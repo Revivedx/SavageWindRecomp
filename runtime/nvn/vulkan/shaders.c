@@ -599,6 +599,367 @@ static const char *builtin_src(const char *name, int *stage) {
                "  o = vec4((lobe * (b + d + f + h) + e) / (4.0 * lobe + 1.0), texelFetch(t, ip, 0).a);\n"
                "}\n";
     }
+    // ---- temporal effects (exec.c "temporal": scene_resolve)
+    // Camera motion vectors: each pixel's position, rebuilt from its depth, taken to the previous frame by m = previous
+    // view-projection x inverse of this one (the game's matrices, GL style). a.x = 1: depth stored as (z_ndc + 1) / 2;
+    // a.y = the sign of clip y at the bottom of the image (+1: row 0 is clip y = -1); a.zw = this frame's jitter in clip
+    // units (the vectors carry none). Out (RGBA16F): xy = velocity = this frame's uv - the previous frame's, in uv units;
+    // z = the pixel's distance in the previous frame / its distance now; w = 1. Where the G-buffer's velocity target
+    // has an object's own (obj, w = 1: ShaderKey.velocity, in clip units / 2 along the game's y) that is taken instead.
+    if (!strcmp(name, "mv.frag")) {
+        *stage = STAGE_FRAGMENT;
+        return "#version 450\n"
+               "layout(set = 0, binding = 0) uniform sampler2D dep;\n"
+               "layout(set = 0, binding = 1) uniform sampler2D obj;\n"
+               "layout(push_constant) uniform P { mat4 m; vec4 a; } pc;\n"
+               "layout(location = 0) out vec4 o;\n"
+               "void main() {\n"
+               "  ivec2 sz = textureSize(dep, 0), p = ivec2(gl_FragCoord.xy);\n"
+               "  vec2 uv = (vec2(p) + 0.5) / vec2(sz);\n"
+               "  vec2 ju = vec2(pc.a.z, pc.a.w * pc.a.y) * 0.5;\n"
+               "  vec4 ov = texelFetch(obj, min(p, textureSize(obj, 0) - 1), 0);\n"
+               "  if (ov.w > 0.5 && !any(isnan(ov)) && !any(isinf(ov))) { o = vec4(ov.x, ov.y * pc.a.y, ov.z, 1.0); return; }\n"
+               "  float d = texelFetch(dep, p, 0).r;\n"
+               "  vec2 u0 = uv - ju;\n"
+               "  vec2 n = u0 * 2.0 - 1.0;\n"
+               "  n.y *= pc.a.y;\n"
+               "  vec4 q = pc.m * vec4(n, pc.a.x > 0.5 ? d * 2.0 - 1.0 : d, 1.0);\n"
+               "  vec2 pn = q.xy / q.w;\n"
+               "  pn.y *= pc.a.y;\n"
+               "  o = vec4(u0 - (pn * 0.5 + 0.5), q.w, 1.0);\n"
+               "}\n";
+    }
+    // Motion vectors shown (b.xy = 1 / the output's size, b.z = the scale: velocity in uv x b.z around mid-grey; blue:
+    // an object's own vector) - the F12 debug view and SAVAGEWIND_MV_DUMP
+    if (!strcmp(name, "mv_show.frag")) {
+        *stage = STAGE_FRAGMENT;
+        return "#version 450\n"
+               "layout(set = 0, binding = 0) uniform sampler2D t;\n"
+               "layout(push_constant) uniform P { vec4 a; vec4 b; } pc;\n"
+               "layout(location = 0) out vec4 o;\n"
+               "void main() {\n"
+               "  vec4 m = texture(t, gl_FragCoord.xy * pc.b.xy);\n"
+               "  vec2 v = m.rg * pc.b.z;\n"
+               "  if (any(isnan(m.rg)) || any(isinf(m.rg))) { o = vec4(1.0, 0.0, 1.0, 1.0); return; }\n"  // (magenta: not a number)
+               "  o = vec4(clamp(0.5 + v, 0.0, 1.0), 0.5, 1.0);\n"
+               "}\n";
+    }
+    // TAA (exec.c taa_run), on the game's finished scene: t = this frame (jittered), h = the history (rgb, a = its
+    // distance), mv = the motion vectors (xy velocity, z previous / current distance), dep = depth. a = the projection
+    // (P00, P11, A, B), b = (reset, history weight, depth mode, 0). Blended in a tone-mapped space (c / (1 + max c)); the
+    // velocity of the nearest of the 3x3 (edges keep the foreground's); the history by Catmull-Rom, clipped to the
+    // 3x3's YCoCg mean +- 1.25 sigma (variance clipping), dropped where its distance is not the one expected
+    // (uncovered). Out: rgb, a = this distance. (LGPE Recomp's.)
+    if (!strcmp(name, "taa.frag")) {
+        *stage = STAGE_FRAGMENT;
+        return "#version 450\n"
+               "layout(set = 0, binding = 0) uniform sampler2D t;\n"
+               "layout(set = 0, binding = 1) uniform sampler2D h;\n"
+               "layout(set = 0, binding = 2) uniform sampler2D mv;\n"
+               "layout(set = 0, binding = 3) uniform sampler2D dep;\n"
+               "layout(push_constant) uniform P { vec4 a; vec4 b; } pc;\n"
+               "layout(location = 0) out vec4 o;\n"
+               "float lin(float d) { return pc.a.w / ((pc.b.z > 0.5 ? d * 2.0 - 1.0 : d) + pc.a.z); }\n"
+               "vec3 tm(vec3 c) { return c / (1.0 + max(c.r, max(c.g, c.b))); }\n"
+               "vec3 itm(vec3 c) { return c / max(1.0 - max(c.r, max(c.g, c.b)), 1e-4); }\n"
+               "vec3 ycc(vec3 c) { return vec3(0.25 * c.r + 0.5 * c.g + 0.25 * c.b, 0.5 * c.r - 0.5 * c.b, -0.25 * c.r + 0.5 * c.g - 0.25 * c.b); }\n"
+               "vec3 rgb(vec3 y) { return vec3(y.x + y.y - y.z, y.x + y.z, y.x - y.y - y.z); }\n"
+               "vec3 cat(vec2 uv, vec2 sz) {\n"  // Catmull-Rom, 5 bilinear taps (the corners dropped)
+               "  vec2 sp = uv * sz, tp = floor(sp - 0.5) + 0.5, f = sp - tp;\n"
+               "  vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f)), w1 = 1.0 + f * f * (-2.5 + 1.5 * f);\n"
+               "  vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f)), w3 = f * f * (-0.5 + 0.5 * f);\n"
+               "  vec2 w12 = w1 + w2, t0 = (tp - 1.0) / sz, t3 = (tp + 2.0) / sz, t12 = (tp + w2 / w12) / sz;\n"
+               "  vec3 r = texture(h, vec2(t12.x, t0.y)).rgb * (w12.x * w0.y) + texture(h, vec2(t0.x, t12.y)).rgb * (w0.x * w12.y)\n"
+               "         + texture(h, t12).rgb * (w12.x * w12.y) + texture(h, vec2(t3.x, t12.y)).rgb * (w3.x * w12.y)\n"
+               "         + texture(h, vec2(t12.x, t3.y)).rgb * (w12.x * w3.y);\n"
+               "  float ws = w12.x * w0.y + w0.x * w12.y + w12.x * w12.y + w3.x * w12.y + w12.x * w3.y;\n"
+               "  return max(r / ws, vec3(0.0));\n"
+               "}\n"
+               "void main() {\n"
+               "  ivec2 sz = textureSize(t, 0), p = ivec2(gl_FragCoord.xy);\n"
+               "  ivec2 dsz = textureSize(dep, 0);\n"
+               "  vec3 c = max(texelFetch(t, p, 0).rgb, vec3(0.0));\n"
+               "  vec2 dsc = vec2(dsz) / vec2(sz);\n"
+               "  float l = lin(texelFetch(dep, min(ivec2(vec2(p) * dsc), dsz - 1), 0).r);\n"
+               "  if (pc.b.x > 0.5) { o = vec4(c, l); return; }\n"
+               "  vec3 m1 = vec3(0.0), m2 = vec3(0.0);\n"
+               "  float dn = 1.0;\n"
+               "  ivec2 np = p;\n"
+               "  for (int y = -1; y <= 1; y++)\n"
+               "    for (int x = -1; x <= 1; x++) {\n"
+               "      ivec2 q = clamp(p + ivec2(x, y), ivec2(0), sz - 1);\n"
+               "      vec3 s = ycc(tm(max(texelFetch(t, q, 0).rgb, vec3(0.0))));\n"
+               "      m1 += s; m2 += s * s;\n"
+               "      float d = texelFetch(dep, min(ivec2(vec2(q) * dsc), dsz - 1), 0).r;\n"
+               "      if (d < dn) { dn = d; np = q; }\n"
+               "    }\n"
+               "  m1 /= 9.0;\n"
+               "  vec3 sg = sqrt(max(m2 / 9.0 - m1 * m1, vec3(0.0)));\n"
+               "  vec4 v = texelFetch(mv, min(ivec2(vec2(np) * vec2(textureSize(mv, 0)) / vec2(sz)), textureSize(mv, 0) - 1), 0);\n"
+               "  vec2 uv = (vec2(p) + 0.5) / vec2(sz), pu = uv - v.xy;\n"
+               "  if (any(lessThan(pu, vec2(0.0))) || any(greaterThan(pu, vec2(1.0)))) { o = vec4(c, l); return; }\n"
+               "  ivec2 hs = textureSize(h, 0);\n"
+               "  float lh = texelFetch(h, clamp(ivec2(pu * vec2(hs)), ivec2(0), hs - 1), 0).a, le = v.z * l;\n"
+               "  float keep = clamp(1.0 - (abs(lh - le) / max(le * 0.02, 2.0) - 1.0), 0.0, 1.0);\n"
+               "  vec3 hy = ycc(tm(cat(pu, vec2(hs))));\n"
+               "  vec3 lo = m1 - 1.25 * sg, hi = m1 + 1.25 * sg, ce = 0.5 * (hi + lo), ex = 0.5 * (hi - lo) + 1e-4;\n"
+               "  vec3 dv = (hy - ce) / ex;\n"
+               "  float mx = max(abs(dv.x), max(abs(dv.y), abs(dv.z)));\n"
+               "  if (mx > 1.0) hy = ce + (hy - ce) / mx;\n"
+               "  vec3 cy = ycc(tm(c));\n"
+               "  float w = pc.b.y * keep;\n"
+               "  o = vec4(itm(rgb(mix(cy, hy, w))), l);\n"
+               "}\n";
+    }
+    // TAA's result into the scene's format: t0 = the history just written (rgb), t1 = the scene (its alpha)
+    if (!strcmp(name, "taa_out.frag")) {
+        *stage = STAGE_FRAGMENT;
+        return "#version 450\n"
+               "layout(set = 0, binding = 0) uniform sampler2D t0;\n"
+               "layout(set = 0, binding = 1) uniform sampler2D t1;\n"
+               "layout(location = 0) out vec4 o;\n"
+               "void main() {\n"
+               "  ivec2 p = ivec2(gl_FragCoord.xy);\n"
+               "  o = vec4(texelFetch(t0, p, 0).rgb, texelFetch(t1, p, 0).a);\n"
+               "}\n";
+    }
+    // ---- frame generation (exec.c "frame generation"): N's and N-1's images, vectors and distances.
+    // The scene's vectors and distances at the render size: xy = the motion vector (this uv - the previous one), z = the
+    // distance (metres: a = A, B of the projection, depth mode; GL style, distance = B / (z_ndc + A)), w = the previous
+    // / current distance. Not a number: still, unknown distance (far).
+    if (!strcmp(name, "fx_cap.frag")) {
+        *stage = STAGE_FRAGMENT;
+        return "#version 450\n"
+               "layout(set = 0, binding = 0) uniform sampler2D dep;\n"
+               "layout(set = 0, binding = 1) uniform sampler2D mv;\n"
+               "layout(push_constant) uniform P { vec4 a; vec4 b; } pc;\n"
+               "layout(location = 0) out vec4 o;\n"
+               "void main() {\n"
+               "  ivec2 p = ivec2(gl_FragCoord.xy);\n"
+               "  float d = texelFetch(dep, p, 0).r;\n"
+               "  float l = pc.a.y / ((pc.a.z > 0.5 ? d * 2.0 - 1.0 : d) + pc.a.x);\n"
+               "  if (isnan(l) || isinf(l) || l <= 0.0) l = 60000.0;\n"
+               "  vec4 m = texelFetch(mv, min(p, textureSize(mv, 0) - 1), 0);\n"
+               "  if (any(isnan(m)) || any(isinf(m))) m = vec4(0.0, 0.0, 1.0, 1.0);\n"
+               "  o = vec4(m.xy, min(l, 60000.0), m.z);\n"
+               "}\n";
+    }
+    // A level of the luma pyramid: a.x = 1, from the image (a 4x4 box: four bilinear taps; its luma); else from the
+    // level before (a 2x2 box: one tap)
+    if (!strcmp(name, "fx_luma.frag")) {
+        *stage = STAGE_FRAGMENT;
+        return "#version 450\n"
+               "layout(set = 0, binding = 0) uniform sampler2D t;\n"
+               "layout(push_constant) uniform P { vec4 a; vec4 b; } pc;\n"
+               "layout(location = 0) out vec4 o;\n"
+               "void main() {\n"
+               "  vec2 sz = vec2(textureSize(t, 0)), p = floor(gl_FragCoord.xy);\n"
+               "  float y;\n"
+               "  if (pc.a.x > 0.5) {\n"
+               "    vec2 c = (p * 4.0 + 2.0) / sz, e = 1.0 / sz;\n"
+               "    vec3 s = texture(t, c - e).rgb + texture(t, c + vec2(e.x, -e.y)).rgb + texture(t, c + vec2(-e.x, e.y)).rgb\n"
+               "           + texture(t, c + e).rgb;\n"
+               "    y = dot(s * 0.25, vec3(0.299, 0.587, 0.114));\n"
+               "  } else y = texture(t, (p * 2.0 + 1.0) / sz).r;\n"
+               "  o = vec4(y);\n"
+               "}\n";
+    }
+    // The optical flow at one level of the pyramid (exec.c fx_begin): for each texel of N (ln), the vector v (uv: this
+    // uv - the previous one, like the engine's) whose 5x5 block of N-1 (lp) at uv - v is the closest (sum of absolute
+    // differences). Candidates: none, the engine's vector there (g: a little favoured - exact where it applies), the
+    // coarser level's vectors (fc) here and around (a.x = 0) or a search of +-4 texels (a.x = 1: the coarsest), then a
+    // search of +-1 texel around the best, and with a.y = 1 (the finest) of half and quarter texels.
+    // Out: xy = the vector, z = its mean difference.
+    if (!strcmp(name, "fx_flow.frag")) {
+        *stage = STAGE_FRAGMENT;
+        return "#version 450\n"
+               "layout(set = 0, binding = 0) uniform sampler2D ln;\n"
+               "layout(set = 0, binding = 1) uniform sampler2D lp;\n"
+               "layout(set = 0, binding = 2) uniform sampler2D fc;\n"
+               "layout(set = 0, binding = 3) uniform sampler2D g;\n"
+               "layout(push_constant) uniform P { vec4 a; vec4 b; } pc;\n"
+               "layout(location = 0) out vec4 o;\n"
+               "float blk[25];\n"
+               "vec2 px, uv;\n"
+               "float cost(vec2 v) {\n"
+               "  float s = 0.0;\n"
+               "  for (int i = 0; i < 25; i++) s += abs(blk[i] - texture(lp, uv - v + vec2(i % 5 - 2, i / 5 - 2) * px).r);\n"
+               "  return s;\n"
+               "}\n"
+               "vec2 best; float bc;\n"
+               "void try_(vec2 v, float bias) { float c = cost(v) * bias; if (c < bc) { bc = c; best = v; } }\n"
+               "void main() {\n"
+               "  px = 1.0 / vec2(textureSize(ln, 0));\n"
+               "  uv = (floor(gl_FragCoord.xy) + 0.5) * px;\n"
+               "  for (int i = 0; i < 25; i++) blk[i] = texture(ln, uv + vec2(i % 5 - 2, i / 5 - 2) * px).r;\n"
+               "  best = vec2(0.0); bc = cost(best);\n"
+               "  vec2 e = texture(g, uv).xy;\n"
+               "  if (!any(isnan(e)) && !any(isinf(e))) try_(e, 0.9);\n"
+               "  if (pc.a.x < 0.5) {\n"
+               "    ivec2 cs = textureSize(fc, 0), cq = ivec2(uv * vec2(cs));\n"
+               "    for (int i = 0; i < 5; i++) {\n"
+               "      ivec2 d = i == 1 ? ivec2(-1, 0) : i == 2 ? ivec2(1, 0) : i == 3 ? ivec2(0, -1) : i == 4 ? ivec2(0, 1) : ivec2(0);\n"
+               "      try_(texelFetch(fc, clamp(cq + d, ivec2(0), cs - 1), 0).xy, 1.0);\n"
+               "    }\n"
+               "  }\n"
+               "  int r = pc.a.x > 0.5 ? 4 : 1;\n"
+               "  vec2 c0 = best;\n"
+               "  for (int y = -r; y <= r; y++)\n"
+               "    for (int x = -r; x <= r; x++) if (x != 0 || y != 0) try_(c0 + vec2(x, y) * px, 1.0);\n"
+               "  if (pc.a.y > 0.5)\n"
+               "    for (int k = 0; k < 2; k++) {\n"
+               "      vec2 c1 = best;\n"
+               "      float st = k == 0 ? 0.5 : 0.25;\n"
+               "      for (int y = -1; y <= 1; y++)\n"
+               "        for (int x = -1; x <= 1; x++) if (x != 0 || y != 0) try_(c1 + vec2(x, y) * px * st, 1.0);\n"
+               "    }\n"
+               "  o = vec4(best, bc / 25.0, 1.0);\n"
+               "}\n";
+    }
+    // Each pixel's vector (render size): the engine's (g) or the optical flow's (f), whichever takes N-1 (cp) to N (cn)
+    // better over a 3x3 two pixels apart (a.xy = 1 / the image's size). The engine's unless the flow's difference is
+    // clearly smaller: they are exact for what they describe, the flow is a block's. Out: xy = the vector, z = the
+    // distance in N, w = the previous / current distance (the engine's), -1 (the flow's: none known) or -2 (neither
+    // fits: blended without the distances' tests).
+    if (!strcmp(name, "fx_pick.frag")) {
+        *stage = STAGE_FRAGMENT;
+        return "#version 450\n"
+               "layout(set = 0, binding = 0) uniform sampler2D cn;\n"
+               "layout(set = 0, binding = 1) uniform sampler2D cp;\n"
+               "layout(set = 0, binding = 2) uniform sampler2D g;\n"
+               "layout(set = 0, binding = 3) uniform sampler2D f;\n"
+               "layout(push_constant) uniform P { vec4 a; vec4 b; } pc;\n"
+               "layout(location = 0) out vec4 o;\n"
+               "float err(vec2 uv, vec2 v) {\n"
+               "  float s = 0.0;\n"
+               "  for (int y = -1; y <= 1; y++)\n"
+               "    for (int x = -1; x <= 1; x++) {\n"
+               "      vec2 q = uv + vec2(x, y) * pc.a.xy * 2.0;\n"
+               "      vec3 d = abs(texture(cn, q).rgb - texture(cp, q - v).rgb);\n"
+               "      s += d.r + d.g + d.b;\n"
+               "    }\n"
+               "  return s / 27.0;\n"
+               "}\n"
+               "void main() {\n"
+               "  ivec2 p = ivec2(gl_FragCoord.xy);\n"
+               "  vec2 uv = (vec2(p) + 0.5) / vec2(textureSize(g, 0));\n"
+               "  vec4 e = texelFetch(g, p, 0);\n"
+               "  vec2 fl = texture(f, uv).xy;\n"
+               "  float ee = err(uv, e.xy), ef = err(uv, fl);\n"
+               "  if (ef < ee * 0.6 - 0.004) o = vec4(fl, e.z, -1.0);\n"
+               "  else o = vec4(e.xy, e.z, ee > 0.08 && ef > 0.08 ? -2.0 : e.w);\n"
+               "}\n";
+    }
+    // The chosen vectors (vf) carried to the in-between image's time: each texel to where it is at t (a.x = 1 - t back
+    // from N along its vector), onto the 2x2 texels around; a.y = 0: the atomic minimum of its distance there (dep:
+    // the bits of a positive float order as the float), 1: its vector where its distance won (vec; z = 0: none)
+    if (!strcmp(name, "fx_splat.comp")) {
+        *stage = STAGE_COMPUTE;
+        return "#version 450\n"
+               "layout(local_size_x = 8, local_size_y = 8) in;\n"
+               "layout(set = 0, binding = 0) uniform sampler2D vf;\n"
+               "layout(set = 0, binding = 1, r32ui) uniform uimage2D dep;\n"
+               "layout(set = 0, binding = 2, rgba16f) uniform writeonly image2D vec;\n"
+               "layout(push_constant) uniform P { vec4 a; } pc;\n"
+               "void main() {\n"
+               "  ivec2 sz = textureSize(vf, 0), p = ivec2(gl_GlobalInvocationID.xy);\n"
+               "  if (any(greaterThanEqual(p, sz))) return;\n"
+               "  vec4 v = texelFetch(vf, p, 0);\n"
+               "  if (any(isnan(v)) || any(isinf(v)) || any(greaterThan(abs(v.xy), vec2(1.0)))) return;\n"
+               "  v.z = max(v.z, 1e-3);\n"
+               "  vec2 x = vec2(p) + 0.5 - pc.a.x * v.xy * vec2(sz);\n"
+               "  uint key = floatBitsToUint(v.z);\n"
+               "  ivec2 b0 = ivec2(floor(x - 0.5));\n"
+               "  for (int k = 0; k < 4; k++) {\n"
+               "    ivec2 q = b0 + ivec2(k & 1, k >> 1);\n"
+               "    if (any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, sz))) continue;\n"
+               "    if (pc.a.y < 0.5) imageAtomicMin(dep, q, key);\n"
+               "    else if (imageLoad(dep, q).r == key) imageStore(vec, q, v);\n"
+               "  }\n"
+               "}\n";
+    }
+    // The image presented (fin) with the HUD mask in its alpha: 1 where the composite's image now (cur: the HUD drawn
+    // over it) differs from its copy as composited (cmp) by more than a.x .. a.y around the pixel (a cross: the HUD's
+    // soft edges)
+    if (!strcmp(name, "fx_final.frag")) {
+        *stage = STAGE_FRAGMENT;
+        return "#version 450\n"
+               "layout(set = 0, binding = 0) uniform sampler2D fin;\n"
+               "layout(set = 0, binding = 1) uniform sampler2D cur;\n"
+               "layout(set = 0, binding = 2) uniform sampler2D cmp;\n"
+               "layout(push_constant) uniform P { vec4 a; vec4 b; } pc;\n"
+               "layout(location = 0) out vec4 o;\n"
+               "void main() {\n"
+               "  ivec2 p = ivec2(gl_FragCoord.xy), sz = textureSize(cur, 0);\n"
+               "  float h = 0.0;\n"
+               "  for (int i = 0; i < 5; i++) {\n"
+               "    ivec2 d = i == 1 ? ivec2(-1, 0) : i == 2 ? ivec2(1, 0) : i == 3 ? ivec2(0, -1) : i == 4 ? ivec2(0, 1) : ivec2(0);\n"
+               "    ivec2 q = clamp(p + d, ivec2(0), sz - 1);\n"
+               "    vec3 df = abs(texelFetch(cur, q, 0).rgb - texelFetch(cmp, q, 0).rgb);\n"
+               "    h = max(h, max(df.r, max(df.g, df.b)));\n"
+               "  }\n"
+               "  o = vec4(texelFetch(fin, p, 0).rgb, smoothstep(pc.a.x, pc.a.y, h));\n"
+               "}\n";
+    }
+    // An in-between image at t (a.x): each pixel along the vector carried to t (sv; where none landed, the farthest
+    // around - a background uncovered - or N's own there, vf), from N (cn) at uv + (1 - t) v and N-1 (cp) at uv - t v:
+    // the one that sees the surface where only one does (N: no nearer surface at that point, vf's distance; N-1: its
+    // distance there, gp, the one the engine's vector expects; neither under its HUD, the images' alpha), blended by t
+    // otherwise. Where N has its HUD, N as it is.
+    // b.xy = 1 / the image's size; b.z (SAVAGEWIND_FX_SHOW): 1 the vectors (red: the flow's), 2 the HUD mask and which
+    // frames see the surface (green N, blue N-1), 3 the plain blend of N-1 and N.
+    if (!strcmp(name, "fx_warp.frag")) {
+        *stage = STAGE_FRAGMENT;
+        return "#version 450\n"
+               "layout(set = 0, binding = 0) uniform sampler2D cn;\n"
+               "layout(set = 0, binding = 1) uniform sampler2D cp;\n"
+               "layout(set = 0, binding = 2) uniform sampler2D sv;\n"
+               "layout(set = 0, binding = 3) uniform sampler2D gp;\n"
+               "layout(set = 0, binding = 4) uniform sampler2D vf;\n"
+               "layout(push_constant) uniform P { vec4 a; vec4 b; } pc;\n"
+               "layout(location = 0) out vec4 o;\n"
+               "vec4 at(sampler2D s, vec2 uv) { ivec2 z = textureSize(s, 0); return texelFetch(s, clamp(ivec2(uv * vec2(z)), ivec2(0), z - 1), 0); }\n"
+               "bool inside(vec2 u) { return all(greaterThanEqual(u, vec2(0.0))) && all(lessThanEqual(u, vec2(1.0))); }\n"
+               "void main() {\n"
+               "  ivec2 p = ivec2(gl_FragCoord.xy);\n"
+               "  vec2 uv = (vec2(p) + 0.5) * pc.b.xy;\n"
+               "  float t = pc.a.x;\n"
+               "  ivec2 ss = textureSize(sv, 0), sq = clamp(ivec2(uv * vec2(ss)), ivec2(0), ss - 1);\n"
+               "  vec4 s = texelFetch(sv, sq, 0);\n"
+               "  bool hole = s.z <= 0.0;\n"
+               "  if (hole) {\n"
+               "    vec4 bst = vec4(0.0);\n"
+               "    for (int y = -2; y <= 2; y++)\n"
+               "      for (int x = -2; x <= 2; x++) {\n"
+               "        vec4 c = texelFetch(sv, clamp(sq + ivec2(x, y) * 2, ivec2(0), ss - 1), 0);\n"
+               "        if (c.z > bst.z) bst = c;\n"
+               "      }\n"
+               "    s = bst.z > 0.0 ? bst : at(vf, uv);\n"
+               "  }\n"
+               "  vec2 un = uv + (1.0 - t) * s.xy, up = uv - t * s.xy;\n"
+               "  vec4 cN = texture(cn, un), cP = texture(cp, up);\n"
+               "  bool okN = inside(un) && cN.a < 0.5, okP = inside(up) && cP.a < 0.5;\n"
+               "  if (s.w > -1.5) {\n"
+               "    okN = okN && at(vf, un).z > s.z * 0.95 - 0.1;\n"
+               "    if (s.w > 0.0) okP = okP && at(gp, up).z > s.z * s.w * 0.95 - 0.1;\n"
+               "  }\n"
+               "  vec3 c = okN == okP ? mix(cP.rgb, cN.rgb, t) : okN ? cN.rgb : cP.rgb;\n"
+               "  vec4 f = texelFetch(cn, p, 0);\n"
+               "  float m = f.a;\n"
+               "  if (pc.b.z > 0.5 && pc.b.z < 1.5) c = vec3(s.w < -0.5 && s.w > -1.5 ? 1.0 : 0.0, clamp(0.5 + s.xy * 16.0, 0.0, 1.0)) * (hole ? 0.5 : 1.0);\n"
+               "  if (pc.b.z > 1.5 && pc.b.z < 2.5) c = vec3(m, okN ? 0.5 : 0.0, okP ? 0.5 : 0.0), m = 0.0;\n"
+               "  if (pc.b.z > 2.5) c = mix(texelFetch(cp, p, 0).rgb, f.rgb, t);\n"
+               "  o = vec4(mix(c, f.rgb, m), 1.0);\n"
+               "}\n";
+    }
+    // The scene depth as R32F (FSR 3.1 reads a colour image)
+    if (!strcmp(name, "depth_r32.frag")) {
+        *stage = STAGE_FRAGMENT;
+        return "#version 450\n"
+               "layout(set = 0, binding = 0) uniform sampler2D dep;\n"
+               "layout(location = 0) out vec4 o;\n"
+               "void main() { o = vec4(texelFetch(dep, ivec2(gl_FragCoord.xy), 0).r); }\n";
+    }
     if (!strcmp(name, "clear.vert")) {
         *stage = STAGE_VERTEX;
         return "#version 450\n"
@@ -631,7 +992,7 @@ static const char *builtin_src(const char *name, int *stage) {
 }
 
 VkShaderModule vk_builtin_shader(const char *name) {
-    static struct { char name[32]; VkShaderModule m; } cache[64];
+    static struct { char name[32]; VkShaderModule m; } cache[96];
     static int n;
     for (int i = 0; i < n; i++) if (!strcmp(cache[i].name, name)) return cache[i].m;
     int stage = 0;
@@ -639,6 +1000,6 @@ VkShaderModule vk_builtin_shader(const char *name) {
     if (!src) FATAL("no built-in shader %s\n", name);
     VkShaderModule m = vk_compile_glsl(src, stage, name);
     if (!m) FATAL("built-in shader %s failed to compile\n", name);
-    if (n < 64) { snprintf(cache[n].name, sizeof cache[n].name, "%s", name); cache[n++].m = m; }
+    if (n < 96) { snprintf(cache[n].name, sizeof cache[n].name, "%s", name); cache[n++].m = m; }
     return m;
 }

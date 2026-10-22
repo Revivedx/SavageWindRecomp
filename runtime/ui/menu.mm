@@ -147,6 +147,10 @@ static std::atomic<bool> g_last_pad{false};
 static char g_kbd_text[96];
 static int g_kbd_max = 8;
 static bool capturing() { return g_open.load() || g_kbd.load() == 1; }
+// The page on screen while the menu is open (tabs_body; read by F12 here, on the main thread)
+static std::atomic<int> g_tab_on_screen{-99};
+extern int g_tab_request_ext;
+#define TAB_GRAPHICS 3
 // The game gets no input while this is true (runtime/hle/input.c): menu or name entry up, or a binding capture begun
 // from the game's Options screen.
 extern "C" bool menu_input_captured(void) { return capturing() || game_options_input_hold(); }
@@ -190,6 +194,17 @@ bool menu_handle_event(const SDL_Event *e) {
                 return true;
             }
             if (!typing) set_open(!g_open.load());  // (Esc with the menu open goes to ImGui below: it cancels a field)
+            return true;
+        }
+        // F12: the Graphics page (upscaler, its mode, frame generation) at once; again: closed. Also in game, where F1 /
+        // Esc no longer open this menu (overlay_enabled): these settings are not on the game's Options screen.
+        if (!e->key.repeat && e->key.scancode == SDL_SCANCODE_F12 && !(e->key.mod & SDL_KMOD_SHIFT) && !typing) {
+            if (g_open.load() && g_tab_on_screen.load() == TAB_GRAPHICS) set_open(false);
+            else {
+                set_open(true);
+                g_tab_request_ext = TAB_GRAPHICS;
+                menu_tabs_focus(false);  // (the cursor on that tab)
+            }
             return true;
         }
         if (!e->key.repeat && e->key.scancode == SDL_SCANCODE_F10 && !typing) {  // performance overlay: off, FPS, full
@@ -555,11 +570,26 @@ static void tab_display(void) {
                "frame time graph. F10 switches between them while you play.");
 
     opt_section("Rendering");
-    {   // Upscaler: Off, this OS's spatial upscaler (its modes on the row below), and the temporal ones still to come.
+    opt_toggle("Asynchronous shaders", &g_settings.async_shaders, false,
+               "Off: the game waits for each new shader to compile, a short stutter the first time an effect "
+               "appears, and everything is drawn. On: no waiting, but what needs a shader still compiling is skipped "
+               "meanwhile: effects pop in late, and pictures the game draws only once (the save file's screenshot) "
+               "can come out as garbage.");
+    opt_end();
+}
+
+// The Graphics page (also F12): how the 3D image is rendered and resolved - the upscaler and its mode, FSR 3.1's
+// sharpening, anti-aliasing, and the motion vectors' debugging view (runtime/nvn/vulkan/exec.c "temporal").
+static void tab_graphics(void) {
+    float scale = ImGui::GetFontSize() / 34;
+    opt_begin("##graphics", scale);
+    opt_section("Upscaling");
+    {   // Upscaler: Off, this OS's spatial upscaler, AMD FSR 3.1 (temporal, Vulkan), and DLSS still to come.
         // Values that can't be picked yet are shown greyed ("coming soon"); stepping onto them keeps the one in use.
         // The modes wait for render-target scaling (upscale_modes_available): until then the upscaler brings the
         // game's own 1920 x 1080 image to a bigger window.
-        std::string fsr3 = std::string(tr("FSR 3")) + " " + tr("(coming soon)");
+        std::string fsr3 = upscaler_available(UPSCALE_FSR3) ? std::string(tr("AMD FSR 3.1"))
+                                                            : std::string(tr("AMD FSR 3.1")) + " " + tr("(not available)");
         std::string dlss = std::string(tr("DLSS")) + " " + tr(renderer_gpu_rtx() ? "(coming soon)" : "(NVIDIA RTX only)");
 #ifdef __APPLE__
         const char *ups[] = {"Off", "MetalFX"};
@@ -571,9 +601,11 @@ static void tab_display(void) {
         const char *ups[] = {"Off", "AMD FSR 1", fsr3.c_str(), dlss.c_str()};
         static const int ups_value[] = {UPSCALE_OFF, UPSCALE_FSR1, UPSCALE_FSR3, UPSCALE_DLSS};
         const char *ud = "Off: the 3D image renders at the window's resolution. AMD FSR 1: it renders smaller (the mode "
-                         "below), then FSR 1's edge-aware upscaling and sharpening bring it to the window. The HUD and "
-                         "menus always render at the window's resolution.\n\nAMD FSR 3 and NVIDIA DLSS (NVIDIA RTX "
-                         "graphics cards) are coming in a later version.";
+                         "below), then FSR 1's edge-aware upscaling and sharpening bring it to the window. AMD FSR 3.1: "
+                         "temporal - it builds each picture from the last ones along the motion of everything on screen, "
+                         "sharper and steadier than FSR 1 at the same size, and anti-aliased (it needs "
+                         "amd_fidelityfx_vk.dll next to the game). The HUD and menus always render at the window's "
+                         "resolution.\n\nNVIDIA DLSS (NVIDIA RTX graphics cards) is coming in a later version.";
 #endif
         enum { NU = sizeof ups_value / sizeof ups_value[0] };
         bool avail[NU];
@@ -586,41 +618,82 @@ static void tab_display(void) {
         int udef = 0;  // (the reset value: UPSCALE_DEFAULT)
         for (int i = 0; i < NU; i++) if (ups_value[i] == UPSCALE_DEFAULT) udef = i;
         if (opt_choice_avail("Upscaler", &ui, &shown, ups, avail, NU, udef, ud)) g_settings.upscaler = ups_value[ui];
-        // its mode (AMD's scale factors), one step in; greyed when the upscaler is off
-        static const char *const modes[] = {"Ultra Quality", "Quality", "Balanced", "Performance"};
+        // its mode (AMD's scale factors), one step in, from the sharpest (upscale_mode_order); greyed when the upscaler
+        // is off. Native AA and Ultra Performance: FSR 3.1 only.
+        static const char *const modes[UPQ_COUNT] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Native AA",
+                                                     "Ultra Performance"};
         bool modes_ok = upscale_modes_available();
         std::string mode_names[UPQ_COUNT];
         const char *mn[UPQ_COUNT];
         bool mavail[UPQ_COUNT];
+        int mcur = 0, mdef = 0;
         for (int i = 0; i < UPQ_COUNT; i++) {
-            mode_names[i] = modes_ok ? tr(modes[i]) : std::string(tr(modes[i])) + " " + tr("(coming soon)");
+            int q = upscale_mode_order[i];
+            bool offered = upscale_mode_offered(g_settings.upscaler == UPSCALE_OFF ? UPSCALE_FSR1 : g_settings.upscaler, q);
+            mode_names[i] = !modes_ok ? std::string(tr(modes[q])) + " " + tr("(coming soon)")
+                          : !offered ? std::string(tr(modes[q])) + " " + tr("(FSR 3.1 only)") : std::string(tr(modes[q]));
             mn[i] = mode_names[i].c_str();
-            mavail[i] = modes_ok;
+            mavail[i] = modes_ok && offered;
+            if (q == g_settings.upscale_quality) mcur = i;
+            if (q == UPQ_QUALITY) mdef = i;
         }
         float sx, sy;  // the 3D scene's size (BOTW docked: 1600 x 900 times its scale)
         renderer_get_scene_scale(&sx, &sy);
         char rendering[100];
         snprintf(rendering, sizeof rendering, tr("Rendering at %.0f x %.0f."), 1600.0 * sx, 900.0 * sy);
         std::string md = std::string(tr("How much smaller the game renders before the upscaler brings it to the window, "
-                                        "on each side: Ultra Quality 1.3x, Quality 1.5x, Balanced 1.7x, Performance "
-                                        "2x. Smaller is faster and softer.")) +
+                                        "on each side: Native AA 1x (FSR 3.1: anti-aliasing only), Ultra Quality 1.3x, "
+                                        "Quality 1.5x, Balanced 1.7x, Performance 2x, Ultra Performance 3x (FSR 3.1). "
+                                        "Smaller is faster and softer.")) +
                          "\n\n" + (modes_ok ? rendering : tr("Coming in a later version."));
         opt_indent(1);
         if (g_settings.upscaler == UPSCALE_OFF) opt_disable_next();
         static int mshown = -1;
-        opt_choice_avail("Upscaler mode", &g_settings.upscale_quality, &mshown, mn, mavail, UPQ_COUNT, UPQ_QUALITY,
-                         md.c_str());
+        if (opt_choice_avail("Upscaler mode", &mcur, &mshown, mn, mavail, UPQ_COUNT, mdef, md.c_str()))
+            g_settings.upscale_quality = upscale_mode_order[mcur];
+        if (g_settings.upscaler != UPSCALE_FSR3) opt_disable_next();
+        float sh = roundf(g_settings.fsr_sharpness * 100);
+        if (opt_slider("Sharpness", &sh, 0, 100, 5, 50, "%g%%",
+                       "FSR 3.1's sharpening of the upscaled picture (AMD's RCAS). 0%: none, the softest; 100%: the "
+                       "strongest."))
+            g_settings.fsr_sharpness = sh / 100.0f;
         opt_indent(-1);
     }
-    static const char *aa[] = {"Off", "SMAA"};
-    opt_choice("Anti-aliasing", &g_settings.antialias, aa, 2, AA_OFF,
-               "Smooths jagged edges of the game image before it is scaled to the window. SMAA: finds the edges and "
-               "blends only along them, so textures stay sharp. Most useful with an upscaler.");
-    opt_toggle("Asynchronous shaders", &g_settings.async_shaders, false,
-               "Off: the game waits for each new shader to compile, a short stutter the first time an effect "
-               "appears, and everything is drawn. On: no waiting, but what needs a shader still compiling is skipped "
-               "meanwhile: effects pop in late, and pictures the game draws only once (the save file's screenshot) "
-               "can come out as garbage.");
+    opt_section("Anti-aliasing");
+    {
+        static const char *aa[] = {"Off", "SMAA", "TAA"};
+        bool fsr3 = g_settings.upscaler == UPSCALE_FSR3 && upscaler_available(UPSCALE_FSR3);
+        if (fsr3) opt_disable_next();
+        opt_choice("Anti-aliasing", &g_settings.antialias, aa, AA_COUNT, AA_OFF,
+                   fsr3 ? "AMD FSR 3.1 anti-aliases the 3D image itself: this setting is not used with it."
+                        : "Smooths jagged edges. SMAA: finds the edges of the finished image and blends only along them, "
+                          "so textures stay sharp. TAA: temporal - the 3D image is drawn a fraction of a pixel apart "
+                          "each frame and blended with the last ones along the motion of everything on screen: steadier "
+                          "edges, foliage and thin lines, a little softer.");
+    }
+    opt_section("Frame generation");
+    {   // images per frame the game draws (runtime/nvn/vulkan/exec.c "frame generation")
+        static const char *const fg_names[] = {"Off", "2x", "3x", "4x"};
+        int cur = g_settings.frame_gen >= 2 ? g_settings.frame_gen - 1 : 0;
+        char desc[900];
+        int fps = g_settings.fps_limit;
+        char rate[160] = "";
+        if (fps > 0 && g_settings.frame_gen >= 2)
+            snprintf(rate, sizeof rate, tr("Now: %d frames a second from the game, %d pictures a second on screen."), fps,
+                     fps * g_settings.frame_gen);
+        snprintf(desc, sizeof desc, "%s%s%s",
+                 tr("Shows 2, 3 or 4 pictures for each frame the game draws: the ones in between move the pixels of "
+                    "the game's last two frames along the motion of everything on screen (the game's own motion, and "
+                    "the image's where that does not tell: smoke, water, reflections), with the HUD kept still. Almost "
+                    "free: the game keeps its frame rate. The game's own speed stays the same; what you do reaches the "
+                    "screen a fraction of a frame later."),
+                 rate[0] ? "\n\n" : "", rate);
+        if (opt_choice("Frame generation", &cur, fg_names, 4, 0, desc, false)) g_settings.frame_gen = cur ? cur + 1 : FG_OFF;
+    }
+    opt_section("Debugging");
+    opt_toggle("Show motion vectors", &g_settings.mv_debug, false,
+               "Shows how each pixel of the 3D image moved since the last frame, in place of the image: grey still, "
+               "red right, green down (and their opposites). What TAA and FSR 3.1 follow. Not saved.");
     opt_end();
 }
 
@@ -841,8 +914,8 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     int ntabs = 0;
     if (prelaunch) tabs[ntabs++] = {"Prelaunch", -1, true};
     // (ids 2-7 were Link's Awakening tabs; the ids stay: test hooks)
-    static const char *names[] = {"Video", "Audio", "Language", "", "", "", "", "", "Controls", "Quit"};
-    static const int order[] = {8, 0, 1, 2, 9};  // Controls, Video, Audio, Language, Quit
+    static const char *names[] = {"Video", "Audio", "Language", "Graphics", "", "", "", "", "Controls", "Quit"};
+    static const int order[] = {8, 0, TAB_GRAPHICS, 1, 2, 9};  // Controls, Video, Graphics, Audio, Language, Quit
     for (int i : order)  // (Quit: in game only - the start screen has its own QUIT)
         if (i != 9 || !prelaunch) tabs[ntabs++] = {names[i], i, true};
     int cur = 0;  // g_tab / g_tab_request hold ids
@@ -907,6 +980,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
             ImGui::EndDisabled();
             if (open) {
                 g_tab = t.id;
+                g_tab_on_screen = t.id;
                 ImGui::Spacing();
                 ImGui::BeginChild("##page", ImVec2(0, 0), ImGuiChildFlags_None,  // (the rest of the window: no hint line)
                                   ImGuiWindowFlags_NavFlattened);
@@ -921,6 +995,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
                 case -1: prelaunch(scale); break;
                 case 0: tab_display(); break;
                 case 1: tab_audio(); break;
+                case TAB_GRAPHICS: tab_graphics(); break;
                 case 2: tab_language(in_game); break;
                 case 8: tab_about(); break;
                 case 9: tab_quit(scale, in_game); break;

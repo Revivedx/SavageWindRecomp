@@ -741,6 +741,95 @@ Se conserva todo lo genérico: el lifter AArch64 → C, el kernel HLE, IPC y ser
 con el backend Vulkan, el traductor de shaders Maxwell, ASTC, audio, la UI de ajustes y la
 compilación local con `zig cc`.
 
+## Vectores de movimiento, TAA, FSR 3.1 y generación de fotogramas (2026-10-22)
+
+Todo en `runtime/nvn/vulkan/exec.c` (secciones "temporal" y "frame generation"), `fsr3.cpp`, `device.c` (presentación)
+y el traductor (`maxwell/translate.c`: `ShaderKey.velocity` / `jitter`). Sigue el diseño de LGPE Recomp (letsgo-recomp),
+con lo que BOTW pide distinto:
+
+- **Dónde.** BOTW dibuja su escena en un G-buffer (6 targets a la escala de la escena, `RS_SCENE`, con su depth),
+  ilumina y hace su postproceso en una imagen de la escena, y un draw la compone en la imagen final (`RS_OUT`) antes del
+  HUD. Ese draw es donde se resuelve todo (`scene_resolve`, lo que antes era `scene_upscale` de FSR 1): el HUD y los
+  menús quedan fuera, sin jitter y a la resolución de la ventana (en LGPE la interfaz va dentro de la imagen y hace
+  falta una máscara).
+- **Cámara.** El cbuf 3 de vértices de los draws del G-buffer (2336 bytes, row-major): vista 3x4 en +0,
+  view-projection en +48, proyección en +112 (estilo GL; acoplada: near 1, far 25000, metros). Se valida (proyección
+  perspectiva, vista rígida, VP = P x V) antes de tomarla. `SAVAGEWIND_MV_SCAN=<present>` lista las matrices de
+  proyección de los cbufs de los draws con depth (la investigación que dio esos offsets).
+- **Vectores.** `mv.frag`: la profundidad reproyectada con VP anterior x inversa de la actual, sin el jitter; donde un
+  draw del G-buffer escribió su propia velocidad (un target RGBA16F añadido a la pasada, `ShaderKey.velocity`: el
+  vertex shader corre dos veces, la segunda con los cbufs del frame anterior en los bindings 100 + k), esa. Los draws
+  se emparejan entre frames por programa, vertex stream 0, argumentos y ocurrencia, y entre las ocurrencias se toma la
+  de constantes más parecidas (la hierba y los árboles). Se rechaza (velocidad de la cámara) un cbuf con una palabra que
+  cambia más de un cuarto de su tamaño + 1 m: el clipmap del terreno intercambia niveles entre frames (250 -> 125).
+  Algunas hierbas daban NaN con las constantes anteriores: se marca desconocida. Orientación comprobada con un giro de
+  cámara (las esquinas se mueven como un yaw). `SAVAGEWIND_MV_DUMP=<frames>` (con `SAVAGEWIND_MV_SHOW_SCALE`),
+  F12 > Gráficos > Mostrar vectores de movimiento, `SAVAGEWIND_MV_OBJECTS=0` (solo cámara), `SAVAGEWIND_MV_YSIGN`,
+  `SAVAGEWIND_MVO_PROBE=<present>`.
+- **Jitter.** Los draws sobre el depth de la escena con test de profundidad (no las pasadas a pantalla completa): Halton
+  (2, 3) de 8 fases con TAA, la secuencia propia de FSR 3.1 para su razón. Solo mientras TAA / FSR 3.1 resolvieron el
+  frame anterior (menús y cargas no tienen composición). `SAVAGEWIND_NO_JITTER=1`.
+- **TAA** (`taa.frag`, el de LGPE): historia por Catmull-Rom con clipping de varianza en YCoCg, peso 0,9.
+- **FSR 3.1.** `amd_fidelityfx_vk.dll` (FidelityFX SDK 1.1.4, MIT, firmado por AMD) se carga en tiempo de ejecución
+  junto al exe (o desde `third_party/fidelityfx/bin` en un checkout); sin ella el escalador no se ofrece. Entra la
+  imagen de la escena (A2B10G10R10, gamma), el depth en R32F y los vectores; sale RGBA16F (la salida en el formato de
+  10 bits también funciona: `SAVAGEWIND_FSR3_OUT=scene`). Modos nuevos: AA nativo (1x) y Ultrarrendimiento (3x), solo
+  FSR 3.1. El aspecto "posterizado" que se ve a 1080p con nubes y Link no es de FSR: sale igual con el escalador en No.
+- **Menú F12.** Abre el menú en la pestaña Gráficos (escalador, modo, nitidez, antialiasing, generación de fotogramas,
+  vista de vectores); otra vez F12 lo cierra. La grabación de frames de depuración pasó a Shift+F12.
+- **Generación de fotogramas** (2x / 3x / 4x, sección "frame generation" de `exec.c`). Las intermedias se hacen con
+  las imágenes de los dos últimos fotogramas del juego, como la interpolación de DLSS / FSR 3: nada se vuelve a
+  dibujar y el juego no hace nada de más. (Una primera versión las dibujaba otra vez reejecutando las listas del frame
+  con los cbufs mezclados entre N-1 y N, como LGPE: cada intermedia costaba ~11 ms de CPU y un frame de GPU, y como
+  BOTW espera a la GPU cada frame, sin límite pasaba de 75 fps a 40 x 2. Se quitó.)
+  - **Captura** (cada frame real, desde `scene_resolve`): los vectores de movimiento y las distancias de la escena a la
+    resolución de render (`POST_FX_G`: xy el vector, z la distancia en metros, w distancia anterior / actual); la
+    imagen final justo después del draw del composite, antes del HUD (`POST_FX_H`); y la imagen presentada con la
+    máscara del HUD en su alfa (`POST_FX_C`). Dos de cada (N y N-1, por la paridad del frame).
+  - **El HUD.** BOTW compone la escena en una imagen de 10 bits a la resolución de la ventana (formato 64), dibuja el
+    HUD **en esa misma imagen** y una última pasada a pantalla completa la escribe en la RGBA8 que presenta (formato
+    37: el gradado / la conversión). Así que la copia tras el composite no se parece a la imagen presentada (otros
+    colores) y la presentada ya trae el HUD. `fx_follow` reconoce esa última pasada (un draw a pantalla completa que
+    lee la imagen del composite y escribe otra de la ventana) y tras ella `fx_final.frag` guarda la imagen presentada
+    con alfa = 1 donde la imagen de 10 bits cambió desde la copia (el HUD, menús, lo que se dibuje encima; una cruz de
+    un píxel para los bordes suaves).
+  - **Flujo óptico** (una vez por pareja, `fx_begin`): pirámide de luma de la imagen (1/4, 1/8, 1/16, 1/32) y
+    búsqueda por bloques 5x5 (suma de diferencias absolutas) de N hacia N-1: en el nivel más grueso una búsqueda de
+    +-4 texels; en cada nivel más fino, los vectores del grueso (aquí y en cruz) como candidatos más +-1 texel; en el
+    más fino, medio y cuarto de texel. El vector del motor es un candidato más (algo favorecido). La DLL de FidelityFX
+    no sirve aquí: su flujo óptico solo existe dentro de su generación de fotogramas (ffx_api 1.1.4 no tiene proveedor
+    de flujo óptico suelto) y esa da como mucho 2x.
+  - **Elección por píxel** (`fx_pick.frag`, a la resolución de render): el vector del motor, salvo donde el del flujo
+    lleva N-1 a N claramente mejor en un 3x3 (humo, agua, reflejos, sombras, nubes: lo que los vectores del motor no
+    describen); si ninguno encaja se marca y se mezcla sin las pruebas de distancia.
+  - **Cada intermedia** a t (`vk_fg_image`): los vectores se llevan a t (`fx_splat.comp`: cada texel de N a donde
+    está en t, sobre los 2x2 de alrededor; gana el más cercano con un `imageAtomicMin` de la distancia y luego escribe
+    su vector), y cada píxel toma N en uv + (1 - t) v y N-1 en uv - t v (`fx_warp.frag`): el que ve la superficie si
+    solo uno la ve (N: ninguna superficie más cercana allí; N-1: la distancia esperada por el vector del motor; ninguno
+    bajo su HUD), mezclados por t si no. Donde no cae nada de N (fondo descubierto en t) se usa el vector más lejano
+    de alrededor. Donde N tiene HUD, N tal cual. Sin composite en este frame o el anterior (menús, cargas), tamaños
+    distintos o un corte de cámara: N solo.
+  - Todo va en la cola principal, entre el trabajo del frame y el del siguiente. Con la generación encendida se
+    calculan los vectores de movimiento (también los de los objetos, `ShaderKey.velocity`) aunque no haya TAA ni
+    FSR 3.1.
+  - **Presentación** (`device.c`): la imagen de N se dibuja primero en su imagen de ventana y se encola al final; cada
+    intermedia se dibuja en cuanto está hecha. El hilo de presentación saca cada imagen cuando su trabajo terminó en
+    la GPU, a su hora y al menos 3/4 de periodo/k después de la anterior (en mailbox, una imagen presentada antes de
+    que la anterior llegue a pantalla la reemplaza). Si un acquire no encuentra imagen libre, la siguiente de la cola
+    sale ya. La swapchain tiene 6 imágenes más.
+  - Pruebas: `SAVAGEWIND_FG_SHOT=<present>,...` guarda las intermedias y su pareja por número de present
+    (`build/frames/fg_<present>_<j>.png`, `_p.png` N-1, `_n.png` N; con `SAVAGEWIND_SCRIPT_CLOCK=1`
+    `SAVAGEWIND_SHOT_AT` cuenta el reloj del guion, no los presents), `SAVAGEWIND_FX_SHOW=<n>` (1 los vectores
+    elegidos, rojo el flujo; 2 la máscara del HUD y qué fotograma ve cada píxel; 3 la mezcla simple de N-1 y N),
+    `SAVAGEWIND_FG_AT=<present>:<k>,...`, `SAVAGEWIND_FG=0`. El log `[vk] t=` dice las imágenes por segundo que
+    llegan a la ventana; `[fg]` cada 600 presents cuántos tuvieron intermedias y por qué no.
+  - Arnés: sin `SAVAGEWIND_SCRIPT_CLOCK=1`, en muchas ejecuciones el juego deja de leer el mando después de cargar
+    (con o sin generación de fotogramas): las entradas del guion no mueven nada. Con el reloj del guion funcionan
+    casi siempre.
+  - Pendiente: medir el costo (fps del juego con y sin generación), pasarla a la segunda cola
+    (`g_vk.present_queue`) para que no retrase los fences del juego, y mejorar la calidad (bordes de objetos finos,
+    flujo en zonas sin textura, el HUD semitransparente).
+
 ## Módulos en memoria
 
 Las direcciones de los módulos del exefs se deciden en un solo lugar, `tools/layout.py`, igual que el

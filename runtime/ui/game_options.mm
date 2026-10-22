@@ -127,8 +127,9 @@ const int UPS_DEFAULT = 0;  // (UPSCALE_DEFAULT: Off, the window's resolution)
 #endif
 std::vector<int> g_shown;   // per item: the value shown instead of get(), one that can't be picked yet (-1: none)
 const char16_t GREY = 3;    // (the game's message colour for greyed values)
-const char *const k_modes[] = {"Ultra Quality", "Quality", "Balanced", "Performance"};
-const char *const k_aa[] = {"Off", "SMAA"};
+// (the modes in upscale_mode_order: from the sharpest)
+const char *const k_modes[UPQ_COUNT] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Native AA", "Ultra Performance"};
+const char *const k_aa[] = {"Off", "SMAA", "TAA"};
 constexpr int k_fps[] = FPS_CHOICES;  // frame rate (0: Off, no limit)
 constexpr int FPS_DEFAULT_INDEX = 2;
 static_assert(k_fps[FPS_DEFAULT_INDEX] == FPS_DEFAULT);
@@ -191,7 +192,7 @@ const char *ups_label(const Item &, int x) {
     if (u == UPSCALE_OFF) return tr("Off");
     if (u == UPSCALE_METALFX) return tr("MetalFX");
     if (u == UPSCALE_FSR1) return tr("AMD FSR 1");
-    if (u == UPSCALE_FSR3) return soon("FSR 3");
+    if (u == UPSCALE_FSR3) return upscaler_available(UPSCALE_FSR3) ? tr("AMD FSR 3.1") : soon("AMD FSR 3.1", "(not available)");
     return soon("DLSS", renderer_gpu_rtx() ? "(coming soon)" : "(NVIDIA RTX only)");
 }
 
@@ -279,7 +280,7 @@ void build_items(void) {
                        [](const Item &) { return N(k_perf); }, [](const Item &, int x) { return tr(k_perf[x]); },
                        [](const Item &) { return g_settings.perf_overlay; },
                        [](const Item &, int x) { g_settings.perf_overlay = x; }, PERF_OFF));
-    v.push_back(choice(P_VIDEO, "Upscaler", "Off: full resolution. AMD FSR 1: renders smaller, then upscales.",
+    v.push_back(choice(P_VIDEO, "Upscaler", "Off: full resolution. FSR: renders smaller, then upscales (F12).",
                        [](const Item &) { return N(k_ups_value); }, ups_label,
                        [](const Item &) {
                            for (int i = 0; i < N(k_ups_value); i++)
@@ -290,17 +291,27 @@ void build_items(void) {
     v.back().value_off = [](const Item &, int x) { return !upscaler_available(k_ups_value[x]); };
     Item mode = choice(P_VIDEO, "Upscaler mode", "",
                        [](const Item &) { return N(k_modes); },
-                       [](const Item &, int x) { return upscale_modes_available() ? tr(k_modes[x]) : soon(k_modes[x]); },
-                       [](const Item &) { return g_settings.upscale_quality; },
-                       [](const Item &, int x) { g_settings.upscale_quality = x; }, UPQ_QUALITY);
-    mode.value_off = [](const Item &, int) { return !upscale_modes_available(); };
+                       [](const Item &, int x) {
+                           int q = upscale_mode_order[x];
+                           return !upscale_modes_available() ? soon(k_modes[q])
+                                : !upscale_mode_offered(g_settings.upscaler, q) ? soon(k_modes[q], "(FSR 3.1 only)") : tr(k_modes[q]);
+                       },
+                       [](const Item &) {
+                           for (int i = 0; i < UPQ_COUNT; i++)
+                               if (upscale_mode_order[i] == g_settings.upscale_quality) return i;
+                           return 2;
+                       },
+                       [](const Item &, int x) { g_settings.upscale_quality = upscale_mode_order[x]; }, 2);
+    mode.value_off = [](const Item &, int x) {
+        return !upscale_modes_available() || !upscale_mode_offered(g_settings.upscaler, upscale_mode_order[x]);
+    };
     mode.desc_fn = [](const Item &) {
         // (one line: the game's description pane is one English line wide)
-        return upscale_modes_available() ? tr("Ultra Quality is the sharpest, Performance the fastest.")
+        return upscale_modes_available() ? tr("Native AA is the sharpest, Ultra Performance the fastest.")
                                          : tr("Renders smaller, then upscales. Coming in a later version.");
     };
     v.push_back(mode);
-    v.push_back(choice(P_VIDEO, "Anti-aliasing", "Smooths jagged edges. Best at a lower resolution.",
+    v.push_back(choice(P_VIDEO, "Anti-aliasing", "Smooths jagged edges. TAA: temporal (FSR 3.1 has its own).",
                        [](const Item &) { return N(k_aa); }, [](const Item &, int x) { return tr(k_aa[x]); },
                        [](const Item &) { return g_settings.antialias; },
                        [](const Item &, int x) { g_settings.antialias = x; }, AA_OFF));

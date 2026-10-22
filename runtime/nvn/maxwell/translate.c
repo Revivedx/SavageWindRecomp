@@ -15,6 +15,7 @@
 #include <malloc.h>  // alloca
 #endif
 #include <math.h>
+#include <ctype.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -2036,6 +2037,42 @@ static const char *glsl_sampler_type(const ShaderTexture *t) {
     return names[ty][t->shadow ? 1 : 0];
 }
 
+// The vertex body again for the previous frame's position (ShaderKey.velocity): the game's constant buffers 3+ read
+// from their previous copies (pcb<k>), the outputs into locals (mvp_*) - identifiers only, not members.
+static char *vel_rename(const char *src) {
+    Str o = {0};
+    for (const char *p = src; *p;) {
+        if (!(isalpha((unsigned char)*p) || *p == '_')) {
+            if (isdigit((unsigned char)*p)) {  // a number: whole (0x3f800000u, 1e-5f)
+                const char *e = p;
+                while (isalnum((unsigned char)*e) || *e == '.') e++;
+                sp(&o, "%.*s", (int)(e - p), p);
+                p = e;
+                continue;
+            }
+            sp(&o, "%c", *p++);
+            continue;
+        }
+        const char *e = p;
+        while (isalnum((unsigned char)*e) || *e == '_') e++;
+        int n = (int)(e - p);
+        bool member = p > src && p[-1] == '.';
+        bool digits = n > 1;
+        for (int i = 1; i < n && digits; i++) digits = isdigit((unsigned char)p[i]) != 0;
+        if (member) sp(&o, "%.*s", n, p);
+        else if (n == 11 && !strncmp(p, "gl_Position", 11)) sp(&o, "mvp_pos");
+        else if (n == 12 && !strncmp(p, "gl_PointSize", 12)) sp(&o, "mvp_psz");
+        else if (p[0] == 'v' && digits) sp(&o, "mvp_%.*s", n, p);
+        else if (n > 2 && p[0] == 'c' && p[1] == 'b' && isdigit((unsigned char)p[2]) && atoi(p + 2) >= 3) {
+            bool all = true;
+            for (int i = 2; i < n; i++) all = all && isdigit((unsigned char)p[i]);
+            if (all) sp(&o, "p%.*s", n, p); else sp(&o, "%.*s", n, p);
+        } else sp(&o, "%.*s", n, p);
+        p = e;
+    }
+    return o.buf ? o.buf : strdup("");
+}
+
 // Declarations + entry point around the (rewritten) body; mirrors the MSL assembly in maxwell_translate.
 static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     ShaderInfo *info = c->info;
@@ -2051,6 +2088,13 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     int set = stage == STAGE_FRAGMENT ? 1 : 0;
     Str s = {0};
     sp(&s, "%s", glsl_prelude);
+    // per-object motion vectors (ShaderKey.velocity): not for a vertex shader writing memory (it would write twice) or
+    // already using varyings 30 / 31
+    bool vel_vs = stage == STAGE_VERTEX && key && key->velocity && !(c->out_attr_mask & (3u << 30)) && !c->uses_gmem_store &&
+                  !dbg;
+    bool vel_fs = stage == STAGE_FRAGMENT && key && key->velocity && key->vel_vs && !dbg && key->vel_rt < 8 &&
+                  !((c->omap_target >> (key->vel_rt * 4)) & 0xF);
+    info->vel = vel_vs || vel_fs;
     for (int i = 0; i < 18; i++) {
         if (!(info->cbuf_mask & (1u << i))) continue;
         uint32_t n = info->cbuf_size[i] / 16;
@@ -2058,6 +2102,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         if ((info->cbuf_dynamic & (1u << i)) && n < 4096) n = 4096;
         if (!n) n = 1;
         sp(&s, "layout(std140, set = %d, binding = %d) uniform CB%d { uvec4 cb%d[%u]; };\n", set, i, i, i, n);
+        if (vel_vs && i >= 3) sp(&s, "layout(std140, set = %d, binding = %d) uniform PCB%d { uvec4 pcb%d[%u]; };\n", set, 100 + i, i, i, n);
     }
     info->writes_gmem = info->uses_gmem && c->uses_gmem_store;
     if (info->uses_gmem)
@@ -2096,7 +2141,12 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         sp(&s, "invariant gl_Position;\nprecise gl_Position;\n");
         for (int i = 0; i < 32; i++)
             if (c->out_attr_mask & (1u << i)) sp(&s, "layout(location = %d) out vec4 v%d;\n", i, i);
+        if (vel_vs) sp(&s, "layout(location = 30) out vec4 mv_prev_;\nlayout(location = 31) out vec4 mv_cur_;\n");
+        if (key && key->jitter && !dbg) sp(&s, "layout(std140, set = 0, binding = 20) uniform Jit { vec4 jit; };\n");
     } else if (stage == STAGE_FRAGMENT) {
+        if (vel_fs)
+            sp(&s, "layout(location = 30) in vec4 mv_prev_;\nlayout(location = 31) in vec4 mv_cur_;\n"
+                   "layout(location = %d) out vec4 c_vel_;\n", key->vel_rt);
         for (int i = 0; i < 32; i++) {
             if (!(c->in_attr_mask & (1u << i))) continue;
             const char *interp = (c->flat_mask & (1u << i)) ? "flat " : (c->noperspective_mask & (1u << i)) ? "noperspective " : "";
@@ -2119,24 +2169,43 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
             if (c->out_attr_mask & (1u << i)) sp(&s, "  v%d = vec4(0, 0, 0, 1);\n", i);
         if (info->writes_point_size) sp(&s, "  gl_PointSize = 0.0f;\n");
     }
+    Str pre = {0};
     for (int i = 0; i < 256; i++)
-        if (c->reg_used[i]) sp(&s, "  uint r%d = 0u;\n", i);
+        if (c->reg_used[i]) sp(&pre, "  uint r%d = 0u;\n", i);
     for (int i = 0; i < 7; i++)
-        if (c->pred_used[i]) sp(&s, "  bool p%d = false;\n", i);
-    if (c->uses_cc) sp(&s, "  uint cc = 0u; bool ccz = false, ccs = false;\n");
-    if (c->uses_local) sp(&s, "  uint lmem[%d]; for (int li_ = 0; li_ < %d; li_++) lmem[li_] = 0u;\n", LMEM_WORDS, LMEM_WORDS);
-    if (dbg) sp(&s, maxwell_dbg_pc == 0xffffffffu ? "  float dbgv = 1.0f;\n" : "  float dbgv = -1.0f;\n");
+        if (c->pred_used[i]) sp(&pre, "  bool p%d = false;\n", i);
+    if (c->uses_cc) sp(&pre, "  uint cc = 0u; bool ccz = false, ccs = false;\n");
+    if (c->uses_local) sp(&pre, "  uint lmem[%d]; for (int li_ = 0; li_ < %d; li_++) lmem[li_] = 0u;\n", LMEM_WORDS, LMEM_WORDS);
+    if (dbg) sp(&pre, maxwell_dbg_pc == 0xffffffffu ? "  float dbgv = 1.0f;\n" : "  float dbgv = -1.0f;\n");
     if (any_branch) {
-        sp(&s, "  uint pc = 8u; uint ssy[16]; uint ssy_n = 0u; uint pbk[16]; uint pbk_n = 0u; uint pcnt[16]; uint pcnt_n = 0u;\n");
-        sp(&s, "  bool exit_now = false;\n");
-        sp(&s, "  for (uint guard = 0u; guard < 100000u; guard++) {\n  switch (pc) {\n");
-        sp(&s, "%s", body.buf ? body.buf : "");
-        sp(&s, "    exit_now = true; break;\n  default: exit_now = true; break;\n  }\n  if (exit_now) break;\n  }\n");
-    } else {
-        sp(&s, "  do {\n%s  } while (false);\n", body.buf ? body.buf : "");
+        sp(&pre, "  uint pc = 8u; uint ssy[16]; uint ssy_n = 0u; uint pbk[16]; uint pbk_n = 0u; uint pcnt[16]; uint pcnt_n = 0u;\n");
+        sp(&pre, "  bool exit_now = false;\n");
     }
+    for (int pass = 0; pass < (vel_vs ? 2 : 1); pass++) {
+        char *b = body.buf ? body.buf : "";
+        if (pass) {  // the previous frame's position: the body on pcb<k>, its outputs into locals
+            b = vel_rename(b);
+            sp(&s, "  mv_cur_ = gl_Position;\n  {\n  vec4 mvp_pos = vec4(0, 0, 0, 1);\n  float mvp_psz = 0.0f;\n");
+            for (int i = 0; i < 32; i++)
+                if (c->out_attr_mask & (1u << i)) sp(&s, "  vec4 mvp_v%d = vec4(0, 0, 0, 1);\n", i);
+        }
+        sp(&s, "%s", pre.buf ? pre.buf : "");
+        if (any_branch) {
+            sp(&s, "  for (uint guard = 0u; guard < 100000u; guard++) {\n  switch (pc) {\n");
+            sp(&s, "%s", b);
+            sp(&s, "    exit_now = true; break;\n  default: exit_now = true; break;\n  }\n  if (exit_now) break;\n  }\n");
+        } else {
+            sp(&s, "  do {\n%s  } while (false);\n", b);
+        }
+        if (pass) {
+            sp(&s, "  mv_prev_ = mvp_pos;\n  }\n");
+            free(b);
+        }
+    }
+    free(pre.buf);
     free(body.buf);
     if (stage == STAGE_VERTEX) {
+        if (key && key->jitter && !dbg) sp(&s, "  gl_Position.xy += jit.xy * gl_Position.w;\n");
         if (key && key->flip_y) sp(&s, "  gl_Position.y = -gl_Position.y;\n");
         if (key && key->depth_minus_one) sp(&s, "  gl_Position.z = (gl_Position.z + gl_Position.w) * 0.5f;\n");
     } else if (stage == STAGE_FRAGMENT) {
@@ -2167,6 +2236,14 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
             if (c->reg_used[r + 1]) sp(&s, "  gl_FragDepth = as_f(r%d);\n", r + 1);
             else sp(&s, "  gl_FragDepth = gl_FragCoord.z;\n");
         }
+        // velocity in uv (this - previous: GL NDC / 2, the image's own orientation), the distances' ratio previous /
+        // current, w = 1: an object's own motion (runtime/nvn/vulkan/shaders.c mv.frag)
+        if (vel_fs)
+            sp(&s, "  if (abs(mv_prev_.w) < 1e-6f) c_vel_ = vec4(0.0f);  // (no previous constants: unknown)\n"
+                   "  else { vec2 a_ = mv_cur_.xy / mv_cur_.w, b_ = mv_prev_.xy / mv_prev_.w;\n"
+                   "    c_vel_ = vec4((a_ - b_) * 0.5f, mv_prev_.w / mv_cur_.w, 1.0f);\n"
+                   // (some of BOTW's grass came out not a number on the previous constants: unknown there too)
+                   "    if (any(isnan(c_vel_)) || any(isinf(c_vel_))) c_vel_ = vec4(0.0f); }\n");
     }
     sp(&s, "}\n");
     info->msl = s.buf;

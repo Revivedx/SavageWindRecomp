@@ -132,7 +132,7 @@ void input_mouse_update(SDL_Window *w) {
 }
 
 volatile int g_debug_frame_request;  // F9: dump the next frame's passes (build/pass_*.png) + draw log
-volatile int g_record_frames;        // F12: (debugging) save every other game image to build/frames/ until F12 again
+volatile int g_record_frames;        // Shift+F12: (debugging) save every other game image to build/frames/ until again
 volatile int g_skip_fs_off;          // F8: (debugging) draw the shaders SAVAGEWIND_SKIP_FSHASH names, until F8 again
 
 // Events a test pushes (SAVAGEWIND_HOST_INPUT type: / sdlkey: / sdlpad:) carry this device id: they go the whole way, menu first.
@@ -205,8 +205,8 @@ void input_handle_event(const SDL_Event *e) {
     switch (e->type) {
     case SDL_EVENT_KEY_DOWN: case SDL_EVENT_KEY_UP:
         if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_F9 && !e->key.repeat) g_debug_frame_request = 1;
-        if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_F12 && !e->key.repeat)
-            g_record_frames = !g_record_frames;
+        if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_F12 && !e->key.repeat && (e->key.mod & SDL_KMOD_SHIFT))
+            g_record_frames = !g_record_frames;  // (F12 alone: the menu's Graphics page, runtime/ui/menu.mm)
         if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_F8 && !e->key.repeat) {
             g_skip_fs_off = !g_skip_fs_off;
             LOG("[input] F8: SAVAGEWIND_SKIP_FSHASH shaders %s\n", g_skip_fs_off ? "drawn" : "skipped");

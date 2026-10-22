@@ -27,6 +27,7 @@ Settings g_settings = {
     .mouse_camera = true,
     .mouse_sens = MOUSE_SENS_DEFAULT,
     .fps_limit = FPS_DEFAULT,
+    .fsr_sharpness = 0.5f,
 };
 
 // settings_version 2 (2026-10-19): the upscaler's mode, the window size and the 300% mouse default. Older files: their
@@ -38,7 +39,8 @@ Settings g_settings = {
 // the display (75%, 50%, 25%: they keep FSR 1 at the nearest mode).
 #define SETTINGS_VERSION 3
 
-static const char *const k_quality[UPQ_COUNT] = {"ultra_quality", "quality", "balanced", "performance"};
+static const char *const k_quality[UPQ_COUNT] = {"ultra_quality", "quality", "balanced", "performance", "native",
+                                                 "ultra_performance"};
 
 void settings_load(void) {
     static bool loaded;
@@ -63,8 +65,9 @@ void settings_load(void) {
         else if (!strcmp(key, "frame_rate")) g_settings.fps_limit = !strcmp(val, "off") ? 0 : atoi(val);  // (fps / off)
         else if (!strcmp(key, "settings_version")) version = atoi(val);
         else if (!strcmp(key, "resolution")) snprintf(old_res, sizeof old_res, "%s", val);  // (version 1)
-        else if (!strcmp(key, "upscaler"))  // (metalfx / fsr1: this OS's spatial upscaler; fsr3 / dlss: not yet)
-            g_settings.upscaler = !strcmp(val, "fsr1") || !strcmp(val, "metalfx") ? UPSCALE_SPATIAL : UPSCALE_OFF;
+        else if (!strcmp(key, "upscaler"))  // (metalfx / fsr1: this OS's spatial upscaler; fsr3: FSR 3.1; dlss: not yet)
+            g_settings.upscaler = !strcmp(val, "fsr1") || !strcmp(val, "metalfx") ? UPSCALE_SPATIAL
+                                : !strcmp(val, "fsr3") ? UPSCALE_FSR3 : UPSCALE_OFF;
         else if (!strcmp(key, "upscaler_quality")) {
             for (int i = 0; i < UPQ_COUNT; i++)
                 if (!strcmp(val, k_quality[i])) g_settings.upscale_quality = i;
@@ -74,7 +77,10 @@ void settings_load(void) {
             if (sscanf(val, "%dx%d", &w, &h) == 2 && w >= 320 && h >= 200 && w <= 16384 && h <= 16384)
                 g_settings.window_w = w, g_settings.window_h = h;
         }
-        else if (!strcmp(key, "antialias")) g_settings.antialias = !strcmp(val, "off") ? AA_OFF : AA_SMAA;  // ("fxaa": SMAA now)
+        else if (!strcmp(key, "antialias"))  // ("fxaa": SMAA now)
+            g_settings.antialias = !strcmp(val, "off") ? AA_OFF : !strcmp(val, "taa") ? AA_TAA : AA_SMAA;
+        else if (!strcmp(key, "fsr_sharpness")) g_settings.fsr_sharpness = (float)atof(val);
+        else if (!strcmp(key, "frame_generation")) g_settings.frame_gen = !strcmp(val, "off") ? FG_OFF : atoi(val);
         else if (!strcmp(key, "dpad_move")) g_settings.dpad_move = atoi(val) != 0;
         else if (!strcmp(key, "mouse_camera")) g_settings.mouse_camera = atoi(val) != 0;
         else if (!strcmp(key, "mouse_sensitivity")) g_settings.mouse_sens = (float)atof(val);
@@ -125,6 +131,8 @@ void settings_load(void) {
         g_settings.fps_limit = best;
     }
     if (!(g_settings.mouse_sens >= 0.1f && g_settings.mouse_sens <= 10.0f)) g_settings.mouse_sens = MOUSE_SENS_DEFAULT;
+    if (!(g_settings.fsr_sharpness >= 0.0f && g_settings.fsr_sharpness <= 1.0f)) g_settings.fsr_sharpness = 0.5f;
+    if (g_settings.frame_gen < 2 || g_settings.frame_gen > FG_MAX) g_settings.frame_gen = FG_OFF;
     LOG("[settings] loaded %s\n", SETTINGS_FILE);
 }
 
@@ -150,7 +158,10 @@ void settings_save(void) {
     int u = g_settings.upscaler, uq = g_settings.upscale_quality;
     fprintf(f, "upscaler = %s\n", u >= 0 && u < UPSCALE_COUNT ? ups[u] : "off");
     fprintf(f, "upscaler_quality = %s\n", k_quality[uq >= 0 && uq < UPQ_COUNT ? uq : UPQ_QUALITY]);
-    fprintf(f, "antialias = %s\n", g_settings.antialias == AA_SMAA ? "smaa" : "off");
+    fprintf(f, "antialias = %s\n", g_settings.antialias == AA_SMAA ? "smaa" : g_settings.antialias == AA_TAA ? "taa" : "off");
+    fprintf(f, "fsr_sharpness = %.2f\n", g_settings.fsr_sharpness);
+    if (g_settings.frame_gen) fprintf(f, "frame_generation = %d\n", g_settings.frame_gen);
+    else fprintf(f, "frame_generation = off\n");
     fprintf(f, "dpad_move = %d\n", g_settings.dpad_move);
     fprintf(f, "mouse_camera = %d\n", g_settings.mouse_camera);
     fprintf(f, "mouse_sensitivity = %.2f\n", g_settings.mouse_sens);

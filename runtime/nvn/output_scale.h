@@ -19,4 +19,6 @@ void output_scale_screen(double sw, double sh, int iw, int ih, OutScale *o);
 bool upscaler_available(int u);
 bool upscale_modes_available(void);  // (rendering below the window's size: needs render-target scaling)
 double upscale_mode_factor(int q);
+bool upscale_mode_offered(int u, int q);    // (Native AA and Ultra Performance: FSR 3.1 only)
+extern const int upscale_mode_order[];      // UPQ_COUNT modes, from the sharpest (Native AA) to the fastest
 double upscale_factor(void);

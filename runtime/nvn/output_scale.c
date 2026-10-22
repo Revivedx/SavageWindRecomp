@@ -7,9 +7,12 @@
 //   AMD FSR 1      the 3D scene renders smaller by the quality mode's factor per axis (AMD's: Ultra Quality 1.3,
 //                  Quality 1.5, Balanced 1.7, Performance 2.0); FSR 1 brings it to its size in the final image at the
 //                  game's composite (vulkan/exec.c scene_upscale)
+//   AMD FSR 3.1    (Vulkan, with amd_fidelityfx_vk.dll) the same render sizes, plus Native AA (1x) and Ultra
+//                  Performance (3x); the jittered scene, its depth and motion vectors are resolved into the final
+//                  image's size at the composite (vulkan/exec.c scene_resolve)
 //   MetalFX        (macOS) metal.m has no scene / final split yet: the modes stay greyed there, and MetalFX scales the
 //                  game's image to a bigger window
-//   FSR 3, DLSS    listed as coming later (temporal: they need motion vectors, which the game has none of)
+//   DLSS           listed as coming later
 // The window size itself is Video > Window size (runtime/window_size.c).
 // Test overrides: SAVAGEWIND_SCALE=<f> (render height = 1080 x f), SAVAGEWIND_WIDE_TEST=<f> (forced shape).
 #include <math.h>
@@ -22,16 +25,28 @@
 #define MAX_TEX 16384.0
 #define SCENE_LINES 900.0  // the height of the game's 3D scene targets (docked)
 
+#ifndef __APPLE__
+bool fsr3_available(void);  // (vulkan/fsr3.cpp: the AMD FidelityFX DLL loaded)
+#endif
+
 bool upscaler_available(int u) {
 #ifdef __APPLE__
     return u == UPSCALE_OFF || u == UPSCALE_METALFX;
 #else
-    return u == UPSCALE_OFF || u == UPSCALE_FSR1;
+    return u == UPSCALE_OFF || u == UPSCALE_FSR1 || (u == UPSCALE_FSR3 && fsr3_available());
 #endif
 }
 
+// whether upscaler u offers mode q (Native AA and Ultra Performance: FSR 3.1 only)
+bool upscale_mode_offered(int u, int q) {
+    return q >= 0 && q < UPQ_COUNT && (u == UPSCALE_FSR3 || (q != UPQ_NATIVE && q != UPQ_ULTRA_PERF));
+}
+
+// The modes from the sharpest to the fastest (the menus' order)
+const int upscale_mode_order[UPQ_COUNT] = {UPQ_NATIVE, UPQ_ULTRA, UPQ_QUALITY, UPQ_BALANCED, UPQ_PERFORMANCE, UPQ_ULTRA_PERF};
+
 double upscale_mode_factor(int q) {
-    static const double f[UPQ_COUNT] = {1.3, 1.5, 1.7, 2.0};
+    static const double f[UPQ_COUNT] = {1.3, 1.5, 1.7, 2.0, 1.0, 3.0};
     return q >= 0 && q < UPQ_COUNT ? f[q] : 1.5;
 }
 
@@ -48,9 +63,9 @@ bool upscale_modes_available(void) {
 }
 
 double upscale_factor(void) {
-    int u = g_settings.upscaler;
-    return u != UPSCALE_OFF && upscaler_available(u) && upscale_modes_available()
-               ? upscale_mode_factor(g_settings.upscale_quality) : 1.0;
+    int u = g_settings.upscaler, q = g_settings.upscale_quality;
+    if (!upscale_mode_offered(u, q)) q = UPQ_QUALITY;  // (FSR 1 with a mode of FSR 3.1's: its nearest, Quality)
+    return u != UPSCALE_OFF && upscaler_available(u) && upscale_modes_available() ? upscale_mode_factor(q) : 1.0;
 }
 
 void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
