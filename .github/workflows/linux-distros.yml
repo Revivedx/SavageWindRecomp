@@ -1,0 +1,18 @@
+# Builds the app (start screen only, no game code) from source in each supported distribution's container, with that
+# distribution's own clang, SDL3, FFmpeg, shaderc and lld: the same check tools/linux/distro_build.sh runs locally.
+name: Linux distributions
+
+on: [push, pull_request, workflow_dispatch]
+
+jobs:
+  build:
+    name: ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [debian:13, ubuntu:25.04, fedora:42, archlinux:latest, opensuse/tumbleweed:latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: tools/linux/distro_build.sh ${{ matrix.image }}

@@ -32,12 +32,25 @@ If the AppImage won't start with a FUSE error, install your distribution's `fuse
 needs `fusermount3`), or run it as `./Savage_Wind-....AppImage --appimage-extract-and-run`.
 
 ## Building from source
-Ubuntu / Debian packages (other distributions: the same libraries under their names; SDL3 3.2 or newer):
+Ubuntu 25.04+ / Debian 13 packages (other distributions: the same libraries under their names; clang 18 or newer - the
+lifted FP/SIMD code needs `__builtin_elementwise_*` - and SDL3 3.2 or newer):
 
     sudo apt install clang lld make pkg-config python3-venv libsdl3-dev libavformat-dev libavcodec-dev \
         libavutil-dev libswscale-dev libvulkan-dev libshaderc-dev glslc vulkan-tools
 
-(The Vulkan Memory Allocator header the renderer uses is bundled in `third_party/vma`.)
+Ubuntu 24.04 LTS and older, Debian 12 and openSUSE Leap have no SDL3 package (SDL3 arrived after their freeze):
+build SDL3 from source there, or use the AppImage. Vulkan headers older than 1.4.321 (Debian 13, Ubuntu 25.04, Fedora
+42 ship 1.4.304 - 1.4.313) build too: attachment feedback loops stay off there and the renderer copies the targets
+instead (the same path as `SAVAGEWIND_VK_NO_FEEDBACK_LOOP=1`).
+
+`tools/linux/distro_build.sh` builds the app (start screen only, no game code) natively in each of Debian 13, Ubuntu
+25.04, Fedora 42, Arch and openSUSE Tumbleweed, in containers, with each distribution's own clang, SDL3, FFmpeg,
+shaderc and lld; CI runs the same script (`.github/workflows/linux-distros.yml`). That is the check for "does it build
+on my distribution": a container reproduces exactly what differs (package names, library sonames, header versions),
+where a virtual machine would only do it slower.
+
+(The Vulkan Memory Allocator header the renderer uses is bundled in `third_party/vma`, as are stb_image and
+stb_image_write in `third_party/stb`.)
 
 Then from the repo root:
 
