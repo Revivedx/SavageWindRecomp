@@ -16,12 +16,7 @@
 #include "imgui_internal.h"  // (ImDrawListSharedData: the white pixel's UV for hand-made geometry)
 #include "splash.h"
 
-#define STB_IMAGE_IMPLEMENTATION
-#define STBI_ONLY_JPEG
-#define STBI_ONLY_PNG
-#define STBI_NO_HDR
-#define STBI_NO_LINEAR
-#include "stb_image.h"
+#include "imageload.h"  // (stb_image, JPEG / PNG: SDL 3.2, which the distributions ship, has no SDL_LoadPNG)
 
 extern "C" {
 #include "paths.h"
@@ -44,14 +39,14 @@ void splash_load(void) {
     splash_unload();
     char path[1100];
     if (!rt_user_splash(path, sizeof path)) return;
-    int w, h, n;
-    if (!stbi_info(path, &w, &h, &n) || w <= 0 || h <= 0 || w > 8192 || h > 8192) {
+    int w, h;
+    if (!rt_image_info(path, &w, &h) || w <= 0 || h <= 0 || w > 8192 || h > 8192) {
         fprintf(stderr, "[splash] %s: not a JPEG / PNG up to 8192x8192, using the default art\n", path);
         return;
     }
-    unsigned char *px = stbi_load(path, &w, &h, &n, 4);
+    unsigned char *px = rt_image_rgba(path, &w, &h);
     if (!px) {
-        fprintf(stderr, "[splash] %s: %s, using the default art\n", path, stbi_failure_reason());
+        fprintf(stderr, "[splash] %s: %s, using the default art\n", path, rt_image_error());
         return;
     }
 #ifdef __APPLE__
@@ -66,7 +61,7 @@ void splash_load(void) {
 #else
     g_tex = (ImTextureID)vk_imgui_texture_rgba(px, w, h);
 #endif
-    stbi_image_free(px);
+    rt_image_free(px);
     if (g_tex) g_tex_w = w, g_tex_h = h;
     fprintf(stderr, "[splash] %s (%dx%d)%s\n", path, w, h, g_tex ? "" : ": no texture, using the default art");
 }

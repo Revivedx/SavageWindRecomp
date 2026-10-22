@@ -9,6 +9,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "../../imageload.h"
 #include "../../paths.h"
 #include "../../settings.h"
 #include "../../ui/menu.h"
@@ -200,26 +201,42 @@ static void create_device(void) {
     // Color targets a draw samples while it writes them (exec.c resolve_feedback): a feedback loop in GENERAL layout
     // with a barrier inside the pass between such draws, instead of a copy of the target before each one.
     // SAVAGEWIND_VK_NO_FEEDBACK_LOOP=1: copies, as before.
+#ifdef VK_KHR_unified_image_layouts
     bool fbl = !getenv("SAVAGEWIND_VK_NO_FEEDBACK_LOOP") && has_ext(ep, ne, VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME) &&
                has_ext(ep, ne, VK_KHR_UNIFIED_IMAGE_LAYOUTS_EXTENSION_NAME) &&
                has_ext(ep, ne, VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME);
+#else
+    bool fbl = false;  // (the headers predate VK_KHR_unified_image_layouts: copies, see below)
+#endif
     free(ep);
 
     // features the backend relies on (all present on current desktop drivers)
+#ifdef VK_KHR_unified_image_layouts
     VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT fbl_have = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_FEATURES_EXT};
     VkPhysicalDeviceUnifiedImageLayoutsFeaturesKHR uil_have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_UNIFIED_IMAGE_LAYOUTS_FEATURES_KHR,
                                                                .pNext = &fbl_have};
     VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR lr_have = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_LOCAL_READ_FEATURES_KHR, .pNext = &uil_have};
+#else
+    // Vulkan headers older than 1.4.321 (Debian 13, Ubuntu 25.04, Fedora 42 ship 1.4.304 - 1.4.313) have no
+    // VkPhysicalDeviceUnifiedImageLayoutsFeaturesKHR: feedback loops cannot be enabled, so the target copies of
+    // exec.c (SAVAGEWIND_VK_NO_FEEDBACK_LOOP) are the only path there.
+    VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR lr_have = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_LOCAL_READ_FEATURES_KHR};
+#endif
     VkPhysicalDeviceFeatures2 have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = fbl ? &lr_have : NULL};
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &have);
+#ifdef VK_KHR_unified_image_layouts
     g_vk.feedback_loop = fbl && fbl_have.attachmentFeedbackLoopLayout && uil_have.unifiedImageLayouts && lr_have.dynamicRenderingLocalRead;
     if (g_vk.feedback_loop) {
         ext[n_ext++] = VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME;
         ext[n_ext++] = VK_KHR_UNIFIED_IMAGE_LAYOUTS_EXTENSION_NAME;
         ext[n_ext++] = VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME;
     }
+#else
+    g_vk.feedback_loop = false;
+#endif
     LOG("[vk] attachment feedback loops %s\n", g_vk.feedback_loop ? "on" : "off (target copies)");
     VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT div = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT,
@@ -242,6 +259,7 @@ static void create_device(void) {
                                            .pNext = &f11};
     VkPhysicalDeviceAddressBindingReportFeaturesEXT abr = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ADDRESS_BINDING_REPORT_FEATURES_EXT,
                                                            .reportAddressBinding = VK_TRUE, .pNext = fault ? (void *)&ff : (void *)&f11};
+#ifdef VK_KHR_unified_image_layouts
     VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT fbl_on = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_FEATURES_EXT, .attachmentFeedbackLoopLayout = VK_TRUE,
         .pNext = addr_report ? (void *)&abr : fault ? (void *)&ff : (void *)&f11};
@@ -250,8 +268,12 @@ static void create_device(void) {
     VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR lr_on = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_LOCAL_READ_FEATURES_KHR, .dynamicRenderingLocalRead = VK_TRUE,
         .pNext = &uil_on};
+    void *feedback_pnext = &lr_on;
+#else
+    void *feedback_pnext = NULL;  // (headers before 1.4.321: g_vk.feedback_loop is false, nothing is chained)
+#endif
     VkPhysicalDeviceFeatures2 f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-                                   .pNext = g_vk.feedback_loop ? (void *)&lr_on : addr_report ? (void *)&abr : fault ? (void *)&ff : (void *)&f11};
+                                   .pNext = g_vk.feedback_loop ? feedback_pnext : addr_report ? (void *)&abr : fault ? (void *)&ff : (void *)&f11};
     VkPhysicalDeviceFeatures *b = &f.features, *h = &have.features;
     b->independentBlend = h->independentBlend;
     b->dualSrcBlend = h->dualSrcBlend;
@@ -775,15 +797,8 @@ void vk_frame_end(const char *shot_path) {
 
 // Saved opaque: render targets often keep data in alpha (BOTW's G-buffer), which image viewers turn into black.
 void vk_save_png(const char *path, const uint8_t *rgba, uint32_t w, uint32_t h) {
-    uint8_t *px = malloc((size_t)w * h * 4);
-    if (!px) return;
-    memcpy(px, rgba, (size_t)w * h * 4);
-    for (size_t i = 3; i < (size_t)w * h * 4; i += 4) px[i] = 255;
-    SDL_Surface *s = SDL_CreateSurfaceFrom((int)w, (int)h, SDL_PIXELFORMAT_ABGR8888, px, (int)w * 4);
-    if (!s || !SDL_SavePNG(s, path)) LOG("[vk] saving %s failed: %s\n", path, SDL_GetError());
-    else LOG("[vk] saved %s (%ux%u)\n", path, w, h);
-    SDL_DestroySurface(s);
-    free(px);
+    if (rt_save_png(path, rgba, (int)w, (int)h)) LOG("[vk] saved %s (%ux%u)\n", path, w, h);
+    else LOG("[vk] saving %s failed\n", path);
 }
 
 // ================================================================== game presentation (metal.m backend_present)

@@ -67,15 +67,18 @@ GAMELIB_LDFLAGS := -dynamiclib -undefined dynamic_lookup  # (the runtime functio
 GAMELIB_SHARED := -shared -Wl,-undefined,dynamic_lookup  # (the same, for the start screen's build: zig cc)
 else ifeq ($(PLATFORM),linux)
 EXE      := $(B)/savagewind
-DEPINC   := $(if $(DEPS),-I$(DEPS)/include)
+DEPINC   := $(if $(DEPS),-I$(DEPS)/include,$(shell pkg-config --cflags libavformat 2>/dev/null))  # (openSUSE has them in /usr/include/ffmpeg)
 ifeq ($(ARCH),x86_64)
 GENARCH  ?= -march=x86-64-v3  # as on Windows: AVX2 + FMA for the lifted FP/SIMD code (checked at startup)
 endif
 GENFLAGS += $(GENARCH) -fPIC
 OSFLAGS  := -Wno-format  # (%llx for uint64_t, which is unsigned long here: the same size)
-# Debian / Ubuntu name it libshaderc.so, Arch, Fedora and a shaderc built from source libshaderc_shared.so: use the one
-# this system has.
-SHADERC  ?= $(shell $(CC) -x c /dev/null -lshaderc -o /dev/null 2>/dev/null && echo -lshaderc || echo -lshaderc_shared)
+# shaderc's shared library is libshaderc.so on Debian / Ubuntu and libshaderc_shared.so on Fedora, Arch and a shaderc
+# built from source (tools/linux/build_deps.sh; DEPS). pkg-config knows which one the system has; without it, or for a
+# DEPS prefix, the probe asks the linker for the name. -shared: an executable build also needs a main, which made the
+# first version of this probe fail everywhere and pick the name Debian does not have.
+SHADERC  ?= $(if $(DEPS),-lshaderc,$(or $(shell pkg-config --libs shaderc 2>/dev/null),\
+             $(shell $(CC) -shared -x c /dev/null -l:libshaderc.so -o /dev/null 2>/dev/null && echo -l:libshaderc.so || echo -lshaderc_shared)))
 # -rdynamic: crash backtraces name host functions (runtime/platform/linux.c)
 LDFLAGS  := -fuse-ld=lld -rdynamic $(if $(DEPS),-L$(DEPS)/lib) -lSDL3 -lavformat -lavcodec -lavutil -lswscale \
             -lvulkan $(SHADERC) -lpthread -ldl -lm
@@ -119,7 +122,7 @@ GAMELIB_SRCS += tools/layout.py
 GAMELIB_ID := $(shell (cat $(GAMELIB_SRCS); echo '$(GENFLAGS)') | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
 
 RT_OBJ   := $(patsubst runtime/%.c,$(B)/rt/%.o,$(RT_SRC))
-RTFLAGS  := -O2 -g -fno-strict-aliasing -Wall -Wno-unused-function -Iruntime -Iruntime/nvn -isystem third_party $(DEPINC) $(OSFLAGS)
+RTFLAGS  := -O2 -g -fno-strict-aliasing -Wall -Wno-unused-function -Iruntime -Iruntime/nvn -isystem third_party -isystem third_party/stb $(DEPINC) $(OSFLAGS)
 CXXFLAGS := -O2 -g -std=c++17 -I$(IMGUI) -I$(IMGUI)/backends -Iruntime -Iruntime/nvn -isystem third_party -Ithird_party/stb $(DEPINC)
 
 all: $(EXE) $(CONFIG_EXE) $(if $(strip $(GEN_SRC)),$(GAMELIB))  # (GEN_SRC is a space when there is no generated/)
