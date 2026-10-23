@@ -662,6 +662,25 @@ Pendiente:
      caché de SPIR-V y de pipelines lo evita en las siguientes sesiones). Ajuste "Asynchronous shaders"
      (`async_shaders`) para volver a no esperar; `SAVAGEWIND_SYNC_SHADERS` / `SAVAGEWIND_ASYNC_SHADERS` mandan
      sobre el ajuste.
+   - Control de flujo estructurado en el GLSL (2026-10-23): un shader con saltos se traducía como una máquina de
+     estados (`for (guard) switch (pc)`, con pilas para SSY / PBK / PCNT), y el driver tarda mucho más en compilar
+     eso: en una muestra de shaders del juego, los que la usaban eran el 94 % del tiempo del driver y costaban ~2 veces
+     más por KB de código Maxwell. Ahora los saltos que anidan se escriben como if / else y do / while
+     (`structure_flow` en `translate.c`):
+     - `@P BRA L; <a>; L:` → `if (!P) { <a> }`, y con un salto incondicional al final de `<a>`, if / else (un SYNC a
+       la unión de su SSY cuenta igual);
+     - un BRA hacia atrás → `do { } while (P)`, con el mismo tope de iteraciones que tenía la máquina de estados;
+     - EXIT → `exited = true`, y lo que sigue, solo `if (!exited)`;
+     - un salto a donde va a parar el rango que lo contiene (la unión de un if / else de fuera) cierra el rango.
+     Lo demás (bucles con PBK / BRK / PCNT / CONT, BRX, salir de un do / while) sigue con la máquina de estados: 5 de
+     286 shaders en una muestra de 1 de cada 50. `SAVAGEWIND_XLATE_NO_STRUCTURE=1` la usa siempre.
+     Muestra de 1 de cada 50 shaders del juego (Radeon 660M, RADV, 4 hilos): compilación del driver 42,9 → 14,6 s de
+     CPU, reloj 12,5 → 5,5 s. El MSL no cambia (`tools/test_translate.sh`: 0 diferencias en 20.000 programas); el GLSL
+     de la prueba compila y valida igual que antes (mismos fallos, del #38), y `tools/test_vk_pipelines` crea los
+     pipelines sin mensajes de la capa de validación. En el juego, con las cachés calientes y
+     `SAVAGEWIND_MAX_INTERVAL=2`, las capturas de los frames deterministas (200, 400, 600, 1600 desde una partida
+     nueva) son idénticas píxel a píxel a las de la máquina de estados, y las demás difieren lo mismo que dos corridas
+     de la máquina de estados entre sí.
    - Herramientas de diagnóstico:
      - `SAVAGEWIND_THREAD_DUMP_AT=<s>,<s>`: estado, núcleo y cadena de llamadas de cada hilo; para los que
        esperan un mutex, también su palabra (el handle del dueño).
