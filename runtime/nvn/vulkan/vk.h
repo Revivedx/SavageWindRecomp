@@ -38,6 +38,11 @@ typedef struct {
     bool custom_border, divisor, host_import, wide_lines;
     bool depth_clamp;          // depthClamp feature (nvnCommandBufferSetDepthClamp: shadow maps keep occluders before the near plane)
     bool feedback_loop;        // attachment feedback loops in GENERAL layout + barriers inside dynamic rendering (exec.c)
+    bool gpl;                  // graphics pipeline libraries with fast linking: pipelines linked from per-stage parts (exec.c)
+    // (with gpl) depth clamp and polygon mode set at draw time (VK_EXT_extended_dynamic_state3): a vertex shader's
+    // part doesn't depend on them
+    PFN_vkCmdSetDepthClampEnableEXT set_depth_clamp;
+    PFN_vkCmdSetPolygonModeEXT set_polygon_mode;
     // window
     VkSurfaceKHR surface;
     VkSwapchainKHR swapchain;
