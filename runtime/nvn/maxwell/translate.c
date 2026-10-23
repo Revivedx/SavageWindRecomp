@@ -80,6 +80,12 @@ typedef struct {
     uint32_t cbuf_need[18];  // highest constant vec4 index + 1 per cbuf (array size of the GLSL block)
     bool uses_shared;        // LDS / STS: compute shared memory, smem_words words (a power of two)
     uint32_t smem_words;
+    // (GLSL) structured control flow (structure_flow): if / else and do / while for the pc state machine. By
+    // instruction index: the braces to write before it, and whether it is dead code (after an unconditional jump or
+    // EXIT)
+    bool structured;
+    Str *flow_before;
+    uint8_t *flow_dead;
 } Ctx;
 
 static uint64_t bits(uint64_t w, int lo, int n) { return (w >> lo) & ((n == 64) ? ~0ull : ((1ull << n) - 1)); }
@@ -1109,7 +1115,7 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
 
 #define OPM(val, mask) ((w & (uint64_t)(mask)) == (uint64_t)(val))
     if (OPM(0xe300000000000000ull, 0xfff0000000000000ull)) {  // EXIT
-        sp(&c->body, c->branchy ? "    exit_now = true; break;\n" : "    break;\n");
+        sp(&c->body, c->structured ? "    exited = true;\n" : c->branchy ? "    exit_now = true; break;\n" : "    break;\n");
     } else if (OPM(0xe330000000000000ull, 0xfff0000000000000ull)) {  // KIL
         c->info->uses_discard = true;
         if (getenv("SAVAGEWIND_NO_DISCARD")) {
@@ -1119,10 +1125,10 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
     } else if (OPM(0xe240000000000000ull, 0xfff0000000000020ull)) {  // BRA
         uint32_t target = norm_target((int64_t)pc + 8 + sbits(w, 20, 24));
         c->uses_branches = true;
-        sp(&c->body, "    pc = %uu; continue;\n", target);
+        if (!c->structured) sp(&c->body, "    pc = %uu; continue;\n", target);
     } else if (OPM(0xe290000000000000ull, 0xfff0000000000020ull)) {  // SSY
         c->uses_branches = true;
-        sp(&c->body, "    ssy[ssy_n++] = %uu;\n", norm_target((int64_t)pc + 8 + sbits(w, 20, 24)));
+        if (!c->structured) sp(&c->body, "    ssy[ssy_n++] = %uu;\n", norm_target((int64_t)pc + 8 + sbits(w, 20, 24)));
     } else if (OPM(0xe2a0000000000000ull, 0xfff0000000000020ull)) {  // PBK
         c->uses_branches = true;
         sp(&c->body, "    pbk[pbk_n++] = %uu;\n", norm_target((int64_t)pc + 8 + sbits(w, 20, 24)));
@@ -1130,7 +1136,7 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         c->uses_branches = true;
         sp(&c->body, "    pcnt[pcnt_n++] = %uu;\n", norm_target((int64_t)pc + 8 + sbits(w, 20, 24)));
     } else if (OPM(0xf0f8000000000000ull, 0xfff8000000000000ull)) {  // SYNC
-        sp(&c->body, "    pc = ssy[--ssy_n]; continue;\n");
+        if (!c->structured) sp(&c->body, "    pc = ssy[--ssy_n]; continue;\n");
     } else if (OPM(0xe340000000000000ull, 0xfff0000000000000ull)) {  // BRK
         sp(&c->body, "    pc = pbk[--pbk_n]; continue;\n");
     } else if (OPM(0xe350000000000000ull, 0xfff0000000000000ull)) {  // CONT
@@ -2126,7 +2132,10 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     if (c->uses_cc) sp(&s, "  uint cc = 0u; bool ccz = false, ccs = false;\n");
     if (c->uses_local) sp(&s, "  uint lmem[%d]; for (int li_ = 0; li_ < %d; li_++) lmem[li_] = 0u;\n", LMEM_WORDS, LMEM_WORDS);
     if (dbg) sp(&s, maxwell_dbg_pc == 0xffffffffu ? "  float dbgv = 1.0f;\n" : "  float dbgv = -1.0f;\n");
-    if (any_branch) {
+    if (c->structured) {
+        sp(&s, "  bool exited = false; uint loops = 0u;\n");
+        sp(&s, "%s", body.buf ? body.buf : "");
+    } else if (any_branch) {
         sp(&s, "  uint pc = 8u; uint ssy[16]; uint ssy_n = 0u; uint pbk[16]; uint pbk_n = 0u; uint pcnt[16]; uint pcnt_n = 0u;\n");
         sp(&s, "  bool exit_now = false;\n");
         sp(&s, "  for (uint guard = 0u; guard < 100000u; guard++) {\n  switch (pc) {\n");
@@ -2207,7 +2216,205 @@ const char *maxwell_translator_id(void) { return TRANSLATOR_ID; }
 
 // Whether a translation depends on more than the binary and the key (debugging switches): not to be cached.
 bool maxwell_translation_uncacheable(void) {
-    return maxwell_dbg_code || maxwell_dbg_vs || getenv("SAVAGEWIND_SAVE_MSL") || getenv("SAVAGEWIND_NO_DISCARD");
+    return maxwell_dbg_code || maxwell_dbg_vs || getenv("SAVAGEWIND_SAVE_MSL") || getenv("SAVAGEWIND_NO_DISCARD") ||
+           getenv("SAVAGEWIND_XLATE_NO_STRUCTURE");
+}
+
+// ---- structured control flow (GLSL). Shaders whose branches nest become if / else and do / while in address order
+// instead of the pc state machine:
+//   @P BRA L; <a>; L:                  ->  if (!P) { <a> }
+//   @P BRA L; <a>; BRA J; L: <b>; J:   ->  if (!P) { <a> } else { <b> }     (a SYNC to the join: the same)
+//   L: <a>; @P BRA L                   ->  do { <a> } while (P)
+//   @P EXIT; <rest>                    ->  if (P) exited = true; if (!exited) { <rest> }
+// A jump to where the enclosing range goes when it ends (the join after an else, say) ends the range. Anything else
+// (PBK / BRK / PCNT / CONT loops, BRX, breaking out of a do / while) keeps the state machine.
+// SAVAGEWIND_XLATE_NO_STRUCTURE=1: always the state machine.
+enum { FLOW_NONE, FLOW_JUMP, FLOW_EXIT, FLOW_SSY, FLOW_OTHER };  // (OTHER: loops through the PBK / PCNT stacks, BRX)
+
+typedef struct {
+    Ctx *c;
+    const uint64_t *code;
+    size_t end;
+    uint32_t *target;    // jumps: target instruction index (SYNC: its join)
+    uint32_t *loop_end;  // a do / while's first instruction: the index of the jump back to it
+    bool ok;
+} Flow;
+
+// Where control goes when a range ends: its end, and the indexes jumps can name for it.
+typedef struct { size_t idx[8]; int n; } Ends;
+
+static int flow_kind(uint64_t w) {
+    if ((w & 0xfff0000000000020ull) == 0xe240000000000000ull || (w & 0xfff8000000000000ull) == 0xf0f8000000000000ull)
+        return FLOW_JUMP;  // BRA, SYNC
+    if ((w & 0xfff0000000000000ull) == 0xe300000000000000ull) return FLOW_EXIT;
+    if ((w & 0xfff0000000000020ull) == 0xe290000000000000ull) return FLOW_SSY;
+    if ((w & 0xfff0000000000020ull) == 0xe2a0000000000000ull || (w & 0xfff0000000000020ull) == 0xe2b0000000000000ull ||
+        (w & 0xfff0000000000000ull) == 0xe340000000000000ull || (w & 0xfff0000000000000ull) == 0xe350000000000000ull ||
+        (w & 0xfff0000000000000ull) == 0xe250000000000000ull)
+        return FLOW_OTHER;  // PBK PCNT BRK CONT BRX
+    return FLOW_NONE;
+}
+
+// The condition under which a flow instruction acts (its predicate and condition-code test, as emit_insn guards
+// it), or NULL: always.
+static const char *flow_cond(Ctx *c, uint64_t w, char *buf, size_t n) {
+    int pr = (int)bits(w, 16, 3), test = (int)bits(w, 0, 5);
+    bool prn = bits(w, 19, 1);
+    const char *cc = test != 15 ? cc_test(test) : NULL;
+    if (cc) c->uses_cc = true;
+    if (pr == PT && !prn && !cc) return NULL;
+    char pb[16];
+    snprintf(buf, n, "%s && %s", pred(c, pr, prn, pb), cc ? cc : "true");
+    return buf;
+}
+
+static size_t next_insn(size_t i) { return (i + 1) % 4 == 0 ? i + 2 : i + 1; }
+static size_t prev_insn(size_t i) { return (i - 1) % 4 == 0 ? i - 2 : i - 1; }
+
+static void flow_dead_range(Flow *f, size_t from, size_t to) {
+    for (size_t k = from; k < to && k < f->end; k++) f->c->flow_dead[k] = 1;
+}
+
+// The ends of a range [.., hi) inside one that ends at parent_hi with parent's ends: hi itself, also what the
+// instruction at hi jumps to (unconditionally) when given (alias, 0: none), and the parent's when they end together.
+static Ends ends_of(size_t hi, size_t alias, size_t parent_hi, const Ends *parent) {
+    Ends e = {{hi}, 1};
+    if (alias) e.idx[e.n++] = alias;
+    if (hi == parent_hi || (alias && alias == parent_hi))
+        for (int k = 0; k < parent->n && e.n < 8; k++) e.idx[e.n++] = parent->idx[k];
+    return e;
+}
+
+static bool is_end(const Ends *e, size_t t) {
+    for (int k = 0; k < e->n; k++) if (e->idx[k] == t) return true;
+    return false;
+}
+
+static bool structure(Flow *f, size_t lo, size_t hi, const Ends *ends, int depth);
+
+// What follows [from, hi) once a construct may have EXITed: only if (!exited).
+static void structure_rest(Flow *f, size_t from, size_t hi, const Ends *ends, int depth) {
+    sp(&f->c->flow_before[from], "  if (!exited) {\n");
+    Ends e = ends_of(hi, 0, hi, ends);
+    structure(f, from, hi, &e, depth + 1);
+    sp(&f->c->flow_before[hi], "  }\n");
+}
+
+// Instructions [lo, hi): control enters at lo and leaves at hi (a jump to one of ends: the same). Returns whether
+// it may EXIT.
+static bool structure(Flow *f, size_t lo, size_t hi, const Ends *ends, int depth) {
+    Str *before = f->c->flow_before;
+    if (depth > 48) { f->ok = false; return false; }
+    for (size_t i = lo; i < hi && f->ok;) {
+        if (i % 4 == 0) { i++; continue; }
+        size_t back = f->loop_end[i];
+        if (back && i != lo && back < hi) {  // a do / while: [i, back], back jumps to i while its condition holds
+            uint64_t bw = f->code[back];
+            char bc[96];
+            const char *cond = flow_cond(f->c, bw, bc, sizeof bc);
+            if (!cond) { f->ok = false; return false; }  // (an endless loop left by breaks)
+            sp(&before[i], "  do {\n");
+            Ends e = {{back}, 1};
+            bool exits = structure(f, i, back, &e, depth + 1);
+            size_t after = next_insn(back);
+            sp(&before[after], "  } while ((%s) && !exited && ++loops < 100000u);\n", cond);
+            if (exits && after < hi) { structure_rest(f, after, hi, ends, depth); return true; }
+            i = after;
+            continue;
+        }
+        uint64_t w = f->code[i];
+        int kind = flow_kind(w);
+        if (kind == FLOW_OTHER || ((kind == FLOW_JUMP || kind == FLOW_EXIT) && bits(w, 0, 5) != 15 && !cc_test((int)bits(w, 0, 5)))) {
+            f->ok = false;  // (loops through the PBK / PCNT stacks, BRX, a condition-code test the translator doesn't know)
+            return false;
+        }
+        char cb[96];
+        const char *cond = kind == FLOW_JUMP || kind == FLOW_EXIT ? flow_cond(f->c, w, cb, sizeof cb) : NULL;
+        size_t n = next_insn(i);
+        if (kind == FLOW_EXIT) {
+            if (!cond) { flow_dead_range(f, n, hi); return true; }
+            if (n < hi) structure_rest(f, n, hi, ends, depth);
+            return true;
+        }
+        if (kind != FLOW_JUMP) { i = n; continue; }
+        size_t t = f->target[i];
+        if (t > hi && is_end(ends, t)) t = hi;
+        if (t <= i || t > hi) { f->ok = false; return false; }  // (backward: only a do / while's own jump)
+        if (!cond) {  // what lies between is dead
+            flow_dead_range(f, n, t);
+            i = t;
+            continue;
+        }
+        if (t == n) { i = n; continue; }  // (a branch to the next instruction)
+        // if / else: the code before the target ends with an unconditional jump further on
+        size_t last = prev_insn(t), after = 0;
+        uint64_t lw = f->code[last];
+        char lb[96];
+        if (last >= n && flow_kind(lw) == FLOW_JUMP && !flow_cond(f->c, lw, lb, sizeof lb) && !f->loop_end[t]) {
+            size_t j = f->target[last];
+            if (j > t && j <= hi) after = j;
+            else if (j > hi && is_end(ends, j)) after = hi;
+        }
+        sp(&before[n], "  if (!(%s)) {\n", cond);
+        bool exits;
+        if (after) {
+            Ends te = ends_of(last, f->target[last], hi, ends);
+            exits = structure(f, n, last, &te, depth + 1);
+            f->c->flow_dead[last] = 1;
+            sp(&before[t], "  } else {\n");
+            Ends ee = ends_of(after, 0, hi, ends);
+            exits |= structure(f, t, after, &ee, depth + 1);
+        } else {
+            after = t;
+            Ends te = ends_of(t, 0, hi, ends);
+            exits = structure(f, n, t, &te, depth + 1);
+        }
+        sp(&before[after], "  }\n");
+        if (exits && after < hi) { structure_rest(f, after, hi, ends, depth); return true; }
+        i = after;
+    }
+    return false;
+}
+
+static void structure_flow(Ctx *c, const uint64_t *code, size_t end) {
+    static int off = -1;
+    if (off < 0) off = getenv("SAVAGEWIND_XLATE_NO_STRUCTURE") != NULL;
+    if (off) return;
+    Flow f = {c, code, end, calloc(end + 1, sizeof(uint32_t)), calloc(end + 1, sizeof(uint32_t)), true};
+    uint32_t ssy[16];
+    int nssy = 0;
+    for (size_t i = 1; i < end && f.ok; i = next_insn(i)) {  // targets; a SYNC goes to its innermost SSY's join
+        uint64_t w = code[i];
+        while (nssy && ssy[nssy - 1] <= i) nssy--;
+        int64_t t = norm_target((int64_t)i * 8 + 8 + sbits(w, 20, 24)) / 8;
+        if ((w & 0xfff0000000000020ull) == 0xe290000000000000ull) {  // SSY
+            if (nssy == 16 || t <= (int64_t)i || t > (int64_t)end || (nssy && (uint32_t)t > ssy[nssy - 1])) f.ok = false;
+            else ssy[nssy++] = (uint32_t)t;
+        } else if ((w & 0xfff8000000000000ull) == 0xf0f8000000000000ull) {  // SYNC
+            if (!nssy) f.ok = false;
+            else f.target[i] = ssy[nssy - 1];
+        } else if ((w & 0xfff0000000000020ull) == 0xe240000000000000ull) {  // BRA
+            if (t < 1 || t > (int64_t)end) f.ok = false;
+            else f.target[i] = (uint32_t)t;
+            if (f.ok && t <= (int64_t)i) {  // a jump back: a do / while from t (one per first instruction)
+                if (f.loop_end[t] || t % 4 == 0) f.ok = false;
+                else f.loop_end[t] = (uint32_t)i;
+            }
+        }
+    }
+    c->flow_before = calloc(end + 1, sizeof(Str));
+    c->flow_dead = calloc(end + 1, 1);
+    Ends top = {{end}, 1};
+    if (f.ok) structure(&f, 1, end, &top, 0);
+    if (f.ok && f.loop_end[1]) f.ok = false;  // (a loop around everything: from the first instruction)
+    free(f.target);
+    free(f.loop_end);
+    if (f.ok) { c->structured = true; return; }
+    for (size_t i = 0; i <= end; i++) free(c->flow_before[i].buf);
+    free(c->flow_before);
+    free(c->flow_dead);
+    c->flow_before = NULL;
+    c->flow_dead = NULL;
 }
 
 ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, const ShaderKey *key) {
@@ -2264,6 +2471,7 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
             any_branch = true;
         (void)is_branch_target_op;
     }
+    if (c->glsl && any_branch) structure_flow(c, (const uint64_t *)code, end);
     // translate
     bool dbg = maxwell_dbg_code && blob == maxwell_dbg_code && stage == STAGE_FRAGMENT;
     static int annotate = -1;
@@ -2272,7 +2480,13 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
     for (size_t i = 0; i < end && !c->fail; i++) {
         if (i % 4 == 0) continue;
         uint32_t pc = (uint32_t)(i * 8);
-        if (any_branch && label[i]) sp(&c->body, "  case %uu:\n", pc);
+        if (c->structured) {
+            if (c->flow_before[i].buf) sp(&c->body, "%s", c->flow_before[i].buf);
+            int kind = flow_kind(((const uint64_t *)code)[i]);
+            if (c->flow_dead[i] || kind == FLOW_JUMP || kind == FLOW_SSY) continue;  // (jumps: in the braces)
+        } else if (any_branch && label[i]) {
+            sp(&c->body, "  case %uu:\n", pc);
+        }
         if (annotate) sp(&c->body, "    // pc %x: %016llx\n", pc, (unsigned long long)((const uint64_t *)code)[i]);
         emit_insn(c, ((const uint64_t *)code)[i], pc);
         if (dbg && pc == maxwell_dbg_pc) {
@@ -2282,6 +2496,12 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
             else sp(&c->body, "    dbgv = as_type<float>(r%d);\n", rr);
         }
         info->num_insts++;
+    }
+    if (c->structured) {
+        if (c->flow_before[end].buf) sp(&c->body, "%s", c->flow_before[end].buf);
+        for (size_t i = 0; i <= end; i++) free(c->flow_before[i].buf);
+        free(c->flow_before);
+        free(c->flow_dead);
     }
     free(label);
     if (c->fail) { free(c->body.buf); free(c); return info; }
