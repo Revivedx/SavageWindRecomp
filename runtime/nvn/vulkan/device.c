@@ -182,7 +182,7 @@ static void create_device(void) {
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
     VkExtensionProperties *ep = calloc(ne, sizeof *ep);
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
-    const char *ext[16];
+    const char *ext[20];
     uint32_t n_ext = 0;
     ext[n_ext++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     bool addr_report = g_addr_report_hi && has_ext(ep, ne, VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME);
@@ -203,6 +203,11 @@ static void create_device(void) {
     bool fbl = !getenv("SAVAGEWIND_VK_NO_FEEDBACK_LOOP") && has_ext(ep, ne, VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME) &&
                has_ext(ep, ne, VK_KHR_UNIFIED_IMAGE_LAYOUTS_EXTENSION_NAME) &&
                has_ext(ep, ne, VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME);
+    // Pipelines linked from per-stage parts (exec.c, pipeline libraries): a pipeline whose shaders are known only
+    // links. SAVAGEWIND_VK_NO_GPL=1: whole pipelines, as before.
+    bool gpl = !getenv("SAVAGEWIND_VK_NO_GPL") && has_ext(ep, ne, VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME) &&
+               has_ext(ep, ne, VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
+    bool eds3 = gpl && has_ext(ep, ne, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
     free(ep);
 
     // features the backend relies on (all present on current desktop drivers)
@@ -212,8 +217,24 @@ static void create_device(void) {
                                                                .pNext = &fbl_have};
     VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR lr_have = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_LOCAL_READ_FEATURES_KHR, .pNext = &uil_have};
-    VkPhysicalDeviceFeatures2 have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = fbl ? &lr_have : NULL};
+    VkPhysicalDeviceExtendedDynamicState3FeaturesEXT eds3_have = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT, .pNext = fbl ? &lr_have : NULL};
+    VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT gpl_have = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT, .pNext = &eds3_have};
+    VkPhysicalDeviceFeatures2 have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &gpl_have};
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &have);
+    VkPhysicalDeviceGraphicsPipelineLibraryPropertiesEXT gpl_props = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_PROPERTIES_EXT};
+    VkPhysicalDeviceProperties2 props2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &gpl_props};
+    vkGetPhysicalDeviceProperties2(g_vk.phys, &props2);
+    g_vk.gpl = gpl && gpl_have.graphicsPipelineLibrary && gpl_props.graphicsPipelineLibraryFastLinking;
+    if (g_vk.gpl) {
+        ext[n_ext++] = VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME;
+        ext[n_ext++] = VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME;
+    }
+    eds3 = g_vk.gpl && eds3 && eds3_have.extendedDynamicState3DepthClampEnable && eds3_have.extendedDynamicState3PolygonMode;
+    if (eds3) ext[n_ext++] = VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME;
+    LOG("[vk] pipeline libraries %s%s\n", g_vk.gpl ? "on" : "off (whole pipelines)", eds3 ? ", depth clamp and polygon mode dynamic" : "");
     g_vk.feedback_loop = fbl && fbl_have.attachmentFeedbackLoopLayout && uil_have.unifiedImageLayouts && lr_have.dynamicRenderingLocalRead;
     if (g_vk.feedback_loop) {
         ext[n_ext++] = VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME;
@@ -250,8 +271,14 @@ static void create_device(void) {
     VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR lr_on = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_LOCAL_READ_FEATURES_KHR, .dynamicRenderingLocalRead = VK_TRUE,
         .pNext = &uil_on};
-    VkPhysicalDeviceFeatures2 f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-                                   .pNext = g_vk.feedback_loop ? (void *)&lr_on : addr_report ? (void *)&abr : fault ? (void *)&ff : (void *)&f11};
+    VkPhysicalDeviceExtendedDynamicState3FeaturesEXT eds3_on = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT, .extendedDynamicState3DepthClampEnable = VK_TRUE,
+        .extendedDynamicState3PolygonMode = VK_TRUE,
+        .pNext = g_vk.feedback_loop ? (void *)&lr_on : addr_report ? (void *)&abr : fault ? (void *)&ff : (void *)&f11};
+    VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT gpl_on = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT, .graphicsPipelineLibrary = VK_TRUE,
+        .pNext = eds3 ? (void *)&eds3_on : eds3_on.pNext};
+    VkPhysicalDeviceFeatures2 f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = g_vk.gpl ? (void *)&gpl_on : gpl_on.pNext};
     VkPhysicalDeviceFeatures *b = &f.features, *h = &have.features;
     b->independentBlend = h->independentBlend;
     b->dualSrcBlend = h->dualSrcBlend;
@@ -279,6 +306,11 @@ static void create_device(void) {
     VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f, .queueCreateInfoCount = 1,
                              .pQueueCreateInfos = &qi, .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext};
     VK_CHECK(vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.dev));
+    if (eds3) {
+        g_vk.set_depth_clamp = (PFN_vkCmdSetDepthClampEnableEXT)vkGetDeviceProcAddr(g_vk.dev, "vkCmdSetDepthClampEnableEXT");
+        g_vk.set_polygon_mode = (PFN_vkCmdSetPolygonModeEXT)vkGetDeviceProcAddr(g_vk.dev, "vkCmdSetPolygonModeEXT");
+        if (!g_vk.set_depth_clamp || !g_vk.set_polygon_mode) g_vk.set_depth_clamp = NULL, g_vk.set_polygon_mode = NULL;
+    }
     vkGetDeviceQueue(g_vk.dev, g_vk.qfam, 0, &g_vk.queue);
     g_vk.present_queue = g_vk.queue;
     if (qi.queueCount == 2) vkGetDeviceQueue(g_vk.dev, g_vk.qfam, 1, &g_vk.present_queue);

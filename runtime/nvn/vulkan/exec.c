@@ -58,7 +58,7 @@ static struct {
     VkPipeline pipe;
     VkPipelineLayout layout;
     VkDescriptorSet sets[2];
-    uint32_t dt, dw, dop, sten, cull, front, topo, restart, bias_on;
+    uint32_t dt, dw, dop, sten, cull, front, topo, restart, bias_on, clamp, poly;
     uint32_t sten_face[2][8];  // fail, pass, depth fail, compare, compare mask, write mask, reference
     float blend[4], bias[3], line_w;
     VkViewport vp;
@@ -738,6 +738,13 @@ const char *renderer_stats(void) {
                  atomic_exchange(&prof_c_prog, 0) / 1e6, (unsigned long long)atomic_exchange(&prof_c_nprog, 0),
                  atomic_exchange(&prof_c_pipe, 0) / 1e6, (unsigned long long)atomic_exchange(&prof_c_npipe, 0),
                  atomic_exchange(&prof_c_comp, 0) / 1e6);
+        if (g_vk.gpl) {
+            extern _Atomic int gpl_made[4], gpl_links, gpl_optimised;
+            n = strlen(stats_text);
+            snprintf(stats_text + n, sizeof stats_text - n, " | libraries: vertex input %d, vertex %d, fragment %d, output %d; links %d, optimised %d",
+                     atomic_exchange(&gpl_made[0], 0), atomic_exchange(&gpl_made[1], 0), atomic_exchange(&gpl_made[2], 0),
+                     atomic_exchange(&gpl_made[3], 0), atomic_exchange(&gpl_links, 0), atomic_exchange(&gpl_optimised, 0));
+        }
         prof_views_created = 0;
         prof_tex_checks = prof_tex_samples = prof_tex_full = prof_tex_full_bytes = prof_tex_dyn = 0;
         prof_exec = prof_draw = prof_sets = prof_vtx = prof_submit = prof_pre = prof_key = prof_dyn = prof_tex = prof_up = prof_gpu = 0;
@@ -1220,6 +1227,16 @@ static const VkDynamicState DYN[] = {
     VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE, VK_DYNAMIC_STATE_STENCIL_OP, VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE,
     VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE, VK_DYNAMIC_STATE_LINE_WIDTH};
 #define NDYN (sizeof DYN / sizeof DYN[0])
+// Pipelines from parts (pipeline libraries) with VK_EXT_extended_dynamic_state3: depth clamp and polygon mode too.
+static const VkDynamicState DYN_GPL[] = {
+    VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_DEPTH_BIAS, VK_DYNAMIC_STATE_BLEND_CONSTANTS,
+    VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK, VK_DYNAMIC_STATE_STENCIL_REFERENCE,
+    VK_DYNAMIC_STATE_CULL_MODE, VK_DYNAMIC_STATE_FRONT_FACE, VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY,
+    VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE, VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE, VK_DYNAMIC_STATE_DEPTH_COMPARE_OP,
+    VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE, VK_DYNAMIC_STATE_STENCIL_OP, VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE,
+    VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE, VK_DYNAMIC_STATE_LINE_WIDTH, VK_DYNAMIC_STATE_DEPTH_CLAMP_ENABLE_EXT,
+    VK_DYNAMIC_STATE_POLYGON_MODE_EXT};
+_Static_assert(sizeof DYN_GPL / sizeof DYN_GPL[0] == NDYN + 2, "DYN_GPL: DYN and two more");
 
 // Fixed-function state that isn't part of a pipeline is set explicitly on every bind (it persists across pipelines).
 static void dyn_defaults(VkCommandBuffer cb) {
@@ -1364,8 +1381,10 @@ static VkPipelineLayout make_layout(const VkBindingInfo *binds, int nbinds, VkDe
                                     VkShaderStageFlags s0, VkShaderStageFlags s1) {
     set_layout[0] = vk_set_layout(binds, nbinds, 0, s0);
     if (nsets > 1) set_layout[1] = vk_set_layout(binds, nbinds, 1, s1);
+    // (graphics with pipeline libraries: each shader part is made with its own set alone, gpl_stage_layout)
     VkPipelineLayoutCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = (uint32_t)nsets,
-                                     .pSetLayouts = set_layout};
+                                     .pSetLayouts = set_layout,
+                                     .flags = g_vk.gpl && nsets == 2 ? VK_PIPELINE_LAYOUT_CREATE_INDEPENDENT_SETS_BIT_EXT : 0};
     VkPipelineLayout l;
     VK_CHECK(vkCreatePipelineLayout(g_vk.dev, &ci, NULL, &l));
     return l;
@@ -1383,7 +1402,14 @@ static void save_glsl(const char *src, uint64_t addr, const char *suffix) {
 // One stage's SPIR-V module and bindings, per translated shader: programs share their vertex and fragment shaders
 // (the same ShaderInfo, vk_translate_cached), so a stage seen in another program costs no SPIR-V load, reflection or
 // module creation again.
-typedef struct { const ShaderInfo *si; VkShaderModule m; int nbinds; VkBindingInfo binds[MAX_BIND]; } StageBuild;
+typedef struct {
+    const ShaderInfo *si;
+    VkShaderModule m;
+    int nbinds;
+    VkBindingInfo binds[MAX_BIND];
+    VkDescriptorSetLayout lib_set;  // (pipeline libraries) its own set alone, and a layout of just that set:
+    VkPipelineLayout lib_layout;    // gpl_stage_layout
+} StageBuild;
 #define STAGE_TAB 8192
 static StageBuild *stage_tab[STAGE_TAB];
 static pthread_mutex_t stage_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -1859,7 +1885,9 @@ typedef struct {
 } PipeState;
 typedef struct { Prog *prog; PipeState s; } PipeKey;
 
-typedef struct { PipeKey k; uint64_t hash; VkPipeline pipe; _Atomic int state; } Pipe;  // state: 0 building, 1 ready, 2 failed
+struct WarmPipe;
+// state: 0 building, 1 ready, 2 failed. w: where pipe came from (pipeline libraries: an optimised link replaces it there)
+typedef struct { PipeKey k; uint64_t hash; VkPipeline pipe; _Atomic int state; struct WarmPipe *w; } Pipe;
 #define PIPE_TAB 8192
 static struct { uint64_t key; Pipe *pipe; } pipe_tab[PIPE_TAB];
 static struct { PipeKey k; Pipe *pp; } pipe_memo;  // (see prog_memo)
@@ -1894,38 +1922,39 @@ static void cache_feedback(const VkPipelineCreationFeedback *fb) {
     vk_pipeline_cache_note(hit);
 }
 
-static VkResult create_pipeline(const PipeState *k, VkShaderModule vsm, VkShaderModule fsm, VkPipelineLayout layout, VkPipeline *out) {
-    VkPipelineShaderStageCreateInfo stages[2] = {
-        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vsm, .pName = "main"},
-        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fsm, .pName = "main"}};
+// The vertex input and colour blending of a pipeline's fixed state, for a whole pipeline or its parts (pipeline
+// libraries below).
+typedef struct {
     VkVertexInputAttributeDescription va[32];
     VkVertexInputBindingDescription vb[17];
     VkVertexInputBindingDivisorDescriptionEXT vd[17];
+    VkPipelineVertexInputDivisorStateCreateInfoEXT dvi;
+    VkPipelineVertexInputStateCreateInfo vi;
+    VkPipelineInputAssemblyStateCreateInfo ia;
+} VertexInput;
+
+static void vertex_input(const PipeState *k, VertexInput *v) {
     uint32_t na = 0, nb = 0, nd = 0;
     for (int i = 0; i < 32; i++)
-        if (k->attr_mask & (1u << i)) va[na++] = (VkVertexInputAttributeDescription){(uint32_t)i, k->attr_bind[i], k->attr_fmt[i], k->attr_off[i]};
+        if (k->attr_mask & (1u << i)) v->va[na++] = (VkVertexInputAttributeDescription){(uint32_t)i, k->attr_bind[i], k->attr_fmt[i], k->attr_off[i]};
     for (uint32_t s = 0; s < 17; s++) {
         if (!(k->used_streams & (1u << s))) continue;
         bool inst = k->divisor[s] != 0;
-        vb[nb++] = (VkVertexInputBindingDescription){s, k->stride[s], inst ? VK_VERTEX_INPUT_RATE_INSTANCE : VK_VERTEX_INPUT_RATE_VERTEX};
-        if (inst && k->divisor[s] > 1 && g_vk.divisor) vd[nd++] = (VkVertexInputBindingDivisorDescriptionEXT){s, k->divisor[s]};
+        v->vb[nb++] = (VkVertexInputBindingDescription){s, k->stride[s], inst ? VK_VERTEX_INPUT_RATE_INSTANCE : VK_VERTEX_INPUT_RATE_VERTEX};
+        if (inst && k->divisor[s] > 1 && g_vk.divisor) v->vd[nd++] = (VkVertexInputBindingDivisorDescriptionEXT){s, k->divisor[s]};
     }
-    VkPipelineVertexInputDivisorStateCreateInfoEXT dvi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_DIVISOR_STATE_CREATE_INFO_EXT,
-                                                          .vertexBindingDivisorCount = nd, .pVertexBindingDivisors = vd};
-    VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO, .pNext = nd ? &dvi : NULL,
-                                               .vertexBindingDescriptionCount = nb, .pVertexBindingDescriptions = vb,
-                                               .vertexAttributeDescriptionCount = na, .pVertexAttributeDescriptions = va};
-    VkPipelineInputAssemblyStateCreateInfo ia = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-                                                 .topology = topo_class_base(k->topo_class)};
-    VkPipelineViewportStateCreateInfo vs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1};
-    VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-                                                 .depthClampEnable = k->depth_clamp && g_vk.depth_clamp,
-                                                 .polygonMode = k->poly_fill ? VK_POLYGON_MODE_FILL : VK_POLYGON_MODE_LINE, .lineWidth = 1};
-    VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-                                               .rasterizationSamples = (VkSampleCountFlagBits)k->samples, .alphaToCoverageEnable = k->a2c};
-    VkPipelineDepthStencilStateCreateInfo ds = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-    VkPipelineColorBlendAttachmentState cba[8] = {0};
-    for (uint32_t i = 0; i < k->ncolor; i++) {
+    v->dvi = (VkPipelineVertexInputDivisorStateCreateInfoEXT){.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_DIVISOR_STATE_CREATE_INFO_EXT,
+                                                             .vertexBindingDivisorCount = nd, .pVertexBindingDivisors = v->vd};
+    v->vi = (VkPipelineVertexInputStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO, .pNext = nd ? &v->dvi : NULL,
+                                                   .vertexBindingDescriptionCount = nb, .pVertexBindingDescriptions = v->vb,
+                                                   .vertexAttributeDescriptionCount = na, .pVertexAttributeDescriptions = v->va};
+    v->ia = (VkPipelineInputAssemblyStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+                                                     .topology = topo_class_base(k->topo_class)};
+}
+
+static void blend_attachments(const PipeState *k, VkPipelineColorBlendAttachmentState cba[8]) {
+    memset(cba, 0, sizeof *cba * 8);
+    for (uint32_t i = 0; i < k->ncolor && i < 8; i++) {
         cba[i].colorWriteMask = k->write_mask[i];
         if ((k->blend_on >> i) & 1) {
             const uint8_t *b = k->blend[i];
@@ -1938,6 +1967,23 @@ static VkResult create_pipeline(const PipeState *k, VkShaderModule vsm, VkShader
             cba[i].alphaBlendOp = blend_op(b[6]);
         }
     }
+}
+
+static VkResult create_pipeline(const PipeState *k, VkShaderModule vsm, VkShaderModule fsm, VkPipelineLayout layout, VkPipeline *out) {
+    VkPipelineShaderStageCreateInfo stages[2] = {
+        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vsm, .pName = "main"},
+        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fsm, .pName = "main"}};
+    VertexInput v;
+    vertex_input(k, &v);
+    VkPipelineViewportStateCreateInfo vs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1};
+    VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+                                                 .depthClampEnable = k->depth_clamp && g_vk.depth_clamp,
+                                                 .polygonMode = k->poly_fill ? VK_POLYGON_MODE_FILL : VK_POLYGON_MODE_LINE, .lineWidth = 1};
+    VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+                                               .rasterizationSamples = (VkSampleCountFlagBits)k->samples, .alphaToCoverageEnable = k->a2c};
+    VkPipelineDepthStencilStateCreateInfo ds = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    VkPipelineColorBlendAttachmentState cba[8];
+    blend_attachments(k, cba);
     VkPipelineColorBlendStateCreateInfo cb = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
                                               .attachmentCount = k->ncolor, .pAttachments = cba};
     VkPipelineDynamicStateCreateInfo dy = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
@@ -1949,7 +1995,7 @@ static VkResult create_pipeline(const PipeState *k, VkShaderModule vsm, VkShader
                                         .colorAttachmentCount = k->ncolor, .pColorAttachmentFormats = k->color,
                                         .depthAttachmentFormat = k->depth, .stencilAttachmentFormat = k->stencil};
     VkGraphicsPipelineCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &ri, .stageCount = 2,
-                                       .pStages = stages, .pVertexInputState = &vi, .pInputAssemblyState = &ia, .pViewportState = &vs,
+                                       .pStages = stages, .pVertexInputState = &v.vi, .pInputAssemblyState = &v.ia, .pViewportState = &vs,
                                        .pRasterizationState = &rs, .pMultisampleState = &ms, .pDepthStencilState = &ds,
                                        .pColorBlendState = &cb, .pDynamicState = &dy, .layout = layout,
                                        .flags = k->feedback ? VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT : 0};
@@ -1961,6 +2007,199 @@ static VkResult create_pipeline(const PipeState *k, VkShaderModule vsm, VkShader
     } else {
         cache_feedback(&fb);
     }
+    return r;
+}
+
+// ================================================================== pipeline libraries (g_vk.gpl)
+// A pipeline is linked from four parts, each made once and kept: the vertex input (attributes, streams, topology
+// class), the vertex shader with its rasterization state, the fragment shader, and the fragment output (formats,
+// blending, samples). The shader parts are what compiling costs (25.9 ms a whole pipeline on a Radeon 660M); each
+// depends only on its shader and that shader's descriptor set (layouts with independent sets: the vertex shader's
+// set 0, the fragment shader's set 1), so a pipeline whose shaders were seen before only links: another vertex
+// layout, blend or target format costs its small part and the link (0.04 ms on a Radeon 660M in AnyPS5, which does
+// the same). A draw waits for that link; a background thread then links the same parts with
+// link-time optimisation, and draws use that one once it is there (gpl_optimise).
+enum { GPL_VI, GPL_VS, GPL_FS, GPL_FO };
+typedef struct { int kind; const StageBuild *sb; PipeState s; } GplKey;  // s: only what the part is made from
+typedef struct GplPart {
+    GplKey key;
+    uint64_t hash;
+    VkPipeline lib;
+    _Atomic int state;  // 1 being made, 2 ready, 3 failed
+    struct GplPart *next;
+} GplPart;
+#define GPL_TAB 16384
+static GplPart *gpl_tab[GPL_TAB];
+static pthread_mutex_t gpl_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t gpl_cond = PTHREAD_COND_INITIALIZER;
+_Atomic int gpl_made[4], gpl_links, gpl_optimised;  // (VK_PROF) parts made by kind, links made
+
+static VkPipelineLayout gpl_stage_layout(const StageBuild *sb, int stage) {
+    pthread_mutex_lock(&gpl_lock);
+    VkPipelineLayout l = sb->lib_layout;
+    if (!l) {
+        int set = stage == STAGE_VERTEX ? 0 : 1;
+        VkDescriptorSetLayout sets[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+        sets[set] = vk_set_layout(sb->binds, sb->nbinds, (uint32_t)set,
+                                  stage == STAGE_VERTEX ? VK_SHADER_STAGE_VERTEX_BIT : VK_SHADER_STAGE_FRAGMENT_BIT);
+        VkPipelineLayoutCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 2,
+                                         .pSetLayouts = sets, .flags = VK_PIPELINE_LAYOUT_CREATE_INDEPENDENT_SETS_BIT_EXT};
+        VK_CHECK(vkCreatePipelineLayout(g_vk.dev, &ci, NULL, &l));
+        ((StageBuild *)sb)->lib_set = sets[set];
+        ((StageBuild *)sb)->lib_layout = l;
+    }
+    pthread_mutex_unlock(&gpl_lock);
+    return l;
+}
+
+static VkPipeline gpl_make(const GplKey *k) {
+    const PipeState *s = &k->s;
+    VkPipelineCreationFeedback fb = {0};
+    VkPipelineCreationFeedbackCreateInfo fci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO,
+                                                .pPipelineCreationFeedback = &fb};
+    VkGraphicsPipelineLibraryCreateInfoEXT lib = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_LIBRARY_CREATE_INFO_EXT, .pNext = &fci};
+    VkPipelineRenderingCreateInfo ri = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO, .pNext = &lib};
+    bool dyn_raster = g_vk.set_depth_clamp != NULL;
+    VkPipelineDynamicStateCreateInfo dy = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+                                           .dynamicStateCount = dyn_raster ? NDYN + 2 : NDYN, .pDynamicStates = dyn_raster ? DYN_GPL : DYN};
+    VkGraphicsPipelineCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &ri, .pDynamicState = &dy,
+                                       .flags = VK_PIPELINE_CREATE_LIBRARY_BIT_KHR |
+                                                VK_PIPELINE_CREATE_RETAIN_LINK_TIME_OPTIMIZATION_INFO_BIT_EXT};
+    VertexInput v;
+    VkPipelineShaderStageCreateInfo stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .pName = "main"};
+    VkPipelineViewportStateCreateInfo vs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1};
+    VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+                                                 .depthClampEnable = s->depth_clamp && g_vk.depth_clamp,
+                                                 .polygonMode = s->poly_fill ? VK_POLYGON_MODE_FILL : VK_POLYGON_MODE_LINE, .lineWidth = 1};
+    VkPipelineDepthStencilStateCreateInfo ds = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+                                               .rasterizationSamples = (VkSampleCountFlagBits)s->samples, .alphaToCoverageEnable = s->a2c};
+    VkPipelineColorBlendAttachmentState cba[8];
+    VkPipelineColorBlendStateCreateInfo cb = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, .pAttachments = cba};
+    switch (k->kind) {
+    case GPL_VI:
+        lib.flags = VK_GRAPHICS_PIPELINE_LIBRARY_VERTEX_INPUT_INTERFACE_BIT_EXT;
+        vertex_input(s, &v);
+        pi.pVertexInputState = &v.vi;
+        pi.pInputAssemblyState = &v.ia;
+        break;
+    case GPL_VS:
+        lib.flags = VK_GRAPHICS_PIPELINE_LIBRARY_PRE_RASTERIZATION_SHADERS_BIT_EXT;
+        stage.stage = VK_SHADER_STAGE_VERTEX_BIT;
+        stage.module = k->sb->m;
+        pi.stageCount = 1;
+        pi.pStages = &stage;
+        pi.pViewportState = &vs;
+        pi.pRasterizationState = &rs;
+        pi.layout = gpl_stage_layout(k->sb, STAGE_VERTEX);
+        break;
+    case GPL_FS:
+        lib.flags = VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT;
+        stage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        stage.module = k->sb->m;
+        pi.stageCount = 1;
+        pi.pStages = &stage;
+        pi.pDepthStencilState = &ds;
+        pi.layout = gpl_stage_layout(k->sb, STAGE_FRAGMENT);
+        break;
+    default:  // GPL_FO
+        lib.flags = VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_OUTPUT_INTERFACE_BIT_EXT;
+        blend_attachments(s, cba);
+        cb.attachmentCount = s->ncolor;
+        ri.colorAttachmentCount = s->ncolor;
+        ri.pColorAttachmentFormats = s->color;
+        ri.depthAttachmentFormat = s->depth;
+        ri.stencilAttachmentFormat = s->stencil;
+        pi.pColorBlendState = &cb;
+        pi.pMultisampleState = &ms;
+        if (s->feedback) pi.flags |= VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
+        break;
+    }
+    VkPipeline p = VK_NULL_HANDLE;
+    VkResult r = vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, &p);
+    if (r != VK_SUCCESS) {
+        static int n;
+        if (n++ < 10) LOG("[vk] pipeline library %d failed: %d\n", k->kind, r);
+        return VK_NULL_HANDLE;
+    }
+    cache_feedback(&fb);
+    atomic_fetch_add(&gpl_made[k->kind], 1);
+    return p;
+}
+
+// The part with this key: made by this call, or by another thread (waited for).
+static VkPipeline gpl_part(const GplKey *k) {
+    uint64_t h = hash_words(0x9E3779B97F4A7C15ull, k, sizeof *k);
+    pthread_mutex_lock(&gpl_lock);
+    GplPart *g = gpl_tab[h & (GPL_TAB - 1)];
+    while (g && !(g->hash == h && !memcmp(&g->key, k, sizeof *k))) g = g->next;
+    if (g) {
+        while (atomic_load(&g->state) == 1) pthread_cond_wait(&gpl_cond, &gpl_lock);
+        pthread_mutex_unlock(&gpl_lock);
+        return g->lib;
+    }
+    g = calloc(1, sizeof *g);
+    g->key = *k;
+    g->hash = h;
+    g->state = 1;
+    g->next = gpl_tab[h & (GPL_TAB - 1)];
+    gpl_tab[h & (GPL_TAB - 1)] = g;
+    pthread_mutex_unlock(&gpl_lock);
+    VkPipeline lib = gpl_make(k);
+    pthread_mutex_lock(&gpl_lock);
+    g->lib = lib;
+    atomic_store(&g->state, lib ? 2 : 3);
+    pthread_cond_broadcast(&gpl_cond);
+    pthread_mutex_unlock(&gpl_lock);
+    return lib;
+}
+
+// The four parts of a pipeline (vs, fs: its stages' modules and bindings), linked; optimise: with link-time
+// optimisation (what a whole pipeline gets), else fast.
+static VkResult gpl_link(const PipeState *s, const StageBuild *vs, const StageBuild *fs, VkPipelineLayout layout, bool optimise,
+                         VkPipeline *out) {
+    GplKey k[4];
+    memset(k, 0, sizeof k);
+    k[GPL_VI].kind = GPL_VI;
+    memcpy(k[GPL_VI].s.attr_fmt, s->attr_fmt, sizeof s->attr_fmt);
+    memcpy(k[GPL_VI].s.attr_off, s->attr_off, sizeof s->attr_off);
+    memcpy(k[GPL_VI].s.attr_bind, s->attr_bind, sizeof s->attr_bind);
+    k[GPL_VI].s.attr_mask = s->attr_mask;
+    memcpy(k[GPL_VI].s.stride, s->stride, sizeof s->stride);
+    memcpy(k[GPL_VI].s.divisor, s->divisor, sizeof s->divisor);
+    k[GPL_VI].s.used_streams = s->used_streams;
+    k[GPL_VI].s.topo_class = s->topo_class;
+    k[GPL_VS].kind = GPL_VS;
+    k[GPL_VS].sb = vs;
+    k[GPL_VS].s.depth_clamp = g_vk.set_depth_clamp ? 0 : s->depth_clamp;  // (dynamic: set by the draw)
+    k[GPL_VS].s.poly_fill = g_vk.set_depth_clamp ? 1 : s->poly_fill;
+    k[GPL_FS].kind = GPL_FS;
+    k[GPL_FS].sb = fs;
+    k[GPL_FO].kind = GPL_FO;
+    memcpy(k[GPL_FO].s.color, s->color, sizeof s->color);
+    k[GPL_FO].s.depth = s->depth;
+    k[GPL_FO].s.stencil = s->stencil;
+    k[GPL_FO].s.ncolor = s->ncolor;
+    k[GPL_FO].s.samples = s->samples;
+    memcpy(k[GPL_FO].s.blend, s->blend, sizeof s->blend);
+    k[GPL_FO].s.blend_on = s->blend_on;
+    k[GPL_FO].s.a2c = s->a2c;
+    memcpy(k[GPL_FO].s.write_mask, s->write_mask, sizeof s->write_mask);
+    k[GPL_FO].s.feedback = s->feedback;
+    VkPipeline libs[4];
+    for (int i = 0; i < 4; i++)
+        if (!(libs[i] = gpl_part(&k[i]))) return VK_ERROR_UNKNOWN;
+    VkPipelineLibraryCreateInfoKHR li = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR, .libraryCount = 4, .pLibraries = libs};
+    VkGraphicsPipelineCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &li, .layout = layout,
+                                       .flags = (optimise ? VK_PIPELINE_CREATE_LINK_TIME_OPTIMIZATION_BIT_EXT : 0) |
+                                                (s->feedback ? VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT : 0)};
+    *out = VK_NULL_HANDLE;
+    VkResult r = vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, out);
+    if (r != VK_SUCCESS) {
+        static int n;
+        if (n++ < 10) LOG("[vk] pipeline link failed: %d\n", r);
+    }
+    atomic_fetch_add(optimise ? &gpl_optimised : &gpl_links, 1);
     return r;
 }
 
@@ -2014,22 +2253,92 @@ static void warm_done(WarmPipe *w, VkPipeline p, VkResult r) {
 
 static void pso_record(int kind, uint64_t id0, uint64_t id1, const void *state, size_t n);
 
+// Optimised links of the pipelines draws got fast-linked (pipeline libraries), one at a time on a low-priority thread
+// of their own: each compiles the whole pipeline again. Draws switch to it through their WarmPipe (pipe_current).
+// SAVAGEWIND_VK_NO_LTO=1: keep the fast links (to measure what they cost on the GPU).
+static WarmPipe **lto_queue;
+static int lto_head, lto_n, lto_cap;
+static pthread_mutex_t lto_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t lto_cond = PTHREAD_COND_INITIALIZER;
+
+static void *lto_thread(void *arg) {
+    (void)arg;
+    SDL_SetCurrentThreadPriority(SDL_THREAD_PRIORITY_LOW);
+    for (;;) {
+        pthread_mutex_lock(&lto_lock);
+        while (lto_head == lto_n) pthread_cond_wait(&lto_cond, &lto_lock);
+        WarmPipe *w = lto_queue[lto_head++];
+        if (lto_head == lto_n) lto_head = lto_n = 0;
+        pthread_mutex_unlock(&lto_lock);
+        bool made;
+        const ProgBuild *b = prog_build(w->vi, w->fi, &made);
+        const StageBuild *vs = b ? stage_build(w->vi, STAGE_VERTEX, "vs") : NULL;
+        const StageBuild *fs = vs ? stage_build(w->fi, STAGE_FRAGMENT, "fs") : NULL;
+        VkPipeline p;
+        if (fs && gpl_link(&w->s, vs, fs, b->layout, true, &p) == VK_SUCCESS) __atomic_store_n(&w->pipe, p, __ATOMIC_RELEASE);
+    }
+    return NULL;
+}
+
+static void gpl_optimise(WarmPipe *w) {
+    static int off = -1;
+    if (off < 0) off = getenv("SAVAGEWIND_VK_NO_LTO") != NULL;
+    if (off) return;
+    pthread_mutex_lock(&lto_lock);
+    static bool started;
+    if (!started) {
+        started = true;
+        pthread_t t;
+        pthread_create(&t, NULL, lto_thread, NULL);
+        pthread_detach(t);
+    }
+    if (lto_n == lto_cap) {
+        lto_cap = lto_cap ? lto_cap * 2 : 256;
+        lto_queue = realloc(lto_queue, sizeof *lto_queue * (size_t)lto_cap);
+    }
+    lto_queue[lto_n++] = w;
+    pthread_cond_signal(&lto_cond);
+    pthread_mutex_unlock(&lto_lock);
+}
+
+// The pipeline a ready Pipe draws with now: its WarmPipe's, which an optimised link replaces.
+static inline VkPipeline pipe_current(Pipe *pp) {
+    if (pp->w) {
+        VkPipeline p = __atomic_load_n(&pp->w->pipe, __ATOMIC_ACQUIRE);
+        if (p != pp->pipe) pp->pipe = p;
+    }
+    return pp->pipe;
+}
+
+// A pipeline for these stages and fixed state: fast-linked from its parts with pipeline libraries (the optimised link
+// follows, gpl_optimise), else whole.
+static VkResult pipe_make(const PipeState *s, const ShaderInfo *vi, const ShaderInfo *fi, const ProgBuild *b, VkPipeline *out) {
+    if (!g_vk.gpl) return create_pipeline(s, b->vs, b->fs, b->layout, out);
+    const StageBuild *vs = stage_build(vi, STAGE_VERTEX, "vs");
+    const StageBuild *fs = vs ? stage_build(fi, STAGE_FRAGMENT, "fs") : NULL;
+    return fs ? gpl_link(s, vs, fs, b->layout, false, out) : VK_ERROR_UNKNOWN;
+}
+
 static void build_pipeline(void *arg) {
     Pipe *pp = arg;
     uint64_t pt0 = SDL_GetTicksNS();
     PipeKey *k = &pp->k;
     WarmPipe *w;
     if (warm_get(k->prog->vi, k->prog->fi, &k->s, &w)) {
-        VkPipeline p;
-        VkResult r = create_pipeline(&k->s, k->prog->vs, k->prog->fs, k->prog->layout, &p);
+        VkPipeline p = VK_NULL_HANDLE;
+        bool made;
+        const ProgBuild *b = prog_build(k->prog->vi, k->prog->fi, &made);
+        VkResult r = b ? pipe_make(&k->s, k->prog->vi, k->prog->fi, b, &p) : VK_ERROR_UNKNOWN;
         warm_done(w, p, r);
         if (r == VK_SUCCESS) pso_record(1, vk_translate_id(k->prog->vi), vk_translate_id(k->prog->fi), &k->s, sizeof k->s);
+        if (r == VK_SUCCESS && g_vk.gpl) gpl_optimise(w);
         atomic_fetch_add(&stat_compiles, 1);
         atomic_fetch_add(&prof_c_pipe, SDL_GetTicksNS() - pt0); atomic_fetch_add(&prof_c_npipe, 1);
     } else {
         atomic_fetch_add(&stat_warm, 1);
     }
-    pp->pipe = w->pipe;
+    pp->pipe = __atomic_load_n(&w->pipe, __ATOMIC_ACQUIRE);
+    pp->w = w;
     atomic_store(&pp->state, atomic_load(&w->state) == 2 ? 1 : 2);
 }
 
@@ -3126,9 +3435,10 @@ static void pso_warm_one(const PsoRec *r) {
         if (!b) { atomic_fetch_add(&pso_skipped, 1); return; }
         WarmPipe *w;
         if (!warm_get(vi, fi, &r->u.g, &w)) { atomic_fetch_add(&pso_found, 1); return; }
-        VkPipeline p;
-        VkResult res = create_pipeline(&r->u.g, b->vs, b->fs, b->layout, &p);
+        VkPipeline p = VK_NULL_HANDLE;
+        VkResult res = pipe_make(&r->u.g, vi, fi, b, &p);
         warm_done(w, p, res);
+        if (res == VK_SUCCESS && g_vk.gpl) gpl_optimise(w);
     } else {
         ShaderInfo *si = vk_translate_load_id(r->id[0], STAGE_COMPUTE);
         if (!si) { atomic_fetch_add(&pso_skipped, 1); return; }
@@ -3540,7 +3850,8 @@ static void draw_(CmdRec *r, bool indexed) {
     }
     if (no_dyn_cache) vk_dyn_forget();
     dyn_check();
-    if (!DYN_SAME(pipe, pp->pipe)) vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pp->pipe);
+    VkPipeline cur_pipe = pipe_current(pp);
+    if (!DYN_SAME(pipe, cur_pipe)) vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, cur_pipe);
     uint64_t prof_td_ = profd ? SDL_GetTicksNS() : 0;
     if (profd) prof_key += prof_td_ - prof_tk_;
 
@@ -3599,6 +3910,11 @@ static void draw_(CmdRec *r, bool indexed) {
     if (!DYN_SAME(topo, (uint32_t)pt)) vkCmdSetPrimitiveTopology(cb, pt);
     bool restart = st.prim_restart && native && (mode == 3 || mode == 5);
     if (!DYN_SAME(restart, (uint32_t)restart)) vkCmdSetPrimitiveRestartEnable(cb, restart);
+    if (g_vk.set_depth_clamp) {  // (pipelines from parts: part of the pipeline otherwise)
+        if (!DYN_SAME(clamp, (uint32_t)k.s.depth_clamp)) g_vk.set_depth_clamp(cb, k.s.depth_clamp);
+        VkPolygonMode pm = k.s.poly_fill ? VK_POLYGON_MODE_FILL : VK_POLYGON_MODE_LINE;
+        if (!DYN_SAME(poly, (uint32_t)pm)) g_vk.set_polygon_mode(cb, pm);
+    }
     {   // nvnCommandBufferSetLineWidth, at the target's scale (BOTW's noise meter strokes its wave at 3 px, then 1.5 px)
         float lw = 1.0f;
         if (cls == 1 && g_vk.wide_lines) {
