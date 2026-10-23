@@ -521,7 +521,8 @@ static void create_swapchain(void) {
     VkSurfaceFormatKHR sf = fmts[0];
     for (uint32_t i = 0; i < nf; i++)
         if (fmts[i].format == VK_FORMAT_B8G8R8A8_UNORM && fmts[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) { sf = fmts[i]; break; }
-    uint32_t count = caps.minImageCount + 1;
+    // (+ 5 more: frame generation keeps a present's images drawn and acquired until their time - present_locked)
+    uint32_t count = caps.minImageCount + 6;
     if (caps.maxImageCount && count > caps.maxImageCount) count = caps.maxImageCount;
     if (count > 8) count = 8;
     VkSwapchainKHR old = g_vk.swapchain;
@@ -561,26 +562,58 @@ static void recreate_swapchain(void) {
 // presents, on a second queue of the same family (queues are externally synchronized: the GPU thread keeps submitting
 // on the first one meanwhile). One present at a time; the next acquire, a swapchain change and teardown wait for it.
 // SAVAGEWIND_VK_PRESENT_THREAD=0 (or a family with one queue): presents on the calling thread, as before.
+// The presents wait in a queue, in order (frame generation: a present's in-between images, then the frame itself, drawn
+// ahead - device.c present_locked - so the next frame's work goes on meanwhile). An image with a time (due) goes out
+// once its work is done on the GPU, at that time at the earliest and `gap` after the image before: in mailbox mode an
+// image presented before the one ahead of it reached the screen replaces it (BOTW's GPU runs ~10-15 ms behind the
+// commands: shown at their time, a present's images reached the GPU's end together and only the last was seen). Due 0:
+// at once. An acquire with no window image free (vk_frame_begin) takes the queue's next one now.
 static pthread_mutex_t pres_m = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t pres_cv = PTHREAD_COND_INITIALIZER;
-static bool pres_busy;           // a present is queued or in progress
-static VkPresentInfoKHR pres_info;
-static VkSwapchainKHR pres_sc;
-static VkSemaphore pres_sem;
-static uint32_t pres_img;
+static bool pres_busy;           // a present is in progress
+typedef struct { uint32_t img; VkSemaphore sem; uint64_t due, seq, gap; } PresQ;
+static PresQ pres_q[16];         // in order
+static int pres_qn;
+static bool pres_rush;           // (an acquire waits: the next one goes now)
 static _Atomic int pres_stale;   // that present said the swapchain is out of date or suboptimal
+// The swapchain is externally synchronized: an acquire and a present never at once (the present thread's present may
+// wait for the GPU: acquires try without waiting meanwhile, vk_frame_begin)
+static pthread_mutex_t sc_m = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t pres_last;       // when the last image went out
+static _Atomic uint64_t g_images_shown;  // (the fps log: images that reached the window)
 
 static void *present_thread(void *arg) {
     (void)arg;
     pthread_mutex_lock(&pres_m);
     for (;;) {
-        while (!pres_busy) pthread_cond_wait(&pres_cv, &pres_m);
-        VkPresentInfoKHR pi = pres_info;
+        while (!pres_qn) pthread_cond_wait(&pres_cv, &pres_m);
+        PresQ p = pres_q[0];
+        uint64_t now = SDL_GetTicksNS();
+        if (p.due && !pres_rush) {
+            uint64_t at = p.due > pres_last + p.gap ? p.due : pres_last + p.gap;
+            bool done = vk_completed_seq() >= p.seq;
+            if (!done || at > now + 100000) {  // (in slices: a timed wait on the condition woke up late)
+                pthread_mutex_unlock(&pres_m);
+                SDL_DelayPrecise(!done ? 200000 : at - now > 1000000 ? 1000000 : at - now);
+                pthread_mutex_lock(&pres_m);
+                continue;
+            }
+        }
+        pres_rush = false;
+        memmove(pres_q, pres_q + 1, (size_t)--pres_qn * sizeof *pres_q);
+        pres_busy = true;
         pthread_mutex_unlock(&pres_m);
+        VkSwapchainKHR sc = g_vk.swapchain;
+        VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &p.sem,
+                               .swapchainCount = 1, .pSwapchains = &sc, .pImageIndices = &p.img};
+        pthread_mutex_lock(&sc_m);
         VkResult r = vkQueuePresentKHR(g_vk.present_queue, &pi);
+        pthread_mutex_unlock(&sc_m);
         if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) atomic_store(&pres_stale, 1);
         else if (r != VK_SUCCESS) { static int n; if (n++ < 5) LOG("[vk] present failed: %d\n", r); }
         pthread_mutex_lock(&pres_m);
+        pres_last = SDL_GetTicksNS();
+        atomic_fetch_add(&g_images_shown, 1);
         pres_busy = false;
         pthread_cond_broadcast(&pres_cv);
     }
@@ -600,26 +633,26 @@ static bool present_threaded(void) {
 
 void vk_present_idle(void) {
     pthread_mutex_lock(&pres_m);
-    while (pres_busy) pthread_cond_wait(&pres_cv, &pres_m);
+    while (pres_busy || pres_qn) pthread_cond_wait(&pres_cv, &pres_m);
     pthread_mutex_unlock(&pres_m);
 }
 
-// Present window image img once sem is signalled. Returns false when the swapchain must be made again.
-static bool present_image(uint32_t img, VkSemaphore sem) {
+// Present window image img once sem is signalled (seq: the submission that signals it), after those queued: at `due`
+// (SDL_GetTicksNS) and `gap` after the one before at the earliest, once seq is done (0: at once). Returns false when
+// the swapchain must be made again.
+static bool present_image(uint32_t img, VkSemaphore sem, uint64_t due, uint64_t seq, uint64_t gap) {
     if (!present_threaded()) {
+        uint64_t now = SDL_GetTicksNS();
+        if (due > now) SDL_DelayPrecise(due - now);
         VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &sem,
                                .swapchainCount = 1, .pSwapchains = &g_vk.swapchain, .pImageIndices = &img};
         VkResult r = vkQueuePresentKHR(g_vk.queue, &pi);
+        atomic_fetch_add(&g_images_shown, 1);
         return !(r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR);
     }
     pthread_mutex_lock(&pres_m);
-    while (pres_busy) pthread_cond_wait(&pres_cv, &pres_m);
-    pres_sc = g_vk.swapchain;
-    pres_sem = sem;
-    pres_img = img;
-    pres_info = (VkPresentInfoKHR){.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &pres_sem,
-                                   .swapchainCount = 1, .pSwapchains = &pres_sc, .pImageIndices = &pres_img};
-    pres_busy = true;
+    while (pres_qn == 16) pthread_cond_wait(&pres_cv, &pres_m);
+    pres_q[pres_qn++] = (PresQ){img, sem, due, seq, gap};
     pthread_cond_signal(&pres_cv);
     pthread_mutex_unlock(&pres_m);
     return true;
@@ -627,7 +660,7 @@ static bool present_image(uint32_t img, VkSemaphore sem) {
 
 // ================================================================== frames (start screen and game)
 // Acquire semaphores rotate per frame in flight; a slot is reused once the submission that waited on it is done.
-#define FRAMES 3
+#define FRAMES 16  // (frame generation: up to 4 images a present, some waiting for their time)
 static VkSemaphore acquire_sem[FRAMES], done_sem[8];
 static uint64_t slot_seq[FRAMES];
 static int slot;
@@ -663,9 +696,6 @@ bool vk_frame_begin(const float clear[4]) {
     SDL_GetWindowSizeInPixels(window, &w, &h);
     // minimised (Windows keeps the window's size then, but its surface is 0 x 0: every acquire was out of date)
     if (!w || !h || (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED)) return false;
-    uint64_t tp = SDL_GetTicksNS();
-    vk_present_idle();  // (the swapchain is externally synchronized: no acquire while the present thread presents)
-    g_present_split[4] += SDL_GetTicksNS() - tp;
     if (!g_vk.swapchain || (uint32_t)w != g_vk.sc_extent.width || (uint32_t)h != g_vk.sc_extent.height ||
         atomic_exchange(&pres_stale, 0))
         recreate_swapchain();
@@ -679,11 +709,28 @@ bool vk_frame_begin(const float clear[4]) {
     vk_wait_seq(slot_seq[slot]);
     g_present_split[5] += SDL_GetTicksNS() - tw;
     uint64_t ta = SDL_GetTicksNS();
-    VkResult r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image);
+    // (the swapchain is externally synchronized with the present thread's presents: tried without waiting while it
+    // has some to make - one may wait there for the GPU - and waited for once it has none)
+    VkResult r;
+    for (;;) {
+        pthread_mutex_lock(&pres_m);
+        bool idle = !pres_busy && !pres_qn;
+        pthread_mutex_unlock(&pres_m);
+        pthread_mutex_lock(&sc_m);
+        r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, idle ? UINT64_MAX : 0, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image);
+        pthread_mutex_unlock(&sc_m);
+        if (r != VK_NOT_READY && r != VK_TIMEOUT) break;
+        pthread_mutex_lock(&pres_m);  // (no window image free: the next one waiting goes now)
+        if (pres_qn) pres_rush = true;
+        pthread_mutex_unlock(&pres_m);
+        SDL_DelayPrecise(200000);
+    }
     g_present_split[0] += SDL_GetTicksNS() - ta;
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         recreate_swapchain();
+        pthread_mutex_lock(&sc_m);
         r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image);
+        pthread_mutex_unlock(&sc_m);
     }
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) {
         static unsigned failed;  // (a few, then every 1000th: one a frame filled the log)
@@ -744,8 +791,16 @@ static void save_window_image(VkCommandBuffer cb, VkSpan *out) {
     image_barrier(cb, g_vk.sc_images[cur_frame.image], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 }
 
-// End rendering into the window image and present it. shot_path: also save the window image as PNG.
-void vk_frame_end(const char *shot_path) {
+// End rendering into the window image and present it (at `due`, SDL_GetTicksNS: frame generation; 0: at once).
+// shot_path: also save the window image as PNG.
+static void vk_frame_end_at(const char *shot_path, uint64_t due);
+void vk_frame_end(const char *shot_path) { vk_frame_end_at(shot_path, 0); }
+// (frame generation, present_locked) the next vk_frame_end_at keeps its present back (g_held), queued later; gap: the
+// least time between its images
+static bool g_hold_next;
+static struct { bool on; uint32_t img; VkSemaphore sem; uint64_t seq; } g_held;
+static uint64_t g_fg_gap;
+static void vk_frame_end_at(const char *shot_path, uint64_t due) {
     if (!cur_frame.ok) return;
     VkCommandBuffer cb = vk_cmd();
     vkCmdEndRendering(cb);
@@ -759,7 +814,8 @@ void vk_frame_end(const char *shot_path) {
     vk_submit_extra(cur_frame.acquired, done_sem[img], VK_NULL_HANDLE);
     g_present_split[3] += SDL_GetTicksNS() - ts;
     ts = SDL_GetTicksNS();
-    if (!present_image(img, done_sem[img])) recreate_swapchain();
+    if (g_hold_next) g_held.on = true, g_held.img = img, g_held.sem = done_sem[img], g_held.seq = seq, g_hold_next = false;
+    else if (!present_image(img, done_sem[img], due, seq, due ? g_fg_gap : 0)) recreate_swapchain();
     g_present_split[4] += SDL_GetTicksNS() - ts;
     cur_frame.ok = false;
     if (shot_path) {
@@ -852,14 +908,9 @@ static uint64_t pso_wait(void) {  // ns waited
     return dt;
 }
 
-static void present_locked(NvnTexture *t) {
-    g_last_presented = t;
-    TexBackend *b = vk_tex(t, true);
-    b->presented = true;
+// One window image: the game's image b drawn into it (with the crop), the overlay menu, presented at `due` (0: at once)
+static void present_window(TexBackend *b, uint64_t due, bool is_frame) {
     uint64_t t0 = SDL_GetTicksNS();
-    vk_end_pass();
-    g_present_split[1] += SDL_GetTicksNS() - t0;
-    t0 += pso_wait();  // (not the acquire's time)
     static const float black[4] = {0, 0, 0, 1};
     bool have = vk_frame_begin(black);
     uint64_t nd = SDL_GetTicksNS() - t0;
@@ -896,11 +947,92 @@ static void present_locked(NvnTexture *t) {
         g_present_split[2] += SDL_GetTicksNS() - td;
         static long win_shot = -1;
         if (win_shot < 0) win_shot = getenv("SAVAGEWIND_WINDOW_SHOT") ? atol(getenv("SAVAGEWIND_WINDOW_SHOT")) : 0;
-        bool shot = win_shot && (long)total_frames + 1 == win_shot;
-        vk_frame_end(shot ? "build/window.png" : NULL);
+        bool shot = is_frame && win_shot && (long)total_frames + 1 == win_shot;
+        vk_frame_end_at(shot ? "build/window.png" : NULL, due);
         if (shot && getenv("SAVAGEWIND_EXIT_AFTER_SHOT")) { fflush(stderr); _exit(0); }
     } else {
         renderer_submit();
+    }
+}
+
+// Frame generation (runtime/nvn/vulkan/exec.c "frame generation"): k images for this present - the k - 1 in-between
+// ones made right after it from N's and N-1's images, each drawn into a window image at once (the next one writes the
+// same image again) and shown at its time, then frame N's own, which goes into its window image first.
+// Evenly apart on a timeline that follows the game's presents smoothly (t0 jitters with the work before it; a jump - a
+// stall, another rate - takes t0), the first image `lead` after it.
+// SAVAGEWIND_FG_AT=<present>:<k>,...: frame generation set to k (0, 2, 3, 4) at those presents, as the F12 menu does.
+int vk_fg_begin(TexBackend *b);
+TexBackend *vk_fg_image(TexBackend *b, float t, int j);
+static void present_locked(NvnTexture *t) {
+    g_last_presented = t;
+    TexBackend *b = vk_tex(t, true);
+    b->presented = true;
+    uint64_t t0 = SDL_GetTicksNS();
+    vk_end_pass();
+    g_present_split[1] += SDL_GetTicksNS() - t0;
+    t0 += pso_wait();  // (not the acquire's time)
+    {
+        const char *e = getenv("SAVAGEWIND_FG_AT");
+        for (const char *p = e; p && *p;) {
+            long at = strtol(p, (char **)&p, 10);
+            int k = *p == ':' ? (int)strtol(p + 1, (char **)&p, 10) : 0;
+            if (at == (long)total_frames) { g_settings.frame_gen = k >= 2 && k <= FG_MAX ? k : 0; LOG("[vk] frame generation %d (SAVAGEWIND_FG_AT)\n", k); }
+            if (*p == ',') p++; else break;
+        }
+    }
+    static uint64_t last_t0, period = 16666667, tl;
+    uint64_t tnow = SDL_GetTicksNS();
+    if (last_t0 && tnow - last_t0 > 2000000 && tnow - last_t0 < 100000000) period = (period * 7 + (tnow - last_t0)) / 8;
+    last_t0 = tnow;
+    int64_t off = (int64_t)(tnow - (tl + period));
+    if (!tl || off > (int64_t)period / 2 || off < -(int64_t)period / 2) tl = tnow;
+    else tl = tl + period + off / 8;
+    // (testing) SAVAGEWIND_FG_SHOT=<present>,...: also the pair's own images, N-1 the present before and N ->
+    // build/frames/fg_<present>_p.png / _n.png (by the presents: SAVAGEWIND_SHOT_AT counts the script's clock,
+    // SAVAGEWIND_SCRIPT_CLOCK)
+    for (const char *q = getenv("SAVAGEWIND_FG_SHOT"); q && *q;) {
+        long at = strtol(q, (char **)&q, 10);
+        if (at == (long)total_frames + 1 || at == (long)total_frames) {
+            char path[96];
+            snprintf(path, sizeof path, "build/frames/fg_%05ld_%c.png", at, at == (long)total_frames ? 'n' : 'p');
+            mkdir("build/frames", 0755);
+            renderer_save_texture_tex(b, path);
+        }
+        if (*q == ',') q++; else break;
+    }
+    int k = vk_fg_begin(b);
+    if (k <= 1) present_window(b, 0, true);
+    else {
+        g_fg_gap = period / (uint64_t)k * 3 / 4;
+        uint64_t lead = 1000000;  // (the GPU's lag is waited for by the present thread)
+        g_hold_next = true, g_held.on = false;  // (frame N's own image: drawn first, queued after the in-between ones)
+        present_window(b, 0, true);
+        g_hold_next = false;
+        // (testing) SAVAGEWIND_FG_SHOT=<present>,...: those presents' in-between images -> build/frames/fg_<present>_<j>.png
+        // (N-1 and N: above)
+        bool fg_shot = false;
+        for (const char *q = getenv("SAVAGEWIND_FG_SHOT"); q && *q;) {
+            long at = strtol(q, (char **)&q, 10);
+            if (at == (long)total_frames) fg_shot = true;
+            if (*q == ',') q++; else break;
+        }
+        for (int j = 1; j < k; j++) {
+            TexBackend *im = vk_fg_image(b, (float)j / (float)k, j);
+            if (fg_shot) {
+                char path[96];
+                snprintf(path, sizeof path, "build/frames/fg_%05llu_%d.png", (unsigned long long)total_frames, j);
+                renderer_save_texture_tex(im, path);
+            }
+            present_window(im, tl + lead + period * (uint64_t)(j - 1) / (uint64_t)k, false);
+        }
+        if (g_held.on && !present_image(g_held.img, g_held.sem, tl + lead + period * (uint64_t)(k - 1) / (uint64_t)k, g_held.seq, g_fg_gap))
+            recreate_swapchain();
+        g_held.on = false;
+        static uint64_t logged;
+        if (total_frames - logged >= 600) {
+            logged = total_frames;
+            LOG("[fg] %dx: period %.2f ms\n", k, period / 1e6);
+        }
     }
     extern void vk_prof_frame(uint64_t frame, uint64_t present_ns);
     vk_prof_frame(total_frames, SDL_GetTicksNS() - t0);
@@ -1015,9 +1147,14 @@ static void present_locked(NvnTexture *t) {
     if (prev_present > 0 && now - prev_present > max_gap) max_gap = now - prev_present;
     prev_present = now;
     if (now - last_fps_time >= fps_iv) {
-        if (last_fps_time > 0)
-            LOG("[vk] t=%.1f frame %llu %.1f fps max %.0fms (%s)\n", now, (unsigned long long)total_frames,
-                frames / (now - last_fps_time), max_gap * 1000.0, renderer_stats());
+        {
+            static uint64_t img_prev;  // (the images that reached the window: with frame generation, k a frame)
+            uint64_t imgs = atomic_load(&g_images_shown);
+            if (last_fps_time > 0)
+                LOG("[vk] t=%.1f frame %llu %.1f fps (%.1f images/s) max %.0fms (%s)\n", now, (unsigned long long)total_frames,
+                    frames / (now - last_fps_time), (imgs - img_prev) / (now - last_fps_time), max_gap * 1000.0, renderer_stats());
+            img_prev = imgs;
+        }
         max_gap = 0;
         frames = 0;
         last_fps_time = now;
