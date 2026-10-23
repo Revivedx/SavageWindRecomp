@@ -20,6 +20,9 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+#ifdef __GLIBC__
+#include <malloc.h>
+#endif
 
 #include "../../kernel.h"
 #include "../precompile.h"
@@ -46,6 +49,13 @@ typedef struct {
     Pair *pairs;
     int npairs;
     _Atomic int next, made, cached, failed, built;
+    // the pipelines step: the driver's compiles share a memory budget (pipe_take)
+    int *order;                   // pairs, largest shader first
+    int64_t *need_mb;             // per pair: what its compile is estimated to take
+    int next_big, next_small;     // still to take: order[next_big .. next_small]
+    int64_t used_mb, budget_mb;
+    pthread_mutex_t lock;
+    pthread_cond_t cond;
 } Work;
 
 static void *worker(void *arg) {
@@ -67,9 +77,51 @@ static void *worker(void *arg) {
     return NULL;
 }
 
+// Memory: RADV takes up to ~1.3 GB to compile the largest fragment shaders (41 KB of Maxwell code), and a thread per
+// core on the largest at once went past 9.5 GB on a 14 GB laptop (Radeon 660M, 12 threads; at 7 GB the kernel killed
+// it). So each compile reserves an estimate from a budget (a quarter of the RAM; SAVAGEWIND_PRECOMPILE_MEM_MB) and a
+// thread takes the largest pair left when it fits, else the smallest: the large ones don't end up alone at the end.
+// glibc keeps what the driver frees in each thread's arena (7.1 GB at the end of a quarter of the shaders, 2.7 GB
+// trimmed after the large ones): malloc_trim after those.
+static int64_t pair_need_mb(const Work *w, const Pair *pr) {
+    uint32_t bytes = 0;
+    int ids[3] = {pr->vs, pr->fs, pr->cs};
+    for (int k = 0; k < 3; k++)
+        if (ids[k] >= 0 && w->set->shaders[w->jobs[ids[k]].shader].size > bytes) bytes = w->set->shaders[w->jobs[ids[k]].shader].size;
+    return 16 + bytes / 32;
+}
+
+static int pipe_take(Work *w, int64_t *mb) {
+    pthread_mutex_lock(&w->lock);
+    int i = -1;
+    while (w->next_big <= w->next_small && !atomic_load(&w->p->cancel)) {
+        int64_t big = w->need_mb[w->order[w->next_big]], small = w->need_mb[w->order[w->next_small]];
+        if (!w->used_mb || w->used_mb + big <= w->budget_mb) { i = w->order[w->next_big++]; *mb = big; break; }
+        if (w->used_mb + small <= w->budget_mb) { i = w->order[w->next_small--]; *mb = small; break; }
+        pthread_cond_wait(&w->cond, &w->lock);
+    }
+    if (i >= 0) w->used_mb += *mb;
+    pthread_mutex_unlock(&w->lock);
+    return i;
+}
+
+static void pipe_give_back(Work *w, int64_t mb) {
+    pthread_mutex_lock(&w->lock);
+    w->used_mb -= mb;
+    pthread_cond_broadcast(&w->cond);
+    pthread_mutex_unlock(&w->lock);
+}
+
+static const int64_t *sort_need;
+static int by_need_desc(const void *a, const void *b) {
+    int64_t x = sort_need[*(const int *)a], y = sort_need[*(const int *)b];
+    return x < y ? 1 : x > y ? -1 : *(const int *)a - *(const int *)b;
+}
+
 static void *pipe_worker(void *arg) {
     Work *w = arg;
-    for (int i; !atomic_load(&w->p->cancel) && (i = atomic_fetch_add(&w->next, 1)) < w->npairs;) {
+    int64_t mb;
+    for (int i; (i = pipe_take(w, &mb)) >= 0;) {
         const Pair *pr = &w->pairs[i];
         bool ok = false;
         if (pr->cs >= 0) {
@@ -94,6 +146,10 @@ static void *pipe_worker(void *arg) {
             maxwell_free(fi);
         }
         if (ok) atomic_fetch_add(&w->built, 1);
+#ifdef __GLIBC__
+        if (mb >= 128) malloc_trim(0);
+#endif
+        pipe_give_back(w, mb);
         atomic_fetch_add(&w->p->done, 1);
     }
     return NULL;
@@ -299,6 +355,18 @@ bool shader_precompile_run(ShaderPrecompile *p, const char *image) {
             if (!nu || memcmp(&pairs[i], &pairs[nu - 1], sizeof *pairs)) pairs[nu++] = pairs[i];
         w.pairs = pairs;
         w.npairs = nu;
+        w.need_mb = malloc(sizeof *w.need_mb * (size_t)(nu ? nu : 1));
+        w.order = malloc(sizeof *w.order * (size_t)(nu ? nu : 1));
+        for (int i = 0; i < nu; i++) w.need_mb[i] = pair_need_mb(&w, &pairs[i]), w.order[i] = i;
+        sort_need = w.need_mb;
+        qsort(w.order, (size_t)nu, sizeof *w.order, by_need_desc);
+        w.next_big = 0;
+        w.next_small = nu - 1;
+        w.used_mb = 0;
+        const char *mem = getenv("SAVAGEWIND_PRECOMPILE_MEM_MB");
+        w.budget_mb = mem && atoll(mem) > 0 ? atoll(mem) : (int64_t)SDL_GetSystemRAM() / 4;
+        pthread_mutex_init(&w.lock, NULL);
+        pthread_cond_init(&w.cond, NULL);
         atomic_store(&w.next, 0);
         atomic_store(&p->done, 0);
         atomic_store(&p->total, nu);
@@ -314,6 +382,10 @@ bool shader_precompile_run(ShaderPrecompile *p, const char *image) {
             p->pipelines, (SDL_GetTicksNS() - tp) / 1e9);
         free(pairs);
         free(first);
+        free(w.order);
+        free(w.need_mb);
+        pthread_mutex_destroy(&w.lock);
+        pthread_cond_destroy(&w.cond);
     }
     p->shaders = set.nshaders;
     p->keys = njobs;

@@ -507,6 +507,12 @@ Pendiente:
          3060); otra vez con todo hecho, ~5 s (el fichero no se reescribe si no hay nada nuevo). Disco: ~1,45 GB
          (librerías 834 MB, SPIR-V 448 MB, traducciones 137 MB, caché de pipelines 17 MB). Memoria: con
          `vk_precompiled.bin` cargado el proceso usa ~0,9 GB más (en el mundo: 5,5 GB de working set frente a 4,6).
+       - Memoria al precompilar (2026-10-23): RADV llega a ~1,3 GB por shader en los fragment shaders más grandes
+         (41 KB de código Maxwell), y un hilo por núcleo sobre los grandes a la vez pasaba de 9,5 GB en un portátil de
+         14 GB (Radeon 660M, 12 hilos; con 7 GB el kernel la mataba). Las librerías comparten un presupuesto (un cuarto
+         de la RAM; `SAVAGEWIND_PRECOMPILE_MEM_MB=<n>`): cada una reserva lo estimado por su tamaño (16 MB + 1 MB por
+         cada 32 bytes de código), y un hilo coge la más grande que quepa o, si no, la más pequeña. glibc se quedaba lo
+         que el driver libera en la arena de cada hilo: `malloc_trim` tras las grandes.
        Paseo con guion (el de arriba, del primer frame del mundo al final), con `SAVAGEWIND_VK_SPIRV_SALT=<n>`, que
        cambia una palabra de la cabecera de cada SPIR-V para que la caché del driver no acierte nada (lo nunca visto
        sin borrar esa caché): sin precompilar, 24,3 s de compilaciones en el hilo de render, 68 frames de más de
