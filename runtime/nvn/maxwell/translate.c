@@ -912,10 +912,11 @@ static void emit_tld4(Ctx *c, uint64_t w, uint32_t pc, bool bindless) {
     const char *offp[4];
     int noff = 0;
     if (toff == 1 || toff == 2) {
-        char pk[2][16];
-        reg(c, b, pk[0]);
+        // reg() returns "0u" for RZ without writing the buffer: use what it returns
+        char pkb[2][16];
+        const char *pk[2] = {reg(c, b, pkb[0]), "0u"};
         if (b != RZ) b++;
-        if (toff == 2) { reg(c, b, pk[1]); if (b != RZ) b++; }
+        if (toff == 2) { pk[1] = reg(c, b, pkb[1]); if (b != RZ) b++; }
         noff = toff == 2 ? 4 : 1;
         for (int i = 0; i < noff; i++) {
             const char *p = pk[(i * 2) >> 2];  // pairs 0, 1 in the first register, 2, 3 in the second
@@ -951,8 +952,8 @@ static void emit_tld4s(Ctx *c, uint64_t w, bool f16) {
     const char *co[2] = {cs[0], cs[1]}, *offp[1] = {ofs};
     int rb = b;
     if (aoffi) {
-        char p[16];
-        reg(c, rb, p);
+        char pb[16];
+        const char *p = reg(c, rb, pb);
         snprintf(ofs, sizeof ofs, "ivec2(int(%s << 26u) >> 26, int(%s << 18u) >> 26)", p, p);
         if (rb != RZ) rb++;
     }
