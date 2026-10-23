@@ -1,0 +1,37 @@
+name: Feature request
+description: Something Savage Wind doesn't do yet.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before asking, check the [roadmap in the README](https://github.com/Revivedx/SavageWindRecomp#status) and the
+        [open issues](https://github.com/Revivedx/SavageWindRecomp/issues?q=is%3Aissue%20state%3Aopen%20label%3Aenhancement):
+        if it's already there, a 👍 on it says the same.
+  - type: textarea
+    id: what
+    attributes:
+      label: What you'd like
+      description: What Savage Wind should do, and where (setup, Configuration, the game's Options, in game).
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why
+      description: What it would let you do, or what is hard without it.
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Your PC
+      description: If it's about hardware or a platform (CPU, GPU, OS, controller).
+      placeholder: Windows 11, RX 6700 XT, Ryzen 7 5800X, DualSense
+  - type: checkboxes
+    id: legal
+    attributes:
+      label: Before sending
+      options:
+        - label: This request contains no game files, keys, firmware, generated game code, save files or links to copies of the game.
+          required: true
