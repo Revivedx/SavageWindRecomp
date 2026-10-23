@@ -202,6 +202,50 @@ def _vfr_ratio(gen, a):
             f'  /* {a:#x}: ldr w8, [x19, #0x78] (VFR: interval ratio) */')
 
 
+# Cheats (F1 menu > Cheats; rt_cheat: runtime/settings.c). The sites are those of the Atmosphere cheats for this build
+# (DE0B6AC4EFC1DDA7); each keeps the game's instruction, which runs as before while its cheat is off. `code` is C with
+# {orig} where the game's instruction (lifted as usual) goes.
+CHEAT_HEALTH, CHEAT_STAMINA, CHEAT_ARROWS, CHEAT_DURABILITY = 0, 1, 2, 3
+
+
+def _cheat(word, cheat, what, code):
+    def patch(gen, a):
+        assert _word(gen, a) == word, hex(_word(gen, a))
+        body = code.replace('{orig}', gen.lift(a).code).replace('{on}', f'rt_cheat({cheat})')
+        return f'{{ extern int rt_cheat(int); {body} }}  /* {a:#x}: {what} (cheat) */'
+    return patch
+
+
+PATCHES_CHEATS = {
+    # Player damage (FUN_7100bb17xx): w25 is the life after the hit, [x21] the life now, [sp, #0xc] a copy of w25.
+    # Before the `cmp w25, #0` that takes the death path, a loss is undone (healing goes through).
+    0x7000bb1988: _cheat(0x7100033f, CHEAT_HEALTH, 'cmp w25, #0',
+                         'if ({on}) { uint32_t o = LD32(c->x[21]); '
+                         'if ((int32_t)(uint32_t)c->x[25] < (int32_t)o) { c->x[25] = o; ST32(c->sp + 0xc, o); } } '
+                         '{orig}'),
+    # its one-quarter path: life - 1 stays life
+    0x7000bb18b0: _cheat(0x51000509, CHEAT_HEALTH, 'sub w9, w8, #1',
+                         'if ({on}) c->x[9] = (uint32_t)c->x[8]; else {orig}'),
+    # life setter (FUN_7100bb3c70, x0: the life): a lower life isn't stored
+    0x7000bb3c94: _cheat(0xb9000013, CHEAT_HEALTH, 'str w19, [x0]',
+                         'if (!{on} || (int32_t)(uint32_t)c->x[19] >= (int32_t)LD32(c->x[0])) {orig}'),
+    # stamina setter (FUN_7100bb3f30, a float at +0xa4): a lower stamina isn't stored
+    0x7000bb3f50: _cheat(0xbd00a668, CHEAT_STAMINA, 'str s8, [x19, #0xa4]',
+                         '{ uint32_t nv = VS32(8), ov = LD32(c->x[19] + 0xa4); float n, o; '
+                         '__builtin_memcpy(&n, &nv, 4); __builtin_memcpy(&o, &ov, 4); '
+                         'if (!{on} || !(n < o)) {orig} }'),
+    # arrows shot (FUN_7100c80xxx: returns unless the item is an arrow): a stack keeps its count
+    0x7000c806f0: _cheat(0x4b160128, CHEAT_ARROWS, 'sub w8, w9, w22',
+                         'if ({on}) c->x[8] = (uint32_t)c->x[9]; else {orig}'),
+    0x7000c806d0: _cheat(0xb900239f, CHEAT_ARROWS, 'str wzr, [x28, #0x20]',
+                         'if (!{on}) {orig}'),
+    # an item's life loss (FUN_7100a81da8: *x1 = max(0, *x1 - w9)): none for weapons ([x1 + 4] == -1, as the
+    # Atmosphere code's cave tells them apart)
+    0x7000a81f14: _cheat(0xb9401fa9, CHEAT_DURABILITY, 'ldr w9, [x29, #0x1c]',
+                         '{orig} if ({on} && (int32_t)LD32(c->x[19] + 4) == -1) c->x[9] = 0;'),
+}
+
+
 PATCHES = {
     0x7000cbd0b4: _pause_option_state,
     0x7000d1bd78: _opt_rows,
@@ -220,4 +264,5 @@ PATCHES = {
     0x7000d71210: _title_msg,
     0x7000d811fc: _frame_wait,
     0x70014092f4: _vfr_ratio,
+    **PATCHES_CHEATS,
 }

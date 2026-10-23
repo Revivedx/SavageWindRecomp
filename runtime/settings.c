@@ -38,6 +38,10 @@ Settings g_settings = {
 // the display (75%, 50%, 25%: they keep FSR 1 at the nearest mode).
 #define SETTINGS_VERSION 3
 
+static const char *const k_cheats[CHEAT_COUNT] = {"health", "stamina", "arrows", "durability"};  // cheat_<name> keys
+
+int rt_cheat(int which) { return which >= 0 && which < CHEAT_COUNT && g_settings.cheat[which]; }
+
 static const char *const k_quality[UPQ_COUNT] = {"ultra_quality", "quality", "balanced", "performance"};
 
 void settings_load(void) {
@@ -91,6 +95,10 @@ void settings_load(void) {
                 if (!strcmp(val, g_voice_languages[i].folder)) g_settings.voice_language = i;
         }
         else if (!strcmp(key, "menu_tip_seen")) g_settings.menu_tip_seen = atoi(val) != 0, tip_key = true;
+        else if (!strncmp(key, "cheat_", 6)) {
+            for (int i = 0; i < CHEAT_COUNT; i++)
+                if (!strcmp(key + 6, k_cheats[i])) g_settings.cheat[i] = atoi(val) != 0;
+        }
         else bind_settings_load(key, val);  // bind_pad_* / bind_key_*: runtime/hle/bindings.c
     }
     fclose(f);
@@ -160,6 +168,7 @@ void settings_save(void) {
     fprintf(f, "text_language = %s\n", tl > 0 && tl < g_ntext_languages ? g_text_languages[tl].folder : "auto");
     fprintf(f, "voice_language = %s\n", vl > 0 && vl < g_nvoice_languages ? g_voice_languages[vl].folder : "text");
     fprintf(f, "menu_tip_seen = %d\n", g_settings.menu_tip_seen);
+    for (int i = 0; i < CHEAT_COUNT; i++) fprintf(f, "cheat_%s = %d\n", k_cheats[i], g_settings.cheat[i]);
     bind_settings_save(f);
     fclose(f);
 }

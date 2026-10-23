@@ -21,6 +21,8 @@ enum { PERF_OFF = 0, PERF_FPS = 1, PERF_FULL = 2 };
 // same at every rate. The console runs the game at 30.
 #define FPS_DEFAULT 60
 #define FPS_CHOICES {0, 30, 60, 90, 120}
+// Cheats (F1 menu > Cheats): the numbers tools/patches.py's sites ask rt_cheat for
+enum { CHEAT_HEALTH = 0, CHEAT_STAMINA = 1, CHEAT_ARROWS = 2, CHEAT_DURABILITY = 3, CHEAT_COUNT };
 
 typedef struct {
     bool fullscreen;
@@ -41,6 +43,7 @@ typedef struct {
     int text_language;   // index in g_text_languages (runtime/language.h), 0: the host's
     int voice_language;  // index in g_voice_languages, 0: the text language's voices
     bool menu_tip_seen;  // the start screen's one-time "how to open the menu" note was shown (first PLAY ever)
+    bool cheat[CHEAT_COUNT];  // Cheats tab (CHEAT_*; the game code asks rt_cheat at the sites of tools/patches.py)
 } Settings;
 
 #define MOUSE_SENS_DEFAULT 3.0f  // (300% of the first default, 1; user, 2026-10-19)
@@ -49,3 +52,4 @@ extern Settings g_settings;
 
 void settings_load(void);
 void settings_save(void);
+int rt_cheat(int which);  // the game code (tools/patches.py): whether that cheat is on
