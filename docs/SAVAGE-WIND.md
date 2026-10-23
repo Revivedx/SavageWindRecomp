@@ -1011,6 +1011,17 @@ Pendiente:
      sola vez a su capa de los arrays de altura, normales y materiales, y una copia descartada dejaba el material 0
      (hierba) para siempre: bandas verdes en la arena fuera de la Ciudad Gerudo en ~3 de 4 corridas. Las esperas
      son de la carga; la línea `[vk] t=` las cuenta como `build waits N`.
+   - GLSL más barato para el driver (2026-10-23): el GLSL traducido llamaba a un ayudante del preludio por cada
+     instrucción (`as_f(r3)`, `as_u(fma(...))`): una llamada a función que glslang deja en el SPIR-V y que el driver
+     integra una a una (880.000 `as_f` en 1.500 shaders del juego). Ahora:
+     - `uintBitsToFloat` cuando el argumento es un registro, una palabra de cbuf o un literal uint, y
+       `floatBitsToUint` en los resultados float (`fresult`).
+     - El preludio entra con lo que el shader llama (`glsl_with_prelude`): glslang analizaba sus 32 funciones en cada
+       shader, ~2 ms.
+     - El SPIR-V sale sin nombres de depuración (`strip_names`, `OpName` y compañía): un 16 % menos de fichero.
+     Muestra de 1 de cada 10 shaders del juego (Radeon 660M, RADV, 6 hilos, con el control de flujo estructurado de
+     #48): compilación del driver 83,8 → 28,8 s de CPU y reloj 19,8 → 10,2 s. El MSL no cambia
+     (`tools/test_translate.sh` contra el commit anterior: 0 diferencias en 20.000 programas).
    - Herramientas de diagnóstico:
      - `SAVAGEWIND_THREAD_DUMP_AT=<s>,<s>`: estado, núcleo y cadena de llamadas de cada hilo; para los que
        esperan un mutex, también su palabra (el handle del dueño).

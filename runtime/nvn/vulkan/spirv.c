@@ -166,6 +166,20 @@ int vk_spirv_ensure(const char *src, int stage) {
     return spv ? 1 : -1;
 }
 
+// Debug names (OpSource, OpSourceExtension, OpName, OpMemberName, OpString, OpLine, OpNoLine, OpModuleProcessed):
+// glslang writes one for every register variable, ~16 % of a translated shader's SPIR-V, read by no driver.
+static void strip_names(uint32_t *spv, size_t *nwords) {
+    size_t o = 5;
+    for (size_t i = 5; i < *nwords;) {
+        uint32_t wc = spv[i] >> 16, op = spv[i] & 0xFFFF;
+        if (!wc || i + wc > *nwords) return;  // (malformed: left as it is from here)
+        bool name = op == 3 || op == 4 || op == 5 || op == 6 || op == 7 || op == 8 || op == 317 || op == 330;
+        if (!name) { memmove(spv + o, spv + i, wc * 4); o += wc; }
+        i += wc;
+    }
+    *nwords = o;
+}
+
 uint32_t *vk_glsl_to_spirv(const char *src, int stage, const char *name, size_t *nwords) {
     uint64_t h = src_hash(src, stage);
     static int nocache = -1;
@@ -188,6 +202,7 @@ uint32_t *vk_glsl_to_spirv(const char *src, int stage, const char *name, size_t 
         out = malloc(n);
         memcpy(out, shaderc_result_get_bytes(r), n);
         *nwords = n / 4;
+        strip_names(out, nwords);
         if (stage == STAGE_VERTEX) out = no_contraction(out, nwords);
         if (!nocache) cache_store(h, out, *nwords);
     }
