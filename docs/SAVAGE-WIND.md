@@ -308,7 +308,8 @@ Pendiente:
        presenta en el hilo que llama).
      - Shaders nuevos (compilación síncrona): la traducción Maxwell → GLSL costaba 1-4 ms por programa en el mundo.
        Ahora se guarda en memoria por etapa, binario y clave (los programas comparten shaders) y en disco
-       (`cache/xlate/`, se invalida al recompilar `translate.c`); `SAVAGEWIND_NO_XLATE_CACHE=1` la desactiva y
+       (`cache/xlate/`, se invalida cuando cambia el traductor: `XLATE_ID`, un hash de `translate.c` y `shader.h` que
+       calcula el `Makefile`; antes, con cada compilación); `SAVAGEWIND_NO_XLATE_CACHE=1` la desactiva y
        `SAVAGEWIND_XLATE_VERIFY=1` vuelve a traducir y compara (0 diferencias en un paseo completo). El módulo
        SPIR-V y sus bindings también se hacen una vez por shader traducido, no por programa.
      - Coste por draw al traducir (~5.000 draws por frame en el mundo): cada draw volvía a fijar el pipeline, unas 20
@@ -339,7 +340,7 @@ Pendiente:
        cargar el mundo eran ~900 compilaciones en 2 s (70-80 ms en un frame), y 1,7 s la primera vez que se leían los
        ficheros de caché recién escritos. Ahora:
        - `cache/vk_pipelines.bin` lleva una cabecera con la GPU (vendor, device), el driver (versión y UUID de la
-         caché), la build del traductor de shaders y una suma del contenido: si algo no coincide, o el fichero está
+         caché), el id del traductor de shaders y una suma del contenido: si algo no coincide, o el fichero está
          dañado o cortado, la caché empieza vacía y se reescribe. El formato anterior (los datos del driver solos) se
          acepta una vez si la cabecera del driver coincide. Se guarda al salir y, mientras se juega, desde un hilo
          propio unos segundos después de que dejen de salir pipelines nuevos (como mucho cada 30 s; como poco cada

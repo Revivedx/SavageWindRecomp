@@ -2197,8 +2197,12 @@ size_t maxwell_binary_size(const uint8_t *blob, size_t max_size, int stage) {
     return head + code_end(blob + head, (max_size - head) / 8) * 8;
 }
 
-// (the cache of translations, runtime/nvn/vulkan/shaders.c, starts over whenever this file is built again)
-const char *maxwell_translator_id(void) { return __DATE__ " " __TIME__; }
+// The cache of translations (runtime/nvn/vulkan/shaders.c) starts over when this id changes: the Makefile's hash of
+// this file and shader.h, or, built without it, the time of the build.
+#ifndef XLATE_ID
+#define XLATE_ID __DATE__ " " __TIME__
+#endif
+const char *maxwell_translator_id(void) { return XLATE_ID; }
 
 // Whether a translation depends on more than the binary and the key (debugging switches): not to be cached.
 bool maxwell_translation_uncacheable(void) {

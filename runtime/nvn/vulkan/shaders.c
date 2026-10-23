@@ -86,7 +86,7 @@ static void cache_store(uint64_t h, const uint32_t *spv, size_t nwords) {
 // ---- translated shaders (Maxwell -> GLSL): 1-4 ms each in the open world, on the GPU thread while compiles are
 // synchronous, and programs share their vertex and fragment shaders. Kept in memory by stage, binary and key, and on
 // disk as cache/xlate/<hash>.bin, so a shader seen in an earlier session costs a file read. The hash covers the bytes
-// the translator reads, the key and the translator's build (a new build of translate.c starts over).
+// the translator reads, the key and the translator's id (maxwell_translator_id: a change to translate.c starts over).
 // The hash is also the translation's id (vk_translate_id): the pipeline list (exec.c) names shaders by it.
 typedef struct { char magic[4]; uint32_t info_size, msl_len, bin_size; ShaderKey key; int32_t stage; } XlateHeader;
 #define XLATE_TAB 16384
