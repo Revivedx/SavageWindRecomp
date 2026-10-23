@@ -37,6 +37,9 @@ CC       := clang $(MINFLAG) $(CROSS)
 CXX      := clang++ $(MINFLAG) $(CROSS)
 IMGUI    := third_party/imgui
 GENFLAGS := -O1 -fno-strict-aliasing -Wno-return-type -Wno-unused-label -fvisibility=hidden -Iruntime
+# FPCR.FZ is the thread's MXCSR DAZ / FTZ on x86-64 (simd.h, rt_fpcr_write): denormals can read as zero at run time, so
+# the compiler mustn't turn the integer denormal checks (simd_fp.h: flush, vfz) into float compares
+GENFLAGS += -fdenormal-fp-math=dynamic
 
 # The game code (made by `make gen` from your own game files) is its own library next to the app (runtime/gamelib.h);
 # the app itself holds none of it. $(GEN)/layout.c, then a folder per module (main, subsdk*, sdk)
