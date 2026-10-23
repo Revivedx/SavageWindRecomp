@@ -287,6 +287,11 @@ Pendiente:
      SDL) y su velocidad se vuelve el stick derecho (≈1200 px/s a fondo con sensibilidad 1, más un 12% para pasar la
      zona muerta del juego; `SAVAGEWIND_MOUSE_SCALE`, `SAVAGEWIND_MOUSE_DEADZONE`). Esc suelta el cursor y un clic
      en la ventana lo vuelve a retener. Ajustes: `mouse_camera`, `mouse_sensitivity`, `mouse_invert_y`.
+   - Zona muerta de los sticks del mando (#27, 2026-10-23): un stick gastado en reposo pasa de la zona muerta del
+     juego y Link anda o la cámara gira sola. `left_stick_deadzone` / `right_stick_deadzone` (0 a 0,3; 0 por
+     defecto: solo la del juego) se aplican al leer el estado (`fill_state`, así un cambio vale con el stick quieto):
+     radial y reescalada, de modo que pasado el borde la inclinación empieza en 0 y a fondo sigue siendo a fondo.
+     Controles en Opciones del juego (de 5 en 5) y en el menú F1 (de 1 en 1).
    - Ritmo de frames (2026-10-16): `nvnQueuePresentTexture` espera el turno de cada frame según el intervalo de la
      ventana (vsyncs por frame) y nunca presenta más rápido que el tope (`SAVAGEWIND_FPS_CAP`, 60 por defecto; 0 sin
      tope). BOTW pide intervalo 2 (30 FPS, como en la consola; 3 en algunas cargas): el menú, que iba a 130 FPS con

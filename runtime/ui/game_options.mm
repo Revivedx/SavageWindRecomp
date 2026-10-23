@@ -135,6 +135,8 @@ static_assert(k_fps[FPS_DEFAULT_INDEX] == FPS_DEFAULT);
 constexpr int k_sens[] = {10, 25, 50, 75, 100, 125, 150, 200, 250, 300, 400, 500, 600, 800, 1000};  // mouse sensitivity, %
 constexpr int SENS_DEFAULT = 9;  // (300%: MOUSE_SENS_DEFAULT)
 static_assert(k_sens[SENS_DEFAULT] == 300);
+constexpr int k_deadzone[] = {0, 5, 10, 15, 20, 25, 30};  // controller stick dead zone, % (0: the game's own only)
+static_assert(k_deadzone[sizeof k_deadzone / sizeof k_deadzone[0] - 1] == (int)(STICK_DEADZONE_MAX * 100 + 0.5f));
 #define N(a) (int)(sizeof(a) / sizeof((a)[0]))
 
 int nearest(const int *v, int n, float x) {
@@ -216,7 +218,7 @@ void build_items(void) {
     v.push_back(button(P_MAIN, "Gameplay", "Mini-map, HUD, jump button and more.", "Open", A_PAGE, P_GAMEPLAY));
     v.push_back(button(P_MAIN, "Video", "Screen, resolution and image quality.", "Open", A_PAGE, P_VIDEO));
     v.push_back(button(P_MAIN, "Audio", "Volume and sound effects.", "Open", A_PAGE, P_AUDIO));
-    v.push_back(button(P_MAIN, "Controls", "Camera, d-pad and mouse.", "Open", A_PAGE, P_CONTROLS));
+    v.push_back(button(P_MAIN, "Controls", "Camera, sticks, d-pad and mouse.", "Open", A_PAGE, P_CONTROLS));
     v.push_back(button(P_MAIN, "Keyboard (buttons)", "Which key does each button.", "Open", A_PAGE, P_KEYS));
     v.push_back(button(P_MAIN, "Keyboard (sticks)", "Keys for the sticks and for walking.", "Open", A_PAGE, P_STICKS));
     v.push_back(button(P_MAIN, "Controller", "Which controller button does each button.", "Open", A_PAGE, P_PAD));
@@ -329,6 +331,24 @@ void build_items(void) {
     v.push_back(toggle(P_CONTROLS, "D-pad as left stick", "The d-pad also moves like the left stick.",
                        [](const Item &) { return (int)g_settings.dpad_move; },
                        [](const Item &, int x) { g_settings.dpad_move = x; }, 0));
+    v.push_back(choice(P_CONTROLS, "Left stick dead zone", "Raise it if Link moves by himself.",
+                       [](const Item &) { return N(k_deadzone); },
+                       [](const Item &, int x) {
+                           static std::string s;
+                           s = pct(k_deadzone[x]);
+                           return s.c_str();
+                       },
+                       [](const Item &) { return nearest(k_deadzone, N(k_deadzone), g_settings.lstick_deadzone * 100); },
+                       [](const Item &, int x) { g_settings.lstick_deadzone = k_deadzone[x] / 100.0f; }, 0));
+    v.push_back(choice(P_CONTROLS, "Right stick dead zone", "Raise it if the camera turns by itself.",
+                       [](const Item &) { return N(k_deadzone); },
+                       [](const Item &, int x) {
+                           static std::string s;
+                           s = pct(k_deadzone[x]);
+                           return s.c_str();
+                       },
+                       [](const Item &) { return nearest(k_deadzone, N(k_deadzone), g_settings.rstick_deadzone * 100); },
+                       [](const Item &, int x) { g_settings.rstick_deadzone = k_deadzone[x] / 100.0f; }, 0));
     v.push_back(toggle(P_CONTROLS, "Mouse camera", "The mouse turns the camera. Esc frees the cursor.",
                        [](const Item &) { return (int)g_settings.mouse_camera; },
                        [](const Item &, int x) { g_settings.mouse_camera = x; }, 1));

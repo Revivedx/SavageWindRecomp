@@ -37,6 +37,7 @@ typedef struct {
     bool mouse_camera;   // the mouse turns the camera (right stick); the cursor is held in the window while playing
     float mouse_sens;    // mouse camera speed, 1 = 100% (default MOUSE_SENS_DEFAULT)
     bool mouse_invert_y; // mouse up looks down
+    float lstick_deadzone, rstick_deadzone;  // controller sticks: tilt ignored, 0..STICK_DEADZONE_MAX (0: the game's own only)
     bool async_shaders;  // draw on while new shaders compile (no stutter; what needs them is skipped meanwhile)
     int text_language;   // index in g_text_languages (runtime/language.h), 0: the host's
     int voice_language;  // index in g_voice_languages, 0: the text language's voices
@@ -44,6 +45,7 @@ typedef struct {
 } Settings;
 
 #define MOUSE_SENS_DEFAULT 3.0f  // (300% of the first default, 1; user, 2026-10-19)
+#define STICK_DEADZONE_MAX 0.3f  // (past it, walking slowly is hardly possible)
 
 extern Settings g_settings;
 

@@ -125,6 +125,9 @@ Every key and mouse button can be remapped in the game's Options (the Keyboard p
 and Y inversion (Controls). Esc frees the cursor, a click in the window takes it back. F10 cycles the performance
 overlay (off, FPS, full).
 
+If Link walks or the camera turns by itself with a controller, its stick drifts: raise that stick's dead zone in
+Options > Controls (0% to 30%; 0%, the default, leaves only the game's own).
+
 ## Building from source
 
 ### Windows

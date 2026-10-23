@@ -74,6 +74,17 @@ static void recompute_pad(void) {
     pad_ry = -SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY);
 }
 
+// Controller stick dead zone (Controls > Left / Right stick dead zone): a worn stick at rest reads a tilt past the
+// game's own dead zone, and Link walks or the camera turns by itself. Radial, then rescaled so the tilt starts again
+// from 0 at its edge (no jump) and a full tilt is still a full tilt.
+static void stick_dead_zone(int32_t *x, int32_t *y, float dz) {
+    if (dz <= 0) return;
+    double m = sqrt((double)*x * *x + (double)*y * *y) / 32767;
+    if (m <= dz) { *x = *y = 0; return; }
+    double k = (m - dz) / (1 - dz) / m;  // (not capped at 1: a diagonal stays a full tilt on both axes, clamp_axis)
+    *x = (int32_t)lround(*x * k), *y = (int32_t)lround(*y * k);
+}
+
 // Forget held keys (the menu took focus); the gamepad is re-read on its next event.
 void input_reset(void) {
     memset(keys_down, 0, sizeof keys_down);
@@ -467,10 +478,13 @@ static void fill_state(Cpu *c) {
         if (g_inject_plus > 0) { until = renderer_present_count() + 10; g_inject_plus = 0; }
         if (renderer_present_count() < until) b |= 1ull << BTN_PLUS;
     }
-    int32_t lx = clamp_axis((menu ? 0 : key_lx + pad_lx) + script_lx), ly = clamp_axis((menu ? 0 : key_ly + pad_ly) + script_ly);
+    int32_t plx = pad_lx, ply = pad_ly, prx = pad_rx, pry = pad_ry;  // (here, not on the pad's events: a new setting
+    stick_dead_zone(&plx, &ply, g_settings.lstick_deadzone);           // applies to a stick held still too)
+    stick_dead_zone(&prx, &pry, g_settings.rstick_deadzone);
+    int32_t lx = clamp_axis((menu ? 0 : key_lx + plx) + script_lx), ly = clamp_axis((menu ? 0 : key_ly + ply) + script_ly);
     int32_t mx = 0, my = 0;
     if (!menu) mouse_stick(&mx, &my);
-    int32_t rx = clamp_axis((menu ? 0 : key_rx + pad_rx + mx) + script_rx), ry = clamp_axis((menu ? 0 : key_ry + pad_ry + my) + script_ry);
+    int32_t rx = clamp_axis((menu ? 0 : key_rx + prx + mx) + script_rx), ry = clamp_axis((menu ? 0 : key_ry + pry + my) + script_ry);
     // d-pad / arrow keys walk (setting) while the stick is at rest. "At rest" has a dead zone: a controller's stick
     // never reads exactly 0 (a DualSense rests at a few hundred), which used to turn the d-pad off altogether.
     if (!menu && g_settings.dpad_move && (int64_t)lx * lx + (int64_t)ly * ly < 8000ll * 8000) {
