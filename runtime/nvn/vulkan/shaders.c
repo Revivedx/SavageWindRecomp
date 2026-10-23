@@ -37,7 +37,7 @@ void vk_cache_path(char *out, size_t n, const char *name) {
 // What the translated shaders depend on besides their binaries: the translator's build and the SPIR-V
 // post-processing below. Caches built from translated shaders (cache/xlate, the pipeline cache, the pipeline list)
 // are valid for one value of this only.
-#define SPIRV_POST_VERSION 3  // (no_contraction)
+#define SPIRV_POST_VERSION 4  // (no_contraction, strip_names)
 const char *vk_shader_version(void) {
     static char v[64];
     if (!v[0]) snprintf(v, sizeof v, "%s/spv%d", maxwell_translator_id(), SPIRV_POST_VERSION);
@@ -297,6 +297,20 @@ static uint32_t *no_contraction(uint32_t *spv, size_t *nwords) {
     return out;
 }
 
+// Debug names (OpSource, OpSourceExtension, OpName, OpMemberName, OpString, OpLine, OpNoLine, OpModuleProcessed):
+// glslang writes one for every register variable, ~16 % of a translated shader's SPIR-V, read by no driver.
+static void strip_names(uint32_t *spv, size_t *nwords) {
+    size_t o = 5;
+    for (size_t i = 5; i < *nwords;) {
+        uint32_t wc = spv[i] >> 16, op = spv[i] & 0xFFFF;
+        if (!wc || i + wc > *nwords) return;  // (malformed: left as it is from here)
+        bool name = op == 3 || op == 4 || op == 5 || op == 6 || op == 7 || op == 8 || op == 317 || op == 330;
+        if (!name) { memmove(spv + o, spv + i, wc * 4); o += wc; }
+        i += wc;
+    }
+    *nwords = o;
+}
+
 // SPIR-V words of src, or NULL (error logged with the source). *nwords set on success. Thread-safe: one shaderc
 // compiler per thread (a shared one behind a lock serialised all the pipeline workers).
 // No spirv-opt by default: it rewrote the depth pre-pass and colour-pass vertex shaders differently enough that
@@ -324,6 +338,7 @@ uint32_t *vk_glsl_to_spirv(const char *src, int stage, const char *name, size_t 
         out = malloc(n);
         memcpy(out, shaderc_result_get_bytes(r), n);
         *nwords = n / 4;
+        strip_names(out, nwords);
         if (stage == STAGE_VERTEX) out = no_contraction(out, nwords);
         if (!nocache) cache_store(h, out, *nwords);
     }
