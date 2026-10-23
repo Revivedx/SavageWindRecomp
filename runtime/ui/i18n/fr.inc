@@ -1,5 +1,5 @@
 // French menu texts (runtime/ui/i18n.mm): T("English", "Français"); "" keeps the English text.
-// Regenerate the list of texts it lacks with tools/i18n_check.py --missing fr.
+// Regenerate the list of texts it lacks with tools/tests/i18n_check.py --missing fr.
 T("Press a button...", "Appuyez sur un bouton...")
 T("Press a key...", "Appuyez sur une touche...")
 T("Nintendo", "")

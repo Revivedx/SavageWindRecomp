@@ -58,17 +58,17 @@ savage_wind/extracted/
 ```
 
 La versión objetivo es la 1.8.2 (versión de título v1048576), la última. El build id del módulo `main`
-identifica la versión exacta; `tools/sw_probe.py` lo imprime.
+identifica la versión exacta; `tools/recomp/sw_probe.py` lo imprime.
 
 ## Cambios respecto de LASRecomp
 
 Hechos:
 
-- `tools/patches.py`: vacío. Los parches por instrucción de LASRecomp apuntaban a direcciones de
+- `tools/recomp/patches.py`: vacío. Los parches por instrucción de LASRecomp apuntaban a direcciones de
   Link's Awakening y habrían roto (o corrompido) la generación de BOTW.
-- `tools/gen.py`: ya no carga `tools/rando/patch_variants.json` (sitios del randomizer de LA). El
+- `tools/recomp/gen.py`: ya no carga `tools/rando/patch_variants.json` (sitios del randomizer de LA). El
   descubrimiento de funciones quedó en `discover()` para poder reusarlo desde otras herramientas.
-- `tools/sw_probe.py`: nuevo. Mide el exefs sin escribir C (ver abajo).
+- `tools/recomp/sw_probe.py`: nuevo. Mide el exefs sin escribir C (ver abajo).
 - `.gitattributes`: finales de línea LF en checkouts de Windows.
 - Runtime sin lo exclusivo de Link's Awakening (verificado con `make runtime-objs` en MSYS2 UCRT64:
   sin errores ni warnings, y el `.exe` enlaza):
@@ -80,13 +80,13 @@ Hechos:
     `runtime/nvn/texpatch.[ch]` (retoques de texturas de la UI de LA: iconos de botones Xbox/PlayStation,
     icono de Hero Mode, color de túnica y corazones, botella dorada).
   - Borrados fuera del runtime: `third_party/LAS-Randomizer`, `tools/rando/`, `tools/warp_table.py`,
-    los objetivos `rando-helper` y `smoketest` del Makefile, `tools/linux/smoketest.sh`,
+    los objetivos `rando-helper` y `smoketest` del Makefile, `tools/packaging/linux/smoketest.sh`,
     `tools/doorjump_test.sh` y `tools/perf_sweep.py` (dependían del warp y del randomizer), keystone en
-    `tools/build_deps_macos.sh`, el venv del randomizer en `tools/setup_windows.ps1`, y las capturas de
+    `tools/packaging/build_deps_macos.sh`, el venv del randomizer en `tools/packaging/setup_windows.ps1`, y las capturas de
     LA de `docs/` (`ultrawide.jpg`, `start_screen.jpg`).
   - `make gen-helper` usa su propio venv (`build/gen-venv`: capstone, unicorn, lz4, PyInstaller);
-    `tools/linux/rando_helper.sh` pasó a `tools/linux/gen_helper.sh` y solo congela el generador.
-  - `tools/gen.py`: fuera el camino muerto de `rando_word()` (`RANDO_CODE` siempre estaba vacío).
+    `tools/packaging/linux/rando_helper.sh` pasó a `tools/packaging/linux/gen_helper.sh` y solo congela el generador.
+  - `tools/recomp/gen.py`: fuera el camino muerto de `rando_word()` (`RANDO_CODE` siempre estaba vacío).
   - Archivos genéricos revisados: `main.c` (sin seeds; `SAVAGEWIND_REBOOT_AT=<frame>:<game|title>`),
     `services/fs.c` (el overlay de la RomFS queda como herramienta de desarrollo:
     `SAVAGEWIND_ROMFS_OVERLAY=<carpeta>` reemplaza o agrega archivos; las partidas van siempre a `save/`),
@@ -99,11 +99,11 @@ Hechos:
     `gamebuild.c`, `romfs_build.c`, `fnprof.c`, `hle/framepace.c` y `nvn/cmdbuf.c` no tenían ganchos
     de LA aparte de los nombres.
 - Nombres: `savagewind[.exe]`, `savagewind.dll.a`, `swgame.{dll,so,dylib}` (entrada `swgame_tables`),
-  generador congelado `swgen` (`tools/swgen.spec`), `savagewind.ini`, `savagewind.log`,
+  generador congelado `swgen` (`tools/recomp/swgen.spec`), `savagewind.ini`, `savagewind.log`,
   `local.savagewind` (macOS), `~/.local/share/savagewind` (Linux), variables de entorno
   `SAVAGEWIND_*` (antes `LARECOMP_*`, incluida `SAVAGEWIND_DATA_ROOT`), "Savage Wind" en la UI.
 - Módulos en memoria (era el pendiente "ajustar `MAIN_BASE`/`SDK_BASE` y cargar `subsdk*`"): ya no hay
-  direcciones fijas por módulo; las calcula `tools/layout.py` y se cargan todos los `subsdk*`. Ver abajo.
+  direcciones fijas por módulo; las calcula `tools/recomp/layout.py` y se cargan todos los `subsdk*`. Ver abajo.
 - Arranque con el `nn::init::Start` de 1.8.2 (`_ZN2nn4init5StartEmmPFvvES2_S2_`, tres callbacks; el de
   LA tenía dos). Desensamblado, hace: `_init_libc0`, `nnosInitialize`, **x2**, `_init_libc1`,
   `nninitInitializeSdkModule`, `nninitStartup`, `_init_libc2`, **x3**, `nnMain`, **x4**,
@@ -111,7 +111,7 @@ Hechos:
   y pasa x2 = inicializar `sdk`, x3 = inicializar `subsdk9`..`0` y `main`, x4 = finalizarlos en orden de
   carga (`DT_FINI`, o `fini_array` al revés); los destructores del `sdk` no corren (la salida es rápida).
   Para llegar a x2 hicieron falta además `DT_RELR` (abajo) y `svcGetInfo` 28 (`AliasRegionExtraSize`, 0).
-- Jump tables en `tools/gen.py` (era el pendiente de `printf_core`, ver abajo).
+- Jump tables en `tools/recomp/gen.py` (era el pendiente de `printf_core`, ver abajo).
   - Antes, el descubrimiento de funciones tomaba como función nueva el destino de un `adr` hecho dentro de la
     misma función. Ese destino es la base de una jump table: 611 en el `sdk`, 953 en `main` y 334 en `subsdk0`.
     Así partía la función, y los cortes se encadenaban: `printf_core` quedaba en 38 pedazos. El `br` caía en
@@ -145,19 +145,19 @@ Hechos:
     partida, igual llegan.
   - Costo: el C con todas las etiquetas crece en `main` de 312k a 485k instrucciones y en el `sdk` de 37k a
     171k. La función más grande sigue siendo la misma (11883 instrucciones, en `main`).
-  - `tools/test_layout.py` agrega un módulo sintético con la forma de `printf_core`, y una función partida
+  - `tools/tests/test_layout.py` agrega un módulo sintético con la forma de `printf_core`, y una función partida
     por una llamada a su mitad.
 
 Pendiente:
 
 1. Restos de LA conocidos, sin efecto en la compilación:
-   - `ui/launcher.mm` no comprueba la versión: falta el build id del `main` 1.8.2 (`tools/sw_probe.py`).
+   - `ui/launcher.mm` no comprueba la versión: falta el build id del `main` 1.8.2 (`tools/recomp/sw_probe.py`).
    - `hle/movie.c` solo deja saltar `movie/opening.webm` (nombre de LA).
    - `hle/framepace.c` y `hle/heaps.c` explican sus valores con casos de LA (siguen siendo genéricos).
    - `CONTRIBUTING.md` es de LASRecomp. (El README y el ícono ya son propios: `docs/icon/icon.svg`, una montaña
      helada con una espada clavada en la cima, dibujo original; `icon_1024.png`, `icon.ico` e `icon.icns` salen de
      él con `rsvg-convert`.)
-   - `tools/explore_far.sh`, `explore_input.sh`, `house_input.txt`, `dbgfs.sh`, `fresh_save.sh`: entradas
+   - `tools/debug/explore_far.sh`, `explore_input.sh`, `house_input.txt`, `dbgfs.sh`, `fresh_save.sh`: entradas
      de prueba pensadas para la pantalla de título de LA.
    - Pantalla ancha (aspecto desbloqueado) e iconos de botones por control: se fueron con
      `widescreen.c` y `texpatch.c`; para BOTW harían falta ganchos propios.
@@ -446,7 +446,7 @@ Pendiente:
      - Los mandos (`sead::ControllerBase::updateDerivativeParams_`, 0x7000d9d8a0) cuentan cuánto lleva pulsado cada
        botón sumando un paso por frame (un float en 0x7001c4ba40, 1 siempre en BOTW): de ahí la repetición de una
        dirección mantenida y algunas pulsaciones largas.
-     Lo que hace Savage Wind (`runtime/hle/framepace.c`, dos parches en `tools/patches.py`):
+     Lo que hace Savage Wind (`runtime/hle/framepace.c`, dos parches en `tools/recomp/patches.py`):
      - `present_pace` espera el turno de cada presentación en una rejilla fija de 1/frecuencia (un frame tardío por
        menos de un periodo no la mueve; uno más largo la reinicia). Sin límite: 300 FPS como mucho (con pasos más
        cortos los relojes float del juego pierden precisión). La espera del bucle (0x7000d811fc) se salta.
@@ -627,7 +627,7 @@ Pendiente:
      títulos ellos mismos; los IDs de ImGui siguen en inglés. Mayúsculas en UTF-8 (`tr_upper`: latín, griego,
      cirílico). Ruso, japonés, coreano y chino suman una fuente del sistema con solo los glifos que usan sus
      textos (`ui_merge_fallback_font`), y cada contexto rehace sus fuentes al cambiar el idioma.
-     `tools/i18n_check.py` lista los textos que le faltan a cada tabla (`--missing <idioma>` los imprime como
+     `tools/tests/i18n_check.py` lista los textos que le faltan a cada tabla (`--missing <idioma>` los imprime como
      líneas `T(...)`); `SAVAGEWIND_MENU_LANG=<código>` (p. ej. `ja`) fuerza el idioma de los menús para probar.
      Las once tablas están completas (es, fr, de, it, nl, ru, pt, ja, ko, zh-Hans, zh-Hant). ImGui 1.91.9 solo
      corta líneas en espacios: `third_party/imgui/imgui_draw.cpp` (`ImFont::CalcWordWrapPositionA`) lleva un
@@ -639,17 +639,17 @@ Pendiente:
      Vídeo, Audio, Controles (las tres de cámara del juego y las del ratón), Teclado (botones / sticks), Mando e
      Idioma, más "Salir del juego". El juego construye la pantalla cada vez que se abre a partir de una tabla
      estática de 14 entradas (0x7001cccd98..0x7001cccdb0): `runtime/ui/game_options.mm` la apunta a una copia con sus
-     entradas detrás y cambia la lista de filas de cada página; los ganchos de `tools/patches.py` le pasan las filas
+     entradas detrás y cambia la lista de filas de cada página; los ganchos de `tools/recomp/patches.py` le pasan las filas
      de esas entradas (valor, textos, A) y un cambio de página cierra la pantalla, que el menú que la abrió vuelve a
      abrir: el update del menú del título (pantalla 1, botones 0x69..0x6f, `FUN_7100d4c5e0`) o el estado Ajustes de
      la página Sistema de la pausa (botones 0x4d..0x53, `FUN_7100cbc918`). "Salir" (en Ajustes y en lugar de
      "Ajustes de amiibo" en el título, sin soporte de amiibo) pregunta con el diálogo de dos botones del juego
      (pantalla 0x39, tipo 7, textos propios): escritorio o pantalla de inicio de Savage Wind; la respuesta queda en
      0x7001c4b308 (botón de arriba 0, de abajo 1) y B cierra sin respuesta. Textos nuevos solo en inglés y español
-     por ahora (`tools/i18n_check.py`).
+     por ahora (`tools/tests/i18n_check.py`).
    - setjmp / longjmp (2026-10-16): libjpeg y libpng de `nn::image` salen de sus errores con `longjmp`, que vuelve
      a la mitad de la función que llamó a `setjmp`; el código recompilado no puede retomar ahí ("no function at
-     70023f1b14", al codificar la miniatura del guardado). `tools/gen.py` envuelve cada `bl` a `setjmp` (el
+     70023f1b14", al codificar la miniatura del guardado). `tools/recomp/gen.py` envuelve cada `bl` a `setjmp` (el
      símbolo o su stub PLT) en un `setjmp` del host dentro de la función C que llama (`setjmp_call`), con un
      `jmp_buf` del host por cada `jmp_buf` del juego y por hilo (`rt_setjmp_slot`). El `setjmp` de musl sigue
      corriendo y llena el del juego; `longjmp` es HLE (`hle_longjmp`, `runtime/hle/setjmp.c`): restaura x19-x30,
@@ -743,11 +743,11 @@ compilación local con `zig cc`.
 
 ## Módulos en memoria
 
-Las direcciones de los módulos del exefs se deciden en un solo lugar, `tools/layout.py`, igual que el
+Las direcciones de los módulos del exefs se deciden en un solo lugar, `tools/recomp/layout.py`, igual que el
 loader de Switch: uno detrás de otro en orden de carga (`main`, `subsdk0`..`subsdk9`, `sdk`; `rtld` no
 se carga, su trabajo lo hace el runtime), cada imagen (text, rodata, data + bss) redondeada a 4 KiB,
 desde `MAIN_BASE` (0x70_0000_0000) y sin pasar de `MODULES_END` (0x70_8000_0000: 2 GiB para módulos).
-Ambos límites están en `runtime/rt.h` y en `tools/layout.py`.
+Ambos límites están en `runtime/rt.h` y en `tools/recomp/layout.py`.
 
 - `make gen` (`gen.py all`) escribe `generated/layout.txt` y `generated/layout.c` y genera cada módulo en
   `generated/<módulo>/`. `gen.py <módulo> <nso> <layout.txt> <salida>` genera uno solo con esas
@@ -757,19 +757,19 @@ Ambos límites están en `runtime/rt.h` y en `tools/layout.py`.
   módulo donde dice la biblioteca y se detiene si un NSO tiene otro build id o si hay un `subsdk*` que
   la biblioteca no tiene (hay que volver a generar).
 - La pantalla de setup (`runtime/gamebuild.c`) corre `gen layout` y después un generador por módulo.
-- `tools/sw_probe.py` imprime la misma disposición y si el runtime la puede cargar.
-- `tools/nso.py` y `runtime/loader.c` leen `DT_RELR` (relocaciones relativas empaquetadas): en 1.8.2 todas
+- `tools/recomp/sw_probe.py` imprime la misma disposición y si el runtime la puede cargar.
+- `tools/recomp/nso.py` y `runtime/loader.c` leen `DT_RELR` (relocaciones relativas empaquetadas): en 1.8.2 todas
   las `R_RELATIVE` de los tres módulos están ahí (222402 en `main`, 3424 en `subsdk0`, 15007 en `sdk`).
   Sin esto los punteros de los datos quedaban sin reubicar. `gen.py` también los toma ahora como inicios
   de función posibles, pero casi todos ya los encontraba por otras vías (eh_frame, `bl`, `adrp`+`add`):
   en `main` agregan 2.
-- `tools/nso.py` y `runtime/loader.c` cuentan los símbolos también con `DT_GNU_HASH`: el `sdk` y el
+- `tools/recomp/nso.py` y `runtime/loader.c` cuentan los símbolos también con `DT_GNU_HASH`: el `sdk` y el
   `subsdk0` de 1.8.2 no traen `DT_HASH`, y sin esto se veían con 0 símbolos: los imports de `main` no
   se resolvían y `gen.py --hle` no podía encontrar funciones del `sdk` (hoy reemplaza `longjmp`, ver
   "setjmp / longjmp").
-- `tools/test_layout.py` lo prueba con NSOs sintéticos sin código del juego (un `main` de 77 MB, dos
+- `tools/tests/test_layout.py` lo prueba con NSOs sintéticos sin código del juego (un `main` de 77 MB, dos
   `subsdk`, un `sdk` de tamaño impar, `subsdk0` y `sdk` solo con `DT_GNU_HASH` y `DT_RELR`):
-  `tools/venv/Scripts/python tools/test_layout.py`.
+  `tools/venv/Scripts/python tools/tests/test_layout.py`.
 
 Con el exefs de 1.8.2: `main` en 0x70_0000_0000 (29.2 MiB), `subsdk0` (multimedia) en 0x70_01d3_7000
 (6.4 MiB), `sdk` en 0x70_023a_3000 (12.3 MiB). El loader carga los tres ahí, con 488, 10110 y 23039
@@ -810,10 +810,10 @@ CPU que se recompila con el resto. Savage Wind lo usa en vez de reimplementarlo 
 ## Sondeo del exefs
 
 ```
-tools/venv/Scripts/python tools/sw_probe.py extracted/exefs --json build/probe.json
+tools/venv/Scripts/python tools/recomp/sw_probe.py extracted/exefs --json build/probe.json
 ```
 
-(En Linux: `tools/venv/bin/python`.) Imprime las direcciones que `tools/layout.py` da a los módulos y
+(En Linux: `tools/venv/bin/python`.) Imprime las direcciones que `tools/recomp/layout.py` da a los módulos y
 si el runtime puede cargarlos ahí. Para cada módulo imprime:
 
 - tamaños de segmentos y build id,
@@ -896,7 +896,7 @@ Después de integrar `module-layout`, `gamelib-build` y `jump-tables` en `main` 
 constructores del `sdk` y se detiene donde dice "Pendiente" 2: mensajes TIPC 16 y 17 a `sm:` y
 `svcBreak(0)` en 0x700251863c.
 
-Arreglos en `tools/sw_probe.py` de esta misma tanda:
+Arreglos en `tools/recomp/sw_probe.py` de esta misma tanda:
 
 - Las importaciones se agrupan por namespace (`nn::os` 85, `nn::audio` 74, `nn::util` 34, ...). Antes,
   402 de las 465 de `main` caían en un grupo vacío porque no se saltaba el prefijo `_ZN`.

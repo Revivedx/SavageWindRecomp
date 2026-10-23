@@ -1,5 +1,5 @@
 // Dutch menu texts (runtime/ui/i18n.mm): T("English", "Nederlands"); "" keeps the English text.
-// Regenerate the list of texts it lacks with tools/i18n_check.py --missing nl.
+// Regenerate the list of texts it lacks with tools/tests/i18n_check.py --missing nl.
 T("Press a button...", "Druk op een knop...")
 T("Press a key...", "Druk op een toets...")
 T("Nintendo", "")

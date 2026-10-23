@@ -1,7 +1,7 @@
 // (profiling) Sampling profiler for Windows. SAVAGEWIND_SAMPLE=<start s>:<seconds>[:<interval us>] suspends every
 // guest thread each interval (default 1000 us) from <start> seconds after boot, for <seconds>, and records its host
 // call stack (x64 unwind data: the game library and the runtime both have it). The samples go to
-// build/samples.txt; tools/profile_samples.py turns them into self / inclusive time per function, recompiled game
+// build/samples.txt; tools/debug/profile_samples.py turns them into self / inclusive time per function, recompiled game
 // functions as f_<guest address>. A thread waiting in the kernel shows its wait; filter with the tool.
 // Each round of samples starts with "R <ns> <presented frame>", so a stretch of frames can be looked at alone.
 #include <stdlib.h>

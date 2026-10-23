@@ -1,5 +1,5 @@
 // Simplified Chinese menu texts (runtime/ui/i18n.mm): T("English", "简体中文"); "" keeps the English text.
-// Regenerate the list of texts it lacks with tools/i18n_check.py --missing zh-Hans.
+// Regenerate the list of texts it lacks with tools/tests/i18n_check.py --missing zh-Hans.
 T("Press a button...", "请按手柄按键...")
 T("Press a key...", "请按键盘按键...")
 T("Nintendo", "")

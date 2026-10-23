@@ -110,10 +110,10 @@ endif
 
 # GAMELIB_ID: what the game code library is built from (the generator, the headers it is compiled against, the
 # flags). A library with another id is rebuilt by the start screen, never loaded.
-GAMELIB_SRCS := tools/gen.py tools/lifter.py tools/analyze.py tools/nso.py tools/passes.py tools/patches.py \
-                tools/simd_c.py tools/gamelib_entry.c runtime/hle/hle_symbols.txt \
+GAMELIB_SRCS := tools/recomp/gen.py tools/recomp/lifter.py tools/recomp/analyze.py tools/recomp/nso.py tools/debug/passes.py tools/recomp/patches.py \
+                tools/recomp/simd_c.py tools/recomp/gamelib_entry.c runtime/hle/hle_symbols.txt \
                 runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h
-GAMELIB_SRCS += tools/layout.py
+GAMELIB_SRCS += tools/recomp/layout.py
 GAMELIB_ID := $(shell (cat $(GAMELIB_SRCS); echo '$(GENFLAGS)') | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
 
 RT_OBJ   := $(patsubst runtime/%.c,$(B)/rt/%.o,$(RT_SRC))
@@ -127,7 +127,7 @@ $(B)/obj/%.o: $(GEN)/%.c runtime/cpu.h runtime/simd.h runtime/simd_fp.h  # (cpu.
 	@$(CC) $(GENFLAGS) -c $< -o $@
 $(B)/obj/layout.o: runtime/gamelib.h
 
-$(B)/obj/tools/gamelib_entry.o: tools/gamelib_entry.c $(GAMELIB_SRCS)
+$(B)/obj/tools/gamelib_entry.o: tools/recomp/gamelib_entry.c $(GAMELIB_SRCS)
 	@mkdir -p $(dir $@)
 	$(CC) $(GENFLAGS) -DGAMELIB_ID='"$(GAMELIB_ID)"' -c $< -o $@
 $(B)/rt/gamelib.o: $(GAMELIB_SRCS)
@@ -192,7 +192,7 @@ $(B)/imgui/imgui_impl_metal.o: $(IMGUI)/backends/imgui_impl_metal.mm
 # Python: tools/venv (macOS, Linux: bin/python, Windows: Scripts/python.exe)
 PY := $(firstword $(wildcard tools/venv/bin/python) $(wildcard tools/venv/Scripts/python.exe))
 
-gen:  # every module of the exefs, at the addresses tools/layout.py gives them
+gen:  # every module of the exefs, at the addresses tools/recomp/layout.py gives them
 	cd tools && ../$(PY) gen.py all ../extracted/exefs ../$(GEN) --hle ../runtime/hle/hle_symbols.txt $(GENSIMD)
 
 gen-objs: $(GEN_OBJ)
@@ -214,23 +214,23 @@ VERSION  := $(shell sed -n 's/^\#define SAVAGEWIND_VERSION "\(.*\)"/\1/p' runtim
 
 # macOS: build/Savage Wind.app, runs on macOS $(APP_MIN)+: the game rebuilt for that in build/mac15 against build/deps
 # (`make deps`: SDL3, LGPL FFmpeg, Python, from pinned sources), the generator helper when built
-# (`make gen-helper` after `make deps`), packaged by tools/bundle_macos.sh. No game files or fonts.
+# (`make gen-helper` after `make deps`), packaged by tools/packaging/bundle_macos.sh. No game files or fonts.
 APP_MIN  := 15.0
 APP_B    := build/mac15
 deps:
-	MACOS_MIN=$(APP_MIN) tools/build_deps_macos.sh
+	MACOS_MIN=$(APP_MIN) tools/packaging/build_deps_macos.sh
 app:
 	@[ -f build/deps/lib/libSDL3.0.dylib ] || { echo "make deps first"; exit 1; }
 	$(MAKE) B=$(APP_B) MACOS_MIN=$(APP_MIN) DEPS=$(CURDIR)/build/deps $(APP_B)/savagewind
-	MACOS_MIN=$(APP_MIN) tools/bundle_macos.sh $(APP_B)/savagewind
+	MACOS_MIN=$(APP_MIN) tools/packaging/bundle_macos.sh $(APP_B)/savagewind
 
 # macOS release disk image (the .app + an Applications shortcut to drag it onto): build/dist/Savage Wind-<v>-macOS.dmg
 dmg: app
-	tools/make_dmg.sh
+	tools/packaging/make_dmg.sh
 
 # Windows: build/dist/SavageWind-<version>-windows.zip, top folder "Savage Wind/": the exe, what the start screen
-# builds the game code with on the player's machine (make gen-helper, tools/fetch_zig.sh slimmed by
-# tools/zig_slim.sh: its runtime built ahead of time, gamelib-src/, the exe's import library)
+# builds the game code with on the player's machine (make gen-helper, tools/packaging/fetch_zig.sh slimmed by
+# tools/packaging/zig_slim.sh: its runtime built ahead of time, gamelib-src/, the exe's import library)
 # and the DLLs they load (runs without MSYS2). No game code. The exe is a release build in $(WIN_B):
 # linked against the LGPL FFmpeg from `make deps-windows` (MSYS2's is a GPLv3 build) and without a console window
 # (RELEASE=1: the log goes to savagewind.log next to the exe, fatal errors show a message box). Its DLLs are looked up
@@ -240,22 +240,22 @@ dmg: app
 DIST     := build/dist/Savage Wind
 WIN_B    := build/win-release
 deps-windows:
-	tools/build_deps_windows.sh
+	tools/packaging/build_deps_windows.sh
 dist:
 	@[ -f build/deps-win/lib/libavcodec.dll.a ] || { echo "make deps-windows first (LGPL FFmpeg)"; exit 1; }
 	@[ -d build/helper/swgen ] || { echo "make gen-helper first (the game code generator)"; exit 1; }
-	@! find tools -maxdepth 1 -name '*.py' -newer build/helper/swgen/swgen.exe | grep -q . || \
-	    { echo "make gen-helper first: tools/*.py changed since build/helper/swgen was frozen"; exit 1; }
-	@[ -x build/zig/zig.exe ] || { echo "tools/fetch_zig.sh first (the compiler)"; exit 1; }
+	@! find tools/recomp -maxdepth 1 -name '*.py' -newer build/helper/swgen/swgen.exe | grep -q . || \
+	    { echo "make gen-helper first: tools/recomp/*.py changed since build/helper/swgen was frozen"; exit 1; }
+	@[ -x build/zig/zig.exe ] || { echo "tools/packaging/fetch_zig.sh first (the compiler)"; exit 1; }
 	$(MAKE) B=$(WIN_B) DEPS=$(CURDIR)/build/deps-win RELEASE=1 $(WIN_B)/savagewind.exe $(WIN_B)/savagewind-config.exe
 	! nm $(WIN_B)/savagewind.exe | grep ' f_70' >/dev/null  # (no game code inside)
 	rm -rf build/dist && mkdir -p "$(DIST)/gamelib-src"
 	cp $(WIN_B)/savagewind.exe $(WIN_B)/savagewind.dll.a "$(DIST)/"
 	cp $(WIN_B)/savagewind-config.exe "$(DIST)/Savage Wind Configuration.exe"
-	tools/zig_slim.sh $(strip $(filter-out -Iruntime,$(GENFLAGS)))  # (zig with its runtime built ahead of time)
+	tools/packaging/zig_slim.sh $(strip $(filter-out -Iruntime,$(GENFLAGS)))  # (zig with its runtime built ahead of time)
 	cp -R build/helper/swgen "$(DIST)/"
 	cp -R build/zig-slim "$(DIST)/zig"
-	cp runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h tools/gamelib_entry.c runtime/hle/hle_symbols.txt \
+	cp runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h tools/recomp/gamelib_entry.c runtime/hle/hle_symbols.txt \
 	    "$(DIST)/gamelib-src/"
 	cp docs/icon/icon_1024.png "$(DIST)/icon.png"
 	cp third_party/fonts/FiraSans/FiraSans-SemiBold.ttf third_party/fonts/FiraSans/FiraSans-Medium.ttf "$(DIST)/"  # (menus, OFL)
@@ -270,7 +270,7 @@ dist:
 	@echo "build/dist/SavageWind-$(VERSION)-windows.zip"
 
 # The game code generator as a standalone helper, so players need no Python: build/helper/swgen/ (swgen[.exe] +
-# _internal/), frozen by PyInstaller from tools/swgen.spec in its own venv (build/gen-venv). Shipped as swgen/ next to
+# _internal/), frozen by PyInstaller from tools/recomp/swgen.spec in its own venv (build/gen-venv). Shipped as swgen/ next to
 # the exe (Windows, Linux) or in "Savage Wind.app"/Contents/Resources. The start screen's setup runs it on the player's own
 # game files (runtime/gamebuild.c). PyInstaller only builds for the OS it runs on.
 # macOS arm64: the relocatable Python 3.12 from `make deps` (macOS 11+ / 15+: the helper runs where the app does);
@@ -288,8 +288,8 @@ endif
 gen-helper: build/gen-venv/.ok
 	$(if $(filter windows,$(PLATFORM)),USERPROFILE="$$(cygpath -w ~ 2>/dev/null || echo $$HOME)") \
 	$(GEN_VPY) -m PyInstaller --noconfirm --clean --log-level WARN --distpath build/helper --workpath build/pyinstaller \
-	    tools/swgen.spec
-	$(if $(filter windows,$(PLATFORM)),$(GEN_VPY) tools/pe_no_cfg.py build/helper/swgen/swgen.exe)
+	    tools/recomp/swgen.spec
+	$(if $(filter windows,$(PLATFORM)),$(GEN_VPY) tools/packaging/pe_no_cfg.py build/helper/swgen/swgen.exe)
 	@du -sh build/helper/swgen
 
 build/gen-venv/.ok:
@@ -301,12 +301,12 @@ build/gen-venv/.ok:
 # FFmpeg, shaderc and the game code generator helper inside; the Vulkan loader and GPU drivers are the system's.
 # `make appimage` (ARCH: this machine's, or aarch64 cross-compiled), `make appimages` both. See docs/linux.md.
 appimage:
-	tools/linux/appimage.sh $(ARCH)
+	tools/packaging/linux/appimage.sh $(ARCH)
 appimages:
-	tools/linux/appimage.sh x86_64
-	tools/linux/appimage.sh aarch64
+	tools/packaging/linux/appimage.sh x86_64
+	tools/packaging/linux/appimage.sh aarch64
 
 .PHONY: dmg all gen gen-helper gen-objs runtime-objs deps deps-windows app dist appimage appimages
 
-build/test_shaders: tools/test_shaders.m runtime/nvn/maxwell/translate.c runtime/nvn/maxwell/shader.h
-	clang -O1 -fobjc-arc -framework Metal -framework Foundation -o $@ tools/test_shaders.m runtime/nvn/maxwell/translate.c
+build/test_shaders: tools/tests/test_shaders.m runtime/nvn/maxwell/translate.c runtime/nvn/maxwell/shader.h
+	clang -O1 -fobjc-arc -framework Metal -framework Foundation -o $@ tools/tests/test_shaders.m runtime/nvn/maxwell/translate.c

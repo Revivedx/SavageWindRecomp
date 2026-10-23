@@ -20,7 +20,7 @@ From an MSYS2 UCRT64 shell, or Git Bash with MSYS2 first on PATH:
     make -j         # -> build/savagewind.exe and the game code library build/swgame.dll
 
 Without `generated/` only the app is built: the start screen builds the game code itself when you set up the game
-files (as for players), given the generator and the compiler (`make gen-helper`, `tools/fetch_zig.sh`).
+files (as for players), given the generator and the compiler (`make gen-helper`, `tools/packaging/fetch_zig.sh`).
 `make runtime-objs` compiles the runtime only (quick check).
 
 Run from a shell that has `C:\msys64\ucrt64\bin` on PATH (SDL3, FFmpeg, Vulkan, shaderc DLLs).
@@ -28,12 +28,12 @@ Run from a shell that has `C:\msys64\ucrt64\bin` on PATH (SDL3, FFmpeg, Vulkan, 
 ## Package
     make deps-windows   # once: FFmpeg built as LGPL only (build/deps-win; downloads its source, needs nasm)
     make gen-helper     # the game code generator without Python (build/helper/swgen)
-    tools/fetch_zig.sh  # the compiler the start screen builds the game code with (build/zig)
+    tools/packaging/fetch_zig.sh  # the compiler the start screen builds the game code with (build/zig)
     make dist           # -> build/dist/SavageWind-<version>-windows.zip (no game code inside)
 
 `make gen-helper` freezes the generator with a python.org CPython (`py -3.12` by default; another one with
 `GEN_PY="py -3.14"`, as long as unicorn and capstone have wheels for it). `make dist` also makes the slim compiler
-(`tools/zig_slim.sh`: only the headers the game code includes, and zig's runtime built ahead of time), so the
+(`tools/packaging/zig_slim.sh`: only the headers the game code includes, and zig's runtime built ahead of time), so the
 start screen's build doesn't compile zig's own libraries on the player's machine. The version is
 `SAVAGEWIND_VERSION` in `runtime/ui/launcher.mm`. Before a release, test the zip as a player would: extract it to a
 new folder, run it with a PATH without MSYS2, set up the game files from the start screen and play.
@@ -59,7 +59,7 @@ with `extracted/` in the starting folder keeps using that folder instead.
   the startup retry when the guest window is taken, which on Windows starts a new process and exits.
 
 ## Tests
-- `tools/test_translate.sh`: shader translator fuzz (MSL output unchanged, GLSL compiles and validates).
-- `tools/test_vk_pipelines.sh`: fuzzed shaders through the backend's compile/reflection into real pipelines.
+- `tools/tests/test_translate.sh`: shader translator fuzz (MSL output unchanged, GLSL compiles and validates).
+- `tools/tests/test_vk_pipelines.sh`: fuzzed shaders through the backend's compile/reflection into real pipelines.
 - `SAVAGEWIND_VK_VALIDATION=1` with `VK_ADD_LAYER_PATH` pointing at `C:\msys64\ucrt64\bin`: Khronos validation layer.
 - Run test windows directly, not under MSYS `timeout` (it stalls the window).

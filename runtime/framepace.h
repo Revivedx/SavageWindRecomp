@@ -13,7 +13,7 @@ bool framepace_on(void);
 // present_pace: a frame was presented at t (plat_now_ns), on its pace's grid or not.
 void framepace_presented(uint64_t t, bool on_grid);
 
-// Called by the game code (tools/patches.py): the frame loop's vsync wait (1: skip it, 0: run the game's own), and
+// Called by the game code (tools/recomp/patches.py): the frame loop's vsync wait (1: skip it, 0: run the game's own), and
 // its clock's update (x19 of ksys::VFR::updateInterval).
 int rt_frame_wait(void);
 void rt_vfr_update(uint64_t vfr);

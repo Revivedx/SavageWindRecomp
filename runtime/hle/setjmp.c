@@ -1,7 +1,7 @@
 // Guest setjmp / longjmp (musl's, in sdk). libjpeg and libpng in nn::image leave their errors with longjmp: the
 // JPEG encoder of the autosave's screenshot, for one. The guest longjmp returns into the middle of the function
 // that called setjmp, and recompiled code can't resume there (dispatch only knows function entries). So the
-// generator (tools/gen.py setjmp_call) wraps every call to the guest setjmp in a host setjmp, in the C function of
+// generator (tools/recomp/gen.py setjmp_call) wraps every call to the guest setjmp in a host setjmp, in the C function of
 // the caller: rt_setjmp_slot gives it a host jmp_buf for the guest one (per thread, by guest address). The guest
 // setjmp still runs and fills the guest jmp_buf. The guest longjmp is HLE (runtime/hle/hle_symbols.txt): it
 // restores the registers musl saved there and jumps to the host jmp_buf, back into that C function with x0 set.

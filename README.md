@@ -64,7 +64,7 @@ extracted/
   romfs/   the complete RomFS (base game + 1.8.2 merged)
 ```
 
-The `main` module's build id tells the exact version; `python tools/sw_probe.py` (it reads `extracted/exefs`)
+The `main` module's build id tells the exact version; `python tools/recomp/sw_probe.py` (it reads `extracted/exefs`)
 prints it and what the recompiler will find there.
 
 ## Status
@@ -193,7 +193,7 @@ The Windows release zip also bundles, unchanged unless noted, under their own li
 
 - FFmpeg 9.0.2 (libavcodec, libavformat, libavutil, libswscale), LGPL 2.1 or later: built from the official
   [source](https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz) as LGPL only, without GPL or nonfree parts, by
-  [tools/build_deps_windows.sh](tools/build_deps_windows.sh). They are separate DLLs: you can replace them with your
+  [tools/packaging/build_deps_windows.sh](tools/packaging/build_deps_windows.sh). They are separate DLLs: you can replace them with your
   own build of the same version.
 - From [MSYS2](https://packages.msys2.org) (UCRT64, sources there): SDL 3.4.18 (zlib), shaderc 2026.4 (Apache 2.0),
   libiconv 1.19 (LGPL 2.1 or later), the GCC 16.2 runtime (libgcc, libstdc++: GPL 3 with the GCC Runtime Library

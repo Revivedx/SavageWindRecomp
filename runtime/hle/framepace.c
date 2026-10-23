@@ -16,7 +16,7 @@
 //     while playing) updates VFR twice a frame.
 // So the game already runs at any frame rate as long as VFR is told how long a frame really took. Savage Wind:
 //   - paces the presents at the chosen rate on a steady grid (present_pace, framepace_period_ns; Off: 300 fps at
-//     most, FPS_CEILING), and skips the frame loop's vsync wait (rt_frame_wait, tools/patches.py);
+//     most, FPS_CEILING), and skips the frame loop's vsync wait (rt_frame_wait, tools/recomp/patches.py);
 //   - tells VFR how long the frame really took (rt_vfr_update, inside updateInterval after the game set its ratio):
 //     ratio = seconds x 30 (0.5 at 60 fps, 0.25 at 120): one period when the frames keep the pace, the measured time
 //     averaged otherwise, changing by a few percent a frame at most, and whatever it gave more or less than the real

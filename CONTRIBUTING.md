@@ -25,7 +25,7 @@ game in bug reports are fine.
 Open a GitHub issue with:
 
 - your platform (Windows / Linux), hardware (CPU, GPU) and window size
-- the game version (the `main` build id that `python tools/sw_probe.py` prints; 1.8.2 is the one supported)
+- the game version (the `main` build id that `python tools/recomp/sw_probe.py` prints; 1.8.2 is the one supported)
 - what you did, what happened, and what you expected
 - a screenshot or short clip if it's visual
 - for crashes: the log the app prints to the terminal (run it from a terminal to capture it)
@@ -38,8 +38,13 @@ recompile the game code from them, then `make -j`.
 
 ## Project layout
 
-- `tools/gen.py` - the recompiler: translates the game's executables into C (`generated/`, never committed).
-  `tools/layout.py` places the modules; `tools/ghidra/` queries a Ghidra project of the game (yours, built locally).
+- `tools/` - by purpose:
+  - `recomp/` - the recompiler: `gen.py` translates the game's executables into C (`generated/`, never committed),
+    `layout.py` places the modules, `sw_probe.py` checks how far it gets on a dump
+  - `tests/` - the tests that need no game files (`test_*`, `i18n_check.py`)
+  - `packaging/` - dependencies and release builds (Windows, macOS, `linux/` for the AppImages)
+  - `debug/` - running the game for screenshots, frame captures and profiles, and reading their output
+  - `ghidra/` - queries a Ghidra project of the game (yours, built locally)
 - `runtime/` - the host side:
   - `kernel.c`, `loader.c`, `ipc.c`, `services/` - the Switch OS replacement
   - `hle/` - host replacements (NVN bootstrap, input, movies, heaps, ...)

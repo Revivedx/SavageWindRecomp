@@ -10,7 +10,7 @@
 // in.x / out.x stage I/O -> GLSL globals and built-ins), helpers with MSL names (saturate, fmin, clz, mulhi, ...)
 // are defined in the GLSL prelude, and the structurally different constructs (texture lookups, global memory,
 // half-float packing, subgroup shuffles, barriers, discard, declarations and entry point) are emitted per dialect.
-// The MSL text is byte-identical to the MSL-only translator (tools/test_translate.c checks it).
+// The MSL text is byte-identical to the MSL-only translator (tools/tests/test_translate.c checks it).
 #if defined(_WIN32)
 #include <malloc.h>  // alloca
 #endif

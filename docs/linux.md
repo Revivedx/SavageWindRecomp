@@ -60,11 +60,11 @@ Needs podman, and for aarch64 QEMU user emulation with binfmt (`sudo apt install
     make appimage ARCH=aarch64   # cross-compiled from x86-64
     make appimages               # both
 
-Everything is built in Ubuntu 22.04 containers (`tools/linux/Containerfile`), so the result runs on glibc 2.35+:
+Everything is built in Ubuntu 22.04 containers (`tools/packaging/linux/Containerfile`), so the result runs on glibc 2.35+:
 SDL3, an LGPL-only FFmpeg (only the movie codecs, as on Windows / macOS), and shaderc from pinned sources
-(`tools/linux/build_deps.sh`), then the game against them (`tools/linux/package.sh`). aarch64 is cross-compiled in
+(`tools/packaging/linux/build_deps.sh`), then the game against them (`tools/packaging/linux/package.sh`). aarch64 is cross-compiled in
 the amd64 container against the arm64 image's root filesystem (`build/linux/aarch64/sysroot`). The game code
-generator helper (`tools/linux/gen_helper.sh`, PyInstaller) is frozen in a container of its own arch (on arm64 under
+generator helper (`tools/packaging/linux/gen_helper.sh`, PyInstaller) is frozen in a container of its own arch (on arm64 under
 QEMU).
 
 The AppImage holds `savagewind`, `swgen/`, `zig/`, the start screen font and the bundled libraries (SDL3,
