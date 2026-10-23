@@ -10,6 +10,9 @@
 #include "romfs_build.h"
 #include "maxwell/shader.h"
 #include "shader_scan.h"
+#if !defined(__APPLE__)
+#include "vulkan/precompile.h"
+#endif
 #include "settings.h"
 #include "hle.h"
 #include "kernel.h"
@@ -231,6 +234,27 @@ static int shader_scan_table(const char *root) {
     return 0;
 }
 
+#if !defined(__APPLE__)
+// --precompile-shaders: what the start screen's setup does for the shader caches (precompile.c), from the command line.
+static void precompile_progress(int done, int total) { fprintf(stderr, "\r[precompile] %d / %d", done, total); }
+
+static int precompile_table(const char *root) {
+    char why[256] = "";
+    PrecompileStats st;
+    // SAVAGEWIND_PRECOMPILE_NO_DRIVER=1: translations and SPIR-V only (no GPU needed)
+    bool driver = !getenv("SAVAGEWIND_PRECOMPILE_NO_DRIVER");
+    if (!precompile_shaders(root, driver, precompile_progress, &st, why, sizeof why)) { fprintf(stderr, "\n[precompile] %s\n", why); return 1; }
+    fprintf(stderr, "\n[precompile] %d shaders: %d compiled; failed: %d translations, %d SPIR-V, %d driver; %d read undeclared "
+            "inputs; scan %llu ms, compile %llu ms on %d threads (CPU: translate %llu, SPIR-V %llu, driver %llu ms)\n", st.shaders,
+            st.compiled, st.failed_translations, st.failed_compiles, st.failed_driver, st.undeclared_inputs,
+            (unsigned long long)st.scan_ms, (unsigned long long)st.compile_ms, st.threads, (unsigned long long)st.translate_cpu_ms,
+            (unsigned long long)st.spirv_cpu_ms, (unsigned long long)st.driver_cpu_ms);
+    return 0;
+}
+#else
+static int precompile_table(const char *root) { (void)root; fprintf(stderr, "[precompile] Vulkan only\n"); return 1; }
+#endif
+
 // The start screen (runtime/ui/launcher.mm), in one of two modes: SETUP sets the game files up and nothing else (a
 // plain start before they're ready; the game starts once they are), CONFIG is the whole configuration screen - Play,
 // Settings, the game files, Quit ("Savage Wind Configuration", --config; Quit to Start Screen comes back to it).
@@ -250,12 +274,13 @@ int main(int argc, char **argv) {
     bool skip_launcher = getenv("SAVAGEWIND_NO_LAUNCHER") || getenv("SAVAGEWIND_INPUT");  // tests boot straight in
     bool config = false;
     static char arg_root[1024];
-    bool build_romfs = false, scan_shaders = false;
+    bool build_romfs = false, scan_shaders = false, precompile = false;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--play")) skip_launcher = true;
         else if (!strcmp(argv[i], "--config")) config = true;
         else if (!strcmp(argv[i], "--build-romfs")) build_romfs = true;
         else if (!strcmp(argv[i], "--shader-scan")) scan_shaders = true;
+        else if (!strcmp(argv[i], "--precompile-shaders")) precompile = true;
         else if (argv[i][0] != '-' && !realpath(argv[i], arg_root)) root = argv[i];  // (relative to where we started)
         else if (argv[i][0] != '-') root = arg_root;
     }
@@ -265,6 +290,7 @@ int main(int argc, char **argv) {
     rt_paths_init();  // the data root becomes the working directory (runtime/paths.h)
     if (build_romfs) return build_romfs_image(root);
     if (scan_shaders) return shader_scan_table(root);
+    if (precompile) return precompile_table(root);
     // A plain start goes straight into the game once the game files are set up and the game code built from them
     // matches this build; the start screen only when there is something to set up, or when asked for.
     int mode = config ? LAUNCHER_CONFIG : skip_launcher || launcher_game_ready(root) ? LAUNCHER_NONE : LAUNCHER_SETUP;

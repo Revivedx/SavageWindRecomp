@@ -194,7 +194,25 @@ static void xlate_store(uint64_t h, const XlateHeader *hd, const ShaderInfo *si)
     if (!ok || rename(tmp, path) != 0) remove(tmp);  // (another thread may have stored it first)
 }
 
+// Only what a shader can depend on stays in its key (the SPH's declared inputs and written targets): draws that
+// differ in attributes, varyings or targets it doesn't declare share one translation, and find the one translated
+// before the game drew with it (precompile.c).
+static void canonical_key(ShaderKey *k, const uint8_t *code, int stage) {
+    if (stage != STAGE_VERTEX && stage != STAGE_FRAGMENT) return;
+    uint32_t in = maxwell_input_mask(code, stage);
+    if (stage == STAGE_VERTEX) {
+        for (int i = 0; i < 32; i++) if (!(in >> i & 1)) k->attr_kind[i] = 0;
+        return;
+    }
+    k->vs_out_mask &= in;
+    uint32_t targets = maxwell_output_targets(code);
+    for (int rt = 0; rt < 8; rt++) if (!(targets >> (rt * 4) & 0xF)) k->rt_kind[rt] = 0;
+}
+
 ShaderInfo *vk_translate_cached(const uint8_t *code, size_t max_size, int stage, const ShaderKey *key) {
+    ShaderKey canon = *key;
+    canonical_key(&canon, code, stage);
+    key = &canon;
     static int off = -1;  // SAVAGEWIND_NO_XLATE_CACHE=1: translate every time
     if (off < 0) off = getenv("SAVAGEWIND_NO_XLATE_CACHE") != NULL;
     if (off || maxwell_translation_uncacheable()) return maxwell_translate(code, max_size, stage, key);

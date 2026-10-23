@@ -34,7 +34,9 @@ its text and voices in any of its languages.
 2. Run `savagewind.exe`. The first time it asks for your game files: pick the folder with your own extracted game
    (`exefs/` and `romfs/`, version 1.8.2, see below) and choose **Set up game files**. It checks the version, copies
    the files, builds the data image and recompiles the game code on your machine - once, and it takes a while (about
-   40 minutes with a 12-thread CPU). Your own files aren't changed. When it's done the game starts.
+   40 minutes with a 12-thread CPU). At the same time it compiles the game's shaders for your GPU (on their own,
+   about 2 minutes on a 6-core CPU), so the game doesn't stop to compile them the first time it uses them. Your own
+   files aren't changed. When it's done the game starts.
 3. From then on `savagewind.exe` goes straight into the game. The settings, including the text and voice languages,
    are in the game's Options (pause menu > System > Options, or Options on the title screen).
 4. **Savage Wind Configuration** (`Savage Wind Configuration.exe`, in the same folder) opens the configuration
@@ -46,7 +48,7 @@ The setup and configuration screens show Savage Wind's own art. To see a picture
 next to `savagewind.exe` as `splash.jpg` or `splash.png`; it's only read from your folder and never part of
 Savage Wind.
 
-Needs Windows 10 or later, a CPU with AVX2, a GPU with Vulkan 1.3 and about 35 GB of free disk space.
+Needs Windows 10 or later, a CPU with AVX2, a GPU with Vulkan 1.3 and about 37 GB of free disk space.
 
 ## What you need
 
@@ -92,12 +94,12 @@ Estimates of where each part stands. "Tested in game" is how much of the game ha
 | 🔧 | **Controllers** | ![70%](https://progress-bar.xyz/70/?width=150&style=square&progress_color=5cb85c) | Any controller SDL knows, by button position; automatic recognition is next |
 | 🔧 | **Steady 60 fps in the open world** | ![90%](https://progress-bar.xyz/90/?width=150&style=square&progress_color=5cb85c) | 60 fps in a scripted walk at 2560x1440 (RTX 3060, Ryzen 5 5600X); real play still drops to 45-50 fps in places, and the first time an effect appears it stutters while its pipeline is made |
 | 🔧 | **Tested in game** | ![10%](https://progress-bar.xyz/10/?width=150&style=square&progress_color=d9534f) | The Shrine of Resurrection and the Great Plateau; the rest of Hyrule is untested: [report what breaks](https://github.com/Revivedx/SavageWindRecomp/issues/new/choose) |
+| 🔧 | **Full shader precompilation** | ![80%](https://progress-bar.xyz/80/?width=150&style=square&progress_color=5cb85c) | At setup, with the game code build: every shader of the game files compiled for your GPU; from a new game, no frame waited on a compile (Radeon 660M, Linux). Not yet measured on Windows or NVIDIA |
 | 🗺️ | **Linux** | ![30%](https://progress-bar.xyz/30/?width=150&style=square&progress_color=f0ad4e) | Builds and runs on x86-64 (from LAS Recomp); not yet tested with this game |
 | 🗺️ | **AMD FSR 3 + frame generation** | ![5%](https://progress-bar.xyz/5/?width=150&style=square&progress_color=d9534f) | Planned: motion vectors from depth and the camera, FidelityFX SDK |
 | 🗺️ | **NVIDIA DLSS (RTX)** | ![0%](https://progress-bar.xyz/0/?width=150&style=square&progress_color=d9534f) | Planned, after FSR 3; under NVIDIA's own SDK license |
 | 🗺️ | **Variable refresh rate (VRR)** | ![0%](https://progress-bar.xyz/0/?width=150&style=square&progress_color=d9534f) | Planned: on G-SYNC and FreeSync displays every frame shows as soon as it's ready, without tearing or vsync stutter |
 | 🗺️ | **Faster game code build** | ![0%](https://progress-bar.xyz/0/?width=150&style=square&progress_color=d9534f) | Planned: the one-time setup build in about 20 minutes instead of about 40 (12 threads) |
-| 🗺️ | **Full shader precompilation** | ![0%](https://progress-bar.xyz/0/?width=150&style=square&progress_color=d9534f) | Optional, at setup or in Configuration: no first-time stutter anywhere |
 | 🗺️ | **Mods** | ![0%](https://progress-bar.xyz/0/?width=150&style=square&progress_color=d9534f) | Planned |
 | 🗺️ | **Accessibility options** | ![0%](https://progress-bar.xyz/0/?width=150&style=square&progress_color=d9534f) | Planned: text size, colour-blind filters and toggles in place of held buttons; enemy and Link health, damage dealt and damage taken |
 | 🗺️ | **Button icons for your device** | ![0%](https://progress-bar.xyz/0/?width=150&style=square&progress_color=d9534f) | Planned: the game's button prompts show your keyboard and mouse keys, or the buttons of the controller you're using |

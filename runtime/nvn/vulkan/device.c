@@ -1111,6 +1111,20 @@ void ui_window_init(void) {
     vk_shaders_init();
 }
 
+// The device alone, on a hidden window and without a swapchain: what --precompile-shaders compiles for
+// (precompile.c), with the pipeline cache the game loads (vk_pipelines.bin; vk_pipeline_cache_save writes it).
+void vk_offscreen_init(void) {
+    SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");  // (SDL's turn SIGTERM into a quit event no one reads here)
+    if (!SDL_Init(SDL_INIT_VIDEO)) FATAL("SDL_Init: %s\n", SDL_GetError());
+    window = SDL_CreateWindow("Savage Wind", 64, 64, SDL_WINDOW_VULKAN | SDL_WINDOW_HIDDEN);
+    if (!window) FATAL("SDL_CreateWindow: %s\n", SDL_GetError());
+    create_instance();
+    if (!SDL_Vulkan_CreateSurface(window, g_vk.inst, NULL, &g_vk.surface)) FATAL("SDL_Vulkan_CreateSurface: %s\n", SDL_GetError());
+    pick_device();
+    create_device();
+    vk_shaders_init();
+}
+
 SDL_Window *ui_window(void) { return window; }
 
 void backend_init(void) {

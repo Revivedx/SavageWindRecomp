@@ -1,5 +1,5 @@
 // Every NVN shader in the game's RomFS folder (runtime/nvn/shader_scan.c), so they can be compiled before the game
-// draws with them. --shader-scan lists them; SAVAGEWIND_SHADER_LOG=1 names the ones a session uses by the same id.
+// draws with them (runtime/nvn/vulkan/precompile.c).
 #pragma once
 #include <stdbool.h>
 #include <stddef.h>

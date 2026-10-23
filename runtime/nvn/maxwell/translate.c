@@ -80,6 +80,12 @@ typedef struct {
     uint32_t cbuf_need[18];  // highest constant vec4 index + 1 per cbuf (array size of the GLSL block)
     bool uses_shared;        // LDS / STS: compute shared memory, smem_words words (a power of two)
     uint32_t smem_words;
+    // (vertex) how the input attributes' values are used: the attribute each register holds (-1: none; a MOV
+    // carries it along), and those registers the instruction being translated reads (attr_uses)
+    int8_t attr_of[256];
+    struct { uint8_t r; int8_t a; } reads[24];
+    int nreads;
+    uint32_t attr_float_use, attr_int_use;
     // (GLSL) structured control flow (structure_flow): if / else and do / while for the pc state machine. By
     // instruction index: the braces to write before it, and whether it is dead code (after an unconditional jump or
     // EXIT)
@@ -113,6 +119,7 @@ static uint32_t norm_target(int64_t t) {
 static const char *reg(Ctx *c, int r, char *buf) {
     if (r == RZ) return "0u";
     c->reg_used[r] = 1;
+    if (c->attr_of[r] >= 0 && c->nreads < 24) { c->reads[c->nreads].r = (uint8_t)r; c->reads[c->nreads++].a = c->attr_of[r]; }
     sprintf(buf, "r%d", r);
     return buf;
 }
@@ -178,6 +185,7 @@ static const char *operand_c_for_ffma(Ctx *c, uint64_t w, char *buf, const char 
 static void set_reg(Ctx *c, int r, const char *expr) {
     if (r == RZ) return;
     c->reg_used[r] = 1;
+    c->attr_of[r] = -1;
     sp(&c->body, "    r%d = %s;\n", r, expr);
 }
 
@@ -205,6 +213,24 @@ static bool uint_operand(const char *p) {
         return false;
     }
     return *q == ')';
+}
+
+// How the instruction just emitted (text: its code) used the attribute values it read: as a float when each read is
+// as_type<float>(rN), else as an integer (an address, bit operations, a conversion). Assignments to rN don't count.
+static void attr_uses(Ctx *c, const char *text) {
+    for (int k = 0; k < c->nreads; k++) {
+        char name[8];
+        int n = snprintf(name, sizeof name, "r%d", c->reads[k].r);
+        bool as_float = false, as_int = false;
+        for (const char *t = text; (t = strstr(t, name)); t += n) {
+            if ((t > text && id_char(t[-1])) || id_char(t[n])) continue;
+            if (!strncmp(t + n, " = ", 3)) continue;
+            if (t - text >= 15 && !strncmp(t - 15, "as_type<float>(", 15) && t[n] == ')') as_float = true;
+            else as_int = true;
+        }
+        if (as_float) c->attr_float_use |= 1u << c->reads[k].a;
+        if (as_int) c->attr_int_use |= 1u << c->reads[k].a;
+    }
 }
 
 static const char *fneg_abs(const char *e, bool neg, bool abs_, char *buf) {
@@ -342,6 +368,7 @@ static void attr_load(Ctx *c, int dst, uint32_t addr, const char *idx) {
         sprintf(e, "0u /* attr %#x */", addr);
     }
     set_reg(c, dst, e);
+    if (c->stage == STAGE_VERTEX && addr >= 0x80 && addr < 0x280 && dst != RZ) c->attr_of[dst] = (int8_t)((addr - 0x80) >> 4);
 }
 
 static void attr_store(Ctx *c, int src, uint32_t addr) {
@@ -593,8 +620,8 @@ static void write_tex_result(Ctx *c, int slot, const char *call, uint32_t mask, 
 
 // Integer texel coordinates in guest units -> the (possibly larger) allocation of texture slot `slot`.
 static const char *RSC2(Ctx *c, int slot, const char *fmt, ...) {
-    static char bufs[4][1024];
-    static int bi;
+    static _Thread_local char bufs[4][1024];  // (per thread: shaders translate on several at once, precompile.c)
+    static _Thread_local int bi;
     char *o = bufs[bi++ & 3];
     char inner[700];
     va_list ap;
@@ -618,8 +645,8 @@ static const char *alayer(Ctx *c, const char *r, int slot, char *buf) {
 // Texel offsets are in guest texels: a scaled allocation (render-target scaling) has 1 / scale as many per guest
 // texel, so an offset moves the coordinates by offset * scale / allocated size (rscale[1 + slot]).
 static const char *off_scale(Ctx *c, int slot, int comps) {
-    static char bufs[4][48];
-    static int bi;
+    static _Thread_local char bufs[4][48];
+    static _Thread_local int bi;
     char *o = bufs[bi++ & 3];
     c->uses_rscale = true;
     snprintf(o, 48, " * rscale[%d].%s", slot + 1, comps == 1 ? "x" : "xy");
@@ -1351,7 +1378,9 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         set_reg(c, d, t);
     } else if (OPM(0x5c98000000000000ull, 0xfff8000000000000ull) || OPM(0x4c98000000000000ull, 0xfff8000000000000ull) ||
                OPM(0x3898000000000000ull, 0xfef8000000000000ull)) {  // MOV
+        int8_t a = b_form(w) == B_REG && bits(w, 20, 8) != RZ ? c->attr_of[bits(w, 20, 8)] : -1;
         set_reg(c, d, B(false));
+        if (a >= 0 && d != RZ) { c->attr_of[d] = a; c->nreads = 0; }  // (a copy: neither a float nor an integer use)
     } else if (OPM(0x0100000000000000ull, 0xfff0000000000000ull)) {  // MOV32I
         sprintf(t, "0x%08xu", (uint32_t)bits(w, 20, 32));
         set_reg(c, d, t);
@@ -2264,6 +2293,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     info->msl = glsl_with_prelude(s.buf);
     free(s.buf);
     info->attr_mask = c->in_attr_mask;
+    info->attr_int_use = c->attr_int_use & ~c->attr_float_use;
     info->out_mask = stage == STAGE_FRAGMENT ? c->omap_target : c->out_attr_mask;
     free(c->body.buf);
     free(c);
@@ -2296,6 +2326,20 @@ size_t maxwell_binary_size(const uint8_t *blob, size_t max_size, int stage) {
 #define XLATE_ID __DATE__ " " __TIME__
 #endif
 const char *maxwell_translator_id(void) { return XLATE_ID; }
+
+// SPH ImapGenericVector (0x18): a vertex shader's 4 bits per input attribute, a fragment shader's byte per varying
+// (2 bits per component, 0 unused).
+uint32_t maxwell_input_mask(const uint8_t *blob, int stage) {
+    const uint8_t *sph = blob + 0x30;
+    uint32_t m = 0;
+    for (int i = 0; i < 32 && stage == STAGE_VERTEX; i++)
+        if ((sph[0x18 + i / 2] >> ((i & 1) * 4)) & 0xF) m |= 1u << i;
+    for (int i = 0; i < 32 && stage == STAGE_FRAGMENT; i++)
+        if (sph[0x18 + i]) m |= 1u << i;
+    return m;
+}
+
+uint32_t maxwell_output_targets(const uint8_t *blob) { return *(const uint32_t *)(blob + 0x30 + 0x48); }
 
 // Whether a translation depends on more than the binary and the key (debugging switches): not to be cached.
 bool maxwell_translation_uncacheable(void) {
@@ -2506,6 +2550,7 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
     Ctx *c = calloc(1, sizeof *c);
     c->info = info;
     c->key = key;
+    memset(c->attr_of, 0xFF, sizeof c->attr_of);
     c->stage = stage;
     c->ipa_mode = -1;
     c->glsl = key && key->glsl;
@@ -2571,7 +2616,10 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
             sp(&c->body, "  case %uu:\n", pc);
         }
         if (annotate) sp(&c->body, "    // pc %x: %016llx\n", pc, (unsigned long long)((const uint64_t *)code)[i]);
+        c->nreads = 0;
+        size_t before = c->body.len;
         emit_insn(c, ((const uint64_t *)code)[i], pc);
+        if (c->nreads && c->body.buf) attr_uses(c, c->body.buf + before);
         if (dbg && pc == maxwell_dbg_pc) {
             int rr = maxwell_dbg_reg % 1000, half = maxwell_dbg_reg / 1000;  // +1000: low f16, +2000: high f16
             c->reg_used[rr] = 1;
@@ -2734,6 +2782,7 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
     }
     info->msl = s.buf;
     info->attr_mask = c->in_attr_mask;
+    info->attr_int_use = c->attr_int_use & ~c->attr_float_use;
     info->out_mask = stage == STAGE_FRAGMENT ? c->omap_target : c->out_attr_mask;
     free(c->body.buf);
     free(c);

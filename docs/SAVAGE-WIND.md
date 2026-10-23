@@ -716,6 +716,35 @@ Pendiente:
      traduce un draw o un dispatch con el mismo id y la clave que usó (líneas `[shader-seen]`).
      Cobertura, partida nueva de 240 s (título, intro, Santuario): los 481 shaders usados están en el inventario
      (220 VS, 255 FS, 6 CS). Sin los dos BNSH de `main` faltaban 12.
+   - Shaders precompilados en la preparación (2026-10-23): la primera vez que el juego usa un shader, el draw esperaba
+     su traducción, su SPIR-V y su pipeline del driver. Desde una partida nueva (título, intro, Santuario; 150 s,
+     Radeon 660M, RADV, caché de Mesa apagada) eran 29 frames con 50 ms o más de compilación y 16,2 s de compilación
+     dentro de frames lentos; 25,9 ms de media por pipeline. Ahora la pantalla de inicio, mientras compila el código
+     del juego, compila también todos los shaders del juego (`runtime/nvn/vulkan/precompile.c`):
+     - Del inventario (`shader_scan.c`): cada shader traducido con la clave que le dará un draw, su SPIR-V y su parte
+       de pipeline (las de vértice y fragmento con las pipeline libraries; los compute, el pipeline entero) en la
+       caché del driver (`cache/vk_pipelines.bin`).
+     - Claves: solo cuentan las entradas y los targets que declara la SPH (`canonical_key` en `shaders.c`;
+       `SAVAGEWIND_PRECOMPILE_CHECK=1` comprueba que ningún shader del juego lee una entrada sin declarar: 0). Los
+       atributos de vértice que el código solo usa como enteros (`attr_int_use`, por el uso de cada registro) se
+       compilan como uint; con dos juegos de índices de huesos, también con el segundo como float (llega sin
+       enlazar). Contra una sesión: 220 de 220 VS con la clave de sus draws.
+     - Varios hilos de prioridad baja, el más grande primero cuando cabe en un presupuesto de memoria (estimado por
+       tamaño; un octavo de la RAM mientras se compila el código del juego, un cuarto después), y
+       `malloc_trim` tras los grandes: RADV llega a ~1,3 GB por shader y glibc se los quedaba (7,1 → 2,7 GB de pico).
+     - El traductor ya puede traducir en varios hilos a la vez (sus anillos de cadenas son por hilo).
+     - Si falla la compilación del código del juego, los shaders paran; lo hecho queda en las cachés.
+     Ryzen 5 7535HS (6 núcleos) y Radeon 660M, solo: 104 s, 1,9 GB de pico, 1,5 GB en `cache/` (SPIR-V 0,9 GB,
+     traducciones 0,5 GB, `vk_pipelines.bin` 56 MB). 13.977 de 14.004: los 27 que no traducen (instrucciones de
+     superficie, TLDS info 6) no salieron en ninguna sesión medida. La misma partida nueva después: **0 frames
+     esperando una compilación**, 0,1 ms por pipeline, 0,65 s de compilación dentro de frames lentos (cargas).
+     `savagewind --precompile-shaders extracted` hace lo mismo desde la línea de comandos
+     (`SAVAGEWIND_PRECOMPILE_NO_DRIVER=1`: sin GPU, solo traducción y SPIR-V; `_THREADS=<n>`, `_MEM_MB=<n>`,
+     `_SAMPLE=<n>` uno de cada n, `_TIMES=<fichero>` una línea por shader con sus tiempos). Sin el handler de
+     señales de SDL: `kill` lo para.
+     Pendiente: un driver o una GPU nuevos vacían `vk_pipelines.bin` (su cabecera los nombra); las traducciones y el
+     SPIR-V siguen, pero las partes del driver se vuelven a hacer al primer uso, salvo lo que rehace la lista de
+     pipelines al arrancar. Volver a compilar el código del juego desde la configuración las rehace todas.
    - Herramientas de diagnóstico:
      - `SAVAGEWIND_THREAD_DUMP_AT=<s>,<s>`: estado, núcleo y cadena de llamadas de cada hilo; para los que
        esperan un mutex, también su palabra (el handle del dueño).

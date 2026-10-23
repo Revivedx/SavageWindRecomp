@@ -70,6 +70,8 @@ typedef struct {
     bool uses_tint;         // fragment: reads the per-draw tint (buffer 19, float4[2]) applied to color target 0
     bool uses_rscale;       // reads the resolution-scale table (fragment/compute buffer 18): float4 [0] = render
                             // target scale, [1 + i] = allocation scale of texture i
+    uint32_t attr_int_use;  // vertex: input attributes the code only uses as integers (precompile.c guesses that the
+                            // draws bind integer formats there)
     uint32_t local_mem;     // bytes of local memory
     uint32_t num_insts;
     char error[256];        // set when translation fails
@@ -95,5 +97,10 @@ void maxwell_free(ShaderInfo *s);
 size_t maxwell_binary_size(const uint8_t *code, size_t max_size, int stage);
 const char *maxwell_translator_id(void);
 bool maxwell_translation_uncacheable(void);
+// From the SPH: the generic inputs a graphics shader declares (bit i: vertex attribute i, or varying i of a fragment
+// shader), and the render targets a fragment shader writes (OmapTarget: 4 component bits per target). The parts of a
+// ShaderKey outside them change nothing in the translation.
+uint32_t maxwell_input_mask(const uint8_t *blob, int stage);
+uint32_t maxwell_output_targets(const uint8_t *blob);
 // Disassemble for debugging (writes text to f).
 void maxwell_disassemble(const uint8_t *code, size_t max_size, int stage, void *file);

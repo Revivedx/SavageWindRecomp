@@ -46,6 +46,7 @@ T("Make sure there's enough free space and try again. The log has the details.",
 T("Looking for the game files...", "Recherche des fichiers du jeu...")
 T("Copying the game files...", "Copie des fichiers du jeu...")
 T("Building the game data image...", "Création de l'image des données du jeu...")
+T("Compiling shaders...", "Compilation des shaders...")
 T("Game files ready.", "Fichiers du jeu prêts.")
 T("NSO", "")
 T("%d font file(s) imported, %d not recognized. Used from the next game start.", "%d fichier(s) de police importé(s), %d non reconnu(s). Utilisés dès le prochain lancement du jeu.")

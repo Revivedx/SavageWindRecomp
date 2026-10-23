@@ -47,6 +47,9 @@ extern "C" {
 #include "gamebuild.h"
 #include "gamelib.h"
 #include "romfs_build.h"
+#if !defined(__APPLE__)
+#include "nvn/vulkan/precompile.h"
+#endif
 #include "settings.h"
 #include "input_bind.h"
 void controls_bindings_draw(float scale);  // ui/controls_ui.mm
@@ -247,6 +250,8 @@ static unsigned long long g_phase_base;
 static std::atomic<float> g_build_frac{-1};  // -1: not building
 static bool g_copy_skipped;                  // (only the game code to build: the bar is all of that)
 static void setup_progress(uint64_t done, uint64_t) { g_done = g_phase_base + done; }
+static std::atomic<float> g_shader_frac{-1};  // (shaders: below) -1 while not compiling
+#define SHADER_SHARE 0.15f  // the shaders' part of the bar while both build
 static void build_progress(double f, const char *step) {
     g_build_frac = (float)f;
     static const char *last;
@@ -254,8 +259,52 @@ static void build_progress(double f, const char *step) {
 }
 static float extract_progress(void) {
     unsigned long long t = g_total, d = g_done;
-    float b = g_build_frac, f = b >= 0 ? (g_copy_skipped ? b : 0.1f + 0.9f * b) : t ? 0.1f * (float)((double)d / (double)t) : 0;
+    float b = g_build_frac, sh = g_shader_frac;
+    if (b >= 0 && sh >= 0) b = SHADER_SHARE * sh + (1 - SHADER_SHARE) * b;
+    float f = b >= 0 ? (g_copy_skipped ? b : 0.1f + 0.9f * b) : t ? 0.1f * (float)((double)d / (double)t) : 0;
     return f < 0 ? 0 : f > 0.99f ? 0.99f : f;
+}
+
+// Shaders compiled while the game code builds (runtime/nvn/vulkan/precompile.c: every shader of the game files
+// translated, in SPIR-V and in the driver's pipeline cache), so the first session doesn't stop to compile them. Its
+// workers run at low priority: the game code build goes first, the shaders take the cores it leaves idle. A failure
+// is only logged: the game then compiles them where first needed, as without this.
+#if !defined(__APPLE__)
+static void shader_progress(int done, int total) { g_shader_frac = total ? (float)done / (float)total : 1.0f; }
+static void *shader_thread(void *) {
+    PrecompileStats st;
+    char why[256] = "";
+    if (!precompile_shaders(g_root.c_str(), true, shader_progress, &st, why, sizeof why))
+        fprintf(stderr, "[launcher] shaders: %s\n", why);
+    else
+        fprintf(stderr, "[launcher] shaders: %d of %d compiled in %llu ms\n", st.compiled, st.shaders,
+                (unsigned long long)(st.scan_ms + st.compile_ms));
+    g_shader_frac = 1;
+    return NULL;
+}
+#endif
+
+static pthread_t g_shader_th;
+// While the game code builds (its compiler processes take ~1 GB each at most) the shaders' driver compiles get an
+// eighth of the RAM; once it's done, the default quarter.
+static void start_shaders(void) {
+#if !defined(__APPLE__)
+    g_shader_frac = 0;
+    precompile_stop(false);
+    precompile_memory_budget((int64_t)SDL_GetSystemRAM() / 8);
+    pthread_create(&g_shader_th, NULL, shader_thread, NULL);
+#endif
+}
+// built: the game code is ready (else the shaders stop: setting up again goes on from where they were)
+static void finish_shaders(bool built) {
+#if !defined(__APPLE__)
+    if (g_shader_frac < 0) return;
+    if (!built) precompile_stop(true);
+    precompile_memory_budget(0);
+    if (built && g_shader_frac < 1) set_job("Compiling shaders...");
+    pthread_join(g_shader_th, NULL);
+    g_shader_frac = -1;
+#endif
 }
 
 // Builds the game code from the copied files (a few minutes); false = failed (the job line says so)
@@ -282,7 +331,10 @@ static void *extract_thread(void *) {
     bool unusable = false;  // (game packages rather than its files)
     if (src.empty() && check_copied_files(g_root).empty()) {  // copied already (an update needs new game code)
         g_copy_skipped = true;
-        if (!build_game_code()) goto done;
+        start_shaders();
+        bool built = build_game_code();
+        finish_shaders(built);
+        if (!built) goto done;
         goto check;
     }
     set_job("Looking for the game files...");
@@ -321,7 +373,10 @@ static void *extract_thread(void *) {
             set_failure(FAIL_COPY);
             goto done;
         }
-        if (!build_game_code()) goto done;
+        start_shaders();
+        bool built = build_game_code();
+        finish_shaders(built);
+        if (!built) goto done;
     }
 check:
     {

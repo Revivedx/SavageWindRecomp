@@ -558,8 +558,8 @@ static bool sync_shaders(void) {
     return env == 2 ? !g_settings.async_shaders : env;
 }
 
-// Shader translation: one dedicated thread (the translator isn't re-entrant - translate.c's RSC2 string ring - and
-// translating on the game thread cost up to ~90 ms per frame on entering an area). Compiles go on to the workers.
+// Shader translation: one dedicated thread (translating on the game thread cost up to ~90 ms per frame on entering
+// an area). Compiles go on to the workers.
 static pthread_mutex_t translate_lock = PTHREAD_MUTEX_INITIALIZER;  // (compute shaders translate on the game thread)
 static Job *tjobs_head, *tjobs_tail;
 static pthread_mutex_t tjobs_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -2222,6 +2222,27 @@ static VkResult gpl_link(const PipeState *s, const StageBuild *vs, const StageBu
     return r;
 }
 
+// (precompile.c) What the driver's cache (vk_pipelines.bin) needs for a shader before the game draws with it: its
+// pipeline-library part as a draw first asks for it (no depth clamp, filled polygons), or a compute shader's whole
+// pipeline (group size from its control section). Made and dropped: the cache keeps them.
+bool vk_prebuild_stage(const uint32_t *spv, size_t nwords, int stage) {
+    StageBuild sb = {0};
+    sb.nbinds = vk_reflect(spv, nwords, sb.binds, MAX_BIND);
+    sb.m = vk_module(spv, nwords);
+    if (!sb.m) return false;
+    GplKey k;
+    memset(&k, 0, sizeof k);
+    k.kind = stage == STAGE_VERTEX ? GPL_VS : GPL_FS;
+    k.sb = &sb;
+    k.s.poly_fill = 1;
+    VkPipeline p = gpl_make(&k);
+    if (p) vkDestroyPipeline(g_vk.dev, p, NULL);
+    vkDestroyShaderModule(g_vk.dev, sb.m, NULL);
+    if (sb.lib_layout) vkDestroyPipelineLayout(g_vk.dev, sb.lib_layout, NULL);
+    if (sb.lib_set) vkDestroyDescriptorSetLayout(g_vk.dev, sb.lib_set, NULL);
+    return p != VK_NULL_HANDLE;
+}
+
 // Graphics pipelines by stages and fixed state, whoever made them first: a draw (build_pipeline, for its Prog's
 // Pipe) or the pre-warm. One being built is waited for; the pre-warm skips those a draw made first.
 typedef struct WarmPipe {
@@ -3226,6 +3247,29 @@ static void build_compute(void *arg) {
     cp->p.layout = c->layout;
     cp->pipe = c->pipe;
     atomic_store(&cp->p.state, atomic_load(&c->state) == 2 ? 1 : 2);
+}
+
+bool vk_prebuild_compute(const uint32_t *spv, size_t nwords, const uint32_t local[3]) {
+    VkBindingInfo binds[MAX_BIND];
+    int nbinds = vk_reflect(spv, nwords, binds, MAX_BIND);
+    VkShaderModule m = vk_module(spv, nwords);
+    if (!m) return false;
+    VkDescriptorSetLayout sl[2] = {0};
+    VkPipelineLayout layout = make_layout(binds, nbinds, sl, 1, VK_SHADER_STAGE_COMPUTE_BIT, 0);
+    VkSpecializationMapEntry me[3] = {{0, 0, 4}, {1, 4, 4}, {2, 8, 4}};
+    VkSpecializationInfo spec = {3, me, 12, local};
+    VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+                                      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main",
+                                                .pSpecializationInfo = &spec},
+                                      .layout = layout};
+    VkPipeline p = VK_NULL_HANDLE;
+    VkResult r = vkCreateComputePipelines(g_vk.dev, g_vk.pcache, 1, &ci, NULL, &p);
+    if (p) vkDestroyPipeline(g_vk.dev, p, NULL);
+    vkDestroyPipelineLayout(g_vk.dev, layout, NULL);
+    vkDestroyDescriptorSetLayout(g_vk.dev, sl[0], NULL);
+    vkDestroyShaderModule(g_vk.dev, m, NULL);
+    return r == VK_SUCCESS;
 }
 
 static struct CsEnt { uint64_t addr; CsProg *cp; } g_cs_tab[256];  // compute programs by code address

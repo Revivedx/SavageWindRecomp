@@ -46,6 +46,7 @@ T("Make sure there's enough free space and try again. The log has the details.",
 T("Looking for the game files...", "ゲームファイルを探しています...")
 T("Copying the game files...", "ゲームファイルをコピーしています...")
 T("Building the game data image...", "ゲームデータのイメージを作成しています...")
+T("Compiling shaders...", "シェーダーをコンパイルしています...")
 T("Game files ready.", "ゲームファイルの準備ができました。")
 T("NSO", "")
 T("%d font file(s) imported, %d not recognized. Used from the next game start.", "%d個のフォントファイルをインポートしました（%d個は認識できませんでした）。次回のゲーム起動から使われます。")
