@@ -15,6 +15,7 @@
 #include "shaders.h"
 #include "vk.h"
 #include "../renderer.h"
+#include "../shader_scan.h"
 #include "../../settings.h"
 
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
@@ -1380,6 +1381,22 @@ static void save_glsl(const char *src, uint64_t addr, const char *suffix) {
     if (f) { fputs(src, f); fclose(f); }
 }
 
+// SAVAGEWIND_SHADER_LOG=1: a [shader-seen] line per shader translation a draw or dispatch asks for: stage, code id (the
+// id --shader-scan gives the same shader in the game files), translation id, and the key as the translation used it
+// (vertex attributes it reads: their kinds, '.' unread; the varyings its vertex shader gives; render target kinds).
+static void shader_seen(int stage, uint64_t code, uint32_t cmax, const ShaderKey *k, const ShaderInfo *si) {
+    static int on = -1;
+    if (on < 0) on = getenv("SAVAGEWIND_SHADER_LOG") != NULL;
+    if (!on || !si) return;
+    char attrs[33], rts[9];
+    for (int i = 0; i < 32; i++) attrs[i] = stage == STAGE_VERTEX && (si->attr_mask >> i & 1) ? (char)('0' + k->attr_kind[i]) : '.';
+    for (int i = 0; i < 8; i++) rts[i] = (char)('0' + k->rt_kind[i]);
+    attrs[32] = rts[8] = 0;
+    LOG("[shader-seen] %d %016llx xlate %016llx attrs %s vsout %08x rt %s ok %d\n", stage,
+        (unsigned long long)shader_code_id((const uint8_t *)(uintptr_t)code, cmax, stage), (unsigned long long)vk_translate_id(si),
+        attrs, stage == STAGE_FRAGMENT ? k->vs_out_mask : 0, rts, si->msl != NULL);
+}
+
 // One stage's SPIR-V module and bindings, per translated shader: programs share their vertex and fragment shaders
 // (the same ShaderInfo, vk_translate_cached), so a stage seen in another program costs no SPIR-V load, reflection or
 // module creation again.
@@ -1568,6 +1585,8 @@ static void translate_program(void *arg) {
         p->fi = vk_translate_cached((const uint8_t *)(uintptr_t)p->code[1], p->cmax[1], STAGE_FRAGMENT, &p->fkey);
     }
     pthread_mutex_unlock(&translate_lock);
+    shader_seen(STAGE_VERTEX, p->code[0], p->cmax[0], &p->vkey, p->vi);
+    if (p->vi->msl) shader_seen(STAGE_FRAGMENT, p->code[1], p->cmax[1], &p->fkey, p->fi);
     atomic_fetch_add(&prof_c_tr, SDL_GetTicksNS() - pt0); atomic_fetch_add(&prof_c_ntr, 1);
     if (!p->vi->msl) {
         LOG("[shader] VS translate failed: %s (code %llx)\n", p->vi->error, (unsigned long long)p->code[0]);
@@ -2919,6 +2938,7 @@ static CsProg *compute_program(NvnProgram *np) {
     cp->si = vk_translate_cached((const uint8_t *)(uintptr_t)ss->code_addr, ss->const_offset ? ss->const_offset : 0x10000, STAGE_COMPUTE, &k);
     pthread_mutex_unlock(&translate_lock);
     cp->p.vi = cp->si;
+    shader_seen(STAGE_COMPUTE, ss->code_addr, ss->const_offset ? ss->const_offset : 0x10000, &k, cp->si);
     if (!cp->si->msl) {
         LOG("[compute] translate failed: %s (code %llx)\n", cp->si->error, (unsigned long long)ss->code_addr);
         dump_failed_shader(ss->code_addr, ss->const_offset ? ss->const_offset : 0x10000, "cs");

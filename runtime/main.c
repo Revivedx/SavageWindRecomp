@@ -8,6 +8,8 @@
 #include "gamelib.h"
 #include "paths.h"
 #include "romfs_build.h"
+#include "maxwell/shader.h"
+#include "shader_scan.h"
 #include "settings.h"
 #include "hle.h"
 #include "kernel.h"
@@ -205,6 +207,30 @@ static int build_romfs_image(const char *root) {
     return ok ? 0 : 1;
 }
 
+// --shader-scan: every shader of the game files (runtime/nvn/shader_scan.c) as a table on stdout: "S <stage> <id>
+// <size>" per shader, "P <vertex id> <fragment id>" per program; the counts on stderr.
+static int shader_scan_table(const char *root) {
+    char dir[1100], main_nso[1100], why[256] = "";
+    snprintf(dir, sizeof dir, "%s/romfs", root);
+    snprintf(main_nso, sizeof main_nso, "%s/exefs/main", root);
+    uint64_t t0 = plat_now_ns();
+    ScanResult r;
+    if (!shader_scan(dir, main_nso, &r, why, sizeof why)) { fprintf(stderr, "[scan] %s\n", why); return 1; }
+    int per_stage[6] = {0};
+    for (int i = 0; i < r.nshaders; i++) {
+        per_stage[r.shaders[i].stage]++;
+        printf("S %d %016llx %u\n", r.shaders[i].stage, (unsigned long long)r.shaders[i].id, r.shaders[i].size);
+    }
+    for (int i = 0; i < r.nprograms; i++)
+        printf("P %016llx %016llx\n", (unsigned long long)r.shaders[r.programs[i].vs].id,
+               (unsigned long long)r.shaders[r.programs[i].fs].id);
+    fprintf(stderr, "[scan] %d shaders (%d vertex, %d fragment, %d compute), %d programs, from %d files in %llu ms\n",
+            r.nshaders, per_stage[STAGE_VERTEX], per_stage[STAGE_FRAGMENT], per_stage[STAGE_COMPUTE], r.nprograms, r.files,
+            (unsigned long long)((plat_now_ns() - t0) / 1000000));
+    shader_scan_free(&r);
+    return 0;
+}
+
 // The start screen (runtime/ui/launcher.mm), in one of two modes: SETUP sets the game files up and nothing else (a
 // plain start before they're ready; the game starts once they are), CONFIG is the whole configuration screen - Play,
 // Settings, the game files, Quit ("Savage Wind Configuration", --config; Quit to Start Screen comes back to it).
@@ -224,11 +250,12 @@ int main(int argc, char **argv) {
     bool skip_launcher = getenv("SAVAGEWIND_NO_LAUNCHER") || getenv("SAVAGEWIND_INPUT");  // tests boot straight in
     bool config = false;
     static char arg_root[1024];
-    bool build_romfs = false;
+    bool build_romfs = false, scan_shaders = false;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--play")) skip_launcher = true;
         else if (!strcmp(argv[i], "--config")) config = true;
         else if (!strcmp(argv[i], "--build-romfs")) build_romfs = true;
+        else if (!strcmp(argv[i], "--shader-scan")) scan_shaders = true;
         else if (argv[i][0] != '-' && !realpath(argv[i], arg_root)) root = argv[i];  // (relative to where we started)
         else if (argv[i][0] != '-') root = arg_root;
     }
@@ -237,6 +264,7 @@ int main(int argc, char **argv) {
 #endif
     rt_paths_init();  // the data root becomes the working directory (runtime/paths.h)
     if (build_romfs) return build_romfs_image(root);
+    if (scan_shaders) return shader_scan_table(root);
     // A plain start goes straight into the game once the game files are set up and the game code built from them
     // matches this build; the start screen only when there is something to set up, or when asked for.
     int mode = config ? LAUNCHER_CONFIG : skip_launcher || launcher_game_ready(root) ? LAUNCHER_NONE : LAUNCHER_SETUP;
