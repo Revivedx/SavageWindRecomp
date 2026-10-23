@@ -266,7 +266,7 @@ def make_case(r, w):
 
 def compile_tests(work, bodies, jobs, cflags):
     cc = os.environ.get('CC', 'clang')
-    flags = ['-O1'] + cflags.split() + ['-fno-strict-aliasing', '-Wno-unused-label', '-I',
+    flags = ['-O1'] + cflags.split() + ['-fno-strict-aliasing', '-fdenormal-fp-math=dynamic', '-Wno-unused-label', '-I',
              os.path.join(ROOT, 'runtime')]
     n = max(1, min(jobs, len(bodies) // 200 + 1))
     per = (len(bodies) + n - 1) // n
