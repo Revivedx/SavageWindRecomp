@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "../gamelib.h"
 #include "../hle.h"
 #include "../ipc.h"
 #include "../language.h"
@@ -368,12 +369,12 @@ static void rom_index(int fd) {
     LOG("[fs] romfs index: %d files\n", rom_nfiles);
 }
 
-// The title screen's version line: main 1.8.2 formats System/Version.txt with "Ver.%s" (0x71014b854e in the Ghidra
-// project, read by FUN_7100d4b57c and FUN_7100d4bca0); "%s" leaves just "Savage Wind <version>". Called once main is
-// loaded; anything else at that address is left alone.
+// The title screen's version line: the game formats System/Version.txt with "Ver.%s" ("title_version_fmt" in
+// tools/game_symbols.py, read by the title screen's update); "%s" leaves just "Savage Wind <version>". Called once
+// main is loaded; anything else at that address is left alone.
 void fs_title_version_patch(void) {
-    char *fmt = (char *)(uintptr_t)0x70014b854eull;
-    if (memcmp(fmt, "Ver.%s", 7)) { LOG("[fs] title version: \"Ver.%%s\" not found, left as is\n"); return; }
+    char *fmt = (char *)(uintptr_t)rt_game_sym("title_version_fmt");
+    if (!fmt || memcmp(fmt, "Ver.%s", 7)) { LOG("[fs] title version: \"Ver.%%s\" not found, left as is\n"); return; }
     memcpy(fmt, "%s", 3);
 }
 

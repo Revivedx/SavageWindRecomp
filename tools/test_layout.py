@@ -32,6 +32,7 @@ import tempfile
 
 import lz4.block
 
+import game_symbols
 import layout
 from nso import Nso
 
@@ -43,13 +44,15 @@ OLD_SDK_BASE = 0x7004000000  # where LASRecomp's fixed layout put sdk
 # like BOTW 1.8.2's: symbols in DT_GNU_HASH only (no DT_HASH), relative relocations in DT_RELR only
 NEW_SDK = {'subsdk0', 'sdk'}
 
-# name: (rodata, data, bss sizes, exported functions, imports, build id byte)
+# name: (rodata, data, bss sizes, exported functions, imports, build id: 8 bytes as hex)
+# main's is BOTW 1.8.2's: gen.py takes the patch sites from tools/patches.py and the runtime's addresses from
+# tools/game_symbols.py by it.
 MODULES = {
-    'rtld': (0x1000, 0x1000, 0, 2, [], 0x10),
-    'main': (0x2F00000, 0x400000, 0x1A00123, 6, ['sw_test_subsdk0_fn1'], 0x11),
-    'subsdk0': (0x600000, 0x100000, 0x80000, 4, [], 0x12),
-    'subsdk1': (0x1000, 0x1000, 0x123, 2, ['sw_test_sdk_fn0'], 0x13),
-    'sdk': (0x800000, 0x200000, 0x300321, 5, [], 0x14),
+    'rtld': (0x1000, 0x1000, 0, 2, [], '1010101010101010'),
+    'main': (0x2F00000, 0x400000, 0x1A00123, 6, ['sw_test_subsdk0_fn1'], 'de0b6ac4efc1dda7'),
+    'subsdk0': (0x600000, 0x100000, 0x80000, 4, [], '1212121212121212'),
+    'subsdk1': (0x1000, 0x1000, 0x123, 2, ['sw_test_sdk_fn0'], '1313131313131313'),
+    'sdk': (0x800000, 0x200000, 0x300321, 5, [], '1414141414141414'),
 }
 
 
@@ -71,7 +74,7 @@ def nso_file(segs, bss, build_id):
         file_off += len(packed)
         mem = align(mem + len(seg), 0x1000)
     struct.pack_into('<I', hdr, 0x3C, bss)
-    hdr[0x40:0x60] = bytes([build_id]) * 0x20
+    hdr[0x40:0x60] = bytes.fromhex(build_id * 4)
     return bytes(hdr) + body
 
 
@@ -269,7 +272,7 @@ def jump_table_module():
                        data_off + len(data) - MOD0_AT, eh_at - MOD0_AT, eh_at + len(eh) - MOD0_AT,
                        data_off + len(data) - MOD0_AT)
     text[MOD0_AT:MOD0_AT + len(mod0)] = mod0
-    return nso_file([text, ro, data], 0, 0x30), L
+    return nso_file([text, ro, data], 0, '3030303030303030'), L
 
 
 def jump_tables(root, check):
@@ -354,7 +357,7 @@ def main():
         extent = align(text, 0x1000) + align(ro, 0x1000) + data + bss
         check(s == align(extent, layout.PAGE) and b % layout.PAGE == 0, f'{n}: image size {s:#x}')
         check(nxt is None or nxt[1] == b + s, f'{n}: next module right after it')
-        check(i == bytes([MODULES[n][5]]).hex() * 32, f'{n}: build id')
+        check(i == MODULES[n][5] * 4, f'{n}: build id')
     check(lay[0][1] + lay[0][2] > OLD_SDK_BASE, 'main is past where LASRecomp put sdk (the case this is for)')
     check(layout.problems(lay) == [], 'loadable')
     for n, spec in MODULES.items():
@@ -366,7 +369,7 @@ def main():
               f'{n}: relative relocations found in {"DT_RELR" if n in NEW_SDK else "DT_RELA"}')
 
     with tempfile.TemporaryDirectory() as t:  # too big for the module area / no sdk: refused
-        big = dict(MODULES, main=(0x1000, 0x1000, 0x7FF00000, 1, [], 0x21))  # (+ sdk: past 2 GiB)
+        big = dict(MODULES, main=(0x1000, 0x1000, 0x7FF00000, 1, [], '2121212121212121'))  # (+ sdk: past 2 GiB)
         make_exefs(t, {k: v for k, v in big.items() if k in ('main', 'sdk')})
         why = layout.problems(layout.compute(t))
         check(len(why) == 1 and 'past' in why[0], f'oversized layout refused: {why}')
@@ -390,6 +393,9 @@ def main():
         chunk = open(os.path.join(gen, n, f'{n}_000.c')).read()
         check(all(f'void f_{a:x}(Cpu *c)' in chunk for a in want), f'{n}: functions named by address')
     check(f'game_module_count = {len(lay)};' in c, 'layout.c module count')
+    syms = game_symbols.symbols('de0b6ac4efc1dda7')  # (main's build id: MODULES)
+    check(all(f'{{"{n}", {v:#x}ull}},' in c for n, (kind, v) in syms), 'layout.c: the game addresses')
+    check(f'game_symbol_count = {len(syms)};' in c, 'layout.c symbol count')
 
     # ---- gen.py <module> with layout.txt
     one = os.path.join(root, 'one')

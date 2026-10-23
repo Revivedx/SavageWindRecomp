@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "../framepace.h"
+#include "../gamelib.h"
 #include "../kernel.h"
 #include "../perfmon.h"
 #include "nvn.h"
@@ -1045,18 +1046,18 @@ NVN(nvnWindowGetNumTextures) { RET(WIN->num); }
 NVN(nvnWindowGetNumActiveTextures) { RET(WIN->active); }
 NVN(nvnWindowSetNumActiveTextures) { WIN->active = (int)A(1); }
 NVN(nvnWindowGetPresentInterval) { RET(WIN->interval); }
-// BOTW's frame loop (sead GameFrameworkNx, main 0x700101287c) sets the interval here every frame (lr 0x7001012a34,
-// x19 = the framework). It times each frame ([fw+0x250], 19.2 MHz system ticks, from the frame's start to the end of
-// its calc and draw) and goes to interval 3 (20 fps) after three frames in a row over 1.9 vsyncs (31.7 ms), back to
-// 2 after a few fast ones; [fw+0x234] is the highest interval it may pick (3).
+// BOTW's frame loop (sead GameFrameworkNx) sets the interval here every frame (its return address is the frame loop's,
+// "frame_loop_lr" in tools/game_symbols.py; x19 = the framework). It times each frame ([fw+0x250], 19.2 MHz system
+// ticks, from the frame's start to the end of its calc and draw) and goes to interval 3 (20 fps) after three frames in
+// a row over 1.9 vsyncs (31.7 ms), back to 2 after a few fast ones; [fw+0x234] is the highest interval it may pick
+// (3).
 // SAVAGEWIND_LOG_FRAMETIME=<ms>: frames whose game time is over that, and every change of interval (tests).
 // SAVAGEWIND_MAX_INTERVAL=2: the game never picks 3, so its step per frame is fixed and a scripted run takes the same
 // path every time (benchmarks; with 3 allowed, the path depends on the frame times). The default while Savage Wind
 // paces the frames and sets the game's clock (runtime/hle/framepace.c): the interval no longer sets either.
-#define FRAME_LOOP_LR 0x7001012a34ull
 NVN(nvnWindowSetPresentInterval) {
     int want = (int)A(1);
-    if (c->x[30] == FRAME_LOOP_LR) {
+    if (c->x[30] == rt_game_sym("frame_loop_lr")) {
         uint64_t fw = c->x[19];
         static int log_ms = -2, max_iv = -1;
         if (log_ms == -2) { const char *e = getenv("SAVAGEWIND_LOG_FRAMETIME"); log_ms = e ? atoi(e) : -1; }

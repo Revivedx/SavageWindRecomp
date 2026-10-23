@@ -80,8 +80,9 @@ def read(path):
     return out
 
 
-def c_source(layout):
-    """layout.c: the layout inside the game code library, with each module's function table (runtime/gamelib.h)."""
+def c_source(layout, symbols=()):
+    """layout.c: the layout inside the game code library, with each module's function table (runtime/gamelib.h) and
+    the game addresses the runtime uses (tools/game_symbols.py, read through rt_game_sym)."""
     lines = ['// Module layout of this game code (tools/layout.py). Generated.\n#include "gamelib.h"\n\n']
     for n, *_ in layout:
         lines.append(f'extern const uint64_t {n}_fn_addrs[], {n}_fn_count;\nextern const GuestFn {n}_fn_ptrs[];\n')
@@ -89,6 +90,12 @@ def c_source(layout):
     for n, b, s, i in layout:
         lines.append(f'    {{"{n}", {b:#x}ull, {s:#x}ull, "{i}", {n}_fn_addrs, {n}_fn_ptrs, &{n}_fn_count}},\n')
     lines.append(f'}};\nconst uint32_t game_module_count = {len(layout)};\n')
+    lines.append('\nconst GameLibSymbol game_symbols[] = {\n')
+    for name, (kind, value) in symbols:
+        lines.append(f'    {{"{name}", {value:#x}ull}},\n')
+    if not symbols:  # (C has no empty initializer)
+        lines.append('    {0, 0},\n')
+    lines.append(f'}};\nconst uint32_t game_symbol_count = {len(symbols)};\n')
     return ''.join(lines)
 
 
@@ -103,10 +110,10 @@ def write_if_changed(path, s):  # (an unchanged file keeps its date: make doesn'
         f.write(s)
 
 
-def write(layout, outdir):
+def write(layout, outdir, symbols=()):
     os.makedirs(outdir, exist_ok=True)
     write_if_changed(os.path.join(outdir, 'layout.txt'), text(layout))
-    write_if_changed(os.path.join(outdir, 'layout.c'), c_source(layout))
+    write_if_changed(os.path.join(outdir, 'layout.c'), c_source(layout, symbols))
 
 
 def show(layout):
@@ -123,4 +130,8 @@ if __name__ == '__main__':
     if why:
         sys.exit('layout: ' + '; '.join(why))
     if len(sys.argv) == 3:
-        write(lay, sys.argv[2])
+        import game_symbols
+        try:
+            write(lay, sys.argv[2], game_symbols.checked(lay))
+        except ValueError as e:
+            sys.exit(f'layout: {e}')

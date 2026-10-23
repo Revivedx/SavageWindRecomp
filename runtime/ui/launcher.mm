@@ -1,8 +1,9 @@
 // Start screen, shown before the game boots, in two modes (runtime/main.c picks):
 // - setup: a plain start whose game files aren't set up yet (or whose game code was built for another version of
 //   Savage Wind). Only the game files page: nothing of the game ships with Savage Wind, so the user picks the folder
-//   with their own extracted game files (exefs/ and romfs/), we check the main module is an NSO of version 1.8.2,
-//   copy the files, build the game's data image and recompile the game code - then the game starts.
+//   with their own extracted game files (exefs/ and romfs/), we check the main module is an NSO of a supported
+//   version (runtime/gameversions.h), copy the files, build the game's data image and recompile the game code - then
+//   the game starts.
 // - configuration ("Savage Wind Configuration", --config): PLAY, SETTINGS, GAME FILES (set up, set up again,
 //   delete), QUIT, the game-files status at the lower left.
 // Once the game files are ready a plain start goes straight into the game. Skipped with --play,
@@ -46,6 +47,7 @@ extern "C" {
 #include "paths.h"
 #include "gamebuild.h"
 #include "gamelib.h"
+#include "gameversions.h"
 #include "romfs_build.h"
 #include "settings.h"
 #include "input_bind.h"
@@ -122,13 +124,21 @@ static bool nso_build_id(const std::string &main_path, std::string *hex) {
     return true;
 }
 
-// The game version this build is made for: BOTW 1.8.2, told by its main module's build id (the first 8 bytes;
-// tools/sw_probe.py prints it). Other versions would need their own recompilation work.
-static const char *const SUPPORTED_MAIN[] = {"de0b6ac4efc1dda7"};
-static bool supported_main(const std::string &id) {
-    for (const char *s : SUPPORTED_MAIN)
-        if (id == s) return true;
-    return false;
+// The game versions Savage Wind can recompile and run (runtime/gameversions.h, from tools/game_symbols.py), told by
+// the main module's build id (the first 8 bytes; tools/sw_probe.py prints it).
+static const KnownGameVersion *supported_version(const std::string &id) {
+    for (unsigned i = 0; i < known_game_version_count; i++)
+        if (id == known_game_versions[i].id) return &known_game_versions[i];
+    return nullptr;
+}
+
+static std::string supported_versions() {  // ("1.8.2, 1.9.0")
+    std::string s;
+    for (unsigned i = 0; i < known_game_version_count; i++) {
+        if (i) s += ", ";
+        s += known_game_versions[i].display;
+    }
+    return s;
 }
 
 // The copied game files alone ("" = there), without the game code built from them.
@@ -136,7 +146,7 @@ static std::string check_copied_files(const std::string &root) {
     if (!file_exists(root + "/exefs/main")) return "No game files";
     std::string id;
     if (!nso_build_id(root + "/exefs/main", &id)) return "Game files unreadable (exefs/main is not an NSO)";
-    if (!supported_main(id)) return "Game files aren't version 1.8.2";
+    if (!supported_version(id)) return "Game files aren't a supported version";
     if (!is_dir(root + "/romfs") || !file_exists(root + "/romfs.bin")) return "Game data missing";
     return "";
 }
@@ -144,8 +154,13 @@ static std::string check_copied_files(const std::string &root) {
 // "" = ready to play, else what is wrong
 static std::string check_game_files(const std::string &root) {
     std::string why = check_copied_files(root);
-    if (why.empty() && !gamelib_present(root.c_str()))  // (a library with another id: an update of Savage Wind)
-        return file_exists(root + "/" GAMELIB_NAME) ? "Game code built for another version" : "Game code not built yet";
+    if (why.empty()) {
+        std::string id;
+        nso_build_id(root + "/exefs/main", &id);  // (readable: checked above)
+        // (a library with another id: an update of Savage Wind; one built from other game files: another version's)
+        if (!gamelib_present(root.c_str(), id.c_str()))
+            return file_exists(root + "/" GAMELIB_NAME) ? "Game code built for another version" : "Game code not built yet";
+    }
     return why;
 }
 
@@ -179,11 +194,11 @@ static void set_job(const std::string &s, bool failed = false, const std::string
 }
 
 // Setup failures: a short headline and what to do next (also SAVAGEWIND_LAUNCHER_SHOT=<f>:fail<1-7>, screenshots)
-enum { FAIL_NOT_FOUND = 1, FAIL_UNUSABLE, FAIL_COPY, FAIL_VERSION, FAIL_MISSING, FAIL_BUILD, FAIL_NOT_182 };
+enum { FAIL_NOT_FOUND = 1, FAIL_UNUSABLE, FAIL_COPY, FAIL_VERSION, FAIL_MISSING, FAIL_BUILD, FAIL_UNSUPPORTED_VERSION };
 static void set_failure(int k) {
     static const char *const head[] = {"", "No game files found in that folder", "Those files can't be used",
                                        "Setup didn't finish", "The game's main module can't be read", "Game files incomplete",
-                                       "The game code didn't build", "Not version 1.8.2"};
+                                       "The game code didn't build", "Unsupported game version"};
     static const char *const hint[] = {
         "",
         "Choose the folder that holds the extracted game files (exefs and romfs).",
@@ -192,9 +207,13 @@ static void set_failure(int k) {
         "exefs/main must be the decrypted, extracted main module (an NSO file).",
         "Some files are missing. Choose the folder again; if it happens again, extract the game again.",
         "Make sure there's enough free space and try again. The log has the details.",
-        "Savage Wind needs the game updated to version 1.8.2: the 1.8.2 ExeFS and the RomFS with the update merged "
-        "in. Update the game on your console, extract it again and choose that folder."};
-    if (k >= 1 && k <= 7) set_job(head[k], true, hint[k]);
+        "Savage Wind needs the game updated to a version it supports. Update the game on your console, extract it "
+        "again and choose that folder."};
+    if (k == FAIL_UNSUPPORTED_VERSION)
+        set_job(head[k], true,
+                std::string(hint[k]) + "\n" + tr("Supported versions:") + " " + supported_versions());
+    else if (k >= 1 && k <= 7)
+        set_job(head[k], true, hint[k]);
 }
 
 // What keeps the game from starting, said on the game files page as a setup failure is (nothing when there are simply
@@ -208,8 +227,8 @@ static void explain_status(const std::string &st) {
     else if (st == "Game code not built yet")
         set_job("The game code isn't built yet", true,
                 "Choose Set up game files to build it from your copy of the game. This takes a few minutes.");
-    else set_failure(st.find("NSO") != std::string::npos ? FAIL_VERSION
-                     : st.find("1.8.2") != std::string::npos ? FAIL_NOT_182 : FAIL_MISSING);
+    else if (st == "Game files aren't a supported version") set_failure(FAIL_UNSUPPORTED_VERSION);
+    else set_failure(st.find("NSO") != std::string::npos ? FAIL_VERSION : FAIL_MISSING);
 }
 
 // exefs: the folder with main and main.npdm; romfs: a folder named romfs (the game's data root). Found in the picked
@@ -292,7 +311,7 @@ static void *extract_thread(void *) {
         std::string id;
         if (!nso_build_id(exefs + "/main", &id)) { set_failure(FAIL_VERSION); goto done; }
         fprintf(stderr, "[launcher] main build id %s\n", id.c_str());
-        if (!supported_main(id)) { set_failure(FAIL_NOT_182); goto done; }  // (before copying 15 GB)
+        if (!supported_version(id)) { set_failure(FAIL_UNSUPPORTED_VERSION); goto done; }  // (before copying 15 GB)
     }
     {
         // (the picked folder can't be Savage Wind's own copy: setting up again deletes that first)
@@ -327,8 +346,8 @@ check:
     {
         std::string why = check_game_files(g_root);
         if (why.empty()) set_job("Game files ready.");
-        else set_failure(why.find("NSO") != std::string::npos ? FAIL_VERSION
-                         : why.find("1.8.2") != std::string::npos ? FAIL_NOT_182 : FAIL_MISSING);
+        else if (why == "Game files aren't a supported version") set_failure(FAIL_UNSUPPORTED_VERSION);
+        else set_failure(why.find("NSO") != std::string::npos ? FAIL_VERSION : FAIL_MISSING);
     }
 done:
     pthread_mutex_lock(&g_lock);
@@ -1075,8 +1094,8 @@ extern "C" void launcher_run(const char *root, int mode) {
                 if (welcome && !busy) {  // what this is about, the first time
                     ImGui::PushTextWrapPos(0);
                     ImGui::TextColored(ImVec4(0.86f, 0.85f, 0.80f, 1), "%s",
-                                       tr("Savage Wind needs your own copy of the game, version 1.8.2. Choose the folder "
-                                          "with its extracted files and set them up: the game starts when it's done."));
+                                       tr("Savage Wind needs your own copy of the game. Choose the folder with its "
+                                          "extracted files and set them up: the game starts when it's done."));
                     ImGui::PopTextWrapPos();
                     ImGui::Dummy(ImVec2(0, 10 * sc));
                 }
@@ -1101,7 +1120,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                     dl->AddLine(ImVec2(x + u * 0.35f, cy + u * 0.35f), ImVec2(x + u, cy - u * 0.4f), g, fs * 0.11f);
                 };
                 std::string src_d = tr("The folder with your own extracted game files: exefs (main, main.npdm, sdk...) and "
-                                       "romfs, version 1.8.2 with the update merged in. The game isn't included with Savage Wind.");
+                                       "romfs, with the update merged in. The game isn't included with Savage Wind.");
                 if (!src.empty()) src_d += std::string("\n\n") + tr("Chosen:") + " " + src;
                 // the step that's running / its result, under the rows and in the Set up row's explanation
                 const std::string &job_line = job;

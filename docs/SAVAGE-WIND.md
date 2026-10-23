@@ -57,8 +57,10 @@ savage_wind/extracted/
   romfs/   contenido completo de la romfs (base + actualización ya fusionadas)
 ```
 
-La versión objetivo es la 1.8.2 (versión de título v1048576), la última. El build id del módulo `main`
-identifica la versión exacta; `tools/sw_probe.py` lo imprime.
+Las versiones soportadas son la 1.8.2 (versión de título v1048576) y la 1.9.0 (v1114112). El build id del módulo
+`main` identifica la versión exacta; `tools/sw_probe.py` lo imprime. Qué versiones acepta el binario está en
+`runtime/gameversions.h` (generado de `tools/game_symbols.py`), y las direcciones del juego que el runtime usa están
+en ese mismo archivo por build: el runtime las pide por nombre con `rt_game_sym` y no conoce ninguna versión.
 
 ## Cambios respecto de LASRecomp
 
@@ -151,7 +153,6 @@ Hechos:
 Pendiente:
 
 1. Restos de LA conocidos, sin efecto en la compilación:
-   - `ui/launcher.mm` no comprueba la versión: falta el build id del `main` 1.8.2 (`tools/sw_probe.py`).
    - `hle/movie.c` solo deja saltar `movie/opening.webm` (nombre de LA).
    - `hle/framepace.c` y `hle/heaps.c` explican sus valores con casos de LA (siguen siendo genéricos).
    - `CONTRIBUTING.md` es de LASRecomp. (El README y el ícono ya son propios: `docs/icon/icon.svg`, una montaña

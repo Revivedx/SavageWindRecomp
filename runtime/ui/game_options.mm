@@ -6,11 +6,11 @@
 // the title menu's amiibo settings) asks with the game's own dialog: desktop or the Savage Wind start screen.
 //
 // The game side (tools/patches.py): the screen builds one row per entry of a static option table each time it opens
-// (entries through 0x7001cccda0 / count 0x7001cccd98, row order through 0x7001cccdb0 / count 0x7001cccda8). The
-// first time it opens, the table is pointed at a copy with this file's entries after the game's 14; each opening then
-// gets the row order of the page asked for. Rows of these entries have their value, texts and A handled here. A page
-// change closes the screen; the title menu's update (rt_opt_title_tick) or the pause System page's Options state
-// (rt_opt_pause_tick) opens it again.
+// (its entry count, entries, row order and its count: "option_count" and the names next to it in
+// tools/game_symbols.py). The first time it opens, the table is pointed at a copy with this file's entries after the
+// game's 14; each opening then gets the row order of the page asked for. Rows of these entries have their value,
+// texts and A handled here. A page change closes the screen; the title menu's update (rt_opt_title_tick) or the pause
+// System page's Options state (rt_opt_pause_tick) opens it again.
 //
 // Threads: every hook runs on the game's thread, inside the screen's own functions.
 #include <math.h>
@@ -28,6 +28,7 @@
 #include "i18n.h"
 
 extern "C" {
+#include "../gamelib.h"
 #include "../input_bind.h"
 #include "../language.h"
 #include "../nvn/output_scale.h"
@@ -47,13 +48,16 @@ void wr8(uint64_t a, uint8_t v) { *(volatile uint8_t *)(uintptr_t)a = v; }
 void wr32(uint64_t a, uint32_t v) { *(volatile uint32_t *)(uintptr_t)a = v; }
 void wr64(uint64_t a, uint64_t v) { *(volatile uint64_t *)(uintptr_t)a = v; }
 
-const uint64_t OPT_COUNT = 0x7001cccd98, OPT_ENTRIES = 0x7001cccda0, OPT_ROWS = 0x7001cccda8, OPT_ORDER = 0x7001cccdb0;
-const uint64_t SCREEN_MGR = 0x7001cd5c38;  // ScreenMgr *: +0x28 screen count, +0x30 screen pointers by id
+// The game's addresses this file uses (tools/game_symbols.py, the game code's layout.c): they belong to the build the
+// game code was generated from, so they are asked for by name, never written down here.
+uint64_t ga(const char *name) { return rt_game_sym(name); }
+
 const uint32_t SCREEN_OPTIONS = 0x34;
 const uint32_t MENU_OPTIONS_ACTIVE = 0x6a;  // title menu +0x363c while its Options button's screen is up
 const uint32_t SCREEN_DIALOG = 0x39, TITLE_AMIIBO_BUTTON = 0x6c;
-const uint64_t DIALOG_ANSWER = 0x7001c4b308;  // the dialog's answer (FUN_7100d46068 takes it)
 const uint32_t DIALOG_NO_ANSWER = 0xd;
+// The game's option table, found by install() (count, entries, row order and its count: main's own pointers)
+uint64_t g_opt_count, g_opt_entries, g_opt_rows, g_opt_order;
 const int GAME_ENTRIES = 14;
 // the game's entries (game data flag names): 1 CameraUpDownReverse, 2 CameraRLReverse, 7 StickSensitivity,
 // 9 AmiiboItemOnOff, 11 / 12 VoiceLanguage (a button or a level, one per platform), 13 DisplaySpecialMode (Toy-Con
@@ -379,10 +383,13 @@ void build_items(void) {
 
 // The game's table, extended (first opening, and again after a reboot reloads the game's own)
 bool install(void) {
-    uint64_t ent = rd64(OPT_ENTRIES);
+    g_opt_count = ga("option_count"), g_opt_entries = ga("option_entries");
+    g_opt_rows = ga("option_rows"), g_opt_order = ga("option_order");
+    if (!g_opt_count || !g_opt_entries || !g_opt_rows || !g_opt_order) return false;  // (not this game's build)
+    uint64_t ent = rd64(g_opt_entries);
     if (g_installed && ent == g_installed) return true;
-    uint32_t count = rd32(OPT_COUNT), rows = rd32(OPT_ROWS);
-    uint64_t order = rd64(OPT_ORDER);
+    uint32_t count = rd32(g_opt_count), rows = rd32(g_opt_rows);
+    uint64_t order = rd64(g_opt_order);
     if (count != GAME_ENTRIES || !ent || !order || rows == 0 || rows > 32) {
         fprintf(stderr, "[options] unexpected option table (%u entries, %u rows): Savage Wind's pages left out\n",
                 count, rows);
@@ -418,14 +425,14 @@ bool install(void) {
     }
     for (size_t i = 0; i < g_items.size(); i++) g_order[g_items[i].page].push_back(GAME_ENTRIES + (uint32_t)i);
     g_installed = (uint64_t)(uintptr_t)g_entries.data();
-    wr64(OPT_ENTRIES, g_installed);
-    wr32(OPT_COUNT, (uint32_t)g_entries.size());
+    wr64(g_opt_entries, g_installed);
+    wr32(g_opt_count, (uint32_t)g_entries.size());
     fprintf(stderr, "[options] Savage Wind's pages added to the Options screen (%zu entries)\n", g_items.size());
     return true;
 }
 
 const Item *item_of_index(uint32_t idx) {
-    if (!g_installed || rd64(OPT_ENTRIES) != g_installed) return nullptr;
+    if (!g_installed || rd64(g_opt_entries) != g_installed) return nullptr;
     if (idx < GAME_ENTRIES || idx >= GAME_ENTRIES + g_items.size()) return nullptr;
     return &g_items[idx - GAME_ENTRIES];
 }
@@ -438,14 +445,15 @@ int clamp_value(const Item &it, int x) {
 
 void mark_all_rows(uint64_t screen) {
     if (!screen) return;
-    int n = (int)rd32(screen + 0x3698);
-    uint64_t rows = rd64(screen + 0x36a0);
+    int n = (int)rd32(screen + ga("screen_rows_count_off"));
+    uint64_t rows = rd64(screen + ga("screen_rows_list_off"));
     for (int i = 0; i < n && i < 64 && rows; i++)
         if (uint64_t r = rd64(rows + 8 * i)) g_dirty.push_back(r);
 }
 
 uint64_t screen_by_id(uint32_t id) {
-    uint64_t mgr = rd64(SCREEN_MGR);
+    uint64_t addr = ga("screen_mgr");  // (ScreenMgr: +0x28 screen count, +0x30 screen pointers by id)
+    uint64_t mgr = addr ? rd64(addr) : 0;
     if (!mgr) return 0;
     uint32_t n = rd32(mgr + 0x28);
     uint64_t screens = rd64(mgr + 0x30);
@@ -486,9 +494,11 @@ void put_text(uint32_t id, const char *s, uint64_t out, bool grey = false) {
 // The quit question's answer (title menu and Options updates)
 void quit_poll(void) {
     if (!g_quit_dialog) return;
-    uint32_t a = rd32(DIALOG_ANSWER);
+    uint64_t ans = ga("dialog_answer");
+    if (!ans) return;
+    uint32_t a = rd32(ans);
     if (a == 0 || a == 1) {
-        wr32(DIALOG_ANSWER, DIALOG_NO_ANSWER);
+        wr32(ans, DIALOG_NO_ANSWER);
         g_quit_dialog = 0;
         fprintf(stderr, "[options] quit: %s\n", a == 1 ? "start screen" : "desktop");
         settings_save();
@@ -529,8 +539,8 @@ extern "C" void rt_opt_rows(void) {
         Entry &e = g_entries[GAME_ENTRIES + i];
         if (g_items[i].kind == KIND_CHOICE) e.last_value = e.first_value + g_items[i].count(g_items[i]) - 1;
     }
-    wr64(OPT_ORDER, (uint64_t)(uintptr_t)o.data());
-    wr32(OPT_ROWS, (uint32_t)o.size());
+    wr64(g_opt_order, (uint64_t)(uintptr_t)o.data());
+    wr32(g_opt_rows, (uint32_t)o.size());
     g_cur_page = page;
     g_reopen = false;
     g_dirty.clear();
@@ -680,7 +690,7 @@ extern "C" void rt_opt_back(void) {
 // The quit question's answer is read here too.
 extern "C" int rt_opt_title_tick(uint64_t menu) {
     quit_poll();
-    if (rd32(menu + 0x363c) != MENU_OPTIONS_ACTIVE) {  // (the Options button isn't active: next opening, first page)
+    if (rd32(menu + ga("menu_button_off")) != MENU_OPTIONS_ACTIVE) {  // (not the Options button: next time, page one)
         g_reopen = g_switching = false;
         return 0;
     }
@@ -700,8 +710,8 @@ extern "C" int rt_opt_pause_tick(void) {
 extern "C" uint64_t rt_opt_screen(void) { return options_screen(); }
 
 // ---- Quit: the game's two-button dialog (screen 0x39, type 7) asks: desktop (upper button) or the start screen
-// (lower). Its buttons write their answer to 0x7001c4b308 (upper 0x5b: 0, lower 0x5a: 1; FUN_7100d46598) and leave
-// the dialog up; B closes it without an answer (rt_quit_dialog_back).
+// (lower). Its buttons write their answer to the dialog's answer ("dialog_answer": upper 0x5b: 0, lower 0x5a: 1) and
+// leave the dialog up; B closes it without an answer (rt_quit_dialog_back).
 
 // The title menu's amiibo settings button (Savage Wind has no amiibo support) is Quit
 extern "C" int rt_title_event(uint32_t id) { return id == TITLE_AMIIBO_BUTTON; }
@@ -719,7 +729,8 @@ extern "C" int rt_title_msg(uint64_t label, uint64_t out) {
 extern "C" uint64_t rt_quit_dialog_begin(uint64_t owner) {
     g_quit_dialog = screen_by_id(SCREEN_DIALOG);
     g_quit_texts = g_quit_dialog != 0;
-    wr32(DIALOG_ANSWER, DIALOG_NO_ANSWER);
+    uint64_t ans = ga("dialog_answer");  // (the dialog's answer, as the game's own handlers take it)
+    if (ans) wr32(ans, DIALOG_NO_ANSWER);
     if (g_quit_dialog && owner && rd64(owner + 0x38)) {
         g_quit_owner = owner;
         uint64_t in = rd64(owner + 0x38) + 0x38;

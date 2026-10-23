@@ -24,7 +24,7 @@
 #ifndef GAMELIB_ID
 #define GAMELIB_ID "dev"
 #endif
-#define GAMELIB_ABI 2
+#define GAMELIB_ABI 3
 
 // One exefs module as the game code was generated for it: where it goes (tools/layout.py, the generated layout.c)
 // and its functions. runtime/loader.c loads the module there.
@@ -37,11 +37,20 @@ typedef struct {
     const uint64_t *count;
 } GameLibModule;
 
+// One game address the runtime uses (tools/game_symbols.py, the generated layout.c): they belong to the build the
+// code was generated from, so the runtime asks for them by name (rt_game_sym) instead of knowing a version.
+typedef struct {
+    const char *name;
+    uint64_t value;
+} GameLibSymbol;
+
 typedef struct {
     uint32_t abi;    // GAMELIB_ABI
     const char *id;  // GAMELIB_ID
     const GameLibModule *modules;  // in load order, main first
     const uint32_t *nmodules;
+    const GameLibSymbol *symbols;  // the game's addresses for this build
+    const uint32_t *nsymbols;
 } GameLibTables;
 
 // The library's one exported function (tools/gamelib_entry.c).
@@ -57,8 +66,12 @@ extern "C" {
 bool gamelib_load(const char *game_dir, char *why, size_t why_size);
 // The tables of the loaded library (NULL before gamelib_load succeeds).
 const GameLibTables *gamelib_tables(void);
-// True when a library usable with this build is in one of those places (without loading it).
-bool gamelib_present(const char *game_dir);
+// A game address of the loaded library's build by name (tools/game_symbols.py), 0 when it has none or no library is
+// loaded. The game code carries the values of the build it was generated from: nothing here knows a version.
+uint64_t rt_game_sym(const char *name);
+// True when a library usable with this build is in one of those places, built from the game files of main_build_id
+// (the exefs/main NSO's build id: a library from another version's files is not it).
+bool gamelib_present(const char *game_dir, const char *main_build_id);
 
 #ifdef __cplusplus
 }

@@ -8,9 +8,9 @@
 > your own discretion.
 
 **Savage Wind Recomp** is a work-in-progress static recompilation of *The Legend of Zelda: Breath of the Wild*
-(Nintendo Switch, version 1.8.2) into a native application for Windows and Linux. The goal is a full PC version of
-your own copy of the game: a launcher, PC-style graphics options, mods, any controller, keyboard and mouse, and
-its text and voices in any of its languages.
+(Nintendo Switch, versions 1.8.2 and 1.9.0) into a native application for Windows and Linux. The goal is a full PC
+version of your own copy of the game: a launcher, PC-style graphics options, mods, any controller, keyboard and
+mouse, and its text and voices in any of its languages.
 
 > [!WARNING]
 > **Playable, but how far is unknown.** Savage Wind plays the opening in the Shrine of Resurrection and the Great
@@ -21,10 +21,10 @@ its text and voices in any of its languages.
 
 > [!NOTE]
 > **No game files are included.** Savage Wind Recomp needs your own legally obtained copy of the game, updated to
-> **version 1.8.2**, dumped from **your own** Nintendo Switch. This project does not include, and will not provide,
-> game files, keys, firmware, dumping or decryption tools, or instructions on how to obtain any of them. Savage Wind
-> never decrypts anything: it only reads files you have already extracted yourself. The recompilation of the game
-> code happens locally, on your machine, from your files.
+> **version 1.8.2 or 1.9.0**, dumped from **your own** Nintendo Switch. This project does not include, and will not
+> provide, game files, keys, firmware, dumping or decryption tools, or instructions on how to obtain any of them.
+> Savage Wind never decrypts anything: it only reads files you have already extracted yourself. The recompilation of
+> the game code happens locally, on your machine, from your files.
 
 ## Getting started (Alpha 2, Windows)
 
@@ -32,7 +32,7 @@ its text and voices in any of its languages.
    and extract it to a folder you can write to (not Program Files): your game files, saves and settings are kept in
    that folder.
 2. Run `savagewind.exe`. The first time it asks for your game files: pick the folder with your own extracted game
-   (`exefs/` and `romfs/`, version 1.8.2, see below) and choose **Set up game files**. It checks the version, copies
+   (`exefs/` and `romfs/`, see below) and choose **Set up game files**. It checks the version, copies
    the files, builds the data image and recompiles the game code on your machine - once, and it takes a while (about
    40 minutes with a 12-thread CPU). Your own files aren't changed. When it's done the game starts.
 3. From then on `savagewind.exe` goes straight into the game. The settings, including the text and voice languages,
@@ -50,9 +50,10 @@ Needs Windows 10 or later, a CPU with AVX2, a GPU with Vulkan 1.3 and about 35 G
 
 ## What you need
 
-- Your own *Breath of the Wild* (cartridge or digital) and its **1.8.2 update**, extracted from your own console:
-  - the **ExeFS** of 1.8.2 (`main`, `main.npdm`, `rtld`, `sdk`, `subsdk0`)
-  - the **RomFS** with the update applied (base game and 1.8.2 merged)
+- Your own *Breath of the Wild* (cartridge or digital) and its **1.8.2 or 1.9.0 update**, extracted from your own
+  console:
+  - the **ExeFS** of that version (`main`, `main.npdm`, `rtld`, `sdk`, `subsdk0`)
+  - the **RomFS** with the update applied (base game and the update merged)
 - DLC: not supported yet (planned, see the roadmap).
 - Windows 10 or later (x86-64, a CPU with AVX2) or Linux (x86-64), and a GPU with Vulkan 1.3.
 
@@ -61,7 +62,7 @@ The files go in `extracted/` next to the program (git ignores this folder):
 ```
 extracted/
   exefs/   main, main.npdm, rtld, sdk, subsdk0
-  romfs/   the complete RomFS (base game + 1.8.2 merged)
+  romfs/   the complete RomFS (base game + the update merged)
 ```
 
 The `main` module's build id tells the exact version; `python tools/sw_probe.py` (it reads `extracted/exefs`)
@@ -75,7 +76,7 @@ Estimates of where each part stands. "Tested in game" is how much of the game ha
 |---|---|---|---|
 | ✅ | **Recompiler** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | The whole game (main, sdk and multimedia modules) recompiles to native code |
 | ✅ | **Game files setup** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Version check, copy, data image and code build, all from your own files |
-| ✅ | **Latest game version** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Version 1.8.2, the latest |
+| ✅ | **Latest game versions** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Versions 1.8.2 and 1.9.0 |
 | ✅ | **Text and voice languages** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Any of the game's 15 text languages with any of its 8 voice languages |
 | ✅ | **Menus in 11 languages** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Savage Wind's own screens follow the text language |
 | ✅ | **Sound and voices** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Mixed by the game SDK's own audio renderer, with room reverb |

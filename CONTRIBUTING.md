@@ -25,7 +25,8 @@ game in bug reports are fine.
 Open a GitHub issue with:
 
 - your platform (Windows / Linux), hardware (CPU, GPU) and window size
-- the game version (the `main` build id that `python tools/sw_probe.py` prints; 1.8.2 is the one supported)
+- the game version (the `main` build id that `python tools/sw_probe.py` prints; 1.8.2 and 1.9.0 are the ones
+  supported, `tools/game_symbols.py`)
 - what you did, what happened, and what you expected
 - a screenshot or short clip if it's visual
 - for crashes: the log the app prints to the terminal (run it from a terminal to capture it)
@@ -33,8 +34,8 @@ Open a GitHub issue with:
 ## Building
 
 See the README's "Building from source", [docs/BUILD-windows.md](docs/BUILD-windows.md) for Windows and
-[docs/linux.md](docs/linux.md) for Linux. In short: put your own 1.8.2 files in `extracted/`, `make gen` once to
-recompile the game code from them, then `make -j`.
+[docs/linux.md](docs/linux.md) for Linux. In short: put your own 1.8.2 or 1.9.0 files in `extracted/`, `make gen`
+once to recompile the game code from them, then `make -j`.
 
 ## Project layout
 

@@ -69,6 +69,8 @@ class Module:
         self.cache = {}
         self.stats = Counter()
         self.mu = None
+        # the patch sites and the addresses their code embeds, for this build (tools/patches.py; main only)
+        self.patch_sites, self.patch_vars = {}, {}
         # the functions as compiled: discovery may split one into several C functions, a jump table spans all of it
         self.fdes = sorted((base + a, base + b) for a, b in eh_frame_extents(n) if b > a)
         self.fde_starts = [a for a, _ in self.fdes]
@@ -422,9 +424,15 @@ class Module:
             if a in labels:
                 flush()
                 out.append(f'L_{a:x}:;')
-            if a in PATCHES:  # hand-written replacement for one instruction (tools/patches.py)
+            site = self.patch_sites.get(a)
+            if site:  # hand-written replacement for one instruction (tools/patches.py)
                 flush()
-                out.append('    ' + PATCHES[a](self, a))
+                word, fn = site
+                got = struct.unpack_from('<I', self.nso.image, a - self.base)[0]
+                if got != word:
+                    sys.exit(f'{self.nso.build_id[:16]}: {a:#x}: the patch expects instruction {word:#010x}, '
+                             f'found {got:#010x} (tools/patches.py)')
+                out.append('    ' + fn(self, a))
                 last = 'op'
                 continue
             k = ins.kind
@@ -486,7 +494,8 @@ class Module:
         return out
 
 
-from patches import PATCHES
+import game_symbols
+from patches import PATCH_BUILDS
 
 
 def write_if_changed(path, text):
@@ -568,6 +577,12 @@ def discover(m, starts):
 def generate(name, nso, base, outdir, opts):
     t0 = time.time()
     m = Module(name, nso, base, opts.simd)
+    if name == 'main':  # (the patches replace instructions of the main module: tools/patches.py)
+        bid = m.nso.build_id[:16]
+        if bid not in PATCH_BUILDS:
+            sys.exit(f'{name}: unsupported main build id {bid} (tools/patches.py)')
+        m.patch_sites = PATCH_BUILDS[bid]['sites']
+        m.patch_vars = PATCH_BUILDS[bid]['vars']
     starts = m.boundaries()
     hle = {}
     if opts.hle and os.path.exists(opts.hle):
@@ -663,7 +678,11 @@ def main():
             exefs, outdir = args.input, args.paths[0]
             lay = layout.checked(exefs)
             layout.show(lay)
-            layout.write(lay, outdir)
+            try:
+                syms = game_symbols.checked(lay)  # (the runtime's game addresses for this build, into layout.c)
+            except ValueError as e:
+                raise layout.LayoutError(str(e)) from None
+            layout.write(lay, outdir, syms)
             if args.name == 'all':
                 present = {n for n, *_ in lay}
                 for n in layout.LOAD_ORDER:  # a module gone from the exefs: its old C would still be built in
