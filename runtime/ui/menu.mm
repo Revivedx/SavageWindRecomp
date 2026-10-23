@@ -706,6 +706,14 @@ static void tab_about(void) {
     toggle("D-pad as left stick", &g_settings.dpad_move);
     hint("The d-pad (and the arrow keys) also move like the left stick while the stick is at rest.");
     ImGui::Spacing();
+    header("Controller");
+    float dz = roundf(g_settings.lstick_deadzone * 100);
+    if (opt_slider("Left stick dead zone", &dz, 0, STICK_DEADZONE_MAX * 100, 1, 0, "%g%%", "Raise it if Link moves by himself."))
+        g_settings.lstick_deadzone = dz / 100.0f;
+    dz = roundf(g_settings.rstick_deadzone * 100);
+    if (opt_slider("Right stick dead zone", &dz, 0, STICK_DEADZONE_MAX * 100, 1, 0, "%g%%", "Raise it if the camera turns by itself."))
+        g_settings.rstick_deadzone = dz / 100.0f;
+    ImGui::Spacing();
     header("Mouse");
     toggle("Mouse camera", &g_settings.mouse_camera);
     hint("The mouse turns the camera. While you play, the cursor stays in the window; Esc or F1 frees it.");

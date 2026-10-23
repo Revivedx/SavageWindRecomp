@@ -79,6 +79,8 @@ void settings_load(void) {
         else if (!strcmp(key, "mouse_camera")) g_settings.mouse_camera = atoi(val) != 0;
         else if (!strcmp(key, "mouse_sensitivity")) g_settings.mouse_sens = (float)atof(val);
         else if (!strcmp(key, "mouse_invert_y")) g_settings.mouse_invert_y = atoi(val) != 0;
+        else if (!strcmp(key, "left_stick_deadzone")) g_settings.lstick_deadzone = (float)atof(val);
+        else if (!strcmp(key, "right_stick_deadzone")) g_settings.rstick_deadzone = (float)atof(val);
         else if (!strcmp(key, "async_shaders")) g_settings.async_shaders = atoi(val) != 0;
         else if (!strcmp(key, "text_language")) {  // (a region language: USen, EUes, ...; auto)
             g_settings.text_language = 0;
@@ -125,6 +127,8 @@ void settings_load(void) {
         g_settings.fps_limit = best;
     }
     if (!(g_settings.mouse_sens >= 0.1f && g_settings.mouse_sens <= 10.0f)) g_settings.mouse_sens = MOUSE_SENS_DEFAULT;
+    if (!(g_settings.lstick_deadzone >= 0 && g_settings.lstick_deadzone <= STICK_DEADZONE_MAX)) g_settings.lstick_deadzone = 0;
+    if (!(g_settings.rstick_deadzone >= 0 && g_settings.rstick_deadzone <= STICK_DEADZONE_MAX)) g_settings.rstick_deadzone = 0;
     LOG("[settings] loaded %s\n", SETTINGS_FILE);
 }
 
@@ -155,6 +159,8 @@ void settings_save(void) {
     fprintf(f, "mouse_camera = %d\n", g_settings.mouse_camera);
     fprintf(f, "mouse_sensitivity = %.2f\n", g_settings.mouse_sens);
     fprintf(f, "mouse_invert_y = %d\n", g_settings.mouse_invert_y);
+    fprintf(f, "left_stick_deadzone = %.2f\n", g_settings.lstick_deadzone);
+    fprintf(f, "right_stick_deadzone = %.2f\n", g_settings.rstick_deadzone);
     fprintf(f, "async_shaders = %d\n", g_settings.async_shaders);
     int tl = g_settings.text_language, vl = g_settings.voice_language;
     fprintf(f, "text_language = %s\n", tl > 0 && tl < g_ntext_languages ? g_text_languages[tl].folder : "auto");
