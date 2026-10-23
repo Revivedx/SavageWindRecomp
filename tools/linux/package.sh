@@ -29,7 +29,7 @@ else
 fi
 
 # the app alone (the game code is built on the player's machine)
-make -j"$JOBS" B="$B" DEPS="$P" SHADERC=-lshaderc_shared "${MAKEARGS[@]}" "$B/savagewind"
+make -j"$JOBS" B="$B" DEPS="$P" "${MAKEARGS[@]}" "$B/savagewind"  # (the DEPS link line asks for libshaderc_shared itself)
 if nm "$B/savagewind" | grep ' f_70' >/dev/null; then echo "$B/savagewind has game code linked in"; exit 1; fi
 ZIG_TARGET=$ARCH-linux tools/fetch_zig.sh
 
