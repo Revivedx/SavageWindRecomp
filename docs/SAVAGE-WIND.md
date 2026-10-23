@@ -692,6 +692,20 @@ Pendiente:
      Muestra de 1 de cada 10 shaders del juego (Radeon 660M, RADV, 6 hilos, con el control de flujo estructurado de
      #48): compilación del driver 83,8 → 28,8 s de CPU y reloj 19,8 → 10,2 s. El MSL no cambia
      (`tools/test_translate.sh` contra el commit anterior: 0 diferencias en 20.000 programas).
+   - Pipelines por partes (2026-10-23): un draw con una combinación nueva de shaders y estado fijo creaba un pipeline
+     entero y volvía a compilar los dos shaders aunque otro pipeline ya los tuviera (25,9 ms por pipeline en una
+     Radeon 660M desde una partida nueva). Con `VK_EXT_graphics_pipeline_library` y fast linking, el pipeline se enlaza
+     de cuatro partes que se guardan por contenido (`exec.c`): entrada de vértices, el vertex shader con su estado de
+     rasterización, el fragment shader y la salida (formatos, blend, muestras). Las partes de los shaders, que son lo
+     que cuesta compilar, dependen solo de su shader y de su descriptor set (layouts con sets independientes: el 0 del
+     vertex shader, el 1 del fragment shader): un pipeline de shaders ya vistos solo se enlaza. Con
+     `VK_EXT_extended_dynamic_state3` el depth clamp y el polygon mode son dinámicos, así que la parte del vertex
+     shader no depende de ellos. El draw espera al enlace rápido; un hilo de prioridad baja enlaza después las mismas
+     partes con optimización (LTO) y los draws pasan a ese pipeline. El precalentamiento de la lista de pipelines usa
+     el mismo camino. `SAVAGEWIND_VK_NO_GPL=1` vuelve a los pipelines enteros (lo que tienen los dispositivos sin las
+     extensiones); `SAVAGEWIND_VK_NO_LTO=1` deja los enlaces rápidos. La línea de `SAVAGEWIND_VK_PROF` cuenta las
+     partes y los enlaces. Desde una partida nueva (150 s, caché de Mesa apagada): 25,9 → 15,1 ms por pipeline y
+     16,2 → 12,6 s de compilación dentro de frames lentos. La capa de validación no da mensajes nuevos.
    - Herramientas de diagnóstico:
      - `SAVAGEWIND_THREAD_DUMP_AT=<s>,<s>`: estado, núcleo y cadena de llamadas de cada hilo; para los que
        esperan un mutex, también su palabra (el handle del dueño).
