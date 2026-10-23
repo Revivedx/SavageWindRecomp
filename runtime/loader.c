@@ -16,7 +16,7 @@ enum { R_ABS64 = 257, R_GLOB_DAT = 1025, R_JUMP_SLOT = 1026, R_RELATIVE = 1027 }
 typedef struct { uint32_t name; uint8_t info, other; uint16_t shndx; uint64_t value, size; } Elf64Sym;
 typedef struct { uint64_t off, info; int64_t addend; } Elf64Rela;
 
-static size_t lz4_decompress(const uint8_t *src, size_t srclen, uint8_t *dst, size_t dstlen) {
+size_t lz4_decompress(const uint8_t *src, size_t srclen, uint8_t *dst, size_t dstlen) {
     const uint8_t *s = src, *se = src + srclen;
     uint8_t *d = dst, *de = dst + dstlen;
     while (s < se) {

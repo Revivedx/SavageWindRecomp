@@ -706,6 +706,16 @@ Pendiente:
      extensiones); `SAVAGEWIND_VK_NO_LTO=1` deja los enlaces rápidos. La línea de `SAVAGEWIND_VK_PROF` cuenta las
      partes y los enlaces. Desde una partida nueva (150 s, caché de Mesa apagada): 25,9 → 15,1 ms por pipeline y
      16,2 → 12,6 s de compilación dentro de frames lentos. La capa de validación no da mensajes nuevos.
+   - Inventario de los shaders del juego (2026-10-23): BOTW no compila ningún shader en marcha. Todos van
+     compilados para la GPU de la consola en sus archivos: BNSH dentro de los archivos de shaders de los materiales
+     (`Shader/uking_*.sbfsha`, en paquetes Yaz0 / SARC), de efectos y de eventos, los paquetes `.sharcb` del motor agl
+     (magic `BAHS`) y dos BNSH en el rodata de `main`. `runtime/nvn/shader_scan.c` los recorre en paralelo, con los
+     formatos como los lee `prepare_shader_seed.py` de MacNativeGames (MIT): en 1.8.2, **14.004 shaders** (6.576 VS,
+     7.356 FS, 72 CS) y 10.347 programas VS + FS, en 1,5-1,7 s con 6 núcleos. `savagewind --shader-scan extracted`
+     escribe la tabla (`S <etapa> <id> <bytes>`, `P <vs> <fs>`). `SAVAGEWIND_SHADER_LOG=1` apunta cada shader que
+     traduce un draw o un dispatch con el mismo id y la clave que usó (líneas `[shader-seen]`).
+     Cobertura, partida nueva de 240 s (título, intro, Santuario): los 481 shaders usados están en el inventario
+     (220 VS, 255 FS, 6 CS). Sin los dos BNSH de `main` faltaban 12.
    - Herramientas de diagnóstico:
      - `SAVAGEWIND_THREAD_DUMP_AT=<s>,<s>`: estado, núcleo y cadena de llamadas de cada hilo; para los que
        esperan un mutex, también su palabra (el handle del dueño).

@@ -44,6 +44,7 @@ typedef struct Module {
 extern Module g_modules[MAX_MODULES];  // in load order
 extern int g_nmodules;
 void loader_load(const char *exefs_dir);  // (again after a reboot: modules are reloaded into wiped memory)
+size_t lz4_decompress(const uint8_t *src, size_t srclen, uint8_t *dst, size_t dstlen);  // (an NSO segment) bytes written
 Module *loader_module(const char *name);  // NULL if the game has no such module
 uint64_t loader_find_symbol(const char *name);
 uint64_t loader_find_symbol_in(const char *module, const char *name);  // an export of that module only
