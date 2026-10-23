@@ -5,7 +5,7 @@
 // from the title screen menu (Options); this replaces the overlay menu in game (menu.mm). Quit (here, and in place of
 // the title menu's amiibo settings) asks with the game's own dialog: desktop or the Savage Wind start screen.
 //
-// The game side (tools/patches.py): the screen builds one row per entry of a static option table each time it opens
+// The game side (tools/recomp/patches.py): the screen builds one row per entry of a static option table each time it opens
 // (entries through 0x7001cccda0 / count 0x7001cccd98, row order through 0x7001cccdb0 / count 0x7001cccda8). The
 // first time it opens, the table is pointed at a copy with this file's entries after the game's 14; each opening then
 // gets the row order of the page asked for. Rows of these entries have their value, texts and A handled here. A page

@@ -1,5 +1,5 @@
 // Korean menu texts (runtime/ui/i18n.mm): T("English", "한국어"); "" keeps the English text.
-// Regenerate the list of texts it lacks with tools/i18n_check.py --missing ko.
+// Regenerate the list of texts it lacks with tools/tests/i18n_check.py --missing ko.
 T("Press a button...", "버튼을 누르세요...")
 T("Press a key...", "키를 누르세요...")
 T("Nintendo", "")

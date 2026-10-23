@@ -89,7 +89,7 @@ static void save_png(id<MTLTexture> tex, const char *path) {
 }
 #endif
 
-// The version this build is (also names the release files; Makefile / tools/bundle_macos.sh / make_dmg.sh read it).
+// The version this build is (also names the release files; Makefile / tools/packaging/bundle_macos.sh / make_dmg.sh read it).
 #define SAVAGEWIND_VERSION "0.2.0-alpha.2"
 extern "C" const char *rt_version(void) { return SAVAGEWIND_VERSION; }  // (the title screen's version line: fs.c)
 
@@ -123,7 +123,7 @@ static bool nso_build_id(const std::string &main_path, std::string *hex) {
 }
 
 // The game version this build is made for: BOTW 1.8.2, told by its main module's build id (the first 8 bytes;
-// tools/sw_probe.py prints it). Other versions would need their own recompilation work.
+// tools/recomp/sw_probe.py prints it). Other versions would need their own recompilation work.
 static const char *const SUPPORTED_MAIN[] = {"de0b6ac4efc1dda7"};
 static bool supported_main(const std::string &id) {
     for (const char *s : SUPPORTED_MAIN)

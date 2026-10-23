@@ -1,5 +1,5 @@
 // Russian menu texts (runtime/ui/i18n.mm): T("English", "Русский"); "" keeps the English text.
-// Regenerate the list of texts it lacks with tools/i18n_check.py --missing ru.
+// Regenerate the list of texts it lacks with tools/tests/i18n_check.py --missing ru.
 T("Press a button...", "Нажмите кнопку...")
 T("Press a key...", "Нажмите клавишу...")
 T("Nintendo", "")

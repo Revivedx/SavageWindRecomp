@@ -1,5 +1,5 @@
 // Brazilian Portuguese menu texts (runtime/ui/i18n.mm): T("English", "Português"); "" keeps the English text.
-// Regenerate the list of texts it lacks with tools/i18n_check.py --missing pt.
+// Regenerate the list of texts it lacks with tools/tests/i18n_check.py --missing pt.
 T("Press a button...", "Pressione um botão...")
 T("Press a key...", "Pressione uma tecla...")
 T("Nintendo", "")

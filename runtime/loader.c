@@ -247,7 +247,7 @@ static void relocate(Module *m) {
         (unsigned long long)packed, unresolved);
 }
 
-// The modules the game code was generated for, in its layout's order (tools/layout.py: main, subsdk0..9, sdk).
+// The modules the game code was generated for, in its layout's order (tools/recomp/layout.py: main, subsdk0..9, sdk).
 void loader_load(const char *exefs) {
     char path[1024];
     const GameLibTables *g = gamelib_tables();

@@ -1,6 +1,6 @@
 // Menu languages (runtime/ui/i18n.cpp): the start screen and the overlay menu follow the game's text language
 // (Language > Text; Auto: the system's display language). tr("English text") is that text in the menu language: the
-// English text is the key, the tables are runtime/ui/i18n/<lang>.inc (tools/i18n_check.py lists what each lacks).
+// English text is the key, the tables are runtime/ui/i18n/<lang>.inc (tools/tests/i18n_check.py lists what each lacks).
 // Format strings translate the same way and keep their conversions in order.
 #pragma once
 #include <string>

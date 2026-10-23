@@ -102,13 +102,13 @@ static void args_free(Args *a) {
 
 // ------------------------------------------------------------------ the tools
 typedef struct {
-    char gen[1100], gen_script[1100];  // generator: swgen, or (source checkout) the venv's python + tools/gen.py
+    char gen[1100], gen_script[1100];  // generator: swgen, or (source checkout) the venv's python + tools/recomp/gen.py
     char cc[1100];                     // compiler: zig (as `zig cc`), or SAVAGEWIND_CC / clang
     bool zig;
-    char inc[1100], entry[1100], hle[1100];  // headers the game code includes, tools/gamelib_entry.c, HLE names
+    char inc[1100], entry[1100], hle[1100];  // headers the game code includes, tools/recomp/gamelib_entry.c, HLE names
 #ifdef _WIN32
     char implib[1100];  // the .exe's import library (the runtime functions the game code calls)
-    char zig_rt[1100];  // the release's zig: its runtime built ahead of time (zig/rt, tools/zig_slim.sh), "" = none
+    char zig_rt[1100];  // the release's zig: its runtime built ahead of time (zig/rt, tools/packaging/zig_slim.sh), "" = none
 #endif
 } Tools;
 
@@ -123,7 +123,7 @@ static bool find_tools(Tools *t) {
     if (e && *e) snprintf(t->gen, sizeof t->gen, "%s", e);
     else if (!rt_resource("swgen" SEP "swgen" PLAT_EXE_SUFFIX, NULL, t->gen, sizeof t->gen) &&
              !(rt_resource(NULL, "tools/" PLAT_VENV_PYTHON, t->gen, sizeof t->gen) &&
-               rt_resource(NULL, "tools/gen.py", t->gen_script, sizeof t->gen_script)))
+               rt_resource(NULL, "tools/recomp/gen.py", t->gen_script, sizeof t->gen_script)))
         return false;
     e = getenv("SAVAGEWIND_CC");
     if (e && *e) snprintf(t->cc, sizeof t->cc, "%s", e);
@@ -133,7 +133,7 @@ static bool find_tools(Tools *t) {
 #endif
     else return false;
     if (!rt_resource("gamelib-src" SEP "cpu.h", "runtime/cpu.h", t->inc, sizeof t->inc) ||
-        !rt_resource("gamelib-src" SEP "gamelib_entry.c", "tools/gamelib_entry.c", t->entry, sizeof t->entry) ||
+        !rt_resource("gamelib-src" SEP "gamelib_entry.c", "tools/recomp/gamelib_entry.c", t->entry, sizeof t->entry) ||
         !rt_resource("gamelib-src" SEP "hle_symbols.txt", "runtime/hle/hle_symbols.txt", t->hle, sizeof t->hle))
         return false;
     char *s = strrchr(t->inc, '/'), *b = strrchr(t->inc, '\\');
@@ -193,7 +193,7 @@ static void read_gen_log(Gen *g) {
     }
 }
 
-// The modules of <work>/layout.txt (`gen layout`, tools/layout.py), in load order; their image sizes in size[].
+// The modules of <work>/layout.txt (`gen layout`, tools/recomp/layout.py), in load order; their image sizes in size[].
 static int read_layout(const char *path, Gen *gens, double *size) {
     FILE *f = fopen(path, "rb");
     if (!f) return 0;
@@ -317,7 +317,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
     LOG("[gamebuild] generator %s%s%s, compiler %s%s, %d jobs\n", t.gen, t.gen_script[0] ? " " : "", t.gen_script,
         t.cc, t.zig ? " cc" : "", o->jobs);
 
-    // 1. the modules' layout (tools/layout.py): which modules, at which addresses
+    // 1. the modules' layout (tools/recomp/layout.py): which modules, at which addresses
     Gen gens[MAX_MODULES];
     double weight[MAX_MODULES], total = 0;  // (each module's share of the generator's progress: its size)
     int ngen = 0;

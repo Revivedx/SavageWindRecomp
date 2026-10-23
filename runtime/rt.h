@@ -15,8 +15,8 @@
 // guest lives in a 12.5 GB window at 0x70_0000_0000 claimed at startup (see main.c).
 #define GUEST_LO     0x7000000000ull
 #define GUEST_HI     0x7320000000ull
-// The exefs modules (main, subsdk0..9, sdk) sit back to back from MAIN_BASE, main first, as tools/layout.py
-// places them; the game code library says where each one is (runtime/gamelib.h). Both bounds: tools/layout.py too.
+// The exefs modules (main, subsdk0..9, sdk) sit back to back from MAIN_BASE, main first, as tools/recomp/layout.py
+// places them; the game code library says where each one is (runtime/gamelib.h). Both bounds: tools/recomp/layout.py too.
 #define MAIN_BASE    0x7000000000ull
 #define MODULES_END  0x7080000000ull
 #define HLE_BASE     0x7080000000ull   // fake addresses for host-implemented functions

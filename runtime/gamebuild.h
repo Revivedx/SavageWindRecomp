@@ -1,5 +1,5 @@
 // Builds the game code library (runtime/gamelib.h) on the player's machine, from their own game files: the generator
-// (tools/gen.py; shipped frozen as swgen/) turns exefs/main and exefs/sdk into C, the bundled compiler (zig/) builds
+// (tools/recomp/gen.py; shipped frozen as swgen/) turns exefs/main and exefs/sdk into C, the bundled compiler (zig/) builds
 // that into <game_dir>/swgame.*. The C and the objects are deleted afterwards.
 #pragma once
 #include <stdbool.h>
