@@ -1,8 +1,8 @@
 // movie:: (nnMedia) implemented with FFmpeg: an Android MediaExtractor/MediaCodec-style API.
 // The game owns the objects (vtable at +0); we keep host state at +8.
 //
-// Extractor slots: 4 GetTrackCount(int*), 5 GetTrackConfiguration(int, MediaData*), 6 SelectTrack(int),
-//   9 GetSampleTrackIndex(size_t*), 10 Read(Buffer*), 11 Advance(), 12 GetSampleTime(int64*),
+// Extractor slots: 2 SetDataSource(const char* path), 4 GetTrackCount(int*), 5 GetTrackConfiguration(int, MediaData*),
+//   6 SelectTrack(int), 9 GetSampleTrackIndex(size_t*), 10 Read(Buffer*), 11 Advance(), 12 GetSampleTime(int64*),
 //   15 SetDataSource(DataSource*, const char* path).
 // Decoder slots: 2 Configure(MediaData*), 3 RegisterClientEvents(EventType*[4]), 4 GetOutputFormat(MediaData*),
 //   6 Start, 9 AcquireInputBufferIndex(int*, int*), 10 GetInputBuffer(int, Buffer*),
@@ -210,9 +210,8 @@ static void ex_fill(Extractor *e) {
     }
 }
 
-static void ex_set_data_source(Cpu *c) {
+static void ex_open(Cpu *c, const char *path) {
     Extractor *e = self_state(c);
-    const char *path = (const char *)(uintptr_t)c->x[2];
     // "rom:/region_common/movie/title.webm" -> extracted/romfs/region_common/movie/title.webm
     const char *rel = path && strstr(path, ":/") ? strstr(path, ":/") + 2 : path;
     char host[1024];
@@ -235,6 +234,12 @@ static void ex_set_data_source(Cpu *c) {
             e->map[e->ntracks++] = (int)i;
     c->x[0] = 0;
 }
+
+// slot 2: SetDataSource(const char* path). Savage Wind's player (0x70012e95f0) opens its movies with this one,
+// right after the constructor, and fails the movie on a nonzero result.
+static void ex_set_data_source_path(Cpu *c) { ex_open(c, (const char *)(uintptr_t)c->x[1]); }
+// slot 15: SetDataSource(DataSource*, const char* path) (Link's Awakening)
+static void ex_set_data_source(Cpu *c) { ex_open(c, (const char *)(uintptr_t)c->x[2]); }
 
 static void ex_get_track_count(Cpu *c) {
     Extractor *e = self_state(c);
@@ -370,11 +375,12 @@ EX_LOCKED(ex_advance)
 EX_LOCKED(ex_get_sample_time)
 EX_LOCKED(ex_cached_duration)
 EX_LOCKED(ex_set_data_source)
+EX_LOCKED(ex_set_data_source_path)
 
 HLE_FUNC("_ZN5movie9ExtractorC1ENS_13ContainerTypeE", movie_extractor_ctor) {
     uint64_t vt = g_ex_vt;
     if (!vt) {
-        HostFn f[16] = {ex_dtor_l, ex_dtor_l, movie_log_slot, movie_log_slot, ex_get_track_count_l,
+        HostFn f[16] = {ex_dtor_l, ex_dtor_l, ex_set_data_source_path_l, movie_log_slot, ex_get_track_count_l,
                         ex_get_track_config_l, ex_select_track_l, movie_log_slot, ex_seek_l, ex_get_sample_track_l,
                         ex_read_l, ex_advance_l, ex_get_sample_time_l, movie_log_slot, ex_cached_duration_l,
                         ex_set_data_source_l};
@@ -724,6 +730,19 @@ static void dec_get_output_buffer(Cpu *c) {
         int dst_stride[1] = {w * 4};
         sws_scale(d->sws, src, src_stride, 0, h, dst, dst_stride);
         renderer_upload_rgba(t, d->rgba, (uint32_t)w, (uint32_t)h, (uint32_t)w * 4);
+        c->x[0] = 0;
+        return;
+    }
+    if (d->video && b->base && b->capacity >= (uint64_t)d->width * d->height * 3 / 2) {
+        // Savage Wind hands its own buffer (SetDataAndCapacity, 0x70012eaa98) and copies it into its Y and UV
+        // textures itself (0x70012ea664): NV12 packed tight, Y w*h at 0 and UV right after it.
+        int w = d->width, h = d->height;
+        uint8_t *dst = (uint8_t *)(uintptr_t)b->base, *src = d->out_mem[i];
+        const uint8_t *uv = src + d->stride * ((h + 15) & ~15);
+        for (int y = 0; y < h; y++) memcpy(dst + (size_t)y * w, src + (size_t)y * d->stride, w);
+        for (int y = 0; y < h / 2; y++) memcpy(dst + (size_t)w * h + (size_t)y * (w / 2 * 2), uv + (size_t)y * d->stride, w / 2 * 2);
+        b->offset = 0;
+        b->size = w * h + (w / 2) * (h / 2) * 2;
         c->x[0] = 0;
         return;
     }
