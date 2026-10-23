@@ -44,7 +44,7 @@ build SDL3 from source there, or use the AppImage. Vulkan headers older than 1.4
 instead (the same path as `SAVAGEWIND_VK_NO_FEEDBACK_LOOP=1`).
 
 `tools/linux/distro_build.sh` builds the app (start screen only, no game code) natively in each of Debian 13, Ubuntu
-25.04, Fedora 42, Arch and openSUSE Tumbleweed, in containers, with each distribution's own clang, SDL3, FFmpeg,
+26.04, Fedora 44, Arch and openSUSE Tumbleweed, in containers, with each distribution's own clang, SDL3, FFmpeg,
 shaderc and lld; CI runs the same script (`.github/workflows/linux-distros.yml`). That is the check for "does it build
 on my distribution": a container reproduces exactly what differs (package names, library sonames, header versions),
 where a virtual machine would only do it slower.

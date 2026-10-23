@@ -17,7 +17,7 @@ PLATFORM=--platform=linux/amd64
 # Every distribution here has all its dependencies in its own archives, as the app needs them (see docs/linux.md).
 # Ubuntu 24.04 LTS and older, Debian 12 and openSUSE Leap are not in the list: no SDL3 package (build SDL3 from
 # source, or use the AppImage).
-DISTROS="debian:13 ubuntu:25.04 fedora:42 archlinux:latest opensuse/tumbleweed:latest"
+DISTROS="debian:13 ubuntu:26.04 fedora:44 archlinux:latest opensuse/tumbleweed:latest"
 
 deps_for() {
     case $1 in
@@ -29,7 +29,7 @@ deps_for() {
             echo 'dnf install -y -q make clang lld pkgconf-pkg-config SDL3-devel libshaderc-devel vulkan-loader-devel \
                 ffmpeg-free-devel libavformat-free-devel libavcodec-free-devel libavutil-free-devel libswscale-free-devel' ;;
         arch*)
-            echo 'pacman -Sy --noconfirm --quiet; pacman -S --noconfirm --quiet --needed \
+            echo 'pacman -Syu --noconfirm --quiet --needed \
                 base-devel clang lld sdl3 shaderc vulkan-icd-loader vulkan-headers ffmpeg' ;;
         opensuse*)        # Tumbleweed: libavformat-devel is its FFmpeg (headers in /usr/include/ffmpeg), SDL3 as SDL3-devel
             echo 'zypper -q --non-interactive --gpg-auto-import-keys refresh; zypper -q --non-interactive \
