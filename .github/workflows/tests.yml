@@ -1,0 +1,85 @@
+# Runs the tests that need no game files (synthetic inputs or reference implementations only), each one only when a
+# pull request touches what it covers. Pushes to main and manual runs run them all.
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      i18n: ${{ steps.filter.outputs.i18n }}
+      layout: ${{ steps.filter.outputs.layout }}
+      astc: ${{ steps.filter.outputs.astc }}
+    steps:
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            i18n:
+              - 'runtime/ui/**'
+              - 'runtime/language.c'
+              - 'runtime/hle/bindings.c'
+              - 'tools/i18n_check.py'
+              - '.github/workflows/tests.yml'
+            layout:
+              - 'tools/*.py'
+              - '.github/workflows/tests.yml'
+            astc:
+              - 'runtime/nvn/astc.c'
+              - 'tools/test_astc*'
+              - '.github/workflows/tests.yml'
+
+  # Every text the menus use has a translation in each runtime/ui/i18n/<lang>.inc, and none is left unused.
+  i18n:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.i18n == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - run: python3 tools/i18n_check.py
+
+  # layout.py, gen.py and sw_probe.py agree on synthetic NSOs sized like a big game's (no game code).
+  layout:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.layout == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.2
+        with:
+          enable-cache: true
+          cache-dependency-glob: .github/workflows/tests.yml
+      - run: uv run --no-project --with lz4 --with capstone --with unicorn python tools/test_layout.py
+
+  # runtime/nvn/astc.c against ARM's astcenc. test_astc.sh clones astcenc's default branch when build/astc-encoder is
+  # missing; a pinned release here keeps the reference the same between runs.
+  astc:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.astc == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      ASTCENC_VERSION: 5.7.0
+    steps:
+      - uses: actions/checkout@v7
+      - run: git clone --quiet --depth 1 --branch "$ASTCENC_VERSION" https://github.com/ARM-software/astc-encoder.git build/astc-encoder
+      - run: bash tools/test_astc.sh
