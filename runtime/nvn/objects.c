@@ -252,6 +252,19 @@ static void queue_block(bool (*done)(uint64_t), uint64_t arg) {
     }
 }
 static bool q_reached(uint64_t k) { return g_q_done >= k; }
+// (cmdbuf.c) operations queued / run so far: a dead command list's memory is reused once the ones queued have run
+uint64_t nvn_queue_put(void) {
+    pthread_mutex_lock(&g_q_lock);
+    uint64_t k = g_q_put;
+    pthread_mutex_unlock(&g_q_lock);
+    return k;
+}
+uint64_t nvn_queue_done(void) {
+    pthread_mutex_lock(&g_q_lock);
+    uint64_t k = g_q_done;
+    pthread_mutex_unlock(&g_q_lock);
+    return k;
+}
 static bool q_room(uint64_t present) { return g_q_put - g_q_done < QCAP && (!present || g_q_presents < g_q_ahead); }
 
 static void queue_start(void) {
@@ -405,7 +418,13 @@ NVN(nvnMemoryPoolInitialize) {
     SET_HOST(A(0), p);
     RET(1);
 }
-NVN(nvnMemoryPoolFinalize) { free(HOST(NvnPool, A(0))); SET_HOST(A(0), 0); }
+NVN(nvnMemoryPoolFinalize) {
+    extern void nvn_cmd_pool_finalized(uint64_t base, uint64_t size);
+    NvnPool *p = HOST(NvnPool, A(0));
+    if (p) nvn_cmd_pool_finalized(p->storage, p->size);  // (the command lists recorded in it are dead)
+    free(p);
+    SET_HOST(A(0), 0);
+}
 NVN(nvnMemoryPoolSetDebugLabel) { (void)c; }
 NVN(nvnMemoryPoolMap) { RET(HOST(NvnPool, A(0))->storage); }
 NVN(nvnMemoryPoolGetBufferAddress) { RET(HOST(NvnPool, A(0))->storage); }  // GPU address == CPU address

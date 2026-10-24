@@ -112,6 +112,8 @@ typedef struct {
     uint64_t start;  // first record of the list being recorded
     uint64_t callback, callback_data;
     bool recording;
+    bool tag_pending;  // the list being recorded has no command yet: its first one gets a tag (cmdbuf.c)
+    uint64_t tag_at, tag_val;  // that tag, once written (tag_at 0: none)
     uint64_t guest;  // the guest NVNcommandBuffer*
 } NvnCmdBuf;
 

@@ -1112,7 +1112,7 @@ uint64_t renderer_present_count(void);
 void renderer_save_texture_tex(TexBackend *b, const char *path);
 
 static uint64_t frames, total_frames, g_frame_counter;
-uint64_t renderer_present_count(void) { return total_frames; }
+uint64_t renderer_present_count(void) { return __atomic_load_n(&total_frames, __ATOMIC_RELAXED); }  // (any thread)
 uint64_t vk_frame_counter(void) { return g_frame_counter; }
 static float g_shot_crop[4] = {0, 0, 1, 1};
 static double last_fps_time;
@@ -1230,7 +1230,7 @@ static void present_locked(NvnTexture *t) {
         if (ft) LOG("[ft] %.3f %llu %d\n", SDL_GetTicksNS() / 1e6, (unsigned long long)total_frames, framepace_target());
     }
     frames++;
-    total_frames++;
+    __atomic_store_n(&total_frames, total_frames + 1, __ATOMIC_RELAXED);  // (the only writer; read elsewhere)
     g_frame_counter++;
     extern void input_frame(uint64_t frame);
     extern uint64_t framepace_script_frame(uint64_t presented);

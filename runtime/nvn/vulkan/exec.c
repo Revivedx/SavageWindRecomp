@@ -5588,8 +5588,11 @@ void vk_list_stats_frame(void) {  // (device.c, each present)
     memset(&lsum, 0, sizeof lsum);
 }
 
+extern int g_cmd_held;
+void nvn_cmd_late(uint64_t p);
 static void exec_list(uint64_t handle, int depth) {
     uint64_t p = handle;
+    if (__atomic_load_n(&g_cmd_held, __ATOMIC_ACQUIRE)) nvn_cmd_late(p);  // (SAVAGEWIND_CMD_RETIRE=1: is it in a shadow found dead?)
     if (lst_on < 0) lst_on = getenv("SAVAGEWIND_VK_LIST_STATS") != NULL;
     if (lst_on) lst_begin(depth);
     for (int guard = 0; guard < 10000000; guard++) {
@@ -5615,7 +5618,10 @@ static void exec_list(uint64_t handle, int depth) {
         case CMD_END:
             if (lst_on) lst_end(depth);
             return;
-        case CMD_JUMP: p = r->x[0]; continue;
+        case CMD_JUMP:
+            p = r->x[0];
+            if (__atomic_load_n(&g_cmd_held, __ATOMIC_ACQUIRE)) nvn_cmd_late(p);
+            continue;
         case CMD_CALL: {
             const uint64_t *h = x;
             if (g_debug_frame && getenv("SAVAGEWIND_LOG_OPS"))
