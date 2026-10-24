@@ -27,65 +27,67 @@
 // A command handle is the host address of a list's first record.
 static uint32_t cmd_cost(uint32_t op, uint32_t extra) { (void)op; return 8 + ((extra + 3) & ~3u); }
 
-typedef struct { uint8_t *mem; uint64_t size; uint64_t frame; } HBlock;
 typedef struct Shadow {
     uint64_t lo, hi;  // the guest memory it stands for (written so far); lo == hi == 0: none
     uint64_t win;     // end of the memory the game added there (0: none)
     uint64_t free_to; // claims below this go over no other live shadow (shadow_claim takes no lock)
-    HBlock *blocks;
-    int nblocks, cap;
+    void **lists;     // compact command list buffers
+    int nlists, caplists;
     int users;        // command buffers recording into it
     bool dead;        // overlapped: out of the live list (freed when its last user leaves)
 } Shadow;
 
 static Shadow **g_live;  // shadows of guest memory, sorted by lo, never overlapping
 static int g_nlive, g_caplive;
-static HBlock *g_free;   // blocks ready for reuse
-static int g_nfree, g_capfree;
-static HBlock *g_grave;  // dead blocks, oldest first, until three frames have passed
+typedef struct { void *ptr; uint64_t frame; } GraveItem;
+static GraveItem *g_grave;  // dead list buffers, freed after 3 frames
 static int g_ngrave, g_capgrave;
 static pthread_mutex_t g_shadow_lock = PTHREAD_MUTEX_INITIALIZER;
 uint64_t renderer_present_count(void);
 
-static void push_block(HBlock **v, int *n, int *cap, HBlock b) {
-    if (*n == *cap) {
-        *cap = *cap ? *cap * 2 : 256;
-        *v = realloc(*v, *cap * sizeof **v);
+static void grave_free(void *p) {  // (lock held)
+    if (!p) return;
+    if (g_ngrave == g_capgrave) {
+        g_capgrave = g_capgrave ? g_capgrave * 2 : 512;
+        g_grave = realloc(g_grave, (size_t)g_capgrave * sizeof *g_grave);
     }
-    (*v)[(*n)++] = b;
+    g_grave[g_ngrave++] = (GraveItem){p, renderer_present_count()};
 }
 
-static void block_release(HBlock b) {  // (lock held)
-    b.frame = renderer_present_count();
-    push_block(&g_grave, &g_ngrave, &g_capgrave, b);
-}
-
-static HBlock block_get(uint64_t want) {  // (lock held) a free block that fits without wasting much, or a new one
-    uint64_t now = renderer_present_count();
+static void grave_drain(uint64_t now) {  // (lock held)
     int k = 0;
-    while (k < g_ngrave && now - g_grave[k].frame >= 3) push_block(&g_free, &g_nfree, &g_capfree, g_grave[k++]);
-    if (k) memmove(g_grave, g_grave + k, (g_ngrave -= k) * sizeof *g_grave);
-    for (int i = g_nfree - 1; i >= 0; i--)
-        if (g_free[i].size >= want && g_free[i].size <= want * 4) {
-            HBlock b = g_free[i];
-            g_free[i] = g_free[--g_nfree];
-            return b;
-        }
-    want = (want + 0xFF) & ~0xFFull;
-    HBlock b = {malloc(want), want, 0};
-    if (!b.mem) FATAL("nvn: out of host memory for command records (%llu bytes)\n", (unsigned long long)want);
-    return b;
+    while (k < g_ngrave && now - g_grave[k].frame >= 3) {
+        free(g_grave[k].ptr);
+        k++;
+    }
+    if (k) {
+        memmove(g_grave, g_grave + k, (size_t)(g_ngrave - k) * sizeof *g_grave);
+        g_ngrave -= k;
+    }
+}
+
+static void shadow_add_list(Shadow *sh, void *compact) {
+    pthread_mutex_lock(&g_shadow_lock);
+    grave_drain(renderer_present_count());
+    if (sh->nlists == sh->caplists) {
+        sh->caplists = sh->caplists ? sh->caplists * 2 : 4;
+        sh->lists = realloc(sh->lists, (size_t)sh->caplists * sizeof *sh->lists);
+    }
+    sh->lists[sh->nlists++] = compact;
+    pthread_mutex_unlock(&g_shadow_lock);
 }
 
 static void shadow_kill(Shadow *sh) {  // (lock held; already out of the live list) its records are dead
-    for (int i = 0; i < sh->nblocks; i++) block_release(sh->blocks[i]);
-    sh->nblocks = 0;
+    for (int i = 0; i < sh->nlists; i++) grave_free(sh->lists[i]);
+    free(sh->lists);
+    sh->lists = NULL;
+    sh->nlists = sh->caplists = 0;
     sh->dead = true;
-    if (!sh->users) { free(sh->blocks); free(sh); }
+    if (!sh->users) free(sh);
 }
 
 static void shadow_unuse(Shadow *sh) {  // (lock held)
-    if (!--sh->users && sh->dead) { free(sh->blocks); free(sh); }
+    if (!--sh->users && sh->dead) { free(sh->lists); free(sh); }
 }
 
 static int live_index(uint64_t lo) {  // (lock held) the first live shadow not wholly before lo
@@ -99,26 +101,30 @@ static int live_index(uint64_t lo) {  // (lock held) the first live shadow not w
 
 // A command buffer moves from shadow `old` (NULL: none yet), having used `used` guest bytes there, to the shadow
 // for guest memory [lo, hi): the same one when the game adds exactly that range again, unless that is the one
-// being recorded into (`recording`: its blocks still hold the start of the list); otherwise a new one, and the
+// being recorded into (`recording`: its records still hold the start of the list); otherwise a new one, and the
 // shadows its first bytes go over die (shadow_claim: the others once written over). What `old` stands for shrinks
 // to the part used first.
 static Shadow *shadow_switch(Shadow *old, uint64_t used, bool recording, uint64_t lo, uint64_t hi) {
     pthread_mutex_lock(&g_shadow_lock);
+    grave_drain(renderer_present_count());
     if (old && !old->dead && old->lo < old->hi && old->lo + used < old->hi) old->hi = old->lo + used;
     Shadow *sh = NULL;
     if (lo < hi) {
         int a = live_index(lo);
         Shadow *same = a < g_nlive && g_live[a]->lo == lo && g_live[a]->win == hi ? g_live[a] : NULL;
-        if (same && (same->users == (same == old)) && !(recording && same == old)) sh = same;
-        else {
+        if (same && (same->users == (same == old)) && !(recording && same == old)) {
+            for (int i = 0; i < same->nlists; i++) grave_free(same->lists[i]);
+            same->nlists = 0;
+            sh = same;
+        } else {
             int end = a;
             while (end < g_nlive && g_live[end]->lo <= lo) end++;
             for (int i = a; i < end; i++) shadow_kill(g_live[i]);
             if (g_nlive - (end - a) + 1 > g_caplive) {
                 g_caplive = g_caplive ? g_caplive * 2 : 1024;
-                g_live = realloc(g_live, g_caplive * sizeof *g_live);
+                g_live = realloc(g_live, (size_t)g_caplive * sizeof *g_live);
             }
-            memmove(g_live + a + 1, g_live + end, (g_nlive - end) * sizeof *g_live);
+            memmove(g_live + a + 1, g_live + end, (size_t)(g_nlive - end) * sizeof *g_live);
             g_nlive += 1 - (end - a);
             sh = calloc(1, sizeof *sh);
             sh->lo = sh->hi = lo;
@@ -149,7 +155,7 @@ static void shadow_claim(Shadow *sh, uint64_t end) {
             int last = i + 1;
             while (last < g_nlive && g_live[last]->lo < end) last++;
             for (int k = i + 1; k < last; k++) shadow_kill(g_live[k]);
-            memmove(g_live + i + 1, g_live + last, (g_nlive - last) * sizeof *g_live);
+            memmove(g_live + i + 1, g_live + last, (size_t)(g_nlive - last) * sizeof *g_live);
             g_nlive -= last - (i + 1);
             sh->hi = end;
             sh->free_to = i + 1 < g_nlive && g_live[i + 1]->lo < sh->win ? g_live[i + 1]->lo : sh->win;
@@ -165,34 +171,31 @@ static void shadow_leave(Shadow *sh, uint64_t used) {  // (a command buffer is f
     pthread_mutex_unlock(&g_shadow_lock);
 }
 
-// Block i of a shadow, at least `want` bytes (blocks past the one in use hold dead records).
-static HBlock shadow_block(Shadow *sh, int i, uint64_t want) {
+void nvn_cmdbuf_pool_finalize(uint64_t base, uint64_t size) {
+    if (!base || !size) return;
     pthread_mutex_lock(&g_shadow_lock);
-    if (i < sh->nblocks && sh->blocks[i].size < want) {
-        block_release(sh->blocks[i]);
-        sh->blocks[i] = block_get(want);
+    grave_drain(renderer_present_count());
+    uint64_t end = base + size;
+    int a = live_index(base);
+    int b = a;
+    while (b < g_nlive && g_live[b]->lo < end) b++;
+    if (b > a) {
+        for (int i = a; i < b; i++) shadow_kill(g_live[i]);
+        memmove(g_live + a, g_live + b, (size_t)(g_nlive - b) * sizeof *g_live);
+        g_nlive -= (b - a);
     }
-    while (sh->nblocks <= i) {
-        if (sh->nblocks == sh->cap) {
-            sh->cap = sh->cap ? sh->cap * 2 : 4;
-            sh->blocks = realloc(sh->blocks, sh->cap * sizeof *sh->blocks);
-        }
-        sh->blocks[sh->nblocks++] = block_get(want);
-    }
-    HBlock b = sh->blocks[i];
     pthread_mutex_unlock(&g_shadow_lock);
-    return b;
 }
 
 RT_ON_RESET(cmdbuf_shadow_reset) {  // (reboot: every list is dead; command buffers were guest objects)
     pthread_mutex_lock(&g_shadow_lock);
     for (int i = 0; i < g_nlive; i++) {
-        for (int k = 0; k < g_live[i]->nblocks; k++) free(g_live[i]->blocks[k].mem);
-        free(g_live[i]->blocks);
+        for (int k = 0; k < g_live[i]->nlists; k++) free(g_live[i]->lists[k]);
+        free(g_live[i]->lists);
         free(g_live[i]);
     }
     g_nlive = 0;
-    for (int i = 0; i < g_ngrave; i++) push_block(&g_free, &g_nfree, &g_capfree, g_grave[i]);
+    for (int i = 0; i < g_ngrave; i++) free(g_grave[i].ptr);
     g_ngrave = 0;
     pthread_mutex_unlock(&g_shadow_lock);
 }
@@ -202,46 +205,27 @@ static NvnCmdBuf *cb_of(uint64_t guest) { return HOST(NvnCmdBuf, guest); }
 NVN(nvnCommandBufferInitialize) {
     NvnCmdBuf *cb = calloc(1, sizeof *cb);
     cb->guest = A(0);
+    cb->rec_cap = 65536;
+    cb->rec_buf = malloc(cb->rec_cap);
     SET_HOST(A(0), cb);
     RET(1);
 }
 NVN(nvnCommandBufferFinalize) {
     NvnCmdBuf *cb = cb_of(A(0));
-    if (cb && cb->shadow) shadow_leave(cb->shadow, cb->gused);
-    free(cb);
+    if (cb) {
+        if (cb->shadow) shadow_leave(cb->shadow, cb->gused);
+        free(cb->rec_buf);
+        free(cb);
+    }
     SET_HOST(A(0), 0);
 }
 NVN(nvnCommandBufferSetDebugLabel) { (void)c; }
-
-static CmdRec *raw_rec(uint64_t at, uint32_t op, uint32_t size) {
-    CmdRec *r = (CmdRec *)(uintptr_t)at;
-    memset(r, 0, sizeof *r);
-    r->op = op;
-    r->size = size;
-    return r;
-}
-
-// Record into block i of the command buffer's shadow, chaining the list being recorded on to it.
-static void use_block(NvnCmdBuf *cb, int i, uint64_t want) {
-    HBlock b = shadow_block(cb->shadow, i, want);
-    uint64_t h = (uint64_t)(uintptr_t)b.mem;
-    if (cb->recording && cb->mem) {  // (rec_cost always leaves JUMP_RESERVE free for this)
-        CmdRec *j = raw_rec(cb->mem + cb->used, CMD_JUMP, sizeof(CmdRec));
-        j->x[0] = h;
-    }
-    cb->block = i;
-    cb->mem = h;
-    cb->size = b.size;
-    cb->used = 0;
-}
 
 static void use_guest_chunk(NvnCmdBuf *cb, uint64_t gmem, uint64_t gsize) {
     cb->shadow = shadow_switch(cb->shadow, cb->gused, cb->recording, gmem, gmem ? gmem + gsize : 0);
     cb->gmem = gmem;
     cb->gsize = gsize;
     cb->gused = 0;
-    uint64_t want = gsize * 8;  // (records take several times the GPU bytes; more blocks chain on when needed)
-    use_block(cb, 0, want < 0x400 ? 0x400 : want > 0x100000 ? 0x100000 : want);
 }
 
 NVN(nvnCommandBufferAddCommandMemory) {  // (cmd, pool, offset, size)
@@ -290,13 +274,20 @@ static CmdRec *rec_cost(Cpu *c, NvnCmdBuf *cb, uint32_t op, uint32_t extra, uint
         memcpy(c->x, saved, sizeof saved);
     }
     cb->gused += cost;
-    shadow_claim(cb->shadow, cb->gmem + cb->gused);
-    if (cb->used + size + JUMP_RESERVE > cb->size) {
-        uint64_t want = size + JUMP_RESERVE;
-        use_block(cb, cb->block + 1, want > cb->size * 2 ? want : cb->size * 2);
+    if (cb->shadow) shadow_claim(cb->shadow, cb->gmem + cb->gused);
+    if (cb->rec_used + size > cb->rec_cap) {
+        uint32_t ncap = cb->rec_cap ? cb->rec_cap * 2 : 65536;
+        while (ncap < cb->rec_used + size) ncap *= 2;
+        uint8_t *nbuf = realloc(cb->rec_buf, ncap);
+        if (!nbuf) FATAL("nvn: out of host memory for scratch recording (%u bytes)\n", ncap);
+        cb->rec_buf = nbuf;
+        cb->rec_cap = ncap;
     }
-    CmdRec *r = raw_rec(cb->mem + cb->used, op, size);
-    cb->used += size;
+    CmdRec *r = (CmdRec *)(cb->rec_buf + cb->rec_used);
+    memset(r, 0, sizeof *r);
+    r->op = op;
+    r->size = size;
+    cb->rec_used += size;
     return r;
 }
 static CmdRec *rec(Cpu *c, NvnCmdBuf *cb, uint32_t op, uint32_t extra) {
@@ -309,15 +300,21 @@ NVN(nvnCommandBufferBeginRecording) {
     NvnCmdBuf *cb = cb_of(A(0));
     TL("record %llx (lr %llx)", (unsigned long long)A(0), (unsigned long long)c->x[30]);
     cb->recording = true;
+    cb->rec_used = 0;
     rec_cost(c, cb, CMD_BARRIER, 0, 0);  // makes sure memory exists; the list starts here
-    cb->start = cb->mem + cb->used - sizeof(CmdRec);
 }
 NVN(nvnCommandBufferEndRecording) {
     NvnCmdBuf *cb = cb_of(A(0));
     rec_cost(c, cb, CMD_END, 0, 0);
     cb->recording = false;
     TL("recorded %llx", (unsigned long long)A(0));
-    RET(cb->start);
+    uint32_t len = cb->rec_used;
+    uint8_t *compact = malloc(len ? len : sizeof(CmdRec));
+    if (!compact) FATAL("nvn: out of host memory for compact list (%u bytes)\n", len);
+    memcpy(compact, cb->rec_buf, len);
+    if (cb->shadow) shadow_add_list(cb->shadow, compact);
+    else free(compact);
+    RET((uint64_t)(uintptr_t)compact);
 }
 NVN(nvnCommandBufferIsRecording) { RET(cb_of(A(0))->recording); }
 

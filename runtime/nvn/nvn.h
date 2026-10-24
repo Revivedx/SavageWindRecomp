@@ -105,14 +105,12 @@ typedef struct NvnSync {
 typedef struct {
     uint64_t gmem, gsize, gused;  // the guest command memory chunk, and the GPU bytes the game is told are used
     struct Shadow *shadow;        // host storage for what is recorded while that chunk is current
-    int block;                    // the shadow's block in use
-    uint64_t mem;    // that block (host address)
-    uint64_t size;   // its size
-    uint64_t used;   // bytes of records in it
-    uint64_t start;  // first record of the list being recorded
+    uint8_t *rec_buf;             // scratch buffer for recording
+    uint32_t rec_cap;             // capacity of rec_buf
+    uint32_t rec_used;            // bytes recorded in current list
     uint64_t callback, callback_data;
     bool recording;
-    uint64_t guest;  // the guest NVNcommandBuffer*
+    uint64_t guest;               // the guest NVNcommandBuffer*
 } NvnCmdBuf;
 
 // One recorded command: header, the call's integer and float arguments, then copied data.
@@ -148,6 +146,7 @@ enum {
 // renderer backend (runtime/nvn/metal.m)
 void backend_init(void);
 void backend_execute(uint64_t handle);            // run a recorded command list
+void nvn_cmdbuf_pool_finalize(uint64_t base, uint64_t size); // (cmdbuf.c) kill shadows in finalized pool
 void backend_present(NvnTexture *tex);            // show a texture in the window
 void backend_texture_destroyed(NvnTexture *tex);
 void backend_pool_written(uint64_t addr, uint64_t size);

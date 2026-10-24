@@ -405,7 +405,14 @@ NVN(nvnMemoryPoolInitialize) {
     SET_HOST(A(0), p);
     RET(1);
 }
-NVN(nvnMemoryPoolFinalize) { free(HOST(NvnPool, A(0))); SET_HOST(A(0), 0); }
+NVN(nvnMemoryPoolFinalize) {
+    NvnPool *p = HOST(NvnPool, A(0));
+    if (p) {
+        nvn_cmdbuf_pool_finalize(p->storage, p->size);
+        free(p);
+    }
+    SET_HOST(A(0), 0);
+}
 NVN(nvnMemoryPoolSetDebugLabel) { (void)c; }
 NVN(nvnMemoryPoolMap) { RET(HOST(NvnPool, A(0))->storage); }
 NVN(nvnMemoryPoolGetBufferAddress) { RET(HOST(NvnPool, A(0))->storage); }  // GPU address == CPU address
