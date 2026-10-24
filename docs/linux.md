@@ -32,10 +32,25 @@ If the AppImage won't start with a FUSE error, install your distribution's `fuse
 needs `fusermount3`), or run it as `./Savage_Wind-....AppImage --appimage-extract-and-run`.
 
 ## Building from source
-Ubuntu / Debian packages (other distributions: the same libraries under their names; SDL3 3.2 or newer):
+Ubuntu 25.04+ / Debian 13 packages (other distributions: the same libraries under their names; clang 18 or newer - the
+lifted FP/SIMD code needs `__builtin_elementwise_*` - and SDL3 3.2 or newer):
 
     sudo apt install clang lld make pkg-config python3-venv libsdl3-dev libavformat-dev libavcodec-dev \
-        libavutil-dev libswscale-dev libvulkan-dev libshaderc-dev libvulkan-memory-allocator-dev glslc vulkan-tools
+        libavutil-dev libswscale-dev libvulkan-dev libshaderc-dev glslc vulkan-tools
+
+Ubuntu 24.04 LTS and older, Debian 12 and openSUSE Leap have no SDL3 package (SDL3 arrived after their freeze):
+build SDL3 from source there, or use the AppImage. Vulkan headers older than 1.4.321 (Debian 13, Ubuntu 25.04, Fedora
+42 ship 1.4.304 - 1.4.313) build too: attachment feedback loops stay off there and the renderer copies the targets
+instead (the same path as `SAVAGEWIND_VK_NO_FEEDBACK_LOOP=1`).
+
+`tools/linux/distro_build.sh` builds the app (start screen only, no game code) natively in each of Debian 13, Ubuntu
+26.04, Fedora 44, Arch and openSUSE Tumbleweed, in containers, with each distribution's own clang, SDL3, FFmpeg,
+shaderc and lld; CI runs the same script (`.github/workflows/linux-distros.yml`). That is the check for "does it build
+on my distribution": a container reproduces exactly what differs (package names, library sonames, header versions),
+where a virtual machine would only do it slower.
+
+(The Vulkan Memory Allocator header the renderer uses is bundled in `third_party/vma`, as are stb_image and
+stb_image_write in `third_party/stb`.)
 
 Then from the repo root:
 
@@ -50,8 +65,8 @@ everything (dev mode) instead of `~/.local/share/savagewind`.
 `ARCH` picks the target, separately from the OS: the generated code differs per arch (aarch64 runs the guest's
 FP/SIMD as inline asm, like Apple Silicon; x86-64 lowers it to C with `-march=x86-64-v3`, like Windows). `make gen`
 passes the matching `--simd`. A cross build (`ARCH=aarch64` on an x86-64 machine, `SYSROOT=<arm64 root filesystem>`)
-keeps its own `generated-aarch64/` and `build/aarch64/`. Distributions that name shaderc's library
-`libshaderc_shared.so` need `SHADERC=-lshaderc_shared`.
+keeps its own `generated-aarch64/` and `build/aarch64/`. The build detects whether shaderc is named
+`libshaderc.so` or `libshaderc_shared.so`; override it with `SHADERC=-l<name>` if neither is found.
 
 ## AppImages
 Needs podman, and for aarch64 QEMU user emulation with binfmt (`sudo apt install podman qemu-user qemu-user-binfmt`).

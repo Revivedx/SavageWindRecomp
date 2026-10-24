@@ -184,7 +184,7 @@ switches - are in [docs/SAVAGE-WIND.md](docs/SAVAGE-WIND.md).
   [Dear ImGui](https://github.com/ocornut/imgui) (MIT),
   [Vulkan Memory Allocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator) (MIT),
   [SMAA](https://github.com/iryoku/smaa) (MIT), [AMD FidelityFX Super Resolution 1](https://github.com/GPUOpen-Effects/FidelityFX-FSR)
-  (MIT), [Fira Sans](https://github.com/mozilla/Fira) (SIL OFL 1.1), [stb_image](https://github.com/nothings/stb)
+  (MIT), [Fira Sans](https://github.com/mozilla/Fira) (SIL OFL 1.1), [stb_image / stb_image_write](https://github.com/nothings/stb)
   (public domain / MIT), [shaderc](https://github.com/google/shaderc)
   (Apache 2.0), [Zig](https://ziglang.org) (MIT), [Capstone](https://www.capstone-engine.org) (BSD),
   [Unicorn](https://www.unicorn-engine.org) (GPL 2.0), [python-lz4](https://github.com/python-lz4/python-lz4) (BSD).

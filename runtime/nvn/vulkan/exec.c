@@ -1056,7 +1056,9 @@ static void begin_pass(void) {
         }
     }
     VkRenderingAttachmentInfo ca[8], da = {0}, sa = {0};
+#ifdef VK_KHR_unified_image_layouts  // (Vulkan headers 1.4.321+; older ones never enable feedback loops: device.c)
     VkAttachmentFeedbackLoopInfoEXT ca_fb[8];
+#endif
     uint32_t w = 0, minw = UINT32_MAX, minh = UINT32_MAX;  // w: first attachment seen
     pass_ncolor = (uint32_t)st.rt.ncolor;
     pass_dbg_n = st.rt.ncolor > 8 ? 8 : st.rt.ncolor;
@@ -1096,9 +1098,11 @@ static void begin_pass(void) {
         ca[i].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
         ca[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         if (b->feedback_seen && b->feedback_ok) {  // a target some draw samples while writing it (resolve_feedback)
+#ifdef VK_KHR_unified_image_layouts
             ca_fb[i] = (VkAttachmentFeedbackLoopInfoEXT){.sType = VK_STRUCTURE_TYPE_ATTACHMENT_FEEDBACK_LOOP_INFO_EXT,
                                                          .feedbackLoopEnable = VK_TRUE};
             ca[i].pNext = &ca_fb[i];
+#endif
             pass_feedback |= (uint8_t)(1u << i);
         }
         bool fresh = (int)renderer_texture_level_fresh(t) | (int)renderer_texture_frame_fresh(t);  // both: each marks its state

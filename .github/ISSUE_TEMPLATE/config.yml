@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: CPUs without AVX2
+    url: https://github.com/Revivedx/SavageWindRecomp/issues/9
+    about: Already requested. Add a 👍 there instead of a new issue.
+  - name: Building from source
+    url: https://github.com/Revivedx/SavageWindRecomp#building-from-source
+    about: Windows and Linux build steps. If a step fails, open a bug report with the first error.

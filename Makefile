@@ -67,13 +67,23 @@ GAMELIB_LDFLAGS := -dynamiclib -undefined dynamic_lookup  # (the runtime functio
 GAMELIB_SHARED := -shared -Wl,-undefined,dynamic_lookup  # (the same, for the start screen's build: zig cc)
 else ifeq ($(PLATFORM),linux)
 EXE      := $(B)/savagewind
-DEPINC   := $(if $(DEPS),-I$(DEPS)/include)
+DEPINC   := $(if $(DEPS),-I$(DEPS)/include,$(shell pkg-config --cflags libavformat 2>/dev/null))  # (openSUSE has them in /usr/include/ffmpeg)
 ifeq ($(ARCH),x86_64)
 GENARCH  ?= -march=x86-64-v3  # as on Windows: AVX2 + FMA for the lifted FP/SIMD code (checked at startup)
 endif
 GENFLAGS += $(GENARCH) -fPIC
 OSFLAGS  := -Wno-format  # (%llx for uint64_t, which is unsigned long here: the same size)
-SHADERC  ?= -lshaderc  # (Debian / Ubuntu's libshaderc.so; a shaderc built from source: -lshaderc_shared)
+# shaderc is libshaderc.so on Debian / Ubuntu and libshaderc_shared.so on Fedora, Arch and a shaderc built from source:
+# tools/linux/build_deps.sh builds only the shaderc_shared target, so a DEPS prefix has no libshaderc.so at all - -lshaderc
+# there would silently fall through to the system path, where Arch's shaderc package has a static libshaderc.a that is
+# only the C wrapper (undefined shaderc_util symbols at the real link). A DEPS prefix therefore links -lshaderc_shared.
+# Elsewhere pkg-config knows the name. Without a .pc, the probe links an executable that calls shaderc and tries
+# -lshaderc_shared before -lshaderc, so an incomplete static libshaderc.a is rejected at probe time too. A shared-only
+# probe cannot do that: a shared link keeps undefined symbols and only the executable link or run fails.
+SHADERC_TEST := extern void *shaderc_compiler_initialize(void); int main(void){return shaderc_compiler_initialize()==0;}
+SHADERC  ?= $(if $(DEPS),-lshaderc_shared,$(or $(shell pkg-config --libs shaderc 2>/dev/null),\
+             $(shell echo '$(SHADERC_TEST)' | $(CC) -x c - -lshaderc_shared -o /dev/null 2>/dev/null && echo -lshaderc_shared),\
+             $(shell echo '$(SHADERC_TEST)' | $(CC) -x c - -lshaderc -o /dev/null 2>/dev/null && echo -lshaderc),-lshaderc))
 # -rdynamic: crash backtraces name host functions (runtime/platform/linux.c)
 LDFLAGS  := -fuse-ld=lld -rdynamic $(if $(DEPS),-L$(DEPS)/lib) -lSDL3 -lavformat -lavcodec -lavutil -lswscale \
             -lvulkan $(SHADERC) -lpthread -ldl -lm
@@ -117,8 +127,8 @@ GAMELIB_SRCS += tools/layout.py
 GAMELIB_ID := $(shell (cat $(GAMELIB_SRCS); echo '$(GENFLAGS)') | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
 
 RT_OBJ   := $(patsubst runtime/%.c,$(B)/rt/%.o,$(RT_SRC))
-RTFLAGS  := -O2 -g -fno-strict-aliasing -Wall -Wno-unused-function -Iruntime -Iruntime/nvn $(DEPINC) $(OSFLAGS)
-CXXFLAGS := -O2 -g -std=c++17 -I$(IMGUI) -I$(IMGUI)/backends -Iruntime -Iruntime/nvn -Ithird_party/stb $(DEPINC)
+RTFLAGS  := -O2 -g -fno-strict-aliasing -Wall -Wno-unused-function -Iruntime -Iruntime/nvn -isystem third_party -isystem third_party/stb $(DEPINC) $(OSFLAGS)
+CXXFLAGS := -O2 -g -std=c++17 -I$(IMGUI) -I$(IMGUI)/backends -Iruntime -Iruntime/nvn -isystem third_party -Ithird_party/stb $(DEPINC)
 
 all: $(EXE) $(CONFIG_EXE) $(if $(strip $(GEN_SRC)),$(GAMELIB))  # (GEN_SRC is a space when there is no generated/)
 

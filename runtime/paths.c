@@ -13,6 +13,7 @@
 #endif
 
 #include "gamelib.h"
+#include "imageload.h"
 #include "paths.h"
 #include "platform.h"
 
@@ -223,6 +224,10 @@ bool rt_user_splash(char *out, size_t n) {
 void rt_window_icon(SDL_Window *w) {
     char p[1100];
     if (!rt_resource("icon.png", NULL, p, sizeof p)) return;
-    SDL_Surface *s = SDL_LoadPNG(p);
+    int iw, ih;
+    unsigned char *px = rt_image_rgba(p, &iw, &ih);  // (not SDL_LoadPNG: that is SDL 3.4, the distributions ship 3.2)
+    if (!px) return;
+    SDL_Surface *s = SDL_CreateSurfaceFrom(iw, ih, SDL_PIXELFORMAT_RGBA32, px, iw * 4);
     if (s) SDL_SetWindowIcon(w, s), SDL_DestroySurface(s);
+    rt_image_free(px);
 }
