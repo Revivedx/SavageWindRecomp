@@ -69,7 +69,8 @@ struct Lang {
 };
 // (most specific first)
 const Lang langs[] = {{"es", "es"}, {"fr", "fr"}, {"de", "de"}, {"it", "it"}, {"nl", "nl"}, {"ru", "ru"},
-                      {"pt", "pt"}, {"ja", "ja"}, {"ko", "ko"}, {"zh-TW", "zh-Hant"}, {"zh", "zh-Hans"}, {"th", "th"}};
+                      {"pt", "pt"}, {"ja", "ja"}, {"ko", "ko"}, {"zh-Hant", "zh-Hant"}, {"zh-Hans", "zh-Hans"},
+                      {"zh", "zh-Hans"}, {"th", "th"}};
 
 std::mutex lock;
 const char *cur_ui = "en";

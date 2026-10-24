@@ -31,8 +31,9 @@ const TextLanguage g_text_languages[] = {
     {"Portuguese (Brazil)", "pt-BR", "USpt"},
     {"Japanese", "ja", "JPja"},
     {"Korean", "ko", "KRko"},
-    {"Chinese (Simplified)", "zh-CN", "CNzh"},
-    {"Chinese (Traditional)", "zh-TW", "TWzh"},
+    // (the switch's own codes, as the game compares them: it has zh-Hans / zh-Hant in its table, not zh-CN / zh-TW)
+    {"Chinese (Simplified)", "zh-Hans", "CNzh"},
+    {"Chinese (Traditional)", "zh-Hant", "TWzh"},
     {"Thai", "th", "THth"},  // (1.9.0 on: language_text_count; last, so the others keep their place)
 };
 const int g_ntext_languages = sizeof g_text_languages / sizeof g_text_languages[0];
@@ -78,7 +79,7 @@ static const char *code_for_locale(const char *loc) {
     if (!strncmp(l, "fr", 2)) return "fr";
     if (!strncmp(l, "pt", 2)) return "pt-BR";  // (the only Portuguese the game has)
     if (!strncmp(l, "zh", 2))
-        return strstr(l, "Hant") || strstr(l, "TW") || strstr(l, "HK") || strstr(l, "MO") ? "zh-TW" : "zh-CN";
+        return strstr(l, "Hant") || strstr(l, "TW") || strstr(l, "HK") || strstr(l, "MO") ? "zh-Hant" : "zh-Hans";
     static const char *const two[] = {"de", "it", "nl", "ru", "ja", "ko"};
     for (int i = 0; i < 6; i++) if (!strncmp(l, two[i], 2)) return two[i];
     return "en-US";
