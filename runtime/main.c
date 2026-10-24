@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "gamelib.h"
+#include "dlc.h"
 #include "paths.h"
 #include "romfs_build.h"
 #include "settings.h"
@@ -175,6 +176,7 @@ static void boot(const char *root) {
         }
         fclose(f);
     }
+    dlc_init(root, g_program_id);
     LOG("main thread: prio %d, stack 0x%x, program %016llx\n", prio, stack_size, (unsigned long long)g_program_id);
 
     // nn::init::Start(thread_handle, args_region, init_sdk, init_main[, fini_main]): with x4 in newer SDKs

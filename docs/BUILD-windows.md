@@ -63,3 +63,8 @@ with `extracted/` in the starting folder keeps using that folder instead.
 - `tools/test_vk_pipelines.sh`: fuzzed shaders through the backend's compile/reflection into real pipelines.
 - `SAVAGEWIND_VK_VALIDATION=1` with `VK_ADD_LAYER_PATH` pointing at `C:\msys64\ucrt64\bin`: Khronos validation layer.
 - Run test windows directly, not under MSYS `timeout` (it stalls the window).
+
+## Optional DLC
+
+See [DLC setup](DLC.md) for separately extracted DLC files. The runtime builds their data images on the next game
+launch; the base game's generated code does not need to be rebuilt for DLC data.

@@ -59,7 +59,7 @@ Needs Windows 10 or later, a CPU with AVX2, a GPU with Vulkan 1.3 and about 35 G
 - Your own *Breath of the Wild* (cartridge or digital) and its **1.8.2 update**, extracted from your own console:
   - the **ExeFS** of 1.8.2 (`main`, `main.npdm`, `rtld`, `sdk`, `subsdk0`)
   - the **RomFS** with the update applied (base game and 1.8.2 merged)
-- DLC: not supported yet (planned, see the roadmap).
+- Optional: your own separately extracted DLC RomFS (see [DLC setup](docs/DLC.md)).
 - Windows 10 or later (x86-64, a CPU with AVX2) or Linux (x86-64), and a GPU with Vulkan 1.3.
 
 The files go in `extracted/` next to the program (git ignores this folder):
@@ -107,7 +107,7 @@ Estimates of where each part stands. "Tested in game" is how much of the game ha
 | 🗺️ | **Mods** | ![0%](https://progress-bar.xyz/0/?width=150&style=square&progress_color=d9534f) | Planned |
 | 🗺️ | **Accessibility options** | ![0%](https://progress-bar.xyz/0/?width=150&style=square&progress_color=d9534f) | Planned: text size, colour-blind filters and toggles in place of held buttons; enemy and Link health, damage dealt and damage taken |
 | 🗺️ | **Button icons for your device** | ![0%](https://progress-bar.xyz/0/?width=150&style=square&progress_color=d9534f) | Planned: the game's button prompts show your keyboard and mouse keys, or the buttons of the controller you're using |
-| 🗺️ | **DLC** | ![0%](https://progress-bar.xyz/0/?width=150&style=square&progress_color=d9534f) | Later |
+| 🔧 | **DLC** | Runtime discovery and mounting implemented | Separate extracted DLC RomFS; synthetic checks pass, Windows gameplay untested: [setup](docs/DLC.md) |
 | 🗺️ | **amiibo rewards without figures** | ![0%](https://progress-bar.xyz/0/?width=150&style=square&progress_color=d9534f) | Planned |
 
 ✅ done · 🔧 in progress · 🗺️ roadmap

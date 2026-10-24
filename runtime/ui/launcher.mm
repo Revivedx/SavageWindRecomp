@@ -229,7 +229,7 @@ static void find_game(const std::string &dir, int depth, std::string &exefs, std
     std::vector<std::string> sub;
     while (struct dirent *e = readdir(d)) {
         std::string n = e->d_name;
-        if (n[0] == '.') continue;
+        if (n[0] == '.' || n == "dlc") continue;
         std::string ext = n.size() > 4 ? n.substr(n.size() - 4) : "";
         for (auto &ch : ext) ch = (char)tolower((unsigned char)ch);
         if (ext == ".xci" || ext == ".nsp" || ext == ".nca" || ext == ".nsz" || ext == ".xcz") unusable = true;
@@ -310,6 +310,12 @@ static void *extract_thread(void *) {
         set_job("Copying the game files...");
         if (!romfs_copy_tree(exefs.c_str(), (g_root + "/exefs").c_str(), NULL) ||
             !romfs_copy_tree(romfs.c_str(), (g_root + "/romfs").c_str(), setup_progress)) {
+            set_failure(FAIL_COPY);
+            goto done;
+        }
+        // Optional DLC sits beside the base RomFS. Images are built on the next boot.
+        std::string dlc = romfs.substr(0, romfs.find_last_of("/\\")) + "/dlc";
+        if (is_dir(dlc) && !romfs_copy_tree(dlc.c_str(), (g_root + "/dlc").c_str(), NULL)) {
             set_failure(FAIL_COPY);
             goto done;
         }

@@ -308,5 +308,12 @@ appimages:
 
 .PHONY: dmg all gen gen-helper gen-objs runtime-objs deps deps-windows app dist appimage appimages
 
+# Host-side DLC integration checks with synthetic RomFS data, no game files.
+.PHONY: test-dlc
+test-dlc:
+	@mkdir -p $(B)
+	$(CC) -O1 -g -Wall -Wno-unused-function -Iruntime $(OSFLAGS) tools/test_dlc.c runtime/dlc.c runtime/romfs_build.c -o $(B)/test_dlc
+	$(B)/test_dlc
+
 build/test_shaders: tools/test_shaders.m runtime/nvn/maxwell/translate.c runtime/nvn/maxwell/shader.h
 	clang -O1 -fobjc-arc -framework Metal -framework Foundation -o $@ tools/test_shaders.m runtime/nvn/maxwell/translate.c

@@ -3,6 +3,7 @@
 
 #include "../hle.h"
 #include "../ipc.h"
+#include "../dlc.h"
 
 static void ok_logger(Service *s, IpcReq *req, IpcResp *resp) {
     LOG("[svc] %s cmd %u (ok)\n", s->name, req->cmd);
@@ -35,14 +36,32 @@ SERVICE("pctl:s", pctl_s) { pctl_root(s, req, resp); }
 SERVICE("pctl:a", pctl_a) { pctl_root(s, req, resp); }
 SERVICE("pctl:r", pctl_r) { pctl_root(s, req, resp); }
 
-// ------------------------------------------------------------------ aoc:u (no DLC)
+// ------------------------------------------------------------------ aoc:u (locally extracted DLC)
 SERVICE("aoc:u", aoc_u) {
     (void)s;
     switch (req->cmd) {
-    case 2: OUT(uint32_t, 0) = 0; resp_size(resp, 4); break;   // CountAddOnContent
-    case 3: OUT(uint32_t, 0) = 0; resp_size(resp, 4); break;   // ListAddOnContent
-    case 5: OUT(uint64_t, 0) = (g_program_id & ~0xFFFull) + 0x1000; resp_size(resp, 8); break;  // GetAddOnContentBaseId
-    case 8: resp->copy_handles[resp->ncopy++] = new_event_handle(); break;
+    case 2: OUT(uint32_t, 0) = dlc_count(); resp_size(resp, 4); break;
+    case 3: {  // ListAddOnContent(offset, count, process_id) -> indices
+        if (req->data_size < 8) { resp->result = MAKE_RESULT(2, 6001); break; }
+        IpcBuf *b = out_buf(req, 0);
+        uint32_t capacity = IN(uint32_t, 4);
+        if (!b || !b->addr) capacity = 0;
+        else if (capacity > b->size / sizeof(int32_t)) capacity = (uint32_t)(b->size / sizeof(int32_t));
+        if (capacity) kernel_watch_write("DLC list", b->addr, (uint64_t)capacity * sizeof(int32_t));
+        OUT(uint32_t, 0) = dlc_list(IN(uint32_t, 0), capacity, b ? (int32_t *)(uintptr_t)b->addr : NULL);
+        resp_size(resp, 4);
+        break;
+    }
+    case 5: {
+        uint64_t id = dlc_base_id();
+        memcpy(resp->data, &id, sizeof id);
+        resp_size(resp, sizeof id);
+        break;
+    }
+    case 7:  // PrepareAddOnContent(index, process_id)
+        if (req->data_size < 4 || !dlc_present(IN(int32_t, 0))) resp->result = MAKE_RESULT(2, 1001);
+        break;
+    case 8: case 10: resp->copy_handles[resp->ncopy++] = new_event_handle(); break;
     default: ok_logger(s, req, resp);
     }
 }

@@ -14,6 +14,7 @@
 #include "../hle.h"
 #include "../ipc.h"
 #include "../language.h"
+#include "../dlc.h"
 
 #define FS_PATH_NOT_FOUND MAKE_RESULT(2, 1)
 #define FS_PATH_EXISTS MAKE_RESULT(2, 2)
@@ -429,7 +430,7 @@ const char *romfs_file_at(uint64_t off) {
 }
 
 // ------------------------------------------------------------------ IStorage (raw RomFS image)
-typedef struct { int fd; uint64_t size; } Storage;
+typedef struct { int fd; uint64_t size; bool addon; } Storage;
 
 static void storage(Service *s, IpcReq *req, IpcResp *resp) {
     Storage *st = s->state;
@@ -439,8 +440,17 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
         IpcBuf *b = out_buf(req, 0);
         if (!b) { resp->result = MAKE_RESULT(2, 6001); break; }
         if (size > b->size) size = b->size;
+        if (st->addon && (off > st->size || size > st->size - off)) {
+            resp->result = MAKE_RESULT(2, 6001);
+            break;
+        }
         kernel_watch_write("romfs read", b->addr, size);
-        ssize_t n = romfs_read(st->fd, (uint8_t *)(uintptr_t)b->addr, size, off);
+        ssize_t n = st->addon ? pread(st->fd, (void *)(uintptr_t)b->addr, size, (off_t)off)
+                              : romfs_read(st->fd, (uint8_t *)(uintptr_t)b->addr, size, off);
+        if (st->addon) {
+            if (n < 0 || (uint64_t)n != size) resp->result = MAKE_RESULT(2, 1001);
+            break;
+        }
         if (n < 0) LOG("[fs] storage read failed at %llx: %s\n", off, strerror(errno));
         {
             const char *path = romfs_file_at(off);
@@ -456,7 +466,12 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
         if ((reads & (reads - 1)) == 0) LOG("[fs] romfs reads: %llu (%llu KB)\n", reads, bytes >> 10);
         break;
     }
-    case 4: OUT(uint64_t, 0) = ov_n ? ov_end : st->size; resp_size(resp, 8); break;  // GetSize
+    case 4: {  // GetSize (response data need not be uint64_t-aligned)
+        uint64_t size = !st->addon && ov_n ? ov_end : st->size;
+        memcpy(resp->data, &size, sizeof size);
+        resp_size(resp, sizeof size);
+        break;
+    }
     default: LOG("[fs] IStorage cmd %u (ok)\n", req->cmd);
     }
 }
@@ -683,10 +698,20 @@ SERVICE("fsp-srv", fsp_srv) {
         break;
     }
     case 200: ipc_return_object(resp, open_romfs_storage()); break;  // OpenDataStorageByCurrentProcess
-    case 202:  // OpenDataStorageByDataId (system data archives)
-        LOG("[fs] OpenDataStorageByDataId %llx (not available)\n", IN(uint64_t, 8));
-        resp->result = MAKE_RESULT(2, 1001);
+    case 202: {  // OpenDataStorageByDataId(storage_id, data_id)
+        int fd;
+        uint64_t size;
+        if (req->data_size < 16 || !dlc_storage(IN(uint64_t, 8), &fd, &size)) {
+            resp->result = MAKE_RESULT(2, 1001);
+            break;
+        }
+        Storage *st = calloc(1, sizeof *st);
+        st->fd = fd;
+        st->size = size;
+        st->addon = true;
+        ipc_return_object(resp, service_new("IStorage(dlc)", storage, st));
         break;
+    }
     case 1005: OUT(uint32_t, 0) = 0; resp_size(resp, 4); break;  // GetGlobalAccessLogMode
     case 1003: case 1004: case 1006: break;
     case 1011: memset(resp->data, 0, 0x10); resp_size(resp, 0x10); break;
