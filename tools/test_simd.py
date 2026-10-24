@@ -14,6 +14,7 @@ import functools
 import os
 import platform
 import random
+import signal
 import struct
 import subprocess
 import sys
@@ -418,8 +419,9 @@ def main():
                        capture_output=True)
     if p.returncode:
         print('harness failed', p.returncode, p.stderr.decode()[-2000:])
-    data = open(outp, 'rb').read()
-    print(f'harness: {len(data) // OUT_SIZE} cases ({time.time() - t3:.0f}s)')
+    data = open(outp, 'rb').read() if os.path.exists(outp) else b''
+    ran = len(data) // OUT_SIZE
+    print(f'harness: {ran} cases ({time.time() - t3:.0f}s)')
     fails = {}
     nfail = 0
     for i, ((k, fpcr, x, sp, nzcv, v, st), (ex, esp, enz, ev, emh)) in enumerate(zip(cases, expect)):
@@ -453,6 +455,19 @@ def main():
     for w, (fpcr, d, ins) in list(fails.items())[:args.show]:
         print(f'  {w:08x} {dis(w):40} fpcr={fpcr:x} {"; ".join(d)}')
         print(f'      {" ".join(ins)}')
+    # The harness stopped early (a crash: an instruction the host CPU lacks, a fault in the lifted code): the cases it
+    # didn't run are failures too, not a pass. Each result is flushed as it's written, so the next one is where.
+    if p.returncode or ran < len(cases):
+        try:
+            how = f'signal {signal.Signals(-p.returncode).name}' if p.returncode < 0 else f'exit status {p.returncode:#x}'
+        except ValueError:
+            how = f'exit status {p.returncode}'
+        where = ''
+        if ran < len(cases):
+            w = pick[cases[ran][0]]
+            where = f' at case {ran} ({w:08x} {dis(w)}, fpcr={cases[ran][1]:x})'
+        print(f'  harness stopped{where}: {how}; {len(cases) - ran} of {len(cases)} cases not run')
+        return 1
     return 1 if fails else 0
 
 

@@ -93,6 +93,7 @@ int main(int argc, char **argv) {
         }
         memcpy(out.v, c.v, sizeof out.v);
         fwrite(&out, sizeof out, 1, o);
+        fflush(o);  // (a crash keeps every result before it: tools/test_simd.py names the case it stopped at)
     }
     fclose(o);
     return 0;
