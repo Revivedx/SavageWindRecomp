@@ -1296,6 +1296,7 @@ static void begin_pass(void) {
         }
         pass_color[i] = st.rt.has_cview[i] && (st.rt.cview[i].setmask & 4) && vk_format(t->format) == b->format
                       ? vk_format(st.rt.cview[i].format) : b->format;
+        pass_color[i] = vk_view_format(b, pass_color[i]);  // (g_vk.lean_usage: the format its view really has)
         uint32_t lv = st.rt.has_cview[i] && (st.rt.cview[i].setmask & 1) ? st.rt.cview[i].base_level : 0;
         uint32_t ew = level_extent(b->width, lv), eh = level_extent(b->height, lv);
         if (blocks) ew = b->block->width, eh = b->block->height;
@@ -2979,6 +2980,12 @@ static void resolve_feedback(Prog *pr) {
                 int ci = -1;
                 for (int k = 0; k < st.rt.ncolor; k++) if (st.rt.color[k] == t) ci = k;
                 if (ci >= 0) {
+                    if (!src->feedback_seen && src->nview_fmt) {  // (outside a pass: no DCC for it from now on)
+                        vk_end_pass();
+                        st.rt_dirty = true;
+                        src->feedback_seen = true;
+                        vk_texture_drop_format_list(t);
+                    }
                     src->feedback_seen = true;
                     fbdump_note(t);
                     if (in_pass && !st.rt_dirty && (pass_feedback & (1u << ci))) {

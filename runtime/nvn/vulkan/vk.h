@@ -43,6 +43,7 @@ typedef struct {
     bool occlusion_precise;    // occlusionQueryPrecise: SAMPLES_PASSED counts samples, not just "any"
     bool feedback_loop;        // attachment feedback loops + barriers inside dynamic rendering (exec.c)
     bool feedback_layout;      // ... in ATTACHMENT_FEEDBACK_LOOP_OPTIMAL layout (no VK_KHR_unified_image_layouts: GENERAL otherwise)
+    bool lean_usage;           // colour images list their view formats instead of a bare MUTABLE_FORMAT (textures.c)
     bool gpl;                  // graphics pipeline libraries with fast linking (exec.c)
     bool dmabuf;               // memory exported as dma-bufs (Linux: the guest heap, exec.c backend_heap_set)
     bool radv;                 // the driver is Mesa's RADV
@@ -97,6 +98,8 @@ typedef struct TexBackend {
     bool feedback_ok;        // made with VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT (sampled while it is rendered to)
     bool feedback_seen;      // a draw sampled it while writing it: its passes begin with the feedback loop enabled
     bool in_feedback_layout; // in ATTACHMENT_FEEDBACK_LOOP_OPTIMAL now (g_vk.feedback_layout: a pass that loops, exec.c)
+    VkFormat view_fmt[2];    // (g_vk.lean_usage) the only formats its views may have; nview_fmt 0: any compatible one
+    uint8_t nview_fmt;
     uint64_t data_hash, sample_hash, checked_frame, full_frame;
     bool scalable, presented;
     uint8_t rs_group;            // RS_*: which output scale its allocation follows (textures.c)
@@ -136,6 +139,8 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
 VkComponentMapping vk_sample_swizzle(NvnTexture *t, const NvnTextureView *v);  // (a colour texture's, sampled)
 VkImageView vk_image_view(TexBackend *b, VkImageViewType type, VkFormat fmt, uint32_t lv0, uint32_t nlv, uint32_t ly0,
                           uint32_t nly, VkComponentMapping sw, VkImageAspectFlags aspect);
+VkFormat vk_view_format(TexBackend *b, VkFormat want);  // want, or the image's own format where want is not listed
+void vk_texture_drop_format_list(NvnTexture *t);        // (textures.c) a feedback loop target: no format list
 VkImageView vk_dummy_view(int textype);
 void vk_block_flush(VkCommandBuffer cb, TexBackend *b);  // (outside a pass) b->block's texels into b's blocks
 VkSampler vk_sampler(NvnSamplerDesc *d, bool aniso_ok);  // (aniso_ok: Video > Anisotropic filtering may apply)
