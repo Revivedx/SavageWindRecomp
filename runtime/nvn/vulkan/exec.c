@@ -1253,8 +1253,6 @@ static void begin_pass(void) {
         }
     VkCommandBuffer cb = vk_cmd();
     pass_barrier(cb);  // passes, copies and dispatches see each other's results
-    for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) pass_barrier_note(st.rt.color[i]->backend);
-    if (st.rt.depth) pass_barrier_note(st.rt.depth->backend);
     {
         NvnTexture *t0n = st.rt.ncolor ? st.rt.color[0] : NULL;
         dl_note("pass %d color %ux%u fmt %#x depth %p", st.rt.ncolor, t0n ? t0n->width : 0, t0n ? t0n->height : 0, t0n ? t0n->format : 0,
@@ -1317,6 +1315,7 @@ static void begin_pass(void) {
         renderer_mark_gpu_owned(t);
         VkImageView v = vk_view(t, &st.rt.cview[i], st.rt.has_cview[i], true, TEXTYPE_2D);
         TexBackend *b = t->backend;
+        if (v) pass_barrier_note(b);  // (the image the view is of: vk_view may have made or changed it)
         if (b && b->drawn_frame != renderer_present_count()) { b->prev_drawn = b->drawn_frame; b->drawn_frame = renderer_present_count(); }
         bool blocks = b && b->block_pending;  // (a view of a compressed image's blocks: drawn into b->block)
         if (blocks) {
@@ -1365,6 +1364,7 @@ static void begin_pass(void) {
         renderer_mark_gpu_owned(st.rt.depth);
         VkImageView v = vk_view(st.rt.depth, &st.rt.dview, st.rt.has_dview, true, TEXTYPE_2D);
         TexBackend *b = st.rt.depth->backend;
+        if (v) pass_barrier_note(b);
         if (b && b->drawn_frame != renderer_present_count()) { b->prev_drawn = b->drawn_frame; b->drawn_frame = renderer_present_count(); }
         if (v && renderer_format_is_depth(st.rt.depth->format)) {
             VkRenderingAttachmentInfo a = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = v,
