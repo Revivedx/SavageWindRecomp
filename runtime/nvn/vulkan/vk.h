@@ -80,6 +80,14 @@ VkSpan vk_transient_copy(const void *data, uint64_t size, uint64_t align);
 VkSpan vk_readback(uint64_t size);  // host-cached GPU -> CPU staging (read right after the copy completes)
 VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout layout);
 
+// ---- descriptor sets kept across submissions, and the constant data they point at (sets.c)
+bool vk_set_keep_on(void);
+VkDescriptorSet vk_set_get(VkDescriptorSetLayout layout, VkWriteDescriptorSet *w, int n, uint64_t gen, bool *shared);
+bool vk_const_store_on(void);
+VkDescriptorBufferInfo vk_const_store(const void *data, uint32_t klen, uint32_t size);
+bool vk_const_store_guest(uint64_t addr, uint32_t size, VkDescriptorBufferInfo *out);
+int vk_set_stats(char *buf, size_t size);
+
 // ---- textures (textures.c)
 // Render-target scale groups (textures.c tex_scale_group): none, the 3D scene's (internal resolution), the final
 // image's (the window's resolution), shadow maps (Video > Shadow resolution)

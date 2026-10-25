@@ -722,6 +722,11 @@ const char *renderer_stats(void) {
         stat_build_waits = 0;
         stat_uub = stat_uub_same = stat_gcopy_hit = stat_gcopy_miss = stat_gcopy_bytes = 0;
         stat_gw_waits = stat_gw_holds = 0;
+        n = strlen(stats_text);
+        if (n < sizeof stats_text - 2) {
+            snprintf(stats_text + n, sizeof stats_text - n, ", ");
+            vk_set_stats(stats_text + n + 2, sizeof stats_text - n - 2);
+        }
         stat_sets = stat_sets_reused = 0;
         stat_feedback_loops = stat_feedback_barriers = 0;
     }
@@ -3019,6 +3024,8 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
         NvnShaderStage *ss = &st.program->stages[stage];
         uint64_t size = ss->const_size ? ss->const_size : 16;
         if (size < si->cbuf_size[1]) size = si->cbuf_size[1];
+        VkDescriptorBufferInfo kept;
+        if (vk_const_store_on() && vk_const_store_guest(ss->code_addr + ss->const_offset, (uint32_t)size, &kept)) return kept;
         return ubo_span(guest_copy(ss->code_addr + ss->const_offset, size), size);  // (constant: shared per submission)
     }
     int idx = k - 3;  // cbuf_base
@@ -3409,6 +3416,12 @@ static VkDescriptorSet set_finish(VkDescriptorSetLayout layout, VkWriteDescripto
     static int off = -1;
     if (off < 0) off = getenv("SAVAGEWIND_VK_NO_SET_CACHE") != NULL;
     stat_sets++;
+    if (!off && vk_set_keep_on()) {
+        bool shared;
+        VkDescriptorSet ds = vk_set_get(layout, w, n, setc_gen, &shared);
+        stat_sets_reused += shared;
+        return ds;
+    }
     SetEnt *e = NULL;
     uint64_t seq = vk_pending_seq() + (setc_gen << 40), h = 0, h2 = 0;
     if (!off) {
@@ -3506,11 +3519,14 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
         w[n] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = VK_NULL_HANDLE, .dstBinding = b->binding,
                                       .descriptorCount = 1, .descriptorType = b->type};
         if (b->binding == 18) {
-            for (int t = 0; t < si->ntex && t < 64; t++) { rs[1 + t][0] = tex_sc[sg][t][0]; rs[1 + t][1] = tex_sc[sg][t][1]; }
-            bi[n] = ubo_span(copy_dedupe(sg ? DEDUPE_RSCALE_F : DEDUPE_RSCALE_V, rs, sizeof rs, 256), sizeof rs);
+            int rows = 1 + (si->ntex < 64 ? si->ntex : 64);
+            for (int t = 0; t + 1 < rows; t++) { rs[1 + t][0] = tex_sc[sg][t][0]; rs[1 + t][1] = tex_sc[sg][t][1]; }
+            if (vk_const_store_on()) bi[n] = vk_const_store(rs, (uint32_t)rows * 16, sizeof rs);  // (the rows after: zeros)
+            else bi[n] = ubo_span(copy_dedupe(sg ? DEDUPE_RSCALE_F : DEDUPE_RSCALE_V, rs, sizeof rs, 256), sizeof rs);
         } else {
             float zero[8] = {0};
-            bi[n] = ubo_span(copy_dedupe(DEDUPE_TINT, tint ? tint : zero, 32, 256), 32);
+            if (vk_const_store_on()) bi[n] = vk_const_store(tint ? tint : zero, 32, 32);
+            else bi[n] = ubo_span(copy_dedupe(DEDUPE_TINT, tint ? tint : zero, 32, 256), 32);
         }
         w[n].pBufferInfo = &bi[n];
         n++;
