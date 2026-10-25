@@ -1156,8 +1156,10 @@ Pendiente:
      en 1; ondas por SIMD: más en 74, menos en 1. `tools/test_translate.sh 20000 6 glsl`: 0 fallos de compilación y de
      validación.
      Un traductor nuevo: la precompilación de shaders se vuelve a hacer.
-     Medido sobre `test` (36a02bc, con #108), 3+3 pasadas alternas sin límite de FPS a 1280x720 (Kakariko, el establo
-     del río y Hateno): 56,9 → 58,0, 66,6 → 68,7 y 62,3 → 62,9 fps; GPU por frame −3,3, −3,5 y −2,3 %.
+     Medido sobre `test` (36a02bc, con #108), 3+3 pasadas alternas sin límite de FPS a 1280x720, con la GPU al
+     ~99 %: GPU por frame −3,0 % en Kakariko, −2,6 % en el establo del río y −4,4 % en la puerta de la Ciudad Gerudo
+     (las dos últimas por encima del ruido); FPS +1,2, +2,1 y −0,7 % (dentro del ruido; en otra serie con Hateno,
+     Kakariko +2,0 % y el establo +3,1 %, por encima).
    - Herramientas de diagnóstico:
      - `SAVAGEWIND_THREAD_DUMP_AT=<s>,<s>`: estado, núcleo y cadena de llamadas de cada hilo; para los que
        esperan un mutex, también su palabra (el handle del dueño).
