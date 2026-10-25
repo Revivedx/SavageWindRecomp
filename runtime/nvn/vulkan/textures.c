@@ -1217,11 +1217,15 @@ static VkCompareOp compare_op(uint32_t f) {
 // 2x .. 16x override it on texture samplers that filter linearly between mip levels or within one (ground, walls,
 // paths at a distance). Left alone: point-filtered samplers (pixel-exact data, some UI), samplers without mipmaps (the
 // UI, render targets read back), ones clamped to one mip level (BOTW reads its bloom and blur chains that way) and
-// depth-comparison ones (shadow maps).
-static float sampler_aniso(const NvnSamplerDesc *d) {
+// depth-comparison ones (shadow maps). And whatever the sampler (aniso_ok false, exec.c texture_info): textures with
+// one mip level - BOTW reads its render targets with samplers allowing the whole mip chain, and filtered that way
+// they put stepped light outlines along edges (around Link's bow and quiver most) - and the blended draws:
+// particles, effects, decals, whose quads' square edges the wider footprint brought out (floating dust as small
+// squares). Both the worse the higher the setting.
+static float sampler_aniso(const NvnSamplerDesc *d, bool aniso_ok) {
     float game = d->max_aniso > 1 ? fminf(d->max_aniso, 16) : 1;
     int a = g_settings.anisotropy;
-    if (a <= 0 || a > 4 || !g_vk.feat_aniso) return game;
+    if (a <= 0 || a > 4 || !g_vk.feat_aniso || !aniso_ok) return game;
     if (d->compare_mode || d->mag_filter != 1 || (d->min_filter != 3 && d->min_filter != 5)) return game;
     if (d->lod_max - d->lod_min < 0.5f) return game;
     return fminf((float)(1 << a), g_vk.props.limits.maxSamplerAnisotropy);
@@ -1235,12 +1239,14 @@ static pthread_mutex_t g_sampler_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static VkSampler sampler_create(const NvnSamplerDesc *d, float aniso);
 
-VkSampler vk_sampler(NvnSamplerDesc *d) {
-    float an = sampler_aniso(d);
-    if (d->backend && d->backend_aniso == an) return (VkSampler)d->backend;
+VkSampler vk_sampler(NvnSamplerDesc *d, bool aniso_ok) {
+    float an = sampler_aniso(d, aniso_ok);
+    void **slot = aniso_ok ? &d->backend : &d->backend_plain;
+    float *slot_aniso = aniso_ok ? &d->backend_aniso : &d->backend_plain_aniso;
+    if (*slot && *slot_aniso == an) return (VkSampler)*slot;
     NvnSamplerDesc key = *d;
-    key.backend = NULL;
-    key.backend_aniso = an;
+    key.backend = key.backend_plain = NULL;
+    key.backend_aniso = an, key.backend_plain_aniso = 0;
     pthread_mutex_lock(&g_sampler_lock);
     VkSampler s = VK_NULL_HANDLE;
     for (int i = 0; i < g_nsamplers && !s; i++)
@@ -1260,8 +1266,8 @@ VkSampler vk_sampler(NvnSamplerDesc *d) {
                      d->lod_max, d->lod_bias, d->max_aniso, an);
     }
     pthread_mutex_unlock(&g_sampler_lock);
-    d->backend = (void *)s;
-    d->backend_aniso = an;
+    *slot = (void *)s;
+    *slot_aniso = an;
     return s;
 }
 

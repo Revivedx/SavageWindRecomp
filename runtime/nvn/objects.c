@@ -975,7 +975,7 @@ NVN(nvnSamplerPoolRegisterSampler) {
     int id = (int)A(1);
     if (id >= 0 && id < d->count && HOST(NvnSamplerDesc, A(2))) {
         NvnSamplerDesc s = *HOST(NvnSamplerDesc, A(2));
-        s.backend = NULL;  // (the pool entry gets its own VkSampler)
+        s.backend = s.backend_plain = NULL;  // (the pool entry gets its own VkSamplers)
         ((NvnSamplerDesc *)d->entries)[id] = s;
     }
 }
