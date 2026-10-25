@@ -83,8 +83,9 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "settings_version")) version = atoi(val);
         else if (!strcmp(key, "resolution")) snprintf(old_res, sizeof old_res, "%s", val);  // (version 1)
-        else if (!strcmp(key, "upscaler"))  // (metalfx / fsr1: this OS's spatial upscaler; fsr3 / dlss: not yet)
-            g_settings.upscaler = !strcmp(val, "fsr1") || !strcmp(val, "metalfx") ? UPSCALE_SPATIAL : UPSCALE_OFF;
+        else if (!strcmp(key, "upscaler"))  // (metalfx / fsr1: this OS's spatial upscaler; dlss: NGX; fsr3: not yet)
+            g_settings.upscaler = !strcmp(val, "dlss") ? UPSCALE_DLSS
+                                : !strcmp(val, "fsr1") || !strcmp(val, "metalfx") ? UPSCALE_SPATIAL : UPSCALE_OFF;
         else if (!strcmp(key, "upscaler_quality")) {
             for (int i = 0; i < UPQ_COUNT; i++)
                 if (!strcmp(val, k_quality[i])) g_settings.upscale_quality = i;

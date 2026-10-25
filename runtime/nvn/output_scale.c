@@ -26,6 +26,10 @@
 #include "../settings.h"
 #include "output_scale.h"
 
+#ifndef __APPLE__
+extern bool vk_dlss_available(void);
+#endif
+
 #define MAX_TEX 16384.0
 #define SCENE_LINES 900.0  // the height of the game's 3D scene targets (docked)
 
@@ -33,7 +37,7 @@ bool upscaler_available(int u) {
 #ifdef __APPLE__
     return u == UPSCALE_OFF || u == UPSCALE_METALFX;
 #else
-    return u == UPSCALE_OFF || u == UPSCALE_FSR1;
+    return u == UPSCALE_OFF || u == UPSCALE_FSR1 || (u == UPSCALE_DLSS && vk_dlss_available());
 #endif
 }
 
