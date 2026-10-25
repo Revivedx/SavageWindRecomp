@@ -742,6 +742,19 @@ Pendiente:
        espera antes a la GPU (0 veces en el paseo). La lista sigue yendo a la GPU por partes. Un shader que escribe
        sin storage buffers (o con el conjunto lleno) retiene el resto de la lista como antes;
        `SAVAGEWIND_VK_GMEM_HOLD=1` retiene siempre.
+     - El hilo principal esperaba en `nvnSyncWait` a que la GPU acabara el frame que se acababa de entregar, y solo
+       entonces el de render entregaba el siguiente: la GPU se quedaba parada desde el final de cada frame hasta que
+       llegaba el primer trozo traducido del siguiente (~5 ms de ~22 en el mundo con una Radeon 660M, y el driver le
+       bajaba el reloj de ~1890 a ~1570 MHz). Ahora esa espera va un frame tarde, como en LAS Recomp (3fc84bd en Metal,
+       13398126d66a en Vulkan): esperar el fence N espera el que se dejó la vez anterior y vuelve, así que como mucho
+       hay dos frames de GPU en cola y nunca se aplaza un fence ya alcanzado (`renderer_wait_seq`). Lo que el juego
+       escribe mientras es su frame siguiente, que tiene doble búfer como en la consola; los constant buffers se copian
+       al traducir. Los render targets que lee la CPU (cielo, exposición, ocho de 128x128 por turnos) llegan un frame
+       después, salvo uno que no se ha leído en los últimos 16 frames (la foto de la cámara): la espera sobre su envío
+       es completa. Medido con 2+2 pasadas alternas (Kakariko, establo y Hateno, sin límite de FPS, 1280x720): 40,1 →
+       54,0, 47,8 → 63,6 y 51,5 → 59,0 fps; la GPU ocupada del 74-83 % al 98-99 %. Sin saltos de brillo en 60 capturas
+       seguidas de día, de noche, con lluvia y dentro de Vah Ruta, y la foto de la cámara correcta.
+       `SAVAGEWIND_GPU_OVERLAP=0` lo quita.
      Además:
      - Copias de constant buffers: se comparten en toda la lista (antes, solo dentro de cada trozo de ~300 draws que
        va a la GPU) y `UpdateUniformBuffer` (~450 por frame en el mundo, sobre solo ~40 rangos pequeños) invalida solo
