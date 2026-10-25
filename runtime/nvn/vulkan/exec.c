@@ -3564,7 +3564,19 @@ static VkDescriptorBufferInfo gmem_info(void) {
         LOG("[vk] guest heap import failed (%llu MB): shader global memory reads return zero\n", (unsigned long long)(want >> 20));
         off = 1;
     }
-    if (gmem_buf) return (VkDescriptorBufferInfo){gmem_buf, 0, gmem_size};
+    if (gmem_buf) {
+        // One binding of the whole heap: past the driver's maxStorageBufferRange (Mali-G610: 2 GB, the heap 3 GB) the
+        // descriptor is invalid and the GPU faults reading through it. Bound up to the limit instead: what lies above
+        // reads as zero (robustBufferAccess), stores there are dropped.
+        uint64_t range = gmem_size, lim = g_vk.props.limits.maxStorageBufferRange;
+        if (range > lim) {
+            static bool told;
+            range = lim & ~0xFFFFull;
+            if (!told) told = true, LOG("[vk] shader global memory: the first %llu MB of the %llu MB heap (the driver's storage buffer limit)\n",
+                                         (unsigned long long)(range >> 20), (unsigned long long)(gmem_size >> 20));
+        }
+        return (VkDescriptorBufferInfo){gmem_buf, 0, range};
+    }
     static uint32_t zero[1024];
     VkSpan s = vk_transient_copy(zero, sizeof zero, 256);
     return (VkDescriptorBufferInfo){s.buf, s.off, sizeof zero};
