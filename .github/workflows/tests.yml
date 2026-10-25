@@ -1,11 +1,12 @@
 # Runs the tests that need no game files (synthetic inputs or reference implementations only), each one only when a
-# pull request touches what it covers. Pushes to main and manual runs run them all.
+# pull request touches what it covers. Pushes to test and main, and manual runs, run them all.
 name: Tests
 
 on:
   push:
-    branches: [main]
+    branches: [test, main]
   pull_request:
+    branches: [test, main]
   workflow_dispatch:
 
 permissions:
@@ -27,6 +28,8 @@ jobs:
       i18n: ${{ steps.filter.outputs.i18n }}
       layout: ${{ steps.filter.outputs.layout }}
       astc: ${{ steps.filter.outputs.astc }}
+      simd: ${{ steps.filter.outputs.simd }}
+      translate: ${{ steps.filter.outputs.translate }}
     steps:
       - uses: dorny/paths-filter@v4
         id: filter
@@ -44,6 +47,17 @@ jobs:
             astc:
               - 'runtime/nvn/astc.c'
               - 'tools/test_astc*'
+              - '.github/workflows/tests.yml'
+            simd:
+              - 'runtime/simd*.h'
+              - 'runtime/cpu.h'
+              - 'tools/lifter.py'
+              - 'tools/simd_c.py'
+              - 'tools/test_simd*'
+              - '.github/workflows/tests.yml'
+            translate:
+              - 'runtime/nvn/maxwell/**'
+              - 'tools/test_translate*'
               - '.github/workflows/tests.yml'
 
   # Every text the menus use has a translation in each runtime/ui/i18n/<lang>.inc, and none is left unused.
@@ -83,3 +97,28 @@ jobs:
       - uses: actions/checkout@v7
       - run: git clone --quiet --depth 1 --branch "$ASTCENC_VERSION" https://github.com/ARM-software/astc-encoder.git build/astc-encoder
       - run: bash tools/test_astc.sh
+
+  # The lifter's FP/SIMD lowering against Unicorn (a Cortex-A57), on random encodings and operands (no game code).
+  simd:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.simd == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.2
+        with:
+          enable-cache: true
+          cache-dependency-glob: .github/workflows/tests.yml
+      - run: uv run --no-project --with unicorn --with capstone python tools/test_simd.py --jobs "$(nproc)"
+
+  # Every GLSL translation of random Maxwell programs compiles (shaderc) and validates (SPIRV-Tools).
+  translate:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.translate == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends libshaderc-dev spirv-tools
+      - run: sh tools/test_translate.sh 20000 "$(nproc)" glsl

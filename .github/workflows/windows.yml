@@ -7,8 +7,9 @@ name: Windows
 
 on:
   push:
-    branches: [main]
+    branches: [test, main]
   pull_request:
+    branches: [test, main]
   workflow_dispatch:
 
 permissions:

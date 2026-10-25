@@ -4,6 +4,7 @@ name: Checks
 
 on:
   pull_request:
+    branches: [test, main]
 
 permissions:
   contents: read
