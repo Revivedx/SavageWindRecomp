@@ -418,6 +418,8 @@ static void create_image(NvnTexture *t, TexBackend *b) {
 }
 
 static void defer(Dead d) {
+    extern void vk_pass_barrier_forget(void);
+    if (d.img) vk_pass_barrier_forget();  // (the next pass barrier may name the image, in a later submission)
     if (ndead == cap_dead) { cap_dead = cap_dead ? cap_dead * 2 : 256; dead = realloc(dead, cap_dead * sizeof *dead); }
     d.seq = vk_pending_seq();
     dead[ndead++] = d;
