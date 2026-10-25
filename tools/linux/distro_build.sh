@@ -24,17 +24,17 @@ deps_for() {
         debian*|ubuntu*)  # SDL3 3.2+, clang 19+ / 20+, libshaderc.so
             echo 'apt-get update -qq; apt-get install -y -qq --no-install-recommends make clang lld pkg-config \
                 libsdl3-dev libavformat-dev libavcodec-dev libavutil-dev libswscale-dev \
-                libvulkan-dev libshaderc-dev' ;;
+                libvulkan-dev libshaderc-dev zlib1g-dev' ;;
         fedora*)          # SDL3-devel, libshaderc-devel, FFmpeg as the "free" variant
             echo 'dnf install -y -q make clang lld pkgconf-pkg-config SDL3-devel libshaderc-devel vulkan-loader-devel \
-                ffmpeg-free-devel libavformat-free-devel libavcodec-free-devel libavutil-free-devel libswscale-free-devel' ;;
+                ffmpeg-free-devel libavformat-free-devel libavcodec-free-devel libavutil-free-devel libswscale-free-devel zlib-devel' ;;
         arch*)
             echo 'pacman -Syu --noconfirm --quiet --needed \
-                base-devel clang lld sdl3 shaderc vulkan-icd-loader vulkan-headers ffmpeg' ;;
+                base-devel clang lld sdl3 shaderc vulkan-icd-loader vulkan-headers ffmpeg zlib' ;;
         opensuse*)        # Tumbleweed: libavformat-devel is its FFmpeg (headers in /usr/include/ffmpeg), SDL3 as SDL3-devel
             echo 'zypper -q --non-interactive --gpg-auto-import-keys refresh; zypper -q --non-interactive \
                 install --no-recommends make clang lld pkgconf-pkg-config SDL3-devel shaderc-devel vulkan-devel \
-                libavformat-devel libavcodec-devel libavutil-devel libswscale-devel' ;;
+                libavformat-devel libavcodec-devel libavutil-devel libswscale-devel zlib-devel' ;;
         *) return 2 ;;
     esac
 }

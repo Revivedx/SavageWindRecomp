@@ -57,7 +57,7 @@ Ubuntu 25.04+ / Debian 13 packages (other distributions: the same libraries unde
 lifted FP/SIMD code needs `__builtin_elementwise_*` - and SDL3 3.2 or newer):
 
     sudo apt install clang lld make pkg-config python3-venv libsdl3-dev libavformat-dev libavcodec-dev \
-        libavutil-dev libswscale-dev libvulkan-dev libshaderc-dev glslc vulkan-tools
+        libavutil-dev libswscale-dev libvulkan-dev libshaderc-dev zlib1g-dev glslc vulkan-tools
 
 Ubuntu 24.04 LTS and older, Debian 12 and openSUSE Leap have no SDL3 package (SDL3 arrived after their freeze):
 build SDL3 from source there, or use the AppImage. Vulkan headers older than 1.4.321 (Debian 13, Ubuntu 25.04, Fedora
