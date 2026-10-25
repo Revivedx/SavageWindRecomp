@@ -2027,6 +2027,7 @@ static const char glsl_prelude[] =
     "#extension GL_KHR_shader_subgroup_shuffle : require\n"
     "#extension GL_KHR_shader_subgroup_shuffle_relative : require\n"
     "#extension GL_EXT_texture_shadow_lod : require\n"
+    "#extension GL_EXT_spirv_intrinsics : require\n"
     "#define cbr(cb, off) cb[min((off) >> 4, uint(cb.length() - 1))][((off) >> 2) & 3u]\n"
     "uint as_u(float x) { return floatBitsToUint(x); }\n"
     "uint as_u(uint x) { return x; }\n"
@@ -2041,10 +2042,17 @@ static const char glsl_prelude[] =
     "int sx16(uint v) { return bitfieldExtract(int(v), 0, 16); }\n"
     "int sx16(int v) { return bitfieldExtract(v, 0, 16); }\n"
     // MSL semantics: saturate(NaN) = 0, fmin/fmax return the non-NaN operand
-    "float saturate(float x) { return isnan(x) ? 0.0f : clamp(x, 0.0f, 1.0f); }\n"
+    // Maxwell's FMNMX returns the other operand when one is NaN, and .SAT turns NaN into 0: GLSL.std.450 NMin, NMax
+    // and NClamp say exactly that (GLSL's min, max and clamp leave NaN undefined), and drivers make them one min or
+    // max instead of the isnan tests and selects written out (ACO: -13 % instructions in the game's largest
+    // fragment shader)
+    "spirv_instruction(set = \"GLSL.std.450\", id = 79) float nmin(float a, float b);\n"
+    "spirv_instruction(set = \"GLSL.std.450\", id = 80) float nmax(float a, float b);\n"
+    "spirv_instruction(set = \"GLSL.std.450\", id = 81) float nclamp(float x, float lo, float hi);\n"
+    "float saturate(float x) { return nclamp(x, 0.0f, 1.0f); }\n"
     "vec2 saturate(vec2 x) { return vec2(saturate(x.x), saturate(x.y)); }\n"
-    "float fmin(float a, float b) { return isnan(a) ? b : (isnan(b) ? a : min(a, b)); }\n"
-    "float fmax(float a, float b) { return isnan(a) ? b : (isnan(b) ? a : max(a, b)); }\n"
+    "float fmin(float a, float b) { return nmin(a, b); }\n"
+    "float fmax(float a, float b) { return nmax(a, b); }\n"
     "uint clz(uint v) { return v == 0u ? 32u : uint(31 - findMSB(v)); }\n"
     "uint popcount(uint v) { return uint(bitCount(v)); }\n"
     "uint mulhi(uint a, uint b) { uint hi, lo; umulExtended(a, b, hi, lo); return hi; }\n"
@@ -2102,6 +2110,7 @@ static char *glsl_with_prelude(const char *rest) {
         pr.len[i] = e ? (size_t)(e - p + 1) : strlen(p);
         p += pr.len[i];
         const char *par = pr.line[i][0] == '#' ? NULL : memchr(pr.line[i], '(', pr.len[i]);
+        if (par && !strncmp(pr.line[i], "spirv_instruction(", 18)) par = strchr(strchr(par, ')'), '(');  // (its own name)
         if (!par) { pr.keep[i] = true; continue; }  // (directives, and the #define everything uses)
         const char *q = par;
         while (q > pr.line[i] && id_char(q[-1])) q--;
@@ -2130,6 +2139,84 @@ static const char *glsl_sampler_type(const ShaderTexture *t) {
     return names[ty][t->shadow ? 1 : 0];
 }
 
+// IPA "multiply" by w (1 / gl_FragCoord.w, a MUFU.RCP of the IPA of position w) undoes the 1/w of "pass": the
+// attribute itself, which Vulkan already interpolates with perspective. Written out, every varying read costs two
+// multiplies the driver can't fold (w * (1 / w) is not 1 in floats): -5 % instructions in the game's largest fragment
+// shader. Folded only where the register surely holds 1 / w: from a write outside every if (the body's control flow
+// lines are indented 2, statements 4) with no break or return before it, to the register's next write, in a shader
+// without loops (do { } while (false) is none): control only goes forward, so every read in between follows it.
+typedef struct { size_t from, to; int r; } IpaSpan;
+
+static void glsl_fold_ipa_w(Str *body) {
+    if (!body->buf) return;
+    char *text = body->buf;
+    for (const char *p = text; (p = strstr(p, "} while (")); p++)
+        if (strncmp(p + 9, "false);", 7)) return;
+    if (strstr(text, "\n  for (") || strstr(text, "\n  switch (") || strstr(text, "\n  while (")) return;
+    static const char rcp_fmt[] = "floatBitsToUint((1.0f / uintBitsToFloat(r%d)));%n";
+    bool is_w[256] = {0}, broke = false;
+    int open_span[256];  // the register's span still open, or -1
+    memset(open_span, -1, sizeof open_span);
+    IpaSpan span[256];
+    int nspan = 0, ifs = 0, stack = 0;
+    uint64_t if_bits = 0;  // per open brace: an if / else (1) or a do (0)
+    for (char *line = text; *line;) {
+        char *eol = strchr(line, '\n');
+        if (!eol) eol = line + strlen(line);
+        if (line[0] == ' ' && line[1] == ' ' && line[2] != ' ') {  // control flow
+            const char *t = line + 2;
+            if (*t == '}' && stack > 0) { stack--; ifs -= (if_bits >> stack) & 1; }
+            if (memchr(t, '{', eol - t)) {
+                if (stack == 64) return;
+                bool is_if = !strncmp(t, "if ", 3) || !strncmp(t, "} else", 6);
+                if_bits = (if_bits & ~(1ull << stack)) | ((uint64_t)is_if << stack);
+                stack++;
+                ifs += is_if;
+            }
+        } else {
+            for (char *p = line; (p = memmem(p, eol - p, " = ", 3)); p += 3) {
+                char *q = p;
+                while (q > line && q[-1] >= '0' && q[-1] <= '9') q--;
+                if (q == p || q[-1] != 'r' || (q - 1 > line && id_char(q[-2]))) continue;
+                int r = atoi(q), m, n = 0;
+                if (r > 255) continue;
+                if (open_span[r] >= 0) span[open_span[r]].to = (size_t)(q - 1 - text), open_span[r] = -1;
+                bool top = ifs == 0 && !broke;
+                if (top && nspan < 256 && sscanf(p + 3, rcp_fmt, &m, &n) == 1 && n && m >= 0 && m < 256 && is_w[m]) {
+                    span[nspan] = (IpaSpan){(size_t)(p + 3 + n - text), body->len, r};
+                    open_span[r] = nspan++;
+                }
+                is_w[r] = top && !strncmp(p + 3, "as_u(gl_FragCoord[3]);", 22);
+            }
+            if (memmem(line, eol - line, "break;", 6) || memmem(line, eol - line, "return;", 7)) broke = true;
+        }
+        line = *eol ? eol + 1 : eol;
+    }
+    for (int i = 0; i < nspan; i++) {
+        char pat[64];
+        size_t pn = (size_t)snprintf(pat, sizeof pat, "] * gl_FragCoord.w * uintBitsToFloat(r%d)", span[i].r);
+        for (char *p = text + span[i].from; (p = strstr(p, pat)) && (size_t)(p - text) + pn <= span[i].to;) {
+            const char *v = p;  // back over "vN[c"
+            while (v > text && v[-1] >= '0' && v[-1] <= '9') v--;
+            bool varying = v < p && v > text && v[-1] == '[';
+            if (varying) {
+                const char *bracket = --v;
+                while (v > text && v[-1] >= '0' && v[-1] <= '9') v--;
+                varying = v < bracket && v > text && v[-1] == 'v' && !(v - 1 > text && id_char(v[-2]));
+            }
+            if (!varying || id_char(p[pn])) { p += pn; continue; }
+            size_t at = (size_t)(p - text);
+            memmove(p + 1, p + pn, body->len - (at + pn) + 1);  // "vN[c" + "]" + the rest
+            body->len -= pn - 1;
+            for (int k = 0; k < nspan; k++) {  // (the spans after it move back)
+                if (span[k].from > at) span[k].from -= pn - 1;
+                if (span[k].to > at) span[k].to -= pn - 1;
+            }
+            p++;
+        }
+    }
+}
+
 // Declarations + entry point around the (rewritten) body; mirrors the MSL assembly in maxwell_translate.
 static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     ShaderInfo *info = c->info;
@@ -2137,6 +2224,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     int stage = c->stage;
     Str body = {0};
     glsl_rewrite(c, &body, c->body.buf ? c->body.buf : "");
+    if (stage == STAGE_FRAGMENT) glsl_fold_ipa_w(&body);
     if (info->uses_gmem && (info->cbuf_mask & (1u << GMEM_BUFFER_INDEX))) fail(c, "cbuf %d clashes with gmem", GMEM_BUFFER_INDEX);
     if (info->cbuf_mask >> 18) fail(c, "cbuf index out of range");
     for (int i = 0; i < info->ntex; i++)
