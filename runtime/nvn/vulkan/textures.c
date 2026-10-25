@@ -311,18 +311,7 @@ static VkFormat srgb_twin(VkFormat f) {
     case VK_FORMAT_B8G8R8A8_SRGB: return VK_FORMAT_B8G8R8A8_UNORM;
     case VK_FORMAT_A8B8G8R8_UNORM_PACK32: return VK_FORMAT_A8B8G8R8_SRGB_PACK32;
     case VK_FORMAT_A8B8G8R8_SRGB_PACK32: return VK_FORMAT_A8B8G8R8_UNORM_PACK32;
-    case VK_FORMAT_BC1_RGBA_UNORM_BLOCK: return VK_FORMAT_BC1_RGBA_SRGB_BLOCK;
-    case VK_FORMAT_BC1_RGBA_SRGB_BLOCK: return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
-    case VK_FORMAT_BC2_UNORM_BLOCK: return VK_FORMAT_BC2_SRGB_BLOCK;
-    case VK_FORMAT_BC2_SRGB_BLOCK: return VK_FORMAT_BC2_UNORM_BLOCK;
-    case VK_FORMAT_BC3_UNORM_BLOCK: return VK_FORMAT_BC3_SRGB_BLOCK;
-    case VK_FORMAT_BC3_SRGB_BLOCK: return VK_FORMAT_BC3_UNORM_BLOCK;
-    case VK_FORMAT_BC7_UNORM_BLOCK: return VK_FORMAT_BC7_SRGB_BLOCK;
-    case VK_FORMAT_BC7_SRGB_BLOCK: return VK_FORMAT_BC7_UNORM_BLOCK;
-    default:
-        if (f >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && f <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK)  // (UNORM, SRGB alternate)
-            return (f - VK_FORMAT_ASTC_4x4_UNORM_BLOCK) & 1 ? f - 1 : f + 1;
-        return VK_FORMAT_UNDEFINED;
+    default: return VK_FORMAT_UNDEFINED;
     }
 }
 
@@ -393,15 +382,16 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     if (type == VK_IMAGE_TYPE_2D && layers >= 6 && tw == th && samples == 1) flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
     b->slices_renderable = type == VK_IMAGE_TYPE_3D && (usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
     if (b->slices_renderable) flags |= VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT;  // (Vulkan 1.1) 2D views of slices
-    // g_vk.lean_usage: colour images may only be viewed as their own format and its sRGB / UNORM twin, listed in a
+    // g_vk.lean_usage: colour targets may only be viewed as their own format and its sRGB / UNORM twin, listed in a
     // VkImageFormatListCreateInfo (no twin: not mutable at all), as LAS Recomp 03ee802f. Mesa's AMD driver keeps DCC
     // for such images before RDNA3 and turns it off for a bare MUTABLE_FORMAT (radv_are_formats_dcc_compatible):
     // without it every render target went uncompressed and every clear wrote the whole image. Views in any other
-    // format fall back to the image's own (vk_view_format, logged). Not for a target in a feedback loop
+    // format fall back to the image's own (vk_view_format, logged). Only render targets (DCC is for them; BOTW reads
+    // the blocks of a BC4 texture through an RGBA16 view, which a list would refuse), and not one in a feedback loop
     // (vk_texture_drop_format_list).
     VkImageFormatListCreateInfo fl = {.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO};
     b->nview_fmt = 0;
-    if (!depthfmt && g_vk.lean_usage && !b->feedback_seen) {
+    if ((usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) && g_vk.lean_usage && !b->feedback_seen) {
         VkFormat twin = srgb_twin(vf);
         b->view_fmt[0] = vf;
         b->view_fmt[1] = twin;
