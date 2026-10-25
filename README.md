@@ -252,10 +252,12 @@ More detail in [docs/BUILD-windows.md](docs/BUILD-windows.md).
      minute) and `make -j` again (builds it into `build/swgame.dll`; the first build takes 15-20 minutes).
 3. Run: `build/savagewind.exe extracted --play`, from a shell with `C:\msys64\ucrt64\bin` on PATH.
 
-DLSS is optional on Windows. To build it from the external NVIDIA SDK checkout, pass its path (the default is the
-sibling `../DLSS` checkout): `make DLSS_SDK=/path/to/DLSS -j`. The release build copies `nvngx_dlss.dll` and the
-NVIDIA license when that SDK path is available. If the SDK or runtime DLL is absent, the game still builds and DLSS
-stays unavailable in Video > Upscaler.
+DLSS is optional on Windows. It builds from NVIDIA's SDK, [NVIDIA/DLSS](https://github.com/NVIDIA/DLSS), cloned beside
+this repository (`../DLSS`, the default) or anywhere else with `make DLSS_SDK=/path/to/DLSS -j`. Check out one of its
+release tags (tested: `v310.9.16`) and keep that tag's own `nvngx_dlss.dll`: the headers and the static library the
+game is linked with must be the same SDK version as the DLL it loads, so don't swap in a DLL from elsewhere. The
+release build copies `nvngx_dlss.dll` and the NVIDIA license when that SDK path is available. If the SDK or runtime
+DLL is absent, the game still builds and DLSS stays unavailable in Video > Upscaler.
 
 ### Linux
 
@@ -290,7 +292,7 @@ switches - are in [docs/SAVAGE-WIND.md](docs/SAVAGE-WIND.md).
   [Switch Loader](https://github.com/Adubbz/Ghidra-Switch-Loader) - used for reverse engineering (not bundled).
 - Libraries: [SDL 3](https://libsdl.org) (zlib), [FFmpeg](https://ffmpeg.org) (LGPL),
   [Dear ImGui](https://github.com/ocornut/imgui) (MIT),
-  NVIDIA DLSS SDK (NVIDIA's own license; optional, Windows; `make dist` adds its `LICENSE.txt`),
+  [NVIDIA DLSS SDK](https://github.com/NVIDIA/DLSS) (NVIDIA's own license; optional, Windows; `make dist` adds its `LICENSE.txt`),
   [Vulkan Memory Allocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator) (MIT),
   [SMAA](https://github.com/iryoku/smaa) (MIT), [AMD FidelityFX Super Resolution 1](https://github.com/GPUOpen-Effects/FidelityFX-FSR)
   (MIT), [AMD FidelityFX CAS](https://github.com/GPUOpen-Effects/FidelityFX-CAS) (MIT),

@@ -19,10 +19,12 @@ From an MSYS2 UCRT64 shell, or Git Bash with MSYS2 first on PATH:
     make gen        # once: recompile the game from extracted/exefs (your own game files; see the start screen)
     make -j         # -> build/savagewind.exe and the game code library build/swgame.dll
 
-DLSS is optional and uses the external NVIDIA SDK checkout. With the SDK cloned beside this repository, the default
-works as-is; otherwise pass its location explicitly: `make DLSS_SDK=/path/to/DLSS -j`. The runtime DLL is not copied
-into the source tree. `make dist` includes `nvngx_dlss.dll` and the SDK license when the SDK path contains the Windows
-x86_64 redistributable.
+DLSS is optional and uses NVIDIA's SDK, not part of this repository: `git clone https://github.com/NVIDIA/DLSS` beside
+it, check out a release tag (tested: `v310.9.16`), and the default works as-is; otherwise pass its location
+explicitly: `make DLSS_SDK=/path/to/DLSS -j`. The runtime DLL is not copied into the source tree. `make dist` includes
+`nvngx_dlss.dll` and the SDK license when the SDK path contains the Windows x86_64 redistributable. Keep the DLL and
+the SDK at the same version - the tag the headers and `nvsdk_ngx_s.lib` come from - rather than a newer or older
+`nvngx_dlss.dll` from elsewhere.
 
 Without `generated/` only the app is built: the start screen builds the game code itself when you set up the game
 files (as for players), given the generator and the compiler (`make gen-helper`, `tools/fetch_zig.sh`).
