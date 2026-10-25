@@ -742,6 +742,20 @@ Pendiente:
        espera antes a la GPU (0 veces en el paseo). La lista sigue yendo a la GPU por partes. Un shader que escribe
        sin storage buffers (o con el conjunto lleno) retiene el resto de la lista como antes;
        `SAVAGEWIND_VK_GMEM_HOLD=1` retiene siempre.
+     - Descriptor sets entre envíos (`runtime/nvn/vulkan/sets.c`). En Kakariko los draws piden ~8700 sets por frame;
+       los de contenido igual solo se compartían dentro de un envío (~8,6 por frame), así que ~1070 se asignaban y
+       escribían cada frame, dos tercios iguales a los de uno de los dos frames anteriores salvo por tres bindings de
+       contenido casi fijo que se copiaban al anillo en cada envío, con offset nuevo: las constantes del compilador
+       (binding 1), la tabla de escalas de texturas (18) y el tinte (19). Ahora viven en un almacén por contenido en
+       memoria de GPU (`vk_const_store`; `SAVAGEWIND_VK_NO_CONST_STORE=1` los copia como antes), y los sets en pools
+       por épocas en vez de con el slot del envío (`vk_set_get`; `SAVAGEWIND_VK_NO_SET_KEEP=1` los comparte solo
+       dentro del envío); una vista destruida o el heap reimportado los tira todos (un objeto nuevo puede tener el
+       handle viejo). Los que se siguen asignando van por lotes por layout (`SAVAGEWIND_VK_NO_SET_BATCH=1`, como LAS
+       Recomp d409a9ffdbfa) y se escriben con plantillas (`SAVAGEWIND_VK_NO_SET_TEMPLATE=1`). Sets asignados
+       ~57 000 → ~14 000 por segundo, descriptores escritos ~310 000 → ~100 000. En una Radeon 660M (RADV) no se
+       nota: 0 ± 1 % de FPS con la CPU como límite y −1,4 % en Kakariko con la GPU como límite; lo que RADV deja de
+       hacer se va en fallos de caché (sets hechos hace frames). En memoria visible desde la CPU, como el anillo, el
+       almacén hacía cada draw ~3 % más lento en la GPU. Sin medir en NVIDIA, donde asignar y escribir sets cuesta más.
      Además:
      - Copias de constant buffers: se comparten en toda la lista (antes, solo dentro de cada trozo de ~300 draws que
        va a la GPU) y `UpdateUniformBuffer` (~450 por frame en el mundo, sobre solo ~40 rangos pequeños) invalida solo
