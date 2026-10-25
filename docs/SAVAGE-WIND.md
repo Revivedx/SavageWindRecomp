@@ -309,7 +309,8 @@ Pendiente:
      el ratón como cámara: con la ventana enfocada, sin menú y sin script, el cursor queda retenido (modo relativo de
      SDL) y su velocidad se vuelve el stick derecho (≈1200 px/s a fondo con sensibilidad 1, más un 12% para pasar la
      zona muerta del juego; `SAVAGEWIND_MOUSE_SCALE`, `SAVAGEWIND_MOUSE_DEADZONE`). Esc suelta el cursor y un clic
-     en la ventana lo vuelve a retener. Ajustes: `mouse_camera`, `mouse_sensitivity`, `mouse_invert_y`.
+     en la ventana lo vuelve a retener. Ajustes: `mouse_camera`, `mouse_sensitivity`, `mouse_vertical_sensitivity`
+     (el eje vertical, en fracción de la sensibilidad: 0,5 a 2) y `mouse_invert_y`.
    - Controles de movimiento (2026-10-22, `runtime/hle/motion.c`): BOTW importa cuatro funciones del sensor de seis
      ejes de nn::hid: `GetSixAxisSensorHandles` y `StartSixAxisSensor` (cuando cambia el estilo del mando,
      `FUN_7100d9e24c`), `GetSixAxisSensorStates` (cada frame, las 16 muestras más nuevas de cada handle) y

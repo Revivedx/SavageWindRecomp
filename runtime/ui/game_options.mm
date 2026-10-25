@@ -150,6 +150,9 @@ static_assert(k_fps[FPS_DEFAULT_INDEX] == FPS_DEFAULT);
 constexpr int k_sens[] = {10, 25, 50, 75, 100, 125, 150, 200, 250, 300, 400, 500, 600, 800, 1000};  // mouse sensitivity, %
 constexpr int SENS_DEFAULT = 9;  // (300%: MOUSE_SENS_DEFAULT)
 static_assert(k_sens[SENS_DEFAULT] == 300);
+constexpr int k_sens_y[] = MOUSE_SENS_Y_CHOICES;  // vertical mouse sensitivity, % of the horizontal
+constexpr int SENS_Y_DEFAULT = 5;
+static_assert(k_sens_y[SENS_Y_DEFAULT] == 100);
 constexpr int k_motion_sens[] = {25, 50, 75, 100, 125, 150, 200, 250, 300, 400};  // motion sensitivity, %
 constexpr int MOTION_SENS_DEFAULT = 3;
 static_assert(k_motion_sens[MOTION_SENS_DEFAULT] == 100);
@@ -425,6 +428,16 @@ void build_items(void) {
                        },
                        [](const Item &) { return nearest(k_sens, N(k_sens), g_settings.mouse_sens * 100); },
                        [](const Item &, int x) { g_settings.mouse_sens = k_sens[x] / 100.0f; }, SENS_DEFAULT));
+    v.push_back(choice(P_CONTROLS, "Mouse vertical sensitivity",
+                       "Up and down, as a percentage of the mouse sensitivity.",
+                       [](const Item &) { return N(k_sens_y); },
+                       [](const Item &, int x) {
+                           static std::string s;
+                           s = pct(k_sens_y[x]);
+                           return s.c_str();
+                       },
+                       [](const Item &) { return nearest(k_sens_y, N(k_sens_y), g_settings.mouse_sens_y * 100); },
+                       [](const Item &, int x) { g_settings.mouse_sens_y = k_sens_y[x] / 100.0f; }, SENS_Y_DEFAULT));
     v.push_back(toggle(P_CONTROLS, "Invert mouse Y", "Only the mouse. The camera Y-axis option inverts both.",
                        [](const Item &) { return (int)g_settings.mouse_invert_y; },
                        [](const Item &, int x) { g_settings.mouse_invert_y = x; }, 0));

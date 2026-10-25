@@ -122,7 +122,8 @@ static void mouse_stick(int32_t *x, int32_t *y) {
     if (full < 0) full = getenv("SAVAGEWIND_MOUSE_SCALE") ? atof(getenv("SAVAGEWIND_MOUSE_SCALE")) : 1200.0;
     if (dz < 0) dz = getenv("SAVAGEWIND_MOUSE_DEADZONE") ? atof(getenv("SAVAGEWIND_MOUSE_DEADZONE")) : 0.12;
     double dx = (double)atomic_exchange(&mouse_dx_milli, 0) / 1000.0, dy = (double)atomic_exchange(&mouse_dy_milli, 0) / 1000.0;
-    double vx = dx / dt / (full / g_settings.mouse_sens), vy = -dy / dt / (full / g_settings.mouse_sens);
+    double scale = full / g_settings.mouse_sens;
+    double vx = dx / dt / scale, vy = -dy / dt / scale * g_settings.mouse_sens_y;
     if (g_settings.mouse_invert_y) vy = -vy;
     double m = sqrt(vx * vx + vy * vy);
     if (m > 1e-3) {
