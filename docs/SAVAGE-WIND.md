@@ -890,6 +890,20 @@ Pendiente:
      ninguna función pasa del 1 %; `rt_dispatch` 4 %), el resto esperas. `SAVAGEWIND_VK_LIST_STATS=1` (medir) mostró
      que un frame no se parte en listas independientes: ~2800 `CallCommands` por frame, ~1 draw cada una, todas usan
      estado puesto antes. Bajar la traducción a 4-5 ms pide traducir en paralelo (notas de la sesión).
+   - Render targets comprimidos en GPU integradas (2026-10-26): las imágenes de color se creaban con
+     `VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT` sin `VkImageFormatListCreateInfo`, y Mesa (RADV) les quita DCC antes de RDNA3
+     (`radv_are_formats_dcc_compatible`): ningún render target iba comprimido y cada clear escribía la imagen entera
+     (en una Radeon 660M, 36 clears por frame en Kakariko = 1,38 ms, ~0,18 ms por target de 1600x900; sin fast clears,
+     que en `GENERAL` exigen DCC). Ahora los render targets listan su formato y su par sRGB / UNORM (sin par: no son
+     mutables), como LAS Recomp 03ee802f; una vista en otro formato usa el propio (`vk_view_format`, con aviso en el
+     log: 0 en las pruebas). Solo los render targets: BOTW lee los bloques de una textura BC4 con una vista RGBA16, que
+     una lista rechazaría. Un target con feedback loop (el 0 del G-buffer: el terreno lo lee y lo escribe) se rehace
+     sin lista copiando su contenido la primera vez (`vk_texture_drop_format_list`): RADV no comprime en
+     `ATTACHMENT_FEEDBACK_LOOP_OPTIMAL` y lo descomprimía al empezar cada pase (0,12 → 1,39 ms por frame). Clears
+     1,38 → 0,83 ms. Por defecto en GPU integradas (en las dedicadas LAS lo midió algo más lento en una RTX 3080 Ti);
+     `SAVAGEWIND_VK_LEAN_USAGE=0` / `=1` lo fuerza. Medido sobre `test` (36a02bc, con #108), 3+3 pasadas alternas sin
+     límite de FPS a 1280x720: el establo del río 66,6 → 70,6 fps (+6,1 %) y la puerta de la Ciudad Gerudo 60,0 → 63,7
+     (+6,3 %), GPU por frame −5,9 y −7,1 %; Kakariko +1,6 % (dentro del ruido: una pasada con NPC delante).
    - Sombras del sol con depth clamp (2026-10-20): `nvnCommandBufferSetDepthClamp` no hacía nada. BOTW lo activa para
      sus tres cascadas de sombra del sol (un array D16 de 896x896x3, ~650-750 draws por frame) y para la consulta de
      oclusión del sol: lo que está más cerca de la luz que el plano cercano de una cascada se aplasta contra él en vez
