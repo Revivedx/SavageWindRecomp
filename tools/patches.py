@@ -12,7 +12,7 @@ The Link's Awakening patches this file held in LASRecomp are kept in the archive
 """
 import struct
 
-from game_sites import adrp_page
+from game_sites import adrp_page, sext
 
 
 def _word(gen, a):
@@ -300,6 +300,62 @@ def _persp_unproject_x(gen, a):
             f'  /* {a:#x}: ldp s2, s3, [x0, #0xac] (screen to camera: tan(fovy / 2), aspect) */')
 
 
+# The mouse camera (runtime/hle/input.c). Every camera action (CameraChase, CameraAiming, CameraHorse...) reads the
+# right stick through one function (1.9.0 0x7000d57fe0), which applies a dead zone, squares the tilt (v |v|) and
+# keeps it in the unit circle; the chase-like ones (CameraChase, CameraShieldSurfing, CameraWakeboard) square the
+# vertical part once more (y |y|). The camera then turns by that x its speeds x the frame's length (VFR). Fine for a
+# stick; from the mouse it crept on slow moves, sped up on fast ones and stopped at the stick's top speed. While the
+# mouse has the camera the runtime answers the stick input itself (rt_cam_stick: the frame's mouse motion over the
+# frame's length, linear, not clamped) and the vertical part goes through unsquared (rt_cam_pitch), so a frame's turn
+# is the mouse's motion in it times the sensitivity, at any frame rate. The cameras turn the horizontal part 1.78
+# times as fast as the vertical one for a stick, and the bow's (CameraAiming) and a held item's (CameraAiming2) scale
+# them apart again (lngStickScale 0.7 and latStickScale 1; 0.8 and 1.5): the runtime gives the vertical part 1.78
+# times the mouse's motion, and those two cameras' vertical part the horizontal part's scale (rt_cam_pitch_scale), so
+# the mouse turns both alike. Optional sites (tools/game_sites.py OPTIONAL_GROUPS): without them the mouse moves the
+# stick, as before.
+
+def _cam_stick(gen, a):
+    assert _word(gen, a) == _sub_sp(0x30), hex(_word(gen, a))
+    return ('{ extern int rt_cam_stick(uint64_t, uint64_t); if (rt_cam_stick(c->x[0], c->x[30])) return; '
+            'c->sp -= 0x30; }'
+            f'  /* {a:#x}: sub sp, sp, #0x30 (camera stick input) */')
+
+
+def _cam_pitch(gen, a):
+    # fmul s1, s0, s0 just above, fnmul s3, s0, s0 here: the vertical part kept its sign squared, s1 or s3 by s0's sign
+    assert _word(gen, a) == 0x1e208803 and _word(gen, a - 4) == 0x1e200801, hex(_word(gen, a))
+    return ('{ extern int rt_cam_pitch(float *); union { uint32_t u; float f; } y = { .u = (uint32_t)VS32(0) }; '
+            'if (rt_cam_pitch(&y.f)) c->v[1] = y.u; else y.f = -(y.f * y.f); c->v[3] = y.u; }'
+            f'  /* {a:#x}: fnmul s3, s0, s0 (camera: the vertical stick part squared) */')
+
+
+def _cam_pitch_aim(gen, a):
+    # ldr s1, [x8]: the camera's latStickScale, through the parameter pointer loaded just above (ldr x8, [x19, #off]);
+    # its lngStickScale's pointer is the next one (the parameters load in that order)
+    assert _word(gen, a) == 0xbd400101, hex(_word(gen, a))
+    w = next(_word(gen, a - 4 * i) for i in range(1, 5) if _word(gen, a - 4 * i) & 0xffc003ff == 0xf9400268)
+    lng = ((w >> 10) & 0xfff) * 8 + 8
+    return ('{ extern uint32_t rt_cam_pitch_scale(uint32_t, uint32_t); '
+            f'c->v[1] = rt_cam_pitch_scale(LD32(c->x[8]), LD32(LD64(c->x[19] + {lng:#x}))); }}'
+            f'  /* {a:#x}: ldr s1, [x8] (camera: latStickScale) */')
+
+
+# The game's Camera X-axis / Y-axis options (Inverted) are applied by the cameras' controller (the one the camera
+# input reads, id 3 of the controller manager): every frame it reads the flags (CameraRLReverse, CameraUpDownReverse)
+# and turns that axis of its right stick around. The mouse's camera input doesn't go through it, so the runtime is
+# told the flags here and turns the mouse's motion around the same way (rt_cam_reverse).
+
+def _cam_reverse(axis):
+    def patch(gen, a):
+        w = _word(gen, a)
+        assert w >> 26 == 0x25, hex(w)  # bl <the flag's getter>
+        t = a + sext(w & 0x3FFFFFF, 26) * 4
+        return (f'{{ extern void f_{t:x}(Cpu *); extern void rt_cam_reverse(int, int); c->x[30] = {a + 4:#x}ull; '
+                f'f_{t:x}(c); rt_cam_reverse({axis}, (int)(c->x[0] & 1)); }}'
+                f'  /* {a:#x}: bl {t:#x} (camera controller: {"XY"[axis]}-axis inverted) */')
+    return patch
+
+
 # tools/game_sites.py site -> its patch
 PATCHES = {
     'pause_options_update': _pause_option_state,
@@ -329,9 +385,18 @@ PATCHES = {
     'frustum_lr1': _frustum_load(0x2d550c02, (2, 3), 'lr'),
     'frustum_tb0': _frustum_load(0x2d540800, (0, 2), 'tb'),
     'frustum_tb1': _frustum_load(0x2d540c02, (2, 3), 'tb'),
+    'cam_stick': _cam_stick,
+    'cam_pitch_chase': _cam_pitch,
+    'cam_pitch_surf': _cam_pitch,
+    'cam_pitch_wakeboard': _cam_pitch,
+    'cam_pitch_aim': _cam_pitch_aim,
+    'cam_pitch_item': _cam_pitch_aim,
+    'cam_reverse_x': _cam_reverse(0),
+    'cam_reverse_y': _cam_reverse(1),
 }
 
 
 def table(sites):
-    """address -> patch, for the main module whose sites these are (tools/game_sites.py)"""
-    return {sites[name]: fn for name, fn in PATCHES.items()}
+    """address -> patch, for the main module whose sites these are (tools/game_sites.py; an optional site it lacks
+    has no patch)"""
+    return {sites[name]: fn for name, fn in PATCHES.items() if name in sites}

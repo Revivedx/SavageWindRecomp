@@ -95,7 +95,10 @@ def main():
     check(set(patches.PATCHES) <= names, f'tools/patches.py\'s sites are in SITES: {set(patches.PATCHES) - names}')
     for v in gs.VERSIONS:
         if v.supported:
-            check(set(gs.KNOWN.get(v.name, {})) == names, f'{v.name}: KNOWN lists every site')
+            listed = set(gs.KNOWN.get(v.name, {}))
+            check(names - gs.OPTIONAL <= listed <= names, f'{v.name}: KNOWN lists every site (optional ones may be left '
+                  f'out): {names - gs.OPTIONAL - listed or listed - names}')
+    check(gs.OPTIONAL <= names, f'optional sites are in SITES: {gs.OPTIONAL - names}')
     check(all(gs.compile_pattern(p) for s in gs.SITES if s.pattern
               for p in ([q for q, _ in s.pattern] if isinstance(s.pattern, list) else [s.pattern])),
           'every pattern compiles')
@@ -149,6 +152,19 @@ def main():
             check(False, 'several places and no table: refused')
         except gs.SiteError as e:
             check('matches 2 places or more' in str(e), str(e))
+        saved_groups, saved_optional = gs.OPTIONAL_GROUPS, gs.OPTIONAL
+        try:
+            gs.OPTIONAL_GROUPS = [('fn', 'gone')]
+            gs.OPTIONAL = {'fn', 'gone'}
+            gs.SITES = [gs.Site('fn', 'code', pat, 0), gs.Site('gone', 'code', 'd503201f 12345678', 0),
+                        gs.Site('data', 'ref', pat, 3)]
+            logs = []
+            check(gs.resolve(b, None, logs.append) == {'data': 0x7000002f30} and logs,
+                  'an optional site not found: its whole group left out, with a note')
+            gs.SITES = [gs.Site('fn', 'code', pat, 0), gs.Site('gone', 'code', pat, 1)]
+            check(gs.resolve(b) == {'fn': BASE + 0x800, 'gone': BASE + 0x804}, 'an optional group found: kept')
+        finally:
+            gs.OPTIONAL_GROUPS, gs.OPTIONAL = saved_groups, saved_optional
     finally:
         gs.SITES = saved
 

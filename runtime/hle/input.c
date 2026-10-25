@@ -102,17 +102,135 @@ void input_reset(void) {
 
 // ---- mouse camera
 // While the game has the window (focused, no overlay menu, no scripted run) the cursor is held in it (SDL relative
-// mode) and its motion becomes the right stick: speed in pixels per second, scaled so that about 1200 px/s is a full
-// tilt at sensitivity 1, plus a small offset past the game's own stick dead zone so slow motion still turns it.
-// SAVAGEWIND_MOUSE_SCALE (px/s for a full tilt) and SAVAGEWIND_MOUSE_DEADZONE (0..1) tune it.
+// mode). Its motion turns the camera through the game's own camera input (below) when the game code has the patches
+// for it (tools/patches.py _cam_stick, _cam_pitch), else, and wherever no camera reads it (the map), it becomes the
+// right stick: speed in pixels per second, scaled so that about 1200 px/s is a full tilt at sensitivity 1, plus a
+// small offset past the game's own stick dead zone so slow motion still turns it. SAVAGEWIND_MOUSE_SCALE (px/s for
+// a full tilt) and SAVAGEWIND_MOUSE_DEADZONE (0..1) tune that.
 static _Atomic int64_t mouse_dx_milli, mouse_dy_milli;  // motion since the last stick sample, 1/1000 pixel
+static _Atomic int64_t cam_dx_milli, cam_dy_milli;      // motion since the last camera frame (input_cam_frame)
 static _Atomic bool mouse_held;                         // relative mode on (main thread decides, game thread reads)
+
+// The camera's own input. Every camera action reads the right stick through one function, which the runtime answers
+// while the mouse has the camera (rt_cam_stick), and turns by what it gives x its speeds x the frame's length (the
+// VFR ratio: 1 per 30th of a second). The mouse gives its motion in the frame (input_cam_frame, at the frame's VFR
+// update) in degrees - 0.022 per count x the sensitivity, as Quake and Source count it - over the turn a full tilt
+// makes in that frame: CAM_DEG_PER_TILT per 30th of a second (CameraChase's yaw at the game's default camera speed:
+// 1.6 x 1.78 x its lngStickScale, 1). Neither clamped to the stick's circle (no top speed) nor curved (no dead zone,
+// no square), so a frame's turn is the mouse's motion in it, at any frame rate.
+// Both axes alike: the cameras turn the horizontal part CAM_YAW_PER_PITCH times as fast as the vertical one (the
+// game's 1.78 for the horizontal stick speed), so the vertical part gets that much more of the mouse's motion. The
+// chase-like cameras square the vertical part once more: rt_cam_pitch leaves that out for the mouse, scaled to turn
+// as far as the horizontal part (CAM_PITCH_LINEAR: unsquared, CameraChase's vertical part turns 2.089 degrees a 30th
+// of a second for 1, measured; the yaw 2.848). The bow's camera (CameraAiming) and a held item's (CameraAiming2)
+// scale the two apart again (lngStickScale 0.7 and latStickScale 1; 0.8 and 1.5): rt_cam_pitch_scale gives their
+// vertical part the horizontal part's scale. Each camera's own speed stays (the bow's 0.7, its zoom's 0.42, the
+// scope's 0.5...), and so do the game's camera speed setting and its Camera X-axis / Y-axis options (Inverted: the
+// cameras' controller turns the stick around for them, the runtime the mouse's motion, rt_cam_reverse).
+// SAVAGEWIND_MOUSE_NATIVE=0 moves the right stick instead; SAVAGEWIND_MOUSE_LOG=<n> logs n camera input reads (the
+// caller, the input and, from CameraChase's main update, the angles it starts from).
+#define CAM_DEG_PER_COUNT 0.022
+#define CAM_YAW_PER_PITCH 1.78
+#define CAM_DEG_PER_TILT (1.6 * CAM_YAW_PER_PITCH)
+#define CAM_PITCH_LINEAR (float)(CAM_DEG_PER_TILT / (2.0892 * CAM_YAW_PER_PITCH))
+static bool test_mouse;               // SAVAGEWIND_HOST_INPUT moves the mouse ("mouse:"): taken as held
+static _Atomic uint64_t cam_read_ns;  // the last camera input read (rt_cam_stick): a camera runs, through the patch
+static _Atomic bool cam_mouse;        // the mouse gives this frame's camera input ...
+static float cam_vx, cam_vy;          // ... this one (game thread, input_cam_frame)
+static _Atomic int cam_reverse;       // the game's Camera X-axis / Y-axis options: Inverted (bits 0 / 1, rt_cam_reverse)
+
+static int cam_log_left(void) {
+    static int n = -1;
+    if (n < 0) n = getenv("SAVAGEWIND_MOUSE_LOG") ? atoi(getenv("SAVAGEWIND_MOUSE_LOG")) : 0;
+    return n > 0 ? n-- : 0;
+}
+
+static bool cam_native_on(void) {
+    static int on = -1;
+    if (on < 0) on = !getenv("SAVAGEWIND_MOUSE_NATIVE") || atoi(getenv("SAVAGEWIND_MOUSE_NATIVE")) != 0;
+    return on;
+}
+
+// A camera read its input through the patch in the last quarter second: the mouse is the camera's, not the stick's
+static bool cam_reading(void) {
+    uint64_t t = cam_read_ns;
+    return cam_native_on() && t && plat_now_ns() - t < 250000000;
+}
+
+// runtime/hle/framepace.c rt_vfr_update, once a frame: the mouse's motion since the last frame, over the frame's
+// length (ratio: its VFR ratio, which the cameras multiply their turn by)
+void input_cam_frame(float ratio) {
+    double dx = (double)atomic_exchange(&cam_dx_milli, 0) / 1000.0, dy = (double)atomic_exchange(&cam_dy_milli, 0) / 1000.0;
+    if ((dx != 0 || dy != 0) && cam_log_left())
+        LOG("[mouse] frame: %.1f %.1f counts, ratio %.3f, held %d/%d\n", dx, dy, ratio, (int)mouse_held, (int)test_mouse);
+    if (!cam_native_on() || !(mouse_held || test_mouse) || !g_settings.mouse_camera || tilt_held || (dx == 0 && dy == 0)) {
+        cam_mouse = false;
+        return;
+    }
+    double k = CAM_DEG_PER_COUNT * g_settings.mouse_sens / (CAM_DEG_PER_TILT * (ratio > 0.05f ? ratio : 0.05f));
+    cam_vx = (float)(dx * k);
+    cam_vy = (float)(-dy * k * CAM_YAW_PER_PITCH * (g_settings.mouse_invert_y ? -1 : 1));
+    cam_mouse = true;
+}
+
+// tools/patches.py _cam_stick: the camera's stick input (two floats at out) when the mouse gives it; 0: the stick's
+int rt_cam_stick(uint64_t out, uint64_t lr) {
+    cam_read_ns = plat_now_ns();
+    bool mouse = cam_mouse && cam_native_on();
+    if (cam_log_left()) {
+        const float *p = (const float *)(uintptr_t)out;  // (CameraChase's main update: radius, pitch, yaw after it)
+        LOG("[mouse] camera input from %llx: %s %.3f %.3f inverted %d (chase: pitch %.3f yaw %.3f)\n",
+            (unsigned long long)lr, mouse ? "mouse" : "stick", mouse ? cam_vx : 0.0f, mouse ? cam_vy : 0.0f,
+            (int)cam_reverse, p[3], p[4]);
+        const char *o = getenv("SAVAGEWIND_MOUSE_LOG_X19");  // (debug) <caller lr>:<off>,...: floats of its x19
+        if (o && strtoull(o, (char **)&o, 16) == lr) {
+            const uint8_t *obj = (const uint8_t *)(uintptr_t)kernel_current_cpu()->x[19];
+            char line[256];
+            int n = 0;
+            while (*o == ':' || *o == ',') {
+                unsigned long off = strtoul(o + 1, (char **)&o, 16);
+                n += snprintf(line + n, sizeof line - n, " +%lx %.3f", off, *(const float *)(obj + off));
+                if (n >= (int)sizeof line) break;
+            }
+            LOG("[mouse]   x19%s\n", line);
+        }
+    }
+    if (!mouse) return 0;
+    float *v = (float *)(uintptr_t)out;
+    int rev = cam_reverse;
+    v[0] = rev & 1 ? -cam_vx : cam_vx, v[1] = rev & 2 ? -cam_vy : cam_vy;
+    return 1;
+}
+
+// tools/patches.py _cam_reverse: the game's Camera X-axis (0) / Y-axis (1) option, Inverted or not, read every frame
+// by the cameras' controller, which turns its right stick around for it; the mouse's motion turns around alike
+void rt_cam_reverse(int axis, int on) {
+    if (on) cam_reverse |= 1 << axis;
+    else cam_reverse &= ~(1 << axis);
+}
+
+// tools/patches.py _cam_pitch: the chase-like cameras' vertical part, to be squared (0) or, from the mouse, scaled (1)
+int rt_cam_pitch(float *y) {
+    if (!cam_mouse || !cam_native_on()) return 0;
+    *y *= CAM_PITCH_LINEAR;
+    return 1;
+}
+
+// tools/patches.py _cam_pitch_aim: CameraAiming's scale for the vertical part (float bits): its latStickScale, or,
+// from the mouse, its lngStickScale (the horizontal part's)
+uint32_t rt_cam_pitch_scale(uint32_t lat, uint32_t lng) {
+    return cam_mouse && cam_native_on() ? lng : lat;
+}
 
 static void mouse_stick(int32_t *x, int32_t *y) {
     static uint64_t last_ns;
     static int32_t hx, hy;
     *x = *y = 0;
-    if (!mouse_held || !g_settings.mouse_camera) { mouse_dx_milli = mouse_dy_milli = 0; hx = hy = 0; return; }
+    if (!(mouse_held || test_mouse) || !g_settings.mouse_camera || cam_reading()) {
+        mouse_dx_milli = mouse_dy_milli = 0;
+        hx = hy = 0;
+        return;
+    }
     uint64_t now = plat_now_ns();
     if (last_ns && now - last_ns < 4000000) { *x = hx; *y = hy; return; }  // (several polls in one frame: one sample)
     double dt = last_ns ? (double)(now - last_ns) / 1e9 : 1 / 60.0;
@@ -245,6 +363,8 @@ void input_handle_event(const SDL_Event *e) {
         } else if (mouse_held) {
             mouse_dx_milli += (int64_t)lround(e->motion.xrel * 1000);
             mouse_dy_milli += (int64_t)lround(e->motion.yrel * 1000);
+            cam_dx_milli += (int64_t)lround(e->motion.xrel * 1000);
+            cam_dy_milli += (int64_t)lround(e->motion.yrel * 1000);
         }
         break;
     case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_BUTTON_UP:
@@ -297,6 +417,8 @@ static _Atomic int32_t script_lx, script_ly, script_rx, script_ry;
 // SAVAGEWIND_HOST_INPUT="frame:key:<SDL key name>:frames,frame:pad:<button>:frames,..." holds a host key / controller
 //   button (names as in savagewind.ini's bind_* lines: "Z", "Keypad 0", "south", "ltrigger"...);
 //   "frame:lstick:<x>/<y>:frames" holds the controller's left stick there (raw SDL units, y up: a drifting stick).
+//   "frame:mouse:<dx>/<dy>:frames" moves the mouse by that many counts each frame (the mouse is then taken as held
+//   in the window throughout: the mouse camera).
 // "frame:type:<text>" types <text> as real key events (down, text, up per character), through the overlay menu / name
 //   entry first like a player's typing; "{Escape}" (any SDL key name) presses that key. No ',' or ':' in <text>.
 // "frame:sdlpad:<button>:frames" / "frame:sdlkey:<key>:frames" hold a controller button / key as real events (down
@@ -362,8 +484,15 @@ static void test_push(uint64_t frame, unsigned long start, unsigned long len, co
 static void host_test_frame(uint64_t frame) {
     static const char *hspec, *bspec;
     static int init;
-    if (!init) { init = 1; hspec = getenv("SAVAGEWIND_HOST_INPUT"); bspec = getenv("SAVAGEWIND_BIND_TEST"); host_test = hspec; }
+    if (!init) {
+        init = 1;
+        hspec = getenv("SAVAGEWIND_HOST_INPUT");
+        bspec = getenv("SAVAGEWIND_BIND_TEST");
+        host_test = hspec;
+        test_mouse = hspec && strstr(hspec, ":mouse:");
+    }
     char buf[2048];
+    static uint64_t mouse_done;  // ("mouse:" moved it for the frames up to this one)
     if (hspec) {
         uint8_t keys[SDL_SCANCODE_COUNT] = {0};
         uint32_t padm = 0;
@@ -378,6 +507,15 @@ static void host_test_frame(uint64_t frame) {
                 test_push(frame, start, len, dev, name);
                 continue;
             }
+            if (!strcmp(dev, "mouse")) {  // once per frame of the script's clock (SAVAGEWIND_SCRIPT_CLOCK: one may
+                double mx = 0, my = 0;    // last two presents, or be skipped)
+                sscanf(name, "%lf/%lf", &mx, &my);
+                uint64_t lo = mouse_done + 1 > start ? mouse_done + 1 : start, hi = frame + 1 < start + len ? frame + 1 : start + len;
+                double n = hi > lo ? (double)(hi - lo) : 0;
+                mouse_dx_milli += llround(n * mx * 1000), mouse_dy_milli += llround(n * my * 1000);
+                cam_dx_milli += llround(n * mx * 1000), cam_dy_milli += llround(n * my * 1000);
+                continue;
+            }
             if (frame < start || frame >= start + len) continue;
             if (!strcmp(dev, "key")) { SDL_Scancode sc = SDL_GetScancodeFromName(name); if (sc) keys[sc] = 1; }
             else if (!strcmp(dev, "lstick")) sscanf(name, "%d/%d", &sx, &sy);
@@ -389,6 +527,7 @@ static void host_test_frame(uint64_t frame) {
         test_lx = sx, test_ly = sy;
         if (kch) recompute_keyboard();
         if (pch) recompute_pad();
+        if (frame > mouse_done) mouse_done = frame;
     }
     if (bspec) {
         snprintf(buf, sizeof buf, "%s", bspec);

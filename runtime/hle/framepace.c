@@ -209,7 +209,11 @@ void rt_vfr_update(uint64_t vfr) {
     g_fs_vfr = plat_now_ns();
     clock_probe(vfr);
     log_screens();
-    if (!framepace_on()) return;
+    extern void input_cam_frame(float ratio);  // runtime/hle/input.c: the mouse's motion in the frame, for the cameras
+    if (!framepace_on()) {
+        input_cam_frame(VF(float, vfr, VFR_RATIO));
+        return;
+    }
     static uint64_t last_t;
     static double real, given;  // seconds of real time and of game time handed out (only their gap matters)
     static double smooth;       // seconds between updates, averaged over about 20
@@ -269,6 +273,7 @@ void rt_vfr_update(uint64_t vfr) {
     VF(uint32_t, vfr, VFR_INTERVAL) = iv;
     VF(uint8_t, vfr, VFR_CHANGED) = last_iv && iv != last_iv;
     last_iv = iv;
+    input_cam_frame(ratio);
     if (log_every > 0 && nframe++ % (uint64_t)log_every == 0) {
         uint64_t pinfo = *(uint64_t *)(uintptr_t)g_site.player_info;  // (Link's position: PlayerInfo +0x88)
         LOG("[framepace] target %d fps, %.2f ms since the last update (avg %.2f), ratio %.3f, interval %u, owed "

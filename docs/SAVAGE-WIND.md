@@ -310,6 +310,33 @@ Pendiente:
      SDL) y su velocidad se vuelve el stick derecho (≈1200 px/s a fondo con sensibilidad 1, más un 12% para pasar la
      zona muerta del juego; `SAVAGEWIND_MOUSE_SCALE`, `SAVAGEWIND_MOUSE_DEADZONE`). Esc suelta el cursor y un clic
      en la ventana lo vuelve a retener. Ajustes: `mouse_camera`, `mouse_sensitivity`, `mouse_invert_y`.
+   - Ratón como cámara, nativo (2026-10-25, `runtime/hle/input.c`, `tools/patches.py` `_cam_*`): el ratón ya no
+     pasa por el stick. Las cámaras son acciones de IA del actor `GameRomCamera` (`CameraChase`, `CameraAiming`,
+     `CameraHorse`...; sus fábricas se registran por el CRC32 del nombre) y todas leen el stick derecho con una
+     sola función (1.9.0 `0x7000d57fe0`): lee `+0x128` del mando, aplica una zona muerta, eleva la inclinación al
+     cuadrado (`v |v|`) y la deja en el círculo unidad. Giran eso × sus velocidades (`latStickScale` /
+     `lngStickScale` del AIProgram; la velocidad de cámara del juego, el flag `StickSensitivity`: 0.8..2.4, 1.6 por
+     defecto; ×1.78 en horizontal) × la duración del frame (VFR). Las de tipo chase (`CameraChase`,
+     `CameraShieldSurfing`, `CameraWakeboard`) elevan además la parte vertical al cuadrado (`y |y|`). Con el ratón
+     como stick eso daba una cámara que apenas se movía con movimientos lentos, se aceleraba con los rápidos y tenía
+     velocidad máxima. Ahora, mientras el ratón tiene la cámara, el runtime responde esa función (`rt_cam_stick`):
+     el movimiento del ratón en el frame (tomado en `rt_vfr_update`) en grados, 0.022 por cuenta × la sensibilidad
+     (como Quake y Source), entre el giro de una inclinación completa en ese frame; ni recortado ni curvado. La parte
+     vertical lleva ×1.78, en las chase se salta el cuadrado (`rt_cam_pitch`) y en `CameraAiming` / `CameraAiming2`
+     usa la escala de la horizontal (`rt_cam_pitch_scale`), así que los dos ejes giran igual. Medido con
+     `SAVAGEWIND_HOST_INPUT` ("frame:mouse:dx/dy:frames") y `SAVAGEWIND_MOUSE_LOG`: 600 cuentas al 100% giran
+     13.20° en yaw y en pitch, a 30 y a 60 fps; 400 cuentas en un frame, 8.80° (un stick a fondo da 2.85° por frame
+     a 30 fps); con el arco, 0.308° por cada 20 cuentas en los dos ejes (su `lngStickScale` 0.7). Lo que la imagen
+     se sigue moviendo al soltar con el arco es el rig de la cámara siguiendo la pose de Link: los ángulos de
+     `CameraAiming` se paran en el mismo frame (`SAVAGEWIND_MOUSE_LOG_X19`), y con el stick pasa igual. Las opciones
+     Camera X-axis / Y-axis (Inverted) del juego las aplica el mando de las cámaras (el id 3 del gestor de mandos,
+     un envoltorio que guarda `objeto + 8` en la lista): cada frame lee `CameraRLReverse` / `CameraUpDownReverse` y le
+     da la vuelta a ese eje de su stick derecho. El ratón no pasa por él, así que `_cam_reverse` le pasa los flags al
+     runtime (`rt_cam_reverse`) y este le da la vuelta igual a su movimiento: con las dos en Inverted (en una copia
+     de `option.sav`) el ratón gira +4.40° / −4.40° en vez de −4.40° / +4.40°, como hacía al pasar por el stick.
+     Los sitios son opcionales (`OPTIONAL_GROUPS` en `tools/game_sites.py`): si en una versión un patrón no encuentra
+     su sitio, el grupo entero queda fuera y el ratón vuelve a mover el stick (sin el segundo grupo, solo pierde las
+     opciones de inversión del juego). `SAVAGEWIND_MOUSE_NATIVE=0` también vuelve al stick.
    - Controles de movimiento (2026-10-22, `runtime/hle/motion.c`): BOTW importa cuatro funciones del sensor de seis
      ejes de nn::hid: `GetSixAxisSensorHandles` y `StartSixAxisSensor` (cuando cambia el estilo del mando,
      `FUN_7100d9e24c`), `GetSixAxisSensorStates` (cada frame, las 16 muestras más nuevas de cada handle) y

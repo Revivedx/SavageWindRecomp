@@ -161,6 +161,9 @@ Steam Deck) also aims and tilts by motion. Keyboard and mouse defaults:
 Every key and mouse button can be remapped in the game's Options (the Keyboard pages), next to the mouse sensitivity
 and Y inversion, motion sensitivity and inversion and the tilt key (Controls). The game's button prompts show the
 keys you bound, or your controller's own buttons (Controls > Button icons: Automatic follows the device you use).
+The mouse turns the camera directly, as in a PC game: 0.022° per count at 100% sensitivity (as Quake and Source
+count it), on both axes, with no acceleration or top speed, the same at any frame rate. The bow's and the scope's own
+slower speeds stay, and so do the game's camera speed setting and its camera axis inversion options.
 Esc frees the cursor, a click in the window takes it back. F10 cycles the performance
 overlay (off, FPS, full).
 
