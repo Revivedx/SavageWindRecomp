@@ -7,7 +7,11 @@
 #
 # Usage: tools/linux/distro_build.sh [image...]     (default: every distribution in DISTROS)
 #        ENGINE=docker|podman JOBS=8 tools/linux/distro_build.sh archlinux:latest
-# The source tree is mounted read-only and objects go to /tmp/build inside the container: a run leaves nothing behind.
+#        PKG_CACHE=0 tools/linux/distro_build.sh     (download every package again)
+# The source tree is mounted read-only and objects go to /tmp/build inside the container; GEN points nowhere, so a
+# checkout with generated/ still builds only the app. Downloaded packages (and
+# the package metadata where the package manager keeps it there) stay in one engine volume per distribution,
+# swr-pkgcache-<image>, so a second run doesn't download them again; `$ENGINE volume rm` drops one.
 set -e
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 ENGINE=${ENGINE:-$(command -v podman || command -v docker)}
@@ -21,21 +25,35 @@ DISTROS="debian:13 ubuntu:26.04 fedora:44 archlinux:latest opensuse/tumbleweed:l
 
 deps_for() {
     case $1 in
-        debian*|ubuntu*)  # SDL3 3.2+, clang 19+ / 20+, libshaderc.so
-            echo 'apt-get update -qq; apt-get install -y -qq --no-install-recommends make clang lld pkg-config \
+        debian*|ubuntu*)  # SDL3 3.2+, clang 19+ / 20+, libshaderc.so; the image's docker-clean deletes the .debs
+            echo 'rm -f /etc/apt/apt.conf.d/docker-clean; apt-get update -qq; \
+                apt-get install -y -qq --no-install-recommends make clang lld pkg-config \
                 libsdl3-dev libavformat-dev libavcodec-dev libavutil-dev libswscale-dev \
                 libvulkan-dev libshaderc-dev zlib1g-dev' ;;
         fedora*)          # SDL3-devel, libshaderc-devel, FFmpeg as the "free" variant
-            echo 'dnf install -y -q make clang lld pkgconf-pkg-config SDL3-devel libshaderc-devel vulkan-loader-devel \
-                ffmpeg-free-devel libavformat-free-devel libavcodec-free-devel libavutil-free-devel libswscale-free-devel zlib-devel' ;;
+            echo 'dnf install -y -q --setopt=keepcache=True \
+                make clang lld pkgconf-pkg-config SDL3-devel libshaderc-devel vulkan-loader-devel zlib-devel \
+                ffmpeg-free-devel libavformat-free-devel libavcodec-free-devel libavutil-free-devel \
+                libswscale-free-devel' ;;
         arch*)
             echo 'pacman -Syu --noconfirm --quiet --needed \
                 base-devel clang lld sdl3 shaderc vulkan-icd-loader vulkan-headers ffmpeg zlib' ;;
         opensuse*)        # Tumbleweed: libavformat-devel is its FFmpeg (headers in /usr/include/ffmpeg), SDL3 as SDL3-devel
-            echo 'zypper -q --non-interactive --gpg-auto-import-keys refresh; zypper -q --non-interactive \
-                install --no-recommends make clang lld pkgconf-pkg-config SDL3-devel shaderc-devel vulkan-devel \
-                libavformat-devel libavcodec-devel libavutil-devel libswscale-devel zlib-devel' ;;
+            echo 'zypper -q modifyrepo --all --keep-packages; \
+                zypper -q --non-interactive --gpg-auto-import-keys refresh; \
+                zypper -q --non-interactive install --no-recommends \
+                make clang lld pkgconf-pkg-config SDL3-devel shaderc-devel vulkan-devel zlib-devel \
+                libavformat-devel libavcodec-devel libavutil-devel libswscale-devel' ;;
         *) return 2 ;;
+    esac
+}
+
+cache_dir_for() {  # where the image's package manager keeps downloaded packages
+    case $1 in
+        debian*|ubuntu*) echo /var/cache/apt/archives ;;
+        fedora*)         echo /var/cache/libdnf5 ;;
+        arch*)           echo /var/cache/pacman/pkg ;;
+        opensuse*)       echo /var/cache/zypp ;;
     esac
 }
 
@@ -49,9 +67,12 @@ for image in $images; do
     fi
     echo "=== $image"
     log=$(mktemp)
-    if "$ENGINE" run --rm $PLATFORM -v "$REPO":/src:ro -w /src \
+    cache=
+    volume=swr-pkgcache-$(echo "$image" | tr -c 'a-zA-Z0-9_.\n-' _)
+    [ "${PKG_CACHE:-1}" = 0 ] || cache="-v $volume:$(cache_dir_for "$image")"
+    if "$ENGINE" run --rm $PLATFORM -v "$REPO":/src:ro $cache -w /src \
             -e SW_INSTALL="$install" -e JOBS="$JOBS" "$image" \
-            sh -c 'eval "$SW_INSTALL" || exit 1; make -j"$JOBS" B=/tmp/build || exit 1; \
+            sh -c 'eval "$SW_INSTALL" || exit 1; make -j"$JOBS" B=/tmp/build GEN=/nonexistent || exit 1; \
                    ldd /tmp/build/savagewind | grep -E "SDL3|avformat|shaderc"' \
             > "$log" 2>&1 < /dev/null; then
         echo "=== $image OK"
