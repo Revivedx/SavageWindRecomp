@@ -3367,73 +3367,189 @@ static uint64_t gmem_tried;  // heap size the import was last attempted for (gme
 static bool gmem_mapped;     // the heap is GPU memory mapped at its addresses (backend_heap_set): no import
 
 #ifdef __linux__
+#include <errno.h>
+#include <fcntl.h>
+#include <linux/dma-heap.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 // On amdgpu the import is a userptr buffer, and the kernel gets every page of every userptr buffer again at each
 // submission: on the Steam Deck ~4 ms a submit for the 3 GB heap (0.03 ms without it), half of a 40 ms frame. So
 // there the heap is GPU memory from the start: the first SetHeapSize (kernel.c), before the game has touched the
-// heap, makes host-cached GPU memory of its size, exported as a dma-buf, and maps that over the heap's addresses;
-// the shaders' global memory and the vertex reads use it in place, as they did the import. RADV only (the drivers
-// that showed the cost); SAVAGEWIND_VK_HEAP_IMPORT=1: the import, as before.
-void backend_heap_set(uint64_t size) {
-    static int off = -1;
-    if (off < 0) off = getenv("SAVAGEWIND_VK_HEAP_IMPORT") != NULL || getenv("SAVAGEWIND_VK_NO_GMEM") != NULL;
-    if (gmem_mapped && size > gmem_size)
-        LOG("[vk] guest heap grew to %llu MB past the %llu MB mapped: the rest is copied, not shared\n",
-            (unsigned long long)(size >> 20), (unsigned long long)(gmem_size >> 20));
-    if (off || gmem_mapped || gmem_buf || !size) return;
-    vk_wait_ready();
-    if (!g_vk.dmabuf || !g_vk.radv) return;
-    size = (size + 0x1FFFFF) & ~0x1FFFFFull;  // (2 MB pages)
-    uint32_t type = UINT32_MAX;
-    VkPhysicalDeviceMemoryProperties mp;
-    vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
-    VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    for (int pass = 0; pass < 2 && type == UINT32_MAX; pass++)  // host-cached first: the game's own memory
-        for (uint32_t i = 0; i < mp.memoryTypeCount && type == UINT32_MAX; i++) {
-            VkMemoryPropertyFlags f = mp.memoryTypes[i].propertyFlags;
-            if ((f & want) == want && !(f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) && (pass || (f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT)) &&
-                !(f & VK_MEMORY_PROPERTY_DEVICE_COHERENT_BIT_AMD))
-                type = i;
-        }
-    PFN_vkGetMemoryFdKHR get_fd = (PFN_vkGetMemoryFdKHR)vkGetDeviceProcAddr(g_vk.dev, "vkGetMemoryFdKHR");
-    if (type == UINT32_MAX || !get_fd) return;
-    VkExportMemoryAllocateInfo ex = {.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
-                                     .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
-    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &ex, .allocationSize = size,
-                               .memoryTypeIndex = type};
-    VkDeviceMemory mem;
-    VkResult r = vkAllocateMemory(g_vk.dev, &ai, NULL, &mem);
-    if (r != VK_SUCCESS) { LOG("[vk] guest heap as GPU memory: allocation failed (%d), imported instead\n", r); return; }
-    VkMemoryGetFdInfoKHR gi = {.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR, .memory = mem,
-                               .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
-    int fd = -1;
-    if (get_fd(g_vk.dev, &gi, &fd) != VK_SUCCESS || fd < 0) {
-        LOG("[vk] guest heap as GPU memory: no dma-buf, imported instead\n");
-        vkFreeMemory(g_vk.dev, mem, NULL);
-        return;
-    }
-    void *p = mmap((void *)(uintptr_t)HEAP_BASE, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0);
-    close(fd);  // (the mapping keeps the dma-buf)
-    if (p != (void *)(uintptr_t)HEAP_BASE) {
-        LOG("[vk] guest heap as GPU memory: mapping failed, imported instead\n");
-        mmap((void *)(uintptr_t)HEAP_BASE, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED, -1, 0);
-        vkFreeMemory(g_vk.dev, mem, NULL);
-        return;
-    }
+// heap, backs the heap's addresses with a dma-buf the GPU also has as a buffer; the shaders' global memory and the
+// vertex reads use it in place, as they did the import. ARM's Mali blob (RK3588) faults on the import instead
+// (TRANSLATION_FAULT reading it within seconds), so the backing is chosen with SAVAGEWIND_VK_HEAP:
+//   import   the host-pointer import (gmem_import), no backing here (also SAVAGEWIND_VK_HEAP_IMPORT=1)
+//   export   Vulkan memory exported as a dma-buf and mapped over the heap (the default on RADV)
+//   dmaheap  a dma-buf from the kernel's dma-buf heap (SAVAGEWIND_VK_DMA_HEAP: its name, default "system"), mapped over
+//            the heap and imported into Vulkan, as the Mali wrapper ICDs' WSI shares its images
+// Unset: export on RADV, import elsewhere.
+enum { HEAP_IMPORT, HEAP_EXPORT, HEAP_DMAHEAP };
+
+static int heap_mode(void) {
+    const char *e = getenv("SAVAGEWIND_VK_HEAP");
+    if (e && !strcmp(e, "export")) return HEAP_EXPORT;
+    if (e && !strcmp(e, "dmaheap")) return HEAP_DMAHEAP;
+    if (e && !strcmp(e, "import")) return HEAP_IMPORT;
+    if (e && *e) LOG("[vk] SAVAGEWIND_VK_HEAP=%s: not import / export / dmaheap, the default instead\n", e);
+    if (getenv("SAVAGEWIND_VK_HEAP_IMPORT")) return HEAP_IMPORT;
+    return g_vk.radv ? HEAP_EXPORT : HEAP_IMPORT;
+}
+
+static void heap_unmap(uint64_t size) {  // the heap's addresses back to plain memory (nothing has used them yet)
+    mmap((void *)(uintptr_t)HEAP_BASE, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED, -1, 0);
+}
+
+static VkBuffer heap_buffer(uint64_t size) {
     VkExternalMemoryBufferCreateInfo eb = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
                                            .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .pNext = &eb, .size = size,
                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                                       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
                                       VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT};
-    VkBuffer buf;
-    VK_CHECK(vkCreateBuffer(g_vk.dev, &bi, NULL, &buf));  // (the heap is mapped now: no way back)
-    VK_CHECK(vkBindBufferMemory(g_vk.dev, buf, mem, 0));
+    VkBuffer buf = VK_NULL_HANDLE;
+    if (vkCreateBuffer(g_vk.dev, &bi, NULL, &buf) != VK_SUCCESS) return VK_NULL_HANDLE;
+    return buf;
+}
+
+static void heap_done(VkBuffer buf, VkDeviceMemory mem, uint64_t size, const char *how) {
     gmem_buf = buf;
     gmem_mem = mem;
     gmem_size = size;
     gmem_mapped = true;
-    LOG("[vk] guest heap is GPU memory (dma-buf mapped at the heap, type %u): %llu MB\n", type, (unsigned long long)(size >> 20));
+    LOG("[vk] guest heap is GPU memory (%s): %llu MB\n", how, (unsigned long long)(size >> 20));
+}
+
+// export: Vulkan memory of the heap's size, exported as a dma-buf, mapped over the heap. Host-cached first (the game's
+// own memory), not device-local where there is a choice (RADV: VRAM); a unified-memory GPU (Mali) has only
+// device-local types, so there they are allowed.
+static void heap_export(uint64_t size) {
+    uint32_t type = UINT32_MAX;
+    VkPhysicalDeviceMemoryProperties mp;
+    vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
+    VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    for (int pass = 0; pass < 4 && type == UINT32_MAX; pass++)  // (cached / any) x (not device-local / unified memory)
+        for (uint32_t i = 0; i < mp.memoryTypeCount && type == UINT32_MAX; i++) {
+            VkMemoryPropertyFlags f = mp.memoryTypes[i].propertyFlags;
+            bool local_ok = pass >= 2 && !g_vk.radv;
+            if ((f & want) == want && (local_ok || !(f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) &&
+                ((pass & 1) || (f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT)) && !(f & VK_MEMORY_PROPERTY_DEVICE_COHERENT_BIT_AMD))
+                type = i;
+        }
+    PFN_vkGetMemoryFdKHR get_fd = (PFN_vkGetMemoryFdKHR)vkGetDeviceProcAddr(g_vk.dev, "vkGetMemoryFdKHR");
+    if (type == UINT32_MAX || !get_fd) { LOG("[vk] guest heap export: no memory type for it, imported instead\n"); return; }
+    VkExportMemoryAllocateInfo ex = {.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
+                                     .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &ex, .allocationSize = size,
+                               .memoryTypeIndex = type};
+    VkDeviceMemory mem;
+    VkResult r = vkAllocateMemory(g_vk.dev, &ai, NULL, &mem);
+    if (r != VK_SUCCESS) { LOG("[vk] guest heap export: allocation failed (%d), imported instead\n", r); return; }
+    VkMemoryGetFdInfoKHR gi = {.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR, .memory = mem,
+                               .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+    int fd = -1;
+    if (get_fd(g_vk.dev, &gi, &fd) != VK_SUCCESS || fd < 0) {
+        LOG("[vk] guest heap export: no dma-buf, imported instead\n");
+        vkFreeMemory(g_vk.dev, mem, NULL);
+        return;
+    }
+    void *p = mmap((void *)(uintptr_t)HEAP_BASE, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0);
+    close(fd);  // (the mapping keeps the dma-buf)
+    if (p != (void *)(uintptr_t)HEAP_BASE) {
+        LOG("[vk] guest heap export: mapping the dma-buf failed (%s), imported instead\n", strerror(errno));
+        heap_unmap(size);
+        vkFreeMemory(g_vk.dev, mem, NULL);
+        return;
+    }
+    VkBuffer buf = heap_buffer(size);
+    if (!buf || vkBindBufferMemory(g_vk.dev, buf, mem, 0) != VK_SUCCESS) {
+        LOG("[vk] guest heap export: no buffer for it, imported instead\n");
+        if (buf) vkDestroyBuffer(g_vk.dev, buf, NULL);
+        heap_unmap(size);
+        vkFreeMemory(g_vk.dev, mem, NULL);
+        return;
+    }
+    char how[64];
+    snprintf(how, sizeof how, "exported dma-buf mapped at the heap, type %u", type);
+    heap_done(buf, mem, size, how);
+}
+
+// dmaheap: a dma-buf from /dev/dma_heap/<name>, mapped over the heap, imported into Vulkan (it then owns the fd).
+static void heap_dmaheap(uint64_t size) {
+    const char *name = getenv("SAVAGEWIND_VK_DMA_HEAP");
+    if (!name || !*name) name = "system";
+    char path[128];
+    snprintf(path, sizeof path, "/dev/dma_heap/%s", name);
+    int hfd = open(path, O_RDONLY | O_CLOEXEC);
+    if (hfd < 0) { LOG("[vk] guest heap dmaheap: can't open %s (%s), imported instead\n", path, strerror(errno)); return; }
+    struct dma_heap_allocation_data d = {.len = size, .fd_flags = O_RDWR | O_CLOEXEC};
+    int r = ioctl(hfd, DMA_HEAP_IOCTL_ALLOC, &d);
+    int err = errno;
+    close(hfd);
+    if (r < 0) { LOG("[vk] guest heap dmaheap: %llu MB from %s failed (%s), imported instead\n", (unsigned long long)(size >> 20), path, strerror(err)); return; }
+    int fd = (int)d.fd;
+    PFN_vkGetMemoryFdPropertiesKHR fdp = (PFN_vkGetMemoryFdPropertiesKHR)vkGetDeviceProcAddr(g_vk.dev, "vkGetMemoryFdPropertiesKHR");
+    VkMemoryFdPropertiesKHR mfp = {.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR};
+    VkResult vr = fdp ? fdp(g_vk.dev, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, fd, &mfp) : VK_ERROR_EXTENSION_NOT_PRESENT;
+    VkBuffer buf = heap_buffer(size);
+    VkMemoryRequirements req = {0};
+    if (buf) vkGetBufferMemoryRequirements(g_vk.dev, buf, &req);
+    uint32_t bits = mfp.memoryTypeBits & req.memoryTypeBits;
+    if (vr != VK_SUCCESS || !buf || !bits) {
+        LOG("[vk] guest heap dmaheap: the driver won't take the dma-buf (%d, types %#x & %#x), imported instead\n", vr,
+            mfp.memoryTypeBits, req.memoryTypeBits);
+        if (buf) vkDestroyBuffer(g_vk.dev, buf, NULL);
+        close(fd);
+        return;
+    }
+    void *p = mmap((void *)(uintptr_t)HEAP_BASE, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0);
+    if (p != (void *)(uintptr_t)HEAP_BASE) {
+        LOG("[vk] guest heap dmaheap: mapping the dma-buf failed (%s), imported instead\n", strerror(errno));
+        heap_unmap(size);
+        vkDestroyBuffer(g_vk.dev, buf, NULL);
+        close(fd);
+        return;
+    }
+    uint32_t type = (uint32_t)__builtin_ctz(bits);
+    VkDeviceMemory mem = VK_NULL_HANDLE;
+    vr = VK_ERROR_UNKNOWN;
+    for (int dedicated = 0; dedicated < 2 && vr != VK_SUCCESS; dedicated++) {  // (some drivers want imports dedicated)
+        int ifd = dup(fd);  // (a successful import owns its fd; a failed one leaves it with us)
+        if (ifd < 0) break;
+        VkMemoryDedicatedAllocateInfo ded = {.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO, .buffer = buf};
+        VkImportMemoryFdInfoKHR imp = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR, .pNext = dedicated ? &ded : NULL,
+                                       .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, .fd = ifd};
+        VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &imp,
+                                   .allocationSize = req.size > size ? req.size : size, .memoryTypeIndex = type};
+        vr = vkAllocateMemory(g_vk.dev, &ai, NULL, &mem);
+        if (vr != VK_SUCCESS) close(ifd);
+    }
+    close(fd);  // (the mapping and the import keep the dma-buf)
+    if (vr != VK_SUCCESS || vkBindBufferMemory(g_vk.dev, buf, mem, 0) != VK_SUCCESS) {
+        LOG("[vk] guest heap dmaheap: importing the dma-buf failed (%d), imported instead\n", vr);
+        if (mem) vkFreeMemory(g_vk.dev, mem, NULL);
+        vkDestroyBuffer(g_vk.dev, buf, NULL);
+        heap_unmap(size);
+        return;
+    }
+    char how[96];
+    snprintf(how, sizeof how, "dma-buf from %s mapped at the heap, imported as type %u", path, type);
+    heap_done(buf, mem, size, how);
+}
+
+void backend_heap_set(uint64_t size) {
+    static int off = -1;
+    if (off < 0) off = getenv("SAVAGEWIND_VK_NO_GMEM") != NULL;
+    if (gmem_mapped && size > gmem_size)
+        LOG("[vk] guest heap grew to %llu MB past the %llu MB mapped: the rest is copied, not shared\n",
+            (unsigned long long)(size >> 20), (unsigned long long)(gmem_size >> 20));
+    if (off || gmem_mapped || gmem_buf || !size) return;
+    vk_wait_ready();
+    int mode = heap_mode();
+    if (mode == HEAP_IMPORT) return;
+    if (!g_vk.dmabuf) { LOG("[vk] guest heap: the driver has no dma-buf support, imported instead\n"); return; }
+    size = (size + 0x1FFFFF) & ~0x1FFFFFull;  // (2 MB pages)
+    if (mode == HEAP_EXPORT) heap_export(size);
+    else heap_dmaheap(size);
 }
 #else
 void backend_heap_set(uint64_t size) { (void)size; }
