@@ -153,7 +153,9 @@ static bool format_supports(VkFormat f, VkFormatFeatureFlags want) {
 //   RS_SCENE  the 3D scene's targets (1600x900 docked, and their fractions): the internal resolution, the window's
 //             with the upscaler off, smaller by the upscaler's factor with it on (exec.c upscales at the composite)
 //   RS_SHADOW shadow maps (BOTW's sun cascades: D16 896x896x3): Video > Shadow resolution, a width (2048 to 8192) they
-//             are made at instead of the game's; never smaller than the game's (output_scale.c shadow_map_size)
+//             are made at instead of the game's; never smaller than the game's (output_scale.c shadow_map_size). Also
+//             their half-size copy (R16 448x448x3, the max of each 2x2), at the same factor: water and the other
+//             forward-shaded surfaces take their shadows from it (issue #101)
 static float g_rs[4][2] = {{1, 1}, {1, 1}, {1, 1}, {1, 1}};
 static uint32_t g_shadow_size;
 void renderer_get_scale(float *sx, float *sy) { *sx = g_rs[RS_OUT][0]; *sy = g_rs[RS_OUT][1]; }
@@ -175,14 +177,19 @@ static bool rs_stale(const TexBackend *b) {
 // Which scale a texture takes (RS_*): the game's screen-sized targets are 16:9 2D images or 2D arrays (BOTW renders
 // some half-size passes into layers of 800x450x2 arrays) with the compressible flag (render targets) or the display
 // flag; shadow maps are square depth render targets, 512 or more (BOTW's sun cascades; its 192x192 depth target is no
-// shadow map). Everything else keeps its guest size: LUTs, cubemaps, the small odd-sized steps of the bloom and
-// exposure chains (sampled with normalized coordinates, they work at any size). SAVAGEWIND_NO_SCALE=1: none scaled.
+// shadow map), and the cascades' half-size copy is a square R16 2D array of 3 layers, one per cascade (no
+// render-target flag; a looser rule also took a 1024x1024x8 R16 array filled once at load, which a change of the
+// setting then made again empty: the terrain went). Everything else keeps its guest size: LUTs, cubemaps, the small
+// odd-sized steps of the bloom and exposure chains (sampled with normalized coordinates, they work at any size).
+// SAVAGEWIND_NO_SCALE=1: none scaled.
 static uint8_t tex_scale_group(const NvnTexture *t) {
     static int on = -1;
     if (on < 0) on = getenv("SAVAGEWIND_NO_SCALE") == NULL;
     if (!on) return RS_NONE;
     if ((t->target == 1 || t->target == 4) && t->samples <= 1 && (t->flags & 8) && renderer_format_is_depth(t->format) &&
         t->width == t->height && t->width >= 512)
+        return RS_SHADOW;
+    if (t->target == 4 && t->format == 0x06 && t->samples <= 1 && t->width == t->height && t->width >= 256 && t->depth == 3)
         return RS_SHADOW;
     if ((t->target != 1 && t->target != 4) || t->samples > 1 || !(t->flags & 9) || t->width < 32 || t->height < 16) return RS_NONE;
     float a = (float)t->width / (float)t->height;
@@ -277,7 +284,8 @@ void vk_collect_dead(void) {
 static void create_image(NvnTexture *t, TexBackend *b) {
     VkFmt mf = fmt_of(t->format);
     b->scalable = b->rs_group != RS_NONE;
-    b->guest_w = t->width;
+    // (RS_SHADOW: the cascades' width, also for their half-size copy, so that both grow by the same factor)
+    b->guest_w = b->rs_group == RS_SHADOW && !renderer_format_is_depth(t->format) ? t->width * 2 : t->width;
     b->sx = rs_want(b, 0);
     b->sy = rs_want(b, 1);
     uint32_t tw = t->width ? t->width : 1, th = t->height ? t->height : 1;

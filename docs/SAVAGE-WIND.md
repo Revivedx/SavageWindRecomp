@@ -922,8 +922,13 @@ Pendiente:
      una copia del buffer del fragment shader (`sdw_patch`: busca el par exacto; ~10 por frame). El depth bias no se
      escala: la parte por pendiente ya depende del tamaño del píxel del mapa, y la constante (y el -0,002 que restan
      los shaders) es la de consola, que solo puede sobrar. Depth clamp sin cambios.
-     Lo demás que lee las cascadas: un downsample a 448x448x3 (`textureGather`, sin escalar: toma 2x2 texels del mapa
-     grande) y shaders de un solo tap sin offsets. Hay shaders con offsets fijos de ±1/4096 (sin constant buffer) para
+     Lo demás que lee las cascadas: un downsample a 448x448x3 R16 (`textureGather`, el máximo de cada 2x2) y shaders de
+     un solo tap sin offsets. El agua y las demás superficies forward (~20 fragment shaders) toman sus sombras de ese
+     downsample, con una sola muestra y coordenadas normalizadas: también va en `RS_SHADOW` (array 2D R16 cuadrado de
+     3 capas, sin flag de render target), escalado con el mismo factor que las cascadas (Extreme: 4096x4096x3). Sin
+     él, el agua seguía a resolución de consola (#101, 2026-10-25). La regla pide las 3 capas: una R16 de 1024x1024x8
+     que se rellena al cargar también casaba, y al cambiar el ajuste jugando se rehacía vacía y desaparecían el
+     terreno y la hierba. Hay shaders con offsets fijos de ±1/4096 (sin constant buffer) para
      otro mapa de sombras que no aparece en la meseta: si es de 2048, en Ultra quedaría con escalones (sin verificar).
      Pruebas: `SAVAGEWIND_SHADOW_AT=<frame presentado>:<console|high|ultra|extreme|ancho>,...` (A/B en una corrida),
      `SAVAGEWIND_NO_SHADOW_TEXEL_FIX=<frame presentado>` (el tamaño de texel del juego desde ese frame).
