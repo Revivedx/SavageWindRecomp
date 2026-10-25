@@ -1170,6 +1170,11 @@ Pendiente:
        `MaxHartValue=120,CurrentHart=120`, 30 corazones). Usar con una copia de la partida
        (`SAVAGEWIND_SAVE_DIR`): al guardar, el juego escribe esos valores. Continuar con
        `SAVAGEWIND_INPUT="155:A:4,187:A:4,213:A:4"`.
+     - En Linux, `tools/linux/test_run.sh <carpeta de una ranura> [segundos]` hace todo eso con una copia de la
+       partida en `build/test_run/` (ini propio, ventana oculta, "Continuar" con A): jugable hacia el frame 1100,
+       ~30 s. Pasa las `SAVAGEWIND_*` que se le den (`SAVAGEWIND_TEST_WARP=hateno`…); `TEST_INPUT` añade botones
+       del juego (formato de `SAVAGEWIND_INPUT`, `1400:PLUS:6` abre la Alforja) y `SHOTS=<n>` captura cada n frames.
+       Ojo: `pad:` de `SAVAGEWIND_HOST_INPUT` usa nombres de SDL (`start`, `south`), no `PLUS`.
      - En Git Bash, `VAR=1 timeout 60 ./build/savagewind.exe` no le pasa la variable al programa: usar
        `timeout 60 env VAR=1 ./build/savagewind.exe`. Con `/c/msys64/usr/bin` primero en el PATH, `env` es el de
        MSYS2 y tampoco ve las variables exportadas desde Git Bash: pasarlas como argumentos de `env`.
