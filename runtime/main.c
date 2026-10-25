@@ -13,7 +13,7 @@
 #include "nvn/precompile.h"
 #include "nvn/vulkan/shaders.h"  // (the shader key log: --scan-shaders)
 #endif
-#include "romfs_build.h"
+#include "romfs_image.h"
 #include "settings.h"
 #include "hle.h"
 #include "kernel.h"
@@ -198,17 +198,11 @@ static void boot(const char *root) {
     kernel_run_main(t, t->handle, 0, init_sdk, init_main, fini_main);
 }
 
-// --build-romfs: what the start screen's setup does for romfs.bin, from the command line (development
-// builds without the launcher, scripts). Exit status 0 when the image was written.
-static void romfs_progress(uint64_t done, uint64_t total) {
-    fprintf(stderr, "\r[romfs] %llu / %llu MB", (unsigned long long)(done >> 20), (unsigned long long)(total >> 20));
-}
-
 // --scan-shaders: what runtime/nvn/shader_archive.c finds in the game's RomFS image (a check of the enumeration the
 // shader precompilation uses).
 static int scan_shaders(const char *root) {
     char image[1100], why[256] = "";
-    snprintf(image, sizeof image, "%s/romfs.bin", root);
+    snprintf(image, sizeof image, "%s/romfs", root);
     SaSet set;
     uint64_t t0 = plat_now_ns();
     if (!shader_archive_scan(image, &set, NULL, NULL, why, sizeof why)) { fprintf(stderr, "[shaders] %s\n", why); return 1; }
@@ -276,7 +270,7 @@ static int precompile_shaders(const char *root) {
     extern void ui_window_init(void);  // (the Vulkan device, for the pipelines; SAVAGEWIND_HIDDEN keeps the window hidden)
     if (!getenv("SAVAGEWIND_PRECOMPILE_NO_PIPELINES")) ui_window_init();
     char image[1100];
-    snprintf(image, sizeof image, "%s/romfs.bin", root);
+    snprintf(image, sizeof image, "%s/romfs", root);
     static ShaderPrecompile p;
     pthread_t t;
     pthread_create(&t, NULL, precompile_progress, &p);
@@ -288,12 +282,28 @@ static int precompile_shaders(const char *root) {
 }
 #endif
 
-static int build_romfs_image(const char *root) {
-    char dir[1100], out[1100], why[256] = "";
+// --dump-romfs <file>: writes the RomFS image the game reads (runtime/romfs_image.h) to a file, to compare it with
+// another build's or check it with RomFS tools (development). Exit status 0 when the image was written.
+static int dump_romfs(const char *root, const char *out_path) {
+    char dir[1100], why[256] = "";
     snprintf(dir, sizeof dir, "%s/romfs", root);
-    snprintf(out, sizeof out, "%s/romfs.bin", root);
-    bool ok = romfs_build(dir, out, romfs_progress, why, sizeof why);
-    fprintf(stderr, "\n[romfs] %s %s\n", ok ? "wrote" : "failed:", ok ? out : why);
+    RomfsImage *img = romfs_image_open(dir, why, sizeof why);
+    if (!img) { fprintf(stderr, "[romfs] cannot read %s: %s\n", dir, why); return 1; }
+    FILE *out = fopen(out_path, "wb");
+    uint64_t size = romfs_image_size(img), chunk = 8u << 20;
+    uint8_t *buf = malloc(chunk);
+    bool ok = out != NULL;
+    for (uint64_t off = 0; ok && off < size; off += chunk) {
+        uint64_t n = size - off < chunk ? size - off : chunk;
+        ok = romfs_image_pread(img, buf, n, off) == (ssize_t)n && fwrite(buf, 1, n, out) == n;
+        if ((off / chunk) % 64 == 0) fprintf(stderr, "\r[romfs] %llu / %llu MB", (unsigned long long)(off >> 20),
+                                             (unsigned long long)(size >> 20));
+    }
+    if (out && fclose(out) != 0) ok = false;
+    if (!ok) remove(out_path);
+    free(buf);
+    romfs_image_close(img);
+    fprintf(stderr, "\n[romfs] %s %s\n", ok ? "wrote" : "failed to write", out_path);
     return ok ? 0 : 1;
 }
 
@@ -316,11 +326,12 @@ int main(int argc, char **argv) {
     bool skip_launcher = getenv("SAVAGEWIND_NO_LAUNCHER") || getenv("SAVAGEWIND_INPUT");  // tests boot straight in
     bool config = false;
     static char arg_root[1024];
-    bool build_romfs = false, scan = false, precompile = false;
+    const char *dump = NULL;
+    bool scan = false, precompile = false;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--play")) skip_launcher = true;
         else if (!strcmp(argv[i], "--config")) config = true;
-        else if (!strcmp(argv[i], "--build-romfs")) build_romfs = true;
+        else if (!strcmp(argv[i], "--dump-romfs") && i + 1 < argc) dump = argv[++i];
         else if (!strcmp(argv[i], "--scan-shaders")) scan = true;
         else if (!strcmp(argv[i], "--precompile-shaders")) precompile = true;
         else if (argv[i][0] != '-' && !realpath(argv[i], arg_root)) root = argv[i];  // (relative to where we started)
@@ -330,7 +341,7 @@ int main(int argc, char **argv) {
     if (launcher_config_key_held()) config = true;  // (the Mac's "Savage Wind Configuration": Option held)
 #endif
     rt_paths_init();  // the data root becomes the working directory (runtime/paths.h)
-    if (build_romfs) return build_romfs_image(root);
+    if (dump) return dump_romfs(root, dump);
     if (scan) return scan_shaders(root);
 #ifndef __APPLE__
     if (precompile) return precompile_shaders(root);

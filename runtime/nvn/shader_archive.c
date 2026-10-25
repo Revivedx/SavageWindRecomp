@@ -5,6 +5,7 @@
 #include <unistd.h>
 
 #include "../lz4.h"
+#include "../romfs_image.h"
 #include "../rt.h"
 #include "maxwell/shader.h"
 #include "shader_archive.h"
@@ -280,11 +281,11 @@ static void dir_path(const uint8_t *dm, size_t dsz, uint32_t dir, char *out, siz
 }
 
 // ------------------------------------------------------------------ the game's executable
-// exefs/main, next to the RomFS image: its data segment has nn::gfx shader files of its own (BOTW 1.8.2: two, with
+// exefs/main, next to the romfs/ folder: its data segment has nn::gfx shader files of its own (BOTW 1.8.2: two, with
 // shaders the game draws that no archive of the RomFS has)
-static void scan_exefs(SaSet *set, const char *image) {
+static void scan_exefs(SaSet *set, const char *romfs) {
     char path[1100];
-    snprintf(path, sizeof path, "%s", image);
+    snprintf(path, sizeof path, "%s", romfs);
     char *end = strrchr(path, '/'), *bs = strrchr(path, '\\');
     if (bs > end) end = bs;
     snprintf(end ? end + 1 : path, sizeof path - (size_t)(end ? end + 1 - path : 0), "exefs/main");
@@ -312,21 +313,23 @@ static void scan_exefs(SaSet *set, const char *image) {
     close(fd);
 }
 
-bool shader_archive_scan(const char *image, SaSet *set, void (*progress)(float, void *), void *user, char *why, size_t wn) {
+bool shader_archive_scan(const char *romfs, SaSet *set, void (*progress)(float, void *), void *user, char *why, size_t wn) {
     memset(set, 0, sizeof *set);
     set->index = calloc(1, sizeof(Index));
-    int fd = open(image, O_RDONLY | O_BINARY);
-    if (fd < 0) { snprintf(why, wn, "cannot open %s", image); return false; }
+    char open_why[256] = "";
+    RomfsImage *img = romfs_image_open(romfs, open_why, sizeof open_why);
+    if (!img) { snprintf(why, wn, "cannot read %s: %s", romfs, open_why); return false; }
     uint64_t h[10];
-    if (pread(fd, h, sizeof h, 0) != (ssize_t)sizeof h || h[4] > (64u << 20) || h[8] > (64u << 20)) {
-        close(fd);
-        snprintf(why, wn, "%s is not a RomFS image", image);
+    if (romfs_image_pread(img, h, sizeof h, 0) != (ssize_t)sizeof h || h[4] > (64u << 20) || h[8] > (64u << 20)) {
+        romfs_image_close(img);
+        snprintf(why, wn, "%s is not a RomFS image", romfs);
         return false;
     }
     uint8_t *dm = malloc(h[4]), *fm = malloc(h[8]);
-    if (pread(fd, dm, h[4], (off_t)h[3]) != (ssize_t)h[4] || pread(fd, fm, h[8], (off_t)h[7]) != (ssize_t)h[8]) {
-        free(dm); free(fm); close(fd);
-        snprintf(why, wn, "%s: cannot read its tables", image);
+    if (romfs_image_pread(img, dm, h[4], h[3]) != (ssize_t)h[4] ||
+        romfs_image_pread(img, fm, h[8], h[7]) != (ssize_t)h[8]) {
+        free(dm); free(fm); romfs_image_close(img);
+        snprintf(why, wn, "%s: cannot read its tables", romfs);
         return false;
     }
     uint64_t total = 0, done = 0;
@@ -344,7 +347,7 @@ bool shader_archive_scan(const char *image, SaSet *set, void (*progress)(float, 
             dir_path(dm, h[4], parent, dir, sizeof dir);
             snprintf(path, sizeof path, "%s%s", dir, name);
             uint8_t *buf = malloc(size ? size : 1);
-            if (buf && pread(fd, buf, size, (off_t)(h[9] + data)) == (ssize_t)size) {
+            if (buf && romfs_image_pread(img, buf, size, h[9] + data) == (ssize_t)size) {
                 set->files++;
                 set->bytes += size;
                 scan_data(set, path, buf, size, 0);
@@ -356,8 +359,8 @@ bool shader_archive_scan(const char *image, SaSet *set, void (*progress)(float, 
     }
     free(dm);
     free(fm);
-    close(fd);
-    scan_exefs(set, image);
+    romfs_image_close(img);
+    scan_exefs(set, romfs);
     return true;
 }
 

@@ -22,9 +22,9 @@ typedef struct {
     char why[256];            // SP_FAILED: what went wrong
 } ShaderPrecompile;
 
-// Runs it on the calling thread (with worker threads of its own); romfs_image: extracted/romfs.bin. Pipelines only
+// Runs it on the calling thread (with worker threads of its own); romfs: extracted/romfs. Pipelines only
 // when the Vulkan device is up (the start screen's window).
-bool shader_precompile_run(ShaderPrecompile *p, const char *romfs_image);
+bool shader_precompile_run(ShaderPrecompile *p, const char *romfs);
 float shader_precompile_progress(const ShaderPrecompile *p);  // 0..1 over the whole run
 // The last run's record (cache/precompiled.txt): 0 never run, 1 done for these shaders, 2 done for an older
 // translator (run again after an update). shaders, date (may be NULL): how many, when (YYYY-MM-DD).

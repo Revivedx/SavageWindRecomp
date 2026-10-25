@@ -43,7 +43,6 @@ T("Some files are missing. Choose the folder again; if it happens again, extract
 T("Make sure there's enough free space and try again. The log has the details.", "Assicurati che ci sia abbastanza spazio libero e riprova. Il registro contiene i dettagli.")
 T("Looking for the game files...", "Ricerca dei file di gioco...")
 T("Copying the game files...", "Copia dei file di gioco...")
-T("Building the game data image...", "Creazione dell'immagine dei dati di gioco...")
 T("Game files ready.", "File di gioco pronti.")
 T("NSO", "")
 T("%d font file(s) imported, %d not recognized. Used from the next game start.", "%d file di font importati, %d non riconosciuti. In uso dal prossimo avvio del gioco.")

@@ -194,6 +194,9 @@ Pendiente:
        `SFCI`, y la respuesta lleva el resultado como primera palabra, sin `SFCO` ni alineación.
      - `romfs.bin`: el runtime lee la RomFS desde esa imagen, que arma la pantalla de setup. Para
        desarrollo sin launcher: `build/savagewind.exe extracted --build-romfs` (4,5 min, 15,1 GB).
+       Desde #99 ya no hay imagen en disco: `runtime/romfs_image.c` la sirve desde `extracted/romfs/` (cabecera
+       y tablas en memoria, los datos de cada fichero leídos del suyo) y la pantalla de inicio borra el
+       `romfs.bin` de versiones anteriores. `--dump-romfs <fichero>` escribe la imagen para compararla.
      - `IApplicationFunctions` 210 (`GetHealthWarningDisappearedSystemEvent`): el juego espera ese evento
        antes del primer frame; el stub no devolvía handle y el juego sondeaba el handle 0 para siempre.
        Ahora devuelve un evento ya señalado.
@@ -454,7 +457,7 @@ Pendiente:
          B la para y lo hecho se queda. `savagewind --precompile-shaders` hace lo mismo sin el menú (ventana oculta
          con `SAVAGEWIND_HIDDEN=1`); `savagewind --scan-shaders` solo cuenta lo que encuentra y cuántos de los shaders
          del registro de claves (abajo) están entre ellos (`SAVAGEWIND_SCAN_LIST=1`: shaders por archivo).
-       - De dónde salen (`runtime/nvn/shader_archive.c`): de la RomFS del propio usuario (`romfs.bin`), en los
+       - De dónde salen (`runtime/nvn/shader_archive.c`): de la RomFS del propio usuario (`romfs/`), en los
          archivos desde los que el juego sube sus shaders a NVN: FSHA con ficheros BNSH de nn::gfx (materiales,
          terreno, hierba: `*.sbfsha`, `*.bfsha` dentro de `*.ssarc`), SHARCB de agl/gsys (`*.sharcb`: postproceso,
          sombras, luces), los efectos VFXB (`*.sesetlist`, también dentro de `*.pack` y `*.sbeventpack`) y el de las

@@ -1,5 +1,5 @@
 // POSIX bits mingw-w64 lacks (included via runtime/platform.h on Windows only).
-// Build with -D_FILE_OFFSET_BITS=64 so off_t / stat sizes are 64-bit (romfs.bin is > 4 GB).
+// Build with -D_FILE_OFFSET_BITS=64 so off_t / stat sizes are 64-bit (RomFS image offsets are > 4 GB).
 #pragma once
 #include <direct.h>
 #include <io.h>

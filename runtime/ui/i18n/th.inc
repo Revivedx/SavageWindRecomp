@@ -190,7 +190,6 @@ T("Building pipelines...", "กำลังสร้างไปป์ไลน�
 T("Looking for the game files...", "กำลังค้นหาไฟล์เกม...")
 T("Checking the game files...", "กำลังตรวจสอบไฟล์เกม...")
 T("Copying the game files...", "กำลังคัดลอกไฟล์เกม...")
-T("Building the game data image...", "กำลังสร้างอิมเมจข้อมูลเกม...")
 T("Game files ready.", "ไฟล์เกมพร้อมแล้ว")
 T("%d font file(s) imported, %d not recognized. Used from the next game start.", "นำเข้าไฟล์ฟอนต์ %d ไฟล์ ไม่รู้จัก %d ไฟล์ ใช้ตั้งแต่การเริ่มเกมครั้งถัดไป")
 T("%d font file(s) imported. Used from the next game start.", "นำเข้าไฟล์ฟอนต์ %d ไฟล์ ใช้ตั้งแต่การเริ่มเกมครั้งถัดไป")

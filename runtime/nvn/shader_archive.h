@@ -1,5 +1,5 @@
-// The game's NVN shader binaries, found in its own RomFS image (extracted/romfs.bin), for translating them ahead of
-// time (runtime/nvn/vulkan/precompile.c). Where BOTW keeps them:
+// The game's NVN shader binaries, found in its own RomFS (extracted/romfs, read through runtime/romfs_image.h), for
+// translating them ahead of time (runtime/nvn/vulkan/precompile.c). Where BOTW keeps them:
 //  - shader archives (*.sbfsha: materials, terrain, foliage; *.bfsha inside *.ssarc): FSHA files holding nn::gfx
 //    shader files (BNSH), each a list of variations (programs) with their stages
 //  - agl / gsys / terrain shader archives (*.sharcb inside *.ssarc): post effects, shadows, lighting, system shaders
@@ -45,10 +45,10 @@ typedef struct {
 // what names a shader binary in the shader key log (vulkan/shaders.c) and here. bin_size (may be NULL): that size.
 uint64_t shader_code_hash(const uint8_t *code, size_t max_size, int stage, uint32_t *bin_size);
 
-// Reads every shader archive of the RomFS image at path into set, and the executable's shader files (exefs/main in
-// the same folder, when there). progress (may be NULL): part done, 0..1.
+// Reads every shader archive of the RomFS folder romfs (extracted/romfs) into set, and the executable's shader files
+// (exefs/main next to it, when there). progress (may be NULL): part done, 0..1.
 // false: the image could not be read (why).
-bool shader_archive_scan(const char *romfs_image, SaSet *set, void (*progress)(float done, void *user), void *user,
+bool shader_archive_scan(const char *romfs, SaSet *set, void (*progress)(float done, void *user), void *user,
                          char *why, size_t why_size);
 int shader_archive_find(const SaSet *set, uint64_t hash);  // index in set->shaders, -1: not there
 void shader_archive_free(SaSet *set);

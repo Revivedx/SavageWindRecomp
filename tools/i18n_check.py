@@ -20,7 +20,7 @@ SOURCES = sorted(glob.glob(os.path.join(ROOT, 'runtime/ui/*.mm'))) + [
     os.path.join(ROOT, 'runtime/language.c'),
     os.path.join(ROOT, 'runtime/hle/bindings.c'),
 ]
-SKIP_LINE = re.compile(r'\b(LOG|fprintf|printf|getenv|strcmp|strncmp|memcmp|strstr|fopen|file_exists|mkdir|unlink|rt_resource|'
+SKIP_LINE = re.compile(r'\b(LOG|fprintf|printf|getenv|strcmp|strncmp|memcmp|strstr|fopen|file_exists|mkdir|unlink|rt_resource|rt_remove_game_file|'
                        r'PushID|BeginChild|BeginTable|BeginPopup|OpenPopup|IsPopupOpen|InvisibleButton|GetID|Begin)\s*\(|'
                        r'#include|#define|SAVAGEWIND_|//')
 

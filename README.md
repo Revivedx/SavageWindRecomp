@@ -45,7 +45,7 @@ mouse, and its text and voices in any of its languages.
      "Testing on ARM").
 2. Run `savagewind.exe` (or the AppImage). The first time it asks for your game files: pick the folder with your own
    extracted game (`exefs/` and `romfs/`, version 1.9.0, see below) and choose **Set up game files**. It checks the
-   version, copies the files, builds the data image and recompiles the game code on your machine - once (about 6
+   version, copies the files and recompiles the game code on your machine - once (about 6
    minutes for the game code with a 12-thread CPU, plus the copy and the optional shader precompilation). Your own
    files aren't changed. When it's done the game starts.
 3. From then on Savage Wind goes straight into the game. The settings, including the text and voice languages,
@@ -63,7 +63,7 @@ The setup and configuration screens show Savage Wind's own art. To see a picture
 next to `savagewind.exe` (on Linux, in the data folder) as `splash.jpg` or `splash.png`; it's only read from your folder and never part of
 Savage Wind.
 
-Needs Windows 10 or later, a CPU with SSE4.2 (2008 or newer), a GPU with Vulkan 1.3 and about 35 GB of free disk
+Needs Windows 10 or later, a CPU with SSE4.2 (2008 or newer), a GPU with Vulkan 1.3 and about 20 GB of free disk
 space. AVX2 isn't required: on a CPU without AVX2 / FMA the setup builds the game code in a compatible mode, which runs
 slower.
 
@@ -178,8 +178,6 @@ More detail in [docs/BUILD-windows.md](docs/BUILD-windows.md).
    - `make -j` builds the app, `build/savagewind.exe`.
    - Put your files in `extracted/` (above), then `make gen` (recompiles the game code into `generated/`, about a
      minute) and `make -j` again (builds it into `build/swgame.dll`; the first build takes 15-20 minutes).
-   - `build/savagewind.exe extracted --build-romfs` packs your RomFS into the image the runtime reads
-     (`extracted/romfs.bin`, about 15 GB).
 3. Run: `build/savagewind.exe extracted --play`, from a shell with `C:\msys64\ucrt64\bin` on PATH.
 
 ### Linux

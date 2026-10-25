@@ -43,7 +43,6 @@ T("Some files are missing. Choose the folder again; if it happens again, extract
 T("Make sure there's enough free space and try again. The log has the details.", "여유 공간이 충분한지 확인한 후 다시 시도하세요. 자세한 내용은 로그에 있습니다.")
 T("Looking for the game files...", "게임 파일을 찾는 중...")
 T("Copying the game files...", "게임 파일을 복사하는 중...")
-T("Building the game data image...", "게임 데이터 이미지를 만드는 중...")
 T("Game files ready.", "게임 파일이 준비되었습니다.")
 T("NSO", "")
 T("%d font file(s) imported, %d not recognized. Used from the next game start.", "글꼴 파일 %d개를 가져왔고 %d개는 인식하지 못했습니다. 다음 게임 시작부터 사용됩니다.")

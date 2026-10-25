@@ -43,7 +43,6 @@ T("Some files are missing. Choose the folder again; if it happens again, extract
 T("Make sure there's enough free space and try again. The log has the details.", "十分な空き容量があることを確認して、もう一度お試しください。詳細はログにあります。")
 T("Looking for the game files...", "ゲームファイルを探しています...")
 T("Copying the game files...", "ゲームファイルをコピーしています...")
-T("Building the game data image...", "ゲームデータのイメージを作成しています...")
 T("Game files ready.", "ゲームファイルの準備ができました。")
 T("NSO", "")
 T("%d font file(s) imported, %d not recognized. Used from the next game start.", "%d個のフォントファイルをインポートしました（%d個は認識できませんでした）。次回のゲーム起動から使われます。")

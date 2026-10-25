@@ -236,13 +236,13 @@ int shader_precompile_status(int *shaders, char *date, int n) {
     return strcmp(version, vk_shader_version()) || !vk_precompiled_cache_ok() ? 2 : 1;
 }
 
-bool shader_precompile_run(ShaderPrecompile *p, const char *image) {
+bool shader_precompile_run(ShaderPrecompile *p, const char *romfs) {
     uint64_t t0 = SDL_GetTicksNS();
     atomic_store(&p->done, 0);
     atomic_store(&p->total, 1000);
     atomic_store(&p->state, SP_READING);
     SaSet set;
-    if (!shader_archive_scan(image, &set, scan_progress, p, p->why, sizeof p->why)) {
+    if (!shader_archive_scan(romfs, &set, scan_progress, p, p->why, sizeof p->why)) {
         atomic_store(&p->state, SP_FAILED);
         return false;
     }
