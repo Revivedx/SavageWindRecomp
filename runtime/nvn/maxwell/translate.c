@@ -78,6 +78,7 @@ typedef struct {
     bool glsl;               // emit Vulkan GLSL: dialect-specific constructs here, the rest via glsl_rewrite()
     bool uses_gmem_store;    // STG present: the gmem buffer is not readonly
     uint32_t cbuf_need[18];  // highest constant vec4 index + 1 per cbuf (array size of the GLSL block)
+    uint32_t cbuf_fixed[18]; // cbuf_size from the reads at constant offsets alone (cbuf_reach)
     bool uses_shared;        // LDS / STS: compute shared memory, smem_words words (a power of two)
     uint32_t smem_words;
     // (GLSL) structured control flow (structure_flow): if / else and do / while for the pc state machine. By
@@ -86,6 +87,7 @@ typedef struct {
     bool structured;
     Str *flow_before;
     uint8_t *flow_dead;
+    struct InsnWrites *writes;  // by instruction index: what its emitted code assigns (cbuf_reach)
 } Ctx;
 
 static uint64_t bits(uint64_t w, int lo, int n) { return (w >> lo) & ((n == 64) ? ~0ull : ((1ull << n) - 1)); }
@@ -132,6 +134,7 @@ static const char *pred(Ctx *c, int p, bool neg, char *buf) {
 static const char *cbuf_ref(Ctx *c, int idx, int64_t off, const char *dyn, char *buf) {
     c->info->cbuf_mask |= 1u << idx;
     if (off + 16 > (int64_t)c->info->cbuf_size[idx]) c->info->cbuf_size[idx] = (uint32_t)((off + 16 + 255) & ~255);
+    if (!dyn && idx < 18 && off + 16 > (int64_t)c->cbuf_fixed[idx]) c->cbuf_fixed[idx] = (uint32_t)((off + 16 + 255) & ~255);
     if (dyn) c->info->cbuf_dynamic |= 1u << idx;
     if (!dyn && idx < 18 && off >= 0 && (uint32_t)(off >> 4) + 1 > c->cbuf_need[idx]) c->cbuf_need[idx] = (uint32_t)(off >> 4) + 1;
     if (dyn) sprintf(buf, "cbr(cb%d, (%s) + %lldu)", idx, dyn, (long long)off);
@@ -2502,6 +2505,329 @@ static void structure_flow(Ctx *c, const uint64_t *code, size_t end) {
     c->flow_dead = NULL;
 }
 
+// ---- how far register-indexed constant reads reach (LDC c[k][Rn + imm]). Such a cbuf is bound whole (up to 64 KB,
+// copied for each draw that binds it after a change), but the register is often a value known here: a loop counter, a
+// constant moved and shifted. BOTW 1.8.2's shadow cascade vertex shader (agl_technique) picks its cascade from a 64 KB
+// block in a two-pass loop and reads < 400 bytes of it, while UpdateUniformBuffer changes the block between its draws:
+// that copy was ~94 % of the constant bytes copied in the open world (Radeon 660M, 3 scenes).
+//
+// The program is walked from its start with the register and predicate values known on each path, through the
+// integer instructions index math uses (as emit_insn translates them); a branch whose condition isn't known takes both
+// ways, and a state already seen at a jump target isn't walked again. What an instruction writes comes from the code
+// emitted for it (note_writes), so anything not modelled here leaves those registers and predicates unknown. A cbuf
+// whose indexed reads all have a known register gets cbuf_size = the furthest one and loses its cbuf_dynamic bit;
+// anything else (an unknown register, BRX, a stack the walk can't follow, too many states) leaves it whole.
+typedef struct InsnWrites {
+    uint64_t regs[4];  // registers assigned (rN = ...)
+    uint8_t preds;     // predicates assigned (pN = ...)
+    bool emitted;
+} InsnWrites;
+
+static bool is_digit(char ch) { return ch >= '0' && ch <= '9'; }
+
+// The rN / pN the code [from, end) assigns (=, compound assignments, ++ / --). (start: the beginning of the buffer)
+static void note_writes(InsnWrites *wr, const char *start, const char *from, const char *end) {
+    wr->emitted = true;
+    for (const char *p = from; p < end; p++) {
+        if ((*p != 'r' && *p != 'p') || !is_digit(p[1]) || (p > start && id_char(p[-1]))) continue;
+        const char *q = p + 1;
+        int n = 0;
+        while (q < end && is_digit(*q)) n = n * 10 + (*q++ - '0');
+        if (q < end && id_char(*q)) continue;
+        bool pre = p - start >= 2 && (!strncmp(p - 2, "++", 2) || !strncmp(p - 2, "--", 2));
+        while (q < end && *q == ' ') q++;
+        if (q >= end && !pre) continue;
+        bool assign = q < end && ((q[0] == '=' && q[1] != '=') || (q[0] == '+' && (q[1] == '=' || q[1] == '+')) ||
+                                  (q[0] == '-' && (q[1] == '=' || q[1] == '-')) ||
+                                  (q[0] && strchr("*/%&|^", q[0]) && q[1] == '=') ||
+                                  ((!strncmp(q, "<<", 2) || !strncmp(q, ">>", 2)) && q[2] == '='));
+        if (!assign && !pre) continue;
+        if (*p == 'r' && n < 256) wr->regs[n >> 6] |= 1ull << (n & 63);
+        else if (*p == 'p' && n < PT) wr->preds |= (uint8_t)(1u << n);
+    }
+}
+
+typedef struct {
+    uint64_t known[4];  // registers with a known value
+    uint32_t val[256];  // (0 when not known: states compare whole)
+    uint32_t ssy[16], pbk[16], pcnt[16];
+    uint32_t i;         // instruction index
+    uint8_t nssy, npbk, npcnt, pknown, pval;
+} Walk;
+
+static bool wk(const Walk *s, int r) { return r == RZ || ((s->known[r >> 6] >> (r & 63)) & 1); }
+static uint32_t wv(const Walk *s, int r) { return r == RZ ? 0 : s->val[r]; }
+static void wset(Walk *s, int r, bool known, uint32_t v) {
+    if (r == RZ) return;
+    if (known) { s->known[r >> 6] |= 1ull << (r & 63); s->val[r] = v; }
+    else { s->known[r >> 6] &= ~(1ull << (r & 63)); s->val[r] = 0; }
+}
+// predicate p (negated): 1, 0, or -1 when not known
+static int wp(const Walk *s, int p, bool neg) {
+    if (p == PT) return neg ? 0 : 1;
+    if (!((s->pknown >> p) & 1)) return -1;
+    return ((s->pval >> p) & 1) ^ neg;
+}
+static void wpset(Walk *s, int p, int v) {
+    if (p == PT) return;
+    uint8_t m = (uint8_t)(1u << p);
+    if (v < 0) { s->pknown &= (uint8_t)~m; s->pval &= (uint8_t)~m; }
+    else { s->pknown |= m; s->pval = (uint8_t)(v ? s->pval | m : s->pval & ~m); }
+}
+
+static bool walk_b(const Walk *s, uint64_t w, uint32_t *v) {  // operand B as operand_b reads it (integer forms)
+    switch (b_form(w)) {
+    case B_REG: { int r = (int)bits(w, 20, 8); *v = wv(s, r); return wk(s, r); }
+    case B_CBUF: return false;
+    default: {
+        uint32_t x = (uint32_t)bits(w, 20, 19) | ((uint32_t)bits(w, 56, 1) << 19);
+        *v = x & 0x80000u ? x | 0xFFF00000u : x;
+        return true;
+    }
+    }
+}
+
+#define WOP(val, mask) ((w & (uint64_t)(mask)) == (uint64_t)(val))
+// The value the integer instructions of index math give their destination, as emit_insn translates them. false: not
+// one of them, or an operand isn't known.
+static bool walk_alu(const Walk *s, uint64_t w, uint32_t *out) {
+    int a = (int)bits(w, 8, 8);
+    uint32_t av = wv(s, a), b, imm = (uint32_t)bits(w, 20, 32);
+    bool ak = wk(s, a);
+    if (WOP(0x0100000000000000ull, 0xfff0000000000000ull)) { *out = imm; return true; }  // MOV32I
+    if (WOP(0x5c98000000000000ull, 0xfff8000000000000ull) || WOP(0x4c98000000000000ull, 0xfff8000000000000ull) ||
+        WOP(0x3898000000000000ull, 0xfef8000000000000ull))  // MOV
+        return walk_b(s, w, out);
+    if (WOP(0x0400000000000000ull, 0xfc00000000000000ull)) {  // LOP32I
+        uint32_t y = bits(w, 56, 1) ? ~imm : imm, x = bits(w, 55, 1) ? ~av : av;
+        int op = (int)bits(w, 53, 2);
+        if (op == 3) { *out = y; return true; }
+        if (!ak) return false;
+        *out = op == 0 ? x & y : op == 1 ? x | y : x ^ y;
+        return true;
+    }
+    if (!ak) return false;
+    if (WOP(0x1c00000000000000ull, 0xfe00000000000000ull)) {  // IADD32I
+        if (bits(w, 53, 1)) return false;  // (.X: the carry)
+        *out = (bits(w, 56, 1) ? -av : av) + imm;
+        return true;
+    }
+    if (WOP(0x1400000000000000ull, 0xfc00000000000000ull)) {  // ISCADD32I
+        *out = (av << bits(w, 53, 5)) + imm;
+        return true;
+    }
+    if (!walk_b(s, w, &b)) return false;
+    if (WOP(0x5c10000000000000ull, 0xfff8000000000000ull) || WOP(0x4c10000000000000ull, 0xfff8000000000000ull) ||
+        WOP(0x3810000000000000ull, 0xfef8000000000000ull)) {  // IADD
+        if (bits(w, 43, 1)) return false;  // (.X)
+        *out = (bits(w, 49, 1) ? -av : av) + (bits(w, 48, 1) ? -b : b);
+        return true;
+    }
+    if (WOP(0x5c18000000000000ull, 0xfff8000000000000ull) || WOP(0x4c18000000000000ull, 0xfff8000000000000ull) ||
+        WOP(0x3818000000000000ull, 0xfef8000000000000ull)) {  // ISCADD
+        *out = ((bits(w, 49, 1) ? -av : av) << bits(w, 39, 5)) + (bits(w, 48, 1) ? -b : b);
+        return true;
+    }
+    if (WOP(0x5c48000000000000ull, 0xfff8000000000000ull) || WOP(0x4c48000000000000ull, 0xfff8000000000000ull) ||
+        WOP(0x3848000000000000ull, 0xfef8000000000000ull)) {  // SHL
+        if (bits(w, 39, 1)) *out = av << (b & 31u);
+        else *out = b >= 32u ? 0u : av << b;
+        return true;
+    }
+    return false;
+}
+
+static bool walk_isetp(uint64_t w) {
+    return WOP(0x5b60000000000000ull, 0xfff0000000000000ull) || WOP(0x4b60000000000000ull, 0xfff0000000000000ull) ||
+           WOP(0x3660000000000000ull, 0xfef0000000000000ull);
+}
+
+static int walk_bool(int x, int y, int op) {  // bool_op on values that may be unknown (-1)
+    if (op == 0) return x == 0 || y == 0 ? 0 : x < 0 || y < 0 ? -1 : 1;
+    if (op == 1) return x == 1 || y == 1 ? 1 : x < 0 || y < 0 ? -1 : 0;
+    return x < 0 || y < 0 ? -1 : x != y;
+}
+
+// ISETP's two predicates (icmp_expr, then combined with its predicate operand)
+static void walk_isetp_preds(const Walk *s, uint64_t w, int *p_out, int *q_out) {
+    int a = (int)bits(w, 8, 8), op = (int)bits(w, 49, 3), bo = (int)bits(w, 45, 2);
+    uint32_t b;
+    int cmp = -1;
+    if (op == 0) cmp = 0;
+    else if (op == 7) cmp = 1;
+    else if (wk(s, a) && walk_b(s, w, &b)) {
+        uint32_t x = wv(s, a);
+        bool sg = bits(w, 48, 1);
+        bool lt = sg ? (int32_t)x < (int32_t)b : x < b, eq = x == b;
+        cmp = op == 1 ? lt : op == 2 ? eq : op == 3 ? lt || eq : op == 4 ? !lt && !eq : op == 5 ? !eq : !lt;
+    }
+    int pp = wp(s, (int)bits(w, 39, 3), bits(w, 42, 1));
+    *p_out = walk_bool(cmp, pp, bo);
+    *q_out = walk_bool(cmp < 0 ? -1 : !cmp, pp, bo);
+}
+#undef WOP
+
+typedef struct {
+    Walk *st;  // states to walk
+    int n, cap;
+    Walk *seen;  // states met at jump targets
+    int nseen, capseen;
+    uint32_t *seen_hash;
+    long steps;
+} WalkSet;
+
+enum { WALK_STATES = 4096, WALK_STEPS = 1 << 21 };
+
+static uint64_t walk_hash(const Walk *s) {
+    const uint8_t *p = (const uint8_t *)s;
+    uint64_t h = 0xcbf29ce484222325ull;
+    for (size_t k = 0; k < sizeof *s; k++) h = (h ^ p[k]) * 0x100000001B3ull;
+    return h;
+}
+
+// Queues s at instruction t unless that state was met there before. false: too many states.
+static bool walk_push(WalkSet *ws, const Walk *s, uint32_t t) {
+    Walk n;
+    memcpy(&n, s, sizeof n);
+    n.i = t;
+    uint32_t h = (uint32_t)walk_hash(&n);
+    for (int k = 0; k < ws->nseen; k++)
+        if (ws->seen_hash[k] == h && !memcmp(&ws->seen[k], &n, sizeof n)) return true;
+    if (ws->nseen == WALK_STATES) return false;
+    if (ws->nseen == ws->capseen) {
+        ws->capseen = ws->capseen ? ws->capseen * 2 : 64;
+        ws->seen = realloc(ws->seen, ws->capseen * sizeof *ws->seen);
+        ws->seen_hash = realloc(ws->seen_hash, ws->capseen * sizeof *ws->seen_hash);
+    }
+    memcpy(&ws->seen[ws->nseen], &n, sizeof n);
+    ws->seen_hash[ws->nseen++] = h;
+    if (ws->n == ws->cap) {
+        ws->cap = ws->cap ? ws->cap * 2 : 64;
+        ws->st = realloc(ws->st, ws->cap * sizeof *ws->st);
+    }
+    memcpy(&ws->st[ws->n++], &n, sizeof n);
+    return true;
+}
+
+// Walks one path from s until it ends; branches go to ws. false: the walk can't follow it (the result is unknown).
+static bool walk_path(Ctx *c, WalkSet *ws, Walk *s, const uint64_t *code, size_t end, uint32_t *reach, uint32_t *whole) {
+    while (s->i < end) {
+        if (++ws->steps > WALK_STEPS) return false;
+        size_t i = s->i;
+        uint64_t w = code[i];
+        uint32_t pc = (uint32_t)(i * 8);
+        int pr = (int)bits(w, 16, 3);
+        bool prn = bits(w, 19, 1);
+        uint64_t top12 = w & 0xfff0000000000000ull;
+        if (top12 == 0xe290000000000000ull || top12 == 0xe2a0000000000000ull || top12 == 0xe2b0000000000000ull ||
+            top12 == 0xe270000000000000ull) { pr = PT; prn = false; }  // (as emit_insn: no predicate)
+        size_t next = next_insn(i);
+        if (pr == PT && prn) { s->i = (uint32_t)next; continue; }  // never executes
+        int g = wp(s, pr, prn);  // the guard
+        int kind = flow_kind(w);
+        bool sync = (w & 0xfff8000000000000ull) == 0xf0f8000000000000ull;
+        if (kind != FLOW_NONE || top12 == 0xe330000000000000ull) {
+            int test = (int)bits(w, 0, 5);
+            if (test != 15 && kind != FLOW_SSY && top12 != 0xe2a0000000000000ull && top12 != 0xe2b0000000000000ull)
+                g = g == 0 ? 0 : -1;  // (a condition-code test: not known)
+            if (top12 == 0xe330000000000000ull) { s->i = (uint32_t)next; continue; }  // KIL (walked on either way)
+            if (top12 == 0xe250000000000000ull) return false;                         // BRX
+            uint32_t t = norm_target((int64_t)pc + 8 + sbits(w, 20, 24)) / 8;
+            if (top12 == 0xe290000000000000ull || top12 == 0xe2a0000000000000ull || top12 == 0xe2b0000000000000ull) {
+                uint32_t *stk = top12 == 0xe290000000000000ull ? s->ssy : top12 == 0xe2a0000000000000ull ? s->pbk : s->pcnt;
+                uint8_t *n = top12 == 0xe290000000000000ull ? &s->nssy : top12 == 0xe2a0000000000000ull ? &s->npbk : &s->npcnt;
+                if (*n == 16) return false;
+                stk[(*n)++] = t;
+                s->i = (uint32_t)next;
+                continue;
+            }
+            if (g == 0) { s->i = (uint32_t)next; continue; }
+            if (top12 == 0xe300000000000000ull) {  // EXIT
+                if (g == 1) return true;
+                s->i = (uint32_t)next;
+                continue;
+            }
+            // BRA / SYNC / BRK / CONT: where it goes
+            Walk taken;
+            memcpy(&taken, s, sizeof taken);
+            if (sync) { if (!taken.nssy) return false; t = taken.ssy[--taken.nssy]; }
+            else if (top12 == 0xe340000000000000ull) { if (!taken.npbk) return false; t = taken.pbk[--taken.npbk]; }
+            else if (top12 == 0xe350000000000000ull) { if (!taken.npcnt) return false; t = taken.pcnt[taken.npcnt - 1]; }
+            else if (top12 != 0xe240000000000000ull || (w & 0x20)) return false;
+            else if (t <= i && g == 1) g = -1;  // (a do / while also ends after its iteration limit)
+            if (!walk_push(ws, &taken, t)) return false;
+            if (g == 1) return true;
+            s->i = (uint32_t)next;
+            continue;
+        }
+        if (g == 0) { s->i = (uint32_t)next; continue; }
+        const InsnWrites *wr = &c->writes[i];
+        if (!wr->emitted) return false;  // (dead code by the structured flow, yet reached: not followed)
+        if ((w & 0xfff8000000000000ull) == 0xef90000000000000ull) {  // LDC: the reads, word by word as emitted
+            int idx = (int)bits(w, 36, 5), a = (int)bits(w, 8, 8), d = (int)bits(w, 0, 8);
+            uint32_t off = (uint32_t)bits(w, 20, 16);
+            int words = bits(w, 48, 3) == 5 ? 2 : 1;
+            for (int k = 0; k < words; k++) {
+                if (a != RZ && idx < 18) {
+                    uint32_t vec = (wv(s, a) + off + 4u * (uint32_t)k) >> 4;
+                    if (!wk(s, a) || vec >= 4096) *whole |= 1u << idx;  // (past 64 KB: the clamp reads the last vec4)
+                    else if (vec + 1 > reach[idx]) reach[idx] = vec + 1;
+                }
+                if (d + k < RZ) wset(s, d + k, false, 0);  // (before the next word's address: as emitted)
+            }
+        }
+        int d = (int)bits(w, 0, 8);
+        uint32_t v = 0;
+        bool alu = walk_alu(s, w, &v);
+        int pv[2] = {-1, -1}, pi[2] = {PT, PT};
+        if (walk_isetp(w)) {
+            walk_isetp_preds(s, w, &pv[0], &pv[1]);
+            pi[0] = (int)bits(w, 3, 3);
+            pi[1] = (int)bits(w, 0, 3);
+        }
+        for (int r = 0; r < RZ; r++) {
+            if (!((wr->regs[r >> 6] >> (r & 63)) & 1)) continue;
+            bool known = alu && r == d;
+            if (g < 0 && !(known && wk(s, r) && wv(s, r) == v)) known = false;  // (maybe not executed)
+            wset(s, r, known, known ? v : 0);
+        }
+        for (int p = 0; p < PT; p++) {
+            if (!((wr->preds >> p) & 1)) continue;
+            int nv = p == pi[1] ? pv[1] : p == pi[0] ? pv[0] : -1;  // (the second is assigned last)
+            if (g < 0 && nv != wp(s, p, false)) nv = -1;
+            wpset(s, p, nv);
+        }
+        s->i = (uint32_t)next;
+    }
+    return true;
+}
+
+static void cbuf_reach(Ctx *c, const uint64_t *code, size_t end) {
+    ShaderInfo *info = c->info;
+    uint32_t reach[18] = {0}, whole = 0;  // vec4s the indexed reads reach; cbufs read at an unknown index
+    WalkSet ws = {0};
+    Walk start;
+    memset(&start, 0, sizeof start);
+    bool ok = walk_push(&ws, &start, 1);
+    while (ok && ws.n && (info->cbuf_dynamic & ~whole)) {
+        Walk s;
+        memcpy(&s, &ws.st[--ws.n], sizeof s);
+        ok = walk_path(c, &ws, &s, code, end, reach, &whole);
+    }
+    free(ws.st);
+    free(ws.seen);
+    free(ws.seen_hash);
+    if (!ok) return;
+    for (int k = 0; k < 18; k++) {
+        if (!((info->cbuf_dynamic >> k) & 1) || ((whole >> k) & 1)) continue;
+        uint32_t size = (reach[k] * 16u + 255u) & ~255u;
+        if (size < c->cbuf_fixed[k]) size = c->cbuf_fixed[k];
+        if (size >= 0x10000) continue;  // (no smaller than the whole buffer)
+        info->cbuf_size[k] = size ? size : 256;
+        info->cbuf_dynamic &= ~(1u << k);
+    }
+}
+
 ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, const ShaderKey *key) {
     ShaderInfo *info = calloc(1, sizeof *info);
     info->stage = stage;
@@ -2557,6 +2883,7 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
         (void)is_branch_target_op;
     }
     if (c->glsl && any_branch) structure_flow(c, (const uint64_t *)code, end);
+    c->writes = calloc(end + 1, sizeof *c->writes);
     // translate
     bool dbg = maxwell_dbg_code && blob == maxwell_dbg_code && stage == STAGE_FRAGMENT;
     static int annotate = -1;
@@ -2573,7 +2900,9 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
             sp(&c->body, "  case %uu:\n", pc);
         }
         if (annotate) sp(&c->body, "    // pc %x: %016llx\n", pc, (unsigned long long)((const uint64_t *)code)[i]);
+        size_t from = c->body.len;
         emit_insn(c, ((const uint64_t *)code)[i], pc);
+        if (c->body.buf) note_writes(&c->writes[i], c->body.buf, c->body.buf + from, c->body.buf + c->body.len);
         if (dbg && pc == maxwell_dbg_pc) {
             int rr = maxwell_dbg_reg % 1000, half = maxwell_dbg_reg / 1000;  // +1000: low f16, +2000: high f16
             c->reg_used[rr] = 1;
@@ -2589,6 +2918,8 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
         free(c->flow_dead);
     }
     free(label);
+    if (!c->fail && info->cbuf_dynamic) cbuf_reach(c, (const uint64_t *)code, end);
+    free(c->writes);
     if (c->fail) { free(c->body.buf); free(c); return info; }
     if (c->glsl) return glsl_finish(c, any_branch, dbg);
 

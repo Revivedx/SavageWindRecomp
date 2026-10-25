@@ -5,7 +5,8 @@
 //  - `#version 460`, entry point `main`. Descriptor set: vertex 0, fragment 1, compute 0.
 //  - hardware cbuf k -> binding k: `layout(std140, set=S, binding=k) uniform CB<k> { uvec4 cb<k>[N]; };`
 //    (anonymous block). N = max(cbuf_size[k] / 16, highest constant-index vec4 + 1), and at least 4096 when
-//    cbuf_dynamic has bit k (the renderer binds up to 64 KB). Register-indexed reads are clamped to N - 1.
+//    cbuf_dynamic has bit k (the renderer binds up to 64 KB). Register-indexed reads are clamped to N - 1; those
+//    whose register is known at translation time (cbuf_reach) count in cbuf_size instead.
 //  - global memory (LDG/STG) -> binding GMEM_BUFFER_INDEX (17):
 //    `layout(std430, set=S, binding=17) [readonly] buffer GMem { uint w[]; } gmem_;`, 32-bit words relative to
 //    maxwell_gmem_base. `readonly` unless the shader stores (needs vertexPipeline/fragmentStoresAndAtomics then);
@@ -59,7 +60,7 @@ typedef struct {
     char *msl;              // complete MSL or GLSL source (MSL entry "main0", GLSL "main"); NULL on failure
     uint32_t cbuf_mask;     // hardware constant buffers read
     uint32_t cbuf_size[18];
-    uint32_t cbuf_dynamic;  // cbufs indexed with a register: bind the whole buffer
+    uint32_t cbuf_dynamic;  // cbufs indexed with a register of unknown value: bind the whole buffer
     int ntex;
     ShaderTexture tex[64];
     uint32_t attr_mask;     // vertex: input attributes; fragment: input varyings

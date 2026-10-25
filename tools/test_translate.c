@@ -208,6 +208,43 @@ static void dump(const char *dir, const char *tag, long n, const char *src, cons
     fclose(f);
 }
 
+// Directed checks of cbuf_reach (how far register-indexed constant reads reach): a vertex program that reads
+// c[3][(R20 << 4) + 0x160] in a loop over R20 = first .. 1 (count down), with R20 from first_insn.
+static uint64_t mov32i(int d, uint32_t v) { return 0x0100000000000000ull | (uint64_t)v << 20 | 7ull << 16 | (uint64_t)d; }
+static uint64_t mov(int d, int src) { return 0x5c98078000070000ull | (uint64_t)src << 20 | (uint64_t)d; }
+static bool reach_case(const char *name, uint64_t first_insn, uint32_t want_dyn, uint32_t want_size) {
+    static uint8_t prog[0x80 + 16 * 8 + 64];
+    memset(prog, 0, sizeof prog);
+    uint64_t *code = (uint64_t *)(prog + 0x80);
+    code[0] = code[4] = code[8] = 0x001f8000fc0007e0ull;  // scheduling words
+    code[1] = first_insn;
+    code[2] = 0x3818000000000000ull | 4ull << 39 | 0x160ull << 20 | 20ull << 8 | 7ull << 16 | 0;  // ISCADD R0, R20, 0x160, 4
+    code[3] = 0xef90000000000000ull | 3ull << 36 | 4ull << 48 | 0ull << 8 | 7ull << 16 | 1;       // LDC R1, c[3][R0]
+    code[5] = 0x1c00000000000000ull | 0xffffffffull << 20 | 20ull << 8 | 7ull << 16 | 20;          // IADD32I R20, R20, -1
+    code[6] = 0x3660000000000000ull | 4ull << 49 | 1ull << 48 | 7ull << 39 | 20ull << 8 | 7ull << 16 | 0 << 3 | 7;  // ISETP.GT P0, R20, 0
+    code[7] = 0xe240000000000000ull | (uint64_t)(-48 & 0xffffff) << 20 | 0ull << 16 | 0xf;          // @P0 BRA (to code[2])
+    code[9] = mov(2, 1);  // (the read kept)
+    code[10] = 0xe30000000007000full;  // EXIT
+    code[11] = 0xe2400fffff87000full;  // BRA self
+    ShaderKey key;
+    memset(&key, 0, sizeof key);
+    key.glsl = 1;
+    ShaderInfo *si = maxwell_translate(prog, sizeof prog, STAGE_VERTEX, &key);
+    bool ok = si->msl && (si->cbuf_mask & 8) && (si->cbuf_dynamic & 8) == want_dyn && si->cbuf_size[3] == want_size;
+    if (!ok) printf("cbuf reach %s: FAILED (%s; dynamic %#x, size %u; want %#x, %u)\n", name, si->msl ? "translated" : si->error,
+                    si->cbuf_dynamic, si->cbuf_size[3], want_dyn, want_size);
+    maxwell_free(si);
+    return ok;
+}
+
+static bool reach_tests(void) {
+    bool ok = reach_case("constant start", mov32i(20, 2), 0, 512);  // reads 0x170 and 0x180: 25 vec4s
+    ok &= reach_case("unknown start", mov(20, 21), 8, 0x10000);
+    ok &= reach_case("past 64 KB", mov32i(20, 0x1000), 8, 0x10000);  // (the clamp reads the last vec4)
+    printf("cbuf reach: %s\n", ok ? "3 checks passed" : "FAILED");
+    return ok;
+}
+
 int main(int argc, char **argv) {
     if (argc < 4) { fprintf(stderr, "usage: %s <translate.c> <count> <seed> [msl|glsl|both] [dump_dir]\n", argv[0]); return 2; }
     load_patterns(argv[1]);
@@ -233,6 +270,7 @@ int main(int argc, char **argv) {
 #else
     if (do_glsl) { fprintf(stderr, "built without WITH_GLSL: msl mode only\n"); do_glsl = false; }
 #endif
+    bool reach_ok = reach_tests();
     static uint8_t prog[0x80 + 64 * 32 + 128];
     long msl_ok = 0, msl_fail = 0, msl_diff = 0, gl_ok = 0, gl_tfail = 0, gl_tfail_only = 0, gl_cfail = 0, gl_vfail = 0;
     long by_stage[3] = {0};
@@ -311,5 +349,5 @@ int main(int argc, char **argv) {
                gl_ok, by_stage[0], by_stage[1], by_stage[2], gl_cfail, gl_vfail, gl_tfail, gl_tfail_only);
         for (int i = 0; i < nreasons; i++) printf("  translation failure: %-36s %ld\n", reasons[i], reason_n[i]);
     }
-    return (msl_diff || gl_cfail || gl_vfail) ? 1 : 0;
+    return (msl_diff || gl_cfail || gl_vfail || !reach_ok) ? 1 : 0;
 }

@@ -745,9 +745,17 @@ Pendiente:
      Además:
      - Copias de constant buffers: se comparten en toda la lista (antes, solo dentro de cada trozo de ~300 draws que
        va a la GPU) y `UpdateUniformBuffer` (~450 por frame en el mundo, sobre solo ~40 rangos pequeños) invalida solo
-       las copias que tocan su rango (antes, todas). Lo que más se copia sigue igual: un buffer de 64 KB que el
+       las copias que tocan su rango (antes, todas). Lo que más se copiaba era un buffer de 64 KB que el
        shader indexa con un registro (se liga entero) y que `UpdateUniformBuffer` cambia 16 bytes entre draws
-       (~220 copias, ~14 MB por frame); cuesta ~6 % del hilo de la cola.
+       (~220 copias, ~14 MB por frame; ~94 % de los bytes de constant buffers copiados en Kakariko, el establo y
+       Hateno). Es el vertex shader que elige la cascada de sombra (`agl_technique`): recorre las cascadas con un
+       contador y lee menos de 400 bytes. El traductor (`cbuf_reach` en `translate.c`) recorre el programa con los
+       valores de registro que se conocen al traducir (constantes movidas, sumadas, desplazadas; los dos caminos de
+       un salto con condición desconocida) y, si todas las lecturas indexadas de un cbuf tienen el registro
+       conocido, `cbuf_size` es hasta dónde llegan y el cbuf deja de estar en `cbuf_dynamic`: se copia solo eso.
+       Lo que escribe cada instrucción sale del código que se emite para ella, así que lo que no se modela queda
+       desconocido (se liga entero, como antes). En BOTW se acotan 46 shaders de `agl_technique` (de 64 KB a
+       512-1024 bytes); la copia de memoria del juego baja de ~440 a ~40 MB por segundo.
      - Prioridades de los núcleos: Horizon da el núcleo al hilo de mejor prioridad en cuanto puede correr. El código
        generado no tiene puntos de expulsión propios y el núcleo solo cambiaba de manos en la siguiente syscall del
        que lo tenía: una vez por segundo un hilo de trabajos de BOTW (prioridad 48, núcleo 2) corre ~5 ms de código
