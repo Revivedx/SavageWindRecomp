@@ -2911,7 +2911,17 @@ static void resolve_feedback(Prog *pr) {
             // in this pass needs a barrier first: the pass ends, without a copy.
             static int nolive = -1;
             if (nolive < 0) nolive = getenv("SAVAGEWIND_NO_LIVE_DEPTH") != NULL;
-            if (!nolive && t == st.rt.depth && depth_read_only()) {
+            // SAVAGEWIND_VK_SNAP_DEPTH=1 / SAVAGEWIND_VK_SNAP_GBUFFER=1 (Mali-G610 blue patches): the two reads of a bound
+            // attachment below (read-only depth; a color target the draw doesn't write) take a snapshot copy instead.
+            // On a tiler the attachment lives in tile memory during the pass, and the lighting read it wrong (walls,
+            // rocks and barricades lit as sky); SAVAGEWIND_NO_LIVE_DEPTH=1 (all live reads) fixed it but lost the terrain.
+            static int snap_depth = -1, snap_gbuf = -1;
+            if (snap_depth < 0) {
+                snap_depth = getenv("SAVAGEWIND_VK_SNAP_DEPTH") != NULL;
+                snap_gbuf = getenv("SAVAGEWIND_VK_SNAP_GBUFFER") != NULL;
+                if (snap_depth || snap_gbuf) LOG("[vk] bound attachments read through snapshots: depth %d, G-buffer %d\n", snap_depth, snap_gbuf);
+            }
+            if (!nolive && !snap_depth && t == st.rt.depth && depth_read_only()) {
                 if (pass_ds_written) { vk_end_pass(); st.rt_dirty = true; }
                 stat_feedback_live++;
                 feedback_tex[nfeedback] = t;
@@ -2935,7 +2945,7 @@ static void resolve_feedback(Prog *pr) {
                 // A color target this draw doesn't write (BOTW's light composites keep the G-buffer bound with its
                 // channel masks off and sample it): read as it is, like a read-only depth attachment. Written earlier
                 // in this pass: the pass ends first (a barrier), still no copy.
-                if (ci >= 0 && !draw_writes_color(pr, ci)) {
+                if (ci >= 0 && !draw_writes_color(pr, ci) && !snap_gbuf) {
                     if (pass_color_written & (1u << ci)) { vk_end_pass(); st.rt_dirty = true; }
                     stat_feedback_live++;
                     continue;
