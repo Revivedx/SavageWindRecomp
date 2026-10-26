@@ -2916,9 +2916,11 @@ static void resolve_feedback(Prog *pr) {
             // On a tiler the attachment lives in tile memory during the pass, and the lighting read it wrong (walls,
             // rocks and barricades lit as sky); SAVAGEWIND_NO_LIVE_DEPTH=1 (all live reads) fixed it but lost the terrain.
             static int snap_depth = -1, snap_gbuf = -1;
-            if (snap_depth < 0) {
-                snap_depth = getenv("SAVAGEWIND_VK_SNAP_DEPTH") != NULL;
-                snap_gbuf = getenv("SAVAGEWIND_VK_SNAP_GBUFFER") != NULL;
+            if (snap_depth < 0) {  // (on by default on Mali; =0 turns one off)
+                bool mali = strstr(g_vk.props.deviceName, "Mali") != NULL;
+                const char *d = getenv("SAVAGEWIND_VK_SNAP_DEPTH"), *g = getenv("SAVAGEWIND_VK_SNAP_GBUFFER");
+                snap_depth = d ? atoi(d) != 0 : mali;
+                snap_gbuf = g ? atoi(g) != 0 : mali;
                 if (snap_depth || snap_gbuf) LOG("[vk] bound attachments read through snapshots: depth %d, G-buffer %d\n", snap_depth, snap_gbuf);
             }
             if (!nolive && !snap_depth && t == st.rt.depth && depth_read_only()) {
