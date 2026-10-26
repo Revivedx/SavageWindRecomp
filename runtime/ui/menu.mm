@@ -1137,6 +1137,10 @@ void menu_tabs_draw(float scale, ImFont *font, ImFont *font_big, bool in_game, v
     g_font = f0, g_font_big = f1;
 }
 
+bool menu_render_needed(void) {
+    return g_open.load() || g_kbd.load() == 1 || g_sizes.load() || g_settings.perf_overlay != PERF_OFF;
+}
+
 #ifdef __APPLE__
 void menu_render(id<MTLDevice> dev, id<MTLCommandBuffer> cb, id<MTLTexture> target) {
     const double tw = target.width, th = target.height;
