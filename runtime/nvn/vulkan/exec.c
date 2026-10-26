@@ -1131,6 +1131,56 @@ static void feedback_layout_move(VkCommandBuffer cb, TexBackend *b, bool to_loop
     b->in_feedback_layout = to_loop;
 }
 
+// ---- Color targets a pass never draws into, left out of it (Mali-G610 / tilers; SAVAGEWIND_VK_DETACH=0: off, 1: on
+// elsewhere too). A tiler loads every attachment into tile memory when a pass begins and stores it all back when it
+// ends: BOTW's lighting passes keep the whole G-buffer bound (6-8 full-screen targets, channel masks off) and draw
+// into one of them, ~20 MB moved per pass for nothing. Which targets a pass writes is known only once its draws have
+// run, so it is remembered per pass (its targets, views and first fragment shader) and the next time that pass begins
+// the others are left out. A draw that would write one of them ends the pass first (the next one has it attached and
+// the memory remembers it), so a wrong guess costs a pass, not a picture. Left out, a target the pass samples is read
+// as the texture it then is (no snapshot copy).
+#define DET_TAB 8192
+static struct { uint64_t key; uint8_t written; bool used; } det_tab[DET_TAB];
+static uint64_t pass_key;
+static uint8_t pass_detached;
+static bool det_no_next;  // (a clear begins this pass: everything attached)
+static uint8_t det_written;  // color slots the open pass drew into or cleared
+static uint8_t det_draw;     // (during resolve_feedback) the slots the draw's pass leaves out: not attachments then
+static uint64_t stat_det_miss;
+static int det_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("SAVAGEWIND_VK_DETACH");
+        on = e ? atoi(e) != 0 : strstr(g_vk.props.deviceName, "Mali") != NULL;
+        LOG("[vk] color targets a pass doesn't draw into left out of it: %s\n", on ? "on" : "off");
+    }
+    return on;
+}
+static uint64_t det_key(void) {
+    uint64_t h = 1469598103934665603ull;
+    const uint8_t *p = (const uint8_t *)&st.rt;
+    for (size_t i = 0; i < sizeof st.rt; i++) h = (h ^ p[i]) * 1099511628211ull;
+    return (h ^ g_cur_fs_hash) * 0x9E3779B97F4A7C15ull | 1;
+}
+static uint8_t det_predict(uint64_t key) {  // the color slots to leave out of a pass with this key
+    if (!det_on() || det_no_next) return 0;
+    uint32_t slot = (uint32_t)(key >> 40) & (DET_TAB - 1);
+    if (!det_tab[slot].used || det_tab[slot].key != key) return 0;
+    uint8_t present = 0;
+    for (int i = 0; i < st.rt.ncolor && i < 8; i++) if (st.rt.color[i]) present |= (uint8_t)(1u << i);
+    uint8_t out = (uint8_t)(present & ~det_tab[slot].written);
+    if (out == present && !st.rt.depth) return 0;  // (never all of them: a pass with nothing attached is skipped, pass_void)
+    return out;
+}
+static void det_note(uint64_t key, uint8_t written) {
+    uint32_t slot = (uint32_t)(key >> 40) & (DET_TAB - 1);
+    if (det_tab[slot].used && det_tab[slot].key == key) det_tab[slot].written |= written;
+    else { det_tab[slot].key = key; det_tab[slot].written = written; det_tab[slot].used = true; }
+}
+// The slots left out of the pass the next draw lands in (the open one, or the one about to begin)
+static uint8_t det_current(void) { return in_pass && !st.rt_dirty ? pass_detached : det_predict(det_key()); }
+static uint64_t det_current_key(void) { return in_pass && !st.rt_dirty ? pass_key : det_key(); }
+
 static void vk_end_pass_at(int line);
 void vk_end_pass(void) { vk_end_pass_at(0); }
 #define vk_end_pass() vk_end_pass_at(__LINE__)
@@ -1140,6 +1190,7 @@ static void vk_end_pass_at(int line) {
     if (!pass_void) vkCmdEndRendering(vk_cmd());
     in_pass = false;
     pass_void = false;
+    det_note(pass_key, det_written);
     for (int i = 0; i < pass_nfbl; i++) feedback_layout_move(vk_cmd(), pass_fbl[i], false);
     pass_nfbl = 0;
     for (int i = 0; i < pass_nblock; i++) vk_block_flush(vk_cmd(), pass_block[i]);
@@ -1177,9 +1228,28 @@ static uint32_t level_extent(uint32_t v, uint32_t lv) { v >>= lv; return v ? v :
 
 static void begin_pass(void) {
     if (in_pass && !st.rt_dirty) return;
-    vk_end_pass();
+    uint64_t new_key = det_key();
+    uint8_t new_detached = det_predict(new_key);
+    det_no_next = false;
+    vk_end_pass();  // (notes what the pass that ends wrote under its own key)
+    pass_key = new_key;
+    pass_detached = new_detached;
+    if (det_on()) {
+        static uint64_t passes, slots, t0;
+        passes++;
+        slots += (uint64_t)__builtin_popcount(new_detached);
+        uint64_t now = SDL_GetTicksNS();
+        if (!t0) t0 = now;
+        if (now - t0 > 4000000000ull) {
+            LOG("[vk] passes %llu, color targets left out %llu, wrong guesses %llu (4 s)\n", (unsigned long long)passes,
+                (unsigned long long)slots, (unsigned long long)stat_det_miss);
+            passes = slots = stat_det_miss = 0;
+            t0 = now;
+        }
+    }
     pass_ds_written = false;
     pass_color_written = pass_color_unsynced = pass_feedback = 0;
+    det_written = 0;
     if (dl_on == 2) renderer_flush();  // (SAVAGEWIND_VK_DEVLOST_TRACE=2: each pass its own submission)
     // BOTW records a whole frame into one command list. Submitted only at its end, the GPU sat idle while the list was
     // translated (~13 ms in the open world) and only then rendered it, and the game waits for the GPU to finish a frame
@@ -1274,6 +1344,7 @@ static void begin_pass(void) {
             if (v && pass_nblock < 8) pass_block[pass_nblock++] = b;
         }
         if (!v) continue;
+        if (pass_detached & (1u << i)) continue;  // (left out: this pass doesn't draw into it, det_tab)
         {   // The same view in two slots (BOTW's G-buffer binds targets 1 / 3 again as 2 / 4, never writing those): attached
             // once. Twice is undefined in Vulkan, and a tiler (Mali) stores each slot's tile copy at the end of the pass, so
             // the unwritten slot put the loaded contents back over the drawn ones (the shrine's G-buffer: specks / tiles).
@@ -1530,7 +1601,15 @@ static VkPipeline clear_pipeline(int index, int kind, uint32_t mask, bool depth,
 
 static void clear(int index, int kind, const void *color, uint32_t mask, bool depth, float dval, bool stencil, uint32_t sval,
                   uint32_t smask) {
+    if (index >= 0 && index < 8) {  // (a color target left out of the open pass: the pass ends, the next has it)
+        if (in_pass && !st.rt_dirty && (pass_detached & (1u << index))) {
+            det_note(pass_key, (uint8_t)(1u << index));
+            st.rt_dirty = true;
+        }
+        if (!in_pass || st.rt_dirty) det_no_next = true;
+    }
     begin_pass();
+    if (index >= 0 && index < 8) det_written |= (uint8_t)(1u << index);
     if (pass_void) return;
     VkCommandBuffer cb = vk_cmd();
     vp_sx = pass_sx; vp_sy = pass_sy; vp_ox = 0; vp_oy = 0;
@@ -2765,7 +2844,7 @@ static NvnTexture *shadow_copy_source(const NvnTexture *t) {
 static bool is_attachment(NvnTexture *t) {
     if (!t) return false;
     if (t == st.rt.depth) return true;
-    for (int i = 0; i < st.rt.ncolor; i++) if (t == st.rt.color[i]) return true;
+    for (int i = 0; i < st.rt.ncolor; i++) if (t == st.rt.color[i] && !(det_draw & (1u << i))) return true;
     return false;
 }
 
@@ -4859,7 +4938,18 @@ static void draw_(CmdRec *r, bool indexed) {
     }
     fb_draws++;
     if (lst_on > 0) lst_draw(pr);
+    if (det_on()) {  // (a draw into a color target left out of the open pass: the pass ends, the next has it, det_tab)
+        uint8_t det = det_current(), want = 0;
+        for (int i = 0; i < st.rt.ncolor && i < 8; i++) if (st.rt.color[i] && draw_writes_color(pr, i)) want |= (uint8_t)(1u << i);
+        if (want & det) {
+            det_note(det_current_key(), want);
+            if (in_pass && !st.rt_dirty) st.rt_dirty = true;
+            stat_det_miss++;
+        }
+        det_draw = det_current();
+    }
     resolve_feedback(pr);
+    det_draw = 0;
     scene_post(pr, r);
     fg_draw(pr, r);
     snap_reason = "draw-depthwrite";
@@ -4878,6 +4968,7 @@ static void draw_(CmdRec *r, bool indexed) {
     for (int i = 0; i < st.rt.ncolor && i < 8; i++)
         if (st.rt.color[i] && draw_writes_color(pr, i)) {
             pass_color_written |= (uint8_t)(1u << i);
+            det_written |= (uint8_t)(1u << i);
             pass_color_unsynced |= (uint8_t)(1u << i);
         }
     VkCommandBuffer cb = vk_cmd();
