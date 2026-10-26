@@ -903,6 +903,21 @@ Pendiente:
      apagado). `SAVAGEWIND_NO_DEPTH_CLAMP=1` lo ignora (A/B). Metal (`renderer.m`): `setDepthClipMode`, sin compilar.
      La paleta de entorno (`fcb4` del shader de la máscara de sombras) pasa de la de interior a la de exterior en 60 s
      al salir del santuario y al cargar una partida afuera, y no vuelve a la de interior al regresar (ver abajo).
+   - Barreras por imagen entre pases (2026-10-26): cada pase empezaba con una barrera global (`ALL_COMMANDS`,
+     escrituras de memoria → lecturas y escrituras). Tras escrituras de attachments, RADV convierte una barrera global
+     en escribir e invalidar toda la L2, porque sin imagen no sabe si eran coherentes con ella
+     (`radv_src_access_flush` añade `AC_BARRIER_INV_L2`); con barreras por imagen no (`radv_image_is_l2_coherent`).
+     Si desde la última barrera completa solo hubo pases (ni copias, ni dispatch, ni subidas, ni escrituras a la
+     memoria del juego, ni lecturas de targets lineales: todo eso va tras una barrera completa, que marca
+     `bar_other`), la barrera del pase siguiente nombra las imágenes de esos pases (las de sus vistas de attachment,
+     tras `vk_view`) más una dependencia de ejecución para lo demás; una imagen diferida fuerza la completa.
+     `SAVAGEWIND_VK_FULL_PASS_BARRIER=1` vuelve a la barrera completa. La validación de sincronización
+     (`VK_LAYER_VALIDATE_SYNC=1` con `VK_LAYER_SYNCVAL_SHADER_ACCESSES_HEURISTIC=1`, mensajes con
+     `SAVAGEWIND_VK_VALIDATION=1`) da en las tres escenas los mismos avisos que antes (los del feedback loop del
+     terreno, dentro del pase) y ninguno entre pases; sin barreras de memoria entre pases da cientos. Medido sobre
+     `test` (36a02bc, con #108), 3+3 pasadas alternas sin límite de FPS a 1280x720 en una Radeon 660M: GPU por frame
+     −1,9 % en Kakariko, −1,1 % en el establo del río y −1,9 % en la puerta de la Ciudad Gerudo; FPS +1,3 % en
+     Kakariko (los otros dos, +1,1 y +0,8 %, dentro del ruido).
    - Fallos gráficos que quedaban en la Alpha 2 (2026-10-22):
      - Consulta de oclusión del sol: `ReportCounter` con `SAMPLES_PASSED` (tipo 1) devolvía siempre 0 muestras y
        `ResetCounter` no hacía nada. BOTW dibuja una vez por frame el disco del sol con prueba de profundidad y sin
