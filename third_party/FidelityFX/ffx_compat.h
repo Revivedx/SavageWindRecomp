@@ -4,10 +4,13 @@
 #pragma once
 #ifdef __cplusplus
 #include <cmath>
+#include <codecvt>
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
+#include <locale>
 #include <new>
+#include <string>
 #endif
 
 #if !defined(_MSC_VER)
@@ -37,5 +40,19 @@ static inline int strcpy_s(char *d, size_t n, const char *s) {
 template <size_t N> static inline int wcscpy_s(wchar_t (&d)[N], const wchar_t *s) { return wcscpy_s(d, N, s); }
 template <size_t N> static inline int strcpy_s(char (&d)[N], const char *s) { return strcpy_s(d, N, s); }
 #endif
+#define sprintf_s snprintf  // (the SDK passes the size and uses what it returns: the length written)
+#ifndef _countof
+#define _countof(a) (sizeof(a) / sizeof((a)[0]))  // (MSVC's and MinGW's stdlib.h have it)
 #endif
 #endif
+#endif
+
+// The contexts are opaque arrays of FFX_SDK_DEFAULT_CONTEXT_SIZE words, sized for Windows, where wchar_t is 2 bytes:
+// with Linux's 4-byte wchar_t the frame interpolation context's own part is 768,072 bytes (401,992 with 2-byte
+// wchar_t), past its 524,288 (a static assertion in ffx_frameinterpolation.cpp). Twice the room where wchar_t is wider.
+#include <FidelityFX/host/ffx_types.h>
+#if __SIZEOF_WCHAR_T__ > 2
+#undef FFX_SDK_DEFAULT_CONTEXT_SIZE
+#define FFX_SDK_DEFAULT_CONTEXT_SIZE (1024 * 256)
+#endif
+#define FFX_UNUSED(x) ((void)(x))  // (as ffx_util.h has it: ffx_message.cpp uses it through ffx_assert.h alone)

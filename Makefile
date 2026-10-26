@@ -172,7 +172,7 @@ $(B)/ffx/%.o: $(FFX)/sdk/src/%.cpp $(FFX)/ffx_compat.h
 	@mkdir -p $(dir $@)
 	$(CXX) -O2 -g -std=c++17 -w -include $(FFX)/ffx_compat.h $(FFX_INC) -I$(FFX)/sdk/include/FidelityFX/gpu $(DEPINC) -c $< -o $@
 $(B)/rt/nvn/vulkan/framegen.o: CXXFLAGS += -include $(FFX)/ffx_compat.h $(FFX_INC) -I$(FFX)/spirv
-$(B)/rt/nvn/vulkan/framegen.o: $(FFX)/spirv/ffx_shaders_vk.h
+$(B)/rt/nvn/vulkan/framegen.o: $(FFX)/spirv/ffx_shaders_vk.h $(FFX)/ffx_compat.h
 
 all: $(EXE) $(CONFIG_EXE) $(if $(strip $(GEN_SRC)),$(GAMELIB))  # (GEN_SRC is a space when there is no generated/)
 
