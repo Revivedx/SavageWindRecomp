@@ -338,7 +338,17 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     VkFormat vf = mf.vf;
     VkFormatFeatureFlags need = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
     b->astc_bw = b->astc_bh = 0;
-    if (!format_supports(vf, need)) {
+    b->bc4_cpu = false;
+    {   // SAVAGEWIND_VK_BC4_CPU=1: BC4 (the game's fonts, many sprites) decoded on the CPU into R8, to tell a driver's
+        // BC4 sampling apart from the rest of the path (the view's swizzle, the shaders)
+        static int bc4cpu = -1;
+        if (bc4cpu < 0) bc4cpu = getenv("SAVAGEWIND_VK_BC4_CPU") != NULL;
+        if (bc4cpu && (t->format == 0x49 || t->format == 0x4A) && t->layout.fmt && t->layout.fmt->bpb == 8) {
+            b->bc4_cpu = true;
+            vf = t->format == 0x4A ? VK_FORMAT_R8_SNORM : VK_FORMAT_R8_UNORM;
+        }
+    }
+    if (!b->bc4_cpu && !format_supports(vf, need)) {
         bool astc = vf >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && vf <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK;
         const FormatInfo *fi = t->layout.fmt;
         if (astc && fi && fi->bpb == 16) {  // desktop GPUs: decoded on the CPU into an RGBA8 image of the same colour space
@@ -819,7 +829,7 @@ static void upload_levels(NvnTexture *t, TexBackend *b, uint32_t level_mask) {
     const FormatInfo *fi = t->layout.fmt;
     VkFmt mf = fmt_of(t->format);
     if (!t->addr || t->target == 10 || !fi || !fi->bpb || !storage_readable(t, storage_size(t))) return;
-    if (b->format != mf.vf && !b->astc_bw) return;  // unsupported format: nothing sensible to copy
+    if (b->format != mf.vf && !b->astc_bw && !b->bc4_cpu) return;  // unsupported format: nothing sensible to copy
     VkCommandBuffer cb = vk_upload_cmd();
     uint32_t layers = t->layout.layers ? t->layout.layers : 1;
     if (layers > b->layers && b->depth == 1) layers = b->layers;
@@ -830,6 +840,41 @@ static void upload_levels(NvnTexture *t, TexBackend *b, uint32_t level_mask) {
         for (uint32_t lv = 0; lv < levels; lv++) {
             if (!((level_mask >> lv) & 1)) continue;
             LevelLayout l = tegra_level(&t->layout, lv);
+            if (b->bc4_cpu) {  // blocks -> linear block rows -> R8 texels (BC4: two endpoints, 3-bit indices)
+                const uint8_t *src = (const uint8_t *)(uintptr_t)t->addr + layer * layer_size + l.offset;
+                uint8_t *blocks = malloc((uint64_t)l.wb * l.hb * 8);
+                if (linear) for (uint32_t y = 0; y < l.hb; y++) memcpy(blocks + (uint64_t)y * l.wb * 8, src + (uint64_t)y * t->stride, l.wb * 8);
+                else tegra_deswizzle(src, blocks, l.wb, l.hb, 1, 8, l.block_height_log2, l.block_depth_log2);
+                uint32_t pw = l.wb * 4, ph = l.hb * 4;
+                VkSpan s = vk_transient((uint64_t)pw * ph, 16);
+                bool sn = t->format == 0x4A;
+                for (uint32_t by = 0; by < l.hb; by++)
+                    for (uint32_t bx = 0; bx < l.wb; bx++) {
+                        const uint8_t *k = blocks + ((uint64_t)by * l.wb + bx) * 8;
+                        int e0 = sn ? (int8_t)k[0] : k[0], e1 = sn ? (int8_t)k[1] : k[1];
+                        if (sn && e0 == -128) e0 = -127;
+                        if (sn && e1 == -128) e1 = -127;
+                        int pal[8] = {e0, e1};
+                        if (e0 > e1) for (int i = 1; i < 7; i++) pal[i + 1] = ((7 - i) * e0 + i * e1 + 3) / 7;
+                        else {
+                            for (int i = 1; i < 5; i++) pal[i + 1] = ((5 - i) * e0 + i * e1 + 2) / 5;
+                            pal[6] = sn ? -127 : 0;
+                            pal[7] = sn ? 127 : 255;
+                        }
+                        uint64_t bits = 0;
+                        for (int i = 0; i < 6; i++) bits |= (uint64_t)k[2 + i] << (8 * i);
+                        for (int i = 0; i < 16; i++) {
+                            int v = pal[(bits >> (3 * i)) & 7];
+                            ((uint8_t *)s.ptr)[(uint64_t)(by * 4 + i / 4) * pw + bx * 4 + i % 4] = (uint8_t)v;
+                        }
+                    }
+                free(blocks);
+                VkBufferImageCopy rg = {.bufferOffset = s.off, .bufferRowLength = pw, .bufferImageHeight = ph,
+                                        .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv, layer, 1},
+                                        .imageExtent = {l.w < level_w(b, lv) ? l.w : level_w(b, lv), l.h < level_h(b, lv) ? l.h : level_h(b, lv), 1}};
+                vkCmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+                continue;
+            }
             if (b->astc_bw) {  // blocks -> linear block rows -> RGBA8 texels
                 const uint8_t *src = (const uint8_t *)(uintptr_t)t->addr + layer * layer_size + l.offset;
                 uint8_t *blocks = malloc((uint64_t)l.wb * l.hb * 16);
