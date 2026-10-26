@@ -35,8 +35,10 @@ mouse, and its text and voices in any of its languages.
 ## Getting started (Alpha 3)
 
 1. Download from [Releases](https://github.com/Revivedx/SavageWindRecomp/releases):
-   - **Windows:** `SavageWind-0.3.0-alpha.3-windows.zip`. Extract it to a folder you can write to (not Program
-     Files): your game files, saves and settings are kept in that folder.
+   - **Windows:** `SavageWind-0.3.1-alpha.3-windows.zip`. Extract it to a folder you can write to (not Program
+     Files): your game files, saves and settings are kept in that folder. 0.3.1 is a hotfix for AMD and Intel
+     graphics on Windows (a black window in 0.3.0, [#85](https://github.com/Revivedx/SavageWindRecomp/issues/85)); on
+     NVIDIA it runs exactly as 0.3.0.
    - **Linux (x86-64, Steam Deck too):** `Savage_Wind-0.3.0-alpha.3-x86_64.AppImage`. Make it executable
      (`chmod +x`) and run it; your game files, saves and settings go to `~/.local/share/savagewind`. See
      [docs/linux.md](docs/linux.md).

@@ -2,6 +2,22 @@
 
 What changed in each Savage Wind release. The `test` branch holds what the next one will contain.
 
+## Alpha 3 hotfix (0.3.1-alpha.3, Windows) - 2026-10-25
+
+**For AMD and Intel graphics on Windows.** Since Alpha 3, AMD's and Intel's Windows drivers showed only a black window,
+the start screen included, where Alpha 2 drew ([#85](https://github.com/Revivedx/SavageWindRecomp/issues/85)). On
+those drivers Savage Wind goes back to Alpha 2's Vulkan setup: three newer features Alpha 3 turned on there
+(maintenance5, graphics pipeline libraries and attachment feedback loops) stay off.
+
+- **Nothing else changes.** NVIDIA on Windows and everything on Linux run exactly as in 0.3.0; Linux keeps the 0.3.0
+  AppImages.
+- **Updating:** replace the files of your 0.3.0 folder with the zip's. Your game files, the game code built at setup,
+  saves and settings stay: no new setup.
+- **Help us find the cause:** we have no Windows PC with AMD graphics. Each of the three features can be turned back on
+  for a test (`set SAVAGEWIND_VK_M5=1`, `set SAVAGEWIND_VK_GPL=1` or `set SAVAGEWIND_VK_FEEDBACK_LOOP=1` in a command
+  prompt, then start `savagewind.exe` from it). Tell us in #85 which one brings the black window back, with the
+  `savagewind.log`; the other two make the game faster and can then come back on for your GPU.
+
 ## Alpha 3 (0.3.0-alpha.3) - 2026-10-24
 
 **The first release for Linux, with a highly experimental build for ARM.** Alpha 3 supports game version 1.9.0. It
