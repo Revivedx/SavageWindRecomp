@@ -3576,21 +3576,28 @@ static VkDescriptorBufferInfo gmem_info(void) {
         off = 1;
     }
     if (gmem_buf) {
-        // One binding of the whole heap: past the driver's maxStorageBufferRange (Mali-G610: 2 GB, the heap 3 GB) the
-        // descriptor is invalid and the GPU faults reading through it. Bound up to the limit instead: what lies above
-        // reads as zero (robustBufferAccess), stores there are dropped.
-        uint64_t range = gmem_size, lim = g_vk.props.limits.maxStorageBufferRange;
-        if (range > lim) {
-            static bool told;
-            range = lim & ~0xFFFFull;
-            if (!told) told = true, LOG("[vk] shader global memory: the first %llu MB of the %llu MB heap (the driver's storage buffer limit)\n",
-                                         (unsigned long long)(range >> 20), (unsigned long long)(gmem_size >> 20));
-        }
+        // The heap's first GMEM_SPLIT bytes (GMEM_BUFFER_INDEX); the rest is the second binding (gmem_info_hi): one binding
+        // of all of it is past some drivers' maxStorageBufferRange (Mali-G610: 2 GB, the heap 3 GB)
+        uint64_t range = gmem_size < GMEM_SPLIT ? gmem_size : GMEM_SPLIT, lim = g_vk.props.limits.maxStorageBufferRange;
+        if (range > lim) range = lim & ~0xFFFFull;
         return (VkDescriptorBufferInfo){gmem_buf, 0, range};
     }
     static uint32_t zero[1024];
     VkSpan s = vk_transient_copy(zero, sizeof zero, 256);
     return (VkDescriptorBufferInfo){s.buf, s.off, sizeof zero};
+}
+
+// The heap past GMEM_SPLIT (GMEM2_BUFFER_INDEX), or a small zeroed buffer when it is no larger than that
+static VkDescriptorBufferInfo gmem_info_hi(void) {
+    VkDescriptorBufferInfo lo = gmem_info();  // (makes the import first where there is one)
+    if (gmem_buf && lo.buffer == gmem_buf && gmem_size > GMEM_SPLIT) {
+        uint64_t range = gmem_size - GMEM_SPLIT, lim = g_vk.props.limits.maxStorageBufferRange;
+        if (range > lim) range = lim & ~0xFFFFull;
+        return (VkDescriptorBufferInfo){gmem_buf, GMEM_SPLIT, range};
+    }
+    static uint32_t zero[1024];
+    VkSpan z = vk_transient_copy(zero, sizeof zero, 256);
+    return (VkDescriptorBufferInfo){z.buf, z.off, sizeof zero};
 }
 
 // Vertex / index data read in place from the imported guest heap (renderer.m bind_guest does the same with
@@ -3931,7 +3938,7 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
             bi[n].offset = 0;
             w[n].pBufferInfo = &bi[n];
         } else if (b->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
-            bi[n] = gmem_info();
+            bi[n] = b->binding == GMEM2_BUFFER_INDEX ? gmem_info_hi() : gmem_info();
             w[n].pBufferInfo = &bi[n];
         } else {
             continue;  // rscale / tint: written below, once the textures (and their scales) are known
