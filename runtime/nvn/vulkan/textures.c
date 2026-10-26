@@ -346,6 +346,9 @@ static void create_image(NvnTexture *t, TexBackend *b) {
         if (bc4cpu && (t->format == 0x49 || t->format == 0x4A) && t->layout.fmt && t->layout.fmt->bpb == 8) {
             b->bc4_cpu = true;
             vf = t->format == 0x4A ? VK_FORMAT_R8_SNORM : VK_FORMAT_R8_UNORM;
+            static int nlog;
+            if (nlog++ < 20) LOG("[vk] BC4 texture %ux%u (nvn %#x) at %llx: decoded on the CPU to R8\n", t->width, t->height,
+                                 t->format, (unsigned long long)t->addr);
         }
     }
     if (!b->bc4_cpu && !format_supports(vf, need)) {
@@ -869,6 +872,9 @@ static void upload_levels(NvnTexture *t, TexBackend *b, uint32_t level_mask) {
                         }
                     }
                 free(blocks);
+                static int nup;
+                if (nup++ < 20) LOG("[vk] BC4 upload %ux%u level %u layer %u: first texels %02x %02x %02x %02x\n", l.w, l.h, lv, layer,
+                                    ((uint8_t *)s.ptr)[0], ((uint8_t *)s.ptr)[1], ((uint8_t *)s.ptr)[2], ((uint8_t *)s.ptr)[3]);
                 VkBufferImageCopy rg = {.bufferOffset = s.off, .bufferRowLength = pw, .bufferImageHeight = ph,
                                         .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv, layer, 1},
                                         .imageExtent = {l.w < level_w(b, lv) ? l.w : level_w(b, lv), l.h < level_h(b, lv) ? l.h : level_h(b, lv), 1}};
