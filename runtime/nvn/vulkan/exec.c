@@ -3034,6 +3034,20 @@ static void resolve_feedback(Prog *pr) {
                     continue;
                 }
             }
+            // SAVAGEWIND_VK_FEEDBACK_ONCE=1: one snapshot of a target per frame, later draws that sample it get that one
+            // (they miss what the frame drew into it since). Each snapshot ends the pass and starts it again: on a tiler
+            // (Mali) the copies and restarts were most of the GPU's frame. For measuring, and where the effects allow.
+            static int once = -1;
+            static uint64_t snap_frame[8];
+            if (once < 0) {
+                once = getenv("SAVAGEWIND_VK_FEEDBACK_ONCE") != NULL;
+                if (once) LOG("[vk] feedback snapshots: one per target per frame\n");
+            }
+            if (!nosnap && once && si >= 0 && existing && snap_frame[si] == renderer_present_count() + 1) {
+                feedback_tex[nfeedback] = t;
+                feedback_view[nfeedback++] = vk_image_view(&existing->copy, VK_IMAGE_VIEW_TYPE_2D, src->format, 0, 1, 0, 1, id, sa);
+                continue;
+            }
             if (!nosnap && si >= 0 && (snap_ok[si] || self_write) && existing) {
                 feedback_tex[nfeedback] = t;
                 feedback_view[nfeedback++] = vk_image_view(&existing->copy, VK_IMAGE_VIEW_TYPE_2D, src->format, 0, 1, 0, 1, id, sa);
@@ -3081,6 +3095,7 @@ static void resolve_feedback(Prog *pr) {
             feedback_view[nfeedback++] = vk_image_view(dst, VK_IMAGE_VIEW_TYPE_2D, src->format, 0, 1, 0, 1, id, sa);
             if (si < 0) { static int rr; si = rr++ & 7; snap_tex[si] = t; }
             snap_ok[si] = true;
+            snap_frame[si] = renderer_present_count() + 1;  // (+1: 0 is never a frame's)
             st.rt_dirty = true;
         }
 }
