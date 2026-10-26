@@ -804,6 +804,15 @@ const char *renderer_stats(void) {
         for (int l = 0; l < 4096; l++)
             if (prof_end_line[l] > 20) { n = strlen(stats_text); snprintf(stats_text + n, sizeof stats_text - n, " %d:%u", l, prof_end_line[l]); }
         memset(prof_end_line, 0, sizeof prof_end_line);
+        RecStats rs;  // (record.c: the recorder thread's work and every wait on it, this interval)
+        rec_stats_take(&rs);
+        n = strlen(stats_text);
+        snprintf(stats_text + n, sizeof stats_text - n,
+                 " | recorder %s: %llu packets (%.1f MB) busy %.0f ms (%llu wakes) submit %.0f ms, waits: drain %llux %.1f ms,"
+                 " seq %llux %.1f ms, full %llux %.1f ms",
+                 rec_on() ? "on" : "off", (unsigned long long)rs.packets, rs.bytes / 1048576.0, rs.busy_ns / 1e6,
+                 (unsigned long long)rs.wakeups, rs.submit_ns / 1e6, (unsigned long long)rs.drains, rs.drain_ns / 1e6,
+                 (unsigned long long)rs.seq_waits, rs.seq_wait_ns / 1e6, (unsigned long long)rs.full_waits, rs.full_ns / 1e6);
         n = strlen(stats_text);
         snprintf(stats_text + n, sizeof stats_text - n, " | views created %llu", (unsigned long long)prof_views_created);
         n = strlen(stats_text);
