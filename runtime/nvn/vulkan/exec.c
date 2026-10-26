@@ -216,7 +216,12 @@ VkCommandBuffer vk_upload_cmd(void) {
     return s->upload;
 }
 
+// Pass barriers (begin_pass, SAVAGEWIND_VK_BARRIER_FRAG): GPU work outside passes (copies, dispatches, clears; each
+// preceded by a full barrier, below) or a draw that stores to memory may have written what a later pass's vertex stage
+// reads (vertex data, instance data a compute shader culled): the next pass begins behind a full barrier then.
+static bool vtx_hazard = true;
 void vk_full_barrier(VkCommandBuffer cb) {
+    vtx_hazard = true;  // (begin_pass clears it after its own)
     VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                            .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT, .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                            .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
@@ -1147,6 +1152,9 @@ static bool det_no_next;  // (a clear begins this pass: everything attached)
 static uint8_t det_written;  // color slots the open pass drew into or cleared
 static uint8_t det_draw;     // (during resolve_feedback) the slots the draw's pass leaves out: not attachments then
 static uint64_t stat_det_miss;
+static bool pass_frag_only;      // the open pass began behind a fragment-only barrier (SAVAGEWIND_VK_BARRIER_FRAG)
+static bool pass_vs_reads_next;  // the pass about to begin has a draw whose vertex stage reads textures / memory
+static uint64_t stat_frag_barriers, stat_frag_restarts;
 static int det_on(void) {
     static int on = -1;
     if (on < 0) {
@@ -1241,9 +1249,10 @@ static void begin_pass(void) {
         uint64_t now = SDL_GetTicksNS();
         if (!t0) t0 = now;
         if (now - t0 > 4000000000ull) {
-            LOG("[vk] passes %llu, color targets left out %llu, wrong guesses %llu (4 s)\n", (unsigned long long)passes,
-                (unsigned long long)slots, (unsigned long long)stat_det_miss);
-            passes = slots = stat_det_miss = 0;
+            LOG("[vk] passes %llu, color targets left out %llu, wrong guesses %llu; fragment-only barriers %llu, restarts %llu (4 s)\n",
+                (unsigned long long)passes, (unsigned long long)slots, (unsigned long long)stat_det_miss,
+                (unsigned long long)stat_frag_barriers, (unsigned long long)stat_frag_restarts);
+            passes = slots = stat_det_miss = stat_frag_barriers = stat_frag_restarts = 0;
             t0 = now;
         }
     }
@@ -1279,7 +1288,11 @@ static void begin_pass(void) {
     // two passes. Wrong where the pass's vertex stage reads what the previous work wrote (a measurement, not a fix).
     static int bfrag = -1;
     if (bfrag < 0) { bfrag = getenv("SAVAGEWIND_VK_BARRIER_FRAG") != NULL; if (bfrag) LOG("[vk] pass barriers hold back fragment work only (test)\n"); }
-    if (bfrag) {
+    bool frag_only = bfrag && !vtx_hazard && !pass_vs_reads_next;
+    pass_frag_only = frag_only;
+    pass_vs_reads_next = false;
+    if (frag_only) {
+        stat_frag_barriers++;
         VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                                .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
                                .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
@@ -1287,8 +1300,10 @@ static void begin_pass(void) {
                                .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
         VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
         vkCmdPipelineBarrier2(cb, &di);
-    } else
+    } else {
         vk_full_barrier(cb);  // passes, copies and dispatches see each other's results
+        vtx_hazard = false;
+    }
     {
         NvnTexture *t0n = st.rt.ncolor ? st.rt.color[0] : NULL;
         dl_note("pass %d color %ux%u fmt %#x depth %p", st.rt.ncolor, t0n ? t0n->width : 0, t0n ? t0n->height : 0, t0n ? t0n->format : 0,
@@ -3793,6 +3808,7 @@ static bool gw_add(uint64_t lo, uint64_t hi) {  // false: no room
 }
 
 static void gw_note(int stage) {  // a shader of this stage that stores to global memory was recorded
+    vtx_hazard = true;  // (the next pass's vertex stage may read it)
     static int hold = -1;
     if (hold < 0) hold = getenv("SAVAGEWIND_VK_GMEM_HOLD") != NULL;
     if (chunk_hold) return;  // (the rest of the list goes in one piece anyway)
@@ -4961,6 +4977,10 @@ static void draw_(CmdRec *r, bool indexed) {
             stat_det_miss++;
         }
         det_draw = det_current();
+    }
+    if (pr->vi->ntex > 0 || pr->vi->uses_gmem) {  // (its vertex stage reads what earlier GPU work may have written)
+        if (in_pass && !st.rt_dirty && pass_frag_only) { st.rt_dirty = true; stat_frag_restarts++; }
+        pass_vs_reads_next = true;  // (whichever pass begins next, also one resolve_feedback starts: a full barrier)
     }
     resolve_feedback(pr);
     det_draw = 0;
