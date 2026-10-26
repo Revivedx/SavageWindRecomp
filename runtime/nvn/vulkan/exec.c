@@ -1274,6 +1274,17 @@ static void begin_pass(void) {
             if (v && pass_nblock < 8) pass_block[pass_nblock++] = b;
         }
         if (!v) continue;
+        {   // The same view in two slots (BOTW's G-buffer binds targets 1 / 3 again as 2 / 4, never writing those): attached
+            // once. Twice is undefined in Vulkan, and a tiler (Mali) stores each slot's tile copy at the end of the pass, so
+            // the unwritten slot put the loaded contents back over the drawn ones (the shrine's G-buffer: specks / tiles).
+            bool dup = false;
+            for (int j = 0; j < i && !dup; j++) dup = ca[j].imageView == v;
+            if (dup) {
+                static int nlog;
+                if (nlog++ < 4) LOG("[vk] render target slot %d is slot %d again: attached once\n", i, i - 1);
+                continue;
+            }
+        }
         ca[i].imageView = v;
         ca[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
         ca[i].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
