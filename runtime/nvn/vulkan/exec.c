@@ -1155,6 +1155,7 @@ static uint64_t stat_det_miss;
 static bool pass_frag_only;      // the open pass began behind a fragment-only barrier (SAVAGEWIND_VK_BARRIER_FRAG)
 static bool pass_vs_reads_next;  // the pass about to begin has a draw whose vertex stage reads textures / memory
 static uint64_t stat_frag_barriers, stat_frag_restarts;
+static uint64_t pass_serial;  // passes begun
 static int det_on(void) {
     static int on = -1;
     if (on < 0) {
@@ -1242,6 +1243,7 @@ static void begin_pass(void) {
     vk_end_pass();  // (notes what the pass that ends wrote under its own key)
     pass_key = new_key;
     pass_detached = new_detached;
+    pass_serial++;
     if (det_on()) {
         static uint64_t passes, slots, t0;
         passes++;
@@ -3162,7 +3164,7 @@ static void resolve_feedback(Prog *pr) {
             // (they miss what the frame drew into it since). Each snapshot ends the pass and starts it again: on a tiler
             // (Mali) the copies and restarts were most of the GPU's frame. For measuring, and where the effects allow.
             static int once = -1;
-            static uint64_t snap_frame[8];
+            static uint64_t snap_frame[8], snap_pass[8];
             if (once < 0) {
                 once = getenv("SAVAGEWIND_VK_FEEDBACK_ONCE") != NULL;
                 if (once) LOG("[vk] feedback snapshots: one per target per frame\n");
@@ -3175,14 +3177,19 @@ static void resolve_feedback(Prog *pr) {
             // Mali (SAVAGEWIND_VK_SNAP_SAME_FRAME=0: off, 1: on elsewhere too): a snapshot is reused within its frame only.
             // Carried into the next one it was stale wherever the frame's own invalidations missed a change (puddles
             // white, reflections flickering as the camera turned).
-            static int same_frame = -1;
-            if (same_frame < 0) {
-                const char *e = getenv("SAVAGEWIND_VK_SNAP_SAME_FRAME");
-                same_frame = e ? atoi(e) != 0 : strstr(g_vk.props.deviceName, "Mali") != NULL;
-                LOG("[vk] feedback snapshots reused within their frame only: %s\n", same_frame ? "on" : "off");
+            // SAVAGEWIND_VK_SNAP_REUSE=pass (Mali's default): within the pass that follows it only; =frame: within its
+            // frame; =any: until a write invalidates it (elsewhere's default)
+            static int reuse = -1;
+            if (reuse < 0) {
+                const char *e = getenv("SAVAGEWIND_VK_SNAP_REUSE");
+                bool mali = strstr(g_vk.props.deviceName, "Mali") != NULL;
+                reuse = e ? (!strcmp(e, "pass") ? 2 : !strcmp(e, "frame") ? 1 : 0) : mali ? 2 : 0;
+                LOG("[vk] feedback snapshots reused: %s\n", reuse == 2 ? "within one pass" : reuse == 1 ? "within one frame" : "until written");
             }
+            uint64_t this_pass = in_pass && !st.rt_dirty ? pass_serial : pass_serial + 1;
             if (!nosnap && si >= 0 && (snap_ok[si] || self_write) && existing &&
-                (!same_frame || snap_frame[si] == renderer_present_count() + 1)) {
+                (reuse == 0 || (reuse == 1 && snap_frame[si] == renderer_present_count() + 1) ||
+                 (reuse == 2 && snap_pass[si] == this_pass))) {
                 feedback_tex[nfeedback] = t;
                 feedback_view[nfeedback++] = vk_image_view(&existing->copy, VK_IMAGE_VIEW_TYPE_2D, src->format, 0, 1, 0, 1, id, sa);
                 continue;
@@ -3230,6 +3237,7 @@ static void resolve_feedback(Prog *pr) {
             if (si < 0) { static int rr; si = rr++ & 7; snap_tex[si] = t; }
             snap_ok[si] = true;
             snap_frame[si] = renderer_present_count() + 1;  // (+1: 0 is never a frame's)
+            snap_pass[si] = pass_serial + 1;  // (the pass that begins next, after this one ends)
             st.rt_dirty = true;
         }
 }
