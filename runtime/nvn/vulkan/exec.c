@@ -3031,7 +3031,7 @@ static void resolve_feedback(Prog *pr) {
             if (snap_depth < 0) {  // (on by default on Mali; =0 turns one off)
                 bool mali = strstr(g_vk.props.deviceName, "Mali") != NULL;
                 const char *d = getenv("SAVAGEWIND_VK_SNAP_DEPTH"), *g = getenv("SAVAGEWIND_VK_SNAP_GBUFFER");
-                snap_depth = d ? atoi(d) != 0 : mali;
+                snap_depth = d ? atoi(d) != 0 : false;  // (not needed: the G-buffer half fixed the blue patches)
                 snap_gbuf = g ? atoi(g) != 0 : mali;
                 if (snap_depth || snap_gbuf) LOG("[vk] bound attachments read through snapshots: depth %d, G-buffer %d\n", snap_depth, snap_gbuf);
             }
@@ -3172,7 +3172,17 @@ static void resolve_feedback(Prog *pr) {
                 feedback_view[nfeedback++] = vk_image_view(&existing->copy, VK_IMAGE_VIEW_TYPE_2D, src->format, 0, 1, 0, 1, id, sa);
                 continue;
             }
-            if (!nosnap && si >= 0 && (snap_ok[si] || self_write) && existing) {
+            // Mali (SAVAGEWIND_VK_SNAP_SAME_FRAME=0: off, 1: on elsewhere too): a snapshot is reused within its frame only.
+            // Carried into the next one it was stale wherever the frame's own invalidations missed a change (puddles
+            // white, reflections flickering as the camera turned).
+            static int same_frame = -1;
+            if (same_frame < 0) {
+                const char *e = getenv("SAVAGEWIND_VK_SNAP_SAME_FRAME");
+                same_frame = e ? atoi(e) != 0 : strstr(g_vk.props.deviceName, "Mali") != NULL;
+                LOG("[vk] feedback snapshots reused within their frame only: %s\n", same_frame ? "on" : "off");
+            }
+            if (!nosnap && si >= 0 && (snap_ok[si] || self_write) && existing &&
+                (!same_frame || snap_frame[si] == renderer_present_count() + 1)) {
                 feedback_tex[nfeedback] = t;
                 feedback_view[nfeedback++] = vk_image_view(&existing->copy, VK_IMAGE_VIEW_TYPE_2D, src->format, 0, 1, 0, 1, id, sa);
                 continue;
