@@ -1287,7 +1287,11 @@ static void begin_pass(void) {
     // before it, but holds back only the new pass's fragment work, not its vertex / tiling work, so a tiler overlaps the
     // two passes. Wrong where the pass's vertex stage reads what the previous work wrote (a measurement, not a fix).
     static int bfrag = -1;
-    if (bfrag < 0) { bfrag = getenv("SAVAGEWIND_VK_BARRIER_FRAG") != NULL; if (bfrag) LOG("[vk] pass barriers hold back fragment work only (test)\n"); }
+    if (bfrag < 0) {  // (on by default on Mali; =0: off)
+        const char *e = getenv("SAVAGEWIND_VK_BARRIER_FRAG");
+        bfrag = e ? atoi(e) != 0 : strstr(g_vk.props.deviceName, "Mali") != NULL;
+        LOG("[vk] pass barriers hold back only fragment work where they can: %s\n", bfrag ? "on" : "off");
+    }
     bool frag_only = bfrag && !vtx_hazard && !pass_vs_reads_next;
     pass_frag_only = frag_only;
     pass_vs_reads_next = false;
