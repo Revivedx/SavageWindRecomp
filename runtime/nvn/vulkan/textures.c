@@ -341,8 +341,13 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     b->bc4_cpu = false;
     {   // SAVAGEWIND_VK_BC4_CPU=1: BC4 (the game's fonts, many sprites) decoded on the CPU into R8, to tell a driver's
         // BC4 sampling apart from the rest of the path (the view's swizzle, the shaders)
+        // On by default on Mali-G610: its own BC4 sampling came out as blocky garbage around text (NPCs' lines, the
+        // Game Over title); =0 turns it off.
         static int bc4cpu = -1;
-        if (bc4cpu < 0) bc4cpu = getenv("SAVAGEWIND_VK_BC4_CPU") != NULL;
+        if (bc4cpu < 0) {
+            const char *e = getenv("SAVAGEWIND_VK_BC4_CPU");
+            bc4cpu = e ? atoi(e) != 0 : strstr(g_vk.props.deviceName, "Mali") != NULL;
+        }
         if (bc4cpu && (t->format == 0x49 || t->format == 0x4A) && t->layout.fmt && t->layout.fmt->bpb == 8) {
             b->bc4_cpu = true;
             vf = t->format == 0x4A ? VK_FORMAT_R8_SNORM : VK_FORMAT_R8_UNORM;
