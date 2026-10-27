@@ -348,7 +348,7 @@ static void create_image(NvnTexture *t, TexBackend *b) {
             const char *e = getenv("SAVAGEWIND_VK_BC4_CPU");
             bc4cpu = e ? atoi(e) != 0 : strstr(g_vk.props.deviceName, "Mali") != NULL;
         }
-        if (bc4cpu && (t->format == 0x49 || t->format == 0x4A) && t->layout.fmt && t->layout.fmt->bpb == 8) {
+        if (bc4cpu && !b->gpu_bc4 && (t->format == 0x49 || t->format == 0x4A) && t->layout.fmt && t->layout.fmt->bpb == 8) {
             b->bc4_cpu = true;
             vf = t->format == 0x4A ? VK_FORMAT_R8_SNORM : VK_FORMAT_R8_UNORM;
             static int nlog;
@@ -1256,6 +1256,17 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
     TexBackend *b = vk_tex(t, render);
     if (!has_view) v = NULL;
     VkFormat fmt = b->format;
+    if (render && b->bc4_cpu && v && (v->setmask & 4) && !is_bc(fmt_of(v->format).vf)) {
+        // A BC4 texture the game encodes on the GPU (NPC speech bubbles, drawn into its blocks): the CPU decode reads
+        // guest memory the GPU never writes, so it goes back to a real BC4 image that block_view can fill
+        static int nlog;
+        if (nlog++ < 20) LOG("[vk] BC4 texture %ux%u at %llx drawn into: kept as BC4 on the GPU\n", t->width, t->height,
+                             (unsigned long long)t->addr);
+        b->gpu_bc4 = true;
+        destroy_image(b);
+        create_image(t, b);
+        b->gpu_owned = true;
+    }
     if (v && (v->setmask & 4) && !(b->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT))) {
         VkFormat vf = fmt_of(v->format).vf;
         if (vk_format(t->format) == b->format) fmt = vf;  // (fallback images keep their own format)

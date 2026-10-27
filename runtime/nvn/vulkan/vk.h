@@ -128,6 +128,7 @@ typedef struct TexBackend {
     // speech bubbles to BC4 on the GPU that way). Vulkan draws into no compressed image: the draw goes into this
     // block-sized image instead, copied into this one after the pass (textures.c block_view, vk_block_flush).
     struct TexBackend *block;
+    bool gpu_bc4;                // BC4 kept as BC4 though SAVAGEWIND_VK_BC4_CPU is on: the GPU draws into its blocks
     bool block_pending;          // (exec.c) the attachment view just made is block's: copy it after the pass
 } TexBackend;
 
