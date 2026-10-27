@@ -247,6 +247,21 @@ def _gui_speed(gen, a):
             f'  /* {a:#x}: str s0, [x8, #0xb20] (GUI speed) */')
 
 
+# MainShortCut's HoldShortCutBg starts P_Capture_00 transparent and has an alpha jump at frame 1. The screen
+# corrects that boundary only at frame == 1 (1.9.0 0x7000e26a38). The wall-time GUI
+# clock can present fractional opening frames below 1, or skip the exact value: the backdrop briefly turns black
+# (#173). Apply the same alpha correction once the animation has started, leaving frame 0 and stopped animations
+# alone. Keep the GUI clock unchanged so both the quick selectors and the other menus retain their normal speed.
+def _quick_menu_capture_alpha(gen, a):
+    w = _word(gen, a)
+    assert w & 0xff00001f == 0x54000001, hex(w)  # b.ne <skip alpha correction>
+    assert _word(gen, a - 4) == 0x1e212000 and _word(gen, a - 8) == 0x1e2e1001
+    target = a + sext((w >> 5) & 0x7ffff, 19) * 4
+    return ('{ union { uint32_t u; float f; } frame = { .u = (uint32_t)c->v[0] }; '
+            f'if (!(frame.f > 0.0f)) goto L_{target:x}; }} '
+            f'/* {a:#x}: b.ne (quick-menu capture alpha after animation starts) */')
+
+
 # Perspective projections' matrix (sead's PerspectiveProjection, its vtable +0x58; 1.8.2 0x7000da13f4): it reads
 # tan(fovy / 2) at +0xac and the aspect ratio at +0xb0 here. The runtime may change both before the matrix is built:
 # a 16:9 view widened to the window's shape (ultrawide: more to the sides, not stretched) and the field of view
@@ -406,6 +421,7 @@ PATCHES = {
     'yaz0_stream_ret': _yaz0_stream_ret,
     'vfr_ratio': _vfr_ratio,
     'gui_speed': _gui_speed,
+    'quick_menu_capture_alpha': _quick_menu_capture_alpha,
     'arrow_fall_gravity': _arrow_gravity,
     'persp_matrix': _persp_matrix,
     'persp_matrix_offset': _persp_matrix_offset,
