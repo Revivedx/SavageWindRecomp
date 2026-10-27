@@ -40,7 +40,7 @@ enum { TEXTYPE_1D, TEXTYPE_2D, TEXTYPE_3D, TEXTYPE_CUBE, TEXTYPE_2D_ARRAY, TEXTY
 typedef struct {
     uint8_t attr_kind[32];  // vertex inputs: 0 float, 1 signed int, 2 unsigned int, 3 / 4 signed / unsigned int
                             // the shader reads as float (NVN's *_I2F / *_UI2F formats)
-    uint8_t rt_kind[8];     // fragment outputs: 0 float, 1 signed int, 2 unsigned int
+    uint8_t rt_kind[8];     // fragment outputs: 0 float, 1 signed int, 2 unsigned int; 5 / 6 uint 16 / 8-bit, 7 / 8 sint 16 / 8-bit (translate.c)
     bool depth_minus_one;   // NVN depth mode [-1,1]: remap clip z
     bool flip_y;            // lower-left window origin
     uint32_t vs_out_mask;   // fragment: varyings the vertex shader provides
