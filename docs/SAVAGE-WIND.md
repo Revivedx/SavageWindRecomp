@@ -1266,6 +1266,80 @@ Se conserva todo lo genérico: el lifter AArch64 → C, el kernel HLE, IPC y ser
 con el backend Vulkan, el traductor de shaders Maxwell, ASTC, audio, la UI de ajustes y la
 compilación local con `zig cc`.
 
+## Heap invitado y memoria sparse de GPU
+
+En Windows, el juego pide un heap invitado de 3120 MiB. No se debe reducir a un límite estimado de VRAM: el código
+generado es código de CPU traducido, no un inventario estático de los recursos ni de las direcciones que leerán o
+escribirán los shaders. Limitar las páginas visibles a 1 GiB podría dejar lecturas sin datos o perder escrituras.
+
+Para GPUs compatibles, `SAVAGEWIND_VK_SPARSE_HEAP=1` conserva el espacio de direcciones completo del heap y crea un
+buffer Vulkan sparse virtual de hasta 3328 MiB. Las páginas confirmadas del heap se exponen por ventanas de 1 MiB
+(alineación sparse de 64 KiB), mediante importación de la memoria host ya existente y enlaces sparse; no se copian
+las páginas a un pool de VRAM separado. En una Intel UHD, la memoria de GPU es memoria del sistema compartida. El
+tamaño virtual del buffer y los bytes enlazados no significan que exista esa cantidad de VRAM dedicada ni que el
+contador de memoria compartida de Windows aumente en la misma cantidad.
+
+Las ventanas enlazadas quedan enlazadas hasta limpiar el backend: no hay política de desalojo ni recarga de páginas
+en este mecanismo. Las líneas `sparse guest heap batch-bound` indican enlaces de memoria nueva, no expulsiones y
+recargas. Solo se omite la validación de rango del sistema operativo cuando la tabla confirma que todas las ventanas
+del rango están enlazadas; los rangos no confirmados siguen el camino de compromiso y validación normal. Esta ruta
+evita repetir consultas caras de memoria sin cambiar el tamaño del heap ni asumir que cualquier rango es seguro.
+
+La prioridad Vulkan de memoria es independiente del heap sparse y está desactivada por defecto. Para probar la
+política de prioridad del driver en imágenes y en el heap denso importado, iniciar con
+`SAVAGEWIND_VK_MEMORY_PRIORITY=1`. Sin el flag, las imágenes usan el asignador normal de VMA y no se solicita
+prioridad para la memoria importada. `VK_EXT_memory_budget` permanece habilitada cuando existe: da información de
+presupuesto a VMA y se consulta para diagnosticar fallos de asignación; no habilita la política de prioridad.
+
+### Diagnóstico de rendimiento
+
+En las pruebas con BOTW 1.8.2 en una Intel UHD, la configuración aceptó el heap de 3120 MiB y llegó a gameplay.
+Con FSR 1 Ultra Performance la escena se renderizaba a 640x360 y se ampliaba a 1280x720. El log sin perfil de GPU
+se estabilizó aproximadamente en 22-25 FPS (con intervalos iniciales de 30 FPS). En esos intervalos de unos dos
+segundos, las estadísticas llegaron a alrededor de 130 000-150 000 draws, 650-750 MiB de cargas contabilizadas y
+900-1040 ms de esperas a la GPU. Son totales del intervalo, no valores por frame; las cargas contabilizadas tampoco
+son una medida directa del ancho de banda físico de la memoria. Cuando el juego ya estaba en la escena estable, las
+operaciones de importación y enlace sparse eran escasas o nulas aunque el FPS seguía bajo. Esto descarta el enlace
+sparse repetido como explicación suficiente del bajo rendimiento, pero no identifica por sí solo el cuello de
+botella entre trabajo de GPU, sincronización y trabajo del juego.
+
+Instrumentación disponible:
+
+- `SAVAGEWIND_GMEM_TRACE=1` añade instrumentación atómica a cada acceso de shader Vulkan al heap invitado y reserva
+  un mapa de páginas. Está desactivada por defecto porque puede afectar notablemente al rendimiento; úsala solo
+  para diagnóstico. Las páginas tocadas se imprimen durante la recuperación de un fallo de asignación de imágenes.
+  La caché de shaders y pipelines se separa automáticamente entre los modos con y sin traza.
+- `SAVAGEWIND_VK_PROF=1` añade desglose de tiempo CPU/GPU, preparación de draws, comprobaciones de heap, compilación,
+  esperas y contadores de importación/enlace sparse. Los cronómetros y las líneas `sparse guest heap batch-bound`
+  también están detrás de este flag; sin él, el heap sparse se comporta igual pero no emite esos diagnósticos.
+- `SAVAGEWIND_VK_PROF=2` deja los tiempos generales de listas, envío y GPU, sin la mayoría de cronómetros por draw.
+- `SAVAGEWIND_HITCH_MS=<ms>` cambia el umbral de `[hitch]` (50 ms por defecto), que compara backend, presentación
+  y tiempo restante. `[vk] t=...` resume estadísticas sobre un intervalo; no es la duración de un solo frame.
+- `SAVAGEWIND_GPUPROF_AT=<frame>[,<frame>...]` perfila los pases, dispatches y copias de los frames presentados
+  indicados y escribe líneas `[gpuprof]`. La consulta de resultados espera a la GPU y puede perturbar la ejecución;
+  no se debe usar para comparar FPS normal. Cada frame puede producir cientos de líneas.
+- `SAVAGEWIND_FNPROF=<desde>:<hasta>` cuenta entradas a funciones guest en un intervalo de frames y escribe
+  `build/fnprof.txt`; sus opciones `SAVAGEWIND_FNPROF_ARGS`, `SAVAGEWIND_FNPROF_BT` y relacionadas permiten
+  inspeccionar funciones concretas.
+
+Para medir el juego sin esos perfiles, quita las variables de la sesión de PowerShell antes de lanzarlo:
+
+```powershell
+Remove-Item Env:SAVAGEWIND_GPUPROF_AT -ErrorAction SilentlyContinue
+Remove-Item Env:SAVAGEWIND_VK_PROF -ErrorAction SilentlyContinue
+.\savagewind.exe
+```
+
+Si un `.bat` o lanzador vuelve a definirlas, quita también esas asignaciones.
+
+Los datos de un perfil deben leerse con su alcance: las estadísticas `[vk] t=...` agregan trabajo entre reportes,
+el campo `wait` acumula esperas por semáforos GPU y los timestamps por pase solo se obtienen con
+`SAVAGEWIND_GPUPROF_AT`. Un perfil anterior mostró dos intervalos de ~2,4 s mayormente fuera de `backend exec`, pero
+no determinó qué subsistema los causó. En otra captura seleccionada, los timestamps abarcaron ~33 ms entre la primera
+y la última marca; los pases individuales más largos rondaron 2,7 ms. Ese alcance no es por sí solo el tiempo total
+de frame ni señala un único pase responsable. Sigue pendiente separar el coste de renderizado y sincronización del
+trabajo de CPU del juego en una captura de gameplay estable.
+
 ## Módulos en memoria
 
 Las direcciones de los módulos del exefs se deciden en un solo lugar, `tools/layout.py`, igual que el

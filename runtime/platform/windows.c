@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <shellapi.h>
 #include <timeapi.h>
@@ -18,13 +19,69 @@
 // does not fault: such buffers must be inside committed regions.
 static uint64_t g_lo, g_hi;
 #define COMMIT_CHUNK 0x10000ull
+#define SPARSE_HEAP_MAX_PAGES (4ull * 1024 * 1024 * 1024 / COMMIT_CHUNK)
+#define SPARSE_HEAP_BITMAP_WORDS ((SPARSE_HEAP_MAX_PAGES + 63) / 64)
+static atomic_uint_fast64_t guest_commit_gen;
+static uint64_t sparse_heap_base, sparse_heap_size;
+static atomic_uint_fast64_t sparse_heap_pages[SPARSE_HEAP_BITMAP_WORDS];
 
-static bool lazy_commit(uint64_t a) {
+static void sparse_heap_note_commit(uint64_t addr, uint64_t size) {
+    if (!size || addr >= sparse_heap_base + sparse_heap_size ||
+        (addr < sparse_heap_base && size <= sparse_heap_base - addr)) return;
+    uint64_t end = addr + size;
+    if (end < addr || end > sparse_heap_base + sparse_heap_size) end = sparse_heap_base + sparse_heap_size;
+    uint64_t first = (addr < sparse_heap_base ? 0 : addr - sparse_heap_base) / COMMIT_CHUNK;
+    uint64_t last = (end - sparse_heap_base + COMMIT_CHUNK - 1) / COMMIT_CHUNK;
+    for (uint64_t page = first; page < last && page < SPARSE_HEAP_MAX_PAGES; page++)
+        atomic_fetch_or_explicit(&sparse_heap_pages[page / 64], 1ull << (page % 64), memory_order_relaxed);
+}
+
+static void sparse_heap_clear_pages(void) {
+    for (size_t i = 0; i < SPARSE_HEAP_BITMAP_WORDS; i++)
+        atomic_store_explicit(&sparse_heap_pages[i], 0, memory_order_relaxed);
+}
+
+static bool guest_page_allows_access(DWORD protect, ULONG_PTR access) {
+    if (protect & PAGE_GUARD) return false;
+    protect &= 0xFF;
+    if (access == 1)
+        return protect == PAGE_READWRITE || protect == PAGE_WRITECOPY ||
+               protect == PAGE_EXECUTE_READWRITE || protect == PAGE_EXECUTE_WRITECOPY;
+    if (access == 8)
+        return protect == PAGE_EXECUTE || protect == PAGE_EXECUTE_READ ||
+               protect == PAGE_EXECUTE_READWRITE || protect == PAGE_EXECUTE_WRITECOPY;
+    return protect == PAGE_READONLY || protect == PAGE_READWRITE || protect == PAGE_WRITECOPY ||
+           protect == PAGE_EXECUTE_READ || protect == PAGE_EXECUTE_READWRITE || protect == PAGE_EXECUTE_WRITECOPY;
+}
+
+bool plat_guest_sparse_heap_enabled(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *value = getenv("SAVAGEWIND_VK_SPARSE_HEAP");
+        enabled = value && !strcmp(value, "1");
+    }
+    return enabled != 0;
+}
+
+static bool lazy_commit(uint64_t a, ULONG_PTR access) {
     if (a < g_lo || a >= g_hi) return false;
     MEMORY_BASIC_INFORMATION mi;
-    if (!VirtualQuery((void *)(uintptr_t)a, &mi, sizeof mi) || mi.State != MEM_RESERVE) return false;
-    uint64_t base = a & ~(COMMIT_CHUNK - 1);
-    return VirtualAlloc((void *)(uintptr_t)base, COMMIT_CHUNK, MEM_COMMIT, PAGE_READWRITE) != NULL;
+    bool handled = false;
+    if (VirtualQuery((void *)(uintptr_t)a, &mi, sizeof mi)) {
+        if (mi.State == MEM_RESERVE) {
+            uint64_t base = a & ~(COMMIT_CHUNK - 1);
+            if (VirtualAlloc((void *)(uintptr_t)base, COMMIT_CHUNK, MEM_COMMIT, PAGE_READWRITE)) {
+                atomic_fetch_add_explicit(&guest_commit_gen, 1, memory_order_relaxed);
+                sparse_heap_note_commit(base, COMMIT_CHUNK);
+                handled = true;
+            } else if (VirtualQuery((void *)(uintptr_t)a, &mi, sizeof mi) && mi.State == MEM_COMMIT) {
+                handled = guest_page_allows_access(mi.Protect, access);
+            }
+        } else if (mi.State == MEM_COMMIT) {
+            handled = guest_page_allows_access(mi.Protect, access);
+        }
+    }
+    return handled;
 }
 
 static bool g_report_crashes;
@@ -52,7 +109,7 @@ static LONG CALLBACK vectored_handler(EXCEPTION_POINTERS *ep) {
     }
     if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || er->NumberParameters < 2) return EXCEPTION_CONTINUE_SEARCH;
     uint64_t fa = er->ExceptionInformation[1];
-    if (lazy_commit(fa)) return EXCEPTION_CONTINUE_EXECUTION;
+    if (lazy_commit(fa, er->ExceptionInformation[0])) return EXCEPTION_CONTINUE_EXECUTION;
     g_fault_is_write = er->ExceptionInformation[0] == 1;
     if (g_report_crashes && rt_fault_watch(fa, ep->ContextRecord->Rip)) {
         extern uint64_t rt_watch_step_page(uint64_t fa);  // runtime/dispatch.c: the page to close again, or 0
@@ -79,7 +136,13 @@ bool plat_reserve_guest(uint64_t lo, uint64_t hi) {
 
 // Decommit everything: the range stays reserved, and pages come back zeroed when committed again (lazily).
 bool plat_reset_guest(uint64_t lo, uint64_t hi) {
-    return VirtualFree((void *)(uintptr_t)lo, hi - lo, MEM_DECOMMIT) != 0;
+    bool ok = VirtualFree((void *)(uintptr_t)lo, hi - lo, MEM_DECOMMIT) != 0;
+    if (ok) {
+        atomic_fetch_add_explicit(&guest_commit_gen, 1, memory_order_relaxed);
+        if (lo < sparse_heap_base + sparse_heap_size && hi > sparse_heap_base)
+            sparse_heap_clear_pages();
+    }
+    return ok;
 }
 
 void plat_commit(uint64_t addr, uint64_t size) {
@@ -88,6 +151,49 @@ void plat_commit(uint64_t addr, uint64_t size) {
     if (!VirtualAlloc((void *)(uintptr_t)a, e - a, MEM_COMMIT, PAGE_READWRITE))
         fprintf(stderr, "[plat] commit %llx+%llx failed (%lu)\n", (unsigned long long)addr,
                 (unsigned long long)size, GetLastError());
+    else {
+        atomic_fetch_add_explicit(&guest_commit_gen, 1, memory_order_relaxed);
+        sparse_heap_note_commit(a, e - a);
+    }
+}
+
+uint64_t plat_guest_commit_generation(void) {
+    return atomic_load_explicit(&guest_commit_gen, memory_order_relaxed);
+}
+
+void plat_guest_sparse_heap_range(uint64_t base, uint64_t size) {
+    sparse_heap_base = base;
+    sparse_heap_size = size;
+    sparse_heap_clear_pages();
+}
+
+uint64_t plat_guest_sparse_heap_committed_word(uint64_t word) {
+    if (word >= SPARSE_HEAP_BITMAP_WORDS) return 0;
+    return atomic_load_explicit(&sparse_heap_pages[word], memory_order_relaxed);
+}
+
+bool plat_guest_commit_sparse_range(uint64_t addr, uint64_t size) {
+    if (!size || addr < g_lo || addr >= g_hi || size > g_hi - addr) return false;
+    uint64_t begin = addr & ~(COMMIT_CHUNK - 1);
+    uint64_t end = (addr + size + COMMIT_CHUNK - 1) & ~(COMMIT_CHUNK - 1);
+    if (end > g_hi) end = g_hi;
+    bool needs_commit = false;
+    for (uint64_t at = begin; at < end;) {
+        MEMORY_BASIC_INFORMATION mi;
+        if (!VirtualQuery((void *)(uintptr_t)at, &mi, sizeof mi) || !mi.RegionSize) return false;
+        if (mi.State != MEM_COMMIT) needs_commit = true;
+        uint64_t next = (uint64_t)(uintptr_t)mi.BaseAddress + mi.RegionSize;
+        at = next < end ? next : end;
+    }
+    if (!needs_commit) return true;
+    if (!VirtualAlloc((void *)(uintptr_t)begin, end - begin, MEM_COMMIT, PAGE_READWRITE)) {
+        fprintf(stderr, "[plat] sparse guest commit %llx+%llx failed (%lu)\n",
+                (unsigned long long)addr, (unsigned long long)size, GetLastError());
+        return false;
+    }
+    atomic_fetch_add_explicit(&guest_commit_gen, 1, memory_order_relaxed);
+    sparse_heap_note_commit(begin, end - begin);
+    return true;
 }
 
 int plat_protect(uint64_t addr, uint64_t size, int prot) {
@@ -318,6 +424,19 @@ void plat_print_backtrace(void) {
 static LONG WINAPI unhandled_filter(EXCEPTION_POINTERS *ep) {
     EXCEPTION_RECORD *er = ep->ExceptionRecord;
     uint64_t fa = er->NumberParameters >= 2 ? er->ExceptionInformation[1] : 0;
+    if (er->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && er->NumberParameters >= 2) {
+        MEMORY_BASIC_INFORMATION mi = {0};
+        const char *access = er->ExceptionInformation[0] == 0 ? "read" :
+                             er->ExceptionInformation[0] == 1 ? "write" :
+                             er->ExceptionInformation[0] == 8 ? "execute" : "unknown";
+        if (VirtualQuery((void *)(uintptr_t)fa, &mi, sizeof mi))
+            fprintf(stderr, "[plat] access violation: %s at %#llx, allocation %#llx+%#llx, state %#lx, protection %#lx\n",
+                    access, (unsigned long long)fa, (unsigned long long)(uintptr_t)mi.AllocationBase,
+                    (unsigned long long)mi.RegionSize, (unsigned long)mi.State, (unsigned long)mi.Protect);
+        else
+            fprintf(stderr, "[plat] access violation: %s at %#llx, VirtualQuery failed (%lu)\n",
+                    access, (unsigned long long)fa, GetLastError());
+    }
     char what[48];
     snprintf(what, sizeof what, "exception %08lx", er->ExceptionCode);
     // x64 has no link register: report the return address on top of the stack (valid at function entry).

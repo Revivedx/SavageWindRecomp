@@ -13,6 +13,7 @@
 #include "../astc.h"
 #include "../glyphs.h"
 #include "../renderer.h"
+#include "../../platform.h"
 
 // ================================================================== formats
 typedef struct { VkFormat vf; uint8_t expand_rgb, alpha_one; } VkFmt;
@@ -290,6 +291,37 @@ typedef struct { VkImage img; VmaAllocation mem; VkImageView view; uint64_t seq;
 static Dead *dead;
 static int ndead, cap_dead;
 static void views_forget(TexBackend *b);
+static void evict_idle_images(void);
+static bool image_format_fallback_error(VkResult r);
+static bool image_out_of_memory(VkResult r);
+static void log_memory_budget(const char *when);
+
+static VmaPool image_priority_pools[VK_MAX_MEMORY_TYPES];
+static bool image_priority_pool_failed[VK_MAX_MEMORY_TYPES];
+
+static VmaAllocationCreateInfo image_allocation_info(const VkImageCreateInfo *ci) {
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+#ifdef VK_EXT_memory_priority
+    if (!g_vk.memory_priority) return ai;
+    uint32_t memory_type;
+    VkResult r = vmaFindMemoryTypeIndexForImageInfo(g_vk.vma, ci, &ai, &memory_type);
+    if (r != VK_SUCCESS) {
+        LOG("[vk] could not select low-priority image memory type (%d); using default allocation\n", r);
+        return ai;
+    }
+    if (!image_priority_pools[memory_type] && !image_priority_pool_failed[memory_type]) {
+        VmaPoolCreateInfo pi = {.memoryTypeIndex = memory_type, .priority = 1.0f};
+        r = vmaCreatePool(g_vk.vma, &pi, &image_priority_pools[memory_type]);
+        if (r != VK_SUCCESS) {
+            image_priority_pool_failed[memory_type] = true;
+            LOG("[vk] could not create high-priority image memory pool for type %u (%d); using default allocation\n",
+                memory_type, r);
+        }
+    }
+    if (image_priority_pools[memory_type]) ai.pool = image_priority_pools[memory_type];
+#endif
+    return ai;
+}
 
 void vk_collect_dead(void) {
     uint64_t done = vk_completed_seq();
@@ -365,24 +397,50 @@ static void create_image(NvnTexture *t, TexBackend *b) {
                             .extent = {tw, th, depth}, .mipLevels = levels, .arrayLayers = layers,
                             .samples = (VkSampleCountFlagBits)samples, .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = usage,
                             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
-    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    const bool sparse = plat_guest_sparse_heap_enabled();
+    VmaAllocationCreateInfo ai = image_allocation_info(&ci);
     // 2D color targets may be sampled by the draws that render into them (exec.c resolve_feedback: a feedback loop)
     b->feedback_ok = g_vk.feedback_loop && type == VK_IMAGE_TYPE_2D && samples == 1 && (usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
     if (b->feedback_ok) ci.usage |= VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
     VkResult r = vmaCreateImage(g_vk.vma, &ci, &ai, &b->image, &b->mem, NULL);
-    if (r != VK_SUCCESS && b->feedback_ok) {
+    if (sparse && image_out_of_memory(r)) {
+        log_memory_budget("at image allocation failure");
+        LOG("[vk] image allocation ran out of memory (%ux%ux%u, %u layers, %u levels); draining GPU work and retrying\n",
+            tw, th, depth, layers, levels);
+        vk_gmem_trace_report();
+        renderer_flush();
+        vk_collect_dead();
+        evict_idle_images();
+        VmaAllocationCreateInfo retry_ai = ai;
+#ifdef VK_EXT_memory_priority
+        if (g_vk.memory_priority) {
+            retry_ai.pool = VK_NULL_HANDLE;
+            retry_ai.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+            retry_ai.priority = 1.0f;
+            LOG("[vk] retrying image as dedicated high-priority memory\n");
+        }
+#endif
+        r = vmaCreateImage(g_vk.vma, &ci, &retry_ai, &b->image, &b->mem, NULL);
+    }
+    if ((sparse ? image_format_fallback_error(r) : r != VK_SUCCESS) && b->feedback_ok) {
         b->feedback_ok = false;
         ci.usage &= ~VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
         r = vmaCreateImage(g_vk.vma, &ci, &ai, &b->image, &b->mem, NULL);
     }
-    if (r != VK_SUCCESS) {
+    if (sparse ? image_format_fallback_error(r) : r != VK_SUCCESS) {
         LOG("[vk] image creation failed (%d): nvn fmt %#x %ux%ux%u target %u\n", r, t->format, t->width, t->height, t->depth, t->target);
         ci.format = vf = VK_FORMAT_R8G8B8A8_UNORM;
         ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         ci.flags &= ~VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
-        VK_CHECK(vmaCreateImage(g_vk.vma, &ci, &ai, &b->image, &b->mem, NULL));
+        ai = image_allocation_info(&ci);
+        r = vmaCreateImage(g_vk.vma, &ci, &ai, &b->image, &b->mem, NULL);
         depthfmt = false;
+    }
+    if (r != VK_SUCCESS) {
+        if (sparse && image_out_of_memory(r)) log_memory_budget("after allocation retry failed");
+        if (sparse) LOG("[vk] image creation failed (%d): nvn fmt %#x %ux%ux%u target %u\n", r, t->format, t->width, t->height, t->depth, t->target);
+        VK_CHECK(r);
     }
     static uint64_t serials;
     b->serial = __atomic_add_fetch(&serials, 1, __ATOMIC_RELAXED);
@@ -430,6 +488,30 @@ void vk_dl_note_upload(void *img, uint32_t w, uint32_t h, uint32_t lv);  // (exe
 
 static uint32_t level_w(const TexBackend *b, uint32_t lv) { uint32_t v = b->width >> lv; return v ? v : 1; }
 static uint32_t level_h(const TexBackend *b, uint32_t lv) { uint32_t v = b->height >> lv; return v ? v : 1; }
+
+static bool image_format_fallback_error(VkResult r) {
+    return r == VK_ERROR_FORMAT_NOT_SUPPORTED || r == VK_ERROR_FEATURE_NOT_PRESENT;
+}
+
+static bool image_out_of_memory(VkResult r) {
+    return r == VK_ERROR_OUT_OF_DEVICE_MEMORY || r == VK_ERROR_OUT_OF_HOST_MEMORY;
+}
+
+static void log_memory_budget(const char *when) {
+    VkPhysicalDeviceMemoryProperties mp;
+    VmaBudget budgets[VK_MAX_MEMORY_HEAPS] = {0};
+    vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
+    vmaGetHeapBudgets(g_vk.vma, budgets);
+    LOG("[vk] memory budget %s (VK_EXT_memory_budget %s)\n", when, g_vk.memory_budget ? "enabled" : "unavailable; VMA estimates");
+    for (uint32_t i = 0; i < mp.memoryHeapCount; i++) {
+        LOG("[vk]   heap %u flags %#x (device-local flag %s): size %llu MB, budget %llu MB, usage %llu MB; "
+            "VMA blocks %llu MB, allocations %llu MB\n",
+            i, mp.memoryHeaps[i].flags, (mp.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) ? "yes" : "no",
+            (unsigned long long)(mp.memoryHeaps[i].size >> 20), (unsigned long long)(budgets[i].budget >> 20),
+            (unsigned long long)(budgets[i].usage >> 20), (unsigned long long)(budgets[i].statistics.blockBytes >> 20),
+            (unsigned long long)(budgets[i].statistics.allocationBytes >> 20));
+    }
+}
 
 static void destroy_image(TexBackend *b) {
     if (b->block) {
@@ -1084,6 +1166,27 @@ static void views_forget(TexBackend *b) {
     vk_view_gen++;
     for (int i = 0; i < VIEW_TAB; i++)
         if (view_tab[i].b == b) { defer((Dead){.view = view_tab[i].view}); view_tab[i].b = NULL; view_tab[i].view = VK_NULL_HANDLE; }
+}
+
+static void evict_idle_images(void) {
+    for (int i = g_nidle - 1; i >= 0; i--) {
+        TexBackend *b = g_idle[i];
+        if (b->gpu_owned || b->kept || b->pending_rgba) continue;
+        // The caller drained the GPU; these unreferenced images can be rebuilt from guest memory.
+        vk_view_gen++;
+        for (int j = 0; j < VIEW_TAB; j++)
+            if (view_tab[j].b == b) {
+                vkDestroyImageView(g_vk.dev, view_tab[j].view, NULL);
+                view_tab[j].b = NULL;
+                view_tab[j].view = VK_NULL_HANDLE;
+            }
+        keyed_remove(b);
+        idle_remove(b);
+        images_remove(b);
+        if (b->image) vmaDestroyImage(g_vk.vma, b->image, b->mem);
+        free(b->pending_rgba);
+        free(b);
+    }
 }
 
 VkImageView vk_image_view(TexBackend *b, VkImageViewType type, VkFormat fmt, uint32_t lv0, uint32_t nlv, uint32_t ly0,

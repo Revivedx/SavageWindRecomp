@@ -23,6 +23,14 @@ bool plat_reserve_guest(uint64_t lo, uint64_t hi);
 void plat_commit(uint64_t addr, uint64_t size);
 // In-place reboot: every page of [lo, hi) back to zero (and unbacked), the window still claimed.
 bool plat_reset_guest(uint64_t lo, uint64_t hi);
+// Vulkan sparse guest-heap backing: report committed 64 KiB pages in a reserved guest range.
+bool plat_guest_sparse_heap_enabled(void);
+#ifdef _WIN32
+uint64_t plat_guest_commit_generation(void);
+void plat_guest_sparse_heap_range(uint64_t base, uint64_t size);
+uint64_t plat_guest_sparse_heap_committed_word(uint64_t word);
+bool plat_guest_commit_sparse_range(uint64_t addr, uint64_t size);
+#endif
 enum { PLAT_PROT_NONE = 0, PLAT_PROT_READ = 1, PLAT_PROT_RW = 3 };
 int plat_protect(uint64_t addr, uint64_t size, int prot);  // 0 on success
 #define PLAT_PAGE 0x4000ull  // largest page size we deal with (macOS 16K; multiple of Windows' 4K)
