@@ -2348,6 +2348,11 @@ static VkStencilOp stencil_op(uint8_t o) {
     }
 }
 
+// The format a colour target is drawn in: its view's when the view sets one (BOTW draws its NPC speech bubbles into a
+// BC4 texture through an RGBA16 UINT view of its blocks: the shader has to write integers)
+static uint32_t rt_format(int i) {
+    return st.rt.has_cview[i] && (st.rt.cview[i].setmask & 4) && st.rt.cview[i].format ? st.rt.cview[i].format : st.rt.color[i]->format;
+}
 static int rt_kind(uint32_t f) {
     switch (f) {
     case 0x03: case 0x08: case 0x0B: case 0x0F: case 0x14: case 0x17: case 0x27: case 0x2C: case 0x2F: case 0x3E: return 2;
@@ -4867,7 +4872,7 @@ static void draw_(CmdRec *r, bool indexed) {
         vkey.flip_y = fkey.flip_y = origin == 0;
         vkey.depth_minus_one = dmode == 0;
         for (int i = 0; i < st.nattrib; i++) vkey.attr_kind[i] = (uint8_t)attr_kind(st.attrib[i] & 0xFF);
-        for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) fkey.rt_kind[i] = (uint8_t)rt_kind(st.rt.color[i]->format);
+        for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) fkey.rt_kind[i] = (uint8_t)rt_kind(rt_format(i));
         pr = get_program(st.program, &vkey, &fkey);
         pm.gen = key_gen; pm.np = st.program; pm.origin = origin; pm.dmode = dmode; pm.pr = pr;
     }
@@ -5084,7 +5089,7 @@ static void draw_(CmdRec *r, bool indexed) {
         // Targets the fragment shader doesn't output keep their contents on Metal, but are undefined in Vulkan
         // (NVIDIA writes black): mask them. Foliage depth pre-passes left black silhouettes (user 2026-10-08).
         k.s.write_mask[i] = ((pr->fi->out_mask >> (i * 4)) & 0xF) ? (st.channel_mask >> (i * 4)) & 0xF : 0;
-        if (((st.color_state[0] >> i) & 1) && !rt_kind(st.rt.color[i]->format)) {
+        if (((st.color_state[0] >> i) & 1) && !rt_kind(rt_format(i))) {
             k.s.blend_on |= (uint8_t)(1u << i);
             memcpy(k.s.blend[i] + 1, st.blend[i] + 1, 6);  // (the factors and ops; 0 is the target index, 7 padding)
         }
