@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "vk.h"
+#include "shaders.h"
 #include "../../settings.h"
 #include "../astc.h"
 #include "../glyphs.h"
@@ -1240,14 +1241,121 @@ static VkImageView block_view(TexBackend *b, VkFormat fmt) {
 }
 
 // A texel of b->block is a block of b: an image copy between the two formats moves texels into blocks as they are
+static bool bc4_decode(VkCommandBuffer cb, TexBackend *b);
 void vk_block_flush(VkCommandBuffer cb, TexBackend *b) {
     TexBackend *s = b->block;
     if (!s) return;
+    if (b->bc4_cpu) { bc4_decode(cb, b); return; }
     vk_full_barrier(cb);
     VkImageCopy c = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                      .extent = {s->width, s->height, 1}};
     vkCmdCopyImage(cb, s->image, VK_IMAGE_LAYOUT_GENERAL, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
     vk_full_barrier(cb);
+}
+
+// BC4 blocks drawn by the GPU (b->block, a texel a block) -> b's R8 texels, on the GPU: the blocks copied into a scratch
+// buffer, a compute shader writes their texels (one uint a block row) after them, copied into b. Mali never decodes BC4.
+static struct { bool tried, ok; VkBuffer buf; VmaAllocation mem; VkDescriptorSetLayout sl; VkPipelineLayout pl;
+                VkPipeline pipe; VkDescriptorPool pool; VkDescriptorSet set; } g_bc4d;
+#define BC4D_SIZE (6u << 20)
+static const char *BC4D_SRC =
+    "#version 450\n"
+    "layout(local_size_x = 8, local_size_y = 8) in;\n"
+    "layout(std430, binding = 0) buffer B { uint d[]; };\n"
+    "layout(push_constant) uniform P { uint bw, bh, out_off, snorm; } p;\n"
+    "int endp(uint v) { return p.snorm != 0u ? max(int(v << 24) >> 24, -127) : int(v); }\n"
+    "void main() {\n"
+    "  uvec2 k = gl_GlobalInvocationID.xy;\n"
+    "  if (k.x >= p.bw || k.y >= p.bh) return;\n"
+    "  uint i = 2u * (k.y * p.bw + k.x), lo = d[i], hi = d[i + 1u];\n"
+    "  int e0 = endp(lo & 255u), e1 = endp((lo >> 8) & 255u);\n"
+    "  int pal[8];\n"
+    "  pal[0] = e0; pal[1] = e1;\n"
+    "  if (e0 > e1) { for (int j = 1; j < 7; j++) pal[j + 1] = ((7 - j) * e0 + j * e1 + 3) / 7; }\n"
+    "  else { for (int j = 1; j < 5; j++) pal[j + 1] = ((5 - j) * e0 + j * e1 + 2) / 5;\n"
+    "         pal[6] = p.snorm != 0u ? -127 : 0; pal[7] = p.snorm != 0u ? 127 : 255; }\n"
+    "  for (uint r = 0u; r < 4u; r++) {\n"
+    "    uint row = 0u;\n"
+    "    for (uint c = 0u; c < 4u; c++) {\n"
+    "      uint pos = 16u + 3u * (r * 4u + c), ix;\n"
+    "      if (pos + 3u <= 32u) ix = (lo >> pos) & 7u;\n"
+    "      else if (pos >= 32u) ix = (hi >> (pos - 32u)) & 7u;\n"
+    "      else ix = ((lo >> pos) | (hi << (32u - pos))) & 7u;\n"
+    "      row |= (uint(pal[ix]) & 255u) << (8u * c);\n"
+    "    }\n"
+    "    d[p.out_off + (k.y * 4u + r) * p.bw + k.x] = row;\n"
+    "  }\n"
+    "}\n";
+
+static bool bc4d_init(void) {
+    if (g_bc4d.tried) return g_bc4d.ok;
+    g_bc4d.tried = true;
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = BC4D_SIZE,
+                             .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                      VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    if (vmaCreateBuffer(g_vk.vma, &bi, &ai, &g_bc4d.buf, &g_bc4d.mem, NULL) != VK_SUCCESS) goto fail;
+    VkDescriptorSetLayoutBinding lb = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL};
+    VkDescriptorSetLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &lb};
+    if (vkCreateDescriptorSetLayout(g_vk.dev, &li, NULL, &g_bc4d.sl) != VK_SUCCESS) goto fail;
+    VkPushConstantRange pr = {VK_SHADER_STAGE_COMPUTE_BIT, 0, 16};
+    VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &g_bc4d.sl,
+                                      .pushConstantRangeCount = 1, .pPushConstantRanges = &pr};
+    if (vkCreatePipelineLayout(g_vk.dev, &pli, NULL, &g_bc4d.pl) != VK_SUCCESS) goto fail;
+    VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
+    VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = &ps};
+    if (vkCreateDescriptorPool(g_vk.dev, &dpi, NULL, &g_bc4d.pool) != VK_SUCCESS) goto fail;
+    VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = g_bc4d.pool,
+                                       .descriptorSetCount = 1, .pSetLayouts = &g_bc4d.sl};
+    if (vkAllocateDescriptorSets(g_vk.dev, &dai, &g_bc4d.set) != VK_SUCCESS) goto fail;
+    VkDescriptorBufferInfo dbi = {g_bc4d.buf, 0, VK_WHOLE_SIZE};
+    VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = g_bc4d.set, .dstBinding = 0, .descriptorCount = 1,
+                              .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &dbi};
+    vkUpdateDescriptorSets(g_vk.dev, 1, &w, 0, NULL);
+    size_t n = 0;
+    uint32_t *spv = vk_glsl_to_spirv(BC4D_SRC, STAGE_COMPUTE, "bc4-decode", &n);
+    if (!spv) goto fail;
+    VkShaderModule m = vk_module(spv, n);
+    free(spv);
+    if (!m) goto fail;
+    VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+                                      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main"},
+                                      .layout = g_bc4d.pl};
+    VkResult r = vkCreateComputePipelines(g_vk.dev, VK_NULL_HANDLE, 1, &ci, NULL, &g_bc4d.pipe);
+    vkDestroyShaderModule(g_vk.dev, m, NULL);
+    if (r != VK_SUCCESS) goto fail;
+    g_bc4d.ok = true;
+    LOG("[vk] BC4 drawn by the GPU: decoded on the GPU (compute)\n");
+    return true;
+fail:
+    LOG("[vk] BC4 GPU decoder unavailable: BC4 textures the GPU draws into stay empty\n");
+    return false;
+}
+
+static bool bc4_decode(VkCommandBuffer cb, TexBackend *b) {
+    TexBackend *s = b->block;
+    uint32_t bw = s->width, bh = s->height;
+    uint64_t in = (uint64_t)bw * bh * 8, out = (uint64_t)bw * bh * 16;
+    if (!bc4d_init() || in + out > BC4D_SIZE) return false;
+    vk_full_barrier(cb);
+    VkBufferImageCopy c1 = {.bufferOffset = 0, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {bw, bh, 1}};
+    vkCmdCopyImageToBuffer(cb, s->image, VK_IMAGE_LAYOUT_GENERAL, g_bc4d.buf, 1, &c1);
+    vk_full_barrier(cb);
+    uint32_t pc[4] = {bw, bh, (uint32_t)(in / 4), b->format == VK_FORMAT_R8_SNORM};
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_bc4d.pipe);
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_bc4d.pl, 0, 1, &g_bc4d.set, 0, NULL);
+    vkCmdPushConstants(cb, g_bc4d.pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, pc);
+    vkCmdDispatch(cb, (bw + 7) / 8, (bh + 7) / 8, 1);
+    vk_full_barrier(cb);
+    VkBufferImageCopy c2 = {.bufferOffset = in, .bufferRowLength = bw * 4, .bufferImageHeight = bh * 4,
+                            .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {b->width, b->height, 1}};
+    vkCmdCopyBufferToImage(cb, g_bc4d.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &c2);
+    vk_full_barrier(cb);
+    vk_dyn_forget();  // (the compute pipeline bound in the main command buffer)
+    static int nlog;
+    if (nlog++ < 10) LOG("[vk] BC4 decode on the GPU: %ux%u (%ux%u blocks)\n", b->width, b->height, bw, bh);
+    return true;
 }
 
 // render: attachment view (one level, one layer). Otherwise a sampled view of type want_textype (TEXTYPE_*),
@@ -1257,15 +1365,22 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
     if (!has_view) v = NULL;
     VkFormat fmt = b->format;
     if (render && b->bc4_cpu && v && (v->setmask & 4) && !is_bc(fmt_of(v->format).vf)) {
-        // A BC4 texture the game encodes on the GPU (NPC speech bubbles, drawn into its blocks): the CPU decode reads
-        // guest memory the GPU never writes, so it goes back to a real BC4 image that block_view can fill
+        // A BC4 texture the game encodes on the GPU (NPC speech bubbles: drawn into its blocks). The draw goes into a
+        // block-sized image, and vk_block_flush decodes it into this R8 image on the GPU (bc4_decode): Mali's own BC4
+        // never comes into it. SAVAGEWIND_VK_BC4_DRAWN=bc4: a real BC4 image instead (copied into, Mali samples it).
+        static int as_bc4 = -1;
+        if (as_bc4 < 0) as_bc4 = getenv("SAVAGEWIND_VK_BC4_DRAWN") && !strcmp(getenv("SAVAGEWIND_VK_BC4_DRAWN"), "bc4");
         static int nlog;
-        if (nlog++ < 20) LOG("[vk] BC4 texture %ux%u at %llx drawn into: kept as BC4 on the GPU\n", t->width, t->height,
-                             (unsigned long long)t->addr);
-        b->gpu_bc4 = true;
-        destroy_image(b);
-        create_image(t, b);
-        b->gpu_owned = true;
+        if (nlog++ < 20) LOG("[vk] BC4 texture %ux%u at %llx drawn into: %s\n", t->width, t->height, (unsigned long long)t->addr,
+                             as_bc4 ? "kept as BC4 on the GPU" : "decoded on the GPU to R8");
+        if (as_bc4) {
+            b->gpu_bc4 = true;
+            destroy_image(b);
+            create_image(t, b);
+            b->gpu_owned = true;
+        } else if (b->levels >= 1 && b->layers == 1 && b->depth == 1 && !((v->setmask & 1) && v->base_level)) {
+            return block_view(b, fmt_of(v->format).vf);
+        }
     }
     if (v && (v->setmask & 4) && !(b->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT))) {
         VkFormat vf = fmt_of(v->format).vf;
