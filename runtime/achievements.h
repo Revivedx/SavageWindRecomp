@@ -25,6 +25,9 @@ typedef enum {
     ACH_SUM,    // the values of the names in `list` added up (enemy defeat counters): reach min
     ACH_STR,    // a string array in the save (horse names): how many of its slots are filled, or (with `list`) equal one of the
                 // names in `list` (ignoring case); `flag` names the array (or "#<hex crc32>"), `first` = entries per slot
+    ACH_ANY,    // one of the groups in `list` complete: each is a comma-separated list of names, all >= 1 (an armor set's
+                // three pieces); progress is the most of one group
+    ACH_META,   // every other achievement unlocked: not from the save, from what the playthrough has (ach_update)
 } AchKind;
 
 typedef struct {
@@ -64,22 +67,25 @@ bool ach_eval(const AchDef *d, const AchSave *s, uint32_t *cur, uint32_t *target
 void ach_def_flags(const AchDef *d, void (*cb)(const char *name, void *user), void *user);
 
 // ---- what has been earned ----
-void ach_state_load(const char *path);         // reads path (missing = nothing earned yet); later changes are saved there (per save)
+void ach_state_load(const char *path);         // reads path (missing = nothing earned yet); later changes are saved there (per save file)
 void ach_set_blocked(bool blocked);            // true: progress is tracked but nothing unlocks (test warps, future assists)
-// Achievements belong to a playthrough, not to the player. The game keeps one per profile: the folder that holds the numbered
-// slots (autosaves, manual saves), e.g. save/save_1 for save/save_1/0/game_data.sav. What a playthrough earned stays
-// earned and is announced once, whichever of its saves is loaded; a new game starts over. What the menu and ach_info show
-// is the playthrough being played: the one whose game_data.sav the game opened last (ach_set_active), or failing that the
-// one read last.
-void ach_game_key(const char *save_path, char *out, size_t n);  // the playthrough a game_data.sav belongs to (its profile folder)
-void ach_game_gone(const char *save_path);   // every save of that playthrough was deleted (a new game): it starts over
-void ach_set_active(const char *save_path);  // the game opened this game_data.sav (to load or to write it)
-// Checks every achievement against the contents of the save at save_path: new ones unlock (time `now`), are kept and, if
-// its playthrough is the one being played, queued as toasts. A save with no progress at all resets the playthrough.
-// Returns how many toasts that queued.
+// Achievements belong to a save: each game_data.sav has those its contents meet (a playthrough's progress only adds up).
+// What the menu and ach_info show is the save being played: the one the game loaded (opened to read) or saved last, or
+// before it opens one, the one written last. A save the game writes is announced against the one that was being played:
+// what it has that that one hadn't gets a notice. A new game's first save meets nothing; loading an older save shows its
+// achievements again, without notices.
+void ach_game_key(const char *save_path, char *out, size_t n);  // the profile folder of a game_data.sav
+void ach_game_gone(const char *save_path);   // that save was deleted: its achievements go with it
+void ach_set_active(const char *save_path);  // the game opened this game_data.sav to write it (it is being saved)
+void ach_game_loaded(const char *save_path);  // ... to read it: loaded, it is the one being played now
+// The watcher, for each game_data.sav it looks at: read it again even unchanged (a save the game has loaded: its next
+// read is quiet)
+bool ach_wants_reread(const char *save_path);
+// Checks every achievement against the contents of the save at save_path (time `now`): the save's own achievements, and
+// when it is the play's save (the game opened it to write, or it is the one being played), toasts for what the save
+// being played until now hadn't. Returns how many toasts that queued.
 int ach_update(const char *save_path, const AchSave *s, time_t now);
-// The same, given when the save was written (its file time): a new game is written over one slot only, so a save with no
-// progress also notes the playthrough's other slots' files as they are then, and those are left out until they change.
+// The same, given when the save was written (its file time: the save shown before the game opens one is the newest)
 int ach_update_at(const char *save_path, const AchSave *s, time_t now, time_t written);
 
 typedef struct {
@@ -99,6 +105,7 @@ int16_t *ach_bars_sound(const uint8_t *b, size_t n, const char *name, int *rate,
 // Plays the notice's sound on the default output: the hidden Korok's "Yahaha!" from the player's RomFS, else
 // achievement.wav from the data root, else the made-up jingle; render thread (runtime/achievements_sound.c).
 void ach_sound_play(void);
+void ach_sound_play_final(void);  // ... the last achievement's (ACH_META): a quest completed's jingle from the RomFS
 
 int ach_toast_pending(void);          // unlocks not yet shown
 bool ach_toast_take(int *index);      // the oldest one not yet shown

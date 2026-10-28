@@ -143,6 +143,40 @@ static const char *const L_dex_food[] = {
     "IsRegisteredPictureBook_Item_PlantGet_M", "IsRegisteredPictureBook_Item_PlantGet_O",
     "IsRegisteredPictureBook_Item_PlantGet_Q",
 };
+// The stables, as the map's markers name them: Location_<marker> counts the visits to each (Location_Hatago001 is a
+// leftover that stays 0)
+static const char *const L_stables[] = {
+    "Location_DeathMountainHatago", "Location_FaronHatago000", "Location_FaronHatago001", "Location_FaronHatago002",
+    "Location_ForestHatago",        "Location_GerudoHatago",   "Location_HyruleDepthHatago", "Location_HyruleWestHatago",
+    "Location_NorthHatelHatago",    "Location_RitoHatago",     "Location_RiverSideHatago",   "Location_TabantaBridgeHatago",
+    "Location_TabantaHatago",       "Location_TamourHatago",   "Location_TamourHatago2",
+};
+
+// Armor sets at their last upgrade (four stars): head, body and legs of each. Upgraded armor is another item in BOTW
+// (ActorInfo: armorNextRankName, armorStarNum 5 at the top); these are the sets whose three pieces all reach it (the
+// Hylian and Sheikah heads without their _B variants, the Ancient set with its own helm)
+static const char *const L_great_fairy[] = {
+    "IsGet_Armor_015_Head,IsGet_Armor_015_Upper,IsGet_Armor_015_Lower",  // Hylian
+    "IsGet_Armor_064_Head,IsGet_Armor_064_Upper,IsGet_Armor_064_Lower",  // Zora
+    "IsGet_Armor_061_Head,IsGet_Armor_061_Upper,IsGet_Armor_061_Lower",  // Korok (Forest Dweller)
+    "IsGet_Armor_067_Head,IsGet_Armor_067_Upper,IsGet_Armor_067_Lower",  // Gerudo (Desert Voe)
+    "IsGet_Armor_073_Head,IsGet_Armor_073_Upper,IsGet_Armor_073_Lower",  // Rito (Snowquill)
+    "IsGet_Armor_076_Head,IsGet_Armor_076_Upper,IsGet_Armor_076_Lower",  // Goron (Flamebreaker)
+    "IsGet_Armor_079_Head,IsGet_Armor_079_Upper,IsGet_Armor_079_Lower",  // Sheikah (Stealth)
+    "IsGet_Armor_086_Head,IsGet_Armor_086_Upper,IsGet_Armor_086_Lower",  // Climbing
+    "IsGet_Armor_090_Head,IsGet_Armor_090_Upper,IsGet_Armor_090_Lower",  // Radiant
+    "IsGet_Armor_098_Head,IsGet_Armor_098_Upper,IsGet_Armor_098_Lower",  // Soldier
+    "IsGet_Armor_102_Head,IsGet_Armor_102_Upper,IsGet_Armor_102_Lower",  // Ancient
+    "IsGet_Armor_106_Head,IsGet_Armor_106_Upper,IsGet_Armor_106_Lower",  // Rubber
+    "IsGet_Armor_114_Head,IsGet_Armor_114_Upper,IsGet_Armor_114_Lower",  // Barbarian
+    "IsGet_Armor_204_Head,IsGet_Armor_204_Upper,IsGet_Armor_204_Lower",  // Ocarina of Time
+    "IsGet_Armor_209_Head,IsGet_Armor_209_Upper,IsGet_Armor_209_Lower",  // Wind Waker
+    "IsGet_Armor_214_Head,IsGet_Armor_214_Upper,IsGet_Armor_214_Lower",  // Twilight Princess
+    "IsGet_Armor_219_Head,IsGet_Armor_219_Upper,IsGet_Armor_219_Lower",  // Skyward Sword
+    "IsGet_Armor_229_Head,IsGet_Armor_229_Upper,IsGet_Armor_229_Lower",  // Majora's Mask
+    "IsGet_Armor_234_Head,IsGet_Armor_234_Upper,IsGet_Armor_234_Lower",  // the First Hero
+};
+
 // Horse names that unlock "Satoru Iwata" (compared ignoring case): his first name is enough
 static const char *const L_horse_legend[] = {"Satoru", "Satoru Iwata", "Iwata Satoru"};
 #define ACH_N(a) ((int)(sizeof(a) / sizeof((a)[0])))

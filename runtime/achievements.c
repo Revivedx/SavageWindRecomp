@@ -5,13 +5,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 
 #define MAX_ACH 256
 #define MAX_EXTRA 16  // lines of achievements.txt for ids this build doesn't know: kept as they are
 #define MAX_SLOTS 32  // playthroughs whose achievements are kept
 #define MAX_TOAST 32
-#define MAX_STALE 16  // slots of one playthrough noted as left from the one before (the game has up to 8)
 
 // ------------------------------------------------------------------ the save image
 uint32_t ach_crc32(const char *s) {
@@ -141,6 +139,24 @@ bool ach_eval(const AchDef *d, const AchSave *s, uint32_t *cur, uint32_t *target
         if (c > t) c = t;
         break;
     }
+    case ACH_ANY:
+        t = 0;
+        for (int i = 0; i < d->n_list; i++) {
+            char list[512];
+            snprintf(list, sizeof list, "%s", d->list[i]);
+            uint32_t got = 0, all = 0;
+            for (char *save = NULL, *n = strtok_r(list, ",", &save); n; n = strtok_r(NULL, ",", &save)) {
+                all++;
+                got += at_least(s, n, 1);
+            }
+            if (got > c || (got == c && all < t) || !t) c = got, t = all;  // (the group closest to complete)
+            if (got == all && all) { c = t = all; break; }
+        }
+        if (!t) t = 1;
+        break;
+    case ACH_META:  // (ach_update fills it in from what the playthrough has)
+        t = (uint32_t)(g_ach_count > 1 ? g_ach_count - 1 : 1);
+        break;
     case ACH_SET:
     case ACH_SUM:
         if (d->kind == ACH_SET && !d->min) t = (uint32_t)d->n_list;
@@ -185,37 +201,42 @@ void ach_def_flags(const AchDef *d, void (*cb)(const char *name, void *user), vo
     case ACH_SUM:
         for (int i = 0; i < d->n_list; i++) cb(d->list[i], user);
         break;
+    case ACH_ANY:
+        for (int i = 0; i < d->n_list; i++) {
+            char list[512];
+            snprintf(list, sizeof list, "%s", d->list[i]);
+            for (char *save = NULL, *n = strtok_r(list, ",", &save); n; n = strtok_r(NULL, ",", &save)) cb(n, user);
+        }
+        break;
+    case ACH_META:
+        break;
     }
 }
 
 // ------------------------------------------------------------------ what has been earned
-// Achievements belong to a playthrough, not to the player: the game keeps one per profile (the folder that holds the
-// numbered slots with the autosaves and manual saves), a new game wipes it, and the achievements shown are those of the
-// playthrough being played. Once earned (and announced) in a playthrough one stays earned and is never announced again,
-// whichever of its saves is loaded; a new game (the save has no progress at all, or its files were all deleted) starts over.
-// The game doesn't delete the old playthrough's saves for a new game: it writes the new one over one slot and leaves the
-// others as they were. So the new game's first save also notes the other slots' files as they are then (`stale`: path and
-// file time): those don't count while they stay the same. Not their age: a save copied in from elsewhere (a backup, a
-// 100% save) keeps the time it was written at, older than any new game, and still counts.
+// Achievements belong to a save: each game_data.sav has its own, what its contents meet (in BOTW what a playthrough has
+// done only adds up, so its save says it all). The ones shown are those of the save being played: the one the game
+// loaded (opened to read) or saved (opened to write, or wrote over the one being played) last. A save the game writes
+// is announced against the one that was being played: what it has that that one hadn't gets a notice (and the times of
+// the rest carry over). So a new game starts from nothing - its first save meets nothing - while the old saves keep
+// theirs, and loading one shows them again without notices. A save copied in from elsewhere counts as it is.
 typedef struct {
     char key[512];  // normalized path of the game_data.sav
     bool used;
-    char stale_path[MAX_STALE][300];  // the old playthrough's saves left in the other slots, and their file times
-    time_t stale_at[MAX_STALE];
-    int n_stale;
     bool unlocked[MAX_ACH];
     time_t at[MAX_ACH];
     uint32_t cur[MAX_ACH], target[MAX_ACH];
     char extra[MAX_EXTRA][300];  // lines of ids this build doesn't know, kept as they are
     int n_extra;
-    time_t touched;
+    time_t written;  // when the save was written (its file time; when it was read, without one)
+    bool writing;    // the game opened it to write: its next contents are the play's (ach_set_active)
 } Slot;
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static char state_path[1024];
 static bool blocked;
 static Slot slots[MAX_SLOTS];
-static int active_slot = -1, latest_slot = -1;  // the save the game opened last / the one read last
+static int active_slot = -1;  // the save being played
 static int toasts[MAX_TOAST], toast_head, toast_n;
 
 static void norm_key(const char *path, char *out, size_t n) {  // "a//b/./c" -> "a/b/c"
@@ -229,7 +250,7 @@ static void norm_key(const char *path, char *out, size_t n) {  // "a//b/./c" -> 
     out[k] = 0;
 }
 
-// "save/save_1/0/game_data.sav" -> "save/save_1": the playthrough (profile folder) a save file belongs to
+// "save/save_1/0/game_data.sav" -> "save/save_1": the profile folder a save file belongs to (the watcher's groups)
 void ach_game_key(const char *save_path, char *out, size_t n) {
     norm_key(save_path, out, n);
     char *sl = strrchr(out, '/');  // the file name off: what's left is the slot folder
@@ -239,15 +260,15 @@ void ach_game_key(const char *save_path, char *out, size_t n) {
     if (sl && sl != out) *sl = 0;
 }
 
-static int find_key(const char *key, bool create) {  // (lock held) key: a playthrough as ach_game_key gives it
+static int find_key(const char *key, bool create) {  // (lock held) key: a normalized save path
     for (int i = 0; i < MAX_SLOTS; i++)
         if (slots[i].used && !strcmp(slots[i].key, key)) return i;
     if (!create) return -1;
     int pick = -1;
     for (int i = 0; i < MAX_SLOTS && pick < 0; i++)
         if (!slots[i].used) pick = i;
-    for (int i = 0; i < MAX_SLOTS && pick < 0; i++)  // full: forget the one touched longest ago
-        if (i != active_slot && i != latest_slot && (pick < 0 || slots[i].touched < slots[pick].touched)) pick = i;
+    for (int i = 0; i < MAX_SLOTS && pick < 0; i++)  // full: forget the one written longest ago
+        if (i != active_slot && (pick < 0 || slots[i].written < slots[pick].written)) pick = i;
     if (pick < 0) return -1;
     memset(&slots[pick], 0, sizeof slots[pick]);
     slots[pick].used = true;
@@ -257,11 +278,18 @@ static int find_key(const char *key, bool create) {  // (lock held) key: a playt
 
 static int find_slot(const char *save_path, bool create) {  // (lock held)
     char key[512];
-    ach_game_key(save_path, key, sizeof key);
+    norm_key(save_path, key, sizeof key);
     return find_key(key, create);
 }
 
-static int view_slot(void) { return active_slot >= 0 ? active_slot : latest_slot; }  // (lock held)
+// (lock held) What is shown: the save being played, or before the game opens one, the one written last
+static int view_slot(void) {
+    if (active_slot >= 0) return active_slot;
+    int k = -1;
+    for (int i = 0; i < MAX_SLOTS; i++)
+        if (slots[i].used && (k < 0 || slots[i].written > slots[k].written)) k = i;
+    return k;
+}
 
 static int find_id(const char *id) {
     for (int i = 0; i < g_ach_count && i < MAX_ACH; i++)
@@ -269,35 +297,34 @@ static int find_id(const char *id) {
     return -1;
 }
 
+static bool is_save_path(const char *p) {
+    size_t n = strlen(p);
+    return n >= 13 && !strcmp(p + n - 13, "game_data.sav");
+}
+
 void ach_state_load(const char *path) {
     pthread_mutex_lock(&lock);
     snprintf(state_path, sizeof state_path, "%s", path);
     memset(slots, 0, sizeof slots);
-    active_slot = latest_slot = -1;
+    active_slot = -1;
     toast_head = toast_n = 0;
     FILE *f = fopen(path, "r");
     char line[600];
     int cur = -1;
-    // Format: "@<tab>path of a game_data.sav", then its lines "id<tab>unix time". (Lines before the first "@" are from the
-    // old one-list-for-everyone format and belong to no save: dropped.)
+    // Format: "@<tab>path of a game_data.sav<tab>file time", then its lines "id<tab>unix time". (Records of whole profile
+    // folders, from builds that kept one per playthrough, are dropped: the saves are read again anyway.)
     while (f && fgets(line, sizeof line, f)) {
         line[strcspn(line, "\r\n")] = 0;
         if (!line[0] || line[0] == '#') continue;
         if (line[0] == '@' && line[1] == '\t') {
-            cur = find_key(line + 2, true);
+            char *tab = strchr(line + 2, '\t');
+            long long written = tab ? atoll(tab + 1) : 0;
+            if (tab) *tab = 0;
+            cur = is_save_path(line + 2) ? find_key(line + 2, true) : -1;
+            if (cur >= 0) slots[cur].written = (time_t)written;
             continue;
         }
-        if (cur < 0) continue;
-        if (!strncmp(line, "!stale\t", 7)) {  // "!stale<tab>file time<tab>path": a save left from the playthrough before
-            Slot *sl = &slots[cur];
-            char *p = strchr(line + 7, '\t');
-            if (p && sl->n_stale < MAX_STALE) {
-                sl->stale_at[sl->n_stale] = (time_t)atoll(line + 7);
-                snprintf(sl->stale_path[sl->n_stale++], sizeof sl->stale_path[0], "%s", p + 1);
-            }
-            continue;
-        }
-        if (line[0] == '!') continue;  // (an older build's "!since": file ages, which copied saves defeated)
+        if (cur < 0 || line[0] == '!') continue;  // (no record / an older build's notes)
         char *tab = strchr(line, '\t');
         long long at = tab ? atoll(tab + 1) : 0;
         if (tab) *tab = 0;
@@ -315,15 +342,11 @@ static void state_save_locked(void) {  // (lock held)
     snprintf(tmp, sizeof tmp, "%s.tmp", state_path);
     FILE *f = fopen(tmp, "w");
     if (!f) return;
-    fprintf(f, "# Savage Wind achievements, per save: \"@<tab>save file\", then id <tab> unlock time (unix) for each.\n");
+    fprintf(f, "# Savage Wind achievements, per save: \"@<tab>save file<tab>file time\", then id <tab> unlock time (unix) for each.\n");
     for (int k = 0; k < MAX_SLOTS; k++) {
         const Slot *sl = &slots[k];
         if (!sl->used) continue;
-        bool any = sl->n_extra > 0 || sl->n_stale > 0;
-        for (int i = 0; i < g_ach_count && i < MAX_ACH && !any; i++) any = sl->unlocked[i];
-        if (!any) continue;
-        fprintf(f, "@\t%s\n", sl->key);
-        for (int i = 0; i < sl->n_stale; i++) fprintf(f, "!stale\t%lld\t%s\n", (long long)sl->stale_at[i], sl->stale_path[i]);
+        fprintf(f, "@\t%s\t%lld\n", sl->key, (long long)sl->written);
         for (int i = 0; i < g_ach_count && i < MAX_ACH; i++)
             if (sl->unlocked[i]) fprintf(f, "%s\t%lld\n", g_ach_defs[i].id, (long long)sl->at[i]);
         for (int i = 0; i < sl->n_extra; i++) fprintf(f, "%s\n", sl->extra[i]);
@@ -347,36 +370,73 @@ void ach_game_gone(const char *save_path) {
     pthread_mutex_lock(&lock);
     int k = find_slot(save_path, false);
     if (k >= 0) {
-        bool had = false;
-        for (int i = 0; i < g_ach_count && i < MAX_ACH; i++) had |= slots[k].unlocked[i], slots[k].unlocked[i] = false, slots[k].at[i] = 0;
-        memset(slots[k].cur, 0, sizeof slots[k].cur);
-        slots[k].n_extra = 0;
-        if (had) state_save_locked();
+        if (k == active_slot) active_slot = -1;
+        memset(&slots[k], 0, sizeof slots[k]);
+        state_save_locked();
     }
     pthread_mutex_unlock(&lock);
 }
+
+// Saves the game loaded: the watcher reads them again even unchanged (ach_wants_reread), quietly
+enum { REREAD_FREE, REREAD_WANTED, REREAD_QUIET };
+static struct { char path[512]; int state; } reread[4];
 
 void ach_set_active(const char *save_path) {
     pthread_mutex_lock(&lock);
     int i = find_slot(save_path, true);
-    if (i >= 0) active_slot = i, slots[i].touched = time(NULL);
+    if (i >= 0) slots[i].writing = true;
     pthread_mutex_unlock(&lock);
+}
+
+void ach_game_loaded(const char *save_path) {
+    pthread_mutex_lock(&lock);
+    int i = find_slot(save_path, true);
+    if (i >= 0) {
+        active_slot = i;
+        int r = 0;
+        while (r < 4 && !(reread[r].state != REREAD_FREE && !strcmp(reread[r].path, slots[i].key))) r++;  // (asked already)
+        if (r == 4)
+            for (r = 0; r < 4 && reread[r].state != REREAD_FREE; r++) {}
+        static int oldest;  // (all taken - by loads whose files were never read since: the oldest goes)
+        if (r == 4) r = oldest, oldest = (oldest + 1) % 4;
+        snprintf(reread[r].path, sizeof reread[r].path, "%s", slots[i].key), reread[r].state = REREAD_WANTED;
+    }
+    pthread_mutex_unlock(&lock);
+}
+
+bool ach_wants_reread(const char *save_path) {
+    char path[512];
+    norm_key(save_path, path, sizeof path);
+    pthread_mutex_lock(&lock);
+    bool want = false;
+    for (int r = 0; r < 4; r++)
+        if (reread[r].state == REREAD_WANTED && !strcmp(reread[r].path, path)) reread[r].state = REREAD_QUIET, want = true;
+    pthread_mutex_unlock(&lock);
+    return want;
 }
 
 int ach_update(const char *save_path, const AchSave *s, time_t now) { return ach_update_at(save_path, s, now, 0); }
 
-// (lock held) A new game began with the save at `path` (normalized): the playthrough's other slots (<profile>/<n>/
-// game_data.sav) hold what is left of the one before. Each is noted with its file time; it counts again once it changes.
-static void note_stale(Slot *sl, const char *path) {
-    sl->n_stale = 0;
-    for (int n = 0; n < 32 && sl->n_stale < MAX_STALE; n++) {
-        char p[600];
-        struct stat st;
-        snprintf(p, sizeof p, "%s/%d/game_data.sav", sl->key, n);
-        if (!strcmp(p, path) || stat(p, &st)) continue;
-        sl->stale_at[sl->n_stale] = st.st_mtime;
-        snprintf(sl->stale_path[sl->n_stale++], sizeof sl->stale_path[0], "%s", p);
+// (lock held) Achievement i of the save sl, from whether its contents meet it; announced when `play` and the save that
+// was being played (prev) hadn't it. Returns whether the record changed.
+static bool settle(Slot *sl, const Slot *prev, int i, bool met, time_t now, bool play, int *fresh) {
+    bool had = prev && prev->unlocked[i];
+    if (!met) {
+        if (!sl->unlocked[i]) return false;
+        sl->unlocked[i] = false, sl->at[i] = 0;  // (a save of another playthrough written over this one)
+        return true;
     }
+    if (blocked) return false;
+    // what the save had before doesn't matter for the notice (the slot may hold another playthrough's old save): only
+    // what the save being played had
+    time_t at = play ? (had && prev->at[i] ? prev->at[i] : now) : sl->unlocked[i] ? sl->at[i] : now;
+    bool changed = !sl->unlocked[i] || sl->at[i] != at;
+    sl->unlocked[i] = true, sl->at[i] = at;
+    if (play && !had && toast_n < MAX_TOAST) {
+        toasts[(toast_head + toast_n++) % MAX_TOAST] = i;
+        (*fresh)++;
+    }
+    return changed;
 }
 
 int ach_update_at(const char *save_path, const AchSave *s, time_t now, time_t written) {
@@ -387,46 +447,35 @@ int ach_update_at(const char *save_path, const AchSave *s, time_t now, time_t wr
     int k = find_slot(save_path, true);
     if (k < 0) { pthread_mutex_unlock(&lock); return 0; }
     Slot *sl = &slots[k];
-    char path[512];
-    norm_key(save_path, path, sizeof path);
-    for (int i = 0; i < sl->n_stale; i++) {
-        if (strcmp(sl->stale_path[i], path)) continue;
-        if (written > 0 && written == sl->stale_at[i]) { pthread_mutex_unlock(&lock); return 0; }  // left from before
-        sl->stale_at[i] = sl->stale_at[--sl->n_stale];  // (written again or replaced since: it counts now)
-        memcpy(sl->stale_path[i], sl->stale_path[sl->n_stale], sizeof sl->stale_path[0]);
-        dirty = true;
-        break;
-    }
-    sl->touched = now;
-    latest_slot = k;
-    // A save with no progress at all on anything is a new game: whatever the playthrough had before is gone.
-    bool any_progress = false;
-    for (int i = 0; i < g_ach_count && i < MAX_ACH && !any_progress; i++) {
-        uint32_t cur, target;
-        ach_eval(&g_ach_defs[i], s, &cur, &target);
-        uint32_t start = g_ach_defs[i].kind == ACH_FLAG && g_ach_defs[i].first > 0 ? (uint32_t)g_ach_defs[i].first : 0;
-        any_progress = cur > start;
-    }
-    if (!any_progress) {
-        for (int i = 0; i < g_ach_count && i < MAX_ACH; i++) dirty |= sl->unlocked[i], sl->unlocked[i] = false, sl->at[i] = 0;
-        sl->n_extra = 0;
-        if (written > 0) note_stale(sl, path), dirty = true;  // (the other slots' saves, as they are now, no longer count)
-        if (dirty) toast_n = 0;  // (nothing of the old playthrough is announced any more)
-    }
+    bool quiet = false;  // (a save the game loaded: shown as it is, nothing announced)
+    for (int r = 0; r < 4; r++)
+        if (reread[r].state == REREAD_QUIET && !strcmp(reread[r].path, sl->key)) reread[r].state = REREAD_FREE, quiet = true;
+    // the play's save: written by the game (opened to write, or the one being played saved over); announced against
+    // the one being played until now
+    bool play = !quiet && (sl->writing || k == active_slot);
+    static Slot prev_copy;  // (lock held: one at a time)
+    const Slot *prev = NULL;
+    if (play && active_slot >= 0) prev_copy = slots[active_slot], prev = &prev_copy;
+    time_t when = written ? written : now;
+    if (sl->written != when) sl->written = when, dirty = true;
+    sl->writing = false;
     for (int i = 0; i < g_ach_count && i < MAX_ACH; i++) {
+        if (g_ach_defs[i].kind == ACH_META) continue;
         uint32_t cur, target;
         bool met = ach_eval(&g_ach_defs[i], s, &cur, &target);
         sl->cur[i] = cur, sl->target[i] = target;
-        if (met && !sl->unlocked[i] && !blocked) {
-            sl->unlocked[i] = true, sl->at[i] = now;
-            dirty = true;
-            // announced only when it's the playthrough being played, and only the first time ever
-            if (k == active_slot && toast_n < MAX_TOAST) {
-                toasts[(toast_head + toast_n++) % MAX_TOAST] = i;
-                fresh++;
-            }
-        }
+        dirty |= settle(sl, prev, i, met, now, play, &fresh);
     }
+    // ACH_META: every other achievement of the save unlocked (after them: its notice comes last)
+    for (int i = 0; i < g_ach_count && i < MAX_ACH; i++) {
+        if (g_ach_defs[i].kind != ACH_META) continue;
+        uint32_t have = 0, all = 0;
+        for (int j = 0; j < g_ach_count && j < MAX_ACH; j++)
+            if (g_ach_defs[j].kind != ACH_META) all++, have += sl->unlocked[j];
+        sl->cur[i] = have, sl->target[i] = all;
+        dirty |= settle(sl, prev, i, have == all && all, now, play, &fresh);
+    }
+    if (play || quiet) active_slot = k;
     if (dirty) state_save_locked();
     pthread_mutex_unlock(&lock);
     return fresh;

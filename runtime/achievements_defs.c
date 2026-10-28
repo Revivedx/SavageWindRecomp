@@ -26,6 +26,8 @@ const AchDef g_ach_defs[] = {
     {"shrine_1", "First Trial", "Complete a shrine.", ACH_COUNT, "Clear_Dungeon%03d", 0, 120, 1},
     {"shrine_4", "Four Trials", "Complete 4 shrines.", ACH_COUNT, "Clear_Dungeon%03d", 0, 120, 4},
     {"paraglider", "Take Flight", "Get the Paraglider.", ACH_FLAG, "IsGet_PlayerStole2", 0, 0, 1},
+    // Beedle's first talk (Npc_TripMaster: Beedle, "Terry" in Spanish)
+    {"beedle", "My Best Friend", "Talk to Beedle.", ACH_FLAG, "Npc_TripMaster_00_Talk", 0, 0, 1},
 
     // ---- the first hours of the open world ----
     // Horse names: the save keeps 6 names of 64 characters (16 entries each) under crc32 0x7b74e117 (zeldamods.org, Save Files).
@@ -61,6 +63,15 @@ const AchDef g_ach_defs[] = {
     // They follow the pattern of the flags already checked against a real save, but run `tools/ach_tool verify` on yours.
     {"hylian_shield", "The Legendary Shield", "Get the Hylian Shield.", ACH_FLAG, "IsGet_Weapon_Shield_030", 0, 0, 1},
     {"master_sword", "Blade That Seals the Darkness", "Pull the Master Sword.", ACH_FLAG, "IsGet_Weapon_Sword_070", 0, 0, 1},
+    // The Lost Woods are crossed when the Korok Forest (map marker Cokiri) has been reached
+    {"lost_woods", "Been Here Before", "Make your way through the Lost Woods.", ACH_FLAG, "Location_Cokiri", 0, 0, 1},
+    // Hestu's maracas (stolen in "Hestu's Concerto" style: IsGet_<actor> of the item)
+    {"maracas", "Shake 'Em", "Get Hestu's maracas back.", ACH_FLAG, "IsGet_Obj_Maracas", 0, 0, 1},
+    // The Gerudo vai: veil, top and sirwal are Armor_053
+    {"gerudo_outfit", "Strange Tastes", "Get the outfit to sneak into Gerudo Town.", ACH_ALL,
+     "IsGet_Armor_053_Head,IsGet_Armor_053_Upper,IsGet_Armor_053_Lower", 0, 0, 3},
+    {"arrows", "Fletcher", "Get every type of arrow.", ACH_ALL,
+     "IsGet_NormalArrow,IsGet_FireArrow,IsGet_IceArrow,IsGet_ElectricArrow,IsGet_BombArrow_A,IsGet_AncientArrow", 0, 0, 6},
     {"old_memories", "Old Memories", "Get the Master Sword and the Hylian Shield.", ACH_ALL, "IsGet_Weapon_Sword_070,IsGet_Weapon_Shield_030", 0, 0, 2},
     {"ancient_parts", "Ancient Collection", "Get every type of ancient part.", ACH_ALL,
      "IsGet_Item_Enemy_26,IsGet_Item_Enemy_27,IsGet_Item_Enemy_28,IsGet_Item_Enemy_29,IsGet_Item_Enemy_30,IsGet_Item_Enemy_31", 0, 0, 6},
@@ -71,11 +82,16 @@ const AchDef g_ach_defs[] = {
     {"ganon", "End of the Calamity", "Defeat Calamity Ganon.", ACH_FLAG, "Defeated_Enemy_GanonBeast_Num", 0, 0, 1},
     {"hearts_20", "Stronger Heart", "Reach 20 hearts.", ACH_FLAG, "MaxHartValue", 12, 0, 80},
     {"shrine_60", "Shrine Veteran", "Complete 60 shrines.", ACH_COUNT, "Clear_Dungeon%03d", 0, 120, 60},
+    // "Stranded on Eventide" (QL_NakedIsland): the island's trial finished
+    {"eventide", "The Lost Island", "Complete Eventide Island.", ACH_FLAG, "NakedIsland_Finish", 0, 0, 1},
+    {"stables", "Horse Lover", "Visit every stable.", ACH_SET, "", 0, 0, 0, L_stables, ACH_N(L_stables)},
     {"lynel_all", "Kings of the Wild", "Defeat one Lynel of each type.", ACH_ALL,
      "Defeated_Enemy_Lynel_Junior_Num,Defeated_Enemy_Lynel_Middle_Num,Defeated_Enemy_Lynel_Senior_Num,Defeated_Enemy_Lynel_Dark_Num",
      0, 0, 4},
 
     // ---- the completionist ones ----
+    {"great_fairy", "Thank You, Great Fairy!", "Fully upgrade an armor set.", ACH_ANY, "", 0, 0, 0, L_great_fairy,
+     ACH_N(L_great_fairy)},
     {"korok_450", "Seed Hoarder", "Find 450 Korok seeds.", ACH_FLAG, "#8a94e07a", 0, 0, 450},
     {"hearts_30", "Heart of a Hero", "Reach 30 hearts.", ACH_FLAG, "MaxHartValue", 12, 0, 120},
     {"cook_100", "Master Chef", "Cook 100 different recipes.", ACH_SET, "", 0, 0, 100, L_cook, ACH_N(L_cook)},
@@ -86,6 +102,9 @@ const AchDef g_ach_defs[] = {
     {"dex_creatures", "Photographer of the Realm", "Fill the Compendium's creatures.", ACH_SET, "", 0, 0, 0, L_dex_creatures,
      ACH_N(L_dex_creatures)},
     {"korok_900", "Seed Legend", "Find all 900 Korok seeds.", ACH_FLAG, "#8a94e07a", 0, 0, 900},
+
+    // every other one: the last, with a sound of its own (achievements_sound.c)
+    {"all", "King of Hyrule", "Unlock every achievement.", ACH_META, "", 0, 0, 0},
 
     // "plus_ultra" (Slated for Upgrades: upgrade the Sheikah Sensor, Remote Bombs and Stasis at Purah's) is NOT here yet: the
     // names of its flags aren't known. docs/ACHIEVEMENTS.md ("Waiting for its flags") says how to find them with ach_tool diff.

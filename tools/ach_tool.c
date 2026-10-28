@@ -99,6 +99,10 @@ int main(int argc, char **argv) {
             ach_def_flags(a, tally, &t);
             uint32_t cur, target;
             bool met = ach_eval(a, &s, &cur, &target);
+            if (a->kind == ACH_META) {  // (from the other achievements, not from the save)
+                printf("%-14s %-18s the other achievements\n", a->id, "ok");
+                continue;
+            }
             const char *state = t.found == 0 ? "NO FLAG IN SAVE" : t.found < t.total && a->kind != ACH_COUNT ? "SOME FLAGS MISSING" : "ok";
             missing += t.found == 0 || (t.found < t.total && a->kind != ACH_COUNT);
             printf("%-14s %-18s flags %3d/%-3d  progress %u/%u %s\n", a->id, state, t.found, t.total, cur, target, met ? "(reached)" : "");

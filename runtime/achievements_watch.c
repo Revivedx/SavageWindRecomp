@@ -88,6 +88,7 @@ static void on_file(const char *path, const struct stat *st) {
     Watched *w = slot_for(path);
     if (!w) return;
     w->present = w->was_present = true;
+    if (ach_wants_reread(path)) w->seen = false, w->pend_mtime = st->st_mtime, w->pend_size = st->st_size;  // (read it now)
     if (w->seen && st->st_mtime == w->proc_mtime && st->st_size == w->proc_size) return;  // nothing new
     if (st->st_mtime != w->pend_mtime || st->st_size != w->pend_size) {  // changed since the last look: wait one more
         w->pend_mtime = st->st_mtime, w->pend_size = st->st_size;
@@ -105,22 +106,14 @@ static void on_file(const char *path, const struct stat *st) {
     free(data);
 }
 
-// A playthrough whose save files have all vanished was deleted (the game wipes them for a new game): it starts over.
+// A save file that has vanished was deleted: its achievements go with it.
 static void after_scan(void) {
     for (int i = 0; i < n_files; i++) {
         Watched *w = &files[i];
         if (w->present || !w->was_present) continue;
         w->was_present = false;
         w->seen = false, w->pend_mtime = 0, w->pend_size = 0;  // (a file that comes back is read again)
-        char key[512], other[512];
-        ach_game_key(w->path, key, sizeof key);
-        bool others = false;
-        for (int j = 0; j < n_files && !others; j++) {
-            if (j == i || !files[j].present) continue;
-            ach_game_key(files[j].path, other, sizeof other);
-            others = !strcmp(key, other);
-        }
-        if (!others) ach_game_gone(w->path);
+        ach_game_gone(w->path);
     }
     for (int i = 0; i < n_files; i++) files[i].present = false;  // (set again by the next look)
 }

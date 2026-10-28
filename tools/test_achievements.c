@@ -5,7 +5,6 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <utime.h>
 #ifdef _WIN32  // (MinGW: mkdir takes one argument, no mkdtemp)
 #include <direct.h>
 #include <windows.h>
@@ -57,11 +56,6 @@ static int idx(const char *id) {
 #define SLOT_B "save/save_2/0/game_data.sav"   // (another playthrough)
 static bool is_unlocked(const char *id) { AchInfo in; ach_info(idx(id), &in); return in.unlocked; }
 static void write_file(const char *path, const Buf *b) { FILE *f = fopen(path, "wb"); fwrite(b->d, 1, b->n, f); fclose(f); }
-static void write_file_at(const char *path, const Buf *b, time_t when) {  // ... with that file time
-    write_file(path, b);
-    struct utimbuf ut = {when, when};
-    utime(path, &ut);
-}
 
 int main(void) {
     char tmpl[512];
@@ -242,68 +236,74 @@ int main(void) {
     s = as(&b);
     CHECK(ach_update(SLOT_A, &s, 3000) == 2 && is_unlocked("beast_naboris") && is_unlocked("beast_all"));
 
-    // another slot (autosave / manual save) of the same playthrough: the same achievements, nothing announced again
+    // another slot written by the game (an autosave): announced against the save being played, so what that one had
+    // isn't announced again; each save has its own
     Buf old = new_save();
     add(&old, "IsGet_PlayerStole2", 1);
     AchSave os = as(&old);
-    ach_set_active(SLOT_A2);
+    ach_set_active(SLOT_A2);  // (opened to write)
+    CHECK(ach_unlocked_total() == 9 && ach_toast_pending() == 2);  // (still the one being played: A2 isn't read yet)
+    CHECK(ach_update(SLOT_A2, &os, 3500) == 0 && ach_unlocked_total() == 1 && ach_toast_pending() == 2);
+    ach_game_loaded(SLOT_A);  // (loaded: its own again, nothing announced)
     CHECK(ach_unlocked_total() == 9 && ach_toast_pending() == 2);
-    CHECK(ach_update(SLOT_A2, &os, 3500) == 0 && ach_unlocked_total() == 9 && ach_toast_pending() == 2);
-    ach_set_active(SLOT_A);
 
-    // a save with no progress is a new game: starts over, and what it earns is announced again
+    // a new game: its first save meets nothing; what it earns is announced again; each save keeps its own
     Buf empty = new_save();
     add(&empty, "SomethingElse", 1);
     AchSave es = as(&empty);
+    ach_set_active(SLOT_A2);
     CHECK(ach_update(SLOT_A2, &es, 4000) == 0 && !is_unlocked("paraglider") && ach_unlocked_total() == 0);
-    CHECK(ach_update(SLOT_A, &os, 4100) == 1 && is_unlocked("paraglider") && ach_unlocked_total() == 1);
-
-    // another playthrough keeps its own; what is shown follows the one being played
-    CHECK(ach_update(SLOT_B, &s, 4500) == 0);  // (not the one being played: no notice)
-    CHECK(ach_unlocked_total() == 1);          // (still showing the first)
-    ach_set_active(SLOT_B);
-    CHECK(ach_unlocked_total() == 9 && is_unlocked("beast_all"));
-    ach_set_active(SLOT_A);
+    ach_set_active(SLOT_A2);
+    CHECK(ach_update(SLOT_A2, &os, 4100) == 1 && is_unlocked("paraglider") && ach_unlocked_total() == 1);
+    ach_game_loaded(SLOT_A);
+    CHECK(ach_unlocked_total() == 9);
+    ach_game_loaded(SLOT_A2);
     CHECK(ach_unlocked_total() == 1);
-    ach_set_active(SLOT_B);
+
+    // a save the game doesn't touch (another profile): its own, no notice; shown once loaded
+    CHECK(ach_update(SLOT_B, &s, 4500) == 0);
+    CHECK(ach_unlocked_total() == 1);  // (still the one being played)
+    ach_game_loaded(SLOT_B);
+    CHECK(ach_unlocked_total() == 9 && is_unlocked("beast_all"));
     while (ach_toast_take(&t)) {}
 
-    // persisted per playthrough; unknown ids kept; times kept
+    // persisted per save; unknown ids kept; times kept; before the game opens a save, the newest one is shown
     FILE *f = fopen("achievements.txt", "a");
     fputs("future_one\t77\n", f);
     fclose(f);
     ach_state_load("achievements.txt");
-    CHECK(ach_unlocked_total() == 0);  // (no save is being played yet)
-    ach_set_active(SLOT_B);
-    CHECK(ach_unlocked_total() == 9 && is_unlocked("beast_all"));
-    ach_set_active(SLOT_A);
+    CHECK(ach_unlocked_total() == 9);  // (save_2's: written last)
+    ach_game_loaded(SLOT_A2);
     CHECK(ach_unlocked_total() == 1);
-    ach_set_active(SLOT_B);
+    ach_game_loaded(SLOT_B);
+    CHECK(ach_unlocked_total() == 9 && is_unlocked("beast_all"));
     ach_info(idx("paraglider"), &in);
     CHECK(in.at == 4500);
     // back in the game after a restart: the same save again announces nothing
     CHECK(ach_update(SLOT_B, &s, 4600) == 0 && ach_toast_pending() == 0);
-    // more progress: only the new one is announced
+    // more progress: only the new one is announced (the save has what it had, and 30 hearts)
     Buf more = new_save();
-    add(&more, "Clear_Dungeon000", 1);
-    add(&more, "MaxHartValue", 120);
+    add(&more, "MaxHartValue", 120);  // (first: the value the save gives)
+    more.d = realloc(more.d, more.n + b.n - 0xC);
+    memcpy(more.d + more.n, b.d + 0xC, b.n - 0xC);
+    more.n += b.n - 0xC;
     s = as(&more);
     CHECK(ach_update(SLOT_B, &s, 5000) == 1 && is_unlocked("hearts_30") && is_unlocked("beast_all") && ach_unlocked_total() == 10);
     f = fopen("achievements.txt", "r");
-    char all[4096] = {0};
+    char all[8192] = {0};
     CHECK(fread(all, 1, sizeof all - 1, f) > 0);
     fclose(f);
-    CHECK(strstr(all, "@\tsave/save_2") && strstr(all, "@\tsave/save_1") && strstr(all, "future_one\t77") &&
-          strstr(all, "hearts_30\t5000"));
-    // its files were all deleted: starts over, and is forgotten in the file
+    CHECK(strstr(all, "@\tsave/save_2/0/game_data.sav") && strstr(all, "@\tsave/save_1/0/game_data.sav") &&
+          strstr(all, "future_one\t77") && strstr(all, "hearts_30\t5000"));
+    // a deleted save: forgotten, in the file too
     ach_game_gone(SLOT_A2);
-    ach_set_active(SLOT_A);
+    ach_game_loaded(SLOT_A2);
     CHECK(ach_unlocked_total() == 0);
     f = fopen("achievements.txt", "r");
     memset(all, 0, sizeof all);
     CHECK(fread(all, 1, sizeof all - 1, f) > 0);
     fclose(f);
-    CHECK(!strstr(all, "@\tsave/save_1") && strstr(all, "@\tsave/save_2"));
+    CHECK(!strstr(all, "@\tsave/save_1/1/game_data.sav") && strstr(all, "@\tsave/save_1/0/game_data.sav"));
     {
         char key[512];
         ach_game_key("./save//save_1/0/game_data.sav", key, sizeof key);
@@ -359,38 +359,55 @@ int main(void) {
         free(pcm);
     }
 
-    // a new game as the game really does it: written over one slot, the old playthrough's saves left in the others
-    // (real files: the new game's first save notes them with their file times). Whatever order they're read in, those
-    // don't count, after a restart too; the new game's own later saves do. So does a save copied in afterwards, though
-    // it keeps an older file time than the new game's (a 100% save brought from a backup).
+    // as a player goes: the 100% save loaded, a new game in another slot, its autosave in a third, then each loaded
+    // again: each shows its own, and only what a save the game writes adds is announced
     {
 #define SLOT_N0 "nsave/save_7/0/game_data.sav"
 #define SLOT_N1 "nsave/save_7/1/game_data.sav"
 #define SLOT_N2 "nsave/save_7/2/game_data.sav"
 #define SLOT_N3 "nsave/save_7/3/game_data.sav"
-        static const char *const dirs[] = {"nsave", "nsave/save_7", "nsave/save_7/0", "nsave/save_7/1", "nsave/save_7/2",
-                                           "nsave/save_7/3"};
-        for (size_t i = 0; i < sizeof dirs / sizeof dirs[0]; i++) MKDIR(dirs[i]);
-        const time_t T0 = 1700000000;  // (file times: Windows keeps none before 1980)
-        AchSave cur_b = as(&b);
+        const time_t T0 = 1700000000;
+        AchSave full = as(&b);
         Buf fresh_buf = new_save();
         add(&fresh_buf, "MaxHartValue", 12);  // (a real new game: three hearts)
         AchSave ng = as(&fresh_buf);
-        write_file_at(SLOT_N0, &b, T0 + 100), write_file_at(SLOT_N2, &b, T0 + 150), write_file_at(SLOT_N1, &fresh_buf, T0 + 200);
-        ach_set_active(SLOT_N1);
         while (ach_toast_take(&t)) {}
-        CHECK(ach_update_at(SLOT_N0, &cur_b, 6000, T0 + 100) > 0 && is_unlocked("paraglider"));     // (the old playthrough)
-        CHECK(ach_update_at(SLOT_N1, &ng, 6001, T0 + 200) == 0 && ach_unlocked_total() == 0);  // New Game, first save
-        CHECK(ach_toast_pending() == 0);                                                  // (old notices dropped)
-        CHECK(ach_update_at(SLOT_N2, &cur_b, 6002, T0 + 150) == 0 && ach_unlocked_total() == 0);  // an old save read later
-        ach_state_load("achievements.txt");
-        ach_set_active(SLOT_N1);
-        CHECK(ach_update_at(SLOT_N0, &cur_b, 6003, T0 + 100) == 0 && ach_unlocked_total() == 0);  // after a restart too
-        CHECK(ach_update_at(SLOT_N1, &ng, 6004, T0 + 200) == 0 && ach_unlocked_total() == 0);
-        CHECK(ach_update_at(SLOT_N2, &os, 6005, T0 + 300) == 1 && is_unlocked("paraglider"));  // the new game's own progress
+        ach_game_loaded(SLOT_N0);
+        CHECK(ach_wants_reread(SLOT_N0) && !ach_wants_reread(SLOT_N0));  // (read again even unchanged, once)
+        CHECK(ach_update_at(SLOT_N0, &full, 6000, T0 + 100) == 0 && ach_unlocked_total() == 9 && ach_toast_pending() == 0);
+        ach_set_active(SLOT_N1);  // New Game: its first save
+        CHECK(ach_update_at(SLOT_N1, &ng, 6001, T0 + 200) == 0 && ach_unlocked_total() == 0);
+        ach_set_active(SLOT_N2);  // ... and an autosave with the paraglider
+        CHECK(ach_update_at(SLOT_N2, &os, 6002, T0 + 300) == 1 && is_unlocked("paraglider") && ach_unlocked_total() == 1);
         CHECK(ach_toast_take(&t) && t == idx("paraglider"));
-        write_file_at(SLOT_N3, &b, T0 + 50);  // (copied in: its file time is older than the new game's)
-        CHECK(ach_update_at(SLOT_N3, &cur_b, 6006, T0 + 50) > 0 && is_unlocked("beast_ruta"));
+        ach_game_loaded(SLOT_N0);  // the 100% save loaded again: its own, no notices
+        CHECK(ach_unlocked_total() == 9 && ach_wants_reread(SLOT_N0));
+        CHECK(ach_update_at(SLOT_N0, &full, 6003, T0 + 100) == 0 && ach_toast_pending() == 0);
+        ach_game_loaded(SLOT_N2);  // and the new game's: only its own
+        CHECK(ach_unlocked_total() == 1 && is_unlocked("paraglider") && !is_unlocked("beast_ruta"));
+        // a 100% save copied in from elsewhere (an old file time): counts as it is, nothing announced; shown once loaded
+        CHECK(ach_update_at(SLOT_N3, &full, 6004, T0 + 50) == 0 && ach_unlocked_total() == 1);
+        ach_game_loaded(SLOT_N3);
+        CHECK(is_unlocked("beast_ruta") && ach_unlocked_total() == 9);
+        // a save written over the one being played with another playthrough's (the new game saved into the 100%'s slot):
+        // what it no longer meets goes
+        ach_set_active(SLOT_N3);
+        CHECK(ach_update_at(SLOT_N3, &os, 6005, T0 + 400) == 0 && ach_unlocked_total() == 1 && !is_unlocked("beast_ruta"));
+        // the new game saved into a slot that held an old save with the same achievement: announced all the same (what
+        // counts is what the save being played had)
+#define SLOT_N4 "nsave/save_7/4/game_data.sav"
+        CHECK(ach_update_at(SLOT_N4, &full, 6006, T0 + 60) == 0);  // (an old 100% save in slot 4)
+        ach_game_loaded(SLOT_N1);
+        CHECK(ach_wants_reread(SLOT_N1) && ach_update_at(SLOT_N1, &ng, 6007, T0 + 200) == 0 && ach_unlocked_total() == 0);
+        ach_set_active(SLOT_N4);
+        CHECK(ach_update_at(SLOT_N4, &os, 6008, T0 + 500) == 1 && is_unlocked("paraglider") && ach_unlocked_total() == 1);
+        CHECK(ach_toast_take(&t) && t == idx("paraglider"));
+        // after a restart each save keeps its own
+        ach_state_load("achievements.txt");
+        ach_game_loaded(SLOT_N1);
+        CHECK(ach_unlocked_total() == 0);
+        ach_game_loaded(SLOT_N0);
+        CHECK(ach_unlocked_total() == 9);
         free(fresh_buf.d);
     }
 
@@ -433,7 +450,7 @@ int main(void) {
     ach_start();
     SLEEP_S(5);  // (first look, second look, read)
     CHECK(ach_unlocked_total() >= 9 && is_unlocked("shrine_4"));
-    unlink("save/save_1/0/game_data.sav");  // (a new game: the game deletes its saves)
+    unlink("save/save_1/0/game_data.sav");  // (the save deleted: its achievements go)
     SLEEP_S(3);
     ach_stop();
     CHECK(ach_unlocked_total() == 0);

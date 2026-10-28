@@ -1148,7 +1148,11 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
         f->fd = fd;
         strlcpy(f->path, p, sizeof f->path);
         size_t pl = strlen(p);
-        if (pl >= 13 && !strcmp(p + pl - 13, "game_data.sav")) ach_set_active(p);  // the playthrough being played (achievements)
+        if (pl >= 13 && !strcmp(p + pl - 13, "game_data.sav")) {  // the playthrough being played (achievements)
+            ach_set_active(p);
+            if (!(mode & 2)) ach_game_loaded(p);  // (opened to read: loaded; to write, it's being saved over)
+            if (log_saves) LOG("[fs] save: open %s %s\n", mode & 2 ? "write" : "read", p);
+        }
         if (pl >= 13 && !strcmp(p + pl - 13, "game_data.sav") && test_warp_active()) {
             struct stat sb;
             if (!fstat(fd, &sb) && sb.st_size > 0 && (f->patched = malloc((size_t)sb.st_size)) &&

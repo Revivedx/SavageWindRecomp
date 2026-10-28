@@ -13,22 +13,19 @@ Savage Wind has a small achievement system that never touches the game: it reads
   effort in a normal playthrough), and that is the order of the lists in the menus; ids are what is saved, so moving a line
   loses nothing.
   Flag names are the game's own GameData names; the save stores their crc32 (`runtime/services/test_warp.c`).
-- **Per playthrough, not per player**: the game keeps one playthrough per profile (`save/<profile>/`, holding the numbered
-  slots with its autosaves and manual saves), and a new game wipes it. Each playthrough has its own achievements; what it
-  earned stays earned and is announced once, whichever of its saves is loaded or reloaded. The one being played is the
-  one whose `game_data.sav` the game opened last (`ach_set_active`, called from `runtime/services/fs.c`); before it opens
-  one, the menu shows the one read last. A new game is noticed two ways: all of the playthrough's `game_data.sav` files
-  disappear (`ach_game_gone`, from the watcher), or a save is read that has no progress at all on any achievement (a
-  value a new game starts with, like the three hearts, isn't progress). Then that playthrough starts over, and what it
-  earns again is announced again. The game deletes nothing for a new game: it writes it over one slot and leaves the old
-  playthrough's saves in the others, so the new game's first save also notes those other slots' files as they are then
-  (`!stale <tab> file time <tab> path` in `achievements.txt`): they don't count until they change. Not by their age: a
-  save copied in from elsewhere (a backup, a 100% save) keeps the time it was first written at and still counts.
-  `SAVAGEWIND_LOG_SAVES=1` logs what the game
+- **Per save**: each `game_data.sav` (the numbered slots of a profile, `save/<profile>/<n>/`: autosaves and manual
+  saves) has its own achievements, those its contents meet - a playthrough's progress only adds up, so its save says what
+  it has done. The ones shown are those of the save being played: the one the game loaded (opened to read,
+  `ach_game_loaded`) or saved (opened to write, `ach_set_active`; both from `runtime/services/fs.c`) last; before it
+  opens one, the newest. A save the game writes is announced against the one that was being played: what it has that
+  that one hadn't gets a notice, and the times of the rest carry over. So a new game - which the game writes over one
+  slot, leaving the old playthrough's saves in the others - starts from nothing (its first save meets nothing), loading
+  an older save shows its achievements again without notices, and a save copied in from elsewhere (a backup, a 100%
+  save) counts as it is. `SAVAGEWIND_LOG_SAVES=1` logs which saves the game opens (to read or to write) and what it
   creates, deletes and renames in the save folder.
-- **What is kept** (`achievements.txt` in the data root, next to `savagewind.ini`): a `@ <tab> <profile folder>` line per
-  playthrough, then `id <tab> unix time` for each achievement it has: that is what remembers what was already announced.
-  Delete a playthrough's lines to forget it. Files from the old one-list format are ignored.
+- **What is kept** (`achievements.txt` in the data root, next to `savagewind.ini`): a `@ <tab> save file <tab> file time`
+  line per save, then `id <tab> unix time` for each achievement it has. A deleted save is forgotten. Records of whole
+  profile folders, from builds that kept one list per playthrough, are dropped (the saves are read again anyway).
 - **In the game's own menu** (`runtime/ui/game_options.mm`): pause menu > System > Options > **Achievements**, a page of
   the Options screen with one row per achievement: its state on the right (Unlocked, `4 / 25`, Locked) and, on the
   description line, what it takes and when it was unlocked. The first page's button says how many are unlocked. The
@@ -111,6 +108,15 @@ name, fix it in `achievements_defs.c`.
 | `old_memories` | `IsGet_Weapon_Sword_070` (Master Sword) + `IsGet_Weapon_Shield_030` |
 | `horse_registered` | any of the 6 horse-name slots is not empty |
 | `horse_iwata` | any slot holds the name "Satoru" (or "Satoru Iwata", "Iwata Satoru"), ignoring case and blanks |
+| `beedle` | `Npc_TripMaster_00_Talk` (Beedle: "Terry" in Spanish) |
+| `lost_woods` | `Location_Cokiri`: the Korok Forest's map marker reached (the Lost Woods are `LostForest`) |
+| `maracas` | `IsGet_Obj_Maracas` |
+| `gerudo_outfit` | `IsGet_Armor_053_Head`, `_Upper`, `_Lower`: the Gerudo vai (veil, top, sirwal) |
+| `arrows` | `IsGet_` of `NormalArrow`, `FireArrow`, `IceArrow`, `ElectricArrow`, `BombArrow_A`, `AncientArrow` |
+| `eventide` | `NakedIsland_Finish` ("Stranded on Eventide", the island `Cohorint` on the map) |
+| `stables` | `Location_<stable>Hatago` >= 1 for the 15 stables (visits; `Location_Hatago001` stays 0) |
+| `great_fairy` | `ACH_ANY`: one of 19 sets with its head, body and legs at four stars (`armorStarNum` 5 in ActorInfo) |
+| `all` | `ACH_META`: every other achievement; its notice plays `Sys_Challenge_Complete` (`Sound/Resource/M_UI.bars`) |
 
 The save keeps the horse names as 6 slots of 64 characters under the hash `0x7b74e117` (96 entries, 4 characters each,
 `ACH_STR`). `build/ach_tool horses <game_data.sav>` prints the slots: register a horse, save, and check that its name
