@@ -20,6 +20,7 @@
 #include <string.h>
 #include <time.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <string>
@@ -73,7 +74,7 @@ const uint32_t GAME_CAMERA_Y = 1, GAME_CAMERA_X = 2, GAME_GYRO = 4, GAME_CAMERA_
                GAME_VOICE_BUTTON = 11, GAME_VOICE_LEVEL = 12, GAME_VR = 13;
 const uint32_t MSG_BASE = 9000;  // this file's message ids: MSG_BASE + item * 256 + part (the game's are 0000-0100)
 enum { MSG_TITLE = 0, MSG_DESC = 1, MSG_BUTTON = 2, MSG_VALUE = 16 };
-enum { MSG_TITLE_QUIT = 1, MSG_QUIT_QUESTION, MSG_QUIT_DESKTOP, MSG_QUIT_START, MSG_PAUSE_ACH };  // (storage ids below MSG_BASE)
+enum { MSG_TITLE_QUIT = 1, MSG_QUIT_QUESTION, MSG_QUIT_DESKTOP, MSG_QUIT_START, MSG_PAUSE_ACH, MSG_ACH_TITLE };  // (storage ids below MSG_BASE)
 
 // Row object (0x98 bytes, FUN_7100d1d828): +0x00 screen, +0x50 entry, +0x54 on/off, +0x58 value, +0x5c max,
 // +0x60 min, +0x64 button state, +0x68 flag type
@@ -606,7 +607,7 @@ void build_items(void) {
             ach_info(row.arg, &in);
             if (in.unlocked) return tr("Unlocked");
             if (in.target <= 1) return tr("Locked");
-            snprintf(buf, sizeof buf, "%u / %u", in.cur, in.target);
+            snprintf(buf, sizeof buf, "%u / %u  (%u%%)", in.cur, in.target, in.cur * 100 / in.target);
             return buf;
         };
         it.desc_fn = [](const Item &row) -> const char * {
@@ -785,11 +786,30 @@ extern "C" bool game_options_input_hold(void) {
     return bind_capture_active(&d, &s, &ms) || std::chrono::steady_clock::now() < g_hold_until;
 }
 
+// The Achievements page's rows as on Steam: the unlocked ones first (the latest on top), then the rest by how far
+// along they are; ties keep the table's order (easiest first)
+void ach_order(std::vector<uint32_t> &o) {
+    auto key = [](uint32_t e, AchInfo *in, double *frac) {
+        ach_info(g_items[e - GAME_ENTRIES].arg, in);
+        *frac = in->target ? (double)in->cur / in->target : 0;
+    };
+    std::sort(o.begin(), o.end());  // (the table's order first: entries are in it)
+    std::stable_sort(o.begin(), o.end(), [&](uint32_t a, uint32_t b) {
+        AchInfo ia, ib;
+        double fa, fb;
+        key(a, &ia, &fa), key(b, &ib, &fb);
+        if (ia.unlocked != ib.unlocked) return ia.unlocked;
+        if (ia.unlocked) return ia.at > ib.at;
+        return fa > fb;
+    });
+}
+
 // createRows: the row list of the page to show
 extern "C" void rt_opt_rows(void) {
     if (!install()) return;
     int page = g_switching ? g_next_page : P_MAIN;
     g_switching = false;
+    if (page == P_ACHIEVEMENTS) ach_order(g_order[page]);
     std::vector<uint32_t> &o = g_order[page];
     g_shown.assign(g_items.size(), -1);
     if (page == P_COLOUR) g_nluts = color_lut_list();  // (files the player added since the last opening)
@@ -1101,7 +1121,9 @@ extern "C" int rt_pause_msg(uint64_t label, uint64_t out) {
     if (!strcmp(l, "T_OptionTitle_00")) {  // (looked up as the screen opens: the page it opens on is the one due)
         int page = g_switching ? g_next_page : g_cur_page;
         if (page != P_ACHIEVEMENTS) return 0;
-        put_text(MSG_PAUSE_ACH, tr("Achievements"), out);
+        char title[96];
+        snprintf(title, sizeof title, "%s  %d / %d", tr("Achievements"), ach_unlocked_total(), g_ach_count);
+        put_text(MSG_ACH_TITLE, title, out);
         return 1;
     }
     if (strncmp(l, "Pa_Save_00-", 11)) return 0;
