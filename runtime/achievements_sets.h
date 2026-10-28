@@ -143,6 +143,6 @@ static const char *const L_dex_food[] = {
     "IsRegisteredPictureBook_Item_PlantGet_M", "IsRegisteredPictureBook_Item_PlantGet_O",
     "IsRegisteredPictureBook_Item_PlantGet_Q",
 };
-// Horse names that unlock "Satoru Iwata" (compared ignoring case)
-static const char *const L_horse_legend[] = {"Satoru Iwata", "Iwata Satoru"};
+// Horse names that unlock "Satoru Iwata" (compared ignoring case): his first name is enough
+static const char *const L_horse_legend[] = {"Satoru", "Satoru Iwata", "Iwata Satoru"};
 #define ACH_N(a) ((int)(sizeof(a) / sizeof((a)[0])))

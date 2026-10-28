@@ -557,7 +557,7 @@ T("Get the Master Sword and the Hylian Shield.", "Consigue la Espada Maestra y e
 T("A Little Horse", "Un caballito")
 T("Register a horse at a stable.", "Registra un caballo en una posta.")
 T("Satoru Iwata", "Satoru Iwata")
-T("Register a horse with the name of the legend.", "Registra un caballo con el nombre de la leyenda.")
+T("Register a horse named Satoru.", "Registra un caballo llamado Satoru.")
 T("%d of %d achievements unlocked. They're checked each time the game saves.", "%d de %d logros desbloqueados. Se revisan cada vez que el juego guarda.")
 T("Locked", "Bloqueado")
 T("%s  Unlocked: %s", "%s  Desbloqueado: %s")

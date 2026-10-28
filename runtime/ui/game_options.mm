@@ -1096,23 +1096,34 @@ extern "C" int rt_opt_pause_tick(void) {
     return 1;
 }
 
-// ---- The pause System page's Downloadable Content button (0x51) is Achievements: on a PC it only offered the
-// Nintendo eShop, which isn't there. Pressed, it does what Options (0x4f) does - the Options screen, which the System
-// page waits on in its Options state - with the Achievements page as the one the screen opens on; B from there goes
+// ---- The pause System page's Achievements button: the seventh button the page's setup adds when the Nintendo Switch 2
+// Edition upgrade is offered (0x53, Pa_Btn_06, in the gap the layout leaves under Load; tools/patches.py
+// _pause_upgrade has it added). Pressed, it does what Options (0x4f) does - the Options screen, which the System page
+// waits on in its Options state - with the Achievements page as the one the screen opens on; B from there goes
 // straight back to the System page.
-const uint32_t PAUSE_OPTIONS_BUTTON = 0x4f, PAUSE_DLC_BUTTON = 0x51;
+const uint32_t PAUSE_OPTIONS_BUTTON = 0x4f, PAUSE_ACH_BUTTON = 0x53;
+
+// The System page's setup: whether to add that button
+extern "C" int rt_pause_ach_button(void) { return 1; }
+
+// ... and its text: at str ({char16_t *, u32 length}) the setup has "Nintendo Switch 2 Edition", a string of its code
+extern "C" void rt_pause_ach_text(uint64_t str) {
+    if (!rt_pause_ach_button()) return;
+    std::u16string &t = g_text[MSG_PAUSE_ACH];
+    t = utf16(tr("Achievements"));
+    wr64(str, (uint64_t)(uintptr_t)t.c_str());
+    wr32(str + 8, (uint32_t)t.size());  // (as the game counts it: the characters, not the terminator)
+}
 
 // The System page's button handler (id = the button pressed): the id it goes on with
 extern "C" uint32_t rt_pause_button(uint32_t id) {
-    if (id != PAUSE_DLC_BUTTON) return id;
+    if (id != PAUSE_ACH_BUTTON) return id;
     g_next_page = P_ACHIEVEMENTS;
     g_switching = g_ach_direct = true;
     return PAUSE_OPTIONS_BUTTON;
 }
 
-// A message file's search by label (label: a C string; out: {char16_t *, u32 length}): the button's text
-// (LayoutMsg/PauseMenu_00 "Pa_Save_00-Pa_Btn_04-T_Btn_00", Downloadable Content) reads Achievements, and so does the
-// Options screen's title (LayoutMsg/OptionWindow_00 "T_OptionTitle_00") while it shows the Achievements page (the
+// A message file's search by label (label: a C string; out: {char16_t *, u32 length}): the Options screen's title (LayoutMsg/OptionWindow_00 "T_OptionTitle_00") while it shows the Achievements page (the
 // screen opens again on a page change, so the title is looked up once per page). SAVAGEWIND_LOG_PAUSE_MSG=1 logs the
 // System page's labels as they're looked up.
 extern "C" int rt_pause_msg(uint64_t label, uint64_t out) {
@@ -1130,9 +1141,7 @@ extern "C" int rt_pause_msg(uint64_t label, uint64_t out) {
     static int log = -1;
     if (log < 0) log = getenv("SAVAGEWIND_LOG_PAUSE_MSG") && strcmp(getenv("SAVAGEWIND_LOG_PAUSE_MSG"), "0");
     if (log) fprintf(stderr, "[options] pause message %s\n", l);
-    if (strcmp(l, "Pa_Save_00-Pa_Btn_04-T_Btn_00")) return 0;
-    put_text(MSG_PAUSE_ACH, tr("Achievements"), out);
-    return 1;
+    return 0;
 }
 
 extern "C" uint64_t rt_opt_screen(void) { return options_screen(); }

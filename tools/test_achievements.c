@@ -200,8 +200,15 @@ int main(void) {
         CHECK(ach_eval(&g_ach_defs[idx("horse_iwata")], &hs, &c3, &t3));
         CHECK(ach_save_strings(&hs, H, 16, slots, 16) == 6 && !strcmp(slots[0], "Satoru Iwata"));
         free(hb.d);
-        const char *close[6] = {"Satoru Iwat", "Satoru Iwata Jr", 0, 0, 0, 0};  // (not the name)
-        const int closelen[6] = {11, 15, 0, 0, 0, 0};
+        const char *first[6] = {" satoru ", 0, 0, 0, 0, 0};  // (his first name alone is enough)
+        const int firstlen[6] = {8, 0, 0, 0, 0, 0};
+        hb = new_save();
+        add_slots(&hb, H, 6, first, firstlen);
+        hs = as(&hb);
+        CHECK(ach_eval(&g_ach_defs[idx("horse_iwata")], &hs, &c3, &t3));
+        free(hb.d);
+        const char *close[6] = {"Satoru Iwat", "Satoru Iwata Jr", "Satorus", "Iwata", 0, 0};  // (not the name)
+        const int closelen[6] = {11, 15, 7, 5, 0, 0};
         hb = new_save();
         add_slots(&hb, H, 6, close, closelen);
         hs = as(&hb);

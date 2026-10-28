@@ -31,7 +31,7 @@ const AchDef g_ach_defs[] = {
     // Horse names: the save keeps 6 names of 64 characters (16 entries each) under crc32 0x7b74e117 (zeldamods.org, Save Files).
     // A slot has a name once a horse is registered at a stable. `ach_tool horses <save>` prints the slots.
     {"horse_registered", "A Little Horse", "Register a horse at a stable.", ACH_STR, "#7b74e117", 16, 0, 1},
-    {"horse_iwata", "Satoru Iwata", "Register a horse with the name of the legend.", ACH_STR, "#7b74e117", 16, 0, 1, L_horse_legend,
+    {"horse_iwata", "Satoru Iwata", "Register a horse named Satoru.", ACH_STR, "#7b74e117", 16, 0, 1, L_horse_legend,
      ACH_N(L_horse_legend)},
     // Dishes: IsGet_Item_Cook_* (dishes you have had)
     {"cook_10", "Improvised Chef", "Cook 10 different recipes.", ACH_SET, "", 0, 0, 10, L_cook, ACH_N(L_cook)},

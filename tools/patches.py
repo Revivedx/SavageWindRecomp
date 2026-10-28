@@ -174,18 +174,38 @@ def _title_msg(gen, a):
 
 def _msg_find(gen, a):
     # A message file's search by label (x0 = file, x1 = the label, a C string; x8 = where the {char16_t *, u32 length}
-    # it finds goes), which the layouts' texts go through: the pause System page's Downloadable Content button
-    # (LayoutMsg/PauseMenu_00 "Pa_Save_00-Pa_Btn_04-T_Btn_00") reads Achievements (see _pause_button)
+    # it finds goes), which the layouts' texts go through: the pause System page's seventh button (Pa_Btn_06, see
+    # _pause_upgrade) reads Achievements
     assert _word(gen, a) == 0xa9bd7bfd, hex(_word(gen, a))  # stp x29, x30, [sp, #-0x30]!
     return ('{ extern int rt_pause_msg(uint64_t, uint64_t); if (rt_pause_msg(c->x[1], c->x[8])) return; '
             'uint64_t ea = c->sp - 0x30; ST64(ea, c->x[29]); ST64(ea + 8, c->x[30]); c->sp = ea; }'
             f'  /* {a:#x}: stp x29, x30, [sp, #-0x30]! (message file: find a label) */')
 
 
+def _pause_upgrade(flag, value):
+    # The pause menu System page's setup adds a seventh button (0x53, Pa_Btn_06, in the gap the layout leaves under Load)
+    # when the Nintendo Switch 2 Edition upgrade is offered (+0x280) and not owned (+0x281): with the runtime's
+    # Achievements button on, they read as such, and the button is Achievements (_pause_button, _msg_find)
+    def patch(gen, a):
+        assert _word(gen, a) == 0x394a0268 | (flag & 1) << 10, hex(_word(gen, a))  # ldrb w8, [x19, #flag]
+        return ('{ extern int rt_pause_ach_button(void); '
+                f'c->x[8] = rt_pause_ach_button() ? {value} : LD8(c->x[19] + {flag:#x}); }}'
+                f'  /* {a:#x}: ldrb w8, [x19, #{flag:#x}] (pause System page: the upgrade button) */')
+    return patch
+
+
+def _pause_upgrade_text(gen, a):
+    # ... and its text: the code gives it "Nintendo Switch 2 Edition" ({char16_t *, u32 length} at sp, for the call
+    # that sets it, after this instruction); the runtime puts Achievements there instead
+    assert _word(gen, a) == 0x910003e1, hex(_word(gen, a))  # mov x1, sp
+    return ('{ extern void rt_pause_ach_text(uint64_t); rt_pause_ach_text(c->sp); c->x[1] = c->sp; }'
+            f'  /* {a:#x}: mov x1, sp (pause System page: the upgrade button text) */')
+
+
 def _pause_button(gen, a):
     # The pause menu System page's button handler (x0 = page, x1 = button, its id at +0x44; it switches on id - 0x4d):
-    # Downloadable Content (0x51; on a PC it only offered the Nintendo eShop) goes on as Options (0x4f), with the
-    # Options screen set to open on its Achievements page (runtime/ui/game_options.mm)
+    # the seventh button (0x53; the Nintendo Switch 2 Edition upgrade, offered through the Nintendo eShop) goes on as
+    # Options (0x4f), with the Options screen set to open on its Achievements page (runtime/ui/game_options.mm)
     assert _word(gen, a) == 0xb9404428, hex(_word(gen, a))  # ldr w8, [x1, #0x44]
     return ('{ extern uint32_t rt_pause_button(uint32_t); c->x[8] = rt_pause_button(LD32(c->x[1] + 0x44)); }'
             f'  /* {a:#x}: ldr w8, [x1, #0x44] (pause System page: button) */')
@@ -432,6 +452,9 @@ PATCHES = {
     'title_update': _title_tick,
     'title_button': _title_event,
     'pause_button': _pause_button,
+    'pause_upgrade_offer': _pause_upgrade(0x280, 1),
+    'pause_upgrade_owned': _pause_upgrade(0x281, 0),
+    'pause_upgrade_text': _pause_upgrade_text,
     'msg_find': _msg_find,
     'msg_lookup': _title_msg,
     'frame_wait': _frame_wait,
