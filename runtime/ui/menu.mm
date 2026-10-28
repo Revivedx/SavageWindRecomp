@@ -593,6 +593,44 @@ static void tab_display(void) {
         g_settings.fullscreen = fs;
         g_want_window_apply.store(true);
     }
+    {   // Fullscreen mode (settings.h FSMODE_*; runtime/window_size.c winsize_apply)
+        static const char *const names[FSMODE_COUNT] = {"Automatic", "Borderless", "Exclusive"};
+        int cur = g_settings.fullscreen_mode;
+        opt_indent(1);
+        if (opt_choice("Fullscreen mode", &cur, names, FSMODE_COUNT, FSMODE_AUTO,
+                       "Automatic: borderless at your display's own size, the display switched to the size chosen at "
+                       "any other.\n\nBorderless: never switches the display; another size is scaled to the screen. "
+                       "Quick to switch away from.\n\nExclusive: the display switched to the size chosen, at its "
+                       "highest refresh rate, its own size too.")) {
+            g_settings.fullscreen_mode = cur;
+            if (g_settings.fullscreen) g_want_window_apply.store(true);
+        }
+        opt_indent(-1);
+    }
+    {   // Monitor (runtime/window_size.c): Automatic, then the displays connected (and the one set, while it isn't)
+        WinDisplay ds[WINDISPLAY_MAX];
+        static char names_buf[WINDISPLAY_MAX + 2][96];
+        const char *names[WINDISPLAY_MAX + 2];
+        int n = windisplay_list(ds), cur = windisplay_target(), gone = -1;
+        names[0] = "Automatic";
+        for (int i = 0; i < n; i++) {
+            windisplay_name(&ds[i], i + 1, tr("primary"), names_buf[i + 1], sizeof names_buf[i + 1]);
+            names[i + 1] = names_buf[i + 1];
+        }
+        if (g_settings.display > 0 && !cur) {
+            snprintf(names_buf[n + 1], sizeof names_buf[n + 1], tr("%s (not connected)"), g_settings.display_name);
+            names[n + 1] = names_buf[n + 1];
+            cur = gone = n + 1;
+        }
+        int pick = cur;
+        if (opt_choice("Monitor", &pick, names, n + 1 + (gone >= 0), 0,
+                       "The monitor the game is shown on, in a window or fullscreen. Automatic: where the window is "
+                       "(the primary monitor at start). A monitor that isn't connected is Automatic until it is.") &&
+            pick != gone) {
+            windisplay_set(pick);
+            g_want_window_apply.store(true);
+        }
+    }
     {   // Window size (runtime/window_size.c): the sizes the display can show, its own first, then grouped by shape
         WinSize list[WINSIZE_MAX];
         static char names_buf[WINSIZE_MAX][64];

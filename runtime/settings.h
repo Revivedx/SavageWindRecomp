@@ -33,8 +33,17 @@ enum { VSYNC_ON = 0, VSYNC_FAST = 1, VSYNC_ADAPTIVE = 2, VSYNC_OFF = 3, VSYNC_CO
 // Video > HDR: Auto presents in HDR10 while Windows HDR is on for the window's monitor, On always (where the display
 // takes it), Off never (an SDR picture, which Windows shows dim and dull while its HDR is on)
 enum { HDR_AUTO = 0, HDR_ON = 1, HDR_OFF = 2, HDR_COUNT };
+// Video > Fullscreen mode (runtime/window_size.c winsize_apply): Automatic is borderless at the desktop's size and the
+// display's own mode at any other size it has; Borderless never changes the display's mode (another size is scaled to
+// the screen); Exclusive always uses a display mode (the desktop's size too, at its highest refresh rate)
+enum { FSMODE_AUTO = 0, FSMODE_BORDERLESS = 1, FSMODE_EXCLUSIVE = 2, FSMODE_COUNT };
 typedef struct {
     bool fullscreen;
+    int fullscreen_mode;     // FSMODE_*
+    // Video > Monitor (runtime/window_size.c): 0 the window's own (where it is; the primary display at start), n the
+    // n-th display connected; display_name is its name, which finds it again when the displays come in another order
+    int display;
+    char display_name[64];
     int window_w, window_h;  // Video > Window size, pixels (0: not chosen; runtime/window_size.c)
     int upscaler;        // UPSCALE_*: Off (render at the window's size), or render smaller and scale up
     int upscale_quality; // UPQ_*: the upscaler's mode (how much smaller it renders)
