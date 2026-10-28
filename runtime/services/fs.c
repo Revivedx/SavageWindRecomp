@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include <zlib.h>
 
+#include "../achievements.h"
 #include "../game_sites.h"
 #include "../hle.h"
 #include "../ipc.h"
@@ -1107,6 +1108,14 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
     HostFs *fs = s->state;
     char p[2048], p2[2048];
     host_path(fs, in_path(req, 0), p, sizeof p);
+    static int log_saves = -1;  // SAVAGEWIND_LOG_SAVES=1: what the game creates, deletes and renames in its save folder
+    if (log_saves < 0) log_saves = getenv("SAVAGEWIND_LOG_SAVES") && strcmp(getenv("SAVAGEWIND_LOG_SAVES"), "0");
+    if (log_saves && (req->cmd <= 6 || req->cmd == 13)) {
+        static const char *const what[] = {"create", "delete", "mkdir", "rmdir", "rmdir -r", "rename", "rename dir"};
+        if (req->cmd == 5 || req->cmd == 6) host_path(fs, in_path(req, 1), p2, sizeof p2);
+        LOG("[fs] save: %s %s%s%s\n", req->cmd == 13 ? "clean dir" : what[req->cmd], p,
+            req->cmd == 5 || req->cmd == 6 ? " -> " : "", req->cmd == 5 || req->cmd == 6 ? p2 : "");
+    }
     switch (req->cmd) {
     case 0: {  // CreateFile(option, size)
         int fd = open(p, O_CREAT | O_EXCL | O_RDWR, 0644);
@@ -1122,6 +1131,7 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
     case 5: case 6:
         host_path(fs, in_path(req, 1), p2, sizeof p2);
         if (rename(p, p2)) resp->result = errno_result();
+        else if (strlen(p2) >= 13 && !strcmp(p2 + strlen(p2) - 13, "game_data.sav")) ach_set_active(p2);  // (saved via a temp file)
         break;
     case 7: {  // GetEntryType
         struct stat sb;
@@ -1138,6 +1148,7 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
         f->fd = fd;
         strlcpy(f->path, p, sizeof f->path);
         size_t pl = strlen(p);
+        if (pl >= 13 && !strcmp(p + pl - 13, "game_data.sav")) ach_set_active(p);  // the playthrough being played (achievements)
         if (pl >= 13 && !strcmp(p + pl - 13, "game_data.sav") && test_warp_active()) {
             struct stat sb;
             if (!fstat(fd, &sb) && sb.st_size > 0 && (f->patched = malloc((size_t)sb.st_size)) &&

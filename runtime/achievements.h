@@ -1,0 +1,108 @@
+// Achievements (runtime/achievements.c, achievements_defs.c, achievements_watch.c).
+//
+// How it works: the game itself is never touched. A small thread (achievements_watch.c) looks at the game's
+// game_data.sav files in the save folder; when one changes (the game saved) it is read and each achievement is checked
+// against the flags in it (flag names are stored as crc32 hashes: see test_warp.c for the format). What has been
+// earned is kept per save in achievements.txt in the data root: a new game starts with none, and each save shows its own. The overlay (ui/achievements_ui.mm) shows a toast on each unlock and has an "Achievements" tab.
+//
+// Adding one: a line in g_ach_defs (achievements_defs.c). `tools/ach_tool verify <game_data.sav>` says which of the flag
+// names the table uses really are in a save.
+#pragma once
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <time.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef enum {
+    ACH_FLAG,   // one flag: value >= min (booleans: min 1); `flag` may be "A,B": alternative names, the highest present counts
+    ACH_COUNT,  // how many of flag pattern(first..last) are >= 1; `flag` is a printf pattern with one %d (e.g. "Clear_Dungeon%03d")
+    ACH_ALL,    // every flag in the comma-separated list `flag` is >= 1
+    ACH_SET,    // how many of the names in `list` are >= 1 (long lists: dishes, Compendium entries); min 0 = all of them
+    ACH_SUM,    // the values of the names in `list` added up (enemy defeat counters): reach min
+    ACH_STR,    // a string array in the save (horse names): how many of its slots are filled, or (with `list`) equal one of the
+                // names in `list` (ignoring case); `flag` names the array (or "#<hex crc32>"), `first` = entries per slot
+} AchKind;
+
+typedef struct {
+    const char *id;    // stable, saved in achievements.txt: never change one that has shipped
+    const char *name;  // English; the overlay runs it through tr()
+    const char *desc;
+    AchKind kind;
+    const char *flag;
+    int first, last;  // ACH_COUNT: the numbers the pattern runs over (inclusive); ACH_FLAG: `first` is the value a new
+                      // game starts with (MaxHartValue: 12, three hearts), which isn't progress
+    uint32_t min;     // ACH_FLAG: the value to reach; ACH_COUNT / ACH_SET: how many flags; ACH_SUM: the total; ACH_STR: slots
+    const char *const *list;  // ACH_SET / ACH_SUM: the flag names; ACH_STR: the texts that count (none: any non-empty slot)
+    int n_list;
+} AchDef;
+
+extern const AchDef g_ach_defs[];
+extern const int g_ach_count;
+
+// ---- the save image (game_data.sav: 0xC-byte header, then 8-byte entries: crc32 of the name, 32-bit value) ----
+typedef struct {
+    const uint8_t *data;
+    size_t size;
+} AchSave;
+
+uint32_t ach_crc32(const char *s);
+bool ach_save_ok(const AchSave *s);                                         // looks like a game_data.sav
+bool ach_save_get(const AchSave *s, uint32_t hash, uint32_t *value);        // first entry with that hash
+bool ach_save_get_named(const AchSave *s, const char *name, uint32_t *value);  // name, or "#<hex crc32>"
+// A string array (the horse names): a run of entries with the same hash, 4 characters each; `per` entries make one slot
+// (a horse name is 16 = 64 characters, 6 slots). Fills out[i] with the text of slot i ("" when empty; trailing/leading
+// blanks cut; plain UTF-8, or ASCII stored as UTF-16LE) and returns how many slots the save holds (at most max).
+#define ACH_STR_MAX 257
+int ach_save_strings(const AchSave *s, uint32_t hash, int per, char (*out)[ACH_STR_MAX], int max);
+// Progress of one achievement in a save: *cur of *target; true when reached.
+bool ach_eval(const AchDef *d, const AchSave *s, uint32_t *cur, uint32_t *target);
+// Calls cb for each flag name the achievement looks at (a pattern: every number of its range).
+void ach_def_flags(const AchDef *d, void (*cb)(const char *name, void *user), void *user);
+
+// ---- what has been earned ----
+void ach_state_load(const char *path);         // reads path (missing = nothing earned yet); later changes are saved there (per save)
+void ach_set_blocked(bool blocked);            // true: progress is tracked but nothing unlocks (test warps, future assists)
+// Achievements belong to a playthrough, not to the player. The game keeps one per profile: the folder that holds the numbered
+// slots (autosaves, manual saves), e.g. save/save_1 for save/save_1/0/game_data.sav. What a playthrough earned stays
+// earned and is announced once, whichever of its saves is loaded; a new game starts over. What the menu and ach_info show
+// is the playthrough being played: the one whose game_data.sav the game opened last (ach_set_active), or failing that the
+// one read last.
+void ach_game_key(const char *save_path, char *out, size_t n);  // the playthrough a game_data.sav belongs to (its profile folder)
+void ach_game_gone(const char *save_path);   // every save of that playthrough was deleted (a new game): it starts over
+void ach_set_active(const char *save_path);  // the game opened this game_data.sav (to load or to write it)
+// Checks every achievement against the contents of the save at save_path: new ones unlock (time `now`), are kept and, if
+// its playthrough is the one being played, queued as toasts. A save with no progress at all resets the playthrough.
+// Returns how many toasts that queued.
+int ach_update(const char *save_path, const AchSave *s, time_t now);
+// The same, given when the save was written (its file time): a new game is written over one slot only, so a save with no
+// progress also marks when the new game began, and saves of that playthrough written before then are left out.
+int ach_update_at(const char *save_path, const AchSave *s, time_t now, time_t written);
+
+typedef struct {
+    const AchDef *def;
+    bool unlocked;
+    time_t at;  // when (unlocked only)
+    uint32_t cur, target;  // progress from the latest save looked at (0 / 0 before the first)
+} AchInfo;
+void ach_info(int index, AchInfo *out);
+int ach_unlocked_total(void);
+// ---- the sound of an unlock ----
+// A short "ya-ha-ha!" made from sine waves into out (at most max samples, mono 16-bit at `rate`); returns the sample count.
+size_t ach_synth_jingle(int16_t *out, size_t max, int rate);
+// Plays it (or achievement.wav from the data root, if there is one) on the default output; render thread (runtime/achievements_sound.c).
+void ach_sound_play(void);
+
+int ach_toast_pending(void);          // unlocks not yet shown
+bool ach_toast_take(int *index);      // the oldest one not yet shown
+
+// ---- the watcher thread ----
+void ach_start(void);  // loads achievements.txt (data root) and starts watching the save folder
+void ach_stop(void);
+
+#ifdef __cplusplus
+}
+#endif

@@ -17,6 +17,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include <atomic>
 #include <chrono>
@@ -29,6 +30,7 @@
 #include "i18n.h"
 
 extern "C" {
+#include "../achievements.h"
 #include "../input_bind.h"
 #include "../language.h"
 #include "../game_sites.h"
@@ -83,7 +85,8 @@ struct Entry {           // the game's option entry (0x30)
 static_assert(sizeof(Entry) == 0x30);
 enum { KIND_TOGGLE = 0, KIND_CHOICE = 1, KIND_BUTTON = 2 };
 
-enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_COLOUR, P_AUDIO, P_CONTROLS, P_KEYS, P_STICKS, P_PAD, P_LANGUAGE, P_COUNT };
+enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_COLOUR, P_AUDIO, P_CONTROLS, P_KEYS, P_STICKS, P_PAD, P_LANGUAGE, P_ACHIEVEMENTS,
+            P_COUNT };
 enum Action { A_NONE, A_PAGE, A_BIND_KEY, A_BIND_PAD, A_RESET_KEYS, A_RESET_PAD, A_RESTART, A_QUIT, A_SIZE_LIST };
 
 struct Item {
@@ -262,6 +265,16 @@ void build_items(void) {
     v.push_back(button(P_MAIN, "Keyboard (sticks)", "Keys for the sticks and for walking.", "Open", A_PAGE, P_STICKS));
     v.push_back(button(P_MAIN, "Controller", "Which controller button does each button.", "Open", A_PAGE, P_PAD));
     v.push_back(button(P_MAIN, "Language", "Language of the texts and of the voices.", "Open", A_PAGE, P_LANGUAGE));
+    {   // (runtime/achievements.h: the page below lists them; its description here is the count)
+        Item it = button(P_MAIN, "Achievements", "", "Open", A_PAGE, P_ACHIEVEMENTS);
+        it.desc_fn = [](const Item &) -> const char * {
+            static char buf[256];
+            snprintf(buf, sizeof buf, tr("%d of %d achievements unlocked. They're checked each time the game saves."),
+                     ach_unlocked_total(), g_ach_count);
+            return buf;
+        };
+        v.push_back(it);
+    }
     v.push_back(button(P_MAIN, "Quit game", "To the desktop, or back to the Savage Wind start screen.", "Quit",
                        A_QUIT, 0));
 
@@ -579,6 +592,40 @@ void build_items(void) {
                        [](const Item &, int x) { g_settings.voice_language = x; }, 0));
     v.push_back(button(P_LANGUAGE, "Restart now",
                        "Starts the game again with these languages. Unsaved progress is lost.", "Restart", A_RESTART, 0));
+
+    // Achievements (runtime/achievements.h): one row per achievement, its state where a button's text goes (Unlocked, or
+    // how far along it is, or Locked); the description line says what it takes, and when it was unlocked. A does nothing.
+    for (int i = 0; i < g_ach_count; i++) {
+        Item it = button(P_ACHIEVEMENTS, g_ach_defs[i].name, g_ach_defs[i].desc, nullptr, A_NONE, i);
+        it.label = [](const Item &row, int) -> const char * {
+            static char buf[48];
+            AchInfo in;
+            ach_info(row.arg, &in);
+            if (in.unlocked) return tr("Unlocked");
+            if (in.target <= 1) return tr("Locked");
+            snprintf(buf, sizeof buf, "%u / %u", in.cur, in.target);
+            return buf;
+        };
+        it.desc_fn = [](const Item &row) -> const char * {
+            static char buf[320];
+            AchInfo in;
+            ach_info(row.arg, &in);
+            if (!in.def) return "";
+            if (!in.unlocked || in.at <= 0) return tr(in.def->desc);
+            char when[32] = "";
+            time_t t = in.at;
+            struct tm tmv;
+#ifdef _WIN32
+            localtime_s(&tmv, &t);
+#else
+            localtime_r(&t, &tmv);
+#endif
+            strftime(when, sizeof when, "%Y-%m-%d", &tmv);
+            snprintf(buf, sizeof buf, tr("%s  Unlocked: %s"), tr(in.def->desc), when);
+            return buf;
+        };
+        v.push_back(it);
+    }
 }
 
 // The game's table, extended (first opening, and again after a reboot reloads the game's own)
