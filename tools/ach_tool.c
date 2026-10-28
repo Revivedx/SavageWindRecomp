@@ -11,6 +11,8 @@
 //   ach_tool counter <s0.sav> <s1.sav> <s2.sav> [...]
 //        saves taken in order, one more of the same thing between each (collect a Korok seed, save, copy; again): only
 //        the entries that went up by exactly 1 at every step. A counter is there; the one-off flags of each seed aren't.
+//   ach_tool sound <file.bars> <name> <out.wav>
+//        one sound of a game sound bank as a WAV file (what the notice plays: runtime/achievements_sound.c)
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -201,7 +203,29 @@ int main(int argc, char **argv) {
         printf("%d entries went up by exactly 1 at every step\n", shown);
         return 0;
     }
+    if (argc >= 5 && !strcmp(argv[1], "sound")) {
+        size_t n, count;
+        int rate;
+        uint8_t *d = slurp(argv[2], &n);
+        int16_t *pcm = d ? ach_bars_sound(d, n, argv[3], &rate, &count) : NULL;
+        if (!pcm) { fprintf(stderr, "%s: no DSP-ADPCM sound named %s\n", argv[2], argv[3]); return 1; }
+        FILE *f = fopen(argv[4], "wb");
+        if (!f) { perror(argv[4]); return 1; }
+        uint8_t h[44];
+        uint32_t bytes = (uint32_t)(count * 2);
+        memcpy(h, "RIFF\0\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\0\0\0\0\0\0\0\0\x02\0\x10\0data\0\0\0\0", 44);
+        for (int i = 0; i < 4; i++) {
+            h[4 + i] = (uint8_t)((36 + bytes) >> (8 * i)), h[24 + i] = (uint8_t)((uint32_t)rate >> (8 * i));
+            h[28 + i] = (uint8_t)((uint32_t)rate * 2 >> (8 * i)), h[40 + i] = (uint8_t)(bytes >> (8 * i));
+        }
+        fwrite(h, 1, 44, f);
+        for (size_t i = 0; i < count; i++) fputc(pcm[i] & 0xFF, f), fputc((uint16_t)pcm[i] >> 8, f);
+        fclose(f);
+        printf("%s: %zu samples at %d Hz (%.2f s)\n", argv[4], count, rate, (double)count / rate);
+        return 0;
+    }
     fprintf(stderr, "usage: ach_tool verify <game_data.sav> | horses <game_data.sav> | get <game_data.sav> <name|#hash>... | guess <game_data.sav> |\n"
-                    "       diff <before.sav> <after.sav> [names.txt] | counter <s0.sav> <s1.sav> <s2.sav> [...]\n");
+                    "       diff <before.sav> <after.sav> [names.txt] | counter <s0.sav> <s1.sav> <s2.sav> [...] |\n"
+                    "       sound <file.bars> <name> <out.wav>\n");
     return 2;
 }

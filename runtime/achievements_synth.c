@@ -1,6 +1,6 @@
-// The default sound of an unlocked achievement: a short original "ya-ha-ha!" made of sine harmonics, in the spirit of a
-// Korok's laugh. No audio file is involved (the game's own sounds belong to Nintendo and aren't shipped with this
-// project): to hear another sound, put a WAV named achievement.wav in the data root (runtime/achievements_sound.c).
+// The last resort for the sound of an unlocked achievement: a short original "ya-ha-ha!" made of sine harmonics, in the
+// spirit of a Korok's laugh, for when the game's own "Yahaha!" can't be read from the player's RomFS and there is no
+// achievement.wav in the data root (runtime/achievements_sound.c). No audio file is involved.
 #include <math.h>
 #include <stdint.h>
 

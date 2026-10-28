@@ -33,11 +33,13 @@ Savage Wind has a small achievement system that never touches the game: it reads
   page is built when it opens, so it shows what the latest save looked at.
 - **Overlay** (`runtime/ui/achievements_ui.mm`): a toast at the top centre on each unlock, and an "Achievements" tab in
   the start screen's Settings.
-- **Sound** (`runtime/achievements_sound.c`, `achievements_synth.c`): the notice comes with a short "ya-ha-ha!" made from
-  sine waves (an original sound: the game's own audio isn't part of this project). To use another one, such as a Korok's real
-  "Yahaha!" from a recording you have the right to use, put a WAV file named `achievement.wav` (or `sounds/achievement.wav`)
-  in the data root, next to `savagewind.ini`; it is loaded the first time a sound is needed. The volume is the game's master
-  volume. `SAVAGEWIND_ACH_SOUND=0` turns it off (so does `SAVAGEWIND_NO_AUDIO`).
+- **Sound** (`runtime/achievements_sound.c`, `achievements_bars.c`): the notice comes with the game's own hidden Korok
+  "Yahaha!" (`NV_Korogu_Man_Young_Normal00_HiddenKorok_Appear00` in `Voice/Common/NV_Korogu_Man_Young_Normal00.bars`),
+  read from the player's RomFS and decoded (DSP-ADPCM) the first time a sound is needed: nothing of the game ships with
+  Savage Wind. Without it (game files not set up), a WAV file named `achievement.wav` (or `sounds/achievement.wav`) in the
+  data root, next to `savagewind.ini`; failing that, a short "ya-ha-ha!" made from sine waves (`achievements_synth.c`).
+  The volume is the game's master volume. `SAVAGEWIND_ACH_SOUND=0` turns it off (so does `SAVAGEWIND_NO_AUDIO`).
+  `tools/ach_tool sound <file.bars> <name> <out.wav>` writes any sound of a bank as a WAV file.
 - **Pictures** (`runtime/ui/ach_icon.mm`): `achievements/<id>.png` (or `.jpg`) in the data root, named after the
   achievement's id (`paraglider.png`, `shrine_120.png`, ...), square, up to 1024 x 1024. They show on the notice and in
   the overlay's tab; an achievement without one gets the gold diamond. None ship with Savage Wind: they're the player's.

@@ -93,7 +93,11 @@ int ach_unlocked_total(void);
 // ---- the sound of an unlock ----
 // A short "ya-ha-ha!" made from sine waves into out (at most max samples, mono 16-bit at `rate`); returns the sample count.
 size_t ach_synth_jingle(int16_t *out, size_t max, int rate);
-// Plays it (or achievement.wav from the data root, if there is one) on the default output; render thread (runtime/achievements_sound.c).
+// The sound `name` of a game sound bank (.bars, `n` bytes at b), decoded to mono 16-bit (malloc'd, `*count` samples at
+// `*rate` Hz), or NULL when the bank has no such sound or it isn't DSP-ADPCM (runtime/achievements_bars.c).
+int16_t *ach_bars_sound(const uint8_t *b, size_t n, const char *name, int *rate, size_t *count);
+// Plays the notice's sound on the default output: the hidden Korok's "Yahaha!" from the player's RomFS, else
+// achievement.wav from the data root, else the made-up jingle; render thread (runtime/achievements_sound.c).
 void ach_sound_play(void);
 
 int ach_toast_pending(void);          // unlocks not yet shown

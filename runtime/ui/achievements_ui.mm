@@ -24,7 +24,7 @@ void pull_new(double now) {
     int i;
     bool any = false;
     while (shown.size() < 3 && ach_toast_take(&i)) shown.push_back({i, now}), any = true;  // (at most 3 at once; the rest wait)
-    if (any) ach_sound_play();  // (once for the batch: "ya-ha-ha!", or achievement.wav)
+    if (any) ach_sound_play();  // (once for the batch: the game's "Yahaha!")
 }
 float ease_out(float t) { t = 1 - t; return 1 - t * t * t; }
 float ease_in(float t) { return t * t * t; }

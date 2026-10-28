@@ -372,6 +372,34 @@ int main(void) {
         free(fresh_buf.d);
     }
 
+    // a sound bank (.bars) made up here: one sound "Yaha", 14 DSP-ADPCM samples with zero coefficients and scale 1, so
+    // each sample is its 4-bit value; a big-endian AMTA (as in the game's voice banks); a cut-off copy gives nothing
+    {
+        uint8_t bk[0x200] = {0};
+        memcpy(bk, "BARS", 4), bk[8] = 0xFF, bk[9] = 0xFE, put32(bk + 0xC, 1);
+        put32(bk + 0x14, 0x1C), put32(bk + 0x18, 0x48);  // (AMTA, FWAV)
+        uint8_t *am = bk + 0x1C;
+        memcpy(am, "AMTA", 4), am[4] = 0xFE, am[5] = 0xFF, am[0x1B] = 0x1C;  // (big-endian: STRG 0x1C on)
+        memcpy(am + 0x1C, "STRG", 4), am[0x23] = 5, memcpy(am + 0x24, "Yaha", 5);
+        uint8_t *fw = bk + 0x48, *info = fw + 0x40, *ci = info + 0x28, *data = info + 0x60;
+        memcpy(fw, "FWAV", 4), fw[4] = 0xFF, fw[5] = 0xFE, fw[0x10] = 2;
+        fw[0x14] = 0x00, fw[0x15] = 0x70, put32(fw + 0x18, 0x40);  // INFO
+        fw[0x20] = 0x01, fw[0x21] = 0x70, put32(fw + 0x24, 0xA0);  // DATA
+        memcpy(info, "INFO", 4), info[8] = 2, put32(info + 0xC, 32000), put32(info + 0x14, 14), put32(info + 0x1C, 1);
+        put32(info + 0x24, 0x0C), put32(ci + 0xC, 0x10);  // (channel info 0x0C past the table; coefficients 0x10 past it)
+        static const uint8_t frame[8] = {0x00, 0x12, 0x34, 0x56, 0x7F, 0x8E, 0xCB, 0xA9};
+        memcpy(data, "DATA", 4), memcpy(data + 8, frame, 8);
+        static const int16_t want[14] = {1, 2, 3, 4, 5, 6, 7, -1, -8, -2, -4, -5, -6, -7};
+        int rate = 0;
+        size_t count = 0;
+        int16_t *pcm = ach_bars_sound(bk, sizeof bk, "Yaha", &rate, &count);
+        CHECK(pcm && rate == 32000 && count == 14 && !memcmp(pcm, want, sizeof want));
+        free(pcm);
+        CHECK(!ach_bars_sound(bk, sizeof bk, "Yah", &rate, &count));                    // (whole names only)
+        CHECK(!ach_bars_sound(bk, (size_t)(data + 12 - bk), "Yaha", &rate, &count));  // (samples cut off)
+        CHECK(!ach_bars_sound(bk, 0x10, "Yaha", &rate, &count));
+    }
+
     // too small / not a save
     AchSave tiny = {(const uint8_t *)"abc", 3};
     CHECK(!ach_save_ok(&tiny) && ach_update(SLOT_A, &tiny, 1) == 0);
