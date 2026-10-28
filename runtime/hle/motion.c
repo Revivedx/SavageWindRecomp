@@ -9,8 +9,8 @@
 //
 // Where the motion comes from: the controller's gyroscope and accelerometer (SDL3 sensor events: DualShock 4,
 // DualSense, Switch Pro, Joy-Con, Steam Deck...), fused into an orientation on the main thread (the gyroscope turns it,
-// gravity slowly corrects its tilt); or, while the tilt key is held, the mouse tilts a still controller (it levels
-// again once the key is let go); or a scripted run. With none of them the controller lies flat and still.
+// gravity slowly corrects its tilt); or, while the tilt key is held, the mouse rotates a virtual controller. Letting
+// go retains its orientation so the mouse can be repositioned; O recenters. A scripted run is another source.
 //
 // What the game gets: that orientation as yaw / pitch / roll, with the player's sensitivity and inversion applied to
 // yaw and pitch (Controls page: g_settings.motion_sens, motion_invert). Samples are made at the Switch's 200 Hz for the
@@ -38,13 +38,13 @@
 #include "../motion.h"
 #include "../platform.h"
 #include "../settings.h"
+#include "../pc_gyro.h"
 
 #define PI 3.14159265358979323846
 #define SAMPLE_NS 5000000ull  // the Switch's sensor rate, 200 Hz
 #define NSAMPLES 16           // states kept per handle (BOTW reads 16)
 #define KP 0.6                // gravity's pull on the tilt, per radian of error per second
 #define TILT_PER_PIXEL (0.2 * PI / 180)
-#define TILT_MAX (50 * PI / 180)
 #define PITCH_MAX (85 * PI / 180)
 
 typedef struct {
@@ -128,7 +128,11 @@ static struct {
     double lin[3];          // ... beyond gravity
     uint64_t gyro_ts;       // last gyroscope reading's sensor time (ns)
     bool tilt_held;
-    double tilt_pitch, tilt_roll;  // the mouse's tilt (radians)
+    double tilt_pitch, tilt_roll, tilt_yaw;  // the mouse's orientation (radians)
+    PcGyro keyboard;
+    int key_pitch, key_roll, key_yaw;
+    bool recenter;
+    uint64_t virtual_event_ns;
     double sc_pitch, sc_roll, sc_pitch_speed, sc_yaw_speed;  // scripted (radians, radians per second)
 } g = {.q = {1, 0, 0, 0}, .acc = {0, 0, -1}};
 
@@ -286,6 +290,7 @@ void motion_sensor_event(const SDL_Event *e) {
 void motion_tilt_held(bool held) {
     pthread_mutex_lock(&g_lock);
     g.tilt_held = held;
+    g.virtual_event_ns=plat_now_ns();
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -293,10 +298,16 @@ void motion_tilt_held(bool held) {
 void motion_mouse(float dx, float dy) {
     pthread_mutex_lock(&g_lock);
     if (g.tilt_held) {
-        double p = g.tilt_pitch + dy * TILT_PER_PIXEL, r = g.tilt_roll + dx * TILT_PER_PIXEL;
-        g.tilt_pitch = p > TILT_MAX ? TILT_MAX : p < -TILT_MAX ? -TILT_MAX : p;
-        g.tilt_roll = r > TILT_MAX ? TILT_MAX : r < -TILT_MAX ? -TILT_MAX : r;
+        g.virtual_event_ns=plat_now_ns();
+        if(isfinite(dy))g.tilt_pitch += dy * TILT_PER_PIXEL;
+        if(isfinite(dx))g.tilt_roll += dx * TILT_PER_PIXEL;
     }
+    pthread_mutex_unlock(&g_lock);
+}
+
+void motion_mouse_yaw(float steps) {
+    pthread_mutex_lock(&g_lock);
+    if(g.tilt_held && isfinite(steps)){g.tilt_yaw += steps * 6 * PI / 180;g.virtual_event_ns=plat_now_ns();}
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -304,6 +315,20 @@ void motion_script(float pitch_deg, float roll_deg, float pitch_speed, float yaw
     pthread_mutex_lock(&g_lock);
     g.sc_pitch = pitch_deg * PI / 180, g.sc_roll = roll_deg * PI / 180;
     g.sc_pitch_speed = pitch_speed * PI / 180, g.sc_yaw_speed = yaw_speed * PI / 180;
+    pthread_mutex_unlock(&g_lock);
+}
+
+void motion_keyboard(int pitch, int roll, int yaw, bool reset) {
+    pthread_mutex_lock(&g_lock);
+    if(pitch || roll || yaw || reset || g.key_pitch || g.key_roll || g.key_yaw)g.virtual_event_ns=plat_now_ns();
+    g.key_pitch = pitch;
+    g.key_roll = roll;
+    g.key_yaw = yaw;
+    if (reset) {
+        memset(&g.keyboard, 0, sizeof g.keyboard);
+        g.tilt_pitch = g.tilt_roll = g.tilt_yaw = 0;
+        g.recenter = true;
+    }
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -323,7 +348,17 @@ static struct {
     double sc_yaw, sc_pitch;     // scripted turning so far
     uint64_t logged;
 } s;
-RT_ON_RESET(motion_reboot_reset) { memset(&s, 0, sizeof s); }
+RT_ON_RESET(motion_reboot_reset) {
+    pthread_mutex_lock(&g_lock);
+    memset(&s, 0, sizeof s);
+    memset(&g.keyboard, 0, sizeof g.keyboard);
+    g.key_pitch = g.key_roll = g.key_yaw = 0;
+    g.tilt_held = false;
+    g.tilt_pitch = g.tilt_roll = g.tilt_yaw = 0;
+    g.recenter = false;
+    g.virtual_event_ns=0;
+    pthread_mutex_unlock(&g_lock);
+}
 
 static void euler_mat(double yaw, double pitch, double roll, Mat m) { quat_mat(euler_quat(yaw, pitch, roll), m); }
 
@@ -338,24 +373,87 @@ static double game_pitch(double pitch) {
     return p > PITCH_MAX ? PITCH_MAX : p < -PITCH_MAX ? -PITCH_MAX : p;
 }
 
+static double virtual_pitch(void) {
+    double p = g.tilt_pitch + g.sc_pitch + s.sc_pitch + g.keyboard.pitch * PI / 180;
+    return sens() * (g_settings.motion_invert & MOTION_INVERT_UD ? -p : p);
+}
+static double virtual_roll(void) { return g.tilt_roll + g.sc_roll + g.keyboard.roll * PI / 180; }
+static double virtual_yaw(void) { return s.sc_yaw + g.tilt_yaw + g.keyboard.yaw * PI / 180; }
+
+void motion_virtual_end(void) {
+    pthread_mutex_lock(&g_lock);
+    memset(&g.keyboard,0,sizeof g.keyboard);
+    g.key_pitch=g.key_roll=g.key_yaw=0;g.tilt_held=false;
+    g.tilt_pitch=g.tilt_roll=g.tilt_yaw=0;
+    g.sc_pitch=g.sc_roll=g.sc_pitch_speed=g.sc_yaw_speed=0;
+    g.recenter=false;g.virtual_event_ns=0;
+    if(s.src==0){int64_t sampling=s.sampling;memset(&s,0,sizeof s);s.sampling=sampling;}
+    pthread_mutex_unlock(&g_lock);
+}
+
+void motion_gizmo_rotate(float pitch,float roll,float yaw) {
+    if(!isfinite(pitch)||!isfinite(roll)||!isfinite(yaw))return;
+    pthread_mutex_lock(&g_lock);
+    double invp=(g_settings.motion_invert & MOTION_INVERT_UD) ? -1 : 1;
+    double invy=(g_settings.motion_invert & MOTION_INVERT_LR) ? -1 : 1;
+    g.tilt_pitch+=pitch*PI/180/sens()*invp;
+    g.tilt_roll+=roll*PI/180;
+    g.tilt_yaw+=yaw*PI/180/sens()*invy;
+    g.virtual_event_ns=plat_now_ns();
+    pthread_mutex_unlock(&g_lock);
+}
+
+void motion_gizmo_arcball(float w,float x,float y,float z) {
+    if(!isfinite(w)||!isfinite(x)||!isfinite(y)||!isfinite(z))return;
+    double length=sqrt((double)w*w+(double)x*x+(double)y*y+(double)z*z);
+    if(length<1e-8)return;
+    pthread_mutex_lock(&g_lock);
+    double oldp=virtual_pitch(),oldr=virtual_roll(),oldy=game_turn(virtual_yaw());
+    Quat delta={w/length,x/length,y/length,z/length};
+    Quat q=qnorm(qmul(delta,euler_quat(oldy,oldp,oldr)));Mat m;quat_mat(q,m);
+    double yaw,pitch,roll;euler_of(m,&yaw,&pitch,&roll);
+    double p2=(pitch>=0?PI:-PI)-pitch,r2=wrap(roll+PI),y2=wrap(yaw+PI);
+    double d0=pow(wrap(pitch-oldp),2)+pow(wrap(roll-oldr),2)+pow(wrap(yaw-oldy),2);
+    double d1=pow(wrap(p2-oldp),2)+pow(wrap(r2-oldr),2)+pow(wrap(y2-oldy),2);
+    if(d1<d0){pitch=p2;roll=r2;yaw=y2;}
+    double invp=(g_settings.motion_invert&MOTION_INVERT_UD)?-1:1;
+    double invy=(g_settings.motion_invert&MOTION_INVERT_LR)?-1:1;
+    g.tilt_pitch+=wrap(pitch-oldp)/sens()*invp;
+    g.tilt_roll+=wrap(roll-oldr);
+    g.tilt_yaw+=wrap(yaw-oldy)/sens()*invy;
+    g.keyboard.active=true;g.virtual_event_ns=plat_now_ns();
+    pthread_mutex_unlock(&g_lock);
+}
+
+bool motion_view(MotionView *out) {
+    pthread_mutex_lock(&g_lock);
+    for(int r=0;r<3;r++)for(int c=0;c<3;c++)out->matrix[r][c]=s.init ? (float)s.m[r][c] : (r==c);
+    out->angles[0]=wrap(s.pitch)*180/PI;out->angles[1]=wrap(s.roll)*180/PI;out->angles[2]=wrap(s.yaw)*180/PI;
+    out->held=g.tilt_held || g.key_pitch || g.key_roll || g.key_yaw;
+    out->pending=fabs(virtual_pitch()-s.pitch)+fabs(virtual_roll()-s.roll)+fabs(game_turn(virtual_yaw())-s.yaw)>.001;
+    uint64_t now=plat_now_ns();
+    bool visible=out->held || (g.virtual_event_ns && now>=g.virtual_event_ns && now-g.virtual_event_ns<6000000000ull);
+    pthread_mutex_unlock(&g_lock);
+    return visible;
+}
+
 // The source's orientation now: the mouse or a script when they tilt or turn it, else the controller's sensors, else
 // flat
 static int source(double dt, Mat m) {
-    if (!g.tilt_held) {  // (let go: level again, ~0.15 s)
-        double k = exp(-dt / 0.15);
-        g.tilt_pitch *= k, g.tilt_roll *= k;
-        if (fabs(g.tilt_pitch) < 1e-4 && fabs(g.tilt_roll) < 1e-4) g.tilt_pitch = g.tilt_roll = 0;
-    }
-    s.sc_yaw = wrap(s.sc_yaw + g.sc_yaw_speed * dt);
+    pc_gyro_step(&g.keyboard, g.key_pitch, g.key_roll, g.key_yaw, dt);
+    // T is a clutch: release ignores mouse motion but retains orientation.
+    // Only an explicit O recenter (or reboot) resets the virtual angles.
+    s.sc_yaw += g.sc_yaw_speed * dt;
     s.sc_pitch += g.sc_pitch_speed * dt;
     if (s.sc_pitch > PITCH_MAX) s.sc_pitch = PITCH_MAX;
     if (s.sc_pitch < -PITCH_MAX) s.sc_pitch = -PITCH_MAX;
-    bool virt = g.tilt_held || g.tilt_pitch || g.tilt_roll || g.sc_pitch || g.sc_roll || s.sc_yaw || s.sc_pitch;
+    bool virt = g.keyboard.active || g.tilt_held || g.tilt_pitch || g.tilt_roll || g.tilt_yaw || g.sc_pitch || g.sc_roll || s.sc_yaw || s.sc_pitch;
     if (g.sensors && g.started && !virt) {
         quat_mat(g.q, m);
         return 1;
     }
-    euler_mat(s.sc_yaw, g.tilt_pitch + g.sc_pitch + s.sc_pitch, g.tilt_roll + g.sc_roll, m);
+    euler_mat(virtual_yaw(), g.tilt_pitch + g.sc_pitch + s.sc_pitch + g.keyboard.pitch * PI / 180,
+              g.tilt_roll + g.sc_roll + g.keyboard.roll * PI / 180, m);
     return 0;
 }
 
@@ -377,13 +475,15 @@ static void fill(SixAxisState *st, Mat m, const double gyro[3], const double lin
 static void update(uint64_t now) {
     double dt = s.last_ns && now > s.last_ns ? (double)(now - s.last_ns) / 1e9 : 0;
     if (dt > 0.25) dt = 0.25;
-    s.last_ns = now;
     static const double zero[3];
     if (!s.init) {  // (first call: 16 samples of the controller at rest)
+        s.last_ns = now;
         Mat m;
         s.src = source(0, m);
         euler_near(m, 0, &s.src_yaw, &s.pitch, &s.roll);
-        s.yaw = 0, s.pitch = game_pitch(s.pitch);
+        if(!s.src){s.src_yaw=virtual_yaw();s.pitch=virtual_pitch();s.roll=virtual_roll();}
+        else s.pitch=game_pitch(s.pitch);
+        s.yaw = 0;
         euler_mat(s.yaw, s.pitch, s.roll, s.m);
         for (int i = 0; i < NSAMPLES; i++) {
             s.ring[i].sampling_number = ++s.sampling;
@@ -395,6 +495,9 @@ static void update(uint64_t now) {
         return;
     }
     if (now < s.t + SAMPLE_NS) return;
+    // Multiple sensor handles may poll between samples. Retain that elapsed time
+    // until a sample is due, otherwise virtual rotation slows with polling rate.
+    s.last_ns = now;
     uint64_t n = (now - s.t) / SAMPLE_NS;
     if (n > NSAMPLES) {
         s.t = now - NSAMPLES * SAMPLE_NS;
@@ -415,19 +518,32 @@ static void update(uint64_t now) {
     }
     double yaw, pitch, roll;
     euler_near(src, s.roll, &yaw, &pitch, &roll);
-    // (switching between sources: no turn. Pointing nearly straight up or down: yaw and roll hold still, and the turn
-    // made meanwhile counts once the controller comes back from there.)
-    bool hold = kind == s.src && steep(pitch);
+    // Virtual inputs already have continuous angles. Extracting Euler angles
+    // from their matrix folds pitch at 90 degrees and flips yaw/roll by 180.
+    if(!kind){yaw=virtual_yaw();pitch=virtual_pitch();roll=virtual_roll();}
+    // (switching between sources, or pointing nearly straight up or down where yaw means little: no turn)
+    bool hold = kind == 1 && kind == s.src && steep(pitch);
     double turn = kind == s.src && !hold ? wrap(yaw - s.src_yaw) : 0;
-    if (!hold) s.src_yaw = yaw;
-    s.src = kind;
-    double yaw1 = s.yaw + game_turn(turn), pitch1 = game_pitch(pitch);
+    if(!hold)s.src_yaw=yaw;
+    s.src=kind;
+    double yaw1 = s.yaw + game_turn(turn), pitch1 = kind ? game_pitch(pitch) : pitch;
+    double dpitch = kind ? pitch1-s.pitch : wrap(pitch1-s.pitch);
     double droll = hold ? 0 : wrap(roll - s.roll);
+    double virtual_now[3]={s.yaw,s.pitch,s.roll};
+    double virtual_target[3]={game_turn(yaw),pitch1,roll};
+    if(!kind && g.recenter) {
+        // O cancels pending revolutions and takes the nearest neutral pose.
+        for(int i=0;i<3;i++)virtual_now[i]=wrap(virtual_now[i]);
+        g.recenter=false;
+    }
     const double *lin = kind == 1 ? g.lin : zero;
     for (uint64_t j = 1; j <= n; j++) {  // (in between: the way there in equal steps)
         double f = (double)j / (double)n;
         Mat m;
-        euler_mat(s.yaw + (yaw1 - s.yaw) * f, s.pitch + (pitch1 - s.pitch) * f, s.roll + droll * f, m);
+        if(!kind) {
+            pc_gyro_follow(virtual_now,virtual_target,SAMPLE_NS/1e9);
+            euler_mat(virtual_now[0],virtual_now[1],virtual_now[2],m);
+        } else euler_mat(s.yaw + (yaw1 - s.yaw) * f, s.pitch + dpitch * f, s.roll + droll * f, m);
         // the turn from the last sample: R_last^T R_now as a rotation vector, per second, in turns
         Mat d;
         for (int r = 0; r < 3; r++)
@@ -446,14 +562,15 @@ static void update(uint64_t now) {
         st->sampling_number = ++s.sampling;
         fill(st, m, gyro, lin);
     }
-    s.yaw = wrap(yaw1), s.pitch = pitch1, s.roll = wrap(s.roll + droll);
+    if(!kind){s.yaw=virtual_now[0];s.pitch=virtual_now[1];s.roll=virtual_now[2];}
+    else {s.yaw=wrap(yaw1);s.pitch=pitch1;s.roll=wrap(s.roll+droll);}
     if (ENV("SAVAGEWIND_MOTION_LOG") && now - s.logged > 1000000000ull) {
         s.logged = now;
         const SixAxisState *st = &s.ring[s.head];
         LOG("[motion] %s: yaw %.1f pitch %.1f roll %.1f deg | gyro %.3f %.3f %.3f turns/s | acc %.2f %.2f %.2f G | "
             "bias %.2f %.2f %.2f deg/s (spread %.4f rad/s, %.4f G) | sample %lld | readings %u gyro %u accel, "
             "%u fused, %u stalled %u jumped, longest gap %.0f ms, last %.0f ms ago | game reads %u\n",
-            kind ? "sensors" : g.tilt_held || g.tilt_pitch || g.tilt_roll ? "mouse tilt" : "still/script",
+            kind ? "sensors" : g.keyboard.active ? "keyboard tilt" : g.tilt_held || g.tilt_pitch || g.tilt_roll ? "mouse tilt" : "still/script",
             s.yaw * 180 / PI, s.pitch * 180 / PI, s.roll * 180 / PI, st->gyro[0], st->gyro[1], st->gyro[2], st->acc[0],
             st->acc[1], st->acc[2], g.bias[0] * 180 / PI, g.bias[1] * 180 / PI, g.bias[2] * 180 / PI, g.gyro_sd,
             sqrt(g.acc_var), (long long)st->sampling_number, hs.gyro, hs.accel, hs.fused, hs.stalled, hs.jumped,

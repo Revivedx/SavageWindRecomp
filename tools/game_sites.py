@@ -174,6 +174,8 @@ SITES = [
          '94000000/fc000000 36000000/fff8001f', 0),
     Site('cam_reverse_y', 'code', '94000000/fc000000 36000000/fff8001f bd413660 1e214000 bd013660 a9424ff4 a9417bfd '
          '9100c3ff', 0),
+    # DungeonRotateGyro::calc_: heartbeat after querying the apparatus input.
+    Site('gyro_scene_actor', 'code', '2d59b28f 2d5ab689 94000000/fc000000 b5000000/ff00001f 9101d280 9101a281', 2),
     Site('main_data', 'data', '', 0),
     Site('main_end', 'end', '', 0),
 ]
@@ -185,6 +187,7 @@ SITES = [
 # second group it turns it without the game's camera inversion options.
 OPTIONAL_GROUPS = [
     ('quick_menu_capture_alpha',),
+    ('gyro_scene_actor',),
     ('yaz0_stream', 'yaz0_stream_ret'),
     ('cam_stick', 'cam_pitch_chase', 'cam_pitch_surf', 'cam_pitch_wakeboard', 'cam_pitch_aim', 'cam_pitch_item'),
     ('cam_reverse_x', 'cam_reverse_y'),

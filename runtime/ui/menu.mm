@@ -14,6 +14,7 @@
 
 #include "i18n.h"
 #include "imgui.h"
+#include "gyro_drag.h"
 #include "option_rows.h"
 #include "imgui_internal.h"  // (NavCursorVisible)
 #include "osk.h"
@@ -174,7 +175,7 @@ static bool overlay_enabled(void) {
     return on;
 }
 static std::atomic<bool> g_cursor_free{false};
-extern "C" bool menu_cursor_free(void) { return g_cursor_free.load(); }
+extern "C" bool menu_cursor_free(void) { return g_cursor_free.load() || pc_gyro_scene_active(); }
 
 bool menu_handle_event(const SDL_Event *e) {
     static bool back_down, start_down;
@@ -192,7 +193,7 @@ bool menu_handle_event(const SDL_Event *e) {
     }
     // typing (a text field, the on-screen keyboard, the name entry): keys are text, not menu shortcuts
     bool typing = g_kbd.load() == 1 || (g_open.load() && g_text_busy.load());
-    if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN && g_cursor_free.load() && !capturing()) {
+    if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN && g_cursor_free.load() && !capturing() && !pc_gyro_scene_active()) {
         g_cursor_free = false;  // (the click only takes the cursor back)
         return true;
     }
@@ -285,11 +286,11 @@ bool menu_handle_event(const SDL_Event *e) {
         return true;
     }
     case SDL_EVENT_MOUSE_MOTION:
-        if (!capturing()) return false;
+        if (!capturing() && !pc_gyro_scene_active()) return false;
         { QEvent q = {}; q.kind = QEvent::MOUSE_POS; q.x = e->motion.x * g_pixel_density; q.y = e->motion.y * g_pixel_density; push(q); }
         return true;
     case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_BUTTON_UP:
-        if (!capturing()) return false;
+        if (!capturing() && !pc_gyro_scene_active()) return false;
         {
             QEvent q = {};
             q.kind = QEvent::MOUSE_BUTTON;
@@ -299,7 +300,7 @@ bool menu_handle_event(const SDL_Event *e) {
         }
         return true;
     case SDL_EVENT_MOUSE_WHEEL:
-        if (!capturing()) return false;
+        if (!capturing() && !pc_gyro_scene_active()) return false;
         { QEvent q = {}; q.kind = QEvent::WHEEL; q.x = e->wheel.x; q.y = e->wheel.y; push(q); }
         return true;
     default:
@@ -1278,7 +1279,8 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     bool open = g_open.load();
     bool kbd = g_kbd.load() == 1;
     bool sizes = g_sizes.load();
-    if (!open && !kbd && !sizes && g_settings.perf_overlay == PERF_OFF) {
+    GyroScene gyro_scene;bool gyro_scene_show=pc_gyro_scene_view(&gyro_scene);
+    if (!open && !kbd && !sizes && !gyro_scene_show && g_settings.perf_overlay == PERF_OFF) {
         if (g_inited) { pthread_mutex_lock(&q_lock); q_events.clear(); pthread_mutex_unlock(&q_lock); }
         return;
     }
@@ -1325,6 +1327,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     ImGui::NewFrame();
 
     if (g_settings.perf_overlay != PERF_OFF) perf_overlay_draw(io, scale);
+    if(!open && !kbd && !sizes && gyro_scene_show)gyro_scene_draw(io,scale,gyro_scene);
 
     if (open) {
         // dim the game behind the menu
