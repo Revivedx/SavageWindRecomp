@@ -16,6 +16,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -72,7 +73,7 @@ const uint32_t GAME_CAMERA_Y = 1, GAME_CAMERA_X = 2, GAME_GYRO = 4, GAME_CAMERA_
                GAME_VOICE_BUTTON = 11, GAME_VOICE_LEVEL = 12, GAME_VR = 13;
 const uint32_t MSG_BASE = 9000;  // this file's message ids: MSG_BASE + item * 256 + part (the game's are 0000-0100)
 enum { MSG_TITLE = 0, MSG_DESC = 1, MSG_BUTTON = 2, MSG_VALUE = 16 };
-enum { MSG_TITLE_QUIT = 1, MSG_QUIT_QUESTION, MSG_QUIT_DESKTOP, MSG_QUIT_START };  // (storage ids below MSG_BASE)
+enum { MSG_TITLE_QUIT = 1, MSG_QUIT_QUESTION, MSG_QUIT_DESKTOP, MSG_QUIT_START, MSG_PAUSE_ACH };  // (storage ids below MSG_BASE)
 
 // Row object (0x98 bytes, FUN_7100d1d828): +0x00 screen, +0x50 entry, +0x54 on/off, +0x58 value, +0x5c max,
 // +0x60 min, +0x64 button state, +0x68 flag type
@@ -114,6 +115,7 @@ uint64_t g_installed;              // address of g_entries while the game uses i
 int g_cur_page = P_MAIN, g_next_page = P_MAIN;
 bool g_reopen;                     // a page change closed the screen: open it again once it has gone
 bool g_switching;                  // ... and its next opening shows g_next_page (any other opening: the first page)
+bool g_ach_direct;                 // the screen was opened on Achievements by the pause menu's button: B closes it
 uint64_t g_quit_dialog;            // the quit question's dialog while it is up
 uint64_t g_quit_owner;             // ... and the screen it came from (title menu or Options; its input is off meanwhile)
 bool g_quit_texts;                 // ... and its texts are still to be given (its two-button layout comes next)
@@ -141,6 +143,7 @@ const int UPS_DEFAULT = 0;  // (UPSCALE_DEFAULT: Off, the window's resolution)
 #endif
 std::vector<int> g_shown;   // per item: the value shown instead of get(), one that can't be picked yet (-1: none)
 const char16_t GREY = 3;    // (the game's message colour for greyed values)
+const char16_t RED = 0, GREEN = 1;  // (the game's message colours: an achievement locked / unlocked)
 const char *const k_modes[] = {"Ultra Quality", "Quality", "Balanced", "Performance"};
 const char *const k_aa[] = {"Off", "SMAA"};
 const char *const k_aniso[] = {"Off", "2x", "4x", "8x", "16x"};  // (settings anisotropy 0..4)
@@ -724,16 +727,21 @@ std::u16string utf16(const char *s) {
     return o;
 }
 
-// A message for the game ({char16_t *, u32 length with the terminator} at out); id: its storage. grey: in the
-// game's grey (its message colour tag: 0x0e, group 0, tag 3, 2 bytes of colour; 0xffff back to the text's own)
-void put_text(uint32_t id, const char *s, uint64_t out, bool grey = false) {
+// A message for the game ({char16_t *, u32 length with the terminator} at out); id: its storage. colour: one of the
+// game's message colours (its colour tag: 0x0e, group 0, tag 3, 2 bytes of colour; 0xffff back to the text's own)
+void put_text_coloured(uint32_t id, const char *s, uint64_t out, char16_t colour) {
     std::u16string &t = g_text[id];
     std::u16string n = utf16(s);
     static const char16_t tag[] = {0x0e, 0, 3, 2};  // (then the colour)
-    if (grey) n = std::u16string(tag, 4) + GREY + n + std::u16string(tag, 4) + (char16_t)0xffff;
+    if (colour != 0xffff) n = std::u16string(tag, 4) + colour + n + std::u16string(tag, 4) + (char16_t)0xffff;
     if (t != n) t = n;
     wr64(out, (uint64_t)(uintptr_t)t.c_str());
     wr32(out + 8, (uint32_t)t.size() + 1);
+}
+
+// ... in the text's own colour, or the game's grey
+void put_text(uint32_t id, const char *s, uint64_t out, bool grey = false) {
+    put_text_coloured(id, s, out, grey ? GREY : 0xffff);
 }
 
 // The quit question's answer (title menu and Options updates)
@@ -764,6 +772,12 @@ void quit_poll(void) {
 }
 
 }  // namespace
+
+// The game gets no A while the Achievements page is up (runtime/hle/input.c): A on a row would move the cursor onto
+// its button, and the achievements' rows only show what they say
+extern "C" bool game_options_hold_a(void) {
+    return g_installed && g_cur_page == P_ACHIEVEMENTS && options_screen();
+}
 
 // The game gets no input while a binding capture runs, and briefly after it (the pressed button is still down)
 extern "C" bool game_options_input_hold(void) {
@@ -801,7 +815,9 @@ extern "C" int rt_opt_read(uint64_t row) {
     const Item *it = item_of_row(row);
     if (!it) return 0;
     if (it->kind == KIND_BUTTON) {
-        wr8(row + 0x64, 0);
+        // +0x64 not 0: the row's redraw (opt_row_redraw) turns its button off, as the game's own unavailable ones -
+        // the achievements' rows, which only show what they say: A on them does nothing (no sound, no press)
+        wr8(row + 0x64, it->action == A_NONE);
         return 1;
     }
     size_t idx = (size_t)(it - g_items.data());
@@ -862,6 +878,12 @@ extern "C" int rt_opt_msg(uint32_t id, uint64_t out) {
     bool grey = false;
     if (part == MSG_TITLE) s = tr(it->title);
     else if (part == MSG_DESC) s = it->desc_fn ? it->desc_fn(*it) : tr(it->desc);
+    else if (part == MSG_BUTTON && it->page == P_ACHIEVEMENTS) {  // (an achievement's state: red until unlocked, then green)
+        AchInfo in;
+        ach_info(it->arg, &in);
+        put_text_coloured(id, it->label(*it, -1), out, in.unlocked ? GREEN : RED);
+        return 1;
+    }
     else if (part == MSG_BUTTON) s = it->button ? tr(it->button) : it->label ? it->label(*it, -1) : "";
     else if (part >= MSG_VALUE && it->kind == KIND_CHOICE && (int)(part - MSG_VALUE) < game_count(*it)) {
         int v = game_value(*it, (int)(part - MSG_VALUE));
@@ -944,11 +966,14 @@ extern "C" uint64_t rt_opt_tick(uint64_t screen) {
 extern "C" void rt_opt_back(void) {
     bind_capture_cancel();
     g_cap_row = 0;
-    if (g_installed && g_cur_page != P_MAIN) {
+    bool direct = g_ach_direct && g_cur_page == P_ACHIEVEMENTS;
+    g_ach_direct = false;
+    if (g_installed && g_cur_page != P_MAIN && !direct) {
         g_next_page = P_MAIN;
         g_reopen = g_switching = true;
-    } else {
+    } else {  // (it closes: the next opening is on the first page, unless a button asks for another)
         g_reopen = g_switching = false;
+        g_cur_page = P_MAIN;
     }
 }
 
@@ -1048,6 +1073,43 @@ extern "C" int rt_opt_pause_tick(void) {
     if (!g_reopen) return 0;
     if (options_screen()) return 2;
     g_reopen = false;
+    return 1;
+}
+
+// ---- The pause System page's Downloadable Content button (0x51) is Achievements: on a PC it only offered the
+// Nintendo eShop, which isn't there. Pressed, it does what Options (0x4f) does - the Options screen, which the System
+// page waits on in its Options state - with the Achievements page as the one the screen opens on; B from there goes
+// straight back to the System page.
+const uint32_t PAUSE_OPTIONS_BUTTON = 0x4f, PAUSE_DLC_BUTTON = 0x51;
+
+// The System page's button handler (id = the button pressed): the id it goes on with
+extern "C" uint32_t rt_pause_button(uint32_t id) {
+    if (id != PAUSE_DLC_BUTTON) return id;
+    g_next_page = P_ACHIEVEMENTS;
+    g_switching = g_ach_direct = true;
+    return PAUSE_OPTIONS_BUTTON;
+}
+
+// A message file's search by label (label: a C string; out: {char16_t *, u32 length}): the button's text
+// (LayoutMsg/PauseMenu_00 "Pa_Save_00-Pa_Btn_04-T_Btn_00", Downloadable Content) reads Achievements, and so does the
+// Options screen's title (LayoutMsg/OptionWindow_00 "T_OptionTitle_00") while it shows the Achievements page (the
+// screen opens again on a page change, so the title is looked up once per page). SAVAGEWIND_LOG_PAUSE_MSG=1 logs the
+// System page's labels as they're looked up.
+extern "C" int rt_pause_msg(uint64_t label, uint64_t out) {
+    const char *l = (const char *)(uintptr_t)label;
+    if (!l) return 0;
+    if (!strcmp(l, "T_OptionTitle_00")) {  // (looked up as the screen opens: the page it opens on is the one due)
+        int page = g_switching ? g_next_page : g_cur_page;
+        if (page != P_ACHIEVEMENTS) return 0;
+        put_text(MSG_PAUSE_ACH, tr("Achievements"), out);
+        return 1;
+    }
+    if (strncmp(l, "Pa_Save_00-", 11)) return 0;
+    static int log = -1;
+    if (log < 0) log = getenv("SAVAGEWIND_LOG_PAUSE_MSG") && strcmp(getenv("SAVAGEWIND_LOG_PAUSE_MSG"), "0");
+    if (log) fprintf(stderr, "[options] pause message %s\n", l);
+    if (strcmp(l, "Pa_Save_00-Pa_Btn_04-T_Btn_00")) return 0;
+    put_text(MSG_PAUSE_ACH, tr("Achievements"), out);
     return 1;
 }
 

@@ -102,6 +102,11 @@ SITES = [
          '91000129/ffc003ff 1000000a/9f00001f 3868692b', 0),
     Site('title_msg_file', 'ref', 'f9000549 90000009/9f00001f 91000129/ffc003ff 9000000a/9f00001f '
          'f900015f/ffc003ff a9002d28 a8c17bfd d65f03c0', 2),
+    # the pause menu's System page: its button handler (buttons 0x4d..0x53; Downloadable Content, 0x51, is Achievements)
+    Site('pause_button', 'code', 'b9404428 51013508 7100191f 54000009/ff00001f d65f03c0 d10183ff a9037bfd f90023f5', 0),
+    # ... and the message files' search by label (x0 = file, x1 = label, x8 = {char16_t *, u32 length}), which the
+    # layouts' texts go through: that button's text
+    Site('msg_find', 'code', 'a9bd7bfd a90157f6 a9024ff4 910003fd aa0003f4 f9400400 aa0803f3 94000000/fc000000', 0),
     Site('title_version_format', 'ref', '90000001/9f00001f 91000021/ffc003ff d103c3a0 94000000/fc000000 '
          'f9400294/ffffffdf b940da88 35000008/ff00001f 90000001/9f00001f', 1),
     # BOTW's streaming Yaz0 decoder: its entry and its return (tools/patches.py; runtime/hle/yaz0.c)
@@ -175,11 +180,13 @@ SITES = [
 # KNOWN table, the whole group is left out (with its patches) instead of refusing the version. The mouse camera's
 # sites go together: the stick input without the linear vertical part would square the mouse's (unclamped) motion.
 # Without them the mouse turns the camera through the right stick, as before (runtime/hle/input.c); without the
-# second group it turns it without the game's camera inversion options.
+# second group it turns it without the game's camera inversion options. Without the pause System page's button
+# handler, its Downloadable Content button stays the game's own (Achievements are still in Options).
 OPTIONAL_GROUPS = [
     ('yaz0_stream', 'yaz0_stream_ret'),
     ('cam_stick', 'cam_pitch_chase', 'cam_pitch_surf', 'cam_pitch_wakeboard', 'cam_pitch_aim', 'cam_pitch_item'),
     ('cam_reverse_x', 'cam_reverse_y'),
+    ('pause_button', 'msg_find'),
 ]
 OPTIONAL = {n for g in OPTIONAL_GROUPS for n in g}
 
@@ -210,6 +217,8 @@ KNOWN = {
         'dialog_answer': 0x7001c4b308,
         'title_update': 0x7000d4bca0,
         'title_button': 0x7000d4c5e0,
+        'pause_button': 0x7000cbc918,
+        'msg_find': 0x7000e566fc,
         'title_options_state': 0x363c,
         'title_msg_file': 0x7001cd06d8,
         'title_version_format': 0x70014b854e,

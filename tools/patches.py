@@ -172,6 +172,25 @@ def _title_msg(gen, a):
             f'  /* {a:#x}: sub sp, sp, #0x40 (message lookup) */')
 
 
+def _msg_find(gen, a):
+    # A message file's search by label (x0 = file, x1 = the label, a C string; x8 = where the {char16_t *, u32 length}
+    # it finds goes), which the layouts' texts go through: the pause System page's Downloadable Content button
+    # (LayoutMsg/PauseMenu_00 "Pa_Save_00-Pa_Btn_04-T_Btn_00") reads Achievements (see _pause_button)
+    assert _word(gen, a) == 0xa9bd7bfd, hex(_word(gen, a))  # stp x29, x30, [sp, #-0x30]!
+    return ('{ extern int rt_pause_msg(uint64_t, uint64_t); if (rt_pause_msg(c->x[1], c->x[8])) return; '
+            'uint64_t ea = c->sp - 0x30; ST64(ea, c->x[29]); ST64(ea + 8, c->x[30]); c->sp = ea; }'
+            f'  /* {a:#x}: stp x29, x30, [sp, #-0x30]! (message file: find a label) */')
+
+
+def _pause_button(gen, a):
+    # The pause menu System page's button handler (x0 = page, x1 = button, its id at +0x44; it switches on id - 0x4d):
+    # Downloadable Content (0x51; on a PC it only offered the Nintendo eShop) goes on as Options (0x4f), with the
+    # Options screen set to open on its Achievements page (runtime/ui/game_options.mm)
+    assert _word(gen, a) == 0xb9404428, hex(_word(gen, a))  # ldr w8, [x1, #0x44]
+    return ('{ extern uint32_t rt_pause_button(uint32_t); c->x[8] = rt_pause_button(LD32(c->x[1] + 0x44)); }'
+            f'  /* {a:#x}: ldr w8, [x1, #0x44] (pause System page: button) */')
+
+
 def _pause_option_state(gen, a):
     # The pause menu System page's Options state update (x0 = page): it leaves the state once the screen reports
     # closed. During a page change it waits instead, then opens it again.
@@ -412,6 +431,8 @@ PATCHES = {
     'dialog_back': _dialog_back,
     'title_update': _title_tick,
     'title_button': _title_event,
+    'pause_button': _pause_button,
+    'msg_find': _msg_find,
     'msg_lookup': _title_msg,
     'frame_wait': _frame_wait,
     'yaz0_stream': _yaz0_stream,

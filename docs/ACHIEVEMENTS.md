@@ -30,7 +30,10 @@ Savage Wind has a small achievement system that never touches the game: it reads
 - **In the game's own menu** (`runtime/ui/game_options.mm`): pause menu > System > Options > **Achievements**, a page of
   the Options screen with one row per achievement: its state on the right (Unlocked, `4 / 25`, Locked) and, on the
   description line, what it takes and when it was unlocked. The first page's button says how many are unlocked. The
-  page is built when it opens, so it shows what the latest save looked at.
+  page is built when it opens, so it shows what the latest save looked at. The pause menu's System page has its own
+  **Achievements** button in place of Downloadable Content (which only offered the Nintendo eShop): it opens the
+  Options screen straight on that page, and B goes back to the System page (`pause_button` in `tools/patches.py`; a
+  game version whose button handler isn't found keeps the game's button).
 - **Overlay** (`runtime/ui/achievements_ui.mm`): a toast at the top centre on each unlock, and an "Achievements" tab in
   the start screen's Settings.
 - **Sound** (`runtime/achievements_sound.c`, `achievements_bars.c`): the notice comes with the game's own hidden Korok
