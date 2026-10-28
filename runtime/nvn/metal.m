@@ -1147,7 +1147,10 @@ int ui_run(void) {
     for (;;) {
         if (rt_reboot_requested()) return rt_reboot_requested();  // (runtime/main.c tears the game down)
         SDL_Event e;
-        while (SDL_WaitEventTimeout(&e, 16)) {
+        // at most a frame's time of events, then the window requests (a controller's gyro can keep the queue full:
+        // runtime/nvn/vulkan/device.c ui_run)
+        uint64_t t0 = SDL_GetTicks();
+        while (SDL_GetTicks() - t0 < 16 && SDL_WaitEventTimeout(&e, 16)) {
             if (e.type == SDL_EVENT_QUIT) { LOG("window closed\n"); exit(0); }
             if (input_user_blocked(&e)) continue;  // scripted test runs: the real keyboard / mouse / pads do nothing
             if (menu_handle_event(&e)) continue;
