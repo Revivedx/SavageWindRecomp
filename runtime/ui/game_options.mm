@@ -1074,9 +1074,91 @@ static void title_hide_dlc(uint64_t menu) {
     }
 }
 
+// ---- The title menu's Achievements button: runtime/services/fs.c adds an eighth button part to the menu's layout
+// (Pa_SaveFile_06, reading Achievements), and the game makes its button like the seven others' - with no id, as the
+// menu knows of seven (its id stays 0: an id the menu doesn't know of would take its cursor). It goes above Options:
+// each update moves its button before Options' in the menu's list (the cursor's order), puts it where Options is, and
+// Options and the buttons after it 40 lower (from their own places in the layout, kept the first time: which buttons
+// show depends on the saves, the downloadable content and the menu's variant). Pressed, it does what Options (0x6b)
+// does - the Options screen - with the Achievements page as the one the screen opens on; B from there goes straight
+// back to the menu.
+// The menu's buttons are a list (head at title_options_state + 0x22c; a button's node at +8: prev, next) of 0x68-byte
+// objects: +0x18 their pane's name, +0x44 the id. A pane (nn::ui2d::Pane) is found by its name, 0xb8 into it: from
+// there, -0xa0 its parent's pane, -0x84 its y in its parent, -0x60 its flags (bit 0: shown), -0x2c its y on the
+// screen.
+const uint32_t TITLE_OPTIONS_BUTTON = 0x6b, TITLE_ACH_BUTTON = 0;
+#define TITLE_ACH_PART "Pa_SaveFile_06"  // (runtime/services/fs.c)
+const float TITLE_BUTTON_STEP = 40;
+uint64_t g_title_ach;      // its Achievements button
+uint64_t g_title_pressed;  // ... while its id reads as Options for a press (given back at the next update)
+uint64_t g_title_head;     // the menu the places below are of
+struct { uint64_t name; float y; } g_title_place[16];  // the buttons' own places (y in their parents)
+int g_title_places;
+
+float rdf(uint64_t a) { float f; uint32_t v = rd32(a); memcpy(&f, &v, 4); return f; }
+void wrf(uint64_t a, float f) { uint32_t v; memcpy(&v, &f, 4); wr32(a, v); }
+
+bool pane_shown(uint64_t name) {  // (shown, and every pane it is in)
+    for (int depth = 0; name && depth < 16; depth++) {
+        if (!(rd32(name - 0x60) & 1)) return false;
+        uint64_t parent = rd64(name - 0xa0);
+        name = parent ? parent + 0xb8 : 0;
+    }
+    return true;
+}
+
+float own_place(uint64_t name) {  // (the y the layout and its animations give the pane)
+    for (int i = 0; i < g_title_places; i++)
+        if (g_title_place[i].name == name) return g_title_place[i].y;
+    float y = rdf(name - 0x84);
+    if (g_title_places < 16) g_title_place[g_title_places++] = {name, y};
+    return y;
+}
+
+bool is_ach(uint64_t b) {
+    uint64_t name = rd64(b + 0x18);
+    return name && !memcmp((const void *)(uintptr_t)name, TITLE_ACH_PART, sizeof TITLE_ACH_PART);
+}
+
+void title_ach_button(uint64_t menu) {
+    uint64_t head = menu + g_site.title_options_state + 0x22c, ach = 0, options = 0;
+    if (head != g_title_head) g_title_head = head, g_title_places = 0;
+    int n = 0;
+    for (uint64_t node = rd64(head + 8); node && node != head && n < 16; node = rd64(node + 8), n++) {
+        uint64_t b = node - 8;
+        if (is_ach(b)) ach = b;
+        else if (rd32(b + 0x44) == TITLE_OPTIONS_BUTTON && !options) options = b;
+    }
+    g_title_ach = ach;
+    if (!ach || !options) return;
+    if (rd64(ach + 0x10) != options + 8) {  // (before Options in the list: out of it, in again)
+        uint64_t prev = rd64(ach + 8), next = rd64(ach + 0x10);
+        wr64(prev + 8, next), wr64(next, prev);
+        prev = rd64(options + 8);
+        wr64(ach + 8, prev), wr64(ach + 0x10, options + 8);
+        wr64(prev + 8, ach + 8), wr64(options + 8, ach + 8);
+    }
+    // Options and what follows: 40 lower than their own places; the button: where Options' would be
+    bool after = false;
+    n = 0;
+    for (uint64_t node = rd64(head + 8); node && node != head && n < 16; node = rd64(node + 8), n++) {
+        uint64_t b = node - 8, name = rd64(b + 0x18);
+        if (b == ach) { after = true; continue; }
+        if (!name) continue;
+        wrf(name - 0x84, own_place(name) - (after ? TITLE_BUTTON_STEP : 0));
+    }
+    uint64_t name = rd64(ach + 0x18), parent = rd64(name - 0xa0), oname = rd64(options + 0x18);
+    if (!parent || !oname || !pane_shown(oname)) return;
+    float at = rdf(oname - 0x2c) - (rdf(oname - 0x84) - own_place(oname));  // (Options' place on the screen, unmoved)
+    wrf(name - 0x84, at - rdf(parent + 0xb8 - 0x2c));  // (its place is in its parent's)
+    wr32(name - 0x60, rd32(name - 0x60) | 1);
+}
+
 // The title menu's update (menu = the screen): 1 = open the Options screen again now (it has gone, a page is due).
 // The quit question's answer is read here too.
 extern "C" int rt_opt_title_tick(uint64_t menu) {
+    if (g_title_pressed) wr32(g_title_pressed + 0x44, TITLE_ACH_BUTTON), g_title_pressed = 0;
+    title_ach_button(menu);
     quit_poll();
     title_hide_dlc(menu);
     if (rd32(menu + g_site.title_options_state) != MENU_OPTIONS_ACTIVE) {  // (the Options button isn't active: next opening, first page)
@@ -1146,12 +1228,25 @@ extern "C" int rt_pause_msg(uint64_t label, uint64_t out) {
 
 extern "C" uint64_t rt_opt_screen(void) { return options_screen(); }
 
+// (runtime/services/fs.c, which is C: the title menu's Achievements button text)
+extern "C" const char *rt_tr(const char *en) { return tr(en); }
+
 // ---- Quit: the game's two-button dialog (screen 0x39, type 7) asks: desktop (upper button) or the start screen
 // (lower). Its buttons write their answer to dialog_answer (1.8.2 0x7001c4b308; upper 0x5b: 0, lower 0x5a: 1;
 // FUN_7100d46598) and leave the dialog up; B closes it without an answer (rt_quit_dialog_back).
 
-// The title menu's amiibo settings button (Savage Wind has no amiibo support) is Quit
-extern "C" int rt_title_event(uint32_t id) { return id == TITLE_AMIIBO_BUTTON; }
+// The title menu's button handler (id: the button pressed's, read before the handler reads it). The amiibo settings
+// button (Savage Wind has no amiibo support) is Quit: 1. The Achievements button reads as Options for this press, with
+// its page due.
+extern "C" int rt_title_event(uint32_t id) {
+    if (id == TITLE_ACH_BUTTON && g_title_ach && rd32(g_title_ach + 0x44) == TITLE_ACH_BUTTON) {  // (the only one)
+        g_next_page = P_ACHIEVEMENTS;
+        g_switching = g_ach_direct = true;
+        wr32(g_title_ach + 0x44, TITLE_OPTIONS_BUTTON);
+        g_title_pressed = g_title_ach;
+    }
+    return id == TITLE_AMIIBO_BUTTON;
+}
 
 // LayoutMsg/Title_00 lookups: "0003" (the amiibo settings button) reads Quit
 extern "C" int rt_title_msg(uint64_t label, uint64_t out) {

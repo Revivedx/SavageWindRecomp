@@ -106,6 +106,7 @@ bool ach_eval(const AchDef *d, const AchSave *s, uint32_t *cur, uint32_t *target
             if (ach_save_get_named(s, n, &v) && (int32_t)v > sv) sv = (int32_t)v;
         }
         c = sv < 0 ? 0 : (uint32_t)sv;
+        if (d->last > 0) c /= (uint32_t)d->last;  // (in whole units: hearts, not quarters)
         if (c > t) c = t;  // (progress never shows past the goal)
         break;
     }

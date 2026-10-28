@@ -34,6 +34,13 @@ Savage Wind has a small achievement system that never touches the game: it reads
   adds that seventh button (0x53, `Pa_Btn_06`) itself when the upgrade is offered, and it is told it is
   (`pause_upgrade_offer` / `_owned`). It opens the Options screen straight on that page, and B goes back to the System
   page (`pause_button` in `tools/patches.py`; a game version where these sites aren't found has no such button).
+  The title screen menu has one above Options: its layout (`blyt/Title_00.bflyt` in `Pack/Title.pack`) gets an
+  eighth button part, `Pa_SaveFile_06`, a copy of `Pa_SaveFile_05` whose text boxes read Achievements in the menu
+  language (`title_button_patch` in `runtime/services/fs.c`; `SAVAGEWIND_NO_TITLE_ACH=1`: the game's menu), and the
+  game makes its button like the others' (id 0). Each menu update moves it before Options in the menu's button list
+  (the cursor's order), puts it where Options is and Options and the buttons after it 40 lower, whichever buttons the
+  saves and the downloadable content show (`title_ach_button` in `runtime/ui/game_options.mm`); pressed, it reads as
+  Options for that press, with the Achievements page due.
 - **Overlay** (`runtime/ui/achievements_ui.mm`): a toast at the top centre on each unlock, and an "Achievements" tab in
   the start screen's Settings.
 - **Sound** (`runtime/achievements_sound.c`, `achievements_bars.c`): the notice comes with the game's own hidden Korok

@@ -30,6 +30,7 @@ const AchDef g_ach_defs[] = {
     {"beedle", "My Best Friend", "Talk to Beedle.", ACH_FLAG, "Npc_TripMaster_00_Talk", 0, 0, 1},
 
     // ---- the first hours of the open world ----
+    {"korok_1", "Is That Its Poop?", "Find your first Korok seed.", ACH_FLAG, "#8a94e07a", 0, 0, 1},
     // Horse names: the save keeps 6 names of 64 characters (16 entries each) under crc32 0x7b74e117 (zeldamods.org, Save Files).
     // A slot has a name once a horse is registered at a stable. `ach_tool horses <save>` prints the slots.
     {"horse_registered", "A Little Horse", "Register a horse at a stable.", ACH_STR, "#7b74e117", 16, 0, 1},
@@ -80,7 +81,7 @@ const AchDef g_ach_defs[] = {
     // ---- late game ----
     // Dark Beast Ganon is Calamity Ganon's last form: beating it ends the game.
     {"ganon", "End of the Calamity", "Defeat Calamity Ganon.", ACH_FLAG, "Defeated_Enemy_GanonBeast_Num", 0, 0, 1},
-    {"hearts_20", "Stronger Heart", "Reach 20 hearts.", ACH_FLAG, "MaxHartValue", 12, 0, 80},
+    {"hearts_20", "Stronger Heart", "Reach 20 hearts.", ACH_FLAG, "MaxHartValue", 0, 4, 20},
     {"shrine_60", "Shrine Veteran", "Complete 60 shrines.", ACH_COUNT, "Clear_Dungeon%03d", 0, 120, 60},
     // "Stranded on Eventide" (QL_NakedIsland): the island's trial finished
     {"eventide", "The Lost Island", "Complete Eventide Island.", ACH_FLAG, "NakedIsland_Finish", 0, 0, 1},
@@ -93,7 +94,7 @@ const AchDef g_ach_defs[] = {
     {"great_fairy", "Thank You, Great Fairy!", "Fully upgrade an armor set.", ACH_ANY, "", 0, 0, 0, L_great_fairy,
      ACH_N(L_great_fairy)},
     {"korok_450", "Seed Hoarder", "Find 450 Korok seeds.", ACH_FLAG, "#8a94e07a", 0, 0, 450},
-    {"hearts_30", "Heart of a Hero", "Reach 30 hearts.", ACH_FLAG, "MaxHartValue", 12, 0, 120},
+    {"hearts_30", "Heart of a Hero", "Reach 30 hearts.", ACH_FLAG, "MaxHartValue", 0, 4, 30},
     {"cook_100", "Master Chef", "Cook 100 different recipes.", ACH_SET, "", 0, 0, 100, L_cook, ACH_N(L_cook)},
     {"dark_armor", "The Dark Side", "Get Dark Link's armor.", ACH_ALL,
      "IsGet_Armor_160_Head,IsGet_Armor_160_Upper,IsGet_Armor_160_Lower", 0, 0, 3},

@@ -36,8 +36,8 @@ typedef struct {
     const char *desc;
     AchKind kind;
     const char *flag;
-    int first, last;  // ACH_COUNT: the numbers the pattern runs over (inclusive); ACH_FLAG: `first` is the value a new
-                      // game starts with (MaxHartValue: 12, three hearts), which isn't progress
+    int first, last;  // ACH_COUNT: the numbers the pattern runs over (inclusive); ACH_FLAG: `last` (when > 0) is the
+                      // value's unit (MaxHartValue counts quarter hearts: 4, so progress and goal are in hearts)
     uint32_t min;     // ACH_FLAG: the value to reach; ACH_COUNT / ACH_SET: how many flags; ACH_SUM: the total; ACH_STR: slots
     const char *const *list;  // ACH_SET / ACH_SUM: the flag names; ACH_STR: the texts that count (none: any non-empty slot)
     int n_list;

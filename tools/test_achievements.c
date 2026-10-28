@@ -91,7 +91,7 @@ int main(void) {
     ach_info(idx("shrine_25"), &in);
     CHECK(in.cur == 4 && in.target == 25);
     ach_info(idx("hearts_30"), &in);
-    CHECK(in.cur == 84 && in.target == 120);
+    CHECK(in.cur == 21 && in.target == 30);  // (in hearts: 84 quarters)
     ach_info(idx("beast_all"), &in);
     CHECK(in.cur == 3 && in.target == 4);
     ach_info(idx("korok_100"), &in);
@@ -320,7 +320,7 @@ int main(void) {
     s = as(&more);
     CHECK(ach_update(SLOT_A, &s, 90000) == 0 && ach_unlocked_total() == 0);
     ach_info(idx("hearts_30"), &in);
-    CHECK(in.cur == 120 && !in.unlocked);
+    CHECK(in.cur == 30 && !in.unlocked);
     ach_set_blocked(false);
 
     // a flag by its hash ("#<hex crc32>"), for one whose name isn't known
