@@ -32,11 +32,20 @@
 #ifndef __APPLE__
 bool fsr3_available(void);  // (vulkan/fsr3.h: built in)
 #endif
+// FSR 3 upscaling is held back until its cost on the thread that records the frame for Vulkan comes down (the draw
+// translation work in progress): today that thread limits 1080p and 1440p, and FSR 3's motion vectors make every mode
+// slower than native there. SAVAGEWIND_FSR3=1 offers it anyway (tests); TAA and frame generation stay as they are.
+bool fsr3_upscaler_enabled(void) {
+    static int on = -1;
+    if (on < 0) on = getenv("SAVAGEWIND_FSR3") && atoi(getenv("SAVAGEWIND_FSR3")) != 0;
+    return on;
+}
+
 bool upscaler_available(int u) {
 #ifdef __APPLE__
     return u == UPSCALE_OFF || u == UPSCALE_METALFX;
 #else
-    return u == UPSCALE_OFF || u == UPSCALE_FSR1 || (u == UPSCALE_FSR3 && fsr3_available());
+    return u == UPSCALE_OFF || u == UPSCALE_FSR1 || (u == UPSCALE_FSR3 && fsr3_available() && fsr3_upscaler_enabled());
 #endif
 }
 
