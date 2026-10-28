@@ -1216,6 +1216,26 @@ Pendiente:
      Muestra de 1 de cada 10 shaders del juego (Radeon 660M, RADV, 6 hilos, con el control de flujo estructurado de
      #48): compilación del driver 83,8 → 28,8 s de CPU y reloj 19,8 → 10,2 s. El MSL no cambia
      (`tools/test_translate.sh` contra el commit anterior: 0 diferencias en 20.000 programas).
+   - Menos instrucciones por shader (2026-10-26): dos patrones de la traducción que el driver no puede simplificar.
+     - `fmin` / `fmax` / `saturate`: FMNMX de Maxwell devuelve el otro operando si uno es NaN y `.SAT` deja un NaN
+       en 0; el preludio lo escribía con `isnan` y selecciones (un `v_cmp` y un `v_cndmask` por llamada en ACO). Ahora
+       son `NMin`, `NMax` y `NClamp` de GLSL.std.450 (`GL_EXT_spirv_intrinsics`), que dicen exactamente eso; Mesa los
+       baja a un solo min / max con `preserve_nan` (`vtn_glsl450.c`). El MSL no cambia (`fmin` de Metal ya es así).
+     - IPA "multiply" por w: cada lectura de un varying salía `v * gl_FragCoord.w * rX` con `rX = 1 / gl_FragCoord.w`
+       (el `1/w` del IPA "pass" y el MUFU.RCP de la posición w de Maxwell), dos multiplicaciones que no se pliegan en
+       float. `glsl_fold_ipa_w` lee `v` directamente donde el registro vale `1 / w` seguro: desde una escritura fuera
+       de todo `if` (sin `break` ni `return` antes) hasta la siguiente escritura del registro, en shaders sin bucles
+       (`do { } while (false)` no lo es). Pliega en 597 de los 600 fragment shaders de una caché de juego que tienen el
+       patrón; no toca el multiplicador `w / clip.w` de las partículas suaves.
+     En ACO (Radeon 660M, `VK_KHR_pipeline_executable_properties`), sobre 662 fragment shaders de una caché de juego:
+     −18,5 % de instrucciones (solo `NMin`/`NClamp`, −10,6 %), mediana −18,6 % por shader; VGPR: menos en 205, más
+     en 1; ondas por SIMD: más en 74, menos en 1. `tools/test_translate.sh 20000 6 glsl`: 0 fallos de compilación y de
+     validación.
+     Un traductor nuevo: la precompilación de shaders se vuelve a hacer.
+     Medido sobre `test` (36a02bc, con #108), 3+3 pasadas alternas sin límite de FPS a 1280x720, con la GPU al
+     ~99 %: GPU por frame −3,0 % en Kakariko, −2,6 % en el establo del río y −4,4 % en la puerta de la Ciudad Gerudo
+     (las dos últimas por encima del ruido); FPS +1,2, +2,1 y −0,7 % (dentro del ruido; en otra serie con Hateno,
+     Kakariko +2,0 % y el establo +3,1 %, por encima).
    - Herramientas de diagnóstico:
      - `SAVAGEWIND_THREAD_DUMP_AT=<s>,<s>`: estado, núcleo y cadena de llamadas de cada hilo; para los que
        esperan un mutex, también su palabra (el handle del dueño).
