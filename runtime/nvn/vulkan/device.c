@@ -1183,7 +1183,7 @@ static void recreate_swapchain(void) {
 // next frame is drawn); vkQueuePresentKHR and vkAcquireNextImageKHR take sc_lock (the swapchain is externally
 // synchronized). The next frame begins once only a game frame after a generated one is still waiting (vk_frame_begin:
 // one frame at a time otherwise, as before); a swapchain change and teardown wait for them all.
-// SAVAGEWIND_VK_PRESENT_THREAD=0 (or a family with one queue): presents on the calling thread, as before.
+// Default: presents on the calling thread. Set SAVAGEWIND_VK_PRESENT_THREAD=1 to opt into a separate present thread (second queue).
 static pthread_mutex_t pres_m = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t pres_cv = PTHREAD_COND_INITIALIZER;
 static pthread_mutex_t sc_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -1245,7 +1245,9 @@ static bool present_threaded(void) {
     static int on = -1;
     if (on < 0) {
         const char *e = getenv("SAVAGEWIND_VK_PRESENT_THREAD");
-        on = g_vk.present_queue != g_vk.queue && !(e && !strcmp(e, "0"));
+        // Some hybrid-GPU/driver configurations lose the device with a separate present thread.
+        // Keep the conservative single-thread path by default; preserve an opt-in for benchmarking.
+        on = g_vk.present_queue != g_vk.queue && e && !strcmp(e, "1");
         if (on) { pthread_t t; pthread_create(&t, NULL, present_thread, NULL); }
         LOG("[vk] presents on %s\n", on ? "a thread of their own (second queue)" : "the calling thread");
     }
