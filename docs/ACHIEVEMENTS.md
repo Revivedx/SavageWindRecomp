@@ -21,8 +21,10 @@ Savage Wind has a small achievement system that never touches the game: it reads
   disappear (`ach_game_gone`, from the watcher), or a save is read that has no progress at all on any achievement (a
   value a new game starts with, like the three hearts, isn't progress). Then that playthrough starts over, and what it
   earns again is announced again. The game deletes nothing for a new game: it writes it over one slot and leaves the old
-  playthrough's saves in the others, so the new game's first save also marks when it began (`!since` in
-  `achievements.txt`), and saves written before then no longer count. `SAVAGEWIND_LOG_SAVES=1` logs what the game
+  playthrough's saves in the others, so the new game's first save also notes those other slots' files as they are then
+  (`!stale <tab> file time <tab> path` in `achievements.txt`): they don't count until they change. Not by their age: a
+  save copied in from elsewhere (a backup, a 100% save) keeps the time it was first written at and still counts.
+  `SAVAGEWIND_LOG_SAVES=1` logs what the game
   creates, deletes and renames in the save folder.
 - **What is kept** (`achievements.txt` in the data root, next to `savagewind.ini`): a `@ <tab> <profile folder>` line per
   playthrough, then `id <tab> unix time` for each achievement it has: that is what remembers what was already announced.
@@ -86,7 +88,8 @@ isn't saved under that name: `ach_tool diff` on a save before and after leaving 
 - `Defeated_<actor>_Num`: kills of each enemy (`Defeated_Enemy_Lynel_Dark_Num`, `Defeated_Enemy_GanonBeast_Num`, ...).
 - `IsRegisteredPictureBook_<actor>`: that Compendium entry is registered. `IsGet_<actor>`: you have had that item (dishes are
   `IsGet_Item_Cook_*`, runes `IsGet_Obj_Magnetglove`, `IsGet_Obj_StopTimer`, `IsGet_Obj_IceMaker`, `IsGet_Obj_Camera`,
-  `IsGet_Obj_RemoteBomb`, `IsGet_Obj_RemoteBombCube`).
+  `IsGet_Obj_RemoteBomb`; `IsGet_Obj_RemoteBombCube` stays 0 even in a 100% save: the round and cube bombs are one rune).
+- `IsGet_Weapon_Sword_070`: the Master Sword (`IsGet_Weapon_Sword_080` is something else: 0 in a 100% save).
 - `MapTower_01` .. `MapTower_15`: Sheikah Towers activated.
 
 Not in the saves (no flag found, so no achievement): the 12 memories, the Great Fairies, reflecting a Guardian beam, Flurry
@@ -104,7 +107,7 @@ name, fix it in `achievements_defs.c`.
 | `ancient_parts` | `IsGet_Item_Enemy_26` .. `31`: Ancient Gear, Screw, Spring, Shaft, Core and Giant Ancient Core |
 | `dark_armor` | `IsGet_Armor_160_Head`, `_Upper`, `_Lower`: the Dark Set (Dark Hood, Tunic, Trousers) |
 | `hylian_shield` | `IsGet_Weapon_Shield_030` |
-| `old_memories` | `IsGet_Weapon_Sword_080` (Master Sword) + `IsGet_Weapon_Shield_030` |
+| `old_memories` | `IsGet_Weapon_Sword_070` (Master Sword) + `IsGet_Weapon_Shield_030` |
 | `horse_registered` | any of the 6 horse-name slots is not empty |
 | `horse_iwata` | any slot holds the name "Satoru Iwata" (or "Iwata Satoru"), ignoring case and blanks |
 

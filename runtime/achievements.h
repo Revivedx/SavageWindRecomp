@@ -79,7 +79,7 @@ void ach_set_active(const char *save_path);  // the game opened this game_data.s
 // Returns how many toasts that queued.
 int ach_update(const char *save_path, const AchSave *s, time_t now);
 // The same, given when the save was written (its file time): a new game is written over one slot only, so a save with no
-// progress also marks when the new game began, and saves of that playthrough written before then are left out.
+// progress also notes the playthrough's other slots' files as they are then, and those are left out until they change.
 int ach_update_at(const char *save_path, const AchSave *s, time_t now, time_t written);
 
 typedef struct {

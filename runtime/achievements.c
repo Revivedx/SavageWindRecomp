@@ -5,11 +5,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #define MAX_ACH 256
 #define MAX_EXTRA 16  // lines of achievements.txt for ids this build doesn't know: kept as they are
 #define MAX_SLOTS 32  // playthroughs whose achievements are kept
 #define MAX_TOAST 32
+#define MAX_STALE 16  // slots of one playthrough noted as left from the one before (the game has up to 8)
 
 // ------------------------------------------------------------------ the save image
 uint32_t ach_crc32(const char *s) {
@@ -192,11 +194,15 @@ void ach_def_flags(const AchDef *d, void (*cb)(const char *name, void *user), vo
 // playthrough being played. Once earned (and announced) in a playthrough one stays earned and is never announced again,
 // whichever of its saves is loaded; a new game (the save has no progress at all, or its files were all deleted) starts over.
 // The game doesn't delete the old playthrough's saves for a new game: it writes the new one over one slot and leaves the
-// others as they were, so `since` (when that new game's first save was written) keeps those older saves from counting.
+// others as they were. So the new game's first save also notes the other slots' files as they are then (`stale`: path and
+// file time): those don't count while they stay the same. Not their age: a save copied in from elsewhere (a backup, a
+// 100% save) keeps the time it was written at, older than any new game, and still counts.
 typedef struct {
     char key[512];  // normalized path of the game_data.sav
     bool used;
-    time_t since;   // the playthrough's new game: saves written before it belong to the one before (0: none seen)
+    char stale_path[MAX_STALE][300];  // the old playthrough's saves left in the other slots, and their file times
+    time_t stale_at[MAX_STALE];
+    int n_stale;
     bool unlocked[MAX_ACH];
     time_t at[MAX_ACH];
     uint32_t cur[MAX_ACH], target[MAX_ACH];
@@ -282,7 +288,16 @@ void ach_state_load(const char *path) {
             continue;
         }
         if (cur < 0) continue;
-        if (!strncmp(line, "!since\t", 7)) { slots[cur].since = (time_t)atoll(line + 7); continue; }
+        if (!strncmp(line, "!stale\t", 7)) {  // "!stale<tab>file time<tab>path": a save left from the playthrough before
+            Slot *sl = &slots[cur];
+            char *p = strchr(line + 7, '\t');
+            if (p && sl->n_stale < MAX_STALE) {
+                sl->stale_at[sl->n_stale] = (time_t)atoll(line + 7);
+                snprintf(sl->stale_path[sl->n_stale++], sizeof sl->stale_path[0], "%s", p + 1);
+            }
+            continue;
+        }
+        if (line[0] == '!') continue;  // (an older build's "!since": file ages, which copied saves defeated)
         char *tab = strchr(line, '\t');
         long long at = tab ? atoll(tab + 1) : 0;
         if (tab) *tab = 0;
@@ -304,11 +319,11 @@ static void state_save_locked(void) {  // (lock held)
     for (int k = 0; k < MAX_SLOTS; k++) {
         const Slot *sl = &slots[k];
         if (!sl->used) continue;
-        bool any = sl->n_extra > 0 || sl->since > 0;
+        bool any = sl->n_extra > 0 || sl->n_stale > 0;
         for (int i = 0; i < g_ach_count && i < MAX_ACH && !any; i++) any = sl->unlocked[i];
         if (!any) continue;
         fprintf(f, "@\t%s\n", sl->key);
-        if (sl->since > 0) fprintf(f, "!since\t%lld\n", (long long)sl->since);
+        for (int i = 0; i < sl->n_stale; i++) fprintf(f, "!stale\t%lld\t%s\n", (long long)sl->stale_at[i], sl->stale_path[i]);
         for (int i = 0; i < g_ach_count && i < MAX_ACH; i++)
             if (sl->unlocked[i]) fprintf(f, "%s\t%lld\n", g_ach_defs[i].id, (long long)sl->at[i]);
         for (int i = 0; i < sl->n_extra; i++) fprintf(f, "%s\n", sl->extra[i]);
@@ -350,6 +365,20 @@ void ach_set_active(const char *save_path) {
 
 int ach_update(const char *save_path, const AchSave *s, time_t now) { return ach_update_at(save_path, s, now, 0); }
 
+// (lock held) A new game began with the save at `path` (normalized): the playthrough's other slots (<profile>/<n>/
+// game_data.sav) hold what is left of the one before. Each is noted with its file time; it counts again once it changes.
+static void note_stale(Slot *sl, const char *path) {
+    sl->n_stale = 0;
+    for (int n = 0; n < 32 && sl->n_stale < MAX_STALE; n++) {
+        char p[600];
+        struct stat st;
+        snprintf(p, sizeof p, "%s/%d/game_data.sav", sl->key, n);
+        if (!strcmp(p, path) || stat(p, &st)) continue;
+        sl->stale_at[sl->n_stale] = st.st_mtime;
+        snprintf(sl->stale_path[sl->n_stale++], sizeof sl->stale_path[0], "%s", p);
+    }
+}
+
 int ach_update_at(const char *save_path, const AchSave *s, time_t now, time_t written) {
     if (!ach_save_ok(s)) return 0;
     int fresh = 0;
@@ -358,7 +387,16 @@ int ach_update_at(const char *save_path, const AchSave *s, time_t now, time_t wr
     int k = find_slot(save_path, true);
     if (k < 0) { pthread_mutex_unlock(&lock); return 0; }
     Slot *sl = &slots[k];
-    if (written > 0 && written < sl->since) { pthread_mutex_unlock(&lock); return 0; }  // the playthrough before this new game
+    char path[512];
+    norm_key(save_path, path, sizeof path);
+    for (int i = 0; i < sl->n_stale; i++) {
+        if (strcmp(sl->stale_path[i], path)) continue;
+        if (written > 0 && written == sl->stale_at[i]) { pthread_mutex_unlock(&lock); return 0; }  // left from before
+        sl->stale_at[i] = sl->stale_at[--sl->n_stale];  // (written again or replaced since: it counts now)
+        memcpy(sl->stale_path[i], sl->stale_path[sl->n_stale], sizeof sl->stale_path[0]);
+        dirty = true;
+        break;
+    }
     sl->touched = now;
     latest_slot = k;
     // A save with no progress at all on anything is a new game: whatever the playthrough had before is gone.
@@ -372,7 +410,7 @@ int ach_update_at(const char *save_path, const AchSave *s, time_t now, time_t wr
     if (!any_progress) {
         for (int i = 0; i < g_ach_count && i < MAX_ACH; i++) dirty |= sl->unlocked[i], sl->unlocked[i] = false, sl->at[i] = 0;
         sl->n_extra = 0;
-        if (written > sl->since) sl->since = written, dirty = true;  // (the other slots' older saves no longer count)
+        if (written > 0) note_stale(sl, path), dirty = true;  // (the other slots' saves, as they are now, no longer count)
         if (dirty) toast_n = 0;  // (nothing of the old playthrough is announced any more)
     }
     for (int i = 0; i < g_ach_count && i < MAX_ACH; i++) {

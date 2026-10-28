@@ -36,8 +36,8 @@ const AchDef g_ach_defs[] = {
     // Dishes: IsGet_Item_Cook_* (dishes you have had)
     {"cook_10", "Improvised Chef", "Cook 10 different recipes.", ACH_SET, "", 0, 0, 10, L_cook, ACH_N(L_cook)},
     // (the save records getting a rune, not using it)
-    {"runes", "Field Engineer", "Get every Sheikah Slate rune.", ACH_ALL,
-     "IsGet_Obj_RemoteBomb,IsGet_Obj_RemoteBombCube,IsGet_Obj_Magnetglove,IsGet_Obj_StopTimer,IsGet_Obj_IceMaker,IsGet_Obj_Camera", 0, 0, 6},
+    {"runes", "Field Engineer", "Get every Sheikah Slate rune.", ACH_ALL,  // (round and cube bombs: one rune, no Cube flag)
+     "IsGet_Obj_RemoteBomb,IsGet_Obj_Magnetglove,IsGet_Obj_StopTimer,IsGet_Obj_IceMaker,IsGet_Obj_Camera", 0, 0, 5},
     {"guardians_10", "Guardian Hunter", "Destroy 10 Guardians.", ACH_SUM, "", 0, 0, 10, L_guardians, ACH_N(L_guardians)},
 
     // ---- the first stretch of the adventure ----
@@ -54,14 +54,14 @@ const AchDef g_ach_defs[] = {
      "Clear_RemainsWater,Clear_RemainsFire,Clear_RemainsElectric,Clear_RemainsWind", 0, 0, 4},
 
     // ---- mid game: gear and the long ones start ----
-    // IsGet_<actor> = "you have had that item" (like IsGet_Weapon_Sword_080 below). Actor names, from BOTW's item tables:
+    // IsGet_<actor> = "you have had that item" (like IsGet_Weapon_Sword_070 below). Actor names, from BOTW's item tables:
     //   Item_Enemy_26..31 = Ancient Gear, Screw, Spring, Shaft, Core, Giant Ancient Core (the six ancient parts)
     //   Armor_160_Head / _Upper / _Lower = Dark Hood, Dark Tunic, Dark Trousers (the Dark Set: Dark Link's look)
     //   Weapon_Shield_030 = Hylian Shield
     // They follow the pattern of the flags already checked against a real save, but run `tools/ach_tool verify` on yours.
     {"hylian_shield", "The Legendary Shield", "Get the Hylian Shield.", ACH_FLAG, "IsGet_Weapon_Shield_030", 0, 0, 1},
-    {"master_sword", "Blade That Seals the Darkness", "Pull the Master Sword.", ACH_FLAG, "IsGet_Weapon_Sword_080", 0, 0, 1},
-    {"old_memories", "Old Memories", "Get the Master Sword and the Hylian Shield.", ACH_ALL, "IsGet_Weapon_Sword_080,IsGet_Weapon_Shield_030", 0, 0, 2},
+    {"master_sword", "Blade That Seals the Darkness", "Pull the Master Sword.", ACH_FLAG, "IsGet_Weapon_Sword_070", 0, 0, 1},
+    {"old_memories", "Old Memories", "Get the Master Sword and the Hylian Shield.", ACH_ALL, "IsGet_Weapon_Sword_070,IsGet_Weapon_Shield_030", 0, 0, 2},
     {"ancient_parts", "Ancient Collection", "Get every type of ancient part.", ACH_ALL,
      "IsGet_Item_Enemy_26,IsGet_Item_Enemy_27,IsGet_Item_Enemy_28,IsGet_Item_Enemy_29,IsGet_Item_Enemy_30,IsGet_Item_Enemy_31", 0, 0, 6},
     {"cook_50", "Camp Cook", "Cook 50 different recipes.", ACH_SET, "", 0, 0, 50, L_cook, ACH_N(L_cook)},

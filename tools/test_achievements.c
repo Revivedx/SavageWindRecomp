@@ -5,6 +5,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <utime.h>
 #ifdef _WIN32  // (MinGW: mkdir takes one argument, no mkdtemp)
 #include <direct.h>
 #include <windows.h>
@@ -56,6 +57,11 @@ static int idx(const char *id) {
 #define SLOT_B "save/save_2/0/game_data.sav"   // (another playthrough)
 static bool is_unlocked(const char *id) { AchInfo in; ach_info(idx(id), &in); return in.unlocked; }
 static void write_file(const char *path, const Buf *b) { FILE *f = fopen(path, "wb"); fwrite(b->d, 1, b->n, f); fclose(f); }
+static void write_file_at(const char *path, const Buf *b, time_t when) {  // ... with that file time
+    write_file(path, b);
+    struct utimbuf ut = {when, when};
+    utime(path, &ut);
+}
 
 int main(void) {
     char tmpl[512];
@@ -142,14 +148,14 @@ int main(void) {
         // the Dark Set needs the three pieces; the shield is one flag; the old memories need sword and shield
         Buf gb = new_save();
         add(&gb, "IsGet_Armor_160_Head", 1); add(&gb, "IsGet_Armor_160_Upper", 1); add(&gb, "IsGet_Armor_160_Lower", 0);
-        add(&gb, "IsGet_Weapon_Sword_080", 1);
+        add(&gb, "IsGet_Weapon_Sword_070", 1);
         AchSave gs = as(&gb);
         CHECK(!ach_eval(&g_ach_defs[idx("dark_armor")], &gs, &c3, &t3) && c3 == 2 && t3 == 3);
         CHECK(!ach_eval(&g_ach_defs[idx("hylian_shield")], &gs, &c3, &t3));
         CHECK(!ach_eval(&g_ach_defs[idx("old_memories")], &gs, &c3, &t3) && c3 == 1 && t3 == 2);
         Buf gb2 = new_save();
         add(&gb2, "IsGet_Armor_160_Head", 1); add(&gb2, "IsGet_Armor_160_Upper", 1); add(&gb2, "IsGet_Armor_160_Lower", 1);
-        add(&gb2, "IsGet_Weapon_Shield_030", 1); add(&gb2, "IsGet_Weapon_Sword_080", 1);
+        add(&gb2, "IsGet_Weapon_Shield_030", 1); add(&gb2, "IsGet_Weapon_Sword_070", 1);
         AchSave gs2 = as(&gb2);
         CHECK(ach_eval(&g_ach_defs[idx("dark_armor")], &gs2, &c3, &t3) &&
               ach_eval(&g_ach_defs[idx("hylian_shield")], &gs2, &c3, &t3) && ach_eval(&g_ach_defs[idx("old_memories")], &gs2, &c3, &t3));
@@ -346,29 +352,38 @@ int main(void) {
         free(pcm);
     }
 
-    // a new game as the game really does it: written over one slot, the old playthrough's saves left in the others.
-    // Whatever order they're read in, the older saves no longer count; that holds after a restart, and the new game's
-    // own later saves unlock (and are announced) again.
+    // a new game as the game really does it: written over one slot, the old playthrough's saves left in the others
+    // (real files: the new game's first save notes them with their file times). Whatever order they're read in, those
+    // don't count, after a restart too; the new game's own later saves do. So does a save copied in afterwards, though
+    // it keeps an older file time than the new game's (a 100% save brought from a backup).
     {
-#define SLOT_N0 "save/save_7/0/game_data.sav"
-#define SLOT_N1 "save/save_7/1/game_data.sav"
-#define SLOT_N2 "save/save_7/2/game_data.sav"
+#define SLOT_N0 "nsave/save_7/0/game_data.sav"
+#define SLOT_N1 "nsave/save_7/1/game_data.sav"
+#define SLOT_N2 "nsave/save_7/2/game_data.sav"
+#define SLOT_N3 "nsave/save_7/3/game_data.sav"
+        static const char *const dirs[] = {"nsave", "nsave/save_7", "nsave/save_7/0", "nsave/save_7/1", "nsave/save_7/2",
+                                           "nsave/save_7/3"};
+        for (size_t i = 0; i < sizeof dirs / sizeof dirs[0]; i++) MKDIR(dirs[i]);
+        const time_t T0 = 1700000000;  // (file times: Windows keeps none before 1980)
         AchSave cur_b = as(&b);
         Buf fresh_buf = new_save();
         add(&fresh_buf, "MaxHartValue", 12);  // (a real new game: three hearts)
         AchSave ng = as(&fresh_buf);
+        write_file_at(SLOT_N0, &b, T0 + 100), write_file_at(SLOT_N2, &b, T0 + 150), write_file_at(SLOT_N1, &fresh_buf, T0 + 200);
         ach_set_active(SLOT_N1);
         while (ach_toast_take(&t)) {}
-        CHECK(ach_update_at(SLOT_N0, &cur_b, 6000, 100) > 0 && is_unlocked("paraglider"));     // (the old playthrough)
-        CHECK(ach_update_at(SLOT_N1, &ng, 6001, 200) == 0 && ach_unlocked_total() == 0);  // New Game, first save
+        CHECK(ach_update_at(SLOT_N0, &cur_b, 6000, T0 + 100) > 0 && is_unlocked("paraglider"));     // (the old playthrough)
+        CHECK(ach_update_at(SLOT_N1, &ng, 6001, T0 + 200) == 0 && ach_unlocked_total() == 0);  // New Game, first save
         CHECK(ach_toast_pending() == 0);                                                  // (old notices dropped)
-        CHECK(ach_update_at(SLOT_N2, &cur_b, 6002, 150) == 0 && ach_unlocked_total() == 0);  // an old save read later
+        CHECK(ach_update_at(SLOT_N2, &cur_b, 6002, T0 + 150) == 0 && ach_unlocked_total() == 0);  // an old save read later
         ach_state_load("achievements.txt");
         ach_set_active(SLOT_N1);
-        CHECK(ach_update_at(SLOT_N0, &cur_b, 6003, 100) == 0 && ach_unlocked_total() == 0);  // after a restart too
-        CHECK(ach_update_at(SLOT_N1, &ng, 6004, 200) == 0 && ach_unlocked_total() == 0);
-        CHECK(ach_update_at(SLOT_N2, &os, 6005, 300) == 1 && is_unlocked("paraglider"));  // the new game's own progress
+        CHECK(ach_update_at(SLOT_N0, &cur_b, 6003, T0 + 100) == 0 && ach_unlocked_total() == 0);  // after a restart too
+        CHECK(ach_update_at(SLOT_N1, &ng, 6004, T0 + 200) == 0 && ach_unlocked_total() == 0);
+        CHECK(ach_update_at(SLOT_N2, &os, 6005, T0 + 300) == 1 && is_unlocked("paraglider"));  // the new game's own progress
         CHECK(ach_toast_take(&t) && t == idx("paraglider"));
+        write_file_at(SLOT_N3, &b, T0 + 50);  // (copied in: its file time is older than the new game's)
+        CHECK(ach_update_at(SLOT_N3, &cur_b, 6006, T0 + 50) > 0 && is_unlocked("beast_ruta"));
         free(fresh_buf.d);
     }
 
