@@ -95,7 +95,8 @@ static bool at_least(const AchSave *s, const char *name, uint32_t min) {
 bool ach_eval(const AchDef *d, const AchSave *s, uint32_t *cur, uint32_t *target) {
     uint32_t c = 0, t = d->min ? d->min : 1;
     switch (d->kind) {
-    case ACH_FLAG: {
+    case ACH_FLAG:
+    case ACH_MASTER: {
         // `flag` may list alternative names ("A,B"): the game's counter has had more than one candidate name, so the
         // highest value among those present in the save counts.
         char list[256];
@@ -176,7 +177,8 @@ bool ach_eval(const AchDef *d, const AchSave *s, uint32_t *cur, uint32_t *target
 
 void ach_def_flags(const AchDef *d, void (*cb)(const char *name, void *user), void *user) {
     switch (d->kind) {
-    case ACH_FLAG: {
+    case ACH_FLAG:
+    case ACH_MASTER: {
         char list[256];
         snprintf(list, sizeof list, "%s", d->flag);
         for (char *save = NULL, *n = strtok_r(list, ",", &save); n; n = strtok_r(NULL, ",", &save)) cb(n, user);
@@ -231,6 +233,8 @@ typedef struct {
     int n_extra;
     time_t written;  // when the save was written (its file time; when it was read, without one)
     bool writing;    // the game opened it to write: its next contents are the play's (ach_set_active)
+    uint32_t raw[MAX_ACH];  // ACH_MASTER: its flag's value in the save as read, in Master Mode (not kept: a save is
+                            // read again at start)
 } Slot;
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
@@ -239,6 +243,12 @@ static bool blocked;
 static Slot slots[MAX_SLOTS];
 static int active_slot = -1;  // the save being played
 static int toasts[MAX_TOAST], toast_head, toast_n;
+static bool g_live[MAX_ACH];    // what the game's flags in memory met at the latest ach_live_update
+static time_t g_live_quiet;     // ... which takes them without notices until then (a load, a new game)
+static bool g_live_first = true;  // (the first look takes them as they are too)
+#define LIVE_SETTLE_S 10
+static bool g_global[MAX_ACH];  // ACH_MASTER achievements met in any save, and when
+static time_t g_global_at[MAX_ACH];
 
 static void norm_key(const char *path, char *out, size_t n) {  // "a//b/./c" -> "a/b/c"
     size_t k = 0;
@@ -298,6 +308,8 @@ static int find_id(const char *id) {
     return -1;
 }
 
+#define GLOBAL (-2)  // (ach_state_load: the record kept for every save)
+
 static bool is_save_path(const char *p) {
     size_t n = strlen(p);
     return n >= 13 && !strcmp(p + n - 13, "game_data.sav");
@@ -307,13 +319,17 @@ void ach_state_load(const char *path) {
     pthread_mutex_lock(&lock);
     snprintf(state_path, sizeof state_path, "%s", path);
     memset(slots, 0, sizeof slots);
+    memset(g_global, 0, sizeof g_global);
+    memset(g_live, 0, sizeof g_live);
+    g_live_quiet = 0, g_live_first = true;
     active_slot = -1;
     toast_head = toast_n = 0;
     FILE *f = fopen(path, "r");
     char line[600];
     int cur = -1;
-    // Format: "@<tab>path of a game_data.sav<tab>file time", then its lines "id<tab>unix time". (Records of whole profile
-    // folders, from builds that kept one per playthrough, are dropped: the saves are read again anyway.)
+    // Format: "@<tab>path of a game_data.sav<tab>file time", then its lines "id<tab>unix time"; "@<tab>*" the ones kept
+    // for every save (ACH_MASTER). (Records of whole profile folders, from builds that kept one per playthrough, are
+    // dropped: the saves are read again anyway.)
     while (f && fgets(line, sizeof line, f)) {
         line[strcspn(line, "\r\n")] = 0;
         if (!line[0] || line[0] == '#') continue;
@@ -321,15 +337,19 @@ void ach_state_load(const char *path) {
             char *tab = strchr(line + 2, '\t');
             long long written = tab ? atoll(tab + 1) : 0;
             if (tab) *tab = 0;
-            cur = is_save_path(line + 2) ? find_key(line + 2, true) : -1;
+            cur = !strcmp(line + 2, "*") ? GLOBAL : is_save_path(line + 2) ? find_key(line + 2, true) : -1;
             if (cur >= 0) slots[cur].written = (time_t)written;
             continue;
         }
-        if (cur < 0 || line[0] == '!') continue;  // (no record / an older build's notes)
+        if (cur == -1 || line[0] == '!') continue;  // (no record / an older build's notes)
         char *tab = strchr(line, '\t');
         long long at = tab ? atoll(tab + 1) : 0;
         if (tab) *tab = 0;
         int i = find_id(line);
+        if (cur == GLOBAL) {
+            if (i >= 0 && g_ach_defs[i].kind == ACH_MASTER) g_global[i] = true, g_global_at[i] = (time_t)at;
+            continue;
+        }
         if (i >= 0) slots[cur].unlocked[i] = true, slots[cur].at[i] = (time_t)at;
         else if (slots[cur].n_extra < MAX_EXTRA) snprintf(slots[cur].extra[slots[cur].n_extra++], sizeof slots[cur].extra[0], "%.200s\t%lld", line, at);
     }
@@ -352,6 +372,11 @@ static void state_save_locked(void) {  // (lock held)
             if (sl->unlocked[i]) fprintf(f, "%s\t%lld\n", g_ach_defs[i].id, (long long)sl->at[i]);
         for (int i = 0; i < sl->n_extra; i++) fprintf(f, "%s\n", sl->extra[i]);
     }
+    bool any = false;
+    for (int i = 0; i < g_ach_count && i < MAX_ACH; i++) any |= g_global[i];
+    if (any) fprintf(f, "@\t*\t0\n");
+    for (int i = 0; i < g_ach_count && i < MAX_ACH; i++)
+        if (g_global[i]) fprintf(f, "%s\t%lld\n", g_ach_defs[i].id, (long long)g_global_at[i]);
     bool ok = fflush(f) == 0 && !ferror(f);
     fclose(f);
     if (!ok) { remove(tmp); return; }
@@ -391,6 +416,7 @@ void ach_set_active(const char *save_path) {
 
 void ach_game_loaded(const char *save_path) {
     pthread_mutex_lock(&lock);
+    g_live_quiet = time(NULL) + LIVE_SETTLE_S;  // (the game's flags become the save's: not news)
     int i = find_slot(save_path, true);
     if (i >= 0) {
         active_slot = i;
@@ -421,7 +447,7 @@ int ach_update(const char *save_path, const AchSave *s, time_t now) { return ach
 // (lock held) Achievement i of the save sl, from whether its contents meet it; announced when `play` and the save that
 // was being played (prev) hadn't it. Returns whether the record changed.
 static bool settle(Slot *sl, const Slot *prev, int i, bool met, time_t now, bool play, int *fresh) {
-    bool had = prev && prev->unlocked[i];
+    bool had = (prev && prev->unlocked[i]) || g_live[i];  // (g_live: announced already, as it happened)
     if (!met) {
         if (!sl->unlocked[i]) return false;
         sl->unlocked[i] = false, sl->at[i] = 0;  // (a save of another playthrough written over this one)
@@ -438,6 +464,23 @@ static bool settle(Slot *sl, const Slot *prev, int i, bool met, time_t now, bool
         (*fresh)++;
     }
     return changed;
+}
+
+// A Master Mode save: the caption next to it (caption.sav, the load list's: the same format as the save) has
+// AoC_HardMode_Enabled set. Either mode can be in any slot.
+static bool master_mode_save(const char *key) {
+    char path[600];
+    const char *e = strrchr(key, '/');
+    if (!e) return false;
+    snprintf(path, sizeof path, "%.*s/caption.sav", (int)(e - key), key);
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    uint8_t buf[4096];
+    size_t n = fread(buf, 1, sizeof buf, f);
+    fclose(f);
+    AchSave c = {buf, n};
+    uint32_t v = 0;
+    return n >= 0x14 && ach_save_get(&c, ach_crc32("AoC_HardMode_Enabled"), &v) && v;
 }
 
 int ach_update_at(const char *save_path, const AchSave *s, time_t now, time_t written) {
@@ -460,10 +503,34 @@ int ach_update_at(const char *save_path, const AchSave *s, time_t now, time_t wr
     time_t when = written ? written : now;
     if (sl->written != when) sl->written = when, dirty = true;
     sl->writing = false;
+    bool master = master_mode_save(sl->key);
     for (int i = 0; i < g_ach_count && i < MAX_ACH; i++) {
         if (g_ach_defs[i].kind == ACH_META) continue;
         uint32_t cur, target;
         bool met = ach_eval(&g_ach_defs[i], s, &cur, &target);
+        if (g_ach_defs[i].kind == ACH_MASTER) {
+            // met while playing in Master Mode - a save the game writes has it, its value higher than in the one being
+            // played (Ganon beaten once more; a save loaded with it already doesn't count) - it is for every save from
+            // now on, announced this once
+            uint32_t raw = 0;
+            if (master) ach_save_get_named(s, g_ach_defs[i].flag, &raw);
+            bool more = prev && raw > prev->raw[i];
+            sl->raw[i] = raw;
+            if (met && master && play && more && !g_global[i] && !blocked) {
+                g_global[i] = true, g_global_at[i] = now, dirty = true;
+                if (play && toast_n < MAX_TOAST) toasts[(toast_head + toast_n++) % MAX_TOAST] = i, fresh++;
+                for (int k2 = 0; k2 < MAX_SLOTS; k2++) {  // (the other saves have it too, and count it for ACH_META)
+                    Slot *o = &slots[k2];
+                    if (!o->used || o == sl) continue;
+                    o->unlocked[i] = true, o->at[i] = now, o->cur[i] = o->target[i] = target;
+                    for (int m = 0; m < g_ach_count && m < MAX_ACH; m++)
+                        if (g_ach_defs[m].kind == ACH_META) o->cur[m]++;
+                }
+            }
+            sl->cur[i] = g_global[i] ? target : 0, sl->target[i] = target;
+            if (g_global[i] && !sl->unlocked[i]) sl->unlocked[i] = true, sl->at[i] = g_global_at[i], dirty = true;
+            continue;
+        }
         sl->cur[i] = cur, sl->target[i] = target;
         dirty |= settle(sl, prev, i, met, now, play, &fresh);
     }
@@ -482,6 +549,56 @@ int ach_update_at(const char *save_path, const AchSave *s, time_t now, time_t wr
     return fresh;
 }
 
+static bool live_kind(AchKind k) { return k != ACH_STR && k != ACH_META && k != ACH_MASTER; }
+
+int ach_live_update(const AchSave *s, time_t now) {
+    if (!ach_save_ok(s)) return 0;
+    static bool met[MAX_ACH];
+    static uint32_t cur[MAX_ACH], target[MAX_ACH];
+    int fresh = 0;
+    bool dirty = false, back = false;
+    pthread_mutex_lock(&lock);
+    for (int i = 0; i < g_ach_count && i < MAX_ACH; i++) {
+        cur[i] = target[i] = 0;
+        met[i] = live_kind(g_ach_defs[i].kind) && ach_eval(&g_ach_defs[i], s, &cur[i], &target[i]);
+        back |= g_live[i] && !met[i];
+    }
+    if (back || g_live_first) g_live_quiet = now + LIVE_SETTLE_S;  // (a load or a new game: the flags go back)
+    g_live_first = false;
+    bool quiet = now < g_live_quiet;
+    static bool was_quiet;
+    if (was_quiet && !quiet) {  // (settled: what the game's flags meet now, for the log)
+        int n = 0;
+        for (int i = 0; i < g_ach_count && i < MAX_ACH; i++) n += met[i];
+        fprintf(stderr, "[achievements] the game's flags settled: %d achievements met\n", n);
+    }
+    was_quiet = quiet;
+    Slot *sl = active_slot >= 0 ? &slots[active_slot] : NULL;
+    for (int i = 0; sl && !quiet && i < g_ach_count && i < MAX_ACH; i++)  // (the progress shown: as it is now)
+        if (live_kind(g_ach_defs[i].kind) && target[i]) sl->cur[i] = cur[i], sl->target[i] = target[i];
+    for (int i = 0; i < g_ach_count && i < MAX_ACH; i++) {
+        bool news = met[i] && !g_live[i];
+        g_live[i] = met[i];
+        if (!news || quiet || blocked) continue;
+        if (sl && !sl->unlocked[i]) sl->unlocked[i] = true, sl->at[i] = now, dirty = true;
+        if (toast_n < MAX_TOAST) toasts[(toast_head + toast_n++) % MAX_TOAST] = i, fresh++;
+    }
+    // ACH_META: the save being played with every other one (after them: its notice comes last)
+    for (int i = 0; sl && !quiet && !blocked && i < g_ach_count && i < MAX_ACH; i++) {
+        if (g_ach_defs[i].kind != ACH_META || sl->unlocked[i]) continue;
+        uint32_t have = 0, all = 0;
+        for (int j = 0; j < g_ach_count && j < MAX_ACH; j++)
+            if (g_ach_defs[j].kind != ACH_META) all++, have += sl->unlocked[j];
+        sl->cur[i] = have, sl->target[i] = all;
+        if (have != all || !all) continue;
+        sl->unlocked[i] = true, sl->at[i] = now, dirty = true;
+        if (toast_n < MAX_TOAST) toasts[(toast_head + toast_n++) % MAX_TOAST] = i, fresh++;
+    }
+    if (dirty) state_save_locked();
+    pthread_mutex_unlock(&lock);
+    return fresh;
+}
+
 void ach_info(int i, AchInfo *out) {
     memset(out, 0, sizeof *out);
     if (i < 0 || i >= g_ach_count || i >= MAX_ACH) return;
@@ -495,6 +612,11 @@ void ach_info(int i, AchInfo *out) {
         out->cur = sl->unlocked[i] && sl->target[i] ? sl->target[i] : sl->cur[i];
         out->target = sl->target[i];
     }
+    if (g_ach_defs[i].kind == ACH_MASTER && g_global[i]) {
+        out->unlocked = true, out->at = g_global_at[i];
+        if (!out->target) out->target = 1;
+        out->cur = out->target;
+    }
     pthread_mutex_unlock(&lock);
 }
 
@@ -502,7 +624,8 @@ int ach_unlocked_total(void) {
     int n = 0;
     pthread_mutex_lock(&lock);
     int k = view_slot();
-    for (int i = 0; k >= 0 && i < g_ach_count && i < MAX_ACH; i++) n += slots[k].unlocked[i];
+    for (int i = 0; i < g_ach_count && i < MAX_ACH; i++)
+        n += g_ach_defs[i].kind == ACH_MASTER && g_global[i] ? 1 : k >= 0 && slots[k].unlocked[i];
     pthread_mutex_unlock(&lock);
     return n;
 }

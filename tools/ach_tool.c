@@ -74,7 +74,7 @@ static const char *known_name(uint32_t h, char (*extra)[256], uint32_t *extra_h,
     for (size_t i = 0; i < n_extra; i++) if (extra_h[i] == h) return extra[i];
     for (int i = 0; i < g_ach_count; i++) {
         const AchDef *d = &g_ach_defs[i];
-        if (d->kind == ACH_FLAG && !strchr(d->flag, ',') && ach_crc32(d->flag) == h) return d->flag;
+        if ((d->kind == ACH_FLAG || d->kind == ACH_MASTER) && !strchr(d->flag, ',') && ach_crc32(d->flag) == h) return d->flag;
     }
     return NULL;
 }

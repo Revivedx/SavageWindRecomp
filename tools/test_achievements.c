@@ -20,6 +20,8 @@
 const char *g_save_dir = "save";
 static bool warp;
 bool test_warp_active(void) { return warp; }
+void ach_live_start(void) {}  // (the game's memory: runtime/achievements_live.c)
+void ach_live_stop(void) {}
 
 static int fails;
 #define CHECK(c) do { if (!(c)) { fprintf(stderr, "FAIL %s:%d  %s\n", __FILE__, __LINE__, #c); fails++; } } while (0)
@@ -409,6 +411,116 @@ int main(void) {
         ach_game_loaded(SLOT_N0);
         CHECK(ach_unlocked_total() == 9);
         free(fresh_buf.d);
+    }
+
+    // live: the game's flags from its memory. The first look is quiet; then what becomes met is announced at once, for
+    // the save being played, and the save written after it doesn't announce it again. A load and a new game (flags
+    // going back) are quiet for a while, then news is announced again.
+    {
+#define SLOT_L "lsave/save_4/0/game_data.sav"
+        unlink("achievements.txt");
+        ach_state_load("achievements.txt");
+        while (ach_toast_take(&t)) {}
+        Buf l0 = new_save(), l1 = new_save(), lz = new_save();
+        add(&l0, "IsGet_PlayerStole2", 1);
+        add(&l1, "IsGet_PlayerStole2", 1);
+        add(&l1, "MaxHartValue", 80);
+        add(&lz, "MaxHartValue", 12);
+        AchSave a0 = as(&l0), a1 = as(&l1), az = as(&lz);
+        ach_game_loaded(SLOT_L);
+        CHECK(ach_wants_reread(SLOT_L) && ach_update(SLOT_L, &a0, 8000) == 0);
+        CHECK(ach_live_update(&a0, 8000) == 0);                                   // (first look, and a load: quiet)
+        CHECK(ach_live_update(&a1, 8020) == 1 && is_unlocked("hearts_20"));      // 20 hearts: at once
+        CHECK(ach_toast_take(&t) && t == idx("hearts_20"));
+        CHECK(ach_live_update(&a1, 8021) == 0);                                   // (the same: nothing)
+        {   // the progress shown follows the game too, before any save: 3 of the 135 dishes
+            Buf lc = new_save();
+            add(&lc, "IsGet_PlayerStole2", 1), add(&lc, "MaxHartValue", 80);
+            add(&lc, "IsGet_Item_Cook_A_01", 1), add(&lc, "IsGet_Item_Cook_A_02", 1), add(&lc, "IsGet_Item_Cook_B_01", 1);
+            AchSave ac = as(&lc);
+            ach_live_update(&ac, 8022);
+            ach_info(idx("cook_10"), &in);
+            CHECK(in.cur == 3 && in.target == 10 && !in.unlocked);
+            ach_live_update(&a1, 8023);  // (as it was)
+            free(lc.d);
+        }
+        ach_set_active(SLOT_L);
+        CHECK(ach_update(SLOT_L, &a1, 8030) == 0 && ach_toast_pending() == 0);    // the save after it: not again
+        CHECK(ach_live_update(&az, 8040) == 0);                                   // a new game: flags go back, quiet
+        CHECK(ach_live_update(&a0, 8041) == 0);                                   // (still settling)
+        CHECK(ach_live_update(&a1, 8060) == 1 && ach_toast_take(&t) && t == idx("hearts_20"));  // played up to it again
+        ach_game_loaded(SLOT_L);
+        CHECK(ach_live_update(&az, 8070) == 0 && ach_live_update(&a1, 8072) == 0);  // (a load: quiet)
+        free(l0.d), free(l1.d), free(lz.d);
+        unlink("achievements.txt");
+        ach_state_load("achievements.txt");
+    }
+
+    // Master Mode: a save is one when its caption (caption.sav next to it) has AoC_HardMode_Enabled, in any slot.
+    // Calamity Ganon beaten while playing in it unlocks "master_mode" for every save, a new normal game's too,
+    // announced once and kept after a restart. A Master Mode save loaded with it already beaten doesn't count, nor
+    // does beating it in normal mode.
+    {
+#define SLOT_H6 "hsave/save_3/6/game_data.sav"
+#define SLOT_H2 "hsave/save_3/2/game_data.sav"
+#define SLOT_H0 "hsave/save_3/0/game_data.sav"
+#define SLOT_H1 "hsave/save_3/1/game_data.sav"
+        MKDIR("hsave"), MKDIR("hsave/save_3"), MKDIR("hsave/save_3/0"), MKDIR("hsave/save_3/1"), MKDIR("hsave/save_3/2"),
+            MKDIR("hsave/save_3/6");
+        Buf hard = new_save(), normal = new_save();
+        add(&hard, "AoC_HardMode_Enabled", 1);
+        add(&normal, "AoC_HardMode_Enabled", 0);
+        write_file("hsave/save_3/6/caption.sav", &hard), write_file("hsave/save_3/2/caption.sav", &hard);
+        write_file("hsave/save_3/0/caption.sav", &normal), write_file("hsave/save_3/1/caption.sav", &normal);
+        Buf beat = new_save();
+        add(&beat, "Defeated_Enemy_GanonBeast_Num", 1);
+        AchSave bs = as(&beat);
+        Buf ng2 = new_save();
+        add(&ng2, "MaxHartValue", 12);
+        AchSave ns2 = as(&ng2);
+        bool found;
+        // a Master Mode save made elsewhere, Ganon beaten: loaded, then saved over while playing it
+        while (ach_toast_take(&t)) {}
+        ach_game_loaded(SLOT_H6);
+        CHECK(ach_wants_reread(SLOT_H6) && ach_update(SLOT_H6, &bs, 7000) == 0 && !is_unlocked("master_mode"));
+        ach_set_active(SLOT_H6);
+        ach_update(SLOT_H6, &bs, 7001);
+        CHECK(!is_unlocked("master_mode"));
+        {   // ... and Ganon beaten once more in it, while playing: that counts
+            Buf again = new_save();
+            add(&again, "Defeated_Enemy_GanonBeast_Num", 2);
+            AchSave as2 = as(&again);
+            while (ach_toast_take(&t)) {}
+            ach_set_active(SLOT_H6);
+            ach_update(SLOT_H6, &as2, 7001);
+            CHECK(is_unlocked("master_mode") && ach_toast_take(&t) && t == idx("master_mode"));
+            free(again.d);
+            ach_state_load("achievements.txt");  // (the rest of the test from scratch: no saves, nothing kept)
+            unlink("achievements.txt");
+            ach_state_load("achievements.txt");
+        }
+        // beaten in normal mode, while playing
+        ach_game_loaded(SLOT_H1);
+        CHECK(ach_wants_reread(SLOT_H1) && ach_update(SLOT_H1, &ns2, 7002) == 0);
+        ach_set_active(SLOT_H0);
+        ach_update(SLOT_H0, &bs, 7003);
+        CHECK(is_unlocked("ganon") && !is_unlocked("master_mode"));
+        // beaten while playing in Master Mode: a Master Mode game without it, then its save with it
+        ach_game_loaded(SLOT_H2);
+        CHECK(ach_wants_reread(SLOT_H2) && ach_update(SLOT_H2, &ns2, 7004) == 0);
+        while (ach_toast_take(&t)) {}
+        ach_set_active(SLOT_H2);
+        ach_update(SLOT_H2, &bs, 7005);
+        found = false;
+        while (ach_toast_take(&t)) found |= t == idx("master_mode");
+        CHECK(found && is_unlocked("master_mode"));
+        // then a new normal game: still unlocked, not announced again; and after a restart
+        ach_set_active(SLOT_H1);
+        CHECK(ach_update(SLOT_H1, &ns2, 7006) == 0 && is_unlocked("master_mode") && !is_unlocked("ganon"));
+        ach_state_load("achievements.txt");
+        ach_game_loaded(SLOT_H1);
+        CHECK(is_unlocked("master_mode") && ach_unlocked_total() == 1);
+        free(hard.d), free(normal.d), free(beat.d), free(ng2.d);
     }
 
     // a sound bank (.bars) made up here: one sound "Yaha", 14 DSP-ADPCM samples with zero coefficients and scale 1, so

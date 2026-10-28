@@ -89,6 +89,31 @@ const AchDef g_ach_defs[] = {
     {"lynel_all", "Kings of the Wild", "Defeat one Lynel of each type.", ACH_ALL,
      "Defeated_Enemy_Lynel_Junior_Num,Defeated_Enemy_Lynel_Middle_Num,Defeated_Enemy_Lynel_Senior_Num,Defeated_Enemy_Lynel_Dark_Num",
      0, 0, 4},
+    // "Captured Memories" (PictureMemory): every memory recovered
+    {"memories", "Captured Memories", "Recover every memory.", ACH_FLAG, "PictureMemory_Finish", 0, 0, 1},
+
+    // ---- the downloadable content ----
+    // (actor names and flags from the game's own texts and GameData, 1.9.0 with the DLC: Armor_172_Head Majora's Mask,
+    // 176_Head Korok Mask, 179 Royal Guard Cap / Uniform / Boots, 180 Phantom Ganon Skull / Armor / Greaves; the
+    // Champions' Ballad: BalladOfHero<Zora/Rito/Goron/Gerudo> are the four Champions' songs, BalladOfHeroes the whole;
+    // FinalTrial is the last shrine, Maz Koshia's)
+    {"korok_mask", "Spitting Image", "Get the Korok Mask.", ACH_FLAG, "IsGet_Armor_176_Head", 0, 0, 1},
+    {"majora_mask", "A Moon?", "Get Majora's Mask.", ACH_FLAG, "IsGet_Armor_172_Head", 0, 0, 1},
+    {"phantom_ganon", "Feel the Evil", "Get the Phantom Ganon armor.", ACH_ALL,
+     "IsGet_Armor_180_Head,IsGet_Armor_180_Upper,IsGet_Armor_180_Lower", 0, 0, 3},
+    {"royal_guard", "Royal Protector", "Get the Royal Guard armor.", ACH_ALL,
+     "IsGet_Armor_179_Head,IsGet_Armor_179_Upper,IsGet_Armor_179_Lower", 0, 0, 3},
+    {"obliterator", "The Divine Annihilator", "Get the most powerful weapon in all of Hyrule.", ACH_FLAG,
+     "IsGet_Weapon_Sword_502", 0, 0, 1},
+    {"song_mipha", "Mipha's Song", "Complete Mipha's Song.", ACH_FLAG, "BalladOfHeroZora_Finish", 0, 0, 1},
+    {"song_revali", "Revali's Song", "Complete Revali's Song.", ACH_FLAG, "BalladOfHeroRito_Finish", 0, 0, 1},
+    {"song_daruk", "Daruk's Song", "Complete Daruk's Song.", ACH_FLAG, "BalladOfHeroGoron_Finish", 0, 0, 1},
+    {"song_urbosa", "Urbosa's Song", "Complete Urbosa's Song.", ACH_FLAG, "BalladOfHeroGerudo_Finish", 0, 0, 1},
+    {"maz_koshia", "Why You?", "Defeat Maz Koshia.", ACH_FLAG, "Die_Boss_FinalTrial,Clear_FinalTrial", 0, 0, 1},
+    {"ballad", "The Champions' Ballad", "Complete every Champion's song.", ACH_FLAG, "BalladOfHeroes_Finish", 0, 0, 1},
+    {"champions_photo", "A Picture for the Memories", "Get the photo of the Champions.", ACH_FLAG,
+     "IsGet_Get_TwnObj_DLC_MemorialPicture_A_01", 0, 0, 1},
+    {"master_cycle", "Why a Motorcycle?", "Get the Master Cycle Zero.", ACH_FLAG, "IsGet_Obj_Motorcycle", 0, 0, 1},
 
     // ---- the completionist ones ----
     {"great_fairy", "Thank You, Great Fairy!", "Fully upgrade an armor set.", ACH_ANY, "", 0, 0, 0, L_great_fairy,
@@ -103,6 +128,8 @@ const AchDef g_ach_defs[] = {
     {"dex_creatures", "Photographer of the Realm", "Fill the Compendium's creatures.", ACH_SET, "", 0, 0, 0, L_dex_creatures,
      ACH_N(L_dex_creatures)},
     {"korok_900", "Seed Legend", "Find all 900 Korok seeds.", ACH_FLAG, "#8a94e07a", 0, 0, 900},
+    // Calamity Ganon beaten in a Master Mode save: kept for every save, a new normal game's too
+    {"master_mode", "Master Hylian", "Beat the game in Master Mode.", ACH_MASTER, "Defeated_Enemy_GanonBeast_Num", 0, 0, 1},
 
     // every other one: the last, with a sound of its own (achievements_sound.c)
     {"all", "King of Hyrule", "Unlock every achievement.", ACH_META, "", 0, 0, 0},

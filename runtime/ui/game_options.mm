@@ -269,16 +269,6 @@ void build_items(void) {
     v.push_back(button(P_MAIN, "Keyboard (sticks)", "Keys for the sticks and for walking.", "Open", A_PAGE, P_STICKS));
     v.push_back(button(P_MAIN, "Controller", "Which controller button does each button.", "Open", A_PAGE, P_PAD));
     v.push_back(button(P_MAIN, "Language", "Language of the texts and of the voices.", "Open", A_PAGE, P_LANGUAGE));
-    {   // (runtime/achievements.h: the page below lists them; its description here is the count)
-        Item it = button(P_MAIN, "Achievements", "", "Open", A_PAGE, P_ACHIEVEMENTS);
-        it.desc_fn = [](const Item &) -> const char * {
-            static char buf[256];
-            snprintf(buf, sizeof buf, tr("%d of %d achievements unlocked. They're checked each time the game saves."),
-                     ach_unlocked_total(), g_ach_count);
-            return buf;
-        };
-        v.push_back(it);
-    }
     v.push_back(button(P_MAIN, "Quit game", "To the desktop, or back to the Savage Wind start screen.", "Quit",
                        A_QUIT, 0));
 

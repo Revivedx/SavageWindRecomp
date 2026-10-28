@@ -23,14 +23,32 @@ Savage Wind has a small achievement system that never touches the game: it reads
   an older save shows its achievements again without notices, and a save copied in from elsewhere (a backup, a 100%
   save) counts as it is. `SAVAGEWIND_LOG_SAVES=1` logs which saves the game opens (to read or to write) and what it
   creates, deletes and renames in the save folder.
+- **At once, from the game's memory** (`runtime/achievements_live.c`): while the game runs, its game data flags are
+  read from its heap every 500 ms (`ach_live_update`), so an achievement unlocks the moment it is met, not at the next
+  autosave. The game keeps each flag as an object made once as it starts: a bool flag is 0x18 bytes (+0 its class,
+  +0xb its value in bit 0, +0xc the crc32 of its name - the save's hash), an s32 flag 0x28 bytes (+0 its class, +0xc
+  its initial value, +0x18 its value, +0x1c the hash). The two classes come from IsGet_PlayerStole2 and MaxHartValue;
+  every object of theirs on the heap (`HEAP_BASE` .. `kernel_heap_size()`) is a flag (46870 in 1.9.0 with the DLC).
+  What becomes met while playing unlocks for the save being played, with its notice, and the save written after it
+  doesn't announce it again; the progress shown (12 / 80 ...) follows the flags too. (Dishes count by kind: a dish's
+  effect - spicy, hearty - doesn't make it another one; the game marks IsGet_Item_Cook_* per kind.) A load or a new game changes the flags all at once, so for 10 s after one (the game
+  opening a save to read, or a flag going back) and after the first look, they are taken without notices. Horse names
+  and Master Hylian stay with the saves. `SAVAGEWIND_NO_LIVE_ACH=1`: only the saves.
+- **Kept for every save** (`ACH_MASTER`): Master Hylian, Calamity Ganon beaten while playing in Master Mode. A save is
+  a Master Mode one when its caption (`caption.sav` next to it, what the load list shows: the save's format) has
+  `AoC_HardMode_Enabled` set; either mode can be in any slot. It counts when the game writes such a save with Ganon's
+  defeat count higher than in the save being played (beaten, or beaten once more): a Master Mode save loaded with Ganon
+  already beaten doesn't, until he is beaten in it again. Then it is unlocked once and for good: every save
+  shows it, a new normal game's too, and it is announced that once. It is kept in its own record (`@ <tab> *` in
+  `achievements.txt`).
 - **What is kept** (`achievements.txt` in the data root, next to `savagewind.ini`): a `@ <tab> save file <tab> file time`
   line per save, then `id <tab> unix time` for each achievement it has. A deleted save is forgotten. Records of whole
   profile folders, from builds that kept one list per playthrough, are dropped (the saves are read again anyway).
-- **In the game's own menu** (`runtime/ui/game_options.mm`): pause menu > System > Options > **Achievements**, a page of
-  the Options screen with one row per achievement: its state on the right (Unlocked, `4 / 25`, Locked) and, on the
-  description line, what it takes and when it was unlocked. The first page's button says how many are unlocked. The
-  page is built when it opens, so it shows what the latest save looked at. The pause menu's System page has its own
-  **Achievements** button under Load, in the gap the layout leaves for the Nintendo Switch 2 Edition upgrade: the page
+- **In the game's own menu** (`runtime/ui/game_options.mm`): **Achievements**, a page of the Options screen (its title
+  says how many are unlocked) with one row per achievement: its state on the right (Unlocked, `4 / 25`, Locked) and, on
+  the description line, what it takes and when it was unlocked. The page is built when it opens. It isn't one of the
+  Options sections: it opens from its own buttons. The pause menu's System page has one,
+  **Achievements** under Load, in the gap the layout leaves for the Nintendo Switch 2 Edition upgrade: the page
   adds that seventh button (0x53, `Pa_Btn_06`) itself when the upgrade is offered, and it is told it is
   (`pause_upgrade_offer` / `_owned`). It opens the Options screen straight on that page, and B goes back to the System
   page (`pause_button` in `tools/patches.py`; a game version where these sites aren't found has no such button).

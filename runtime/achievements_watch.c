@@ -141,10 +141,12 @@ void ach_start(void) {
     ach_set_blocked(test_warp_active());  // test warps / flag edits would hand them out
     stop_req = false;
     if (pthread_create(&thread, NULL, watch_thread, NULL) == 0) running = true;
+    ach_live_start();
 }
 
 void ach_stop(void) {
     if (!running) return;
+    ach_live_stop();
     pthread_mutex_lock(&wlock);
     stop_req = true;
     pthread_cond_signal(&wcond);

@@ -28,6 +28,8 @@ typedef enum {
     ACH_ANY,    // one of the groups in `list` complete: each is a comma-separated list of names, all >= 1 (an armor set's
                 // three pieces); progress is the most of one group
     ACH_META,   // every other achievement unlocked: not from the save, from what the playthrough has (ach_update)
+    ACH_MASTER, // as ACH_FLAG, in a Master Mode save (the profile's slots 6 and 7; normal mode uses 0 to 5): once met,
+                // it is unlocked for every save, a new game's too (kept apart: "@<tab>*" in achievements.txt)
 } AchKind;
 
 typedef struct {
@@ -81,6 +83,14 @@ void ach_game_loaded(const char *save_path);  // ... to read it: loaded, it is t
 // The watcher, for each game_data.sav it looks at: read it again even unchanged (a save the game has loaded: its next
 // read is quiet)
 bool ach_wants_reread(const char *save_path);
+// While playing: the game's flags as they are now in its memory (achievements_live.c reads them, as a save image),
+// so achievements unlock the moment they are met instead of at the next save. Each one met now that wasn't at the
+// previous call unlocks for the save being played, with its notice. A load or a new game changes the flags all at
+// once: for LIVE_SETTLE_S seconds after one (ach_game_loaded, or a flag going back) and after the first call, the
+// calls take the flags as they are without notices. Horse names (ACH_STR) and Master Mode (ACH_MASTER) stay with the saves. Returns the notices.
+int ach_live_update(const AchSave *s, time_t now);
+void ach_live_start(void);  // achievements_live.c: the thread that reads them (ach_start starts it)
+void ach_live_stop(void);
 // Checks every achievement against the contents of the save at save_path (time `now`): the save's own achievements, and
 // when it is the play's save (the game opened it to write, or it is the one being played), toasts for what the save
 // being played until now hadn't. Returns how many toasts that queued.
