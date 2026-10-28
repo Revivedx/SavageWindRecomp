@@ -314,6 +314,11 @@ void vk_collect_dead(void) {
     ndead = k;
 }
 
+static bool is_bc_or_astc(VkFormat f) {
+    return (f >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && f <= VK_FORMAT_BC7_SRGB_BLOCK) ||
+           (f >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && f <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK);
+}
+
 static void create_image(NvnTexture *t, TexBackend *b) {
     VkFmt mf = fmt_of(t->format);
     b->scalable = b->rs_group != RS_NONE;
@@ -370,7 +375,21 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     else if (format_supports(vf, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     VkImageCreateFlags flags = 0;
     if (!depthfmt) flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;  // format views (NVN texture views, raw sRGB views)
-    if (type == VK_IMAGE_TYPE_2D && layers >= 6 && tw == th && samples == 1) flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+    // Square 2D arrays of 6 layers or more are made cube compatible (cube views of them can come). On AMD's own driver
+    // only cubemaps, cube arrays and arrays of whole cubes (6n layers) are: BOTW's terrain material arrays (512x512 and
+    // 1024x1024 BC1, 83 layers, all levels) were cube compatible too, and on AMD's Windows driver (an RX 580, a 7800 XT)
+    // rocks, cliffs, ground and grass, all of which sample those arrays, got rainbow blocks that came and went with the
+    // mip level sampled, and nowhere else (#59). The cube flag changes how AMD lays such an image out; NVIDIA and RADV
+    // draw it right, and keep the rule they had. SAVAGEWIND_CUBE_ALL=1: every square array of 6+ layers, on any driver;
+    // SAVAGEWIND_CUBE_STRICT=1: only 6n layers and cube targets, on any driver (testing).
+    static int cube_strict = -1;
+    if (cube_strict < 0) {
+        cube_strict = getenv("SAVAGEWIND_CUBE_ALL") ? 0 : getenv("SAVAGEWIND_CUBE_STRICT") ? 1 : g_vk.amd_proprietary;
+        LOG("[vk] cube-compatible arrays: %s\n", cube_strict ? "cube targets and 6n layers only" : "every square array of 6+ layers");
+    }
+    if (type == VK_IMAGE_TYPE_2D && layers >= 6 && tw == th && samples == 1 &&
+        (!cube_strict || t->target == 8 || t->target == 9 || layers % 6 == 0))
+        flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
     b->slices_renderable = type == VK_IMAGE_TYPE_3D && (usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
     if (b->slices_renderable) flags |= VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT;  // (Vulkan 1.1) 2D views of slices
     VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .flags = flags, .imageType = type, .format = vf,
@@ -396,6 +415,7 @@ static void create_image(NvnTexture *t, TexBackend *b) {
         VK_CHECK(vmaCreateImage(g_vk.vma, &ci, &ai, &b->image, &b->mem, NULL));
         depthfmt = false;
     }
+    b->cube_ok = (ci.flags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) != 0;
     static uint64_t serials;
     b->serial = __atomic_add_fetch(&serials, 1, __ATOMIC_RELAXED);
     b->format = vf;
@@ -416,6 +436,17 @@ static void create_image(NvnTexture *t, TexBackend *b) {
         VkClearColorValue zero = {{0}};
         VkImageSubresourceRange rg = {VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
         vkCmdClearColorImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &rg);
+    }
+    {   // (debugging) SAVAGEWIND_DEBUG_NEW_FILL=1: every new colour image starts magenta (texels nothing wrote yet)
+        static int fill = -1;
+        if (fill < 0) fill = getenv("SAVAGEWIND_DEBUG_NEW_FILL") != NULL;
+        if (fill && !depthfmt && !is_bc_or_astc(vf)) {
+            VkCommandBuffer cb = vk_upload_cmd();
+            VkClearColorValue mag = {{1.0f, 0.0f, 1.0f, 1.0f}};
+            VkImageSubresourceRange rg = {VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
+            vkCmdClearColorImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, &mag, 1, &rg);
+            vk_full_barrier(cb);
+        }
     }
     if (depthfmt) {
         // New depth / stencil images start zeroed (as fresh memory reads on Apple GPUs). The game builds its depth
@@ -831,6 +862,32 @@ static void upload_scaled(VkCommandBuffer cb, TexBackend *b, VkSpan s, VkBufferI
     vk_defer_image(img, mem);
 }
 
+// (debugging) SAVAGEWIND_DEBUG_MIP_COLOURS=1: every level of a mipmapped texture the CPU fills is one solid colour, by
+// level (0 red, 1 green, 2 blue, 3 yellow, 4 magenta, 5 cyan, 6 white, 7 and smaller grey), so a screenshot shows which
+// level each surface samples. BC1-BC5 and 4-byte formats (RGBA8 and the like); others stay as they are.
+static void debug_mip_colour(uint8_t *p, uint32_t nvn_fmt, uint32_t bpb, uint64_t nblocks, uint32_t lv) {
+    static int on = -1;
+    if (on < 0) on = getenv("SAVAGEWIND_DEBUG_MIP_COLOURS") != NULL;
+    if (!on) return;
+    static const uint8_t rgb[8][3] = {{255, 0, 0}, {0, 255, 0}, {0, 0, 255}, {255, 255, 0}, {255, 0, 255}, {0, 255, 255},
+                                      {255, 255, 255}, {128, 128, 128}};
+    const uint8_t *c = rgb[lv < 7 ? lv : 7];
+    uint16_t c565 = (uint16_t)((c[0] >> 3) << 11 | (c[1] >> 2) << 5 | (c[2] >> 3));
+    uint8_t blk[16] = {0}, bc1[8] = {(uint8_t)c565, (uint8_t)(c565 >> 8), (uint8_t)c565, (uint8_t)(c565 >> 8), 0, 0, 0, 0};
+    VkFormat vf = fmt_of(nvn_fmt).vf;
+    switch (vf) {
+    case VK_FORMAT_BC1_RGBA_UNORM_BLOCK: case VK_FORMAT_BC1_RGBA_SRGB_BLOCK: memcpy(blk, bc1, 8); break;
+    case VK_FORMAT_BC2_UNORM_BLOCK: case VK_FORMAT_BC2_SRGB_BLOCK: memset(blk, 0xFF, 8); memcpy(blk + 8, bc1, 8); break;
+    case VK_FORMAT_BC3_UNORM_BLOCK: case VK_FORMAT_BC3_SRGB_BLOCK: blk[0] = blk[1] = 255; memcpy(blk + 8, bc1, 8); break;
+    case VK_FORMAT_BC4_UNORM_BLOCK: blk[0] = blk[1] = c[0]; break;
+    case VK_FORMAT_BC5_UNORM_BLOCK: blk[0] = blk[1] = c[0]; blk[8] = blk[9] = c[1]; break;
+    default:
+        if (bpb != 4 || is_bc_or_astc(vf)) return;
+        blk[0] = c[0]; blk[1] = c[1]; blk[2] = c[2]; blk[3] = 255;
+    }
+    for (uint64_t i = 0; i < nblocks; i++) memcpy(p + i * bpb, blk, bpb);
+}
+
 // Guest memory -> image for the levels in level_mask (bit per level), every layer or slice.
 static void upload_levels(NvnTexture *t, TexBackend *b, uint32_t level_mask) {
     const FormatInfo *fi = t->layout.fmt;
@@ -894,6 +951,7 @@ static void upload_levels(NvnTexture *t, TexBackend *b, uint32_t level_mask) {
                         l.block_height_log2, l.block_depth_log2, path);
                 }
             }
+            if (t->layout.levels > 1) debug_mip_colour(lin, t->format, fi->bpb, (uint64_t)l.wb * l.hb * l.d, lv);
             if (expand) {  // RGB8 -> RGBA8
                 uint8_t *o = s.ptr;
                 uint64_t n = (uint64_t)l.wb * l.hb * l.d;
@@ -1255,11 +1313,12 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
         return vk_image_view(b, want, fmt, lv0, nlv, ly0, 1, sw, aspect);
     if (want == VK_IMAGE_VIEW_TYPE_2D_ARRAY && (have == VK_IMAGE_VIEW_TYPE_2D || have == VK_IMAGE_VIEW_TYPE_CUBE))
         return vk_image_view(b, want, fmt, lv0, nlv, ly0, have == VK_IMAGE_VIEW_TYPE_CUBE ? nly : 1, sw, aspect);
-    if (want == VK_IMAGE_VIEW_TYPE_CUBE && have == VK_IMAGE_VIEW_TYPE_2D_ARRAY && b->layers >= 6 && b->width == b->height)
+    if (want == VK_IMAGE_VIEW_TYPE_CUBE && have == VK_IMAGE_VIEW_TYPE_2D_ARRAY && b->layers >= 6 && b->width == b->height &&
+        b->cube_ok)
         return vk_image_view(b, want, fmt, lv0, nlv, ly0 + 6 <= b->layers ? ly0 : 0, 6, sw, aspect);
     // a cube read as a cube array of one (BOTW's 64x64 R11G11B10 light probes): it was black
     if (want == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY && (have == VK_IMAGE_VIEW_TYPE_CUBE || have == VK_IMAGE_VIEW_TYPE_2D_ARRAY) &&
-        b->layers >= 6 && b->width == b->height)
+        b->layers >= 6 && b->width == b->height && b->cube_ok)
         return vk_image_view(b, want, fmt, lv0, nlv, 0, b->layers / 6 * 6, sw, aspect);
     if (want == VK_IMAGE_VIEW_TYPE_1D_ARRAY && have == VK_IMAGE_VIEW_TYPE_1D)
         return vk_image_view(b, want, fmt, lv0, nlv, 0, 1, sw, aspect);
@@ -1338,20 +1397,57 @@ static pthread_mutex_t g_sampler_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static VkSampler sampler_create(const NvnSamplerDesc *d, float aniso);
 
-VkSampler vk_sampler(NvnSamplerDesc *d, bool aniso_ok) {
+VkSampler vk_sampler(NvnSamplerDesc *d, bool aniso_ok, float bias) {
     float an = sampler_aniso(d, aniso_ok);
-    void **slot = aniso_ok ? &d->backend : &d->backend_plain;
-    float *slot_aniso = aniso_ok ? &d->backend_aniso : &d->backend_plain_aniso;
-    if (*slot && *slot_aniso == an) return (VkSampler)*slot;
+    if (d->min_filter <= 1) bias = 0;  // (no mip levels: nothing to bias)
+    int k = aniso_ok ? 1 : 0;
+    void **slot = bias != 0 ? &d->backend_bias[k] : aniso_ok ? &d->backend : &d->backend_plain;
+    float *slot_aniso = bias != 0 ? &d->backend_bias_aniso[k] : aniso_ok ? &d->backend_aniso : &d->backend_plain_aniso;
+    if (*slot && *slot_aniso == an && (bias == 0 || d->backend_bias_lod[k] == bias)) return (VkSampler)*slot;
     NvnSamplerDesc key = *d;
-    key.backend = key.backend_plain = NULL;
+    key.backend = key.backend_plain = key.backend_bias[0] = key.backend_bias[1] = NULL;
     key.backend_aniso = an, key.backend_plain_aniso = 0;
+    key.backend_bias_aniso[0] = key.backend_bias_aniso[1] = key.backend_bias_lod[0] = key.backend_bias_lod[1] = 0;
+    key.lod_bias += bias;
     pthread_mutex_lock(&g_sampler_lock);
     VkSampler s = VK_NULL_HANDLE;
     for (int i = 0; i < g_nsamplers && !s; i++)
         if (!memcmp(&g_samplers[i].key, &key, sizeof key)) s = g_samplers[i].s;
+    bool found = s != VK_NULL_HANDLE;
+    // maxSamplerAllocationCount (4000 on Intel's Windows driver, the spec's minimum) counts every VkSampler alive;
+    // keep some for the rest of the renderer (imgui, FidelityFX, the default samplers). Past it, or when the driver
+    // refuses one (#239: -2 on an Intel Iris Xe), the closest existing sampler stands in rather than ending the game.
+    uint32_t limit = g_vk.props.limits.maxSamplerAllocationCount;
+    bool full = limit > 256 && (uint32_t)g_nsamplers >= limit - 128;
+    static int test_max = -1;  // SAVAGEWIND_VK_MAX_SAMPLERS=<n>: the game's samplers stop at n (tests of the reuse)
+    if (test_max < 0) test_max = getenv("SAVAGEWIND_VK_MAX_SAMPLERS") ? atoi(getenv("SAVAGEWIND_VK_MAX_SAMPLERS")) : 0;
+    if (test_max > 0 && g_nsamplers >= test_max) full = true;
+    if (!found && !full) s = sampler_create(&key, an);
     if (!s) {
-        s = sampler_create(d, an);
+        int best = -1, best_score = -1;
+        for (int i = 0; i < g_nsamplers; i++) {
+            const NvnSamplerDesc *k = &g_samplers[i].key;
+            int score = (k->compare_mode == d->compare_mode) * 8 + (k->min_filter == d->min_filter) * 4 +
+                        (k->mag_filter == d->mag_filter) * 2 + (k->wrap[0] == d->wrap[0] && k->wrap[1] == d->wrap[1]);
+            if (score > best_score) best_score = score, best = i;
+        }
+        s = best >= 0 ? g_samplers[best].s : vk_default_sampler(d->mag_filter == 1);
+        static bool logged;
+        if (!logged) {
+            logged = true;
+            LOG("[vk] sampler %s (%d made, driver limit %u): reusing the closest one from now on\n",
+                full ? "limit reached" : "creation failed", g_nsamplers, limit);
+        }
+        pthread_mutex_unlock(&g_sampler_lock);
+        *slot = (void *)s;
+        *slot_aniso = an;
+        if (bias != 0) d->backend_bias_lod[k] = bias;
+        return s;
+    }
+    if (!found) {
+        int made = g_nsamplers + 1;  // (the count in players' logs: #239)
+        if (made == 1 || made == 64 || made == 256 || made == 1024 || made == 2048)
+            LOG("[vk] samplers: %d (driver limit %u)\n", made, limit);
         if (g_nsamplers == g_cap_samplers) {
             g_cap_samplers = g_cap_samplers ? g_cap_samplers * 2 : 256;
             g_samplers = realloc(g_samplers, g_cap_samplers * sizeof *g_samplers);
@@ -1367,6 +1463,7 @@ VkSampler vk_sampler(NvnSamplerDesc *d, bool aniso_ok) {
     pthread_mutex_unlock(&g_sampler_lock);
     *slot = (void *)s;
     *slot_aniso = an;
+    if (bias != 0) d->backend_bias_lod[k] = bias;
     return s;
 }
 
@@ -1393,7 +1490,13 @@ static VkSampler sampler_create(const NvnSamplerDesc *d, float aniso) {
     si.maxLod = d->lod_max > 1000 ? VK_LOD_CLAMP_NONE : d->lod_max;
     if (mf <= 1) si.maxLod = si.minLod + 0.25f;  // not mipmapped: stay on the base level
     if (si.maxLod < si.minLod) si.maxLod = si.minLod;
-    si.mipLodBias = d->lod_bias;
+    static float max_bias;
+    if (!max_bias) {
+        VkPhysicalDeviceProperties pp;
+        vkGetPhysicalDeviceProperties(g_vk.phys, &pp);
+        max_bias = pp.limits.maxSamplerLodBias;
+    }
+    si.mipLodBias = fmaxf(-max_bias, fminf(max_bias, d->lod_bias));
     if (aniso > 1) { si.anisotropyEnable = VK_TRUE; si.maxAnisotropy = aniso; }
     static float lodmin = -1;
     if (lodmin < 0) lodmin = getenv("SAVAGEWIND_LOD_MIN") ? (float)atof(getenv("SAVAGEWIND_LOD_MIN")) : 0;
@@ -1418,7 +1521,14 @@ static VkSampler sampler_create(const NvnSamplerDesc *d, float aniso) {
         } else si.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
     }
     VkSampler s;
-    VK_CHECK(vkCreateSampler(g_vk.dev, &si, NULL, &s));
+    VkResult r = vkCreateSampler(g_vk.dev, &si, NULL, &s);
+    if (r == VK_ERROR_DEVICE_LOST) VK_CHECK(r);
+    if (r != VK_SUCCESS) {  // (vk_sampler reuses another one)
+        static int logged;
+        if (logged++ < 3) LOG("[vk] vkCreateSampler failed: %d (border %d, aniso %.0f, compare %u)\n", r, border, aniso,
+                              d->compare_mode);
+        return VK_NULL_HANDLE;
+    }
     return s;
 }
 

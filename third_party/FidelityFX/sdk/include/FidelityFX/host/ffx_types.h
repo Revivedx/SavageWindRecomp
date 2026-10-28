@@ -77,7 +77,13 @@
 #define FFX_API __declspec(dllexport)
 #endif // #if defined (FFX_GCC)
 
+// Savage Wind: the contexts hold their resources' wide-string debug names, sized for Windows' 2-byte wchar_t; with
+// Linux's 4-byte one they outgrew this (ffx_frameinterpolation.cpp's static_assert), so twice the room there.
+#if defined(_WIN32)
 #define FFX_SDK_DEFAULT_CONTEXT_SIZE (1024 * 128)
+#else
+#define FFX_SDK_DEFAULT_CONTEXT_SIZE (1024 * 128 * 2)
+#endif
 
 /// Maximum supported number of simultaneously bound SRVs.
 ///

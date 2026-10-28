@@ -692,11 +692,14 @@ def generate(name, nso, base, outdir, opts, sites=None):
 
 def main():
     # a crash in native code (Unicorn, capstone, Python itself) leaves the Python stack in the log instead of nothing
-    # (the setup copies the end of this log into savagewind.log: runtime/gamebuild.c)
-    try:  # (only the Python stack: 3.14's C stack, without symbols, would push it out of the lines the setup keeps)
-        faulthandler.enable(**({'c_stack': False} if sys.version_info >= (3, 14) else {}))
-    except (AttributeError, RuntimeError, ValueError, OSError):  # (no stderr to write to)
-        pass
+    # (the setup copies the end of this log into savagewind.log: runtime/gamebuild.c). Not on Windows: there it also
+    # writes a "Windows fatal exception: access violation" stack for each fault Unicorn raises and handles itself (a
+    # dozen or more in a run that works), which reads like the crash; a real one still shows as the exit status.
+    if sys.platform != 'win32':
+        try:  # (only the Python stack: 3.14's C stack, without symbols, would push it out of the lines the setup keeps)
+            faulthandler.enable(**({'c_stack': False} if sys.version_info >= (3, 14) else {}))
+        except (AttributeError, RuntimeError, ValueError, OSError):  # (no stderr to write to)
+            pass
     ap = argparse.ArgumentParser(usage=__doc__)
     ap.add_argument('name')  # a module (main, subsdk0..9, sdk), or layout / all
     ap.add_argument('input')  # its NSO; layout / all: the exefs folder

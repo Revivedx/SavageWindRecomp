@@ -40,12 +40,15 @@ SERVICE("pctl:r", pctl_r) { pctl_root(s, req, resp); }
 // through fsp-srv OpenDataStorageByDataId.
 // BOTW's DLC was sold only as the Expansion Pass: index 1 holds the data, index 3 is the pass itself (no data: what
 // owning it unlocks). The game mounts the DLC only when the list holds two (main 0x70010cc2f8 in 1.9.0: exactly 2,
-// one of them 1; a 3 turns on the second pack), so with the data set up the pass is listed too.
+// one of them 1; a 3 turns on the second pack), so with only the data set up (aoc1, no other: a dump of the first DLC
+// alone) the pass is listed too. Both DLC set up (aoc1 and aoc2) are listed as they are.
 #define AOC_PASS 3
 static int aoc_list(uint32_t *out, int max) {
+    bool only_data = fs_aoc_present(1);
+    for (int i = 2; i <= 8 && only_data; i++) only_data = !fs_aoc_present(i);
     int n = 0;
     for (int i = 1; i <= 8; i++)
-        if (fs_aoc_present(i) || (i == AOC_PASS && fs_aoc_present(1))) { if (out && n < max) out[n] = (uint32_t)i; n++; }
+        if (fs_aoc_present(i) || (i == AOC_PASS && only_data)) { if (out && n < max) out[n] = (uint32_t)i; n++; }
     return n;
 }
 

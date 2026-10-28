@@ -792,9 +792,52 @@ static void title_button_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz
     free(pack), free(arc), free(arc2);
 }
 
+// An RSTB entry: names first (paths whose crc32 collides), then the crc32 table (sorted). NULL when it has none.
+static uint32_t *rstb_entry(uint8_t *d, uint32_t ncrc, uint32_t nname, const char *path) {
+    for (uint32_t i = 0; i < nname; i++)
+        if (!strncmp((const char *)d + 12 + ncrc * 8 + i * 132, path, 128))
+            return (uint32_t *)(d + 12 + ncrc * 8 + i * 132 + 128);
+    uint32_t crc = (uint32_t)crc32(0, (const Bytef *)path, (uInt)strlen(path));
+    for (uint32_t lo = 0, hi = ncrc; lo < hi;) {
+        uint32_t mid = (lo + hi) / 2, c;
+        memcpy(&c, d + 12 + mid * 8, 4);
+        if (c == crc) return (uint32_t *)(d + 12 + mid * 8 + 4);
+        if (c < crc) lo = mid + 1;
+        else hi = mid;
+    }
+    return NULL;
+}
+
+// A RomFS with the DLC merged into it (#188, #242): some dumping guides copy the DLC's RomFS over the game's, so its
+// main-map files (Map/MainField/D-7/D-7_Dynamic.smubin...) are the DLC's versions, a few KB bigger than the game's.
+// On the console the game reads those from the DLC (aoc:/0010/...), sized by their own "Aoc/0010/<path>" entries,
+// which the game's RSTB has. Read from the game's own paths, the game finds them bigger than those paths' entries,
+// can't load them and retries for ever: a white screen after "Open your eyes" (the Great Plateau's map sections).
+// Such a RomFS has the DLC's System/AocVersion.txt or Pack/AocMainField.pack; there each path's entry grows to its
+// Aoc/0010 entry when that one is bigger.
+static bool romfs_has_dlc_merged(void) {
+    static const char *const marks[] = {"System/AocVersion.txt", "Pack/AocMainField.pack"};
+    char host[1200];
+    for (int m = 0; m < 2; m++) {
+        if (overlay_file(marks[m], host, sizeof host)) return true;
+        for (int i = 0; i < R->rom_nfiles; i++)
+            if (!strcmp(R->rom_files[i].path, marks[m])) return true;
+    }
+    return false;
+}
+
+// The RSTB's name for a RomFS path: Yaz0-compressed files drop the 's' their extension starts with
+// (D-7_Dynamic.smubin -> D-7_Dynamic.mubin); .sarc is the one extension that really starts with an 's'.
+static void rstb_name(const char *path, char *out, size_t cap) {
+    snprintf(out, cap, "%s", path);
+    char *dot = strrchr(out, '.');
+    if (dot && dot[1] == 's' && strcmp(dot, ".sarc") && !strchr(dot, '/')) memmove(dot + 1, dot + 2, strlen(dot + 2) + 1);
+}
+
 static void rstb_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
     static const char rstb_path[] = "System/Resource/ResourceSizeTable.product.srsizetable";
-    if (!R->ngrown) return;
+    bool merged = R == &images[0] && romfs_has_dlc_merged();
+    if (!R->ngrown && !merged) return;
     int k = 0;
     while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, rstb_path)) k++;
     char host[1200];
@@ -818,21 +861,10 @@ static void rstb_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
         free(d);
         return;
     }
-    int changed = 0;
-    uint64_t added = 0;
+    int changed = 0, dlc_changed = 0;
+    uint64_t added = 0, dlc_added = 0;
     for (int g = 0; g < R->ngrown; g++) {
-        uint32_t grow = (uint32_t)((R->grown[g].grow + 31) & ~31ull) + 32, *size = NULL;
-        for (uint32_t i = 0; i < nname && !size; i++)  // (names first: paths whose crc32 collides)
-            if (!strncmp((const char *)d + 12 + ncrc * 8 + i * 132, R->grown[g].path, 128))
-                size = (uint32_t *)(d + 12 + ncrc * 8 + i * 132 + 128);
-        uint32_t crc = (uint32_t)crc32(0, (const Bytef *)R->grown[g].path, (uInt)strlen(R->grown[g].path));
-        for (uint32_t lo = 0, hi = ncrc; !size && lo < hi;) {
-            uint32_t mid = (lo + hi) / 2, c;
-            memcpy(&c, d + 12 + mid * 8, 4);
-            if (c == crc) size = (uint32_t *)(d + 12 + mid * 8 + 4);
-            else if (c < crc) lo = mid + 1;
-            else hi = mid;
-        }
+        uint32_t grow = (uint32_t)((R->grown[g].grow + 31) & ~31ull) + 32, *size = rstb_entry(d, ncrc, nname, R->grown[g].path);
         if (!size) continue;  // (no entry: the game sizes it from the file, the dialogue streams)
         uint32_t v;
         memcpy(&v, size, 4);
@@ -840,6 +872,23 @@ static void rstb_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
         memcpy(size, &v, 4);
         changed++;
         added += grow;
+    }
+    if (merged) {
+        char name[300], aoc[320];
+        for (int i = 0; i < R->rom_nfiles; i++) {
+            rstb_name(R->rom_files[i].path, name, sizeof name);
+            snprintf(aoc, sizeof aoc, "Aoc/0010/%s", name);
+            uint32_t *base = rstb_entry(d, ncrc, nname, name), *dlc = base ? rstb_entry(d, ncrc, nname, aoc) : NULL;
+            if (!dlc) continue;
+            uint32_t bv, dv;
+            memcpy(&bv, base, 4), memcpy(&dv, dlc, 4);
+            if (dv <= bv) continue;
+            memcpy(base, &dv, 4);
+            dlc_changed++;
+            dlc_added += dv - bv;
+        }
+        LOG("[fs] the RomFS has the DLC merged into it: %d ResourceSizeTable entries grown to the DLC's (%llu KB)\n",
+            dlc_changed, (unsigned long long)(dlc_added >> 10));
     }
     size_t bn = 0;
     free(R->rstb_blob);
@@ -852,8 +901,9 @@ static void rstb_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
     if (R->ov_n == R->ov_cap) { R->ov_cap = R->ov_cap ? R->ov_cap * 2 : 256; R->ov = realloc(R->ov, sizeof *R->ov * R->ov_cap); }
     R->ov[R->ov_n++] = (Overlay){R->ov_end, size, NULL, -1, R->rstb_blob};
     R->ov_end = (R->ov_end + size + 0xF) & ~0xFull;
-    LOG("[fs] voices: %d files bigger than the game's own, %d ResourceSizeTable entries grown (%llu KB in all)\n",
-        R->ngrown, changed, (unsigned long long)(added >> 10));
+    if (R->ngrown)
+        LOG("[fs] voices: %d files bigger than the game's own, %d ResourceSizeTable entries grown (%llu KB in all)\n",
+            R->ngrown, changed, (unsigned long long)(added >> 10));
 }
 
 static void rom_index(void) {
@@ -991,6 +1041,19 @@ static ssize_t romfs_read(RomImage *m, uint8_t *dst, uint64_t size, uint64_t off
     return (ssize_t)done;
 }
 
+// Image offset where the game's RomFS file containing `off` starts (~0 if none).
+static uint64_t romfs_file_start(uint64_t off) {
+    const RomImage *m = &images[0];
+    int lo = 0, hi = m->rom_nfiles - 1;
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2;
+        if (off < m->rom_files[mid].off) hi = mid - 1;
+        else if (off >= m->rom_files[mid].off + m->rom_files[mid].size) lo = mid + 1;
+        else return m->rom_files[mid].off;
+    }
+    return ~0ull;
+}
+
 // Path of the game's RomFS file containing image offset `off` (NULL if none).
 const char *romfs_file_at(uint64_t off) {
     const RomImage *m = &images[0];
@@ -1027,6 +1090,13 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
                 last = path;
                 if (getenv("SAVAGEWIND_LOG_FILES")) LOG("[fs] read %s\n", path);
             }
+            // SAVAGEWIND_LOG_STREAMS=1: every read of a stream's header (a .bfstm read from its start: the sound
+            // system opening it, once per playback of a BGM or other streamed sound)
+            static int log_streams = -1;
+            if (log_streams < 0) log_streams = getenv("SAVAGEWIND_LOG_STREAMS") ? 1 : 0;
+            size_t pl = path && log_streams ? strlen(path) : 0;
+            if (pl > 6 && !strcmp(path + pl - 6, ".bfstm") && romfs_file_start(off) == off)
+                LOG("[fs] stream %s (%.2f s)\n", path, plat_now_ns() / 1e9);
         }
         static uint64_t reads, bytes;
         reads++;

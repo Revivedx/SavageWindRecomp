@@ -286,6 +286,20 @@ def _solver_steps(gen, a):
             f'  /* {a:#x}: fmul s2, s1, s2 (solver microsteps: delta frame x 6) */')
 
 
+# The sound system's frame (runtime/hle/framepace.c rt_snd_frame_floor, #145): once a frame the game hands its sound
+# system the delta frame, at least 0.5 (1.9.0 0x7001551004; 1.8.2 0x710143ce64 in the Ghidra project): in console
+# frames, with the frame rate (30) it makes the seconds every sound timer and fade steps by. The floor is a 60 fps
+# frame, so above 60 fps the sound's clock ran fast: at ~95 fps each field battle music segment started the next one
+# when it was 63% through, and the segments played over each other. The floor becomes 0.5 x the frame's length in
+# console frames: 0.5 at 30 fps as on the console, and the real frame at any rate (slow motion floored as there).
+
+def _snd_frame_floor(gen, a):
+    assert _word(gen, a) == 0x1e2c1001, hex(_word(gen, a))  # fmov s1, #0.5
+    return ('{ extern float rt_snd_frame_floor(void); union { uint32_t u; float f; } m = { .f = rt_snd_frame_floor() }; '
+            'c->v[1] = m.u; }'
+            f'  /* {a:#x}: fmov s1, #0.5 (sound frame: floor of the delta frame) */')
+
+
 # The menus' speed (runtime/hle/framepace.c rt_gui_speed): once a frame the game stores its integer interval x 0.5 as
 # the GUI speed (the float at +0xb20 of a UI object; 1.8.2 0x700116d0e8): 1 at 30 fps, 0.5 at 60 and never lower, so
 # the menus' cursor and animations ran faster above 60 fps. The runtime gives the frame's real length instead, as Cemu's
@@ -296,6 +310,21 @@ def _gui_speed(gen, a):
     return ('{ extern float rt_gui_speed(float); union { uint32_t u; float f; } s = { .u = (uint32_t)c->v[0] }; '
             's.f = rt_gui_speed(s.f); ST32(c->x[8] + 0xb20, s.u); }'
             f'  /* {a:#x}: str s0, [x8, #0xb20] (GUI speed) */')
+
+
+# MainShortCut's HoldShortCutBg starts P_Capture_00 transparent and has an alpha jump at frame 1. The screen
+# corrects that boundary only at frame == 1 (1.9.0 0x7000e26a38). The wall-time GUI
+# clock can present fractional opening frames below 1, or skip the exact value: the backdrop briefly turns black
+# (#173). Apply the same alpha correction once the animation has started, leaving frame 0 and stopped animations
+# alone. Keep the GUI clock unchanged so both the quick selectors and the other menus retain their normal speed.
+def _quick_menu_capture_alpha(gen, a):
+    w = _word(gen, a)
+    assert w & 0xff00001f == 0x54000001, hex(w)  # b.ne <skip alpha correction>
+    assert _word(gen, a - 4) == 0x1e212000 and _word(gen, a - 8) == 0x1e2e1001
+    target = a + sext((w >> 5) & 0x7ffff, 19) * 4
+    return ('{ union { uint32_t u; float f; } frame = { .u = (uint32_t)c->v[0] }; '
+            f'if (!(frame.f > 0.0f)) goto L_{target:x}; }} '
+            f'/* {a:#x}: b.ne (quick-menu capture alpha after animation starts) */')
 
 
 # Perspective projections' matrix (sead's PerspectiveProjection, its vtable +0x58; 1.8.2 0x7000da13f4): it reads
@@ -462,8 +491,10 @@ PATCHES = {
     'yaz0_stream_ret': _yaz0_stream_ret,
     'vfr_ratio': _vfr_ratio,
     'gui_speed': _gui_speed,
+    'quick_menu_capture_alpha': _quick_menu_capture_alpha,
     'arrow_fall_gravity': _arrow_gravity,
     'phys_solver_steps': _solver_steps,
+    'snd_frame_floor': _snd_frame_floor,
     'persp_matrix': _persp_matrix,
     'persp_matrix_offset': _persp_matrix_offset,
     'persp_unproject_y': _persp_unproject_y,

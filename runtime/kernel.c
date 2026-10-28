@@ -426,7 +426,13 @@ static KThread *thread_new(uint64_t entry, uint64_t arg, uint64_t stack_top, int
 static void thread_start(KThread *t) {
     pthread_attr_t attr;
     pthread_attr_init(&attr);
+#ifndef _WIN32
     pthread_attr_setstacksize(&attr, 256ull << 20);  // guest recursion runs on the host stack
+#else
+    // (the same 256 MB, as the program's default stack reservation: Makefile, --stack. winpthreads hands a stack size to
+    // Windows as memory to commit up front, and 43 threads committed 11 GB that no thread ever touched - half of the
+    // process's commit charge, which a PC must cover with RAM + page file. Reserved, a stack commits as it grows.)
+#endif
     t->started = true;
     pthread_create(&t->host, &attr, thread_main, t);
     pthread_attr_destroy(&attr);

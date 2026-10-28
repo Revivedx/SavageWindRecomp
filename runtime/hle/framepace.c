@@ -237,7 +237,32 @@ float rt_solver_steps(float delta_frame, float per_frame) {
     return keep && delta_frame > 0 && delta_frame < 1 ? per_frame / sqrtf(delta_frame) : delta_frame * per_frame;
 }
 
+// The sound system's frame (tools/patches.py _snd_frame_floor, #145): the game gives it the delta frame, at least 0.5
+// (a 60 fps frame), and every sound timer and fade steps by it: above 60 fps the sound's clock ran ahead of the game's
+// (x1.6 at ~95 fps, x2 at 120), and the field battle music started each segment while the last one still played. The
+// floor is 0.5 x the frame's length in console frames: the console's at 30 fps (slow motion floored as there), the
+// frame's own length above. SAVAGEWIND_SND_FRAME_FLOOR=0: the game's 0.5.
+float rt_snd_frame_floor(void) {
+    static int keep = -1;
+    if (keep < 0) keep = env_int("SAVAGEWIND_SND_FRAME_FLOOR", 1) != 0;
+    return keep && framepace_on() ? 0.5f * g_frame_ratio : 0.5f;
+}
+
+static uint64_t game_frames;  // rt_vfr_update calls: the game's frames (framepace_game_frame)
+uint64_t framepace_game_frame(void) { return __atomic_load_n(&game_frames, __ATOMIC_RELAXED); }
+// The game's frames that were presented: one step per presented frame, where game frames step twice while paused
+// (output_scale.c's jitter sequence: each presented frame gets the next phase)
+static uint64_t shown_frames;
+uint64_t framepace_shown_frame(void) { return __atomic_load_n(&shown_frames, __ATOMIC_RELAXED); }
+
 void rt_vfr_update(uint64_t vfr) {
+    __atomic_fetch_add(&game_frames, 1, __ATOMIC_RELAXED);
+    {
+        extern uint64_t renderer_present_count(void);
+        static uint64_t presented = ~0ull;
+        uint64_t n = renderer_present_count();
+        if (n != presented) presented = n, __atomic_fetch_add(&shown_frames, 1, __ATOMIC_RELAXED);
+    }
     extern bool nvn_timeline(void);
     if (nvn_timeline()) LOG("[tl] %.3f %x vfr\n", plat_now_ns() / 1e6, kernel_current_thread_handle());
     extern uint64_t g_fs_vfr;  // (SAVAGEWIND_FRAME_LOG=2, nvn/objects.c)
