@@ -176,6 +176,23 @@ def main():
         check(False, 'an unknown main module is refused')
     except gs.SiteError as e:
         check('not a version Savage Wind knows' in str(e), str(e))
+    # Entry hooks must retain the original guest stack/register effects on the
+    # unhandled path, and refuse a mismatched instruction rather than corrupt it.
+    for name, word, stack in [('pc_map_focus', 0xa9be7bfd, 0x20),
+                              ('pc_map_focus_target', 0xd100c3ff, 0x30),
+                              ('pc_map_focus_now', 0xd100c3ff, 0x30)]:
+        g = SimpleNamespace(base=BASE, nso=SimpleNamespace(image=struct.pack('<I', word)))
+        code = patches.PATCHES[name](g, BASE)
+        check(f'c->sp -= {stack:#x};' in code and 'return;' in code, f'{name}: guarded original stack effect')
+        if stack == 0x20:
+            check('ST64(c->sp, c->x[29])' in code and 'ST64(c->sp + 8, c->x[30])' in code,
+                  'map focus STP preserves guest FP and LR')
+        g.nso.image = struct.pack('<I', NOP)
+        try:
+            patches.PATCHES[name](g, BASE)
+            check(False, f'{name}: mismatched opcode accepted')
+        except AssertionError:
+            check(True, f'{name}: mismatched opcode refused')
     print(f'ok: {checks} checks')
 
 
