@@ -402,18 +402,49 @@ static bool gpu_overlap(void) {
     return on;
 }
 
+// (GPU overlap) Occlusion query results read on time. The game reads its SAMPLES_PASSED reports after waiting on its
+// frame fence, which the overlap lets return a frame early: it read reports the GPU hadn't counted yet, and in
+// Kakariko the morning fog, faded in, went out at once for good (Mali-G610: the GPU there is still on the frame
+// before). Not deferring the waits on submissions with a report in them fixed it at 27 FPS instead of 30; waiting only
+// up to that submission, the rest of the frame still overlapped, fixed it at 30 (a copy back of a photo, the other
+// one-off wait, is in its submission too). Neither helped written early with the count before, nor any wait on other
+// GPU results. On by default on Mali: SAVAGEWIND_VK_OVERLAP_SYNC_QUERIES=0/1 and SAVAGEWIND_VK_OVERLAP_SYNC_PARTIAL=0/1
+// turn either off or on.
+static bool mali_default(const char *env) {
+    const char *e = getenv(env);
+    return e ? atoi(e) != 0 : g_vk.is_mali;
+}
+static bool oneshot_queries(void) {
+    static int on = -1;
+    if (on < 0) { on = mali_default("SAVAGEWIND_VK_OVERLAP_SYNC_QUERIES"); if (on) LOG("[vk] GPU overlap: query reports waited for\n"); }
+    return on;
+}
+static bool oneshot_partial(void) {
+    static int on = -1;
+    if (on < 0) { on = mali_default("SAVAGEWIND_VK_OVERLAP_SYNC_PARTIAL"); if (on) LOG("[vk] GPU overlap: one-off waits only up to their submission\n"); }
+    return on;
+}
+
 void renderer_wait_seq(uint64_t seq) {
     if (!seq) return;
     pthread_mutex_lock(&seq_lock);
     uint64_t s = submit_seq;
     if (seq > s) seq = s;  // not submitted yet (other thread): everything submitted so far
     if (gpu_overlap() && oneshot_seq && oneshot_seq <= seq && oneshot_seq > vk_completed_seq()) {
-        deferred_seq = 0;  // (a one-off readback in what this waits for: everything up to it, now)
-        pthread_mutex_unlock(&seq_lock);
-        static int nlog;
-        if (nlog < 20) { nlog++; LOG("[vk] GPU overlap: a one-off readback, wait on submission %llu not deferred\n", (unsigned long long)seq); }
-        vk_wait_seq(seq);
-        return;
+        if (oneshot_partial()) {  // (only up to the submission with it in: the rest of the frame still deferred, below)
+            uint64_t os = oneshot_seq;
+            pthread_mutex_unlock(&seq_lock);
+            vk_wait_seq(os);
+            readbacks_apply();
+            pthread_mutex_lock(&seq_lock);
+        } else {
+            deferred_seq = 0;  // (a one-off readback in what this waits for: everything up to it, now)
+            pthread_mutex_unlock(&seq_lock);
+            static int nlog;
+            if (nlog < 20) { nlog++; LOG("[vk] GPU overlap: a one-off readback, wait on submission %llu not deferred\n", (unsigned long long)seq); }
+            vk_wait_seq(seq);
+            return;
+        }
     }
     if (gpu_overlap()) {
         if (vk_completed_seq() >= seq) {
@@ -7430,6 +7461,11 @@ static void exec_list(uint64_t handle, int depth) {
                     OqReport *p = &oq_reports[oq_nreports++];
                     p->addr = r->x[1]; p->seq = vk_pending_seq(); p->ts = ts; p->nq = oq_nrun;
                     memcpy(p->q, oq_run, sizeof p->q[0] * (size_t)oq_nrun);
+                    if (oneshot_queries()) {  // (the game reads this frame's count, never an uncounted one: renderer_wait_seq)
+                        pthread_mutex_lock(&seq_lock);
+                        if (p->seq > oneshot_seq) oneshot_seq = p->seq;
+                        pthread_mutex_unlock(&seq_lock);
+                    }
                 }
                 pthread_mutex_unlock(&readback_lock);
                 break;
