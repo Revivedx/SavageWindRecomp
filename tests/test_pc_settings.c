@@ -9,6 +9,7 @@ const TextLanguage g_text_languages[] = {{"Auto", NULL, NULL}};
 const VoiceLanguage g_voice_languages[] = {{"Auto", NULL}};
 const int g_ntext_languages = 1, g_nvoice_languages = 1;
 int input_pad_family(void) { return 0; }
+bool fsr3_upscaler_enabled(void) { return false; }
 
 int main(int argc, char **argv) {
     assert(argc == 4);
