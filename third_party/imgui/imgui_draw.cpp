@@ -4163,6 +4163,23 @@ void ImFont::RenderChar(ImDrawList* draw_list, float size, const ImVec2& pos, Im
 }
 
 // Note: as with every ImDrawList drawing function, this expects that the font atlas texture is bound.
+// (Savage Wind local patch) Right-to-left text (GImTextReorderLine, imgui.h)
+void (*GImTextReorderLine)(const char* begin, const char* end, char* out) = NULL;
+// Hebrew, Arabic and the other right-to-left blocks (U+0590..U+08FF), and their presentation forms (U+FB1D..U+FDFF,
+// U+FE70..U+FEFF): only text with one of these goes through the hook
+static bool ImTextHasRightToLeft(const char* s, const char* text_end)
+{
+    for (; s < text_end; s++)
+    {
+        const unsigned char c = (unsigned char)*s;
+        if ((c >= 0xD6 && c <= 0xDF) || (c == 0xE0 && s + 1 < text_end && (unsigned char)s[1] <= 0xA3))
+            return true;
+        if (c == 0xEF && s + 1 < text_end && (((unsigned char)s[1] >= 0xAC && (unsigned char)s[1] <= 0xB7) || ((unsigned char)s[1] >= 0xB9 && (unsigned char)s[1] <= 0xBB)))
+            return true;
+    }
+    return false;
+}
+
 void ImFont::RenderText(ImDrawList* draw_list, float size, const ImVec2& pos, ImU32 col, const ImVec4& clip_rect, const char* text_begin, const char* text_end, float wrap_width, bool cpu_fine_clip)
 {
     // Align to be pixel perfect
@@ -4178,6 +4195,61 @@ void ImFont::RenderText(ImDrawList* draw_list, float size, const ImVec2& pos, Im
     const float line_height = FontSize * scale;
     const float origin_x = x;
     const bool word_wrap_enabled = (wrap_width > 0.0f);
+
+    // (Savage Wind local patch) Right-to-left text: the lines are found as below (new lines, then word wrapping, on the
+    // text as typed); each is drawn in the visual order GImTextReorderLine gives it, without wrapping, right-aligned in
+    // the width of the widest line (the width CalcTextSize gives the text).
+    static thread_local bool reordering = false;
+    if (GImTextReorderLine && !reordering && ImTextHasRightToLeft(text_begin, text_end))
+    {
+        ImVector<const char*> lines; // (begin, end) pairs
+        float block_w = 0.0f;
+        for (const char* s_line = text_begin;;)
+        {
+            const char* para_end = (const char*)ImMemchr(s_line, '\n', text_end - s_line);
+            if (!para_end)
+                para_end = text_end;
+            const char* seg = s_line;
+            do
+            {
+                const char* eol = para_end;
+                if (word_wrap_enabled)
+                {
+                    eol = CalcWordWrapPositionA(scale, seg, para_end, wrap_width);
+                    if (eol <= seg && seg < para_end)
+                        eol = seg + ImTextCountUtf8BytesFromChar(seg, para_end); // (at least one character a line)
+                }
+                const char* next = word_wrap_enabled ? eol : para_end; // (wrapping skips the blanks after a line)
+                while (next < para_end && ImCharIsBlankA(*next))
+                    next++;
+                while (eol > seg && (eol[-1] == ' ' || eol[-1] == '\t' || eol[-1] == '\r'))
+                    eol--;
+                lines.push_back(seg);
+                lines.push_back(eol);
+                block_w = ImMax(block_w, CalcTextSizeA(size, FLT_MAX, 0.0f, seg, eol).x);
+                seg = next;
+            } while (seg < para_end);
+            if (para_end >= text_end)
+                break;
+            s_line = para_end + 1;
+        }
+        reordering = true;
+        ImVector<char> line;
+        float line_y = y;
+        for (int i = 0; i < lines.Size && line_y <= clip_rect.w; i += 2, line_y += line_height)
+        {
+            const char* seg = lines[i];
+            const char* eol = lines[i + 1];
+            if (eol <= seg || line_y + line_height < clip_rect.y)
+                continue;
+            line.resize((int)(eol - seg));
+            GImTextReorderLine(seg, eol, line.Data);
+            const float line_x = x + IM_TRUNC(block_w - CalcTextSizeA(size, FLT_MAX, 0.0f, seg, eol).x);
+            RenderText(draw_list, size, ImVec2(line_x, line_y), col, clip_rect, line.Data, line.Data + line.Size, 0.0f, cpu_fine_clip);
+        }
+        reordering = false;
+        return;
+    }
 
     // Fast-forward to first visible line
     const char* s = text_begin;

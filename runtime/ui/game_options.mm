@@ -698,10 +698,11 @@ std::u16string utf16(const char *s) {
 }
 
 // A message for the game ({char16_t *, u32 length with the terminator} at out); id: its storage. grey: in the
-// game's grey (its message colour tag: 0x0e, group 0, tag 3, 2 bytes of colour; 0xffff back to the text's own)
+// game's grey (its message colour tag: 0x0e, group 0, tag 3, 2 bytes of colour; 0xffff back to the text's own).
+// Right-to-left menus: the game draws text left to right, so it gets each line in visual order.
 void put_text(uint32_t id, const char *s, uint64_t out, bool grey = false) {
     std::u16string &t = g_text[id];
-    std::u16string n = utf16(s);
+    std::u16string n = utf16(ui_visual_order(s).c_str());
     static const char16_t tag[] = {0x0e, 0, 3, 2};  // (then the colour)
     if (grey) n = std::u16string(tag, 4) + GREY + n + std::u16string(tag, 4) + (char16_t)0xffff;
     if (t != n) t = n;

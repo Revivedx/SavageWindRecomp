@@ -328,6 +328,8 @@ dist:
 	cp third_party/fonts/FiraSans/OFL.txt "$(DIST)/FiraSans-OFL.txt"
 	cp third_party/fonts/NotoSansThai/NotoSansThai-Medium.ttf "$(DIST)/"  # (Thai menus, OFL)
 	cp third_party/fonts/NotoSansThai/OFL.txt "$(DIST)/NotoSansThai-OFL.txt"
+	cp third_party/fonts/NotoSansHebrew/NotoSansHebrew-Medium.ttf "$(DIST)/"  # (Hebrew menus, OFL)
+	cp third_party/fonts/NotoSansHebrew/OFL.txt "$(DIST)/NotoSansHebrew-OFL.txt"
 	cp third_party/FidelityFX/LICENSE.txt "$(DIST)/FidelityFX-LICENSE.txt"  # (AMD FidelityFX SDK, MIT: README "License")
 	mkdir "$(DIST)/colour-luts" && cp third_party/luts/*.cube third_party/luts/README.md "$(DIST)/colour-luts/"  # (CC0: Video > Colour)
 	cp README.md LICENSE "$(DIST)/"  # (licenses and source links of the bundled components: README "License")

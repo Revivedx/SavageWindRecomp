@@ -1222,7 +1222,7 @@ Pendiente:
      textos (`ui_merge_fallback_font`), y cada contexto rehace sus fuentes al cambiar el idioma.
      `tools/i18n_check.py` lista los textos que le faltan a cada tabla (`--missing <idioma>` los imprime como
      líneas `T(...)`); `SAVAGEWIND_MENU_LANG=<código>` (p. ej. `ja`) fuerza el idioma de los menús para probar.
-     Las doce tablas están completas (es, fr, de, it, nl, ru, pt, ja, ko, zh-Hans, zh-Hant, th). ImGui 1.91.9 solo
+     Las trece tablas están completas (es, fr, de, it, nl, ru, pt, ja, ko, zh-Hans, zh-Hant, th, he). ImGui 1.91.9 solo
      corta líneas en espacios: `third_party/imgui/imgui_draw.cpp` (`ImFont::CalcWordWrapPositionA`) lleva un
      parche local que también corta entre caracteres CJK, respetando la puntuación. El tailandés no separa
      palabras con espacios: sus textos llevan espacios entre frases, que es donde se cortan las líneas. Su fuente
@@ -1230,6 +1230,15 @@ Pendiente:
      del sistema (Leelawadee UI, Tahoma). ImGui no posiciona marcas combinantes con GPOS: las vocales y tonos de
      Noto Sans Thai tienen avance 0 y caen sobre la letra anterior, que se lee bien en los tamaños del menú.
      Dentro del juego, las páginas de Opciones se dibujan con la fuente tailandesa del propio juego.
+     El hebreo (`he`) no es un idioma de texto del juego: solo `SAVAGEWIND_MENU_LANG=he` lo elige. Se escribe de
+     derecha a izquierda: sus textos están en orden lógico (el de lectura) y cada línea se dibuja en orden visual,
+     con un subconjunto del algoritmo bidireccional de Unicode (`ui_visual_order` / `visual_line` en `i18n.mm`:
+     los tramos latinos y los números conservan su orden, el resto se invierte y los paréntesis se reflejan).
+     ImGui lo hace con otro parche local (`GImTextReorderLine`, `ImFont::RenderText`): corta las líneas sobre el
+     texto lógico, las reordena y alinea a la derecha las de un párrafo en el ancho de la más larga; la
+     disposición de los menús no se refleja. Las páginas de Opciones del juego reciben cada línea ya reordenada
+     (`put_text`) y necesitan una fuente del juego con hebreo. Fuente: Noto Sans Hebrew Medium (OFL,
+     `third_party/fonts/NotoSansHebrew`), y si falta, la del sistema (Segoe UI, Arial).
    - Ajustes dentro del juego (2026-10-18): la pantalla Ajustes del propio juego (pausa > Sistema > Ajustes, u
      Opciones en el menú del título) lleva las páginas de Savage Wind y sustituye al overlay en el juego (F1, Esc y el
      botón Home ya no lo abren; `SAVAGEWIND_OVERLAY=1` lo devuelve; Esc suelta el cursor). La primera página es una
