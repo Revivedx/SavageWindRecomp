@@ -41,3 +41,4 @@ game_dir.txt
 # online play: the player's own settings (runtime/online.c)
 /online.ini
 /online_mod*/
+/run.log
