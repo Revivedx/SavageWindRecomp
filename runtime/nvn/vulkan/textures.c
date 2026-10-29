@@ -451,11 +451,13 @@ static uint32_t level_w(const TexBackend *b, uint32_t lv) { uint32_t v = b->widt
 static uint32_t level_h(const TexBackend *b, uint32_t lv) { uint32_t v = b->height >> lv; return v ? v : 1; }
 
 static void destroy_image(TexBackend *b) {
-    if (b->block) {
-        destroy_image(b->block);
-        free(b->block);
-        b->block = NULL;
-    }
+    for (int i = 0; i < 16; i++)
+        if (b->block_lv[i]) {
+            destroy_image(b->block_lv[i]);
+            free(b->block_lv[i]);
+            b->block_lv[i] = NULL;
+        }
+    b->block = NULL;
     views_forget(b);
     if (b->image || b->mem) defer((Dead){.img = b->image, .mem = b->mem});  // (never the same allocation twice)
     b->image = VK_NULL_HANDLE;
@@ -864,9 +866,10 @@ static void upload_levels(NvnTexture *t, TexBackend *b, uint32_t level_mask) {
                         if (sn && e0 == -128) e0 = -127;
                         if (sn && e1 == -128) e1 = -127;
                         int pal[8] = {e0, e1};
-                        if (e0 > e1) for (int i = 1; i < 7; i++) pal[i + 1] = ((7 - i) * e0 + i * e1 + 3) / 7;
+                        // (signed: rounded to nearest, C division truncates towards zero)
+                        if (e0 > e1) for (int i = 1; i < 7; i++) pal[i + 1] = sn ? (int)lround(((7 - i) * e0 + i * e1) / 7.0) : ((7 - i) * e0 + i * e1 + 3) / 7;
                         else {
-                            for (int i = 1; i < 5; i++) pal[i + 1] = ((5 - i) * e0 + i * e1 + 2) / 5;
+                            for (int i = 1; i < 5; i++) pal[i + 1] = sn ? (int)lround(((5 - i) * e0 + i * e1) / 5.0) : ((5 - i) * e0 + i * e1 + 2) / 5;
                             pal[6] = sn ? -127 : 0;
                             pal[7] = sn ? 127 : 255;
                         }
@@ -1206,36 +1209,48 @@ VkComponentMapping vk_sample_swizzle(NvnTexture *t, const NvnTextureView *v) {
 
 static bool is_bc(VkFormat f) { return f >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && f <= VK_FORMAT_BC7_SRGB_BLOCK; }
 
-// Attachment view for a draw into the blocks of BC image b, a texel a 4x4 block in format fmt (the game's view: RG32
-// for 8-byte blocks): a view of b->block, made for it, that vk_block_flush copies into b after the pass.
-static VkImageView block_view(TexBackend *b, VkFormat fmt) {
-    TexBackend *s = b->block;
+// Attachment view for a draw into the blocks of level lv of BC image b, a texel a 4x4 block in format fmt (the game's
+// view: RGBA16 UINT for 8-byte blocks): a view of b->block_lv[lv], made for it, that vk_block_flush copies (or, Mali's
+// R8 images, decodes) into that level of b after the pass. lv > 0 only on the Mali R8 path (vk_view).
+static VkImageView block_view(TexBackend *b, VkFormat fmt, uint32_t lv) {
+    if (lv >= 16 || lv >= b->levels) return VK_NULL_HANDLE;
+    TexBackend *s = b->block_lv[lv];
     if (s && s->format != fmt) {
         destroy_image(s);
         free(s);
-        s = b->block = NULL;
+        s = b->block_lv[lv] = NULL;
+        if (b->block_level == lv) b->block = NULL;
     }
     if (!s) {
         if (!format_supports(fmt, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) return VK_NULL_HANDLE;
         s = calloc(1, sizeof *s);
         s->format = fmt;
-        s->width = (b->width + 3) / 4, s->height = (b->height + 3) / 4;
+        s->width = (level_w(b, lv) + 3) / 4, s->height = (level_h(b, lv) + 3) / 4;
         s->depth = s->layers = s->levels = s->samples = 1;
         s->aspect = VK_IMAGE_ASPECT_COLOR_BIT;
         s->base_type = VK_IMAGE_VIEW_TYPE_2D;
+        VkImageUsageFlags usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                  VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        {   // (Mali R8 path) storage usage keeps ARM's driver from compressing the blocks (AFBC) or skipping tiles it
+            // thinks unchanged (transaction elimination): the bit-exact integers are the whole point of this image.
+            // SAVAGEWIND_VK_BLOCK_AFBC=1: allowed.
+            static int afbc = -1;
+            if (afbc < 0) afbc = getenv("SAVAGEWIND_VK_BLOCK_AFBC") != NULL;
+            if (b->bc4_cpu && !afbc && format_supports(fmt, VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+        }
         VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = fmt,
                                 .extent = {s->width, s->height, 1}, .mipLevels = 1, .arrayLayers = 1,
-                                .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
-                                .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                                         VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT};
+                                .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = usage};
         VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
         if (vmaCreateImage(g_vk.vma, &ci, &ai, &s->image, &s->mem, NULL) != VK_SUCCESS) {
             free(s);
             return VK_NULL_HANDLE;
         }
         vk_image_init_layout(vk_upload_cmd(), s->image, VK_IMAGE_ASPECT_COLOR_BIT);
-        b->block = s;
+        b->block_lv[lv] = s;
     }
+    b->block = s;
+    b->block_level = (uint8_t)lv;
     b->block_pending = true;
     return vk_image_view(s, VK_IMAGE_VIEW_TYPE_2D, fmt, 0, 1, 0, 1, IDENTITY, VK_IMAGE_ASPECT_COLOR_BIT);
 }
@@ -1247,8 +1262,8 @@ void vk_block_flush(VkCommandBuffer cb, TexBackend *b) {
     if (!s) return;
     if (b->bc4_cpu) { bc4_decode(cb, b); return; }
     vk_full_barrier(cb);
-    VkImageCopy c = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                     .extent = {s->width, s->height, 1}};
+    VkImageCopy c = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                     .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, b->block_level, 0, 1}, .extent = {s->width, s->height, 1}};
     vkCmdCopyImage(cb, s->image, VK_IMAGE_LAYOUT_GENERAL, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
     vk_full_barrier(cb);
 }
@@ -1271,8 +1286,8 @@ static const char *BC4D_SRC =
     "  int e0 = endp(lo & 255u), e1 = endp((lo >> 8) & 255u);\n"
     "  int pal[8];\n"
     "  pal[0] = e0; pal[1] = e1;\n"
-    "  if (e0 > e1) { for (int j = 1; j < 7; j++) pal[j + 1] = ((7 - j) * e0 + j * e1 + 3) / 7; }\n"
-    "  else { for (int j = 1; j < 5; j++) pal[j + 1] = ((5 - j) * e0 + j * e1 + 2) / 5;\n"
+    "  if (e0 > e1) { for (int j = 1; j < 7; j++) pal[j + 1] = int(round(float((7 - j) * e0 + j * e1) / 7.0)); }\n"
+    "  else { for (int j = 1; j < 5; j++) pal[j + 1] = int(round(float((5 - j) * e0 + j * e1) / 5.0));\n"
     "         pal[6] = p.snorm != 0u ? -127 : 0; pal[7] = p.snorm != 0u ? 127 : 255; }\n"
     "  for (uint r = 0u; r < 4u; r++) {\n"
     "    uint row = 0u;\n"
@@ -1335,9 +1350,14 @@ fail:
 
 static bool bc4_decode(VkCommandBuffer cb, TexBackend *b) {
     TexBackend *s = b->block;
-    uint32_t bw = s->width, bh = s->height;
+    uint32_t bw = s->width, bh = s->height, lv = b->block_level;
     uint64_t in = (uint64_t)bw * bh * 8, out = (uint64_t)bw * bh * 16;
-    if (!bc4d_init() || in + out > BC4D_SIZE) return false;
+    if (!bc4d_init()) return false;
+    if (in + out > BC4D_SIZE) {
+        static int nbig;
+        if (nbig++ < 4) LOG("[vk] BC4 drawn by the GPU: %ux%u blocks don't fit the decoder's buffer, not decoded\n", bw, bh);
+        return false;
+    }
     vk_full_barrier(cb);
     VkBufferImageCopy c1 = {.bufferOffset = 0, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {bw, bh, 1}};
     vkCmdCopyImageToBuffer(cb, s->image, VK_IMAGE_LAYOUT_GENERAL, g_bc4d.buf, 1, &c1);
@@ -1349,12 +1369,13 @@ static bool bc4_decode(VkCommandBuffer cb, TexBackend *b) {
     vkCmdDispatch(cb, (bw + 7) / 8, (bh + 7) / 8, 1);
     vk_full_barrier(cb);
     VkBufferImageCopy c2 = {.bufferOffset = in, .bufferRowLength = bw * 4, .bufferImageHeight = bh * 4,
-                            .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {b->width, b->height, 1}};
+                            .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv, 0, 1},
+                            .imageExtent = {level_w(b, lv), level_h(b, lv), 1}};
     vkCmdCopyBufferToImage(cb, g_bc4d.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &c2);
     vk_full_barrier(cb);
     vk_dyn_forget();  // (the compute pipeline bound in the main command buffer)
     static int nlog;
-    if (nlog++ < 10) LOG("[vk] BC4 decode on the GPU: %ux%u (%ux%u blocks)\n", b->width, b->height, bw, bh);
+    if (nlog++ < 10) LOG("[vk] BC4 decode on the GPU: %ux%u level %u (%ux%u blocks)\n", level_w(b, lv), level_h(b, lv), lv, bw, bh);
     return true;
 }
 
@@ -1370,16 +1391,25 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
         // never comes into it. SAVAGEWIND_VK_BC4_DRAWN=bc4: a real BC4 image instead (copied into, Mali samples it).
         static int as_bc4 = -1;
         if (as_bc4 < 0) as_bc4 = getenv("SAVAGEWIND_VK_BC4_DRAWN") && !strcmp(getenv("SAVAGEWIND_VK_BC4_DRAWN"), "bc4");
+        uint32_t lv = (v->setmask & 1) ? v->base_level : 0;
         static int nlog;
-        if (nlog++ < 20) LOG("[vk] BC4 texture %ux%u at %llx drawn into: %s\n", t->width, t->height, (unsigned long long)t->addr,
+        if (nlog++ < 20) LOG("[vk] BC4 texture %ux%u (%u levels, %u layers) at %llx drawn into: level %u through view fmt %#x, %s\n",
+                             t->width, t->height, b->levels, b->layers, (unsigned long long)t->addr, lv, v->format,
                              as_bc4 ? "kept as BC4 on the GPU" : "decoded on the GPU to R8");
         if (as_bc4) {
             b->gpu_bc4 = true;
             destroy_image(b);
             create_image(t, b);
             b->gpu_owned = true;
-        } else if (b->levels >= 1 && b->layers == 1 && b->depth == 1 && !((v->setmask & 1) && v->base_level)) {
-            return block_view(b, fmt_of(v->format).vf);
+        } else if (b->layers == 1 && b->depth == 1 && lv < b->levels) {
+            // (every level: the R8 image's own levels never take the game's integers; a level the game encodes but
+            // that wasn't decoded would show whenever the bubble is drawn smaller than its texture)
+            return block_view(b, fmt_of(v->format).vf, lv);
+        } else {
+            static int nskip;
+            if (nskip++ < 4) LOG("[vk] BC4 texture drawn into at level %u layer %u of %u: not handled (stays as uploaded)\n", lv,
+                                 (v->setmask & 2) ? v->min_layer : 0, b->layers);
+            return VK_NULL_HANDLE;
         }
     }
     if (v && (v->setmask & 4) && !(b->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT))) {
@@ -1395,7 +1425,7 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
     if (ly0 >= b->layers) ly0 = b->layers - 1;
     if (ly0 + nly > b->layers) nly = b->layers - ly0;
     if (render && fmt != b->format && is_bc(b->format) && !is_bc(fmt) && lv0 == 0 && b->layers == 1 && b->depth == 1)
-        return block_view(b, fmt);  // (drawn into through a view of its blocks)
+        return block_view(b, fmt, 0);  // (drawn into through a view of its blocks)
     if (render) {
         if (b->base_type == VK_IMAGE_VIEW_TYPE_3D) {
             // One slice of one level (the view's layer is the slice), as a 2D view of the 2D-array-compatible image.

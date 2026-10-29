@@ -127,7 +127,11 @@ typedef struct TexBackend {
     // A compressed image drawn into through an uncompressed view of its blocks (a texel a block: BOTW encodes its NPC
     // speech bubbles to BC4 on the GPU that way). Vulkan draws into no compressed image: the draw goes into this
     // block-sized image instead, copied into this one after the pass (textures.c block_view, vk_block_flush).
+    // block is the one the open pass draws into: one of block_lv (a block image per level of b drawn into that way;
+    // only level 0 outside the Mali R8 path), block_level the level of b its texels are the blocks of.
     struct TexBackend *block;
+    struct TexBackend *block_lv[16];
+    uint8_t block_level;
     bool gpu_bc4;                // BC4 kept as BC4 though SAVAGEWIND_VK_BC4_CPU is on: the GPU draws into its blocks
     bool block_pending;          // (exec.c) the attachment view just made is block's: copy it after the pass
 } TexBackend;
