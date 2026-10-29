@@ -31,10 +31,12 @@ BASE_AI = 'Dm_Animal_Heron_A'
 ARMOR_PREFIX = 'Online'
 # the armour models online_mod carries: each is a resident actor, and the game's resident list holds only about
 # ten more than its own 48 (the 59th crashes it at start: 0x7000d49080's fixed arrays), Link's included. The pieces
-# most seen (the head is Link's own hair in his model): Hylian tunic and trousers, the Old Shirt and Well-Worn
-# Trousers, the Champion's Tunic, Climbing and Stealth. --armor-models=Armor_001_Upper,... for others
+# most seen: Hylian tunic and trousers, the Old Shirt and Well-Worn Trousers, the Champion's Tunic, Climbing, the
+# Stealth top; and Link's hair (Armor_Default_Head: his model has none), which every Link wears without a helmet.
+# --armor-models=Armor_001_Upper,... for others
+HAIR = 'Armor_Default_Head'
 ARMOR_MODELS = ['Armor_001_Upper', 'Armor_001_Lower', 'Armor_043_Upper', 'Armor_043_Lower', 'Armor_116_Upper',
-                'Armor_014_Upper', 'Armor_014_Lower', 'Armor_012_Upper', 'Armor_012_Lower']
+                'Armor_014_Upper', 'Armor_014_Lower', 'Armor_012_Upper', HAIR]
 # (AS name, the player's own AS file): the order is runtime/online_actors.c k_anims'
 ANIMS = [('OnlineWait', 'Player_Wait'), ('OnlineWalk', 'Player_Move'), ('OnlineRun', 'Player_Move'),
          ('OnlineDash', 'Player_Move'), ('OnlineJump', 'Player_Jump'), ('OnlineFall', 'Player_Fall'),
@@ -106,7 +108,7 @@ def main():
         ARMOR = only[0].split(',')
     else:
         ARMOR = sorted(n[:-len('.sbactorpack')] for n in os.listdir(os.path.join(romfs, 'Actor', 'Pack'))
-                       if n.startswith('Armor_') and not n.startswith('Armor_Default')
+                       if n.startswith('Armor_') and (not n.startswith('Armor_Default') or n == HAIR + '.sbactorpack')
                        and n.endswith(('_Head.sbactorpack', '_Upper.sbactorpack', '_Lower.sbactorpack')))
     title_bg_path = os.path.join(romfs, 'Pack', 'TitleBG.pack')
     title_bg = oead.Sarc(open(title_bg_path, 'rb').read())

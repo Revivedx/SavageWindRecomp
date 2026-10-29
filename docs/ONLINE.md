@@ -103,9 +103,15 @@ AS list and AS, on the Link's matrix, playing his AS from the same frame), from 
 
 The limit: each armour model is a resident actor, and the game's resident list (`Actor/ResidentActors.byml`) holds
 only ten more than its own 48 (the 59th crashes the game at start in its loader, 0x7000d49080, fixed arrays). So
-online_mod carries nine models, the pieces most seen (`ARMOR_MODELS` in `tools/online_mod.py`): Hylian tunic and
-trousers, the Old Shirt and Well-Worn Trousers, the Champion's Tunic, Climbing and Stealth. A piece without one
-shows Link's base model there (the head: Link's own hair). Also learnt: every online actor carries the AS list and
+online_mod carries nine models (`ARMOR_MODELS` in `tools/online_mod.py`): Link's hair (`Armor_Default_Head`: the
+Link model has none; every Link without a helmet online_mod has wears it), and the pieces most seen: Hylian tunic
+and trousers, the Old Shirt and Well-Worn Trousers, the Champion's Tunic, Climbing, the Stealth top. A piece without
+one shows Link's base model there.
+
+Under his armour the player's code hides the parts of Link's model it covers; so does the runtime, through what the
+`SetMaterialVisible` AI action does (0x7000731828): the model is actor +0x4e0, `0x7000f777c4`(model, SafeString)
+finds a material (unit in the low 16 bits, material in the high 16), and unit->vtable[0x1b0](unit, material, visible)
+shows or hides it. An upper piece hides `Mt_Upper_Skin`; a lower one `Mt_Lower_Skin`, `Mt_Underwear` and the belts. Also learnt: every online actor carries the AS list and
 AS in its own pack (without them its load never ends), and the ResidentActors list's RSTB size must grow with it.
 
 ### Not done yet

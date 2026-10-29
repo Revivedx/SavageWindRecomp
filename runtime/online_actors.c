@@ -27,6 +27,10 @@
 #define FN_PLAY_AS 0x700151e42cull  // an AI action's "play this AS" (x0 the action: its actor at +8; x1 the AS name, w2
                                     // not again if already playing, w3 w4 0, s0 the blend, -1 its own); the AS
                                     // manager is the actor's +0x560 (ForkASPlay's enter, 0x7000759e74, calls it)
+#define FN_FIND_MATERIAL 0x7000f777c4ull  // gsys model, SafeString * -> unit (low 16) and material (high 16)
+                                         // (SetMaterialVisible's invoke, 0x7000731828: the model is actor +0x4e0,
+                                         // its units at +0x40, unit->vtable[0x1b0](unit, material, visible))
+#define P_SAFE_STRING_VT 0x7001d66260ull  // (sead::SafeString's vtable, +0x10)
 #define P_CREATOR 0x7001d66550ull
 #define P_HEAP_OWNER 0x7001d66558ull
 
@@ -43,6 +47,7 @@ static struct {
     int fails[PARTS];
     int anim;                // the AS all parts play (ONLINE_A_*; -1: none yet, or a part needs it again)
     int as_fails;
+    int skin;                // the body materials shown (SKIN_*; -1: not set yet)
 } g_act[ONLINE_MAX];
 
 // tools/online_mod.py ANIMS: the AS names of OnlinePlayer's one-clip animations, in ONLINE_A_* order
@@ -119,7 +124,7 @@ static bool play_anim(Cpu *c, uint64_t actor, int anim, bool again) {
 
 static void forget_all(void) {
     memset(g_act, 0, sizeof g_act);
-    for (int i = 0; i < ONLINE_MAX; i++) g_act[i].anim = -1;
+    for (int i = 0; i < ONLINE_MAX; i++) g_act[i].anim = -1, g_act[i].skin = -1;
 }
 
 static void drop(Cpu *c, int i) {
@@ -128,7 +133,7 @@ static void drop(Cpu *c, int i) {
         g_act[i].actor[k] = 0;
     }
     LOG("[online] removed %s's Link\n", g_act[i].name);
-    g_act[i].anim = -1;
+    g_act[i].anim = -1, g_act[i].skin = -1;
 }
 
 // online_mod/armor.txt (tools/online_mod.py): each armour piece it has an online actor for, "piece=actor" a line
@@ -169,6 +174,8 @@ static int armor_of(const OnlinePlayer *p, char out[PARTS - 1][48]) {
         int n = 0;
         for (int k = 0; k < 3; k++) {
             const char *a = p->armor[k][0] ? armor_actor(p->armor[k]) : NULL;
+            // (no helmet, or one online_mod lacks: his hair, Link's default head)
+            if (!a && k == 0) a = armor_actor("Armor_Default_Head");
             if (a) snprintf(out[n++], 48, "%s", a);
         }
         return n;
@@ -192,6 +199,33 @@ static uint64_t create(Cpu *c, const char *name) {
     return call(c, FN_CREATE, creator, (uint64_t)(uintptr_t)name, heap, 0, 0, 0);
 }
 
+
+// Link's body under his armour: the player's code hides the parts of his model an armour piece covers; so does this
+// (materials of the Link model: Mt_Upper_Skin, Mt_Lower_Skin, Mt_Underwear, Mt_Belt_A, Mt_Belt_C)
+enum { SKIN_UPPER = 1, SKIN_LOWER = 2 };  // shown
+
+static bool set_material_visible(Cpu *c, uint64_t actor, const char *material, bool visible) {
+    uint64_t model = *(uint64_t *)(uintptr_t)(actor + 0x4e0);
+    if (!model) return false;
+    uint64_t name[2] = {*(uint64_t *)(uintptr_t)P_SAFE_STRING_VT + 0x10, (uint64_t)(uintptr_t)material};
+    uint32_t r = (uint32_t)call(c, FN_FIND_MATERIAL, model, (uint64_t)(uintptr_t)name, 0, 0, 0, 0);
+    if (r >= 0xffff0000u || (r & 0xffff) == 0xffff) return false;  // (not found)
+    int16_t unit_i = (int16_t)(r & 0xffff);
+    uint64_t units = *(uint64_t *)(uintptr_t)(model + 0x40);
+    uint64_t unit = *(uint64_t *)(uintptr_t)(*(uint64_t *)(uintptr_t)(units + 8 * unit_i));
+    if (!unit) return false;
+    uint64_t fn = *(uint64_t *)(uintptr_t)(*(uint64_t *)(uintptr_t)unit + 0x1b0);
+    call(c, fn, unit, r >> 16, visible, 0, 0, 0);
+    return true;
+}
+
+static void set_skin(Cpu *c, uint64_t link, int shown) {
+    set_material_visible(c, link, "Mt_Upper_Skin", shown & SKIN_UPPER);
+    set_material_visible(c, link, "Mt_Lower_Skin", shown & SKIN_LOWER);
+    set_material_visible(c, link, "Mt_Underwear", shown & SKIN_LOWER);
+    set_material_visible(c, link, "Mt_Belt_A", shown & SKIN_LOWER);
+    set_material_visible(c, link, "Mt_Belt_C", shown & SKIN_LOWER);
+}
 
 static bool running(uint64_t actor) { return actor && *(uint8_t *)(uintptr_t)(actor + 0x64) == 1; }  // (calc)
 
@@ -246,6 +280,7 @@ void rt_online_frame(Cpu *c) {
             }
             g_act[i].actor[k] = a;
             g_act[i].anim = -1;  // (all parts start the AS again together: the new one in step)
+            if (k == 0) g_act[i].skin = -1;
             memcpy(g_act[i].name, pl[i].name, sizeof g_act[i].name);
             LOG("[online] %s: %s (actor %llx)\n", pl[i].name, want_part[k], (unsigned long long)a);
         }
@@ -258,6 +293,17 @@ void rt_online_frame(Cpu *c) {
                 call(c, FN_SET_MTX, g_act[i].actor[k], (uint64_t)(uintptr_t)m, 0, 0, 0, 0);
                 all_running &= running(g_act[i].actor[k]);
             }
+        // his body under his armour (once his Link runs: its model is there)
+        if (is_online_player() && running(g_act[i].actor[0])) {
+            int shown = SKIN_UPPER | SKIN_LOWER;
+            for (int k = 1; k < PARTS; k++) {
+                const char *pn = g_act[i].actor[k] ? g_act[i].part[k] : "";
+                size_t l = strlen(pn);
+                if (l > 6 && !strcmp(pn + l - 6, "_Upper")) shown &= ~SKIN_UPPER;
+                if (l > 6 && !strcmp(pn + l - 6, "_Lower")) shown &= ~SKIN_LOWER;
+            }
+            if (shown != g_act[i].skin) set_skin(c, g_act[i].actor[0], shown), g_act[i].skin = shown;
+        }
         // the AS: once all parts run (BaseProc state 1, calc; right after its creation, 0, an actor's AS can't play),
         // on every part in the same frame
         if (is_online_player() && all_running && pl[i].anim < ONLINE_A_COUNT && pl[i].anim != g_act[i].anim) {
