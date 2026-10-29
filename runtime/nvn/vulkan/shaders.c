@@ -243,6 +243,7 @@ void vk_key_normalize(const uint8_t *code, int stage, ShaderKey *k) {
         memset(k->rt_kind, 0, sizeof k->rt_kind);
         k->vs_out_mask = 0;
         k->shared_size = 0;
+        k->mvec_rt = 0;
     } else if (stage == STAGE_FRAGMENT) {
         uint32_t omap;
         memcpy(&omap, code + 0x30 + 0x48, 4);  // (4 bits per color target)
@@ -252,6 +253,7 @@ void vk_key_normalize(const uint8_t *code, int stage, ShaderKey *k) {
         memset(k->attr_kind, 0, sizeof k->attr_kind);
         k->flip_y = k->depth_minus_one = false;
         k->shared_size = 0;
+        k->mvec = 0;
     } else {
         uint32_t shared = k->shared_size;
         bool glsl = k->glsl;
@@ -599,6 +601,396 @@ VkDescriptorSetLayout vk_set_layout(const VkBindingInfo *b, int n, uint32_t set,
 }
 
 // ================================================================== built-in shaders
+// Temporal anti-aliasing (Video > Anti-aliasing TAA, exec.c mvec_taa): AMD FSR 3.1's upscaler's reconstruction at the
+// scene's own size, as compute passes (8x8 groups; bindings 0-7 sampled, linear / clamp, 8-15 storage images). Push
+// constants: size (w, h, 1 / w, 1 / h); jit (this frame's jitter J, then the previous frame's, in pixels, y down: pixel
+// p's sample is at p + 0.5 - J); cam (A, B: view depth Z = B / (A + ndc), ndc = cam.z * depth + cam.w); st (x: 1 when
+// last frame's images hold history, y: the jitter's phase count, zw: the pass's own size where it isn't the scene's).
+// Motion vectors here are UV offsets to where the pixel was (prepare turns mvec_fill's NDC into them).
+//   - taa_prepare: per pixel, the depth and vector of the nearest surface in its 3x3 (.xy; .z its view depth, negative
+//     when it has no vector; .w the farthest's), its luma, and the nearest depth scattered (atomic min of the float's
+//     bits) to the 2x2 it lands on in last frame's image: what was in front where.
+//   - taa_shade_src / taa_shade_down / taa_shade: shading change. This frame's 5 lumas around the pixel against last
+//     frame's around where it was, both sorted: the smallest relative difference between the two sets (0 when any two
+//     match), so jitter and sub-pixel motion, which reorder the values, don't count; averaged to half, quarter and
+//     eighth size, |mean difference x mean sign| (a change in one direction: lighting) at the strongest of the three.
+//   - taa_reactivity: disocclusion (no tap of last frame's nearest depths is this surface or behind it, by more than a
+//     distance-scaled separation), motion divergence (what is now where the pixel was moves differently), the reactive
+//     mask (3x3 max of the vectors' .z: blended effects) with shading change, and the accumulation: last frame's at
+//     where the pixel was, 0 on a shading change, -1/3 on a disocclusion (two frames of the new image alone), 1/3 more
+//     a frame. Thin features: a luma ridge in the 3x3 that fills no 2x2 quadrant around the pixel (branches, wires).
+//   - taa_instability: the last 4 lumas along the motion; a pixel nearer an older one than the last (it oscillates, as
+//     sub-pixel leaves do with the jitter) keeps its history from the clamp.
+//   - taa_resolve: the history (Lanczos 2, deringed to its 4 nearest texels) clipped to an ellipsoid in YCoCg around
+//     the 3x3's Gaussian-weighted mean, its radii 1-3 standard deviations (tight with motion, near geometry, little
+//     accumulation, reactive or changed shading; luma 1.7x) unless unstable or locked; the new sample a Lanczos 2 of the
+//     3x3 at their jittered distances, deringed to the 3x3, whose weight (0.74 / 16 for a typical frame's) against the
+//     accumulation sets the blend: about 1/23 on a converged still pixel. The thin-feature lock lives in the history's
+//     .a: it needs two frames of detection to count, fades over the jitter sequence and dies with disocclusion.
+//     st.z (SAVAGEWIND_TAA_VIEW): the output shows a mask in magenta over grey: 1 disocclusion, 2 accumulation, 3 shading
+//     change, 4 luma instability, 5 lock, 6 motion divergence, 7 no motion vector.
+static const char taa_common[] =
+        "#version 450\n"
+        "layout(local_size_x = 8, local_size_y = 8) in;\n"
+        "layout(push_constant) uniform P { vec4 size; vec4 jit; vec4 cam; vec4 st; } pc;\n"
+        "const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);\n"
+        "const float FP16_MIN = 6.10e-05;\n"
+        "vec3 ycocg(vec3 c) { return vec3(0.25 * c.r + 0.5 * c.g + 0.25 * c.b, 0.5 * c.r - 0.5 * c.b, -0.25 * c.r + 0.5 * c.g - 0.25 * c.b); }\n"
+        "vec3 rgb(vec3 y) { return vec3(y.x + y.y - y.z, y.x + y.z, y.x - y.y - y.z); }\n"
+        "float v4k(vec2 mv) { return length(mv * vec2(3840.0, 2160.0)); }\n"
+        "bool inside(vec2 uv) { return all(greaterThanEqual(uv, vec2(0.0))) && all(lessThanEqual(uv, vec2(1.0))); }\n"
+        "float min_over_max(float a, float b, float z) { float m = max(a, b); return m != 0.0 ? min(a, b) / m : z; }\n"
+        "ivec2 pixel() { return ivec2(gl_GlobalInvocationID.xy); }\n"
+        "ivec2 rsize() { return ivec2(pc.size.xy); }\n"
+        "ivec2 clampp(ivec2 q) { return clamp(q, ivec2(0), rsize() - 1); }\n"
+        "bool onscreen(ivec2 q) { return all(greaterThanEqual(q, ivec2(0))) && all(lessThan(q, rsize())); }\n"
+        "float view_z(float d) { return pc.cam.y / (pc.cam.x + pc.cam.z * d + pc.cam.w); }\n";
+static const char taa_prepare[] =
+        "layout(set = 0, binding = 0) uniform sampler2D color_t;\n"
+        "layout(set = 0, binding = 1) uniform sampler2D vec_t;\n"
+        "layout(set = 0, binding = 2) uniform sampler2D depth_t;\n"
+        "layout(set = 0, binding = 8, rgba32f) uniform writeonly image2D dil_i;\n"
+        "layout(set = 0, binding = 9, r16f) uniform writeonly image2D luma_i;\n"
+        "layout(set = 0, binding = 10, r32ui) uniform uimage2D recon_i;\n"
+        "void main() {\n"
+        "  ivec2 p = pixel();\n"
+        "  if (!onscreen(p)) return;\n"
+        "  float dn = texelFetch(depth_t, p, 0).r, df = dn;\n"
+        "  ivec2 pn = p;\n"
+        "  for (int y = -1; y <= 1; y++)\n"
+        "    for (int x = -1; x <= 1; x++) {\n"
+        "      ivec2 q = clampp(p + ivec2(x, y));\n"
+        "      float d = texelFetch(depth_t, q, 0).r;\n"
+        "      if (d < dn) { dn = d; pn = q; }\n"
+        "      df = max(df, d);\n"
+        "    }\n"
+        "  vec4 v = texelFetch(vec_t, pn, 0);\n"
+        "  bool has = v.a >= 0.25;\n"
+        "  vec2 mv = has ? vec2(-0.5 * v.x, 0.5 * v.y) : vec2(0.0);\n"
+        "  float zn = view_z(dn);\n"
+        "  imageStore(dil_i, p, vec4(mv, has ? zn : -zn, view_z(df)));\n"
+        "  imageStore(luma_i, p, vec4(dot(max(texelFetch(color_t, p, 0).rgb, vec3(0.0)), LUMA)));\n"
+        "  if (!has) return;\n"
+        "  vec2 m = v4k(mv) > mix(0.25, 0.75, clamp(zn / 100.0, 0.0, 1.0)) ? mv : vec2(0.0);\n"
+        "  vec2 fp = ((vec2(p) + 0.5) * pc.size.zw + m) * pc.size.xy - 0.5;\n"
+        "  ivec2 b = ivec2(floor(fp));\n"
+        "  vec2 f = fp - vec2(b);\n"
+        "  float w[4] = float[4]((1.0 - f.x) * (1.0 - f.y), f.x * (1.0 - f.y), (1.0 - f.x) * f.y, f.x * f.y);\n"
+        "  uint zb = floatBitsToUint(zn);\n"
+        "  for (int i = 0; i < 4; i++) {\n"
+        "    ivec2 q = b + ivec2(i & 1, i >> 1);\n"
+        "    if (w[i] > FP16_MIN * 10.0 && onscreen(q)) imageAtomicMin(recon_i, q, zb);\n"
+        "  }\n"
+        "}\n";
+static const char taa_shade_src[] =
+        "layout(set = 0, binding = 0) uniform sampler2D dil_t;\n"
+        "layout(set = 0, binding = 1) uniform sampler2D luma_t;\n"
+        "layout(set = 0, binding = 2) uniform sampler2D luma_prev_t;\n"
+        "layout(set = 0, binding = 8, rg16f) uniform writeonly image2D out_i;\n"
+        "const ivec2 PLUS[5] = ivec2[5](ivec2(0, 0), ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1));\n"
+        "void sort5(inout float s[5]) {\n"
+        "  const ivec2 N[9] = ivec2[9](ivec2(0, 3), ivec2(1, 4), ivec2(0, 2), ivec2(1, 3), ivec2(0, 1), ivec2(2, 4), ivec2(1, 2),\n"
+        "                              ivec2(3, 4), ivec2(2, 3));\n"
+        "  for (int k = 0; k < 9; k++) {\n"
+        "    float a = s[N[k].x], b = s[N[k].y];\n"
+        "    s[N[k].x] = min(a, b);\n"
+        "    s[N[k].y] = max(a, b);\n"
+        "  }\n"
+        "}\n"
+        "float set_difference(float a[5], float b[5]) {\n"
+        "  sort5(a);\n"
+        "  sort5(b);\n"
+        "  if (min(a[4], b[4]) <= 1.175494351e-38) return 0.0;\n"
+        "  float best = 65504.0;\n"
+        "  int i = 0, j = 0;\n"
+        "  for (int k = 0; k < 9 && i < 5 && j < 5; k++) {\n"
+        "    float d = a[i] - b[j];\n"
+        "    if (abs(d) <= FP16_MIN) return 0.0;\n"
+        "    d = sign(d) * (1.0 - min_over_max(a[i], b[j], 0.0));\n"
+        "    if (abs(d) < abs(best)) best = d;\n"
+        "    if (a[i] < b[j]) i++; else j++;\n"
+        "  }\n"
+        "  return best;\n"
+        "}\n"
+        "float difference(ivec2 q) {\n"
+        "  vec4 d = texelFetch(dil_t, q, 0);\n"
+        "  vec2 uv = (vec2(q) + 0.5) * pc.size.zw, ruv = uv + pc.jit.zw * pc.size.zw + d.xy;\n"
+        "  if (pc.st.x < 0.5 || d.z < 0.0 || !inside(ruv)) return 0.0;\n"
+        "  ivec2 bc = ivec2(floor((uv + pc.jit.xy * pc.size.zw) * pc.size.xy)), bp = ivec2(floor(ruv * pc.size.xy));\n"
+        "  float a[5], b[5];\n"
+        "  for (int i = 0; i < 5; i++) {\n"
+        "    a[i] = max(texelFetch(luma_t, clampp(bc + PLUS[i]), 0).r, FP16_MIN);\n"
+        "    b[i] = max(texelFetch(luma_prev_t, clampp(bp + PLUS[i]), 0).r, FP16_MIN);\n"
+        "  }\n"
+        "  return set_difference(a, b);\n"
+        "}\n"
+        "void main() {\n"
+        "  ivec2 p = pixel(), o = ivec2(pc.st.zw);\n"
+        "  if (any(greaterThanEqual(p, o))) return;\n"
+        "  vec2 sum = vec2(0.0);\n"
+        "  float n = 0.0;\n"
+        "  for (int i = 0; i < 4; i++) {\n"
+        "    ivec2 q = 2 * p + ivec2(i & 1, i >> 1);\n"
+        "    if (!onscreen(q)) continue;\n"
+        "    float d = difference(q);\n"
+        "    sum += vec2(d, d != 0.0 ? sign(d) : 0.0);\n"
+        "    n += 1.0;\n"
+        "  }\n"
+        "  imageStore(out_i, p, vec4(sum / max(n, 1.0), 0.0, 0.0));\n"
+        "}\n";
+static const char taa_shade_down[] =
+        "layout(set = 0, binding = 0) uniform sampler2D in_t;\n"
+        "layout(set = 0, binding = 8, rg16f) uniform writeonly image2D out_i;\n"
+        "void main() {\n"
+        "  ivec2 p = pixel(), o = ivec2(pc.st.zw), s = textureSize(in_t, 0);\n"
+        "  if (any(greaterThanEqual(p, o))) return;\n"
+        "  vec2 sum = vec2(0.0);\n"
+        "  float n = 0.0;\n"
+        "  for (int i = 0; i < 4; i++) {\n"
+        "    ivec2 q = 2 * p + ivec2(i & 1, i >> 1);\n"
+        "    if (any(greaterThanEqual(q, s))) continue;\n"
+        "    sum += texelFetch(in_t, q, 0).rg;\n"
+        "    n += 1.0;\n"
+        "  }\n"
+        "  imageStore(out_i, p, vec4(sum / max(n, 1.0), 0.0, 0.0));\n"
+        "}\n";
+static const char taa_shade[] =
+        "layout(set = 0, binding = 0) uniform sampler2D mip0_t;\n"
+        "layout(set = 0, binding = 1) uniform sampler2D mip1_t;\n"
+        "layout(set = 0, binding = 2) uniform sampler2D mip2_t;\n"
+        "layout(set = 0, binding = 8, r8) uniform writeonly image2D out_i;\n"
+        "void main() {\n"
+        "  ivec2 p = pixel(), o = ivec2(pc.st.zw);\n"
+        "  if (any(greaterThanEqual(p, o))) return;\n"
+        "  vec2 uv = (vec2(p) + 0.5) / vec2(o) + pc.jit.xy * pc.size.zw;\n"
+        "  vec2 m0 = texture(mip0_t, uv).rg, m1 = texture(mip1_t, uv).rg, m2 = texture(mip2_t, uv).rg;\n"
+        "  float s = max(abs(m0.x * m0.y), max(abs(m1.x * m1.y), abs(m2.x * m2.y)));\n"
+        "  imageStore(out_i, p, vec4(clamp(s, 0.0, 1.0)));\n"
+        "}\n";
+static const char taa_reactivity[] =
+        "layout(set = 0, binding = 0) uniform sampler2D dil_t;\n"
+        "layout(set = 0, binding = 1) uniform sampler2D vec_t;\n"
+        "layout(set = 0, binding = 2) uniform sampler2D acc_prev_t;\n"
+        "layout(set = 0, binding = 3) uniform sampler2D shade_t;\n"
+        "layout(set = 0, binding = 4) uniform sampler2D luma_t;\n"
+        "layout(set = 0, binding = 8, r32ui) uniform readonly uimage2D recon_i;\n"
+        "layout(set = 0, binding = 9, rgba8) uniform writeonly image2D react_i;\n"
+        "layout(set = 0, binding = 10, r8) uniform writeonly image2D acc_i;\n"
+        "layout(set = 0, binding = 11, r8) uniform writeonly image2D lock_i;\n"
+        "float disocclusion(vec2 uv, vec2 mv, float zc) {\n"
+        "  if (v4k(mv) <= mix(0.25, 0.75, clamp(zc / 100.0, 0.0, 1.0))) mv = vec2(0.0);\n"
+        "  vec2 fp = (uv + mv) * pc.size.xy - 0.5;\n"
+        "  ivec2 b = ivec2(floor(fp));\n"
+        "  vec2 f = fp - vec2(b);\n"
+        "  float w[4] = float[4]((1.0 - f.x) * (1.0 - f.y), f.x * (1.0 - f.y), (1.0 - f.x) * f.y, f.x * f.y);\n"
+        "  float sum = 0.0, wsum = 0.0, sep = 1.37e-05 * length(pc.size.xy * 0.5);\n"
+        "  for (int i = 0; i < 4; i++) {\n"
+        "    ivec2 q = b + ivec2(i & 1, i >> 1);\n"
+        "    if (!onscreen(q) || w[i] <= FP16_MIN * 10.0) continue;\n"
+        "    float zp = uintBitsToFloat(imageLoad(recon_i, q).r), dz = zc - zp;\n"
+        "    if (!(dz > 1.175494351e-38)) return 0.0;\n"
+        "    sum += clamp(sep * max(zc, zp) / dz, 0.0, 1.0) * w[i];\n"
+        "    wsum += w[i];\n"
+        "  }\n"
+        "  return wsum > 0.0 ? clamp(1.0 - sum / wsum, 0.0, 1.0) : 0.0;\n"
+        "}\n"
+        "float motion_divergence(vec2 uv, vec2 mv, float zc) {\n"
+        "  vec4 r = texelFetch(dil_t, clampp(ivec2((uv + mv) * pc.size.xy)), 0);\n"
+        "  float v = v4k(mv);\n"
+        "  if (v <= 0.0) return 0.0;\n"
+        "  return (1.0 - clamp(v4k(r.xy) / v, 0.0, 1.0)) * min_over_max(abs(r.z), zc, 0.0) * clamp(v / 10.0, 0.0, 1.0);\n"
+        "}\n"
+        "float thin_feature(ivec2 p) {\n"
+        "  const ivec2 O[9] = ivec2[9](ivec2(0, 0), ivec2(-1, -1), ivec2(0, -1), ivec2(1, -1), ivec2(-1, 0), ivec2(1, 0), ivec2(-1, 1),\n"
+        "                              ivec2(0, 1), ivec2(1, 1));\n"
+        "  float s[9], lo = 3.402823466e+38, hi = 1.175494351e-38;\n"
+        "  for (int i = 0; i < 9; i++) {\n"
+        "    s[i] = texelFetch(luma_t, clampp(p + O[i]), 0).r;\n"
+        "    lo = min(lo, s[i]);\n"
+        "    hi = max(hi, s[i]);\n"
+        "  }\n"
+        "  uint similar = 1u;\n"
+        "  float dlo = 3.402823466e+38, dhi = 0.0;\n"
+        "  for (int i = 1; i < 9; i++) {\n"
+        "    if (abs(s[i] - s[0]) / (hi - lo) < 0.9) similar |= 1u << i;\n"
+        "    else { dlo = min(dlo, s[i]); dhi = max(dhi, s[i]); }\n"
+        "  }\n"
+        "  if (!(s[0] > dhi || s[0] < dlo)) return 0.0;\n"
+        "  const uint Q[4] = uint[4](0x17u, 0x2Du, 0xD1u, 0x1A1u);  // (the 2x2 quadrants around the centre: a solid area)\n"
+        "  for (int i = 0; i < 4; i++) if ((similar & Q[i]) == Q[i]) return 0.0;\n"
+        "  return 1.0 - lo / hi;\n"
+        "}\n"
+        "void main() {\n"
+        "  ivec2 p = pixel();\n"
+        "  if (!onscreen(p)) return;\n"
+        "  vec2 uv = (vec2(p) + 0.5) * pc.size.zw;\n"
+        "  vec4 d = texelFetch(dil_t, p, 0);\n"
+        "  bool has = d.z > 0.0;\n"
+        "  float zc = abs(d.z);\n"
+        "  float disocc = has ? disocclusion(uv, d.xy, zc) : 1.0;\n"
+        "  float reactive = 0.0;\n"
+        "  for (int y = -1; y <= 1; y++)\n"
+        "    for (int x = -1; x <= 1; x++) reactive = max(reactive, texelFetch(vec_t, clampp(p + ivec2(x, y)), 0).z);\n"
+        "  float shading = max(clamp(reactive, 0.0, 1.0), clamp(texture(shade_t, uv - pc.jit.xy * pc.size.zw).r, 0.0, 1.0));\n"
+        "  float divergence = has ? motion_divergence(uv, d.xy, zc) : 0.0;\n"
+        "  vec2 ruv = uv + d.xy;\n"
+        "  float acc = pc.st.x > 0.5 && has && inside(ruv) ? clamp(texture(acc_prev_t, ruv).r, 0.0, 1.0) : 0.0;\n"
+        "  acc = mix(acc, 0.0, shading);\n"
+        "  acc = mix(acc, min(-1.0 / 3.0, acc), disocc);\n"
+        "  acc *= float(round(acc * 100.0) > 1.0);\n"
+        "  imageStore(acc_i, p, vec4(clamp(acc + 1.0 / 3.0, 0.0, 1.0)));\n"
+        "  imageStore(react_i, p, vec4(divergence, disocc, shading, max(acc, 0.0)));\n"
+        "  float lock = thin_feature(p);\n"
+        "  imageStore(lock_i, p, vec4(lock > 0.01 ? lock : 0.0));\n"
+        "}\n";
+static const char taa_instability[] =
+        "layout(set = 0, binding = 0) uniform sampler2D dil_t;\n"
+        "layout(set = 0, binding = 1) uniform sampler2D react_t;\n"
+        "layout(set = 0, binding = 2) uniform sampler2D luma_t;\n"
+        "layout(set = 0, binding = 3) uniform sampler2D hist_t;\n"
+        "layout(set = 0, binding = 8, rgba16f) uniform writeonly image2D hist_i;\n"
+        "layout(set = 0, binding = 9, r8) uniform writeonly image2D instab_i;\n"
+        "void main() {\n"
+        "  ivec2 p = pixel();\n"
+        "  if (!onscreen(p)) return;\n"
+        "  vec4 d = texelFetch(dil_t, p, 0);\n"
+        "  vec2 uv = (vec2(p) + 0.5) * pc.size.zw, cuv = uv + pc.jit.xy * pc.size.zw, ruv = uv + pc.jit.zw * pc.size.zw + d.xy;\n"
+        "  vec4 h = vec4(0.0);\n"
+        "  float instab = 0.0;\n"
+        "  if (pc.st.x > 0.5 && d.z > 0.0 && inside(ruv)) {\n"
+        "    vec4 m = texture(react_t, cuv);\n"
+        "    if (m.a > 0.9) {\n"
+        "      float l = texture(luma_t, cuv).r;\n"
+        "      h = texture(hist_t, ruv);\n"
+        "      float s0 = min_over_max(l, h.x, 1.0);\n"
+        "      if (s0 < 1.0) {\n"
+        "        float best = s0;\n"
+        "        for (int i = 1; i < 4; i++)\n"
+        "          if (sign(l - h.x) == sign(l - h[i])) best = max(best, min_over_max(l, h[i], 0.0));\n"
+        "        instab = float(best > s0);\n"
+        "      }\n"
+        "      h = vec4(l, h.xyz);\n"
+        "      instab *= float(h.w != 0.0);\n"
+        "      instab *= (1.0 - clamp(v4k(d.xy) / 20.0, 0.0, 1.0)) * (1.0 - m.g) * (1.0 - m.r) * (1.0 - m.b);\n"
+        "    }\n"
+        "  }\n"
+        "  imageStore(hist_i, p, h);\n"
+        "  imageStore(instab_i, p, vec4(instab));\n"
+        "}\n";
+static const char taa_resolve[] =
+        "layout(set = 0, binding = 0) uniform sampler2D color_t;\n"
+        "layout(set = 0, binding = 1) uniform sampler2D dil_t;\n"
+        "layout(set = 0, binding = 2) uniform sampler2D react_t;\n"
+        "layout(set = 0, binding = 3) uniform sampler2D instab_t;\n"
+        "layout(set = 0, binding = 4) uniform sampler2D hist_t;\n"
+        "layout(set = 0, binding = 5) uniform sampler2D lock_t;\n"
+        "layout(set = 0, binding = 8, rgba16f) uniform writeonly image2D hist_i;\n"
+        "layout(set = 0, binding = 9, rgba16f) uniform writeonly image2D out_i;\n"
+        "float lanczos2(float x) {\n"
+        "  const float PI = 3.14159265;\n"
+        "  x = abs(x);\n"
+        "  if (x < 1e-5) return 1.0;\n"
+        "  if (x >= 2.0) return 0.0;\n"
+        "  return 2.0 * sin(PI * x) * sin(0.5 * PI * x) / (PI * PI * x * x);\n"
+        "}\n"
+        "float lanczos2_sq(float x2) {\n"
+        "  x2 = min(x2, 4.0);\n"
+        "  float a = 0.4 * x2 - 1.0, b = 0.25 * x2 - 1.0;\n"
+        "  return (25.0 / 16.0 * a * a - 9.0 / 16.0) * (b * b);\n"
+        "}\n"
+        "vec4 history(vec2 uv) {\n"
+        "  vec2 fp = uv * pc.size.xy - 0.5;\n"
+        "  ivec2 b = ivec2(floor(fp));\n"
+        "  vec2 f = fp - vec2(b);\n"
+        "  vec4 wx, wy;\n"
+        "  for (int i = 0; i < 4; i++) { wx[i] = lanczos2(float(i - 1) - f.x); wy[i] = lanczos2(float(i - 1) - f.y); }\n"
+        "  wx /= dot(wx, vec4(1.0));\n"
+        "  wy /= dot(wy, vec4(1.0));\n"
+        "  vec4 sum = vec4(0.0), lo = vec4(65504.0), hi = vec4(-65504.0);\n"
+        "  for (int j = 0; j < 4; j++)\n"
+        "    for (int i = 0; i < 4; i++) {\n"
+        "      vec4 s = texelFetch(hist_t, clampp(b + ivec2(i - 1, j - 1)), 0);\n"
+        "      sum += s * (wx[i] * wy[j]);\n"
+        "      if (i == 1 || i == 2) if (j == 1 || j == 2) { lo = min(lo, s); hi = max(hi, s); }\n"
+        "    }\n"
+        "  return clamp(sum, lo, hi);\n"
+        "}\n"
+        "void main() {\n"
+        "  ivec2 p = pixel();\n"
+        "  if (!onscreen(p)) return;\n"
+        "  vec2 uv = (vec2(p) + 0.5) * pc.size.zw, J = pc.jit.xy, cuv = uv + J * pc.size.zw;\n"
+        "  vec4 d = texelFetch(dil_t, p, 0);\n"
+        "  vec2 mv = d.xy, ruv = uv + mv;\n"
+        "  float vel = v4k(mv);\n"
+        "  bool fresh = pc.st.x < 0.5 || d.z < 0.0 || !inside(ruv);\n"
+        "  vec4 m = texture(react_t, cuv);\n"
+        "  float reactive = clamp(m.r, 0.0, 1.0), disocc = clamp(m.g, 0.0, 1.0), shading = clamp(m.b, 0.0, 1.0);\n"
+        "  float acc = clamp(m.a, 0.0, 1.0);\n"
+        "  acc *= float(round(acc * 100.0) > 1.0);\n"
+        "  float instab = texture(instab_t, uv).r;\n"
+        "  vec4 c4 = texelFetch(color_t, p, 0);\n"
+        "\n"
+        "  vec3 hist = vec3(0.0);\n"
+        "  float lock = 0.0;\n"
+        "  if (!fresh) {\n"
+        "    vec4 h = history(ruv);\n"
+        "    hist = ycocg(h.rgb);\n"
+        "    lock = h.a;\n"
+        "  }\n"
+        "  float fade = max(shading, max(reactive, disocc));\n"
+        "  lock = max(0.0, lock - fade * 2.0);\n"
+        "  float lock_now = clamp(clamp(lock - 1.0, 0.0, 1.0) * (2.0 - 1.0), 0.0, 1.0);\n"
+        "  lock = clamp(lock + texelFetch(lock_t, p, 0).r * (1.0 - reactive), 0.0, 2.0);\n"
+        "  lock = max(0.0, lock - 0.1 / pc.st.y * (1.0 - fade));\n"
+        "  lock *= float(inside(uv - mv));\n"
+        "\n"
+        "  float hw = min(acc, mix(acc, 0.15, clamp(vel / 0.5, 0.0, 1.0)));\n"
+        "\n"
+        "  vec3 up = vec3(0.0), mu = vec3(0.0), m2 = vec3(0.0), lo = vec3(65504.0), hi = vec3(-65504.0);\n"
+        "  float uw = 0.0, bw = 0.0;\n"
+        "  for (int y = -1; y <= 1; y++)\n"
+        "    for (int x = -1; x <= 1; x++) {\n"
+        "      ivec2 q = p + ivec2(x, y);\n"
+        "      if (!onscreen(q)) continue;\n"
+        "      vec3 s = ycocg(max(texelFetch(color_t, q, 0).rgb, vec3(0.0)));\n"
+        "      vec2 o = vec2(x, y) - J;\n"
+        "      float o2 = dot(o, o), w = lanczos2_sq(o2), b = exp(-2.3 * o2);\n"
+        "      up += s * w; uw += w;\n"
+        "      mu += s * b; m2 += s * s * b; bw += b;\n"
+        "      lo = min(lo, s); hi = max(hi, s);\n"
+        "    }\n"
+        "  mu /= bw;\n"
+        "  vec3 sigma = sqrt(abs(m2 / bw - mu * mu));\n"
+        "  uw *= float(uw > FP16_MIN);\n"
+        "  if (uw > FP16_MIN) {\n"
+        "    up = clamp(up / uw, lo, hi);\n"
+        "    uw *= 0.74 / 16.0;\n"
+        "  }\n"
+        "  if (acc == 0.0) { up = mu; uw = 1.0; hw = 0.0; }\n"
+        "\n"
+        "  float t = max(max(clamp(vel / 20.0, 0.0, 1.0), clamp(0.75 - d.w / 20.0, 0.0, 1.0)),\n"
+        "                max(max(1.0 - acc, sqrt(reactive)), shading));\n"
+        "  vec3 box = sigma * vec3(1.7, 1.0, 1.0) * mix(3.0, 1.0, t);\n"
+        "  vec3 th = (hist - mu) / max(box, vec3(1.193e-7));\n"
+        "  if (length(th) > 1.0) {\n"
+        "    vec3 clipped = normalize(th) * box + mu;\n"
+        "    hist = mix(clipped, hist, clamp(max(instab, lock_now) * acc * (1.0 - disocc), 0.0, 1.0));\n"
+        "  }\n"
+        "\n"
+        "  hw *= float(hw > FP16_MIN);\n"
+        "  hw = max(FP16_MIN, hw + uw);\n"
+        "  vec3 col = max(rgb(mix(hist, up, clamp(uw / hw, 0.0, 1.0))), vec3(0.0));\n"
+        "  imageStore(hist_i, p, vec4(col, lock));\n"
+        "  int view = int(pc.st.z);\n"
+        "  if (view != 0) {\n"
+        "    vec3 grey = vec3(dot(col, LUMA) * 0.5);\n"
+        "    float v = view == 1 ? disocc : view == 2 ? acc : view == 3 ? shading : view == 4 ? instab : view == 5 ? lock_now\n"
+        "            : view == 6 ? reactive : float(d.z < 0.0);\n"
+        "    col = mix(grey, vec3(1.0, 0.1, 0.6), clamp(v, 0.0, 1.0));\n"
+        "  }\n"
+        "  imageStore(out_i, p, vec4(col, c4.a));\n"
+        "}\n";
+
 static const char *builtin_src(const char *name, int *stage) {
     if (!strcmp(name, "present.vert")) {
         *stage = STAGE_VERTEX;
@@ -795,6 +1187,99 @@ static const char *builtin_src(const char *name, int *stage) {
     // path): a 3x3 neighbourhood's soft minimum and maximum set how far each pixel may be pushed away from its cross
     // neighbours, so edges sharpen without halos and flat or noisy areas stay. a.x = sharpness 0..1 (peak -1/8 ..
     // -1/5), b.xy = image size. Alpha passes through (exec.c scene_post).
+    // Motion vectors over the scene (SAVAGEWIND_MVEC_VIEW, exec.c mvec_scene_view): t0 the scene, t1 the motion vectors
+    // (exec.c mvec_fill: NDC distance from the previous frame in .xy; .a 1 for a draw's own vector, 0.5 for the camera's,
+    // 0 for none). The scene's grey mixed with a hue for the direction, as strong as the length against a.x pixels;
+    // camera vectors hatched; no vector: the scene darkened and blue; the reactive mask (.z, 4x: effects are faint)
+    // magenta over them. a.x < 0:
+    // raw (red = .a, green / blue = |x| / |y|
+    // times -a.x). b.xy: the motion vectors' size, b.zw: the output's.
+    if (!strcmp(name, "mvec_view.frag")) {
+        *stage = STAGE_FRAGMENT;
+        return "#version 450\n"
+               "layout(set = 0, binding = 0) uniform sampler2D t0;\n"
+               "layout(set = 0, binding = 1) uniform sampler2D t1;\n"
+               "layout(push_constant) uniform P { vec4 a; vec4 b; } pc;\n"
+               "layout(location = 0) out vec4 o;\n"
+               "void main() {\n"
+               "  vec2 uv = gl_FragCoord.xy / pc.b.zw;\n"
+               "  vec4 s = texture(t0, uv);\n"
+               "  float l = dot(s.rgb, vec3(0.299, 0.587, 0.114));\n"
+               "  vec4 m = texelFetch(t1, ivec2(uv * pc.b.xy), 0);\n"
+               "  if (pc.a.x < 0.0) { o = vec4(m.a, clamp(abs(m.xy) * -pc.a.x, 0.0, 1.0), s.a); return; }\n"
+               "  if (m.a < 0.25) { o = vec4(l * 0.3, l * 0.3, l * 0.3 + 0.2, s.a); return; }\n"
+               "  vec2 px = m.xy * 0.5 * pc.b.xy;\n"
+               "  float k = clamp(length(px) / max(pc.a.x, 0.001), 0.0, 1.0);\n"
+               "  vec3 hue = 0.5 + 0.5 * cos(atan(px.y, px.x) + vec3(0.0, 2.094, 4.189));\n"
+               "  vec3 c = mix(vec3(l * 0.6), hue, k);\n"
+               "  if (m.a < 0.75 && ((int(gl_FragCoord.x + gl_FragCoord.y) >> 3) & 1) != 0) c = mix(c, vec3(l * 0.6), 0.65);\n"
+               "  c = mix(c, vec3(1.0, 0.25, 1.0), clamp(m.z * 4.0, 0.0, 1.0) * 0.8);\n"
+               "  o = vec4(c, s.a);\n"
+               "}\n";
+    }
+    // Motion vectors for the pixels no draw gave one (exec.c mvec_fill): t0 the object vectors (begin_pass's motion
+    // target, alpha 1 where written), t1 the scene depth. Those pixels get the camera's motion: this frame's NDC from
+    // their position and depth, taken by m (the previous frame's view-projection * the inverse of this frame's) to the
+    // previous frame's; alpha 0.5. Vectors are clip-space NDC differences, as the object vectors (mvec_rt): the
+    // viewports have a negative height (exec.c set_viewport: y up), so a pixel's clip y is minus its framebuffer NDC y,
+    // and the game's NDC y is that times a.x (-1 when the vertex shaders flip y, ShaderKey.flip_y). a.y: 1 when the
+    // game's depth range is [-1, 1] (depth = (z + 1) / 2). a.z: 1 = camera vectors everywhere, 2 = camera minus object
+    // vector where there is one (SAVAGEWIND_MVEC_CAMONLY). b.xy: this frame's jitter minus the previous frame's in the
+    // game's NDC (mvec_reprojection), taken out of every vector: what remains is the motion alone.
+    if (!strcmp(name, "mvec_fill.frag")) {
+        *stage = STAGE_FRAGMENT;
+        return "#version 450\n"
+               "layout(set = 0, binding = 0) uniform sampler2D t0;\n"
+               "layout(set = 0, binding = 1) uniform sampler2D t1;\n"
+               "layout(push_constant) uniform P { layout(row_major) mat4 m; vec4 a; vec4 b; } pc;\n"
+               "layout(location = 0) out vec4 o;\n"
+               "void main() {\n"
+               "  ivec2 p = ivec2(gl_FragCoord.xy);\n"
+               "  vec4 v = texelFetch(t0, p, 0);\n"
+               "  vec2 jit = vec2(pc.b.x, pc.b.y * pc.a.x);\n"
+               "  if (v.a > 0.5 && pc.a.z == 0.0) { o = vec4(v.xy - jit, v.zw); return; }\n"
+               "  if (v.a < 0.5 && pc.a.z == 2.0) { o = vec4(0.0); return; }\n"
+               "  vec2 fb = gl_FragCoord.xy / vec2(textureSize(t0, 0)) * 2.0 - 1.0;\n"
+               "  vec2 clip = vec2(fb.x, -fb.y);\n"
+               "  float d = texelFetch(t1, p, 0).r;\n"
+               "  vec4 q = pc.m * vec4(clip.x, clip.y * pc.a.x, pc.a.y != 0.0 ? d * 2.0 - 1.0 : d, 1.0);\n"
+               "  vec2 prev = vec2(q.x, q.y * pc.a.x) / q.w;\n"
+               "  o = pc.a.z == 2.0 ? vec4(clip - prev - v.xy, 0.0, 1.0) : vec4(clip - prev - jit, v.z, 0.5);\n"
+               "}\n";
+    }
+    // FSR 3's inputs (exec.c fsr3_scene), at the render size: the scene depth as R32F (t0, a depth view), and the
+    // reactive mask from the motion vectors' .z (t0) as R8
+    if (!strcmp(name, "fsr3_depth.frag") || !strcmp(name, "fsr3_reactive.frag")) {
+        *stage = STAGE_FRAGMENT;
+        return name[5] == 'd' ? "#version 450\n"
+                                "layout(set = 0, binding = 0) uniform sampler2D t0;\n"
+                                "layout(location = 0) out vec4 o;\n"
+                                "void main() { o = vec4(texelFetch(t0, ivec2(gl_FragCoord.xy), 0).r); }\n"
+                              : "#version 450\n"
+                                "layout(set = 0, binding = 0) uniform sampler2D t0;\n"
+                                "layout(location = 0) out vec4 o;\n"
+                                "layout(push_constant) uniform P { vec4 a; vec4 b; } pc;\n"
+                                "void main() { o = vec4(clamp(texelFetch(t0, ivec2(gl_FragCoord.xy), 0).z * pc.a.x, 0.0, 1.0)); }\n";
+    }
+    if (!strncmp(name, "taa_", 4)) {
+        static const char *const names[] = {"taa_prepare.comp", "taa_shade_src.comp", "taa_shade_down.comp", "taa_shade.comp",
+                                            "taa_reactivity.comp", "taa_instability.comp", "taa_resolve.comp"};
+        static const char *const bodies[] = {taa_prepare, taa_shade_src, taa_shade_down, taa_shade, taa_reactivity,
+                                             taa_instability, taa_resolve};
+        static char *src[7];
+        for (int i = 0; i < 7; i++) {
+            if (strcmp(name, names[i])) continue;
+            if (!src[i]) {
+                size_t a = strlen(taa_common), b = strlen(bodies[i]);
+                src[i] = malloc(a + b + 1);
+                memcpy(src[i], taa_common, a);
+                memcpy(src[i] + a, bodies[i], b + 1);
+            }
+            *stage = STAGE_COMPUTE;
+            return src[i];
+        }
+        return NULL;
+    }
     if (!strcmp(name, "cas.frag")) {
         *stage = STAGE_FRAGMENT;
         return "#version 450\n"

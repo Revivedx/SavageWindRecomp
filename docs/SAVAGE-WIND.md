@@ -419,7 +419,9 @@ Pendiente:
        medio escribir y la GPU fallaba con una escritura inválida (device lost en ~1 de cada 7 cargas del mundo).
      - `vkQueuePresentKHR` (NVIDIA, Windows, en ventana) espera a que la GPU termine el frame: 13-18 ms en uno de cada
        cinco. Ahora presenta un hilo propio con una segunda cola de la misma familia (`SAVAGEWIND_VK_PRESENT_THREAD=0`
-       presenta en el hilo que llama).
+       presenta en el hilo que llama). En NVIDIA antes de Turing (device id < 0x1E00: GTX 10 y anteriores) la GPU
+       escribía en la dirección 0 en los primeros frames con la segunda cola y funcionaba sin ella (#36); ahí se crea
+       una sola cola y presenta el hilo que llama (`SAVAGEWIND_VK_PRESENT_THREAD=1` fuerza la segunda cola).
      - Shaders nuevos (compilación síncrona): la traducción Maxwell → GLSL costaba 1-4 ms por programa en el mundo.
        Ahora se guarda en memoria por etapa, binario y clave (los programas comparten shaders) y en disco
        (`cache/xlate/`, se invalida al recompilar `translate.c`); `SAVAGEWIND_NO_XLATE_CACHE=1` la desactiva y
@@ -1023,6 +1025,13 @@ Pendiente:
      que se rellena al cargar también casaba, y al cambiar el ajuste jugando se rehacía vacía y desaparecían el
      terreno y la hierba. Hay shaders con offsets fijos de ±1/4096 (sin constant buffer) para
      otro mapa de sombras que no aparece en la meseta: si es de 2048, en Ultra quedaría con escalones (sin verificar).
+     Ese downsample R16 (y un array R32_SFLOAT de 4x4 que algunos compute shaders reciben en su slot de sombra) se
+     muestrea con comparación de profundidad, y ni la RTX 3060 ni AMD dan `SAMPLED_IMAGE_DEPTH_COMPARISON` a R16_UNORM
+     ni a R32_SFLOAT: indefinido (`VUID-vkCmd{Draw,DrawIndexed,Dispatch}-None-06479` con la capa de validación; #59).
+     Desde 2026-10-28 (`exec.c` `depth_twin_*`) esas imágenes tienen un gemelo D16 / D32 con los mismos bits, copiado
+     por un buffer fuera de los pases (tras cada pase que dibuja en el downsample; antes del dispatch en compute), y
+     sus lectores de sombra muestrean el gemelo. Validación sin 06479 y sin errores nuevos; en NVIDIA la imagen no
+     cambia. `SAVAGEWIND_NO_DEPTH_TWIN=1`: como antes; `SAVAGEWIND_DEPTH_TWIN_ALL=1`: gemelo para todo formato de color.
      Pruebas: `SAVAGEWIND_SHADOW_AT=<frame presentado>:<console|high|ultra|extreme|ancho>,...` (A/B en una corrida),
      `SAVAGEWIND_NO_SHADOW_TEXEL_FIX=<frame presentado>` (el tamaño de texel del juego desde ese frame).
      Costo (RTX 3060, ventana oculta de 1920x1080, meseta, mediana de 10 frames con `SAVAGEWIND_GPUPROF_AT`): los
@@ -1032,8 +1041,12 @@ Pendiente:
      el tamaño del depth de cada pase (`pass: ... depth 896x896`).
    - Pantallas anchas y campo de visión (2026-10-24, issue #65): Vídeo > Llenar pantallas anchas (`wide_view`, Sí
      por defecto) y Vídeo > Campo de visión (`field_of_view`, 70-150 %), en Opciones del juego y en Configuración.
-     Solo ventanas más anchas que 16:9 (21:9, 32:9); las más estrechas (16:10, 4:3) siguen 16:9 con bandas: el
-     texgen de los paneles del HUD (el minimapa) no sigue una vista más alta.
+     Al principio solo ventanas más anchas que 16:9 (21:9, 32:9): en las más estrechas el minimapa salía roto.
+     Desde 2026-10-28 (#125) también las más altas (16:10, 4:3): la vista ve más arriba y abajo con la misma
+     horizontal (`rt_persp`: tan(fovy / 2) / shape), `rt_frustum` y `rt_persp_offset` en vertical, las tijeras que no
+     cubren la imagen final (la máscara del minimapa) y `hud_patch` (m11 x shape; un panel que cubre todo el alto
+     16:9 se estira a la ventana) igual que en horizontal; el menú de pausa y el mapa se muestran en la banda 16:9
+     del medio. El minimapa sale bien así (1280x800, 1680x1050).
      - El mundo: `output_scale` (con `reshape`) agranda todo render target 16:9 a la forma de la ventana, y el juego
        dibuja en ellos con sus vistas ensanchadas. `tools/patches.py` engancha las proyecciones de sead:
        PerspectiveProjection (vtable +0x58, la carga de tan(fovy/2) y aspect en `+0xac`/`+0xb0`, site `persp_matrix`;
@@ -1450,6 +1463,16 @@ La 1.9.0 (2026-10-22, rama `game-1.9.0`; archivos del usuario en `extracted-1.9.
   La preparación acepta la carpeta 1.9.0 (versión "1.9.0", 39008+ ficheros) y rechaza `exefs` 1.9.0 con `romfs`
   1.8.2 y al revés.
 
+## FSR 3 upscaling: held back for now
+
+AMD FSR 3.1 upscaling (PRs #194 and #195: per-object motion vectors, the five quality modes plus Ultra Performance) is
+built in, but Video > Upscaler doesn't offer it yet (`fsr3_upscaler_enabled` in `runtime/nvn/output_scale.c`). On an
+RTX 3060 the thread that records each frame for Vulkan limits 1080p and 1440p, and the motion vectors and FSR 3 add
+about 1.1 ms there, so every FSR 3 mode ran slower than native at those sizes; only at 4K did Balanced and up gain.
+It comes back once the draw translation on that thread runs in parallel (worked on apart, branch `heap-vram`).
+Until then `SAVAGEWIND_FSR3=1` offers it for tests, and a settings file with `upscaler = fsr3` loads as AMD FSR 1 with
+the same quality mode. TAA (Video > Anti-aliasing) and frame generation stay available.
+
 ## Frame generation (AMD FSR 3)
 
 Video > Frame generation (AMD FSR 3) (Off by default; `frame_generation = 0|1`; `SAVAGEWIND_FG=0|1` overrides it in
@@ -1495,9 +1518,13 @@ memory are 64-byte aligned (they were 4: clang's aligned SSE stores faulted).
   range; the pixels inside both (him, and a strip of ground at his feet) take the motion of his centre on screen
   between the two frames. His limbs and what he holds are still the optical flow's. `SAVAGEWIND_FG_MV_DEBUG=1` paints
   the box (red) and the pixels taken as him (yellow) into the motion vectors (dump them with
-  `SAVAGEWIND_FG_INPUTS_AT=<n>`); `SAVAGEWIND_FG_NO_LINK=1` leaves him out. Other moving things (enemies, horses,
-  animals) would need per-object vectors: each draw's previous transform, which the translated vertex shaders could
-  output from the previous frame's constant buffers kept per draw. Not done.
+  `SAVAGEWIND_FG_INPUTS_AT=<n>`); `SAVAGEWIND_FG_NO_LINK=1` leaves him out. That is the fallback now: with frame generation on, the per-object
+  motion vectors (`mvec.c`, from PR #194: every scene draw matched with the previous frame's and run again on its
+  inputs, jitter taken out) are made too, and frame generation takes them when they are this frame's and at the
+  depth's size (their .xy are clip-space NDC differences: FSR's motion vector scale (-w / 2, h / 2), as for the FSR 3
+  upscaler). Link running, enemies and animals then interpolate without the double image; it costs ~5% of the
+  presented frames (no limit, 2560x1440, RTX 3060: 145 presented against 153 with the camera's vectors).
+  `SAVAGEWIND_FG_CAMERA_VECTORS=1`: the camera's and Link's box only (A/B).
 - The HUD-less image: BOTW composites the scene into a linear 10-bit image of the final size (A2B10G10R10), draws the
   HUD into that, then copies it sRGB-encoded into the 8-bit image it presents. The composite's target is copied right
   after the composite (`scene_composite`, the draw `scene_post` also uses), before the next draw, the HUD's first,

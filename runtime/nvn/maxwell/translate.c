@@ -88,6 +88,9 @@ typedef struct {
     Str *flow_before;
     uint8_t *flow_dead;
     struct InsnWrites *writes;  // by instruction index: what its emitted code assigns (cbuf_reach)
+    // (GLSL, key->mvec) glsl_rewrite for the previous frame's copy of a vertex body: the game's constant buffers
+    // (cb3..cb16) read from the motion history (ph, at the push constants' pb offsets), the outputs to locals
+    bool rw_prev;
 } Ctx;
 
 static uint64_t bits(uint64_t w, int lo, int n) { return (w >> lo) & ((n == 64) ? ~0ull : ((1ull << n) - 1)); }
@@ -137,6 +140,10 @@ static const char *cbuf_ref(Ctx *c, int idx, int64_t off, const char *dyn, char 
     if (!dyn && idx < 18 && off + 16 > (int64_t)c->cbuf_fixed[idx]) c->cbuf_fixed[idx] = (uint32_t)((off + 16 + 255) & ~255);
     if (dyn) c->info->cbuf_dynamic |= 1u << idx;
     if (!dyn && idx < 18 && off >= 0 && (uint32_t)(off >> 4) + 1 > c->cbuf_need[idx]) c->cbuf_need[idx] = (uint32_t)(off >> 4) + 1;
+    if (idx < 18) {
+        if (dyn || off < 0 || (off >> 4) >= 256) c->info->cbuf_rows_all |= 1u << idx;
+        else c->info->cbuf_rows[idx][off >> 10] |= 1ull << ((off >> 4) & 63);
+    }
     if (dyn) sprintf(buf, "cbr(cb%d, (%s) + %lldu)", idx, dyn, (long long)off);
     else sprintf(buf, "cb%d[%lld][%lld]", idx, (long long)(off >> 4), (long long)((off >> 2) & 3));
     return buf;
@@ -2011,13 +2018,30 @@ static void glsl_rewrite(Ctx *c, Str *o, const char *src) {
             while (id_char(*me)) me++;
             char mem[32];
             snprintf(mem, sizeof mem, "%.*s", (int)(me - m), m);
-            if (!strcmp(mem, "pos")) sp(o, c->stage == STAGE_FRAGMENT ? "gl_FragCoord" : "gl_Position");
+            bool out_ = id[0] == 'o';
+            if (c->rw_prev && out_) sp(o, !strcmp(mem, "pos") ? "ppos" : !strcmp(mem, "psize") ? "pps" : "pvd");
+            else if (!strcmp(mem, "pos")) sp(o, c->stage == STAGE_FRAGMENT ? "gl_FragCoord" : "gl_Position");
             else if (!strcmp(mem, "psize")) sp(o, "gl_PointSize");
             else sp(o, "%s", mem);  // a<i> (vertex input), v<i> (varying)
             p = me;
             continue;
         }
         if ((!strcmp(id, "char") || !strcmp(id, "short")) && *p == '(') { sp(o, id[0] == 'c' ? "sx8" : "sx16"); continue; }
+        if (c->rw_prev) {  // the previous frame's copy (key->mvec): the game's constant buffers from the history
+            int cb = -1, used = 0;
+            if (!strcmp(id, "cbr") && p[0] == '(' && p[1] == 'c' && p[2] == 'b' && sscanf(p + 3, "%d%n", &cb, &used) == 1 &&
+                cb >= 3 && cb <= 16 && p[3 + used] == ',') {
+                sp(o, "pcbr(%d", cb - 3);  // cbr(cb<N>, off) -> pcbr(N - 3, off)
+                p += 3 + used;
+                continue;
+            }
+            if (id[0] == 'c' && id[1] == 'b' && sscanf(id + 2, "%d%n", &cb, &used) == 1 && !id[2 + used] && cb >= 3 &&
+                cb <= 16 && *p == '[') {
+                sp(o, "ph[pb[%d] + ", cb - 3);  // cb<N>[i][j] -> ph[pb[N - 3] + i][j]
+                p++;
+                continue;
+            }
+        }
         if (!strcmp(id, "tid") || !strcmp(id, "ctaid")) {
             sp(o, c->stage != STAGE_COMPUTE ? "uvec3(0u)" : id[0] == 't' ? "gl_LocalInvocationID" : "gl_WorkGroupID");
             continue;
@@ -2144,18 +2168,55 @@ static const char *glsl_sampler_type(const ShaderTexture *t) {
     return names[ty][t->shadow ? 1 : 0];
 }
 
+// A rewritten body with the state it runs in: registers, predicates, flags, local memory and the control flow's
+// variables (glsl_finish: main's, or a block of its own for the previous frame's copy, key->mvec)
+static void glsl_body(Ctx *c, Str *s, const char *body, bool any_branch, bool dbg) {
+    for (int i = 0; i < 256; i++)
+        if (c->reg_used[i]) sp(s, "  uint r%d = 0u;\n", i);
+    for (int i = 0; i < 7; i++)
+        if (c->pred_used[i]) sp(s, "  bool p%d = false;\n", i);
+    if (c->uses_cc) sp(s, "  uint cc = 0u; bool ccz = false, ccs = false;\n");
+    if (c->uses_local) sp(s, "  uint lmem[%d]; for (int li_ = 0; li_ < %d; li_++) lmem[li_] = 0u;\n", LMEM_WORDS, LMEM_WORDS);
+    if (dbg) sp(s, maxwell_dbg_pc == 0xffffffffu ? "  float dbgv = 1.0f;\n" : "  float dbgv = -1.0f;\n");
+    if (c->structured) {
+        sp(s, "  bool exited = false; uint loops = 0u;\n");
+        sp(s, "%s", body);
+    } else if (any_branch) {
+        sp(s, "  uint pc = 8u; uint ssy[16]; uint ssy_n = 0u; uint pbk[16]; uint pbk_n = 0u; uint pcnt[16]; uint pcnt_n = 0u;\n");
+        sp(s, "  bool exit_now = false;\n");
+        sp(s, "  for (uint guard = 0u; guard < 100000u; guard++) {\n  switch (pc) {\n");
+        sp(s, "%s", body);
+        sp(s, "    exit_now = true; break;\n  default: exit_now = true; break;\n  }\n  if (exit_now) break;\n  }\n");
+    } else {
+        sp(s, "  do {\n%s  } while (false);\n", body);
+    }
+}
+
 // Declarations + entry point around the (rewritten) body; mirrors the MSL assembly in maxwell_translate.
 static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     ShaderInfo *info = c->info;
     const ShaderKey *key = c->key;
     int stage = c->stage;
-    Str body = {0};
+    Str body = {0}, pbody = {0};
     glsl_rewrite(c, &body, c->body.buf ? c->body.buf : "");
+    // motion vectors (key->mvec, key->mvec_rt): see shader.h
+    bool mvec = stage == STAGE_VERTEX && key && key->mvec && !dbg;
+    int mvec_rt = stage == STAGE_FRAGMENT && key && !dbg ? (key->mvec_rt & 0x3F) - 1 : -1;
+    bool mvec_mask = mvec_rt >= 0 && (key->mvec_rt & 0x80);  // (the reactive mask: no vector, no mv_cur / mv_prev)
+    bool mvec_still = mvec_rt >= 0 && !mvec_mask && (key->mvec_rt & 0x40);  // (zero: no mv_cur / mv_prev either)
+    if (mvec) {
+        if (c->out_attr_mask >> 30) fail(c, "mvec: varyings 30 / 31 in use");
+        c->rw_prev = true;
+        glsl_rewrite(c, &pbody, c->body.buf ? c->body.buf : "");
+        c->rw_prev = false;
+    }
+    if (mvec_rt >= 0 && ((!mvec_mask && !mvec_still && (c->in_attr_mask >> 30)) || ((c->omap_target >> (mvec_rt * 4)) & 0xF)))
+        fail(c, "mvec: input 30 / 31 or color %d in use", mvec_rt);
     if (info->uses_gmem && (info->cbuf_mask & (1u << GMEM_BUFFER_INDEX))) fail(c, "cbuf %d clashes with gmem", GMEM_BUFFER_INDEX);
     if (info->cbuf_mask >> 18) fail(c, "cbuf index out of range");
     for (int i = 0; i < info->ntex; i++)
         if (info->tex[i].shadow && info->tex[i].type == TEXTYPE_3D) fail(c, "3d shadow texture");
-    if (c->fail) { free(body.buf); free(c->body.buf); free(c); return info; }
+    if (c->fail) { free(body.buf); free(pbody.buf); free(c->body.buf); free(c); return info; }
     int set = stage == STAGE_FRAGMENT ? 1 : 0;
     Str s = {0};  // (the prelude goes in front at the end: glsl_with_prelude)
     for (int i = 0; i < 18; i++) {
@@ -2203,6 +2264,13 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         sp(&s, "invariant gl_Position;\nprecise gl_Position;\n");
         for (int i = 0; i < 32; i++)
             if (c->out_attr_mask & (1u << i)) sp(&s, "layout(location = %d) out vec4 v%d;\n", i, i);
+        if (mvec) {  // the history: the previous frame's copies of the game's constant buffers (mvec.c), at pb[cb - 3]
+            sp(&s, "layout(std430, set = 0, binding = 63) readonly buffer MvHist { uvec4 ph[]; };\n");
+            // (std430: uint arrays 4 bytes apart, as mvec.c packs them; a push constant block is std140 by default)
+            sp(&s, "layout(push_constant, std430) uniform MvPush { uint pb[14]; uint pbn[14]; };\n");
+            sp(&s, "#define pcbr(n, off) ph[pb[n] + min((off) >> 4, pbn[n] - 1u)][((off) >> 2) & 3u]\n");
+            sp(&s, "layout(location = 30) out vec4 mv_cur;\nlayout(location = 31) out vec4 mv_prev;\n");
+        }
     } else if (stage == STAGE_FRAGMENT) {
         for (int i = 0; i < 32; i++) {
             if (!(c->in_attr_mask & (1u << i))) continue;
@@ -2215,6 +2283,8 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
             sp(&s, "layout(location = %d) out %s c%d;\n", rt, kind == 1 ? "ivec4" : kind == 2 ? "uvec4" : "vec4", rt);
         }
         if (c->omap_depth) info->writes_depth = true;
+        if (mvec_rt >= 0 && !mvec_mask && !mvec_still) sp(&s, "layout(location = 30) in vec4 mv_cur;\nlayout(location = 31) in vec4 mv_prev;\n");
+        if (mvec_rt >= 0) sp(&s, "layout(location = %d) out vec4 mv_out;\n", mvec_rt);
     } else {
         sp(&s, "layout(local_size_x_id = 0, local_size_y_id = 1, local_size_z_id = 2) in;\n");
         if (c->uses_shared) sp(&s, "shared uint smem[%u];\n", c->smem_words);
@@ -2225,30 +2295,31 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         for (int i = 0; i < 32; i++)
             if (c->out_attr_mask & (1u << i)) sp(&s, "  v%d = vec4(0, 0, 0, 1);\n", i);
         if (info->writes_point_size) sp(&s, "  gl_PointSize = 0.0f;\n");
+        // A point list whose shader writes no size: NVN's 1.0. Without maintenance5 (AMD's and Intel's Windows drivers
+        // in 0.3.1, every GPU in Alpha 2) Vulkan leaves that size undefined, and the validation layer flags it: BOTW
+        // draws 64 such points into an 8x8 RGBA32F linear target the CPU reads back. NVIDIA draws 1.0 anyway; what
+        // AMD's driver draws is unknown (#59). SAVAGEWIND_DEBUG_POINT_SIZE=<px>: that size instead (testing).
+        else if (key && key->point_size) {
+            const char *e = getenv("SAVAGEWIND_DEBUG_POINT_SIZE");
+            sp(&s, "  gl_PointSize = %.1ff;\n", e && atof(e) > 0 ? atof(e) : 1.0);
+        }
     }
-    for (int i = 0; i < 256; i++)
-        if (c->reg_used[i]) sp(&s, "  uint r%d = 0u;\n", i);
-    for (int i = 0; i < 7; i++)
-        if (c->pred_used[i]) sp(&s, "  bool p%d = false;\n", i);
-    if (c->uses_cc) sp(&s, "  uint cc = 0u; bool ccz = false, ccs = false;\n");
-    if (c->uses_local) sp(&s, "  uint lmem[%d]; for (int li_ = 0; li_ < %d; li_++) lmem[li_] = 0u;\n", LMEM_WORDS, LMEM_WORDS);
-    if (dbg) sp(&s, maxwell_dbg_pc == 0xffffffffu ? "  float dbgv = 1.0f;\n" : "  float dbgv = -1.0f;\n");
-    if (c->structured) {
-        sp(&s, "  bool exited = false; uint loops = 0u;\n");
-        sp(&s, "%s", body.buf ? body.buf : "");
-    } else if (any_branch) {
-        sp(&s, "  uint pc = 8u; uint ssy[16]; uint ssy_n = 0u; uint pbk[16]; uint pbk_n = 0u; uint pcnt[16]; uint pcnt_n = 0u;\n");
-        sp(&s, "  bool exit_now = false;\n");
-        sp(&s, "  for (uint guard = 0u; guard < 100000u; guard++) {\n  switch (pc) {\n");
-        sp(&s, "%s", body.buf ? body.buf : "");
-        sp(&s, "    exit_now = true; break;\n  default: exit_now = true; break;\n  }\n  if (exit_now) break;\n  }\n");
-    } else {
-        sp(&s, "  do {\n%s  } while (false);\n", body.buf ? body.buf : "");
+    if (mvec) {  // the previous frame's position first, in a block of its own (its registers start at 0 as well)
+        sp(&s, "  vec4 ppos = vec4(0, 0, 0, 1); vec4 pvd = vec4(0); float pps = 0.0f;\n  {\n");
+        glsl_body(c, &s, pbody.buf ? pbody.buf : "", any_branch, false);
+        sp(&s, "  }\n");
     }
+    free(pbody.buf);
+    glsl_body(c, &s, body.buf ? body.buf : "", any_branch, dbg);
     free(body.buf);
     if (stage == STAGE_VERTEX) {
         if (key && key->flip_y) sp(&s, "  gl_Position.y = -gl_Position.y;\n");
         if (key && key->depth_minus_one) sp(&s, "  gl_Position.z = (gl_Position.z + gl_Position.w) * 0.5f;\n");
+        if (mvec) {
+            if (key->flip_y) sp(&s, "  ppos.y = -ppos.y;\n");
+            if (key->depth_minus_one) sp(&s, "  ppos.z = (ppos.z + ppos.w) * 0.5f;\n");
+            sp(&s, "  mv_cur = gl_Position; mv_prev = ppos;\n");
+        }
     } else if (stage == STAGE_FRAGMENT) {
         int r = 0;
         for (int rt = 0; rt < 8; rt++) {
@@ -2277,10 +2348,21 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
             if (c->reg_used[r + 1]) sp(&s, "  gl_FragDepth = as_f(r%d);\n", r + 1);
             else sp(&s, "  gl_FragDepth = gl_FragCoord.z;\n");
         }
+        if (mvec_mask) {  // the reactive mask: the effect's coverage (its alpha, when it writes one as a float)
+            bool alpha = (c->omap_target & 0x8) && (!key || key->rt_kind[0] == 0);
+            sp(&s, "  mv_out = vec4(0.0f, 0.0f, %s, 0.0f);\n", alpha ? "clamp(c0.a, 0.0f, 1.0f)" : "1.0f");
+        } else if (mvec_still) {
+            sp(&s, "  mv_out = vec4(0.0f);\n");
+        } else if (mvec_rt >= 0) {  // NDC from the previous frame's position to this one's (both after the y flip)
+            sp(&s, "  mv_out = vec4(mv_cur.xy / mv_cur.w - mv_prev.xy / mv_prev.w, 0.0f, 1.0f);\n");
+        }
     }
     sp(&s, "}\n");
     info->msl = glsl_with_prelude(s.buf);
     free(s.buf);
+    info->mvec = mvec || (mvec_rt >= 0 && !mvec_mask && !mvec_still);
+    info->mvec_mask = mvec_mask;
+    info->mvec_still = mvec_still;
     info->attr_mask = c->in_attr_mask;
     info->out_mask = stage == STAGE_FRAGMENT ? c->omap_target : c->out_attr_mask;
     free(c->body.buf);
@@ -2319,7 +2401,7 @@ const char *maxwell_translator_id(void) { return TRANSLATOR_ID; }
 // Whether a translation depends on more than the binary and the key (debugging switches): not to be cached.
 bool maxwell_translation_uncacheable(void) {
     return maxwell_dbg_code || maxwell_dbg_vs || getenv("SAVAGEWIND_SAVE_MSL") || getenv("SAVAGEWIND_NO_DISCARD") ||
-           getenv("SAVAGEWIND_XLATE_NO_STRUCTURE");
+           getenv("SAVAGEWIND_XLATE_NO_STRUCTURE") || getenv("SAVAGEWIND_DEBUG_POINT_SIZE");
 }
 
 // ---- structured control flow (GLSL). Shaders whose branches nest become if / else and do / while in address order

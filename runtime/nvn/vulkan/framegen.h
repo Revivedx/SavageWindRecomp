@@ -27,7 +27,8 @@ typedef struct {
     FgImage color;     // this frame as presented (with the HUD)
     FgImage hudless;   // ... without it (the 3D scene composited, before the HUD's first draw)
     FgImage depth;     // the 3D scene's depth (D32)
-    FgImage motion;    // camera motion vectors (R16G16F, uv units: where each pixel was in the previous frame - here)
+    FgImage motion;    // motion vectors (.xy: where each pixel was in the previous frame - here, times motion_scale)
+    float motion_scale[2];  // .xy times this over the render size is that uv offset (0, 0: .xy are uv units)
     FgImage out;       // the interpolated frame (storage image)
     float near_, far_, fovy;  // the world camera's (fovy in radians)
     float cam_pos[3], cam_up[3], cam_right[3], cam_fwd[3];

@@ -215,6 +215,10 @@ static bool radv_gcn(void) {
     return false;
 }
 
+// RADV on an RDNA 4 chip (RX 9060 / 9070): "AMD Radeon RX 9070 XT (RADV GFX1201)"
+static bool radv_gfx12(void) { return strstr(g_vk.props.deviceName, "(RADV GFX12") != NULL; }
+bool vk_shader_fp16(void) { return g_vk.fp16; }
+
 static void create_device(void) {
     uint32_t ne = 0;
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
@@ -248,6 +252,13 @@ static void create_device(void) {
 #ifdef __linux__
     g_vk.radv = drv.driverID == VK_DRIVER_ID_MESA_RADV;
 #endif
+    g_vk.amd_proprietary = drv.driverID == VK_DRIVER_ID_AMD_PROPRIETARY;
+    {   // (for bug reports: the driver's version, and whether ASTC textures reach the GPU as they are or decoded)
+        VkFormatProperties ap;
+        vkGetPhysicalDeviceFormatProperties(g_vk.phys, VK_FORMAT_ASTC_4x4_UNORM_BLOCK, &ap);
+        LOG("[vk] driver: %s %s (id %d), ASTC %s\n", drv.driverName, drv.driverInfo, (int)drv.driverID,
+            ap.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT ? "sampled by the GPU" : "decoded on the CPU");
+    }
     // SAVAGEWIND_VK_LEGACY=1: Alpha 2's setup, none of maintenance5, graphics pipeline libraries and attachment
     // feedback loops (SAVAGEWIND_VK_M5=1 / _GPL=1 / _FEEDBACK_LOOP=1 turn one back on). The 0.3.1 hotfix made it the
     // default on AMD's and Intel's Windows drivers, for a black window from Alpha 3 on (#85); that was their shader
@@ -290,8 +301,11 @@ static void create_device(void) {
     bool uil = false;
 #endif
     // Pipelines linked from shaders compiled apart from the fixed state (exec.c, graphics pipeline libraries), when
-    // the driver links them fast. SAVAGEWIND_VK_NO_GPL=1: whole pipelines, as before.
-    bool gpl = !getenv("SAVAGEWIND_VK_NO_GPL") && !(win_legacy && !getenv("SAVAGEWIND_VK_GPL")) && has_ext(ep, ne, VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME) &&
+    // the driver links them fast. SAVAGEWIND_VK_NO_GPL=1: whole pipelines, as before. RADV on RDNA 4 (Mesa 26.0, an
+    // RX 9070 XT) hung the GPU ~46 s in, at the title screen, with them and ran without (#228); SAVAGEWIND_VK_GPL=1
+    // turns them on there anyway.
+    bool gpl_off = (win_legacy || radv_gfx12()) && !getenv("SAVAGEWIND_VK_GPL");
+    bool gpl = !getenv("SAVAGEWIND_VK_NO_GPL") && !gpl_off && has_ext(ep, ne, VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME) &&
                has_ext(ep, ne, VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
     // when each frame reached the display (SAVAGEWIND_LOG_PRESENT, tests: "present timing" below)
     bool pwait = getenv("SAVAGEWIND_LOG_PRESENT") && has_ext(ep, ne, VK_KHR_PRESENT_ID_EXTENSION_NAME) &&
@@ -383,7 +397,16 @@ static void create_device(void) {
                                             .pipelineCreationCacheControl = g_vk.gpl && f13_have.pipelineCreationCacheControl,
                                             .pNext = m5 ? (void *)&m5_on : g_vk.custom_border ? (void *)&cbc
                                                                          : g_vk.divisor ? (void *)&div : NULL};
+    {   // 16-bit floats in shaders where the device has them (the FSR 3 upscaler's shaders: vulkan/fsr3.cpp)
+        VkPhysicalDeviceVulkan12Features q12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+        VkPhysicalDeviceVulkan11Features q11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &q12};
+        VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &q11};
+        vkGetPhysicalDeviceFeatures2(g_vk.phys, &q);
+        g_vk.fp16 = q12.shaderFloat16 && q11.uniformAndStorageBuffer16BitAccess && q11.storageBuffer16BitAccess &&
+                    q.features.shaderInt16;
+    }
     VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+                                            .shaderFloat16 = g_vk.fp16,
                                             .timelineSemaphore = WANT(f12_have, timelineSemaphore),
                                             .shaderInt8 = WANT(f12_have, shaderInt8),
                                             .samplerMirrorClampToEdge = WANT(f12_have, samplerMirrorClampToEdge),
@@ -391,7 +414,8 @@ static void create_device(void) {
                                             .storageBuffer8BitAccess = WANT(f12_have, storageBuffer8BitAccess),
                                             .scalarBlockLayout = WANT(f12_have, scalarBlockLayout), .pNext = &f13};
     VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
-                                            .storageBuffer16BitAccess = WANT(f11_have, storageBuffer16BitAccess), .pNext = &f12};
+                                            .storageBuffer16BitAccess = WANT(f11_have, storageBuffer16BitAccess),
+                                            .uniformAndStorageBuffer16BitAccess = g_vk.fp16, .pNext = &f12};
 #undef WANT
     VkPhysicalDeviceFaultFeaturesEXT ff = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT, .deviceFault = VK_TRUE,
                                            .pNext = &f11};
@@ -419,8 +443,13 @@ static void create_device(void) {
     b->fillModeNonSolid = h->fillModeNonSolid;
     b->samplerAnisotropy = h->samplerAnisotropy;
     g_vk.feat_aniso = h->samplerAnisotropy;
+    b->shaderStorageImageExtendedFormats = h->shaderStorageImageExtendedFormats;
+    g_vk.storage_ext = h->shaderStorageImageExtendedFormats;
     b->textureCompressionBC = h->textureCompressionBC;
+    // (textures.c samples ASTC images as they are wherever the driver lists the formats: the feature has to be on)
+    b->textureCompressionASTC_LDR = h->textureCompressionASTC_LDR;
     b->shaderInt64 = h->shaderInt64;
+    b->shaderInt16 = g_vk.fp16;
     b->depthBiasClamp = h->depthBiasClamp;
     b->depthClamp = h->depthClamp;
     g_vk.depth_clamp = h->depthClamp;
@@ -456,9 +485,18 @@ static void create_device(void) {
     }
     g_vk.present_wait = pwait;
     float prio[2] = {1.0f, 1.0f};
-    // two queues when the family has them: the second one presents (present thread below)
+    // Two queues when the family has them: the second one presents (present thread below). NVIDIA's GPUs before
+    // Turing (PCI device ids below 0x1E00: the GTX 10 series and older) faulted writing to GPU address 0 within the
+    // first frames whenever the second queue presented, and ran with the presents on the game's queue (#36: a GTX 1050,
+    // a GTX 1050 Ti, a GTX 1050 Mobile, a Quadro P1000). Those get one queue. SAVAGEWIND_VK_PRESENT_THREAD=0: one queue
+    // on every GPU; any other value: two there too (testing).
+    const char *pt_env = getenv("SAVAGEWIND_VK_PRESENT_THREAD");
+    bool nv_pre_turing = g_vk.props.vendorID == 0x10DE && g_vk.props.deviceID < 0x1E00;
+    bool two_q = g_vk.qfam_count >= 2 && (pt_env ? strcmp(pt_env, "0") != 0 : !nv_pre_turing);
+    if (nv_pre_turing && !pt_env && g_vk.qfam_count >= 2)
+        LOG("[vk] NVIDIA before Turing (device 0x%04x): presents on the game's queue (#36)\n", g_vk.props.deviceID);
     VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_vk.qfam,
-                                  .queueCount = g_vk.qfam_count >= 2 ? 2 : 1, .pQueuePriorities = prio};
+                                  .queueCount = two_q ? 2 : 1, .pQueuePriorities = prio};
     VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f, .queueCreateInfoCount = 1,
                              .pQueueCreateInfos = &qi, .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext};
     VK_CHECK(vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.dev));
@@ -1183,7 +1221,8 @@ static void recreate_swapchain(void) {
 // next frame is drawn); vkQueuePresentKHR and vkAcquireNextImageKHR take sc_lock (the swapchain is externally
 // synchronized). The next frame begins once only a game frame after a generated one is still waiting (vk_frame_begin:
 // one frame at a time otherwise, as before); a swapchain change and teardown wait for them all.
-// SAVAGEWIND_VK_PRESENT_THREAD=0 (or a family with one queue): presents on the calling thread, as before.
+// SAVAGEWIND_VK_PRESENT_THREAD=0, NVIDIA before Turing (create_device, #36) or a family with one queue: presents on
+// the calling thread, as before.
 static pthread_mutex_t pres_m = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t pres_cv = PTHREAD_COND_INITIALIZER;
 static pthread_mutex_t sc_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -1745,7 +1784,9 @@ presented:
     }
     if (g_debug_frame) LOG("===== debug frame %llu =====\n", (unsigned long long)total_frames);
     {   // (testing) SAVAGEWIND_UPSCALE_AT=<frame>:<off|ultra|quality|balanced|performance>,... (ascending): the
-        // upscaler from that frame on, as the Video page sets it (A/B of the same view a few frames apart)
+        // upscaler from that frame on, as the Video page sets it (A/B of the same view a few frames apart): FSR 1, or
+        // FSR 3 with a fsr3- in front of the mode (fsr3-quality); fsr3-native: FSR 3 at the window's size (its native
+        // AA: the reference for TAA, which is the same reconstruction)
         static const char *next;
         static int init;
         if (!init) { init = 1; next = getenv("SAVAGEWIND_UPSCALE_AT"); }
@@ -1754,10 +1795,14 @@ presented:
             long at = strtol(next, &end, 10);
             if ((long)total_frames < at) break;
             const char *m = *end == ':' ? end + 1 : end;
-            static const char *const names[] = {"ultra", "quality", "balanced", "performance"};
+            static const char *const names[] = {"ultra", "quality", "balanced", "performance", "ultraperf"};  // (UPQ_*; a later match wins)
+            bool f3 = !strncmp(m, "fsr3-", 5);
+            if (f3) m += 5;
             g_settings.upscaler = UPSCALE_OFF;
-            for (int i = 0; i < 4; i++)
-                if (!strncmp(m, names[i], strlen(names[i]))) g_settings.upscaler = UPSCALE_FSR1, g_settings.upscale_quality = i;
+            for (int i = 0; i < 5; i++)
+                if (!strncmp(m, names[i], strlen(names[i])))
+                    g_settings.upscaler = f3 ? UPSCALE_FSR3 : UPSCALE_FSR1, g_settings.upscale_quality = i;
+            if (f3 && !strncmp(m, "native", 6)) g_settings.upscaler = UPSCALE_FSR3, g_settings.upscale_quality = UPQ_COUNT;
             LOG("[test] frame %llu: upscaler %d mode %d\n", (unsigned long long)total_frames, g_settings.upscaler,
                 g_settings.upscale_quality);
             next = strchr(m, ',');

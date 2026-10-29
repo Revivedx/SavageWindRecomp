@@ -4,7 +4,7 @@
 #pragma once
 #ifdef __cplusplus
 #include <cmath>
-#include <codecvt>
+#include <codecvt>  // (std::wstring_convert, which ffx_vk.cpp uses for the debug names: MSVC's headers bring it)
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
@@ -15,6 +15,10 @@
 
 #if !defined(_MSC_VER)
 #define swprintf_s swprintf  // (the SDK passes the size)
+#if defined(__cplusplus) && !defined(_countof)
+template <typename T, size_t N> constexpr size_t ffx_countof_(T (&)[N]) { return N; }
+#define _countof(a) ffx_countof_(a)  // (stdlib.h's on Windows; glibc has none)
+#endif
 #if !defined(_WIN32)
 #include <stddef.h>
 #include <wchar.h>
@@ -39,6 +43,11 @@ static inline int strcpy_s(char *d, size_t n, const char *s) {
 #ifdef __cplusplus
 template <size_t N> static inline int wcscpy_s(wchar_t (&d)[N], const wchar_t *s) { return wcscpy_s(d, N, s); }
 template <size_t N> static inline int strcpy_s(char (&d)[N], const char *s) { return strcpy_s(d, N, s); }
+template <size_t N, typename... A> static inline int sprintf_s(char (&d)[N], const char *f, A... a) { return snprintf(d, N, f, a...); }
+template <typename... A> static inline int sprintf_s(char *d, size_t n, const char *f, A... a) { return snprintf(d, n, f, a...); }
+#endif
+#ifndef FFX_UNUSED
+#define FFX_UNUSED(x) ((void)(x))  // (ffx_message.cpp: defined by the SDK's Windows headers only)
 #endif
 #define sprintf_s snprintf  // (the SDK passes the size and uses what it returns: the length written)
 #ifndef _countof
