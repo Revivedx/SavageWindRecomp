@@ -16,9 +16,22 @@ Savage Wind: the same kind of session (a host, up to 8 players), its own protoco
 - `SAVAGEWIND_ONLINE=host` or `SAVAGEWIND_ONLINE=<address>` creates or joins a session at start (shortcuts, tests).
 - The settings are in `online.ini` in the data folder.
 
-In a session: the players (left, under the hearts), join / leave notices, the chat's last lines, and each other player
-where they are in the world (a figure in their colour with their name and distance; an arrow at the screen's edge when
-out of view). Chat from the Online tab.
+Each player plays their own game (their save, their world: enemies, chests and quests are not shared); the others are
+in it as Links: each other player is a Link in the world where he is, turned where he goes, walking, running,
+jumping, falling, gliding, climbing or swimming as he does, with his name over him. The overlay adds the session's
+players (left, under the hearts), join / leave notices, the chat's last lines and an arrow at the screen's edge for a
+player out of view. Chat from the Online tab.
+
+### The players' Links (online_mod)
+
+The other players' Links are an actor the game doesn't have, OnlinePlayer, made from the player's own game files by
+`tools/online_mod.py` into `online_mod/` in the data folder (git-ignored: it is derived from the game). A source
+checkout makes it at the first start (`tools/venv` with `oead`: `tools/setup_windows.ps1` installs it), or by hand:
+
+    tools/venv/Scripts/python.exe tools/online_mod.py "<game files>/romfs" online_mod
+
+With `online_mod/` there the runtime serves it as the RomFS overlay (`SAVAGEWIND_ROMFS_OVERLAY`). Without it the
+other players are the overlay's figures only.
 
 ## How it works
 
@@ -27,37 +40,67 @@ out of view). Chat from the Online tab.
 | Protocol, server, client, interpolation, settings | `runtime/online.c`, `runtime/online.h` |
 | Online tab and overlay | `runtime/ui/online_ui.mm` (tab 10 of `runtime/ui/menu.mm`; Options > Online in `game_options.mm`) |
 | Scene camera for the overlay | `runtime/nvn/vulkan/exec.c` (frame generation's camera capture, also while online) |
-| Actors for the other players (experimental, off) | `runtime/online_actors.c`, called from `tools/patches.py` `_vfr_ratio` |
+| The other players as Links | `runtime/online_actors.c`, called each frame from `tools/patches.py` `_vfr_ratio` |
+| OnlinePlayer, from the game files | `tools/online_mod.py` |
 | Test player without a game | `tools/online_bot.c` |
 
-The wire: TCP, little-endian, `u16 length, u8 type, payload`. HELLO (magic `SWOL`, protocol version, name, password) ->
-WELCOME (slot) or REJECT (full, version, password, name); JOIN / LEAVE; STATE 20 times a second (Link's feet position,
-heading, paused / loading flags, the sender's round trip); CHAT; PING / PONG. The server passes each STATE and CHAT on
-with the sender's slot. Clients draw the others 100 ms behind what they last heard, interpolated.
+The wire (protocol 2): TCP, little-endian, `u16 length, u8 type, payload`. HELLO (magic `SWOL`, protocol version,
+name, password) -> WELCOME (slot) or REJECT (full, version, password, name); JOIN / LEAVE; STATE 20 times a second
+(Link's feet position, heading, paused / loading flags, the sender's round trip, what Link does: `ONLINE_A_*`); CHAT;
+PING / PONG. The server passes each STATE and CHAT on with the sender's slot. Clients draw the others 100 ms behind
+what they last heard, interpolated.
 
 What the game gives: `uking::act::PlayerInfo` [`player_info`] +0x88 Link's position; the pause state
-[`pause_state`]. The heading comes from where Link has been moving.
+[`pause_state`]. The heading and what Link does (`motion_anim` in `online.c`) come from how he moves: on the ground
+by his speed, in the air by how fast he rises or falls.
 
-## Players as actors: what was found (1.9.0)
+### OnlinePlayer
 
-Read from the code with capstone (no symbols, no RTTI in `main`):
+`tools/online_mod.py`, from the game's own files:
+
+- the actor link of a DemoNPC (`Dm_Npc_Rito_HeroSoul_Kago`: an NPC the game draws in the world and doesn't steer),
+  without its effects and sounds;
+- the AI program of a DemoNPC that only stands (`Dm_Animal_Heron_A`, root `DummyAction`; the spirit's own AI hides
+  its model while it waits);
+- Link's model list and AS list (`PauseMenuPlayer`: Folder Link, `Player_Animation`) plus the runtime's AS
+  (`OnlineWait`, `OnlineWalk`, ... : the player's own `Player_Wait`, `Player_Move`, ...). **The defines must stay
+  sorted by name**: the game finds an AS by binary search. Its RSTB size grows with them (~340 bytes each);
+- resident: in `Pack/TitleBG.pack` and `Actor/ResidentActors.byml` (`Pack/Bootup.pack`, `only_res`), an entry in
+  `Actor/ActorInfo.product.sbyml` (sorted by crc32 of the name) and sizes in the ResourceSizeTable.
+
+### The game's functions (1.9.0)
+
+Read from the code (capstone, and Ghidra: `tools/ghidra/README.md`; no symbols, no RTTI in `main`):
 
 - `0x7001535900`: creates an actor now, by name. x0 the creator (`**0x7001d66550`), x1 the name, x2 a heap
-  (`*(**0x7001d66558 + 0x28)`), x3 0, w4, w5 0; returns the actor, or 0 when its resources aren't loaded. The Remote
-  Bomb rune calls it (`0x7000b3bb40`) with `RemoteBomb` / `RemoteBombCube`.
-- `0x700152261c`: sets an actor's matrix (x0 actor, x1 `Matrix34f *`, x2 scale or 0); the 3x4 is at actor +0x398.
+  (`*(**0x7001d66558 + 0x28)`), x3 0, w4, w5 0; returns the actor, or 0. The Remote Bomb rune calls it
+  (`0x7000b3bb40`). The actor is drawn only when its resources (its model) are loaded: resident, or in use.
+  `0x7001535b10` is the asynchronous request (88 callers), which also wants the actor's resources there.
+- `0x700152261c`: sets an actor's matrix (x0 actor, x1 `Matrix34f *` row-major, x2 scale or 0): actor +0x398.
 - `0x7001514bac`: deletes an actor (x0, w1 0).
+- Actor +0x64: the BaseProc state (0 init, 1 calc, 2 sleep, 3 delete). An actor's AS can play from state 1 on.
+- `0x700151e42c`: an AI action's "play this AS": x0 the action (its actor at +8), x1 the AS name, w2 not again if
+  playing, w3 w4 0, s0 the blend (-1: its own). `ForkASPlay`'s enter (`0x7000759e74`) calls it. The AS manager is
+  actor +0x560 (+0xb8 slots, +0xd8 the actor); `0x70014a0040` (manager, slot) gives the AS playing (+8 its name;
+  `0x7001dad0b8` for none). The AS list is `*(actor +0x570) +0x98` (+0x2b8 count, +0x2c0 entries of 0x88).
 
-Tried with `SAVAGEWIND_ONLINE_ACTOR=<name>` (the bot of `tools/online_bot.c` walking around Link):
+### Tried, and what came of it
 
-- `RemoteBombCube`: created (the call works), but the bomb stays at Link's hands: its own AI / physics overrides the
-  matrix.
-- `PauseMenuPlayer` (the only actor besides the player with Link's model, `bfres` `Link`): created, never drawn in the
-  world (it belongs to the pause menu's own scene).
+- `RemoteBombCube` as a player: drawn, but its AI and physics keep it at Link's hands.
+- `PauseMenuPlayer`: never drawn in the world (the pause menu's own scene).
 - `GameROMPlayer` (a second player): the game crashes right after (access at 0x4e0).
+- `Dm_Npc_Rito_HeroSoul_Kago`: created, state 2 (sleep), its model hidden by its AI.
+- `Item_Material_01`: created, not drawn (its model isn't loaded).
 
-Milk Bar's players are `Jugador1..32`: Hylian NPCs with a UMii (`Actor/UMii/Jugador<n>.bumii`, its values written at
-run time) and equipment given to them, spawned through `ActorCreator::requestCreateActor` (Wii U 0x037b6040) with
-their resources loaded first. The same on the Switch needs, still to be found: the asynchronous creation (resources
-loaded, then created), the UMii appearance and the equipment, and the animations (the AS of the remote player's
-action). A Ghidra project of 1.9.0's `main` (`tools/ghidra/README.md`) is the way to find them.
+### Not done yet
+
+- **Armour.** The players' Links wear Link's base model (no armour). Armour pieces are actors of their own
+  (`Armor_XXX_Upper`, model in `Model/Armor_XXX`) that the player's code binds to Link's skeleton. Tried: an
+  `OnlineArmor_<piece>` actor per piece (the piece's model list, Link's AS list, kept on the Link's matrix and AS:
+  `tools/online_mod.py --armor`, `SAVAGEWIND_ONLINE_ARMOR=OnlineArmor_001_Upper,...`) crashes the game at start
+  when resident (an access at 0 while the resident actors load); the piece as a second `ModelData` of Link's model
+  list loads but isn't drawn. Next: why the resident armour crashes (Ghidra on the faulting function), or how the
+  player's code binds an armour actor to Link's model, and what the local player wears (to send it).
+- What Link does, from the game itself (the player actor's AS) instead of from how he moves: needs the player actor
+  (from PlayerInfo).
+- The world shared: enemies, items, time of day, quests (Milk Bar's quest and enemy sync); damage between players.

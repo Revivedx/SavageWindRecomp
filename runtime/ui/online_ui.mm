@@ -255,7 +255,7 @@ extern "C" void online_overlay_draw(float scale, ImFont *font) {
         else snprintf(t, sizeof t, "%s  %.1f km", p.name, dist / 1000);
         if (visible) {
             float h = fabsf(sf.y - sh.y);
-            if (h > 2) {
+            if (h > 2 && !online_has_actor(i)) {
                 if (!project(vp, ysign, dir, size, &sd, &wd)) sd = sf;
                 // (close to the camera a figure would cover the screen: it fades out from 35% of the height)
                 float a = p.flags & ONLINE_F_PAUSED ? 0.45f : 0.9f, big = (h - size.y * 0.35f) / (size.y * 0.3f);

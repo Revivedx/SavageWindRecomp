@@ -374,9 +374,24 @@ int main(int argc, char **argv) {
 #endif
     rt_paths_init();  // the data root becomes the working directory (runtime/paths.h)
     online_settings_load();
-    {   // online play's actors (tools/online_mod.py): its folder in the data root is the RomFS overlay, unless one is set
+    if (!root) root = own_game_dir();
+    if (!root) root = "extracted";
+    {   // online play's actors (tools/online_mod.py): its folder in the data root is the RomFS overlay, unless one is
+        // set; a source checkout makes it from the game files the first time (Python with oead: tools/setup_windows.ps1)
         struct stat sb;
         const char *ov = getenv("SAVAGEWIND_ROMFS_OVERLAY");
+#ifdef _WIN32
+        const char *py = "tools\\venv\\Scripts\\python.exe";
+#else
+        const char *py = "tools/venv/bin/python";
+#endif
+        if ((!ov || !*ov) && stat("online_mod/online_mod.txt", &sb) != 0 && stat("tools/online_mod.py", &sb) == 0 &&
+            stat(py, &sb) == 0) {
+            char cmd[1400];
+            snprintf(cmd, sizeof cmd, "\"\"%s\" -I tools/online_mod.py \"%s/romfs\" online_mod\"", py, root);
+            LOG("[online] making online play's actors: %s\n", cmd);
+            if (system(cmd) != 0) LOG("[online] tools/online_mod.py failed (pip install oead?)\n");
+        }
         if ((!ov || !*ov) && stat("online_mod/online_mod.txt", &sb) == 0) {
             static char env[] = "SAVAGEWIND_ROMFS_OVERLAY=online_mod";
             putenv(env);
@@ -388,8 +403,6 @@ int main(int argc, char **argv) {
         if (o && !strcmp(o, "host")) online_host();
         else if (o && *o) snprintf(g_online.host, sizeof g_online.host, "%s", o), online_join();
     }
-    if (!root) root = own_game_dir();
-    if (!root) root = "extracted";
     if (dump) return dump_romfs(root, dump);
     if (scan) return scan_shaders(root);
 #ifndef __APPLE__

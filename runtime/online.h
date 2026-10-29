@@ -81,6 +81,9 @@ bool online_wants_camera(void);
 void online_camera_set(const double vp[16], float ysign);
 bool online_camera_get(double vp[16], float *ysign, uint64_t *age_ns);
 
+// The player in that slot is an actor in the world (runtime/online_actors.c): the overlay names him, draws no figure
+bool online_has_actor(int slot);
+
 // A dedicated server (main.c --server): runs until the process ends
 int online_server_main(int port, const char *password);
 

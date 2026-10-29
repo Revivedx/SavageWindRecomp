@@ -33,11 +33,15 @@
 bool framepace_title_ui(void);
 bool framepace_paused(void);
 
+// A remote player in the world: his Link and the armour pieces he wears (tools/online_mod.py ARMOR), each an actor
+// of its own on the same matrix, playing the same AS from the same frame (so the armour moves with him)
+#define PARTS 4  // Link, head, upper body, lower body
 static struct {
-    uint64_t actor;
+    uint64_t actor[PARTS];   // [0] Link (OnlinePlayer); 0: none
+    char part[PARTS][48];    // the actor each is
     char name[ONLINE_NAME_MAX];
-    int fails;
-    int anim;  // the AS playing (ONLINE_A_*; -1 none yet)
+    int fails[PARTS];
+    int anim;                // the AS all parts play (ONLINE_A_*; -1: none yet, or a part needs it again)
     int as_fails;
 } g_act[ONLINE_MAX];
 
@@ -46,6 +50,9 @@ static const char *const k_anims[ONLINE_A_COUNT] = {
     "OnlineWait", "OnlineWalk", "OnlineRun", "OnlineDash", "OnlineJump", "OnlineFall", "OnlineGlide",
     "OnlineSwimWait", "OnlineSwim", "OnlineClimbWait", "OnlineClimb", "OnlineSquatWait", "OnlineSquat"};
 static float g_last_link[3];
+volatile bool g_online_actor[ONLINE_MAX];  // (online.h online_has_actor: the overlay draws no figure for these)
+
+bool online_has_actor(int slot) { return slot >= 0 && slot < ONLINE_MAX && g_online_actor[slot]; }
 static int g_settle;  // frames to wait after a load before creating anything
 
 // SAVAGEWIND_ONLINE_ACTOR, else OnlinePlayer when the overlay is online play's (tools/online_mod.py)
@@ -99,52 +106,60 @@ static const char *playing(Cpu *c, uint64_t actor) {
     return now ? now : "";
 }
 
-// play OnlinePlayer's animation `anim` on actor (blended over a few frames); true when it plays
-static bool play_anim(Cpu *c, uint64_t actor, int anim) {
+// play OnlinePlayer's animation `anim` on actor (blended over a few frames; again: even if it plays it already, from
+// its start); true when it plays
+static bool play_anim(Cpu *c, uint64_t actor, int anim, bool again) {
     uint64_t fake_action[2] = {0, actor};
     const char *name = k_anims[anim];
-    call_f(c, FN_PLAY_AS, (uint64_t)(uintptr_t)fake_action, (uint64_t)(uintptr_t)name, 1, 0, 0, 0, 6.0f);
+    call_f(c, FN_PLAY_AS, (uint64_t)(uintptr_t)fake_action, (uint64_t)(uintptr_t)name, again ? 0 : 1, 0, 0, 0, 6.0f);
     const char *now = playing(c, actor);
-    bool ok = !strcmp(now, name);
-    if (getenv("SAVAGEWIND_ONLINE_ACTOR_LOG")) {
-        uint64_t mgr = *(uint64_t *)(uintptr_t)(actor + 0x560);
-        LOG("[online] AS %s on %llx: now %s (manager %llx: +d8 %llx, slots %u, +c0 %llx)\n", name,
-            (unsigned long long)actor, now, (unsigned long long)mgr,
-            mgr ? (unsigned long long)*(uint64_t *)(uintptr_t)(mgr + 0xd8) : 0ull,
-            mgr ? *(uint32_t *)(uintptr_t)(mgr + 0xb8) : 0u,
-            mgr ? (unsigned long long)*(uint64_t *)(uintptr_t)(mgr + 0xc0) : 0ull);
-        static int dumped;
-        uint64_t param = *(uint64_t *)(uintptr_t)(actor + 0x570);
-        uint64_t asl = param ? *(uint64_t *)(uintptr_t)(param + 0x98) : 0;
-        if (asl && !dumped++) {
-            uint32_t n = *(uint32_t *)(uintptr_t)(asl + 0x2b8);
-            uint64_t e = *(uint64_t *)(uintptr_t)(asl + 0x2c0);
-            LOG("[online] AS list %llx: %u, file %s\n", (unsigned long long)asl, n, *(const char **)(uintptr_t)(asl + 0x1e8));
-            for (uint32_t k = 0; k < n && k < 40; k++) {
-                const uint8_t *en = (const uint8_t *)(uintptr_t)(e + k * 0x88);
-                LOG("[online]   %u: %s\n", k, *(const char **)(en + 0x18 + 8));
-            }
-        }
-    }
-    return ok;
+    if (getenv("SAVAGEWIND_ONLINE_ACTOR_LOG")) LOG("[online] AS %s on %llx: now %s\n", name, (unsigned long long)actor, now);
+    return !strcmp(now, name);
 }
 
 static void forget_all(void) {
-    for (int i = 0; i < ONLINE_MAX; i++) g_act[i].actor = 0, g_act[i].fails = 0, g_act[i].anim = -1, g_act[i].as_fails = 0;
+    memset(g_act, 0, sizeof g_act);
+    for (int i = 0; i < ONLINE_MAX; i++) g_act[i].anim = -1;
 }
 
 static void drop(Cpu *c, int i) {
-    if (g_act[i].actor) {
-        LOG("[online] removing %s's actor %llx\n", g_act[i].name, (unsigned long long)g_act[i].actor);
-        call(c, FN_DELETE, g_act[i].actor, 0, 0, 0, 0, 0);
+    for (int k = 0; k < PARTS; k++) {
+        if (g_act[i].actor[k]) call(c, FN_DELETE, g_act[i].actor[k], 0, 0, 0, 0, 0);
+        g_act[i].actor[k] = 0;
     }
-    g_act[i].actor = 0;
+    LOG("[online] removed %s's Link\n", g_act[i].name);
+    g_act[i].anim = -1;
 }
+
+// The armour a player wears, as online actors (tools/online_mod.py --armor): SAVAGEWIND_ONLINE_ARMOR=<actor>,...
+// (experimental: a resident armour actor crashes the game at start for now, docs/ONLINE.md), else none
+static int armor_of(const OnlinePlayer *p, char out[PARTS - 1][48]) {
+    (void)p;
+    const char *e = getenv("SAVAGEWIND_ONLINE_ARMOR");
+    if (!e || !*e) return 0;
+    int n = 0;
+    while (*e && n < PARTS - 1) {
+        const char *comma = strchr(e, ',');
+        size_t l = comma ? (size_t)(comma - e) : strlen(e);
+        snprintf(out[n++], 48, "%.*s", (int)(l < 47 ? l : 47), e);
+        e += l + (comma ? 1 : 0);
+    }
+    return n;
+}
+
+static uint64_t create(Cpu *c, const char *name) {
+    uint64_t creator = *(uint64_t *)(uintptr_t)P_CREATOR, owner = *(uint64_t *)(uintptr_t)P_HEAP_OWNER;
+    creator = creator ? *(uint64_t *)(uintptr_t)creator : 0;
+    owner = owner ? *(uint64_t *)(uintptr_t)owner : 0;
+    if (!creator || !owner) return 0;
+    uint64_t heap = *(uint64_t *)(uintptr_t)(owner + 0x28);
+    return call(c, FN_CREATE, creator, (uint64_t)(uintptr_t)name, heap, 0, 0, 0);
+}
+
+static bool running(uint64_t actor) { return actor && *(uint8_t *)(uintptr_t)(actor + 0x64) == 1; }  // (calc)
 
 void rt_online_frame(Cpu *c) {
     if (!online_actors_on()) return;
-    static unsigned calls;
-    if (getenv("SAVAGEWIND_ONLINE_ACTOR_LOG") && calls++ % 600 == 0) LOG("[online] frame hook %u\n", calls);
     int me = online_local_id();
     uint64_t pinfo = g_site.player_info ? *(uint64_t *)(uintptr_t)g_site.player_info : 0;
     float link[3] = {0, 0, 0};
@@ -154,12 +169,13 @@ void rt_online_frame(Cpu *c) {
     float dx = link[0] - g_last_link[0], dy = link[1] - g_last_link[1], dz = link[2] - g_last_link[2];
     if (!world || dx * dx + dy * dy + dz * dz > 100 * 100) {
         bool any = false;
-        for (int i = 0; i < ONLINE_MAX; i++) any |= g_act[i].actor != 0;
+        for (int i = 0; i < ONLINE_MAX; i++) any |= g_act[i].actor[0] != 0;
         if (any) LOG("[online] a load: the players' actors are gone\n");
         forget_all();
         g_settle = 60;
     }
     memcpy(g_last_link, link, sizeof link);
+    for (int i = 0; i < ONLINE_MAX; i++) g_online_actor[i] = world && running(g_act[i].actor[0]);
     if (!world) return;
     if (g_settle > 0) { g_settle--; return; }
 
@@ -172,42 +188,46 @@ void rt_online_frame(Cpu *c) {
             want = ex * ex + ez * ez < 400 * 400;  // (far away: the world there isn't loaded)
         }
         if (!want) {
-            if (g_act[i].actor && !framepace_paused()) drop(c, i);
+            if (g_act[i].actor[0] && !framepace_paused()) drop(c, i);
             continue;
         }
-        if (!g_act[i].actor) {
-            if (g_act[i].fails > 10) continue;
-            uint64_t creator = *(uint64_t *)(uintptr_t)P_CREATOR, owner = *(uint64_t *)(uintptr_t)P_HEAP_OWNER;
-            creator = creator ? *(uint64_t *)(uintptr_t)creator : 0;
-            owner = owner ? *(uint64_t *)(uintptr_t)owner : 0;
-            if (!creator || !owner) continue;
-            uint64_t heap = *(uint64_t *)(uintptr_t)(owner + 0x28);
-            uint64_t a = call(c, FN_CREATE, creator, (uint64_t)(uintptr_t)actor_name(), heap, 0, 0, 0);
+        // the parts he should have: Link, then his armour; a part that changed is removed and made again
+        char want_part[PARTS][48] = {{0}};
+        snprintf(want_part[0], 48, "%s", actor_name());
+        if (is_online_player()) armor_of(&pl[i], &want_part[1]);
+        for (int k = 0; k < PARTS; k++) {
+            if (g_act[i].actor[k] && strcmp(g_act[i].part[k], want_part[k])) {
+                call(c, FN_DELETE, g_act[i].actor[k], 0, 0, 0, 0, 0);
+                g_act[i].actor[k] = 0;
+            }
+            snprintf(g_act[i].part[k], 48, "%s", want_part[k]);
+            if (g_act[i].actor[k] || !want_part[k][0] || g_act[i].fails[k] > 10) continue;
+            uint64_t a = create(c, want_part[k]);
             if (!a) {
-                if (g_act[i].fails++ == 0) LOG("[online] can't create a %s for %s (not loaded?)\n", actor_name(), pl[i].name);
+                if (g_act[i].fails[k]++ == 0) LOG("[online] can't create a %s for %s (not loaded?)\n", want_part[k], pl[i].name);
                 continue;
             }
-            g_act[i].actor = a;
-            g_act[i].anim = -1, g_act[i].as_fails = 0;
+            g_act[i].actor[k] = a;
+            g_act[i].anim = -1;  // (all parts start the AS again together: the new one in step)
             memcpy(g_act[i].name, pl[i].name, sizeof g_act[i].name);
-            LOG("[online] %s is a %s (actor %llx)\n", pl[i].name, actor_name(), (unsigned long long)a);
+            LOG("[online] %s: %s (actor %llx)\n", pl[i].name, want_part[k], (unsigned long long)a);
         }
         // the matrix: turned about y by the heading (forward is +z), at the player's feet
         float s = sinf(pl[i].yaw), co = cosf(pl[i].yaw);
         float m[12] = {co, 0, s, pl[i].pos[0], 0, 1, 0, pl[i].pos[1], -s, 0, co, pl[i].pos[2]};
-        static unsigned n;
-        if (getenv("SAVAGEWIND_ONLINE_ACTOR_LOG") && n < 3) LOG("[online] setting the matrix of %llx\n", (unsigned long long)g_act[i].actor);
-        call(c, FN_SET_MTX, g_act[i].actor, (uint64_t)(uintptr_t)m, 0, 0, 0, 0);
-        // (once it runs: BaseProc state 1, calc; right after its creation, 0, its AS cannot play yet)
-        if (is_online_player() && pl[i].anim != g_act[i].anim && pl[i].anim < ONLINE_A_COUNT &&
-            *(uint8_t *)(uintptr_t)(g_act[i].actor + 0x64) == 1) {
-            if (play_anim(c, g_act[i].actor, pl[i].anim) || ++g_act[i].as_fails > 30) g_act[i].anim = pl[i].anim;
-        }
-        if (getenv("SAVAGEWIND_ONLINE_ACTOR_LOG") && n++ % 120 == 0) {
-            const float *a = (const float *)(uintptr_t)(g_act[i].actor + 0x398);
-            LOG("[online] actor %llx mtx t %.2f %.2f %.2f (want %.2f %.2f %.2f) state %02x flags %08x\n",
-                (unsigned long long)g_act[i].actor, a[3], a[7], a[11], m[3], m[7], m[11],
-                *(uint8_t *)(uintptr_t)(g_act[i].actor + 0x64), *(uint32_t *)(uintptr_t)(g_act[i].actor + 0x78));
+        bool all_running = true;
+        for (int k = 0; k < PARTS; k++)
+            if (g_act[i].actor[k]) {
+                call(c, FN_SET_MTX, g_act[i].actor[k], (uint64_t)(uintptr_t)m, 0, 0, 0, 0);
+                all_running &= running(g_act[i].actor[k]);
+            }
+        // the AS: once all parts run (BaseProc state 1, calc; right after its creation, 0, an actor's AS can't play),
+        // on every part in the same frame
+        if (is_online_player() && all_running && pl[i].anim < ONLINE_A_COUNT && pl[i].anim != g_act[i].anim) {
+            bool again = g_act[i].anim < 0, ok = true;
+            for (int k = 0; k < PARTS; k++)
+                if (g_act[i].actor[k]) ok &= play_anim(c, g_act[i].actor[k], pl[i].anim, again);
+            if (ok || ++g_act[i].as_fails > 30) g_act[i].anim = pl[i].anim, g_act[i].as_fails = 0;
         }
     }
 }
