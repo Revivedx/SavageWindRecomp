@@ -759,6 +759,13 @@ extern "C" void rt_opt_rows(void) {
 }
 
 // Row init: the flag type of an entry (0 bool, 1 s32); -1: the game's own entry
+// The installed entries are a host vector, not guest-heap pointers.
+extern "C" int rt_opt_pointer_kind(uint64_t row) {
+    if(!g_installed||rd64(OPT_ENTRIES)!=g_installed||!row)return -1;
+    uint32_t index=rd32(row+0x50);
+    return index<g_entries.size()?(int)g_entries[index].kind:-1;
+}
+
 extern "C" int rt_opt_flag_type(uint64_t entry) {
     if (!g_installed || entry < g_installed) return -1;
     const Item *it = item_of_index((uint32_t)((entry - g_installed) / sizeof(Entry)));

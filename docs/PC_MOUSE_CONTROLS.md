@@ -13,6 +13,11 @@ Changes apply immediately and are saved as `pc_cursor` and `pc_bow` in `savagewi
 
 ## Pointer behavior
 
+In native Options pages, the wheel scrolls the view without generating d-pad
+input. Hover highlights the row under the pointer; left-click operates its
+toggle, button or choice arrow. Hover does not recenter the scroll view. These
+controls use **PC mouse pointer**, including immediate disable and reboot reset.
+
 Inventory categories support clicking their icons, wheel navigation and horizontal dragging. Quick equipment supports wheel and drag selection, retaining the selected item when its selector closes. The current `test` defaults remain **1 weapons / 2 shields / 3 runes / 4 whistle**. Saved custom bindings are not overwritten.
 
 Map navigation supports wheel zoom, left-drag panning, WASD and progressive edge scrolling. Marker hover has a small attraction radius without recentering the map. Stamp placement stays anchored while choosing an icon, and Edit/Delete/Cancel accepts pointer input. Coordinates account for resolution, aspect ratio and letterboxing.
@@ -23,9 +28,10 @@ The specialized map/inventory adapters target BOTW 1.9.0. Optional generator sit
 
 ## Validation
 
-Rebased onto `test` at `79ede35528fce6d251acf2c47a11d5598c2c2911`, retaining color-grading includes and the upstream quick-selector fix/defaults. The Windows executable builds. Automated coverage includes:
+Updated onto `test` at `4249c88`, retaining upstream changes. The Windows executable builds. Automated coverage includes:
 
 - `make test-pc-controls`: actual host cursor-update transitions (including map entry while relative mode is already off), focus, overlay/F2 policy, safe bow cancellation, number-key defaults, options persistence across boots and startup overrides.
+- `tests/test_options_pointer.c`: synthetic Options viewport scrolling without d-pad/selection changes, scroll limits, transformed hover rectangles, direct row actions, disabled pointer behavior and reboot reset. Actual Options hit detection and scrolling still require the contributor's gameplay check.
 - `tests/test_bow.c`: draw, shot, redraw and cancellation at 30/60/120 FPS.
 - `tests/test_cursor_math.c`: seven resolutions/aspect ratios, letterboxing, 1,200 pan/zoom samples, time-based WASD/edge navigation.
 - `tools/test_game_sites.py`: 45 checks.
