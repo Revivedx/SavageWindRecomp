@@ -82,6 +82,7 @@ static void *live_thread(void *arg) {
     (void)arg;
     uint8_t *img = NULL;
     size_t cap = 0;
+    int img_n = 0;  // (the flags img holds: the previous look's, for SAVAGEWIND_LOG_FLAGS)
     pthread_mutex_lock(&llock);
     while (!stop_req) {
         pthread_mutex_unlock(&llock);
@@ -91,13 +92,21 @@ static void *live_thread(void *arg) {
             size_t n = 0xC + 8 * (size_t)n_flags;
             if (n > cap) img = realloc(img, cap = n);
             if (img) {
+                // SAVAGEWIND_LOG_FLAGS=1: each flag that changes from one look to the next (crc32 of its name: tools'
+                // flag lists name it), to find what an action in the game sets
+                static int log_flags = -1;
+                if (log_flags < 0) log_flags = getenv("SAVAGEWIND_LOG_FLAGS") && strcmp(getenv("SAVAGEWIND_LOG_FLAGS"), "0");
+                bool same = log_flags && n == cap && img_n == n_flags;
                 memset(img, 0, 0xC);
                 for (int i = 0; i < n_flags; i++) {
                     const LiveFlag *f = &flags[i];
-                    uint32_t v = f->s32 ? rd32(f->obj + 0x18) : (*(volatile uint8_t *)(uintptr_t)(f->obj + 0xb) & 1);
+                    uint32_t v = f->s32 ? rd32(f->obj + 0x18) : (*(volatile uint8_t *)(uintptr_t)(f->obj + 0xb) & 1), old;
+                    memcpy(&old, img + 0xC + 8 * i + 4, 4);
+                    if (same && old != v) LOG("[flags] %08x: %d -> %d\n", f->hash, (int)old, (int)v);
                     memcpy(img + 0xC + 8 * i, &f->hash, 4);
                     memcpy(img + 0xC + 8 * i + 4, &v, 4);
                 }
+                img_n = n_flags;
                 AchSave s = {img, n};
                 int fresh = ach_live_update(&s, time(NULL));
                 if (fresh) LOG("[achievements] %d new from the game's flags\n", fresh);

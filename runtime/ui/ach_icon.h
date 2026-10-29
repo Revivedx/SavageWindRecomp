@@ -1,4 +1,5 @@
-// The picture of each achievement (runtime/ui/ach_icon.mm): achievements/<id>.png in the data root, next to the exe.
+// The picture of each achievement (runtime/ui/ach_icon.mm): achievements/<id>.png in the data root, next to the exe,
+// else the game's own icon for it (an inventory icon or a Compendium photo from the player's RomFS).
 #pragma once
 #include "imgui.h"
 

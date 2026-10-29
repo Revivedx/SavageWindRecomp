@@ -48,6 +48,12 @@ typedef struct {
 extern const AchDef g_ach_defs[];
 extern const int g_ach_count;
 
+// The game's own picture for an achievement (achievements_defs.c): an inventory icon's name, or "@" and a Compendium
+// photo's (runtime/ui/ach_icon.mm reads it from the player's RomFS)
+typedef struct { const char *id, *icon; } AchGameIcon;
+extern const AchGameIcon g_ach_game_icons[];
+extern const int g_ach_game_icon_count;
+
 // ---- the save image (game_data.sav: 0xC-byte header, then 8-byte entries: crc32 of the name, 32-bit value) ----
 typedef struct {
     const uint8_t *data;

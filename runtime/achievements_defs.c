@@ -30,6 +30,15 @@ const AchDef g_ach_defs[] = {
     {"beedle", "My Best Friend", "Talk to Beedle.", ACH_FLAG, "Npc_TripMaster_00_Talk", 0, 0, 1},
 
     // ---- the first hours of the open world ----
+    // A Flurry Rush (a perfect dodge: time slows down): the game sets GuideSPlus_KaihiJust (kaihi: dodge) the first
+    // time, seen with SAVAGEWIND_LOG_FLAGS while doing one
+    {"flurry_rush", "Bullet Time", "Dodge an attack at the last moment and slow down time.", ACH_FLAG,
+     "GuideSPlus_KaihiJust", 0, 0, 1},
+    // ... and a Perfect Guard (a parry with the shield): GuideSPlus_GurdJust, its twin (set with Guide_GurdJust, the
+    // Perfect Guard hint, as an enemy attacks with the shield up: no flag records the parry itself)
+    {"perfect_guard", "Not Today, Thanks", "Parry an attack with your shield.", ACH_FLAG, "GuideSPlus_GurdJust", 0, 0, 1},
+    // Shield surfing: GuideSPlus_Surfing, set with Guide_Surfing the first time (seen with SAVAGEWIND_LOG_FLAGS)
+    {"shield_surf", "Just Like the Beach", "Surf down a slope on your shield.", ACH_FLAG, "GuideSPlus_Surfing", 0, 0, 1},
     {"korok_1", "Is That Its Poop?", "Find your first Korok seed.", ACH_FLAG, "#8a94e07a", 0, 0, 1},
     // Horse names: the save keeps 6 names of 64 characters (16 entries each) under crc32 0x7b74e117 (zeldamods.org, Save Files).
     // A slot has a name once a horse is registered at a stable. `ach_tool horses <save>` prints the slots.
@@ -138,3 +147,31 @@ const AchDef g_ach_defs[] = {
     // names of its flags aren't known. docs/ACHIEVEMENTS.md ("Waiting for its flags") says how to find them with ach_tool diff.
 };
 const int g_ach_count = (int)(sizeof g_ach_defs / sizeof g_ach_defs[0]);
+
+// The game's own picture for each achievement (runtime/ui/ach_icon.mm), from the player's RomFS: an inventory icon
+// (UI/StockItem/<name>.sbitemico) or, with "@", a Hyrule Compendium photo (UI/PictureBook/<name>.jpg)
+const AchGameIcon g_ach_game_icons[] = {
+    {"leave_shrine", "Armor_001_Upper"}, {"first_enemy", "@Enemy_Bokoblin_Junior"}, {"shrine_1", "Item_Enemy_40"},
+    {"shrine_4", "Obj_HeartUtuwa_A_01"}, {"paraglider", "PlayerStole2"}, {"beedle", "PutRupee"},
+    {"flurry_rush", "Weapon_Sword_001"}, {"perfect_guard", "Weapon_Shield_003"}, {"shield_surf", "Weapon_Shield_001"},
+    {"korok_1", "Obj_KorokNuts"}, {"horse_registered", "GameRomHorseSaddle_00"}, {"horse_iwata", "@GameRomHorse"},
+    {"cook_10", "Item_Roast_01"}, {"runes", "Obj_RemoteBombBall"}, {"guardians_10", "@Enemy_Guardian_A"},
+    {"shrine_25", "Obj_StaminaUtuwa_A_01"}, {"map_towers", "Obj_DRStone_Get"}, {"korok_100", "Obj_KorokNuts"},
+    {"beast_ruta", "Weapon_Spear_050"}, {"beast_rudania", "Item_Ore_B"}, {"beast_naboris", "Item_Ore_D"},
+    {"beast_medoh", "Weapon_Bow_071"}, {"beast_all", "Item_Ore_J"}, {"hylian_shield", "Weapon_Shield_030"},
+    {"master_sword", "Weapon_Sword_070"}, {"lost_woods", "@Npc_HiddenKorokGround"}, {"maracas", "Obj_Maracas"},
+    {"gerudo_outfit", "Armor_053_Upper"}, {"arrows", "Obj_ArrowBundle_A_01"}, {"old_memories", "Weapon_Shield_030"},
+    {"ancient_parts", "Item_Enemy_31"}, {"cook_50", "Item_Cook_A_01"}, {"ganon", "@Enemy_GanonBeast"},
+    {"hearts_20", "Obj_HeartUtuwa_A_01"}, {"shrine_60", "Item_Ore_E"}, {"eventide", "Obj_FireWoodBundle"},
+    {"stables", "GameRomHorseReins_00"}, {"lynel_all", "@Enemy_Lynel_Senior"}, {"memories", "Obj_Camera"},
+    {"korok_mask", "Armor_176_Head"}, {"majora_mask", "Armor_172_Head"}, {"phantom_ganon", "Armor_180_Head"},
+    {"royal_guard", "Armor_179_Head"}, {"obliterator", "Weapon_Sword_502"}, {"song_mipha", "Weapon_Spear_050"},
+    {"song_revali", "Weapon_Bow_071"}, {"song_daruk", "Item_Ore_B"}, {"song_urbosa", "Item_Ore_D"},
+    {"maz_koshia", "@Priest_Boss_Normal"}, {"ballad", "Obj_Head_024"},
+    {"champions_photo", "Get_TwnObj_DLC_MemorialPicture_A_01"}, {"master_cycle", "Obj_Motorcycle"},
+    {"great_fairy", "Item_Ore_A"}, {"korok_450", "Obj_KorokNuts"}, {"hearts_30", "Obj_HeartUtuwa_A_01"},
+    {"cook_100", "Item_Cook_P_01"}, {"dark_armor", "Armor_160_Head"}, {"dex_food", "Item_Fruit_A"},
+    {"shrine_120", "Item_Ore_A"}, {"dex_creatures", "Obj_Photo_Animal"}, {"korok_900", "Obj_ProofKorok"},
+    {"master_mode", "@Enemy_Ganon"}, {"all", "Obj_Armor_115_Head"},
+};
+const int g_ach_game_icon_count = (int)(sizeof g_ach_game_icons / sizeof g_ach_game_icons[0]);

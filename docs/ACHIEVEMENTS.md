@@ -59,8 +59,10 @@ Savage Wind has a small achievement system that never touches the game: it reads
   (the cursor's order), puts it where Options is and Options and the buttons after it 40 lower, whichever buttons the
   saves and the downloadable content show (`title_ach_button` in `runtime/ui/game_options.mm`); pressed, it reads as
   Options for that press, with the Achievements page due.
-- **Overlay** (`runtime/ui/achievements_ui.mm`): a toast at the top centre on each unlock, and an "Achievements" tab in
-  the start screen's Settings.
+- **Overlay** (`runtime/ui/achievements_ui.mm`): a toast that slides down at the top centre on each unlock (the name in a
+  book serif - Palatino, Georgia or DejaVu Serif, whichever the system has - the rest in Fira Sans), and an
+  "Achievements" tab in the start screen's Settings. `SAVAGEWIND_ACH_DEMO=<seconds>[:<id>,<id>...]`: then the toasts of
+  those achievements (the first one's without ids), to see them.
 - **Sound** (`runtime/achievements_sound.c`, `achievements_bars.c`): the notice comes with the game's own hidden Korok
   "Yahaha!" (`NV_Korogu_Man_Young_Normal00_HiddenKorok_Appear00` in `Voice/Common/NV_Korogu_Man_Young_Normal00.bars`),
   read from the player's RomFS and decoded (DSP-ADPCM) the first time a sound is needed: nothing of the game ships with
@@ -69,8 +71,10 @@ Savage Wind has a small achievement system that never touches the game: it reads
   The volume is the game's master volume. `SAVAGEWIND_ACH_SOUND=0` turns it off (so does `SAVAGEWIND_NO_AUDIO`).
   `tools/ach_tool sound <file.bars> <name> <out.wav>` writes any sound of a bank as a WAV file.
 - **Pictures** (`runtime/ui/ach_icon.mm`): `achievements/<id>.png` (or `.jpg`) in the data root, named after the
-  achievement's id (`paraglider.png`, `shrine_120.png`, ...), square, up to 1024 x 1024. They show on the notice and in
-  the overlay's tab; an achievement without one gets the gold diamond. None ship with Savage Wind: they're the player's.
+  achievement's id (`paraglider.png`, `shrine_120.png`, ...), square, up to 1024 x 1024; without one, the game's own
+  picture for it (`g_ach_game_icons` in `runtime/achievements_defs.c`), read from the player's RomFS: an inventory icon (`UI/StockItem/<name>.sbitemico`:
+  Yaz0, a BFRES holding one BNTX texture, RGBA8 in the console's block-linear layout) or a Hyrule Compendium photo
+  (`UI/PictureBook/<name>.jpg`). They show on the notice and in the overlay's tab; with neither, the gold triangles.
 - **No cheating by accident**: while a test warp / flag edit is active (`SAVAGEWIND_TEST_*`) progress is tracked but nothing
   unlocks. Anything that later gives assists (infinite stamina, no damage, teleport) should call `ach_set_blocked(true)`.
 

@@ -408,9 +408,21 @@ static void load_fonts(void) {
         g_menu_font = add(med, 29, cfg);
         g_menu_font_big = add(semi, 53.5f, cfg);
     }
+    // the achievement toasts' title: a book serif in bold (Palatino, Georgia, DejaVu Serif), else Fira's SemiBold
+    ImFont *toast_title = NULL;
+    const char *serif[] = {"C:/Windows/Fonts/palab.ttf", "C:/Windows/Fonts/georgiab.ttf",
+                           "/System/Library/Fonts/Supplemental/Palatino.ttc",
+                           "/System/Library/Fonts/Supplemental/Georgia Bold.ttf",
+                           "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf", "/usr/share/fonts/TTF/DejaVuSerif-Bold.ttf"};
+    for (const char *p : serif) {
+        if (FILE *f = fopen(p, "rb")) fclose(f);
+        else continue;
+        if ((toast_title = add(p, 56, cfg))) break;
+    }
     if (!g_font) g_font = io.Fonts->AddFontDefault();
     if (!g_font_big) g_font_big = g_font;
     if (!g_menu_font || !g_menu_font_big) g_menu_font = g_font, g_menu_font_big = g_font_big;
+    ach_ui_fonts(toast_title ? toast_title : g_menu_font_big, g_menu_font);
 }
 
 // Before a frame: another menu language may need other glyphs - the fonts and their texture are made again
