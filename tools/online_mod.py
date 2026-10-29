@@ -25,11 +25,16 @@ NAME = 'OnlinePlayer'
 BASE_NPC = 'Dm_Npc_Rito_HeroSoul_Kago'
 BASE_LOOK = 'PauseMenuPlayer'
 BASE_AI = 'Dm_Animal_Heron_A'
-# armour pieces the other players can wear (runtime/online_actors.c), with --armor (experimental: the game crashes at
-# start with them resident, docs/ONLINE.md): each an actor of its own, OnlineArmor_<piece>, with that piece's model
-# and Link's animations, kept in step with the Link it dresses
+# the armour pieces the other players can wear (runtime/online_actors.c): each an actor of its own, Online<piece>,
+# with that piece's model and Link's animations, kept in step with the Link it dresses. Every head, upper and lower
+# piece of the game (Actor/Pack/Armor_*); --armor-only=<piece>,... for a few (tests); --no-armor for none
 ARMOR_PREFIX = 'Online'
-ARMOR = ['Armor_001_Upper', 'Armor_001_Lower']
+# the armour models online_mod carries: each is a resident actor, and the game's resident list holds only about
+# ten more than its own 48 (the 59th crashes it at start: 0x7000d49080's fixed arrays), Link's included. The pieces
+# most seen (the head is Link's own hair in his model): Hylian tunic and trousers, the Old Shirt and Well-Worn
+# Trousers, the Champion's Tunic, Climbing and Stealth. --armor-models=Armor_001_Upper,... for others
+ARMOR_MODELS = ['Armor_001_Upper', 'Armor_001_Lower', 'Armor_043_Upper', 'Armor_043_Lower', 'Armor_116_Upper',
+                'Armor_014_Upper', 'Armor_014_Lower', 'Armor_012_Upper', 'Armor_012_Lower']
 # (AS name, the player's own AS file): the order is runtime/online_actors.c k_anims'
 ANIMS = [('OnlineWait', 'Player_Wait'), ('OnlineWalk', 'Player_Move'), ('OnlineRun', 'Player_Move'),
          ('OnlineDash', 'Player_Move'), ('OnlineJump', 'Player_Jump'), ('OnlineFall', 'Player_Fall'),
@@ -92,7 +97,17 @@ class Rstb:
 
 
 def main():
+    global ARMOR
     romfs, out = sys.argv[1], sys.argv[2]
+    only = [a.split('=', 1)[1] for a in sys.argv if a.startswith('--armor-only=')]
+    if '--no-armor' in sys.argv:
+        ARMOR = []
+    elif only:
+        ARMOR = only[0].split(',')
+    else:
+        ARMOR = sorted(n[:-len('.sbactorpack')] for n in os.listdir(os.path.join(romfs, 'Actor', 'Pack'))
+                       if n.startswith('Armor_') and not n.startswith('Armor_Default')
+                       and n.endswith(('_Head.sbactorpack', '_Upper.sbactorpack', '_Lower.sbactorpack')))
     title_bg_path = os.path.join(romfs, 'Pack', 'TitleBG.pack')
     title_bg = oead.Sarc(open(title_bg_path, 'rb').read())
     npc = actor_pack(romfs, title_bg, BASE_NPC)
@@ -102,7 +117,7 @@ def main():
 
     sizes = {}  # RSTB sizes of the new files
 
-    def build(name, modellist, model_files=()):
+    def build(name, modellist, model_files=(), with_as=True):
         """an actor pack: the DemoNPC's actor link and an AI that only stands, the model list given, and the AS list
         (Link's animations and the runtime's AS); returns the packed (yaz0) actor pack"""
         files = {}
@@ -121,7 +136,8 @@ def main():
         sizes['Actor/ActorLink/%s.bxml' % name] = rstb.get('Actor/ActorLink/%s.bxml' % BASE_NPC)
         files['Actor/ModelList/%s.bmodellist' % name] = modellist
         sizes['Actor/ModelList/%s.bmodellist' % name] = max(rstb.get('Actor/ModelList/%s.bmodellist' % BASE_LOOK), 0x4000)
-        files.update(as_files)
+        if with_as:  # (every online actor carries the AS list and AS: an actor finds them in its own pack)
+            files.update(as_files)
         for p2, d in model_files:
             files[p2] = d
         w = oead.SarcWriter(oead.Endianness.Little)
@@ -180,12 +196,31 @@ def main():
             md.lists['Unit'] = unit
             mds.lists['ModelData_%d' % len(mds.lists)] = md
     packs = {NAME: build(NAME, link_ml.to_binary())}
-    for piece in (ARMOR if '--armor' in sys.argv else []):
+    model_of = {}  # online armour actor -> the piece whose model and ActorInfo bounds it has
+    models_arg = [a.split('=', 1)[1] for a in sys.argv if a.startswith('--armor-models=')]
+    models = set(models_arg[0].split(',') if models_arg else ARMOR_MODELS)
+    have = {}  # piece -> its online actor: one per model list (upgrades and dyes share their piece's)
+    made = set()
+    for piece in ARMOR:
         a = actor_pack(romfs, title_bg, piece)
+        # its model list: its actor link's ModelUser (pieces share them)
+        al = [f for f in a.get_files() if f.name.startswith('Actor/ActorLink/')]
+        user = str(pio(al[0].data).objects['LinkTarget'].params['ModelUser'].v) if al else piece
+        ml = a.get_file('Actor/ModelList/%s.bmodellist' % user)
+        if not ml:
+            print('online_mod: %s has no model list (%s), left out' % (piece, user))
+            continue
+        if user not in models:
+            continue
+        have[piece] = ARMOR_PREFIX + user
+        if user in made:
+            continue
+        made.add(user)
         # (with its support bones and cloth: its model refers to them)
         extra = [(f.name, bytes(f.data)) for f in a.get_files() if f.name.startswith('Physics/')]
-        packs[ARMOR_PREFIX + piece] = build(ARMOR_PREFIX + piece,
-                                            bytes(a.get_file('Actor/ModelList/%s.bmodellist' % piece).data), extra)
+        packs[ARMOR_PREFIX + user] = build(ARMOR_PREFIX + user, bytes(ml.data), extra)
+        model_of[ARMOR_PREFIX + user] = user
+    pieces = have
     tw = oead.SarcWriter.from_sarc(title_bg)
     for n, (z, _) in packs.items():
         tw.files['Actor/Pack/%s.sbactorpack' % n] = z
@@ -223,8 +258,8 @@ def main():
             actors.insert(i, entry)
 
     add_info(NAME, BASE_LOOK)
-    for piece in (ARMOR if '--armor' in sys.argv else []):
-        add_info(ARMOR_PREFIX + piece, piece)
+    for online, piece in model_of.items():
+        add_info(online, piece)
     info_bin = oead.byml.to_binary(info, big_endian=False, version=2)
     sizes['Actor/ActorInfo.product.byml'] = max(rstb.get('Actor/ActorInfo.product.byml') or 0, len(info_bin) * 2)
 
@@ -246,14 +281,19 @@ def main():
             r['name'] = n
             r['only_res'] = True
             res.append(r)
+    res_bin = oead.byml.to_binary(res, big_endian=False, version=2)
     bw = oead.SarcWriter.from_sarc(bootup)
-    bw.files['Actor/ResidentActors.byml'] = oead.byml.to_binary(res, big_endian=False, version=2)
+    bw.files['Actor/ResidentActors.byml'] = res_bin
+    # (its RSTB size: the list grew; too small and the game reads no list at all and crashes at start, 0x7000d49080)
+    rstb.set('Actor/ResidentActors.byml', max(rstb.get('Actor/ResidentActors.byml') or 0, len(res_bin) * 4 + 0x1000))
     put('Pack/Bootup.pack', bw.write()[1])
 
     put('Pack/TitleBG.pack', title_bg_new)
     put('Actor/ActorInfo.product.sbyml', oead.yaz0.compress(info_bin))
     put('System/Resource/ResourceSizeTable.product.srsizetable', oead.yaz0.compress(rstb.binary()))
     open(os.path.join(out, 'online_mod.txt'), 'w').write('Savage Wind online play: OnlinePlayer (tools/online_mod.py)\n')
+    # piece=its online actor, one a line (runtime/online_actors.c armor_actor)
+    open(os.path.join(out, 'armor.txt'), 'w').write(''.join('%s=%s\n' % kv for kv in sorted(pieces.items())))
     print('online_mod: %d actors in %s (%s)' % (len(packs), out, ', '.join(packs)))
 
 

@@ -34,6 +34,7 @@ typedef struct {
     float yaw;          // heading, radians (0: +z), from where he has been moving
     uint8_t flags;      // ONLINE_F_*
     uint8_t anim;       // ONLINE_A_*
+    char armor[3][48];  // what he wears: head, upper body, lower body (the game's actor names, "" none)
     uint32_t ping_ms;   // (the local player's own slot: the round trip to the server)
 } OnlinePlayer;
 

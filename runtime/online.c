@@ -37,17 +37,18 @@ typedef int sock_t;
 #include "rt.h"
 
 #define MAGIC 0x4c4f5753u  // "SWOL"
-#define PROTOCOL 2
+#define PROTOCOL 3
 #define SEND_HZ 20
 #define INTERP_NS 100000000ull  // the others are drawn this far behind what was last heard (smooth between updates)
 #define TIMEOUT_NS 10000000000ull  // nothing heard for this long: the connection is gone
 
-enum { M_HELLO = 1, M_WELCOME, M_REJECT, M_STATE, M_JOIN, M_LEAVE, M_CHAT, M_PING, M_PONG };
+enum { M_HELLO = 1, M_WELCOME, M_REJECT, M_STATE, M_JOIN, M_LEAVE, M_CHAT, M_PING, M_PONG, M_EQUIP };
 enum { R_FULL = 1, R_VERSION, R_PASSWORD, R_NAME };
 
 #pragma pack(push, 1)
 typedef struct { float pos[3], yaw; uint8_t flags; uint16_t ping_ms; uint8_t anim; } WireState;
 typedef struct { uint32_t magic; uint16_t version; char name[ONLINE_NAME_MAX], pass[ONLINE_NAME_MAX]; } WireHello;
+typedef struct { char armor[3][48]; } WireEquip;  // EQUIP: what a player wears (head, upper, lower; actor names)
 #pragma pack(pop)
 
 OnlineSettings g_online = {.port = ONLINE_PORT, .show_names = true, .show_markers = true};
@@ -141,6 +142,8 @@ typedef struct {
     char name[ONLINE_NAME_MAX];
     WireState last;
     bool have_last;
+    WireEquip equip;
+    bool have_equip;
 } SClient;
 
 typedef struct {
@@ -164,7 +167,7 @@ static void srv_drop(Server *sv, int i) {
         c->used = false;
         srv_broadcast(sv, -1, M_LEAVE, &id, 1, NULL, 0);
     }
-    c->used = c->hello = c->have_last = false;
+    c->used = c->hello = c->have_last = c->have_equip = false;
     c->rb.n = 0;
 }
 
@@ -193,6 +196,7 @@ static bool srv_message(Server *sv, int i, uint8_t type, const uint8_t *p, int l
             uint8_t ok = (uint8_t)k;
             send_msg(c->s, M_JOIN, &ok, 1, o->name, ONLINE_NAME_MAX);
             if (o->have_last) send_msg(c->s, M_STATE, &ok, 1, &o->last, sizeof o->last);
+            if (o->have_equip) send_msg(c->s, M_EQUIP, &ok, 1, &o->equip, sizeof o->equip);
         }
         srv_broadcast(sv, -1, M_JOIN, &id, 1, c->name, ONLINE_NAME_MAX);  // (the new player too: its own name back)
         LOG("[online] server: %s joined (slot %d)\n", c->name, i);
@@ -204,6 +208,12 @@ static bool srv_message(Server *sv, int i, uint8_t type, const uint8_t *p, int l
         memcpy(&c->last, p, sizeof c->last);
         c->have_last = true;
         srv_broadcast(sv, i, M_STATE, &id, 1, &c->last, sizeof c->last);
+        break;
+    case M_EQUIP:
+        if (len < (int)sizeof(WireEquip)) return false;
+        memcpy(&c->equip, p, sizeof c->equip);
+        c->have_equip = true;
+        srv_broadcast(sv, i, M_EQUIP, &id, 1, &c->equip, sizeof c->equip);
         break;
     case M_CHAT: {
         char text[ONLINE_CHAT_MAX];
@@ -328,6 +338,7 @@ typedef struct {
     int ns;  // snapshots held (newest at s[(head - 1) % SNAPS])
     int head;
     uint16_t ping;
+    char armor[3][48];
 } Remote;
 
 #define CHAT_LINES 8
@@ -428,6 +439,30 @@ static bool sample_local(WireState *w) {
     return true;
 }
 
+// What Link wears (head, upper, lower): the player actor (PlayerInfo +0x60) keeps its equipment as slots of 0x58
+// (*(player +0xb98)), each slot's actor at +0x48: 0 weapon, 1 shield, 2 bow, 3 head, 4 upper, 5 lower, 6 sheath,
+// 7 quiver; an actor's name is at +0x10 (runtime/online_actors.c). The default ones (Armor_Default_*) are Link's own
+// model: "".
+static bool sample_equip(WireEquip *e) {
+    memset(e, 0, sizeof *e);
+    uint64_t pinfo = g_site.player_info ? *(uint64_t *)(uintptr_t)g_site.player_info : 0;
+    uint64_t player = pinfo ? *(uint64_t *)(uintptr_t)(pinfo + 0x60) : 0;
+    uint64_t slots = player >= 0x7000000000ull ? *(uint64_t *)(uintptr_t)(player + 0xb98) : 0;
+    if (slots < 0x7000000000ull || slots >= 0x7400000000ull) return false;
+    for (int k = 0; k < 3; k++) {
+        uint64_t a = *(uint64_t *)(uintptr_t)(slots + 0x48 + 0x58 * (3 + k));
+        uint64_t n = a >= 0x7000000000ull && a < 0x7400000000ull ? *(uint64_t *)(uintptr_t)(a + 0x10) : 0;
+        if (n < 0x7000000000ull || n >= 0x7400000000ull) continue;
+        const char *s = (const char *)(uintptr_t)n;
+        if (strncmp(s, "Armor_", 6) || !strncmp(s, "Armor_Default", 13)) continue;
+        int l = 0;
+        while (l < 47 && s[l] > ' ' && s[l] < 127) l++;
+        if (s[l]) continue;  // (not a name: the actor went away while read)
+        memcpy(e->armor[k], s, l);
+    }
+    return true;
+}
+
 static void remote_snap(int id, const WireState *w) {  // (lock held)
     Remote *r = &g.r[id];
     Snap *s = &r->s[r->head];
@@ -479,6 +514,12 @@ static bool cl_message(uint8_t type, const uint8_t *p, int len) {
             WireState w;
             memcpy(&w, p + 1, sizeof w);
             remote_snap(p[0], &w);
+        }
+        break;
+    case M_EQUIP:
+        if (len >= 1 + (int)sizeof(WireEquip) && p[0] < ONLINE_MAX && g.r[p[0]].used) {
+            memcpy(g.r[p[0]].armor, p + 1, sizeof g.r[p[0]].armor);
+            for (int k = 0; k < 3; k++) g.r[p[0]].armor[k][47] = 0;
         }
         break;
     case M_CHAT:
@@ -592,6 +633,16 @@ static void *cl_thread(void *arg) {
             next_ping = now + 1000000000ull;
             send_msg(s, M_PING, &now, 8, NULL, 0);
         }
+        {   // what he wears: when it changes, and every 5 s (for whoever came in meanwhile)
+            static WireEquip last;
+            static uint64_t next_equip;
+            WireEquip e;
+            if (sample_equip(&e) && (memcmp(&e, &last, sizeof e) || now >= next_equip)) {
+                next_equip = now + 5000000000ull;
+                last = e;
+                send_msg(s, M_EQUIP, &e, sizeof e, NULL, 0);
+            }
+        }
         pthread_mutex_lock(&g.lock);
         char out[4][ONLINE_CHAT_MAX];
         int nout = g.nout;
@@ -681,6 +732,7 @@ bool online_players(OnlinePlayer out[ONLINE_MAX]) {
         OnlinePlayer *o = &out[i];
         o->used = true;
         memcpy(o->name, r->name, sizeof o->name);
+        memcpy(o->armor, r->armor, sizeof o->armor);
         o->ping_ms = i == g.id ? g.ping : r->ping;
         if (!r->ns) { o->flags = ONLINE_F_LOADING; continue; }
         // the two snapshots around t (or the newest one)

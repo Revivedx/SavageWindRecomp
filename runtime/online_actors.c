@@ -131,12 +131,48 @@ static void drop(Cpu *c, int i) {
     g_act[i].anim = -1;
 }
 
-// The armour a player wears, as online actors (tools/online_mod.py --armor): SAVAGEWIND_ONLINE_ARMOR=<actor>,...
-// (experimental: a resident armour actor crashes the game at start for now, docs/ONLINE.md), else none
+// online_mod/armor.txt (tools/online_mod.py): each armour piece it has an online actor for, "piece=actor" a line
+// (upgrades and dyes share their piece's model, and its actor)
+static char (*g_armor_map)[2][48];
+static int g_armor_n = -1;
+static const char *armor_actor(const char *piece) {
+    if (g_armor_n < 0) {
+        g_armor_n = 0;
+        const char *ov = getenv("SAVAGEWIND_ROMFS_OVERLAY");
+        char p[1100], line[128];
+        snprintf(p, sizeof p, "%s/armor.txt", ov ? ov : "");
+        FILE *f = ov && *ov ? fopen(p, "r") : NULL;
+        int cap = 0;
+        while (f && fgets(line, sizeof line, f)) {
+            line[strcspn(line, "\r\n")] = 0;
+            char *eq = strchr(line, '=');
+            if (!eq) continue;
+            *eq = 0;
+            if (g_armor_n == cap) g_armor_map = realloc(g_armor_map, sizeof *g_armor_map * (cap = cap ? cap * 2 : 128));
+            snprintf(g_armor_map[g_armor_n][0], 48, "%s", line);
+            snprintf(g_armor_map[g_armor_n][1], 48, "%s", eq + 1);
+            g_armor_n++;
+        }
+        if (f) fclose(f);
+        LOG("[online] %d armour pieces for the other players\n", g_armor_n);
+    }
+    for (int i = 0; i < g_armor_n; i++)
+        if (!strcmp(g_armor_map[i][0], piece)) return g_armor_map[i][1];
+    return NULL;
+}
+
+// The armour a player wears, as online actors (OnlineArmor_XXX, tools/online_mod.py): what he sent (pieces online_mod
+// has), or SAVAGEWIND_ONLINE_ARMOR=<actor>,... (testing)
 static int armor_of(const OnlinePlayer *p, char out[PARTS - 1][48]) {
-    (void)p;
     const char *e = getenv("SAVAGEWIND_ONLINE_ARMOR");
-    if (!e || !*e) return 0;
+    if (!e || !*e) {
+        int n = 0;
+        for (int k = 0; k < 3; k++) {
+            const char *a = p->armor[k][0] ? armor_actor(p->armor[k]) : NULL;
+            if (a) snprintf(out[n++], 48, "%s", a);
+        }
+        return n;
+    }
     int n = 0;
     while (*e && n < PARTS - 1) {
         const char *comma = strchr(e, ',');
@@ -155,6 +191,7 @@ static uint64_t create(Cpu *c, const char *name) {
     uint64_t heap = *(uint64_t *)(uintptr_t)(owner + 0x28);
     return call(c, FN_CREATE, creator, (uint64_t)(uintptr_t)name, heap, 0, 0, 0);
 }
+
 
 static bool running(uint64_t actor) { return actor && *(uint8_t *)(uintptr_t)(actor + 0x64) == 1; }  // (calc)
 

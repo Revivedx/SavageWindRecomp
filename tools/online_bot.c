@@ -2,7 +2,7 @@
 // first other player it hears from, so a single copy of the game shows someone in the world. Says hello in the chat.
 //
 //   cc -O2 -o build/online_bot tools/online_bot.c [-lws2_32]
-//   build/online_bot [host] [port] [name] [radius]       (127.0.0.1 52520 Bot 4)
+//   build/online_bot [host] [port] [name] [radius] [head upper lower]   (127.0.0.1 52520 Bot 4, Hylian set)
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -27,7 +27,7 @@ typedef int sock_t;
 typedef struct { float pos[3], yaw; uint8_t flags; uint16_t ping_ms; uint8_t anim; } WireState;
 typedef struct { uint32_t magic; uint16_t version; char name[24], pass[24]; } WireHello;
 #pragma pack(pop)
-enum { M_HELLO = 1, M_WELCOME, M_REJECT, M_STATE, M_JOIN, M_LEAVE, M_CHAT, M_PING, M_PONG };
+enum { M_HELLO = 1, M_WELCOME, M_REJECT, M_STATE, M_JOIN, M_LEAVE, M_CHAT, M_PING, M_PONG, M_EQUIP };
 
 static void msg(sock_t s, uint8_t type, const void *p, int n) {
     uint8_t b[600];
@@ -48,7 +48,7 @@ int main(int argc, char **argv) {
     if (getaddrinfo(host, port, &hints, &res)) { fprintf(stderr, "bot: can't resolve %s\n", host); return 1; }
     sock_t s = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (connect(s, res->ai_addr, (int)res->ai_addrlen)) { fprintf(stderr, "bot: can't connect to %s:%s\n", host, port); return 1; }
-    WireHello h = {.magic = 0x4c4f5753u, .version = 2};
+    WireHello h = {.magic = 0x4c4f5753u, .version = 3};
     snprintf(h.name, sizeof h.name, "%s", name);
     msg(s, M_HELLO, &h, sizeof h);
     float centre[3] = {0, 0, 0};
@@ -101,6 +101,10 @@ int main(int argc, char **argv) {
                 said = 1;
                 const char *hi = "hola! soy un bot de prueba";
                 msg(s, M_CHAT, hi, (int)strlen(hi) + 1);
+                char equip[3][48] = {{0}};  // what it wears (the game's armour actor names)
+                const char *def[3] = {"Armor_001_Head", "Armor_001_Upper", "Armor_001_Lower"};
+                for (int k = 0; k < 3; k++) snprintf(equip[k], 48, "%s", argc > 5 + k ? argv[5 + k] : def[k]);
+                msg(s, M_EQUIP, equip, sizeof equip);
             }
         }
         sleep_ms(50);

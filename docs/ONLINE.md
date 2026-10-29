@@ -92,15 +92,26 @@ Read from the code (capstone, and Ghidra: `tools/ghidra/README.md`; no symbols, 
 - `Dm_Npc_Rito_HeroSoul_Kago`: created, state 2 (sleep), its model hidden by its AI.
 - `Item_Material_01`: created, not drawn (its model isn't loaded).
 
+### Armour
+
+Each player sends what his Link wears (EQUIP: head, upper, lower; when it changes and every 5 s), read from the
+player actor: `PlayerInfo +0x60` is the player actor; `*(player +0xb98)` its equipment, slots of 0x58 with the
+slot's actor at +0x48 (0 weapon, 1 shield, 2 bow, 3 head, 4 upper, 5 lower, 6 sheath, 7 quiver); an actor's name is
+at actor +0x10. The others dress his Link with an actor per piece, `OnlineArmor_XXX` (the piece's model list, Link's
+AS list and AS, on the Link's matrix, playing his AS from the same frame), from `online_mod/armor.txt`
+(`piece=actor`: upgrades and dyes share their piece's model, and its actor; a dye's colour is lost).
+
+The limit: each armour model is a resident actor, and the game's resident list (`Actor/ResidentActors.byml`) holds
+only ten more than its own 48 (the 59th crashes the game at start in its loader, 0x7000d49080, fixed arrays). So
+online_mod carries nine models, the pieces most seen (`ARMOR_MODELS` in `tools/online_mod.py`): Hylian tunic and
+trousers, the Old Shirt and Well-Worn Trousers, the Champion's Tunic, Climbing and Stealth. A piece without one
+shows Link's base model there (the head: Link's own hair). Also learnt: every online actor carries the AS list and
+AS in its own pack (without them its load never ends), and the ResidentActors list's RSTB size must grow with it.
+
 ### Not done yet
 
-- **Armour.** The players' Links wear Link's base model (no armour). Armour pieces are actors of their own
-  (`Armor_XXX_Upper`, model in `Model/Armor_XXX`) that the player's code binds to Link's skeleton. Tried: an
-  `OnlineArmor_<piece>` actor per piece (the piece's model list, Link's AS list, kept on the Link's matrix and AS:
-  `tools/online_mod.py --armor`, `SAVAGEWIND_ONLINE_ARMOR=OnlineArmor_001_Upper,...`) crashes the game at start
-  when resident (an access at 0 while the resident actors load); the piece as a second `ModelData` of Link's model
-  list loads but isn't drawn. Next: why the resident armour crashes (Ghidra on the faulting function), or how the
-  player's code binds an armour actor to Link's model, and what the local player wears (to send it).
-- What Link does, from the game itself (the player actor's AS) instead of from how he moves: needs the player actor
-  (from PlayerInfo).
+- More armour models than nine: loading an armour's resources on demand instead of keeping them resident (the
+  resident list is full), or more room in the resident loader's arrays.
+- Weapons, shield and bow on the players' Links (the slots are there: 0, 1, 2), and the paraglider.
+- What Link does, from the game itself (the player actor's AS) instead of from how he moves.
 - The world shared: enemies, items, time of day, quests (Milk Bar's quest and enemy sync); damage between players.
