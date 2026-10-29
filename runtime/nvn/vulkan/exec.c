@@ -504,6 +504,11 @@ VkSpan vk_transient(uint64_t size, uint64_t align) {
 // GPU -> CPU copies: the ring is write-combined (often device-local over the BAR), where CPU reads crawl (a
 // 1280x720 screenshot took 7 s). Readbacks use one host-cached buffer instead. Every user waits for the GPU and
 // reads the data before the next readback (render thread), so a single grow-only buffer suffices.
+// Host-cached memory need not be coherent (Mali-G610: it isn't): the CPU's caches can still hold what an earlier
+// readback left there, so vk_readback_sync before reading - each readback reuses the same buffer, and without it a
+// copy read back right after another got largely the first one's bytes.
+static VmaAllocation readback_mem;
+void vk_readback_sync(void) { if (readback_mem) vmaInvalidateAllocation(g_vk.vma, readback_mem, 0, VK_WHOLE_SIZE); }
 VkSpan vk_readback(uint64_t size) {
     static VkBuffer buf;
     static VmaAllocation mem;
@@ -518,6 +523,7 @@ VkSpan vk_readback(uint64_t size) {
         VmaAllocationInfo info;
         VK_CHECK(vmaCreateBuffer(g_vk.vma, &bi, &ai, &buf, &mem, &info));
         ptr = info.pMappedData;
+        readback_mem = mem;
     }
     return (VkSpan){buf, 0, ptr};
 }
@@ -1016,6 +1022,7 @@ static void readbacks_apply(void) {
             Readback *r = &readbacks[i];
             if (r->seq > done) { readbacks[k++] = *r; continue; }
             kernel_watch_write("linear render target", r->addr, r->stride * r->rows);
+            vmaInvalidateAllocation(g_vk.vma, r->mem, 0, VK_WHOLE_SIZE);  // (see below)
             static int dump = -1;  // (debugging) SAVAGEWIND_DUMP_LINEAR=1: the first copies of each target as raw files
             if (dump < 0) dump = getenv("SAVAGEWIND_DUMP_LINEAR") != NULL;
             if (dump) {
@@ -1033,6 +1040,10 @@ static void readbacks_apply(void) {
                         (unsigned long long)r->fs, path);
                 }
             }
+            // (the invalidate above: host-cached memory need not be coherent - Mali-G610's isn't - and VMA hands out the
+            // memory of earlier readbacks again, whose bytes the CPU's caches could still hold. BOTW draws four linear
+            // targets and reads them back together every ~10 s; on Mali the water lost its sky reflection for a frame at
+            // that same rate.)
             for (uint32_t y = 0; y < r->rows; y++)
                 memcpy((void *)(uintptr_t)(r->addr + y * r->stride), r->ptr + (uint64_t)y * r->row, r->row);
             guest_copy_flush();
@@ -1640,8 +1651,13 @@ static VkPipeline clear_pipeline(int index, int kind, uint32_t mask, bool depth,
     return p;
 }
 
+static void snapshots_invalidate_clear(NvnTexture *t);
 static void clear(int index, int kind, const void *color, uint32_t mask, bool depth, float dval, bool stencil, uint32_t sval,
                   uint32_t smask) {
+    // (a snapshot of a target taken before this clear is stale after it: Mali's G-buffer snapshots, reused within the
+    // pass that follows, were - when the clear began that very pass - the water's sky reflection lost for a frame)
+    if (index >= 0 && index < st.rt.ncolor && st.rt.color[index]) snapshots_invalidate_clear(st.rt.color[index]);
+    if ((depth || stencil) && st.rt.depth) snapshots_invalidate_clear(st.rt.depth);
     if (index >= 0 && index < 8) {  // (a color target left out of the open pass: the pass ends, the next has it)
         if (in_pass && !st.rt_dirty && (pass_detached & (1u << index))) {
             det_note(pass_key, (uint8_t)(1u << index));
@@ -2833,11 +2849,32 @@ static bool feedback_any_type[4];  // the view fits every lookup type (a restric
 static int nfeedback;
 static uint64_t g_cur_fs_hash;
 static NvnTexture *snap_tex[8];
+static TexBackend *snap_be[8];  // (the image snap_tex had when the snapshot was taken: compared, never followed)
 static bool snap_ok[8];
 static const char *snap_why[8];
 static const char *snap_reason = "?";
+// A snapshot of texture object t, or of its image through another object (BOTW reaches some targets through more than
+// one), is stale once t is written. SAVAGEWIND_VK_SNAP_BY_OBJECT=1: by object only, as before.
+static uint64_t snap_wpass[8];  // (the pass the latest write into the slot's target was in, since its snapshot; 0: none)
+static uint64_t snap_pass_now(void);
 static void snapshots_invalidate(NvnTexture *t) {
-    for (int i = 0; i < 8; i++) if ((!t || snap_tex[i] == t) && snap_ok[i]) { snap_ok[i] = false; snap_why[i] = snap_reason; }
+    static int by_obj = -1;
+    if (by_obj < 0) by_obj = getenv("SAVAGEWIND_VK_SNAP_BY_OBJECT") != NULL;
+    TexBackend *be = t && !by_obj ? (TexBackend *)t->backend : NULL;
+    for (int i = 0; i < 8; i++) {
+        if (!(!t || snap_tex[i] == t || (be && snap_be[i] == be))) continue;
+        if (t) snap_wpass[i] = snap_pass_now();
+        if (snap_ok[i]) { snap_ok[i] = false; snap_why[i] = snap_reason; }
+    }
+}
+static uint64_t snap_pass_now(void) { return in_pass && !st.rt_dirty ? pass_serial : pass_serial + 1; }  // (the pass a write now is in)
+static bool snap_cleared[8];  // (the slot's target itself was cleared since its snapshot: its contents are another thing's)
+static void snapshots_invalidate_clear(NvnTexture *t) {  // (clear(), defined before this)
+    TexBackend *be = t ? (TexBackend *)t->backend : NULL;
+    for (int i = 0; i < 8; i++)
+        if (t && (snap_tex[i] == t || (be && snap_be[i] == be))) snap_cleared[i] = true;
+    snap_reason = "clear";
+    snapshots_invalidate(t);
 }
 
 typedef struct { NvnTexture *key; TexBackend copy; } Snap;
@@ -2896,10 +2933,17 @@ static NvnTexture *shadow_copy_source(const NvnTexture *t) {
                : NULL;
 }
 
+// (the same image through another texture object counts: it is the image that is bound; SAVAGEWIND_VK_SNAP_BY_OBJECT=1:
+// the object only, as before)
+static bool same_image(NvnTexture *a, NvnTexture *b) {
+    static int by_obj = -1;
+    if (by_obj < 0) by_obj = getenv("SAVAGEWIND_VK_SNAP_BY_OBJECT") != NULL;
+    return a == b || (!by_obj && a && b && a->backend && a->backend == b->backend);
+}
 static bool is_attachment(NvnTexture *t) {
     if (!t) return false;
-    if (t == st.rt.depth) return true;
-    for (int i = 0; i < st.rt.ncolor; i++) if (t == st.rt.color[i] && !(det_draw & (1u << i))) return true;
+    if (same_image(t, st.rt.depth)) return true;
+    for (int i = 0; i < st.rt.ncolor; i++) if (same_image(t, st.rt.color[i]) && !(det_draw & (1u << i))) return true;
     return false;
 }
 
@@ -2942,6 +2986,7 @@ static void debug_save_depth(TexBackend *b, const char *path) {
                            .imageExtent = {b->width, b->height, 1}};
     vkCmdCopyImageToBuffer(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, out.buf, 1, &c);
     renderer_flush();
+    vk_readback_sync();
     const float *d = out.ptr;
     float lo = 1e30f, hi = -1e30f;
     for (uint64_t i = 0; i < n; i++) { if (d[i] < lo) lo = d[i]; if (d[i] > hi) hi = d[i]; }
@@ -2983,6 +3028,7 @@ static void fbdump_flush(void) {
                                .imageExtent = {b->width, b->height, 1}};
         vkCmdCopyImageToBuffer(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, out.buf, 1, &c);
         renderer_flush();
+        vk_readback_sync();
         char path[160];
         snprintf(path, sizeof path, "build/fbdump_%d_%ux%u_f%d.bin", n++, b->width, b->height, b->format);
         FILE *f = fopen(path, "wb");
@@ -3033,7 +3079,8 @@ static void resolve_feedback(Prog *pr) {
             if (nosnap < 0) nosnap = getenv("SAVAGEWIND_NO_SNAPSHOT_REUSE") != NULL;
             int si = -1;
             for (int k = 0; k < 8; k++) if (snap_tex[k] == t) si = k;
-            bool self_write = t == st.rt.depth && st.ds[0] && st.ds[1];
+            bool is_depth = same_image(t, st.rt.depth);  // (this object, or another of the bound depth image)
+            bool self_write = is_depth && st.ds[0] && st.ds[1];
             TexBackend *src = vk_tex(t, true);
             Snap *existing = NULL;
             for (int k = 0; k < nsnaps; k++) if (snaps[k].key == t && snaps[k].copy.image) existing = &snaps[k];
@@ -3057,7 +3104,7 @@ static void resolve_feedback(Prog *pr) {
                 snap_gbuf = g ? atoi(g) != 0 : mali;
                 if (snap_depth || snap_gbuf) LOG("[vk] bound attachments read through snapshots: depth %d, G-buffer %d\n", snap_depth, snap_gbuf);
             }
-            if (!nolive && !snap_depth && t == st.rt.depth && depth_read_only()) {
+            if (!nolive && !snap_depth && is_depth && depth_read_only()) {
                 if (pass_ds_written) { vk_end_pass(); st.rt_dirty = true; }
                 stat_feedback_live++;
                 feedback_tex[nfeedback] = t;
@@ -3070,10 +3117,10 @@ static void resolve_feedback(Prog *pr) {
             // the one being written: different subresources, no feedback loop, no copy. (The copy cost a pass and a
             // 1024x1024 copy per level, and for array lookups it gave a black texture.) The level below was written
             // by an earlier pass, which ended with a barrier.
-            if (!nolive && t != st.rt.depth) {
+            if (!nolive && !is_depth) {
                 const NvnTexEntry *e = shader_texture_entry(sg, &infos[sg]->tex[i]);
                 int ci = -1;
-                for (int k = 0; k < st.rt.ncolor; k++) if (st.rt.color[k] == t) ci = k;
+                for (int k = 0; k < st.rt.ncolor; k++) if (same_image(st.rt.color[k], t)) ci = k;
                 const NvnTextureView *cv = ci >= 0 && st.rt.has_cview[ci] ? &st.rt.cview[ci] : NULL;
                 uint32_t nl = t->levels ? t->levels : 1, tl = cv && (cv->setmask & 1) ? cv->base_level : 0;
                 bool sv = e && e->has_view && (e->view.setmask & 1);
@@ -3151,9 +3198,9 @@ static void resolve_feedback(Prog *pr) {
             // from then on every pass with that target does.
             static int nofbl = -1;
             if (nofbl < 0) nofbl = getenv("SAVAGEWIND_VK_FEEDBACK_COPY") != NULL;  // (debugging) copies, as before
-            if (!nofbl && sg == 1 && t != st.rt.depth && src->feedback_ok) {
+            if (!nofbl && sg == 1 && !is_depth && src->feedback_ok) {
                 int ci = -1;
-                for (int k = 0; k < st.rt.ncolor; k++) if (st.rt.color[k] == t) ci = k;
+                for (int k = 0; k < st.rt.ncolor; k++) if (same_image(st.rt.color[k], t)) ci = k;
                 if (ci >= 0) {
                     src->feedback_seen = true;
                     fbdump_note(t);
@@ -3187,9 +3234,98 @@ static void resolve_feedback(Prog *pr) {
             static uint64_t snap_frame[8], snap_pass[8];
             if (once < 0) {
                 once = getenv("SAVAGEWIND_VK_FEEDBACK_ONCE") != NULL;
-                if (once) LOG("[vk] feedback snapshots: one per target per frame\n");
+                if (once) LOG("[vk] feedback snapshots: one per target per frame, until written\n");
             }
-            if (!nosnap && once && si >= 0 && existing && snap_frame[si] == renderer_present_count() + 1) {
+            // (once: reused past draws into the target since - that is its point, a pass break and a copy saved each
+            // time, ~450 a frame in the open world: refusing every one took Mali-G610 from 30 to 7 FPS. But not for
+            // targets of the formats in SAVAGEWIND_VK_ONCE_STRICT_FMT (NVN format codes, default 0xa: R32F, the format of
+            // the target below), nor past a clear of the target (snap_cleared): every few seconds BOTW makes ~155
+            // more draws with a shader that samples its bound 1600x900 R32F target, drawn into since its snapshot - the
+            // frames where the water lost its sky reflection. SAVAGEWIND_VK_ONCE_STRICT=1: not past any write; =0: past
+            // anything, as before. SAVAGEWIND_DEBUG_ONCE=1: the reuses by what came between and by format, every 2 s.)
+            static int strict = -1, odbg = -1, nsf;
+            static uint32_t sfmt[8];
+            if (strict < 0) {
+                const char *e = getenv("SAVAGEWIND_VK_ONCE_STRICT"), *f = getenv("SAVAGEWIND_VK_ONCE_STRICT_FMT");
+                strict = e ? atoi(e) : 2;  // (2: by format and past clears)
+                odbg = getenv("SAVAGEWIND_DEBUG_ONCE") != NULL;
+                if (!f) f = "0xa";
+                for (const char *q = f; *q && nsf < 8;) {
+                    char *end;
+                    unsigned long v = strtoul(q, &end, 0);
+                    if (end == q) break;
+                    sfmt[nsf++] = (uint32_t)v;
+                    q = *end == ',' ? end + 1 : end;
+                }
+                LOG("[vk] once-a-frame snapshots not reused past a write for %d format(s) (first %#x), strict %d\n", nsf,
+                    nsf ? sfmt[0] : 0, strict);
+            }
+            bool fresh = si >= 0 && (snap_ok[si] || self_write);
+            bool cleared = si >= 0 && !fresh && snap_cleared[si];
+            bool fmt_strict = false;
+            for (int k = 0; k < nsf; k++) fmt_strict |= t->format == sfmt[k];
+            // (strict formats: still reused past writes in the pass the snapshot was taken for - BOTW draws into its
+            // R32F target and reads it back within one pass ~34 times a frame, and a new copy each time cost half the
+            // frame rate - but not past a write in a later pass: the copy then predates a whole pass of drawing)
+            bool later = si >= 0 && !fresh && snap_wpass[si] > snap_pass[si];
+            // ... and, within one pass, a new copy when a shader that hasn't read the target for a while (the last
+            // SAVAGEWIND_VK_ONCE_NEW_FRAMES frames, 60) reads it stale; its later reads take that copy. The ~155 extra
+            // draws of the frames the water lost its sky reflection are one such shader, run every ~10 s: one copy more
+            // on those frames. The shaders that read it every frame keep the old copy, as before (a new copy for each
+            // of them, every frame, cost frames near water).
+            static struct { uint64_t fs; TexBackend *be; uint64_t frame; } rd[64];
+            static int new_frames = -1;
+            static uint64_t n_refresh;
+            if (new_frames < 0) { const char *e = getenv("SAVAGEWIND_VK_ONCE_NEW_FRAMES"); new_frames = e && atoi(e) > 0 ? atoi(e) : 60; }
+            bool new_reader = false;
+            if (fmt_strict && !fresh && si >= 0 && strict == 2) {
+                uint64_t fr = renderer_present_count() + 1;
+                int k = 0, old = 0;
+                while (k < 64 && rd[k].fs && !(rd[k].fs == g_cur_fs_hash && rd[k].be == src)) {
+                    if (rd[k].frame < rd[old].frame) old = k;
+                    k++;
+                }
+                if (k == 64) k = old;  // (full: the least recently seen goes)
+                if (!rd[k].fs || rd[k].fs != g_cur_fs_hash || rd[k].be != src || rd[k].frame + (uint64_t)new_frames < fr) {
+                    new_reader = true;
+                    n_refresh++;
+                }
+                rd[k].fs = g_cur_fs_hash ? g_cur_fs_hash : 1, rd[k].be = src, rd[k].frame = fr;
+            }
+            bool once_ok = strict == 0 || fresh || (strict == 2 && !cleared && !(fmt_strict && (later || new_reader)));
+            if (odbg && !nosnap && once && si >= 0 && existing && snap_frame[si] == renderer_present_count() + 1) {
+                static uint64_t n_fresh, n_draw, n_clear, n_other, n_refused, n_same, n_later, t0;
+                static struct { uint32_t fmt; uint64_t n; } byf[16];
+                static const char *why_other;
+                if (fresh) n_fresh++;
+                else {
+                    if (cleared) n_clear++;
+                    else if (snap_why[si] && !strncmp(snap_why[si], "draw", 4)) n_draw++;
+                    else { n_other++; why_other = snap_why[si]; }
+                    int k = 0;
+                    while (k < 15 && byf[k].n && byf[k].fmt != t->format) k++;
+                    byf[k].fmt = t->format, byf[k].n++;
+                }
+                if (!once_ok) n_refused++;
+                if (fmt_strict && !fresh) { if (later) n_later++; else n_same++; }
+                uint64_t now = SDL_GetTicksNS();
+                if (!t0) t0 = now;
+                if (now - t0 > 2000000000ull) {
+                    char fb[256]; int o = 0;
+                    for (int k = 0; k < 16 && byf[k].n && o < 220; k++) o += snprintf(fb + o, sizeof fb - o, " %#x:%llu", byf[k].fmt, (unsigned long long)byf[k].n);
+                    fb[o] = 0;
+                    LOG("[once] 2 s: reuses %llu up to date, %llu past draws, %llu past clears, %llu past other (%s); refused %llu | strict "
+                        "formats stale: %llu same pass, %llu later pass, %llu new copies for a shader not seen lately | stale by format:%s\n",
+                        (unsigned long long)n_fresh, (unsigned long long)n_draw, (unsigned long long)n_clear, (unsigned long long)n_other,
+                        why_other ? why_other : "-", (unsigned long long)n_refused, (unsigned long long)n_same,
+                        (unsigned long long)n_later, (unsigned long long)n_refresh, fb);
+                    n_refresh = 0;
+                    n_fresh = n_draw = n_clear = n_other = n_refused = n_same = n_later = 0;
+                    memset(byf, 0, sizeof byf);
+                    t0 = now;
+                }
+            }
+            if (!nosnap && once && si >= 0 && once_ok && existing && snap_frame[si] == renderer_present_count() + 1) {
                 feedback_tex[nfeedback] = t;
                 feedback_view[nfeedback++] = vk_image_view(&existing->copy, VK_IMAGE_VIEW_TYPE_2D, src->format, 0, 1, 0, 1, id, sa);
                 continue;
@@ -3215,7 +3351,7 @@ static void resolve_feedback(Prog *pr) {
                 continue;
             }
             stat_feedback_copies++;
-            if (t != st.rt.depth) fbdump_note(t);
+            if (!is_depth) fbdump_note(t);
             // SAVAGEWIND_LOG_FEEDBACK=<n>: 200 snapshots after the first n (what is sampled while bound)
             if (logfb < 0) logfb = getenv("SAVAGEWIND_LOG_FEEDBACK") ? (fbskip = atol(getenv("SAVAGEWIND_LOG_FEEDBACK")), 200) : 0;
             if (logfb > 0 && fbskip > 0) fbskip--;
@@ -3223,10 +3359,10 @@ static void resolve_feedback(Prog *pr) {
                 logfb--;
                 const NvnTexEntry *e = shader_texture_entry(sg, &infos[sg]->tex[i]);
                 int ci = -1;
-                for (int k = 0; k < st.rt.ncolor; k++) if (st.rt.color[k] == t) ci = k;
+                for (int k = 0; k < st.rt.ncolor; k++) if (same_image(st.rt.color[k], t)) ci = k;
                 const NvnTextureView *cv = ci >= 0 && st.rt.has_cview[ci] ? &st.rt.cview[ci] : NULL;
                 LOG("[feedback] fs %016llx @%llx %s %ux%u fmt %#x levels %u | target view mask %#x level %u layer %u+%u | sampled view %d mask %#x "
-                    "level %u+%u layer %u+%u | stage %d t%d target %d of %d out %#x mask %#x blend %d draws since %u\n", (unsigned long long)g_cur_fs_hash, (unsigned long long)st.program->stages[1].code_addr, t == st.rt.depth ? "depth" : "color", src->width, src->height, t->format,
+                    "level %u+%u layer %u+%u | stage %d t%d target %d of %d out %#x mask %#x blend %d draws since %u\n", (unsigned long long)g_cur_fs_hash, (unsigned long long)st.program->stages[1].code_addr, is_depth ? "depth" : "color", src->width, src->height, t->format,
                     t->levels, cv ? cv->setmask : 0, cv ? cv->base_level : 0, cv ? cv->min_layer : 0, cv ? cv->num_layers : 0,
                     e ? e->has_view : -1, e && e->has_view ? e->view.setmask : 0, e && e->has_view ? e->view.base_level : 0,
                     e && e->has_view ? e->view.num_levels : 0, e && e->has_view ? e->view.min_layer : 0,
@@ -3256,6 +3392,9 @@ static void resolve_feedback(Prog *pr) {
             feedback_view[nfeedback++] = vk_image_view(dst, VK_IMAGE_VIEW_TYPE_2D, src->format, 0, 1, 0, 1, id, sa);
             if (si < 0) { static int rr; si = rr++ & 7; snap_tex[si] = t; }
             snap_ok[si] = true;
+            snap_cleared[si] = false;
+            snap_wpass[si] = 0;
+            snap_be[si] = src;
             snap_frame[si] = renderer_present_count() + 1;  // (+1: 0 is never a frame's)
             snap_pass[si] = pass_serial + 1;  // (the pass that begins next, after this one ends)
             st.rt_dirty = true;
@@ -6039,6 +6178,7 @@ static void copy_texture_to_buffer(const TexRefRec *src, uint64_t dst) {
         t2b_log[k].t = t;
         memcpy(t2b_log[k].rg, rg, sizeof rg);
     }
+    vk_readback_sync();  // (non-coherent host-cached memory: what the GPU just wrote, not what the caches held)
     memcpy((void *)(uintptr_t)dst, out.ptr, total);
     if (small_mem) vmaDestroyImage(g_vk.vma, srcimg, small_mem);
 }
@@ -6885,6 +7025,7 @@ static void save_view_png(TexBackend *b, VkImageView src, const char *path) {
     VkBufferImageCopy c = {.bufferOffset = out.off, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
     vkCmdCopyImageToBuffer(cb, img, VK_IMAGE_LAYOUT_GENERAL, out.buf, 1, &c);
     renderer_flush();
+    vk_readback_sync();
     vk_save_png(path, out.ptr, w, h);
     vkDestroyImageView(g_vk.dev, tv, NULL);
     vmaDestroyImage(g_vk.vma, img, mem);
