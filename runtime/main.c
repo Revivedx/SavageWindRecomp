@@ -17,6 +17,7 @@
 #include "settings.h"
 #include "hle.h"
 #include "kernel.h"
+#include "online.h"
 
 const char *g_romfs_dir;
 uint64_t g_program_id;
@@ -307,6 +308,29 @@ static int dump_romfs(const char *root, const char *out_path) {
     return ok ? 0 : 1;
 }
 
+// The game files in a folder of the player's own, used in place (no copy into extracted/): SAVAGEWIND_GAME_DIR, else
+// the first line of game_dir.txt in the data root (e.g. `E:\extracted hom`). The folder holds exefs/, romfs/ and any
+// aoc<index>/ as extracted/ would; the game code is built into it. NULL = neither, extracted/ as before.
+static const char *own_game_dir(void) {
+    static char dir[1024];
+    const char *e = getenv("SAVAGEWIND_GAME_DIR");
+    if (e && *e) snprintf(dir, sizeof dir, "%s", e);
+    else {
+        FILE *f = fopen("game_dir.txt", "r");
+        if (!f) return NULL;
+        if (!fgets(dir, sizeof dir, f)) dir[0] = 0;
+        fclose(f);
+    }
+    char *s = dir;  // (spaces, quotes and a trailing slash around the path)
+    while (*s == ' ' || *s == '\t' || *s == '"') s++;
+    size_t n = strlen(s);
+    while (n && strchr(" \t\r\n\"/\\", s[n - 1])) s[--n] = 0;
+    memmove(dir, s, n + 1);
+    if (!dir[0]) return NULL;
+    LOG("[main] game files in %s (%s)\n", dir, e && *e ? "SAVAGEWIND_GAME_DIR" : "game_dir.txt");
+    return dir;
+}
+
 // The start screen (runtime/ui/launcher.mm), in one of two modes: SETUP sets the game files up and nothing else (a
 // plain start before they're ready; the game starts once they are), CONFIG is the whole configuration screen - Play,
 // Settings, the game files, Quit ("Savage Wind Configuration", --config; Quit to Start Screen comes back to it).
@@ -322,7 +346,7 @@ int main(int argc, char **argv) {
 #else
     setvbuf(stderr, NULL, _IOLBF, 0);
 #endif
-    const char *root = "extracted";  // (in the data root)
+    const char *root = NULL;  // (NULL: own_game_dir, else extracted/ in the data root)
     bool skip_launcher = getenv("SAVAGEWIND_NO_LAUNCHER") || getenv("SAVAGEWIND_INPUT");  // tests boot straight in
     bool config = false;
     static char arg_root[1024];
@@ -334,6 +358,13 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--dump-romfs") && i + 1 < argc) dump = argv[++i];
         else if (!strcmp(argv[i], "--scan-shaders")) scan = true;
         else if (!strcmp(argv[i], "--precompile-shaders")) precompile = true;
+        else if (!strcmp(argv[i], "--server")) {  // a dedicated online server, no game: --server [port] [--password p]
+            int port = i + 1 < argc && argv[i + 1][0] != '-' ? atoi(argv[++i]) : ONLINE_PORT;
+            const char *pass = NULL;
+            for (int k = i + 1; k + 1 < argc; k++)
+                if (!strcmp(argv[k], "--password")) pass = argv[k + 1];
+            return online_server_main(port > 0 && port < 65536 ? port : ONLINE_PORT, pass);
+        }
         else if (argv[i][0] != '-' && !realpath(argv[i], arg_root)) root = argv[i];  // (relative to where we started)
         else if (argv[i][0] != '-') root = arg_root;
     }
@@ -341,6 +372,14 @@ int main(int argc, char **argv) {
     if (launcher_config_key_held()) config = true;  // (the Mac's "Savage Wind Configuration": Option held)
 #endif
     rt_paths_init();  // the data root becomes the working directory (runtime/paths.h)
+    online_settings_load();
+    {   // SAVAGEWIND_ONLINE=host | <address>: create or join a session right away (shortcuts, tests)
+        const char *o = getenv("SAVAGEWIND_ONLINE");
+        if (o && !strcmp(o, "host")) online_host();
+        else if (o && *o) snprintf(g_online.host, sizeof g_online.host, "%s", o), online_join();
+    }
+    if (!root) root = own_game_dir();
+    if (!root) root = "extracted";
     if (dump) return dump_romfs(root, dump);
     if (scan) return scan_shaders(root);
 #ifndef __APPLE__

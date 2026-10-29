@@ -37,3 +37,6 @@ tools/ghidra/gq.local.json
 docs/RAMAS.md
 # the player's own colour LUTs (runtime/color_grade.h): in the data root, which is the checkout in a source build
 /luts/
+game_dir.txt
+# online play: the player's own settings (runtime/online.c)
+/online.ini
