@@ -396,8 +396,13 @@ $(B)/test_pc_settings: tests/test_pc_settings.c runtime/settings.c runtime/setti
 	@mkdir -p $(dir $@)
 	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< -lSDL3 -lm
 
-test-pc-controls: $(B)/test_pc_controls $(B)/test_pc_settings
+$(B)/test_options_pointer: tests/test_options_pointer.c runtime/pc_cursor.c runtime/pc_cursor.h runtime/pc_cursor_math.h
+	@mkdir -p $(dir $@)
+	$(CC) -O2 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -isystem third_party -o $@ $< -fuse-ld=lld -Wl,--gc-sections $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) -lSDL3 -lm
+
+test-pc-controls: $(B)/test_pc_controls $(B)/test_pc_settings $(B)/test_options_pointer
 	$(B)/test_pc_controls
+	$(B)/test_options_pointer
 	@set -e; f=$$(mktemp); trap 'rm -f "$$f"' EXIT; \
 	  env -u SAVAGEWIND_PC_CURSOR -u SAVAGEWIND_PC_BOW $(B)/test_pc_settings "$$f" 1 1; \
 	  env -u SAVAGEWIND_PC_CURSOR -u SAVAGEWIND_PC_BOW $(B)/test_pc_settings "$$f" 0 0; \

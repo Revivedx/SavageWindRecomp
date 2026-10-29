@@ -888,6 +888,7 @@ extern "C" uint64_t rt_opt_tick(uint64_t screen) {
         mark_all_rows(screen);
     }
     if (g_size_redraw.exchange(false) && g_size_row) g_dirty.push_back(g_size_row);
+    if (!game_options_input_hold()) pc_cursor_options_tick(screen);
     if (g_dirty.empty()) return 0;
     uint64_t r = g_dirty.back();
     g_dirty.pop_back();

@@ -26,6 +26,12 @@ static uint64_t click_deadline;
 static uint64_t injected_manager;
 static uint32_t saved_action;
 static _Atomic int wheel;
+static _Atomic unsigned pointer_motion;
+static _Atomic uint64_t options_buttons,options_buttons_until;
+static int options_wheel_pending;
+static unsigned options_navigation_motion;
+static bool options_navigation;
+static uint64_t options_screen_active,options_next_pulse;
 static _Atomic bool quick_confirmed;
 static _Atomic uint64_t confirm_until, hover_until, hover_rect[2], motion_at;
 static bool map_down, map_dragged;
@@ -66,6 +72,8 @@ void pc_cursor_frame(void) {
         (framepace_menu_ui() || framepace_title_ui() || *(uint32_t *)(uintptr_t)g_site.pause_state == 4);
     active = enabled() && ui;
     if(!pc_cursor_active()){
+        options_buttons=options_buttons_until=0;options_wheel_pending=0;
+        options_navigation=false;options_screen_active=options_next_pulse=0;
         map_canvas_active=false;map_nav_ns=0;map_view_valid=false;
         held=false;last_press=presses;last_release=releases;wheel=0;click_pending=false;
         gesture_down=map_down=false;map_anchor_active=map_picker_seen=false;
@@ -115,6 +123,7 @@ void pc_cursor_frame(void) {
         if(down)presses++;
         if(up){releases++;released_event=event;}
         if(fresh) {
+            if(action!=4&&action!=5)pointer_motion++;
             if(action==4)wheel++;
             if(action==5)wheel--;
             motion_at=plat_now_ns();last_event=event;
@@ -181,7 +190,7 @@ bool pc_cursor_event(const SDL_Event *e) {
     }
     if (!enabled()) return false;
     if (!pc_cursor_active()) return false;
-    if (e->type == SDL_EVENT_MOUSE_MOTION) { window_position(e->motion.x,e->motion.y);motion_at=plat_now_ns(); return true; }
+    if (e->type == SDL_EVENT_MOUSE_MOTION) { pointer_motion++;window_position(e->motion.x,e->motion.y);motion_at=plat_now_ns(); return true; }
     if (e->type == SDL_EVENT_MOUSE_WHEEL) {
         wheel+=(e->wheel.y>0)-(e->wheel.y<0); motion_at=plat_now_ns();return true;
     }
@@ -261,7 +270,56 @@ int rt_pc_map_focus(Cpu *c, int position) {
     return 1;
 }
 
+// Options reads normal Npad edges after cursor selection; BoxCursorMgr's
+// confirm action alone does not reach its value handlers. Keep each wheel step
+// separated by a release, and do not let a stationary hover undo navigation.
+void pc_cursor_options_tick(uint64_t screen) {
+    if(!pc_cursor_active()||!screen||LD8(screen+0xfe)!=2)return;
+    sample_pointer();
+    if(options_screen_active!=screen){options_screen_active=screen;options_navigation=false;options_wheel_pending=0;}
+    int scroll=atomic_exchange(&wheel,0);
+    if(scroll) {
+        options_wheel_pending+=scroll;
+        if(options_wheel_pending>32)options_wheel_pending=32;
+        if(options_wheel_pending< -32)options_wheel_pending=-32;
+        options_navigation=true;options_navigation_motion=pointer_motion;
+    }
+    uint64_t now=plat_now_ns();
+    if(options_wheel_pending&&now>=options_next_pulse) {
+        bool up=options_wheel_pending>0;options_wheel_pending+=up?-1:1;
+        options_buttons=1ull<<(up?13:15);options_buttons_until=now+50000000;
+        options_next_pulse=now+100000000;
+    }
+}
+static void options_click(uint64_t screen,uint64_t button,const float box[4]) {
+    uint64_t rows=LD64(screen+g_site.opt_screen_rows+8);
+    unsigned count=LD32(screen+g_site.opt_screen_rows);
+    uint64_t entries=LD64(g_site.opt_table+8);unsigned total=LD32(g_site.opt_table);
+    if(!ptr(rows)||!ptr(entries))return;
+    for(unsigned i=0;i<count&&i<64;i++) {
+        uint64_t row=LD64(rows+i*8);if(!ptr(row))continue;
+        unsigned index=LD32(row+0x50);if(index>=total)continue;
+        unsigned kind=LD32(entries+index*0x30+0x10);
+        unsigned offset=kind==0?0x18:kind==1?0x20:kind==2?0x28:0;
+        if(!offset||LD64(row+offset)!=button)continue;
+        uint64_t mask=1;
+        if(kind==0) {
+            bool want=point[0]<(box[0]+box[2])*.5f;
+            if(want==(LD8(row+0x54)!=0))return;
+        } else if(kind==1) {
+            float edge=fminf(36,(box[2]-box[0])*.2f);
+            if(point[0]<box[0]+edge)mask=1ull<<12;
+            else if(point[0]>box[2]-edge)mask=1ull<<14;
+        }
+        uint64_t now=plat_now_ns();options_buttons=mask;
+        options_buttons_until=now+50000000;options_next_pulse=now+100000000;
+        if(getenv("SAVAGEWIND_PC_CURSOR_LOG"))LOG("[pc-options-click] row %u kind %u mask %llx\n",i,kind,mask);
+        return;
+    }
+}
+
 uint64_t pc_cursor_buttons(uint64_t b) {
+    if(pc_cursor_active()&&plat_now_ns()<options_buttons_until)b|=options_buttons;
     if(quick_confirmed) {
         if(!(b&(1ull<<14)))quick_confirmed=false;
         b&=~(1ull<<14);
@@ -629,12 +687,13 @@ void rt_pc_cursor_manager(Cpu *c, uint64_t activate, uint64_t bounds) {
     if(n>0x2d&&ptr(screens))special_diagnostics(c,screens);
     if(n>0x39&&ptr(screens)&&native_special(c,screens,bounds))return;
     if(!click_pending&&!pointer_test()&&plat_now_ns()-motion_at>300000000)return;
-    uint64_t hit=0,hit_screen=0;float best=1e30f;
+    uint64_t hit=0,hit_screen=0;float best=1e30f;float hit_box[4]={0};
     extern uint64_t renderer_present_count(void);
     static bool dumped_screens[256];
     for(unsigned id=0;id<n&&id<256&&ptr(screens);id++) {
         uint64_t screen=LD64(screens+8*id);
         if(!ptr(screen)||LD8(screen+0xfe)!=2)continue;
+        if(id==0x34&&options_navigation&&!click_pending&&options_navigation_motion==pointer_motion)continue;
         bool dump=getenv("SAVAGEWIND_PC_DUMP_UI")&&!dumped_screens[id]&&renderer_present_count()>300;
         uint64_t link_offset=(int32_t)LD32(screen+0x9c);
         uint64_t head=screen+0x88,link=LD64(head+8);
@@ -665,7 +724,7 @@ void rt_pc_cursor_manager(Cpu *c, uint64_t activate, uint64_t bounds) {
                         (call(c,LD64(vtable+0x28),node,target,0)&1)) {
                         float dx=point[0]-(box[0]+box[2])*.5f,dy=point[1]-(box[1]+box[3])*.5f;
                         float score=dx*dx+dy*dy;
-                        if(score<best){best=score;hit=node;hit_screen=screen;}
+                        if(score<best){best=score;hit=node;hit_screen=screen;memcpy(hit_box,box,sizeof hit_box);}
                     }
                 }
             }
@@ -685,6 +744,10 @@ void rt_pc_cursor_manager(Cpu *c, uint64_t activate, uint64_t bounds) {
         ST8(hit_screen+0x106,1);
         if(getenv("SAVAGEWIND_PC_CURSOR_LOG"))LOG("[pc-hover] node %llx point %.1f %.1f\n",hit,point[0],point[1]);
     }
+    if(click_pending&&hit_screen==options_screen_active) {
+        options_click(hit_screen,LD64(hit+0x18),hit_box);click_pending=false;
+        return;
+    }
     if(click_pending) {
         injected_manager=manager;saved_action=LD32(manager+0x10);
         ST32(manager+0x10,1); // The exact action used by the game's confirm button, processed by its own code next.
@@ -694,6 +757,8 @@ void rt_pc_cursor_manager(Cpu *c, uint64_t activate, uint64_t bounds) {
 }
 
 RT_ON_RESET(pc_cursor_reset) {
+    options_buttons=options_buttons_until=0;options_wheel_pending=0;pointer_motion=0;
+    options_navigation_motion=0;options_navigation=false;options_screen_active=options_next_pulse=0;
     active = false; held = false; frame_press = frame_release = frame_held = false;
     click_pending=false;
     injected_manager=0;

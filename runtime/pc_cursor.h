@@ -14,3 +14,5 @@ bool pc_cursor_hover_box(float box[4]);
 bool pc_cursor_map_navigation(void);
 bool pc_cursor_hide_system(void);
 int rt_pc_map_focus(Cpu *c, int position);
+
+void pc_cursor_options_tick(uint64_t screen);
