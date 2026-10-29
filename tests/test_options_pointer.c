@@ -22,7 +22,8 @@ bool framepace_title_ui(void){return false;}
 uint64_t framepace_script_frame(uint64_t value){return value;}
 void input_pc_escape(bool down){(void)down;abort();}
 void input_pc_map_axes(float out[2]){(void)out;abort();}
-void guest_call(Cpu *cpu,uint64_t address){(void)cpu;(void)address;abort();}
+static unsigned actions,refreshes,last_action;
+void guest_call(Cpu *cpu,uint64_t address){if(address==0x7000e30700ull){actions++;last_action=LD32(LD64(cpu->x[0])+0x36c0);}else if(address==0x7000e2eed8ull)refreshes++;else abort();}
 
 int main(void) {
     void *memory;
@@ -55,16 +56,16 @@ int main(void) {
     wheel=2;pc_cursor_options_tick(screen);assert(wheel==2);
     g_settings.pc_cursor=true;wheel=0;options_wheel_pending=0;
 
-    float box[4]={0,0,200,40};
-    ST32(entries+0x10,0);ST64(row+0x18,button);ST8(row+0x54,0);
-    point[0]=50;options_click(screen,button,box);assert(options_buttons==1);
-    ST8(row+0x54,1);options_buttons=0;options_click(screen,button,box);assert(options_buttons==0);
-    point[0]=150;options_click(screen,button,box);assert(options_buttons==1);
-    ST32(entries+0x10,1);ST64(row+0x20,button);
-    point[0]=10;options_click(screen,button,box);assert(options_buttons==(1ull<<12));
-    point[0]=190;options_click(screen,button,box);assert(options_buttons==(1ull<<14));
-    point[0]=100;options_click(screen,button,box);assert(options_buttons==1);
-    ST32(entries+0x10,2);ST64(row+0x28,button);options_click(screen,button,box);assert(options_buttons==1);
+    float box[4]={0,0,200,40};Cpu cpu={0};ST64(row,screen);
+    ST32(screen+0x36c0,3);ST8(row+0x54,0);
+    point[0]=50;options_click(&cpu,screen,row,0,box);assert(actions==1&&refreshes==1&&last_action==0);
+    assert(LD32(screen+0x36c0)==3&&LD64(screen+0x36c8)==row);
+    ST8(row+0x54,1);options_click(&cpu,screen,row,0,box);assert(actions==1);
+    point[0]=150;options_click(&cpu,screen,row,0,box);assert(actions==2);
+    point[0]=10;options_click(&cpu,screen,row,1,box);assert(last_action==1);
+    point[0]=190;options_click(&cpu,screen,row,1,box);assert(last_action==2);
+    point[0]=100;options_click(&cpu,screen,row,1,box);assert(last_action==0);
+    options_click(&cpu,screen,row,2,box);assert(actions==6&&refreshes==6);
     pc_cursor_reset();assert(!options_buttons&&!options_buttons_until&&!options_wheel_pending&&!options_navigation&&!options_screen_active);
     puts("PASS: Options wheel edges, setting gate, toggle halves, arrows, button confirm and reboot reset (synthetic host state).");
 #ifdef _WIN32

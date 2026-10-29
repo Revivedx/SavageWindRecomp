@@ -291,31 +291,51 @@ void pc_cursor_options_tick(uint64_t screen) {
         options_next_pulse=now+100000000;
     }
 }
-static void options_click(uint64_t screen,uint64_t button,const float box[4]) {
-    uint64_t rows=LD64(screen+g_site.opt_screen_rows+8);
-    unsigned count=LD32(screen+g_site.opt_screen_rows);
-    uint64_t entries=LD64(g_site.opt_table+8);unsigned total=LD32(g_site.opt_table);
-    if(!ptr(rows)||!ptr(entries))return;
+static void options_click(Cpu *c,uint64_t screen,uint64_t row,unsigned kind,const float box[4]) {
+    unsigned action=0;
+    if(kind==0) {
+        bool want=point[0]<(box[0]+box[2])*.5f;
+        if(want==(LD8(row+0x54)!=0))return;
+    } else if(kind==1) {
+        float edge=fminf(36,(box[2]-box[0])*.2f);
+        if(point[0]<box[0]+edge)action=1;
+        else if(point[0]>box[2]-edge)action=2;
+    }
+    // The options rows are nested buttons, not the screen's cursor-node list.
+    // Run the same row action and refresh as keyboard confirmation, once.
+    uint64_t saved_action=LD32(screen+0x36c0);
+    ST64(screen+0x36c8,row);ST32(screen+0x36c0,action);
+    call(c,0x7000e30700,row,0,0);
+    ST32(screen+0x36c0,saved_action);
+    call(c,0x7000e2eed8,row,0,0);
+    if(getenv("SAVAGEWIND_PC_CURSOR_LOG"))LOG("[pc-options-click] row %llx kind %u action %u\n",row,kind,action);
+}
+static bool options_pointer(Cpu *c,uint64_t screens,uint64_t bounds) {
+    if(g_site.opt_screen_rows!=0x36b0)return false; // inspected 1.9.0 row handlers
+    uint64_t screen=LD64(screens+8*0x34);
+    if(!ptr(screen)||LD8(screen+0xfe)!=2)return false;
+    // The footer still uses the ordinary Back / Restore buttons. The list must
+    // not follow hover, otherwise the pointer fights wheel/keyboard navigation.
+    if(point[1]<-260||point[1]>230)return false;
+    if(!click_pending)return true;
+    click_pending=false;
+    uint64_t rows=LD64(screen+g_site.opt_screen_rows+8),entries=LD64(g_site.opt_table+8);
+    unsigned count=LD32(screen+g_site.opt_screen_rows),total=LD32(g_site.opt_table);
+    if(!ptr(rows)||!ptr(entries))return true;
     for(unsigned i=0;i<count&&i<64;i++) {
         uint64_t row=LD64(rows+i*8);if(!ptr(row))continue;
         unsigned index=LD32(row+0x50);if(index>=total)continue;
         unsigned kind=LD32(entries+index*0x30+0x10);
         unsigned offset=kind==0?0x18:kind==1?0x20:kind==2?0x28:0;
-        if(!offset||LD64(row+offset)!=button)continue;
-        uint64_t mask=1;
-        if(kind==0) {
-            bool want=point[0]<(box[0]+box[2])*.5f;
-            if(want==(LD8(row+0x54)!=0))return;
-        } else if(kind==1) {
-            float edge=fminf(36,(box[2]-box[0])*.2f);
-            if(point[0]<box[0]+edge)mask=1ull<<12;
-            else if(point[0]>box[2]-edge)mask=1ull<<14;
+        uint64_t button=offset?LD64(row+offset):0,pane=ptr(button)?LD64(button+0x60):0;
+        if(!ptr(pane))continue;
+        float box[4];call(c,bounds,(uintptr_t)box,pane,0);
+        if(!isfinite(box[0])||!isfinite(box[1])||!isfinite(box[2])||!isfinite(box[3]))continue;
+        if(point[0]>=box[0]&&point[0]<=box[2]&&point[1]>=box[1]&&point[1]<=box[3]) {
+            options_click(c,screen,row,kind,box);return true;
         }
-        uint64_t now=plat_now_ns();options_buttons=mask;
-        options_buttons_until=now+50000000;options_next_pulse=now+100000000;
-        if(getenv("SAVAGEWIND_PC_CURSOR_LOG"))LOG("[pc-options-click] row %u kind %u mask %llx\n",i,kind,mask);
-        return;
     }
+    return true;
 }
 
 uint64_t pc_cursor_buttons(uint64_t b) {
@@ -685,9 +705,10 @@ void rt_pc_cursor_manager(Cpu *c, uint64_t activate, uint64_t bounds) {
     if(!ptr(control)||!ptr(screen_mgr))return;
     uint64_t screens=LD64(screen_mgr+0x30),n=LD32(screen_mgr+0x28);
     if(n>0x2d&&ptr(screens))special_diagnostics(c,screens);
+    if(n>0x34&&ptr(screens)&&options_pointer(c,screens,bounds))return;
     if(n>0x39&&ptr(screens)&&native_special(c,screens,bounds))return;
     if(!click_pending&&!pointer_test()&&plat_now_ns()-motion_at>300000000)return;
-    uint64_t hit=0,hit_screen=0;float best=1e30f;float hit_box[4]={0};
+    uint64_t hit=0,hit_screen=0;float best=1e30f;
     extern uint64_t renderer_present_count(void);
     static bool dumped_screens[256];
     for(unsigned id=0;id<n&&id<256&&ptr(screens);id++) {
@@ -724,7 +745,7 @@ void rt_pc_cursor_manager(Cpu *c, uint64_t activate, uint64_t bounds) {
                         (call(c,LD64(vtable+0x28),node,target,0)&1)) {
                         float dx=point[0]-(box[0]+box[2])*.5f,dy=point[1]-(box[1]+box[3])*.5f;
                         float score=dx*dx+dy*dy;
-                        if(score<best){best=score;hit=node;hit_screen=screen;memcpy(hit_box,box,sizeof hit_box);}
+                        if(score<best){best=score;hit=node;hit_screen=screen;}
                     }
                 }
             }
@@ -743,10 +764,6 @@ void rt_pc_cursor_manager(Cpu *c, uint64_t activate, uint64_t bounds) {
         call(c,activate,control,hit,0);
         ST8(hit_screen+0x106,1);
         if(getenv("SAVAGEWIND_PC_CURSOR_LOG"))LOG("[pc-hover] node %llx point %.1f %.1f\n",hit,point[0],point[1]);
-    }
-    if(click_pending&&hit_screen==options_screen_active) {
-        options_click(hit_screen,LD64(hit+0x18),hit_box);click_pending=false;
-        return;
     }
     if(click_pending) {
         injected_manager=manager;saved_action=LD32(manager+0x10);
