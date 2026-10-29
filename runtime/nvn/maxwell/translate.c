@@ -1740,9 +1740,11 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
                 c->uses_gmem_store = true;
                 if (size < 4)
                     sp(&c->body, "      if (ok) { uint wi = uint(ga >> 2); uint sh = uint(ga & %s) * 8u; uint gm = ~(0x%xu << sh), gv = (%s & 0x%xu) << sh; "
-                       "if (wi < GSPLIT) { atomicAnd(gmem_.w[wi], gm); atomicOr(gmem_.w[wi], gv); } "
-                       "else { atomicAnd(gmem2_.w[wi - GSPLIT], gm); atomicOr(gmem2_.w[wi - GSPLIT], gv); } }\n", size < 2 ? "3ul" : "2ul", size < 2 ? 0xFFu : 0xFFFFu, R(d),
-                       size < 2 ? 0xFFu : 0xFFFFu);
+                       "%s }\n", size < 2 ? "3ul" : "2ul", size < 2 ? 0xFFu : 0xFFFFu, R(d),
+                       size < 2 ? 0xFFu : 0xFFFFu,
+                       maxwell_gmem_split ? "if (wi < GSPLIT) { atomicAnd(gmem_.w[wi], gm); atomicOr(gmem_.w[wi], gv); } "
+                                            "else { atomicAnd(gmem2_.w[wi - GSPLIT], gm); atomicOr(gmem2_.w[wi - GSPLIT], gv); }"
+                                          : "atomicAnd(gmem_.w[wi], gm); atomicOr(gmem_.w[wi], gv);");
                 else
                     for (int k = 0; k < nw; k++)
                         sp(&c->body, "      if (ok) GST(uint(ga >> 2) + %du, %s);\n", k, R(d == RZ ? RZ : d + k));
@@ -2158,27 +2160,32 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     }
     info->writes_gmem = info->uses_gmem && c->uses_gmem_store;
     if (info->uses_gmem) {
-        // The heap in two storage buffers, split at GMEM_SPLIT: one binding of all of it (3 GB) is past some drivers'
-        // maxStorageBufferRange (Mali-G610: 2 GB). GLD / GST read and write a word of either.
+        // The heap in one storage buffer, or (maxwell_gmem_split: the device's maxStorageBufferRange is below the heap,
+        // Mali-G610's 2 GB against 3 GB) in two, split at GMEM_SPLIT. GLD / GST read and write a word of it.
+        bool split = maxwell_gmem_split;
         sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GMem { uint w[]; } gmem_;\n", set, GMEM_BUFFER_INDEX,
            c->uses_gmem_store ? "" : "readonly ");
-        sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GMem2 { uint w[]; } gmem2_;\n", set, GMEM2_BUFFER_INDEX,
-           c->uses_gmem_store ? "" : "readonly ");
-        if (c->uses_gmem_store)
-            sp(&s, "#define GSPLIT 0x%xu\n#define GLD(i) ((i) < GSPLIT ? gmem_.w[(i)] : gmem2_.w[(i) - GSPLIT])\n"
-                   "#define GST(i, v) { uint gi_ = (i); if (gi_ < GSPLIT) gmem_.w[gi_] = (v); else gmem2_.w[gi_ - GSPLIT] = (v); }\n",
-               (unsigned)(GMEM_SPLIT >> 2));
-        else {
-            // Read-only: up to 4 ranges of the heap copied at translation (exec.c gsnap: what the HUD's shaders read,
-            // which the game may rewrite while the GPU is still on the frame), r = (first word, words, word in w[]; gs_r[0].w: how many);
-            // the rest in place.
-            sp(&s, "#define GSPLIT 0x%xu\n", (unsigned)(GMEM_SPLIT >> 2));
+        if (split)
+            sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GMem2 { uint w[]; } gmem2_;\n", set, GMEM2_BUFFER_INDEX,
+               c->uses_gmem_store ? "" : "readonly ");
+        if (split) sp(&s, "#define GSPLIT 0x%xu\n#define GLD0(i) ((i) < GSPLIT ? gmem_.w[(i)] : gmem2_.w[(i) - GSPLIT])\n", (unsigned)(GMEM_SPLIT >> 2));
+        else sp(&s, "#define GLD0(i) gmem_.w[(i)]\n");
+        if (c->uses_gmem_store || !maxwell_gmem_snap) {
+            sp(&s, "#define GLD(i) GLD0(i)\n");
+            if (split)
+                sp(&s, "#define GST(i, v) { uint gi_ = (i); if (gi_ < GSPLIT) gmem_.w[gi_] = (v); else gmem2_.w[gi_ - GSPLIT] = (v); }\n");
+            else
+                sp(&s, "#define GST(i, v) { gmem_.w[(i)] = (v); }\n");
+        } else {
+            // Read-only, maxwell_gmem_snap: up to 4 ranges of the heap copied at translation (exec.c gsnap: what the HUD's
+            // shaders read, which the game may rewrite while the GPU is still on the frame), r = (first word, words, word in
+            // w[]; gs_r[0].w: how many); the rest in place.
             sp(&s, "layout(std430, set = %d, binding = %d) readonly buffer GSnap { uvec4 gs_r[4]; uint w[]; } gsnap_;\n", set,
                GSNAP_BUFFER_INDEX);
             sp(&s, "uint GLD(uint i) {\n"
                    "  uint n_ = min(gsnap_.gs_r[0].w, 4u);\n"
                    "  for (uint k_ = 0u; k_ < n_; k_++) { uvec4 q_ = gsnap_.gs_r[k_]; if (i - q_.x < q_.y) return gsnap_.w[q_.z + (i - q_.x)]; }\n"
-                   "  return i < GSPLIT ? gmem_.w[i] : gmem2_.w[i - GSPLIT];\n}\n");
+                   "  return GLD0(i);\n}\n");
         }
     }
     if (c->uses_rscale) {  // (vertex shaders too: texel fetches from scaled targets, e.g. depth under the sun's flare)
@@ -2331,7 +2338,13 @@ size_t maxwell_binary_size(const uint8_t *blob, size_t max_size, int stage) {
 #ifndef TRANSLATOR_ID
 #define TRANSLATOR_ID __DATE__ " " __TIME__
 #endif
-const char *maxwell_translator_id(void) { return TRANSLATOR_ID; }
+bool maxwell_gmem_split, maxwell_gmem_snap;
+// (the two switches above change translations: they name caches of their own)
+const char *maxwell_translator_id(void) {
+    static char id[64];
+    snprintf(id, sizeof id, "%s%s%s", TRANSLATOR_ID, maxwell_gmem_split ? "-gs" : "", maxwell_gmem_snap ? "-gn" : "");
+    return id;
+}
 
 // Whether a translation depends on more than the binary and the key (debugging switches): not to be cached.
 bool maxwell_translation_uncacheable(void) {

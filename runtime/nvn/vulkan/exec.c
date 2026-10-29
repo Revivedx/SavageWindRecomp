@@ -381,6 +381,18 @@ uint64_t renderer_fence_seq(void) {
 // a game built to overlap on the console double-buffers; constant buffers are copied at translation. The render
 // targets the CPU reads back (readback_schedule) arrive a frame later, except a one-off one (a photo): a wait on its
 // submission is never deferred. SAVAGEWIND_GPU_OVERLAP=0: off (the wait on the frame's own fence, as before).
+static int gsnap_mode(void);
+// (device.c, before any translation) the translator's switches that depend on the device: global memory in two bindings
+// where one binding of the whole heap is past maxStorageBufferRange (Mali-G610: 2 GB, the heap 3.25 GB), and read-only
+// global memory through copied ranges where gsnap is on (Mali by default)
+void vk_translator_setup(void) {
+    maxwell_gmem_split = HEAP_MAX > g_vk.props.limits.maxStorageBufferRange;
+    maxwell_gmem_snap = gsnap_mode() != 0;
+    LOG("[vk] shader global memory: %s (storage buffer limit %u MB), the HUD's reads %s\n",
+        maxwell_gmem_split ? "two bindings" : "one binding", g_vk.props.limits.maxStorageBufferRange >> 20,
+        maxwell_gmem_snap ? "through copies" : "in place");
+}
+
 static bool gpu_overlap(void) {
     static int on = -1;
     if (on < 0) {
@@ -1171,7 +1183,7 @@ static int det_on(void) {
     static int on = -1;
     if (on < 0) {
         const char *e = getenv("SAVAGEWIND_VK_DETACH");
-        on = e ? atoi(e) != 0 : strstr(g_vk.props.deviceName, "Mali") != NULL;
+        on = e ? atoi(e) != 0 : g_vk.is_mali;
         LOG("[vk] color targets a pass doesn't draw into left out of it: %s\n", on ? "on" : "off");
     }
     return on;
@@ -1302,7 +1314,7 @@ static void begin_pass(void) {
     static int bfrag = -1;
     if (bfrag < 0) {  // (on by default on Mali; =0: off)
         const char *e = getenv("SAVAGEWIND_VK_BARRIER_FRAG");
-        bfrag = e ? atoi(e) != 0 : strstr(g_vk.props.deviceName, "Mali") != NULL;
+        bfrag = e ? atoi(e) != 0 : g_vk.is_mali;
         LOG("[vk] pass barriers hold back only fragment work where they can: %s\n", bfrag ? "on" : "off");
     }
     bool frag_only = bfrag && !vtx_hazard && !pass_vs_reads_next;
@@ -1391,14 +1403,15 @@ static void begin_pass(void) {
         }
         if (!v) continue;
         if (pass_detached & (1u << i)) continue;  // (left out: this pass doesn't draw into it, det_tab)
-        {   // The same view in two slots (BOTW's G-buffer binds targets 1 / 3 again as 2 / 4, never writing those): attached
-            // once. Twice is undefined in Vulkan, and a tiler (Mali) stores each slot's tile copy at the end of the pass, so
-            // the unwritten slot put the loaded contents back over the drawn ones (the shrine's G-buffer: specks / tiles).
-            bool dup = false;
-            for (int j = 0; j < i && !dup; j++) dup = ca[j].imageView == v;
-            if (dup) {
+        if (g_vk.is_mali) {  // The same view in two slots (BOTW's G-buffer binds targets 1 / 3 again as 2 / 4, never writing
+            // those): attached once on Mali. Twice is undefined in Vulkan, and a tiler stores each slot's tile copy at the end
+            // of the pass, so the unwritten slot put the loaded contents back over the drawn ones (the shrine's G-buffer:
+            // specks / tiles). Other GPUs: attached as before (the pipelines' rendering formats unchanged).
+            int dup = -1;
+            for (int j = 0; j < i && dup < 0; j++) if (ca[j].imageView == v) dup = j;
+            if (dup >= 0) {
                 static int nlog;
-                if (nlog++ < 4) LOG("[vk] render target slot %d is slot %d again: attached once\n", i, i - 1);
+                if (nlog++ < 4) LOG("[vk] render target slot %d is slot %d again: attached once\n", i, dup);
                 continue;
             }
         }
@@ -1656,8 +1669,10 @@ static void clear(int index, int kind, const void *color, uint32_t mask, bool de
                   uint32_t smask) {
     // (a snapshot of a target taken before this clear is stale after it: Mali's G-buffer snapshots, reused within the
     // pass that follows, were - when the clear began that very pass - the water's sky reflection lost for a frame)
-    if (index >= 0 && index < st.rt.ncolor && st.rt.color[index]) snapshots_invalidate_clear(st.rt.color[index]);
-    if ((depth || stencil) && st.rt.depth) snapshots_invalidate_clear(st.rt.depth);
+    if (g_vk.is_mali) {  // (other GPUs: as before)
+        if (index >= 0 && index < st.rt.ncolor && st.rt.color[index]) snapshots_invalidate_clear(st.rt.color[index]);
+        if ((depth || stencil) && st.rt.depth) snapshots_invalidate_clear(st.rt.depth);
+    }
     if (index >= 0 && index < 8) {  // (a color target left out of the open pass: the pass ends, the next has it)
         if (in_pass && !st.rt_dirty && (pass_detached & (1u << index))) {
             det_note(pass_key, (uint8_t)(1u << index));
@@ -2373,6 +2388,7 @@ static VkStencilOp stencil_op(uint8_t o) {
 // The format a colour target is drawn in: its view's when the view sets one (BOTW draws its NPC speech bubbles into a
 // BC4 texture through an RGBA16 UINT view of its blocks: the shader has to write integers)
 static uint32_t rt_format(int i) {
+    if (!g_vk.is_mali) return st.rt.color[i]->format;  // (other GPUs: as before)
     return st.rt.has_cview[i] && (st.rt.cview[i].setmask & 4) && st.rt.cview[i].format ? st.rt.cview[i].format : st.rt.color[i]->format;
 }
 static int rt_kind(uint32_t f) {
@@ -2382,7 +2398,9 @@ static int rt_kind(uint32_t f) {
     case 0x04: case 0x09: case 0x0C: case 0x10: case 0x15: case 0x18: case 0x28: case 0x2D: case 0x30: k = 1; break;
     default: return 0;
     }
-    // 16 / 8-bit components: the shader writes the register's low bits (translate.c; Mali saturates wider values)
+    // 16 / 8-bit components: the shader writes the register's low bits (translate.c; Mali saturates wider values, other
+    // GPUs keep the low bits themselves: as before there)
+    if (!g_vk.is_mali) return k;
     switch (vk_format(f)) {
     case VK_FORMAT_R16_UINT: case VK_FORMAT_R16G16_UINT: case VK_FORMAT_R16G16B16_UINT: case VK_FORMAT_R16G16B16A16_UINT: return 5;
     case VK_FORMAT_R8_UINT: case VK_FORMAT_R8G8_UINT: case VK_FORMAT_R8G8B8_UINT: case VK_FORMAT_R8G8B8A8_UINT: return 6;
@@ -2859,7 +2877,7 @@ static uint64_t snap_wpass[8];  // (the pass the latest write into the slot's ta
 static uint64_t snap_pass_now(void);
 static void snapshots_invalidate(NvnTexture *t) {
     static int by_obj = -1;
-    if (by_obj < 0) by_obj = getenv("SAVAGEWIND_VK_SNAP_BY_OBJECT") != NULL;
+    if (by_obj < 0) by_obj = getenv("SAVAGEWIND_VK_SNAP_BY_OBJECT") ? atoi(getenv("SAVAGEWIND_VK_SNAP_BY_OBJECT")) != 0 : !g_vk.is_mali;
     TexBackend *be = t && !by_obj ? (TexBackend *)t->backend : NULL;
     for (int i = 0; i < 8; i++) {
         if (!(!t || snap_tex[i] == t || (be && snap_be[i] == be))) continue;
@@ -2933,11 +2951,11 @@ static NvnTexture *shadow_copy_source(const NvnTexture *t) {
                : NULL;
 }
 
-// (the same image through another texture object counts: it is the image that is bound; SAVAGEWIND_VK_SNAP_BY_OBJECT=1:
-// the object only, as before)
+// (Mali: the same image through another texture object counts, it is the image that is bound. SAVAGEWIND_VK_SNAP_BY_OBJECT=1:
+// the object only, as before and as elsewhere; =0: by image elsewhere too)
 static bool same_image(NvnTexture *a, NvnTexture *b) {
     static int by_obj = -1;
-    if (by_obj < 0) by_obj = getenv("SAVAGEWIND_VK_SNAP_BY_OBJECT") != NULL;
+    if (by_obj < 0) by_obj = getenv("SAVAGEWIND_VK_SNAP_BY_OBJECT") ? atoi(getenv("SAVAGEWIND_VK_SNAP_BY_OBJECT")) != 0 : !g_vk.is_mali;
     return a == b || (!by_obj && a && b && a->backend && a->backend == b->backend);
 }
 static bool is_attachment(NvnTexture *t) {
@@ -3098,7 +3116,7 @@ static void resolve_feedback(Prog *pr) {
             // rocks and barricades lit as sky); SAVAGEWIND_NO_LIVE_DEPTH=1 (all live reads) fixed it but lost the terrain.
             static int snap_depth = -1, snap_gbuf = -1;
             if (snap_depth < 0) {  // (on by default on Mali; =0 turns one off)
-                bool mali = strstr(g_vk.props.deviceName, "Mali") != NULL;
+                bool mali = g_vk.is_mali;
                 const char *d = getenv("SAVAGEWIND_VK_SNAP_DEPTH"), *g = getenv("SAVAGEWIND_VK_SNAP_GBUFFER");
                 snap_depth = d ? atoi(d) != 0 : false;  // (not needed: the G-buffer half fixed the blue patches)
                 snap_gbuf = g ? atoi(g) != 0 : mali;
@@ -3330,16 +3348,14 @@ static void resolve_feedback(Prog *pr) {
                 feedback_view[nfeedback++] = vk_image_view(&existing->copy, VK_IMAGE_VIEW_TYPE_2D, src->format, 0, 1, 0, 1, id, sa);
                 continue;
             }
-            // Mali (SAVAGEWIND_VK_SNAP_SAME_FRAME=0: off, 1: on elsewhere too): a snapshot is reused within its frame only.
-            // Carried into the next one it was stale wherever the frame's own invalidations missed a change (puddles
-            // white, reflections flickering as the camera turned).
+            // Mali: a snapshot is reused within a pass (or frame) only. Carried into the next frame it was stale wherever the
+            // frame's own invalidations missed a change (puddles white, reflections flickering as the camera turned).
             // SAVAGEWIND_VK_SNAP_REUSE=pass (Mali's default): within the pass that follows it only; =frame: within its
             // frame; =any: until a write invalidates it (elsewhere's default)
             static int reuse = -1;
             if (reuse < 0) {
                 const char *e = getenv("SAVAGEWIND_VK_SNAP_REUSE");
-                bool mali = strstr(g_vk.props.deviceName, "Mali") != NULL;
-                reuse = e ? (!strcmp(e, "pass") ? 2 : !strcmp(e, "frame") ? 1 : 0) : mali ? 2 : 0;
+                reuse = e ? (!strcmp(e, "pass") ? 2 : !strcmp(e, "frame") ? 1 : 0) : g_vk.is_mali ? 2 : 0;
                 LOG("[vk] feedback snapshots reused: %s\n", reuse == 2 ? "within one pass" : reuse == 1 ? "within one frame" : "until written");
             }
             uint64_t this_pass = in_pass && !st.rt_dirty ? pass_serial : pass_serial + 1;
@@ -3696,7 +3712,19 @@ static bool gmem_mapped;     // the heap is GPU memory mapped at its addresses (
 #ifdef __linux__
 #include <errno.h>
 #include <fcntl.h>
+#if defined(__has_include) && __has_include(<linux/dma-heap.h>)
 #include <linux/dma-heap.h>
+#else  // (kernel headers older than 5.6: the uapi definitions, unchanged since)
+#include <linux/types.h>
+struct dma_heap_allocation_data {
+    __u64 len;
+    __u32 fd;
+    __u32 fd_flags;
+    __u64 heap_flags;
+};
+#define DMA_HEAP_IOC_MAGIC 'H'
+#define DMA_HEAP_IOCTL_ALLOC _IOWR(DMA_HEAP_IOC_MAGIC, 0x0, struct dma_heap_allocation_data)
+#endif
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 // On amdgpu the import is a userptr buffer, and the kernel gets every page of every userptr buffer again at each
@@ -3894,7 +3922,8 @@ static VkDescriptorBufferInfo gmem_info(void) {
     if (gmem_buf) {
         // The heap's first GMEM_SPLIT bytes (GMEM_BUFFER_INDEX); the rest is the second binding (gmem_info_hi): one binding
         // of all of it is past some drivers' maxStorageBufferRange (Mali-G610: 2 GB, the heap 3 GB)
-        uint64_t range = gmem_size < GMEM_SPLIT ? gmem_size : GMEM_SPLIT, lim = g_vk.props.limits.maxStorageBufferRange;
+        // (maxwell_gmem_split off: one binding of the whole heap, as before)
+        uint64_t range = maxwell_gmem_split && gmem_size > GMEM_SPLIT ? GMEM_SPLIT : gmem_size, lim = g_vk.props.limits.maxStorageBufferRange;
         if (range > lim) range = lim & ~0xFFFFull;
         return (VkDescriptorBufferInfo){gmem_buf, 0, range};
     }
@@ -4225,7 +4254,7 @@ static VkDescriptorSet set_finish(VkDescriptorSetLayout layout, VkWriteDescripto
 // buffers a read-only stage has bound (and the bytes after them, gsnap_info) are copied with its constants, and its
 // shader reads those ranges from the copy (translate.c GLD, GSNAP_BUFFER_INDEX; the rest in place). Never ranges a
 // storing shader has bound (GPU data: gsnap_gpu_note).
-// Only with the overlap on. SAVAGEWIND_VK_GSNAP=0: off; =all: the global memory copies in every pass (the vertex data
+// Only with the overlap on, and by default on Mali only (other GPUs: as before). SAVAGEWIND_VK_GSNAP=0: off, =1: on; =all: the global memory copies in every pass (the vertex data
 // still only the HUD's); SAVAGEWIND_VK_GSNAP_MAX=<KB>: the largest storage buffer copied (1024); SAVAGEWIND_DEBUG_GSNAP=1:
 // counts every 2 s.
 // GPU data (ranges a storing shader had bound): kept as sorted, merged intervals. When full, the two closest are
@@ -4239,7 +4268,7 @@ static int gsnap_mode(void) {
     static int m = -1;
     if (m < 0) {
         const char *e = getenv("SAVAGEWIND_VK_GSNAP");
-        m = !gpu_overlap() ? 0 : !e ? 1 : !strcmp(e, "all") ? 2 : atoi(e) ? 1 : 0;
+        m = !gpu_overlap() ? 0 : !e ? (g_vk.is_mali ? 1 : 0) : !strcmp(e, "all") ? 2 : atoi(e) ? 1 : 0;  // (Mali by default)
         LOG("[vk] global memory the HUD reads: %s\n",
             m == 2 ? "copied at translation (every pass, vertex data the HUD's)" : m ? "copied at translation (final image)" : "in place");
     }

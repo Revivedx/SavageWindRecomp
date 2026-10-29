@@ -397,8 +397,8 @@ static bool devfreq_gpu_sample(PerfStats *s) {
     return true;
 }
 
-// AMD GPUs: amdgpu's sysfs (busy percent, VRAM, hwmon temperature)
-static void amdgpu_sample(PerfStats *s) {
+// AMD GPUs: amdgpu's sysfs (busy percent, VRAM, hwmon temperature); false: no amdgpu device
+static bool amdgpu_sample(PerfStats *s) {
     static char dev[200];
     static bool tried;
     if (!tried) {
@@ -410,7 +410,7 @@ static void amdgpu_sample(PerfStats *s) {
         }
         if (dev[0] && !s->gpu_name[0]) snprintf(s->gpu_name, sizeof s->gpu_name, "%s", g_gpu_hint[0] ? g_gpu_hint : "AMD GPU");
     }
-    if (!dev[0]) return;
+    if (!dev[0]) return false;
     char p[300];
     snprintf(p, sizeof p, "%s/gpu_busy_percent", dev); s->gpu_pct = read_float_file(p);
     snprintf(p, sizeof p, "%s/mem_info_vram_used", dev); float u = read_float_file(p);
@@ -430,6 +430,7 @@ static void amdgpu_sample(PerfStats *s) {
             }
         closedir(d);
     }
+    return true;
 }
 
 static void platform_sample(PerfStats *s, double dt) {
@@ -480,8 +481,9 @@ static void platform_sample(PerfStats *s, double dt) {
     }
     s->cpu_temp_c = cpu_temp_linux(&s->cpu_temp_source);
     if (!nv.ok) {
-        amdgpu_sample(s);
-        if (s->gpu_pct < 0) devfreq_gpu_sample(s);  // (no amdgpu: Mali and other devfreq GPUs)
+        // (no amdgpu: Mali and other devfreq GPUs. Decided by the device, not by gpu_pct: once a devfreq read had set it,
+        // a gpu_pct < 0 test stopped every later read, and load, clock and temperature froze at their first values)
+        if (!amdgpu_sample(s)) devfreq_gpu_sample(s);
     }
 }
 #endif

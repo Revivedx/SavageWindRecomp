@@ -347,7 +347,7 @@ static void create_image(NvnTexture *t, TexBackend *b) {
         static int bc4cpu = -1;
         if (bc4cpu < 0) {
             const char *e = getenv("SAVAGEWIND_VK_BC4_CPU");
-            bc4cpu = e ? atoi(e) != 0 : strstr(g_vk.props.deviceName, "Mali") != NULL;
+            bc4cpu = e ? atoi(e) != 0 : g_vk.is_mali;
         }
         if (bc4cpu && !b->gpu_bc4 && (t->format == 0x49 || t->format == 0x4A) && t->layout.fmt && t->layout.fmt->bpb == 8) {
             b->bc4_cpu = true;
