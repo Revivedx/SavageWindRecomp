@@ -2164,9 +2164,22 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
            c->uses_gmem_store ? "" : "readonly ");
         sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GMem2 { uint w[]; } gmem2_;\n", set, GMEM2_BUFFER_INDEX,
            c->uses_gmem_store ? "" : "readonly ");
-        sp(&s, "#define GSPLIT 0x%xu\n#define GLD(i) ((i) < GSPLIT ? gmem_.w[(i)] : gmem2_.w[(i) - GSPLIT])\n"
-               "#define GST(i, v) { uint gi_ = (i); if (gi_ < GSPLIT) gmem_.w[gi_] = (v); else gmem2_.w[gi_ - GSPLIT] = (v); }\n",
-           (unsigned)(GMEM_SPLIT >> 2));
+        if (c->uses_gmem_store)
+            sp(&s, "#define GSPLIT 0x%xu\n#define GLD(i) ((i) < GSPLIT ? gmem_.w[(i)] : gmem2_.w[(i) - GSPLIT])\n"
+                   "#define GST(i, v) { uint gi_ = (i); if (gi_ < GSPLIT) gmem_.w[gi_] = (v); else gmem2_.w[gi_ - GSPLIT] = (v); }\n",
+               (unsigned)(GMEM_SPLIT >> 2));
+        else {
+            // Read-only: up to 4 ranges of the heap copied at translation (exec.c gsnap: what the HUD's shaders read,
+            // which the game may rewrite while the GPU is still on the frame), r = (first word, words, word in w[]; gs_r[0].w: how many);
+            // the rest in place.
+            sp(&s, "#define GSPLIT 0x%xu\n", (unsigned)(GMEM_SPLIT >> 2));
+            sp(&s, "layout(std430, set = %d, binding = %d) readonly buffer GSnap { uvec4 gs_r[4]; uint w[]; } gsnap_;\n", set,
+               GSNAP_BUFFER_INDEX);
+            sp(&s, "uint GLD(uint i) {\n"
+                   "  uint n_ = min(gsnap_.gs_r[0].w, 4u);\n"
+                   "  for (uint k_ = 0u; k_ < n_; k_++) { uvec4 q_ = gsnap_.gs_r[k_]; if (i - q_.x < q_.y) return gsnap_.w[q_.z + (i - q_.x)]; }\n"
+                   "  return i < GSPLIT ? gmem_.w[i] : gmem2_.w[i - GSPLIT];\n}\n");
+        }
     }
     if (c->uses_rscale) {  // (vertex shaders too: texel fetches from scaled targets, e.g. depth under the sun's flare)
         sp(&s, "layout(std140, set = %d, binding = 18) uniform RScale { vec4 rscale[65]; };\n", set);

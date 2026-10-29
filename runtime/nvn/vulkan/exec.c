@@ -3780,10 +3780,12 @@ static VkDescriptorBufferInfo gmem_info_hi(void) {
 // Vertex / index data read in place from the imported guest heap (renderer.m bind_guest does the same with
 // g_guest_buffer): no per-draw copy, no index scan for the copy size. The game fences its CPU writes as on the
 // Switch. Falls back to copies outside the heap or without the import; SAVAGEWIND_VK_COPY_VERTICES=1 forces copies.
+static bool gsnap_verts(void);
 static bool guest_direct(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSize *off) {
     static int copy = -1;
     if (copy < 0) copy = getenv("SAVAGEWIND_VK_COPY_VERTICES") != NULL;
     if (copy || addr < HEAP_BASE) return false;
+    if (gsnap_verts()) return false;  // (SAVAGEWIND_VK_GSNAP_VERTS=1: the HUD's vertex data copied at translation too)
     if (!gmem_mapped && addr + size > HEAP_BASE + gmem_size && kernel_heap_size() != gmem_tried) { gmem_tried = kernel_heap_size(); gmem_info(); }
     if (!gmem_buf || addr + size > HEAP_BASE + gmem_size) return false;
     *buf = gmem_buf;
@@ -3849,7 +3851,9 @@ static bool gw_add(uint64_t lo, uint64_t hi) {  // false: no room
     return true;
 }
 
+static void gsnap_gpu_note(int stage);
 static void gw_note(int stage) {  // a shader of this stage that stores to global memory was recorded
+    gsnap_gpu_note(stage);
     vtx_hazard = true;  // (the next pass's vertex stage may read it)
     static int hold = -1;
     if (hold < 0) hold = getenv("SAVAGEWIND_VK_GMEM_HOLD") != NULL;
@@ -4072,6 +4076,222 @@ static VkDescriptorSet set_finish(VkDescriptorSetLayout layout, VkWriteDescripto
     return ds;
 }
 
+// ---- (GPU overlap) the global memory the HUD's shaders read, copied at translation
+// With the GPU overlap the game's wait on its frame fence returns a frame early, so it may write frame N+2's data
+// while the GPU still runs frame N. Constant buffers are copied at translation, but what shaders read through global
+// memory (NVN's storage buffers: BOTW's text vertex shader fetches its glyphs that way) was read in place, when the GPU
+// got to it: at each change of a button prompt's text, a GPU still on the frame before (Mali-G610) read glyph data the
+// game had already rewritten - doubled or shifted letters (X Y B -> T X Y) and the prompt layout's hidden Wii U panes
+// ("Tap here", "Wii U GamePad") for a frame or two. In passes into the final image (the HUD and menus), the storage
+// buffers a read-only stage has bound (and the bytes after them, gsnap_info) are copied with its constants, and its
+// shader reads those ranges from the copy (translate.c GLD, GSNAP_BUFFER_INDEX; the rest in place). Never ranges a
+// storing shader has bound (GPU data: gsnap_gpu_note).
+// Only with the overlap on. SAVAGEWIND_VK_GSNAP=0: off; =all: the global memory copies in every pass (the vertex data
+// still only the HUD's); SAVAGEWIND_VK_GSNAP_MAX=<KB>: the largest storage buffer copied (1024); SAVAGEWIND_DEBUG_GSNAP=1:
+// counts every 2 s.
+// GPU data (ranges a storing shader had bound): kept as sorted, merged intervals. When full, the two closest are
+// joined (the gap between them counts as GPU data too: fewer copies, never a stale one).
+#define GSNAP_GPU_MAX 512
+static struct { uint64_t lo, hi; } gsnap_gpu[GSNAP_GPU_MAX];
+static int ngsnap_gpu;
+static uint64_t gsnap_gpu_stores;  // (debug: storing stages seen)
+
+static int gsnap_mode(void) {
+    static int m = -1;
+    if (m < 0) {
+        const char *e = getenv("SAVAGEWIND_VK_GSNAP");
+        m = !gpu_overlap() ? 0 : !e ? 1 : !strcmp(e, "all") ? 2 : atoi(e) ? 1 : 0;
+        LOG("[vk] global memory the HUD reads: %s\n",
+            m == 2 ? "copied at translation (every pass, vertex data the HUD's)" : m ? "copied at translation (final image)" : "in place");
+    }
+    return m;
+}
+
+static int gsnap_gpu_find(uint64_t lo) {  // first interval whose hi > lo
+    int a = 0, b = ngsnap_gpu;
+    while (a < b) { int c = (a + b) / 2; if (gsnap_gpu[c].hi <= lo) a = c + 1; else b = c; }
+    return a;
+}
+
+static void gsnap_gpu_add(uint64_t lo, uint64_t hi) {
+    int i = gsnap_gpu_find(lo);
+    if (i < ngsnap_gpu && gsnap_gpu[i].lo <= lo && hi <= gsnap_gpu[i].hi) return;  // (already in)
+    if (i > 0 && gsnap_gpu[i - 1].hi == lo) i--;  // (touching on the left)
+    int j = i;
+    while (j < ngsnap_gpu && gsnap_gpu[j].lo <= hi) j++;  // [i, j): overlapping or touching
+    if (j > i) {
+        if (gsnap_gpu[i].lo < lo) lo = gsnap_gpu[i].lo;
+        if (gsnap_gpu[j - 1].hi > hi) hi = gsnap_gpu[j - 1].hi;
+        memmove(&gsnap_gpu[i + 1], &gsnap_gpu[j], (size_t)(ngsnap_gpu - j) * sizeof gsnap_gpu[0]);
+        ngsnap_gpu -= j - i - 1;
+        gsnap_gpu[i].lo = lo, gsnap_gpu[i].hi = hi;
+        return;
+    }
+    if (ngsnap_gpu == GSNAP_GPU_MAX) {  // full: join every neighbour closer than the median gap (about half), once
+        static uint64_t gaps[GSNAP_GPU_MAX];
+        int ng = ngsnap_gpu - 1;
+        for (int k = 0; k < ng; k++) gaps[k] = gsnap_gpu[k + 1].lo - gsnap_gpu[k].hi;
+        int a = 0, b = ng - 1, want = ng / 2;  // (quickselect: the median gap)
+        while (a < b) {
+            uint64_t piv = gaps[(a + b) / 2];
+            int x = a, y = b;
+            while (x <= y) {
+                while (gaps[x] < piv) x++;
+                while (gaps[y] > piv) y--;
+                if (x <= y) { uint64_t tmp = gaps[x]; gaps[x] = gaps[y]; gaps[y] = tmp; x++; y--; }
+            }
+            if (want <= y) b = y; else if (want >= x) a = x; else break;
+        }
+        uint64_t lim = gaps[want];
+        int o = 0;
+        for (int k = 1; k < ngsnap_gpu; k++) {
+            if (gsnap_gpu[k].lo - gsnap_gpu[o].hi <= lim) gsnap_gpu[o].hi = gsnap_gpu[k].hi;
+            else gsnap_gpu[++o] = gsnap_gpu[k];
+        }
+        ngsnap_gpu = o + 1;
+        gsnap_gpu_add(lo, hi);
+        return;
+    }
+    memmove(&gsnap_gpu[i + 1], &gsnap_gpu[i], (size_t)(ngsnap_gpu - i) * sizeof gsnap_gpu[0]);
+    gsnap_gpu[i].lo = lo, gsnap_gpu[i].hi = hi;
+    ngsnap_gpu++;
+}
+
+static void gsnap_gpu_note(int stage) {
+    gsnap_gpu_stores++;
+    for (int i = 0; i < 16; i++) {
+        Range r = st.sbuf[stage][i];
+        if (r.addr && r.size) gsnap_gpu_add(r.addr, r.addr + r.size);
+    }
+}
+
+static bool gsnap_gpu_hit(Range r) {
+    int i = gsnap_gpu_find(r.addr);
+    return i < ngsnap_gpu && gsnap_gpu[i].lo < r.addr + r.size;
+}
+
+// SAVAGEWIND_VK_GSNAP_VERTS=1 (test): the HUD's vertex and index data copied too (guest_direct), in passes into the
+// final image. Off by default: with it, the prompt fix cost 30 -> 17 FPS on Mali-G610 (the storage buffer copies
+// themselves ~0.3 ms in 2 s).
+static bool gsnap_verts(void) {
+    static int on = -1;
+    if (on < 0) on = getenv("SAVAGEWIND_VK_GSNAP_VERTS") != NULL;
+    return on && gsnap_mode() && pass_out;
+}
+
+static bool gsnap_linear_hit(Range r) {  // (render targets also written into the heap on the GPU: GPU data)
+    if (!__atomic_load_n(&nlinear_mem, __ATOMIC_RELAXED)) return false;
+    bool hit = false;
+    pthread_mutex_lock(&readback_lock);
+    for (int i = 0; i < nlinear_mem && !hit; i++)
+        hit = r.addr < linear_mem[i].addr + linear_mem[i].size && linear_mem[i].addr < r.addr + r.size;
+    pthread_mutex_unlock(&readback_lock);
+    return hit;
+}
+
+// The ranges a read-only stage's global memory reads are copied from (translate.c GLD: up to GSNAP_N): its storage
+// buffers, each with SAVAGEWIND_VK_GSNAP_EXT bytes after it. BOTW's HUD text shader reads its glyphs past the size its storage
+// buffer is bound with: copied at the bound size (~500 bytes) the prompt still broke, with the bytes after it it
+// didn't. (Where that reaches GPU data, the bound size only.) In passes into the final image; SAVAGEWIND_VK_GSNAP=all:
+// every pass. SAVAGEWIND_VK_GSNAP_EXT=<KB>: the bytes after (16).
+#define GSNAP_N 4
+static VkDescriptorBufferInfo gsnap_info(int stage) {
+    static struct { uint64_t seq; int n; Range r[GSNAP_N]; VkDescriptorBufferInfo bi; } cache[32];
+    static int cpos;
+    static uint64_t maxsz, ext, t_log;
+    static uint64_t n_draw, n_other, n_copy, n_bytes, n_reuse, n_skip, n_short, n_ns;
+    static int dbg = -1;
+    if (!maxsz) {
+        const char *e = getenv("SAVAGEWIND_VK_GSNAP_MAX"), *x = getenv("SAVAGEWIND_VK_GSNAP_EXT");
+        maxsz = (e && atoi(e) > 0 ? (uint64_t)atoi(e) : 1024) << 10;
+        ext = (x && atoi(x) >= 0 ? (uint64_t)atoi(x) : 16) << 10;
+        dbg = getenv("SAVAGEWIND_DEBUG_GSNAP") != NULL;
+    }
+    int m = gsnap_mode();
+    bool here = m && (m == 2 || pass_out) && (stage == 0 || stage == 1) && gmem_size;
+    if (!here) {  // (no copies here: one empty table per submission, the shader looks at none of it)
+        if (m && (stage == 0 || stage == 1)) n_other++;
+        static uint64_t eseq = ~0ull;
+        static VkDescriptorBufferInfo ebi;
+        uint64_t sq = vk_pending_seq();
+        if (eseq != sq) {
+            VkSpan e = vk_transient(GSNAP_N * 16 + 16, 256);
+            memset(e.ptr, 0, GSNAP_N * 16 + 16);
+            ebi = (VkDescriptorBufferInfo){e.buf, e.off, GSNAP_N * 16 + 16};
+            eseq = sq;
+        }
+        return ebi;
+    }
+    uint64_t t_in = dbg ? SDL_GetTicksNS() : 0;
+    uint64_t lo = HEAP_BASE, hi = HEAP_BASE + gmem_size;
+    Range r[GSNAP_N];
+    int n = 0;
+    n_draw++;
+    for (int i = 0; i < 16 && n < GSNAP_N; i++) {
+        Range q = st.sbuf[stage][i];
+        if (!q.addr || !q.size) continue;
+        if (q.size > maxsz || (q.addr & 3) || q.addr < lo || q.addr + q.size > hi || gsnap_gpu_hit(q) || gsnap_linear_hit(q)) {
+            n_skip++;
+            continue;
+        }
+        Range x = {q.addr, q.size + ext};
+        if (x.addr + x.size > hi) x.size = hi - x.addr;
+        if (ext && (gsnap_gpu_hit(x) || gsnap_linear_hit(x))) { x = q; n_short++; }
+        x.size = (x.size + 3) & ~3ull;
+        if (x.addr + x.size > hi) x.size = (hi - x.addr) & ~3ull;
+        r[n++] = x;
+    }
+    uint64_t seq = vk_pending_seq();
+    for (int c = 0; c < 32; c++)  // (the same ranges again in this submission: the same copy)
+        if (cache[c].seq == seq && cache[c].n == n && !memcmp(cache[c].r, r, sizeof r[0] * (size_t)n)) {
+            n_reuse++;
+            if (dbg) n_ns += SDL_GetTicksNS() - t_in;
+            return cache[c].bi;
+        }
+    uint64_t hdr = GSNAP_N * 16, total = hdr;
+    for (int k = 0; k < n; k++) total += (r[k].size + 15) & ~15ull;
+    if (!n) total += 16;
+    VkSpan span = vk_transient(total, 256);
+    uint32_t *h = (uint32_t *)span.ptr;
+    memset(h, 0, hdr);
+    uint64_t at = hdr;
+    for (int k = 0; k < n; k++) {
+        uint64_t padded = (r[k].size + 15) & ~15ull;
+        h[k * 4 + 0] = (uint32_t)((r[k].addr - HEAP_BASE) >> 2);
+        h[k * 4 + 1] = (uint32_t)(r[k].size >> 2);
+        h[k * 4 + 2] = (uint32_t)((at - hdr) >> 2);
+        memcpy((uint8_t *)span.ptr + at, (const void *)(uintptr_t)r[k].addr, r[k].size);
+        memset((uint8_t *)span.ptr + at + r[k].size, 0, padded - r[k].size);
+        at += padded;
+        n_copy++;
+        n_bytes += r[k].size;
+    }
+    h[3] = (uint32_t)n;  // (gs_r[0].w: the shader looks at this many)
+    if (!n) memset((uint8_t *)span.ptr + hdr, 0, 16);
+    VkDescriptorBufferInfo bi = {span.buf, span.off, total};
+    cache[cpos].seq = seq;
+    cache[cpos].n = n;
+    memcpy(cache[cpos].r, r, sizeof r[0] * (size_t)n);
+    cache[cpos].bi = bi;
+    cpos = (cpos + 1) & 31;
+    if (dbg) {
+        uint64_t now = SDL_GetTicksNS();
+        n_ns += now - t_in;
+        if (!t_log) t_log = now;
+        if (now - t_log > 2000000000ull) {
+            LOG("[gsnap] 2 s: %llu HUD draws, %llu elsewhere; %llu ranges copied (%.2f MB), %llu reused, %llu skipped, %llu not "
+                "extended (GPU data after); %llu storing shaders, GPU data in %d ranges; %.2f ms CPU\n",
+                (unsigned long long)n_draw, (unsigned long long)n_other, (unsigned long long)n_copy, n_bytes / 1048576.0,
+                (unsigned long long)n_reuse, (unsigned long long)n_skip, (unsigned long long)n_short,
+                (unsigned long long)gsnap_gpu_stores, ngsnap_gpu, n_ns / 1e6);
+            gsnap_gpu_stores = 0;
+            n_draw = n_other = n_copy = n_bytes = n_reuse = n_skip = n_short = n_ns = 0;
+            t_log = now;
+        }
+    }
+    return bi;
+}
+
 // Writes the descriptor set of one stage. gx..gz: compute group counts (driver constants).
 // pre_ii: texture descriptors already resolved by the caller (draw: fragment textures, needed earlier for the
 // viewport decision), or NULL.
@@ -4116,7 +4336,7 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
             bi[n].offset = 0;
             w[n].pBufferInfo = &bi[n];
         } else if (b->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
-            bi[n] = b->binding == GMEM2_BUFFER_INDEX ? gmem_info_hi() : gmem_info();
+            bi[n] = b->binding == GSNAP_BUFFER_INDEX ? gsnap_info(stage) : b->binding == GMEM2_BUFFER_INDEX ? gmem_info_hi() : gmem_info();
             w[n].pBufferInfo = &bi[n];
         } else {
             continue;  // rscale / tint: written below, once the textures (and their scales) are known
