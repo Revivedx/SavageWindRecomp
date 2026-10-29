@@ -753,6 +753,7 @@ extern "C" void rt_opt_rows(void) {
     }
     wr64(OPT_ORDER, (uint64_t)(uintptr_t)o.data());
     wr32(OPT_ROWS, (uint32_t)o.size());
+    pc_cursor_options_page_changed();
     g_cur_page = page;
     g_reopen = false;
     g_dirty.clear();
@@ -761,7 +762,7 @@ extern "C" void rt_opt_rows(void) {
 // Row init: the flag type of an entry (0 bool, 1 s32); -1: the game's own entry
 // The installed entries are a host vector, not guest-heap pointers.
 extern "C" int rt_opt_pointer_kind(uint64_t row) {
-    if(!g_installed||rd64(OPT_ENTRIES)!=g_installed||!row)return -1;
+    if(!g_installed||rd64(OPT_ENTRIES)!=g_installed||!row||game_options_input_hold())return -1;
     uint32_t index=rd32(row+0x50);
     return index<g_entries.size()?(int)g_entries[index].kind:-1;
 }

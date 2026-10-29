@@ -22,13 +22,26 @@ bool framepace_title_ui(void){return false;}
 uint64_t framepace_script_frame(uint64_t value){return value;}
 void input_pc_escape(bool down){(void)down;abort();}
 void input_pc_map_axes(float out[2]){(void)out;abort();}
-static unsigned actions,refreshes,last_action,scroll_updates;
+static unsigned actions,refreshes,last_action,scroll_updates,activations,help_updates;
+static uint64_t activated_node;
 static uint64_t navigation;
 static Cpu test_cpu;
 Cpu *kernel_current_cpu(void){return &test_cpu;}
 uint64_t input_buttons_now(void){return navigation;}
 int rt_opt_pointer_kind(uint64_t row){return (int)LD32(row+0x50);}
-void guest_call(Cpu *cpu,uint64_t address){if(address==0x7000e30700ull){actions++;last_action=LD32(LD64(cpu->x[0])+0x36c0);}else if(address==0x7000e2eed8ull)refreshes++;else if(address==0x7000d671d4ull)scroll_updates++;else abort();}
+void guest_call(Cpu *cpu,uint64_t address){
+    if(address==0x7000e30700ull){actions++;last_action=LD32(LD64(cpu->x[0])+0x36c0);}
+    else if(address==0x7000e2eed8ull)refreshes++;
+    else if(address==0x7000d671d4ull)scroll_updates++;
+    else if(address==0x7000f6e2c8ull){assert(LD8(cpu->x[0]+0xfc)==1);cpu->x[0]=0;}
+    else if(address==0x7000f57da8ull){
+        activations++;activated_node=cpu->x[1];ST64(cpu->x[0]+0x48,cpu->x[1]);
+        uint64_t owner=LD64(cpu->x[1]+0x20);ST64(owner+0xe0,cpu->x[1]);
+        *(float*)(owner+0x3628+0x30)=90;cpu->x[19]=0xdead;
+    }else if(address==0x7000e3047cull){
+        help_updates++;ST64(cpu->x[0]+0x36c8,LD64(LD64(cpu->x[0]+0x36b8)));
+    }else abort();
+}
 
 int main(void) {
     void *memory;
@@ -77,11 +90,49 @@ int main(void) {
     *(float*)(pane+0x7c)=130;*(float*)(pane+0x8c)=200;
     ST8(row+0x54,0);position_inside=true;point[0]=100;point[1]=200;
     pc_cursor_options_tick(screen);assert(LD64(screen+0x36c8)==row);
-    assert(pc_cursor_hover_box(box)&&box[0]==-8&&box[2]==268&&box[1]==180&&box[3]==220);
+    assert(!pc_cursor_hover_box(box)); // Options never draws a competing PC focus rectangle.
+    // The screen reports cursor type 1 but its native resolver chooses
+    // manager slot 0. Type and array index must not be confused.
+    uint64_t ui=GUEST_LO+0x4000,manager=GUEST_LO+0x5000,control=GUEST_LO+0x5300,node=GUEST_LO+0x5500;
+    ST64(screen+0x28,ui);ST64(ui+0xb18,manager);ST64(manager+0x18,control);ST8(screen+0xfc,1);
+    ST32(screen+0x9c,0x40);ST64(screen+0x90,node+0x40);ST64(node+0x48,screen+0x88);
+    ST64(node+0x18,button);ST64(node+0x20,screen);ST64(screen+0x36c8,0);
+    test_cpu.x[19]=42;*(float*)(view+0x2c)=25;options_scroll_valid=false;
+    pc_cursor_options_tick(screen);
+    assert(activations==1&&activated_node==node&&test_cpu.x[19]==42&&help_updates==1);
+    assert(LD64(screen+0xe0)==node&&LD64(screen+0x36c8)==row);
+    assert(*(float*)(view+0x2c)==25&&*(float*)(view+0x30)==25&&!pc_cursor_hover_box(box));
+    pc_cursor_options_tick(screen);assert(activations==1);
+    // Navigation owns the shared highlight until new mouse input; no stale overlay.
+    ST64(control+0x48,0);navigation=1ull<<15;
+    pc_cursor_options_tick(screen);navigation=0;
+    pc_cursor_options_tick(screen);assert(activations==1&&!pc_cursor_hover_box(box));
+    point[0]+=2;pc_cursor_options_tick(screen);assert(activations==2);
     click_pending=true;pc_cursor_options_tick(screen);assert(!click_pending&&actions==7);
+    // Native Options can capture Npad input: keyboard ownership still has
+    // to work when input_buttons_now() reports zero, including after key-up.
+    ST64(control+0x48,0);navigation=0;
+    SDL_Event event={0};event.type=SDL_EVENT_KEY_DOWN;event.key.scancode=SDL_SCANCODE_DOWN;
+    assert(!pc_cursor_event(&event));pc_cursor_options_tick(screen);assert(activations==2);
+    event.type=SDL_EVENT_KEY_UP;assert(!pc_cursor_event(&event));
+    pc_cursor_options_tick(screen);assert(activations==2);
+    event.type=SDL_EVENT_MOUSE_MOTION;event.motion.xrel=1;
+    assert(pc_cursor_event(&event));pc_cursor_options_tick(screen);assert(activations==3);
+    // A page rebuild may reuse both guest pointers. Its old long-list offset
+    // must not displace a shorter parent page, even while keyboard owns focus.
+    event.type=SDL_EVENT_KEY_DOWN;assert(!pc_cursor_event(&event));
+    options_scroll_valid=true;options_scroll=900;
+    *(float*)(view+0x2c)=*(float*)(view+0x30)=900;
+    pc_cursor_options_page_changed();unsigned updates=scroll_updates;
+    pc_cursor_options_tick(screen);
+    assert(*(float*)(view+0x2c)==0&&*(float*)(view+0x30)==0);
+    assert(!options_scroll_valid&&scroll_updates==updates+1&&activations==3);
+    // Mouse reclaim on click does not require moving the stationary pointer.
+    event.type=SDL_EVENT_MOUSE_BUTTON_DOWN;event.button.button=SDL_BUTTON_LEFT;
+    assert(pc_cursor_event(&event));ST64(control+0x48,0);pc_cursor_options_tick(screen);assert(activations==4);
     g_settings.pc_cursor=false;click_pending=true;pc_cursor_options_tick(screen);assert(click_pending&&actions==7);
     pc_cursor_reset();assert(!options_scroll_valid&&!options_screen_active&&!options_rows_active);
-    puts("PASS: Options viewport wheel without selection/d-pad, clamps, hover rectangles, click actions, setting gate and reboot reset (synthetic host state).");
+    puts("PASS: Options viewport wheel without selection/d-pad, clamps, hover rectangles, click actions, native cursor-type resolution, single shared focus, input ownership, captured-key ownership, same-address page rebuild, setting gate and reboot reset (synthetic host state).");
 #ifdef _WIN32
     VirtualFree(memory,0,MEM_RELEASE);
 #else

@@ -29,6 +29,12 @@ static _Atomic int wheel;
 static uint64_t options_screen_active,options_rows_active;
 static bool options_scroll_valid;
 static float options_scroll;
+static bool options_keyboard;
+static float options_keyboard_point[2];
+static _Atomic bool pointer_keyboard_input;
+static _Atomic uint64_t pointer_mouse_events;
+static uint64_t options_keyboard_mouse_events;
+static bool options_page_pending;
 static _Atomic bool quick_confirmed;
 static _Atomic uint64_t confirm_until, hover_until, hover_rect[2], motion_at;
 static bool map_down, map_dragged;
@@ -185,6 +191,17 @@ bool pc_cursor_event(const SDL_Event *e) {
     }
     if (!enabled()) return false;
     if (!pc_cursor_active()) return false;
+    // Native Options captures game buttons, so input_buttons_now() may be
+    // zero even while a navigation key is down. Track the real SDL source.
+    if(e->type==SDL_EVENT_KEY_DOWN||e->type==SDL_EVENT_GAMEPAD_BUTTON_DOWN||
+       (e->type==SDL_EVENT_GAMEPAD_AXIS_MOTION&&
+        e->gaxis.axis<=SDL_GAMEPAD_AXIS_RIGHTY&&abs(e->gaxis.value)>16000)) {
+        pointer_keyboard_input=true;hover_until=0;
+    }
+    if((e->type==SDL_EVENT_MOUSE_MOTION&&(e->motion.xrel!=0||e->motion.yrel!=0))||
+       e->type==SDL_EVENT_MOUSE_WHEEL||e->type==SDL_EVENT_MOUSE_BUTTON_DOWN) {
+        pointer_keyboard_input=false;pointer_mouse_events++;
+    }
     if (e->type == SDL_EVENT_MOUSE_MOTION) { window_position(e->motion.x,e->motion.y);motion_at=plat_now_ns(); return true; }
     if (e->type == SDL_EVENT_MOUSE_WHEEL) {
         wheel+=(e->wheel.y>0)-(e->wheel.y<0); motion_at=plat_now_ns();return true;
@@ -276,26 +293,67 @@ static bool options_box(uint64_t pane,float box[4]) {
     box[0]=x-hw;box[1]=y-hh;box[2]=x+hw;box[3]=y+hh;
     return isfinite(x)&&isfinite(y)&&isfinite(hw)&&isfinite(hh)&&hw>0&&hh>0;
 }
+// Navigation keys own focus until the pointer moves again. A stationary mouse
+// must not pull keyboard/controller selection back to its previous hover row.
+static bool options_mouse_owns_focus(bool wheel_input) {
+    extern uint64_t input_buttons_now(void);
+    if(pointer_keyboard_input||(input_buttons_now()&((15ull<<12)|(15ull<<16)))) {
+        options_keyboard=true;options_keyboard_mouse_events=pointer_mouse_events;memcpy(options_keyboard_point,point,sizeof(point));
+        options_scroll_valid=false;hover_until=0;return false;
+    }
+    if(options_keyboard) {
+        if(options_keyboard_mouse_events==pointer_mouse_events&&!wheel_input&&!click_pending&&fabsf(point[0]-options_keyboard_point[0])<.5f&&fabsf(point[1]-options_keyboard_point[1])<.5f)return false;
+        options_keyboard=false;
+    }
+    return true;
+}
+static uint64_t options_row_at(uint64_t screen,float box[4],unsigned *kind_out) {
+    if((!position_inside&&!pointer_test())||point[1]<-260||point[1]>230)return 0;
+    uint64_t rows=LD64(screen+0x36b8);unsigned count=LD32(screen+0x36b0);
+    if(!ptr(rows)||!count||count>64)return 0;
+    for(unsigned i=0;i<count;i++) {
+        uint64_t row=LD64(rows+i*8);if(!ptr(row))continue;
+        int kind=rt_opt_pointer_kind(row);if(kind<0||kind>2)continue;
+        uint64_t button=LD64(row+(kind==0?0x18:kind==1?0x20:0x28));
+        if(!ptr(button)||!options_box(LD64(button+0x60),box))continue;
+        if(point[0]>=-280&&point[0]<=box[2]&&point[1]>=box[1]&&point[1]<=box[3]) {*kind_out=(unsigned)kind;return row;}
+    }
+    return 0;
+}
+static void options_focus(Cpu *c,uint64_t screen,uint64_t row,unsigned kind);
 // Options owns a native scroll view. Wheel input changes its view offset;
 // it never synthesizes d-pad presses or walks the selection through rows.
+void pc_cursor_options_page_changed(void) {
+    // A page rebuild can reuse the exact same screen and row-array addresses.
+    // Do not carry the previous page's locked offset into the rebuilt list.
+    options_page_pending=true;options_scroll_valid=false;
+    options_screen_active=options_rows_active=0;
+}
 void pc_cursor_options_tick(uint64_t screen) {
     if(!pc_cursor_active()||!ptr(screen)||LD8(screen+0xfe)!=2||g_site.opt_screen_rows!=0x36b0)return;
     sample_pointer();
+    // Options uses one native highlight for both input methods, never a second overlay.
+    hover_until=0;
     uint64_t rows=LD64(screen+g_site.opt_screen_rows+8),view=screen+0x3628;
     unsigned count=LD32(screen+g_site.opt_screen_rows);
     if(!ptr(rows)||!count||count>64)return;
     if(options_screen_active!=screen||options_rows_active!=rows) {
         options_screen_active=screen;options_rows_active=rows;options_scroll_valid=false;
     }
+    bool page_changed=options_page_pending;options_page_pending=false;
+    if(page_changed) {
+        *(float*)(view+0x2c)=*(float*)(view+0x30)=0;
+        options_scroll=0;options_scroll_valid=false;
+        Cpu*c=kernel_current_cpu();if(c){Cpu saved=*c;c->x[0]=view;float ratio=1;memcpy(&c->v[0],&ratio,4);guest_call(c,0x7000d671d4);*c=saved;}
+    }
     int scroll=atomic_exchange(&wheel,0);
+    if(!options_mouse_owns_focus(scroll!=0))return;
     float current=*(float*)(view+0x2c),height=*(float*)(view+0x48)-*(float*)(view+0x40);
     float content=*(float*)(view+0x28),maximum=fmaxf(0,content-height);
     if(isfinite(current)&&isfinite(maximum)&&maximum<10000) {
         if(scroll) {options_scroll=fmaxf(0,fminf(maximum,current-scroll*50.f));options_scroll_valid=true;}
         // Hover changes the highlighted row, never the view offset. Explicit
         // keyboard/controller navigation can take ownership of scrolling again.
-        extern uint64_t input_buttons_now(void);
-        if(input_buttons_now()&((15ull<<12)|(15ull<<16))){options_scroll_valid=false;return;}
         if(options_scroll_valid) {
             *(float*)(view+0x2c)=*(float*)(view+0x30)=options_scroll;
             if(scroll) {
@@ -303,24 +361,15 @@ void pc_cursor_options_tick(uint64_t screen) {
             }
         }
     }
-    if(!position_inside&&!pointer_test())return;
-    if(point[1]<-260||point[1]>230)return;
-    for(unsigned i=0;i<count;i++) {
-        uint64_t row=LD64(rows+i*8);if(!ptr(row))continue;
-        int kind=rt_opt_pointer_kind(row);if(kind<0||kind>2)continue;
-        unsigned offset=kind==0?0x18:kind==1?0x20:0x28;
-        uint64_t button=LD64(row+offset),pane=ptr(button)?LD64(button+0x60):0;
-        float box[4];if(!options_box(pane,box))continue;
-        // Labels belong to the same row; arrows/toggle halves use the value box.
-        if(point[0]>=-280&&point[0]<=box[2]&&point[1]>=box[1]&&point[1]<=box[3]) {
-            if(!options_scroll_valid&&isfinite(current)){options_scroll=current;options_scroll_valid=true;}
-            ST64(screen+0x36c8,row);
-            uint64_t packed[2];memcpy(packed,box,16);hover_rect[0]=packed[0];hover_rect[1]=packed[1];hover_until=plat_now_ns()+50000000;
-            if(click_pending) {click_pending=false;Cpu*c=kernel_current_cpu();if(c)options_click(c,screen,row,(unsigned)kind,box);}
-            break;
-        }
+    float box[4];unsigned kind;
+    uint64_t row=options_row_at(screen,box,&kind);
+    if(row) {
+        if(!options_scroll_valid&&isfinite(current)){options_scroll=current;options_scroll_valid=true;}
+        Cpu *focus_cpu=kernel_current_cpu();if(focus_cpu)options_focus(focus_cpu,screen,row,kind);
+        if(click_pending) {click_pending=false;Cpu*c=kernel_current_cpu();if(c)options_click(c,screen,row,kind,box);}
     }
 }
+
 static void options_click(Cpu *c,uint64_t screen,uint64_t row,unsigned kind,const float box[4]) {
     unsigned action=0;
     if(kind==0) {
@@ -340,11 +389,40 @@ static void options_click(Cpu *c,uint64_t screen,uint64_t row,unsigned kind,cons
     call(c,0x7000e2eed8,row,0,0);
     if(getenv("SAVAGEWIND_PC_CURSOR_LOG"))LOG("[pc-options-click] row %llx kind %u action %u\n",row,kind,action);
 }
+static void options_focus(Cpu *c,uint64_t screen,uint64_t row,unsigned kind) {
+    // Screen's cursor type (+fc) is translated by its UI controller; it is
+    // not the BoxCursorMgr array index. Resolve the actual active control.
+    uint64_t ui=LD64(screen+0x28);if(!ptr(ui))return;
+    uint64_t manager=LD64(ui+0xb18);if(!ptr(manager))return;
+    unsigned target=(unsigned)call(c,0x7000f6e2c8,screen,0,0);if(target>1)return;
+    uint64_t control=LD64(manager+0x18+8*target);if(!ptr(control))return;
+    uint64_t button=LD64(row+(kind==0?0x18:kind==1?0x20:0x28));
+    int32_t offset=(int32_t)LD32(screen+0x9c);
+    uint64_t head=screen+0x88,link=LD64(head+8);
+    for(unsigned i=0;i<256&&link!=head&&ptr(link);i++) {
+        uint64_t node=link-offset;if(!ptr(node))break;
+        if(LD64(node+0x18)==button&&LD64(node+0x20)==screen) {
+            if(LD64(control+0x48)!=node||LD64(screen+0xe0)!=node||LD64(screen+0x36c8)!=row) {
+                uint64_t view=screen+0x3628;float current=*(float*)(view+0x2c);
+                // Activation changes the shared highlight and calls the native
+                // Options help callback. No independent PC rectangle is drawn.
+                call(c,0x7000f57da8,control,node,0);
+                if(LD64(screen+0x36c8)!=row)call(c,0x7000e3047c,screen,button,0);
+                ST8(screen+0x106,1);
+                if(isfinite(current)) {
+                    options_scroll=current;options_scroll_valid=true;
+                    *(float*)(view+0x2c)=*(float*)(view+0x30)=current;
+                }
+            }
+            break;
+        }
+        link=LD64(link+8);
+    }
+}
 static bool options_pointer(Cpu *c,uint64_t screens,uint64_t bounds) {
     (void)c;(void)bounds;
     uint64_t screen=LD64(screens+8*0x34);
-    // Row input is handled in the Options update, including screens whose
-    // nested buttons are absent from BoxCursorMgr's top-level node list.
+    // Options tick handles both hover focus and direct row actions.
     return ptr(screen)&&LD8(screen+0xfe)==2&&point[1]>=-260&&point[1]<=230;
 }
 
@@ -782,7 +860,7 @@ void rt_pc_cursor_manager(Cpu *c, uint64_t activate, uint64_t bounds) {
 }
 
 RT_ON_RESET(pc_cursor_reset) {
-    options_scroll_valid=false;options_scroll=0;options_screen_active=options_rows_active=0;
+    options_scroll_valid=false;options_scroll=0;options_keyboard=false;options_page_pending=false;pointer_keyboard_input=false;pointer_mouse_events=0;options_keyboard_mouse_events=0;options_screen_active=options_rows_active=0;
     active = false; held = false; frame_press = frame_release = frame_held = false;
     click_pending=false;
     injected_manager=0;

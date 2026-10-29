@@ -14,9 +14,10 @@ Changes apply immediately and are saved as `pc_cursor` and `pc_bow` in `savagewi
 ## Pointer behavior
 
 In native Options pages, the wheel scrolls the view without generating d-pad
-input. Hover highlights the row under the pointer; left-click operates its
+input. Hover activates the native row highlight and its localized help text; left-click operates its
 toggle, button or choice arrow. Hover does not recenter the scroll view. These
 controls use **PC mouse pointer**, including immediate disable and reboot reset.
+Mouse and keyboard/controller share one native highlight and help text. Options does not draw a separate mouse highlight. Keyboard/controller navigation retains focus until the mouse moves, clicks or scrolls again, including when Options captures the game button state. Rebuilt pages start at the top, so returning from a long key-binding list cannot carry its scroll offset into the parent menu.
 
 Inventory categories support clicking their icons, wheel navigation and horizontal dragging. Quick equipment supports wheel and drag selection, retaining the selected item when its selector closes. The current `test` defaults remain **1 weapons / 2 shields / 3 runes / 4 whistle**. Saved custom bindings are not overwritten.
 
@@ -31,12 +32,12 @@ The specialized map/inventory adapters target BOTW 1.9.0. Optional generator sit
 Updated onto `test` at `4249c88`, retaining upstream changes. The Windows executable builds. Automated coverage includes:
 
 - `make test-pc-controls`: actual host cursor-update transitions (including map entry while relative mode is already off), focus, overlay/F2 policy, safe bow cancellation, number-key defaults, options persistence across boots and startup overrides.
-- `tests/test_options_pointer.c`: synthetic Options viewport scrolling without d-pad/selection changes, scroll limits, transformed hover rectangles, direct row actions, disabled pointer behavior and reboot reset. Actual Options hit detection and scrolling still require the contributor's gameplay check.
+- `tests/test_options_pointer.c`: synthetic Options viewport scrolling without d-pad/selection changes, scroll limits, transformed hover rectangles, direct row actions, native focus activation without auto-scrolling, input ownership, disabled pointer behavior and reboot reset. The contributor also checked Options hit detection, wheel scrolling, help text, keyboard/mouse focus transfer and returning from binding subpages in game.
 - `tests/test_bow.c`: draw, shot, redraw and cancellation at 30/60/120 FPS.
 - `tests/test_cursor_math.c`: seven resolutions/aspect ratios, letterboxing, 1,200 pan/zoom samples, time-based WASD/edge navigation.
 - `tools/test_game_sites.py`: 45 checks.
 
-Earlier versions were tested in game by the contributor and maintainer on Windows. **Manual gameplay validation of this revision is pending the contributor's separate-instance test**, including the two native Options rows, cursor visibility, focus transitions, persistence and controller regression. Steam Deck and broader controller testing remain pending.
+The contributor tested this revision in a separate Windows build based on `test` at `4249c88`, at 1920 x 1080 on an NVIDIA RTX 3080 Ti. The local playable build also contains the separate virtual-gyro contribution; that code is not included in this PR. The executable opens directly, with no launcher script or environment overrides required. The contributor confirmed native Options click actions, viewport wheel scrolling, one shared highlight and help text, keyboard/mouse focus handoff, and returning from long keyboard-binding pages. Earlier gameplay checks covered menus, inventory, quick equipment, bow controls, map navigation and stamps, including 4K. The PC-pointer-only executable also builds and passes the host tests. Steam Deck and broader controller testing remain pending.
 
 ```sh
 make -j8
