@@ -24,7 +24,7 @@ typedef int sock_t;
 #include <string.h>
 
 #pragma pack(push, 1)
-typedef struct { float pos[3], yaw; uint8_t flags; uint16_t ping_ms; } WireState;
+typedef struct { float pos[3], yaw; uint8_t flags; uint16_t ping_ms; uint8_t anim; } WireState;
 typedef struct { uint32_t magic; uint16_t version; char name[24], pass[24]; } WireHello;
 #pragma pack(pop)
 enum { M_HELLO = 1, M_WELCOME, M_REJECT, M_STATE, M_JOIN, M_LEAVE, M_CHAT, M_PING, M_PONG };
@@ -48,7 +48,7 @@ int main(int argc, char **argv) {
     if (getaddrinfo(host, port, &hints, &res)) { fprintf(stderr, "bot: can't resolve %s\n", host); return 1; }
     sock_t s = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (connect(s, res->ai_addr, (int)res->ai_addrlen)) { fprintf(stderr, "bot: can't connect to %s:%s\n", host, port); return 1; }
-    WireHello h = {.magic = 0x4c4f5753u, .version = 1};
+    WireHello h = {.magic = 0x4c4f5753u, .version = 2};
     snprintf(h.name, sizeof h.name, "%s", name);
     msg(s, M_HELLO, &h, sizeof h);
     float centre[3] = {0, 0, 0};
@@ -95,6 +95,7 @@ int main(int argc, char **argv) {
             ws.pos[0] = centre[0] + sinf(a) * radius, ws.pos[1] = centre[1], ws.pos[2] = centre[2] + cosf(a) * radius;
             ws.yaw = a + 1.5707963f;
             ws.flags = have ? 0 : 2;
+            ws.anim = 1;  // (walking: 4 m around at 0.6 rad/s is 2.4 m/s)
             msg(s, M_STATE, &ws, sizeof ws);
             if (have && !said) {
                 said = 1;

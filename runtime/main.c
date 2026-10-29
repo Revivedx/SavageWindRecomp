@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "gamelib.h"
 #include "paths.h"
@@ -373,6 +374,15 @@ int main(int argc, char **argv) {
 #endif
     rt_paths_init();  // the data root becomes the working directory (runtime/paths.h)
     online_settings_load();
+    {   // online play's actors (tools/online_mod.py): its folder in the data root is the RomFS overlay, unless one is set
+        struct stat sb;
+        const char *ov = getenv("SAVAGEWIND_ROMFS_OVERLAY");
+        if ((!ov || !*ov) && stat("online_mod/online_mod.txt", &sb) == 0) {
+            static char env[] = "SAVAGEWIND_ROMFS_OVERLAY=online_mod";
+            putenv(env);
+            LOG("[online] online play's actors: online_mod\n");
+        }
+    }
     {   // SAVAGEWIND_ONLINE=host | <address>: create or join a session right away (shortcuts, tests)
         const char *o = getenv("SAVAGEWIND_ONLINE");
         if (o && !strcmp(o, "host")) online_host();

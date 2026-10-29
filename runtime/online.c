@@ -37,7 +37,7 @@ typedef int sock_t;
 #include "rt.h"
 
 #define MAGIC 0x4c4f5753u  // "SWOL"
-#define PROTOCOL 1
+#define PROTOCOL 2
 #define SEND_HZ 20
 #define INTERP_NS 100000000ull  // the others are drawn this far behind what was last heard (smooth between updates)
 #define TIMEOUT_NS 10000000000ull  // nothing heard for this long: the connection is gone
@@ -46,7 +46,7 @@ enum { M_HELLO = 1, M_WELCOME, M_REJECT, M_STATE, M_JOIN, M_LEAVE, M_CHAT, M_PIN
 enum { R_FULL = 1, R_VERSION, R_PASSWORD, R_NAME };
 
 #pragma pack(push, 1)
-typedef struct { float pos[3], yaw; uint8_t flags; uint16_t ping_ms; } WireState;
+typedef struct { float pos[3], yaw; uint8_t flags; uint16_t ping_ms; uint8_t anim; } WireState;
 typedef struct { uint32_t magic; uint16_t version; char name[ONLINE_NAME_MAX], pass[ONLINE_NAME_MAX]; } WireHello;
 #pragma pack(pop)
 
@@ -319,7 +319,7 @@ int online_server_main(int port, const char *password) {
 }
 
 // ------------------------------------------------------------------ the client
-typedef struct { uint64_t t; float pos[3], yaw; uint8_t flags; } Snap;
+typedef struct { uint64_t t; float pos[3], yaw; uint8_t flags, anim; } Snap;
 #define SNAPS 8
 typedef struct {
     bool used;
@@ -383,11 +383,31 @@ static void add_notice(const char *fmt, const char *name) {  // (lock held)
     g.notice_t[g.nnotice++] = plat_now_ns();
 }
 
+// What Link is doing, from how he moves (20 samples a second): on the ground by his speed, in the air by how fast he
+// rises or falls, gliding when he falls slowly while going fast. A change needs two samples in a row.
+static uint8_t motion_anim(float dh, float dy) {
+    float vh = dh * SEND_HZ, vy = dy * SEND_HZ;
+    uint8_t a;
+    if (vy < -7) a = ONLINE_A_FALL;
+    else if (vy < -0.8f && vh > 3) a = ONLINE_A_GLIDE;
+    else if (vy > 3) a = ONLINE_A_JUMP;
+    else if (vy > 0.4f && vh < 1.2f) a = ONLINE_A_CLIMB;
+    else if (vh < 0.3f) a = ONLINE_A_WAIT;
+    else if (vh < 2.8f) a = ONLINE_A_WALK;
+    else if (vh < 6.5f) a = ONLINE_A_RUN;
+    else a = ONLINE_A_DASH;
+    static uint8_t cur, cand;
+    if (a == cand) cur = a;
+    cand = a;
+    return cur;
+}
+
 // Link right now: false while there is no Link (loading, the title screen)
 static bool sample_local(WireState *w) {
     static float last[3], yaw;
     static bool have;
     w->flags = 0;
+    w->anim = ONLINE_A_WAIT;
     if (g_site.pause_state && *(uint32_t *)(uintptr_t)g_site.pause_state) w->flags |= ONLINE_F_PAUSED;
     uint64_t pinfo = g_site.player_info ? *(uint64_t *)(uintptr_t)g_site.player_info : 0;
     if (!pinfo) { have = false; return false; }
@@ -395,13 +415,16 @@ static bool sample_local(WireState *w) {
     for (int k = 0; k < 3; k++)
         if (!isfinite(w->pos[k]) || fabsf(w->pos[k]) > 100000) { have = false; return false; }
     if (w->pos[0] == 0 && w->pos[1] == 0 && w->pos[2] == 0) { have = false; return false; }  // (no Link placed yet)
+    static uint8_t anim;
     if (have) {  // heading: where he has been going (kept while he stands)
-        float dx = w->pos[0] - last[0], dz = w->pos[2] - last[2];
+        float dx = w->pos[0] - last[0], dy = w->pos[1] - last[1], dz = w->pos[2] - last[2];
         if (dx * dx + dz * dz > 0.02f * 0.02f) yaw = atan2f(dx, dz);
+        if (dx * dx + dy * dy + dz * dz < 50 * 50) anim = motion_anim(sqrtf(dx * dx + dz * dz), dy);
     }
     memcpy(last, w->pos, sizeof last);
     have = true;
     w->yaw = yaw;
+    w->anim = anim;
     return true;
 }
 
@@ -410,7 +433,7 @@ static void remote_snap(int id, const WireState *w) {  // (lock held)
     Snap *s = &r->s[r->head];
     s->t = plat_now_ns();
     memcpy(s->pos, w->pos, sizeof s->pos);
-    s->yaw = w->yaw, s->flags = w->flags;
+    s->yaw = w->yaw, s->flags = w->flags, s->anim = w->anim < ONLINE_A_COUNT ? w->anim : ONLINE_A_WAIT;
     r->head = (r->head + 1) % SNAPS;
     if (r->ns < SNAPS) r->ns++;
     r->ping = w->ping_ms;
@@ -674,6 +697,7 @@ bool online_players(OnlinePlayer out[ONLINE_MAX]) {
         float dyaw = remainderf(b->yaw - a->yaw, 6.2831853f);
         o->yaw = a->yaw + dyaw * f;
         o->flags = b->flags;
+        o->anim = b->anim;
     }
     pthread_mutex_unlock(&g.lock);
     return true;

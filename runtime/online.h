@@ -21,6 +21,11 @@ extern "C" {
 
 enum { ONLINE_OFF, ONLINE_CONNECTING, ONLINE_CONNECTED, ONLINE_FAILED };
 enum { ONLINE_F_PAUSED = 1, ONLINE_F_LOADING = 2 };  // OnlinePlayer.flags
+// What a player's Link is doing (OnlinePlayer.anim): the animation the others' copies of him play
+// (runtime/online_actors.c k_anims, tools/online_mod.py ANIMS: the same order)
+enum { ONLINE_A_WAIT, ONLINE_A_WALK, ONLINE_A_RUN, ONLINE_A_DASH, ONLINE_A_JUMP, ONLINE_A_FALL, ONLINE_A_GLIDE,
+       ONLINE_A_SWIM_WAIT, ONLINE_A_SWIM, ONLINE_A_CLIMB_WAIT, ONLINE_A_CLIMB, ONLINE_A_SQUAT_WAIT, ONLINE_A_SQUAT,
+       ONLINE_A_COUNT };
 
 typedef struct {
     bool used;
@@ -28,6 +33,7 @@ typedef struct {
     float pos[3];       // Link's feet, in the world (interpolated: a tenth of a second behind)
     float yaw;          // heading, radians (0: +z), from where he has been moving
     uint8_t flags;      // ONLINE_F_*
+    uint8_t anim;       // ONLINE_A_*
     uint32_t ping_ms;   // (the local player's own slot: the round trip to the server)
 } OnlinePlayer;
 
