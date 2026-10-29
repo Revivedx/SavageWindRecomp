@@ -377,7 +377,8 @@ int main(int argc, char **argv) {
     if (!root) root = own_game_dir();
     if (!root) root = "extracted";
     {   // online play's actors (tools/online_mod.py): its folder in the data root is the RomFS overlay, unless one is
-        // set; a source checkout makes it from the game files the first time (Python with oead: tools/setup_windows.ps1)
+        // set; a source checkout makes it from the game files the first time (Python with oead: tools/setup_windows.ps1),
+        // and again over one older than the runtime's (without gear.txt: its players carried nothing)
         struct stat sb;
         const char *ov = getenv("SAVAGEWIND_ROMFS_OVERLAY");
 #ifdef _WIN32
@@ -385,7 +386,7 @@ int main(int argc, char **argv) {
 #else
         const char *py = "tools/venv/bin/python";
 #endif
-        if ((!ov || !*ov) && stat("online_mod/online_mod.txt", &sb) != 0 && stat("tools/online_mod.py", &sb) == 0 &&
+        if ((!ov || !*ov) && stat("online_mod/gear.txt", &sb) != 0 && stat("tools/online_mod.py", &sb) == 0 &&
             stat(py, &sb) == 0) {
             char cmd[1400];
             snprintf(cmd, sizeof cmd, "\"\"%s\" -I tools/online_mod.py \"%s/romfs\" online_mod\"", py, root);

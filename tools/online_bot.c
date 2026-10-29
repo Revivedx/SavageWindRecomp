@@ -1,8 +1,11 @@
 // (test) A player without a game for online play (runtime/online.c): joins a session and walks in a circle around the
-// first other player it hears from, so a single copy of the game shows someone in the world. Says hello in the chat.
+// first other player it hears from, so a single copy of the game shows someone in the world: 6 s walking with its
+// gear put away, then 4 s standing, sword drawn, swinging it (the player's own AS: Move, WaitAttention, CutS1, ...).
+// Says hello in the chat.
 //
 //   cc -O2 -o build/online_bot tools/online_bot.c [-lws2_32]
-//   build/online_bot [host] [port] [name] [radius] [head upper lower]   (127.0.0.1 52520 Bot 4, Hylian set)
+//   build/online_bot [host] [port] [name] [radius] [head upper lower] [weapon shield bow sheath quiver]
+//                    (127.0.0.1 52520 Bot 4, Hylian set, Traveler's sword, shield, bow, its sheath, a quiver)
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -18,19 +21,28 @@ typedef int sock_t;
 #define sleep_ms(ms) usleep((ms) * 1000)
 #endif
 #include <math.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #pragma pack(push, 1)
-typedef struct { float pos[3], yaw; uint8_t flags; uint16_t ping_ms; uint8_t anim; } WireState;
+typedef struct {
+    float pos[3], yaw;
+    uint8_t flags;
+    uint16_t ping_ms;
+    uint8_t anim;
+    char as[4][32];  // the AS its Link plays: slot 0, slot 1 banks 0 and 1, slot 2
+    uint8_t gear_bone[5];  // runtime/online_actors.c k_bones + 1: 1 Weapon_R, 2 Weapon_L, 3 Pod_A, 4 Pod_B, 5 Pod_C
+    float gear_rel[5][12];
+} WireState;
 typedef struct { uint32_t magic; uint16_t version; char name[24], pass[24]; } WireHello;
 #pragma pack(pop)
 enum { M_HELLO = 1, M_WELCOME, M_REJECT, M_STATE, M_JOIN, M_LEAVE, M_CHAT, M_PING, M_PONG, M_EQUIP };
 
 static void msg(sock_t s, uint8_t type, const void *p, int n) {
-    uint8_t b[600];
+    uint8_t b[1100];
     b[0] = (uint8_t)(n + 1), b[1] = (uint8_t)((n + 1) >> 8), b[2] = type;
     memcpy(b + 3, p, n);
     send(s, (const char *)b, n + 3, 0);
@@ -48,7 +60,7 @@ int main(int argc, char **argv) {
     if (getaddrinfo(host, port, &hints, &res)) { fprintf(stderr, "bot: can't resolve %s\n", host); return 1; }
     sock_t s = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (connect(s, res->ai_addr, (int)res->ai_addrlen)) { fprintf(stderr, "bot: can't connect to %s:%s\n", host, port); return 1; }
-    WireHello h = {.magic = 0x4c4f5753u, .version = 3};
+    WireHello h = {.magic = 0x4c4f5753u, .version = 6};
     snprintf(h.name, sizeof h.name, "%s", name);
     msg(s, M_HELLO, &h, sizeof h);
     float centre[3] = {0, 0, 0};
@@ -90,20 +102,50 @@ int main(int argc, char **argv) {
             FD_SET(s, &rd);
         }
         if (id >= 0) {
-            WireState ws = {0};
-            float a = (float)(t * 0.6);
+            static WireState ws;
+            static float a;
+            double ph = fmod(t, 10);
+            bool fight = ph >= 6;
+            if (!fight) a = (float)(a + 0.05 * 0.6);  // (walking: 4 m around at 0.6 rad/s is 2.4 m/s)
+            memset(&ws, 0, sizeof ws);
             ws.pos[0] = centre[0] + sinf(a) * radius, ws.pos[1] = centre[1], ws.pos[2] = centre[2] + cosf(a) * radius;
             ws.yaw = a + 1.5707963f;
             ws.flags = have ? 0 : 2;
-            ws.anim = 1;  // (walking: 4 m around at 0.6 rad/s is 2.4 m/s)
+            ws.anim = fight ? 0 : 1;
+            static const char *const swing[] = {"WaitAttention", "CutS1", "CutS2", "CutS3", "CutSF", "WaitAttention"};
+            const char *as = fight ? swing[(int)((ph - 6) / 0.7) % 6] : "Move";
+            snprintf(ws.as[0], 32, "%s", as);
+            snprintf(ws.as[1], 32, "%s", as);
+            // the gear on its bones (as it sits there: the bone's own matrix): the sword in the right hand while
+            // fighting, else on the back with the shield and the bow; the sheath and quiver on the back
+            static const uint8_t away[5] = {3, 4, 5, 3, 5}, drawn[5] = {1, 2, 5, 3, 5};
+            for (int k = 0; k < 5; k++) {
+                ws.gear_bone[k] = fight ? drawn[k] : away[k];
+                ws.gear_rel[k][0] = ws.gear_rel[k][5] = ws.gear_rel[k][10] = 1;
+            }
             msg(s, M_STATE, &ws, sizeof ws);
             if (have && !said) {
                 said = 1;
                 const char *hi = "hola! soy un bot de prueba";
                 msg(s, M_CHAT, hi, (int)strlen(hi) + 1);
-                char equip[3][48] = {{0}};  // what it wears (the game's armour actor names)
-                const char *def[3] = {"Armor_001_Head", "Armor_001_Upper", "Armor_001_Lower"};
-                for (int k = 0; k < 3; k++) snprintf(equip[k], 48, "%s", argc > 5 + k ? argv[5 + k] : def[k]);
+                char equip[8][48] = {{0}};  // what it wears and carries (the game's actor names)
+                const char *def[8] = {"Armor_001_Head", "Armor_001_Upper", "Armor_001_Lower", "Weapon_Sword_001",
+                                      "Weapon_Shield_001", "Weapon_Bow_001", "Weapon_Sheath_001", "Weapon_Quiver_001"};
+                for (int k = 0; k < 8; k++) snprintf(equip[k], 48, "%s", argc > 5 + k ? argv[5 + k] : def[k]);
+                msg(s, M_EQUIP, equip, sizeof equip);
+            }
+            // BOT_SWAP=1: every 5 s its upper piece comes off and back on, and its sword is another one meanwhile
+            static double next_swap = 10;
+            static int swaps;
+            if (have && said && getenv("BOT_SWAP") && t >= next_swap && (atoi(getenv("BOT_SWAP")) <= 1 || swaps < 2)) {
+                static int phase;
+                next_swap = t + 5, phase ^= 1, swaps++;  // (BOT_SWAP=2: off and on once)
+                char equip[8][48] = {{0}};
+                const char *def[8] = {"Armor_001_Head", "Armor_001_Upper", "Armor_001_Lower", "Weapon_Sword_001",
+                                      "Weapon_Shield_001", "Weapon_Bow_001", "Weapon_Sheath_001", "Weapon_Quiver_001"};
+                for (int k = 0; k < 8; k++) snprintf(equip[k], 48, "%s", argc > 5 + k ? argv[5 + k] : def[k]);
+                if (phase) equip[1][0] = 0, snprintf(equip[3], 48, "Weapon_Sword_002");
+                fprintf(stderr, "bot: %s, %s\n", equip[1][0] ? equip[1] : "(no upper)", equip[3]);
                 msg(s, M_EQUIP, equip, sizeof equip);
             }
         }

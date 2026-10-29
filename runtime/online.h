@@ -27,6 +27,20 @@ enum { ONLINE_A_WAIT, ONLINE_A_WALK, ONLINE_A_RUN, ONLINE_A_DASH, ONLINE_A_JUMP,
        ONLINE_A_SWIM_WAIT, ONLINE_A_SWIM, ONLINE_A_CLIMB_WAIT, ONLINE_A_CLIMB, ONLINE_A_SQUAT_WAIT, ONLINE_A_SQUAT,
        ONLINE_A_COUNT };
 
+// What a player's Link is doing, from his game (runtime/online_actors.c, 20 times a second): the AS his Link plays
+// (slot 0 bank 0, the body; slot 1 banks 0 and 1, the upper body; slot 2, drawing a weapon), where each piece of his
+// gear is (on which of Link's bones, and how) and his heading
+#define ONLINE_AS_CHANNELS 4
+#define ONLINE_AS_MAX 32
+#define ONLINE_GEAR 5  // weapon, shield, bow, sheath, quiver
+typedef struct {
+    char as[ONLINE_AS_CHANNELS][ONLINE_AS_MAX];  // "" none
+    uint8_t gear_bone[ONLINE_GEAR];              // 0: not shown; else the bone + 1 (online_actors.c k_bones)
+    float gear_rel[ONLINE_GEAR][12];             // the piece's matrix in that bone's space (Matrix34f, row-major)
+    float yaw;                                   // heading, radians (0: +z), as his Link faces
+    uint8_t valid;
+} OnlinePose;
+
 typedef struct {
     bool used;
     char name[ONLINE_NAME_MAX];
@@ -35,6 +49,8 @@ typedef struct {
     uint8_t flags;      // ONLINE_F_*
     uint8_t anim;       // ONLINE_A_*
     char armor[3][48];  // what he wears: head, upper body, lower body (the game's actor names, "" none)
+    char gear[ONLINE_GEAR][48];  // what he carries: weapon, shield, bow, sheath, quiver (actor names, "" none)
+    OnlinePose pose;    // (pose.valid: from his game; else only anim)
     uint32_t ping_ms;   // (the local player's own slot: the round trip to the server)
 } OnlinePlayer;
 
@@ -84,6 +100,18 @@ bool online_camera_get(double vp[16], float *ysign, uint64_t *age_ns);
 
 // The player in that slot is an actor in the world (runtime/online_actors.c): the overlay names him, draws no figure
 bool online_has_actor(int slot);
+// The local Link's pose, from the frame loop (runtime/online_actors.c): sent with his state
+void online_set_local_pose(const OnlinePose *p);
+// What the local Link wears (head, upper, lower) and carries (weapon, shield, bow, sheath, quiver): actor names, ""
+// none; from the frame loop, sent when it changes and every 5 s
+void online_set_local_equip(const char armor[3][48], const char gear[ONLINE_GEAR][48]);
+// The local Link's skeleton (each bone's local rotation, a quaternion x y z w, and translation; from the frame loop),
+// n of his bones and then nbow of his bow's (its string): sent 20 times a second; a remote player's, as it was 100 ms
+// ago (interpolated), false when none came lately
+#define ONLINE_BONES 160      // in all
+#define ONLINE_BOW_BONES 32   // of them, at most, the bow's
+void online_set_local_skeleton(int n, int nbow, const float (*q)[4], const float (*t)[3]);
+bool online_skeleton(int slot, int *n, int *nbow, float (*q)[4], float (*t)[3]);
 
 // A dedicated server (main.c --server): runs until the process ends
 int online_server_main(int port, const char *password);

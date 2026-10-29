@@ -37,18 +37,31 @@ typedef int sock_t;
 #include "rt.h"
 
 #define MAGIC 0x4c4f5753u  // "SWOL"
-#define PROTOCOL 3
+#define PROTOCOL 6
 #define SEND_HZ 20
 #define INTERP_NS 100000000ull  // the others are drawn this far behind what was last heard (smooth between updates)
 #define TIMEOUT_NS 10000000000ull  // nothing heard for this long: the connection is gone
 
-enum { M_HELLO = 1, M_WELCOME, M_REJECT, M_STATE, M_JOIN, M_LEAVE, M_CHAT, M_PING, M_PONG, M_EQUIP };
+enum { M_HELLO = 1, M_WELCOME, M_REJECT, M_STATE, M_JOIN, M_LEAVE, M_CHAT, M_PING, M_PONG, M_EQUIP, M_SKEL };
+// SKEL: u8 Link's bone count, u8 his bow's, then each bone's rotation (smallest three of its quaternion: 2 bits which
+// is dropped, 3 x 15 bits; 6 bytes) and translation (3 x s16, 1/8192 m); 20 times a second
+#define SKEL_BONE_BYTES 12
+#define SKEL_BYTES (2 + ONLINE_BONES * SKEL_BONE_BYTES)
 enum { R_FULL = 1, R_VERSION, R_PASSWORD, R_NAME };
 
 #pragma pack(push, 1)
-typedef struct { float pos[3], yaw; uint8_t flags; uint16_t ping_ms; uint8_t anim; } WireState;
+typedef struct {
+    float pos[3], yaw;
+    uint8_t flags;
+    uint16_t ping_ms;
+    uint8_t anim;
+    char as[ONLINE_AS_CHANNELS][ONLINE_AS_MAX];  // OnlinePose ("" all: none; the others go by anim)
+    uint8_t gear_bone[ONLINE_GEAR];
+    float gear_rel[ONLINE_GEAR][12];
+} WireState;
 typedef struct { uint32_t magic; uint16_t version; char name[ONLINE_NAME_MAX], pass[ONLINE_NAME_MAX]; } WireHello;
-typedef struct { char armor[3][48]; } WireEquip;  // EQUIP: what a player wears (head, upper, lower; actor names)
+typedef struct { char armor[3][48], gear[ONLINE_GEAR][48]; } WireEquip;  // EQUIP: what a player wears (head,
+                                                                          // upper, lower) and carries (actor names)
 #pragma pack(pop)
 
 OnlineSettings g_online = {.port = ONLINE_PORT, .show_names = true, .show_markers = true};
@@ -92,7 +105,7 @@ static bool send_all(sock_t s, const void *p, int n) {
 }
 
 static bool send_msg(sock_t s, uint8_t type, const void *a, int na, const void *b, int nb) {
-    uint8_t buf[3 + 512];
+    uint8_t buf[3 + 2048];
     int len = 1 + na + nb;
     if (len + 2 > (int)sizeof buf) return false;
     buf[0] = (uint8_t)len, buf[1] = (uint8_t)(len >> 8), buf[2] = type;
@@ -102,7 +115,7 @@ static bool send_msg(sock_t s, uint8_t type, const void *a, int na, const void *
 }
 
 // A connection's incoming bytes, cut into messages
-typedef struct { uint8_t data[8192]; int n; } RecvBuf;
+typedef struct { uint8_t data[32768]; int n; } RecvBuf;
 
 // read what is there into rb (false: closed or failed)
 static bool recv_some(sock_t s, RecvBuf *rb) {
@@ -214,6 +227,9 @@ static bool srv_message(Server *sv, int i, uint8_t type, const uint8_t *p, int l
         memcpy(&c->equip, p, sizeof c->equip);
         c->have_equip = true;
         srv_broadcast(sv, i, M_EQUIP, &id, 1, &c->equip, sizeof c->equip);
+        break;
+    case M_SKEL:
+        if (len >= 2 && len <= SKEL_BYTES) srv_broadcast(sv, i, M_SKEL, &id, 1, p, len);
         break;
     case M_CHAT: {
         char text[ONLINE_CHAT_MAX];
@@ -329,7 +345,7 @@ int online_server_main(int port, const char *password) {
 }
 
 // ------------------------------------------------------------------ the client
-typedef struct { uint64_t t; float pos[3], yaw; uint8_t flags, anim; } Snap;
+typedef struct { uint64_t t; float pos[3], yaw; uint8_t flags, anim; OnlinePose pose; } Snap;
 #define SNAPS 8
 typedef struct {
     bool used;
@@ -338,7 +354,9 @@ typedef struct {
     int ns;  // snapshots held (newest at s[(head - 1) % SNAPS])
     int head;
     uint16_t ping;
-    char armor[3][48];
+    char armor[3][48], gear[ONLINE_GEAR][48];
+    struct { uint64_t t; int n, nbow; float q[ONLINE_BONES][4], tr[ONLINE_BONES][3]; } sk[4];  // (SKEL, newest at skh - 1)
+    int skh, skn;
 } Remote;
 
 #define CHAT_LINES 8
@@ -413,6 +431,112 @@ static uint8_t motion_anim(float dh, float dy) {
     return cur;
 }
 
+// SKEL's bones
+static void skel_encode(uint8_t *o, const float q_in[4], const float t[3]) {
+    float q[4] = {q_in[0], q_in[1], q_in[2], q_in[3]};
+    float l = sqrtf(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+    int big = 0;
+    for (int k = 0; k < 4; k++) {
+        q[k] = l > 0 ? q[k] / l : k == 3;
+        if (fabsf(q[k]) > fabsf(q[big])) big = k;
+    }
+    float sign = q[big] < 0 ? -1.0f : 1.0f;
+    uint64_t bits = (uint64_t)big;
+    for (int k = 0, sh = 2; k < 4; k++) {
+        if (k == big) continue;
+        float v = q[k] * sign * 1.41421356f;  // (-1 .. 1)
+        int iv = (int)lroundf((v < -1 ? -1 : v > 1 ? 1 : v) * 16383.0f) + 16383;
+        bits |= (uint64_t)(iv & 0x7fff) << sh;
+        sh += 15;
+    }
+    for (int k = 0; k < 6; k++) o[k] = (uint8_t)(bits >> (8 * k));
+    for (int k = 0; k < 3; k++) {
+        float v = t[k] * 8192.0f;
+        int16_t iv = (int16_t)(v < -32767 ? -32767 : v > 32767 ? 32767 : lroundf(v));
+        o[6 + 2 * k] = (uint8_t)iv, o[7 + 2 * k] = (uint8_t)((uint16_t)iv >> 8);
+    }
+}
+
+static void skel_decode(const uint8_t *o, float q[4], float t[3]) {
+    uint64_t bits = 0;
+    for (int k = 0; k < 6; k++) bits |= (uint64_t)o[k] << (8 * k);
+    int big = (int)(bits & 3);
+    float sum = 0;
+    for (int k = 0, sh = 2; k < 4; k++) {
+        if (k == big) continue;
+        q[k] = ((float)((bits >> sh) & 0x7fff) - 16383.0f) / 16383.0f / 1.41421356f;
+        sum += q[k] * q[k];
+        sh += 15;
+    }
+    q[big] = sqrtf(sum < 1 ? 1 - sum : 0);
+    for (int k = 0; k < 3; k++) t[k] = (float)(int16_t)(o[6 + 2 * k] | o[7 + 2 * k] << 8) / 8192.0f;
+}
+
+// the local Link's skeleton, encoded (online_set_local_skeleton, the frame loop's thread)
+static uint8_t g_skel[SKEL_BYTES];
+static int g_skel_len;
+static uint64_t g_skel_t;
+
+void online_set_local_skeleton(int n, int nbow, const float (*q)[4], const float (*t)[3]) {
+    uint8_t buf[SKEL_BYTES];
+    if (nbow > ONLINE_BOW_BONES) nbow = ONLINE_BOW_BONES;
+    if (n > ONLINE_BONES - nbow) n = ONLINE_BONES - nbow;
+    buf[0] = (uint8_t)n, buf[1] = (uint8_t)nbow;
+    for (int b = 0; b < n + nbow; b++) skel_encode(buf + 2 + b * SKEL_BONE_BYTES, q[b], t[b]);
+    pthread_mutex_lock(&g.lock);
+    memcpy(g_skel, buf, 2 + (n + nbow) * SKEL_BONE_BYTES);
+    g_skel_len = 2 + (n + nbow) * SKEL_BONE_BYTES;
+    g_skel_t = plat_now_ns();
+    pthread_mutex_unlock(&g.lock);
+}
+
+bool online_skeleton(int slot, int *n, int *nbow, float (*q)[4], float (*t)[3]) {
+    if (slot < 0 || slot >= ONLINE_MAX) return false;
+    uint64_t now = plat_now_ns(), at = now - INTERP_NS;
+    bool ok = false;
+    pthread_mutex_lock(&g.lock);
+    Remote *r = &g.r[slot];
+    if (r->used && r->skn) {
+        int newest = (r->skh + 3) % 4;
+        if (now - r->sk[newest].t < 500000000ull) {
+            int a = newest, b = newest;  // (the two around at, or the newest)
+            for (int k = 1; k < r->skn; k++) {
+                int nb = (r->skh + 4 - k) % 4, na = (r->skh + 4 - k - 1) % 4;
+                if (r->sk[na].t <= at && r->sk[nb].t >= at) { a = na, b = nb; break; }
+            }
+            float f = r->sk[b].t > r->sk[a].t ? (float)(at - r->sk[a].t) / (float)(r->sk[b].t - r->sk[a].t) : 1;
+            if (f < 0) f = 0;
+            if (f > 1) f = 1;
+            if (r->sk[a].n != r->sk[b].n || r->sk[a].nbow != r->sk[b].nbow) a = b, f = 1;  // (another bow)
+            int nn = r->sk[b].n + r->sk[b].nbow;
+            for (int bo = 0; bo < nn; bo++) {
+                const float *qa = r->sk[a].q[bo], *qb = r->sk[b].q[bo];
+                float d = qa[0] * qb[0] + qa[1] * qb[1] + qa[2] * qb[2] + qa[3] * qb[3], s = d < 0 ? -1.0f : 1.0f, l = 0;
+                for (int k = 0; k < 4; k++) q[bo][k] = qa[k] + (qb[k] * s - qa[k]) * f, l += q[bo][k] * q[bo][k];
+                l = l > 0 ? 1 / sqrtf(l) : 1;
+                for (int k = 0; k < 4; k++) q[bo][k] *= l;
+                for (int k = 0; k < 3; k++) t[bo][k] = r->sk[a].tr[bo][k] + (r->sk[b].tr[bo][k] - r->sk[a].tr[bo][k]) * f;
+            }
+            *n = r->sk[b].n, *nbow = r->sk[b].nbow;
+            ok = nn > 0;
+        }
+    }
+    pthread_mutex_unlock(&g.lock);
+    return ok;
+}
+
+// the local Link's pose (online_set_local_pose, the frame loop's thread)
+static pthread_mutex_t g_pose_lock = PTHREAD_MUTEX_INITIALIZER;
+static OnlinePose g_pose;
+static uint64_t g_pose_t;
+
+void online_set_local_pose(const OnlinePose *p) {
+    pthread_mutex_lock(&g_pose_lock);
+    g_pose = *p;
+    g_pose_t = plat_now_ns();
+    pthread_mutex_unlock(&g_pose_lock);
+}
+
 // Link right now: false while there is no Link (loading, the title screen)
 static bool sample_local(WireState *w) {
     static float last[3], yaw;
@@ -436,31 +560,35 @@ static bool sample_local(WireState *w) {
     have = true;
     w->yaw = yaw;
     w->anim = anim;
+    pthread_mutex_lock(&g_pose_lock);  // (a pose of the last half second: the frame loop runs)
+    if (g_pose.valid && plat_now_ns() - g_pose_t < 500000000ull) {
+        memcpy(w->as, g_pose.as, sizeof w->as);
+        memcpy(w->gear_bone, g_pose.gear_bone, sizeof w->gear_bone);
+        memcpy(w->gear_rel, g_pose.gear_rel, sizeof w->gear_rel);
+        w->yaw = g_pose.yaw;
+    }
+    pthread_mutex_unlock(&g_pose_lock);
     return true;
 }
 
-// What Link wears (head, upper, lower): the player actor (PlayerInfo +0x60) keeps its equipment as slots of 0x58
-// (*(player +0xb98)), each slot's actor at +0x48: 0 weapon, 1 shield, 2 bow, 3 head, 4 upper, 5 lower, 6 sheath,
-// 7 quiver; an actor's name is at +0x10 (runtime/online_actors.c). The default ones (Armor_Default_*) are Link's own
-// model: "".
+// What Link wears and carries (runtime/online_actors.c reads it from his actor links on the frame loop)
+static WireEquip g_equip;
+static uint64_t g_equip_t;
+
+void online_set_local_equip(const char armor[3][48], const char gear[ONLINE_GEAR][48]) {
+    pthread_mutex_lock(&g_pose_lock);
+    memcpy(g_equip.armor, armor, sizeof g_equip.armor);
+    memcpy(g_equip.gear, gear, sizeof g_equip.gear);
+    g_equip_t = plat_now_ns();
+    pthread_mutex_unlock(&g_pose_lock);
+}
+
 static bool sample_equip(WireEquip *e) {
-    memset(e, 0, sizeof *e);
-    uint64_t pinfo = g_site.player_info ? *(uint64_t *)(uintptr_t)g_site.player_info : 0;
-    uint64_t player = pinfo ? *(uint64_t *)(uintptr_t)(pinfo + 0x60) : 0;
-    uint64_t slots = player >= 0x7000000000ull ? *(uint64_t *)(uintptr_t)(player + 0xb98) : 0;
-    if (slots < 0x7000000000ull || slots >= 0x7400000000ull) return false;
-    for (int k = 0; k < 3; k++) {
-        uint64_t a = *(uint64_t *)(uintptr_t)(slots + 0x48 + 0x58 * (3 + k));
-        uint64_t n = a >= 0x7000000000ull && a < 0x7400000000ull ? *(uint64_t *)(uintptr_t)(a + 0x10) : 0;
-        if (n < 0x7000000000ull || n >= 0x7400000000ull) continue;
-        const char *s = (const char *)(uintptr_t)n;
-        if (strncmp(s, "Armor_", 6) || !strncmp(s, "Armor_Default", 13)) continue;
-        int l = 0;
-        while (l < 47 && s[l] > ' ' && s[l] < 127) l++;
-        if (s[l]) continue;  // (not a name: the actor went away while read)
-        memcpy(e->armor[k], s, l);
-    }
-    return true;
+    pthread_mutex_lock(&g_pose_lock);
+    bool ok = g_equip_t && plat_now_ns() - g_equip_t < 500000000ull;
+    if (ok) *e = g_equip;
+    pthread_mutex_unlock(&g_pose_lock);
+    return ok;
 }
 
 static void remote_snap(int id, const WireState *w) {  // (lock held)
@@ -469,6 +597,12 @@ static void remote_snap(int id, const WireState *w) {  // (lock held)
     s->t = plat_now_ns();
     memcpy(s->pos, w->pos, sizeof s->pos);
     s->yaw = w->yaw, s->flags = w->flags, s->anim = w->anim < ONLINE_A_COUNT ? w->anim : ONLINE_A_WAIT;
+    memcpy(s->pose.as, w->as, sizeof s->pose.as);
+    for (int k = 0; k < ONLINE_AS_CHANNELS; k++) s->pose.as[k][ONLINE_AS_MAX - 1] = 0;
+    memcpy(s->pose.gear_bone, w->gear_bone, sizeof s->pose.gear_bone);
+    memcpy(s->pose.gear_rel, w->gear_rel, sizeof s->pose.gear_rel);
+    s->pose.yaw = w->yaw;
+    s->pose.valid = w->as[0][0] != 0;
     r->head = (r->head + 1) % SNAPS;
     if (r->ns < SNAPS) r->ns++;
     r->ping = w->ping_ms;
@@ -516,10 +650,27 @@ static bool cl_message(uint8_t type, const uint8_t *p, int len) {
             remote_snap(p[0], &w);
         }
         break;
+    case M_SKEL:
+        if (len >= 2 && p[0] < ONLINE_MAX && g.r[p[0]].used) {
+            Remote *r = &g.r[p[0]];
+            int n = p[1], nbow = len >= 3 ? p[2] : 0;
+            if (n + nbow > ONLINE_BONES || len < 3 + (n + nbow) * SKEL_BONE_BYTES) break;
+            r->sk[r->skh].t = plat_now_ns();
+            r->sk[r->skh].n = n, r->sk[r->skh].nbow = nbow;
+            for (int b = 0; b < n + nbow; b++)
+                skel_decode(p + 3 + b * SKEL_BONE_BYTES, r->sk[r->skh].q[b], r->sk[r->skh].tr[b]);
+            r->skh = (r->skh + 1) % 4;
+            if (r->skn < 4) r->skn++;
+        }
+        break;
     case M_EQUIP:
         if (len >= 1 + (int)sizeof(WireEquip) && p[0] < ONLINE_MAX && g.r[p[0]].used) {
-            memcpy(g.r[p[0]].armor, p + 1, sizeof g.r[p[0]].armor);
+            WireEquip e;
+            memcpy(&e, p + 1, sizeof e);
+            memcpy(g.r[p[0]].armor, e.armor, sizeof e.armor);
+            memcpy(g.r[p[0]].gear, e.gear, sizeof e.gear);
             for (int k = 0; k < 3; k++) g.r[p[0]].armor[k][47] = 0;
+            for (int k = 0; k < ONLINE_GEAR; k++) g.r[p[0]].gear[k][47] = 0;
         }
         break;
     case M_CHAT:
@@ -628,6 +779,12 @@ static void *cl_thread(void *arg) {
             if (!sample_local(&w)) w.flags |= ONLINE_F_LOADING;
             w.ping_ms = g.ping;
             if (!send_msg(s, M_STATE, &w, sizeof w, NULL, 0)) alive = false;
+            uint8_t sk[SKEL_BYTES];
+            int skl = 0;
+            pthread_mutex_lock(&g.lock);
+            if (g_skel_len && now - g_skel_t < 500000000ull) memcpy(sk, g_skel, skl = g_skel_len);
+            pthread_mutex_unlock(&g.lock);
+            if (skl && !(w.flags & ONLINE_F_LOADING) && !send_msg(s, M_SKEL, sk, skl, NULL, 0)) alive = false;
         }
         if (now >= next_ping) {
             next_ping = now + 1000000000ull;
@@ -639,6 +796,9 @@ static void *cl_thread(void *arg) {
             WireEquip e;
             if (sample_equip(&e) && (memcmp(&e, &last, sizeof e) || now >= next_equip)) {
                 next_equip = now + 5000000000ull;
+                if (memcmp(&e, &last, sizeof e))
+                    LOG("[online] wearing %s|%s|%s carrying %s|%s|%s|%s|%s\n", e.armor[0], e.armor[1], e.armor[2], e.gear[0],
+                        e.gear[1], e.gear[2], e.gear[3], e.gear[4]);
                 last = e;
                 send_msg(s, M_EQUIP, &e, sizeof e, NULL, 0);
             }
@@ -733,6 +893,7 @@ bool online_players(OnlinePlayer out[ONLINE_MAX]) {
         o->used = true;
         memcpy(o->name, r->name, sizeof o->name);
         memcpy(o->armor, r->armor, sizeof o->armor);
+        memcpy(o->gear, r->gear, sizeof o->gear);
         o->ping_ms = i == g.id ? g.ping : r->ping;
         if (!r->ns) { o->flags = ONLINE_F_LOADING; continue; }
         // the two snapshots around t (or the newest one)
@@ -750,6 +911,8 @@ bool online_players(OnlinePlayer out[ONLINE_MAX]) {
         o->yaw = a->yaw + dyaw * f;
         o->flags = b->flags;
         o->anim = b->anim;
+        o->pose = b->pose;  // (the newer one: what he does next comes a little early, never late)
+        o->pose.yaw = o->yaw;
     }
     pthread_mutex_unlock(&g.lock);
     return true;
@@ -825,12 +988,14 @@ bool online_camera_get(double vp[16], float *ysign, uint64_t *age_ns) {
 }
 
 // ------------------------------------------------------------------ settings (online.ini)
+static void name_from_env(void);
+
 void online_settings_load(void) {
     const char *u = getenv("USERNAME");
     if (!u || !*u) u = getenv("USER");
     copy_name(g_online.name, u && *u ? u : "Link");
     FILE *f = fopen("online.ini", "r");
-    if (!f) return;
+    if (!f) { name_from_env(); return; }
     char line[256];
     while (fgets(line, sizeof line, f)) {
         char key[64], val[128] = "";
@@ -843,9 +1008,18 @@ void online_settings_load(void) {
         else if (!strcmp(key, "show_markers")) g_online.show_markers = atoi(val) != 0;
     }
     fclose(f);
+    name_from_env();
+}
+
+// SAVAGEWIND_ONLINE_NAME: this run's name (two copies of the game on one machine)
+static void name_from_env(void) {
+    const char *n = getenv("SAVAGEWIND_ONLINE_NAME");
+    if (n && *n) copy_name(g_online.name, n);
 }
 
 void online_settings_save(void) {
+    const char *n = getenv("SAVAGEWIND_ONLINE_NAME");
+    if (n && *n && !strcmp(g_online.name, n)) return;  // (a test run's name: online.ini stays as it was)
     FILE *f = fopen("online.ini", "w");
     if (!f) return;
     fprintf(f, "# Savage Wind online settings (Settings > Online in game)\n");
