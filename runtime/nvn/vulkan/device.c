@@ -267,6 +267,7 @@ static void create_device(void) {
 #ifdef __linux__
     g_vk.radv = drv.driverID == VK_DRIVER_ID_MESA_RADV;
 #endif
+    g_vk.turnip = drv.driverID == VK_DRIVER_ID_MESA_TURNIP;
     g_vk.amd_proprietary = drv.driverID == VK_DRIVER_ID_AMD_PROPRIETARY;
     {   // (for bug reports: the driver's version, and whether ASTC textures reach the GPU as they are or decoded)
         VkFormatProperties ap;
@@ -427,7 +428,9 @@ static void create_device(void) {
                                             .samplerMirrorClampToEdge = WANT(f12_have, samplerMirrorClampToEdge),
                                             .uniformAndStorageBuffer8BitAccess = WANT(f12_have, uniformAndStorageBuffer8BitAccess),
                                             .storageBuffer8BitAccess = WANT(f12_have, storageBuffer8BitAccess),
-                                            .scalarBlockLayout = WANT(f12_have, scalarBlockLayout), .pNext = &f13};
+                                            .scalarBlockLayout = WANT(f12_have, scalarBlockLayout),
+                                            // (exec.c vk_translator_setup: shader global memory through addresses)
+                                            .bufferDeviceAddress = maxwell_gmem_bda ? VK_TRUE : VK_FALSE, .pNext = &f13};
     VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
                                             .storageBuffer16BitAccess = WANT(f11_have, storageBuffer16BitAccess),
                                             .uniformAndStorageBuffer16BitAccess = g_vk.fp16, .pNext = &f12};
