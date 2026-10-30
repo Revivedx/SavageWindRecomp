@@ -37,6 +37,7 @@ void input_reset(void);
 void controls_bindings_draw(float scale);  // controls_ui.mm
 #include "../input_bind.h"
 #include "../perfmon.h"
+#include "achievements_ui.h"  // (the Achievements page and the unlock toasts)
 #include "../paths.h"
 }
 
@@ -407,9 +408,21 @@ static void load_fonts(void) {
         g_menu_font = add(med, 29, cfg);
         g_menu_font_big = add(semi, 53.5f, cfg);
     }
+    // the achievement toasts' title: a book serif in bold (Palatino, Georgia, DejaVu Serif), else Fira's SemiBold
+    ImFont *toast_title = NULL;
+    const char *serif[] = {"C:/Windows/Fonts/palab.ttf", "C:/Windows/Fonts/georgiab.ttf",
+                           "/System/Library/Fonts/Supplemental/Palatino.ttc",
+                           "/System/Library/Fonts/Supplemental/Georgia Bold.ttf",
+                           "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf", "/usr/share/fonts/TTF/DejaVuSerif-Bold.ttf"};
+    for (const char *p : serif) {
+        if (FILE *f = fopen(p, "rb")) fclose(f);
+        else continue;
+        if ((toast_title = add(p, 56, cfg))) break;
+    }
     if (!g_font) g_font = io.Fonts->AddFontDefault();
     if (!g_font_big) g_font_big = g_font;
     if (!g_menu_font || !g_menu_font_big) g_menu_font = g_font, g_menu_font_big = g_font_big;
+    ach_ui_fonts(toast_title ? toast_title : g_menu_font_big, g_menu_font);
 }
 
 // Before a frame: another menu language may need other glyphs - the fonts and their texture are made again
@@ -1157,8 +1170,8 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     int ntabs = 0;
     if (prelaunch) tabs[ntabs++] = {"Prelaunch", -1, true};
     // (ids 2-7 were Link's Awakening tabs; the ids stay: test hooks)
-    static const char *names[] = {"Video", "Audio", "Language", "", "", "", "", "", "Controls", "Quit"};
-    static const int order[] = {8, 0, 1, 2, 9};  // Controls, Video, Audio, Language, Quit
+    static const char *names[] = {"Video", "Audio", "Language", "Achievements", "", "", "", "", "Controls", "Quit"};
+    static const int order[] = {8, 0, 1, 2, 3, 9};  // Controls, Video, Audio, Language, Achievements, Quit
     for (int i : order)  // (Quit: in game only - the start screen has its own QUIT)
         if (i != 9 || !prelaunch) tabs[ntabs++] = {names[i], i, true};
     int cur = 0;  // g_tab / g_tab_request hold ids
@@ -1238,6 +1251,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
                 case 0: tab_display(); break;
                 case 1: tab_audio(); break;
                 case 2: tab_language(in_game); break;
+                case 3: ach_ui_tab(); break;
                 case 8: tab_about(); break;
                 case 9: tab_quit(scale, in_game); break;
                 }
@@ -1278,7 +1292,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     bool open = g_open.load();
     bool kbd = g_kbd.load() == 1;
     bool sizes = g_sizes.load();
-    if (!open && !kbd && !sizes && g_settings.perf_overlay == PERF_OFF) {
+    if (!open && !kbd && !sizes && g_settings.perf_overlay == PERF_OFF && !ach_ui_active()) {
         if (g_inited) { pthread_mutex_lock(&q_lock); q_events.clear(); pthread_mutex_unlock(&q_lock); }
         return;
     }
@@ -1325,6 +1339,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     ImGui::NewFrame();
 
     if (g_settings.perf_overlay != PERF_OFF) perf_overlay_draw(io, scale);
+    ach_ui_toasts(io.DisplaySize.x, io.DisplaySize.y, scale);
 
     if (open) {
         // dim the game behind the menu
