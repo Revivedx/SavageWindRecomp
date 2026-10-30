@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "vk.h"
+#include "record.h"
 #include "shaders.h"
 #include "../../settings.h"
 #include "../astc.h"
@@ -295,7 +296,7 @@ void vk_image_init_layout(VkCommandBuffer cb, VkImage img, VkImageAspectFlags as
                                .subresourceRange = {aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS},
                                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED};
     VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &b};
-    vkCmdPipelineBarrier2(cb, &di);
+    rec_CmdPipelineBarrier2(cb, &di);
 }
 
 // Images destroyed by the guest are kept until the submissions that may use them have completed.
@@ -497,7 +498,7 @@ static void create_image(NvnTexture *t, TexBackend *b) {
         VkCommandBuffer cb = vk_upload_cmd();
         VkClearColorValue zero = {{0}};
         VkImageSubresourceRange rg = {VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
-        vkCmdClearColorImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &rg);
+        rec_CmdClearColorImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &rg);
     }
     {   // (debugging) SAVAGEWIND_DEBUG_NEW_FILL=1: every new colour image starts magenta (texels nothing wrote yet)
         static int fill = -1;
@@ -506,7 +507,7 @@ static void create_image(NvnTexture *t, TexBackend *b) {
             VkCommandBuffer cb = vk_upload_cmd();
             VkClearColorValue mag = {{1.0f, 0.0f, 1.0f, 1.0f}};
             VkImageSubresourceRange rg = {VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
-            vkCmdClearColorImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, &mag, 1, &rg);
+            rec_CmdClearColorImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, &mag, 1, &rg);
             vk_full_barrier(cb);
         }
     }
@@ -518,12 +519,12 @@ static void create_image(NvnTexture *t, TexBackend *b) {
         VkCommandBuffer cb = vk_upload_cmd();
         VkClearDepthStencilValue zero = {0.0f, 0};
         VkImageSubresourceRange rg = {b->aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
-        vkCmdClearDepthStencilImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &rg);
+        rec_CmdClearDepthStencilImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &rg);
         VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                                .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT, .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                                .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
         VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
-        vkCmdPipelineBarrier2(cb, &di);
+        rec_CmdPipelineBarrier2(cb, &di);
     }
 }
 
@@ -821,7 +822,7 @@ static void upload_pending(TexBackend *b) {
     VkCommandBuffer cb = vk_upload_cmd();
     if (scaled) { upload_scaled(cb, b, s, rg, w, h); return; }
     vk_dl_note_upload((void *)b->image, rg.imageExtent.width, rg.imageExtent.height, rg.imageSubresource.mipLevel);
-                vkCmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+                rec_CmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
 }
 
 uint64_t prof_tex_checks, prof_tex_samples, prof_tex_full, prof_tex_full_bytes, prof_tex_dyn;
@@ -918,13 +919,13 @@ static void upload_scaled(VkCommandBuffer cb, TexBackend *b, VkSpan s, VkBufferI
     rg.imageSubresource.mipLevel = 0;
     rg.imageSubresource.baseArrayLayer = 0;
     rg.imageExtent = (VkExtent3D){gw, gh, 1};
-    vkCmdCopyBufferToImage(cb, s.buf, img, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+    rec_CmdCopyBufferToImage(cb, s.buf, img, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
     vk_full_barrier(cb);
     VkImageBlit bl = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .srcOffsets = {{0, 0, 0}, {(int32_t)gw, (int32_t)gh, 1}},
                       .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv, layer, 1},
                       .dstOffsets = {{0, 0, 0}, {(int32_t)level_w(b, lv), (int32_t)level_h(b, lv), 1}}};
     bool lin = format_supports(b->format, VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT);
-    vkCmdBlitImage(cb, img, VK_IMAGE_LAYOUT_GENERAL, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &bl, lin ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
+    rec_CmdBlitImage(cb, img, VK_IMAGE_LAYOUT_GENERAL, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &bl, lin ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
     vk_defer_image(img, mem);
 }
 
@@ -1006,7 +1007,7 @@ static void upload_levels(NvnTexture *t, TexBackend *b, uint32_t level_mask) {
                 VkBufferImageCopy rg = {.bufferOffset = s.off, .bufferRowLength = pw, .bufferImageHeight = ph,
                                         .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv, layer, 1},
                                         .imageExtent = {l.w < level_w(b, lv) ? l.w : level_w(b, lv), l.h < level_h(b, lv) ? l.h : level_h(b, lv), 1}};
-                vkCmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+                rec_CmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
                 continue;
             }
             if (b->astc_bw) {  // blocks -> linear block rows -> RGBA8 texels
@@ -1021,7 +1022,7 @@ static void upload_levels(NvnTexture *t, TexBackend *b, uint32_t level_mask) {
                                         .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv, layer, 1},
                                         .imageExtent = {l.w < level_w(b, lv) ? l.w : level_w(b, lv), l.h < level_h(b, lv) ? l.h : level_h(b, lv), 1}};
                 vk_dl_note_upload((void *)b->image, rg.imageExtent.width, rg.imageExtent.height, rg.imageSubresource.mipLevel);
-                vkCmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+                rec_CmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
                 continue;
             }
             uint32_t row = l.wb * fi->bpb;
@@ -1082,7 +1083,7 @@ static void upload_levels(NvnTexture *t, TexBackend *b, uint32_t level_mask) {
                 continue;
             }
             vk_dl_note_upload((void *)b->image, rg.imageExtent.width, rg.imageExtent.height, rg.imageSubresource.mipLevel);
-                vkCmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+                rec_CmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
         }
     }
 }
@@ -1255,7 +1256,7 @@ void vk_texture_drop_format_list(NvnTexture *t) {
     }
     VkCommandBuffer cb = vk_cmd();
     vk_full_barrier(cb);
-    vkCmdCopyImage(cb, old, VK_IMAGE_LAYOUT_GENERAL, b->image, VK_IMAGE_LAYOUT_GENERAL, n, r);
+    rec_CmdCopyImage(cb, old, VK_IMAGE_LAYOUT_GENERAL, b->image, VK_IMAGE_LAYOUT_GENERAL, n, r);
     vk_full_barrier(cb);
     defer((Dead){.img = old, .mem = old_mem});
 }
@@ -1411,7 +1412,7 @@ void vk_block_flush(VkCommandBuffer cb, TexBackend *b) {
     vk_full_barrier(cb);
     VkImageCopy c = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                      .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, b->block_level, 0, 1}, .extent = {s->width, s->height, 1}};
-    vkCmdCopyImage(cb, s->image, VK_IMAGE_LAYOUT_GENERAL, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+    rec_CmdCopyImage(cb, s->image, VK_IMAGE_LAYOUT_GENERAL, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
     vk_full_barrier(cb);
 }
 
@@ -1507,18 +1508,18 @@ static bool bc4_decode(VkCommandBuffer cb, TexBackend *b) {
     }
     vk_full_barrier(cb);
     VkBufferImageCopy c1 = {.bufferOffset = 0, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {bw, bh, 1}};
-    vkCmdCopyImageToBuffer(cb, s->image, VK_IMAGE_LAYOUT_GENERAL, g_bc4d.buf, 1, &c1);
+    rec_CmdCopyImageToBuffer(cb, s->image, VK_IMAGE_LAYOUT_GENERAL, g_bc4d.buf, 1, &c1);
     vk_full_barrier(cb);
     uint32_t pc[4] = {bw, bh, (uint32_t)(in / 4), b->format == VK_FORMAT_R8_SNORM};
-    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_bc4d.pipe);
-    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_bc4d.pl, 0, 1, &g_bc4d.set, 0, NULL);
-    vkCmdPushConstants(cb, g_bc4d.pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, pc);
-    vkCmdDispatch(cb, (bw + 7) / 8, (bh + 7) / 8, 1);
+    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_bc4d.pipe);
+    rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_bc4d.pl, 0, 1, &g_bc4d.set, 0, NULL);
+    rec_CmdPushConstants(cb, g_bc4d.pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, pc);
+    rec_CmdDispatch(cb, (bw + 7) / 8, (bh + 7) / 8, 1);
     vk_full_barrier(cb);
     VkBufferImageCopy c2 = {.bufferOffset = in, .bufferRowLength = bw * 4, .bufferImageHeight = bh * 4,
                             .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv, 0, 1},
                             .imageExtent = {level_w(b, lv), level_h(b, lv), 1}};
-    vkCmdCopyBufferToImage(cb, g_bc4d.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &c2);
+    rec_CmdCopyBufferToImage(cb, g_bc4d.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &c2);
     vk_full_barrier(cb);
     vk_dyn_forget();  // (the compute pipeline bound in the main command buffer)
     static int nlog;
@@ -1647,7 +1648,7 @@ VkImageView vk_dummy_view(int textype) {
     vk_image_init_layout(cb, b->image, VK_IMAGE_ASPECT_COLOR_BIT);
     VkClearColorValue zero = {{0, 0, 0, 0}};
     VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, cube ? 6 : 1};
-    vkCmdClearColorImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &all);
+    rec_CmdClearColorImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &all);
     b->format = VK_FORMAT_R8G8B8A8_UNORM;
     b->levels = 1;
     b->layers = cube ? 6 : 1;

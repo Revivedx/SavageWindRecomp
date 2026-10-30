@@ -68,6 +68,7 @@ void *vk_frame_cmd(void);
 bool vk_imgui_backend_init(void);
 void vk_imgui_backend_shutdown(void);
 uint64_t vk_imgui_texture_rgba(const void *rgba, int w, int h);
+void rec_drain(void);  // (runtime/nvn/vulkan/record.c)
 #endif
 }
 #ifdef __APPLE__
@@ -1183,6 +1184,7 @@ extern "C" void launcher_run(const char *root, int mode) {
             static const float clear_col[4] = {0.04f, 0.05f, 0.06f, 1};
             if (!vk_frame_begin(clear_col)) { SDL_Delay(16); continue; }
             launcher_fonts_follow_language();
+            rec_drain();  // (ImGui uploads its fonts on the queue the recorder thread submits on)
             ImGui_ImplVulkan_NewFrame();
 #endif
             ImGui_ImplSDL3_NewFrame();

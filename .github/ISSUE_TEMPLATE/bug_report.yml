@@ -24,7 +24,7 @@ body:
     id: version
     attributes:
       label: Savage Wind version
-      description: Shown on the game's title screen and in Savage Wind Configuration.
+      description: Shown on the game's title screen, in Savage Wind Configuration and on the first line of `savagewind.log`.
       options:
         - "0.3.1-alpha.3 (latest)"
         - "Built from the test branch"

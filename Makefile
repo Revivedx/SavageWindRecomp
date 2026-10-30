@@ -152,6 +152,14 @@ TRANSLATOR_SRCS := runtime/nvn/maxwell/translate.c runtime/nvn/maxwell/shader.h
 TRANSLATOR_ID := $(shell cat $(TRANSLATOR_SRCS) | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
 SPIRV_ID := $(shell cat runtime/nvn/vulkan/spirv.c | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
 
+# SW_SOURCE: the source this build is made from, in the log's first line (runtime/main.c): its commit and tree, and
+# "modified" when the runtime, the tools or this Makefile differ from them ("unknown" outside a git checkout). A
+# commit published to test has the tree of the local commit it was made from. $(B)/source_id follows it, so main.o is
+# rebuilt when it changes.
+comma    := ,
+SW_SOURCE := $(or $(shell git log -1 --format='commit %h, tree %t' 2>/dev/null),unknown)$(if $(shell git status --porcelain --untracked-files=no -- runtime tools Makefile 2>/dev/null),$(comma) modified)
+$(shell mkdir -p $(B) && [ "$$(cat $(B)/source_id 2>/dev/null)" = '$(SW_SOURCE)' ] || echo '$(SW_SOURCE)' > $(B)/source_id)
+
 RT_OBJ   := $(patsubst runtime/%.c,$(B)/rt/%.o,$(RT_SRC))
 RTFLAGS  := -O2 -g -fno-strict-aliasing -Wall -Wno-unused-function -Iruntime -Iruntime/nvn -isystem third_party -isystem third_party/stb $(DEPINC) $(OSFLAGS)
 CXXFLAGS := -O2 -g -std=c++17 -I$(IMGUI) -I$(IMGUI)/backends -Iruntime -Iruntime/nvn -isystem third_party -Ithird_party/stb $(DEPINC)
@@ -193,6 +201,8 @@ $(B)/obj/tools/gamelib_entry.o: tools/gamelib_entry.c $(GAMELIB_SRCS) Makefile  
 	$(CC) $(GENFLAGS) -DGAMELIB_ID='"$(GAMELIB_ID)"' -c $< -o $@
 $(B)/rt/nvn/maxwell/translate.o: RTFLAGS += -DTRANSLATOR_ID='"$(TRANSLATOR_ID)"'
 $(B)/rt/nvn/vulkan/spirv.o: RTFLAGS += -DSPIRV_ID='"$(SPIRV_ID)"'
+$(B)/rt/main.o: $(B)/source_id
+$(B)/rt/main.o: RTFLAGS += -DSW_SOURCE='"$(SW_SOURCE)"'
 $(B)/rt/gamelib.o: $(GAMELIB_SRCS) Makefile
 $(B)/rt/gamelib.o: RTFLAGS += -DGAMELIB_ID='"$(GAMELIB_ID)"' $(GAMELIB_TARGETS)
 # the start screen's build of it (runtime/gamebuild.c) uses the same flags
@@ -401,3 +411,12 @@ test-vibration: $(B)/test_vibration
 	$(B)/test_vibration
 
 .PHONY: test-vibration
+
+$(B)/test_swkbd: tools/test_swkbd.c runtime/hle/swkbd.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -O1 -std=gnu11 -Wall -Wextra -Werror $(OSFLAGS) -Iruntime -o $@ tools/test_swkbd.c
+
+test-swkbd: $(B)/test_swkbd
+	$(B)/test_swkbd
+
+.PHONY: test-swkbd

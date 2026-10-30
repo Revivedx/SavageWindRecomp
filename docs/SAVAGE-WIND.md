@@ -984,6 +984,28 @@ Pendiente:
      `SAVAGEWIND_VK_LEAN_USAGE=0` / `=1` lo fuerza. Medido sobre `test` (36a02bc, con #108), 3+3 pasadas alternas sin
      límite de FPS a 1280x720: el establo del río 66,6 → 70,6 fps (+6,1 %) y la puerta de la Ciudad Gerudo 60,0 → 63,7
      (+6,3 %), GPU por frame −5,9 y −7,1 %; Kakariko +1,6 % (dentro del ruido: una pasada con NPC delante).
+   - Hilo grabador (2026-10-26): con el CPU y la GPU en paralelo, la traducción de comandos (`sw-queue`) limitaba
+     Kakariko y la puerta de la Ciudad Gerudo en una Radeon 660M (el hilo al 98-99 %, la GPU al 88-96 %), y una
+     cuarta parte del hilo era RADV (construir los comandos de `vkCmd*`, escribir descriptor sets, los envíos). Ahora
+     esas llamadas las hace un hilo propio (`record.c`, de LAS Recomp bb52932, c2bdc17 y 76f4f21): `sw-queue` copia
+     los argumentos de cada llamada en un paquete de un anillo de 16 MB, en orden, y el grabador hace las llamadas en
+     ese orden. Distinto de LAS: los sets se asignan y sus pools se vacían en `sw-queue` (solo la escritura y el bind
+     son paquetes) y los pipelines van por handle. Los command buffers se reservan al arrancar (su pool es del
+     grabador); las esperas a la GPU esperan antes a que el grabador haya enviado (`rec_wait_submitted`), igual que el
+     present, cuyo semáforo binario tiene que estar enviado; `vkDeviceWaitIdle`, ImGui (solo cuando dibuja algo,
+     `menu_render_needed`) y FidelityFX graban en el command buffer ellos mismos tras vaciar el grabador
+     (`rec_drain`). `SAVAGEWIND_VK_RECORDER=0` hace las llamadas en `sw-queue` como antes (mismas llamadas, mismo
+     orden); apagado por defecto en los drivers Mali de ARM (LAS #358).
+     La validación de sincronización destapó un fallo que ya estaba: el pase de la ventana lee la imagen del juego,
+     escrita por los pases de un envío anterior, y solo la hacía visible la barrera completa del command buffer de
+     subidas cuando el envío del present tenía subidas. Con el grabador cambia cuándo llegan y salían 200 avisos
+     `READ_AFTER_WRITE` del draw del present; ahora `vk_frame_begin` empieza con una barrera completa (una por frame)
+     y quedan los 80 de antes (el feedback loop del terreno) en las tres escenas.
+     Medido con 3+3 pasadas alternas sin límite de FPS (1280x720; con el reloj del sistema en HPET y el portátil en
+     uso, ruido de FPS del 11-26 %): el tiempo de traducción por frame baja 24,5 % en Kakariko, 20,5 % en el establo
+     y 26,9 % en Gerudo; los FPS no se separan del ruido (+4,6, −3,2, +22,3 %). A 640x360 (GPU al 80 %) `sw-queue` pasa
+     de 0,96-0,98 núcleos a 0,73-0,83 en Kakariko y el establo, pero el hilo principal del juego sube a 0,79-0,86 y
+     limita él: en este portátil no hay más FPS. El grabador usa 0,37-0,48 núcleos.
    - Sombras del sol con depth clamp (2026-10-20): `nvnCommandBufferSetDepthClamp` no hacía nada. BOTW lo activa para
      sus tres cascadas de sombra del sol (un array D16 de 896x896x3, ~650-750 draws por frame) y para la consulta de
      oclusión del sol: lo que está más cerca de la luz que el plano cercano de una cascada se aplasta contra él en vez

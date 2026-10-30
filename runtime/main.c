@@ -324,6 +324,9 @@ int main(int argc, char **argv) {
 #else
     setvbuf(stderr, NULL, _IOLBF, 0);
 #endif
+    // every log starts with which Savage Wind made it: the version and the source it was built from (Makefile SW_SOURCE)
+    extern const char *rt_version(void);  // (runtime/ui/launcher.mm)
+    fprintf(stderr, "[savagewind] Savage Wind %s (%s)\n", rt_version(), SW_SOURCE);
     const char *root = "extracted";  // (in the data root)
     bool skip_launcher = getenv("SAVAGEWIND_NO_LAUNCHER") || getenv("SAVAGEWIND_INPUT");  // tests boot straight in
     bool config = false;
