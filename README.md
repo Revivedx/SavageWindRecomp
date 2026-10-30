@@ -296,9 +296,9 @@ switches - are in [docs/SAVAGE-WIND.md](docs/SAVAGE-WIND.md).
   (Apache 2.0), [Zig](https://ziglang.org) (MIT), [Capstone](https://www.capstone-engine.org) (BSD),
   [Unicorn](https://www.unicorn-engine.org) (GPL 2.0), [python-lz4](https://github.com/python-lz4/python-lz4) (BSD).
 - Colour LUTs from [FreshLUTs](https://freshluts.com), CC0 1.0, renamed: "Savage Wind" is
-  [powerful cold](https://freshluts.com/luts/107), uploaded by sagi hershkovich; "Ember" is
-  [CINEMA 3](https://freshluts.com/luts/219), and "Dormant" is [CARIBE](https://freshluts.com/luts/217), both
-  uploaded by Andy (`third_party/luts/README.md`).
+  [CINEMA 3](https://freshluts.com/luts/219) and "Dormant" is [CARIBE](https://freshluts.com/luts/217), both
+  uploaded by Andy; "Ember" is [powerful cold](https://freshluts.com/luts/107), uploaded by sagi hershkovich
+  (`third_party/luts/README.md`).
 
 ## License
 

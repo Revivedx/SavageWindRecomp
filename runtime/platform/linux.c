@@ -61,6 +61,8 @@ void plat_sleep_until_ns(uint64_t t) {
     while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL) == EINTR) {}
 }
 
+void plat_cpu_placement(void) {}  // (one logical processor per core: measured on Windows only)
+
 // Real-time scheduling where the user may have it (rtkit / limits.conf), else just a higher priority: keeps the
 // vsync thread on time while the guest threads load every core.
 void plat_thread_realtime(uint64_t period_ns) {

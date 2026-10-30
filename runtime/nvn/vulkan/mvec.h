@@ -53,6 +53,7 @@ typedef struct {
 } MvecRec;
 
 bool mvec_enabled(void);  // Video > Anti-aliasing TAA, or SAVAGEWIND_MVEC=1
+bool mvec_for_framegen(void);  // frame generation takes them: SAVAGEWIND_FG_OBJECT_VECTORS=1 (default: the camera's)
 // Records a scene draw of the current frame: its index among the frame's records, -1 when not recorded (off, or the
 // history buffer is full: grown for the next frame).
 int mvec_record(const MvecDrawIn *d);

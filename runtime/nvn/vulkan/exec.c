@@ -220,12 +220,69 @@ VkCommandBuffer vk_upload_cmd(void) {
     return s->upload;
 }
 
+// Since the last full barrier only render passes wrote (copies, dispatches, uploads and guest memory stores come
+// after a full barrier, which sets bar_other), and these were their targets. The next pass's barrier then names
+// those images instead of all memory: on AMD a global barrier after attachment writes also writes back and
+// invalidates the whole L2, as the driver can't tell the writes were coherent with it (RADV: radv_src_access_flush
+// adds AC_BARRIER_INV_L2 without an image), an image barrier doesn't (radv_image_is_l2_coherent).
+// SAVAGEWIND_VK_FULL_PASS_BARRIER=1: a full barrier before every pass, as before.
+static bool bar_other = true;
+static VkImage bar_img[64];
+static VkImageAspectFlags bar_aspect[64];
+static int bar_n;
+
+void vk_pass_barrier_forget(void) { bar_other = true; }
+
+// Pass barriers (begin_pass, SAVAGEWIND_VK_BARRIER_FRAG): GPU work outside passes (copies, dispatches, clears; each
+// preceded by a full barrier, below) or a draw that stores to memory may have written what a later pass's vertex stage
+// reads (vertex data, instance data a compute shader culled): the next pass begins behind a full barrier then.
+static bool vtx_hazard = true;
 void vk_full_barrier(VkCommandBuffer cb) {
+    vtx_hazard = true;  // (begin_pass clears it after its own)
     VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                            .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT, .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                            .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
     VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
     vkCmdPipelineBarrier2(cb, &di);
+    bar_other = true;  // (what follows may write anything)
+    bar_n = 0;
+}
+
+static void pass_barrier(VkCommandBuffer cb) {
+    static int full = -1;
+    if (full < 0) full = getenv("SAVAGEWIND_VK_FULL_PASS_BARRIER") != NULL;
+    if (full || bar_other) {
+        vk_full_barrier(cb);
+        bar_other = false;  // (a pass follows)
+        return;
+    }
+    VkImageMemoryBarrier2 ib[64];
+    for (int i = 0; i < bar_n; i++) {
+        bool ds = bar_aspect[i] & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
+        ib[i] = (VkImageMemoryBarrier2){.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                                        .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                        .srcAccessMask = ds ? VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT : VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                                        .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                                        .oldLayout = VK_IMAGE_LAYOUT_GENERAL, .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                        .image = bar_img[i],
+                                        .subresourceRange = {bar_aspect[i], 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS}};
+    }
+    VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                           .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};  // (execution only: reads before writes)
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb,
+                           .imageMemoryBarrierCount = (uint32_t)bar_n, .pImageMemoryBarriers = ib};
+    vkCmdPipelineBarrier2(cb, &di);
+    bar_n = 0;
+}
+
+static void pass_barrier_note(TexBackend *b) {  // a target of the pass begun
+    if (!b || !b->image) return;
+    for (int i = 0; i < bar_n; i++) if (bar_img[i] == b->image) return;
+    if (bar_n == 64) { bar_other = true; return; }
+    bar_img[bar_n] = b->image;
+    bar_aspect[bar_n++] = b->aspect ? b->aspect : VK_IMAGE_ASPECT_COLOR_BIT;
 }
 
 static void ring_retire(void);
@@ -385,12 +442,45 @@ uint64_t renderer_fence_seq(void) {
 // a game built to overlap on the console double-buffers; constant buffers are copied at translation. The render
 // targets the CPU reads back (readback_schedule) arrive a frame later, except a one-off one (a photo): a wait on its
 // submission is never deferred. SAVAGEWIND_GPU_OVERLAP=0: off (the wait on the frame's own fence, as before).
+static int gsnap_mode(void);
+// (device.c, before any translation) the translator's switches that depend on the device: global memory in two bindings
+// where one binding of the whole heap is past maxStorageBufferRange (Mali-G610: 2 GB, the heap 3.25 GB), and read-only
+// global memory through copied ranges where gsnap is on (Mali by default). The split is Mali-only: other drivers with a
+// smaller limit keep the one binding of the whole heap they had (SAVAGEWIND_VK_GMEM_SPLIT=0/1 turns it off or on).
+void vk_translator_setup(void) {
+    const char *split = getenv("SAVAGEWIND_VK_GMEM_SPLIT");
+    maxwell_gmem_split = split ? atoi(split) != 0 : g_vk.is_mali && HEAP_MAX > g_vk.props.limits.maxStorageBufferRange;
+    maxwell_gmem_snap = gsnap_mode() != 0;
+    LOG("[vk] shader global memory: %s (storage buffer limit %u MB), the HUD's reads %s\n",
+        maxwell_gmem_split ? "two bindings" : "one binding", g_vk.props.limits.maxStorageBufferRange >> 20,
+        maxwell_gmem_snap ? "through copies" : "in place");
+}
+
 static bool gpu_overlap(void) {
     static int on = -1;
     if (on < 0) {
         on = !getenv("SAVAGEWIND_GPU_OVERLAP") || atoi(getenv("SAVAGEWIND_GPU_OVERLAP"));
         LOG("[vk] GPU overlap %s (the game's frame fence waited one frame late; SAVAGEWIND_GPU_OVERLAP=0: off)\n", on ? "on" : "off");
     }
+    return on;
+}
+
+// (GPU overlap) Occlusion query results read on time. The game reads its SAMPLES_PASSED reports after waiting on its
+// frame fence, which the overlap lets return a frame early: it read reports the GPU hadn't counted yet, and in
+// Kakariko the morning fog, faded in, went out at once for good (Mali-G610: the GPU there is still on the frame
+// before). Not deferring the waits on submissions with a report in them fixed it at 27 FPS instead of 30; waiting only
+// up to that submission, the rest of the frame still overlapped, fixed it at 30 (a copy back of a photo, the other
+// one-off wait, is in its submission too). Neither helped written early with the count before, nor any wait on other
+// GPU results. (Waiting only up to the one-off submission is what renderer_wait_seq does for every one-off wait, on
+// every GPU: the PR's SAVAGEWIND_VK_OVERLAP_SYNC_PARTIAL switch is not needed.) On by default on Mali:
+// SAVAGEWIND_VK_OVERLAP_SYNC_QUERIES=0/1 turns it off or on.
+static bool mali_default(const char *env) {
+    const char *e = getenv(env);
+    return e ? atoi(e) != 0 : g_vk.is_mali;
+}
+static bool oneshot_queries(void) {
+    static int on = -1;
+    if (on < 0) { on = mali_default("SAVAGEWIND_VK_OVERLAP_SYNC_QUERIES"); if (on) LOG("[vk] GPU overlap: query reports waited for\n"); }
     return on;
 }
 
@@ -520,6 +610,11 @@ VkSpan vk_transient(uint64_t size, uint64_t align) {
 // GPU -> CPU copies: the ring is write-combined (often device-local over the BAR), where CPU reads crawl (a
 // 1280x720 screenshot took 7 s). Readbacks use one host-cached buffer instead. Every user waits for the GPU and
 // reads the data before the next readback (render thread), so a single grow-only buffer suffices.
+// Host-cached memory need not be coherent (Mali-G610: it isn't): the CPU's caches can still hold what an earlier
+// readback left there, so vk_readback_sync before reading - each readback reuses the same buffer, and without it a
+// copy read back right after another got largely the first one's bytes.
+static VmaAllocation readback_mem;
+void vk_readback_sync(void) { if (readback_mem) vmaInvalidateAllocation(g_vk.vma, readback_mem, 0, VK_WHOLE_SIZE); }
 VkSpan vk_readback(uint64_t size) {
     static VkBuffer buf;
     static VmaAllocation mem;
@@ -534,6 +629,7 @@ VkSpan vk_readback(uint64_t size) {
         VmaAllocationInfo info;
         VK_CHECK(vmaCreateBuffer(g_vk.vma, &bi, &ai, &buf, &mem, &info));
         ptr = info.pMappedData;
+        readback_mem = mem;
     }
     return (VkSpan){buf, 0, ptr};
 }
@@ -1060,6 +1156,7 @@ static void readbacks_apply(void) {
             Readback *r = &readbacks[i];
             if (r->seq > done) { readbacks[k++] = *r; continue; }
             kernel_watch_write("linear render target", r->addr, r->stride * r->rows);
+            vmaInvalidateAllocation(g_vk.vma, r->mem, 0, VK_WHOLE_SIZE);  // (see below)
             static int dump = -1;  // (debugging) SAVAGEWIND_DUMP_LINEAR=1: the first copies of each target as raw files
             if (dump < 0) dump = getenv("SAVAGEWIND_DUMP_LINEAR") != NULL;
             if (dump) {
@@ -1091,6 +1188,10 @@ static void readbacks_apply(void) {
                     LOG("[exposure] %llx seq %llu: %g %g %g %g%s\n", (unsigned long long)r->addr, (unsigned long long)r->seq,
                         f[0], f[1], f[2], f[3], odd ? "  <- odd" : "");
             }
+            // (the invalidate above: host-cached memory need not be coherent - Mali-G610's isn't - and VMA hands out the
+            // memory of earlier readbacks again, whose bytes the CPU's caches could still hold. BOTW draws four linear
+            // targets and reads them back together every ~10 s; on Mali the water lost its sky reflection for a frame at
+            // that same rate.)
             for (uint32_t y = 0; y < r->rows; y++)
                 memcpy((void *)(uintptr_t)(r->addr + y * r->stride), r->ptr + (uint64_t)y * r->row, r->row);
             guest_copy_flush();
@@ -1353,6 +1454,59 @@ static VkImageView depth_twin_sample(TexBackend *b, int textype, bool update) {
     DepthTwin *t = update ? depth_twin_update(vk_cmd(), b) : depth_twin_find(b);
     return t ? t->view[textype == TEXTYPE_2D_ARRAY ? 1 : 0] : VK_NULL_HANDLE;
 }
+// ---- Color targets a pass never draws into, left out of it (Mali-G610 / tilers; SAVAGEWIND_VK_DETACH=0: off, 1: on
+// elsewhere too). A tiler loads every attachment into tile memory when a pass begins and stores it all back when it
+// ends: BOTW's lighting passes keep the whole G-buffer bound (6-8 full-screen targets, channel masks off) and draw
+// into one of them, ~20 MB moved per pass for nothing. Which targets a pass writes is known only once its draws have
+// run, so it is remembered per pass (its targets, views and first fragment shader) and the next time that pass begins
+// the others are left out. A draw that would write one of them ends the pass first (the next one has it attached and
+// the memory remembers it), so a wrong guess costs a pass, not a picture. Left out, a target the pass samples is read
+// as the texture it then is (no snapshot copy).
+#define DET_TAB 8192
+static struct { uint64_t key; uint8_t written; bool used; } det_tab[DET_TAB];
+static uint64_t pass_key;
+static uint8_t pass_detached;
+static bool det_no_next;  // (a clear begins this pass: everything attached)
+static uint8_t det_written;  // color slots the open pass drew into or cleared
+static uint8_t det_draw;     // (during resolve_feedback) the slots the draw's pass leaves out: not attachments then
+static uint64_t stat_det_miss;
+static bool pass_frag_only;      // the open pass began behind a fragment-only barrier (SAVAGEWIND_VK_BARRIER_FRAG)
+static bool pass_vs_reads_next;  // the pass about to begin has a draw whose vertex stage reads textures / memory
+static uint64_t stat_frag_barriers, stat_frag_restarts;
+static uint64_t pass_serial;  // passes begun
+static int det_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("SAVAGEWIND_VK_DETACH");
+        on = e ? atoi(e) != 0 : g_vk.is_mali;
+        LOG("[vk] color targets a pass doesn't draw into left out of it: %s\n", on ? "on" : "off");
+    }
+    return on;
+}
+static uint64_t det_key(void) {
+    uint64_t h = 1469598103934665603ull;
+    const uint8_t *p = (const uint8_t *)&st.rt;
+    for (size_t i = 0; i < sizeof st.rt; i++) h = (h ^ p[i]) * 1099511628211ull;
+    return (h ^ g_cur_fs_hash) * 0x9E3779B97F4A7C15ull | 1;
+}
+static uint8_t det_predict(uint64_t key) {  // the color slots to leave out of a pass with this key
+    if (!det_on() || det_no_next) return 0;
+    uint32_t slot = (uint32_t)(key >> 40) & (DET_TAB - 1);
+    if (!det_tab[slot].used || det_tab[slot].key != key) return 0;
+    uint8_t present = 0;
+    for (int i = 0; i < st.rt.ncolor && i < 8; i++) if (st.rt.color[i]) present |= (uint8_t)(1u << i);
+    uint8_t out = (uint8_t)(present & ~det_tab[slot].written);
+    if (out == present && !st.rt.depth) return 0;  // (never all of them: a pass with nothing attached is skipped, pass_void)
+    return out;
+}
+static void det_note(uint64_t key, uint8_t written) {
+    uint32_t slot = (uint32_t)(key >> 40) & (DET_TAB - 1);
+    if (det_tab[slot].used && det_tab[slot].key == key) det_tab[slot].written |= written;
+    else { det_tab[slot].key = key; det_tab[slot].written = written; det_tab[slot].used = true; }
+}
+// The slots left out of the pass the next draw lands in (the open one, or the one about to begin)
+static uint8_t det_current(void) { return in_pass && !st.rt_dirty ? pass_detached : det_predict(det_key()); }
+static uint64_t det_current_key(void) { return in_pass && !st.rt_dirty ? pass_key : det_key(); }
 
 static void vk_end_pass_at(int line);
 void vk_end_pass(void) { vk_end_pass_at(0); }
@@ -1363,11 +1517,13 @@ static void vk_end_pass_at(int line) {
     if (!pass_void) vkCmdEndRendering(vk_cmd());
     in_pass = false;
     pass_void = false;
+    if (det_on()) det_note(pass_key, det_written);
     for (int i = 0; i < pass_nfbl; i++) feedback_layout_move(vk_cmd(), pass_fbl[i], false);
     pass_nfbl = 0;
     for (int i = 0; i < pass_nblock; i++) vk_block_flush(vk_cmd(), pass_block[i]);
     pass_nblock = 0;
     depth_twin_after_pass(vk_cmd());  // (the shadow copy just drawn: its depth twin)
+    if (pass_nlinear) bar_other = true;  // (copies to memory)
     for (int i = 0; i < pass_nlinear; i++) readback_schedule(vk_cmd(), pass_linear[i], &pass_linear_view[i], pass_linear_has_view[i]);
     pass_nlinear = 0;
     // (debug frame) what the pass drew: its targets, as begin_pass recorded them (st.rt may name the next pass's)
@@ -1401,9 +1557,30 @@ static uint32_t level_extent(uint32_t v, uint32_t lv) { v >>= lv; return v ? v :
 
 static void begin_pass(void) {
     if (in_pass && !st.rt_dirty) return;
-    vk_end_pass();
+    uint64_t new_key = det_on() ? det_key() : 0;  // (the hash of st.rt: only where targets are left out, Mali)
+    uint8_t new_detached = det_predict(new_key);
+    det_no_next = false;
+    vk_end_pass();  // (notes what the pass that ends wrote under its own key)
+    pass_key = new_key;
+    pass_detached = new_detached;
+    pass_serial++;
+    if (det_on()) {
+        static uint64_t passes, slots, t0;
+        passes++;
+        slots += (uint64_t)__builtin_popcount(new_detached);
+        uint64_t now = SDL_GetTicksNS();
+        if (!t0) t0 = now;
+        if (now - t0 > 4000000000ull) {
+            LOG("[vk] passes %llu, color targets left out %llu, wrong guesses %llu; fragment-only barriers %llu, restarts %llu (4 s)\n",
+                (unsigned long long)passes, (unsigned long long)slots, (unsigned long long)stat_det_miss,
+                (unsigned long long)stat_frag_barriers, (unsigned long long)stat_frag_restarts);
+            passes = slots = stat_det_miss = stat_frag_barriers = stat_frag_restarts = 0;
+            t0 = now;
+        }
+    }
     pass_ds_written = false;
     pass_color_written = pass_color_unsynced = pass_feedback = 0;
+    det_written = 0;
     if (dl_on == 2) renderer_flush();  // (SAVAGEWIND_VK_DEVLOST_TRACE=2: each pass its own submission)
     // BOTW records a whole frame into one command list. Submitted only at its end, the GPU sat idle while the list was
     // translated (~13 ms in the open world) and only then rendered it, and the game waits for the GPU to finish a frame
@@ -1428,7 +1605,31 @@ static void begin_pass(void) {
             break;
         }
     VkCommandBuffer cb = vk_cmd();
-    vk_full_barrier(cb);  // passes, copies and dispatches see each other's results
+    // SAVAGEWIND_VK_BARRIER_FRAG=1 (test, Mali-G610 performance): the barrier at a pass's start waits for everything
+    // before it, but holds back only the new pass's fragment work, not its vertex / tiling work, so a tiler overlaps the
+    // two passes. Wrong where the pass's vertex stage reads what the previous work wrote (a measurement, not a fix).
+    static int bfrag = -1;
+    if (bfrag < 0) {  // (on by default on Mali; =0: off)
+        const char *e = getenv("SAVAGEWIND_VK_BARRIER_FRAG");
+        bfrag = e ? atoi(e) != 0 : g_vk.is_mali;
+        LOG("[vk] pass barriers hold back only fragment work where they can: %s\n", bfrag ? "on" : "off");
+    }
+    bool frag_only = bfrag && !vtx_hazard && !pass_vs_reads_next;
+    pass_frag_only = frag_only;
+    pass_vs_reads_next = false;
+    if (frag_only) {
+        stat_frag_barriers++;
+        VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                               .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+                               .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                                               VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                               .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
+        VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+        vkCmdPipelineBarrier2(cb, &di);
+    } else {
+        pass_barrier(cb);  // passes, copies and dispatches see each other's results
+        vtx_hazard = false;
+    }
     {
         NvnTexture *t0n = st.rt.ncolor ? st.rt.color[0] : NULL;
         dl_note("pass %d color %ux%u fmt %#x depth %p", st.rt.ncolor, t0n ? t0n->width : 0, t0n ? t0n->height : 0, t0n ? t0n->format : 0,
@@ -1491,6 +1692,7 @@ static void begin_pass(void) {
         renderer_mark_gpu_owned(t);
         VkImageView v = vk_view(t, &st.rt.cview[i], st.rt.has_cview[i], true, TEXTYPE_2D);
         TexBackend *b = t->backend;
+        if (v) pass_barrier_note(b);  // (the image the view is of: vk_view may have made or changed it)
         if (b && b->drawn_frame != renderer_present_count()) { b->prev_drawn = b->drawn_frame; b->drawn_frame = renderer_present_count(); }
         bool blocks = b && b->block_pending;  // (a view of a compressed image's blocks: drawn into b->block)
         if (blocks) {
@@ -1498,6 +1700,19 @@ static void begin_pass(void) {
             if (v && pass_nblock < 8) pass_block[pass_nblock++] = b;
         }
         if (!v) continue;
+        if (pass_detached & (1u << i)) continue;  // (left out: this pass doesn't draw into it, det_tab)
+        if (g_vk.is_mali) {  // The same view in two slots (BOTW's G-buffer binds targets 1 / 3 again as 2 / 4, never writing
+            // those): attached once on Mali. Twice is undefined in Vulkan, and a tiler stores each slot's tile copy at the end
+            // of the pass, so the unwritten slot put the loaded contents back over the drawn ones (the shrine's G-buffer:
+            // specks / tiles). Other GPUs: attached as before (the pipelines' rendering formats unchanged).
+            int dup = -1;
+            for (int j = 0; j < i && dup < 0; j++) if (ca[j].imageView == v) dup = j;
+            if (dup >= 0) {
+                static int nlog;
+                if (nlog++ < 4) LOG("[vk] render target slot %d is slot %d again: attached once\n", i, dup);
+                continue;
+            }
+        }
         ca[i].imageView = v;
         ca[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
         ca[i].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
@@ -1525,6 +1740,13 @@ static void begin_pass(void) {
         }
         pass_color[i] = st.rt.has_cview[i] && (st.rt.cview[i].setmask & 4) && vk_format(t->format) == b->format
                       ? vk_format(st.rt.cview[i].format) : b->format;
+        pass_color[i] = vk_view_format(b, pass_color[i]);  // (g_vk.lean_usage: the format its view really has)
+        // Drawn into through a view of a compressed image's blocks: the pipeline's format is the block image's, the one
+        // attached. (The same as above for a real BC image. For Mali's R8 images (SAVAGEWIND_VK_BC4_CPU) the line above
+        // gives R8_UNORM, so the NPC speech bubbles' encode draws ran pipelines made for one UNORM channel into the
+        // RGBA16 UINT block image: undefined in Vulkan (VUID-vkCmdDraw-colorAttachmentCount-06180), and the G / B / A
+        // channels are the blocks' 48 index bits - what shapes the bubble's edges and rounded ends.)
+        if (blocks && b->block) pass_color[i] = b->block->format;
         uint32_t lv = st.rt.has_cview[i] && (st.rt.cview[i].setmask & 1) ? st.rt.cview[i].base_level : 0;
         uint32_t ew = level_extent(b->width, lv), eh = level_extent(b->height, lv);
         if (blocks) ew = b->block->width, eh = b->block->height;
@@ -1539,6 +1761,7 @@ static void begin_pass(void) {
         renderer_mark_gpu_owned(st.rt.depth);
         VkImageView v = vk_view(st.rt.depth, &st.rt.dview, st.rt.has_dview, true, TEXTYPE_2D);
         TexBackend *b = st.rt.depth->backend;
+        if (v) pass_barrier_note(b);
         if (b && b->drawn_frame != renderer_present_count()) { b->prev_drawn = b->drawn_frame; b->drawn_frame = renderer_present_count(); }
         if (v && renderer_format_is_depth(st.rt.depth->format)) {
             VkRenderingAttachmentInfo a = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = v,
@@ -1556,6 +1779,38 @@ static void begin_pass(void) {
     }
     if (!w) { pass_sx = pass_sy = 1; minw = minh = 16; }
     pass_w = minw; pass_h = minh;
+    {   // (debugging) SAVAGEWIND_LOG_NULL_VIEWS=1: each new shape of pass with a target slot that has no view
+        static int on = -1, nseen;
+        static uint32_t seen[64];
+        if (on < 0) on = getenv("SAVAGEWIND_LOG_NULL_VIEWS") != NULL;
+        uint32_t unbound = 0, noview = 0, vol = 0, lin = 0;
+        for (uint32_t i = 0; on && i < pass_ncolor && i < 8; i++) {
+            if (!st.rt.color[i]) unbound |= 1u << i;
+            else if (!ca[i].imageView) noview |= 1u << i;
+            else {
+                TexBackend *b = st.rt.color[i]->backend;
+                if (b && b->base_type == VK_IMAGE_VIEW_TYPE_3D) vol |= 1u << i;
+                if (st.rt.color[i]->flags & 0x40) lin |= 1u << i;
+            }
+        }
+        bool d_lost = on && st.rt.depth && !has_d && !has_s;
+        uint32_t key = pass_ncolor | unbound << 4 | noview << 12 | (uint32_t)d_lost << 20 | (uint32_t)has_d << 21 |
+                       (uint32_t)(vol != 0) << 22 | (uint32_t)(lin != 0) << 23 | (uint32_t)(pass_nblock != 0) << 24;
+        static int nvoid;
+        bool known = !on || (!unbound && !noview && !d_lost && w && !vol && !lin && !pass_nblock);
+        for (int k = 0; !known && k < nseen; k++) known = seen[k] == key;
+        if (on && !w && nvoid < 40) known = false, nvoid++;
+        if (!known && nseen < 64) {
+            seen[nseen++] = key;
+            LOG("[rt] frame %llu: pass of %u color (unbound %#x, no view %#x, 3D slice %#x, linear %#x, blocks %u), depth %s%s\n",
+                (unsigned long long)renderer_present_count(), pass_ncolor, unbound, noview, vol, lin, pass_nblock,
+                d_lost ? "without a view" : has_d ? "yes" : "no", w ? "" : ": nothing to draw into");
+            for (uint32_t i = 0; i < pass_ncolor && i < 8; i++)
+                if (noview >> i & 1)
+                    LOG("[rt]   slot %u: %ux%ux%u format %#x target %u\n", i, st.rt.color[i]->width, st.rt.color[i]->height,
+                        st.rt.color[i]->depth, st.rt.color[i]->format, st.rt.color[i]->target);
+        }
+    }
     // A pass with nothing to draw into: every color target without a view and no depth (BOTW draws into a 32x32x32
     // BC4 volume, whose blocks this backend can't render to). Its draws land nowhere, so it is not begun and they are
     // skipped: Intel's Windows driver (UHD 620, API 1.3.215) crashed in vkCmdBeginRendering on such a pass, a null
@@ -1573,6 +1828,7 @@ static void begin_pass(void) {
     if (mvec_enabled() && has_d && pass_ncolor < 8 && pass_samples == 1) {  // (mvec.c) the motion target, appended
         TexBackend *mt = mvec_pass_target(st.rt.depth, minw, minh);
         if (mt) {
+            pass_barrier_note(mt);  // (the motion target is drawn into too)
             uint64_t frame = renderer_present_count();
             ca[pass_ncolor] = (VkRenderingAttachmentInfo){.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                                                           .imageView = post_view(mt), .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
@@ -1764,9 +2020,24 @@ static VkPipeline clear_pipeline(int index, int kind, uint32_t mask, bool depth,
     return p;
 }
 
+static void snapshots_invalidate_clear(NvnTexture *t);
 static void clear(int index, int kind, const void *color, uint32_t mask, bool depth, float dval, bool stencil, uint32_t sval,
                   uint32_t smask) {
+    // (a snapshot of a target taken before this clear is stale after it: Mali's G-buffer snapshots, reused within the
+    // pass that follows, were - when the clear began that very pass - the water's sky reflection lost for a frame)
+    if (g_vk.is_mali) {  // (other GPUs: as before)
+        if (index >= 0 && index < st.rt.ncolor && st.rt.color[index]) snapshots_invalidate_clear(st.rt.color[index]);
+        if ((depth || stencil) && st.rt.depth) snapshots_invalidate_clear(st.rt.depth);
+    }
+    if (index >= 0 && index < 8) {  // (a color target left out of the open pass: the pass ends, the next has it)
+        if (in_pass && !st.rt_dirty && (pass_detached & (1u << index))) {
+            det_note(pass_key, (uint8_t)(1u << index));
+            st.rt_dirty = true;
+        }
+        if (!in_pass || st.rt_dirty) det_no_next = true;
+    }
     begin_pass();
+    if (index >= 0 && index < 8) det_written |= (uint8_t)(1u << index);
     if (pass_void) return;
     VkCommandBuffer cb = vk_cmd();
     vp_sx = pass_sx; vp_sy = pass_sy; vp_ox = 0; vp_oy = 0;
@@ -2485,11 +2756,28 @@ static VkStencilOp stencil_op(uint8_t o) {
     }
 }
 
+// The format a colour target is drawn in: its view's when the view sets one (BOTW draws its NPC speech bubbles into a
+// BC4 texture through an RGBA16 UINT view of its blocks: the shader has to write integers)
+static uint32_t rt_format(int i) {
+    if (!g_vk.is_mali) return st.rt.color[i]->format;  // (other GPUs: as before)
+    return st.rt.has_cview[i] && (st.rt.cview[i].setmask & 4) && st.rt.cview[i].format ? st.rt.cview[i].format : st.rt.color[i]->format;
+}
 static int rt_kind(uint32_t f) {
+    int k;
     switch (f) {
-    case 0x03: case 0x08: case 0x0B: case 0x0F: case 0x14: case 0x17: case 0x27: case 0x2C: case 0x2F: case 0x3E: return 2;
-    case 0x04: case 0x09: case 0x0C: case 0x10: case 0x15: case 0x18: case 0x28: case 0x2D: case 0x30: return 1;
+    case 0x03: case 0x08: case 0x0B: case 0x0F: case 0x14: case 0x17: case 0x27: case 0x2C: case 0x2F: case 0x3E: k = 2; break;
+    case 0x04: case 0x09: case 0x0C: case 0x10: case 0x15: case 0x18: case 0x28: case 0x2D: case 0x30: k = 1; break;
     default: return 0;
+    }
+    // 16 / 8-bit components: the shader writes the register's low bits (translate.c; Mali saturates wider values, other
+    // GPUs keep the low bits themselves: as before there)
+    if (!g_vk.is_mali) return k;
+    switch (vk_format(f)) {
+    case VK_FORMAT_R16_UINT: case VK_FORMAT_R16G16_UINT: case VK_FORMAT_R16G16B16_UINT: case VK_FORMAT_R16G16B16A16_UINT: return 5;
+    case VK_FORMAT_R8_UINT: case VK_FORMAT_R8G8_UINT: case VK_FORMAT_R8G8B8_UINT: case VK_FORMAT_R8G8B8A8_UINT: return 6;
+    case VK_FORMAT_R16_SINT: case VK_FORMAT_R16G16_SINT: case VK_FORMAT_R16G16B16_SINT: case VK_FORMAT_R16G16B16A16_SINT: return 7;
+    case VK_FORMAT_R8_SINT: case VK_FORMAT_R8G8_SINT: case VK_FORMAT_R8G8B8_SINT: case VK_FORMAT_R8G8B8A8_SINT: return 8;
+    default: return k;
     }
 }
 
@@ -2730,6 +3018,13 @@ static VkPipeline gpl_stage_lib(StageBuild *b, int stage, const PipeState *s) {
     uint64_t have = atomic_load(&b->lib[variant]);
     if (have) return (VkPipeline)(uintptr_t)have;
     VkPipeline p = g_vk.pcache_pre ? gpl_shader_lib(b->m, stage, b->lib_layout, variant, g_vk.pcache_pre, true) : VK_NULL_HANDLE;
+    // (testing) SAVAGEWIND_LOG_LIBS=1: each shader library the precompiled shaders' cache did not have (precompile.c)
+    static int log_libs = -1;
+    if (log_libs < 0) log_libs = getenv("SAVAGEWIND_LOG_LIBS") != NULL;
+    if (!p && log_libs && g_vk.pcache_pre)
+        LOG("[vk] library not precompiled: %s variant %d, %u instructions%s%s%s\n", stage == STAGE_VERTEX ? "vertex" : "fragment",
+            variant, b->si->num_insts, b->si->mvec ? ", motion vector" : "", b->si->mvec_still ? ", still" : "",
+            b->si->mvec_mask ? ", reactive mask" : "");
     if (!p) p = gpl_shader_lib(b->m, stage, b->lib_layout, variant, g_vk.pcache, false);
     if (!p) return VK_NULL_HANDLE;
     uint64_t want = 0;
@@ -2951,11 +3246,32 @@ static bool feedback_any_type[4];  // the view fits every lookup type (a restric
 static int nfeedback;
 static uint64_t g_cur_fs_hash;
 static NvnTexture *snap_tex[8];
+static TexBackend *snap_be[8];  // (the image snap_tex had when the snapshot was taken: compared, never followed)
 static bool snap_ok[8];
 static const char *snap_why[8];
 static const char *snap_reason = "?";
+// A snapshot of texture object t, or of its image through another object (BOTW reaches some targets through more than
+// one), is stale once t is written. SAVAGEWIND_VK_SNAP_BY_OBJECT=1: by object only, as before.
+static uint64_t snap_wpass[8];  // (the pass the latest write into the slot's target was in, since its snapshot; 0: none)
+static uint64_t snap_pass_now(void);
 static void snapshots_invalidate(NvnTexture *t) {
-    for (int i = 0; i < 8; i++) if ((!t || snap_tex[i] == t) && snap_ok[i]) { snap_ok[i] = false; snap_why[i] = snap_reason; }
+    static int by_obj = -1;
+    if (by_obj < 0) by_obj = getenv("SAVAGEWIND_VK_SNAP_BY_OBJECT") ? atoi(getenv("SAVAGEWIND_VK_SNAP_BY_OBJECT")) != 0 : !g_vk.is_mali;
+    TexBackend *be = t && !by_obj ? (TexBackend *)t->backend : NULL;
+    for (int i = 0; i < 8; i++) {
+        if (!(!t || snap_tex[i] == t || (be && snap_be[i] == be))) continue;
+        if (t) snap_wpass[i] = snap_pass_now();
+        if (snap_ok[i]) { snap_ok[i] = false; snap_why[i] = snap_reason; }
+    }
+}
+static uint64_t snap_pass_now(void) { return in_pass && !st.rt_dirty ? pass_serial : pass_serial + 1; }  // (the pass a write now is in)
+static bool snap_cleared[8];  // (the slot's target itself was cleared since its snapshot: its contents are another thing's)
+static void snapshots_invalidate_clear(NvnTexture *t) {  // (clear(), defined before this)
+    TexBackend *be = t ? (TexBackend *)t->backend : NULL;
+    for (int i = 0; i < 8; i++)
+        if (t && (snap_tex[i] == t || (be && snap_be[i] == be))) snap_cleared[i] = true;
+    snap_reason = "clear";
+    snapshots_invalidate(t);
 }
 
 typedef struct { NvnTexture *key; TexBackend copy; } Snap;
@@ -3015,10 +3331,17 @@ static NvnTexture *shadow_copy_source(const NvnTexture *t) {
                : NULL;
 }
 
+// (Mali: the same image through another texture object counts, it is the image that is bound. SAVAGEWIND_VK_SNAP_BY_OBJECT=1:
+// the object only, as before and as elsewhere; =0: by image elsewhere too)
+static bool same_image(NvnTexture *a, NvnTexture *b) {
+    static int by_obj = -1;
+    if (by_obj < 0) by_obj = getenv("SAVAGEWIND_VK_SNAP_BY_OBJECT") ? atoi(getenv("SAVAGEWIND_VK_SNAP_BY_OBJECT")) != 0 : !g_vk.is_mali;
+    return a == b || (!by_obj && a && b && a->backend && a->backend == b->backend);
+}
 static bool is_attachment(NvnTexture *t) {
     if (!t) return false;
-    if (t == st.rt.depth) return true;
-    for (int i = 0; i < st.rt.ncolor; i++) if (t == st.rt.color[i]) return true;
+    if (same_image(t, st.rt.depth)) return true;
+    for (int i = 0; i < st.rt.ncolor; i++) if (same_image(t, st.rt.color[i]) && !(det_draw & (1u << i))) return true;
     return false;
 }
 
@@ -3061,6 +3384,7 @@ static void debug_save_depth(TexBackend *b, const char *path) {
                            .imageExtent = {b->width, b->height, 1}};
     vkCmdCopyImageToBuffer(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, out.buf, 1, &c);
     renderer_flush();
+    vk_readback_sync();
     const float *d = out.ptr;
     float lo = 1e30f, hi = -1e30f;
     for (uint64_t i = 0; i < n; i++) { if (d[i] < lo) lo = d[i]; if (d[i] > hi) hi = d[i]; }
@@ -3102,6 +3426,7 @@ static void fbdump_flush(void) {
                                .imageExtent = {b->width, b->height, 1}};
         vkCmdCopyImageToBuffer(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, out.buf, 1, &c);
         renderer_flush();
+        vk_readback_sync();
         char path[160];
         snprintf(path, sizeof path, "build/fbdump_%d_%ux%u_f%d.bin", n++, b->width, b->height, b->format);
         FILE *f = fopen(path, "wb");
@@ -3152,7 +3477,8 @@ static void resolve_feedback(Prog *pr) {
             if (nosnap < 0) nosnap = getenv("SAVAGEWIND_NO_SNAPSHOT_REUSE") != NULL;
             int si = -1;
             for (int k = 0; k < 8; k++) if (snap_tex[k] == t) si = k;
-            bool self_write = t == st.rt.depth && st.ds[0] && st.ds[1];
+            bool is_depth = same_image(t, st.rt.depth);  // (this object, or another of the bound depth image)
+            bool self_write = is_depth && st.ds[0] && st.ds[1];
             TexBackend *src = vk_tex(t, true);
             Snap *existing = NULL;
             for (int k = 0; k < nsnaps; k++) if (snaps[k].key == t && snaps[k].copy.image) existing = &snaps[k];
@@ -3164,7 +3490,19 @@ static void resolve_feedback(Prog *pr) {
             // in this pass needs a barrier first: the pass ends, without a copy.
             static int nolive = -1;
             if (nolive < 0) nolive = getenv("SAVAGEWIND_NO_LIVE_DEPTH") != NULL;
-            if (!nolive && t == st.rt.depth && depth_read_only()) {
+            // SAVAGEWIND_VK_SNAP_DEPTH=1 / SAVAGEWIND_VK_SNAP_GBUFFER=1 (Mali-G610 blue patches): the two reads of a bound
+            // attachment below (read-only depth; a color target the draw doesn't write) take a snapshot copy instead.
+            // On a tiler the attachment lives in tile memory during the pass, and the lighting read it wrong (walls,
+            // rocks and barricades lit as sky); SAVAGEWIND_NO_LIVE_DEPTH=1 (all live reads) fixed it but lost the terrain.
+            static int snap_depth = -1, snap_gbuf = -1;
+            if (snap_depth < 0) {  // (on by default on Mali; =0 turns one off)
+                bool mali = g_vk.is_mali;
+                const char *d = getenv("SAVAGEWIND_VK_SNAP_DEPTH"), *g = getenv("SAVAGEWIND_VK_SNAP_GBUFFER");
+                snap_depth = d ? atoi(d) != 0 : false;  // (not needed: the G-buffer half fixed the blue patches)
+                snap_gbuf = g ? atoi(g) != 0 : mali;
+                if (snap_depth || snap_gbuf) LOG("[vk] bound attachments read through snapshots: depth %d, G-buffer %d\n", snap_depth, snap_gbuf);
+            }
+            if (!nolive && !snap_depth && is_depth && depth_read_only()) {
                 if (pass_ds_written) { vk_end_pass(); st.rt_dirty = true; }
                 stat_feedback_live++;
                 feedback_tex[nfeedback] = t;
@@ -3177,10 +3515,10 @@ static void resolve_feedback(Prog *pr) {
             // the one being written: different subresources, no feedback loop, no copy. (The copy cost a pass and a
             // 1024x1024 copy per level, and for array lookups it gave a black texture.) The level below was written
             // by an earlier pass, which ended with a barrier.
-            if (!nolive && t != st.rt.depth) {
+            if (!nolive && !is_depth) {
                 const NvnTexEntry *e = shader_texture_entry(sg, &infos[sg]->tex[i]);
                 int ci = -1;
-                for (int k = 0; k < st.rt.ncolor; k++) if (st.rt.color[k] == t) ci = k;
+                for (int k = 0; k < st.rt.ncolor; k++) if (same_image(st.rt.color[k], t)) ci = k;
                 const NvnTextureView *cv = ci >= 0 && st.rt.has_cview[ci] ? &st.rt.cview[ci] : NULL;
                 uint32_t nl = t->levels ? t->levels : 1, tl = cv && (cv->setmask & 1) ? cv->base_level : 0;
                 bool sv = e && e->has_view && (e->view.setmask & 1);
@@ -3188,7 +3526,7 @@ static void resolve_feedback(Prog *pr) {
                 // A color target this draw doesn't write (BOTW's light composites keep the G-buffer bound with its
                 // channel masks off and sample it): read as it is, like a read-only depth attachment. Written earlier
                 // in this pass: the pass ends first (a barrier), still no copy.
-                if (ci >= 0 && !draw_writes_color(pr, ci)) {
+                if (ci >= 0 && !draw_writes_color(pr, ci) && !snap_gbuf) {
                     if (pass_color_written & (1u << ci)) { vk_end_pass(); st.rt_dirty = true; }
                     stat_feedback_live++;
                     continue;
@@ -3258,10 +3596,16 @@ static void resolve_feedback(Prog *pr) {
             // from then on every pass with that target does.
             static int nofbl = -1;
             if (nofbl < 0) nofbl = getenv("SAVAGEWIND_VK_FEEDBACK_COPY") != NULL;  // (debugging) copies, as before
-            if (!nofbl && sg == 1 && t != st.rt.depth && src->feedback_ok) {
+            if (!nofbl && sg == 1 && !is_depth && src->feedback_ok) {
                 int ci = -1;
-                for (int k = 0; k < st.rt.ncolor; k++) if (st.rt.color[k] == t) ci = k;
+                for (int k = 0; k < st.rt.ncolor; k++) if (same_image(st.rt.color[k], t)) ci = k;
                 if (ci >= 0) {
+                    if (!src->feedback_seen && src->nview_fmt) {  // (outside a pass: no DCC for it from now on)
+                        vk_end_pass();
+                        st.rt_dirty = true;
+                        src->feedback_seen = true;
+                        vk_texture_drop_format_list(t);
+                    }
                     src->feedback_seen = true;
                     fbdump_note(t);
                     if (in_pass && !st.rt_dirty && (pass_feedback & (1u << ci))) {
@@ -3287,13 +3631,129 @@ static void resolve_feedback(Prog *pr) {
                     continue;
                 }
             }
-            if (!nosnap && si >= 0 && (snap_ok[si] || self_write) && existing) {
+            // SAVAGEWIND_VK_FEEDBACK_ONCE=1: one snapshot of a target per frame, later draws that sample it get that one
+            // (they miss what the frame drew into it since). Each snapshot ends the pass and starts it again: on a tiler
+            // (Mali) the copies and restarts were most of the GPU's frame. For measuring, and where the effects allow.
+            static int once = -1;
+            static uint64_t snap_frame[8], snap_pass[8];
+            if (once < 0) {
+                once = getenv("SAVAGEWIND_VK_FEEDBACK_ONCE") != NULL;
+                if (once) LOG("[vk] feedback snapshots: one per target per frame, until written\n");
+            }
+            // (once: reused past draws into the target since - that is its point, a pass break and a copy saved each
+            // time, ~450 a frame in the open world: refusing every one took Mali-G610 from 30 to 7 FPS. But not for
+            // targets of the formats in SAVAGEWIND_VK_ONCE_STRICT_FMT (NVN format codes, default 0xa: R32F, the format of
+            // the target below), nor past a clear of the target (snap_cleared): every few seconds BOTW makes ~155
+            // more draws with a shader that samples its bound 1600x900 R32F target, drawn into since its snapshot - the
+            // frames where the water lost its sky reflection. SAVAGEWIND_VK_ONCE_STRICT=1: not past any write; =0: past
+            // anything, as before. SAVAGEWIND_DEBUG_ONCE=1: the reuses by what came between and by format, every 2 s.)
+            static int strict = -1, odbg = -1, nsf;
+            static uint32_t sfmt[8];
+            if (once && strict < 0) {  // (all of it only with once on: other GPUs as before)
+                const char *e = getenv("SAVAGEWIND_VK_ONCE_STRICT"), *f = getenv("SAVAGEWIND_VK_ONCE_STRICT_FMT");
+                strict = e ? atoi(e) : 2;  // (2: by format and past clears)
+                odbg = getenv("SAVAGEWIND_DEBUG_ONCE") != NULL;
+                if (!f) f = "0xa";
+                for (const char *q = f; *q && nsf < 8;) {
+                    char *end;
+                    unsigned long v = strtoul(q, &end, 0);
+                    if (end == q) break;
+                    sfmt[nsf++] = (uint32_t)v;
+                    q = *end == ',' ? end + 1 : end;
+                }
+                LOG("[vk] once-a-frame snapshots not reused past a write for %d format(s) (first %#x), strict %d\n", nsf,
+                    nsf ? sfmt[0] : 0, strict);
+            }
+            bool fresh = si >= 0 && (snap_ok[si] || self_write);
+            bool cleared = si >= 0 && !fresh && snap_cleared[si];
+            bool fmt_strict = false;
+            for (int k = 0; k < nsf; k++) fmt_strict |= t->format == sfmt[k];
+            // (strict formats: still reused past writes in the pass the snapshot was taken for - BOTW draws into its
+            // R32F target and reads it back within one pass ~34 times a frame, and a new copy each time cost half the
+            // frame rate - but not past a write in a later pass: the copy then predates a whole pass of drawing)
+            bool later = si >= 0 && !fresh && snap_wpass[si] > snap_pass[si];
+            // ... and, within one pass, a new copy when a shader that hasn't read the target for a while (the last
+            // SAVAGEWIND_VK_ONCE_NEW_FRAMES frames, 60) reads it stale; its later reads take that copy. The ~155 extra
+            // draws of the frames the water lost its sky reflection are one such shader, run every ~10 s: one copy more
+            // on those frames. The shaders that read it every frame keep the old copy, as before (a new copy for each
+            // of them, every frame, cost frames near water).
+            static struct { uint64_t fs; TexBackend *be; uint64_t frame; } rd[64];
+            static int new_frames = -1;
+            static uint64_t n_refresh;
+            if (new_frames < 0) { const char *e = getenv("SAVAGEWIND_VK_ONCE_NEW_FRAMES"); new_frames = e && atoi(e) > 0 ? atoi(e) : 60; }
+            bool new_reader = false;
+            if (once && fmt_strict && !fresh && si >= 0 && strict == 2) {
+                uint64_t fr = renderer_present_count() + 1;
+                int k = 0, old = 0;
+                while (k < 64 && rd[k].fs && !(rd[k].fs == g_cur_fs_hash && rd[k].be == src)) {
+                    if (rd[k].frame < rd[old].frame) old = k;
+                    k++;
+                }
+                if (k == 64) k = old;  // (full: the least recently seen goes)
+                if (!rd[k].fs || rd[k].fs != g_cur_fs_hash || rd[k].be != src || rd[k].frame + (uint64_t)new_frames < fr) {
+                    new_reader = true;
+                    n_refresh++;
+                }
+                rd[k].fs = g_cur_fs_hash ? g_cur_fs_hash : 1, rd[k].be = src, rd[k].frame = fr;
+            }
+            bool once_ok = strict == 0 || fresh || (strict == 2 && !cleared && !(fmt_strict && (later || new_reader)));
+            if (odbg && !nosnap && once && si >= 0 && existing && snap_frame[si] == renderer_present_count() + 1) {
+                static uint64_t n_fresh, n_draw, n_clear, n_other, n_refused, n_same, n_later, t0;
+                static struct { uint32_t fmt; uint64_t n; } byf[16];
+                static const char *why_other;
+                if (fresh) n_fresh++;
+                else {
+                    if (cleared) n_clear++;
+                    else if (snap_why[si] && !strncmp(snap_why[si], "draw", 4)) n_draw++;
+                    else { n_other++; why_other = snap_why[si]; }
+                    int k = 0;
+                    while (k < 15 && byf[k].n && byf[k].fmt != t->format) k++;
+                    byf[k].fmt = t->format, byf[k].n++;
+                }
+                if (!once_ok) n_refused++;
+                if (fmt_strict && !fresh) { if (later) n_later++; else n_same++; }
+                uint64_t now = SDL_GetTicksNS();
+                if (!t0) t0 = now;
+                if (now - t0 > 2000000000ull) {
+                    char fb[256]; int o = 0;
+                    for (int k = 0; k < 16 && byf[k].n && o < 220; k++) o += snprintf(fb + o, sizeof fb - o, " %#x:%llu", byf[k].fmt, (unsigned long long)byf[k].n);
+                    fb[o] = 0;
+                    LOG("[once] 2 s: reuses %llu up to date, %llu past draws, %llu past clears, %llu past other (%s); refused %llu | strict "
+                        "formats stale: %llu same pass, %llu later pass, %llu new copies for a shader not seen lately | stale by format:%s\n",
+                        (unsigned long long)n_fresh, (unsigned long long)n_draw, (unsigned long long)n_clear, (unsigned long long)n_other,
+                        why_other ? why_other : "-", (unsigned long long)n_refused, (unsigned long long)n_same,
+                        (unsigned long long)n_later, (unsigned long long)n_refresh, fb);
+                    n_refresh = 0;
+                    n_fresh = n_draw = n_clear = n_other = n_refused = n_same = n_later = 0;
+                    memset(byf, 0, sizeof byf);
+                    t0 = now;
+                }
+            }
+            if (!nosnap && once && si >= 0 && once_ok && existing && snap_frame[si] == renderer_present_count() + 1) {
+                feedback_tex[nfeedback] = t;
+                feedback_view[nfeedback++] = vk_image_view(&existing->copy, VK_IMAGE_VIEW_TYPE_2D, src->format, 0, 1, 0, 1, id, sa);
+                continue;
+            }
+            // Mali: a snapshot is reused within a pass (or frame) only. Carried into the next frame it was stale wherever the
+            // frame's own invalidations missed a change (puddles white, reflections flickering as the camera turned).
+            // SAVAGEWIND_VK_SNAP_REUSE=pass (Mali's default): within the pass that follows it only; =frame: within its
+            // frame; =any: until a write invalidates it (elsewhere's default)
+            static int reuse = -1;
+            if (reuse < 0) {
+                const char *e = getenv("SAVAGEWIND_VK_SNAP_REUSE");
+                reuse = e ? (!strcmp(e, "pass") ? 2 : !strcmp(e, "frame") ? 1 : 0) : g_vk.is_mali ? 2 : 0;
+                LOG("[vk] feedback snapshots reused: %s\n", reuse == 2 ? "within one pass" : reuse == 1 ? "within one frame" : "until written");
+            }
+            uint64_t this_pass = in_pass && !st.rt_dirty ? pass_serial : pass_serial + 1;
+            if (!nosnap && si >= 0 && (snap_ok[si] || self_write) && existing &&
+                (reuse == 0 || (reuse == 1 && snap_frame[si] == renderer_present_count() + 1) ||
+                 (reuse == 2 && snap_pass[si] == this_pass))) {
                 feedback_tex[nfeedback] = t;
                 feedback_view[nfeedback++] = vk_image_view(&existing->copy, VK_IMAGE_VIEW_TYPE_2D, src->format, 0, 1, 0, 1, id, sa);
                 continue;
             }
             stat_feedback_copies++;
-            if (t != st.rt.depth) fbdump_note(t);
+            if (!is_depth) fbdump_note(t);
             // SAVAGEWIND_LOG_FEEDBACK=<n>: 200 snapshots after the first n (what is sampled while bound)
             if (logfb < 0) logfb = getenv("SAVAGEWIND_LOG_FEEDBACK") ? (fbskip = atol(getenv("SAVAGEWIND_LOG_FEEDBACK")), 200) : 0;
             if (logfb > 0 && fbskip > 0) fbskip--;
@@ -3301,10 +3761,10 @@ static void resolve_feedback(Prog *pr) {
                 logfb--;
                 const NvnTexEntry *e = shader_texture_entry(sg, &infos[sg]->tex[i]);
                 int ci = -1;
-                for (int k = 0; k < st.rt.ncolor; k++) if (st.rt.color[k] == t) ci = k;
+                for (int k = 0; k < st.rt.ncolor; k++) if (same_image(st.rt.color[k], t)) ci = k;
                 const NvnTextureView *cv = ci >= 0 && st.rt.has_cview[ci] ? &st.rt.cview[ci] : NULL;
                 LOG("[feedback] fs %016llx @%llx %s %ux%u fmt %#x levels %u | target view mask %#x level %u layer %u+%u | sampled view %d mask %#x "
-                    "level %u+%u layer %u+%u | stage %d t%d target %d of %d out %#x mask %#x blend %d draws since %u\n", (unsigned long long)g_cur_fs_hash, (unsigned long long)st.program->stages[1].code_addr, t == st.rt.depth ? "depth" : "color", src->width, src->height, t->format,
+                    "level %u+%u layer %u+%u | stage %d t%d target %d of %d out %#x mask %#x blend %d draws since %u\n", (unsigned long long)g_cur_fs_hash, (unsigned long long)st.program->stages[1].code_addr, is_depth ? "depth" : "color", src->width, src->height, t->format,
                     t->levels, cv ? cv->setmask : 0, cv ? cv->base_level : 0, cv ? cv->min_layer : 0, cv ? cv->num_layers : 0,
                     e ? e->has_view : -1, e && e->has_view ? e->view.setmask : 0, e && e->has_view ? e->view.base_level : 0,
                     e && e->has_view ? e->view.num_levels : 0, e && e->has_view ? e->view.min_layer : 0,
@@ -3334,6 +3794,11 @@ static void resolve_feedback(Prog *pr) {
             feedback_view[nfeedback++] = vk_image_view(dst, VK_IMAGE_VIEW_TYPE_2D, src->format, 0, 1, 0, 1, id, sa);
             if (si < 0) { static int rr; si = rr++ & 7; snap_tex[si] = t; }
             snap_ok[si] = true;
+            snap_cleared[si] = false;
+            snap_wpass[si] = 0;
+            snap_be[si] = src;
+            snap_frame[si] = renderer_present_count() + 1;  // (+1: 0 is never a frame's)
+            snap_pass[si] = pass_serial + 1;  // (the pass that begins next, after this one ends)
             st.rt_dirty = true;
         }
 }
@@ -3653,73 +4118,201 @@ static uint64_t gmem_tried;  // heap size the import was last attempted for (gme
 static bool gmem_mapped;     // the heap is GPU memory mapped at its addresses (backend_heap_set): no import
 
 #ifdef __linux__
+#include <errno.h>
+#include <fcntl.h>
+#if defined(__has_include) && __has_include(<linux/dma-heap.h>)
+#include <linux/dma-heap.h>
+#else  // (kernel headers older than 5.6: the uapi definitions, unchanged since)
+#include <linux/types.h>
+struct dma_heap_allocation_data {
+    __u64 len;
+    __u32 fd;
+    __u32 fd_flags;
+    __u64 heap_flags;
+};
+#define DMA_HEAP_IOC_MAGIC 'H'
+#define DMA_HEAP_IOCTL_ALLOC _IOWR(DMA_HEAP_IOC_MAGIC, 0x0, struct dma_heap_allocation_data)
+#endif
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 // On amdgpu the import is a userptr buffer, and the kernel gets every page of every userptr buffer again at each
 // submission: on the Steam Deck ~4 ms a submit for the 3 GB heap (0.03 ms without it), half of a 40 ms frame. So
 // there the heap is GPU memory from the start: the first SetHeapSize (kernel.c), before the game has touched the
-// heap, makes host-cached GPU memory of its size, exported as a dma-buf, and maps that over the heap's addresses;
-// the shaders' global memory and the vertex reads use it in place, as they did the import. RADV only (the drivers
-// that showed the cost); SAVAGEWIND_VK_HEAP_IMPORT=1: the import, as before.
-void backend_heap_set(uint64_t size) {
-    static int off = -1;
-    if (off < 0) off = getenv("SAVAGEWIND_VK_HEAP_IMPORT") != NULL || getenv("SAVAGEWIND_VK_NO_GMEM") != NULL;
-    if (gmem_mapped && size > gmem_size)
-        LOG("[vk] guest heap grew to %llu MB past the %llu MB mapped: the rest is copied, not shared\n",
-            (unsigned long long)(size >> 20), (unsigned long long)(gmem_size >> 20));
-    if (off || gmem_mapped || gmem_buf || !size) return;
-    vk_wait_ready();
-    if (!g_vk.dmabuf || !g_vk.radv) return;
-    size = (size + 0x1FFFFF) & ~0x1FFFFFull;  // (2 MB pages)
-    uint32_t type = UINT32_MAX;
-    VkPhysicalDeviceMemoryProperties mp;
-    vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
-    VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    for (int pass = 0; pass < 2 && type == UINT32_MAX; pass++)  // host-cached first: the game's own memory
-        for (uint32_t i = 0; i < mp.memoryTypeCount && type == UINT32_MAX; i++) {
-            VkMemoryPropertyFlags f = mp.memoryTypes[i].propertyFlags;
-            if ((f & want) == want && !(f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) && (pass || (f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT)) &&
-                !(f & VK_MEMORY_PROPERTY_DEVICE_COHERENT_BIT_AMD))
-                type = i;
-        }
-    PFN_vkGetMemoryFdKHR get_fd = (PFN_vkGetMemoryFdKHR)vkGetDeviceProcAddr(g_vk.dev, "vkGetMemoryFdKHR");
-    if (type == UINT32_MAX || !get_fd) return;
-    VkExportMemoryAllocateInfo ex = {.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
-                                     .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
-    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &ex, .allocationSize = size,
-                               .memoryTypeIndex = type};
-    VkDeviceMemory mem;
-    VkResult r = vkAllocateMemory(g_vk.dev, &ai, NULL, &mem);
-    if (r != VK_SUCCESS) { LOG("[vk] guest heap as GPU memory: allocation failed (%d), imported instead\n", r); return; }
-    VkMemoryGetFdInfoKHR gi = {.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR, .memory = mem,
-                               .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
-    int fd = -1;
-    if (get_fd(g_vk.dev, &gi, &fd) != VK_SUCCESS || fd < 0) {
-        LOG("[vk] guest heap as GPU memory: no dma-buf, imported instead\n");
-        vkFreeMemory(g_vk.dev, mem, NULL);
-        return;
-    }
-    void *p = mmap((void *)(uintptr_t)HEAP_BASE, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0);
-    close(fd);  // (the mapping keeps the dma-buf)
-    if (p != (void *)(uintptr_t)HEAP_BASE) {
-        LOG("[vk] guest heap as GPU memory: mapping failed, imported instead\n");
-        mmap((void *)(uintptr_t)HEAP_BASE, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED, -1, 0);
-        vkFreeMemory(g_vk.dev, mem, NULL);
-        return;
-    }
+// heap, backs the heap's addresses with a dma-buf the GPU also has as a buffer; the shaders' global memory and the
+// vertex reads use it in place, as they did the import. ARM's Mali blob (RK3588) faults on the import instead
+// (TRANSLATION_FAULT reading it within seconds), so the backing is chosen with SAVAGEWIND_VK_HEAP:
+//   import   the host-pointer import (gmem_import), no backing here (also SAVAGEWIND_VK_HEAP_IMPORT=1)
+//   export   Vulkan memory exported as a dma-buf and mapped over the heap (the default on RADV)
+//   dmaheap  a dma-buf from the kernel's dma-buf heap (SAVAGEWIND_VK_DMA_HEAP: its name, default "system"), mapped over
+//            the heap and imported into Vulkan, as the Mali wrapper ICDs' WSI shares its images
+// Unset: export on RADV, import elsewhere.
+enum { HEAP_IMPORT, HEAP_EXPORT, HEAP_DMAHEAP };
+
+static int heap_mode(void) {
+    const char *e = getenv("SAVAGEWIND_VK_HEAP");
+    if (e && !strcmp(e, "export")) return HEAP_EXPORT;
+    if (e && !strcmp(e, "dmaheap")) return HEAP_DMAHEAP;
+    if (e && !strcmp(e, "import")) return HEAP_IMPORT;
+    if (e && *e) LOG("[vk] SAVAGEWIND_VK_HEAP=%s: not import / export / dmaheap, the default instead\n", e);
+    if (getenv("SAVAGEWIND_VK_HEAP_IMPORT")) return HEAP_IMPORT;
+    return g_vk.radv ? HEAP_EXPORT : HEAP_IMPORT;
+}
+
+static void heap_unmap(uint64_t size) {  // the heap's addresses back to plain memory (nothing has used them yet)
+    mmap((void *)(uintptr_t)HEAP_BASE, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED, -1, 0);
+}
+
+static VkBuffer heap_buffer(uint64_t size) {
     VkExternalMemoryBufferCreateInfo eb = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
                                            .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .pNext = &eb, .size = size,
                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                                       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
                                       VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT};
-    VkBuffer buf;
-    VK_CHECK(vkCreateBuffer(g_vk.dev, &bi, NULL, &buf));  // (the heap is mapped now: no way back)
-    VK_CHECK(vkBindBufferMemory(g_vk.dev, buf, mem, 0));
+    VkBuffer buf = VK_NULL_HANDLE;
+    if (vkCreateBuffer(g_vk.dev, &bi, NULL, &buf) != VK_SUCCESS) return VK_NULL_HANDLE;
+    return buf;
+}
+
+static void heap_done(VkBuffer buf, VkDeviceMemory mem, uint64_t size, const char *how) {
     gmem_buf = buf;
     gmem_mem = mem;
     gmem_size = size;
     gmem_mapped = true;
-    LOG("[vk] guest heap is GPU memory (dma-buf mapped at the heap, type %u): %llu MB\n", type, (unsigned long long)(size >> 20));
+    LOG("[vk] guest heap is GPU memory (%s): %llu MB\n", how, (unsigned long long)(size >> 20));
+}
+
+// export: Vulkan memory of the heap's size, exported as a dma-buf, mapped over the heap. Host-cached first (the game's
+// own memory), not device-local where there is a choice (RADV: VRAM); a unified-memory GPU (Mali) has only
+// device-local types, so there they are allowed.
+static void heap_export(uint64_t size) {
+    uint32_t type = UINT32_MAX;
+    VkPhysicalDeviceMemoryProperties mp;
+    vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
+    VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    for (int pass = 0; pass < 4 && type == UINT32_MAX; pass++)  // (cached / any) x (not device-local / unified memory)
+        for (uint32_t i = 0; i < mp.memoryTypeCount && type == UINT32_MAX; i++) {
+            VkMemoryPropertyFlags f = mp.memoryTypes[i].propertyFlags;
+            bool local_ok = pass >= 2 && !g_vk.radv;
+            if ((f & want) == want && (local_ok || !(f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) &&
+                ((pass & 1) || (f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT)) && !(f & VK_MEMORY_PROPERTY_DEVICE_COHERENT_BIT_AMD))
+                type = i;
+        }
+    PFN_vkGetMemoryFdKHR get_fd = (PFN_vkGetMemoryFdKHR)vkGetDeviceProcAddr(g_vk.dev, "vkGetMemoryFdKHR");
+    if (type == UINT32_MAX || !get_fd) { LOG("[vk] guest heap export: no memory type for it, imported instead\n"); return; }
+    VkExportMemoryAllocateInfo ex = {.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
+                                     .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &ex, .allocationSize = size,
+                               .memoryTypeIndex = type};
+    VkDeviceMemory mem;
+    VkResult r = vkAllocateMemory(g_vk.dev, &ai, NULL, &mem);
+    if (r != VK_SUCCESS) { LOG("[vk] guest heap export: allocation failed (%d), imported instead\n", r); return; }
+    VkMemoryGetFdInfoKHR gi = {.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR, .memory = mem,
+                               .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+    int fd = -1;
+    if (get_fd(g_vk.dev, &gi, &fd) != VK_SUCCESS || fd < 0) {
+        LOG("[vk] guest heap export: no dma-buf, imported instead\n");
+        vkFreeMemory(g_vk.dev, mem, NULL);
+        return;
+    }
+    void *p = mmap((void *)(uintptr_t)HEAP_BASE, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0);
+    close(fd);  // (the mapping keeps the dma-buf)
+    if (p != (void *)(uintptr_t)HEAP_BASE) {
+        LOG("[vk] guest heap export: mapping the dma-buf failed (%s), imported instead\n", strerror(errno));
+        heap_unmap(size);
+        vkFreeMemory(g_vk.dev, mem, NULL);
+        return;
+    }
+    VkBuffer buf = heap_buffer(size);
+    if (!buf || vkBindBufferMemory(g_vk.dev, buf, mem, 0) != VK_SUCCESS) {
+        LOG("[vk] guest heap export: no buffer for it, imported instead\n");
+        if (buf) vkDestroyBuffer(g_vk.dev, buf, NULL);
+        heap_unmap(size);
+        vkFreeMemory(g_vk.dev, mem, NULL);
+        return;
+    }
+    char how[64];
+    snprintf(how, sizeof how, "exported dma-buf mapped at the heap, type %u", type);
+    heap_done(buf, mem, size, how);
+}
+
+// dmaheap: a dma-buf from /dev/dma_heap/<name>, mapped over the heap, imported into Vulkan (it then owns the fd).
+static void heap_dmaheap(uint64_t size) {
+    const char *name = getenv("SAVAGEWIND_VK_DMA_HEAP");
+    if (!name || !*name) name = "system";
+    char path[128];
+    snprintf(path, sizeof path, "/dev/dma_heap/%s", name);
+    int hfd = open(path, O_RDONLY | O_CLOEXEC);
+    if (hfd < 0) { LOG("[vk] guest heap dmaheap: can't open %s (%s), imported instead\n", path, strerror(errno)); return; }
+    struct dma_heap_allocation_data d = {.len = size, .fd_flags = O_RDWR | O_CLOEXEC};
+    int r = ioctl(hfd, DMA_HEAP_IOCTL_ALLOC, &d);
+    int err = errno;
+    close(hfd);
+    if (r < 0) { LOG("[vk] guest heap dmaheap: %llu MB from %s failed (%s), imported instead\n", (unsigned long long)(size >> 20), path, strerror(err)); return; }
+    int fd = (int)d.fd;
+    PFN_vkGetMemoryFdPropertiesKHR fdp = (PFN_vkGetMemoryFdPropertiesKHR)vkGetDeviceProcAddr(g_vk.dev, "vkGetMemoryFdPropertiesKHR");
+    VkMemoryFdPropertiesKHR mfp = {.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR};
+    VkResult vr = fdp ? fdp(g_vk.dev, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, fd, &mfp) : VK_ERROR_EXTENSION_NOT_PRESENT;
+    VkBuffer buf = heap_buffer(size);
+    VkMemoryRequirements req = {0};
+    if (buf) vkGetBufferMemoryRequirements(g_vk.dev, buf, &req);
+    uint32_t bits = mfp.memoryTypeBits & req.memoryTypeBits;
+    if (vr != VK_SUCCESS || !buf || !bits) {
+        LOG("[vk] guest heap dmaheap: the driver won't take the dma-buf (%d, types %#x & %#x), imported instead\n", vr,
+            mfp.memoryTypeBits, req.memoryTypeBits);
+        if (buf) vkDestroyBuffer(g_vk.dev, buf, NULL);
+        close(fd);
+        return;
+    }
+    void *p = mmap((void *)(uintptr_t)HEAP_BASE, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0);
+    if (p != (void *)(uintptr_t)HEAP_BASE) {
+        LOG("[vk] guest heap dmaheap: mapping the dma-buf failed (%s), imported instead\n", strerror(errno));
+        heap_unmap(size);
+        vkDestroyBuffer(g_vk.dev, buf, NULL);
+        close(fd);
+        return;
+    }
+    uint32_t type = (uint32_t)__builtin_ctz(bits);
+    VkDeviceMemory mem = VK_NULL_HANDLE;
+    vr = VK_ERROR_UNKNOWN;
+    for (int dedicated = 0; dedicated < 2 && vr != VK_SUCCESS; dedicated++) {  // (some drivers want imports dedicated)
+        int ifd = dup(fd);  // (a successful import owns its fd; a failed one leaves it with us)
+        if (ifd < 0) break;
+        VkMemoryDedicatedAllocateInfo ded = {.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO, .buffer = buf};
+        VkImportMemoryFdInfoKHR imp = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR, .pNext = dedicated ? &ded : NULL,
+                                       .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, .fd = ifd};
+        VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &imp,
+                                   .allocationSize = req.size > size ? req.size : size, .memoryTypeIndex = type};
+        vr = vkAllocateMemory(g_vk.dev, &ai, NULL, &mem);
+        if (vr != VK_SUCCESS) close(ifd);
+    }
+    close(fd);  // (the mapping and the import keep the dma-buf)
+    if (vr != VK_SUCCESS || vkBindBufferMemory(g_vk.dev, buf, mem, 0) != VK_SUCCESS) {
+        LOG("[vk] guest heap dmaheap: importing the dma-buf failed (%d), imported instead\n", vr);
+        if (mem) vkFreeMemory(g_vk.dev, mem, NULL);
+        vkDestroyBuffer(g_vk.dev, buf, NULL);
+        heap_unmap(size);
+        return;
+    }
+    char how[96];
+    snprintf(how, sizeof how, "dma-buf from %s mapped at the heap, imported as type %u", path, type);
+    heap_done(buf, mem, size, how);
+}
+
+void backend_heap_set(uint64_t size) {
+    static int off = -1;
+    if (off < 0) off = getenv("SAVAGEWIND_VK_NO_GMEM") != NULL;
+    if (gmem_mapped && size > gmem_size)
+        LOG("[vk] guest heap grew to %llu MB past the %llu MB mapped: the rest is copied, not shared\n",
+            (unsigned long long)(size >> 20), (unsigned long long)(gmem_size >> 20));
+    if (off || gmem_mapped || gmem_buf || !size) return;
+    vk_wait_ready();
+    int mode = heap_mode();
+    if (mode == HEAP_IMPORT) return;
+    if (!g_vk.dmabuf) { LOG("[vk] guest heap: the driver has no dma-buf support, imported instead\n"); return; }
+    size = (size + 0x1FFFFF) & ~0x1FFFFFull;  // (2 MB pages)
+    if (mode == HEAP_EXPORT) heap_export(size);
+    else heap_dmaheap(size);
 }
 #else
 void backend_heap_set(uint64_t size) { (void)size; }
@@ -3734,19 +4327,41 @@ static VkDescriptorBufferInfo gmem_info(void) {
         LOG("[vk] guest heap import failed (%llu MB): shader global memory reads return zero\n", (unsigned long long)(want >> 20));
         off = 1;
     }
-    if (gmem_buf) return (VkDescriptorBufferInfo){gmem_buf, 0, gmem_size};
+    if (gmem_buf) {
+        // The heap's first GMEM_SPLIT bytes (GMEM_BUFFER_INDEX); the rest is the second binding (gmem_info_hi): one binding
+        // of all of it is past some drivers' maxStorageBufferRange (Mali-G610: 2 GB, the heap 3 GB)
+        // (maxwell_gmem_split off: one binding of the whole heap, as before)
+        uint64_t range = maxwell_gmem_split && gmem_size > GMEM_SPLIT ? GMEM_SPLIT : gmem_size, lim = g_vk.props.limits.maxStorageBufferRange;
+        if (maxwell_gmem_split && range > lim) range = lim & ~0xFFFFull;
+        return (VkDescriptorBufferInfo){gmem_buf, 0, range};
+    }
     static uint32_t zero[1024];
     VkSpan s = vk_transient_copy(zero, sizeof zero, 256);
     return (VkDescriptorBufferInfo){s.buf, s.off, sizeof zero};
 }
 
+// The heap past GMEM_SPLIT (GMEM2_BUFFER_INDEX), or a small zeroed buffer when it is no larger than that
+static VkDescriptorBufferInfo gmem_info_hi(void) {
+    VkDescriptorBufferInfo lo = gmem_info();  // (makes the import first where there is one)
+    if (gmem_buf && lo.buffer == gmem_buf && gmem_size > GMEM_SPLIT) {
+        uint64_t range = gmem_size - GMEM_SPLIT, lim = g_vk.props.limits.maxStorageBufferRange;
+        if (range > lim) range = lim & ~0xFFFFull;
+        return (VkDescriptorBufferInfo){gmem_buf, GMEM_SPLIT, range};
+    }
+    static uint32_t zero[1024];
+    VkSpan z = vk_transient_copy(zero, sizeof zero, 256);
+    return (VkDescriptorBufferInfo){z.buf, z.off, sizeof zero};
+}
+
 // Vertex / index data read in place from the imported guest heap (renderer.m bind_guest does the same with
 // g_guest_buffer): no per-draw copy, no index scan for the copy size. The game fences its CPU writes as on the
 // Switch. Falls back to copies outside the heap or without the import; SAVAGEWIND_VK_COPY_VERTICES=1 forces copies.
+static bool gsnap_verts(void);
 static bool guest_direct(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSize *off) {
     static int copy = -1;
     if (copy < 0) copy = getenv("SAVAGEWIND_VK_COPY_VERTICES") != NULL;
     if (copy || addr < HEAP_BASE) return false;
+    if (gsnap_verts()) return false;  // (SAVAGEWIND_VK_GSNAP_VERTS=1: the HUD's vertex data copied at translation too)
     if (!gmem_mapped && addr + size > HEAP_BASE + gmem_size && kernel_heap_size() != gmem_tried) { gmem_tried = kernel_heap_size(); gmem_info(); }
     if (!gmem_buf || addr + size > HEAP_BASE + gmem_size) return false;
     *buf = gmem_buf;
@@ -3812,7 +4427,10 @@ static bool gw_add(uint64_t lo, uint64_t hi) {  // false: no room
     return true;
 }
 
+static void gsnap_gpu_note(int stage);
 static void gw_note(int stage) {  // a shader of this stage that stores to global memory was recorded
+    if (gsnap_mode()) gsnap_gpu_note(stage);  // (the GPU data list is read only by the copies: gsnap on, Mali)
+    vtx_hazard = true;  // (the next pass's vertex stage may read it)
     static int hold = -1;
     if (hold < 0) hold = getenv("SAVAGEWIND_VK_GMEM_HOLD") != NULL;
     if (chunk_hold) return;  // (the rest of the list goes in one piece anyway)
@@ -4051,6 +4669,222 @@ static VkDescriptorSet set_finish(VkDescriptorSetLayout layout, VkWriteDescripto
     return ds;
 }
 
+// ---- (GPU overlap) the global memory the HUD's shaders read, copied at translation
+// With the GPU overlap the game's wait on its frame fence returns a frame early, so it may write frame N+2's data
+// while the GPU still runs frame N. Constant buffers are copied at translation, but what shaders read through global
+// memory (NVN's storage buffers: BOTW's text vertex shader fetches its glyphs that way) was read in place, when the GPU
+// got to it: at each change of a button prompt's text, a GPU still on the frame before (Mali-G610) read glyph data the
+// game had already rewritten - doubled or shifted letters (X Y B -> T X Y) and the prompt layout's hidden Wii U panes
+// ("Tap here", "Wii U GamePad") for a frame or two. In passes into the final image (the HUD and menus), the storage
+// buffers a read-only stage has bound (and the bytes after them, gsnap_info) are copied with its constants, and its
+// shader reads those ranges from the copy (translate.c GLD, GSNAP_BUFFER_INDEX; the rest in place). Never ranges a
+// storing shader has bound (GPU data: gsnap_gpu_note).
+// Only with the overlap on, and by default on Mali only (other GPUs: as before). SAVAGEWIND_VK_GSNAP=0: off, =1: on; =all: the global memory copies in every pass (the vertex data
+// still only the HUD's); SAVAGEWIND_VK_GSNAP_MAX=<KB>: the largest storage buffer copied (1024); SAVAGEWIND_DEBUG_GSNAP=1:
+// counts every 2 s.
+// GPU data (ranges a storing shader had bound): kept as sorted, merged intervals. When full, the two closest are
+// joined (the gap between them counts as GPU data too: fewer copies, never a stale one).
+#define GSNAP_GPU_MAX 512
+static struct { uint64_t lo, hi; } gsnap_gpu[GSNAP_GPU_MAX];
+static int ngsnap_gpu;
+static uint64_t gsnap_gpu_stores;  // (debug: storing stages seen)
+
+static int gsnap_mode(void) {
+    static int m = -1;
+    if (m < 0) {
+        const char *e = getenv("SAVAGEWIND_VK_GSNAP");
+        m = !gpu_overlap() ? 0 : !e ? (g_vk.is_mali ? 1 : 0) : !strcmp(e, "all") ? 2 : atoi(e) ? 1 : 0;  // (Mali by default)
+        LOG("[vk] global memory the HUD reads: %s\n",
+            m == 2 ? "copied at translation (every pass, vertex data the HUD's)" : m ? "copied at translation (final image)" : "in place");
+    }
+    return m;
+}
+
+static int gsnap_gpu_find(uint64_t lo) {  // first interval whose hi > lo
+    int a = 0, b = ngsnap_gpu;
+    while (a < b) { int c = (a + b) / 2; if (gsnap_gpu[c].hi <= lo) a = c + 1; else b = c; }
+    return a;
+}
+
+static void gsnap_gpu_add(uint64_t lo, uint64_t hi) {
+    int i = gsnap_gpu_find(lo);
+    if (i < ngsnap_gpu && gsnap_gpu[i].lo <= lo && hi <= gsnap_gpu[i].hi) return;  // (already in)
+    if (i > 0 && gsnap_gpu[i - 1].hi == lo) i--;  // (touching on the left)
+    int j = i;
+    while (j < ngsnap_gpu && gsnap_gpu[j].lo <= hi) j++;  // [i, j): overlapping or touching
+    if (j > i) {
+        if (gsnap_gpu[i].lo < lo) lo = gsnap_gpu[i].lo;
+        if (gsnap_gpu[j - 1].hi > hi) hi = gsnap_gpu[j - 1].hi;
+        memmove(&gsnap_gpu[i + 1], &gsnap_gpu[j], (size_t)(ngsnap_gpu - j) * sizeof gsnap_gpu[0]);
+        ngsnap_gpu -= j - i - 1;
+        gsnap_gpu[i].lo = lo, gsnap_gpu[i].hi = hi;
+        return;
+    }
+    if (ngsnap_gpu == GSNAP_GPU_MAX) {  // full: join every neighbour closer than the median gap (about half), once
+        static uint64_t gaps[GSNAP_GPU_MAX];
+        int ng = ngsnap_gpu - 1;
+        for (int k = 0; k < ng; k++) gaps[k] = gsnap_gpu[k + 1].lo - gsnap_gpu[k].hi;
+        int a = 0, b = ng - 1, want = ng / 2;  // (quickselect: the median gap)
+        while (a < b) {
+            uint64_t piv = gaps[(a + b) / 2];
+            int x = a, y = b;
+            while (x <= y) {
+                while (gaps[x] < piv) x++;
+                while (gaps[y] > piv) y--;
+                if (x <= y) { uint64_t tmp = gaps[x]; gaps[x] = gaps[y]; gaps[y] = tmp; x++; y--; }
+            }
+            if (want <= y) b = y; else if (want >= x) a = x; else break;
+        }
+        uint64_t lim = gaps[want];
+        int o = 0;
+        for (int k = 1; k < ngsnap_gpu; k++) {
+            if (gsnap_gpu[k].lo - gsnap_gpu[o].hi <= lim) gsnap_gpu[o].hi = gsnap_gpu[k].hi;
+            else gsnap_gpu[++o] = gsnap_gpu[k];
+        }
+        ngsnap_gpu = o + 1;
+        gsnap_gpu_add(lo, hi);
+        return;
+    }
+    memmove(&gsnap_gpu[i + 1], &gsnap_gpu[i], (size_t)(ngsnap_gpu - i) * sizeof gsnap_gpu[0]);
+    gsnap_gpu[i].lo = lo, gsnap_gpu[i].hi = hi;
+    ngsnap_gpu++;
+}
+
+static void gsnap_gpu_note(int stage) {
+    gsnap_gpu_stores++;
+    for (int i = 0; i < 16; i++) {
+        Range r = st.sbuf[stage][i];
+        if (r.addr && r.size) gsnap_gpu_add(r.addr, r.addr + r.size);
+    }
+}
+
+static bool gsnap_gpu_hit(Range r) {
+    int i = gsnap_gpu_find(r.addr);
+    return i < ngsnap_gpu && gsnap_gpu[i].lo < r.addr + r.size;
+}
+
+// SAVAGEWIND_VK_GSNAP_VERTS=1 (test): the HUD's vertex and index data copied too (guest_direct), in passes into the
+// final image. Off by default: with it, the prompt fix cost 30 -> 17 FPS on Mali-G610 (the storage buffer copies
+// themselves ~0.3 ms in 2 s).
+static bool gsnap_verts(void) {
+    static int on = -1;
+    if (on < 0) on = getenv("SAVAGEWIND_VK_GSNAP_VERTS") != NULL;
+    return on && gsnap_mode() && pass_out;
+}
+
+static bool gsnap_linear_hit(Range r) {  // (render targets also written into the heap on the GPU: GPU data)
+    if (!__atomic_load_n(&nlinear_mem, __ATOMIC_RELAXED)) return false;
+    bool hit = false;
+    pthread_mutex_lock(&readback_lock);
+    for (int i = 0; i < nlinear_mem && !hit; i++)
+        hit = r.addr < linear_mem[i].addr + linear_mem[i].size && linear_mem[i].addr < r.addr + r.size;
+    pthread_mutex_unlock(&readback_lock);
+    return hit;
+}
+
+// The ranges a read-only stage's global memory reads are copied from (translate.c GLD: up to GSNAP_N): its storage
+// buffers, each with SAVAGEWIND_VK_GSNAP_EXT bytes after it. BOTW's HUD text shader reads its glyphs past the size its storage
+// buffer is bound with: copied at the bound size (~500 bytes) the prompt still broke, with the bytes after it it
+// didn't. (Where that reaches GPU data, the bound size only.) In passes into the final image; SAVAGEWIND_VK_GSNAP=all:
+// every pass. SAVAGEWIND_VK_GSNAP_EXT=<KB>: the bytes after (16).
+#define GSNAP_N 4
+static VkDescriptorBufferInfo gsnap_info(int stage) {
+    static struct { uint64_t seq; int n; Range r[GSNAP_N]; VkDescriptorBufferInfo bi; } cache[32];
+    static int cpos;
+    static uint64_t maxsz, ext, t_log;
+    static uint64_t n_draw, n_other, n_copy, n_bytes, n_reuse, n_skip, n_short, n_ns;
+    static int dbg = -1;
+    if (!maxsz) {
+        const char *e = getenv("SAVAGEWIND_VK_GSNAP_MAX"), *x = getenv("SAVAGEWIND_VK_GSNAP_EXT");
+        maxsz = (e && atoi(e) > 0 ? (uint64_t)atoi(e) : 1024) << 10;
+        ext = (x && atoi(x) >= 0 ? (uint64_t)atoi(x) : 16) << 10;
+        dbg = getenv("SAVAGEWIND_DEBUG_GSNAP") != NULL;
+    }
+    int m = gsnap_mode();
+    bool here = m && (m == 2 || pass_out) && (stage == 0 || stage == 1) && gmem_size;
+    if (!here) {  // (no copies here: one empty table per submission, the shader looks at none of it)
+        if (m && (stage == 0 || stage == 1)) n_other++;
+        static uint64_t eseq = ~0ull;
+        static VkDescriptorBufferInfo ebi;
+        uint64_t sq = vk_pending_seq();
+        if (eseq != sq) {
+            VkSpan e = vk_transient(GSNAP_N * 16 + 16, 256);
+            memset(e.ptr, 0, GSNAP_N * 16 + 16);
+            ebi = (VkDescriptorBufferInfo){e.buf, e.off, GSNAP_N * 16 + 16};
+            eseq = sq;
+        }
+        return ebi;
+    }
+    uint64_t t_in = dbg ? SDL_GetTicksNS() : 0;
+    uint64_t lo = HEAP_BASE, hi = HEAP_BASE + gmem_size;
+    Range r[GSNAP_N];
+    int n = 0;
+    n_draw++;
+    for (int i = 0; i < 16 && n < GSNAP_N; i++) {
+        Range q = st.sbuf[stage][i];
+        if (!q.addr || !q.size) continue;
+        if (q.size > maxsz || (q.addr & 3) || q.addr < lo || q.addr + q.size > hi || gsnap_gpu_hit(q) || gsnap_linear_hit(q)) {
+            n_skip++;
+            continue;
+        }
+        Range x = {q.addr, q.size + ext};
+        if (x.addr + x.size > hi) x.size = hi - x.addr;
+        if (ext && (gsnap_gpu_hit(x) || gsnap_linear_hit(x))) { x = q; n_short++; }
+        x.size = (x.size + 3) & ~3ull;
+        if (x.addr + x.size > hi) x.size = (hi - x.addr) & ~3ull;
+        r[n++] = x;
+    }
+    uint64_t seq = vk_pending_seq();
+    for (int c = 0; c < 32; c++)  // (the same ranges again in this submission: the same copy)
+        if (cache[c].seq == seq && cache[c].n == n && !memcmp(cache[c].r, r, sizeof r[0] * (size_t)n)) {
+            n_reuse++;
+            if (dbg) n_ns += SDL_GetTicksNS() - t_in;
+            return cache[c].bi;
+        }
+    uint64_t hdr = GSNAP_N * 16, total = hdr;
+    for (int k = 0; k < n; k++) total += (r[k].size + 15) & ~15ull;
+    if (!n) total += 16;
+    VkSpan span = vk_transient(total, 256);
+    uint32_t *h = (uint32_t *)span.ptr;
+    memset(h, 0, hdr);
+    uint64_t at = hdr;
+    for (int k = 0; k < n; k++) {
+        uint64_t padded = (r[k].size + 15) & ~15ull;
+        h[k * 4 + 0] = (uint32_t)((r[k].addr - HEAP_BASE) >> 2);
+        h[k * 4 + 1] = (uint32_t)(r[k].size >> 2);
+        h[k * 4 + 2] = (uint32_t)((at - hdr) >> 2);
+        memcpy((uint8_t *)span.ptr + at, (const void *)(uintptr_t)r[k].addr, r[k].size);
+        memset((uint8_t *)span.ptr + at + r[k].size, 0, padded - r[k].size);
+        at += padded;
+        n_copy++;
+        n_bytes += r[k].size;
+    }
+    h[3] = (uint32_t)n;  // (gs_r[0].w: the shader looks at this many)
+    if (!n) memset((uint8_t *)span.ptr + hdr, 0, 16);
+    VkDescriptorBufferInfo bi = {span.buf, span.off, total};
+    cache[cpos].seq = seq;
+    cache[cpos].n = n;
+    memcpy(cache[cpos].r, r, sizeof r[0] * (size_t)n);
+    cache[cpos].bi = bi;
+    cpos = (cpos + 1) & 31;
+    if (dbg) {
+        uint64_t now = SDL_GetTicksNS();
+        n_ns += now - t_in;
+        if (!t_log) t_log = now;
+        if (now - t_log > 2000000000ull) {
+            LOG("[gsnap] 2 s: %llu HUD draws, %llu elsewhere; %llu ranges copied (%.2f MB), %llu reused, %llu skipped, %llu not "
+                "extended (GPU data after); %llu storing shaders, GPU data in %d ranges; %.2f ms CPU\n",
+                (unsigned long long)n_draw, (unsigned long long)n_other, (unsigned long long)n_copy, n_bytes / 1048576.0,
+                (unsigned long long)n_reuse, (unsigned long long)n_skip, (unsigned long long)n_short,
+                (unsigned long long)gsnap_gpu_stores, ngsnap_gpu, n_ns / 1e6);
+            gsnap_gpu_stores = 0;
+            n_draw = n_other = n_copy = n_bytes = n_reuse = n_skip = n_short = n_ns = 0;
+            t_log = now;
+        }
+    }
+    return bi;
+}
+
 // Writes the descriptor set of one stage. gx..gz: compute group counts (driver constants).
 // pre_ii: texture descriptors already resolved by the caller (draw: fragment textures, needed earlier for the
 // viewport decision), or NULL.
@@ -4095,7 +4929,10 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
             bi[n].offset = 0;
             w[n].pBufferInfo = &bi[n];
         } else if (b->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
-            bi[n] = b->binding == MVEC_HISTORY_BINDING ? mvec_history_info() : gmem_info();
+            bi[n] = b->binding == MVEC_HISTORY_BINDING ? mvec_history_info()
+                  : b->binding == GSNAP_BUFFER_INDEX   ? gsnap_info(stage)
+                  : b->binding == GMEM2_BUFFER_INDEX   ? gmem_info_hi()
+                                                       : gmem_info();
             w[n].pBufferInfo = &bi[n];
         } else {
             continue;  // rscale / tint: written below, once the textures (and their scales) are known
@@ -4524,6 +5361,7 @@ bool vk_pso_warm_stage(const ShaderInfo *si, int stage) {
     if (!cache) return false;
     StageBuild b;
     memset(&b, 0, sizeof b);
+    b.si = si;  // (stage_layouts reads it: a motion vector variant's layout has the push constants)
     b.m = warm_module(si, stage, b.binds, &b.nbinds, MAX_BIND);
     if (!b.m) return false;
     stage_layouts(&b, stage);
@@ -4875,7 +5713,7 @@ static void draw_(CmdRec *r, bool indexed) {
         vkey.depth_minus_one = dmode == 0;
         vkey.point_size = points;
         for (int i = 0; i < st.nattrib; i++) vkey.attr_kind[i] = (uint8_t)attr_kind(st.attrib[i] & 0xFF);
-        for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) fkey.rt_kind[i] = (uint8_t)rt_kind(st.rt.color[i]->format);
+        for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) fkey.rt_kind[i] = (uint8_t)rt_kind(rt_format(i));
         pr = get_program(st.program, &vkey, &fkey);
         pm.gen = key_gen; pm.np = st.program; pm.origin = origin; pm.dmode = dmode; pm.pr = pr; pm.points = points;
     }
@@ -4998,7 +5836,22 @@ static void draw_(CmdRec *r, bool indexed) {
     }
     fb_draws++;
     if (lst_on > 0) lst_draw(pr);
+    if (det_on()) {  // (a draw into a color target left out of the open pass: the pass ends, the next has it, det_tab)
+        uint8_t det = det_current(), want = 0;
+        for (int i = 0; i < st.rt.ncolor && i < 8; i++) if (st.rt.color[i] && draw_writes_color(pr, i)) want |= (uint8_t)(1u << i);
+        if (want & det) {
+            det_note(det_current_key(), want);
+            if (in_pass && !st.rt_dirty) st.rt_dirty = true;
+            stat_det_miss++;
+        }
+        det_draw = det_current();
+    }
+    if (pr->vi->ntex > 0 || pr->vi->uses_gmem) {  // (its vertex stage reads what earlier GPU work may have written)
+        if (in_pass && !st.rt_dirty && pass_frag_only) { st.rt_dirty = true; stat_frag_restarts++; }
+        pass_vs_reads_next = true;  // (whichever pass begins next, also one resolve_feedback starts: a full barrier)
+    }
     resolve_feedback(pr);
+    det_draw = 0;
     scene_post(pr, r);
     fg_draw(pr, r);
     snap_reason = "draw-depthwrite";
@@ -5096,6 +5949,7 @@ static void draw_(CmdRec *r, bool indexed) {
     for (int i = 0; i < st.rt.ncolor && i < 8; i++)
         if (st.rt.color[i] && draw_writes_color(pr, i)) {
             pass_color_written |= (uint8_t)(1u << i);
+            det_written |= (uint8_t)(1u << i);
             pass_color_unsynced |= (uint8_t)(1u << i);
         }
     VkCommandBuffer cb = vk_cmd();
@@ -5155,7 +6009,7 @@ static void draw_(CmdRec *r, bool indexed) {
         // Targets the fragment shader doesn't output keep their contents on Metal, but are undefined in Vulkan
         // (NVIDIA writes black): mask them. Foliage depth pre-passes left black silhouettes (user 2026-10-08).
         k.s.write_mask[i] = ((pr->fi->out_mask >> (i * 4)) & 0xF) ? (st.channel_mask >> (i * 4)) & 0xF : 0;
-        if (((st.color_state[0] >> i) & 1) && !rt_kind(st.rt.color[i]->format)) {
+        if (((st.color_state[0] >> i) & 1) && !rt_kind(rt_format(i))) {
             k.s.blend_on |= (uint8_t)(1u << i);
             memcpy(k.s.blend[i] + 1, st.blend[i] + 1, 6);  // (the factors and ops; 0 is the target index, 7 padding)
         }
@@ -5514,6 +6368,7 @@ have_pipe:
     stat_draws++;
     chunk_draws++;
     if (pr->vi->writes_gmem || pr->fi->writes_gmem) {
+        bar_other = true;
         if (pr->vi->writes_gmem) gw_note(0);
         if (pr->fi->writes_gmem) gw_note(1);
         if (getenv("SAVAGEWIND_LOG_HOLD")) LOG("[hold] frame %llu draw %llu: vs %llx (%d) fs %llx (%d) fs hash %016llx\n",
@@ -5799,7 +6654,7 @@ static void copy_buffer_to_texture(uint64_t src, const TexRefRec *dst) {
                 dst->has_view ? dst->view.min_layer : 0);
     }
     if (b->aspect == (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) return;
-    if (b->astc_bw) {  // (blocks would need the CPU decode: not seen in the game yet)
+    if (b->astc_bw || b->bc4_cpu) {  // (blocks would need the CPU decode: not seen in the game yet)
         static int nlog;
         if (nlog++ < 5) LOG("[vk] buffer -> ASTC texture copy skipped (%ux%u)\n", t->width, t->height);
         return;
@@ -5891,6 +6746,7 @@ static void copy_texture_to_buffer(const TexRefRec *src, uint64_t dst) {
         t2b_log[k].t = t;
         memcpy(t2b_log[k].rg, rg, sizeof rg);
     }
+    vk_readback_sync();  // (non-coherent host-cached memory: what the GPU just wrote, not what the caches held)
     memcpy((void *)(uintptr_t)dst, out.ptr, total);
     if (small_mem) vmaDestroyImage(g_vk.vma, srcimg, small_mem);
 }
@@ -6793,14 +7649,12 @@ TexBackend *vk_fg_generate(NvnTexture *t, TexBackend *b) {
                         lk[0], lk[1], lk[2], pc[20], pc[22], pc[21], pc[23], pc[24], pc[25], pc[26], pc[27]);
             }
             // The scene's per-object motion vectors (mvec.c: everything that moves, jitter taken out) when they were
-            // made this frame, at the depth's size: in place of the camera's and Link's box. Their .xy are clip-space
+            // made this frame, at the depth's size, with SAVAGEWIND_FG_OBJECT_VECTORS=1: in place of the camera's and Link's box. Their .xy are clip-space
             // NDC differences (y up, the image's y down), FSR's uv offset over the render size (-x / 2, y / 2), as for
             // the FSR 3 upscaler (fsr3_scene).
             bool objv = mvec_filled == renderer_present_count() && mvec_vectors_img && mvec_vectors_img->width == db->width &&
                         mvec_vectors_img->height == db->height;
-            static int no_obj = -1;  // (A/B) SAVAGEWIND_FG_CAMERA_VECTORS=1: the camera's (and Link's) vectors only
-            if (no_obj < 0) no_obj = getenv("SAVAGEWIND_FG_CAMERA_VECTORS") != NULL;
-            if (no_obj) objv = false;
+            if (!mvec_for_framegen()) objv = false;  // (the default: they break up foliage, mvec.c mvec_for_framegen)
             if (objv) mv = mvec_vectors_img;
             if (g_gpuprof_frame) gp_mark(cb, "frame generation: motion vectors");
             if (!objv) post_pass_pc(cb, "fg_mv.frag", &dv, 1, mv, pc, sizeof pc, false);
@@ -7204,6 +8058,7 @@ static void save_view_png(TexBackend *b, VkImageView src, const char *path) {
     VkBufferImageCopy c = {.bufferOffset = out.off, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
     vkCmdCopyImageToBuffer(cb, img, VK_IMAGE_LAYOUT_GENERAL, out.buf, 1, &c);
     renderer_flush();
+    vk_readback_sync();
     vk_save_png(path, out.ptr, w, h);
     vkDestroyImageView(g_vk.dev, tv, NULL);
     vmaDestroyImage(g_vk.vma, img, mem);
@@ -7589,6 +8444,11 @@ static void exec_list(uint64_t handle, int depth) {
                     OqReport *p = &oq_reports[oq_nreports++];
                     p->addr = r->x[1]; p->seq = vk_pending_seq(); p->ts = ts; p->nq = oq_nrun;
                     memcpy(p->q, oq_run, sizeof p->q[0] * (size_t)oq_nrun);
+                    if (oneshot_queries()) {  // (the game reads this frame's count, never an uncounted one: renderer_wait_seq)
+                        pthread_mutex_lock(&seq_lock);
+                        if (p->seq > oneshot_seq) oneshot_seq = p->seq;
+                        pthread_mutex_unlock(&seq_lock);
+                    }
                 }
                 pthread_mutex_unlock(&readback_lock);
                 break;

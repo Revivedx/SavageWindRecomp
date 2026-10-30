@@ -148,6 +148,8 @@ static void pick_device(void) {
     g_vk.phys = pd[best];
     free(pd);
     vkGetPhysicalDeviceProperties(g_vk.phys, &g_vk.props);
+    g_vk.is_mali = g_vk.props.vendorID == 0x13B5;  // (Arm)
+    { extern void vk_translator_setup(void); vk_translator_setup(); }
     uint32_t nq = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(g_vk.phys, &nq, NULL);
     VkQueueFamilyProperties *qp = calloc(nq, sizeof *qp);
@@ -165,6 +167,18 @@ static void pick_device(void) {
     free(qp);
     if (g_vk.qfam == UINT32_MAX) FATAL("no graphics+present queue\n");
     LOG("[vk] using %s\n", g_vk.props.deviceName);
+    // Colour images with a list of their view formats (textures.c create_image), on integrated GPUs by default: there
+    // the memory traffic it saves pays (Radeon 660M; LAS Recomp 03ee802f measured an Intel UHD 770 faster and an
+    // RTX 3080 Ti slightly slower). Not on Linux AMD (RADV: the Steam Deck): there the game showed small purple specks
+    // flickering on the ground with them and none without (Great Plateau, user play test 2026-10-29).
+    // SAVAGEWIND_VK_LEAN_USAGE=0 / =1 overrides.
+    const char *lean = getenv("SAVAGEWIND_VK_LEAN_USAGE");
+    bool lean_default = g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+#ifdef __linux__
+    if (g_vk.props.vendorID == 0x1002) lean_default = false;
+#endif
+    g_vk.lean_usage = lean && *lean ? atoi(lean) != 0 : lean_default;
+    LOG("[vk] view format lists %s\n", g_vk.lean_usage ? "on" : "off");
     { extern void perfmon_set_gpu_hint(const char *n); perfmon_set_gpu_hint(g_vk.props.deviceName); }
 }
 
@@ -1268,8 +1282,14 @@ static void *present_thread(void *arg) {
         VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &q.sem,
                                .swapchainCount = 1, .pSwapchains = &q.sc, .pImageIndices = &q.img};
         pthread_mutex_lock(&sc_lock);
+        uint64_t tq = SDL_GetTicksNS();
         VkResult r = queue_present(g_vk.present_queue, &pi);
+        tq = SDL_GetTicksNS() - tq;
         pthread_mutex_unlock(&sc_lock);
+        if (tq > 200000000ull) {  // (#224: a present the driver held on to)
+            static int slow;
+            if (slow++ < 20) LOG("[vk] present took %llu ms (result %d)\n", (unsigned long long)(tq / 1000000), r);
+        }
         if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) atomic_store(&pres_stale, 1);
         else if (r != VK_SUCCESS) { static int n; if (n++ < 5) LOG("[vk] present failed: %d\n", r); }
         pthread_mutex_lock(&pres_m);
@@ -1310,13 +1330,44 @@ static void present_wait_room(void) {
     pthread_mutex_unlock(&pres_m);
 }
 
+// The next window image, or VK_TIMEOUT when none came within ACQUIRE_GIVE_UP_NS (#224). This used to wait without an
+// end: with the present thread it asked again every 2 ms for as long as the driver said VK_TIMEOUT / VK_NOT_READY,
+// holding the GPU lock (backend_present), so the game, the movie and the "[vk]" lines stood still for good with one
+// core busy. An exclusive fullscreen window that loses the focus is minimised by SDL and gives its display mode back;
+// a swapchain that no longer gets an image back then (and never says out of date) kept it there. Now the frame is left
+// out (vk_frame_begin), the swapchain is made again, and the next frame tries anew.
+// SAVAGEWIND_TEST_ACQUIRE_TIMEOUT=<frame>,<frames> (tests): from that presented frame on, for that many, every acquire
+// answers VK_TIMEOUT at once, as that driver did.
+#define ACQUIRE_GIVE_UP_NS 250000000ull
+static uint64_t presented_frames(void);
+static bool acquire_test_timeout(void) {
+    static long from = -1, n;
+    if (from < 0) {
+        const char *e = getenv("SAVAGEWIND_TEST_ACQUIRE_TIMEOUT");
+        from = 0;
+        if (e && sscanf(e, "%ld,%ld", &from, &n) != 2) from = 0;
+    }
+    uint64_t f = presented_frames();
+    return from > 0 && f >= (uint64_t)from && f < (uint64_t)(from + n);
+}
+
 static VkResult acquire_image(VkSemaphore sem, uint32_t *img) {
-    if (!present_threaded()) return vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, sem, VK_NULL_HANDLE, img);
-    for (;;) {  // (a short timeout at a time: not holding the swapchain while the present thread needs it)
-        pthread_mutex_lock(&sc_lock);
-        VkResult r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, 2000000, sem, VK_NULL_HANDLE, img);
-        pthread_mutex_unlock(&sc_lock);
+    bool threaded = present_threaded();
+    uint64_t t0 = SDL_GetTicksNS();
+    for (;;) {  // (threaded: a short timeout at a time, not holding the swapchain while the present thread needs it)
+        uint64_t tc = SDL_GetTicksNS();
+        VkResult r;
+        if (acquire_test_timeout()) r = VK_TIMEOUT;
+        else if (!threaded) r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, ACQUIRE_GIVE_UP_NS, sem, VK_NULL_HANDLE, img);
+        else {
+            pthread_mutex_lock(&sc_lock);
+            r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, 2000000, sem, VK_NULL_HANDLE, img);
+            pthread_mutex_unlock(&sc_lock);
+        }
         if (r != VK_TIMEOUT && r != VK_NOT_READY) return r;
+        uint64_t now = SDL_GetTicksNS();
+        if (now - t0 >= ACQUIRE_GIVE_UP_NS) return VK_TIMEOUT;
+        if (now - tc < 1000000) SDL_Delay(1);  // (answered without waiting: not a busy loop)
     }
 }
 
@@ -1427,6 +1478,16 @@ bool vk_frame_begin(const float clear[4]) {
         recreate_swapchain();
         r = acquire_image(acquire_sem[slot], &cur_frame.image);
     }
+    if (r == VK_TIMEOUT) {  // (no image came: acquire_image, #224) this frame is left out, the swapchain made again
+        static unsigned timeouts;
+        if (timeouts++ < 5 || timeouts % 100 == 0)
+            LOG("[vk] no window image within %llu ms (%u times; %s, %s): frame left out, swapchain made again\n",
+                (unsigned long long)(ACQUIRE_GIVE_UP_NS / 1000000), timeouts,
+                (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED) ? "minimised" : "not minimised",
+                (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) ? "focused" : "not focused");
+        atomic_store(&pres_stale, 1);
+        return false;
+    }
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) {
         static unsigned failed;  // (a few, then every 1000th: one a frame filled the log)
         if (failed++ < 5 || failed % 1000 == 0) LOG("[vk] acquire failed: %d (%u times)\n", r, failed);
@@ -1535,6 +1596,7 @@ void renderer_save_texture_tex(TexBackend *b, const char *path);
 
 static uint64_t frames, total_frames, g_frame_counter;
 uint64_t renderer_present_count(void) { return total_frames; }
+static uint64_t presented_frames(void) { return total_frames; }
 uint64_t vk_frame_counter(void) { return g_frame_counter; }
 static float g_shot_crop[4] = {0, 0, 1, 1};
 static double last_fps_time;
@@ -1999,17 +2061,40 @@ void backend_clear_window(void) {
     if (g_vk.dev && vk_frame_begin(black)) vk_frame_end(NULL);
 }
 
+// "[window]" lines for what the window went through (focus, minimised, restored, hidden behind another): an exclusive
+// fullscreen window that loses the focus is minimised and gives its display mode back (#224)
+static void window_event_log(const SDL_Event *e) {
+    const char *what = NULL;
+    switch (e->type) {
+    case SDL_EVENT_WINDOW_FOCUS_GAINED: what = "focus gained"; break;
+    case SDL_EVENT_WINDOW_FOCUS_LOST: what = "focus lost"; break;
+    case SDL_EVENT_WINDOW_MINIMIZED: what = "minimised"; break;
+    case SDL_EVENT_WINDOW_RESTORED: what = "restored"; break;
+    case SDL_EVENT_WINDOW_OCCLUDED: what = "occluded"; break;
+    case SDL_EVENT_WINDOW_ENTER_FULLSCREEN: what = "entered fullscreen"; break;
+    case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN: what = "left fullscreen"; break;
+    default: return;
+    }
+    static unsigned n;  // (a few hundred: a window that flickers between states doesn't fill the log)
+    if (n++ < 400) LOG("[window] %s (frame %llu)\n", what, (unsigned long long)total_frames);
+}
+
 int ui_run(void) {
     ui_window_init();
     atomic_store(&ui_ready, true);
     for (;;) {
         if (rt_reboot_requested()) return rt_reboot_requested();  // (runtime/main.c tears the game down)
         SDL_Event e;
-        while (SDL_WaitEventTimeout(&e, 16)) {
+        // at most a frame's time of events, then the window requests: a controller's motion sensors (gyro) send about
+        // a thousand updates a second, so the queue may never run empty, and Fullscreen, Window size and Monitor
+        // waited for that until the next restart
+        uint64_t t0 = SDL_GetTicks();
+        while (SDL_GetTicks() - t0 < 16 && SDL_WaitEventTimeout(&e, 16)) {
             if (e.type == SDL_EVENT_QUIT) {
                 LOG("window closed\n");
                 exit(0);
             }
+            window_event_log(&e);
             if (menu_handle_event(&e)) continue;
             input_handle_event(&e);
         }

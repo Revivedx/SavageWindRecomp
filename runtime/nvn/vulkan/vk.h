@@ -35,6 +35,7 @@ typedef struct {
     uint32_t qfam, qfam_count;
     VmaAllocator vma;
     VkPhysicalDeviceProperties props;
+    bool is_mali;              // Arm Mali (vendor 0x13B5): the Mali-only paths' default (tiler / non-coherent workarounds)
     VkPipelineCache pcache;
     VkPipelineCache pcache_pre;  // the precompiled shaders' libraries (cache/vk_precompiled.bin; read only while playing)
     VkSemaphore timeline;      // value = last completed submission number
@@ -46,6 +47,7 @@ typedef struct {
     bool occlusion_precise;    // occlusionQueryPrecise: SAMPLES_PASSED counts samples, not just "any"
     bool feedback_loop;        // attachment feedback loops + barriers inside dynamic rendering (exec.c)
     bool feedback_layout;      // ... in ATTACHMENT_FEEDBACK_LOOP_OPTIMAL layout (no VK_KHR_unified_image_layouts: GENERAL otherwise)
+    bool lean_usage;           // colour images list their view formats instead of a bare MUTABLE_FORMAT (textures.c)
     bool gpl;                  // graphics pipeline libraries with fast linking (exec.c)
     bool dmabuf;               // memory exported as dma-bufs (Linux: the guest heap, exec.c backend_heap_set)
     bool radv;                 // the driver is Mesa's RADV
@@ -83,6 +85,7 @@ typedef struct { VkBuffer buf; uint64_t off; void *ptr; } VkSpan;
 VkSpan vk_transient(uint64_t size, uint64_t align);
 VkSpan vk_transient_copy(const void *data, uint64_t size, uint64_t align);
 VkSpan vk_readback(uint64_t size);  // host-cached GPU -> CPU staging (read right after the copy completes)
+void vk_readback_sync(void);         // ... before reading it (non-coherent host-cached memory: invalidated)
 VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout layout);
 
 // ---- textures (textures.c)
@@ -99,10 +102,13 @@ typedef struct TexBackend {
     VkImageAspectFlags aspect;
     bool gpu_owned, uploaded, dynamic;
     bool slices_renderable;  // 3D image made 2D-array compatible: its slices are render targets
+    bool not_attachable;     // made without a color or depth/stencil attachment usage (vk_view: no render view)
     bool cube_ok;            // made cube compatible: cube and cube-array views allowed
     bool feedback_ok;        // made with VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT (sampled while it is rendered to)
     bool feedback_seen;      // a draw sampled it while writing it: its passes begin with the feedback loop enabled
     bool in_feedback_layout; // in ATTACHMENT_FEEDBACK_LOOP_OPTIMAL now (g_vk.feedback_layout: a pass that loops, exec.c)
+    VkFormat view_fmt[2];    // (g_vk.lean_usage) the only formats its views may have; nview_fmt 0: any compatible one
+    uint8_t nview_fmt;
     uint64_t data_hash, sample_hash, checked_frame, full_frame;
     bool scalable, presented;
     uint8_t rs_group;            // RS_*: which output scale its allocation follows (textures.c)
@@ -114,6 +120,7 @@ typedef struct TexBackend {
     uint32_t pending_w, pending_h, pending_stride;
     uint8_t astc_bw, astc_bh;  // ASTC without GPU support: decoded to RGBA8 on upload (runtime/nvn/astc.c)
     bool astc_srgb;
+    bool bc4_cpu;                // BC4 decoded to R8 on upload (SAVAGEWIND_VK_BC4_CPU=1: Mali text / sprites test)
     uint32_t glyph_gen;          // a button glyph sheet (runtime/nvn/glyphs.c): the icons it was uploaded with
     // textures.c: one image per memory and shape, shared by every texture made there
     uint64_t key_addr;           // 0: not shared
@@ -130,7 +137,12 @@ typedef struct TexBackend {
     // A compressed image drawn into through an uncompressed view of its blocks (a texel a block: BOTW encodes its NPC
     // speech bubbles to BC4 on the GPU that way). Vulkan draws into no compressed image: the draw goes into this
     // block-sized image instead, copied into this one after the pass (textures.c block_view, vk_block_flush).
+    // block is the one the open pass draws into: one of block_lv (a block image per level of b drawn into that way;
+    // only level 0 outside the Mali R8 path), block_level the level of b its texels are the blocks of.
     struct TexBackend *block;
+    struct TexBackend *block_lv[16];
+    uint8_t block_level;
+    bool gpu_bc4;                // BC4 kept as BC4 though SAVAGEWIND_VK_BC4_CPU is on: the GPU draws into its blocks
     bool block_pending;          // (exec.c) the attachment view just made is block's: copy it after the pass
 } TexBackend;
 
@@ -142,6 +154,8 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
 VkComponentMapping vk_sample_swizzle(NvnTexture *t, const NvnTextureView *v);  // (a colour texture's, sampled)
 VkImageView vk_image_view(TexBackend *b, VkImageViewType type, VkFormat fmt, uint32_t lv0, uint32_t nlv, uint32_t ly0,
                           uint32_t nly, VkComponentMapping sw, VkImageAspectFlags aspect);
+VkFormat vk_view_format(TexBackend *b, VkFormat want);  // want, or the image's own format where want is not listed
+void vk_texture_drop_format_list(NvnTexture *t);        // (textures.c) a feedback loop target: no format list
 VkImageView vk_dummy_view(int textype);
 void vk_block_flush(VkCommandBuffer cb, TexBackend *b);  // (outside a pass) b->block's texels into b's blocks
 VkSampler vk_sampler(NvnSamplerDesc *d, bool aniso_ok, float bias);  // (aniso_ok: Video > Anisotropic filtering may

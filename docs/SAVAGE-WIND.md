@@ -378,7 +378,13 @@ Pendiente:
      es el giro desde la anterior, así que todo concuerda con la dirección. Ajustes: `motion_sensitivity`,
      `motion_invert` (`off`, `up_down`, `left_right`, `both`); la opción del juego "Controles por movimiento" pasa a
      la página Controles. Pruebas: `SAVAGEWIND_INPUT` acepta `TILT_UP/DOWN/LEFT/RIGHT` y
-     `TURN_UP/DOWN/LEFT/RIGHT`; `SAVAGEWIND_MOTION_LOG=1` registra la orientación una vez por segundo.
+     `TURN_UP/DOWN/LEFT/RIGHT`; `SAVAGEWIND_MOTION_LOG=1` registra la orientación una vez por segundo, con la salud del
+     flujo del sensor (lecturas por segundo, fusionadas, con reloj del sensor quieto o a saltos, el hueco más largo) y cuántas veces lo leyó el juego, y el encendido y apagado de la vibración. Siempre (unas pocas
+     líneas como mucho): de dónde sale el movimiento cuando cambia, los huecos del flujo de más de 0,25 s y un reloj del
+     sensor que se queda quieto o salta. Ese reloj (el timestamp del sensor de SDL) da el tiempo de cada lectura; un mando
+     que se hace pasar por DualShock 4 puede dejarlo quieto o hacerlo saltar, y cada lectura se descartaba (0 s o un
+     tercio de segundo desde la anterior): el apuntado se quedaba quieto aunque las lecturas siguieran llegando (sospecha en #220). Ahora una
+     lectura sin tiempo usable cuenta como un periodo de muestreo (la frecuencia que da SDL).
    - Iconos de botones (2026-10-22, `runtime/nvn/glyphs.c`): BOTW dibuja los botones de sus avisos (HUD, menús,
      diálogos) como caracteres de su propia fuente de mapa de bits `External_00.bffnt` (en `Font/Font_*.sbfarc`,
      igual en todas las regiones): 51 glifos en U+E040..E091, celdas de 50x50 (a 51 px) en una hoja BC4 de 256x1024
@@ -552,6 +558,38 @@ Pendiente:
          de siempre, que sigue guardándose en ~16 ms y no en 2,6 s. Con un driver nuevo el fichero no vale y
          Configuración pide volver a hacerla. La caché de disco del propio driver no basta: con las librerías
          compiladas solo en cachés temporales, el paseo tuvo 1,8 s de compilaciones y 50 frames de más de 40 ms.
+         Se hacen las librerías de todas las claves (la predicha, las del registro que difieren y las de movimiento),
+         no solo de la predicha.
+       - Variantes de los vectores de movimiento (2026-10-28; TAA y FSR 3, `mvec.c`): con ellos, una pasada con la
+         profundidad de la escena a resolución interna lleva el target de movimiento tras sus targets (hueco = cuántos
+         tiene, `begin_pass`), y en ella un dibujo que escribe profundidad usa la variante de movimiento de su programa
+         (vértices `mvec` 1 y fragmentos `mvec_rt` hueco+1 si casa con uno del frame anterior; si no, vértices tal cual
+         y fragmentos 0x40|hueco+1, quieto) y uno con blending que no la escribe, la máscara reactiva (fragmentos
+         0x80|hueco+1). Las claves son por lo demás las del mismo dibujo sin vectores (en el registro, las 522 de
+         movimiento eran una registrada más esos campos). En BOTW las pasadas son el G-buffer (6 targets: hueco 6; sus
+         shaders de fragmentos escriben los targets 0, 1 y 3, y el 5 algunos) y la pasada forward tras la luz (1
+         target: hueco 1, efectos y materiales que solo escriben el 0). `precompile.c` (`add_mvec_jobs`) añade a cada
+         clave de fragmentos de un shader de G-buffer `mvec_rt` 7 y 0x47, `mvec` 1 a las de los shaders de vértices de
+         sus programas, y 0x82 a las de los shaders de solo target 0 de `uking_mat` y de los efectos (`*.sesetlist`);
+         las de movimiento del registro van tal cual. Son 7.467 traducciones y librerías más (1.856 shaders de
+         fragmentos de G-buffer, 1.099 de vértices, 2.656 de máscara). Sus librerías salen con el layout que pedirá el
+         juego (las de vértices de movimiento con las push constants, `stage_layouts` desde `ShaderInfo.mvec`): en la
+         prueba no faltó ninguna de las predichas salvo las de claves mal predichas sin registro (abajo).
+         `SAVAGEWIND_PRECOMPILE_NO_MVEC=1`: sin ellas; `SAVAGEWIND_LOG_LIBS=1` registra cada librería que
+         `vk_precompiled.bin` no tenía. Hasta este cambio la precompilación moría sin decir nada al empezar las
+         librerías (`vk_pso_warm_stage` sin `si`, desde 6203d7f): ni librerías ni `precompiled.txt`.
+         Medido (desde una caché vacía, sin registro de claves, 12 hilos, RTX 3060, sal de SPIR-V nueva): sin las
+         variantes 108 s, 13.997 traducciones, 13.973 librerías, 782 MB; con ellas 161 s, 21.464, 21.440, 1.179 MB
+         (SPIR-V 297 → 445 MB, traducciones 131 → 199, librerías 345 → 526). Partida oculta de save_0 a 1080p con
+         SMAA que pasa a TAA en el frame 7000 (`SAVAGEWIND_AA_AT`, `async_shaders = 0`): sin las variantes, 159
+         librerías compiladas en el momento, tirones de 1.164 y 3.226 ms (4,2 s de compilaciones) y otros tres de
+         57-74 ms; con ellas, 8 librerías (claves base mal predichas sin registro: 3 normales, 5 de movimiento),
+         tirones de 98 y 272 ms (~0,19 s de compilaciones: los ~340 enlaces y módulos nuevos; lo demás, crear lo de
+         TAA) y ninguno más. "compile N" no baja (498 frente a 494): cuenta programas y enlaces, no compilaciones del
+         driver.
+         La DLC (`aoc1`, `aoc2`) no tiene archivos de shaders (sus 23 packs no llevan ninguno; los efectos de la DLC
+         están en la RomFS base): no hace falta leerla. Tras actualizar el traductor, Configuración marca "Volver a
+         hacer" y nada la lanza sola.
        - Coste: la primera vez ~3 min (172 s: traducciones 46 s, librerías 125 s; 12 hilos, Ryzen 5 5600X, RTX
          3060); otra vez con todo hecho, ~5 s (el fichero no se reescribe si no hay nada nuevo). Disco: ~1,45 GB
          (librerías 834 MB, SPIR-V 448 MB, traducciones 137 MB, caché de pipelines 17 MB). Memoria: con
@@ -932,6 +970,20 @@ Pendiente:
      ninguna función pasa del 1 %; `rt_dispatch` 4 %), el resto esperas. `SAVAGEWIND_VK_LIST_STATS=1` (medir) mostró
      que un frame no se parte en listas independientes: ~2800 `CallCommands` por frame, ~1 draw cada una, todas usan
      estado puesto antes. Bajar la traducción a 4-5 ms pide traducir en paralelo (notas de la sesión).
+   - Render targets comprimidos en GPU integradas (2026-10-26): las imágenes de color se creaban con
+     `VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT` sin `VkImageFormatListCreateInfo`, y Mesa (RADV) les quita DCC antes de RDNA3
+     (`radv_are_formats_dcc_compatible`): ningún render target iba comprimido y cada clear escribía la imagen entera
+     (en una Radeon 660M, 36 clears por frame en Kakariko = 1,38 ms, ~0,18 ms por target de 1600x900; sin fast clears,
+     que en `GENERAL` exigen DCC). Ahora los render targets listan su formato y su par sRGB / UNORM (sin par: no son
+     mutables), como LAS Recomp 03ee802f; una vista en otro formato usa el propio (`vk_view_format`, con aviso en el
+     log: 0 en las pruebas). Solo los render targets: BOTW lee los bloques de una textura BC4 con una vista RGBA16, que
+     una lista rechazaría. Un target con feedback loop (el 0 del G-buffer: el terreno lo lee y lo escribe) se rehace
+     sin lista copiando su contenido la primera vez (`vk_texture_drop_format_list`): RADV no comprime en
+     `ATTACHMENT_FEEDBACK_LOOP_OPTIMAL` y lo descomprimía al empezar cada pase (0,12 → 1,39 ms por frame). Clears
+     1,38 → 0,83 ms. Por defecto en GPU integradas (en las dedicadas LAS lo midió algo más lento en una RTX 3080 Ti);
+     `SAVAGEWIND_VK_LEAN_USAGE=0` / `=1` lo fuerza. Medido sobre `test` (36a02bc, con #108), 3+3 pasadas alternas sin
+     límite de FPS a 1280x720: el establo del río 66,6 → 70,6 fps (+6,1 %) y la puerta de la Ciudad Gerudo 60,0 → 63,7
+     (+6,3 %), GPU por frame −5,9 y −7,1 %; Kakariko +1,6 % (dentro del ruido: una pasada con NPC delante).
    - Sombras del sol con depth clamp (2026-10-20): `nvnCommandBufferSetDepthClamp` no hacía nada. BOTW lo activa para
      sus tres cascadas de sombra del sol (un array D16 de 896x896x3, ~650-750 draws por frame) y para la consulta de
      oclusión del sol: lo que está más cerca de la luz que el plano cercano de una cascada se aplasta contra él en vez
@@ -945,6 +997,21 @@ Pendiente:
      apagado). `SAVAGEWIND_NO_DEPTH_CLAMP=1` lo ignora (A/B). Metal (`renderer.m`): `setDepthClipMode`, sin compilar.
      La paleta de entorno (`fcb4` del shader de la máscara de sombras) pasa de la de interior a la de exterior en 60 s
      al salir del santuario y al cargar una partida afuera, y no vuelve a la de interior al regresar (ver abajo).
+   - Barreras por imagen entre pases (2026-10-26): cada pase empezaba con una barrera global (`ALL_COMMANDS`,
+     escrituras de memoria → lecturas y escrituras). Tras escrituras de attachments, RADV convierte una barrera global
+     en escribir e invalidar toda la L2, porque sin imagen no sabe si eran coherentes con ella
+     (`radv_src_access_flush` añade `AC_BARRIER_INV_L2`); con barreras por imagen no (`radv_image_is_l2_coherent`).
+     Si desde la última barrera completa solo hubo pases (ni copias, ni dispatch, ni subidas, ni escrituras a la
+     memoria del juego, ni lecturas de targets lineales: todo eso va tras una barrera completa, que marca
+     `bar_other`), la barrera del pase siguiente nombra las imágenes de esos pases (las de sus vistas de attachment,
+     tras `vk_view`) más una dependencia de ejecución para lo demás; una imagen diferida fuerza la completa.
+     `SAVAGEWIND_VK_FULL_PASS_BARRIER=1` vuelve a la barrera completa. La validación de sincronización
+     (`VK_LAYER_VALIDATE_SYNC=1` con `VK_LAYER_SYNCVAL_SHADER_ACCESSES_HEURISTIC=1`, mensajes con
+     `SAVAGEWIND_VK_VALIDATION=1`) da en las tres escenas los mismos avisos que antes (los del feedback loop del
+     terreno, dentro del pase) y ninguno entre pases; sin barreras de memoria entre pases da cientos. Medido sobre
+     `test` (36a02bc, con #108), 3+3 pasadas alternas sin límite de FPS a 1280x720 en una Radeon 660M: GPU por frame
+     −1,9 % en Kakariko, −1,1 % en el establo del río y −1,9 % en la puerta de la Ciudad Gerudo; FPS +1,3 % en
+     Kakariko (los otros dos, +1,1 y +0,8 %, dentro del ruido).
    - Fallos gráficos que quedaban en la Alpha 2 (2026-10-22):
      - Consulta de oclusión del sol: `ReportCounter` con `SAMPLES_PASSED` (tipo 1) devolvía siempre 0 muestras y
        `ResetCounter` no hacía nada. BOTW dibuja una vez por frame el disco del sol con prueba de profundidad y sin
@@ -1518,13 +1585,16 @@ memory are 64-byte aligned (they were 4: clang's aligned SSE stores faulted).
   range; the pixels inside both (him, and a strip of ground at his feet) take the motion of his centre on screen
   between the two frames. His limbs and what he holds are still the optical flow's. `SAVAGEWIND_FG_MV_DEBUG=1` paints
   the box (red) and the pixels taken as him (yellow) into the motion vectors (dump them with
-  `SAVAGEWIND_FG_INPUTS_AT=<n>`); `SAVAGEWIND_FG_NO_LINK=1` leaves him out. That is the fallback now: with frame generation on, the per-object
-  motion vectors (`mvec.c`, from PR #194: every scene draw matched with the previous frame's and run again on its
-  inputs, jitter taken out) are made too, and frame generation takes them when they are this frame's and at the
-  depth's size (their .xy are clip-space NDC differences: FSR's motion vector scale (-w / 2, h / 2), as for the FSR 3
-  upscaler). Link running, enemies and animals then interpolate without the double image; it costs ~5% of the
-  presented frames (no limit, 2560x1440, RTX 3060: 145 presented against 153 with the camera's vectors).
-  `SAVAGEWIND_FG_CAMERA_VECTORS=1`: the camera's and Link's box only (A/B).
+  `SAVAGEWIND_FG_INPUTS_AT=<n>`); `SAVAGEWIND_FG_NO_LINK=1` leaves him out. That is the default again.
+  `SAVAGEWIND_FG_OBJECT_VECTORS=1` makes the per-object motion vectors too (`mvec.c`, from PR #194: every scene draw
+  matched with the previous frame's and run again on its inputs, jitter taken out), and frame generation takes them
+  when they are this frame's and at the depth's size (their .xy are clip-space NDC differences: FSR's motion vector
+  scale (-w / 2, h / 2), as for the FSR 3 upscaler). Link running, enemies and animals then interpolate without the
+  double image, but on grass and trees some draws match the wrong draw of the previous frame and get motion they
+  don't have (2026-10-28: the dumped vectors showed motion on standing trees and a grass blade with the camera still),
+  and the generated frames broke the grass around Link up while the camera turned: the flicker players saw. They also
+  cost ~0.6 ms of GPU and ~1.5-2 ms of CPU a frame (2560x1440, RTX 3060, no limit: 52-57 drawn fps against 54-59
+  with the camera's vectors). So they stay off for frame generation until the matching is right for foliage.
 - The HUD-less image: BOTW composites the scene into a linear 10-bit image of the final size (A2B10G10R10), draws the
   HUD into that, then copies it sRGB-encoded into the 8-bit image it presents. The composite's target is copied right
   after the composite (`scene_composite`, the draw `scene_post` also uses), before the next draw, the HUD's first,
@@ -1636,7 +1706,7 @@ eye on the Great Plateau by day and in the evening. The preset row shows Custom 
 strips (N*N x N: 1024 x 32, 4096 x 64; slice = blue, x = red, y = green). Listed: the shipped ones (`colour-luts/`
 next to the executable; `third_party/luts` in a source build: three CC0 LUTs from FreshLUTs, see its README) then the
 player's (`<data root>/luts/`, made at the first listing; rescanned each time the page opens). The first setup offers
-Savage Wind's own look (`COLOR_LUT_RECOMMENDED`, the shipped `Savage_Wind.cube` at 80% intensity,
+Savage Wind's own look (`COLOR_LUT_RECOMMENDED`, the shipped `Savage_Wind.cube` at 50% intensity,
 `COLOR_LUT_RECOMMENDED_STRENGTH`): the start screen's "Savage Wind colour look" toggle, on unless the ini already
 names a LUT (`colour_lut`, `none` included). Players' third-party packs (e.g. Nexus ones whose licence forbids
 redistribution) are never shipped: they load them themselves.

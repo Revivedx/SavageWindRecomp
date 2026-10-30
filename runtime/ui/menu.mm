@@ -529,8 +529,12 @@ static bool toggle(const char *label, bool *v) {
     return ch;
 }
 
+extern "C" void renderer_get_scale(float *sx, float *sy);
 extern "C" void renderer_get_scene_scale(float *sx, float *sy);
 extern "C" bool renderer_gpu_rtx(void);  // (vulkan/device.c, metal.m)
+extern "C" volatile int g_fg_active;     // (hle/framepace.c: the last presented frame was generated)
+// Video > Upscaler mode's names, by UPQ_*
+static const char *const k_upscale_modes[UPQ_COUNT] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance"};
 extern "C" {
 #include "../nvn/output_scale.h"
 }
@@ -753,7 +757,7 @@ static void tab_display(void) {
         for (int i = 0; i < NU; i++) if (ups_value[i] == UPSCALE_DEFAULT) udef = i;
         if (opt_choice_avail("Upscaler", &ui, &shown, ups, avail, NU, udef, ud)) g_settings.upscaler = ups_value[ui];
         // its mode (AMD's scale factors), one step in; greyed when the upscaler is off
-        static const char *const modes[] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance"};
+        const char *const *modes = k_upscale_modes;
         bool modes_ok = upscale_modes_available();
         std::string mode_names[UPQ_COUNT];
         const char *mn[UPQ_COUNT];
@@ -988,6 +992,41 @@ static void perf_overlay_draw(ImGuiIO &io, float scale) {
     ImGui::PlotLines("##ft", s.frame_ms, PERF_HISTORY, 0, NULL, 0, top, ImVec2(330 * scale, 48 * scale));
     ImGui::TextDisabled("%s", s.gpu_name[0] ? s.gpu_name : tr("GPU: no NVML / sysfs data"));
     ImGui::TextDisabled("%s", s.cpu_name);
+    // the graphics settings in effect: what the game falls back to (FSR 3 not built in, a mode that isn't offered), not
+    // what the menu says
+    int up = upscaler_available(g_settings.upscaler) ? g_settings.upscaler : UPSCALE_OFF;
+    std::string line = std::string(tr("Upscaler")) + ": ";
+    switch (up) {
+        case UPSCALE_METALFX: line += tr("MetalFX"); break;
+        case UPSCALE_FSR1: line += tr("FSR 1"); break;
+        case UPSCALE_FSR3: line += tr("FSR 3"); break;
+        default: line += tr("Off");
+    }
+    int q = g_settings.upscale_quality;
+    if (up != UPSCALE_OFF && upscale_factor() > 1.0) {
+        char f[16];
+        snprintf(f, sizeof f, "%.1f", upscale_factor());
+        line += std::string(" ") + (q >= 0 && q < UPQ_COUNT ? std::string(tr(k_upscale_modes[q])) + " " : "") + f + "x";
+    }
+    // (FSR 3 anti-aliases the scene itself: the setting does nothing then)
+    int aa = rt_antialias();
+    line += std::string(" | ") + tr("Anti-aliasing") + ": " + (rt_fsr3() ? tr("FSR 3") : aa == AA_TAA ? tr("TAA") : aa == AA_SMAA ? tr("SMAA") : tr("Off"));
+    ImGui::TextDisabled("%s", line.c_str());
+    line.clear();
+#ifndef __APPLE__
+    {   // the scene's size and the final image's (the HUD and menus render at that one)
+        float rx, ry, ox, oy;
+        renderer_get_scene_scale(&rx, &ry);
+        renderer_get_scale(&ox, &oy);
+        if (rx > 0 && ox > 0) {
+            char r[48];
+            snprintf(r, sizeof r, "%.0f x %.0f -> %.0f x %.0f", 1600.0 * rx, 900.0 * ry, 1920.0 * ox, 1080.0 * oy);
+            line = r;
+        }
+    }
+#endif
+    if (g_fg_active) line += std::string(line.empty() ? "" : " | ") + tr("Frame generation on");
+    if (!line.empty()) ImGui::TextDisabled("%s", line.c_str());
     ImGui::End();
 }
 

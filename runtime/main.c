@@ -166,6 +166,7 @@ static void boot(const char *root) {
     { extern void fs_title_version_patch(void); fs_title_version_patch(); }  // (runtime/services/fs.c)
     { extern void settings_load(void); settings_load(); }
     { extern void language_booted(void); language_booted(); }  // (runtime/language.c)
+    plat_cpu_placement();
     kernel_init();
     dispatch_init();
     { extern void jpeg_debug_init(void); jpeg_debug_init(); }

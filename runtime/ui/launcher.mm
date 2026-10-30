@@ -1516,8 +1516,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                         bool look = !strcmp(g_settings.color_lut, COLOR_LUT_RECOMMENDED);
                         if (busy) opt_disable_next();
                         if (opt_toggle("Savage Wind colour look", &look, true,
-                                       "Recommended. The game's picture with Savage Wind's own colour look: a little "
-                                       "deeper and cooler. Change it or turn it off any time in the game's Options > "
+                                       "Recommended. The game's picture with Savage Wind's own colour look. Change it or turn it off any time in the game's Options > "
                                        "Colour (LUT).")) {
                             snprintf(g_settings.color_lut, sizeof g_settings.color_lut, "%s", look ? COLOR_LUT_RECOMMENDED : "");
                             g_settings.color_lut_strength = look ? COLOR_LUT_RECOMMENDED_STRENGTH : 100;

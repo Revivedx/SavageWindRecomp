@@ -40,7 +40,7 @@ enum { TEXTYPE_1D, TEXTYPE_2D, TEXTYPE_3D, TEXTYPE_CUBE, TEXTYPE_2D_ARRAY, TEXTY
 typedef struct {
     uint8_t attr_kind[32];  // vertex inputs: 0 float, 1 signed int, 2 unsigned int, 3 / 4 signed / unsigned int
                             // the shader reads as float (NVN's *_I2F / *_UI2F formats)
-    uint8_t rt_kind[8];     // fragment outputs: 0 float, 1 signed int, 2 unsigned int
+    uint8_t rt_kind[8];     // fragment outputs: 0 float, 1 signed int, 2 unsigned int; 5 / 6 uint 16 / 8-bit, 7 / 8 sint 16 / 8-bit (translate.c)
     bool depth_minus_one;   // NVN depth mode [-1,1]: remap clip z
     bool flip_y;            // lower-left window origin
     uint8_t mvec;           // vertex (GLSL): also the previous frame's position, from the motion history (vulkan/mvec.c):
@@ -94,7 +94,13 @@ typedef struct {
 
 // Global memory (LDG/STG) is addressed through one buffer that wraps the guest heap.
 #define GMEM_BUFFER_INDEX 17
+#define GMEM2_BUFFER_INDEX 20       // (Vulkan) the heap past GMEM_SPLIT: a second binding
+#define GMEM_SPLIT 0x68000000ull    // bytes in the first binding; both stay under 2 GB for the whole heap (HEAP_MAX)
+#define GSNAP_BUFFER_INDEX 21       // (Vulkan, read-only global memory) ranges of it copied at translation: exec.c gsnap
 extern uint64_t maxwell_gmem_base, maxwell_gmem_size;
+// Set by the Vulkan backend before translating: global memory in two bindings (maxStorageBufferRange below the heap),
+// read-only global memory through the copied ranges at GSNAP_BUFFER_INDEX (exec.c gsnap). Both change translations.
+extern bool maxwell_gmem_split, maxwell_gmem_snap;
 // Debug: when translating the shader whose code starts at maxwell_dbg_code, output register
 // maxwell_dbg_reg as captured after the instruction at maxwell_dbg_pc (greyscale, all targets).
 extern const uint8_t *maxwell_dbg_code;

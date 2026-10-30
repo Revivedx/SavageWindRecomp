@@ -31,6 +31,7 @@ int plat_protect(uint64_t addr, uint64_t size, int prot);  // 0 on success
 uint64_t plat_now_ns(void);                // monotonic
 void plat_sleep_until_ns(uint64_t t);      // precise wait for plat_now_ns() >= t
 void plat_thread_realtime(uint64_t period_ns);  // periodic timing thread (vsync): don't coalesce its timers
+void plat_cpu_placement(void);  // (game start) one logical processor per core on CPUs with SMT and 8+ cores (Windows)
 
 // ---- process
 void plat_init(void);                                // first thing in main()
