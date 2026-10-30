@@ -71,6 +71,7 @@ typedef struct {
     bool async_shaders;  // draw on while new shaders compile (no stutter; what needs them is skipped meanwhile)
     bool precompile_shaders;  // setting the game files up also precompiles every shader (runtime/nvn/precompile.h)
     int shadow_res;      // SHADOW_*: shadow maps at the console's size or bigger
+    bool no_weapon_wear; // weapons, bows and shields lose no durability (game code patch; see tools/patches.py)
     bool wide_view;      // a window that isn't 16:9 shows more of the world instead of bars (runtime/nvn/output_scale.c)
     int hdr;             // HDR_* (runtime/nvn/vulkan/device.c hdr_*)
     int hdr_white;       // nits of SDR white in HDR (0: what Windows gives SDR content on that monitor)

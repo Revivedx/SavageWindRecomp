@@ -214,6 +214,14 @@ static void log_screens(void);
 // patched to scale a per-update step it doesn't scale itself
 static volatile float g_frame_ratio = 1;
 
+// Unbreakable weapons (tools/patches.py _no_wear): 1 keeps the item's value instead of storing a lower one. Arrows
+// (type 2) are counts, not wear, and are left alone.
+int rt_keep_wear(uint32_t type, int32_t newv, int32_t oldv) {
+    return g_settings.no_weapon_wear && type != 2 && newv < oldv;
+}
+
+int rt_no_wear(void) { return g_settings.no_weapon_wear; }
+
 // An arrow's gravity in its fall, added once per update (tools/patches.py _arrow_gravity, #144): per console frame.
 // SAVAGEWIND_LOG_ARROW=1 logs each falling arrow's update (time, velocity before it).
 float rt_arrow_gravity(uint64_t arrow, float g) {
