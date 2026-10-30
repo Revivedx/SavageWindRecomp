@@ -155,6 +155,11 @@ static const char *const L_stables[] = {
 // Armor sets at their last upgrade (four stars): head, body and legs of each. Upgraded armor is another item in BOTW
 // (ActorInfo: armorNextRankName, armorStarNum 5 at the top); these are the sets whose three pieces all reach it (the
 // Hylian and Sheikah heads without their _B variants, the Ancient set with its own helm)
+// "Bullet Time": the dodges that lead to a Flurry Rush, as the pause menu's Actions list records them (Guide_BackStep:
+// "Backflip", Guide_SideStep: "Side Hop", each set once the game has taught it), or the Flurry Rush itself
+// (GuideSPlus_KaihiJust, its first one)
+static const char *const L_flurry[] = {"Guide_BackStep", "Guide_SideStep", "GuideSPlus_KaihiJust"};
+
 static const char *const L_great_fairy[] = {
     "IsGet_Armor_015_Head,IsGet_Armor_015_Upper,IsGet_Armor_015_Lower",  // Hylian
     "IsGet_Armor_064_Head,IsGet_Armor_064_Upper,IsGet_Armor_064_Lower",  // Zora

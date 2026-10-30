@@ -30,10 +30,10 @@ const AchDef g_ach_defs[] = {
     {"beedle", "My Best Friend", "Talk to Beedle.", ACH_FLAG, "Npc_TripMaster_00_Talk", 0, 0, 1},
 
     // ---- the first hours of the open world ----
-    // A Flurry Rush (a perfect dodge: time slows down): the game sets GuideSPlus_KaihiJust (kaihi: dodge) the first
-    // time, seen with SAVAGEWIND_LOG_FLAGS while doing one
-    {"flurry_rush", "Bullet Time", "Dodge an attack at the last moment and slow down time.", ACH_FLAG,
-     "GuideSPlus_KaihiJust", 0, 0, 1},
+    // A Flurry Rush (a perfect dodge: time slows down): once the Actions list has one of its dodges, or the first
+    // Flurry Rush (GuideSPlus_KaihiJust, kaihi: dodge, seen with SAVAGEWIND_LOG_FLAGS while doing one): L_flurry
+    {"flurry_rush", "Bullet Time", "Dodge an attack at the last moment and slow down time.", ACH_ANY, "", 0, 0, 0,
+     L_flurry, ACH_N(L_flurry)},
     // ... and a Perfect Guard (a parry with the shield): GuideSPlus_GurdJust, its twin (set with Guide_GurdJust, the
     // Perfect Guard hint, as an enemy attacks with the shield up: no flag records the parry itself)
     {"perfect_guard", "Not Today, Thanks", "Parry an attack with your shield.", ACH_FLAG, "GuideSPlus_GurdJust", 0, 0, 1},
@@ -151,12 +151,12 @@ const int g_ach_count = (int)(sizeof g_ach_defs / sizeof g_ach_defs[0]);
 // The game's own picture for each achievement (runtime/ui/ach_icon.mm), from the player's RomFS: an inventory icon
 // (UI/StockItem/<name>.sbitemico) or, with "@", a Hyrule Compendium photo (UI/PictureBook/<name>.jpg)
 const AchGameIcon g_ach_game_icons[] = {
-    {"leave_shrine", "Armor_001_Upper"}, {"first_enemy", "@Enemy_Bokoblin_Junior"}, {"shrine_1", "Item_Enemy_40"},
+    {"leave_shrine", "Obj_DRStone_Get"}, {"first_enemy", "@Enemy_Bokoblin_Junior"}, {"shrine_1", "Item_Enemy_40"},
     {"shrine_4", "Obj_HeartUtuwa_A_01"}, {"paraglider", "PlayerStole2"}, {"beedle", "PutRupee"},
     {"flurry_rush", "Weapon_Sword_001"}, {"perfect_guard", "Weapon_Shield_003"}, {"shield_surf", "Weapon_Shield_001"},
     {"korok_1", "Obj_KorokNuts"}, {"horse_registered", "GameRomHorseSaddle_00"}, {"horse_iwata", "@GameRomHorse"},
     {"cook_10", "Item_Roast_01"}, {"runes", "Obj_RemoteBombBall"}, {"guardians_10", "@Enemy_Guardian_A"},
-    {"shrine_25", "Obj_StaminaUtuwa_A_01"}, {"map_towers", "Obj_DRStone_Get"}, {"korok_100", "Obj_KorokNuts"},
+    {"shrine_25", "Obj_StaminaUtuwa_A_01"}, {"map_towers", "Obj_Photo_Other"}, {"korok_100", "Obj_KorokNuts"},
     {"beast_ruta", "Weapon_Spear_050"}, {"beast_rudania", "Item_Ore_B"}, {"beast_naboris", "Item_Ore_D"},
     {"beast_medoh", "Weapon_Bow_071"}, {"beast_all", "Item_Ore_J"}, {"hylian_shield", "Weapon_Shield_030"},
     {"master_sword", "Weapon_Sword_070"}, {"lost_woods", "@Npc_HiddenKorokGround"}, {"maracas", "Obj_Maracas"},
