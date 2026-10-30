@@ -294,6 +294,9 @@ void build_items(void) {
         menu_request_window_apply();
     };
     v.push_back(ws);
+    v.push_back(toggle(P_GAMEPLAY, "Unbreakable weapons", "Weapons, bows and shields lose no durability and never break.",
+                       [](const Item &) { return (int)g_settings.no_weapon_wear; },
+                       [](const Item &, int x) { g_settings.no_weapon_wear = x; }, 0));
     v.push_back(toggle(P_VIDEO, "Fill wide screens", "Shows more of the world on screens that aren't 16:9 (wider or taller), instead of bars.",
                        [](const Item &) { return (int)g_settings.wide_view; },
                        [](const Item &, int x) { g_settings.wide_view = x; }, 1));

@@ -128,6 +128,14 @@ SITES = [
     # tan(fovy / 2) (y) and of it with the aspect ratio (x)
     Site('persp_unproject_y', 'code', 'bd409800 f900003f 1e201004 1e214000 bd000820 bd409800 bd40ac01 bd400442', 6),
     Site('persp_unproject_x', 'code', 'bd409800 f900003f 1e201004 1e214000 bd000820 bd409800 bd40ac01 bd400442', 18),
+    # the store of an equipped weapon's, bow's or shield's durability, x100 (tools/patches.py _no_wear; the setter
+    # 1.8.2 0x7000c809e8 finds the equipped item of a type w22 in the pouch and stores the new value w20)
+    Site('no_wear_store', 'code', 'b9002174 5288fb08 72a00088 38686aa8 35000008/ff00001f 2a1403e0 2a1f03e2 94000000/fc000000', 0),
+    # the weapon actor's own durability, x100 (tools/patches.py _no_wear_hit): a hit takes its cost w9 off the value w8
+    Site('no_wear_hit', 'code', '4b090108 0aa87d08 1e220101 b9000268 1e212000 1a9f07e0 14000000/fc000000 f9400288', 0),
+    # where the weapon's update calls that (no_wear_hit's function, a virtual method that every damage goes through):
+    # the instruction after the call, the return address that tells a weapon's wear from damage to Link or an enemy
+    Site('no_wear_ret', 'code', 'f9400288 2a0003f5 aa1403e0 f9415d08 d63f0100 b5000000/ff00001f 52800036 14000000/fc000000', 0),
     # arrows' fall (tools/patches.py _arrow_gravity): the load of the gravity added to an arrow's velocity per update
     Site('arrow_fall_gravity', 'code', 'bd410a81 1e212849 bd410e81 1e21280a 94000000/fc000000 36000000/fff8001f f9404288 2d400500', 0),
     # the physics step's solver microsteps (tools/patches.py _solver_steps): the delta frame times 6
@@ -188,6 +196,8 @@ OPTIONAL_GROUPS = [
     ('yaz0_stream', 'yaz0_stream_ret'),
     ('cam_stick', 'cam_pitch_chase', 'cam_pitch_surf', 'cam_pitch_wakeboard', 'cam_pitch_aim', 'cam_pitch_item'),
     ('cam_reverse_x', 'cam_reverse_y'),
+    ('no_wear_store',),
+    ('no_wear_hit', 'no_wear_ret'),
 ]
 OPTIONAL = {n for g in OPTIONAL_GROUPS for n in g}
 
@@ -225,6 +235,9 @@ KNOWN = {
         'frame_loop_interval_ret': 0x7001012a34,
         'vfr_ratio': 0x70014092f4,
         'gui_speed': 0x700116d0e8,
+        'no_wear_store': 0x7000c80a80,
+        'no_wear_hit': 0x7000a81f1c,
+        'no_wear_ret': 0x700069d4c4,
         'arrow_fall_gravity': 0x70004db204,
         'phys_solver_steps': 0x700145b790,
         'snd_frame_floor': 0x700143ce64,

@@ -129,6 +129,7 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "async_shaders")) g_settings.async_shaders = atoi(val) != 0;
         else if (!strcmp(key, "precompile_shaders")) g_settings.precompile_shaders = atoi(val) != 0;
+        else if (!strcmp(key, "no_weapon_wear")) g_settings.no_weapon_wear = atoi(val) != 0;
         else if (!strcmp(key, "wide_view")) g_settings.wide_view = atoi(val) != 0;
         else if (!strcmp(key, "hdr")) {
             for (int i = 0; i < HDR_COUNT; i++)
@@ -261,6 +262,7 @@ void settings_save(void) {
     static const char *const shadow[SHADOW_COUNT] = {"console", "high", "ultra", "extreme"};
     int sr = g_settings.shadow_res;
     fprintf(f, "shadow_resolution = %s\n", shadow[sr >= 0 && sr < SHADOW_COUNT ? sr : SHADOW_CONSOLE]);
+    fprintf(f, "no_weapon_wear = %d\n", g_settings.no_weapon_wear);
     fprintf(f, "wide_view = %d\n", g_settings.wide_view);
     fprintf(f, "hdr = %s\n", k_hdr[g_settings.hdr >= 0 && g_settings.hdr < HDR_COUNT ? g_settings.hdr : HDR_AUTO]);
     if (g_settings.hdr_white) fprintf(f, "hdr_paper_white = %d\n", g_settings.hdr_white);

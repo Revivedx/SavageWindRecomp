@@ -235,6 +235,31 @@ def _arrow_gravity(gen, a):
             f'  /* {a:#x}: ldr s1, [x20, #0x108] (arrow gravity) */')
 
 
+# Unbreakable weapons (Options > Gameplay, runtime/hle/framepace.c rt_keep_wear): the pouch's setter for an equipped
+# item's value (type w22: 0 weapon, 1 bow, 2 arrows, 3 shield; new value w20; the item x11, value at +0x20) is where a
+# hit's wear lands, in hundredths (1700 = 17). The runtime keeps the old value when the new one is lower.
+
+def _no_wear(gen, a):
+    assert _word(gen, a) == 0xb9002174, hex(_word(gen, a))  # str w20, [x11, #0x20]
+    return ('{ extern int rt_keep_wear(uint32_t, int32_t, int32_t); '
+            'if (!rt_keep_wear((uint32_t)c->x[22], (int32_t)c->x[20], (int32_t)LD32(c->x[11] + 0x20))) '
+            'ST32(c->x[11] + 0x20, c->x[20]); }'
+            f'  /* {a:#x}: str w20, [x11, #0x20] (equipped item value: no wear) */')
+
+
+# The weapon actor keeps its own copy of the durability and is what breaks (f_7000a81da8, 1.8.2): a hit takes its cost
+# (w9, hundredths) off it with `sub w8, w8, w9`. With the option on the cost is 0, so nothing changes and nothing
+# is stored in the pouch either. That method takes every life off (Link's hearts, the enemies') and only the call
+# from the weapon's update (no_wear_ret) is wear: the saved return address, at sp + 0x28, tells them apart.
+
+def _no_wear_hit(gen, a):
+    assert _word(gen, a) == 0x4b090108, hex(_word(gen, a))  # sub w8, w8, w9
+    ret = gen.sites['no_wear_ret']
+    return ('{ extern int rt_no_wear(void); '
+            f'c->x[8] = (uint32_t)((uint32_t)c->x[8] - (rt_no_wear() && LD64(c->sp + 0x28) == {ret:#x}ull ? 0u : (uint32_t)c->x[9])); }}'
+            f'  /* {a:#x}: sub w8, w8, w9 (weapon hit: no wear) */')
+
+
 # The physics step's solver microsteps (runtime/hle/framepace.c rt_solver_steps, #161): before each Havok step the game
 # gives the solver round(delta frame x 6) microsteps (1.9.0 0x700156f930): 6 at 30 fps, 3 at 60, 2 at 120. With fewer
 # the solver gives way more to what is in contact with Link: holding a cucco, its body over his head held his jump
@@ -448,6 +473,8 @@ PATCHES = {
     'vfr_ratio': _vfr_ratio,
     'gui_speed': _gui_speed,
     'quick_menu_capture_alpha': _quick_menu_capture_alpha,
+    'no_wear_store': _no_wear,
+    'no_wear_hit': _no_wear_hit,
     'arrow_fall_gravity': _arrow_gravity,
     'phys_solver_steps': _solver_steps,
     'snd_frame_floor': _snd_frame_floor,
