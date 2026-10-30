@@ -49,10 +49,10 @@ Controls-page motion sensitivity and inversion apply to either sensor source. No
    Mode too. `journalctl --user -u sdgyrodsu.service -n 30 --no-pager` shows its startup and device errors.
 3. Add the patched Linux AppImage to Steam as a non-Steam game (native Linux execution; do not force Proton).
    Leave Steam Input enabled and use a normal gamepad layout. No Steam gyro-to-mouse mapping is required.
-4. Return to Gaming Mode and launch. DSU fallback is automatic; no launch option is required. To make it explicit
-   while keeping a 40 FPS cap, use Steam launch options:
+4. Return to Gaming Mode and launch. DSU fallback is automatic; no launch option is required. To enable DSU
+   explicitly, use Steam launch options:
 
-       SAVAGEWIND_DSU=on SAVAGEWIND_FPS=40 %command%
+       SAVAGEWIND_DSU=on %command%
 
 5. Enable the game's motion-controls option, hold the Deck still briefly for bias calibration, then check bow
    aiming and a tilt shrine. Motion should only affect the contexts where the game normally uses it.
@@ -95,7 +95,7 @@ real endpoint for three seconds without SDL or game data. It reports acceleratio
 Protocol/axis references: [Cemuhook reference](https://v1993.github.io/cemuhook-protocol/),
 [SteamDeckGyroDSU MIT implementation](https://github.com/kmicki/SteamDeckGyroDSU/blob/master/src/sdgyrodsu/cemuhookadapter.cpp),
 and [SDL Steam Deck sensor mapping](https://github.com/libsdl-org/SDL/blob/main/src/joystick/hidapi/SDL_hidapi_steamdeck.c).
-The client uses G and rad/s directly in the existing fusion axes; frame timing and `SAVAGEWIND_FPS` are unchanged.
+The client uses G and rad/s directly in the existing fusion axes.
 
 ### Steam Deck (first test, 2026-10-23)
 SteamOS 3.8, Mesa 26.2 RADV (VANGOGH). The setup works: copying the game files, generating and compiling the game
