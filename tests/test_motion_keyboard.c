@@ -134,6 +134,50 @@ static void arcball_composition(void) {
     motion_virtual_end();update(clock_ns+=10000000);orientation(0,0,0);
     puts("Arcball: arbitrary-axis quaternion composition over two turns, sensor delivery and apparatus exit reset PASS");
 }
+
+static void dualstick_turns(void) {
+    // 1. Right Stick Pitch: 360 degrees (100 deg/s * 3.6s)
+    fresh();
+    for (int i = 1; i <= 360; i++) {
+        motion_dualstick(0, 0, 0, 1.0f, 0.01, false);
+        update(clock_ns += 10000000);
+    }
+    for (int i = 0; i < 20; i++) update(clock_ns += 10000000);
+    orientation(360, 0, 0);
+
+    // 2. Right Stick Yaw: 360 degrees
+    fresh();
+    for (int i = 1; i <= 360; i++) {
+        motion_dualstick(0, 0, -1.0f, 0, 0.01, false);
+        update(clock_ns += 10000000);
+    }
+    for (int i = 0; i < 20; i++) update(clock_ns += 10000000);
+    orientation(0, 0, 360);
+
+    // 3. Left Stick Roll: 360 degrees
+    fresh();
+    for (int i = 1; i <= 360; i++) {
+        motion_dualstick(1.0f, 0, 0, 0, 0.01, false);
+        update(clock_ns += 10000000);
+    }
+    for (int i = 0; i < 20; i++) update(clock_ns += 10000000);
+    orientation(0, 360, 0);
+
+    // 4. Combined 3-axis rotation, quaternion normalization and stick recenter
+    fresh();
+    for (int i = 1; i <= 100; i++) {
+        motion_dualstick(0.7f, 0.5f, 0.6f, -0.4f, 0.016, false);
+        update(clock_ns += 16000000);
+    }
+    double q_norm = g.vq.w * g.vq.w + g.vq.x * g.vq.x + g.vq.y * g.vq.y + g.vq.z * g.vq.z;
+    assert(fabs(q_norm - 1.0) < 1e-6);
+
+    // Recenter/Reset via stick press (R3/L3)
+    motion_dualstick(0, 0, 0, 0, 0, true);
+    for (int i = 0; i < 30; i++) update(clock_ns += 10000000);
+    orientation(0, 0, 0);
+    puts("Dualstick: 3-axis independent 360 turns, compound quaternion normalization and R3/L3 reset PASS");
+}
 int main(void) {
     const int rates[] = {30,60,120,200,1000};
     for(unsigned k=0;k<sizeof rates/sizeof rates[0];k++) {
@@ -173,4 +217,5 @@ int main(void) {
     mouse_turns();
     fast_mouse();
     arcball_composition();
+    dualstick_turns();
 }

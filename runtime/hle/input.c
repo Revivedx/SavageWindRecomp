@@ -187,6 +187,20 @@ void input_cam_frame(float ratio) {
     pc_gyro_scene_tick();
     if (pc_gyro_enabled() && (menu_input_captured() || framepace_menu_ui() || framepace_title_ui()))
         motion_keyboard(0, 0, 0, false);
+    if (pad && !motion_has_sensors()) {
+        bool apparatus = pc_gyro_scene_active();
+        bool tilt_active = tilt_held || apparatus;
+        if (tilt_active && !menu_input_captured() && !framepace_menu_ui() && !framepace_title_ui()) {
+            bool reset = SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_RIGHT_STICK) ||
+                         (apparatus && SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_LEFT_STICK));
+            double dt = (ratio > 0.05f && ratio < 10.0f) ? (double)ratio / 30.0 : (1.0 / 60.0);
+            float lx = (float)pad_lx / 32767.0f;
+            float ly = (float)pad_ly / 32767.0f;
+            float rx = (float)pad_rx / 32767.0f;
+            float ry = (float)pad_ry / 32767.0f;
+            motion_dualstick(lx, ly, rx, ry, dt, reset);
+        }
+    }
     double dx = (double)atomic_exchange(&cam_dx_milli, 0) / 1000.0, dy = (double)atomic_exchange(&cam_dy_milli, 0) / 1000.0;
     if ((dx != 0 || dy != 0) && cam_log_left())
         LOG("[mouse] frame: %.1f %.1f counts, ratio %.3f, held %d/%d\n", dx, dy, ratio, (int)mouse_held, (int)test_mouse);
@@ -703,6 +717,9 @@ static void fill_state(Cpu *c) {
     int32_t mx = 0, my = 0;
     if (!menu) mouse_stick(&mx, &my);
     int32_t rx = clamp_axis((menu ? 0 : key_rx + pad_rx + mx) + script_rx), ry = clamp_axis((menu ? 0 : key_ry + pad_ry + my) + script_ry);
+    if (!menu && pc_gyro_scene_active() && !motion_has_sensors()) {
+        lx = ly = rx = ry = 0;
+    }
     // d-pad / arrow keys walk (setting) while the stick is at rest. "At rest" has a dead zone: a controller's stick
     // never reads exactly 0 (a DualSense rests at a few hundred), which used to turn the d-pad off altogether.
     if (!menu && g_settings.dpad_move && (int64_t)lx * lx + (int64_t)ly * ly < 8000ll * 8000) {

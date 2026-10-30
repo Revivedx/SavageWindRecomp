@@ -18,6 +18,7 @@ void motion_tilt_held(bool held);              // the tilt key, pressed or let g
 void motion_mouse(float dx, float dy);         // mouse motion while the tilt key is held (pixels)
 void motion_mouse_yaw(float steps);             // tilt key + wheel: six degrees per wheel unit
 void motion_keyboard(int pitch, int roll, int yaw, bool reset);  // -1/0/1 per axis; retain angle on release
+void motion_dualstick(float lx, float ly, float rx, float ry, double dt, bool reset); // dual-stick virtual gyro for controllers without motion sensors
 typedef struct {
     float matrix[3][3], angles[3]; // controller -> world, then pitch/roll/yaw in degrees
     bool held, pending;

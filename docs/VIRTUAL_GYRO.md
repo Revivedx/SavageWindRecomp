@@ -7,7 +7,13 @@ Enable keyboard rotation with `SAVAGEWIND_PC_GYRO=1`. Enable automatic mouse dra
 - I/K and J/L: tilt on two axes, 90 degrees/s.
 - U/P: rotate the third axis, 90 degrees/s.
 - O: recenter the virtual controller and cancel pending rotation.
-- T + mouse retains its orientation when released. In the original captured-mouse mode, T + wheel adds yaw at six degrees per wheel unit.
+- T + mouse retains its orientation when released without any rigid clamp. In the original captured-mouse mode, T + wheel adds yaw at six degrees per wheel unit.
+- Dual-stick virtual gyro on controllers without motion sensors (e.g. XInput / Xbox):
+  - Right Stick: Horizontal turn on the table / camera-style yaw (RS X) and front/back tilt / pitch (RS Y).
+  - Left Stick: Sideways bank / seesaw roll (LS X) and front/back tilt / pitch (LS Y).
+  - Stick Click (R3 / L3): Recenters the platform and cancels pending rotation.
+  - Automatically active during the BOTW 1.9.0 shrine apparatus interaction (`DungeonRotateGyro`) or while holding the tilt modifier.
+  - Continuous quaternion composition ($Q_{\text{new}} = \text{normalize}(Q_{\Delta} \times Q_{\text{current}})$) eliminates gimbal lock and allows seamless 360° rotation across all axes.
 
 The virtual sensor keeps continuous rotations through full turns. Fast packets are delivered at a bounded combined angular rate, preserving their direction and winding. Mouse drags compose quaternion increments into the virtual target orientation. Each shrine still applies its own reference frame; this does not bypass a mechanism's own constraints.
 

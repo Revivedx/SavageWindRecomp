@@ -114,12 +114,37 @@ static void euler_near(Mat m, double last_roll, double *yaw, double *pitch, doub
 // sensors' noise
 static bool steep(double pitch) { return fabs(cos(pitch)) < 0.1736; }
 
+static double sens(void) {
+    float k = g_settings.motion_sens;
+    return k >= 0.1f && k <= 10 ? k : 1;
+}
+
+static Quat quat_step_towards(Quat cur, Quat target, double max_rad) {
+    if (cur.w == 0 && cur.x == 0 && cur.y == 0 && cur.z == 0) cur.w = 1.0;
+    if (target.w == 0 && target.x == 0 && target.y == 0 && target.z == 0) target.w = 1.0;
+    double dot = cur.w * target.w + cur.x * target.x + cur.y * target.y + cur.z * target.z;
+    if (dot < 0.0) {
+        target.w = -target.w; target.x = -target.x; target.y = -target.y; target.z = -target.z;
+    }
+    Quat cur_inv = {cur.w, -cur.x, -cur.y, -cur.z};
+    Quat diff = qmul(target, cur_inv);
+    double vn = sqrt(diff.x * diff.x + diff.y * diff.y + diff.z * diff.z);
+    double angle = 2.0 * atan2(vn, fabs(diff.w));
+    if (angle <= max_rad || vn < 1e-9) return target;
+    double half = 0.5 * max_rad;
+    double s_val = sin(half) / vn;
+    Quat step_q = {cos(half), diff.x * s_val, diff.y * s_val, diff.z * s_val};
+    return qnorm(qmul(step_q, cur));
+}
+
 // ---- the source orientation (main thread writes, the game's controller thread reads)
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct {
     bool sensors;           // the controller has a gyroscope and an accelerometer (turned on)
     bool started;           // its orientation was set from gravity (first accelerometer reading)
     Quat q;                 // its orientation
+    Quat vq;                // continuous virtual orientation quaternion
+    bool vq_active;
     double bias[3];         // its gyroscope at rest (rad/s, Switch axes)
     double mean[3], var[3]; // its gyroscope's recent mean and variance (rad/s, (rad/s)^2; ~0.2 s)
     double acc_mean, acc_var;  // its accelerometer's recent strength, mean and variance (G, G^2; ~0.2 s)
@@ -134,7 +159,20 @@ static struct {
     bool recenter;
     uint64_t virtual_event_ns;
     double sc_pitch, sc_roll, sc_pitch_speed, sc_yaw_speed;  // scripted (radians, radians per second)
-} g = {.q = {1, 0, 0, 0}, .acc = {0, 0, -1}};
+} g = {.q = {1, 0, 0, 0}, .vq = {1, 0, 0, 0}, .acc = {0, 0, -1}};
+
+// Extrinsic (table/screen-space) incremental quaternion rotation - free of Gimbal Lock
+static void apply_virtual_rotation(double dpitch_rad, double droll_rad, double dyaw_rad) {
+    double wn = sqrt(dpitch_rad * dpitch_rad + droll_rad * droll_rad + dyaw_rad * dyaw_rad);
+    if (wn <= 1e-9) return;
+    double h = 0.5 * wn;
+    double k = sin(h) / wn;
+    Quat dq = {cos(h), dpitch_rad * k, droll_rad * k, dyaw_rad * k};
+    if (g.vq.w == 0 && g.vq.x == 0 && g.vq.y == 0 && g.vq.z == 0) g.vq.w = 1.0;
+    g.vq = qnorm(qmul(dq, g.vq));
+    g.vq_active = true;
+    g.virtual_event_ns = plat_now_ns();
+}
 
 // The sensor stream's health, for the log (under g_lock)
 static struct {
@@ -301,13 +339,65 @@ void motion_mouse(float dx, float dy) {
         g.virtual_event_ns=plat_now_ns();
         if(isfinite(dy))g.tilt_pitch += dy * TILT_PER_PIXEL;
         if(isfinite(dx))g.tilt_roll += dx * TILT_PER_PIXEL;
+        double invp = (g_settings.motion_invert & MOTION_INVERT_UD) ? -1 : 1;
+        apply_virtual_rotation(dy * TILT_PER_PIXEL * sens() * invp, dx * TILT_PER_PIXEL, 0);
     }
     pthread_mutex_unlock(&g_lock);
 }
 
 void motion_mouse_yaw(float steps) {
     pthread_mutex_lock(&g_lock);
-    if(g.tilt_held && isfinite(steps)){g.tilt_yaw += steps * 6 * PI / 180;g.virtual_event_ns=plat_now_ns();}
+    if(g.tilt_held && isfinite(steps)){
+        double invy = (g_settings.motion_invert & MOTION_INVERT_LR) ? -1 : 1;
+        double dy = steps * 6 * PI / 180 * sens() * invy;
+        g.tilt_yaw += steps * 6 * PI / 180;
+        apply_virtual_rotation(0, 0, dy);
+        g.virtual_event_ns=plat_now_ns();
+    }
+    pthread_mutex_unlock(&g_lock);
+}
+
+void motion_dualstick(float lx, float ly, float rx, float ry, double dt, bool reset) {
+    pthread_mutex_lock(&g_lock);
+    if (reset) {
+        memset(&g.keyboard, 0, sizeof g.keyboard);
+        g.tilt_pitch = g.tilt_roll = g.tilt_yaw = 0;
+        g.vq = (Quat){1, 0, 0, 0};
+        g.vq_active = false;
+        g.recenter = true;
+        g.virtual_event_ns = plat_now_ns();
+        pthread_mutex_unlock(&g_lock);
+        return;
+    }
+    if (!isfinite(dt) || dt <= 0) {
+        pthread_mutex_unlock(&g_lock);
+        return;
+    }
+    if (dt > 0.25) dt = 0.25;
+
+    // Right Stick: camera-style rotation
+    // RS X (rx): Horizontal turn on table / yaw (Z axis)
+    // RS Y (ry): Front/Back tilt / pitch (X axis)
+    // Left Stick:
+    // LS X (lx): Sideways tilt / seesaw / roll (Y axis)
+    // LS Y (ly): Front/Back tilt / pitch (X axis)
+    double rate_p = (double)ry + (double)ly;
+    double rate_r = (double)lx;
+    double rate_y = -(double)rx;
+
+    if (fabs(rate_p) > 1e-4 || fabs(rate_r) > 1e-4 || fabs(rate_y) > 1e-4) {
+        double speed_rad = (100.0 * PI / 180.0) * dt * sens();
+        double inv_ud = (g_settings.motion_invert & MOTION_INVERT_UD) ? -1.0 : 1.0;
+        double inv_lr = (g_settings.motion_invert & MOTION_INVERT_LR) ? -1.0 : 1.0;
+        double dp = rate_p * speed_rad * inv_ud;
+        double dr = rate_r * speed_rad;
+        double dy = rate_y * speed_rad * inv_lr;
+        apply_virtual_rotation(dp, dr, dy);
+        g.tilt_pitch += dp;
+        g.tilt_roll  += dr;
+        g.tilt_yaw   += dy;
+        g.keyboard.active = true;
+    }
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -327,6 +417,8 @@ void motion_keyboard(int pitch, int roll, int yaw, bool reset) {
     if (reset) {
         memset(&g.keyboard, 0, sizeof g.keyboard);
         g.tilt_pitch = g.tilt_roll = g.tilt_yaw = 0;
+        g.vq = (Quat){1, 0, 0, 0};
+        g.vq_active = false;
         g.recenter = true;
     }
     pthread_mutex_unlock(&g_lock);
@@ -342,19 +434,23 @@ static struct {
     int src;                     // what the orientation came from last time: 0 still / mouse / script, 1 sensors
     double src_yaw;              // ... and its yaw then
     double yaw, pitch, roll;     // the newest sample's orientation as the game gets it
+    Quat vq;                     // virtual orientation tracking quaternion
     Mat m;                       // ... as a matrix
     double angle[3];             // turns, summed
     uint64_t last_ns;            // last update (the mouse tilt's levelling, scripted turning)
     double sc_yaw, sc_pitch;     // scripted turning so far
     uint64_t logged;
-} s;
+} s = {.vq = {1, 0, 0, 0}};
 RT_ON_RESET(motion_reboot_reset) {
     pthread_mutex_lock(&g_lock);
     memset(&s, 0, sizeof s);
+    s.vq = (Quat){1, 0, 0, 0};
     memset(&g.keyboard, 0, sizeof g.keyboard);
     g.key_pitch = g.key_roll = g.key_yaw = 0;
     g.tilt_held = false;
     g.tilt_pitch = g.tilt_roll = g.tilt_yaw = 0;
+    g.vq = (Quat){1, 0, 0, 0};
+    g.vq_active = false;
     g.recenter = false;
     g.virtual_event_ns=0;
     pthread_mutex_unlock(&g_lock);
@@ -363,10 +459,6 @@ RT_ON_RESET(motion_reboot_reset) {
 static void euler_mat(double yaw, double pitch, double roll, Mat m) { quat_mat(euler_quat(yaw, pitch, roll), m); }
 
 // The player's sensitivity and inversion: the game's turn for the source's, its pitch for the source's
-static double sens(void) {
-    float k = g_settings.motion_sens;
-    return k >= 0.1f && k <= 10 ? k : 1;
-}
 static double game_turn(double turn) { return sens() * (g_settings.motion_invert & MOTION_INVERT_LR ? -turn : turn); }
 static double game_pitch(double pitch) {
     double p = sens() * (g_settings.motion_invert & MOTION_INVERT_UD ? -pitch : pitch);
@@ -385,9 +477,16 @@ void motion_virtual_end(void) {
     memset(&g.keyboard,0,sizeof g.keyboard);
     g.key_pitch=g.key_roll=g.key_yaw=0;g.tilt_held=false;
     g.tilt_pitch=g.tilt_roll=g.tilt_yaw=0;
+    g.vq = (Quat){1, 0, 0, 0};
+    g.vq_active = false;
     g.sc_pitch=g.sc_roll=g.sc_pitch_speed=g.sc_yaw_speed=0;
     g.recenter=false;g.virtual_event_ns=0;
-    if(s.src==0){int64_t sampling=s.sampling;memset(&s,0,sizeof s);s.sampling=sampling;}
+    if(s.src==0){
+        int64_t sampling=s.sampling;
+        memset(&s,0,sizeof s);
+        s.sampling=sampling;
+        s.vq = (Quat){1, 0, 0, 0};
+    }
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -408,8 +507,11 @@ void motion_gizmo_arcball(float w,float x,float y,float z) {
     double length=sqrt((double)w*w+(double)x*x+(double)y*y+(double)z*z);
     if(length<1e-8)return;
     pthread_mutex_lock(&g_lock);
-    double oldp=virtual_pitch(),oldr=virtual_roll(),oldy=game_turn(virtual_yaw());
     Quat delta={w/length,x/length,y/length,z/length};
+    if (g.vq.w == 0 && g.vq.x == 0 && g.vq.y == 0 && g.vq.z == 0) g.vq.w = 1.0;
+    g.vq = qnorm(qmul(delta, g.vq));
+    g.vq_active = true;
+    double oldp=virtual_pitch(),oldr=virtual_roll(),oldy=game_turn(virtual_yaw());
     Quat q=qnorm(qmul(delta,euler_quat(oldy,oldp,oldr)));Mat m;quat_mat(q,m);
     double yaw,pitch,roll;euler_of(m,&yaw,&pitch,&roll);
     double p2=(pitch>=0?PI:-PI)-pitch,r2=wrap(roll+PI),y2=wrap(yaw+PI);
@@ -447,7 +549,7 @@ static int source(double dt, Mat m) {
     s.sc_pitch += g.sc_pitch_speed * dt;
     if (s.sc_pitch > PITCH_MAX) s.sc_pitch = PITCH_MAX;
     if (s.sc_pitch < -PITCH_MAX) s.sc_pitch = -PITCH_MAX;
-    bool virt = g.keyboard.active || g.tilt_held || g.tilt_pitch || g.tilt_roll || g.tilt_yaw || g.sc_pitch || g.sc_roll || s.sc_yaw || s.sc_pitch;
+    bool virt = g.vq_active || g.keyboard.active || g.tilt_held || g.tilt_pitch || g.tilt_roll || g.tilt_yaw || g.sc_pitch || g.sc_roll || s.sc_yaw || s.sc_pitch;
     if (g.sensors && g.started && !virt) {
         quat_mat(g.q, m);
         return 1;
@@ -534,6 +636,7 @@ static void update(uint64_t now) {
     if(!kind && g.recenter) {
         // O cancels pending revolutions and takes the nearest neutral pose.
         for(int i=0;i<3;i++)virtual_now[i]=wrap(virtual_now[i]);
+        s.vq = (Quat){1, 0, 0, 0};
         g.recenter=false;
     }
     const double *lin = kind == 1 ? g.lin : zero;
