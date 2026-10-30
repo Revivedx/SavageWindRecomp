@@ -22,9 +22,16 @@ enum {
     BIND_RS_UP, BIND_RS_DOWN, BIND_RS_LEFT, BIND_RS_RIGHT,
     BIND_WALK,                                           // keyboard only: held, the left stick keys tilt it part way
     BIND_TILT,                                           // keyboard only: held, the mouse tilts the controller (motion)
+    BIND_GYRO_UP, BIND_GYRO_DOWN, BIND_GYRO_LEFT, BIND_GYRO_RIGHT,
+    BIND_GYRO_TURN_LEFT, BIND_GYRO_TURN_RIGHT, BIND_GYRO_CENTER,
     BIND_KEY_COUNT                                       // keyboard: buttons + both sticks + walk + tilt
 };
 enum { BIND_DEV_PAD, BIND_DEV_KEY };
+// Gyro keys form a separate, optional input context. Rebinding one must not
+// silently swap the normal camera/movement keys that work with gyro disabled.
+static inline bool bind_key_same_context(int a, int b) {
+    return (a >= BIND_GYRO_UP) == (b >= BIND_GYRO_UP);
+}
 // A keyboard binding can also be a mouse button: BIND_MOUSE + SDL_BUTTON_LEFT (1) .. SDL_BUTTON_X2 (5), past every
 // SDL scancode.
 #define BIND_MOUSE 0x400

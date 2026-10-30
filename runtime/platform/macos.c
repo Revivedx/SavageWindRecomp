@@ -51,6 +51,8 @@ void plat_sleep_until_ns(uint64_t t) {
     mach_wait_until(t * tb.denom / tb.numer);
 }
 
+void plat_cpu_placement(void) {}  // (one logical processor per core: measured on Windows only)
+
 // Real-time (time-constraint) thread: exempt from the timer coalescing macOS applies to
 // ordinary threads when the app isn't frontmost, which otherwise stretches 16ms waits to ~100ms.
 void plat_thread_realtime(uint64_t period_ns) {

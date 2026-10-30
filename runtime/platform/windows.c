@@ -235,6 +235,33 @@ void plat_init(void) {
     SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &pt, sizeof pt);
 }
 
+// One logical processor per physical core for the whole process: the game's main thread and the render thread then
+// never share a core with another busy thread of the game, or with a helper spinning for work. With fewer cores than
+// the game's busy threads (main, two job workers, render, audio, file loading) they would queue for one instead, so by
+// default only with SMT and 8 or more physical cores. SAVAGEWIND_ONE_PER_CORE=1: always, 0: never. Called when the game
+// starts, so what the start screen runs (the game code build) keeps every logical processor.
+void plat_cpu_placement(void) {
+    DWORD_PTR all, sys, one = 0;
+    if (!GetProcessAffinityMask(GetCurrentProcess(), &all, &sys)) return;
+    int logical = __builtin_popcountll((unsigned long long)all), cores = 0;
+    DWORD len = 0;
+    GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &len);
+    char *buf = len ? malloc(len) : NULL;
+    if (buf && GetLogicalProcessorInformationEx(RelationProcessorCore, (void *)buf, &len))
+        for (DWORD o = 0; o < len;) {
+            SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *e = (void *)(buf + o);
+            DWORD_PTR m = e->Processor.GroupMask[0].Group == 0 ? e->Processor.GroupMask[0].Mask & all : 0;
+            if (m) cores++, one |= m & -m;  // (the core's first logical processor)
+            o += e->Size;
+        }
+    free(buf);
+    const char *x = getenv("SAVAGEWIND_ONE_PER_CORE");
+    bool on = one && (x ? atoi(x) != 0 : cores >= 8 && logical > cores);
+    fprintf(stderr, "[cpu] %d cores, %d logical processors: %s\n", cores, logical,
+            on ? "one logical processor per core" : "all logical processors");
+    if (on) SetProcessAffinityMask(GetCurrentProcess(), one);
+}
+
 bool plat_exe_path(char *buf, size_t size) {
     DWORD n = GetModuleFileNameA(NULL, buf, (DWORD)size);
     return n > 0 && n < size;

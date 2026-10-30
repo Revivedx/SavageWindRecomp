@@ -41,28 +41,22 @@ static _Atomic uint32_t test_pad;
 static _Atomic int32_t test_lx, test_ly;  // (a resting stick's drift: "lstick" in SAVAGEWIND_HOST_INPUT)
 static bool host_test;  // (then a real controller is left out: the player's own pad must not spoil the test)
 static _Atomic int last_device;  // DEVICE_*: what the player used last
+static bool win_focused = true;         // (main thread: window events and input_mouse_update)
 static bool tilt_held;  // the tilt key: the mouse tilts the controller instead of turning the camera
 extern bool menu_input_captured(void);  // runtime/ui/menu.mm: overlay menu or name entry up (it has the keys / pad)
 
-static bool pc_gyro_enabled(void) {
-    static int on = -1;
-    if (on < 0) {
-        const char *v = getenv("SAVAGEWIND_PC_GYRO");
-        on = v ? atoi(v) != 0 : 1;
-    }
-    return on;
-}
+static bool pc_gyro_enabled(void) { return g_settings.pc_gyro && pc_gyro_keyboard_active(); }
 
 static int held_key(int sc) {
     if (sc > BIND_MOUSE && sc <= BIND_MOUSE_LAST) return mouse_down[sc - BIND_MOUSE];
     return sc > 0 && sc < SDL_SCANCODE_COUNT && (keys_down[sc] || test_keys[sc]);
 }
 
-// Retain custom camera bindings; only IJKL are reserved for the virtual sensor.
-static int camera_key(int sc) {
-    if (pc_gyro_enabled() && (sc == SDL_SCANCODE_I || sc == SDL_SCANCODE_J ||
-                              sc == SDL_SCANCODE_K || sc == SDL_SCANCODE_L ||
-                              sc == SDL_SCANCODE_U || sc == SDL_SCANCODE_P)) return 0;
+// Only the player's current gyro bindings have priority while its switch is on.
+// With it off, all ordinary camera/movement bindings keep working unchanged.
+static int game_key(int sc) {
+    if(pc_gyro_enabled() && sc)for(int i=BIND_GYRO_UP;i<=BIND_GYRO_CENTER;i++)
+        if(sc==g_bind_key[i])return 0;
     return held_key(sc);
 }
 
@@ -70,21 +64,19 @@ static int camera_key(int sc) {
 static void recompute_keyboard(void) {
     uint64_t b = 0;
     for (int i = 0; i < BIND_PAD_COUNT; i++)
-        if (held_key(g_bind_key[i])) b |= 1ull << i;
+        if (game_key(g_bind_key[i])) b |= 1ull << i;
     key_buttons = b;
-    int tilt = held_key(g_bind_key[BIND_WALK]) ? 13107 : 32767;  // walk: 40% (BOTW walks below about half)
-    key_lx = (held_key(g_bind_key[BIND_LS_RIGHT]) - held_key(g_bind_key[BIND_LS_LEFT])) * tilt;
-    key_ly = (held_key(g_bind_key[BIND_LS_UP]) - held_key(g_bind_key[BIND_LS_DOWN])) * tilt;
-    key_rx = (camera_key(g_bind_key[BIND_RS_RIGHT]) - camera_key(g_bind_key[BIND_RS_LEFT])) * 32767;
-    key_ry = (camera_key(g_bind_key[BIND_RS_UP]) - camera_key(g_bind_key[BIND_RS_DOWN])) * 32767;
-    if (pc_gyro_enabled()) {
-        bool allow = !menu_input_captured() && !framepace_menu_ui() && !framepace_title_ui();
-        motion_keyboard(allow ? held_key(SDL_SCANCODE_K) - held_key(SDL_SCANCODE_I) : 0,
-                        allow ? held_key(SDL_SCANCODE_L) - held_key(SDL_SCANCODE_J) : 0,
-                        allow ? held_key(SDL_SCANCODE_P) - held_key(SDL_SCANCODE_U) : 0,
-                        allow && held_key(SDL_SCANCODE_O));
-    }
-    bool tilt_key = held_key(g_bind_key[BIND_TILT]) && !menu_input_captured();
+    int tilt = game_key(g_bind_key[BIND_WALK]) ? 13107 : 32767;  // walk: 40% (BOTW walks below about half)
+    key_lx = (game_key(g_bind_key[BIND_LS_RIGHT]) - game_key(g_bind_key[BIND_LS_LEFT])) * tilt;
+    key_ly = (game_key(g_bind_key[BIND_LS_UP]) - game_key(g_bind_key[BIND_LS_DOWN])) * tilt;
+    key_rx = (game_key(g_bind_key[BIND_RS_RIGHT]) - game_key(g_bind_key[BIND_RS_LEFT])) * 32767;
+    key_ry = (game_key(g_bind_key[BIND_RS_UP]) - game_key(g_bind_key[BIND_RS_DOWN])) * 32767;
+    bool allow=pc_gyro_enabled() && win_focused && !menu_input_captured() && !framepace_menu_ui() && !framepace_title_ui();
+    motion_keyboard(allow ? held_key(g_bind_key[BIND_GYRO_UP])-held_key(g_bind_key[BIND_GYRO_DOWN]) : 0,
+                    allow ? held_key(g_bind_key[BIND_GYRO_RIGHT])-held_key(g_bind_key[BIND_GYRO_LEFT]) : 0,
+                    allow ? held_key(g_bind_key[BIND_GYRO_TURN_RIGHT])-held_key(g_bind_key[BIND_GYRO_TURN_LEFT]) : 0,
+                    allow && held_key(g_bind_key[BIND_GYRO_CENTER]));
+    bool tilt_key = game_key(g_bind_key[BIND_TILT]) && !menu_input_captured();
     if (tilt_key != tilt_held) motion_tilt_held(tilt_held = tilt_key);
 }
 
@@ -188,8 +180,7 @@ static bool cam_reading(void) {
 // length (ratio: its VFR ratio, which the cameras multiply their turn by)
 void input_cam_frame(float ratio) {
     pc_gyro_scene_tick();
-    if (pc_gyro_enabled() && (menu_input_captured() || framepace_menu_ui() || framepace_title_ui()))
-        motion_keyboard(0, 0, 0, false);
+    recompute_keyboard();  // apparatus entry/exit and remapping apply without another key event
     double dx = (double)atomic_exchange(&cam_dx_milli, 0) / 1000.0, dy = (double)atomic_exchange(&cam_dy_milli, 0) / 1000.0;
     if ((dx != 0 || dy != 0) && cam_log_left())
         LOG("[mouse] frame: %.1f %.1f counts, ratio %.3f, held %d/%d\n", dx, dy, ratio, (int)mouse_held, (int)test_mouse);
@@ -285,7 +276,6 @@ static void mouse_stick(int32_t *x, int32_t *y) {
 
 // Main thread, every window loop turn (runtime/nvn/vulkan/device.c ui_run): hold or free the cursor.
 extern bool menu_cursor_free(void);     // runtime/ui/menu.mm: Esc freed the cursor (a click in the window holds it)
-static bool win_focused = true;         // (main thread: window events and input_mouse_update)
 void input_mouse_update(SDL_Window *w) {
     vibration_update(pad, win_focused && !host_test);
     static bool cur;

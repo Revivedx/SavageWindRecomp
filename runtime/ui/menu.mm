@@ -517,8 +517,12 @@ static bool toggle(const char *label, bool *v) {
     return ch;
 }
 
+extern "C" void renderer_get_scale(float *sx, float *sy);
 extern "C" void renderer_get_scene_scale(float *sx, float *sy);
 extern "C" bool renderer_gpu_rtx(void);  // (vulkan/device.c, metal.m)
+extern "C" volatile int g_fg_active;     // (hle/framepace.c: the last presented frame was generated)
+// Video > Upscaler mode's names, by UPQ_*
+static const char *const k_upscale_modes[UPQ_COUNT] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance"};
 extern "C" {
 #include "../nvn/output_scale.h"
 }
@@ -609,8 +613,8 @@ static void tab_display(void) {
         }
         char desc[600];
         snprintf(desc, sizeof desc, tr("The size of the game's window, or of the screen in fullscreen. Only the sizes your "
-                                       "display can show: its own first, then grouped by shape. A shape wider than 16:9 "
-                                       "is filled with Fill wide screens on; any other keeps 16:9 with bars.\n\nYour display: %d x %d."), desk.w, desk.h);
+                                       "display can show: its own first, then grouped by shape. Any shape other than 16:9 "
+                                       "is filled with Fill wide screens on; off, it keeps 16:9 with bars.\n\nYour display: %d x %d."), desk.w, desk.h);
         bool picked;
         if (opt_list("Window size", &cur, names, n, def, desc, &picked)) {  // (past either end: the other one)
             g_settings.window_w = list[cur].w, g_settings.window_h = list[cur].h;
@@ -621,9 +625,10 @@ static void tab_display(void) {
     {   // Fill wide screens (runtime/nvn/output_scale.c rt_persp)
         bool wv = g_settings.wide_view;
         if (opt_toggle("Fill wide screens", &wv, true,
-                       "On a window or screen wider than 16:9 (21:9, 32:9) the game shows more to the sides instead "
-                       "of black bars. The HUD stays 16:9 in the middle; the pause menu, the map and the start "
-                       "screen are shown 16:9."))
+                       "On a window or screen that isn't 16:9 the game shows more of the world instead of black bars: "
+                       "to the sides when it's wider (21:9, 32:9), above and below when it's taller (16:10, 4:3). "
+                       "The HUD stays 16:9 in the middle; the pause menu, the map and the start screen are shown "
+                       "16:9."))
             g_settings.wide_view = wv;
     }
     {   // Field of view (runtime/nvn/output_scale.c rt_persp)
@@ -703,7 +708,8 @@ static void tab_display(void) {
         // Values that can't be picked yet are shown greyed ("coming soon"); stepping onto them keeps the one in use.
         // The modes wait for render-target scaling (upscale_modes_available): until then the upscaler brings the
         // game's own 1920 x 1080 image to a bigger window.
-        std::string fsr3 = std::string(tr("FSR 3")) + " " + tr("(coming soon)");
+        std::string fsr3 = upscaler_available(UPSCALE_FSR3) ? std::string(tr("AMD FSR 3"))
+                                                            : std::string(tr("FSR 3")) + " " + tr("(coming soon)");
         std::string dlss = std::string(tr("DLSS")) + " " + tr(renderer_gpu_rtx() ? "(coming soon)" : "(NVIDIA RTX only)");
 #ifdef __APPLE__
         const char *ups[] = {"Off", "MetalFX"};
@@ -714,10 +720,18 @@ static void tab_display(void) {
 #else
         const char *ups[] = {"Off", "AMD FSR 1", fsr3.c_str(), dlss.c_str()};
         static const int ups_value[] = {UPSCALE_OFF, UPSCALE_FSR1, UPSCALE_FSR3, UPSCALE_DLSS};
-        const char *ud = "Off: the 3D image renders at the window's resolution. AMD FSR 1: it renders smaller (the mode "
-                         "below), then FSR 1's edge-aware upscaling and sharpening bring it to the window. The HUD and "
-                         "menus always render at the window's resolution.\n\nAMD FSR 3 and NVIDIA DLSS (NVIDIA RTX "
-                         "graphics cards) are coming in a later version.";
+        // (the FSR 3 paragraph on its own: the first one keeps its translations)
+        static std::string uds;
+        uds = std::string(tr("Off: the 3D image renders at the window's resolution. AMD FSR 1: it renders smaller (the mode "
+                             "below), then FSR 1's edge-aware upscaling and sharpening bring it to the window. The HUD and "
+                             "menus always render at the window's resolution.")) + "\n\n" +
+              (upscaler_available(UPSCALE_FSR3)
+                   ? tr("AMD FSR 3: it renders smaller and builds the full-resolution image from the frames before, "
+                        "following the game's motion: sharper and steadier than FSR 1, and anti-aliased (Anti-aliasing "
+                        "has no effect with it). Sharpening sets its own sharpening. NVIDIA DLSS (NVIDIA RTX graphics "
+                        "cards) is coming in a later version.")
+                   : tr("AMD FSR 3 and NVIDIA DLSS (NVIDIA RTX graphics cards) are coming in a later version."));
+        const char *ud = uds.c_str();
 #endif
         enum { NU = sizeof ups_value / sizeof ups_value[0] };
         bool avail[NU];
@@ -731,7 +745,7 @@ static void tab_display(void) {
         for (int i = 0; i < NU; i++) if (ups_value[i] == UPSCALE_DEFAULT) udef = i;
         if (opt_choice_avail("Upscaler", &ui, &shown, ups, avail, NU, udef, ud)) g_settings.upscaler = ups_value[ui];
         // its mode (AMD's scale factors), one step in; greyed when the upscaler is off
-        static const char *const modes[] = {"Ultra Quality", "Quality", "Balanced", "Performance"};
+        const char *const *modes = k_upscale_modes;
         bool modes_ok = upscale_modes_available();
         std::string mode_names[UPQ_COUNT];
         const char *mn[UPQ_COUNT];
@@ -747,7 +761,7 @@ static void tab_display(void) {
         snprintf(rendering, sizeof rendering, tr("Rendering at %.0f x %.0f."), 1600.0 * sx, 900.0 * sy);
         std::string md = std::string(tr("How much smaller the game renders before the upscaler brings it to the window, "
                                         "on each side: Ultra Quality 1.3x, Quality 1.5x, Balanced 1.7x, Performance "
-                                        "2x. Smaller is faster and softer.")) +
+                                        "2x, Ultra Performance 3x. Smaller is faster and softer.")) +
                          "\n\n" + (modes_ok ? rendering : tr("Coming in a later version."));
         opt_indent(1);
         if (g_settings.upscaler == UPSCALE_OFF) opt_disable_next();
@@ -756,10 +770,22 @@ static void tab_display(void) {
                          md.c_str());
         opt_indent(-1);
     }
+#ifdef __APPLE__
     static const char *aa[] = {"Off", "SMAA"};
     opt_choice("Anti-aliasing", &g_settings.antialias, aa, 2, AA_OFF,
                "Smooths jagged edges of the game image before it is scaled to the window. SMAA: finds the edges and "
                "blends only along them, so textures stay sharp. Most useful with an upscaler.");
+#else
+    {   // (the TAA sentence on its own: the first one keeps its translations)
+        static const char *aa[] = {"Off", "SMAA", "TAA"};  // (settings.h AA_*)
+        static std::string d;
+        d = std::string(tr("Smooths jagged edges of the game image before it is scaled to the window. SMAA: finds the "
+                           "edges and blends only along them, so textures stay sharp. Most useful with an upscaler.")) +
+            " " + tr("TAA: blends each frame with the ones before it, following the game's motion, so edges stay "
+                     "smooth and stop shimmering; slightly softer, use it with Sharpening.");
+        opt_choice("Anti-aliasing", &g_settings.antialias, aa, 3, AA_OFF, d.c_str());
+    }
+#endif
 #ifndef __APPLE__
     {   // Anisotropic filtering and sharpening (Vulkan: vulkan/textures.c sampler_aniso, vulkan/exec.c scene_post)
         static const char *const aniso[] = {"Off", "2x", "4x", "8x", "16x"};
@@ -954,6 +980,41 @@ static void perf_overlay_draw(ImGuiIO &io, float scale) {
     ImGui::PlotLines("##ft", s.frame_ms, PERF_HISTORY, 0, NULL, 0, top, ImVec2(330 * scale, 48 * scale));
     ImGui::TextDisabled("%s", s.gpu_name[0] ? s.gpu_name : tr("GPU: no NVML / sysfs data"));
     ImGui::TextDisabled("%s", s.cpu_name);
+    // the graphics settings in effect: what the game falls back to (FSR 3 not built in, a mode that isn't offered), not
+    // what the menu says
+    int up = upscaler_available(g_settings.upscaler) ? g_settings.upscaler : UPSCALE_OFF;
+    std::string line = std::string(tr("Upscaler")) + ": ";
+    switch (up) {
+        case UPSCALE_METALFX: line += tr("MetalFX"); break;
+        case UPSCALE_FSR1: line += tr("FSR 1"); break;
+        case UPSCALE_FSR3: line += tr("FSR 3"); break;
+        default: line += tr("Off");
+    }
+    int q = g_settings.upscale_quality;
+    if (up != UPSCALE_OFF && upscale_factor() > 1.0) {
+        char f[16];
+        snprintf(f, sizeof f, "%.1f", upscale_factor());
+        line += std::string(" ") + (q >= 0 && q < UPQ_COUNT ? std::string(tr(k_upscale_modes[q])) + " " : "") + f + "x";
+    }
+    // (FSR 3 anti-aliases the scene itself: the setting does nothing then)
+    int aa = rt_antialias();
+    line += std::string(" | ") + tr("Anti-aliasing") + ": " + (rt_fsr3() ? tr("FSR 3") : aa == AA_TAA ? tr("TAA") : aa == AA_SMAA ? tr("SMAA") : tr("Off"));
+    ImGui::TextDisabled("%s", line.c_str());
+    line.clear();
+#ifndef __APPLE__
+    {   // the scene's size and the final image's (the HUD and menus render at that one)
+        float rx, ry, ox, oy;
+        renderer_get_scene_scale(&rx, &ry);
+        renderer_get_scale(&ox, &oy);
+        if (rx > 0 && ox > 0) {
+            char r[48];
+            snprintf(r, sizeof r, "%.0f x %.0f -> %.0f x %.0f", 1600.0 * rx, 900.0 * ry, 1920.0 * ox, 1080.0 * oy);
+            line = r;
+        }
+    }
+#endif
+    if (g_fg_active) line += std::string(line.empty() ? "" : " | ") + tr("Frame generation on");
+    if (!line.empty()) ImGui::TextDisabled("%s", line.c_str());
     ImGui::End();
 }
 
@@ -1202,6 +1263,10 @@ void menu_tabs_draw(float scale, ImFont *font, ImFont *font_big, bool in_game, v
     tabs_body(scale, in_game, prelaunch);
     ImGui::GetStyle() = saved;
     g_font = f0, g_font_big = f1;
+}
+
+bool menu_render_needed(void) {
+    return g_open.load() || g_kbd.load() == 1 || g_sizes.load() || g_settings.perf_overlay != PERF_OFF;
 }
 
 #ifdef __APPLE__

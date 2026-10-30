@@ -158,23 +158,28 @@ CXXFLAGS := -O2 -g -std=c++17 -I$(IMGUI) -I$(IMGUI)/backends -Iruntime -Iruntime
 
 .DEFAULT_GOAL := all
 
-# AMD FidelityFX SDK 1.1.4 (third_party/FidelityFX, MIT): FSR 3 frame interpolation and optical flow on its Vulkan
-# backend (runtime/nvn/vulkan/framegen.cpp). Its sources unchanged, with ffx_compat.h for what MSVC's headers bring;
-# the shaders are tools/ffx_shaders.py's (third_party/FidelityFX/spirv).
+# AMD FidelityFX SDK 1.1.4 (third_party/FidelityFX, MIT): FSR 3 frame interpolation and optical flow
+# (runtime/nvn/vulkan/framegen.cpp) and the FSR 3 upscaler (runtime/nvn/vulkan/fsr3.cpp) on its Vulkan backend. Its
+# sources unchanged, with ffx_compat.h for what MSVC's headers bring; the shaders are tools/ffx_shaders.py's
+# (third_party/FidelityFX/spirv).
 FFX      := third_party/FidelityFX
 FFX_SRC  := $(FFX)/sdk/src/components/frameinterpolation/ffx_frameinterpolation.cpp \
-            $(FFX)/sdk/src/components/opticalflow/ffx_opticalflow.cpp $(FFX)/sdk/src/backends/vk/ffx_vk.cpp \
+            $(FFX)/sdk/src/components/opticalflow/ffx_opticalflow.cpp \
+            $(FFX)/sdk/src/components/fsr3upscaler/ffx_fsr3upscaler.cpp $(FFX)/sdk/src/backends/vk/ffx_vk.cpp \
             $(wildcard $(FFX)/sdk/src/shared/*.cpp)
 FFX_OBJ  := $(patsubst $(FFX)/sdk/src/%.cpp,$(B)/ffx/%.o,$(FFX_SRC))
 FFX_INC  := -I$(FFX)/sdk/include -I$(FFX)/sdk/src/components -I$(FFX)/sdk/src/shared -I$(FFX)/sdk/src/backends/shared
 ifneq ($(PLATFORM),macos)
 BACKEND_OBJ += $(FFX_OBJ)
+$(B)/rt/nvn/vulkan/fsr3.o: CXXFLAGS := -DSW_FSR3=1 -include $(FFX)/ffx_compat.h $(FFX_INC) $(CXXFLAGS)
 endif
 $(B)/ffx/%.o: $(FFX)/sdk/src/%.cpp $(FFX)/ffx_compat.h
 	@mkdir -p $(dir $@)
 	$(CXX) -O2 -g -std=c++17 -w -include $(FFX)/ffx_compat.h $(FFX_INC) -I$(FFX)/sdk/include/FidelityFX/gpu $(DEPINC) -c $< -o $@
-$(B)/rt/nvn/vulkan/framegen.o: CXXFLAGS += -include $(FFX)/ffx_compat.h $(FFX_INC) -I$(FFX)/spirv
-$(B)/rt/nvn/vulkan/framegen.o: $(FFX)/spirv/ffx_shaders_vk.h $(FFX)/ffx_compat.h
+# (the SDK's headers ahead of $(DEPINC)'s: another copy of them there, from a build of the SDK, has other context
+# sizes, and a context smaller than the SDK's own code writes overran the next one in memory)
+$(B)/rt/nvn/vulkan/framegen.o: CXXFLAGS := -include $(FFX)/ffx_compat.h $(FFX_INC) -I$(FFX)/spirv $(CXXFLAGS)
+$(B)/rt/nvn/vulkan/framegen.o: $(FFX)/spirv/ffx_shaders_vk.h $(FFX)/spirv/ffx_fsr3upscaler_vk.h $(FFX)/ffx_compat.h
 
 all: $(EXE) $(CONFIG_EXE) $(if $(strip $(GEN_SRC)),$(GAMELIB))  # (GEN_SRC is a space when there is no generated/)
 
@@ -396,3 +401,22 @@ test-vibration: $(B)/test_vibration
 	$(B)/test_vibration
 
 .PHONY: test-vibration
+
+# Gyro controls tests use production input/settings with host-only stubs.
+$(B)/test_gyro_bindings: tests/test_gyro_bindings.c runtime/hle/input.c runtime/hle/bindings.c runtime/input_bind.h runtime/settings.h
+	@mkdir -p $(B)
+	$(CC) -O1 -ffunction-sections -fdata-sections -fuse-ld=lld -Wl,--gc-sections $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tests/test_gyro_bindings.c runtime/hle/bindings.c -lSDL3
+
+$(B)/test_gyro_settings: tests/test_gyro_settings.c runtime/settings.c runtime/hle/bindings.c runtime/input_bind.h runtime/settings.h
+	@mkdir -p $(B)
+	$(CC) -O1 -ffunction-sections -fdata-sections -fuse-ld=lld -Wl,--gc-sections $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tests/test_gyro_settings.c -lSDL3
+
+test-gyro-controls: $(B)/test_gyro_bindings $(B)/test_gyro_settings test-bind-capture
+	$(B)/test_gyro_bindings
+	@set -e; tmp=$$(mktemp); trap 'rm -f "$$tmp"' EXIT; \
+	 printf 'settings_version = 3\npc_gyro = 0\ngyro_scene = 1\n' > "$$tmp"; \
+	 $(B)/test_gyro_settings "$$tmp" 0 1; \
+	 $(B)/test_gyro_settings "$$tmp" 1 0 saved; \
+	 SAVAGEWIND_PC_GYRO=1 SAVAGEWIND_GYRO_SCENE=0 $(B)/test_gyro_settings "$$tmp" 1 0
+
+.PHONY: test-gyro-controls

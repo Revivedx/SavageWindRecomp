@@ -28,19 +28,23 @@ _Static_assert(PADB_LTRIGGER == SDL_GAMEPAD_BUTTON_COUNT, "trigger pseudo-button
     SDL_SCANCODE_TAB, SDL_SCANCODE_M, \
     SDL_SCANCODE_2, SDL_SCANCODE_3, SDL_SCANCODE_1, SDL_SCANCODE_4, \
     SDL_SCANCODE_W, SDL_SCANCODE_S, SDL_SCANCODE_A, SDL_SCANCODE_D, SDL_SCANCODE_I, SDL_SCANCODE_K, \
-    SDL_SCANCODE_J, SDL_SCANCODE_L, SDL_SCANCODE_C, SDL_SCANCODE_T}
+    SDL_SCANCODE_J, SDL_SCANCODE_L, SDL_SCANCODE_C, SDL_SCANCODE_T, \
+    SDL_SCANCODE_I, SDL_SCANCODE_K, SDL_SCANCODE_J, SDL_SCANCODE_L, SDL_SCANCODE_U, SDL_SCANCODE_O, SDL_SCANCODE_P}
 static const int16_t k_def_pad[BIND_PAD_COUNT] = DEF_PAD, k_def_key[BIND_KEY_COUNT] = DEF_KEY;
 int16_t g_bind_pad[BIND_PAD_COUNT] = DEF_PAD, g_bind_key[BIND_KEY_COUNT] = DEF_KEY;
 
 static const char *const k_ini[BIND_KEY_COUNT] = {
     "a", "b", "x", "y", "lstick", "rstick", "l", "r", "zl", "zr", "plus", "minus", "left", "up", "right", "down",
     "ls_up", "ls_down", "ls_left", "ls_right", "rs_up", "rs_down", "rs_left", "rs_right", "walk", "tilt",
+    "gyro_up", "gyro_down", "gyro_left", "gyro_right", "gyro_turn_left", "gyro_turn_right", "gyro_center",
 };
 static const char *const k_names[BIND_KEY_COUNT] = {
     "A", "B", "X", "Y", "Left stick press", "Right stick press", "L", "R", "ZL", "ZR", "Plus", "Minus",
     "D-pad Left", "D-pad Up", "D-pad Right", "D-pad Down", "Left stick Up", "Left stick Down", "Left stick Left",
     "Left stick Right", "Right stick Up", "Right stick Down", "Right stick Left", "Right stick Right", "Walk (hold)",
     "Tilt with the mouse (hold)",
+    "Gyro tilt up (only in shrines)", "Gyro tilt down (only in shrines)", "Gyro tilt left (only in shrines)", "Gyro tilt right (only in shrines)",
+    "Gyro turn left (only in shrines)", "Gyro turn right (only in shrines)", "Gyro recenter (only in shrines)",
 };
 // controller buttons by position (savagewind.ini)
 static const char *const k_pad_ini[PADB_HOST_COUNT] = {
@@ -165,7 +169,7 @@ static void assign(int dev, int slot, int host) {
     int16_t *t = dev == BIND_DEV_PAD ? g_bind_pad : g_bind_key;
     int n = dev == BIND_DEV_PAD ? BIND_PAD_COUNT : BIND_KEY_COUNT, other = -1;
     for (int i = 0; i < n; i++)
-        if (i != slot && t[i] == host) { other = i; t[i] = t[slot]; }
+        if (i != slot && t[i] == host && (dev == BIND_DEV_PAD || bind_key_same_context(i, slot))) { other = i; t[i] = t[slot]; }
     t[slot] = (int16_t)host;
     LOG("[input] %s %s -> %s%s%s%s\n", dev == BIND_DEV_PAD ? "controller" : "keyboard", k_names[slot],
         dev == BIND_DEV_PAD ? k_pad_ini[host] : bind_key_label(host), other >= 0 ? " (swapped with " : "",

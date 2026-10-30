@@ -68,6 +68,7 @@ void *vk_frame_cmd(void);
 bool vk_imgui_backend_init(void);
 void vk_imgui_backend_shutdown(void);
 uint64_t vk_imgui_texture_rgba(const void *rgba, int w, int h);
+void rec_drain(void);  // (runtime/nvn/vulkan/record.c)
 #endif
 }
 #ifdef __APPLE__
@@ -1183,6 +1184,7 @@ extern "C" void launcher_run(const char *root, int mode) {
             static const float clear_col[4] = {0.04f, 0.05f, 0.06f, 1};
             if (!vk_frame_begin(clear_col)) { SDL_Delay(16); continue; }
             launcher_fonts_follow_language();
+            rec_drain();  // (ImGui uploads its fonts on the queue the recorder thread submits on)
             ImGui_ImplVulkan_NewFrame();
 #endif
             ImGui_ImplSDL3_NewFrame();
@@ -1516,8 +1518,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                         bool look = !strcmp(g_settings.color_lut, COLOR_LUT_RECOMMENDED);
                         if (busy) opt_disable_next();
                         if (opt_toggle("Savage Wind colour look", &look, true,
-                                       "Recommended. The game's picture with Savage Wind's own colour look: a little "
-                                       "deeper and cooler. Change it or turn it off any time in the game's Options > "
+                                       "Recommended. The game's picture with Savage Wind's own colour look. Change it or turn it off any time in the game's Options > "
                                        "Colour (LUT).")) {
                             snprintf(g_settings.color_lut, sizeof g_settings.color_lut, "%s", look ? COLOR_LUT_RECOMMENDED : "");
                             g_settings.color_lut_strength = look ? COLOR_LUT_RECOMMENDED_STRENGTH : 100;

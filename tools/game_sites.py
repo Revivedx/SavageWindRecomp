@@ -132,6 +132,9 @@ SITES = [
     Site('arrow_fall_gravity', 'code', 'bd410a81 1e212849 bd410e81 1e21280a 94000000/fc000000 36000000/fff8001f f9404288 2d400500', 0),
     # the physics step's solver microsteps (tools/patches.py _solver_steps): the delta frame times 6
     Site('phys_solver_steps', 'code', '1e231002 1e3c1004 f9401a68 1e2c1009 1e220822 f9400108 1e202048 f9400514', 4),
+    # the sound system's frame (tools/patches.py _snd_frame_floor): the delta frame, at least 0.5, its timers' step
+    Site('snd_frame_floor', 'code', '1e2c1001 1e212000 1e204c28 94000000/fc000000 b4000000/ff00001f bd415660 '
+         'aa0003f4 7e21d800', 0),
     Site('gui_speed', 'code', 'bd0b2100 94000000/fc000000 f9400260 94000000/fc000000 52800020 94000000/fc000000 '
          'a9414ff4 a8c27bfd', 0),
     # MainShortCut's HoldShortCutBg: repair P_Capture_00's alpha after a fractional opening frame (#173).
@@ -227,6 +230,7 @@ KNOWN = {
         'gui_speed': 0x700116d0e8,
         'arrow_fall_gravity': 0x70004db204,
         'phys_solver_steps': 0x700145b790,
+        'snd_frame_floor': 0x700143ce64,
         'persp_matrix': 0x7000da1400,
         'persp_matrix_offset': 0x7000da1408,
         'persp_unproject_y': 0x7000da14d8,
@@ -282,6 +286,7 @@ KNOWN = {
         'quick_menu_capture_alpha': 0x7000e26a38,
         'arrow_fall_gravity': 0x70005ee734,
         'phys_solver_steps': 0x700156f930,
+        'snd_frame_floor': 0x7001551004,
         'persp_matrix': 0x7000eb4a50,
         'persp_matrix_offset': 0x7000eb4a58,
         'persp_unproject_y': 0x7000eb4b28,

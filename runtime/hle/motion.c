@@ -24,7 +24,10 @@
 // out of its face, Z toward the player; its accelerometer reads the push against gravity in m/s^2, its gyroscope
 // radians per second.
 //
-// SAVAGEWIND_MOTION_LOG=1 logs the orientation the game gets about once a second.
+// SAVAGEWIND_MOTION_LOG=1 logs the orientation the game gets about once a second, with the sensor stream's health
+// (readings per second, readings whose sensor time was unusable, the longest gap) and how often the game read it.
+// Always logged (a few dozen lines at most): what the motion comes from whenever it changes, gaps in the sensor
+// stream when they end, a sensor clock that stops or jumps.
 #include <SDL3/SDL.h>
 #include <math.h>
 #include <pthread.h>
@@ -133,6 +136,17 @@ static struct {
     double sc_pitch, sc_roll, sc_pitch_speed, sc_yaw_speed;  // scripted (radians, radians per second)
 } g = {.q = {1, 0, 0, 0}, .acc = {0, 0, -1}};
 
+// The sensor stream's health, for the log (under g_lock)
+static struct {
+    uint32_t gyro, accel, fused, stalled, jumped;  // readings since the last log line; unusable sensor times
+    uint32_t reads;              // GetSixAxisSensorStates calls since the last log line
+    uint64_t host_ns;            // when the last gyroscope reading came (SDL's clock, ns)
+    uint64_t max_gap;            // the longest time between two of them since the last log line (ns)
+    double period;               // the gyroscope's sample period as SDL gives its rate (s; 0: unknown)
+    int bad_run;                 // gyroscope readings in a row whose sensor time was unusable
+    int notes;                   // (the log: one-off lines so far, capped)
+} hs;
+
 bool motion_has_sensors(void) { return g.sensors; }
 
 void motion_pad_opened(SDL_Gamepad *pad) {
@@ -146,6 +160,8 @@ void motion_pad_opened(SDL_Gamepad *pad) {
     memset(g.var, 0, sizeof g.var);
     g.acc_mean = 1, g.acc_var = 0;
     memset(g.lin, 0, sizeof g.lin);
+    float rate = on ? SDL_GetGamepadSensorDataRate(pad, SDL_SENSOR_GYRO) : 0;
+    hs.period = rate > 1 ? 1.0 / rate : 0, hs.host_ns = 0, hs.bad_run = 0;
     pthread_mutex_unlock(&g_lock);
     if (on)
         LOG("[motion] %s: gyroscope and accelerometer on (%.0f / %.0f Hz)\n", SDL_GetGamepadName(pad),
@@ -227,12 +243,46 @@ void motion_sensor_event(const SDL_Event *e) {
         Mat m;
         quat_mat(g.q, m);
         g.lin[0] = g.acc[0] + m[2][0], g.lin[1] = g.acc[1] + m[2][1], g.lin[2] = g.acc[2] + m[2][2];
+        hs.accel++;
     } else if (e->gsensor.sensor == SDL_SENSOR_GYRO && g.started) {
         double raw[3] = {d[0], -d[2], d[1]};
-        uint64_t ts = e->gsensor.sensor_timestamp ? e->gsensor.sensor_timestamp : e->gsensor.timestamp;
-        double dt = g.gyro_ts && ts > g.gyro_ts ? (double)(ts - g.gyro_ts) / 1e9 : 0;
+        uint64_t host = e->gsensor.timestamp, ts = e->gsensor.sensor_timestamp ? e->gsensor.sensor_timestamp : host;
+        bool first = !g.gyro_ts;
+        double dt = !first && ts > g.gyro_ts ? (double)(ts - g.gyro_ts) / 1e9 : 0;
+        double host_dt = hs.host_ns && host > hs.host_ns ? (double)(host - hs.host_ns) / 1e9 : 0;
         g.gyro_ts = ts;
-        if (dt > 0 && dt < 0.1) fuse_gyro(raw, dt);
+        hs.gyro++;
+        if (host_dt * 1e9 > hs.max_gap) hs.max_gap = (uint64_t)(host_dt * 1e9);
+        if (host_dt > 0.25 && hs.notes < 64) {
+            hs.notes++;
+            LOG("[motion] no gyroscope readings for %.2f s\n", host_dt);
+        }
+        hs.host_ns = host;
+        // The reading's time is the sensor's own clock (SDL's sensor timestamp). A controller that passes for a
+        // DualShock 4 or a DualSense may keep that clock still or move it in jumps (a still 16-bit DualShock 4 tick
+        // reads as a third of a second through SDL's wrap): every reading then looked 0 s or 0.1 s and more after the
+        // last one and was dropped, and the aim stood still while the readings went on (suspected in #220). A reading
+        // without a usable time counts as one sample period (SDL's rate for the sensor) instead.
+        if (!first && !(dt > 0 && dt < 0.1)) {
+            if (dt == 0) hs.stalled++;
+            else hs.jumped++;
+            if (++hs.bad_run == 8 && hs.notes < 64) {
+                hs.notes++;
+                LOG("[motion] the controller's sensor clock %s (%.4f s from one reading to the next): readings timed "
+                    "by its rate, %.1f ms\n", dt == 0 ? "stands still or goes back" : "jumps", dt, hs.period * 1e3);
+            }
+            dt = hs.period > 0 ? hs.period : host_dt;
+        } else if (!first) {
+            if (hs.bad_run >= 8 && hs.notes < 64) {
+                hs.notes++;
+                LOG("[motion] the controller's sensor clock runs again (after %d readings)\n", hs.bad_run);
+            }
+            hs.bad_run = 0;
+        }
+        if (dt > 0 && dt < 0.1) {
+            fuse_gyro(raw, dt);
+            hs.fused++;
+        }
     }
     pthread_mutex_unlock(&g_lock);
 }
@@ -456,6 +506,16 @@ static void update(uint64_t now) {
     s.t += n * SAMPLE_NS;
     Mat src;
     int kind = source(dt, src);
+    if (kind != s.src && hs.notes < 64) {  // (what the motion comes from now, and why)
+        hs.notes++;
+        LOG("[motion] the game's motion now comes from %s\n",
+            kind                                                ? "the controller's sensors"
+            : g.tilt_held                                       ? "the mouse (tilt key held)"
+            : g.tilt_pitch || g.tilt_roll                       ? "the mouse tilt, levelling"
+            : g.sc_pitch || g.sc_roll || s.sc_yaw || s.sc_pitch ? "a script"
+            : !g.sensors                                        ? "nothing: no controller sensors (lying still)"
+                                                                : "nothing yet: no accelerometer reading (lying still)");
+    }
     double yaw, pitch, roll;
     euler_near(src, s.roll, &yaw, &pitch, &roll);
     // Virtual inputs already have continuous angles. Extracting Euler angles
@@ -508,11 +568,14 @@ static void update(uint64_t now) {
         s.logged = now;
         const SixAxisState *st = &s.ring[s.head];
         LOG("[motion] %s: yaw %.1f pitch %.1f roll %.1f deg | gyro %.3f %.3f %.3f turns/s | acc %.2f %.2f %.2f G | "
-            "bias %.2f %.2f %.2f deg/s (spread %.4f rad/s, %.4f G) | sample %lld\n",
+            "bias %.2f %.2f %.2f deg/s (spread %.4f rad/s, %.4f G) | sample %lld | readings %u gyro %u accel, "
+            "%u fused, %u stalled %u jumped, longest gap %.0f ms, last %.0f ms ago | game reads %u\n",
             kind ? "sensors" : g.keyboard.active ? "keyboard tilt" : g.tilt_held || g.tilt_pitch || g.tilt_roll ? "mouse tilt" : "still/script",
             s.yaw * 180 / PI, s.pitch * 180 / PI, s.roll * 180 / PI, st->gyro[0], st->gyro[1], st->gyro[2], st->acc[0],
             st->acc[1], st->acc[2], g.bias[0] * 180 / PI, g.bias[1] * 180 / PI, g.bias[2] * 180 / PI, g.gyro_sd,
-            sqrt(g.acc_var), (long long)st->sampling_number);
+            sqrt(g.acc_var), (long long)st->sampling_number, hs.gyro, hs.accel, hs.fused, hs.stalled, hs.jumped,
+            hs.max_gap / 1e6, hs.host_ns ? (double)(SDL_GetTicksNS() - hs.host_ns) / 1e6 : -1.0, hs.reads);
+        hs.gyro = hs.accel = hs.fused = hs.stalled = hs.jumped = hs.reads = 0, hs.max_gap = 0;
     }
 }
 
@@ -552,6 +615,7 @@ HLE_FUNC("_ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_19
     }
     if (count > NSAMPLES) count = NSAMPLES;
     pthread_mutex_lock(&g_lock);
+    hs.reads++;
     update(plat_now_ns());
     for (int i = 0; i < count; i++) {
         if ((h >> 8 & 0xff) == 0) {

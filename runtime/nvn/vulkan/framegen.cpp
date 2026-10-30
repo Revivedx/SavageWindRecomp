@@ -17,6 +17,7 @@
 #include <FidelityFX/host/backends/vk/ffx_vk.h>
 #include <FidelityFX/host/ffx_frameinterpolation.h>
 #include <FidelityFX/host/ffx_opticalflow.h>
+#include <FidelityFX/host/ffx_fsr3upscaler.h>
 #include <ffx_shader_blobs.h>
 
 #include "framegen.h"
@@ -24,10 +25,14 @@
 #define LOG(...) fprintf(stderr, __VA_ARGS__)
 
 // ---- the shaders: tools/ffx_shaders.py's blobs (wave32, 32-bit floats; frame interpolation for low-resolution
-// motion vectors without jitter, both depth directions) in place of the SDK's FidelityFX_SC permutation tables
+// motion vectors without jitter, both depth directions; the FSR 3 upscaler of vulkan/fsr3.cpp) in place of the SDK's
+// FidelityFX_SC permutation tables
 #include "ffx_shaders_vk.h"
+#include "ffx_fsr3upscaler_vk.h"
 
-enum { FI_PERM_DEPTH_INVERTED = 1 << 2 };  // (ffx_frameinterpolation_private.h FRAMEINTERPOLATION_SHADER_PERMUTATION_*)
+enum { FI_PERM_DEPTH_INVERTED = 1 << 2 };
+enum { FU_PERM_FP16 = 1 << 7 };  // (ffx_fsr3upscaler_private.h FSR3UPSCALER_SHADER_PERMUTATION_ALLOW_FP16)
+extern "C" bool vk_shader_fp16(void);  // (device.c)  // (ffx_frameinterpolation_private.h FRAMEINTERPOLATION_SHADER_PERMUTATION_*)
 
 extern "C" FfxErrorCode ffxGetPermutationBlobByIndex(FfxEffect effect, FfxPass pass, FfxBindStage, uint32_t options,
                                                      FfxShaderBlob *out) {
@@ -37,6 +42,14 @@ extern "C" FfxErrorCode ffxGetPermutationBlobByIndex(FfxEffect effect, FfxPass p
     }
     if (effect == FFX_EFFECT_OPTICALFLOW && pass < FFX_OPTICALFLOW_PASS_COUNT) {
         memcpy(out, &ffx_of_blobs[pass], sizeof *out);
+        return FFX_OK;
+    }
+    // (one permutation per pass, the one fsr3.cpp's context asks for: sharpening is a pass of its own,
+    // FFX_FSR3UPSCALER_PASS_ACCUMULATE_SHARPEN; its 16-bit version where the SDK allows it - the device reports
+    // shaderFloat16 - and the device was made with it: vk_shader_fp16)
+    if (effect == FFX_EFFECT_FSR3UPSCALER && pass < FFX_FSR3UPSCALER_PASS_COUNT && ffx_fu_blobs[0][pass].data) {
+        int half = (options & FU_PERM_FP16) && vk_shader_fp16();
+        memcpy(out, &ffx_fu_blobs[half][pass], sizeof *out);
         return FFX_OK;
     }
     LOG("[fg] no shader for effect %d pass %d\n", (int)effect, (int)pass);
@@ -188,7 +201,8 @@ extern "C" bool fg_dispatch(VkCommandBuffer cb, const FgConfig *c, const FgFrame
     FfxFrameInterpolationPrepareDescription pd = {};
     pd.commandList = cl;
     pd.renderSize = {c->render_w, c->render_h};
-    pd.motionVectorScale = {(float)c->render_w, (float)c->render_h};  // (the vectors are in uv units)
+    pd.motionVectorScale = f->motion_scale[0] || f->motion_scale[1] ? FfxFloatCoords2D{f->motion_scale[0], f->motion_scale[1]}
+                                                                    : FfxFloatCoords2D{(float)c->render_w, (float)c->render_h};
     pd.frameTimeDelta = f->frame_ms;
     pd.cameraNear = f->near_;
     pd.cameraFar = f->far_;

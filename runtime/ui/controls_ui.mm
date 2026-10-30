@@ -24,7 +24,7 @@ static void cell(int dev, int slot, int fam, int cap_dev, int cap_slot, int ms_l
     const int16_t *t = dev == BIND_DEV_PAD ? g_bind_pad : g_bind_key;
     int n = dev == BIND_DEV_PAD ? BIND_PAD_COUNT : BIND_KEY_COUNT, pushed = 0;
     bool dup = false;
-    for (int i = 0; i < n; i++) dup |= i != slot && t[i] == t[slot] && t[slot] > (dev == BIND_DEV_PAD ? -1 : 0);
+    for (int i = 0; i < n; i++) dup |= i != slot && (dev == BIND_DEV_PAD || bind_key_same_context(i,slot)) && t[i] == t[slot] && t[slot] > (dev == BIND_DEV_PAD ? -1 : 0);
     if (waiting) { ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.42f, 0.12f, 1)); pushed++; }
     else if (dup) { ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.16f, 0.12f, 1)); pushed++; }
     if (!bind_is_default_slot(dev, slot)) { ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.98f, 0.82f, 0.38f, 1)); pushed++; }
@@ -86,7 +86,8 @@ extern "C" void controls_bindings_draw(float scale) {
         static const int order[] = {BIND_A, BIND_B, BIND_X, BIND_Y, BIND_L, BIND_R, BIND_ZL, BIND_ZR, BIND_PLUS,
                                     BIND_MINUS, BIND_UP, BIND_DOWN, BIND_LEFT, BIND_RIGHT, BIND_LSTICK, BIND_RSTICK,
                                     BIND_LS_UP, BIND_LS_DOWN, BIND_LS_LEFT, BIND_LS_RIGHT, BIND_RS_UP, BIND_RS_DOWN,
-                                    BIND_RS_LEFT, BIND_RS_RIGHT, BIND_WALK, BIND_TILT};
+                                    BIND_RS_LEFT, BIND_RS_RIGHT, BIND_WALK, BIND_TILT, BIND_GYRO_UP, BIND_GYRO_DOWN, BIND_GYRO_LEFT, BIND_GYRO_RIGHT,
+                                    BIND_GYRO_TURN_LEFT, BIND_GYRO_TURN_RIGHT, BIND_GYRO_CENTER};
         for (int slot : order) {
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
@@ -95,7 +96,7 @@ extern "C" void controls_bindings_draw(float scale) {
             ImGui::TableNextColumn();
             if (slot < BIND_PAD_COUNT) cell(BIND_DEV_PAD, slot, fam, cd, cs, ms);
             else ImGui::TextDisabled("%s", tr(slot == BIND_WALK ? "Tilt the stick" : slot == BIND_TILT ? "Motion sensors" :
-                                              slot < BIND_RS_UP ? "Left stick" : "Right stick"));
+                                              slot >= BIND_GYRO_UP ? "Motion sensors" : slot < BIND_RS_UP ? "Left stick" : "Right stick"));
             ImGui::TableNextColumn();
             cell(BIND_DEV_KEY, slot, fam, cd, cs, ms);
         }

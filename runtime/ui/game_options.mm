@@ -138,8 +138,12 @@ const int UPS_DEFAULT = 0;  // (UPSCALE_DEFAULT: Off, the window's resolution)
 #endif
 std::vector<int> g_shown;   // per item: the value shown instead of get(), one that can't be picked yet (-1: none)
 const char16_t GREY = 3;    // (the game's message colour for greyed values)
-const char *const k_modes[] = {"Ultra Quality", "Quality", "Balanced", "Performance"};
+const char *const k_modes[] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance"};
+#ifdef __APPLE__
 const char *const k_aa[] = {"Off", "SMAA"};
+#else
+const char *const k_aa[] = {"Off", "SMAA", "TAA"};  // (settings.h AA_*)
+#endif
 const char *const k_aniso[] = {"Off", "2x", "4x", "8x", "16x"};  // (settings anisotropy 0..4)
 const char *const k_shadow[] = {"Console (896)", "High (2048)", "Ultra (4096)", "Extreme (8192)"};  // (SHADOW_*)
 const char *const k_icons[] = {"Automatic", "Keyboard", "Xbox", "PlayStation", "Nintendo"};  // (ICONS_*)
@@ -229,7 +233,7 @@ const char *ups_label(const Item &, int x) {
     if (u == UPSCALE_OFF) return tr("Off");
     if (u == UPSCALE_METALFX) return tr("MetalFX");
     if (u == UPSCALE_FSR1) return tr("AMD FSR 1");
-    if (u == UPSCALE_FSR3) return soon("FSR 3");
+    if (u == UPSCALE_FSR3) return upscaler_available(u) ? tr("AMD FSR 3") : soon("FSR 3");
     return soon("DLSS", renderer_gpu_rtx() ? "(coming soon)" : "(NVIDIA RTX only)");
 }
 
@@ -290,7 +294,7 @@ void build_items(void) {
         menu_request_window_apply();
     };
     v.push_back(ws);
-    v.push_back(toggle(P_VIDEO, "Fill wide screens", "Shows more to the sides on screens wider than 16:9, instead of bars.",
+    v.push_back(toggle(P_VIDEO, "Fill wide screens", "Shows more of the world on screens that aren't 16:9 (wider or taller), instead of bars.",
                        [](const Item &) { return (int)g_settings.wide_view; },
                        [](const Item &, int x) { g_settings.wide_view = x; }, 1));
     v.push_back(choice(P_VIDEO, "Field of view", "How much the camera shows in play. Cutscenes keep their own.",
@@ -344,16 +348,32 @@ void build_items(void) {
                        },
                        [](const Item &, int x) { g_settings.upscaler = k_ups_value[x]; }, UPS_DEFAULT));
     v.back().value_off = [](const Item &, int x) { return !upscaler_available(k_ups_value[x]); };
+    v.back().desc_fn = [](const Item &) {  // (one line)
+        return g_settings.upscaler == UPSCALE_FSR3 ? tr("AMD FSR 3: renders smaller, then rebuilds detail from past frames.")
+                                                   : tr("Off: full resolution. AMD FSR 1: renders smaller, then upscales.");
+    };
+    // With Upscaler Off no mode applies: the row has the one value Off, greyed, so its arrows go nowhere (rt_opt_read
+    // gives the row its range at each redraw, and a change of the Upscaler row redraws the page); the mode chosen
+    // before stays stored and comes back with an upscaler.
     Item mode = choice(P_VIDEO, "Upscaler mode", "",
-                       [](const Item &) { return N(k_modes); },
-                       [](const Item &, int x) { return upscale_modes_available() ? tr(k_modes[x]) : soon(k_modes[x]); },
-                       [](const Item &) { return g_settings.upscale_quality; },
-                       [](const Item &, int x) { g_settings.upscale_quality = x; }, UPQ_QUALITY);
-    mode.value_off = [](const Item &, int) { return !upscale_modes_available(); };
+                       [](const Item &) { return g_settings.upscaler == UPSCALE_OFF ? 1 : N(k_modes); },
+                       [](const Item &, int x) {
+                           return g_settings.upscaler == UPSCALE_OFF ? tr("Off")
+                                  : upscale_modes_available()        ? tr(k_modes[x])
+                                                                     : soon(k_modes[x]);
+                       },
+                       [](const Item &) { return g_settings.upscaler == UPSCALE_OFF ? 0 : g_settings.upscale_quality; },
+                       [](const Item &, int x) {
+                           if (g_settings.upscaler != UPSCALE_OFF) g_settings.upscale_quality = x;
+                       },
+                       UPQ_QUALITY);
+    mode.value_off = [](const Item &, int) { return !upscale_modes_available() || g_settings.upscaler == UPSCALE_OFF; };
+    mode.reset = [](const Item &) { g_settings.upscale_quality = UPQ_QUALITY; };  // (also while Off)
     mode.desc_fn = [](const Item &) {
         // (one line: the game's description pane is one English line wide)
-        return upscale_modes_available() ? tr("Ultra Quality is the sharpest, Performance the fastest.")
-                                         : tr("Renders smaller, then upscales. Coming in a later version.");
+        return !upscale_modes_available()           ? tr("Renders smaller, then upscales. Coming in a later version.")
+               : g_settings.upscaler == UPSCALE_OFF ? tr("Only with an upscaler: choose one above first.")
+                                                    : tr("Ultra Quality is the sharpest, Ultra Performance the fastest.");
     };
     v.push_back(mode);
     v.push_back(choice(P_VIDEO, "Anti-aliasing", "Smooths jagged edges. Best at a lower resolution.",
@@ -519,6 +539,14 @@ void build_items(void) {
     v.push_back(toggle(P_CONTROLS, "Invert mouse Y", "Only the mouse. The camera Y-axis option inverts both.",
                        [](const Item &) { return (int)g_settings.mouse_invert_y; },
                        [](const Item &, int x) { g_settings.mouse_invert_y = x; }, 0));
+    v.push_back(toggle(P_CONTROLS, "Shrine keyboard gyro",
+                       "Only while controlling a shrine apparatus. Remap on Keyboard (sticks). Outside it, camera keys keep working.",
+                       [](const Item &) { return (int)g_settings.pc_gyro; },
+                       [](const Item &, int x) { g_settings.pc_gyro=x; }, 1));
+    v.push_back(toggle(P_CONTROLS, "Shrine mouse drag",
+                       "At a shrine apparatus, hold left click and drag to rotate. Release to keep its orientation and re-grip.",
+                       [](const Item &) { return (int)g_settings.gyro_scene; },
+                       [](const Item &, int x) { g_settings.gyro_scene=x; }, 1));
     // motion controls (runtime/hle/motion.c; the game's own Motion Controls option turns motion aiming on and off)
     v.push_back(choice(P_CONTROLS, "Motion sensitivity", "How far turning the controller turns the aim.",
                        [](const Item &) { return N(k_motion_sens); },
@@ -562,6 +590,18 @@ void build_items(void) {
     bind(P_KEYS, A_BIND_KEY, BIND_WALK);
     v.push_back(button(P_KEYS, "Reset keyboard to defaults", "Every key back to its default.", "Reset", A_RESET_KEYS, 0));
     for (int s = BIND_LS_UP; s <= BIND_RS_RIGHT; s++) bind(P_STICKS, A_BIND_KEY, s);
+    static const char *const gyro_help[] = {
+        "Tilt upward.",
+        "Tilt downward.",
+        "Tilt left.",
+        "Tilt right.",
+        "Rotate left on the third axis.",
+        "Rotate right on the third axis.",
+        "Reset orientation and stop pending rotation."
+    };
+    for(int s=BIND_GYRO_UP;s<=BIND_GYRO_CENTER;s++) {
+        bind(P_STICKS,A_BIND_KEY,s);v.back().desc=gyro_help[s-BIND_GYRO_UP];
+    }
     v.push_back(button(P_STICKS, "Reset keyboard to defaults", "Every key back to its default.", "Reset", A_RESET_KEYS, 0));
     for (int s = 0; s < BIND_PAD_COUNT; s++) bind(P_PAD, A_BIND_PAD, s);
     v.push_back(button(P_PAD, "Reset controller to defaults", "Every button back to its default.", "Reset", A_RESET_PAD, 0));
@@ -786,8 +826,20 @@ extern "C" int rt_opt_store(uint64_t row) {
             fprintf(stderr, "[options] %s = %d at %.3f s\n", it->title, x, SDL_GetTicksNS() / 1e9);
     }
     if (it->kind != KIND_BUTTON) settings_save();
-    // (the sizes offered follow Fullscreen, texts the upscaler; Colour: the preset sets the sliders, they the preset)
-    if (it->page == P_VIDEO || it->page == P_COLOUR) mark_all_rows(rd64(row));
+    // (the sizes offered follow Fullscreen, texts and Upscaler mode's values the upscaler; Colour: the preset sets the
+    // sliders, they the preset). A value kept on show because it couldn't be picked goes once it can (Upscaler mode
+    // after Off: the mode stored, not the Off shown).
+    if (it->page == P_VIDEO || it->page == P_COLOUR) {
+        for (size_t i = 0; i < g_items.size() && i < g_shown.size(); i++) {
+            const Item &o = g_items[i];
+            if (g_shown[i] >= 0 && (!o.value_off || !o.value_off(o, g_shown[i]))) g_shown[i] = -1;
+            if (o.kind == KIND_CHOICE) {
+                Entry &e = g_entries[GAME_ENTRIES + i];
+                e.last_value = e.first_value + game_count(o) - 1;
+            }
+        }
+        mark_all_rows(rd64(row));
+    }
     if (past_end) g_dirty.push_back(row);                // (first: the row shows the value at the other end)
     return 1;
 }
