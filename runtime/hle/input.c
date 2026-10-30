@@ -294,6 +294,7 @@ void input_focus_update(SDL_Window *w) {
 }
 void input_mouse_update(SDL_Window *w) {
     input_focus_update(w);
+    motion_poll();
     vibration_update(pad, win_focused && !host_test);
     static bool cur;
     bool want = w && win_focused && g_settings.mouse_camera && !menu_input_captured() && !menu_cursor_free() &&

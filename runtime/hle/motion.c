@@ -9,7 +9,8 @@
 //
 // Where the motion comes from: the controller's gyroscope and accelerometer (SDL3 sensor events: DualShock 4,
 // DualSense, Switch Pro, Joy-Con, Steam Deck...), fused into an orientation on the main thread (the gyroscope turns it,
-// gravity slowly corrects its tilt); or, while the tilt key is held, the mouse tilts a still controller (it levels
+// gravity slowly corrects its tilt), with a Linux DSU fallback through the same fusion; or, while the tilt key is
+// held, the mouse tilts a still controller (it levels
 // again once the key is let go); or a scripted run. With none of them the controller lies flat and still.
 //
 // What the game gets: that orientation as yaw / pitch / roll, with the player's sensitivity and inversion applied to
@@ -38,6 +39,9 @@
 #include "../motion.h"
 #include "../platform.h"
 #include "../settings.h"
+#ifdef __linux__
+#include "../dsu.h"
+#endif
 
 #define PI 3.14159265358979323846
 #define SAMPLE_NS 5000000ull  // the Switch's sensor rate, 200 Hz
@@ -143,14 +147,61 @@ static struct {
     int notes;                   // (the log: one-off lines so far, capped)
 } hs;
 
-bool motion_has_sensors(void) { return g.sensors; }
+#ifdef __linux__
+static struct {
+    bool enabled;
+    uint64_t acc_time, gyro_time, acc_ts, gyro_ts;
+    float acc[3];
+    int source;  // 0 none, 1 SDL, 2 DSU
+    unsigned epoch, dsu_generation;
+    DsuClient dsu;
+} backend;
+
+static bool native_fresh(uint64_t now) {
+    return backend.enabled && backend.acc_time && backend.gyro_time &&
+           now - backend.acc_time < DSU_TIMEOUT_NS && now - backend.gyro_time < DSU_TIMEOUT_NS;
+}
+
+// Called under g_lock. Never carry bias, gravity, timestamps or integration across devices.
+static void select_motion(int source) {
+    if (backend.source == source) return;
+    LOG("[motion] source: %s -> %s\n", backend.source == 1 ? "SDL" : backend.source == 2 ? "DSU" : "none",
+        source == 1 ? "SDL" : source == 2 ? "DSU" : "none");
+    backend.source = source;
+    backend.epoch++;
+    g.sensors = source != 0, g.started = false, g.gyro_ts = 0;
+    g.q = (Quat){1, 0, 0, 0};
+    memset(g.bias, 0, sizeof g.bias);
+    memset(g.mean, 0, sizeof g.mean);
+    memset(g.var, 0, sizeof g.var);
+    memset(g.lin, 0, sizeof g.lin);
+    g.acc[0] = g.acc[1] = 0, g.acc[2] = -1;
+    g.acc_mean = 1, g.acc_var = g.gyro_sd = 0;
+    hs.host_ns = 0, hs.bad_run = 0;
+}
+#endif
+
+bool motion_has_sensors(void) {
+    pthread_mutex_lock(&g_lock);
+    bool sensors = g.sensors;
+    pthread_mutex_unlock(&g_lock);
+    return sensors;
+}
 
 void motion_pad_opened(SDL_Gamepad *pad) {
     bool gyro = SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO), accel = SDL_GamepadHasSensor(pad, SDL_SENSOR_ACCEL);
     bool on = gyro && accel && SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_GYRO, true) &&
               SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_ACCEL, true);
     pthread_mutex_lock(&g_lock);
-    g.sensors = on, g.started = false, g.gyro_ts = 0;
+#ifdef __linux__
+    backend.enabled = on;
+    backend.acc_time = backend.gyro_time = backend.acc_ts = backend.gyro_ts = 0;
+    select_motion(0);
+    g.sensors = false;
+#else
+    g.sensors = on;
+#endif
+    g.started = false, g.gyro_ts = 0;
     memset(g.bias, 0, sizeof g.bias);
     memset(g.mean, 0, sizeof g.mean);
     memset(g.var, 0, sizeof g.var);
@@ -169,7 +220,13 @@ void motion_pad_opened(SDL_Gamepad *pad) {
 
 void motion_pad_closed(void) {
     pthread_mutex_lock(&g_lock);
+#ifdef __linux__
+    backend.enabled = false;
+    backend.acc_time = backend.gyro_time = 0;
+    if (backend.source == 1) select_motion(0);
+#else
     g.sensors = g.started = false;
+#endif
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -220,29 +277,74 @@ static void fuse_gyro(const double raw[3], double dt) {
     g.q = qnorm(qmul(g.q, (Quat){cos(h), w[0] * s, w[1] * s, w[2] * s}));
 }
 
+// Shared fusion entry points: acceleration is gravity in G, gyro rad/s, both in Switch axes.
+static void sensor_accel(const double acc[3]) {
+    memcpy(g.acc, acc, sizeof g.acc);
+    hs.accel++;
+    double an = sqrt(g.acc[0] * g.acc[0] + g.acc[1] * g.acc[1] + g.acc[2] * g.acc[2]);
+    if (!g.started && an > 0.5) {
+        double v = -g.acc[1] / an;
+        g.q = euler_quat(0, asin(v > 1 ? 1 : v < -1 ? -1 : v), atan2(g.acc[0], -g.acc[2]));
+        g.started = true;
+    }
+    Mat m;
+    quat_mat(g.q, m);
+    for (int i = 0; i < 3; i++) g.lin[i] = g.acc[i] + m[2][i];
+}
+
+static void sensor_gyro(const double raw[3], uint64_t ts) {
+    if (!g.started) return;
+    double dt = g.gyro_ts && ts > g.gyro_ts ? (double)(ts - g.gyro_ts) / 1e9 : 0;
+    g.gyro_ts = ts;
+    hs.gyro++;
+    hs.host_ns = SDL_GetTicksNS();
+    if (dt > 0 && dt < 0.1) {
+        fuse_gyro(raw, dt);
+        hs.fused++;
+    }
+}
+
 void motion_sensor_event(const SDL_Event *e) {
     const float *d = e->gsensor.data;
+    if (e->gsensor.sensor != SDL_SENSOR_ACCEL && e->gsensor.sensor != SDL_SENSOR_GYRO) return;
+    if (!isfinite(d[0]) || !isfinite(d[1]) || !isfinite(d[2])) return;
+    uint64_t ts = e->gsensor.sensor_timestamp ? e->gsensor.sensor_timestamp : e->gsensor.timestamp;
     pthread_mutex_lock(&g_lock);
-    if (!g.sensors) {
-        pthread_mutex_unlock(&g_lock);
-        return;
-    }
+#ifdef __linux__
+    if (!backend.enabled) { pthread_mutex_unlock(&g_lock); return; }
+    uint64_t now = plat_now_ns();
+    // Use event time for freshness: the native path below also supports a stalled device clock.
+    uint64_t fresh_ts = e->gsensor.timestamp ? e->gsensor.timestamp : ts;
     if (e->gsensor.sensor == SDL_SENSOR_ACCEL) {
-        g.acc[0] = -d[0] / SDL_STANDARD_GRAVITY, g.acc[1] = d[2] / SDL_STANDARD_GRAVITY;
-        g.acc[2] = -d[1] / SDL_STANDARD_GRAVITY;
-        double an = sqrt(g.acc[0] * g.acc[0] + g.acc[1] * g.acc[1] + g.acc[2] * g.acc[2]);
-        if (!g.started && an > 0.5) {  // (first reading: tilt from gravity, facing ahead)
-            double s = -g.acc[1] / an;
-            g.q = euler_quat(0, asin(s > 1 ? 1 : s < -1 ? -1 : s), atan2(g.acc[0], -g.acc[2]));
-            g.started = true;
+        double an = (double)d[0]*d[0] + (double)d[1]*d[1] + (double)d[2]*d[2];
+        if (an < 0.01 || an > 100000 || (backend.acc_time && fresh_ts == backend.acc_ts)) {
+            pthread_mutex_unlock(&g_lock); return;
         }
-        Mat m;
-        quat_mat(g.q, m);
-        g.lin[0] = g.acc[0] + m[2][0], g.lin[1] = g.acc[1] + m[2][1], g.lin[2] = g.acc[2] + m[2][2];
-        hs.accel++;
-    } else if (e->gsensor.sensor == SDL_SENSOR_GYRO && g.started) {
+        backend.acc_time = now, backend.acc_ts = fresh_ts;
+        memcpy(backend.acc, d, sizeof backend.acc);
+    } else {
+        if (backend.gyro_time && fresh_ts == backend.gyro_ts) { pthread_mutex_unlock(&g_lock); return; }
+        backend.gyro_time = now, backend.gyro_ts = fresh_ts;
+    }
+    if (native_fresh(now)) {
+        bool changed = backend.source != 1;
+        select_motion(1);
+        if (changed) {
+            const float *a = backend.acc;
+            double acc[3] = {-a[0] / SDL_STANDARD_GRAVITY, a[2] / SDL_STANDARD_GRAVITY, -a[1] / SDL_STANDARD_GRAVITY};
+            sensor_accel(acc);
+        }
+    }
+    if (backend.source != 1) { pthread_mutex_unlock(&g_lock); return; }
+#else
+    if (!g.sensors) { pthread_mutex_unlock(&g_lock); return; }
+#endif
+    if (e->gsensor.sensor == SDL_SENSOR_ACCEL) {
+        double acc[3] = {-d[0] / SDL_STANDARD_GRAVITY, d[2] / SDL_STANDARD_GRAVITY, -d[1] / SDL_STANDARD_GRAVITY};
+        sensor_accel(acc);
+    } else if (g.started) {
         double raw[3] = {d[0], -d[2], d[1]};
-        uint64_t host = e->gsensor.timestamp, ts = e->gsensor.sensor_timestamp ? e->gsensor.sensor_timestamp : host;
+        uint64_t host = e->gsensor.timestamp;
         bool first = !g.gyro_ts;
         double dt = !first && ts > g.gyro_ts ? (double)(ts - g.gyro_ts) / 1e9 : 0;
         double host_dt = hs.host_ns && host > hs.host_ns ? (double)(host - hs.host_ns) / 1e9 : 0;
@@ -283,6 +385,46 @@ void motion_sensor_event(const SDL_Event *e) {
     pthread_mutex_unlock(&g_lock);
 }
 
+#ifdef __linux__
+static void dsu_sample(const DsuPacket *p, uint32_t generation, void *user) {
+    (void)user;
+    if (native_fresh(plat_now_ns())) return;
+    if (backend.dsu_generation != generation && backend.source == 2) select_motion(0);
+    backend.dsu_generation = generation;
+    select_motion(2);
+    sensor_accel(p->acc);
+    // Microseconds -> ns, without overflowing on a malformed timestamp.
+    sensor_gyro(p->gyro, p->timestamp <= UINT64_MAX / 1000 ? p->timestamp * 1000 : 0);
+}
+#endif
+
+void motion_poll(void) {
+#ifdef __linux__
+    static bool initialized, enabled, force;
+    if (!initialized) {
+        initialized = true;
+        const char *mode = getenv("SAVAGEWIND_DSU");
+        enabled = !mode || strcmp(mode, "off");
+        force = mode && !strcmp(mode, "on");
+        if (mode && strcmp(mode, "auto") && strcmp(mode, "off") && strcmp(mode, "on"))
+            LOG("[dsu] unknown SAVAGEWIND_DSU=%s; using auto\n", mode);
+        if (enabled) enabled = dsu_init(&backend.dsu, getenv("SAVAGEWIND_DSU_ENDPOINT"), (uint32_t)plat_now_ns());
+        else LOG("[dsu] disabled (SAVAGEWIND_DSU=off)\n");
+    }
+    uint64_t now = plat_now_ns();
+    pthread_mutex_lock(&g_lock);
+    bool native = native_fresh(now);
+    if (backend.source == 1 && !native) {
+        LOG("[motion] SDL motion timeout; trying fallback\n");
+        select_motion(0);
+    }
+    if (enabled && (force || !native)) dsu_poll(&backend.dsu, now, dsu_sample, NULL);
+    else if (enabled && backend.dsu.fd >= 0) dsu_close(&backend.dsu);
+    if (backend.source == 2 && !backend.dsu.fresh) select_motion(0);
+    pthread_mutex_unlock(&g_lock);
+#endif
+}
+
 void motion_tilt_held(bool held) {
     pthread_mutex_lock(&g_lock);
     g.tilt_held = held;
@@ -314,7 +456,7 @@ static struct {
     int64_t sampling;            // its sampling number
     int head;                    // its place in ring
     SixAxisState ring[NSAMPLES];
-    int src;                     // what the orientation came from last time: 0 still / mouse / script, 1 sensors
+    int src;                     // last source: 0 still / mouse / script, positive = sensor source epoch
     double src_yaw;              // ... and its yaw then
     double yaw, pitch, roll;     // the newest sample's orientation as the game gets it
     Mat m;                       // ... as a matrix
@@ -353,7 +495,11 @@ static int source(double dt, Mat m) {
     bool virt = g.tilt_held || g.tilt_pitch || g.tilt_roll || g.sc_pitch || g.sc_roll || s.sc_yaw || s.sc_pitch;
     if (g.sensors && g.started && !virt) {
         quat_mat(g.q, m);
+#ifdef __linux__
+        return (int)backend.epoch + 1;
+#else
         return 1;
+#endif
     }
     euler_mat(s.sc_yaw, g.tilt_pitch + g.sc_pitch + s.sc_pitch, g.tilt_roll + g.sc_roll, m);
     return 0;
@@ -419,11 +565,18 @@ static void update(uint64_t now) {
     // made meanwhile counts once the controller comes back from there.)
     bool hold = kind == s.src && steep(pitch);
     double turn = kind == s.src && !hold ? wrap(yaw - s.src_yaw) : 0;
+#ifdef __linux__
+    if (kind != s.src) {
+        // Rebase tilt too: changing physical devices must not synthesize angular velocity.
+        s.pitch = game_pitch(pitch), s.roll = roll;
+        euler_mat(s.yaw, s.pitch, s.roll, s.m);
+    }
+#endif
     if (!hold) s.src_yaw = yaw;
     s.src = kind;
     double yaw1 = s.yaw + game_turn(turn), pitch1 = game_pitch(pitch);
     double droll = hold ? 0 : wrap(roll - s.roll);
-    const double *lin = kind == 1 ? g.lin : zero;
+    const double *lin = kind != 0 ? g.lin : zero;
     for (uint64_t j = 1; j <= n; j++) {  // (in between: the way there in equal steps)
         double f = (double)j / (double)n;
         Mat m;
