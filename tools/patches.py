@@ -235,6 +235,29 @@ def _arrow_gravity(gen, a):
             f'  /* {a:#x}: ldr s1, [x20, #0x108] (arrow gravity) */')
 
 
+# Experimental shield-surf takeoff grace (#305), runtime/hle/framepace.c. Preserve the original FP subtraction
+# through fp_op_s when the grace is inactive, including the game's FP exception/rounding behavior.
+def _surf_contact(gen, a):
+    assert _word(gen, a) == 0x3941d2a8  # ldrb w8, [x21, #0x74]
+    return ('{ extern void rt_surf_contact(uint64_t, unsigned); '
+            'c->x[8] = LD8(c->x[21] + 0x74); rt_surf_contact(c->x[21], (unsigned)c->x[8]); }')
+
+
+def _surf_boost_remove(gen, a):
+    assert _word(gen, a) == 0x1e203820  # fsub s0, s1, s0
+    return ('{ extern int rt_surf_takeoff_pending(uint64_t); '
+            'if (rt_surf_takeoff_pending(c->x[21])) c->v[0] = (uint32_t)c->v[1]; '
+            'else fp_op_s(c, FOP_SUB, 0, 1, 0); }')
+
+
+def _surf_jump_request(gen, a):
+    w = _word(gen, a)
+    assert w & 0xfff8001f == 0x36000000  # tbz w0, #0, <no jump>
+    target = a + sext((w >> 5) & 0x3fff, 14) * 4
+    return ('{ extern int rt_surf_jump_request(uint64_t); '
+            f'if (!(c->x[0] & 1) || !rt_surf_jump_request(c->x[19])) goto L_{target:x}; }}')
+
+
 # The physics step's solver microsteps (runtime/hle/framepace.c rt_solver_steps, #161): before each Havok step the game
 # gives the solver round(delta frame x 6) microsteps (1.9.0 0x700156f930): 6 at 30 fps, 3 at 60, 2 at 120. With fewer
 # the solver gives way more to what is in contact with Link: holding a cucco, its body over his head held his jump
@@ -449,6 +472,9 @@ PATCHES = {
     'gui_speed': _gui_speed,
     'quick_menu_capture_alpha': _quick_menu_capture_alpha,
     'arrow_fall_gravity': _arrow_gravity,
+    'surf_contact': _surf_contact,
+    'surf_boost_remove': _surf_boost_remove,
+    'surf_jump_request': _surf_jump_request,
     'phys_solver_steps': _solver_steps,
     'snd_frame_floor': _snd_frame_floor,
     'persp_matrix': _persp_matrix,

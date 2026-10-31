@@ -130,6 +130,10 @@ SITES = [
     Site('persp_unproject_x', 'code', 'bd409800 f900003f 1e201004 1e214000 bd000820 bd409800 bd40ac01 bd400442', 18),
     # arrows' fall (tools/patches.py _arrow_gravity): the load of the gravity added to an arrow's velocity per update
     Site('arrow_fall_gravity', 'code', 'bd410a81 1e212849 bd410e81 1e21280a 94000000/fc000000 36000000/fff8001f f9404288 2d400500', 0),
+    # Experimental shield-surf takeoff grace (#305): contact update, boost removal and launch request.
+    Site('surf_contact', 'code', '3941d2a8 36080008/fff8001f bd4066a0 1e202008 5400000d/ff00001f bd403261 1e202028 5400000d/ff00001f', 0),
+    Site('surf_boost_remove', 'code', '1e203820 2f00e401 aa1403e1 1e216800 bd003260 0f016680 f94006a0 94000000/fc000000', 0),
+    Site('surf_jump_request', 'code', '36000000/fff8001f 52a82608 b9006668 b9008288 52800028 3900a288 2d488680 52800141', 0),
     # the physics step's solver microsteps (tools/patches.py _solver_steps): the delta frame times 6
     Site('phys_solver_steps', 'code', '1e231002 1e3c1004 f9401a68 1e2c1009 1e220822 f9400108 1e202048 f9400514', 4),
     # the sound system's frame (tools/patches.py _snd_frame_floor): the delta frame, at least 0.5, its timers' step
@@ -184,6 +188,7 @@ SITES = [
 # Without them the mouse turns the camera through the right stick, as before (runtime/hle/input.c); without the
 # second group it turns it without the game's camera inversion options.
 OPTIONAL_GROUPS = [
+    ('surf_contact', 'surf_boost_remove', 'surf_jump_request'),
     ('quick_menu_capture_alpha',),
     ('yaz0_stream', 'yaz0_stream_ret'),
     ('cam_stick', 'cam_pitch_chase', 'cam_pitch_surf', 'cam_pitch_wakeboard', 'cam_pitch_aim', 'cam_pitch_item'),
@@ -282,6 +287,9 @@ KNOWN = {
         'gui_speed': 0x7001280ee8,
         'quick_menu_capture_alpha': 0x7000e26a38,
         'arrow_fall_gravity': 0x70005ee734,
+        'surf_contact': 0x70011e9e74,
+        'surf_boost_remove': 0x70011e9e94,
+        'surf_jump_request': 0x70011ea3d4,
         'phys_solver_steps': 0x700156f930,
         'snd_frame_floor': 0x7001551004,
         'persp_matrix': 0x7000eb4a50,
