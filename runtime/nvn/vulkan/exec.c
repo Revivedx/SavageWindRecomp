@@ -24,6 +24,8 @@
 #include "../output_scale.h"
 #include "framegen.h"
 #include "../../game_sites.h"
+#include "../../framepace.h"
+#include "../../services/fs_layout.h"
 
 static uint64_t stat_build_waits;  // draws that waited for their pipeline (draw_must_happen)
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
@@ -1894,6 +1896,22 @@ static VkRect2D scissor_rect(void) {
     extern float output_view_shape(void);
     float shape = output_view_shape();
     if (shape > 1 && pass_out && pass_sx > 0 && sw < 16384) {
+        FsInventoryClipLayout list;
+        if (framepace_menu_ui() && st.rt.color[0] && fs_inventory_clip_layout(&list)) {
+            double sx = (double)st.rt.color[0]->width / list.root_w;
+            double sy = (double)st.rt.color[0]->height / list.root_h;
+            int cx = (int)lround(list.clip_x * sx), cy = (int)lround(list.clip_y * sy);
+            int cw = (int)lround(list.clip_w * sx), ch = (int)lround(list.clip_h * sy);
+            if (abs(x - cx) <= 1 && abs(y - cy) <= 1 && abs(sw - cw) <= 1 && abs(sh - ch) <= 1) {
+                // N_Cut_00 and item centers are in layout space; NVN's scissor is in guest target pixels.
+                // Clip at the previous page's last item center; the next-page hint keeps its original right edge.
+                int item = (int)lround(list.previous_item_x * sx), right = x + sw;
+                if (item > x && item < right) {
+                    x = item;
+                    sw = right - x;
+                }
+            }
+        }
         double gw = w / pass_sx;  // (the target's own width)
         if (x > 0 || x + sw < gw - 0.5) {
             double c = gw / 2, x0 = c + (x - c) / shape, x1 = c + (x + sw - c) / shape;
@@ -3969,15 +3987,45 @@ static bool up_patch_frag(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *
 // the matrix in c3[0-3], the view in c3[4-6], the pane's rectangle - width, height, left, top - in c3[33]):
 // - a layer whose matrix the game made without sead's projection classes (the menus' selection cursor) still projects
 //   16:9, and its pieces landed where the unwidened view puts them: it gets the widened matrix;
-// - a pane that covers the layer's whole 16:9 width (a fade, a loading screen's black, the menus' blurred picture of
-//   the game - a picture of the wider scene) covered only the middle of the wider picture: it gets the 16:9 matrix,
-//   which stretches it over the whole window. (The start screen is shown 16:9 with bars: output_scale.c.)
+// - a pane that covers the layer's whole 16:9 width, and not much more (a fade, a loading screen's black, the menus'
+//   blurred picture of the game - a picture of the wider scene), covered only the middle of the wider picture: it
+//   gets the 16:9 matrix, which stretches it over the whole window. (The start screen is shown 16:9 with bars:
+//   output_scale.c.) A pane much wider than the screen (the world map's picture) is not stretched (#253).
 // On a taller window (16:10, 4:3: shape < 1, #125) the same vertically: the layers' matrices get m11 x shape, and a
 // pane over the whole 16:9 height gets the 16:9 matrix.
+// - a pause frame's vertical ends get the same matrix as the horizontal pieces they meet, so their
+//   line, inset, and shadow all meet the corners when the frame spans a wider window.
 // In a copy of the buffer, as rt_persp makes them: m00 / shape on a wider window, m11 x shape on a narrower one.
 // - a pane wholly past the edges (a layout's parts kept off screen: a pane with a texture nothing draws into, at the
 //   inventory's description box) is not drawn (hud_clip, scissor_rect), as it is never seen on the console.
 // SAVAGEWIND_NO_HUD_FIX=1: off.
+static bool hud_frame_end(const float *g, const float *mv, const float *rc, float m00, float shape) {
+    if (!framepace_menu_ui() || mv[8] || mv[9] || mv[11] >= 0) return false;
+    // ui2d's window block has four border margins at c3[26] and its parent window size at c3[27].
+    // The piece rectangle at c3[33] is local to that window: a right end touches the top/right
+    // parent corners; a left end touches the bottom/left corners. The long horizontal pieces use
+    // the same view and parent bounds. Match those relationships, rather than one layout's pixels.
+    float w = g[108], h = g[109], ew = rc[0], eh = rc[1];
+    if (!isfinite(w) || !isfinite(h) || w <= 0 || h <= 0 || ew <= 0 || ew >= w || eh <= ew || eh >= h) return false;
+    float tol = 8 * FLT_EPSILON * fmaxf(1.0f, fmaxf(w, h));
+    bool width_margin = false, height_margin = false;
+    for (int k = 104; k < 108; k++) {
+        width_margin |= isfinite(g[k]) && fabsf(ew - g[k]) <= tol;
+        height_margin |= isfinite(g[k]) && fabsf(h - eh - g[k]) <= tol;
+    }
+    if (!width_margin || !height_margin) return false;
+    bool right = fabsf(rc[2] + ew - w * 0.5f) <= tol && fabsf(rc[3] - h * 0.5f) <= tol;
+    bool left = fabsf(rc[2] + w * 0.5f) <= tol && fabsf(rc[3] - eh + h * 0.5f) <= tol;
+    // Project the adjacent top or bottom piece, whose size is (window - this end's margins).
+    // It must pass the same full-width test as the real horizontal draw; small windows stay untouched.
+    float span = (fabsf(mv[0]) * (w - ew) + fabsf(mv[1]) * (h - eh)) * m00 / -mv[11];
+    bool end = (right || left) && span >= 2 / shape - 0.02f;
+    if (end && g_debug_frame)
+        LOG("[hud-frame] end %.3f %.3f %.3f %.3f from window %.3fx%.3f (span %.3f)\n",
+            ew, eh, rc[2], rc[3], w, h, span);
+    return end;
+}
+
 static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out) {
     static int off = -1;
     if (off < 0) off = getenv("SAVAGEWIND_NO_HUD_FIX") != NULL;
@@ -3987,6 +4035,18 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
     TexBackend *tb = (TexBackend *)st.rt.color[0]->backend;
     if (!tb || tb->rs_group != RS_OUT) return false;
     const float *g = (const float *)(uintptr_t)addr;
+    // ui2d text combines the projection and each label's position into this smaller, Y-flipped matrix.
+    // A cached 16:9 projection can survive a live resize; scale the whole X row so glyph widths and
+    // positions follow the widened HUD together.
+    if (shape > 1 && size == 128 && g[0] > 0 && g[5] < 0 && g[14] == -1 && g[15] > 0 &&
+        !g[1] && !g[2] && !g[4] && !g[6] && !g[8] && !g[9] && !g[12] && !g[13] &&
+        fabsf(-g[5] / g[0] - 16.0f / 9.0f) < 0.002f) {
+        float text_matrix[32];
+        memcpy(text_matrix, g, sizeof text_matrix);
+        for (int k = 0; k < 4; k++) text_matrix[k] /= shape;
+        *out = ubo_span(vk_transient_copy(text_matrix, sizeof text_matrix, 256), sizeof text_matrix);
+        return true;
+    }
     // A layer whose matrix comes with its view already in it (projection x view, a translation in column 3; the HUD's
     // clock and some texts): 16:9 (|m11| / m00), it gets its first row / shape (a taller window: its second x shape),
     // so it stays in the 16:9 layout with the rest of the HUD instead of moving outwards with the wider view.
@@ -4025,7 +4085,15 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
                 if (n < lo) lo = n;
                 if (n > hi) hi = n;
             }
-            if (lo <= -edge + 0.01f && hi >= edge - 0.01f) {
+            // Only a pane about the screen's size: one much wider (the world map's picture, 1500 wide, scrolled inside
+            // it; the map frame's 4660-wide strips) keeps the 16:9 layout, or its contents move ~shape x faster than
+            // the icons drawn over them (#253).
+            float over = edge * 1.05f + 0.01f;
+            // Full-width panes slide between pause pages: keep their projection wide throughout the move, so test the
+            // width, not the position.
+            bool frame_end = !tall && hud_frame_end(g, mv, rc, m00, shape);
+            if (lo < 1e8f && (tall ? lo <= -edge + 0.01f && hi >= edge - 0.01f && lo >= -over && hi <= over
+                                    : (hi - lo >= 2 / shape - 0.02f && hi - lo <= 2 * over) || frame_end)) {
                 if (tall) m11 /= shape;
                 else m00 *= shape;
             }
@@ -6471,6 +6539,40 @@ have_pipe:
             vp_oy = (ph - st.rt.color[0]->height * u) * 0.5f;
         }
     }
+    // A full-screen draw into a smaller, fixed-size capture samples the reshaped final image.
+    // Derive the crop from the source's guest/backing dimensions, never a window or thumbnail size.
+    // Expand the viewport about its center so the target clips the original guest aspect.
+    // The vertex-count guard admits simple full-screen triangles/quads; other capture meshes need
+    // coverage information before opting in. Scaled blur targets and partial draws stay untouched.
+    if (st.rt.ncolor == 1 && st.rt.color[0] && pr->fi->ntex == 1 && r->x[2] <= 6 &&
+        vp[0] == 0 && vp[1] == 0 && vp[2] == st.rt.color[0]->width && vp[3] == st.rt.color[0]->height) {
+        NvnTexture *dst = st.rt.color[0], *src = shader_texture_object(1, &pr->fi->tex[0]);
+        TexBackend *d = dst->backend, *s = src ? src->backend : NULL;
+        if (d && !d->scalable && pass_w == d->width && pass_h == d->height &&
+            s && s->rs_group == RS_OUT && src->target == 1 && dst->target == 1 &&
+            src->levels == 1 && s->samples == 1 && d->samples == 1 &&
+            d->aspect == VK_IMAGE_ASPECT_COLOR_BIT && s->aspect == VK_IMAGE_ASPECT_COLOR_BIT &&
+            dst->width < src->width && dst->height < src->height &&
+            // A whole-pixel target can round the source aspect by up to one destination pixel.
+            fabs((double)dst->width - (double)dst->height * src->width / src->height) <= 1 &&
+            st.scissor[0][0] <= 0 && st.scissor[0][1] <= 0 &&
+            (int64_t)st.scissor[0][0] + st.scissor[0][2] >= dst->width &&
+            (int64_t)st.scissor[0][1] + st.scissor[0][3] >= dst->height) {
+            float shape = (float)((double)s->width * src->height / ((double)s->height * src->width));
+            float sx = vp_sx * fmaxf(shape, 1), sy = vp_sy / fminf(shape, 1);
+            float w = dst->width * sx, h = dst->height * sy, x = (pass_w - w) * 0.5f, y = (pass_h - h) * 0.5f;
+            const VkPhysicalDeviceLimits *lim = &g_vk.props.limits;
+            if (isfinite(w) && isfinite(h) && w > 0 && h > 0 &&
+                w <= lim->maxViewportDimensions[0] && h <= lim->maxViewportDimensions[1] &&
+                x >= lim->viewportBoundsRange[0] && y >= lim->viewportBoundsRange[0] &&
+                x + w <= lim->viewportBoundsRange[1] && y + h <= lim->viewportBoundsRange[1]) {
+                vp_sx = sx; vp_sy = sy; vp_ox = x; vp_oy = y;
+                if (getenv("SAVAGEWIND_LOG_COPIES"))
+                    LOG("[copy] fixed-aspect capture %ux%u backing %ux%u -> %ux%u: viewport %.3fx%.3f at %.3f,%.3f\n",
+                        src->width, src->height, s->width, s->height, dst->width, dst->height, w, h, x, y);
+            }
+        }
+    }
     {
         float k = 1.0f;  // (horizontal stretch of a camera-attached effect: none, the view keeps its 16:9 shape)
         float vx = vp[0] * vp_sx + vp_ox, vw = vp[2] * vp_sx;
@@ -6972,7 +7074,24 @@ static void copy_texture_to_buffer(const TexRefRec *src, uint64_t dst) {
         VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
         VK_CHECK(vmaCreateImage(g_vk.vma, &ci, &ai, &srcimg, &small_mem, NULL));
         vk_image_init_layout(cb, srcimg, VK_IMAGE_ASPECT_COLOR_BIT);
-        VkImageBlit bl = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .srcOffsets = {{0, 0, 0}, {(int32_t)b->width, (int32_t)b->height, 1}},
+        int32_t sx0 = 0, sy0 = 0, sx1 = (int32_t)b->width, sy1 = (int32_t)b->height;
+        if (b->scalable && rg[0] == 0 && rg[1] == 0 && rg[3] == (int32_t)t->width && rg[4] == (int32_t)t->height) {
+            // A wide render target keeps its guest dimensions (for example the save caption's 256x144) but its
+            // backing image includes the extra sides. Crop those sides before returning it to the guest; scaling the
+            // whole backing to the guest's fixed 16:9 size squeezes the save screenshot horizontally.
+            double guest_aspect = (double)t->width / t->height;
+            double backing_aspect = (double)b->width / b->height;
+            if (backing_aspect > guest_aspect) {
+                sx1 = (int32_t)lround(b->height * guest_aspect);
+                sx0 = ((int32_t)b->width - sx1) / 2;
+                sx1 += sx0;
+            } else if (backing_aspect < guest_aspect) {
+                sy1 = (int32_t)lround(b->width / guest_aspect);
+                sy0 = ((int32_t)b->height - sy1) / 2;
+                sy1 += sy0;
+            }
+        }
+        VkImageBlit bl = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .srcOffsets = {{sx0, sy0, 0}, {sx1, sy1, 1}},
                           .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstOffsets = {{0, 0, 0}, {(int32_t)t->width, (int32_t)t->height, 1}}};
         rec_CmdBlitImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, srcimg, VK_IMAGE_LAYOUT_GENERAL, 1, &bl, VK_FILTER_LINEAR);
         vk_full_barrier(cb);

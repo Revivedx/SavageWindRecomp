@@ -17,13 +17,28 @@ static int relative_changes, visibility_changes;
 static uint64_t now = 1000000000;
 
 bool pc_cursor_active(void) { return pointer_ui; }
-int pc_cursor_preview_axis(void) { return 0; }
 bool pc_cursor_hide_system(void) { return map_pointer; }
+bool pc_cursor_map_navigation(void) { return map_pointer; }
+uint64_t pc_cursor_buttons(uint64_t buttons) { return buttons; }
 void pc_cursor_window(SDL_Window *w) { (void)w; }
 bool menu_input_captured(void) { return captured; }
 bool menu_cursor_free(void) { return freed; }
 void vibration_update(SDL_Gamepad *p, bool focused) { (void)p; (void)focused; }
 void motion_tilt_held(bool held) { (void)held; }
+bool pc_gyro_keyboard_active(void) { return false; }
+void motion_keyboard(int p,int r,int y,bool reset) { (void)p;(void)r;(void)y;(void)reset; }
+void motion_poll(void) {}
+bool control_enabled(void) { return false; }
+bool control_fly_toggle(void) { abort(); }
+void control_fly_wheel(float notches) { (void)notches;abort(); }
+void control_input_frame(uint64_t frame) { (void)frame; }
+void control_input_apply(uint64_t *b,int32_t *lx,int32_t *ly,int32_t *rx,int32_t *ry) {
+    (void)b;(void)lx;(void)ly;(void)rx;(void)ry;
+}
+uint64_t renderer_present_count(void) { return 0; }
+SDL_WindowFlags SDL_GetWindowFlags(SDL_Window *w) {
+    (void)w;return win_focused?SDL_WINDOW_INPUT_FOCUS:0;
+}
 uint64_t plat_now_ns(void) { return now; }
 bool SDL_SetWindowRelativeMouseMode(SDL_Window *w, bool on) {
     (void)w; relative = on; relative_changes++; return true;

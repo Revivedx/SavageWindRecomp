@@ -207,6 +207,8 @@ static void dump_largest_textures(const char *why) {
 
 static uint64_t frames, total_frames;
 uint64_t renderer_present_count(void) { return total_frames; }
+bool control_camera_view(float view[12]) { (void)view; return false; }  // (the control endpoint's `camera`: not on Metal yet)
+bool control_shot_now(const char *path) { (void)path; return false; }  // (the control endpoint's `shot`: not on Metal yet)
 
 // Output resolution: render targets the game sizes for the 1920x1080 screen are allocated at
 // (sx, sy) times their guest size. Shaders and the renderer keep working in guest ("logical") units.
@@ -1059,6 +1061,8 @@ void backend_present(NvnTexture *t) {
     reboot_test_frame(total_frames);
     extern void test_warp_frame(uint64_t frame);  // runtime/services/test_warp.c (SAVAGEWIND_TEST_TIME)
     test_warp_frame(total_frames);
+    extern void control_frame(uint64_t frame);  // runtime/control.c (SAVAGEWIND_CONTROL)
+    control_frame(total_frames);
     static long shot_every = -1;
     if (shot_every < 0) { const char *e = getenv("SAVAGEWIND_SCREENSHOT_EVERY"); shot_every = e ? atol(e) : 0; }
     extern bool g_debug_frame;
@@ -1143,6 +1147,7 @@ int ui_run(void) {
             beginActivityWithOptions:NSActivityUserInitiated | NSActivityLatencyCritical
                               reason:@"Game emulation"];
     ui_window_init();
+    input_focus_update(window);
     atomic_store(&ui_ready, true);
     for (;;) {
         if (rt_reboot_requested()) return rt_reboot_requested();  // (runtime/main.c tears the game down)
@@ -1157,6 +1162,7 @@ int ui_run(void) {
             input_handle_event(&e);
         }
         menu_apply_window_requests(window);
+        input_focus_update(window);
         int w, h;
         SDL_GetWindowSizeInPixels(window, &w, &h);
         layer.drawableSize = CGSizeMake(w, h);

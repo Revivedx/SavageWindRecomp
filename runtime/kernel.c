@@ -73,11 +73,19 @@ uint32_t kernel_new_handle(KObject *o) {
     return h;
 }
 
-static void handle_close(uint32_t h) {
+static KThread *g_threads;  // every thread of this boot (g_klock)
+static KThread *thread_unlink_if_dead(KThread *t);
+static void thread_free(KThread *t, bool join);
+
+// Closes a handle (g_klock held). A finished thread nothing refers to any more is returned, unlinked: the caller frees
+// it (thread_free) once it has let go of g_klock.
+static KThread *handle_close(uint32_t h) {
     KObject *o = handle_get(h);
-    if (!o || h == PSEUDO_THREAD) return;
+    if (!o || h == PSEUDO_THREAD) return NULL;
     handles[h - 0x100] = NULL;
     o->refs--;
+    if (o->type == KOBJ_THREAD && o->refs == 0) return thread_unlink_if_dead((KThread *)o);
+    return NULL;
 }
 
 // Threads blocked in WaitSynchronization; object signals wake only these (caller holds g_klock).
@@ -314,14 +322,15 @@ static void region_add(uint64_t addr, uint64_t size, uint32_t type, uint32_t per
     regions[i] = (Region){addr, size, type, perm};
 }
 
-static void region_remove(uint64_t addr) {
+static bool region_remove(uint64_t addr) {  // (false: no region starts there)
     for (int i = 0; i < nregions; i++) {
         if (regions[i].addr == addr) {
             memmove(&regions[i], &regions[i + 1], (nregions - i - 1) * sizeof(Region));
             nregions--;
-            return;
+            return true;
         }
     }
+    return false;
 }
 
 static void query_memory(uint64_t addr, uint64_t out) {
@@ -361,8 +370,6 @@ static uint64_t next_thread_id = 0x50;
 // none of those hold a host lock across a call into the guest, so nothing stays locked. svcExitThread ends a
 // thread the same way.
 volatile int g_rt_unwind;
-static KThread *g_threads;  // every thread of this boot (g_klock)
-
 static pthread_t g_host_threads[4];  // (profiling) host threads the sampler takes too: handles 0xf000 + i
 static int g_nhost_threads;
 void kernel_sample_host_thread(void) {
@@ -395,9 +402,38 @@ static void *thread_main(void *arg) {
     klock();
     t->finished = true;
     kernel_signal(&t->obj);
+    // (the game already closed its handle: nothing can refer to this thread any more, free it as it ends)
+    KThread *dead = t->obj.refs == 0 ? thread_unlink_if_dead(t) : NULL;
     pthread_mutex_unlock(&g_klock);
     t_cur = NULL;
+    if (dead) {
+        pthread_detach(pthread_self());
+        thread_free(dead, false);
+    }
     return NULL;
+}
+
+// A finished guest thread: its KThread, its host thread (a joinable thread keeps its OS handle until joined) and its
+// TLS slot are freed once the game has closed the thread's handle. Not during a reboot (kernel_stop_threads joins and
+// kernel_reset frees every thread then). Unlinks it from g_threads (g_klock held); the caller then calls thread_free.
+static bool g_no_reap;
+static uint64_t tls_free[1024];
+static int ntls_free;
+
+static KThread *thread_unlink_if_dead(KThread *t) {
+    if (!t->finished || !t->started || g_no_reap) return NULL;
+    for (KThread **p = &g_threads; *p; p = &(*p)->anext)
+        if (*p == t) { *p = t->anext; return t; }
+    return NULL;
+}
+
+static void thread_free(KThread *t, bool join) {
+    if (join) pthread_join(t->host, NULL);
+    klock();
+    if (ntls_free < 1024) tls_free[ntls_free++] = t->tlr;
+    pthread_mutex_unlock(&g_klock);
+    pthread_cond_destroy(&t->cond);
+    free(t);
 }
 
 static KThread *thread_new(uint64_t entry, uint64_t arg, uint64_t stack_top, int prio, int core) {
@@ -412,11 +448,17 @@ static KThread *thread_new(uint64_t entry, uint64_t arg, uint64_t stack_top, int
     t->cpu.x[0] = arg;
     t->cpu.sp = stack_top & ~15ull;
     t->cpu.excl_addr = ~0ull;
-    t->tlr = tls_next;
-    tls_next += 0x200;
+    klock();
+    if (ntls_free) {  // a finished thread's slot, cleared as a new thread expects it
+        t->tlr = tls_free[--ntls_free];
+        memset((void *)(uintptr_t)t->tlr, 0, 0x200);
+    } else {
+        if (tls_next + 0x200 > TLS_BASE + TLS_SIZE - 0x1000) FATAL("out of thread-local storage (%d threads)\n", (int)((tls_next - TLS_BASE) / 0x200));
+        t->tlr = tls_next;
+        tls_next += 0x200;
+    }
     t->cpu.tpidrro = t->tlr;
     t->cpu.thread = t;
-    klock();
     t->anext = g_threads;
     g_threads = t;
     pthread_mutex_unlock(&g_klock);
@@ -892,7 +934,7 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
     case 0x05:  // UnmapMemory(dst, src, size): copy back
         kernel_watch_write("UnmapMemory", x[1], x[2]);
         memcpy((void *)x[1], (void *)x[0], x[2]);
-        region_remove(x[0]);
+        if (region_remove(x[0])) plat_decommit(x[0], x[2]);  // (gone for the game: its pages go back to the OS, not kept committed at every address it maps)
         x[0] = R_OK;
         break;
     case 0x06:  // QueryMemory(out_info, _, addr)
@@ -1010,8 +1052,9 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
     }
     case 0x16:  // CloseHandle
         klock();
-        handle_close((uint32_t)x[0]);
+        KThread *dead = handle_close((uint32_t)x[0]);
         pthread_mutex_unlock(&g_klock);
+        if (dead) thread_free(dead, true);
         x[0] = R_OK;
         break;
     case 0x18: {  // WaitSynchronization(_, handles, count, timeout)
@@ -1120,6 +1163,9 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
 
 // Reboot, step 1: stop every guest thread (see rt_unwind_point) and join it. `idle` keeps the window responsive.
 void kernel_stop_threads(void (*idle)(void)) {
+    klock();
+    g_no_reap = true;  // (the threads are joined and freed below and in kernel_reset)
+    pthread_mutex_unlock(&g_klock);
     g_rt_unwind = 1;
     uint64_t t0 = plat_now_ns(), logged = t0;
     for (;;) {
@@ -1170,6 +1216,8 @@ void kernel_reset(void) {
     nregions = 0;
     heap_size = 0;
     tls_next = TLS_BASE;
+    ntls_free = 0;
+    g_no_reap = false;
     next_thread_id = 0x50;
     for (int i = 0; i < 4; i++) {
         g_cores[i].owner = NULL;

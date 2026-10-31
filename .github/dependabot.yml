@@ -1,0 +1,15 @@
+# Keeps the actions the workflows use up to date: one grouped pull request a week at most.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: test
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns:
+          - '*'
+    commit-message:
+      prefix: CI
+    open-pull-requests-limit: 1

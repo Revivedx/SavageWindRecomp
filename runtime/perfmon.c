@@ -9,6 +9,9 @@
 #include <string.h>
 
 #include "perfmon.h"
+#include "framepace.h"
+#include "game_sites.h"
+#include "kernel.h"
 #include "platform.h"
 #include "rt.h"
 
@@ -29,6 +32,28 @@
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static PerfStats g_stats;
 static char g_gpu_hint[96];
+
+// PlayerInfo's copy can outlive Link during scene changes. Read it only while playing, on the presenting thread,
+// rather than the machine sampler; the heap stays mapped until presents stop for reboot (main.c teardown).
+bool perfmon_position(float out[3]) {
+    extern volatile int g_movie_playing;  // runtime/hle/movie.c
+    if (g_rt_unwind || !g_site.player_info || !g_site.screen_mgr || !g_site.event_mgr || g_movie_playing > 0)
+        return false;
+    if (framepace_title_ui() || framepace_loading_ui() || framepace_in_event()) return false;
+    uint64_t pinfo = *(uint64_t *)(uintptr_t)g_site.player_info;
+    uint64_t size = kernel_heap_size();
+    if (size < 0x94 || (pinfo & 7) || pinfo < HEAP_BASE || pinfo - HEAP_BASE > size - 0x94) return false;
+    float pos[3];
+    // Same game-maintained copy as the clock probe (hle/framepace.c), not the actor's writable position.
+#define VF(T, base, off) (*(T *)(uintptr_t)((base) + (off)))
+    for (int i = 0; i < 3; i++) {
+        pos[i] = VF(float, pinfo, 0x88 + 4 * i);
+        if (!isfinite(pos[i])) return false;
+    }
+#undef VF
+    memcpy(out, pos, sizeof pos);
+    return true;
+}
 
 // ------------------------------------------------------------------ frames
 static uint64_t g_last_frame_ns;

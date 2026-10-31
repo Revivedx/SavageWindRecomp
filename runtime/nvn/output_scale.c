@@ -120,18 +120,7 @@ void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
     }
     o->vx = (dw - o->vw) / 2; o->vy = (dh - o->vh) / 2;
     o->crop[0] = o->crop[1] = 0, o->crop[2] = o->crop[3] = 1;
-    // The pause menu's pages and the map are 16:9 layouts over the whole picture, their frames drawn for a 16:9 screen:
-    // while one is up the picture's 16:9 middle is shown, with bars, exactly as on a 16:9 screen (the views stay
-    // widened, so nothing is made again; vulkan/exec.c hud_patch stretches their full-width backgrounds to match).
-    if (reshape && wide_test <= 0 && framepace_menu_ui()) {
-        if (shape > 1) {
-            o->crop[0] = (1 - 1 / shape) / 2, o->crop[2] = 1 / shape, o->vw = dw / shape;
-            o->vx = (dw - o->vw) / 2;
-        } else {  // (a taller window: the 16:9 band in the middle, bars above and below)
-            o->crop[1] = (1 - shape) / 2, o->crop[3] = shape, o->vh = dh * shape;
-            o->vy = (dh - o->vh) / 2;
-        }
-    }
+    // Pause pages keep their 16:9 layout centered while the wider or taller image remains visible around them.
     g_view_shape = (float)o->shape;
     // Video > Field of view: in play only (cutscenes and talks keep the game's framing), eased over about 1/4 s so
     // that a talk's start and end don't jump

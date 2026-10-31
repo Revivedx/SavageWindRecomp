@@ -152,6 +152,7 @@ const char *const k_icons[] = {"Automatic", "Keyboard", "Xbox", "PlayStation", "
 constexpr int k_fps[] = FPS_CHOICES;  // frame rate (0: Off, no limit)
 const char *const k_vsync[VSYNC_COUNT] = {"On", "Fast", "Adaptive", "Off"};  // (settings.h VSYNC_*)
 const char *const k_hdr[HDR_COUNT] = {"Automatic", "On", "Off"};               // (settings.h HDR_*)
+const char *const k_fsmode[FSMODE_COUNT] = {"Automatic", "Borderless", "Exclusive"};  // (settings.h FSMODE_*)
 constexpr int FPS_DEFAULT_INDEX = 2;
 static_assert(k_fps[FPS_DEFAULT_INDEX] == FPS_DEFAULT);
 constexpr int k_sens[] = {10, 25, 50, 75, 100, 125, 150, 200, 250, 300, 400, 500, 600, 800, 1000};  // mouse sensitivity, %
@@ -275,6 +276,38 @@ void build_items(void) {
     v.push_back(toggle(P_VIDEO, "Fullscreen", "Fills the screen. Also F11 or Alt+Enter.",
                        [](const Item &) { return (int)g_settings.fullscreen; },
                        [](const Item &, int x) { g_settings.fullscreen = x; menu_request_window_apply(); }, 0));
+    // Fullscreen mode (settings.h FSMODE_*; runtime/window_size.c winsize_apply)
+    v.push_back(choice(P_VIDEO, "Fullscreen mode", "Borderless never switches the display. Exclusive always does.",
+                       [](const Item &) { return (int)FSMODE_COUNT; },
+                       [](const Item &, int x) { return tr(k_fsmode[x]); },
+                       [](const Item &) { return g_settings.fullscreen_mode; },
+                       [](const Item &, int x) {
+                           g_settings.fullscreen_mode = x;
+                           if (g_settings.fullscreen) menu_request_window_apply();
+                       }, FSMODE_AUTO));
+    // Monitor: Automatic, then the displays connected (runtime/window_size.c; listed again at each opening)
+    Item disp = choice(P_VIDEO, "Monitor", "The monitor the game is shown on. Automatic: where the window is.",
+                       [](const Item &) {
+                           WinDisplay ds[WINDISPLAY_MAX];
+                           return windisplay_list(ds) + 1;
+                       },
+                       [](const Item &, int x) {
+                           static char buf[4][96];
+                           static int k;
+                           char *b = buf[k++ & 3];
+                           WinDisplay ds[WINDISPLAY_MAX];
+                           int n = windisplay_list(ds);
+                           if (x < 1 || x > n) return tr("Automatic");
+                           snprintf(b, sizeof buf[0], "%d: %s", x, ds[x - 1].name);  // (short: the row is narrow)
+                           return (const char *)b;
+                       },
+                       [](const Item &) { return windisplay_target(); },
+                       [](const Item &, int x) {
+                           windisplay_set(x);
+                           menu_request_window_apply();
+                       }, 0);
+    disp.wrap = true;
+    v.push_back(disp);
     // Window size: a button showing the size; A drops the sizes down as a list over it (menu.mm size_list_draw)
     Item ws = button(P_VIDEO, "Window size", "", nullptr, A_SIZE_LIST, 0);
     ws.label = [](const Item &, int) {
@@ -550,6 +583,14 @@ void build_items(void) {
     v.push_back(toggle(P_CONTROLS, "Invert mouse Y", "Only the mouse. The camera Y-axis option inverts both.",
                        [](const Item &) { return (int)g_settings.mouse_invert_y; },
                        [](const Item &, int x) { g_settings.mouse_invert_y = x; }, 0));
+    v.push_back(toggle(P_CONTROLS, "Shrine keyboard gyro",
+                       "Only while controlling a shrine apparatus. Remap on Keyboard (sticks). Outside it, camera keys keep working.",
+                       [](const Item &) { return (int)g_settings.pc_gyro; },
+                       [](const Item &, int x) { g_settings.pc_gyro = x; }, 1));
+    v.push_back(toggle(P_CONTROLS, "Shrine mouse drag",
+                       "At a shrine apparatus, hold left click and drag to rotate. Release to keep its orientation and re-grip.",
+                       [](const Item &) { return (int)g_settings.gyro_scene; },
+                       [](const Item &, int x) { g_settings.gyro_scene = x; }, 1));
     // motion controls (runtime/hle/motion.c; the game's own Motion Controls option turns motion aiming on and off)
     v.push_back(choice(P_CONTROLS, "Motion sensitivity", "How far turning the controller turns the aim.",
                        [](const Item &) { return N(k_motion_sens); },
@@ -587,12 +628,25 @@ void build_items(void) {
                                               : "Press A, then the new button.",
                          nullptr, action, slot);
         it.label = bind_label;
+        if (action == A_BIND_KEY) it.desc_fn = [](const Item &) {
+            static std::string desc;
+            desc = std::string(tr("Press A, then the new key. Esc cancels.")) + " " +
+                   tr("In the title, pause and map menus, unbound arrow keys act as the left stick and Enter selects.");
+            return desc.c_str();
+        };
         v.push_back(it);
     };
     for (int s = 0; s < BIND_PAD_COUNT; s++) bind(P_KEYS, A_BIND_KEY, s);
     bind(P_KEYS, A_BIND_KEY, BIND_WALK);
     v.push_back(button(P_KEYS, "Reset keyboard to defaults", "Every key back to its default.", "Reset", A_RESET_KEYS, 0));
     for (int s = BIND_LS_UP; s <= BIND_RS_RIGHT; s++) bind(P_STICKS, A_BIND_KEY, s);
+    static const char *const gyro_help[] = {"Tilt upward.", "Tilt downward.", "Tilt left.", "Tilt right.",
+                                            "Rotate left on the third axis.", "Rotate right on the third axis.",
+                                            "Reset orientation and stop pending rotation."};
+    for (int s = BIND_GYRO_UP; s <= BIND_GYRO_CENTER; s++) {  // (the virtual gyro at a shrine apparatus)
+        bind(P_STICKS, A_BIND_KEY, s);
+        v.back().desc = gyro_help[s - BIND_GYRO_UP];
+    }
     v.push_back(button(P_STICKS, "Reset keyboard to defaults", "Every key back to its default.", "Reset", A_RESET_KEYS, 0));
     for (int s = 0; s < BIND_PAD_COUNT; s++) bind(P_PAD, A_BIND_PAD, s);
     v.push_back(button(P_PAD, "Reset controller to defaults", "Every button back to its default.", "Reset", A_RESET_PAD, 0));

@@ -132,8 +132,11 @@ static bool screen_up(uint32_t id) {
     return arr && *(uint64_t *)(uintptr_t)(arr + 8 * id);
 }
 
-// (screens: 1 the start screen, 0x38 its load and confirmation menus)
-bool framepace_title_ui(void) { return screen_up(1) || screen_up(0x38); }
+// (screens: 1 the start screen, 0x38 its load and confirmation menus; 0x38 can also be used over a paused game)
+bool framepace_title_ui(void) {
+    if (*(uint32_t *)(uintptr_t)PAUSE_STATE) return false;
+    return screen_up(1) || screen_up(0x38);
+}
 
 // (screen 0x55: the loading screen with its tip, up from a load's start until its fade into the game is over)
 bool framepace_loading_ui(void) { return screen_up(0x55); }

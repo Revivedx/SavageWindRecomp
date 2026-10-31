@@ -6,6 +6,8 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <math.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -18,6 +20,7 @@
 #include "../language.h"
 #include "../romfs_image.h"
 #include "archive.h"
+#include "fs_layout.h"
 
 #define FS_PATH_NOT_FOUND MAKE_RESULT(2, 1)
 #define FS_PATH_EXISTS MAKE_RESULT(2, 2)
@@ -58,6 +61,8 @@ typedef struct {
 #define AOC_MAX 8
 static RomImage images[1 + AOC_MAX];  // [0] the game's, [index] add-on content
 static RomImage *R = &images[0];
+static FsInventoryClipLayout inventory_clip_layout;
+static _Atomic bool inventory_clip_layout_valid;
 
 // Reboot: the next boot builds its own index / overlay when the game opens the RomFS again.
 RT_ON_RESET(fs_reset) {
@@ -74,6 +79,7 @@ RT_ON_RESET(fs_reset) {
         *m = (RomImage){0};
     }
     R = &images[0];
+    atomic_store_explicit(&inventory_clip_layout_valid, false, memory_order_release);
     g_save_dir = "save";
 }
 
@@ -471,6 +477,181 @@ static uint8_t *yaz0_pack(const uint8_t *d, size_t n, const uint8_t *hdr, size_t
     return o;
 }
 
+bool fs_inventory_clip_layout(FsInventoryClipLayout *out) {
+    if (!out || !atomic_load_explicit(&inventory_clip_layout_valid, memory_order_acquire)) return false;
+    *out = inventory_clip_layout;
+    return true;
+}
+
+typedef struct { float x, y, sx, sy; unsigned kind; } LayoutPane;
+enum { PANE_OTHER, PANE_ROOT, PANE_SLIDE, PANE_INOUT, PANE_CUT, PANE_PORCH_LEFT, PANE_PORCH_MIDDLE };
+
+static bool layout_name(const uint8_t *sec, const char *name) { return !strncmp((const char *)sec + 12, name, 24); }
+
+static bool layout_part(const uint8_t *sec, size_t n, const char *part) {
+    size_t k = strlen(part) + 1;
+    for (size_t i = 84; i + k <= n; i++) if (!memcmp(sec + i, part, k)) return true;
+    return false;
+}
+
+// Follow only the named branch of PauseMenu_00's pane hierarchy. Positions and sizes come from the
+// player's loaded layout, never from a particular window size or a copied game asset.
+static bool pause_inventory_panes(const uint8_t *d, size_t n, float *root_w, float *root_h,
+                                  LayoutPane *cut, float *cut_w, float *cut_h, LayoutPane *left) {
+    if (n < 20 || memcmp(d, "FLYT", 4) || d[4] != 0xFF || d[5] != 0xFE) return false;
+    size_t p = (size_t)d[6] | (size_t)d[7] << 8;
+    LayoutPane stack[16] = {{0}}, last = {0}, middle = {0};
+    unsigned depth = 0, found = 0;
+    while (p + 8 <= n) {
+        const uint8_t *sec = d + p;
+        uint32_t sz;
+        memcpy(&sz, sec + 4, 4);
+        if (sz < 8 || sz > n - p) return false;
+        if (!memcmp(sec, "pas1", 4)) {
+            if (depth == 16) return false;
+            stack[depth++] = last;
+        } else if (!memcmp(sec, "pae1", 4)) {
+            if (!depth) return false;
+            depth--;
+        } else if (!memcmp(sec, "pan1", 4) || !memcmp(sec, "prt1", 4) ||
+                   !memcmp(sec, "pic1", 4) || !memcmp(sec, "txt1", 4) ||
+                   !memcmp(sec, "wnd1", 4) || !memcmp(sec, "bnd1", 4)) {
+            if (sz < 84) return false;
+            float v[10];
+            memcpy(v, sec + 44, sizeof v);
+            LayoutPane parent = depth ? stack[depth - 1] : (LayoutPane){.sx = 1, .sy = 1};
+            last = (LayoutPane){parent.x + parent.sx * v[0], parent.y + parent.sy * v[1],
+                                parent.sx * v[6], parent.sy * v[7], PANE_OTHER};
+            if (depth == 0 && layout_name(sec, "RootPane")) {
+                if (found & 1) return false;
+                *root_w = v[8], *root_h = v[9];
+                last.kind = PANE_ROOT;
+                found |= 1;
+            } else if (parent.kind == PANE_ROOT && layout_name(sec, "N_Slide_01")) {
+                last.kind = PANE_SLIDE;
+            } else if (parent.kind == PANE_SLIDE && layout_name(sec, "N_InOut_00")) {
+                last.kind = PANE_INOUT;
+            } else if (parent.kind == PANE_INOUT && layout_name(sec, "N_Cut_00")) {
+                if (found & 2 || sec[11] != 2) return false;  // center origin; other origins need different bounds
+                *cut = last; *cut_w = v[8] * last.sx; *cut_h = v[9] * last.sy;
+                last.kind = PANE_CUT;
+                found |= 2;
+            } else if (parent.kind == PANE_CUT && layout_name(sec, "Pa_PagePorch_00")) {
+                if (found & 4 || !layout_part(sec, sz, "PaPage20_00")) return false;
+                *left = last;
+                last.kind = PANE_PORCH_LEFT;
+                found |= 4;
+            } else if (parent.kind == PANE_CUT && layout_name(sec, "Pa_PagePorch_01")) {
+                if (found & 8 || !layout_part(sec, sz, "PaPage20_00")) return false;
+                middle = last;
+                last.kind = PANE_PORCH_MIDDLE;
+                found |= 8;
+            }
+        }
+        p += sz;
+    }
+    return p == n && depth == 0 && found == 15 && left->x < middle.x &&
+           isfinite(*root_w) && isfinite(*root_h) && *root_w > 0 && *root_h > 0 &&
+           isfinite(*cut_w) && isfinite(*cut_h) && *cut_w > 0 && *cut_h > 0 &&
+           isfinite(left->x) && isfinite(left->sx) && left->sx > 0;
+}
+
+// PaPage20_00 is the grid of inventory items. Its rightmost item column is the part of
+// the previous page visible through N_Cut_00's left edge.
+static bool pause_inventory_last_column(const uint8_t *d, size_t n, float *x, float *half_w,
+                                        float *root_w, float *root_h) {
+    if (n < 20 || memcmp(d, "FLYT", 4) || d[4] != 0xFF || d[5] != 0xFE) return false;
+    size_t p = (size_t)d[6] | (size_t)d[7] << 8;
+    LayoutPane stack[16] = {{0}}, last = {0};
+    unsigned depth = 0, count = 0, roots = 0;
+    *x = -INFINITY;
+    while (p + 8 <= n) {
+        const uint8_t *sec = d + p;
+        uint32_t sz;
+        memcpy(&sz, sec + 4, 4);
+        if (sz < 8 || sz > n - p) return false;
+        if (!memcmp(sec, "pas1", 4)) {
+            if (depth == 16) return false;
+            stack[depth++] = last;
+        } else if (!memcmp(sec, "pae1", 4)) {
+            if (!depth) return false;
+            depth--;
+        } else if (!memcmp(sec, "pan1", 4) || !memcmp(sec, "prt1", 4) ||
+                   !memcmp(sec, "pic1", 4) || !memcmp(sec, "txt1", 4) ||
+                   !memcmp(sec, "wnd1", 4) || !memcmp(sec, "bnd1", 4)) {
+            if (sz < 84) return false;
+            float v[10];
+            memcpy(v, sec + 44, sizeof v);
+            LayoutPane parent = depth ? stack[depth - 1] : (LayoutPane){.sx = 1, .sy = 1};
+            last = (LayoutPane){parent.x + parent.sx * v[0], parent.y + parent.sy * v[1],
+                                parent.sx * v[6], parent.sy * v[7], PANE_OTHER};
+            if (depth == 0 && layout_name(sec, "RootPane")) {
+                if (roots++) return false;
+                *root_w = v[8], *root_h = v[9];
+                last.kind = PANE_ROOT;
+            } else if (parent.kind == PANE_ROOT && !memcmp(sec, "prt1", 4) &&
+                       !strncmp((const char *)sec + 12, "Pa_Btn_", 7)) {
+                if (!isfinite(last.x) || !isfinite(last.sx) || !isfinite(v[8])) return false;
+                if (last.x > *x) *x = last.x, *half_w = v[8] * last.sx * 0.5f;
+                count++;
+            }
+        }
+        p += sz;
+    }
+    return p == n && depth == 0 && roots == 1 && count > 1 &&
+           isfinite(*root_w) && isfinite(*root_h) && *root_w > 0 && *root_h > 0 &&
+           isfinite(*x) && isfinite(*half_w) && *half_w > 0;
+}
+
+static void inventory_layout_from_common(const uint8_t *arc, size_t an) {
+    uint32_t adoff, as, ae;
+    int pa = sarc_find(arc, an, "blyt/PauseMenu_00.bflyt", &adoff, &as, &ae);
+    if (pa < 0) return;
+    float root_w = 0, root_h = 0, cut_w = 0, cut_h = 0, page_root_w = 0, page_root_h = 0;
+    float last_x = 0, last_half_w = 0;
+    LayoutPane cut = {0}, left = {0};
+    if (!pause_inventory_panes(arc + adoff + as, ae - as, &root_w, &root_h, &cut, &cut_w, &cut_h, &left)) return;
+    if (sarc_find(arc, an, "blyt/PaPage20_00.bflyt", &adoff, &as, &ae) < 0 ||
+        !pause_inventory_last_column(arc + adoff + as, ae - as, &last_x, &last_half_w,
+                                     &page_root_w, &page_root_h)) return;
+    if (fabsf(page_root_w - root_w) > 0.01f || fabsf(page_root_h - root_h) > 0.01f) return;
+    FsInventoryClipLayout layout = {
+        .root_w = root_w, .root_h = root_h,
+        .clip_x = root_w * 0.5f + cut.x - cut_w * 0.5f,
+        .clip_y = root_h * 0.5f - cut.y - cut_h * 0.5f,
+        .clip_w = cut_w, .clip_h = cut_h,
+        .previous_item_x = root_w * 0.5f + left.x + left.sx * last_x,
+    };
+    // The original left edge crosses the previous item's right half; its center gives a half-item hint.
+    if (!isfinite(layout.clip_x) || !isfinite(layout.clip_y) || !isfinite(layout.previous_item_x) ||
+        !(layout.clip_x < layout.previous_item_x &&
+          layout.previous_item_x < layout.clip_x + last_half_w * left.sx &&
+          layout.previous_item_x < layout.clip_x + layout.clip_w)) return;
+    inventory_clip_layout = layout;
+    atomic_store_explicit(&inventory_clip_layout_valid, true, memory_order_release);
+    LOG("[fs] Inventory clip layout: root %.0fx%.0f, pane %.1f %.1f %.1fx%.1f, previous item x %.1f\n",
+        root_w, root_h, layout.clip_x, layout.clip_y, layout.clip_w, layout.clip_h, layout.previous_item_x);
+}
+
+static void inventory_layout_from_overlay(const char *host) {
+    int fd = open(host, O_RDONLY);
+    if (fd < 0) return;
+    struct stat sb;
+    // The replacement is a complete Bootup.pack. Bound the read before trusting its archive sizes.
+    if (fstat(fd, &sb) || sb.st_size < 0x20 || sb.st_size > 128 * 1024 * 1024) { close(fd); return; }
+    size_t pn = (size_t)sb.st_size, an = 0;
+    uint8_t *pack = malloc(pn);
+    uint32_t pdoff, ps, pe;
+    if (pack && pread(fd, pack, pn, 0) == (ssize_t)pn &&
+        sarc_find(pack, pn, "Layout/Common.sblarc", &pdoff, &ps, &pe) >= 0) {
+        uint8_t *arc = yaz0_unpack(pack + pdoff + ps, pe - ps, &an);
+        if (arc) inventory_layout_from_common(arc, an);
+        free(arc);
+    }
+    free(pack);
+    close(fd);
+}
+
 // The HUD's prompt with its diamond of the other buttons (Layout/Common.sblarc, PaDoCommandA/B/X/Y_00: "Pick up",
 // "Talk", the rune's "Activate", the paraglider) writes the dim A / B / X / Y around it as text in the HUD's normal
 // font: the Switch's letters with any button icons. They become the button characters of the icon font
@@ -546,11 +727,14 @@ static void hud_letters_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz)
     static const char pack_path[] = "Pack/Bootup.pack";
     static const char *const layouts[] = {"blyt/PaDoCommandA_00.bflyt", "blyt/PaDoCommandB_00.bflyt",
                                           "blyt/PaDoCommandX_00.bflyt", "blyt/PaDoCommandY_00.bflyt"};
-    if (getenv("SAVAGEWIND_NO_HUD_LETTERS")) return;
     int k = 0;
     while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, pack_path)) k++;
     char host[1200];
-    if (k == R->rom_nfiles || overlay_file(pack_path, host, sizeof host)) return;
+    if (k == R->rom_nfiles) return;
+    if (overlay_file(pack_path, host, sizeof host)) {
+        if (R == &images[0]) inventory_layout_from_overlay(host);
+        return;
+    }
     uint64_t t0 = plat_now_ns();
     size_t pn = R->rom_files[k].size, zn = 0, an = 0, nn = 0;
     uint8_t *pack = malloc(pn), *arc = NULL, *arc2 = NULL, *z2 = NULL;
@@ -559,6 +743,8 @@ static void hud_letters_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz)
     if (romfs_image_pread(R->img, pack, pn, R->rom_files[k].off) == (ssize_t)pn)
         node = sarc_find(pack, pn, "Layout/Common.sblarc", &pdoff, &ps, &pe);
     if (node >= 0) arc = yaz0_unpack(pack + pdoff + ps, pe - ps, &an);
+    if (R == &images[0] && arc) inventory_layout_from_common(arc, an);
+    if (getenv("SAVAGEWIND_NO_HUD_LETTERS")) { free(pack), free(arc); return; }
     const char *why = node < 0 ? "no Layout/Common.sblarc" : !arc ? "archive not readable" : NULL;
     if (!why) {
         arc2 = malloc(an + 4 * (0x80 + 0x2000));
@@ -810,6 +996,8 @@ static void rom_index(void) {
         break;
     }
     hud_letters_patch(fmeta, foff, fsz);
+    if (R == &images[0] && !atomic_load_explicit(&inventory_clip_layout_valid, memory_order_acquire))
+        LOG("[fs] Inventory clip layout unavailable; using the game's clipping\n");
     rstb_patch(fmeta, foff, fsz);
     if (R->ov_n) LOG("[fs] overlay: %d romfs files replaced\n", R->ov_n);
     if (R->ov_meta) { R->patches[R->npatches++] = (Patch){R->ov_meta_off, R->ov_meta_size, R->ov_meta}; }
@@ -1022,6 +1210,24 @@ static uint32_t errno_result(void) {
     return MAKE_RESULT(2, 4000);
 }
 
+// The game closed the file's session: its host descriptor (a Windows handle each) and the copy of the save go.
+static void file_close(Service *s) {
+    HostFile *f = s->state;
+    if (!f) return;
+    s->state = NULL;
+    if (f->fd >= 0) close(f->fd);
+    free(f->patched);
+    free(f);
+}
+
+static void dir_close(Service *s) {
+    HostDir *d = s->state;
+    if (!d) return;
+    s->state = NULL;
+    if (d->d) closedir(d->d);
+    free(d);
+}
+
 static void file(Service *s, IpcReq *req, IpcResp *resp) {
     HostFile *f = s->state;
     switch (req->cmd) {
@@ -1177,7 +1383,9 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
                 f->patched = NULL;
             }
         }
-        ipc_return_object(resp, service_new("IFile", file, f));
+        Service *fsvc = service_new("IFile", file, f);
+        fsvc->on_close = file_close;
+        ipc_return_object(resp, fsvc);
         break;
     }
     case 9: {  // OpenDirectory(mode)
@@ -1187,7 +1395,9 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
         hd->d = d;
         hd->mode = (int)IN(uint32_t, 0);
         snprintf(hd->path, sizeof hd->path, "%s", p);
-        ipc_return_object(resp, service_new("IDirectory", directory, hd));
+        Service *dsvc = service_new("IDirectory", directory, hd);
+        dsvc->on_close = dir_close;
+        ipc_return_object(resp, dsvc);
         break;
     }
     case 10: break;  // Commit

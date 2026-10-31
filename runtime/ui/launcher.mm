@@ -26,6 +26,7 @@
 #include <atomic>
 
 #include "i18n.h"
+#include "file_size_cache.h"
 #include "imgui.h"
 #include "imgui_internal.h"  // (SetKeyOwner)
 #include "option_rows.h"
@@ -103,6 +104,7 @@ extern "C" const char *rt_version(void) { return SAVAGEWIND_VERSION; }  // (the 
 
 // ------------------------------------------------------------------ game files
 static std::string g_root;  // extracted game: <root>/exefs, <root>/romfs
+static FileSizeCache g_file_size;
 
 static bool file_exists(const std::string &p) {
     struct stat st;
@@ -922,8 +924,7 @@ static void prelaunch_tab(float sc) {
         ImGui::Spacing();
     };
     heading("Game files");
-    static double gb = -1;
-    if (gb < 0) gb = rt_game_files_size(g_root.c_str()) / 1e9;
+    FileSizeCache::Value size = g_file_size.get();
 #ifdef _WIN32
     if (ImGui::Button(tr("Show in Explorer"))) reveal_folder(g_root);
 #elif defined(__linux__)
@@ -938,7 +939,12 @@ static void prelaunch_tab(float sc) {
         ImGui::PushFont(g_font_menu);
         ImGui::TextColored(ImVec4(1, 0.72f, 0.4f, 1), "%s", tr("Are you sure?"));
         ImGui::PopFont();
-        ImGui::Text(tr("This deletes Savage Wind's copy of the game files (%.1f GB)."), gb);
+        if (size.state == FileSizeCache::State::Ready)
+            ImGui::Text(tr("This deletes Savage Wind's copy of the game files (%.1f GB)."), size.bytes / 1e9);
+        else {
+            ImGui::TextUnformatted(tr("This deletes Savage Wind's copy of the game files."));
+            ImGui::TextDisabled("%s", tr(size.state == FileSizeCache::State::Pending ? "Calculating..." : "Unavailable"));
+        }
         ImGui::TextDisabled("%s", tr("Saves and settings are kept. Your own game files aren't touched."));
         if (rt_dev_mode()) {  // (a source checkout: the files are the project's own extracted/)
             bool abs = !g_root.empty() && (g_root[0] == '/' || (g_root.size() > 1 && g_root[1] == ':'));
@@ -947,9 +953,10 @@ static void prelaunch_tab(float sc) {
         }
         ImGui::Spacing();
         if (ImGui::Button(tr("Delete"), ImVec2(220 * sc, 0))) {
+            g_file_size.invalidate();
             bool ok = rt_remove_game_files(g_root.c_str());  // (runtime/paths.c: only what the extraction made)
             set_job(ok ? "Game files deleted." : "Could not delete the game files (not in Savage Wind's data folder?).", !ok);
-            g_files_deleted = true, gb = -1;
+            g_files_deleted = true;
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
@@ -1040,6 +1047,7 @@ static bool g_setup_only;
 extern "C" void launcher_run(const char *root, int mode) {
     g_root = root;
     saves_tab_set_game_files(root);
+    g_file_size.reset(g_root);
     g_setup_only = mode == 0;
     ui_window_init();
     SDL_Window *win = ui_window();
@@ -1140,6 +1148,7 @@ extern "C" void launcher_run(const char *root, int mode) {
         fprintf(stderr, "[launcher] delete %.1f GB: %s -> %s\n", gb, ok ? "ok" : "refused", status.c_str());
         if (!status.empty()) page = SETUP;
     }
+    bool was_busy = false;
     while (!play) {
         menu_apply_window_requests(win);  // (the Video tab's Fullscreen)
         if (g_files_deleted) {  // (Settings > Prelaunch deleted them)
@@ -1157,7 +1166,7 @@ extern "C" void launcher_run(const char *root, int mode) {
         pthread_mutex_lock(&g_lock);
         bool busy = g_busy;
         pthread_mutex_unlock(&g_lock);
-        static bool was_busy;
+        g_file_size.set_suspended(busy);
         if (was_busy && !busy) {
             status = check_game_files(g_root);
             if (status.empty() && g_setup_only) {  // set up: on into the game (after the first-start note)
@@ -1392,7 +1401,6 @@ extern "C" void launcher_run(const char *root, int mode) {
                 bool failed = g_job_failed;
                 pthread_mutex_unlock(&g_lock);
                 bool ready = status.empty() && !busy;  // (set up: the window offers to delete them, or set them up again)
-                static double files_gb = -1;
                 // chosen: "Selected" with a green check (long paths ran over the label); the path is in the
                 // explanation, and choosing again opens the picker again
                 std::string src_v = tr(src.empty() ? "Choose..." : "Selected");
@@ -1430,9 +1438,10 @@ extern "C" void launcher_run(const char *root, int mode) {
                 if (ready && !g_setup_only) {
                     // DELETE: frees Savage Wind's copy (runtime/paths.c removes only what the setup made, only inside
                     // the data root). Saves, settings and the user's own files stay.
-                    if (files_gb < 0) files_gb = rt_game_files_size(g_root.c_str()) / 1e9;
-                    char gb[32];
-                    snprintf(gb, sizeof gb, "%.1f GB", files_gb);
+                    FileSizeCache::Value size = g_file_size.get();
+                    char gb[128];
+                    if (size.state == FileSizeCache::State::Ready) snprintf(gb, sizeof gb, "%.1f GB", size.bytes / 1e9);
+                    else snprintf(gb, sizeof gb, "%s", tr(size.state == FileSizeCache::State::Pending ? "Calculating..." : "Unavailable"));
                     opt_section("Game files");
                     if (!g_confirm_delete) {
                         if (opt_action("Delete game files", gb, "Frees the space Savage Wind's copy of the game files takes. "
@@ -1442,12 +1451,13 @@ extern "C" void launcher_run(const char *root, int mode) {
                         first_row();
                     } else {
                         if (opt_action("Yes, delete them", gb, "Deletes the extracted game files now.", true)) {
+                            g_file_size.invalidate();
                             bool ok = rt_remove_game_files(g_root.c_str());
                             status = check_game_files(g_root);
                             if (ok) set_job("Game files deleted.");
                             else set_job("Couldn't delete the game files", true, "They aren't in Savage Wind's data folder, "
                                          "so they were left alone.");
-                            g_confirm_delete = false, files_gb = -1;
+                            g_confirm_delete = false;
                         }
                         if (opt_action("Cancel", "", "Keeps the game files.", true)) g_confirm_delete = false;
                     }
@@ -1459,9 +1469,9 @@ extern "C" void launcher_run(const char *root, int mode) {
                                        tr("The Master Trials and The Champions' Ballad, from your own copy of them. To add "
                                           "them, choose the folder with their extracted RomFS (or the game's folder, if "
                                           "they're in it) below and set up. Removing them keeps your saves."), true)) {
+                            g_file_size.invalidate();
                             remove_dlc(g_root);
                             set_job("Downloadable content removed.");
-                            files_gb = -1;
                         }
                     }
 #ifndef __APPLE__
@@ -1481,6 +1491,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                         opt_section("Shaders");
                         if (opt_action("Precompile shaders", tr(pst == 1 ? "Done" : pst == 2 ? "Run again" : "Not done"), pd.c_str(),
                                        true)) {
+                            g_file_size.set_suspended(true);
                             pthread_mutex_lock(&g_lock);
                             g_busy = true;
                             pthread_mutex_unlock(&g_lock);
@@ -1534,6 +1545,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                     if (opt_action("Set up game files", busy ? tr("Working...") : "", ready ? again_d.c_str() : ex_d.c_str(),
                                    true)) {
                         settings_save();  // (the colour look as chosen above)
+                        g_file_size.set_suspended(true);
                         pthread_mutex_lock(&g_lock);
                         g_busy = true;
                         pthread_mutex_unlock(&g_lock);
@@ -1541,7 +1553,6 @@ extern "C" void launcher_run(const char *root, int mode) {
                         pthread_create(&t, NULL, extract_thread, NULL);
                         pthread_detach(t);
                     }
-                    if (!ready) files_gb = -1;  // (re-measured after a setup)
                 }
                 if (!job_line.empty()) {  // the current step / result
                     ImGui::Dummy(ImVec2(0, 14 * sc));
@@ -1728,7 +1739,8 @@ extern "C" void launcher_run(const char *root, int mode) {
             next = (next > now ? next : now) + period;
         }
     }
-    // play: hand the window to the game
+    // play: cancel the size traversal before handing the window to the game
+    g_file_size.stop();
     settings_save();
     SDL_SetWindowTitle(win, "Savage Wind");
     splash_unload();

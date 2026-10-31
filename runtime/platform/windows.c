@@ -1,5 +1,6 @@
 // Windows host layer (runtime/platform.h).
 #include <windows.h>
+#include <pthread.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -108,6 +109,11 @@ void plat_commit(uint64_t addr, uint64_t size) {
                 (unsigned long long)size, GetLastError());
 }
 
+void plat_decommit(uint64_t addr, uint64_t size) {
+    uint64_t a = (addr + 0xFFF) & ~0xFFFull, e = (addr + size) & ~0xFFFull;  // (whole pages inside the range only)
+    if (e > a && a >= g_lo && e <= g_hi) VirtualFree((void *)(uintptr_t)a, e - a, MEM_DECOMMIT);
+}
+
 int plat_protect(uint64_t addr, uint64_t size, int prot) {
     DWORD p = prot == PLAT_PROT_NONE ? PAGE_NOACCESS : prot == PLAT_PROT_READ ? PAGE_READONLY : PAGE_READWRITE, old;
     if (addr >= g_lo && addr < g_hi) plat_commit(addr, size);
@@ -128,11 +134,21 @@ uint64_t plat_now_ns(void) {
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x2
 #endif
 
+// (one timer per thread, closed when the thread ends: guest threads come and go, a death reload creates new ones)
+static pthread_key_t timer_key;
+static pthread_once_t timer_once = PTHREAD_ONCE_INIT;
+static void timer_close(void *h) { CloseHandle((HANDLE)h); }
+static void timer_key_init(void) { pthread_key_create(&timer_key, timer_close); }
+
 void plat_sleep_until_ns(uint64_t t) {
     static __thread HANDLE timer;
     if (!timer) {
         timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
         if (!timer) timer = CreateWaitableTimerExW(NULL, NULL, 0, TIMER_ALL_ACCESS);
+        if (timer) {
+            pthread_once(&timer_once, timer_key_init);
+            pthread_setspecific(timer_key, timer);
+        }
     }
     for (;;) {
         uint64_t now = plat_now_ns();

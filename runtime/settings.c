@@ -31,6 +31,8 @@ Settings g_settings = {
     .mouse_sens = MOUSE_SENS_DEFAULT,
     .mouse_sens_y = 1.0f,
     .motion_sens = 1.0f,
+    .pc_gyro = true,
+    .gyro_scene = true,
     .stick_deadzone = {STICK_DEADZONE_DEFAULT, STICK_DEADZONE_DEFAULT},
     .fps_limit = FPS_DEFAULT,
     .precompile_shaders = true,
@@ -42,6 +44,7 @@ Settings g_settings = {
 
 static const char *const k_vsync[VSYNC_COUNT] = {"on", "fast", "adaptive", "off"};  // (VSYNC_*: the ini's words)
 static const char *const k_hdr[HDR_COUNT] = {"auto", "on", "off"};             // (HDR_*)
+static const char *const k_fsmode[FSMODE_COUNT] = {"auto", "borderless", "exclusive"};  // (FSMODE_*)
 
 // settings_version 2 (2026-10-19): the upscaler's mode, the window size and the 300% mouse default. Older files: their
 // "resolution" (the internal resolution, removed) gives the upscaler's mode, and a mouse sensitivity at the old
@@ -64,12 +67,23 @@ static void pc_controls_env(void) {
     if (cursor) g_settings.pc_cursor = atoi(cursor) != 0;
 }
 
+// SAVAGEWIND_PC_GYRO / SAVAGEWIND_GYRO_SCENE=0|1: the two shrine apparatus switches at start (Controls changes them)
+static void gyro_startup_overrides(void) {
+    const char *v = getenv("SAVAGEWIND_PC_GYRO");
+    if (v && *v) g_settings.pc_gyro = atoi(v) != 0;
+    v = getenv("SAVAGEWIND_GYRO_SCENE");
+    if (v && *v) g_settings.gyro_scene = atoi(v) != 0;
+}
 void settings_load(void) {
     static bool loaded;
     if (loaded) return;
     loaded = true;
     FILE *f = fopen(SETTINGS_FILE, "r");
-    if (!f) { pc_controls_env(); return; }
+    if (!f) {
+        gyro_startup_overrides();
+        pc_controls_env();
+        return;
+    }
     char line[256];
     bool tip_key = false;
     int version = 1;
@@ -82,6 +96,18 @@ void settings_load(void) {
         for (size_t n = strlen(val); n && (val[n - 1] == ' ' || val[n - 1] == '\t'); n--) val[n - 1] = 0;  // (a file
         // edited by hand: Notepad's CRLF line ends and stray spaces would make the names below not match)
         if (!strcmp(key, "fullscreen")) g_settings.fullscreen = atoi(val) != 0;
+        else if (!strcmp(key, "fullscreen_mode")) {
+            for (int i = 0; i < FSMODE_COUNT; i++)
+                if (!strcmp(val, k_fsmode[i])) g_settings.fullscreen_mode = i;
+        }
+        else if (!strcmp(key, "display")) {  // (auto, or "<n> <name>": the n-th display, named so)
+            int n = 0, at = 0;
+            g_settings.display = 0, g_settings.display_name[0] = 0;
+            if (strcmp(val, "auto") && sscanf(val, "%d %n", &n, &at) >= 1 && n >= 1 && n <= 16) {
+                g_settings.display = n;
+                snprintf(g_settings.display_name, sizeof g_settings.display_name, "%s", at ? val + at : "");
+            }
+        }
         else if (!strcmp(key, "volume")) g_settings.volume = (float)atof(val);
         else if (!strcmp(key, "reverb")) g_settings.reverb = atoi(val) != 0;
         else if (!strcmp(key, "movie_audio")) g_settings.movie_audio = atoi(val) != 0;
@@ -127,6 +153,8 @@ void settings_load(void) {
         else if (!strcmp(key, "mouse_sensitivity")) g_settings.mouse_sens = (float)atof(val);
         else if (!strcmp(key, "mouse_vertical_sensitivity")) g_settings.mouse_sens_y = (float)atof(val);
         else if (!strcmp(key, "mouse_invert_y")) g_settings.mouse_invert_y = atoi(val) != 0;
+        else if (!strcmp(key, "pc_gyro")) g_settings.pc_gyro = atoi(val) != 0;
+        else if (!strcmp(key, "gyro_scene")) g_settings.gyro_scene = atoi(val) != 0;
         else if (!strcmp(key, "motion_sensitivity")) g_settings.motion_sens = (float)atof(val);
         else if (!strcmp(key, "motion_invert")) {  // (off, up_down, left_right, both)
             g_settings.motion_invert = !strcmp(val, "both") ? MOTION_INVERT_UD | MOTION_INVERT_LR :
@@ -226,6 +254,7 @@ void settings_load(void) {
         if (!(g_settings.stick_deadzone[i] >= 0 && g_settings.stick_deadzone[i] <= 0.5f))
             g_settings.stick_deadzone[i] = STICK_DEADZONE_DEFAULT;
     pc_controls_env();
+    gyro_startup_overrides();
     LOG("[settings] loaded %s\n", SETTINGS_FILE);
 }
 
@@ -235,6 +264,10 @@ void settings_save(void) {
     fprintf(f, "# Savage Wind settings (edited from the in-game menu: F1, Esc, or Minus+Plus on a controller)\n");
     fprintf(f, "settings_version = %d\n", SETTINGS_VERSION);
     fprintf(f, "fullscreen = %d\n", g_settings.fullscreen);
+    int fm = g_settings.fullscreen_mode;
+    fprintf(f, "fullscreen_mode = %s\n", k_fsmode[fm >= 0 && fm < FSMODE_COUNT ? fm : FSMODE_AUTO]);
+    if (g_settings.display > 0) fprintf(f, "display = %d %s\n", g_settings.display, g_settings.display_name);
+    else fprintf(f, "display = auto\n");
     if (g_settings.window_w > 0 && g_settings.window_h > 0)
         fprintf(f, "window_size = %dx%d\n", g_settings.window_w, g_settings.window_h);
     else
@@ -267,6 +300,8 @@ void settings_save(void) {
     fprintf(f, "mouse_sensitivity = %.2f\n", g_settings.mouse_sens);
     fprintf(f, "mouse_vertical_sensitivity = %.2f\n", g_settings.mouse_sens_y);
     fprintf(f, "mouse_invert_y = %d\n", g_settings.mouse_invert_y);
+    fprintf(f, "pc_gyro = %d\n", g_settings.pc_gyro);
+    fprintf(f, "gyro_scene = %d\n", g_settings.gyro_scene);
     fprintf(f, "motion_sensitivity = %.2f\n", g_settings.motion_sens);
     static const char *const inv[4] = {"off", "up_down", "left_right", "both"};
     fprintf(f, "motion_invert = %s\n", inv[g_settings.motion_invert & 3]);

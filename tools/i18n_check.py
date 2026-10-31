@@ -16,7 +16,8 @@ import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SOURCES = sorted(glob.glob(os.path.join(ROOT, 'runtime/ui/*.mm'))) + [
+# (console.mm is left out: the console is English, like the command names and replies it shows)
+SOURCES = sorted(p for p in glob.glob(os.path.join(ROOT, 'runtime/ui/*.mm')) if not p.endswith('console.mm')) + [
     os.path.join(ROOT, 'runtime/language.c'),
     os.path.join(ROOT, 'runtime/hle/bindings.c'),
 ]

@@ -38,7 +38,7 @@ Dragging horizontally over Link's inventory preview adjusts its native yaw targe
 
 ## Validation
 
-Updated onto `test` at `232bb49`, retaining upstream changes. The Windows executable builds. Automated coverage includes:
+Updated onto `test` at `ed9279a`, retaining upstream changes. The Windows host executable builds. After synchronization, pointer, input-focus, control, console and gyro host tests pass; localization checks report no missing/unused keys, and game-site checks pass. The in-game checks below cover the pre-sync pointer build; full gameplay validation of this latest integration remains pending. Automated coverage includes:
 
 - `make test-pc-controls`: actual host cursor-update transitions (including map entry while relative mode is already off), focus, overlay/F2 policy, number-key defaults, options persistence across boots and startup overrides.
 - `tests/test_options_pointer.c`: synthetic Options viewport scrolling without d-pad/selection changes, scroll limits, transformed hover rectangles, direct row actions, native focus activation without auto-scrolling, input ownership, disabled pointer behavior and reboot reset. The contributor also checked Options hit detection, wheel scrolling, help text, keyboard/mouse focus transfer and returning from binding subpages in game.

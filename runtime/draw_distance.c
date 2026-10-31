@@ -16,7 +16,7 @@
 // at most FAR_MAX times out: at 2x, buildings far off flickered and whole blocks of them went missing (Tabantha, user
 // play test 2026-10-29), and 1.5x was fine.
 //
-// High's factor for the nearer actors, 1.6, is the highest that kept every actor (round 3, 2026-10-29: a copy of a 100%
+// High's factor for the nearer actors, 1.6, was the highest that kept every actor in round 3 (2026-10-29: a copy of a 100%
 // save warped to Kakariko, Hyrule Castle's front, Korok Forest, Lurelin, Hateno and Gerudo Town, walking and turning
 // for 4700 frames). Past it the game leaves actors out, silently: at the castle's front its wall and banners were
 // missing at 1.75x (twice), 2x (twice), 2.25x and 4x, and there at 1x, 1.5x (twice) and 1.6x (twice). Further out it
@@ -73,7 +73,11 @@ static int level(void) {
     return forced >= 0 ? forced : g_settings.draw_distance;
 }
 
-static const float k_factor[DRAWDIST_COUNT] = {1.0f, 1.5f, 1.6f};  // (DRAWDIST_*)
+// The nearer actors' factors were 1.5 and 1.6 until 2026-10-30: at Rito Village, a denser place than the six of round
+// 3, the game then left the entrance bridge, its rocks and the houses out (only the far model of the cliffs was drawn,
+// right next to Link). Walking onto that bridge from a save there (High's other factors kept): 1.1, 1.25 and 1.4 kept
+// them, 1.5 and 1.6 did not. Medium 1.15 and High 1.3 (the user's choice) keep a margin under that.
+static const float k_factor[DRAWDIST_COUNT] = {1.0f, 1.15f, 1.3f};  // (DRAWDIST_*)
 
 float draw_distance_factor(void) {
     static float env = -1;
