@@ -26,6 +26,19 @@ const char *winsize_aspect(int w, int h);
 // the size). Any thread.
 bool winsize_virtual(int *w, int *h);
 
-// Main thread (the window loop): read the window's display again when it changed; apply the setting to the window.
+// Video > Monitor: the displays connected, in SDL's order (the setting's display n is the list's n - 1). Any thread.
+enum { WINDISPLAY_MAX = 8 };
+typedef struct { char name[64]; int w, h; bool primary; } WinDisplay;
+int windisplay_list(WinDisplay *out);
+int windisplay_current(void);  // the window's display: its number in the list (1..; 0: not known)
+int windisplay_target(void);   // the display the setting picks (1..; 0: Automatic, or that display isn't connected)
+void windisplay_set(int n);    // the setting: 0 Automatic, n the list's n-th display (by its name too)
+// "2: DELL U2723QE  (3840 x 2160, primary)"
+void windisplay_name(const WinDisplay *d, int n, const char *primary, char *buf, int len);
+
+// Main thread (the window loop): read the window's display again when it changed; apply the setting to the window
+// (and move it to the display the setting picks). winsize_start_display: the display to make the window on (an
+// SDL_DisplayID; 0 the primary), after winsize_refresh(NULL).
 void winsize_refresh(void *sdl_window);
 void winsize_apply(void *sdl_window);
+unsigned winsize_start_display(void);

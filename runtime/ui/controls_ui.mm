@@ -12,6 +12,7 @@ extern "C" {
 #include "../input_bind.h"
 #include "../settings.h"
 }
+extern "C" bool control_enabled(void);  // runtime/control.c: is the test endpoint on (SAVAGEWIND_CONTROL)?
 
 static void cell(int dev, int slot, int fam, int cap_dev, int cap_slot, int ms_left) {
     char lbl[96];
@@ -22,9 +23,11 @@ static void cell(int dev, int slot, int fam, int cap_dev, int cap_slot, int ms_l
                                                     bind_key_label(g_bind_key[slot])), dev, slot);
     // changed from the default: gold text; the same button / key on two inputs (a hand-edited savagewind.ini): red
     const int16_t *t = dev == BIND_DEV_PAD ? g_bind_pad : g_bind_key;
-    int n = dev == BIND_DEV_PAD ? BIND_PAD_COUNT : BIND_KEY_COUNT, pushed = 0;
+    int pushed = 0;
     bool dup = false;
-    for (int i = 0; i < n; i++) dup |= i != slot && t[i] == t[slot] && t[slot] > (dev == BIND_DEV_PAD ? -1 : 0);
+    for (int i = 0; i < BIND_KEY_COUNT; i++)
+        dup |= i != slot && (dev == BIND_DEV_KEY ? bind_key_same_context(i, slot) : bind_pad_slot(i)) && t[i] == t[slot] &&
+               t[slot] > (dev == BIND_DEV_PAD ? -1 : 0);
     if (waiting) { ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.42f, 0.12f, 1)); pushed++; }
     else if (dup) { ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.16f, 0.12f, 1)); pushed++; }
     if (!bind_is_default_slot(dev, slot)) { ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.98f, 0.82f, 0.38f, 1)); pushed++; }
@@ -86,16 +89,20 @@ extern "C" void controls_bindings_draw(float scale) {
         static const int order[] = {BIND_A, BIND_B, BIND_X, BIND_Y, BIND_L, BIND_R, BIND_ZL, BIND_ZR, BIND_PLUS,
                                     BIND_MINUS, BIND_UP, BIND_DOWN, BIND_LEFT, BIND_RIGHT, BIND_LSTICK, BIND_RSTICK,
                                     BIND_LS_UP, BIND_LS_DOWN, BIND_LS_LEFT, BIND_LS_RIGHT, BIND_RS_UP, BIND_RS_DOWN,
-                                    BIND_RS_LEFT, BIND_RS_RIGHT, BIND_WALK, BIND_TILT};
-        for (int slot : order) {
+                                    BIND_RS_LEFT, BIND_RS_RIGHT, BIND_WALK, BIND_TILT, BIND_GYRO_UP, BIND_GYRO_DOWN,
+                                    BIND_GYRO_LEFT, BIND_GYRO_RIGHT, BIND_GYRO_TURN_LEFT, BIND_GYRO_TURN_RIGHT,
+                                    BIND_GYRO_CENTER, BIND_FLY};
+        const int rows = (int)(sizeof order / sizeof *order) - (control_enabled() ? 0 : 1);  // (the fly row: test builds only)
+        for (int row = 0; row < rows; row++) {
+            const int slot = order[row];
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
             ImGui::AlignTextToFramePadding();
             ImGui::TextUnformatted(tr(bind_input_name(slot)));
             ImGui::TableNextColumn();
-            if (slot < BIND_PAD_COUNT) cell(BIND_DEV_PAD, slot, fam, cd, cs, ms);
+            if (bind_pad_slot(slot)) cell(BIND_DEV_PAD, slot, fam, cd, cs, ms);
             else ImGui::TextDisabled("%s", tr(slot == BIND_WALK ? "Tilt the stick" : slot == BIND_TILT ? "Motion sensors" :
-                                              slot < BIND_RS_UP ? "Left stick" : "Right stick"));
+                                              bind_key_gyro(slot) ? "Motion sensors" : slot < BIND_RS_UP ? "Left stick" : "Right stick"));
             ImGui::TableNextColumn();
             cell(BIND_DEV_KEY, slot, fam, cd, cs, ms);
         }
@@ -110,9 +117,10 @@ extern "C" void controls_bindings_draw(float scale) {
     if (ImGui::Button(tr("Reset keyboard to defaults"))) { bind_capture_cancel(); bind_reset(BIND_DEV_KEY); }
     ImGui::EndDisabled();
     ImGui::PushTextWrapPos(0);
-    ImGui::TextDisabled("%s", tr("Bindings apply to the game only. Menus keep the fixed layout (right face button / Enter "
+    ImGui::TextDisabled("%s %s", tr("Bindings apply to the game only. Menus keep the fixed layout (right face button / Enter "
                                  "select, bottom face button / Esc back), and the in-game menu always opens with F1 or Esc, or "
                                  "the controller's Back + Start held together, or its Home / Guide button - so this page can't be "
-                                 "locked out. The game's button icons follow the controller bindings."));
+                                 "locked out. The game's button icons follow the controller bindings."),
+                       tr("In the title, pause and map menus, unbound arrow keys act as the left stick and Enter selects."));
     ImGui::PopTextWrapPos();
 }

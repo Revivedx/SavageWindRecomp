@@ -270,6 +270,21 @@ def _solver_steps(gen, a):
             f'  /* {a:#x}: fmul s2, s1, s2 (solver microsteps: delta frame x 6) */')
 
 
+# Keyframed bodies' turn (runtime/hle/framepace.c rt_kf_angle, #209): the platforms and parts the game moves (a Divine
+# Beast tilting, lifts, gates) get each physics step the angular velocity that takes them to their target, the angle
+# of the turn left over the step (1.9.0 0x70012d5598). That angle is 2 acos(|w|) of the turn's quaternion
+# (hkQuaternion::getAngle, 0x70000b06d4): below about a milliradian w rounds to 1 in a float, and a turn that small
+# reads as none. At 30 fps a tilting Vah Medoh turns its floor about 1.7 mrad a frame; at 120, 0.43: the floor stood
+# still for a few steps and then caught up at once (0.08 x sqrt(1, 2, 3, 4) rad/s for a steady 0.05), and Link on it
+# hopped. The runtime gives 2 atan2(|xyz|, |w|), the same angle without the rounding.
+
+def _kf_angle(gen, a):
+    assert _word(gen, a) >> 26 == 0x25, hex(_word(gen, a))  # bl (getAngle)
+    target = sext(_word(gen, a) & 0x3ffffff, 26) * 4 + a
+    return ('{ extern float rt_kf_angle(uint64_t); union { float f; uint32_t u; } r = { rt_kf_angle(c->x[0]) }; '
+            f'c->v[0] = r.u; }}  /* {a:#x}: bl {target:#x} (keyframed body: angle of the turn left) */')
+
+
 # The sound system's frame (runtime/hle/framepace.c rt_snd_frame_floor, #145): once a frame the game hands its sound
 # system the delta frame, at least 0.5 (1.9.0 0x7001551004; 1.8.2 0x710143ce64 in the Ghidra project): in console
 # frames, with the frame rate (30) it makes the seconds every sound timer and fade steps by. The floor is a 60 fps
@@ -433,6 +448,157 @@ def _cam_reverse(axis):
     return patch
 
 
+def _pc_button_group(gen, a):
+    assert _word(gen, a) == _sub_sp(0x60), hex(_word(gen, a))
+    return ('{ extern void rt_pc_button_group(Cpu *); rt_pc_button_group(c); c->sp -= 0x60; }'
+            f' /* {a:#x}: native mouse pointer arguments */')
+
+def _pc_cursor_manager(gen, a):
+    assert _word(gen, a) == _sub_sp(0x50), hex(_word(gen, a))
+    return ('{ extern void rt_pc_cursor_manager(Cpu *, uint64_t, uint64_t); '
+            f'rt_pc_cursor_manager(c, {gen.sites["pc_cursor_activate"]:#x}ull, {gen.sites["pc_pane_bounds"]:#x}ull); '
+            'c->sp -= 0x50; }')
+
+def _pc_map_focus(position):
+    def patch(gen, a):
+        expected = _sub_sp(0x30) if position else 0xa9be7bfd
+        assert _word(gen, a) == expected, hex(_word(gen, a))
+        prologue = 'c->sp -= 0x30;' if position else 'c->sp -= 0x20; ST64(c->sp, c->x[29]); ST64(c->sp + 8, c->x[30]);'
+        return ('{ extern int rt_pc_map_focus(Cpu *, int); '
+                f'if (rt_pc_map_focus(c, {int(position)})) return; {prologue} }}')
+    return patch
+
+# Placed actors' traverse distance (1.9.0 0x70010a4640, 1.8.2 0x7000f908b0): how far from the camera an actor placed
+# on the map is created (trees and bushes 150 m, rocks and buildings 300-3000 m, the full model of a building with a
+# "_Far" version ~500 m, enemies 150 m). It is the actor's traverseDist (ActorInfo; 100 when unset) times a scale: the
+# float at +0x310 of the actor debug manager (the object at 1.9.0 0x7001e39348, made only when its "ActorDebug" heap
+# exists, which the released game doesn't have), or 1 without it. Every placed actor's distance goes through here.
+# Video > Draw distance multiplies that scale, on both paths (runtime/draw_distance.c rt_traverse_scale; Original:
+# the game's own).
+
+def _traverse_scale(gen, a):
+    assert _word(gen, a) == 0xbd431101, hex(_word(gen, a))  # ldr s1, [x8, #0x310]
+    return ('{ extern uint32_t rt_traverse_scale(uint32_t, uint32_t); '
+            'c->v[1] = rt_traverse_scale(LD32(c->x[8] + 0x310), (uint32_t)c->v[0]); }'
+            f'  /* {a:#x}: ldr s1, [x8, #0x310] (placement: traverse distance scale) */')
+
+
+def _traverse_scale_default(gen, a):
+    assert _word(gen, a) == 0x1e2e1001, hex(_word(gen, a))  # fmov s1, #1.0
+    return ('{ extern uint32_t rt_traverse_scale(uint32_t, uint32_t); '
+            'c->v[1] = rt_traverse_scale(0x3f800000u, (uint32_t)c->v[0]); }'
+            f'  /* {a:#x}: fmov s1, #1.0 (placement: traverse distance scale, no debug manager) */')
+
+
+# The grass's view context (1.9.0 0x70013ad8b0, 1.8.2 0x70012999d0): both grass layers (blades, and the crossed
+# quads) build it every frame from the camera (x2; s3 is the layer's cell size, 3 m or 10 m). s1 and s2 are
+# screen-size limits (in 1.9.0's play: blades 0.0858 and 2, crossed quads 0.0162 and 0.186) that give the region the
+# layer makes and lists its cells in: about 1 / (max(tan(fovy / 2), s0) * s1), s0 = tan(10 deg), out to at most
+# 1 / (s0 * s1) (a narrow view, the scope: 66 m for the blades, inside their +-69 m grid). Video > Draw distance takes
+# the blades' region further by dividing both limits by their factor and multiplying s0 by it, which keeps that
+# most where it was (runtime/draw_distance.c rt_grass_range; Original: the game's own).
+
+def _grass_range(gen, a):
+    assert _word(gen, a) == 0xbd400024, hex(_word(gen, a))  # ldr s4, [x1]
+    return ('{ extern int rt_grass_range(uint64_t, uint32_t, uint32_t *, uint32_t *, uint32_t *); '
+            'uint32_t s0 = (uint32_t)c->v[0], '
+            's1 = (uint32_t)c->v[1], s2 = (uint32_t)c->v[2]; '
+            'if (rt_grass_range(c->x[2], (uint32_t)c->v[3], &s0, &s1, &s2)) { c->v[0] = s0; c->v[1] = s1; c->v[2] = s2; } '
+            'c->v[4] = LD32(c->x[1]); }'
+            f'  /* {a:#x}: ldr s4, [x1] (grass view context: its screen-size limits) */')
+
+
+# ... and how each grass layer fades out: by cell, from 1 / (k * distance), with k = max(the camera's tan(fovy / 2)
+# at +0x170, tan(10 deg)) stored once a frame (blades: +0x373e8 of their manager, 1.9.0 0x70013a85d0; crossed quads:
+# +0x4fdb8, 0x70013baa5c). The blades fade from about 8 m to 21.5 m (clamp((1 / (k d) - 0.1) / 0.17), k = 0.466 in
+# play), the crossed quads out to about 46 m. Every reader of k is a fade of that kind, so a smaller k fades the same
+# grass that many times further out (runtime/draw_distance.c rt_grass_fade; Original: the game's own).
+
+def _grass_fade(base, off):
+    def patch(gen, a):
+        want = 0xbd000000 | ((off // 4) << 10) | (base << 5)  # str s0, [x<base>, #off]
+        assert _word(gen, a) == want, hex(_word(gen, a))
+        fn = 'rt_grass_fade_blades' if off == 0x240 else 'rt_grass_fade_quads'
+        return (f'{{ extern uint32_t {fn}(uint64_t, uint32_t); '
+                f'ST32(c->x[{base}] + {off:#x}, {fn}(c->x[{base}] + {off:#x} - {0x373e8 if off == 0x240 else 0x4fdb8:#x}, (uint32_t)c->v[0])); }}'
+                f'  /* {a:#x}: str s0, [x{base}, #{off:#x}] (grass: its fades\' camera scale) */')
+    return patch
+
+
+# The blades' draw slots: their manager makes 256 at boot (1.9.0 0x70013a7230, `mov w1, #0x100` before the array's
+# creation; each slot a 2 x 800-byte shader block), its main pass draws its nearest cells into as many as there are,
+# and two other passes stop at the 256th cell (0x70013b32e0, 0x7001496c40: `cmp wN, #0xff; b.hi`). A blade region
+# 2.5 times the game's needs more: runtime/draw_distance.c rt_grass_blade_slots makes 512 when the game starts at
+# High (Original and Medium: the game's 256, and the two passes as the game has them).
+
+def _grass_blade_slots(gen, a):
+    assert _word(gen, a) == 0x52802001, hex(_word(gen, a))  # mov w1, #0x100
+    return ('{ extern uint32_t rt_grass_blade_slots(uint32_t); c->x[1] = rt_grass_blade_slots(0x100); }'
+            f'  /* {a:#x}: mov w1, #0x100 (grass blades: draw slots) */')
+
+
+def _grass_blade_cap(gen, a, fn='rt_grass_blade_cap'):
+    w = _word(gen, a)
+    assert w & 0xfffffc1f == 0x7103fc1f, hex(w)  # cmp wN, #0xff
+    n = (w >> 5) & 31
+    return (f'{{ extern uint32_t {fn}(void); '
+            f'(void)(subs32(c, (uint32_t)c->x[{n}], {fn}())); }}'
+            f'  /* {a:#x}: cmp w{n}, #0xff (grass blades: the last draw slot) */')
+
+
+# The per-frame pass that points each draw slot at this frame's half of its double-buffered shader block (1.9.0
+# 0x70013ae920: for the drawn cells, at most 256 of them, `cmp w8, #0xff; ...; mov w9, #0xff; csel`) has the same cap.
+# With 512 slots and more than 256 cells drawn, the slots past the 256th kept last frame's half: the cells drawn there
+# alternated between this frame's grass and the one from two frames before, every frame (round 4: a flicker at
+# High only, seen near Link and in the far grass). Its count and its clamp now stop at the last slot.
+
+def _grass_blade_cap_swap(gen, a):
+    return _grass_blade_cap(gen, a, 'rt_grass_blade_swap_cap')
+
+
+def _grass_blade_cap_max(gen, a):
+    w = _word(gen, a)
+    assert w & 0xffffffe0 == 0x52801fe0, hex(w)  # mov wN, #0xff
+    n = w & 31
+    return ('{ extern uint32_t rt_grass_blade_swap_cap(void); '
+            f'c->x[{n}] = rt_grass_blade_swap_cap(); }}'
+            f'  /* {a:#x}: mov w{n}, #0xff (grass blades: the last draw slot) */')
+
+
+# The blades' region test, per cell of their grid as their update lists them (1.9.0 0x70013a8eec..): the cell's offset
+# from the camera (x s9, z s13, squared distance s21), the view direction (a, b at sp+0x204, sp+0x208), its distance
+# from the view's axis (s0 = |a z - b x|), then `fcmp s0, s6` (the near part's half width + 1.5 m) and `fcmp s0, s7`
+# (the far part's). The parts are slabs as wide as the view is at their end, so a region 2.5 times as deep lists
+# about 760 cells at 60 m and the list holds 512. runtime/draw_distance.c rt_grass_blade_lateral narrows them, only
+# past the game's own near distance and only at High, to a cone a little wider than the view: the cells the game
+# lists itself stay listed, and the region reaches further within the list.
+
+def _grass_blade_lateral(gen, a):
+    w = _word(gen, a)
+    assert w in (0x1e262000, 0x1e272000), hex(w)  # fcmp s0, s6 / fcmp s0, s7
+    n = (w >> 16) & 31
+    return ('{ extern float rt_grass_blade_lateral(int, float, float, float, float, uint32_t, uint32_t); '
+            f'c->nzcv = cmp_s(c, VSF32(0), rt_grass_blade_lateral({n - 6}, VSF32({n}), VSF32(9), VSF32(13), VSF32(21), '
+            'LD32(c->sp + 0x204), LD32(c->sp + 0x208))); }'
+            f'  /* {a:#x}: fcmp s0, s{n} (grass blades: a cell inside the region\'s width) */')
+
+
+# The terrain's distant trees (tera::Core::Tree, 1.9.0 0x70013c94ac, 1.8.2 0x70012b55cc: its per-frame shader setup).
+# The trees past the actor trees are drawn by the terrain, from where it fades them in (+0x14cb0, 100 m; +0x14cb4 the
+# fade, 100 m) out to +0x14cb8 (4000 m, fading over the last +0x14cbc, 500 m; +0x14cc0, 4000 m, where its blocks
+# change detail). The constructor sets them, and the game writes them again as it plays (about twice a frame; the end
+# is sometimes 4444.5 m); this setup and the per-frame update (1.9.0 0x70013c8898) read them. Video > Draw distance
+# sets them at the setup's entry, from the game's latest values times its factor (runtime/draw_distance.c
+# rt_tree_ranges; Original: the game's own).
+
+def _tree_ranges(gen, a):
+    w = _word(gen, a)
+    assert w & 0x9f00001f == 0x90000008, hex(w)  # adrp x8, <page>
+    page = adrp_page(w, a)
+    return (f'{{ extern void rt_tree_ranges(uint64_t); rt_tree_ranges(c->x[0]); c->x[8] = {page:#x}ull; }}'
+            f'  /* {a:#x}: adrp x8, {page:#x} (distant trees: their ranges) */')
+
+
 # tools/game_sites.py site -> its patch
 # BOTW's streaming Yaz0 decoder (1.9.0 0x700131d674; x0 its state, x1/w2 the input chunk): in native code
 # (runtime/hle/yaz0.c rt_yaz0, which declines the first call of a stream, the one that reads its header). Its return
@@ -449,7 +615,24 @@ def _yaz0_stream_ret(gen, a):
     return '{ extern void rt_yaz0_done(Cpu *); rt_yaz0_done(c); return; }' + f'  /* {a:#x}: ret (Yaz0 stream decoder) */'
 
 
+# A shrine apparatus (DungeonRotateGyro::calc_, 1.9.0): the call that fetches the mechanism's input, then a heartbeat
+# with the mechanism (x19) and what the call returned (x0), so runtime/pc_gyro_scene.c knows the player controls one.
+def _gyro_scene_actor(gen, a):
+    w = _word(gen, a)
+    assert w >> 26 == 0x25, hex(w)  # bl
+    t = a + sext(w & 0x3ffffff, 26) * 4
+    return (f'{{ extern void f_{t:x}(Cpu *); extern void rt_gyro_scene_actor(Cpu *, uint64_t, uint64_t); '
+            f'c->x[30] = {a + 4:#x}ull; f_{t:x}(c); rt_gyro_scene_actor(c, c->x[19], c->x[0]); }}'
+            f'  /* {a:#x}: bl (shrine apparatus input) */')
+
+
 PATCHES = {
+    'pc_map_focus': _pc_map_focus(False),
+    'pc_map_focus_target': _pc_map_focus(True),
+    'pc_map_focus_now': _pc_map_focus(True),
+    'pc_button_group': _pc_button_group,
+    'pc_cursor_manager': _pc_cursor_manager,
+    'gyro_scene_actor': _gyro_scene_actor,
     'pause_options_update': _pause_option_state,
     'opt_create_rows': _opt_rows,
     'opt_row_init_flag_type': _opt_flag_type,
@@ -476,6 +659,7 @@ PATCHES = {
     'surf_boost_remove': _surf_boost_remove,
     'surf_jump_request': _surf_jump_request,
     'phys_solver_steps': _solver_steps,
+    'kf_angle': _kf_angle,
     'snd_frame_floor': _snd_frame_floor,
     'persp_matrix': _persp_matrix,
     'persp_matrix_offset': _persp_matrix_offset,
@@ -494,6 +678,19 @@ PATCHES = {
     'cam_pitch_item': _cam_pitch_aim,
     'cam_reverse_x': _cam_reverse(0),
     'cam_reverse_y': _cam_reverse(1),
+    'traverse_scale': _traverse_scale,
+    'traverse_scale_default': _traverse_scale_default,
+    'grass_range': _grass_range,
+    'grass_fade_blades': _grass_fade(27, 0x240),
+    'grass_fade_quads': _grass_fade(24, 0x4),
+    'grass_blade_slots': _grass_blade_slots,
+    'grass_blade_cap_a': _grass_blade_cap,
+    'grass_blade_cap_b': _grass_blade_cap,
+    'grass_blade_cap_c': _grass_blade_cap_swap,
+    'grass_blade_cap_c_max': _grass_blade_cap_max,
+    'grass_blade_lateral_near': _grass_blade_lateral,
+    'grass_blade_lateral_far': _grass_blade_lateral,
+    'tree_ranges': _tree_ranges,
 }
 
 

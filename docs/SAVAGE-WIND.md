@@ -732,6 +732,18 @@ Pendiente:
        0,56 m a ~90 FPS. Prueba (corridas ocultas en Kakariko, `SAVAGEWIND_TEST_WARP=1834.4,221.9,959.0`, coger el
        cuco con A y saltar con X, altura de Link en PlayerInfo +0x8c): 0,634 m a 30, 0,640 a 60, 0,639 a ~85-120;
        el salto normal sigue en 0,68.
+     - Giro de los cuerpos que mueve el juego (#209): las piezas "keyframed" (el suelo de una Bestia Divina al
+       inclinarse, ascensores, puertas) reciben cada fotograma un objetivo (FUN_710130d19c, una matriz 3x4) y cada paso
+       de física la velocidad que las lleva a él (1.9.0 0x70012d5598): la angular sale del ángulo del giro que falta,
+       que Havok calcula como 2 acos(|w|) de su cuaternión (`hkQuaternion::getAngle`, 0x70000b06d4). Por debajo de
+       ~1 mrad, w redondea a 1 en float y el giro se lee como nulo. A 30 FPS el suelo de Vah Medoh gira ~1,7 mrad por
+       fotograma; a 120, 0,43: se quedaba quieto 1-3 pasos y luego recuperaba de golpe (0,0828 x raíz(1, 2, 3, 4)
+       rad/s para un giro constante de 0,0523), y Link encima daba saltitos (en el aire la mitad de los fotogramas,
+       relanzado al tocar el suelo). El parche `kf_angle` sustituye esa llamada por `rt_kf_angle`:
+       2 atan2(|xyz|, |w|), el mismo ángulo sin el redondeo (`SAVAGEWIND_KF_ANGLE=0` deja el del juego). Medido con
+       Link quieto sobre Medoh inclinándose a 120 FPS: velocidad angular del suelo constante (pasos parados del 49 % al
+       3 %, solo al arrancar o parar el giro); variación de la velocidad vertical de Link de 0,9-1,6 m/s a 0,07-0,13
+       (a 30 FPS, 0,04-0,05).
      - Vsync: Vídeo > Sincronización vertical (ver "VSync y VRR" abajo). Por defecto Rápida (MAILBOX), sin tearing;
        cada refresco muestra la imagen más nueva. Una frecuencia que divide la del monitor (60 en 60/120/240 Hz) es
        la más fluida; una que no (60 o 90 en 144 Hz) alterna 2 y 3 refrescos por imagen; por encima de la del
@@ -1168,6 +1180,74 @@ Pendiente:
        vuelve a poner su fovy cada frame (setFovy desde la cámara), así que no se acumula.
        `SAVAGEWIND_NO_FOV_CAMERA_FIX=1`: solo tan y aspect, como antes. Pruebas: `SAVAGEWIND_WINDOW_SHOT_AT=<frame>,...` guarda la
        ventana tal cual se presenta (bandas y menús incluidos) en `build/frames/window_N.png`. Metal pasa `false`.
+   - Distancia de dibujado (2026-10-29, #88): Vídeo > Distancia de dibujado (`draw_distance` = original, medium,
+     high), en Opciones del juego y en Configuración; `runtime/draw_distance.c`. Original deja cada valor del juego
+     intacto. Tres partes, cada una con su site de `tools/game_sites.py` (grupos opcionales):
+     - Actores colocados (`traverse_scale`, `traverse_scale_default`; 1.9.0 `0x70010a4640`): cada actor del mapa
+       existe dentro de su distancia de recorrido de la cámara, su `traverseDist` de ActorInfo (100 si no tiene; árboles
+       y enemigos 150 m, rocas y edificios 300-3000 m, el modelo completo de un edificio con versión `_Far` ~500 m) por
+       una escala que el juego lee del gestor de depuración de actores (`+0x310` del objeto en `0x7001e39348`, que solo
+       existe con el heap "ActorDebug") o 1 sin él, como en el juego publicado. `rt_traverse_scale` la multiplica por
+       1,5 (Medium) o 2 (High), pero lo que tiene menos de 2000 m propios se queda en 2000 m como mucho: llevar actores
+       de 1000-2000 m a 3000-4000 m tiraba el juego al cargar el mundo en la meseta. Lo de 2000 m o más (los `_Far`,
+       el castillo, los modelos de roca de las montañas) escala como mucho 1,5 (`FAR_MAX`: a 2x parpadeaban y faltaban
+       bloques enteros de edificios lejanos en Tabantha, prueba del usuario). High usa 1,6 para los actores de menos de
+       2000 m (Medium 1,5): con una copia de una partida al 100 % en Kakariko, delante del castillo de Hyrule, el Bosque
+       Kolog, Lurelin, Hateno y la ciudadela Gerudo (andar y girar 4700 frames), delante del castillo faltaban el muro y
+       los estandartes desde 1,75x (1,75 x2, 2 x2, 2,25, 4) y estaban con 1, 1,5 x2 y 1,6 x2; la carga se caía desde 2,5x
+       (llamada nula desde `0x7001405cd8` o acceso a 0: 2,5 en Gerudo, 3 en el Bosque Kolog y Gerudo, 4 en Kakariko,
+       Hateno y Gerudo; 2,25 cargó en los seis sitios).
+     - Hierba (`grass_range` `0x70013ad8b0`, `grass_fade_blades` `0x70013a85d0`, `grass_fade_quads`
+       `0x70013baa5c`): cada capa (briznas: celdas de 3 m en una rejilla de 47, +-69 m; quads cruzados: 10 m, 59 celdas,
+       +-290 m) hace hierba en las celdas de una región delante de la cámara, las lista de la más cercana a la más
+       lejana y las dibuja apagándolas con la distancia. En juego (tan(fovy/2) 0,466): región de briznas ~24 m, fundido
+       de 8 a 21,5 m (clamp((1/(k·d) - 0,1)/0,17), k = max(tan(fovy/2), tan 10°), que el juego guarda una vez por frame),
+       lista 335-342 de 512, 64 de 256 celdas dibujadas; quads: región ~120 m, fundido hasta ~46 m, lista 718-768 de
+       768. La región es 1/(max(tan, s0)·s1) con los límites de tamaño en pantalla s1, s2 (briznas 0,0858 y 2, quads
+       0,0162 y 0,186) y como mucho 1/(s0·s1) = 66 m en las briznas (una vista estrecha), dentro de su rejilla.
+       Medium/High: `rt_grass_fade_*` divide k por el factor de la capa (la hierba se apaga más lejos); los quads solo
+       eso (1,6 / 2,5: su región ya llega); las briznas además la región (`rt_grass_range`: límites / factor, s0 x
+       factor, el máximo queda el del juego), con un factor que sigue su lista: sube 0,005 por frame con menos de 455
+       listadas, baja rápido con 485 o más y vuelve a 1 donde no hay hierba, hasta 1,15 (Medium) o 1,6 (High). Una lista
+       llena deja huecos en la hierba junto a Link (visto a 3x); con esto High se queda en ~1,31 (87-97 celdas dibujadas)
+       y la lista no pasó de 492 girando en la meseta y en el campo de Hyrule. El enganche anterior, solo la región, no
+       dibujaba hierba más lejos en juego (el fundido seguía donde el del juego). Pruebas: `SAVAGEWIND_GRASS_BLADES` /
+       `_QUADS=<x>`, `SAVAGEWIND_GRASS_PROBE=1` (regiones, listas y factores en el log) y
+       `SAVAGEWIND_DRAWDIST_AT=<frame>:<nivel>,...` (varios niveles en una sola corrida, con un mismo tiempo y cámara;
+       `framepace_script_now`).
+       Ronda 3 (2026-10-29): en High las briznas llegan a ~2,45x (fundido hasta ~53 m, 245-302 celdas dibujadas). Hizo
+       falta: 512 ranuras de dibujo en vez de 256 si el juego arranca en High (`grass_blade_slots` `0x70013a7230`,
+       `mov w1, #0x100`; y las dos pasadas que paraban en la celda 256, `grass_blade_cap_a/b` `0x70013b32e0`,
+       `0x7001496c40`, `cmp wN, #0xff`), y una región en cono pasada la distancia cercana del propio juego
+       (`grass_blade_lateral_near/far` `0x70013a8f0c`, `0x70013a8f20`: `fcmp s0, s6` / `fcmp s0, s7`, la prueba de
+       anchura de cada celda; las dos partes de la región son franjas tan anchas como la vista en su final y a 2,5x
+       listaban más celdas de las 512 que caben): ancho de la vista + 4 m, y la parte lejana solo 6 m más allá de la
+       cercana. Las celdas que lista el propio juego siguen. Las listas (struct en línea de 0x810 bytes: cuenta, 512
+       entradas y el puntero a las celdas en +0x808, que `0x70013afc0c` usa para las dos listas) no se tocan. Los quads
+       a 2,5x ya dibujaban hasta 127 m (su región los tiene). Medium y Original: los mismos valores del juego en todos
+       los sitios nuevos.
+       Ronda 4 (2026-10-30, prueba del usuario: "algo parpadea constantemente" solo en High): una tercera pasada se
+       quedaba en 256. `0x70013ae920`, una vez por frame (desde el intercambio de `0x7001493434`), apunta cada ranura
+       a la mitad de este frame de su bloque de shader doble (+0x41 la mitad, +0x10 el puntero) para las celdas
+       dibujadas, como mucho 256 (`cmp w8, #0xff` ... `mov w9, #0xff; csel`). Con más de 256 celdas (solo en High) las
+       ranuras de la 257 en adelante se quedaban en la otra mitad y su hierba salía, un frame sí y otro no, con los
+       datos de dos frames antes: manchas de hierba alta que parpadean. `grass_blade_cap_c` / `_c_max`
+       (`0x70013ae960`, `0x70013ae96c`) la llevan a la última ranura (`rt_grass_blade_swap_cap`; Original y Medium
+       arrancados así: los 255 del juego). Con la sonda (`SAVAGEWIND_GRASS_PROBE`, ranuras en otra mitad que la 0):
+       hasta 33 un frame de cada dos con la pasada de la ronda 3 (`SAVAGEWIND_GRASS_OLDSWAP=1`, pruebas), 0 ahora.
+     - Árboles lejanos del terreno (`tree_ranges`, `0x70013c94ac`, la entrada de su preparación de shader por frame):
+       tera::Core::Tree guarda en `+0x14cb0` dónde aparecen (100 m, fundido 100 m), hasta dónde llegan (4000 m,
+       fundido 500 m) y dónde cambian de detalle sus bloques (4000 m). El juego los vuelve a escribir mientras se
+       juega (unas dos veces por frame; el final a veces es 4444,5 m), así que `rt_tree_ranges` los pone cada vez al
+       último valor del juego por un factor: dónde aparecen y su fundido, por el de los actores (el juego acaba sus
+       árboles actor, 150 m, a mitad de ese fundido, 100-200 m; en High 240 m en 160-320 m), y hasta dónde llegan, su
+       fundido y el cambio de detalle, por el de los modelos lejanos (1,5). Pruebas: `SAVAGEWIND_TREE_NEAR` /
+       `_FAR=<x>`.
+     - El nivel de detalle del terreno no cambia: no se encontró una distancia que lo elija (ver
+       `issue-logs/88-draw-distance/results.md` fuera del repo).
+     Costo (RTX 3060, 1440p, SMAA, sin límite, meseta girando la cámara, 3 rondas alternadas, ronda 4): Original
+     76,9 fps (13,01 ms), Medium 71,5 (13,99 ms, +1,0), High 68,7 (14,55 ms, +1,5). `SAVAGEWIND_TRAVERSE_SCALE=<x>` y
+     `SAVAGEWIND_FAR_SCALE=<x>` (pruebas) fuerzan los factores de actores y modelos lejanos.
    - Overlay de rendimiento (F10: off, FPS, full; ajuste `perf_overlay`): FPS y ms del juego con gráfico, CPU (total
      y del juego), RAM, GPU (uso, temperatura, potencia, reloj, VRAM) por NVML, que trae el driver de NVIDIA
      (cargado en tiempo de ejecución), y en Linux amdgpu por sysfs. Temperatura de CPU: hwmon en Linux; en Windows
