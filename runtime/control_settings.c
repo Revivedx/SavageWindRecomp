@@ -179,8 +179,11 @@ static void cmd_set(int argc, char **argv, ControlReply *r) {
                      s->names ? " or " : "", s->names ? s->names : ""); return;
     }
     int v = (int)value;
-    if (is(s, "fps_limit") && v != 0 && v != 30 && v != 60 && v != 90 && v != 120 && v != 360) {
-        control_fail(r, "fps must be 0 (unlimited), 30, 60, 90, 120 or 360"); return;
+    if (is(s, "fps_limit")) {
+        static const int fps[] = FPS_CHOICES;
+        bool offered = false;
+        for (unsigned i = 0; i < sizeof fps / sizeof fps[0]; i++) offered |= fps[i] == v;
+        if (!offered) { control_fail(r, "fps must be 0 (unlimited), 30, 60, 90, 120, 144, 165, 240 or 360"); return; }
     }
     if (is(s, "hdr_white") && v != 0 && v < 80) {
         control_fail(r, "hdr_white must be 0 (automatic) or 80 to 1000 nits"); return;

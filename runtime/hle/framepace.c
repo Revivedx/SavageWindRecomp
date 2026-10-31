@@ -1,4 +1,4 @@
-// Frame rate (Video > Frame rate): Off (no limit), 30, 60 (the default), 90, 120 or 360 frames per second, and the game's
+// Frame rate (Video > Frame rate): Off (no limit), 30, 60 (the default), 90, 120, 144, 165, 240 or 360 frames per second, and the game's
 // clock the same at every one of them. Shared by the macOS, Linux and Windows builds.
 //
 // How BOTW 1.8.2 keeps time (main module, runtime addresses):
