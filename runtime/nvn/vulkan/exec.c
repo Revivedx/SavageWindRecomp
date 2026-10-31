@@ -7674,7 +7674,7 @@ static void scene_post(Prog *pr, CmdRec *r) {
     float gpc[16];
     bool grade = grade_wanted(&lut, gpc);
     bool fsr3 = fsr_on && rt_fsr3() && mvec_enabled();  // (FSR 3: its own sharpening, RCAS, in place of CAS)
-    if (!fsr3) rt_jitter_set_phases(8);
+    if (!fsr3 && !dlss) rt_jitter_set_phases(8);  // (theirs: set by fsr3_scene, dlss_scene)
     if (!dlss && !fsr && !cas && !taa && !fsr3 && !grade) return;
     NvnTexture *t = scene_composite(pr, r), *rt = st.rt.ncolor ? st.rt.color[0] : NULL;
     if (!t) return;
@@ -7691,10 +7691,10 @@ static void scene_post(Prog *pr, CmdRec *r) {
         bool up = (fsr || fsr3) && smaller;
         dlss = dlss && smaller;  // (an upscaler only: at the window's size the game's own composite stays; no DLAA yet)
         if (t != taa_t || dlss) taa = NULL;
-        scene_mip_bias = (taa || fsr3) && ow && b->width ? log2f((float)b->width / (float)ow) - 1.0f : 0.0f;
+        scene_mip_bias = (taa || fsr3 || dlss) && ow && b->width ? log2f((float)b->width / (float)ow) - 1.0f : 0.0f;
         static const char *bias_env = (const char *)1;  // (testing) SAVAGEWIND_MIP_BIAS=<levels>: in place of that
         if (bias_env == (const char *)1) bias_env = getenv("SAVAGEWIND_MIP_BIAS");
-        if (bias_env && (taa || fsr3)) scene_mip_bias = (float)atof(bias_env);
+        if (bias_env && (taa || fsr3 || dlss)) scene_mip_bias = (float)atof(bias_env);
         if (!up && !dlss && !cas && !taa && !fsr3 && !grade) return;
         VkFormatProperties fp;
         vkGetPhysicalDeviceFormatProperties(g_vk.phys, b->format, &fp);
@@ -8150,9 +8150,14 @@ TexBackend *vk_fg_generate(NvnTexture *t, TexBackend *b) {
 // the world camera's depth and the camera's motion vectors, the ones frame generation makes (fg_draw finds the camera,
 // cam_motion makes the vectors, Link's box included), so it keeps its history from frame to frame. The history is
 // reset at a cut (as frame generation's: a jump of over 10 m or a turn of over ~35 degrees), after a frame without
-// DLSS, and with no world camera (the title screen: the scene's own depth then, and no motion). The game's projection
-// has no sub-pixel jitter yet: the history steadies edges as the camera moves, but adds no detail to a still view.
-// SAVAGEWIND_DLSS_HISTORY=0: the history reset every frame (A/B); SAVAGEWIND_DLSS_LOG=1: the camera now and then.
+// DLSS, and with no world camera (the title screen: the scene's own depth then, and no motion). The world camera is
+// jittered (output_scale.c rt_persp_offset: Halton, 8 x the upscale's area phases, as NVIDIA's guide has it) and the
+// textures' LOD biased (scene_mip_bias), so the history adds detail beyond the render size. The motion vectors are
+// the scene's per-object ones (mvec.c, as FSR 3's: fsr3_scene) when they were made this frame at the scene's size,
+// else the camera's. SAVAGEWIND_DLSS_HISTORY=0: the history reset every frame (A/B); SAVAGEWIND_DLSS_VECTORS=camera:
+// (A/B) the camera's vectors always; SAVAGEWIND_DLSS_JITTER_AT=<frame>:<pp|nn|np|pn|off>,...: (testing) the jitter's
+// signs as NGX gets them (pp: FSR 3's, the default) from that presented frame on, the camera's jitter unchanged
+// (same-view A/B in one run); SAVAGEWIND_DLSS_LOG=1: the camera now and then.
 static struct {
     double prev_vp[16];
     float prev_pos[3], prev_fwd[3], prev_link[3];
@@ -8182,6 +8187,17 @@ static TexBackend *dlss_scene(VkCommandBuffer cb, TexBackend *color, uint32_t ow
     if (history < 0) history = getenv("SAVAGEWIND_DLSS_HISTORY") ? atoi(getenv("SAVAGEWIND_DLSS_HISTORY")) : 1;
     if (lg < 0) lg = getenv("SAVAGEWIND_DLSS_LOG") != NULL;
     uint64_t frame = renderer_present_count();
+    static int camv = -1;
+    if (camv < 0) camv = getenv("SAVAGEWIND_DLSS_VECTORS") && !strcmp(getenv("SAVAGEWIND_DLSS_VECTORS"), "camera");
+    // (the object vectors, with their own depth: clip-space NDC differences, FSR's scale; fsr3_scene)
+    TexBackend *ov = mvec_vectors_img, *od = mvec_depth ? vk_tex(mvec_depth, false) : NULL;
+    float jit[2] = {0, 0}, nr, fr, fov;
+    bool objv = !camv && mvec_filled == frame && ov && ov->width == color->width && ov->height == color->height && od &&
+                od->image && (od->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) && od->width == color->width &&
+                od->height == color->height;
+    bool jittered = mvec_camera_now(jit, &nr, &fr, &fov) && rt_jitter_on();
+    if (!jittered) jit[0] = jit[1] = 0;
+    if (objv) db = od;
     TexBackend *mv = post_image_ex(34, db->width, db->height, VK_FORMAT_R16G16_SFLOAT, VK_IMAGE_USAGE_TRANSFER_DST_BIT);
     bool reset = true, moved = false;
     if (best >= 0) {
@@ -8194,13 +8210,16 @@ static TexBackend *dlss_scene(VkCommandBuffer cb, TexBackend *color, uint32_t ow
         reset = !history || !dl.have_prev || dl.frame + 1 != frame || dp > 100 || dot < 0.82f;
         if (reset) memcpy(dl.prev_vp, vp, sizeof vp);
         bool link = fg.cand[best].has_link && !reset && dl.have_prev_link;
-        if (g_gpuprof_frame) gp_mark(cb, "DLSS: motion vectors");
-        moved = cam_motion(cb, m, dl.prev_vp, link ? fg.cand[best].link : NULL, dl.prev_link, db, mv);
+        if (objv) mv = ov, moved = true;
+        else {
+            if (g_gpuprof_frame) gp_mark(cb, "DLSS: motion vectors");
+            moved = cam_motion(cb, m, dl.prev_vp, link ? fg.cand[best].link : NULL, dl.prev_link, db, mv);
+        }
         static uint64_t k;
         if (lg && k++ % 60 < 4)
-            LOG("[dlss] camera %d of %d (%d draws) at %.1f %.1f %.1f, moved %.2f m, turn %.4f%s%s\n", best, fg.ncand,
+            LOG("[dlss] camera %d of %d (%d draws) at %.1f %.1f %.1f, moved %.2f m, turn %.4f%s%s%s\n", best, fg.ncand,
                 fg.cand[best].draws, pos[0], pos[1], pos[2], sqrtf(dp), dot, reset ? ", reset" : "",
-                moved ? "" : ", no motion vectors");
+                moved ? "" : ", no motion vectors", objv ? ", object vectors" : "");
         memcpy(dl.prev_vp, vp, sizeof vp);
         memcpy(dl.prev_pos, pos, sizeof pos), memcpy(dl.prev_fwd, fwd, sizeof fwd);
         dl.have_prev_link = fg.cand[best].has_link;
@@ -8219,7 +8238,33 @@ static TexBackend *dlss_scene(VkCommandBuffer cb, TexBackend *color, uint32_t ow
     vk_full_barrier(cb);
     if (g_gpuprof_frame) gp_mark(cb, "DLSS: %ux%u -> %ux%u", color->width, color->height, ow, oh);
     rec_drain();  // (NGX records into cb itself: what was queued before goes first)
-    bool ok = vk_dlss_apply(cb, color, db, mv, o, (unsigned)g_settings.upscale_quality, 0, 0, reset);
+    uint32_t w = color->width, h = color->height;
+    float flip = nvn_window_origin() == 0 ? -1.0f : 1.0f;  // (the game's NDC y to clip y, as fsr3_scene's)
+    float sx = objv ? -0.5f * (float)w : (float)mv->width, sy = objv ? 0.5f * (float)h : (float)mv->height;
+    float jx = jit[0] * (float)w * 0.5f, jy = -jit[1] * flip * (float)h * 0.5f;
+    {
+        static int n = -1;
+        static unsigned long long at[8];
+        static char mode[8][4];
+        if (n < 0) {
+            n = 0;
+            for (const char *e = getenv("SAVAGEWIND_DLSS_JITTER_AT"); e && *e && n < 8;) {
+                if (sscanf(e, "%llu:%3[^,]", &at[n], mode[n]) != 2) break;
+                n++;
+                e = strchr(e, ',');
+                if (e) e++;
+            }
+        }
+        const char *md = NULL;
+        for (int i = 0; i < n; i++)
+            if (frame >= at[i]) md = mode[i];
+        if (md && !strcmp(md, "off")) jx = jy = 0;
+        else if (md && strlen(md) == 2) jx *= md[0] == 'n' ? -1 : 1, jy *= md[1] == 'n' ? -1 : 1;
+    }
+    bool ok = vk_dlss_apply(cb, color, db, mv, o, (unsigned)g_settings.upscale_quality, jx, jy, sx, sy, reset);
+    // (the next frames' jitter sequence: 8 x the upscale's area, NVIDIA's recommended length)
+    float area = (float)ow * (float)oh / ((float)w * (float)h);
+    rt_jitter_set_phases((uint32_t)ceilf(8.0f * (area > 1 ? area : 1)));
     vk_dyn_forget();
     if (!ok) {
         dl.have_prev = false;
@@ -8231,8 +8276,9 @@ static TexBackend *dlss_scene(VkCommandBuffer cb, TexBackend *color, uint32_t ow
     }
     static int logged;
     if (!logged++)
-        LOG("[dlss] first frame: %ux%u (format %d) -> %ux%u, depth format %d, %s\n", color->width, color->height,
-            color->format, ow, oh, db->format, best >= 0 ? "camera motion vectors" : "no world camera");
+        LOG("[dlss] first frame: %ux%u (format %d) -> %ux%u, depth format %d, %s, %s\n", color->width, color->height,
+            color->format, ow, oh, db->format, objv ? "object motion vectors" : best >= 0 ? "camera motion vectors" : "no world camera",
+            jittered ? "jittered" : "no jitter");
     return o;
 }
 

@@ -56,7 +56,9 @@ bool upscaler_available(int u) {
 
 bool rt_fsr3(void) { return g_settings.upscaler == UPSCALE_FSR3 && upscaler_available(UPSCALE_FSR3); }
 
-bool rt_temporal(void) { return rt_antialias() == AA_TAA || rt_fsr3(); }
+bool rt_dlss(void) { return g_settings.upscaler == UPSCALE_DLSS && upscaler_available(UPSCALE_DLSS); }
+
+bool rt_temporal(void) { return rt_antialias() == AA_TAA || rt_fsr3() || rt_dlss(); }
 
 double upscale_mode_factor(int q) {
     static const double f[UPQ_COUNT] = {1.3, 1.5, 1.7, 2.0, 3.0};
@@ -295,7 +297,7 @@ bool rt_jitter_on(void) {
     return env >= 0 ? env : rt_temporal();
 }
 
-// The jitter sequence's length: 8, or FSR 3's for its upscale (fsr3_jitter_phases, set by vulkan/exec.c)
+// The jitter sequence's length: 8, or the temporal upscaler's (FSR 3's fsr3_jitter_phases, DLSS's; set by vulkan/exec.c)
 static uint32_t jitter_phases = 8;
 void rt_jitter_set_phases(uint32_t n) { __atomic_store_n(&jitter_phases, n ? n : 8, __ATOMIC_RELAXED); }
 

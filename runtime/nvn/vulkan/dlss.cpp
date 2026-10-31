@@ -169,7 +169,8 @@ void vk_dlss_shutdown(void) {
 bool vk_dlss_available(void) { return g_available; }
 
 bool vk_dlss_apply(VkCommandBuffer cb, TexBackend *color, TexBackend *depth, TexBackend *motion,
-                   TexBackend *output, unsigned quality, float jitter_x, float jitter_y, bool reset) {
+                   TexBackend *output, unsigned quality, float jitter_x, float jitter_y, float mv_scale_x,
+                   float mv_scale_y, bool reset) {
     if (!g_available || !cb || !color || !depth || !motion || !output ||
         !color->image || !depth->image || !motion->image || !output->image ||
         color->width == 0 || color->height == 0 || output->width == 0 || output->height == 0)
@@ -229,9 +230,8 @@ bool vk_dlss_apply(VkCommandBuffer cb, TexBackend *color, TexBackend *depth, Tex
     eval.InRenderSubrectDimensions.Width = color->width;
     eval.InRenderSubrectDimensions.Height = color->height;
     eval.InReset = reset ? 1 : 0;
-    // (the vectors are uv in the previous frame - uv in this one, exec.c cam_motion; NGX takes them in render pixels)
-    eval.InMVScaleX = (float)motion->width;
-    eval.InMVScaleY = (float)motion->height;
+    eval.InMVScaleX = mv_scale_x;  // (NGX takes them in render pixels)
+    eval.InMVScaleY = mv_scale_y;
     NVSDK_NGX_Result r = NGX_VULKAN_EVALUATE_DLSS_EXT(cb, g_feature, g_params, &eval);
     if (!ok(r, "evaluate")) {
         release_feature();
@@ -254,7 +254,8 @@ void vk_dlss_required_device_extensions(const char ***names, unsigned *count) {
 bool vk_dlss_init(void) { return false; }
 void vk_dlss_shutdown(void) {}
 bool vk_dlss_available(void) { return false; }
-bool vk_dlss_apply(VkCommandBuffer, TexBackend *, TexBackend *, TexBackend *, TexBackend *, unsigned, float, float, bool) {
+bool vk_dlss_apply(VkCommandBuffer, TexBackend *, TexBackend *, TexBackend *, TexBackend *, unsigned, float, float, float, float,
+                   bool) {
     return false;
 }
 
