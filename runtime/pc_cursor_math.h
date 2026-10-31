@@ -1,6 +1,19 @@
 #pragma once
 #include <math.h>
 #include <stdbool.h>
+#include <float.h>
+// The native map leaves one vertical pan bound at FLT_MAX: controller cursor
+// navigation normally constrains it elsewhere. Direct pan must close that end
+// using the opposite, zoom-dependent extent without changing finite bounds.
+static inline float pc_map_clamp_center(float value,float lower,float upper) {
+    bool lo=isfinite(lower)&&fabsf(lower)<FLT_MAX*.5f;
+    bool hi=isfinite(upper)&&fabsf(upper)<FLT_MAX*.5f;
+    if(!lo)lower=hi?-upper:0;
+    if(!hi)upper=lo?-lower:0;
+    if(lower>upper){float mid=(lower+upper)*.5f;lower=upper=mid;}
+    if(!isfinite(value))value=0;
+    return fmaxf(lower,fminf(upper,value));
+}
 // SDL window size and mouse position use the same logical coordinate system, including on a high-DPI display.
 // BOTW's menu layouts use 1280x720. The presented pause/title image is fitted to the window, with bars if needed.
 static inline bool pc_cursor_to_layout(float width,float height,float x,float y,float out[2]) {

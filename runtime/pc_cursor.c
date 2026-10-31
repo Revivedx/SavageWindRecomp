@@ -757,6 +757,15 @@ static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
     }
     float zoom=*(float*)(d+0x878);
     if(!isfinite(zoom)||zoom<=0)return true;
+    // Recover an already escaped view as well as limiting future input. Clamp
+    // the retained viewport too, otherwise idle-hover restoration brings it back.
+    for(unsigned axis=0;axis<2;axis++) {
+        float lo=*(float*)(d+0x8d0+4*axis),hi=*(float*)(d+0x8d8+4*axis);
+        float center=pc_map_clamp_center(*(float*)(d+0x880+4*axis),lo,hi);
+        *(float*)(d+0x880+4*axis)=*(float*)(d+0x890+4*axis)=center;
+        *(float*)(d+0x870+4*axis)=center*zoom;
+        if(map_view_valid)map_view_center[axis]=pc_map_clamp_center(map_view_center[axis],lo,hi);
+    }
     bool area=fabsf(point[0])<=633&&fabsf(point[1])<=285;
     int scroll=atomic_exchange(&wheel,0);
     map_canvas_active=true;
@@ -784,8 +793,8 @@ static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
         if(hypotf(point[0]-map_origin[0],point[1]-map_origin[1])>5)map_dragged=true;
         if(map_dragged) {
             float dx=(point[0]-map_last[0])/zoom,dy=(point[1]-map_last[1])/zoom;
-            *(float*)(d+0x880)=fmaxf(*(float*)(d+0x8d0),fminf(*(float*)(d+0x8d8),*(float*)(d+0x880)+dx));
-            *(float*)(d+0x884)=fmaxf(*(float*)(d+0x8d4),fminf(*(float*)(d+0x8dc),*(float*)(d+0x884)+dy));
+            *(float*)(d+0x880)=pc_map_clamp_center(*(float*)(d+0x880)+dx,*(float*)(d+0x8d0),*(float*)(d+0x8d8));
+            *(float*)(d+0x884)=pc_map_clamp_center(*(float*)(d+0x884)+dy,*(float*)(d+0x8d4),*(float*)(d+0x8dc));
             *(float*)(d+0x890)=*(float*)(d+0x880);*(float*)(d+0x894)=*(float*)(d+0x884);
         }
         memcpy(map_last,point,sizeof point);
@@ -826,8 +835,8 @@ static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
     float keys[2],pan[2];extern void input_pc_map_axes(float out[2]);input_pc_map_axes(keys);
     pc_map_navigation(point,keys[0],keys[1],!frame_held&&!snapped&&!native_snap&&(pointer_test()||position_inside),nav_dt,zoom,pan);
     if(!frame_held&&(pan[0]||pan[1])) {
-        *(float*)(d+0x880)=fmaxf(*(float*)(d+0x8d0),fminf(*(float*)(d+0x8d8),*(float*)(d+0x880)+pan[0]));
-        *(float*)(d+0x884)=fmaxf(*(float*)(d+0x8d4),fminf(*(float*)(d+0x8dc),*(float*)(d+0x884)+pan[1]));
+        *(float*)(d+0x880)=pc_map_clamp_center(*(float*)(d+0x880)+pan[0],*(float*)(d+0x8d0),*(float*)(d+0x8d8));
+        *(float*)(d+0x884)=pc_map_clamp_center(*(float*)(d+0x884)+pan[1],*(float*)(d+0x8d4),*(float*)(d+0x8dc));
         *(float*)(d+0x890)=*(float*)(d+0x880);*(float*)(d+0x894)=*(float*)(d+0x884);
         if(getenv("SAVAGEWIND_PC_CURSOR_LOG")&&f%30==0)LOG("[pc-map-pan] frame %llu keys %.0f %.0f delta %.2f %.2f center %.2f %.2f\n",f,keys[0],keys[1],pan[0],pan[1],*(float*)(d+0x880),*(float*)(d+0x884));
     }

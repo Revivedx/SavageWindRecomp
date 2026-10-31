@@ -26,6 +26,8 @@ Adventure Log and Ability Controls hover select through their registered native 
 
 Map navigation supports wheel zoom, left-drag panning, WASD and progressive edge scrolling. Marker hover has a small attraction radius without recentering the map. Stamp placement stays anchored while choosing an icon, and Edit/Delete/Cancel accepts pointer input. Coordinates account for resolution, aspect ratio and letterboxing.
 
+Direct panning closes the native unbounded vertical sentinel using the opposite zoom-dependent extent. Dragging, WASD and edge scrolling stop at that boundary, and a viewport left outside by an older revision is recovered. Synthetic limit/zoom tests pass, and the contributor confirmed this follow-up in game on the previously validated local pointer base. Full gameplay validation of the latest upstream integration remains pending.
+
 The system cursor is hidden while keyboard/controller navigation owns menu focus, and over the map canvas while the game pointer is active, without enabling relative mouse mode there. It is restored for host UI, cursor release, loss of focus and when pointer mode is off. Controllers and existing bindings remain available.
 
 The specialized map/inventory adapters target BOTW 1.9.0. Optional generator sites validate instruction prologues; missing groups disable their adapters instead of guessing addresses. Reboot clears cached guest pointers and gesture state.

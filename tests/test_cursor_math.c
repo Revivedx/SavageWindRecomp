@@ -43,4 +43,23 @@ int main(void) {
     }
     pc_map_navigation(middle,1,0,false,10,1,delta);assert(fabsf(delta[0]+18)<.001f);
     puts("PASS: map navigation speed at 30/60/120 FPS and 4 zooms; normalized corners, header/outside exclusion, drag/modal suppression and stall limit");
+    // The native lower-screen edge is FLT_MAX, not a usable world extent.
+    // Mouse dragging, edge scrolling and WASD must stop at the zoom-dependent
+    // opposite extent and recover positions left outside by older revisions.
+    for(unsigned z=0;z<4;z++) {
+        float extent=fmaxf(0,10000-360/zooms[z]);
+        float center=0;
+        for(unsigned i=0;i<20000;i++)center=pc_map_clamp_center(center+360/zooms[z],-extent,FLT_MAX);
+        assert(center==extent);
+        for(unsigned i=0;i<20000;i++)center=pc_map_clamp_center(center-360/zooms[z],-extent,FLT_MAX);
+        assert(center==-extent);
+        assert(pc_map_clamp_center(1e20f,-extent,FLT_MAX)==extent);
+        assert(pc_map_clamp_center(-1e20f,-extent,FLT_MAX)==-extent);
+    }
+    assert(pc_map_clamp_center(11567.6f,-2000,FLT_MAX)==2000);
+    assert(pc_map_clamp_center(10,-0.f,0.f)==0);
+    assert(pc_map_clamp_center(2000,-1000,1500)==1500); // preserve asymmetric finite limits
+    assert(pc_map_clamp_center(-2000,-FLT_MAX,1500)==-1500);
+    assert(pc_map_clamp_center(INFINITY,-2000,FLT_MAX)==0);
+    puts("PASS: pan limits at every zoom, unbounded native sentinel, all directions and escaped-view recovery");
 }
