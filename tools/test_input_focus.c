@@ -28,6 +28,9 @@ void motion_sensor_event(const SDL_Event *e) { (void)e; sensor_events++; }
 void vibration_update(SDL_Gamepad *p, bool focused) { (void)p; vibrating = focused; }
 uint64_t renderer_present_count(void) { return 0; }
 uint64_t plat_now_ns(void) { return 0; }
+uint64_t framepace_game_frame(void) { return 0; }
+bool framepace_title_ui(void) { return false; }
+bool framepace_menu_ui(void) { return false; }
 
 // PE linkers also keep exported helpers from input.c. These paths are outside this harness.
 static _Noreturn void unexpected_helper(void) { fputs("unexpected runtime helper\n", stderr); abort(); }
@@ -43,6 +46,15 @@ void motion_script(float p, float r, float ps, float ys) { (void)p; (void)r; (vo
 static void focus(bool on) {
     SDL_Event e = {0};
     e.type = on ? SDL_EVENT_WINDOW_FOCUS_GAINED : SDL_EVENT_WINDOW_FOCUS_LOST;
+    assert(!input_user_blocked(&e));
+    input_handle_event(&e);
+}
+
+// A mouse button, as the window loop delivers it (relative mode off: the side buttons must still register).
+static void mouse_button(int button, bool down) {
+    SDL_Event e = {0};
+    e.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+    e.button.button = (Uint8)button;
     assert(!input_user_blocked(&e));
     input_handle_event(&e);
 }
@@ -113,6 +125,23 @@ int main(void) {
     focus(true);
     controls(joy, true);
     sample(held, true);
+
+    // Mouse buttons beyond Left/Middle/Right (the side buttons, "Mouse 4 / 5") must be detected while the cursor is
+    // free (relative mode off): they used to be dropped whenever mouse_held was false, so a binding on them failed.
+    assert(!mouse_held);
+    g_bind_key[BIND_Y] = BIND_MOUSE + SDL_BUTTON_X1;  // Mouse 4 (Back)
+    g_bind_key[BIND_X] = BIND_MOUSE + SDL_BUTTON_X2;  // Mouse 5 (Forward)
+    recompute_keyboard();
+    mouse_button(SDL_BUTTON_X1, true);
+    assert(input_buttons_now() & (1ull << BTN_Y));
+    mouse_button(SDL_BUTTON_X2, true);
+    assert(input_buttons_now() & (1ull << BTN_X));
+    mouse_button(SDL_BUTTON_X1, false);
+    mouse_button(SDL_BUTTON_X2, false);
+    assert(!(input_buttons_now() & ((1ull << BTN_Y) | (1ull << BTN_X))));
+    g_bind_key[BIND_Y] = 0;
+    g_bind_key[BIND_X] = 0;
+    recompute_keyboard();
 
     // Losing focus must release cached input even if no further controller event arrives.
     focus(false);
