@@ -408,6 +408,29 @@ test-bind-capture: $(B)/test_bind_capture
 
 .PHONY: test-bind-capture
 
+$(B)/test_pc_controls: tests/test_pc_controls.c runtime/hle/input.c runtime/hle/bindings.c runtime/settings.h
+	@mkdir -p $(dir $@)
+	$(CC) -O2 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -isystem third_party -o $@ $< -fuse-ld=lld -Wl,--gc-sections $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) -lSDL3 -lm
+
+$(B)/test_pc_settings: tests/test_pc_settings.c runtime/settings.c runtime/settings.h runtime/hle/bindings.c
+	@mkdir -p $(dir $@)
+	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< -lSDL3 -lm
+
+$(B)/test_options_pointer: tests/test_options_pointer.c runtime/pc_cursor.c runtime/pc_cursor.h runtime/pc_cursor_math.h
+	@mkdir -p $(dir $@)
+	$(CC) -O2 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -isystem third_party -o $@ $< -fuse-ld=lld -Wl,--gc-sections $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) -lSDL3 -lm
+
+test-pc-controls: $(B)/test_pc_controls $(B)/test_pc_settings $(B)/test_options_pointer
+	$(B)/test_pc_controls
+	$(B)/test_options_pointer
+	@set -e; tmp=$$(mktemp); trap 'rm -f "$$tmp"' EXIT; \
+	 printf 'settings_version = 3\npc_cursor = 1\n' > "$$tmp"; \
+	 $(B)/test_pc_settings "$$tmp" 1; \
+	 $(B)/test_pc_settings "$$tmp" 0; \
+	 SAVAGEWIND_PC_CURSOR=0 $(B)/test_pc_settings "$$tmp" 0
+
+.PHONY: test-pc-controls
+
 $(B)/test_vibration: tools/test_vibration.c runtime/hle/vibration.c runtime/vibration.h runtime/services/hid_set.c
 	@mkdir -p $(B)
 	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_vibration.c -lpthread -lm
@@ -418,7 +441,7 @@ test-vibration: $(B)/test_vibration
 .PHONY: test-vibration
 
 # The input test includes input.c; discard its unused HLE functions and their runtime dependencies.
-$(B)/test_input_focus: tools/test_input_focus.c runtime/hle/input.c $(RT_HDRS)
+$(B)/test_input_focus: tools/test_input_focus.c tools/test_pointer_disabled.h runtime/hle/input.c $(RT_HDRS)
 	@mkdir -p $(B)
 	$(CC) -O1 -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_input_focus.c \
 	    $(if $(filter macos,$(PLATFORM)),-Wl$(comma)-dead_strip,-Wl$(comma)--gc-sections) \
@@ -433,7 +456,7 @@ test-input-focus: $(B)/test_input_focus
 # two Controls switches saved and loaded, the turns (motion.c), the apparatus heartbeat, the drag (no game files)
 TEST_LD := $(if $(filter macos,$(PLATFORM)),-Wl$(comma)-dead_strip,-Wl$(comma)--gc-sections) \
            $(if $(filter macos,$(PLATFORM)),-L$(SDL)/lib,$(if $(DEPS),-L$(DEPS)/lib))
-$(B)/test_gyro_bindings: tools/test_gyro_bindings.c runtime/hle/input.c runtime/hle/bindings.c $(RT_HDRS)
+$(B)/test_gyro_bindings: tools/test_gyro_bindings.c tools/test_pointer_disabled.h runtime/hle/input.c runtime/hle/bindings.c $(RT_HDRS)
 	@mkdir -p $(B)
 	$(CC) -O1 -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_gyro_bindings.c \
 	    runtime/hle/bindings.c $(TEST_LD) -lSDL3 -lm

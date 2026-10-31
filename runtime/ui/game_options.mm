@@ -35,6 +35,7 @@ extern "C" {
 #include "../nvn/output_scale.h"
 #include "../settings.h"
 #include "../color_grade.h"
+#include "../pc_cursor.h"
 #include "../window_size.h"
 void rt_request_reboot(int kind);           // runtime/main.c (1: start the game again)
 void menu_request_window_apply(void);       // menu.mm (fullscreen / window size, applied by the window loop)
@@ -554,7 +555,10 @@ void build_items(void) {
                            s ? [](const Item &, int x) { g_settings.stick_deadzone[1] = k_deadzone[x] / 100.0f; }
                              : [](const Item &, int x) { g_settings.stick_deadzone[0] = k_deadzone[x] / 100.0f; },
                            DEADZONE_DEFAULT));
-    v.push_back(toggle(P_CONTROLS, "Mouse camera", "The mouse turns the camera. Esc frees the cursor.",
+    v.push_back(toggle(P_CONTROLS, "PC mouse pointer", "Point and click in menus and map. Esc pauses/goes back; F2 frees the cursor.",
+                       [](const Item &) { return (int)g_settings.pc_cursor; },
+                       [](const Item &, int x) { g_settings.pc_cursor = x; }, 1));
+    v.push_back(toggle(P_CONTROLS, "Mouse camera", "The mouse turns the camera. Pointer off: Esc frees it; pointer on: F2 frees it.",
                        [](const Item &) { return (int)g_settings.mouse_camera; },
                        [](const Item &, int x) { g_settings.mouse_camera = x; }, 1));
     v.push_back(choice(P_CONTROLS, "Mouse sensitivity", "How fast the mouse turns the camera.",
@@ -819,12 +823,20 @@ extern "C" void rt_opt_rows(void) {
     }
     wr64(OPT_ORDER, (uint64_t)(uintptr_t)o.data());
     wr32(OPT_ROWS, (uint32_t)o.size());
+    pc_cursor_options_page_changed();
     g_cur_page = page;
     g_reopen = false;
     g_dirty.clear();
 }
 
 // Row init: the flag type of an entry (0 bool, 1 s32); -1: the game's own entry
+// The installed entries are a host vector, not guest-heap pointers.
+extern "C" int rt_opt_pointer_kind(uint64_t row) {
+    if(!g_installed||rd64(OPT_ENTRIES)!=g_installed||!row||game_options_input_hold())return -1;
+    uint32_t index=rd32(row+0x50);
+    return index<g_entries.size()?(int)g_entries[index].kind:-1;
+}
+
 extern "C" int rt_opt_flag_type(uint64_t entry) {
     if (!g_installed || entry < g_installed) return -1;
     const Item *it = item_of_index((uint32_t)((entry - g_installed) / sizeof(Entry)));
@@ -974,6 +986,7 @@ extern "C" uint64_t rt_opt_tick(uint64_t screen) {
         mark_all_rows(screen);
     }
     if (g_size_redraw.exchange(false) && g_size_row) g_dirty.push_back(g_size_row);
+    if (!game_options_input_hold()) pc_cursor_options_tick(screen);
     if (g_dirty.empty()) return 0;
     uint64_t r = g_dirty.back();
     g_dirty.pop_back();

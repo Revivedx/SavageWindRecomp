@@ -37,10 +37,12 @@ extern "C" {
 }
 #include "menu.h"
 void input_reset(void);
+void input_pc_escape(bool down);
 void controls_bindings_draw(float scale);  // controls_ui.mm
 #include "../input_bind.h"
 #include "../perfmon.h"
 #include "../paths.h"
+#include "../pc_cursor.h"
 }
 
 // ------------------------------------------------------------------ state shared with the main thread
@@ -169,8 +171,7 @@ extern "C" bool menu_input_captured(void) {
     return capturing() || game_options_input_hold() || SDL_GetTicks() < g_sizes_hold.load();
 }
 
-// In game the settings are the game's own Options screen (game_options.mm): F1, Esc and the controller's home button no
-// longer open this menu (SAVAGEWIND_OVERLAY=1 brings it back). Esc frees the mouse cursor instead, a click in the
+// Esc opens the game's pause screen or backs out of a menu. F2 frees the mouse cursor; a click in the
 // window holds it again (runtime/hle/input.c).
 static bool overlay_enabled(void) {
     static const bool on = getenv("SAVAGEWIND_OVERLAY") && *getenv("SAVAGEWIND_OVERLAY") != '0';
@@ -234,7 +235,14 @@ bool menu_handle_event(const SDL_Event *e) {
     }
     // typing (a text field, the on-screen keyboard, the name entry): keys are text, not menu shortcuts
     bool typing = g_kbd.load() == 1 || console_is_open() || (g_open.load() && g_text_busy.load());
-    if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN && g_cursor_free.load() && !capturing() && !pc_gyro_scene_active()) {
+    if (e->type == SDL_EVENT_KEY_UP && e->key.scancode == SDL_SCANCODE_ESCAPE)
+        input_pc_escape(false);
+    if (pc_cursor_enabled() && !capturing() && !typing && !game_options_input_hold() &&
+        (e->type == SDL_EVENT_KEY_DOWN || e->type == SDL_EVENT_KEY_UP) && e->key.scancode == SDL_SCANCODE_ESCAPE) {
+        if (!e->key.repeat) input_pc_escape(e->type == SDL_EVENT_KEY_DOWN);
+        return true;
+    }
+    if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN && g_cursor_free.load() && !capturing() && !pc_cursor_active() && !pc_gyro_scene_active()) {
         g_cursor_free = false;  // (the click only takes the cursor back)
         return true;
     }
@@ -252,10 +260,14 @@ bool menu_handle_event(const SDL_Event *e) {
                 return true;
             }
         }
+        if (!e->key.repeat && pc_cursor_enabled() && e->key.scancode == SDL_SCANCODE_F2 && !typing) {
+            g_cursor_free = !g_cursor_free.load();
+            return true;
+        }
         if (!e->key.repeat && (e->key.scancode == SDL_SCANCODE_F1 ||
-                               (e->key.scancode == SDL_SCANCODE_ESCAPE && !g_open.load()))) {
+                               (!pc_cursor_enabled() && e->key.scancode == SDL_SCANCODE_ESCAPE && !g_open.load()))) {
             if (!overlay_enabled()) {
-                if (e->key.scancode == SDL_SCANCODE_ESCAPE && !typing) g_cursor_free = !g_cursor_free.load();
+                if (e->key.scancode == (pc_cursor_enabled() ? SDL_SCANCODE_F2 : SDL_SCANCODE_ESCAPE) && !typing) g_cursor_free = !g_cursor_free.load();
                 return true;
             }
             if (!typing) set_open(!g_open.load());  // (Esc with the menu open goes to ImGui below: it cancels a field)
@@ -1022,8 +1034,10 @@ static void tab_about(void) {
     hint("The d-pad (and the arrow keys) also move like the left stick while the stick is at rest.");
     ImGui::Spacing();
     header("Mouse");
+    opt_toggle("PC mouse pointer", &g_settings.pc_cursor, true,
+               "Point and click in menus and map. Esc pauses/goes back; F2 frees the cursor.");
     toggle("Mouse camera", &g_settings.mouse_camera);
-    hint("The mouse turns the camera. While you play, the cursor stays in the window; Esc or F1 frees it.");
+    hint("The mouse turns the camera. Pointer off: Esc frees it; pointer on: F2 frees it.");
     float sens = roundf(g_settings.mouse_sens * 100);
     if (opt_slider("Mouse sensitivity", &sens, 10, 1000, 5, MOUSE_SENS_DEFAULT * 100, "%g%%", "How fast the mouse turns the camera."))
         g_settings.mouse_sens = sens / 100.0f;
@@ -1406,7 +1420,9 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     console_collect();
     GyroScene gyro_scene;
     bool gyro_scene_show = pc_gyro_scene_view(&gyro_scene);
-    if (!open && !kbd && !sizes && !con && !gyro_scene_show && g_settings.perf_overlay == PERF_OFF) {
+    float pointer_box[4];
+    bool pointer_hover = pc_cursor_hover_box(pointer_box);
+    if (!open && !kbd && !sizes && !con && !gyro_scene_show && !pointer_hover && g_settings.perf_overlay == PERF_OFF) {
         if (g_inited) { pthread_mutex_lock(&q_lock); q_events.clear(); pthread_mutex_unlock(&q_lock); }
         return;
     }
@@ -1451,6 +1467,15 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     ImGui_ImplVulkan_NewFrame();
 #endif
     ImGui::NewFrame();
+
+    if(pointer_hover&&!open&&!kbd) {
+        float s=fminf(io.DisplaySize.x/1280.f,io.DisplaySize.y/720.f);
+        ImVec2 a(io.DisplaySize.x*.5f+pointer_box[0]*s,io.DisplaySize.y*.5f-pointer_box[3]*s);
+        ImVec2 b(io.DisplaySize.x*.5f+pointer_box[2]*s,io.DisplaySize.y*.5f-pointer_box[1]*s);
+        bool pressed=pc_cursor_hover_pressed();
+        if(pressed)ImGui::GetForegroundDrawList()->AddRectFilled(a,b,IM_COL32(250,250,220,45),2.f*s);
+        ImGui::GetForegroundDrawList()->AddRect(a,b,pressed?IM_COL32(255,235,155,255):IM_COL32(250,250,220,255),2.f*s,0,2.f*s);
+    }
 
     if (g_settings.perf_overlay != PERF_OFF) perf_overlay_draw(io, scale);
     if (!open && !kbd && !sizes && !con && gyro_scene_show) gyro_scene_draw(io, scale, gyro_scene);

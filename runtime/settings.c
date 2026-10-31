@@ -27,6 +27,7 @@ Settings g_settings = {
     .upscaler = UPSCALE_DEFAULT,  // (Off: the window's resolution; MetalFX on macOS)
     .upscale_quality = UPQ_QUALITY,
     .mouse_camera = true,
+    .pc_cursor = true,
     .mouse_sens = MOUSE_SENS_DEFAULT,
     .mouse_sens_y = 1.0f,
     .motion_sens = 1.0f,
@@ -60,6 +61,12 @@ static const char *const k_icons[ICONS_COUNT] = {"auto", "keyboard", "xbox", "pl
 
 static const char *const k_quality[UPQ_COUNT] = {"ultra_quality", "quality", "balanced", "performance", "ultra_performance"};
 
+// Debug overrides seed this boot's options; the Controls switches can still change them at once.
+static void pc_controls_env(void) {
+    const char *cursor = getenv("SAVAGEWIND_PC_CURSOR");
+    if (cursor) g_settings.pc_cursor = atoi(cursor) != 0;
+}
+
 // SAVAGEWIND_PC_GYRO / SAVAGEWIND_GYRO_SCENE=0|1: the two shrine apparatus switches at start (Controls changes them)
 static void gyro_startup_overrides(void) {
     const char *v = getenv("SAVAGEWIND_PC_GYRO");
@@ -74,6 +81,7 @@ void settings_load(void) {
     FILE *f = fopen(SETTINGS_FILE, "r");
     if (!f) {
         gyro_startup_overrides();
+        pc_controls_env();
         return;
     }
     char line[256];
@@ -141,6 +149,7 @@ void settings_load(void) {
         else if (!strcmp(key, "left_stick_deadzone")) g_settings.stick_deadzone[0] = (float)atof(val) / 100;  // (percent)
         else if (!strcmp(key, "right_stick_deadzone")) g_settings.stick_deadzone[1] = (float)atof(val) / 100;
         else if (!strcmp(key, "mouse_camera")) g_settings.mouse_camera = atoi(val) != 0;
+        else if (!strcmp(key, "pc_cursor")) g_settings.pc_cursor = atoi(val) != 0;
         else if (!strcmp(key, "mouse_sensitivity")) g_settings.mouse_sens = (float)atof(val);
         else if (!strcmp(key, "mouse_vertical_sensitivity")) g_settings.mouse_sens_y = (float)atof(val);
         else if (!strcmp(key, "mouse_invert_y")) g_settings.mouse_invert_y = atoi(val) != 0;
@@ -244,6 +253,7 @@ void settings_load(void) {
     for (int i = 0; i < 2; i++)
         if (!(g_settings.stick_deadzone[i] >= 0 && g_settings.stick_deadzone[i] <= 0.5f))
             g_settings.stick_deadzone[i] = STICK_DEADZONE_DEFAULT;
+    pc_controls_env();
     gyro_startup_overrides();
     LOG("[settings] loaded %s\n", SETTINGS_FILE);
 }
@@ -286,6 +296,7 @@ void settings_save(void) {
     fprintf(f, "left_stick_deadzone = %.0f\n", g_settings.stick_deadzone[0] * 100);
     fprintf(f, "right_stick_deadzone = %.0f\n", g_settings.stick_deadzone[1] * 100);
     fprintf(f, "mouse_camera = %d\n", g_settings.mouse_camera);
+    fprintf(f, "pc_cursor = %d\n", g_settings.pc_cursor);
     fprintf(f, "mouse_sensitivity = %.2f\n", g_settings.mouse_sens);
     fprintf(f, "mouse_vertical_sensitivity = %.2f\n", g_settings.mouse_sens_y);
     fprintf(f, "mouse_invert_y = %d\n", g_settings.mouse_invert_y);

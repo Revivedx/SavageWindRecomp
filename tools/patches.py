@@ -410,6 +410,26 @@ def _cam_reverse(axis):
     return patch
 
 
+def _pc_button_group(gen, a):
+    assert _word(gen, a) == _sub_sp(0x60), hex(_word(gen, a))
+    return ('{ extern void rt_pc_button_group(Cpu *); rt_pc_button_group(c); c->sp -= 0x60; }'
+            f' /* {a:#x}: native mouse pointer arguments */')
+
+def _pc_cursor_manager(gen, a):
+    assert _word(gen, a) == _sub_sp(0x50), hex(_word(gen, a))
+    return ('{ extern void rt_pc_cursor_manager(Cpu *, uint64_t, uint64_t); '
+            f'rt_pc_cursor_manager(c, {gen.sites["pc_cursor_activate"]:#x}ull, {gen.sites["pc_pane_bounds"]:#x}ull); '
+            'c->sp -= 0x50; }')
+
+def _pc_map_focus(position):
+    def patch(gen, a):
+        expected = _sub_sp(0x30) if position else 0xa9be7bfd
+        assert _word(gen, a) == expected, hex(_word(gen, a))
+        prologue = 'c->sp -= 0x30;' if position else 'c->sp -= 0x20; ST64(c->sp, c->x[29]); ST64(c->sp + 8, c->x[30]);'
+        return ('{ extern int rt_pc_map_focus(Cpu *, int); '
+                f'if (rt_pc_map_focus(c, {int(position)})) return; {prologue} }}')
+    return patch
+
 # Placed actors' traverse distance (1.9.0 0x70010a4640, 1.8.2 0x7000f908b0): how far from the camera an actor placed
 # on the map is created (trees and bushes 150 m, rocks and buildings 300-3000 m, the full model of a building with a
 # "_Far" version ~500 m, enemies 150 m). It is the actor's traverseDist (ActorInfo; 100 when unset) times a scale: the
@@ -569,6 +589,11 @@ def _gyro_scene_actor(gen, a):
 
 
 PATCHES = {
+    'pc_map_focus': _pc_map_focus(False),
+    'pc_map_focus_target': _pc_map_focus(True),
+    'pc_map_focus_now': _pc_map_focus(True),
+    'pc_button_group': _pc_button_group,
+    'pc_cursor_manager': _pc_cursor_manager,
     'gyro_scene_actor': _gyro_scene_actor,
     'pause_options_update': _pause_option_state,
     'opt_create_rows': _opt_rows,
