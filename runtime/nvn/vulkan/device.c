@@ -13,6 +13,7 @@
 #include "../../imageload.h"
 #include "../../paths.h"
 #include "../../perfmon.h"
+#include "../../prof.h"
 #include "../../settings.h"
 #include "../../ui/menu.h"
 #include "../../window_size.h"
@@ -62,7 +63,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_cb(VkDebugUtilsMessageSeverityFlagBi
 static void create_instance(void) {
     Uint32 n_sdl = 0;
     const char *const *sdl_ext = SDL_Vulkan_GetInstanceExtensions(&n_sdl);
-    const char *ext[24];
+    const char *ext[28];
     uint32_t n_ext = 0;
     for (Uint32 i = 0; i < n_sdl && n_ext < 14; i++) ext[n_ext++] = sdl_ext[i];
     {   // the HDR10 colour space of an HDR swapchain (Video > HDR) comes with VK_EXT_swapchain_colorspace
@@ -247,6 +248,8 @@ static void create_device(void) {
     if (g_addr_report_hi) LOG("[vk] address binding report %s\n", addr_report ? "on" : "not supported");
     g_vk.custom_border = has_ext(ep, ne, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
     if (g_vk.custom_border) ext[n_ext++] = VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME;
+    g_vk.calibrated = has_ext(ep, ne, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
+    if (g_vk.calibrated) ext[n_ext++] = VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME;
     g_vk.divisor = has_ext(ep, ne, VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
     if (g_vk.divisor) ext[n_ext++] = VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME;
     g_vk.host_import = has_ext(ep, ne, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);  // guest heap as a GPU buffer (exec.c)
@@ -1275,6 +1278,7 @@ static void present_wait_turn(int kind, uint64_t seq) {
 
 static void *present_thread(void *arg) {
     (void)arg;
+    prof_thread_name("present");
     pthread_mutex_lock(&pres_m);
     for (;;) {
         while (!presq_n) pthread_cond_wait(&pres_cv, &pres_m);
@@ -1445,7 +1449,6 @@ static void hdr_write(VkCommandBuffer cb, uint32_t i) {
     image_barrier(cb, hdr_sc_images[i], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 }
 
-uint64_t g_present_split[6];  // (VK_PROF) acquire, end pass, draw + menu, submit, present, slot wait
 typedef struct { uint32_t image; VkSemaphore acquired; bool ok; } Frame;
 static Frame cur_frame;
 
@@ -1457,9 +1460,7 @@ bool vk_frame_begin(const float clear[4]) {
     SDL_GetWindowSizeInPixels(window, &w, &h);
     // minimised (Windows keeps the window's size then, but its surface is 0 x 0: every acquire was out of date)
     if (!w || !h || (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED)) return false;
-    uint64_t tp = SDL_GetTicksNS();
-    present_wait_room();
-    g_present_split[4] += SDL_GetTicksNS() - tp;
+    { SW_ZONE("present/wait_room"); present_wait_room(); }
     float white;  // (Windows HDR turned on or off, the window moved to another display, Video > HDR changed)
     bool hdr = hdr_wanted(&white);
     if (g_hdr) g_hdr_white = white;
@@ -1472,12 +1473,9 @@ bool vk_frame_begin(const float clear[4]) {
     if (trace) LOG("[vk] frame begin %dx%d (swapchain %ux%u)\n", w, h, g_vk.sc_extent.width, g_vk.sc_extent.height);
     slot = (slot + 1) % FRAMES;
     if (!acquire_sem[slot]) acquire_sem[slot] = binary_semaphore();
-    uint64_t tw = SDL_GetTicksNS();
-    vk_wait_seq(slot_seq[slot]);
-    g_present_split[5] += SDL_GetTicksNS() - tw;
-    uint64_t ta = SDL_GetTicksNS();
-    VkResult r = acquire_image(acquire_sem[slot], &cur_frame.image);
-    g_present_split[0] += SDL_GetTicksNS() - ta;
+    { SW_ZONE("present/slot_wait"); vk_wait_seq(slot_seq[slot]); }
+    VkResult r;
+    { SW_ZONE("present/acquire"); r = acquire_image(acquire_sem[slot], &cur_frame.image); }
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         recreate_swapchain();
         r = acquire_image(acquire_sem[slot], &cur_frame.image);
@@ -1572,13 +1570,11 @@ void vk_frame_end(const char *shot_path) {
     uint32_t img = cur_frame.image;
     if (!done_sem[img]) done_sem[img] = binary_semaphore();
     uint64_t seq = vk_pending_seq();
-    uint64_t ts = SDL_GetTicksNS();
-    vk_submit_extra(cur_frame.acquired, done_sem[img], VK_NULL_HANDLE);
-    g_present_split[3] += SDL_GetTicksNS() - ts;
-    ts = SDL_GetTicksNS();
-    if (!present_image(img, done_sem[img], frame_kind, seq)) recreate_swapchain();
+    { SW_ZONE("present/submit"); vk_submit_extra(cur_frame.acquired, done_sem[img], VK_NULL_HANDLE); }
+    bool presented_ok;
+    { SW_ZONE("present/queue_present"); presented_ok = present_image(img, done_sem[img], frame_kind, seq); }
+    if (!presented_ok) recreate_swapchain();
     frame_kind = PRES_PLAIN;
-    g_present_split[4] += SDL_GetTicksNS() - ts;
     cur_frame.ok = false;
     if (shot_path) {
         vk_wait_seq(seq);
@@ -1697,11 +1693,11 @@ static void present_locked(NvnTexture *t) {
     TexBackend *b = vk_tex(t, true);
     b->presented = true;
     uint64_t t0 = SDL_GetTicksNS();
-    vk_end_pass();
-    g_present_split[1] += SDL_GetTicksNS() - t0;
+    { SW_ZONE("present/end_pass"); vk_end_pass(); }
     t0 += pso_wait();  // (not the acquire's time)
     // Frame generation: the frame between the last one and this (exec.c vk_fg_generate), presented first
-    TexBackend *gen = vk_fg_generate(t, b);
+    TexBackend *gen;
+    { SW_ZONE("present/frame_gen"); gen = vk_fg_generate(t, b); }
     {   // (measuring) SAVAGEWIND_FG_TEST=1: the frame made, not presented
         static int test = -1;
         if (test < 0) test = getenv("SAVAGEWIND_FG_TEST") ? atoi(getenv("SAVAGEWIND_FG_TEST")) : 0;
@@ -1709,7 +1705,8 @@ static void present_locked(NvnTexture *t) {
     }
     g_fg_active = gen != NULL;
     static const float black[4] = {0, 0, 0, 1};
-    bool have = vk_frame_begin(black);
+    bool have;
+    { SW_ZONE("present/frame_begin"); have = vk_frame_begin(black); }
     uint64_t nd = SDL_GetTicksNS() - t0;
     if (nd > 30000000) {
         static int warned;
@@ -1737,7 +1734,6 @@ static void present_locked(NvnTexture *t) {
         VkCommandBuffer cb = vk_cmd();
         float pv[8] = {renderer_origin_lower_left() ? 1.0f : 0.0f, 0, 0, 0, crop[0], crop[1], crop[2], crop[3]};
         memcpy(g_shot_crop, crop, sizeof crop);
-        uint64_t td = SDL_GetTicksNS();
         if (gen) {  // the generated frame, as the game's are (crop, anti-aliasing, menu), then this one half a frame later
             vk_present_draw(cb, gen, (float)vx, (float)vy, (float)vw, (float)vh, pv);
             if (menu_render_needed()) rec_drain();  // (ImGui records into cb itself, and may upload its fonts on the queue)
@@ -1772,13 +1768,12 @@ static void present_locked(NvnTexture *t) {
             if (!vk_frame_begin(black)) { renderer_submit(); goto presented; }
             cb = vk_cmd();
         }
-        vk_present_draw(cb, b, (float)vx, (float)vy, (float)vw, (float)vh, pv);
+        { SW_ZONE("present/draw"); vk_present_draw(cb, b, (float)vx, (float)vy, (float)vw, (float)vh, pv); }
         static long menu_at = -1;
         if (menu_at < 0) menu_at = getenv("SAVAGEWIND_MENU_AT") ? atol(getenv("SAVAGEWIND_MENU_AT")) : 0;
         if (menu_at && (long)total_frames + 1 == menu_at) { extern void menu_test_open(void); menu_test_open(); }
         if (menu_render_needed()) rec_drain();  // (ImGui records into cb itself, and may upload its fonts on the queue)
-        menu_render((void *)cb, g_vk.sc_extent.width, g_vk.sc_extent.height);
-        g_present_split[2] += SDL_GetTicksNS() - td;
+        { SW_ZONE("present/menu"); menu_render((void *)cb, g_vk.sc_extent.width, g_vk.sc_extent.height); }
         static long win_shot = -1;
         if (win_shot < 0) win_shot = getenv("SAVAGEWIND_WINDOW_SHOT") ? atol(getenv("SAVAGEWIND_WINDOW_SHOT")) : 0;
         bool shot = win_shot && (long)total_frames + 1 == win_shot;
@@ -1805,8 +1800,6 @@ static void present_locked(NvnTexture *t) {
     }
 presented:
     g_fg_want = fg_wanted();  // (for the next frame's draws)
-    extern void vk_prof_frame(uint64_t frame, uint64_t present_ns);
-    vk_prof_frame(total_frames, SDL_GetTicksNS() - t0);
     extern void vk_list_stats_frame(void);
     vk_list_stats_frame();
     {   // SAVAGEWIND_FRAME_LOG=1: "[ft] <ms> <frame> <target fps>" at every present (frame time statistics)
@@ -1830,6 +1823,7 @@ presented:
     static long slow_ms = -1;
     if (slow_ms < 0) slow_ms = getenv("SAVAGEWIND_SLOW_FRAME_MS") ? atol(getenv("SAVAGEWIND_SLOW_FRAME_MS")) : 0;
     if (slow_ms > 0 && total_frames > 2600) SDL_Delay((Uint32)slow_ms);
+    prof_frame(total_frames);  // (the profiler: a new frame starts here, for every thread's events)
     extern void fnprof_frame(uint64_t frame);
     fnprof_frame(total_frames);
     extern void reboot_test_frame(uint64_t frame);  // runtime/main.c (SAVAGEWIND_REBOOT_AT)
@@ -1848,17 +1842,8 @@ presented:
     if (debug_n < 0) { const char *e = getenv("SAVAGEWIND_DEBUG_FRAMES"); debug_n = e && atol(e) > 1 ? atol(e) : 1; }
     g_debug_frame = debug_at && total_frames >= (uint64_t)debug_at && total_frames < (uint64_t)debug_at + (uint64_t)debug_n;
     if (!g_debug_frame) { extern void vk_pick_report(void); vk_pick_report(); }  // (SAVAGEWIND_DEBUG_PICK)
-    {   // SAVAGEWIND_GPUPROF_AT=<frame>[,<frame>...]: GPU time per pass of those frames ("[gpuprof]" in the log)
-        extern bool g_gpuprof_frame;
-        extern void vk_gpuprof_report(void);
-        if (g_gpuprof_frame) { g_gpuprof_frame = false; vk_gpuprof_report(); }
-        const char *e = getenv("SAVAGEWIND_GPUPROF_AT");
-        for (const char *p = e; p && *p;) {
-            long at = strtol(p, (char **)&p, 10);
-            if (at == (long)total_frames) { g_gpuprof_frame = true; break; }
-            if (*p == ',') p++; else break;
-        }
-    }
+    extern void vk_gpu_collect(void);
+    vk_gpu_collect();  // (the profiler: GPU time of the submissions that have finished)
     if (g_debug_frame) LOG("===== debug frame %llu =====\n", (unsigned long long)total_frames);
     {   // (testing) SAVAGEWIND_UPSCALE_AT=<frame>:<off|ultra|quality|balanced|performance>,... (ascending): the
         // upscaler from that frame on, as the Video page sets it (A/B of the same view a few frames apart): FSR 1, or

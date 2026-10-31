@@ -5,6 +5,7 @@
 #include "../framepace.h"
 #include "../game_sites.h"
 #include "../kernel.h"
+#include "../prof.h"
 #include "../perfmon.h"
 #include "nvn.h"
 
@@ -137,23 +138,8 @@ static bool host_work(void) {
     if (on < 0) on = !getenv("SAVAGEWIND_HOST_WORK_CORE");
     return on;
 }
-// SAVAGEWIND_TIMELINE=<first frame>:<frames>: "[tl]" lines (ms, guest thread, event) for submits, fences, GPU
-// waits and presents of those presented frames: who waits for whom within a frame.
-uint64_t renderer_present_count(void);
 uint64_t vk_completed_seq(void);
 uint64_t renderer_fence_seq(void);
-bool nvn_timeline(void) {
-    static int64_t from = -2, count;
-    if (from == -2) {
-        const char *e = getenv("SAVAGEWIND_TIMELINE");
-        from = -1;
-        if (e) { from = atoll(e); const char *c = strchr(e, ':'); count = c ? atoll(c + 1) : 60; }
-    }
-    if (from < 0) return false;
-    uint64_t f = renderer_present_count();
-    return f >= (uint64_t)from && f < (uint64_t)(from + count);
-}
-#define TL(fmt, ...) do { if (nvn_timeline()) LOG("[tl] %.3f %x " fmt "\n", plat_now_ns() / 1e6, kernel_current_thread_handle(), ##__VA_ARGS__); } while (0)
 
 // ---- the submission queue
 // On the console a submit hands the GPU its commands and returns; the GPU runs them while the CPU goes on with the next
@@ -188,7 +174,7 @@ static bool async_exec(void) {
 
 // SAVAGEWIND_FRAME_LOG=2: an "[fsplit]" line per present with when each step of the frame happened, in ms before the
 // present ends: the main thread's VFR update and its GPU wait (nvnSyncWait), the submit, the list's translation, the
-// present's turn (cheap enough to leave the timing alone, unlike SAVAGEWIND_TIMELINE)
+// present's turn (cheap enough to leave the timing alone, unlike a profiler capture)
 uint64_t g_fs_vfr, g_fs_sync0, g_fs_sync1, g_fs_submit, g_fs_x0, g_fs_x1, g_fs_pace;
 static int frame_split(void) {
     static int on = -1;
@@ -222,15 +208,14 @@ static void qop_run(const QOp *o) {
 
 static void *queue_thread(void *arg) {
     (void)arg;
+    prof_thread_name("nvn-queue");
     kernel_sample_host_thread();
     pthread_mutex_lock(&g_q_lock);
     for (;;) {
         while (g_q_done == g_q_put) pthread_cond_wait(&g_q_work, &g_q_lock);
         QOp o = g_q[g_q_done % QCAP];
         pthread_mutex_unlock(&g_q_lock);
-        if (o.op == QOP_EXEC) TL("queue: exec %llx", (unsigned long long)o.a);
         qop_run(&o);
-        if (o.op == QOP_EXEC || o.op == QOP_PRESENT) TL("queue: %s done", o.op == QOP_EXEC ? "exec" : "present");
         pthread_mutex_lock(&g_q_lock);
         g_q_done++;
         if (o.op == QOP_PRESENT) g_q_presents--;
@@ -282,9 +267,9 @@ static void queue_wait(uint64_t k) {
 void nvn_queue_idle(void) { if (async_exec()) queue_wait(~0ull); }  // (runtime/main.c reboot: guest threads stopped)
 
 NVN(nvnQueueSubmitCommands) {
+    SW_ZONE("nvnQueueSubmitCommands");
     int n = (int)A(1);
     const uint64_t *handles = AP(2);
-    TL("submit %d lists (lr %llx)", n, (unsigned long long)c->x[30]);
     if (frame_split()) g_fs_submit = plat_now_ns();
     if (async_exec()) {
         for (int i = 0; i < n; i++) queue_put(QOP_EXEC, handles[i], NULL);
@@ -293,7 +278,6 @@ NVN(nvnQueueSubmitCommands) {
     if (host_work()) kernel_host_work_begin();
     for (int i = 0; i < n; i++) backend_execute(handles[i]);
     if (host_work()) kernel_host_work_end();
-    TL("submitted (seq %llu)", (unsigned long long)renderer_fence_seq());
 }
 NVN(nvnQueueFlush) { (void)c; }
 NVN(nvnQueueFinish) {
@@ -320,11 +304,9 @@ NVN(nvnQueueFenceSync) {
     NvnSync *s = sync_of(A(1));
     if (async_exec()) {
         s->ticket = queue_put(QOP_FENCE, 0, s);
-        TL("fence %llx queued as %llu (lr %llx)", (unsigned long long)A(1), (unsigned long long)s->ticket, (unsigned long long)c->x[30]);
         return;
     }
     s->signaled = 1; s->seq = renderer_fence_seq();
-    TL("fence %llx = seq %llu (lr %llx)", (unsigned long long)A(1), (unsigned long long)s->seq, (unsigned long long)c->x[30]);
 }
 void nvn_sync_set_seq(uint64_t guest, uint64_t seq) { NvnSync *s = sync_of(guest); s->signaled = 1; s->seq = seq; }
 void nvn_sync_in_list(uint64_t guest) { if (guest) sync_of(guest)->in_list = 1; }  // (cmdbuf.c: recording a list fence)
@@ -341,6 +323,7 @@ NVN(nvnSyncFinalize) {
 NVN(nvnSyncSetDebugLabel) { (void)c; }
 void renderer_flush(void);
 NVN(nvnSyncWait) {  // NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED
+    SW_ZONE("nvnSyncWait");
     static int flush = -1;
     static uint64_t n;
     if (flush < 0) flush = getenv("SAVAGEWIND_SYNC_FLUSH") ? 1 : 0;
@@ -348,9 +331,6 @@ NVN(nvnSyncWait) {  // NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED
     static int whole = -1;  // SAVAGEWIND_SYNC_ALL=1: old behaviour, wait for all submitted work
     if (whole < 0) whole = getenv("SAVAGEWIND_SYNC_ALL") ? 1 : 0;
     NvnSync *s = sync_of(A(0));
-    TL("syncwait %llx seq %llu ticket %llu (fence seq now %llu, done %llu, lr %llx)", (unsigned long long)A(0),
-       (unsigned long long)s->seq, (unsigned long long)s->ticket, (unsigned long long)renderer_fence_seq(),
-       (unsigned long long)vk_completed_seq(), (unsigned long long)c->x[30]);
     // the queue first: up to the fence that sets it (a fence inside a command list: everything submitted so far)
     if (frame_split() && s->ticket) g_fs_sync0 = plat_now_ns();
     if (async_exec()) queue_wait(flush || whole || s->in_list ? ~0ull : s->ticket);
@@ -360,7 +340,6 @@ NVN(nvnSyncWait) {  // NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED
     else renderer_wait_seq(s->seq);  // only the submission that holds this fence
     if (host_work()) kernel_host_work_end();
     if (frame_split() && s->ticket) g_fs_sync1 = plat_now_ns();
-    TL("syncwait done");
     RET(0);
 }
 NVN(nvnSyncCreateGLSync) { RET(0); }
@@ -1192,8 +1171,8 @@ NVN(nvnQueueAcquireTexture) {
 // framepace.c) after the last one, and tells framepace.c when it went out (the game's clock follows it).
 // SAVAGEWIND_FRAMEPACE=0 (the game's own pacing): interval x 1/60 s after the last one, and never sooner than
 // SAVAGEWIND_FPS_CAP allows (default 60; 0 = no cap).
-uint64_t g_pace_sleep_ns;  // (VK_PROF hitch lines) time present_pace slept
 static void present_pace(int interval) {
+    SW_ZONE("present pace");
     static int cap = -1;
     static uint64_t last;
     if (cap < 0) cap = getenv("SAVAGEWIND_FPS_CAP") ? atoi(getenv("SAVAGEWIND_FPS_CAP")) : 60;
@@ -1207,31 +1186,27 @@ static void present_pace(int interval) {
     uint64_t target = last + period, now = plat_now_ns();
     if (last && now < target) kernel_sleep_until_ns(target);
     uint64_t t1 = plat_now_ns();
-    g_pace_sleep_ns += t1 - now;
     now = t1;
     last = last && now < target + period ? target : now;  // (steady cadence; after a long frame, start again)
     framepace_presented(last, last == target);
 }
 
 NVN(nvnQueuePresentTexture) {
+    SW_ZONE("nvnQueuePresentTexture");
     NvnWindow *w = HOST(NvnWindow, A(1));
     int i = (int)A(2);
     static int logged = -1;
     if (logged != w->interval) { logged = w->interval; LOG("[nvn] window present interval %d\n", w->interval); }
-    TL("present (pace)");
     present_pace(w->interval);
     if (frame_split()) g_fs_pace = plat_now_ns();
     perfmon_frame();
-    TL("present (backend)");
     if (async_exec()) {
         if (i >= 0 && i < w->num) queue_put(QOP_PRESENT, 0, HOST(NvnTexture, w->textures[i]));
-        TL("present queued");
         return;
     }
     if (host_work()) kernel_host_work_begin();
     if (i >= 0 && i < w->num) backend_present(HOST(NvnTexture, w->textures[i]));
     if (host_work()) kernel_host_work_end();
-    TL("presented");
 }
 
 // ================================================================== small state objects

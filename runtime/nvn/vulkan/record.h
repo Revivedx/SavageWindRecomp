@@ -31,14 +31,6 @@ void rec_wait_submitted(uint64_t seq);  // until the driver has submission seq (
 // recording into a command buffer directly (the menu's ImGui, frame generation), before using the queue outside it.
 void rec_drain(void);
 
-// ---- profiling (SAVAGEWIND_VK_PROF): counts since the last take
-typedef struct {
-    uint64_t packets, bytes, enqueue_ns;  // packets queued, their bytes, the translating thread's time queuing them
-    uint64_t busy_ns, wakeups, submit_ns;  // the recorder's time making calls, times it woke, its time in vkQueueSubmit2
-    uint64_t drains, drain_ns, seq_waits, seq_wait_ns, full_waits, full_ns;  // waits on it: drains, submissions, ring full
-} RecStats;
-void rec_stats_take(RecStats *o);
-
 // ---- commands: as vkCmd*, the same arguments (arrays and structures copied; nothing chained through pNext)
 void rec_CmdBeginRendering(VkCommandBuffer cb, const VkRenderingInfo *ri);
 void rec_CmdEndRendering(VkCommandBuffer cb);

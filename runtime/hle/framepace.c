@@ -304,8 +304,6 @@ void rt_vfr_update(uint64_t vfr) {
         uint64_t n = renderer_present_count();
         if (n != presented) presented = n, __atomic_fetch_add(&shown_frames, 1, __ATOMIC_RELAXED);
     }
-    extern bool nvn_timeline(void);
-    if (nvn_timeline()) LOG("[tl] %.3f %x vfr\n", plat_now_ns() / 1e6, kernel_current_thread_handle());
     extern uint64_t g_fs_vfr;  // (SAVAGEWIND_FRAME_LOG=2, nvn/objects.c)
     g_fs_vfr = plat_now_ns();
     clock_probe(vfr);

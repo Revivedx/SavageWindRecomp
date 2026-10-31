@@ -27,8 +27,9 @@
 //   Vulkan objects in   images, views, buffers, samplers, pipelines, layouts, query pools: created by T (or the build
 //   packets             workers) before the packet that names them; destroyed by T only once the submission that could
 //                       use them is done on the GPU - again after R recorded and submitted it
-//   stats               RecStats: T's fields plain, R's and the waits' _Atomic relaxed adds; read by T
+//   profiling           the profiler's markers (runtime/prof.h): the recorder thread's batches and submits, T's waits on it
 #include "record.h"
+#include "../../prof.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -54,15 +55,10 @@ static pthread_cond_t cv_work = PTHREAD_COND_INITIALIZER, cv_done = PTHREAD_COND
 static _Atomic int asleep;
 static _Atomic uint64_t submitted;
 static int on = -1;  // 1: the thread records, 0: calls at once, -1: not started
-static bool prof, prof_enq;  // SAVAGEWIND_VK_PROF; the time queuing each packet only when it isn't 2 (two clock reads a packet)
-static RecStats st_t;  // T's counters
-static _Atomic uint64_t r_busy_ns, r_wakeups, r_submit_ns;
-static _Atomic uint64_t a_seq_waits, a_seq_wait_ns;  // (waits from any thread)
 
 bool rec_on(void) { return on > 0; }
 
 #define NOW() plat_now_ns()
-#define ADD(v, x) atomic_fetch_add_explicit(&(v), (x), memory_order_relaxed)
 
 static void timed_wait(pthread_cond_t *cv, uint64_t ns) {  // (mu held)
     struct timespec ts;
@@ -85,17 +81,18 @@ static void publish(void) {
     }
 }
 
+static void slow_wait(const char *what, uint64_t ns);
 // T: room for `need` bytes at wpos (the recorder frees room as it records; a full ring means it is behind by its
 // whole size, 16 MB of packets, so the wait is rare)
 static void wait_room(uint64_t need) {
     if (wpos + need - atomic_load_explicit(&tail, memory_order_acquire) <= ring_cap) return;
     publish();
+    SW_ZONE("recorder ring full");
     uint64_t t0 = NOW();
     pthread_mutex_lock(&mu);
     while (wpos + need - atomic_load_explicit(&tail, memory_order_acquire) > ring_cap) timed_wait(&cv_done, 1000000);
     pthread_mutex_unlock(&mu);
-    st_t.full_waits++;
-    st_t.full_ns += NOW() - t0;
+    slow_wait("room in the ring", NOW() - t0);
 }
 
 // T: a packet for fn with `args` bytes of arguments (+ `extra` bytes of arrays after them, each caller aligns its
@@ -118,8 +115,7 @@ static void *push(PktFn fn, size_t args, size_t extra) {
     h->fn = fn;
     h->size = (uint32_t)need;
     wpos += need;
-    st_t.packets++;
-    st_t.bytes += need;
+    SW_TALLY("vk packets");
     return h + 1;
 }
 static void commit(void) {
@@ -132,6 +128,7 @@ static inline void *after(const void *args, size_t args_size) { return (uint8_t 
 // ---- the thread
 static void *run(void *arg) {
     (void)arg;
+    prof_thread_name("vk-record");
     uint64_t t = 0;
     for (;;) {
         uint64_t h = atomic_load_explicit(&head, memory_order_acquire);
@@ -141,16 +138,14 @@ static void *run(void *arg) {
             while ((h = atomic_load_explicit(&head, memory_order_seq_cst)) == t) pthread_cond_wait(&cv_work, &mu);
             atomic_store_explicit(&asleep, 0, memory_order_relaxed);
             pthread_mutex_unlock(&mu);
-            ADD(r_wakeups, 1);
         }
-        uint64_t t0 = prof ? NOW() : 0;
+        SW_ZONE("record packets");
         while (t != h) {
             const PktHdr *p = (const PktHdr *)(ring + (t & (ring_cap - 1)));
             if (p->fn) p->fn(p + 1);
             t += p->size;
             atomic_store_explicit(&tail, t, memory_order_release);
         }
-        if (prof) ADD(r_busy_ns, NOW() - t0);
         pthread_mutex_lock(&mu);  // caught up: drains and waiters
         pthread_cond_broadcast(&cv_done);
         pthread_mutex_unlock(&mu);
@@ -160,8 +155,6 @@ static void *run(void *arg) {
 
 void rec_init(void) {
     if (on >= 0) return;
-    prof = getenv("SAVAGEWIND_VK_PROF") != NULL;
-    prof_enq = prof && atoi(getenv("SAVAGEWIND_VK_PROF")) != 2;
     const char *e = getenv("SAVAGEWIND_VK_RECORDER");
     int want = !e || atoi(e) != 0;
     // ARM's Mali drivers: LAS Recomp lost the GPU a few seconds into its title screen with the recorder thread on
@@ -206,13 +199,12 @@ uint64_t rec_submitted(void) { return atomic_load_explicit(&submitted, memory_or
 
 void rec_wait_submitted(uint64_t seq) {
     if (on <= 0 || rec_submitted() >= seq) return;
+    SW_ZONE("wait for recorder submit");
     uint64_t t0 = NOW();
     pthread_mutex_lock(&mu);
     while (rec_submitted() < seq) timed_wait(&cv_done, 2000000);
     pthread_mutex_unlock(&mu);
     uint64_t dt = NOW() - t0;
-    ADD(a_seq_waits, 1);
-    ADD(a_seq_wait_ns, dt);
     slow_wait("a submission", dt);
 }
 
@@ -221,30 +213,18 @@ void rec_drain(void) {
     publish();
     uint64_t upto = wpos;
     if (atomic_load_explicit(&tail, memory_order_acquire) >= upto) return;
+    SW_ZONE("recorder drain");
     uint64_t t0 = NOW();
     pthread_mutex_lock(&mu);
     while (atomic_load_explicit(&tail, memory_order_acquire) < upto) timed_wait(&cv_done, 2000000);
     pthread_mutex_unlock(&mu);
     uint64_t dt = NOW() - t0;
-    st_t.drains++;
-    st_t.drain_ns += dt;
     slow_wait("a drain", dt);
 }
 
-// ================================================================== stats
-void rec_stats_take(RecStats *o) {
-    *o = st_t;
-    memset(&st_t, 0, sizeof st_t);
-    o->busy_ns = atomic_exchange_explicit(&r_busy_ns, 0, memory_order_relaxed);
-    o->wakeups = atomic_exchange_explicit(&r_wakeups, 0, memory_order_relaxed);
-    o->submit_ns = atomic_exchange_explicit(&r_submit_ns, 0, memory_order_relaxed);
-    o->seq_waits = atomic_exchange_explicit(&a_seq_waits, 0, memory_order_relaxed);
-    o->seq_wait_ns = atomic_exchange_explicit(&a_seq_wait_ns, 0, memory_order_relaxed);
-}
-
-// (T) time spent queuing: around every rec_* that queues, when profiling in detail
-#define ENQ_T0() uint64_t enq_t0_ = prof_enq ? NOW() : 0
-#define ENQ_END() do { if (prof_enq) st_t.enqueue_ns += NOW() - enq_t0_; } while (0)
+// (T) time spent queuing, added up under one name: around every rec_* that queues
+#define ENQ_T0() SW_ACC("vk enqueue")
+#define ENQ_END() ((void)0)
 
 // ================================================================== descriptor writes
 static bool write_is_image(const VkWriteDescriptorSet *w) {
@@ -318,10 +298,10 @@ static void submit_run(const void *p) {
     VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .commandBufferInfoCount = a->ncb, .pCommandBufferInfos = a->cbs,
                         .signalSemaphoreInfoCount = a->nsig, .pSignalSemaphoreInfos = a->sig,
                         .waitSemaphoreInfoCount = a->nwait, .pWaitSemaphoreInfos = &a->wait};
+    SW_ZONE("vkQueueSubmit2");
     uint64_t t0 = NOW();
     VkResult r = vkQueueSubmit2(g_vk.queue, 1, &si, VK_NULL_HANDLE);
     uint64_t dt = NOW() - t0;
-    if (prof) ADD(r_submit_ns, dt);
     if (dt > 50000000) {  // (a driver stall: a slow wait on the recorder shows where it was)
         static int n;
         if (n++ < 20) LOG("[vk] vkQueueSubmit2 of submission %llu took %llu ms\n", (unsigned long long)a->seq, (unsigned long long)(dt / 1000000));

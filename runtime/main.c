@@ -134,6 +134,8 @@ static void reboot_idle(void) {  // (main thread, while guest threads stop) keep
 }
 
 static void teardown(void) {
+    extern void prof_shutdown(void);
+    prof_shutdown();  // finish sampling before guest thread handles or the game library can be replaced
     uint64_t t0 = plat_now_ns();
     kernel_stop_threads(reboot_idle);
     extern void nvn_queue_idle(void);

@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "vk.h"
+#include "../../prof.h"
 #include "record.h"
 #include "shaders.h"
 #include "../../settings.h"
@@ -825,7 +826,6 @@ static void upload_pending(TexBackend *b) {
                 rec_CmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
 }
 
-uint64_t prof_tex_checks, prof_tex_samples, prof_tex_full, prof_tex_full_bytes, prof_tex_dyn;
 static void upload_levels(NvnTexture *t, TexBackend *b, uint32_t level_mask);
 
 // Bytes of guest storage the texels occupy: rows at the stride for pitch textures, else the block-linear size.
@@ -862,7 +862,7 @@ static void upload_texture(NvnTexture *t, TexBackend *b, bool written) {
         return;
     }
     b->checked_frame = frame;
-    prof_tex_checks++;
+    SW_TALLY("tex/checks");
     if (t->flags & 0x10) b->dynamic = true;
     if (full_hash_budget_frame != frame) { full_hash_budget_frame = frame; full_hash_budget = 4 << 20; }
     const uint8_t *mem = (const uint8_t *)(uintptr_t)t->addr;
@@ -871,11 +871,13 @@ static void upload_texture(NvnTexture *t, TexBackend *b, bool written) {
     bool full = b->dynamic || !b->uploaded || always_full;
     if (!full && frame - b->full_frame >= 120 && full_hash_budget >= total) { full = true; full_hash_budget -= total; }
     if (!full) {
-        prof_tex_samples++;
+        SW_TALLY("tex/sampled");
         uint64_t sh = fnv_sample(mem, total);
         if (sh == b->sample_hash) return;
     }
-    prof_tex_full++; prof_tex_full_bytes += total; if (b->dynamic) prof_tex_dyn++;
+    if (b->dynamic) SW_TALLY("tex/full hash (dynamic)");
+    else SW_TALLY("tex/full hash");
+    SW_COUNT("tex full hash bytes", total);
     uint64_t h = hash_full(mem, total);
     b->full_frame = frame;
     b->sample_hash = fnv_sample(mem, total);
@@ -1202,10 +1204,8 @@ TexBackend *vk_tex(NvnTexture *t, bool for_render) {
     }
     if (for_render) b->gpu_owned = true;
     else if (!b->gpu_owned) {
-        extern uint64_t prof_up_ns;
-        uint64_t t0 = prof_up_ns != ~0ull ? SDL_GetTicksNS() : 0;
+        SW_ACC("tex/upload check");
         upload_texture(t, b, false);
-        if (prof_up_ns != ~0ull) prof_up_ns += SDL_GetTicksNS() - t0;
     }
     return b;
 }
@@ -1305,8 +1305,7 @@ VkImageView vk_image_view(TexBackend *b, VkImageViewType type, VkFormat fmt, uin
         if (e->b == b && e->k1 == k1 && e->k2 == k2) return e->view;
         if (!e->b) break;
     }
-    extern uint64_t prof_views_created;
-    prof_views_created++;
+    SW_TALLY("tex/views created");
     VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = b->image, .viewType = type,
                                 .format = fmt, .components = sw, .subresourceRange = {aspect, lv0, nlv, ly0, nly}};
     VkImageView v;

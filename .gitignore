@@ -13,6 +13,7 @@ generated-*/
 /splash.png
 # build output, caches, saves and settings
 build/
+/profile/
 /cache/
 save/
 /save.lock

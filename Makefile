@@ -212,6 +212,9 @@ $(B)/rt/gamebuild.o: RTFLAGS += -DGAMELIB_CFLAGS='"$(strip $(filter-out -Iruntim
                                 $(if $(GENFLAGS_COMPAT),-DGAMELIB_CFLAGS_COMPAT='"$(strip $(filter-out -Iruntime,$(GENFLAGS_COMPAT)))"') \
                                 -DGAMELIB_ZIGFLAGS='"$(GENFLAGS_ZIG)"' -DGAMELIB_SHARED='"$(GAMELIB_SHARED)"'
 
+# The profiler's Windows sampler guards its stack walks with SEH (__try).
+$(B)/rt/sampler.o: RTFLAGS += -fms-extensions
+
 $(B)/rt/%.o: runtime/%.c $(RT_HDRS)
 	@mkdir -p $(dir $@)
 	$(CC) $(RTFLAGS) -c $< -o $@
@@ -412,6 +415,22 @@ test-vibration: $(B)/test_vibration
 	$(B)/test_vibration
 
 .PHONY: test-vibration
+
+$(B)/test_prof: tools/test_prof.c runtime/prof.c runtime/sampler.c runtime/prof.h runtime/rt.h
+	@mkdir -p $(B)
+	$(CC) -O2 -std=gnu11 -Wall -Wextra -Werror $(OSFLAGS) -Iruntime -o $@ tools/test_prof.c runtime/prof.c runtime/sampler.c -lpthread
+
+# (POSIX only: mkdtemp, nanosleep)
+$(B)/test_prof_lifecycle: tools/test_prof_lifecycle.c runtime/prof.c runtime/sampler.c runtime/prof.h runtime/rt.h
+	@mkdir -p $(B)
+	$(CC) -O2 -std=gnu11 -Wall -Wextra -Werror $(OSFLAGS) -Iruntime -o $@ tools/test_prof_lifecycle.c runtime/prof.c runtime/sampler.c -lpthread
+
+test-prof: $(B)/test_prof $(B)/test_prof_lifecycle
+	$(B)/test_prof
+	python3 -m unittest tools.test_swprof
+	SWPROF_TEST_BIN=$(B)/test_prof_lifecycle python3 -m unittest tools.test_prof_lifecycle
+
+.PHONY: test-prof
 
 # The input test includes input.c; discard its unused HLE functions and their runtime dependencies.
 $(B)/test_input_focus: tools/test_input_focus.c runtime/hle/input.c $(RT_HDRS)

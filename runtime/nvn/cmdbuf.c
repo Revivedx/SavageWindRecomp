@@ -338,11 +338,8 @@ static CmdRec *rec(Cpu *c, NvnCmdBuf *cb, uint32_t op, uint32_t extra) {
     return rec_cost(c, cb, op, extra, cmd_cost(op, extra));
 }
 
-bool nvn_timeline(void);
-#define TL(fmt, ...) do { if (nvn_timeline()) LOG("[tl] %.3f %x " fmt "\n", plat_now_ns() / 1e6, kernel_current_thread_handle(), ##__VA_ARGS__); } while (0)
 NVN(nvnCommandBufferBeginRecording) {
     NvnCmdBuf *cb = cb_of(A(0));
-    TL("record %llx (lr %llx)", (unsigned long long)A(0), (unsigned long long)c->x[30]);
     cb->recording = true;
     rec_cost(c, cb, CMD_BARRIER, 0, 0);  // makes sure memory exists; the list starts here
     cb->start = cb->mem + cb->used - sizeof(CmdRec);
@@ -351,7 +348,6 @@ NVN(nvnCommandBufferEndRecording) {
     NvnCmdBuf *cb = cb_of(A(0));
     rec_cost(c, cb, CMD_END, 0, 0);
     cb->recording = false;
-    TL("recorded %llx", (unsigned long long)A(0));
     RET(cb->start);
 }
 NVN(nvnCommandBufferIsRecording) { RET(cb_of(A(0))->recording); }

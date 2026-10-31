@@ -41,6 +41,7 @@ typedef struct {
     VkSemaphore timeline;      // value = last completed submission number
     VkCommandPool pool;        // render thread only
     bool custom_border, divisor, host_import, wide_lines;
+    bool calibrated;  // VK_EXT_calibrated_timestamps (the profiler aligns GPU timestamps to the CPU clock)
     bool feat_aniso;  // samplerAnisotropy (Video > Anisotropic filtering)
     bool storage_ext;  // shaderStorageImageExtendedFormats (TAA's R8 / R16F / RG16F storage images: exec.c mvec_taa)
     bool depth_clamp;          // depthClamp feature (nvnCommandBufferSetDepthClamp: shadow maps keep occluders before the near plane)
