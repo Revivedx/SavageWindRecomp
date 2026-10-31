@@ -691,7 +691,7 @@ Pendiente:
        dirección mantenida y algunas pulsaciones largas.
      Lo que hace Savage Wind (`runtime/hle/framepace.c`, dos parches en `tools/patches.py`):
      - `present_pace` espera el turno de cada presentación en una rejilla fija de 1/frecuencia (un frame tardío por
-       menos de un periodo no la mueve; uno más largo la reinicia). Sin límite: 300 FPS como mucho (con pasos más
+       menos de un periodo no la mueve; uno más largo la reinicia). Sin límite: 360 FPS como mucho (con pasos más
        cortos los relojes float del juego pierden precisión). La espera del bucle (0x7000d811fc) se salta.
      - Dentro de `updateInterval`, después de que el juego pone su razón y antes de los multiplicadores y los deltas,
        `rt_vfr_update` pone la duración real: razón = segundos x 30 (0,5 a 60 FPS, 0,25 a 120). Cuando las
