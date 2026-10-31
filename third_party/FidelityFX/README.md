@@ -39,3 +39,15 @@ Changes to the SDK's files (marked "Savage Wind" in them):
 - `sdk/src/backends/vk/ffx_vk.cpp`: the global descriptor pool is created with all six of the sizes it lists. It passed
   five, leaving out the storage buffers, which the FSR 3 upscaler's passes allocate from it (the Vulkan validation
   layer reports it; NVIDIA's driver allocates them anyway).
+
+## AMD FSR 4 (FidelityFX SDK 2.4.0, `api/`)
+
+FSR 4 for Vulkan exists only as AMD's signed Windows DLLs. `api/` holds the SDK v2.4.0's ffx-api headers
+(`api/include/ffx_api.h`, `ffx_api_types.h`, `vk/ffx_api_vk.h`, `upscalers/include/ffx_upscale.h`; MIT, see
+`LICENSE.txt`) that `runtime/nvn/vulkan/fsr_api.cpp` is written against. The DLLs themselves
+(`amd_fidelityfx_loader_vk.dll`, `amd_fidelityfx_upscaler_vk.dll`, 36 MB) are not in the repository:
+`python3 tools/fetch_fsr_dlls.py` downloads them (SHA-256 checked) into `build/fsr-dlls/` together with AMD's licence
+text; `--dest <folder of savagewind.exe>` puts them where the game loads them from. `make dist` copies them into the
+release when they are in `build/fsr-dlls/`. Their licence: binary redistribution with that notice reproduced, no
+reverse engineering. The DLL also holds AMD's build of FSR 3.1 (3.1.6); `SAVAGEWIND_FSR3_API=1` has Upscaler FSR 3 use
+it in place of the built-in one (comparisons).

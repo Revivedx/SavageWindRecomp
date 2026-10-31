@@ -18,6 +18,7 @@
 #include "../../window_size.h"
 #include "vk.h"
 #include "record.h"
+#include "fsr_api.h"
 #include "../output_scale.h"
 #include "../renderer.h"
 
@@ -239,7 +240,7 @@ static void create_device(void) {
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
     VkExtensionProperties *ep = calloc(ne, sizeof *ep);
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
-    const char *ext[24];
+    const char *ext[32];
     uint32_t n_ext = 0;
     ext[n_ext++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     bool addr_report = g_addr_report_hi && has_ext(ep, ne, VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME);
@@ -499,6 +500,75 @@ static void create_device(void) {
         ext[n_ext++] = VK_KHR_PRESENT_WAIT_EXTENSION_NAME;
     }
     g_vk.present_wait = pwait;
+    // AMD FSR 4 (vulkan/fsr_api.h): AMD's upscaler DLL runs its network with cooperative matrices (FP8 on the RX 9000,
+    // INT8 on older Radeons), integer dot products, compute derivatives and a chosen subgroup size. They go on
+    // only for an AMD Radeon with the DLLs next to the game; each only where the driver has it (fsr_api_probe says
+    // after the device is made whether AMD's DLL then offers FSR 4).
+    VkPhysicalDeviceCooperativeMatrixFeaturesKHR coop_on = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR,
+                                                            .cooperativeMatrix = VK_TRUE};
+#ifdef VK_EXT_shader_float8
+    VkPhysicalDeviceShaderFloat8FeaturesEXT f8_on = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT8_FEATURES_EXT,
+                                                     .shaderFloat8 = VK_TRUE, .shaderFloat8CooperativeMatrix = VK_TRUE};
+#endif
+#ifdef VK_KHR_compute_shader_derivatives
+    VkPhysicalDeviceComputeShaderDerivativesFeaturesKHR deriv_on = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_KHR};
+#endif
+    if (g_vk.props.vendorID == 0x1002 && fsr_api_present()) {
+        const char *got[4];
+        int n_got = 0;
+        bool coop = has_ext(ep, ne, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
+        if (coop) {
+            VkPhysicalDeviceCooperativeMatrixFeaturesKHR q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR};
+            VkPhysicalDeviceFeatures2 q2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &q};
+            vkGetPhysicalDeviceFeatures2(g_vk.phys, &q2);
+            coop = q.cooperativeMatrix;
+        }
+        if (coop) {
+            ext[n_ext++] = VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME;
+            coop_on.pNext = f.pNext, f.pNext = &coop_on;
+            got[n_got++] = "cooperative matrix";
+        }
+#ifdef VK_EXT_shader_float8
+        bool f8 = has_ext(ep, ne, VK_EXT_SHADER_FLOAT8_EXTENSION_NAME);
+        if (f8) {
+            VkPhysicalDeviceShaderFloat8FeaturesEXT q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT8_FEATURES_EXT};
+            VkPhysicalDeviceFeatures2 q2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &q};
+            vkGetPhysicalDeviceFeatures2(g_vk.phys, &q2);
+            f8 = q.shaderFloat8 && q.shaderFloat8CooperativeMatrix;  // (AMD's sample wants both, or neither)
+        }
+        if (f8) {
+            ext[n_ext++] = VK_EXT_SHADER_FLOAT8_EXTENSION_NAME;
+            f8_on.pNext = f.pNext, f.pNext = &f8_on;
+            got[n_got++] = "FP8";
+        }
+#endif
+#ifdef VK_KHR_compute_shader_derivatives
+        bool dv = has_ext(ep, ne, VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME);
+        if (dv) {
+            VkPhysicalDeviceComputeShaderDerivativesFeaturesKHR q = {
+                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_KHR};
+            VkPhysicalDeviceFeatures2 q2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &q};
+            vkGetPhysicalDeviceFeatures2(g_vk.phys, &q2);
+            deriv_on.computeDerivativeGroupLinear = q.computeDerivativeGroupLinear;
+            deriv_on.computeDerivativeGroupQuads = q.computeDerivativeGroupQuads;
+            dv = q.computeDerivativeGroupLinear || q.computeDerivativeGroupQuads;
+        }
+        if (dv) {
+            ext[n_ext++] = VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME;
+            deriv_on.pNext = f.pNext, f.pNext = &deriv_on;
+            got[n_got++] = "compute derivatives";
+        }
+#endif
+        // (Vulkan 1.3 core, in the f13 above)
+        f13.shaderIntegerDotProduct = f13_have.shaderIntegerDotProduct;
+        f13.subgroupSizeControl = f13_have.subgroupSizeControl;
+        f13.computeFullSubgroups = f13_have.computeFullSubgroups;
+        char list[96] = "";
+        for (int i = 0; i < n_got; i++) snprintf(list + strlen(list), sizeof list - strlen(list), "%s%s", i ? ", " : "", got[i]);
+        LOG("[vk] AMD FSR 4 device features: %s%s integer dot product %s, subgroup size control %s\n", list, n_got ? "," : "none,",
+            f13.shaderIntegerDotProduct ? "on" : "off", f13.subgroupSizeControl && f13.computeFullSubgroups ? "on" : "off");
+    }
     float prio[2] = {1.0f, 1.0f};
     // Two queues when the family has them: the second one presents (present thread below). NVIDIA's GPUs before
     // Turing (PCI device ids below 0x1E00: the GTX 10 series and older) faulted writing to GPU address 0 within the
@@ -515,6 +585,7 @@ static void create_device(void) {
     VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f, .queueCreateInfoCount = 1,
                              .pQueueCreateInfos = &qi, .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext};
     VK_CHECK(vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.dev));
+    fsr_api_probe(g_vk.dev, g_vk.phys);  // (logs what AMD's FSR DLLs offer this device; a no-op without them)
     vkGetDeviceQueue(g_vk.dev, g_vk.qfam, 0, &g_vk.queue);
     g_vk.present_queue = g_vk.queue;
     if (qi.queueCount == 2) vkGetDeviceQueue(g_vk.dev, g_vk.qfam, 1, &g_vk.present_queue);
@@ -1873,13 +1944,13 @@ presented:
             if ((long)total_frames < at) break;
             const char *m = *end == ':' ? end + 1 : end;
             static const char *const names[] = {"ultra", "quality", "balanced", "performance", "ultraperf"};  // (UPQ_*; a later match wins)
-            bool f3 = !strncmp(m, "fsr3-", 5);
-            if (f3) m += 5;
+            bool f4 = !strncmp(m, "fsr4-", 5), f3 = !strncmp(m, "fsr3-", 5);  // (fsr4-<mode>: AMD FSR 4)
+            if (f3 || f4) m += 5;
+            int tu = f4 ? UPSCALE_FSR4 : f3 ? UPSCALE_FSR3 : UPSCALE_FSR1;
             g_settings.upscaler = UPSCALE_OFF;
             for (int i = 0; i < 5; i++)
-                if (!strncmp(m, names[i], strlen(names[i])))
-                    g_settings.upscaler = f3 ? UPSCALE_FSR3 : UPSCALE_FSR1, g_settings.upscale_quality = i;
-            if (f3 && !strncmp(m, "native", 6)) g_settings.upscaler = UPSCALE_FSR3, g_settings.upscale_quality = UPQ_COUNT;
+                if (!strncmp(m, names[i], strlen(names[i]))) g_settings.upscaler = tu, g_settings.upscale_quality = i;
+            if ((f3 || f4) && !strncmp(m, "native", 6)) g_settings.upscaler = tu, g_settings.upscale_quality = UPQ_COUNT;
             LOG("[test] frame %llu: upscaler %d mode %d\n", (unsigned long long)total_frames, g_settings.upscaler,
                 g_settings.upscale_quality);
             next = strchr(m, ',');
@@ -2057,6 +2128,10 @@ void ui_window_init(void) {
     if (!SDL_Vulkan_CreateSurface(window, g_vk.inst, NULL, &g_vk.surface)) FATAL("SDL_Vulkan_CreateSurface: %s\n", SDL_GetError());
     pick_device();
     create_device();
+    if (g_settings.upscaler == UPSCALE_FSR4 && !fsr4_available()) {  // (a settings file from a PC with an AMD Radeon)
+        g_settings.upscaler = fsr3_available() && fsr3_upscaler_enabled() ? UPSCALE_FSR3 : UPSCALE_SPATIAL;
+        LOG("[fsr] FSR 4 is not offered on this GPU: upscaler %d instead\n", g_settings.upscaler);
+    }
     create_swapchain();
     vk_exec_init();
     vk_shaders_init();

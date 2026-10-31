@@ -15,6 +15,7 @@
 #include "shaders.h"
 #include "vk.h"
 #include "fsr3.h"
+#include "fsr_api.h"
 #include "mvec.h"
 #include "../output_scale.h"
 #include "record.h"
@@ -8276,7 +8277,7 @@ static TexBackend *mvec_taa(VkCommandBuffer cb, TexBackend *b, uint64_t frame) {
     return out;
 }
 
-// AMD FSR 3.1 (Video > Upscaler FSR 3; fsr3.h): the scene b (render size, jittered: output_scale.c rt_persp_offset with
+// AMD FSR 3.1 (Video > Upscaler FSR 3; fsr3.h) or FSR 4 (Upscaler FSR 4; fsr_api.h): the scene b (render size, jittered: output_scale.c rt_persp_offset with
 // FSR's sequence, rt_jitter_set_phases) to ow x oh (post image 13), from this frame's motion vectors (just filled), the
 // scene depth (as R32F, post image 14) and the reactive mask (the vectors' .z as R8, post image 15). The vectors are
 // clip-space NDC differences (y up, the image's y down: mvec_fill.frag), FSR wants the UV offset to where the pixel was:
@@ -8325,10 +8326,20 @@ static TexBackend *fsr3_scene(VkCommandBuffer cb, TexBackend *b, uint32_t ow, ui
         .reset = last == ~0ull || last + 1 != frame,
     };
     last_ns = ns;
-    if (g_gpuprof_frame) gp_mark(cb, "FSR 3 upscaler");
+    // Upscaler FSR 4, or SAVAGEWIND_FSR3_API=1: AMD's DLLs (fsr_api.h); else the built-in FSR 3.1 (fsr3.h)
+    int api = rt_fsr4() ? 4 : fsr3_api_wanted() ? 3 : 0;
+    if (api && !fsr_api_usable(api)) api = 0;  // (it failed before: the built-in one from here on)
+    static int last_api = -1;  // (another upscaler: its own history, from none)
+    if (api != last_api) d.reset = true;
+    last_api = api;
+    if (g_gpuprof_frame) gp_mark(cb, api == 4 ? "FSR 4 upscaler" : "FSR 3 upscaler");
     rec_drain();  // (FidelityFX records into cb itself, and may wait for the device: what was queued before goes first)
-    if (!fsr3_dispatch(&d)) return NULL;
-    if (g_gpuprof_frame) gp_mark(cb, "after FSR 3");
+    // (AMD's failing, logged there: the built-in FSR 3.1 in its place, from this frame on, without the history of the
+    // other upscaler)
+    bool amd_ok = api && fsr_api_dispatch(&d, api);
+    if (api && !amd_ok) d.reset = true, api = 0, last_api = 0;
+    if (!amd_ok && !(fsr3_available() && fsr3_dispatch(&d))) return NULL;
+    if (g_gpuprof_frame) gp_mark(cb, api == 4 ? "after FSR 4" : "after FSR 3");
     last = frame;
     vk_dyn_forget();  // (FSR's own pipelines and sets were bound)
     vk_full_barrier(cb);
