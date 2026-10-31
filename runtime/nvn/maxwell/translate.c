@@ -21,6 +21,9 @@
 #include <string.h>
 
 #include "shader.h"
+// fragment output kinds (ShaderKey rt_kind): 1 / 2 signed / unsigned integer; 5 / 6 unsigned 16 / 8-bit, 7 / 8 signed
+#define RT_SINT(k) ((k) == 1 || (k) == 7 || (k) == 8)
+#define RT_UINT(k) ((k) == 2 || (k) == 5 || (k) == 6)
 
 uint64_t maxwell_gmem_base, maxwell_gmem_size;
 const uint8_t *maxwell_dbg_code;
@@ -1740,10 +1743,10 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         int nw = size == 5 ? 2 : size >= 6 ? 4 : 1;
         if (c->glsl) {  // gmem_.w[]: 32-bit words; sub-word accesses within the containing word
             static const char *const gl_small[] = {
-                "(gmem_.w[uint(ga >> 2)] >> (uint(ga & 3ul) * 8u)) & 0xFFu",
-                "uint(sx8(gmem_.w[uint(ga >> 2)] >> (uint(ga & 3ul) * 8u)))",
-                "(gmem_.w[uint(ga >> 2)] >> (uint(ga & 2ul) * 8u)) & 0xFFFFu",
-                "uint(sx16(gmem_.w[uint(ga >> 2)] >> (uint(ga & 2ul) * 8u)))"};
+                "(GLD(uint(ga >> 2)) >> (uint(ga & 3ul) * 8u)) & 0xFFu",
+                "uint(sx8(GLD(uint(ga >> 2)) >> (uint(ga & 3ul) * 8u)))",
+                "(GLD(uint(ga >> 2)) >> (uint(ga & 2ul) * 8u)) & 0xFFFFu",
+                "uint(sx16(GLD(uint(ga >> 2)) >> (uint(ga & 2ul) * 8u)))"};
             if (!store) {
                 if (size < 4) {
                     if (d != RZ) { c->reg_used[d] = 1; sp(&c->body, "      if (ok) r%d = %s; else r%d = 0u;\n", d, gl_small[size], d); }
@@ -1751,18 +1754,21 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
                     for (int k = 0; k < nw; k++)
                         if (d != RZ && d + k < RZ) {
                             c->reg_used[d + k] = 1;
-                            sp(&c->body, "      if (ok) r%d = gmem_.w[uint(ga >> 2) + %du]; else r%d = 0u;\n", d + k, k, d + k);
+                            sp(&c->body, "      if (ok) r%d = GLD(uint(ga >> 2) + %du); else r%d = 0u;\n", d + k, k, d + k);
                         }
                 }
             } else {
                 c->uses_gmem_store = true;
                 if (size < 4)
-                    sp(&c->body, "      if (ok) { uint wi = uint(ga >> 2); uint sh = uint(ga & %s) * 8u; atomicAnd(gmem_.w[wi], ~(0x%xu << sh)); "
-                       "atomicOr(gmem_.w[wi], (%s & 0x%xu) << sh); }\n", size < 2 ? "3ul" : "2ul", size < 2 ? 0xFFu : 0xFFFFu, R(d),
-                       size < 2 ? 0xFFu : 0xFFFFu);
+                    sp(&c->body, "      if (ok) { uint wi = uint(ga >> 2); uint sh = uint(ga & %s) * 8u; uint gm = ~(0x%xu << sh), gv = (%s & 0x%xu) << sh; "
+                       "%s }\n", size < 2 ? "3ul" : "2ul", size < 2 ? 0xFFu : 0xFFFFu, R(d),
+                       size < 2 ? 0xFFu : 0xFFFFu,
+                       maxwell_gmem_split ? "if (wi < GSPLIT) { atomicAnd(gmem_.w[wi], gm); atomicOr(gmem_.w[wi], gv); } "
+                                            "else { atomicAnd(gmem2_.w[wi - GSPLIT], gm); atomicOr(gmem2_.w[wi - GSPLIT], gv); }"
+                                          : "atomicAnd(gmem_.w[wi], gm); atomicOr(gmem_.w[wi], gv);");
                 else
                     for (int k = 0; k < nw; k++)
-                        sp(&c->body, "      if (ok) gmem_.w[uint(ga >> 2) + %du] = %s;\n", k, R(d == RZ ? RZ : d + k));
+                        sp(&c->body, "      if (ok) GST(uint(ga >> 2) + %du, %s);\n", k, R(d == RZ ? RZ : d + k));
             }
         } else if (!store) {
             if (size < 4) {
@@ -2228,9 +2234,35 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         sp(&s, "layout(std140, set = %d, binding = %d) uniform CB%d { uvec4 cb%d[%u]; };\n", set, i, i, i, n);
     }
     info->writes_gmem = info->uses_gmem && c->uses_gmem_store;
-    if (info->uses_gmem)
+    if (info->uses_gmem) {
+        // The heap in one storage buffer, or (maxwell_gmem_split: the device's maxStorageBufferRange is below the heap,
+        // Mali-G610's 2 GB against 3 GB) in two, split at GMEM_SPLIT. GLD / GST read and write a word of it.
+        bool split = maxwell_gmem_split;
         sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GMem { uint w[]; } gmem_;\n", set, GMEM_BUFFER_INDEX,
            c->uses_gmem_store ? "" : "readonly ");
+        if (split)
+            sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GMem2 { uint w[]; } gmem2_;\n", set, GMEM2_BUFFER_INDEX,
+               c->uses_gmem_store ? "" : "readonly ");
+        if (split) sp(&s, "#define GSPLIT 0x%xu\n#define GLD0(i) ((i) < GSPLIT ? gmem_.w[(i)] : gmem2_.w[(i) - GSPLIT])\n", (unsigned)(GMEM_SPLIT >> 2));
+        else sp(&s, "#define GLD0(i) gmem_.w[(i)]\n");
+        if (c->uses_gmem_store || !maxwell_gmem_snap) {
+            sp(&s, "#define GLD(i) GLD0(i)\n");
+            if (split)
+                sp(&s, "#define GST(i, v) { uint gi_ = (i); if (gi_ < GSPLIT) gmem_.w[gi_] = (v); else gmem2_.w[gi_ - GSPLIT] = (v); }\n");
+            else
+                sp(&s, "#define GST(i, v) { gmem_.w[(i)] = (v); }\n");
+        } else {
+            // Read-only, maxwell_gmem_snap: up to 4 ranges of the heap copied at translation (exec.c gsnap: what the HUD's
+            // shaders read, which the game may rewrite while the GPU is still on the frame), r = (first word, words, word in
+            // w[]; gs_r[0].w: how many); the rest in place.
+            sp(&s, "layout(std430, set = %d, binding = %d) readonly buffer GSnap { uvec4 gs_r[4]; uint w[]; } gsnap_;\n", set,
+               GSNAP_BUFFER_INDEX);
+            sp(&s, "uint GLD(uint i) {\n"
+                   "  uint n_ = min(gsnap_.gs_r[0].w, 4u);\n"
+                   "  for (uint k_ = 0u; k_ < n_; k_++) { uvec4 q_ = gsnap_.gs_r[k_]; if (i - q_.x < q_.y) return gsnap_.w[q_.z + (i - q_.x)]; }\n"
+                   "  return GLD0(i);\n}\n");
+        }
+    }
     if (c->uses_rscale) {  // (vertex shaders too: texel fetches from scaled targets, e.g. depth under the sun's flare)
         sp(&s, "layout(std140, set = %d, binding = 18) uniform RScale { vec4 rscale[65]; };\n", set);
         info->uses_rscale = true;
@@ -2280,7 +2312,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         for (int rt = 0; rt < 8; rt++) {
             if (!((c->omap_target >> (rt * 4)) & 0xF)) continue;
             int kind = key ? key->rt_kind[rt] : 0;
-            sp(&s, "layout(location = %d) out %s c%d;\n", rt, kind == 1 ? "ivec4" : kind == 2 ? "uvec4" : "vec4", rt);
+            sp(&s, "layout(location = %d) out %s c%d;\n", rt, RT_SINT(kind) ? "ivec4" : RT_UINT(kind) ? "uvec4" : "vec4", rt);
         }
         if (c->omap_depth) info->writes_depth = true;
         if (mvec_rt >= 0 && !mvec_mask && !mvec_still) sp(&s, "layout(location = 30) in vec4 mv_cur;\nlayout(location = 31) in vec4 mv_prev;\n");
@@ -2326,7 +2358,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
             uint32_t m = (c->omap_target >> (rt * 4)) & 0xF;
             if (!m) continue;
             int kind = key ? key->rt_kind[rt] : 0;
-            const char *cv = kind == 1 ? "int" : kind == 2 ? "uint" : "";
+            const char *cv = RT_SINT(kind) ? "int" : RT_UINT(kind) ? "uint" : "";
             for (int comp = 0; comp < 4; comp++) {
                 if (!(m & (1u << comp))) continue;
                 if (dbg) {
@@ -2334,6 +2366,12 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
                     else sp(&s, "  c%d[%d] = %s(dbgv);\n", rt, comp, cv);
                 } else if (r < 256 && c->reg_used[r]) {
                     if (kind == 0) sp(&s, "  c%d[%d] = as_f(r%d);\n", rt, comp, r);
+                    // (narrow integer targets: the register's low bits, as NVIDIA's hardware stores them; Mali saturates
+                    // wider values - BOTW's NPC speech bubbles pack BC4 indices into RGBA16 UINT with high bits left over)
+                    else if (kind == 5) sp(&s, "  c%d[%d] = r%d & 0xFFFFu;\n", rt, comp, r);
+                    else if (kind == 6) sp(&s, "  c%d[%d] = r%d & 0xFFu;\n", rt, comp, r);
+                    else if (kind == 7) sp(&s, "  c%d[%d] = int(r%d << 16) >> 16;\n", rt, comp, r);
+                    else if (kind == 8) sp(&s, "  c%d[%d] = int(r%d << 24) >> 24;\n", rt, comp, r);
                     else sp(&s, "  c%d[%d] = %s(r%d);\n", rt, comp, cv, r);
                 } else {
                     sp(&s, "  c%d[%d] = 0;\n", rt, comp);
@@ -2396,7 +2434,13 @@ size_t maxwell_binary_size(const uint8_t *blob, size_t max_size, int stage) {
 #ifndef TRANSLATOR_ID
 #define TRANSLATOR_ID __DATE__ " " __TIME__
 #endif
-const char *maxwell_translator_id(void) { return TRANSLATOR_ID; }
+bool maxwell_gmem_split, maxwell_gmem_snap;
+// (the two switches above change translations: they name caches of their own)
+const char *maxwell_translator_id(void) {
+    static __thread char id[64];  // (per thread: the precompile's workers ask for it at once)
+    snprintf(id, sizeof id, "%s%s%s", TRANSLATOR_ID, maxwell_gmem_split ? "-gs" : "", maxwell_gmem_snap ? "-gn" : "");
+    return id;
+}
 
 // Whether a translation depends on more than the binary and the key (debugging switches): not to be cached.
 bool maxwell_translation_uncacheable(void) {
@@ -3058,7 +3102,7 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
         for (int rt = 0; rt < 8; rt++) {
             if (!((c->omap_target >> (rt * 4)) & 0xF)) continue;
             int kind = key ? key->rt_kind[rt] : 0;
-            sp(&s, "  %s4 c%d [[color(%d)]];\n", kind == 1 ? "int" : kind == 2 ? "uint" : "float", rt, rt);
+            sp(&s, "  %s4 c%d [[color(%d)]];\n", RT_SINT(kind) ? "int" : RT_UINT(kind) ? "uint" : "float", rt, rt);
         }
         if (c->omap_depth) { sp(&s, "  float depth [[depth(any)]];\n"); info->writes_depth = true; }
         sp(&s, "};\n");

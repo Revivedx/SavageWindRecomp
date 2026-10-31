@@ -1,4 +1,4 @@
-// Window size (Video > Window size). The list (user, 2026-10-19), by shape: 16:9 1280x720 .. 7680x4320, 21:9
+// Window size (Video > Window size). The list (user, 2026-10-19), by shape: 16:9 640x360 .. 7680x4320, 21:9
 // 2560x1080 / 3440x1440 / 3840x1600, 16:10 1280x800 / 1680x1050 / 2560x1600, 4:3 and 5:4 640x480 .. 1600x1200. Offered:
 // those that fit on the window's display (its desktop size), and the desktop size itself; fullscreen also offers
 // bigger ones the display has a mode for (GPU downsampling such as NVIDIA DSR adds them).
@@ -20,7 +20,8 @@
 #include "settings.h"
 
 static const WinSize k_sizes[] = {
-    {1280, 720}, {1920, 1080}, {2560, 1440}, {3840, 2160}, {5120, 2880}, {7680, 4320},  // 16:9
+    {640, 360}, {960, 540}, {1280, 720}, {1920, 1080}, {2560, 1440}, {3840, 2160},  // 16:9
+    {5120, 2880}, {7680, 4320},
     {2560, 1080}, {3440, 1440}, {3840, 1600},                                            // 21:9
     {1280, 800}, {1680, 1050}, {2560, 1600},                                             // 16:10
     {640, 480}, {800, 600}, {1024, 768}, {1280, 1024}, {1600, 1200},                     // 4:3, 5:4

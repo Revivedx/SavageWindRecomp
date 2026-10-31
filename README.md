@@ -101,6 +101,10 @@ the data folder actually in use. `SAVAGEWIND_SAVE_DIR`, when set for a test run,
 To back up your progress or move it to another Savage Wind installation, close the game and copy the **whole
 `save` folder**, including `save_0` and its contents. Keep a backup of the destination's saves before replacing them.
 
+Played on the Wii U or in Cemu? Savage Wind Configuration can import that save: open **Settings > Saves** and choose
+**Import from Wii U / Cemu...**. It backs up your current saves first and asks before it replaces them. See
+[Importing Wii U / Cemu saves](docs/save-converter.md).
+
 ## What you need
 
 - Your own *Breath of the Wild* (cartridge or digital) and its **1.9.0 update**, the latest, extracted from your own
@@ -181,6 +185,7 @@ Estimates of where each part stands. "Tested in game" is how much of the game ha
 | ✅ | **Faster game code build** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | The one-time setup takes about 15 minutes instead of about 40 (12 threads) from the next release: the game code builds in about 6 minutes instead of 30 ([#43](https://github.com/Revivedx/SavageWindRecomp/pull/43), by [@adriadam10](https://github.com/adriadam10)) |
 | ✅ | **Frame rate** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | 60 fps by default, or 30, 90, 120 or no limit, with the game at the same speed; menus, cutscenes and conversations too, and videos at their own speed |
 | ✅ | **Field of view** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Video > Field of view: 70% to 150% of the game's own in play; cutscenes and conversations keep theirs |
+| ✅ | **Draw distance** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Video > Draw distance: Original (the game's own), Medium or High. Trees, rocks, buildings, enemies and villagers appear further out (1.5x at Medium, 1.6x at High, up to 2 km), buildings keep their full models further before their far versions take over, and distant landmarks such as Hyrule Castle and the terrain's distant trees stay drawn 1.5x as far. The grass reaches further too: the short grass 1.6x (Medium) or 2.5x (High), the tall grass about 1.15x or 2.45x. The terrain's own detail levels stay the game's ([#88](https://github.com/Revivedx/SavageWindRecomp/issues/88)) |
 | ✅ | **Steady 60 fps in the open world** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Holds 60 fps in real play on the Great Plateau (RTX 3060, Ryzen 5 5600X); steady 120 fps (8 ms frames) is the next goal |
 | ✅ | **Game version 1.9.0** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | The latest version and the supported one (its Thai text isn't offered yet). 1.8.2 still sets up and runs, but isn't supported: a bug is only fixed if it also happens on 1.9.0 |
 | ✅ | **DLC** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | *The Master Trials* and *The Champions' Ballad* from your own copy, set up with the game files or later ([The DLC](#the-dlc)), from the next release: Master Mode, the Trial of the Sword and the Travel Medallion work on a 100% save. The Champions' Ballad has been played through. |
@@ -296,9 +301,9 @@ switches - are in [docs/SAVAGE-WIND.md](docs/SAVAGE-WIND.md).
   (Apache 2.0), [Zig](https://ziglang.org) (MIT), [Capstone](https://www.capstone-engine.org) (BSD),
   [Unicorn](https://www.unicorn-engine.org) (GPL 2.0), [python-lz4](https://github.com/python-lz4/python-lz4) (BSD).
 - Colour LUTs from [FreshLUTs](https://freshluts.com), CC0 1.0, renamed: "Savage Wind" is
-  [powerful cold](https://freshluts.com/luts/107), uploaded by sagi hershkovich; "Ember" is
-  [CINEMA 3](https://freshluts.com/luts/219), and "Dormant" is [CARIBE](https://freshluts.com/luts/217), both
-  uploaded by Andy (`third_party/luts/README.md`).
+  [CINEMA 3](https://freshluts.com/luts/219) and "Dormant" is [CARIBE](https://freshluts.com/luts/217), both
+  uploaded by Andy; "Ember" is [powerful cold](https://freshluts.com/luts/107), uploaded by sagi hershkovich
+  (`third_party/luts/README.md`).
 
 ## License
 

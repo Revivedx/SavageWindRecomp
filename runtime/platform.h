@@ -26,11 +26,16 @@ bool plat_reset_guest(uint64_t lo, uint64_t hi);
 enum { PLAT_PROT_NONE = 0, PLAT_PROT_READ = 1, PLAT_PROT_RW = 3 };
 int plat_protect(uint64_t addr, uint64_t size, int prot);  // 0 on success
 #define PLAT_PAGE 0x4000ull  // largest page size we deal with (macOS 16K; multiple of Windows' 4K)
+// The 4K pages of [addr, addr + size) (in the guest window) written since the last call for them, which the call
+// resets: their addresses into pages (ascending, at most max). -1: not known here (only Windows tracks them: the
+// window is reserved with MEM_WRITE_WATCH), or more than max were written (then any page may have been).
+long plat_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, size_t max);
 
 // ---- time
 uint64_t plat_now_ns(void);                // monotonic
 void plat_sleep_until_ns(uint64_t t);      // precise wait for plat_now_ns() >= t
 void plat_thread_realtime(uint64_t period_ns);  // periodic timing thread (vsync): don't coalesce its timers
+void plat_cpu_placement(void);  // (game start) one logical processor per core on CPUs with SMT and 8+ cores (Windows)
 
 // ---- process
 void plat_init(void);                                // first thing in main()

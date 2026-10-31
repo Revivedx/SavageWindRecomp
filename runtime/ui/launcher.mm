@@ -30,6 +30,7 @@
 #include "imgui_internal.h"  // (SetKeyOwner)
 #include "option_rows.h"
 #include "osk.h"
+#include "saves_tab.h"
 #include "splash.h"
 #ifdef __APPLE__
 #include "imgui_impl_metal.h"
@@ -69,6 +70,7 @@ void *vk_frame_cmd(void);
 bool vk_imgui_backend_init(void);
 void vk_imgui_backend_shutdown(void);
 uint64_t vk_imgui_texture_rgba(const void *rgba, int w, int h);
+void rec_drain(void);  // (runtime/nvn/vulkan/record.c)
 #endif
 }
 #ifdef __APPLE__
@@ -891,8 +893,8 @@ static bool launcher_pad_event(const SDL_Event &e) {
 
 // Settings' first tab, on the start screen only: the extracted game files (size, delete) and the user's own Switch
 // fonts (import / back to the substitute)
-// Open a folder in Finder / Explorer (relative paths are in the data root, the working directory)
-static void reveal_folder(const std::string &dir) {
+// Open a folder in Finder / Explorer (relative paths are in the data root, the working directory); also the Saves tab's
+void reveal_folder(const std::string &dir) {
     std::string path = dir;
     bool abs = !path.empty() && (path[0] == '/' || path[0] == '\\' || (path.size() > 1 && path[1] == ':'));
     if (!abs) path = std::string(rt_data_root()) + "/" + path;
@@ -1037,6 +1039,7 @@ static void launcher_fonts_follow_language(void) {
 static bool g_setup_only;
 extern "C" void launcher_run(const char *root, int mode) {
     g_root = root;
+    saves_tab_set_game_files(root);
     g_setup_only = mode == 0;
     ui_window_init();
     SDL_Window *win = ui_window();
@@ -1185,6 +1188,7 @@ extern "C" void launcher_run(const char *root, int mode) {
             static const float clear_col[4] = {0.04f, 0.05f, 0.06f, 1};
             if (!vk_frame_begin(clear_col)) { SDL_Delay(16); continue; }
             launcher_fonts_follow_language();
+            rec_drain();  // (ImGui uploads its fonts on the queue the recorder thread submits on)
             ImGui_ImplVulkan_NewFrame();
 #endif
             ImGui_ImplSDL3_NewFrame();
@@ -1331,7 +1335,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                     back = true;
                 ImGui::PopFont();
                 ImGui::EndChild();
-                if (back) {
+                if (back && !saves_tab_busy()) {  // (an import or a backup is running, or waiting for the player's yes)
                     bind_capture_cancel();
                     settings_save();
                     page = MAIN, g_refocus = SETTINGS;
@@ -1518,8 +1522,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                         bool look = !strcmp(g_settings.color_lut, COLOR_LUT_RECOMMENDED);
                         if (busy) opt_disable_next();
                         if (opt_toggle("Savage Wind colour look", &look, true,
-                                       "Recommended. The game's picture with Savage Wind's own colour look: a little "
-                                       "deeper and cooler. Change it or turn it off any time in the game's Options > "
+                                       "Recommended. The game's picture with Savage Wind's own colour look. Change it or turn it off any time in the game's Options > "
                                        "Colour (LUT).")) {
                             snprintf(g_settings.color_lut, sizeof g_settings.color_lut, "%s", look ? COLOR_LUT_RECOMMENDED : "");
                             g_settings.color_lut_strength = look ? COLOR_LUT_RECOMMENDED_STRENGTH : 100;
@@ -1729,6 +1732,7 @@ extern "C" void launcher_run(const char *root, int mode) {
     settings_save();
     SDL_SetWindowTitle(win, "Savage Wind");
     splash_unload();
+    saves_tab_unload();
 #ifdef __APPLE__
     ImGui_ImplMetal_Shutdown();
 #else

@@ -34,3 +34,4 @@ uint64_t framepace_shown_frame(void);  // (the game's frames that were presented
 // SAVAGEWIND_SCRIPT_CLOCK=1: the frame number test scripts use, in 30ths of a second (once per presented frame);
 // otherwise the presented frames.
 uint64_t framepace_script_frame(uint64_t presented);
+uint64_t framepace_script_now(void);  // (read only: the script frames so far, 0 without SAVAGEWIND_SCRIPT_CLOCK)

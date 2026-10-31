@@ -17,6 +17,7 @@
 #include "../../ui/menu.h"
 #include "../../window_size.h"
 #include "vk.h"
+#include "record.h"
 #include "../output_scale.h"
 #include "../renderer.h"
 
@@ -148,6 +149,8 @@ static void pick_device(void) {
     g_vk.phys = pd[best];
     free(pd);
     vkGetPhysicalDeviceProperties(g_vk.phys, &g_vk.props);
+    g_vk.is_mali = g_vk.props.vendorID == 0x13B5;  // (Arm)
+    { extern void vk_translator_setup(void); vk_translator_setup(); }
     uint32_t nq = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(g_vk.phys, &nq, NULL);
     VkQueueFamilyProperties *qp = calloc(nq, sizeof *qp);
@@ -165,6 +168,18 @@ static void pick_device(void) {
     free(qp);
     if (g_vk.qfam == UINT32_MAX) FATAL("no graphics+present queue\n");
     LOG("[vk] using %s\n", g_vk.props.deviceName);
+    // Colour images with a list of their view formats (textures.c create_image), on integrated GPUs by default: there
+    // the memory traffic it saves pays (Radeon 660M; LAS Recomp 03ee802f measured an Intel UHD 770 faster and an
+    // RTX 3080 Ti slightly slower). Not on Linux AMD (RADV: the Steam Deck): there the game showed small purple specks
+    // flickering on the ground with them and none without (Great Plateau, user play test 2026-10-29).
+    // SAVAGEWIND_VK_LEAN_USAGE=0 / =1 overrides.
+    const char *lean = getenv("SAVAGEWIND_VK_LEAN_USAGE");
+    bool lean_default = g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+#ifdef __linux__
+    if (g_vk.props.vendorID == 0x1002) lean_default = false;
+#endif
+    g_vk.lean_usage = lean && *lean ? atoi(lean) != 0 : lean_default;
+    LOG("[vk] view format lists %s\n", g_vk.lean_usage ? "on" : "off");
     { extern void perfmon_set_gpu_hint(const char *n); perfmon_set_gpu_hint(g_vk.props.deviceName); }
 }
 
@@ -1052,7 +1067,7 @@ static void create_swapchain(void) {
         VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = hdr_sets[i], .dstBinding = 0,
                                   .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                   .pImageInfo = &ii};
-        vkUpdateDescriptorSets(g_vk.dev, 1, &w, 0, NULL);
+        rec_UpdateDescriptorSets(1, &w);
     }
     if (g_hdr) LOG("[vk] HDR10 output (%s), SDR white at %.0f nits\n",
                    g_settings.hdr == HDR_ON ? "Video > HDR is On" : "Windows HDR is on for this display", g_hdr_white);
@@ -1207,6 +1222,7 @@ static void pt_retire(void) {
 static void recreate_swapchain(void) {
     vk_present_idle();
     pt_retire();
+    rec_drain();
     vkDeviceWaitIdle(g_vk.dev);
     create_swapchain();
 }
@@ -1264,12 +1280,19 @@ static void *present_thread(void *arg) {
         while (!presq_n) pthread_cond_wait(&pres_cv, &pres_m);
         __typeof__(presq[0]) q = presq[presq_head];
         pthread_mutex_unlock(&pres_m);
+        rec_wait_submitted(q.seq);  // (its semaphore's signal must be submitted first: record.c may not have yet)
         present_wait_turn(q.kind, q.seq);
         VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &q.sem,
                                .swapchainCount = 1, .pSwapchains = &q.sc, .pImageIndices = &q.img};
         pthread_mutex_lock(&sc_lock);
+        uint64_t tq = SDL_GetTicksNS();
         VkResult r = queue_present(g_vk.present_queue, &pi);
+        tq = SDL_GetTicksNS() - tq;
         pthread_mutex_unlock(&sc_lock);
+        if (tq > 200000000ull) {  // (#224: a present the driver held on to)
+            static int slow;
+            if (slow++ < 20) LOG("[vk] present took %llu ms (result %d)\n", (unsigned long long)(tq / 1000000), r);
+        }
         if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) atomic_store(&pres_stale, 1);
         else if (r != VK_SUCCESS) { static int n; if (n++ < 5) LOG("[vk] present failed: %d\n", r); }
         pthread_mutex_lock(&pres_m);
@@ -1310,13 +1333,44 @@ static void present_wait_room(void) {
     pthread_mutex_unlock(&pres_m);
 }
 
+// The next window image, or VK_TIMEOUT when none came within ACQUIRE_GIVE_UP_NS (#224). This used to wait without an
+// end: with the present thread it asked again every 2 ms for as long as the driver said VK_TIMEOUT / VK_NOT_READY,
+// holding the GPU lock (backend_present), so the game, the movie and the "[vk]" lines stood still for good with one
+// core busy. An exclusive fullscreen window that loses the focus is minimised by SDL and gives its display mode back;
+// a swapchain that no longer gets an image back then (and never says out of date) kept it there. Now the frame is left
+// out (vk_frame_begin), the swapchain is made again, and the next frame tries anew.
+// SAVAGEWIND_TEST_ACQUIRE_TIMEOUT=<frame>,<frames> (tests): from that presented frame on, for that many, every acquire
+// answers VK_TIMEOUT at once, as that driver did.
+#define ACQUIRE_GIVE_UP_NS 250000000ull
+static uint64_t presented_frames(void);
+static bool acquire_test_timeout(void) {
+    static long from = -1, n;
+    if (from < 0) {
+        const char *e = getenv("SAVAGEWIND_TEST_ACQUIRE_TIMEOUT");
+        from = 0;
+        if (e && sscanf(e, "%ld,%ld", &from, &n) != 2) from = 0;
+    }
+    uint64_t f = presented_frames();
+    return from > 0 && f >= (uint64_t)from && f < (uint64_t)(from + n);
+}
+
 static VkResult acquire_image(VkSemaphore sem, uint32_t *img) {
-    if (!present_threaded()) return vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, sem, VK_NULL_HANDLE, img);
-    for (;;) {  // (a short timeout at a time: not holding the swapchain while the present thread needs it)
-        pthread_mutex_lock(&sc_lock);
-        VkResult r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, 2000000, sem, VK_NULL_HANDLE, img);
-        pthread_mutex_unlock(&sc_lock);
+    bool threaded = present_threaded();
+    uint64_t t0 = SDL_GetTicksNS();
+    for (;;) {  // (threaded: a short timeout at a time, not holding the swapchain while the present thread needs it)
+        uint64_t tc = SDL_GetTicksNS();
+        VkResult r;
+        if (acquire_test_timeout()) r = VK_TIMEOUT;
+        else if (!threaded) r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, ACQUIRE_GIVE_UP_NS, sem, VK_NULL_HANDLE, img);
+        else {
+            pthread_mutex_lock(&sc_lock);
+            r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, 2000000, sem, VK_NULL_HANDLE, img);
+            pthread_mutex_unlock(&sc_lock);
+        }
         if (r != VK_TIMEOUT && r != VK_NOT_READY) return r;
+        uint64_t now = SDL_GetTicksNS();
+        if (now - t0 >= ACQUIRE_GIVE_UP_NS) return VK_TIMEOUT;
+        if (now - tc < 1000000) SDL_Delay(1);  // (answered without waiting: not a busy loop)
     }
 }
 
@@ -1326,6 +1380,7 @@ static bool present_image(uint32_t img, VkSemaphore sem, int kind, uint64_t seq)
     if (!present_threaded()) {
         VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &sem,
                                .swapchainCount = 1, .pSwapchains = &g_vk.swapchain, .pImageIndices = &img};
+        rec_wait_submitted(seq);  // (as present_thread)
         present_wait_turn(kind, seq);
         VkResult r = queue_present(g_vk.queue, &pi);
         return !(r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR);
@@ -1362,7 +1417,7 @@ static void image_barrier(VkCommandBuffer cb, VkImage img, VkImageLayout from, V
                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
                                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED};
     VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &b};
-    vkCmdPipelineBarrier2(cb, &di);
+    rec_CmdPipelineBarrier2(cb, &di);
 }
 
 static void hdr_write(VkCommandBuffer cb, uint32_t i) {
@@ -1373,19 +1428,19 @@ static void hdr_write(VkCommandBuffer cb, uint32_t i) {
                                     .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, g_vk.sc_extent}, .layerCount = 1,
                           .colorAttachmentCount = 1, .pColorAttachments = &ca};
-    vkCmdBeginRendering(cb, &ri);
+    rec_CmdBeginRendering(cb, &ri);
     VkViewport vp = {0, 0, (float)g_vk.sc_extent.width, (float)g_vk.sc_extent.height, 0, 1};
     VkRect2D sc = {{0, 0}, g_vk.sc_extent};
-    vkCmdSetViewport(cb, 0, 1, &vp);
-    vkCmdSetScissor(cb, 0, 1, &sc);
-    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, hdr_pipe);
-    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, hdr_layout, 0, 1, &hdr_sets[i], 0, NULL);
+    rec_CmdSetViewport(cb, 0, 1, &vp);
+    rec_CmdSetScissor(cb, 0, 1, &sc);
+    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, hdr_pipe);
+    rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, hdr_layout, 0, 1, &hdr_sets[i], 0, NULL);
     static int srgb = -1;
     if (srgb < 0) srgb = getenv("SAVAGEWIND_HDR_SRGB") != NULL;
     float pc[2] = {g_hdr_white, (float)srgb};
-    vkCmdPushConstants(cb, hdr_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, pc);
-    vkCmdDraw(cb, 3, 1, 0, 0);
-    vkCmdEndRendering(cb);
+    rec_CmdPushConstants(cb, hdr_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, pc);
+    rec_CmdDraw(cb, 3, 1, 0, 0);
+    rec_CmdEndRendering(cb);
     vk_dyn_forget();
     image_barrier(cb, hdr_sc_images[i], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 }
@@ -1427,6 +1482,16 @@ bool vk_frame_begin(const float clear[4]) {
         recreate_swapchain();
         r = acquire_image(acquire_sem[slot], &cur_frame.image);
     }
+    if (r == VK_TIMEOUT) {  // (no image came: acquire_image, #224) this frame is left out, the swapchain made again
+        static unsigned timeouts;
+        if (timeouts++ < 5 || timeouts % 100 == 0)
+            LOG("[vk] no window image within %llu ms (%u times; %s, %s): frame left out, swapchain made again\n",
+                (unsigned long long)(ACQUIRE_GIVE_UP_NS / 1000000), timeouts,
+                (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED) ? "minimised" : "not minimised",
+                (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) ? "focused" : "not focused");
+        atomic_store(&pres_stale, 1);
+        return false;
+    }
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) {
         static unsigned failed;  // (a few, then every 1000th: one a frame filled the log)
         if (failed++ < 5 || failed % 1000 == 0) LOG("[vk] acquire failed: %d (%u times)\n", r, failed);
@@ -1435,6 +1500,10 @@ bool vk_frame_begin(const float clear[4]) {
     cur_frame.acquired = acquire_sem[slot];
     slot_seq[slot] = vk_pending_seq();
     VkCommandBuffer cb = vk_cmd();
+    // The window pass reads the game's image, written by an earlier submission's passes: only the full barrier that
+    // ends an upload command buffer made those writes visible, when this submission had uploads (validation:
+    // READ_AFTER_WRITE on the present draw once the recorder thread changed when they come)
+    vk_full_barrier(cb);
     image_barrier(cb, g_vk.sc_images[cur_frame.image], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     VkRenderingAttachmentInfo ca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = g_vk.sc_views[cur_frame.image],
                                     .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -1442,11 +1511,11 @@ bool vk_frame_begin(const float clear[4]) {
                                     .clearValue.color.float32 = {clear[0], clear[1], clear[2], clear[3]}};
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, g_vk.sc_extent}, .layerCount = 1,
                           .colorAttachmentCount = 1, .pColorAttachments = &ca};
-    vkCmdBeginRendering(cb, &ri);
+    rec_CmdBeginRendering(cb, &ri);
     VkViewport vp = {0, 0, (float)g_vk.sc_extent.width, (float)g_vk.sc_extent.height, 0, 1};
     VkRect2D sc = {{0, 0}, g_vk.sc_extent};
-    vkCmdSetViewport(cb, 0, 1, &vp);
-    vkCmdSetScissor(cb, 0, 1, &sc);
+    rec_CmdSetViewport(cb, 0, 1, &vp);
+    rec_CmdSetScissor(cb, 0, 1, &sc);
     vk_dyn_forget();
     cur_frame.ok = true;
     return true;
@@ -1455,7 +1524,7 @@ bool vk_frame_begin(const float clear[4]) {
 // Passes of their own between vk_frame_begin and vk_frame_end (exec.c post passes): end the window image's
 // rendering, and begin it again keeping what was drawn.
 void vk_frame_suspend(void) {
-    if (cur_frame.ok) vkCmdEndRendering(vk_cmd());
+    if (cur_frame.ok) rec_CmdEndRendering(vk_cmd());
 }
 void vk_frame_resume(void) {
     if (!cur_frame.ok) return;
@@ -1465,16 +1534,20 @@ void vk_frame_resume(void) {
                                     .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, g_vk.sc_extent}, .layerCount = 1,
                           .colorAttachmentCount = 1, .pColorAttachments = &ca};
-    vkCmdBeginRendering(cb, &ri);
+    rec_CmdBeginRendering(cb, &ri);
     VkViewport vp = {0, 0, (float)g_vk.sc_extent.width, (float)g_vk.sc_extent.height, 0, 1};
     VkRect2D sc = {{0, 0}, g_vk.sc_extent};
-    vkCmdSetViewport(cb, 0, 1, &vp);
-    vkCmdSetScissor(cb, 0, 1, &sc);
+    rec_CmdSetViewport(cb, 0, 1, &vp);
+    rec_CmdSetScissor(cb, 0, 1, &sc);
     vk_dyn_forget();
 }
 
 VkExtent2D vk_frame_extent(void) { return g_vk.sc_extent; }
-void *vk_frame_cmd(void) { return (void *)vk_cmd(); }
+void *vk_frame_cmd(void) {  // (the start screen's ImGui records into it itself: what was queued before goes first)
+    VkCommandBuffer cb = vk_cmd();
+    rec_drain();
+    return (void *)cb;
+}
 
 static void save_window_image(VkCommandBuffer cb, VkSpan *out) {
     uint32_t w = g_vk.sc_extent.width, h = g_vk.sc_extent.height;
@@ -1482,7 +1555,7 @@ static void save_window_image(VkCommandBuffer cb, VkSpan *out) {
     image_barrier(cb, g_vk.sc_images[cur_frame.image], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     VkBufferImageCopy rg = {.bufferOffset = out->off, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                             .imageExtent = {w, h, 1}};
-    vkCmdCopyImageToBuffer(cb, g_vk.sc_images[cur_frame.image], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, out->buf, 1, &rg);
+    rec_CmdCopyImageToBuffer(cb, g_vk.sc_images[cur_frame.image], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, out->buf, 1, &rg);
     image_barrier(cb, g_vk.sc_images[cur_frame.image], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 }
 
@@ -1491,7 +1564,7 @@ static int frame_kind;  // (frame generation: PRES_GEN / PRES_AFTER_GEN for the 
 void vk_frame_end(const char *shot_path) {
     if (!cur_frame.ok) return;
     VkCommandBuffer cb = vk_cmd();
-    vkCmdEndRendering(cb);
+    rec_CmdEndRendering(cb);
     VkSpan shot = {0};
     if (shot_path) save_window_image(cb, &shot);
     if (g_hdr) hdr_write(cb, cur_frame.image);
@@ -1535,6 +1608,7 @@ void renderer_save_texture_tex(TexBackend *b, const char *path);
 
 static uint64_t frames, total_frames, g_frame_counter;
 uint64_t renderer_present_count(void) { return total_frames; }
+static uint64_t presented_frames(void) { return total_frames; }
 uint64_t vk_frame_counter(void) { return g_frame_counter; }
 static float g_shot_crop[4] = {0, 0, 1, 1};
 static double last_fps_time;
@@ -1569,7 +1643,7 @@ static void present_progress(float done) {
         VkClearAttachment a = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .colorAttachment = 0,
                                .clearValue.color.float32 = {parts[i].c, parts[i].c, parts[i].c, 1}};
         VkClearRect cr = {parts[i].r, 0, 1};
-        vkCmdClearAttachments(cb, 1, &a, 1, &cr);
+        rec_CmdClearAttachments(cb, 1, &a, 1, &cr);
     }
     static int shot;  // (SAVAGEWIND_PSO_SLOW_MS, exec.c: the first bar frame past a quarter)
     bool save = !shot && done > 0.25f && getenv("SAVAGEWIND_PSO_SLOW_MS");
@@ -1601,6 +1675,7 @@ static char fg_real_shot[256];  // (SAVAGEWIND_FG_SHOT_AT: the game's frame afte
 
 void vk_fg_wait_idle(void) {
     vk_present_idle();
+    rec_drain();
     vkDeviceWaitIdle(g_vk.dev);
 }
 
@@ -1665,6 +1740,7 @@ static void present_locked(NvnTexture *t) {
         uint64_t td = SDL_GetTicksNS();
         if (gen) {  // the generated frame, as the game's are (crop, anti-aliasing, menu), then this one half a frame later
             vk_present_draw(cb, gen, (float)vx, (float)vy, (float)vw, (float)vh, pv);
+            if (menu_render_needed()) rec_drain();  // (ImGui records into cb itself, and may upload its fonts on the queue)
             menu_render((void *)cb, g_vk.sc_extent.width, g_vk.sc_extent.height);
             // SAVAGEWIND_FG_SHOT_AT=<frame>,... (counted as SAVAGEWIND_SHOT_AT): the window at two presents in a row
             // from there, each generated frame and the game's after it -> build/frames/window_N_<0|1>_<gen|real>.png
@@ -1700,6 +1776,7 @@ static void present_locked(NvnTexture *t) {
         static long menu_at = -1;
         if (menu_at < 0) menu_at = getenv("SAVAGEWIND_MENU_AT") ? atol(getenv("SAVAGEWIND_MENU_AT")) : 0;
         if (menu_at && (long)total_frames + 1 == menu_at) { extern void menu_test_open(void); menu_test_open(); }
+        if (menu_render_needed()) rec_drain();  // (ImGui records into cb itself, and may upload its fonts on the queue)
         menu_render((void *)cb, g_vk.sc_extent.width, g_vk.sc_extent.height);
         g_present_split[2] += SDL_GetTicksNS() - td;
         static long win_shot = -1;
@@ -1926,6 +2003,7 @@ static void quick_exit_handler(void) {
     if (trace) LOG("[vk] exit: waiting for the GPU\n");
     if (g_vk.dev) {
         vk_present_idle();
+        rec_drain();
         vkDeviceWaitIdle(g_vk.dev);
         if (trace) LOG("[vk] exit: saving the pipeline cache\n");
         vk_pipeline_cache_save();
@@ -1986,6 +2064,7 @@ void backend_init(void) {
 void backend_reset(void) {
     if (!g_vk.dev) return;
     vk_present_idle();
+    rec_drain();
     vkDeviceWaitIdle(g_vk.dev);
     extern void vk_textures_reset(void);
     extern void vk_exec_reset(void);
@@ -1999,17 +2078,40 @@ void backend_clear_window(void) {
     if (g_vk.dev && vk_frame_begin(black)) vk_frame_end(NULL);
 }
 
+// "[window]" lines for what the window went through (focus, minimised, restored, hidden behind another): an exclusive
+// fullscreen window that loses the focus is minimised and gives its display mode back (#224)
+static void window_event_log(const SDL_Event *e) {
+    const char *what = NULL;
+    switch (e->type) {
+    case SDL_EVENT_WINDOW_FOCUS_GAINED: what = "focus gained"; break;
+    case SDL_EVENT_WINDOW_FOCUS_LOST: what = "focus lost"; break;
+    case SDL_EVENT_WINDOW_MINIMIZED: what = "minimised"; break;
+    case SDL_EVENT_WINDOW_RESTORED: what = "restored"; break;
+    case SDL_EVENT_WINDOW_OCCLUDED: what = "occluded"; break;
+    case SDL_EVENT_WINDOW_ENTER_FULLSCREEN: what = "entered fullscreen"; break;
+    case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN: what = "left fullscreen"; break;
+    default: return;
+    }
+    static unsigned n;  // (a few hundred: a window that flickers between states doesn't fill the log)
+    if (n++ < 400) LOG("[window] %s (frame %llu)\n", what, (unsigned long long)total_frames);
+}
+
 int ui_run(void) {
     ui_window_init();
     atomic_store(&ui_ready, true);
     for (;;) {
         if (rt_reboot_requested()) return rt_reboot_requested();  // (runtime/main.c tears the game down)
         SDL_Event e;
-        while (SDL_WaitEventTimeout(&e, 16)) {
+        // at most a frame's time of events, then the window requests: a controller's motion sensors (gyro) send about
+        // a thousand updates a second, so the queue may never run empty, and Fullscreen, Window size and Monitor
+        // waited for that until the next restart
+        uint64_t t0 = SDL_GetTicks();
+        while (SDL_GetTicks() - t0 < 16 && SDL_WaitEventTimeout(&e, 16)) {
             if (e.type == SDL_EVENT_QUIT) {
                 LOG("window closed\n");
                 exit(0);
             }
+            window_event_log(&e);
             if (menu_handle_event(&e)) continue;
             input_handle_event(&e);
         }

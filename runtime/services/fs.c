@@ -17,6 +17,7 @@
 #include "../ipc.h"
 #include "../language.h"
 #include "../romfs_image.h"
+#include "archive.h"
 
 #define FS_PATH_NOT_FOUND MAKE_RESULT(2, 1)
 #define FS_PATH_EXISTS MAKE_RESULT(2, 2)
@@ -398,28 +399,6 @@ static void voice_redirect(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
 // it loads the Demo*.bars banks). So the RSTB the game reads is a copy whose entries for those paths grow by as much
 // as their data did (and a little: the room varies with alignment), served from memory like Version.txt. Its format:
 // Yaz0 over "RSTB", u32 CRC count, u32 name count, {crc32(path), size} sorted by crc32, then {char[128], size}.
-static uint8_t *yaz0_unpack(const uint8_t *d, size_t n, size_t *out_n) {
-    if (n < 16 || memcmp(d, "Yaz0", 4)) return NULL;
-    size_t size = (size_t)d[4] << 24 | (size_t)d[5] << 16 | (size_t)d[6] << 8 | d[7], s = 16, w = 0;
-    uint8_t *o = malloc(size ? size : 1);
-    while (w < size && s < n) {
-        uint8_t code = d[s++];
-        for (int b = 0; b < 8 && w < size && s < n; b++) {
-            if (code & (0x80 >> b)) { o[w++] = d[s++]; continue; }
-            if (s + 1 >= n) break;
-            size_t dist = (size_t)((d[s] & 0xF) << 8 | d[s + 1]) + 1, cnt = d[s] >> 4;
-            s += 2;
-            if (!cnt) cnt = s < n ? (size_t)d[s++] + 0x12 : 0;
-            else cnt += 2;
-            if (dist > w) { free(o); return NULL; }  // (damaged)
-            for (size_t i = 0; i < cnt && w < size; i++, w++) o[w] = o[w - dist];
-        }
-    }
-    if (w < size) { free(o); return NULL; }
-    *out_n = size;
-    return o;
-}
-
 // Yaz0 with literal bytes only (a 0xFF flag before every 8): what the game's decoder reads, no search needed
 static uint8_t *yaz0_pack_literal(const uint8_t *d, size_t n, size_t *out_n) {
     uint8_t *o = malloc(16 + n + (n + 7) / 8), *w = o;
@@ -490,27 +469,6 @@ static uint8_t *yaz0_pack(const uint8_t *d, size_t n, const uint8_t *hdr, size_t
     free(prev);
     *out_n = w;
     return o;
-}
-
-// SARC (little-endian): the node of `name` (its index; start and end in the data, which begins at *data_off), or -1
-static int sarc_find(const uint8_t *d, size_t n, const char *name, uint32_t *data_off, uint32_t *start, uint32_t *end) {
-    if (n < 0x20 || memcmp(d, "SARC", 4) || d[6] != 0xFF || d[7] != 0xFE || memcmp(d + 0x14, "SFAT", 4)) return -1;
-    uint32_t doff, cnt = d[0x1A] | d[0x1B] << 8;
-    memcpy(&doff, d + 0xC, 4);
-    size_t names = 0x20 + (size_t)cnt * 16 + 8;
-    if (names > n || doff > n) return -1;
-    for (uint32_t i = 0; i < cnt; i++) {
-        uint32_t attr, s, e;
-        memcpy(&attr, d + 0x20 + i * 16 + 4, 4);
-        memcpy(&s, d + 0x20 + i * 16 + 8, 4);
-        memcpy(&e, d + 0x20 + i * 16 + 12, 4);
-        size_t at = names + (size_t)(attr & 0xFFFFFF) * 4;
-        if (!(attr >> 24) || at >= n || strncmp((const char *)d + at, name, n - at)) continue;
-        if (s > e || doff + (uint64_t)e > n) return -1;
-        *data_off = doff, *start = s, *end = e;
-        return (int)i;
-    }
-    return -1;
 }
 
 // The HUD's prompt with its diamond of the other buttons (Layout/Common.sblarc, PaDoCommandA/B/X/Y_00: "Pick up",

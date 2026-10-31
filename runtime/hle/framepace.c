@@ -46,6 +46,8 @@
 
 #include "../game_sites.h"
 #include "../hle.h"
+#include "../kernel.h"
+#include "../rt.h"
 #include "../settings.h"
 #include "../framepace.h"
 #include "../window_size.h"
@@ -87,6 +89,41 @@ static bool in_event(void) {
 
 bool framepace_in_event(void) { return in_event(); }
 
+// The active event's name ("Demo014_0"): the event's name string, a char pointer at +0x68 to its buffer at +0x74
+// (found with a probe on the new game's opening, Demo169_0). "" when there is none or it isn't in the heap.
+static const char *event_name(void) {
+    uint64_t evt = *(uint64_t *)(uintptr_t)g_site.event_mgr;
+    uint64_t ev = evt ? *(uint64_t *)(uintptr_t)(evt + 0x1d2b8) : 0;
+    if (!ev) return "";
+    uint64_t s = *(uint64_t *)(uintptr_t)(ev + 0x68), top = HEAP_BASE + kernel_heap_size();
+    if (s < HEAP_BASE || s + 32 > top) return "";
+    const char *p = (const char *)(uintptr_t)s;
+    size_t n = 0;
+    while (n < 32 && p[n] >= 0x20 && p[n] < 0x7f) n++;
+    return n && n < 32 && !p[n] ? p : "";
+}
+
+// Events held at the console's 30 fps whatever the chosen rate: a wait in them counts frames and can miss its end.
+//   Demo014_0: Master Kohga's entrance in the Yiga Clan hideout (Assassin_Leader) froze after "The strong, the burly..."
+//              at 120 fps, and played through at 30 (#196). It depends on the exact rate: one run at about 80 fps passed.
+static const char *const events_at_30[] = {"Demo014_0"};
+
+// The event running now is one of those (and its name, logged once per event)
+static bool event_at_30(void) {
+    static uint64_t last;
+    uint64_t evt = *(uint64_t *)(uintptr_t)g_site.event_mgr;
+    uint64_t ev = evt ? *(uint64_t *)(uintptr_t)(evt + 0x1d2b8) : 0;
+    const char *name = event_name();
+    bool hold = false;
+    for (size_t i = 0; i < sizeof events_at_30 / sizeof *events_at_30; i++)
+        if (!strcmp(name, events_at_30[i])) hold = true;
+    if (ev != last && *name) {
+        last = ev;
+        LOG("[event] %s%s\n", name, hold ? ": at 30 fps (its waits count frames)" : "");
+    }
+    return hold;
+}
+
 // The game's UI screen `id` exists (the screen manager's array; ids as runtime/ui/game_options.mm uses them)
 static bool screen_up(uint32_t id) {
     uint64_t mgr = *(uint64_t *)(uintptr_t)g_site.screen_mgr;
@@ -120,6 +157,7 @@ int framepace_target(void) {
     }
     if (menu > 0 && (fps == 0 || fps > menu) && in_menu()) fps = menu;
     if (event > 0 && (fps == 0 || fps > event) && in_event()) fps = event;
+    if (in_event() && event_at_30() && (fps == 0 || fps > 30)) fps = 30;
     return fps;
 }
 
@@ -349,9 +387,12 @@ void rt_vfr_update(uint64_t vfr) {
 // SAVAGEWIND_SCRIPT_CLOCK=1: SAVAGEWIND_INPUT and SAVAGEWIND_SHOT_AT count 30ths of a second (the console's frames)
 // instead of presented frames, so one script drives the game the same way at any frame rate: each presented frame
 // adds its length x 30, at most 1.5 (a load's long frames count like the console's).
+static double g_script_t;  // (SAVAGEWIND_SCRIPT_CLOCK: the script frames so far)
+uint64_t framepace_script_now(void) { return (uint64_t)g_script_t; }
+
 uint64_t framepace_script_frame(uint64_t presented) {
     static int on = -1;
-    static double t;
+    double t = g_script_t;
     static uint64_t last;
     if (on < 0) on = env_int("SAVAGEWIND_SCRIPT_CLOCK", 0) != 0;
     if (!on) return presented;
@@ -359,6 +400,7 @@ uint64_t framepace_script_frame(uint64_t presented) {
     double units = last ? (now - last) / 1e9 * 30 : 1;
     last = now;
     t += units > 1.5 ? 1.5 : units;
+    g_script_t = t;
     {   // (debug) SAVAGEWIND_DUMP_DATA_AT=<frame>,...: main's .data and .bss -> build/data_<frame>.bin
         static const char *next;
         static int init;
