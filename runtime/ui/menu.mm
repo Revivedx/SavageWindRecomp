@@ -929,8 +929,6 @@ static void tab_about(void) {
     header("Mouse");
     opt_toggle("PC mouse pointer", &g_settings.pc_cursor, true,
                "Point and click in menus and map. Esc pauses/goes back; F2 frees the cursor.");
-    opt_toggle("Mouse bow aiming", &g_settings.pc_bow, true,
-               "Hold right mouse to aim; left click fires. Off: use your normal button bindings.");
     toggle("Mouse camera", &g_settings.mouse_camera);
     hint("The mouse turns the camera. Pointer off: Esc frees it; pointer on: F2 frees it.");
     float sens = roundf(g_settings.mouse_sens * 100);
@@ -1359,7 +1357,9 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         float s=fminf(io.DisplaySize.x/1280.f,io.DisplaySize.y/720.f);
         ImVec2 a(io.DisplaySize.x*.5f+pointer_box[0]*s,io.DisplaySize.y*.5f-pointer_box[3]*s);
         ImVec2 b(io.DisplaySize.x*.5f+pointer_box[2]*s,io.DisplaySize.y*.5f-pointer_box[1]*s);
-        ImGui::GetForegroundDrawList()->AddRect(a,b,IM_COL32(250,250,220,255),2.f*s,0,2.f*s);
+        bool pressed=pc_cursor_hover_pressed();
+        if(pressed)ImGui::GetForegroundDrawList()->AddRectFilled(a,b,IM_COL32(250,250,220,45),2.f*s);
+        ImGui::GetForegroundDrawList()->AddRect(a,b,pressed?IM_COL32(255,235,155,255):IM_COL32(250,250,220,255),2.f*s,0,2.f*s);
     }
 
     if (g_settings.perf_overlay != PERF_OFF) perf_overlay_draw(io, scale);

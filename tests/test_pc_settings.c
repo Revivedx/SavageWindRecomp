@@ -12,14 +12,12 @@ int input_pad_family(void) { return 0; }
 bool fsr3_upscaler_enabled(void) { return false; }
 
 int main(int argc, char **argv) {
-    assert(argc == 4);
+    assert(argc == 3);
     setenv("SAVAGEWIND_SETTINGS", argv[1], 1);
     settings_load();
     assert(g_settings.pc_cursor == (atoi(argv[2]) != 0));
-    assert(g_settings.pc_bow == (atoi(argv[3]) != 0));
     // UI changes must remain possible even when startup debug overrides were supplied.
     g_settings.pc_cursor = !g_settings.pc_cursor;
-    g_settings.pc_bow = !g_settings.pc_bow;
     settings_save();
-    printf("PASS: load cursor=%s bow=%s, toggle and save for next boot\n", argv[2], argv[3]);
+    printf("PASS: load cursor=%s, toggle and save for next boot\n", argv[2]);
 }

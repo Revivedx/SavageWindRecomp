@@ -1,4 +1,4 @@
-// Exercise the window-thread cursor policy and game-thread bow transition without opening a window.
+// Exercise the window-thread cursor policy and ordinary gameplay bindings without opening a window.
 // Unrelated guest imports are left out; SDL window operations are replaced below.
 #include <assert.h>
 #include <stdio.h>
@@ -11,12 +11,13 @@
 #include "../runtime/hle/input.c"
 #include "../runtime/hle/bindings.c"
 
-Settings g_settings = {.mouse_camera = true, .pc_cursor = true, .pc_bow = true};
+Settings g_settings = {.mouse_camera = true, .pc_cursor = true};
 static bool pointer_ui, map_pointer, captured, freed, visible = true, relative;
 static int relative_changes, visibility_changes;
 static uint64_t now = 1000000000;
 
 bool pc_cursor_active(void) { return pointer_ui; }
+int pc_cursor_preview_axis(void) { return 0; }
 bool pc_cursor_hide_system(void) { return map_pointer; }
 void pc_cursor_window(SDL_Window *w) { (void)w; }
 bool menu_input_captured(void) { return captured; }
@@ -37,7 +38,7 @@ void pc_cursor_frame(void) { abort(); }
 bool framepace_menu_ui(void) { abort(); }
 bool framepace_title_ui(void) { abort(); }
 Cpu *kernel_current_cpu(void) { abort(); }
-bool pc_cursor_event(const SDL_Event *e) { (void)e; abort(); }
+bool pc_cursor_event(const SDL_Event *e) { (void)e; return false; }
 void motion_pad_opened(SDL_Gamepad *p) { (void)p; abort(); }
 void motion_pad_closed(void) { abort(); }
 void motion_sensor_event(const SDL_Event *e) { (void)e; abort(); }
@@ -72,18 +73,18 @@ int main(void) {
     changes = visibility_changes; update(); assert(visibility_changes == changes);
     puts("PASS: camera/menu/map transitions, absolute map input, F2, focus, overlay and idle cursor visibility");
 
-    g_settings.pc_bow = true; pc_bow_wanted = true;
-    assert(pc_bow_sample() == (1ull << BTN_ZR));
-    g_settings.pc_bow = false;
-    assert(pc_bow_sample() == ((1ull << BTN_ZR) | (1ull << BTN_B)));
-    now += 130000000;
-    assert(pc_bow_sample() == (1ull << BTN_B));
-    now += 70000000;
-    assert(pc_bow_sample() == 0);
-    g_settings.pc_bow = true;
-    assert(pc_bow_sample() == 0);  // re-enabling must not resume a stale aim
-    pc_bow_wanted = true; assert(pc_bow_sample() == (1ull << BTN_ZR));
-    freed = true;
-    assert(pc_bow_sample() == ((1ull << BTN_ZR) | (1ull << BTN_B)));
-    puts("PASS: disabling bow/F2 cancels before trigger release; re-enable does not resume stale aim");
+    // Pointer support must leave normal play bindings alone: F draws the bow,
+    // right mouse raises the shield/locks on, and left mouse attacks.
+    mouse_held=true;
+    SDL_Event e={0};e.type=SDL_EVENT_MOUSE_BUTTON_DOWN;e.button.button=SDL_BUTTON_RIGHT;
+    input_handle_event(&e);assert(input_buttons_now()&(1ull<<BTN_ZL));
+    assert(!(input_buttons_now()&(1ull<<BTN_ZR)));
+    e.type=SDL_EVENT_MOUSE_BUTTON_UP;input_handle_event(&e);
+    e.type=SDL_EVENT_KEY_DOWN;e.key.scancode=SDL_SCANCODE_F;
+    input_handle_event(&e);assert(input_buttons_now()&(1ull<<BTN_ZR));
+    e.type=SDL_EVENT_KEY_UP;input_handle_event(&e);
+    e.type=SDL_EVENT_MOUSE_BUTTON_DOWN;e.button.button=SDL_BUTTON_LEFT;
+    input_handle_event(&e);assert(input_buttons_now()&(1ull<<BTN_Y));
+    e.type=SDL_EVENT_MOUSE_BUTTON_UP;input_handle_event(&e);
+    puts("PASS: F bow, right-mouse shield/lock-on and left-mouse attack use ordinary bindings");
 }

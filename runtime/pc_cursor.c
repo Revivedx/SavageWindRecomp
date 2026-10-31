@@ -12,6 +12,21 @@
 #include "settings.h"
 
 static _Atomic bool active, focused = true;
+static _Atomic bool dialogue_active;
+static _Atomic uint64_t quantity_until;
+static _Atomic int quantity_value,quantity_max,quantity_request=-1;
+static _Atomic bool quantity_edit,quantity_replace;
+static uint64_t quantity_screen;
+static uint64_t shop_screen;
+static bool ptr(uint64_t p);
+static bool preview_defaults_saved;
+static float preview_defaults[2];
+static int quantity_hold;
+static uint64_t quantity_repeat_at;
+static uint64_t sound_hover_key,sound_hover_until;
+static void pointer_sound(Cpu *c,uint64_t screen,const char *cue);
+static void pointer_hover_sound(Cpu *c,uint64_t screen,uint64_t key);
+
 static _Atomic uint64_t position;
 static _Atomic bool position_inside;
 static _Atomic unsigned presses, releases;
@@ -26,6 +41,8 @@ static uint64_t click_deadline;
 static uint64_t injected_manager;
 static uint32_t saved_action;
 static _Atomic int wheel;
+static uint64_t hover_control,hover_screen,hover_node;
+static void hover_leave(void){hover_control=hover_screen=hover_node=0;}
 static uint64_t options_screen_active,options_rows_active;
 static bool options_scroll_valid;
 static float options_scroll;
@@ -63,18 +80,43 @@ static bool enabled(void) {
     return g_settings.pc_cursor;
 }
 bool pc_cursor_enabled(void) { return enabled(); }
-
-
 extern bool menu_cursor_free(void);
 bool pc_cursor_active(void) { return enabled() && active && (focused || pointer_test()) && !menu_cursor_free(); }
 bool pc_cursor_map_navigation(void) { return pc_cursor_active() && map_canvas_active; }
-bool pc_cursor_hide_system(void) { return pc_cursor_map_navigation() && position_inside; }
+bool pc_cursor_hide_system(void) {
+    return position_inside&&(pc_cursor_map_navigation()||(pc_cursor_active()&&pointer_keyboard_input));
+}
 
 void pc_cursor_frame(void) {
+    bool dialogue=false;shop_screen=0;
+    if(g_site.screen_mgr) {
+        uint64_t mgr=LD64(g_site.screen_mgr),arr=mgr?LD64(mgr+0x30):0;
+        unsigned count=mgr?LD32(mgr+0x28):0;
+        // MessageDialog owns both NPC text and responses. Screen indices are
+        // not stable identifiers (AkashNum is the spirit-orb counter).
+        if(arr)for(unsigned i=0;i<count&&i<256;i++) {
+            uint64_t text=LD64(arr+8*i);
+            if(!text||LD8(text+0xfe)!=2)continue;
+            if(LD64(text)==0x7001d4ed48ull)dialogue=true;
+            uint64_t name=LD64(text+0xd0);
+            if(name>=GUEST_LO&&name<GUEST_HI-32&&!strncmp((char*)(uintptr_t)name,"ShopBtnList",11))shop_screen=text;
+        }
+    }
+    if(preview_defaults_saved) {
+        uint64_t m=LD64(g_site.screen_mgr),a=ptr(m)?LD64(m+0x30):0;
+        uint64_t inv=ptr(a)?LD64(a+8*0x2e):0;
+        if(!enabled()||!g_site.pause_state||LD32(g_site.pause_state)!=2||!ptr(inv)||LD32(inv+0x3a48)!=0) {
+            memcpy((void*)(uintptr_t)0x7001e15fa8ull,preview_defaults,sizeof preview_defaults);
+            preview_defaults_saved=false;
+        }
+    }
+    if(dialogue_active&&!dialogue)confirm_until=0;
+    dialogue_active=dialogue;
     bool ui = g_site.pause_state &&
-        (framepace_menu_ui() || framepace_title_ui() || *(uint32_t *)(uintptr_t)g_site.pause_state == 4);
+        (dialogue || shop_screen || framepace_menu_ui() || framepace_title_ui() || *(uint32_t *)(uintptr_t)g_site.pause_state == 4);
     active = enabled() && ui;
     if(!pc_cursor_active()){
+        hover_leave();
         options_scroll_valid=false;options_screen_active=options_rows_active=0;
         map_canvas_active=false;map_nav_ns=0;map_view_valid=false;
         held=false;last_press=presses;last_release=releases;wheel=0;click_pending=false;
@@ -165,11 +207,18 @@ static void window_position(float x,float y) {
 }
 
 void pc_cursor_window(SDL_Window *w) {
-    if (!enabled() || !w) return;
+    if(!w)return;
+    if(!enabled()){SDL_SetWindowMouseRect(w,NULL);return;}
     int width, height;
     float x, y;
     SDL_GetWindowSize(w, &width, &height);
     window_width=width;window_height=height;
+    if(pc_cursor_map_navigation()&&focused) {
+        float scale=fminf(width/1280.f,height/720.f);
+        SDL_Rect rect={(int)(width*.5f-632*scale),(int)(height*.5f-280*scale),(int)(1264*scale),(int)(560*scale)};
+        const SDL_Rect *old=SDL_GetWindowMouseRect(w);
+        if(!old||memcmp(old,&rect,sizeof rect))SDL_SetWindowMouseRect(w,&rect);
+    } else if(SDL_GetWindowMouseRect(w))SDL_SetWindowMouseRect(w,NULL);
     SDL_GetMouseState(&x, &y);
     if (width <= 0 || height <= 0) return;
     // eui HitTest uses layout space, centered, Y up. Full pause screens use a fitted 16:9 view.
@@ -191,6 +240,21 @@ bool pc_cursor_event(const SDL_Event *e) {
     }
     if (!enabled()) return false;
     if (!pc_cursor_active()) return false;
+    if(quantity_edit&&plat_now_ns()<quantity_until&&(e->type==SDL_EVENT_KEY_DOWN||e->type==SDL_EVENT_KEY_UP)) {
+        if(e->type==SDL_EVENT_KEY_UP)return true;
+        SDL_Scancode sc=e->key.scancode;int digit=-1;
+        if(sc>=SDL_SCANCODE_1&&sc<=SDL_SCANCODE_9)digit=sc-SDL_SCANCODE_1+1;
+        if(sc==SDL_SCANCODE_0||sc==SDL_SCANCODE_KP_0)digit=0;
+        if(sc>=SDL_SCANCODE_KP_1&&sc<=SDL_SCANCODE_KP_9)digit=sc-SDL_SCANCODE_KP_1+1;
+        int value=quantity_value;
+        if(digit>=0){value=(quantity_replace?0:value)*10+digit;quantity_replace=false;}
+        else if(sc==SDL_SCANCODE_BACKSPACE){value/=10;quantity_replace=false;}
+        else if(sc==SDL_SCANCODE_RETURN||sc==SDL_SCANCODE_KP_ENTER||sc==SDL_SCANCODE_ESCAPE){quantity_edit=false;return true;}
+        else return true;
+        if(value>quantity_max)value=quantity_max;
+        if(value<1)value=1;
+        quantity_value=value;quantity_request=value;return true;
+    }
     // Native Options captures game buttons, so input_buttons_now() may be
     // zero even while a navigation key is down. Track the real SDL source.
     if(e->type==SDL_EVENT_KEY_DOWN||e->type==SDL_EVENT_GAMEPAD_BUTTON_DOWN||
@@ -269,6 +333,20 @@ static uint64_t call(Cpu *c, uint64_t fn, uint64_t x0, uint64_t x1, uint64_t x2)
     return result;
 }
 static bool ptr(uint64_t p) { return p>=GUEST_LO && p<GUEST_HI-0x100; }
+static void pointer_sound(Cpu *c,uint64_t screen,const char *cue) {
+    uint64_t ref=ptr(screen)?LD64(screen+0xf0):0,emitter=ptr(ref)?LD64(ref+8):0;
+    if(!ptr(emitter)||!ptr(LD64(emitter+0x30)))return;
+    uint64_t handle[2]={0,0};
+    // One-shot cues are owned by the native sound manager. This handle is
+    // non-owning; stopping it here would cut the sound off immediately.
+    call(c,0x7000f50e80,emitter,(uintptr_t)cue,(uintptr_t)handle);
+}
+static void pointer_hover_sound(Cpu *c,uint64_t screen,uint64_t key) {
+    uint64_t now=plat_now_ns();
+    if(sound_hover_key!=key||now>sound_hover_until)pointer_sound(c,screen,"mc_CursorMove");
+    sound_hover_key=key;sound_hover_until=now+100000000;
+}
+
 
 int rt_pc_map_focus(Cpu *c, int position) {
     if(!pc_cursor_map_navigation() || map_zooming || plat_now_ns()<map_select_until)return 0;
@@ -438,25 +516,51 @@ bool pc_cursor_hover_box(float box[4]) {
     if(!pc_cursor_active()||plat_now_ns()>hover_until)return false;
     uint64_t p[2]={hover_rect[0],hover_rect[1]};memcpy(box,p,16);return true;
 }
-static void set_hover(float x,float y,float half) {
-    float b[4]={x-half,y-half,x+half,y+half};uint64_t p[2];memcpy(p,b,16);
+bool pc_cursor_hover_pressed(void) { return pc_cursor_active()&&held; }
+static void set_hover_rect(const float box[4]) {
+    uint64_t p[2];memcpy(p,box,16);
     hover_rect[0]=p[0];hover_rect[1]=p[1];hover_until=plat_now_ns()+50000000;
+}
+static void set_hover(float x,float y,float half) {
+    float b[4]={x-half,y-half,x+half,y+half};set_hover_rect(b);
 }
 static void inventory_shift(Cpu *c,uint64_t s,float dx) {
     Cpu saved=*c;c->x[0]=s;memcpy(&c->v[0],&dx,4);guest_call(c,0x7000e3e398);*c=saved;
+}
+
+// Change only the native preview yaw target. Do not rotate translation or
+// enter Rotate mode: that mode also hides the inventory information panes.
+static void inventory_rotate(Cpu *c,float dx) {
+    (void)c;
+    uint64_t owner=LD64(0x7001e15fb8ull),actor=ptr(owner)?LD64(owner+0x48):0;
+    if(!ptr(actor)||!isfinite(dx)||dx==0)return;
+    float *yaw=(float*)(uintptr_t)0x7001e15fa8ull;
+    if(!isfinite(yaw[0])||!isfinite(yaw[1]))return;
+    if(!preview_defaults_saved) {
+        memcpy(preview_defaults,yaw,sizeof preview_defaults);preview_defaults_saved=true;
+    }
+    for(unsigned i=0;i<2;i++)yaw[i]=remainderf(yaw[i]+dx*.46f,360.f);
 }
 
 static void inventory_pointer(Cpu *c) {
     if(LD32(g_site.pause_state)!=2)return;
     uint64_t mgr=LD64(g_site.screen_mgr),arr=ptr(mgr)?LD64(mgr+0x30):0;
     uint64_t s=ptr(arr)?LD64(arr+8*0x2e):0;
-    if(!ptr(s)||LD64(s)!=0x7001cf9ad8ull||LD8(s+0xfe)!=2||LD64(s+0x38)!=c->x[0])return;
+    if(!ptr(s)||LD64(s)!=0x7001cf9ad8ull||LD8(s+0xfe)!=2||LD32(s+0x3a48)!=0||LD64(s+0x38)!=c->x[0]||pointer_keyboard_input)return;
     uint64_t modal=LD64(arr+8*0x39);
     if(ptr(modal)&&LD8(modal+0xfe)==2)return;
     static uint64_t frame=UINT64_MAX;
     extern uint64_t renderer_present_count(void);
     uint64_t f=renderer_present_count();if(frame==f)return;frame=f;
     static int target=-1;
+    // A gesture keeps its original owner until release, even when it crosses
+    // the item grid. Do not let pending page motion or settling consume it.
+    bool preview=gesture_down&&gesture_start[0]>=70&&gesture_start[1]<155&&gesture_start[1]>-260;
+    if(preview) {
+        target=-1;click_pending=false;hover_until=0;atomic_exchange(&wheel,0);
+        if(gesture_dragged)inventory_rotate(c,gesture_delta[0]);
+        return;
+    }
     int total=LD32(s+0x363c),current=LD32(s+0x365c),scroll=atomic_exchange(&wheel,0);
     if(getenv("SAVAGEWIND_PC_CURSOR_LOG")&&(scroll||f%120==0))LOG("[pc-inventory-state] frame %llu page %d selected-page %u ring %u selected %u scroll %d target %d\n",f,current,LD32(s+0x3660),LD8(s+0x3a30),LD32(s+0x3650),scroll,target);
     if(total<1||total>100)return;
@@ -467,9 +571,21 @@ static void inventory_pointer(Cpu *c) {
         float x=*(float*)(pane+0x7c),y=*(float*)(pane+0x8c);
         if(fabsf(point[0]-x)<28&&fabsf(point[1]-y)<28) {
             set_hover(x,y,25);
+            pointer_hover_sound(c,s,s+0x200+i);
             if(click_pending) {
+                pointer_sound(c,s,"mc_Decide");
                 int page=LD32(s+0x3708+0x80*i);
-                if(page>=0&&page<total&&(unsigned)call(c,0x7000e71080,page,0,0)==i)target=page;
+                if(page>=0&&page<total&&(unsigned)call(c,0x7000e71080,page,0,0)==i&&page!=current) {
+                    // Refill the existing three-page ring directly. A global
+                    // inventory refresh also restores unrelated pouch state.
+                    unsigned ring=LD8(s+0x3a30);
+                    if(ring<3) {
+                        ST32(s+0x365c,page);ST32(s+0x3660,page);
+                        for(int d=-1;d<=1;d++)if(page+d>=0&&page+d<total)
+                            call(c,0x7000e3c424,s,(ring+d+3)%3,page+d);
+                    }
+                    target=-1;
+                }
                 click_pending=false;
                 if(getenv("SAVAGEWIND_PC_CURSOR_LOG"))LOG("[pc-category] %u page %d current %d\n",i,target,current);
             }
@@ -641,7 +757,7 @@ static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
     }
     float zoom=*(float*)(d+0x878);
     if(!isfinite(zoom)||zoom<=0)return true;
-    bool area=fabsf(point[0])<600&&fabsf(point[1])<285;
+    bool area=fabsf(point[0])<=633&&fabsf(point[1])<=285;
     int scroll=atomic_exchange(&wheel,0);
     map_canvas_active=true;
     bool zooming=scroll||fabsf(zoom-*(float*)(d+0x888))>.001f;
@@ -674,7 +790,7 @@ static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
         }
         memcpy(map_last,point,sizeof point);
     }
-    float cursor[2]={point[0],point[1]},best_snap=1e9f;
+    float cursor[2]={fmaxf(-632,fminf(632,point[0])),fmaxf(-280,fminf(280,point[1]))},best_snap=1e9f;
     uint64_t snapped=0;
     // Native map markers need not be registered in the screen's AnimButton list.
     // A target changed from the point we sent last frame is the game's marker
@@ -773,6 +889,289 @@ static void special_diagnostics(Cpu *c,uint64_t screens) {
     }
 }
 
+// The screen's cursor type is translated by the UI controller, not used as
+// a manager-array index. Only that manager channel may focus this screen.
+static bool hover_target(Cpu *c,uint64_t screen,unsigned target) {
+    uint64_t ui=LD64(screen+0x28),router=ptr(ui)?LD64(ui+0x48):0;
+    uint64_t vt=ptr(router)?LD64(router):0,resolve=ptr(vt)?LD64(vt+0x28):0;
+    if(!ptr(resolve))return false;
+    return call(c,resolve,router,LD8(screen+0xfc),0)==target;
+}
+
+static uint64_t quest_list(uint64_t screen) {
+    if(!ptr(screen)||LD64(screen)!=0x7001cf9ad8ull||LD8(screen+0xfe)!=2)return 0;
+    uint64_t lists=LD64(screen+0x390);
+    if(LD32(screen+0x388)!=3||!ptr(lists))return 0;
+    uint64_t list=LD64(lists+8);
+    return ptr(list)&&LD64(list)==0x7001cdbb58ull?list:0;
+}
+
+// Adventure Log owns a virtualized list. Changing only BoxCursorControl leaves
+// that list on the keyboard's old row; its next update restores the old focus.
+// Select through the list's own node lookup and selection path instead. The
+// native list then updates the highlight, quest details and sound together.
+static bool native_item_list(uint64_t list) {
+    if(!ptr(list))return false;
+    uint64_t vt=LD64(list);
+    // The five-row purchase list derives from the same native list class as
+    // the selling grid, with its own vtable but the same selection contract.
+    return vt==0x7001cdbb58ull||vt==0x7001cfcf78ull;
+}
+static bool quest_focus(Cpu *c,uint64_t screen,uint64_t node) {
+    uint64_t vt=LD64(screen);
+    if(vt!=0x7001cf9ad8ull&&vt!=0x7001ceb808ull&&screen!=shop_screen)return false;
+    unsigned count=LD32(screen+0x388);uint64_t lists=LD64(screen+0x390);
+    if(!ptr(lists)||count>8)return false;
+    for(unsigned i=0;i<count;i++) {
+        uint64_t list=LD64(lists+8*i);
+        if(!native_item_list(list))continue;
+        int index=(int)call(c,0x7000d6d710,list,node,0);
+        if(index<0)continue;
+        // 2dc is a scroll-page index, not the focused item. Selecting that
+        // page rebuilds positions and makes a stationary pointer chase rows.
+        // The cursor-only path updates 30c/310 and the native highlight.
+        if((int)LD32(list+0x30c)!=index||(int)LD32(list+0x310)!=index)
+            call(c,0x7000d6c870,list,(unsigned)index,0);
+        return true;
+    }
+    return false;
+}
+
+// These category panes belong to nested button layouts, not the screen root.
+static uint64_t button_parent_named(uint64_t screen,const char *name) {
+    uint64_t head=screen+0x88,link=LD64(head+8);int offset=(int)LD32(screen+0x9c);
+    for(unsigned i=0;ptr(link)&&link!=head&&i<256;i++,link=LD64(link+8)) {
+        uint64_t node=link-offset,button=LD64(node+0x18);
+        uint64_t layout=ptr(button)?LD64(button+0x20):0,parent=ptr(layout)?LD64(layout+0x18):0;
+        if(ptr(parent)&&strncmp((char*)(uintptr_t)(parent+0xb8),name,40)==0)return LD64(button+0x60);
+    }
+    return 0;
+}
+
+static bool quest_categories(Cpu *c,uint64_t screen) {
+    if(!quest_list(screen)||LD32(screen+0x3a48)!=2)return false;
+    uint64_t quest=LD64(screen+0x3bb0),list=ptr(quest)?LD64(quest+0x300):0;
+    // The outer list switches categories and creates their nested row lists.
+    // It has no row cursor nodes; those belong to the registered child lists.
+    if(!native_item_list(list))return false;
+    for(unsigned category=0;category<4;category++) {
+        char name[40];snprintf(name,sizeof name,"Pa_ChallengeCategory_%02u",category);
+        uint64_t pane=button_parent_named(screen,name);float box[4];
+        bool valid=ptr(pane)&&options_box(pane,box);
+        if(!valid)continue;
+        // A category layout is 211 px wide although icons are 58 px apart.
+        // Its 32 px cursor pane identifies the actual icon without overlap.
+        float x=*(float*)(pane+0x7c),y=*(float*)(pane+0x8c);
+        box[0]=x-(category==0?31:25);box[1]=y-25;box[2]=x+(category==0?31:25);box[3]=y+25;
+        if(point[0]<box[0]||point[0]>box[2]||point[1]<box[1]||point[1]>box[3])continue;
+        set_hover_rect(box);
+        pointer_hover_sound(c,screen,screen+0x300+category);
+        if(click_pending) {
+            click_pending=false;
+            pointer_sound(c,screen,"mc_Decide");
+            unsigned count=LD32(list+0x288);uint64_t columns=LD64(list+0x290);
+            uint64_t column=category<count&&ptr(columns)?LD64(columns+8*category):0;
+            // Locked/empty categories retain the game's disabled behavior.
+            if(ptr(column)&&LD32(column+0x29c)>0&&!LD8(column+0x38c)&&!LD8(column+0x38d)&&LD32(list+0x2e8)!=category) {
+                // Schedule the normal transition; immediate mode rebuilds
+                // nested controls while BoxCursorMgr is still using them.
+                call(c,0x7000d6c244,list,0,category);
+            }
+        }
+        return true;
+    }
+    return false;
+}
+
+static uint64_t pane_named(uint64_t pane,const char *name,unsigned depth,unsigned *budget) {
+    if(!ptr(pane)||depth>32||!*budget)return 0;
+    --*budget;
+    if(strncmp((char*)(uintptr_t)(pane+0xb8),name,40)==0)return pane;
+    uint64_t head=pane+0x20,link=LD64(head+8);
+    while(ptr(link)&&link!=head&&*budget) {
+        uint64_t found=pane_named(link-8,name,depth+1,budget);
+        if(found)return found;
+        link=LD64(link+8);
+    }
+    return 0;
+}
+
+static bool pause_headers(Cpu *c,uint64_t screen,uint64_t screens,unsigned count) {
+    if(!quest_list(screen)||count<=0x2f)return false;
+    // Submenus retain the pause screen underneath them, but own the input.
+    for(unsigned i=0x30;i<=0x3a&&i<count;i++) {
+        uint64_t modal=LD64(screens+8*i);
+        if(ptr(modal)&&LD8(modal+0xfe)==2)return false;
+    }
+    uint64_t header=LD64(screens+8*0x2f);
+    if(!ptr(header)||LD8(header+0xfe)!=2)return false;
+    unsigned current=LD32(screen+0x3a48);
+    if(current>2||LD32(screen+0x3a4c)!=current)return false;
+    for(unsigned side=0;side<2;side++) {
+        float half=current==0?(side?40.f:70.f):46.f;
+        float center=side?150.f:-150.f;
+        float box[4]={center-half,272,center+half,327};
+        // Both animated text copies share one fixed hit area with the key
+        // hint above them. Never let hover geometry follow their animation.
+        if(point[0]<box[0]||point[0]>box[2]||point[1]<box[1]||point[1]>box[3])continue;
+        int next=side?(current==0?1:current==2?0:-1):(current==0?2:current==1?0:-1);
+        if(next<0)return false;
+        set_hover_rect(box);
+        pointer_hover_sound(c,screen,screen+0x100+side);
+        if(click_pending) {
+            click_pending=false;
+            pointer_sound(c,screen,"mc_Decide");
+            ST32(screen+0x3a4c,next);
+            // The normal page-change state performs exit/enter and animation.
+            call(c,0x7001403a88,screen+0x178,0x7001e2f4a8ull,0);
+        }
+        return true;
+    }
+    return false;
+}
+
+// Other menus enter a button once per hover, rather than replaying its focus
+// callback whenever the screen rebuilds a transient cursor field.
+static bool hover_enter(Cpu *c,uint64_t control,uint64_t screen,uint64_t node,uint64_t activate) {
+    if(hover_control==control&&hover_screen==screen&&hover_node==node)return false;
+    hover_control=control;hover_screen=screen;hover_node=node;
+    if(LD64(control+0x48)==node)return false;
+    call(c,activate,control,node,0);ST8(screen+0x106,1);
+    return true;
+}
+
+static bool dialogue_choices(Cpu *c,uint64_t screens,unsigned count) {
+    if(!dialogue_active)return false;
+    uint64_t s=0;
+    for(unsigned i=0;i<count&&i<256;i++) {
+        uint64_t candidate=LD64(screens+8*i);
+        if(ptr(candidate)&&LD64(candidate)==0x7001d4ed48ull&&LD8(candidate+0xfe)==2){s=candidate;break;}
+    }
+    if(!s)return false;
+    uint64_t head=s+0x88,link=LD64(head+8);int offset=(int)LD32(s+0x9c);
+    for(unsigned i=0;ptr(link)&&link!=head&&i<8;i++,link=LD64(link+8)) {
+        uint64_t node=link-offset,vt=LD64(node),button=LD64(node+0x18);
+        uint64_t pane=ptr(button)?LD64(button+0x60):0;float box[4];
+        if(!ptr(vt)||!options_box(pane,box)||box[0]<840||box[0]>1265||box[1]<-320||box[3]>320)continue;
+        // The two manager channels run separately. Text advance must never
+        // confirm a response merely because its channel has not run yet.
+        if((call(c,LD64(vt+0x28),node,0,0)|call(c,LD64(vt+0x28),node,1,0))&1)return true;
+    }
+    return false;
+}
+
+static bool shop_pointer(Cpu *c) {
+    uint64_t s=shop_screen;
+    if(!ptr(s)||pointer_keyboard_input)return false;
+    uint64_t lists=LD64(s+0x390),list=ptr(lists)&&LD32(s+0x388)?LD64(lists):0;
+    if(!native_item_list(list))return false;
+    unsigned columns=LD32(list+0x288);uint64_t array=LD64(list+0x290);
+    if(columns>16||!ptr(array))return false;
+    for(unsigned i=0;i<7;i++) {
+        char name[32];snprintf(name,sizeof name,"Pa_CategoryS_%02u",i);
+        uint64_t pane=call(c,0x7000f6f800,s,(uintptr_t)name,0);float box[4];
+        if(!options_box(pane,box))continue;
+        float x=*(float*)(pane+0x7c),y=*(float*)(pane+0x8c);
+        if(fabsf(point[0]-x)>28||fabsf(point[1]-y)>28)continue;
+        set_hover(x,y,27);
+        if(click_pending) {
+            click_pending=false;
+            uint64_t column=i<columns?LD64(array+8*i):0;
+            if(ptr(column)&&LD32(column+0x29c)&&!LD8(column+0x38c)&&!LD8(column+0x38d))
+                call(c,0x7000d6c244,list,0,i);
+        }
+        return true;
+    }
+    int scroll=atomic_exchange(&wheel,0);
+    if(scroll) {
+        unsigned col=LD32(list+0x2e8);uint64_t column=col<columns?LD64(array+8*col):0;
+        unsigned pages=ptr(column)?LD32(column+0x2f4):0;
+        int page=(int)LD32(list+0x2dc)-(scroll>0?1:-1);
+        if(pages&&pages<1000){if(page<0)page=0;if(page>=(int)pages)page=pages-1;call(c,0x7000d6c54c,list,page,0);}
+    }
+    return false;
+}
+
+static bool quantity_pointer(Cpu *c,uint64_t screens,unsigned count) {
+    if(!dialogue_active)return false;
+    for(unsigned i=0;i<count&&i<256;i++) {
+        uint64_t screen=LD64(screens+8*i);
+        if(!ptr(screen)||LD64(screen)!=0x7001d4ed48ull||LD8(screen+0xfe)!=2)continue;
+        int max=(int)LD32(screen+0x750),value=(int)LD32(screen+0x754);
+        if(max<1||max>999999||value<1||value>max||!ptr(LD64(screen+0x650)))continue;
+        uint64_t pane=LD64(screen+0x650);float cx=*(float*)(pane+0x7c),cy=*(float*)(pane+0x8c);
+        if(!isfinite(cx)||!isfinite(cy)||fabsf(cx)>640||fabsf(cy)>360)continue;
+        if(quantity_screen!=screen||(plat_now_ns()>quantity_until&&!quantity_hold)){quantity_edit=false;quantity_request=-1;quantity_hold=0;}
+        quantity_screen=screen;quantity_max=max;quantity_value=value;quantity_until=plat_now_ns()+100000000;
+        // 640/648 are animation controllers, not panes. Resolve the real
+        // arrow panes alongside T_Num_00 and hit-test their rendered locations.
+        uint64_t root=LD64(pane+0x18);unsigned budget=80;
+        uint64_t left=pane_named(root,"Pa_ArrowL_00",0,&budget);budget=80;
+        uint64_t right=pane_named(root,"Pa_ArrowR_00",0,&budget);
+        bool row=fabsf(point[1]-cy)<=22;
+        bool dec=ptr(left)&&row&&fabsf(point[0]-*(float*)(left+0x7c))<=18;
+        bool inc=ptr(right)&&row&&fabsf(point[0]-*(float*)(right+0x7c))<=18;
+        bool number=row&&fabsf(point[0]-cx)<=28,over=dec||inc||number;
+        // Feedback belongs to the original arrow panes. Keep their disabled
+        // animation at the limits; hover scales only an available arrow.
+        bool mouse=!pointer_keyboard_input;
+        if(ptr(left)) {
+            float scale=mouse&&dec&&value>1?(quantity_hold<0?1.12f:1.20f):1.f;
+            *(float*)(left+0x48)=*(float*)(left+0x4c)=scale;
+        }
+        if(ptr(right)) {
+            float scale=mouse&&inc&&value<max?(quantity_hold>0?1.12f:1.20f):1.f;
+            *(float*)(right+0x48)=*(float*)(right+0x4c)=scale;
+        }
+        if(mouse) {
+            if(dec&&value>1)pointer_hover_sound(c,screen,left);
+            else if(inc&&value<max)pointer_hover_sound(c,screen,right);
+            else if(number)pointer_hover_sound(c,screen,pane);
+        }
+        int request=atomic_exchange(&quantity_request,-1);
+        uint64_t now=plat_now_ns();
+        if(frame_press&&(dec||inc)&&!quantity_hold) {
+            quantity_hold=inc?1:-1;quantity_repeat_at=now+350000000;
+            request=value+quantity_hold;quantity_edit=false;click_pending=false;
+        }
+        if(quantity_hold) {
+            if(!gesture_down||frame_release||pointer_keyboard_input) {
+                quantity_hold=0;click_pending=false;
+            } else if(now>=quantity_repeat_at) {
+                request=value+quantity_hold;quantity_repeat_at=now+70000000;
+            }
+        }
+        if(over&&click_pending) {
+            click_pending=false;hover_until=0;
+            if(dec){request=value-1;quantity_edit=false;}
+            else if(inc){request=value+1;quantity_edit=false;}
+            else {
+                quantity_edit=true;quantity_replace=true;
+                pointer_sound(c,screen,"mc_Decide");
+            }
+        } else if(click_pending)quantity_edit=false;
+        if(request>=0) {
+            if(request<1)request=1;if(request>max)request=max;
+            ST32(screen+0x754,request);quantity_value=request;
+            call(c,0x70013f59f8,screen,0,0);
+            if(request!=value)pointer_sound(c,screen,"mc_CursorMove");
+        }
+        // Render editing feedback with the game's TextBox and font. No host
+        // overlay: hover tints the number; editing adds a blinking text caret.
+        if(LD64(pane)==0x7001d0e878ull) {
+            uint32_t color=quantity_edit?0xff8ce8ffu:number?0xffffe0a0u:0xffffffffu;
+            ST32(pane+0xf0,color);ST32(pane+0xf4,color);
+            char digits[24];snprintf(digits,sizeof digits,"%d%s",(int)quantity_value,
+                quantity_edit&&(now/500000000)%2==0?"|":"");
+            uint16_t text[24];unsigned len=0;
+            while(digits[len]&&len<23){text[len]=(unsigned char)digits[len];len++;}text[len]=0;
+            call(c,LD64(LD64(pane)+0x140),pane,(uintptr_t)text,len);
+        }
+        return over||quantity_edit||quantity_hold;
+    }
+    return false;
+}
+
 void rt_pc_cursor_manager(Cpu *c, uint64_t activate, uint64_t bounds) {
     // Restore only our one-call confirm pulse. Some screens retain the last action while input is idle.
     if(injected_manager) {
@@ -792,15 +1191,27 @@ void rt_pc_cursor_manager(Cpu *c, uint64_t activate, uint64_t bounds) {
     if(!ptr(control)||!ptr(screen_mgr))return;
     uint64_t screens=LD64(screen_mgr+0x30),n=LD32(screen_mgr+0x28);
     if(n>0x2d&&ptr(screens))special_diagnostics(c,screens);
-    if(n>0x34&&ptr(screens)&&options_pointer(c,screens,bounds))return;
-    if(n>0x39&&ptr(screens)&&native_special(c,screens,bounds))return;
-    if(!click_pending&&!pointer_test()&&plat_now_ns()-motion_at>300000000)return;
-    uint64_t hit=0,hit_screen=0;float best=1e30f;
+    if(n>0x34&&ptr(screens)&&options_pointer(c,screens,bounds)){hover_leave();return;}
+    if(n>0x39&&ptr(screens)&&native_special(c,screens,bounds)){hover_leave();return;}
+    if(quantity_pointer(c,screens,n))return;
+    if(pointer_keyboard_input){hover_leave();hover_until=0;return;}
+    if(!click_pending&&!pointer_test()&&!motion_at)return;
+    if(n>0x2e&&ptr(screens)) {
+        uint64_t screen=LD64(screens+8*0x2e);
+        if(ptr(screen)&&hover_target(c,screen,target)&&
+           (pause_headers(c,screen,screens,n)||quest_categories(c,screen))){hover_leave();return;}
+    }
+    uint64_t hit=0,hit_screen=0;float best=1e30f;bool choices=dialogue_choices(c,screens,n);
+    if(shop_screen&&!choices&&shop_pointer(c))return;
     extern uint64_t renderer_present_count(void);
     static bool dumped_screens[256];
     for(unsigned id=0;id<n&&id<256&&ptr(screens);id++) {
         uint64_t screen=LD64(screens+8*id);
         if(!ptr(screen)||LD8(screen+0xfe)!=2)continue;
+        if(dialogue_active&&choices&&LD64(screen)!=0x7001d4ed48ull)continue;
+        if(shop_screen&&!choices&&screen!=shop_screen)continue;
+        if(dialogue_active&&!shop_screen&&LD64(screen)!=0x7001d4ed48ull)continue;
+        if(!hover_target(c,screen,target))continue;
         bool dump=getenv("SAVAGEWIND_PC_DUMP_UI")&&!dumped_screens[id]&&renderer_present_count()>300;
         uint64_t link_offset=(int32_t)LD32(screen+0x9c);
         uint64_t head=screen+0x88,link=LD64(head+8);
@@ -814,7 +1225,19 @@ void rt_pc_cursor_manager(Cpu *c, uint64_t activate, uint64_t bounds) {
                 if(ptr(pane)) {
                     float box[4];
                     call(c,bounds,(uintptr_t)box,pane,0);
-                    call(c,LD64(LD64(screen)+0x38),screen,(uintptr_t)box,node);
+                    if(dialogue_active&&LD64(screen)==0x7001d4ed48ull) {
+                        // Choice arrows use left-origin X, center-origin Y.
+                        box[0]-=640;box[2]-=640;box[2]=fminf(625,box[0]+255);
+                    }
+                    // The native "clip" callback clears the active cursor for
+                    // an offscreen row. Calling it while scanning every node
+                    // repeatedly cancels real focus. Clip without side effects.
+                    if(LD64(screen)==0x7001cf9ad8ull&&LD32(screen+0x368c)) {
+                        box[0]=fmaxf(box[0],*(float*)(screen+0x367c));
+                        box[1]=fmaxf(box[1],*(float*)(screen+0x3680));
+                        box[2]=fminf(box[2],*(float*)(screen+0x3684));
+                        box[3]=fminf(box[3],*(float*)(screen+0x3688));
+                    }
                     if(dump)LOG("[pc-node] screen %x node %llx button %llx rect %.1f %.1f %.1f %.1f\n",id,node,button,box[0],box[1],box[2],box[3]);
                     uint64_t layout=LD64(button+0x20),parent=ptr(layout)?LD64(layout+0x18):0;
                     if(dump&&ptr(layout)) {
@@ -826,9 +1249,11 @@ void rt_pc_cursor_manager(Cpu *c, uint64_t activate, uint64_t bounds) {
                         float x=*(float*)(parent+0x7c),y=*(float*)(parent+0x8c);
                         box[0]=x-25;box[2]=640;box[1]=y-18;box[3]=y+18;
                     }
+                    bool eligible=(call(c,LD64(vtable+0x28),node,target,0)&1)!=0;
+                    if(dialogue_active&&LD64(screen)==0x7001d4ed48ull&&eligible&&box[0]>200&&box[0]<625&&box[1]>-320&&box[3]<320)choices=true;
                     if(isfinite(box[0])&&isfinite(box[1])&&isfinite(box[2])&&isfinite(box[3])&&
                         point[0]>=box[0]&&point[0]<=box[2]&&point[1]>=box[1]&&point[1]<=box[3]&&
-                        (call(c,LD64(vtable+0x28),node,target,0)&1)) {
+                        eligible) {
                         float dx=point[0]-(box[0]+box[2])*.5f,dy=point[1]-(box[1]+box[3])*.5f;
                         float score=dx*dx+dy*dy;
                         if(score<best){best=score;hit=node;hit_screen=screen;}
@@ -839,19 +1264,25 @@ void rt_pc_cursor_manager(Cpu *c, uint64_t activate, uint64_t bounds) {
         }
         if(dump)dumped_screens[id]=true;
     }
-    if(!hit)return;
+    if(!hit){
+        if(dialogue_active&&!choices&&click_pending){confirm_until=plat_now_ns()+50000000;click_pending=false;}
+        if(hover_control==control)hover_leave();return;
+    }
     // The PC hover is drawn this frame; the game's own highlight may still be playing its transition.
     if(hit&&best<1e29f) {
         uint64_t button=LD64(hit+0x18),pane=LD64(button+0x60);
         if(ptr(pane)&&*(float*)(pane+0x50)>40&&*(float*)(pane+0x50)<150)
             set_hover(*(float*)(pane+0x7c),*(float*)(pane+0x8c),*(float*)(pane+0x50)*.5f);
     }
-    if(LD64(control+0x48)!=hit) {
-        call(c,activate,control,hit,0);
-        ST8(hit_screen+0x106,1);
+    bool quest=quest_focus(c,hit_screen,hit);
+    if(quest&&LD64(control+0x48)!=hit)call(c,activate,control,hit,0);
+    if(!quest&&hover_enter(c,control,hit_screen,hit,activate)) {
         if(getenv("SAVAGEWIND_PC_CURSOR_LOG"))LOG("[pc-hover] node %llx point %.1f %.1f\n",hit,point[0],point[1]);
     }
     if(click_pending) {
+        // A list may have rebuilt the manager cursor after hover entered.
+        // Confirmation must still target the row under the pointer.
+        if(LD64(control+0x48)!=hit)call(c,activate,control,hit,0);
         injected_manager=manager;saved_action=LD32(manager+0x10);
         ST32(manager+0x10,1); // The exact action used by the game's confirm button, processed by its own code next.
         click_pending=false;
@@ -860,6 +1291,9 @@ void rt_pc_cursor_manager(Cpu *c, uint64_t activate, uint64_t bounds) {
 }
 
 RT_ON_RESET(pc_cursor_reset) {
+    dialogue_active=false;shop_screen=quantity_screen=0;quantity_until=0;quantity_edit=false;quantity_request=-1;
+    quantity_hold=0;quantity_repeat_at=0;preview_defaults_saved=false;sound_hover_key=sound_hover_until=0;
+    hover_leave();
     options_scroll_valid=false;options_scroll=0;options_keyboard=false;options_page_pending=false;pointer_keyboard_input=false;pointer_mouse_events=0;options_keyboard_mouse_events=0;options_screen_active=options_rows_active=0;
     active = false; held = false; frame_press = frame_release = frame_held = false;
     click_pending=false;

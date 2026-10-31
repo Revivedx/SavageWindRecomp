@@ -20,7 +20,6 @@
 #include "../vibration.h"
 #include "../framepace.h"
 #include "../pc_cursor.h"
-#include "../pc_bow.h"
 
 enum {
     BTN_A = 0, BTN_B, BTN_X, BTN_Y, BTN_LSTICK, BTN_RSTICK, BTN_L, BTN_R, BTN_ZL, BTN_ZR, BTN_PLUS, BTN_MINUS,
@@ -34,28 +33,6 @@ static _Atomic int map_key_x,map_key_y;
 void input_pc_map_axes(float out[2]) { out[0]=map_key_x;out[1]=map_key_y; }
 static _Atomic uint64_t escape_buttons;
 static _Atomic bool pc_menu_active;
-static _Atomic bool pc_bow_wanted;
-static _Atomic unsigned pc_bow_shots;
-static PcBow pc_bow;
-static unsigned pc_bow_seen_shots;
-
-static bool pc_bow_enabled(void) {
-    return g_settings.pc_bow;
-}
-
-
-static uint64_t pc_bow_sample(void) {
-    extern bool menu_cursor_free(void);
-    // Turning the override off (or freeing the mouse) must cancel an already drawn arrow safely.
-    if (!pc_bow_enabled() || menu_cursor_free()) pc_bow_wanted = false;
-    uint64_t now = plat_now_ns();
-    bool wanted = pc_bow_wanted && !pc_menu_active;
-    if (pc_bow.aiming != wanted) pc_bow_aim(&pc_bow, wanted, now);
-    unsigned shots = pc_bow_shots;
-    if (shots != pc_bow_seen_shots) { pc_bow_fire(&pc_bow, now); pc_bow_seen_shots = shots; }
-    return pc_bow_buttons(&pc_bow, now);
-}
-
 // Main thread: Esc opens inventory in play and backs out of an existing menu.
 // Keep its release independent of the current screen and of player bindings.
 void input_pc_escape(bool down) {
@@ -133,7 +110,6 @@ static void recompute_pad(void) {
 // Forget held keys (the menu took focus); the gamepad is re-read on its next event.
 void input_reset(void) {
     escape_buttons = 0;
-    pc_bow_wanted = false;
     memset(keys_down, 0, sizeof keys_down);
     memset(mouse_down, 0, sizeof mouse_down);
     recompute_keyboard();
@@ -201,7 +177,6 @@ static bool cam_reading(void) {
 void input_cam_frame(float ratio) {
     pc_cursor_frame();
     pc_menu_active = framepace_menu_ui() || framepace_title_ui() || pc_cursor_active();
-    if(pc_menu_active)pc_bow_wanted=false;
     double dx = (double)atomic_exchange(&cam_dx_milli, 0) / 1000.0, dy = (double)atomic_exchange(&cam_dy_milli, 0) / 1000.0;
     if ((dx != 0 || dy != 0) && cam_log_left())
         LOG("[mouse] frame: %.1f %.1f counts, ratio %.3f, held %d/%d\n", dx, dy, ratio, (int)mouse_held, (int)test_mouse);
@@ -396,20 +371,6 @@ int input_pad_family(void) {
 
 void input_handle_event(const SDL_Event *e) {
     if (pc_cursor_event(e)) return;
-    if (pc_bow_enabled() && !pc_menu_active && !menu_input_captured() && !menu_cursor_free() &&
-        (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN || e->type == SDL_EVENT_MOUSE_BUTTON_UP)) {
-        bool down = e->type == SDL_EVENT_MOUSE_BUTTON_DOWN;
-        if (e->button.button == SDL_BUTTON_RIGHT) {
-            pc_bow_wanted = down;
-            last_device = DEVICE_KEYBOARD;
-            return;
-        }
-        if (e->button.button == SDL_BUTTON_LEFT && pc_bow_wanted) {
-            if (down) pc_bow_shots++;
-            last_device = DEVICE_KEYBOARD;
-            return;
-        }
-    }
     static bool scanned;  // pads present at startup: their ADDED event may have gone to the start screen's loop
     if (!scanned) {
         scanned = true;
@@ -453,7 +414,7 @@ void input_handle_event(const SDL_Event *e) {
         break;
     case SDL_EVENT_WINDOW_FOCUS_LOST: case SDL_EVENT_WINDOW_FOCUS_GAINED:
         win_focused = e->type == SDL_EVENT_WINDOW_FOCUS_GAINED;
-        if (!win_focused) { pc_bow_wanted = false; input_reset(); }
+        if (!win_focused) input_reset();
         break;
     case SDL_EVENT_GAMEPAD_ADDED:
         if (!pad) {
@@ -650,8 +611,6 @@ static uint64_t g_pad_obj;
 volatile int g_inject_plus;  // frames to hold Plus for the game (movie.c: A/B skip a skippable movie)
 RT_ON_RESET(input_reboot_reset) {
     g_pad_obj = 0; g_inject_plus = 0;
-    pc_bow_wanted = false; pc_bow_shots = pc_bow_seen_shots = 0;
-    memset(&pc_bow, 0, sizeof pc_bow);
 }  // (reboot: the controller object was guest memory)
 void input_frame(uint64_t frame) {
     if (g_pad_obj && getenv("SAVAGEWIND_DUMP_PAD") && frame % 600 == 0) {
@@ -739,8 +698,7 @@ static void fill_state(Cpu *c) {
         LOG("[input] watching controller object %llx\n", c->x[1] - 8);
     }
     bool menu = menu_input_captured();  // the overlay menu / name entry has the controls (typing there isn't for the game)
-    uint64_t bow = pc_bow_sample();
-    uint64_t b = menu ? script_buttons : key_buttons | pad_buttons | escape_buttons | bow | script_buttons;
+    uint64_t b = menu ? script_buttons : key_buttons | pad_buttons | escape_buttons | script_buttons;
     b=pc_cursor_buttons(b);
     {   // injected Plus: held for ~10 presented frames (the game polls several times per frame)
         extern uint64_t renderer_present_count(void);

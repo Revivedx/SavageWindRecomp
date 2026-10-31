@@ -63,7 +63,6 @@ typedef struct {
     float stick_deadzone[2];  // left, right stick: a controller's stick reads 0 within this much of full tilt (radial)
     bool mouse_camera;   // the mouse turns the camera (right stick); the cursor is held in the window while playing
     bool pc_cursor;      // mouse pointer in menus, inventory, quick selectors and the map
-    bool pc_bow;         // right mouse holds bow aim; left mouse fires while aiming
     float mouse_sens;    // mouse camera speed, 1 = 100% (default MOUSE_SENS_DEFAULT)
     float mouse_sens_y;  // vertical mouse camera speed, a fraction of mouse_sens (1: the same as horizontal)
     bool mouse_invert_y; // mouse up looks down

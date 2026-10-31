@@ -525,9 +525,6 @@ void build_items(void) {
     v.push_back(toggle(P_CONTROLS, "PC mouse pointer", "Point and click in menus and map. Esc pauses/goes back; F2 frees the cursor.",
                        [](const Item &) { return (int)g_settings.pc_cursor; },
                        [](const Item &, int x) { g_settings.pc_cursor = x; }, 1));
-    v.push_back(toggle(P_CONTROLS, "Mouse bow aiming", "Hold right mouse to aim; left click fires. Off: use your normal button bindings.",
-                       [](const Item &) { return (int)g_settings.pc_bow; },
-                       [](const Item &, int x) { g_settings.pc_bow = x; }, 1));
     v.push_back(toggle(P_CONTROLS, "Mouse camera", "The mouse turns the camera. Pointer off: Esc frees it; pointer on: F2 frees it.",
                        [](const Item &) { return (int)g_settings.mouse_camera; },
                        [](const Item &, int x) { g_settings.mouse_camera = x; }, 1));
