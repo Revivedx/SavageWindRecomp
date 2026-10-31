@@ -579,6 +579,14 @@ void build_items(void) {
     v.push_back(toggle(P_CONTROLS, "Invert mouse Y", "Only the mouse. The camera Y-axis option inverts both.",
                        [](const Item &) { return (int)g_settings.mouse_invert_y; },
                        [](const Item &, int x) { g_settings.mouse_invert_y = x; }, 0));
+    v.push_back(toggle(P_CONTROLS, "Shrine keyboard gyro",
+                       "Only while controlling a shrine apparatus. Remap on Keyboard (sticks). Outside it, camera keys keep working.",
+                       [](const Item &) { return (int)g_settings.pc_gyro; },
+                       [](const Item &, int x) { g_settings.pc_gyro = x; }, 1));
+    v.push_back(toggle(P_CONTROLS, "Shrine mouse drag",
+                       "At a shrine apparatus, hold left click and drag to rotate. Release to keep its orientation and re-grip.",
+                       [](const Item &) { return (int)g_settings.gyro_scene; },
+                       [](const Item &, int x) { g_settings.gyro_scene = x; }, 1));
     // motion controls (runtime/hle/motion.c; the game's own Motion Controls option turns motion aiming on and off)
     v.push_back(choice(P_CONTROLS, "Motion sensitivity", "How far turning the controller turns the aim.",
                        [](const Item &) { return N(k_motion_sens); },
@@ -628,6 +636,13 @@ void build_items(void) {
     bind(P_KEYS, A_BIND_KEY, BIND_WALK);
     v.push_back(button(P_KEYS, "Reset keyboard to defaults", "Every key back to its default.", "Reset", A_RESET_KEYS, 0));
     for (int s = BIND_LS_UP; s <= BIND_RS_RIGHT; s++) bind(P_STICKS, A_BIND_KEY, s);
+    static const char *const gyro_help[] = {"Tilt upward.", "Tilt downward.", "Tilt left.", "Tilt right.",
+                                            "Rotate left on the third axis.", "Rotate right on the third axis.",
+                                            "Reset orientation and stop pending rotation."};
+    for (int s = BIND_GYRO_UP; s <= BIND_GYRO_CENTER; s++) {  // (the virtual gyro at a shrine apparatus)
+        bind(P_STICKS, A_BIND_KEY, s);
+        v.back().desc = gyro_help[s - BIND_GYRO_UP];
+    }
     v.push_back(button(P_STICKS, "Reset keyboard to defaults", "Every key back to its default.", "Reset", A_RESET_KEYS, 0));
     for (int s = 0; s < BIND_PAD_COUNT; s++) bind(P_PAD, A_BIND_PAD, s);
     v.push_back(button(P_PAD, "Reset controller to defaults", "Every button back to its default.", "Reset", A_RESET_PAD, 0));

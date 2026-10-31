@@ -30,6 +30,8 @@ Settings g_settings = {
     .mouse_sens = MOUSE_SENS_DEFAULT,
     .mouse_sens_y = 1.0f,
     .motion_sens = 1.0f,
+    .pc_gyro = true,
+    .gyro_scene = true,
     .stick_deadzone = {STICK_DEADZONE_DEFAULT, STICK_DEADZONE_DEFAULT},
     .fps_limit = FPS_DEFAULT,
     .precompile_shaders = true,
@@ -58,12 +60,22 @@ static const char *const k_icons[ICONS_COUNT] = {"auto", "keyboard", "xbox", "pl
 
 static const char *const k_quality[UPQ_COUNT] = {"ultra_quality", "quality", "balanced", "performance", "ultra_performance"};
 
+// SAVAGEWIND_PC_GYRO / SAVAGEWIND_GYRO_SCENE=0|1: the two shrine apparatus switches at start (Controls changes them)
+static void gyro_startup_overrides(void) {
+    const char *v = getenv("SAVAGEWIND_PC_GYRO");
+    if (v && *v) g_settings.pc_gyro = atoi(v) != 0;
+    v = getenv("SAVAGEWIND_GYRO_SCENE");
+    if (v && *v) g_settings.gyro_scene = atoi(v) != 0;
+}
 void settings_load(void) {
     static bool loaded;
     if (loaded) return;
     loaded = true;
     FILE *f = fopen(SETTINGS_FILE, "r");
-    if (!f) return;
+    if (!f) {
+        gyro_startup_overrides();
+        return;
+    }
     char line[256];
     bool tip_key = false;
     int version = 1;
@@ -132,6 +144,8 @@ void settings_load(void) {
         else if (!strcmp(key, "mouse_sensitivity")) g_settings.mouse_sens = (float)atof(val);
         else if (!strcmp(key, "mouse_vertical_sensitivity")) g_settings.mouse_sens_y = (float)atof(val);
         else if (!strcmp(key, "mouse_invert_y")) g_settings.mouse_invert_y = atoi(val) != 0;
+        else if (!strcmp(key, "pc_gyro")) g_settings.pc_gyro = atoi(val) != 0;
+        else if (!strcmp(key, "gyro_scene")) g_settings.gyro_scene = atoi(val) != 0;
         else if (!strcmp(key, "motion_sensitivity")) g_settings.motion_sens = (float)atof(val);
         else if (!strcmp(key, "motion_invert")) {  // (off, up_down, left_right, both)
             g_settings.motion_invert = !strcmp(val, "both") ? MOTION_INVERT_UD | MOTION_INVERT_LR :
@@ -230,6 +244,7 @@ void settings_load(void) {
     for (int i = 0; i < 2; i++)
         if (!(g_settings.stick_deadzone[i] >= 0 && g_settings.stick_deadzone[i] <= 0.5f))
             g_settings.stick_deadzone[i] = STICK_DEADZONE_DEFAULT;
+    gyro_startup_overrides();
     LOG("[settings] loaded %s\n", SETTINGS_FILE);
 }
 
@@ -274,6 +289,8 @@ void settings_save(void) {
     fprintf(f, "mouse_sensitivity = %.2f\n", g_settings.mouse_sens);
     fprintf(f, "mouse_vertical_sensitivity = %.2f\n", g_settings.mouse_sens_y);
     fprintf(f, "mouse_invert_y = %d\n", g_settings.mouse_invert_y);
+    fprintf(f, "pc_gyro = %d\n", g_settings.pc_gyro);
+    fprintf(f, "gyro_scene = %d\n", g_settings.gyro_scene);
     fprintf(f, "motion_sensitivity = %.2f\n", g_settings.motion_sens);
     static const char *const inv[4] = {"off", "up_down", "left_right", "both"};
     fprintf(f, "motion_invert = %s\n", inv[g_settings.motion_invert & 3]);

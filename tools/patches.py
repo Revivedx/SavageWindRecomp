@@ -557,7 +557,19 @@ def _yaz0_stream_ret(gen, a):
     return '{ extern void rt_yaz0_done(Cpu *); rt_yaz0_done(c); return; }' + f'  /* {a:#x}: ret (Yaz0 stream decoder) */'
 
 
+# A shrine apparatus (DungeonRotateGyro::calc_, 1.9.0): the call that fetches the mechanism's input, then a heartbeat
+# with the mechanism (x19) and what the call returned (x0), so runtime/pc_gyro_scene.c knows the player controls one.
+def _gyro_scene_actor(gen, a):
+    w = _word(gen, a)
+    assert w >> 26 == 0x25, hex(w)  # bl
+    t = a + sext(w & 0x3ffffff, 26) * 4
+    return (f'{{ extern void f_{t:x}(Cpu *); extern void rt_gyro_scene_actor(Cpu *, uint64_t, uint64_t); '
+            f'c->x[30] = {a + 4:#x}ull; f_{t:x}(c); rt_gyro_scene_actor(c, c->x[19], c->x[0]); }}'
+            f'  /* {a:#x}: bl (shrine apparatus input) */')
+
+
 PATCHES = {
+    'gyro_scene_actor': _gyro_scene_actor,
     'pause_options_update': _pause_option_state,
     'opt_create_rows': _opt_rows,
     'opt_row_init_flag_type': _opt_flag_type,

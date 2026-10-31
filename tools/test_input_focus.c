@@ -12,7 +12,7 @@
 #include "../runtime/hle/input.c"
 
 Settings g_settings;
-int16_t g_bind_key[BIND_KEY_COUNT], g_bind_pad[BIND_PAD_COUNT];
+int16_t g_bind_key[BIND_KEY_COUNT], g_bind_pad[BIND_KEY_COUNT];
 uint64_t g_watch_lo, g_watch_hi;
 static bool captured;
 static int sensor_events;
@@ -39,6 +39,21 @@ bool bind_capture_event(const SDL_Event *e) { (void)e; unexpected_helper(); }
 void bind_capture_begin(int dev, int slot) { (void)dev; (void)slot; unexpected_helper(); }
 void bind_reset(int dev) { (void)dev; unexpected_helper(); }
 void motion_script(float p, float r, float ps, float ys) { (void)p; (void)r; (void)ps; (void)ys; unexpected_helper(); }
+// (the control endpoint, the virtual gyro and the DSU poll: off here)
+bool control_enabled(void) { return false; }
+bool control_fly_toggle(void) { unexpected_helper(); }
+void control_fly_wheel(float notches) { (void)notches; unexpected_helper(); }
+void control_input_frame(uint64_t frame) { (void)frame; }
+void control_input_apply(uint64_t *b, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) { (void)b; (void)lx; (void)ly; (void)rx; (void)ry; }
+bool pc_gyro_keyboard_active(void) { return false; }
+void pc_gyro_scene_tick(void) {}
+bool motion_has_sensors(void) { return false; }
+void motion_keyboard(int p, int r, int y, bool c) { (void)p; (void)r; (void)y; (void)c; }
+void motion_mouse_yaw(float s) { (void)s; unexpected_helper(); }
+void motion_dualstick(float lx, float ly, float rx, float ry, double dt, bool reset) { (void)lx; (void)ly; (void)rx; (void)ry; (void)dt; (void)reset; unexpected_helper(); }
+void motion_poll(void) {}
+bool framepace_title_ui(void) { return false; }
+bool framepace_menu_ui(void) { return false; }
 
 static void focus(bool on) {
     SDL_Event e = {0};

@@ -12,12 +12,14 @@
 #include <string.h>
 
 #include "../hle.h"
+#include "../control.h"
 #include "../nvn/nvn.h"
 #include "../nvn/renderer.h"
 #include "../settings.h"
 #include "../input_bind.h"
 #include "../framepace.h"
 #include "../motion.h"
+#include "../pc_gyro_scene.h"
 #include "../vibration.h"
 
 enum {
@@ -46,6 +48,9 @@ static _Atomic int last_device;  // DEVICE_*: what the player used last
 static bool tilt_held;  // the tilt key: the mouse tilts the controller instead of turning the camera
 extern bool menu_input_captured(void);  // runtime/ui/menu.mm: overlay menu or name entry up (it has the keys / pad)
 
+// The gyro keys work: in a shrine apparatus (runtime/pc_gyro_scene.c) with Controls > Shrine keyboard gyro on
+static bool pc_gyro_enabled(void) { return g_settings.pc_gyro && pc_gyro_keyboard_active(); }
+
 static int held_key(int sc) {
     if (sc > BIND_MOUSE && sc <= BIND_MOUSE_LAST) return mouse_down[sc - BIND_MOUSE];
     return sc > 0 && sc < SDL_SCANCODE_COUNT && (keys_down[sc] || test_keys[sc]);
@@ -65,21 +70,40 @@ static int menu_enter(void) {
     return menu_key(SDL_SCANCODE_RETURN) || menu_key(SDL_SCANCODE_KP_ENTER);
 }
 
+// A key for the game's buttons and sticks: while the gyro keys work, the keys bound to them are theirs (they share the
+// camera's I / J / K / L by default); anywhere else every binding works as it always does
+static int game_key(int sc) {
+    if (pc_gyro_enabled() && sc)
+        for (int i = BIND_GYRO_UP; i <= BIND_GYRO_CENTER; i++)
+            if (sc == g_bind_key[i]) return 0;
+    return held_key(sc);
+}
+// ... and with the menus closed and the window focused (main thread)
+static bool gyro_keys_live(void) {
+    return pc_gyro_enabled() && win_focused && !menu_input_captured() && !framepace_menu_ui() && !framepace_title_ui();
+}
+
 // Through the bindings (runtime/hle/bindings.c: g_bind_key), read on every key event, so a rebind applies at once.
 static void recompute_keyboard(void) {
     uint64_t b = 0;
     for (int i = 0; i < BIND_PAD_COUNT; i++)
-        if (held_key(g_bind_key[i])) b |= 1ull << i;
+        if (game_key(g_bind_key[i])) b |= 1ull << i;
     key_buttons = b;
-    int tilt = held_key(g_bind_key[BIND_WALK]) ? 13107 : 32767;  // walk: 40% (BOTW walks below about half)
-    key_lx = (held_key(g_bind_key[BIND_LS_RIGHT]) - held_key(g_bind_key[BIND_LS_LEFT])) * tilt;
-    key_ly = (held_key(g_bind_key[BIND_LS_UP]) - held_key(g_bind_key[BIND_LS_DOWN])) * tilt;
-    key_rx = (held_key(g_bind_key[BIND_RS_RIGHT]) - held_key(g_bind_key[BIND_RS_LEFT])) * 32767;
-    key_ry = (held_key(g_bind_key[BIND_RS_UP]) - held_key(g_bind_key[BIND_RS_DOWN])) * 32767;
+    int tilt = game_key(g_bind_key[BIND_WALK]) ? 13107 : 32767;  // walk: 40% (BOTW walks below about half)
+    key_lx = (game_key(g_bind_key[BIND_LS_RIGHT]) - game_key(g_bind_key[BIND_LS_LEFT])) * tilt;
+    key_ly = (game_key(g_bind_key[BIND_LS_UP]) - game_key(g_bind_key[BIND_LS_DOWN])) * tilt;
+    key_rx = (game_key(g_bind_key[BIND_RS_RIGHT]) - game_key(g_bind_key[BIND_RS_LEFT])) * 32767;
+    key_ry = (game_key(g_bind_key[BIND_RS_UP]) - game_key(g_bind_key[BIND_RS_DOWN])) * 32767;
     menu_lx = (menu_key(SDL_SCANCODE_RIGHT) - menu_key(SDL_SCANCODE_LEFT)) * 32767;
     menu_ly = (menu_key(SDL_SCANCODE_UP) - menu_key(SDL_SCANCODE_DOWN)) * 32767;
     menu_confirm = menu_enter();  // publish here; guest polls must not read the keyboard arrays or bindings
-    bool tilt_key = held_key(g_bind_key[BIND_TILT]) && !menu_input_captured();
+    if (gyro_keys_live())  // (tilting up is a negative pitch: the apparatus's far edge rises)
+        motion_keyboard(held_key(g_bind_key[BIND_GYRO_DOWN]) - held_key(g_bind_key[BIND_GYRO_UP]),
+                        held_key(g_bind_key[BIND_GYRO_RIGHT]) - held_key(g_bind_key[BIND_GYRO_LEFT]),
+                        held_key(g_bind_key[BIND_GYRO_TURN_RIGHT]) - held_key(g_bind_key[BIND_GYRO_TURN_LEFT]),
+                        held_key(g_bind_key[BIND_GYRO_CENTER]));
+    else motion_keyboard(0, 0, 0, false);
+    bool tilt_key = game_key(g_bind_key[BIND_TILT]) && !menu_input_captured();
     if (tilt_key != tilt_held) motion_tilt_held(tilt_held = tilt_key);
 }
 
@@ -113,6 +137,14 @@ static void recompute_pad(void) {
     for (int i = 0; i < BIND_PAD_COUNT; i++)
         if (g_bind_pad[i] >= 0 && g_bind_pad[i] < PADB_HOST_COUNT && (host >> g_bind_pad[i] & 1)) b |= 1ull << i;
     pad_buttons = b;
+    // Fly mode (test builds): the press of its controller button toggles it. Not while the menu or a rebind has the pad
+    // (the held state is still tracked, so letting go of a button that was just bound does not toggle).
+    static bool fly_was_down;
+    int fly_host = g_bind_pad[BIND_FLY];
+    bool fly_down = fly_host >= 0 && fly_host < PADB_HOST_COUNT && (host >> fly_host & 1);
+    if (fly_down && !fly_was_down && control_enabled() && !menu_input_captured() && !bind_capture_active(NULL, NULL, NULL))
+        control_fly_toggle();
+    fly_was_down = fly_down;
     if (!pad || host_test) { pad_lx = test_lx, pad_ly = test_ly, pad_rx = pad_ry = 0; return; }
     dead_zone(&pad_lx, &pad_ly, SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX),
               -SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY), g_settings.stick_deadzone[0]);
@@ -184,9 +216,23 @@ static bool cam_reading(void) {
     return cam_native_on() && t && plat_now_ns() - t < 250000000;
 }
 
+// A controller without a gyroscope at a shrine apparatus (or with the tilt key held): its sticks turn the virtual
+// controller (runtime/hle/motion.c motion_dualstick), and R3 / L3 recenter it
+static bool dualstick_on(void) {
+    return pad && !host_test && (pc_gyro_keyboard_active() || tilt_held) && !motion_has_sensors() &&
+           !menu_input_captured() && !framepace_menu_ui() && !framepace_title_ui();
+}
+
 // runtime/hle/framepace.c rt_vfr_update, once a frame: the mouse's motion since the last frame, over the frame's
 // length (ratio: its VFR ratio, which the cameras multiply their turn by)
 void input_cam_frame(float ratio) {
+    pc_gyro_scene_tick();
+    if (dualstick_on()) {  // (ratio: this frame's length in 30 fps frames)
+        uint64_t held = pad_buttons;
+        bool reset = (held >> BTN_RSTICK & 1) || (pc_gyro_keyboard_active() && (held >> BTN_LSTICK & 1));
+        motion_dualstick(pad_lx / 32767.0f, pad_ly / 32767.0f, pad_rx / 32767.0f, pad_ry / 32767.0f,
+                         ratio > 0.05f && ratio < 10.0f ? ratio / 30.0 : 1.0 / 60.0, reset);
+    }
     double dx = (double)atomic_exchange(&cam_dx_milli, 0) / 1000.0, dy = (double)atomic_exchange(&cam_dy_milli, 0) / 1000.0;
     if ((dx != 0 || dy != 0) && cam_log_left())
         LOG("[mouse] frame: %.1f %.1f counts, ratio %.3f, held %d/%d\n", dx, dy, ratio, (int)mouse_held, (int)test_mouse);
@@ -293,7 +339,13 @@ void input_focus_update(SDL_Window *w) {
     window_focus(w && (SDL_GetWindowFlags(w) & SDL_WINDOW_INPUT_FOCUS));
 }
 void input_mouse_update(SDL_Window *w) {
+    motion_poll();
     input_focus_update(w);
+    static bool gyro_keys;  // (the gyro keys start or stop working without a key event: entering an apparatus)
+    if (gyro_keys_live() != gyro_keys) {
+        gyro_keys = !gyro_keys;
+        recompute_keyboard();
+    }
     vibration_update(pad, win_focused && !host_test);
     static bool cur;
     bool want = w && win_focused && g_settings.mouse_camera && !menu_input_captured() && !menu_cursor_free() &&
@@ -397,9 +449,16 @@ void input_handle_event(const SDL_Event *e) {
             g_skip_fs_off = !g_skip_fs_off;
             LOG("[input] F8: SAVAGEWIND_SKIP_FSHASH shaders %s\n", g_skip_fs_off ? "drawn" : "skipped");
         }
+        if (e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat && g_bind_key[BIND_FLY] && e->key.scancode == g_bind_key[BIND_FLY] &&
+            control_enabled() && !menu_input_captured()) control_fly_toggle();  // (fly mode, test builds)
         if (e->key.scancode < SDL_SCANCODE_COUNT) keys_down[e->key.scancode] = e->type == SDL_EVENT_KEY_DOWN;
         if (e->type == SDL_EVENT_KEY_DOWN) last_device = DEVICE_KEYBOARD;
         recompute_keyboard();
+        break;
+    case SDL_EVENT_MOUSE_WHEEL:
+        if (control_enabled() && !menu_input_captured()) control_fly_wheel(e->wheel.y);  // (fly mode speed, test builds)
+        if (tilt_held && !menu_input_captured() && !framepace_menu_ui() && !framepace_title_ui())
+            motion_mouse_yaw(e->wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -e->wheel.y : e->wheel.y);
         break;
     case SDL_EVENT_MOUSE_MOTION:
         if ((tilt_held || mouse_held) && fabsf(e->motion.xrel) + fabsf(e->motion.yrel) > 4) last_device = DEVICE_KEYBOARD;
@@ -617,16 +676,18 @@ static uint64_t g_pad_obj;
 volatile int g_inject_plus;  // frames to hold Plus for the game (movie.c: A/B skip a skippable movie)
 RT_ON_RESET(input_reboot_reset) { g_pad_obj = 0; g_inject_plus = 0; }  // (reboot: the controller object was guest memory)
 void input_frame(uint64_t frame) {
+    extern uint64_t renderer_present_count(void);
+    control_input_frame(renderer_present_count());
     if (g_pad_obj && getenv("SAVAGEWIND_DUMP_PAD") && frame % 600 == 0) {
         const uint8_t *m = (const uint8_t *)(uintptr_t)(g_pad_obj - 0x98);
-        LOG("[pad] mgr %llx 4e0=%u 4e4=%u 4e8=%u 548=%#x 54c..=%02x %02x %02x 56c=%02x\n", g_pad_obj - 0x98,
+        LOG("[pad] mgr %llx 4e0=%u 4e4=%u 4e8=%u 548=%#x 54c..=%02x %02x %02x 56c=%02x\n", (unsigned long long)(g_pad_obj - 0x98),
             *(uint32_t *)(m + 0x4e0), *(uint32_t *)(m + 0x4e4), *(uint32_t *)(m + 0x4e8), *(uint32_t *)(m + 0x548),
             m[0x54c], m[0x54d], m[0x54e], m[0x56c]);
         for (int i = 0; i < 9; i++) {
             const uint8_t *o = m + 0x98 + 0x48 * i;
             uint64_t player = *(uint64_t *)(m + 0x10 * i);
             LOG("[pad]  ctl%d id %#x style %#x btn %#x conn %d %d | player %llx [8]=%u\n", i, *(uint32_t *)(o + 8),
-                *(uint32_t *)(o + 0xc), *(uint32_t *)(o + 0x14), o[0x44], o[0x45], player,
+                *(uint32_t *)(o + 0xc), *(uint32_t *)(o + 0x14), o[0x44], o[0x45], (unsigned long long)player,
                 player ? *(uint32_t *)(uintptr_t)(player + 8) : 0);
         }
     }
@@ -680,7 +741,9 @@ void input_frame(uint64_t frame) {
 // Buttons held right now (keyboard, gamepad, test script), independent of whether the game polls (movies).
 uint64_t input_buttons_now(void) {
     bool muted = (!win_focused && !host_test) || menu_input_captured();
-    return (muted ? 0 : key_buttons | pad_buttons) | script_buttons;
+    uint64_t b = (muted ? 0 : key_buttons | pad_buttons) | script_buttons;
+    control_input_apply(&b, NULL, NULL, NULL, NULL);
+    return b;
 }
 
 static int32_t clamp_axis(int32_t v) { return v > 32767 ? 32767 : v < -32767 ? -32767 : v; }
@@ -693,7 +756,7 @@ static void fill_state(Cpu *c) {
     memset(s, 0, 0x28);
     *(int64_t *)s = ++sampling;
     static int nlog;
-    if (nlog < 6 && (sampling % 600) == 1) { nlog++; LOG("[input] GetNpadState id %#x lr %llx\n", id, c->x[30]); }
+    if (nlog < 6 && (sampling % 600) == 1) { nlog++; LOG("[input] GetNpadState id %#x lr %llx\n", id, (unsigned long long)c->x[30]); }
     if (id != 0) return;  // docked: only player 1 (FullKey); Handheld stays disconnected
     extern uint64_t g_watch_lo, g_watch_hi;
     if (id == 0 && !g_pad_obj) g_pad_obj = c->x[1] - 8;
@@ -702,7 +765,7 @@ static void fill_state(Cpu *c) {
         sscanf(getenv("SAVAGEWIND_WATCH_PAD"), "%x,%x", &lo, &hi);
         g_watch_lo = c->x[1] - 8 - 0x98 + lo;
         g_watch_hi = c->x[1] - 8 - 0x98 + hi;
-        LOG("[input] watching controller object %llx\n", c->x[1] - 8);
+        LOG("[input] watching controller object %llx\n", (unsigned long long)(c->x[1] - 8));
     }
     bool menu = (!win_focused && !host_test) || menu_input_captured();  // host controls belong to the focused game window
     uint64_t b = menu ? script_buttons : key_buttons | pad_buttons | script_buttons;
@@ -712,7 +775,10 @@ static void fill_state(Cpu *c) {
         if (g_inject_plus > 0) { until = renderer_present_count() + 10; g_inject_plus = 0; }
         if (renderer_present_count() < until) b |= 1ull << BTN_PLUS;
     }
-    int32_t lx = clamp_axis((menu ? 0 : key_lx + pad_lx) + script_lx), ly = clamp_axis((menu ? 0 : key_ly + pad_ly) + script_ly);
+    // (the controller's sticks turning a shrine apparatus move neither Link nor the camera meanwhile)
+    bool sticks = !menu && !dualstick_on();
+    int32_t plx = sticks ? pad_lx : 0, ply = sticks ? pad_ly : 0, prx = sticks ? pad_rx : 0, pry = sticks ? pad_ry : 0;
+    int32_t lx = clamp_axis((menu ? 0 : key_lx + plx) + script_lx), ly = clamp_axis((menu ? 0 : key_ly + ply) + script_ly);
     // Gate at each poll: an arrow or Enter held when a menu closes must never move the player or press A.
     // Event activity also includes cutscenes and fanfares, so it cannot identify dialogue choices safely.
     if (!menu && (framepace_title_ui() || framepace_menu_ui())) {
@@ -722,7 +788,7 @@ static void fill_state(Cpu *c) {
     }
     int32_t mx = 0, my = 0;
     if (!menu) mouse_stick(&mx, &my);
-    int32_t rx = clamp_axis((menu ? 0 : key_rx + pad_rx + mx) + script_rx), ry = clamp_axis((menu ? 0 : key_ry + pad_ry + my) + script_ry);
+    int32_t rx = clamp_axis((menu ? 0 : key_rx + prx + mx) + script_rx), ry = clamp_axis((menu ? 0 : key_ry + pry + my) + script_ry);
     // d-pad / arrow keys walk (setting) while the stick is at rest. "At rest" has a dead zone: a controller's stick
     // never reads exactly 0 (a DualSense rests at a few hundred), which used to turn the d-pad off altogether.
     if (!menu && g_settings.dpad_move && (int64_t)lx * lx + (int64_t)ly * ly < 8000ll * 8000) {
@@ -732,6 +798,7 @@ static void fill_state(Cpu *c) {
         int32_t m = dx && dy ? 23170 : 32767;  // diagonals: same speed (32767 / sqrt 2)
         if (dx || dy) lx = dx * m, ly = dy * m;
     }
+    control_input_apply(&b, &lx, &ly, &rx, &ry);
     // stick directions also appear as buttons (bits 16-23)
     if (lx < -16000) b |= 1ull << 16;
     if (ly > 16000) b |= 1ull << 17;
@@ -743,7 +810,7 @@ static void fill_state(Cpu *c) {
     if (ry < -16000) b |= 1ull << 23;
     *(uint64_t *)(s + 8) = b;
     static uint64_t last_b;
-    if (b != last_b && getenv("SAVAGEWIND_INPUT")) LOG("[input] id %#x buttons %#llx (sampling %lld, lr %llx)\n", id, (unsigned long long)b, (long long)sampling, c->x[30]);
+    if (b != last_b && getenv("SAVAGEWIND_INPUT")) LOG("[input] id %#x buttons %#llx (sampling %lld, lr %llx)\n", id, (unsigned long long)b, (long long)sampling, (unsigned long long)c->x[30]);
     last_b = b;
     *(int32_t *)(s + 16) = lx;
     *(int32_t *)(s + 20) = ly;

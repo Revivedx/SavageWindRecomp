@@ -4,6 +4,8 @@
 // build/samples.txt; tools/profile_samples.py turns them into self / inclusive time per function, recompiled game
 // functions as f_<guest address>. A thread waiting in the kernel shows its wait; filter with the tool.
 // Each round of samples starts with "R <ns> <presented frame>", so a stretch of frames can be looked at alone.
+#include <math.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -16,14 +18,26 @@
 #define MAX_THREADS 128
 #define MAX_DEPTH 48
 
+enum { SAMPLE_IDLE, SAMPLE_STARTING, SAMPLE_SAMPLING, SAMPLE_WRITING, SAMPLE_DONE,
+       SAMPLE_MEMORY_ERROR, SAMPLE_FILE_ERROR, SAMPLE_THREAD_ERROR };
+static atomic_int sample_state;
+static struct { double start, seconds, us; } request;
+
+const char *sampler_status(void) {
+    static const char *const names[] = {"idle", "starting", "sampling", "writing", "done",
+        "failed: allocation; retry a shorter capture", "failed: output; create a writable build folder and retry",
+        "failed: worker creation; retry"};
+    return names[atomic_load(&sample_state)];
+}
+
 static void *sampler_main(void *arg) {
-    double start = 0, secs = 0, us = 1000;
-    sscanf((const char *)arg, "%lf:%lf:%lf", &start, &secs, &us);
-    if (secs <= 0) return NULL;
+    (void)arg;
+    double start = request.start, secs = request.seconds, us = request.us;
     plat_sleep_until_ns(plat_now_ns() + (uint64_t)(start * 1e9));
     size_t cap = 12u << 20, used = 0;  // words (96 MB), allocated up front: nothing may allocate while a thread is suspended
     uint64_t *buf = malloc(cap * sizeof *buf);
-    if (!buf) return NULL;
+    if (!buf) { atomic_store(&sample_state, SAMPLE_MEMORY_ERROR); return NULL; }
+    atomic_store(&sample_state, SAMPLE_SAMPLING);
     pthread_t host[MAX_THREADS];
     uint32_t handle[MAX_THREADS];
     uint64_t entry[MAX_THREADS];
@@ -72,6 +86,7 @@ static void *sampler_main(void *arg) {
         if (next > now) plat_sleep_until_ns(next);
         else next = now;
     }
+    atomic_store(&sample_state, SAMPLE_WRITING);
     FILE *f = fopen("build/samples.txt", "w");
     if (f) {
         fprintf(f, "M exe %llx\nM swgame %llx\n", (unsigned long long)(uintptr_t)GetModuleHandleA(NULL),
@@ -90,18 +105,55 @@ static void *sampler_main(void *arg) {
             fputc('\n', f);
             p += 2 + d;
         }
-        fclose(f);
+        bool failed = ferror(f) != 0;
+        if (fclose(f)) failed = true;
+        if (failed) { free(buf); atomic_store(&sample_state, SAMPLE_FILE_ERROR); return NULL; }
     }
+    if (!f) { free(buf); atomic_store(&sample_state, SAMPLE_FILE_ERROR); return NULL; }
     LOG("[sample] %llu samples written to build/samples.txt\n", (unsigned long long)nsamples);
     free(buf);
+    atomic_store(&sample_state, SAMPLE_DONE);
     return NULL;
+}
+
+// Own the request until the worker has finished writing. No join, sleep or file I/O on the caller.
+static const char *sampler_launch(double start, double seconds, double us) {
+    int state = atomic_load(&sample_state);
+    do {
+        if (state >= SAMPLE_STARTING && state <= SAMPLE_WRITING)
+            return "already active; use sample status and wait for completion";
+    } while (!atomic_compare_exchange_weak(&sample_state, &state, SAMPLE_STARTING));
+    request.start = start;
+    request.seconds = seconds;
+    request.us = us;
+    pthread_t th;
+    if (pthread_create(&th, NULL, sampler_main, NULL)) {
+        atomic_store(&sample_state, SAMPLE_THREAD_ERROR);
+        return "cannot start worker; retry";
+    }
+    pthread_detach(th);
+    return NULL;
+}
+
+const char *sampler_request(double seconds, unsigned interval_us) {
+    if (!isfinite(seconds) || seconds < 0.001 || seconds > 3600 || interval_us < 100 || interval_us > 1000000)
+        return "use seconds 0.001-3600 and interval_us 100-1000000";
+    return sampler_launch(0, seconds, interval_us);
 }
 
 __attribute__((constructor)) static void sampler_start(void) {
     const char *e = getenv("SAVAGEWIND_SAMPLE");
     if (!e) return;
-    pthread_t th;
-    pthread_create(&th, NULL, sampler_main, (void *)e);
-    pthread_detach(th);
+    double start = 0, secs = 0, us = 1000;
+    sscanf(e, "%lf:%lf:%lf", &start, &secs, &us);
+    if (!isfinite(start) || !isfinite(secs) || !isfinite(us) || start < 0 || secs <= 0 || us <= 0 ||
+        start >= 1e9 || secs >= 1e9 || us >= 1e12) return;
+    (void)sampler_launch(start, secs, us);
+}
+#else
+const char *sampler_status(void) { return "unsupported: Windows only"; }
+const char *sampler_request(double seconds, unsigned interval_us) {
+    (void)seconds; (void)interval_us;
+    return "runtime sampling needs Windows; run the Windows build and use sample start <seconds> [interval_us]";
 }
 #endif

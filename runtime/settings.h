@@ -74,6 +74,8 @@ typedef struct {
     float mouse_sens;    // mouse camera speed, 1 = 100% (default MOUSE_SENS_DEFAULT)
     float mouse_sens_y;  // vertical mouse camera speed, a fraction of mouse_sens (1: the same as horizontal)
     bool mouse_invert_y; // mouse up looks down
+    bool pc_gyro;        // keyboard gyro only during shrine apparatus interaction
+    bool gyro_scene;     // left-drag rotation during a shrine apparatus interaction
     float motion_sens;   // motion controls: how far turning the controller turns the aim, 1 = 100%
     int motion_invert;   // MOTION_INVERT_* bits: turning the controller up / down, left / right goes the other way
     int button_icons;    // ICONS_*: the game's button prompts show this device's buttons (Automatic: the one in use)

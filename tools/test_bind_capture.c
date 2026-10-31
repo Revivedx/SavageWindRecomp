@@ -85,6 +85,17 @@ int main(void) {
     assert(bind_capture_event(&e));
     assert(g_bind_pad[BIND_A] == PADB_LTRIGGER);
     ended(2);  // ZL already uses the left trigger
+    // Optional gyro bindings may overlap normal keys without mutating the
+    // camera defaults; duplicates within the gyro context still swap.
+    bind_reset(BIND_DEV_KEY);
+    int camera_up=g_bind_key[BIND_RS_UP];
+    bind_capture_begin(BIND_DEV_KEY,BIND_GYRO_DOWN);
+    e=(SDL_Event){0};e.type=SDL_EVENT_KEY_DOWN;e.key.scancode=SDL_SCANCODE_I;
+    assert(bind_capture_event(&e));assert(g_bind_key[BIND_GYRO_DOWN]==SDL_SCANCODE_I);
+    assert(g_bind_key[BIND_GYRO_UP]==SDL_SCANCODE_K&&g_bind_key[BIND_RS_UP]==camera_up);
+    bind_capture_begin(BIND_DEV_KEY,BIND_GYRO_CENTER);
+    e.key.scancode=SDL_SCANCODE_H;assert(bind_capture_event(&e));
+    assert(g_bind_key[BIND_GYRO_CENTER]==SDL_SCANCODE_H&&g_bind_key[BIND_RS_UP]==camera_up);
     puts("binding capture: confirm releases, assignments, cancellation and timeout passed");
     return 0;
 }

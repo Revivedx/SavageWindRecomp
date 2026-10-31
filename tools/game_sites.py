@@ -206,6 +206,8 @@ SITES = [
     # the terrain's distant trees (tools/patches.py _tree_ranges): the entry of their per-frame shader setup
     Site('tree_ranges', 'code', '90000008/9f00001f 91000108/ffc003ff f9400108 b4000008/ff00001f f9452908 '
          'b4000008/ff00001f 39406108 37280008/fff8001f 39402008 36000008/fff8001f d10143ff', 0),
+    # a shrine apparatus fetching its input (tools/patches.py _gyro_scene_actor; runtime/pc_gyro_scene.c)
+    Site('gyro_scene_actor', 'code', '2d59b28f 2d5ab689 94000000/fc000000 b5000000/ff00001f 9101d280 9101a281', 2),
     Site('main_data', 'data', '', 0),
     Site('main_end', 'end', '', 0),
 ]
@@ -216,6 +218,7 @@ SITES = [
 # Without them the mouse turns the camera through the right stick, as before (runtime/hle/input.c); without the
 # second group it turns it without the game's camera inversion options.
 OPTIONAL_GROUPS = [
+    ('gyro_scene_actor',),
     ('quick_menu_capture_alpha',),
     ('yaz0_stream', 'yaz0_stream_ret'),
     ('cam_stick', 'cam_pitch_chase', 'cam_pitch_surf', 'cam_pitch_wakeboard', 'cam_pitch_aim', 'cam_pitch_item'),
