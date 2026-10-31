@@ -80,6 +80,8 @@ T("Shows more of the world on screens that aren't 16:9 (wider or taller), instea
 T("On a window or screen that isn't 16:9 the game shows more of the world instead of black bars: to the sides when it's wider (21:9, 32:9), above and below when it's taller (16:10, 4:3). The HUD stays 16:9 in the middle; the pause menu, the map and the start screen are shown 16:9.", "บนหน้าต่างหรือจอที่ไม่ใช่ 16:9 เกมจะแสดงโลกได้มากขึ้นแทนแถบดำ: ด้านข้างเมื่อจอกว้างกว่า (21:9, 32:9) และด้านบนกับด้านล่างเมื่อจอสูงกว่า (16:10, 4:3) HUD ยังคงเป็น 16:9 อยู่ตรงกลาง ส่วนเมนูหยุดชั่วคราว แผนที่ และหน้าจอเริ่มต้นจะแสดงเป็น 16:9")
 T("Field of view", "ระยะการมองเห็น")
 T("Draw distance", "ระยะการแสดงผล")
+T("Haze", "หมอกควัน")
+T("How hazy the air is. Lower: clearer distances. From the next start.", "ความขมุกขมัวของอากาศ ยิ่งต่ำยิ่งมองไกลชัด มีผลเมื่อเริ่มเกมครั้งถัดไป")
 T("Original", "ต้นฉบับ")
 T("Medium", "กลาง")
 T("High", "สูง")

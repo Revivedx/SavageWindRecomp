@@ -124,6 +124,8 @@ T("Shows more of the world on screens that aren't 16:9 (wider or taller), instea
 T("On a window or screen that isn't 16:9 the game shows more of the world instead of black bars: to the sides when it's wider (21:9, 32:9), above and below when it's taller (16:10, 4:3). The HUD stays 16:9 in the middle; the pause menu, the map and the start screen are shown 16:9.", "在不是16:9的視窗或螢幕上，遊戲會顯示更多畫面，而不是黑邊：更寬時（21:9、32:9）在兩側，更高時（16:10、4:3）在上下。HUD維持16:9，位於中間；暫停選單、地圖和標題畫面以16:9顯示。")
 T("Field of view", "視野")
 T("Draw distance", "繪製距離")
+T("Haze", "霧氣")
+T("How hazy the air is. Lower: clearer distances. From the next start.", "空氣中的霧氣濃度。越低遠景越清晰。下次啟動生效。")
 T("Original", "原版")
 T("Medium", "中")
 T("High", "高")

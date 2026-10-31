@@ -124,6 +124,8 @@ T("Shows more of the world on screens that aren't 16:9 (wider or taller), instea
 T("On a window or screen that isn't 16:9 the game shows more of the world instead of black bars: to the sides when it's wider (21:9, 32:9), above and below when it's taller (16:10, 4:3). The HUD stays 16:9 in the middle; the pause menu, the map and the start screen are shown 16:9.", "В окне или на экране не 16:9 игра показывает больше мира вместо чёрных полос: по бокам, если он шире (21:9, 32:9), сверху и снизу, если он выше (16:10, 4:3). Интерфейс остаётся 16:9 посередине; меню паузы, карта и титульный экран показываются в 16:9.")
 T("Field of view", "Поле зрения")
 T("Draw distance", "Дальность прорисовки")
+T("Haze", "Дымка")
+T("How hazy the air is. Lower: clearer distances. From the next start.", "Насколько туманен воздух. Ниже: даль чётче. Со следующего запуска.")
 T("Original", "Оригинал")
 T("Medium", "Средняя")
 T("High", "Высокая")

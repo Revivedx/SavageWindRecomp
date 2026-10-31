@@ -40,6 +40,7 @@ Settings g_settings = {
     .wide_view = true,
     .fov = 100,
     .color_lut_strength = 100,
+    .haze = 100,
 };
 
 static const char *const k_vsync[VSYNC_COUNT] = {"on", "fast", "adaptive", "off"};  // (VSYNC_*: the ini's words)
@@ -181,6 +182,7 @@ void settings_load(void) {
             for (int i = 0; i < DRAWDIST_COUNT; i++)
                 if (!strcmp(val, k_drawdist[i])) g_settings.draw_distance = i;
         }
+        else if (!strcmp(key, "haze")) { int v = atoi(val); g_settings.haze = v < 0 ? 0 : v > 100 ? 100 : v; }  // (percent)
         else if (!strcmp(key, "colour_exposure")) g_settings.color_exposure = (int)lroundf((float)atof(val) * 10);  // (EV)
         else if (!strcmp(key, "colour_contrast")) g_settings.color_contrast = atoi(val);  // (percent)
         else if (!strcmp(key, "colour_saturation")) g_settings.color_saturation = atoi(val);
@@ -318,6 +320,7 @@ void settings_save(void) {
     fprintf(f, "field_of_view = %d\n", g_settings.fov);
     int dd = g_settings.draw_distance;
     fprintf(f, "draw_distance = %s\n", k_drawdist[dd >= 0 && dd < DRAWDIST_COUNT ? dd : DRAWDIST_ORIGINAL]);
+    fprintf(f, "haze = %d\n", g_settings.haze);
     fprintf(f, "colour_exposure = %.1f\n", g_settings.color_exposure / 10.0);
     fprintf(f, "colour_contrast = %d\n", g_settings.color_contrast);
     fprintf(f, "colour_saturation = %d\n", g_settings.color_saturation);

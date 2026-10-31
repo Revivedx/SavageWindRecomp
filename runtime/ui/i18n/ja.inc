@@ -124,6 +124,8 @@ T("Shows more of the world on screens that aren't 16:9 (wider or taller), instea
 T("On a window or screen that isn't 16:9 the game shows more of the world instead of black bars: to the sides when it's wider (21:9, 32:9), above and below when it's taller (16:10, 4:3). The HUD stays 16:9 in the middle; the pause menu, the map and the start screen are shown 16:9.", "16:9以外のウィンドウや画面では、黒い帯の代わりに世界がより広く見えます。横長（21:9、32:9）なら左右が、縦長（16:10、4:3）なら上下が広がります。HUDは中央に16:9のまま表示され、ポーズメニュー、マップ、タイトル画面は16:9で表示されます。")
 T("Field of view", "視野")
 T("Draw distance", "描画距離")
+T("Haze", "もや")
+T("How hazy the air is. Lower: clearer distances. From the next start.", "空気のもやの濃さ。低いほど遠景がくっきり。次回起動から。")
 T("Original", "オリジナル")
 T("Medium", "中")
 T("High", "高")

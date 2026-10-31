@@ -124,6 +124,8 @@ T("Shows more of the world on screens that aren't 16:9 (wider or taller), instea
 T("On a window or screen that isn't 16:9 the game shows more of the world instead of black bars: to the sides when it's wider (21:9, 32:9), above and below when it's taller (16:10, 4:3). The HUD stays 16:9 in the middle; the pause menu, the map and the start screen are shown 16:9.", "16:9가 아닌 창이나 화면에서는 검은 띠 대신 세상이 더 보입니다. 더 넓으면(21:9, 32:9) 양옆이, 더 높으면(16:10, 4:3) 위아래가 더 보입니다. HUD는 가운데에 16:9로 유지되며, 일시 정지 메뉴, 지도, 타이틀 화면은 16:9로 표시됩니다.")
 T("Field of view", "시야")
 T("Draw distance", "그리기 거리")
+T("Haze", "연무")
+T("How hazy the air is. Lower: clearer distances. From the next start.", "공기 중 연무의 정도. 낮을수록 먼 곳이 선명. 다음 실행부터.")
 T("Original", "원본")
 T("Medium", "중간")
 T("High", "높음")

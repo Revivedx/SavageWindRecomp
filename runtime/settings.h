@@ -88,6 +88,7 @@ typedef struct {
     int hdr_white;       // nits of SDR white in HDR (0: what Windows gives SDR content on that monitor)
     int fov;             // field of view in play, percent of the game's own (FOV_CHOICES)
     int draw_distance;   // DRAWDIST_*: how far placed actors are kept (runtime/draw_distance.c)
+    int haze;            // the air's haze, percent of the game's (services/fs.c haze_patch; from the next start)
     // Video > Colour (runtime/color_grade.h): 0 everywhere and no LUT = the game's own colours (nothing runs)
     int color_exposure;      // tenths of an EV, -20..20
     int color_contrast;      // percent, -50..50
@@ -103,6 +104,7 @@ typedef struct {
 } Settings;
 
 #define STICK_DEADZONE_DEFAULT 0.10f  // (the Switch's own input service has one: the game expects 0 at rest)
+#define HAZE_CHOICES {0, 25, 50, 75, 100}  // (percent of the game's haze)
 enum { DRAWDIST_ORIGINAL, DRAWDIST_MEDIUM, DRAWDIST_HIGH, DRAWDIST_COUNT };  // (Original: the game's own distances)
 float draw_distance_factor(void);  // the setting's factor on the game's distances (1: Original)
 #define FOV_CHOICES {70, 80, 90, 100, 110, 120, 130, 140, 150}  // (percent; 100: the game's own)

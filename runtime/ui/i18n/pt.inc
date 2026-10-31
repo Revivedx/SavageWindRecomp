@@ -124,6 +124,8 @@ T("Shows more of the world on screens that aren't 16:9 (wider or taller), instea
 T("On a window or screen that isn't 16:9 the game shows more of the world instead of black bars: to the sides when it's wider (21:9, 32:9), above and below when it's taller (16:10, 4:3). The HUD stays 16:9 in the middle; the pause menu, the map and the start screen are shown 16:9.", "Em uma janela ou tela que não é 16:9, o jogo mostra mais do mundo em vez de faixas pretas: nas laterais se for mais larga (21:9, 32:9), em cima e embaixo se for mais alta (16:10, 4:3). O HUD continua em 16:9 no centro; o menu de pausa, o mapa e a tela de título são mostrados em 16:9.")
 T("Field of view", "Campo de visão")
 T("Draw distance", "Distância de renderização")
+T("Haze", "Névoa")
+T("How hazy the air is. Lower: clearer distances. From the next start.", "Quanta névoa há no ar. Mais baixa: distâncias mais nítidas. A partir do próximo arranque.")
 T("Original", "Original")
 T("Medium", "Média")
 T("High", "Alta")
