@@ -39,6 +39,14 @@ from lifter import Insn, Lifter, Unsupported, bits, emit_asm_batch, hx, sext
 from nso import Nso, R_AARCH64_JUMP_SLOT, R_AARCH64_RELATIVE, header
 
 SCRATCH_MEM = 0x7300000000
+FLAG_READ = re.compile(r'\b(?:COND_|FLAG_)|\b(?:adc|sbc|adcs|sbcs)\d+\(|c->nzcv(?! =)')
+
+
+def flags_in_local(code):
+    """A lifted instruction's C with the flags in the function's local nzl (Module.local_flags)."""
+    code = re.sub(r'\bCOND_([A-Z]{2})\(c\)', r'COND_\1_F(nzl)', code)
+    code = re.sub(r'\b(adds|subs|adcs|sbcs|adc|sbc|logic)(32|64)\(c, ', r'\1\2_f(&nzl, ', code)
+    return code.replace('c->nzcv', 'nzl')
 
 
 def sext26(w):
@@ -77,6 +85,7 @@ class Module:
         self.lifter = Lifter(base, simd)
         self.cache = {}
         self.stats = Counter()
+        self.entry_flags = {}  # (_entry_flags)
         self.mu = None
         self.cs = None  # (capstone, made on first use: writes_gpr)
         # the functions as compiled: discovery may split one into several C functions, a jump table spans all of it
@@ -217,6 +226,91 @@ class Module:
         if ins.kind == 'asm':
             return ins.asm.flags
         return ins.kind == 'op' and re.search(r'\b(adds|subs|adcs|sbcs|logic)\d+\(|nzcv', ins.code) is not None
+
+    def _reads_flags(self, a):
+        ins = self.lift(a)
+        text = ins.cond if ins.kind == 'bcond' else ins.code if ins.kind == 'op' else ''
+        return FLAG_READ.search(text) is not None
+
+    def _entry_flags(self, a, unknown, depth=4):
+        """Does the code at a read the flags before setting them? A call or a return ends the search with no: the
+        AArch64 calling convention keeps no flags across them. unknown: the answer where the code can't be followed."""
+        key = a, unknown, depth
+        if key not in self.entry_flags:
+            self.entry_flags[key] = self._find_flag_use(a, unknown, depth)
+        return self.entry_flags[key]
+
+    def _find_flag_use(self, a, unknown, depth):
+        for _ in range(32):
+            if not self.in_text(a) or a in self.patches:
+                return unknown
+            if self._reads_flags(a):
+                return True
+            if self._sets_flags(a):
+                return False
+            ins = self.lift(a)
+            if ins.kind in ('bl', 'blr', 'ret', 'trap'):
+                return False
+            if ins.kind == 'br' or ins.kind == 'asm':
+                return unknown
+            if ins.kind == 'b':
+                a = ins.target
+                continue
+            if ins.kind == 'bcond':  # (cbz, tbz: a flag test is a read, above)
+                if depth == 0 or self._entry_flags(ins.target, unknown, depth - 1):
+                    return True if depth else unknown
+            a += 4
+        return unknown
+
+    def local_flags(self, entry, end, tables):
+        """Can the function keep the flags in a C local? They are only ever seen by the function's own code then, so a
+        compare and its branch fold together (a quarter fewer instructions). Not when anything else can see them or
+        needs them there: a flag read that a call can reach with no flag write in between (real code doesn't do that:
+        the calling convention keeps no flags across a call), a call whose target reads flags it was handed, setjmp
+        (a local isn't kept across its second return), a patch, or inline asm. A jump leaving the function stores
+        them unless what it goes to sets them first (jump in _emit_body)."""
+        n = (end - entry) // 4
+        live = bytearray(n + 1)  # flags may be read before they're written, from this instruction on
+        seen = False
+        for a in range(entry, end, 4):
+            ins = self.lift(a)
+            if ins.kind == 'asm' or a in self.patches:
+                return False
+            if ins.kind == 'bl' and (ins.target in self.setjmps or self._entry_flags(ins.target, False)):
+                return False
+            seen = seen or self._reads_flags(a) or self._sets_flags(a)
+        if not seen:
+            return False
+
+        def at(t):
+            return live[(t - entry) // 4] if entry <= t < end else 0
+
+        changed = True
+        while changed:
+            changed = False
+            for i in range(n - 1, -1, -1):
+                a = entry + i * 4
+                ins = self.lift(a)
+                k = ins.kind
+                if k in ('bl', 'blr'):
+                    if live[i + 1]:
+                        return False
+                    after = 0
+                elif k == 'b':
+                    after = at(ins.target)
+                elif k == 'bcond':
+                    after = live[i + 1] or at(ins.target)
+                elif k == 'br':
+                    after = any(at(t) for t in tables.get(a, ()))
+                elif k in ('ret', 'trap'):
+                    after = 0
+                else:
+                    after = live[i + 1]
+                now = 1 if self._reads_flags(a) or (after and not self._sets_flags(a)) else 0
+                if now != live[i]:
+                    live[i] = now
+                    changed = True
+        return True
 
     def _guard_cmp(self, guard, lo):
         """The `cmp idx, #imm` that sets the flags a bounds check at guard tests, or None. Only straight-line
@@ -446,18 +540,28 @@ class Module:
                 out.append('    ' + emit_asm_batch(batch))
                 batch.clear()
 
+        all_labels = mode == 'resume' or (mode == 'plain' and bool(tables))
+        local = not all_labels and self.local_flags(entry, end, tables)
+        sync = 'c->nzcv = nzl; ' if local else ''
+        if local:
+            self.stats['local_flags'] += 1
+            out.append('    uint64_t nzl = c->nzcv;')
+
+        def code(text):
+            return flags_in_local(text) if local else text
+
         def jump(t):
             if entry <= t < end:
                 return f'goto L_{t:x};'
             if not self.in_text(t):
-                return f'c->pc = {hx(t)}; __attribute__((musttail)) return rt_dispatch(c);'
+                return f'{sync}c->pc = {hx(t)}; __attribute__((musttail)) return rt_dispatch(c);'
             refs.add(t)
-            return f'__attribute__((musttail)) return {fname(t)}(c);'
+            keep = sync if self._entry_flags(t, True) else ''
+            return f'{keep}__attribute__((musttail)) return {fname(t)}(c);'
 
-        all_labels = mode == 'resume' or (mode == 'plain' and bool(tables))
         if all_labels:
             labels = set(range(entry, end, 4))
-        miss = f'__attribute__((musttail)) return {fname(entry)}_r(c);' if mode == 'fast' else 'goto L_dispatch;'
+        miss = f'{sync}__attribute__((musttail)) return {fname(entry)}_r(c);' if mode == 'fast' else 'goto L_dispatch;'
         last = None
         for a in range(entry, end, 4):
             ins = self.lift(a)
@@ -484,11 +588,11 @@ class Module:
                 continue
             flush()
             if k == 'op' or k == 'trap':
-                out.append('    ' + ins.code)
+                out.append('    ' + code(ins.code))
             elif k == 'b':
                 out.append('    ' + jump(ins.target))
             elif k == 'bcond':
-                out.append(f'    if ({ins.cond}) {{ {jump(ins.target)} }}')
+                out.append(f'    if ({code(ins.cond)}) {{ {jump(ins.target)} }}')
             elif k == 'bl':
                 t = ins.target
                 if t in self.setjmps:
@@ -511,7 +615,7 @@ class Module:
                     out.append(f'    switch ({ins.target}) {{ {cases} default: break; }}')
                     out.append(f'    c->pc = {ins.target}; {miss}')
                     continue
-                out.append(f'    c->pc = {ins.target}; __attribute__((musttail)) return rt_dispatch(c);')
+                out.append(f'    {sync}c->pc = {ins.target}; __attribute__((musttail)) return rt_dispatch(c);')
             elif k == 'ret':
                 out.append('    return;')
             last = k

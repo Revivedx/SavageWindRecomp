@@ -97,66 +97,105 @@ EXCL(32, uint32_t)
 EXCL(64, uint64_t)
 
 // ---- flags (packed NZCV in bits 31..28)
-#define FLAG_N(c) (((c)->nzcv >> 31) & 1)
-#define FLAG_Z(c) (((c)->nzcv >> 30) & 1)
-#define FLAG_C(c) (((c)->nzcv >> 29) & 1)
-#define FLAG_V(c) (((c)->nzcv >> 28) & 1)
-#define COND_EQ(c) (FLAG_Z(c))
-#define COND_NE(c) (!FLAG_Z(c))
-#define COND_CS(c) (FLAG_C(c))
-#define COND_CC(c) (!FLAG_C(c))
-#define COND_MI(c) (FLAG_N(c))
-#define COND_PL(c) (!FLAG_N(c))
-#define COND_VS(c) (FLAG_V(c))
-#define COND_VC(c) (!FLAG_V(c))
-#define COND_HI(c) (FLAG_C(c) && !FLAG_Z(c))
-#define COND_LS(c) (!(FLAG_C(c) && !FLAG_Z(c)))
-#define COND_GE(c) (FLAG_N(c) == FLAG_V(c))
-#define COND_LT(c) (FLAG_N(c) != FLAG_V(c))
-#define COND_GT(c) (!FLAG_Z(c) && FLAG_N(c) == FLAG_V(c))
-#define COND_LE(c) (!(!FLAG_Z(c) && FLAG_N(c) == FLAG_V(c)))
+// The *_F forms and the *_f helpers work on any flags value: recompiled functions keep the flags in a local when
+// nothing can see them there (gen.py local_flags), and the compiler then folds a compare and its branch together.
+#define FLAGS_N(f) (((f) >> 31) & 1)
+#define FLAGS_Z(f) (((f) >> 30) & 1)
+#define FLAGS_C(f) (((f) >> 29) & 1)
+#define FLAGS_V(f) (((f) >> 28) & 1)
+#define COND_EQ_F(f) (FLAGS_Z(f))
+#define COND_NE_F(f) (!FLAGS_Z(f))
+#define COND_CS_F(f) (FLAGS_C(f))
+#define COND_CC_F(f) (!FLAGS_C(f))
+#define COND_MI_F(f) (FLAGS_N(f))
+#define COND_PL_F(f) (!FLAGS_N(f))
+#define COND_VS_F(f) (FLAGS_V(f))
+#define COND_VC_F(f) (!FLAGS_V(f))
+#define COND_HI_F(f) (FLAGS_C(f) && !FLAGS_Z(f))
+#define COND_LS_F(f) (!(FLAGS_C(f) && !FLAGS_Z(f)))
+#define COND_GE_F(f) (FLAGS_N(f) == FLAGS_V(f))
+#define COND_LT_F(f) (FLAGS_N(f) != FLAGS_V(f))
+#define COND_GT_F(f) (!FLAGS_Z(f) && FLAGS_N(f) == FLAGS_V(f))
+#define COND_LE_F(f) (!(!FLAGS_Z(f) && FLAGS_N(f) == FLAGS_V(f)))
+
+#define FLAG_N(c) FLAGS_N((c)->nzcv)
+#define FLAG_Z(c) FLAGS_Z((c)->nzcv)
+#define FLAG_C(c) FLAGS_C((c)->nzcv)
+#define FLAG_V(c) FLAGS_V((c)->nzcv)
+#define COND_EQ(c) COND_EQ_F((c)->nzcv)
+#define COND_NE(c) COND_NE_F((c)->nzcv)
+#define COND_CS(c) COND_CS_F((c)->nzcv)
+#define COND_CC(c) COND_CC_F((c)->nzcv)
+#define COND_MI(c) COND_MI_F((c)->nzcv)
+#define COND_PL(c) COND_PL_F((c)->nzcv)
+#define COND_VS(c) COND_VS_F((c)->nzcv)
+#define COND_VC(c) COND_VC_F((c)->nzcv)
+#define COND_HI(c) COND_HI_F((c)->nzcv)
+#define COND_LS(c) COND_LS_F((c)->nzcv)
+#define COND_GE(c) COND_GE_F((c)->nzcv)
+#define COND_LT(c) COND_LT_F((c)->nzcv)
+#define COND_GT(c) COND_GT_F((c)->nzcv)
+#define COND_LE(c) COND_LE_F((c)->nzcv)
 
 #define MKFLAGS(n, z, cy, v) \
     (((uint64_t)(n) << 31) | ((uint64_t)(z) << 30) | ((uint64_t)(cy) << 29) | ((uint64_t)(v) << 28))
 
-static inline uint64_t adds64(Cpu *c, uint64_t a, uint64_t b) {
+static inline uint64_t adds64_f(uint64_t *f, uint64_t a, uint64_t b) {
     uint64_t r = a + b;
-    c->nzcv = MKFLAGS(r >> 63, r == 0, r < a, ((a ^ r) & (b ^ r)) >> 63);
+    *f = MKFLAGS(r >> 63, r == 0, r < a, ((a ^ r) & (b ^ r)) >> 63);
     return r;
 }
-static inline uint64_t subs64(Cpu *c, uint64_t a, uint64_t b) {
+static inline uint64_t subs64_f(uint64_t *f, uint64_t a, uint64_t b) {
     uint64_t r = a - b;
-    c->nzcv = MKFLAGS(r >> 63, r == 0, a >= b, ((a ^ b) & (a ^ r)) >> 63);
+    *f = MKFLAGS(r >> 63, r == 0, a >= b, ((a ^ b) & (a ^ r)) >> 63);
     return r;
 }
-static inline uint32_t adds32(Cpu *c, uint32_t a, uint32_t b) {
+static inline uint32_t adds32_f(uint64_t *f, uint32_t a, uint32_t b) {
     uint32_t r = a + b;
-    c->nzcv = MKFLAGS(r >> 31, r == 0, r < a, ((a ^ r) & (b ^ r)) >> 31);
+    *f = MKFLAGS(r >> 31, r == 0, r < a, ((a ^ r) & (b ^ r)) >> 31);
     return r;
 }
-static inline uint32_t subs32(Cpu *c, uint32_t a, uint32_t b) {
+static inline uint32_t subs32_f(uint64_t *f, uint32_t a, uint32_t b) {
     uint32_t r = a - b;
-    c->nzcv = MKFLAGS(r >> 31, r == 0, a >= b, ((a ^ b) & (a ^ r)) >> 31);
+    *f = MKFLAGS(r >> 31, r == 0, a >= b, ((a ^ b) & (a ^ r)) >> 31);
     return r;
 }
-static inline uint64_t logic64(Cpu *c, uint64_t r) { c->nzcv = MKFLAGS(r >> 63, r == 0, 0, 0); return r; }
-static inline uint32_t logic32(Cpu *c, uint32_t r) { c->nzcv = MKFLAGS(r >> 31, r == 0, 0, 0); return r; }
+static inline uint64_t logic64_f(uint64_t *f, uint64_t r) { *f = MKFLAGS(r >> 63, r == 0, 0, 0); return r; }
+static inline uint32_t logic32_f(uint64_t *f, uint32_t r) { *f = MKFLAGS(r >> 31, r == 0, 0, 0); return r; }
+static inline uint64_t adds64(Cpu *c, uint64_t a, uint64_t b) { return adds64_f(&c->nzcv, a, b); }
+static inline uint64_t subs64(Cpu *c, uint64_t a, uint64_t b) { return subs64_f(&c->nzcv, a, b); }
+static inline uint32_t adds32(Cpu *c, uint32_t a, uint32_t b) { return adds32_f(&c->nzcv, a, b); }
+static inline uint32_t subs32(Cpu *c, uint32_t a, uint32_t b) { return subs32_f(&c->nzcv, a, b); }
+static inline uint64_t logic64(Cpu *c, uint64_t r) { return logic64_f(&c->nzcv, r); }
+static inline uint32_t logic32(Cpu *c, uint32_t r) { return logic32_f(&c->nzcv, r); }
 
 #define ADC_IMPL(N, S)                                                                     \
-    static inline uint##N##_t adc##N(Cpu *c, uint##N##_t a, uint##N##_t b) {               \
-        return a + b + (uint##N##_t)FLAG_C(c);                                             \
+    static inline uint##N##_t adc##N##_f(uint64_t *f, uint##N##_t a, uint##N##_t b) {      \
+        return a + b + (uint##N##_t)FLAGS_C(*f);                                           \
     }                                                                                      \
-    static inline uint##N##_t sbc##N(Cpu *c, uint##N##_t a, uint##N##_t b) {               \
-        return a - b - 1 + (uint##N##_t)FLAG_C(c);                                         \
+    static inline uint##N##_t sbc##N##_f(uint64_t *f, uint##N##_t a, uint##N##_t b) {      \
+        return a - b - 1 + (uint##N##_t)FLAGS_C(*f);                                       \
     }                                                                                      \
-    static inline uint##N##_t adcs##N(Cpu *c, uint##N##_t a, uint##N##_t b) {              \
-        uint##N##_t cin = FLAG_C(c), r = a + b + cin;                                      \
+    static inline uint##N##_t adcs##N##_f(uint64_t *f, uint##N##_t a, uint##N##_t b) {     \
+        uint##N##_t cin = FLAGS_C(*f), r = a + b + cin;                                    \
         int carry = cin ? r <= a : r < a;                                                  \
-        c->nzcv = MKFLAGS(r >> (N - 1), r == 0, carry, ((a ^ r) & (b ^ r)) >> (N - 1));    \
+        *f = MKFLAGS(r >> (N - 1), r == 0, carry, ((a ^ r) & (b ^ r)) >> (N - 1));         \
         return r;                                                                          \
     }                                                                                      \
+    static inline uint##N##_t sbcs##N##_f(uint64_t *f, uint##N##_t a, uint##N##_t b) {     \
+        return adcs##N##_f(f, a, (uint##N##_t)~b);                                         \
+    }                                                                                      \
+    static inline uint##N##_t adc##N(Cpu *c, uint##N##_t a, uint##N##_t b) {               \
+        return adc##N##_f(&c->nzcv, a, b);                                                 \
+    }                                                                                      \
+    static inline uint##N##_t sbc##N(Cpu *c, uint##N##_t a, uint##N##_t b) {               \
+        return sbc##N##_f(&c->nzcv, a, b);                                                 \
+    }                                                                                      \
+    static inline uint##N##_t adcs##N(Cpu *c, uint##N##_t a, uint##N##_t b) {              \
+        return adcs##N##_f(&c->nzcv, a, b);                                                \
+    }                                                                                      \
     static inline uint##N##_t sbcs##N(Cpu *c, uint##N##_t a, uint##N##_t b) {              \
-        return adcs##N(c, a, (uint##N##_t)~b);                                             \
+        return sbcs##N##_f(&c->nzcv, a, b);                                                \
     }
 ADC_IMPL(64, )
 ADC_IMPL(32, )
