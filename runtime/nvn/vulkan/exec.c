@@ -2134,6 +2134,7 @@ static void clear(int index, int kind, const void *color, uint32_t mask, bool de
 typedef struct {
     ShaderInfo *vi, *fi;
     uint64_t code[2], cmax[2];  // translation inputs (copied: translated on the translator thread)
+    int8_t ui;                  // vertex shader of the game's layouts (freecam_hud_drop): 0 unknown, 1 yes, -1 no
     ShaderKey vkey, fkey;
     VkShaderModule vs, fs;
     VkBindingInfo binds[MAX_BIND];
@@ -5102,6 +5103,7 @@ static void scene_post(Prog *pr, CmdRec *r);
 static void save_view_png(TexBackend *b, VkImageView src, const char *path);
 static void fg_draw(Prog *pr, CmdRec *r);  // (frame generation, below: the camera, the depth, the HUD-less image)
 static void fg_before_draw(void);
+static bool freecam_hud_drop(Prog *pr, CmdRec *r);
 
 // SAVAGEWIND_ANISO_ALL=<presented frame>: from then on every texture takes Video > Anisotropic filtering's override,
 // as before texture_info left some out (same-view A/B in one run)
@@ -6328,6 +6330,7 @@ static void draw_(CmdRec *r, bool indexed) {
         }
         extern volatile int g_skip_fs_off;
         if (last_skip && !g_skip_fs_off) { stat_skipped++; return; }
+        if (freecam_hud_drop(pr, r)) { stat_skipped++; return; }
         if (g_debug_frame && getenv("SAVAGEWIND_LOG_FSHASH")) LOG("[fshash] fs=%llx hash %016llx\n", (unsigned long long)fs, (unsigned long long)last_hash);
         g_cur_fs_hash = last_hash;
     }
@@ -7853,6 +7856,25 @@ static VkImageView grade_lut(int *n, float dmin[3], float dscale[3]) {
     memcpy(dmin, lo, sizeof lo), memcpy(dscale, sc, sizeof sc);
     static const VkComponentMapping id = {0};
     return vk_image_view(&t, VK_IMAGE_VIEW_TYPE_3D, t.format, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_COLOR_BIT);
+}
+
+// Free camera (hle/freecam.c): the HUD and menus are dropped: the draws of the vertex shaders built into main (the
+// HUD's, nn::ui2d) and of Bootup.pack Layout/Common.sblarc's archive (1.9.0, by code hash).
+static bool freecam_hud_drop(Prog *pr, CmdRec *r) {
+    (void)r;
+    extern bool freecam_active(void);
+    if (!freecam_active()) return false;
+    if (!pr->ui) {
+        static const uint64_t k[] = {0x1bc7b1e02ba7c8bbull, 0x2efdd8529ca5a423ull,  // (Layout/Common.sblarc)
+                                     0x27b9a168fe111c48ull, 0x2b40df38c66b5a98ull, 0x3ed936808eeb6e1full, 0x60671dc59c02b632ull,
+                                     0xa48fc1fd1793e2c1ull, 0xaf2b24cf09619238ull, 0xc8739ce4f815596cull, 0xed9b3dd7444d10c4ull};
+        extern uint64_t shader_code_hash(const uint8_t *code, size_t max_size, int stage, uint32_t *bin_size);
+        uint64_t h = shader_code_hash((const uint8_t *)(uintptr_t)pr->code[0], pr->cmax[0], STAGE_VERTEX, NULL);
+        pr->ui = -1;
+        for (size_t i = 0; i < sizeof k / sizeof *k; i++)
+            if (k[i] == h) pr->ui = 1;
+    }
+    return pr->ui > 0;
 }
 
 // The grading the settings ask for, as grade.frag's push constants, and the LUT's view (or NULL). false: nothing to do
