@@ -38,6 +38,7 @@ bool plat_reserve_guest(uint64_t lo, uint64_t hi) {
 
 // Fresh zero pages over the whole window (the old ones are released at once).
 long plat_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, size_t max) { return -1; }  // (not tracked)
+int plat_any_written(uint64_t addr, uint64_t size) { return -1; }
 
 bool plat_reset_guest(uint64_t lo, uint64_t hi) {
     return mmap((void *)(uintptr_t)lo, hi - lo, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED,

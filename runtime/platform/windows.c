@@ -96,6 +96,15 @@ long plat_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, size_t ma
     return n >= max ? -1 : (long)n;  // (a full list may have left pages out)
 }
 
+int plat_any_written(uint64_t addr, uint64_t size) {
+    if (!g_write_watch || addr < g_lo || addr + size > g_hi) return -1;
+    void *page;
+    ULONG_PTR n = 1;
+    DWORD gran;
+    if (GetWriteWatch(0, (void *)(uintptr_t)addr, size, &page, &n, &gran) != 0) return -1;
+    return n != 0;
+}
+
 // Decommit everything: the range stays reserved, and pages come back zeroed when committed again (lazily).
 bool plat_reset_guest(uint64_t lo, uint64_t hi) {
     return VirtualFree((void *)(uintptr_t)lo, hi - lo, MEM_DECOMMIT) != 0;

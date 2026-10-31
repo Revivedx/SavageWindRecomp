@@ -14,6 +14,7 @@
 #include "../../kernel.h"
 #include "shaders.h"
 #include "vk.h"
+#include "vram.h"
 #include "fsr3.h"
 #include "mvec.h"
 #include "../output_scale.h"
@@ -853,27 +854,28 @@ bool renderer_origin_lower_left(void) { return nvn_window_origin() == 0; }
 extern uint64_t g_pace_sleep_ns;  // (objects.c present_pace)
 void vk_prof_frame(uint64_t frame, uint64_t present_ns) {
     if (!prof) return;
-    static uint64_t last_t, l_exec, l_wait, l_xwait, l_draws, l_subs, l_comp, hitch_ns;
+    static uint64_t last_t, l_exec, l_wait, l_xwait, l_draws, l_subs, l_comp, l_valloc, hitch_ns;
     if (!hitch_ns) hitch_ns = getenv("SAVAGEWIND_HITCH_MS") ? (uint64_t)atoi(getenv("SAVAGEWIND_HITCH_MS")) * 1000000ull : 50000000ull;
     uint64_t now = SDL_GetTicksNS();
-    uint64_t comp = prof_c_tr + prof_c_prog + prof_c_pipe + prof_c_comp;
+    uint64_t comp = prof_c_tr + prof_c_prog + prof_c_pipe + prof_c_comp, valloc = atomic_load(&g_vram_alloc_ns);
     if (comp < l_comp) l_comp = 0;  // (the fps line took the counters)
     if (last_t && now - last_t > hitch_ns) {
         uint64_t dt = now - last_t, ex = cum_exec - l_exec, wt = cum_wait - l_wait;
         extern uint64_t g_present_split[6];
         LOG("[hitch] frame %llu: %.0f ms = backend exec %.1f (of which GPU waits %.1f, compiles %.1f) + present %.1f (acquire %.1f "
             "end %.1f draw %.1f submit %.1f present %.1f slot %.1f) + other %.1f (pace %.1f); %llu draws, %llu submits, compiles %d pending; "
-            "exec waits %.1f\n",
+            "exec waits %.1f; vkAllocateMemory %.1f\n",
             (unsigned long long)frame, dt / 1e6, ex / 1e6, wt / 1e6, (comp - l_comp) / 1e6, present_ns / 1e6,
             g_present_split[0] / 1e6, g_present_split[1] / 1e6, g_present_split[2] / 1e6, g_present_split[3] / 1e6,
             g_present_split[4] / 1e6, g_present_split[5] / 1e6,
             ((double)dt - ex - present_ns) / 1e6, g_pace_sleep_ns / 1e6, (unsigned long long)(cum_draws - l_draws),
             (unsigned long long)(cum_submits - l_subs),
-            atomic_load(&stat_compiles), (cum_xwait - l_xwait) / 1e6);
+            atomic_load(&stat_compiles), (cum_xwait - l_xwait) / 1e6, (valloc - l_valloc) / 1e6);
     }
     { extern uint64_t g_present_split[6]; memset(g_present_split, 0, sizeof g_present_split); }
     g_pace_sleep_ns = 0;
     l_comp = comp;
+    l_valloc = valloc;
     last_t = now; l_exec = cum_exec; l_wait = cum_wait; l_xwait = cum_xwait; l_draws = cum_draws; l_subs = cum_submits;
 }
 
@@ -4587,25 +4589,74 @@ static void gw_check(const uint32_t cbufs[6], bool vertices, uint64_t iaddr, uin
 // A fetch from pages the copy doesn't hold as they are now reads the import in place, as before, and its pages join
 // the next list's copy. What shaders store to (the gw set) is always read in place; CPU writes during a list
 // (UpdateUniformBuffer, CopyBufferToBuffer, readbacks) take their pages out of the copy until the next one.
-// Write-watch queries cost per call and per page, so they cover only spans around the geometry pages.
-// Off on integrated GPUs (the import is already their memory), outside Windows, without room for the copy in video
-// memory (4 GB besides it), and with SAVAGEWIND_VK_HEAP_COPY=0 (=1: on whatever the room).
-// SAVAGEWIND_VK_HEAP_COPY_LOG=<lists>: what was copied, every that many lists.
-// (Approach from Demetter's fork, savagewind-native-28oct; reimplemented.)
+// Write-watch queries cover only spans around the geometry pages held. One that resets (GetWriteWatch with
+// WRITE_WATCH_FLAG_RESET) costs ~10-15 us a call and ~1 us a MB it covers; one that only looks, ~0.6 us a call. So
+// the spans hug the geometry (up to 128 of them: ~140 MB for BOTW's ~50 MB), each is looked at first, and only the
+// ones written since (~8 a list) are queried and reset: 0.33 ms a list instead of 0.54 (6 spans over ~450 MB).
+// SAVAGEWIND_VK_HEAP_COPY_SPANS=<n>: at most n spans; SAVAGEWIND_VK_HEAP_COPY_PEEK=0: every span queried and reset.
+// Two shapes. With room for the whole heap in video memory and 4 GB besides it (8 GB cards and up): one buffer the
+// heap's size, made at once. With less (4-6 GB cards): the heap in chunks of HC_CHUNK_MB, each a buffer of its own
+// made where geometry is first fetched - on a thread of their own (hc_maker: a block of video memory can take
+// milliseconds), live from the list after - while the video memory in use (VK_EXT_memory_budget: the process's;
+// else VMA's count) stays within the plan: the smaller of the budget and 90% of the video memory, less HC_RESERVE_MB
+// for the game's own growth. A fetch inside one live chunk binds that chunk's buffer at its offset in it; one across a
+// chunk's edge, or in a chunk not made (over the plan), reads the import in place as before. Every HC_LOOK lists:
+// over the plan (the game's own memory grew), the least fetched live chunk goes (destroyed once the GPU is past it);
+// within it, chunks refused before may be made; and a chunk the GPU read in place much more than the least fetched
+// live one takes its place. BOTW's geometry (25-56 MB of the 3120 MB heap) sat in 17-20 chunks of 32 MB (~0.6 GB) in
+// every place tried, with ~1 fetch a list across a chunk's edge.
+// Off on integrated GPUs (the import is already their memory), outside Windows, and with SAVAGEWIND_VK_HEAP_COPY=0
+// (=1: one buffer whatever the room, =2: chunks whatever the room). SAVAGEWIND_VK_HEAP_COPY_BUDGET_MB=<n>: plan for a
+// card of n MB of video memory (the shape, and the chunks' plan: a smaller card simulated). _CHUNK_MB=<n>: the chunk
+// size (a power of 2, 4-1024). SAVAGEWIND_VK_HEAP_COPY_LOG=<lists>: what was copied, every that many lists.
+// (Approach from Demetter's fork, savagewind-native-28oct; reimplemented; chunks ours.)
 #define HC_PAGE 4096ull
-#define HC_SPANS 8
-static int hc_state = -1;  // -1: not decided yet, 0: off, 1: on
-static VkBuffer hc_buf;
-static VmaAllocation hc_mem;
+#define HC_SPANS_MAX 256
+#define HC_MAXCH 1024
+#define HC_CHUNK_MB 32
+#define HC_RESERVE_MB 512
+#define HC_LOOK 120
+enum { HC_NONE, HC_WANT, HC_MAKING, HC_MADE, HC_LIVE, HC_DYING, HC_OVER };  // a chunk's state
+typedef struct {
+    VkBuffer buf;
+    VmaAllocation mem;
+    _Atomic int state;       // HC_*: HC_MAKING -> HC_MADE / HC_OVER by hc_maker, every other change by this thread
+    uint64_t fetches, missed;  // fetches from it / in place for want of it, since the last look
+    uint64_t dead_seq;         // (HC_DYING) destroyed once this submission completes
+} HcChunk;
+static int hc_state = -1;  // -1: not decided yet, 0: off, 1: one buffer, 2: chunks
+static HcChunk hc_ch[HC_MAXCH];
+static int hc_nch;              // chunks the heap spans (one buffer: 1); 0: no copy
+static unsigned hc_shift;       // a heap offset's chunk: offset >> hc_shift
+static uint64_t hc_vram;        // video memory planned for (the device's, or SAVAGEWIND_VK_HEAP_COPY_BUDGET_MB)
 static uint64_t hc_size;          // bytes of the heap it mirrors (gmem_size when made)
 static uint64_t *hc_geo, *hc_ok;  // a bit per page: geometry / held by the copy as it is now
 static size_t hc_words;
 static uint64_t *hc_pages;  // (written pages, plat_written_pages)
 static size_t hc_pages_max;
-static struct { uint64_t lo, hi; } hc_span[HC_SPANS];  // heap offsets the write-watch queries cover
-static int hc_nspans;
-static bool hc_geo_new;  // pages became geometry since the spans were made
+static struct { uint64_t lo, hi; } hc_span[HC_SPANS_MAX];  // heap offsets the write-watch queries cover
+static int hc_nspans, hc_spans_cap = 128;  // (SAVAGEWIND_VK_HEAP_COPY_SPANS)
+static bool hc_geo_new;  // pages became geometry (or their chunk live) since the spans were made
+static bool hc_want_any, hc_dying_any;
+static uint64_t hc_lists;  // (chunks: lists since made, for HC_LOOK)
 static uint64_t hc_stat_lists, hc_stat_bytes, hc_stat_runs, hc_stat_inplace, hc_stat_mirror, hc_stat_query_ns, hc_stat_written;
+static uint64_t hc_stat_edge, hc_stat_nochunk, hc_made_total, hc_dropped_total, hc_stat_resets;
+static pthread_mutex_t hc_make_lock = PTHREAD_MUTEX_INITIALIZER;  // (hc_maker making a chunk; hc_free waits for it)
+static pthread_cond_t hc_make_cond = PTHREAD_COND_INITIALIZER;
+static bool hc_make_req, hc_maker_up;
+static uint64_t hc_gen;  // (under hc_make_lock) bumped by hc_free: a chunk made for the copy before is destroyed
+
+static uint64_t hc_base(int c) { return (uint64_t)c << hc_shift; }
+static uint64_t hc_chunk_size(int c) { uint64_t b = hc_base(c); return hc_nch == 1 ? hc_size : (hc_size - b < (1ull << hc_shift) ? hc_size - b : 1ull << hc_shift); }
+static bool hc_live(int c) { return atomic_load_explicit(&hc_ch[c].state, memory_order_relaxed) == HC_LIVE; }
+
+// What the plan lets video memory in use come to (chunks), and what is in use now
+static uint64_t hc_limit(uint64_t *usage) {
+    uint64_t budget;
+    vram_device_local(usage, &budget, NULL);
+    uint64_t plan = (budget < hc_vram / 10 * 9 ? budget : hc_vram / 10 * 9), reserve = (uint64_t)HC_RESERVE_MB << 20;
+    return plan > reserve ? plan - reserve : 0;
+}
 
 static bool hc_on(void) {
     if (hc_state >= 0) return hc_state;
@@ -4613,54 +4664,126 @@ static bool hc_on(void) {
     int force = e ? atoi(e) : -1;
     uint64_t probe;
     bool ww = plat_written_pages(HEAP_BASE, HC_PAGE, &probe, 2) >= 0;
-    VkPhysicalDeviceMemoryProperties mp;
-    vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
-    uint64_t vram = 0;
-    for (uint32_t i = 0; i < mp.memoryHeapCount; i++)
-        if ((mp.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) && mp.memoryHeaps[i].size > vram) vram = mp.memoryHeaps[i].size;
+    uint64_t vram;
+    vram_device_local(NULL, NULL, &vram);
+    const char *bm = getenv("SAVAGEWIND_VK_HEAP_COPY_BUDGET_MB");
+    hc_vram = bm && atoll(bm) > 0 ? (uint64_t)atoll(bm) << 20 : vram;
     bool discrete = g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
     uint64_t heap = kernel_heap_size();
-    hc_state = force == 0 || gmem_mapped || !ww ? 0 : force > 0 ? 1 : discrete && vram >= heap + (4ull << 30);
-    LOG("[vk] heap copy in video memory: %s (%s GPU, %llu MB of video memory, heap %llu MB, write watch %s)\n",
-        hc_state ? "on" : "off", discrete ? "discrete" : "not a discrete", (unsigned long long)(vram >> 20),
-        (unsigned long long)(heap >> 20), ww ? "yes" : "no");
+    hc_state = force == 0 || gmem_mapped || !ww ? 0 : force == 1 ? 1 : force == 2 ? 2 : !discrete ? 0
+             : hc_vram >= heap + (4ull << 30) ? 1 : 2;
+    const char *cm = getenv("SAVAGEWIND_VK_HEAP_COPY_CHUNK_MB");
+    unsigned mb = cm ? (unsigned)atoi(cm) : HC_CHUNK_MB;
+    if (mb < 4 || mb > 1024 || (mb & (mb - 1))) mb = HC_CHUNK_MB;
+    hc_shift = 20 + (unsigned)__builtin_ctz(mb);
+    uint64_t usage, lim = hc_limit(&usage);
+    LOG("[vk] heap copy in video memory: %s (%s GPU, %llu MB of video memory%s, heap %llu MB, write watch %s)\n",
+        hc_state == 1 ? "on, one buffer" : hc_state == 2 ? "on, in chunks" : "off", discrete ? "discrete" : "not a discrete",
+        (unsigned long long)(hc_vram >> 20), bm ? " (SAVAGEWIND_VK_HEAP_COPY_BUDGET_MB)" : "", (unsigned long long)(heap >> 20),
+        ww ? "yes" : "no");
+    if (hc_state == 2)
+        LOG("[vk] heap copy: chunks of %u MB while video memory in use stays within %llu MB (%llu MB in use now, budget %s)\n",
+            mb, (unsigned long long)(lim >> 20), (unsigned long long)(usage >> 20),
+            vram_budget_ext() ? "VK_EXT_memory_budget" : "VMA's estimate");
     return hc_state;
 }
 
+// (thread) makes the chunks asked for (HC_MAKING): a buffer of video memory each, outside the lock
+static void *hc_maker(void *arg) {
+    (void)arg;
+    pthread_mutex_lock(&hc_make_lock);
+    for (;;) {
+        while (!hc_make_req) pthread_cond_wait(&hc_make_cond, &hc_make_lock);
+        hc_make_req = false;
+        for (int c = 0; c < hc_nch; c++) {
+            if (atomic_load(&hc_ch[c].state) != HC_MAKING) continue;
+            uint64_t gen = hc_gen;
+            VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = hc_chunk_size(c),
+                                     .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+            VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, .flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT,
+                                          .requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT};
+            VkBuffer b;
+            VmaAllocation m;
+            pthread_mutex_unlock(&hc_make_lock);
+            bool ok = vmaCreateBuffer(g_vk.vma, &bi, &ai, &b, &m, NULL) == VK_SUCCESS;
+            pthread_mutex_lock(&hc_make_lock);
+            if (gen != hc_gen) {  // (hc_free meanwhile: for a copy gone)
+                if (ok) vmaDestroyBuffer(g_vk.vma, b, m);
+                break;
+            }
+            if (ok) hc_ch[c].buf = b, hc_ch[c].mem = m;
+            atomic_store(&hc_ch[c].state, ok ? HC_MADE : HC_OVER);
+        }
+    }
+    return NULL;
+}
+
+static void hc_chunk_destroy(int c) {
+    vmaDestroyBuffer(g_vk.vma, hc_ch[c].buf, hc_ch[c].mem);
+    hc_ch[c].buf = VK_NULL_HANDLE;
+    hc_ch[c].mem = NULL;
+}
+
 static void hc_free(void) {
-    if (hc_buf) {
+    pthread_mutex_lock(&hc_make_lock);  // (hc_maker between chunks)
+    bool any = false;
+    for (int c = 0; c < hc_nch; c++) any |= hc_ch[c].buf != VK_NULL_HANDLE;
+    if (any) {
         vk_wait_seq(submit_seq);
         vk_dyn_forget();  // (a new buffer may get the old handle: nothing recorded may be taken as still bound)
         setc_gen++;
-        vmaDestroyBuffer(g_vk.vma, hc_buf, hc_mem);
+        for (int c = 0; c < hc_nch; c++)
+            if (hc_ch[c].buf) hc_chunk_destroy(c);
     }
-    hc_buf = VK_NULL_HANDLE;
+    memset(hc_ch, 0, sizeof hc_ch);
+    hc_nch = 0;
+    hc_gen++;
+    pthread_mutex_unlock(&hc_make_lock);
     hc_size = 0;
     free(hc_geo), free(hc_ok), free(hc_pages);
     hc_geo = hc_ok = hc_pages = NULL;
     hc_nspans = 0;
+    hc_want_any = hc_dying_any = false;
 }
 
 static bool hc_ready(void) {  // the copy, made for the heap as imported now
     if (!gmem_buf || !hc_on()) return false;
-    if (hc_size == gmem_size) return hc_buf != VK_NULL_HANDLE;
+    if (hc_size == gmem_size) return hc_nch > 0;
     hc_free();
     hc_size = gmem_size;
-    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = gmem_size,
-                             .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
-    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, .flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT,
-                                  .requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT};
-    if (vmaCreateBuffer(g_vk.vma, &bi, &ai, &hc_buf, &hc_mem, NULL) != VK_SUCCESS) {
-        LOG("[vk] heap copy: no room for %llu MB in video memory, off\n", (unsigned long long)(gmem_size >> 20));
-        hc_buf = VK_NULL_HANDLE;
-        hc_state = 0;
-        return false;
+    while (hc_state == 2 && (hc_size + (1ull << hc_shift) - 1) >> hc_shift > HC_MAXCH) hc_shift++;
+    if (hc_state == 1) {
+        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = gmem_size,
+                                 .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, .flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT,
+                                      .requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT};
+        if (vmaCreateBuffer(g_vk.vma, &bi, &ai, &hc_ch[0].buf, &hc_ch[0].mem, NULL) != VK_SUCCESS) {
+            LOG("[vk] heap copy: no room for %llu MB in video memory, in chunks\n", (unsigned long long)(gmem_size >> 20));
+            hc_ch[0].buf = VK_NULL_HANDLE;
+            hc_state = 2;
+            hc_size = 0;
+            return hc_ready();
+        }
+        hc_shift = 63;
+        hc_nch = 1;
+        atomic_store(&hc_ch[0].state, HC_LIVE);
+        LOG("[vk] heap copy: %llu MB in video memory\n", (unsigned long long)(gmem_size >> 20));
+    } else {
+        pthread_mutex_lock(&hc_make_lock);
+        hc_nch = (int)((hc_size + (1ull << hc_shift) - 1) >> hc_shift);
+        pthread_mutex_unlock(&hc_make_lock);
+        if (!hc_maker_up) {
+            pthread_t t;
+            hc_maker_up = pthread_create(&t, NULL, hc_maker, NULL) == 0;
+            if (hc_maker_up) pthread_detach(t);
+            else { hc_nch = 0; hc_state = 0; return false; }
+        }
+        hc_lists = 0;
     }
     hc_words = (size_t)((gmem_size / HC_PAGE + 63) / 64);
     hc_geo = calloc(hc_words, 8), hc_ok = calloc(hc_words, 8);
     hc_pages_max = 65536;
     hc_pages = malloc(hc_pages_max * sizeof *hc_pages);
-    LOG("[vk] heap copy: %llu MB in video memory\n", (unsigned long long)(gmem_size >> 20));
     return true;
 }
 
@@ -4676,20 +4799,29 @@ static void hc_cpu_wrote(uint64_t addr, uint64_t size) {
     if (hc_ok && addr >= HEAP_BASE && addr < HEAP_BASE + hc_size) hc_stale(addr - HEAP_BASE, addr - HEAP_BASE + size);
 }
 
-// The spans the queries cover: runs of geometry words (64 pages, 256 KB) joined across gaps, with the smallest gap
-// that leaves at most HC_SPANS of them
+// (chunks: a word of hc_geo / hc_ok, 64 pages, lies in one chunk)
+static int hc_word_chunk(size_t w) { return (int)(((uint64_t)w * 64 * HC_PAGE) >> hc_shift); }
+
+// The spans the queries cover: runs of geometry words (64 pages, 256 KB) of live chunks joined across gaps, with the
+// smallest gap that leaves at most hc_spans_cap of them
 static void hc_spans_make(void) {
+    static bool env;
+    if (!env) {
+        env = true;
+        const char *e = getenv("SAVAGEWIND_VK_HEAP_COPY_SPANS");
+        if (e && atoi(e) > 0) hc_spans_cap = atoi(e) < HC_SPANS_MAX ? atoi(e) : HC_SPANS_MAX;
+    }
     for (size_t gap = 1;; gap *= 2) {
         int n = 0;
         size_t w = 0;
         bool over = false;
         while (w < hc_words) {
-            while (w < hc_words && !hc_geo[w]) w++;
+            while (w < hc_words && !(hc_geo[w] && hc_live(hc_word_chunk(w)))) w++;
             if (w == hc_words) break;
             size_t lo = w, last = w;
             for (; w < hc_words && w - last <= gap; w++)
-                if (hc_geo[w]) last = w;
-            if (n == HC_SPANS) { over = true; break; }
+                if (hc_geo[w] && hc_live(hc_word_chunk(w))) last = w;
+            if (n == hc_spans_cap) { over = true; break; }
             hc_span[n].lo = (uint64_t)lo * 64 * HC_PAGE;
             hc_span[n].hi = (uint64_t)(last + 1) * 64 * HC_PAGE;
             if (hc_span[n].hi > hc_size) hc_span[n].hi = hc_size;
@@ -4701,7 +4833,86 @@ static void hc_spans_make(void) {
     hc_geo_new = false;
 }
 
-static void hc_copy_flush(VkCommandBuffer *cb, VkBufferCopy *rg, int *nrg) {
+// A live chunk goes: out of the copy now, its buffer destroyed once the GPU is past what was recorded with it
+static void hc_chunk_drop(int c) {
+    atomic_store(&hc_ch[c].state, HC_DYING);
+    hc_ch[c].dead_seq = vk_pending_seq();
+    hc_stale(hc_base(c), hc_base(c) + hc_chunk_size(c));
+    hc_dying_any = true;
+    hc_geo_new = true;  // (spans without it)
+    hc_dropped_total++;
+}
+
+// (chunks, as a list begins) made chunks go live, dead ones are destroyed, wanted ones are asked for within the plan,
+// and every HC_LOOK lists the plan is looked at again
+static void hc_chunks_step(void) {
+    int live = 0, making = 0;
+    bool req = false;
+    uint64_t done = hc_dying_any ? vk_completed_seq() : 0;
+    bool dying = false;
+    for (int c = 0; c < hc_nch; c++) {
+        int s = atomic_load(&hc_ch[c].state);
+        if (s == HC_MADE) {  // (its pages aren't in hc_ok: this list copies them)
+            atomic_store(&hc_ch[c].state, s = HC_LIVE);
+            hc_geo_new = true;
+            hc_made_total++;
+        } else if (s == HC_DYING) {
+            if (done >= hc_ch[c].dead_seq) {
+                vk_dyn_forget();  // (as hc_free)
+                setc_gen++;
+                hc_chunk_destroy(c);
+                atomic_store(&hc_ch[c].state, s = HC_NONE);
+            } else dying = true;
+        }
+        live += s == HC_LIVE;
+        making += s == HC_MAKING;
+    }
+    hc_dying_any = dying;
+    uint64_t chunk = 1ull << hc_shift;
+    bool look = ++hc_lists % HC_LOOK == 0;
+    if (hc_want_any || look) {
+        uint64_t usage, lim = hc_limit(&usage);
+        usage += (uint64_t)making * chunk;
+        if (look) {
+            int worst = -1, best = -1;  // (the least fetched live chunk, the most missed one not made)
+            for (int c = 0; c < hc_nch; c++) {
+                int s = atomic_load(&hc_ch[c].state);
+                if (s == HC_LIVE && (worst < 0 || hc_ch[c].fetches < hc_ch[worst].fetches)) worst = c;
+                if ((s == HC_OVER || s == HC_WANT) && (best < 0 || hc_ch[c].missed > hc_ch[best].missed)) best = c;
+            }
+            if (worst >= 0 && usage > lim) hc_chunk_drop(worst), live--;  // (over the plan: one a look)
+            else if (worst >= 0 && best >= 0 && hc_ch[best].missed > 64 && hc_ch[best].missed > 4 * hc_ch[worst].fetches + 64 &&
+                     usage + chunk > lim)
+                hc_chunk_drop(worst), live--;  // (the room for a busier one, made from a later look)
+            for (int c = 0; c < hc_nch; c++) {
+                if (atomic_load(&hc_ch[c].state) == HC_OVER) atomic_store(&hc_ch[c].state, hc_ch[c].missed ? HC_WANT : HC_NONE);
+                hc_ch[c].fetches = hc_ch[c].missed = 0;
+            }
+            hc_want_any = true;
+        }
+        if (hc_want_any) {
+            hc_want_any = false;
+            for (;;) {  // (the most missed first)
+                int best = -1;
+                for (int c = 0; c < hc_nch; c++)
+                    if (atomic_load(&hc_ch[c].state) == HC_WANT && (best < 0 || hc_ch[c].missed > hc_ch[best].missed)) best = c;
+                if (best < 0) break;
+                if (usage + chunk > lim || hc_dying_any) { atomic_store(&hc_ch[best].state, HC_OVER); continue; }
+                atomic_store(&hc_ch[best].state, HC_MAKING);
+                usage += chunk;
+                req = true;
+            }
+        }
+    }
+    if (req) {
+        pthread_mutex_lock(&hc_make_lock);
+        hc_make_req = true;
+        pthread_cond_signal(&hc_make_cond);
+        pthread_mutex_unlock(&hc_make_lock);
+    }
+}
+
+static void hc_copy_flush(VkCommandBuffer *cb, VkBuffer dst, VkBufferCopy *rg, int *nrg) {
     if (!*nrg) return;
     if (!*cb) {
         *cb = vk_upload_cmd();
@@ -4711,23 +4922,29 @@ static void hc_copy_flush(VkCommandBuffer *cb, VkBufferCopy *rg, int *nrg) {
         rec_CmdPipelineBarrier2(*cb, &(VkDependencyInfo){.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1,
                                                          .pMemoryBarriers = &mb});
     }
-    rec_CmdCopyBuffer(*cb, gmem_buf, hc_buf, (uint32_t)*nrg, rg);
+    rec_CmdCopyBuffer(*cb, gmem_buf, dst, (uint32_t)*nrg, rg);
     for (int i = 0; i < *nrg; i++) hc_stat_bytes += rg[i].size;
     hc_stat_runs += (uint64_t)*nrg;
     *nrg = 0;
 }
 
-// A list begins: the written geometry pages leave the copy, and every geometry page it doesn't hold is copied over
-// (runs of pages, in the list's upload commands: before its draws)
+// A list begins: the written geometry pages leave the copy, and every geometry page of a live chunk it doesn't hold
+// is copied over (runs of pages, in the list's upload commands: before its draws)
 static void hc_list_begin(void) {
     if (!hc_ready()) return;
     uint64_t t0 = SDL_GetTicksNS();
     uint64_t b0 = hc_stat_bytes, r0 = hc_stat_runs, w0 = hc_stat_written;  // (the slow-list line below)
+    if (hc_state == 2) hc_chunks_step();
     bool remade = hc_geo_new, all = hc_all_stale;
     int full = 0;
     if (hc_geo_new) hc_spans_make();
     if (hc_all_stale) memset(hc_ok, 0, hc_words * 8), hc_all_stale = false;
+    static int peek = -1;
+    if (peek < 0) peek = !getenv("SAVAGEWIND_VK_HEAP_COPY_PEEK") || atoi(getenv("SAVAGEWIND_VK_HEAP_COPY_PEEK"));
     for (int i = 0; i < hc_nspans; i++) {
+        // (a write after the look is in the next list's query, as one after the query is)
+        if (peek && plat_any_written(HEAP_BASE + hc_span[i].lo, hc_span[i].hi - hc_span[i].lo) == 0) continue;
+        hc_stat_resets++;
         long n = plat_written_pages(HEAP_BASE + hc_span[i].lo, hc_span[i].hi - hc_span[i].lo, hc_pages, hc_pages_max);
         if (n < 0) { hc_stale(hc_span[i].lo, hc_span[i].hi); full++; continue; }
         hc_stat_written += (uint64_t)n;
@@ -4739,19 +4956,24 @@ static void hc_list_begin(void) {
     uint64_t tq = SDL_GetTicksNS() - t0;
     hc_stat_query_ns += tq;
     VkBufferCopy rg[256];
-    int nrg = 0;
+    int nrg = 0, rc = -1;  // (rc: the chunk rg's runs go to)
     VkCommandBuffer cb = VK_NULL_HANDLE;
     for (size_t w = 0; w < hc_words; w++) {
         uint64_t need = hc_geo[w] & ~hc_ok[w];
+        if (!need) continue;
+        int c = hc_nch == 1 ? 0 : hc_word_chunk(w);
+        if (!hc_live(c)) continue;  // (not held: fetched in place)
+        if (c != rc) hc_copy_flush(&cb, rc >= 0 ? hc_ch[rc].buf : VK_NULL_HANDLE, rg, &nrg), rc = c;
+        uint64_t base = hc_base(c);
         hc_ok[w] |= hc_geo[w];
         for (; need; need &= need - 1) {
             uint64_t off = ((uint64_t)w * 64 + (uint64_t)__builtin_ctzll(need)) * HC_PAGE;
             if (nrg && rg[nrg - 1].srcOffset + rg[nrg - 1].size == off) { rg[nrg - 1].size += HC_PAGE; continue; }
-            if (nrg == 256) hc_copy_flush(&cb, rg, &nrg);
-            rg[nrg++] = (VkBufferCopy){off, off, HC_PAGE};
+            if (nrg == 256) hc_copy_flush(&cb, hc_ch[c].buf, rg, &nrg);
+            rg[nrg++] = (VkBufferCopy){off, off - base, HC_PAGE};
         }
     }
-    hc_copy_flush(&cb, rg, &nrg);
+    if (rc >= 0) hc_copy_flush(&cb, hc_ch[rc].buf, rg, &nrg);
     if (cb) {
         VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
                                .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
@@ -4772,28 +4994,44 @@ static void hc_list_begin(void) {
     static int every = -1;
     if (every < 0) every = getenv("SAVAGEWIND_VK_HEAP_COPY_LOG") ? atoi(getenv("SAVAGEWIND_VK_HEAP_COPY_LOG")) : 0;
     if (every > 0 && ++hc_stat_lists >= (uint64_t)every) {
-        size_t geo = 0;
-        for (size_t w = 0; w < hc_words; w++) geo += (size_t)__builtin_popcountll(hc_geo[w]);
+        size_t geo = 0, geo_held = 0;
+        for (size_t w = 0; w < hc_words; w++) {
+            geo += (size_t)__builtin_popcountll(hc_geo[w]);
+            if (hc_live(hc_nch == 1 ? 0 : hc_word_chunk(w))) geo_held += (size_t)__builtin_popcountll(hc_geo[w]);
+        }
         double f = (double)hc_stat_lists;
-        LOG("[vk] heap copy, a list: %.1f KB copied in %.1f runs, %.0f pages written, query %.3f ms over %d spans; "
-            "fetches %.0f from the copy, %.0f in place; geometry %.1f MB\n", hc_stat_bytes / f / 1024, hc_stat_runs / f,
-            hc_stat_written / f, hc_stat_query_ns / f / 1e6, hc_nspans, hc_stat_mirror / f, hc_stat_inplace / f,
-            geo * HC_PAGE / 1048576.0);
+        uint64_t spanned = 0;
+        for (int i = 0; i < hc_nspans; i++) spanned += hc_span[i].hi - hc_span[i].lo;
+        LOG("[vk] heap copy, a list: %.1f KB copied in %.1f runs, %.0f pages written, query %.3f ms over %d spans (%.0f MB, %.1f reset); "
+            "fetches %.0f from the copy, %.0f in place (%.0f across a chunk's edge, %.0f in chunks not held); geometry %.1f MB "
+            "(%.1f MB in held chunks)\n", hc_stat_bytes / f / 1024, hc_stat_runs / f, hc_stat_written / f,
+            hc_stat_query_ns / f / 1e6, hc_nspans, spanned / 1048576.0, hc_stat_resets / f, hc_stat_mirror / f, hc_stat_inplace / f, hc_stat_edge / f,
+            hc_stat_nochunk / f, geo * HC_PAGE / 1048576.0, geo_held * HC_PAGE / 1048576.0);
+        if (hc_state == 2) {
+            int n[HC_OVER + 1] = {0};
+            for (int c = 0; c < hc_nch; c++) n[atomic_load(&hc_ch[c].state)]++;
+            uint64_t usage, lim = hc_limit(&usage);
+            LOG("[vk] heap copy, chunks of %u MB: %d live (%d made, %d dropped so far), %d being made, %d over the plan, "
+                "%d going; video memory in use %llu MB of %llu MB\n", 1u << (hc_shift - 20), n[HC_LIVE],
+                (int)hc_made_total, (int)hc_dropped_total, n[HC_MAKING] + n[HC_MADE], n[HC_OVER] + n[HC_WANT], n[HC_DYING],
+                (unsigned long long)(usage >> 20), (unsigned long long)(lim >> 20));
+        }
         hc_stat_lists = hc_stat_bytes = hc_stat_runs = hc_stat_inplace = hc_stat_mirror = hc_stat_query_ns = hc_stat_written = 0;
+        hc_stat_edge = hc_stat_nochunk = hc_stat_resets = 0;
     }
 }
 
-// A vertex or index fetch: from the copy if it holds [addr, addr + size) as it is now, else in place from the import
-// (guest_direct), its pages then geometry for the next list's copy. While a storing shader whose stores aren't
-// known holds the list (chunk_hold), in place.
+// A vertex or index fetch: from the copy if it holds [addr, addr + size) as it is now - within one live chunk - else
+// in place from the import (guest_direct), its pages then geometry for the next list's copy (and its chunk wanted).
+// While a storing shader whose stores aren't known holds the list (chunk_hold), in place.
 static bool guest_fetch(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSize *off) {
     if (!guest_direct(addr, size, buf, off)) return false;
-    if (!hc_buf) return true;
+    if (!hc_nch) return true;
     if (chunk_hold || !size || addr + size > HEAP_BASE + hc_size || gw_overlaps(addr, addr + size)) {
         hc_stat_inplace++;
         return true;
     }
-    uint64_t p0 = (addr - HEAP_BASE) / HC_PAGE, p1 = (addr - HEAP_BASE + size - 1) / HC_PAGE;
+    uint64_t o = addr - HEAP_BASE, p0 = o / HC_PAGE, p1 = (o + size - 1) / HC_PAGE;
     bool all = true;
     for (uint64_t w = p0 >> 6; w <= p1 >> 6; w++) {
         uint64_t m = ~0ull;
@@ -4802,9 +5040,27 @@ static bool guest_fetch(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSiz
         if ((hc_ok[w] & m) != m) all = false;
         if ((hc_geo[w] & m) != m) hc_geo[w] |= m, hc_geo_new = true;
     }
+    int c = (int)(o >> hc_shift), c1 = (int)((o + size - 1) >> hc_shift);
+    HcChunk *ch = &hc_ch[c];
+    if (c != c1) {  // (both wanted: their other fetches)
+        for (int k = c; k <= c1; k++)
+            if (atomic_load_explicit(&hc_ch[k].state, memory_order_relaxed) == HC_NONE)
+                atomic_store_explicit(&hc_ch[k].state, HC_WANT, memory_order_relaxed), hc_want_any = true;
+        hc_stat_edge++, hc_stat_inplace++;
+        return true;
+    }
+    int s = atomic_load_explicit(&ch->state, memory_order_relaxed);
+    if (s != HC_LIVE) {
+        if (s == HC_NONE) atomic_store_explicit(&ch->state, HC_WANT, memory_order_relaxed), hc_want_any = true;
+        ch->missed++;
+        hc_stat_nochunk++, hc_stat_inplace++;
+        return true;
+    }
     if (!all) { hc_stat_inplace++; return true; }
     hc_stat_mirror++;
-    *buf = hc_buf;
+    ch->fetches++;
+    *buf = ch->buf;
+    *off = o - hc_base(c);
     return true;
 }
 
