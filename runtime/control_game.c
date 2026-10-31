@@ -109,6 +109,29 @@ static bool link_position(float p[3]) {
     return p[0] != 0 || p[1] != 0 || p[2] != 0;
 }
 
+// The place in savagewind.log: the `pos` line every PLACE_LOG_NS while Link moves (no line while he stands still: the
+// last one still says where), so a report's log says where its bug happened and `goto` takes the line back.
+// SAVAGEWIND_PLACE_LOG=0: no lines.
+#define PLACE_LOG_NS 30000000000ull
+void control_place_frame(void) {
+    static int on = -1;
+    static uint64_t last_ns;
+    static float last[3];
+    if (on < 0) on = !getenv("SAVAGEWIND_PLACE_LOG") || atoi(getenv("SAVAGEWIND_PLACE_LOG")) != 0;
+    if (!on) return;
+    uint64_t now = plat_now_ns();
+    if (last_ns && now - last_ns < PLACE_LOG_NS) return;
+    float p[3];
+    if (!link_position(p)) return;
+    last_ns = now;
+    float dx = p[0] - last[0], dy = p[1] - last[1], dz = p[2] - last[2];
+    if (dx * dx + dy * dy + dz * dz < 1.0f) return;
+    memcpy(last, p, sizeof last);
+    char place[160];
+    place_string(place, sizeof place, p);
+    LOG("[place] %s\n", place);
+}
+
 static void cmd_pos(int argc, char **argv, ControlReply *r) {
     (void)argv;
     if (argc != 1) { control_fail(r, "Usage: pos"); return; }

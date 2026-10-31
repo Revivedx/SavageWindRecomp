@@ -80,6 +80,8 @@ Most of them rely on addresses found in game version 1.9.0 and are untested on o
 
 To use `goto` with a line from an issue, run it in developer mode: `swctl goto "swr:1 x=... y=... z=... yaw=... pitch=... hour=..."`.
 
+`savagewind.log` gets the same line every 30 seconds while Link moves (`[place] swr:1 ...`; none while he stands still), so the log attached to an issue says where its bug happened. `SAVAGEWIND_PLACE_LOG=0` turns these lines off.
+
 ## Using swctl
 
 `tools/swctl.py` needs only Python 3.8 or later, with no extra packages.

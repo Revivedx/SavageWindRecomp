@@ -50,6 +50,8 @@ void control_game_init(void);
 // Called by control_frame() at the start of every frame, also when no command is queued, but only when the
 // endpoint is on (the game side keeps its fps average with it).
 void control_game_frame(uint64_t frame);
+// Called by control_frame() every frame: Link's place into savagewind.log every 30 s while he moves ("[place] swr:1 ...").
+void control_place_frame(void);
 
 // Live input hook: frame publication on the presenter; apply may run on guest threads.
 // A NULL lx requests buttons only. Otherwise all four axis pointers must be valid.

@@ -529,6 +529,7 @@ int control_console_names(const char *prefix, const char **out, int max) {
 
 void control_frame(uint64_t frame) {
     if (!initialized) return;
+    control_place_frame();
     if (dev_mode) control_game_frame(frame);
     console_pump();
     if (!queued) return;

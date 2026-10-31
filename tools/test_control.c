@@ -12,6 +12,7 @@
 uint64_t plat_now_ns(void) { return 1; }
 void rt_fatal_trace(void) { abort(); }
 void control_game_frame(uint64_t frame) { (void)frame; }
+void control_place_frame(void) {}
 
 static int failures, checks;
 #define CHECK(cond) do { checks++; if (!(cond)) { failures++; printf("FAIL line %d: %s\n", __LINE__, #cond); } } while (0)
