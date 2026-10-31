@@ -278,6 +278,18 @@ float rt_solver_steps(float delta_frame, float per_frame) {
     return keep && delta_frame > 0 && delta_frame < 1 ? per_frame / sqrtf(delta_frame) : delta_frame * per_frame;
 }
 
+// Keyframed bodies' turn (tools/patches.py _kf_angle, #209): the angle of a keyframed body's turn toward its target,
+// 2 atan2(|xyz|, |w|) of the turn's quaternion at q (x, y, z, w) instead of the game's 2 acos(|w|), which reads turns
+// under about a milliradian (a Divine Beast's floor over one 120 fps frame) as none. SAVAGEWIND_KF_ANGLE=0: the game's.
+static int g_kf_angle = -1;
+float rt_kf_angle(uint64_t q) {
+    const float *v = (const float *)(uintptr_t)q;
+    if (g_kf_angle < 0) g_kf_angle = env_int("SAVAGEWIND_KF_ANGLE", 1) != 0;
+    float w = fabsf(v[3]);
+    if (!g_kf_angle) return w >= 1.0f ? 0.0f : 2.0f * acosf(w);
+    return 2.0f * atan2f(sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]), w);
+}
+
 // The sound system's frame (tools/patches.py _snd_frame_floor, #145): the game gives it the delta frame, at least 0.5
 // (a 60 fps frame), and every sound timer and fade steps by it: above 60 fps the sound's clock ran ahead of the game's
 // (x1.6 at ~95 fps, x2 at 120), and the field battle music started each segment while the last one still played. The

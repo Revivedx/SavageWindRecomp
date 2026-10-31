@@ -138,6 +138,10 @@ SITES = [
     Site('arrow_fall_gravity', 'code', 'bd410a81 1e212849 bd410e81 1e21280a 94000000/fc000000 36000000/fff8001f f9404288 2d400500', 0),
     # the physics step's solver microsteps (tools/patches.py _solver_steps): the delta frame times 6
     Site('phys_solver_steps', 'code', '1e231002 1e3c1004 f9401a68 1e2c1009 1e220822 f9400108 1e202048 f9400514', 4),
+    # a keyframed body's angular velocity toward its target (tools/patches.py _kf_angle): the call that takes the angle
+    # of the turn left (hkQuaternion::getAngle, 2 acos(|w|))
+    Site('kf_angle', 'code', '0e612800 0e0e3c08 0e040d00 0f3f5400 0ea0a800 6e180400 4e221c00 6e211c00 3c9983a0 '
+         '94000000/fc000000 3cd883a6 1e2008c0', 9),
     # the sound system's frame (tools/patches.py _snd_frame_floor): the delta frame, at least 0.5, its timers' step
     Site('snd_frame_floor', 'code', '1e2c1001 1e212000 1e204c28 94000000/fc000000 b4000000/ff00001f bd415660 '
          'aa0003f4 7e21d800', 0),
@@ -217,6 +221,7 @@ SITES = [
 # second group it turns it without the game's camera inversion options.
 OPTIONAL_GROUPS = [
     ('quick_menu_capture_alpha',),
+    ('kf_angle',),
     ('yaz0_stream', 'yaz0_stream_ret'),
     ('cam_stick', 'cam_pitch_chase', 'cam_pitch_surf', 'cam_pitch_wakeboard', 'cam_pitch_aim', 'cam_pitch_item'),
     ('cam_reverse_x', 'cam_reverse_y'),
@@ -327,6 +332,7 @@ KNOWN = {
         'quick_menu_capture_alpha': 0x7000e26a38,
         'arrow_fall_gravity': 0x70005ee734,
         'phys_solver_steps': 0x700156f930,
+        'kf_angle': 0x70012d57fc,
         'snd_frame_floor': 0x7001551004,
         'persp_matrix': 0x7000eb4a50,
         'persp_matrix_offset': 0x7000eb4a58,

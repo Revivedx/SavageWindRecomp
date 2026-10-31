@@ -732,6 +732,18 @@ Pendiente:
        0,56 m a ~90 FPS. Prueba (corridas ocultas en Kakariko, `SAVAGEWIND_TEST_WARP=1834.4,221.9,959.0`, coger el
        cuco con A y saltar con X, altura de Link en PlayerInfo +0x8c): 0,634 m a 30, 0,640 a 60, 0,639 a ~85-120;
        el salto normal sigue en 0,68.
+     - Giro de los cuerpos que mueve el juego (#209): las piezas "keyframed" (el suelo de una Bestia Divina al
+       inclinarse, ascensores, puertas) reciben cada fotograma un objetivo (FUN_710130d19c, una matriz 3x4) y cada paso
+       de física la velocidad que las lleva a él (1.9.0 0x70012d5598): la angular sale del ángulo del giro que falta,
+       que Havok calcula como 2 acos(|w|) de su cuaternión (`hkQuaternion::getAngle`, 0x70000b06d4). Por debajo de
+       ~1 mrad, w redondea a 1 en float y el giro se lee como nulo. A 30 FPS el suelo de Vah Medoh gira ~1,7 mrad por
+       fotograma; a 120, 0,43: se quedaba quieto 1-3 pasos y luego recuperaba de golpe (0,0828 x raíz(1, 2, 3, 4)
+       rad/s para un giro constante de 0,0523), y Link encima daba saltitos (en el aire la mitad de los fotogramas,
+       relanzado al tocar el suelo). El parche `kf_angle` sustituye esa llamada por `rt_kf_angle`:
+       2 atan2(|xyz|, |w|), el mismo ángulo sin el redondeo (`SAVAGEWIND_KF_ANGLE=0` deja el del juego). Medido con
+       Link quieto sobre Medoh inclinándose a 120 FPS: velocidad angular del suelo constante (pasos parados del 49 % al
+       3 %, solo al arrancar o parar el giro); variación de la velocidad vertical de Link de 0,9-1,6 m/s a 0,07-0,13
+       (a 30 FPS, 0,04-0,05).
      - Vsync: Vídeo > Sincronización vertical (ver "VSync y VRR" abajo). Por defecto Rápida (MAILBOX), sin tearing;
        cada refresco muestra la imagen más nueva. Una frecuencia que divide la del monitor (60 en 60/120/240 Hz) es
        la más fluida; una que no (60 o 90 en 144 Hz) alterna 2 y 3 refrescos por imagen; por encima de la del

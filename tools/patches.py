@@ -247,6 +247,21 @@ def _solver_steps(gen, a):
             f'  /* {a:#x}: fmul s2, s1, s2 (solver microsteps: delta frame x 6) */')
 
 
+# Keyframed bodies' turn (runtime/hle/framepace.c rt_kf_angle, #209): the platforms and parts the game moves (a Divine
+# Beast tilting, lifts, gates) get each physics step the angular velocity that takes them to their target, the angle
+# of the turn left over the step (1.9.0 0x70012d5598). That angle is 2 acos(|w|) of the turn's quaternion
+# (hkQuaternion::getAngle, 0x70000b06d4): below about a milliradian w rounds to 1 in a float, and a turn that small
+# reads as none. At 30 fps a tilting Vah Medoh turns its floor about 1.7 mrad a frame; at 120, 0.43: the floor stood
+# still for a few steps and then caught up at once (0.08 x sqrt(1, 2, 3, 4) rad/s for a steady 0.05), and Link on it
+# hopped. The runtime gives 2 atan2(|xyz|, |w|), the same angle without the rounding.
+
+def _kf_angle(gen, a):
+    assert _word(gen, a) >> 26 == 0x25, hex(_word(gen, a))  # bl (getAngle)
+    target = sext(_word(gen, a) & 0x3ffffff, 26) * 4 + a
+    return ('{ extern float rt_kf_angle(uint64_t); union { float f; uint32_t u; } r = { rt_kf_angle(c->x[0]) }; '
+            f'c->v[0] = r.u; }}  /* {a:#x}: bl {target:#x} (keyframed body: angle of the turn left) */')
+
+
 # The sound system's frame (runtime/hle/framepace.c rt_snd_frame_floor, #145): once a frame the game hands its sound
 # system the delta frame, at least 0.5 (1.9.0 0x7001551004; 1.8.2 0x710143ce64 in the Ghidra project): in console
 # frames, with the frame rate (30) it makes the seconds every sound timer and fade steps by. The floor is a 60 fps
@@ -581,6 +596,7 @@ PATCHES = {
     'quick_menu_capture_alpha': _quick_menu_capture_alpha,
     'arrow_fall_gravity': _arrow_gravity,
     'phys_solver_steps': _solver_steps,
+    'kf_angle': _kf_angle,
     'snd_frame_floor': _snd_frame_floor,
     'persp_matrix': _persp_matrix,
     'persp_matrix_offset': _persp_matrix_offset,
