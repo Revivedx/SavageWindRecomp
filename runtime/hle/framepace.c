@@ -278,6 +278,18 @@ float rt_solver_steps(float delta_frame, float per_frame) {
     return keep && delta_frame > 0 && delta_frame < 1 ? per_frame / sqrtf(delta_frame) : delta_frame * per_frame;
 }
 
+// Keyframed bodies' turn (tools/patches.py _kf_angle, #209): the angle of a keyframed body's turn toward its target,
+// 2 atan2(|xyz|, |w|) of the turn's quaternion at q (x, y, z, w) instead of the game's 2 acos(|w|), which reads turns
+// under about a milliradian (a Divine Beast's floor over one 120 fps frame) as none. SAVAGEWIND_KF_ANGLE=0: the game's.
+static int g_kf_angle = -1;
+float rt_kf_angle(uint64_t q) {
+    const float *v = (const float *)(uintptr_t)q;
+    if (g_kf_angle < 0) g_kf_angle = env_int("SAVAGEWIND_KF_ANGLE", 1) != 0;
+    float w = fabsf(v[3]);
+    if (!g_kf_angle) return w >= 1.0f ? 0.0f : 2.0f * acosf(w);
+    return 2.0f * atan2f(sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]), w);
+}
+
 // The sound system's frame (tools/patches.py _snd_frame_floor, #145): the game gives it the delta frame, at least 0.5
 // (a 60 fps frame), and every sound timer and fade steps by it: above 60 fps the sound's clock ran ahead of the game's
 // (x1.6 at ~95 fps, x2 at 120), and the field battle music started each segment while the last one still played. The
@@ -291,6 +303,59 @@ float rt_snd_frame_floor(void) {
 
 static uint64_t game_frames;  // rt_vfr_update calls: the game's frames (framepace_game_frame)
 uint64_t framepace_game_frame(void) { return __atomic_load_n(&game_frames, __ATOMIC_RELAXED); }
+// Experimental #305: the surf controller can still report contact on the update after takeoff at 120 fps.
+// Removing its previous 11-unit boost then can cancel the jump. Protect takeoff for one console frame, with
+// one impulse only. Lower rates keep the original path. This hypothesis still needs in-game validation.
+// SAVAGEWIND_SURF_TAKEOFF=0 disables it; SAVAGEWIND_LOG_SURF=1 logs launch/contact/timeout transitions.
+static struct {
+    uint64_t controller, frame;
+    float remaining;  // console frames, at most 1/30 second (not presented-frame counts)
+} surf_takeoff;
+
+static int surf_takeoff_enabled(void) {
+    return framepace_on() && env_int("SAVAGEWIND_SURF_TAKEOFF", 1) != 0;
+}
+
+static void surf_takeoff_log(const char *event) {
+    if (env_int("SAVAGEWIND_LOG_SURF", 0))
+        LOG("[surf] %s controller %#llx frame %llu ratio %.4f grace %.4f\n", event,
+            (unsigned long long)surf_takeoff.controller, (unsigned long long)surf_takeoff.frame,
+            g_frame_ratio, surf_takeoff.remaining);
+}
+
+void rt_surf_contact(uint64_t controller, unsigned flags) {
+    uint64_t frame = framepace_game_frame();
+    if (surf_takeoff.controller != controller || frame - surf_takeoff.frame > 1 || !surf_takeoff_enabled())
+        surf_takeoff.remaining = 0;
+    if (surf_takeoff.remaining > 0 && frame != surf_takeoff.frame) {
+        if (!(flags & 2)) {
+            surf_takeoff.remaining = 0;
+            surf_takeoff_log("airborne");
+        } else {
+            surf_takeoff.remaining -= g_frame_ratio;
+            if (surf_takeoff.remaining <= 0) surf_takeoff_log("timeout");
+        }
+    }
+    surf_takeoff.controller = controller;
+    surf_takeoff.frame = frame;
+}
+
+int rt_surf_takeoff_pending(uint64_t controller) {
+    return surf_takeoff_enabled() && surf_takeoff.controller == controller && surf_takeoff.remaining > 0 &&
+           surf_takeoff.frame == framepace_game_frame();
+}
+
+int rt_surf_jump_request(uint64_t controller) {
+    if (rt_surf_takeoff_pending(controller)) return 0;
+    if (surf_takeoff_enabled() && g_frame_ratio > 0 && g_frame_ratio < 0.30f) {
+        surf_takeoff.controller = controller;
+        surf_takeoff.frame = framepace_game_frame();
+        surf_takeoff.remaining = 1;
+        surf_takeoff_log("launch");
+    }
+    return 1;
+}
+
 // The game's frames that were presented: one step per presented frame, where game frames step twice while paused
 // (output_scale.c's jitter sequence: each presented frame gets the next phase)
 static uint64_t shown_frames;
