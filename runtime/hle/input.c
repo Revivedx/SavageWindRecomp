@@ -505,10 +505,10 @@ void input_handle_event(const SDL_Event *e) {
     }
     switch (e->type) {
     case SDL_EVENT_KEY_DOWN: case SDL_EVENT_KEY_UP:
-        {   // F7: the free camera (hle/freecam.c); while it is on, keys move it, not Link
+        {   // Home: the free camera (hle/freecam.c; F7 is fly mode's default); while it is on, keys move it, not Link
             extern bool freecam_active(void);
             extern void freecam_toggle(void), freecam_key(int scancode, bool down);
-            if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_F7 && !e->key.repeat) {
+            if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_HOME && !e->key.repeat) {
                 freecam_toggle();
                 memset(keys_down, 0, sizeof keys_down);  // (Link stops; held keys don't carry over either way)
                 recompute_keyboard();

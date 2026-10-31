@@ -1,4 +1,4 @@
-// Free camera / photo mode (F7). The game's cameras are sead::LookAtCamera; their view comes from eye (+0x38), at
+// Free camera / photo mode (Home). The game's cameras are sead::LookAtCamera; their view comes from eye (+0x38), at
 // (+0x44) and up (+0x50) in doUpdateMatrix (tools/patches.py _lookat_update calls rt_lookat first). The view cameras
 // (in play: the main camera and a copy of it) have an eye off the origin and up near +y; the shadow cameras are built
 // at the origin. While the free camera is on, the view cameras take its eye and look direction, the game's clock
