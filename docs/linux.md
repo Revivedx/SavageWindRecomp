@@ -58,7 +58,7 @@ Ubuntu 25.04+ / Debian 13 packages (other distributions: the same libraries unde
 lifted FP/SIMD code needs `__builtin_elementwise_*` - and SDL3 3.2 or newer):
 
     sudo apt install clang lld make pkg-config python3-venv libsdl3-dev libavformat-dev libavcodec-dev \
-        libavutil-dev libswscale-dev libvulkan-dev libshaderc-dev glslc vulkan-tools
+        libavutil-dev libswscale-dev libvulkan-dev libshaderc-dev zlib1g-dev glslc vulkan-tools
 
 Ubuntu 24.04 LTS and older, Debian 12 and openSUSE Leap have no SDL3 package (SDL3 arrived after their freeze):
 build SDL3 from source there, or use the AppImage. Vulkan headers older than 1.4.321 (Debian 13, Ubuntu 25.04, Fedora
@@ -66,7 +66,7 @@ build SDL3 from source there, or use the AppImage. Vulkan headers older than 1.4
 drivers without `VK_KHR_unified_image_layouts`.
 
 `tools/linux/distro_build.sh` builds the app (start screen only, no game code) natively in each of Debian 13, Ubuntu
-25.04, Fedora 42, Arch and openSUSE Tumbleweed, in containers, with each distribution's own clang, SDL3, FFmpeg,
+26.04, Fedora 44, Arch and openSUSE Tumbleweed, in containers, with each distribution's own clang, SDL3, FFmpeg,
 shaderc and lld; CI runs the same script (`.github/workflows/linux-distros.yml`). That is the check for "does it build
 on my distribution": a container reproduces exactly what differs (package names, library sonames, header versions),
 where a virtual machine would only do it slower.

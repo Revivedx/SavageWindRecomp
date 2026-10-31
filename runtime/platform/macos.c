@@ -29,12 +29,16 @@ bool plat_reserve_guest(uint64_t lo, uint64_t hi) {
 }
 
 // Fresh zero pages over the whole window (the old ones are released at once).
+long plat_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, size_t max) { return -1; }  // (not tracked)
+
 bool plat_reset_guest(uint64_t lo, uint64_t hi) {
     mach_vm_address_t a = lo;
     return mach_vm_allocate(mach_task_self(), &a, hi - lo, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE) == KERN_SUCCESS;
 }
 
 void plat_commit(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
+
+void plat_decommit(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
 
 int plat_protect(uint64_t addr, uint64_t size, int prot) {
     int p = prot == PLAT_PROT_NONE ? PROT_NONE : prot == PLAT_PROT_READ ? PROT_READ : PROT_READ | PROT_WRITE;
@@ -50,6 +54,8 @@ void plat_sleep_until_ns(uint64_t t) {
     if (!tb.denom) mach_timebase_info(&tb);
     mach_wait_until(t * tb.denom / tb.numer);
 }
+
+void plat_cpu_placement(void) {}  // (one logical processor per core: measured on Windows only)
 
 // Real-time (time-constraint) thread: exempt from the timer coalescing macOS applies to
 // ordinary threads when the app isn't frontmost, which otherwise stretches 16ms waits to ~100ms.

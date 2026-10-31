@@ -1,0 +1,41 @@
+# Builds the app on real Windows (MSYS2 UCRT64, the toolchain docs/BUILD-windows.md and tools/setup_windows.ps1 set up
+# on a player's machine): no game code, so no Nintendo data - the same `make` a Windows user runs from an MSYS2 UCRT64
+# shell. This is the check a Linux container cannot give: the Windows target's own headers, import libraries and
+# windres. Locally (a Linux host) the alternatives are a Windows VM under QEMU or a mingw-w64 cross build, neither of
+# which reproduces the MSYS2 setup.
+name: Windows
+
+on:
+  push:
+    branches: [test, main]
+  pull_request:
+    branches: [test, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            make mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-lld mingw-w64-ucrt-x86_64-sdl3
+            mingw-w64-ucrt-x86_64-ffmpeg mingw-w64-ucrt-x86_64-vulkan-headers mingw-w64-ucrt-x86_64-vulkan-loader
+            mingw-w64-ucrt-x86_64-shaderc
+            mingw-w64-ucrt-x86_64-spirv-tools mingw-w64-ucrt-x86_64-pkgconf mingw-w64-ucrt-x86_64-nasm
+      - name: Build
+        run: make -j$(nproc) && ls -l build/savagewind.exe build/savagewind.dll.a

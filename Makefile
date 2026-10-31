@@ -48,7 +48,8 @@ GEN_OBJ  := $(patsubst %.c,$(B)/obj/%.o,$(patsubst $(GEN)/%,%,$(GEN_SRC))) $(B)/
 RT_SRC   := $(wildcard runtime/*.c) $(wildcard runtime/hle/*.c) $(wildcard runtime/services/*.c) \
             $(wildcard runtime/nvn/*.c) $(wildcard runtime/nvn/maxwell/*.c) runtime/platform/$(PLATFORM).c
 RT_HDRS  := $(wildcard runtime/*.h) $(wildcard runtime/platform/*.h) $(wildcard runtime/nvn/*.h) \
-            $(wildcard runtime/nvn/maxwell/*.h) $(wildcard runtime/nvn/vulkan/*.h) $(wildcard runtime/ui/*.h)
+            $(wildcard runtime/nvn/maxwell/*.h) $(wildcard runtime/nvn/vulkan/*.h) $(wildcard runtime/ui/*.h) \
+            $(wildcard runtime/services/*.h)
 UI_SRC   := $(wildcard runtime/ui/*.mm)
 UI_OBJ   := $(patsubst runtime/%.mm,$(B)/rt/%.o,$(UI_SRC))
 IMGUI_OBJ := $(B)/imgui/imgui.o $(B)/imgui/imgui_draw.o $(B)/imgui/imgui_tables.o $(B)/imgui/imgui_widgets.o \
@@ -167,29 +168,42 @@ TRANSLATOR_SRCS := runtime/nvn/maxwell/translate.c runtime/nvn/maxwell/shader.h
 TRANSLATOR_ID := $(shell cat $(TRANSLATOR_SRCS) | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
 SPIRV_ID := $(shell cat runtime/nvn/vulkan/spirv.c | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
 
+# SW_SOURCE: the source this build is made from, in the log's first line (runtime/main.c): its commit and tree, and
+# "modified" when the runtime, the tools or this Makefile differ from them ("unknown" outside a git checkout). A
+# commit published to test has the tree of the local commit it was made from. $(B)/source_id follows it, so main.o is
+# rebuilt when it changes.
+comma    := ,
+SW_SOURCE := $(or $(shell git log -1 --format='commit %h, tree %t' 2>/dev/null),unknown)$(if $(shell git status --porcelain --untracked-files=no -- runtime tools Makefile 2>/dev/null),$(comma) modified)
+$(shell mkdir -p $(B) && [ "$$(cat $(B)/source_id 2>/dev/null)" = '$(SW_SOURCE)' ] || echo '$(SW_SOURCE)' > $(B)/source_id)
+
 RT_OBJ   := $(patsubst runtime/%.c,$(B)/rt/%.o,$(RT_SRC))
 RTFLAGS  := -O2 -g -fno-strict-aliasing -Wall -Wno-unused-function -Iruntime -Iruntime/nvn -isystem third_party -isystem third_party/stb $(DEPINC) $(OSFLAGS)
 CXXFLAGS := -O2 -g -std=c++17 -I$(IMGUI) -I$(IMGUI)/backends -Iruntime -Iruntime/nvn -isystem third_party -Ithird_party/stb $(DEPINC)
 
 .DEFAULT_GOAL := all
 
-# AMD FidelityFX SDK 1.1.4 (third_party/FidelityFX, MIT): FSR 3 frame interpolation and optical flow on its Vulkan
-# backend (runtime/nvn/vulkan/framegen.cpp). Its sources unchanged, with ffx_compat.h for what MSVC's headers bring;
-# the shaders are tools/ffx_shaders.py's (third_party/FidelityFX/spirv).
+# AMD FidelityFX SDK 1.1.4 (third_party/FidelityFX, MIT): FSR 3 frame interpolation and optical flow
+# (runtime/nvn/vulkan/framegen.cpp) and the FSR 3 upscaler (runtime/nvn/vulkan/fsr3.cpp) on its Vulkan backend. Its
+# sources unchanged, with ffx_compat.h for what MSVC's headers bring; the shaders are tools/ffx_shaders.py's
+# (third_party/FidelityFX/spirv).
 FFX      := third_party/FidelityFX
 FFX_SRC  := $(FFX)/sdk/src/components/frameinterpolation/ffx_frameinterpolation.cpp \
-            $(FFX)/sdk/src/components/opticalflow/ffx_opticalflow.cpp $(FFX)/sdk/src/backends/vk/ffx_vk.cpp \
+            $(FFX)/sdk/src/components/opticalflow/ffx_opticalflow.cpp \
+            $(FFX)/sdk/src/components/fsr3upscaler/ffx_fsr3upscaler.cpp $(FFX)/sdk/src/backends/vk/ffx_vk.cpp \
             $(wildcard $(FFX)/sdk/src/shared/*.cpp)
 FFX_OBJ  := $(patsubst $(FFX)/sdk/src/%.cpp,$(B)/ffx/%.o,$(FFX_SRC))
 FFX_INC  := -I$(FFX)/sdk/include -I$(FFX)/sdk/src/components -I$(FFX)/sdk/src/shared -I$(FFX)/sdk/src/backends/shared
 ifneq ($(PLATFORM),macos)
 BACKEND_OBJ += $(FFX_OBJ)
+$(B)/rt/nvn/vulkan/fsr3.o: CXXFLAGS := -DSW_FSR3=1 -include $(FFX)/ffx_compat.h $(FFX_INC) $(CXXFLAGS)
 endif
 $(B)/ffx/%.o: $(FFX)/sdk/src/%.cpp $(FFX)/ffx_compat.h
 	@mkdir -p $(dir $@)
 	$(CXX) -O2 -g -std=c++17 -w -include $(FFX)/ffx_compat.h $(FFX_INC) -I$(FFX)/sdk/include/FidelityFX/gpu $(DEPINC) -c $< -o $@
-$(B)/rt/nvn/vulkan/framegen.o: CXXFLAGS += -include $(FFX)/ffx_compat.h $(FFX_INC) -I$(FFX)/spirv
-$(B)/rt/nvn/vulkan/framegen.o: $(FFX)/spirv/ffx_shaders_vk.h $(FFX)/ffx_compat.h
+# (the SDK's headers ahead of $(DEPINC)'s: another copy of them there, from a build of the SDK, has other context
+# sizes, and a context smaller than the SDK's own code writes overran the next one in memory)
+$(B)/rt/nvn/vulkan/framegen.o: CXXFLAGS := -include $(FFX)/ffx_compat.h $(FFX_INC) -I$(FFX)/spirv $(CXXFLAGS)
+$(B)/rt/nvn/vulkan/framegen.o: $(FFX)/spirv/ffx_shaders_vk.h $(FFX)/spirv/ffx_fsr3upscaler_vk.h $(FFX)/ffx_compat.h
 
 all: $(EXE) $(CONFIG_EXE) $(if $(strip $(GEN_SRC)),$(GAMELIB))  # (GEN_SRC is a space when there is no generated/)
 
@@ -203,6 +217,8 @@ $(B)/obj/tools/gamelib_entry.o: tools/gamelib_entry.c $(GAMELIB_SRCS) Makefile  
 	$(CC) $(GENFLAGS) -DGAMELIB_ID='"$(GAMELIB_ID)"' -c $< -o $@
 $(B)/rt/nvn/maxwell/translate.o: RTFLAGS += -DTRANSLATOR_ID='"$(TRANSLATOR_ID)"'
 $(B)/rt/nvn/vulkan/spirv.o: RTFLAGS += -DSPIRV_ID='"$(SPIRV_ID)"'
+$(B)/rt/main.o: $(B)/source_id
+$(B)/rt/main.o: RTFLAGS += -DSW_SOURCE='"$(SW_SOURCE)"'
 $(B)/rt/gamelib.o: $(GAMELIB_SRCS) Makefile
 $(B)/rt/gamelib.o: RTFLAGS += -DGAMELIB_ID='"$(GAMELIB_ID)"' $(GAMELIB_TARGETS)
 # the start screen's build of it (runtime/gamebuild.c) uses the same flags
@@ -420,3 +436,51 @@ test-vibration: $(B)/test_vibration
 	$(B)/test_vibration
 
 .PHONY: test-vibration
+
+# The input test includes input.c; discard its unused HLE functions and their runtime dependencies.
+$(B)/test_input_focus: tools/test_input_focus.c runtime/hle/input.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -O1 -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_input_focus.c \
+	    $(if $(filter macos,$(PLATFORM)),-Wl$(comma)-dead_strip,-Wl$(comma)--gc-sections) \
+	    $(if $(filter macos,$(PLATFORM)),-L$(SDL)/lib,$(if $(DEPS),-L$(DEPS)/lib)) -lSDL3 -lm
+
+test-input-focus: $(B)/test_input_focus
+	$(B)/test_input_focus
+
+.PHONY: test-input-focus
+
+$(B)/test_swkbd: tools/test_swkbd.c runtime/hle/swkbd.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -O1 -std=gnu11 -Wall -Wextra -Werror $(OSFLAGS) -Iruntime -o $@ tools/test_swkbd.c
+
+test-swkbd: $(B)/test_swkbd
+	$(B)/test_swkbd
+
+.PHONY: test-swkbd
+
+# The Wii U / Cemu save importer against tools/botw_save_convert.py: both convert synthetic saves and every output file
+# is compared (no game files needed). With your own: python3 tools/test_save_convert.py --src <profile> --bootup <pack>
+$(B)/test_save_convert: tools/test_save_convert.c runtime/services/save_convert.c runtime/services/save_convert.h runtime/services/archive.c runtime/services/archive.h
+	@mkdir -p $(B)
+	$(CC) -O1 -std=gnu11 -D_FILE_OFFSET_BITS=64 -Iruntime -o $@ tools/test_save_convert.c runtime/services/archive.c
+
+test-save-convert: $(B)/test_save_convert
+	python3 tools/test_save_convert.py --exe $(B)/test_save_convert
+
+.PHONY: test-save-convert
+
+$(B)/test_game_file_size: tools/test_game_file_size.c runtime/game_file_size.c runtime/game_file_size.h runtime/game_files.h
+	@mkdir -p $(B)
+	$(CC) -O1 -Wall $(OSFLAGS) -Iruntime -o $@ tools/test_game_file_size.c runtime/game_file_size.c
+
+test-game-file-size: $(B)/test_game_file_size
+	$(B)/test_game_file_size
+
+$(B)/test_file_size_cache: tools/test_file_size_cache.cpp runtime/ui/file_size_cache.mm runtime/ui/file_size_cache.h runtime/game_file_size.h
+	@mkdir -p $(B)
+	$(CXX) -O1 -Wall -std=c++17 $(OSFLAGS) -Iruntime -o $@ tools/test_file_size_cache.cpp -lpthread
+
+test-file-size-cache: $(B)/test_file_size_cache
+	$(B)/test_file_size_cache
+
+.PHONY: test-game-file-size test-file-size-cache

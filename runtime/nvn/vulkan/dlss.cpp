@@ -186,8 +186,9 @@ bool vk_dlss_apply(VkCommandBuffer cb, TexBackend *color, TexBackend *depth, Tex
         create.Feature.InTargetHeight = output->height;
         static const NVSDK_NGX_PerfQuality_Value q[] = {
             NVSDK_NGX_PerfQuality_Value_UltraQuality, NVSDK_NGX_PerfQuality_Value_MaxQuality,
-            NVSDK_NGX_PerfQuality_Value_Balanced, NVSDK_NGX_PerfQuality_Value_MaxPerf};
-        unsigned requested = quality < 4 ? quality : 1;
+            NVSDK_NGX_PerfQuality_Value_Balanced, NVSDK_NGX_PerfQuality_Value_MaxPerf,
+            NVSDK_NGX_PerfQuality_Value_UltraPerformance};  // (UPQ_*: Ultra Performance's 3.0 is DLSS's own)
+        unsigned requested = quality < 5 ? quality : 1;
         create.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_IsHDR | NVSDK_NGX_DLSS_Feature_Flags_MVLowRes;
         // Some driver/NGX combinations reject Ultra Quality at a particular
         // render size. Retry the next conservative mode before disabling DLSS.

@@ -29,6 +29,7 @@ typedef struct {
 void perfmon_frame(void);                  // a game frame was presented (any thread)
 void perfmon_generated_frame(void);        // a generated frame was presented (vulkan/device.c)
 void perfmon_snapshot(PerfStats *out);     // the latest numbers (machine numbers refresh twice a second)
+bool perfmon_position(float out[3]);       // render thread: Link's position copy now; false when unavailable
 void perfmon_set_gpu_hint(const char *n);  // the Vulkan device's name: which GPU to report
 
 #ifdef __cplusplus

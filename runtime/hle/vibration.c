@@ -95,6 +95,12 @@ void vibration_update(SDL_Gamepad *pad, bool focused) {
         LOG("[input] controller rumble unavailable: %s\n", SDL_GetError());
         failed = true;
     }
+    static int nlog;  // (SAVAGEWIND_MOTION_LOG: rumble going on and off, next to the sensor stream's health - a
+                      // controller might change its sensor reports once it rumbles, #220)
+    if (!(low || high) != !(last_low || last_high) && ENV("SAVAGEWIND_MOTION_LOG") && nlog < 200) {
+        nlog++;
+        LOG("[motion] rumble %s\n", low || high ? "on" : "off");
+    }
     last_low = low;
     last_high = high;
     last_ms = now;

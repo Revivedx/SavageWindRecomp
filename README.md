@@ -101,6 +101,10 @@ the data folder actually in use. `SAVAGEWIND_SAVE_DIR`, when set for a test run,
 To back up your progress or move it to another Savage Wind installation, close the game and copy the **whole
 `save` folder**, including `save_0` and its contents. Keep a backup of the destination's saves before replacing them.
 
+Played on the Wii U or in Cemu? Savage Wind Configuration can import that save: open **Settings > Saves** and choose
+**Import from Wii U / Cemu...**. It backs up your current saves first and asks before it replaces them. See
+[Importing Wii U / Cemu saves](docs/save-converter.md).
+
 ## What you need
 
 - Your own *Breath of the Wild* (cartridge or digital) and its **1.9.0 update**, the latest, extracted from your own
@@ -172,7 +176,7 @@ Estimates of where each part stands. "Tested in game" is how much of the game ha
 | ✅ | **Settings in the game's Options** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Video, audio, controls and language pages drawn by the game itself |
 | ✅ | **Direct start + Configuration** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | savagewind.exe goes straight into the game; Savage Wind Configuration has the rest |
 | ✅ | **Window sizes and fullscreen** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | The sizes your display can show; windowed, borderless or exclusive |
-| ✅ | **Ultrawide** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Video > Fill wide screens (on by default): a window or screen wider than 16:9 (21:9, 32:9) shows more of the world to the sides instead of bars. The HUD stays 16:9 in the middle; the pause menu, the map and the start screen are shown 16:9. Narrower shapes (16:10, 4:3) keep the 16:9 picture with bars |
+| ✅ | **Ultrawide** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Video > Fill wide screens (on by default): a window or screen wider than 16:9 (21:9, 32:9) shows more of the world to the sides instead of bars, and a taller one (16:10, 4:3) more above and below. The HUD stays 16:9 in the middle; the pause menu, the map, the loading screen and the start screen are shown 16:9 |
 | ✅ | **Internal resolution and FSR 1** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Native resolution up to 4K, or AMD FSR 1 quality modes |
 | ✅ | **Anisotropic filtering and sharpening** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Ground and paths sharp at a distance (2x to 16x); AMD CAS sharpening of the 3D image, useful with FSR 1 |
 | ✅ | **Higher-resolution shadows** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Sun shadows at the console's 896x896, or sharper at 2048, 4096 or 8192 (Video > Shadow resolution) |
@@ -181,17 +185,18 @@ Estimates of where each part stands. "Tested in game" is how much of the game ha
 | ✅ | **Faster game code build** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | The one-time setup takes about 15 minutes instead of about 40 (12 threads) from the next release: the game code builds in about 6 minutes instead of 30 ([#43](https://github.com/Revivedx/SavageWindRecomp/pull/43), by [@adriadam10](https://github.com/adriadam10)) |
 | ✅ | **Frame rate** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | 60 fps by default, or 30, 90, 120 or no limit, with the game at the same speed; menus, cutscenes and conversations too, and videos at their own speed |
 | ✅ | **Field of view** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Video > Field of view: 70% to 150% of the game's own in play; cutscenes and conversations keep theirs |
+| ✅ | **Draw distance** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Video > Draw distance: Original (the game's own), Medium or High. Trees, rocks, buildings, enemies and villagers appear further out (1.5x at Medium, 1.6x at High, up to 2 km), buildings keep their full models further before their far versions take over, and distant landmarks such as Hyrule Castle and the terrain's distant trees stay drawn 1.5x as far. The grass reaches further too: the short grass 1.6x (Medium) or 2.5x (High), the tall grass about 1.15x or 2.45x. The terrain's own detail levels stay the game's ([#88](https://github.com/Revivedx/SavageWindRecomp/issues/88)) |
 | ✅ | **Steady 60 fps in the open world** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Holds 60 fps in real play on the Great Plateau (RTX 3060, Ryzen 5 5600X); steady 120 fps (8 ms frames) is the next goal |
 | ✅ | **Game version 1.9.0** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | The latest version and the supported one (its Thai text isn't offered yet). 1.8.2 still sets up and runs, but isn't supported: a bug is only fixed if it also happens on 1.9.0 |
+| ✅ | **DLC** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | *The Master Trials* and *The Champions' Ballad* from your own copy, set up with the game files or later ([The DLC](#the-dlc)), from the next release: Master Mode, the Trial of the Sword and the Travel Medallion work on a 100% save. The Champions' Ballad has been played through. |
+| ✅ | **Variable refresh rate (VRR)** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Video > VSync: On lets G-SYNC and FreeSync displays show every frame as soon as it's ready, a little under the refresh rate; Fast (the default), Adaptive and Off too. Tried on a VRR display |
+| ✅ | **Motion controls (gyro)** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | The controller's gyroscope and accelerometer (DualSense, DualShock 4, Switch controllers, Steam Deck) for motion aiming and the tilt shrines; without one, hold T and move the mouse to tilt. Sensitivity and inversion in Options > Controls. Confirmed by players with real controllers |
 | 🔧 | **Horizon OS services** | ![90%](https://progress-bar.xyz/90/?width=150&style=square&progress_color=5cb85c) | Threads, files, controllers, applets and time: all the opening and the Great Plateau use |
 | 🔧 | **Maxwell shader translator** | ![90%](https://progress-bar.xyz/90/?width=150&style=square&progress_color=5cb85c) | Every shader seen so far translates to Vulkan |
 | 🔧 | **Graphics (NVN on Vulkan)** | ![80%](https://progress-bar.xyz/80/?width=150&style=square&progress_color=5cb85c) | Shrine and Great Plateau look right, shadows included; far parts of the map can still be missing ([#20](https://github.com/Revivedx/SavageWindRecomp/issues/20)) |
 | 🔧 | **Controllers** | ![80%](https://progress-bar.xyz/80/?width=150&style=square&progress_color=5cb85c) | Any controller SDL knows, by button position, confirmed by players; automatic recognition is next, then camera speed set apart for each axis |
-| ✅ | **Motion controls (gyro)** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | The controller's gyroscope and accelerometer (DualSense, DualShock 4, Switch controllers, Steam Deck) for motion aiming and the tilt shrines; without one, hold T and move the mouse to tilt. Sensitivity and inversion in Options > Controls. Confirmed by players with real controllers |
 | 🔧 | **Button icons for your device** | ![80%](https://progress-bar.xyz/80/?width=150&style=square&progress_color=5cb85c) | The game's button prompts show your bound keys and mouse buttons, or Xbox / PlayStation / Nintendo buttons, switching with the device you use |
-| ✅ | **Variable refresh rate (VRR)** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Video > VSync: On lets G-SYNC and FreeSync displays show every frame as soon as it's ready, a little under the refresh rate; Fast (the default), Adaptive and Off too. Tried on a VRR display |
 | 🔧 | **Tested in game** | ![50%](https://progress-bar.xyz/50/?width=150&style=square&progress_color=f0ad4e) | The Shrine of Resurrection, the Great Plateau, and a walk through every region on a 100% save file. The main quests and the Divine Beasts aren't tested yet, so expect bugs there: [report what breaks](https://github.com/Revivedx/SavageWindRecomp/issues/new/choose) |
-| 🔧 | **DLC** | ![80%](https://progress-bar.xyz/80/?width=150&style=square&progress_color=5cb85c) | *The Master Trials* and *The Champions' Ballad* from your own copy, set up with the game files or later ([The DLC](#the-dlc)), from the next release: Master Mode, the Trial of the Sword and the Travel Medallion work on a 100% save. The Champions' Ballad isn't played through yet |
 | 🔧 | **Linux** | ![90%](https://progress-bar.xyz/90/?width=150&style=square&progress_color=5cb85c) | Builds and runs on x86-64 (from LAS Recomp); a steady 144 fps on an RTX 3070 Ti with a Ryzen 5 7600X, and no Linux-only issues so far |
 | 🔧 | **AMD FSR 3 + frame generation** | ![60%](https://progress-bar.xyz/60/?width=150&style=square&progress_color=f0ad4e) | Video > Frame generation (AMD FSR 3): a frame made between each two the game draws, about twice the frames on screen, with the HUD kept sharp. Motion vectors from depth and the camera, and Link's own; enemies and animals can still leave a faint smear. Smooth with VSync and G-SYNC. Works on Windows; Linux and the Steam Deck aren't tried yet. Only frame generation for now: FSR 3 upscaling is next |
 | 🗺️ | **NVIDIA DLSS (RTX)** | ![0%](https://progress-bar.xyz/0/?width=150&style=square&progress_color=d9534f) | Planned, after FSR 3; under NVIDIA's own SDK license |
@@ -213,7 +218,12 @@ Estimates of where each part stands. "Tested in game" is how much of the game ha
 ## Controls
 
 Any controller SDL knows works, by button position; one with a gyroscope (DualSense, DualShock 4, Switch controllers,
-Steam Deck) also aims and tilts by motion. Keyboard and mouse defaults:
+Steam Deck) also aims and tilts by motion.
+
+Controller buttons, sticks and motion only control the game while its window has focus. Switching away releases
+held inputs; returning reads the controller's current state.
+
+Keyboard and mouse defaults:
 
 | Action | Key | Action | Key |
 |---|---|---|---|
@@ -234,7 +244,9 @@ the device you use). The mouse turns the camera directly, as in a PC game: 0.022
 Quake and Source count it), on both axes (the vertical one scaled by Controls > Mouse vertical sensitivity), with no
 acceleration or top speed, the same at any frame rate. The bow's and the scope's own slower speeds stay, and so do the
 game's camera speed setting and its camera axis inversion options. Esc frees the cursor, a click in the window takes
-it back. F10 cycles the performance overlay (off, FPS, full).
+it back. F10 cycles the performance overlay (off, FPS, full). Full also shows Link's XYZ coordinates from the game's
+position copy, in game units, with one decimal place. The line is hidden on the title screen, while loading,
+during movies and scripted events (cutscenes, talks, item pickups), or when the position is unavailable.
 
 ## Building from source
 
@@ -304,9 +316,9 @@ switches - are in [docs/SAVAGE-WIND.md](docs/SAVAGE-WIND.md).
   (Apache 2.0), [Zig](https://ziglang.org) (MIT), [Capstone](https://www.capstone-engine.org) (BSD),
   [Unicorn](https://www.unicorn-engine.org) (GPL 2.0), [python-lz4](https://github.com/python-lz4/python-lz4) (BSD).
 - Colour LUTs from [FreshLUTs](https://freshluts.com), CC0 1.0, renamed: "Savage Wind" is
-  [powerful cold](https://freshluts.com/luts/107), uploaded by sagi hershkovich; "Ember" is
-  [CINEMA 3](https://freshluts.com/luts/219), and "Dormant" is [CARIBE](https://freshluts.com/luts/217), both
-  uploaded by Andy (`third_party/luts/README.md`).
+  [CINEMA 3](https://freshluts.com/luts/219) and "Dormant" is [CARIBE](https://freshluts.com/luts/217), both
+  uploaded by Andy; "Ember" is [powerful cold](https://freshluts.com/luts/107), uploaded by sagi hershkovich
+  (`third_party/luts/README.md`).
 
 ## License
 

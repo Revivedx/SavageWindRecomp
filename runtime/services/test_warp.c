@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "../game_sites.h"
 #include "../hle.h"
 
 typedef struct { const char *name; float x, y, z; const char *map_type, *map_name; } WarpPlace;
@@ -139,17 +140,17 @@ void test_warp_patch(uint8_t *d, uint64_t size) {
     }
 }
 
-// Every frame (SAVAGEWIND_TEST_TIME): TimeMgr's time of day held at the hour. 1.8.2: ksys::world::Manager
-// [0x7001cf5d00] (+0x5c0 count, +0x5c8 its managers; [0] = TimeMgr, the time at +0xb8), as SAVAGEWIND_CLOCK_PROBE
-// reads it (runtime/hle/framepace.c).
+// Every frame (SAVAGEWIND_TEST_TIME): TimeMgr's time of day held at the hour. ksys::world::Manager [world_mgr]
+// (+0x5c0 count, +0x5c8 its managers; [0] = TimeMgr, the time at +0xb8), as SAVAGEWIND_CLOCK_PROBE reads it
+// (runtime/hle/framepace.c).
 void test_warp_frame(uint64_t frame) {
     static float tod = -2;
     if (tod == -2) {
         const char *t = getenv("SAVAGEWIND_TEST_TIME");
         tod = t && *t ? (float)atof(t) * 15.0f : -1;
     }
-    if (tod < 0) return;
-    uint64_t wm = *(uint64_t *)(uintptr_t)0x7001cf5d00ull;
+    if (tod < 0 || !g_site.world_mgr) return;
+    uint64_t wm = *(uint64_t *)(uintptr_t)g_site.world_mgr;
     if (!wm || !*(uint32_t *)(uintptr_t)(wm + 0x5c0)) return;
     uint64_t mgrs = *(uint64_t *)(uintptr_t)(wm + 0x5c8), tm = mgrs ? *(uint64_t *)(uintptr_t)mgrs : 0;
     if (!tm) return;

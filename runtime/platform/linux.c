@@ -37,12 +37,19 @@ bool plat_reserve_guest(uint64_t lo, uint64_t hi) {
 }
 
 // Fresh zero pages over the whole window (the old ones are released at once).
+long plat_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, size_t max) { return -1; }  // (not tracked)
+
 bool plat_reset_guest(uint64_t lo, uint64_t hi) {
     return mmap((void *)(uintptr_t)lo, hi - lo, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED,
                 -1, 0) == (void *)(uintptr_t)lo;
 }
 
 void plat_commit(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
+
+void plat_decommit(uint64_t addr, uint64_t size) {
+    uint64_t a = (addr + 0xFFF) & ~0xFFFull, e = (addr + size) & ~0xFFFull;  // (whole pages inside the range only)
+    if (e > a) madvise((void *)(uintptr_t)a, e - a, MADV_DONTNEED);  // (private anonymous memory: freed, reads as zero)
+}
 
 int plat_protect(uint64_t addr, uint64_t size, int prot) {
     int p = prot == PLAT_PROT_NONE ? PROT_NONE : prot == PLAT_PROT_READ ? PROT_READ : PROT_READ | PROT_WRITE;
@@ -60,6 +67,8 @@ void plat_sleep_until_ns(uint64_t t) {
     struct timespec ts = {.tv_sec = (time_t)(t / 1000000000u), .tv_nsec = (long)(t % 1000000000u)};
     while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL) == EINTR) {}
 }
+
+void plat_cpu_placement(void) {}  // (one logical processor per core: measured on Windows only)
 
 // Real-time scheduling where the user may have it (rtkit / limits.conf), else just a higher priority: keeps the
 // vsync thread on time while the guest threads load every core.

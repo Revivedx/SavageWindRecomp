@@ -7,7 +7,22 @@
 #include "cpu.h"
 #include "platform.h"
 
-#define LOG(...) fprintf(stderr, __VA_ARGS__)
+// One line = one write. stderr is unbuffered (so nothing is lost in a crash), and fprintf on an unbuffered stream
+// writes every piece of the format on its own; on Windows that cost ~2 ms per piece, so the fps line stalled the
+// render thread for ~55 ms every interval. Format into a buffer first and write it once.
+#include <stdarg.h>
+static inline void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static inline void rt_log(const char *fmt, ...) {
+    char buf[8192];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    if (n < 0) return;
+    if (n >= (int)sizeof buf) n = (int)sizeof buf - 1;  // (cut off, never longer than one line in practice)
+    fwrite(buf, 1, (size_t)n, stderr);
+}
+#define LOG(...) rt_log(__VA_ARGS__)
 #define FATAL(...) (fprintf(stderr, "FATAL: " __VA_ARGS__), rt_fatal_trace())
 
 // ---- address space layout (guest addresses == host addresses)

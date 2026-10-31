@@ -138,14 +138,20 @@ const int UPS_DEFAULT = 0;  // (UPSCALE_DEFAULT: Off, the window's resolution)
 #endif
 std::vector<int> g_shown;   // per item: the value shown instead of get(), one that can't be picked yet (-1: none)
 const char16_t GREY = 3;    // (the game's message colour for greyed values)
-const char *const k_modes[] = {"Ultra Quality", "Quality", "Balanced", "Performance"};
+const char *const k_modes[] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance"};
+#ifdef __APPLE__
 const char *const k_aa[] = {"Off", "SMAA"};
+#else
+const char *const k_aa[] = {"Off", "SMAA", "TAA"};  // (settings.h AA_*)
+#endif
 const char *const k_aniso[] = {"Off", "2x", "4x", "8x", "16x"};  // (settings anisotropy 0..4)
+const char *const k_drawdist[] = {"Original", "Medium", "High"};  // (settings.h DRAWDIST_*)
 const char *const k_shadow[] = {"Console (896)", "High (2048)", "Ultra (4096)", "Extreme (8192)"};  // (SHADOW_*)
 const char *const k_icons[] = {"Automatic", "Keyboard", "Xbox", "PlayStation", "Nintendo"};  // (ICONS_*)
 constexpr int k_fps[] = FPS_CHOICES;  // frame rate (0: Off, no limit)
 const char *const k_vsync[VSYNC_COUNT] = {"On", "Fast", "Adaptive", "Off"};  // (settings.h VSYNC_*)
 const char *const k_hdr[HDR_COUNT] = {"Automatic", "On", "Off"};               // (settings.h HDR_*)
+const char *const k_fsmode[FSMODE_COUNT] = {"Automatic", "Borderless", "Exclusive"};  // (settings.h FSMODE_*)
 constexpr int FPS_DEFAULT_INDEX = 2;
 static_assert(k_fps[FPS_DEFAULT_INDEX] == FPS_DEFAULT);
 constexpr int k_sens[] = {10, 25, 50, 75, 100, 125, 150, 200, 250, 300, 400, 500, 600, 800, 1000};  // mouse sensitivity, %
@@ -229,7 +235,7 @@ const char *ups_label(const Item &, int x) {
     if (u == UPSCALE_OFF) return tr("Off");
     if (u == UPSCALE_METALFX) return tr("MetalFX");
     if (u == UPSCALE_FSR1) return tr("AMD FSR 1");
-    if (u == UPSCALE_FSR3) return soon("FSR 3");
+    if (u == UPSCALE_FSR3) return upscaler_available(u) ? tr("AMD FSR 3") : soon("FSR 3");
     if (upscaler_available(UPSCALE_DLSS)) {
         static std::string available;
         available = tr("DLSS");
@@ -274,6 +280,38 @@ void build_items(void) {
     v.push_back(toggle(P_VIDEO, "Fullscreen", "Fills the screen. Also F11 or Alt+Enter.",
                        [](const Item &) { return (int)g_settings.fullscreen; },
                        [](const Item &, int x) { g_settings.fullscreen = x; menu_request_window_apply(); }, 0));
+    // Fullscreen mode (settings.h FSMODE_*; runtime/window_size.c winsize_apply)
+    v.push_back(choice(P_VIDEO, "Fullscreen mode", "Borderless never switches the display. Exclusive always does.",
+                       [](const Item &) { return (int)FSMODE_COUNT; },
+                       [](const Item &, int x) { return tr(k_fsmode[x]); },
+                       [](const Item &) { return g_settings.fullscreen_mode; },
+                       [](const Item &, int x) {
+                           g_settings.fullscreen_mode = x;
+                           if (g_settings.fullscreen) menu_request_window_apply();
+                       }, FSMODE_AUTO));
+    // Monitor: Automatic, then the displays connected (runtime/window_size.c; listed again at each opening)
+    Item disp = choice(P_VIDEO, "Monitor", "The monitor the game is shown on. Automatic: where the window is.",
+                       [](const Item &) {
+                           WinDisplay ds[WINDISPLAY_MAX];
+                           return windisplay_list(ds) + 1;
+                       },
+                       [](const Item &, int x) {
+                           static char buf[4][96];
+                           static int k;
+                           char *b = buf[k++ & 3];
+                           WinDisplay ds[WINDISPLAY_MAX];
+                           int n = windisplay_list(ds);
+                           if (x < 1 || x > n) return tr("Automatic");
+                           snprintf(b, sizeof buf[0], "%d: %s", x, ds[x - 1].name);  // (short: the row is narrow)
+                           return (const char *)b;
+                       },
+                       [](const Item &) { return windisplay_target(); },
+                       [](const Item &, int x) {
+                           windisplay_set(x);
+                           menu_request_window_apply();
+                       }, 0);
+    disp.wrap = true;
+    v.push_back(disp);
     // Window size: a button showing the size; A drops the sizes down as a list over it (menu.mm size_list_draw)
     Item ws = button(P_VIDEO, "Window size", "", nullptr, A_SIZE_LIST, 0);
     ws.label = [](const Item &, int) {
@@ -295,7 +333,7 @@ void build_items(void) {
         menu_request_window_apply();
     };
     v.push_back(ws);
-    v.push_back(toggle(P_VIDEO, "Fill wide screens", "Shows more to the sides on screens wider than 16:9, instead of bars.",
+    v.push_back(toggle(P_VIDEO, "Fill wide screens", "Shows more of the world on screens that aren't 16:9 (wider or taller), instead of bars.",
                        [](const Item &) { return (int)g_settings.wide_view; },
                        [](const Item &, int x) { g_settings.wide_view = x; }, 1));
     v.push_back(choice(P_VIDEO, "Field of view", "How much the camera shows in play. Cutscenes keep their own.",
@@ -307,6 +345,12 @@ void build_items(void) {
                        },
                        [](const Item &) { return nearest(k_fov, N(k_fov), (float)g_settings.fov); },
                        [](const Item &, int x) { g_settings.fov = k_fov[x]; }, FOV_DEFAULT_INDEX));
+    // Draw distance (runtime/draw_distance.c): applied while playing, from the next placed actor the game looks at
+    v.push_back(choice(P_VIDEO, "Draw distance", "How far out grass, trees, rocks, buildings and enemies appear. Higher costs more CPU and GPU time.",
+                       [](const Item &) { return (int)DRAWDIST_COUNT; },
+                       [](const Item &, int x) { return tr(k_drawdist[x]); },
+                       [](const Item &) { return g_settings.draw_distance; },
+                       [](const Item &, int x) { g_settings.draw_distance = x; }, DRAWDIST_ORIGINAL));
     Item fps = choice(P_VIDEO, "Frame rate", "",
                       [](const Item &) { return N(k_fps); }, fps_label,
                       [](const Item &) {
@@ -349,16 +393,32 @@ void build_items(void) {
                        },
                        [](const Item &, int x) { g_settings.upscaler = k_ups_value[x]; }, UPS_DEFAULT));
     v.back().value_off = [](const Item &, int x) { return !upscaler_available(k_ups_value[x]); };
+    v.back().desc_fn = [](const Item &) {  // (one line)
+        return g_settings.upscaler == UPSCALE_FSR3 ? tr("AMD FSR 3: renders smaller, then rebuilds detail from past frames.")
+                                                   : tr("Off: full resolution. AMD FSR 1: renders smaller, then upscales.");
+    };
+    // With Upscaler Off no mode applies: the row has the one value Off, greyed, so its arrows go nowhere (rt_opt_read
+    // gives the row its range at each redraw, and a change of the Upscaler row redraws the page); the mode chosen
+    // before stays stored and comes back with an upscaler.
     Item mode = choice(P_VIDEO, "Upscaler mode", "",
-                       [](const Item &) { return N(k_modes); },
-                       [](const Item &, int x) { return upscale_modes_available() ? tr(k_modes[x]) : soon(k_modes[x]); },
-                       [](const Item &) { return g_settings.upscale_quality; },
-                       [](const Item &, int x) { g_settings.upscale_quality = x; }, UPQ_QUALITY);
-    mode.value_off = [](const Item &, int) { return !upscale_modes_available(); };
+                       [](const Item &) { return g_settings.upscaler == UPSCALE_OFF ? 1 : N(k_modes); },
+                       [](const Item &, int x) {
+                           return g_settings.upscaler == UPSCALE_OFF ? tr("Off")
+                                  : upscale_modes_available()        ? tr(k_modes[x])
+                                                                     : soon(k_modes[x]);
+                       },
+                       [](const Item &) { return g_settings.upscaler == UPSCALE_OFF ? 0 : g_settings.upscale_quality; },
+                       [](const Item &, int x) {
+                           if (g_settings.upscaler != UPSCALE_OFF) g_settings.upscale_quality = x;
+                       },
+                       UPQ_QUALITY);
+    mode.value_off = [](const Item &, int) { return !upscale_modes_available() || g_settings.upscaler == UPSCALE_OFF; };
+    mode.reset = [](const Item &) { g_settings.upscale_quality = UPQ_QUALITY; };  // (also while Off)
     mode.desc_fn = [](const Item &) {
         // (one line: the game's description pane is one English line wide)
-        return upscale_modes_available() ? tr("Ultra Quality is the sharpest, Performance the fastest.")
-                                         : tr("Renders smaller, then upscales. Coming in a later version.");
+        return !upscale_modes_available()           ? tr("Renders smaller, then upscales. Coming in a later version.")
+               : g_settings.upscaler == UPSCALE_OFF ? tr("Only with an upscaler: choose one above first.")
+                                                    : tr("Ultra Quality is the sharpest, Ultra Performance the fastest.");
     };
     v.push_back(mode);
     v.push_back(choice(P_VIDEO, "Anti-aliasing", "Smooths jagged edges. Best at a lower resolution.",
@@ -561,6 +621,12 @@ void build_items(void) {
                                               : "Press A, then the new button.",
                          nullptr, action, slot);
         it.label = bind_label;
+        if (action == A_BIND_KEY) it.desc_fn = [](const Item &) {
+            static std::string desc;
+            desc = std::string(tr("Press A, then the new key. Esc cancels.")) + " " +
+                   tr("In the title, pause and map menus, unbound arrow keys act as the left stick and Enter selects.");
+            return desc.c_str();
+        };
         v.push_back(it);
     };
     for (int s = 0; s < BIND_PAD_COUNT; s++) bind(P_KEYS, A_BIND_KEY, s);
@@ -791,8 +857,20 @@ extern "C" int rt_opt_store(uint64_t row) {
             fprintf(stderr, "[options] %s = %d at %.3f s\n", it->title, x, SDL_GetTicksNS() / 1e9);
     }
     if (it->kind != KIND_BUTTON) settings_save();
-    // (the sizes offered follow Fullscreen, texts the upscaler; Colour: the preset sets the sliders, they the preset)
-    if (it->page == P_VIDEO || it->page == P_COLOUR) mark_all_rows(rd64(row));
+    // (the sizes offered follow Fullscreen, texts and Upscaler mode's values the upscaler; Colour: the preset sets the
+    // sliders, they the preset). A value kept on show because it couldn't be picked goes once it can (Upscaler mode
+    // after Off: the mode stored, not the Off shown).
+    if (it->page == P_VIDEO || it->page == P_COLOUR) {
+        for (size_t i = 0; i < g_items.size() && i < g_shown.size(); i++) {
+            const Item &o = g_items[i];
+            if (g_shown[i] >= 0 && (!o.value_off || !o.value_off(o, g_shown[i]))) g_shown[i] = -1;
+            if (o.kind == KIND_CHOICE) {
+                Entry &e = g_entries[GAME_ENTRIES + i];
+                e.last_value = e.first_value + game_count(o) - 1;
+            }
+        }
+        mark_all_rows(rd64(row));
+    }
     if (past_end) g_dirty.push_back(row);                // (first: the row shows the value at the other end)
     return 1;
 }

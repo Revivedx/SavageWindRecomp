@@ -16,6 +16,7 @@
 #include "../nvn/renderer.h"
 #include "../settings.h"
 #include "../input_bind.h"
+#include "../framepace.h"
 #include "../motion.h"
 #include "../vibration.h"
 
@@ -28,16 +29,19 @@ _Static_assert(BTN_DOWN == BIND_DOWN && BTN_ZL == BIND_ZL, "bindings follow the 
 
 static _Atomic uint64_t key_buttons, pad_buttons;
 static _Atomic int32_t key_lx, key_ly, key_rx, key_ry, pad_lx, pad_ly, pad_rx, pad_ry;
+static _Atomic int32_t menu_lx, menu_ly;
+static _Atomic bool menu_confirm;
 static uint8_t keys_down[SDL_SCANCODE_COUNT];
 static uint8_t mouse_down[8];  // SDL_BUTTON_LEFT .. X2 (keyboard bindings BIND_MOUSE + button)
 static SDL_Gamepad *pad;
 static _Atomic int64_t sampling;
+static _Atomic bool win_focused = true;  // main thread writes; guest input polls read
 
 // Host keys / buttons held by a test script (SAVAGEWIND_HOST_INPUT, input_frame): they go through the bindings
 static uint8_t test_keys[SDL_SCANCODE_COUNT];
 static _Atomic uint32_t test_pad;
 static _Atomic int32_t test_lx, test_ly;  // (a resting stick's drift: "lstick" in SAVAGEWIND_HOST_INPUT)
-static bool host_test;  // (then a real controller is left out: the player's own pad must not spoil the test)
+static _Atomic bool host_test;  // (then a real controller is left out: the player's own pad must not spoil the test)
 static _Atomic int last_device;  // DEVICE_*: what the player used last
 static bool tilt_held;  // the tilt key: the mouse tilts the controller instead of turning the camera
 extern bool menu_input_captured(void);  // runtime/ui/menu.mm: overlay menu or name entry up (it has the keys / pad)
@@ -45,6 +49,20 @@ extern bool menu_input_captured(void);  // runtime/ui/menu.mm: overlay menu or n
 static int held_key(int sc) {
     if (sc > BIND_MOUSE && sc <= BIND_MOUSE_LAST) return mouse_down[sc - BIND_MOUSE];
     return sc > 0 && sc < SDL_SCANCODE_COUNT && (keys_down[sc] || test_keys[sc]);
+}
+
+static int menu_key(int sc) {
+    for (int i = 0; i < BIND_KEY_COUNT; i++)
+        if (g_bind_key[i] == sc) return 0;  // a player's binding takes priority
+    return held_key(sc);
+}
+
+// Enter / keypad Enter select in the game's menus (the A button, which E is bound to by default). A modified Enter is
+// left to Alt+Enter, the fullscreen toggle (runtime/ui/menu.mm), so it does not also confirm something on the way.
+static int menu_enter(void) {
+    if (held_key(SDL_SCANCODE_LALT) || held_key(SDL_SCANCODE_RALT) ||
+        held_key(SDL_SCANCODE_LGUI) || held_key(SDL_SCANCODE_RGUI)) return 0;
+    return menu_key(SDL_SCANCODE_RETURN) || menu_key(SDL_SCANCODE_KP_ENTER);
 }
 
 // Through the bindings (runtime/hle/bindings.c: g_bind_key), read on every key event, so a rebind applies at once.
@@ -58,6 +76,9 @@ static void recompute_keyboard(void) {
     key_ly = (held_key(g_bind_key[BIND_LS_UP]) - held_key(g_bind_key[BIND_LS_DOWN])) * tilt;
     key_rx = (held_key(g_bind_key[BIND_RS_RIGHT]) - held_key(g_bind_key[BIND_RS_LEFT])) * 32767;
     key_ry = (held_key(g_bind_key[BIND_RS_UP]) - held_key(g_bind_key[BIND_RS_DOWN])) * 32767;
+    menu_lx = (menu_key(SDL_SCANCODE_RIGHT) - menu_key(SDL_SCANCODE_LEFT)) * 32767;
+    menu_ly = (menu_key(SDL_SCANCODE_UP) - menu_key(SDL_SCANCODE_DOWN)) * 32767;
+    menu_confirm = menu_enter();  // publish here; guest polls must not read the keyboard arrays or bindings
     bool tilt_key = held_key(g_bind_key[BIND_TILT]) && !menu_input_captured();
     if (tilt_key != tilt_held) motion_tilt_held(tilt_held = tilt_key);
 }
@@ -76,6 +97,11 @@ static void dead_zone(_Atomic int32_t *x, _Atomic int32_t *y, int32_t rx, int32_
 
 // Controller buttons (and the triggers as buttons) -> Switch buttons through g_bind_pad; the sticks stay the sticks.
 static void recompute_pad(void) {
+    if (!win_focused && !host_test) {
+        pad_buttons = 0;
+        pad_lx = pad_ly = pad_rx = pad_ry = 0;
+        return;
+    }
     uint32_t host = test_pad;
     if (pad && !host_test) {
         for (int i = 0; i < SDL_GAMEPAD_BUTTON_COUNT; i++)
@@ -256,8 +282,18 @@ static void mouse_stick(int32_t *x, int32_t *y) {
 
 // Main thread, every window loop turn (runtime/nvn/vulkan/device.c ui_run): hold or free the cursor.
 extern bool menu_cursor_free(void);     // runtime/ui/menu.mm: Esc freed the cursor (a click in the window holds it)
-static bool win_focused = true;         // (main thread: window events and input_mouse_update)
+static void window_focus(bool focused) {
+    if (focused == win_focused) return;
+    win_focused = focused;
+    input_reset();
+    mouse_dx_milli = mouse_dy_milli = cam_dx_milli = cam_dy_milli = 0;
+    recompute_pad();  // release cached controls on loss; sample current controls on return
+}
+void input_focus_update(SDL_Window *w) {
+    window_focus(w && (SDL_GetWindowFlags(w) & SDL_WINDOW_INPUT_FOCUS));
+}
 void input_mouse_update(SDL_Window *w) {
+    input_focus_update(w);
     vibration_update(pad, win_focused && !host_test);
     static bool cur;
     bool want = w && win_focused && g_settings.mouse_camera && !menu_input_captured() && !menu_cursor_free() &&
@@ -289,6 +325,13 @@ static bool test_event(const SDL_Event *e) {
 // SAVAGEWIND_NO_USER_INPUT=1, on by default whenever SAVAGEWIND_INPUT is set (or SAVAGEWIND_HOST_INPUT /
 // SAVAGEWIND_BIND_TEST; SAVAGEWIND_NO_USER_INPUT=0 lets it through again).
 bool input_user_blocked(const SDL_Event *e) {
+    if (test_event(e)) return false;  // synthetic events are also usable in unattended tests
+    if (!win_focused) switch (e->type) {
+    case SDL_EVENT_GAMEPAD_AXIS_MOTION: case SDL_EVENT_GAMEPAD_BUTTON_DOWN: case SDL_EVENT_GAMEPAD_BUTTON_UP:
+    case SDL_EVENT_GAMEPAD_SENSOR_UPDATE:
+        return true;  // before menu shortcuts, name entry and binding capture get the event
+    default: break;
+    }
     static int on = -1;
     if (on < 0) {
         const char *v = getenv("SAVAGEWIND_NO_USER_INPUT");
@@ -296,7 +339,6 @@ bool input_user_blocked(const SDL_Event *e) {
         if (on) LOG("[input] scripted run: keyboard, mouse and controllers ignored\n");
     }
     if (!on) return false;
-    if (test_event(e)) return false;  // (SAVAGEWIND_HOST_INPUT type: / sdlkey: / sdlpad: - the test's own presses)
     switch (e->type) {
     case SDL_EVENT_KEY_DOWN: case SDL_EVENT_KEY_UP: case SDL_EVENT_TEXT_INPUT: case SDL_EVENT_TEXT_EDITING:
     case SDL_EVENT_MOUSE_MOTION: case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_BUTTON_UP:
@@ -378,7 +420,7 @@ void input_handle_event(const SDL_Event *e) {
         }
         break;
     case SDL_EVENT_WINDOW_FOCUS_LOST: case SDL_EVENT_WINDOW_FOCUS_GAINED:
-        win_focused = e->type == SDL_EVENT_WINDOW_FOCUS_GAINED;
+        window_focus(e->type == SDL_EVENT_WINDOW_FOCUS_GAINED);
         break;
     case SDL_EVENT_GAMEPAD_ADDED:
         if (!pad) {
@@ -399,10 +441,10 @@ void input_handle_event(const SDL_Event *e) {
         recompute_pad();
         break;
     case SDL_EVENT_GAMEPAD_SENSOR_UPDATE:
-        if (pad && !host_test && SDL_GetGamepadID(pad) == e->gsensor.which) motion_sensor_event(e);
+        if (win_focused && pad && !host_test && SDL_GetGamepadID(pad) == e->gsensor.which) motion_sensor_event(e);
         break;
     case SDL_EVENT_GAMEPAD_AXIS_MOTION: case SDL_EVENT_GAMEPAD_BUTTON_DOWN: case SDL_EVENT_GAMEPAD_BUTTON_UP:
-        if (pad && !host_test && (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
+        if (win_focused && pad && !host_test && (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
                                   (e->type == SDL_EVENT_GAMEPAD_AXIS_MOTION && abs(e->gaxis.value) > 16000)))
             last_device = DEVICE_PAD;
         recompute_pad();
@@ -636,7 +678,10 @@ void input_frame(uint64_t frame) {
 }
 
 // Buttons held right now (keyboard, gamepad, test script), independent of whether the game polls (movies).
-uint64_t input_buttons_now(void) { return (menu_input_captured() ? 0 : key_buttons | pad_buttons) | script_buttons; }
+uint64_t input_buttons_now(void) {
+    bool muted = (!win_focused && !host_test) || menu_input_captured();
+    return (muted ? 0 : key_buttons | pad_buttons) | script_buttons;
+}
 
 static int32_t clamp_axis(int32_t v) { return v > 32767 ? 32767 : v < -32767 ? -32767 : v; }
 
@@ -659,7 +704,7 @@ static void fill_state(Cpu *c) {
         g_watch_hi = c->x[1] - 8 - 0x98 + hi;
         LOG("[input] watching controller object %llx\n", c->x[1] - 8);
     }
-    bool menu = menu_input_captured();  // the overlay menu / name entry has the controls (typing there isn't for the game)
+    bool menu = (!win_focused && !host_test) || menu_input_captured();  // host controls belong to the focused game window
     uint64_t b = menu ? script_buttons : key_buttons | pad_buttons | script_buttons;
     {   // injected Plus: held for ~10 presented frames (the game polls several times per frame)
         extern uint64_t renderer_present_count(void);
@@ -668,6 +713,13 @@ static void fill_state(Cpu *c) {
         if (renderer_present_count() < until) b |= 1ull << BTN_PLUS;
     }
     int32_t lx = clamp_axis((menu ? 0 : key_lx + pad_lx) + script_lx), ly = clamp_axis((menu ? 0 : key_ly + pad_ly) + script_ly);
+    // Gate at each poll: an arrow or Enter held when a menu closes must never move the player or press A.
+    // Event activity also includes cutscenes and fanfares, so it cannot identify dialogue choices safely.
+    if (!menu && (framepace_title_ui() || framepace_menu_ui())) {
+        lx = clamp_axis(lx + menu_lx);
+        ly = clamp_axis(ly + menu_ly);
+        if (menu_confirm) b |= 1ull << BTN_A;
+    }
     int32_t mx = 0, my = 0;
     if (!menu) mouse_stick(&mx, &my);
     int32_t rx = clamp_axis((menu ? 0 : key_rx + pad_rx + mx) + script_rx), ry = clamp_axis((menu ? 0 : key_ry + pad_ry + my) + script_ry);

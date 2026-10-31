@@ -1,4 +1,5 @@
 // IPC message parsing/serialization and session management.
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -42,16 +43,25 @@ Service *service_lookup(const char *name) {
 
 void ipc_return_object(IpcResp *resp, Service *s) { resp->objects[resp->nobjects++] = s; }
 
+// Guest threads send requests at the same time, with no kernel lock held (SendSyncRequest), and the clones of a domain
+// session share its object table: the table's slots and the services' reference counts change under this lock. Two
+// objects made at once could take the same free slot, and closing one then left the other "missing" (Steam Deck,
+// Continue: the game's resource loading stopped on the failed request). Handlers run without it.
+static pthread_mutex_t g_domain_lock = PTHREAD_MUTEX_INITIALIZER;
+
 static uint32_t session_new(Service *s) {
     KSession *k = calloc(1, sizeof *k);
     k->obj.type = KOBJ_SESSION;
     k->svc = s;
+    pthread_mutex_lock(&g_domain_lock);
     s->refs++;
+    pthread_mutex_unlock(&g_domain_lock);
     return kernel_new_handle(&k->obj);
 }
 
-static void service_release(Service *s) {
-    if (s && --s->refs == 0 && s->on_close) s->on_close(s);
+// (caller holds g_domain_lock) -> the service to close once the lock is released (its last holder went), or NULL
+static Service *service_release(Service *s) {
+    return s && --s->refs == 0 && s->on_close ? s : NULL;
 }
 
 uint32_t ipc_connect_named_port(const char *name) {
@@ -157,7 +167,12 @@ int ipc_handle_request(Cpu *c, uint32_t handle) {
 
     if (req.type == 2 || req.type == 15) {  // close (CMIF / TIPC)
         LOG("[ipc] close session %s (handle %x)\n", sess->svc->name, handle);
-        if (!sess->domain) service_release(sess->svc);  // (a domain's objects stay: closed one by one)
+        if (!sess->domain) {  // (a domain's objects stay: closed one by one)
+            pthread_mutex_lock(&g_domain_lock);
+            Service *last = service_release(sess->svc);
+            pthread_mutex_unlock(&g_domain_lock);
+            if (last) last->on_close(last);
+        }
         return 0;
     }
     if (req.type >= 16) {  // TIPC: the command is in the type, the raw words are the arguments
@@ -178,9 +193,12 @@ int ipc_handle_request(Cpu *c, uint32_t handle) {
             req.domain_obj = *(uint32_t *)(payload + 4);
             if (dcmd == 2) {  // close object
                 if (req.domain_obj < 256) {
+                    pthread_mutex_lock(&g_domain_lock);
                     Service *o = sess->domain->objs[req.domain_obj];
                     sess->domain->objs[req.domain_obj] = NULL;
-                    service_release(o);
+                    Service *last = service_release(o);
+                    pthread_mutex_unlock(&g_domain_lock);
+                    if (last) last->on_close(last);
                 }
                 goto write_response;
             }
@@ -198,8 +216,13 @@ int ipc_handle_request(Cpu *c, uint32_t handle) {
         req.data_size = raw_words * 4 > 32 ? raw_words * 4 - 32 : 0;
         Service *target = sess->svc;
         if (sess->domain) {
+            pthread_mutex_lock(&g_domain_lock);
             target = req.domain_obj < 256 ? sess->domain->objs[req.domain_obj] : NULL;
-            if (!target) { LOG("[ipc] domain object %u missing\n", req.domain_obj); return 0xE401; }
+            pthread_mutex_unlock(&g_domain_lock);
+            if (!target) {
+                LOG("[ipc] domain object %u missing on %s (cmd %u)\n", req.domain_obj, sess->svc->name, req.cmd);
+                return 0xE401;
+            }
         }
         target->handler(target, &req, &resp);
     } else if (req.type == 5 || req.type == 7) {  // control
@@ -235,10 +258,13 @@ write_response:;
     int ndomain_out = 0;
     for (int i = 0; i < resp.nobjects; i++) {
         if (dom) {
+            pthread_mutex_lock(&g_domain_lock);
             int id = 1;
             while (id < 256 && sess->domain->objs[id]) id++;
+            if (id == 256) FATAL("[ipc] domain of %s full (256 objects)\n", sess->svc->name);
             sess->domain->objs[id] = resp.objects[i];
             resp.objects[i]->refs++;
+            pthread_mutex_unlock(&g_domain_lock);
             domain_out[ndomain_out++] = id;
         } else {
             resp.move_handles[resp.nmove++] = session_new(resp.objects[i]);

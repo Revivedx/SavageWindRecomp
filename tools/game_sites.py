@@ -49,6 +49,12 @@ VERSIONS = [
 ]
 
 Site = namedtuple('Site', 'name kind pattern at')
+BLADE_BUFFERS = '910e0135 b85fc3a9 7103fd1f 52800f18 12001d36 52801fe9 1a893108'
+BLADE_LATERAL = ('bd4207e0 bd420be1 1e298821 1f0d0402 1f2d0400 1e202048 1e20cc40 bd000720 1e262000 bd4213e1 1e35d428 '
+                 '54000005/ff00001f bd4217e1 1e272000')
+TRAVERSE = ('b9400028 2f00e400 36600008/fff8001f d65f03c0 a9bf7bfd 910003fd 12000042 12000083 94000000/fc000000 '
+            '90000008/9f00001f 91000108/ffc003ff f9400108 b4000008/ff00001f bd431101 52a85908 1e202008 1e270102 1e22cc00 '
+            '1e210800 a8c17bfd 14000000/fc000000 1e2e1001')
 SITES = [
     # The Options screen (tools/patches.py; runtime/ui/game_options.mm)
     Site('opt_create_rows', 'code', 'd10303ff a9067bfd a9076ffc a90867fa a9095ff8 a90a57f6 a90b4ff4 910183fd '
@@ -132,6 +138,9 @@ SITES = [
     Site('arrow_fall_gravity', 'code', 'bd410a81 1e212849 bd410e81 1e21280a 94000000/fc000000 36000000/fff8001f f9404288 2d400500', 0),
     # the physics step's solver microsteps (tools/patches.py _solver_steps): the delta frame times 6
     Site('phys_solver_steps', 'code', '1e231002 1e3c1004 f9401a68 1e2c1009 1e220822 f9400108 1e202048 f9400514', 4),
+    # the sound system's frame (tools/patches.py _snd_frame_floor): the delta frame, at least 0.5, its timers' step
+    Site('snd_frame_floor', 'code', '1e2c1001 1e212000 1e204c28 94000000/fc000000 b4000000/ff00001f bd415660 '
+         'aa0003f4 7e21d800', 0),
     Site('gui_speed', 'code', 'bd0b2100 94000000/fc000000 f9400260 94000000/fc000000 52800020 94000000/fc000000 '
          'a9414ff4 a8c27bfd', 0),
     # MainShortCut's HoldShortCutBg: repair P_Capture_00's alpha after a fractional opening frame (#173).
@@ -171,6 +180,32 @@ SITES = [
          '94000000/fc000000 36000000/fff8001f', 0),
     Site('cam_reverse_y', 'code', '94000000/fc000000 36000000/fff8001f bd413660 1e214000 bd013660 a9424ff4 a9417bfd '
          '9100c3ff', 0),
+    # placed actors' traverse distance (tools/patches.py _traverse_scale): the scale the game multiplies every one by,
+    # loaded from the actor debug manager, or 1 without it (Video > Draw distance)
+    Site('traverse_scale', 'code', TRAVERSE, 13),
+    Site('traverse_scale_default', 'code', TRAVERSE, 21),
+    # the grass's view context (tools/patches.py _grass_range): its entry, with the two screen-size limits in s1, s2
+    Site('grass_range', 'code', 'bd400024 bd000004 bd400425 bd000405 bd400825 2d011005 bd001005', 0),
+    # ... and each layer's store of the camera scale its distance fades are measured with (_grass_fade)
+    Site('grass_fade_blades', 'code', 'bd417349 aa1a03e0 94000000/fc000000 1e202120 a91ceffa 90000008/9f00001f '
+         '1e20cd20 bd024360', 7),
+    Site('grass_fade_quads', 'code', 'bd4172e9 aa1703e0 94000000/fc000000 1e202120 90000008/9f00001f 1e20cd20 '
+         'bd000700', 6),
+    # the blades' draw slots (tools/patches.py _grass_blade_slots): how many their manager makes, and the two passes
+    # that stop at the 256th cell
+    Site('grass_blade_slots', 'code', 'a9416ffc 52802001 52800103 aa1c03e0 aa1b03e2 94000000/fc000000', 1),
+    Site('grass_blade_cap_a', 'code', '7100013f 7a401940 54000000/ff00001f 7103fe7f 54000008/ff00001f 71001d9f', 3),
+    Site('grass_blade_cap_b', 'code', '79402509 34000009/ff00001f 79402908 34000008/ff00001f 7103ff7f 54000008/ff00001f '
+         '7d4032c0', 4),
+    # ... and the per-frame pass that points each slot at this frame's half of its shader block (count clamped to 256)
+    Site('grass_blade_cap_c', 'code', BLADE_BUFFERS, 2),
+    Site('grass_blade_cap_c_max', 'code', BLADE_BUFFERS, 5),
+    # the blades' region test for each cell, near and far parts (tools/patches.py _grass_blade_lateral)
+    Site('grass_blade_lateral_near', 'code', BLADE_LATERAL, 8),
+    Site('grass_blade_lateral_far', 'code', BLADE_LATERAL, 13),
+    # the terrain's distant trees (tools/patches.py _tree_ranges): the entry of their per-frame shader setup
+    Site('tree_ranges', 'code', '90000008/9f00001f 91000108/ffc003ff f9400108 b4000008/ff00001f f9452908 '
+         'b4000008/ff00001f 39406108 37280008/fff8001f 39402008 36000008/fff8001f d10143ff', 0),
     Site('main_data', 'data', '', 0),
     Site('main_end', 'end', '', 0),
 ]
@@ -185,6 +220,12 @@ OPTIONAL_GROUPS = [
     ('yaz0_stream', 'yaz0_stream_ret'),
     ('cam_stick', 'cam_pitch_chase', 'cam_pitch_surf', 'cam_pitch_wakeboard', 'cam_pitch_aim', 'cam_pitch_item'),
     ('cam_reverse_x', 'cam_reverse_y'),
+    ('traverse_scale', 'traverse_scale_default'),
+    ('grass_range', 'grass_fade_blades', 'grass_fade_quads'),
+    ('grass_blade_slots', 'grass_blade_cap_a', 'grass_blade_cap_b', 'grass_blade_cap_c', 'grass_blade_cap_c_max',
+     'grass_blade_lateral_near',
+     'grass_blade_lateral_far'),
+    ('tree_ranges',),
 ]
 OPTIONAL = {n for g in OPTIONAL_GROUPS for n in g}
 
@@ -224,6 +265,7 @@ KNOWN = {
         'gui_speed': 0x700116d0e8,
         'arrow_fall_gravity': 0x70004db204,
         'phys_solver_steps': 0x700145b790,
+        'snd_frame_floor': 0x700143ce64,
         'persp_matrix': 0x7000da1400,
         'persp_matrix_offset': 0x7000da1408,
         'persp_unproject_y': 0x7000da14d8,
@@ -238,6 +280,12 @@ KNOWN = {
         'controller_step': 0x7001c4ba40,
         'player_info': 0x7001cb2658,
         'world_mgr': 0x7001cf5d00,
+        'traverse_scale': 0x7000f908e4,
+        'traverse_scale_default': 0x7000f90904,
+        'grass_range': 0x70012999d0,
+        'grass_fade_blades': 0x70012946f0,
+        'grass_fade_quads': 0x70012a6b7c,
+        'tree_ranges': 0x70012b55cc,
         'main_data': 0x7001a1f000,
         'main_end': 0x7001d37000,
     },
@@ -279,6 +327,7 @@ KNOWN = {
         'quick_menu_capture_alpha': 0x7000e26a38,
         'arrow_fall_gravity': 0x70005ee734,
         'phys_solver_steps': 0x700156f930,
+        'snd_frame_floor': 0x7001551004,
         'persp_matrix': 0x7000eb4a50,
         'persp_matrix_offset': 0x7000eb4a58,
         'persp_unproject_y': 0x7000eb4b28,
@@ -301,6 +350,19 @@ KNOWN = {
         'cam_pitch_item': 0x7000bf2c0c,
         'cam_reverse_x': 0x7000d17024,
         'cam_reverse_y': 0x7000d1703c,
+        'traverse_scale': 0x70010a4674,
+        'traverse_scale_default': 0x70010a4694,
+        'grass_range': 0x70013ad8b0,
+        'grass_fade_blades': 0x70013a85d0,
+        'grass_fade_quads': 0x70013baa5c,
+        'grass_blade_slots': 0x70013a7230,
+        'grass_blade_cap_a': 0x70013b32e0,
+        'grass_blade_cap_b': 0x7001496c40,
+        'grass_blade_cap_c': 0x70013ae960,
+        'grass_blade_cap_c_max': 0x70013ae96c,
+        'grass_blade_lateral_near': 0x70013a8f0c,
+        'grass_blade_lateral_far': 0x70013a8f20,
+        'tree_ranges': 0x70013c94ac,
         'main_data': 0x7001b7a000,
         'main_end': 0x7001e98000,
     },

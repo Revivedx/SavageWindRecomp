@@ -9,6 +9,9 @@
 #include <string.h>
 
 #include "perfmon.h"
+#include "framepace.h"
+#include "game_sites.h"
+#include "kernel.h"
 #include "platform.h"
 #include "rt.h"
 
@@ -29,6 +32,28 @@
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static PerfStats g_stats;
 static char g_gpu_hint[96];
+
+// PlayerInfo's copy can outlive Link during scene changes. Read it only while playing, on the presenting thread,
+// rather than the machine sampler; the heap stays mapped until presents stop for reboot (main.c teardown).
+bool perfmon_position(float out[3]) {
+    extern volatile int g_movie_playing;  // runtime/hle/movie.c
+    if (g_rt_unwind || !g_site.player_info || !g_site.screen_mgr || !g_site.event_mgr || g_movie_playing > 0)
+        return false;
+    if (framepace_title_ui() || framepace_loading_ui() || framepace_in_event()) return false;
+    uint64_t pinfo = *(uint64_t *)(uintptr_t)g_site.player_info;
+    uint64_t size = kernel_heap_size();
+    if (size < 0x94 || (pinfo & 7) || pinfo < HEAP_BASE || pinfo - HEAP_BASE > size - 0x94) return false;
+    float pos[3];
+    // Same game-maintained copy as the clock probe (hle/framepace.c), not the actor's writable position.
+#define VF(T, base, off) (*(T *)(uintptr_t)((base) + (off)))
+    for (int i = 0; i < 3; i++) {
+        pos[i] = VF(float, pinfo, 0x88 + 4 * i);
+        if (!isfinite(pos[i])) return false;
+    }
+#undef VF
+    memcpy(out, pos, sizeof pos);
+    return true;
+}
 
 // ------------------------------------------------------------------ frames
 static uint64_t g_last_frame_ns;
@@ -354,8 +379,51 @@ static float cpu_temp_linux(const char **src) {
     return v < 0 ? -1 : v / 1000.0f;
 }
 
-// AMD GPUs: amdgpu's sysfs (busy percent, VRAM, hwmon temperature)
-static void amdgpu_sample(PerfStats *s) {
+// Arm Mali and other devfreq GPUs (RK3588's Mali-G610: /sys/class/devfreq/fb000000.gpu): "load" is "<percent>@<Hz>",
+// cur_freq the clock; the temperature from the thermal zone whose type names the GPU. Unified memory: no VRAM.
+static bool devfreq_gpu_sample(PerfStats *s) {
+    static char dev[300], tz[300];
+    static bool tried;
+    if (!tried) {
+        tried = true;
+        DIR *d = opendir("/sys/class/devfreq");
+        if (d) {
+            struct dirent *e;
+            while ((e = readdir(d)) && !dev[0])
+                if (strstr(e->d_name, "gpu") || strstr(e->d_name, "mali")) snprintf(dev, sizeof dev, "/sys/class/devfreq/%s", e->d_name);
+            closedir(d);
+        }
+        for (int i = 0; i < 32 && !tz[0]; i++) {
+            char p[200], t[64] = {0};
+            snprintf(p, sizeof p, "/sys/class/thermal/thermal_zone%d/type", i);
+            FILE *f = fopen(p, "r");
+            if (!f) continue;
+            if (fgets(t, sizeof t, f) && strstr(t, "gpu")) snprintf(tz, sizeof tz, "/sys/class/thermal/thermal_zone%d/temp", i);
+            fclose(f);
+        }
+        if (dev[0] && !s->gpu_name[0]) snprintf(s->gpu_name, sizeof s->gpu_name, "%s", g_gpu_hint[0] ? g_gpu_hint : "GPU");
+    }
+    if (!dev[0]) return false;
+    char p[400];
+    snprintf(p, sizeof p, "%s/load", dev);
+    FILE *f = fopen(p, "r");
+    if (f) {
+        int load = -1;
+        if (fscanf(f, "%d", &load) == 1 && load >= 0) s->gpu_pct = (float)load;
+        fclose(f);
+    }
+    snprintf(p, sizeof p, "%s/cur_freq", dev);
+    float hz = read_float_file(p);
+    if (hz > 0) s->gpu_clock_mhz = hz / 1e6f;
+    if (tz[0]) {
+        float t = read_float_file(tz);
+        if (t > 0) s->gpu_temp_c = t / 1000.0f;
+    }
+    return true;
+}
+
+// AMD GPUs: amdgpu's sysfs (busy percent, VRAM, hwmon temperature); false: no amdgpu device
+static bool amdgpu_sample(PerfStats *s) {
     static char dev[200];
     static bool tried;
     if (!tried) {
@@ -367,7 +435,7 @@ static void amdgpu_sample(PerfStats *s) {
         }
         if (dev[0] && !s->gpu_name[0]) snprintf(s->gpu_name, sizeof s->gpu_name, "%s", g_gpu_hint[0] ? g_gpu_hint : "AMD GPU");
     }
-    if (!dev[0]) return;
+    if (!dev[0]) return false;
     char p[300];
     snprintf(p, sizeof p, "%s/gpu_busy_percent", dev); s->gpu_pct = read_float_file(p);
     snprintf(p, sizeof p, "%s/mem_info_vram_used", dev); float u = read_float_file(p);
@@ -387,6 +455,7 @@ static void amdgpu_sample(PerfStats *s) {
             }
         closedir(d);
     }
+    return true;
 }
 
 static void platform_sample(PerfStats *s, double dt) {
@@ -436,7 +505,11 @@ static void platform_sample(PerfStats *s, double dt) {
         fclose(f);
     }
     s->cpu_temp_c = cpu_temp_linux(&s->cpu_temp_source);
-    if (!nv.ok) amdgpu_sample(s);
+    if (!nv.ok) {
+        // (no amdgpu: Mali and other devfreq GPUs. Decided by the device, not by gpu_pct: once a devfreq read had set it,
+        // a gpu_pct < 0 test stopped every later read, and load, clock and temperature froze at their first values)
+        if (!amdgpu_sample(s)) devfreq_gpu_sample(s);
+    }
 }
 #endif
 
