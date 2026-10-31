@@ -759,13 +759,14 @@ static void tab_display(void) {
                "frame time graph and Link's coordinates. F10 switches between them while you play.");
 
     opt_section("Rendering");
-    {   // Upscaler: Off, this OS's spatial upscaler (its modes on the row below), and the temporal ones still to come.
-        // Values that can't be picked yet are shown greyed ("coming soon"); stepping onto them keeps the one in use.
+    {   // Upscaler: Off, this OS's spatial upscaler (its modes on the row below), DLSS where NGX runs, and FSR 3 still
+        // to come. Values that can't be picked are shown greyed; stepping onto them keeps the one in use.
         // The modes wait for render-target scaling (upscale_modes_available): until then the upscaler brings the
         // game's own 1920 x 1080 image to a bigger window.
         std::string fsr3 = upscaler_available(UPSCALE_FSR3) ? std::string(tr("AMD FSR 3"))
                                                             : std::string(tr("FSR 3")) + " " + tr("(coming soon)");
-        std::string dlss = std::string(tr("DLSS")) + " " + tr(renderer_gpu_rtx() ? "(coming soon)" : "(NVIDIA RTX only)");
+        std::string dlss = upscaler_available(UPSCALE_DLSS) ? std::string(tr("DLSS")) :
+                           std::string(tr("DLSS")) + " " + tr("(NVIDIA RTX only)");
 #ifdef __APPLE__
         const char *ups[] = {"Off", "MetalFX"};
         static const int ups_value[] = {UPSCALE_OFF, UPSCALE_METALFX};

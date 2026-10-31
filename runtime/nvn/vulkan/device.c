@@ -20,6 +20,7 @@
 #include "record.h"
 #include "../output_scale.h"
 #include "../renderer.h"
+#include "dlss.h"
 
 #ifdef _WIN32  // (kernel32; windows.h itself clashes with names used here)
 __declspec(dllimport) int __stdcall MoveFileExA(const char *from, const char *to, unsigned long flags);
@@ -74,6 +75,14 @@ static void create_instance(void) {
             if (!strcmp(ie[i].extensionName, VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME)) g_cs_ext = true;
         if (g_cs_ext) ext[n_ext++] = VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME;
         free(ie);
+    }
+    const char **ngx_ext = NULL;
+    unsigned n_ngx_ext = 0;
+    vk_dlss_required_instance_extensions(&ngx_ext, &n_ngx_ext);
+    for (unsigned i = 0; i < n_ngx_ext && n_ext < sizeof(ext) / sizeof(ext[0]); i++) {
+        bool duplicate = false;
+        for (uint32_t j = 0; j < n_ext; j++) duplicate |= !strcmp(ext[j], ngx_ext[i]);
+        if (!duplicate) ext[n_ext++] = ngx_ext[i];
     }
     bool validate = getenv("SAVAGEWIND_VK_VALIDATION") != NULL;
     // (debugging) SAVAGEWIND_VK_ADDR_REPORT=<lo>-<hi> (hex GPU addresses): every bind and unbind of GPU memory in that
@@ -242,6 +251,13 @@ static void create_device(void) {
     const char *ext[24];
     uint32_t n_ext = 0;
     ext[n_ext++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+    const char **ngx_ext = NULL;
+    unsigned n_ngx_ext = 0;
+    vk_dlss_required_device_extensions(&ngx_ext, &n_ngx_ext);
+    for (unsigned i = 0; i < n_ngx_ext && n_ext < sizeof(ext) / sizeof(ext[0]); i++) {
+        if (has_ext(ep, ne, ngx_ext[i])) ext[n_ext++] = ngx_ext[i];
+        else LOG("[dlss] required device extension unavailable: %s\n", ngx_ext[i]);
+    }
     bool addr_report = g_addr_report_hi && has_ext(ep, ne, VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME);
     if (addr_report) ext[n_ext++] = VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME;
     if (g_addr_report_hi) LOG("[vk] address binding report %s\n", addr_report ? "on" : "not supported");
@@ -532,6 +548,12 @@ static void create_device(void) {
     VK_CHECK(vkCreateCommandPool(g_vk.dev, &pi, NULL, &g_vk.pool));
 
     pipeline_cache_load();
+    // NGX on the device just made. Optional: without the SDK's DLL or an RTX driver the renderer runs as before, and
+    // a settings file asking for DLSS gets FSR 1
+    if (!vk_dlss_init() && g_settings.upscaler == UPSCALE_DLSS) {
+        g_settings.upscaler = UPSCALE_FSR1;
+        LOG("[dlss] unavailable: FSR 1 instead\n");
+    }
     pthread_t saver;
     pthread_create(&saver, NULL, pc_saver, NULL);
 }
@@ -2005,6 +2027,7 @@ static void quick_exit_handler(void) {
         vk_present_idle();
         rec_drain();
         vkDeviceWaitIdle(g_vk.dev);
+        vk_dlss_shutdown();
         if (trace) LOG("[vk] exit: saving the pipeline cache\n");
         vk_pipeline_cache_save();
         extern void vk_pso_flush(void);

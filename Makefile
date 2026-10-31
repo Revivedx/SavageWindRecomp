@@ -111,6 +111,21 @@ GENFLAGS += -D_FILE_OFFSET_BITS=64 $(GENARCH)
 LDFLAGS  := -fuse-ld=lld -Wl,--stack,268435456 $(if $(DEPS),-L$(DEPS)/lib) -lSDL3 -lavformat -lavcodec -lavutil -lswscale \
             -lvulkan-1 -lwinmm -lole32 -lshell32 -lcomdlg32 -luuid -lshaderc_shared -lpdh -l:libz.a \
             $(if $(RELEASE),-Wl$(comma)--subsystem$(comma)windows)  # release: no console window (log -> savagewind.log)
+# NVIDIA DLSS is an optional external SDK. Keep proprietary files out of this
+# repository; source builds can point at the sibling checkout with DLSS_SDK=../DLSS.
+DLSS_SDK ?= ../DLSS
+DLSS_DLL := $(DLSS_SDK)/lib/Windows_x86_64/rel/nvngx_dlss.dll
+DLSS_IMPORT := $(B)/nvngx_dlss.a
+DLSS_LIB := $(DLSS_SDK)/lib/Windows_x86_64/x64/nvsdk_ngx_s.lib
+ifneq ($(wildcard $(DLSS_DLL)),)
+DEPINC += -I$(DLSS_SDK)/include -DDLSS_SDK_PRESENT=1
+LDFLAGS += $(DLSS_IMPORT) $(DLSS_LIB)
+# The SDK wrapper is built with MSVC's CRT directives. Use the MinGW CRT and
+# provide the small ABI shim in runtime/nvn/vulkan/dlss_compat.c.
+LDFLAGS += -Wl,/NODEFAULTLIB:libcmt.lib -Wl,/NODEFAULTLIB:libcpmt.lib -Wl,/NODEFAULTLIB:OLDNAMES.lib
+else
+DEPINC += -DDLSS_SDK_PRESENT=0
+endif
 BACKEND_SRC := $(wildcard runtime/nvn/vulkan/*.c) $(wildcard runtime/nvn/vulkan/*.cpp)
 BACKEND_OBJ := $(patsubst runtime/%.cpp,$(B)/rt/%.o,$(patsubst runtime/%.c,$(B)/rt/%.o,$(BACKEND_SRC)))
 BACKEND_OBJ += $(B)/rt/platform/windows_rc.o  # the .exe's icon (Explorer, taskbar)
@@ -236,7 +251,7 @@ $(B)/rt/%.o: runtime/%.m $(RT_HDRS)
 # linked to a temp file, then renamed over: a copy of the game still running keeps its (old) file - relinking in
 # place gets running copies killed by macOS (code signature of the changed pages). The temp file keeps the real name
 # (in a folder of its own): on Windows the import library records the name the game code library loads it by.
-$(EXE): $(RT_OBJ) $(BACKEND_OBJ) $(UI_OBJ) $(IMGUI_OBJ)
+$(EXE): $(RT_OBJ) $(BACKEND_OBJ) $(UI_OBJ) $(IMGUI_OBJ) $(if $(wildcard $(DLSS_DLL)),$(DLSS_IMPORT) $(DLSS_LIB))
 	@mkdir -p $(dir $@)link
 	$(CXX) -o $(dir $@)link/$(notdir $@) $^ $(LDFLAGS)
 	mv -f $(dir $@)link/$(notdir $@) $@
@@ -251,6 +266,11 @@ $(B)/rt/ui/i18n.o: $(wildcard runtime/ui/i18n/*.inc) runtime/ui/i18n.h
 $(B)/rt/ui/%.o: runtime/ui/%.mm $(RT_HDRS)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(UIFLAGS) -c $< -o $@
+
+ifneq ($(wildcard $(DLSS_DLL)),)
+$(DLSS_IMPORT): $(DLSS_DLL) tools/make_dlss_import.py
+	python tools/make_dlss_import.py $< $@
+endif
 
 $(B)/imgui/%.o: $(IMGUI)/%.cpp
 	@mkdir -p $(dir $@)
@@ -342,6 +362,10 @@ dist:
 	cp third_party/FidelityFX/LICENSE.txt "$(DIST)/FidelityFX-LICENSE.txt"  # (AMD FidelityFX SDK, MIT: README "License")
 	mkdir "$(DIST)/colour-luts" && cp third_party/luts/*.cube third_party/luts/README.md "$(DIST)/colour-luts/"  # (CC0: Video > Colour)
 	cp README.md LICENSE "$(DIST)/"  # (licenses and source links of the bundled components: README "License")
+	if [ -f "$(DLSS_SDK)/lib/Windows_x86_64/rel/nvngx_dlss.dll" ]; then \
+		cp "$(DLSS_SDK)/lib/Windows_x86_64/rel/nvngx_dlss.dll" "$(DIST)/"; \
+		cp "$(DLSS_SDK)/LICENSE.txt" "$(DIST)/NVIDIA-DLSS-LICENSE.txt"; \
+	fi
 	PATH="$(CURDIR)/build/deps-win/bin:$$PATH" ldd $(WIN_B)/savagewind.exe | awk '(/ucrt64/ || /deps-win/) && !/vulkan-1/ {print $$3}' | sort -u | \
 	    xargs -I{} cp -u {} "$(DIST)/"
 	! ls "$(DIST)" | grep -iE 'x264|x265|xvid|postproc'  # (no GPL codec libraries in the release)
