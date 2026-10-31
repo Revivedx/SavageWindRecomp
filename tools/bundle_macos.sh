@@ -46,6 +46,8 @@ cp third_party/fonts/FiraSans/FiraSans-SemiBold.ttf third_party/fonts/FiraSans/F
 cp third_party/fonts/FiraSans/OFL.txt "$C/Resources/FiraSans-OFL.txt"
 cp third_party/fonts/NotoSansThai/NotoSansThai-Medium.ttf "$C/Resources/"  # (Thai menus; OFL)
 cp third_party/fonts/NotoSansThai/OFL.txt "$C/Resources/NotoSansThai-OFL.txt"
+cp third_party/fonts/NotoSansHebrew/NotoSansHebrew-Medium.ttf "$C/Resources/"  # (Hebrew menus; OFL)
+cp third_party/fonts/NotoSansHebrew/OFL.txt "$C/Resources/NotoSansHebrew-OFL.txt"
 
 # ---- dylibs: copy every non-system dependency, recursively; point all references at @rpath/<name>
 is_system() { case "$1" in /usr/lib/*|/System/*) return 0;; esac; return 1; }

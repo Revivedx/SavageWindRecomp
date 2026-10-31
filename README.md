@@ -170,7 +170,7 @@ Estimates of where each part stands. "Tested in game" is how much of the game ha
 | ✅ | **Game files setup** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Version check, copy, data image and code build, all from your own files |
 | ✅ | **Text and voice languages** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Any of the game's 15 text languages (16 with 1.9.0's Thai) with any of its 8 voice languages |
 | ✅ | **Voices in another language: crash fix** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Fixed ([#2](https://github.com/Revivedx/SavageWindRecomp/issues/2)): the game now sets aside enough memory for voice banks bigger than its own, so any voice language works with any text language |
-| ✅ | **Menus in 12 languages** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Savage Wind's own screens follow the text language |
+| ✅ | **Menus in 13 languages** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Savage Wind's own screens follow the text language. Hebrew, right to left, which the game has no text language for: `SAVAGEWIND_MENU_LANG=he` |
 | ✅ | **Sound and voices** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Mixed by the game SDK's own audio renderer, with room reverb |
 | ✅ | **Keyboard and mouse** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Every key and mouse button remappable, mouse camera |
 | ✅ | **Settings in the game's Options** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Video, audio, controls and language pages drawn by the game itself |
@@ -303,7 +303,7 @@ switches - are in [docs/SAVAGE-WIND.md](docs/SAVAGE-WIND.md).
   [AMD FidelityFX SDK 1.1.4](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/tree/v1.1.4) (MIT: FSR 3 frame
   generation),
   [Fira Sans](https://github.com/mozilla/Fira) (SIL OFL 1.1), [Noto Sans Thai](https://github.com/notofonts/thai)
-  (SIL OFL 1.1), [stb_image / stb_image_write](https://github.com/nothings/stb)
+  (SIL OFL 1.1), [Noto Sans Hebrew](https://github.com/notofonts/hebrew) (SIL OFL 1.1), [stb_image / stb_image_write](https://github.com/nothings/stb)
   (public domain / MIT), [shaderc](https://github.com/google/shaderc)
   (Apache 2.0), [Zig](https://ziglang.org) (MIT), [Capstone](https://www.capstone-engine.org) (BSD),
   [Unicorn](https://www.unicorn-engine.org) (GPL 2.0), [python-lz4](https://github.com/python-lz4/python-lz4) (BSD).
@@ -335,6 +335,7 @@ The Windows release zip also bundles, unchanged unless noted, under their own li
 - AMD FidelityFX SDK 1.1.4 (MIT, `FidelityFX-LICENSE.txt`), compiled into savagewind.exe: FSR 3 frame interpolation,
   optical flow and the Vulkan backend, from [its source](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/tree/v1.1.4)
   with two alignment fixes (`third_party/FidelityFX/README.md`) and shaders compiled by `tools/ffx_shaders.py`.
-- The Fira Sans font, Medium and SemiBold (SIL OFL 1.1, `FiraSans-OFL.txt`), and the Noto Sans Thai font, Medium,
-  for the menus in Thai (SIL OFL 1.1, `NotoSansThai-OFL.txt`).
+- The Fira Sans font, Medium and SemiBold (SIL OFL 1.1, `FiraSans-OFL.txt`), and the Noto Sans Thai and Noto Sans
+  Hebrew fonts, Medium, for the menus in Thai and Hebrew (SIL OFL 1.1, `NotoSansThai-OFL.txt`,
+  `NotoSansHebrew-OFL.txt`).
 - Three colour LUTs in `colour-luts/` (CC0 1.0, from FreshLUTs: see "Credits" and `colour-luts/README.md`).
