@@ -32,6 +32,15 @@
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static PerfStats g_stats;
 static char g_gpu_hint[96];
+#ifdef __linux__
+static int g_gpu_drm_major = -1, g_gpu_drm_minor = -1;  // protected by g_lock, like the name
+#endif
+
+static void gpu_hint(char out[96]) {
+    pthread_mutex_lock(&g_lock);
+    memcpy(out, g_gpu_hint, sizeof g_gpu_hint);
+    pthread_mutex_unlock(&g_lock);
+}
 
 // PlayerInfo's copy can outlive Link during scene changes. Read it only while playing, on the presenting thread,
 // rather than the machine sampler; the heap stays mapped until presents stop for reboot (main.c teardown).
@@ -160,6 +169,9 @@ static void *lib_sym(void *lib, const char *name) {
 }
 
 static void nvml_open(PerfStats *s) {
+    char hint[96];
+    gpu_hint(hint);
+    if (!hint[0]) return;  // the launcher can start sampling before Vulkan has selected a device
     nv.tried = true;
 #ifdef _WIN32
     void *lib = lib_open("nvml.dll");
@@ -180,14 +192,15 @@ static void nvml_open(PerfStats *s) {
     if (!nv.init || !nv.count || !nv.handle || nv.init() != 0) return;
     unsigned n = 0;
     if (nv.count(&n) != 0 || !n) return;
-    for (unsigned i = 0; i < n; i++) {  // the one Vulkan renders on, else the first
+    for (unsigned i = 0; i < n; i++) {  // never substitute a different GPU for the rendering device
         void *d = NULL;
         char nm[96] = "";
         if (nv.handle(i, &d) != 0) continue;
         if (nv.name) nv.name(d, nm, sizeof nm);
-        if (!nv.dev || (g_gpu_hint[0] && strstr(g_gpu_hint, nm) && nm[0])) {
+        if (nm[0] && strstr(hint, nm)) {
             nv.dev = d;
             snprintf(s->gpu_name, sizeof s->gpu_name, "%s", nm);
+            break;
         }
     }
     nv.ok = nv.dev != NULL;
@@ -197,6 +210,7 @@ static void nvml_open(PerfStats *s) {
 static void nvml_sample(PerfStats *s) {
     if (!nv.tried) nvml_open(s);
     if (!nv.ok) return;
+    gpu_hint(s->gpu_name);
     NvmlUtil u;
     NvmlMem m;
     unsigned v;
@@ -401,9 +415,11 @@ static bool devfreq_gpu_sample(PerfStats *s) {
             if (fgets(t, sizeof t, f) && strstr(t, "gpu")) snprintf(tz, sizeof tz, "/sys/class/thermal/thermal_zone%d/temp", i);
             fclose(f);
         }
-        if (dev[0] && !s->gpu_name[0]) snprintf(s->gpu_name, sizeof s->gpu_name, "%s", g_gpu_hint[0] ? g_gpu_hint : "GPU");
     }
     if (!dev[0]) return false;
+    char hint[96];
+    gpu_hint(hint);
+    snprintf(s->gpu_name, sizeof s->gpu_name, "%s", hint[0] ? hint : "GPU");
     char p[400];
     snprintf(p, sizeof p, "%s/load", dev);
     FILE *f = fopen(p, "r");
@@ -422,21 +438,52 @@ static bool devfreq_gpu_sample(PerfStats *s) {
     return true;
 }
 
-// AMD GPUs: amdgpu's sysfs (busy percent, VRAM, hwmon temperature); false: no amdgpu device
-static bool amdgpu_sample(PerfStats *s) {
-    static char dev[200];
-    static bool tried;
-    if (!tried) {
-        tried = true;
-        for (int i = 0; i < 8 && !dev[0]; i++) {
-            char p[200];
-            snprintf(p, sizeof p, "/sys/class/drm/card%d/device/gpu_busy_percent", i);
-            if (access(p, R_OK) == 0) snprintf(dev, sizeof dev, "/sys/class/drm/card%d/device", i);
-        }
-        if (dev[0] && !s->gpu_name[0]) snprintf(s->gpu_name, sizeof s->gpu_name, "%s", g_gpu_hint[0] ? g_gpu_hint : "AMD GPU");
+// Match the Vulkan DRM node first; it can be renderD128 even when the card node is card1. Without an identity,
+// only accept an unambiguous AMD device. Never attach another adapter's counters to the rendering GPU's name.
+static bool amdgpu_find(char *dev, size_t cap, const char *sysfs, int major, int minor) {
+    dev[0] = 0;
+    char p[512];
+    if (major >= 0 && minor >= 0) {
+        snprintf(dev, cap, "%s/dev/char/%d:%d/device", sysfs, major, minor);
+        snprintf(p, sizeof p, "%s/gpu_busy_percent", dev);
+        if (access(p, R_OK) == 0) return true;
+        dev[0] = 0;
+        return false;
     }
-    if (!dev[0]) return false;
-    char p[300];
+    snprintf(p, sizeof p, "%s/class/drm", sysfs);
+    DIR *d = opendir(p);
+    if (!d) return false;
+    struct dirent *e;
+    unsigned matches = 0;
+    while ((e = readdir(d))) {
+        if (strncmp(e->d_name, "card", 4) || !e->d_name[4] ||
+            strspn(e->d_name + 4, "0123456789") != strlen(e->d_name + 4)) continue;
+        snprintf(p, sizeof p, "%s/class/drm/%s/device/gpu_busy_percent", sysfs, e->d_name);
+        if (access(p, R_OK) != 0) continue;
+        snprintf(dev, cap, "%s/class/drm/%s/device", sysfs, e->d_name);
+        matches++;
+    }
+    closedir(d);
+    if (matches == 1) return true;
+    dev[0] = 0;
+    return false;
+}
+
+// AMD GPUs: amdgpu's sysfs (busy percent, VRAM, hwmon temperature); false: no matching amdgpu device.
+static bool amdgpu_sample(PerfStats *s) {
+    char dev[512], hint[96];
+    int major = -1, minor = -1;
+#ifdef __linux__
+    pthread_mutex_lock(&g_lock);
+    major = g_gpu_drm_major;
+    minor = g_gpu_drm_minor;
+    pthread_mutex_unlock(&g_lock);
+#endif
+    // Resolve each sample so selection made after the overlay starts also takes effect.
+    if (!amdgpu_find(dev, sizeof dev, "/sys", major, minor)) return false;
+    gpu_hint(hint);
+    snprintf(s->gpu_name, sizeof s->gpu_name, "%s", hint[0] ? hint : "AMD GPU");
+    char p[640];
     snprintf(p, sizeof p, "%s/gpu_busy_percent", dev); s->gpu_pct = read_float_file(p);
     snprintf(p, sizeof p, "%s/mem_info_vram_used", dev); float u = read_float_file(p);
     snprintf(p, sizeof p, "%s/mem_info_vram_total", dev); float t = read_float_file(p);
@@ -448,7 +495,7 @@ static bool amdgpu_sample(PerfStats *s) {
         struct dirent *e;
         while ((e = readdir(d)))
             if (e->d_name[0] != '.') {
-                char q[400];
+                char q[1024];
                 snprintf(q, sizeof q, "%s/%s/temp1_input", p, e->d_name);
                 float v = read_float_file(q);
                 if (v >= 0) s->gpu_temp_c = v / 1000.0f;
@@ -523,6 +570,9 @@ static void *sampler(void *arg) {
     uint64_t last = plat_now_ns();
     for (;;) {
         uint64_t now = plat_now_ns();
+        // Do not retain another adapter's readings when identity arrives late or a sensor becomes unavailable.
+        s.gpu_name[0] = 0;
+        s.gpu_pct = s.gpu_temp_c = s.gpu_power_w = s.gpu_clock_mhz = s.vram_used_mb = s.vram_total_mb = -1;
         platform_sample(&s, (now - last) / 1e9);
         nvml_sample(&s);
 #ifdef _WIN32
@@ -539,7 +589,23 @@ static void *sampler(void *arg) {
     return NULL;
 }
 
-void perfmon_set_gpu_hint(const char *n) { snprintf(g_gpu_hint, sizeof g_gpu_hint, "%s", n ? n : ""); }
+void perfmon_set_gpu_hint(const char *n) {
+    pthread_mutex_lock(&g_lock);
+    snprintf(g_gpu_hint, sizeof g_gpu_hint, "%s", n ? n : "");
+#ifdef __linux__
+    g_gpu_drm_major = g_gpu_drm_minor = -1;
+#endif
+    pthread_mutex_unlock(&g_lock);
+}
+
+#ifdef __linux__
+void perfmon_set_gpu_drm(int major, int minor) {
+    pthread_mutex_lock(&g_lock);
+    g_gpu_drm_major = major;
+    g_gpu_drm_minor = minor;
+    pthread_mutex_unlock(&g_lock);
+}
+#endif
 
 void perfmon_snapshot(PerfStats *out) {
     static bool started;
