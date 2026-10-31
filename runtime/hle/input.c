@@ -26,13 +26,16 @@ enum {
 };
 
 _Static_assert(BTN_DOWN == BIND_DOWN && BTN_ZL == BIND_ZL, "bindings follow the button bits");
+_Static_assert(SDL_BUTTON_X2 == BIND_MOUSE_LAST - BIND_MOUSE, "BIND_MOUSE covers every SDL mouse button");
 
 static _Atomic uint64_t key_buttons, pad_buttons;
 static _Atomic int32_t key_lx, key_ly, key_rx, key_ry, pad_lx, pad_ly, pad_rx, pad_ry;
 static _Atomic int32_t menu_lx, menu_ly;
 static _Atomic bool menu_confirm;
 static uint8_t keys_down[SDL_SCANCODE_COUNT];
-static uint8_t mouse_down[8];  // SDL_BUTTON_LEFT .. X2 (keyboard bindings BIND_MOUSE + button)
+// SDL_BUTTON_LEFT (1) .. SDL_BUTTON_X2 (5): the side buttons (Back / Forward, "Mouse 4 / 5") included (keyboard
+// bindings BIND_MOUSE + button). Indexed by SDL's button number, so it is one past the highest one.
+static uint8_t mouse_down[SDL_BUTTON_X2 + 1];
 static SDL_Gamepad *pad;
 static _Atomic int64_t sampling;
 static _Atomic bool win_focused = true;  // main thread writes; guest input polls read
@@ -250,7 +253,7 @@ uint32_t rt_cam_pitch_scale(uint32_t lat, uint32_t lng) {
 }
 
 static void mouse_stick(int32_t *x, int32_t *y) {
-    static uint64_t last_ns;
+    static uint64_t last_frame = ~0ull, last_ns;
     static int32_t hx, hy;
     *x = *y = 0;
     if (!(mouse_held || test_mouse) || !g_settings.mouse_camera || cam_reading()) {
@@ -258,9 +261,15 @@ static void mouse_stick(int32_t *x, int32_t *y) {
         hx = hy = 0;
         return;
     }
+    // One fresh sample per game frame: several polls in a frame read the same stick (the game samples it more than
+    // once), but a fixed time gate used to hold a stale value across frames and added to the camera's lag. The frame
+    // counter advances with the game, so the mouse's motion is never carried past the frame it belongs to.
+    extern uint64_t framepace_game_frame(void);
+    uint64_t frame = framepace_game_frame();
+    if (frame == last_frame) { *x = hx; *y = hy; return; }
     uint64_t now = plat_now_ns();
-    if (last_ns && now - last_ns < 4000000) { *x = hx; *y = hy; return; }  // (several polls in one frame: one sample)
-    double dt = last_ns ? (double)(now - last_ns) / 1e9 : 1 / 60.0;
+    double dt = last_frame && now > last_ns ? (double)(now - last_ns) / 1e9 : 1 / 60.0;
+    last_frame = frame;
     last_ns = now;
     if (dt > 0.1) dt = 0.1;
     static double full = -1, dz = -1;
@@ -272,8 +281,9 @@ static void mouse_stick(int32_t *x, int32_t *y) {
     if (g_settings.mouse_invert_y) vy = -vy;
     double m = sqrt(vx * vx + vy * vy);
     if (m > 1e-3) {
-        double out = dz + m * (1 - dz);  // past the dead zone, then linear
-        if (out > 1) out = 1;
+        // Past the game's own stick dead zone so slow motion still turns the camera; no extra curve on top of it (a
+        // super-linear ramp made a slow mouse move turn slower than the hand and read as lag).
+        double out = (dz + m) < 1 ? (dz + m) : 1;
         vx *= out / m, vy *= out / m;
     }
     hx = *x = (int32_t)lround(vx * 32767);
@@ -413,7 +423,10 @@ void input_handle_event(const SDL_Event *e) {
         }
         break;
     case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_BUTTON_UP:
-        if (e->button.button < sizeof mouse_down && mouse_held) {
+        // Every SDL button (Left .. X2 - the side buttons included) is recorded whether or not the cursor is held in
+        // the window: a binding on Mouse 4 / 5 used to be dropped whenever relative mode was off (the cursor freed, a
+        // menu up, before the game first captured it), so the button looked undetected.
+        if (e->button.button >= SDL_BUTTON_LEFT && e->button.button <= SDL_BUTTON_X2) {
             if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN) last_device = DEVICE_KEYBOARD;
             mouse_down[e->button.button] = e->type == SDL_EVENT_MOUSE_BUTTON_DOWN;
             recompute_keyboard();

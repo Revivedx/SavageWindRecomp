@@ -25,8 +25,8 @@ enum {
     BIND_KEY_COUNT                                       // keyboard: buttons + both sticks + walk + tilt
 };
 enum { BIND_DEV_PAD, BIND_DEV_KEY };
-// A keyboard binding can also be a mouse button: BIND_MOUSE + SDL_BUTTON_LEFT (1) .. SDL_BUTTON_X2 (5), past every
-// SDL scancode.
+// A keyboard binding can also be a mouse button: BIND_MOUSE + SDL_BUTTON_LEFT (1) .. SDL_BUTTON_X2 (5 - the side
+// buttons, "Mouse 4 / 5"), past every SDL scancode. SDL_BUTTON_X2 is 5; runtime/hle/input.c static-asserts this.
 #define BIND_MOUSE 0x400
 #define BIND_MOUSE_LAST (BIND_MOUSE + 5)
 // What the player uses (runtime/hle/input.c input_last_device)
