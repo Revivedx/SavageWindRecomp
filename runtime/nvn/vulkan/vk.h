@@ -51,6 +51,7 @@ typedef struct {
     bool gpl;                  // graphics pipeline libraries with fast linking (exec.c)
     bool dmabuf;               // memory exported as dma-bufs (Linux: the guest heap, exec.c backend_heap_set)
     bool radv;                 // the driver is Mesa's RADV
+    bool turnip;               // the driver is Mesa's Turnip (Qualcomm Adreno; exec.c ubo_dynamic_mark_stage)
     bool amd_proprietary;      // the driver is AMD's own (Windows; textures.c's cube-compatible rule, #59)
     bool present_wait;         // VK_KHR_present_id + present_wait on (SAVAGEWIND_LOG_PRESENT: when frames are shown)
     bool fp16;                 // shaderFloat16 + 16-bit storage on (the FSR 3 upscaler's 16-bit shaders: fsr3.cpp)

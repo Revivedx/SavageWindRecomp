@@ -450,12 +450,22 @@ static int gsnap_mode(void);
 // where one binding of the whole heap is past maxStorageBufferRange (Mali-G610: 2 GB, the heap 3.25 GB), and read-only
 // global memory through copied ranges where gsnap is on (Mali by default). The split is Mali-only: other drivers with a
 // smaller limit keep the one binding of the whole heap they had (SAVAGEWIND_VK_GMEM_SPLIT=0/1 turns it off or on).
+// Where even two bindings are past the limit (Turnip: 128 MB), the heap is read through its buffer device address: a
+// binding past maxStorageBufferRange reads zeros there (BOTW's text came out blank), and an address has no such limit
+// (SAVAGEWIND_VK_GMEM_BDA=0/1 turns it off or on).
 void vk_translator_setup(void) {
-    const char *split = getenv("SAVAGEWIND_VK_GMEM_SPLIT");
-    maxwell_gmem_split = split ? atoi(split) != 0 : g_vk.is_mali && HEAP_MAX > g_vk.props.limits.maxStorageBufferRange;
+    const char *split = getenv("SAVAGEWIND_VK_GMEM_SPLIT"), *bda = getenv("SAVAGEWIND_VK_GMEM_BDA");
+    uint32_t lim = g_vk.props.limits.maxStorageBufferRange;
+    VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+    VkPhysicalDeviceFeatures2 f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &f12};
+    vkGetPhysicalDeviceFeatures2(g_vk.phys, &f);
+    bool can_bda = f12.bufferDeviceAddress && f.features.shaderInt64;
+    maxwell_gmem_bda = can_bda && (bda ? atoi(bda) != 0 : lim < GMEM_SPLIT || HEAP_MAX - GMEM_SPLIT > lim);
+    if (bda && atoi(bda) && !can_bda) LOG("[vk] SAVAGEWIND_VK_GMEM_BDA=1: the driver lacks bufferDeviceAddress or shaderInt64\n");
+    maxwell_gmem_split = !maxwell_gmem_bda && (split ? atoi(split) != 0 : g_vk.is_mali && HEAP_MAX > lim);
     maxwell_gmem_snap = gsnap_mode() != 0;
     LOG("[vk] shader global memory: %s (storage buffer limit %u MB), the HUD's reads %s\n",
-        maxwell_gmem_split ? "two bindings" : "one binding", g_vk.props.limits.maxStorageBufferRange >> 20,
+        maxwell_gmem_bda ? "by address" : maxwell_gmem_split ? "two bindings" : "one binding", lim >> 20,
         maxwell_gmem_snap ? "through copies" : "in place");
 }
 
@@ -645,7 +655,7 @@ VkSpan vk_transient_copy(const void *data, uint64_t size, uint64_t align) {
 
 // Per-draw constants that usually repeat the previous draw's (scale table, tint, driver constants): reuse that copy
 // while it's identical, within one submission. slot: one per kind of data.
-enum { DEDUPE_RSCALE_V, DEDUPE_RSCALE_F, DEDUPE_TINT, DEDUPE_DRV_V, DEDUPE_DRV_F, DEDUPE_DRV_C, DEDUPE_SLOTS };
+enum { DEDUPE_RSCALE_V, DEDUPE_RSCALE_F, DEDUPE_TINT, DEDUPE_DRV_V, DEDUPE_DRV_F, DEDUPE_DRV_C, DEDUPE_GMEM, DEDUPE_SLOTS };
 static VkSpan copy_dedupe(int slot, const void *data, uint64_t size, uint64_t align) {
     static struct { uint64_t seq, size; uint8_t data[0x800]; VkSpan span; } last[DEDUPE_SLOTS];
     uint64_t seq = vk_pending_seq();
@@ -2326,6 +2336,11 @@ static void ubo_dynamic_mark(VkBindingInfo *b, int n) {
 // the rest).
 static void ubo_dynamic_mark_stage(VkBindingInfo *b, int n, uint32_t set) {
     if (!ubo_dynamic_on()) return;
+    // Turnip (Mesa 26.2, Adreno 740) reads a dynamic uniform buffer of an independently made fragment library from set
+    // 0's descriptors instead of its own set 1: BOTW's lighting tables came out as NaN, a white screen. That set stays
+    // static there; vertex libraries and whole pipelines keep dynamic ones. tools/test_vk_gpl_dynamic.c shows it
+    // without the game.
+    if (g_vk.turnip && set == 1) return;
     uint32_t lim = g_vk.props.limits.maxDescriptorSetUniformBuffersDynamic, k = 0;
     if (lim > 32) lim = 32;
     uint32_t share = set == 0 ? (lim + 1) / 2 : lim / 2;
@@ -4168,6 +4183,14 @@ static VkBuffer gmem_buf;
 static VkDeviceMemory gmem_mem;
 static uint64_t gmem_size;
 
+// (maxwell_gmem_bda) the heap's memory has to be allocated with a device address
+static const void *gmem_alloc_chain(VkMemoryAllocateFlagsInfo *f, const void *next) {
+    if (!maxwell_gmem_bda) return next;
+    *f = (VkMemoryAllocateFlagsInfo){.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO, .pNext = next,
+                                     .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
+    return f;
+}
+
 static bool gmem_import(uint64_t size) {
     PFN_vkGetMemoryHostPointerPropertiesEXT props =
         (PFN_vkGetMemoryHostPointerPropertiesEXT)vkGetDeviceProcAddr(g_vk.dev, "vkGetMemoryHostPointerPropertiesEXT");
@@ -4178,7 +4201,8 @@ static bool gmem_import(uint64_t size) {
     VkImportMemoryHostPointerInfoEXT imp = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT,
                                             .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
                                             .pHostPointer = (void *)(uintptr_t)HEAP_BASE};
-    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &imp, .allocationSize = size,
+    VkMemoryAllocateFlagsInfo af;
+    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = gmem_alloc_chain(&af, &imp), .allocationSize = size,
                                .memoryTypeIndex = (uint32_t)__builtin_ctz(mp.memoryTypeBits)};
     VkDeviceMemory mem;
     if (vkAllocateMemory(g_vk.dev, &ai, NULL, &mem) != VK_SUCCESS) return false;
@@ -4187,7 +4211,7 @@ static bool gmem_import(uint64_t size) {
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .pNext = &eb, .size = size,
                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                                       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-                                      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT};
+                                      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | (maxwell_gmem_bda ? VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT : 0)};
     VkBuffer buf;
     if (vkCreateBuffer(g_vk.dev, &bi, NULL, &buf) != VK_SUCCESS) { vkFreeMemory(g_vk.dev, mem, NULL); return false; }
     vkBindBufferMemory(g_vk.dev, buf, mem, 0);
@@ -4236,7 +4260,8 @@ struct dma_heap_allocation_data {
 //   export   Vulkan memory exported as a dma-buf and mapped over the heap (the default on RADV)
 //   dmaheap  a dma-buf from the kernel's dma-buf heap (SAVAGEWIND_VK_DMA_HEAP: its name, default "system"), mapped over
 //            the heap and imported into Vulkan, as the Mali wrapper ICDs' WSI shares its images
-// Unset: export on RADV, import elsewhere.
+// Unset: export on RADV and Turnip (which has no host-pointer import: without a backing the shaders' global memory read
+// zeros), import elsewhere.
 enum { HEAP_IMPORT, HEAP_EXPORT, HEAP_DMAHEAP };
 
 static int heap_mode(void) {
@@ -4246,7 +4271,7 @@ static int heap_mode(void) {
     if (e && !strcmp(e, "import")) return HEAP_IMPORT;
     if (e && *e) LOG("[vk] SAVAGEWIND_VK_HEAP=%s: not import / export / dmaheap, the default instead\n", e);
     if (getenv("SAVAGEWIND_VK_HEAP_IMPORT")) return HEAP_IMPORT;
-    return g_vk.radv ? HEAP_EXPORT : HEAP_IMPORT;
+    return g_vk.radv || g_vk.turnip ? HEAP_EXPORT : HEAP_IMPORT;
 }
 
 static void heap_unmap(uint64_t size) {  // the heap's addresses back to plain memory (nothing has used them yet)
@@ -4259,7 +4284,7 @@ static VkBuffer heap_buffer(uint64_t size) {
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .pNext = &eb, .size = size,
                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                                       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-                                      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT};
+                                      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | (maxwell_gmem_bda ? VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT : 0)};
     VkBuffer buf = VK_NULL_HANDLE;
     if (vkCreateBuffer(g_vk.dev, &bi, NULL, &buf) != VK_SUCCESS) return VK_NULL_HANDLE;
     return buf;
@@ -4293,7 +4318,8 @@ static void heap_export(uint64_t size) {
     if (type == UINT32_MAX || !get_fd) { LOG("[vk] guest heap export: no memory type for it, imported instead\n"); return; }
     VkExportMemoryAllocateInfo ex = {.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
                                      .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
-    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &ex, .allocationSize = size,
+    VkMemoryAllocateFlagsInfo af;
+    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = gmem_alloc_chain(&af, &ex), .allocationSize = size,
                                .memoryTypeIndex = type};
     VkDeviceMemory mem;
     VkResult r = vkAllocateMemory(g_vk.dev, &ai, NULL, &mem);
@@ -4372,7 +4398,8 @@ static void heap_dmaheap(uint64_t size) {
         VkMemoryDedicatedAllocateInfo ded = {.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO, .buffer = buf};
         VkImportMemoryFdInfoKHR imp = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR, .pNext = dedicated ? &ded : NULL,
                                        .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, .fd = ifd};
-        VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &imp,
+        VkMemoryAllocateFlagsInfo af;
+        VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = gmem_alloc_chain(&af, &imp),
                                    .allocationSize = req.size > size ? req.size : size, .memoryTypeIndex = type};
         vr = vkAllocateMemory(g_vk.dev, &ai, NULL, &mem);
         if (vr != VK_SUCCESS) close(ifd);
@@ -4417,6 +4444,17 @@ static VkDescriptorBufferInfo gmem_info(void) {
     if (!off && !gmem_mapped && want > gmem_size && !gmem_import(want)) {
         LOG("[vk] guest heap import failed (%llu MB): shader global memory reads return zero\n", (unsigned long long)(want >> 20));
         off = 1;
+    }
+    if (maxwell_gmem_bda) {  // (GMemInfo: the heap's device address and the size mapped there; zeros without one)
+        static VkBuffer addr_of;
+        static VkDeviceAddress addr;
+        if (gmem_buf && addr_of != gmem_buf) {
+            VkBufferDeviceAddressInfo ai = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = gmem_buf};
+            addr = vkGetBufferDeviceAddress(g_vk.dev, &ai);
+            addr_of = gmem_buf;
+        }
+        const uint64_t info[2] = {gmem_buf ? addr : 0, gmem_buf ? gmem_size : 0};
+        return ubo_span(copy_dedupe(DEDUPE_GMEM, info, sizeof info, 256), sizeof info);
     }
     if (gmem_buf) {
         // The heap's first GMEM_SPLIT bytes (GMEM_BUFFER_INDEX); the rest is the second binding (gmem_info_hi): one binding
@@ -5238,6 +5276,9 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
                 tex_wh[sg][ti][0] = wh[0]; tex_wh[sg][ti][1] = wh[1];
             }
             w[n].pImageInfo = &ii[n];
+        } else if (b->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER && b->binding == GMEM_BUFFER_INDEX && maxwell_gmem_bda) {
+            bi[n] = gmem_info();
+            w[n].pBufferInfo = &bi[n];
         } else if (b->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER && b->binding < 17) {
             bi[n] = cbuf_info(stage, si, (int)b->binding, gx, gy, gz);
             w[n].pBufferInfo = &bi[n];

@@ -1738,6 +1738,12 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         else sprintf(addr, "(ulong(%s) + ulong(%lld))", R(a), (long long)off);
         sp(&c->body, "    { ulong ga = %s - 0x%llxul; bool ok = ga < 0x%llxul;\n", addr,
            (unsigned long long)maxwell_gmem_base, (unsigned long long)maxwell_gmem_size);
+        if (c->glsl && maxwell_gmem_bda) {
+            // An address has no robustBufferAccess bounds: check the whole access (a sub-word one's containing word)
+            // against the memory actually mapped, before any read or write through it.
+            unsigned bytes = size < 4 ? 4 : size == 5 ? 8 : size >= 6 ? 16 : 4;
+            sp(&c->body, "      ok = ok && gmem_addr != 0ul && gmem_size >= %uu && (ga & ~3ul) <= gmem_size - %uu;\n", bytes, bytes);
+        }
         static const char *const ld_small[] = {"uint(gmem[ga])", "uint(int(char(gmem[ga])))",
                                                "uint(*(device ushort *)(gmem + ga))", "uint(int(*(device short *)(gmem + ga)))"};
         int nw = size == 5 ? 2 : size >= 6 ? 4 : 1;
@@ -2237,9 +2243,15 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     if (info->uses_gmem) {
         // The heap in one storage buffer, or (maxwell_gmem_split: the device's maxStorageBufferRange is below the heap,
         // Mali-G610's 2 GB against 3 GB) in two, split at GMEM_SPLIT. GLD / GST read and write a word of it.
-        bool split = maxwell_gmem_split;
-        sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GMem { uint w[]; } gmem_;\n", set, GMEM_BUFFER_INDEX,
-           c->uses_gmem_store ? "" : "readonly ");
+        bool split = maxwell_gmem_split && !maxwell_gmem_bda;
+        if (maxwell_gmem_bda)  // (the heap by address: GMemInfo holds it and its mapped size; emit_insn checks every access)
+            sp(&s, "#extension GL_EXT_buffer_reference : require\n"
+                   "layout(buffer_reference, std430, buffer_reference_align = 4) %sbuffer GMem { uint w[]; };\n"
+                   "layout(std140, set = %d, binding = %d) uniform GMemInfo { uint64_t gmem_addr; uint64_t gmem_size; };\n"
+                   "#define gmem_ GMem(gmem_addr)\n", c->uses_gmem_store ? "" : "readonly ", set, GMEM_BUFFER_INDEX);
+        else
+            sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GMem { uint w[]; } gmem_;\n", set, GMEM_BUFFER_INDEX,
+               c->uses_gmem_store ? "" : "readonly ");
         if (split)
             sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GMem2 { uint w[]; } gmem2_;\n", set, GMEM2_BUFFER_INDEX,
                c->uses_gmem_store ? "" : "readonly ");
@@ -2434,11 +2446,12 @@ size_t maxwell_binary_size(const uint8_t *blob, size_t max_size, int stage) {
 #ifndef TRANSLATOR_ID
 #define TRANSLATOR_ID __DATE__ " " __TIME__
 #endif
-bool maxwell_gmem_split, maxwell_gmem_snap;
-// (the two switches above change translations: they name caches of their own)
+bool maxwell_gmem_split, maxwell_gmem_snap, maxwell_gmem_bda;
+// (the switches above change translations: they name caches of their own)
 const char *maxwell_translator_id(void) {
     static __thread char id[64];  // (per thread: the precompile's workers ask for it at once)
-    snprintf(id, sizeof id, "%s%s%s", TRANSLATOR_ID, maxwell_gmem_split ? "-gs" : "", maxwell_gmem_snap ? "-gn" : "");
+    snprintf(id, sizeof id, "%s%s%s%s", TRANSLATOR_ID, maxwell_gmem_split ? "-gs" : "", maxwell_gmem_snap ? "-gn" : "",
+             maxwell_gmem_bda ? "-ga" : "");
     return id;
 }
 
