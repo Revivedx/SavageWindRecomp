@@ -262,9 +262,38 @@ void input_cam_frame(float ratio) {
     cam_mouse = true;
 }
 
+// Riding is detected through the camera: CameraHorse reads the right stick through rt_cam_stick, from a call site
+// (its lr) that no other camera uses. While it was read in the last quarter second Link is riding.
+#define CAM_CALLER_NS 250000000ull
+static _Atomic uint64_t horse_cam_ns;  // CameraHorse's last read (game thread)
+
+// CameraHorse's call site of the camera stick input in game version 1.9.0 (rt_cam_stick's lr).
+// SAVAGEWIND_HORSE_CAM=<lr, hex> overrides it, for another game version.
+#define HORSE_CAM_LR 0x7000c29000ull
+static uint64_t horse_cam_lr(void) {
+    static int64_t lr = -1;
+    if (lr < 0) lr = getenv("SAVAGEWIND_HORSE_CAM") ? (int64_t)strtoull(getenv("SAVAGEWIND_HORSE_CAM"), NULL, 16) : HORSE_CAM_LR;
+    return (uint64_t)lr;
+}
+
+static void cam_caller(uint64_t lr, uint64_t now) {
+    if (lr == horse_cam_lr()) horse_cam_ns = now;
+}
+
+// While riding, the keyboard's A and B swap: the keys bound to them press each other's button (E and Shift by
+// default). Only when one of the two is held do the bits differ; flipping both moves that press to the other button.
+static uint64_t ride_keys(uint64_t b) {
+    uint64_t t = horse_cam_ns;
+    bool riding = t && plat_now_ns() - t < CAM_CALLER_NS;
+    bool a_held = (b >> BIND_A) & 1, b_held = (b >> BIND_B) & 1;
+    if (riding && a_held != b_held) b ^= (1ull << BIND_A) | (1ull << BIND_B);
+    return b;
+}
+
 // tools/patches.py _cam_stick: the camera's stick input (two floats at out) when the mouse gives it; 0: the stick's
 int rt_cam_stick(uint64_t out, uint64_t lr) {
     cam_read_ns = plat_now_ns();
+    cam_caller(lr, cam_read_ns);
     bool mouse = cam_mouse && cam_native_on();
     if (cam_log_left()) {
         const float *p = (const float *)(uintptr_t)out;  // (CameraChase's main update: radius, pitch, yaw after it)
@@ -805,7 +834,7 @@ static void fill_state(Cpu *c) {
         LOG("[input] watching controller object %llx\n", (unsigned long long)(c->x[1] - 8));
     }
     bool menu = (!win_focused && !host_test) || menu_input_captured();  // host controls belong to the focused game window
-    uint64_t b = menu ? script_buttons : key_buttons | pad_buttons | escape_buttons | script_buttons;
+    uint64_t b = menu ? script_buttons : ride_keys(key_buttons) | pad_buttons | escape_buttons | script_buttons;
     b=pc_cursor_buttons(b);
     {   // injected Plus: held for ~10 presented frames (the game polls several times per frame)
         extern uint64_t renderer_present_count(void);
