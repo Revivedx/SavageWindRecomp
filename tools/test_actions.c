@@ -495,11 +495,15 @@ static void names_and_groups(void) {
         if (bind_key_gyro(slot)) assert(!strcmp(bind_input_group(slot), "gyro"));
         else assert(!bind_input_group(slot));
     }
-    assert(!strcmp(bind_menu_role(BIND_A), "Menu: confirm"));
-    assert(!strcmp(bind_menu_role(BIND_B), "Menu: back"));
-    assert(!strcmp(bind_menu_role(BIND_L), "Menu: previous tab"));
-    assert(!strcmp(bind_menu_role(BIND_R), "Menu: next tab"));
-    assert(!bind_menu_role(BIND_X) && !bind_menu_role(-1) && !bind_menu_role(BIND_ACTION + JUMP));
+    static const char *const menu_names[] = {"Menu: confirm", "Menu: back", "Menu: Hero's Path", "Menu: sort / sensor"};
+    for (int i = 0; i < 4; i++) assert(!strcmp(bind_input_name(BIND_A + i), menu_names[i]));
+    assert(!strcmp(bind_input_name(BIND_PLUS), "Pause menu") && !strcmp(bind_input_name(BIND_MINUS), "Map (Sheikah Slate)"));
+    assert(!strcmp(bind_input_name(BIND_UP), "Quick menu: runes") && !strcmp(bind_input_name(BIND_LEFT), "Quick menu: shields"));
+    assert(!strcmp(bind_input_name(BIND_RIGHT), "Quick menu: weapons"));
+    // no listed input is called by its Switch button
+    static const char *const raw[] = {"A", "B", "X", "Y", "L", "R", "ZL", "ZR", "Plus", "Minus", "D-pad Left", "D-pad Up", "D-pad Right"};
+    for (int slot = 0; slot < BIND_PAD_COUNT; slot++)
+        for (unsigned i = 0; i < sizeof raw / sizeof *raw; i++) assert(strcmp(bind_input_name(slot), raw[i]));
 }
 
 int main(void) {

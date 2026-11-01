@@ -43,9 +43,15 @@ static const char *const k_ini[BIND_KEY_COUNT] = {
     "ls_up", "ls_down", "ls_left", "ls_right", "rs_up", "rs_down", "rs_left", "rs_right", "walk", "tilt",
     "gyro_up", "gyro_down", "gyro_left", "gyro_right", "gyro_turn_left", "gyro_turn_right", "gyro_center", "fly",
 };
+// What each raw Switch input does apart from the 41 actions: the Key bindings page and the F1 overlay list these by
+// function, never by the Switch button. The two with no function of their own (left stick press, D-pad Down: the
+// actions Crouch, Call horse and Throw distance cover them) are not listed and keep their Switch names.
 static const char *const k_names[BIND_KEY_COUNT] = {
-    "A", "B", "X", "Y", "Left stick press", "Right stick press", "L", "R", "ZL", "ZR", "Plus", "Minus",
-    "D-pad Left", "D-pad Up", "D-pad Right", "D-pad Down", "Move forward", "Move back", "Move left",
+    "Menu: confirm", "Menu: back", "Menu: Hero's Path", "Menu: sort / sensor",
+    "Left stick press", "Menu: inspect / zoom", "Menu: previous tab", "Menu: next tab",
+    "Menu: previous tab (alt)", "Menu: next tab (alt)", "Pause menu", "Map (Sheikah Slate)",
+    "Quick menu: shields", "Quick menu: runes", "Quick menu: weapons", "D-pad Down",
+    "Move forward", "Move back", "Move left",
     "Move right", "Camera up", "Camera down", "Camera left", "Camera right", "Walk",
     "Tilt (hold)",
     "Gyro tilt up", "Gyro tilt down", "Gyro tilt left", "Gyro tilt right",
@@ -74,16 +80,6 @@ const char *bind_input_name(int slot) {
 }
 
 const char *bind_input_group(int slot) { return bind_key_gyro(slot) ? "gyro" : NULL; }
-
-const char *bind_menu_role(int slot) {
-    switch (slot) {
-    case BIND_A: return "Menu: confirm";
-    case BIND_B: return "Menu: back";
-    case BIND_L: return "Menu: previous tab";
-    case BIND_R: return "Menu: next tab";
-    default: return NULL;
-    }
-}
 
 // fam: 0 Nintendo (and pads SDL doesn't name), 1 Xbox, 2 PlayStation
 const char *bind_pad_label(int host, int fam) {

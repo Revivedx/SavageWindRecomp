@@ -114,10 +114,12 @@ static void action_table(const char *id, int fam, int cd, int cs, int ms) {
     ImGui::EndTable();
 }
 
+enum { FIXED_ESC = -1, FIXED_F1 = -2 };  // (rows of switch_table that are not a slot)
+
 // Rows of Switch inputs: the controller button and the key bound to each
 static void switch_table(const char *id, const int *order, int rows, int fam, int cd, int cs, int ms) {
     if (!ImGui::BeginTable(id, 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX)) return;
-    ImGui::TableSetupColumn("Switch", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+    ImGui::TableSetupColumn(tr("Action"), ImGuiTableColumnFlags_WidthStretch, 1.0f);
     ImGui::TableSetupColumn(tr("Controller"), ImGuiTableColumnFlags_WidthStretch, 1.3f);
     ImGui::TableSetupColumn(tr("Keyboard"), ImGuiTableColumnFlags_WidthStretch, 1.3f);
     ImGui::TableHeadersRow();
@@ -126,6 +128,14 @@ static void switch_table(const char *id, const int *order, int rows, int fam, in
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
         ImGui::AlignTextToFramePadding();
+        if (slot == FIXED_ESC || slot == FIXED_F1) {  // hard-wired, so this page can't be locked out: shown, never changed
+            ImGui::TextUnformatted(tr(slot == FIXED_ESC ? "Pause menu / back" : "Savage Wind menu"));
+            ImGui::TableNextColumn();
+            ImGui::TextDisabled("%s", slot == FIXED_ESC ? "-" : tr(bind_pad_label(5 /* guide */, fam)));
+            ImGui::TableNextColumn();
+            ImGui::TextDisabled("%s", tr(bind_key_label(slot == FIXED_ESC ? SDL_SCANCODE_ESCAPE : SDL_SCANCODE_F1)));
+            continue;
+        }
         ImGui::TextUnformatted(tr(bind_input_name(slot)));
         ImGui::TableNextColumn();
         if (bind_pad_slot(slot)) cell(BIND_DEV_PAD, slot, fam, cd, cs, ms);
@@ -189,24 +199,20 @@ extern "C" void controls_bindings_draw(float scale) {
     if (ImGui::Button(tr("Reset actions to defaults"))) { bind_capture_cancel(); act_reset(); settings_save(); }
     ImGui::EndDisabled();
 
-    // what no action covers: the sticks, camera, motion, the menu buttons and the d-pad's quick menus
-    ImGui::SeparatorText(tr("Movement, camera and menus"));
-    static const int other[] = {BIND_PLUS, BIND_MINUS, BIND_UP, BIND_LEFT, BIND_RIGHT, BIND_LS_UP, BIND_LS_DOWN,
-                                BIND_LS_LEFT, BIND_LS_RIGHT, BIND_RS_UP, BIND_RS_DOWN, BIND_RS_LEFT, BIND_RS_RIGHT,
-                                BIND_WALK, BIND_TILT, BIND_GYRO_UP, BIND_GYRO_DOWN, BIND_GYRO_LEFT, BIND_GYRO_RIGHT,
-                                BIND_GYRO_TURN_LEFT, BIND_GYRO_TURN_RIGHT, BIND_GYRO_CENTER, BIND_FLY};
+    // what no action covers: the game's menus and quick menus, then movement, camera and motion. Raw Switch buttons are
+    // never listed by their name, only by what they do.
+    ImGui::SeparatorText(tr("Menus"));
+    static const int menus[] = {BIND_PLUS, BIND_MINUS, BIND_UP, BIND_LEFT, BIND_RIGHT, BIND_A, BIND_B, BIND_X, BIND_Y,
+                                BIND_L, BIND_R, BIND_ZL, BIND_ZR, BIND_RSTICK, FIXED_ESC, FIXED_F1};
+    switch_table("##binds_menus", menus, (int)(sizeof menus / sizeof *menus), fam, cd, cs, ms);
+    ImGui::SeparatorText(tr("Movement, camera and motion"));
+    static const int other[] = {BIND_LS_UP, BIND_LS_DOWN, BIND_LS_LEFT, BIND_LS_RIGHT, BIND_RS_UP, BIND_RS_DOWN,
+                                BIND_RS_LEFT, BIND_RS_RIGHT, BIND_WALK, BIND_TILT, BIND_GYRO_UP, BIND_GYRO_DOWN,
+                                BIND_GYRO_LEFT, BIND_GYRO_RIGHT, BIND_GYRO_TURN_LEFT, BIND_GYRO_TURN_RIGHT,
+                                BIND_GYRO_CENTER, BIND_FLY};
     const int other_rows = (int)(sizeof other / sizeof *other) - (control_enabled() ? 0 : 1);  // (the fly row: test builds only)
     switch_table("##binds_other", other, other_rows, fam, cd, cs, ms);
 
-    // the buttons the actions follow: changing one moves every action that has no binding of its own
-    if (ImGui::CollapsingHeader(tr("Advanced: Switch buttons"))) {
-        ImGui::PushTextWrapPos(0);
-        ImGui::TextDisabled("%s", tr("Every action follows one of these until it has a binding above."));
-        ImGui::PopTextWrapPos();
-        static const int buttons[] = {BIND_A, BIND_B, BIND_X, BIND_Y, BIND_L, BIND_R, BIND_ZL, BIND_ZR, BIND_DOWN,
-                                      BIND_LSTICK, BIND_RSTICK};
-        switch_table("##binds_buttons", buttons, (int)(sizeof buttons / sizeof *buttons), fam, cd, cs, ms);
-    }
     ImGui::Spacing();
     ImGui::BeginDisabled(bind_is_default(BIND_DEV_PAD));
     if (ImGui::Button(tr("Reset controller to defaults"))) { bind_capture_cancel(); bind_reset(BIND_DEV_PAD); }
@@ -217,10 +223,8 @@ extern "C" void controls_bindings_draw(float scale) {
     ImGui::EndDisabled();
 
     ImGui::PushTextWrapPos(0);
-    ImGui::TextDisabled("%s %s", tr("Bindings apply to the game only. Menus keep the fixed layout (right face button / Enter "
-                                 "select, bottom face button / Esc back), and the in-game menu always opens with F1 or Esc, or "
-                                 "the controller's Back + Start held together, or its Home / Guide button - so this page can't be "
-                                 "locked out. The game's button icons follow the controller bindings."),
-                       tr("In the title, pause and map menus, unbound arrow keys act as the left stick and Enter selects."));
+    ImGui::TextDisabled("%s", tr("Bindings apply to the game only. Esc and F1 always open the in-game menu, and so do the "
+                                 "controller's Back + Start held together or its Home / Guide button, so this page can't "
+                                 "be locked out. The game's button icons follow the controller bindings."));
     ImGui::PopTextWrapPos();
 }

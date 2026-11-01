@@ -89,8 +89,8 @@ static_assert(sizeof(Entry) == 0x30);
 enum { KIND_TOGGLE = 0, KIND_CHOICE = 1, KIND_BUTTON = 2 };
 
 enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_COLOUR, P_AUDIO, P_CONTROLS, P_BINDS, P_LANGUAGE, P_COUNT };
-// A_BIND: Item.arg is a binding slot (an input, or BIND_ACTION + an action); the next key, mouse button or controller button binds it
-enum Action { A_NONE, A_PAGE, A_BIND, A_BINDS_HEADER, A_RESET_BINDS, A_RESTART, A_QUIT, A_SIZE_LIST };
+// A_FIXED: a greyed row for an input that can never be rebound (Item.arg: 0 Esc, 1 F1); A_BIND: Item.arg is a binding slot (an input, or BIND_ACTION + an action); the next key, mouse button or controller button binds it
+enum Action { A_NONE, A_PAGE, A_BIND, A_BINDS_HEADER, A_RESET_BINDS, A_RESTART, A_QUIT, A_SIZE_LIST, A_FIXED };
 
 struct Item {
     int page;
@@ -657,9 +657,15 @@ void build_items(void) {
     };
     for (int id = 0; id < ACT_COUNT; id++)
         if (!act_hidden(id) && act_name(id)) bind(BIND_ACTION + id, act_name(id));
+    // the game's menus: what the Switch buttons do outside the actions, listed by function (never by button name)
+    for (int sl : {BIND_PLUS, BIND_MINUS, BIND_UP, BIND_LEFT, BIND_RIGHT, BIND_A, BIND_B, BIND_X, BIND_Y, BIND_L, BIND_R,
+                   BIND_ZL, BIND_ZR, BIND_RSTICK})
+        bind(sl, bind_input_name(sl));
+    // Esc and F1 are hard-wired (the menu can always be reached): shown greyed, never rebound
+    v.push_back(button(P_BINDS, "Pause menu / back", "Fixed: this key always works.", "", A_FIXED, 0));
+    v.push_back(button(P_BINDS, "Savage Wind menu", "Fixed: this key always opens it.", "", A_FIXED, 1));
     for (int sl = BIND_LS_UP; sl <= BIND_RS_RIGHT; sl++) bind(sl, bind_input_name(sl));
     bind(BIND_WALK, bind_input_name(BIND_WALK));
-    for (int sl : {BIND_PLUS, BIND_MINUS, BIND_LEFT, BIND_UP, BIND_RIGHT, BIND_DOWN}) bind(sl, bind_input_name(sl));
     bind(BIND_TILT, bind_input_name(BIND_TILT));
     v.back().desc = "Hold it and move the mouse to tilt the controller. Press A, then the new key.";
     static const char *const gyro_help[] = {"Tilt upward.", "Tilt downward.", "Tilt left.", "Tilt right.",
@@ -669,8 +675,6 @@ void build_items(void) {
         bind(sl, bind_input_name(sl));
         v.back().desc = gyro_help[sl - BIND_GYRO_UP];
     }
-    for (int sl : {BIND_A, BIND_B, BIND_X, BIND_Y, BIND_L, BIND_R, BIND_ZL, BIND_ZR, BIND_LSTICK, BIND_RSTICK})
-        bind(sl, bind_input_name(sl));
     v.push_back(button(P_BINDS, "Reset all bindings", "Every key and button back to its default.", "Reset", A_RESET_BINDS, 0));
 
     // Language
@@ -785,7 +789,7 @@ bool two_candidate(uint64_t row) {
     const Item *it = item_of_row(row);
     if (g_cur_page != P_BINDS || !two_enabled() || !it) return false;
     if (is_binds_header(it)) return true;
-    return it->action == A_BIND;  // every binding row: label, keyboard/mouse button, controller button
+    return it->action == A_BIND || it->action == A_FIXED;  // every binding row: label, keyboard/mouse button, controller button
 }
 bool two_ready(uint64_t row) {
     for (const auto &r : g_two_rows) if (r.row == row) return true;
@@ -1377,6 +1381,10 @@ extern "C" int rt_opt_msg(uint32_t id, uint64_t out) {
         bool key = part == MSG_KEY;
         if (is_binds_header(it)) {
             s = tr(key ? "Keyboard/Mouse" : "Controller");
+        } else if (it->action == A_FIXED) {
+            grey = true;
+            if (key) s = tr(bind_key_label(it->arg ? SDL_SCANCODE_F1 : SDL_SCANCODE_ESCAPE));
+            else s = it->arg ? tr(bind_pad_label(5 /* guide */, bind_label_family())) : "-";
         } else {
             int dev, slot, ms;
             bool capture = bind_capture_active(&dev, &slot, &ms) && slot == it->arg &&
@@ -1411,6 +1419,8 @@ extern "C" int rt_opt_decide(uint64_t row) {
         g_next_page = it->arg;
         g_reopen = g_switching = true;
         return 1;
+    case A_FIXED:
+        return 2;
     case A_BIND:
         if (two_ready(row) && rd32(rd64(row) + 0x36c0) != 0) return 2;
         if (two_ready(row) && g_two_column && !slot_has_pad(it->arg)) return 2;  // (no controller side to bind)

@@ -18,8 +18,9 @@ host slots still swap among themselves on the same device, including the raw Swi
 
 The game's title, pause and map menus still use the raw Switch layer, including legacy raw-button rebinds. The runtime
 overlay and launcher keep their fixed navigation shortcuts. The separate UI update can use `bind_input_name`,
-`bind_input_group` ("gyro" or NULL), and `bind_menu_role` (provisional A/B/L/R roles, otherwise NULL). No slots are hidden
-by these helpers. Use `bind_pad_slot` for controller availability and `bind_is_default_slot` for defaults, including
+and `bind_input_group` ("gyro" or NULL). Raw Switch inputs are named by what they do (`bind_input_name(BIND_A)` is
+"Menu: confirm"), never by the button. No slots are hidden by these helpers; the page and overlay simply do not list
+left stick press and D-pad Down (their functions are the actions Crouch, Call horse and Throw distance). Use `bind_pad_slot` for controller availability and `bind_is_default_slot` for defaults, including
 `BIND_ACTION + id`; do not test for a stored `ACT_FOLLOW`.
 
 ## The Key bindings page
@@ -31,7 +32,7 @@ up/down keeps it, and the mouse hovers and clicks each button on its own. Confir
 a key or mouse button binds the keyboard side, a controller button the controller side (Esc cancels, as does waiting 5
 seconds). The hovered button is lit; the other one sits under a darker band, so only one looks selected.
 
-The rows are the 28 actions below, then Move forward/back/left/right and Camera up/down/left/right (keyboard only: the
+The rows are the 28 actions below, then the menu inputs (see "Menu inputs" below), then Move forward/back/left/right and Camera up/down/left/right (keyboard only: the
 controller cell reads "Stick" and is greyed), Walk, Tilt and the seven gyro keys (both devices). The F1 overlay's Controls
 page shows the same table from the same in-process state; the launcher is a separate process.
 
@@ -39,6 +40,31 @@ The two-button rows hook the game's Options code through one strict optional sig
 (`tools/game_sites.py`, tested by `tools/test_two_button_sites.py`). If any signature does not match exactly, the group is
 off and the page falls back to the single-button rows. `SAVAGEWIND_TWO_BUTTON_ROWS=0` turns them off by hand. The layout
 numbers live in `runtime/ui/binding_row_layout.h`; the research notes are in `docs/research/`.
+
+## Menu inputs
+
+No raw Switch button is listed on the page or in the overlay. The functions the Switch layer carries beyond the 41
+actions are rows of their own, bound to the same raw slots with the same defaults (ini names unchanged):
+
+| Row | Slot | Default (Switch button) | What it does |
+|---|---|---|---|
+| Pause menu | Plus | Plus | opens the pause menu |
+| Map (Sheikah Slate) | Minus | Minus | opens the map |
+| Quick menu: runes | D-pad up | D-pad up | hold for the rune quick menu |
+| Quick menu: shields | D-pad left | D-pad left | shield quick menu |
+| Quick menu: weapons | D-pad right | D-pad right | weapon quick menu |
+| Menu: confirm | A | A | selects in the game's menus |
+| Menu: back | B | B | goes back |
+| Menu: Hero's Path | X | X | Hero's Path in the map |
+| Menu: sort / sensor | Y | Y | sorts the inventory, Sheikah Sensor in the map |
+| Menu: previous / next tab | L / R | L / R | switches the menu tab |
+| Menu: previous / next tab (alt) | ZL / ZR | ZL / ZR | the same, in the menus that use the triggers |
+| Menu: inspect / zoom | right stick click | right stick click | inspect an item, zoom the map |
+
+Left stick click (Crouch, a menu use) and D-pad down (Call horse, Throw distance) have no function of their own beyond
+the actions, so they are not listed; they keep their slots and defaults. Two greyed rows, Esc and F1, are fixed
+and cannot be rebound: Esc is Plus in play and B in menus, F1 opens the Savage Wind menu (controller: Back + Start or
+Home / Guide).
 
 ## The actions
 

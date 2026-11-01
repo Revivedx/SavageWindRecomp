@@ -51,9 +51,8 @@ extern int16_t g_bind_pad[BIND_KEY_COUNT];  // PADB value, -1 = none; use bind_p
 extern int16_t g_bind_key[BIND_KEY_COUNT];  // SDL_Scancode or BIND_MOUSE + button per input (0 = none)
 bool bind_pad_slot(int slot);               // raw buttons, walk, tilt, gyro and fly; false for stick directions
 
-const char *bind_input_name(int slot);         // "A", "Move forward", "Camera up"...
+const char *bind_input_name(int slot);         // "Pause menu", "Move forward", "Camera up"...
 const char *bind_input_group(int slot);        // "gyro" for the seven gyro slots, NULL otherwise
-const char *bind_menu_role(int slot);          // provisional menu roles for A / B / L / R, NULL otherwise
 const char *bind_pad_label(int host, int fam); // controller button in the pad family's own words (fam: input_pad_family)
 const char *bind_key_label(int scancode);
 int bind_label_family(void);                   // the connected controller's family (also on the start screen)
