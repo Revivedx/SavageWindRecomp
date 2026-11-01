@@ -89,7 +89,7 @@ static_assert(sizeof(Entry) == 0x30);
 enum { KIND_TOGGLE = 0, KIND_CHOICE = 1, KIND_BUTTON = 2 };
 
 enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_COLOUR, P_AUDIO, P_CONTROLS, P_BINDS, P_LANGUAGE, P_COUNT };
-// A_FIXED: a greyed row for an input that can never be rebound (Item.arg: 0 Esc, 1 F1); A_BIND: Item.arg is a binding slot (an input, or BIND_ACTION + an action); the next key, mouse button or controller button binds it
+// A_FIXED: a greyed row for an input that can never be rebound (Item.arg: 0 Esc, 1 F2); A_BIND: Item.arg is a binding slot (an input, or BIND_ACTION + an action); the next key, mouse button or controller button binds it
 enum Action { A_NONE, A_PAGE, A_BIND, A_BINDS_HEADER, A_RESET_BINDS, A_RESTART, A_QUIT, A_SIZE_LIST, A_FIXED };
 
 struct Item {
@@ -661,9 +661,9 @@ void build_items(void) {
     for (int sl : {BIND_PLUS, BIND_MINUS, BIND_UP, BIND_LEFT, BIND_RIGHT, BIND_A, BIND_B, BIND_X, BIND_Y, BIND_L, BIND_R,
                    BIND_ZL, BIND_ZR, BIND_RSTICK})
         bind(sl, bind_input_name(sl));
-    // Esc and F1 are hard-wired (the menu can always be reached): shown greyed, never rebound
+    // Esc and F2 are hard-wired (the game can always be paused, the cursor freed): shown greyed, never rebound
     v.push_back(button(P_BINDS, "Pause menu / back", "Fixed: this key always works.", "", A_FIXED, 0));
-    v.push_back(button(P_BINDS, "Savage Wind menu", "Fixed: this key always opens it.", "", A_FIXED, 1));
+    v.push_back(button(P_BINDS, "Free mouse cursor", "Fixed: this key frees the mouse cursor.", "", A_FIXED, 1));
     for (int sl = BIND_LS_UP; sl <= BIND_RS_RIGHT; sl++) bind(sl, bind_input_name(sl));
     bind(BIND_WALK, bind_input_name(BIND_WALK));
     bind(BIND_TILT, bind_input_name(BIND_TILT));
@@ -964,6 +964,37 @@ void hide_failed_header(uint64_t row) {
         wr8(root + 0x58, *(uint8_t *)(uintptr_t)(root + 0x58) & ~1u);
     g_two_header = row;
 }
+// The scale that fits a row name before the keyboard button: widths are estimated per character (the game's font is
+// proportional): narrow marks count less, kana / hanzi / hangul double, Thai combining marks nothing.
+float label_fit(const char *text) {
+    float w = 0;
+    for (const unsigned char *p = (const unsigned char *)text; *p;) {
+        unsigned cp = *p, n = 1;
+        if (cp >= 0xf0) cp &= 0x07, n = 4;
+        else if (cp >= 0xe0) cp &= 0x0f, n = 3;
+        else if (cp >= 0xc0) cp &= 0x1f, n = 2;
+        for (unsigned i = 1; i < n && p[i]; i++) cp = cp << 6 | (p[i] & 0x3f);
+        p += n;
+        if (cp == 0x0e31 || (cp >= 0x0e34 && cp <= 0x0e3a) || (cp >= 0x0e47 && cp <= 0x0e4e)) continue;
+        const bool narrow = cp == ' ' || cp == '.' || cp == ',' || cp == ':' || cp == ';' || cp == '\'' || cp == '!' ||
+                            cp == '|' || cp == 'i' || cp == 'l' || cp == '(' || cp == ')' || cp == '/' || cp == '-';
+        w += cp >= 0x2e80 ? 2.f : narrow ? .55f : 1.f;
+    }
+    const float room = 17.5f;
+    return w <= room ? 1.f : fmaxf(room / w, .62f);
+}
+// The Reset row's button spans both columns (key and controller), like the rows above it
+void wide_button(uint64_t row) {
+    uint64_t button = rd64(row + 0x28);
+    if (!two_ptr(button) || !two_ptr(rd64(button + 0x20))) return;
+    uint64_t root = rd64(rd64(button + 0x20) + 0x18);
+    TwoButtonPanes p;
+    if (!two_ptr(root) || !two_button_panes(root, p)) return;
+    const auto layout = binding_row_layout();
+    const uint8_t plate = *(uint8_t *)(uintptr_t)(p.plate + 0x58);  // (the row's own band: stays)
+    two_geometry(p, {layout.key.x, layout.pad.x + layout.pad.width - layout.key.x});
+    wr8(p.plate + 0x58, plate | 0x10);
+}
 bool two_configure(uint64_t row) {
     bool header = is_binds_header(item_of_row(row));
     if (header ? g_two_header == row : two_ready(row)) return true;
@@ -1025,6 +1056,11 @@ bool two_configure(uint64_t row) {
     } else {
         two_float(title, 0x30, layout.label_right);
         two_float(title, 0x50, layout.label_width);
+        if (const Item *it = item_of_row(row)) {  // a long name shrinks to fit before the first button
+            const float fit = label_fit(tr(it->title));
+            two_float(title, 0x48, fit);
+            two_float(title, 0x4c, fit);
+        }
         // The toggle part: only its plate and its box stay (its other panes are hidden for good).
         float togx = *(float *)(uintptr_t)(band.tog + 0x30);
         for (uint64_t c = band.tog, n = 0; n < 2; n++) {
@@ -1208,6 +1244,10 @@ extern "C" int rt_opt_two_row_state(uint64_t row) {
     return 1;
 }
 extern "C" int rt_opt_two_redraw(uint64_t row) {
+    if (g_cur_page == P_BINDS && two_enabled()) {
+        const Item *it = item_of_row(row);
+        if (it && it->action == A_RESET_BINDS) wide_button(row);
+    }
     if (!two_configure(row)) return 0;
     uint32_t msg = MSG_BASE + (rd32(row + 0x50) - GAME_ENTRIES) * 256;
     for (int col = 0; col < 2; col++) {
@@ -1383,8 +1423,7 @@ extern "C" int rt_opt_msg(uint32_t id, uint64_t out) {
             s = tr(key ? "Keyboard/Mouse" : "Controller");
         } else if (it->action == A_FIXED) {
             grey = true;
-            if (key) s = tr(bind_key_label(it->arg ? SDL_SCANCODE_F1 : SDL_SCANCODE_ESCAPE));
-            else s = it->arg ? tr(bind_pad_label(5 /* guide */, bind_label_family())) : "-";
+            s = key ? tr(bind_key_label(it->arg ? SDL_SCANCODE_F2 : SDL_SCANCODE_ESCAPE)) : "-";
         } else {
             int dev, slot, ms;
             bool capture = bind_capture_active(&dev, &slot, &ms) && slot == it->arg &&

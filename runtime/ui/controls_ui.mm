@@ -114,7 +114,7 @@ static void action_table(const char *id, int fam, int cd, int cs, int ms) {
     ImGui::EndTable();
 }
 
-enum { FIXED_ESC = -1, FIXED_F1 = -2 };  // (rows of switch_table that are not a slot)
+enum { FIXED_ESC = -1, FIXED_F2 = -2, FIXED_F1 = -3 };  // (rows of switch_table that are not a slot)
 
 // Rows of Switch inputs: the controller button and the key bound to each
 static void switch_table(const char *id, const int *order, int rows, int fam, int cd, int cs, int ms) {
@@ -128,12 +128,14 @@ static void switch_table(const char *id, const int *order, int rows, int fam, in
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
         ImGui::AlignTextToFramePadding();
-        if (slot == FIXED_ESC || slot == FIXED_F1) {  // hard-wired, so this page can't be locked out: shown, never changed
-            ImGui::TextUnformatted(tr(slot == FIXED_ESC ? "Pause menu / back" : "Savage Wind menu"));
+        if (slot == FIXED_ESC || slot == FIXED_F2 || slot == FIXED_F1) {  // hard-wired: shown, never changed
+            ImGui::TextUnformatted(tr(slot == FIXED_ESC ? "Pause menu / back" : slot == FIXED_F2 ? "Free mouse cursor" :
+                                                                                                    "Savage Wind menu"));
             ImGui::TableNextColumn();
-            ImGui::TextDisabled("%s", slot == FIXED_ESC ? "-" : tr(bind_pad_label(5 /* guide */, fam)));
+            ImGui::TextDisabled("%s", slot == FIXED_F1 ? tr(bind_pad_label(5 /* guide */, fam)) : "-");
             ImGui::TableNextColumn();
-            ImGui::TextDisabled("%s", tr(bind_key_label(slot == FIXED_ESC ? SDL_SCANCODE_ESCAPE : SDL_SCANCODE_F1)));
+            ImGui::TextDisabled("%s", tr(bind_key_label(slot == FIXED_ESC ? SDL_SCANCODE_ESCAPE :
+                                                        slot == FIXED_F2 ? SDL_SCANCODE_F2 : SDL_SCANCODE_F1)));
             continue;
         }
         ImGui::TextUnformatted(tr(bind_input_name(slot)));
@@ -203,7 +205,7 @@ extern "C" void controls_bindings_draw(float scale) {
     // never listed by their name, only by what they do.
     ImGui::SeparatorText(tr("Menus"));
     static const int menus[] = {BIND_PLUS, BIND_MINUS, BIND_UP, BIND_LEFT, BIND_RIGHT, BIND_A, BIND_B, BIND_X, BIND_Y,
-                                BIND_L, BIND_R, BIND_ZL, BIND_ZR, BIND_RSTICK, FIXED_ESC, FIXED_F1};
+                                BIND_L, BIND_R, BIND_ZL, BIND_ZR, BIND_RSTICK, FIXED_ESC, FIXED_F2, FIXED_F1};
     switch_table("##binds_menus", menus, (int)(sizeof menus / sizeof *menus), fam, cd, cs, ms);
     ImGui::SeparatorText(tr("Movement, camera and motion"));
     static const int other[] = {BIND_LS_UP, BIND_LS_DOWN, BIND_LS_LEFT, BIND_LS_RIGHT, BIND_RS_UP, BIND_RS_DOWN,
