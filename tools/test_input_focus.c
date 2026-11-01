@@ -28,7 +28,8 @@ void motion_pad_closed(void) {}
 void motion_sensor_event(const SDL_Event *e) { (void)e; sensor_events++; }
 void vibration_update(SDL_Gamepad *p, bool focused) { (void)p; vibrating = focused; }
 uint64_t renderer_present_count(void) { return 0; }
-uint64_t plat_now_ns(void) { return 0; }
+static uint64_t test_now_ns;
+uint64_t plat_now_ns(void) { return test_now_ns; }
 
 // PE linkers also keep exported helpers from input.c. These paths are outside this harness.
 static _Noreturn void unexpected_helper(void) { fputs("unexpected runtime helper\n", stderr); abort(); }
@@ -87,6 +88,25 @@ static void sample(uint64_t buttons, bool tilted) {
     if (tilted) assert(sticks[0] > 16000 && sticks[1] > 16000 && sticks[2] < -16000 && sticks[3] < -16000);
     else assert(!sticks[0] && !sticks[1] && !sticks[2] && !sticks[3]);
     assert(*(uint32_t *)((uint8_t *)state + 32) == 1);  // still connected while unfocused
+}
+
+static void steering_axes(int32_t key_x, int32_t key_y, int32_t pad_y, bool riding,
+                          int32_t expected_x, int32_t expected_y) {
+    key_lx = key_x;
+    key_ly = key_y;
+    pad_lx = 0;
+    pad_ly = pad_y;
+    script_lx = script_ly = 0;
+    horse_cam_ns = riding ? test_now_ns : 0;
+
+    uint64_t state[5] = {0};
+    uint32_t id = 0;
+    Cpu c = {0};
+    c.x[0] = (uintptr_t)state;
+    c.x[1] = (uintptr_t)&id;
+    fill_state(&c);
+    int32_t *sticks = (int32_t *)((uint8_t *)state + 16);
+    assert(sticks[0] == expected_x && sticks[1] == expected_y);
 }
 
 static void controls(SDL_Joystick *joy, bool held) {
@@ -191,6 +211,17 @@ int main(void) {
     pump();
     sample(0, false);
     SDL_CloseJoystick(joy);
+
+    // While mounted, keyboard forward is suppressed when steering; other input sources stay unchanged.
+    focus(true);
+    test_now_ns = 1000000000;
+    steering_axes(32767, 32767, 0, true, 32767, 0);
+    steering_axes(-32767, 32767, 0, true, -32767, 0);
+    steering_axes(0, 32767, 0, true, 0, 32767);
+    steering_axes(-32767, 0, 0, true, -32767, 0);
+    steering_axes(32767, 32767, 5000, true, 32767, 5000);
+    steering_axes(32767, 32767, 0, false, 32767, 32767);
+
     SDL_Quit();
     puts("input focus checks passed");
 }
