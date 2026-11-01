@@ -30,7 +30,8 @@ static const Setting settings[] = {
     I(upscale_quality, 0, UPQ_COUNT - 1, "ultra_quality|quality|balanced|performance|ultra_performance"),
     I(antialias, 0, AA_TAA, "off|smaa|taa"), B(game_fxaa),
     I(anisotropy, 0, 4, "game|2x|4x|8x|16x"), I(sharpening, 0, 10, NULL),
-    B(frame_gen), F(volume, 0, 2), B(reverb), B(movie_audio),
+    I(frame_gen, 0, FG_COUNT - 1, "off|fsr3|dlss"), I(frame_gen_mult, FG_MULT_MIN, FG_MULT_MAX, NULL),
+    F(volume, 0, 2), B(reverb), B(movie_audio),
     I(perf_overlay, 0, PERF_FULL, "off|fps|full"), I(fps_limit, 0, 360, NULL),
     I(vsync, 0, VSYNC_COUNT - 1, "on|fast|adaptive|off"), B(dpad_move),
     {"stick_deadzone[0]", &g_settings.stick_deadzone[0], FLOAT, 0, .5, NULL},
@@ -143,7 +144,7 @@ static void cmd_set(int argc, char **argv, ControlReply *r) {
         control_fail(r, "%s is read-only", s->key); return;
     }
 #ifdef __APPLE__
-    if (is(s, "anisotropy") || is(s, "sharpening") || is(s, "frame_gen") || is(s, "game_fxaa") ||
+    if (is(s, "anisotropy") || is(s, "sharpening") || is(s, "frame_gen") || is(s, "frame_gen_mult") || is(s, "game_fxaa") ||
         !strncmp(s->key, "color_", 6) || is(s, "hdr") || is(s, "hdr_white") || is(s, "vsync")) {
         control_fail(r, "%s is not supported by this backend", s->key); return;
     }

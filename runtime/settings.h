@@ -48,6 +48,13 @@ enum { VSYNC_ON = 0, VSYNC_FAST = 1, VSYNC_ADAPTIVE = 2, VSYNC_OFF = 3, VSYNC_CO
 // takes it), Off never (an SDR picture, which Windows shows dim and dull while its HDR is on)
 enum { HDR_AUTO = 0, HDR_ON = 1, HDR_OFF = 2, HDR_COUNT };
 enum { SPARSE_HEAP_AUTO = 0, SPARSE_HEAP_ON = 1, SPARSE_HEAP_OFF = 2, SPARSE_HEAP_COUNT };
+// Video > Frame generation: a frame made between each two the game draws, by AMD FSR 3 (vulkan/framegen.cpp) or
+// NVIDIA DLSS Frame Generation (vulkan/dlss.cpp: RTX 40 and later, Windows)
+enum { FG_OFF = 0, FG_FSR3 = 1, FG_DLSS = 2, FG_COUNT };
+// Video > Frame generation multiplier: the frames on screen for each the game draws (DLSS: 2x, 3x, 4x where the GPU
+// makes that many; FSR 3: 2x)
+#define FG_MULT_MIN 2
+#define FG_MULT_MAX 4
 // Video > Fullscreen mode (runtime/window_size.c winsize_apply): Automatic is borderless at the desktop's size and the
 // display's own mode at any other size it has; Borderless never changes the display's mode (another size is scaled to
 // the screen); Exclusive always uses a display mode (the desktop's size too, at its highest refresh rate)
@@ -66,7 +73,8 @@ typedef struct {
     bool game_fxaa;      // the game's own FXAA, in its scene -> final image composite (vulkan/exec.c fxaa_patch)
     int anisotropy;      // texture filtering: 0 the game's own, 1..4 = 2x, 4x, 8x, 16x (vulkan/textures.c)
     int sharpening;      // AMD CAS sharpening of the 3D image, 0 (off) .. 10 (100%) (vulkan/exec.c scene_post)
-    bool frame_gen;      // AMD FSR 3 frame generation: a frame made between each two the game draws (vulkan/framegen.cpp)
+    int frame_gen;       // FG_*: frame generation, a frame made between each two the game draws
+    int frame_gen_mult;  // FG_MULT_MIN..FG_MULT_MAX: frames on screen for each drawn (DLSS's multi frame generation)
     float volume;        // master volume, 1 = 100%
     bool reverb;         // room reverb effect
     bool movie_audio;

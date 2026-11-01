@@ -959,12 +959,35 @@ static void tab_display(void) {
                    "AMD FidelityFX CAS sharpens the 3D image after the upscaler (or at the window's resolution with the "
                    "upscaler off), before the HUD is drawn over it: edges get crisper without halos. Most useful with "
                    "AMD FSR 1.", false);
-        // AMD FSR 3 frame generation (vulkan/framegen.cpp; the frame rate counts the presented frames: framepace.c)
-        opt_toggle("Frame generation (AMD FSR 3)", &g_settings.frame_gen, false,
-                   "AMD FSR 3 makes a frame between each two the game draws: about twice the frames on screen. The "
-                   "frame rate above counts them all, so the game itself draws half of it (60 with 120) and the "
-                   "controls answer as at that rate, a little later. In play only: the menus and the map show the "
-                   "game's own frames. Fast moves can leave faint smears around Link and what moves on its own.");
+        // Frame generation: AMD FSR 3 (vulkan/framegen.cpp) or NVIDIA DLSS (vulkan/dlss.cpp, greyed off RTX 40
+        // and later); the frame rate counts the presented frames (framepace.c)
+        std::string fg_dlss = frame_gen_available(FG_DLSS) ? std::string(tr("NVIDIA DLSS")) :
+                              std::string(tr("NVIDIA DLSS")) + " " + tr("(NVIDIA RTX 40 and later)");
+        const char *fgn[] = {"Off", "AMD FSR 3", fg_dlss.c_str()};
+        bool fg_avail[FG_COUNT];
+        for (int i = 0; i < FG_COUNT; i++) fg_avail[i] = frame_gen_available(i);
+        static int fg_shown = -1;
+        opt_choice_avail("Frame generation", &g_settings.frame_gen, &fg_shown, fgn, fg_avail, FG_COUNT, FG_OFF,
+                         "Makes a frame between each two the game draws: about twice the frames on screen. The "
+                         "frame rate above counts them all, so the game itself draws half of it (60 with 120) and the "
+                         "controls answer as at that rate, a little later. In play only: the menus and the map show "
+                         "the game's own frames. AMD FSR 3 runs on any graphics card; fast moves can leave faint "
+                         "smears around Link and what moves on its own. NVIDIA DLSS: NVIDIA's AI frame generation, "
+                         "on NVIDIA RTX 40 and later graphics cards.");
+        // DLSS's multi frame generation: 3x and 4x where the GPU makes that many (RTX 50); greyed with the others
+        const char *multn[] = {"2x", "3x", "4x"};
+        bool mult_avail[FG_MULT_MAX - FG_MULT_MIN + 1];
+        for (int i = 0; i <= FG_MULT_MAX - FG_MULT_MIN; i++) mult_avail[i] = frame_gen_mult_available(FG_DLSS, FG_MULT_MIN + i);
+        int mi = (g_settings.frame_gen_mult >= FG_MULT_MIN ? g_settings.frame_gen_mult : FG_MULT_MIN) - FG_MULT_MIN;
+        static int mult_shown = -1;
+        if (g_settings.frame_gen != FG_DLSS) opt_disable_next();
+        if (opt_choice_avail("Frame generation multiplier", &mi, &mult_shown, multn, mult_avail,
+                             FG_MULT_MAX - FG_MULT_MIN + 1, 0,
+                             "NVIDIA DLSS only: the frames on screen for each the game draws. 3x and 4x (NVIDIA RTX 50 "
+                             "and later) make two or three frames between each two: the game draws a third or a "
+                             "quarter of the frame rate above (40 or 30 with 120), and the controls answer at that "
+                             "rate. Best with a high refresh rate display."))
+            g_settings.frame_gen_mult = FG_MULT_MIN + mi;
     }
 #endif
     opt_toggle("Asynchronous shaders", &g_settings.async_shaders, true,
