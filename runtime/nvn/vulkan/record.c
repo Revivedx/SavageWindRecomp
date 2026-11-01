@@ -22,8 +22,9 @@
 //                       of other sets of a pool may run at the same time (only the set written is externally
 //                       synchronized); a slot's pools are reset once its submission is done on the GPU, which implies
 //                       R submitted it, which implies R made every call before it (packets run in order)
-//   the queue           R's alone (submissions); T uses it only after rec_drain. Presents go on device.c's own queue
-//                       once rec_wait_submitted says the submission that signals their semaphore was made
+//   the queue           R's submissions; T uses it only after rec_drain. Presents go on it too (device.c: the calling
+//                       thread's, the present thread's for frame generation) once rec_wait_submitted says the
+//                       submission that signals their semaphore was made; queue_m (rec_queue_lock) around each
 //   Vulkan objects in   images, views, buffers, samplers, pipelines, layouts, query pools: created by T (or the build
 //   packets             workers) before the packet that names them; destroyed by T only once the submission that could
 //                       use them is done on the GPU - again after R recorded and submitted it
@@ -52,6 +53,9 @@ static _Atomic uint64_t head;  // (T) published end
 static _Atomic uint64_t tail;  // (R) recorded end
 static uint64_t wpos, published;  // (T) written end, the end last published
 static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t queue_m = PTHREAD_MUTEX_INITIALIZER;  // (rec_queue_lock)
+void rec_queue_lock(void) { pthread_mutex_lock(&queue_m); }
+void rec_queue_unlock(void) { pthread_mutex_unlock(&queue_m); }
 static pthread_cond_t cv_work = PTHREAD_COND_INITIALIZER, cv_done = PTHREAD_COND_INITIALIZER;
 static _Atomic int asleep;
 static _Atomic int done_waiters;  // threads inside a cv_done wait (WAIT_DONE): R broadcasts only when there are any
@@ -388,7 +392,9 @@ static void submit_run(const void *p) {
                         .waitSemaphoreInfoCount = a->nwait, .pWaitSemaphoreInfos = a->wait};
     SW_ZONE("vkQueueSubmit2");
     uint64_t t0 = NOW();
+    pthread_mutex_lock(&queue_m);  // (presents on the same queue: device.c)
     VkResult r = vkQueueSubmit2(g_vk.queue, 1, &si, VK_NULL_HANDLE);
+    pthread_mutex_unlock(&queue_m);
     uint64_t dt = NOW() - t0;
     if (prof) ADD(r_submit_ns, dt);
     if (dt > 50000000) {  // (a driver stall: a slow wait on the recorder shows where it was)

@@ -25,6 +25,7 @@
 #else
 #include "imgui_impl_vulkan.h"
 extern "C" bool vk_imgui_backend_init(void);  // runtime/nvn/vulkan/imgui_glue.cpp
+extern "C" void rec_queue_lock(void), rec_queue_unlock(void);  // (runtime/nvn/vulkan/record.c)
 #endif
 
 extern "C" {
@@ -1599,7 +1600,9 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
 #ifdef __APPLE__
     ImGui_ImplMetal_NewFrame(rp);
 #else
+    rec_queue_lock();  // (a new font texture is uploaded on the game's queue, which presents may be using: device.c)
     ImGui_ImplVulkan_NewFrame();
+    rec_queue_unlock();
 #endif
     ImGui::NewFrame();
 

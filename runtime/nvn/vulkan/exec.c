@@ -4929,7 +4929,9 @@ static bool gmem_sparse_refresh(uint64_t size) {
             .pBufferBinds = &buffer_bind,
             .signalSemaphoreCount = 1,
             .pSignalSemaphores = &gmem_sparse_timeline};
+        rec_queue_lock();  // (frame generation's presents use the queue from the present thread: device.c)
         VkResult r = vkQueueBindSparse(g_vk.queue, 1, &bind_info, VK_NULL_HANDLE);
+        rec_queue_unlock();
         if (r != VK_SUCCESS) {
             LOG("[vk] sparse guest heap batch binding failed (%d)\n", r);
             goto fail;

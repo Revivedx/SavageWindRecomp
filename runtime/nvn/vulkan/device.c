@@ -1663,6 +1663,15 @@ static void *pt_waiter(void *arg) {
     }
 }
 
+// (the game's queue is the recorder's too: record.c rec_queue_lock)
+static VkResult present_call(VkQueue q, const VkPresentInfoKHR *info) {
+    bool own = q == g_vk.queue;
+    if (own) rec_queue_lock();
+    VkResult r = vkQueuePresentKHR(q, info);
+    if (own) rec_queue_unlock();
+    return r;
+}
+
 // vkQueuePresentKHR, timed and given a present id for the waiter when SAVAGEWIND_LOG_PRESENT asks
 static VkResult queue_present(VkQueue q, const VkPresentInfoKHR *info) {
     if (pt_every < 0) {
@@ -1675,7 +1684,7 @@ static VkResult queue_present(VkQueue q, const VkPresentInfoKHR *info) {
             if (g_vk.present_wait) { pthread_t t; pthread_create(&t, NULL, pt_waiter, NULL); }
         }
     }
-    if (pt_every <= 0) return vkQueuePresentKHR(q, info);
+    if (pt_every <= 0) return present_call(q, info);
     pthread_mutex_lock(&pt_m);
     uint64_t id = ++pt_id;
     if (!pt_from) pt_from = id;
@@ -1684,7 +1693,7 @@ static VkResult queue_present(VkQueue q, const VkPresentInfoKHR *info) {
     VkPresentInfoKHR pi = *info;
     if (g_vk.present_wait) pi.pNext = &pid;
     uint64_t t = SDL_GetTicksNS();
-    VkResult r = vkQueuePresentKHR(q, &pi);
+    VkResult r = present_call(q, &pi);
     pthread_mutex_lock(&pt_m);
     pt[id % PT_RING].call = t, pt[id % PT_RING].shown = 0;
     pt_sc = info->pSwapchains[0];
@@ -1722,8 +1731,11 @@ static void recreate_swapchain(void) {
 // next frame is drawn); vkQueuePresentKHR and vkAcquireNextImageKHR take sc_lock (the swapchain is externally
 // synchronized). The next frame begins once only a game frame after a generated one is still waiting (vk_frame_begin:
 // one frame at a time otherwise, as before); a swapchain change and teardown wait for them all.
-// Only with SAVAGEWIND_VK_PRESENT_THREAD=1 now (create_device: one queue by default, #36, #293); otherwise presents on
-// the calling thread.
+// With SAVAGEWIND_VK_PRESENT_THREAD=1 (create_device: one queue by default, #36, #293), and for frame generation: its
+// groups wait for the GPU and their turn (present_wait_turn), which on the calling thread held up the next frame's
+// translation until the GPU had finished this one (4K, DLSS frame generation 2x: 36 drawn / 73 presented against 71 /
+// 143 here). Then the thread presents on the game's own queue (rec_queue_lock), and plain frames go on the calling
+// thread again once it has none left.
 static pthread_mutex_t pres_m = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t pres_cv = PTHREAD_COND_INITIALIZER;
 static pthread_mutex_t sc_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -1800,12 +1812,20 @@ static void *present_thread(void *arg) {
     return NULL;
 }
 
+static _Atomic int pres_thread_on;  // the present thread runs (the second queue, or frame generation since its first group)
+static void present_thread_start(const char *why) {
+    if (atomic_exchange(&pres_thread_on, 1)) return;
+    pthread_t t;
+    pthread_create(&t, NULL, present_thread, NULL);
+    LOG("[vk] present thread started (%s)\n", why);
+}
+
 static bool present_threaded(void) {
     static int on = -1;
     if (on < 0) {
         const char *e = getenv("SAVAGEWIND_VK_PRESENT_THREAD");
         on = g_vk.present_queue != g_vk.queue && !(e && !strcmp(e, "0"));
-        if (on) { pthread_t t; pthread_create(&t, NULL, present_thread, NULL); }
+        if (on) present_thread_start("second queue");
         LOG("[vk] presents on %s\n", on ? "a thread of their own (second queue)" : "the calling thread");
     }
     return on;
@@ -1856,7 +1876,7 @@ static bool acquire_test_timeout(void) {
 }
 
 static VkResult acquire_image(VkSemaphore sem, uint32_t *img) {
-    bool threaded = present_threaded();
+    bool threaded = present_threaded() || atomic_load(&pres_thread_on);
     uint64_t t0 = SDL_GetTicksNS();
     for (;;) {  // (threaded: a short timeout at a time, not holding the swapchain while the present thread needs it)
         uint64_t tc = SDL_GetTicksNS();
@@ -1878,7 +1898,14 @@ static VkResult acquire_image(VkSemaphore sem, uint32_t *img) {
 // Present window image img once sem is signalled (kind, seq, pos, n: frame generation's group and the frame's
 // submission, see present_wait_turn). Returns false when the swapchain must be made again.
 static bool present_image(uint32_t img, VkSemaphore sem, int kind, uint64_t seq, int pos, int n) {
-    if (!present_threaded()) {
+    bool queued = present_threaded() || kind != PRES_PLAIN;
+    if (!queued && atomic_load(&pres_thread_on)) {  // (a plain frame behind a group still waiting: in order after it)
+        pthread_mutex_lock(&pres_m);
+        queued = presq_n > 0;
+        pthread_mutex_unlock(&pres_m);
+    }
+    if (queued) present_thread_start("frame generation");
+    if (!queued) {
         VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &sem,
                                .swapchainCount = 1, .pSwapchains = &g_vk.swapchain, .pImageIndices = &img};
         rec_wait_submitted(seq);  // (as present_thread)
