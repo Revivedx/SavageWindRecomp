@@ -18,6 +18,7 @@ static _Atomic int quantity_value,quantity_max,quantity_request=-1;
 static _Atomic bool quantity_edit,quantity_replace;
 static uint64_t quantity_screen;
 static uint64_t shop_screen;
+static uint64_t game_over_screen;
 static bool ptr(uint64_t p);
 static bool preview_defaults_saved;
 static float preview_defaults[2];
@@ -88,7 +89,7 @@ bool pc_cursor_hide_system(void) {
 }
 
 void pc_cursor_frame(void) {
-    bool dialogue=false;shop_screen=0;
+    bool dialogue=false;shop_screen=game_over_screen=0;
     if(g_site.screen_mgr) {
         uint64_t mgr=LD64(g_site.screen_mgr),arr=mgr?LD64(mgr+0x30):0;
         unsigned count=mgr?LD32(mgr+0x28):0;
@@ -97,6 +98,7 @@ void pc_cursor_frame(void) {
         if(arr)for(unsigned i=0;i<count&&i<256;i++) {
             uint64_t text=LD64(arr+8*i);
             if(!text||LD8(text+0xfe)!=2)continue;
+            if(i==0x30&&LD64(text)==0x7001cef0a8ull)game_over_screen=text;
             if(LD64(text)==0x7001d4ed48ull)dialogue=true;
             uint64_t name=LD64(text+0xd0);
             if(name>=GUEST_LO&&name<GUEST_HI-32&&!strncmp((char*)(uintptr_t)name,"ShopBtnList",11))shop_screen=text;
@@ -112,8 +114,9 @@ void pc_cursor_frame(void) {
     }
     if(dialogue_active&&!dialogue)confirm_until=0;
     dialogue_active=dialogue;
-    bool ui = g_site.pause_state &&
-        (dialogue || shop_screen || framepace_menu_ui() || framepace_title_ui() || *(uint32_t *)(uintptr_t)g_site.pause_state == 4);
+    if(game_over_screen){dialogue_active=false;shop_screen=0;}
+    bool ui = game_over_screen || (g_site.pause_state &&
+        (dialogue || shop_screen || framepace_menu_ui() || framepace_title_ui() || *(uint32_t *)(uintptr_t)g_site.pause_state == 4));
     active = enabled() && ui;
     if(!pc_cursor_active()){
         hover_leave();
@@ -1200,12 +1203,14 @@ void rt_pc_cursor_manager(Cpu *c, uint64_t activate, uint64_t bounds) {
     if(!ptr(control)||!ptr(screen_mgr))return;
     uint64_t screens=LD64(screen_mgr+0x30),n=LD32(screen_mgr+0x28);
     if(n>0x2d&&ptr(screens))special_diagnostics(c,screens);
-    if(n>0x34&&ptr(screens)&&options_pointer(c,screens,bounds)){hover_leave();return;}
-    if(n>0x39&&ptr(screens)&&native_special(c,screens,bounds)){hover_leave();return;}
-    if(quantity_pointer(c,screens,n))return;
+    if(!game_over_screen) {
+        if(n>0x34&&ptr(screens)&&options_pointer(c,screens,bounds)){hover_leave();return;}
+        if(n>0x39&&ptr(screens)&&native_special(c,screens,bounds)){hover_leave();return;}
+        if(quantity_pointer(c,screens,n))return;
+    }
     if(pointer_keyboard_input){hover_leave();hover_until=0;return;}
     if(!click_pending&&!pointer_test()&&!motion_at)return;
-    if(n>0x2e&&ptr(screens)) {
+    if(!game_over_screen&&n>0x2e&&ptr(screens)) {
         uint64_t screen=LD64(screens+8*0x2e);
         if(ptr(screen)&&hover_target(c,screen,target)&&
            (pause_headers(c,screen,screens,n)||quest_categories(c,screen))){hover_leave();return;}
@@ -1217,6 +1222,7 @@ void rt_pc_cursor_manager(Cpu *c, uint64_t activate, uint64_t bounds) {
     for(unsigned id=0;id<n&&id<256&&ptr(screens);id++) {
         uint64_t screen=LD64(screens+8*id);
         if(!ptr(screen)||LD8(screen+0xfe)!=2)continue;
+        if(game_over_screen&&screen!=game_over_screen)continue;
         if(dialogue_active&&choices&&LD64(screen)!=0x7001d4ed48ull)continue;
         if(shop_screen&&!choices&&screen!=shop_screen)continue;
         if(dialogue_active&&!shop_screen&&LD64(screen)!=0x7001d4ed48ull)continue;
@@ -1300,7 +1306,7 @@ void rt_pc_cursor_manager(Cpu *c, uint64_t activate, uint64_t bounds) {
 }
 
 RT_ON_RESET(pc_cursor_reset) {
-    dialogue_active=false;shop_screen=quantity_screen=0;quantity_until=0;quantity_edit=false;quantity_request=-1;
+    dialogue_active=false;shop_screen=game_over_screen=quantity_screen=0;quantity_until=0;quantity_edit=false;quantity_request=-1;
     quantity_hold=0;quantity_repeat_at=0;preview_defaults_saved=false;sound_hover_key=sound_hover_until=0;
     hover_leave();
     options_scroll_valid=false;options_scroll=0;options_keyboard=false;options_page_pending=false;pointer_keyboard_input=false;pointer_mouse_events=0;options_keyboard_mouse_events=0;options_screen_active=options_rows_active=0;

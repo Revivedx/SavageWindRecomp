@@ -17,7 +17,8 @@ static uint64_t now=1000000000,frame=1;
 bool menu_cursor_free(void){return false;}
 uint64_t plat_now_ns(void){return now;}
 uint64_t renderer_present_count(void){return frame;}
-bool framepace_menu_ui(void){return true;}
+static bool test_menu_ui=true;
+bool framepace_menu_ui(void){return test_menu_ui;}
 bool framepace_title_ui(void){return false;}
 uint64_t framepace_script_frame(uint64_t value){return value;}
 void input_pc_escape(bool down){(void)down;abort();}
@@ -388,6 +389,37 @@ int main(void) {
     munmap(yaw_memory,65536);
 #endif
     pc_cursor_reset();assert(!options_scroll_valid&&!options_screen_active&&!options_rows_active);
+    // Game Over has pause state zero and is neither title nor pause UI. Its
+    // native cursor nodes must get hover/help and one confirm, without touching
+    // loaded background screens or replaying stationary hover callbacks.
+    pc_cursor_reset();test_menu_ui=false;ST8(header+0xfe,0);
+    ST64(screen,0x7001cef0a8ull);ST8(screen+0xfe,2);ST8(screen+0xfc,1);
+    ST64(sa+8*0x30,screen);ST32(sm+0x28,0x4b);
+    ST64(screen+0x90,node+0x40);ST32(screen+0x9c,0x40);
+    ST64(node+0x48,other+0x40);ST64(other+0x48,screen+0x88);
+    uint64_t second_button=GUEST_LO+0x6000,second_pane=GUEST_LO+0x6200;
+    ST64(node,nvt);ST64(node+0x18,button);ST64(node+0x20,screen);ST64(button+0x60,pane);
+    ST64(other,nvt);ST64(other+0x18,second_button);ST64(other+0x20,screen);ST64(second_button+0x60,second_pane);
+    for(int i=0;i<2;i++) {
+        uint64_t p=i?second_pane:pane;
+        *(float*)(p+0x7c)=0;*(float*)(p+0x8c)=i?-154:-96;
+        *(float*)(p+0x50)=264;*(float*)(p+0x54)=54;
+        *(float*)(p+0x70)=*(float*)(p+0x84)=1;
+        *(float*)(p+0x74)=*(float*)(p+0x80)=0;
+    }
+    pc_cursor_frame();assert(game_over_screen==screen&&pc_cursor_active()&&!dialogue_active);
+    position_inside=true;point[0]=0;point[1]=-96;motion_at=now;sampled_frame=frame;
+    cpu.x[0]=manager;cpu.x[1]=0;ST64(control+0x48,0);
+    unsigned old_activations=activations;
+    rt_pc_cursor_manager(&cpu,0x7000f57da8,0x7000123404);
+    assert(activated_node==node&&activations==old_activations+1);
+    for(int i=0;i<60;i++)rt_pc_cursor_manager(&cpu,0x7000f57da8,0x7000123404);
+    assert(activations==old_activations+1);
+    point[1]=-154;click_pending=true;
+    rt_pc_cursor_manager(&cpu,0x7000f57da8,0x7000123404);
+    assert(activated_node==other&&LD32(manager+0x10)==1&&!click_pending);
+    g_settings.pc_cursor=false;pc_cursor_frame();assert(!pc_cursor_active());
+    g_settings.pc_cursor=true;ST64(sa+8*0x30,0);pc_cursor_frame();assert(!game_over_screen&&!pc_cursor_active());
     puts("PASS: Options scroll/click/shared focus, SDL ownership/cursor visibility, page rebuild, Adventure Log/Ability Controls list registry, stationary hover, nested category clicks/locks, viewport preservation, pause header transitions/modal priority, setting gate and reboot reset (synthetic host state).");
 #ifdef _WIN32
     VirtualFree(vt_memory,0,MEM_RELEASE);
