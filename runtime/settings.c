@@ -24,6 +24,8 @@ Settings g_settings = {
     .volume = 1.0f,
     .reverb = true,
     .movie_audio = true,
+    .damage_taken = 100,
+    .damage_dealt = 100,
     .upscaler = UPSCALE_DEFAULT,  // (Off: the window's resolution; MetalFX on macOS)
     .upscale_quality = UPQ_QUALITY,
     .mouse_camera = true,
@@ -183,6 +185,11 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "no_weapon_wear")) g_settings.no_weapon_wear = atoi(val) != 0;
         else if (!strcmp(key, "infinite_arrows")) g_settings.infinite_arrows = atoi(val) != 0;
+        else if (!strcmp(key, "infinite_stamina")) g_settings.infinite_stamina = atoi(val) != 0;
+        else if (!strcmp(key, "god_mode")) g_settings.god_mode = atoi(val) != 0;
+        else if (!strcmp(key, "one_hit_kill")) g_settings.one_hit_kill = atoi(val) != 0;
+        else if (!strcmp(key, "damage_taken")) g_settings.damage_taken = atoi(val);  // (percent)
+        else if (!strcmp(key, "damage_dealt")) g_settings.damage_dealt = atoi(val);
         else if (!strcmp(key, "colour_exposure")) g_settings.color_exposure = (int)lroundf((float)atof(val) * 10);  // (EV)
         else if (!strcmp(key, "colour_contrast")) g_settings.color_contrast = atoi(val);  // (percent)
         else if (!strcmp(key, "colour_saturation")) g_settings.color_saturation = atoi(val);
@@ -322,6 +329,11 @@ void settings_save(void) {
     fprintf(f, "draw_distance = %s\n", k_drawdist[dd >= 0 && dd < DRAWDIST_COUNT ? dd : DRAWDIST_ORIGINAL]);
     fprintf(f, "no_weapon_wear = %d\n", g_settings.no_weapon_wear);
     fprintf(f, "infinite_arrows = %d\n", g_settings.infinite_arrows);
+    fprintf(f, "infinite_stamina = %d\n", g_settings.infinite_stamina);
+    fprintf(f, "god_mode = %d\n", g_settings.god_mode);
+    fprintf(f, "one_hit_kill = %d\n", g_settings.one_hit_kill);
+    fprintf(f, "damage_taken = %d\n", g_settings.damage_taken);
+    fprintf(f, "damage_dealt = %d\n", g_settings.damage_dealt);
     fprintf(f, "colour_exposure = %.1f\n", g_settings.color_exposure / 10.0);
     fprintf(f, "colour_contrast = %d\n", g_settings.color_contrast);
     fprintf(f, "colour_saturation = %d\n", g_settings.color_saturation);

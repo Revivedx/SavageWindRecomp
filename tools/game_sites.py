@@ -235,6 +235,14 @@ SITES = [
     # the instruction after the call, the return address that tells a weapon's wear from damage to Link or an enemy
     Site('no_wear_ret', 'code', 'f9400288 2a0003f5 aa1403e0 f9415d08 d63f0100 b5000000/ff00001f 52800036 '
          '14000000/fc000000', 0),
+    # Link's damage handling storing his new life, in quarter hearts (tools/patches.py _link_life): at its end, and on
+    # the path that takes one quarter off
+    Site('link_life_store', 'code', 'b90002b9 f9400300 94000000/fc000000 6b00033f 5400000d/ff00001f f9400300 b9400ff5 '
+         '94000000/fc000000', 0),
+    Site('link_life_tick', 'code', 'b90002a8 1e212000 1a9f07e0 14000000/fc000000 2a1f03fa 39715288 36080008/fff8001f '
+         'bd42e660', 0),
+    # the stamina setter's store, PlayerInfo +0xa4 (tools/patches.py _stamina)
+    Site('stamina_store', 'code', '1e204008 94000000/fc000000 bd00a668 f9400ff3 a940fbfd fc4207e8 d65f03c0', 2),
     # the pouch taking arrows off for the player's bow (tools/patches.py _remove_arrows; Accessibility > Infinite arrows)
     Site('pouch_remove_arrows', 'code', 'd101c3ff a9017bfd a9026ffc a90367fa a9045ff8 a90557f6 a9064ff4 910043fd '
          '90000008/9f00001f aa0003f3 f9400108/ffc003ff aa0103e0', 0),
@@ -267,6 +275,8 @@ OPTIONAL_GROUPS = [
     ('pouch_remove_arrows',),
     ('no_wear_store',),
     ('no_wear_hit', 'no_wear_ret'),
+    ('link_life_store', 'link_life_tick'),
+    ('stamina_store',),
 ]
 OPTIONAL = {n for g in OPTIONAL_GROUPS for n in g}
 
@@ -412,6 +422,9 @@ KNOWN = {
         'no_wear_store': 0x7000d93d50,
         'no_wear_hit': 0x7000b9542c,
         'no_wear_ret': 0x70007b09f4,
+        'link_life_store': 0x7000cc4e70,
+        'link_life_tick': 0x7000cc4da4,
+        'stamina_store': 0x7000cc7430,
         'main_data': 0x7001b7a000,
         'main_end': 0x7001e98000,
     },

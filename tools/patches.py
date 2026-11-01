@@ -626,19 +626,56 @@ def _no_wear(gen, a):
             f'  /* {a:#x}: str w20, [x11, #0x20] (equipped item value: no wear) */')
 
 
-# The weapon actor keeps its own copy of the durability and is what breaks (1.9.0 0x7000b952b8, 1.8.2 0x7000a81da8): a
-# hit takes its cost (w9, hundredths) off it with `sub w8, w8, w9`. With the option on the cost is 0, so nothing
-# changes and nothing is stored in the pouch either. That method takes every life off (Link's hearts, the enemies')
-# and only the call from the weapon's update (no_wear_ret) is wear: the saved return address, at sp + 0x28, tells
-# them apart.
+# Every life goes through one method (1.9.0 0x7000b952b8, 1.8.2 0x7000a81da8; x1 the life, a copy the caller stores):
+# every frame, for everything that has one, it takes the cost of the frame's hits (w9) off the life (w8) with
+# `sub w8, w8, w9`. The saved return address, at sp + 0x28, tells whose life it is: a weapon's durability, in
+# hundredths, when the call comes from the weapon's update (no_wear_ret, from #296: Unbreakable weapons, the actor's
+# own copy, which is what breaks); Link's hearts when it comes from his damage handling (the call just before
+# link_life_store; his losses are left to _link_life); anything else's otherwise (One-hit kill, the damage dealt).
+# runtime/assists.c rt_life_cost. Without Link's sites every call that isn't a weapon's counts as his.
 
 def _no_wear_hit(gen, a):
     assert _word(gen, a) == 0x4b090108, hex(_word(gen, a))  # sub w8, w8, w9
-    ret = gen.sites['no_wear_ret']
-    return ('{ extern int rt_no_wear(void); '
-            f'c->x[8] = (uint32_t)((uint32_t)c->x[8] - (rt_no_wear() && LD64(c->sp + 0x28) == {ret:#x}ull ? 0u : '
-            '(uint32_t)c->x[9])); }'
-            f'  /* {a:#x}: sub w8, w8, w9 (weapon hit: no wear) */')
+    wret = gen.sites['no_wear_ret']
+    if 'link_life_store' in gen.sites:
+        s = gen.sites['link_life_store']
+        bl = _word(gen, s - 0x20)  # (Link's call of this method: bl, then 6 instructions to the store)
+        assert bl >> 26 == 0x25 and 0 <= a - (s - 0x20 + sext(bl & 0x3FFFFFF, 26) * 4) < 0x400, hex(bl)
+        whose = f'r == {wret:#x}ull ? 1 : r == {s - 0x1c:#x}ull ? 2 : 0'
+    else:
+        whose = f'r == {wret:#x}ull ? 1 : 2'
+    return ('{ extern uint32_t rt_life_cost(uint32_t, int32_t, int); uint64_t r = LD64(c->sp + 0x28); '
+            f'c->x[8] = (uint32_t)((uint32_t)c->x[8] - rt_life_cost((uint32_t)c->x[9], (int32_t)c->x[8], {whose})); }}'
+            f'  /* {a:#x}: sub w8, w8, w9 (a life\'s hit: Accessibility) */')
+
+
+# Link's damage handling (1.9.0 0x7000cc4c3c; x21 his life, in quarter hearts) works on a copy of it (w25, also at
+# sp + 0xc): the frame's hits through the method above, a few cases of its own (one quarter, four, the death path,
+# which may leave one quarter), and stores the copy at its end (link_life_store, `str w25, [x21]`); another path takes
+# one quarter off and stores it at once (link_life_tick, `str w8, [x21]`). God mode keeps the old life, Damage taken
+# scales the loss (runtime/assists.c rt_link_life); the copy gets the same value, so what follows sees it.
+
+def _link_life(gen, a):
+    w = _word(gen, a)
+    if w == 0xb90002b9:  # str w25, [x21]
+        return ('{ extern int32_t rt_link_life(int32_t, int32_t); '
+                'int32_t v = rt_link_life((int32_t)LD32(c->x[21]), (int32_t)c->x[25]); '
+                'c->x[25] = (uint32_t)v; ST32(c->sp + 0xc, (uint32_t)v); ST32(c->x[21], (uint32_t)v); }'
+                f'  /* {a:#x}: str w25, [x21] (Link\'s life: Accessibility) */')
+    assert w == 0xb90002a8, hex(w)  # str w8, [x21]
+    return ('{ extern int32_t rt_link_life(int32_t, int32_t); '
+            'c->x[8] = (uint32_t)rt_link_life((int32_t)LD32(c->x[21]), (int32_t)c->x[8]); ST32(c->x[21], c->x[8]); }'
+            f'  /* {a:#x}: str w8, [x21] (Link\'s life: Accessibility) */')
+
+
+# Accessibility > Infinite stamina (runtime/assists.c rt_stamina): the stamina setter (1.9.0 0x7000cc7410; x0
+# PlayerInfo, s0 the new stamina, 1000 a wheel) stores it at +0xa4; with the option on a lower value isn't stored.
+
+def _stamina(gen, a):
+    assert _word(gen, a) == 0xbd00a668, hex(_word(gen, a))  # str s8, [x19, #0xa4]
+    return ('{ extern uint32_t rt_stamina(uint32_t, uint32_t); '
+            'ST32(c->x[19] + 0xa4, rt_stamina(LD32(c->x[19] + 0xa4), (uint32_t)c->v[8])); }'
+            f'  /* {a:#x}: str s8, [x19, #0xa4] (stamina: Accessibility) */')
 
 
 # tools/game_sites.py site -> its patch
@@ -736,6 +773,9 @@ PATCHES = {
     'pouch_remove_arrows': _remove_arrows,
     'no_wear_store': _no_wear,
     'no_wear_hit': _no_wear_hit,
+    'link_life_store': _link_life,
+    'link_life_tick': _link_life,
+    'stamina_store': _stamina,
 }
 
 

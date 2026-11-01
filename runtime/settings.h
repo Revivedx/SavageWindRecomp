@@ -100,6 +100,11 @@ typedef struct {
     // Options > Accessibility (runtime/assists.c): assists, each off by default
     bool no_weapon_wear;     // weapons, bows and shields lose no durability and never break
     bool infinite_arrows;    // shooting a bow takes no arrows from the pouch
+    bool infinite_stamina;   // the stamina wheel never goes down
+    bool god_mode;           // Link takes no damage
+    bool one_hit_kill;       // whatever else takes damage loses all its life at once
+    int damage_taken;        // percent of the damage Link takes (DAMAGE_CHOICES)
+    int damage_dealt;        // percent of the damage everything else takes (DAMAGE_CHOICES)
     int text_language;   // index in g_text_languages (runtime/language.h), 0: the host's
     int voice_language;  // index in g_voice_languages, 0: the text language's voices
     bool menu_tip_seen;  // the start screen's one-time "how to open the menu" note was shown (first PLAY ever)
@@ -108,6 +113,7 @@ typedef struct {
 #define STICK_DEADZONE_DEFAULT 0.10f  // (the Switch's own input service has one: the game expects 0 at rest)
 enum { DRAWDIST_ORIGINAL, DRAWDIST_MEDIUM, DRAWDIST_HIGH, DRAWDIST_COUNT };  // (Original: the game's own distances)
 float draw_distance_factor(void);  // the setting's factor on the game's distances (1: Original)
+#define DAMAGE_CHOICES {25, 50, 75, 100, 150, 200, 300, 400}  // (Accessibility's damage multipliers, percent)
 #define FOV_CHOICES {70, 80, 90, 100, 110, 120, 130, 140, 150}  // (percent; 100: the game's own)
 #define MOUSE_SENS_DEFAULT 3.0f  // (300% of the first default, 1; user, 2026-10-19)
 #define MOUSE_SENS_Y_CHOICES {50, 60, 70, 80, 90, 100, 110, 125, 150, 175, 200}  // (percent of the horizontal)

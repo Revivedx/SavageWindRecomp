@@ -99,7 +99,7 @@ struct Item {
     int (*get)(const Item &);
     void (*set)(const Item &, int v);
     int def;                                     // the default value ("reset to defaults")
-    int action, arg;                             // KIND_BUTTON
+    int action, arg;                             // KIND_BUTTON (arg: also a choice's own number)
     const char *(*desc_fn)(const Item &);        // a description made when shown (NULL: desc)
     void (*reset)(const Item &);                 // "reset to defaults" when it isn't set(def)
     bool (*value_off)(const Item &, int v);      // KIND_CHOICE: value v can't be picked yet (shown greyed)
@@ -166,6 +166,9 @@ static_assert(k_sens_y[SENS_Y_DEFAULT] == 100);
 constexpr int k_motion_sens[] = {25, 50, 75, 100, 125, 150, 200, 250, 300, 400};  // motion sensitivity, %
 constexpr int MOTION_SENS_DEFAULT = 3;
 static_assert(k_motion_sens[MOTION_SENS_DEFAULT] == 100);
+constexpr int k_damage[] = DAMAGE_CHOICES;  // Accessibility's damage multipliers, %
+constexpr int DAMAGE_DEFAULT = 3;
+static_assert(k_damage[DAMAGE_DEFAULT] == 100);
 constexpr int k_fov[] = FOV_CHOICES;  // field of view, % of the game's own
 constexpr int FOV_DEFAULT_INDEX = 3;
 static_assert(k_fov[FOV_DEFAULT_INDEX] == 100);
@@ -669,12 +672,39 @@ void build_items(void) {
                        "Starts the game again with these languages. Unsaved progress is lost.", "Restart", A_RESTART, 0));
 
     // Accessibility (runtime/assists.c): applied at once, while playing
+    v.push_back(toggle(P_ACCESS, "God mode", "Link takes no damage.",
+                       [](const Item &) { return (int)g_settings.god_mode; },
+                       [](const Item &, int x) { g_settings.god_mode = x; }, 0));
+    v.push_back(toggle(P_ACCESS, "One-hit kill", "Enemies go down in one hit.",
+                       [](const Item &) { return (int)g_settings.one_hit_kill; },
+                       [](const Item &, int x) { g_settings.one_hit_kill = x; }, 0));
+    for (int dealt = 0; dealt < 2; dealt++) {
+        Item it = choice(P_ACCESS, dealt ? "Damage dealt" : "Damage taken",
+                         dealt ? "How much damage enemies take. 100% is the game's own."
+                               : "How much damage Link takes. 100% is the game's own.",
+                         [](const Item &) { return N(k_damage); },
+                         [](const Item &, int x) {
+                             static std::string s;
+                             s = pct(k_damage[x]);
+                             return s.c_str();
+                         },
+                         nullptr, nullptr, DAMAGE_DEFAULT);
+        it.arg = dealt;
+        it.get = [](const Item &i) {
+            return nearest(k_damage, N(k_damage), i.arg ? g_settings.damage_dealt : g_settings.damage_taken);
+        };
+        it.set = [](const Item &i, int x) { (i.arg ? g_settings.damage_dealt : g_settings.damage_taken) = k_damage[x]; };
+        v.push_back(it);
+    }
     v.push_back(toggle(P_ACCESS, "Unbreakable weapons", "Weapons, bows and shields lose no durability and never break.",
                        [](const Item &) { return (int)g_settings.no_weapon_wear; },
                        [](const Item &, int x) { g_settings.no_weapon_wear = x; }, 0));
     v.push_back(toggle(P_ACCESS, "Infinite arrows", "Shooting a bow uses up no arrows. You still need one to shoot.",
                        [](const Item &) { return (int)g_settings.infinite_arrows; },
                        [](const Item &, int x) { g_settings.infinite_arrows = x; }, 0));
+    v.push_back(toggle(P_ACCESS, "Infinite stamina", "The stamina wheel never runs out.",
+                       [](const Item &) { return (int)g_settings.infinite_stamina; },
+                       [](const Item &, int x) { g_settings.infinite_stamina = x; }, 0));
 }
 
 // The game's table, extended (first opening, and again after a reboot reloads the game's own)
