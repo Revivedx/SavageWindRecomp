@@ -626,6 +626,21 @@ def _gyro_scene_actor(gen, a):
             f'  /* {a:#x}: bl (shrine apparatus input) */')
 
 
+# Per-action bindings (runtime/hle/bindings.c, docs/ACTIONS.md). The game reads its pad object through two functions,
+# isHold(pad, action) and isTrig(pad, action): each looks the action's pad mask up in a table of 41 (act_masks) and tests
+# it against the pad object's held (+0x11c) or pressed (+0x10) word. An action the player gave a binding of its own is
+# answered by the runtime from the host key / button instead (rt_act_query); every other answer stays the game's.
+def _act_query(kind):
+    def patch(gen, a):
+        assert _word(gen, a) == 0xa9be7bfd, hex(_word(gen, a))  # stp x29, x30, [sp, #-0x20]!
+        return ('{ extern int rt_act_query(int, uint64_t, uint64_t, uint64_t, uint64_t); '
+                f'int r = rt_act_query({kind}, c->x[0], c->x[1], c->x[30], {gen.sites["act_masks"]:#x}ull); '
+                'if (r >= 0) { c->x[0] = (uint64_t)r; return; } '
+                'uint64_t ea = c->sp - 0x20; ST64(ea, c->x[29]); ST64(ea + 8, c->x[30]); c->sp = ea; }'
+                f'  /* {a:#x}: stp x29, x30, [sp, #-0x20]! ({"pressed" if kind else "held"} query of an action) */')
+    return patch
+
+
 PATCHES = {
     'pc_map_focus': _pc_map_focus(False),
     'pc_map_focus_target': _pc_map_focus(True),
@@ -691,6 +706,8 @@ PATCHES = {
     'grass_blade_lateral_near': _grass_blade_lateral,
     'grass_blade_lateral_far': _grass_blade_lateral,
     'tree_ranges': _tree_ranges,
+    'act_hold': _act_query(0),
+    'act_trig': _act_query(1),
 }
 
 

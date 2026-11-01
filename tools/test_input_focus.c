@@ -39,6 +39,11 @@ int bind_slot_from_name(const char *name) { (void)name; unexpected_helper(); }
 bool bind_capture_event(const SDL_Event *e) { (void)e; unexpected_helper(); }
 void bind_capture_begin(int dev, int slot) { (void)dev; (void)slot; unexpected_helper(); }
 void bind_reset(int dev) { (void)dev; unexpected_helper(); }
+// (per-action bindings: none here, the Switch layer answers)
+uint64_t act_scan_keys(uint64_t b, int (*held)(int)) { (void)b; (void)held; return 0; }
+uint64_t act_scan_pad(uint64_t b, uint32_t host) { (void)b; (void)host; return 0; }
+void act_publish(uint64_t keys, uint64_t pads) { (void)keys; (void)pads; }
+void act_poll(bool live) { (void)live; }
 void motion_script(float p, float r, float ps, float ys) { (void)p; (void)r; (void)ps; (void)ys; unexpected_helper(); }
 // (the control endpoint, the virtual gyro and the DSU poll: off here)
 bool control_enabled(void) { return false; }

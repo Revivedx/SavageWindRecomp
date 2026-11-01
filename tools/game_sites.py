@@ -55,6 +55,11 @@ BLADE_LATERAL = ('bd4207e0 bd420be1 1e298821 1f0d0402 1f2d0400 1e202048 1e20cc40
 TRAVERSE = ('b9400028 2f00e400 36600008/fff8001f d65f03c0 a9bf7bfd 910003fd 12000042 12000083 94000000/fc000000 '
             '90000008/9f00001f 91000108/ffc003ff f9400108 b4000008/ff00001f bd431101 52a85908 1e202008 1e270102 1e22cc00 '
             '1e210800 a8c17bfd 14000000/fc000000 1e2e1001')
+# The game's input queries: isHold(pad, action) / isTrig(pad, action). Both load the action's pad mask from a table of 41
+# (cmp w1, #0x29) and test it against the pad object's held word (+0x11c) or pressed word (+0x10)
+PAD_QUERY = ('a9be7bfd a9014ff4 910003fd 7100a43f 90000008/9f00001f 91000108/ffc003ff 1a9f3029 aa0003f3 b8695914 '
+             '7100229f 7a421a84 54000001/ff00001f 2a1f03e0 94000000/fc000000 71000a9f 52800048 52800109 1a880128 '
+             '7200001f 1a941114')
 SITES = [
     # The Options screen (tools/patches.py; runtime/ui/game_options.mm)
     Site('opt_create_rows', 'code', 'd10303ff a9067bfd a9076ffc a90867fa a9095ff8 a90a57f6 a90b4ff4 910183fd '
@@ -225,6 +230,10 @@ SITES = [
          'b4000008/ff00001f 39406108 37280008/fff8001f 39402008 36000008/fff8001f d10143ff', 0),
     # a shrine apparatus fetching its input (tools/patches.py _gyro_scene_actor; runtime/pc_gyro_scene.c)
     Site('gyro_scene_actor', 'code', '2d59b28f 2d5ab689 94000000/fc000000 b5000000/ff00001f 9101d280 9101a281', 2),
+    # per-action bindings (tools/patches.py _act_query; runtime/hle/bindings.c): the two queries and the mask table
+    Site('act_hold', 'code', PAD_QUERY + ' b9411e68', 0),
+    Site('act_trig', 'code', PAD_QUERY + ' b9401268', 0),
+    Site('act_masks', 'ref', PAD_QUERY + ' b9401268', 5),
     Site('main_data', 'data', '', 0),
     Site('main_end', 'end', '', 0),
 ]
@@ -251,6 +260,7 @@ OPTIONAL_GROUPS = [
      'grass_blade_lateral_near',
      'grass_blade_lateral_far'),
     ('tree_ranges',),
+    ('act_hold', 'act_trig', 'act_masks'),
 ]
 OPTIONAL = {n for g in OPTIONAL_GROUPS for n in g}
 
@@ -392,6 +402,9 @@ KNOWN = {
         'grass_blade_lateral_near': 0x70013a8f0c,
         'grass_blade_lateral_far': 0x70013a8f20,
         'tree_ranges': 0x70013c94ac,
+        'act_hold': 0x7000d16f0c,
+        'act_trig': 0x7000d16f74,
+        'act_masks': 0x70016d89b4,
         'main_data': 0x7001b7a000,
         'main_end': 0x7001e98000,
     },

@@ -76,6 +76,41 @@ void bind_settings_save(FILE *f);
 int bind_slot_from_name(const char *name);
 int bind_pad_from_name(const char *name);
 
+// ---- Per-action bindings
+// The game asks "is action N held / pressed" through two functions (tools/patches.py _act_query); each action reads one
+// Switch button (a table in the game: several actions share a button). An action with a binding of its own answers from
+// the host key / controller button bound to it, whatever the Switch layer above says, so two actions can sit on one key
+// and an action can leave its button. An action without one (ACT_FOLLOW, the default) is untouched: the game answers
+// from the Switch button as before. The game's menus (title, pause, map) always use the Switch layer, so no binding can
+// lock the player out. runtime/hle/bindings.c holds the tables and the answers; runtime/hle/input.c feeds them the
+// host state.
+#define ACT_COUNT 41
+enum { ACT_FOLLOW = -1, ACT_NONE = -2 };
+extern int16_t g_act_key[ACT_COUNT];  // SDL_Scancode / BIND_MOUSE + button, ACT_FOLLOW (the Switch button's key) or ACT_NONE
+extern int16_t g_act_pad[ACT_COUNT];  // PADB value, ACT_FOLLOW or ACT_NONE
+// An action as a capture slot: bind_capture_begin(dev, BIND_ACTION + id)
+#define BIND_ACTION 0x100
+static inline bool bind_slot_is_action(int slot) { return slot >= BIND_ACTION && slot < BIND_ACTION + ACT_COUNT; }
+
+void act_set(int dev, int id, int host);      // ACT_FOLLOW = back to the default; ACT_NONE = nothing
+bool act_is_default(int id);                  // neither side has a binding of its own
+bool act_hidden(int id);                      // no code reaches it in the game (or only by a computed number): not on the page
+const char *act_name(int id);                 // what the game does with it, or NULL while unknown
+int act_switch_button(int id);                // the Switch input (BIND_*) the game reads for it, -1 while the game is not running
+void act_masks(const uint32_t *table);        // the game's table of one mask per action (its address, from the patch)
+void act_reset(void);                         // every action back to the default
+
+// Host state in, from runtime/hle/input.c. Main thread, on every key / button event:
+uint64_t act_scan_keys(uint64_t key_buttons, int (*held)(int scancode));    // actions the keyboard side holds
+uint64_t act_scan_pad(uint64_t pad_buttons, uint32_t host_buttons);         // ... the controller side holds
+void act_publish(uint64_t keys, uint64_t pads);                             // (bit per action)
+// The controller poll (game thread, once per GetNpadStates): freezes the held / pressed sets the game's queries see.
+// live = false in the game's menus, with the window unfocused or the overlay up: the Switch layer answers then.
+void act_poll(bool live);
+// The hook: the answer to hold (kind 0) / trigger (kind 1) of action `id` on game pad object `pad`, or -1 = the game
+// answers (no binding of its own, a menu, an id out of range). `masks` is the game's mask table.
+int rt_act_query(int kind, uint64_t pad, uint64_t id, uint64_t lr, uint64_t masks);
+
 #ifdef __cplusplus
 }
 #endif

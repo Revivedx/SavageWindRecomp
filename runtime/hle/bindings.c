@@ -67,7 +67,10 @@ int bind_pad_from_name(const char *name) {
     return -1;
 }
 
-const char *bind_input_name(int slot) { return slot >= 0 && slot < BIND_KEY_COUNT ? k_names[slot] : "?"; }
+const char *bind_input_name(int slot) {
+    if (bind_slot_is_action(slot)) return act_name(slot - BIND_ACTION) ? act_name(slot - BIND_ACTION) : "Action";  // (the page numbers the unnamed)
+    return slot >= 0 && slot < BIND_KEY_COUNT ? k_names[slot] : "?";
+}
 
 // fam: 0 Nintendo (and pads SDL doesn't name), 1 Xbox, 2 PlayStation
 const char *bind_pad_label(int host, int fam) {
@@ -140,7 +143,8 @@ static void result(int kind, int dev, int slot, int other) {
 }
 
 void bind_capture_begin(int dev, int slot) {
-    if (slot < 0 || slot >= BIND_KEY_COUNT || (dev == BIND_DEV_PAD && !bind_pad_slot(slot))) return;
+    if (!bind_slot_is_action(slot) &&
+        (slot < 0 || slot >= BIND_KEY_COUNT || (dev == BIND_DEV_PAD && !bind_pad_slot(slot)))) return;
     cap_deadline = SDL_GetTicks() + BIND_CAPTURE_MS;
     cap_slot = slot;
     cap_dev = dev;
@@ -171,6 +175,13 @@ int bind_last_result(int *dev, int *slot, int *other, int *serial) {
 
 // Bind `host` to `slot`; an input already on `host` takes the slot's old binding (swap).
 static void assign(int dev, int slot, int host) {
+    if (bind_slot_is_action(slot)) {  // an action may share its key with any other: nothing swaps
+        act_set(dev, slot - BIND_ACTION, host);
+        LOG("[input] %s action %d -> %s\n", dev == BIND_DEV_PAD ? "controller" : "keyboard", slot - BIND_ACTION,
+            dev == BIND_DEV_PAD ? k_pad_ini[host] : bind_key_label(host));
+        result(1, dev, slot, -1);
+        return;
+    }
     int16_t *t = dev == BIND_DEV_PAD ? g_bind_pad : g_bind_key;
     int other = -1;
     for (int i = 0; i < BIND_KEY_COUNT; i++)
@@ -237,7 +248,9 @@ bool bind_capture_event(const SDL_Event *e) {
 }
 
 // ------------------------------------------------------------------ savagewind.ini
+static bool act_settings_load(const char *key, const char *val);
 bool bind_settings_load(const char *key, const char *val) {
+    if (!strncmp(key, "act_", 4)) return act_settings_load(key, val);
     bool pad = !strncmp(key, "bind_pad_", 9), kb = !strncmp(key, "bind_key_", 9);
     if (!pad && !kb) return false;
     for (int i = 0; i < BIND_KEY_COUNT; i++) {
@@ -255,11 +268,230 @@ bool bind_settings_load(const char *key, const char *val) {
     return true;
 }
 
+static void act_settings_save(FILE *f);
 void bind_settings_save(FILE *f) {
+    act_settings_save(f);
     for (int i = 0; i < BIND_KEY_COUNT; i++)
         if (bind_pad_slot(i) && g_bind_pad[i] != k_def_pad[i] && g_bind_pad[i] >= 0 && g_bind_pad[i] < PADB_HOST_COUNT)
             fprintf(f, "bind_pad_%s = %s\n", k_ini[i], k_pad_ini[g_bind_pad[i]]);
     for (int i = 0; i < BIND_KEY_COUNT; i++)
         if (g_bind_key[i] != k_def_key[i])
             fprintf(f, "bind_key_%s = %s\n", k_ini[i], g_bind_key[i] ? bind_key_label(g_bind_key[i]) : "none");
+}
+
+// ------------------------------------------------------------------ per-action bindings
+// See runtime/input_bind.h. A host key / button per action and device: ACT_FOLLOW (the default) leaves the action to
+// the game's Switch layer; any other value, on either side, takes the action over for both (the side left at
+// ACT_FOLLOW then reads the Switch button the game ties the action to, so a rebound key never half-works).
+int16_t g_act_key[ACT_COUNT] = {[0 ... ACT_COUNT - 1] = ACT_FOLLOW};
+int16_t g_act_pad[ACT_COUNT] = {[0 ... ACT_COUNT - 1] = ACT_FOLLOW};
+
+static const uint32_t *k_masks;  // the game's table: one pad mask (sead::Controller bit) per action
+static _Atomic uint64_t a_custom;      // actions with a binding of their own
+static _Atomic uint64_t a_keys, a_pads;  // held now, by the keyboard side / the controller side (main thread)
+static _Atomic uint64_t a_hold, a_trig;  // frozen at the last poll: what the game's queries see
+static _Atomic bool a_live;
+
+// What the game calls them. NULL until a run with the logging build (SAVAGEWIND_ACTLOG) has seen what an action does;
+// only the ones whose use is certain are named.
+static const char *const k_act_names[ACT_COUNT] = {
+    [2] = "Jump", [3] = "Attack", [13] = "Guard / lock on", [14] = "Cancel", [18] = "Bow",
+};
+// No code in the game reaches these by a number (they may still be asked by a computed one): kept off the page
+#define ACT_HIDDEN_MASK ((1ull << 1) | (1ull << 4) | (1ull << 6) | (1ull << 7) | (1ull << 8) | (1ull << 16) | \
+                         (1ull << 20) | (1ull << 21) | (1ull << 22) | (1ull << 23) | (1ull << 24) | (1ull << 29) | \
+                         (1ull << 30))
+
+const char *act_name(int id) { return id >= 0 && id < ACT_COUNT ? k_act_names[id] : NULL; }
+bool act_hidden(int id) { return id >= 0 && id < ACT_COUNT && (ACT_HIDDEN_MASK >> id & 1); }
+
+static void act_refresh(void) {
+    uint64_t m = 0;
+    for (int i = 0; i < ACT_COUNT; i++)
+        if (g_act_key[i] != ACT_FOLLOW || g_act_pad[i] != ACT_FOLLOW) m |= 1ull << i;
+    a_custom = m;
+}
+
+bool act_is_default(int id) { return id < 0 || id >= ACT_COUNT || (g_act_key[id] == ACT_FOLLOW && g_act_pad[id] == ACT_FOLLOW); }
+
+void act_set(int dev, int id, int host) {
+    if (id < 0 || id >= ACT_COUNT) return;
+    if (host < 0 && host != ACT_NONE) host = ACT_FOLLOW;
+    if (dev == BIND_DEV_PAD) g_act_pad[id] = (int16_t)host;
+    else g_act_key[id] = (int16_t)host;
+    act_refresh();
+}
+
+void act_reset(void) {
+    for (int i = 0; i < ACT_COUNT; i++) g_act_key[i] = g_act_pad[i] = ACT_FOLLOW;
+    act_refresh();
+}
+
+void act_masks(const uint32_t *table) { k_masks = table; }
+
+// The game's mask bits are sead's pad indices (open-ead: PadIdx), not the Switch's nn::hid bits.
+static int mask_button(uint32_t m) {
+    switch (m) {
+    case 0x1: return BIND_A;
+    case 0x2: return BIND_B;
+    case 0x4: return BIND_ZL;
+    case 0x8: return BIND_X;
+    case 0x10: return BIND_Y;
+    case 0x20: return BIND_ZR;
+    case 0x40: return BIND_RSTICK;
+    case 0x80: return BIND_LSTICK;
+    case 0x2000: return BIND_L;
+    case 0x4000: return BIND_R;
+    case 0x10000: return BIND_UP;
+    case 0x20000: return BIND_DOWN;
+    default: return -1;
+    }
+}
+
+int act_switch_button(int id) { return k_masks && id >= 0 && id < ACT_COUNT ? mask_button(k_masks[id]) : -1; }
+
+uint64_t act_scan_keys(uint64_t key_buttons, int (*held)(int scancode)) {
+    uint64_t out = 0, cu = a_custom;
+    for (int id = 0; id < ACT_COUNT; id++) {
+        if (!(cu >> id & 1)) continue;
+        int k = g_act_key[id], b, down;
+        if (k == ACT_FOLLOW) down = (b = act_switch_button(id)) >= 0 && (key_buttons >> b & 1);
+        else down = k > 0 && held(k);
+        out |= (uint64_t)down << id;
+    }
+    return out;
+}
+
+uint64_t act_scan_pad(uint64_t pad_buttons, uint32_t host_buttons) {
+    uint64_t out = 0, cu = a_custom;
+    for (int id = 0; id < ACT_COUNT; id++) {
+        if (!(cu >> id & 1)) continue;
+        int k = g_act_pad[id], b, down;
+        if (k == ACT_FOLLOW) down = (b = act_switch_button(id)) >= 0 && (pad_buttons >> b & 1);
+        else down = k >= 0 && k < PADB_HOST_COUNT && (host_buttons >> k & 1);
+        out |= (uint64_t)down << id;
+    }
+    return out;
+}
+
+// Each side publishes its own half (the keyboard and the controller change at different times)
+void act_publish(uint64_t keys, uint64_t pads) {
+    if (keys != ~0ull) a_keys = keys;
+    if (pads != ~0ull) a_pads = pads;
+}
+
+// ---- logging build: SAVAGEWIND_ACTLOG=1 prints which actions the game asks about, from where, and which of them its
+// own pad object answers yes to (the unswapped mask test), once per change, so a scripted run that presses one Switch
+// button at a time shows what each action is.
+static int act_log_on(void) {
+    static int on = -1;
+    if (on < 0) on = getenv("SAVAGEWIND_ACTLOG") != NULL;
+    return on;
+}
+static _Atomic uint64_t l_seen[2], l_true[2], l_last[2];
+static _Atomic uint64_t l_pads[4];
+static _Atomic unsigned l_polls, l_queries[2];
+
+static void act_log_ids(char *out, size_t n, uint64_t set) {
+    size_t o = 0;
+    out[0] = 0;
+    for (int i = 0; i < ACT_COUNT && o + 6 < n; i++)
+        if (set >> i & 1) o += (size_t)snprintf(out + o, n - o, "%s%d", o ? "," : "", i);
+    if (!o) snprintf(out, n, "-");
+}
+
+static void act_log_query(int kind, uint64_t pad, unsigned id, uint64_t lr) {
+    l_queries[kind]++;
+    if (id >= ACT_COUNT || !pad) return;
+    if (!(l_seen[kind] >> id & 1)) {
+        l_seen[kind] |= 1ull << id;
+        LOG("[act] %s of action %u: first asked from %llx on pad object %llx (mask %#x)\n", kind ? "pressed" : "held", id,
+            (unsigned long long)lr, (unsigned long long)pad, k_masks ? k_masks[id] : 0);
+    }
+    for (int i = 0; i < 4; i++) {  // distinct pad objects
+        uint64_t p = l_pads[i];
+        if (p == pad) break;
+        if (!p) { l_pads[i] = pad; LOG("[act] pad object %llx asked\n", (unsigned long long)pad); break; }
+    }
+    uint32_t word = *(const uint32_t *)(uintptr_t)(pad + (kind ? 0x10 : 0x11c));
+    if (k_masks && (word & k_masks[id])) l_true[kind] |= 1ull << id;
+}
+
+static void act_log_poll(void) {
+    unsigned n = ++l_polls;
+    for (int kind = 0; kind < 2; kind++) {
+        uint64_t t = l_true[kind];
+        l_true[kind] = 0;
+        if (t == l_last[kind]) continue;
+        l_last[kind] = t;
+        char ids[200];
+        act_log_ids(ids, sizeof ids, t);
+        LOG("[act] poll %u: game says %s: %s\n", n, kind ? "pressed" : "held", ids);
+    }
+    if (n % 600 == 0) {
+        LOG("[act] %u polls: %u held queries, %u pressed queries\n", n, (unsigned)l_queries[0], (unsigned)l_queries[1]);
+        l_queries[0] = l_queries[1] = 0;
+    }
+}
+
+// ---- the controller poll and the game's queries
+static _Atomic uint64_t a_prev;
+static _Atomic bool a_served;  // a pressed query was answered since the last poll
+
+void act_poll(bool live) {
+    static bool was_live;
+    uint64_t cur = live ? (a_keys | a_pads) & a_custom : 0, prev = a_prev;
+    if (live && !was_live) prev = cur;  // held through a menu closing: not a new press
+    uint64_t edge = cur & ~prev;
+    // A poll nobody read (no pressed query since the last one) keeps its edge for the next, so a press is never lost
+    // however often the game polls compared with how often it updates its pad
+    a_trig = (a_served ? 0 : a_trig) | edge;
+    a_served = false;
+    a_hold = cur;
+    a_prev = cur;
+    a_live = live;
+    was_live = live;
+    if (act_log_on()) act_log_poll();
+}
+
+int rt_act_query(int kind, uint64_t pad, uint64_t id, uint64_t lr, uint64_t masks) {
+    if (!k_masks && masks) k_masks = (const uint32_t *)(uintptr_t)masks;
+    if (act_log_on()) act_log_query(kind, pad, (unsigned)id, lr);
+    if (id >= ACT_COUNT || !a_live || !(a_custom >> id & 1)) return -1;
+    if (kind) {
+        a_served = true;
+        return (int)(a_trig >> id & 1);
+    }
+    return (int)(a_hold >> id & 1);
+}
+
+// ---- savagewind.ini: act_key_<id> / act_pad_<id> = <key | button | none>, written only when not the default
+static bool act_settings_load(const char *key, const char *val) {
+    bool pad = !strncmp(key, "act_pad_", 8), kb = !strncmp(key, "act_key_", 8);
+    if (!pad && !kb) return false;
+    char *end;
+    long id = strtol(key + 8, &end, 10);
+    if (end == key + 8 || *end || id < 0 || id >= ACT_COUNT) return true;
+    int host = ACT_FOLLOW;
+    if (!strcmp(val, "none")) host = ACT_NONE;
+    else if (pad) {
+        int h = bind_pad_from_name(val);
+        if (h >= 0) host = h;
+    } else {
+        int sc = (int)SDL_GetScancodeFromName(val);
+        for (int m = 0; m < 5; m++)
+            if (!strcmp(val, k_mouse[m])) sc = BIND_MOUSE + 1 + m;
+        if (sc != SDL_SCANCODE_UNKNOWN) host = sc;
+    }
+    act_set(pad ? BIND_DEV_PAD : BIND_DEV_KEY, (int)id, host);
+    return true;
+}
+
+static void act_settings_save(FILE *f) {
+    for (int i = 0; i < ACT_COUNT; i++) {
+        int k = g_act_key[i], p = g_act_pad[i];
+        if (k != ACT_FOLLOW) fprintf(f, "act_key_%d = %s\n", i, k == ACT_NONE ? "none" : bind_key_label(k));
+        if (p != ACT_FOLLOW && (p == ACT_NONE || (p >= 0 && p < PADB_HOST_COUNT)))
+            fprintf(f, "act_pad_%d = %s\n", i, p == ACT_NONE ? "none" : k_pad_ini[p]);
+    }
 }

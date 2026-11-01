@@ -102,6 +102,7 @@ static void recompute_keyboard(void) {
     for (int i = 0; i < BIND_PAD_COUNT; i++)
         if (game_key(g_bind_key[i])) b |= 1ull << i;
     key_buttons = b;
+    act_publish(act_scan_keys(b, game_key), ~0ull);  // (the actions with a key of their own)
     int tilt = game_key(g_bind_key[BIND_WALK]) ? 13107 : 32767;  // walk: 40% (BOTW walks below about half)
     key_lx = (game_key(g_bind_key[BIND_LS_RIGHT]) - game_key(g_bind_key[BIND_LS_LEFT])) * tilt;
     key_ly = (game_key(g_bind_key[BIND_LS_UP]) - game_key(g_bind_key[BIND_LS_DOWN])) * tilt;
@@ -136,6 +137,7 @@ static void dead_zone(_Atomic int32_t *x, _Atomic int32_t *y, int32_t rx, int32_
 static void recompute_pad(void) {
     if (!win_focused && !host_test) {
         pad_buttons = 0;
+        act_publish(~0ull, 0);
         pad_lx = pad_ly = pad_rx = pad_ry = 0;
         return;
     }
@@ -150,6 +152,7 @@ static void recompute_pad(void) {
     for (int i = 0; i < BIND_PAD_COUNT; i++)
         if (g_bind_pad[i] >= 0 && g_bind_pad[i] < PADB_HOST_COUNT && (host >> g_bind_pad[i] & 1)) b |= 1ull << i;
     pad_buttons = b;
+    act_publish(~0ull, act_scan_pad(b, host));  // (the actions with a button of their own)
     // Fly mode (test builds): the press of its controller button toggles it. Not while the menu or a rebind has the pad
     // (the held state is still tracked, so letting go of a button that was just bound does not toggle).
     static bool fly_was_down;
@@ -805,6 +808,9 @@ static void fill_state(Cpu *c) {
         LOG("[input] watching controller object %llx\n", (unsigned long long)(c->x[1] - 8));
     }
     bool menu = (!win_focused && !host_test) || menu_input_captured();  // host controls belong to the focused game window
+    // The actions with a binding of their own answer from the host while the game is being played; in its menus (and with
+    // the window unfocused or the overlay up) the Switch layer answers, so no binding can lock the player out
+    act_poll(!menu && !framepace_title_ui() && !framepace_menu_ui());
     uint64_t b = menu ? script_buttons : key_buttons | pad_buttons | escape_buttons | script_buttons;
     b=pc_cursor_buttons(b);
     {   // injected Plus: held for ~10 presented frames (the game polls several times per frame)
