@@ -22,6 +22,24 @@ overlay and launcher keep their fixed navigation shortcuts. The separate UI upda
 by these helpers. Use `bind_pad_slot` for controller availability and `bind_is_default_slot` for defaults, including
 `BIND_ACTION + id`; do not test for a stored `ACT_FOLLOW`.
 
+## The Key bindings page
+
+The game's own Options has a **Key bindings** page. Every row is one input: its name on the left, a keyboard/mouse
+button in the middle and a controller button on the right, under a column header row (Keyboard/Mouse, Controller).
+Both buttons are real native buttons of the game's Options row, not an overlay. Left/right switches the column,
+up/down keeps it, and the mouse hovers and clicks each button on its own. Confirming a button waits for the next press:
+a key or mouse button binds the keyboard side, a controller button the controller side (Esc cancels, as does waiting 5
+seconds). The hovered button is lit; the other one sits under a darker band, so only one looks selected.
+
+The rows are the 28 actions below, then Move forward/back/left/right and Camera up/down/left/right (keyboard only: the
+controller cell reads "Stick" and is greyed), Walk, Tilt and the seven gyro keys (both devices). The F1 overlay's Controls
+page shows the same table from the same in-process state; the launcher is a separate process.
+
+The two-button rows hook the game's Options code through one strict optional signature group
+(`tools/game_sites.py`, tested by `tools/test_two_button_sites.py`). If any signature does not match exactly, the group is
+off and the page falls back to the single-button rows. `SAVAGEWIND_TWO_BUTTON_ROWS=0` turns them off by hand. The layout
+numbers live in `runtime/ui/binding_row_layout.h`; the research notes are in `docs/research/`.
+
 ## The actions
 
 | Id | Action | Default (Switch button) | Notes |
@@ -119,6 +137,9 @@ SAVAGEWIND_ACTLOG=1 SAVAGEWIND_HOST_INPUT="3000:key:Space:60" SAVAGEWIND_EXIT_AT
 Use host injection for customized actions.
 
 ## Tests
+
+`make test-two-button-rows` runs the Options row hooks, column routing, header geometry and capture engine against
+synthetic rows (needs no game files).
 
 `make test-actions` (no game files): the answers to the hold / pressed queries, menus falling back, two actions on one
 key, factory-default fallthrough, customization on either device, legacy migration in either order, one-time schema
