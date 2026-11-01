@@ -105,22 +105,56 @@ int main() {
     assert(*(float *)(uintptr_t)(panes.frames[0] + 0x50) == geometry.key.width);
     assert(*(float *)(uintptr_t)(panes.frames[1] + 0x50) == geometry.key.width);
     assert(*(uint8_t *)(uintptr_t)(panes.frames[0] + 0x58) & 0x10);
-    uint64_t row = base + 0x1000, next = base + 0x1100, ordinary = base + 0x1200;
+    // Column headers share the column centers and widths, hide all button chrome, and scale uniformly.
+    assert(binding_row_header_scale > 0.f && two_header_scale() == binding_row_header_scale);
+    for (int col = 0; col < 2; col++) {
+        const auto column = col ? geometry.pad : geometry.key;
+        two_header_geometry(panes, column, binding_row_header_scale);
+        assert(*(float *)(uintptr_t)(root + 0x30) == column.center());
+        assert(*(float *)(uintptr_t)(panes.texts[0] + 0x30) == 0.f);
+        assert(*(float *)(uintptr_t)(panes.texts[0] + 0x48) == binding_row_header_scale);
+        assert(*(float *)(uintptr_t)(panes.texts[0] + 0x4c) == binding_row_header_scale);
+        assert(fabsf(*(float *)(uintptr_t)(panes.texts[0] + 0x50) * binding_row_header_scale - column.width) < 1e-3f);
+        for (uint64_t frame : panes.frames) assert(!(*(uint8_t *)(uintptr_t)(frame + 0x58) & 1));
+        assert(!(*(uint8_t *)(uintptr_t)(panes.plate + 0x58) & 1));
+    }
+    uint64_t header = base + 0xf00, row = base + 0x1000, next = base + 0x1100, ordinary = base + 0x1200;
     uint64_t screen = base + 0x2000;
-    g_site.opt_table = base; g_site.opt_two_help = base + 0x8000;
+    g_site.opt_table = base; g_site.opt_two_help = base + 0x8000; g_site.opt_screen_rows = 0x36b0;
     g_installed = 1; wr64(OPT_ENTRIES, g_installed);
+    g_items.push_back(button(P_BINDS, "", "test", "", A_BINDS_HEADER, 0));
+    wr32(header + 0x50, GAME_ENTRIES); wr64(header, screen);
+    wr64(header + 0x20, base + 0x5e00); wr64(header + 0x28, base + 0x5f00);
     for (int i = 0; i < 3; i++) {
         g_items.push_back(button(P_BINDS, "test", "test", nullptr, A_BIND, BIND_ACTION + i));
         uint64_t r = i == 0 ? row : i == 1 ? next : ordinary;
-        wr32(r + 0x50, GAME_ENTRIES + i); wr64(r, screen);
+        wr32(r + 0x50, GAME_ENTRIES + 1 + i); wr64(r, screen);
         wr64(r + 0x20, base + 0x6000 + i * 0x200);
         wr64(r + 0x28, base + 0x6100 + i * 0x200);
     }
-    g_two_rows = {{row}, {next}}; g_cur_page = P_BINDS;
+    g_entries.resize(GAME_ENTRIES + g_items.size());
+    for (size_t i = 0; i < g_items.size(); i++) g_entries[GAME_ENTRIES + i].kind = KIND_BUTTON;
+    uint64_t row_list = base + 0x2400, order_list = base + 0x2500, msg_out = base + 0x2600;
+    wr32(screen + 0x36b0, 4); wr64(screen + 0x36b8, row_list);
+    // Reverse row array order vs visual OPT_ORDER: initial focus must still land on row, never header.
+    wr64(row_list + 0, ordinary); wr64(row_list + 8, next); wr64(row_list + 16, row); wr64(row_list + 24, header);
+    for (uint32_t i = 0; i < 4; i++) wr32(order_list + 4 * i, GAME_ENTRIES + i);
+    wr32(OPT_ROWS, 4); wr64(OPT_ORDER, order_list);
+    g_two_header = header; g_two_rows = {{row}, {next}}; g_cur_page = P_BINDS;
+    assert(rt_opt_msg(MSG_BASE + MSG_KEY, msg_out) && std::u16string((const char16_t *)(uintptr_t)rd64(msg_out)) == u"Keyboard/Mouse");
+    assert(rt_opt_msg(MSG_BASE + MSG_PAD, msg_out) && std::u16string((const char16_t *)(uintptr_t)rd64(msg_out)) == u"Controller");
+    assert(rt_opt_msg(MSG_BASE + MSG_TITLE, msg_out) && std::u16string((const char16_t *)(uintptr_t)rd64(msg_out)).empty());
+    assert(rt_opt_pointer_kind(header) == -1 && rt_opt_two_column(header) == -1);
+    assert(rt_opt_two_control(header) == rd64(row + 0x20) && rd64(screen + 0x36c8) == row);
+    int dev, slot, ms;
+    wr32(screen + 0x36c0, 0);
+    assert(rt_opt_decide(header) == 2 && !bind_capture_active(&dev, &slot, &ms));
+    assert(rt_opt_two_callback(screen, rd64(header + 0x28), 2) == 1 && !bind_capture_active(&dev, &slot, &ms));
+    focused_row = 0;
+    assert(rt_opt_two_callback(screen, rd64(header + 0x28), 0) == 1 && focused_row == row);
     act_reset();
     wr64(screen + 0x36c8, row); wr32(screen + 0x36c0, 0);
     assert(rt_opt_decide(row) == 2);
-    int dev, slot, ms;
     assert(bind_capture_active(&dev, &slot, &ms) && dev == BIND_DEV_KEY && slot == BIND_ACTION);
     int before = g_act_key[0];
     SDL_Event e = {}; e.type = SDL_EVENT_GAMEPAD_BUTTON_DOWN; e.gbutton.button = SDL_GAMEPAD_BUTTON_NORTH;

@@ -18,3 +18,9 @@ constexpr BindingRowLayout binding_row_layout() {
 
 // The native row plate (W_Base_02, 540 wide, centred on the row) lives in each button part. Only the key part keeps it.
 constexpr float binding_row_plate_width = 540.f;
+
+// Uniform scale for the Key bindings column header text panes (overridable via SAVAGEWIND_HEADER_SCALE).
+constexpr float binding_row_header_scale = 0.85f;
+
+// Vertical offset of the header text from the header row's centre (layout units, negative = lower, closer to row 1).
+constexpr float binding_row_header_y = -14.f;

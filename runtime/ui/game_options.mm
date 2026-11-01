@@ -16,6 +16,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <atomic>
@@ -89,7 +90,7 @@ enum { KIND_TOGGLE = 0, KIND_CHOICE = 1, KIND_BUTTON = 2 };
 
 enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_COLOUR, P_AUDIO, P_CONTROLS, P_BINDS, P_LANGUAGE, P_COUNT };
 // A_BIND: Item.arg is a binding slot (an input, or BIND_ACTION + an action); the next key, mouse button or controller button binds it
-enum Action { A_NONE, A_PAGE, A_BIND, A_RESET_BINDS, A_RESTART, A_QUIT, A_SIZE_LIST };
+enum Action { A_NONE, A_PAGE, A_BIND, A_BINDS_HEADER, A_RESET_BINDS, A_RESTART, A_QUIT, A_SIZE_LIST };
 
 struct Item {
     int page;
@@ -647,6 +648,7 @@ void build_items(void) {
 
     // Key bindings: one row per action (key | controller button), then the inputs no action covers. A waits for the
     // next press: a key or mouse button binds the keyboard side, a controller button the controller side
+    v.push_back(button(P_BINDS, "", "Press A, then the new key or button. Esc cancels.", "", A_BINDS_HEADER, 0));
     auto bind = [&](int slot, const char *title) {
         Item it = button(P_BINDS, title, "Press A, then the new key or button. Esc cancels.", nullptr, A_BIND, slot);
         it.label = bind_label;
@@ -740,20 +742,35 @@ const Item *item_of_index(uint32_t idx) {
 }
 const Item *item_of_row(uint64_t row) { return row ? item_of_index(rd32(row + 0x50)) : nullptr; }
 
-// Three rows only. No guest object is enlarged and no shared archive is changed.
+// Three rows plus the column header row. No guest object is enlarged and no shared archive is changed.
 struct TwoRow { uint64_t row; };
 std::vector<TwoRow> g_two_rows;
+uint64_t g_two_header;
 int g_two_column;
 uint64_t g_two_current;
 bool g_two_focusing;
 
+bool is_binds_header(const Item *it) { return it && it->action == A_BINDS_HEADER; }
+bool row_is_header(uint64_t row) { return row && (row == g_two_header || is_binds_header(item_of_row(row))); }
+bool two_enabled(void) {
+    return g_site.opt_two_redraw && g_site.opt_two_text && g_site.opt_two_help &&
+           g_site.opt_two_pane_calc && g_game_version && !strcmp(g_game_version, "1.9.0") &&
+           (!getenv("SAVAGEWIND_TWO_BUTTON_ROWS") || strcmp(getenv("SAVAGEWIND_TWO_BUTTON_ROWS"), "0"));
+}
+float two_header_scale(void) {
+    const char *env = getenv("SAVAGEWIND_HEADER_SCALE");
+    if (env && *env) {
+        char *end = nullptr;
+        float v = strtof(env, &end);
+        if (end != env && isfinite(v) && v > 0.1f && v <= 4.f) return v;
+    }
+    return binding_row_header_scale;
+}
 bool two_candidate(uint64_t row) {
     const Item *it = item_of_row(row);
-    return g_cur_page == P_BINDS && g_site.opt_two_redraw && g_site.opt_two_text && g_site.opt_two_help &&
-           g_site.opt_two_pane_calc && g_game_version && !strcmp(g_game_version, "1.9.0") &&
-           (!getenv("SAVAGEWIND_TWO_BUTTON_ROWS") || strcmp(getenv("SAVAGEWIND_TWO_BUTTON_ROWS"), "0")) &&
-           it && it->action == A_BIND && (it->arg == BIND_ACTION || it->arg == BIND_ACTION + 2 ||
-                                        it->arg == BIND_ACTION + 3);
+    if (g_cur_page != P_BINDS || !two_enabled() || !it) return false;
+    if (is_binds_header(it)) return true;
+    return it->action == A_BIND;  // every binding row: label, keyboard/mouse button, controller button
 }
 bool two_ready(uint64_t row) {
     for (const auto &r : g_two_rows) if (r.row == row) return true;
@@ -804,6 +821,7 @@ void two_geometry(const TwoButtonPanes &p, BindingRowColumn col, bool owns_plate
     // Resize native nine-slice frames, hit area and cursor together. Glyphs stay at native scale.
     for (uint64_t text : p.texts) {
         two_float(text, 0x48, 1.f);
+        two_float(text, 0x4c, 1.f);
         two_float(text, 0x50, col.width - layout.text_inset);
     }
     for (int i = 0; i < 8; i++)
@@ -817,6 +835,48 @@ void two_geometry(const TwoButtonPanes &p, BindingRowColumn col, bool owns_plate
         wr8(p.plate + 0x58, *(uint8_t *)(uintptr_t)(p.plate + 0x58) | 1u);
     } else wr8(p.plate + 0x58, flags & ~1u);
 }
+void two_header_geometry(const TwoButtonPanes &p, BindingRowColumn col, float scale) {
+    two_float(p.root, 0x30, col.center());
+    two_float(p.root, 0x48, 1.f);
+    for (uint64_t text : p.texts) {
+        two_float(text, 0x30, 0.f);
+        two_float(text, 0x34, binding_row_header_y);
+        two_float(text, 0x48, scale);
+        two_float(text, 0x4c, scale);
+        two_float(text, 0x50, col.width / scale);
+    }
+    for (uint64_t frame : p.frames)
+        wr8(frame + 0x58, *(uint8_t *)(uintptr_t)(frame + 0x58) & ~1u);
+    wr8(p.plate + 0x58, *(uint8_t *)(uintptr_t)(p.plate + 0x58) & ~1u);
+}
+uint64_t first_selectable_row(uint64_t screen) {
+    if (!screen) return 0;
+    uint32_t nrows = rd32(screen + g_site.opt_screen_rows);
+    uint64_t rows = rd64(screen + g_site.opt_screen_rows + 8);
+    if (!rows || !nrows || nrows > 64) return g_two_rows.empty() ? 0 : g_two_rows[0].row;
+    uint32_t norder = g_site.opt_table ? rd32(OPT_ROWS) : 0;
+    uint64_t order = g_site.opt_table ? rd64(OPT_ORDER) : 0;
+    for (uint32_t oi = 0; oi < norder && oi < 64 && order; oi++) {
+        uint32_t want = rd32(order + 4 * oi);
+        if (is_binds_header(item_of_index(want))) continue;
+        for (uint32_t ri = 0; ri < nrows; ri++) {
+            uint64_t r = rd64(rows + 8 * ri);
+            if (r && rd32(r + 0x50) == want) return r;
+        }
+    }
+    for (uint32_t ri = 0; ri < nrows; ri++) {
+        uint64_t r = rd64(rows + 8 * ri);
+        if (r && !row_is_header(r)) return r;
+    }
+    return 0;
+}
+uint64_t row_active_control(uint64_t r) {
+    if (!r) return 0;
+    if (two_ready(r)) return rd64(r + (g_two_column ? 0x28 : 0x20));
+    const Item *it = item_of_row(r);
+    int kind = it ? it->kind : KIND_BUTTON;
+    return rd64(r + (kind == KIND_TOGGLE ? 0x18 : kind == KIND_CHOICE ? 0x20 : 0x28));
+}
 void two_focus(uint64_t screen, uint64_t row, int col) {
     if (g_two_focusing) return;
     g_two_focusing = true;
@@ -828,40 +888,71 @@ void two_text(uint64_t layout, const char *pane, uint32_t id) {
     uint64_t name[] = {g_entries[0].name_vtbl, (uint64_t)(uintptr_t)pane};
     two_call(g_site.opt_two_text, layout, (uint64_t)(uintptr_t)name, id);
 }
+void hide_failed_header(uint64_t row) {
+    uint64_t btn = rd64(row + 0x28);
+    if (two_ptr(btn) && two_ptr(rd64(btn)) && two_ptr(rd64(rd64(btn) + 0x60)))
+        two_call(rd64(rd64(btn) + 0x60), btn, 0);
+    if (uint64_t root = rd64(row + 0x80); two_ptr(root))
+        wr8(root + 0x58, *(uint8_t *)(uintptr_t)(root + 0x58) & ~1u);
+    g_two_header = row;
+}
 bool two_configure(uint64_t row) {
-    if (two_ready(row)) return true;
-    if (!two_candidate(row) || !kernel_current_cpu()) return false;
+    bool header = is_binds_header(item_of_row(row));
+    if (header ? g_two_header == row : two_ready(row)) return true;
+    if (!two_candidate(row) || !kernel_current_cpu()) {
+        if (header && kernel_current_cpu()) hide_failed_header(row);
+        return false;
+    }
     uint64_t roots[2], buttons[2], arrows[4];
     TwoButtonPanes panes[2];
     const char *arrow_names[] = {"Pa_ArrowL_00", "Pa_ArrowR_00", "P_Arrow_00", "P_Arrow_01"};
     for (int col = 0; col < 2; col++) {
         buttons[col] = rd64(row + (col ? 0x28 : 0x20));
-        if (!two_ptr(buttons[col]) || !two_ptr(rd64(buttons[col] + 0x20))) return false;
+        if (!two_ptr(buttons[col]) || !two_ptr(rd64(buttons[col] + 0x20))) {
+            if (header) hide_failed_header(row);
+            return false;
+        }
         roots[col] = rd64(rd64(buttons[col] + 0x20) + 0x18);
-        if (!two_ptr(roots[col]) || !two_ptr(rd64(buttons[col] + 0x60))) return false;
-        if (!two_button_panes(roots[col], panes[col])) return false;
+        if (!two_ptr(roots[col]) || !two_ptr(rd64(buttons[col] + 0x60)) || !two_button_panes(roots[col], panes[col])) {
+            if (header) hide_failed_header(row);
+            return false;
+        }
     }
     for (int i = 0; i < 4; i++) {
         arrows[i] = two_pane(roots[0], arrow_names[i]);
-        if (!arrows[i]) return false;
+        if (!arrows[i]) {
+            if (header) hide_failed_header(row);
+            return false;
+        }
     }
     uint64_t row_layout = rd64(row + 0x10);
     uint64_t title = two_ptr(row_layout) ? two_pane(rd64(row_layout + 0x18), "T_Option_00") : 0;
-    if (!title) return false;
+    if (!title) {
+        if (header) hide_failed_header(row);
+        return false;
+    }
     // Validate all panes before the first mutation, leaving ordinary rows usable on failure.
     const auto layout = binding_row_layout();
+    float hscale = header ? two_header_scale() : 1.f;
     for (int col = 0; col < 2; col++) {
-        two_call(rd64(rd64(buttons[col]) + 0x60), buttons[col], 1);
+        two_call(rd64(rd64(buttons[col]) + 0x60), buttons[col], header ? 0 : 1);
         wr8(roots[col] + 0x58, *(uint8_t *)(uintptr_t)(roots[col] + 0x58) | 1);
         const auto column = col ? layout.pad : layout.key;
-        two_geometry(panes[col], column, col == 0);
-        fprintf(stderr, "[row-spike] row %llx column %d button %llx center %.1f width %.1f plate %s\n",
-                (unsigned long long)row, col, (unsigned long long)buttons[col], column.center(), column.width, col == 0 ? "kept" : "hidden");
+        if (header) two_header_geometry(panes[col], column, hscale);
+        else two_geometry(panes[col], column, col == 0);
+        fprintf(stderr, "[row-spike] %s %llx column %d button %llx center %.1f width %.1f\n",
+                header ? "header" : "row", (unsigned long long)row, col, (unsigned long long)buttons[col],
+                column.center(), column.width);
     }
     for (uint64_t arrow : arrows) wr8(arrow + 0x58, *(uint8_t *)(uintptr_t)(arrow + 0x58) & ~1u);
-    two_float(title, 0x30, layout.label_right);
-    two_float(title, 0x50, layout.label_width);
-    g_two_rows.push_back({row});
+    if (header) {
+        wr8(title + 0x58, *(uint8_t *)(uintptr_t)(title + 0x58) & ~1u);
+        g_two_header = row;
+    } else {
+        two_float(title, 0x30, layout.label_right);
+        two_float(title, 0x50, layout.label_width);
+        g_two_rows.push_back({row});
+    }
     return true;
 }
 
@@ -979,21 +1070,42 @@ extern "C" void rt_opt_rows(void) {
         Entry &e = g_entries[GAME_ENTRIES + i];
         if (g_items[i].kind == KIND_CHOICE) e.last_value = e.first_value + game_count(g_items[i]) - 1;
     }
-    wr64(OPT_ORDER, (uint64_t)(uintptr_t)o.data());
-    wr32(OPT_ROWS, (uint32_t)o.size());
+    const uint32_t *order_data = o.data();
+    uint32_t order_count = (uint32_t)o.size();
+    if (page == P_BINDS && order_count > 0 && !two_enabled() && is_binds_header(item_of_index(order_data[0]))) {
+        order_data++;
+        order_count--;
+    }
+    wr64(OPT_ORDER, (uint64_t)(uintptr_t)order_data);
+    wr32(OPT_ROWS, order_count);
     pc_cursor_options_page_changed();
     g_cur_page = page;
     g_reopen = false;
     g_dirty.clear();
-    g_two_rows.clear(); g_two_column = 0; g_two_current = 0;
+    g_two_rows.clear(); g_two_header = 0; g_two_column = 0; g_two_current = 0;
 }
 
 // Called only by the strict optional hook group. Other pages use their original instructions.
 extern "C" int rt_opt_two_column(uint64_t row) { return two_ready(row) ? g_two_column : -1; }
 extern "C" uint64_t rt_opt_two_control(uint64_t row) {
+    if (row_is_header(row)) {
+        uint64_t screen = rd64(row);
+        uint64_t first = first_selectable_row(screen);
+        if (first && screen) {
+            g_two_current = first;
+            wr64(screen + 0x36c8, first);
+        }
+        return row_active_control(first);
+    }
     return two_ready(row) ? rd64(row + (g_two_column ? 0x28 : 0x20)) : 0;
 }
 extern "C" int rt_opt_two_row_state(uint64_t row) {
+    if (row_is_header(row)) {
+        for (unsigned offset : {0x18u, 0x20u, 0x28u})
+            if (uint64_t button = rd64(row + offset); two_ptr(button))
+                *(uint16_t *)(uintptr_t)(button + 0x3a) &= ~4u;
+        return 1;
+    }
     if (!two_ready(row)) return 0;
     for (unsigned offset : {0x20u, 0x28u}) {
         uint64_t button = rd64(row + offset);
@@ -1013,7 +1125,22 @@ extern "C" int rt_opt_two_redraw(uint64_t row) {
     return 1;
 }
 extern "C" int rt_opt_decide(uint64_t row);
+extern "C" int rt_opt_pointer_kind(uint64_t row);
 extern "C" int rt_opt_two_callback(uint64_t screen, uint64_t button, int which) {
+    if (g_two_header && rd64(g_two_header) == screen) {
+        for (unsigned off : {0x18u, 0x20u, 0x28u}) {
+            if (button && button == rd64(g_two_header + off)) {
+                if (which == 0) {
+                    if (uint64_t first = first_selectable_row(screen)) {
+                        if (two_ready(first)) two_focus(screen, first, g_two_column);
+                        else if (int k = rt_opt_pointer_kind(first); k >= 0)
+                            pc_cursor_options_focus(screen, first, (unsigned)k);
+                    }
+                }
+                return 1;
+            }
+        }
+    }
     for (const auto &r : g_two_rows) {
         uint64_t row = r.row;
         if (rd64(row) != screen) continue;
@@ -1043,6 +1170,12 @@ extern "C" void rt_opt_two_pointer(uint64_t row, unsigned kind) {
 }
 extern "C" void rt_opt_two_horizontal(uint64_t screen, unsigned action) {
     uint64_t row = rd64(screen + 0x36c8);
+    if (row_is_header(row)) {
+        if (uint64_t first = first_selectable_row(screen); two_ready(first))
+            two_focus(screen, first, action == 2);
+        wr32(screen + 0x36c0, 3);
+        return;
+    }
     if (!two_ready(row)) return;
     two_focus(screen, row, action == 2);
     wr32(screen + 0x36c0, 3); // movement is never confirmation or a value change
@@ -1051,7 +1184,7 @@ extern "C" void rt_opt_two_horizontal(uint64_t screen, unsigned action) {
 // Row init: the flag type of an entry (0 bool, 1 s32); -1: the game's own entry
 // The installed entries are a host vector, not guest-heap pointers.
 extern "C" int rt_opt_pointer_kind(uint64_t row) {
-    if(!g_installed||rd64(OPT_ENTRIES)!=g_installed||!row||game_options_input_hold())return -1;
+    if(!g_installed||rd64(OPT_ENTRIES)!=g_installed||!row||game_options_input_hold()||row_is_header(row))return -1;
     uint32_t index=rd32(row+0x50);
     return index<g_entries.size()?(int)g_entries[index].kind:-1;
 }
@@ -1149,12 +1282,17 @@ extern "C" int rt_opt_msg(uint32_t id, uint64_t out) {
     }
     else if (part == MSG_DESC) s = it->desc_fn ? it->desc_fn(*it) : tr(it->desc);
     else if (part == MSG_KEY || part == MSG_PAD) {
-        int dev, slot, ms;
         bool key = part == MSG_KEY;
-        bool capture = bind_capture_active(&dev, &slot, &ms) && slot == it->arg &&
-                       dev == (key ? BIND_DEV_KEY : BIND_DEV_PAD);
-        s = capture ? tr(key ? "Press a key..." : "Press a button...") :
-                      key ? slot_key_text(it->arg) : slot_pad_text(it->arg);
+        if (is_binds_header(it)) {
+            s = tr(key ? "Keyboard/Mouse" : "Controller");
+        } else {
+            int dev, slot, ms;
+            bool capture = bind_capture_active(&dev, &slot, &ms) && slot == it->arg &&
+                           dev == (key ? BIND_DEV_KEY : BIND_DEV_PAD);
+            if (!key && !slot_has_pad(it->arg)) s = tr("Stick"), grey = true;  // (keys only: a stick direction)
+            else s = capture ? tr(key ? "Press a key..." : "Press a button...") :
+                              key ? slot_key_text(it->arg) : slot_pad_text(it->arg);
+        }
     }
     else if (part == MSG_BUTTON) s = it->button ? tr(it->button) : it->label ? it->label(*it, -1) : "";
     else if (part >= MSG_VALUE && it->kind == KIND_CHOICE && (int)(part - MSG_VALUE) < game_count(*it)) {
@@ -1183,6 +1321,7 @@ extern "C" int rt_opt_decide(uint64_t row) {
         return 1;
     case A_BIND:
         if (two_ready(row) && rd32(rd64(row) + 0x36c0) != 0) return 2;
+        if (two_ready(row) && g_two_column && !slot_has_pad(it->arg)) return 2;  // (no controller side to bind)
         bind_capture_begin(two_ready(row) ? (g_two_column ? BIND_DEV_PAD : BIND_DEV_KEY) : BIND_DEV_ANY, it->arg);
         cap_slot_was = it->arg;
         if (two_ready(row)) fprintf(stderr, "[row-spike] capture slot %d device %s\n", it->arg,
