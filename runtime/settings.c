@@ -181,6 +181,7 @@ void settings_load(void) {
             for (int i = 0; i < DRAWDIST_COUNT; i++)
                 if (!strcmp(val, k_drawdist[i])) g_settings.draw_distance = i;
         }
+        else if (!strcmp(key, "no_weapon_wear")) g_settings.no_weapon_wear = atoi(val) != 0;
         else if (!strcmp(key, "infinite_arrows")) g_settings.infinite_arrows = atoi(val) != 0;
         else if (!strcmp(key, "colour_exposure")) g_settings.color_exposure = (int)lroundf((float)atof(val) * 10);  // (EV)
         else if (!strcmp(key, "colour_contrast")) g_settings.color_contrast = atoi(val);  // (percent)
@@ -319,6 +320,7 @@ void settings_save(void) {
     fprintf(f, "field_of_view = %d\n", g_settings.fov);
     int dd = g_settings.draw_distance;
     fprintf(f, "draw_distance = %s\n", k_drawdist[dd >= 0 && dd < DRAWDIST_COUNT ? dd : DRAWDIST_ORIGINAL]);
+    fprintf(f, "no_weapon_wear = %d\n", g_settings.no_weapon_wear);
     fprintf(f, "infinite_arrows = %d\n", g_settings.infinite_arrows);
     fprintf(f, "colour_exposure = %.1f\n", g_settings.color_exposure / 10.0);
     fprintf(f, "colour_contrast = %d\n", g_settings.color_contrast);

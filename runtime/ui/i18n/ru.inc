@@ -426,6 +426,8 @@ T("The characters' voices. Applies after a restart.", "Голоса персон
 T("Starts the game again with these languages. Unsaved progress is lost.", "Перезапускает игру с этими языками. Несохранённое будет потеряно.")
 T("Accessibility", "Специальные возможности")
 T("Assists that make the game easier.", "Помощь, которая упрощает игру.")
+T("Unbreakable weapons", "Неломающееся оружие")
+T("Weapons, bows and shields lose no durability and never break.", "Оружие, луки и щиты не теряют прочность и никогда не ломаются.")
 T("Infinite arrows", "Бесконечные стрелы")
 T("Shooting a bow uses up no arrows. You still need one to shoot.", "Выстрелы из лука не тратят стрелы. Для выстрела всё равно нужна одна.")
 T("Restart", "Перезапуск")

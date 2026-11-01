@@ -426,6 +426,8 @@ T("The characters' voices. Applies after a restart.", "De stemmen van de persona
 T("Starts the game again with these languages. Unsaved progress is lost.", "Herstart met deze talen. Niet-opgeslagen voortgang gaat verloren.")
 T("Accessibility", "Toegankelijkheid")
 T("Assists that make the game easier.", "Hulpmiddelen die het spel makkelijker maken.")
+T("Unbreakable weapons", "Onbreekbare wapens")
+T("Weapons, bows and shields lose no durability and never break.", "Wapens, bogen en schilden verliezen geen duurzaamheid en breken nooit.")
 T("Infinite arrows", "Oneindige pijlen")
 T("Shooting a bow uses up no arrows. You still need one to shoot.", "Schieten met een boog kost geen pijlen. Je hebt er wel één nodig om te schieten.")
 T("Restart", "Herstarten")

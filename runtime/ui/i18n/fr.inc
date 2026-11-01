@@ -426,6 +426,8 @@ T("The characters' voices. Applies after a restart.", "Les voix des personnages.
 T("Starts the game again with these languages. Unsaved progress is lost.", "Relance le jeu dans ces langues. Progrès non sauvegardés perdus.")
 T("Accessibility", "Accessibilité")
 T("Assists that make the game easier.", "Des aides qui rendent le jeu plus facile.")
+T("Unbreakable weapons", "Armes incassables")
+T("Weapons, bows and shields lose no durability and never break.", "Les armes, arcs et boucliers ne s'usent pas et ne se brisent jamais.")
 T("Infinite arrows", "Flèches infinies")
 T("Shooting a bow uses up no arrows. You still need one to shoot.", "Tirer à l'arc ne consomme pas de flèches. Il en faut quand même une pour tirer.")
 T("Restart", "Redémarrer")

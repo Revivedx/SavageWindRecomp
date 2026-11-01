@@ -426,6 +426,8 @@ T("The characters' voices. Applies after a restart.", "角色的语音。重启�
 T("Starts the game again with these languages. Unsaved progress is lost.", "以这些语言重新启动游戏。未存档的进度将会丢失。")
 T("Accessibility", "辅助功能")
 T("Assists that make the game easier.", "让游戏更轻松的辅助选项。")
+T("Unbreakable weapons", "武器不会损坏")
+T("Weapons, bows and shields lose no durability and never break.", "武器、弓和盾牌不会消耗耐久度，也永远不会损坏。")
 T("Infinite arrows", "无限箭矢")
 T("Shooting a bow uses up no arrows. You still need one to shoot.", "用弓射击不消耗箭矢。射击时仍需至少一支箭。")
 T("Restart", "重启")

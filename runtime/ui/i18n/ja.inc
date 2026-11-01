@@ -426,6 +426,8 @@ T("The characters' voices. Applies after a restart.", "キャラクターの音�
 T("Starts the game again with these languages. Unsaved progress is lost.", "この言語で再起動します。セーブしていない進行は失われます。")
 T("Accessibility", "アクセシビリティ")
 T("Assists that make the game easier.", "ゲームを遊びやすくするアシスト機能です。")
+T("Unbreakable weapons", "壊れない武器")
+T("Weapons, bows and shields lose no durability and never break.", "武器・弓・盾の耐久値が減らず、壊れることはありません。")
 T("Infinite arrows", "矢が減らない")
 T("Shooting a bow uses up no arrows. You still need one to shoot.", "弓を撃っても矢が減りません。撃つには矢が1本必要です。")
 T("Restart", "再起動")

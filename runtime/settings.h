@@ -98,6 +98,7 @@ typedef struct {
     int color_lut_strength;  // percent, 0..100
     bool color_lut_set;      // the ini names a LUT (or none): the player chose; the first setup offers COLOR_LUT_RECOMMENDED
     // Options > Accessibility (runtime/assists.c): assists, each off by default
+    bool no_weapon_wear;     // weapons, bows and shields lose no durability and never break
     bool infinite_arrows;    // shooting a bow takes no arrows from the pouch
     int text_language;   // index in g_text_languages (runtime/language.h), 0: the host's
     int voice_language;  // index in g_voice_languages, 0: the text language's voices

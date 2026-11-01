@@ -45,7 +45,7 @@ static const Setting settings[] = {
     I(color_saturation, -100, 100, NULL), I(color_temperature, -100, 100, NULL),
     I(color_tint, -100, 100, NULL),
     {"color_lut", g_settings.color_lut, TEXT, 0, 0, NULL},
-    I(color_lut_strength, 0, 100, NULL), B(color_lut_set), B(infinite_arrows),
+    I(color_lut_strength, 0, 100, NULL), B(color_lut_set), B(no_weapon_wear), B(infinite_arrows),
     I(text_language, 0, 0, NULL), I(voice_language, 0, 0, NULL), B(menu_tip_seen),
 };
 #undef B

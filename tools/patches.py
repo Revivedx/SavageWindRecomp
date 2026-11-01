@@ -613,6 +613,34 @@ def _remove_arrows(gen, a):
             f'  /* {a:#x}: sub sp, sp, #0x70 (remove arrows: none with Infinite arrows) */')
 
 
+# Accessibility > Unbreakable weapons (runtime/assists.c rt_keep_wear, rt_no_wear; from #296). The pouch's setter for
+# an equipped item's value (type w22: 0 weapon, 1 bow, 2 arrows, 3 shield; new value w20; the item x11, value at
+# +0x20) is where a hit's wear lands, in hundredths (1700 = 17). The runtime keeps the old value when the new one is
+# lower.
+
+def _no_wear(gen, a):
+    assert _word(gen, a) == 0xb9002174, hex(_word(gen, a))  # str w20, [x11, #0x20]
+    return ('{ extern int rt_keep_wear(uint32_t, int32_t, int32_t); '
+            'if (!rt_keep_wear((uint32_t)c->x[22], (int32_t)c->x[20], (int32_t)LD32(c->x[11] + 0x20))) '
+            'ST32(c->x[11] + 0x20, c->x[20]); }'
+            f'  /* {a:#x}: str w20, [x11, #0x20] (equipped item value: no wear) */')
+
+
+# The weapon actor keeps its own copy of the durability and is what breaks (1.9.0 0x7000b952b8, 1.8.2 0x7000a81da8): a
+# hit takes its cost (w9, hundredths) off it with `sub w8, w8, w9`. With the option on the cost is 0, so nothing
+# changes and nothing is stored in the pouch either. That method takes every life off (Link's hearts, the enemies')
+# and only the call from the weapon's update (no_wear_ret) is wear: the saved return address, at sp + 0x28, tells
+# them apart.
+
+def _no_wear_hit(gen, a):
+    assert _word(gen, a) == 0x4b090108, hex(_word(gen, a))  # sub w8, w8, w9
+    ret = gen.sites['no_wear_ret']
+    return ('{ extern int rt_no_wear(void); '
+            f'c->x[8] = (uint32_t)((uint32_t)c->x[8] - (rt_no_wear() && LD64(c->sp + 0x28) == {ret:#x}ull ? 0u : '
+            '(uint32_t)c->x[9])); }'
+            f'  /* {a:#x}: sub w8, w8, w9 (weapon hit: no wear) */')
+
+
 # tools/game_sites.py site -> its patch
 # BOTW's streaming Yaz0 decoder (1.9.0 0x700131d674; x0 its state, x1/w2 the input chunk): in native code
 # (runtime/hle/yaz0.c rt_yaz0, which declines the first call of a stream, the one that reads its header). Its return
@@ -706,6 +734,8 @@ PATCHES = {
     'grass_blade_lateral_far': _grass_blade_lateral,
     'tree_ranges': _tree_ranges,
     'pouch_remove_arrows': _remove_arrows,
+    'no_wear_store': _no_wear,
+    'no_wear_hit': _no_wear_hit,
 }
 
 

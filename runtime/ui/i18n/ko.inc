@@ -426,6 +426,8 @@ T("The characters' voices. Applies after a restart.", "캐릭터의 음성입니
 T("Starts the game again with these languages. Unsaved progress is lost.", "이 언어로 게임을 다시 시작합니다. 저장하지 않은 진행은 사라집니다.")
 T("Accessibility", "접근성")
 T("Assists that make the game easier.", "게임을 더 쉽게 만들어 주는 보조 기능입니다.")
+T("Unbreakable weapons", "부서지지 않는 무기")
+T("Weapons, bows and shields lose no durability and never break.", "무기, 활, 방패의 내구도가 줄지 않으며 절대 부서지지 않습니다.")
 T("Infinite arrows", "무한 화살")
 T("Shooting a bow uses up no arrows. You still need one to shoot.", "활을 쏴도 화살이 줄지 않습니다. 쏘려면 화살이 하나는 있어야 합니다.")
 T("Restart", "다시 시작")

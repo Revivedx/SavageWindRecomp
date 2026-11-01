@@ -669,6 +669,9 @@ void build_items(void) {
                        "Starts the game again with these languages. Unsaved progress is lost.", "Restart", A_RESTART, 0));
 
     // Accessibility (runtime/assists.c): applied at once, while playing
+    v.push_back(toggle(P_ACCESS, "Unbreakable weapons", "Weapons, bows and shields lose no durability and never break.",
+                       [](const Item &) { return (int)g_settings.no_weapon_wear; },
+                       [](const Item &, int x) { g_settings.no_weapon_wear = x; }, 0));
     v.push_back(toggle(P_ACCESS, "Infinite arrows", "Shooting a bow uses up no arrows. You still need one to shoot.",
                        [](const Item &) { return (int)g_settings.infinite_arrows; },
                        [](const Item &, int x) { g_settings.infinite_arrows = x; }, 0));
