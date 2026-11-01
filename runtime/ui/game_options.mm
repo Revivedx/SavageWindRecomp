@@ -1367,8 +1367,8 @@ extern "C" int rt_opt_msg(uint32_t id, uint64_t out) {
         // Probe fixture only: exercise long labels without changing the actions being captured.
         if (g_cur_page == P_BINDS && it->action == A_BIND && getenv("SAVAGEWIND_TWO_BUTTON_LABEL_TEST")) {
             if (it->arg == BIND_ACTION) title = "Guard / lock on";
-            if (it->arg == BIND_ACTION + 2) title = "Use rune";
-            if (it->arg == BIND_ACTION + 3) title = "Master Cycle jump";
+            if (it->arg == BIND_ACTION + 2) title = "Use rune";  // (test fixture, not shown) i18n-skip
+            if (it->arg == BIND_ACTION + 3) title = "Master Cycle jump";  // (test fixture, not shown) i18n-skip
         }
         s = tr(title);
     }

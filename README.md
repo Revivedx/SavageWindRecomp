@@ -237,8 +237,9 @@ Keyboard and mouse defaults:
 | Inventory (Plus) | Tab | Map (Minus) | M |
 | Tilt the controller (hold, motion puzzles) | T + mouse | | |
 
-Every key and mouse button can be remapped in the game's Options (the Keyboard pages), next to the mouse sensitivity
-(horizontal and vertical) and Y inversion, motion sensitivity and inversion and the tilt key (Controls). The game's
+Every game action has its own key and its own controller button, set on the Key bindings page of the game's Options
+(a keyboard/mouse button and a controller button per row; see [docs/ACTIONS.md](docs/ACTIONS.md)). Mouse sensitivity
+(horizontal and vertical), Y inversion and motion sensitivity and inversion are on the Controls page. The game's
 button prompts show the keys you bound, or your controller's own buttons (Controls > Button icons: Automatic follows
 the device you use). The mouse turns the camera directly, as in a PC game: 0.022° per count at 100% sensitivity (as
 Quake and Source count it), on both axes (the vertical one scaled by Controls > Mouse vertical sensitivity), with no

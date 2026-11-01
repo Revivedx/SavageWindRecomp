@@ -76,6 +76,8 @@ def literals(text):
 def looks_like_text(s, in_tr=False):
     if not re.search(r'[A-Za-z]{2}', s) or s.startswith('##') or '###' in s:
         return False
+    if re.fullmatch(r'[A-Za-z]+(_[A-Za-z0-9]+)+', s):  # layout pane names (W_Base_00)
+        return False
     if in_tr and '/' not in s and '\\' not in s:  # (a word passed to tr() is text, however short)
         return True
     if re.fullmatch(r'[\w./\\:%-]+\.(ttf|ttc|bfttf|pack|bin|txt|ini|png|dll|so|dylib|nso|npdm|mp4|webm)', s):
@@ -96,7 +98,7 @@ def keys():
         lines = text.split('\n')
         for ln, s in literals(text):
             src = lines[ln - 1] if ln - 1 < len(lines) else ''
-            if SKIP_LINE.search(src.split('"')[0]) or not looks_like_text(s, 'tr(' in src):
+            if 'i18n-skip' in src or SKIP_LINE.search(src.split('"')[0]) or not looks_like_text(s, 'tr(' in src):
                 continue
             found.setdefault(s, f'{os.path.relpath(path, ROOT)}:{ln}')
     # the colour presets' names (runtime/color_grade.c g_color_presets: shown through tr() by both menus)
