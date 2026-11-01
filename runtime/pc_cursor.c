@@ -18,7 +18,7 @@ static _Atomic int quantity_value,quantity_max,quantity_request=-1;
 static _Atomic bool quantity_edit,quantity_replace;
 static uint64_t quantity_screen;
 static uint64_t shop_screen;
-static uint64_t game_over_screen;
+static uint64_t game_over_screen;  // the one screen that owns the pointer: Game Over, or a quit window over it or a menu
 static bool ptr(uint64_t p);
 static bool preview_defaults_saved;
 static float preview_defaults[2];
@@ -122,6 +122,10 @@ void pc_cursor_frame(void) {
     // Quit opens a native SystemWindow over Game Over. Only its buttons
     // own pointer input until it closes; then focus returns to Continue/Quit.
     if(game_over_screen&&game_over_modal)game_over_screen=game_over_modal;
+    // Savage Wind's own quit question (Options or the title menu: runtime/ui/game_options.mm) is the same window over
+    // a screen whose input is off meanwhile, so it alone owns the pointer too (#360).
+    extern int rt_quit_dialog_back(void);
+    if(!game_over_screen&&game_over_modal&&rt_quit_dialog_back())game_over_screen=game_over_modal;
     if(preview_defaults_saved) {
         uint64_t m=LD64(g_site.screen_mgr),a=ptr(m)?LD64(m+0x30):0;
         uint64_t inv=ptr(a)?LD64(a+8*0x2e):0;
@@ -616,13 +620,23 @@ static void inventory_pointer(Cpu *c) {
                 pointer_sound(c,s,"mc_Decide");
                 int page=LD32(s+0x3708+0x80*i);
                 if(page>=0&&page<total&&(unsigned)call(c,0x7000e71080,page,0,0)==i&&page!=current) {
-                    // Refill the existing three-page ring directly. A global
-                    // inventory refresh also restores unrelated pouch state.
+                    // Rebuild the existing three-page ring around the page, as
+                    // the screen does when it opens (not a global inventory
+                    // refresh, which also restores unrelated pouch state). It
+                    // also shows/hides each slot and places the neighbours: a
+                    // bare refill left a slot hidden from an edge page, so A/D
+                    // then slid onto an empty page (#360). A page slide still
+                    // in flight is dropped, as the game's own jump does: the
+                    // centre page goes back to rest (f_7000dc6fdc's stores),
+                    // and the rebuild places the neighbours from it.
                     unsigned ring=LD8(s+0x3a30);
                     if(ring<3) {
                         ST32(s+0x365c,page);ST32(s+0x3660,page);
-                        for(int d=-1;d<=1;d++)if(page+d>=0&&page+d<total)
-                            call(c,0x7000e3c424,s,(ring+d+3)%3,page+d);
+                        *(float*)(s+0x3668)=0;ST8(s+0x3678,0);ST8(s+0x3679,0);
+                        uint64_t centre=LD64(s+0x3a18+8*ring),layout=ptr(centre)?LD64(centre+0x20):0;
+                        uint64_t root=ptr(layout)?LD64(layout+0x18):0;
+                        if(ptr(root)){*(float*)(root+0x30)=*(float*)(s+0x366c);ST32(root+0x38,0);ST8(root+0x58,LD8(root+0x58)|0x10);}
+                        call(c,0x7000e3af74,s,0,0);
                     }
                     target=-1;
                 }

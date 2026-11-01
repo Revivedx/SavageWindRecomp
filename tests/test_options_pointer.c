@@ -36,6 +36,8 @@ static Cpu test_cpu;
 Cpu *kernel_current_cpu(void){return &test_cpu;}
 uint64_t input_buttons_now(void){return navigation;}
 int rt_opt_pointer_kind(uint64_t row){return (int)LD32(row+0x50);}
+static int quit_dialog;
+int rt_quit_dialog_back(void){return quit_dialog;}
 void guest_call(Cpu *cpu,uint64_t address){
     if(address==0x7000e30700ull){actions++;last_action=LD32(LD64(cpu->x[0])+0x36c0);}
     else if(address==0x7000e2eed8ull)refreshes++;
@@ -498,7 +500,15 @@ int main(void) {
     rt_pc_cursor_manager(&cpu,0x7000f57da8,0x7000123404);assert(activated_node==other);
     g_settings.pc_cursor=false;pc_cursor_frame();assert(!pc_cursor_active());
     g_settings.pc_cursor=true;ST64(sa+8*0x30,0);pc_cursor_frame();assert(!game_over_screen&&!pc_cursor_active());
-    puts("PASS: Options scroll/click/shared focus, SDL ownership/cursor visibility, page rebuild, Adventure Log/Ability Controls list registry, stationary hover, nested category clicks/locks, viewport preservation, pause header transitions/modal priority, setting gate and reboot reset (synthetic host state).");
+    // Savage Wind's quit question over Options is the same window, with Options still shown under it and its input
+    // off. The question's buttons take the click; Options must not swallow it (#360).
+    ST64(sa+8*0x39,modal);ST64(sa+8*0x34,screen);point[1]=-154;
+    pc_cursor_frame();assert(!game_over_screen);
+    quit_dialog=1;pc_cursor_frame();assert(game_over_screen==modal&&pc_cursor_active());
+    ST32(manager+0x10,0);click_pending=true;rt_pc_cursor_manager(&cpu,0x7000f57da8,0x7000123404);
+    assert(activated_node==modal_node&&LD32(manager+0x10)==1&&!click_pending);
+    quit_dialog=0;ST64(sa+8*0x39,0);ST64(sa+8*0x34,0);pc_cursor_frame();assert(!game_over_screen);
+    puts("PASS: Options scroll/click/shared focus, SDL ownership/cursor visibility, page rebuild, Adventure Log/Ability Controls list registry, stationary hover, nested category clicks/locks, viewport preservation, pause header transitions/modal priority, quit question over Options, setting gate and reboot reset (synthetic host state).");
 #ifdef _WIN32
     VirtualFree(vt_memory,0,MEM_RELEASE);
     VirtualFree(memory,0,MEM_RELEASE);
