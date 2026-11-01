@@ -295,7 +295,10 @@ static _Atomic bool a_live;
 // What the game calls them. NULL until a run with the logging build (SAVAGEWIND_ACTLOG) has seen what an action does;
 // only the ones whose use is certain are named.
 static const char *const k_act_names[ACT_COUNT] = {
-    [2] = "Jump", [3] = "Attack", [13] = "Guard / lock on", [14] = "Cancel", [18] = "Bow",
+    [0] = "Interact", [2] = "Jump", [3] = "Attack", [5] = "Shield bash", [9] = "Lower shield", [10] = "Crouch step", [11] = "Dodge",
+    [12] = "Sprint", [13] = "Guard / lock on", [14] = "Cancel", [15] = "Scope", [17] = "Crouch", [18] = "Bow",
+    [19] = "Paraglider", [25] = "Dismount", [26] = "Speed up horse", [27] = "Pet horse", [28] = "Throw weapon", [31] = "Take photo", [32] = "Climb (no effect)",
+    [33] = "Aim rune", [34] = "Activate rune", [35] = "Call horse", [36] = "Water spin attack", [37] = "Throw distance", [38] = "Cycle accelerate", [39] = "Cycle brake", [40] = "Cycle jump",
 };
 // No code in the game reaches these by a number (they may still be asked by a computed one): kept off the page
 #define ACT_HIDDEN_MASK ((1ull << 1) | (1ull << 4) | (1ull << 6) | (1ull << 7) | (1ull << 8) | (1ull << 16) | \
@@ -391,6 +394,28 @@ static int act_log_on(void) {
 static _Atomic uint64_t l_seen[2], l_true[2], l_last[2];
 static _Atomic uint64_t l_pads[4];
 static _Atomic unsigned l_polls, l_queries[2];
+// for the on-screen list (written on the game thread, read by the menu layer)
+static _Atomic unsigned l_cnt[2][ACT_COUNT];
+static _Atomic uint32_t l_last_ms[ACT_COUNT];
+static _Atomic uint64_t l_holding;
+
+bool act_log_enabled(void) { return act_log_on(); }
+
+int act_log_rows(ActLogRow *out, int max) {
+    ActLogRow all[ACT_COUNT];
+    int n = 0;
+    for (int i = 0; i < ACT_COUNT; i++) {
+        unsigned p = l_cnt[1][i], h = l_cnt[0][i];
+        if (!p && !h) continue;
+        ActLogRow r = {i, p, h, l_last_ms[i], (l_holding >> i & 1) != 0};
+        int j = n++;
+        while (j > 0 && all[j - 1].last_ms < r.last_ms) { all[j] = all[j - 1]; j--; }  // (newest first)
+        all[j] = r;
+    }
+    if (n > max) n = max;
+    for (int i = 0; i < n; i++) out[i] = all[i];
+    return n;
+}
 
 static void act_log_ids(char *out, size_t n, uint64_t set) {
     size_t o = 0;
@@ -400,7 +425,7 @@ static void act_log_ids(char *out, size_t n, uint64_t set) {
     if (!o) snprintf(out, n, "-");
 }
 
-static void act_log_query(int kind, uint64_t pad, unsigned id, uint64_t lr) {
+static void act_log_query(int kind, uint64_t pad, unsigned id, uint64_t lr, bool custom) {
     l_queries[kind]++;
     if (id >= ACT_COUNT || !pad) return;
     if (!(l_seen[kind] >> id & 1)) {
@@ -413,6 +438,7 @@ static void act_log_query(int kind, uint64_t pad, unsigned id, uint64_t lr) {
         if (p == pad) break;
         if (!p) { l_pads[i] = pad; LOG("[act] pad object %llx asked\n", (unsigned long long)pad); break; }
     }
+    if (custom) return;  // an action with a binding of its own is logged by what the game is told (rt_act_query)
     uint32_t word = *(const uint32_t *)(uintptr_t)(pad + (kind ? 0x10 : 0x11c));
     if (k_masks && (word & k_masks[id])) l_true[kind] |= 1ull << id;
 }
@@ -423,10 +449,15 @@ static void act_log_poll(void) {
         uint64_t t = l_true[kind];
         l_true[kind] = 0;
         if (t == l_last[kind]) continue;
+        uint64_t fresh = t & ~l_last[kind];
         l_last[kind] = t;
+        if (!kind) l_holding = t;
+        uint32_t ms = SDL_GetTicks();
+        for (int i = 0; i < ACT_COUNT; i++)
+            if (fresh >> i & 1) { l_cnt[kind][i]++; l_last_ms[i] = ms; }
         char ids[200];
         act_log_ids(ids, sizeof ids, t);
-        LOG("[act] poll %u: game says %s: %s\n", n, kind ? "pressed" : "held", ids);
+        LOG("[act] poll %u: game says %s: %s (t=%.1f s)\n", n, kind ? "pressed" : "held", ids, ms / 1000.0);
     }
     if (n % 600 == 0) {
         LOG("[act] %u polls: %u held queries, %u pressed queries\n", n, (unsigned)l_queries[0], (unsigned)l_queries[1]);
@@ -456,13 +487,18 @@ void act_poll(bool live) {
 
 int rt_act_query(int kind, uint64_t pad, uint64_t id, uint64_t lr, uint64_t masks) {
     if (!k_masks && masks) k_masks = (const uint32_t *)(uintptr_t)masks;
-    if (act_log_on()) act_log_query(kind, pad, (unsigned)id, lr);
-    if (id >= ACT_COUNT || !a_live || !(a_custom >> id & 1)) return -1;
+    bool custom = id < ACT_COUNT && (a_custom >> id & 1);
+    if (act_log_on()) act_log_query(kind, pad, (unsigned)id, lr, custom && a_live);
+    if (id >= ACT_COUNT || !a_live || !custom) return -1;
+    int r;
     if (kind) {
         a_served = true;
-        return (int)(a_trig >> id & 1);
+        r = (int)(a_trig >> id & 1);
+    } else {
+        r = (int)(a_hold >> id & 1);
     }
-    return (int)(a_hold >> id & 1);
+    if (r && act_log_on()) l_true[kind] |= 1ull << id;
+    return r;
 }
 
 // ---- savagewind.ini: act_key_<id> / act_pad_<id> = <key | button | none>, written only when not the default

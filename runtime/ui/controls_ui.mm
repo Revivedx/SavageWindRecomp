@@ -1,9 +1,9 @@
 // Control remapping editor (runtime/input_bind.h), shared by the in-game menu's Controls tab (menu.mm) and the start
-// screen's Controls page (launcher.mm): a table of Switch inputs with the controller button and the key bound to
-// each. Select a binding, then press the new button / key (Esc or 5 s without a press cancels; a button already in
-// use swaps over). Below it, a table of the game's own actions (Jump, Attack...) with a controller button and a key of
-// their own each: two actions can share one, and an action can leave its Switch button. Drawn in whichever ImGui
-// context is current.
+// screen's Controls page (launcher.mm). First a table of the game's own actions (Jump, Attack...), each with a
+// controller button and a key of its own: two actions can share one, and an action keeps the button of its Switch
+// input until it is given a binding. Below it the inputs no action covers (sticks, camera, motion, menus), and, folded,
+// the Switch buttons the actions follow. Select a binding, then press the new button / key (Esc or 5 s without a
+// press cancels; a Switch input's button already in use swaps over). Drawn in whichever ImGui context is current.
 #include <SDL3/SDL.h>
 #include <stdio.h>
 
@@ -91,15 +91,15 @@ static void action_cell(int dev, int id, int fam, int cap_dev, int cap_slot, int
     if (waiting && !ImGui::IsItemVisible()) ImGui::SetScrollHereY(0.5f);
 }
 
-// One table of actions: the named ones (named = true), or the rest; the ones no code in the game reaches are left out
-static void action_table(const char *id, bool named, int fam, int cd, int cs, int ms) {
+// The table of actions: every one the game asks about (the ones no code in the game reaches are left out)
+static void action_table(const char *id, int fam, int cd, int cs, int ms) {
     if (!ImGui::BeginTable(id, 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX)) return;
     ImGui::TableSetupColumn(tr("Action"), ImGuiTableColumnFlags_WidthStretch, 1.0f);
     ImGui::TableSetupColumn(tr("Controller"), ImGuiTableColumnFlags_WidthStretch, 1.3f);
     ImGui::TableSetupColumn(tr("Keyboard"), ImGuiTableColumnFlags_WidthStretch, 1.3f);
     ImGui::TableHeadersRow();
     for (int a = 0; a < ACT_COUNT; a++) {
-        if (act_hidden(a) || (act_name(a) != NULL) != named) continue;
+        if (act_hidden(a)) continue;
         char name[64];
         action_name(a, name, sizeof name);
         ImGui::TableNextRow();
@@ -110,6 +110,29 @@ static void action_table(const char *id, bool named, int fam, int cd, int cs, in
         action_cell(BIND_DEV_PAD, a, fam, cd, cs, ms);
         ImGui::TableNextColumn();
         action_cell(BIND_DEV_KEY, a, fam, cd, cs, ms);
+    }
+    ImGui::EndTable();
+}
+
+// Rows of Switch inputs: the controller button and the key bound to each
+static void switch_table(const char *id, const int *order, int rows, int fam, int cd, int cs, int ms) {
+    if (!ImGui::BeginTable(id, 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX)) return;
+    ImGui::TableSetupColumn("Switch", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+    ImGui::TableSetupColumn(tr("Controller"), ImGuiTableColumnFlags_WidthStretch, 1.3f);
+    ImGui::TableSetupColumn(tr("Keyboard"), ImGuiTableColumnFlags_WidthStretch, 1.3f);
+    ImGui::TableHeadersRow();
+    for (int row = 0; row < rows; row++) {
+        const int slot = order[row];
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(tr(bind_input_name(slot)));
+        ImGui::TableNextColumn();
+        if (bind_pad_slot(slot)) cell(BIND_DEV_PAD, slot, fam, cd, cs, ms);
+        else ImGui::TextDisabled("%s", tr(slot == BIND_WALK ? "Tilt the stick" : slot == BIND_TILT ? "Motion sensors" :
+                                          bind_key_gyro(slot) ? "Motion sensors" : slot < BIND_RS_UP ? "Left stick" : "Right stick"));
+        ImGui::TableNextColumn();
+        cell(BIND_DEV_KEY, slot, fam, cd, cs, ms);
     }
     ImGui::EndTable();
 }
@@ -158,33 +181,31 @@ extern "C" void controls_bindings_draw(float scale) {
     }
     if (msg[0]) ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", msg);
 
-    if (ImGui::BeginTable("##binds", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX)) {
-        ImGui::TableSetupColumn("Switch", ImGuiTableColumnFlags_WidthStretch, 1.0f);
-        ImGui::TableSetupColumn(tr("Controller"), ImGuiTableColumnFlags_WidthStretch, 1.3f);
-        ImGui::TableSetupColumn(tr("Keyboard"), ImGuiTableColumnFlags_WidthStretch, 1.3f);
-        ImGui::TableHeadersRow();
-        // in the order a player thinks of them: face buttons, shoulders, Plus / Minus, d-pad, sticks
-        static const int order[] = {BIND_A, BIND_B, BIND_X, BIND_Y, BIND_L, BIND_R, BIND_ZL, BIND_ZR, BIND_PLUS,
-                                    BIND_MINUS, BIND_UP, BIND_DOWN, BIND_LEFT, BIND_RIGHT, BIND_LSTICK, BIND_RSTICK,
-                                    BIND_LS_UP, BIND_LS_DOWN, BIND_LS_LEFT, BIND_LS_RIGHT, BIND_RS_UP, BIND_RS_DOWN,
-                                    BIND_RS_LEFT, BIND_RS_RIGHT, BIND_WALK, BIND_TILT, BIND_GYRO_UP, BIND_GYRO_DOWN,
-                                    BIND_GYRO_LEFT, BIND_GYRO_RIGHT, BIND_GYRO_TURN_LEFT, BIND_GYRO_TURN_RIGHT,
-                                    BIND_GYRO_CENTER, BIND_FLY};
-        const int rows = (int)(sizeof order / sizeof *order) - (control_enabled() ? 0 : 1);  // (the fly row: test builds only)
-        for (int row = 0; row < rows; row++) {
-            const int slot = order[row];
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-            ImGui::AlignTextToFramePadding();
-            ImGui::TextUnformatted(tr(bind_input_name(slot)));
-            ImGui::TableNextColumn();
-            if (bind_pad_slot(slot)) cell(BIND_DEV_PAD, slot, fam, cd, cs, ms);
-            else ImGui::TextDisabled("%s", tr(slot == BIND_WALK ? "Tilt the stick" : slot == BIND_TILT ? "Motion sensors" :
-                                              bind_key_gyro(slot) ? "Motion sensors" : slot < BIND_RS_UP ? "Left stick" : "Right stick"));
-            ImGui::TableNextColumn();
-            cell(BIND_DEV_KEY, slot, fam, cd, cs, ms);
-        }
-        ImGui::EndTable();
+    // the page: the game's actions first (they follow the Switch inputs below until given a binding of their own)
+    action_table("##actions", fam, cd, cs, ms);
+    bool all_default = true;
+    for (int a = 0; a < ACT_COUNT; a++) all_default &= act_is_default(a);
+    ImGui::BeginDisabled(all_default);
+    if (ImGui::Button(tr("Reset actions to defaults"))) { bind_capture_cancel(); act_reset(); settings_save(); }
+    ImGui::EndDisabled();
+
+    // what no action covers: the sticks, camera, motion, the menu buttons and the d-pad's quick menus
+    ImGui::SeparatorText(tr("Movement, camera and menus"));
+    static const int other[] = {BIND_PLUS, BIND_MINUS, BIND_UP, BIND_LEFT, BIND_RIGHT, BIND_LS_UP, BIND_LS_DOWN,
+                                BIND_LS_LEFT, BIND_LS_RIGHT, BIND_RS_UP, BIND_RS_DOWN, BIND_RS_LEFT, BIND_RS_RIGHT,
+                                BIND_WALK, BIND_TILT, BIND_GYRO_UP, BIND_GYRO_DOWN, BIND_GYRO_LEFT, BIND_GYRO_RIGHT,
+                                BIND_GYRO_TURN_LEFT, BIND_GYRO_TURN_RIGHT, BIND_GYRO_CENTER, BIND_FLY};
+    const int other_rows = (int)(sizeof other / sizeof *other) - (control_enabled() ? 0 : 1);  // (the fly row: test builds only)
+    switch_table("##binds_other", other, other_rows, fam, cd, cs, ms);
+
+    // the buttons the actions follow: changing one moves every action that has no binding of its own
+    if (ImGui::CollapsingHeader(tr("Advanced: Switch buttons"))) {
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextDisabled("%s", tr("Every action follows one of these until it has a binding above."));
+        ImGui::PopTextWrapPos();
+        static const int buttons[] = {BIND_A, BIND_B, BIND_X, BIND_Y, BIND_L, BIND_R, BIND_ZL, BIND_ZR, BIND_DOWN,
+                                      BIND_LSTICK, BIND_RSTICK};
+        switch_table("##binds_buttons", buttons, (int)(sizeof buttons / sizeof *buttons), fam, cd, cs, ms);
     }
     ImGui::Spacing();
     ImGui::BeginDisabled(bind_is_default(BIND_DEV_PAD));
@@ -193,15 +214,6 @@ extern "C" void controls_bindings_draw(float scale) {
     ImGui::SameLine();
     ImGui::BeginDisabled(bind_is_default(BIND_DEV_KEY));
     if (ImGui::Button(tr("Reset keyboard to defaults"))) { bind_capture_cancel(); bind_reset(BIND_DEV_KEY); }
-    ImGui::EndDisabled();
-
-    ImGui::SeparatorText(tr("Actions"));
-    action_table("##actions", true, fam, cd, cs, ms);
-    if (ImGui::CollapsingHeader(tr("More actions"))) action_table("##more_actions", false, fam, cd, cs, ms);
-    bool all_default = true;
-    for (int a = 0; a < ACT_COUNT; a++) all_default &= act_is_default(a);
-    ImGui::BeginDisabled(all_default);
-    if (ImGui::Button(tr("Reset actions to defaults"))) { bind_capture_cancel(); act_reset(); settings_save(); }
     ImGui::EndDisabled();
 
     ImGui::PushTextWrapPos(0);

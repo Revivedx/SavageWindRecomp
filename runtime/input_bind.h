@@ -111,6 +111,17 @@ void act_poll(bool live);
 // answers (no binding of its own, a menu, an id out of range). `masks` is the game's mask table.
 int rt_act_query(int kind, uint64_t pad, uint64_t id, uint64_t lr, uint64_t masks);
 
+// Logging build (SAVAGEWIND_ACTLOG=1): a live list of what the game says is pressed / held, drawn over the game by the menu
+// layer (ui/menu.mm act_overlay_draw) next to the "[act] poll N" lines in the log.
+typedef struct {
+    int id;
+    unsigned pressed, held;  // times the game has said "pressed" / started saying "held" since the start
+    uint32_t last_ms;        // SDL_GetTicks of the latest of either
+    bool holding;            // the game says held right now
+} ActLogRow;
+bool act_log_enabled(void);
+int act_log_rows(ActLogRow *out, int max);  // actions seen, the most recent first
+
 #ifdef __cplusplus
 }
 #endif

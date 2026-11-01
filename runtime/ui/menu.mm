@@ -1402,6 +1402,48 @@ void menu_tabs_draw(float scale, ImFont *font, ImFont *font_big, bool in_game, v
     g_font = f0, g_font_big = f1;
 }
 
+// Logging build (SAVAGEWIND_ACTLOG=1): the actions the game says are pressed / held, live, so a play session can be read off
+// the screen as well as the log ("[act] poll N: game says ..."). A big flash of the latest in the top middle, the list left.
+static void act_overlay_draw(ImGuiIO &io, float scale) {
+    ActLogRow rows[12];
+    int n = act_log_rows(rows, 12);
+    uint32_t now = SDL_GetTicks();
+    const ImGuiWindowFlags fl = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
+                                ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoSavedSettings;
+    ImGui::SetNextWindowPos(ImVec2(16 * scale, 170 * scale), 0, ImVec2(0, 0));
+    ImGui::SetNextWindowBgAlpha(0.7f);
+    ImGui::Begin("##actlog", NULL, fl);
+    ImGui::SetWindowFontScale(0.72f);
+    ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "Actions the game asks for (also in the log)");
+    if (!n) ImGui::TextDisabled("press something");
+    for (int i = 0; i < n; i++) {
+        const ActLogRow &r = rows[i];
+        float age = (float)(now - r.last_ms) / 1000.f;
+        ImVec4 c = r.holding || age < 1.5f ? ImVec4(1, 0.9f, 0.35f, 1) : age < 8 ? ImVec4(0.92f, 0.92f, 0.92f, 1) : ImVec4(0.6f, 0.6f, 0.6f, 1);
+        const char *nm = act_name(r.id);
+        ImGui::TextColored(c, "%2d  %s   pressed x%u   held x%u%s", r.id, nm ? nm : "?", r.pressed, r.held,
+                           r.holding ? "   [HELD]" : "");
+    }
+    ImGui::End();
+    // the latest, big, fading over 1.5 s; one line per action pressed in that time
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, 60 * scale), 0, ImVec2(0.5f, 0));
+    ImGui::SetNextWindowBgAlpha(0);
+    ImGui::Begin("##actbig", NULL, fl | ImGuiWindowFlags_NoBackground);
+    ImGui::PushFont(g_font_big);
+    ImGui::SetWindowFontScale(1.5f);
+    int shown = 0;
+    for (int i = 0; i < n && shown < 4; i++) {
+        float age = (float)(now - rows[i].last_ms) / 1000.f;
+        if (age >= 1.5f && !rows[i].holding) continue;
+        float a = rows[i].holding ? 1.f : 1.f - age / 1.5f;
+        const char *nm = act_name(rows[i].id);
+        ImGui::TextColored(ImVec4(1, 0.9f, 0.35f, a), "%d%s%s%s", rows[i].id, nm ? " " : "", nm ? nm : "", rows[i].holding ? "  (held)" : "");
+        shown++;
+    }
+    ImGui::PopFont();
+    ImGui::End();
+}
+
 #ifndef __APPLE__
 extern "C" void rec_drain(void);  // (runtime/nvn/vulkan/record.c)
 #endif
@@ -1417,7 +1459,7 @@ static bool menu_draws(bool *pointer_hover = NULL, float *pointer_box = NULL, bo
     if (pointer_hover) *pointer_hover = hover;
     if (gyro_show) *gyro_show = gyro_on;
     return g_open.load() || g_kbd.load() == 1 || g_sizes.load() || console_is_open() || gyro_on || hover ||
-           g_settings.perf_overlay != PERF_OFF;
+           g_settings.perf_overlay != PERF_OFF || act_log_enabled();
 }
 
 bool menu_render_needed(void) { return menu_draws(); }
@@ -1500,6 +1542,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     }
 
     if (g_settings.perf_overlay != PERF_OFF) perf_overlay_draw(io, scale);
+    if (act_log_enabled()) act_overlay_draw(io, scale);
     if (!open && !kbd && !sizes && !con && gyro_scene_show) gyro_scene_draw(io, scale, gyro_scene);
 
     if (open) {
