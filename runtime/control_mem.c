@@ -128,7 +128,10 @@ static bool copy_memory(uint64_t a, void *buf, size_t n, bool write) {
     struct iovec local = {buf, n}, remote = {(void *)(uintptr_t)a, n};
     ssize_t done = write ? process_vm_writev(getpid(), &local, 1, &remote, 1, 0)
                          : process_vm_readv(getpid(), &local, 1, &remote, 1, 0);
-    return done >= 0 && (size_t)done == n;
+    if (done >= 0 && (size_t)done == n) return true;
+    if (!ms_direct(a, n)) return false;  // (the heap as a dma-buf: refused by the OS copy, but mapped read-write)
+    if (write) memcpy((void *)(uintptr_t)a, buf, n); else memcpy(buf, (const void *)(uintptr_t)a, n);
+    return true;
 #endif
 }
 static void address(ControlReply *r, const char *key, uint64_t a) {

@@ -26,6 +26,7 @@
 #include "framegen.h"
 #include "../../game_sites.h"
 #include "../../framepace.h"
+#include "../../memscan.h"
 #include "../../services/fs_layout.h"
 
 static uint64_t stat_build_waits;  // draws that waited for their pipeline (draw_must_happen)
@@ -4327,6 +4328,7 @@ static void heap_done(VkBuffer buf, VkDeviceMemory mem, uint64_t size, const cha
     gmem_mem = mem;
     gmem_size = size;
     gmem_mapped = true;
+    ms_direct_set(HEAP_BASE, size);  // (the control endpoint's memory reads: the OS copy refuses a dma-buf's pages)
     LOG("[vk] guest heap is GPU memory (%s): %llu MB\n", how, (unsigned long long)(size >> 20));
 }
 
@@ -5148,6 +5150,7 @@ void vk_exec_reset(void) {
     }
     gmem_size = gmem_tried = 0;
     gmem_mapped = false;  // (still mapped until main.c resets guest memory: the dma-buf lives on until then)
+    ms_direct_set(0, 0);
     st_defaults();
 }
 

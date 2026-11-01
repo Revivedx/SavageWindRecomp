@@ -39,3 +39,9 @@ bool ms_resident(uint64_t addr, size_t npages, uint8_t *resident);
 // *ret gets fn's result otherwise.
 typedef size_t (*MsFn)(const void *p, size_t n, void *ctx);
 bool ms_guarded(const void *p, size_t n, MsFn fn, void *ctx, size_t *ret);
+
+// A range the OS copy can't read but that stays mapped while it is set: on Linux the guest heap as GPU memory, a dma-buf
+// mapped at its addresses (runtime/nvn/vulkan/exec.c heap_done), whose pages process_vm_readv/writev refuse. ms_guarded
+// and control_mem.c's copies fall back to reading or writing it in place. size 0 clears it.
+void ms_direct_set(uint64_t lo, uint64_t size);
+bool ms_direct(uint64_t addr, size_t n);  // [addr, addr + n) lies inside that range
