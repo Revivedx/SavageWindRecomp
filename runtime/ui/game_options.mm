@@ -1027,7 +1027,11 @@ void wide_button(uint64_t row) {
     if (!two_ptr(root) || !two_button_panes(root, p)) return;
     const auto layout = binding_row_layout();
     const uint8_t plate = *(uint8_t *)(uintptr_t)(p.plate + 0x58);  // (the row's own band: stays)
-    two_geometry(p, {layout.key.x, layout.pad.x + layout.pad.width - layout.key.x});
+    const BindingRowColumn span{layout.key.x, layout.pad.x + layout.pad.width - layout.key.x};
+    // The band is a child of the button and would move with it: its offset takes the move back
+    const float moved = *(float *)(uintptr_t)(root + 0x30) - span.center();
+    if (fabsf(moved) > .01f) two_float(p.plate, 0x30, *(float *)(uintptr_t)(p.plate + 0x30) + moved);
+    two_geometry(p, span);
     wr8(p.plate + 0x58, plate | 0x10);
 }
 bool two_configure(uint64_t row) {
