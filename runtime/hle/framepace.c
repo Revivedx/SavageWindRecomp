@@ -46,6 +46,8 @@
 
 #include "../game_sites.h"
 #include "../hle.h"
+#include "../kernel.h"
+#include "../rt.h"
 #include "../settings.h"
 #include "../framepace.h"
 #include "../window_size.h"
@@ -87,6 +89,41 @@ static bool in_event(void) {
 
 bool framepace_in_event(void) { return in_event(); }
 
+// The active event's name ("Demo014_0"): the event's name string, a char pointer at +0x68 to its buffer at +0x74
+// (found with a probe on the new game's opening, Demo169_0). "" when there is none or it isn't in the heap.
+static const char *event_name(void) {
+    uint64_t evt = *(uint64_t *)(uintptr_t)g_site.event_mgr;
+    uint64_t ev = evt ? *(uint64_t *)(uintptr_t)(evt + 0x1d2b8) : 0;
+    if (!ev) return "";
+    uint64_t s = *(uint64_t *)(uintptr_t)(ev + 0x68), top = HEAP_BASE + kernel_heap_size();
+    if (s < HEAP_BASE || s + 32 > top) return "";
+    const char *p = (const char *)(uintptr_t)s;
+    size_t n = 0;
+    while (n < 32 && p[n] >= 0x20 && p[n] < 0x7f) n++;
+    return n && n < 32 && !p[n] ? p : "";
+}
+
+// Events held at the console's 30 fps whatever the chosen rate: a wait in them counts frames and can miss its end.
+//   Demo014_0: Master Kohga's entrance in the Yiga Clan hideout (Assassin_Leader) froze after "The strong, the burly..."
+//              at 120 fps, and played through at 30 (#196). It depends on the exact rate: one run at about 80 fps passed.
+static const char *const events_at_30[] = {"Demo014_0"};
+
+// The event running now is one of those (and its name, logged once per event)
+static bool event_at_30(void) {
+    static uint64_t last;
+    uint64_t evt = *(uint64_t *)(uintptr_t)g_site.event_mgr;
+    uint64_t ev = evt ? *(uint64_t *)(uintptr_t)(evt + 0x1d2b8) : 0;
+    const char *name = event_name();
+    bool hold = false;
+    for (size_t i = 0; i < sizeof events_at_30 / sizeof *events_at_30; i++)
+        if (!strcmp(name, events_at_30[i])) hold = true;
+    if (ev != last && *name) {
+        last = ev;
+        LOG("[event] %s%s\n", name, hold ? ": at 30 fps (its waits count frames)" : "");
+    }
+    return hold;
+}
+
 // The game's UI screen `id` exists (the screen manager's array; ids as runtime/ui/game_options.mm uses them)
 static bool screen_up(uint32_t id) {
     uint64_t mgr = *(uint64_t *)(uintptr_t)g_site.screen_mgr;
@@ -95,8 +132,14 @@ static bool screen_up(uint32_t id) {
     return arr && *(uint64_t *)(uintptr_t)(arr + 8 * id);
 }
 
-// (screens: 1 the start screen, 0x38 its load and confirmation menus)
-bool framepace_title_ui(void) { return screen_up(1) || screen_up(0x38); }
+// (screens: 1 the start screen, 0x38 its load and confirmation menus; 0x38 can also be used over a paused game)
+bool framepace_title_ui(void) {
+    if (*(uint32_t *)(uintptr_t)PAUSE_STATE) return false;
+    return screen_up(1) || screen_up(0x38);
+}
+
+// (screen 0x55: the loading screen with its tip, up from a load's start until its fade into the game is over)
+bool framepace_loading_ui(void) { return screen_up(0x55); }
 
 // (pause state 2: the pause menu's pages and the map; 4 is the quick menus over the game)
 bool framepace_menu_ui(void) { return *(uint32_t *)(uintptr_t)PAUSE_STATE == 2; }
@@ -117,6 +160,7 @@ int framepace_target(void) {
     }
     if (menu > 0 && (fps == 0 || fps > menu) && in_menu()) fps = menu;
     if (event > 0 && (fps == 0 || fps > event) && in_event()) fps = event;
+    if (in_event() && event_at_30() && (fps == 0 || fps > 30)) fps = 30;
     return fps;
 }
 
@@ -207,7 +251,124 @@ float rt_gui_speed(float game) {
 static void clock_probe(uint64_t vfr);
 static void log_screens(void);
 
+// The frame's length in console frames (VFR's interval ratio as set below: 1 at 30 fps, 0.5 at 60), for game code
+// patched to scale a per-update step it doesn't scale itself
+static volatile float g_frame_ratio = 1;
+
+// An arrow's gravity in its fall, added once per update (tools/patches.py _arrow_gravity, #144): per console frame.
+// SAVAGEWIND_LOG_ARROW=1 logs each falling arrow's update (time, velocity before it).
+float rt_arrow_gravity(uint64_t arrow, float g) {
+    static int log = -1;
+    if (log < 0) log = env_int("SAVAGEWIND_LOG_ARROW", 0);
+    if (log > 0)
+        LOG("[arrow] %.3f s %#llx ratio %.3f gravity %.2f velocity %.2f %.2f %.2f\n", plat_now_ns() / 1e9,
+            (unsigned long long)arrow, g_frame_ratio, g, VF(float, arrow, 0x110), VF(float, arrow, 0x114),
+            VF(float, arrow, 0x118));
+    return g * g_frame_ratio;
+}
+
+// The physics step's solver microsteps (tools/patches.py _solver_steps, #161): the game asks for delta frame x 6 (6 at
+// 30 fps, 2 at 120), the same microstep length at any frame rate; the runtime gives 6 / sqrt(delta frame) on shorter
+// steps (8.5 at 60 fps, 12 at 120). With the game's count the solver gave way to what touches Link more and more as the
+// steps got shorter: a held cucco over his head cut his jump to 0.25 m at ~90 fps (0.63 at 30); 6 a step still left
+// 0.56, 6 / sqrt the 0.64 of 30 fps (SAVAGEWIND_SOLVER_STEPS=0: the game's count).
+float rt_solver_steps(float delta_frame, float per_frame) {
+    static int keep = -1;
+    if (keep < 0) keep = env_int("SAVAGEWIND_SOLVER_STEPS", 1) != 0;
+    return keep && delta_frame > 0 && delta_frame < 1 ? per_frame / sqrtf(delta_frame) : delta_frame * per_frame;
+}
+
+// Keyframed bodies' turn (tools/patches.py _kf_angle, #209): the angle of a keyframed body's turn toward its target,
+// 2 atan2(|xyz|, |w|) of the turn's quaternion at q (x, y, z, w) instead of the game's 2 acos(|w|), which reads turns
+// under about a milliradian (a Divine Beast's floor over one 120 fps frame) as none. SAVAGEWIND_KF_ANGLE=0: the game's.
+static int g_kf_angle = -1;
+float rt_kf_angle(uint64_t q) {
+    const float *v = (const float *)(uintptr_t)q;
+    if (g_kf_angle < 0) g_kf_angle = env_int("SAVAGEWIND_KF_ANGLE", 1) != 0;
+    float w = fabsf(v[3]);
+    if (!g_kf_angle) return w >= 1.0f ? 0.0f : 2.0f * acosf(w);
+    return 2.0f * atan2f(sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]), w);
+}
+
+// The sound system's frame (tools/patches.py _snd_frame_floor, #145): the game gives it the delta frame, at least 0.5
+// (a 60 fps frame), and every sound timer and fade steps by it: above 60 fps the sound's clock ran ahead of the game's
+// (x1.6 at ~95 fps, x2 at 120), and the field battle music started each segment while the last one still played. The
+// floor is 0.5 x the frame's length in console frames: the console's at 30 fps (slow motion floored as there), the
+// frame's own length above. SAVAGEWIND_SND_FRAME_FLOOR=0: the game's 0.5.
+float rt_snd_frame_floor(void) {
+    static int keep = -1;
+    if (keep < 0) keep = env_int("SAVAGEWIND_SND_FRAME_FLOOR", 1) != 0;
+    return keep && framepace_on() ? 0.5f * g_frame_ratio : 0.5f;
+}
+
+static uint64_t game_frames;  // rt_vfr_update calls: the game's frames (framepace_game_frame)
+uint64_t framepace_game_frame(void) { return __atomic_load_n(&game_frames, __ATOMIC_RELAXED); }
+// Experimental #305: the surf controller can still report contact on the update after takeoff at 120 fps.
+// Removing its previous 11-unit boost then can cancel the jump. Protect takeoff for one console frame, with
+// one impulse only. Lower rates keep the original path. This hypothesis still needs in-game validation.
+// SAVAGEWIND_SURF_TAKEOFF=0 disables it; SAVAGEWIND_LOG_SURF=1 logs launch/contact/timeout transitions.
+static struct {
+    uint64_t controller, frame;
+    float remaining;  // console frames, at most 1/30 second (not presented-frame counts)
+} surf_takeoff;
+
+static int surf_takeoff_enabled(void) {
+    return framepace_on() && env_int("SAVAGEWIND_SURF_TAKEOFF", 1) != 0;
+}
+
+static void surf_takeoff_log(const char *event) {
+    if (env_int("SAVAGEWIND_LOG_SURF", 0))
+        LOG("[surf] %s controller %#llx frame %llu ratio %.4f grace %.4f\n", event,
+            (unsigned long long)surf_takeoff.controller, (unsigned long long)surf_takeoff.frame,
+            g_frame_ratio, surf_takeoff.remaining);
+}
+
+void rt_surf_contact(uint64_t controller, unsigned flags) {
+    uint64_t frame = framepace_game_frame();
+    if (surf_takeoff.controller != controller || frame - surf_takeoff.frame > 1 || !surf_takeoff_enabled())
+        surf_takeoff.remaining = 0;
+    if (surf_takeoff.remaining > 0 && frame != surf_takeoff.frame) {
+        if (!(flags & 2)) {
+            surf_takeoff.remaining = 0;
+            surf_takeoff_log("airborne");
+        } else {
+            surf_takeoff.remaining -= g_frame_ratio;
+            if (surf_takeoff.remaining <= 0) surf_takeoff_log("timeout");
+        }
+    }
+    surf_takeoff.controller = controller;
+    surf_takeoff.frame = frame;
+}
+
+int rt_surf_takeoff_pending(uint64_t controller) {
+    return surf_takeoff_enabled() && surf_takeoff.controller == controller && surf_takeoff.remaining > 0 &&
+           surf_takeoff.frame == framepace_game_frame();
+}
+
+int rt_surf_jump_request(uint64_t controller) {
+    if (rt_surf_takeoff_pending(controller)) return 0;
+    if (surf_takeoff_enabled() && g_frame_ratio > 0 && g_frame_ratio < 0.30f) {
+        surf_takeoff.controller = controller;
+        surf_takeoff.frame = framepace_game_frame();
+        surf_takeoff.remaining = 1;
+        surf_takeoff_log("launch");
+    }
+    return 1;
+}
+
+// The game's frames that were presented: one step per presented frame, where game frames step twice while paused
+// (output_scale.c's jitter sequence: each presented frame gets the next phase)
+static uint64_t shown_frames;
+uint64_t framepace_shown_frame(void) { return __atomic_load_n(&shown_frames, __ATOMIC_RELAXED); }
+
 void rt_vfr_update(uint64_t vfr) {
+    __atomic_fetch_add(&game_frames, 1, __ATOMIC_RELAXED);
+    {
+        extern uint64_t renderer_present_count(void);
+        static uint64_t presented = ~0ull;
+        uint64_t n = renderer_present_count();
+        if (n != presented) presented = n, __atomic_fetch_add(&shown_frames, 1, __ATOMIC_RELAXED);
+    }
     extern bool nvn_timeline(void);
     if (nvn_timeline()) LOG("[tl] %.3f %x vfr\n", plat_now_ns() / 1e6, kernel_current_thread_handle());
     extern uint64_t g_fs_vfr;  // (SAVAGEWIND_FRAME_LOG=2, nvn/objects.c)
@@ -216,6 +377,7 @@ void rt_vfr_update(uint64_t vfr) {
     log_screens();
     extern void input_cam_frame(float ratio);  // runtime/hle/input.c: the mouse's motion in the frame, for the cameras
     if (!framepace_on()) {
+        g_frame_ratio = VF(float, vfr, VFR_RATIO);
         input_cam_frame(VF(float, vfr, VFR_RATIO));
         return;
     }
@@ -275,6 +437,7 @@ void rt_vfr_update(uint64_t vfr) {
     else if (iv == 3 && slow < 1.15) iv = 2;
     VF(float, vfr, VFR_RATIO) = ratio;
     VF(float, vfr, VFR_NEW_RATIO) = ratio;
+    if (!paused) g_frame_ratio = ratio;
     VF(uint32_t, vfr, VFR_INTERVAL) = iv;
     VF(uint8_t, vfr, VFR_CHANGED) = last_iv && iv != last_iv;
     last_iv = iv;
@@ -292,9 +455,12 @@ void rt_vfr_update(uint64_t vfr) {
 // SAVAGEWIND_SCRIPT_CLOCK=1: SAVAGEWIND_INPUT and SAVAGEWIND_SHOT_AT count 30ths of a second (the console's frames)
 // instead of presented frames, so one script drives the game the same way at any frame rate: each presented frame
 // adds its length x 30, at most 1.5 (a load's long frames count like the console's).
+static double g_script_t;  // (SAVAGEWIND_SCRIPT_CLOCK: the script frames so far)
+uint64_t framepace_script_now(void) { return (uint64_t)g_script_t; }
+
 uint64_t framepace_script_frame(uint64_t presented) {
     static int on = -1;
-    static double t;
+    double t = g_script_t;
     static uint64_t last;
     if (on < 0) on = env_int("SAVAGEWIND_SCRIPT_CLOCK", 0) != 0;
     if (!on) return presented;
@@ -302,6 +468,7 @@ uint64_t framepace_script_frame(uint64_t presented) {
     double units = last ? (now - last) / 1e9 * 30 : 1;
     last = now;
     t += units > 1.5 ? 1.5 : units;
+    g_script_t = t;
     {   // (debug) SAVAGEWIND_DUMP_DATA_AT=<frame>,...: main's .data and .bss -> build/data_<frame>.bin
         static const char *next;
         static int init;

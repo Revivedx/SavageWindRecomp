@@ -45,10 +45,12 @@ GENFLAGS_ZIG := -Xclang $(filter -O%,$(GENFLAGS)) -fno-vectorize -fno-slp-vector
 # the app itself holds none of it. $(GEN)/layout.c, then a folder per module (main, subsdk*, sdk)
 GEN_SRC  := $(wildcard $(GEN)/*.c) $(wildcard $(GEN)/*/*.c)
 GEN_OBJ  := $(patsubst %.c,$(B)/obj/%.o,$(patsubst $(GEN)/%,%,$(GEN_SRC))) $(B)/obj/tools/gamelib_entry.o
-RT_SRC   := $(wildcard runtime/*.c) $(wildcard runtime/hle/*.c) $(wildcard runtime/services/*.c) \
+RT_SRC   := $(filter-out runtime/control.c runtime/control_game.c,$(wildcard runtime/*.c)) \
+            runtime/control.c runtime/control_game.c $(wildcard runtime/hle/*.c) $(wildcard runtime/services/*.c) \
             $(wildcard runtime/nvn/*.c) $(wildcard runtime/nvn/maxwell/*.c) runtime/platform/$(PLATFORM).c
 RT_HDRS  := $(wildcard runtime/*.h) $(wildcard runtime/platform/*.h) $(wildcard runtime/nvn/*.h) \
-            $(wildcard runtime/nvn/maxwell/*.h) $(wildcard runtime/nvn/vulkan/*.h) $(wildcard runtime/ui/*.h)
+            $(wildcard runtime/nvn/maxwell/*.h) $(wildcard runtime/nvn/vulkan/*.h) $(wildcard runtime/ui/*.h) \
+            $(wildcard runtime/services/*.h)
 UI_SRC   := $(wildcard runtime/ui/*.mm)
 UI_OBJ   := $(patsubst runtime/%.mm,$(B)/rt/%.o,$(UI_SRC))
 IMGUI_OBJ := $(B)/imgui/imgui.o $(B)/imgui/imgui_draw.o $(B)/imgui/imgui_tables.o $(B)/imgui/imgui_widgets.o \
@@ -105,8 +107,10 @@ OSFLAGS  := -D_FILE_OFFSET_BITS=64 -D_POSIX_THREAD_SAFE_FUNCTIONS -D_CRT_RAND_S 
 GENARCH  ?= -march=x86-64-v3  # AVX2 + FMA for the lifted FP/SIMD code (simd.h)
 GENARCH_COMPAT ?= -march=x86-64-v2  # CPUs without them (GAMELIB_ID_COMPAT below)
 GENFLAGS += -D_FILE_OFFSET_BITS=64 $(GENARCH)
-LDFLAGS  := -fuse-ld=lld -Wl,--stack,16777216 $(if $(DEPS),-L$(DEPS)/lib) -lSDL3 -lavformat -lavcodec -lavutil -lswscale \
-            -lvulkan-1 -lwinmm -lole32 -lshell32 -lcomdlg32 -luuid -lshaderc_shared -lpdh -l:libz.a \
+# --stack: every thread's default stack, reserved (committed as it grows): 256 MB, the guest threads' recursion runs on
+# it (runtime/kernel.c thread_start)
+LDFLAGS  := -fuse-ld=lld -Wl,--stack,268435456 $(if $(DEPS),-L$(DEPS)/lib) -lSDL3 -lavformat -lavcodec -lavutil -lswscale \
+            -lvulkan-1 -lwinmm -lole32 -lshell32 -lcomdlg32 -luuid -lshaderc_shared -lpdh -lws2_32 -l:libz.a \
             $(if $(RELEASE),-Wl$(comma)--subsystem$(comma)windows)  # release: no console window (log -> savagewind.log)
 BACKEND_SRC := $(wildcard runtime/nvn/vulkan/*.c) $(wildcard runtime/nvn/vulkan/*.cpp)
 BACKEND_OBJ := $(patsubst runtime/%.cpp,$(B)/rt/%.o,$(patsubst runtime/%.c,$(B)/rt/%.o,$(BACKEND_SRC)))
@@ -150,29 +154,42 @@ TRANSLATOR_SRCS := runtime/nvn/maxwell/translate.c runtime/nvn/maxwell/shader.h
 TRANSLATOR_ID := $(shell cat $(TRANSLATOR_SRCS) | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
 SPIRV_ID := $(shell cat runtime/nvn/vulkan/spirv.c | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
 
+# SW_SOURCE: the source this build is made from, in the log's first line (runtime/main.c): its commit and tree, and
+# "modified" when the runtime, the tools or this Makefile differ from them ("unknown" outside a git checkout). A
+# commit published to test has the tree of the local commit it was made from. $(B)/source_id follows it, so main.o is
+# rebuilt when it changes.
+comma    := ,
+SW_SOURCE := $(or $(shell git log -1 --format='commit %h, tree %t' 2>/dev/null),unknown)$(if $(shell git status --porcelain --untracked-files=no -- runtime tools Makefile 2>/dev/null),$(comma) modified)
+$(shell mkdir -p $(B) && [ "$$(cat $(B)/source_id 2>/dev/null)" = '$(SW_SOURCE)' ] || echo '$(SW_SOURCE)' > $(B)/source_id)
+
 RT_OBJ   := $(patsubst runtime/%.c,$(B)/rt/%.o,$(RT_SRC))
 RTFLAGS  := -O2 -g -fno-strict-aliasing -Wall -Wno-unused-function -Iruntime -Iruntime/nvn -isystem third_party -isystem third_party/stb $(DEPINC) $(OSFLAGS)
 CXXFLAGS := -O2 -g -std=c++17 -I$(IMGUI) -I$(IMGUI)/backends -Iruntime -Iruntime/nvn -isystem third_party -Ithird_party/stb $(DEPINC)
 
 .DEFAULT_GOAL := all
 
-# AMD FidelityFX SDK 1.1.4 (third_party/FidelityFX, MIT): FSR 3 frame interpolation and optical flow on its Vulkan
-# backend (runtime/nvn/vulkan/framegen.cpp). Its sources unchanged, with ffx_compat.h for what MSVC's headers bring;
-# the shaders are tools/ffx_shaders.py's (third_party/FidelityFX/spirv).
+# AMD FidelityFX SDK 1.1.4 (third_party/FidelityFX, MIT): FSR 3 frame interpolation and optical flow
+# (runtime/nvn/vulkan/framegen.cpp) and the FSR 3 upscaler (runtime/nvn/vulkan/fsr3.cpp) on its Vulkan backend. Its
+# sources unchanged, with ffx_compat.h for what MSVC's headers bring; the shaders are tools/ffx_shaders.py's
+# (third_party/FidelityFX/spirv).
 FFX      := third_party/FidelityFX
 FFX_SRC  := $(FFX)/sdk/src/components/frameinterpolation/ffx_frameinterpolation.cpp \
-            $(FFX)/sdk/src/components/opticalflow/ffx_opticalflow.cpp $(FFX)/sdk/src/backends/vk/ffx_vk.cpp \
+            $(FFX)/sdk/src/components/opticalflow/ffx_opticalflow.cpp \
+            $(FFX)/sdk/src/components/fsr3upscaler/ffx_fsr3upscaler.cpp $(FFX)/sdk/src/backends/vk/ffx_vk.cpp \
             $(wildcard $(FFX)/sdk/src/shared/*.cpp)
 FFX_OBJ  := $(patsubst $(FFX)/sdk/src/%.cpp,$(B)/ffx/%.o,$(FFX_SRC))
 FFX_INC  := -I$(FFX)/sdk/include -I$(FFX)/sdk/src/components -I$(FFX)/sdk/src/shared -I$(FFX)/sdk/src/backends/shared
 ifneq ($(PLATFORM),macos)
 BACKEND_OBJ += $(FFX_OBJ)
+$(B)/rt/nvn/vulkan/fsr3.o: CXXFLAGS := -DSW_FSR3=1 -include $(FFX)/ffx_compat.h $(FFX_INC) $(CXXFLAGS)
 endif
 $(B)/ffx/%.o: $(FFX)/sdk/src/%.cpp $(FFX)/ffx_compat.h
 	@mkdir -p $(dir $@)
 	$(CXX) -O2 -g -std=c++17 -w -include $(FFX)/ffx_compat.h $(FFX_INC) -I$(FFX)/sdk/include/FidelityFX/gpu $(DEPINC) -c $< -o $@
-$(B)/rt/nvn/vulkan/framegen.o: CXXFLAGS += -include $(FFX)/ffx_compat.h $(FFX_INC) -I$(FFX)/spirv
-$(B)/rt/nvn/vulkan/framegen.o: $(FFX)/spirv/ffx_shaders_vk.h
+# (the SDK's headers ahead of $(DEPINC)'s: another copy of them there, from a build of the SDK, has other context
+# sizes, and a context smaller than the SDK's own code writes overran the next one in memory)
+$(B)/rt/nvn/vulkan/framegen.o: CXXFLAGS := -include $(FFX)/ffx_compat.h $(FFX_INC) -I$(FFX)/spirv $(CXXFLAGS)
+$(B)/rt/nvn/vulkan/framegen.o: $(FFX)/spirv/ffx_shaders_vk.h $(FFX)/spirv/ffx_fsr3upscaler_vk.h $(FFX)/ffx_compat.h
 
 all: $(EXE) $(CONFIG_EXE) $(if $(strip $(GEN_SRC)),$(GAMELIB))  # (GEN_SRC is a space when there is no generated/)
 
@@ -186,6 +203,8 @@ $(B)/obj/tools/gamelib_entry.o: tools/gamelib_entry.c $(GAMELIB_SRCS) Makefile  
 	$(CC) $(GENFLAGS) -DGAMELIB_ID='"$(GAMELIB_ID)"' -c $< -o $@
 $(B)/rt/nvn/maxwell/translate.o: RTFLAGS += -DTRANSLATOR_ID='"$(TRANSLATOR_ID)"'
 $(B)/rt/nvn/vulkan/spirv.o: RTFLAGS += -DSPIRV_ID='"$(SPIRV_ID)"'
+$(B)/rt/main.o: $(B)/source_id
+$(B)/rt/main.o: RTFLAGS += -DSW_SOURCE='"$(SW_SOURCE)"'
 $(B)/rt/gamelib.o: $(GAMELIB_SRCS) Makefile
 $(B)/rt/gamelib.o: RTFLAGS += -DGAMELIB_ID='"$(GAMELIB_ID)"' $(GAMELIB_TARGETS)
 # the start screen's build of it (runtime/gamebuild.c) uses the same flags
@@ -193,6 +212,9 @@ $(B)/rt/gamebuild.o: $(GAMELIB_SRCS) Makefile
 $(B)/rt/gamebuild.o: RTFLAGS += -DGAMELIB_CFLAGS='"$(strip $(filter-out -Iruntime,$(GENFLAGS)))"' \
                                 $(if $(GENFLAGS_COMPAT),-DGAMELIB_CFLAGS_COMPAT='"$(strip $(filter-out -Iruntime,$(GENFLAGS_COMPAT)))"') \
                                 -DGAMELIB_ZIGFLAGS='"$(GENFLAGS_ZIG)"' -DGAMELIB_SHARED='"$(GAMELIB_SHARED)"'
+
+# Windows guarded memory scans use SEH.
+$(B)/rt/memscan_os.o: RTFLAGS += -fms-extensions
 
 $(B)/rt/%.o: runtime/%.c $(RT_HDRS)
 	@mkdir -p $(dir $@)
@@ -322,6 +344,7 @@ dist:
 	cp third_party/fonts/NotoSansThai/NotoSansThai-Medium.ttf "$(DIST)/"  # (Thai menus, OFL)
 	cp third_party/fonts/NotoSansThai/OFL.txt "$(DIST)/NotoSansThai-OFL.txt"
 	cp third_party/FidelityFX/LICENSE.txt "$(DIST)/FidelityFX-LICENSE.txt"  # (AMD FidelityFX SDK, MIT: README "License")
+	mkdir "$(DIST)/colour-luts" && cp third_party/luts/*.cube third_party/luts/README.md "$(DIST)/colour-luts/"  # (CC0: Video > Colour)
 	cp README.md LICENSE "$(DIST)/"  # (licenses and source links of the bundled components: README "License")
 	PATH="$(CURDIR)/build/deps-win/bin:$$PATH" ldd $(WIN_B)/savagewind.exe | awk '(/ucrt64/ || /deps-win/) && !/vulkan-1/ {print $$3}' | sort -u | \
 	    xargs -I{} cp -u {} "$(DIST)/"
@@ -375,3 +398,168 @@ build/test_shaders: tools/test_shaders.m runtime/nvn/maxwell/translate.c runtime
 
 build/test_romfs: tools/test_romfs.c runtime/romfs_build.c runtime/romfs_image.c runtime/romfs_build.h runtime/romfs_image.h
 	clang -O1 -Iruntime -o $@ tools/test_romfs.c runtime/romfs_build.c runtime/romfs_image.c -lpthread
+
+$(B)/test_bind_capture: tools/test_bind_capture.c runtime/hle/bindings.c runtime/input_bind.h
+	@mkdir -p $(B)
+	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_bind_capture.c runtime/hle/bindings.c -lSDL3
+
+test-bind-capture: $(B)/test_bind_capture
+	$(B)/test_bind_capture
+
+.PHONY: test-bind-capture
+
+$(B)/test_pc_controls: tests/test_pc_controls.c runtime/hle/input.c runtime/hle/bindings.c runtime/settings.h
+	@mkdir -p $(dir $@)
+	$(CC) -O2 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -isystem third_party -o $@ $< -fuse-ld=lld -Wl,--gc-sections $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) -lSDL3 -lm
+
+$(B)/test_pc_settings: tests/test_pc_settings.c runtime/settings.c runtime/settings.h runtime/hle/bindings.c
+	@mkdir -p $(dir $@)
+	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< -lSDL3 -lm
+
+$(B)/test_options_pointer: tests/test_options_pointer.c runtime/pc_cursor.c runtime/pc_cursor.h runtime/pc_cursor_math.h
+	@mkdir -p $(dir $@)
+	$(CC) -O2 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -isystem third_party -o $@ $< -fuse-ld=lld -Wl,--gc-sections $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) -lSDL3 -lm
+
+test-pc-controls: $(B)/test_pc_controls $(B)/test_pc_settings $(B)/test_options_pointer
+	$(B)/test_pc_controls
+	$(B)/test_options_pointer
+	@set -e; tmp=$$(mktemp); trap 'rm -f "$$tmp"' EXIT; \
+	 printf 'settings_version = 3\npc_cursor = 1\n' > "$$tmp"; \
+	 $(B)/test_pc_settings "$$tmp" 1; \
+	 $(B)/test_pc_settings "$$tmp" 0; \
+	 SAVAGEWIND_PC_CURSOR=0 $(B)/test_pc_settings "$$tmp" 0
+
+.PHONY: test-pc-controls
+
+$(B)/test_vibration: tools/test_vibration.c runtime/hle/vibration.c runtime/vibration.h runtime/services/hid_set.c
+	@mkdir -p $(B)
+	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_vibration.c -lpthread -lm
+
+test-vibration: $(B)/test_vibration
+	$(B)/test_vibration
+
+.PHONY: test-vibration
+
+# The input test includes input.c; discard its unused HLE functions and their runtime dependencies.
+$(B)/test_input_focus: tools/test_input_focus.c tools/test_pointer_disabled.h runtime/hle/input.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -O1 -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_input_focus.c \
+	    $(if $(filter macos,$(PLATFORM)),-Wl$(comma)-dead_strip,-Wl$(comma)--gc-sections) \
+	    $(if $(filter macos,$(PLATFORM)),-L$(SDL)/lib,$(if $(DEPS),-L$(DEPS)/lib)) -lSDL3 -lm
+
+test-input-focus: $(B)/test_input_focus
+	$(B)/test_input_focus
+
+.PHONY: test-input-focus
+
+# The virtual gyro at a shrine apparatus (docs/VIRTUAL_GYRO.md): the gyro keys through input.c and the bindings, the
+# two Controls switches saved and loaded, the turns (motion.c), the apparatus heartbeat, the drag (no game files)
+TEST_LD := $(if $(filter macos,$(PLATFORM)),-Wl$(comma)-dead_strip,-Wl$(comma)--gc-sections) \
+           $(if $(filter macos,$(PLATFORM)),-L$(SDL)/lib,$(if $(DEPS),-L$(DEPS)/lib))
+$(B)/test_gyro_bindings: tools/test_gyro_bindings.c tools/test_pointer_disabled.h runtime/hle/input.c runtime/hle/bindings.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -O1 -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_gyro_bindings.c \
+	    runtime/hle/bindings.c $(TEST_LD) -lSDL3 -lm
+
+$(B)/test_gyro_settings: tools/test_gyro_settings.c runtime/settings.c runtime/hle/bindings.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -O1 -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_gyro_settings.c \
+	    $(TEST_LD) -lSDL3 -lm
+
+$(B)/test_motion_keyboard: tools/test_motion_keyboard.c runtime/hle/motion.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -O1 -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_motion_keyboard.c \
+	    $(TEST_LD) -lSDL3 -lm
+
+$(B)/test_gyro_activation: tools/test_gyro_activation.c runtime/pc_gyro_scene.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -O1 -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_gyro_activation.c \
+	    $(TEST_LD) -lm
+
+$(B)/test_gyro_drag: tools/test_gyro_drag.cpp runtime/ui/gyro_drag.h $(B)/imgui/imgui.o $(B)/imgui/imgui_draw.o \
+                     $(B)/imgui/imgui_tables.o $(B)/imgui/imgui_widgets.o
+	@mkdir -p $(B)
+	$(CXX) -O1 -std=c++17 $(OSFLAGS) -I$(IMGUI) -Iruntime -o $@ tools/test_gyro_drag.cpp $(filter %.o,$^)
+
+test-gyro: $(B)/test_gyro_bindings $(B)/test_gyro_settings $(B)/test_motion_keyboard $(B)/test_gyro_activation \
+           $(B)/test_gyro_drag test-bind-capture
+	$(B)/test_gyro_bindings
+	@set -e; tmp=$$(mktemp); trap 'rm -f "$$tmp"' EXIT; \
+	 printf 'settings_version = 3\npc_gyro = 0\ngyro_scene = 1\n' > "$$tmp"; \
+	 $(B)/test_gyro_settings "$$tmp" 0 1; \
+	 $(B)/test_gyro_settings "$$tmp" 1 0 saved; \
+	 SAVAGEWIND_PC_GYRO=1 SAVAGEWIND_GYRO_SCENE=0 $(B)/test_gyro_settings "$$tmp" 1 0
+	$(B)/test_motion_keyboard
+	$(B)/test_gyro_activation
+	$(B)/test_gyro_drag
+	python3 tools/test_gyro_site.py
+
+.PHONY: test-gyro
+
+$(B)/test_swkbd: tools/test_swkbd.c runtime/hle/swkbd.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -O1 -std=gnu11 -Wall -Wextra -Werror $(OSFLAGS) -Iruntime -o $@ tools/test_swkbd.c
+
+test-swkbd: $(B)/test_swkbd
+	$(B)/test_swkbd
+
+.PHONY: test-swkbd
+
+# The Wii U / Cemu save importer against tools/botw_save_convert.py: both convert synthetic saves and every output file
+# is compared (no game files needed). With your own: python3 tools/test_save_convert.py --src <profile> --bootup <pack>
+$(B)/test_save_convert: tools/test_save_convert.c runtime/services/save_convert.c runtime/services/save_convert.h runtime/services/archive.c runtime/services/archive.h
+	@mkdir -p $(B)
+	$(CC) -O1 -std=gnu11 -D_FILE_OFFSET_BITS=64 -Iruntime -o $@ tools/test_save_convert.c runtime/services/archive.c
+
+test-save-convert: $(B)/test_save_convert
+	python3 tools/test_save_convert.py --exe $(B)/test_save_convert
+
+.PHONY: test-save-convert
+
+$(B)/test_game_file_size: tools/test_game_file_size.c runtime/game_file_size.c runtime/game_file_size.h runtime/game_files.h
+	@mkdir -p $(B)
+	$(CC) -O1 -Wall $(OSFLAGS) -Iruntime -o $@ tools/test_game_file_size.c runtime/game_file_size.c
+
+test-game-file-size: $(B)/test_game_file_size
+	$(B)/test_game_file_size
+
+$(B)/test_file_size_cache: tools/test_file_size_cache.cpp runtime/ui/file_size_cache.mm runtime/ui/file_size_cache.h runtime/game_file_size.h
+	@mkdir -p $(B)
+	$(CXX) -O1 -Wall -std=c++17 $(OSFLAGS) -Iruntime -o $@ tools/test_file_size_cache.cpp -lpthread
+
+test-file-size-cache: $(B)/test_file_size_cache
+	$(B)/test_file_size_cache
+
+.PHONY: test-game-file-size test-file-size-cache
+
+# the command layer of the control endpoint (who may run what, the queue, the text)
+$(B)/test_control: tools/test_control.c runtime/control.c runtime/control.h
+	@mkdir -p $(B)
+	$(CC) -O1 -g -Wall $(OSFLAGS) -Iruntime -o $@ tools/test_control.c runtime/control.c -lpthread -lm \
+	    $(if $(filter windows,$(PLATFORM)),-lws2_32)
+
+test-control: $(B)/test_control
+	env -u SAVAGEWIND_CONTROL -u SAVAGEWIND_DEV $(B)/test_control
+	env -u SAVAGEWIND_CONTROL SAVAGEWIND_DEV=1 $(B)/test_control dev
+
+.PHONY: test-control
+
+# the in-game console's lines, history and completion
+$(B)/test_console_core: tools/test_console_core.c runtime/console_core.c runtime/console_core.h
+	@mkdir -p $(B)
+	$(CC) -O1 -g -Wall $(OSFLAGS) -Iruntime -o $@ tools/test_console_core.c runtime/console_core.c
+
+test-console: $(B)/test_console_core
+	$(B)/test_console_core
+
+.PHONY: test-console
+
+$(B)/test_hour: tools/test_hour.c runtime/services/test_warp.c runtime/game_sites.h
+	@mkdir -p $(B)
+	$(CC) -O1 -g -Wall -Wno-unused-function $(OSFLAGS) -Iruntime -o $@ tools/test_hour.c -lm
+
+test-hour: $(B)/test_hour
+	env -u SAVAGEWIND_TEST_TIME $(B)/test_hour
+	env SAVAGEWIND_TEST_TIME=18 $(B)/test_hour env
+
+.PHONY: test-hour

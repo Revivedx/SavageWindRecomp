@@ -19,7 +19,10 @@
 #include "../../settings.h"
 #include "../../ui/menu.h"
 #include "../../window_size.h"
+#include "mvec.h"
 #include "vk.h"
+#include "vram.h"
+#include "record.h"
 #include "../output_scale.h"
 #include "../renderer.h"
 
@@ -84,7 +87,7 @@ static void create_instance(void) {
     if (ar) sscanf(ar, "%llx-%llx", (unsigned long long *)&g_addr_report_lo, (unsigned long long *)&g_addr_report_hi);
     if (validate || ar) ext[n_ext++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
     const char *layers[] = {"VK_LAYER_KHRONOS_validation"};
-    // The release as the application's and engine's version ("0.3.1-alpha.3": 0.3.103): drivers keep their shader
+    // The release as the application's and engine's version ("0.4.1-alpha.4": 0.4.104): drivers keep their shader
     // caches per application, and with one version for every release AMD's Windows driver reused what it had cached
     // for Alpha 2 in Alpha 3, built for another setup - a black window until the player reset that cache (#85)
     extern const char *rt_version(void);  // runtime/ui/launcher.mm
@@ -151,6 +154,8 @@ static void pick_device(void) {
     g_vk.phys = pd[best];
     free(pd);
     vkGetPhysicalDeviceProperties(g_vk.phys, &g_vk.props);
+    g_vk.is_mali = g_vk.props.vendorID == 0x13B5;  // (Arm)
+    { extern void vk_translator_setup(void); vk_translator_setup(); }
     uint32_t nq = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(g_vk.phys, &nq, NULL);
     VkQueueFamilyProperties *qp = calloc(nq, sizeof *qp);
@@ -172,7 +177,35 @@ static void pick_device(void) {
     free(qp);
     if (g_vk.qfam == UINT32_MAX) FATAL("no graphics+present queue\n");
     LOG("[vk] using %s\n", g_vk.props.deviceName);
-    { extern void perfmon_set_gpu_hint(const char *n); perfmon_set_gpu_hint(g_vk.props.deviceName); }
+    // Colour images with a list of their view formats (textures.c create_image), on integrated GPUs by default: there
+    // the memory traffic it saves pays (Radeon 660M; LAS Recomp 03ee802f measured an Intel UHD 770 faster and an
+    // RTX 3080 Ti slightly slower). Not on Linux AMD (RADV: the Steam Deck): there the game showed small purple specks
+    // flickering on the ground with them and none without (Great Plateau, user play test 2026-10-29).
+    // SAVAGEWIND_VK_LEAN_USAGE=0 / =1 overrides.
+    const char *lean = getenv("SAVAGEWIND_VK_LEAN_USAGE");
+    bool lean_default = g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+#ifdef __linux__
+    if (g_vk.props.vendorID == 0x1002) lean_default = false;
+#endif
+    g_vk.lean_usage = lean && *lean ? atoi(lean) != 0 : lean_default;
+    LOG("[vk] view format lists %s\n", g_vk.lean_usage ? "on" : "off");
+    perfmon_set_gpu_hint(g_vk.props.deviceName);
+#ifdef __linux__
+    // DRM numbering is independent of Vulkan's enumeration: card0 can be the iGPU while the dGPU renders.
+    uint32_t ne = 0;
+    if (vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL) == VK_SUCCESS && ne) {
+        VkExtensionProperties *ep = calloc(ne, sizeof *ep);
+        if (ep && vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep) == VK_SUCCESS &&
+            has_ext(ep, ne, VK_EXT_PHYSICAL_DEVICE_DRM_EXTENSION_NAME)) {
+            VkPhysicalDeviceDrmPropertiesEXT drm = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT};
+            VkPhysicalDeviceProperties2 props = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &drm};
+            vkGetPhysicalDeviceProperties2(g_vk.phys, &props);
+            if (drm.hasRender) perfmon_set_gpu_drm((int)drm.renderMajor, (int)drm.renderMinor);
+            else if (drm.hasPrimary) perfmon_set_gpu_drm((int)drm.primaryMajor, (int)drm.primaryMinor);
+        }
+        free(ep);
+    }
+#endif
 }
 
 static void sparse_host_import_probe(void) {
@@ -324,7 +357,10 @@ static bool g_fault_ext;
 // After VK_ERROR_DEVICE_LOST: what the driver says faulted (VK_EXT_device_fault), into the log.
 void vk_device_fault_report(void) {
     static int once;
-    if (once++ || !g_fault_ext) return;
+    if (once++) return;
+    extern void vk_checkpoints_report(void);
+    vk_checkpoints_report();
+    if (!g_fault_ext) return;
     PFN_vkGetDeviceFaultInfoEXT get = (PFN_vkGetDeviceFaultInfoEXT)vkGetDeviceProcAddr(g_vk.dev, "vkGetDeviceFaultInfoEXT");
     if (!get) return;
     VkDeviceFaultCountsEXT c = {.sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT};
@@ -360,6 +396,10 @@ static bool radv_gcn(void) {
         if (!strncmp(r + 6, gcn[i], strlen(gcn[i]))) return true;
     return false;
 }
+
+// RADV on an RDNA 4 chip (RX 9060 / 9070): "AMD Radeon RX 9070 XT (RADV GFX1201)"
+static bool radv_gfx12(void) { return strstr(g_vk.props.deviceName, "(RADV GFX12") != NULL; }
+bool vk_shader_fp16(void) { return g_vk.fp16; }
 
 static void create_device(void) {
     uint32_t ne = 0;
@@ -451,12 +491,20 @@ static void create_device(void) {
     bool addr_report = g_addr_report_hi && has_ext(ep, ne, VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME);
     if (addr_report) ext[n_ext++] = VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME;
     if (g_addr_report_hi) LOG("[vk] address binding report %s\n", addr_report ? "on" : "not supported");
+    const char *ck = getenv("SAVAGEWIND_VK_CHECKPOINTS");  // (=0: none)
+    g_vk.nv_checkpoints = has_ext(ep, ne, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME) && !(ck && !strcmp(ck, "0"));
+    if (g_vk.nv_checkpoints) {
+        ext[n_ext++] = VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME;
+        LOG("[vk] GPU checkpoints on (a device loss logs the pass the GPU was in; SAVAGEWIND_VK_CHECKPOINTS=0: off)\n");
+    }
     g_vk.custom_border = has_ext(ep, ne, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
     if (g_vk.custom_border) ext[n_ext++] = VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME;
     g_vk.divisor = has_ext(ep, ne, VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
     if (g_vk.divisor) ext[n_ext++] = VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME;
     g_vk.host_import = has_ext(ep, ne, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);  // guest heap as a GPU buffer (exec.c)
     if (g_vk.host_import) ext[n_ext++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
+    bool mem_budget = has_ext(ep, ne, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);  // what the OS grants (vram.c, exec.c's heap copy)
+    if (mem_budget) ext[n_ext++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
 #ifdef __linux__
     // the guest heap as GPU memory mapped at the heap's addresses (exec.c backend_heap_set)
     g_vk.dmabuf = has_ext(ep, ne, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME) && has_ext(ep, ne, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
@@ -473,6 +521,13 @@ static void create_device(void) {
 #ifdef __linux__
     g_vk.radv = drv.driverID == VK_DRIVER_ID_MESA_RADV;
 #endif
+    g_vk.amd_proprietary = drv.driverID == VK_DRIVER_ID_AMD_PROPRIETARY;
+    {   // (for bug reports: the driver's version, and whether ASTC textures reach the GPU as they are or decoded)
+        VkFormatProperties ap;
+        vkGetPhysicalDeviceFormatProperties(g_vk.phys, VK_FORMAT_ASTC_4x4_UNORM_BLOCK, &ap);
+        LOG("[vk] driver: %s %s (id %d), ASTC %s\n", drv.driverName, drv.driverInfo, (int)drv.driverID,
+            ap.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT ? "sampled by the GPU" : "decoded on the CPU");
+    }
     // SAVAGEWIND_VK_LEGACY=1: Alpha 2's setup, none of maintenance5, graphics pipeline libraries and attachment
     // feedback loops (SAVAGEWIND_VK_M5=1 / _GPL=1 / _FEEDBACK_LOOP=1 turn one back on). The 0.3.1 hotfix made it the
     // default on AMD's and Intel's Windows drivers, for a black window from Alpha 3 on (#85); that was their shader
@@ -515,8 +570,11 @@ static void create_device(void) {
     bool uil = false;
 #endif
     // Pipelines linked from shaders compiled apart from the fixed state (exec.c, graphics pipeline libraries), when
-    // the driver links them fast. SAVAGEWIND_VK_NO_GPL=1: whole pipelines, as before.
-    bool gpl = !getenv("SAVAGEWIND_VK_NO_GPL") && !(win_legacy && !getenv("SAVAGEWIND_VK_GPL")) && has_ext(ep, ne, VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME) &&
+    // the driver links them fast. SAVAGEWIND_VK_NO_GPL=1: whole pipelines, as before. RADV on RDNA 4 (Mesa 26.0, an
+    // RX 9070 XT) hung the GPU ~46 s in, at the title screen, with them and ran without (#228); SAVAGEWIND_VK_GPL=1
+    // turns them on there anyway.
+    bool gpl_off = (win_legacy || radv_gfx12()) && !getenv("SAVAGEWIND_VK_GPL");
+    bool gpl = !getenv("SAVAGEWIND_VK_NO_GPL") && !gpl_off && has_ext(ep, ne, VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME) &&
                has_ext(ep, ne, VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
     // when each frame reached the display (SAVAGEWIND_LOG_PRESENT, tests: "present timing" below)
     bool pwait = getenv("SAVAGEWIND_LOG_PRESENT") && has_ext(ep, ne, VK_KHR_PRESENT_ID_EXTENSION_NAME) &&
@@ -579,6 +637,31 @@ static void create_device(void) {
     LOG("[vk] attachment feedback loops %s\n", gcn_off ? win_legacy ? "off (target copies)" : "off on this GCN chip (target copies)"
                                                : !g_vk.feedback_loop ? "off (target copies)"
                                                : g_vk.feedback_layout ? "on (feedback loop layout)" : "on");
+    // What the driver has of the features asked for below: only those are asked for (a driver refuses the device for
+    // one it lacks, VK_ERROR_FEATURE_NOT_PRESENT: Turnip on an Adreno 830, #207), and each one missing is logged
+    VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT div_have = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT};
+    VkPhysicalDeviceCustomBorderColorFeaturesEXT cbc_have = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT, .pNext = g_vk.divisor ? &div_have : NULL};
+    VkPhysicalDeviceFaultFeaturesEXT ff_have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT,
+                                                .pNext = g_vk.custom_border ? (void *)&cbc_have
+                                                         : g_vk.divisor ? (void *)&div_have : NULL};
+    VkPhysicalDeviceVulkan13Features f13_have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+                                                 .pNext = fault ? &ff_have : ff_have.pNext};
+    VkPhysicalDeviceVulkan12Features f12_have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &f13_have};
+    VkPhysicalDeviceVulkan11Features f11_have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &f12_have};
+    VkPhysicalDeviceFeatures2 have2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &f11_have};
+    vkGetPhysicalDeviceFeatures2(g_vk.phys, &have2);
+#define WANT(have, name) (have.name ? VK_TRUE : (LOG("[vk] warning: the driver lacks " #name "\n"), VK_FALSE))
+    if (fault && !ff_have.deviceFault) fault = g_fault_ext = false;
+    if (g_vk.custom_border && !(cbc_have.customBorderColors && cbc_have.customBorderColorWithoutFormat)) {
+        LOG("[vk] custom border colors without a format not supported: standard border colors\n");
+        g_vk.custom_border = false;
+    }
+    if (g_vk.divisor && !div_have.vertexAttributeInstanceRateDivisor) {
+        LOG("[vk] vertex attribute divisors not supported\n");
+        g_vk.divisor = false;
+    }
     VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT div = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT,
         .vertexAttributeInstanceRateDivisor = VK_TRUE, .vertexAttributeInstanceRateZeroDivisor = VK_FALSE};
@@ -589,17 +672,34 @@ static void create_device(void) {
                                                      .maintenance5 = VK_TRUE,
                                                      .pNext = g_vk.custom_border ? (void *)&cbc : g_vk.divisor ? (void *)&div : NULL};
     VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
-                                            .dynamicRendering = VK_TRUE, .synchronization2 = VK_TRUE,
-                                            .shaderDemoteToHelperInvocation = VK_TRUE, .shaderTerminateInvocation = VK_TRUE,
-                                            .maintenance4 = VK_TRUE, .pipelineCreationCacheControl = g_vk.gpl,
+                                            .dynamicRendering = WANT(f13_have, dynamicRendering),
+                                            .synchronization2 = WANT(f13_have, synchronization2),
+                                            .shaderDemoteToHelperInvocation = WANT(f13_have, shaderDemoteToHelperInvocation),
+                                            .shaderTerminateInvocation = WANT(f13_have, shaderTerminateInvocation),
+                                            .maintenance4 = WANT(f13_have, maintenance4),
+                                            .pipelineCreationCacheControl = g_vk.gpl && f13_have.pipelineCreationCacheControl,
                                             .pNext = m5 ? (void *)&m5_on : g_vk.custom_border ? (void *)&cbc
                                                                          : g_vk.divisor ? (void *)&div : NULL};
+    {   // 16-bit floats in shaders where the device has them (the FSR 3 upscaler's shaders: vulkan/fsr3.cpp)
+        VkPhysicalDeviceVulkan12Features q12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+        VkPhysicalDeviceVulkan11Features q11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &q12};
+        VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &q11};
+        vkGetPhysicalDeviceFeatures2(g_vk.phys, &q);
+        g_vk.fp16 = q12.shaderFloat16 && q11.uniformAndStorageBuffer16BitAccess && q11.storageBuffer16BitAccess &&
+                    q.features.shaderInt16;
+    }
     VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
-                                            .timelineSemaphore = VK_TRUE, .shaderInt8 = VK_TRUE, .samplerMirrorClampToEdge = VK_TRUE,
-                                            .uniformAndStorageBuffer8BitAccess = VK_TRUE, .storageBuffer8BitAccess = VK_TRUE,
-                                            .scalarBlockLayout = VK_TRUE, .pNext = &f13};
+                                            .shaderFloat16 = g_vk.fp16,
+                                            .timelineSemaphore = WANT(f12_have, timelineSemaphore),
+                                            .shaderInt8 = WANT(f12_have, shaderInt8),
+                                            .samplerMirrorClampToEdge = WANT(f12_have, samplerMirrorClampToEdge),
+                                            .uniformAndStorageBuffer8BitAccess = WANT(f12_have, uniformAndStorageBuffer8BitAccess),
+                                            .storageBuffer8BitAccess = WANT(f12_have, storageBuffer8BitAccess),
+                                            .scalarBlockLayout = WANT(f12_have, scalarBlockLayout), .pNext = &f13};
     VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
-                                            .storageBuffer16BitAccess = VK_TRUE, .pNext = &f12};
+                                            .storageBuffer16BitAccess = WANT(f11_have, storageBuffer16BitAccess),
+                                            .uniformAndStorageBuffer16BitAccess = g_vk.fp16, .pNext = &f12};
+#undef WANT
     VkPhysicalDeviceFaultFeaturesEXT ff = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT, .deviceFault = VK_TRUE,
                                            .pNext = &f11};
     VkPhysicalDeviceAddressBindingReportFeaturesEXT abr = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ADDRESS_BINDING_REPORT_FEATURES_EXT,
@@ -637,8 +737,13 @@ static void create_device(void) {
     b->fillModeNonSolid = h->fillModeNonSolid;
     b->samplerAnisotropy = h->samplerAnisotropy;
     g_vk.feat_aniso = h->samplerAnisotropy;
+    b->shaderStorageImageExtendedFormats = h->shaderStorageImageExtendedFormats;
+    g_vk.storage_ext = h->shaderStorageImageExtendedFormats;
     b->textureCompressionBC = h->textureCompressionBC;
+    // (textures.c samples ASTC images as they are wherever the driver lists the formats: the feature has to be on)
+    b->textureCompressionASTC_LDR = h->textureCompressionASTC_LDR;
     b->shaderInt64 = h->shaderInt64;
+    b->shaderInt16 = g_vk.fp16;
     b->depthBiasClamp = h->depthBiasClamp;
     b->depthClamp = h->depthClamp;
     g_vk.depth_clamp = h->depthClamp;
@@ -676,9 +781,17 @@ static void create_device(void) {
     }
     g_vk.present_wait = pwait;
     float prio[2] = {1.0f, 1.0f};
-    // two queues when the family has them: the second one presents (present thread below)
+    // One queue: frames are presented on the game's own. A second one that presented (present thread below) went
+    // wrong with others' code on it: NVIDIA's GPUs before Turing faulted writing to GPU address 0 within the first
+    // frames (#36: GTX 1050 / 1050 Ti / 1050 Mobile, Quadro P1000), and OBS's Game Capture, which copies the image
+    // inside its vkQueuePresentKHR on that queue without waiting for the game's, showed black or broken frames (#293).
+    // Since driver calls went to a thread of their own (record.c) presenting there costs nothing: RTX 3060, visible,
+    // fullscreen and windowed, at 120 fps with VSync and unlimited, the same or 1-3 fps more than with the second
+    // queue. SAVAGEWIND_VK_PRESENT_THREAD=1: two queues and the present thread, as before (testing).
+    const char *pt_env = getenv("SAVAGEWIND_VK_PRESENT_THREAD");
+    bool two_q = g_vk.qfam_count >= 2 && pt_env && strcmp(pt_env, "0") != 0;
     VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_vk.qfam,
-                                  .queueCount = g_vk.qfam_count >= 2 ? 2 : 1, .pQueuePriorities = prio};
+                                  .queueCount = two_q ? 2 : 1, .pQueuePriorities = prio};
     VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f, .queueCreateInfoCount = 1,
                              .pQueueCreateInfos = &qi, .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext};
     VK_CHECK(vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.dev));
@@ -691,13 +804,13 @@ static void create_device(void) {
 
     VmaAllocatorCreateInfo ai = {.physicalDevice = g_vk.phys, .device = g_vk.dev, .instance = g_vk.inst,
                                  .vulkanApiVersion = VK_API_VERSION_1_3};
-#ifdef VK_EXT_memory_budget
-    if (g_vk.memory_budget) ai.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
-#endif
+    VmaVulkanFunctions vfn;
+    vram_allocator_setup(&ai, &vfn, mem_budget);
 #ifdef VK_EXT_memory_priority
     if (g_vk.memory_priority) ai.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_PRIORITY_BIT;
 #endif
     VK_CHECK(vmaCreateAllocator(&ai, &g_vk.vma));
+    vram_start();
 
     VkSemaphoreTypeCreateInfo st = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
                                     .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE, .initialValue = 0};
@@ -1243,7 +1356,7 @@ static void create_swapchain(void) {
         VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = hdr_sets[i], .dstBinding = 0,
                                   .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                   .pImageInfo = &ii};
-        vkUpdateDescriptorSets(g_vk.dev, 1, &w, 0, NULL);
+        rec_UpdateDescriptorSets(1, &w);
     }
     if (g_hdr) LOG("[vk] HDR10 output (%s), SDR white at %.0f nits\n",
                    g_settings.hdr == HDR_ON ? "Video > HDR is On" : "Windows HDR is on for this display", g_hdr_white);
@@ -1398,6 +1511,7 @@ static void pt_retire(void) {
 static void recreate_swapchain(void) {
     vk_present_idle();
     pt_retire();
+    rec_drain();
     vkDeviceWaitIdle(g_vk.dev);
     create_swapchain();
 }
@@ -1412,7 +1526,8 @@ static void recreate_swapchain(void) {
 // next frame is drawn); vkQueuePresentKHR and vkAcquireNextImageKHR take sc_lock (the swapchain is externally
 // synchronized). The next frame begins once only a game frame after a generated one is still waiting (vk_frame_begin:
 // one frame at a time otherwise, as before); a swapchain change and teardown wait for them all.
-// SAVAGEWIND_VK_PRESENT_THREAD=0 (or a family with one queue): presents on the calling thread, as before.
+// Only with SAVAGEWIND_VK_PRESENT_THREAD=1 now (create_device: one queue by default, #36, #293); otherwise presents on
+// the calling thread.
 static pthread_mutex_t pres_m = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t pres_cv = PTHREAD_COND_INITIALIZER;
 static pthread_mutex_t sc_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -1454,12 +1569,29 @@ static void *present_thread(void *arg) {
         while (!presq_n) pthread_cond_wait(&pres_cv, &pres_m);
         __typeof__(presq[0]) q = presq[presq_head];
         pthread_mutex_unlock(&pres_m);
+        rec_wait_submitted(q.seq);  // (its semaphore's signal must be submitted first: record.c may not have yet)
         present_wait_turn(q.kind, q.seq);
+        // Handed over once drawn: capture and overlay layers copy the image inside their vkQueuePresentKHR, on this
+        // second queue, without waiting for the first one (#293: OBS's Game Capture showed black or broken frames).
+        // NVIDIA's windowed present waited for the GPU anyway. SAVAGEWIND_VK_PRESENT_DRAWN=0: not waited for here.
+        static int drawn = -1;
+        if (drawn < 0) drawn = !getenv("SAVAGEWIND_VK_PRESENT_DRAWN") || atoi(getenv("SAVAGEWIND_VK_PRESENT_DRAWN"));
+        if (drawn && q.kind == PRES_PLAIN) {  // (the frame generation pair: present_wait_turn waited)
+            VkSemaphoreWaitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1,
+                                      .pSemaphores = &g_vk.timeline, .pValues = &q.seq};
+            vkWaitSemaphores(g_vk.dev, &wi, 1000000000ull);  // (a second at most)
+        }
         VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &q.sem,
                                .swapchainCount = 1, .pSwapchains = &q.sc, .pImageIndices = &q.img};
         pthread_mutex_lock(&sc_lock);
+        uint64_t tq = SDL_GetTicksNS();
         VkResult r = queue_present(g_vk.present_queue, &pi);
+        tq = SDL_GetTicksNS() - tq;
         pthread_mutex_unlock(&sc_lock);
+        if (tq > 200000000ull) {  // (#224: a present the driver held on to)
+            static int slow;
+            if (slow++ < 20) LOG("[vk] present took %llu ms (result %d)\n", (unsigned long long)(tq / 1000000), r);
+        }
         if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) atomic_store(&pres_stale, 1);
         else if (r != VK_SUCCESS) { static int n; if (n++ < 5) LOG("[vk] present failed: %d\n", r); }
         pthread_mutex_lock(&pres_m);
@@ -1500,13 +1632,44 @@ static void present_wait_room(void) {
     pthread_mutex_unlock(&pres_m);
 }
 
+// The next window image, or VK_TIMEOUT when none came within ACQUIRE_GIVE_UP_NS (#224). This used to wait without an
+// end: with the present thread it asked again every 2 ms for as long as the driver said VK_TIMEOUT / VK_NOT_READY,
+// holding the GPU lock (backend_present), so the game, the movie and the "[vk]" lines stood still for good with one
+// core busy. An exclusive fullscreen window that loses the focus is minimised by SDL and gives its display mode back;
+// a swapchain that no longer gets an image back then (and never says out of date) kept it there. Now the frame is left
+// out (vk_frame_begin), the swapchain is made again, and the next frame tries anew.
+// SAVAGEWIND_TEST_ACQUIRE_TIMEOUT=<frame>,<frames> (tests): from that presented frame on, for that many, every acquire
+// answers VK_TIMEOUT at once, as that driver did.
+#define ACQUIRE_GIVE_UP_NS 250000000ull
+static uint64_t presented_frames(void);
+static bool acquire_test_timeout(void) {
+    static long from = -1, n;
+    if (from < 0) {
+        const char *e = getenv("SAVAGEWIND_TEST_ACQUIRE_TIMEOUT");
+        from = 0;
+        if (e && sscanf(e, "%ld,%ld", &from, &n) != 2) from = 0;
+    }
+    uint64_t f = presented_frames();
+    return from > 0 && f >= (uint64_t)from && f < (uint64_t)(from + n);
+}
+
 static VkResult acquire_image(VkSemaphore sem, uint32_t *img) {
-    if (!present_threaded()) return vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, sem, VK_NULL_HANDLE, img);
-    for (;;) {  // (a short timeout at a time: not holding the swapchain while the present thread needs it)
-        pthread_mutex_lock(&sc_lock);
-        VkResult r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, 2000000, sem, VK_NULL_HANDLE, img);
-        pthread_mutex_unlock(&sc_lock);
+    bool threaded = present_threaded();
+    uint64_t t0 = SDL_GetTicksNS();
+    for (;;) {  // (threaded: a short timeout at a time, not holding the swapchain while the present thread needs it)
+        uint64_t tc = SDL_GetTicksNS();
+        VkResult r;
+        if (acquire_test_timeout()) r = VK_TIMEOUT;
+        else if (!threaded) r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, ACQUIRE_GIVE_UP_NS, sem, VK_NULL_HANDLE, img);
+        else {
+            pthread_mutex_lock(&sc_lock);
+            r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, 2000000, sem, VK_NULL_HANDLE, img);
+            pthread_mutex_unlock(&sc_lock);
+        }
         if (r != VK_TIMEOUT && r != VK_NOT_READY) return r;
+        uint64_t now = SDL_GetTicksNS();
+        if (now - t0 >= ACQUIRE_GIVE_UP_NS) return VK_TIMEOUT;
+        if (now - tc < 1000000) SDL_Delay(1);  // (answered without waiting: not a busy loop)
     }
 }
 
@@ -1516,6 +1679,7 @@ static bool present_image(uint32_t img, VkSemaphore sem, int kind, uint64_t seq)
     if (!present_threaded()) {
         VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &sem,
                                .swapchainCount = 1, .pSwapchains = &g_vk.swapchain, .pImageIndices = &img};
+        rec_wait_submitted(seq);  // (as present_thread)
         present_wait_turn(kind, seq);
         VkResult r = queue_present(g_vk.queue, &pi);
         return !(r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR);
@@ -1552,7 +1716,7 @@ static void image_barrier(VkCommandBuffer cb, VkImage img, VkImageLayout from, V
                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
                                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED};
     VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &b};
-    vkCmdPipelineBarrier2(cb, &di);
+    rec_CmdPipelineBarrier2(cb, &di);
 }
 
 static void hdr_write(VkCommandBuffer cb, uint32_t i) {
@@ -1563,19 +1727,19 @@ static void hdr_write(VkCommandBuffer cb, uint32_t i) {
                                     .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, g_vk.sc_extent}, .layerCount = 1,
                           .colorAttachmentCount = 1, .pColorAttachments = &ca};
-    vkCmdBeginRendering(cb, &ri);
+    rec_CmdBeginRendering(cb, &ri);
     VkViewport vp = {0, 0, (float)g_vk.sc_extent.width, (float)g_vk.sc_extent.height, 0, 1};
     VkRect2D sc = {{0, 0}, g_vk.sc_extent};
-    vkCmdSetViewport(cb, 0, 1, &vp);
-    vkCmdSetScissor(cb, 0, 1, &sc);
-    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, hdr_pipe);
-    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, hdr_layout, 0, 1, &hdr_sets[i], 0, NULL);
+    rec_CmdSetViewport(cb, 0, 1, &vp);
+    rec_CmdSetScissor(cb, 0, 1, &sc);
+    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, hdr_pipe);
+    rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, hdr_layout, 0, 1, &hdr_sets[i], 0, NULL);
     static int srgb = -1;
     if (srgb < 0) srgb = getenv("SAVAGEWIND_HDR_SRGB") != NULL;
     float pc[2] = {g_hdr_white, (float)srgb};
-    vkCmdPushConstants(cb, hdr_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, pc);
-    vkCmdDraw(cb, 3, 1, 0, 0);
-    vkCmdEndRendering(cb);
+    rec_CmdPushConstants(cb, hdr_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, pc);
+    rec_CmdDraw(cb, 3, 1, 0, 0);
+    rec_CmdEndRendering(cb);
     vk_dyn_forget();
     image_barrier(cb, hdr_sc_images[i], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 }
@@ -1617,6 +1781,16 @@ bool vk_frame_begin(const float clear[4]) {
         recreate_swapchain();
         r = acquire_image(acquire_sem[slot], &cur_frame.image);
     }
+    if (r == VK_TIMEOUT) {  // (no image came: acquire_image, #224) this frame is left out, the swapchain made again
+        static unsigned timeouts;
+        if (timeouts++ < 5 || timeouts % 100 == 0)
+            LOG("[vk] no window image within %llu ms (%u times; %s, %s): frame left out, swapchain made again\n",
+                (unsigned long long)(ACQUIRE_GIVE_UP_NS / 1000000), timeouts,
+                (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED) ? "minimised" : "not minimised",
+                (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) ? "focused" : "not focused");
+        atomic_store(&pres_stale, 1);
+        return false;
+    }
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) {
         static unsigned failed;  // (a few, then every 1000th: one a frame filled the log)
         if (failed++ < 5 || failed % 1000 == 0) LOG("[vk] acquire failed: %d (%u times)\n", r, failed);
@@ -1625,6 +1799,10 @@ bool vk_frame_begin(const float clear[4]) {
     cur_frame.acquired = acquire_sem[slot];
     slot_seq[slot] = vk_pending_seq();
     VkCommandBuffer cb = vk_cmd();
+    // The window pass reads the game's image, written by an earlier submission's passes: only the full barrier that
+    // ends an upload command buffer made those writes visible, when this submission had uploads (validation:
+    // READ_AFTER_WRITE on the present draw once the recorder thread changed when they come)
+    vk_full_barrier(cb);
     image_barrier(cb, g_vk.sc_images[cur_frame.image], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     VkRenderingAttachmentInfo ca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = g_vk.sc_views[cur_frame.image],
                                     .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -1632,11 +1810,11 @@ bool vk_frame_begin(const float clear[4]) {
                                     .clearValue.color.float32 = {clear[0], clear[1], clear[2], clear[3]}};
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, g_vk.sc_extent}, .layerCount = 1,
                           .colorAttachmentCount = 1, .pColorAttachments = &ca};
-    vkCmdBeginRendering(cb, &ri);
+    rec_CmdBeginRendering(cb, &ri);
     VkViewport vp = {0, 0, (float)g_vk.sc_extent.width, (float)g_vk.sc_extent.height, 0, 1};
     VkRect2D sc = {{0, 0}, g_vk.sc_extent};
-    vkCmdSetViewport(cb, 0, 1, &vp);
-    vkCmdSetScissor(cb, 0, 1, &sc);
+    rec_CmdSetViewport(cb, 0, 1, &vp);
+    rec_CmdSetScissor(cb, 0, 1, &sc);
     vk_dyn_forget();
     cur_frame.ok = true;
     return true;
@@ -1645,7 +1823,7 @@ bool vk_frame_begin(const float clear[4]) {
 // Passes of their own between vk_frame_begin and vk_frame_end (exec.c post passes): end the window image's
 // rendering, and begin it again keeping what was drawn.
 void vk_frame_suspend(void) {
-    if (cur_frame.ok) vkCmdEndRendering(vk_cmd());
+    if (cur_frame.ok) rec_CmdEndRendering(vk_cmd());
 }
 void vk_frame_resume(void) {
     if (!cur_frame.ok) return;
@@ -1655,16 +1833,20 @@ void vk_frame_resume(void) {
                                     .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, g_vk.sc_extent}, .layerCount = 1,
                           .colorAttachmentCount = 1, .pColorAttachments = &ca};
-    vkCmdBeginRendering(cb, &ri);
+    rec_CmdBeginRendering(cb, &ri);
     VkViewport vp = {0, 0, (float)g_vk.sc_extent.width, (float)g_vk.sc_extent.height, 0, 1};
     VkRect2D sc = {{0, 0}, g_vk.sc_extent};
-    vkCmdSetViewport(cb, 0, 1, &vp);
-    vkCmdSetScissor(cb, 0, 1, &sc);
+    rec_CmdSetViewport(cb, 0, 1, &vp);
+    rec_CmdSetScissor(cb, 0, 1, &sc);
     vk_dyn_forget();
 }
 
 VkExtent2D vk_frame_extent(void) { return g_vk.sc_extent; }
-void *vk_frame_cmd(void) { return (void *)vk_cmd(); }
+void *vk_frame_cmd(void) {  // (the start screen's ImGui records into it itself: what was queued before goes first)
+    VkCommandBuffer cb = vk_cmd();
+    rec_drain();
+    return (void *)cb;
+}
 
 static void save_window_image(VkCommandBuffer cb, VkSpan *out) {
     uint32_t w = g_vk.sc_extent.width, h = g_vk.sc_extent.height;
@@ -1672,7 +1854,7 @@ static void save_window_image(VkCommandBuffer cb, VkSpan *out) {
     image_barrier(cb, g_vk.sc_images[cur_frame.image], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     VkBufferImageCopy rg = {.bufferOffset = out->off, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                             .imageExtent = {w, h, 1}};
-    vkCmdCopyImageToBuffer(cb, g_vk.sc_images[cur_frame.image], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, out->buf, 1, &rg);
+    rec_CmdCopyImageToBuffer(cb, g_vk.sc_images[cur_frame.image], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, out->buf, 1, &rg);
     image_barrier(cb, g_vk.sc_images[cur_frame.image], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 }
 
@@ -1681,7 +1863,7 @@ static int frame_kind;  // (frame generation: PRES_GEN / PRES_AFTER_GEN for the 
 void vk_frame_end(const char *shot_path) {
     if (!cur_frame.ok) return;
     VkCommandBuffer cb = vk_cmd();
-    vkCmdEndRendering(cb);
+    rec_CmdEndRendering(cb);
     VkSpan shot = {0};
     if (shot_path) save_window_image(cb, &shot);
     if (g_hdr) hdr_write(cb, cur_frame.image);
@@ -1725,6 +1907,7 @@ void renderer_save_texture_tex(TexBackend *b, const char *path);
 
 static uint64_t frames, total_frames, g_frame_counter;
 uint64_t renderer_present_count(void) { return total_frames; }
+static uint64_t presented_frames(void) { return total_frames; }
 uint64_t vk_frame_counter(void) { return g_frame_counter; }
 static float g_shot_crop[4] = {0, 0, 1, 1};
 static double last_fps_time;
@@ -1759,7 +1942,7 @@ static void present_progress(float done) {
         VkClearAttachment a = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .colorAttachment = 0,
                                .clearValue.color.float32 = {parts[i].c, parts[i].c, parts[i].c, 1}};
         VkClearRect cr = {parts[i].r, 0, 1};
-        vkCmdClearAttachments(cb, 1, &a, 1, &cr);
+        rec_CmdClearAttachments(cb, 1, &a, 1, &cr);
     }
     static int shot;  // (SAVAGEWIND_PSO_SLOW_MS, exec.c: the first bar frame past a quarter)
     bool save = !shot && done > 0.25f && getenv("SAVAGEWIND_PSO_SLOW_MS");
@@ -1791,6 +1974,7 @@ static char fg_real_shot[256];  // (SAVAGEWIND_FG_SHOT_AT: the game's frame afte
 
 void vk_fg_wait_idle(void) {
     vk_present_idle();
+    rec_drain();
     vkDeviceWaitIdle(g_vk.dev);
 }
 
@@ -1807,9 +1991,28 @@ static bool fg_wanted(void) {
     return !framepace_title_ui() && !framepace_menu_ui() && !framepace_paused() && !menu_is_open();
 }
 
+// The image being presented, for the control endpoint's `shot` (runtime/control_game.c; commands run in this frame).
+static TexBackend *ctl_present_tex;
+bool control_shot_now(const char *path) {
+    if (!ctl_present_tex) return false;
+    renderer_save_texture_tex(ctl_present_tex, path);
+    return true;
+}
+
+// The world camera's view matrix (3x4, row-major, as the shaders read it) of the last finished frame, for the control
+// endpoint's `camera` (runtime/control_game.c). false: none (motion recording is off, or no scene was drawn).
+bool control_camera_view(float view[12]) {
+    if (!mvec_enabled()) return false;  // switching TAA off leaves the old camera cached; it no longer follows the game
+    const MvecCamera *c = mvec_camera(true);
+    if (!c) return false;
+    memcpy(view, c->view, 12 * sizeof(float));
+    return true;
+}
+
 static void present_locked(NvnTexture *t) {
     g_last_presented = t;
     TexBackend *b = vk_tex(t, true);
+    ctl_present_tex = b;
     b->presented = true;
     uint64_t t0 = SDL_GetTicksNS();
     vk_end_pass();
@@ -1855,6 +2058,7 @@ static void present_locked(NvnTexture *t) {
         uint64_t td = SDL_GetTicksNS();
         if (gen) {  // the generated frame, as the game's are (crop, anti-aliasing, menu), then this one half a frame later
             vk_present_draw(cb, gen, (float)vx, (float)vy, (float)vw, (float)vh, pv);
+            if (menu_render_needed()) rec_drain();  // (ImGui records into cb itself, and may upload its fonts on the queue)
             menu_render((void *)cb, g_vk.sc_extent.width, g_vk.sc_extent.height);
             // SAVAGEWIND_FG_SHOT_AT=<frame>,... (counted as SAVAGEWIND_SHOT_AT): the window at two presents in a row
             // from there, each generated frame and the game's after it -> build/frames/window_N_<0|1>_<gen|real>.png
@@ -1890,6 +2094,7 @@ static void present_locked(NvnTexture *t) {
         static long menu_at = -1;
         if (menu_at < 0) menu_at = getenv("SAVAGEWIND_MENU_AT") ? atol(getenv("SAVAGEWIND_MENU_AT")) : 0;
         if (menu_at && (long)total_frames + 1 == menu_at) { extern void menu_test_open(void); menu_test_open(); }
+        if (menu_render_needed()) rec_drain();  // (ImGui records into cb itself, and may upload its fonts on the queue)
         menu_render((void *)cb, g_vk.sc_extent.width, g_vk.sc_extent.height);
         g_present_split[2] += SDL_GetTicksNS() - td;
         static long win_shot = -1;
@@ -1949,6 +2154,8 @@ presented:
     reboot_test_frame(total_frames);
     extern void test_warp_frame(uint64_t frame);  // runtime/services/test_warp.c (SAVAGEWIND_TEST_TIME)
     test_warp_frame(total_frames);
+    extern void control_frame(uint64_t frame);  // runtime/control.c (SAVAGEWIND_CONTROL)
+    control_frame(total_frames);
     static long shot_every = -1;
     if (shot_every < 0) { const char *e = getenv("SAVAGEWIND_SCREENSHOT_EVERY"); shot_every = e ? atol(e) : 0; }
     extern bool g_debug_frame;
@@ -1974,7 +2181,9 @@ presented:
     }
     if (g_debug_frame) LOG("===== debug frame %llu =====\n", (unsigned long long)total_frames);
     {   // (testing) SAVAGEWIND_UPSCALE_AT=<frame>:<off|ultra|quality|balanced|performance>,... (ascending): the
-        // upscaler from that frame on, as the Video page sets it (A/B of the same view a few frames apart)
+        // upscaler from that frame on, as the Video page sets it (A/B of the same view a few frames apart): FSR 1, or
+        // FSR 3 with a fsr3- in front of the mode (fsr3-quality); fsr3-native: FSR 3 at the window's size (its native
+        // AA: the reference for TAA, which is the same reconstruction)
         static const char *next;
         static int init;
         if (!init) { init = 1; next = getenv("SAVAGEWIND_UPSCALE_AT"); }
@@ -1983,10 +2192,14 @@ presented:
             long at = strtol(next, &end, 10);
             if ((long)total_frames < at) break;
             const char *m = *end == ':' ? end + 1 : end;
-            static const char *const names[] = {"ultra", "quality", "balanced", "performance"};
+            static const char *const names[] = {"ultra", "quality", "balanced", "performance", "ultraperf"};  // (UPQ_*; a later match wins)
+            bool f3 = !strncmp(m, "fsr3-", 5);
+            if (f3) m += 5;
             g_settings.upscaler = UPSCALE_OFF;
-            for (int i = 0; i < 4; i++)
-                if (!strncmp(m, names[i], strlen(names[i]))) g_settings.upscaler = UPSCALE_FSR1, g_settings.upscale_quality = i;
+            for (int i = 0; i < 5; i++)
+                if (!strncmp(m, names[i], strlen(names[i])))
+                    g_settings.upscaler = f3 ? UPSCALE_FSR3 : UPSCALE_FSR1, g_settings.upscale_quality = i;
+            if (f3 && !strncmp(m, "native", 6)) g_settings.upscaler = UPSCALE_FSR3, g_settings.upscale_quality = UPQ_COUNT;
             LOG("[test] frame %llu: upscaler %d mode %d\n", (unsigned long long)total_frames, g_settings.upscaler,
                 g_settings.upscale_quality);
             next = strchr(m, ',');
@@ -2007,6 +2220,32 @@ presented:
                 g_settings.anisotropy = a;
                 g_settings.sharpening = s;
                 LOG("[test] frame %llu: anisotropy %d sharpening %d\n", (unsigned long long)total_frames, a, s);
+            }
+            next = strchr(end, ',');
+            if (next) next++;
+        }
+    }
+    {   // (testing) SAVAGEWIND_COLOUR_AT=<frame>:<exposure>/<contrast>/<saturation>/<temperature>/<tint>/<LUT %>/<LUT>,...
+        // (ascending; the LUT as the ini names it, may be empty): Video > Colour from that frame on (A/B of one view)
+        static const char *next;
+        static int init;
+        if (!init) { init = 1; next = getenv("SAVAGEWIND_COLOUR_AT"); }
+        while (next && *next) {
+            char *end;
+            long at = strtol(next, &end, 10);
+            if ((long)total_frames < at) break;
+            Settings *s = &g_settings;
+            int k = 0, used = 0;
+            if (*end == ':' && sscanf(end + 1, "%d/%d/%d/%d/%d/%d/%n", &s->color_exposure, &s->color_contrast,
+                                      &s->color_saturation, &s->color_temperature, &s->color_tint,
+                                      &s->color_lut_strength, &used) == 6 && used) {
+                const char *l = end + 1 + used;
+                while (l[k] && l[k] != ',' && k < (int)sizeof s->color_lut - 1) k++;
+                memcpy(s->color_lut, l, (size_t)k);
+                s->color_lut[k] = 0;
+                LOG("[test] frame %llu: colour %d/%d/%d/%d/%d LUT \"%s\" %d%%\n", (unsigned long long)total_frames,
+                    s->color_exposure, s->color_contrast, s->color_saturation, s->color_temperature, s->color_tint,
+                    s->color_lut, s->color_lut_strength);
             }
             next = strchr(end, ',');
             if (next) next++;
@@ -2084,6 +2323,7 @@ static void quick_exit_handler(void) {
     if (trace) LOG("[vk] exit: waiting for the GPU\n");
     if (g_vk.dev) {
         vk_present_idle();
+        rec_drain();
         vkDeviceWaitIdle(g_vk.dev);
         if (trace) LOG("[vk] exit: saving the pipeline cache\n");
         vk_pipeline_cache_save();
@@ -2109,13 +2349,26 @@ void ui_window_init(void) {
     // Video > Window size (runtime/window_size.c: pixels; SDL's window size is pixels / the display's pixel density)
     winsize_refresh(NULL);
     WinSize ws = winsize_effective(false);
-    const SDL_DisplayMode *dm = SDL_GetDesktopDisplayMode(SDL_GetPrimaryDisplay());
+    // made on Video > Monitor's display (the primary one: Automatic; test windows too)
+    bool test = getenv("SAVAGEWIND_WINDOW") || getenv("SAVAGEWIND_HIDDEN");
+    SDL_DisplayID disp = test ? 0 : (SDL_DisplayID)winsize_start_display();
+    const SDL_DisplayMode *dm = SDL_GetDesktopDisplayMode(disp ? disp : SDL_GetPrimaryDisplay());
     float density = dm && dm->pixel_density > 0 ? dm->pixel_density : 1;
     int win_w = (int)lroundf(ws.w / density), win_h = (int)lroundf(ws.h / density);
     if (getenv("SAVAGEWIND_WINDOW")) sscanf(getenv("SAVAGEWIND_WINDOW"), "%dx%d", &win_w, &win_h);
     SDL_WindowFlags wflags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
     if (getenv("SAVAGEWIND_HIDDEN")) wflags |= SDL_WINDOW_HIDDEN;
-    window = SDL_CreateWindow("Savage Wind", win_w, win_h, wflags);
+    SDL_PropertiesID props = SDL_CreateProperties();
+    SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING, "Savage Wind");
+    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, win_w);
+    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, win_h);
+    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_FLAGS_NUMBER, (Sint64)wflags);
+    if (disp) {
+        SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X_NUMBER, (Sint64)SDL_WINDOWPOS_CENTERED_DISPLAY(disp));
+        SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_Y_NUMBER, (Sint64)SDL_WINDOWPOS_CENTERED_DISPLAY(disp));
+    }
+    window = SDL_CreateWindowWithProperties(props);
+    SDL_DestroyProperties(props);
     if (!window) FATAL("SDL_CreateWindow: %s\n", SDL_GetError());
     rt_window_icon(window);
     // the Fullscreen setting applies from the start screen on (not only once the game runs); test windows stay windows
@@ -2144,6 +2397,7 @@ void backend_init(void) {
 void backend_reset(void) {
     if (!g_vk.dev) return;
     vk_present_idle();
+    rec_drain();
     vkDeviceWaitIdle(g_vk.dev);
     extern void vk_textures_reset(void);
     extern void vk_exec_reset(void);
@@ -2157,17 +2411,42 @@ void backend_clear_window(void) {
     if (g_vk.dev && vk_frame_begin(black)) vk_frame_end(NULL);
 }
 
+// "[window]" lines for what the window went through (focus, minimised, restored, hidden behind another): an exclusive
+// fullscreen window that loses the focus is minimised and gives its display mode back (#224)
+static void window_event_log(const SDL_Event *e) {
+    const char *what = NULL;
+    switch (e->type) {
+    case SDL_EVENT_WINDOW_FOCUS_GAINED: what = "focus gained"; break;
+    case SDL_EVENT_WINDOW_FOCUS_LOST: what = "focus lost"; break;
+    case SDL_EVENT_WINDOW_MINIMIZED: what = "minimised"; break;
+    case SDL_EVENT_WINDOW_RESTORED: what = "restored"; break;
+    case SDL_EVENT_WINDOW_OCCLUDED: what = "occluded"; break;
+    case SDL_EVENT_WINDOW_ENTER_FULLSCREEN: what = "entered fullscreen"; break;
+    case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN: what = "left fullscreen"; break;
+    default: return;
+    }
+    static unsigned n;  // (a few hundred: a window that flickers between states doesn't fill the log)
+    if (n++ < 400) LOG("[window] %s (frame %llu)\n", what, (unsigned long long)total_frames);
+}
+
 int ui_run(void) {
     ui_window_init();
+    input_focus_update(window);
     atomic_store(&ui_ready, true);
     for (;;) {
         if (rt_reboot_requested()) return rt_reboot_requested();  // (runtime/main.c tears the game down)
         SDL_Event e;
-        while (SDL_WaitEventTimeout(&e, 16)) {
+        // at most a frame's time of events, then the window requests: a controller's motion sensors (gyro) send about
+        // a thousand updates a second, so the queue may never run empty, and Fullscreen, Window size and Monitor
+        // waited for that until the next restart
+        uint64_t t0 = SDL_GetTicks();
+        while (SDL_GetTicks() - t0 < 16 && SDL_WaitEventTimeout(&e, 16)) {
             if (e.type == SDL_EVENT_QUIT) {
                 LOG("window closed\n");
                 exit(0);
             }
+            window_event_log(&e);
+            if (input_user_blocked(&e)) continue;
             if (menu_handle_event(&e)) continue;
             input_handle_event(&e);
         }

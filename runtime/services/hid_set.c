@@ -4,6 +4,7 @@
 #include "../hle.h"
 #include "../ipc.h"
 #include "../language.h"
+#include "../vibration.h"
 
 static uint32_t new_event_handle(void) {
     uint32_t w, r;
@@ -24,6 +25,10 @@ static void applet_resource(Service *s, IpcReq *req, IpcResp *resp) {
     }
 }
 
+static void active_vibration_devices(Service *s, IpcReq *req, IpcResp *resp) {
+    (void)s; (void)req; (void)resp;  // ActivateVibrationDevice: our one controller is already open through SDL.
+}
+
 SERVICE("hid", hid) {
     (void)s;
     switch (req->cmd) {
@@ -32,8 +37,45 @@ SERVICE("hid", hid) {
     case 101: OUT(uint32_t, 0) = 0x1F; resp_size(resp, 4); break;  // GetSupportedNpadStyleSet
     case 121: OUT(int64_t, 0) = 0; resp_size(resp, 8); break;      // GetNpadJoyHoldType
     case 129: OUT(int64_t, 0) = 0; resp_size(resp, 8); break;      // GetNpadHandheldActivationMode
-    case 201: case 202: case 203: case 206: case 207: case 208: case 209: break;  // vibration
-    case 200: memset(resp->data, 0, 0x10); OUT(uint32_t, 0) = 1; resp_size(resp, 0x10); break;
+    case 201: {  // SendVibrationValue: handle, four floats, padding, applet resource user id
+        if (req->data_size < 32) break;
+        VibrationValue v;
+        memcpy(&v, req->data + 4, sizeof v);
+        vibration_send(IN(uint32_t, 0), &v);
+        break;
+    }
+    case 202: {  // GetActualVibrationValue
+        if (req->data_size < 16) break;
+        VibrationValue v = vibration_get(IN(uint32_t, 0));
+        memcpy(resp->data, &v, sizeof v);
+        resp_size(resp, sizeof v);
+        break;
+    }
+    case 203: ipc_return_object(resp, service_new("IActiveVibrationDeviceList", active_vibration_devices, NULL)); break;
+    case 204: if (req->data_size) vibration_permit(IN(uint8_t, 0) != 0); break;
+    case 205: OUT(uint8_t, 0) = vibration_permitted(); resp_size(resp, 1); break;
+    case 206: {  // SendVibrationValues: parallel input buffers (handles, values)
+        IpcBuf *handles = in_buf(req, 0), *values = in_buf(req, 1);
+        if (!handles || !values) break;
+        uint64_t n = handles->size / sizeof(uint32_t), nv = values->size / sizeof(VibrationValue);
+        if (n > nv) n = nv;
+        for (uint64_t i = 0; i < n; i++) {
+            uint32_t h;
+            VibrationValue v;
+            memcpy(&h, (const void *)(uintptr_t)(handles->addr + i * sizeof h), sizeof h);
+            memcpy(&v, (const void *)(uintptr_t)(values->addr + i * sizeof v), sizeof v);
+            vibration_send(h, &v);
+        }
+        break;
+    }
+    case 207: case 208: case 209: break;
+    case 210: vibration_clear(); break;  // EndPermitVibrationSession
+    case 200:  // GetVibrationDeviceInfo
+        if (req->data_size < 4) break;
+        OUT(uint32_t, 0) = 1;  // linear resonant actuator
+        OUT(uint32_t, 4) = 1 + ((IN(uint32_t, 0) >> 16) & 1);
+        resp_size(resp, 8);
+        break;
     default: break;  // Activate*/Set*: accept
     }
 }

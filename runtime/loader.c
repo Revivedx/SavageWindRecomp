@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "game_versions.h"
 #include "gamelib.h"
 #include "lz4.h"
 #include "rt.h"
@@ -237,12 +238,25 @@ void loader_load(const char *exefs) {
         snprintf(path, sizeof path, "%s/%s", exefs, m->name);
         load_nso(m, path, &g->modules[i]);
     }
-    for (int i = 0; i < 10; i++) {  // (a subsdk the code doesn't have: other game files than it was built from)
+    // A subsdk the code doesn't have: other game files than it was built from, unless main is a known game version,
+    // whose code leaves out the subsdks that aren't the game's (a mod copied into the ExeFS, #165; tools/layout.py
+    // GAME_SUBSDKS)
+    bool known = false;
+    const char *main_id = NULL;
+    for (uint32_t i = 0; i < *g->nmodules; i++)
+        if (!strcmp(g->modules[i].name, "main")) main_id = g->modules[i].build_id;
+#define KNOWN_MAIN(ver, id, ok, files) known = known || (main_id && !strncmp(main_id, id, 16));
+    GAME_VERSIONS(KNOWN_MAIN)
+#undef KNOWN_MAIN
+    for (int i = 0; i < 10; i++) {
         char name[16];
         snprintf(name, sizeof name, "subsdk%d", i);
         snprintf(path, sizeof path, "%s/%s", exefs, name);
         FILE *f = loader_module(name) ? NULL : fopen(path, "rb");
-        if (f) { fclose(f); FATAL("%s is not in the game code: build it again\n", path); }
+        if (!f) continue;
+        fclose(f);
+        if (!known) FATAL("%s is not in the game code: build it again\n", path);
+        LOG("[loader] %s is not one of the game's modules (a mod?): left out\n", path);
     }
     for (int i = 0; i < g_nmodules; i++) relocate(&g_modules[i]);
 }

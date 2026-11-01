@@ -164,7 +164,7 @@ static GuestFn dispatch_slow(Cpu *c) {
 // Always tail-calls, so chains of indirect jumps don't grow the host stack.
 void rt_dispatch(Cpu *c) {
     KThread *t = c->thread;  // (a better thread waiting for this one's core gets it: kernel.c kernel_preempt)
-    if (t && t->core_held >= 0 && __builtin_expect(g_core_best_wait[t->core_held] < t->prio, 0)) kernel_preempt(t);
+    if (t && t->core_held >= 0 && __builtin_expect(g_core_best_wait[t->core_held].v < t->prio, 0)) kernel_preempt(t);
     unsigned h = (unsigned)(c->pc >> 2) & (DCACHE - 1);
     GuestFn f = dcache[h].addr == c->pc ? dcache[h].fn : dispatch_slow(c);
     __attribute__((musttail)) return f(c);

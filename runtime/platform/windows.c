@@ -1,5 +1,6 @@
 // Windows host layer (runtime/platform.h).
 #include <windows.h>
+#include <pthread.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -125,13 +126,40 @@ static LONG CALLBACK vectored_handler(EXCEPTION_POINTERS *ep) {
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
+// MEM_WRITE_WATCH: Windows keeps which pages were written (plat_written_pages; the Vulkan backend refreshes its copy of
+// the heap's geometry from it). SAVAGEWIND_NO_WRITE_WATCH=1, or a system that refuses it: a plain reservation.
+static bool g_write_watch;
+
 bool plat_reserve_guest(uint64_t lo, uint64_t hi) {
-    void *p = VirtualAlloc((void *)(uintptr_t)lo, hi - lo, MEM_RESERVE, PAGE_READWRITE);
+    void *p = NULL;
+    if (!getenv("SAVAGEWIND_NO_WRITE_WATCH")) {
+        p = VirtualAlloc((void *)(uintptr_t)lo, hi - lo, MEM_RESERVE | MEM_WRITE_WATCH, PAGE_READWRITE);
+        if (p && p != (void *)(uintptr_t)lo) VirtualFree(p, 0, MEM_RELEASE), p = NULL;
+        g_write_watch = p != NULL;
+    }
+    if (!p) p = VirtualAlloc((void *)(uintptr_t)lo, hi - lo, MEM_RESERVE, PAGE_READWRITE);
     if (p != (void *)(uintptr_t)lo) return false;
     g_lo = lo;
     g_hi = hi;
     AddVectoredExceptionHandler(1, vectored_handler);
     return true;
+}
+
+long plat_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, size_t max) {
+    if (!g_write_watch || addr < g_lo || addr + size > g_hi || !max) return -1;
+    ULONG_PTR n = max;
+    DWORD gran;
+    if (GetWriteWatch(WRITE_WATCH_FLAG_RESET, (void *)(uintptr_t)addr, size, (void **)pages, &n, &gran) != 0) return -1;
+    return n >= max ? -1 : (long)n;  // (a full list may have left pages out)
+}
+
+int plat_any_written(uint64_t addr, uint64_t size) {
+    if (!g_write_watch || addr < g_lo || addr + size > g_hi) return -1;
+    void *page;
+    ULONG_PTR n = 1;
+    DWORD gran;
+    if (GetWriteWatch(0, (void *)(uintptr_t)addr, size, &page, &n, &gran) != 0) return -1;
+    return n != 0;
 }
 
 // Decommit everything: the range stays reserved, and pages come back zeroed when committed again (lazily).
@@ -196,6 +224,11 @@ bool plat_guest_commit_sparse_range(uint64_t addr, uint64_t size) {
     return true;
 }
 
+void plat_decommit(uint64_t addr, uint64_t size) {
+    uint64_t a = (addr + 0xFFF) & ~0xFFFull, e = (addr + size) & ~0xFFFull;  // (whole pages inside the range only)
+    if (e > a && a >= g_lo && e <= g_hi) VirtualFree((void *)(uintptr_t)a, e - a, MEM_DECOMMIT);
+}
+
 int plat_protect(uint64_t addr, uint64_t size, int prot) {
     DWORD p = prot == PLAT_PROT_NONE ? PAGE_NOACCESS : prot == PLAT_PROT_READ ? PAGE_READONLY : PAGE_READWRITE, old;
     if (addr >= g_lo && addr < g_hi) plat_commit(addr, size);
@@ -216,11 +249,21 @@ uint64_t plat_now_ns(void) {
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x2
 #endif
 
+// (one timer per thread, closed when the thread ends: guest threads come and go, a death reload creates new ones)
+static pthread_key_t timer_key;
+static pthread_once_t timer_once = PTHREAD_ONCE_INIT;
+static void timer_close(void *h) { CloseHandle((HANDLE)h); }
+static void timer_key_init(void) { pthread_key_create(&timer_key, timer_close); }
+
 void plat_sleep_until_ns(uint64_t t) {
     static __thread HANDLE timer;
     if (!timer) {
         timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
         if (!timer) timer = CreateWaitableTimerExW(NULL, NULL, 0, TIMER_ALL_ACCESS);
+        if (timer) {
+            pthread_once(&timer_once, timer_key_init);
+            pthread_setspecific(timer_key, timer);
+        }
     }
     for (;;) {
         uint64_t now = plat_now_ns();
@@ -339,6 +382,33 @@ void plat_init(void) {
         .StateMask = 0,
     };
     SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &pt, sizeof pt);
+}
+
+// One logical processor per physical core for the whole process: the game's main thread and the render thread then
+// never share a core with another busy thread of the game, or with a helper spinning for work. With fewer cores than
+// the game's busy threads (main, two job workers, render, audio, file loading) they would queue for one instead, so by
+// default only with SMT and 8 or more physical cores. SAVAGEWIND_ONE_PER_CORE=1: always, 0: never. Called when the game
+// starts, so what the start screen runs (the game code build) keeps every logical processor.
+void plat_cpu_placement(void) {
+    DWORD_PTR all, sys, one = 0;
+    if (!GetProcessAffinityMask(GetCurrentProcess(), &all, &sys)) return;
+    int logical = __builtin_popcountll((unsigned long long)all), cores = 0;
+    DWORD len = 0;
+    GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &len);
+    char *buf = len ? malloc(len) : NULL;
+    if (buf && GetLogicalProcessorInformationEx(RelationProcessorCore, (void *)buf, &len))
+        for (DWORD o = 0; o < len;) {
+            SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *e = (void *)(buf + o);
+            DWORD_PTR m = e->Processor.GroupMask[0].Group == 0 ? e->Processor.GroupMask[0].Mask & all : 0;
+            if (m) cores++, one |= m & -m;  // (the core's first logical processor)
+            o += e->Size;
+        }
+    free(buf);
+    const char *x = getenv("SAVAGEWIND_ONE_PER_CORE");
+    bool on = one && (x ? atoi(x) != 0 : cores >= 8 && logical > cores);
+    fprintf(stderr, "[cpu] %d cores, %d logical processors: %s\n", cores, logical,
+            on ? "one logical processor per core" : "all logical processors");
+    if (on) SetProcessAffinityMask(GetCurrentProcess(), one);
 }
 
 bool plat_exe_path(char *buf, size_t size) {
@@ -501,7 +571,28 @@ PlatProc plat_spawn(const char *const argv[], const char *log_path, bool append_
     MultiByteToWideChar(CP_UTF8, 0, argv[0], -1, wprog, MAX_PATH);
     for (wchar_t *p = wprog; *p; p++) if (*p == L'/') *p = L'\\';
     const wchar_t *app = GetFullPathNameW(wprog, MAX_PATH, wfull, NULL) ? wfull : NULL;
-    BOOL ok = CreateProcessW(app, wcmd, NULL, NULL, TRUE, CREATE_NO_WINDOW | CREATE_SUSPENDED, NULL, NULL, &si, &pi);
+    // The game code generator (swgen.exe, PyInstaller) without Control Flow Guard, whatever its header says: its code
+    // generator longjmps out of the code it generated, which CFG ends the process for. Clearing the header bit
+    // (tools/pe_no_cfg.py) isn't enough on some Windows 11 builds (#113); this is what Exploit protection's per-program
+    // "CFG: off" does, for this process only. Without the attribute (older Windows), started as before.
+    const char *base = strrchr(argv[0], '\\') > strrchr(argv[0], '/') ? strrchr(argv[0], '\\') : strrchr(argv[0], '/');
+    base = base ? base + 1 : argv[0];
+    BOOL ok = FALSE;
+    if (!_stricmp(base, "swgen.exe")) {
+        static __thread uint8_t attrs[256];
+        LPPROC_THREAD_ATTRIBUTE_LIST list = (LPPROC_THREAD_ATTRIBUTE_LIST)attrs;
+        SIZE_T size = sizeof attrs;
+        DWORD64 policy = PROCESS_CREATION_MITIGATION_POLICY_CONTROL_FLOW_GUARD_ALWAYS_OFF;
+        if (InitializeProcThreadAttributeList(list, 1, 0, &size)) {
+            STARTUPINFOEXW six = {.StartupInfo = si, .lpAttributeList = list};
+            six.StartupInfo.cb = sizeof six;
+            if (UpdateProcThreadAttribute(list, 0, PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, &policy, sizeof policy, NULL, NULL))
+                ok = CreateProcessW(app, wcmd, NULL, NULL, TRUE, CREATE_NO_WINDOW | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT,
+                                    NULL, NULL, &six.StartupInfo, &pi);
+            DeleteProcThreadAttributeList(list);
+        }
+    }
+    if (!ok) ok = CreateProcessW(app, wcmd, NULL, NULL, TRUE, CREATE_NO_WINDOW | CREATE_SUSPENDED, NULL, NULL, &si, &pi);
     if (!ok) fprintf(stderr, "[plat] could not start %s (error %lu)\n", argv[0], GetLastError());
     CloseHandle(log);
     if (!ok) return 0;

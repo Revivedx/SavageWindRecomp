@@ -35,14 +35,36 @@ SERVICE("pctl:s", pctl_s) { pctl_root(s, req, resp); }
 SERVICE("pctl:a", pctl_a) { pctl_root(s, req, resp); }
 SERVICE("pctl:r", pctl_r) { pctl_root(s, req, resp); }
 
-// ------------------------------------------------------------------ aoc:u (no DLC)
+// ------------------------------------------------------------------ aoc:u
+// The add-on contents set up (services/fs.c: an image per index) are the ones installed; their data is mounted
+// through fsp-srv OpenDataStorageByDataId.
+static int aoc_list(uint32_t *out, int max) {
+    int n = 0;
+    for (int i = 1; i <= 8; i++)
+        if (fs_aoc_present(i)) { if (out && n < max) out[n] = (uint32_t)i; n++; }
+    return n;
+}
+
 SERVICE("aoc:u", aoc_u) {
     (void)s;
     switch (req->cmd) {
-    case 2: OUT(uint32_t, 0) = 0; resp_size(resp, 4); break;   // CountAddOnContent
-    case 3: OUT(uint32_t, 0) = 0; resp_size(resp, 4); break;   // ListAddOnContent
-    case 5: OUT(uint64_t, 0) = (g_program_id & ~0xFFFull) + 0x1000; resp_size(resp, 8); break;  // GetAddOnContentBaseId
-    case 8: resp->copy_handles[resp->ncopy++] = new_event_handle(); break;
+    case 0: case 2: OUT(uint32_t, 0) = (uint32_t)aoc_list(NULL, 0); resp_size(resp, 4); break;  // CountAddOnContent
+    case 1: case 3: {  // ListAddOnContent(offset, count) -> B buffer of indices
+        uint32_t idx[8], offset = IN(uint32_t, 0), count = IN(uint32_t, 4);
+        int n = aoc_list(idx, 8), w = 0;
+        IpcBuf *b = out_buf(req, 0);
+        uint32_t room = b ? (uint32_t)(b->size / 4) : 0;
+        if (count > room) count = room;
+        for (uint32_t i = offset; i < (uint32_t)n && (uint32_t)w < count; i++)
+            ((uint32_t *)(uintptr_t)b->addr)[w++] = idx[i];
+        LOG("[aoc] ListAddOnContent(%u, %u): %d of %d\n", offset, count, w, n);
+        OUT(uint32_t, 0) = (uint32_t)w;
+        resp_size(resp, 4);
+        break;
+    }
+    case 4: case 5: OUT(uint64_t, 0) = fs_aoc_base_id(); resp_size(resp, 8); break;  // GetAddOnContentBaseId
+    case 6: case 7: LOG("[aoc] PrepareAddOnContent %u\n", IN(uint32_t, 0)); break;
+    case 8: case 10: resp->copy_handles[resp->ncopy++] = new_event_handle(); break;  // ...ListChangedEvent
     default: ok_logger(s, req, resp);
     }
 }

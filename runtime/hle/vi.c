@@ -24,7 +24,7 @@ static void *vsync_thread(void *arg) {
             if (warned++ < 20) LOG("[vi] vsync timer late by %llums (host throttling?)\n", (unsigned long long)((now - next) / 1000000));
             next = now;  // don't burst-signal to catch up
         }
-        pthread_mutex_lock(&g_klock);
+        klock();
         kernel_signal(vsync_event);
         pthread_mutex_unlock(&g_klock);
     }

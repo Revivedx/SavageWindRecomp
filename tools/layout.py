@@ -34,12 +34,33 @@ def image_size(h):
     return (end + PAGE - 1) & ~(PAGE - 1)
 
 
+# The subsdk modules each known game version has, by its main module's build id (the first 8 bytes, as
+# runtime/game_versions.h lists them). Another subsdk in such an ExeFS isn't the game's: a mod or a mod loader copied
+# there (#165). It is left out, and runtime/loader.c skips it the same way.
+GAME_SUBSDKS = {
+    'de0b6ac4efc1dda7': ['subsdk0'],  # 1.8.2
+    'cd57b23fa4bbad65': ['subsdk0'],  # 1.9.0
+}
+
+
+def foreign(exefs):
+    """The subsdk modules in an exefs folder that aren't its known game version's (none for an unknown version)."""
+    main = os.path.join(exefs, 'main')
+    known = GAME_SUBSDKS.get(header(main)['build_id'][:16]) if os.path.isfile(main) else None
+    if known is None:
+        return []
+    return [n for n in LOAD_ORDER if n.startswith('subsdk') and n not in known and os.path.isfile(os.path.join(exefs, n))]
+
+
 def compute(exefs):
     """[(name, base, size, build_id)] of the modules in an exefs folder, in load order."""
     out, base = [], MODULES_LO
+    skip = foreign(exefs)
+    for name in skip:
+        print(f"layout: {name} is not one of the game's modules (a mod?): left out", file=sys.stderr)
     for name in LOAD_ORDER:
         path = os.path.join(exefs, name)
-        if os.path.isfile(path):
+        if os.path.isfile(path) and name not in skip:
             h = header(path)
             out.append((name, base, image_size(h), h['build_id']))
             base += out[-1][2]

@@ -6,3 +6,6 @@ contact_links:
   - name: Latest release and known issues
     url: https://github.com/Revivedx/SavageWindRecomp/releases/latest
     about: Downloads, what's new, and the issues already known in this release.
+  - name: Want to share code or a fix?
+    url: https://github.com/Revivedx/SavageWindRecomp/blob/main/CONTRIBUTING.md#pull-requests
+    about: "Don't open an issue for it: open a pull request against the test branch. Issues that share code are closed."

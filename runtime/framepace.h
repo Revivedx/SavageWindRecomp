@@ -14,6 +14,8 @@ bool framepace_on(void);
 bool framepace_in_event(void);
 // The start screen or one of its menus is up (a 16:9 layout over pictures of its own)
 bool framepace_title_ui(void);
+// The loading screen is up (a 16:9 layout: its tip, the logo)
+bool framepace_loading_ui(void);
 // The pause menu's pages or the map are up (16:9 layouts that cover the whole picture)
 bool framepace_menu_ui(void);
 // The game is paused (the pause menu, the map) or the start screen's menu is up
@@ -25,7 +27,11 @@ void framepace_presented(uint64_t t, bool on_grid);
 // its clock's update (x19 of ksys::VFR::updateInterval).
 int rt_frame_wait(void);
 void rt_vfr_update(uint64_t vfr);
+// The game's frames so far (rt_vfr_update calls, game thread): what the matrices of one frame share (the jitter)
+uint64_t framepace_game_frame(void);
+uint64_t framepace_shown_frame(void);  // (the game's frames that were presented: one per present, paused too)
 
 // SAVAGEWIND_SCRIPT_CLOCK=1: the frame number test scripts use, in 30ths of a second (once per presented frame);
 // otherwise the presented frames.
 uint64_t framepace_script_frame(uint64_t presented);
+uint64_t framepace_script_now(void);  // (read only: the script frames so far, 0 without SAVAGEWIND_SCRIPT_CLOCK)

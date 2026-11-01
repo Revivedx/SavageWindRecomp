@@ -683,7 +683,7 @@ static void *renderer_tick(void *arg) {
             r->wav_bytes += frame_bytes;
             if ((r->elapsed_frames & 255) == 0) { wav_header(r->wav, r->wav_bytes); fflush(r->wav); }
         }
-        pthread_mutex_lock(&g_klock);
+        klock();
         kernel_signal(r->event);
         pthread_mutex_unlock(&g_klock);
     }
@@ -1451,7 +1451,7 @@ static void *audout_thread(void *arg) {
             a->played += frames;
         }
         pthread_mutex_unlock(&a->lock);
-        pthread_mutex_lock(&g_klock);
+        klock();
         kernel_signal(a->event);
         pthread_mutex_unlock(&g_klock);
     }

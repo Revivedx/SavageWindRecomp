@@ -15,6 +15,7 @@ generated-*/
 build/
 /cache/
 save/
+/save.lock
 /savagewind.ini
 # tools and Python environments (machine-specific)
 tools/venv/
@@ -36,3 +37,5 @@ tools/ghidra/gq.local.json
 # Internal work-branch log, local only
 docs/RAMAS.md
 .clangd
+# the player's own colour LUTs (runtime/color_grade.h): in the data root, which is the checkout in a source build
+/luts/

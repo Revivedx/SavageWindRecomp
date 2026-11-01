@@ -59,6 +59,7 @@ typedef struct {
 } KTransferMem;
 
 extern pthread_mutex_t g_klock;
+void klock(void);  // pthread_mutex_lock(&g_klock), with a short spin first (kernel.c)
 extern KThread *g_waitlist;
 
 KObject *handle_get(uint32_t h);
@@ -79,6 +80,7 @@ void kernel_host_work_end(void);
 int kernel_running_threads(pthread_t *host, uint32_t *handle, uint64_t *entry, int max);
 void kernel_sample_host_thread(void);  // (profiling) the calling host thread is sampled too (handle 0xf000 + n)
 // A better thread waits for t's core: t lets it have it (dispatch.c, at indirect calls; g_core_best_wait: per core)
-extern volatile int g_core_best_wait[4];
+typedef struct { volatile int v; char pad[60]; } __attribute__((aligned(64))) CoreBestWait;  // (one cache line per core)
+extern CoreBestWait g_core_best_wait[4];
 void kernel_preempt(KThread *t);
 uint64_t kernel_heap_size(void);  // bytes from HEAP_BASE set by SetHeapSize

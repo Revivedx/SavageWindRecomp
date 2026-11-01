@@ -12,7 +12,7 @@
 #include <windows.h>
 #endif
 
-#include "gamelib.h"
+#include "game_files.h"
 #include "imageload.h"
 #include "paths.h"
 #include "platform.h"
@@ -137,11 +137,6 @@ bool rt_resource(const char *name, const char *dev_rel, char *out, size_t n) {
 }
 
 // ---- game files
-// What the setup (runtime/ui/launcher.mm) creates in extracted/, plus what older versions' extraction and manual
-// extractions left there (never read at run time).
-static const char *const GAME_FILES[] = {"exefs", "romfs", "romfs.bin", GAMELIB_NAME, GAMELIB_NAME ".id", ".gamebuild",
-                                         ".extract", "extract.log", "xci_secure", "nso_raw", "update_pfs", ".DS_Store"};
-
 // game_dir must be <data root>/extracted, a real folder (a dev worktree's symlinked extracted/ is refused)
 static bool game_dir_ok(const char *game_dir) {
     char want[1100], got[1100];
@@ -167,6 +162,8 @@ bool rt_remove_game_file(const char *game_dir, const char *name) {
     return is_dir(p) ? plat_remove_tree(p) : remove(p) == 0;  // (plat_remove_tree doesn't follow links inside)
 }
 
+bool rt_is_link(const char *p) { return is_link(p); }
+
 bool rt_remove_game_files(const char *game_dir) {
     if (!game_dir_ok(game_dir)) {
         fprintf(stderr, "[paths] refusing to delete game files in %s (not <data root>/extracted)\n", game_dir);
@@ -176,35 +173,6 @@ bool rt_remove_game_files(const char *game_dir) {
     for (size_t i = 0; i < sizeof GAME_FILES / sizeof *GAME_FILES; i++) ok &= rt_remove_game_file(game_dir, GAME_FILES[i]);
     rmdir(game_dir);  // only if empty: anything else in there stays
     return ok;
-}
-
-static unsigned long long tree_size(const char *p) {
-    struct stat st;
-    if (is_link(p) || stat(p, &st) != 0) return 0;
-    if (!S_ISDIR(st.st_mode)) return (unsigned long long)st.st_size;
-    unsigned long long n = 0;
-    DIR *d = opendir(p);
-    if (d) {
-        struct dirent *e;
-        while ((e = readdir(d))) {
-            if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
-            char c[2048];
-            snprintf(c, sizeof c, "%s" SEP "%s", p, e->d_name);
-            n += tree_size(c);
-        }
-        closedir(d);
-    }
-    return n;
-}
-
-unsigned long long rt_game_files_size(const char *game_dir) {
-    unsigned long long n = 0;
-    char p[1100];
-    for (size_t i = 0; i < sizeof GAME_FILES / sizeof *GAME_FILES; i++) {
-        snprintf(p, sizeof p, "%s" SEP "%s", game_dir, GAME_FILES[i]);
-        n += tree_size(p);
-    }
-    return n;
 }
 
 // The player's own start screen picture (runtime/ui/splash.mm): splash.jpg / splash.jpeg / splash.png in the data root

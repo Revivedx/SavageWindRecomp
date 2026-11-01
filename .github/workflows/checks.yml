@@ -1,0 +1,48 @@
+# CONTRIBUTING.md's hard rule, checked on every pull request: no game files, keys, dumps, saves or generated game
+# code, and no personal paths in what the pull request adds. Only names and added lines are read; nothing is run.
+name: Checks
+
+on:
+  pull_request:
+    branches: [test, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  no-nintendo-files:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: No game files, keys, dumps, saves or generated code
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # The folders .gitignore keeps out, the exefs module names, console dump and key formats, the Switch's
+          # shared fonts, saves and the game's own asset formats.
+          bad=$(git diff --name-only --diff-filter=ACR "$BASE"...HEAD | grep -iE \
+            '(^|/)(extracted|generated[^/]*|input|dump|keys|save)/|(^|/)(main|main\.npdm|rtld|sdk|subsdk[0-9]+)$|\.(keys|xci|xcz|nsp|nsz|nca|nso|nro|bfttf|bfotf|sav|sarc|ssarc|pack|bfres|sbfres|bntx|sbactorpack|msbt|byml|sbyml|bfstm|bwav|bars|bfevfl)$' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::These files can't be in a pull request (CONTRIBUTING.md, \"The one hard rule\"):"
+            echo "$bad"
+            exit 1
+          fi
+      - name: No personal paths
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          bad=$(git diff -U0 "$BASE"...HEAD -- . ':!third_party' \
+            | awk '/^\+\+\+ b\//{f=substr($0,7); next} /^\+/{print f ": " substr($0,2)}' \
+            | grep -E '/home/[a-z][a-z0-9_-]+/|/Users/[A-Za-z][^/ ]*/|[Cc]:[\/]+Users[\/]' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::Personal paths in added lines (CONTRIBUTING.md, \"Pull requests\"):"
+            echo "$bad"
+            exit 1
+          fi

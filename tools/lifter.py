@@ -681,21 +681,23 @@ def emit_asm_batch(batch):
     """Emit one inline-asm block for a run of FP/SIMD instructions."""
     vregs = set()
     gmap = {}
-    flags = False
     consts = []
     words = []
+    flags = any(a.flags for a in batch)
+    pool = [r for r in SCRATCH if not (flags and r == 16)]  # (x16 holds NZCV around the batch: never a guest reg's)
     for a in batch:
         vregs |= a.vregs
-        flags |= a.flags
         w = a.word
         for pos, g in a.gprs:
             if g not in gmap:
-                if len(gmap) + len(consts) >= len(SCRATCH):
+                if len(gmap) + len(consts) >= len(pool):
                     raise Unsupported('scratch exhausted')
-                gmap[g] = SCRATCH[len(gmap) + len(consts)]
+                gmap[g] = pool[len(gmap) + len(consts)]
             w = (w & ~(31 << pos)) | (gmap[g] << pos)
         for pos, val in a.consts:
-            s = SCRATCH[len(gmap) + len(consts)]
+            if len(gmap) + len(consts) >= len(pool):
+                raise Unsupported('scratch exhausted')
+            s = pool[len(gmap) + len(consts)]
             consts.append((s, val))
             w = (w & ~(31 << pos)) | (s << pos)
         words.append(w)

@@ -32,6 +32,11 @@ with the help of contributors, and every contribution is reviewed and tested by 
 Issues, pull requests and comments that share, link to or ask for copies of the game, keys, firmware or dumping and
 decryption tools are removed. An account that does it again is blocked.
 
+Issues are for bug reports and feature requests. Don't open an issue to share code, patches or changed files: open a
+pull request against `test` instead (see [Pull requests](#pull-requests)), so the change can be reviewed, tested and
+credited to you. Issues that share code are closed with a pointer here, and an account that keeps opening them after
+that is blocked.
+
 ## Which branch to work on
 
 - **`test`** is where development happens. It has every change that is implemented and being tested, ahead of the

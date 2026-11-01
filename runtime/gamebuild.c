@@ -164,6 +164,17 @@ bool gamebuild_available(void) {
 static void compiler(Args *a, const Tools *t) {
     add(a, t->cc);
     if (t->zig) add(a, "cc");
+#ifdef __linux__
+    // zig's own glibc headers and stubs (lib/libc, tools/fetch_zig.sh keeps them), as old as the oldest glibc the
+    // release runs on (docs/linux.md). Without a target it builds for the native libc and wants the system's headers,
+    // which SteamOS and other read-only systems don't have: "failed to find libc installation:
+    // LibCStdLibHeaderNotFound" (#191). The game code only takes memcpy / math / fenv from it.
+#if defined(__aarch64__)
+    if (t->zig) { add(a, "-target"); add(a, "aarch64-linux-gnu.2.35"); }
+#else
+    if (t->zig) { add(a, "-target"); add(a, "x86_64-linux-gnu.2.35"); }
+#endif
+#endif
 }
 
 // ------------------------------------------------------------------ generator progress (its log)

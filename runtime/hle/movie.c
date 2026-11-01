@@ -221,6 +221,13 @@ static void ex_set_data_source(Cpu *c) {
     const char *rel = path && strstr(path, ":/") ? strstr(path, ":/") + 2 : path;
     char host[1024];
     snprintf(host, sizeof host, "%s/%s", g_romfs_dir, rel ? rel : "");
+    // an add-on content's movie (the Champions' Ballad's, in another mount): extracted/aoc<index>/, the DLC's RomFS
+    for (int i = 1; i <= 8 && rel && access(host, R_OK); i++) {
+        const char *slash = strrchr(g_romfs_dir, '/');
+        int dir = slash ? (int)(slash - g_romfs_dir) + 1 : 0;
+        snprintf(host, sizeof host, "%.*saoc%d/%s", dir, g_romfs_dir, i, rel);
+    }
+    if (rel && access(host, R_OK)) snprintf(host, sizeof host, "%s/%s", g_romfs_dir, rel);
     // the RomFS overlay's copy first (SAVAGEWIND_ROMFS_OVERLAY, services/fs.c): movies are read from the host
     const char *ov = getenv("SAVAGEWIND_ROMFS_OVERLAY");
     if (ov && *ov && rel) {
