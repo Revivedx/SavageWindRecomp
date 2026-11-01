@@ -332,13 +332,14 @@ static _Atomic bool a_live;
 static const char *const k_act_names[ACT_COUNT] = {
     [0] = "Interact", [2] = "Jump", [3] = "Attack", [5] = "Shield bash", [9] = "Lower shield", [10] = "Crouch step", [11] = "Dodge",
     [12] = "Sprint", [13] = "Guard / lock on", [14] = "Cancel", [15] = "Scope", [17] = "Crouch", [18] = "Bow",
-    [19] = "Paraglider", [25] = "Dismount", [26] = "Speed up horse", [27] = "Pet horse", [28] = "Throw weapon", [31] = "Take photo", [32] = "Climb (no effect)",
+    [19] = "Paraglider", [25] = "Dismount", [26] = "Speed up horse", [27] = "Pet horse", [28] = "Throw weapon", [31] = "Take photo",
     [33] = "Aim rune", [34] = "Activate rune", [35] = "Call horse", [36] = "Water spin attack", [37] = "Throw distance", [38] = "Cycle accelerate", [39] = "Cycle brake", [40] = "Cycle jump",
 };
-// No code in the game reaches these by a number (they may still be asked by a computed one): kept off the page
+// No code in the game reaches these by a number (they may still be asked by a computed one): kept off the page.
+// 32 is asked while wall climbing but nothing happens with the answer, so a row for it would only mislead.
 #define ACT_HIDDEN_MASK ((1ull << 1) | (1ull << 4) | (1ull << 6) | (1ull << 7) | (1ull << 8) | (1ull << 16) | \
                          (1ull << 20) | (1ull << 21) | (1ull << 22) | (1ull << 23) | (1ull << 24) | (1ull << 29) | \
-                         (1ull << 30))
+                         (1ull << 30) | (1ull << 32))
 
 const char *act_name(int id) { return id >= 0 && id < ACT_COUNT ? k_act_names[id] : NULL; }
 bool act_hidden(int id) { return id >= 0 && id < ACT_COUNT && (ACT_HIDDEN_MASK >> id & 1); }

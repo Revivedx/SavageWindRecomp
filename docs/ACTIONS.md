@@ -32,7 +32,7 @@ up/down keeps it, and the mouse hovers and clicks each button on its own. Confir
 a key or mouse button binds the keyboard side, a controller button the controller side (Esc cancels, as does waiting 5
 seconds). The hovered button is lit; the other one sits under a darker band, so only one looks selected.
 
-The rows are the 28 actions below, then the menu inputs (see "Menu inputs" below), then Move forward/back/left/right and Camera up/down/left/right (keyboard only: the
+The rows are the 27 actions below, then the menu inputs (see "Menu inputs" below), then Move forward/back/left/right and Camera up/down/left/right (keyboard only: the
 controller cell reads "Stick" and is greyed), Walk, Tilt and the seven gyro keys (both devices). The F1 overlay's Controls
 page shows the same table from the same in-process state; the launcher is a separate process.
 
@@ -89,7 +89,7 @@ Home / Guide).
 | 27 | Pet horse | L | |
 | 28 | Throw weapon | R | |
 | 31 | Take photo | R | with the Camera rune's view open |
-| 32 | Climb (no effect) | R | asked while wall climbing; nothing happens |
+| 32 | (hidden) | R | asked while wall climbing; nothing happens, so it has no row |
 | 33 | Aim rune | L | |
 | 34 | Activate rune | A | fires Stasis, Magnesis, Cryonis; the bombs ignore it |
 | 35 | Call horse | d-pad down | |
