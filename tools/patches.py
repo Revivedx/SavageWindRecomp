@@ -130,6 +130,45 @@ def _opt_tick(gen, a):
             f'  /* {a:#x}: sub sp, sp, #0x40 (Options: update) */')
 
 
+# Dual native binding cells: only emitted when the entire strict optional group matched.
+def _opt_two_redraw(gen, a):
+    assert _word(gen, a) == _sub_sp(0x40)
+    return ('{ extern int rt_opt_two_redraw(uint64_t); if (rt_opt_two_redraw(c->x[0])) return; c->sp -= 0x40; }')
+
+
+def _opt_two_callback(which):
+    def patch(gen, a):
+        assert _word(gen, a) == 0xb976b008  # ldr w8, [x0, #0x36b0]
+        return ('{ extern int rt_opt_two_callback(uint64_t, uint64_t, int); '
+                f'if (rt_opt_two_callback(c->x[0], c->x[1], {which})) return; '
+                'c->x[8] = LD32(c->x[0] + 0x36b0); }')
+    return patch
+
+
+def _opt_two_row_state(gen, a):
+    assert _word(gen, a) & 0x9f00001f == 0x90000008
+    page = adrp_page(_word(gen, a), a)
+    return ('{ extern int rt_opt_two_row_state(uint64_t); '
+            f'if (rt_opt_two_row_state(c->x[0])) return; c->x[8] = {page:#x}ull; }}')
+
+
+def _opt_two_control(initial):
+    def patch(gen, a):
+        assert _word(gen, a) == (0xf9400161 if initial else 0xf9400129)
+        # x11 / x9 is the original field address; the row stays x20 on initial focus.
+        expr = 'c->x[20]' if initial else 'c->x[9] - 0x28'
+        reg, field = (1, 11) if initial else (9, 9)
+        return ('{ extern uint64_t rt_opt_two_control(uint64_t); '
+                f'uint64_t b = rt_opt_two_control({expr}); c->x[{reg}] = b ? b : LD64(c->x[{field}]); }}')
+    return patch
+
+
+def _opt_two_horizontal(gen, a):
+    assert _word(gen, a) == 0xb936c268  # str w8, [x19, #0x36c0]
+    return ('{ extern void rt_opt_two_horizontal(uint64_t, unsigned); '
+            'ST32(c->x[19] + 0x36c0, c->x[8]); rt_opt_two_horizontal(c->x[19], (unsigned)c->x[8]); }')
+
+
 def _opt_back(gen, a):
     # B on the screen: it closes (after the save); on one of Savage Wind's pages it opens again on the first page
     assert _word(gen, a) >> 26 == 0x25, hex(_word(gen, a))  # bl screen_back
@@ -649,6 +688,16 @@ PATCHES = {
     'pc_cursor_manager': _pc_cursor_manager,
     'gyro_scene_actor': _gyro_scene_actor,
     'pause_options_update': _pause_option_state,
+    'opt_two_redraw': _opt_two_redraw,
+    'opt_two_select': _opt_two_callback(0),
+    'opt_two_state': _opt_two_callback(1),
+    'opt_two_decide': _opt_two_callback(2),
+    'opt_two_after': _opt_two_callback(3),
+    'opt_two_row_state': _opt_two_row_state,
+    'opt_two_update_control': _opt_two_control(False),
+    'opt_two_initial_control': _opt_two_control(True),
+    'opt_two_left': _opt_two_horizontal,
+    'opt_two_right': _opt_two_horizontal,
     'opt_create_rows': _opt_rows,
     'opt_row_init_flag_type': _opt_flag_type,
     'opt_read': _opt_read,

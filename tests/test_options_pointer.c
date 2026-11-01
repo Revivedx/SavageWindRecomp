@@ -23,7 +23,7 @@ bool framepace_title_ui(void){return false;}
 uint64_t framepace_script_frame(uint64_t value){return value;}
 void input_pc_escape(bool down){(void)down;abort();}
 void input_pc_map_axes(float out[2]){(void)out;abort();}
-static unsigned actions,refreshes,last_action,scroll_updates,activations,help_updates;
+static unsigned actions,refreshes,last_action,scroll_updates,activations,help_updates,native_decides;
 static uint64_t activated_node;
 static uint64_t quest_screen,quest_widget,quest_control,quest_nodes[2],quest_icons[4];
 static uint64_t quest_master;
@@ -35,6 +35,9 @@ static uint64_t navigation;
 static Cpu test_cpu;
 Cpu *kernel_current_cpu(void){return &test_cpu;}
 uint64_t input_buttons_now(void){return navigation;}
+static uint64_t dual_row;
+void rt_opt_two_pointer(uint64_t row,unsigned kind){(void)row;(void)kind;}
+int rt_opt_two_column(uint64_t row){return row==dual_row?0:-1;}
 int rt_opt_pointer_kind(uint64_t row){return (int)LD32(row+0x50);}
 void guest_call(Cpu *cpu,uint64_t address){
     if(address==0x7000e30700ull){actions++;last_action=LD32(LD64(cpu->x[0])+0x36c0);}
@@ -80,6 +83,7 @@ void guest_call(Cpu *cpu,uint64_t address){
         assert(cpu->x[0]==quest_screen+0x178&&cpu->x[1]==0x7001e2f4a8ull);page_changes++;
     }else if(address==0x7000123408ull){abort();} // Native clipping mutates focus; never scan through it.
     else if(address==0x700012340cull){cpu->x[0]=1;}
+    else if(address==0x7000123410ull){native_decides++;}
     else if(address==0x70013f59f8ull){assert(cpu->x[0]==quantity_screen);}
     else abort();
 }
@@ -172,6 +176,28 @@ int main(void) {
     event.type=SDL_EVENT_MOUSE_BUTTON_DOWN;event.button.button=SDL_BUTTON_LEFT;
     assert(pc_cursor_event(&event));ST64(control+0x48,0);pc_cursor_options_tick(screen);assert(activations==4);
     g_settings.pc_cursor=false;click_pending=true;pc_cursor_options_tick(screen);assert(click_pending&&actions==7);
+    // A dual row has two disjoint native hit panes. The label and gap are not buttons.
+    uint64_t key_button=GUEST_LO+0xc00,key_pane=GUEST_LO+0xd00;
+    uint64_t pad_button=GUEST_LO+0xe00,pad_pane=GUEST_LO+0xf00;
+    dual_row=row;ST32(row+0x50,2);ST64(row+0x20,key_button);ST64(row+0x28,pad_button);
+    ST64(key_button+0x60,key_pane);ST64(pad_button+0x60,pad_pane);
+    for(unsigned col=0;col<2;col++) {
+        uint64_t p=col?pad_pane:key_pane;
+        *(float*)(p+0x50)=120;*(float*)(p+0x54)=40;
+        *(float*)(p+0x70)=*(float*)(p+0x84)=1;
+        *(float*)(p+0x7c)=col?200:50;*(float*)(p+0x8c)=200;
+    }
+    unsigned cell=99;point[1]=200;point[0]=50;
+    assert(options_row_at(screen,box,&cell)==row&&cell==1);
+    point[0]=200;assert(options_row_at(screen,box,&cell)==row&&cell==2);
+    unsigned action_count=actions;
+    point[0]=125;assert(!options_row_at(screen,box,&cell));
+    point[0]=-100;assert(!options_row_at(screen,box,&cell));
+    uint64_t cell_vt=GUEST_LO+0x1600;
+    ST64(key_button,cell_vt);ST64(cell_vt+0x38,0x7000123410ull);
+    point[0]=0;options_click(&cpu,screen,row,1,box);
+    assert(actions==action_count&&native_decides==1); // the native button animates before its confirmed callback
+    dual_row=0;ST32(row+0x50,0);
     uint64_t router=GUEST_LO+0x5900,router_vt=GUEST_LO+0x5a00;
     ST64(ui+0x48,router);ST64(router,router_vt);ST64(router_vt+0x28,0x7000123400ull);
     assert(hover_target(&cpu,screen,0)&&!hover_target(&cpu,screen,1));

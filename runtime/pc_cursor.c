@@ -405,6 +405,8 @@ int rt_pc_map_focus(Cpu *c, int position) {
 }
 
 extern int rt_opt_pointer_kind(uint64_t row);
+extern int rt_opt_two_column(uint64_t row);
+extern void rt_opt_two_pointer(uint64_t row,unsigned kind);
 static void options_click(Cpu *c,uint64_t screen,uint64_t row,unsigned kind,const float box[4]);
 static bool options_box(uint64_t pane,float box[4]) {
     if(!ptr(pane))return false;
@@ -436,6 +438,14 @@ static uint64_t options_row_at(uint64_t screen,float box[4],unsigned *kind_out) 
     for(unsigned i=0;i<count;i++) {
         uint64_t row=LD64(rows+i*8);if(!ptr(row))continue;
         int kind=rt_opt_pointer_kind(row);if(kind<0||kind>2)continue;
+        if(rt_opt_two_column(row)>=0) {
+            for(unsigned cell=1;cell<=2;cell++) {
+                uint64_t button=LD64(row+(cell==1?0x20:0x28));
+                if(!ptr(button)||!options_box(LD64(button+0x60),box))continue;
+                if(point[0]>=box[0]&&point[0]<=box[2]&&point[1]>=box[1]&&point[1]<=box[3]) {*kind_out=cell;return row;}
+            }
+            continue;
+        }
         uint64_t button=LD64(row+(kind==0?0x18:kind==1?0x20:0x28));
         if(!ptr(button)||!options_box(LD64(button+0x60),box))continue;
         if(point[0]>=-280&&point[0]<=box[2]&&point[1]>=box[1]&&point[1]<=box[3]) {*kind_out=(unsigned)kind;return row;}
@@ -487,17 +497,26 @@ void pc_cursor_options_tick(uint64_t screen) {
     uint64_t row=options_row_at(screen,box,&kind);
     if(row) {
         if(!options_scroll_valid&&isfinite(current)){options_scroll=current;options_scroll_valid=true;}
+        rt_opt_two_pointer(row,kind);
         Cpu *focus_cpu=kernel_current_cpu();if(focus_cpu)options_focus(focus_cpu,screen,row,kind);
         if(click_pending) {click_pending=false;Cpu*c=kernel_current_cpu();if(c)options_click(c,screen,row,kind,box);}
     }
 }
 
 static void options_click(Cpu *c,uint64_t screen,uint64_t row,unsigned kind,const float box[4]) {
+    if(rt_opt_two_column(row)>=0) {
+        uint64_t button=LD64(row+(kind==1?0x20:0x28));
+        // Same native Decide request used by Options update: +0x38. The button
+        // owns the animation/sound and later invokes its confirmed callback.
+        // Calling row-decide directly here would bypass that native feedback.
+        if(ptr(button)&&ptr(LD64(button)))call(c,LD64(LD64(button)+0x38),button,0,0);
+        return;
+    }
     unsigned action=0;
     if(kind==0) {
         bool want=point[0]<box[0] ? LD8(row+0x54)==0 : point[0]<(box[0]+box[2])*.5f;
         if(want==(LD8(row+0x54)!=0))return;
-    } else if(kind==1) {
+    } else if(kind==1&&rt_opt_two_column(row)<0) {
         float edge=fminf(36,(box[2]-box[0])*.2f);
         if(point[0]<box[0]+edge)action=1;
         else if(point[0]>box[2]-edge)action=2;
@@ -529,7 +548,7 @@ static void options_focus(Cpu *c,uint64_t screen,uint64_t row,unsigned kind) {
                 // Activation changes the shared highlight and calls the native
                 // Options help callback. No independent PC rectangle is drawn.
                 call(c,0x7000f57da8,control,node,0);
-                if(LD64(screen+0x36c8)!=row)call(c,0x7000e3047c,screen,button,0);
+                if(LD64(screen+0x36c8)!=row||rt_opt_two_column(row)>=0)call(c,0x7000e3047c,screen,button,0);
                 ST8(screen+0x106,1);
                 if(isfinite(current)) {
                     options_scroll=current;options_scroll_valid=true;
@@ -540,6 +559,10 @@ static void options_focus(Cpu *c,uint64_t screen,uint64_t row,unsigned kind) {
         }
         link=LD64(link+8);
     }
+}
+// Also used by the dual-row experiment for pad/keyboard column changes.
+void pc_cursor_options_focus(uint64_t screen,uint64_t row,unsigned kind) {
+    Cpu *c=kernel_current_cpu();if(c)options_focus(c,screen,row,kind);
 }
 static bool options_pointer(Cpu *c,uint64_t screens,uint64_t bounds) {
     (void)c;(void)bounds;

@@ -575,3 +575,17 @@ test-hour: $(B)/test_hour
 	env SAVAGEWIND_TEST_TIME=18 $(B)/test_hour env
 
 .PHONY: test-hour
+
+# Real Options routing + binding capture, using synthetic guest rows rather than game assets.
+$(B)/two_button_bindings.o: runtime/hle/bindings.c runtime/input_bind.h
+	@mkdir -p $(B)
+	$(CC) -O1 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -c $< -o $@
+
+$(B)/test_two_button_rows: tools/test_two_button_rows.cpp runtime/ui/game_options.mm runtime/ui/binding_row_layout.h $(B)/two_button_bindings.o
+	$(CXX) -std=c++17 -O1 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -Ithird_party -o $@ $< $(B)/two_button_bindings.o -fuse-ld=lld -Wl,--gc-sections $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) -lSDL3 -lm
+
+test-two-button-rows: $(B)/test_two_button_rows
+	$(B)/test_two_button_rows
+	python3 tools/test_two_button_sites.py
+
+.PHONY: test-two-button-rows
