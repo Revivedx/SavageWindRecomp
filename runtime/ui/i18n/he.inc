@@ -618,3 +618,9 @@ T("Makes the game's letters sharper on 1440p and 4K screens. It takes effect the
 T("Game's FXAA", "FXAA של המשחק")
 T("The game's own edge smoothing. Off: sharper, more jagged edges.", "החלקת הקצוות של המשחק עצמו. כבוי: חד יותר, קצוות משוננים יותר.")
 T("The game's own FXAA, which smooths edges as the 3D image is drawn into the final picture, as on the console. Off: a sharper image with more jagged edges; use it to replace FXAA with SMAA or TAA above, or to keep the image crisp at a high resolution.", "ה-FXAA של המשחק עצמו, שמחליק קצוות בזמן שתמונת התלת-ממד מצוירת לתמונה הסופית, כמו בקונסולה. כבוי: תמונה חדה יותר עם קצוות משוננים יותר; השתמשו בזה כדי להחליף את FXAA ב-SMAA או TAA למעלה, או כדי לשמור על תמונה חדה ברזולוציה גבוהה.")
+
+// Quick inventory actions and Gameplay setting.
+T("Drop", "השלכה")
+T("Back", "חזרה")
+T("Enhanced quick inventory", "מלאי מהיר משופר")
+T("Drop unequipped gear or press Back to cancel the quick selection.", "השליכו ציוד שאינו מצויד או לחצו על חזרה כדי לבטל את הבחירה המהירה.")

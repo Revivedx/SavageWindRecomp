@@ -619,3 +619,9 @@ T("Makes the game's letters sharper on 1440p and 4K screens. It takes effect the
 T("Game's FXAA", "游戏自带 FXAA")
 T("The game's own edge smoothing. Off: sharper, more jagged edges.", "游戏自带的边缘平滑。关闭：更锐利，但边缘锯齿更多。")
 T("The game's own FXAA, which smooths edges as the 3D image is drawn into the final picture, as on the console. Off: a sharper image with more jagged edges; use it to replace FXAA with SMAA or TAA above, or to keep the image crisp at a high resolution.", "游戏自带的 FXAA，在把 3D 画面绘制到最终画面时平滑边缘，与主机上相同。关闭：画面更锐利，但边缘锯齿更多；可用于以上方的 SMAA 或 TAA 代替 FXAA，或在高分辨率下保持画面清晰。")
+
+// Quick inventory actions and Gameplay setting.
+T("Drop", "丢弃")
+T("Back", "返回")
+T("Enhanced quick inventory", "增强快捷物品栏")
+T("Drop unequipped gear or press Back to cancel the quick selection.", "丢弃未装备的武器等物品，或按返回取消快捷选择。")

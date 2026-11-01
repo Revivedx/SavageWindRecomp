@@ -620,3 +620,45 @@ test-bloom-scale: $(B)/test_bloom_scale
 	$(B)/test_bloom_scale
 
 .PHONY: test-bloom-scale
+# Quick inventory: Linux host tests without a window, ROM or game library.
+ifeq ($(PLATFORM),linux)
+$(B)/test_quick_drop_probe: tools/test_quick_drop_probe.c runtime/quick_drop.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -std=gnu11 -O1 -g $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $<
+
+$(B)/test_quick_drop_action: tools/test_quick_drop_action.c runtime/quick_drop_action.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -std=gnu11 -O1 -g $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $<
+
+$(B)/test_quick_inventory_settings: tools/test_quick_inventory_settings.c runtime/settings.c runtime/hle/bindings.c $(RT_HDRS) Makefile
+	@mkdir -p $(B)
+	$(CC) -std=gnu11 -O1 -g $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< $(TEST_LD) $(if $(DEPS),-Wl$(comma)-rpath$(comma)$(abspath $(DEPS))/lib) -lSDL3 -lm
+
+$(B)/test_input_consumed_buttons: tools/test_input_consumed_buttons.c runtime/hle/input.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -std=gnu11 -O1 -g -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< $(TEST_LD)
+
+test-quick-inventory: $(B)/test_quick_drop_probe $(B)/test_quick_drop_action $(B)/test_quick_inventory_settings $(B)/test_input_consumed_buttons
+	$(B)/test_quick_drop_probe
+	$(B)/test_quick_drop_probe disabled
+	$(B)/test_quick_drop_action
+	$(B)/test_input_consumed_buttons
+	@tmp=$$(mktemp); trap 'rm -f "$$tmp"' EXIT; \
+	 env -u SAVAGEWIND_QUICK_DROP $(B)/test_quick_inventory_settings "$$tmp" 0 && \
+	 env -u SAVAGEWIND_QUICK_DROP $(B)/test_quick_inventory_settings "$$tmp" 1 && \
+	 env SAVAGEWIND_QUICK_DROP=1 $(B)/test_quick_inventory_settings "$$tmp" 1 && \
+	 env SAVAGEWIND_QUICK_DROP=0 $(B)/test_quick_inventory_settings "$$tmp" 0
+
+$(B)/test_quick_hint_font: tools/test_quick_hint_font.cpp runtime/ui/quick_hint_font.mm runtime/ui/quick_hint_font.h \
+                         $(B)/imgui/imgui.o $(B)/imgui/imgui_draw.o $(B)/imgui/imgui_tables.o $(B)/imgui/imgui_widgets.o \
+                         $(B)/rt/services/archive.o $(B)/rt/nvn/tegra.o
+	@mkdir -p $(B)
+	$(CXX) $(CXXFLAGS) -o $@ $< $(filter %.o,$^) -lm
+
+# Optional font integration check: ROMFS=/path/to/the/player's/romfs.
+test-quick-inventory-font: $(B)/test_quick_hint_font
+	@test -n "$(ROMFS)" || { echo 'Set ROMFS to your own extracted game RomFS directory.'; exit 2; }
+	$(B)/test_quick_hint_font "$(ROMFS)"
+
+.PHONY: test-quick-inventory test-quick-inventory-font
+endif

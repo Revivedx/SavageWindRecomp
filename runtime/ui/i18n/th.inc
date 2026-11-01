@@ -619,3 +619,9 @@ T("Makes the game's letters sharper on 1440p and 4K screens. It takes effect the
 T("Game's FXAA", "FXAA ของเกม")
 T("The game's own edge smoothing. Off: sharper, more jagged edges.", "การลดรอยหยักขอบภาพของเกมเอง ปิด: คมขึ้น แต่ขอบหยักมากขึ้น")
 T("The game's own FXAA, which smooths edges as the 3D image is drawn into the final picture, as on the console. Off: a sharper image with more jagged edges; use it to replace FXAA with SMAA or TAA above, or to keep the image crisp at a high resolution.", "FXAA ของเกมเอง ซึ่งทำให้ขอบเรียบขึ้นขณะวาดภาพ 3D ลงในภาพสุดท้าย เหมือนบนเครื่องคอนโซล ปิด: ภาพคมขึ้นแต่ขอบหยักมากขึ้น ใช้เมื่อต้องการแทน FXAA ด้วย SMAA หรือ TAA ด้านบน หรือเพื่อให้ภาพคมชัดที่ความละเอียดสูง")
+
+// Quick inventory actions and Gameplay setting.
+T("Drop", "ทิ้ง")
+T("Back", "กลับ")
+T("Enhanced quick inventory", "ช่องไอเท็มด่วนแบบปรับปรุง")
+T("Drop unequipped gear or press Back to cancel the quick selection.", "ทิ้งอุปกรณ์ที่ไม่ได้สวมใส่ หรือกดกลับเพื่อยกเลิกการเลือกด่วน")

@@ -619,3 +619,9 @@ T("Makes the game's letters sharper on 1440p and 4K screens. It takes effect the
 T("Game's FXAA", "FXAA do jogo")
 T("The game's own edge smoothing. Off: sharper, more jagged edges.", "A suavização de bordas do próprio jogo. Desligado: mais nítido, bordas mais serrilhadas.")
 T("The game's own FXAA, which smooths edges as the 3D image is drawn into the final picture, as on the console. Off: a sharper image with more jagged edges; use it to replace FXAA with SMAA or TAA above, or to keep the image crisp at a high resolution.", "O FXAA do próprio jogo, que suaviza as bordas quando a imagem 3D é desenhada na imagem final, como no console. Desligado: uma imagem mais nítida com bordas mais serrilhadas; use para trocar o FXAA por SMAA ou TAA acima, ou para manter a imagem nítida em alta resolução.")
+
+// Quick inventory actions and Gameplay setting.
+T("Drop", "Descartar")
+T("Back", "Voltar")
+T("Enhanced quick inventory", "Inventário rápido aprimorado")
+T("Drop unequipped gear or press Back to cancel the quick selection.", "Descarte equipamento não equipado ou pressione Voltar para cancelar a seleção rápida.")

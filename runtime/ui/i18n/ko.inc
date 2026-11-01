@@ -619,3 +619,9 @@ T("Makes the game's letters sharper on 1440p and 4K screens. It takes effect the
 T("Game's FXAA", "게임 FXAA")
 T("The game's own edge smoothing. Off: sharper, more jagged edges.", "게임 자체의 가장자리 부드럽게 하기. 끄기: 더 선명하지만 가장자리가 더 거칩니다.")
 T("The game's own FXAA, which smooths edges as the 3D image is drawn into the final picture, as on the console. Off: a sharper image with more jagged edges; use it to replace FXAA with SMAA or TAA above, or to keep the image crisp at a high resolution.", "3D 화면을 최종 화면에 그릴 때 가장자리를 부드럽게 하는 게임 자체의 FXAA입니다(콘솔과 같음). 끄기: 더 선명하지만 가장자리가 더 거친 화면이 됩니다. 위의 SMAA나 TAA로 FXAA를 대신하거나 높은 해상도에서 화면을 선명하게 유지할 때 사용하세요.")
+
+// Quick inventory actions and Gameplay setting.
+T("Drop", "버리기")
+T("Back", "뒤로")
+T("Enhanced quick inventory", "빠른 인벤토리 기능 확장")
+T("Drop unequipped gear or press Back to cancel the quick selection.", "장비하지 않은 아이템을 버리거나 뒤로 버튼으로 빠른 선택을 취소합니다.")
