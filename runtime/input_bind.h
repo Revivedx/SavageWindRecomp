@@ -27,7 +27,9 @@ enum {
     BIND_FLY,                                            // toggles fly mode (control endpoint builds, runtime/control_fly.c): the one slot past the 16 buttons that the controller binds too; its row is on the Controls page only when the endpoint is on
     BIND_KEY_COUNT                                       // keyboard: buttons + both sticks + walk + tilt + gyro + fly
 };
-enum { BIND_DEV_PAD, BIND_DEV_KEY };
+// BIND_DEV_ANY (a capture only): the next press of either device is taken, a controller button for the controller side,
+// a key or mouse button for the keyboard side (a keyboard-only input ignores the controller)
+enum { BIND_DEV_PAD, BIND_DEV_KEY, BIND_DEV_ANY };
 // The gyro keys are a context of their own (they only work during a shrine apparatus): rebinding one swaps only with
 // another gyro key, never with the camera or movement keys it shares by default.
 static inline bool bind_key_gyro(int slot) { return slot >= BIND_GYRO_UP && slot <= BIND_GYRO_CENTER; }
@@ -53,6 +55,7 @@ const char *bind_pad_label(int host, int fam); // controller button in the pad f
 const char *bind_key_label(int scancode);
 int bind_label_family(void);                   // the connected controller's family (also on the start screen)
 void bind_reset(int dev);
+void bind_reset_slot(int slot);                // one input (or action: BIND_ACTION + id) back to its defaults, both devices
 bool bind_is_default(int dev);
 bool bind_is_default_slot(int dev, int slot);
 

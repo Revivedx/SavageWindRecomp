@@ -156,6 +156,24 @@ static void capture_and_settings(void) {
     bind_capture_begin(BIND_DEV_KEY, BIND_ACTION + CANCEL);
     e = (SDL_Event){0}; e.type = SDL_EVENT_KEY_DOWN; e.key.scancode = SDL_SCANCODE_ESCAPE;
     assert(bind_capture_event(&e) && g_act_key[CANCEL] == BIND_MOUSE + SDL_BUTTON_X1);
+    // BIND_DEV_ANY (the in-game Options page): a key binds the keyboard side, a controller button the other side
+    bind_capture_begin(BIND_DEV_ANY, BIND_ACTION + 12);
+    e = (SDL_Event){0}; e.type = SDL_EVENT_KEY_DOWN; e.key.scancode = SDL_SCANCODE_G;
+    assert(bind_capture_event(&e) && g_act_key[12] == SDL_SCANCODE_G && g_act_pad[12] == ACT_FOLLOW);
+    bind_capture_begin(BIND_DEV_ANY, BIND_ACTION + 12);
+    e = (SDL_Event){0}; e.type = SDL_EVENT_GAMEPAD_BUTTON_DOWN; e.gbutton.button = SDL_GAMEPAD_BUTTON_EAST;
+    assert(bind_capture_event(&e) && g_act_pad[12] == SDL_GAMEPAD_BUTTON_EAST && g_act_key[12] == SDL_SCANCODE_G);
+    bind_reset_slot(BIND_ACTION + 12);  // one row back to its default, both sides
+    assert(g_act_key[12] == ACT_FOLLOW && g_act_pad[12] == ACT_FOLLOW);
+    // a keyboard-only input (the walk key) ignores a controller button but takes a key
+    bind_capture_begin(BIND_DEV_ANY, BIND_WALK);
+    e = (SDL_Event){0}; e.type = SDL_EVENT_GAMEPAD_BUTTON_DOWN; e.gbutton.button = SDL_GAMEPAD_BUTTON_EAST;
+    int16_t walk = g_bind_key[BIND_WALK];
+    assert(bind_capture_event(&e) && g_bind_key[BIND_WALK] == walk);
+    e = (SDL_Event){0}; e.type = SDL_EVENT_KEY_DOWN; e.key.scancode = SDL_SCANCODE_H;
+    assert(bind_capture_event(&e) && g_bind_key[BIND_WALK] == SDL_SCANCODE_H);
+    bind_reset_slot(BIND_WALK);
+    assert(g_bind_key[BIND_WALK] == walk);
     act_set(BIND_DEV_PAD, ATTACK, ACT_NONE);
 
     // savagewind.ini: only what differs, and back

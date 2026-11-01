@@ -123,6 +123,17 @@ void bind_reset(int dev) {
     result(5, dev, -1, -1);
 }
 
+void bind_reset_slot(int slot) {
+    if (bind_slot_is_action(slot)) {
+        act_set(BIND_DEV_PAD, slot - BIND_ACTION, ACT_FOLLOW);
+        act_set(BIND_DEV_KEY, slot - BIND_ACTION, ACT_FOLLOW);
+        return;
+    }
+    if (slot < 0 || slot >= BIND_KEY_COUNT) return;
+    g_bind_key[slot] = k_def_key[slot];
+    if (bind_pad_slot(slot)) g_bind_pad[slot] = k_def_pad[slot];
+}
+
 bool bind_is_default(int dev) {
     return dev == BIND_DEV_PAD ? !memcmp(g_bind_pad, k_def_pad, sizeof g_bind_pad) : !memcmp(g_bind_key, k_def_key, sizeof g_bind_key);
 }
@@ -145,6 +156,7 @@ static void result(int kind, int dev, int slot, int other) {
 void bind_capture_begin(int dev, int slot) {
     if (!bind_slot_is_action(slot) &&
         (slot < 0 || slot >= BIND_KEY_COUNT || (dev == BIND_DEV_PAD && !bind_pad_slot(slot)))) return;
+    if (dev == BIND_DEV_ANY && !bind_slot_is_action(slot) && slot >= BIND_KEY_COUNT) return;
     cap_deadline = SDL_GetTicks() + BIND_CAPTURE_MS;
     cap_slot = slot;
     cap_dev = dev;
@@ -200,17 +212,20 @@ static void assign(int dev, int slot, int host) {
 bool bind_capture_event(const SDL_Event *e) {
     int dev = cap_dev;
     if (dev < 0) return false;
+    // which sides this capture takes (BIND_DEV_ANY: both, the controller only where the input has a controller side)
+    const bool kd = dev != BIND_DEV_PAD;
+    const bool pd = dev == BIND_DEV_PAD || (dev == BIND_DEV_ANY && (bind_slot_is_action(cap_slot) || bind_pad_slot(cap_slot)));
     switch (e->type) {
     case SDL_EVENT_KEY_DOWN:
         if (e->key.repeat) return true;
         if (e->key.scancode == SDL_SCANCODE_ESCAPE) { bind_capture_cancel(); return true; }
         // F1 (menu), F9 (frame dump), F11 (fullscreen), F12 and the key left of 1 (the console) stay the overlay's; a
         // controller capture ignores keys
-        if (dev != BIND_DEV_KEY || e->key.scancode == SDL_SCANCODE_F1 || e->key.scancode == SDL_SCANCODE_F9 ||
+        if (!kd || e->key.scancode == SDL_SCANCODE_F1 || e->key.scancode == SDL_SCANCODE_F9 ||
             e->key.scancode == SDL_SCANCODE_F11 || e->key.scancode == SDL_SCANCODE_F12 ||
             e->key.scancode == SDL_SCANCODE_GRAVE || e->key.scancode >= SDL_SCANCODE_COUNT) return true;
         cap_dev = -1;
-        assign(dev, cap_slot, e->key.scancode);
+        assign(BIND_DEV_KEY, cap_slot, e->key.scancode);
         return true;
     // Keep host held-state current even while capturing. Swallowing the release of the confirm key / button left
     // it down in input.c, so ending a capture pressed confirm again and reopened the binding row (#175).
@@ -219,27 +234,27 @@ bool bind_capture_event(const SDL_Event *e) {
     case SDL_EVENT_TEXT_INPUT:
         return true;
     case SDL_EVENT_MOUSE_BUTTON_DOWN:  // a keyboard binding can be a mouse button (a controller capture ignores it)
-        if (dev != BIND_DEV_KEY || e->button.button < SDL_BUTTON_LEFT || e->button.button > SDL_BUTTON_X2) return true;
+        if (!kd || e->button.button < SDL_BUTTON_LEFT || e->button.button > SDL_BUTTON_X2) return true;
         cap_dev = -1;
-        assign(dev, cap_slot, BIND_MOUSE + e->button.button);
+        assign(BIND_DEV_KEY, cap_slot, BIND_MOUSE + e->button.button);
         return true;
     case SDL_EVENT_MOUSE_BUTTON_UP:
         return false;
     case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
         // Home / Guide opens the menu; a keyboard capture ignores the controller (it times out, or Esc)
-        if (dev != BIND_DEV_PAD || e->gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE || e->gbutton.button >= SDL_GAMEPAD_BUTTON_COUNT) return true;
+        if (!pd || e->gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE || e->gbutton.button >= SDL_GAMEPAD_BUTTON_COUNT) return true;
         cap_dev = -1;
-        assign(dev, cap_slot, e->gbutton.button);
+        assign(BIND_DEV_PAD, cap_slot, e->gbutton.button);
         return true;
     case SDL_EVENT_GAMEPAD_BUTTON_UP:
         return false;
     case SDL_EVENT_GAMEPAD_AXIS_MOTION:
         if ((e->gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER || e->gaxis.axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) &&
             e->gaxis.value <= 16000) return false;  // a trigger may also have been bound to confirm
-        if (dev == BIND_DEV_PAD && e->gaxis.value > 16000 &&
+        if (pd && e->gaxis.value > 16000 &&
             (e->gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER || e->gaxis.axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER)) {
             cap_dev = -1;
-            assign(dev, cap_slot, e->gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER ? PADB_LTRIGGER : PADB_RTRIGGER);
+            assign(BIND_DEV_PAD, cap_slot, e->gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER ? PADB_LTRIGGER : PADB_RTRIGGER);
         }
         return true;  // (sticks: no menu movement while waiting)
     default:

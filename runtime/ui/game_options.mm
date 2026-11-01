@@ -84,8 +84,9 @@ struct Entry {           // the game's option entry (0x30)
 static_assert(sizeof(Entry) == 0x30);
 enum { KIND_TOGGLE = 0, KIND_CHOICE = 1, KIND_BUTTON = 2 };
 
-enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_COLOUR, P_AUDIO, P_CONTROLS, P_KEYS, P_STICKS, P_PAD, P_LANGUAGE, P_COUNT };
-enum Action { A_NONE, A_PAGE, A_BIND_KEY, A_BIND_PAD, A_RESET_KEYS, A_RESET_PAD, A_RESTART, A_QUIT, A_SIZE_LIST };
+enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_COLOUR, P_AUDIO, P_CONTROLS, P_BINDS, P_LANGUAGE, P_COUNT };
+// A_BIND: Item.arg is a binding slot (an input, or BIND_ACTION + an action); the next key, mouse button or controller button binds it
+enum Action { A_NONE, A_PAGE, A_BIND, A_RESET_BINDS, A_RESTART, A_QUIT, A_SIZE_LIST };
 
 struct Item {
     int page;
@@ -116,6 +117,7 @@ uint64_t g_quit_dialog;            // the quit question's dialog while it is up
 uint64_t g_quit_owner;             // ... and the screen it came from (title menu or Options; its input is off meanwhile)
 bool g_quit_texts;                 // ... and its texts are still to be given (its two-button layout comes next)
 uint64_t g_cap_row;                // a binding row whose capture is running
+int cap_slot_was = -1;             // ... and its slot (for the redraw once it has ended)
 uint64_t g_size_row;               // the Window size row whose list was opened
 std::atomic<bool> g_size_redraw;   // ... and a size was picked there (render thread): redraw it
 std::vector<uint64_t> g_dirty;     // rows to redraw, one per frame
@@ -247,12 +249,40 @@ const char *fps_label(const Item &, int x) {
     return buf;
 }
 
+// What a slot is bound to on the keyboard / mouse and on the controller. An action without a binding of its own shows
+// the button its Switch input has (what it follows).
+const char *slot_key_text(int slot) {
+    if (bind_slot_is_action(slot)) {
+        int h = g_act_key[slot - BIND_ACTION];
+        if (h == ACT_FOLLOW) {
+            int b = act_switch_button(slot - BIND_ACTION);
+            h = b < 0 ? ACT_NONE : g_bind_key[b];
+        }
+        return h == ACT_NONE ? tr("Unbound") : tr(bind_key_label(h));
+    }
+    return tr(bind_key_label(g_bind_key[slot]));
+}
+const char *slot_pad_text(int slot) {
+    if (bind_slot_is_action(slot)) {
+        int h = g_act_pad[slot - BIND_ACTION];
+        if (h == ACT_FOLLOW) {
+            int b = act_switch_button(slot - BIND_ACTION);
+            h = b < 0 ? ACT_NONE : g_bind_pad[b];
+        }
+        return h == ACT_NONE ? tr("Unbound") : tr(bind_pad_label(h, bind_label_family()));
+    }
+    return tr(bind_pad_label(g_bind_pad[slot], bind_label_family()));
+}
+bool slot_has_pad(int slot) { return bind_slot_is_action(slot) || bind_pad_slot(slot); }
+
 const char *bind_label(const Item &it, int) {
+    static char buf[160];
     int dev, slot, ms;
-    bool key = it.action == A_BIND_KEY;
-    if (bind_capture_active(&dev, &slot, &ms) && dev == (key ? BIND_DEV_KEY : BIND_DEV_PAD) && slot == it.arg)
-        return tr(key ? "Press a key..." : "Press a button...");
-    return tr(key ? bind_key_label(g_bind_key[it.arg]) : bind_pad_label(g_bind_pad[it.arg], bind_label_family()));
+    if (bind_capture_active(&dev, &slot, &ms) && slot == it.arg)
+        return tr(slot_has_pad(slot) ? "Press a key or button..." : "Press a key...");
+    if (slot_has_pad(it.arg)) snprintf(buf, sizeof buf, "%s  |  %s", slot_key_text(it.arg), slot_pad_text(it.arg));
+    else snprintf(buf, sizeof buf, "%s", slot_key_text(it.arg));
+    return buf;
 }
 
 void build_items(void) {
@@ -265,9 +295,7 @@ void build_items(void) {
 #endif
     v.push_back(button(P_MAIN, "Audio", "Volume and sound effects.", "Open", A_PAGE, P_AUDIO));
     v.push_back(button(P_MAIN, "Controls", "Camera, motion, d-pad, mouse and button icons.", "Open", A_PAGE, P_CONTROLS));
-    v.push_back(button(P_MAIN, "Keyboard (buttons)", "Which key does each button.", "Open", A_PAGE, P_KEYS));
-    v.push_back(button(P_MAIN, "Keyboard (sticks)", "Keys for the sticks and for walking.", "Open", A_PAGE, P_STICKS));
-    v.push_back(button(P_MAIN, "Controller", "Which controller button does each button.", "Open", A_PAGE, P_PAD));
+    v.push_back(button(P_MAIN, "Key bindings", "Which key, mouse button or controller button does what.", "Open", A_PAGE, P_BINDS));
     v.push_back(button(P_MAIN, "Language", "Language of the texts and of the voices.", "Open", A_PAGE, P_LANGUAGE));
     v.push_back(button(P_MAIN, "Quit game", "To the desktop, or back to the Savage Wind start screen.", "Quit",
                        A_QUIT, 0));
@@ -584,7 +612,7 @@ void build_items(void) {
                        [](const Item &) { return (int)g_settings.mouse_invert_y; },
                        [](const Item &, int x) { g_settings.mouse_invert_y = x; }, 0));
     v.push_back(toggle(P_CONTROLS, "Shrine keyboard gyro",
-                       "Only while controlling a shrine apparatus. Remap on Keyboard (sticks). Outside it, camera keys keep working.",
+                       "Only while controlling a shrine apparatus. Remap under Key bindings. Outside it, camera keys keep working.",
                        [](const Item &) { return (int)g_settings.pc_gyro; },
                        [](const Item &, int x) { g_settings.pc_gyro = x; }, 1));
     v.push_back(toggle(P_CONTROLS, "Shrine mouse drag",
@@ -607,13 +635,6 @@ void build_items(void) {
                        [](const Item &, int x) { return tr(k_invert[x]); },
                        [](const Item &) { return g_settings.motion_invert & 3; },
                        [](const Item &, int x) { g_settings.motion_invert = x; }, 0));
-    {   // the tilt key: held, the mouse tilts the controller (for motion puzzles without a gyroscope)
-        Item it = button(P_CONTROLS, bind_input_name(BIND_TILT),
-                         "Hold it and move the mouse to tilt the controller. Press A, then the new key.", nullptr,
-                         A_BIND_KEY, BIND_TILT);
-        it.label = bind_label;
-        v.push_back(it);
-    }
     v.push_back(choice(P_CONTROLS, "Button icons",
                        "The buttons the game's prompts show. Automatic: the device you used last.",
                        [](const Item &) { return N(k_icons); },
@@ -621,35 +642,31 @@ void build_items(void) {
                        [](const Item &) { return g_settings.button_icons; },
                        [](const Item &, int x) { g_settings.button_icons = x; }, ICONS_AUTO));
 
-    // Keyboard and controller: one button per Switch input, showing what drives it; A waits for the new one
-    auto bind = [&](int page, int action, int slot) {
-        Item it = button(page, bind_input_name(slot),
-                         action == A_BIND_KEY ? "Press A, then the new key. Esc cancels."
-                                              : "Press A, then the new button.",
-                         nullptr, action, slot);
+    // Key bindings: one row per action (key | controller button), then the inputs no action covers. A waits for the
+    // next press: a key or mouse button binds the keyboard side, a controller button the controller side
+    auto bind = [&](int slot, const char *title) {
+        Item it = button(P_BINDS, title, "Press A, then the new key or button. Esc cancels.", nullptr, A_BIND, slot);
         it.label = bind_label;
-        if (action == A_BIND_KEY) it.desc_fn = [](const Item &) {
-            static std::string desc;
-            desc = std::string(tr("Press A, then the new key. Esc cancels.")) + " " +
-                   tr("In the title, pause and map menus, unbound arrow keys act as the left stick and Enter selects.");
-            return desc.c_str();
-        };
+        if (!slot_has_pad(slot)) it.desc = "Press A, then the new key. Esc cancels.";
         v.push_back(it);
     };
-    for (int s = 0; s < BIND_PAD_COUNT; s++) bind(P_KEYS, A_BIND_KEY, s);
-    bind(P_KEYS, A_BIND_KEY, BIND_WALK);
-    v.push_back(button(P_KEYS, "Reset keyboard to defaults", "Every key back to its default.", "Reset", A_RESET_KEYS, 0));
-    for (int s = BIND_LS_UP; s <= BIND_RS_RIGHT; s++) bind(P_STICKS, A_BIND_KEY, s);
+    for (int id = 0; id < ACT_COUNT; id++)
+        if (!act_hidden(id) && act_name(id)) bind(BIND_ACTION + id, act_name(id));
+    for (int sl = BIND_LS_UP; sl <= BIND_RS_RIGHT; sl++) bind(sl, bind_input_name(sl));
+    bind(BIND_WALK, bind_input_name(BIND_WALK));
+    for (int sl : {BIND_PLUS, BIND_MINUS, BIND_LEFT, BIND_UP, BIND_RIGHT, BIND_DOWN}) bind(sl, bind_input_name(sl));
+    bind(BIND_TILT, bind_input_name(BIND_TILT));
+    v.back().desc = "Hold it and move the mouse to tilt the controller. Press A, then the new key.";
     static const char *const gyro_help[] = {"Tilt upward.", "Tilt downward.", "Tilt left.", "Tilt right.",
                                             "Rotate left on the third axis.", "Rotate right on the third axis.",
                                             "Reset orientation and stop pending rotation."};
-    for (int s = BIND_GYRO_UP; s <= BIND_GYRO_CENTER; s++) {  // (the virtual gyro at a shrine apparatus)
-        bind(P_STICKS, A_BIND_KEY, s);
-        v.back().desc = gyro_help[s - BIND_GYRO_UP];
+    for (int sl = BIND_GYRO_UP; sl <= BIND_GYRO_CENTER; sl++) {  // (the virtual gyro at a shrine apparatus)
+        bind(sl, bind_input_name(sl));
+        v.back().desc = gyro_help[sl - BIND_GYRO_UP];
     }
-    v.push_back(button(P_STICKS, "Reset keyboard to defaults", "Every key back to its default.", "Reset", A_RESET_KEYS, 0));
-    for (int s = 0; s < BIND_PAD_COUNT; s++) bind(P_PAD, A_BIND_PAD, s);
-    v.push_back(button(P_PAD, "Reset controller to defaults", "Every button back to its default.", "Reset", A_RESET_PAD, 0));
+    for (int sl : {BIND_A, BIND_B, BIND_X, BIND_Y, BIND_L, BIND_R, BIND_ZL, BIND_ZR, BIND_LSTICK, BIND_RSTICK})
+        bind(sl, bind_input_name(sl));
+    v.push_back(button(P_BINDS, "Reset all bindings", "Every key and button back to its default.", "Reset", A_RESET_BINDS, 0));
 
     // Language
     v.push_back(choice(P_LANGUAGE, "Text", "Texts and menus. Applies after a restart.",
@@ -731,6 +748,19 @@ void mark_all_rows(uint64_t screen) {
     uint64_t rows = rd64(screen + g_site.opt_screen_rows + 8);
     for (int i = 0; i < n && i < 64 && rows; i++)
         if (uint64_t r = rd64(rows + 8 * i)) g_dirty.push_back(r);
+}
+
+// Only the binding rows of these two slots (the one just bound and the one it swapped with): a page of ~55 rows
+// redrawn one per frame took two seconds to show the new key
+void mark_bind_rows(uint64_t screen, int slot, int other) {
+    if (!screen) return;
+    int n = (int)rd32(screen + g_site.opt_screen_rows);
+    uint64_t rows = rd64(screen + g_site.opt_screen_rows + 8);
+    for (int i = 0; i < n && i < 64 && rows; i++) {
+        uint64_t r = rd64(rows + 8 * i);
+        const Item *it = item_of_row(r);
+        if (it && it->action == A_BIND && (it->arg == slot || it->arg == other)) g_dirty.push_back(r);
+    }
 }
 
 uint64_t screen_by_id(uint32_t id) {
@@ -904,8 +934,8 @@ extern "C" int rt_opt_reset(uint64_t row) {
     if (idx < g_shown.size()) g_shown[idx] = -1;
     if (it->reset) it->reset(*it);
     else if (it->kind != KIND_BUTTON) it->set(*it, it->def);
-    else if (it->action == A_BIND_KEY || it->action == A_RESET_KEYS) bind_reset(BIND_DEV_KEY);
-    else if (it->action == A_BIND_PAD || it->action == A_RESET_PAD) bind_reset(BIND_DEV_PAD);
+    else if (it->action == A_BIND) bind_reset_slot(it->arg);
+    else if (it->action == A_RESET_BINDS) bind_reset(BIND_DEV_KEY), bind_reset(BIND_DEV_PAD), act_reset();
     settings_save();
     return 1;
 }
@@ -945,15 +975,15 @@ extern "C" int rt_opt_decide(uint64_t row) {
         g_next_page = it->arg;
         g_reopen = g_switching = true;
         return 1;
-    case A_BIND_KEY:
-    case A_BIND_PAD:
-        bind_capture_begin(it->action == A_BIND_KEY ? BIND_DEV_KEY : BIND_DEV_PAD, it->arg);
+    case A_BIND:
+        bind_capture_begin(BIND_DEV_ANY, it->arg);
         g_cap_row = row;
         g_dirty.push_back(row);
         return 2;
-    case A_RESET_KEYS:
-    case A_RESET_PAD:
-        bind_reset(it->action == A_RESET_KEYS ? BIND_DEV_KEY : BIND_DEV_PAD);
+    case A_RESET_BINDS:
+        bind_reset(BIND_DEV_KEY);
+        bind_reset(BIND_DEV_PAD);
+        act_reset();
         settings_save();
         mark_all_rows(rd64(row));
         return 2;
@@ -979,11 +1009,14 @@ extern "C" uint64_t rt_opt_tick(uint64_t screen) {
         if (g_quit_dialog) return 1;
     }
     int d, s, ms;
+    if (g_cap_row && bind_capture_active(&d, &s, &ms)) cap_slot_was = s;
     if (g_cap_row && !bind_capture_active(&d, &s, &ms)) {
         g_cap_row = 0;
         g_hold_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(400);
         settings_save();
-        mark_all_rows(screen);
+        int rd, rs, other, serial;
+        bind_last_result(&rd, &rs, &other, &serial);
+        mark_bind_rows(screen, cap_slot_was, other);
     }
     if (g_size_redraw.exchange(false) && g_size_row) g_dirty.push_back(g_size_row);
     if (!game_options_input_hold()) pc_cursor_options_tick(screen);
