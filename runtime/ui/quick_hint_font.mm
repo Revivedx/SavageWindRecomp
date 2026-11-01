@@ -96,7 +96,7 @@ ImFont *append(ImFontAtlas *atlas, const unsigned char *src, size_t size,
                        w / 4, h / 4, 1, 8, tegra_default_block_height_log2(h / 4), 0);
     ImFontConfig cfg;
     cfg.SizePixels = ch;
-    snprintf(cfg.Name, sizeof cfg.Name, "Quick selector game bitmap");
+    snprintf(cfg.Name, sizeof cfg.Name, "quick_selector_bitmap");
     ImFont *font = atlas->AddFontDefault(&cfg);
     for (unsigned code : chars) {
         unsigned gi = f.glyph(code), sheet = gi / (cols * rows), local = gi % (cols * rows), advance;

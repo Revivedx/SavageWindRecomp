@@ -1470,6 +1470,7 @@ static void quick_drop_hint_draw(const ImGuiIO &io, float scale, int state) {
     float widths[2], badges[2];
     const char *buttons[2];
     const char *native[2] = {};
+    static const char face_letters[] = {'A', 'B', 'X', 'Y', 0};
     static const char *face[] = {"\xee\x81\x80", "\xee\x81\x81", "\xee\x81\x82", "\xee\x81\x83"};
     float width = 0;
     int first = state == 3 ? 1 : 0;
@@ -1488,8 +1489,8 @@ static void quick_drop_hint_draw(const ImGuiIO &io, float scale, int state) {
         // Both Nintendo and Xbox use round lettered faces. Read the original
         // circle/letter artwork from the player's font instead of approximating it.
         if (!keyboard && family != 2 && g_hint_buttons && buttons[i][0] && !buttons[i][1]) {
-            const char *at = strchr("ABXY", buttons[i][0]);
-            if (at) native[i] = face[at - "ABXY"];
+            const char *at = strchr(face_letters, buttons[i][0]);
+            if (at) native[i] = face[at - face_letters];
         }
         badges[i] = native[i] ? 44 * scale : fmaxf(radius * 2,
             g_font->CalcTextSizeA(fs * 0.65f, FLT_MAX, 0, buttons[i]).x + 14 * scale);
