@@ -49,6 +49,7 @@ static float options_scroll;
 static bool options_keyboard;
 static float options_keyboard_point[2];
 static _Atomic bool pointer_keyboard_input;
+static _Atomic bool pointer_gamepad_input;
 static _Atomic uint64_t pointer_mouse_events;
 static uint64_t options_keyboard_mouse_events;
 static bool options_page_pending;
@@ -82,12 +83,21 @@ static bool enabled(void) {
 bool pc_cursor_enabled(void) { return enabled(); }
 extern bool menu_cursor_free(void);
 bool pc_cursor_active(void) { return enabled() && active && (focused || pointer_test()) && !menu_cursor_free(); }
-bool pc_cursor_map_navigation(void) { return pc_cursor_active() && map_canvas_active; }
+bool pc_cursor_map_navigation(void) { return pc_cursor_active() && map_canvas_active && !pointer_gamepad_input; }
 bool pc_cursor_hide_system(void) {
     return position_inside&&(pc_cursor_map_navigation()||(pc_cursor_active()&&pointer_keyboard_input));
 }
+static void map_release_to_controller(void) {
+    map_down=map_dragged=false;map_anchor_active=map_picker_seen=false;
+    map_canvas_active=map_view_valid=map_sent_valid=map_native_snapped=false;
+    map_nav_ns=map_select_until=0;map_snap_button=0;map_zooming=false;
+    click_pending=false;
+}
 
 void pc_cursor_frame(void) {
+    // Invalidate cached mouse state even when the pointer is outside the
+    // window and the native manager hook has no reason to run this frame.
+    if(pointer_gamepad_input)map_release_to_controller();
     bool dialogue=false;shop_screen=0;
     if(g_site.screen_mgr) {
         uint64_t mgr=LD64(g_site.screen_mgr),arr=mgr?LD64(mgr+0x30):0;
@@ -238,6 +248,23 @@ bool pc_cursor_event(const SDL_Event *e) {
     if(e->type==SDL_EVENT_MOUSE_BUTTON_UP&&e->button.button==SDL_BUTTON_RIGHT&&right_back_held) {
         input_pc_escape(false);right_back_held=false;return true;
     }
+    // Remember real controller activity even before a menu opens: the button
+    // which opens the map must not start it under a stationary mouse's control.
+    bool pad_input=e->type==SDL_EVENT_GAMEPAD_BUTTON_DOWN;
+    if(e->type==SDL_EVENT_GAMEPAD_AXIS_MOTION&&e->gaxis.axis<=SDL_GAMEPAD_AXIS_RIGHTY) {
+        float deadzone=g_settings.stick_deadzone[e->gaxis.axis>=SDL_GAMEPAD_AXIS_RIGHTX];
+        int threshold=(int)(32767*fmaxf(.12f,deadzone));
+        pad_input=abs(e->gaxis.value)>threshold;
+    }
+    if(pad_input) {
+        pointer_gamepad_input=pointer_keyboard_input=true;
+        hover_until=confirm_until=0;wheel=0;held=false;releases++;
+        quantity_edit=false;quick_confirmed=false;
+    } else if(e->type==SDL_EVENT_KEY_DOWN||e->type==SDL_EVENT_MOUSE_BUTTON_DOWN||
+              e->type==SDL_EVENT_MOUSE_WHEEL||
+              (e->type==SDL_EVENT_MOUSE_MOTION&&(e->motion.xrel!=0||e->motion.yrel!=0))) {
+        pointer_gamepad_input=false;
+    }
     if (!enabled()) return false;
     if (!pc_cursor_active()) return false;
     if(quantity_edit&&plat_now_ns()<quantity_until&&(e->type==SDL_EVENT_KEY_DOWN||e->type==SDL_EVENT_KEY_UP)) {
@@ -257,9 +284,7 @@ bool pc_cursor_event(const SDL_Event *e) {
     }
     // Native Options captures game buttons, so input_buttons_now() may be
     // zero even while a navigation key is down. Track the real SDL source.
-    if(e->type==SDL_EVENT_KEY_DOWN||e->type==SDL_EVENT_GAMEPAD_BUTTON_DOWN||
-       (e->type==SDL_EVENT_GAMEPAD_AXIS_MOTION&&
-        e->gaxis.axis<=SDL_GAMEPAD_AXIS_RIGHTY&&abs(e->gaxis.value)>16000)) {
+    if(e->type==SDL_EVENT_KEY_DOWN||pad_input) {
         pointer_keyboard_input=true;hover_until=0;
     }
     if((e->type==SDL_EVENT_MOUSE_MOTION&&(e->motion.xrel!=0||e->motion.yrel!=0))||
@@ -644,6 +669,11 @@ static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
     bool inventory=ptr(LD64(screens+8*0x2f));
     bool is_map=pause==2&&!inventory&&ptr(screen)&&LD8(screen+0xfe)==2&&LD64(screen)==0x7001ce8298ull;
     if(!is_map&&!is_quick){map_down=false;map_anchor_active=map_picker_seen=false;map_canvas_active=false;map_view_valid=map_sent_valid=map_native_snapped=false;map_nav_ns=0;return false;}
+    if(pointer_gamepad_input) {
+        // Leave the original cursor/pan/zoom helpers in charge. In particular,
+        // never restore the PC viewport or write the mouse cursor over a stick.
+        map_release_to_controller();return false;
+    }
     if(special_frame==f)return true;
     special_frame=f;
     uint64_t nav_now=plat_now_ns();
@@ -1303,7 +1333,7 @@ RT_ON_RESET(pc_cursor_reset) {
     dialogue_active=false;shop_screen=quantity_screen=0;quantity_until=0;quantity_edit=false;quantity_request=-1;
     quantity_hold=0;quantity_repeat_at=0;preview_defaults_saved=false;sound_hover_key=sound_hover_until=0;
     hover_leave();
-    options_scroll_valid=false;options_scroll=0;options_keyboard=false;options_page_pending=false;pointer_keyboard_input=false;pointer_mouse_events=0;options_keyboard_mouse_events=0;options_screen_active=options_rows_active=0;
+    options_scroll_valid=false;options_scroll=0;options_keyboard=false;options_page_pending=false;pointer_keyboard_input=false;pointer_gamepad_input=false;pointer_mouse_events=0;options_keyboard_mouse_events=0;options_screen_active=options_rows_active=0;
     active = false; held = false; frame_press = frame_release = frame_held = false;
     click_pending=false;
     injected_manager=0;

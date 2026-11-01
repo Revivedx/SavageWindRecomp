@@ -30,6 +30,8 @@ Direct panning closes the native unbounded vertical sentinel using the opposite 
 
 The system cursor is hidden while keyboard/controller navigation owns menu focus, and over the map canvas while the game pointer is active, without enabling relative mouse mode there. It is restored for host UI, cursor release, loss of focus and when pointer mode is off. Controllers and existing bindings remain available.
 
+Controller button presses and stick movement outside the configured dead zone release the PC map adapter, including the button that opens the map. While the controller owns input, native map pan/zoom/focus helpers run unchanged and cached mouse viewport, drag and stamp state are discarded. Mouse movement, clicks or scrolling reclaim pointer control; WASD retains PC map navigation. Host tests exercise these transitions and out-of-window cache invalidation. Physical-controller gameplay validation is pending.
+
 The specialized map/inventory adapters target BOTW 1.9.0. Optional generator sites validate instruction prologues; missing groups disable their adapters instead of guessing addresses. Reboot clears cached guest pointers and gesture state.
 
 Dialogue pointer input uses the shared conversation screen: left-click advances text when no responses are selectable, while response clicks use their native cursor channel. It also advances shop dialogue while the background item screen remains allocated.

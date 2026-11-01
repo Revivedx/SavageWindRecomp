@@ -387,7 +387,41 @@ int main(void) {
 #else
     munmap(yaw_memory,65536);
 #endif
+    // A controller can open the map before pointer mode is active. It must
+    // keep the native map helpers in charge, with no stale mouse restoration.
+    active=false;quantity_edit=false;pointer_gamepad_input=false;
+    event.type=SDL_EVENT_GAMEPAD_BUTTON_DOWN;event.gbutton.button=SDL_GAMEPAD_BUTTON_START;
+    assert(!pc_cursor_event(&event)&&pointer_gamepad_input);
+    active=true;map_canvas_active=true;map_view_valid=map_sent_valid=true;
+    map_down=map_anchor_active=map_picker_seen=true;click_pending=true;
+    held=true;confirm_until=now+100000000;wheel=3;
+    event.gbutton.button=SDL_GAMEPAD_BUTTON_SOUTH;
+    assert(!pc_cursor_event(&event)&&!held&&!wheel&&!confirm_until);
+    assert(!pc_cursor_map_navigation()&&rt_pc_map_focus(&cpu,0)==0);
+    uint64_t map_screen=GUEST_LO+0xf000;
+    ST32(g_site.pause_state,2);ST64(sa+8*0x2a,map_screen);ST64(sa+8*0x2f,0);
+    ST64(map_screen,0x7001ce8298ull);ST8(map_screen+0xfe,2);
+    ST32(map_screen+0x880,12345);special_frame=frame;
+    assert(!native_special(&cpu,sa,0x7000123404));
+    assert(LD32(map_screen+0x880)==12345&&!map_view_valid&&!map_canvas_active&&!map_down&&!map_anchor_active&&!click_pending);
+    // No axis event at rest or within the configured dead zone steals focus.
+    pointer_gamepad_input=pointer_keyboard_input=false;g_settings.stick_deadzone[0]=.25f;
+    event.type=SDL_EVENT_GAMEPAD_AXIS_MOTION;event.gaxis.axis=SDL_GAMEPAD_AXIS_LEFTX;
+    event.gaxis.value=2000;assert(!pc_cursor_event(&event)&&!pointer_gamepad_input);
+    event.gaxis.value=10000;assert(!pc_cursor_event(&event)&&pointer_gamepad_input&&pointer_keyboard_input);
+    map_view_valid=map_sent_valid=map_canvas_active=true;position_inside=false;
+    pc_cursor_frame();assert(!map_view_valid&&!map_sent_valid&&!map_canvas_active);
+    // Stationary/synthetic mouse motion is not a takeover; real movement is.
+    event.type=SDL_EVENT_MOUSE_MOTION;event.motion.xrel=event.motion.yrel=0;
+    assert(pc_cursor_event(&event)&&pointer_gamepad_input);
+    event.motion.xrel=1;assert(pc_cursor_event(&event)&&!pointer_gamepad_input&&!pointer_keyboard_input);
+    map_canvas_active=true;assert(pc_cursor_map_navigation()&&rt_pc_map_focus(&cpu,0)==1);
+    // WASD's pointer-map navigation remains available after controller use.
+    pointer_gamepad_input=true;event.type=SDL_EVENT_KEY_DOWN;event.key.scancode=SDL_SCANCODE_W;
+    assert(!pc_cursor_event(&event)&&!pointer_gamepad_input&&pc_cursor_map_navigation());
     pc_cursor_reset();assert(!options_scroll_valid&&!options_screen_active&&!options_rows_active);
+    assert(!pointer_gamepad_input);
+    puts("PASS: controller opens/owns map, native helper bypass, cursor-cache release outside window, stick dead zone, mouse reclaim and WASD preservation");
     puts("PASS: Options scroll/click/shared focus, SDL ownership/cursor visibility, page rebuild, Adventure Log/Ability Controls list registry, stationary hover, nested category clicks/locks, viewport preservation, pause header transitions/modal priority, setting gate and reboot reset (synthetic host state).");
 #ifdef _WIN32
     VirtualFree(vt_memory,0,MEM_RELEASE);
