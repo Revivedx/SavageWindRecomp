@@ -767,7 +767,7 @@ static void tab_display(void) {
                                                             : std::string(tr("FSR 3")) + " " + tr("(coming soon)");
         std::string fsr4 = upscaler_available(UPSCALE_FSR4)
                                ? std::string(tr("AMD FSR 4"))
-                               : std::string(tr("FSR 4")) + " " + tr(fsr4_offered() ? "(coming soon)" : "(AMD Radeon on Windows only)");
+                               : std::string(tr("FSR 4")) + " " + tr(fsr4_offered() ? "(coming soon)" : "(AMD Radeon only)");
         std::string dlss = std::string(tr("DLSS")) + " " + tr(renderer_gpu_rtx() ? "(coming soon)" : "(NVIDIA RTX only)");
 #ifdef __APPLE__
         const char *ups[] = {"Off", "MetalFX"};
