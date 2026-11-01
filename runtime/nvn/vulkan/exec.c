@@ -4271,7 +4271,7 @@ static VkDeviceMemory gmem_mem;
 static uint64_t gmem_size;
 static bool gmem_sparse;
 #define GMEM_SPARSE_PAGE_SIZE 0x10000ull
-#define GMEM_SPARSE_CHUNK_SIZE (1ull << 20)
+#define GMEM_SPARSE_CHUNK_SIZE (1ull << 16)
 #define GMEM_SPARSE_CHUNK_PAGES (GMEM_SPARSE_CHUNK_SIZE / GMEM_SPARSE_PAGE_SIZE)
 #define GMEM_SPARSE_PAGE_COUNT ((HEAP_MAX + GMEM_SPARSE_PAGE_SIZE - 1) / GMEM_SPARSE_PAGE_SIZE)
 #define GMEM_SPARSE_MEM_COUNT GMEM_SPARSE_PAGE_COUNT
@@ -4641,6 +4641,9 @@ static bool gmem_sparse_refresh(uint64_t size) {
         }
     }
     if (bind_count) {
+        // Sparse binds and queue submissions share g_vk.queue, which Vulkan requires to be externally synchronized.
+        // Drain prior recorder packets before binding; later submissions wait on this bind's timeline value.
+        rec_drain();
         VkSparseBufferMemoryBindInfo buffer_bind = {
             .buffer = gmem_buf, .bindCount = bind_count, .pBinds = gmem_sparse_binds};
         uint64_t wait_value = submit_seq;

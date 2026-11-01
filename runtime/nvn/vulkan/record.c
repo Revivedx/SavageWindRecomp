@@ -309,7 +309,7 @@ void rec_EndCommandBuffer(VkCommandBuffer cb) {
 
 typedef struct {
     VkCommandBufferSubmitInfo cbs[2];
-    VkSemaphoreSubmitInfo wait, sig[2];
+    VkSemaphoreSubmitInfo wait[2], sig[2];
     uint32_t ncb, nwait, nsig;
     uint64_t seq;
 } SubmitArgs;
@@ -317,7 +317,7 @@ static void submit_run(const void *p) {
     const SubmitArgs *a = p;
     VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .commandBufferInfoCount = a->ncb, .pCommandBufferInfos = a->cbs,
                         .signalSemaphoreInfoCount = a->nsig, .pSignalSemaphoreInfos = a->sig,
-                        .waitSemaphoreInfoCount = a->nwait, .pWaitSemaphoreInfos = &a->wait};
+                        .waitSemaphoreInfoCount = a->nwait, .pWaitSemaphoreInfos = a->wait};
     uint64_t t0 = NOW();
     VkResult r = vkQueueSubmit2(g_vk.queue, 1, &si, VK_NULL_HANDLE);
     uint64_t dt = NOW() - t0;
@@ -337,9 +337,9 @@ static void submit_run(const void *p) {
 }
 void rec_QueueSubmit2(const VkSubmitInfo2 *si, uint64_t seq) {
     SubmitArgs a = {.ncb = si->commandBufferInfoCount, .nwait = si->waitSemaphoreInfoCount, .nsig = si->signalSemaphoreInfoCount, .seq = seq};
-    if (a.ncb > 2 || a.nwait > 1 || a.nsig > 2 || si->pNext) FATAL("[vk] recorder: a submission it can't carry\n");
+    if (a.ncb > 2 || a.nwait > 2 || a.nsig > 2 || si->pNext) FATAL("[vk] recorder: a submission it can't carry\n");
     for (uint32_t i = 0; i < a.ncb; i++) a.cbs[i] = si->pCommandBufferInfos[i];
-    if (a.nwait) a.wait = si->pWaitSemaphoreInfos[0];
+    for (uint32_t i = 0; i < a.nwait; i++) a.wait[i] = si->pWaitSemaphoreInfos[i];
     for (uint32_t i = 0; i < a.nsig; i++) a.sig[i] = si->pSignalSemaphoreInfos[i];
     if (on <= 0) { submit_run(&a); return; }
     ENQ_T0();
