@@ -18,7 +18,9 @@
 #include "../hle.h"
 #include "../ipc.h"
 #include "../language.h"
+#include "../nvn/text_upscale.h"
 #include "../romfs_image.h"
+#include "../settings.h"
 #include "archive.h"
 #include "fs_layout.h"
 
@@ -723,6 +725,47 @@ static size_t hud_letters_flyt(const uint8_t *b, size_t n, uint8_t *out, int *pa
     return w;
 }
 
+// Video > Sharper text: the font sheets in the game's own archives, so that their textures can be told from others
+// (runtime/nvn/text_upscale.c). External_00 is left out: glyphs.c redraws those, and Ancient_00's sheet is too small.
+static void text_sheets_scan(void) {
+    static const char *const fonts[] = {"Normal_00.bffnt", "NormalS_00.bffnt", "Caption_00.bffnt", "Special_00.bffnt"};
+    static bool done;
+    if (done || !g_settings.sharper_text || R != &images[0]) return;
+    done = true;
+    for (int k = 0; k < R->rom_nfiles; k++) {
+        const char *path = R->rom_files[k].path;
+        if (strncmp(path, "Font/Font_", 10) || !strstr(path, ".sbfarc")) continue;
+        size_t zn = R->rom_files[k].size, an = 0;
+        uint8_t *z = malloc(zn), *arc = NULL;
+        if (romfs_image_pread(R->img, z, zn, R->rom_files[k].off) == (ssize_t)zn) arc = yaz0_unpack(z, zn, &an);
+        for (size_t i = 0; arc && i < sizeof fonts / sizeof *fonts; i++) {
+            uint32_t doff, s, e;
+            if (sarc_find(arc, an, fonts[i], &doff, &s, &e) < 0 || e - s < 0x40) continue;
+            const uint8_t *f = arc + doff + s;
+            uint32_t n = e - s, p = *(const uint16_t *)(f + 6);
+            while (p + 32 <= n) {  // (FFNT sections: TGLP holds the sheets)
+                uint32_t size = *(const uint32_t *)(f + p + 4);
+                if (!memcmp(f + p, "TGLP", 4)) {  // (its sheets: the layers of one texture in a BNTX, texels after "BRTD")
+                    uint32_t off = *(const uint32_t *)(f + p + 28), format = *(const uint16_t *)(f + p + 18);
+                    uint32_t w = *(const uint16_t *)(f + p + 24), h = *(const uint16_t *)(f + p + 26);
+                    uint64_t bytes = (uint64_t)w * h / (format == 8 ? 1 : 2);  // (8: R8, 12: BC4)
+                    for (uint32_t a = off; a + 0x10 + bytes <= n && a < off + 0x2000; a += 4)
+                        if (!memcmp(f + a, "BRTD", 4)) {
+                            text_sheet_add(f + a + 0x10, bytes);
+                            break;
+                        }
+                    break;
+                }
+                if (size < 8) break;
+                p += size;
+            }
+        }
+        free(z);
+        free(arc);
+    }
+    LOG("[fs] sharper text: %d font sheets found\n", text_sheet_count());
+}
+
 static void hud_letters_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
     static const char pack_path[] = "Pack/Bootup.pack";
     static const char *const layouts[] = {"blyt/PaDoCommandA_00.bflyt", "blyt/PaDoCommandB_00.bflyt",
@@ -996,6 +1039,7 @@ static void rom_index(void) {
         break;
     }
     hud_letters_patch(fmeta, foff, fsz);
+    text_sheets_scan();
     if (R == &images[0] && !atomic_load_explicit(&inventory_clip_layout_valid, memory_order_acquire))
         LOG("[fs] Inventory clip layout unavailable; using the game's clipping\n");
     rstb_patch(fmeta, foff, fsz);

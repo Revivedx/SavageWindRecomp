@@ -15,6 +15,7 @@
 #include "../astc.h"
 #include "../glyphs.h"
 #include "../renderer.h"
+#include "../text_upscale.h"
 
 // ================================================================== formats
 typedef struct { VkFormat vf; uint8_t expand_rgb, alpha_one; } VkFmt;
@@ -395,6 +396,23 @@ static void create_image(NvnTexture *t, TexBackend *b) {
             if (nlog++ < 20) LOG("[vk] BC4 texture %ux%u (nvn %#x) at %llx: decoded on the CPU to R8\n", t->width, t->height,
                                  t->format, (unsigned long long)t->addr);
         }
+    }
+    // Video > Sharper text: a font sheet of the game (BC4, or R8 for NormalS_00) gets an image larger than the game
+    // knows of. Its texture coordinates are fractions of the sheet, so nothing else changes.
+    b->text_scale = 0;
+    uint64_t sheet_bytes = (uint64_t)t->width * t->height / (t->format == 0x49 ? 2 : 1);
+    if (g_settings.sharper_text && !b->gpu_bc4 && (t->format == 0x49 || t->format == 0x01) && t->pool &&
+        t->layout.levels == 1 && t->addr >= t->pool->storage && t->addr + sheet_bytes <= t->pool->storage + t->pool->size &&
+        text_sheet_known((const uint8_t *)(uintptr_t)t->addr, sheet_bytes)) {
+        b->text_scale = (uint8_t)g_settings.sharper_text;
+        b->bc4_cpu = t->format == 0x49;
+        vf = VK_FORMAT_R8_UNORM;
+        LOG("[vk] sharper text: font sheet %ux%u (nvn %#x) enlarged %ux\n", t->width, t->height, t->format, b->text_scale);
+        tw *= b->text_scale;
+        th *= b->text_scale;
+        // Mip levels down to the sheet's own size. Text is often drawn smaller than an enlarged sheet (at 1440p, about
+        // 1.25 times the original): without them, its edges alias into stair steps on every diagonal.
+        levels = b->text_scale == 4 ? 3 : 2;
     }
     if (!b->bc4_cpu && !format_supports(vf, need)) {
         bool astc = vf >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && vf <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK;
@@ -955,6 +973,67 @@ static void debug_mip_colour(uint8_t *p, uint32_t nvn_fmt, uint32_t bpb, uint64_
     for (uint64_t i = 0; i < nblocks; i++) memcpy(p + i * bpb, blk, bpb);
 }
 
+// One channel of BC4 blocks (blocks of `stride` bytes, the channel's 8 at `at`) -> tightly packed R8 texels
+static void bc4_channel(const uint8_t *blocks, uint32_t wb, uint32_t hb, uint32_t stride, uint32_t at, uint8_t *out) {
+    uint32_t pw = wb * 4;
+    for (uint32_t by = 0; by < hb; by++)
+        for (uint32_t bx = 0; bx < wb; bx++) {
+            const uint8_t *k = blocks + ((uint64_t)by * wb + bx) * stride + at;
+            int e0 = k[0], e1 = k[1], pal[8] = {e0, e1};
+            if (e0 > e1) for (int i = 1; i < 7; i++) pal[i + 1] = ((7 - i) * e0 + i * e1 + 3) / 7;
+            else {
+                for (int i = 1; i < 5; i++) pal[i + 1] = ((5 - i) * e0 + i * e1 + 2) / 5;
+                pal[6] = 0;
+                pal[7] = 255;
+            }
+            uint64_t bits = 0;
+            for (int i = 0; i < 6; i++) bits |= (uint64_t)k[2 + i] << (8 * i);
+            for (int i = 0; i < 16; i++) out[(uint64_t)(by * 4 + i / 4) * pw + bx * 4 + i % 4] = (uint8_t)pal[(bits >> (3 * i)) & 7];
+        }
+}
+
+// Video > Sharper text: a font sheet, decoded and enlarged (create_image made its image for that)
+static void upload_text_sheet(VkCommandBuffer cb, NvnTexture *t, TexBackend *b, const LevelLayout *l, const uint8_t *src, bool linear,
+                              uint32_t layer) {
+    uint32_t bc4 = t->format == 0x49, stride = bc4 ? 8 : 1, s = b->text_scale, nlevels = b->levels;
+    uint32_t pw = l->wb * (bc4 ? 4 : 1), ph = l->hb * (bc4 ? 4 : 1), dw = pw * s, dh = ph * s;
+    uint8_t *blocks = malloc((uint64_t)l->wb * l->hb * stride), *plain = malloc((uint64_t)pw * ph), *big = malloc((uint64_t)dw * dh);
+    uint64_t total = 0;
+    for (uint32_t lv = 0; lv < nlevels; lv++) total += (uint64_t)(dw >> lv) * (dh >> lv);
+    VkSpan out = vk_transient(total, 16);
+    if (linear) for (uint32_t y = 0; y < l->hb; y++) memcpy(blocks + (uint64_t)y * l->wb * stride, src + (uint64_t)y * t->stride, l->wb * stride);
+    else tegra_deswizzle(src, blocks, l->wb, l->hb, 1, stride, l->block_height_log2, l->block_depth_log2);
+    uint64_t t0 = SDL_GetTicksNS();
+    if (bc4) bc4_channel(blocks, l->wb, l->hb, stride, 0, plain);
+    else memcpy(plain, blocks, (uint64_t)pw * ph);
+    if (!text_upscale(plain, pw, ph, s, bc4, big)) memset(big, 0, (uint64_t)dw * dh);
+    uint64_t at = 0;
+    for (uint32_t lv = 0; lv < nlevels; lv++) {
+        uint32_t w = dw >> lv, h = dh >> lv;
+        memcpy((uint8_t *)out.ptr + at, big, (uint64_t)w * h);
+        at += (uint64_t)w * h;
+        if (lv + 1 < nlevels)  // (2 x 2 texels -> 1, in place: each row is read before it is overwritten)
+            for (uint32_t y = 0; y < h / 2; y++)
+                for (uint32_t x = 0; x < w / 2; x++) {
+                    const uint8_t *a = big + (uint64_t)y * 2 * w + x * 2, *z = a + w;
+                    big[(uint64_t)y * (w / 2) + x] = (uint8_t)((a[0] + a[1] + z[0] + z[1] + 2) / 4);
+                }
+    }
+    LOG("[vk] sharper text: %ux%u sheet (nvn %#x) enlarged in %.0f ms\n", pw, ph, t->format, (SDL_GetTicksNS() - t0) / 1e6);
+    free(blocks);
+    free(plain);
+    free(big);
+    uint64_t off = out.off;
+    for (uint32_t lv = 0; lv < nlevels; lv++) {
+        uint32_t w = dw >> lv, h = dh >> lv;
+        VkBufferImageCopy rg = {.bufferOffset = off, .bufferRowLength = w, .bufferImageHeight = h,
+                                .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv, layer, 1},
+                                .imageExtent = {w < level_w(b, lv) ? w : level_w(b, lv), h < level_h(b, lv) ? h : level_h(b, lv), 1}};
+        rec_CmdCopyBufferToImage(cb, out.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+        off += (uint64_t)w * h;
+    }
+}
+
 // Guest memory -> image for the levels in level_mask (bit per level), every layer or slice.
 static void upload_levels(NvnTexture *t, TexBackend *b, uint32_t level_mask) {
     const FormatInfo *fi = t->layout.fmt;
@@ -971,6 +1050,10 @@ static void upload_levels(NvnTexture *t, TexBackend *b, uint32_t level_mask) {
         for (uint32_t lv = 0; lv < levels; lv++) {
             if (!((level_mask >> lv) & 1)) continue;
             LevelLayout l = tegra_level(&t->layout, lv);
+            if (b->text_scale) {
+                upload_text_sheet(cb, t, b, &l, (const uint8_t *)(uintptr_t)t->addr + layer * layer_size + l.offset, linear, layer);
+                continue;
+            }
             if (b->bc4_cpu) {  // blocks -> linear block rows -> R8 texels (BC4: two endpoints, 3-bit indices)
                 const uint8_t *src = (const uint8_t *)(uintptr_t)t->addr + layer * layer_size + l.offset;
                 uint8_t *blocks = malloc((uint64_t)l.wb * l.hb * 8);
@@ -1569,6 +1652,7 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
     uint32_t ly0 = v && (v->setmask & 2) ? v->min_layer : 0;
     uint32_t nly = v && (v->setmask & 2) && v->num_layers ? v->num_layers : b->layers - (ly0 < b->layers ? ly0 : 0);
     if (lv0 >= b->levels) lv0 = b->levels - 1;
+    if (b->text_scale) nlv = b->levels;  // (the mip levels the game doesn't know of: create_image)
     if (lv0 + nlv > b->levels) nlv = b->levels - lv0;
     if (ly0 >= b->layers) ly0 = b->layers - 1;
     if (ly0 + nly > b->layers) nly = b->layers - ly0;
@@ -1827,6 +1911,20 @@ static VkSampler sampler_create(const NvnSamplerDesc *d, float aniso) {
         if (logged++ < 3) LOG("[vk] vkCreateSampler failed: %d (border %d, aniso %.0f, compare %u)\n", r, border, aniso,
                               d->compare_mode);
         return VK_NULL_HANDLE;
+    }
+    return s;
+}
+
+// An enlarged font sheet (Video > Sharper text): the game samples its fonts without mip levels, these have some
+VkSampler vk_text_sampler(void) {
+    static VkSampler s;
+    if (!s) {
+        VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = VK_FILTER_LINEAR,
+                                  .minFilter = VK_FILTER_LINEAR, .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+                                  .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                                  .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                                  .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .maxLod = VK_LOD_CLAMP_NONE};
+        VK_CHECK(vkCreateSampler(g_vk.dev, &si, NULL, &s));
     }
     return s;
 }

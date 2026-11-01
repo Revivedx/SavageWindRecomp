@@ -591,3 +591,7 @@ T("Rotate left on the third axis.", "Gira a la izquierda sobre el tercer eje.")
 T("Rotate right on the third axis.", "Gira a la derecha sobre el tercer eje.")
 T("Reset orientation and stop pending rotation.", "Restablece la orientación y detiene el giro pendiente.")
 T("Open them from the title screen, or pause the game and choose System > Options. Esc opens pause or goes back. F2 frees the mouse cursor.", "Ábrelas desde la pantalla de título o pausa el juego y elige Sistema > Opciones. Esc abre la pausa o vuelve atrás. F2 libera el cursor del ratón.")
+
+T("Sharper text", "")
+T("Upscales the game's letters for 1440p and 4K, after a restart. Not the original art.", "")
+T("Makes the game's letters sharper on 1440p and 4K screens. It takes effect the next time you start the game. This is an upscale made on your computer from the game's own letters, not Nintendo's original art: the shapes are kept, but they aren't exactly as drawn. 4x takes a moment longer to start and uses more video memory.", "")
