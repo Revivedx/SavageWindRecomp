@@ -913,9 +913,35 @@ void two_band(uint64_t selected, int col) {
     g_band_row = selected; g_band_col = col;
     for (auto &r : g_two_rows) two_band_row(r, r.row == selected, col);
 }
+// The native selection brackets are not clipped by the list: after the wheel scrolls the selected row out of view they
+// would float over the title. Hide them while that row is outside the list (the view shows about y -230 .. 235).
+uint64_t g_cursor_hidden;
+void two_cursor_clip(void) {
+    uint64_t row = g_band_row, cursor = 0;
+    bool out = false;
+    if (row && g_band_col >= 0) {
+        uint64_t button = rd64(row + (two_ready(row) ? (g_band_col ? 0x28 : 0x20) : 0x28));
+        uint64_t hit = two_ptr(button) ? rd64(button + 0x60) : 0;
+        uint64_t layout = two_ptr(button) ? rd64(button + 0x20) : 0;
+        uint64_t root = two_ptr(layout) ? rd64(layout + 0x18) : 0;
+        if (two_ptr(hit) && two_ptr(root)) {
+            cursor = two_pane(root, "N_Cursor_00");
+            float y = *(float *)(uintptr_t)(hit + 0x8c);
+            out = isfinite(y) && (y < -230.f || y > 235.f);
+        }
+    }
+    if (cursor && out) {
+        if (*(uint8_t *)(uintptr_t)(cursor + 0x58) & 1u) two_show(cursor, false);
+        g_cursor_hidden = cursor;
+    } else if (g_cursor_hidden) {
+        if (cursor == g_cursor_hidden) two_show(cursor, true);
+        g_cursor_hidden = 0;
+    }
+}
 void two_band_refresh(uint64_t screen) {
     if (g_two_rows.empty() || rd64(g_two_rows[0].row) != screen) return;
     two_band(g_band_row, g_band_col);
+    two_cursor_clip();
 }
 uint64_t first_selectable_row(uint64_t screen) {
     if (!screen) return 0;
