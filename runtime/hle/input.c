@@ -45,6 +45,7 @@ static _Atomic int32_t key_lx, key_ly, key_rx, key_ry, pad_lx, pad_ly, pad_rx, p
 static _Atomic int32_t menu_lx, menu_ly;
 static _Atomic bool menu_confirm;
 static uint8_t keys_down[SDL_SCANCODE_COUNT];
+static uint32_t host_buttons;  // main-thread pad state, including trigger pseudo-buttons
 static uint8_t mouse_down[8];  // SDL_BUTTON_LEFT .. X2 (keyboard bindings BIND_MOUSE + button)
 static SDL_Gamepad *pad;
 static _Atomic int64_t sampling;
@@ -56,7 +57,7 @@ static _Atomic uint32_t test_pad;
 static _Atomic int32_t test_lx, test_ly;  // (a resting stick's drift: "lstick" in SAVAGEWIND_HOST_INPUT)
 static _Atomic bool host_test;  // (then a real controller is left out: the player's own pad must not spoil the test)
 static _Atomic int last_device;  // DEVICE_*: what the player used last
-static bool tilt_held;  // the tilt key: the mouse tilts the controller instead of turning the camera
+static bool tilt_held;  // the tilt key or controller button: the mouse tilts the controller instead of turning the camera
 extern bool menu_input_captured(void);  // runtime/ui/menu.mm: overlay menu or name entry up (it has the keys / pad)
 
 // The gyro keys work: in a shrine apparatus (runtime/pc_gyro_scene.c) with Controls > Shrine keyboard gyro on
@@ -94,6 +95,25 @@ static bool gyro_keys_live(void) {
     return pc_gyro_enabled() && win_focused && !menu_input_captured() && !framepace_menu_ui() && !framepace_title_ui();
 }
 
+static bool held_pad(int slot) {
+    int h = g_bind_pad[slot];
+    return h >= 0 && h < PADB_HOST_COUNT && (host_buttons >> h & 1);
+}
+
+static bool held_gyro(int slot) { return held_key(g_bind_key[slot]) || held_pad(slot); }
+
+// Both event paths publish one combined motion state: releasing either device must not cancel the other.
+static void recompute_motion(void) {
+    if (gyro_keys_live())
+        motion_keyboard(held_gyro(BIND_GYRO_DOWN) - held_gyro(BIND_GYRO_UP),
+                        held_gyro(BIND_GYRO_RIGHT) - held_gyro(BIND_GYRO_LEFT),
+                        held_gyro(BIND_GYRO_TURN_RIGHT) - held_gyro(BIND_GYRO_TURN_LEFT),
+                        held_gyro(BIND_GYRO_CENTER));
+    else motion_keyboard(0, 0, 0, false);
+    bool tilt = (game_key(g_bind_key[BIND_TILT]) || held_pad(BIND_TILT)) && win_focused && !menu_input_captured();
+    if (tilt != tilt_held) motion_tilt_held(tilt_held = tilt);
+}
+
 // Through the bindings (runtime/hle/bindings.c: g_bind_key), read on every key event, so a rebind applies at once.
 static void recompute_keyboard(void) {
     map_key_x=held_key(SDL_SCANCODE_D)-held_key(SDL_SCANCODE_A);
@@ -102,7 +122,7 @@ static void recompute_keyboard(void) {
     for (int i = 0; i < BIND_PAD_COUNT; i++)
         if (game_key(g_bind_key[i])) b |= 1ull << i;
     key_buttons = b;
-    act_publish(act_scan_keys(b, game_key), ~0ull);  // (the actions with a key of their own)
+    act_publish(act_scan_keys(b, game_key), ~0ull);  // actions read their own host keys
     int tilt = game_key(g_bind_key[BIND_WALK]) ? 13107 : 32767;  // walk: 40% (BOTW walks below about half)
     key_lx = (game_key(g_bind_key[BIND_LS_RIGHT]) - game_key(g_bind_key[BIND_LS_LEFT])) * tilt;
     key_ly = (game_key(g_bind_key[BIND_LS_UP]) - game_key(g_bind_key[BIND_LS_DOWN])) * tilt;
@@ -111,14 +131,7 @@ static void recompute_keyboard(void) {
     menu_lx = (menu_key(SDL_SCANCODE_RIGHT) - menu_key(SDL_SCANCODE_LEFT)) * 32767;
     menu_ly = (menu_key(SDL_SCANCODE_UP) - menu_key(SDL_SCANCODE_DOWN)) * 32767;
     menu_confirm = menu_enter();  // publish here; guest polls must not read the keyboard arrays or bindings
-    if (gyro_keys_live())  // (tilting up is a negative pitch: the apparatus's far edge rises)
-        motion_keyboard(held_key(g_bind_key[BIND_GYRO_DOWN]) - held_key(g_bind_key[BIND_GYRO_UP]),
-                        held_key(g_bind_key[BIND_GYRO_RIGHT]) - held_key(g_bind_key[BIND_GYRO_LEFT]),
-                        held_key(g_bind_key[BIND_GYRO_TURN_RIGHT]) - held_key(g_bind_key[BIND_GYRO_TURN_LEFT]),
-                        held_key(g_bind_key[BIND_GYRO_CENTER]));
-    else motion_keyboard(0, 0, 0, false);
-    bool tilt_key = game_key(g_bind_key[BIND_TILT]) && !menu_input_captured();
-    if (tilt_key != tilt_held) motion_tilt_held(tilt_held = tilt_key);
+    recompute_motion();
 }
 
 // A controller's stick with a radial dead zone (Controls page, a fraction of full tilt): within it the stick reads 0,
@@ -137,6 +150,8 @@ static void dead_zone(_Atomic int32_t *x, _Atomic int32_t *y, int32_t rx, int32_
 static void recompute_pad(void) {
     if (!win_focused && !host_test) {
         pad_buttons = 0;
+        host_buttons = 0;
+        recompute_motion();
         act_publish(~0ull, 0);
         pad_lx = pad_ly = pad_rx = pad_ry = 0;
         return;
@@ -148,11 +163,13 @@ static void recompute_pad(void) {
         if (SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 16000) host |= 1u << PADB_LTRIGGER;
         if (SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 16000) host |= 1u << PADB_RTRIGGER;
     }
+    host_buttons = host;
+    recompute_motion();
     uint64_t b = 0;
     for (int i = 0; i < BIND_PAD_COUNT; i++)
         if (g_bind_pad[i] >= 0 && g_bind_pad[i] < PADB_HOST_COUNT && (host >> g_bind_pad[i] & 1)) b |= 1ull << i;
     pad_buttons = b;
-    act_publish(~0ull, act_scan_pad(b, host));  // (the actions with a button of their own)
+    act_publish(~0ull, act_scan_pad(b, host));  // actions read their own host buttons
     // Fly mode (test builds): the press of its controller button toggles it. Not while the menu or a rebind has the pad
     // (the held state is still tracked, so letting go of a button that was just bound does not toggle).
     static bool fly_was_down;
@@ -161,11 +178,14 @@ static void recompute_pad(void) {
     if (fly_down && !fly_was_down && control_enabled() && !menu_input_captured() && !bind_capture_active(NULL, NULL, NULL))
         control_fly_toggle();
     fly_was_down = fly_down;
-    if (!pad || host_test) { pad_lx = test_lx, pad_ly = test_ly, pad_rx = pad_ry = 0; return; }
-    dead_zone(&pad_lx, &pad_ly, SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX),
-              -SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY), g_settings.stick_deadzone[0]);
-    dead_zone(&pad_rx, &pad_ry, SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX),
-              -SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY), g_settings.stick_deadzone[1]);
+    if (!pad || host_test) pad_lx = test_lx, pad_ly = test_ly, pad_rx = pad_ry = 0;
+    else {
+        dead_zone(&pad_lx, &pad_ly, SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX),
+                  -SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY), g_settings.stick_deadzone[0]);
+        dead_zone(&pad_rx, &pad_ry, SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX),
+                  -SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY), g_settings.stick_deadzone[1]);
+    }
+    if (held_pad(BIND_WALK)) { pad_lx = pad_lx * 13107 / 32767; pad_ly = pad_ly * 13107 / 32767; }
 }
 
 // Forget held keys (the menu took focus); the gamepad is re-read on its next event.
@@ -808,8 +828,8 @@ static void fill_state(Cpu *c) {
         LOG("[input] watching controller object %llx\n", (unsigned long long)(c->x[1] - 8));
     }
     bool menu = (!win_focused && !host_test) || menu_input_captured();  // host controls belong to the focused game window
-    // The actions with a binding of their own answer from the host while the game is being played; in its menus (and with
-    // the window unfocused or the overlay up) the Switch layer answers, so no binding can lock the player out
+    // Customized actions use host bindings during play. Factory-default actions and all queries in menus, with
+    // the window unfocused or the overlay up, use the Switch layer, so no binding can lock the player out.
     act_poll(!menu && !framepace_title_ui() && !framepace_menu_ui());
     uint64_t b = menu ? script_buttons : key_buttons | pad_buttons | escape_buttons | script_buttons;
     b=pc_cursor_buttons(b);
