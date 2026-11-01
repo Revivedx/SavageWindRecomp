@@ -913,35 +913,44 @@ void two_band(uint64_t selected, int col) {
     g_band_row = selected; g_band_col = col;
     for (auto &r : g_two_rows) two_band_row(r, r.row == selected, col);
 }
-// The native selection brackets are not clipped by the list: after the wheel scrolls the selected row out of view they
-// would float over the title. Hide them while that row is outside the list (the view shows about y -230 .. 235).
-uint64_t g_cursor_hidden;
-void two_cursor_clip(void) {
-    uint64_t row = g_band_row, cursor = 0;
-    bool out = false;
-    if (row && g_band_col >= 0) {
-        uint64_t button = rd64(row + (two_ready(row) ? (g_band_col ? 0x28 : 0x20) : 0x28));
-        uint64_t hit = two_ptr(button) ? rd64(button + 0x60) : 0;
-        uint64_t layout = two_ptr(button) ? rd64(button + 0x20) : 0;
-        uint64_t root = two_ptr(layout) ? rd64(layout + 0x18) : 0;
-        if (two_ptr(hit) && two_ptr(root)) {
-            cursor = two_pane(root, "N_Cursor_00");
-            float y = *(float *)(uintptr_t)(hit + 0x8c);
-            out = isfinite(y) && (y < -230.f || y > 235.f);
-        }
+// The native selection brackets are not clipped by the list: when the wheel scrolls the selected row out of view they
+// would stay behind, floating over the title. So after a wheel scroll a selection outside the list moves to the nearest
+// row inside it. (Rows are 50 apart; y is 150 for the first row at scroll 0, grows as the list scrolls down, and the list
+// shows about y -305 .. 205 with the outer rows faded. A row the list no longer draws stops updating its y, so the selected
+// row's position is carried along with the scroll offset from the last frame its y changed.)
+void two_focus(uint64_t screen, uint64_t row, int col);
+int g_wheel_frames;
+struct SelTrack { uint64_t row; float raw_y, y, off; bool seen; } g_sel;
+void two_wheel_scrolled(void) { g_wheel_frames = 6; }
+void two_follow_wheel(uint64_t screen) {
+    if (g_wheel_frames <= 0) return;
+    g_wheel_frames--;
+    uint64_t row = g_band_row;
+    const int col = g_band_col < 0 ? 0 : g_band_col;
+    if (!row || !two_ready(row)) return;
+    auto hit_y = [&](uint64_t r) {
+        uint64_t button = rd64(r + 0x20), hit = two_ptr(button) ? rd64(button + 0x60) : 0;
+        return two_ptr(hit) ? *(float *)(uintptr_t)(hit + 0x8c) : NAN;
+    };
+    const float off = *(float *)(uintptr_t)(screen + 0x3628 + 0x2c), raw = hit_y(row);
+    if (!isfinite(off) || !isfinite(raw)) return;
+    if (g_sel.row != row || !g_sel.seen || raw != g_sel.raw_y) g_sel = {row, raw, raw, off, true};
+    const float y = g_sel.y + (off - g_sel.off);
+    if (y <= 205.f && y >= -305.f) return;
+    uint64_t best = 0;
+    float best_y = 0;
+    for (const auto &r : g_two_rows) {
+        if (r.row == row || row_is_header(r.row)) continue;
+        const float ry = hit_y(r.row);
+        if (!isfinite(ry) || ry > 150.f || ry < -250.f) continue;
+        if (!best || (y > 205.f ? ry > best_y : ry < best_y)) best = r.row, best_y = ry;
     }
-    if (cursor && out) {
-        if (*(uint8_t *)(uintptr_t)(cursor + 0x58) & 1u) two_show(cursor, false);
-        g_cursor_hidden = cursor;
-    } else if (g_cursor_hidden) {
-        if (cursor == g_cursor_hidden) two_show(cursor, true);
-        g_cursor_hidden = 0;
-    }
+    if (best) two_focus(screen, best, col);
 }
 void two_band_refresh(uint64_t screen) {
     if (g_two_rows.empty() || rd64(g_two_rows[0].row) != screen) return;
     two_band(g_band_row, g_band_col);
-    two_cursor_clip();
+    two_follow_wheel(screen);
 }
 uint64_t first_selectable_row(uint64_t screen) {
     if (!screen) return 0;
@@ -1006,7 +1015,7 @@ float label_fit(const char *text) {
                             cp == '|' || cp == 'i' || cp == 'l' || cp == '(' || cp == ')' || cp == '/' || cp == '-';
         w += cp >= 0x2e80 ? 2.f : narrow ? .55f : 1.f;
     }
-    const float room = 17.5f;
+    const float room = 16.5f;
     return w <= room ? 1.f : fmaxf(room / w, .62f);
 }
 // The Reset row's button spans both columns (key and controller), like the rows above it
@@ -1086,6 +1095,7 @@ bool two_configure(uint64_t row) {
             const float fit = label_fit(tr(it->title));
             two_float(title, 0x48, fit);
             two_float(title, 0x4c, fit);
+            two_float(title, 0x50, layout.label_width / fit);  // (scaled about its centre: the box grows so its edges stay)
         }
         // The toggle part: only its plate and its box stay (its other panes are hidden for good).
         float togx = *(float *)(uintptr_t)(band.tog + 0x30);
@@ -1269,6 +1279,7 @@ extern "C" int rt_opt_two_row_state(uint64_t row) {
     }
     return 1;
 }
+extern "C" void rt_opt_wheel_scrolled(void) { two_wheel_scrolled(); }
 extern "C" int rt_opt_two_redraw(uint64_t row) {
     if (g_cur_page == P_BINDS && two_enabled()) {
         const Item *it = item_of_row(row);

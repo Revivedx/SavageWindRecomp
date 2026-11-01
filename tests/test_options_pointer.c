@@ -37,6 +37,7 @@ Cpu *kernel_current_cpu(void){return &test_cpu;}
 uint64_t input_buttons_now(void){return navigation;}
 static uint64_t dual_row;
 void rt_opt_two_pointer(uint64_t row,unsigned kind){(void)row;(void)kind;}
+void rt_opt_wheel_scrolled(void){}
 int rt_opt_two_column(uint64_t row){return row==dual_row?0:-1;}
 int rt_opt_pointer_kind(uint64_t row){return (int)LD32(row+0x50);}
 void guest_call(Cpu *cpu,uint64_t address){

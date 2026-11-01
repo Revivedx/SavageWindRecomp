@@ -407,6 +407,7 @@ int rt_pc_map_focus(Cpu *c, int position) {
 extern int rt_opt_pointer_kind(uint64_t row);
 extern int rt_opt_two_column(uint64_t row);
 extern void rt_opt_two_pointer(uint64_t row,unsigned kind);
+extern void rt_opt_wheel_scrolled(void);
 static void options_click(Cpu *c,uint64_t screen,uint64_t row,unsigned kind,const float box[4]);
 static bool options_box(uint64_t pane,float box[4]) {
     if(!ptr(pane))return false;
@@ -479,6 +480,7 @@ void pc_cursor_options_tick(uint64_t screen) {
         Cpu*c=kernel_current_cpu();if(c){Cpu saved=*c;c->x[0]=view;float ratio=1;memcpy(&c->v[0],&ratio,4);guest_call(c,0x7000d671d4);*c=saved;}
     }
     int scroll=atomic_exchange(&wheel,0);
+    if(scroll)rt_opt_wheel_scrolled();
     if(!options_mouse_owns_focus(scroll!=0))return;
     float current=*(float*)(view+0x2c),height=*(float*)(view+0x48)-*(float*)(view+0x40);
     float content=*(float*)(view+0x28),maximum=fmaxf(0,content-height);
