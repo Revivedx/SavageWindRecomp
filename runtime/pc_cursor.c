@@ -89,6 +89,7 @@ bool pc_cursor_hide_system(void) {
 }
 
 void pc_cursor_frame(void) {
+    uint64_t game_over_modal=0;
     bool dialogue=false;shop_screen=game_over_screen=0;
     if(g_site.screen_mgr) {
         uint64_t mgr=LD64(g_site.screen_mgr),arr=mgr?LD64(mgr+0x30):0;
@@ -99,11 +100,15 @@ void pc_cursor_frame(void) {
             uint64_t text=LD64(arr+8*i);
             if(!text||LD8(text+0xfe)!=2)continue;
             if(i==0x30&&LD64(text)==0x7001cef0a8ull)game_over_screen=text;
+            if(i==0x39&&LD64(text)==0x7001cfffe0ull)game_over_modal=text;
             if(LD64(text)==0x7001d4ed48ull)dialogue=true;
             uint64_t name=LD64(text+0xd0);
             if(name>=GUEST_LO&&name<GUEST_HI-32&&!strncmp((char*)(uintptr_t)name,"ShopBtnList",11))shop_screen=text;
         }
     }
+    // Quit opens a native SystemWindow over Game Over. Only its buttons
+    // own pointer input until it closes; then focus returns to Continue/Quit.
+    if(game_over_screen&&game_over_modal)game_over_screen=game_over_modal;
     if(preview_defaults_saved) {
         uint64_t m=LD64(g_site.screen_mgr),a=ptr(m)?LD64(m+0x30):0;
         uint64_t inv=ptr(a)?LD64(a+8*0x2e):0;

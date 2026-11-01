@@ -418,6 +418,18 @@ int main(void) {
     point[1]=-154;click_pending=true;
     rt_pc_cursor_manager(&cpu,0x7000f57da8,0x7000123404);
     assert(activated_node==other&&LD32(manager+0x10)==1&&!click_pending);
+    // Quit opens a different screen over Game Over. Its nodes must own hover
+    // and clicks; the underlying Continue/Quit controls must not steal focus.
+    uint64_t modal=GUEST_LO+0xa000,modal_node=GUEST_LO+0xe000,modal_button=GUEST_LO+0xe200,modal_pane=GUEST_LO+0xe400;
+    ST64(sa+8*0x39,modal);ST64(modal,0x7001cfffe0ull);ST8(modal+0xfe,2);ST8(modal+0xfc,1);ST64(modal+0x28,ui);
+    ST32(modal+0x9c,0x40);ST64(modal+0x90,modal_node+0x40);ST64(modal_node+0x48,modal+0x88);
+    ST64(modal_node,nvt);ST64(modal_node+0x18,modal_button);ST64(modal_node+0x20,modal);ST64(modal_button+0x60,modal_pane);
+    memcpy((void*)(uintptr_t)modal_pane,(void*)(uintptr_t)second_pane,0x100);
+    *(float*)(modal_pane+0x8c)=-154;pc_cursor_frame();assert(game_over_screen==modal);
+    click_pending=true;rt_pc_cursor_manager(&cpu,0x7000f57da8,0x7000123404);
+    assert(activated_node==modal_node&&LD32(manager+0x10)==1&&!click_pending);
+    ST64(sa+8*0x39,0);pc_cursor_frame();assert(game_over_screen==screen);
+    rt_pc_cursor_manager(&cpu,0x7000f57da8,0x7000123404);assert(activated_node==other);
     g_settings.pc_cursor=false;pc_cursor_frame();assert(!pc_cursor_active());
     g_settings.pc_cursor=true;ST64(sa+8*0x30,0);pc_cursor_frame();assert(!game_over_screen&&!pc_cursor_active());
     puts("PASS: Options scroll/click/shared focus, SDL ownership/cursor visibility, page rebuild, Adventure Log/Ability Controls list registry, stationary hover, nested category clicks/locks, viewport preservation, pause header transitions/modal priority, setting gate and reboot reset (synthetic host state).");
