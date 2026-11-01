@@ -599,6 +599,20 @@ def _tree_ranges(gen, a):
             f'  /* {a:#x}: adrp x8, {page:#x} (distant trees: their ranges) */')
 
 
+# Accessibility > Infinite arrows (runtime/assists.c rt_infinite_arrows). The pause menu data's arrow removal (1.9.0
+# 0x7000d93814; x0 the pause menu data, x1 the arrow's name, w2 how many) returns at once when the actor info doesn't
+# tag the item 0x19f6c13a (an arrow), else takes the count off the pouch's arrows of that name (each item's count at
+# +0x20; a stack that runs out goes to 0 and the rest comes off the next) and writes the counts to the game data
+# (PorchItem_Value1). Two places reach it, both for a bow the player holds: the bow's shot (1.9.0 0x700092ddb4) and a
+# weapon function that takes one arrow (its tail call at 0x70007fe9f8, after the weapon's vtable +0x4e8 says the
+# player holds it). With the option on it returns before taking any; the shot itself still needs an arrow in the pouch.
+
+def _remove_arrows(gen, a):
+    assert _word(gen, a) == _sub_sp(0x70), hex(_word(gen, a))
+    return ('{ extern int rt_infinite_arrows(void); if (rt_infinite_arrows()) return; c->sp -= 0x70; }'
+            f'  /* {a:#x}: sub sp, sp, #0x70 (remove arrows: none with Infinite arrows) */')
+
+
 # tools/game_sites.py site -> its patch
 # BOTW's streaming Yaz0 decoder (1.9.0 0x700131d674; x0 its state, x1/w2 the input chunk): in native code
 # (runtime/hle/yaz0.c rt_yaz0, which declines the first call of a stream, the one that reads its header). Its return
@@ -691,6 +705,7 @@ PATCHES = {
     'grass_blade_lateral_near': _grass_blade_lateral,
     'grass_blade_lateral_far': _grass_blade_lateral,
     'tree_ranges': _tree_ranges,
+    'pouch_remove_arrows': _remove_arrows,
 }
 
 
