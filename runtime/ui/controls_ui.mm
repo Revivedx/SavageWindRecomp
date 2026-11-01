@@ -1,7 +1,9 @@
 // Control remapping editor (runtime/input_bind.h), shared by the in-game menu's Controls tab (menu.mm) and the start
 // screen's Controls page (launcher.mm): a table of Switch inputs with the controller button and the key bound to
 // each. Select a binding, then press the new button / key (Esc or 5 s without a press cancels; a button already in
-// use swaps over). Drawn in whichever ImGui context is current.
+// use swaps over). Below it, a table of the game's own actions (Jump, Attack...) with a controller button and a key of
+// their own each: two actions can share one, and an action can leave its Switch button. Drawn in whichever ImGui
+// context is current.
 #include <SDL3/SDL.h>
 #include <stdio.h>
 
@@ -39,6 +41,79 @@ static void cell(int dev, int slot, int fam, int cap_dev, int cap_slot, int ms_l
     if (waiting && !ImGui::IsItemVisible()) ImGui::SetScrollHereY(0.5f);  // (a capture started by a test hook)
 }
 
+// ---- what a binding says: a Switch input, or an action (slot BIND_ACTION + id)
+static void action_name(int id, char *out, size_t n) {
+    if (act_name(id)) snprintf(out, n, "%s", tr(act_name(id)));
+    else snprintf(out, n, tr("Action %d"), id);
+}
+static void slot_name(int slot, char *out, size_t n) {
+    if (bind_slot_is_action(slot)) action_name(slot - BIND_ACTION, out, n);
+    else snprintf(out, n, "%s", tr(bind_input_name(slot)));
+}
+static const char *host_name(int dev, int host, int fam) {
+    return tr(dev == BIND_DEV_PAD ? bind_pad_label(host, fam) : bind_key_label(host));
+}
+// what the slot is bound to now
+static const char *slot_binding(int dev, int slot, int fam) {
+    if (!bind_slot_is_action(slot)) return host_name(dev, dev == BIND_DEV_PAD ? g_bind_pad[slot] : g_bind_key[slot], fam);
+    const int h = dev == BIND_DEV_PAD ? g_act_pad[slot - BIND_ACTION] : g_act_key[slot - BIND_ACTION];
+    return h == ACT_NONE ? tr("Unbound") : h == ACT_FOLLOW ? tr("Default") : host_name(dev, h, fam);
+}
+
+// An action's cell: its own binding in gold, or (grey) the button of the Switch input the game reads for it, which
+// is what it follows until it is given one. Right-click: back to that, or nothing.
+static void action_cell(int dev, int id, int fam, int cap_dev, int cap_slot, int ms_left) {
+    const int slot = BIND_ACTION + id;
+    const int host = dev == BIND_DEV_PAD ? g_act_pad[id] : g_act_key[id];
+    const bool waiting = cap_dev == dev && cap_slot == slot;
+    char lbl[96];
+    if (waiting) snprintf(lbl, sizeof lbl, "%s  %d##a%d_%d", tr(dev == BIND_DEV_PAD ? "Press a button..." : "Press a key..."),
+                          (ms_left + 999) / 1000, dev, id);
+    else if (host == ACT_FOLLOW) {
+        const int b = act_switch_button(id);  // (-1 until the game has run: the start screen)
+        snprintf(lbl, sizeof lbl, "%s##a%d_%d", b < 0 ? tr("Default") :
+                 host_name(dev, dev == BIND_DEV_PAD ? g_bind_pad[b] : g_bind_key[b], fam), dev, id);
+    } else snprintf(lbl, sizeof lbl, "%s##a%d_%d", slot_binding(dev, slot, fam), dev, id);
+    int pushed = 0;
+    if (waiting) { ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.42f, 0.12f, 1)); pushed++; }
+    if (host != ACT_FOLLOW) { ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.98f, 0.82f, 0.38f, 1)); pushed++; }
+    else if (!waiting) { ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled)); pushed++; }
+    if (ImGui::Button(lbl, ImVec2(-FLT_MIN, 0))) {
+        if (waiting) bind_capture_cancel();
+        else bind_capture_begin(dev, slot);
+    }
+    ImGui::PopStyleColor(pushed);
+    if (ImGui::BeginPopupContextItem()) {
+        if (ImGui::MenuItem(tr("Use default"), NULL, false, host != ACT_FOLLOW)) { act_set(dev, id, ACT_FOLLOW); settings_save(); }
+        if (ImGui::MenuItem(tr("Unbind"), NULL, false, host != ACT_NONE)) { act_set(dev, id, ACT_NONE); settings_save(); }
+        ImGui::EndPopup();
+    }
+    if (waiting && !ImGui::IsItemVisible()) ImGui::SetScrollHereY(0.5f);
+}
+
+// One table of actions: the named ones (named = true), or the rest; the ones no code in the game reaches are left out
+static void action_table(const char *id, bool named, int fam, int cd, int cs, int ms) {
+    if (!ImGui::BeginTable(id, 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX)) return;
+    ImGui::TableSetupColumn(tr("Action"), ImGuiTableColumnFlags_WidthStretch, 1.0f);
+    ImGui::TableSetupColumn(tr("Controller"), ImGuiTableColumnFlags_WidthStretch, 1.3f);
+    ImGui::TableSetupColumn(tr("Keyboard"), ImGuiTableColumnFlags_WidthStretch, 1.3f);
+    ImGui::TableHeadersRow();
+    for (int a = 0; a < ACT_COUNT; a++) {
+        if (act_hidden(a) || (act_name(a) != NULL) != named) continue;
+        char name[64];
+        action_name(a, name, sizeof name);
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(name);
+        ImGui::TableNextColumn();
+        action_cell(BIND_DEV_PAD, a, fam, cd, cs, ms);
+        ImGui::TableNextColumn();
+        action_cell(BIND_DEV_KEY, a, fam, cd, cs, ms);
+    }
+    ImGui::EndTable();
+}
+
 extern "C" void controls_bindings_draw(float scale) {
     (void)scale;
     int fam = bind_label_family();
@@ -66,16 +141,19 @@ extern "C" void controls_bindings_draw(float scale) {
     if (seen_serial < 0) seen_serial = serial;
     if (serial != seen_serial) {
         seen_serial = serial;
-        const char *now = rslot < 0 ? "" : tr(rdev == BIND_DEV_PAD ? bind_pad_label(g_bind_pad[rslot], fam) : bind_key_label(g_bind_key[rslot]));
+        const char *now = rslot < 0 ? "" : slot_binding(rdev, rslot, fam);
+        char name[64] = "", other[64] = "";
+        if (rslot >= 0) slot_name(rslot, name, sizeof name);
+        if (rother >= 0) slot_name(rother, other, sizeof other);
         if (kind == 5)
             snprintf(msg, sizeof msg, "%s", tr(rdev == BIND_DEV_PAD ? "Controller bindings reset to the defaults."
                                                                      : "Keyboard bindings reset to the defaults."));
-        else if (kind == 1) snprintf(msg, sizeof msg, tr("%s is now %s."), tr(bind_input_name(rslot)), now);
+        else if (kind == 1) snprintf(msg, sizeof msg, tr("%s is now %s."), name, now);
         else if (kind == 2)
-            snprintf(msg, sizeof msg, tr("%s is now %s; %s moved to %s (swapped)."), tr(bind_input_name(rslot)), now,
-                     tr(bind_input_name(rother)), tr(rdev == BIND_DEV_PAD ? bind_pad_label(g_bind_pad[rother], fam) : bind_key_label(g_bind_key[rother])));
-        else if (kind == 3) snprintf(msg, sizeof msg, tr("Cancelled: %s unchanged."), tr(bind_input_name(rslot)));
-        else if (kind == 4) snprintf(msg, sizeof msg, tr("Nothing pressed: %s unchanged."), tr(bind_input_name(rslot)));
+            snprintf(msg, sizeof msg, tr("%s is now %s; %s moved to %s (swapped)."), name, now, other,
+                     slot_binding(rdev, rother, fam));
+        else if (kind == 3) snprintf(msg, sizeof msg, tr("Cancelled: %s unchanged."), name);
+        else if (kind == 4) snprintf(msg, sizeof msg, tr("Nothing pressed: %s unchanged."), name);
         if (kind == 1 || kind == 2 || kind == 5) settings_save();
     }
     if (msg[0]) ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", msg);
@@ -116,6 +194,16 @@ extern "C" void controls_bindings_draw(float scale) {
     ImGui::BeginDisabled(bind_is_default(BIND_DEV_KEY));
     if (ImGui::Button(tr("Reset keyboard to defaults"))) { bind_capture_cancel(); bind_reset(BIND_DEV_KEY); }
     ImGui::EndDisabled();
+
+    ImGui::SeparatorText(tr("Actions"));
+    action_table("##actions", true, fam, cd, cs, ms);
+    if (ImGui::CollapsingHeader(tr("More actions"))) action_table("##more_actions", false, fam, cd, cs, ms);
+    bool all_default = true;
+    for (int a = 0; a < ACT_COUNT; a++) all_default &= act_is_default(a);
+    ImGui::BeginDisabled(all_default);
+    if (ImGui::Button(tr("Reset actions to defaults"))) { bind_capture_cancel(); act_reset(); settings_save(); }
+    ImGui::EndDisabled();
+
     ImGui::PushTextWrapPos(0);
     ImGui::TextDisabled("%s %s", tr("Bindings apply to the game only. Menus keep the fixed layout (right face button / Enter "
                                  "select, bottom face button / Esc back), and the in-game menu always opens with F1 or Esc, or "
