@@ -56,6 +56,13 @@ static uint64_t options_keyboard_mouse_events;
 static bool options_page_pending;
 static _Atomic bool quick_wheel_only;
 static _Atomic uint64_t confirm_until, hover_until, hover_rect[2], motion_at;
+static _Atomic uint64_t guide_until;  // a clicked button prompt holds its button until then (pause_guides)
+static _Atomic unsigned guide_bit;
+// The inventory's Rotate mode, told by its own Back prompt (Pa_RotateGuide_00) being shown: a left-button drag turns Link
+static uint64_t rotate_info,rotate_group;
+static _Atomic bool rotate_mode;
+static bool pane_shown(uint64_t pane);
+extern void input_pc_rotate_motion(float dx,float dy);
 static bool map_down, map_dragged;
 static float map_origin[2],map_last[2];
 static bool map_anchor_active,map_picker_seen;
@@ -118,6 +125,9 @@ void pc_cursor_frame(void) {
             uint64_t name=LD64(text+0xd0);
             if(name>=GUEST_LO&&name<GUEST_HI-32&&!strncmp((char*)(uintptr_t)name,"ShopBtnList",11))shop_screen=text;
         }
+        rotate_mode=enabled()&&arr&&count>0x2f&&g_site.pause_state&&LD32(g_site.pause_state)==2&&ptr(rotate_info)&&
+            LD64(arr+8*0x2f)==rotate_info&&LD8(rotate_info+0xfe)==2&&ptr(rotate_group)&&
+            !strncmp((char*)(uintptr_t)(rotate_group+0xb8),"N_InOut_00",11)&&pane_shown(rotate_group);
     }
     // Quit opens a native SystemWindow over Game Over. Only its buttons
     // own pointer input until it closes; then focus returns to Continue/Quit.
@@ -271,7 +281,7 @@ bool pc_cursor_event(const SDL_Event *e) {
     }
     if(pad_input) {
         pointer_gamepad_input=pointer_keyboard_input=true;
-        hover_until=confirm_until=0;wheel=0;held=false;releases++;
+        hover_until=confirm_until=guide_until=0;wheel=0;held=false;releases++;
         quantity_edit=false;
     } else if(e->type==SDL_EVENT_KEY_DOWN||e->type==SDL_EVENT_MOUSE_BUTTON_DOWN||
               e->type==SDL_EVENT_MOUSE_WHEEL||
@@ -309,7 +319,10 @@ bool pc_cursor_event(const SDL_Event *e) {
        e->type==SDL_EVENT_MOUSE_WHEEL||e->type==SDL_EVENT_MOUSE_BUTTON_DOWN) {
         pointer_keyboard_input=false;pointer_mouse_events++;
     }
-    if (e->type == SDL_EVENT_MOUSE_MOTION) { window_position(e->motion.x,e->motion.y);motion_at=plat_now_ns(); return true; }
+    if (e->type == SDL_EVENT_MOUSE_MOTION) {
+        if(rotate_mode&&held)input_pc_rotate_motion(e->motion.xrel,e->motion.yrel);
+        window_position(e->motion.x,e->motion.y);motion_at=plat_now_ns(); return true;
+    }
     if (e->type == SDL_EVENT_MOUSE_WHEEL) {
         wheel+=(e->wheel.y>0)-(e->wheel.y<0); motion_at=plat_now_ns();return true;
     }
@@ -549,7 +562,9 @@ static bool options_pointer(Cpu *c,uint64_t screens,uint64_t bounds) {
 }
 
 uint64_t pc_cursor_buttons(uint64_t b) {
-    if(plat_now_ns()<confirm_until)b|=1;
+    uint64_t now=plat_now_ns();
+    if(now<confirm_until)b|=1;
+    if(now<guide_until)b|=1ull<<guide_bit;
     return b;
 }
 bool pc_cursor_hover_box(float box[4]) {
@@ -557,6 +572,7 @@ bool pc_cursor_hover_box(float box[4]) {
     uint64_t p[2]={hover_rect[0],hover_rect[1]};memcpy(box,p,16);return true;
 }
 bool pc_cursor_hover_pressed(void) { return pc_cursor_active()&&held; }
+bool pc_cursor_rotate_drag(void) { return pc_cursor_active()&&rotate_mode&&held; }
 static void set_hover_rect(const float box[4]) {
     uint64_t p[2];memcpy(p,box,16);
     hover_rect[0]=p[0];hover_rect[1]=p[1];hover_until=plat_now_ns()+50000000;
@@ -584,6 +600,7 @@ static void inventory_rotate(Cpu *c,float dx) {
 
 static void inventory_pointer(Cpu *c) {
     if(LD32(g_site.pause_state)!=2)return;
+    if(rotate_mode){atomic_exchange(&wheel,0);return;}  // Rotate owns the inventory: no page change waits for its end
     uint64_t mgr=LD64(g_site.screen_mgr),arr=ptr(mgr)?LD64(mgr+0x30):0;
     uint64_t s=ptr(arr)?LD64(arr+8*0x2e):0;
     if(!ptr(s)||LD64(s)!=0x7001cf9ad8ull||LD8(s+0xfe)!=2||LD32(s+0x3a48)!=0||LD64(s+0x38)!=c->x[0]||pointer_keyboard_input)return;
@@ -1062,6 +1079,61 @@ static bool pause_headers(Cpu *c,uint64_t screen,uint64_t screens,unsigned count
     return false;
 }
 
+// The button prompts along the bottom of the pause menu (Sort, Select, Back, Rotate...) and the one beside Link's
+// preview. Clicking one presses its button, so actions whose keyboard binding is a mouse button the pointer keeps for
+// itself (Sort is left click by default) stay reachable (#346). Each prompt is a T_Icon_00 glyph (U+E040.. A B X Y,
+// runtime/nvn/glyphs.c) beside its T_Guide_00 label; hidden slots fade their N_InOut_00 group out.
+static int guide_button(uint16_t glyph) {
+    switch(glyph) {
+    case 0xE040: case 0xE041: case 0xE042: case 0xE043: return glyph-0xE040;  // A B X Y
+    case 0xE044: return 6;  case 0xE045: return 7;   // L R
+    case 0xE046: return 8;  case 0xE047: return 9;   // ZL ZR
+    case 0xE04B: return 10; case 0xE04C: return 11;  // Plus Minus
+    case 0xE056: return 4;  case 0xE057: return 5;   // stick presses
+    default: return -1;
+    }
+}
+static bool pane_shown(uint64_t pane) {
+    return ptr(pane)&&(LD8(pane+0x58)&1)&&LD8(pane+0x5a)>=0x80;  // visible, global alpha at least half
+}
+static bool pause_guides(Cpu *c,uint64_t screen,uint64_t screens,unsigned count) {
+    if(!ptr(screen)||LD64(screen)!=0x7001cf9ad8ull||LD8(screen+0xfe)!=2||count<=0x2f)return false;
+    for(unsigned i=0x30;i<=0x3a&&i<count;i++) {
+        uint64_t modal=LD64(screens+8*i);
+        if(ptr(modal)&&LD8(modal+0xfe)==2)return false;
+    }
+    uint64_t info=LD64(screens+8*0x2f),name=ptr(info)?LD64(info+0xd0):0;
+    if(!ptr(info)||LD8(info+0xfe)!=2||!ptr(name)||strncmp((char*)(uintptr_t)name,"PauseMenuInfo_00",17))return false;
+    static const char *const slots[]={"Pa_RotateGuide_00","Pa_Guide_00","Pa_Guide_01","Pa_Guide_02","Pa_Guide_03","Pa_Guide_04"};
+    for(unsigned i=0;i<sizeof slots/sizeof*slots;i++) {
+        uint64_t slot=call(c,0x7000f6f800,info,(uintptr_t)slots[i],0);
+        unsigned budget=8;uint64_t group=pane_named(slot,"N_InOut_00",0,&budget);
+        budget=8;uint64_t icon=pane_named(group,"T_Icon_00",0,&budget);
+        budget=8;uint64_t label=pane_named(group,"T_Guide_00",0,&budget);
+        if(i==0){rotate_info=info;rotate_group=group;}
+        if(!pane_shown(slot)||!pane_shown(group)||!pane_shown(icon))continue;
+        uint64_t glyphs=LD64(icon+0xe0);
+        int button=ptr(glyphs)?guide_button(LD16(glyphs)):-1;
+        float box[4],text[4];
+        if(button<0||!options_box(icon,box))continue;
+        if(pane_shown(label)&&options_box(label,text)) {
+            box[0]=fminf(box[0],text[0]);box[1]=fminf(box[1],text[1]);
+            box[2]=fmaxf(box[2],text[2]);box[3]=fmaxf(box[3],text[3]);
+        }
+        box[1]-=4;box[3]+=4;
+        if(point[0]<box[0]||point[0]>box[2]||point[1]<box[1]||point[1]>box[3])continue;
+        set_hover_rect(box);
+        pointer_hover_sound(c,info,info+0x400+i);
+        if(click_pending) {
+            // The game plays the action's own sound: no extra cue here.
+            click_pending=false;
+            guide_bit=(unsigned)button;guide_until=plat_now_ns()+80000000;
+        }
+        return true;
+    }
+    return false;
+}
+
 // Other menus enter a button once per hover, rather than replaying its focus
 // callback whenever the screen rebuilds a transient cursor field.
 static bool hover_enter(Cpu *c,uint64_t control,uint64_t screen,uint64_t node,uint64_t activate) {
@@ -1233,7 +1305,7 @@ void rt_pc_cursor_manager(Cpu *c, uint64_t activate, uint64_t bounds) {
     if(!game_over_screen&&n>0x2e&&ptr(screens)) {
         uint64_t screen=LD64(screens+8*0x2e);
         if(ptr(screen)&&hover_target(c,screen,target)&&
-           (pause_headers(c,screen,screens,n)||quest_categories(c,screen))){hover_leave();return;}
+           (pause_headers(c,screen,screens,n)||pause_guides(c,screen,screens,n)||quest_categories(c,screen))){hover_leave();return;}
     }
     uint64_t hit=0,hit_screen=0;float best=1e30f;bool choices=dialogue_choices(c,screens,n);
     if(shop_screen&&!choices&&shop_pointer(c))return;
@@ -1334,7 +1406,8 @@ RT_ON_RESET(pc_cursor_reset) {
     quick_wheel_only=false;
     click_pending=false;
     injected_manager=0;
-    confirm_until=hover_until=0;wheel=0;map_down=false;special_frame=UINT64_MAX;
+    confirm_until=hover_until=guide_until=0;wheel=0;map_down=false;special_frame=UINT64_MAX;
+    rotate_mode=false;rotate_info=rotate_group=0;
     sampled_frame=UINT64_MAX;gesture_down=gesture_dragged=false;
     map_anchor_active=map_picker_seen=false;map_anchor_deadline=0;
     map_canvas_active=false;map_nav_ns=map_snap_button=0;map_view_valid=false;

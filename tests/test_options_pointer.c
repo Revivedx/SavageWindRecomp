@@ -23,6 +23,7 @@ bool framepace_title_ui(void){return false;}
 uint64_t framepace_script_frame(uint64_t value){return value;}
 void input_pc_escape(bool down){(void)down;abort();}
 void input_pc_map_axes(float out[2]){(void)out;abort();}
+void input_pc_rotate_motion(float dx,float dy){(void)dx;(void)dy;abort();}
 static unsigned actions,refreshes,last_action,scroll_updates,activations,help_updates;
 static uint64_t activated_node;
 static uint64_t quest_screen,quest_widget,quest_control,quest_nodes[2],quest_icons[4];
