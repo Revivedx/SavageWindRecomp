@@ -396,22 +396,21 @@ static void host_pad_slots(void) {
         assert(g_bind_pad[slot] == -1 && bind_is_default_slot(BIND_DEV_PAD, slot));
     }
     for (int slot = BIND_LS_UP; slot <= BIND_RS_RIGHT; slot++) assert(!bind_pad_slot(slot));
-    // Pad conflicts involve pad-capable slots only: unused zero-valued stick slots must not swap South.
+    // Host actions share inputs without taking raw menu buttons or another action's binding.
     capture_pad(BIND_DEV_ANY, BIND_WALK, SDL_GAMEPAD_BUTTON_SOUTH);
-    assert(g_bind_pad[BIND_B] == -1 && g_bind_pad[BIND_LS_UP] == 0);
+    assert(g_bind_pad[BIND_B] == SDL_GAMEPAD_BUTTON_SOUTH && g_bind_pad[BIND_LS_UP] == 0);
     assert(g_act_pad[12] == SDL_GAMEPAD_BUTTON_SOUTH);  // independent action, no swap
     capture_pad(BIND_DEV_PAD, BIND_TILT, SDL_GAMEPAD_BUTTON_SOUTH);
-    assert(g_bind_pad[BIND_WALK] == -1);
-    // Gyro context may share a pad button with Tilt; only other gyro bindings swap.
+    assert(g_bind_pad[BIND_WALK] == SDL_GAMEPAD_BUTTON_SOUTH);
     capture_pad(BIND_DEV_PAD, BIND_GYRO_UP, SDL_GAMEPAD_BUTTON_SOUTH);
     assert(g_bind_pad[BIND_TILT] == SDL_GAMEPAD_BUTTON_SOUTH);
     capture_pad(BIND_DEV_ANY, BIND_GYRO_DOWN, SDL_GAMEPAD_BUTTON_SOUTH);
-    assert(g_bind_pad[BIND_GYRO_UP] == -1 && g_bind_pad[BIND_TILT] == SDL_GAMEPAD_BUTTON_SOUTH);
+    assert(g_bind_pad[BIND_GYRO_UP] == SDL_GAMEPAD_BUTTON_SOUTH && g_bind_pad[BIND_TILT] == SDL_GAMEPAD_BUTTON_SOUTH);
     // A trigger is also capturable on the new slots.
     SDL_Event e = {0}; e.type = SDL_EVENT_GAMEPAD_AXIS_MOTION;
     e.gaxis.axis = SDL_GAMEPAD_AXIS_LEFT_TRIGGER; e.gaxis.value = 20000;
     bind_capture_begin(BIND_DEV_ANY, BIND_WALK);
-    assert(bind_capture_event(&e) && g_bind_pad[BIND_WALK] == PADB_LTRIGGER && g_bind_pad[BIND_ZL] == -1);
+    assert(bind_capture_event(&e) && g_bind_pad[BIND_WALK] == PADB_LTRIGGER && g_bind_pad[BIND_ZL] == PADB_LTRIGGER);
 
     // Every added ini name round-trips. Unbinding an existing raw pad slot also survives a save.
     static const char *const names[] = {"walk", "tilt", "gyro_up", "gyro_down", "gyro_left", "gyro_right",
@@ -421,6 +420,7 @@ static void host_pad_slots(void) {
         assert(bind_settings_load(key, "misc2"));
         assert(g_bind_pad[BIND_WALK + i] == SDL_GAMEPAD_BUTTON_MISC2);
     }
+    assert(bind_settings_load("bind_pad_zl", "none"));
     char *saved = save_bindings();
     assert(strstr(saved, "bind_pad_zl = none\n"));
     for (int i = 0; i < 9; i++) {
@@ -435,6 +435,54 @@ static void host_pad_slots(void) {
     bind_settings_load("bind_pad_walk", "none");
     bind_settings_load("bind_pad_tilt", "bad-button");
     assert(g_bind_pad[BIND_WALK] == -1 && g_bind_pad[BIND_TILT] == SDL_GAMEPAD_BUTTON_MISC2);
+    reset_bindings();
+}
+
+static void captures_allow_shared_action_inputs(void) {
+    const int captures[] = {BIND_DEV_PAD, BIND_DEV_KEY, BIND_DEV_ANY};
+    for (unsigned c = 0; c < sizeof captures / sizeof *captures; c++) {
+        for (int dev = BIND_DEV_PAD; dev <= BIND_DEV_KEY; dev++) {
+            if (captures[c] != BIND_DEV_ANY && captures[c] != dev) continue;
+            reset_bindings();
+            int16_t *raw = dev == BIND_DEV_PAD ? g_bind_pad : g_bind_key;
+            int16_t *actions = dev == BIND_DEV_PAD ? g_act_pad : g_act_key;
+            const int host = raw[BIND_B];
+            SDL_Event e = {0};
+            e.type = dev == BIND_DEV_PAD ? SDL_EVENT_GAMEPAD_BUTTON_DOWN : SDL_EVENT_KEY_DOWN;
+            if (dev == BIND_DEV_PAD) e.gbutton.button = (Uint8)host;
+            else e.key.scancode = (SDL_Scancode)host;
+            // Every host action and game action can share the menu-back input. Only the chosen slot changes.
+            for (int n = BIND_WALK; n <= BIND_GYRO_CENTER + ACT_COUNT; n++) {
+                int slot = n <= BIND_GYRO_CENTER ? n : BIND_ACTION + n - BIND_GYRO_CENTER - 1;
+                int16_t expected_raw[BIND_KEY_COUNT], expected_actions[ACT_COUNT];
+                memcpy(expected_raw, raw, sizeof expected_raw);
+                memcpy(expected_actions, actions, sizeof expected_actions);
+                if (bind_slot_is_action(slot)) expected_actions[slot - BIND_ACTION] = host;
+                else expected_raw[slot] = host;
+                bind_capture_begin(captures[c], slot);
+                assert(bind_capture_event(&e));
+                assert(!bind_capture_active(NULL, NULL, NULL));
+                assert(!memcmp(raw, expected_raw, sizeof expected_raw));
+                assert(!memcmp(actions, expected_actions, sizeof expected_actions));
+                int actual_dev, actual_slot, other;
+                assert(bind_last_result(&actual_dev, &actual_slot, &other, NULL) == 1);
+                assert(actual_dev == dev && actual_slot == slot && other == -1);
+            }
+            // Direct action edits also leave all existing bindings in place.
+            for (int id = 0; id < ACT_COUNT; id++) act_set(dev, id, raw[BIND_A]);
+            for (int id = 0; id < ACT_COUNT; id++) assert(actions[id] == raw[BIND_A]);
+            assert(raw[BIND_B] == host);
+            // Raw Switch slots still swap with each other without displacing any shared host actions.
+            int old_a = raw[BIND_A];
+            bind_capture_begin(dev, BIND_A);
+            assert(bind_capture_event(&e));
+            assert(raw[BIND_A] == host && raw[BIND_B] == old_a);
+            for (int slot = BIND_WALK; slot <= BIND_GYRO_CENTER; slot++) assert(raw[slot] == host);
+            for (int id = 0; id < ACT_COUNT; id++) assert(actions[id] == old_a);
+            int other;
+            assert(bind_last_result(NULL, NULL, &other, NULL) == 2 && other == BIND_B);
+        }
+    }
     reset_bindings();
 }
 
@@ -469,6 +517,7 @@ int main(void) {
     capture_and_settings();
     migration_and_independent_defaults();
     schema_migration_is_one_time();
+    captures_allow_shared_action_inputs();
     host_pad_slots();
     names_and_groups();
     puts("action bindings: default fallthrough, custom host bindings, schema migration, held / pressed, menus, shared keys, pad capture, contexts, reset and ini passed");

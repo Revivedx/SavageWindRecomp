@@ -29,10 +29,12 @@ enum {
 // BIND_DEV_ANY (a capture only): the next press of either device is taken, a controller button for the controller side,
 // a key or mouse button for the keyboard side (only the stick-direction slots ignore the controller)
 enum { BIND_DEV_PAD, BIND_DEV_KEY, BIND_DEV_ANY };
-// The gyro bindings are a context of their own (they only work during a shrine apparatus): rebinding one swaps only with
-// another gyro binding on the same device, never with the camera or movement keys it shares by default.
+// Gyro grouping is for the UI. Walk, Tilt and gyro bindings allow duplicates on both devices and never take part
+// in swaps, including when a legacy slot is rebound to their input. Other host slots keep their shared context.
 static inline bool bind_key_gyro(int slot) { return slot >= BIND_GYRO_UP && slot <= BIND_GYRO_CENTER; }
-static inline bool bind_key_same_context(int a, int b) { return bind_key_gyro(a) == bind_key_gyro(b); }
+static inline bool bind_key_same_context(int a, int b) {
+    return (a < BIND_WALK || a > BIND_GYRO_CENTER) && (b < BIND_WALK || b > BIND_GYRO_CENTER);
+}
 // A keyboard binding can also be a mouse button: BIND_MOUSE + SDL_BUTTON_LEFT (1) .. SDL_BUTTON_X2 (5), past every
 // SDL scancode.
 #define BIND_MOUSE 0x400

@@ -205,7 +205,7 @@ int bind_last_result(int *dev, int *slot, int *other, int *serial) {
     return res_kind;
 }
 
-// Bind `host` to `slot`; an input already on `host` takes the slot's old binding (swap).
+// Bind `host` to `slot`; only legacy host slots swap. Actions, Walk, Tilt and gyro allow shared inputs.
 static void assign(int dev, int slot, int host) {
     if (bind_slot_is_action(slot)) {  // an action may share its key with any other: nothing swaps
         act_set(dev, slot - BIND_ACTION, host);

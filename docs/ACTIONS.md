@@ -12,7 +12,9 @@ Movement and camera directions keep their keyboard-only slots and defaults (W S 
 seven gyro slots accept both devices; their new controller sides default to unbound (`-1`). Walk scales its device's
 left stick to 40%. Tilt holds the mouse clutch and enables the existing sensorless controller stick tilt path. Gyro
 buttons and keys combine per direction, only while `gyro_keys_live()`; simultaneous opposite directions cancel.
-Host-slot conflicts swap within the same device and gyro context; action bindings never swap other bindings.
+Walk, Tilt, gyro and game action bindings allow shared inputs on both devices. Assigning one never changes another
+slot, including raw Switch menu buttons; rebinding a raw slot also leaves these shared bindings intact. Legacy
+host slots still swap among themselves on the same device, including the raw Switch buttons (0 to 15).
 
 The game's title, pause and map menus still use the raw Switch layer, including legacy raw-button rebinds. The runtime
 overlay and launcher keep their fixed navigation shortcuts. The separate UI update can use `bind_input_name`,
@@ -120,7 +122,8 @@ Use host injection for customized actions.
 
 `make test-actions` (no game files): the answers to the hold / pressed queries, menus falling back, two actions on one
 key, factory-default fallthrough, customization on either device, legacy migration in either order, one-time schema
-migration and reload idempotence, action and host-slot capture, gyro context swaps, reset and ini round trips
+migration and reload idempotence, shared action/Walk/Tilt/gyro captures on both devices, preserved raw Switch swaps,
+reset and ini round trips
 (`tools/test_actions.c`), and the generated hook (`tools/test_act_site.py`).
 `make test-pc-controls` also checks Walk scaling, shared key/pad Tilt, mouse routing, sensorless dual-stick eligibility,
 and all gyro directions with menu/focus/context gates. `tools/test_game_sites.py` covers the site patterns.
