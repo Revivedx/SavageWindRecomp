@@ -429,7 +429,7 @@ T("Assists that make the game easier.", "Hulpmiddelen die het spel makkelijker m
 T("Unbreakable weapons", "Onbreekbare wapens")
 T("Weapons, bows and shields lose no durability and never break.", "Wapens, bogen en schilden verliezen geen duurzaamheid en breken nooit.")
 T("Infinite arrows", "Oneindige pijlen")
-T("Shooting a bow uses up no arrows. You still need one to shoot.", "Schieten met een boog kost geen pijlen. Je hebt er wel één nodig om te schieten.")
+T("Shooting a bow uses up no arrows. You still need one to shoot.", "Schieten met een boog kost geen pijlen. Je hebt er wel één nodig.")
 T("God mode", "Onkwetsbaar")
 T("Link takes no damage.", "Link loopt geen schade op.")
 T("One-hit kill", "Eén klap, één zege")

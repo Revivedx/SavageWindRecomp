@@ -429,7 +429,7 @@ T("Assists that make the game easier.", "Des aides qui rendent le jeu plus facil
 T("Unbreakable weapons", "Armes incassables")
 T("Weapons, bows and shields lose no durability and never break.", "Les armes, arcs et boucliers ne s'usent pas et ne se brisent jamais.")
 T("Infinite arrows", "Flèches infinies")
-T("Shooting a bow uses up no arrows. You still need one to shoot.", "Tirer à l'arc ne consomme pas de flèches. Il en faut quand même une pour tirer.")
+T("Shooting a bow uses up no arrows. You still need one to shoot.", "Tirer à l'arc ne consomme pas de flèches. Il en faut une pour tirer.")
 T("God mode", "Invincibilité")
 T("Link takes no damage.", "Link ne subit aucun dégât.")
 T("One-hit kill", "Victoire en un coup")
