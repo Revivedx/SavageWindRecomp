@@ -1015,8 +1015,17 @@ float label_fit(const char *text) {
                             cp == '|' || cp == 'i' || cp == 'l' || cp == '(' || cp == ')' || cp == '/' || cp == '-';
         w += cp >= 0x2e80 ? 2.f : narrow ? .55f : 1.f;
     }
-    const float room = 16.5f;
+    const float room = binding_row_layout().label_width / 9.7f;  // (9.7 layout units per average character)
     return w <= room ? 1.f : fmaxf(room / w, .62f);
+}
+// The label box (right edge fixed, text left-aligned); a name still too long shrinks to fit before the first button
+void label_geometry(uint64_t title, const char *text) {
+    const auto layout = binding_row_layout();
+    const float fit = label_fit(text);
+    two_float(title, 0x30, layout.label_right);
+    two_float(title, 0x48, fit);
+    two_float(title, 0x4c, fit);
+    two_float(title, 0x50, layout.label_width / fit);  // (scaled about its centre: the box grows so its edges stay)
 }
 // The Reset row's button spans both columns (key and controller), like the rows above it
 void wide_button(uint64_t row) {
@@ -1032,7 +1041,12 @@ void wide_button(uint64_t row) {
     const float moved = *(float *)(uintptr_t)(root + 0x30) - span.center();
     if (fabsf(moved) > .01f) two_float(p.plate, 0x30, *(float *)(uintptr_t)(p.plate + 0x30) + moved);
     two_geometry(p, span);
+    two_float(p.plate, 0x50, binding_row_plate_width);
     wr8(p.plate + 0x58, plate | 0x10);
+    uint64_t row_layout = rd64(row + 0x10);
+    uint64_t layout_root = two_ptr(row_layout) ? rd64(row_layout + 0x18) : 0;
+    uint64_t title = two_ptr(layout_root) ? two_pane(layout_root, "T_Option_00") : 0;
+    if (title) if (const Item *it = item_of_row(row)) label_geometry(title, tr(it->title));
 }
 bool two_configure(uint64_t row) {
     bool header = is_binds_header(item_of_row(row));
@@ -1093,14 +1107,7 @@ bool two_configure(uint64_t row) {
         wr8(title + 0x58, *(uint8_t *)(uintptr_t)(title + 0x58) & ~1u);
         g_two_header = row;
     } else {
-        two_float(title, 0x30, layout.label_right);
-        two_float(title, 0x50, layout.label_width);
-        if (const Item *it = item_of_row(row)) {  // a long name shrinks to fit before the first button
-            const float fit = label_fit(tr(it->title));
-            two_float(title, 0x48, fit);
-            two_float(title, 0x4c, fit);
-            two_float(title, 0x50, layout.label_width / fit);  // (scaled about its centre: the box grows so its edges stay)
-        }
+        if (const Item *it = item_of_row(row)) label_geometry(title, tr(it->title));
         // The toggle part: only its plate and its box stay (its other panes are hidden for good).
         float togx = *(float *)(uintptr_t)(band.tog + 0x30);
         for (uint64_t c = band.tog, n = 0; n < 2; n++) {
@@ -1112,6 +1119,7 @@ bool two_configure(uint64_t row) {
             }
             c = band.disable;
         }
+        two_float(band.band, 0x50, binding_row_plate_width);
         band.dark_x[0] = layout.key.center() - togx;
         band.dark_x[1] = layout.pad.center() - togx;
         two_float(band.dark, 0x48, 1.f);

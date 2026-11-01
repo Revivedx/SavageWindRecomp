@@ -12,12 +12,14 @@ struct BindingRowLayout {
     float text_inset, glow_extra;
 };
 constexpr BindingRowLayout binding_row_layout() {
-    // Row band: x -270..270 (the native 540-wide plate). Label right edge, text left-aligned in its box (native rows: -14 / 246).
-    return {-100.f, 160.f, {-90.f, 170.f}, {98.f, 170.f}, 20.f, 56.f};
+    // Row band: x -300..300 (the native 540-wide plate, widened by 60 on the label side and the whole row re-centred:
+    // the label box grew from 160 to 220, key and controller columns moved 30 right). Label right edge, text left-aligned.
+    return {-70.f, 220.f, {-60.f, 170.f}, {128.f, 170.f}, 20.f, 56.f};
 }
 
-// The native row plate (W_Base_02, 540 wide, centred on the row) lives in each button part. Only the key part keeps it.
-constexpr float binding_row_plate_width = 540.f;
+// The row plate (W_Base_02, natively 540 wide, centred on the row) lives in each button part. Only the key part keeps it.
+// Widened to hold the longer label box; the row stays centred (x -300..300).
+constexpr float binding_row_plate_width = 600.f;
 
 // Uniform scale for the Key bindings column header text panes (overridable via SAVAGEWIND_HEADER_SCALE).
 constexpr float binding_row_header_scale = 0.85f;

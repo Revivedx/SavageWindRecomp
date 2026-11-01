@@ -58,7 +58,7 @@ actions are rows of their own, bound to the same raw slots with the same default
 | Menu: Hero's Path | X | X | Hero's Path in the map |
 | Menu: sort / sensor | Y | Y | sorts the inventory, Sheikah Sensor in the map |
 | Menu: previous / next tab | L / R | L / R | switches the menu tab |
-| Menu: previous / next tab (alt) | ZL / ZR | ZL / ZR | the same, in the menus that use the triggers |
+| Menu: previous / next tab 2 | ZL / ZR | ZL / ZR | the same, in the menus that use the triggers |
 | Menu: inspect / zoom | right stick click | right stick click | inspect an item, zoom the map |
 
 Left stick click (Crouch, a menu use) and D-pad down (Call horse, Throw distance) have no function of their own beyond

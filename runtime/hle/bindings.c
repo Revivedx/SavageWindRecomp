@@ -49,7 +49,7 @@ static const char *const k_ini[BIND_KEY_COUNT] = {
 static const char *const k_names[BIND_KEY_COUNT] = {
     "Menu: confirm", "Menu: back", "Menu: Hero's Path", "Menu: sort / sensor",
     "Left stick press", "Menu: inspect / zoom", "Menu: previous tab", "Menu: next tab",
-    "Menu: previous tab (alt)", "Menu: next tab (alt)", "Pause menu", "Map (Sheikah Slate)",
+    "Menu: previous tab 2", "Menu: next tab 2", "Pause menu", "Map (Sheikah Slate)",
     "Quick menu: shields", "Quick menu: runes", "Quick menu: weapons", "D-pad Down",
     "Move forward", "Move back", "Move left",
     "Move right", "Camera up", "Camera down", "Camera left", "Camera right", "Walk",

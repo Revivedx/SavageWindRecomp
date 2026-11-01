@@ -75,9 +75,11 @@ int main() {
     const auto geometry = binding_row_layout();
     assert(geometry.label_right < geometry.key.x);
     assert(geometry.key.x + geometry.key.width < geometry.pad.x);
-    // Both columns and the label sit inside the native 540-wide row band (-270..270).
-    assert(geometry.label_right - geometry.label_width >= -270.f);
-    assert(geometry.key.x >= -270.f && geometry.pad.x + geometry.pad.width <= 270.f);
+    // Both columns and the label sit inside the (widened) row band, and the row is centred.
+    const float half_band = binding_row_plate_width * .5f;
+    assert(geometry.label_right - geometry.label_width >= -half_band);
+    assert(geometry.key.x >= -half_band && geometry.pad.x + geometry.pad.width <= half_band);
+    assert(fabsf((geometry.label_right - geometry.label_width) + (geometry.pad.x + geometry.pad.width)) <= 24.f);
     assert(geometry.key.width > 0 && geometry.pad.width > 0);
     uint64_t root = base + 0xa000;
     const char *names[] = {"T_Text_00", "T_Text_01", "N_Cursor_00", "B_Hit_00", "W_Base_00",
