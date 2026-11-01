@@ -13,9 +13,10 @@ version of your own copy of the game: a launcher, PC-style graphics options, mod
 mouse, and its text and voices in any of its languages.
 
 > [!WARNING]
-> **Playable, but how far is unknown.** Savage Wind plays the opening in the Shrine of Resurrection and the Great
-> Plateau around it at 60 fps, with sound, voices, the HUD, saving and loading. Nobody has played past the Great
-> Plateau on Savage Wind yet, so expect bugs or crashes further on. This is an alpha, a preview for testers. If you
+> **Playable, but not yet confirmed to the end.** Savage Wind plays the opening in the Shrine of Resurrection and the
+> Great Plateau around it at 60 fps, with sound, voices, the HUD, saving and loading. A player has completed the first
+> Divine Beast, Vah Ruta, with no problems ([#335](https://github.com/Revivedx/SavageWindRecomp/issues/335)); the rest
+> of the main story isn't confirmed yet, so expect bugs or crashes further on. This is an alpha, a preview for testers. If you
 > find a bug, please [report it on GitHub](https://github.com/Revivedx/SavageWindRecomp/issues/new/choose): every
 > report shows how far the game really works.
 
@@ -196,7 +197,7 @@ Estimates of where each part stands. "Tested in game" is how much of the game ha
 | 🔧 | **Graphics (NVN on Vulkan)** | ![80%](https://progress-bar.xyz/80/?width=150&style=square&progress_color=5cb85c) | Shrine and Great Plateau look right, shadows included; far parts of the map can still be missing ([#20](https://github.com/Revivedx/SavageWindRecomp/issues/20)) |
 | 🔧 | **Controllers** | ![80%](https://progress-bar.xyz/80/?width=150&style=square&progress_color=5cb85c) | Any controller SDL knows, by button position, confirmed by players; automatic recognition is next, then camera speed set apart for each axis |
 | 🔧 | **Button icons for your device** | ![80%](https://progress-bar.xyz/80/?width=150&style=square&progress_color=5cb85c) | The game's button prompts show your bound keys and mouse buttons, or Xbox / PlayStation / Nintendo buttons, switching with the device you use |
-| 🔧 | **Tested in game** | ![50%](https://progress-bar.xyz/50/?width=150&style=square&progress_color=f0ad4e) | The Shrine of Resurrection, the Great Plateau, and a walk through every region on a 100% save file. The main quests and the Divine Beasts aren't tested yet, so expect bugs there: [report what breaks](https://github.com/Revivedx/SavageWindRecomp/issues/new/choose) |
+| 🔧 | **Tested in game** | ![50%](https://progress-bar.xyz/50/?width=150&style=square&progress_color=f0ad4e) | The Shrine of Resurrection, the Great Plateau, and a walk through every region on a 100% save file. Divine Beasts: 1 of 4 confirmed, Vah Ruta, completed by a player with no problems ([#335](https://github.com/Revivedx/SavageWindRecomp/issues/335)). The other three and the rest of the main quests aren't confirmed yet, so expect bugs there: [report what breaks](https://github.com/Revivedx/SavageWindRecomp/issues/new/choose) |
 | 🔧 | **Linux** | ![90%](https://progress-bar.xyz/90/?width=150&style=square&progress_color=5cb85c) | Builds and runs on x86-64 (from LAS Recomp); a steady 144 fps on an RTX 3070 Ti with a Ryzen 5 7600X, and no Linux-only issues so far |
 | 🔧 | **AMD FSR 3 + frame generation** | ![60%](https://progress-bar.xyz/60/?width=150&style=square&progress_color=f0ad4e) | Video > Frame generation (AMD FSR 3): a frame made between each two the game draws, about twice the frames on screen, with the HUD kept sharp. Motion vectors from depth and the camera, and Link's own; enemies and animals can still leave a faint smear. Smooth with VSync and G-SYNC. Works on Windows; Linux and the Steam Deck aren't tried yet. Only frame generation for now: FSR 3 upscaling is next |
 | 🗺️ | **NVIDIA DLSS (RTX)** | ![0%](https://progress-bar.xyz/0/?width=150&style=square&progress_color=d9534f) | Planned, after FSR 3; under NVIDIA's own SDK license |
