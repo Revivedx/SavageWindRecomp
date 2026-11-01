@@ -28,6 +28,8 @@ static uint64_t quest_screen,quest_widget,quest_control,quest_nodes[2],quest_ico
 static uint64_t quest_master;
 static unsigned quest_selections,quest_categories_clicked,last_category;
 static unsigned page_changes;
+static uint64_t quick_test_screen,quick_test_list;
+static unsigned quick_test_moves;
 static uint64_t navigation;
 static Cpu test_cpu;
 Cpu *kernel_current_cpu(void){return &test_cpu;}
@@ -49,7 +51,12 @@ void guest_call(Cpu *cpu,uint64_t address){
         // The detail list precedes the real row list in the screen registry.
         cpu->x[0]=cpu->x[0]!=quest_widget?UINT32_MAX:
             cpu->x[1]==quest_nodes[0]?0:cpu->x[1]==quest_nodes[1]?1:UINT32_MAX;
-    }else if(address==0x7000d6c54cull){abort();} // Hover must never select/recenter a scroll page.
+    }else if(address==0x7000d6c54cull){
+        assert(quick_test_list&&cpu->x[0]==quick_test_list&&cpu->x[1]<3);quick_test_moves++;
+    }else if(address==0x7000e2785cull){
+        assert(cpu->x[0]==quick_test_screen&&cpu->x[1]<3);
+        ST32(quick_test_screen+0x387c,LD32(quick_test_screen+0x3884+4*cpu->x[1]));
+    }
     else if(address==0x7000d6c870ull){
         assert(cpu->x[0]==quest_widget&&cpu->x[1]<2);
         unsigned index=(unsigned)cpu->x[1];quest_selections++;
@@ -388,6 +395,31 @@ int main(void) {
     munmap(yaw_memory,65536);
 #endif
     pc_cursor_reset();assert(!options_scroll_valid&&!options_screen_active&&!options_rows_active);
+    // Quick equipment: movement/click/drag cannot select; wheel moves once and
+    // clamps. The cursor is hidden even if its old absolute position is outside.
+    quick_test_screen=GUEST_LO+0xa000;quick_test_list=GUEST_LO+0xe000;
+    ST64(sa+8*0x2d,quick_test_screen);ST64(quick_test_screen,0x7001cf51d8ull);
+    ST8(quick_test_screen+0xfe,2);ST32(g_site.pause_state,4);
+    ST64(quick_test_screen+0x37a8,quick_test_list);ST32(quick_test_screen+0x3880,3);
+    ST32(quick_test_list+0x2ac,3);
+    for(int i=0;i<3;i++)ST32(quick_test_screen+0x3884+4*i,10+10*i);
+    ST32(quick_test_screen+0x387c,20);focused=true;position_inside=false;
+    pc_cursor_frame();assert(quick_wheel_only&&pc_cursor_hide_system());
+    event.type=SDL_EVENT_MOUSE_MOTION;event.motion.xrel=400;event.motion.yrel=200;
+    assert(pc_cursor_event(&event));
+    event.type=SDL_EVENT_MOUSE_BUTTON_DOWN;event.button.button=SDL_BUTTON_LEFT;
+    assert(pc_cursor_event(&event)&&!held);
+    gesture_down=gesture_dragged=true;gesture_delta[0]=500;click_pending=true;
+    frame++;assert(native_special(&cpu,sa,0));assert(!quick_test_moves&&!click_pending);
+    event.type=SDL_EVENT_MOUSE_WHEEL;event.wheel.y=-1;
+    assert(pc_cursor_event(&event));frame++;assert(native_special(&cpu,sa,0));
+    assert(quick_test_moves==1&&LD32(quick_test_screen+0x387c)==30);
+    assert(pc_cursor_event(&event));frame++;native_special(&cpu,sa,0);assert(quick_test_moves==1);
+    event.wheel.y=1;assert(pc_cursor_event(&event));frame++;native_special(&cpu,sa,0);
+    assert(quick_test_moves==2&&LD32(quick_test_screen+0x387c)==20);
+    event.type=SDL_EVENT_KEY_DOWN;event.key.scancode=SDL_SCANCODE_RIGHT;
+    assert(!pc_cursor_event(&event));assert(pc_cursor_buttons(1ull<<14)==(1ull<<14));
+    ST32(g_site.pause_state,0);ST64(sa+8*0x2d,0);pc_cursor_frame();assert(!quick_wheel_only);
     puts("PASS: Options scroll/click/shared focus, SDL ownership/cursor visibility, page rebuild, Adventure Log/Ability Controls list registry, stationary hover, nested category clicks/locks, viewport preservation, pause header transitions/modal priority, setting gate and reboot reset (synthetic host state).");
 #ifdef _WIN32
     VirtualFree(vt_memory,0,MEM_RELEASE);

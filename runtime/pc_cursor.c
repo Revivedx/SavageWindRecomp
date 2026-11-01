@@ -52,7 +52,7 @@ static _Atomic bool pointer_keyboard_input;
 static _Atomic uint64_t pointer_mouse_events;
 static uint64_t options_keyboard_mouse_events;
 static bool options_page_pending;
-static _Atomic bool quick_confirmed;
+static _Atomic bool quick_wheel_only;
 static _Atomic uint64_t confirm_until, hover_until, hover_rect[2], motion_at;
 static bool map_down, map_dragged;
 static float map_origin[2],map_last[2];
@@ -84,11 +84,12 @@ extern bool menu_cursor_free(void);
 bool pc_cursor_active(void) { return enabled() && active && (focused || pointer_test()) && !menu_cursor_free(); }
 bool pc_cursor_map_navigation(void) { return pc_cursor_active() && map_canvas_active; }
 bool pc_cursor_hide_system(void) {
-    return position_inside&&(pc_cursor_map_navigation()||(pc_cursor_active()&&pointer_keyboard_input));
+    return (pc_cursor_active()&&quick_wheel_only)||
+        (position_inside&&(pc_cursor_map_navigation()||(pc_cursor_active()&&pointer_keyboard_input)));
 }
 
 void pc_cursor_frame(void) {
-    bool dialogue=false;shop_screen=0;
+    bool dialogue=false,quick=false;shop_screen=0;
     if(g_site.screen_mgr) {
         uint64_t mgr=LD64(g_site.screen_mgr),arr=mgr?LD64(mgr+0x30):0;
         unsigned count=mgr?LD32(mgr+0x28):0;
@@ -96,7 +97,9 @@ void pc_cursor_frame(void) {
         // not stable identifiers (AkashNum is the spirit-orb counter).
         if(arr)for(unsigned i=0;i<count&&i<256;i++) {
             uint64_t text=LD64(arr+8*i);
-            if(!text||LD8(text+0xfe)!=2)continue;
+            if(!text)continue;
+            if(i==0x2d&&g_site.pause_state&&LD32(g_site.pause_state)==4&&LD64(text)==0x7001cf51d8ull)quick=true;
+            if(LD8(text+0xfe)!=2)continue;
             if(LD64(text)==0x7001d4ed48ull)dialogue=true;
             uint64_t name=LD64(text+0xd0);
             if(name>=GUEST_LO&&name<GUEST_HI-32&&!strncmp((char*)(uintptr_t)name,"ShopBtnList",11))shop_screen=text;
@@ -115,6 +118,8 @@ void pc_cursor_frame(void) {
     bool ui = g_site.pause_state &&
         (dialogue || shop_screen || framepace_menu_ui() || framepace_title_ui() || *(uint32_t *)(uintptr_t)g_site.pause_state == 4);
     active = enabled() && ui;
+    quick_wheel_only=enabled()&&quick;
+    if(quick_wheel_only){hover_leave();hover_until=0;click_pending=false;held=false;gesture_down=gesture_dragged=false;}
     if(!pc_cursor_active()){
         hover_leave();
         options_scroll_valid=false;options_screen_active=options_rows_active=0;
@@ -240,6 +245,11 @@ bool pc_cursor_event(const SDL_Event *e) {
     }
     if (!enabled()) return false;
     if (!pc_cursor_active()) return false;
+    // The quick selector has no absolute pointer target. Ignore movement and
+    // clicks, but leave the wheel and the native keyboard/controller paths live.
+    if(quick_wheel_only&&(e->type==SDL_EVENT_MOUSE_MOTION||
+       ((e->type==SDL_EVENT_MOUSE_BUTTON_DOWN||e->type==SDL_EVENT_MOUSE_BUTTON_UP)&&
+        (e->button.button==SDL_BUTTON_LEFT||e->button.button==SDL_BUTTON_RIGHT))))return true;
     if(quantity_edit&&plat_now_ns()<quantity_until&&(e->type==SDL_EVENT_KEY_DOWN||e->type==SDL_EVENT_KEY_UP)) {
         if(e->type==SDL_EVENT_KEY_UP)return true;
         SDL_Scancode sc=e->key.scancode;int digit=-1;
@@ -290,6 +300,7 @@ bool pc_cursor_event(const SDL_Event *e) {
 // Entry hook, before the original prologue: preserve the game's group and provide its native pointer arguments.
 void rt_pc_button_group(Cpu *c) {
     if (!pc_cursor_active()) return;
+    if(quick_wheel_only)return;
     sample_pointer();
     inventory_pointer(c);
     extern uint64_t renderer_present_count(void);
@@ -505,10 +516,6 @@ static bool options_pointer(Cpu *c,uint64_t screens,uint64_t bounds) {
 }
 
 uint64_t pc_cursor_buttons(uint64_t b) {
-    if(quick_confirmed) {
-        if(!(b&(1ull<<14)))quick_confirmed=false;
-        b&=~(1ull<<14);
-    }
     if(plat_now_ns()<confirm_until)b|=1;
     return b;
 }
@@ -650,21 +657,15 @@ static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
     float nav_dt=map_nav_ns&&nav_now>map_nav_ns?(float)(nav_now-map_nav_ns)/1e9f:0;
     map_nav_ns=nav_now;map_canvas_active=false;
     if(is_quick) {
-        bool clicked=click_pending;click_pending=false;
+        click_pending=false;hover_until=0;
         uint64_t list=LD64(quick+0x37a8);
-        if(!ptr(list)||quick_confirmed)return true;
-        int count=(int)LD32(quick+0x3880),hit=-1;
+        if(!ptr(list))return true;
+        int count=(int)LD32(quick+0x3880);
         if(count<1||count>20)return true;
         int selected=-1,total=(int)LD32(list+0x2ac);
         if(total<1||total>21)total=count+1;
         for(int i=0;i<total;i++)if(LD32(quick+0x3884+4*i)==LD32(quick+0x387c))selected=i;
         int scroll=atomic_exchange(&wheel,0);
-        static float drag;
-        if(frame_press)drag=0;
-        if(gesture_down&&gesture_dragged) {
-            drag+=gesture_delta[0];
-            if(fabsf(drag)>=47){scroll=(int)roundf(drag/94);drag-=scroll*94;}
-        }
         if(scroll&&selected>=0) {
             int next=selected-scroll;if(next<0)next=0;if(next>=total)next=total-1;
             if(next!=selected) {
@@ -672,22 +673,6 @@ static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
                 call(c,0x7000e2785c,quick,next,0);
                 if(getenv("SAVAGEWIND_PC_CURSOR_LOG"))LOG("[pc-quick-scroll] slot %d -> %d pending %d\n",selected,next,(int)LD32(quick+0x387c));
             }
-        }
-        for(int i=0;i<=20;i++) {
-            uint64_t entry=call(c,0x7000d6fe80,list,i,0);
-            uint64_t child=ptr(entry)?LD64(entry+0x10):0;
-            uint64_t pane=ptr(child)?LD64(child+0x60):0;
-            if(!ptr(pane)&&ptr(child))pane=LD64(child+0x58);
-            if(!ptr(pane))continue;
-            float x=*(float*)(pane+0x7c),y=*(float*)(pane+0x8c);
-            if(getenv("SAVAGEWIND_PC_CURSOR_LOG")&&clicked)LOG("[pc-quick-rect] index %d name %.24s center %.1f %.1f\n",i,(char*)(pane+0xb8),x,y);
-            if(isfinite(x)&&isfinite(y)&&fabsf(point[0]-x)<42&&fabsf(point[1]-y)<42){hit=i;set_hover(x,y,40);}
-        }
-        if(hit>=0&&clicked) {
-            // Preserve the old selection: release of Right invokes the game's normal equip path using pending.
-            call(c,0x7000e2785c,quick,hit,0);
-            quick_confirmed=true;
-            if(getenv("SAVAGEWIND_PC_CURSOR_LOG"))LOG("[pc-quick-click] slot %d pending %d previous %d\n",hit,(int)LD32(quick+0x387c),(int)LD32(quick+0x3878));
         }
         return true;
     }
@@ -1189,7 +1174,7 @@ void rt_pc_cursor_manager(Cpu *c, uint64_t activate, uint64_t bounds) {
     }
     if (!pc_cursor_active()) return;
     sample_pointer();
-    if (!pointer_test() && !position_inside) {
+    if (!quick_wheel_only && !pointer_test() && !position_inside) {
         float keys[2];extern void input_pc_map_axes(float out[2]);input_pc_map_axes(keys);
         if(keys[0]==0&&keys[1]==0)return;
     }
@@ -1305,9 +1290,10 @@ RT_ON_RESET(pc_cursor_reset) {
     hover_leave();
     options_scroll_valid=false;options_scroll=0;options_keyboard=false;options_page_pending=false;pointer_keyboard_input=false;pointer_mouse_events=0;options_keyboard_mouse_events=0;options_screen_active=options_rows_active=0;
     active = false; held = false; frame_press = frame_release = frame_held = false;
+    quick_wheel_only=false;
     click_pending=false;
     injected_manager=0;
-    quick_confirmed=false;confirm_until=hover_until=0;wheel=0;map_down=false;special_frame=UINT64_MAX;
+    confirm_until=hover_until=0;wheel=0;map_down=false;special_frame=UINT64_MAX;
     sampled_frame=UINT64_MAX;gesture_down=gesture_dragged=false;
     map_anchor_active=map_picker_seen=false;map_anchor_deadline=0;
     map_canvas_active=false;map_nav_ns=map_snap_button=0;map_view_valid=false;
