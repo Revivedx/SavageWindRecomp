@@ -743,12 +743,27 @@ const Item *item_of_index(uint32_t idx) {
 const Item *item_of_row(uint64_t row) { return row ? item_of_index(rd32(row + 0x50)) : nullptr; }
 
 // Three rows plus the column header row. No guest object is enlarged and no shared archive is changed.
-struct TwoRow { uint64_t row; };
+// The row band is the toggle part's own plate (Pa_Btn_00, hidden natively, drawn before both buttons): full width, bright
+// while the row is selected. Under the button that is not selected, that part's box (a darkener) cancels the band
+// shining through the semi-transparent native box, so that button keeps its base colour in a selected row.
+struct TwoRow {
+    uint64_t row, tog, band, disable, dark, box[2];
+    float dark_x[2];
+    int dark_col;  // the column the darkener sits under now (-1: not placed yet)
+};
 std::vector<TwoRow> g_two_rows;
+uint64_t g_band_row;
+int g_band_col;
 uint64_t g_two_header;
 int g_two_column;
 uint64_t g_two_current;
 bool g_two_focusing;
+// Debug log of the two-button rows (SAVAGEWIND_ROW_SPIKE_LOG=1); every stderr line costs about 6 ms on Windows
+bool two_log(void) {
+    static int on = -1;
+    if (on < 0) on = getenv("SAVAGEWIND_ROW_SPIKE_LOG") != nullptr;
+    return on;
+}
 
 bool is_binds_header(const Item *it) { return it && it->action == A_BINDS_HEADER; }
 bool row_is_header(uint64_t row) { return row && (row == g_two_header || is_binds_header(item_of_row(row))); }
@@ -814,7 +829,7 @@ bool two_button_panes(uint64_t root, TwoButtonPanes &p) {
         if (!(p.frames[i] = two_pane(root, frames[i]))) return false;
     return (p.plate = two_pane(root, "W_Base_02")) != 0;
 }
-void two_geometry(const TwoButtonPanes &p, BindingRowColumn col, bool owns_plate) {
+void two_geometry(const TwoButtonPanes &p, BindingRowColumn col) {
     const auto layout = binding_row_layout();
     two_float(p.root, 0x30, col.center());
     two_float(p.root, 0x48, 1.f);
@@ -826,14 +841,9 @@ void two_geometry(const TwoButtonPanes &p, BindingRowColumn col, bool owns_plate
     }
     for (int i = 0; i < 8; i++)
         two_float(p.frames[i], 0x50, col.width + (i == 7 ? layout.glow_extra : 0.f));
-    // Each part carries the 540-wide row plate (W_Base_02). Only the first part keeps it, re-centred on the row
-    // (the part's root moved, so its local x is minus the root's x); the second part's copy is hidden.
-    uint8_t flags = *(uint8_t *)(uintptr_t)(p.plate + 0x58);
-    if (owns_plate) {
-        two_float(p.plate, 0x30, -col.center());
-        two_float(p.plate, 0x50, binding_row_plate_width);
-        wr8(p.plate + 0x58, *(uint8_t *)(uintptr_t)(p.plate + 0x58) | 1u);
-    } else wr8(p.plate + 0x58, flags & ~1u);
+    // The part's own row plate is drawn over the first button's box when it is the second part, and is bright only while
+    // its own button is the selected one: both are hidden, the toggle part's plate is the row band (two_band).
+    wr8(p.plate + 0x58, *(uint8_t *)(uintptr_t)(p.plate + 0x58) & ~1u);
 }
 void two_header_geometry(const TwoButtonPanes &p, BindingRowColumn col, float scale) {
     two_float(p.root, 0x30, col.center());
@@ -848,6 +858,60 @@ void two_header_geometry(const TwoButtonPanes &p, BindingRowColumn col, float sc
     for (uint64_t frame : p.frames)
         wr8(frame + 0x58, *(uint8_t *)(uintptr_t)(frame + 0x58) & ~1u);
     wr8(p.plate + 0x58, *(uint8_t *)(uintptr_t)(p.plate + 0x58) & ~1u);
+}
+// Window pane colours are materials: the white colour's alpha is the brightness (band, box). Seen at two places of the pane.
+constexpr unsigned two_mat_alpha[2] = {0x16f, 0x207};
+constexpr uint8_t two_band_selected = 0x10, two_band_faint = 0x02;  // the native values of a focused / unfocused plate
+constexpr uint8_t two_dark_alpha = 0x92;   // the darkener under the other button (one value fits both columns' backdrop)
+constexpr uint8_t two_hover_alpha = 0xde;  // pane alpha of the selected button's box: the band shows through a little
+// The selected button's box is black natively; a little white (linear colour) in it lifts it a notch above the others.
+constexpr unsigned two_mat_white[2] = {0x16c, 0x204};
+constexpr uint8_t two_hover_tint = 0x06;
+void two_alpha(uint64_t pane, uint8_t v) {
+    for (unsigned o : two_mat_alpha) if (*(uint8_t *)(uintptr_t)(pane + o) != v) wr8(pane + o, v);
+}
+void two_tint(uint64_t pane, uint8_t v) {
+    for (unsigned o : two_mat_white)
+        for (unsigned i = 0; i < 3; i++)
+            if (*(uint8_t *)(uintptr_t)(pane + o + i) != v) wr8(pane + o + i, v);
+}
+void two_show(uint64_t pane, bool on) {
+    uint8_t f = *(uint8_t *)(uintptr_t)(pane + 0x58);
+    if ((f & 1u) != (on ? 1u : 0u)) wr8(pane + 0x58, on ? f | 0x11u : (f & ~1u) | 0x10u);
+}
+void two_pane_alpha(uint64_t pane, uint8_t v) {
+    if (*(uint8_t *)(uintptr_t)(pane + 0x59) == v) return;
+    wr8(pane + 0x59, v);
+    wr8(pane + 0x58, *(uint8_t *)(uintptr_t)(pane + 0x58) | 0x10u);
+}
+void two_band_row(TwoRow &r, bool selected, int col) {
+    two_show(r.tog, true);
+    two_show(r.band, true);
+    two_alpha(r.band, selected ? two_band_selected : two_band_faint);
+    two_show(r.disable, selected);
+    if (selected) {
+        int other = 1 - col;
+        if (r.dark_col != other) {
+            two_float(r.dark, 0x30, r.dark_x[other]);
+            r.dark_col = other;
+        }
+        two_alpha(r.dark, two_dark_alpha);
+    }
+    for (int i = 0; i < 2; i++) {
+        bool hover = selected && i == col;
+        two_pane_alpha(r.box[i], hover ? two_hover_alpha : 0xff);
+        two_tint(r.box[i], hover ? two_hover_tint : 0);
+    }
+}
+// One row at a time is the selected one; the rest show the faint band. Also run every frame (two_band_refresh): the
+// game redraws a row's parts when a binding changes.
+void two_band(uint64_t selected, int col) {
+    g_band_row = selected; g_band_col = col;
+    for (auto &r : g_two_rows) two_band_row(r, r.row == selected, col);
+}
+void two_band_refresh(uint64_t screen) {
+    if (g_two_rows.empty() || rd64(g_two_rows[0].row) != screen) return;
+    two_band(g_band_row, g_band_col);
 }
 uint64_t first_selectable_row(uint64_t screen) {
     if (!screen) return 0;
@@ -926,7 +990,16 @@ bool two_configure(uint64_t row) {
         }
     }
     uint64_t row_layout = rd64(row + 0x10);
-    uint64_t title = two_ptr(row_layout) ? two_pane(rd64(row_layout + 0x18), "T_Option_00") : 0;
+    uint64_t layout_root = two_ptr(row_layout) ? rd64(row_layout + 0x18) : 0;
+    uint64_t title = two_ptr(layout_root) ? two_pane(layout_root, "T_Option_00") : 0;
+    TwoRow band = {row, 0, 0, 0, 0, {panes[0].frames[2], panes[1].frames[2]}, {0, 0}, -1};
+    if (!header && title) {
+        band.tog = two_pane(layout_root, "Pa_Btn_00");
+        band.band = two_pane(band.tog, "W_Base_02");
+        band.disable = two_pane(band.tog, "N_Disable_00");
+        band.dark = two_pane(band.disable, "W_Base_00");
+        if (!band.band || !band.disable || !band.dark) title = 0;
+    }
     if (!title) {
         if (header) hide_failed_header(row);
         return false;
@@ -939,10 +1012,7 @@ bool two_configure(uint64_t row) {
         wr8(roots[col] + 0x58, *(uint8_t *)(uintptr_t)(roots[col] + 0x58) | 1);
         const auto column = col ? layout.pad : layout.key;
         if (header) two_header_geometry(panes[col], column, hscale);
-        else two_geometry(panes[col], column, col == 0);
-        fprintf(stderr, "[row-spike] %s %llx column %d button %llx center %.1f width %.1f\n",
-                header ? "header" : "row", (unsigned long long)row, col, (unsigned long long)buttons[col],
-                column.center(), column.width);
+        else two_geometry(panes[col], column);
     }
     for (uint64_t arrow : arrows) wr8(arrow + 0x58, *(uint8_t *)(uintptr_t)(arrow + 0x58) & ~1u);
     if (header) {
@@ -951,7 +1021,27 @@ bool two_configure(uint64_t row) {
     } else {
         two_float(title, 0x30, layout.label_right);
         two_float(title, 0x50, layout.label_width);
-        g_two_rows.push_back({row});
+        // The toggle part: only its plate and its box stay (its other panes are hidden for good).
+        float togx = *(float *)(uintptr_t)(band.tog + 0x30);
+        for (uint64_t c = band.tog, n = 0; n < 2; n++) {
+            uint64_t head = c + 0x20, link = rd64(head + 8);
+            for (unsigned k = 0; k < 16 && two_ptr(link) && link != head; k++, link = rd64(link + 8)) {
+                uint64_t child = link - 8;
+                if (child == band.band || child == band.disable || child == band.dark) continue;
+                wr8(child + 0x58, *(uint8_t *)(uintptr_t)(child + 0x58) & ~1u);
+            }
+            c = band.disable;
+        }
+        band.dark_x[0] = layout.key.center() - togx;
+        band.dark_x[1] = layout.pad.center() - togx;
+        two_float(band.dark, 0x48, 1.f);
+        two_float(band.dark, 0x4c, 1.f);
+        two_float(band.dark, 0x34, 0.f);
+        two_float(band.dark, 0x50, layout.key.width);
+        two_float(band.dark, 0x54, *(float *)(uintptr_t)(panes[0].frames[2] + 0x54));
+        for (int col = 0; col < 2; col++) wr8(panes[col].plate + 0x58, *(uint8_t *)(uintptr_t)(panes[col].plate + 0x58) & ~1u);
+        g_two_rows.push_back(band);
+        two_band_row(g_two_rows.back(), false, 0);
     }
     return true;
 }
@@ -1152,8 +1242,9 @@ extern "C" int rt_opt_two_callback(uint64_t screen, uint64_t button, int which) 
             g_two_column = want; g_two_current = row;
             wr64(screen + 0x36c8, row);
             two_call(g_site.opt_two_help, row);
+            two_band(row, want);
             if (want != col) two_focus(screen, row, want);
-            fprintf(stderr, "[row-spike] select row %llx column %d\n", (unsigned long long)row, want);
+            if (two_log()) fprintf(stderr, "[row-spike] select row %llx column %d\n", (unsigned long long)row, want);
         } else if (which == 1) rt_opt_two_row_state(row);
         else if (which == 2) {
             uint32_t action = rd32(screen + 0x36c0);
@@ -1163,6 +1254,7 @@ extern "C" int rt_opt_two_callback(uint64_t screen, uint64_t button, int which) 
         }
         return 1;
     }
+    if (which == 0 && !g_two_rows.empty() && rd64(g_two_rows[0].row) == screen) two_band(0, 0);  // (another row: Reset)
     return 0;
 }
 extern "C" void rt_opt_two_pointer(uint64_t row, unsigned kind) {
@@ -1324,7 +1416,7 @@ extern "C" int rt_opt_decide(uint64_t row) {
         if (two_ready(row) && g_two_column && !slot_has_pad(it->arg)) return 2;  // (no controller side to bind)
         bind_capture_begin(two_ready(row) ? (g_two_column ? BIND_DEV_PAD : BIND_DEV_KEY) : BIND_DEV_ANY, it->arg);
         cap_slot_was = it->arg;
-        if (two_ready(row)) fprintf(stderr, "[row-spike] capture slot %d device %s\n", it->arg,
+        if (two_ready(row) && two_log()) fprintf(stderr, "[row-spike] capture slot %d device %s\n", it->arg,
                                    g_two_column ? "pad" : "key");
         g_cap_row = row;
         g_dirty.push_back(row);
@@ -1369,6 +1461,7 @@ extern "C" uint64_t rt_opt_tick(uint64_t screen) {
     }
     if (g_size_redraw.exchange(false) && g_size_row) g_dirty.push_back(g_size_row);
     if (!game_options_input_hold()) pc_cursor_options_tick(screen);
+    two_band_refresh(screen);
     if (g_dirty.empty()) return 0;
     uint64_t r = g_dirty.back();
     g_dirty.pop_back();

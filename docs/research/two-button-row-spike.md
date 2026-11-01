@@ -2,6 +2,10 @@
 
 2026-11-01, BotW 1.9.0.
 
+**Status:** the layout now applies to every binding row, with a column header row and a row band
+(darkener under the non-hovered button, slightly lighter hovered button). The text below describes
+the first three-row probe. Corner rounding of the row band is left for a later change.
+
 **Result: three rows render two real native buttons side by side in the running game.**
 The hidden Windows probe reached Title > Options > Key bindings without an observed crash.
 Its screenshot shows Interact, Jump and Attack with separate key/pad text and the native highlight.
