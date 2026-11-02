@@ -1,9 +1,13 @@
 """Differential test: lifted C vs Unicorn, one instruction at a time.
 
-Usage: test_lift.py <nso> <base> [count] [seed]
+Usage: test_lift.py <nso> <base> [count] [seed] [--locals]
+
+--locals: each instruction runs as gen.py --locals makes it (registers and flags in C locals, gen.single_with_locals).
+FP/SIMD is lifted to inline asm on arm64 hosts and to portable C elsewhere, as gen.py does.
 """
-import hashlib
 import os
+import platform
+import zlib
 import random
 import struct
 import subprocess
@@ -12,6 +16,7 @@ import sys
 import unicorn as uc
 from unicorn import arm64_const as A
 
+from gen import single_with_locals
 from lifter import Lifter, Unsupported, emit_asm_batch, bits
 from nso import Nso
 
@@ -108,14 +113,16 @@ def run_unicorn(mu, n, w, pc, state, buf0):
     onz = mu.reg_read(A.UC_ARM64_REG_NZCV) & 0xF0000000
     ov = [mu.reg_read(A.UC_ARM64_REG_Q0 + i) for i in range(32)]
     opc = mu.reg_read(A.UC_ARM64_REG_PC)
-    h = hashlib.md5(bytes(mu.mem_read(BUF, BUF_SIZE))).hexdigest()
+    h = f'{zlib.crc32(bytes(mu.mem_read(BUF, BUF_SIZE))):08x}'
     return ox, osp, onz, ov, opc, h
 
 
 def main():
-    path, base = sys.argv[1], int(sys.argv[2], 0)
-    count = int(sys.argv[3]) if len(sys.argv) > 3 else 3000
-    seed = int(sys.argv[4]) if len(sys.argv) > 4 else 1
+    argv = [a for a in sys.argv if a != '--locals']
+    with_locals = len(argv) != len(sys.argv)
+    path, base = argv[1], int(argv[2], 0)
+    count = int(argv[3]) if len(argv) > 3 else 3000
+    seed = int(argv[4]) if len(argv) > 4 else 1
     r = random.Random(seed)
     n = Nso(path)
     lo, hi = n.text[0], n.text[0] + n.text[1]
@@ -125,7 +132,7 @@ def main():
     seen, picks = set(), []
     order = list(range(len(words)))
     r.shuffle(order)
-    lifter = Lifter(base)
+    lifter = Lifter(base, 'asm' if platform.machine().lower() in ('arm64', 'aarch64') else 'c')
     unsupported = {}
     for i in order:
         w = words[i]
@@ -137,6 +144,8 @@ def main():
         try:
             ins = lifter.lift(w, pc)
             body = to_test_body(ins, pc)
+            if with_locals and ins.kind != 'asm':
+                body = single_with_locals(body)
         except Unsupported as e:
             unsupported[str(e).split(' ')[0]] = unsupported.get(str(e).split(' ')[0], 0) + 1
             continue
@@ -144,7 +153,7 @@ def main():
         if len(picks) >= count:
             break
 
-    work = os.path.join(ROOT, 'build', 'test_lift')
+    work = os.path.join(ROOT, 'build', 'test_lift' + ('_locals' if with_locals else ''))
     os.makedirs(work, exist_ok=True)
     img_path = os.path.join(work, 'image.bin')
     with open(img_path, 'wb') as f:
@@ -156,9 +165,10 @@ def main():
         f.write('GuestFn tests[] = {' + ','.join(f't{k}' for k in range(len(picks))) + '};\n')
         f.write(f'int ntests = {len(picks)};\n')
     harness = os.path.join(ROOT, 'tools', 'test_harness.c')
-    exe = os.path.join(work, 'harness')
-    subprocess.check_call(['clang', '-O1', '-Wno-deprecated-declarations', '-fno-strict-aliasing', '-I', os.path.join(ROOT, 'runtime'),
-                           '-o', exe, harness, os.path.join(work, 'tests.c')])
+    exe = os.path.join(work, 'harness.exe' if os.name == 'nt' else 'harness')
+    native = ['-march=x86-64-v3'] if platform.machine().lower() in ('amd64', 'x86_64') else []
+    subprocess.check_call(['clang', '-O1'] + native + ['-Wno-deprecated-declarations', '-fno-strict-aliasing', '-I',
+                           os.path.join(ROOT, 'runtime'), '-o', exe, harness, os.path.join(work, 'tests.c')])
 
     mu = uc.Uc(uc.UC_ARCH_ARM64, uc.UC_MODE_ARM)
     mu.mem_map(base, len(n.image))

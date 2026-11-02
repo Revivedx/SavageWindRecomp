@@ -538,6 +538,9 @@ void build_items(void) {
                        [](const Item &, int x) { g_settings.movie_audio = x; }, 1));
 
     // Controls
+    v.push_back(toggle(P_CONTROLS, "Controller rumble", "Vibrate the controller during play.",
+                       [](const Item &) { return (int)g_settings.rumble; },
+                       [](const Item &, int x) { g_settings.rumble = x; }, 1));
     v.push_back(toggle(P_CONTROLS, "D-pad as left stick", "The d-pad also moves like the left stick.",
                        [](const Item &) { return (int)g_settings.dpad_move; },
                        [](const Item &, int x) { g_settings.dpad_move = x; }, 0));

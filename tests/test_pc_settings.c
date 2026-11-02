@@ -12,10 +12,12 @@ int input_pad_family(void) { return 0; }
 bool fsr3_upscaler_enabled(void) { return false; }
 
 int main(int argc, char **argv) {
-    assert(argc == 3);
+    assert(argc == 4);
     setenv("SAVAGEWIND_SETTINGS", argv[1], 1);
     settings_load();
     assert(g_settings.pc_cursor == (atoi(argv[2]) != 0));
+    assert(g_settings.rumble == (atoi(argv[3]) != 0));
+    g_settings.rumble = !g_settings.rumble;
     // UI changes must remain possible even when startup debug overrides were supplied.
     g_settings.pc_cursor = !g_settings.pc_cursor;
     settings_save();

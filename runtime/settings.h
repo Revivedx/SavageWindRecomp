@@ -68,6 +68,8 @@ typedef struct {
     int perf_overlay;    // PERF_*: the performance overlay (F10 cycles it)
     int fps_limit;       // frame rate, frames per second (FPS_CHOICES; 0: no limit)
     int vsync;           // VSYNC_*
+    bool rumble;         // controller vibration
+    int gpu;             // Vulkan adapter index from the startup log; -1: automatic (restart required)
     bool dpad_move;      // the d-pad (and arrow keys) also act as the left stick while it is at rest
     float stick_deadzone[2];  // left, right stick: a controller's stick reads 0 within this much of full tilt (radial)
     bool mouse_camera;   // the mouse turns the camera (right stick); the cursor is held in the window while playing
@@ -80,7 +82,8 @@ typedef struct {
     float motion_sens;   // motion controls: how far turning the controller turns the aim, 1 = 100%
     int motion_invert;   // MOTION_INVERT_* bits: turning the controller up / down, left / right goes the other way
     int button_icons;    // ICONS_*: the game's button prompts show this device's buttons (Automatic: the one in use)
-    bool async_shaders;  // draw on while new shaders compile (no stutter; what needs them is skipped meanwhile)
+    bool async_shaders;  // draw on while new shaders compile (no stutter; what needs them is skipped meanwhile; on by
+                         // default since settings_version 4; off: every draw waits for its shaders, as before)
     bool precompile_shaders;  // setting the game files up also precompiles every shader (runtime/nvn/precompile.h)
     int shadow_res;      // SHADOW_*: shadow maps at the console's size or bigger
     bool wide_view;      // a window that isn't 16:9 shows more of the world instead of bars (runtime/nvn/output_scale.c)

@@ -964,11 +964,8 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         int64_t ns = (int64_t)x[0];
         if (ns <= 0) { core_yield(t_cur); break; }
         core_release(t_cur);
-        for (uint64_t end = plat_now_ns() + (uint64_t)ns, now; !g_rt_unwind && (now = plat_now_ns()) < end;) {
-            uint64_t d = end - now < 50000000 ? end - now : 50000000;
-            struct timespec ts = {(time_t)(d / 1000000000), (long)(d % 1000000000)};
-            nanosleep(&ts, NULL);
-        }
+        for (uint64_t end = plat_now_ns() + (uint64_t)ns, now; !g_rt_unwind && (now = plat_now_ns()) < end;)
+            plat_wait_until_ns(end - now < 50000000 ? end : now + 50000000);  // (not nanosleep: see plat_wait_until_ns)
         core_acquire(t_cur);
         break;
     }

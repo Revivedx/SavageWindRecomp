@@ -143,6 +143,15 @@ bool framepace_loading_ui(void) { return screen_up(0x55); }
 
 // (pause state 2: the pause menu's pages and the map; 4 is the quick menus over the game)
 bool framepace_menu_ui(void) { return *(uint32_t *)(uintptr_t)PAUSE_STATE == 2; }
+bool framepace_map_ui(void) {
+    if (!framepace_menu_ui()) return false;
+    uint64_t mgr = *(uint64_t *)(uintptr_t)g_site.screen_mgr;
+    if (!mgr || VF(uint32_t, mgr, 0x28) <= 0x2f) return false;
+    uint64_t arr = VF(uint64_t, mgr, 0x30);
+    if (!arr || VF(uint64_t, arr, 8 * 0x2f)) return false;  // inventory covers the map
+    uint64_t map = VF(uint64_t, arr, 8 * 0x2a);
+    return map && VF(uint8_t, map, 0xfe) == 2;  // same active map screen as pc_cursor.c
+}
 bool framepace_paused(void) { return in_menu(); }
 
 int framepace_target(void) {

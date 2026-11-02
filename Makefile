@@ -37,6 +37,11 @@ CC       := clang $(MINFLAG) $(CROSS)
 CXX      := clang++ $(MINFLAG) $(CROSS)
 IMGUI    := third_party/imgui
 GENFLAGS := -O1 -fno-strict-aliasing -Wno-return-type -Wno-unused-label -fvisibility=hidden -Iruntime
+# RECOMP_LOCALS=1 (the default since Alpha 5): the generator keeps each function's most used registers and its flags in
+# C locals (gen.py --locals, docs/RECOMP-LOCALS.md); RECOMP_LOCALS=0 builds the plain game code. It is part of
+# GAMELIB_ID, so a library built one way is never loaded for the other.
+RECOMP_LOCALS ?= 1
+GENLOCALS := $(if $(filter 1,$(RECOMP_LOCALS)),--locals)
 # The start screen's zig cc reads -O1 as its own "fast" mode (clang -O2 with the loop and SLP vectorizers) and adds
 # debug info and frame pointers: these give it what clang -O1 builds here, in a third less time (runtime/gamebuild.c)
 GENFLAGS_ZIG := -Xclang $(filter -O%,$(GENFLAGS)) -fno-vectorize -fno-slp-vectorize -g0 -fomit-frame-pointer
@@ -130,10 +135,10 @@ endif
 # GAMELIB_ID: what the game code library is built from (the generator, the headers it is compiled against, the
 # flags). A library with another id is rebuilt by the start screen, never loaded.
 GAMELIB_SRCS := tools/gen.py tools/lifter.py tools/analyze.py tools/nso.py tools/passes.py tools/patches.py \
-                tools/simd_c.py tools/gamelib_entry.c runtime/hle/hle_symbols.txt \
+                tools/simd_c.py tools/regs.py tools/flags.py tools/gamelib_entry.c runtime/hle/hle_symbols.txt \
                 runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/simd_softfma.h runtime/gamelib.h
 GAMELIB_SRCS += tools/layout.py tools/game_sites.py
-GAMELIB_ID := $(shell (cat $(GAMELIB_SRCS); echo '$(strip $(GENFLAGS))'; echo '$(GENFLAGS_ZIG)') | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
+GAMELIB_ID := $(shell (cat $(GAMELIB_SRCS); echo '$(strip $(GENFLAGS))'; echo '$(GENFLAGS_ZIG)'; echo 'gen $(GENLOCALS)') | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
 # The compatible target (#9): x86-64 CPUs without AVX2 / FMA / BMI2 get the game code built with GENARCH_COMPAT in
 # place of GENARCH (no -mfma: simd.h's fma is runtime/simd_softfma.h, slower). The start screen builds the one the CPU
 # runs (runtime/gamelib.h gamelib_compat); its id differs, so neither library is ever loaded in place of the other.
@@ -141,18 +146,28 @@ GAMELIB_ID := $(shell (cat $(GAMELIB_SRCS); echo '$(strip $(GENFLAGS))'; echo '$
 ifneq ($(strip $(GENARCH)),)
 ifneq ($(strip $(GENARCH_COMPAT)),)
 GENFLAGS_COMPAT := $(subst $(strip $(GENARCH)),$(strip $(GENARCH_COMPAT)),$(GENFLAGS))
-GAMELIB_ID_COMPAT := $(shell (cat $(GAMELIB_SRCS); echo '$(strip $(GENFLAGS_COMPAT))'; echo '$(GENFLAGS_ZIG)') | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
+GAMELIB_ID_COMPAT := $(shell (cat $(GAMELIB_SRCS); echo '$(strip $(GENFLAGS_COMPAT))'; echo '$(GENFLAGS_ZIG)'; echo 'gen $(GENLOCALS)') | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
 GAMELIB_TARGETS := -DGAMELIB_ARCH='"$(strip $(GENARCH))"' -DGAMELIB_ARCH_COMPAT='"$(strip $(GENARCH_COMPAT))"' \
                    -DGAMELIB_ID_COMPAT='"$(GAMELIB_ID_COMPAT)"'
 endif
 endif
 
-# TRANSLATOR_ID / SPIRV_ID: what translated shaders and their SPIR-V are made from (the Maxwell translator, the
-# GLSL -> SPIR-V step). The shader caches (cache/xlate, cache/spirv, the pipeline cache and list) are kept while these
-# stay the same, so builds that do not touch those sources keep them.
+# TRANSLATOR_ID / SPIRV_ID: what translated shaders and their SPIR-V are made from: the Maxwell translator (its
+# source and the header with the key and the output structures it fills), and the GLSL -> SPIR-V step. The shader
+# caches (cache/xlate, cache/spirv, the pipeline list, the precompiled libraries) are kept while these stay the same,
+# so builds and updates that do not touch those sources keep them; the device-dependent switches the translator reads
+# at run time are not in here (runtime/nvn/maxwell/translate.c maxwell_translation_variant: a translation records
+# them itself). Baked into the generated header $(B)/inc/shader_ids.h, rewritten only when a hash changes, which
+# translate.o and spirv.o include ahead of their source (-include) and depend on.
 TRANSLATOR_SRCS := runtime/nvn/maxwell/translate.c runtime/nvn/maxwell/shader.h
+SPIRV_SRCS := runtime/nvn/vulkan/spirv.c
 TRANSLATOR_ID := $(shell cat $(TRANSLATOR_SRCS) | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
-SPIRV_ID := $(shell cat runtime/nvn/vulkan/spirv.c | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
+SPIRV_ID := $(shell cat $(SPIRV_SRCS) | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
+SHADER_IDS := $(B)/inc/shader_ids.h
+# (compared with cat and test, not cmp: MSYS2 has no diffutils unless installed, and a rewrite at every make would
+# recompile the translator each time)
+$(shell mkdir -p $(B)/inc && printf '#define TRANSLATOR_ID "%s"\n#define SPIRV_ID "%s"\n' '$(TRANSLATOR_ID)' '$(SPIRV_ID)' > $(SHADER_IDS).new && \
+        if [ "$$(cat $(SHADER_IDS) 2>/dev/null)" = "$$(cat $(SHADER_IDS).new)" ]; then rm -f $(SHADER_IDS).new; else mv -f $(SHADER_IDS).new $(SHADER_IDS); fi)
 
 # SW_SOURCE: the source this build is made from, in the log's first line (runtime/main.c): its commit and tree, and
 # "modified" when the runtime, the tools or this Makefile differ from them ("unknown" outside a git checkout). A
@@ -201,8 +216,8 @@ $(B)/obj/layout.o: runtime/gamelib.h
 $(B)/obj/tools/gamelib_entry.o: tools/gamelib_entry.c $(GAMELIB_SRCS) Makefile  # (the id: the flags are in here too)
 	@mkdir -p $(dir $@)
 	$(CC) $(GENFLAGS) -DGAMELIB_ID='"$(GAMELIB_ID)"' -c $< -o $@
-$(B)/rt/nvn/maxwell/translate.o: RTFLAGS += -DTRANSLATOR_ID='"$(TRANSLATOR_ID)"'
-$(B)/rt/nvn/vulkan/spirv.o: RTFLAGS += -DSPIRV_ID='"$(SPIRV_ID)"'
+$(B)/rt/nvn/maxwell/translate.o $(B)/rt/nvn/vulkan/spirv.o: $(SHADER_IDS)
+$(B)/rt/nvn/maxwell/translate.o $(B)/rt/nvn/vulkan/spirv.o: RTFLAGS += -include $(SHADER_IDS)
 $(B)/rt/main.o: $(B)/source_id
 $(B)/rt/main.o: RTFLAGS += -DSW_SOURCE='"$(SW_SOURCE)"'
 $(B)/rt/gamelib.o: $(GAMELIB_SRCS) Makefile
@@ -211,7 +226,7 @@ $(B)/rt/gamelib.o: RTFLAGS += -DGAMELIB_ID='"$(GAMELIB_ID)"' $(GAMELIB_TARGETS)
 $(B)/rt/gamebuild.o: $(GAMELIB_SRCS) Makefile
 $(B)/rt/gamebuild.o: RTFLAGS += -DGAMELIB_CFLAGS='"$(strip $(filter-out -Iruntime,$(GENFLAGS)))"' \
                                 $(if $(GENFLAGS_COMPAT),-DGAMELIB_CFLAGS_COMPAT='"$(strip $(filter-out -Iruntime,$(GENFLAGS_COMPAT)))"') \
-                                -DGAMELIB_ZIGFLAGS='"$(GENFLAGS_ZIG)"' -DGAMELIB_SHARED='"$(GAMELIB_SHARED)"'
+                                -DGAMELIB_ZIGFLAGS='"$(GENFLAGS_ZIG)"' -DGAMELIB_SHARED='"$(GAMELIB_SHARED)"' -DGAMELIB_GENARGS='"$(GENLOCALS)"'
 
 # Windows guarded memory scans use SEH.
 $(B)/rt/memscan_os.o: RTFLAGS += -fms-extensions
@@ -273,7 +288,7 @@ PY := $(firstword $(wildcard tools/venv/bin/python) $(wildcard tools/venv/Script
 
 # GENARGS=--any-version: a game version not supported yet (tools/game_sites.py; docs/SAVAGE-WIND.md)
 gen:  # every module of the exefs, at the addresses tools/layout.py gives them
-	cd tools && ../$(PY) gen.py all ../extracted/exefs ../$(GEN) --hle ../runtime/hle/hle_symbols.txt $(GENSIMD) $(GENARGS)
+	cd tools && ../$(PY) gen.py all ../extracted/exefs ../$(GEN) --hle ../runtime/hle/hle_symbols.txt $(GENSIMD) $(GENLOCALS) $(GENARGS)
 
 gen-objs: $(GEN_OBJ)
 
@@ -339,6 +354,7 @@ dist:
 	cp runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/simd_softfma.h runtime/gamelib.h tools/gamelib_entry.c \
 	    runtime/hle/hle_symbols.txt "$(DIST)/gamelib-src/"
 	cp docs/icon/icon_1024.png "$(DIST)/icon.png"
+	cp runtime/nvn/vulkan/vk_pipelines.seed "$(DIST)/"  # (the pipeline seed the precompilation reads: hashes and render state, nothing of the game)
 	cp third_party/fonts/FiraSans/FiraSans-SemiBold.ttf third_party/fonts/FiraSans/FiraSans-Medium.ttf "$(DIST)/"  # (menus, OFL)
 	cp third_party/fonts/FiraSans/OFL.txt "$(DIST)/FiraSans-OFL.txt"
 	cp third_party/fonts/NotoSansThai/NotoSansThai-Medium.ttf "$(DIST)/"  # (Thai menus, OFL)
@@ -416,6 +432,22 @@ $(B)/test_pc_settings: tests/test_pc_settings.c runtime/settings.c runtime/setti
 	@mkdir -p $(dir $@)
 	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< -lSDL3 -lm
 
+$(B)/test_gpu_settings: tests/test_gpu_settings.c runtime/settings.c runtime/settings.h runtime/gpu_select.h runtime/hle/bindings.c
+	@mkdir -p $(dir $@)
+	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< -lSDL3 -lm
+
+test-gpu-settings: $(B)/test_gpu_settings
+	@set -e; tmp=$$(mktemp); trap 'rm -f "$$tmp"' EXIT; \
+	 $(B)/test_gpu_settings "$$tmp" -1; \
+	 for value in auto 0 1 2147483647 -1 nvidia 1junk 2147483648 99999999999999999999999999999; do \
+	   case "$$value" in 0|1|2147483647) expected=$$value;; *) expected=-1;; esac; \
+	   printf 'settings_version = 3\ngpu = %s  \r\n' "$$value" > "$$tmp"; \
+	   $(B)/test_gpu_settings "$$tmp" "$$expected"; \
+	   $(B)/test_gpu_settings "$$tmp" "$$expected"; \
+	 done
+
+.PHONY: test-gpu-settings
+
 $(B)/test_options_pointer: tests/test_options_pointer.c runtime/pc_cursor.c runtime/pc_cursor.h runtime/pc_cursor_math.h
 	@mkdir -p $(dir $@)
 	$(CC) -O2 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -isystem third_party -o $@ $< -fuse-ld=lld -Wl,--gc-sections $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) -lSDL3 -lm
@@ -425,13 +457,22 @@ test-pc-controls: $(B)/test_pc_controls $(B)/test_pc_settings $(B)/test_options_
 	$(B)/test_options_pointer
 	@set -e; tmp=$$(mktemp); trap 'rm -f "$$tmp"' EXIT; \
 	 printf 'settings_version = 3\npc_cursor = 1\n' > "$$tmp"; \
-	 $(B)/test_pc_settings "$$tmp" 1; \
-	 $(B)/test_pc_settings "$$tmp" 0; \
-	 SAVAGEWIND_PC_CURSOR=0 $(B)/test_pc_settings "$$tmp" 0
+	 $(B)/test_pc_settings "$$tmp" 1 1; \
+	 $(B)/test_pc_settings "$$tmp" 0 0; \
+	 SAVAGEWIND_PC_CURSOR=0 $(B)/test_pc_settings "$$tmp" 0 1
 
 .PHONY: test-pc-controls
 
-$(B)/test_vibration: tools/test_vibration.c runtime/hle/vibration.c runtime/vibration.h runtime/services/hid_set.c
+$(B)/test_output_scale: tests/test_output_scale.c runtime/nvn/output_scale.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -O1 -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< -fuse-ld=lld -Wl,--gc-sections -lpthread -lm
+
+test-output-scale: $(B)/test_output_scale
+	$(B)/test_output_scale
+
+.PHONY: test-output-scale
+
+$(B)/test_vibration: tools/test_vibration.c runtime/hle/vibration.c runtime/vibration.h runtime/settings.h runtime/services/hid_set.c
 	@mkdir -p $(B)
 	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_vibration.c -lpthread -lm
 

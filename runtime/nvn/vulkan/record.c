@@ -132,6 +132,8 @@ static inline void *after(const void *args, size_t args_size) { return (uint8_t 
 // ---- the thread
 static void *run(void *arg) {
     (void)arg;
+    extern void control_prof_thread(const char *name);  // runtime/control_prof.c (`threads`)
+    control_prof_thread("recorder");
     uint64_t t = 0;
     for (;;) {
         uint64_t h = atomic_load_explicit(&head, memory_order_acquire);
@@ -179,8 +181,16 @@ void rec_init(void) {
         pthread_attr_init(&attr);
         pthread_attr_setstacksize(&attr, 1 << 20);
         ring_cap = cap;  // (before the thread exists)
-        if (!ring || pthread_create(&th, &attr, run, NULL) != 0) {
-            LOG("[vk] recorder thread: could not start (%s): Vulkan calls on the queue thread\n", ring ? "thread" : "memory");
+        int rc = ring ? pthread_create(&th, &attr, run, NULL) : 0;
+        if (rc) {
+            // glibc takes the static TLS of every thread out of its stack and fails with EINVAL when a requested
+            // size leaves no room for it; the default stack (8 MB on Linux) does
+            LOG("[vk] recorder thread: a 1 MB stack failed (%s), trying the default stack\n", strerror(rc));
+            rc = pthread_create(&th, NULL, run, NULL);
+        }
+        if (!ring || rc) {
+            LOG("[vk] recorder thread: could not start (%s, error %d): Vulkan calls on the queue thread\n",
+                ring ? strerror(rc) : "out of memory", rc);
             free(ring);
             ring = NULL;
             ring_cap = 0;

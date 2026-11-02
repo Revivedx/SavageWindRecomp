@@ -13,6 +13,7 @@
 #include "shaders.h"
 #include "../../settings.h"
 #include "../astc.h"
+#include "../../perfcount.h"
 #include "../glyphs.h"
 #include "../renderer.h"
 
@@ -316,6 +317,29 @@ void vk_collect_dead(void) {
     ndead = k;
 }
 
+static uint64_t storage_size(const NvnTexture *t);
+
+// (control `memstats`) texture memory by kind: what an image holds of its memory, until it is destroyed
+static void texmem_note(const NvnTexture *t, TexBackend *b, bool depthfmt) {
+    VmaAllocationInfo mi;
+    vmaGetAllocationInfo(g_vk.vma, b->mem, &mi);
+    VkFormat f = b->format;
+    b->mem_kind = b->astc_bw ? TM_ASTC_RGBA8
+                : f >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && f <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK ? TM_ASTC_NATIVE
+                : f >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && f <= VK_FORMAT_BC7_SRGB_BLOCK ? TM_BC
+                : depthfmt || (t->flags & 9) ? TM_RT : TM_OTHER;  // (NVN compressible or display flag: render targets)
+    b->mem_bytes = (int64_t)mi.size;
+    b->mem_src = b->astc_bw ? (int64_t)storage_size(t) : 0;
+    texmem_add(b->mem_kind, b->mem_bytes, 1);
+    if (b->mem_src) texmem_add(TM_ASTC_SRC, b->mem_src, 1);
+}
+static void texmem_forget(TexBackend *b) {
+    if (!b->mem_bytes) return;
+    texmem_add(b->mem_kind, -b->mem_bytes, -1);
+    if (b->mem_src) texmem_add(TM_ASTC_SRC, -b->mem_src, -1);
+    b->mem_bytes = b->mem_src = 0;
+}
+
 static bool is_bc_or_astc(VkFormat f) {
     return (f >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && f <= VK_FORMAT_BC7_SRGB_BLOCK) ||
            (f >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && f <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK);
@@ -482,6 +506,7 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     static uint64_t serials;
     b->serial = __atomic_add_fetch(&serials, 1, __ATOMIC_RELAXED);
     b->format = vf;
+    texmem_note(t, b, depthfmt);
     b->width = tw; b->height = th; b->depth = depth; b->layers = layers; b->levels = levels; b->samples = samples;
     b->aspect = depthfmt ? aspect_of(t->format) : VK_IMAGE_ASPECT_COLOR_BIT;
     b->base_type = type == VK_IMAGE_TYPE_1D ? (layers > 1 ? VK_IMAGE_VIEW_TYPE_1D_ARRAY : VK_IMAGE_VIEW_TYPE_1D)
@@ -553,6 +578,7 @@ static void destroy_image(TexBackend *b) {
         }
     b->block = NULL;
     views_forget(b);
+    texmem_forget(b);
     if (b->image || b->mem) defer((Dead){.img = b->image, .mem = b->mem});  // (never the same allocation twice)
     b->image = VK_NULL_HANDLE;
     b->mem = VK_NULL_HANDLE;
@@ -883,6 +909,7 @@ static void upload_texture(NvnTexture *t, TexBackend *b, bool written) {
     if (b->uploaded && h != b->data_hash && !written) b->dynamic = true;
     b->data_hash = h;
     b->uploaded = true;
+    perfcount_add(PC_TEX_BYTES, total);
     {   // (debugging) SAVAGEWIND_DUMP_RAW=<w>x<h>x<nvn format hex>: the guest storage of such textures as uploaded
         static const char *e = (const char *)1;
         if (e == (const char *)1) e = getenv("SAVAGEWIND_DUMP_RAW");
@@ -1016,7 +1043,10 @@ static void upload_levels(NvnTexture *t, TexBackend *b, uint32_t level_mask) {
                 if (linear) for (uint32_t y = 0; y < l.hb; y++) memcpy(blocks + (uint64_t)y * l.wb * 16, src + (uint64_t)y * t->stride, l.wb * 16);
                 else tegra_deswizzle(src, blocks, l.wb, l.hb, 1, 16, l.block_height_log2, l.block_depth_log2);
                 VkSpan s = vk_transient((uint64_t)l.w * l.h * 4, 16);
+                uint64_t at0 = SDL_GetTicksNS();
                 astc_decode_ldr(blocks, l.w, l.h, b->astc_bw, b->astc_bh, b->astc_srgb, s.ptr);
+                perfcount_add(PC_ASTC_NS, SDL_GetTicksNS() - at0);
+                perfcount_add(PC_ASTC_BYTES, (uint64_t)l.w * l.h * 4);
                 free(blocks);
                 VkBufferImageCopy rg = {.bufferOffset = s.off, .bufferRowLength = l.w, .bufferImageHeight = l.h,
                                         .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv, layer, 1},
@@ -1244,6 +1274,7 @@ void vk_texture_drop_format_list(NvnTexture *t) {
     VkImage old = b->image;
     VmaAllocation old_mem = b->mem;
     views_forget(b);
+    texmem_forget(b);
     b->image = VK_NULL_HANDLE;
     b->mem = VK_NULL_HANDLE;
     create_image(t, b);  // (feedback_seen: no list; its layout is set in the upload buffer, which runs first)

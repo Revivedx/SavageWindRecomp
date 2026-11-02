@@ -14,6 +14,11 @@ patterns all find (bringing up a new version); --no-sites generates without site
 of tools/test_layout.py).
 
 --simd: FP/SIMD/CRC32 as AArch64 inline asm (default on arm64 hosts) or portable C (default elsewhere).
+
+--locals: each function keeps its most used registers (tools/regs.py) and its flags (tools/flags.py) in C locals
+instead of the Cpu, so clang can hold them in host registers (docs/RECOMP-LOCALS.md). --reg-locals N: how many
+registers (default 6); --no-callee-saved-trust: reload X19-X29 and SP after every call too. The Makefile's
+RECOMP_LOCALS=1 (the default) passes --locals, and the start screen's build (runtime/gamebuild.c) the same.
 """
 import argparse
 import bisect
@@ -31,14 +36,18 @@ import capstone
 import unicorn as uc
 from unicorn import arm64_const as A
 
+import flags
 import game_sites
 import layout
 import patches
+import regs
 from analyze import eh_frame_extents, eh_frame_functions
 from lifter import Insn, Lifter, Unsupported, bits, emit_asm_batch, hx, sext
 from nso import Nso, R_AARCH64_JUMP_SLOT, R_AARCH64_RELATIVE, header
 
 SCRATCH_MEM = 0x7300000000
+# An instruction's C reads the flags (Module._reads_flags; from PR #324 by Hiorac)
+FLAG_READ = re.compile(r'\b(?:COND_|FLAG_)|\b(?:adc|sbc|adcs|sbcs)\d+\(|c->nzcv(?! =)')
 
 
 def sext26(w):
@@ -65,8 +74,16 @@ def sanitize(sym):
     return 'hle_' + re.sub(r'[^A-Za-z0-9_]', '_', sym)
 
 
+class Locals:
+    """gen.py --locals: registers per function in locals (tools/regs.py), and the registers a call leaves alone."""
+
+    def __init__(self, n=regs.LOCALS, callee_saved=True):
+        self.n = n
+        self.kept = regs.CALLEE_SAVED if callee_saved else frozenset()
+
+
 class Module:
-    def __init__(self, name, path, base, simd='asm'):
+    def __init__(self, name, path, base, simd='asm', locals_=None):
         self.name = name
         self.nso = Nso(path)
         self.base = base
@@ -85,6 +102,8 @@ class Module:
         self.jt_cache = {}
         self.setjmps = self.setjmp_targets()
         self.sites, self.patches = {}, {}  # (main: tools/game_sites.py, tools/patches.py)
+        self.locals = locals_  # Locals, or None: registers and flags stay in the Cpu
+        self.entry_flags = {}  # (_entry_flags)
 
     def in_text(self, a):
         return self.lo <= a < self.hi and a % 4 == 0
@@ -217,6 +236,44 @@ class Module:
         if ins.kind == 'asm':
             return ins.asm.flags
         return ins.kind == 'op' and re.search(r'\b(adds|subs|adcs|sbcs|logic)\d+\(|nzcv', ins.code) is not None
+
+    # Whether code reads the flags it is entered with (from PR #324 by Hiorac, "Recompiled code: flags in a local where
+    # only the function can see them"). gen.py --locals uses it to publish the flags before a call only to a callee
+    # that reads them, and at a tail exit only when the code jumped to may read them before it sets them.
+    def _reads_flags(self, a):
+        ins = self.lift(a)
+        text = ins.cond if ins.kind == 'bcond' else ins.code if ins.kind == 'op' else ''
+        return FLAG_READ.search(text) is not None
+
+    def _entry_flags(self, a, unknown, depth=4):
+        """Does the code at a read the flags before setting them? A call or a return ends the search with no: the
+        AArch64 calling convention keeps no flags across them. unknown: the answer where the code can't be followed."""
+        key = a, unknown, depth
+        if key not in self.entry_flags:
+            self.entry_flags[key] = self._find_flag_use(a, unknown, depth)
+        return self.entry_flags[key]
+
+    def _find_flag_use(self, a, unknown, depth):
+        for _ in range(32):
+            if not self.in_text(a) or a in self.patches:
+                return unknown
+            if self._reads_flags(a):
+                return True
+            if self._sets_flags(a):
+                return False
+            ins = self.lift(a)
+            if ins.kind in ('bl', 'blr', 'ret', 'trap'):
+                return False
+            if ins.kind == 'br' or ins.kind == 'asm':
+                return unknown
+            if ins.kind == 'b':
+                a = ins.target
+                continue
+            if ins.kind == 'bcond':  # (cbz, tbz: a flag test is a read, above)
+                if depth == 0 or self._entry_flags(ins.target, unknown, depth - 1):
+                    return True if depth else unknown
+            a += 4
+        return unknown
 
     def _guard_cmp(self, guard, lo):
         """The `cmp idx, #imm` that sets the flags a bounds check at guard tests, or None. Only straight-line
@@ -429,6 +486,60 @@ class Module:
         self._refs = refs
         return out
 
+    def _flow(self, entry, end, tables):
+        """Successors of each instruction of entry..end inside it (gen.py --locals). Index n = (end - entry) / 4 stands
+        for falling through into the next function and has none. A patch site goes on to the next instruction and to
+        the labels its C jumps to."""
+        def idx(t):
+            return [(t - entry) // 4] if entry <= t < end else []
+
+        succ = []
+        for i, a in enumerate(range(entry, end, 4)):
+            ins = self.lift(a)
+            k = ins.kind
+            if a in self.patches:
+                text = self.patches[a](self, a)
+                succ.append([i + 1] + [t for g in re.findall(r'goto L_([0-9a-f]+);', text) for t in idx(int(g, 16))])
+            elif k in ('op', 'asm', 'bl', 'blr'):
+                succ.append([i + 1])
+            elif k == 'b':
+                succ.append(idx(ins.target))
+            elif k == 'bcond':
+                succ.append(idx(ins.target) + [i + 1])
+            elif k == 'br':
+                jt = tables.get(a)
+                succ.append([t for x in jt for t in idx(x)] if jt and jt != 'all' else [])
+            else:  # ret, trap
+                succ.append([])
+        succ.append([])
+        return succ
+
+    def _flag_plan(self, entry, end, tables, succ):
+        """tools/flags.py plan of entry..end over the flow succ (_flow)."""
+        n = (end - entry) // 4
+        # (a fall into the next function, or a tail branch, publishes only if the code there can read them first)
+        mems, effects, exits = set(), [], {n} if end >= self.hi or self._entry_flags(end, True) else set()
+        for i, a in enumerate(range(entry, end, 4)):
+            ins = self.lift(a)
+            k = ins.kind
+            if a in self.patches:
+                mems.add(i)
+                exits.add(i)   # (its C sees the Cpu's flags: they are published before it)
+                effects.append((False, None))
+                continue
+            if k in ('bl', 'blr'):
+                mems.add(i)
+                if k == 'bl' and self._entry_flags(ins.target, False):
+                    exits.add(i)   # (a callee that reads the flags it is handed: none in BOTW 1.9.0, AAPCS64 has none)
+            elif k in ('b', 'bcond') and not entry <= ins.target < end:
+                if not self.in_text(ins.target) or self._entry_flags(ins.target, True):
+                    exits.add(i)
+            elif k == 'br':
+                exits.add(i)   # through rt_dispatch, a table's miss or its cases outside the function
+            effects.append(flags.effect(ins.cond if k == 'bcond' else ins.code or ''))
+        effects.append((False, None))
+        return flags.plan(effects, succ, mems, exits)
+
     def _emit_body(self, entry, end, labels, tables, refs, mode):
         """One C function for entry..end. mode: 'plain' (the all-instruction fallback inside when it has tables),
         'fast' (a table miss goes on in <name>_r) or 'resume' (<name>_r: from c->pc, through that fallback)."""
@@ -439,34 +550,71 @@ class Module:
             out = [head, '    goto L_dispatch;']
         else:
             out = [f'void {fname(entry)}(Cpu *c) {{', f'    FN_ENTER({hx(entry)});']
+        all_labels = mode == 'resume' or (mode == 'plain' and bool(tables))
+        # Registers and flags in locals (tools/regs.py, tools/flags.py; gen.py --locals): not where the all-instruction
+        # fallback switches on c->pc to any instruction, nor around FP/SIMD inline asm, which works on the Cpu.
+        local = (self.locals is not None and not all_labels
+                 and not any(self.lift(a).kind == 'asm' for a in range(entry, end, 4)))
+        spill, reload, reload_call = (regs.SPILL, regs.RELOAD, regs.RELOAD_CALL) if local else ('', '', '')
+        opaque, end_opaque = (regs.OPAQUE, regs.END) if local else ('', '')
+        succ = self._flow(entry, end, tables) if local else None
+        fp = self._flag_plan(entry, end, tables, succ) if local else None
+        fl = fp is not None and fp.used
+
+        def fx(i, code):
+            return fp.rewrite(i, code) if fl else code
+
+        def publish(i):
+            return fp.publish(i) if fl else ''
+
+        def fload(i):
+            return fp.reload(i) if fl else ''
+
+        body = []  # (instruction index, or None for a label or an asm batch, line)
         batch = []
+
+        def emit(i, line):
+            body.append((i, line))
 
         def flush():
             if batch:
-                out.append('    ' + emit_asm_batch(batch))
+                emit(None, '    ' + emit_asm_batch(batch))
                 batch.clear()
 
-        def jump(t):
+        def jump(t, i):
             if entry <= t < end:
+                if local and t <= entry + 4 * i:
+                    # A backward branch closes a loop. Guest spin waits poll memory with plain loads (`ldr w8, [x9];
+                    # cmp w8, #1; b.eq`), which the hardware keeps fresh but C does not: with the registers in locals
+                    # nothing in such a loop stores any more, and clang hoists the load and spins forever. Without
+                    # locals the loop's own stores to the Cpu kept the load inside. The barrier keeps every load in
+                    # its loop; locals are not memory, so they stay in registers.
+                    return f'__asm__ volatile("" ::: "memory"); goto L_{t:x};'
                 return f'goto L_{t:x};'
             if not self.in_text(t):
-                return f'c->pc = {hx(t)}; __attribute__((musttail)) return rt_dispatch(c);'
+                return f'{publish(i)}{spill}c->pc = {hx(t)}; __attribute__((musttail)) return rt_dispatch(c);'
             refs.add(t)
-            return f'__attribute__((musttail)) return {fname(t)}(c);'
+            return f'{publish(i)}{spill}__attribute__((musttail)) return {fname(t)}(c);'
 
-        all_labels = mode == 'resume' or (mode == 'plain' and bool(tables))
         if all_labels:
             labels = set(range(entry, end, 4))
         miss = f'__attribute__((musttail)) return {fname(entry)}_r(c);' if mode == 'fast' else 'goto L_dispatch;'
         last = None
-        for a in range(entry, end, 4):
+        for i, a in enumerate(range(entry, end, 4)):
             ins = self.lift(a)
             if a in labels:
                 flush()
-                out.append(f'L_{a:x}:;')
+                emit(None, f'L_{a:x}:;')
             if a in self.patches:  # hand-written replacement for one instruction (tools/patches.py)
                 flush()
-                out.append('    ' + self.patches[a](self, a))
+                text = self.patches[a](self, a)
+                if local:
+                    # it calls into the runtime with c, which may read and write any register: it runs on the Cpu,
+                    # after a spill and with the flags published, and every register is loaded again after it,
+                    # also where it jumps to a label
+                    text = re.sub(r'goto (L_[0-9a-f]+);', lambda g: f'{{{reload}{fload(i)} goto {g.group(1)}; }}', text)
+                    text = f'{spill}{publish(i)}{opaque}{text}{end_opaque}{reload}{fload(i)}'
+                emit(i, '    ' + text)
                 last = 'op'
                 continue
             k = ins.kind
@@ -483,41 +631,71 @@ class Module:
                 last = k
                 continue
             flush()
-            if k == 'op' or k == 'trap':
-                out.append('    ' + ins.code)
+            if k == 'op':
+                code = fx(i, ins.code)
+                emit(i, f'    {spill}{code}{reload}' if local and regs.ESCAPE.search(code) else '    ' + code)
+            elif k == 'trap':
+                emit(i, f'    {spill}{ins.code}')
             elif k == 'b':
-                out.append('    ' + jump(ins.target))
+                emit(i, '    ' + jump(ins.target, i))
             elif k == 'bcond':
-                out.append(f'    if ({ins.cond}) {{ {jump(ins.target)} }}')
+                emit(i, f'    if ({fx(i, ins.cond)}) {{ {jump(ins.target, i)} }}')
             elif k == 'bl':
                 t = ins.target
                 if t in self.setjmps:
                     refs.add(t)
-                    out.append('    ' + setjmp_call(t, a + 4))
+                    # (the longjmp lands in it with the registers the setjmp saved in the Cpu: all are loaded again)
+                    emit(i, f'    {spill}{opaque}{setjmp_call(t, a + 4)}{end_opaque}{reload}{fload(i)}')
                 elif self.in_text(t):
                     refs.add(t)
-                    out.append(f'    c->x[30] = {hx(a + 4)}; {fname(t)}(c);')
+                    emit(i, f'    c->x[30] = {hx(a + 4)}; {publish(i)}{spill}{fname(t)}(c);{reload_call}{fload(i)}')
                 else:
-                    out.append(f'    c->x[30] = {hx(a + 4)}; c->pc = {hx(t)}; rt_dispatch(c);')
+                    emit(i, f'    c->x[30] = {hx(a + 4)}; {spill}c->pc = {hx(t)}; rt_dispatch(c);{reload_call}'
+                            f'{fload(i)}')
             elif k == 'blr':
-                out.append(f'    c->pc = {ins.target}; c->x[30] = {hx(a + 4)}; rt_dispatch(c);')
+                emit(i, f'    c->pc = {ins.target}; c->x[30] = {hx(a + 4)}; {spill}rt_dispatch(c);{reload_call}'
+                        f'{fload(i)}')
             elif k == 'br':
                 jt = tables.get(a)
                 if jt == 'all':
-                    out.append(f'    c->pc = {ins.target}; goto L_dispatch;')
+                    emit(i, f'    c->pc = {ins.target}; goto L_dispatch;')
                     continue
                 if jt:
-                    cases = ' '.join(f'case {hx(t)}: {jump(t)}' for t in jt)
-                    out.append(f'    switch ({ins.target}) {{ {cases} default: break; }}')
-                    out.append(f'    c->pc = {ins.target}; {miss}')
+                    cases = ' '.join(f'case {hx(t)}: {jump(t, i)}' for t in jt)
+                    emit(i, f'    switch ({ins.target}) {{ {cases} default: break; }}')
+                    emit(i, f'    {publish(i)}{spill}c->pc = {ins.target}; {miss}')
                     continue
-                out.append(f'    c->pc = {ins.target}; __attribute__((musttail)) return rt_dispatch(c);')
+                emit(i, f'    {publish(i)}{spill}c->pc = {ins.target}; __attribute__((musttail)) return rt_dispatch(c);')
             elif k == 'ret':
-                out.append('    return;')
+                emit(i, f'    {spill}return;')
             last = k
         flush()
+        n = (end - entry) // 4
         if last not in ('b', 'br', 'ret', 'trap'):
-            out.append('    ' + jump(end) if end < self.hi else f'    rt_udf(c, {hx(end)});')
+            emit(n, '    ' + jump(end, n) if end < self.hi else f'    {spill}rt_udf(c, {hx(end)});')
+        if local:
+            texts = [''] * (n + 1)
+            for i, line in body:
+                if i is not None:
+                    texts[i] += line
+            clean = {i for i, a in enumerate(range(entry, end, 4))
+                     if a in self.patches or self.lift(a).kind in ('bl', 'blr') or regs.RELOAD in texts[i]}
+            rp = regs.plan(texts, succ, clean, self.locals.n, self.locals.kept)
+            if fl:
+                out.append('    ' + fp.decl())
+                self.stats['local_flag_functions'] += 1
+                self.stats['flag_reads_direct'] += sum(1 for k in fp.reader if k and k != 'nz')
+                self.stats['flag_reads_packed'] += sum(1 for k in fp.reader if k == 'nz')
+                self.stats['flag_reads_after_call'] += fp.after_call
+                self.stats['flag_publishing_exits'] += sum(1 for k in fp.exit if k)
+                self.stats['flag_loads_after_call'] += sum(fp.load)
+            if rp.regs:
+                out.append('    ' + rp.decl())
+                self.stats['local_reg_functions'] += 1
+                self.stats['reg_spills'] += sum(len(s) for s in rp.spill)
+            out += [line if i is None else rp.resolve(i, line) for i, line in body]
+        else:
+            out += [line for _, line in body]
         if all_labels:
             out.append('L_dispatch:')
             cases = ' '.join(f'case {hx(t)}: goto L_{t:x};' for t in range(entry, end, 4))
@@ -525,6 +703,23 @@ class Module:
             out.append('    __attribute__((musttail)) return rt_dispatch(c);')
         out.append('}')
         return out
+
+
+def single_with_locals(code, loc=None):
+    """C body of a function made of one lifted instruction's C (code) and a tail exit, with the registers and flags
+    in locals as gen.py --locals makes them (tools/test_lift.py, tools/test_simd.py --locals). The exit publishes the
+    flags and spills the registers, so the Cpu after it is what the instruction alone leaves."""
+    loc = loc or Locals()
+    fp = flags.plan([flags.effect(code), (False, None)], [[1], []], set(), {1})
+    body = fp.rewrite(0, code) if fp.used else code
+    clean = set()
+    if regs.ESCAPE.search(body):
+        body = f'{regs.SPILL}{body}{regs.RELOAD}'
+        clean.add(0)
+    tail = (fp.publish(1) if fp.used else '') + regs.SPILL
+    rp = regs.plan([body, tail], [[1], []], clean, loc.n, loc.kept)
+    decl = (fp.decl() + ' ' if fp.used else '') + (rp.decl() + ' ' if rp.regs else '')
+    return f'{decl}{rp.resolve(0, body)} {rp.resolve(1, tail)}'
 
 
 def write_if_changed(path, text):
@@ -612,7 +807,8 @@ def main_sites(nso, base, opts):
 
 def generate(name, nso, base, outdir, opts, sites=None):
     t0 = time.time()
-    m = Module(name, nso, base, opts.simd)
+    loc = Locals(opts.reg_locals, not opts.no_callee_saved_trust) if opts.locals and opts.reg_locals >= 0 else None
+    m = Module(name, nso, base, opts.simd, loc)
     if name == 'main':
         m.sites = sites if sites is not None else main_sites(m.nso, base, opts)[1]
         m.patches = patches.table(m.sites) if m.sites else {}
@@ -687,6 +883,9 @@ def generate(name, nso, base, outdir, opts, sites=None):
         f.write('};\n')
         f.write(f'const uint64_t {name}_fn_count = {len(order)};\n')
         write_if_changed(os.path.join(outdir, f'{name}_table.c'), f.getvalue())
+    if loc:
+        st = {k: v for k, v in sorted(m.stats.items()) if k.startswith(('local_', 'flag_', 'reg_'))}
+        print(f'{name}: locals {st}', file=sys.stderr)
     print(f'{name}: wrote {nchunks} chunks, {time.time() - t0:.0f}s total', file=sys.stderr)
 
 
@@ -713,6 +912,9 @@ def main():
     ap.add_argument('--no-sites', action='store_true')  # (made-up modules, tools/test_layout.py: no sites, no patches)
     ap.add_argument('--simd', choices=('asm', 'c'),
                     default='asm' if platform.machine().lower() in ('arm64', 'aarch64') else 'c')
+    ap.add_argument('--locals', action='store_true')  # registers and flags in C locals (tools/regs.py, tools/flags.py)
+    ap.add_argument('--reg-locals', type=int, default=regs.LOCALS)  # (with --locals) registers per function
+    ap.add_argument('--no-callee-saved-trust', action='store_true')  # (with --locals) reload X19-X29, SP after calls
     args = ap.parse_args()
     if len(args.paths) != (1 if args.name in ('layout', 'all') else 2):
         ap.error('wrong number of arguments')

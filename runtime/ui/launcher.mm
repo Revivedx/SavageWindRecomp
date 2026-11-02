@@ -673,7 +673,8 @@ static void import_fonts() {
     mkdir("fonts", 0755);
     int ok = 0, skipped = 0;
     for (auto &src : picks) {
-        std::string base = src.substr(src.find_last_of('/') + 1), low = base;
+        // (the file dialog's paths have backslashes on Windows: the name is what follows either kind of separator)
+        std::string base = src.substr(src.find_last_of("/\\") + 1), low = base;
         for (auto &c : low) c = (char)tolower(c);
         bool known = false;
         for (auto n : FONT_STD) known |= low == n;

@@ -14,6 +14,7 @@
 #include "../../paths.h"
 #include "../../perfmon.h"
 #include "../../settings.h"
+#include "../../gpu_select.h"
 #include "../../ui/menu.h"
 #include "../../window_size.h"
 #include "mvec.h"
@@ -136,18 +137,40 @@ static void pick_device(void) {
     if (!n) FATAL("no Vulkan device\n");
     VkPhysicalDevice *pd = calloc(n, sizeof *pd);
     vkEnumeratePhysicalDevices(g_vk.inst, &n, pd);
-    int want = getenv("SAVAGEWIND_GPU") ? atoi(getenv("SAVAGEWIND_GPU")) : -1, best = -1, best_score = -1;
+    const char *override = getenv("SAVAGEWIND_GPU");
+    int want = override && *override ? gpu_index_parse(override) : g_settings.gpu;
+    if (override && *override && want < 0 && strcmp(override, "auto"))
+        LOG("[vk] invalid SAVAGEWIND_GPU '%s'; using automatic selection\n", override);
+    int best = -1, best_score = -1;
     for (uint32_t i = 0; i < n; i++) {
         VkPhysicalDeviceProperties p;
         vkGetPhysicalDeviceProperties(pd[i], &p);
         LOG("[vk] gpu %u: %s (api %u.%u.%u)\n", i, p.deviceName, VK_API_VERSION_MAJOR(p.apiVersion),
             VK_API_VERSION_MINOR(p.apiVersion), VK_API_VERSION_PATCH(p.apiVersion));
         if (p.apiVersion < VK_API_VERSION_1_3) continue;
+        // Check presentation before scoring: a headless adapter must not hide a usable GPU.
+        uint32_t nq = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(pd[i], &nq, NULL);
+        VkQueueFamilyProperties *qp = calloc(nq ? nq : 1, sizeof *qp);
+        if (!qp) FATAL("cannot allocate GPU queue properties\n");
+        vkGetPhysicalDeviceQueueFamilyProperties(pd[i], &nq, qp);
+        bool usable = false;
+        for (uint32_t q = 0; q < nq; q++) {
+            VkBool32 present = VK_FALSE;
+            if (vkGetPhysicalDeviceSurfaceSupportKHR(pd[i], q, g_vk.surface, &present) == VK_SUCCESS &&
+                present && qp[q].queueCount && (qp[q].queueFlags & VK_QUEUE_GRAPHICS_BIT) &&
+                (qp[q].queueFlags & VK_QUEUE_COMPUTE_BIT)) usable = true;
+        }
+        free(qp);
+        if (!usable) continue;
         int score = p.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 3 : p.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 2 : 1;
         if ((int)i == want) score = 100;
         if (score > best_score) { best_score = score; best = (int)i; }
     }
-    if (best < 0) FATAL("no Vulkan 1.3 device\n");
+    if (best < 0) FATAL("no Vulkan 1.3 device with a graphics+compute+present queue\n");
+    if (want >= 0 && best != want)
+        LOG("[vk] requested GPU %d unavailable or unsuitable; falling back to GPU %d\n", want, best);
+    LOG("[vk] selected GPU %d (%s)\n", best, best == want ? "requested" : "automatic");
     g_vk.phys = pd[best];
     free(pd);
     vkGetPhysicalDeviceProperties(g_vk.phys, &g_vk.props);
@@ -335,7 +358,11 @@ static void create_device(void) {
     // RADV on GCN chips (Polaris, Vega and older) drew the loops wrong: the pause menus' blurred background came out
     // black and their cursor off its slot (RX 560, issue #90); RDNA (the Steam Deck, a 660M) is fine. Those take the
     // copies; SAVAGEWIND_VK_FEEDBACK_LOOP=1 turns the loops on there anyway.
-    bool gcn_off = (radv_gcn() || win_legacy) && !getenv("SAVAGEWIND_VK_FEEDBACK_LOOP");
+    // Intel integrated GPUs (Iris Plus on Mesa ANV, UHD / Iris Xe on Intel's Windows driver) drew them wrong as well:
+    // flickering text and UI edges, white slivers in the sky, shredded menu labels (#342, #352, #399); with the copies
+    // all of it went away, and 0.3.1 (copies) never had it. They take the copies too.
+    bool intel_igpu = g_vk.props.vendorID == 0x8086 && g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+    bool gcn_off = (radv_gcn() || win_legacy || intel_igpu) && !getenv("SAVAGEWIND_VK_FEEDBACK_LOOP");
     bool fbl = !getenv("SAVAGEWIND_VK_NO_FEEDBACK_LOOP") && !gcn_off &&
                has_ext(ep, ne, VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME) &&
                has_ext(ep, ne, VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME);
@@ -395,7 +422,7 @@ static void create_device(void) {
         if (uil) ext[n_ext++] = VK_KHR_UNIFIED_IMAGE_LAYOUTS_EXTENSION_NAME;
 #endif
     }
-    LOG("[vk] attachment feedback loops %s\n", gcn_off ? win_legacy ? "off (target copies)" : "off on this GCN chip (target copies)"
+    LOG("[vk] attachment feedback loops %s\n", gcn_off ? win_legacy ? "off (target copies)" : intel_igpu ? "off on this Intel integrated GPU (target copies)" : "off on this GCN chip (target copies)"
                                                : !g_vk.feedback_loop ? "off (target copies)"
                                                : g_vk.feedback_layout ? "on (feedback loop layout)" : "on");
     // What the driver has of the features asked for below: only those are asked for (a driver refuses the device for
@@ -528,6 +555,25 @@ static void create_device(void) {
         ext[n_ext++] = VK_KHR_PRESENT_WAIT_EXTENSION_NAME;
     }
     g_vk.present_wait = pwait;
+    // The draws' depth test enable is dynamic state (Vulkan 1.3 core). Mesa 26.3+ RADV (ccb8eb5c) then gives fragment
+    // shaders that write depth a PS epilog, but only sets up its epilog cache when the EXT extendedDynamicState feature
+    // is on: without it a draw crashed in radv_shader_part_cache_get (RX 9060 XT, Mesa 27.0-devel). Asked for wherever
+    // the driver has it, so the cache exists; it changes nothing else (the same state is already core).
+    bool eds = false;
+    if (has_ext(ep, ne, VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME)) {
+        VkPhysicalDeviceExtendedDynamicStateFeaturesEXT eds_have = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT};
+        VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &eds_have};
+        vkGetPhysicalDeviceFeatures2(g_vk.phys, &q);
+        eds = eds_have.extendedDynamicState;
+    }
+    VkPhysicalDeviceExtendedDynamicStateFeaturesEXT eds_on = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT, .extendedDynamicState = VK_TRUE,
+        .pNext = f.pNext};
+    if (eds) {
+        f.pNext = &eds_on;
+        ext[n_ext++] = VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME;
+    }
     float prio[2] = {1.0f, 1.0f};
     // One queue: frames are presented on the game's own. A second one that presented (present thread below) went
     // wrong with others' code on it: NVIDIA's GPUs before Turing faulted writing to GPU address 0 within the first
@@ -647,7 +693,12 @@ static void *pc_read(FILE *f, size_t *size, const char **why) {
     if (memcmp(h.magic, want.magic, 8) || h.version != want.version) { *why = "older format"; return NULL; }
     if (h.vendor != want.vendor || h.device != want.device) { *why = "made on another GPU"; return NULL; }
     if (h.driver != want.driver || memcmp(h.uuid, want.uuid, VK_UUID_SIZE)) { *why = "made with another driver"; return NULL; }
-    if (memcmp(h.shaders, want.shaders, sizeof h.shaders)) { *why = "made by another shader translator build or device setup"; return NULL; }
+    if (memcmp(h.shaders, want.shaders, sizeof h.shaders)) {
+        const char *slash = strrchr(want.shaders, '/');  // (the device setup is after the last slash)
+        size_t n = slash ? (size_t)(slash - want.shaders) : sizeof h.shaders;
+        *why = memcmp(h.shaders, want.shaders, n) ? "made by another shader translator build" : "made for another device setup";
+        return NULL;
+    }
     if (h.size != (uint64_t)n - sizeof h) { *why = "cut short"; return NULL; }
     uint8_t *d = malloc(h.size ? h.size : 1);
     if (!d || fread(d, 1, h.size, f) != h.size || data_hash(d, h.size) != h.hash) { free(d); *why = "damaged"; return NULL; }
@@ -928,6 +979,12 @@ static bool hdr_wanted(float *white) {
     float w = SDL_GetFloatProperty(p, SDL_PROP_WINDOW_SDR_WHITE_LEVEL_FLOAT, 0) * 80;  // (scRGB: 1.0 is 80 nits)
     if (g_settings.hdr == HDR_ON) on = true;
     if (g_settings.hdr == HDR_OFF) on = false;
+#ifdef __linux__
+    // On Wayland SDL reports exactly 1.0 when the compositor gives no SDR white level (the frog protocol, or an 80 nit
+    // reference): that is "unknown", not an SDR white of 80 nits, which came out dim and washed out (KWin, #369). On
+    // Windows 1.0 is the real lowest setting of the SDR content brightness slider.
+    if (w <= 80) w = 0;
+#endif
     *white = g_settings.hdr_white ? (float)g_settings.hdr_white : w >= 80 ? w : 200;
     return on && g_cs_ext;
 }
@@ -1937,6 +1994,12 @@ presented:
         extern bool g_gpuprof_frame;
         extern void vk_gpuprof_report(void);
         if (g_gpuprof_frame) { g_gpuprof_frame = false; vk_gpuprof_report(); }
+        extern volatile int g_gpuprof_request;  // (runtime/control_prof.c: the `gpuprof` command)
+        if (g_gpuprof_request) {
+            g_gpuprof_request = 0;
+            g_gpuprof_frame = true;
+            LOG("[gpuprof] capture of frame %llu (gpuprof command)\n", (unsigned long long)total_frames);
+        }
         const char *e = getenv("SAVAGEWIND_GPUPROF_AT");
         for (const char *p = e; p && *p;) {
             long at = strtol(p, (char **)&p, 10);

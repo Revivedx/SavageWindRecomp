@@ -1,4 +1,5 @@
 #include "settings.h"
+#include "gpu_select.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -24,6 +25,7 @@ Settings g_settings = {
     .volume = 1.0f,
     .reverb = true,
     .movie_audio = true,
+    .rumble = true,
     .upscaler = UPSCALE_DEFAULT,  // (Off: the window's resolution; MetalFX on macOS)
     .upscale_quality = UPQ_QUALITY,
     .mouse_camera = true,
@@ -36,7 +38,9 @@ Settings g_settings = {
     .stick_deadzone = {STICK_DEADZONE_DEFAULT, STICK_DEADZONE_DEFAULT},
     .fps_limit = FPS_DEFAULT,
     .precompile_shaders = true,
+    .async_shaders = true,
     .vsync = VSYNC_DEFAULT,
+    .gpu = -1,
     .wide_view = true,
     .fov = 100,
     .color_lut_strength = 100,
@@ -53,7 +57,12 @@ static const char *const k_fsmode[FSMODE_COUNT] = {"auto", "borderless", "exclus
 // "fsr1" (the default) only scaled the finished 1920x1080 image to a bigger window: older files load it as Off, so
 // nobody drops below the window's resolution unasked, except version-1 files whose internal resolution was a share of
 // the display (75%, 50%, 25%: they keep FSR 1 at the nearest mode).
-#define SETTINGS_VERSION 3
+// settings_version 4 (2026-11-01): "Asynchronous shaders" is on by default: with the shaders precompiled, the pipeline
+// list pre-warmed at start and the cheap links done inline (exec.c link_now), a draw only skips a frame for a real
+// shader compile, and the draws that must not be skipped (one-shot targets, texture arrays, compute) wait. Older files
+// have the old default (off) written in them: version 3 files take the new default (a player who turned it on keeps
+// it; one who left it off was on the default, since the menu wrote every key).
+#define SETTINGS_VERSION 4
 
 static const char *const k_drawdist[DRAWDIST_COUNT] = {"original", "medium", "high"};  // (DRAWDIST_*)
 
@@ -108,6 +117,7 @@ void settings_load(void) {
                 snprintf(g_settings.display_name, sizeof g_settings.display_name, "%s", at ? val + at : "");
             }
         }
+        else if (!strcmp(key, "gpu")) g_settings.gpu = gpu_index_parse(val);
         else if (!strcmp(key, "volume")) g_settings.volume = (float)atof(val);
         else if (!strcmp(key, "reverb")) g_settings.reverb = atoi(val) != 0;
         else if (!strcmp(key, "movie_audio")) g_settings.movie_audio = atoi(val) != 0;
@@ -145,6 +155,7 @@ void settings_load(void) {
             int p = atoi(val);
             g_settings.sharpening = p < 0 ? 0 : p > 100 ? 10 : (p + 5) / 10;
         }
+        else if (!strcmp(key, "rumble")) g_settings.rumble = atoi(val) != 0;
         else if (!strcmp(key, "dpad_move")) g_settings.dpad_move = atoi(val) != 0;
         else if (!strcmp(key, "left_stick_deadzone")) g_settings.stick_deadzone[0] = (float)atof(val) / 100;  // (percent)
         else if (!strcmp(key, "right_stick_deadzone")) g_settings.stick_deadzone[1] = (float)atof(val) / 100;
@@ -227,6 +238,10 @@ void settings_load(void) {
         LOG("[settings] %s: version %d upscaler fsr1 -> %s\n", SETTINGS_FILE, version, lower ? "fsr1" : "off");
     }
 #endif
+    if (version < 4 && !g_settings.async_shaders) {
+        g_settings.async_shaders = true;
+        LOG("[settings] %s: version %d async_shaders 0 -> 1 (the new default)\n", SETTINGS_FILE, version);
+    }
     if (!tip_key) g_settings.menu_tip_seen = true;  // (a settings file from before the note: not a first launch)
     if (g_settings.volume < 0) g_settings.volume = 0;
     if (g_settings.volume > 2) g_settings.volume = 2;
@@ -268,6 +283,9 @@ void settings_save(void) {
     fprintf(f, "fullscreen_mode = %s\n", k_fsmode[fm >= 0 && fm < FSMODE_COUNT ? fm : FSMODE_AUTO]);
     if (g_settings.display > 0) fprintf(f, "display = %d %s\n", g_settings.display, g_settings.display_name);
     else fprintf(f, "display = auto\n");
+    fprintf(f, "# Vulkan GPU index from the startup log, or auto; restart after changing\n");
+    if (g_settings.gpu >= 0) fprintf(f, "gpu = %d\n", g_settings.gpu);
+    else fprintf(f, "gpu = auto\n");
     if (g_settings.window_w > 0 && g_settings.window_h > 0)
         fprintf(f, "window_size = %dx%d\n", g_settings.window_w, g_settings.window_h);
     else
@@ -292,6 +310,7 @@ void settings_save(void) {
     else fprintf(f, "anisotropy = game\n");
     fprintf(f, "sharpening = %d\n", g_settings.sharpening * 10);
     fprintf(f, "frame_generation = %d\n", g_settings.frame_gen ? 1 : 0);
+    fprintf(f, "rumble = %d\n", g_settings.rumble);
     fprintf(f, "dpad_move = %d\n", g_settings.dpad_move);
     fprintf(f, "left_stick_deadzone = %.0f\n", g_settings.stick_deadzone[0] * 100);
     fprintf(f, "right_stick_deadzone = %.0f\n", g_settings.stick_deadzone[1] * 100);

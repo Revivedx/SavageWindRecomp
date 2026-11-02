@@ -21,6 +21,8 @@
 #include "../romfs_image.h"
 #include "archive.h"
 #include "fs_layout.h"
+#include "../perfcount.h"
+#include "../platform.h"
 
 #define FS_PATH_NOT_FOUND MAKE_RESULT(2, 1)
 #define FS_PATH_EXISTS MAKE_RESULT(2, 2)
@@ -1095,7 +1097,10 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
         if (!b) { resp->result = MAKE_RESULT(2, 6001); break; }
         if (size > b->size) size = b->size;
         kernel_watch_write("romfs read", b->addr, size);
+        uint64_t ft0 = plat_now_ns();
         ssize_t n = romfs_read(m, (uint8_t *)(uintptr_t)b->addr, size, off);
+        perfcount_add(PC_FILE_READS, 1), perfcount_add(PC_FILE_NS, plat_now_ns() - ft0);
+        if (n > 0) perfcount_add(PC_FILE_BYTES, (uint64_t)n);
         if (n < 0) LOG("[fs] storage read failed at %llx: %s\n", off, strerror(errno));
         if (m != &images[0]) break;
         {
@@ -1241,7 +1246,10 @@ static void file(Service *s, IpcReq *req, IpcResp *resp) {
             n = off >= 0 && (uint64_t)off < f->patched_size ? (ssize_t)((uint64_t)size < f->patched_size - (uint64_t)off ? (uint64_t)size : f->patched_size - (uint64_t)off) : 0;
             memcpy((void *)(uintptr_t)b->addr, f->patched + off, (size_t)n);
         } else {
+            uint64_t ft0 = plat_now_ns();
             n = pread(f->fd, (void *)(uintptr_t)b->addr, (size_t)size, off);
+            perfcount_add(PC_FILE_READS, 1), perfcount_add(PC_FILE_NS, plat_now_ns() - ft0);
+            if (n > 0) perfcount_add(PC_FILE_BYTES, (uint64_t)n);
         }
         if (strstr(f->path, "savedata")) {
             LOG("[save] read %s off %lld size %lld -> guest %llx\n", f->path, (long long)off, (long long)size, (unsigned long long)b->addr);

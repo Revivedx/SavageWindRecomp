@@ -14,6 +14,7 @@ bool pc_cursor_hover_box(float box[4]);
 bool pc_cursor_hover_pressed(void);
 bool pc_cursor_map_navigation(void);
 bool pc_cursor_hide_system(void);
+bool pc_cursor_rotate_drag(void);  // left button held in the inventory's Rotate mode: the mouse turns Link (#346)
 int rt_pc_map_focus(Cpu *c, int position);
 
 void pc_cursor_options_page_changed(void);
