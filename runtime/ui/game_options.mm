@@ -298,8 +298,9 @@ void build_items(void) {
                            g_settings.amiibo_figure = x;
                            nfp_configure(g_settings.virtual_amiibo, g_settings.amiibo_figure, g_settings.amiibo_repeat);
                        }, AMIIBO_ARCHER));
+    v.back().wrap = true;
 
-    v.push_back(toggle(P_GAMEPLAY, "Repeat amiibo scans", "Use the same figure again without waiting until tomorrow. Virtual amiibo must be on.",
+    v.push_back(toggle(P_GAMEPLAY, "Repeat amiibo scans", "Use the same figure again without waiting until tomorrow. Keeps first-use reward history. Virtual amiibo must be on.",
                        [](const Item &) { return (int)g_settings.amiibo_repeat; },
                        [](const Item &, int x) {
                            g_settings.amiibo_repeat = x;

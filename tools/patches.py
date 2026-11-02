@@ -23,6 +23,16 @@ def _fn(gen, site):  # the generated function at a site's address
     return f'f_{gen.sites[site]:x}'
 
 
+def _amiibo_daily_count(gen, a):
+    # x0 = AmiiboMgr, x1 = history flag SafeString {vtable, char *}, w2 = match kind.
+    # Override only UID-based daily checks; lifetime history is used by first-use rewards such as Epona.
+    assert _word(gen, a) == _sub_sp(0xf0), hex(_word(gen, a))
+    return ('{ extern int rt_amiibo_ignore_daily(const char *, uint32_t); '
+            'if (rt_amiibo_ignore_daily((const char *)(uintptr_t)LD64(c->x[1] + 8), (uint32_t)c->x[2])) '
+            '{ c->x[0] = 0; return; } c->sp -= 0xf0; }'
+            f'  /* {a:#x}: sub sp, sp, #0xf0 (amiibo daily history count) */')
+
+
 # Savage Wind's own pages in the game's Options screen (runtime/ui/game_options.mm), opened from the title screen menu
 # (screen 1, buttons 0x69..0x6f, FUN_7100d4c5e0) or the pause menu's System page (buttons 0x4d..0x53, FUN_7100cbc918).
 # The screen builds one row per entry of a static option table every time it opens (the table is read through the
@@ -707,6 +717,7 @@ def _gyro_scene_actor(gen, a):
 
 
 PATCHES = {
+    'amiibo_daily_count': _amiibo_daily_count,
     'pc_map_focus': _pc_map_focus(False),
     'pc_map_focus_target': _pc_map_focus(True),
     'pc_map_focus_now': _pc_map_focus(True),

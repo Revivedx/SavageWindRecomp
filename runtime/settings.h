@@ -114,7 +114,7 @@ typedef struct {
     int text_language;   // index in g_text_languages (runtime/language.h), 0: the host's
     int voice_language;  // index in g_voice_languages, 0: the text language's voices
     bool menu_tip_seen;  // the start screen's one-time "how to open the menu" note was shown (first PLAY ever)
-    bool amiibo_repeat; // Gameplay: use a fresh virtual tag identity for each scan of the selected figure
+    bool amiibo_repeat; // Gameplay: bypass the daily use check while preserving the figure identity
     bool virtual_amiibo; // Gameplay: automatically present the chosen figure through the amiibo rune
     int amiibo_figure;   // AMIIBO_* (runtime/amiibo.h); stable key saved in the ini
 } Settings;

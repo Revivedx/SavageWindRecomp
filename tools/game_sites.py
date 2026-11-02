@@ -56,6 +56,9 @@ TRAVERSE = ('b9400028 2f00e400 36600008/fff8001f d65f03c0 a9bf7bfd 910003fd 1200
             '90000008/9f00001f 91000108/ffc003ff f9400108 b4000008/ff00001f bd431101 52a85908 1e202008 1e270102 1e22cc00 '
             '1e210800 a8c17bfd 14000000/fc000000 1e2e1001')
 SITES = [
+    # History count entry: kind 0 matches UID. The runtime only overrides the daily history, not total history.
+    Site('amiibo_daily_count', 'code', 'd103c3ff a9097bfd a90a6ffc a90b67fa a90c5ff8 a90d57f6 a90e4ff4 910243fd '
+         '90000008/9f00001f 91000108/ffc003ff f9400119', 0),
     # The Options screen (tools/patches.py; runtime/ui/game_options.mm)
     Site('opt_create_rows', 'code', 'd10303ff a9067bfd a9076ffc a90867fa a9095ff8 a90a57f6 a90b4ff4 910183fd '
          '90000008/9f00001f b9400118/ffc003ff', 0),
@@ -256,6 +259,7 @@ SITES = [
 # Without them the mouse turns the camera through the right stick, as before (runtime/hle/input.c); without the
 # second group it turns it without the game's camera inversion options.
 OPTIONAL_GROUPS = [
+    ('amiibo_daily_count',),
     ('gyro_scene_actor',),
     ('surf_contact', 'surf_boost_remove', 'surf_jump_request'),
     ('quick_menu_capture_alpha',),
@@ -341,6 +345,7 @@ KNOWN = {
         'main_end': 0x7001d37000,
     },
     '1.9.0': {
+        'amiibo_daily_count': 0x7000b0a55c,
         'yaz0_stream': 0x700131d674,
         'yaz0_stream_ret': 0x700131d7e8,
         'opt_create_rows': 0x7000e2f0a8,

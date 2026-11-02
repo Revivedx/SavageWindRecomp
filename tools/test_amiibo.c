@@ -58,40 +58,83 @@ int main(void) {
     assert(!request(13, tag, sizeof tag).result && tag[6] == 2);
     assert(!request(5, NULL, 0).result);
     assert(!request(16, model, 0x40).result && model[1] == 1 && model[4] == 0x56);
-    for (int i = AMIIBO_GUARDIAN; i < AMIIBO_COUNT; i++) {
+    // Catalog IDs are fixed fixtures, in tag order; IPC swaps only the numbering field.
+    const char *catalog_ids[] = {
+        "0100000003530902",
+        "0101000003560902",
+        "0140000003550902",
+        "01410000035c0902",
+        "0100000003540902",
+        "0105000003580902",
+        "01070000035a0902",
+        "01080000035b0902",
+        "0106000003590902",
+        "01000000034f0902",
+        "01000000034b0902",
+        "01000000034c0902",
+        "01000000034d0902",
+        "01000000034e0902",
+        "0100010003500902",
+        "0101000003520902",
+        "0100000000040002",
+        "01010000000e0002",
+        "0100010000160002",
+        "0101010000170002",
+        "01020100001b0002",
+        "0000000000000002",
+    };
+    assert(sizeof catalog_ids / sizeof *catalog_ids == AMIIBO_COUNT);
+    for (int i = 0; i < AMIIBO_COUNT; i++) {
         nfp_configure(true, i, false);
         assert(!request(4, NULL, 0).result && !request(3, NULL, 0).result);
         assert(!request(13, tag, sizeof tag).result && tag[6] == i + 1);
         assert(!request(5, NULL, 0).result && !request(16, model, 0x40).result);
-        assert(model[1] == (i == AMIIBO_GUARDIAN ? 0x40 : 0x41));
-        assert(model[4] == (i == AMIIBO_GUARDIAN ? 0x55 : 0x5c));
+        uint8_t expected[8];
+        for (int j = 0; j < 8; j++) {
+            unsigned v; assert(sscanf(catalog_ids[i] + j * 2, "%2x", &v) == 1); expected[j] = v;
+        }
+        uint8_t tmp = expected[4]; expected[4] = expected[5]; expected[5] = tmp;
+        assert(!memcmp(model, expected, 7));
+        for (int j = 0; j < i; j++) {
+            assert(strcmp(virtual_amiibos[i].key, virtual_amiibos[j].key));
+            assert(strcmp(catalog_ids[i], catalog_ids[j]));
+        }
     }
     nfp_configure(false, AMIIBO_ZELDA, false);
     assert(deactivate->signaled && !activate->signaled && request(16, model, 0x40).result);
     assert(!request(4, NULL, 0).result && !request(3, NULL, 0).result);
     assert(device_state == NFP_SEARCHING && !activate->signaled);
-    // Repeat mode changes the tag identity at detection, while model and identity stay fixed within a scan.
+    // Repeat mode bypasses only daily UID counts. Identity and lifetime history remain unchanged.
     nfp_configure(true, AMIIBO_ARCHER, true);
     assert(!request(13, tag, sizeof tag).result);
     uint8_t first_tag[0x58]; memcpy(first_tag, tag, sizeof tag);
-    assert(tag[0] == 4 && (tag[1] & 0x80) && tag[0xa] == 7);
+    const uint8_t stable_archer[] = {4, 0x53, 0x57, 1, 0, 0, 1};
+    assert(!memcmp(tag, stable_archer, 7) && tag[0xa] == 7);
+    assert(rt_amiibo_ignore_daily("AmiiboTouchHistory", 0));
+    for (uint32_t kind = 0; kind < 4; kind++)
+        assert(!rt_amiibo_ignore_daily("AmiiboTouchHistoryTotal", kind));
+    assert(!rt_amiibo_ignore_daily("AmiiboTouchHistory", 1));
+    assert(!rt_amiibo_ignore_daily("AmiiboLastTouchDate", 0));
+    assert(!rt_amiibo_ignore_daily(NULL, 0));
     assert(!request(5, NULL, 0).result && !request(16, model, 0x40).result);
     assert(!memcmp(model, archer, sizeof archer));
     nfp_configure(true, AMIIBO_ARCHER, false);  // turning repeat off mid-scan preserves the current serial
+    assert(!rt_amiibo_ignore_daily("AmiiboTouchHistory", 0));
     assert(!request(13, tag, sizeof tag).result && !memcmp(first_tag, tag, sizeof tag));
     nfp_configure(true, AMIIBO_ARCHER, true);
     assert(!request(4, NULL, 0).result && !request(3, NULL, 0).result);
-    assert(!request(13, tag, sizeof tag).result && memcmp(first_tag, tag, 7));
+    assert(!request(13, tag, sizeof tag).result && !memcmp(first_tag, tag, 7));
     memcpy(first_tag, tag, sizeof tag);
     assert(!request(1, NULL, 0).result && !request(0, NULL, 0).result);
     nfp_configure(true, AMIIBO_ARCHER, true);
     assert(!request(3, NULL, 0).result && !request(13, tag, sizeof tag).result);
-    assert(memcmp(first_tag, tag, 7));  // reinitialization cannot reuse the repeat sequence
+    assert(!memcmp(first_tag, tag, 7));  // identity survives service reinitialization
     nfp_configure(true, AMIIBO_ARCHER, false);
     assert(!request(4, NULL, 0).result && !request(3, NULL, 0).result);
     assert(!request(13, tag, sizeof tag).result);
-    const uint8_t stable_archer[] = {4, 0x53, 0x57, 1, 0, 0, 1};
     assert(!memcmp(tag, stable_archer, 7));
+    nfp_configure(false, AMIIBO_ARCHER, true);
+    assert(!rt_amiibo_ignore_daily("AmiiboTouchHistory", 0));
     nfp_reset();
     assert(!initialized && !activate && !deactivate);
     puts("PASS: virtual amiibo discovery, live controls, stable scans, catalog and reset");

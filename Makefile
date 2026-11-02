@@ -619,11 +619,13 @@ $(B)/test_amiibo_settings: tools/test_amiibo_settings.c runtime/settings.c runti
 
 test-amiibo: $(B)/test_amiibo $(B)/test_amiibo_settings
 	$(B)/test_amiibo
+	CC='$(CC)' $(PY) tools/test_amiibo_patch.py
 	@set -eu; tmp=$$(mktemp); trap 'rm -f "$$tmp"' EXIT; \
 	 env -u SAVAGEWIND_AMIIBO $(B)/test_amiibo_settings "$$tmp" 0 0 1 1 0 1; \
 	 env -u SAVAGEWIND_AMIIBO $(B)/test_amiibo_settings "$$tmp" 1 1 0 2 1 0; \
 	 env -u SAVAGEWIND_AMIIBO $(B)/test_amiibo_settings "$$tmp" 0 2 1 3; \
-	 env -u SAVAGEWIND_AMIIBO $(B)/test_amiibo_settings "$$tmp" 1 3 0 0; \
+	 env -u SAVAGEWIND_AMIIBO $(B)/test_amiibo_settings "$$tmp" 1 3 1 21; \
+	 env -u SAVAGEWIND_AMIIBO $(B)/test_amiibo_settings "$$tmp" 1 21 0 0; \
 	 SAVAGEWIND_AMIIBO=archer $(B)/test_amiibo_settings "$$tmp" 1 0 0 2; \
 	 env -u SAVAGEWIND_AMIIBO $(B)/test_amiibo_settings "$$tmp" 0 2 0 0; \
 	 printf 'virtual_amiibo = 1\namiibo_figure = unknown\n' > "$$tmp"; \

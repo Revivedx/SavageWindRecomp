@@ -12,9 +12,6 @@ enum { NFP_READY, NFP_SEARCHING, NFP_FOUND, NFP_REMOVED, NFP_MOUNTED };
 static pthread_mutex_t nfp_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool initialized, enabled, repeat_scans;
 static uint8_t active_uid[7];
-// Process-lifetime sequence: keep it across in-place reboots so repeat scans do not reuse serials.
-static uint64_t repeat_serial;
-static bool repeat_seeded;
 static uint32_t device_state;
 static int selected_figure, active_figure;
 static KEvent *activate, *deactivate, *availability;
@@ -43,20 +40,9 @@ static void present_figure(void) {
     active_figure = selected_figure;
     const uint8_t stable_uid[7] = {0x04, 0x53, 0x57, 0x01, 0x00, 0x00, (uint8_t)(active_figure + 1)};
     memcpy(active_uid, stable_uid, sizeof active_uid);
-    if (repeat_scans) {
-        if (!repeat_seeded) {
-            repeat_serial = ((uint64_t)arc4random() << 32) | arc4random();
-            repeat_seeded = true;
-        }
-        // A 47-bit serial space, separate from the normal stable identities (byte 1 has its high bit set).
-        uint64_t serial = ++repeat_serial;
-        for (int i = 6; i >= 1; i--) { active_uid[i] = serial & 0xff; serial >>= 8; }
-        active_uid[1] |= 0x80;
-    }
     device_state = NFP_FOUND;
     event_set(activate, true);
-    LOG("[nfp] virtual %s detected%s\n", virtual_amiibos[active_figure].name,
-        repeat_scans ? " (repeat scan identity)" : "");
+    LOG("[nfp] virtual %s detected\n", virtual_amiibos[active_figure].name);
 }
 
 void nfp_configure(bool on, int figure, bool repeat) {
@@ -74,6 +60,18 @@ void nfp_configure(bool on, int figure, bool repeat) {
         } else if (initialized && device_state == NFP_SEARCHING) present_figure();
     }
     pthread_mutex_unlock(&nfp_lock);
+}
+
+// 1.9.0 main+0xb0a55c counts history entries: kind 0 matches the current UID.
+// Callers at +0x61f830 and +0x6c36fc query AmiiboTouchHistory for daily use;
+// +0xb0a8ac queries AmiiboTouchHistoryTotal for lifetime rewards. Leave the latter alone.
+int rt_amiibo_ignore_daily(const char *history, uint32_t kind) {
+    if (!history || kind != 0 || strcmp(history, "AmiiboTouchHistory")) return 0;
+    pthread_mutex_lock(&nfp_lock);
+    int ignore = enabled && repeat_scans;
+    pthread_mutex_unlock(&nfp_lock);
+    if (ignore) LOG("[nfp] bypassed daily use check (stable figure identity)\n");
+    return ignore;
 }
 
 static void return_event(IpcResp *resp, KEvent **event, uint32_t *w, uint32_t *r) {
