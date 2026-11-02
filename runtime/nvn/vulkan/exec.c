@@ -2987,13 +2987,20 @@ static VkResult create_pipeline_in(const PipeState *k, VkShaderModule vsm, VkSha
                                               .attachmentCount = k->ncolor, .pAttachments = cba};
     VkPipelineDynamicStateCreateInfo dy = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
                                            .dynamicStateCount = NDYN, .pDynamicStates = DYN};
+    VkPipelineRenderingCreateInfo ri = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+                                        .colorAttachmentCount = k->ncolor, .pColorAttachmentFormats = k->color,
+                                        .depthAttachmentFormat = k->depth, .stencilAttachmentFormat = k->stencil};
     VkPipelineCreationFeedback fb = {0};
     VkPipelineCreationFeedbackCreateInfo fci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO,
                                                 .pPipelineCreationFeedback = &fb};
-    VkPipelineRenderingCreateInfo ri = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO, .pNext = &fci,
-                                        .colorAttachmentCount = k->ncolor, .pColorAttachmentFormats = k->color,
-                                        .depthAttachmentFormat = k->depth, .stencilAttachmentFormat = k->stencil};
-    VkGraphicsPipelineCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &ri, .stageCount = 2,
+    // On AMD's Windows proprietary driver (e.g. RX 480 / Polaris), attaching VkPipelineCreationFeedbackCreateInfo
+    // causes vkCreateGraphicsPipelines to crash inside amdvlk64.dll.
+    void *pnext = &ri;
+    if (!g_vk.amd_proprietary) {
+        fci.pNext = &ri;
+        pnext = &fci;
+    }
+    VkGraphicsPipelineCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = pnext, .stageCount = 2,
                                        .pStages = stages, .pVertexInputState = &vi, .pInputAssemblyState = &ia, .pViewportState = &vs,
                                        .pRasterizationState = &rs, .pMultisampleState = &ms, .pDepthStencilState = &ds,
                                        .pColorBlendState = &cb, .pDynamicState = &dy, .layout = layout,
@@ -3003,7 +3010,7 @@ static VkResult create_pipeline_in(const PipeState *k, VkShaderModule vsm, VkSha
     if (r != VK_SUCCESS) {
         static int n;
         if (n++ < 10) LOG("[vk] pipeline creation failed: %d\n", r);
-    } else if (cache == g_vk.pcache) {
+    } else if (cache == g_vk.pcache && !g_vk.amd_proprietary) {
         cache_feedback(&fb);
     }
     return r;
