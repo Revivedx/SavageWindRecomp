@@ -1,8 +1,9 @@
 # Glitch compatibility tracker
 
 Use this checklist to record which Breath of the Wild glitches and speedrun techniques behave like the
-Nintendo Switch game in Savage Wind. Entries start untested until results are reported; inclusion is not a claim that a technique
-works on Switch version 1.9.0 or in the recomp.
+Nintendo Switch **1.9.0** game in Savage Wind. Only include glitches with a documented working 1.9.0
+baseline or a successful test using the supported 1.9.0 game in the recomp. `Untested` refers to the
+recomp result, not whether the glitch exists in 1.9.0.
 
 Savage Wind targets **Switch version 1.9.0**. Record the exact Switch version used as a baseline: an older
 video or a Wii U result alone does not establish expected behavior on the supported version.
@@ -13,7 +14,8 @@ video or a Wii U result alone does not establish expected behavior on the suppor
 - `Works` means the expected effect was reproduced; `Partial` means it differs or only some variants work.
   `Fails` means the documented setup was attempted without the expected effect. `Retest` means an earlier
   result needs checking on the current build. A failed attempt alone does not establish a regression.
-- In **Switch baseline**, record the version and result, with evidence when available.
+- In **Switch baseline**, link the working 1.9.0 reference. Recomp evidence alone must be labeled as
+  such; it does not establish console parity. Do not add patched or unverified techniques to the tables.
 - In **Build / report**, add the recomp commit or release and a link to a test record below, clip, or issue.
 - Use **Notes** for the exact variant, limitations, and other frame rates (90, 120, uncapped, etc.).
   Add separate rows when variants or builds give different results.
@@ -25,39 +27,34 @@ FPS when possible. Keep the location, equipment, input device, and setup consist
 
 | Glitch / technique | Switch baseline | 30 FPS | 60 FPS | Build / report | Notes / other FPS |
 |---|---|---|---|---|---|
-| Windbomb (general test; variant not recorded) | — | Works | Works | Built from `test` branch commit [`ac47f65e3f9ee05641fff35f8d683fd36c306513`](https://github.com/Revivedx/SavageWindRecomp/commit/ac47f65e3f9ee05641fff35f8d683fd36c306513); [video evidence](https://youtu.be/7JGTN7cCYoY) | **120 FPS: Works.** Tester reports that higher FPS makes execution harder because the trick is timing-sensitive; expected behavior, not an issue. |
-| Windbomb (bomb impact launch) — ledge setup | — | Untested | Untested | — | — |
-| Windbomb — midair setup | — | Untested | Untested | — | — |
-| Bullet Time Bounce (BTB) | — | Works | Works | Built from `test` branch commit [`ac47f65e3f9ee05641fff35f8d683fd36c306513`](https://github.com/Revivedx/SavageWindRecomp/commit/ac47f65e3f9ee05641fff35f8d683fd36c306513); [video evidence](https://youtu.be/A6n5opLTVng) | **120 FPS: Works.** |
-| Bow Lift Smuggling Slide (BLSS) | — | Untested | Untested | — | — |
-| Whistle sprint | — | Untested | Untested | — | — |
-| Skew storage / shield clipping | — | Untested | Untested | — | Record wall and skew setup. |
-| Skew bounce | — | Untested | Untested | — | — |
-| Extended shield clip (ESC) | — | Untested | Untested | — | Record location and setup. |
-| Stasis launch | — | Untested | Untested | — | Record object and hits. |
-| Stasis clipping | — | Untested | Untested | — | — |
-| Cryonis launch | — | Untested | Untested | — | — |
-| Moon jump | — | Untested | Untested | — | Record mounted archery setup. |
-| Wrong warp using moon jump | — | Untested | Untested | — | Record source and destination. |
-| Infinite jump / climbing using whistle | — | Untested | Untested | — | Record exact method. |
+| Windbomb (general test; variant not recorded) | [1.9.0 reference][baseline-190] | Works | Works | Built from `test` branch commit [`ac47f65e3f9ee05641fff35f8d683fd36c306513`](https://github.com/Revivedx/SavageWindRecomp/commit/ac47f65e3f9ee05641fff35f8d683fd36c306513); [video evidence](https://youtu.be/7JGTN7cCYoY) | **120 FPS: Works.** Tester reports that higher FPS makes execution harder because the trick is timing-sensitive; expected behavior, not an issue. |
+| Bullet Time Bounce (BTB) | 1.9.0 recomp confirmed; console baseline not recorded | Works | Works | Built from `test` branch commit [`ac47f65e3f9ee05641fff35f8d683fd36c306513`](https://github.com/Revivedx/SavageWindRecomp/commit/ac47f65e3f9ee05641fff35f8d683fd36c306513); [video evidence](https://youtu.be/A6n5opLTVng) | **120 FPS: Works.** |
+| Whistle sprint | [1.9.0 reference][baseline-190] | Untested | Untested | — | — |
+| Skew storage / shield clipping | [1.9.0 reference][baseline-190] | Untested | Untested | — | Record wall and skew setup. |
+| Extended shield clip (ESC) | [1.9.0 reference][baseline-190] | Untested | Untested | — | Record location and setup. |
+| Moon jump | [1.9.0 reference][baseline-190] | Untested | Untested | — | Record mounted archery setup. |
 
 ## Inventory, equipment, and progression
 
 | Glitch / technique | Switch baseline | 30 FPS | 60 FPS | Build / report | Notes / other FPS |
 |---|---|---|---|---|---|
-| Menu overload | — | Untested | Untested | — | Record bows, arrows, and setup count. |
-| Equipment duplication through overload | — | Untested | Untested | — | Test weapon, bow, and shield separately. |
-| Durability transfer | — | Untested | Untested | — | Record source and target equipment. |
-| Weapon smuggling | — | Untested | Untested | — | — |
-| Bow smuggling | — | Untested | Untested | — | — |
-| Inventory Slot Transfer (IST) | — | Untested | Untested | — | Record exact method and transferred items. |
-| Weapon Modifier Corruption (WMC) | — | Untested | Untested | — | Record intended and actual modifiers. |
-| Apparatus storage | — | Untested | Untested | — | Record shrine and setup. |
-| Heart / stamina duplication | — | Untested | Untested | — | Record exact apparatus / essence method. |
-| Early Master Sword — campfire method | — | Untested | Untested | — | Record hearts and prerequisites. |
-| Trial of the Sword skip | — | Untested | Untested | — | Requires DLC; record trial and route. |
-| Eventide storage | — | Untested | Untested | — | Record inventory and quest effects. |
-| Minigame storage | — | Untested | Untested | — | Record minigame and exact variant. |
+| Menu overload | [1.9.0 reference][baseline-190] | Untested | Untested | — | Record bows, arrows, and setup count. |
+| Equipment duplication through overload | [1.9.0 reference][baseline-190] | Untested | Untested | — | Test weapon, bow, and shield separately. |
+| Durability transfer | [1.9.0 reference][baseline-190] | Untested | Untested | — | Record source and target equipment. |
+| Inventory Slot Transfer (IST) | [1.9.0 reference][baseline-190] | Untested | Untested | — | Record exact method and transferred items. |
+| Heart / stamina duplication | [1.9.0 reference][baseline-190] | Untested | Untested | — | Record exact apparatus / essence method. |
+
+## Inclusion references
+
+[baseline-190]: https://questfern.com/botw/guides/glitches/
+
+The [1.9.0 compatibility guide][baseline-190] reports the retained console-baseline techniques as working
+on original Switch 1.9.0. Its Switch 2 Edition results are separate: plain shield clips differ, while the
+extended method is reported working. Recomp frame-rate behavior still needs testing.
+
+BLSS is excluded because it was patched in 1.8.0. Other entries without a specific working 1.9.0 reference
+have been removed; add them back only with version-specific evidence. BTB is retained on the strength of
+the contributor's successful 1.9.0 recomp tests linked in its row, rather than an assumed console result.
 
 ## Detailed test records
 
