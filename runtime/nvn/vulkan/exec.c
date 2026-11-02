@@ -4709,7 +4709,11 @@ static bool hc_live(int c) { return atomic_load_explicit(&hc_ch[c].state, memory
 static uint64_t hc_limit(uint64_t *usage) {
     uint64_t budget;
     vram_device_local(usage, &budget, NULL);
-    uint64_t plan = (budget < hc_vram / 10 * 9 ? budget : hc_vram / 10 * 9), reserve = (uint64_t)HC_RESERVE_MB << 20;
+    uint32_t r_mb = HC_RESERVE_MB;
+    const char *re = getenv("SAVAGEWIND_VK_HEAP_COPY_RESERVE_MB");
+    if (re && *re) r_mb = (uint32_t)atoi(re);
+    else if (hc_vram <= (2048ull << 20)) r_mb = 128;
+    uint64_t plan = (budget < hc_vram / 10 * 9 ? budget : hc_vram / 10 * 9), reserve = (uint64_t)r_mb << 20;
     return plan > reserve ? plan - reserve : 0;
 }
 
@@ -4728,7 +4732,7 @@ static bool hc_on(void) {
     hc_state = force == 0 || gmem_mapped || !ww ? 0 : force == 1 ? 1 : force == 2 ? 2 : !discrete ? 0
              : hc_vram >= heap + (4ull << 30) ? 1 : 2;
     const char *cm = getenv("SAVAGEWIND_VK_HEAP_COPY_CHUNK_MB");
-    unsigned mb = cm ? (unsigned)atoi(cm) : HC_CHUNK_MB;
+    unsigned mb = cm ? (unsigned)atoi(cm) : (hc_vram <= (2048ull << 20) ? 8 : HC_CHUNK_MB);
     if (mb < 4 || mb > 1024 || (mb & (mb - 1))) mb = HC_CHUNK_MB;
     hc_shift = 20 + (unsigned)__builtin_ctz(mb);
     uint64_t usage, lim = hc_limit(&usage);
@@ -7661,12 +7665,22 @@ static TexBackend *post_image_ex(int i, uint32_t w, uint32_t h, VkFormat f, VkIm
         d->mem = VK_NULL_HANDLE;
     }
     if (!d->image) {
+        extern void vk_collect_dead(void);
+        vk_collect_dead();
         VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
                                 .format = f, .extent = {w, h, 1}, .mipLevels = 1, .arrayLayers = 1,
                                 .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
                                 .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | extra};
         VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-        VK_CHECK(vmaCreateImage(g_vk.vma, &ci, &ai, &d->image, &d->mem, NULL));
+        VkResult r = vmaCreateImage(g_vk.vma, &ci, &ai, &d->image, &d->mem, NULL);
+        if (r != VK_SUCCESS) {
+            vk_collect_dead();
+            r = vmaCreateImage(g_vk.vma, &ci, &ai, &d->image, &d->mem, NULL);
+            if (r != VK_SUCCESS) {
+                ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+                VK_CHECK(vmaCreateImage(g_vk.vma, &ci, &ai, &d->image, &d->mem, NULL));
+            }
+        }
         usage[i] = extra;
         d->format = f; d->width = w; d->height = h; d->depth = 1; d->layers = 1; d->levels = 1;
         d->samples = 1; d->aspect = VK_IMAGE_ASPECT_COLOR_BIT; d->base_type = VK_IMAGE_VIEW_TYPE_2D;
