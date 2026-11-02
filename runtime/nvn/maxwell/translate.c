@@ -79,7 +79,6 @@ typedef struct {
     int ipa_mul;   // its multiplier register ("multiply" mode)
     // GLSL (fields kept last: the MSL path's layout, including its out-of-range reg_used writes, is unchanged)
     bool glsl;               // emit Vulkan GLSL: dialect-specific constructs here, the rest via glsl_rewrite()
-    bool trace_gmem;         // diagnostic per-access tracking for Vulkan guest-memory operations
     bool uses_gmem_store;    // STG present: the gmem buffer is not readonly
     uint32_t cbuf_need[18];  // highest constant vec4 index + 1 per cbuf (array size of the GLSL block)
     uint32_t cbuf_fixed[18]; // cbuf_size from the reads at constant offsets alone (cbuf_reach)
@@ -1743,9 +1742,6 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
                                                "uint(*(device ushort *)(gmem + ga))", "uint(int(*(device short *)(gmem + ga)))"};
         int nw = size == 5 ? 2 : size >= 6 ? 4 : 1;
         if (c->glsl) {  // gmem_.w[]: 32-bit words; sub-word accesses within the containing word
-            unsigned bytes = size < 2 ? 1 : size < 4 ? 2 : size == 4 ? 4 : size == 5 ? 8 : 16;
-            if (c->trace_gmem)
-                sp(&c->body, "      if (ok) trace_gmem(ga, %uu, %s);\n", bytes, store ? "true" : "false");
             static const char *const gl_small[] = {
                 "(GLD(uint(ga >> 2)) >> (uint(ga & 3ul) * 8u)) & 0xFFu",
                 "uint(sx8(GLD(uint(ga >> 2)) >> (uint(ga & 3ul) * 8u)))",
@@ -2244,17 +2240,6 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         bool split = maxwell_gmem_split;
         sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GMem { uint w[]; } gmem_;\n", set, GMEM_BUFFER_INDEX,
            c->uses_gmem_store ? "" : "readonly ");
-        if (c->trace_gmem) {
-            sp(&s, "layout(std430, set = %d, binding = %d) buffer GMemTrace { uint w[%u]; } gmem_trace_;\n",
-               set, GMEM_TRACE_BUFFER_INDEX, GMEM_TRACE_WORDS * 2);
-            sp(&s,
-               "void trace_gmem(uint64_t ga, uint bytes, bool store) { uint p = uint(ga >> %u); uint word = p >> 5; "
-               "uint mask = 1u << (p & 31u); uint base = store ? %uu : 0u; "
-               "atomicOr(gmem_trace_.w[base + word], mask); "
-               "if ((uint(ga) & 0xFFFFu) + bytes > 0x10000u && p + 1u < %uu) { "
-               "p++; atomicOr(gmem_trace_.w[base + (p >> 5)], 1u << (p & 31u)); } }\n",
-               GMEM_TRACE_PAGE_SHIFT, GMEM_TRACE_WORDS, GMEM_TRACE_PAGE_COUNT);
-        }
         if (split)
             sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GMem2 { uint w[]; } gmem2_;\n", set, GMEM2_BUFFER_INDEX,
                c->uses_gmem_store ? "" : "readonly ");
@@ -2453,14 +2438,8 @@ bool maxwell_gmem_split, maxwell_gmem_snap;
 // (the two switches above change translations: they name caches of their own)
 const char *maxwell_translator_id(void) {
     static __thread char id[64];  // (per thread: the precompile's workers ask for it at once)
-    snprintf(id, sizeof id, "%s%s%s%s", TRANSLATOR_ID, maxwell_gmem_split ? "-gs" : "", maxwell_gmem_snap ? "-gn" : "",
-             maxwell_gmem_trace_enabled() ? "-gtrace" : "");
+    snprintf(id, sizeof id, "%s%s%s", TRANSLATOR_ID, maxwell_gmem_split ? "-gs" : "", maxwell_gmem_snap ? "-gn" : "");
     return id;
-}
-
-bool maxwell_gmem_trace_enabled(void) {
-    const char *enabled = getenv("SAVAGEWIND_GMEM_TRACE");
-    return enabled && !strcmp(enabled, "1");
 }
 
 // Whether a translation depends on more than the binary and the key (debugging switches): not to be cached.
@@ -2998,7 +2977,6 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
     c->stage = stage;
     c->ipa_mode = -1;
     c->glsl = key && key->glsl;
-    c->trace_gmem = c->glsl && maxwell_gmem_trace_enabled();
     // shared memory: the size the control section gives (1 KB if none), as a power of two up to 32 KB
     uint32_t sw = key && key->shared_size ? (key->shared_size + 3) / 4 : 256;
     for (c->smem_words = 1; c->smem_words < sw && c->smem_words < 8192; c->smem_words *= 2) {}

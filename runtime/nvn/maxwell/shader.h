@@ -94,11 +94,6 @@ typedef struct {
 
 // Global memory (LDG/STG) is addressed through one buffer that wraps the guest heap.
 #define GMEM_BUFFER_INDEX 17
-// Vulkan diagnostic bitmap: one read and one write bit per 64 KiB guest-heap page.
-#define GMEM_TRACE_BUFFER_INDEX 22
-#define GMEM_TRACE_PAGE_SHIFT 16
-#define GMEM_TRACE_PAGE_COUNT 53248
-#define GMEM_TRACE_WORDS (GMEM_TRACE_PAGE_COUNT / 32)
 #define GMEM2_BUFFER_INDEX 20       // (Vulkan) the heap past GMEM_SPLIT: a second binding
 #define GMEM_SPLIT 0x68000000ull    // bytes in the first binding; both stay under 2 GB for the whole heap (HEAP_MAX)
 #define GSNAP_BUFFER_INDEX 21       // (Vulkan, read-only global memory) ranges of it copied at translation: exec.c gsnap
@@ -123,6 +118,5 @@ void maxwell_free(ShaderInfo *s);
 size_t maxwell_binary_size(const uint8_t *code, size_t max_size, int stage);
 const char *maxwell_translator_id(void);
 bool maxwell_translation_uncacheable(void);
-bool maxwell_gmem_trace_enabled(void);
 // Disassemble for debugging (writes text to f).
 void maxwell_disassemble(const uint8_t *code, size_t max_size, int stage, void *file);

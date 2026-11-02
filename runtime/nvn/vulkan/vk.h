@@ -81,7 +81,6 @@ void vk_end_pass(void);
 void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra);  // submit + one more cb (present)
 void vk_present_idle(void);  // device.c: the presentation thread has no present queued or in progress
 void vk_dyn_forget(void);    // exec.c: graphics pipeline / dynamic state of the main command buffer changed elsewhere
-void vk_gmem_trace_report(void);  // exec.c: report guest-heap pages touched by shader global-memory accesses
 
 // Transient GPU-visible memory that lives until the submission it was allocated for completes.
 typedef struct { VkBuffer buf; uint64_t off; void *ptr; } VkSpan;

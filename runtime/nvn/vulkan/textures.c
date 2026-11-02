@@ -497,7 +497,6 @@ static void create_image(NvnTexture *t, TexBackend *b) {
         log_memory_budget("at image allocation failure");
         LOG("[vk] image allocation ran out of memory (%ux%ux%u, %u layers, %u levels); draining GPU work and retrying\n",
             tw, th, depth, layers, levels);
-        vk_gmem_trace_report();
         renderer_flush();
         vk_collect_dead();
         evict_idle_images();

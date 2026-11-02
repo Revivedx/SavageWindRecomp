@@ -1503,10 +1503,10 @@ tamaño virtual del buffer y los bytes enlazados no significan que exista esa ca
 contador de memoria compartida de Windows aumente en la misma cantidad.
 
 Las ventanas enlazadas quedan enlazadas hasta limpiar el backend: no hay política de desalojo ni recarga de páginas
-en este mecanismo. Las líneas `sparse guest heap batch-bound` indican enlaces de memoria nueva, no expulsiones y
-recargas. Solo se omite la validación de rango del sistema operativo cuando la tabla confirma que todas las ventanas
-del rango están enlazadas; los rangos no confirmados siguen el camino de compromiso y validación normal. Esta ruta
-evita repetir consultas caras de memoria sin cambiar el tamaño del heap ni asumir que cualquier rango es seguro.
+en este mecanismo. Solo se omite la validación de rango del sistema operativo cuando la tabla confirma que todas las
+ventanas del rango están enlazadas; los rangos no confirmados siguen el camino de compromiso y validación normal.
+Esta ruta evita repetir consultas caras de memoria sin cambiar el tamaño del heap ni asumir que cualquier rango es
+seguro.
 
 La prioridad Vulkan de memoria es independiente del heap sparse y está desactivada por defecto. Para probar la
 política de prioridad del driver en imágenes y en el heap denso importado, iniciar con
@@ -1525,43 +1525,6 @@ son una medida directa del ancho de banda físico de la memoria. Cuando el juego
 operaciones de importación y enlace sparse eran escasas o nulas aunque el FPS seguía bajo. Esto descarta el enlace
 sparse repetido como explicación suficiente del bajo rendimiento, pero no identifica por sí solo el cuello de
 botella entre trabajo de GPU, sincronización y trabajo del juego.
-
-Instrumentación disponible:
-
-- `SAVAGEWIND_GMEM_TRACE=1` añade instrumentación atómica a cada acceso de shader Vulkan al heap invitado y reserva
-  un mapa de páginas. Está desactivada por defecto porque puede afectar notablemente al rendimiento; úsala solo
-  para diagnóstico. Las páginas tocadas se imprimen durante la recuperación de un fallo de asignación de imágenes.
-  La caché de shaders y pipelines se separa automáticamente entre los modos con y sin traza.
-- `SAVAGEWIND_VK_PROF=1` añade desglose de tiempo CPU/GPU, preparación de draws, comprobaciones de heap, compilación,
-  esperas y contadores de importación/enlace sparse. Los cronómetros y las líneas `sparse guest heap batch-bound`
-  también están detrás de este flag; sin él, el heap sparse se comporta igual pero no emite esos diagnósticos.
-- `SAVAGEWIND_VK_PROF=2` deja los tiempos generales de listas, envío y GPU, sin la mayoría de cronómetros por draw.
-- `SAVAGEWIND_HITCH_MS=<ms>` cambia el umbral de `[hitch]` (50 ms por defecto), que compara backend, presentación
-  y tiempo restante. `[vk] t=...` resume estadísticas sobre un intervalo; no es la duración de un solo frame.
-- `SAVAGEWIND_GPUPROF_AT=<frame>[,<frame>...]` perfila los pases, dispatches y copias de los frames presentados
-  indicados y escribe líneas `[gpuprof]`. La consulta de resultados espera a la GPU y puede perturbar la ejecución;
-  no se debe usar para comparar FPS normal. Cada frame puede producir cientos de líneas.
-- `SAVAGEWIND_FNPROF=<desde>:<hasta>` cuenta entradas a funciones guest en un intervalo de frames y escribe
-  `build/fnprof.txt`; sus opciones `SAVAGEWIND_FNPROF_ARGS`, `SAVAGEWIND_FNPROF_BT` y relacionadas permiten
-  inspeccionar funciones concretas.
-
-Para medir el juego sin esos perfiles, quita las variables de la sesión de PowerShell antes de lanzarlo:
-
-```powershell
-Remove-Item Env:SAVAGEWIND_GPUPROF_AT -ErrorAction SilentlyContinue
-Remove-Item Env:SAVAGEWIND_VK_PROF -ErrorAction SilentlyContinue
-.\savagewind.exe
-```
-
-Si un `.bat` o lanzador vuelve a definirlas, quita también esas asignaciones.
-
-Los datos de un perfil deben leerse con su alcance: las estadísticas `[vk] t=...` agregan trabajo entre reportes,
-el campo `wait` acumula esperas por semáforos GPU y los timestamps por pase solo se obtienen con
-`SAVAGEWIND_GPUPROF_AT`. Un perfil anterior mostró dos intervalos de ~2,4 s mayormente fuera de `backend exec`, pero
-no determinó qué subsistema los causó. En otra captura seleccionada, los timestamps abarcaron ~33 ms entre la primera
-y la última marca; los pases individuales más largos rondaron 2,7 ms. Ese alcance no es por sí solo el tiempo total
-de frame ni señala un único pase responsable. Sigue pendiente separar el coste de renderizado y sincronización del
-trabajo de CPU del juego en una captura de gameplay estable.
 
 ## Módulos en memoria
 

@@ -35,9 +35,6 @@ static uint64_t stat_gw_waits, stat_gw_holds;  // draws / dispatches that waited
 static uint64_t stat_uub, stat_uub_same, stat_gcopy_hit, stat_gcopy_miss, stat_gcopy_bytes;  // UpdateUniformBuffer; guest_copy cache
 static uint64_t stat_feedback_live;  // depth attachments sampled as they are (read-only feedback, no copy)
 static uint64_t stat_feedback_loops, stat_feedback_barriers;  // draws sampling a target they write, in a feedback loop
-// Sparse-heap timing and bind logs are collected only with SAVAGEWIND_VK_PROF=1.
-static uint64_t stat_sparse_refreshes, stat_sparse_refresh_ns, stat_sparse_import_ns, stat_sparse_bind_ns;
-static uint64_t stat_sparse_imports, stat_sparse_bind_batches, stat_sparse_bound_bytes;
 static bool pass_ds_written;         // a draw of the current pass wrote depth or stencil
 static uint8_t pass_color_written;   // the color targets (bits) a draw of the current pass wrote
 static uint8_t pass_color_unsynced;  // the color targets drawn or cleared since the pass began or its last feedback barrier
@@ -972,17 +969,6 @@ const char *renderer_stats(void) {
         snprintf(stats_text + n, sizeof stats_text - n, ", uub %llu (%llu same), gcopy %llu hit %llu miss (%.1f MB)",
                  (unsigned long long)stat_uub, (unsigned long long)stat_uub_same, (unsigned long long)stat_gcopy_hit,
                  (unsigned long long)stat_gcopy_miss, stat_gcopy_bytes / 1048576.0);
-        if (prof) {
-            n = strlen(stats_text);
-            snprintf(stats_text + n, sizeof stats_text - n,
-                     " | sparse refresh %llu (%.1f ms) import %llu (%.1f ms) bind %llu (%.1f ms, %.1f MB)",
-                     (unsigned long long)stat_sparse_refreshes, stat_sparse_refresh_ns / 1e6,
-                     (unsigned long long)stat_sparse_imports, stat_sparse_import_ns / 1e6,
-                     (unsigned long long)stat_sparse_bind_batches, stat_sparse_bind_ns / 1e6,
-                     stat_sparse_bound_bytes / 1048576.0);
-            stat_sparse_refreshes = stat_sparse_refresh_ns = stat_sparse_import_ns = stat_sparse_bind_ns = 0;
-            stat_sparse_imports = stat_sparse_bind_batches = stat_sparse_bound_bytes = 0;
-        }
         n = strlen(stats_text);
         if (stat_build_waits) snprintf(stats_text + n, sizeof stats_text - n, ", build waits %llu", (unsigned long long)stat_build_waits);
         stat_build_waits = 0;
@@ -4280,93 +4266,6 @@ static uint64_t gmem_sparse_generation;
 static VkDeviceMemory gmem_sparse_mem[GMEM_SPARSE_MEM_COUNT];
 static VkSparseMemoryBind gmem_sparse_binds[GMEM_SPARSE_PAGE_COUNT];
 static uint32_t gmem_sparse_nmem;
-static VkBuffer gmem_trace_buf;
-static VmaAllocation gmem_trace_mem;
-static uint32_t *gmem_trace_map;
-
-static VkDescriptorBufferInfo gmem_trace_info(void) {
-    if (!gmem_trace_buf) {
-        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                                 .size = GMEM_TRACE_WORDS * 2ull * sizeof(uint32_t),
-                                 .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT};
-        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
-                                      .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT};
-        VmaAllocationInfo info;
-        VkResult r = vmaCreateBuffer(g_vk.vma, &bi, &ai, &gmem_trace_buf, &gmem_trace_mem, &info);
-        if (r != VK_SUCCESS) {
-            LOG("[vk] guest heap trace buffer allocation failed (%d)\n", r);
-            FATAL("could not allocate guest heap trace buffer\n");
-        }
-        gmem_trace_map = info.pMappedData;
-        if (!gmem_trace_map) FATAL("guest heap trace buffer was not mapped\n");
-        memset(gmem_trace_map, 0, GMEM_TRACE_WORDS * 2ull * sizeof(uint32_t));
-        VK_CHECK(vmaFlushAllocation(g_vk.vma, gmem_trace_mem, 0, VK_WHOLE_SIZE));
-    }
-    return (VkDescriptorBufferInfo){gmem_trace_buf, 0, GMEM_TRACE_WORDS * 2ull * sizeof(uint32_t)};
-}
-
-void vk_gmem_trace_report(void) {
-    if (!gmem_trace_buf) return;
-    gpu_lock();
-    vk_end_pass();
-    VkCommandBuffer cb = vk_cmd();
-    VkBufferMemoryBarrier2 barrier = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                                      .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                                      .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                                      .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
-                                      .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT,
-                                      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                                      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                                      .buffer = gmem_trace_buf,
-                                      .offset = 0,
-                                      .size = VK_WHOLE_SIZE};
-    VkDependencyInfo dep = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                            .bufferMemoryBarrierCount = 1,
-                            .pBufferMemoryBarriers = &barrier};
-    vkCmdPipelineBarrier2(cb, &dep);
-    renderer_flush();
-    VkResult r = vmaInvalidateAllocation(g_vk.vma, gmem_trace_mem, 0, VK_WHOLE_SIZE);
-    if (r != VK_SUCCESS) {
-        LOG("[vk] guest heap trace invalidate failed (%d)\n", r);
-        gpu_unlock();
-        return;
-    }
-
-    uint32_t read_pages = 0, write_pages = 0, either_pages = 0;
-    for (uint32_t p = 0; p < GMEM_TRACE_PAGE_COUNT; p++) {
-        uint32_t mask = 1u << (p & 31u), word = p >> 5;
-        bool rd = (gmem_trace_map[word] & mask) != 0;
-        bool wr = (gmem_trace_map[GMEM_TRACE_WORDS + word] & mask) != 0;
-        read_pages += rd;
-        write_pages += wr;
-        either_pages += rd || wr;
-    }
-    LOG("[vk] guest shader heap touched: read %u pages, wrote %u pages, total %u pages (64 KiB/page; cumulative)\n",
-        read_pages, write_pages, either_pages);
-
-    uint32_t ranges = 0, shown = 0, start = 0;
-    bool in_range = false;
-    for (uint32_t p = 0; p <= GMEM_TRACE_PAGE_COUNT; p++) {
-        bool used = false;
-        if (p < GMEM_TRACE_PAGE_COUNT) {
-            uint32_t mask = 1u << (p & 31u), word = p >> 5;
-            used = (gmem_trace_map[word] | gmem_trace_map[GMEM_TRACE_WORDS + word]) & mask;
-        }
-        if (used && !in_range) { start = p; in_range = true; }
-        if (!used && in_range) {
-            ranges++;
-            if (shown < 32) {
-                LOG("[vk]   guest heap shader range %#llx-%#llx\n",
-                    (unsigned long long)HEAP_BASE + ((uint64_t)start << GMEM_TRACE_PAGE_SHIFT),
-                    (unsigned long long)HEAP_BASE + ((uint64_t)p << GMEM_TRACE_PAGE_SHIFT));
-                shown++;
-            }
-            in_range = false;
-        }
-    }
-    if (ranges > shown) LOG("[vk]   ... %u more ranges\n", ranges - shown);
-    gpu_unlock();
-}
 
 #ifdef _WIN32
 static bool gmem_sparse_refresh(uint64_t size);
@@ -4593,8 +4492,6 @@ static bool gmem_sparse_refresh(uint64_t size) {
     uint64_t generation = plat_guest_commit_generation();
     if (generation == gmem_sparse_generation) return true;
 
-    uint64_t refresh_start = prof ? SDL_GetTicksNS() : 0;
-    if (prof) stat_sparse_refreshes++;
     uint32_t first_new_mem = gmem_sparse_nmem;
     uint32_t bind_count = 0;
     uint64_t page_count = size / GMEM_SPARSE_PAGE_SIZE;
@@ -4629,11 +4526,8 @@ static bool gmem_sparse_refresh(uint64_t size) {
             uint64_t offset = run_start * GMEM_SPARSE_CHUNK_SIZE;
             uint64_t bytes = (chunk - run_start) * GMEM_SPARSE_CHUNK_SIZE;
             if (offset + bytes > size) bytes = size - offset;
-            uint64_t import_start = prof ? SDL_GetTicksNS() : 0;
             bool imported = gmem_sparse_import_range(offset, bytes, &mem);
-            if (prof) stat_sparse_import_ns += SDL_GetTicksNS() - import_start;
             if (!imported) goto fail;
-            if (prof) stat_sparse_imports++;
             gmem_sparse_mem[gmem_sparse_nmem++] = mem;
             gmem_sparse_binds[bind_count++] = (VkSparseMemoryBind){
                 .resourceOffset = offset, .size = bytes, .memory = mem, .memoryOffset = 0};
@@ -4663,9 +4557,7 @@ static bool gmem_sparse_refresh(uint64_t size) {
             .pBufferBinds = &buffer_bind,
             .signalSemaphoreCount = 1,
             .pSignalSemaphores = &gmem_sparse_timeline};
-        uint64_t bind_start = prof ? SDL_GetTicksNS() : 0;
         VkResult r = vkQueueBindSparse(g_vk.queue, 1, &bind_info, VK_NULL_HANDLE);
-        if (prof) stat_sparse_bind_ns += SDL_GetTicksNS() - bind_start;
         if (r != VK_SUCCESS) {
             LOG("[vk] sparse guest heap batch binding failed (%d)\n", r);
             goto fail;
@@ -4676,21 +4568,11 @@ static bool gmem_sparse_refresh(uint64_t size) {
             uint64_t pages = gmem_sparse_binds[i].size / GMEM_SPARSE_PAGE_SIZE;
             memset(&gmem_sparse_bound_pages[first], 1, (size_t)pages);
         }
-        if (prof) {
-            uint64_t total_bytes = 0;
-            for (uint32_t i = 0; i < bind_count; i++) total_bytes += gmem_sparse_binds[i].size;
-            stat_sparse_bind_batches++;
-            stat_sparse_bound_bytes += total_bytes;
-            LOG("[vk] sparse guest heap batch-bound %u ranges (%llu KiB)\n", bind_count,
-                (unsigned long long)(total_bytes >> 10));
-        }
     }
     gmem_sparse_generation = generation;
-    if (prof) stat_sparse_refresh_ns += SDL_GetTicksNS() - refresh_start;
     return true;
 
 fail:
-    if (prof) stat_sparse_refresh_ns += SDL_GetTicksNS() - refresh_start;
     while (gmem_sparse_nmem > first_new_mem) vkFreeMemory(g_vk.dev, gmem_sparse_mem[--gmem_sparse_nmem], NULL);
     return false;
 }
@@ -6065,8 +5947,7 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
             bi[n].offset = 0;
             w[n].pBufferInfo = &bi[n];
         } else if (b->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
-            bi[n] = b->binding == GMEM_TRACE_BUFFER_INDEX ? gmem_trace_info()
-                  : b->binding == MVEC_HISTORY_BINDING ? mvec_history_info()
+            bi[n] = b->binding == MVEC_HISTORY_BINDING ? mvec_history_info()
                   : b->binding == GSNAP_BUFFER_INDEX   ? gsnap_info(stage)
                   : b->binding == GMEM2_BUFFER_INDEX   ? gmem_info_hi()
                                                        : gmem_info();
