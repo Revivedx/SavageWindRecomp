@@ -26,7 +26,7 @@ static void *vsync_thread(void *arg) {
         }
         klock();
         kernel_signal(vsync_event);
-        pthread_mutex_unlock(&g_klock);
+        kunlock();
     }
     return NULL;
 }

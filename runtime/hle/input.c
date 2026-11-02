@@ -917,7 +917,7 @@ HLE_FUNC("_ZN2nn3hid27BindNpadStyleSetUpdateEventERKjPNS_2os15SystemEventTypeENS
     KEvent *ev = kernel_create_event_pair(&w, &r);
     klock();
     kernel_signal(ev);
-    pthread_mutex_unlock(&g_klock);
+    kunlock();
     uint64_t clear_mode = c->x[2];
     c->x[0] = c->x[1];
     c->x[1] = r;

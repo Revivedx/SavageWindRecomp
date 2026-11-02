@@ -2,6 +2,7 @@
 #pragma once
 #include <setjmp.h>
 
+#include "ksync.h"
 #include "rt.h"
 
 #define STACK_BASE 0x7200000000ull
@@ -33,7 +34,7 @@ struct KThread {
     uint32_t wait_tag, wait_result;
     KThread *wnext;
     KThread *snext;        // in WaitSynchronization (g_syncwaiters)
-    pthread_cond_t cond;   // each thread sleeps on its own condition; wakers signal it directly
+    KCond cond;   // each thread sleeps on its own condition; wakers signal it directly
     // in-place reboot (kernel_stop_threads): thread_main's setjmp point, where the thread unwinds to and ends
     jmp_buf unwind;
     bool started, finished;
@@ -58,8 +59,9 @@ typedef struct {
     uint64_t addr, size;
 } KTransferMem;
 
-extern pthread_mutex_t g_klock;
-void klock(void);  // pthread_mutex_lock(&g_klock), with a short spin first (kernel.c)
+extern KMutex g_klock;
+#define kunlock() kmutex_unlock(&g_klock)
+void klock(void);  // kmutex_lock(&g_klock) (kernel.c)
 extern KThread *g_waitlist;
 
 KObject *handle_get(uint32_t h);
