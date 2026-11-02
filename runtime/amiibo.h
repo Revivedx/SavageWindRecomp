@@ -23,4 +23,4 @@ static inline int amiibo_valid_figure(int figure) {
 }
 
 // Called by Gameplay's controls. The service serializes configuration with IPC requests.
-void nfp_configure(bool enabled, int figure);
+void nfp_configure(bool enabled, int figure, bool repeat);

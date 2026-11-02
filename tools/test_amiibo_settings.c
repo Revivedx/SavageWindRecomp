@@ -10,11 +10,14 @@ int input_pad_family(void) { return 0; }
 bool fsr3_upscaler_enabled(void) { return false; }
 
 int main(int argc, char **argv) {
-    assert(argc == 6);
+    assert(argc == 6 || argc == 8);
     setenv("SAVAGEWIND_SETTINGS", argv[1], 1);
     settings_load();
     assert(g_settings.virtual_amiibo == atoi(argv[2]));
     assert(g_settings.amiibo_figure == atoi(argv[3]));
+    if (argc == 8) assert(g_settings.amiibo_repeat == atoi(argv[6]));
+    else assert(!g_settings.amiibo_repeat);
+    g_settings.amiibo_repeat = argc == 8 && atoi(argv[7]);
     g_settings.virtual_amiibo = atoi(argv[4]);
     g_settings.amiibo_figure = atoi(argv[5]);
     settings_save();

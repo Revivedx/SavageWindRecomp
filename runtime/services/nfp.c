@@ -10,7 +10,11 @@
 
 enum { NFP_READY, NFP_SEARCHING, NFP_FOUND, NFP_REMOVED, NFP_MOUNTED };
 static pthread_mutex_t nfp_lock = PTHREAD_MUTEX_INITIALIZER;
-static bool initialized, enabled;
+static bool initialized, enabled, repeat_scans;
+static uint8_t active_uid[7];
+// Process-lifetime sequence: keep it across in-place reboots so repeat scans do not reuse serials.
+static uint64_t repeat_serial;
+static bool repeat_seeded;
 static uint32_t device_state;
 static int selected_figure, active_figure;
 static KEvent *activate, *deactivate, *availability;
@@ -18,7 +22,8 @@ static uint32_t activate_w, activate_r, deactivate_w, deactivate_r, availability
 static const uint64_t device = 1;
 
 RT_ON_RESET(nfp_reset) {
-    initialized = enabled = false;
+    initialized = enabled = repeat_scans = false;
+    memset(active_uid, 0, sizeof active_uid);
     device_state = NFP_READY;
     selected_figure = active_figure = AMIIBO_ARCHER;
     activate = deactivate = availability = NULL;
@@ -36,14 +41,28 @@ static void event_set(KEvent *event, bool signal) {
 // The figure is latched for the whole scan: model and UID must always agree.
 static void present_figure(void) {
     active_figure = selected_figure;
+    const uint8_t stable_uid[7] = {0x04, 0x53, 0x57, 0x01, 0x00, 0x00, (uint8_t)(active_figure + 1)};
+    memcpy(active_uid, stable_uid, sizeof active_uid);
+    if (repeat_scans) {
+        if (!repeat_seeded) {
+            repeat_serial = ((uint64_t)arc4random() << 32) | arc4random();
+            repeat_seeded = true;
+        }
+        // A 47-bit serial space, separate from the normal stable identities (byte 1 has its high bit set).
+        uint64_t serial = ++repeat_serial;
+        for (int i = 6; i >= 1; i--) { active_uid[i] = serial & 0xff; serial >>= 8; }
+        active_uid[1] |= 0x80;
+    }
     device_state = NFP_FOUND;
     event_set(activate, true);
-    LOG("[nfp] virtual %s detected\n", virtual_amiibos[active_figure].name);
+    LOG("[nfp] virtual %s detected%s\n", virtual_amiibos[active_figure].name,
+        repeat_scans ? " (repeat scan identity)" : "");
 }
 
-void nfp_configure(bool on, int figure) {
+void nfp_configure(bool on, int figure, bool repeat) {
     pthread_mutex_lock(&nfp_lock);
     selected_figure = amiibo_valid_figure(figure);
+    repeat_scans = repeat;
     if (enabled != on) {
         enabled = on;
         if (!on) {
@@ -91,6 +110,7 @@ static void nfp_user(Service *s, IpcReq *req, IpcResp *resp) {
     switch (req->cmd) {
     case 0: {
         enabled = g_settings.virtual_amiibo;
+        repeat_scans = g_settings.amiibo_repeat;
         selected_figure = amiibo_valid_figure(g_settings.amiibo_figure);
         initialized = true;
         device_state = NFP_READY;
@@ -136,9 +156,8 @@ static void nfp_user(Service *s, IpcReq *req, IpcResp *resp) {
             break;
         }
         uint8_t info[0x58] = {0};
-        const uint8_t uid[7] = {0x04, 0x53, 0x57, 0x01, 0x00, 0x00, (uint8_t)(active_figure + 1)};
-        memcpy(info, uid, sizeof uid);
-        info[0xa] = sizeof uid;
+        memcpy(info, active_uid, sizeof active_uid);
+        info[0xa] = sizeof active_uid;
         info[0x20] = 1;  // Type A protocol
         info[0x24] = 2;  // Type 2 tag
         write_info(req, resp, info, sizeof info);

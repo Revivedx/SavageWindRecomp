@@ -288,7 +288,7 @@ void build_items(void) {
                        [](const Item &) { return (int)g_settings.virtual_amiibo; },
                        [](const Item &, int x) {
                            g_settings.virtual_amiibo = x;
-                           nfp_configure(g_settings.virtual_amiibo, g_settings.amiibo_figure);
+                           nfp_configure(g_settings.virtual_amiibo, g_settings.amiibo_figure, g_settings.amiibo_repeat);
                        }, 0));
     v.push_back(choice(P_GAMEPLAY, "amiibo figure", "The figure used for your next scan. The game's normal reward rules apply.",
                        [](const Item &) { return (int)AMIIBO_COUNT; },
@@ -296,8 +296,15 @@ void build_items(void) {
                        [](const Item &) { return amiibo_valid_figure(g_settings.amiibo_figure); },
                        [](const Item &, int x) {
                            g_settings.amiibo_figure = x;
-                           nfp_configure(g_settings.virtual_amiibo, g_settings.amiibo_figure);
+                           nfp_configure(g_settings.virtual_amiibo, g_settings.amiibo_figure, g_settings.amiibo_repeat);
                        }, AMIIBO_ARCHER));
+
+    v.push_back(toggle(P_GAMEPLAY, "Repeat amiibo scans", "Use the same figure again without waiting until tomorrow. Virtual amiibo must be on.",
+                       [](const Item &) { return (int)g_settings.amiibo_repeat; },
+                       [](const Item &, int x) {
+                           g_settings.amiibo_repeat = x;
+                           nfp_configure(g_settings.virtual_amiibo, g_settings.amiibo_figure, g_settings.amiibo_repeat);
+                       }, 0));
 
     // Video (fullscreen and the window size are applied by the window loop: menu.mm)
     v.push_back(toggle(P_VIDEO, "Fullscreen", "Fills the screen. Also F11 or Alt+Enter.",

@@ -186,6 +186,7 @@ void settings_load(void) {
         else if (!strcmp(key, "mouse_invert_y")) g_settings.mouse_invert_y = atoi(val) != 0;
         else if (!strcmp(key, "pc_gyro")) g_settings.pc_gyro = atoi(val) != 0;
         else if (!strcmp(key, "gyro_scene")) g_settings.gyro_scene = atoi(val) != 0;
+        else if (!strcmp(key, "amiibo_repeat")) g_settings.amiibo_repeat = atoi(val) != 0;
         else if (!strcmp(key, "virtual_amiibo")) g_settings.virtual_amiibo = atoi(val) != 0;
         else if (!strcmp(key, "amiibo_figure")) {
             for (int i = 0; i < AMIIBO_COUNT; i++)
@@ -360,6 +361,7 @@ void settings_save(void) {
     fprintf(f, "pc_gyro = %d\n", g_settings.pc_gyro);
     fprintf(f, "gyro_scene = %d\n", g_settings.gyro_scene);
     fprintf(f, "virtual_amiibo = %d\n", g_settings.virtual_amiibo);
+    fprintf(f, "amiibo_repeat = %d\n", g_settings.amiibo_repeat);
     fprintf(f, "amiibo_figure = %s\n", virtual_amiibos[amiibo_valid_figure(g_settings.amiibo_figure)].key);
     fprintf(f, "motion_sensitivity = %.2f\n", g_settings.motion_sens);
     static const char *const inv[4] = {"off", "up_down", "left_right", "both"};

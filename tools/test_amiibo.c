@@ -43,11 +43,11 @@ int main(void) {
     assert(!request(18, NULL, 0).result);
     assert(!request(3, NULL, 0).result && device_state == NFP_SEARCHING);
     assert(!activate->signaled && request(13, tag, sizeof tag).result);
-    nfp_configure(true, AMIIBO_ARCHER);
+    nfp_configure(true, AMIIBO_ARCHER, false);
     assert(activate->signaled && device_state == NFP_FOUND);
     assert(!request(13, tag, sizeof tag).result && tag[6] == 1 && tag[0xa] == 7);
     assert(!request(5, NULL, 0).result);
-    nfp_configure(true, AMIIBO_ZELDA);  // settings changes cannot change an already mounted figure
+    nfp_configure(true, AMIIBO_ZELDA, false);  // settings changes cannot change an already mounted figure
     memset(model, 0xcc, sizeof model);
     assert(!request(16, model, 0x40).result);
     const uint8_t archer[] = {1, 0, 0, 0, 0x53, 3, 9};
@@ -59,17 +59,39 @@ int main(void) {
     assert(!request(5, NULL, 0).result);
     assert(!request(16, model, 0x40).result && model[1] == 1 && model[4] == 0x56);
     for (int i = AMIIBO_GUARDIAN; i < AMIIBO_COUNT; i++) {
-        nfp_configure(true, i);
+        nfp_configure(true, i, false);
         assert(!request(4, NULL, 0).result && !request(3, NULL, 0).result);
         assert(!request(13, tag, sizeof tag).result && tag[6] == i + 1);
         assert(!request(5, NULL, 0).result && !request(16, model, 0x40).result);
         assert(model[1] == (i == AMIIBO_GUARDIAN ? 0x40 : 0x41));
         assert(model[4] == (i == AMIIBO_GUARDIAN ? 0x55 : 0x5c));
     }
-    nfp_configure(false, AMIIBO_ZELDA);
+    nfp_configure(false, AMIIBO_ZELDA, false);
     assert(deactivate->signaled && !activate->signaled && request(16, model, 0x40).result);
     assert(!request(4, NULL, 0).result && !request(3, NULL, 0).result);
     assert(device_state == NFP_SEARCHING && !activate->signaled);
+    // Repeat mode changes the tag identity at detection, while model and identity stay fixed within a scan.
+    nfp_configure(true, AMIIBO_ARCHER, true);
+    assert(!request(13, tag, sizeof tag).result);
+    uint8_t first_tag[0x58]; memcpy(first_tag, tag, sizeof tag);
+    assert(tag[0] == 4 && (tag[1] & 0x80) && tag[0xa] == 7);
+    assert(!request(5, NULL, 0).result && !request(16, model, 0x40).result);
+    assert(!memcmp(model, archer, sizeof archer));
+    nfp_configure(true, AMIIBO_ARCHER, false);  // turning repeat off mid-scan preserves the current serial
+    assert(!request(13, tag, sizeof tag).result && !memcmp(first_tag, tag, sizeof tag));
+    nfp_configure(true, AMIIBO_ARCHER, true);
+    assert(!request(4, NULL, 0).result && !request(3, NULL, 0).result);
+    assert(!request(13, tag, sizeof tag).result && memcmp(first_tag, tag, 7));
+    memcpy(first_tag, tag, sizeof tag);
+    assert(!request(1, NULL, 0).result && !request(0, NULL, 0).result);
+    nfp_configure(true, AMIIBO_ARCHER, true);
+    assert(!request(3, NULL, 0).result && !request(13, tag, sizeof tag).result);
+    assert(memcmp(first_tag, tag, 7));  // reinitialization cannot reuse the repeat sequence
+    nfp_configure(true, AMIIBO_ARCHER, false);
+    assert(!request(4, NULL, 0).result && !request(3, NULL, 0).result);
+    assert(!request(13, tag, sizeof tag).result);
+    const uint8_t stable_archer[] = {4, 0x53, 0x57, 1, 0, 0, 1};
+    assert(!memcmp(tag, stable_archer, 7));
     nfp_reset();
     assert(!initialized && !activate && !deactivate);
     puts("PASS: virtual amiibo discovery, live controls, stable scans, catalog and reset");
