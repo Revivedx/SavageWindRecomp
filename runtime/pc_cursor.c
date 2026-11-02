@@ -597,6 +597,7 @@ static void inventory_pointer(Cpu *c) {
     extern uint64_t renderer_present_count(void);
     uint64_t f=renderer_present_count();if(frame==f)return;frame=f;
     static int target=-1;
+    bool refocus=false;
     // A gesture keeps its original owner until release, even when it crosses
     // the item grid. Do not let pending page motion or settling consume it.
     bool preview=gesture_down&&gesture_start[0]>=70&&gesture_start[1]<155&&gesture_start[1]>-260;
@@ -637,6 +638,7 @@ static void inventory_pointer(Cpu *c) {
                         uint64_t root=ptr(layout)?LD64(layout+0x18):0;
                         if(ptr(root)){*(float*)(root+0x30)=*(float*)(s+0x366c);ST32(root+0x38,0);ST8(root+0x58,LD8(root+0x58)|0x10);}
                         call(c,0x7000e3af74,s,0,0);
+                        refocus=true;
                     }
                     target=-1;
                 }
@@ -677,6 +679,15 @@ static void inventory_pointer(Cpu *c) {
             if(ptr(page))call(c,0x7000dc7040,page,i==ring&&LD32(s+0x368c)==0,0);
         }
         call(c,0x7000e3e284,s,now,now==0?1:0);
+    }
+    if(refocus) {
+        // The focused cell now holds the new page's item, but its focus didn't
+        // change, so the info pane kept the old page's item until the pointer
+        // moved. Replay the screen's focus callback f_7000e3bacc on that cell:
+        // it reads only the button's cell id (+0x44), so the screen's own copy
+        // of the id stands in for the button.
+        int cell=(int)LD32(s+0x3650);
+        if(cell>=9&&cell<=0x44)call(c,0x7000e3bacc,s,s+0x3650-0x44,0);
     }
     if(!dragging&&(target<0||target==now)) {
         unsigned ring=LD8(s+0x3a30);
