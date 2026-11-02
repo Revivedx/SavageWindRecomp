@@ -35,7 +35,7 @@ int main(void) {
     bind_capture_begin(BIND_DEV_KEY, BIND_RIGHT);
     e.type = SDL_EVENT_KEY_UP; e.key.scancode = SDL_SCANCODE_E;
     release_to_game(e); waiting();  // releasing confirm must not assign a binding
-    e.type = SDL_EVENT_KEY_DOWN; e.key.scancode = SDL_SCANCODE_F6;
+    e.type = SDL_EVENT_KEY_DOWN; e.key.scancode = SDL_SCANCODE_F5;
     assert(bind_capture_event(&e)); waiting();  // the blood moon shortcut cannot become a game binding
     e.key.scancode = SDL_SCANCODE_B;
     assert(bind_capture_event(&e));

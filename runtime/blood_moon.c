@@ -78,13 +78,13 @@ void blood_moon_frame(void) {
     if (!relief_root && g_site.main_data > MAIN_BASE && g_site.main_data < g_site.main_end)
         relief_root = find_relief_root((const uint32_t *)(uintptr_t)MAIN_BASE,
                                       g_site.main_data - MAIN_BASE, MAIN_BASE, g_site.main_data, g_site.main_end);
-    if (!relief_root) { LOG("[blood-moon] F6: unsupported relief layout\n"); return; }
+    if (!relief_root) { LOG("[blood-moon] F5: unsupported relief layout\n"); return; }
     uint64_t mgr = *(uint64_t *)(uintptr_t)relief_root;
     if (!guest_pointer(mgr, 0x178)) return;
     // Bit 12 is a one-shot native request, consumed by the game's next relief check.
     // Never simulate exhausted heaps or force the clock / visual blood moon environment.
     *(uint32_t *)(uintptr_t)(mgr + 0x174) |= 1u << 12;
-    LOG("[blood-moon] F6: panic blood moon requested\n");
+    LOG("[blood-moon] F5: panic blood moon requested\n");
 }
 
 RT_ON_RESET(blood_moon_reset) {

@@ -223,7 +223,7 @@ bool menu_handle_event(const SDL_Event *e) {
         push(q);
         return false;  // the input runtime also releases its cached controls
     }
-    if (e->type == SDL_EVENT_KEY_UP && e->key.scancode == SDL_SCANCODE_F6) {
+    if (e->type == SDL_EVENT_KEY_UP && e->key.scancode == SDL_SCANCODE_F5) {
         blood_moon_key(false);
         return true;
     }
@@ -279,7 +279,7 @@ bool menu_handle_event(const SDL_Event *e) {
             if (!typing) set_open(!g_open.load());  // (Esc with the menu open goes to ImGui below: it cancels a field)
             return true;
         }
-        if (e->key.scancode == SDL_SCANCODE_F6) {
+        if (e->key.scancode == SDL_SCANCODE_F5) {
             if (!e->key.repeat && !typing && !menu_input_captured()) blood_moon_key(true);
             return true;
         }
