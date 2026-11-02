@@ -1,5 +1,5 @@
-// Video > HUD size: the HUD's panes shrink towards the part of the screen they are in (exec.c hud_patch, scissor_rect),
-// so the hearts stay in their corner and the minimap in its. The screen is three by three zones: a pane in an outer zone
+// Video > HUD size: the HUD's panes scale from the part of the screen they are in (exec.c hud_patch, scissor_rect), so
+// the hearts stay in their corner and the minimap in its. The screen is three by three zones: a pane in an outer zone
 // goes to that edge, one in the middle (the stamina wheel) to the centre. All in the view, the panes' own matrices: on
 // screen a point p goes to anchor + (p - anchor) x s.
 #pragma once
@@ -11,7 +11,7 @@ static inline float hud_anchor(float c, float edge) { return c < -edge / 3 ? -ed
 // While a quick menu is up its bar keeps the game's size: a pane centred at x, y in the middle of the screen and not low
 // down, where the rest of the HUD (the hearts, the minimap, the clock) never is
 static inline bool hud_quick_keeps(float x, float y, float edge_x, float edge_y) {
-    return x > -0.6f * edge_x && x < 0.6f * edge_x && y > -0.4f * edge_y && y < 0.85f * edge_y;
+    return x > -0.72f * edge_x && x < 0.72f * edge_x && y > -0.4f * edge_y && y < 0.85f * edge_y;
 }
 
 // A pane's view rows (3 x 4, row 2 its depth: projected x = m00 x / -z, y = m11 y / -z)

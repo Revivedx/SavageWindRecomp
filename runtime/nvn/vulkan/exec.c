@@ -1086,9 +1086,9 @@ static float hud_scale_now(void) {
         // (not the quick menus, pause state 4: the game keeps the HUD up around them)
         static uint64_t quick_ns;
         uint64_t ns = plat_now_ns();
-        if (g_settings.hud_size < 100 && framepace_quick_ui()) quick_ns = ns;
+        if (g_settings.hud_size != 100 && framepace_quick_ui()) quick_ns = ns;
         hud_quick = quick_ns && ns - quick_ns < HUD_QUICK_HOLD_NS;
-        s = g_settings.hud_size >= 100 || framepace_menu_ui() || framepace_title_ui() || framepace_loading_ui() ||
+        s = g_settings.hud_size == 100 || framepace_menu_ui() || framepace_title_ui() || framepace_loading_ui() ||
             framepace_in_event() ? 1 : (float)g_settings.hud_size / 100;
     }
     return s;
@@ -2020,10 +2020,10 @@ static VkRect2D scissor_rect(void) {
         }
     }
     float hud_s = pass_out && sw < 16384 && sh < 16384 && pass_sx > 0 && pass_sy > 0 ? hud_scale_now() : 1;
-    if (hud_s < 1) {  // (the minimap's mask goes with the minimap: a scissor over about the whole image is left alone)
+    if (hud_s != 1) {  // (the minimap's mask goes with the minimap: a scissor over about the whole image is left alone)
         double gw = w / pass_sx, gh = h / pass_sy;
         float mx = (float)((x + sw / 2.0) / gw * 2 - 1), my = (float)((y + sh / 2.0) / gh * 2 - 1);
-        if (sw < gw * 0.9 && sh < gh * 0.9 && !(hud_quick && fabsf(mx) < 0.6f && fabsf(my) < 0.6f)) {
+        if (sw < gw * 0.9 && sh < gh * 0.9 && !(hud_quick && fabsf(mx) < 0.72f && fabsf(my) < 0.6f)) {
             double px = x, py = y, pw = sw, ph = sh;
             hud_scale_span(&px, &pw, gw / 2, gw / 2 / fmax(shape, 1), hud_s);
             hud_scale_span(&py, &ph, gh / 2, gh / 2 * fmin(shape, 1), hud_s);
@@ -4157,7 +4157,7 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         memcpy(text_matrix, g, sizeof text_matrix);
         for (int k = 0; k < 4; k++) text_matrix[k] /= shape;
         float tx = text_matrix[3] / text_matrix[15], ty = text_matrix[7] / text_matrix[15];
-        if (hud_s < 1 && !(hud_quick && hud_quick_keeps(tx, ty, edge_x, edge_y)))
+        if (hud_s != 1 && !(hud_quick && hud_quick_keeps(tx, ty, edge_x, edge_y)))
             hud_scale_matrix(text_matrix, hud_s, hud_anchor(tx, edge_x), hud_anchor(ty, edge_y));
         *out = ubo_span(vk_transient_copy(text_matrix, sizeof text_matrix, 256), sizeof text_matrix);
         return true;
@@ -4173,7 +4173,7 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         if (shape > 1) buf[0] /= shape, buf[3] /= shape;
         else buf[5] *= shape, buf[7] *= shape;
         float tx = buf[3] / buf[15], ty = buf[7] / buf[15];
-        if (hud_s < 1 && !(hud_quick && hud_quick_keeps(tx, ty, edge_x, edge_y)))
+        if (hud_s != 1 && !(hud_quick && hud_quick_keeps(tx, ty, edge_x, edge_y)))
             hud_scale_matrix(buf, hud_s, hud_anchor(tx, edge_x), hud_anchor(ty, edge_y));
         *out = ubo_span(vk_transient_copy(buf, n, 256), n);
         return true;
@@ -4221,7 +4221,7 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
     // Video > HUD size: a pane of a 40-degree layer, and not one over about the whole screen (a fade, a picture)
     float hud_ax = 0, hud_ay = 0;
     bool hud_scale = false;
-    if (hud_s < 1 && size >= 28 * 4 && fabsf((tall ? m11 / shape : m11) - 2.74748f) < 0.001f) {
+    if (hud_s != 1 && size >= 28 * 4 && fabsf((tall ? m11 / shape : m11) - 2.74748f) < 0.001f) {
         const float *mv = g + 16, *rc = g + 33 * 4;
         bool has_rect = size >= 34 * 16 && rc[0] > 0 && rc[1] > 0;
         float x0 = 1e9f, x1 = -1e9f, y0 = 1e9f, y1 = -1e9f;

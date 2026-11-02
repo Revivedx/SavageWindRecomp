@@ -43,8 +43,18 @@ int main(void) {
     hud_scale_span(&p, &n, 960, 960, 0.5f);
     assert(NEAR(n, 100) && NEAR(p, 910));
 
+    // Bigger than the game's: from the same corner, 1.5 times the size
+    p = 1700, n = 200;
+    hud_scale_span(&p, &n, 960, 960, 1.5f);
+    assert(NEAR(n, 300) && NEAR(p, 1590));
+    float big[12] = {1, 0, 0, -600, 0, 1, 0, 300, 0, 0, 1, -1000};
+    project(big, m00, m11, 0, 0, &x0, &y0);
+    hud_scale_view(big, 1.5f, m00, m11, -1, 1);
+    project(big, m00, m11, 0, 0, &a0, &b0);
+    assert(NEAR(a0, -1 + (x0 + 1) * 1.5f) && NEAR(b0, 1 + (y0 - 1) * 1.5f));
+
     // A quick menu's bar keeps its size; the hearts, the minimap and the clock don't
-    assert(hud_quick_keeps(0, 0.27f, 1, 1) && hud_quick_keeps(-0.5f, 0.3f, 1, 1));
+    assert(hud_quick_keeps(0, 0.27f, 1, 1) && hud_quick_keeps(-0.5f, 0.3f, 1, 1) && hud_quick_keeps(0.64f, 0.63f, 1, 1));
     assert(!hud_quick_keeps(-0.85f, 0.85f, 1, 1) && !hud_quick_keeps(0.8f, -0.75f, 1, 1) && !hud_quick_keeps(0.5f, -0.8f, 1, 1));
 
     puts("PASS: hud_scale");

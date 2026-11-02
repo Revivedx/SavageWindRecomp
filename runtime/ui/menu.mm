@@ -772,13 +772,16 @@ static void tab_display(void) {
         enum { NV = sizeof sizes / sizeof sizes[0] };
         static char names_buf[NV][16];
         const char *names[NV];
-        int cur = NV - 1;
+        int cur = 0, def = 0;
         for (int i = 0; i < NV; i++) {
             snprintf(names_buf[i], sizeof names_buf[i], "%d%%", sizes[i]);
             names[i] = names_buf[i];
-            if (sizes[i] == g_settings.hud_size) cur = i;
+            if (sizes[i] == 100) def = i;
         }
-        if (opt_choice("HUD size", &cur, names, NV, NV - 1,
+        cur = def;
+        for (int i = 0; i < NV; i++)
+            if (sizes[i] == g_settings.hud_size) cur = i;
+        if (opt_choice("HUD size", &cur, names, NV, def,
                        "How big the hearts, stamina, minimap and the rest of the HUD are. Each part stays in its corner.", false))
             g_settings.hud_size = sizes[cur];
     }
