@@ -101,6 +101,9 @@ typedef struct {
     int text_language;   // index in g_text_languages (runtime/language.h), 0: the host's
     int voice_language;  // index in g_voice_languages, 0: the text language's voices
     bool menu_tip_seen;  // the start screen's one-time "how to open the menu" note was shown (first PLAY ever)
+    // Options > Cheats (runtime/hle/cheats.c)
+    bool cheat_infinite_durability;  // weapons, bows and shields never wear out
+    bool cheat_infinite_arrows;      // shooting takes no arrows from the pouch
 } Settings;
 
 #define STICK_DEADZONE_DEFAULT 0.10f  // (the Switch's own input service has one: the game expects 0 at rest)

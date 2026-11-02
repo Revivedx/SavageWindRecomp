@@ -84,7 +84,8 @@ struct Entry {           // the game's option entry (0x30)
 static_assert(sizeof(Entry) == 0x30);
 enum { KIND_TOGGLE = 0, KIND_CHOICE = 1, KIND_BUTTON = 2 };
 
-enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_COLOUR, P_AUDIO, P_CONTROLS, P_KEYS, P_STICKS, P_PAD, P_LANGUAGE, P_COUNT };
+enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_COLOUR, P_AUDIO, P_CONTROLS, P_KEYS, P_STICKS, P_PAD, P_LANGUAGE, P_CHEATS,
+            P_COUNT };
 enum Action { A_NONE, A_PAGE, A_BIND_KEY, A_BIND_PAD, A_RESET_KEYS, A_RESET_PAD, A_RESTART, A_QUIT, A_SIZE_LIST };
 
 struct Item {
@@ -269,6 +270,7 @@ void build_items(void) {
     v.push_back(button(P_MAIN, "Keyboard (sticks)", "Keys for the sticks and for walking.", "Open", A_PAGE, P_STICKS));
     v.push_back(button(P_MAIN, "Controller", "Which controller button does each button.", "Open", A_PAGE, P_PAD));
     v.push_back(button(P_MAIN, "Language", "Language of the texts and of the voices.", "Open", A_PAGE, P_LANGUAGE));
+    v.push_back(button(P_MAIN, "Cheats", "Infinite durability and arrows.", "Open", A_PAGE, P_CHEATS));
     v.push_back(button(P_MAIN, "Quit game", "To the desktop, or back to the Savage Wind start screen.", "Quit",
                        A_QUIT, 0));
 
@@ -664,6 +666,14 @@ void build_items(void) {
                        [](const Item &, int x) { g_settings.voice_language = x; }, 0));
     v.push_back(button(P_LANGUAGE, "Restart now",
                        "Starts the game again with these languages. Unsaved progress is lost.", "Restart", A_RESTART, 0));
+
+    // Cheats (runtime/hle/cheats.c; the game code asks at each use, so they apply at once)
+    v.push_back(toggle(P_CHEATS, "Infinite Durability", "Weapons, bows and shields never wear out or break.",
+                       [](const Item &) { return (int)g_settings.cheat_infinite_durability; },
+                       [](const Item &, int x) { g_settings.cheat_infinite_durability = x; }, 0));
+    v.push_back(toggle(P_CHEATS, "Infinite Arrows", "Shooting doesn't use up arrows. You need at least one to shoot.",
+                       [](const Item &) { return (int)g_settings.cheat_infinite_arrows; },
+                       [](const Item &, int x) { g_settings.cheat_infinite_arrows = x; }, 0));
 }
 
 // The game's table, extended (first opening, and again after a reboot reloads the game's own)

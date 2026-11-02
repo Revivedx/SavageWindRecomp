@@ -626,7 +626,28 @@ def _gyro_scene_actor(gen, a):
             f'  /* {a:#x}: bl (shrine apparatus input) */')
 
 
+# Options > Cheats (runtime/hle/cheats.c). Infinite Durability: a weapon's hit update (1.9.0 0x70007b08f4) calls its
+# damage component (actor +0xe28, vtable +0x78) with its life pointer (x1: actor +0xd4c) and breaks it at 0 after. The
+# call runs as before; with the cheat on, the life is put back and the update told it didn't change (w0 = 0: no
+# breaking, no pouch sync).
+def _weapon_wear(gen, a):
+    assert _word(gen, a) == 0xd63f0100, hex(_word(gen, a))  # blr x8
+    return ('{ extern int rt_cheat_durability(void); uint64_t life = c->x[1]; uint32_t was = life ? LD32(life) : 0; '
+            f'c->pc = c->x[8]; c->x[30] = {a + 4:#x}ull; rt_dispatch(c); '
+            'if (life && rt_cheat_durability()) { ST32(life, was); c->x[0] = 0; } }'
+            f'  /* {a:#x}: blr x8 (weapon wear) */')
+
+
+# Infinite Arrows: PauseMenuDataMgr::removeArrow(name, count) (1.9.0 0x7000d93814) returns before taking any off
+def _remove_arrow(gen, a):
+    assert _word(gen, a) == _sub_sp(0x70), hex(_word(gen, a))
+    return ('{ extern int rt_cheat_arrows(void); if (rt_cheat_arrows()) return; c->sp -= 0x70; }'
+            f'  /* {a:#x}: sub sp, sp, #0x70 (removeArrow) */')
+
+
 PATCHES = {
+    'weapon_wear': _weapon_wear,
+    'remove_arrow': _remove_arrow,
     'pc_map_focus': _pc_map_focus(False),
     'pc_map_focus_target': _pc_map_focus(True),
     'pc_map_focus_now': _pc_map_focus(True),

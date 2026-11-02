@@ -211,6 +211,8 @@ void settings_load(void) {
                 if (!strcmp(val, g_voice_languages[i].folder)) g_settings.voice_language = i;
         }
         else if (!strcmp(key, "menu_tip_seen")) g_settings.menu_tip_seen = atoi(val) != 0, tip_key = true;
+        else if (!strcmp(key, "cheat_infinite_durability")) g_settings.cheat_infinite_durability = atoi(val) != 0;
+        else if (!strcmp(key, "cheat_infinite_arrows")) g_settings.cheat_infinite_arrows = atoi(val) != 0;
         else bind_settings_load(key, val);  // bind_pad_* / bind_key_*: runtime/hle/bindings.c
     }
     fclose(f);
@@ -339,6 +341,8 @@ void settings_save(void) {
     fprintf(f, "text_language = %s\n", tl > 0 && tl < g_ntext_languages ? g_text_languages[tl].folder : "auto");
     fprintf(f, "voice_language = %s\n", vl > 0 && vl < g_nvoice_languages ? g_voice_languages[vl].folder : "text");
     fprintf(f, "menu_tip_seen = %d\n", g_settings.menu_tip_seen);
+    fprintf(f, "cheat_infinite_durability = %d\n", g_settings.cheat_infinite_durability);
+    fprintf(f, "cheat_infinite_arrows = %d\n", g_settings.cheat_infinite_arrows);
     bind_settings_save(f);
     fclose(f);
 }

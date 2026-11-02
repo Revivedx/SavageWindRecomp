@@ -180,7 +180,8 @@ def main():
     # unhandled path, and refuse a mismatched instruction rather than corrupt it.
     for name, word, stack in [('pc_map_focus', 0xa9be7bfd, 0x20),
                               ('pc_map_focus_target', 0xd100c3ff, 0x30),
-                              ('pc_map_focus_now', 0xd100c3ff, 0x30)]:
+                              ('pc_map_focus_now', 0xd100c3ff, 0x30),
+                              ('remove_arrow', 0xd101c3ff, 0x70)]:
         g = SimpleNamespace(base=BASE, nso=SimpleNamespace(image=struct.pack('<I', word)))
         code = patches.PATCHES[name](g, BASE)
         check(f'c->sp -= {stack:#x};' in code and 'return;' in code, f'{name}: guarded original stack effect')
@@ -193,6 +194,18 @@ def main():
             check(False, f'{name}: mismatched opcode accepted')
         except AssertionError:
             check(True, f'{name}: mismatched opcode refused')
+    # Infinite Durability keeps the damage call (blr x8, its return address after it) and only puts the life back
+    g = SimpleNamespace(base=BASE, nso=SimpleNamespace(image=struct.pack('<I', 0xd63f0100)))
+    code = patches.PATCHES['weapon_wear'](g, BASE)
+    check('c->pc = c->x[8];' in code and f'c->x[30] = {BASE + 4:#x}ull;' in code and 'rt_dispatch(c);' in code,
+          'weapon_wear: the damage call still runs')
+    check(code.index('rt_dispatch(c);') < code.index('ST32(life, was)'), 'weapon_wear: life restored after the call')
+    g.nso.image = struct.pack('<I', NOP)
+    try:
+        patches.PATCHES['weapon_wear'](g, BASE)
+        check(False, 'weapon_wear: mismatched opcode accepted')
+    except AssertionError:
+        check(True, 'weapon_wear: mismatched opcode refused')
     print(f'ok: {checks} checks')
 
 

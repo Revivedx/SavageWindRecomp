@@ -225,6 +225,15 @@ SITES = [
          'b4000008/ff00001f 39406108 37280008/fff8001f 39402008 36000008/fff8001f d10143ff', 0),
     # a shrine apparatus fetching its input (tools/patches.py _gyro_scene_actor; runtime/pc_gyro_scene.c)
     Site('gyro_scene_actor', 'code', '2d59b28f 2d5ab689 94000000/fc000000 b5000000/ff00001f 9101d280 9101a281', 2),
+    # Options > Cheats (tools/patches.py _weapon_wear, _remove_arrow; runtime/hle/cheats.c): a weapon's hit update
+    # calling its damage component (vtable +0x78) with its life, and PauseMenuDataMgr::removeArrow's entry (it checks
+    # the actor tag Arrow, CRC32 0x19f6c13a)
+    Site('weapon_wear', 'code', 'f9400288 aa1403e0 f9415d08 d63f0100 b5000000/ff00001f 1e2e1008 14000000/fc000000 '
+         'bd400000 5e21d808 f9400288 aa1403e0 f9471695 f9415d08 d63f0100 f94002a8 aa0003e1 aa1503e0 f9403d08 '
+         'd63f0100 f9400288 2a0003f5', 18),
+    Site('remove_arrow', 'code', 'd101c3ff a9017bfd a9026ffc a90367fa a9045ff8 a90557f6 a9064ff4 910043fd '
+         '90000008/9f00001f aa0003f3 f9400108/ffc003ff aa0103e0 2a0203f6 f9400115 f9400028 aa0103f4 f9400d08 '
+         'd63f0100 f9400681 52982742 72a33ec2', 0),
     Site('main_data', 'data', '', 0),
     Site('main_end', 'end', '', 0),
 ]
@@ -236,6 +245,8 @@ SITES = [
 # second group it turns it without the game's camera inversion options.
 OPTIONAL_GROUPS = [
     ('gyro_scene_actor',),
+    ('weapon_wear',),
+    ('remove_arrow',),
     ('surf_contact', 'surf_boost_remove', 'surf_jump_request'),
     ('quick_menu_capture_alpha',),
     ('kf_angle',),
@@ -392,6 +403,8 @@ KNOWN = {
         'grass_blade_lateral_near': 0x70013a8f0c,
         'grass_blade_lateral_far': 0x70013a8f20,
         'tree_ranges': 0x70013c94ac,
+        'weapon_wear': 0x70007b09f0,
+        'remove_arrow': 0x7000d93814,
         'main_data': 0x7001b7a000,
         'main_end': 0x7001e98000,
     },
