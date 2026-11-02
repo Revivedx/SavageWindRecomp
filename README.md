@@ -131,9 +131,9 @@ reads `extracted/` next to the program (git ignores this folder):
 extracted/
   exefs/   main, main.npdm, rtld, sdk, subsdk0
   romfs/   the complete RomFS (base game + the 1.9.0 update merged)
-  dlc1/    optional: the first DLC's RomFS (11 folders, about 7,000 files, 1.4 GB)
+  aoc1/    optional: the first DLC's RomFS (11 folders, about 7,000 files, 1.4 GB)
     Game/  Map/  Movie/  NavMesh/  Pack/  Physics/  Sound/  System/  Terrain/  UI/  Voice/
-  dlc2/    optional: the second DLC's RomFS (1 folder, 1 file)
+  aoc2/    optional: the second DLC's RomFS (1 folder, 1 file)
     System/AocVersion.txt
 ```
 
@@ -142,16 +142,18 @@ prints it and what the recompiler will find there.
 
 ### The DLC
 
-Each DLC's RomFS goes in a folder of its own, like `dlc1/` and `dlc2/` above: its folders right inside it
-(`dlc1/System/AocVersion.txt`) or one folder deeper (`dlc1/romfs/System/AocVersion.txt`); the setup finds either.
+Each DLC's RomFS goes in a folder of its own, named `aoc1/` and `aoc2/` as above, with its folders right inside it
+(`aoc1/System/AocVersion.txt`). Keep the two DLC apart: the second one's RomFS is a single file, and extracting both
+into one folder leaves only one DLC.
 
 - **With the game:** keep them in the same folder as `exefs/` and `romfs/`, and choose that folder at the first
   setup. The DLC is set up together with the game.
 - **Later:** in Savage Wind Configuration's game files page, choose a folder that holds just the DLC folders and set
   up. The DLC is added to the game files already set up, without building the game code again.
 
-The setup tells the game's RomFS (it has `System/Version.txt`) from a DLC's (`System/AocVersion.txt`), so the folder
-names don't matter. It copies them as `aoc1/` and `aoc2/` into the data folder. The game files page shows the DLC set
+The setup tells the game's RomFS (it has `System/Version.txt`) from a DLC's (`System/AocVersion.txt`) and copies the
+DLC as `aoc1/` and `aoc2/` into the data folder. A folder the game reads in place (an `extracted/` folder next to the
+program) is not copied, so there the DLC folders must already be named `aoc1/` and `aoc2/`. The game files page shows the DLC set
 up (for example "1 + 2 (3.0)") and removes it; your saves stay.
 
 The DLC are optional: the whole game plays without them. What you get depends on what you set up:
