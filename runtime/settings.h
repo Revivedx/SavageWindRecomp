@@ -68,6 +68,7 @@ typedef struct {
     int perf_overlay;    // PERF_*: the performance overlay (F10 cycles it)
     int fps_limit;       // frame rate, frames per second (FPS_CHOICES; 0: no limit)
     int vsync;           // VSYNC_*
+    int gpu;             // Vulkan adapter index from the startup log; -1: automatic (restart required)
     bool dpad_move;      // the d-pad (and arrow keys) also act as the left stick while it is at rest
     float stick_deadzone[2];  // left, right stick: a controller's stick reads 0 within this much of full tilt (radial)
     bool mouse_camera;   // the mouse turns the camera (right stick); the cursor is held in the window while playing

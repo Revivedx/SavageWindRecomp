@@ -432,6 +432,22 @@ $(B)/test_pc_settings: tests/test_pc_settings.c runtime/settings.c runtime/setti
 	@mkdir -p $(dir $@)
 	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< -lSDL3 -lm
 
+$(B)/test_gpu_settings: tests/test_gpu_settings.c runtime/settings.c runtime/settings.h runtime/gpu_select.h runtime/hle/bindings.c
+	@mkdir -p $(dir $@)
+	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< -lSDL3 -lm
+
+test-gpu-settings: $(B)/test_gpu_settings
+	@set -e; tmp=$$(mktemp); trap 'rm -f "$$tmp"' EXIT; \
+	 $(B)/test_gpu_settings "$$tmp" -1; \
+	 for value in auto 0 1 2147483647 -1 nvidia 1junk 2147483648 99999999999999999999999999999; do \
+	   case "$$value" in 0|1|2147483647) expected=$$value;; *) expected=-1;; esac; \
+	   printf 'settings_version = 3\ngpu = %s  \r\n' "$$value" > "$$tmp"; \
+	   $(B)/test_gpu_settings "$$tmp" "$$expected"; \
+	   $(B)/test_gpu_settings "$$tmp" "$$expected"; \
+	 done
+
+.PHONY: test-gpu-settings
+
 $(B)/test_options_pointer: tests/test_options_pointer.c runtime/pc_cursor.c runtime/pc_cursor.h runtime/pc_cursor_math.h
 	@mkdir -p $(dir $@)
 	$(CC) -O2 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -isystem third_party -o $@ $< -fuse-ld=lld -Wl,--gc-sections $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) -lSDL3 -lm

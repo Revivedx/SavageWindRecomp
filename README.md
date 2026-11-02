@@ -44,6 +44,14 @@ mouse, and its text and voices in any of its languages.
 
 ## Getting started (Alpha 4)
 
+To choose a Vulkan GPU manually, close Savage Wind and edit `savagewind.ini` in the same data folder as
+`savagewind.log`. Set `gpu = 1`, for example, using the number printed beside your preferred adapter in the log's
+`[vk] gpu 0: ...`, `[vk] gpu 1: ...` lines, then restart. `gpu = auto` (the default) prefers a discrete GPU.
+An unavailable adapter falls back to automatic selection with a warning in the log. Adapter numbers can change
+after hardware or driver changes; check the log again if necessary. The `SAVAGEWIND_GPU` environment variable
+overrides this setting for one launch (an index or `auto`). This selects the rendering GPU; the `display` setting
+selects the monitor.
+
 **You need:** a 64-bit CPU with SSE4.2 (AVX2 runs faster), a GPU with a Vulkan 1.3 driver, and 16 GB of RAM. With
 integrated graphics, which share the PC's RAM, 8 GB isn't enough: the game's 3 GB of memory has to stay available
 to the GPU ([#117](https://github.com/Revivedx/SavageWindRecomp/issues/117)).

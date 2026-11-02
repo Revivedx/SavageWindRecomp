@@ -14,6 +14,7 @@
 #include "../../paths.h"
 #include "../../perfmon.h"
 #include "../../settings.h"
+#include "../../gpu_select.h"
 #include "../../ui/menu.h"
 #include "../../window_size.h"
 #include "mvec.h"
@@ -136,18 +137,40 @@ static void pick_device(void) {
     if (!n) FATAL("no Vulkan device\n");
     VkPhysicalDevice *pd = calloc(n, sizeof *pd);
     vkEnumeratePhysicalDevices(g_vk.inst, &n, pd);
-    int want = getenv("SAVAGEWIND_GPU") ? atoi(getenv("SAVAGEWIND_GPU")) : -1, best = -1, best_score = -1;
+    const char *override = getenv("SAVAGEWIND_GPU");
+    int want = override && *override ? gpu_index_parse(override) : g_settings.gpu;
+    if (override && *override && want < 0 && strcmp(override, "auto"))
+        LOG("[vk] invalid SAVAGEWIND_GPU '%s'; using automatic selection\n", override);
+    int best = -1, best_score = -1;
     for (uint32_t i = 0; i < n; i++) {
         VkPhysicalDeviceProperties p;
         vkGetPhysicalDeviceProperties(pd[i], &p);
         LOG("[vk] gpu %u: %s (api %u.%u.%u)\n", i, p.deviceName, VK_API_VERSION_MAJOR(p.apiVersion),
             VK_API_VERSION_MINOR(p.apiVersion), VK_API_VERSION_PATCH(p.apiVersion));
         if (p.apiVersion < VK_API_VERSION_1_3) continue;
+        // Check presentation before scoring: a headless adapter must not hide a usable GPU.
+        uint32_t nq = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(pd[i], &nq, NULL);
+        VkQueueFamilyProperties *qp = calloc(nq ? nq : 1, sizeof *qp);
+        if (!qp) FATAL("cannot allocate GPU queue properties\n");
+        vkGetPhysicalDeviceQueueFamilyProperties(pd[i], &nq, qp);
+        bool usable = false;
+        for (uint32_t q = 0; q < nq; q++) {
+            VkBool32 present = VK_FALSE;
+            if (vkGetPhysicalDeviceSurfaceSupportKHR(pd[i], q, g_vk.surface, &present) == VK_SUCCESS &&
+                present && qp[q].queueCount && (qp[q].queueFlags & VK_QUEUE_GRAPHICS_BIT) &&
+                (qp[q].queueFlags & VK_QUEUE_COMPUTE_BIT)) usable = true;
+        }
+        free(qp);
+        if (!usable) continue;
         int score = p.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 3 : p.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 2 : 1;
         if ((int)i == want) score = 100;
         if (score > best_score) { best_score = score; best = (int)i; }
     }
-    if (best < 0) FATAL("no Vulkan 1.3 device\n");
+    if (best < 0) FATAL("no Vulkan 1.3 device with a graphics+compute+present queue\n");
+    if (want >= 0 && best != want)
+        LOG("[vk] requested GPU %d unavailable or unsuitable; falling back to GPU %d\n", want, best);
+    LOG("[vk] selected GPU %d (%s)\n", best, best == want ? "requested" : "automatic");
     g_vk.phys = pd[best];
     free(pd);
     vkGetPhysicalDeviceProperties(g_vk.phys, &g_vk.props);

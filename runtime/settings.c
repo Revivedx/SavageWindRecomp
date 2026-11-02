@@ -1,4 +1,5 @@
 #include "settings.h"
+#include "gpu_select.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -38,6 +39,7 @@ Settings g_settings = {
     .precompile_shaders = true,
     .async_shaders = true,
     .vsync = VSYNC_DEFAULT,
+    .gpu = -1,
     .wide_view = true,
     .fov = 100,
     .color_lut_strength = 100,
@@ -114,6 +116,7 @@ void settings_load(void) {
                 snprintf(g_settings.display_name, sizeof g_settings.display_name, "%s", at ? val + at : "");
             }
         }
+        else if (!strcmp(key, "gpu")) g_settings.gpu = gpu_index_parse(val);
         else if (!strcmp(key, "volume")) g_settings.volume = (float)atof(val);
         else if (!strcmp(key, "reverb")) g_settings.reverb = atoi(val) != 0;
         else if (!strcmp(key, "movie_audio")) g_settings.movie_audio = atoi(val) != 0;
@@ -278,6 +281,9 @@ void settings_save(void) {
     fprintf(f, "fullscreen_mode = %s\n", k_fsmode[fm >= 0 && fm < FSMODE_COUNT ? fm : FSMODE_AUTO]);
     if (g_settings.display > 0) fprintf(f, "display = %d %s\n", g_settings.display, g_settings.display_name);
     else fprintf(f, "display = auto\n");
+    fprintf(f, "# Vulkan GPU index from the startup log, or auto; restart after changing\n");
+    if (g_settings.gpu >= 0) fprintf(f, "gpu = %d\n", g_settings.gpu);
+    else fprintf(f, "gpu = auto\n");
     if (g_settings.window_w > 0 && g_settings.window_h > 0)
         fprintf(f, "window_size = %dx%d\n", g_settings.window_w, g_settings.window_h);
     else
