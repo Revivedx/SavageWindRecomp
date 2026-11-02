@@ -1048,6 +1048,7 @@ static void tab_about(void) {
     toggle("Invert mouse Y", &g_settings.mouse_invert_y);
     ImGui::Spacing();
     header("Controls");
+    opt_toggle("Controller rumble", &g_settings.rumble, true, "Vibrate the controller during play.");
     controls_bindings_draw(ImGui::GetFontSize() / 34);
     ImGui::Spacing();
     header("Menu");

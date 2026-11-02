@@ -4,6 +4,8 @@
 #include "../runtime/hle/vibration.c"
 #include "../runtime/services/hid_set.c"
 
+Settings g_settings = {.rumble = true};
+
 static uint64_t now;
 static unsigned calls;
 static uint16_t motor_low, motor_high;
@@ -76,6 +78,21 @@ int main(void) {
     batch[0].low_amplitude = .6f; req.x[1].size = sizeof(VibrationValue) + 1;
     hid(NULL, &req, &resp);
     assert(vibration_get(left).low_amplitude == .6f && vibration_get(right).high_amplitude == .9f);
+
+    // The player's toggle stops active motors without changing the game's HID permission.
+    g_settings.rumble = false;
+    vibration_update(pad, true);
+    assert(motor_low == 0 && motor_high == 0 && vibration_permitted());
+    command(201, packet, sizeof packet);
+    assert(vibration_get(left).low_amplitude == 0);
+    vibration_reset();
+    assert(!g_settings.rumble);  // returning to the title screen preserves the preference
+    g_settings.rumble = true;
+    vibration_update(pad, true);
+    assert(motor_low == 0 && motor_high == 0);  // no stale effect after re-enabling
+    command(201, packet, sizeof packet);
+    vibration_update(pad, true);
+    assert(motor_low == 16384 && motor_high == 32768);
 
     uint8_t allow = 0; command(204, &allow, 1);
     vibration_update(pad, true); assert(motor_low == 0 && motor_high == 0);
