@@ -28,6 +28,7 @@
 #include <SDL3/SDL.h>
 
 #include "i18n.h"
+#include "amiibo_picker.h"
 
 extern "C" {
 #include "../input_bind.h"
@@ -87,8 +88,8 @@ static_assert(sizeof(Entry) == 0x30);
 enum { KIND_TOGGLE = 0, KIND_CHOICE = 1, KIND_BUTTON = 2 };
 
 enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_COLOUR, P_AUDIO, P_CONTROLS, P_KEYS, P_STICKS, P_PAD, P_LANGUAGE, P_ACCESS,
-            P_COUNT };
-enum Action { A_NONE, A_PAGE, A_BIND_KEY, A_BIND_PAD, A_RESET_KEYS, A_RESET_PAD, A_RESTART, A_QUIT, A_SIZE_LIST };
+            P_AMIIBO, P_COUNT };
+enum Action { A_NONE, A_PAGE, A_BIND_KEY, A_BIND_PAD, A_RESET_KEYS, A_RESET_PAD, A_RESTART, A_QUIT, A_SIZE_LIST, A_AMIIBO_LIST };
 
 struct Item {
     int page;
@@ -119,6 +120,7 @@ uint64_t g_quit_dialog;            // the quit question's dialog while it is up
 uint64_t g_quit_owner;             // ... and the screen it came from (title menu or Options; its input is off meanwhile)
 bool g_quit_texts;                 // ... and its texts are still to be given (its two-button layout comes next)
 uint64_t g_cap_row;                // a binding row whose capture is running
+uint64_t g_amiibo_row;             // the Choose amiibo row whose browser is open
 uint64_t g_size_row;               // the Window size row whose list was opened
 std::atomic<bool> g_size_redraw;   // ... and a size was picked there (render thread): redraw it
 std::vector<uint64_t> g_dirty;     // rows to redraw, one per frame
@@ -281,26 +283,25 @@ void build_items(void) {
     v.push_back(button(P_MAIN, "Controller", "Which controller button does each button.", "Open", A_PAGE, P_PAD));
     v.push_back(button(P_MAIN, "Language", "Language of the texts and of the voices.", "Open", A_PAGE, P_LANGUAGE));
     v.push_back(button(P_MAIN, "Accessibility", "Assists that make the game easier.", "Open", A_PAGE, P_ACCESS));
+    v.push_back(button(P_MAIN, "amiibo", "Choose a figure and receive rewards with the amiibo rune.", "Open", A_PAGE, P_AMIIBO));
     v.push_back(button(P_MAIN, "Quit game", "To the desktop, or back to the Savage Wind start screen.", "Quit",
                        A_QUIT, 0));
 
-    v.push_back(toggle(P_GAMEPLAY, "Virtual amiibo", "Automatically scans the selected figure when you use the amiibo rune. Enable amiibo in the game setting above too.",
+    v.push_back(toggle(P_AMIIBO, "amiibo rewards", "Enables the amiibo rune and automatically scans your selected figure. Use the rune in game to receive rewards.",
                        [](const Item &) { return (int)g_settings.virtual_amiibo; },
                        [](const Item &, int x) {
+                           amiibo_set_game_enabled(x != 0);
                            g_settings.virtual_amiibo = x;
                            nfp_configure(g_settings.virtual_amiibo, g_settings.amiibo_figure, g_settings.amiibo_repeat);
                        }, 0));
-    v.push_back(choice(P_GAMEPLAY, "amiibo figure", "The figure used for your next scan. The game's normal reward rules apply.",
-                       [](const Item &) { return (int)AMIIBO_COUNT; },
-                       [](const Item &, int x) { return virtual_amiibos[x].name; },
-                       [](const Item &) { return amiibo_valid_figure(g_settings.amiibo_figure); },
-                       [](const Item &, int x) {
-                           g_settings.amiibo_figure = x;
-                           nfp_configure(g_settings.virtual_amiibo, g_settings.amiibo_figure, g_settings.amiibo_repeat);
-                       }, AMIIBO_ARCHER));
-    v.back().wrap = true;
+    {
+        Item it = button(P_AMIIBO, "Choose amiibo", "Search by character or series, pin favorites, or pick a recent figure.",
+                         nullptr, A_AMIIBO_LIST, 0);
+        it.label = [](const Item &, int) { return virtual_amiibos[amiibo_valid_figure(g_settings.amiibo_figure)].name; };
+        v.push_back(it);
+    }
 
-    v.push_back(toggle(P_GAMEPLAY, "Repeat amiibo scans", "Use the same figure again without waiting until tomorrow. Keeps first-use reward history. Virtual amiibo must be on.",
+    v.push_back(toggle(P_AMIIBO, "Repeat scans", "Use the same figure again without waiting until tomorrow. Keeps first-use reward history. Enable amiibo rewards first.",
                        [](const Item &) { return (int)g_settings.amiibo_repeat; },
                        [](const Item &, int x) {
                            g_settings.amiibo_repeat = x;
@@ -794,10 +795,11 @@ bool install(void) {
         g_entries.push_back(e);
     }
     for (auto &o : g_order) o.clear();
-    // Keep the original amiibo gameplay toggle available alongside the virtual figure controls.
+    // The combined amiibo rewards control owns both the game flag and virtual scanning.
     // Voice language lives on Language; the VR goggles mode has no use on a PC screen.
     for (uint32_t r = 0; r < rows; r++) {
         uint32_t e = ((const uint32_t *)(uintptr_t)order)[r];
+        if (e == GAME_AMIIBO) continue;
         if (e == GAME_VOICE_BUTTON || e == GAME_VOICE_LEVEL || e == GAME_VR) continue;
         bool camera = e == GAME_CAMERA_Y || e == GAME_CAMERA_X || e == GAME_GYRO || e == GAME_CAMERA_SENSITIVITY;
         g_order[camera ? P_CONTROLS : P_GAMEPLAY].push_back(e);
@@ -903,12 +905,14 @@ void quit_poll(void) {
 // The game gets no input while a binding capture runs, and briefly after it (the pressed button is still down)
 extern "C" bool game_options_input_hold(void) {
     int d, s, ms;
-    return bind_capture_active(&d, &s, &ms) || std::chrono::steady_clock::now() < g_hold_until;
+    return amiibo_picker_active() || bind_capture_active(&d, &s, &ms) || std::chrono::steady_clock::now() < g_hold_until;
 }
 
 // createRows: the row list of the page to show
 extern "C" void rt_opt_rows(void) {
     if (!install()) return;
+    // Reconcile old configurations when opening Options: one switch now controls both settings.
+    amiibo_set_game_enabled(g_settings.virtual_amiibo);
     int page = g_switching ? g_next_page : P_MAIN;
     g_switching = false;
     std::vector<uint32_t> &o = g_order[page];
@@ -1033,6 +1037,10 @@ extern "C" int rt_opt_decide(uint64_t row) {
     if (!it || it->kind != KIND_BUTTON) return 0;
     int d, s, ms;
     switch (it->action) {
+    case A_AMIIBO_LIST:
+        g_amiibo_row = row;
+        amiibo_picker_open();
+        return 2;
     case A_SIZE_LIST:
         g_size_row = row;
         menu_size_list_open();
@@ -1074,6 +1082,19 @@ extern "C" uint64_t rt_opt_tick(uint64_t screen) {
     if (g_quit_dialog) {  // (the quit question is up: 1 skips the screen's update, whose dialog handling takes answers)
         quit_poll();
         if (g_quit_dialog) return 1;
+    }
+    AmiiboPickerResult picked;
+    if (amiibo_picker_take(&picked)) {
+        memcpy(g_settings.amiibo_favorites, picked.favorites, sizeof picked.favorites);
+        if (picked.selected >= 0 && picked.selected < AMIIBO_COUNT) {
+            g_settings.amiibo_figure = picked.selected;
+            amiibo_recent_push(g_settings.amiibo_recent, &g_settings.amiibo_recent_count, picked.selected);
+            nfp_configure(g_settings.virtual_amiibo, picked.selected, g_settings.amiibo_repeat);
+        }
+        settings_save();
+        g_hold_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+        if (g_amiibo_row) g_dirty.push_back(g_amiibo_row);
+        g_amiibo_row = 0;
     }
     int d, s, ms;
     if (g_cap_row && !bind_capture_active(&d, &s, &ms)) {

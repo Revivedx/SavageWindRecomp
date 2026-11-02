@@ -20,6 +20,25 @@ int main(int argc, char **argv) {
     g_settings.amiibo_repeat = argc == 8 && atoi(argv[7]);
     g_settings.virtual_amiibo = atoi(argv[4]);
     g_settings.amiibo_figure = atoi(argv[5]);
+    const char *library = getenv("SAVAGEWIND_TEST_AMIIBO_LIBRARY");
+    if (library && !strcmp(library, "write")) {
+        g_settings.amiibo_favorites[AMIIBO_GUARDIAN] = true;
+        g_settings.amiibo_favorites[AMIIBO_MARIO] = true;
+        amiibo_recent_push(g_settings.amiibo_recent, &g_settings.amiibo_recent_count, AMIIBO_ARCHER);
+        amiibo_recent_push(g_settings.amiibo_recent, &g_settings.amiibo_recent_count, AMIIBO_GUARDIAN);
+        amiibo_recent_push(g_settings.amiibo_recent, &g_settings.amiibo_recent_count, AMIIBO_ARCHER);
+    } else if (library && !strcmp(library, "read")) {
+        assert(g_settings.amiibo_favorites[AMIIBO_GUARDIAN] && g_settings.amiibo_favorites[AMIIBO_MARIO]);
+        assert(!g_settings.amiibo_favorites[AMIIBO_ARCHER]);
+        assert(g_settings.amiibo_recent_count == 2);
+        assert(g_settings.amiibo_recent[0] == AMIIBO_ARCHER && g_settings.amiibo_recent[1] == AMIIBO_GUARDIAN);
+        g_settings.amiibo_favorites[AMIIBO_GUARDIAN] = false;
+        amiibo_recent_push(g_settings.amiibo_recent, &g_settings.amiibo_recent_count, AMIIBO_MARIO);
+    } else if (library && !strcmp(library, "removed")) {
+        assert(!g_settings.amiibo_favorites[AMIIBO_GUARDIAN] && g_settings.amiibo_favorites[AMIIBO_MARIO]);
+        assert(g_settings.amiibo_recent_count == 3 && g_settings.amiibo_recent[0] == AMIIBO_MARIO);
+        assert(g_settings.amiibo_recent[1] == AMIIBO_ARCHER && g_settings.amiibo_recent[2] == AMIIBO_GUARDIAN);
+    }
     settings_save();
     puts("PASS: amiibo settings loaded and saved");
 }

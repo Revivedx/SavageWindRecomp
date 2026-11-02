@@ -617,8 +617,24 @@ $(B)/test_amiibo_settings: tools/test_amiibo_settings.c runtime/settings.c runti
 	@mkdir -p $(B)
 	$(CC) -O1 -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< $(TEST_LD) -lSDL3 -lm
 
-test-amiibo: $(B)/test_amiibo $(B)/test_amiibo_settings
+$(B)/test_amiibo_options: tools/test_amiibo_options.c runtime/amiibo_options.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -O1 -g -Wall $(OSFLAGS) -Iruntime -o $@ $<
+
+$(B)/test_amiibo_library: tools/test_amiibo_library.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -O1 -g -Wall $(OSFLAGS) -Iruntime -o $@ $<
+
+$(B)/test_amiibo_picker: tools/test_amiibo_picker.cpp runtime/ui/amiibo_picker.mm runtime/ui/amiibo_picker.h $(RT_HDRS) \
+                       $(B)/imgui/imgui.o $(B)/imgui/imgui_draw.o $(B)/imgui/imgui_tables.o $(B)/imgui/imgui_widgets.o
+	$(CXX) -O1 -g -std=c++17 -I$(IMGUI) -Iruntime -o $@ $< \
+	    $(B)/imgui/imgui.o $(B)/imgui/imgui_draw.o $(B)/imgui/imgui_tables.o $(B)/imgui/imgui_widgets.o -lpthread
+
+test-amiibo: $(B)/test_amiibo $(B)/test_amiibo_settings $(B)/test_amiibo_options $(B)/test_amiibo_library $(B)/test_amiibo_picker
 	$(B)/test_amiibo
+	$(B)/test_amiibo_options
+	$(B)/test_amiibo_library
+	$(B)/test_amiibo_picker
 	CC='$(CC)' $(PY) tools/test_amiibo_patch.py
 	@set -eu; tmp=$$(mktemp); trap 'rm -f "$$tmp"' EXIT; \
 	 env -u SAVAGEWIND_AMIIBO $(B)/test_amiibo_settings "$$tmp" 0 0 1 1 0 1; \
@@ -630,6 +646,9 @@ test-amiibo: $(B)/test_amiibo $(B)/test_amiibo_settings
 	 env -u SAVAGEWIND_AMIIBO $(B)/test_amiibo_settings "$$tmp" 0 2 0 0; \
 	 printf 'virtual_amiibo = 1\namiibo_figure = unknown\n' > "$$tmp"; \
 	 env -u SAVAGEWIND_AMIIBO $(B)/test_amiibo_settings "$$tmp" 1 0 0 99; \
-	 env -u SAVAGEWIND_AMIIBO $(B)/test_amiibo_settings "$$tmp" 0 0 0 0
+	 env -u SAVAGEWIND_AMIIBO $(B)/test_amiibo_settings "$$tmp" 0 0 0 0; \
+	 env -u SAVAGEWIND_AMIIBO SAVAGEWIND_TEST_AMIIBO_LIBRARY=write $(B)/test_amiibo_settings "$$tmp" 0 0 0 0; \
+	 env -u SAVAGEWIND_AMIIBO SAVAGEWIND_TEST_AMIIBO_LIBRARY=read $(B)/test_amiibo_settings "$$tmp" 0 0 0 0; \
+	 env -u SAVAGEWIND_AMIIBO SAVAGEWIND_TEST_AMIIBO_LIBRARY=removed $(B)/test_amiibo_settings "$$tmp" 0 0 0 0
 
 .PHONY: test-amiibo

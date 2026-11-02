@@ -49,4 +49,11 @@ static inline int amiibo_valid_figure(int figure) {
 }
 
 // Called by Gameplay's controls. The service serializes configuration with IPC requests.
+#ifdef __cplusplus
+extern "C" {
+#endif
 void nfp_configure(bool enabled, int figure, bool repeat);
+bool amiibo_set_game_enabled(bool enabled);  // game's AmiiboItemOnOff, from a guest-thread Options callback
+#ifdef __cplusplus
+}
+#endif

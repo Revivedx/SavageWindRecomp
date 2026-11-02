@@ -17,6 +17,7 @@
 #include "gyro_drag.h"
 #include "option_rows.h"
 #include "saves_tab.h"
+#include "amiibo_picker.h"
 #include "imgui_internal.h"  // (NavCursorVisible)
 #include "osk.h"
 #include "console.h"
@@ -164,7 +165,7 @@ extern "C" void menu_size_list_open(void) {
     input_reset();
     g_sizes = true;
 }
-static bool capturing() { return g_open.load() || g_kbd.load() == 1 || g_sizes.load() || console_is_open(); }
+static bool capturing() { return g_open.load() || g_kbd.load() == 1 || g_sizes.load() || amiibo_picker_active() || console_is_open(); }
 // The game gets no input while this is true (runtime/hle/input.c): menu or name entry up, or a binding capture begun
 // from the game's Options screen.
 extern "C" bool menu_input_captured(void) {
@@ -234,7 +235,7 @@ bool menu_handle_event(const SDL_Event *e) {
         return true;
     }
     // typing (a text field, the on-screen keyboard, the name entry): keys are text, not menu shortcuts
-    bool typing = g_kbd.load() == 1 || console_is_open() || (g_open.load() && g_text_busy.load());
+    bool typing = g_kbd.load() == 1 || console_is_open() || ((g_open.load() || amiibo_picker_active()) && g_text_busy.load());
     if (e->type == SDL_EVENT_KEY_UP && e->key.scancode == SDL_SCANCODE_ESCAPE)
         input_pc_escape(false);
     if (pc_cursor_enabled() && !capturing() && !typing && !game_options_input_hold() &&
@@ -249,7 +250,7 @@ bool menu_handle_event(const SDL_Event *e) {
     switch (e->type) {
     case SDL_EVENT_KEY_DOWN:
         if (!e->key.repeat && (e->key.scancode == SDL_SCANCODE_GRAVE || e->key.scancode == SDL_SCANCODE_F12) &&
-            !g_open.load() && g_kbd.load() != 1 && !g_sizes.load()) {
+            !g_open.load() && g_kbd.load() != 1 && !g_sizes.load() && !amiibo_picker_active()) {
             set_console(!console_is_open());
             return true;
         }
@@ -264,7 +265,7 @@ bool menu_handle_event(const SDL_Event *e) {
             g_cursor_free = !g_cursor_free.load();
             return true;
         }
-        if (!e->key.repeat && (e->key.scancode == SDL_SCANCODE_F1 ||
+        if (!e->key.repeat && !amiibo_picker_active() && (e->key.scancode == SDL_SCANCODE_F1 ||
                                (!pc_cursor_enabled() && e->key.scancode == SDL_SCANCODE_ESCAPE && !g_open.load()))) {
             if (!overlay_enabled()) {
                 if (e->key.scancode == (pc_cursor_enabled() ? SDL_SCANCODE_F2 : SDL_SCANCODE_ESCAPE) && !typing) g_cursor_free = !g_cursor_free.load();
@@ -297,7 +298,7 @@ bool menu_handle_event(const SDL_Event *e) {
             return true;
         }
         ImGuiKey k = key_from_scancode(e->key.scancode);
-        if (g_sizes.load()) {  // Window size's list (in game): the keys bound to A, B and up / down work it too
+        if (g_sizes.load() || (amiibo_picker_active() && !typing)) {  // In-game lists: the keys bound to A, B and up / down work it too
             int sc = e->key.scancode;
             if (sc == g_bind_key[BIND_A]) k = ImGuiKey_Enter;
             else if (sc == g_bind_key[BIND_B]) k = ImGuiKey_Escape;
@@ -325,7 +326,7 @@ bool menu_handle_event(const SDL_Event *e) {
         }
         if (!capturing()) return false;
         ImGuiKey k = key_from_pad(e->gbutton.button);
-        if (g_sizes.load()) {  // Window size's list (in game): the buttons bound to A and B, wherever they are
+        if (g_sizes.load() || amiibo_picker_active()) {  // In-game lists: the buttons bound to A and B, wherever they are
             int b = e->gbutton.button;
             if (b == g_bind_pad[BIND_A]) k = ImGuiKey_GamepadFaceDown;
             else if (b == g_bind_pad[BIND_B]) k = ImGuiKey_GamepadFaceRight;
@@ -1089,6 +1090,8 @@ static void tab_about(void) {
 RT_ON_RESET(menu_reset) {
     set_open(false);
     g_kbd = 0;
+    amiibo_picker_reset();
+    g_text_busy = false;
     osk_cancel();
     pthread_mutex_lock(&q_lock);
     q_events.clear();
@@ -1445,7 +1448,7 @@ static bool menu_draws(bool *pointer_hover = NULL, float *pointer_box = NULL, bo
     bool gyro_on = pc_gyro_scene_view(gyro ? gyro : &gs);
     if (pointer_hover) *pointer_hover = hover;
     if (gyro_show) *gyro_show = gyro_on;
-    return g_open.load() || g_kbd.load() == 1 || g_sizes.load() || console_is_open() || gyro_on || hover ||
+    return g_open.load() || g_kbd.load() == 1 || g_sizes.load() || amiibo_picker_active() || console_is_open() || gyro_on || hover ||
            g_settings.perf_overlay != PERF_OFF;
 }
 
@@ -1461,6 +1464,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     bool open = g_open.load();
     bool kbd = g_kbd.load() == 1;
     bool sizes = g_sizes.load();
+    bool picker = amiibo_picker_active();
     bool con = console_is_open();
     console_collect();
     GyroScene gyro_scene;
@@ -1578,9 +1582,14 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
 
     if (kbd) keyboard_draw(io, scale);
     if (sizes) size_list_draw(io, scale);
+    if (picker) {
+        amiibo_picker_draw(scale);
+        osk_draw(g_font_big, scale);
+        if (!amiibo_picker_active()) g_sizes_hold = SDL_GetTicks() + 300;
+    }
     if (con) console_draw(io, scale, g_font_mono ? g_font_mono : g_font);
     ImGui::Render();
-    g_text_busy = open && ui_text_busy();
+    g_text_busy = (open || amiibo_picker_active()) && ui_text_busy();
 #ifdef __APPLE__
     id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rp];
     ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), cb, enc);

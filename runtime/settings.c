@@ -192,6 +192,19 @@ void settings_load(void) {
             for (int i = 0; i < AMIIBO_COUNT; i++)
                 if (!strcmp(val, virtual_amiibos[i].key)) g_settings.amiibo_figure = i;
         }
+        else if (!strcmp(key, "amiibo_favorite")) {
+            int figure = amiibo_from_key(val);
+            if (figure >= 0) g_settings.amiibo_favorites[figure] = true;
+        }
+        else if (!strcmp(key, "amiibo_recent")) {
+            int figure = amiibo_from_key(val), n = g_settings.amiibo_recent_count;
+            bool duplicate = false;
+            for (int i = 0; i < n; i++) if (g_settings.amiibo_recent[i] == figure) duplicate = true;
+            if (figure >= 0 && !duplicate && n < AMIIBO_RECENT_MAX) {
+                g_settings.amiibo_recent[n] = figure;
+                g_settings.amiibo_recent_count++;
+            }
+        }
         else if (!strcmp(key, "motion_sensitivity")) g_settings.motion_sens = (float)atof(val);
         else if (!strcmp(key, "motion_invert")) {  // (off, up_down, left_right, both)
             g_settings.motion_invert = !strcmp(val, "both") ? MOTION_INVERT_UD | MOTION_INVERT_LR :
@@ -363,6 +376,12 @@ void settings_save(void) {
     fprintf(f, "virtual_amiibo = %d\n", g_settings.virtual_amiibo);
     fprintf(f, "amiibo_repeat = %d\n", g_settings.amiibo_repeat);
     fprintf(f, "amiibo_figure = %s\n", virtual_amiibos[amiibo_valid_figure(g_settings.amiibo_figure)].key);
+    for (int i = 0; i < AMIIBO_COUNT; i++)
+        if (g_settings.amiibo_favorites[i]) fprintf(f, "amiibo_favorite = %s\n", virtual_amiibos[i].key);
+    for (int i = 0; i < g_settings.amiibo_recent_count && i < AMIIBO_RECENT_MAX; i++) {
+        int figure = g_settings.amiibo_recent[i];
+        if (figure >= 0 && figure < AMIIBO_COUNT) fprintf(f, "amiibo_recent = %s\n", virtual_amiibos[figure].key);
+    }
     fprintf(f, "motion_sensitivity = %.2f\n", g_settings.motion_sens);
     static const char *const inv[4] = {"off", "up_down", "left_right", "both"};
     fprintf(f, "motion_invert = %s\n", inv[g_settings.motion_invert & 3]);
