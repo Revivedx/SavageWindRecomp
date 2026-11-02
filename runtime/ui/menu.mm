@@ -6,6 +6,7 @@
 #import <Metal/Metal.h>
 #endif
 #include <SDL3/SDL.h>
+#include "../blood_moon.h"
 #include <math.h>
 #include <pthread.h>
 #include <atomic>
@@ -271,6 +272,10 @@ bool menu_handle_event(const SDL_Event *e) {
                 return true;
             }
             if (!typing) set_open(!g_open.load());  // (Esc with the menu open goes to ImGui below: it cancels a field)
+            return true;
+        }
+        if (e->key.scancode == SDL_SCANCODE_F6) {
+            if (!e->key.repeat && !typing && !menu_input_captured()) blood_moon_request();
             return true;
         }
         if (!e->key.repeat && e->key.scancode == SDL_SCANCODE_F10 && !typing) {  // performance overlay: off, FPS, full

@@ -424,6 +424,15 @@ test-bind-capture: $(B)/test_bind_capture
 
 .PHONY: test-bind-capture
 
+$(B)/test_blood_moon: tools/test_blood_moon.c runtime/blood_moon.c runtime/blood_moon.h
+	@mkdir -p $(B)
+	$(CC) -O1 -g -Wall -Wno-unused-function $(OSFLAGS) -Iruntime -o $@ tools/test_blood_moon.c
+
+test-blood-moon: $(B)/test_blood_moon
+	$(B)/test_blood_moon
+
+.PHONY: test-blood-moon
+
 $(B)/test_pc_controls: tests/test_pc_controls.c runtime/hle/input.c runtime/hle/bindings.c runtime/settings.h
 	@mkdir -p $(dir $@)
 	$(CC) -O2 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -isystem third_party -o $@ $< -fuse-ld=lld -Wl,--gc-sections $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) -lSDL3 -lm
