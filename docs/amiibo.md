@@ -3,7 +3,7 @@
 In **Options > amiibo**:
 
 1. Turn **amiibo rewards** on. This enables the game's rune setting and virtual scanning together.
-2. Open **Choose amiibo** and select a figure from the 22-entry library. The button shows your current selection.
+2. Open **Choose amiibo** and select a figure from the 952-entry offline library. The button shows your current selection.
 3. Return to play and use the amiibo rune on suitable ground. The selected figure is scanned automatically.
 
 The amiibo controls now have their own entry on the main Options page. The former Gameplay controls and separate
@@ -29,16 +29,27 @@ binary and game library have already been rebuilt.
 
 No figure dumps or keys are needed. The original four figures (Archer Link, BOTW Zelda, Guardian and Bokoblin),
 previous Gameplay controls and the repeat cooldown bypass have been confirmed working in game. The expanded library still needs
-gameplay testing. Wolf Link is not included; writable amiibo application data is not implemented.
+gameplay testing. Wolf Link is listed, but its special saved-data behavior is not supported: writable amiibo application data is not implemented. Catalog presence does not guarantee a special reward or game compatibility.
 
-The library contains:
+The offline catalog contains 952 entries from [AmiiboAPI](https://amiiboapi.org/), including figures, cards,
+bands, blocks and yarn amiibo across 33 series filters. The first 22 entries retain their saved keys, order and
+virtual identities; later entries use `id_` followed by the API's 16-digit head/tail ID. Each entry has a distinct,
+stable virtual identity, including entries beyond index 255. The game determines compatibility and rewards;
+new entries have automated service coverage but still need gameplay testing. Images are not bundled.
 
-- BOTW: Archer Link, Rider Link, Zelda, Guardian, Bokoblin, Daruk, Mipha, Revali and Urbosa.
-- Zelda series: 8-Bit Link, Ocarina of Time Link, Majora's Mask Link, Twilight Princess Link, Skyward Sword Link,
-  Wind Waker Toon Link and Wind Waker Toon Zelda.
-- Super Smash Bros.: Link, Zelda, Toon Link, Sheik, Ganondorf and Mario (generic reward testing).
+Catalog metadata is stored in `data/amiibo.json`, with a generated C catalog in `runtime/amiibo_catalog.h`.
+The game never contacts the API. To update the catalog:
 
-The existing four entries keep their original saved keys and virtual identities. New figures are appended.
+```sh
+curl -fL https://amiiboapi.org/api/amiibo/ -o /tmp/amiibo-api.json
+python3 tools/update_amiibo_catalog.py --source /tmp/amiibo-api.json
+make -j16
+make test-amiibo
+```
+
+The importer appends new IDs and preserves existing entries, including their names, keys and ordering. It does
+not remove or reorder entries when the upstream catalog changes. To regenerate from the checked-in snapshot,
+run `python3 tools/update_amiibo_catalog.py`; `--check` verifies the generated header without modifying it.
 
 For the original terminal workflow, `SAVAGEWIND_AMIIBO=archer` still seeds the startup settings. The values `zelda`,
 `guardian`, `bokoblin`, and `off` are also supported. The amiibo page can change these choices afterwards.
@@ -58,7 +69,7 @@ one ordinary chest does not establish that a figure's special loot is broken.
 
 | Test | Steps | Expected result |
 | --- | --- | --- |
-| Library coverage | Turn amiibo rewards and Repeat scans on. Scan each of the 22 entries once. | Each selection completes its reward flow without hanging or crashing. Report horse behavior separately for Twilight Princess Link and Smash Link. |
+| Library coverage | Turn amiibo rewards and Repeat scans on. Scan representative entries from each series and item type. | Each selection completes its reward flow without hanging or crashing. Report horse behavior separately for Twilight Princess Link and Smash Link. |
 | Browser | Open Choose amiibo, search for a character, select a result, leave Options and reopen it. | The result becomes the selected figure and the button shows its name. Back / Cancel leaves the previous selection unchanged. |
 | Normal daily limit | Turn repeat off. Choose a figure whose stable identity has not been used today; scan it twice. | The first scan succeeds; the second is rejected by the game. If both are rejected, use another unused figure. |
 | Repeated use | Turn repeat on and scan the same ordinary figure 10–20 times, letting each reward finish before the next scan. | Repeated rewards without a daily-limit error, stuck scan or crash. |
@@ -111,7 +122,7 @@ first attempt. Mario should exercise the generic non-Zelda reward path.
 
 **Options > amiibo > Choose amiibo** opens the library. Search matches words across character names, edition keys
 and series names without regard to case. For example, `link smash`, `wind toon` or `guardian wild` narrow the
-results. The series dropdown offers All series, Breath of the Wild, The Legend of Zelda and Super Smash Bros.
+results. The series dropdown includes Breath of the Wild, The Legend of Zelda, Super Smash Bros., Animal Crossing, Metroid and the other imported series. Search also matches game, character and item type (for example, `card`).
 
 - **All** lists the catalog. **Favorites** lists pinned figures. **Recent** lists the last eight selections, newest
   first, without duplicates. Search and series filters apply within each tab.

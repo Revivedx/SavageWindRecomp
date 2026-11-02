@@ -3,6 +3,7 @@
 #include "i18n.h"
 #include "osk.h"
 #include "imgui.h"
+#include "imgui_internal.h"
 #include <algorithm>
 #include <atomic>
 #include <mutex>
@@ -71,14 +72,17 @@ void amiibo_picker_draw(float scale) {
     if (appearing) ImGui::SetNextWindowFocus();
     ImGui::Begin(tr("Choose amiibo"), nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove);
     ImGui::TextWrapped("%s: %s", tr("Selected figure"), virtual_amiibos[current].name);
+
     ImGui::SetNextItemWidth(-1);
     ui_input_text("##amiibo-search", query, sizeof query, 0, tr("Search character, game or series..."), tr("Search amiibo"));
     ImGui::SetNextItemWidth(-1);
     if (ImGui::BeginCombo("##amiibo-series", tr(amiibo_series_name(series)))) {
         for (int i = 0; i < AMIIBO_SERIES_COUNT; i++)
-            if (ImGui::Selectable(tr(amiibo_series_name(i)), series == i)) series = i;
+            if (ImGui::Selectable(tr(amiibo_series_name(i)), series == i)) { series = i; }
+            else if (series == i) ImGui::SetItemDefaultFocus();
         ImGui::EndCombo();
     }
+    int previous_tab = tab;
     const char *tabs[] = {"All", "Favorites", "Recent"};
     if (!ui_text_busy() && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)) {
         if (ImGui::IsKeyPressed(ImGuiKey_GamepadL1)) tab = (tab + 2) % 3;
@@ -98,19 +102,35 @@ void amiibo_picker_draw(float scale) {
         if (tab == 1 && !draft.favorites[i]) continue;
         if (amiibo_matches(i, query, series)) results.push_back(i);
     }
+    // Keep the preview in the filtered list. Shoulder navigation starts on a usable
+    // figure even when the old selection is absent from Favorites or Recent.
+    bool preview_hidden = !results.empty() && std::find(results.begin(), results.end(), preview) == results.end();
+    if (preview_hidden) preview = results.front();
+    bool focus_result = appearing || (previous_tab != tab) ||
+                        (preview_hidden && !was_typing && !ui_text_busy() && !ImGui::IsAnyItemActive());
+    bool shortcuts = !was_typing && !ui_text_busy() &&
+                     !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId);
+    bool favorite_pressed = shortcuts && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp, false);
     ImGui::Text("%d %s", (int)results.size(), tr("figures"));
     float footer = ImGui::GetTextLineHeightWithSpacing() * 3 + ImGui::GetFrameHeightWithSpacing() + 18 * scale;
-    ImGui::BeginChild("##amiibo-results", ImVec2(0, -footer), ImGuiChildFlags_Borders);
+    ImGui::BeginChild("##amiibo-results", ImVec2(0, -footer), ImGuiChildFlags_Borders, ImGuiWindowFlags_NavFlattened);
     if (results.empty()) ImGui::TextWrapped("%s", tr("No figures match. Try another search or filter."));
     for (int i : results) {
         ImGui::PushID(i);
+        ImGui::PushItemFlag(ImGuiItemFlags_NoNav, true);
         if (ImGui::SmallButton(draft.favorites[i] ? "[-]" : "[+]")) draft.favorites[i] = !draft.favorites[i];
+        ImGui::PopItemFlag();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr(draft.favorites[i] ? "Remove favorite" : "Add favorite"));
         ImGui::SameLine();
-        if (appearing && i == current) ImGui::SetKeyboardFocusHere();
-        if (ImGui::Selectable(virtual_amiibos[i].name, current == i) && frames > 2) close_picker(i);
+        if (focus_result && i == preview) ImGui::SetKeyboardFocusHere();
+        if (ImGui::Selectable(virtual_amiibos[i].name, current == i) && frames > 2 && !favorite_pressed) close_picker(i);
         if (ImGui::IsItemHovered() || ImGui::IsItemFocused()) preview = i;
-        if (appearing && i == current) {
+        if (favorite_pressed && ImGui::IsItemFocused())
+            draft.favorites[i] = !draft.favorites[i];
+        if (focus_result && i == preview) {
+            ImGui::FocusWindow(ImGui::GetCurrentWindow());
+            ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
+            ImGui::SetNavCursorVisible(true);
             ImGui::SetItemDefaultFocus();
             ImGui::SetScrollHereY(.5f);
         }
@@ -120,7 +140,7 @@ void amiibo_picker_draw(float scale) {
     ImGui::Separator();
     ImGui::TextWrapped("%s", virtual_amiibos[preview].name);
     ImGui::TextDisabled("%s", tr(amiibo_series_name(amiibo_series(preview))));
-    ImGui::TextDisabled("%s", tr("[+] Favorite   L/R: tabs   Confirm: select   Back: cancel"));
+    ImGui::TextDisabled("%s", tr("Top button: favorite   L/R: tabs   Confirm: select   Back: cancel"));
     if (ImGui::Button(tr("Cancel"))) close_picker(-1);
     bool popup = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId);
     if (frames > 2 && !popup && !was_typing && !ui_text_busy() &&

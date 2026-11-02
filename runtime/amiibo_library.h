@@ -5,18 +5,16 @@
 #include "amiibo.h"
 
 #define AMIIBO_RECENT_MAX 8
-enum { AMIIBO_SERIES_ALL, AMIIBO_SERIES_BOTW, AMIIBO_SERIES_ZELDA, AMIIBO_SERIES_SMASH, AMIIBO_SERIES_COUNT };
+enum { AMIIBO_SERIES_ALL, AMIIBO_SERIES_BOTW, AMIIBO_SERIES_ZELDA, AMIIBO_SERIES_SMASH };
 static inline int amiibo_from_key(const char *key) {
     for (int i = 0; i < AMIIBO_COUNT; i++) if (!strcmp(key, virtual_amiibos[i].key)) return i;
     return -1;
 }
 static inline int amiibo_series(int figure) {
-    if (virtual_amiibos[figure].type == 0) return AMIIBO_SERIES_SMASH;
-    return figure <= AMIIBO_URBOSA ? AMIIBO_SERIES_BOTW : AMIIBO_SERIES_ZELDA;
+    return virtual_amiibos[amiibo_valid_figure(figure)].group;
 }
 static inline const char *amiibo_series_name(int series) {
-    static const char *const names[] = {"All series", "Breath of the Wild", "The Legend of Zelda", "Super Smash Bros."};
-    return names[series >= 0 && series < AMIIBO_SERIES_COUNT ? series : 0];
+    return amiibo_series_names[series >= 0 && series < AMIIBO_SERIES_COUNT ? series : 0];
 }
 static inline bool amiibo_contains_word(const char *text, const char *word, size_t len) {
     for (; *text; text++) {
@@ -37,7 +35,10 @@ static inline bool amiibo_matches(int figure, const char *query, int series) {
         size_t len = (size_t)(query - word);
         if (len && !amiibo_contains_word(virtual_amiibos[figure].name, word, len) &&
             !amiibo_contains_word(virtual_amiibos[figure].key, word, len) &&
-            !amiibo_contains_word(amiibo_series_name(group), word, len)) return false;
+            !amiibo_contains_word(amiibo_series_name(group), word, len) &&
+            !amiibo_contains_word(virtual_amiibos[figure].game, word, len) &&
+            !amiibo_contains_word(virtual_amiibos[figure].character_name, word, len) &&
+            !amiibo_contains_word(virtual_amiibos[figure].kind, word, len)) return false;
     }
     return true;
 }

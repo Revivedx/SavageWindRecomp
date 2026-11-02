@@ -24,12 +24,14 @@ int main(int argc, char **argv) {
     if (library && !strcmp(library, "write")) {
         g_settings.amiibo_favorites[AMIIBO_GUARDIAN] = true;
         g_settings.amiibo_favorites[AMIIBO_MARIO] = true;
+        g_settings.amiibo_favorites[AMIIBO_COUNT - 1] = true;
         amiibo_recent_push(g_settings.amiibo_recent, &g_settings.amiibo_recent_count, AMIIBO_ARCHER);
         amiibo_recent_push(g_settings.amiibo_recent, &g_settings.amiibo_recent_count, AMIIBO_GUARDIAN);
         amiibo_recent_push(g_settings.amiibo_recent, &g_settings.amiibo_recent_count, AMIIBO_ARCHER);
     } else if (library && !strcmp(library, "read")) {
         assert(g_settings.amiibo_favorites[AMIIBO_GUARDIAN] && g_settings.amiibo_favorites[AMIIBO_MARIO]);
         assert(!g_settings.amiibo_favorites[AMIIBO_ARCHER]);
+        assert(g_settings.amiibo_favorites[AMIIBO_COUNT - 1]);
         assert(g_settings.amiibo_recent_count == 2);
         assert(g_settings.amiibo_recent[0] == AMIIBO_ARCHER && g_settings.amiibo_recent[1] == AMIIBO_GUARDIAN);
         g_settings.amiibo_favorites[AMIIBO_GUARDIAN] = false;

@@ -625,12 +625,13 @@ $(B)/test_amiibo_library: tools/test_amiibo_library.c $(RT_HDRS)
 	@mkdir -p $(B)
 	$(CC) -O1 -g -Wall $(OSFLAGS) -Iruntime -o $@ $<
 
-$(B)/test_amiibo_picker: tools/test_amiibo_picker.cpp runtime/ui/amiibo_picker.mm runtime/ui/amiibo_picker.h $(RT_HDRS) \
+$(B)/test_amiibo_picker: tools/test_amiibo_picker.cpp runtime/ui/amiibo_picker.mm runtime/ui/amiibo_picker.h runtime/ui/osk.mm $(RT_HDRS) \
                        $(B)/imgui/imgui.o $(B)/imgui/imgui_draw.o $(B)/imgui/imgui_tables.o $(B)/imgui/imgui_widgets.o
 	$(CXX) -O1 -g -std=c++17 -I$(IMGUI) -Iruntime -o $@ $< \
 	    $(B)/imgui/imgui.o $(B)/imgui/imgui_draw.o $(B)/imgui/imgui_tables.o $(B)/imgui/imgui_widgets.o -lpthread
 
 test-amiibo: $(B)/test_amiibo $(B)/test_amiibo_settings $(B)/test_amiibo_options $(B)/test_amiibo_library $(B)/test_amiibo_picker
+	$(PY) tools/update_amiibo_catalog.py --check
 	$(B)/test_amiibo
 	$(B)/test_amiibo_options
 	$(B)/test_amiibo_library
@@ -645,7 +646,7 @@ test-amiibo: $(B)/test_amiibo $(B)/test_amiibo_settings $(B)/test_amiibo_options
 	 SAVAGEWIND_AMIIBO=archer $(B)/test_amiibo_settings "$$tmp" 1 0 0 2; \
 	 env -u SAVAGEWIND_AMIIBO $(B)/test_amiibo_settings "$$tmp" 0 2 0 0; \
 	 printf 'virtual_amiibo = 1\namiibo_figure = unknown\n' > "$$tmp"; \
-	 env -u SAVAGEWIND_AMIIBO $(B)/test_amiibo_settings "$$tmp" 1 0 0 99; \
+	 env -u SAVAGEWIND_AMIIBO $(B)/test_amiibo_settings "$$tmp" 1 0 0 99999; \
 	 env -u SAVAGEWIND_AMIIBO $(B)/test_amiibo_settings "$$tmp" 0 0 0 0; \
 	 env -u SAVAGEWIND_AMIIBO SAVAGEWIND_TEST_AMIIBO_LIBRARY=write $(B)/test_amiibo_settings "$$tmp" 0 0 0 0; \
 	 env -u SAVAGEWIND_AMIIBO SAVAGEWIND_TEST_AMIIBO_LIBRARY=read $(B)/test_amiibo_settings "$$tmp" 0 0 0 0; \

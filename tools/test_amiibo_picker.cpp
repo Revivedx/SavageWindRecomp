@@ -4,15 +4,23 @@
 
 extern "C" { Settings g_settings = {}; void input_reset(void) {} }
 const char *tr(const char *text) { return text; }
-void osk_cancel(void) {}
-bool ui_text_busy(void) { return ImGui::GetIO().WantTextInput; }
-bool ui_input_text(const char *label, char *buf, size_t size, ImGuiInputTextFlags flags, const char *hint, const char *) {
-    return ImGui::InputTextWithHint(label, hint, buf, size, flags);
-}
+#include "../runtime/ui/osk.mm"
 static void frame(void) {
     ImGui::NewFrame();
     amiibo_picker_draw(1);
+    osk_draw(nullptr, 1);
     ImGui::Render();
+}
+static void press(ImGuiKey key) {
+    ImGui::GetIO().AddKeyEvent(key, true); frame();
+    ImGui::GetIO().AddKeyEvent(key, false);
+    for (int i = 0; i < 3; i++) frame();
+}
+static bool focus_up_to(const char *label) {
+    ImGuiWindow *window = ImGui::FindWindowByName("Choose amiibo");
+    ImGuiID id = window->GetID(label);
+    for (int i = 0; i < 12 && GImGui->NavId != id; i++) press(ImGuiKey_GamepadDpadUp);
+    return GImGui->NavId == id;
 }
 int main(void) {
     ImGui::CreateContext();
@@ -20,7 +28,8 @@ int main(void) {
     io.IniFilename = nullptr;
     io.DisplaySize = ImVec2(1280, 720);
     io.DeltaTime = 1.f / 60;
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
+    io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
     io.Fonts->AddFontDefault();
     io.Fonts->Build();
     g_settings.amiibo_figure = AMIIBO_GUARDIAN;
@@ -43,6 +52,39 @@ int main(void) {
     io.AddKeyEvent(ImGuiKey_Enter, false); frame();
     assert(!amiibo_picker_active());
     assert(amiibo_picker_take(&r) && r.selected == AMIIBO_GUARDIAN);
+    io.AddKeyEvent(ImGuiKey_Enter, false);
+    amiibo_picker_open();
+    for (int i = 0; i < 4; i++) frame();
+    io.AddKeyEvent(ImGuiKey_GamepadR1, true); frame();
+    io.AddKeyEvent(ImGuiKey_GamepadR1, false);
+    for (int i = 0; i < 3; i++) frame();
+    assert(tab == 1 && preview == AMIIBO_MARIO);
+    io.AddKeyEvent(ImGuiKey_GamepadFaceUp, true); frame();
+    io.AddKeyEvent(ImGuiKey_GamepadFaceUp, false); frame();
+    assert(!draft.favorites[AMIIBO_MARIO] && amiibo_picker_active());
+    io.AddKeyEvent(ImGuiKey_GamepadL1, true); frame();
+    io.AddKeyEvent(ImGuiKey_GamepadL1, false);
+    for (int i = 0; i < 3; i++) frame();
+    assert(tab == 0);
+    io.AddKeyEvent(ImGuiKey_GamepadFaceDown, true); frame();
+    io.AddKeyEvent(ImGuiKey_GamepadFaceDown, false); frame();
+    assert(!amiibo_picker_active());
+    assert(amiibo_picker_take(&r) && r.selected == AMIIBO_MARIO && !r.favorites[AMIIBO_MARIO]);
+    amiibo_picker_open();
+    for (int i = 0; i < 4; i++) frame();
+    assert(focus_up_to("##amiibo-series"));
+    press(ImGuiKey_GamepadFaceDown);
+    assert(ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId));
+    press(ImGuiKey_GamepadDpadDown);
+    press(ImGuiKey_GamepadFaceDown);
+    assert(series == AMIIBO_SERIES_BOTW && amiibo_picker_active());
+    assert(focus_up_to("##amiibo-search"));
+    press(ImGuiKey_GamepadFaceDown);
+    assert(osk_is_open());
+    io.AddInputCharactersUTF8("Link"); frame();
+    press(ImGuiKey_GamepadStart);
+    assert(!osk_is_open() && !strcmp(query, "Link") && amiibo_picker_active());
+    amiibo_picker_reset();
     amiibo_picker_open();
     tab = 1; strcpy(query, "no such figure");
     for (int i = 0; i < 4; i++) frame();
@@ -54,5 +96,5 @@ int main(void) {
     amiibo_picker_reset();
     assert(!amiibo_picker_active() && !amiibo_picker_take(&r));
     ImGui::DestroyContext();
-    puts("PASS: amiibo browser rendering, cancel, settings snapshots, result delivery and reset");
+    puts("PASS: amiibo browser, controller filters, on-screen search, favorites, result delivery and reset");
 }

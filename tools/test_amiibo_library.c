@@ -12,6 +12,20 @@ int main(void) {
     assert(amiibo_matches(AMIIBO_TOON_LINK_WW, "wind toon", 0));
     assert(amiibo_matches(AMIIBO_LINK_SMASH, "link smash", AMIIBO_SERIES_SMASH));
     assert(!amiibo_matches(-1, "", 0));
+    assert(AMIIBO_COUNT > 256);
+    bool card = false, metroid = false;
+    for (int i = AMIIBO_LEGACY_COUNT; i < AMIIBO_COUNT; i++) {
+        assert(amiibo_from_key(virtual_amiibos[i].key) == i);
+        assert(amiibo_series(i) > 0 && amiibo_series(i) < AMIIBO_SERIES_COUNT);
+        assert(amiibo_matches(i, virtual_amiibos[i].character_name, 0));
+        if (!strcmp(virtual_amiibos[i].kind, "Card")) {
+            assert(amiibo_matches(i, "card", amiibo_series(i))); card = true;
+        }
+        if (!strcmp(virtual_amiibos[i].game, "Metroid")) {
+            assert(amiibo_matches(i, "metroid", amiibo_series(i))); metroid = true;
+        }
+    }
+    assert(card && metroid);
     int list[AMIIBO_RECENT_MAX] = {0}, n = 0;
     amiibo_recent_push(list, &n, AMIIBO_ARCHER);
     amiibo_recent_push(list, &n, AMIIBO_GUARDIAN);

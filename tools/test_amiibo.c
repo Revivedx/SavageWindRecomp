@@ -83,21 +83,21 @@ int main(void) {
         "01020100001b0002",
         "0000000000000002",
     };
-    assert(sizeof catalog_ids / sizeof *catalog_ids == AMIIBO_COUNT);
+    assert(sizeof catalog_ids / sizeof *catalog_ids == AMIIBO_LEGACY_COUNT);
     for (int i = 0; i < AMIIBO_COUNT; i++) {
         nfp_configure(true, i, false);
         assert(!request(4, NULL, 0).result && !request(3, NULL, 0).result);
-        assert(!request(13, tag, sizeof tag).result && tag[6] == i + 1);
+        assert(!request(13, tag, sizeof tag).result && tag[6] == (uint8_t)(i + 1) && tag[5] == (uint8_t)((i + 1) >> 8));
         assert(!request(5, NULL, 0).result && !request(16, model, 0x40).result);
         uint8_t expected[8];
         for (int j = 0; j < 8; j++) {
-            unsigned v; assert(sscanf(catalog_ids[i] + j * 2, "%2x", &v) == 1); expected[j] = v;
+            unsigned v; assert(sscanf((i < AMIIBO_LEGACY_COUNT ? catalog_ids[i] : virtual_amiibos[i].id) + j * 2, "%2x", &v) == 1); expected[j] = v;
         }
         uint8_t tmp = expected[4]; expected[4] = expected[5]; expected[5] = tmp;
         assert(!memcmp(model, expected, 7));
         for (int j = 0; j < i; j++) {
             assert(strcmp(virtual_amiibos[i].key, virtual_amiibos[j].key));
-            assert(strcmp(catalog_ids[i], catalog_ids[j]));
+            assert(strcmp(virtual_amiibos[i].id, virtual_amiibos[j].id));
         }
     }
     nfp_configure(false, AMIIBO_ZELDA, false);

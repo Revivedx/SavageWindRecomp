@@ -38,7 +38,8 @@ static void event_set(KEvent *event, bool signal) {
 // The figure is latched for the whole scan: model and UID must always agree.
 static void present_figure(void) {
     active_figure = selected_figure;
-    const uint8_t stable_uid[7] = {0x04, 0x53, 0x57, 0x01, 0x00, 0x00, (uint8_t)(active_figure + 1)};
+    const uint8_t stable_uid[7] = {0x04, 0x53, 0x57, 0x01, (uint8_t)((active_figure + 1) >> 16),
+                                   (uint8_t)((active_figure + 1) >> 8), (uint8_t)(active_figure + 1)};
     memcpy(active_uid, stable_uid, sizeof active_uid);
     device_state = NFP_FOUND;
     event_set(activate, true);
