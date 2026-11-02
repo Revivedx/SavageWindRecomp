@@ -30,6 +30,7 @@
 #include "save_profiles.h"
 #include "../perfcount.h"
 #include "../platform.h"
+#include "../game_place.h"
 
 #define FS_PATH_NOT_FOUND MAKE_RESULT(2, 1)
 #define FS_PATH_EXISTS MAKE_RESULT(2, 2)
@@ -1443,9 +1444,8 @@ uint8_t *fs_game_file(const char *path, size_t *out_n) {
     return NULL;
 }
 
-// Path of the game's RomFS file containing image offset `off` (NULL if none).
-const char *romfs_file_at(uint64_t off) {
-    const RomImage *m = &images[0];
+// Path of the file of image m containing image offset `off` (NULL if none).
+static const char *image_file_at(const RomImage *m, uint64_t off) {
     int lo = 0, hi = m->rom_nfiles - 1;
     while (lo <= hi) {
         int mid = (lo + hi) / 2;
@@ -1467,6 +1467,9 @@ int fs_recent_files(const char **out, int max) {
     return k;
 }
 
+// Path of the game's RomFS file containing image offset `off` (NULL if none).
+const char *romfs_file_at(uint64_t off) { return image_file_at(&images[0], off); }
+
 // ------------------------------------------------------------------ IStorage (raw RomFS image)
 typedef struct { RomImage *img; uint64_t size; } Storage;
 
@@ -1485,7 +1488,16 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
         perfcount_add(PC_FILE_READS, 1), perfcount_add(PC_FILE_NS, plat_now_ns() - ft0);
         if (n > 0) perfcount_add(PC_FILE_BYTES, (uint64_t)n);
         if (n < 0) LOG("[fs] storage read failed at %llx: %s\n", off, strerror(errno));
-        if (m != &images[0]) break;
+        if (m != &images[0]) {  // (add-on content: its shrines and Divine Beasts)
+            const char *path = image_file_at(m, off);
+            static const char *last;
+            if (path && path != last) {
+                last = path;
+                if (getenv("SAVAGEWIND_LOG_FILES")) LOG("[fs] read aoc %s\n", path);
+                game_place_on_read(path);
+            }
+            break;
+        }
         {
             const char *path = romfs_file_at(off);
             static const char *last;
@@ -1493,6 +1505,7 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
                 last = path;
                 recent_files[atomic_load(&recent_n) & 7] = path, atomic_fetch_add(&recent_n, 1);
                 if (getenv("SAVAGEWIND_LOG_FILES")) LOG("[fs] read %s\n", path);
+                game_place_on_read(path);
             }
             // SAVAGEWIND_LOG_STREAMS=1: every read of a stream's header (a .bfstm read from its start: the sound
             // system opening it, once per playback of a BGM or other streamed sound)
