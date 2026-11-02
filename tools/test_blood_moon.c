@@ -9,6 +9,9 @@
 
 GameSites g_site;
 static bool blocked;
+static uint64_t now;
+uint64_t plat_now_ns(void) { return now; }
+bool menu_input_captured(void) { return blocked; }
 bool framepace_title_ui(void) { return blocked; }
 bool framepace_loading_ui(void) { return false; }
 bool framepace_paused(void) { return false; }
@@ -39,13 +42,25 @@ int main(void) {
     assert(!guest_pointer(0, 1) && !guest_pointer(GUEST_HI - 1, 8));
     assert(guest_pointer(GUEST_LO, 8));
 
-    // Blocked presses are discarded, not delayed until gameplay, and resets drop pending input and addresses.
+    // Real elapsed time, including the exact threshold; one trigger per fresh press.
+    now = 100;
+    blood_moon_key(true);
+    assert(!hold_ready(now + 2999999999ull, true));
+    assert(hold_ready(now + 3000000000ull, true));
+    assert(!hold_ready(now + 6000000000ull, true));
+    blood_moon_key(true); blood_moon_key(false);
+    assert(!hold_ready(now + 3000000000ull, true));
+    blood_moon_key(true);
+    assert(!hold_ready(now + 1000000000ull, false));
+    assert(!hold_ready(now + 4000000000ull, true));
+
+    // Blocked presses are discarded, and resets drop both input and cached addresses.
     g_site.world_mgr = 1; blocked = true;
-    blood_moon_request(); blood_moon_request(); blood_moon_frame();
-    assert(!atomic_load(&requested));
-    blood_moon_request(); relief_root = MAIN_BASE + 0x1000;
+    blood_moon_key(true); blood_moon_frame();
+    assert(!atomic_load(&held_since));
+    blood_moon_key(true); relief_root = MAIN_BASE + 0x1000;
     blood_moon_reset();
-    assert(!atomic_load(&requested) && !relief_root);
+    assert(!atomic_load(&held_since) && !relief_root);
     blood_moon_frame();
-    puts("blood moon: relief predicate, relocation, malformed layouts, blocked request and reset passed");
+    puts("blood moon: relief layout, three-second hold, release, blocked states, single trigger and reset passed");
 }

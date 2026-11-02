@@ -215,12 +215,17 @@ static void console_paste(void) {
 bool menu_handle_event(const SDL_Event *e) {
     static bool back_down, start_down;
     if (e->type == SDL_EVENT_WINDOW_FOCUS_LOST || e->type == SDL_EVENT_WINDOW_FOCUS_GAINED) {
+        blood_moon_key(false);
         back_down = start_down = false;
         QEvent q = {};
         q.kind = QEvent::FOCUS;
         q.down = e->type == SDL_EVENT_WINDOW_FOCUS_GAINED;
         push(q);
         return false;  // the input runtime also releases its cached controls
+    }
+    if (e->type == SDL_EVENT_KEY_UP && e->key.scancode == SDL_SCANCODE_F6) {
+        blood_moon_key(false);
+        return true;
     }
     // a binding capture (Controls tab, or the game's Options screen) takes the press
     if (bind_capture_event(e)) return true;
@@ -275,7 +280,7 @@ bool menu_handle_event(const SDL_Event *e) {
             return true;
         }
         if (e->key.scancode == SDL_SCANCODE_F6) {
-            if (!e->key.repeat && !typing && !menu_input_captured()) blood_moon_request();
+            if (!e->key.repeat && !typing && !menu_input_captured()) blood_moon_key(true);
             return true;
         }
         if (!e->key.repeat && e->key.scancode == SDL_SCANCODE_F10 && !typing) {  // performance overlay: off, FPS, full

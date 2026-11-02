@@ -5,10 +5,22 @@
 #include "game_sites.h"
 #include "hle.h"
 
-static atomic_bool requested;
+static atomic_uint_fast64_t held_since;
 static uint64_t relief_root;
 
-void blood_moon_request(void) { atomic_store(&requested, true); }
+void blood_moon_key(bool down) {
+    atomic_store(&held_since, down ? plat_now_ns() + 1 : 0);
+}
+
+static bool hold_ready(uint64_t now, bool allowed) {
+    uint_fast64_t start = atomic_load(&held_since);
+    if (!allowed) { atomic_store(&held_since, 0); return false; }
+    if (!start || now < start - 1 || now - (start - 1) < 3000000000ull) return false;
+    // Disarm after firing: another trigger requires a release and fresh press.
+    return atomic_compare_exchange_strong(&held_since, &start, 0);
+}
+
+bool menu_input_captured(void);
 
 static int64_t signed_imm(uint32_t v, unsigned bits) {
     uint32_t sign = 1u << (bits - 1);
@@ -50,15 +62,19 @@ static bool guest_pointer(uint64_t p, size_t size) {
 }
 
 void blood_moon_frame(void) {
-    if (!atomic_exchange(&requested, false)) return;
+    if (!atomic_load(&held_since)) return;
     if (!g_site.world_mgr || framepace_title_ui() || framepace_loading_ui() ||
-        framepace_paused() || framepace_in_event()) return;
+        framepace_paused() || framepace_in_event() || menu_input_captured()) {
+        hold_ready(0, false);
+        return;
+    }
     uint64_t world = *(uint64_t *)(uintptr_t)g_site.world_mgr;
     if (!guest_pointer(world, 0x7da) || !*(uint8_t *)(uintptr_t)(world + 0x7d9) ||
         *(uint32_t *)(uintptr_t)(world + 0x6b8) != 1) {
-        LOG("[blood-moon] F6: requires the overworld\n");
+        hold_ready(0, false);
         return;
     }
+    if (!hold_ready(plat_now_ns(), true)) return;
     if (!relief_root && g_site.main_data > MAIN_BASE && g_site.main_data < g_site.main_end)
         relief_root = find_relief_root((const uint32_t *)(uintptr_t)MAIN_BASE,
                                       g_site.main_data - MAIN_BASE, MAIN_BASE, g_site.main_data, g_site.main_end);
@@ -72,6 +88,6 @@ void blood_moon_frame(void) {
 }
 
 RT_ON_RESET(blood_moon_reset) {
-    atomic_store(&requested, false);
+    atomic_store(&held_since, 0);
     relief_root = 0;
 }
