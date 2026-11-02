@@ -310,8 +310,19 @@ PlatProc plat_spawn(const char *const argv[], const char *log_path, bool append_
     posix_spawnattr_init(&at);
     posix_spawnattr_setflags(&at, POSIX_SPAWN_SETPGROUP);
     posix_spawnattr_setpgroup(&at, 0);
+    // The child's environment without LD_PRELOAD: Steam sets it to its x86 overlay libraries, which an aarch64 swgen or
+    // compiler cannot load, and ld.so then prints "wrong ELF class" into the output the launcher shows as the error
+    // (#413). None of these children (the generator, the compilers) needs the overlay.
+    size_t n = 0;
+    while (environ[n]) n++;
+    char **env = malloc((n + 1) * sizeof *env);
+    size_t k = 0;
+    for (size_t i = 0; env && i < n; i++)
+        if (strncmp(environ[i], "LD_PRELOAD=", 11)) env[k++] = environ[i];
+    if (env) env[k] = NULL;
     pid_t pid;
-    int rc = posix_spawn(&pid, argv[0], &fa, &at, (char *const *)argv, environ);
+    int rc = posix_spawn(&pid, argv[0], &fa, &at, (char *const *)argv, env ? env : environ);
+    free(env);
     posix_spawnattr_destroy(&at);
     posix_spawn_file_actions_destroy(&fa);
     return rc ? 0 : (PlatProc)pid;
