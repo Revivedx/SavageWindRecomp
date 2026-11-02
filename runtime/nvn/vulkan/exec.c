@@ -27,8 +27,10 @@
 #include "../../game_sites.h"
 #include "../../framepace.h"
 #include "../../services/fs_layout.h"
+#include "../../perfcount.h"
 
 static uint64_t stat_build_waits;  // draws that waited for their pipeline (draw_must_happen)
+static uint64_t stat_links_now;    // pipelines linked on the render thread within the frame's budget (link_now)
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
 static uint64_t stat_gw_waits, stat_gw_holds;  // draws / dispatches that waited for a storing shader; lists held (gw_check)
 static uint64_t stat_uub, stat_uub_same, stat_gcopy_hit, stat_gcopy_miss, stat_gcopy_bytes;  // UpdateUniformBuffer; guest_copy cache
@@ -167,6 +169,7 @@ void vk_wait_seq(uint64_t seq) {
     VkResult r = vkWaitSemaphores(g_vk.dev, &wi, 10ull * 1000000000ull);
     stat_wait_ns += SDL_GetTicksNS() - t0;
     cum_wait += SDL_GetTicksNS() - t0;
+    perfcount_add(PC_GPU_WAIT_NS, SDL_GetTicksNS() - t0);
     if (in_execute) cum_xwait += SDL_GetTicksNS() - t0;
     if (r == VK_TIMEOUT) LOG("[vk] GPU did not finish submission %llu within 10 s (device lost?)\n", (unsigned long long)seq);
     else if (r != VK_SUCCESS) {
@@ -507,6 +510,11 @@ void vk_translator_setup(void) {
     maxwell_gmem_split = split ? atoi(split) != 0 : (g_vk.is_mali && HEAP_MAX > g_vk.props.limits.maxStorageBufferRange) ||
                                                     drv.driverID == VK_DRIVER_ID_AMD_PROPRIETARY;
     maxwell_gmem_snap = gsnap_mode() != 0;
+    // (the heap window too, from here on: translate_program and the precompile set it before translating, but the
+    // pre-warm's loads of cached translations read the variant before any translation - with 0+0 there, the global
+    // memory shaders' translations were taken for another variant and their pipelines skipped)
+    maxwell_gmem_base = HEAP_BASE;
+    maxwell_gmem_size = HEAP_MAX;
     LOG("[vk] shader global memory: %s (storage buffer limit %u MB), the HUD's reads %s\n",
         maxwell_gmem_split ? "two bindings" : "one binding", g_vk.props.limits.maxStorageBufferRange >> 20,
         maxwell_gmem_snap ? "through copies" : "in place");
@@ -648,6 +656,7 @@ VkSpan vk_transient(uint64_t size, uint64_t align) {
             c->used = off + size;
             c->seq = pending;
             stat_upload_bytes += size;
+            perfcount_add(PC_UPLOAD_BYTES, size);
             return (VkSpan){c->buf, off, c->ptr + off};
         }
     }
@@ -660,6 +669,7 @@ VkSpan vk_transient(uint64_t size, uint64_t align) {
     chunks[pick].used = size;
     chunks[pick].seq = pending;
     stat_upload_bytes += size;
+    perfcount_add(PC_UPLOAD_BYTES, size);
     return (VkSpan){chunks[pick].buf, 0, chunks[pick].ptr};
 }
 
@@ -841,8 +851,9 @@ static void run_job(void (*fn)(void *), void *arg) {
     static bool started;
     if (!started) {
         started = true;
-        // first entry into an area builds dozens of pipelines at once: use most of the CPU (draws wait for them)
-        int n = SDL_GetNumLogicalCPUCores() - 4;
+        // first entry into an area builds dozens of pipelines at once: use most of the CPU (draws wait for them). The
+        // processors the game runs on (plat_cpu_placement may leave out SMT siblings), not every one of the system's.
+        int n = plat_cpu_count() - 4;
         if (n < 4) n = 4;
         if (n > 16) n = 16;
         for (int i = 0; i < n; i++) { pthread_t t; pthread_create(&t, NULL, worker, NULL); }
@@ -905,6 +916,7 @@ bool renderer_origin_lower_left(void) { return nvn_window_origin() == 0; }
 // present_ns: time in backend_present's acquire/blit/present.
 extern uint64_t g_pace_sleep_ns;  // (objects.c present_pace)
 void vk_prof_frame(uint64_t frame, uint64_t present_ns) {
+    perfcount_add(PC_PRESENT_NS, present_ns);
     if (!prof) return;
     static uint64_t last_t, l_exec, l_wait, l_xwait, l_draws, l_subs, l_comp, l_valloc, hitch_ns;
     if (!hitch_ns) hitch_ns = getenv("SAVAGEWIND_HITCH_MS") ? (uint64_t)atoi(getenv("SAVAGEWIND_HITCH_MS")) * 1000000ull : 50000000ull;
@@ -957,6 +969,9 @@ const char *renderer_stats(void) {
         n = strlen(stats_text);
         if (stat_build_waits) snprintf(stats_text + n, sizeof stats_text - n, ", build waits %llu", (unsigned long long)stat_build_waits);
         stat_build_waits = 0;
+        n = strlen(stats_text);
+        if (stat_links_now) snprintf(stats_text + n, sizeof stats_text - n, ", links now %llu", (unsigned long long)stat_links_now);
+        stat_links_now = 0;
         stat_uub = stat_uub_same = stat_gcopy_hit = stat_gcopy_miss = stat_gcopy_bytes = 0;
         stat_gw_waits = stat_gw_holds = 0;
         stat_sets = stat_sets_reused = 0;
@@ -2474,6 +2489,7 @@ static void compile_program(void *arg) {
     if (made) {
         atomic_fetch_add(&stat_compiles, 1);
         atomic_fetch_add(&prof_c_prog, SDL_GetTicksNS() - pt0); atomic_fetch_add(&prof_c_nprog, 1);
+        perfcount_add(PC_BUILDS, 1); perfcount_add(PC_BUILD_NS, SDL_GetTicksNS() - pt0);
     } else {
         atomic_fetch_add(&stat_warm, 1);
     }
@@ -2560,6 +2576,7 @@ static void translate_program(void *arg) {
                 p->fi ? p->fi->attr_mask : 0, fin, (unsigned long long)p->code[0], (unsigned long long)p->code[1]);
     }
     atomic_fetch_add(&prof_c_tr, SDL_GetTicksNS() - pt0); atomic_fetch_add(&prof_c_ntr, 1);
+    perfcount_add(PC_BUILDS, 1); perfcount_add(PC_BUILD_NS, SDL_GetTicksNS() - pt0);
     if (!p->vi->msl) {
         LOG("[shader] VS translate failed: %s (code %llx)\n", p->vi->error, (unsigned long long)p->code[0]);
         dump_failed_shader(p->code[0], p->cmax[0], "vs");
@@ -3316,7 +3333,7 @@ static void warm_done(WarmPipe *w, VkPipeline p, VkResult r) {
     pthread_mutex_unlock(&warm_lock);
 }
 
-static void pso_record(int kind, uint64_t id0, uint64_t id1, const void *state, size_t n);
+static bool pso_record(int kind, uint64_t id0, uint64_t id1, const void *state, size_t n);
 
 static void build_pipeline(void *arg) {
     Pipe *pp = arg;
@@ -3330,6 +3347,7 @@ static void build_pipeline(void *arg) {
         if (r == VK_SUCCESS) pso_record(1, vk_translate_id(k->prog->vi), vk_translate_id(k->prog->fi), &k->s, sizeof k->s);
         atomic_fetch_add(&stat_compiles, 1);
         atomic_fetch_add(&prof_c_pipe, SDL_GetTicksNS() - pt0); atomic_fetch_add(&prof_c_npipe, 1);
+        perfcount_add(PC_BUILDS, 1); perfcount_add(PC_BUILD_NS, SDL_GetTicksNS() - pt0);
     } else {
         atomic_fetch_add(&stat_warm, 1);
     }
@@ -4381,6 +4399,8 @@ static void heap_export(uint64_t size) {
     }
     char how[64];
     snprintf(how, sizeof how, "exported dma-buf mapped at the heap, type %u", type);
+    extern uint64_t g_mem_direct_lo, g_mem_direct_hi;  // (control_mem.h: the control peeks copy in place here)
+    g_mem_direct_lo = HEAP_BASE, g_mem_direct_hi = HEAP_BASE + size;
     heap_done(buf, mem, size, how);
 }
 
@@ -4444,6 +4464,8 @@ static void heap_dmaheap(uint64_t size) {
     }
     char how[96];
     snprintf(how, sizeof how, "dma-buf from %s mapped at the heap, imported as type %u", path, type);
+    extern uint64_t g_mem_direct_lo, g_mem_direct_hi;  // (control_mem.h: the control peeks copy in place here)
+    g_mem_direct_lo = HEAP_BASE, g_mem_direct_hi = HEAP_BASE + size;
     heap_done(buf, mem, size, how);
 }
 
@@ -5673,6 +5695,7 @@ static void build_compute(void *arg) {
         if (atomic_load(&c->state) == 2) pso_record(2, vk_translate_id(cp->si), 0, cp->local, sizeof cp->local);
         atomic_fetch_add(&stat_compiles, 1);
         atomic_fetch_add(&prof_c_comp, SDL_GetTicksNS() - pt0);
+        perfcount_add(PC_BUILDS, 1); perfcount_add(PC_BUILD_NS, SDL_GetTicksNS() - pt0);
     } else {
         atomic_fetch_add(&stat_warm, 1);
     }
@@ -5733,6 +5756,11 @@ static CsProg *compute_program(NvnProgram *np) {
 // header names the GPU and the shader translator build the list is for (each record's check covers them too):
 // another, and it starts over. Not the driver: a new driver empties the pipeline cache, and the list is what rebuilds
 // it before the game needs it. SAVAGEWIND_NO_SHADER_WARM=1: no pre-warm (pipelines are still recorded).
+// A fresh install has no list: setup's precompilation makes every shader's libraries, but the final pipelines (a
+// program with the fixed state of a draw) are only known from play, so a first boot still linked every one where
+// first drawn (270-706 in the first 45 s on the Steam Deck). The pipeline seed (precompile.c, vk_pipelines.seed: the
+// list of a developer's playthrough in a portable form, by shader binary hash and key) fills the list at the
+// precompilation, so the first boot pre-warms like a second one. vk_pso_add / vk_pso_records are its way in and out.
 #define PSO_LIST_VERSION 1
 #define PSO_WAIT_DRAWS 800
 typedef struct { char magic[8]; uint32_t version, rec_size, vendor, device; char shaders[64]; } PsoHeader;
@@ -5793,8 +5821,8 @@ static bool pso_known_add(uint64_t h) {  // (pso_lock held) false: there already
     return true;
 }
 
-static void pso_record(int kind, uint64_t id0, uint64_t id1, const void *state, size_t n) {
-    if (!id0 || (kind == 1 && !id1)) return;  // (translations not cached: debugging switches)
+static bool pso_record(int kind, uint64_t id0, uint64_t id1, const void *state, size_t n) {
+    if (!id0 || (kind == 1 && !id1)) return false;  // (translations not cached: debugging switches)
     PsoRec r;
     memset(&r, 0, sizeof r);
     r.kind = (uint32_t)kind;
@@ -5804,7 +5832,8 @@ static void pso_record(int kind, uint64_t id0, uint64_t id1, const void *state, 
     uint64_t h = pso_hash(&r);
     r.check = (uint32_t)h;
     pthread_mutex_lock(&pso_lock);
-    if (pso_known_add(h)) {
+    bool added = pso_known_add(h);
+    if (added) {
         if (pso_npend == pso_pend_cap) {
             pso_pend_cap = pso_pend_cap ? pso_pend_cap * 2 : 256;
             pso_pend = realloc(pso_pend, (size_t)pso_pend_cap * sizeof *pso_pend);
@@ -5812,6 +5841,7 @@ static void pso_record(int kind, uint64_t id0, uint64_t id1, const void *state, 
         pso_pend[pso_npend++] = r;
     }
     pthread_mutex_unlock(&pso_lock);
+    return added;
 }
 
 void vk_pso_flush(void) {
@@ -5836,7 +5866,10 @@ void vk_pso_flush(void) {
     pthread_mutex_unlock(&pso_lock);
 }
 
+static bool pso_loaded;
 static void pso_load(void) {
+    if (pso_loaded) return;
+    pso_loaded = true;
     PsoHeader want;
     pso_header(&want);
     pso_seed = hash_words(0xcbf29ce484222325ull, &want, sizeof want);
@@ -5852,9 +5885,13 @@ static void pso_load(void) {
         long size = ftell(f);
         fseek(f, 0, SEEK_SET);
         if (size < (long)sizeof h || fread(&h, sizeof h, 1, f) != 1) why = "too short";
-        else if (memcmp(h.magic, want.magic, 8) || h.version != want.version || h.rec_size != want.rec_size) why = "older format";
-        else if (h.vendor != want.vendor || h.device != want.device) why = "made on another GPU";
-        else if (memcmp(h.shaders, want.shaders, sizeof h.shaders)) why = "made by another shader translator build";
+        else if (getenv("SAVAGEWIND_PSO_ANY_VERSION")) {  // (the seed's export of another build's list: as the file names it)
+            memcpy(want.shaders, h.shaders, sizeof want.shaders);
+            pso_seed = hash_words(0xcbf29ce484222325ull, &want, sizeof want);
+        }
+        if (!why && (memcmp(h.magic, want.magic, 8) || h.version != want.version || h.rec_size != want.rec_size)) why = "older format";
+        else if (!why && (h.vendor != want.vendor || h.device != want.device)) why = "made on another GPU";
+        else if (!why && memcmp(h.shaders, want.shaders, sizeof h.shaders)) why = "made by another shader translator build";
         if (why) {
             rewrite = true;
         } else {
@@ -5886,6 +5923,27 @@ static void pso_load(void) {
     }
     if (why) LOG("[pso] pipeline list: starts empty (%s: %s)\n", path, why);
     else LOG("[pso] pipeline list: %d pipelines (%d damaged and %d repeated records dropped)\n", pso_nrecs, bad, dup);
+}
+
+// (precompile.c, the pipeline seed) the list's records, each as kind (1 graphics, 2 compute), its translation ids and
+// the fixed state's bytes (a PipeState, or the group size); and a record added (pending, written by vk_pso_flush;
+// one the list has is dropped). Both after the device is up (the list's header names it).
+size_t vk_pso_state_size(void) { return sizeof(PipeState); }
+
+int vk_pso_records(int (*fn)(void *ctx, int kind, const uint64_t id[2], const void *state, size_t n), void *ctx) {
+    pso_load();
+    int sent = 0;
+    for (int i = 0; i < pso_nrecs; i++) {
+        const PsoRec *r = &pso_recs[i];
+        if (fn(ctx, (int)r->kind, r->id, &r->u, r->kind == 1 ? sizeof r->u.g : sizeof r->u.local)) sent++;
+    }
+    return sent;
+}
+
+bool vk_pso_add(int kind, uint64_t id0, uint64_t id1, const void *state, size_t n) {
+    pso_load();
+    if ((kind != 1 && kind != 2) || n > sizeof(((PsoRec *)0)->u)) return false;
+    return pso_record(kind, id0, id1, state, n);
 }
 
 // The fixed state of a record is something this device can build (the list is not keyed by driver).
@@ -5982,7 +6040,9 @@ static void warm_outs_init(void) {  // (from the pipeline list read at start)
 
 static VkShaderModule warm_module(const ShaderInfo *si, int stage, VkBindingInfo *binds, int *nbinds, int max) {
     size_t n = 0;
-    uint32_t *spv = vk_glsl_to_spirv(si->msl, stage, "warm", &n);
+    char *blur = blur_edge_source(si, stage);  // (the same source as stage_build: else the precompiled library never matches)
+    uint32_t *spv = vk_glsl_to_spirv(blur ? blur : si->msl, stage, "warm", &n);
+    free(blur);
     if (!spv) return VK_NULL_HANDLE;
     *nbinds += vk_reflect(spv, n, binds + *nbinds, max - *nbinds);
     VkShaderModule m = vk_module(spv, n);
@@ -6094,21 +6154,53 @@ bool vk_pso_warm(const ShaderInfo *vi, const ShaderInfo *fi, const uint8_t attr_
     return ok;
 }
 
-static void pso_init(void) {
-    vk_cache_cleanup();
+static void pso_start(void) {  // the list read, and its pre-warm started
     pso_load();
     // (without the translation cache, draws translate anew and never meet what the pre-warm loads)
     if (!pso_nrecs || getenv("SAVAGEWIND_NO_SHADER_WARM") || getenv("SAVAGEWIND_NO_XLATE_CACHE") || maxwell_translation_uncacheable())
         return;
     // most of the CPU (as run_job), leaving some to the game booting meanwhile
-    int n = SDL_GetNumLogicalCPUCores() - 4;
+    int n = plat_cpu_count() - 4;
     if (n < 2) n = 2;
     if (n > 16) n = 16;
     pso_t0 = SDL_GetTicksNS();
+    atomic_store(&pso_next, 0);
+    atomic_store(&pso_finished, 0);
+    atomic_store(&pso_built, 0);
+    atomic_store(&pso_found, 0);
+    atomic_store(&pso_skipped, 0);
     atomic_store(&pso_workers, n);
     atomic_store(&pso_running, true);
     LOG("[pso] pre-warm: %d pipelines on %d threads\n", pso_nrecs, n);
     for (int i = 0; i < n; i++) { pthread_t t; pthread_create(&t, NULL, pso_worker, NULL); }
+}
+
+static void pso_init(void) {
+    vk_cache_cleanup();
+    pso_start();
+}
+
+// precompile.c, once the pipeline seed's records have joined the list in this process: the start screen's
+// precompilation runs after vk_exec_init read the list (at the window's creation), so the pre-warm of this start never
+// saw them, and the first boot after the setup would link every seeded pipeline where first drawn, as if there were
+// no seed, with only the next start pre-warming them. So the list is read again, as the file is now, and pre-warmed.
+// A pre-warm still going (a long list, the precompilation run again right after the start) is left to finish: the
+// next start takes the seed's records.
+void vk_pso_rewarm(void) {
+    if (atomic_load(&pso_running)) return;
+    pthread_mutex_lock(&pso_lock);
+    bool again = pso_npend == 0;  // (records vk_pso_flush could not write stay pending and known: the file lacks them)
+    if (again) {
+        free(pso_recs);
+        pso_recs = NULL;
+        pso_nrecs = 0;
+        free(pso_known);
+        pso_known = NULL;
+        pso_known_cap = pso_known_n = 0;
+        pso_loaded = false;
+    }
+    pthread_mutex_unlock(&pso_lock);
+    if (again) pso_start();
 }
 
 // device.c, once per frame presented: whether this frame waits for the pre-warm (it looks like gameplay and the
@@ -6126,10 +6218,14 @@ bool vk_pso_wait(int ms, float *done) {
     return !atomic_load(&pso_running);
 }
 
+static void wait_built(_Atomic int *state);
 static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     snap_reason = "compute"; snapshots_invalidate(NULL);
     if (!st.program || !gx || !gy || !gz) return;
     CsProg *cp = compute_program(st.program);
+    // (asynchronous shaders) a dispatch waits for its pipeline instead of being skipped: what a compute shader writes
+    // (skinning, particles, culling results) the game may read for good, and there are few of them (72 in BOTW)
+    if (cp && atomic_load(&cp->p.state) == 0) wait_built(&cp->p.state);
     if (!cp || atomic_load(&cp->p.state) != 1) { stat_skipped++; return; }
     gw_check((const uint32_t[6]){0, 0, 0, 0, 0, cp->si->cbuf_mask}, false, 0, 0);
     vk_end_pass();
@@ -6306,6 +6402,14 @@ static uint64_t prof_tp_;
 // (the next frame has it), not for one drawn once and then only sampled. BOTW's pause menu blurs a capture of the
 // scene once when it opens (the background stayed black) and the save dialog's picture is made once. So a draw into
 // targets no pass drew in the previous frame waits for its shaders, as with synchronous shaders.
+// What is safe to skip, in all: a draw into targets some pass drew in the previous frame (the scene, the G-buffer,
+// shadow maps, depth pre-passes: the next frame draws them again; under an occlusion query the object counts as
+// hidden for that frame), feedback-loop draws included. What waits: one-shot targets (here), texture arrays, 3D and
+// cube textures the game fills once (draw_must_happen), every compute dispatch (dispatch_compute: its writes may be
+// read for good), and the runtime's own pipelines (present, blits, clears: made synchronously). The "skip when the
+// pass's targets were rendered in the previous frame, wait otherwise" rule and the inline link of ready stages
+// (link_now) follow TotK Recomp's TOTK_PIPE_SKIP (Valiantsin Dzerakh, MIT: third_party/totk-pc-recomp/LICENSE),
+// written here in this runtime's own terms.
 static bool one_shot_target(void) {
     uint64_t now = renderer_present_count();
     NvnTexture *ts[9];
@@ -6322,11 +6426,41 @@ static bool one_shot_target(void) {
 
 // Draws into one-shot targets (alpha3-glitches) or texture arrays, 3D and cube textures the game fills once (terrain
 // tiles: region-tests) wait for their program or pipeline instead of being skipped while it builds.
+// Asynchronous shaders, a pipeline whose stages' libraries are built already (the precompiled shaders', or a draw's
+// before): the draw links it here, now, instead of skipping a frame for a job that takes a fraction of a millisecond
+// (graphics pipeline libraries link without compiling; 0.2 ms each measured on the Steam Deck's RADV). Up to
+// SAVAGEWIND_PIPE_LINK_MS (default 3) per presented frame: a burst of hundreds of new pipelines (an area streamed in,
+// a fight) links that much here and hands the rest to the workers, skipping their draws until built, so no frame
+// stalls on them - where a first boot linked 236 pipelines in one 109 ms frame. A stage library still to compile
+// (5-50 ms) always goes to a worker. SAVAGEWIND_PIPE_LINK_MS=0: every build on a worker, as before.
+static void build_pipeline(void *arg);
+static bool link_now(Pipe *pp) {
+    static int64_t budget = -1;
+    if (budget < 0) budget = (getenv("SAVAGEWIND_PIPE_LINK_MS") ? atoi(getenv("SAVAGEWIND_PIPE_LINK_MS")) : 3) * 1000000ll;
+    const Prog *pr = pp->k.prog;
+    const PipeState *s = &pp->k.s;
+    const StageBuild *v = pr->stages.v, *f = pr->stages.f;
+    if (budget <= 0 || !g_vk.gpl || s->feedback || !v || !f) return false;
+    int vv = (s->depth_clamp ? 1 : 0) | (s->poly_fill ? 2 : 0), fv = (samples_log2(s->samples) << 1) | (s->a2c ? 1 : 0);
+    if (vv >= 8 || fv >= 8 || !atomic_load(&v->lib[vv]) || !atomic_load(&f->lib[fv])) return false;
+    static uint64_t frame, spent;
+    uint64_t now = renderer_present_count();
+    if (now != frame) { frame = now; spent = 0; }
+    if (spent >= (uint64_t)budget) return false;
+    uint64_t t0 = SDL_GetTicksNS();
+    build_pipeline(pp);
+    spent += SDL_GetTicksNS() - t0;
+    stat_links_now++;
+    return true;
+}
+
 static void wait_built(_Atomic int *state) {  // (0 building: until built or failed, 5 s at most)
     if (atomic_load(state) != 0 || sync_shaders()) return;
     uint64_t t0 = SDL_GetTicksNS();
     while (atomic_load(state) == 0 && SDL_GetTicksNS() - t0 < 5000000000ull) SDL_Delay(1);
     stat_build_waits++;
+    perfcount_add(PC_BUILD_WAITS, 1);
+    perfcount_add(PC_BUILD_WAIT_NS, SDL_GetTicksNS() - t0);
 }
 
 static void draw_(CmdRec *r, bool indexed) {
@@ -6675,7 +6809,7 @@ static void draw_(CmdRec *r, bool indexed) {
             pipe_tab[pslot].pipe = pp;
             VkPipeline ready = sync_shaders() ? VK_NULL_HANDLE : warm_ready(pr->vi, pr->fi, &k.s);
             if (ready) { pp->pipe = ready; atomic_store(&pp->state, 1); atomic_fetch_add(&stat_warm, 1); }
-            else run_job(build_pipeline, pp);
+            else if (sync_shaders() || !link_now(pp)) run_job(build_pipeline, pp);  // (asynchronous: a link alone is done here)
         }
         pipe_memo.k = k;
         pipe_memo.pp = pp;

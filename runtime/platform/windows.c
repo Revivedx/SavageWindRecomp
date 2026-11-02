@@ -149,7 +149,7 @@ static pthread_once_t timer_once = PTHREAD_ONCE_INIT;
 static void timer_close(void *h) { CloseHandle((HANDLE)h); }
 static void timer_key_init(void) { pthread_key_create(&timer_key, timer_close); }
 
-void plat_sleep_until_ns(uint64_t t) {
+static HANDLE thread_timer(void) {
     static __thread HANDLE timer;
     if (!timer) {
         timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
@@ -159,12 +159,28 @@ void plat_sleep_until_ns(uint64_t t) {
             pthread_setspecific(timer_key, timer);
         }
     }
+    return timer;
+}
+
+void plat_sleep_until_ns(uint64_t t) {
+    HANDLE timer = thread_timer();
     for (;;) {
         uint64_t now = plat_now_ns();
         if (now >= t) return;
         uint64_t left = t - now;
         if (left < 200000) { YieldProcessor(); continue; }  // last 0.2 ms: spin (timer slack)
         LARGE_INTEGER due = {.QuadPart = -(LONGLONG)((left - 100000) / 100)};  // relative, 100 ns units
+        if (!timer || !SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE)) { Sleep(1); continue; }
+        WaitForSingleObject(timer, INFINITE);
+    }
+}
+
+// The same timer, without the spin: back about 0.5 ms late at worst. (MinGW's nanosleep counts whole milliseconds:
+// under 1 ms it returns at once, so a loop around it spins, and 1.9 ms sleeps 1 ms.)
+void plat_wait_until_ns(uint64_t t) {
+    HANDLE timer = thread_timer();
+    for (uint64_t now; (now = plat_now_ns()) < t;) {
+        LARGE_INTEGER due = {.QuadPart = -(LONGLONG)((t - now + 99) / 100)};
         if (!timer || !SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE)) { Sleep(1); continue; }
         WaitForSingleObject(timer, INFINITE);
     }
@@ -268,24 +284,29 @@ void plat_init(void) {
     _setmode(_fileno(stdout), _O_BINARY);
     _setmode(_fileno(stderr), _O_BINARY);
     SetConsoleOutputCP(CP_UTF8);
-    timeBeginPeriod(1);  // 1 ms Sleep / condition-variable timeouts (default 15.6 ms)
-    // Opt out of EcoQoS and of Windows 11 ignoring the timer resolution while the window is occluded.
+    // Opt out of EcoQoS and of Windows 11 ignoring the timer resolution while the window is occluded, before asking
+    // for 1 ms: a request made earlier stays ignored (Sleep(1) took 15.6 ms in hidden test runs).
     PROCESS_POWER_THROTTLING_STATE pt = {
         .Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION,
         .ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
         .StateMask = 0,
     };
     SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &pt, sizeof pt);
+    timeBeginPeriod(1);  // 1 ms Sleep / condition-variable timeouts (default 15.6 ms)
 }
 
 // One logical processor per physical core for the whole process: the game's main thread and the render thread then
-// never share a core with another busy thread of the game, or with a helper spinning for work. With fewer cores than
-// the game's busy threads (main, two job workers, render, audio, file loading) they would queue for one instead, so by
-// default only with SMT and 8 or more physical cores. SAVAGEWIND_ONE_PER_CORE=1: always, 0: never. Called when the game
-// starts, so what the start screen runs (the game code build) keeps every logical processor.
+// never share a core with another busy thread of the game. With fewer cores than the game's busy threads (main, two job
+// workers, render, recorder, audio, file loading) they queue for one instead: by default with SMT and 4 or more
+// physical cores (plat_one_per_core_default). SAVAGEWIND_ONE_PER_CORE=1: always, 0: never. Called when the game
+// starts, so what the start screen runs (the game code build) keeps every logical processor. Under Wine / Proton the
+// Linux kernel schedules the threads, and there the Steam Deck measured one processor per core as a loss
+// (platform.h): the default keeps every logical processor, as the Linux build does.
 void plat_cpu_placement(void) {
     DWORD_PTR all, sys, one = 0;
     if (!GetProcessAffinityMask(GetCurrentProcess(), &all, &sys)) return;
+    HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+    bool wine = ntdll && GetProcAddress(ntdll, "wine_get_version") != NULL;
     int logical = __builtin_popcountll((unsigned long long)all), cores = 0;
     DWORD len = 0;
     GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &len);
@@ -299,10 +320,18 @@ void plat_cpu_placement(void) {
         }
     free(buf);
     const char *x = getenv("SAVAGEWIND_ONE_PER_CORE");
-    bool on = one && (x ? atoi(x) != 0 : cores >= 8 && logical > cores);
-    fprintf(stderr, "[cpu] %d cores, %d logical processors: %s\n", cores, logical,
-            on ? "one logical processor per core" : "all logical processors");
+    bool on = one && (x ? atoi(x) != 0 : !wine && plat_one_per_core_default(cores, logical));
+    fprintf(stderr, "[cpu] %d cores, %d logical processors: %s%s\n", cores, logical,
+            on ? "one logical processor per core" : "all logical processors", wine && !x ? " (Wine)" : "");
     if (on) SetProcessAffinityMask(GetCurrentProcess(), one);
+}
+
+int plat_cpu_count(void) {
+    DWORD_PTR proc, sys;
+    if (GetProcessAffinityMask(GetCurrentProcess(), &proc, &sys) && proc) return __builtin_popcountll((unsigned long long)proc);
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    return (int)si.dwNumberOfProcessors;
 }
 
 bool plat_exe_path(char *buf, size_t size) {

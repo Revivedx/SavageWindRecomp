@@ -647,7 +647,12 @@ static void *pc_read(FILE *f, size_t *size, const char **why) {
     if (memcmp(h.magic, want.magic, 8) || h.version != want.version) { *why = "older format"; return NULL; }
     if (h.vendor != want.vendor || h.device != want.device) { *why = "made on another GPU"; return NULL; }
     if (h.driver != want.driver || memcmp(h.uuid, want.uuid, VK_UUID_SIZE)) { *why = "made with another driver"; return NULL; }
-    if (memcmp(h.shaders, want.shaders, sizeof h.shaders)) { *why = "made by another shader translator build or device setup"; return NULL; }
+    if (memcmp(h.shaders, want.shaders, sizeof h.shaders)) {
+        const char *slash = strrchr(want.shaders, '/');  // (the device setup is after the last slash)
+        size_t n = slash ? (size_t)(slash - want.shaders) : sizeof h.shaders;
+        *why = memcmp(h.shaders, want.shaders, n) ? "made by another shader translator build" : "made for another device setup";
+        return NULL;
+    }
     if (h.size != (uint64_t)n - sizeof h) { *why = "cut short"; return NULL; }
     uint8_t *d = malloc(h.size ? h.size : 1);
     if (!d || fread(d, 1, h.size, f) != h.size || data_hash(d, h.size) != h.hash) { free(d); *why = "damaged"; return NULL; }
@@ -1914,6 +1919,12 @@ presented:
         extern bool g_gpuprof_frame;
         extern void vk_gpuprof_report(void);
         if (g_gpuprof_frame) { g_gpuprof_frame = false; vk_gpuprof_report(); }
+        extern volatile int g_gpuprof_request;  // (runtime/control_prof.c: the `gpuprof` command)
+        if (g_gpuprof_request) {
+            g_gpuprof_request = 0;
+            g_gpuprof_frame = true;
+            LOG("[gpuprof] capture of frame %llu (gpuprof command)\n", (unsigned long long)total_frames);
+        }
         const char *e = getenv("SAVAGEWIND_GPUPROF_AT");
         for (const char *p = e; p && *p;) {
             long at = strtol(p, (char **)&p, 10);

@@ -223,6 +223,8 @@ static void qop_run(const QOp *o) {
 static void *queue_thread(void *arg) {
     (void)arg;
     kernel_sample_host_thread();
+    extern void control_prof_thread(const char *name);  // runtime/control_prof.c (`threads`)
+    control_prof_thread("render");
     pthread_mutex_lock(&g_q_lock);
     for (;;) {
         while (g_q_done == g_q_put) pthread_cond_wait(&g_q_work, &g_q_lock);

@@ -132,6 +132,8 @@ static inline void *after(const void *args, size_t args_size) { return (uint8_t 
 // ---- the thread
 static void *run(void *arg) {
     (void)arg;
+    extern void control_prof_thread(const char *name);  // runtime/control_prof.c (`threads`)
+    control_prof_thread("recorder");
     uint64_t t = 0;
     for (;;) {
         uint64_t h = atomic_load_explicit(&head, memory_order_acquire);
@@ -179,8 +181,10 @@ void rec_init(void) {
         pthread_attr_init(&attr);
         pthread_attr_setstacksize(&attr, 1 << 20);
         ring_cap = cap;  // (before the thread exists)
-        if (!ring || pthread_create(&th, &attr, run, NULL) != 0) {
-            LOG("[vk] recorder thread: could not start (%s): Vulkan calls on the queue thread\n", ring ? "thread" : "memory");
+        int rc = ring ? pthread_create(&th, &attr, run, NULL) : 0;
+        if (!ring || rc != 0) {  // (pthread_create returns the error number; errno is not set)
+            LOG("[vk] recorder thread: could not start (%s%s%s, error %d): Vulkan calls on the queue thread\n",
+                ring ? "thread" : "memory", ring ? ": " : "", ring ? strerror(rc) : "", ring ? rc : 0);
             free(ring);
             ring = NULL;
             ring_cap = 0;

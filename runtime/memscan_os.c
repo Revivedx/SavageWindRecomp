@@ -4,6 +4,8 @@
 #endif
 #include "memscan.h"
 
+#include <string.h>
+
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -89,7 +91,12 @@ bool ms_guarded(const void *p, size_t n, MsFn fn, void *ctx, size_t *ret) {
             return false;
 #else
         struct iovec local = {copy.bytes, n}, remote = {(void *)p, n};
-        if (process_vm_readv(getpid(), &local, 1, &remote, 1, 0) != (ssize_t)n) return false;
+        if (process_vm_readv(getpid(), &local, 1, &remote, 1, 0) != (ssize_t)n) {
+            extern uint64_t g_mem_direct_lo, g_mem_direct_hi;  // (control_mem.h: the heap's dma-buf mapping)
+            uint64_t a = (uint64_t)(uintptr_t)p;
+            if (a < g_mem_direct_lo || a + n > g_mem_direct_hi) return false;
+            memcpy(copy.bytes, p, n);
+        }
 #endif
     }
     *ret = fn(copy.bytes, n, ctx);

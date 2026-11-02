@@ -31,6 +31,13 @@ ShaderInfo *vk_translate_peek(const uint8_t *code, size_t max_size, int stage, c
 // with that id from memory or cache/xlate/ (NULL: not there, or not of that stage).
 uint64_t vk_translate_id(const ShaderInfo *si);
 ShaderInfo *vk_translate_load_id(uint64_t id, int stage);
+uint64_t vk_translate_id_for(const uint8_t *code, size_t max_size, int stage, const ShaderKey *key);  // (the id it would get)
+// (exec.c) the pipeline list for the pipeline seed (precompile.c): its records, one added, the fixed state's size
+size_t vk_pso_state_size(void);
+int vk_pso_records(int (*fn)(void *ctx, int kind, const uint64_t id[2], const void *state, size_t n), void *ctx);
+bool vk_pso_add(int kind, uint64_t id0, uint64_t id1, const void *state, size_t n);
+void vk_pso_flush(void);
+void vk_pso_rewarm(void);  // the list read again and pre-warmed (after the seed's records joined it in this process)
 // Only what the translation reads of a key (the Shader Program Header's inputs and outputs); vk_sph_inputs: the
 // vertex attributes / fragment inputs a shader reads (bit i: attribute or varying i).
 void vk_key_normalize(const uint8_t *code, int stage, ShaderKey *key);
@@ -44,8 +51,10 @@ const char *vk_cache_dir(void);
 const char *vk_cache_dir_id(const char *id);  // a folder name for a translator / SPIR-V id
 void vk_cache_cleanup(void);                  // other builds' translations and SPIR-V removed (in the background)
 void vk_cache_path(char *out, size_t n, const char *name);
-// What caches of translated shaders are valid for: the translator's id and the GLSL -> SPIR-V step's (spirv.c).
+// What caches of translated shaders are valid for: the translator's id and the GLSL -> SPIR-V step's (spirv.c); the
+// full one adds the device's translation variant (maxwell_translation_variant): what a precompilation was made under.
 const char *vk_shader_version(void);
+const char *vk_shader_version_full(void);
 const char *vk_spirv_id(void);
 VkShaderModule vk_module(const uint32_t *spv, size_t nwords);
 // Descriptor bindings declared by a SPIR-V module.

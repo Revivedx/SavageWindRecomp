@@ -933,11 +933,11 @@ static void tab_display(void) {
                    "game's own frames. Fast moves can leave faint smears around Link and what moves on its own.");
     }
 #endif
-    opt_toggle("Asynchronous shaders", &g_settings.async_shaders, false,
-               "Off: the game waits for each new shader to compile, a short stutter the first time an effect "
-               "appears, and everything is drawn. On: no waiting, but what needs a shader still compiling is skipped "
-               "meanwhile: effects pop in late, and pictures the game draws only once (the save file's screenshot) "
-               "can come out as garbage.");
+    opt_toggle("Asynchronous shaders", &g_settings.async_shaders, true,
+               "On (default): the game never waits for a new shader to compile: what needs one still compiling is "
+               "left out until it is ready, usually one frame (an effect pops in a frame late). Pictures the game "
+               "draws only once (the save file's screenshot, the pause menu's background, terrain tiles) still wait "
+               "for theirs. Off: every draw waits for its shader, a short stutter the first time an effect appears.");
     // shadow resolution (its own block)
     static const char *shadow[] = {"Console (896)", "High (2048)", "Ultra (4096)", "Extreme (8192)"};
     opt_choice("Shadow resolution", &g_settings.shadow_res, shadow, SHADOW_COUNT, SHADOW_CONSOLE,

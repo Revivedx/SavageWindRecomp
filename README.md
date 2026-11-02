@@ -70,6 +70,12 @@ to the GPU ([#117](https://github.com/Revivedx/SavageWindRecomp/issues/117)).
    files (set them up again, rebuild the game code, delete them) and Quit. In game, Quit to Start Screen also comes
    back to it.
 
+The file `vk_pipelines.seed` next to the executable is a list of shader hashes and draw states met in a full
+playthrough (about 4,000 pipelines, 100 KB; it holds nothing of the game itself). The shader precompilation reads it
+so that the first boot already has every pipeline that playthrough needed, instead of building each one the first
+time it is drawn. Deleting it only costs some stutter on the first boots while those pipelines are built as they
+appear.
+
 Coming from Alpha 3: extract Alpha 4 over your Alpha 3 folder (Windows) or use the new AppImage (Linux). Your game
 files, saves and settings stay; the start screen asks you to build the game code again (Set up game files) once.
 What's new is in [CHANGELOG.md](CHANGELOG.md).
@@ -292,6 +298,10 @@ switches - are in [docs/SAVAGE-WIND.md](docs/SAVAGE-WIND.md).
   this project is built on (MIT).
 - [Ryujinx](https://github.com/Ryujinx/Ryujinx) (MIT) - its shader decoder was the reference for instruction field
   layouts.
+- [TotK Recomp](https://github.com/valentderah/totk-pc-recomp) by Valiantsin Dzerakh (MIT) - the generator passes that
+  keep registers and flags in C locals (`tools/regs.py`, `tools/flags.py`, the flag helpers in `runtime/cpu.h`), and
+  the rule for skipping a draw whose pipeline is still building and linking ready stages inline (`TOTK_PIPE_SKIP`;
+  `runtime/nvn/vulkan/exec.c` one_shot_target, link_now; `third_party/totk-pc-recomp/LICENSE`).
 - [envytools](https://github.com/envytools/envytools) - NVIDIA GPU documentation used for the shader translator.
 - The Switch homebrew community's documentation ([Switchbrew](https://switchbrew.org)).
 - [Ghidra](https://github.com/NationalSecurityAgency/ghidra) and the

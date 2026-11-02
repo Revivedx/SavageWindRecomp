@@ -117,6 +117,9 @@ void maxwell_free(ShaderInfo *s);
 // translator's build, and whether debugging switches make the output depend on more than binary and key.
 size_t maxwell_binary_size(const uint8_t *code, size_t max_size, int stage);
 const char *maxwell_translator_id(void);
+// The run-time switches and heap window a translation is made under (translate.c): what a translation of a shader
+// that reads global memory depends on besides the binary, the key and the translator's id.
+const char *maxwell_translation_variant(void);
 bool maxwell_translation_uncacheable(void);
 // Disassemble for debugging (writes text to f).
 void maxwell_disassemble(const uint8_t *code, size_t max_size, int stage, void *file);

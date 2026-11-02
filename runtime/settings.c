@@ -36,6 +36,7 @@ Settings g_settings = {
     .stick_deadzone = {STICK_DEADZONE_DEFAULT, STICK_DEADZONE_DEFAULT},
     .fps_limit = FPS_DEFAULT,
     .precompile_shaders = true,
+    .async_shaders = true,
     .vsync = VSYNC_DEFAULT,
     .wide_view = true,
     .fov = 100,
@@ -53,7 +54,12 @@ static const char *const k_fsmode[FSMODE_COUNT] = {"auto", "borderless", "exclus
 // "fsr1" (the default) only scaled the finished 1920x1080 image to a bigger window: older files load it as Off, so
 // nobody drops below the window's resolution unasked, except version-1 files whose internal resolution was a share of
 // the display (75%, 50%, 25%: they keep FSR 1 at the nearest mode).
-#define SETTINGS_VERSION 3
+// settings_version 4 (2026-11-01): "Asynchronous shaders" is on by default: with the shaders precompiled, the pipeline
+// list pre-warmed at start and the cheap links done inline (exec.c link_now), a draw only skips a frame for a real
+// shader compile, and the draws that must not be skipped (one-shot targets, texture arrays, compute) wait. Older files
+// have the old default (off) written in them: version 3 files take the new default (a player who turned it on keeps
+// it; one who left it off was on the default, since the menu wrote every key).
+#define SETTINGS_VERSION 4
 
 static const char *const k_drawdist[DRAWDIST_COUNT] = {"original", "medium", "high"};  // (DRAWDIST_*)
 
@@ -227,6 +233,10 @@ void settings_load(void) {
         LOG("[settings] %s: version %d upscaler fsr1 -> %s\n", SETTINGS_FILE, version, lower ? "fsr1" : "off");
     }
 #endif
+    if (version < 4 && !g_settings.async_shaders) {
+        g_settings.async_shaders = true;
+        LOG("[settings] %s: version %d async_shaders 0 -> 1 (the new default)\n", SETTINGS_FILE, version);
+    }
     if (!tip_key) g_settings.menu_tip_seen = true;  // (a settings file from before the note: not a first launch)
     if (g_settings.volume < 0) g_settings.volume = 0;
     if (g_settings.volume > 2) g_settings.volume = 2;
