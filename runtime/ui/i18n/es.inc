@@ -591,3 +591,6 @@ T("Rotate left on the third axis.", "Gira a la izquierda sobre el tercer eje.")
 T("Rotate right on the third axis.", "Gira a la derecha sobre el tercer eje.")
 T("Reset orientation and stop pending rotation.", "Restablece la orientación y detiene el giro pendiente.")
 T("Open them from the title screen, or pause the game and choose System > Options. Esc opens pause or goes back. F2 frees the mouse cursor.", "Ábrelas desde la pantalla de título o pausa el juego y elige Sistema > Opciones. Esc abre la pausa o vuelve atrás. F2 libera el cursor del ratón.")
+
+T("Controller rumble", "Vibración del mando")
+T("Vibrate the controller during play.", "Hace vibrar el mando durante el juego.")

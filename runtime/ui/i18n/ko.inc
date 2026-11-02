@@ -591,3 +591,6 @@ T("PC mouse pointer", "")
 T("Point and click in menus and map. Esc pauses/goes back; F2 frees the cursor.", "")
 T("The mouse turns the camera. Pointer off: Esc frees it; pointer on: F2 frees it.", "")
 T("Open them from the title screen, or pause the game and choose System > Options. Esc opens pause or goes back. F2 frees the mouse cursor.", "")
+
+T("Controller rumble", "컨트롤러 진동")
+T("Vibrate the controller during play.", "플레이 중 컨트롤러가 진동합니다.")

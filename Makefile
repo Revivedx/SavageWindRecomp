@@ -425,13 +425,13 @@ test-pc-controls: $(B)/test_pc_controls $(B)/test_pc_settings $(B)/test_options_
 	$(B)/test_options_pointer
 	@set -e; tmp=$$(mktemp); trap 'rm -f "$$tmp"' EXIT; \
 	 printf 'settings_version = 3\npc_cursor = 1\n' > "$$tmp"; \
-	 $(B)/test_pc_settings "$$tmp" 1; \
-	 $(B)/test_pc_settings "$$tmp" 0; \
-	 SAVAGEWIND_PC_CURSOR=0 $(B)/test_pc_settings "$$tmp" 0
+	 $(B)/test_pc_settings "$$tmp" 1 1; \
+	 $(B)/test_pc_settings "$$tmp" 0 0; \
+	 SAVAGEWIND_PC_CURSOR=0 $(B)/test_pc_settings "$$tmp" 0 1
 
 .PHONY: test-pc-controls
 
-$(B)/test_vibration: tools/test_vibration.c runtime/hle/vibration.c runtime/vibration.h runtime/services/hid_set.c
+$(B)/test_vibration: tools/test_vibration.c runtime/hle/vibration.c runtime/vibration.h runtime/settings.h runtime/services/hid_set.c
 	@mkdir -p $(B)
 	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_vibration.c -lpthread -lm
 
