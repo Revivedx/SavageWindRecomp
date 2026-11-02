@@ -13,6 +13,7 @@
 // (rt_opt_pause_tick) opens it again.
 //
 // Threads: every hook runs on the game's thread, inside the screen's own functions.
+#include "../mods.h"
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -84,7 +85,7 @@ struct Entry {           // the game's option entry (0x30)
 static_assert(sizeof(Entry) == 0x30);
 enum { KIND_TOGGLE = 0, KIND_CHOICE = 1, KIND_BUTTON = 2 };
 
-enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_COLOUR, P_AUDIO, P_CONTROLS, P_KEYS, P_STICKS, P_PAD, P_LANGUAGE, P_COUNT };
+enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_COLOUR, P_AUDIO, P_CONTROLS, P_KEYS, P_STICKS, P_PAD, P_LANGUAGE, P_MODS, P_COUNT };
 enum Action { A_NONE, A_PAGE, A_BIND_KEY, A_BIND_PAD, A_RESET_KEYS, A_RESET_PAD, A_RESTART, A_QUIT, A_SIZE_LIST };
 
 struct Item {
@@ -269,6 +270,7 @@ void build_items(void) {
     v.push_back(button(P_MAIN, "Keyboard (sticks)", "Keys for the sticks and for walking.", "Open", A_PAGE, P_STICKS));
     v.push_back(button(P_MAIN, "Controller", "Which controller button does each button.", "Open", A_PAGE, P_PAD));
     v.push_back(button(P_MAIN, "Language", "Language of the texts and of the voices.", "Open", A_PAGE, P_LANGUAGE));
+    v.push_back(button(P_MAIN, "Mods", "Turn your mods on or off.", "Open", A_PAGE, P_MODS));
     v.push_back(button(P_MAIN, "Quit game", "To the desktop, or back to the Savage Wind start screen.", "Quit",
                        A_QUIT, 0));
 
@@ -664,6 +666,19 @@ void build_items(void) {
                        [](const Item &, int x) { g_settings.voice_language = x; }, 0));
     v.push_back(button(P_LANGUAGE, "Restart now",
                        "Starts the game again with these languages. Unsaved progress is lost.", "Restart", A_RESTART, 0));
+
+    // Mods (runtime/mods.c): the ones there were when the game started, a row each
+    for (int i = 0; i < mods_count(); i++) {
+        Item it = toggle(P_MODS, mods_title(i), "Turn this mod on or off. Applies after a restart.",
+                         [](const Item &o) { return (int)mods_on(o.arg); },
+                         [](const Item &o, int x) { mods_set(o.arg, x != 0); }, 1);
+        it.arg = i;
+        v.push_back(it);
+    }
+    if (!mods_count())
+        v.push_back(button(P_MODS, "No mods found", "Put your mods in the mods folder, in the game's folder.", "OK", A_NONE, 0));
+    v.push_back(button(P_MODS, "Restart now", "Starts the game again with these mods. Unsaved progress is lost.", "Restart",
+                       A_RESTART, 0));
 }
 
 // The game's table, extended (first opening, and again after a reboot reloads the game's own)
@@ -958,7 +973,7 @@ extern "C" int rt_opt_decide(uint64_t row) {
         mark_all_rows(rd64(row));
         return 2;
     case A_RESTART:
-        if (language_pending()) {
+        if (language_pending() || mods_pending()) {
             settings_save();
             rt_request_reboot(1);
         }

@@ -134,6 +134,8 @@ static void reboot_idle(void) {  // (main thread, while guest threads stop) keep
         if (e.type == SDL_EVENT_QUIT) { LOG("window closed\n"); exit(0); }
 }
 
+#include "mods.h"
+
 static void teardown(void) {
     uint64_t t0 = plat_now_ns();
     kernel_stop_threads(reboot_idle);
@@ -362,6 +364,7 @@ int main(int argc, char **argv) {
     if (launcher_config_key_held()) config = true;  // (the Mac's "Savage Wind Configuration": Option held)
 #endif
     rt_paths_init();  // the data root becomes the working directory (runtime/paths.h)
+    mods_scan();  // (the configuration screen lists them before anything boots)
     if (dump) return dump_romfs(root, dump);
     if (scan) return scan_shaders(root);
 #ifndef __APPLE__
@@ -387,6 +390,8 @@ int main(int argc, char **argv) {
         // the game; it is let go before the start screen of a reboot, which is this same process.
         ScLock *save_lock = NULL;
         const char *save_env = getenv("SAVAGEWIND_SAVE_DIR");
+        mods_sync();  // (and again on a reboot: Settings can turn mods on and off)
+        mods_scan();
         if (sc_lock_take(save_env && *save_env ? save_env : "save", &save_lock) == SC_LOCK_BUSY)
             fprintf(stderr, "[saves] another Savage Wind is running with this save folder; saving from both can overwrite saves\n");
         boot(root);

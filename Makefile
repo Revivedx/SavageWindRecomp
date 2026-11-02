@@ -350,6 +350,7 @@ dist:
 	tools/zig_slim.sh $(strip $(filter-out -Iruntime,$(GENFLAGS))) \
 	    $(if $(GENFLAGS_COMPAT),-- $(strip $(filter-out -Iruntime,$(GENFLAGS_COMPAT))))  # (zig, its runtime built ahead of time)
 	cp -R build/helper/swgen "$(DIST)/"
+	$(if $(wildcard build/helper/swmods),cp -R build/helper/swmods "$(DIST)/")
 	cp -R build/zig-slim "$(DIST)/zig"
 	cp runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/simd_softfma.h runtime/gamelib.h tools/gamelib_entry.c \
 	    runtime/hle/hle_symbols.txt "$(DIST)/gamelib-src/"
@@ -381,9 +382,11 @@ dist:
 ifeq ($(PLATFORM),macos)
 GEN_PY    ?= $(firstword $(wildcard build/deps/python/bin/python3.12) python3.12)
 GEN_VPY   := build/gen-venv/bin/python
+MODS_VPY  := build/mods-venv/bin/python
 else
 GEN_PY    ?= py -3.12
 GEN_VPY   := build/gen-venv/Scripts/python.exe
+MODS_VPY  := build/mods-venv/Scripts/python.exe
 endif
 
 gen-helper: build/gen-venv/.ok
@@ -392,6 +395,19 @@ gen-helper: build/gen-venv/.ok
 	    tools/swgen.spec
 	$(if $(filter windows,$(PLATFORM)),$(GEN_VPY) tools/pe_no_cfg.py build/helper/swgen/swgen.exe)
 	@du -sh build/helper/swgen
+
+# The mods helper, so players need no Python either: build/helper/swmods/ (tools/mods.py and BCML, runtime/mods.c)
+mods-helper: build/mods-venv/.ok
+	$(if $(filter windows,$(PLATFORM)),USERPROFILE="$$(cygpath -w ~ 2>/dev/null || echo $$HOME)") \
+	$(MODS_VPY) -m PyInstaller --noconfirm --clean --log-level WARN --distpath build/helper --workpath build/pyinstaller \
+	    tools/swmods.spec
+	@du -sh build/helper/swmods
+
+build/mods-venv/.ok: tools/mods_requirements.txt
+	$(GEN_PY) -m venv build/mods-venv
+	$(MODS_VPY) -m pip install -q --only-binary=:all: --no-deps -r tools/mods_requirements.txt
+	$(MODS_VPY) -m pip install -q pyinstaller==6.22.3
+	touch $@
 
 build/gen-venv/.ok:
 	$(GEN_PY) -m venv build/gen-venv
@@ -407,7 +423,7 @@ appimages:
 	tools/linux/appimage.sh x86_64
 	tools/linux/appimage.sh aarch64
 
-.PHONY: dmg all gen gen-helper gen-objs runtime-objs deps deps-windows app dist appimage appimages
+.PHONY: dmg all gen gen-helper mods-helper gen-objs runtime-objs deps deps-windows app dist appimage appimages
 
 build/test_shaders: tools/test_shaders.m runtime/nvn/maxwell/translate.c runtime/nvn/maxwell/shader.h
 	clang -O1 -fobjc-arc -framework Metal -framework Foundation -o $@ tools/test_shaders.m runtime/nvn/maxwell/translate.c
@@ -431,6 +447,10 @@ $(B)/test_pc_controls: tests/test_pc_controls.c runtime/hle/input.c runtime/hle/
 $(B)/test_pc_settings: tests/test_pc_settings.c runtime/settings.c runtime/settings.h runtime/hle/bindings.c
 	@mkdir -p $(dir $@)
 	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< -lSDL3 -lm
+
+$(B)/test_mods_switch: tests/test_mods_switch.c runtime/mods.c runtime/mods.h
+	@mkdir -p $(dir $@)
+	$(CC) -O1 -Iruntime -o $@ $<
 
 $(B)/test_options_pointer: tests/test_options_pointer.c runtime/pc_cursor.c runtime/pc_cursor.h runtime/pc_cursor_math.h
 	@mkdir -p $(dir $@)
