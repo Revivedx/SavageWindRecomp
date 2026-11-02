@@ -767,6 +767,21 @@ static void tab_display(void) {
                        "conversations keep theirs.", false))
             g_settings.fov = fov[cur];
     }
+    {   // HUD size (runtime/nvn/hud_scale.h)
+        static const int sizes[] = HUD_SIZE_CHOICES;
+        enum { NV = sizeof sizes / sizeof sizes[0] };
+        static char names_buf[NV][16];
+        const char *names[NV];
+        int cur = NV - 1;
+        for (int i = 0; i < NV; i++) {
+            snprintf(names_buf[i], sizeof names_buf[i], "%d%%", sizes[i]);
+            names[i] = names_buf[i];
+            if (sizes[i] == g_settings.hud_size) cur = i;
+        }
+        if (opt_choice("HUD size", &cur, names, NV, NV - 1,
+                       "How big the hearts, stamina, minimap and the rest of the HUD are. Each part stays in its corner.", false))
+            g_settings.hud_size = sizes[cur];
+    }
     {   // Draw distance (runtime/draw_distance.c)
         static const char *const names[DRAWDIST_COUNT] = {"Original", "Medium", "High"};  // (DRAWDIST_*)
         int cur = g_settings.draw_distance;

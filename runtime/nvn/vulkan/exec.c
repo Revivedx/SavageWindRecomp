@@ -28,6 +28,7 @@
 #include "../../framepace.h"
 #include "../../services/fs_layout.h"
 #include "../../perfcount.h"
+#include "../hud_scale.h"
 
 static uint64_t stat_build_waits;  // draws that waited for their pipeline (draw_must_happen)
 static uint64_t stat_links_now;    // pipelines linked on the render thread within the frame's budget (link_now)
@@ -1071,6 +1072,27 @@ void renderer_save_texture_tex(TexBackend *b, const char *path);
 static float pass_sx = 1, pass_sy = 1;
 static bool pass_out;  // the pass draws into the game's final image (RS_OUT: the HUD and menus draw there)
 static bool hud_clip;  // the draw in progress is a 16:9 layout's pane wholly off a 16:9 screen: not drawn (hud_patch)
+// Video > HUD size this frame, 1: none. Only the HUD in play: not in menus, the title, a load or an event (a talk's text).
+#define HUD_QUICK_HOLD_NS 500000000ull  // (a quick menu's bar fades out after the pause state ends)
+static bool hud_quick;  // a quick menu's bar may be on screen: it keeps the game's size (hud_quick_keeps)
+static float hud_scale_now(void) {
+    extern bool framepace_menu_ui(void), framepace_title_ui(void), framepace_loading_ui(void), framepace_in_event(void);
+    extern bool framepace_quick_ui(void);
+    static uint64_t frame = ~0ull;
+    static float s = 1;
+    uint64_t now = renderer_present_count();
+    if (now != frame) {
+        frame = now;
+        // (not the quick menus, pause state 4: the game keeps the HUD up around them)
+        static uint64_t quick_ns;
+        uint64_t ns = plat_now_ns();
+        if (g_settings.hud_size < 100 && framepace_quick_ui()) quick_ns = ns;
+        hud_quick = quick_ns && ns - quick_ns < HUD_QUICK_HOLD_NS;
+        s = g_settings.hud_size >= 100 || framepace_menu_ui() || framepace_title_ui() || framepace_loading_ui() ||
+            framepace_in_event() ? 1 : (float)g_settings.hud_size / 100;
+    }
+    return s;
+}
 static float vp_sx = 1, vp_sy = 1, vp_ox = 0, vp_oy = 0;
 static float tex_sc[2][64][2];
 static uint32_t tex_wh[2][64][2];
@@ -1995,6 +2017,18 @@ static VkRect2D scissor_rect(void) {
         if (y > 0 || y + sh < gh - 0.5) {
             double c = gh / 2, y0 = c + (y - c) * shape, y1 = c + (y + sh - c) * shape;
             y = (int)floor(y0); sh = (int)ceil(y1) - y;
+        }
+    }
+    float hud_s = pass_out && sw < 16384 && sh < 16384 && pass_sx > 0 && pass_sy > 0 ? hud_scale_now() : 1;
+    if (hud_s < 1) {  // (the minimap's mask goes with the minimap: a scissor over about the whole image is left alone)
+        double gw = w / pass_sx, gh = h / pass_sy;
+        float mx = (float)((x + sw / 2.0) / gw * 2 - 1), my = (float)((y + sh / 2.0) / gh * 2 - 1);
+        if (sw < gw * 0.9 && sh < gh * 0.9 && !(hud_quick && fabsf(mx) < 0.6f && fabsf(my) < 0.6f)) {
+            double px = x, py = y, pw = sw, ph = sh;
+            hud_scale_span(&px, &pw, gw / 2, gw / 2 / fmax(shape, 1), hud_s);
+            hud_scale_span(&py, &ph, gh / 2, gh / 2 * fmin(shape, 1), hud_s);
+            x = (int)floor(px), y = (int)floor(py);
+            sw = (int)ceil(px + pw) - x, sh = (int)ceil(py + ph) - y;
         }
     }
     if (vp_sx != 1 || vp_sy != 1 || vp_ox != 0 || vp_oy != 0) {
@@ -4073,7 +4107,7 @@ static bool up_patch_frag(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *
 // In a copy of the buffer, as rt_persp makes them: m00 / shape on a wider window, m11 x shape on a narrower one.
 // - a pane wholly past the edges (a layout's parts kept off screen: a pane with a texture nothing draws into, at the
 //   inventory's description box) is not drawn (hud_clip, scissor_rect), as it is never seen on the console.
-// SAVAGEWIND_NO_HUD_FIX=1: off.
+// SAVAGEWIND_NO_HUD_FIX=1: off (Video > HUD size, hud_scale.h, stays).
 static bool hud_frame_end(const float *g, const float *mv, const float *rc, float m00, float shape) {
     if (!framepace_menu_ui() || mv[8] || mv[9] || mv[11] >= 0) return false;
     // ui2d's window block has four border margins at c3[26] and its parent window size at c3[27].
@@ -4105,20 +4139,26 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
     static int off = -1;
     if (off < 0) off = getenv("SAVAGEWIND_NO_HUD_FIX") != NULL;
     extern float output_view_shape(void);
-    float shape = output_view_shape();
-    if (off || shape == 1 || size < 64 || !st.rt.ncolor || !st.rt.color[0]) return false;
+    float shape = off ? 1 : output_view_shape();
+    if (size < 64 || !st.rt.ncolor || !st.rt.color[0]) return false;
     TexBackend *tb = (TexBackend *)st.rt.color[0]->backend;
     if (!tb || tb->rs_group != RS_OUT) return false;
+    float hud_s = hud_scale_now();
+    if (shape == 1 && hud_s == 1) return false;
+    float edge_x = 1 / fmaxf(shape, 1), edge_y = fminf(shape, 1);  // (where the 16:9 HUD ends on this window)
     const float *g = (const float *)(uintptr_t)addr;
     // ui2d text combines the projection and each label's position into this smaller, Y-flipped matrix.
     // A cached 16:9 projection can survive a live resize; scale the whole X row so glyph widths and
     // positions follow the widened HUD together.
-    if (shape > 1 && size == 128 && g[0] > 0 && g[5] < 0 && g[14] == -1 && g[15] > 0 &&
+    if (shape >= 1 && size == 128 && g[0] > 0 && g[5] < 0 && g[14] == -1 && g[15] > 0 &&
         !g[1] && !g[2] && !g[4] && !g[6] && !g[8] && !g[9] && !g[12] && !g[13] &&
         fabsf(-g[5] / g[0] - 16.0f / 9.0f) < 0.002f) {
         float text_matrix[32];
         memcpy(text_matrix, g, sizeof text_matrix);
         for (int k = 0; k < 4; k++) text_matrix[k] /= shape;
+        float tx = text_matrix[3] / text_matrix[15], ty = text_matrix[7] / text_matrix[15];
+        if (hud_s < 1 && !(hud_quick && hud_quick_keeps(tx, ty, edge_x, edge_y)))
+            hud_scale_matrix(text_matrix, hud_s, hud_anchor(tx, edge_x), hud_anchor(ty, edge_y));
         *out = ubo_span(vk_transient_copy(text_matrix, sizeof text_matrix, 256), sizeof text_matrix);
         return true;
     }
@@ -4132,6 +4172,9 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         memcpy(buf, g, n);
         if (shape > 1) buf[0] /= shape, buf[3] /= shape;
         else buf[5] *= shape, buf[7] *= shape;
+        float tx = buf[3] / buf[15], ty = buf[7] / buf[15];
+        if (hud_s < 1 && !(hud_quick && hud_quick_keeps(tx, ty, edge_x, edge_y)))
+            hud_scale_matrix(buf, hud_s, hud_anchor(tx, edge_x), hud_anchor(ty, edge_y));
         *out = ubo_span(vk_transient_copy(buf, n, 256), n);
         return true;
     }
@@ -4175,11 +4218,31 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
             if (lo < 1e8f && (hi <= -edge || lo >= edge)) hud_clip = true;  // (wholly off a 16:9 screen)
         }
     }
-    if (m00 == g[0] && m11 == g[5]) return false;
+    // Video > HUD size: a pane of a 40-degree layer, and not one over about the whole screen (a fade, a picture)
+    float hud_ax = 0, hud_ay = 0;
+    bool hud_scale = false;
+    if (hud_s < 1 && size >= 28 * 4 && fabsf((tall ? m11 / shape : m11) - 2.74748f) < 0.001f) {
+        const float *mv = g + 16, *rc = g + 33 * 4;
+        bool has_rect = size >= 34 * 16 && rc[0] > 0 && rc[1] > 0;
+        float x0 = 1e9f, x1 = -1e9f, y0 = 1e9f, y1 = -1e9f;
+        hud_scale = true;
+        for (int k = 0; k < 4; k++) {
+            float x = has_rect ? (k & 1) * rc[0] + rc[2] : 0, y = has_rect ? rc[3] - (k >> 1) * rc[1] : 0;
+            float w = -(mv[8] * x + mv[9] * y + mv[11]);
+            if (w <= 0) { hud_scale = false; break; }
+            float nx = m00 * (mv[0] * x + mv[1] * y + mv[3]) / w, ny = m11 * (mv[4] * x + mv[5] * y + mv[7]) / w;
+            x0 = fminf(x0, nx), x1 = fmaxf(x1, nx), y0 = fminf(y0, ny), y1 = fmaxf(y1, ny);
+        }
+        if (x1 - x0 >= 1.8f * edge_x || y1 - y0 >= 1.8f * edge_y) hud_scale = false;
+        if (hud_quick && hud_quick_keeps((x0 + x1) / 2, (y0 + y1) / 2, edge_x, edge_y)) hud_scale = false;
+        hud_ax = hud_anchor((x0 + x1) / 2, edge_x), hud_ay = hud_anchor((y0 + y1) / 2, edge_y);
+    }
+    if (m00 == g[0] && m11 == g[5] && !hud_scale) return false;
     static float buf[0x10000 / 4];
     uint64_t n = size > sizeof buf ? sizeof buf : size;
     memcpy(buf, g, n);
     buf[0] = m00, buf[5] = m11;
+    if (hud_scale) hud_scale_view(buf + 16, hud_s, m00, m11, hud_ax, hud_ay);
     *out = ubo_span(vk_transient_copy(buf, n, 256), n);
     return true;
 }

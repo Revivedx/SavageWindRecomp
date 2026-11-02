@@ -40,6 +40,7 @@ Settings g_settings = {
     .vsync = VSYNC_DEFAULT,
     .wide_view = true,
     .fov = 100,
+    .hud_size = 100,
     .color_lut_strength = 100,
 };
 
@@ -183,6 +184,7 @@ void settings_load(void) {
             g_settings.hdr_white = n >= 80 && n <= 1000 ? n : 0;
         }
         else if (!strcmp(key, "field_of_view")) g_settings.fov = atoi(val);  // (percent)
+        else if (!strcmp(key, "hud_size")) g_settings.hud_size = atoi(val);  // (percent)
         else if (!strcmp(key, "draw_distance")) {
             for (int i = 0; i < DRAWDIST_COUNT; i++)
                 if (!strcmp(val, k_drawdist[i])) g_settings.draw_distance = i;
@@ -252,6 +254,7 @@ void settings_load(void) {
     if (!(g_settings.mouse_sens_y >= 0.5f && g_settings.mouse_sens_y <= 2.0f)) g_settings.mouse_sens_y = 1.0f;
     if (!(g_settings.motion_sens >= 0.1f && g_settings.motion_sens <= 10.0f)) g_settings.motion_sens = 1.0f;
     if (g_settings.fov < 50 || g_settings.fov > 200) g_settings.fov = 100;
+    if (g_settings.hud_size < 50 || g_settings.hud_size > 100) g_settings.hud_size = 100;
 #define CLAMP(v, lo, hi) ((v) < (lo) ? (lo) : (v) > (hi) ? (hi) : (v))
     g_settings.color_exposure = CLAMP(g_settings.color_exposure, -20, 20);
     g_settings.color_contrast = CLAMP(g_settings.color_contrast, -50, 50);
@@ -326,6 +329,7 @@ void settings_save(void) {
     fprintf(f, "hdr = %s\n", k_hdr[g_settings.hdr >= 0 && g_settings.hdr < HDR_COUNT ? g_settings.hdr : HDR_AUTO]);
     if (g_settings.hdr_white) fprintf(f, "hdr_paper_white = %d\n", g_settings.hdr_white);
     fprintf(f, "field_of_view = %d\n", g_settings.fov);
+    fprintf(f, "hud_size = %d\n", g_settings.hud_size);
     int dd = g_settings.draw_distance;
     fprintf(f, "draw_distance = %s\n", k_drawdist[dd >= 0 && dd < DRAWDIST_COUNT ? dd : DRAWDIST_ORIGINAL]);
     fprintf(f, "colour_exposure = %.1f\n", g_settings.color_exposure / 10.0);
