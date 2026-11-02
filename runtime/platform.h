@@ -33,6 +33,9 @@ int plat_protect(uint64_t addr, uint64_t size, int prot);  // 0 on success
 // resets: their addresses into pages (ascending, at most max). -1: not known here (only Windows tracks them: the
 // window is reserved with MEM_WRITE_WATCH), or more than max were written (then any page may have been).
 long plat_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, size_t max);
+// Whether any 4K page of [addr, addr + size) was written since plat_written_pages last reset it (1 / 0), without
+// resetting anything. -1: not known here.
+int plat_any_written(uint64_t addr, uint64_t size);
 
 // ---- time
 uint64_t plat_now_ns(void);                // monotonic

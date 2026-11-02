@@ -17,7 +17,9 @@
 #include "../../settings.h"
 #include "../../ui/menu.h"
 #include "../../window_size.h"
+#include "mvec.h"
 #include "vk.h"
+#include "vram.h"
 #include "record.h"
 #include "../output_scale.h"
 #include "../renderer.h"
@@ -83,7 +85,7 @@ static void create_instance(void) {
     if (ar) sscanf(ar, "%llx-%llx", (unsigned long long *)&g_addr_report_lo, (unsigned long long *)&g_addr_report_hi);
     if (validate || ar) ext[n_ext++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
     const char *layers[] = {"VK_LAYER_KHRONOS_validation"};
-    // The release as the application's and engine's version ("0.3.1-alpha.3": 0.3.103): drivers keep their shader
+    // The release as the application's and engine's version ("0.4.1-alpha.4": 0.4.104): drivers keep their shader
     // caches per application, and with one version for every release AMD's Windows driver reused what it had cached
     // for Alpha 2 in Alpha 3, built for another setup - a black window until the player reset that cache (#85)
     extern const char *rt_version(void);  // runtime/ui/launcher.mm
@@ -181,7 +183,23 @@ static void pick_device(void) {
 #endif
     g_vk.lean_usage = lean && *lean ? atoi(lean) != 0 : lean_default;
     LOG("[vk] view format lists %s\n", g_vk.lean_usage ? "on" : "off");
-    { extern void perfmon_set_gpu_hint(const char *n); perfmon_set_gpu_hint(g_vk.props.deviceName); }
+    perfmon_set_gpu_hint(g_vk.props.deviceName);
+#ifdef __linux__
+    // DRM numbering is independent of Vulkan's enumeration: card0 can be the iGPU while the dGPU renders.
+    uint32_t ne = 0;
+    if (vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL) == VK_SUCCESS && ne) {
+        VkExtensionProperties *ep = calloc(ne, sizeof *ep);
+        if (ep && vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep) == VK_SUCCESS &&
+            has_ext(ep, ne, VK_EXT_PHYSICAL_DEVICE_DRM_EXTENSION_NAME)) {
+            VkPhysicalDeviceDrmPropertiesEXT drm = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT};
+            VkPhysicalDeviceProperties2 props = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &drm};
+            vkGetPhysicalDeviceProperties2(g_vk.phys, &props);
+            if (drm.hasRender) perfmon_set_gpu_drm((int)drm.renderMajor, (int)drm.renderMinor);
+            else if (drm.hasPrimary) perfmon_set_gpu_drm((int)drm.primaryMajor, (int)drm.primaryMinor);
+        }
+        free(ep);
+    }
+#endif
 }
 
 // Video > Upscaler: NVIDIA DLSS needs an NVIDIA RTX GPU (tensor cores: GeForce / Quadro RTX, the RTX A / Ada
@@ -194,7 +212,10 @@ static bool g_fault_ext;
 // After VK_ERROR_DEVICE_LOST: what the driver says faulted (VK_EXT_device_fault), into the log.
 void vk_device_fault_report(void) {
     static int once;
-    if (once++ || !g_fault_ext) return;
+    if (once++) return;
+    extern void vk_checkpoints_report(void);
+    vk_checkpoints_report();
+    if (!g_fault_ext) return;
     PFN_vkGetDeviceFaultInfoEXT get = (PFN_vkGetDeviceFaultInfoEXT)vkGetDeviceProcAddr(g_vk.dev, "vkGetDeviceFaultInfoEXT");
     if (!get) return;
     VkDeviceFaultCountsEXT c = {.sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT};
@@ -246,6 +267,12 @@ static void create_device(void) {
     bool addr_report = g_addr_report_hi && has_ext(ep, ne, VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME);
     if (addr_report) ext[n_ext++] = VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME;
     if (g_addr_report_hi) LOG("[vk] address binding report %s\n", addr_report ? "on" : "not supported");
+    const char *ck = getenv("SAVAGEWIND_VK_CHECKPOINTS");  // (=0: none)
+    g_vk.nv_checkpoints = has_ext(ep, ne, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME) && !(ck && !strcmp(ck, "0"));
+    if (g_vk.nv_checkpoints) {
+        ext[n_ext++] = VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME;
+        LOG("[vk] GPU checkpoints on (a device loss logs the pass the GPU was in; SAVAGEWIND_VK_CHECKPOINTS=0: off)\n");
+    }
     g_vk.custom_border = has_ext(ep, ne, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
     if (g_vk.custom_border) ext[n_ext++] = VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME;
     g_vk.calibrated = has_ext(ep, ne, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
@@ -254,6 +281,8 @@ static void create_device(void) {
     if (g_vk.divisor) ext[n_ext++] = VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME;
     g_vk.host_import = has_ext(ep, ne, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);  // guest heap as a GPU buffer (exec.c)
     if (g_vk.host_import) ext[n_ext++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
+    bool mem_budget = has_ext(ep, ne, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);  // what the OS grants (vram.c, exec.c's heap copy)
+    if (mem_budget) ext[n_ext++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
 #ifdef __linux__
     // the guest heap as GPU memory mapped at the heap's addresses (exec.c backend_heap_set)
     g_vk.dmabuf = has_ext(ep, ne, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME) && has_ext(ep, ne, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
@@ -503,16 +532,15 @@ static void create_device(void) {
     }
     g_vk.present_wait = pwait;
     float prio[2] = {1.0f, 1.0f};
-    // Two queues when the family has them: the second one presents (present thread below). NVIDIA's GPUs before
-    // Turing (PCI device ids below 0x1E00: the GTX 10 series and older) faulted writing to GPU address 0 within the
-    // first frames whenever the second queue presented, and ran with the presents on the game's queue (#36: a GTX 1050,
-    // a GTX 1050 Ti, a GTX 1050 Mobile, a Quadro P1000). Those get one queue. SAVAGEWIND_VK_PRESENT_THREAD=0: one queue
-    // on every GPU; any other value: two there too (testing).
+    // One queue: frames are presented on the game's own. A second one that presented (present thread below) went
+    // wrong with others' code on it: NVIDIA's GPUs before Turing faulted writing to GPU address 0 within the first
+    // frames (#36: GTX 1050 / 1050 Ti / 1050 Mobile, Quadro P1000), and OBS's Game Capture, which copies the image
+    // inside its vkQueuePresentKHR on that queue without waiting for the game's, showed black or broken frames (#293).
+    // Since driver calls went to a thread of their own (record.c) presenting there costs nothing: RTX 3060, visible,
+    // fullscreen and windowed, at 120 fps with VSync and unlimited, the same or 1-3 fps more than with the second
+    // queue. SAVAGEWIND_VK_PRESENT_THREAD=1: two queues and the present thread, as before (testing).
     const char *pt_env = getenv("SAVAGEWIND_VK_PRESENT_THREAD");
-    bool nv_pre_turing = g_vk.props.vendorID == 0x10DE && g_vk.props.deviceID < 0x1E00;
-    bool two_q = g_vk.qfam_count >= 2 && (pt_env ? strcmp(pt_env, "0") != 0 : !nv_pre_turing);
-    if (nv_pre_turing && !pt_env && g_vk.qfam_count >= 2)
-        LOG("[vk] NVIDIA before Turing (device 0x%04x): presents on the game's queue (#36)\n", g_vk.props.deviceID);
+    bool two_q = g_vk.qfam_count >= 2 && pt_env && strcmp(pt_env, "0") != 0;
     VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_vk.qfam,
                                   .queueCount = two_q ? 2 : 1, .pQueuePriorities = prio};
     VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f, .queueCreateInfoCount = 1,
@@ -524,7 +552,10 @@ static void create_device(void) {
 
     VmaAllocatorCreateInfo ai = {.physicalDevice = g_vk.phys, .device = g_vk.dev, .instance = g_vk.inst,
                                  .vulkanApiVersion = VK_API_VERSION_1_3};
+    VmaVulkanFunctions vfn;
+    vram_allocator_setup(&ai, &vfn, mem_budget);
     VK_CHECK(vmaCreateAllocator(&ai, &g_vk.vma));
+    vram_start();
 
     VkSemaphoreTypeCreateInfo st = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
                                     .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE, .initialValue = 0};
@@ -1240,8 +1271,8 @@ static void recreate_swapchain(void) {
 // next frame is drawn); vkQueuePresentKHR and vkAcquireNextImageKHR take sc_lock (the swapchain is externally
 // synchronized). The next frame begins once only a game frame after a generated one is still waiting (vk_frame_begin:
 // one frame at a time otherwise, as before); a swapchain change and teardown wait for them all.
-// SAVAGEWIND_VK_PRESENT_THREAD=0, NVIDIA before Turing (create_device, #36) or a family with one queue: presents on
-// the calling thread, as before.
+// Only with SAVAGEWIND_VK_PRESENT_THREAD=1 now (create_device: one queue by default, #36, #293); otherwise presents on
+// the calling thread.
 static pthread_mutex_t pres_m = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t pres_cv = PTHREAD_COND_INITIALIZER;
 static pthread_mutex_t sc_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -1286,6 +1317,16 @@ static void *present_thread(void *arg) {
         pthread_mutex_unlock(&pres_m);
         rec_wait_submitted(q.seq);  // (its semaphore's signal must be submitted first: record.c may not have yet)
         present_wait_turn(q.kind, q.seq);
+        // Handed over once drawn: capture and overlay layers copy the image inside their vkQueuePresentKHR, on this
+        // second queue, without waiting for the first one (#293: OBS's Game Capture showed black or broken frames).
+        // NVIDIA's windowed present waited for the GPU anyway. SAVAGEWIND_VK_PRESENT_DRAWN=0: not waited for here.
+        static int drawn = -1;
+        if (drawn < 0) drawn = !getenv("SAVAGEWIND_VK_PRESENT_DRAWN") || atoi(getenv("SAVAGEWIND_VK_PRESENT_DRAWN"));
+        if (drawn && q.kind == PRES_PLAIN) {  // (the frame generation pair: present_wait_turn waited)
+            VkSemaphoreWaitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1,
+                                      .pSemaphores = &g_vk.timeline, .pValues = &q.seq};
+            vkWaitSemaphores(g_vk.dev, &wi, 1000000000ull);  // (a second at most)
+        }
         VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &q.sem,
                                .swapchainCount = 1, .pSwapchains = &q.sc, .pImageIndices = &q.img};
         pthread_mutex_lock(&sc_lock);
@@ -1688,9 +1729,28 @@ static bool fg_wanted(void) {
     return !framepace_title_ui() && !framepace_menu_ui() && !framepace_paused() && !menu_is_open();
 }
 
+// The image being presented, for the control endpoint's `shot` (runtime/control_game.c; commands run in this frame).
+static TexBackend *ctl_present_tex;
+bool control_shot_now(const char *path) {
+    if (!ctl_present_tex) return false;
+    renderer_save_texture_tex(ctl_present_tex, path);
+    return true;
+}
+
+// The world camera's view matrix (3x4, row-major, as the shaders read it) of the last finished frame, for the control
+// endpoint's `camera` (runtime/control_game.c). false: none (motion recording is off, or no scene was drawn).
+bool control_camera_view(float view[12]) {
+    if (!mvec_enabled()) return false;  // switching TAA off leaves the old camera cached; it no longer follows the game
+    const MvecCamera *c = mvec_camera(true);
+    if (!c) return false;
+    memcpy(view, c->view, 12 * sizeof(float));
+    return true;
+}
+
 static void present_locked(NvnTexture *t) {
     g_last_presented = t;
     TexBackend *b = vk_tex(t, true);
+    ctl_present_tex = b;
     b->presented = true;
     uint64_t t0 = SDL_GetTicksNS();
     { SW_ZONE("present/end_pass"); vk_end_pass(); }
@@ -1830,6 +1890,8 @@ presented:
     reboot_test_frame(total_frames);
     extern void test_warp_frame(uint64_t frame);  // runtime/services/test_warp.c (SAVAGEWIND_TEST_TIME)
     test_warp_frame(total_frames);
+    extern void control_frame(uint64_t frame);  // runtime/control.c (SAVAGEWIND_CONTROL)
+    control_frame(total_frames);
     static long shot_every = -1;
     if (shot_every < 0) { const char *e = getenv("SAVAGEWIND_SCREENSHOT_EVERY"); shot_every = e ? atol(e) : 0; }
     extern bool g_debug_frame;

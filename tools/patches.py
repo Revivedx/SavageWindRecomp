@@ -235,6 +235,29 @@ def _arrow_gravity(gen, a):
             f'  /* {a:#x}: ldr s1, [x20, #0x108] (arrow gravity) */')
 
 
+# Experimental shield-surf takeoff grace (#305), runtime/hle/framepace.c. Preserve the original FP subtraction
+# through fp_op_s when the grace is inactive, including the game's FP exception/rounding behavior.
+def _surf_contact(gen, a):
+    assert _word(gen, a) == 0x3941d2a8  # ldrb w8, [x21, #0x74]
+    return ('{ extern void rt_surf_contact(uint64_t, unsigned); '
+            'c->x[8] = LD8(c->x[21] + 0x74); rt_surf_contact(c->x[21], (unsigned)c->x[8]); }')
+
+
+def _surf_boost_remove(gen, a):
+    assert _word(gen, a) == 0x1e203820  # fsub s0, s1, s0
+    return ('{ extern int rt_surf_takeoff_pending(uint64_t); '
+            'if (rt_surf_takeoff_pending(c->x[21])) c->v[0] = (uint32_t)c->v[1]; '
+            'else fp_op_s(c, FOP_SUB, 0, 1, 0); }')
+
+
+def _surf_jump_request(gen, a):
+    w = _word(gen, a)
+    assert w & 0xfff8001f == 0x36000000  # tbz w0, #0, <no jump>
+    target = a + sext((w >> 5) & 0x3fff, 14) * 4
+    return ('{ extern int rt_surf_jump_request(uint64_t); '
+            f'if (!(c->x[0] & 1) || !rt_surf_jump_request(c->x[19])) goto L_{target:x}; }}')
+
+
 # The physics step's solver microsteps (runtime/hle/framepace.c rt_solver_steps, #161): before each Havok step the game
 # gives the solver round(delta frame x 6) microsteps (1.9.0 0x700156f930): 6 at 30 fps, 3 at 60, 2 at 120. With fewer
 # the solver gives way more to what is in contact with Link: holding a cucco, its body over his head held his jump
@@ -245,6 +268,21 @@ def _solver_steps(gen, a):
     return ('{ extern float rt_solver_steps(float, float); union { uint32_t u; float f; } d = { .u = (uint32_t)c->v[1] }, '
             'k = { .u = (uint32_t)c->v[2] }; k.f = rt_solver_steps(d.f, k.f); c->v[2] = k.u; }'
             f'  /* {a:#x}: fmul s2, s1, s2 (solver microsteps: delta frame x 6) */')
+
+
+# Keyframed bodies' turn (runtime/hle/framepace.c rt_kf_angle, #209): the platforms and parts the game moves (a Divine
+# Beast tilting, lifts, gates) get each physics step the angular velocity that takes them to their target, the angle
+# of the turn left over the step (1.9.0 0x70012d5598). That angle is 2 acos(|w|) of the turn's quaternion
+# (hkQuaternion::getAngle, 0x70000b06d4): below about a milliradian w rounds to 1 in a float, and a turn that small
+# reads as none. At 30 fps a tilting Vah Medoh turns its floor about 1.7 mrad a frame; at 120, 0.43: the floor stood
+# still for a few steps and then caught up at once (0.08 x sqrt(1, 2, 3, 4) rad/s for a steady 0.05), and Link on it
+# hopped. The runtime gives 2 atan2(|xyz|, |w|), the same angle without the rounding.
+
+def _kf_angle(gen, a):
+    assert _word(gen, a) >> 26 == 0x25, hex(_word(gen, a))  # bl (getAngle)
+    target = sext(_word(gen, a) & 0x3ffffff, 26) * 4 + a
+    return ('{ extern float rt_kf_angle(uint64_t); union { float f; uint32_t u; } r = { rt_kf_angle(c->x[0]) }; '
+            f'c->v[0] = r.u; }}  /* {a:#x}: bl {target:#x} (keyframed body: angle of the turn left) */')
 
 
 # The sound system's frame (runtime/hle/framepace.c rt_snd_frame_floor, #145): once a frame the game hands its sound
@@ -410,6 +448,26 @@ def _cam_reverse(axis):
     return patch
 
 
+def _pc_button_group(gen, a):
+    assert _word(gen, a) == _sub_sp(0x60), hex(_word(gen, a))
+    return ('{ extern void rt_pc_button_group(Cpu *); rt_pc_button_group(c); c->sp -= 0x60; }'
+            f' /* {a:#x}: native mouse pointer arguments */')
+
+def _pc_cursor_manager(gen, a):
+    assert _word(gen, a) == _sub_sp(0x50), hex(_word(gen, a))
+    return ('{ extern void rt_pc_cursor_manager(Cpu *, uint64_t, uint64_t); '
+            f'rt_pc_cursor_manager(c, {gen.sites["pc_cursor_activate"]:#x}ull, {gen.sites["pc_pane_bounds"]:#x}ull); '
+            'c->sp -= 0x50; }')
+
+def _pc_map_focus(position):
+    def patch(gen, a):
+        expected = _sub_sp(0x30) if position else 0xa9be7bfd
+        assert _word(gen, a) == expected, hex(_word(gen, a))
+        prologue = 'c->sp -= 0x30;' if position else 'c->sp -= 0x20; ST64(c->sp, c->x[29]); ST64(c->sp + 8, c->x[30]);'
+        return ('{ extern int rt_pc_map_focus(Cpu *, int); '
+                f'if (rt_pc_map_focus(c, {int(position)})) return; {prologue} }}')
+    return patch
+
 # Placed actors' traverse distance (1.9.0 0x70010a4640, 1.8.2 0x7000f908b0): how far from the camera an actor placed
 # on the map is created (trees and bushes 150 m, rocks and buildings 300-3000 m, the full model of a building with a
 # "_Far" version ~500 m, enemies 150 m). It is the actor's traverseDist (ActorInfo; 100 when unset) times a scale: the
@@ -557,7 +615,24 @@ def _yaz0_stream_ret(gen, a):
     return '{ extern void rt_yaz0_done(Cpu *); rt_yaz0_done(c); return; }' + f'  /* {a:#x}: ret (Yaz0 stream decoder) */'
 
 
+# A shrine apparatus (DungeonRotateGyro::calc_, 1.9.0): the call that fetches the mechanism's input, then a heartbeat
+# with the mechanism (x19) and what the call returned (x0), so runtime/pc_gyro_scene.c knows the player controls one.
+def _gyro_scene_actor(gen, a):
+    w = _word(gen, a)
+    assert w >> 26 == 0x25, hex(w)  # bl
+    t = a + sext(w & 0x3ffffff, 26) * 4
+    return (f'{{ extern void f_{t:x}(Cpu *); extern void rt_gyro_scene_actor(Cpu *, uint64_t, uint64_t); '
+            f'c->x[30] = {a + 4:#x}ull; f_{t:x}(c); rt_gyro_scene_actor(c, c->x[19], c->x[0]); }}'
+            f'  /* {a:#x}: bl (shrine apparatus input) */')
+
+
 PATCHES = {
+    'pc_map_focus': _pc_map_focus(False),
+    'pc_map_focus_target': _pc_map_focus(True),
+    'pc_map_focus_now': _pc_map_focus(True),
+    'pc_button_group': _pc_button_group,
+    'pc_cursor_manager': _pc_cursor_manager,
+    'gyro_scene_actor': _gyro_scene_actor,
     'pause_options_update': _pause_option_state,
     'opt_create_rows': _opt_rows,
     'opt_row_init_flag_type': _opt_flag_type,
@@ -580,7 +655,11 @@ PATCHES = {
     'gui_speed': _gui_speed,
     'quick_menu_capture_alpha': _quick_menu_capture_alpha,
     'arrow_fall_gravity': _arrow_gravity,
+    'surf_contact': _surf_contact,
+    'surf_boost_remove': _surf_boost_remove,
+    'surf_jump_request': _surf_jump_request,
     'phys_solver_steps': _solver_steps,
+    'kf_angle': _kf_angle,
     'snd_frame_floor': _snd_frame_floor,
     'persp_matrix': _persp_matrix,
     'persp_matrix_offset': _persp_matrix_offset,

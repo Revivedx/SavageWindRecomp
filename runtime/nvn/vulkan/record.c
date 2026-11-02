@@ -421,6 +421,23 @@ void rec_CmdWriteTimestamp2(VkCommandBuffer cb, VkPipelineStageFlags2 stage, VkQ
     CMD_QUEUE(CmdWriteTimestamp2, cb, stage, pool, query);
 }
 
+// (an extension's command: through its pointer, which the loader's own exports don't have)
+static void set_checkpoint(VkCommandBuffer cb, const void *marker) {
+    static PFN_vkCmdSetCheckpointNV set;
+    if (!set) set = (PFN_vkCmdSetCheckpointNV)vkGetDeviceProcAddr(g_vk.dev, "vkCmdSetCheckpointNV");
+    if (set) set(cb, marker);
+}
+CMD_ARGS(CmdSetCheckpointNV, const void *marker;)
+static void CmdSetCheckpointNV_run(const void *p) { const CmdSetCheckpointNVArgs *a = p; set_checkpoint(a->cb, a->marker); }
+void rec_CmdSetCheckpointNV(VkCommandBuffer cb, const void *marker) {
+    if (on <= 0) { set_checkpoint(cb, marker); return; }
+    ENQ_T0();
+    CmdSetCheckpointNVArgs *a_ = push(CmdSetCheckpointNV_run, sizeof *a_, 0);
+    *a_ = (CmdSetCheckpointNVArgs){cb, marker};
+    commit();
+    ENQ_END();
+}
+
 CMD_ARGS(CmdBeginQuery, VkQueryPool pool; uint32_t query; VkQueryControlFlags flags;)
 static void CmdBeginQuery_run(const void *p) { const CmdBeginQueryArgs *a = p; vkCmdBeginQuery(a->cb, a->pool, a->query, a->flags); }
 void rec_CmdBeginQuery(VkCommandBuffer cb, VkQueryPool pool, uint32_t query, VkQueryControlFlags flags) {

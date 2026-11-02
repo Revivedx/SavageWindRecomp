@@ -52,6 +52,7 @@ extern "C" {
 #include "romfs_build.h"
 #include "settings.h"
 #include "color_grade.h"
+#include "pc_cursor.h"
 #include "input_bind.h"
 #ifndef __APPLE__
 #include "nvn/precompile.h"
@@ -98,7 +99,7 @@ static void save_png(id<MTLTexture> tex, const char *path) {
 #endif
 
 // The version this build is (also names the release files; Makefile / tools/bundle_macos.sh / make_dmg.sh read it).
-#define SAVAGEWIND_VERSION "0.3.1-alpha.3"
+#define SAVAGEWIND_VERSION "0.4.1-alpha.4"
 extern "C" const char *rt_version(void) { return SAVAGEWIND_VERSION; }  // (the title screen's version line: fs.c)
 
 // ------------------------------------------------------------------ game files
@@ -190,6 +191,12 @@ static unsigned count_files(const std::string &dir, unsigned enough, unsigned n 
     return n;
 }
 
+// The cutscene videos: all 30 in Movie/. A RomFS without that folder (left out when it was extracted, or lost copying
+// it) passed the file count, 30 short of ~41,000, and the game crashed at the first pre-rendered cutscene, the Great
+// Plateau Tower's (#292): such files are incomplete, before the setup copies them and before a start plays them.
+static const unsigned MOVIE_FILES = 30;
+static bool movies_complete(const std::string &romfs) { return count_files(romfs + "/Movie", MOVIE_FILES) >= MOVIE_FILES; }
+
 // The RomFS of version v, update applied? "" = yes, else what was found, said to the player (in the menu language).
 // A common mistake used to pass this far and the game then failed with no explanation: the update's ExeFS with the
 // cartridge's RomFS, which says its own older version, or with the update's RomFS alone, which has far fewer files.
@@ -231,6 +238,7 @@ static std::string check_copied_files(const std::string &root) {
         return v ? NOT_SUPPORTED_YET : NOT_SUPPORTED;
     }
     if (!is_dir(root + "/romfs")) return "Game data missing";
+    if (!movies_complete(root + "/romfs")) return "Game files incomplete";
     return "";
 }
 
@@ -579,6 +587,11 @@ static void *extract_thread(void *) {
         const GameVersion *v = main_version(id);
         std::string found = check_romfs(romfs, *v);  // (the RomFS that goes with that ExeFS)
         if (!found.empty()) { set_romfs_failure(*v, found); goto done; }
+        if (!movies_complete(romfs)) {
+            fprintf(stderr, "[launcher] romfs: Movie/ has fewer than the game's %u videos\n", MOVIE_FILES);
+            set_failure(FAIL_MISSING);
+            goto done;
+        }
     }
     {
         // (the picked folder can't be Savage Wind's own copy: setting up again deletes that first)
@@ -721,8 +734,9 @@ static bool menu_tip(float s) {
         ImGui::PushTextWrapPos(0);
         ImGui::TextUnformatted(tr("Savage Wind's video, audio and controls settings are in the game's own Options."));
         ImGui::Spacing();
-        ImGui::TextUnformatted(tr("Open them from the title screen, or pause the game and choose System > Options. "
-                                  "Esc frees the mouse cursor."));
+        ImGui::TextUnformatted(tr(pc_cursor_enabled()
+            ? "Open them from the title screen, or pause the game and choose System > Options. Esc opens pause or goes back. F2 frees the mouse cursor."
+            : "Open them from the title screen, or pause the game and choose System > Options. Esc frees the mouse cursor."));
         ImGui::PopTextWrapPos();
         ImGui::Dummy(ImVec2(0, 14 * s));
         ImGui::SetCursorPosX((ImGui::GetWindowWidth() - 180 * s) * 0.5f);
