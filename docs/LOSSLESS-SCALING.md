@@ -10,7 +10,7 @@ This guide explains how to configure **Lossless Scaling** (Spatial Upscaling and
 
 | Setting | Recommended Value | Why |
 | :--- | :--- | :--- |
-| **VSync** | **Adaptive** (`vsync = adaptive`) when supported; otherwise try **Fast** (`vsync = fast`) | Check the swapchain log for the actual present mode. Adaptive falls back to FIFO when `FIFO_RELAXED` is unavailable on some drivers/surfaces (e.g. certain Intel displays); Fast can use Mailbox or Immediate instead. |
+| **VSync** | **Adaptive** (`vsync = adaptive`) | **Universal recommendation.** Disables VSync throttling when FPS dips below refresh rate (`FIFO_RELAXED`). On surfaces where `FIFO_RELAXED` is unsupported (e.g. some Intel displays), the engine automatically falls back to `Mailbox` or `Immediate` before `FIFO`, preventing the 25/30 FPS divisor lock. |
 | **Window Mode** | **Borderless Fullscreen** (for Native Res FG) or **Windowed** (for External Upscaling) | Required by screen capture APIs (WGC/DXGI). For spatial upscaling (LS1/FSR), run in **Windowed** mode at the lower resolution so the capture API captures the smaller buffer directly. Exclusive Fullscreen bypasses DWM and cannot be captured reliably. |
 | **Frame Rate** | **Uncapped** or **Target Refresh Rate** | Eliminates engine-side artificial frame caps while allowing smooth pacing. |
 | **Upscaler** | **Off** (or Native) | If upscaling through Lossless Scaling (LS1/FSR), leave internal upscalers off to save GPU cycles. |
@@ -61,7 +61,7 @@ Savage Wind exposes three primary Vulkan presentation modes:
 2. **Mailbox (`vsync = fast`):**  
    Triple-buffering with frame replacement. While ideal on some desktop configurations, on hybrid laptops (Optimus) or displays with fractional refresh rates (e.g. 75 Hz), missing a single VBLANK window can trigger driver-level throttling down to sub-multiples ($75 / 3 = 25\text{ FPS}$).
 3. **Adaptive / FIFO Relaxed (`vsync = adaptive`):**  
-   **The optimal mode.** If a frame renders in time, it waits for VBLANK (tear-free). If a frame is late (e.g. takes 20 ms / 50 FPS on a 75 Hz monitor), **it is presented immediately without stalling for the next refresh cycle.** This avoids the 25 FPS trap and ensures unthrottled GPU delivery.
+   **The optimal mode.** If a frame renders in time, it waits for VBLANK (tear-free). If a frame is late (e.g. takes 20 ms / 50 FPS on a 75 Hz monitor), **it is presented immediately without stalling for the next refresh cycle.** If the surface does not support `FIFO_RELAXED`, Savage Wind automatically falls back to `Mailbox` or `Immediate` before `FIFO`, avoiding the 25 FPS trap across all display configurations.
 
 ### Swapchain Buffer Headroom (5 Images)
 Savage Wind creates swapchains with `caps.minImageCount + 3` images (clamped to 8):

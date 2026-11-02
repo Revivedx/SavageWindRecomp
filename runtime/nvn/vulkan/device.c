@@ -883,11 +883,11 @@ static VkPresentModeKHR present_mode(char *have, size_t cap) {
         k += (size_t)snprintf(have + k, cap - k, "%s%s", i ? ", " : "", present_mode_name(m[i]));
     // (VkPresentModeKHR is an enum whose IMMEDIATE is 0: the terminator cannot be 0)
     static const VkPresentModeKHR NONE = (VkPresentModeKHR)-1;
-    static const VkPresentModeKHR pref[VSYNC_COUNT][3] = {
-        {VK_PRESENT_MODE_FIFO_KHR, NONE, NONE},                               // on
-        {VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR, NONE},   // fast: nothing queued behind vsync
-        {VK_PRESENT_MODE_FIFO_RELAXED_KHR, VK_PRESENT_MODE_FIFO_KHR, NONE},   // adaptive -> on
-        {VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_MAILBOX_KHR, NONE}};  // off -> fast
+    static const VkPresentModeKHR pref[VSYNC_COUNT][5] = {
+        {VK_PRESENT_MODE_FIFO_KHR, NONE, NONE, NONE, NONE},                               // on
+        {VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR, NONE, NONE, NONE},   // fast: nothing queued behind vsync
+        {VK_PRESENT_MODE_FIFO_RELAXED_KHR, VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_FIFO_KHR, NONE}, // adaptive -> mailbox -> immediate -> fifo
+        {VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_MAILBOX_KHR, NONE, NONE, NONE}};  // off -> fast
     const char *env = getenv("SAVAGEWIND_VK_PRESENT");
     VkPresentModeKHR forced = wanted_present_mode();
     const VkPresentModeKHR one_shot[2] = {forced, NONE};  // the env override is a single mode, FIFO behind it
