@@ -770,11 +770,12 @@ bool install(void) {
         g_entries.push_back(e);
     }
     for (auto &o : g_order) o.clear();
-    // the game's rows: camera and motion aiming ones on Controls; amiibo, the voice language (Language has the voices)
-    // and the VR goggles mode (no use on a PC screen) left out; the rest on Gameplay
+    // The virtual amiibo prototype exposes the original gameplay toggle only when opted in.
+    // Voice language lives on Language; the VR goggles mode has no use on a PC screen.
     for (uint32_t r = 0; r < rows; r++) {
         uint32_t e = ((const uint32_t *)(uintptr_t)order)[r];
-        if (e == GAME_AMIIBO || e == GAME_VOICE_BUTTON || e == GAME_VOICE_LEVEL || e == GAME_VR) continue;
+        if (e == GAME_AMIIBO && (!getenv("SAVAGEWIND_AMIIBO") || strcmp(getenv("SAVAGEWIND_AMIIBO"), "archer"))) continue;
+        if (e == GAME_VOICE_BUTTON || e == GAME_VOICE_LEVEL || e == GAME_VR) continue;
         bool camera = e == GAME_CAMERA_Y || e == GAME_CAMERA_X || e == GAME_GYRO || e == GAME_CAMERA_SENSITIVITY;
         g_order[camera ? P_CONTROLS : P_GAMEPLAY].push_back(e);
     }

@@ -68,26 +68,3 @@ SERVICE("aoc:u", aoc_u) {
     default: ok_logger(s, req, resp);
     }
 }
-
-// ------------------------------------------------------------------ nfp:user (amiibo: no NFC reader)
-// IUserManager hands out an IUser; the IUser reports no devices, so games see amiibo as unavailable instead of
-// crashing on a missing object (BOTW 1.8.2 calls nn::nfp::Initialize at start-up).
-static void nfp_user(Service *s, IpcReq *req, IpcResp *resp) {
-    (void)s;
-    switch (req->cmd) {
-    case 0: case 1: break;                                                // Initialize / Finalize
-    case 2: OUT(int32_t, 0) = 0; resp_size(resp, 4); break;               // ListDevices: none
-    case 17: case 18: case 23:                                            // Attach{Activate,Deactivate,Availability}Event
-        resp->copy_handles[resp->ncopy++] = new_event_handle();
-        break;
-    case 19: OUT(uint32_t, 0) = 1; resp_size(resp, 4); break;            // GetState: initialized
-    case 20: OUT(uint32_t, 0) = 0; resp_size(resp, 4); break;            // GetDeviceState: none
-    default: LOG("[nfp] IUser cmd %u (ok)\n", req->cmd); resp_size(resp, 0x10);
-    }
-}
-
-SERVICE("nfp:user", nfp_user_manager) {
-    (void)s;
-    if (req->cmd == 0) ipc_return_object(resp, service_new("IUser(nfp)", nfp_user, NULL));  // CreateUserInterface
-    else LOG("[nfp] IUserManager cmd %u (ok)\n", req->cmd);
-}
