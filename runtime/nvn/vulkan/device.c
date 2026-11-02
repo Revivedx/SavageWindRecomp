@@ -1056,7 +1056,10 @@ static void create_swapchain(void) {
     hdr_failed = hdr && !hdr_found;
     if (hdr && !hdr_found) LOG("[vk] HDR wanted, but this display offers no HDR10 swapchain format: SDR\n");
     if (hdr_found) draw.format = VK_FORMAT_B8G8R8A8_UNORM;
-    uint32_t count = caps.minImageCount + 2;  // (+1, and one for frame generation's queued pair: present_wait_room)
+    // Headroom for present pacing & external window capture (Lossless Scaling, OBS, DWM capture):
+    // minImageCount + 3 ensures at least 5 swapchain images when supported, so acquire_image never starves
+    // when DWM/WGC temporarily holds 1-2 frames during screen capture duplication.
+    uint32_t count = caps.minImageCount + 3;
     if (caps.maxImageCount && count > caps.maxImageCount) count = caps.maxImageCount;
     if (count > 8) count = 8;
     VkSwapchainKHR old = g_vk.swapchain;
@@ -1511,7 +1514,22 @@ bool vk_frame_begin(const float clear[4]) {
     static int trace = -1;
     if (trace < 0) trace = getenv("SAVAGEWIND_VK_TRACE") != NULL;
     if (trace) LOG("[vk] frame begin %dx%d (swapchain %ux%u)\n", w, h, g_vk.sc_extent.width, g_vk.sc_extent.height);
-    slot = (slot + 1) % FRAMES;
+    static int max_flight = -1;
+    if (max_flight < 0) {
+        const char *e = getenv("SAVAGEWIND_MAX_FRAMES_IN_FLIGHT");
+        if (e && *e) {
+            max_flight = atoi(e);
+        } else {
+            uint64_t vram_bytes = 0;
+            vram_device_local(NULL, NULL, &vram_bytes);
+            // On cards with 2 GB or less dedicated VRAM, default to 2 frames in flight to prevent queue congestion and PCIe stalls;
+            // On cards with > 2 GB, retain the original author default (FRAMES = 3).
+            max_flight = (vram_bytes > 0 && vram_bytes <= (2048ull << 20)) ? 2 : FRAMES;
+        }
+        if (max_flight < 1) max_flight = 1;
+        if (max_flight > FRAMES) max_flight = FRAMES;
+    }
+    slot = (slot + 1) % max_flight;
     if (!acquire_sem[slot]) acquire_sem[slot] = binary_semaphore();
     uint64_t tw = SDL_GetTicksNS();
     vk_wait_seq(slot_seq[slot]);
@@ -2040,9 +2058,18 @@ presented:
     if (prev_present > 0 && now - prev_present > max_gap) max_gap = now - prev_present;
     prev_present = now;
     if (now - last_fps_time >= fps_iv) {
-        if (last_fps_time > 0)
-            LOG("[vk] t=%.1f frame %llu %.1f fps max %.0fms (%s)\n", now, (unsigned long long)total_frames,
-                frames / (now - last_fps_time), max_gap * 1000.0, renderer_stats());
+        if (last_fps_time > 0) {
+            double dt = now - last_fps_time;
+            double n = frames > 0 ? (double)frames : 1.0;
+            LOG("[vk] t=%.1f frame %llu %.1f fps max %.0fms (splits: acq %.2fms, pres %.2fms, slot %.2fms) (%s)\n",
+                now, (unsigned long long)total_frames,
+                frames / dt, max_gap * 1000.0,
+                (double)g_present_split[0] / (n * 1e6),
+                (double)g_present_split[4] / (n * 1e6),
+                (double)g_present_split[5] / (n * 1e6),
+                renderer_stats());
+            memset(g_present_split, 0, sizeof g_present_split);
+        }
         if (gen_frames && last_fps_time > 0)
             LOG("[fg] %.1f generated frames/s: %.1f presented\n", gen_frames / (now - last_fps_time),
                 (frames + gen_frames) / (now - last_fps_time));
