@@ -39,3 +39,6 @@ docs/RAMAS.md
 # the player's own colour LUTs (runtime/color_grade.h): in the data root, which is the checkout in a source build
 /luts/
 /vk_pipelines.seed
+
+# Discord Rich Presence names: the game's own text (make writes it from extracted/)
+runtime/game_place_table.inc
