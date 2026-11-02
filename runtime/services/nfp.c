@@ -1,8 +1,10 @@
 // Opt-in virtual amiibo experiment. Public IPC layouts: switchbrew/libnx services/nfc.h and nfc.c.
-// No tag dumps or keys: answer the OS-level queries with a synthetic Link (Archer) identity.
+// No tag dumps or keys: answer OS-level queries using the selected synthetic identity.
 #include <stdlib.h>
 #include <string.h>
 
+#include "../amiibo.h"
+#include "../settings.h"
 #include "../hle.h"
 #include "../ipc.h"
 
@@ -10,6 +12,7 @@ enum { NFP_READY, NFP_SEARCHING, NFP_FOUND, NFP_REMOVED, NFP_MOUNTED };
 static pthread_mutex_t nfp_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool initialized, enabled;
 static uint32_t device_state;
+static int selected_figure, active_figure;
 static KEvent *activate, *deactivate, *availability;
 static uint32_t activate_w, activate_r, deactivate_w, deactivate_r, availability_w, availability_r;
 static const uint64_t device = 1;
@@ -17,6 +20,7 @@ static const uint64_t device = 1;
 RT_ON_RESET(nfp_reset) {
     initialized = enabled = false;
     device_state = NFP_READY;
+    selected_figure = active_figure = AMIIBO_ARCHER;
     activate = deactivate = availability = NULL;
     activate_w = activate_r = deactivate_w = deactivate_r = availability_w = availability_r = 0;
 }
@@ -27,6 +31,30 @@ static void event_set(KEvent *event, bool signal) {
     if (signal) kernel_signal(event);
     else event->signaled = false;
     pthread_mutex_unlock(&g_klock);
+}
+
+// The figure is latched for the whole scan: model and UID must always agree.
+static void present_figure(void) {
+    active_figure = selected_figure;
+    device_state = NFP_FOUND;
+    event_set(activate, true);
+    LOG("[nfp] virtual %s detected\n", virtual_amiibos[active_figure].name);
+}
+
+void nfp_configure(bool on, int figure) {
+    pthread_mutex_lock(&nfp_lock);
+    selected_figure = amiibo_valid_figure(figure);
+    if (enabled != on) {
+        enabled = on;
+        if (!on) {
+            event_set(activate, false);
+            if (device_state == NFP_FOUND || device_state == NFP_MOUNTED) {
+                device_state = NFP_REMOVED;
+                event_set(deactivate, true);
+            }
+        } else if (initialized && device_state == NFP_SEARCHING) present_figure();
+    }
+    pthread_mutex_unlock(&nfp_lock);
 }
 
 static void return_event(IpcResp *resp, KEvent **event, uint32_t *w, uint32_t *r) {
@@ -48,10 +76,10 @@ static bool write_info(IpcReq *req, IpcResp *resp, const void *data, size_t size
 static void nfp_user(Service *s, IpcReq *req, IpcResp *resp) {
     (void)s;
     pthread_mutex_lock(&nfp_lock);
-    if (enabled || req->cmd == 0) LOG("[nfp] cmd %u state %u\n", req->cmd, device_state);
+    if (req->cmd != 19 && req->cmd != 20 && (enabled || req->cmd == 0)) LOG("[nfp] cmd %u state %u\n", req->cmd, device_state);
     // All device commands start with the eight-byte handle, except the global state/event queries.
     bool device_cmd = (req->cmd >= 3 && req->cmd <= 18) || (req->cmd >= 20 && req->cmd <= 22);
-    if (device_cmd && (!enabled || !initialized || req->data_size < 8 || IN(uint64_t, 0) != device)) {
+    if (device_cmd && (!initialized || req->data_size < 8 || IN(uint64_t, 0) != device)) {
         resp->result = MAKE_RESULT(115, 64);
         goto done;
     }
@@ -62,12 +90,11 @@ static void nfp_user(Service *s, IpcReq *req, IpcResp *resp) {
     }
     switch (req->cmd) {
     case 0: {
-        const char *v = getenv("SAVAGEWIND_AMIIBO");
-        enabled = v && !strcmp(v, "archer");
+        enabled = g_settings.virtual_amiibo;
+        selected_figure = amiibo_valid_figure(g_settings.amiibo_figure);
         initialized = true;
         device_state = NFP_READY;
-        if (enabled) LOG("[nfp] virtual Link (Archer) enabled; scans are automatic\n");
-        else if (v && *v) LOG("[nfp] unknown SAVAGEWIND_AMIIBO value; use archer\n");
+        if (enabled) LOG("[nfp] virtual %s enabled; scans are automatic\n", virtual_amiibos[selected_figure].name);
         break;
     }
     case 1:
@@ -78,7 +105,7 @@ static void nfp_user(Service *s, IpcReq *req, IpcResp *resp) {
         break;
     case 2: {
         IpcBuf *b = out_buf(req, 0);
-        int count = enabled && initialized && b && b->addr && b->size >= sizeof device;
+        int count = initialized && b && b->addr && b->size >= sizeof device;
         if (count) memcpy((void *)(uintptr_t)b->addr, &device, sizeof device);
         OUT(int32_t, 0) = count;
         resp_size(resp, 4);
@@ -88,9 +115,8 @@ static void nfp_user(Service *s, IpcReq *req, IpcResp *resp) {
         // Present one figure at the start of each detection window. No timing thread or UI required.
         event_set(activate, false);
         event_set(deactivate, false);
-        device_state = NFP_FOUND;
-        event_set(activate, true);
-        LOG("[nfp] virtual figure detected\n");
+        device_state = NFP_SEARCHING;
+        if (enabled) present_figure();
         break;
     case 4:
         event_set(activate, false);
@@ -110,7 +136,7 @@ static void nfp_user(Service *s, IpcReq *req, IpcResp *resp) {
             break;
         }
         uint8_t info[0x58] = {0};
-        const uint8_t uid[7] = {0x04, 0x53, 0x57, 0x01, 0x00, 0x00, 0x01};
+        const uint8_t uid[7] = {0x04, 0x53, 0x57, 0x01, 0x00, 0x00, (uint8_t)(active_figure + 1)};
         memcpy(info, uid, sizeof uid);
         info[0xa] = sizeof uid;
         info[0x20] = 1;  // Type A protocol
@@ -131,14 +157,14 @@ static void nfp_user(Service *s, IpcReq *req, IpcResp *resp) {
     }
     case 16: {
         uint8_t info[0x40] = {0};
-        // Catalog ID 01000000-03530902: character bytes stay in tag order;
-        // only the numbering ID is byte-swapped by GetModelInfo.
-        info[0] = 0x01;                // Link
-        info[3] = 0x00;                // Series ID
-        info[4] = 0x53; info[5] = 0x03; // model 0x0353 (Archer)
-        info[6] = 0x09;                // NFP type (Breath of the Wild)
-        write_info(req, resp, info, sizeof info);
-        LOG("[nfp] supplied Link (Archer) model info\n");
+        const VirtualAmiibo *figure = &virtual_amiibos[active_figure];
+        // Character bytes stay in tag order; only the numbering ID is byte-swapped.
+        memcpy(info, figure->character, sizeof figure->character);
+        info[3] = figure->series;
+        info[4] = figure->model & 0xff;
+        info[5] = figure->model >> 8;
+        info[6] = figure->type;
+        if (write_info(req, resp, info, sizeof info)) LOG("[nfp] supplied %s model info\n", figure->name);
         break;
     }
     case 17:

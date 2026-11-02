@@ -35,6 +35,7 @@ extern "C" {
 #include "../game_sites.h"
 #include "../nvn/output_scale.h"
 #include "../settings.h"
+#include "../amiibo.h"
 #include "../color_grade.h"
 #include "../pc_cursor.h"
 #include "../window_size.h"
@@ -282,6 +283,21 @@ void build_items(void) {
     v.push_back(button(P_MAIN, "Accessibility", "Assists that make the game easier.", "Open", A_PAGE, P_ACCESS));
     v.push_back(button(P_MAIN, "Quit game", "To the desktop, or back to the Savage Wind start screen.", "Quit",
                        A_QUIT, 0));
+
+    v.push_back(toggle(P_GAMEPLAY, "Virtual amiibo", "Automatically scans the selected figure when you use the amiibo rune. Enable amiibo in the game setting above too.",
+                       [](const Item &) { return (int)g_settings.virtual_amiibo; },
+                       [](const Item &, int x) {
+                           g_settings.virtual_amiibo = x;
+                           nfp_configure(g_settings.virtual_amiibo, g_settings.amiibo_figure);
+                       }, 0));
+    v.push_back(choice(P_GAMEPLAY, "amiibo figure", "The figure used for your next scan. The game's normal reward rules apply.",
+                       [](const Item &) { return (int)AMIIBO_COUNT; },
+                       [](const Item &, int x) { return virtual_amiibos[x].name; },
+                       [](const Item &) { return amiibo_valid_figure(g_settings.amiibo_figure); },
+                       [](const Item &, int x) {
+                           g_settings.amiibo_figure = x;
+                           nfp_configure(g_settings.virtual_amiibo, g_settings.amiibo_figure);
+                       }, AMIIBO_ARCHER));
 
     // Video (fullscreen and the window size are applied by the window loop: menu.mm)
     v.push_back(toggle(P_VIDEO, "Fullscreen", "Fills the screen. Also F11 or Alt+Enter.",
@@ -770,11 +786,10 @@ bool install(void) {
         g_entries.push_back(e);
     }
     for (auto &o : g_order) o.clear();
-    // The virtual amiibo prototype exposes the original gameplay toggle only when opted in.
+    // Keep the original amiibo gameplay toggle available alongside the virtual figure controls.
     // Voice language lives on Language; the VR goggles mode has no use on a PC screen.
     for (uint32_t r = 0; r < rows; r++) {
         uint32_t e = ((const uint32_t *)(uintptr_t)order)[r];
-        if (e == GAME_AMIIBO && (!getenv("SAVAGEWIND_AMIIBO") || strcmp(getenv("SAVAGEWIND_AMIIBO"), "archer"))) continue;
         if (e == GAME_VOICE_BUTTON || e == GAME_VOICE_LEVEL || e == GAME_VR) continue;
         bool camera = e == GAME_CAMERA_Y || e == GAME_CAMERA_X || e == GAME_GYRO || e == GAME_CAMERA_SENSITIVITY;
         g_order[camera ? P_CONTROLS : P_GAMEPLAY].push_back(e);

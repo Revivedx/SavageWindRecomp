@@ -240,7 +240,7 @@ Estimates of where each part stands. "Tested in game" is how much of the game ha
 | 🗺️ | **Accessibility and assists** | ![0%](https://progress-bar.xyz/0/?width=150&style=square&progress_color=d9534f) | Planned: text size, colour-blind filters and toggles in place of held buttons; enemy and Link health, damage dealt and taken, weapon durability and stamina use on screen; optional assists: infinite stamina, health or weapon durability, arrows and rupees, no damage at all, no fall damage, health that refills over time, nearby enemies defeated at once, and multipliers for weapon durability, stamina use, damage dealt and taken, and walking, running, climbing, swimming and gliding speed |
 | 🗺️ | **Teleport with bookmarks** | ![0%](https://progress-bar.xyz/0/?width=150&style=square&progress_color=d9534f) | Planned: save places and travel back to them |
 | 🗺️ | **Achievements** | ![0%](https://progress-bar.xyz/0/?width=150&style=square&progress_color=d9534f) | Planned: achievements from your save's progress, from start to finish ([#236](https://github.com/Revivedx/SavageWindRecomp/pull/236)) |
-| 🗺️ | **amiibo rewards without figures** | ![0%](https://progress-bar.xyz/0/?width=150&style=square&progress_color=d9534f) | Planned |
+| 🔧 | **amiibo rewards without figures** | Prototype | Options > Gameplay: enable Virtual amiibo and select Link (Archer), Zelda, Guardian or Bokoblin. Use the amiibo rune to scan automatically. Archer and the picker confirmed; other figures need gameplay testing. See [Virtual amiibo](docs/amiibo.md). |
 
 ✅ done · 🔧 in progress · 🗺️ roadmap
 
