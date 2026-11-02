@@ -10,8 +10,8 @@ This guide explains how to configure **Lossless Scaling** (Spatial Upscaling and
 
 | Setting | Recommended Value | Why |
 | :--- | :--- | :--- |
-| **VSync** | **Adaptive** (`vsync = adaptive`) | **Universal recommendation.** Disables VSync throttling when FPS dips below refresh rate (`FIFO_RELAXED`), preventing the 25/30 FPS divisor lock and DWM capture stalls. |
-| **Window Mode** | **Borderless Fullscreen** or **Windowed** | Required by screen capture APIs (WGC/DXGI). Exclusive Fullscreen bypasses DWM and cannot be captured reliably. |
+| **VSync** | **Adaptive** (`vsync = adaptive`) when supported; otherwise try **Fast** (`vsync = fast`) | Check the swapchain log for the actual present mode. Adaptive falls back to FIFO when `FIFO_RELAXED` is unavailable on some drivers/surfaces (e.g. certain Intel displays); Fast can use Mailbox or Immediate instead. |
+| **Window Mode** | **Borderless Fullscreen** (for Native Res FG) or **Windowed** (for External Upscaling) | Required by screen capture APIs (WGC/DXGI). For spatial upscaling (LS1/FSR), run in **Windowed** mode at the lower resolution so the capture API captures the smaller buffer directly. Exclusive Fullscreen bypasses DWM and cannot be captured reliably. |
 | **Frame Rate** | **Uncapped** or **Target Refresh Rate** | Eliminates engine-side artificial frame caps while allowing smooth pacing. |
 | **Upscaler** | **Off** (or Native) | If upscaling through Lossless Scaling (LS1/FSR), leave internal upscalers off to save GPU cycles. |
 
@@ -29,8 +29,8 @@ This guide explains how to configure **Lossless Scaling** (Spatial Upscaling and
 - **Flow Scale (Escala de fluxo):** 50% (Default).
 
 #### **Upscaling (Redimensionamento)**
-- **Native Resolution Gaming:** Set to **Off (Desativado)** if running the game at your monitor's native resolution and only using Frame Generation.
-- **Lower Base Resolution (Performance Boost):** Set to **LS1** or **AMD FSR**, Mode: **Fullscreen (Tela cheia)** with Sharpness at 2–3.
+- **Native Resolution Gaming:** Set to **Off (Desativado)** if running the game at your monitor's native resolution and only using Frame Generation. Borderless Fullscreen can be used here.
+- **Lower Base Resolution (Performance Boost):** Run Savage Wind in **Windowed** mode at the selected lower resolution, then set Lossless Scaling to **LS1** or **AMD FSR**, Mode: **Fullscreen (Tela cheia)** with Sharpness at 2–3. Borderless Fullscreen scales the image to desktop size before capture; use it for native-resolution frame generation rather than external spatial upscaling.
 
 #### **Rendering Options (Opções de Renderização)**
 - **Sync Mode (Modo de sincronização):** `Default (Padrão)`.
@@ -71,13 +71,13 @@ Savage Wind creates swapchains with `caps.minImageCount + 3` images (clamped to 
 - 1 image in the submission queue.
 - 1 free image ready for immediate acquisition.
 
-This guarantees `vkAcquireNextImageKHR` completes near-instantly ($\le 0.05\text{ ms}$) without starving the rendering thread.
+The extra images reduced capture-related acquisition stalls on the tested configuration, but do not guarantee an absolute acquisition-time bound. The image count is also limited by the surface's `maxImageCount`, so five images may not be available on all drivers/surfaces.
 
 ---
 
 ## 3. Resolution Matrix & Upscaling Guide
 
-Rendering at a lower base resolution and letting Lossless Scaling (LS1) upscale to your target display resolution provides significant framerate gains while reducing DWM capture bandwidth:
+Rendering at a lower base resolution in **Windowed** mode and letting Lossless Scaling (LS1/FSR) upscale to your target display resolution provides significant framerate gains while reducing DWM capture bandwidth (in Borderless Fullscreen, Savage Wind stretches the image to full desktop resolution internally before capture):
 
 ### 16:9 Displays (Standard 1080p / 1440p / 4K)
 | Target Display | Suggested Game Resolution | Render Load Reduction | Typical Base FPS Gain |

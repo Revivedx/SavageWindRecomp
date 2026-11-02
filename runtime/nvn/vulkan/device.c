@@ -1490,6 +1490,11 @@ static void hdr_write(VkCommandBuffer cb, uint32_t i) {
 }
 
 uint64_t g_present_split[6];  // (VK_PROF) acquire, end pass, draw + menu, submit, present, slot wait
+static uint64_t g_fps_present_split[6];  // (FPS log interval totals; not cleared each frame by vk_prof_frame)
+static inline void add_split(int idx, uint64_t dt) {
+    g_present_split[idx] += dt;
+    g_fps_present_split[idx] += dt;
+}
 typedef struct { uint32_t image; VkSemaphore acquired; bool ok; } Frame;
 static Frame cur_frame;
 
@@ -1503,7 +1508,7 @@ bool vk_frame_begin(const float clear[4]) {
     if (!w || !h || (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED)) return false;
     uint64_t tp = SDL_GetTicksNS();
     present_wait_room();
-    g_present_split[4] += SDL_GetTicksNS() - tp;
+    add_split(4, SDL_GetTicksNS() - tp);
     float white;  // (Windows HDR turned on or off, the window moved to another display, Video > HDR changed)
     bool hdr = hdr_wanted(&white);
     if (g_hdr) g_hdr_white = white;
@@ -1533,10 +1538,10 @@ bool vk_frame_begin(const float clear[4]) {
     if (!acquire_sem[slot]) acquire_sem[slot] = binary_semaphore();
     uint64_t tw = SDL_GetTicksNS();
     vk_wait_seq(slot_seq[slot]);
-    g_present_split[5] += SDL_GetTicksNS() - tw;
+    add_split(5, SDL_GetTicksNS() - tw);
     uint64_t ta = SDL_GetTicksNS();
     VkResult r = acquire_image(acquire_sem[slot], &cur_frame.image);
-    g_present_split[0] += SDL_GetTicksNS() - ta;
+    add_split(0, SDL_GetTicksNS() - ta);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         recreate_swapchain();
         r = acquire_image(acquire_sem[slot], &cur_frame.image);
@@ -1633,11 +1638,11 @@ void vk_frame_end(const char *shot_path) {
     uint64_t seq = vk_pending_seq();
     uint64_t ts = SDL_GetTicksNS();
     vk_submit_extra(cur_frame.acquired, done_sem[img], VK_NULL_HANDLE);
-    g_present_split[3] += SDL_GetTicksNS() - ts;
+    add_split(3, SDL_GetTicksNS() - ts);
     ts = SDL_GetTicksNS();
     if (!present_image(img, done_sem[img], frame_kind, seq)) recreate_swapchain();
     frame_kind = PRES_PLAIN;
-    g_present_split[4] += SDL_GetTicksNS() - ts;
+    add_split(4, SDL_GetTicksNS() - ts);
     cur_frame.ok = false;
     if (shot_path) {
         vk_wait_seq(seq);
@@ -1776,7 +1781,7 @@ static void present_locked(NvnTexture *t) {
     b->presented = true;
     uint64_t t0 = SDL_GetTicksNS();
     vk_end_pass();
-    g_present_split[1] += SDL_GetTicksNS() - t0;
+    add_split(1, SDL_GetTicksNS() - t0);
     t0 += pso_wait();  // (not the acquire's time)
     // Frame generation: the frame between the last one and this (exec.c vk_fg_generate), presented first
     TexBackend *gen = vk_fg_generate(t, b);
@@ -1856,7 +1861,7 @@ static void present_locked(NvnTexture *t) {
         if (menu_at && (long)total_frames + 1 == menu_at) { extern void menu_test_open(void); menu_test_open(); }
         if (menu_render_needed()) rec_drain();  // (ImGui records into cb itself, and may upload its fonts on the queue)
         menu_render((void *)cb, g_vk.sc_extent.width, g_vk.sc_extent.height);
-        g_present_split[2] += SDL_GetTicksNS() - td;
+        add_split(2, SDL_GetTicksNS() - td);
         static long win_shot = -1;
         if (win_shot < 0) win_shot = getenv("SAVAGEWIND_WINDOW_SHOT") ? atol(getenv("SAVAGEWIND_WINDOW_SHOT")) : 0;
         bool shot = win_shot && (long)total_frames + 1 == win_shot;
@@ -2064,11 +2069,11 @@ presented:
             LOG("[vk] t=%.1f frame %llu %.1f fps max %.0fms (splits: acq %.2fms, pres %.2fms, slot %.2fms) (%s)\n",
                 now, (unsigned long long)total_frames,
                 frames / dt, max_gap * 1000.0,
-                (double)g_present_split[0] / (n * 1e6),
-                (double)g_present_split[4] / (n * 1e6),
-                (double)g_present_split[5] / (n * 1e6),
+                (double)g_fps_present_split[0] / (n * 1e6),
+                (double)g_fps_present_split[4] / (n * 1e6),
+                (double)g_fps_present_split[5] / (n * 1e6),
                 renderer_stats());
-            memset(g_present_split, 0, sizeof g_present_split);
+            memset(g_fps_present_split, 0, sizeof g_fps_present_split);
         }
         if (gen_frames && last_fps_time > 0)
             LOG("[fg] %.1f generated frames/s: %.1f presented\n", gen_frames / (now - last_fps_time),

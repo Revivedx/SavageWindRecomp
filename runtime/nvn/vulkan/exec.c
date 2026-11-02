@@ -7665,8 +7665,6 @@ static TexBackend *post_image_ex(int i, uint32_t w, uint32_t h, VkFormat f, VkIm
         d->mem = VK_NULL_HANDLE;
     }
     if (!d->image) {
-        extern void vk_collect_dead(void);
-        vk_collect_dead();
         VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
                                 .format = f, .extent = {w, h, 1}, .mipLevels = 1, .arrayLayers = 1,
                                 .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
@@ -7674,11 +7672,17 @@ static TexBackend *post_image_ex(int i, uint32_t w, uint32_t h, VkFormat f, VkIm
         VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
         VkResult r = vmaCreateImage(g_vk.vma, &ci, &ai, &d->image, &d->mem, NULL);
         if (r != VK_SUCCESS) {
+            // Memory pressure recovery: drain pending submissions and wait for the GPU sequence to complete
+            // so deferred dead images (including previous replaced allocations) are guaranteed to be freed.
+            rec_drain();
+            vk_wait_seq(vk_pending_seq());
+            extern void vk_collect_dead(void);
             vk_collect_dead();
             r = vmaCreateImage(g_vk.vma, &ci, &ai, &d->image, &d->mem, NULL);
             if (r != VK_SUCCESS) {
-                ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
-                VK_CHECK(vmaCreateImage(g_vk.vma, &ci, &ai, &d->image, &d->mem, NULL));
+                static int warned;
+                if (warned++ < 5) LOG("[vram] post_image allocation failed (%ux%u format %d, error %d)\n", w, h, f, r);
+                return NULL;
             }
         }
         usage[i] = extra;
@@ -7690,6 +7694,7 @@ static TexBackend *post_image_ex(int i, uint32_t w, uint32_t h, VkFormat f, VkIm
 }
 
 static VkImageView post_view(TexBackend *d) {
+    if (!d || !d->image) return VK_NULL_HANDLE;
     static const VkComponentMapping id = {0};
     return vk_image_view(d, VK_IMAGE_VIEW_TYPE_2D, d->format, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_COLOR_BIT);
 }
@@ -7836,24 +7841,28 @@ static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, 
         const VkFormat f8 = VK_FORMAT_R8G8B8A8_UNORM;
         TexBackend *edges = post_image(0, b->width, b->height, f8), *weights = post_image(1, b->width, b->height, f8);
         TexBackend *out = post_image(2, b->width, b->height, f8);
-        VkImageView in[3] = {v};
-        post_pass(cb, "smaa_edge.frag", in, 1, edges, m, true);
-        VkImageView wi[3] = {post_view(edges), smaa_lut(0), smaa_lut(1)};
-        post_pass(cb, "smaa_weight.frag", wi, 3, weights, m, true);
-        VkImageView bi[3] = {v, post_view(weights)};
-        post_pass(cb, "smaa_blend.frag", bi, 2, out, m, false);
-        v = post_view(out);
+        if (edges && weights && out && edges->image && weights->image && out->image) {
+            VkImageView in[3] = {v};
+            post_pass(cb, "smaa_edge.frag", in, 1, edges, m, true);
+            VkImageView wi[3] = {post_view(edges), smaa_lut(0), smaa_lut(1)};
+            post_pass(cb, "smaa_weight.frag", wi, 3, weights, m, true);
+            VkImageView bi[3] = {v, post_view(weights)};
+            post_pass(cb, "smaa_blend.frag", bi, 2, out, m, false);
+            v = post_view(out);
+        }
     }
     if (fsr) {
         float iw = (float)b->width, ih = (float)b->height;
         TexBackend *e = post_image(3, ow, oh, VK_FORMAT_R8G8B8A8_UNORM), *r = post_image(4, ow, oh, VK_FORMAT_R8G8B8A8_UNORM);
-        float pe[8] = {iw / ow, ih / oh, 0.5f * iw / ow - 0.5f, 0.5f * ih / oh - 0.5f, iw, ih};
-        VkImageView ei[3] = {v};
-        post_pass(cb, "easu.frag", ei, 1, e, pe, false);
-        float pr[8] = {exp2f(-0.2f), 0, 0, 0, (float)ow, (float)oh};  // (sharpness 0.2 stops: AMD's default)
-        VkImageView ri_[3] = {post_view(e)};
-        post_pass(cb, "rcas.frag", ri_, 1, r, pr, false);
-        v = post_view(r);
+        if (e && r && e->image && r->image) {
+            float pe[8] = {iw / ow, ih / oh, 0.5f * iw / ow - 0.5f, 0.5f * ih / oh - 0.5f, iw, ih};
+            VkImageView ei[3] = {v};
+            post_pass(cb, "easu.frag", ei, 1, e, pe, false);
+            float pr[8] = {exp2f(-0.2f), 0, 0, 0, (float)ow, (float)oh};  // (sharpness 0.2 stops: AMD's default)
+            VkImageView ri_[3] = {post_view(e)};
+            post_pass(cb, "rcas.frag", ri_, 1, r, pr, false);
+            v = post_view(r);
+        }
     }
     vk_full_barrier(cb);
     vk_frame_resume();
@@ -8019,11 +8028,13 @@ static void scene_post(Prog *pr, CmdRec *r) {
         TexBackend *out = taa, *in = b;
         if (grade) {
             TexBackend *g = post_image(32, w, h, b->format);
-            VkImageView gi[3] = {src, lut};
-            if (g_gpuprof_frame) gp_mark(cb, "colour grading%s", lut ? " + LUT" : "");
-            post_pass_pc(cb, lut ? "grade_lut.frag" : "grade.frag", gi, lut ? 2 : 1, g, gpc, sizeof gpc, false);
-            src = post_view(g);
-            out = in = g;
+            if (g && g->image) {
+                VkImageView gi[3] = {src, lut};
+                if (g_gpuprof_frame) gp_mark(cb, "colour grading%s", lut ? " + LUT" : "");
+                post_pass_pc(cb, lut ? "grade_lut.frag" : "grade.frag", gi, lut ? 2 : 1, g, gpc, sizeof gpc, false);
+                src = post_view(g);
+                out = in = g;
+            }
         }
         TexBackend *f3 = fsr3 ? fsr3_scene(cb, in, ow, oh) : NULL;
         if (f3) {
@@ -8035,32 +8046,36 @@ static void scene_post(Prog *pr, CmdRec *r) {
             return;
         }
         if (up) {
-            if (g_gpuprof_frame) gp_mark(cb, "scene FSR 1");
             TexBackend *e = post_image(5, ow, oh, b->format), *o = post_image(6, ow, oh, b->format);
-            float iw = (float)b->width, ih = (float)b->height;
-            // (the scene is linear light - the composite gamma-encodes it -: EASU and RCAS work on its gamma 2.0 in
-            // between, b.z = 1; SAVAGEWIND_SCENE_FSR_LINEAR=1: in linear light, as before)
-            static int lin = -1;
-            if (lin < 0) lin = getenv("SAVAGEWIND_SCENE_FSR_LINEAR") != NULL;
-            float g2 = lin ? 0.0f : 1.0f;
-            float pe[8] = {iw / ow, ih / oh, 0.5f * iw / ow - 0.5f, 0.5f * ih / oh - 0.5f, iw, ih, g2};
-            VkImageView in[3] = {src};
-            post_pass(cb, "easu.frag", in, 1, e, pe, false);
-            float pr_[8] = {exp2f(-0.2f), 0, 0, 0, (float)ow, (float)oh, g2};  // (sharpness 0.2 stops: AMD's default)
-            VkImageView ri[3] = {post_view(e)};
-            post_pass(cb, "rcas.frag", ri, 1, o, pr_, false);
-            src = post_view(o);
-            out = o;
-            w = ow; h = oh;
+            if (e && o && e->image && o->image) {
+                if (g_gpuprof_frame) gp_mark(cb, "scene FSR 1");
+                float iw = (float)b->width, ih = (float)b->height;
+                // (the scene is linear light - the composite gamma-encodes it -: EASU and RCAS work on its gamma 2.0 in
+                // between, b.z = 1; SAVAGEWIND_SCENE_FSR_LINEAR=1: in linear light, as before)
+                static int lin = -1;
+                if (lin < 0) lin = getenv("SAVAGEWIND_SCENE_FSR_LINEAR") != NULL;
+                float g2 = lin ? 0.0f : 1.0f;
+                float pe[8] = {iw / ow, ih / oh, 0.5f * iw / ow - 0.5f, 0.5f * ih / oh - 0.5f, iw, ih, g2};
+                VkImageView in[3] = {src};
+                post_pass(cb, "easu.frag", in, 1, e, pe, false);
+                float pr_[8] = {exp2f(-0.2f), 0, 0, 0, (float)ow, (float)oh, g2};  // (sharpness 0.2 stops: AMD's default)
+                VkImageView ri[3] = {post_view(e)};
+                post_pass(cb, "rcas.frag", ri, 1, o, pr_, false);
+                src = post_view(o);
+                out = o;
+                w = ow; h = oh;
+            }
         }
         if (cas) {  // (after TAA: RCAS, as FSR 3 sharpens, its noise term keeping the residual flicker from being
                     //  pushed up the way CAS did; its strength FSR 3's: 2 - 2 x sharpness stops)
             TexBackend *c = post_image(7, w, h, b->format);
-            float sh = g_settings.sharpening / 10.0f;
-            float pc[8] = {taa ? exp2f(-(2.0f - 2.0f * sh)) : sh, 0, 0, 0, (float)w, (float)h};
-            VkImageView ci[3] = {src};
-            post_pass(cb, taa ? "rcas.frag" : "cas.frag", ci, 1, c, pc, false);
-            out = c;
+            if (c && c->image) {
+                float sh = g_settings.sharpening / 10.0f;
+                float pc[8] = {taa ? exp2f(-(2.0f - 2.0f * sh)) : sh, 0, 0, 0, (float)w, (float)h};
+                VkImageView ci[3] = {src};
+                post_pass(cb, taa ? "rcas.frag" : "cas.frag", ci, 1, c, pc, false);
+                out = c;
+            }
         }
         vk_full_barrier(cb);
         {   // (debug) SAVAGEWIND_SCENE_POST_DUMP=<frame> (counted as SAVAGEWIND_SHOT_AT): that frame's scene, its EASU
@@ -8080,10 +8095,14 @@ static void scene_post(Prog *pr, CmdRec *r) {
                 cb = vk_cmd();
             }
         }
-        scene_up.t = t;
-        scene_up.img = out;
-        scene_up.sx = (float)w / (float)t->width;
-        scene_up.sy = (float)h / (float)t->height;
+        if (out && out->image) {
+            scene_up.t = t;
+            scene_up.img = out;
+            scene_up.sx = (float)w / (float)t->width;
+            scene_up.sy = (float)h / (float)t->height;
+        } else {
+            scene_up.t = NULL;
+        }
         static uint32_t lw, lh, low, loh;
         static int lcas = -1, lgrade = -1;
         static bool ltaa, lf3;
