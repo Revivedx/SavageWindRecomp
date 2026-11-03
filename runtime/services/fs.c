@@ -18,6 +18,7 @@
 #include "../hle.h"
 #include "../ipc.h"
 #include "../language.h"
+#include "../paths.h"
 #include "../romfs_image.h"
 #include "archive.h"
 #include "fs_layout.h"
@@ -66,8 +67,11 @@ static RomImage *R = &images[0];
 static FsInventoryClipLayout inventory_clip_layout;
 static _Atomic bool inventory_clip_layout_valid;
 
+static int mods_overlay = -1;  // overlay_dir: mods/.merged is there (-1: not looked yet)
+
 // Reboot: the next boot builds its own index / overlay when the game opens the RomFS again.
 RT_ON_RESET(fs_reset) {
+    mods_overlay = -1;  // (Settings can turn mods on and off, and a reboot applies them)
     for (int k = 0; k <= AOC_MAX; k++) {
         RomImage *m = &images[k];
         for (int i = 0; i < m->ov_n; i++) {
@@ -85,10 +89,19 @@ RT_ON_RESET(fs_reset) {
     g_save_dir = "save";
 }
 
-// The RomFS overlay folder (SAVAGEWIND_ROMFS_OVERLAY), or NULL
+// The RomFS overlay folder, or NULL: SAVAGEWIND_ROMFS_OVERLAY, else the merged mods tools/mods.py made in the data folder
+// (docs/MODS.md; SAVAGEWIND_NO_MODS=1 plays without them)
 static const char *overlay_dir(void) {
     const char *e = getenv("SAVAGEWIND_ROMFS_OVERLAY");
-    return e && *e ? e : NULL;
+    if (e && *e) return e;
+    static char mods[1100];
+    if (mods_overlay < 0) {
+        struct stat sb;
+        snprintf(mods, sizeof mods, "%s/mods/.merged/01007EF00011E000/romfs", rt_data_root());
+        mods_overlay = !getenv("SAVAGEWIND_NO_MODS") && !stat(mods, &sb) && S_ISDIR(sb.st_mode);
+        if (mods_overlay) LOG("[fs] mods: playing with %s\n", mods);
+    }
+    return mods_overlay ? mods : NULL;
 }
 
 // Host path of the overlay's replacement for RomFS file `path` (relative, e.g. "Actor/ActorInfo.product.sbyml"); an
@@ -862,13 +875,18 @@ static void rstb_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
         return;
     }
     if (k == R->rom_nfiles) { LOG("[fs] voices: no %s, %d bigger banks left as they are\n", rstb_path, R->ngrown); return; }
-    if (overlay_file(rstb_path, host, sizeof host)) {
-        LOG("[fs] voices: the overlay folder replaces the ResourceSizeTable: %d bigger banks left to it\n", R->ngrown);
-        return;
-    }
-    size_t zn = R->rom_files[k].size, n = 0;
+    // A mod's table (the overlay folder's) needs the same growth: without it the game can't load what grew here
+    struct stat over;
+    bool from_overlay = overlay_file(rstb_path, host, sizeof host) && !stat(host, &over);
+    size_t zn = from_overlay ? (size_t)over.st_size : R->rom_files[k].size, n = 0;
     uint8_t *z = malloc(zn), *d = NULL;
-    if (romfs_image_pread(R->img, z, zn, R->rom_files[k].off) == (ssize_t)zn) d = yaz0_unpack(z, zn, &n);
+    if (from_overlay) {
+        FILE *f = fopen(host, "rb");
+        if (f && fread(z, 1, zn, f) == zn) d = yaz0_unpack(z, zn, &n);
+        if (f) fclose(f);
+    } else if (romfs_image_pread(R->img, z, zn, R->rom_files[k].off) == (ssize_t)zn) {
+        d = yaz0_unpack(z, zn, &n);
+    }
     free(z);
     uint32_t ncrc = 0, nname = 0;
     if (d && n >= 12) memcpy(&ncrc, d + 4, 4), memcpy(&nname, d + 8, 4);

@@ -39,3 +39,6 @@ docs/RAMAS.md
 # the player's own colour LUTs (runtime/color_grade.h): in the data root, which is the checkout in a source build
 /luts/
 /vk_pipelines.seed
+
+# Mods: your BNPs, BCML and the merged result (docs/MODS.md)
+/mods/

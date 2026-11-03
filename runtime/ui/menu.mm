@@ -5,6 +5,7 @@
 #ifdef __APPLE__
 #import <Metal/Metal.h>
 #endif
+#include "../mods.h"
 #include <SDL3/SDL.h>
 #include <math.h>
 #include <pthread.h>
@@ -990,6 +991,20 @@ static void tab_language(bool in_game) {
         settings_save();
         rt_request_reboot(1);  // (RT_REBOOT_GAME: boot again at once)
     }
+    opt_section("Mods");  // (runtime/mods.c)
+    for (int i = 0; i < mods_count(); i++) {
+        bool on = mods_on(i);
+        if (opt_toggle(mods_title(i), &on, true, "Turn this mod on or off. Applies the next time the game starts."))
+            mods_set(i, on);
+    }
+    if (!mods_count()) ImGui::TextDisabled("%s", tr("No mods found"));
+    ImGui::PushID("mods");  // (Language above has a Restart now too)
+    if (in_game && mods_pending() &&
+        opt_button("Restart now", "Starts the game again with these mods. Progress since your last save is lost.")) {
+        settings_save();
+        rt_request_reboot(1);
+    }
+    ImGui::PopID();
     opt_end();
 }
 
