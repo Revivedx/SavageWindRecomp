@@ -1,4 +1,4 @@
-// Frame rate (Video > Frame rate): Off (no limit), 30, 60 (the default), 90 or 120 frames per second, and the game's
+// Frame rate (Video > Frame rate): Off (no limit), 30, 60 (the default), 90, 120, 144, 165, 240 or 360 frames per second, and the game's
 // clock the same at every one of them. Shared by the macOS, Linux and Windows builds.
 //
 // How BOTW 1.8.2 keeps time (main module, runtime addresses):
@@ -15,7 +15,7 @@
 //     screen (0.2 s at 30 fps, 0.1 s at 120). The paused game (pause menu, map: the state at 0x7001cb48a4 is 2, 0
 //     while playing) updates VFR twice a frame.
 // So the game already runs at any frame rate as long as VFR is told how long a frame really took. Savage Wind:
-//   - paces the presents at the chosen rate on a steady grid (present_pace, framepace_period_ns; Off: 300 fps at
+//   - paces the presents at the chosen rate on a steady grid (present_pace, framepace_period_ns; Off: 360 fps at
 //     most, FPS_CEILING; with VSync On or Adaptive a little under the display's refresh rate), and skips the frame
 //     loop's vsync wait (rt_frame_wait, tools/patches.py);
 //   - tells VFR how long the frame really took (rt_vfr_update, inside updateInterval after the game set its ratio):
@@ -152,6 +152,7 @@ bool framepace_map_ui(void) {
     uint64_t map = VF(uint64_t, arr, 8 * 0x2a);
     return map && VF(uint8_t, map, 0xfe) == 2;  // same active map screen as pc_cursor.c
 }
+bool framepace_quick_ui(void) { return *(uint32_t *)(uintptr_t)PAUSE_STATE == 4; }
 bool framepace_paused(void) { return in_menu(); }
 
 int framepace_target(void) {
@@ -173,9 +174,11 @@ int framepace_target(void) {
     return fps;
 }
 
-// No limit still stops at 300 fps: shorter steps lose precision in the game's float clocks (the time of day, 0..360,
-// takes 1/30 of a minute times the step each frame: at 300 fps that is 1% of the value's rounding unit per frame).
-#define FPS_CEILING 300
+// No limit still stops at 360 fps: shorter steps lose precision in the game's float clocks (the time of day, 0..360,
+// takes 1/30 of a minute times the step each frame: at 360 fps that is 1.2% of the value's rounding unit per frame).
+// The game's clock and the menus' step stop here too (rt_vfr_update, framepace_presented): a frame rate above this
+// would run the game fast.
+#define FPS_CEILING 360
 
 // With VSync On or Adaptive (FIFO), a frame rate at or over the display's refresh rate waits for the display: up to a
 // refresh of delay, and with G-SYNC / FreeSync the display leaves its variable rate at the top of its range. So the
@@ -231,7 +234,8 @@ void framepace_presented(uint64_t t, bool on_grid) {
     if (s > 0.25) s = 0.25;
     smooth = smooth > 0 ? smooth + (s - smooth) * 0.25 : s;
     float step = (float)((on_grid ? s : smooth) * 30);
-    g_step = step < 0.1f ? 0.1f : step > 1.5f ? 1.5f : step;
+    float least = 30.0f / FPS_CEILING;
+    g_step = step < least ? least : step > 1.5f ? 1.5f : step;
     g_grid_streak = on_grid ? g_grid_streak + 1 : 0;
     static int fixed = -1;
     if (fixed < 0) fixed = env_int("SAVAGEWIND_NO_CONTROLLER_STEP", 0);

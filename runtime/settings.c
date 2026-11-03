@@ -26,6 +26,8 @@ Settings g_settings = {
     .reverb = true,
     .movie_audio = true,
     .rumble = true,
+    .damage_taken = 100,
+    .damage_dealt = 100,
     .upscaler = UPSCALE_DEFAULT,  // (Off: the window's resolution; MetalFX on macOS)
     .upscale_quality = UPQ_QUALITY,
     .mouse_camera = true,
@@ -43,7 +45,9 @@ Settings g_settings = {
     .gpu = -1,
     .wide_view = true,
     .fov = 100,
+    .hud_size = 100,
     .color_lut_strength = 100,
+    .haze = 100,
 };
 
 static const char *const k_vsync[VSYNC_COUNT] = {"on", "fast", "adaptive", "off"};  // (VSYNC_*: the ini's words)
@@ -188,10 +192,19 @@ void settings_load(void) {
             g_settings.hdr_white = n >= 80 && n <= 1000 ? n : 0;
         }
         else if (!strcmp(key, "field_of_view")) g_settings.fov = atoi(val);  // (percent)
+        else if (!strcmp(key, "hud_size")) g_settings.hud_size = atoi(val);  // (percent)
         else if (!strcmp(key, "draw_distance")) {
             for (int i = 0; i < DRAWDIST_COUNT; i++)
                 if (!strcmp(val, k_drawdist[i])) g_settings.draw_distance = i;
         }
+        else if (!strcmp(key, "no_weapon_wear")) g_settings.no_weapon_wear = atoi(val) != 0;
+        else if (!strcmp(key, "infinite_arrows")) g_settings.infinite_arrows = atoi(val) != 0;
+        else if (!strcmp(key, "infinite_stamina")) g_settings.infinite_stamina = atoi(val) != 0;
+        else if (!strcmp(key, "god_mode")) g_settings.god_mode = atoi(val) != 0;
+        else if (!strcmp(key, "one_hit_kill")) g_settings.one_hit_kill = atoi(val) != 0;
+        else if (!strcmp(key, "damage_taken")) g_settings.damage_taken = atoi(val);  // (percent)
+        else if (!strcmp(key, "damage_dealt")) g_settings.damage_dealt = atoi(val);
+        else if (!strcmp(key, "haze")) { int v = atoi(val); g_settings.haze = v < 0 ? 0 : v > 100 ? 100 : v; }  // (percent)
         else if (!strcmp(key, "colour_exposure")) g_settings.color_exposure = (int)lroundf((float)atof(val) * 10);  // (EV)
         else if (!strcmp(key, "colour_contrast")) g_settings.color_contrast = atoi(val);  // (percent)
         else if (!strcmp(key, "colour_saturation")) g_settings.color_saturation = atoi(val);
@@ -202,6 +215,8 @@ void settings_load(void) {
             g_settings.color_lut_set = true;
         }
         else if (!strcmp(key, "colour_lut_strength")) g_settings.color_lut_strength = atoi(val);  // (percent)
+        else if (!strcmp(key, "sharper_text"))  // (off / 2x / 4x)
+            g_settings.sharper_text = !strcmp(val, "4x") ? 4 : !strcmp(val, "2x") ? 2 : 0;
         else if (!strcmp(key, "shadow_resolution"))  // (console / high / ultra / extreme)
             g_settings.shadow_res = !strcmp(val, "extreme") ? SHADOW_EXTREME : !strcmp(val, "ultra") ? SHADOW_ULTRA
                                   : !strcmp(val, "high") ? SHADOW_HIGH : SHADOW_CONSOLE;
@@ -257,6 +272,7 @@ void settings_load(void) {
     if (!(g_settings.mouse_sens_y >= 0.5f && g_settings.mouse_sens_y <= 2.0f)) g_settings.mouse_sens_y = 1.0f;
     if (!(g_settings.motion_sens >= 0.1f && g_settings.motion_sens <= 10.0f)) g_settings.motion_sens = 1.0f;
     if (g_settings.fov < 50 || g_settings.fov > 200) g_settings.fov = 100;
+    if (g_settings.hud_size < 50 || g_settings.hud_size > 150) g_settings.hud_size = 100;
 #define CLAMP(v, lo, hi) ((v) < (lo) ? (lo) : (v) > (hi) ? (hi) : (v))
     g_settings.color_exposure = CLAMP(g_settings.color_exposure, -20, 20);
     g_settings.color_contrast = CLAMP(g_settings.color_contrast, -50, 50);
@@ -331,12 +347,22 @@ void settings_save(void) {
     static const char *const shadow[SHADOW_COUNT] = {"console", "high", "ultra", "extreme"};
     int sr = g_settings.shadow_res;
     fprintf(f, "shadow_resolution = %s\n", shadow[sr >= 0 && sr < SHADOW_COUNT ? sr : SHADOW_CONSOLE]);
+    fprintf(f, "sharper_text = %s\n", g_settings.sharper_text == 4 ? "4x" : g_settings.sharper_text == 2 ? "2x" : "off");
     fprintf(f, "wide_view = %d\n", g_settings.wide_view);
     fprintf(f, "hdr = %s\n", k_hdr[g_settings.hdr >= 0 && g_settings.hdr < HDR_COUNT ? g_settings.hdr : HDR_AUTO]);
     if (g_settings.hdr_white) fprintf(f, "hdr_paper_white = %d\n", g_settings.hdr_white);
     fprintf(f, "field_of_view = %d\n", g_settings.fov);
+    fprintf(f, "hud_size = %d\n", g_settings.hud_size);
     int dd = g_settings.draw_distance;
     fprintf(f, "draw_distance = %s\n", k_drawdist[dd >= 0 && dd < DRAWDIST_COUNT ? dd : DRAWDIST_ORIGINAL]);
+    fprintf(f, "no_weapon_wear = %d\n", g_settings.no_weapon_wear);
+    fprintf(f, "infinite_arrows = %d\n", g_settings.infinite_arrows);
+    fprintf(f, "infinite_stamina = %d\n", g_settings.infinite_stamina);
+    fprintf(f, "god_mode = %d\n", g_settings.god_mode);
+    fprintf(f, "one_hit_kill = %d\n", g_settings.one_hit_kill);
+    fprintf(f, "damage_taken = %d\n", g_settings.damage_taken);
+    fprintf(f, "damage_dealt = %d\n", g_settings.damage_dealt);
+    fprintf(f, "haze = %d\n", g_settings.haze);
     fprintf(f, "colour_exposure = %.1f\n", g_settings.color_exposure / 10.0);
     fprintf(f, "colour_contrast = %d\n", g_settings.color_contrast);
     fprintf(f, "colour_saturation = %d\n", g_settings.color_saturation);

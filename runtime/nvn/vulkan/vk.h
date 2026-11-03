@@ -124,6 +124,7 @@ typedef struct TexBackend {
     uint8_t mem_kind;            // TM_* (runtime/perfcount.h): texture memory by kind
     int64_t mem_bytes, mem_src;  // its memory; ASTC decoded to RGBA8: the guest ASTC size
     bool bc4_cpu;                // BC4 decoded to R8 on upload (SAVAGEWIND_VK_BC4_CPU=1: Mali text / sprites test)
+    uint8_t text_scale;          // a font sheet enlarged by this much on upload (runtime/nvn/text_upscale.c); 0: not one
     uint32_t glyph_gen;          // a button glyph sheet (runtime/nvn/glyphs.c): the icons it was uploaded with
     // textures.c: one image per memory and shape, shared by every texture made there
     uint64_t key_addr;           // 0: not shared
@@ -164,6 +165,7 @@ void vk_block_flush(VkCommandBuffer cb, TexBackend *b);  // (outside a pass) b->
 VkSampler vk_sampler(NvnSamplerDesc *d, bool aniso_ok, float bias);  // (aniso_ok: Video > Anisotropic filtering may
                                                                      //  apply; bias: added to the LOD bias)
 VkSampler vk_default_sampler(bool linear);
+VkSampler vk_text_sampler(void);
 void vk_image_init_layout(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect);
 // Destruction once every submission that may use the object has completed.
 void vk_defer_image(VkImage img, VmaAllocation mem);

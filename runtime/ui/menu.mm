@@ -767,6 +767,24 @@ static void tab_display(void) {
                        "conversations keep theirs.", false))
             g_settings.fov = fov[cur];
     }
+    {   // HUD size (runtime/nvn/hud_scale.h)
+        static const int sizes[] = HUD_SIZE_CHOICES;
+        enum { NV = sizeof sizes / sizeof sizes[0] };
+        static char names_buf[NV][16];
+        const char *names[NV];
+        int cur = 0, def = 0;
+        for (int i = 0; i < NV; i++) {
+            snprintf(names_buf[i], sizeof names_buf[i], "%d%%", sizes[i]);
+            names[i] = names_buf[i];
+            if (sizes[i] == 100) def = i;
+        }
+        cur = def;
+        for (int i = 0; i < NV; i++)
+            if (sizes[i] == g_settings.hud_size) cur = i;
+        if (opt_choice("HUD size", &cur, names, NV, def,
+                       "How big the hearts, stamina, minimap and the rest of the HUD are. Each part stays in its corner.", false))
+            g_settings.hud_size = sizes[cur];
+    }
     {   // Draw distance (runtime/draw_distance.c)
         static const char *const names[DRAWDIST_COUNT] = {"Original", "Medium", "High"};  // (DRAWDIST_*)
         int cur = g_settings.draw_distance;
@@ -944,6 +962,16 @@ static void tab_display(void) {
                "The size of the maps the sun's shadows are drawn from. Console: the game's own, 896 x 896. High (2048), "
                "Ultra (4096) and Extreme (8192) give sharper shadow edges (Link, trees, buildings) for more GPU time "
                "and video memory (Ultra: about 100 MB, Extreme: about 400 MB).");
+    {   // the game's font sheets enlarged (runtime/nvn/text_upscale.c): read when the game starts
+        static const char *text[] = {"Off", "2x", "4x"};
+        int cur = g_settings.sharper_text / 2;
+        if (opt_choice("Sharper text", &cur, text, 3, 0,
+                       "Makes the game's letters sharper on 1440p and 4K screens. It takes effect the next time you start "
+                       "the game. This is an upscale made on your computer from the game's own letters, not Nintendo's "
+                       "original art: the shapes are kept, but they aren't exactly as drawn. 4x takes a moment longer to "
+                       "start and uses more video memory.", false))
+            g_settings.sharper_text = cur * 2;
+    }
 #ifndef __APPLE__
     tab_colour();
 #endif
