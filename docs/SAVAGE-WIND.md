@@ -1563,6 +1563,12 @@ enlaces sparse; no se copian las páginas a un pool de VRAM separado. En una Int
 del sistema compartida. El tamaño virtual del buffer y los bytes enlazados no significan que exista esa cantidad de
 VRAM dedicada ni que el contador de memoria compartida de Windows aumente en la misma cantidad.
 
+En un inicio directo del juego en Windows, Vulkan inicializa la ventana y selecciona la GPU antes del arranque del
+juego. Así `auto` ya conoce el adaptador cuando `SetHeapSize` decide entre confirmar el heap de inmediato o dejar que
+sus páginas se confirmen al usarse; sin esa selección temprana, el modo `auto` podía elegir el camino eager antes de
+saber que la GPU era Intel integrada. Desde la pantalla de inicio, la ventana y Vulkan ya se inicializan antes de
+iniciar el juego.
+
 Las ventanas enlazadas quedan enlazadas hasta limpiar el backend: no hay política de desalojo ni recarga de páginas
 en este mecanismo. Solo se omite la validación de rango del sistema operativo cuando la tabla confirma que todas las
 ventanas del rango están enlazadas; los rangos no confirmados siguen el camino de compromiso y validación normal.

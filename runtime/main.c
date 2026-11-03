@@ -385,6 +385,12 @@ int main(int argc, char **argv) {
     if (test_mode || getenv("SAVAGEWIND_LAUNCHER_SHOT") || getenv("SAVAGEWIND_LAUNCHER_EXTRACT") ||
         getenv("SAVAGEWIND_LAUNCHER_SETUP") || getenv("SAVAGEWIND_LAUNCHER_DELETE"))
         mode = test_mode && !strcmp(test_mode, "setup") ? LAUNCHER_SETUP : LAUNCHER_CONFIG;
+#ifdef _WIN32
+    if (mode == LAUNCHER_NONE) {
+        extern void ui_window_init(void);  // Select the GPU before the game's SetHeapSize chooses eager or lazy backing.
+        ui_window_init();
+    }
+#endif
     for (;;) {
         if (mode != LAUNCHER_NONE) launcher_run(root, mode);
         // The game holds the lock on its save folder while it runs, so the Saves tab of another Savage Wind refuses to
