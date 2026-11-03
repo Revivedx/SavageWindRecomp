@@ -31,6 +31,72 @@ static IpcResp request(uint32_t cmd, void *buf, size_t size) {
     return resp;
 }
 
+static IpcResp area_request(uint32_t cmd, uint32_t access_id, void *buffer, size_t size) {
+    uint64_t payload[2] = {1, access_id};
+    IpcReq req = {.cmd = cmd, .data = (void *)payload, .data_size = sizeof payload};
+    if (buffer) {
+        req.na = 1;
+        req.a[0] = (IpcBuf){(uintptr_t)buffer, size};
+    }
+    IpcResp resp = {0};
+    nfp_user(NULL, &req, &resp);
+    return resp;
+}
+
+static void test_wolf_link(void) {
+    int wolf = -1;
+    for (int figure = 0; figure < AMIIBO_COUNT; figure++)
+        if (!strcmp(virtual_amiibos[figure].id, "01030000024f0902")) wolf = figure;
+    assert(wolf >= 0);
+    assert(rt_amiibo_bool(0xf37e3e58, 1) == 1);
+    nfp_configure(true, wolf, false);
+    assert(rt_amiibo_bool(0xf37e3e58, 1) == 1);
+    nfp_configure(true, wolf, true);
+    assert(rt_amiibo_bool(0xf37e3e58, 1) == 0);
+    assert(rt_amiibo_bool(0xf37e3e58, 0) == 0);
+    assert(rt_amiibo_bool(0xf37e3e59, 1) == 1);
+    nfp_configure(false, wolf, true);
+    assert(rt_amiibo_bool(0xf37e3e58, 1) == 1);
+    nfp_configure(true, AMIIBO_ARCHER, true);
+    assert(rt_amiibo_bool(0xf37e3e58, 1) == 1);
+    nfp_configure(true, wolf, false);
+    assert(!request(4, NULL, 0).result && !request(3, NULL, 0).result);
+    uint8_t area[0xd9], registration[0x100];
+    assert(request(8, area, sizeof area).result);
+    assert(!request(5, NULL, 0).result);
+    assert(!request(14, registration, sizeof registration).result);
+    assert(!strcmp((char *)registration + 0x5c, "Wolf Link"));
+    assert(request(14, registration, sizeof registration - 1).result);
+    assert(request(8, area, sizeof area).result);
+    assert(request(7, NULL, 0).result);
+    assert(area_request(7, 0, NULL, 0).result == MAKE_RESULT(115, 152));
+    assert(!area_request(7, 0x1019c800, NULL, 0).result);
+    assert(request(8, area, 0xd7).result);
+    memset(area, 0xcc, sizeof area);
+    IpcResp resp = request(8, area, sizeof area);
+    assert(!resp.result && resp.data_size == 4);
+    uint32_t size;
+    memcpy(&size, resp.data, sizeof size);
+    assert(size == 0xd8 && area[0x11] == 40 && area[0x12] == 80 && area[0xd8] == 0xcc);
+    area[0x12] = 60;
+    assert(area_request(9, 0, area, 0xd7).result);
+    assert(!area_request(9, 0, area, 0xd8).result);
+    assert(!request(10, NULL, 0).result);
+    assert(!request(8, area, sizeof area).result && area[0x12] == 60);
+    assert(!request(6, NULL, 0).result && !request(5, NULL, 0).result);
+    assert(request(8, area, sizeof area).result);
+    assert(!area_request(7, 0x1019c800, NULL, 0).result);
+    assert(!request(8, area, sizeof area).result && area[0x12] == 60);
+    assert(!request(4, NULL, 0).result && !request(3, NULL, 0).result && !request(5, NULL, 0).result);
+    assert(!area_request(7, 0x1019c800, NULL, 0).result);
+    assert(!request(8, area, sizeof area).result && area[0x12] == 80);
+    nfp_configure(true, AMIIBO_ARCHER, false);
+    assert(!request(4, NULL, 0).result && !request(3, NULL, 0).result && !request(5, NULL, 0).result);
+    assert(request(14, registration, sizeof registration).result == MAKE_RESULT(115, 120));
+    assert(area_request(7, 0x1019c800, NULL, 0).result == MAKE_RESULT(115, 128));
+    assert(request(8, area, sizeof area).result);
+}
+
 int main(void) {
     uint8_t tag[0x58], model[0x41];
     uint64_t handle = 0;
@@ -135,7 +201,8 @@ int main(void) {
     assert(!memcmp(tag, stable_archer, 7));
     nfp_configure(false, AMIIBO_ARCHER, true);
     assert(!rt_amiibo_ignore_daily("AmiiboTouchHistory", 0));
+    test_wolf_link();
     nfp_reset();
-    assert(!initialized && !activate && !deactivate);
+    assert(!initialized && !activate && !deactivate && !application_open);
     puts("PASS: virtual amiibo discovery, live controls, stable scans, catalog and reset");
 }

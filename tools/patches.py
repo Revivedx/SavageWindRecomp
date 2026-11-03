@@ -23,6 +23,12 @@ def _fn(gen, site):  # the generated function at a site's address
     return f'f_{gen.sites[site]:x}'
 
 
+def _amiibo_wolf_death(gen, a):
+    assert _word(gen, a) == 0x12000008, hex(_word(gen, a))
+    return ('{ extern uint32_t rt_amiibo_bool(uint32_t, uint32_t); '
+            'c->x[8] = rt_amiibo_bool(LD32(c->x[20] + 0xc), (uint32_t)c->x[0]); }')
+
+
 def _amiibo_daily_count(gen, a):
     # x0 = AmiiboMgr, x1 = history flag SafeString {vtable, char *}, w2 = match kind.
     # Override only UID-based daily checks; lifetime history is used by first-use rewards such as Epona.
@@ -718,6 +724,7 @@ def _gyro_scene_actor(gen, a):
 
 PATCHES = {
     'amiibo_daily_count': _amiibo_daily_count,
+    'amiibo_wolf_death': _amiibo_wolf_death,
     'pc_map_focus': _pc_map_focus(False),
     'pc_map_focus_target': _pc_map_focus(True),
     'pc_map_focus_now': _pc_map_focus(True),

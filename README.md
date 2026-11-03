@@ -316,6 +316,9 @@ switches - are in [docs/SAVAGE-WIND.md](docs/SAVAGE-WIND.md).
 
 ## Credits
 
+- [AmiiboAPI](https://amiiboapi.org/) by [8bitDream and contributors](https://github.com/8bitDream/AmiiboAPI),
+  based on [Nevin Vu (N3evin)'s original project](https://github.com/N3evin/AmiiboAPI) (MIT) - metadata for the
+  offline amiibo catalog. See [catalog attribution](data/README.md) and [upstream license](data/AmiiboAPI-LICENSE.txt).
 - **[LAS Recomp](https://github.com/peiikai/LASRecomp)** by peiikai - the recompiler, the runtime and most of what
   this project is built on (MIT).
 - [Ryujinx](https://github.com/Ryujinx/Ryujinx) (MIT) - its shader decoder was the reference for instruction field
@@ -350,6 +353,9 @@ switches - are in [docs/SAVAGE-WIND.md](docs/SAVAGE-WIND.md).
 Savage Wind Recomp's own code is open source under the [MIT License](LICENSE), as is LAS Recomp's, on which it
 builds. Third-party components in `third_party/` keep their own licenses. The license covers this project's code
 only: it grants nothing for Nintendo's game, which you must supply yourself.
+
+The offline amiibo catalog includes metadata adapted from AmiiboAPI; its upstream MIT notice is preserved in
+`data/AmiiboAPI-LICENSE.txt` and shipped as `AmiiboAPI-LICENSE.txt` in release packages.
 
 The Windows release zip also bundles, unchanged unless noted, under their own licenses:
 

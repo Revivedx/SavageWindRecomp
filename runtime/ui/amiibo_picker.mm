@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <mutex>
+#include <string>
 #include <vector>
 extern "C" {
 #include "../settings.h"
@@ -70,7 +71,7 @@ void amiibo_picker_draw(float scale) {
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * .5f, io.DisplaySize.y * .5f), ImGuiCond_Always, ImVec2(.5f, .5f));
     ImGui::SetNextWindowSize(size, ImGuiCond_Always);
     if (appearing) ImGui::SetNextWindowFocus();
-    ImGui::Begin(tr("Choose amiibo"), nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove);
+    ImGui::Begin((std::string(tr("Choose amiibo")) + "###amiibo-picker").c_str(), nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove);
     ImGui::TextWrapped("%s: %s", tr("Selected figure"), virtual_amiibos[current].name);
 
     ImGui::SetNextItemWidth(-1);
@@ -111,8 +112,11 @@ void amiibo_picker_draw(float scale) {
     bool shortcuts = !was_typing && !ui_text_busy() &&
                      !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId);
     bool favorite_pressed = shortcuts && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp, false);
-    ImGui::Text("%d %s", (int)results.size(), tr("figures"));
-    float footer = ImGui::GetTextLineHeightWithSpacing() * 3 + ImGui::GetFrameHeightWithSpacing() + 18 * scale;
+    ImGui::Text(tr("Figures: %d"), (int)results.size());
+    const char *hint = tr("Top button: favorite   L/R: tabs   Confirm: select   Back: cancel");
+    float hint_height = ImGui::CalcTextSize(hint, nullptr, false, ImGui::GetContentRegionAvail().x).y;
+    float footer = ImGui::GetTextLineHeightWithSpacing() * 2 + hint_height +
+                   ImGui::GetFrameHeightWithSpacing() + 18 * scale;
     ImGui::BeginChild("##amiibo-results", ImVec2(0, -footer), ImGuiChildFlags_Borders, ImGuiWindowFlags_NavFlattened);
     if (results.empty()) ImGui::TextWrapped("%s", tr("No figures match. Try another search or filter."));
     for (int i : results) {
@@ -140,7 +144,9 @@ void amiibo_picker_draw(float scale) {
     ImGui::Separator();
     ImGui::TextWrapped("%s", virtual_amiibos[preview].name);
     ImGui::TextDisabled("%s", tr(amiibo_series_name(amiibo_series(preview))));
-    ImGui::TextDisabled("%s", tr("Top button: favorite   L/R: tabs   Confirm: select   Back: cancel"));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    ImGui::TextWrapped("%s", hint);
+    ImGui::PopStyleColor();
     if (ImGui::Button(tr("Cancel"))) close_picker(-1);
     bool popup = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId);
     if (frames > 2 && !popup && !was_typing && !ui_text_busy() &&

@@ -3,7 +3,11 @@
 #include "../runtime/ui/amiibo_picker.mm"
 
 extern "C" { Settings g_settings = {}; void input_reset(void) {} }
-const char *tr(const char *text) { return text; }
+static bool translated;
+const char *tr(const char *text) {
+    if (translated && !strcmp(text, "Choose amiibo")) return "Choisir un amiibo";
+    return text;
+}
 #include "../runtime/ui/osk.mm"
 static void frame(void) {
     ImGui::NewFrame();
@@ -17,7 +21,7 @@ static void press(ImGuiKey key) {
     for (int i = 0; i < 3; i++) frame();
 }
 static bool focus_up_to(const char *label) {
-    ImGuiWindow *window = ImGui::FindWindowByName("Choose amiibo");
+    ImGuiWindow *window = ImGui::FindWindowByName("###amiibo-picker");
     ImGuiID id = window->GetID(label);
     for (int i = 0; i < 12 && GImGui->NavId != id; i++) press(ImGuiKey_GamepadDpadUp);
     return GImGui->NavId == id;
@@ -93,6 +97,13 @@ int main(void) {
     assert(amiibo_picker_take(&r) && r.selected == AMIIBO_ARCHER && r.favorites[AMIIBO_ARCHER]);
     assert(g_settings.amiibo_figure == AMIIBO_GUARDIAN && !g_settings.amiibo_favorites[AMIIBO_ARCHER]);
     amiibo_picker_open();
+    for (int index = 0; index < 4; index++) frame();
+    ImGuiWindow *original = ImGui::FindWindowByName("###amiibo-picker");
+    assert(original);
+    translated = true;
+    frame();
+    assert(ImGui::FindWindowByName("Choisir un amiibo###amiibo-picker") == original);
+    assert(amiibo_picker_active() && g_settings.amiibo_figure == AMIIBO_GUARDIAN);
     amiibo_picker_reset();
     assert(!amiibo_picker_active() && !amiibo_picker_take(&r));
     ImGui::DestroyContext();

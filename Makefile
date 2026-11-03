@@ -362,6 +362,7 @@ dist:
 	cp third_party/FidelityFX/LICENSE.txt "$(DIST)/FidelityFX-LICENSE.txt"  # (AMD FidelityFX SDK, MIT: README "License")
 	mkdir "$(DIST)/colour-luts" && cp third_party/luts/*.cube third_party/luts/README.md "$(DIST)/colour-luts/"  # (CC0: Video > Colour)
 	cp README.md LICENSE "$(DIST)/"  # (licenses and source links of the bundled components: README "License")
+	cp data/AmiiboAPI-LICENSE.txt "$(DIST)/"
 	PATH="$(CURDIR)/build/deps-win/bin:$$PATH" ldd $(WIN_B)/savagewind.exe | awk '(/ucrt64/ || /deps-win/) && !/vulkan-1/ {print $$3}' | sort -u | \
 	    xargs -I{} cp -u {} "$(DIST)/"
 	! ls "$(DIST)" | grep -iE 'x264|x265|xvid|postproc'  # (no GPL codec libraries in the release)
@@ -632,6 +633,7 @@ $(B)/test_amiibo_picker: tools/test_amiibo_picker.cpp runtime/ui/amiibo_picker.m
 
 test-amiibo: $(B)/test_amiibo $(B)/test_amiibo_settings $(B)/test_amiibo_options $(B)/test_amiibo_library $(B)/test_amiibo_picker
 	$(PY) tools/update_amiibo_catalog.py --check
+	$(PY) tools/test_amiibo_i18n.py
 	$(B)/test_amiibo
 	$(B)/test_amiibo_options
 	$(B)/test_amiibo_library

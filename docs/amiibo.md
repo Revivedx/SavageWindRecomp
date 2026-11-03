@@ -13,8 +13,15 @@ The enable setting, figure selection, Favorites and Recent list are saved in `sa
 changing the figure during a scan applies to the next scan. Each figure normally has its own stable virtual identity.
 Turning amiibo rewards off removes a detected figure and leaves the reader waiting without presenting one.
 
-**Repeat scans**, also on this page, is an optional saved setting (off by default). It now bypasses only the
-UID-based daily-use check while retaining each figure's stable serial number and the game's lifetime-use history.
+The amiibo page and browser controls follow the selected menu text language, with translations for Spanish,
+French, German, Italian, Dutch, Portuguese, Russian, Japanese, Korean, Simplified and Traditional Chinese, and Thai.
+The generic series filters (All series and Others) are translated too. Figure names and branded series titles
+remain the catalog's English names; search uses those catalog fields rather than translated names and does not
+perform Unicode case folding. The browser keeps a stable window identity when its translated title changes.
+
+**Repeat scans**, also on this page, is an optional saved setting (off by default). It bypasses the
+UID-based daily-use check and, for Wolf Link, his separate death cooldown, while retaining each figure's stable
+serial number and the game's lifetime-use history.
 The game still selects the rewards. This is intended to allow Epona's first-use reward to give way to subsequent
 chest rolls instead of repeatedly presenting a brand-new figure. The revised bypass has been confirmed to produce subsequent chest rewards in game.
 Turning repeat off restores the normal daily-use check; scans made while repeat was on still count in that history.
@@ -29,7 +36,19 @@ binary and game library have already been rebuilt.
 
 No figure dumps or keys are needed. The original four figures (Archer Link, BOTW Zelda, Guardian and Bokoblin),
 previous Gameplay controls and the repeat cooldown bypass have been confirmed working in game. The expanded library still needs
-gameplay testing. Wolf Link is listed, but its special saved-data behavior is not supported: writable amiibo application data is not implemented. Catalog presence does not guarantee a special reward or game compatibility.
+gameplay testing. Selecting **Midna & Wolf Link** now supplies synthetic registration and Twilight Princess HD
+application data for **20 hearts** (Cave of Shadows level 40). No dump or keys are required. This path has automated
+IPC coverage. Writes are retained only within the current detection window;
+each new scan starts with 20 hearts. BOTW's own companion-health and daily-use rules may still affect a summon.
+With **Repeat scans** enabled and Wolf Link selected, reads of `WolfLink_DiedToday` now return false, allowing
+the game to attempt another summon after his death. The saved flag is not cleared; switching repeat off restores
+its real value. Other boolean flags, figure identities and lifetime reward history are unchanged. This additional
+hook has automated coverage and has been built for 1.9.0. Resummoning after death with Repeat scans enabled
+has been confirmed working in game.
+Other figures have no application data. Catalog presence does not guarantee a special reward or game compatibility.
+
+The synthetic Wolf Link data uses application ID `0x1019c800`, level byte `0x11` and quarter-heart byte `0x12`,
+as documented by [TagMo's application-data implementation](https://github.com/HiddenRamblings/TagMo/blob/master/app/src/main/java/com/hiddenramblings/tagmo/amiibo/tagdata/AppDataZeldaTP.kt).
 
 The offline catalog contains 952 entries from [AmiiboAPI](https://amiiboapi.org/), including figures, cards,
 bands, blocks and yarn amiibo across 33 series filters. The first 22 entries retain their saved keys, order and
@@ -38,6 +57,8 @@ stable virtual identity, including entries beyond index 255. The game determines
 new entries have automated service coverage but still need gameplay testing. Images are not bundled.
 
 Catalog metadata is stored in `data/amiibo.json`, with a generated C catalog in `runtime/amiibo_catalog.h`.
+Credit goes to 8bitDream and contributors and the original AmiiboAPI by Nevin Vu (N3evin).
+See [catalog attribution](../data/README.md) and the preserved [MIT license](../data/AmiiboAPI-LICENSE.txt).
 The game never contacts the API. To update the catalog:
 
 ```sh

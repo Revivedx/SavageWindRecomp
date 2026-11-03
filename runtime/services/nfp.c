@@ -17,12 +17,20 @@ static int selected_figure, active_figure;
 static KEvent *activate, *deactivate, *availability;
 static uint32_t activate_w, activate_r, deactivate_w, deactivate_r, availability_w, availability_r;
 static const uint64_t device = 1;
+static bool application_open;
+static uint8_t wolf_area[0xd8];
+
+static bool is_wolf_link(void) {
+    return !strcmp(virtual_amiibos[active_figure].id, "01030000024f0902");
+}
 
 RT_ON_RESET(nfp_reset) {
     initialized = enabled = repeat_scans = false;
     memset(active_uid, 0, sizeof active_uid);
     device_state = NFP_READY;
     selected_figure = active_figure = AMIIBO_ARCHER;
+    application_open = false;
+    memset(wolf_area, 0, sizeof wolf_area);
     activate = deactivate = availability = NULL;
     activate_w = activate_r = deactivate_w = deactivate_r = availability_w = availability_r = 0;
 }
@@ -38,6 +46,10 @@ static void event_set(KEvent *event, bool signal) {
 // The figure is latched for the whole scan: model and UID must always agree.
 static void present_figure(void) {
     active_figure = selected_figure;
+    application_open = false;
+    memset(wolf_area, 0, sizeof wolf_area);
+    wolf_area[0x11] = 40;
+    wolf_area[0x12] = 80;
     const uint8_t stable_uid[7] = {0x04, 0x53, 0x57, 0x01, (uint8_t)((active_figure + 1) >> 16),
                                    (uint8_t)((active_figure + 1) >> 8), (uint8_t)(active_figure + 1)};
     memcpy(active_uid, stable_uid, sizeof active_uid);
@@ -73,6 +85,15 @@ int rt_amiibo_ignore_daily(const char *history, uint32_t kind) {
     pthread_mutex_unlock(&nfp_lock);
     if (ignore) LOG("[nfp] bypassed daily use check (stable figure identity)\n");
     return ignore;
+}
+
+uint32_t rt_amiibo_bool(uint32_t hash, uint32_t value) {
+    if (hash != 0xf37e3e58 || !(value & 1)) return value & 1;
+    pthread_mutex_lock(&nfp_lock);
+    bool bypass = enabled && repeat_scans &&
+        !strcmp(virtual_amiibos[selected_figure].id, "01030000024f0902");
+    pthread_mutex_unlock(&nfp_lock);
+    return bypass ? 0 : value & 1;
 }
 
 static void return_event(IpcResp *resp, KEvent **event, uint32_t *w, uint32_t *r) {
@@ -120,6 +141,7 @@ static void nfp_user(Service *s, IpcReq *req, IpcResp *resp) {
         event_set(activate, false);
         event_set(deactivate, false);
         initialized = false;
+        application_open = false;
         device_state = NFP_READY;
         break;
     case 2: {
@@ -138,17 +160,37 @@ static void nfp_user(Service *s, IpcReq *req, IpcResp *resp) {
         if (enabled) present_figure();
         break;
     case 4:
+        application_open = false;
         event_set(activate, false);
         if (device_state == NFP_FOUND || device_state == NFP_MOUNTED) event_set(deactivate, true);
         device_state = NFP_READY;
         break;
     case 5: device_state = NFP_MOUNTED; break;
-    case 6: device_state = NFP_FOUND; break;
-    case 7: case 8: case 9: case 12: case 24:
-        // This prototype has no application area (in particular, no Wolf Link save data).
+    case 6: application_open = false; device_state = NFP_FOUND; break;
+    case 7:
+        if (!is_wolf_link()) resp->result = MAKE_RESULT(115, 128);
+        else if (req->data_size < 12) resp->result = MAKE_RESULT(115, 65);
+        else if (IN(uint32_t, 8) != 0x1019c800) resp->result = MAKE_RESULT(115, 152);
+        else application_open = true;
+        break;
+    case 8:
+        if (!is_wolf_link() || !application_open) resp->result = MAKE_RESULT(115, 128);
+        else if (write_info(req, resp, wolf_area, sizeof wolf_area)) {
+            OUT(uint32_t, 0) = sizeof wolf_area;
+            resp_size(resp, 4);
+        }
+        break;
+    case 9: {
+        IpcBuf *buffer = in_buf(req, 0);
+        if (!is_wolf_link() || !application_open) resp->result = MAKE_RESULT(115, 128);
+        else if (!buffer || !buffer->addr || buffer->size != sizeof wolf_area) resp->result = MAKE_RESULT(115, 65);
+        else memcpy(wolf_area, (const void *)(uintptr_t)buffer->addr, sizeof wolf_area);
+        break;
+    }
+    case 12: case 24:
         resp->result = MAKE_RESULT(115, 128);
         break;
-    case 10: case 11: break;  // Flush / Restore: the synthetic tag has no writable storage.
+    case 10: case 11: break;
     case 13: {
         if (device_state != NFP_FOUND && device_state != NFP_MOUNTED) {
             resp->result = MAKE_RESULT(115, 73);
@@ -163,8 +205,12 @@ static void nfp_user(Service *s, IpcReq *req, IpcResp *resp) {
         break;
     }
     case 14:
-        // Unregistered: avoid supplying a fabricated Mii or opening the console registration applet.
-        resp->result = MAKE_RESULT(115, 120);
+        if (is_wolf_link()) {
+            uint8_t info[0x100] = {0};
+            info[0x58] = 0xe8; info[0x59] = 0x07; info[0x5a] = 1; info[0x5b] = 1;
+            memcpy(info + 0x5c, "Wolf Link", sizeof "Wolf Link");
+            write_info(req, resp, info, sizeof info);
+        } else resp->result = MAKE_RESULT(115, 120);
         break;
     case 15: {
         uint8_t info[0x40] = {0};
