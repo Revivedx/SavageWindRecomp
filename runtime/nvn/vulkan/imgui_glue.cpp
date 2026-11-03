@@ -7,6 +7,7 @@
 
 extern "C" {
 #include "vk.h"
+#include "record.h"
 }
 
 // Per ImGui context (the start screen and the in-game menu each have one, and the start screen comes back after an
@@ -47,6 +48,7 @@ extern "C" void vk_imgui_fonts_changed(void) {
 extern "C" void vk_imgui_backend_shutdown(void) {
     if (!ImGui::GetIO().BackendRendererUserData) return;
     vk_present_idle();
+    rec_drain();
     vkDeviceWaitIdle(g_vk.dev);
     ImGui_ImplVulkan_Shutdown();
 }
@@ -78,7 +80,7 @@ extern "C" uint64_t vk_imgui_texture_rgba(const void *rgba, int w, int h) {
     rg.bufferOffset = s.off;
     rg.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     rg.imageExtent = {(uint32_t)w, (uint32_t)h, 1};
-    vkCmdCopyBufferToImage(cb, s.buf, img, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+    rec_CmdCopyBufferToImage(cb, s.buf, img, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
     VkImageViewCreateInfo vi = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     vi.image = img;
     vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
@@ -95,6 +97,7 @@ extern "C" uint64_t vk_imgui_texture_rgba(const void *rgba, int w, int h) {
 extern "C" void vk_imgui_texture_free(uint64_t id) {
     for (size_t i = 0; i < g_textures.size(); i++) {
         if (g_textures[i].id != id) continue;
+        rec_drain();
         vkDeviceWaitIdle(g_vk.dev);  // (a frame in flight may still draw it)
         ImGui_ImplVulkan_RemoveTexture((VkDescriptorSet)id);
         vkDestroyImageView(g_vk.dev, g_textures[i].view, NULL);

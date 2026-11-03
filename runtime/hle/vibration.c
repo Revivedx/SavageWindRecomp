@@ -7,6 +7,7 @@
 
 #include "../hle.h"
 #include "../vibration.h"
+#include "../settings.h"
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static VibrationValue values[2] = {{0, 160, 0, 320}, {0, 160, 0, 320}};
@@ -24,7 +25,7 @@ void vibration_send(uint32_t handle, const VibrationValue *value) {
     int i = device(handle);
     if (i < 0) return;
     pthread_mutex_lock(&lock);
-    if (permitted) {
+    if (permitted && g_settings.rumble) {
         VibrationValue previous = values[i];
         values[i] = *value;
         values[i].low_amplitude = amplitude(value->low_amplitude);
@@ -40,7 +41,7 @@ VibrationValue vibration_get(uint32_t handle) {
     VibrationValue v = {0, 160, 0, 320};
     int i = device(handle);
     pthread_mutex_lock(&lock);
-    if (i >= 0 && permitted) v = values[i];
+    if (i >= 0 && permitted && g_settings.rumble) v = values[i];
     pthread_mutex_unlock(&lock);
     return v;
 }
@@ -75,7 +76,7 @@ void vibration_update(SDL_Gamepad *pad, bool focused) {
     static uint16_t last_low, last_high;
     static uint64_t last_ms;
     static bool failed;
-    if (!pad || !focused) vibration_clear();
+    if (!pad || !focused || !g_settings.rumble) vibration_clear();
     bool changed = pad != last_pad;
     if (changed) {
         last_pad = pad;
@@ -85,8 +86,8 @@ void vibration_update(SDL_Gamepad *pad, bool focused) {
     }
     if (!pad) return;
     pthread_mutex_lock(&lock);
-    uint16_t low = focused && permitted ? (uint16_t)lroundf(fmaxf(values[0].low_amplitude, values[1].low_amplitude) * 65535) : 0;
-    uint16_t high = focused && permitted ? (uint16_t)lroundf(fmaxf(values[0].high_amplitude, values[1].high_amplitude) * 65535) : 0;
+    uint16_t low = focused && permitted && g_settings.rumble ? (uint16_t)lroundf(fmaxf(values[0].low_amplitude, values[1].low_amplitude) * 65535) : 0;
+    uint16_t high = focused && permitted && g_settings.rumble ? (uint16_t)lroundf(fmaxf(values[0].high_amplitude, values[1].high_amplitude) * 65535) : 0;
     pthread_mutex_unlock(&lock);
     uint64_t now = SDL_GetTicks();
     // A short lease stops the motors if the event loop stalls; refresh unchanged effects while it is alive.
@@ -94,6 +95,12 @@ void vibration_update(SDL_Gamepad *pad, bool focused) {
     if (!SDL_RumbleGamepad(pad, low, high, 100) && !failed) {
         LOG("[input] controller rumble unavailable: %s\n", SDL_GetError());
         failed = true;
+    }
+    static int nlog;  // (SAVAGEWIND_MOTION_LOG: rumble going on and off, next to the sensor stream's health - a
+                      // controller might change its sensor reports once it rumbles, #220)
+    if (!(low || high) != !(last_low || last_high) && ENV("SAVAGEWIND_MOTION_LOG") && nlog < 200) {
+        nlog++;
+        LOG("[motion] rumble %s\n", low || high ? "on" : "off");
     }
     last_low = low;
     last_high = high;

@@ -26,10 +26,12 @@
 #include <atomic>
 
 #include "i18n.h"
+#include "file_size_cache.h"
 #include "imgui.h"
 #include "imgui_internal.h"  // (SetKeyOwner)
 #include "option_rows.h"
 #include "osk.h"
+#include "saves_tab.h"
 #include "splash.h"
 #ifdef __APPLE__
 #include "imgui_impl_metal.h"
@@ -50,6 +52,7 @@ extern "C" {
 #include "romfs_build.h"
 #include "settings.h"
 #include "color_grade.h"
+#include "pc_cursor.h"
 #include "input_bind.h"
 #ifndef __APPLE__
 #include "nvn/precompile.h"
@@ -68,6 +71,7 @@ void *vk_frame_cmd(void);
 bool vk_imgui_backend_init(void);
 void vk_imgui_backend_shutdown(void);
 uint64_t vk_imgui_texture_rgba(const void *rgba, int w, int h);
+void rec_drain(void);  // (runtime/nvn/vulkan/record.c)
 #endif
 }
 #ifdef __APPLE__
@@ -95,11 +99,12 @@ static void save_png(id<MTLTexture> tex, const char *path) {
 #endif
 
 // The version this build is (also names the release files; Makefile / tools/bundle_macos.sh / make_dmg.sh read it).
-#define SAVAGEWIND_VERSION "0.3.1-alpha.3"
+#define SAVAGEWIND_VERSION "0.4.1-alpha.4"
 extern "C" const char *rt_version(void) { return SAVAGEWIND_VERSION; }  // (the title screen's version line: fs.c)
 
 // ------------------------------------------------------------------ game files
 static std::string g_root;  // extracted game: <root>/exefs, <root>/romfs
+static FileSizeCache g_file_size;
 
 static bool file_exists(const std::string &p) {
     struct stat st;
@@ -186,6 +191,12 @@ static unsigned count_files(const std::string &dir, unsigned enough, unsigned n 
     return n;
 }
 
+// The cutscene videos: all 30 in Movie/. A RomFS without that folder (left out when it was extracted, or lost copying
+// it) passed the file count, 30 short of ~41,000, and the game crashed at the first pre-rendered cutscene, the Great
+// Plateau Tower's (#292): such files are incomplete, before the setup copies them and before a start plays them.
+static const unsigned MOVIE_FILES = 30;
+static bool movies_complete(const std::string &romfs) { return count_files(romfs + "/Movie", MOVIE_FILES) >= MOVIE_FILES; }
+
 // The RomFS of version v, update applied? "" = yes, else what was found, said to the player (in the menu language).
 // A common mistake used to pass this far and the game then failed with no explanation: the update's ExeFS with the
 // cartridge's RomFS, which says its own older version, or with the update's RomFS alone, which has far fewer files.
@@ -227,6 +238,7 @@ static std::string check_copied_files(const std::string &root) {
         return v ? NOT_SUPPORTED_YET : NOT_SUPPORTED;
     }
     if (!is_dir(root + "/romfs")) return "Game data missing";
+    if (!movies_complete(root + "/romfs")) return "Game files incomplete";
     return "";
 }
 
@@ -575,6 +587,11 @@ static void *extract_thread(void *) {
         const GameVersion *v = main_version(id);
         std::string found = check_romfs(romfs, *v);  // (the RomFS that goes with that ExeFS)
         if (!found.empty()) { set_romfs_failure(*v, found); goto done; }
+        if (!movies_complete(romfs)) {
+            fprintf(stderr, "[launcher] romfs: Movie/ has fewer than the game's %u videos\n", MOVIE_FILES);
+            set_failure(FAIL_MISSING);
+            goto done;
+        }
     }
     {
         // (the picked folder can't be Savage Wind's own copy: setting up again deletes that first)
@@ -656,7 +673,8 @@ static void import_fonts() {
     mkdir("fonts", 0755);
     int ok = 0, skipped = 0;
     for (auto &src : picks) {
-        std::string base = src.substr(src.find_last_of('/') + 1), low = base;
+        // (the file dialog's paths have backslashes on Windows: the name is what follows either kind of separator)
+        std::string base = src.substr(src.find_last_of("/\\") + 1), low = base;
         for (auto &c : low) c = (char)tolower(c);
         bool known = false;
         for (auto n : FONT_STD) known |= low == n;
@@ -717,8 +735,9 @@ static bool menu_tip(float s) {
         ImGui::PushTextWrapPos(0);
         ImGui::TextUnformatted(tr("Savage Wind's video, audio and controls settings are in the game's own Options."));
         ImGui::Spacing();
-        ImGui::TextUnformatted(tr("Open them from the title screen, or pause the game and choose System > Options. "
-                                  "Esc frees the mouse cursor."));
+        ImGui::TextUnformatted(tr(pc_cursor_enabled()
+            ? "Open them from the title screen, or pause the game and choose System > Options. Esc opens pause or goes back. F2 frees the mouse cursor."
+            : "Open them from the title screen, or pause the game and choose System > Options. Esc frees the mouse cursor."));
         ImGui::PopTextWrapPos();
         ImGui::Dummy(ImVec2(0, 14 * s));
         ImGui::SetCursorPosX((ImGui::GetWindowWidth() - 180 * s) * 0.5f);
@@ -889,8 +908,8 @@ static bool launcher_pad_event(const SDL_Event &e) {
 
 // Settings' first tab, on the start screen only: the extracted game files (size, delete) and the user's own Switch
 // fonts (import / back to the substitute)
-// Open a folder in Finder / Explorer (relative paths are in the data root, the working directory)
-static void reveal_folder(const std::string &dir) {
+// Open a folder in Finder / Explorer (relative paths are in the data root, the working directory); also the Saves tab's
+void reveal_folder(const std::string &dir) {
     std::string path = dir;
     bool abs = !path.empty() && (path[0] == '/' || path[0] == '\\' || (path.size() > 1 && path[1] == ':'));
     if (!abs) path = std::string(rt_data_root()) + "/" + path;
@@ -918,8 +937,7 @@ static void prelaunch_tab(float sc) {
         ImGui::Spacing();
     };
     heading("Game files");
-    static double gb = -1;
-    if (gb < 0) gb = rt_game_files_size(g_root.c_str()) / 1e9;
+    FileSizeCache::Value size = g_file_size.get();
 #ifdef _WIN32
     if (ImGui::Button(tr("Show in Explorer"))) reveal_folder(g_root);
 #elif defined(__linux__)
@@ -934,7 +952,12 @@ static void prelaunch_tab(float sc) {
         ImGui::PushFont(g_font_menu);
         ImGui::TextColored(ImVec4(1, 0.72f, 0.4f, 1), "%s", tr("Are you sure?"));
         ImGui::PopFont();
-        ImGui::Text(tr("This deletes Savage Wind's copy of the game files (%.1f GB)."), gb);
+        if (size.state == FileSizeCache::State::Ready)
+            ImGui::Text(tr("This deletes Savage Wind's copy of the game files (%.1f GB)."), size.bytes / 1e9);
+        else {
+            ImGui::TextUnformatted(tr("This deletes Savage Wind's copy of the game files."));
+            ImGui::TextDisabled("%s", tr(size.state == FileSizeCache::State::Pending ? "Calculating..." : "Unavailable"));
+        }
         ImGui::TextDisabled("%s", tr("Saves and settings are kept. Your own game files aren't touched."));
         if (rt_dev_mode()) {  // (a source checkout: the files are the project's own extracted/)
             bool abs = !g_root.empty() && (g_root[0] == '/' || (g_root.size() > 1 && g_root[1] == ':'));
@@ -943,9 +966,10 @@ static void prelaunch_tab(float sc) {
         }
         ImGui::Spacing();
         if (ImGui::Button(tr("Delete"), ImVec2(220 * sc, 0))) {
+            g_file_size.invalidate();
             bool ok = rt_remove_game_files(g_root.c_str());  // (runtime/paths.c: only what the extraction made)
             set_job(ok ? "Game files deleted." : "Could not delete the game files (not in Savage Wind's data folder?).", !ok);
-            g_files_deleted = true, gb = -1;
+            g_files_deleted = true;
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
@@ -1035,6 +1059,8 @@ static void launcher_fonts_follow_language(void) {
 static bool g_setup_only;
 extern "C" void launcher_run(const char *root, int mode) {
     g_root = root;
+    saves_tab_set_game_files(root);
+    g_file_size.reset(g_root);
     g_setup_only = mode == 0;
     ui_window_init();
     SDL_Window *win = ui_window();
@@ -1135,6 +1161,7 @@ extern "C" void launcher_run(const char *root, int mode) {
         fprintf(stderr, "[launcher] delete %.1f GB: %s -> %s\n", gb, ok ? "ok" : "refused", status.c_str());
         if (!status.empty()) page = SETUP;
     }
+    bool was_busy = false;
     while (!play) {
         menu_apply_window_requests(win);  // (the Video tab's Fullscreen)
         if (g_files_deleted) {  // (Settings > Prelaunch deleted them)
@@ -1152,7 +1179,7 @@ extern "C" void launcher_run(const char *root, int mode) {
         pthread_mutex_lock(&g_lock);
         bool busy = g_busy;
         pthread_mutex_unlock(&g_lock);
-        static bool was_busy;
+        g_file_size.set_suspended(busy);
         if (was_busy && !busy) {
             status = check_game_files(g_root);
             if (status.empty() && g_setup_only) {  // set up: on into the game (after the first-start note)
@@ -1183,6 +1210,7 @@ extern "C" void launcher_run(const char *root, int mode) {
             static const float clear_col[4] = {0.04f, 0.05f, 0.06f, 1};
             if (!vk_frame_begin(clear_col)) { SDL_Delay(16); continue; }
             launcher_fonts_follow_language();
+            rec_drain();  // (ImGui uploads its fonts on the queue the recorder thread submits on)
             ImGui_ImplVulkan_NewFrame();
 #endif
             ImGui_ImplSDL3_NewFrame();
@@ -1329,7 +1357,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                     back = true;
                 ImGui::PopFont();
                 ImGui::EndChild();
-                if (back) {
+                if (back && !saves_tab_busy()) {  // (an import or a backup is running, or waiting for the player's yes)
                     bind_capture_cancel();
                     settings_save();
                     page = MAIN, g_refocus = SETTINGS;
@@ -1386,7 +1414,6 @@ extern "C" void launcher_run(const char *root, int mode) {
                 bool failed = g_job_failed;
                 pthread_mutex_unlock(&g_lock);
                 bool ready = status.empty() && !busy;  // (set up: the window offers to delete them, or set them up again)
-                static double files_gb = -1;
                 // chosen: "Selected" with a green check (long paths ran over the label); the path is in the
                 // explanation, and choosing again opens the picker again
                 std::string src_v = tr(src.empty() ? "Choose..." : "Selected");
@@ -1424,9 +1451,10 @@ extern "C" void launcher_run(const char *root, int mode) {
                 if (ready && !g_setup_only) {
                     // DELETE: frees Savage Wind's copy (runtime/paths.c removes only what the setup made, only inside
                     // the data root). Saves, settings and the user's own files stay.
-                    if (files_gb < 0) files_gb = rt_game_files_size(g_root.c_str()) / 1e9;
-                    char gb[32];
-                    snprintf(gb, sizeof gb, "%.1f GB", files_gb);
+                    FileSizeCache::Value size = g_file_size.get();
+                    char gb[128];
+                    if (size.state == FileSizeCache::State::Ready) snprintf(gb, sizeof gb, "%.1f GB", size.bytes / 1e9);
+                    else snprintf(gb, sizeof gb, "%s", tr(size.state == FileSizeCache::State::Pending ? "Calculating..." : "Unavailable"));
                     opt_section("Game files");
                     if (!g_confirm_delete) {
                         if (opt_action("Delete game files", gb, "Frees the space Savage Wind's copy of the game files takes. "
@@ -1436,12 +1464,13 @@ extern "C" void launcher_run(const char *root, int mode) {
                         first_row();
                     } else {
                         if (opt_action("Yes, delete them", gb, "Deletes the extracted game files now.", true)) {
+                            g_file_size.invalidate();
                             bool ok = rt_remove_game_files(g_root.c_str());
                             status = check_game_files(g_root);
                             if (ok) set_job("Game files deleted.");
                             else set_job("Couldn't delete the game files", true, "They aren't in Savage Wind's data folder, "
                                          "so they were left alone.");
-                            g_confirm_delete = false, files_gb = -1;
+                            g_confirm_delete = false;
                         }
                         if (opt_action("Cancel", "", "Keeps the game files.", true)) g_confirm_delete = false;
                     }
@@ -1453,9 +1482,9 @@ extern "C" void launcher_run(const char *root, int mode) {
                                        tr("The Master Trials and The Champions' Ballad, from your own copy of them. To add "
                                           "them, choose the folder with their extracted RomFS (or the game's folder, if "
                                           "they're in it) below and set up. Removing them keeps your saves."), true)) {
+                            g_file_size.invalidate();
                             remove_dlc(g_root);
                             set_job("Downloadable content removed.");
-                            files_gb = -1;
                         }
                     }
 #ifndef __APPLE__
@@ -1475,6 +1504,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                         opt_section("Shaders");
                         if (opt_action("Precompile shaders", tr(pst == 1 ? "Done" : pst == 2 ? "Run again" : "Not done"), pd.c_str(),
                                        true)) {
+                            g_file_size.set_suspended(true);
                             pthread_mutex_lock(&g_lock);
                             g_busy = true;
                             pthread_mutex_unlock(&g_lock);
@@ -1516,8 +1546,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                         bool look = !strcmp(g_settings.color_lut, COLOR_LUT_RECOMMENDED);
                         if (busy) opt_disable_next();
                         if (opt_toggle("Savage Wind colour look", &look, true,
-                                       "Recommended. The game's picture with Savage Wind's own colour look: a little "
-                                       "deeper and cooler. Change it or turn it off any time in the game's Options > "
+                                       "Recommended. The game's picture with Savage Wind's own colour look. Change it or turn it off any time in the game's Options > "
                                        "Colour (LUT).")) {
                             snprintf(g_settings.color_lut, sizeof g_settings.color_lut, "%s", look ? COLOR_LUT_RECOMMENDED : "");
                             g_settings.color_lut_strength = look ? COLOR_LUT_RECOMMENDED_STRENGTH : 100;
@@ -1529,6 +1558,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                     if (opt_action("Set up game files", busy ? tr("Working...") : "", ready ? again_d.c_str() : ex_d.c_str(),
                                    true)) {
                         settings_save();  // (the colour look as chosen above)
+                        g_file_size.set_suspended(true);
                         pthread_mutex_lock(&g_lock);
                         g_busy = true;
                         pthread_mutex_unlock(&g_lock);
@@ -1536,7 +1566,6 @@ extern "C" void launcher_run(const char *root, int mode) {
                         pthread_create(&t, NULL, extract_thread, NULL);
                         pthread_detach(t);
                     }
-                    if (!ready) files_gb = -1;  // (re-measured after a setup)
                 }
                 if (!job_line.empty()) {  // the current step / result
                     ImGui::Dummy(ImVec2(0, 14 * sc));
@@ -1723,10 +1752,12 @@ extern "C" void launcher_run(const char *root, int mode) {
             next = (next > now ? next : now) + period;
         }
     }
-    // play: hand the window to the game
+    // play: cancel the size traversal before handing the window to the game
+    g_file_size.stop();
     settings_save();
     SDL_SetWindowTitle(win, "Savage Wind");
     splash_unload();
+    saves_tab_unload();
 #ifdef __APPLE__
     ImGui_ImplMetal_Shutdown();
 #else

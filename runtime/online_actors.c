@@ -99,7 +99,13 @@ static struct {
     uint64_t link;  // OnlinePlayer; 0: none
     Watch link_w;
     int link_fails;
-    Piece armor[ARMOR], gear[ONLINE_GEAR], arrow;  // (arrow: on his bow's string while he draws it)
+    Piece armor[ARMOR], gear[ONLINE_GEAR];
+    Piece shot[ONLINE_SHOTS];      // what he holds, threw or shot (bombs, arrows: OnlineShots)
+    uint16_t shot_id[ONLINE_SHOTS];  // (its id; 0: unused, out of sight)
+    Piece nock;                    // the arrow on his bow's string while he draws it (it's no actor in his game)
+    struct { uint64_t p; uint32_t id, pad; } kago[2];  // Daruk's Protection on his Link: its effects' handles
+    int kago_n;                    // (the ring's charges it was made for)
+    uint16_t boom_seen;              // (the last explosion played)
     char name[ONLINE_NAME_MAX];
     int anim;                                     // the one-clip AS played (no pose: ONLINE_A_*; -1 none yet)
     char as[ONLINE_AS_CHANNELS][ONLINE_AS_MAX];   // the player's AS played on each channel
@@ -119,6 +125,7 @@ static const char *const k_bones[] = {"Weapon_R", "Weapon_L", "Pod_A", "Pod_B", 
 #define BONES (int)(sizeof k_bones / sizeof *k_bones)
 
 static float g_last_link[3];
+static bool g_local_dead;  // the local Link is dead (his body's AS: Dead...): game over is coming
 volatile bool g_online_actor[ONLINE_MAX];  // (online.h online_has_actor: the overlay draws no figure for these)
 
 bool online_has_actor(int slot) { return slot >= 0 && slot < ONLINE_MAX && g_online_actor[slot]; }
@@ -163,6 +170,17 @@ static uint64_t call_f(Cpu *c, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t a
     return r;
 }
 
+// a call whose result the game returns in memory (x8: where)
+static void call_sret(Cpu *c, uint64_t fn, uint64_t out, uint64_t a0, uint64_t a1) {
+    static Cpu saved;  // (the main thread only)
+    memcpy(&saved, c, sizeof saved);
+    for (int k = 0; k < 8; k++) c->x[k] = 0;
+    c->x[0] = a0, c->x[1] = a1, c->x[8] = out;
+    c->sp = (c->sp - 0x400) & ~0xFull;
+    guest_call(c, fn);
+    memcpy(c, &saved, sizeof saved);
+}
+
 static uint64_t call(Cpu *c, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
     return call_f(c, fn, a0, a1, a2, a3, a4, a5, 0, 0);
 }
@@ -189,8 +207,44 @@ static bool play_as(Cpu *c, uint64_t actor, const char *name, int slot, int bank
 #define POOL 24  // (each player's pool of pieces: below)
 static Piece g_pool[ONLINE_MAX][POOL];
 
+static void booms_forget(void);
+
+// requests still under way when all was forgotten: what they make is deleted once made (else it would stay in the
+// world, a piece nobody moves)
+#define ORPHANS 128
+static Piece g_orphan[ORPHANS];
+static void orphan(Piece *p) {
+    if (!p->pending) return;
+    for (int k = 0; k < ORPHANS; k++)
+        if (!g_orphan[k].pending) { g_orphan[k] = *p; return; }
+}
+
+static void orphans_update(Cpu *c) {
+    for (int k = 0; k < ORPHANS; k++) {
+        Piece *q = &g_orphan[k];
+        if (!q->pending) continue;
+        int *unit = (int *)(uintptr_t)q->handle->unit;
+        if (unit && *unit == 2) {
+            uint64_t a = call(c, FN_HANDLE_TAKE, (uint64_t)(uintptr_t)q->handle, 0, 0, 0, 0, 0);
+            if (a) call(c, FN_DELETE, a, 0, 0, 0, 0, 0);
+            memset(q, 0, sizeof *q);
+        } else if (unit && (*unit == 3 || *unit == 5)) {
+            call(c, FN_HANDLE_RELEASE, (uint64_t)(uintptr_t)q->handle, 0, 0, 0, 0, 0);
+            memset(q, 0, sizeof *q);
+        }
+    }
+}
+
 static void forget_all(void) {
+    for (int i = 0; i < ONLINE_MAX; i++) {
+        for (int k = 0; k < ARMOR; k++) orphan(&g_act[i].armor[k]);
+        for (int k = 0; k < ONLINE_GEAR; k++) orphan(&g_act[i].gear[k]);
+        for (int k = 0; k < ONLINE_SHOTS; k++) orphan(&g_act[i].shot[k]);
+        orphan(&g_act[i].nock);
+        for (int k = 0; k < POOL; k++) orphan(&g_pool[i][k]);
+    }
     memset(g_act, 0, sizeof g_act);
+    booms_forget();
     memset(g_pool, 0, sizeof g_pool);
     for (int i = 0; i < ONLINE_MAX; i++) g_act[i].anim = -1, g_act[i].covered = -1;
 }
@@ -283,7 +337,8 @@ static void pool_update(Cpu *c) {
 static void drop(Cpu *c, int i, bool left) {
     for (int k = 0; k < ARMOR; k++) pool_piece(c, i, &g_act[i].armor[k]);
     for (int k = 0; k < ONLINE_GEAR; k++) pool_piece(c, i, &g_act[i].gear[k]);
-    pool_piece(c, i, &g_act[i].arrow);
+    for (int k = 0; k < ONLINE_SHOTS; k++) pool_piece(c, i, &g_act[i].shot[k]);
+    pool_piece(c, i, &g_act[i].nock);
     if (left)
         for (int k = 0; k < POOL; k++) delete_piece(c, &g_pool[i][k]);
     if (alive(g_act[i].link, g_act[i].link_w)) call(c, FN_DELETE, g_act[i].link, 0, 0, 0, 0, 0);
@@ -322,6 +377,78 @@ static const char *gear_actor(const char *piece) {
     return NULL;
 }
 
+// online_mod/armor.txt: each armour piece's online actor (OnlineArmor_<its model list>), "piece=actor" a line;
+// online_mod/bones.txt: each of those actors' bone map, "actor=unit|unit..." (per unit of its model list, each bone's
+// index in Link's skeleton, 255 for one Link hasn't: its cloth's, its support bones')
+typedef struct { char key[48]; char *val; } MapLine;
+static int map_load(const char *file, MapLine **out) {
+    const char *ov = getenv("SAVAGEWIND_ROMFS_OVERLAY");
+    char p[1100];
+    snprintf(p, sizeof p, "%s/%s", ov ? ov : "", file);
+    FILE *f = ov && *ov ? fopen(p, "rb") : NULL;
+    int n = 0, cap = 0;
+    static char line[16384];
+    while (f && fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\r\n")] = 0;
+        char *eq = strchr(line, '=');
+        if (!eq) continue;
+        *eq = 0;
+        if (n == cap) *out = realloc(*out, sizeof **out * (cap = cap ? cap * 2 : 256));
+        snprintf((*out)[n].key, sizeof (*out)[n].key, "%s", line);
+        (*out)[n].val = strdup(eq + 1);
+        n++;
+    }
+    if (f) fclose(f);
+    return n;
+}
+
+static const char *map_find(MapLine *m, int n, const char *key) {
+    for (int i = 0; i < n; i++)
+        if (!strcmp(m[i].key, key)) return m[i].val;
+    return NULL;
+}
+
+static const char *armor_actor(const char *piece) {
+    static MapLine *m;
+    static int n = -1;
+    if (n < 0) n = map_load("armor.txt", &m), LOG("[online] %d armour pieces for the other players\n", n);
+    return map_find(m, n, piece);
+}
+
+// an armour actor's bone map for unit u: Link bone index per bone (255 none); its length in *len
+#define ARMOR_BONES 160
+static const uint8_t *armor_bones(const char *actor, int u, int *len) {
+    static MapLine *m;
+    static int n = -1;
+    static struct { char key[48]; int units; uint8_t map[4][ARMOR_BONES]; int len[4]; } cache[16];
+    static int next;
+    if (n < 0) n = map_load("bones.txt", &m);
+    for (int k = 0; k < 16; k++)
+        if (!strcmp(cache[k].key, actor) && cache[k].units) {
+            int uu = u < cache[k].units ? u : cache[k].units - 1;
+            *len = cache[k].len[uu];
+            return cache[k].map[uu];
+        }
+    const char *v = map_find(m, n, actor);
+    if (!v) return NULL;
+    int slot = next++ % 16;
+    memset(&cache[slot], 0, sizeof cache[slot]);
+    snprintf(cache[slot].key, sizeof cache[slot].key, "%s", actor);
+    int unit = 0, b = 0;
+    for (const char *c = v; *c && unit < 4; c++) {
+        if (*c == '|') { cache[slot].len[unit++] = b, b = 0; continue; }
+        if (*c == ',') continue;
+        int x = atoi(c);
+        while (c[1] >= '0' && c[1] <= '9') c++;
+        if (b < ARMOR_BONES) cache[slot].map[unit][b++] = (uint8_t)(x > 255 ? 255 : x);
+    }
+    if (unit < 4) cache[slot].len[unit++] = b;
+    cache[slot].units = unit;
+    int uu = u < unit ? u : unit - 1;
+    *len = cache[slot].len[uu];
+    return cache[slot].map[uu];
+}
+
 static uint64_t create(Cpu *c, const char *name) {
     uint64_t creator = *(uint64_t *)(uintptr_t)P_CREATOR, owner = *(uint64_t *)(uintptr_t)P_HEAP_OWNER;
     creator = creator ? *(uint64_t *)(uintptr_t)creator : 0;
@@ -341,6 +468,8 @@ static bool request(Cpu *c, const char *name, Handle *handle) {
     return call_f(c, FN_REQUEST, creator, (uint64_t)(uintptr_t)name, heap, (uint64_t)(uintptr_t)handle, 0, 0, 1, 0) & 1;
 }
 
+static float g_dist;  // (how far the player being done is)
+
 // p should be `want` ("" none): a piece that changed goes, and the new one is asked for; true when it was made just now
 static bool piece_update(Cpu *c, int i, Piece *p, const char *want, const char *who) {
     if ((p->actor || p->pending || p->name[0]) && strcmp(p->name, want)) pool_piece(c, i, p);
@@ -350,7 +479,7 @@ static bool piece_update(Cpu *c, int i, Piece *p, const char *want, const char *
     }
     snprintf(p->name, sizeof p->name, "%s", want);
     if (p->actor && !alive(p->actor, p->w)) {
-        LOG("[online] %s: the game removed his %s, made again\n", who, want);
+        LOG("[online] %s: the game removed his %s, made again (%.0f m away)\n", who, want, g_dist);
         p->actor = 0, p->fails = 0;
     }
     if (!want[0] || p->actor) return false;
@@ -371,6 +500,14 @@ static bool piece_update(Cpu *c, int i, Piece *p, const char *want, const char *
         return false;
     }
     if (p->wait > 0) { p->wait--; return false; }
+    if (!strncmp(want, "Armor_Default", 13)) {  // (Link's default pieces, resident: asked for, they are never drawn;
+        uint64_t a = create(c, want);           // made at once, they are)
+        if (a) {
+            p->actor = a, p->w = watch(a), p->fails = 0;
+            LOG("[online] %s: %s (actor %llx)\n", who, want, (unsigned long long)a);
+            return true;
+        }
+    }
     if (p->fails < 5) {
         p->handle = new_handle();
         if (request(c, want, p->handle)) p->pending = true;
@@ -401,6 +538,8 @@ static bool running(uint64_t actor) { return actor && *(uint8_t *)(uintptr_t)(ac
 
 // An actor's skeleton: the gsys model unit that has Link's bones (the one Skl_Root is in) and how many bones it has
 // (its skeleton, unit +0x118: +0x18 the local matrices, 0x60 each; +0x50 the bone count)
+#define FN_EFFECT_EMIT 0x7001100bd0ull  // x8 out {effect, id}, x0 an actor, x1 a name in its ELink user
+#define FN_EFFECT_KILL 0x700056d010ull  // x0 such a handle: the effect ends
 #define FN_BONE_LOCAL_GET 0x7000f960f8ull  // x0 unit, x1 Matrix34f *out, x2 Vec3 *scale out, w3 bone
 #define FN_BONE_LOCAL_SET 0x7000f95fa8ull  // x0 unit, x1 Matrix34f *, x2 Vec3 *scale, w3 bone
 static uint64_t skel_unit(Cpu *c, uint64_t actor, int *bones) {
@@ -433,6 +572,33 @@ static uint64_t linked(uint64_t at) {
     return VALID(a) && *(uint8_t *)(uintptr_t)(a + 0x64) != 3 ? a : 0;
 }
 
+static void actor_name_of(uint64_t a, char out[48]);
+
+
+// his paraglider (PlayerStole2, or its _Vagrant look): an actor the player links (the link's
+// place in the player found once, by looking through him for one; again every second while none is)
+static uint64_t glider_of(uint64_t player) {
+    static int off = -1, miss;
+    char n[48];
+    if (off >= 0) {
+        uint64_t a = linked(player + off);
+        actor_name_of(a, n);
+        if (strncmp(n, "PlayerStole2", 12)) a = 0;
+        if (a || miss++ % 30) return a;
+    } else if (miss++ % 30) return 0;
+    for (int o = 0x100; o < 0x4000; o += 8) {
+        uint64_t u = *(uint64_t *)(uintptr_t)(player + o);
+        if (!VALID(u) || (u & 7)) continue;
+        uint64_t a = linked(player + o);
+        actor_name_of(a, n);
+        if (strncmp(n, "PlayerStole2", 12)) continue;
+        if (off != o) LOG("[online] his paraglider: player +0x%x\n", o);
+        off = o;
+        return a;
+    }
+    return 0;
+}
+
 static void equipment(uint64_t player, uint64_t armor[ARMOR], uint64_t gear[ONLINE_GEAR]) {
     uint64_t mgr = *(uint64_t *)(uintptr_t)(player + 0x2500);
     bool mine = VALID(mgr) && *(uint64_t *)(uintptr_t)(mgr + 0x128) == player;
@@ -440,6 +606,7 @@ static void equipment(uint64_t player, uint64_t armor[ARMOR], uint64_t gear[ONLI
     for (int k = 0; k < 3; k++) gear[k] = linked(player + 0xb98 + 0x18 * k);
     gear[3] = gear[0] ? linked(gear[0] + 0x958) : 0;
     gear[4] = gear[2] ? linked(gear[2] + 0x958) : 0;
+    gear[5] = glider_of(player);
 }
 
 // an actor's name, when it is one ("" else)
@@ -502,6 +669,190 @@ static void mtx_inv(const float a[12], float out[12]) {
         out[r * 4 + 3] = -(out[r * 4] * a[3] + out[r * 4 + 1] * a[7] + out[r * 4 + 2] * a[11]);
 }
 
+// OnlineShots' kinds: the game's actors
+static const char *const k_shot_names[ONLINE_K_COUNT] = {
+    "RemoteBomb", "RemoteBombCube", "RemoteBomb2", "RemoteBombCube2", "NormalArrow", "FireArrow", "IceArrow",
+    "ElectricArrow", "BombArrow_A", "AncientArrow", "BrightArrow", "PlayerBeam"};
+#define IS_BOMB(kind) ((kind) <= ONLINE_K_REMOTE_BOMB_CUBE2)
+
+// Arrows in flight (tools/patches.py _arrow_move: each update of an arrow's flight action, on whatever thread the
+// actors update on): their actors, noted in a ring for the frame loop to look at
+#define ARROW_RING 64
+static uint64_t volatile g_arrow_ring[ARROW_RING];
+static volatile int g_arrow_next;
+
+// the Remote Bomb rune's bombs, as it makes them (tools/patches.py _remote_bomb_made; the main thread): his
+static uint64_t volatile g_bomb_made[4];
+static volatile int g_bomb_next;
+
+void rt_online_bomb(uint64_t bomb) {
+    if (!VALID(bomb)) return;
+    int k = __atomic_fetch_add(&g_bomb_next, 1, __ATOMIC_RELAXED);
+    g_bomb_made[k & 3] = bomb;
+}
+
+void rt_online_arrow(uint64_t action) {
+    uint64_t a = *(uint64_t *)(uintptr_t)(action + 8);
+    if (!VALID(a)) return;
+    int k = __atomic_fetch_add(&g_arrow_next, 1, __ATOMIC_RELAXED);
+    g_arrow_ring[k & (ARROW_RING - 1)] = a;
+}
+
+// What the local Link threw or shot: his rune's bombs (rt_online_bomb), his arrows in flight (rt_online_arrow), each
+// followed from then until it goes (held, thrown, flying, stuck: as it is in the world), a bomb that goes having gone
+// off (the Remote Bomb's bombs go when they do)
+static void sample_shots(Cpu *c, uint64_t player, OnlineShots *out) {
+    static struct { uint64_t a; Watch w; uint16_t id; uint8_t kind; bool boomed; float m[12]; } tr[ONLINE_SHOTS];
+    static uint16_t next_id = 1, boom_seq;
+    static struct { uint16_t seq; uint8_t kind; float pos[3]; int frames; } booms[ONLINE_BOOMS];
+    // the bombs his rune made
+    static uint64_t bomb_seen[4];
+    for (int r = 0; r < 4; r++) {
+        uint64_t held = g_bomb_made[r];
+        if (!held || held == bomb_seen[r]) continue;
+        bomb_seen[r] = held;
+        char name[48];
+        actor_name_of(held, name);
+        int kind = -1;
+        for (int k = 0; IS_BOMB(k); k++)
+            if (!strcmp(name, k_shot_names[k])) kind = k;
+        bool known = false;
+        for (int k = 0; k < ONLINE_SHOTS; k++) known |= tr[k].a == held;
+        for (int k = 0; kind >= 0 && !known && k < ONLINE_SHOTS; k++)
+            if (!tr[k].a) {
+                tr[k].a = held, tr[k].w = watch(held), tr[k].kind = (uint8_t)kind, tr[k].id = next_id++;
+                LOG("[online] shot %d: %s %llx\n", tr[k].id, name, (unsigned long long)held);
+                if (!next_id) next_id = 1;
+                break;
+            }
+    }
+    // arrows in flight his own: those first seen near him (an enemy's are far); his beams (only his: anywhere)
+    static uint64_t seen[ARROW_RING];
+    const float *me = (const float *)(uintptr_t)(player + 0x398);
+    for (int r = 0; r < ARROW_RING; r++) {
+        uint64_t a = g_arrow_ring[r];
+        if (!a || a == seen[r]) continue;
+        seen[r] = a;
+        bool known2 = false;
+        for (int k = 0; k < ONLINE_SHOTS; k++) known2 |= tr[k].a == a;
+        if (known2) continue;
+        char an[48];
+        actor_name_of(a, an);
+        int ak = -1;
+        for (int k = ONLINE_K_NORMAL_ARROW; k < ONLINE_K_COUNT; k++)
+            if (!strcmp(an, k_shot_names[k])) ak = k;
+        const float *am = (const float *)(uintptr_t)(a + 0x398);
+        float dx = am[3] - me[3], dy = am[7] - me[7], dz = am[11] - me[11];
+        if (ak < 0 || (ak != ONLINE_K_BEAM && dx * dx + dy * dy + dz * dz > 4 * 4)) continue;
+        if (ak == ONLINE_K_BEAM) LOG("[online] his beam %llx\n", (unsigned long long)a);
+        for (int k = 0; k < ONLINE_SHOTS; k++)
+            if (!tr[k].a) {
+                tr[k].a = a, tr[k].w = watch(a), tr[k].kind = (uint8_t)ak, tr[k].id = next_id++;
+                if (!next_id) next_id = 1;
+                break;
+            }
+    }
+    memset(out, 0, sizeof *out);
+    for (int k = 0; k < ONLINE_SHOTS; k++) {
+        if (!tr[k].a) continue;
+        bool gone = !alive(tr[k].a, tr[k].w);
+        // a bomb goes off as it starts its AS "Explode" (it goes some frames later)
+        if (!gone) memcpy(tr[k].m, (const float *)(uintptr_t)(tr[k].a + 0x398), sizeof tr[k].m);
+        // (gone without it: put away, cancelled - no explosion)
+        if (IS_BOMB(tr[k].kind) && !tr[k].boomed && !gone && !strcmp(playing(c, tr[k].a, 0, 0), "Explode")) {
+            memmove(&booms[1], &booms[0], sizeof booms[0] * (ONLINE_BOOMS - 1));
+            booms[0].seq = ++boom_seq ? boom_seq : ++boom_seq, booms[0].kind = tr[k].kind, booms[0].frames = 0;
+            booms[0].pos[0] = tr[k].m[3], booms[0].pos[1] = tr[k].m[7], booms[0].pos[2] = tr[k].m[11];
+            tr[k].boomed = true;
+            LOG("[online] shot %d (%s) went off%s\n", tr[k].id, k_shot_names[tr[k].kind], gone ? " (gone)" : "");
+        }
+        if (gone) {
+            LOG("[online] shot %d (%s) gone\n", tr[k].id, k_shot_names[tr[k].kind]);
+            memset(&tr[k], 0, sizeof tr[k]);
+            continue;
+        }
+        if (tr[k].boomed) continue;  // (going off: no longer shown as a bomb)
+        out->shot[out->n].id = tr[k].id, out->shot[out->n].kind = tr[k].kind;
+        memcpy(out->shot[out->n].m, tr[k].m, sizeof tr[k].m);
+        out->n++;
+    }
+    for (int k = 0; k < ONLINE_BOOMS; k++)  // (each sent for two seconds: the others see it once by its number)
+        if (booms[k].seq && booms[k].frames++ < 120) {
+            out->boom[k].seq = booms[k].seq, out->boom[k].kind = booms[k].kind;
+            memcpy(out->boom[k].pos, booms[k].pos, sizeof booms[k].pos);
+        }
+}
+
+// Explosions of the others' bombs: an OnlineBoom actor asked for at that place (its resources load meanwhile), then
+// sent the Remote Bomb rune's "go off" message (0x800000a: 0x7000b3b66c sends it to each of its bombs) through a
+// message transceiver of the local player's (his armour manager's, player +0x2500 +0xd8: the armour code sends its
+// messages so); its own AI goes off (shock wave, effects, sound) and deletes it. Sent again while it is there
+#define FN_SEND_MSG 0x700154c61cull  // x0 the sender's transceiver, x1 the receiver (actor +0x5f0), x2 the message, w4 1
+#define BOOMS_MAX 8
+static struct { Handle *h; uint64_t actor; Watch w; float pos[3]; int frames; bool used; } g_boom[BOOMS_MAX];
+
+static void boom_start(Cpu *c, const char *name, const float pos[3]) {
+    for (int k = 0; k < BOOMS_MAX; k++) {
+        if (g_boom[k].used) continue;
+        memset(&g_boom[k], 0, sizeof g_boom[k]);
+        g_boom[k].h = new_handle();
+        if (!request(c, name, g_boom[k].h)) return;
+        g_boom[k].used = true;
+        memcpy(g_boom[k].pos, pos, sizeof g_boom[k].pos);
+        return;
+    }
+}
+
+static void booms_forget(void) { memset(g_boom, 0, sizeof g_boom); }
+
+static void booms_update(Cpu *c, uint64_t player) {
+    uint64_t mgr = VALID(player) ? *(uint64_t *)(uintptr_t)(player + 0x2500) : 0;
+    for (int k = 0; k < BOOMS_MAX; k++) {
+        if (!g_boom[k].used) continue;
+        if (!g_boom[k].actor) {
+            int *unit = (int *)(uintptr_t)g_boom[k].h->unit;
+            if (!unit) continue;
+            if (*unit == 3 || *unit == 5) {
+                call(c, FN_HANDLE_RELEASE, (uint64_t)(uintptr_t)g_boom[k].h, 0, 0, 0, 0, 0);
+                g_boom[k].used = false;
+                continue;
+            }
+            if (*unit != 2) continue;
+            g_boom[k].actor = call(c, FN_HANDLE_TAKE, (uint64_t)(uintptr_t)g_boom[k].h, 0, 0, 0, 0, 0);
+            if (!g_boom[k].actor) { g_boom[k].used = false; continue; }
+            g_boom[k].w = watch(g_boom[k].actor);
+            // as the rune does with its bombs (0x7000b3ba04): its xlink holder (+0x558) +0x148 = 5 (without, its
+            // blast is only a small ring)
+            uint64_t xl = *(uint64_t *)(uintptr_t)(g_boom[k].actor + 0x558);
+            if (VALID(xl)) *(uint32_t *)(uintptr_t)(xl + 0x148) = 5;
+            float m[12] = {1, 0, 0, g_boom[k].pos[0], 0, 1, 0, g_boom[k].pos[1], 0, 0, 1, g_boom[k].pos[2]};
+            call(c, FN_SET_MTX, g_boom[k].actor, (uint64_t)(uintptr_t)m, 0, 0, 0, 0);
+        }
+        if (!alive(g_boom[k].actor, g_boom[k].w)) {  // (gone off: deleted)
+            if (getenv("SAVAGEWIND_BOOM_LOG")) LOG("[online] boom gone after %d frames\n", g_boom[k].frames);
+            g_boom[k].used = false;
+            continue;
+        }
+        int f = g_boom[k].frames++;
+        if (getenv("SAVAGEWIND_BOOM_LOG")) {
+            const float *m = (const float *)(uintptr_t)(g_boom[k].actor + 0x398);
+            LOG("[online] boom f%d st %d AS %s at %.2f %.2f %.2f scale %.2f\n", f, *(uint8_t *)(uintptr_t)(g_boom[k].actor + 0x64),
+                playing(c, g_boom[k].actor, 0, 0), m[3], m[7], m[11], m[0]);
+        }
+        if (f > 600) {  // (never went off)
+            call(c, FN_DELETE, g_boom[k].actor, 0, 0, 0, 0, 0);
+            g_boom[k].used = false;
+            continue;
+        }
+        if (VALID(mgr) && running(g_boom[k].actor) && f % 15 == 1) {
+            uint64_t rx = *(uint64_t *)(uintptr_t)(g_boom[k].actor + 0x5f0);
+            uint64_t msg = 0x800000a;
+            call(c, FN_SEND_MSG, mgr + 0xd8, rx, (uint64_t)(uintptr_t)&msg, 0, 1, 0);
+            if (f == 1 || getenv("SAVAGEWIND_ONLINE_SHOT_LOG")) LOG("[online] boom %llx: go off (frame %d)\n", (unsigned long long)g_boom[k].actor, f);
+        }
+    }
+}
+
 // The local Link's pose for the others: his AS on each channel, his heading, and each piece of his gear on the bone
 // nearest to it (the hands while drawn, the back's mounts while put away), as it sits on that bone
 static void sample_pose(Cpu *c, uint64_t pinfo) {
@@ -521,6 +872,7 @@ static void sample_pose(Cpu *c, uint64_t pinfo) {
     pose.yaw = atan2f(pm[2], pm[10]);
     uint64_t armor[ARMOR], gear[ONLINE_GEAR];
     equipment(player, armor, gear);
+    if (strncmp(pose.as[0], "Para", 4) || !strcmp(pose.as[0], "ParaEquipOff")) gear[5] = 0;  // (his paraglider: open)
     {   // what he wears and carries, for the others (the default pieces are Link's own body: "")
         char an[ARMOR][48] = {{0}}, gn[ONLINE_GEAR][48] = {{0}};
         for (int k = 0; k < ARMOR; k++) {
@@ -538,7 +890,10 @@ static void sample_pose(Cpu *c, uint64_t pinfo) {
         if (!a) continue;
         const float *w = (const float *)(uintptr_t)(a + 0x398);
         static uint8_t last_bone[ONLINE_GEAR];
-        float best = 0.6f * 0.6f, kept = -1;  // (farther from every bone: thrown, dropped; not shown)
+        // (farther from every bone: thrown, dropped; not shown. The paraglider is over his head, a shield he surfs
+        // on under his feet)
+        float reach = k == 5 ? 3.0f : k == 1 ? 1.5f : 0.6f;
+        float best = reach * reach, kept = -1;
         float rel_of[BONES][12];
         for (int b = 0; b < BONES; b++) {
             if (!have[b]) continue;
@@ -550,17 +905,30 @@ static void sample_pose(Cpu *c, uint64_t pinfo) {
             if (d < best) best = d, pose.gear_bone[k] = (uint8_t)(b + 1);
         }
         // the bone it was on, while it stays near it and no other is much nearer (two bones as near: no flicker)
-        if (kept >= 0 && kept < 0.6f * 0.6f && kept < best * 4) pose.gear_bone[k] = last_bone[k];
+        if (kept >= 0 && kept < reach * reach && kept < best * 4) pose.gear_bone[k] = last_bone[k];
         if (pose.gear_bone[k]) memcpy(pose.gear_rel[k], rel_of[pose.gear_bone[k] - 1], sizeof pose.gear_rel[k]);
         last_bone[k] = pose.gear_bone[k];
     }
     pose.valid = pose.as[0][0] != 0;
+    {   // Daruk's Protection: the player's own effects of it (1.9.0 0x7100cd39fc): "Kago_Shield" (a hit taken on it) at
+        // player +0x2350, "Kago_ShieldCount_0<n>" (its ring while he guards, n charges left: player +0x1cd4) at +0x2360;
+        // each a handle (the effect, its id: alive while the effect's +0x20 is that id)
+        for (int k = 0; k < 2; k++) {
+            uint64_t h = *(uint64_t *)(uintptr_t)(player + 0x2350 + 0x10 * k);
+            if (!VALID(h) || *(uint32_t *)(uintptr_t)(h + 0x20) != *(uint32_t *)(uintptr_t)(player + 0x2358 + 0x10 * k)) continue;
+            int n = *(int *)(uintptr_t)(player + 0x1cd4);
+            if (k == 0) pose.effects |= ONLINE_E_KAGO;
+            else if (n >= 1 && n <= 3) pose.effects |= (uint8_t)(n << ONLINE_E_KAGO_COUNT_SHIFT);
+        }
+    }
+    g_local_dead = !strncmp(pose.as[0], "Dead", 4);
+    sample_shots(c, player, &pose.shots);
     online_set_local_pose(&pose);
     if (getenv("SAVAGEWIND_ONLINE_POSE_LOG")) {
         static OnlinePose last;
         if (memcmp(last.as, pose.as, sizeof pose.as) || memcmp(last.gear_bone, pose.gear_bone, sizeof pose.gear_bone))
-            LOG("[online] pose %s|%s|%s|%s gear %d %d %d %d %d\n", pose.as[0], pose.as[1], pose.as[2], pose.as[3],
-                pose.gear_bone[0], pose.gear_bone[1], pose.gear_bone[2], pose.gear_bone[3], pose.gear_bone[4]);
+            LOG("[online] pose %s|%s|%s|%s gear %d %d %d %d %d %d\n", pose.as[0], pose.as[1], pose.as[2], pose.as[3],
+                pose.gear_bone[0], pose.gear_bone[1], pose.gear_bone[2], pose.gear_bone[3], pose.gear_bone[4], pose.gear_bone[5]);
         last = pose;
     }
 }
@@ -620,11 +988,22 @@ static void sample_skeleton(Cpu *c, uint64_t pinfo) {
 // His Link posed: his player's skeleton, bone by bone, written into his Link's own (it plays no AS, so nothing
 // writes over it before the game makes his bones' matrices in the world from it); while none has come, the AS
 // his Link plays (online.h OnlinePose: an older game, the test bot)
+static float g_pose_q[ONLINE_BONES][4], g_pose_t[ONLINE_BONES][3];  // (the skeleton pose_link posed his Link by)
+static int g_pose_n;  // (its Link bones; 0: none this frame)
+
 static void pose_link(Cpu *c, int i, const OnlinePlayer *p) {
-    static float q[ONLINE_BONES][4], t[ONLINE_BONES][3];
+    float (*q)[4] = g_pose_q, (*t)[3] = g_pose_t;
     int n = 0, nbow = 0, nb = 0, nbb = 0;
     g_act[i].frames++;
-    if (online_skeleton(i, &n, &nbow, q, t)) {
+    g_pose_n = 0;
+    // (none lately: paused, in a menu - the last one he sent kept; his armour posed by it too)
+    static struct { float q[ONLINE_BONES][4], t[ONLINE_BONES][3]; int n, nbow; } last[ONLINE_MAX];
+    bool fresh = online_skeleton(i, &n, &nbow, q, t);
+    if (fresh) memcpy(last[i].q, q, sizeof last[i].q), memcpy(last[i].t, t, sizeof last[i].t), last[i].n = n, last[i].nbow = nbow;
+    else if (g_act[i].skeleton && last[i].n)
+        memcpy(q, last[i].q, sizeof last[i].q), memcpy(t, last[i].t, sizeof last[i].t), n = last[i].n, nbow = last[i].nbow;
+    if (fresh || (g_act[i].skeleton && last[i].n)) {
+        g_pose_n = n;
         uint64_t unit = skel_unit(c, g_act[i].link, &nb);
         // his bow (its string drawn) when the one he carries is the one posed
         Piece *bp = &g_act[i].gear[2];
@@ -642,6 +1021,42 @@ static void pose_link(Cpu *c, int i, const OnlinePlayer *p) {
         return;
     }
     if (!g_act[i].skeleton && g_act[i].frames > 60) animate(c, i, p);  // (a second for his skeleton to come first)
+    // (his armour posed as his Link stands then: his own bones, as his AS left them)
+    uint64_t unit = skel_unit(c, g_act[i].link, &nb);
+    if (!unit || nb <= 0) return;
+    if (nb > ONLINE_BONES) nb = ONLINE_BONES;
+    for (int b = 0; b < nb; b++) {
+        float m[12], sc[3];
+        call(c, FN_BONE_LOCAL_GET, unit, (uint64_t)(uintptr_t)m, (uint64_t)(uintptr_t)sc, b, 0, 0);
+        mtx_to_quat(m, q[b]);
+        t[b][0] = m[3], t[b][1] = m[7], t[b][2] = m[11];
+    }
+    g_pose_n = nb;
+}
+
+// an armour piece posed as his Link: each of its bones Link has, as Link's (its cloth and support bones follow them)
+static void pose_armor(Cpu *c, const Piece *p) {
+    if (!g_pose_n) return;
+    uint64_t model = *(uint64_t *)(uintptr_t)(p->actor + 0x4e0);
+    if (!VALID(model)) return;
+    int nu = *(int *)(uintptr_t)(model + 0x38);
+    uint64_t units = *(uint64_t *)(uintptr_t)(model + 0x40);
+    for (int ui = 0; VALID(units) && ui < nu && ui < 8; ui++) {
+        uint64_t unit = *(uint64_t *)(uintptr_t)(units + 8 * ui);
+        unit = VALID(unit) ? *(uint64_t *)(uintptr_t)unit : 0;
+        uint64_t sk = VALID(unit) ? *(uint64_t *)(uintptr_t)(unit + 0x118) : 0;
+        if (!VALID(sk)) continue;
+        int nb = *(uint16_t *)(uintptr_t)(sk + 0x50), len = 0;
+        const uint8_t *map = armor_bones(p->name, ui, &len);
+        for (int b = 0; map && b < len && b < nb; b++) {
+            int li = map[b];
+            if (li == 255 || li >= g_pose_n) continue;
+            float m[12], sc[3] = {1, 1, 1};
+            quat_to_mtx(g_pose_q[li], m);
+            m[3] = g_pose_t[li][0], m[7] = g_pose_t[li][1], m[11] = g_pose_t[li][2];
+            call(c, FN_BONE_LOCAL_SET, unit, (uint64_t)(uintptr_t)m, (uint64_t)(uintptr_t)sc, b, 0, 0);
+        }
+    }
 }
 
 // the remote Link plays what his player's Link plays: the player's own AS on each channel (a channel that went
@@ -668,7 +1083,21 @@ void rt_online_frame(Cpu *c) {
     uint64_t pinfo = g_site.player_info ? *(uint64_t *)(uintptr_t)g_site.player_info : 0;
     float link[3] = {0, 0, 0};
     if (pinfo) memcpy(link, (const void *)(uintptr_t)(pinfo + 0x88), sizeof link);
-    bool world = pinfo && me >= 0 && !framepace_title_ui() && (link[0] != 0 || link[1] != 0 || link[2] != 0);
+    bool in_world = pinfo && !framepace_title_ui() && (link[0] != 0 || link[1] != 0 || link[2] != 0);
+    bool world = in_world && me >= 0;
+    // out of the session (left, or the connection lost) in the world: the players' actors are still there, deleted
+    if (in_world && me < 0) {
+        bool any = false;
+        for (int i = 0; i < ONLINE_MAX; i++) {
+            bool has = g_act[i].link != 0;
+            for (int k = 0; k < POOL; k++) has |= g_pool[i][k].actor || g_pool[i][k].pending;
+            if (has) any = true, drop(c, i, true);
+        }
+        if (any) LOG("[online] out of the session: the players' actors deleted\n");
+        booms_forget();
+        memcpy(g_last_link, link, sizeof link);
+        return;
+    }
     // a load (no Link, or Link somewhere else at once): the game has removed the world's actors, ours with them
     float dx = link[0] - g_last_link[0], dy = link[1] - g_last_link[1], dz = link[2] - g_last_link[2];
     if (!world || dx * dx + dy * dy + dz * dz > 100 * 100) {
@@ -684,7 +1113,19 @@ void rt_online_frame(Cpu *c) {
     if (!framepace_paused()) sample_pose(c, pinfo), sample_skeleton(c, pinfo);
     memcpy(g_pool_at, link, sizeof g_pool_at);
     pool_update(c);
+    booms_update(c, *(uint64_t *)(uintptr_t)(pinfo + 0x60));
+    orphans_update(c);
     if (g_settle > 0) { g_settle--; return; }
+    // dead: game over; nothing made meanwhile, and three seconds more once he is up again. What is still there is kept
+    // (an armour piece made again for a player is never drawn): what the game removed is seen gone and made again
+    static bool was_dead;
+    if (g_local_dead) { was_dead = true; return; }
+    if (was_dead) {
+        was_dead = false;
+        LOG("[online] back after dying\n");
+        g_settle = 180;
+        return;
+    }
 
     OnlinePlayer pl[ONLINE_MAX];
     online_players(pl);
@@ -693,6 +1134,7 @@ void rt_online_frame(Cpu *c) {
         if (want) {
             float ex = pl[i].pos[0] - link[0], ez = pl[i].pos[2] - link[2];
             want = ex * ex + ez * ez < 400 * 400;  // (far away: the world there isn't loaded)
+            g_dist = sqrtf(ex * ex + ez * ez);
         }
         if (!want) {
             if (g_act[i].link && !framepace_paused()) drop(c, i, !pl[i].used);
@@ -701,12 +1143,19 @@ void rt_online_frame(Cpu *c) {
                     if (g_pool[i][k].actor || g_pool[i][k].pending) delete_piece(c, &g_pool[i][k]);
             continue;
         }
-        // his Link (gone, deleted by the game: made again, his pieces with it)
+        // another player in his slot (one left and another came before it was seen): the first one's actors go
+        if (g_act[i].link && strcmp(g_act[i].name, pl[i].name)) {
+            LOG("[online] slot %d is %s now, not %s\n", i, pl[i].name, g_act[i].name);
+            drop(c, i, true);
+            continue;
+        }
+        // his Link gone, deleted by the game: the world's actors are going (the local Link died: game over; a load
+        // not seen by where he is): all forgotten, made again two seconds later
         if (g_act[i].link && !alive(g_act[i].link, g_act[i].link_w)) {
-            LOG("[online] the game removed %s's Link, made again\n", pl[i].name);
-            g_act[i].link = 0;
-            drop(c, i, false);  // (his pieces still there to his pool)
-            g_act[i].anim = -1, g_act[i].covered = -1;
+            LOG("[online] the game removed %s's Link: the world's actors are going, made again later (%.0f m away)\n", pl[i].name, g_dist);
+            forget_all();
+            g_settle = 180;
+            return;
         }
         if (!g_act[i].link) {
             if (g_act[i].link_fails > 10) continue;
@@ -726,18 +1175,24 @@ void rt_online_frame(Cpu *c) {
         if (!is_online_player() || !running(g_act[i].link)) continue;
         pose_link(c, i, &pl[i]);
 
-        // his armour: the game's own pieces (no helmet: Link's hair), worn on his Link's skeleton
+        // his armour: an actor per piece of its model alone (OnlineArmor_*, tools/online_mod.py) on his Link's matrix,
+        // posed bone by bone as his Link (the game's own Armor_* actors, worn on his skeleton, crashed and weren't drawn
+        // made a second time)
         for (int k = 0; k < ARMOR; k++) {
-            const char *w = pl[i].armor[k][0] ? pl[i].armor[k] : k == 0 ? "Armor_Default_Head" : "";
+            // (none: what the game puts on his Link then: his hair, his shorts; shirtless is his own body)
+            const char *w = pl[i].armor[k][0] ? pl[i].armor[k] : k == 0 ? "Armor_Default_Head" : k == 2 ? "Armor_Default_Lower" : "";
+            const char *oa = w[0] ? armor_actor(w) : NULL;
             Piece *p = &g_act[i].armor[k];
             bool had = p->actor != 0;
-            if (piece_update(c, i, p, w, pl[i].name)) {
-                call(c, FN_ARMOR_BIND, p->actor, g_act[i].link, 0, 0, 0, 0);
-                call(c, FN_ARMOR_INIT, p->actor, 0, 0, 0, 0, 0);
-                model_visible(c, p->actor, true);  // (one from his pool: hidden there)
+            if (piece_update(c, i, p, oa ? oa : "", pl[i].name)) {
+                model_visible(c, p->actor, true);
                 g_act[i].covered = -1;
             }
             if (had != (p->actor != 0)) g_act[i].covered = -1;
+            if (p->actor) {
+                call(c, FN_SET_MTX, p->actor, (uint64_t)(uintptr_t)m, 0, 0, 0, 0);
+                pose_armor(c, p);
+            }
         }
         int pieces = 0;
         bool all_running = true;
@@ -747,6 +1202,28 @@ void rt_online_frame(Cpu *c) {
         }
         if (all_running && pieces != g_act[i].covered) cover(c, i), g_act[i].covered = pieces;
 
+        // Daruk's Protection: the player's own effects on his Link while they are on in his game, "Kago_Shield" (a hit
+        // taken) and "Kago_ShieldCount_0<n>" (its ring while he guards) (0x7001100bd0: x8 the handle out, x0 the actor,
+        // x1 the effect's name in its ELink; 0x700056d010(handle) ends one)
+        for (int k = 0; k < 2; k++) {
+            int e = pl[i].pose.valid ? pl[i].pose.effects : 0;
+            int n = (e & ONLINE_E_KAGO_COUNT) >> ONLINE_E_KAGO_COUNT_SHIFT;
+            bool want_k = k == 0 ? (e & ONLINE_E_KAGO) != 0 : n != 0;
+            uint64_t kp = g_act[i].kago[k].p;
+            bool on = VALID(kp) && *(uint32_t *)(uintptr_t)(kp + 0x20) == g_act[i].kago[k].id;
+            if (on && (!want_k || (k == 1 && n != g_act[i].kago_n))) {
+                call(c, FN_EFFECT_KILL, (uint64_t)(uintptr_t)&g_act[i].kago[k], 0, 0, 0, 0, 0);
+                memset(&g_act[i].kago[k], 0, sizeof g_act[i].kago[k]);
+                on = false;
+            }
+            if (want_k && !on) {
+                static char name[24];
+                if (k == 0) snprintf(name, sizeof name, "Kago_Shield");
+                else snprintf(name, sizeof name, "Kago_ShieldCount_0%d", n), g_act[i].kago_n = n;
+                call_sret(c, FN_EFFECT_EMIT, (uint64_t)(uintptr_t)&g_act[i].kago[k], g_act[i].link, (uint64_t)(uintptr_t)name);
+                LOG("[online] %s: %s (%llx)\n", pl[i].name, name, (unsigned long long)g_act[i].kago[k].p);
+            }
+        }
         // his gear, on his Link's bones as in his game (not there: under the world, out of sight)
         float bm[BONES][12];
         int have = 0;  // (bones read: a bit each)
@@ -768,31 +1245,89 @@ void rt_online_frame(Cpu *c) {
                     p->name, b, b >= 0 && (have >> b & 1) ? "ok" : "-", gm[3], gm[7], gm[11], pl[i].pos[0], pl[i].pos[1],
                     pl[i].pos[2], pl[i].pose.gear_rel[k][3], pl[i].pose.gear_rel[k][7], pl[i].pose.gear_rel[k][11]);
         }
-        // an arrow in his right hand, on the string, while he nocks and draws his bow (the upper body's AS: BowReload,
-        // BowCharge...; his bow in a hand); kept made while he carries a bow, out of sight the rest of the time
-        Piece *ar = &g_act[i].arrow;
-        const char *an = pl[i].gear[2][0] ? gear_actor("NormalArrow") : NULL;
-        piece_update(c, i, ar, an ? an : "", pl[i].name);
-        if (ar->actor) {
-            const char *up = pl[i].pose.as[2];
-            bool drawn = pl[i].pose.valid && (pl[i].pose.gear_bone[2] == 1 || pl[i].pose.gear_bone[2] == 2) &&
-                         (!strncmp(up, "BowCharge", 9) || !strncmp(up, "BowReload", 9));
-            float am[12] = {1, 0, 0, pl[i].pos[0], 0, 1, 0, pl[i].pos[1] - 5000, 0, 0, 1, pl[i].pos[2]};
-            if (drawn && !(have & 1) && bone_mtx(c, g_act[i].link, k_bones[0], bm[0])) have |= 1;
-            if (drawn && !(have & 2) && bone_mtx(c, g_act[i].link, k_bones[1], bm[1])) have |= 2;
-            if (drawn && (have & 3) == 3) {  // (its nock in the right hand, its point (+z) past the bow in the left)
-                float z[3] = {bm[1][3] - bm[0][3], bm[1][7] - bm[0][7], bm[1][11] - bm[0][11]}, l = 0;
-                for (int k = 0; k < 3; k++) l += z[k] * z[k];
-                l = l > 1e-8f ? 1 / sqrtf(l) : 0;
-                for (int k = 0; k < 3; k++) z[k] *= l;
-                float x[3] = {z[2], 0, -z[0]}, lx = sqrtf(x[0] * x[0] + x[2] * x[2]);  // (up x z)
-                if (lx < 1e-4f) x[0] = 1, x[2] = 0, lx = 1;
-                x[0] /= lx, x[2] /= lx;
-                float y[3] = {z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0]};
-                float m[12] = {x[0], y[0], z[0], bm[0][3], x[1], y[1], z[1], bm[0][7], x[2], y[2], z[2], bm[0][11]};
-                if (l > 0) memcpy(am, m, sizeof am);
+        // what he holds, threw or shot, where it is (out of sight: those he no longer has)
+        const OnlineShots *sh = &pl[i].pose.shots;
+        bool used[ONLINE_SHOTS] = {false};
+        for (int k = 0; pl[i].pose.valid && k < sh->n; k++) {
+            int slot = -1;
+            for (int j2 = 0; j2 < ONLINE_SHOTS && slot < 0; j2++)
+                if (g_act[i].shot_id[j2] == sh->shot[k].id) slot = j2;
+            for (int j2 = 0; j2 < ONLINE_SHOTS && slot < 0; j2++) {
+                bool in_use = false;
+                for (int q = 0; q < sh->n; q++) in_use |= g_act[i].shot_id[j2] == sh->shot[q].id;
+                if (!in_use) slot = j2;
             }
-            call(c, FN_SET_MTX, ar->actor, (uint64_t)(uintptr_t)am, 0, 0, 0, 0);
+            if (slot < 0 || sh->shot[k].kind >= ONLINE_K_COUNT) continue;
+            used[slot] = true;
+            if (g_act[i].shot_id[slot] != sh->shot[k].id)
+                LOG("[online] %s's shot %d (%s) in slot %d\n", pl[i].name, sh->shot[k].id, k_shot_names[sh->shot[k].kind], slot);
+            g_act[i].shot_id[slot] = sh->shot[k].id;
+            const char *sa = gear_actor(k_shot_names[sh->shot[k].kind]);
+            Piece *p = &g_act[i].shot[slot];
+            if (piece_update(c, i, p, sa ? sa : "", pl[i].name)) model_visible(c, p->actor, true);
+            if (p->actor) call(c, FN_SET_MTX, p->actor, (uint64_t)(uintptr_t)sh->shot[k].m, 0, 0, 0, 0);
+            if (getenv("SAVAGEWIND_ONLINE_SHOT_LOG"))
+                LOG("[online] shot %d %s at %.2f %.2f %.2f%s\n", sh->shot[k].id, k_shot_names[sh->shot[k].kind], sh->shot[k].m[3],
+                    sh->shot[k].m[7], sh->shot[k].m[11], p->actor ? "" : " (being made)");
+        }
+        for (int k = 0; k < ONLINE_SHOTS; k++) {
+            if (used[k]) continue;
+            if (g_act[i].shot_id[k])
+                LOG("[online] %s's shot %d out of sight (slot %d, actor %llx)\n", pl[i].name, g_act[i].shot_id[k], k,
+                    (unsigned long long)g_act[i].shot[k].actor);
+            g_act[i].shot_id[k] = 0;
+            if (g_act[i].shot[k].actor) {
+                float hm[12] = {1, 0, 0, pl[i].pos[0], 0, 1, 0, pl[i].pos[1] - 5000, 0, 0, 1, pl[i].pos[2]};
+                call(c, FN_SET_MTX, g_act[i].shot[k].actor, (uint64_t)(uintptr_t)hm, 0, 0, 0, 0);
+            }
+        }
+        // an arrow on his string, in his right hand, while he nocks and draws his bow (the upper body's AS: BowReload,
+        // BowCharge...; his bow in a hand), its point (+z) past the bow in his left; out of sight the rest of the time
+        {
+            Piece *ar = &g_act[i].nock;
+            const char *an = pl[i].gear[2][0] ? gear_actor("NormalArrow") : NULL;
+            if (piece_update(c, i, ar, an ? an : "", pl[i].name)) model_visible(c, ar->actor, true);
+            if (ar->actor) {
+                const char *up = pl[i].pose.as[2];
+                bool drawn = pl[i].pose.valid && (pl[i].pose.gear_bone[2] == 1 || pl[i].pose.gear_bone[2] == 2) &&
+                             (!strncmp(up, "BowCharge", 9) || !strncmp(up, "BowReload", 9));
+                float am[12] = {1, 0, 0, pl[i].pos[0], 0, 1, 0, pl[i].pos[1] - 5000, 0, 0, 1, pl[i].pos[2]};
+                if (drawn && !(have & 1) && bone_mtx(c, g_act[i].link, k_bones[0], bm[0])) have |= 1;
+                if (drawn && !(have & 2) && bone_mtx(c, g_act[i].link, k_bones[1], bm[1])) have |= 2;
+                if (drawn && (have & 3) == 3) {
+                    float z[3] = {bm[1][3] - bm[0][3], bm[1][7] - bm[0][7], bm[1][11] - bm[0][11]}, l = 0;
+                    for (int k = 0; k < 3; k++) l += z[k] * z[k];
+                    l = l > 1e-8f ? 1 / sqrtf(l) : 0;
+                    for (int k = 0; k < 3; k++) z[k] *= l;
+                    float x[3] = {z[2], 0, -z[0]}, lx = sqrtf(x[0] * x[0] + x[2] * x[2]);  // (up x z)
+                    if (lx < 1e-4f) x[0] = 1, x[2] = 0, lx = 1;
+                    x[0] /= lx, x[2] /= lx;
+                    float y[3] = {z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0]};
+                    float m2[12] = {x[0], y[0], z[0], bm[0][3], x[1], y[1], z[1], bm[0][7], x[2], y[2], z[2], bm[0][11]};
+                    if (l > 0) memcpy(am, m2, sizeof am);
+                }
+                call(c, FN_SET_MTX, ar->actor, (uint64_t)(uintptr_t)am, 0, 0, 0, 0);
+            }
+        }
+        // a bomb of his gone off, once by its number: his bomb as shown goes out of sight, and the bomb's own actor
+        // without what hurts (OnlineBoom_*, tools/online_mod.py) is made there and set off as the rune sets his off
+        for (int k = ONLINE_BOOMS - 1; pl[i].pose.valid && k >= 0; k--) {
+            uint16_t seq = sh->boom[k].seq;
+            if (!seq || (uint16_t)(seq - g_act[i].boom_seen) > 0x8000u || seq == g_act[i].boom_seen) continue;
+            g_act[i].boom_seen = seq;
+            if (g_act[i].frames < 60 || sh->boom[k].kind >= ONLINE_K_COUNT) continue;  // (from before he was here)
+            const char *ba = gear_actor(k_shot_names[sh->boom[k].kind]);
+            for (int q = 0; ba && q < ONLINE_SHOTS; q++)
+                if (!used[q] && g_act[i].shot[q].actor && !strcmp(g_act[i].shot[q].name, ba)) {
+                    float hm[12] = {1, 0, 0, pl[i].pos[0], 0, 1, 0, pl[i].pos[1] - 5000, 0, 0, 1, pl[i].pos[2]};
+                    call(c, FN_SET_MTX, g_act[i].shot[q].actor, (uint64_t)(uintptr_t)hm, 0, 0, 0, 0);
+                }
+            char key[48];
+            snprintf(key, sizeof key, "Boom_%s", k_shot_names[sh->boom[k].kind]);
+            const char *boom = getenv("SAVAGEWIND_BOOM_ACTOR") ? getenv("SAVAGEWIND_BOOM_ACTOR") : gear_actor(key);
+            if (boom) boom_start(c, boom, sh->boom[k].pos);
+            LOG("[online] %s's bomb went off at %.1f %.1f %.1f\n", pl[i].name, sh->boom[k].pos[0], sh->boom[k].pos[1],
+                sh->boom[k].pos[2]);
         }
     }
 }

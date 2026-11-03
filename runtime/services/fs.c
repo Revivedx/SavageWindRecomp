@@ -6,6 +6,8 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <math.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -16,7 +18,13 @@
 #include "../hle.h"
 #include "../ipc.h"
 #include "../language.h"
+#include "../nvn/text_upscale.h"
 #include "../romfs_image.h"
+#include "../settings.h"
+#include "archive.h"
+#include "fs_layout.h"
+#include "../perfcount.h"
+#include "../platform.h"
 
 #define FS_PATH_NOT_FOUND MAKE_RESULT(2, 1)
 #define FS_PATH_EXISTS MAKE_RESULT(2, 2)
@@ -57,6 +65,8 @@ typedef struct {
 #define AOC_MAX 8
 static RomImage images[1 + AOC_MAX];  // [0] the game's, [index] add-on content
 static RomImage *R = &images[0];
+static FsInventoryClipLayout inventory_clip_layout;
+static _Atomic bool inventory_clip_layout_valid;
 
 // Reboot: the next boot builds its own index / overlay when the game opens the RomFS again.
 RT_ON_RESET(fs_reset) {
@@ -73,6 +83,7 @@ RT_ON_RESET(fs_reset) {
         *m = (RomImage){0};
     }
     R = &images[0];
+    atomic_store_explicit(&inventory_clip_layout_valid, false, memory_order_release);
     g_save_dir = "save";
 }
 
@@ -398,28 +409,6 @@ static void voice_redirect(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
 // it loads the Demo*.bars banks). So the RSTB the game reads is a copy whose entries for those paths grow by as much
 // as their data did (and a little: the room varies with alignment), served from memory like Version.txt. Its format:
 // Yaz0 over "RSTB", u32 CRC count, u32 name count, {crc32(path), size} sorted by crc32, then {char[128], size}.
-static uint8_t *yaz0_unpack(const uint8_t *d, size_t n, size_t *out_n) {
-    if (n < 16 || memcmp(d, "Yaz0", 4)) return NULL;
-    size_t size = (size_t)d[4] << 24 | (size_t)d[5] << 16 | (size_t)d[6] << 8 | d[7], s = 16, w = 0;
-    uint8_t *o = malloc(size ? size : 1);
-    while (w < size && s < n) {
-        uint8_t code = d[s++];
-        for (int b = 0; b < 8 && w < size && s < n; b++) {
-            if (code & (0x80 >> b)) { o[w++] = d[s++]; continue; }
-            if (s + 1 >= n) break;
-            size_t dist = (size_t)((d[s] & 0xF) << 8 | d[s + 1]) + 1, cnt = d[s] >> 4;
-            s += 2;
-            if (!cnt) cnt = s < n ? (size_t)d[s++] + 0x12 : 0;
-            else cnt += 2;
-            if (dist > w) { free(o); return NULL; }  // (damaged)
-            for (size_t i = 0; i < cnt && w < size; i++, w++) o[w] = o[w - dist];
-        }
-    }
-    if (w < size) { free(o); return NULL; }
-    *out_n = size;
-    return o;
-}
-
 // Yaz0 with literal bytes only (a 0xFF flag before every 8): what the game's decoder reads, no search needed
 static uint8_t *yaz0_pack_literal(const uint8_t *d, size_t n, size_t *out_n) {
     uint8_t *o = malloc(16 + n + (n + 7) / 8), *w = o;
@@ -492,25 +481,179 @@ static uint8_t *yaz0_pack(const uint8_t *d, size_t n, const uint8_t *hdr, size_t
     return o;
 }
 
-// SARC (little-endian): the node of `name` (its index; start and end in the data, which begins at *data_off), or -1
-static int sarc_find(const uint8_t *d, size_t n, const char *name, uint32_t *data_off, uint32_t *start, uint32_t *end) {
-    if (n < 0x20 || memcmp(d, "SARC", 4) || d[6] != 0xFF || d[7] != 0xFE || memcmp(d + 0x14, "SFAT", 4)) return -1;
-    uint32_t doff, cnt = d[0x1A] | d[0x1B] << 8;
-    memcpy(&doff, d + 0xC, 4);
-    size_t names = 0x20 + (size_t)cnt * 16 + 8;
-    if (names > n || doff > n) return -1;
-    for (uint32_t i = 0; i < cnt; i++) {
-        uint32_t attr, s, e;
-        memcpy(&attr, d + 0x20 + i * 16 + 4, 4);
-        memcpy(&s, d + 0x20 + i * 16 + 8, 4);
-        memcpy(&e, d + 0x20 + i * 16 + 12, 4);
-        size_t at = names + (size_t)(attr & 0xFFFFFF) * 4;
-        if (!(attr >> 24) || at >= n || strncmp((const char *)d + at, name, n - at)) continue;
-        if (s > e || doff + (uint64_t)e > n) return -1;
-        *data_off = doff, *start = s, *end = e;
-        return (int)i;
+bool fs_inventory_clip_layout(FsInventoryClipLayout *out) {
+    if (!out || !atomic_load_explicit(&inventory_clip_layout_valid, memory_order_acquire)) return false;
+    *out = inventory_clip_layout;
+    return true;
+}
+
+typedef struct { float x, y, sx, sy; unsigned kind; } LayoutPane;
+enum { PANE_OTHER, PANE_ROOT, PANE_SLIDE, PANE_INOUT, PANE_CUT, PANE_PORCH_LEFT, PANE_PORCH_MIDDLE };
+
+static bool layout_name(const uint8_t *sec, const char *name) { return !strncmp((const char *)sec + 12, name, 24); }
+
+static bool layout_part(const uint8_t *sec, size_t n, const char *part) {
+    size_t k = strlen(part) + 1;
+    for (size_t i = 84; i + k <= n; i++) if (!memcmp(sec + i, part, k)) return true;
+    return false;
+}
+
+// Follow only the named branch of PauseMenu_00's pane hierarchy. Positions and sizes come from the
+// player's loaded layout, never from a particular window size or a copied game asset.
+static bool pause_inventory_panes(const uint8_t *d, size_t n, float *root_w, float *root_h,
+                                  LayoutPane *cut, float *cut_w, float *cut_h, LayoutPane *left) {
+    if (n < 20 || memcmp(d, "FLYT", 4) || d[4] != 0xFF || d[5] != 0xFE) return false;
+    size_t p = (size_t)d[6] | (size_t)d[7] << 8;
+    LayoutPane stack[16] = {{0}}, last = {0}, middle = {0};
+    unsigned depth = 0, found = 0;
+    while (p + 8 <= n) {
+        const uint8_t *sec = d + p;
+        uint32_t sz;
+        memcpy(&sz, sec + 4, 4);
+        if (sz < 8 || sz > n - p) return false;
+        if (!memcmp(sec, "pas1", 4)) {
+            if (depth == 16) return false;
+            stack[depth++] = last;
+        } else if (!memcmp(sec, "pae1", 4)) {
+            if (!depth) return false;
+            depth--;
+        } else if (!memcmp(sec, "pan1", 4) || !memcmp(sec, "prt1", 4) ||
+                   !memcmp(sec, "pic1", 4) || !memcmp(sec, "txt1", 4) ||
+                   !memcmp(sec, "wnd1", 4) || !memcmp(sec, "bnd1", 4)) {
+            if (sz < 84) return false;
+            float v[10];
+            memcpy(v, sec + 44, sizeof v);
+            LayoutPane parent = depth ? stack[depth - 1] : (LayoutPane){.sx = 1, .sy = 1};
+            last = (LayoutPane){parent.x + parent.sx * v[0], parent.y + parent.sy * v[1],
+                                parent.sx * v[6], parent.sy * v[7], PANE_OTHER};
+            if (depth == 0 && layout_name(sec, "RootPane")) {
+                if (found & 1) return false;
+                *root_w = v[8], *root_h = v[9];
+                last.kind = PANE_ROOT;
+                found |= 1;
+            } else if (parent.kind == PANE_ROOT && layout_name(sec, "N_Slide_01")) {
+                last.kind = PANE_SLIDE;
+            } else if (parent.kind == PANE_SLIDE && layout_name(sec, "N_InOut_00")) {
+                last.kind = PANE_INOUT;
+            } else if (parent.kind == PANE_INOUT && layout_name(sec, "N_Cut_00")) {
+                if (found & 2 || sec[11] != 2) return false;  // center origin; other origins need different bounds
+                *cut = last; *cut_w = v[8] * last.sx; *cut_h = v[9] * last.sy;
+                last.kind = PANE_CUT;
+                found |= 2;
+            } else if (parent.kind == PANE_CUT && layout_name(sec, "Pa_PagePorch_00")) {
+                if (found & 4 || !layout_part(sec, sz, "PaPage20_00")) return false;
+                *left = last;
+                last.kind = PANE_PORCH_LEFT;
+                found |= 4;
+            } else if (parent.kind == PANE_CUT && layout_name(sec, "Pa_PagePorch_01")) {
+                if (found & 8 || !layout_part(sec, sz, "PaPage20_00")) return false;
+                middle = last;
+                last.kind = PANE_PORCH_MIDDLE;
+                found |= 8;
+            }
+        }
+        p += sz;
     }
-    return -1;
+    return p == n && depth == 0 && found == 15 && left->x < middle.x &&
+           isfinite(*root_w) && isfinite(*root_h) && *root_w > 0 && *root_h > 0 &&
+           isfinite(*cut_w) && isfinite(*cut_h) && *cut_w > 0 && *cut_h > 0 &&
+           isfinite(left->x) && isfinite(left->sx) && left->sx > 0;
+}
+
+// PaPage20_00 is the grid of inventory items. Its rightmost item column is the part of
+// the previous page visible through N_Cut_00's left edge.
+static bool pause_inventory_last_column(const uint8_t *d, size_t n, float *x, float *half_w,
+                                        float *root_w, float *root_h) {
+    if (n < 20 || memcmp(d, "FLYT", 4) || d[4] != 0xFF || d[5] != 0xFE) return false;
+    size_t p = (size_t)d[6] | (size_t)d[7] << 8;
+    LayoutPane stack[16] = {{0}}, last = {0};
+    unsigned depth = 0, count = 0, roots = 0;
+    *x = -INFINITY;
+    while (p + 8 <= n) {
+        const uint8_t *sec = d + p;
+        uint32_t sz;
+        memcpy(&sz, sec + 4, 4);
+        if (sz < 8 || sz > n - p) return false;
+        if (!memcmp(sec, "pas1", 4)) {
+            if (depth == 16) return false;
+            stack[depth++] = last;
+        } else if (!memcmp(sec, "pae1", 4)) {
+            if (!depth) return false;
+            depth--;
+        } else if (!memcmp(sec, "pan1", 4) || !memcmp(sec, "prt1", 4) ||
+                   !memcmp(sec, "pic1", 4) || !memcmp(sec, "txt1", 4) ||
+                   !memcmp(sec, "wnd1", 4) || !memcmp(sec, "bnd1", 4)) {
+            if (sz < 84) return false;
+            float v[10];
+            memcpy(v, sec + 44, sizeof v);
+            LayoutPane parent = depth ? stack[depth - 1] : (LayoutPane){.sx = 1, .sy = 1};
+            last = (LayoutPane){parent.x + parent.sx * v[0], parent.y + parent.sy * v[1],
+                                parent.sx * v[6], parent.sy * v[7], PANE_OTHER};
+            if (depth == 0 && layout_name(sec, "RootPane")) {
+                if (roots++) return false;
+                *root_w = v[8], *root_h = v[9];
+                last.kind = PANE_ROOT;
+            } else if (parent.kind == PANE_ROOT && !memcmp(sec, "prt1", 4) &&
+                       !strncmp((const char *)sec + 12, "Pa_Btn_", 7)) {
+                if (!isfinite(last.x) || !isfinite(last.sx) || !isfinite(v[8])) return false;
+                if (last.x > *x) *x = last.x, *half_w = v[8] * last.sx * 0.5f;
+                count++;
+            }
+        }
+        p += sz;
+    }
+    return p == n && depth == 0 && roots == 1 && count > 1 &&
+           isfinite(*root_w) && isfinite(*root_h) && *root_w > 0 && *root_h > 0 &&
+           isfinite(*x) && isfinite(*half_w) && *half_w > 0;
+}
+
+static void inventory_layout_from_common(const uint8_t *arc, size_t an) {
+    uint32_t adoff, as, ae;
+    int pa = sarc_find(arc, an, "blyt/PauseMenu_00.bflyt", &adoff, &as, &ae);
+    if (pa < 0) return;
+    float root_w = 0, root_h = 0, cut_w = 0, cut_h = 0, page_root_w = 0, page_root_h = 0;
+    float last_x = 0, last_half_w = 0;
+    LayoutPane cut = {0}, left = {0};
+    if (!pause_inventory_panes(arc + adoff + as, ae - as, &root_w, &root_h, &cut, &cut_w, &cut_h, &left)) return;
+    if (sarc_find(arc, an, "blyt/PaPage20_00.bflyt", &adoff, &as, &ae) < 0 ||
+        !pause_inventory_last_column(arc + adoff + as, ae - as, &last_x, &last_half_w,
+                                     &page_root_w, &page_root_h)) return;
+    if (fabsf(page_root_w - root_w) > 0.01f || fabsf(page_root_h - root_h) > 0.01f) return;
+    FsInventoryClipLayout layout = {
+        .root_w = root_w, .root_h = root_h,
+        .clip_x = root_w * 0.5f + cut.x - cut_w * 0.5f,
+        .clip_y = root_h * 0.5f - cut.y - cut_h * 0.5f,
+        .clip_w = cut_w, .clip_h = cut_h,
+        .previous_item_x = root_w * 0.5f + left.x + left.sx * last_x,
+    };
+    // The original left edge crosses the previous item's right half; its center gives a half-item hint.
+    if (!isfinite(layout.clip_x) || !isfinite(layout.clip_y) || !isfinite(layout.previous_item_x) ||
+        !(layout.clip_x < layout.previous_item_x &&
+          layout.previous_item_x < layout.clip_x + last_half_w * left.sx &&
+          layout.previous_item_x < layout.clip_x + layout.clip_w)) return;
+    inventory_clip_layout = layout;
+    atomic_store_explicit(&inventory_clip_layout_valid, true, memory_order_release);
+    LOG("[fs] Inventory clip layout: root %.0fx%.0f, pane %.1f %.1f %.1fx%.1f, previous item x %.1f\n",
+        root_w, root_h, layout.clip_x, layout.clip_y, layout.clip_w, layout.clip_h, layout.previous_item_x);
+}
+
+static void inventory_layout_from_overlay(const char *host) {
+    int fd = open(host, O_RDONLY);
+    if (fd < 0) return;
+    struct stat sb;
+    // The replacement is a complete Bootup.pack. Bound the read before trusting its archive sizes.
+    if (fstat(fd, &sb) || sb.st_size < 0x20 || sb.st_size > 128 * 1024 * 1024) { close(fd); return; }
+    size_t pn = (size_t)sb.st_size, an = 0;
+    uint8_t *pack = malloc(pn);
+    uint32_t pdoff, ps, pe;
+    if (pack && pread(fd, pack, pn, 0) == (ssize_t)pn &&
+        sarc_find(pack, pn, "Layout/Common.sblarc", &pdoff, &ps, &pe) >= 0) {
+        uint8_t *arc = yaz0_unpack(pack + pdoff + ps, pe - ps, &an);
+        if (arc) inventory_layout_from_common(arc, an);
+        free(arc);
+    }
+    free(pack);
+    close(fd);
 }
 
 // The HUD's prompt with its diamond of the other buttons (Layout/Common.sblarc, PaDoCommandA/B/X/Y_00: "Pick up",
@@ -584,15 +727,59 @@ static size_t hud_letters_flyt(const uint8_t *b, size_t n, uint8_t *out, int *pa
     return w;
 }
 
+// Gameplay > Sharper text: the font sheets in the game's own archives, so that their textures can be told from others
+// (runtime/nvn/text_upscale.c). External_00 is left out: glyphs.c redraws those, and Ancient_00's sheet is too small.
+static void text_sheets_scan(void) {
+    static const char *const fonts[] = {"Normal_00.bffnt", "NormalS_00.bffnt", "Caption_00.bffnt", "Special_00.bffnt"};
+    static bool done;
+    if (done || !g_settings.sharper_text || R != &images[0]) return;
+    done = true;
+    for (int k = 0; k < R->rom_nfiles; k++) {
+        const char *path = R->rom_files[k].path;
+        if (strncmp(path, "Font/Font_", 10) || !strstr(path, ".sbfarc")) continue;
+        size_t zn = R->rom_files[k].size, an = 0;
+        uint8_t *z = malloc(zn), *arc = NULL;
+        if (romfs_image_pread(R->img, z, zn, R->rom_files[k].off) == (ssize_t)zn) arc = yaz0_unpack(z, zn, &an);
+        for (size_t i = 0; arc && i < sizeof fonts / sizeof *fonts; i++) {
+            uint32_t doff, s, e;
+            if (sarc_find(arc, an, fonts[i], &doff, &s, &e) < 0 || e - s < 0x40) continue;
+            const uint8_t *f = arc + doff + s;
+            uint32_t n = e - s, p = *(const uint16_t *)(f + 6);
+            while (p + 32 <= n) {  // (FFNT sections: TGLP holds the sheets)
+                uint32_t size = *(const uint32_t *)(f + p + 4);
+                if (!memcmp(f + p, "TGLP", 4)) {  // (its sheets: the layers of one texture in a BNTX, texels after "BRTD")
+                    uint32_t off = *(const uint32_t *)(f + p + 28), format = *(const uint16_t *)(f + p + 18);
+                    uint32_t w = *(const uint16_t *)(f + p + 24), h = *(const uint16_t *)(f + p + 26);
+                    uint64_t bytes = (uint64_t)w * h / (format == 8 ? 1 : 2);  // (8: R8, 12: BC4)
+                    for (uint32_t a = off; a + 0x10 + bytes <= n && a < off + 0x2000; a += 4)
+                        if (!memcmp(f + a, "BRTD", 4)) {
+                            text_sheet_add(f + a + 0x10, bytes);
+                            break;
+                        }
+                    break;
+                }
+                if (size < 8) break;
+                p += size;
+            }
+        }
+        free(z);
+        free(arc);
+    }
+    LOG("[fs] sharper text: %d font sheets found\n", text_sheet_count());
+}
+
 static void hud_letters_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
     static const char pack_path[] = "Pack/Bootup.pack";
     static const char *const layouts[] = {"blyt/PaDoCommandA_00.bflyt", "blyt/PaDoCommandB_00.bflyt",
                                           "blyt/PaDoCommandX_00.bflyt", "blyt/PaDoCommandY_00.bflyt"};
-    if (getenv("SAVAGEWIND_NO_HUD_LETTERS")) return;
     int k = 0;
     while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, pack_path)) k++;
     char host[1200];
-    if (k == R->rom_nfiles || overlay_file(pack_path, host, sizeof host)) return;
+    if (k == R->rom_nfiles) return;
+    if (overlay_file(pack_path, host, sizeof host)) {
+        if (R == &images[0]) inventory_layout_from_overlay(host);
+        return;
+    }
     uint64_t t0 = plat_now_ns();
     size_t pn = R->rom_files[k].size, zn = 0, an = 0, nn = 0;
     uint8_t *pack = malloc(pn), *arc = NULL, *arc2 = NULL, *z2 = NULL;
@@ -601,6 +788,8 @@ static void hud_letters_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz)
     if (romfs_image_pread(R->img, pack, pn, R->rom_files[k].off) == (ssize_t)pn)
         node = sarc_find(pack, pn, "Layout/Common.sblarc", &pdoff, &ps, &pe);
     if (node >= 0) arc = yaz0_unpack(pack + pdoff + ps, pe - ps, &an);
+    if (R == &images[0] && arc) inventory_layout_from_common(arc, an);
+    if (getenv("SAVAGEWIND_NO_HUD_LETTERS")) { free(pack), free(arc); return; }
     const char *why = node < 0 ? "no Layout/Common.sblarc" : !arc ? "archive not readable" : NULL;
     if (!why) {
         arc2 = malloc(an + 4 * (0x80 + 0x2000));
@@ -660,6 +849,97 @@ static void hud_letters_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz)
     R->grown[R->ngrown++] = (GrownFile){"Layout/Common.blarc", nn - an};
     LOG("[fs] HUD letters: %d button letters use the icon font (archive %zu -> %zu bytes, pack +%llu KB, %.0f ms)\n",
         panes, (size_t)old, zn, (unsigned long long)(delta >> 10), (plat_now_ns() - t0) / 1e6);
+}
+
+// (Savage Wind+) Video > Haze: the air's haze. BOTW's outdoor haze is its atmospheric scattering, set per climate in
+// Pack/TitleBG.pack's WorldMgr/normal.bwinfo (AAMP, 20 climates): CalcMie and CalcRayleigh (the white and the blue of
+// the air: lower, clearer; at 0.6x the sky darkens and turns teal) and CalcSfParamNear (0 or below: the haze close by,
+// least at 0). The setting's share k of the game's haze gives those 0.7 + 0.3 k times theirs (0.85 at 50 %, where far
+// mountains keep their colour and the sky its blue; seen from Hebra's tower at noon, clear sky) and k times the near
+// one. The file is read at the start: one patch over its bytes, the same size.
+static uint32_t crc32_str(const char *s) { return (uint32_t)crc32(0, (const uint8_t *)s, (uInt)strlen(s)); }
+static size_t haze_done[512];  // (the value offsets changed so far)
+static void haze_walk_list(uint8_t *d, size_t n, size_t o, const uint32_t h[3], const float f[3], int *changed, int depth) {
+    if (o + 12 > n || depth > 8) return;
+    uint16_t lo, ln, oo, on;
+    memcpy(&lo, d + o + 4, 2), memcpy(&ln, d + o + 6, 2), memcpy(&oo, d + o + 8, 2), memcpy(&on, d + o + 10, 2);
+    for (uint32_t i = 0; i < on; i++) {
+        size_t ob = o + (size_t)oo * 4 + i * 8;
+        if (ob + 8 > n) return;
+        uint16_t po, pn;
+        memcpy(&po, d + ob + 4, 2), memcpy(&pn, d + ob + 6, 2);
+        for (uint32_t j = 0; j < pn; j++) {
+            size_t pb = ob + (size_t)po * 4 + j * 8;
+            if (pb + 8 > n) return;
+            uint32_t ph, w;
+            memcpy(&ph, d + pb, 4), memcpy(&w, d + pb + 4, 4);
+            size_t vo = pb + (size_t)(w & 0xFFFFFF) * 4;
+            if (w >> 24 != 1 || vo + 4 > n) continue;  // (floats only)
+            bool seen = false;  // (AAMP shares equal values: one value is the data of several parameters)
+            for (int k = 0; k < *changed && !seen; k++) seen = haze_done[k] == vo;
+            if (seen) continue;
+            for (int k = 0; k < 3; k++)
+                if (ph == h[k] && *changed < 512) {
+                    haze_done[*changed] = vo;
+                    float v;
+                    memcpy(&v, d + vo, 4);
+                    v *= f[k];
+                    memcpy(d + vo, &v, 4);
+                    (*changed)++;
+                }
+        }
+    }
+    (void)lo, (void)ln, (void)depth;  // (the root's objects only: the climates. Lists under it hold values of the same
+                                      //  names that this scaling turned teal)
+}
+static void haze_patch(void) {
+    int pct = g_settings.haze;
+    if (pct >= 100 || R != &images[0] || R->npatches >= 8) return;
+    static const char pack_path[] = "Pack/TitleBG.pack", name[] = "WorldMgr/normal.bwinfo";
+    int k = 0;
+    while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, pack_path)) k++;
+    char host[1200];
+    if (k == R->rom_nfiles || overlay_file(pack_path, host, sizeof host)) return;
+    uint8_t head[0x20];
+    if (romfs_image_pread(R->img, head, 0x20, R->rom_files[k].off) != 0x20 || memcmp(head, "SARC", 4)) return;
+    uint32_t doff;
+    memcpy(&doff, head + 0xC, 4);
+    if (doff > (16u << 20) || doff > R->rom_files[k].size) return;
+    uint8_t *tab = malloc(doff);  // (the tables: the data starts at doff)
+    uint32_t ds = 0, de = 0;
+    bool found = false;
+    if (tab && romfs_image_pread(R->img, tab, doff, R->rom_files[k].off) == (ssize_t)doff) {
+        uint32_t cnt = tab[0x1A] | tab[0x1B] << 8;
+        size_t names = 0x20 + (size_t)cnt * 16 + 8;
+        for (uint32_t i = 0; i < cnt && names <= doff && !found; i++) {
+            uint32_t attr;
+            memcpy(&attr, tab + 0x20 + i * 16 + 4, 4);
+            size_t at = names + (size_t)(attr & 0xFFFFFF) * 4;
+            if (!(attr >> 24) || at + sizeof name > doff || memcmp(tab + at, name, sizeof name)) continue;
+            memcpy(&ds, tab + 0x20 + i * 16 + 8, 4), memcpy(&de, tab + 0x20 + i * 16 + 12, 4);
+            found = de > ds && de - ds < (4u << 20);
+        }
+    }
+    free(tab);
+    if (!found) { LOG("[fs] haze: %s not found, the game's haze stays\n", name); return; }
+    size_t n = de - ds;
+    uint64_t at = R->rom_files[k].off + doff + ds;
+    uint8_t *d = malloc(n);
+    if (!d || romfs_image_pread(R->img, d, n, at) != (ssize_t)n || memcmp(d, "AAMP", 4)) { free(d); return; }
+    float kk = pct / 100.0f, sc = 0.7f + 0.3f * kk;
+    const uint32_t h[3] = {crc32_str("CalcMie"), crc32_str("CalcRayleigh"), crc32_str("CalcSfParamNear")};
+    const float f[3] = {sc, sc, kk};
+    uint32_t pio;
+    memcpy(&pio, d + 0x14, 4);
+    int changed = 0;
+    haze_walk_list(d, n, 0x30 + (size_t)pio, h, f, &changed, 0);
+    if (!changed) { free(d); LOG("[fs] haze: no climate values found, the game's haze stays\n"); return; }
+    if (getenv("SAVAGEWIND_HAZE_DUMP")) {  // (tests) the patched file, to compare
+        FILE *df = fopen(getenv("SAVAGEWIND_HAZE_DUMP"), "wb");
+        if (df) fwrite(d, 1, n, df), fclose(df);
+    }
+    R->patches[R->npatches++] = (Patch){at, n, d};
+    LOG("[fs] haze %d %%: %d climate values (scattering x%.2f, near haze x%.2f)\n", pct, changed, sc, kk);
 }
 
 // An RSTB entry: names first (paths whose crc32 collides), then the crc32 table (sorted). NULL when it has none.
@@ -852,7 +1132,11 @@ static void rom_index(void) {
         break;
     }
     hud_letters_patch(fmeta, foff, fsz);
+    text_sheets_scan();
+    if (R == &images[0] && !atomic_load_explicit(&inventory_clip_layout_valid, memory_order_acquire))
+        LOG("[fs] Inventory clip layout unavailable; using the game's clipping\n");
     rstb_patch(fmeta, foff, fsz);
+    haze_patch();
     if (R->ov_n) LOG("[fs] overlay: %d romfs files replaced\n", R->ov_n);
     if (R->ov_meta) { R->patches[R->npatches++] = (Patch){R->ov_meta_off, R->ov_meta_size, R->ov_meta}; }
     add_new_files(h, dmeta, dsz, fsz);
@@ -949,7 +1233,10 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
         if (!b) { resp->result = MAKE_RESULT(2, 6001); break; }
         if (size > b->size) size = b->size;
         kernel_watch_write("romfs read", b->addr, size);
+        uint64_t ft0 = plat_now_ns();
         ssize_t n = romfs_read(m, (uint8_t *)(uintptr_t)b->addr, size, off);
+        perfcount_add(PC_FILE_READS, 1), perfcount_add(PC_FILE_NS, plat_now_ns() - ft0);
+        if (n > 0) perfcount_add(PC_FILE_BYTES, (uint64_t)n);
         if (n < 0) LOG("[fs] storage read failed at %llx: %s\n", off, strerror(errno));
         if (m != &images[0]) break;
         {
@@ -1064,6 +1351,24 @@ static uint32_t errno_result(void) {
     return MAKE_RESULT(2, 4000);
 }
 
+// The game closed the file's session: its host descriptor (a Windows handle each) and the copy of the save go.
+static void file_close(Service *s) {
+    HostFile *f = s->state;
+    if (!f) return;
+    s->state = NULL;
+    if (f->fd >= 0) close(f->fd);
+    free(f->patched);
+    free(f);
+}
+
+static void dir_close(Service *s) {
+    HostDir *d = s->state;
+    if (!d) return;
+    s->state = NULL;
+    if (d->d) closedir(d->d);
+    free(d);
+}
+
 static void file(Service *s, IpcReq *req, IpcResp *resp) {
     HostFile *f = s->state;
     switch (req->cmd) {
@@ -1077,7 +1382,10 @@ static void file(Service *s, IpcReq *req, IpcResp *resp) {
             n = off >= 0 && (uint64_t)off < f->patched_size ? (ssize_t)((uint64_t)size < f->patched_size - (uint64_t)off ? (uint64_t)size : f->patched_size - (uint64_t)off) : 0;
             memcpy((void *)(uintptr_t)b->addr, f->patched + off, (size_t)n);
         } else {
+            uint64_t ft0 = plat_now_ns();
             n = pread(f->fd, (void *)(uintptr_t)b->addr, (size_t)size, off);
+            perfcount_add(PC_FILE_READS, 1), perfcount_add(PC_FILE_NS, plat_now_ns() - ft0);
+            if (n > 0) perfcount_add(PC_FILE_BYTES, (uint64_t)n);
         }
         if (strstr(f->path, "savedata")) {
             LOG("[save] read %s off %lld size %lld -> guest %llx\n", f->path, (long long)off, (long long)size, (unsigned long long)b->addr);
@@ -1219,7 +1527,9 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
                 f->patched = NULL;
             }
         }
-        ipc_return_object(resp, service_new("IFile", file, f));
+        Service *fsvc = service_new("IFile", file, f);
+        fsvc->on_close = file_close;
+        ipc_return_object(resp, fsvc);
         break;
     }
     case 9: {  // OpenDirectory(mode)
@@ -1229,7 +1539,9 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
         hd->d = d;
         hd->mode = (int)IN(uint32_t, 0);
         snprintf(hd->path, sizeof hd->path, "%s", p);
-        ipc_return_object(resp, service_new("IDirectory", directory, hd));
+        Service *dsvc = service_new("IDirectory", directory, hd);
+        dsvc->on_close = dir_close;
+        ipc_return_object(resp, dsvc);
         break;
     }
     case 10: break;  // Commit

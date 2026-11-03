@@ -33,6 +33,70 @@ Steam with Steam Input on, the game sees Steam's virtual Xbox controller.
 If the AppImage won't start with a FUSE error, install your distribution's `fuse3` package (the AppImage runtime
 needs `fusermount3`), or run it as `./Savage_Wind-....AppImage --appimage-extract-and-run`.
 
+### Steam Deck motion in Gaming Mode (DSU)
+
+Keep Steam Input enabled for buttons and sticks. On Linux the game automatically prefers fresh native SDL gyro
+**and** accelerometer samples, then falls back to a Cemuhook DSU server at `127.0.0.1:26760`. If neither source
+works, the existing still-controller / mouse-tilt fallback remains. This is native game motion (bow aiming and
+motion puzzles), not gyro-to-mouse; the game's own motion-controls option still decides when aiming uses it.
+Controls-page motion sensitivity and inversion apply to either sensor source. No root access is needed by the game.
+
+1. Install [SteamDeckGyroDSU](https://github.com/kmicki/SteamDeckGyroDSU) separately in Desktop Mode. Follow its
+   current **Install/Update** instructions: download and run the official **Update GyroDSU** desktop shortcut.
+   The game does not install or start the service. Follow the project's installer instructions if it requests
+   device permissions. Updating an existing installation uses the same shortcut.
+2. Check in Konsole: `systemctl --user status sdgyrodsu.service`. It should be active. The service runs in Gaming
+   Mode too. `journalctl --user -u sdgyrodsu.service -n 30 --no-pager` shows its startup and device errors.
+3. Add the patched Linux AppImage to Steam as a non-Steam game (native Linux execution; do not force Proton).
+   Leave Steam Input enabled and use a normal gamepad layout. No Steam gyro-to-mouse mapping is required.
+4. Return to Gaming Mode and launch. DSU fallback is automatic; no launch option is required. To enable DSU
+   explicitly, use Steam launch options:
+
+       SAVAGEWIND_DSU=on %command%
+
+5. Enable the game's motion-controls option, hold the Deck still briefly for bias calibration, then check bow
+   aiming and a tilt shrine. Motion should only affect the contexts where the game normally uses it.
+
+`SAVAGEWIND_DSU=auto` is the Linux default: contact DSU only when fresh SDL motion is unavailable.
+`SAVAGEWIND_DSU=off` disables DSU completely. `SAVAGEWIND_DSU=on` keeps discovery/subscription active even when SDL
+works, with SDL still taking priority. An optional `SAVAGEWIND_DSU_ENDPOINT=127.0.0.1:26760` accepts a numeric IPv4
+address and port (no DNS lookup on the game thread). Windows and macOS retain their existing SDL motion path.
+
+Look in `~/.local/share/savagewind/savagewind.log` (or terminal output; custom data roots use their own log) for
+`[motion]` and `[dsu]`. SDL availability is logged when opening a controller; `[dsu] connected: slot ...` means
+valid motion packets were received; `[motion] source: none -> DSU` means they are being used. `enabled` alone
+means the client is trying, not that the server was detected. `SAVAGEWIND_MOTION_LOG=1` adds the existing periodic
+fusion/orientation diagnostic. Logs are never emitted per sample by default.
+
+Troubleshooting:
+
+- Buttons working with no gyro is expected when Steam exposes a virtual Xbox pad: check for a DSU connection.
+- If DSU stays unavailable, check the service above and its port. If you changed `SDGYRO_SERVER_PORT` on the
+  server, set the matching `SAVAGEWIND_DSU_ENDPOINT` on the game. Check that localhost UDP is permitted.
+- A timeout means no advancing, valid motion for 500 ms. The client drops stale data and retries discovery and
+  subscriptions every second; starting/restarting the service later needs no game restart. A still controller
+  remains valid if packets/timestamps keep advancing. Duplicate and out-of-order packets do not refresh it.
+- Invalid-packet messages are rate limited: check the endpoint really serves Cemuhook DSU. The known 2.1
+  SteamDeckGyroDSU padded version reply is supported explicitly; motion packets still require valid CRC/lengths.
+- One DSU controller is selected and retained by slot/MAC until disconnected. With multiple controllers,
+  automatic selection cannot infer which physical controller Steam's virtual pad represents; stop unrelated
+  DSU sources or use `off` for an external controller without motion. Fresh SDL sensors always take priority.
+- After suspend or a source switch, allow a brief stationary period for calibration. Device changes reset fusion
+  and timestamps; no stale angular velocity is integrated. Saves and settings do not need to be changed.
+
+Developer validation (no game assets): `DEPS=/absolute/path/to/deps tools/test_dsu.sh`, or omit `DEPS` with SDL3
+installed through pkg-config. `SANITIZE=1` enables ASan/UBSan when the compiler's sanitizer runtimes are installed.
+Tests exercise CRC against zlib, malformed packets, axis/unit conversion, UDP discovery/subscription, sequence wrap,
+server restarts, timeouts, source priority and game-facing source-switch angular velocity. A live diagnostic can be
+built separately: `cc -Iruntime tools/dsu_probe.c runtime/dsu.c -lm -o /tmp/dsu_probe`; `/tmp/dsu_probe` checks the
+real endpoint for three seconds without SDL or game data. It reports acceleration in the runtime's Switch axes
+(flat, face upward: approximately `0 0 -1`) and angular velocity in rad/s.
+
+Protocol/axis references: [Cemuhook reference](https://v1993.github.io/cemuhook-protocol/),
+[SteamDeckGyroDSU MIT implementation](https://github.com/kmicki/SteamDeckGyroDSU/blob/master/src/sdgyrodsu/cemuhookadapter.cpp),
+and [SDL Steam Deck sensor mapping](https://github.com/libsdl-org/SDL/blob/main/src/joystick/hidapi/SDL_hidapi_steamdeck.c).
+The client uses G and rad/s directly in the existing fusion axes.
+
 ### Steam Deck (first test, 2026-10-23)
 SteamOS 3.8, Mesa 26.2 RADV (VANGOGH). The setup works: copying the game files, generating and compiling the game
 code (~16 minutes on the Deck's 8 threads), precompiling the shaders (~7 minutes). Known problems:
@@ -58,7 +122,7 @@ Ubuntu 25.04+ / Debian 13 packages (other distributions: the same libraries unde
 lifted FP/SIMD code needs `__builtin_elementwise_*` - and SDL3 3.2 or newer):
 
     sudo apt install clang lld make pkg-config python3-venv libsdl3-dev libavformat-dev libavcodec-dev \
-        libavutil-dev libswscale-dev libvulkan-dev libshaderc-dev glslc vulkan-tools
+        libavutil-dev libswscale-dev libvulkan-dev libshaderc-dev zlib1g-dev glslc vulkan-tools
 
 Ubuntu 24.04 LTS and older, Debian 12 and openSUSE Leap have no SDL3 package (SDL3 arrived after their freeze):
 build SDL3 from source there, or use the AppImage. Vulkan headers older than 1.4.321 (Debian 13, Ubuntu 25.04, Fedora
@@ -66,7 +130,7 @@ build SDL3 from source there, or use the AppImage. Vulkan headers older than 1.4
 drivers without `VK_KHR_unified_image_layouts`.
 
 `tools/linux/distro_build.sh` builds the app (start screen only, no game code) natively in each of Debian 13, Ubuntu
-25.04, Fedora 42, Arch and openSUSE Tumbleweed, in containers, with each distribution's own clang, SDL3, FFmpeg,
+26.04, Fedora 44, Arch and openSUSE Tumbleweed, in containers, with each distribution's own clang, SDL3, FFmpeg,
 shaderc and lld; CI runs the same script (`.github/workflows/linux-distros.yml`). That is the check for "does it build
 on my distribution": a container reproduces exactly what differs (package names, library sonames, header versions),
 where a virtual machine would only do it slower.

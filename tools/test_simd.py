@@ -7,7 +7,9 @@ random interesting operands (NaNs, infinities, denormals, +-0, saturation edges,
 against Unicorn: X0-X30, SP, NZCV, V0-V31 and (for stores) memory must match. FPSR is not compared (the
 lowering doesn't model the cumulative exception bits or QC).
 
-Usage: test_simd.py [--encodings N] [--cases K] [--seed S] [--jobs J] [--no-validity] [--filter HEX/MASK]
+Usage: test_simd.py [--encodings N] [--cases K] [--seed S] [--jobs J] [--no-validity] [--filter HEX/MASK] [--locals]
+
+--locals: each instruction runs as gen.py --locals makes it (registers and flags in C locals, gen.single_with_locals).
 """
 import argparse
 import functools
@@ -25,6 +27,7 @@ from collections import Counter, defaultdict
 import unicorn as uc
 from unicorn import arm64_const as A
 
+from gen import single_with_locals
 from lifter import Lifter, Unsupported
 
 print = functools.partial(print, flush=True)
@@ -307,6 +310,7 @@ def main():
     ap.add_argument('--no-validity', action='store_true', help='skip the full validity enumeration')
     ap.add_argument('--filter', help='only encodings with (w & MASK) == VAL, as VAL/MASK in hex')
     ap.add_argument('--show', type=int, default=40)
+    ap.add_argument('--locals', action='store_true', help='registers and flags in C locals (gen.py --locals)')
     ap.add_argument('--cflags', default='-march=x86-64-v3' if platform.machine().lower() in ('amd64', 'x86_64') else '',
                     help='extra compiler flags for the lifted tests')
     args = ap.parse_args()
@@ -371,8 +375,8 @@ def main():
     bodies = []
     for i, w in enumerate(pick):
         ins = lifter.lift(w, CODE + 4 * i)
-        bodies.append(ins.code)
-    work = os.path.join(ROOT, 'build', 'test_simd')
+        bodies.append(single_with_locals(ins.code) if args.locals else ins.code)
+    work = os.path.join(ROOT, 'build', 'test_simd' + ('_locals' if args.locals else ''))
     os.makedirs(work, exist_ok=True)
     t1 = time.time()
     exe = compile_tests(work, bodies, args.jobs, args.cflags)

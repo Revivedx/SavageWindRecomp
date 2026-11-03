@@ -196,7 +196,20 @@ static void camera_finish(Slot *s) {
 
 
 uint64_t renderer_present_count(void);
-// On with Video > Anti-aliasing TAA or Upscaler FSR 3 (output_scale.h rt_temporal), read once a presented frame so a frame is all on or all off;
+// Whether frame generation interpolates with these vectors: only with SAVAGEWIND_FG_OBJECT_VECTORS=1. By default it
+// takes the camera's and Link's box (exec.c fg_mv.frag): on grass, trees and other instanced foliage some draws match
+// the wrong draw of the previous frame and get motion they don't have, and the generated frames broke them up (a
+// flicker in the grass around Link while the camera turned, 2026-10-28 captures); making them also cost ~1.5-2 ms of
+// CPU and ~0.6 ms of GPU a frame (RTX 3060, 1440p) with frame generation alone.
+bool mvec_for_framegen(void) {
+    static int on = -1;
+    if (on < 0) on = getenv("SAVAGEWIND_FG_OBJECT_VECTORS") && atoi(getenv("SAVAGEWIND_FG_OBJECT_VECTORS")) != 0 &&
+                     !getenv("SAVAGEWIND_FG_CAMERA_VECTORS");
+    return on;
+}
+
+// On with Video > Anti-aliasing TAA or Upscaler FSR 3 (output_scale.h rt_temporal), or frame generation when it takes
+// them (mvec_for_framegen), read once a presented frame so a frame is all on or all off;
 // SAVAGEWIND_MVEC=1 / 0 turns it on or off whatever the setting.
 bool mvec_enabled(void) {
     static int env = -2;
@@ -206,7 +219,7 @@ bool mvec_enabled(void) {
     static bool on;
     uint64_t f = renderer_present_count();
     extern volatile int g_fg_want;  // (vulkan/exec.c: frame generation interpolates with them too)
-    if (f != at) at = f, on = rt_temporal() || g_fg_want;
+    if (f != at) at = f, on = rt_temporal() || (g_fg_want && mvec_for_framegen());
     return on;
 }
 

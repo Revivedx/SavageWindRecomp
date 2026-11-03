@@ -33,7 +33,7 @@ bool color_grade_get(ColorGrade *g);
 // rescanned on each call. Index 0 is "None". The setting stores color_lut_id().
 enum { COLOR_LUT_MAX = 200 };
 #define COLOR_LUT_RECOMMENDED "sw:Savage_Wind.cube"  // Savage Wind's own look (third_party/luts), offered at the setup
-#define COLOR_LUT_RECOMMENDED_STRENGTH 80  // (percent) its LUT intensity in the recommended setup
+#define COLOR_LUT_RECOMMENDED_STRENGTH 50  // (percent) its LUT intensity in the recommended setup
 int color_lut_list(void);            // how many (with None)
 const char *color_lut_name(int i);   // as shown
 const char *color_lut_id(int i);     // as stored in the ini ("" for None; shipped: "sw:<file>", the player's: "<file>")

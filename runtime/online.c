@@ -37,10 +37,12 @@ typedef int sock_t;
 #include "rt.h"
 
 #define MAGIC 0x4c4f5753u  // "SWOL"
-#define PROTOCOL 6
+#define PROTOCOL 9
 #define SEND_HZ 20
 #define INTERP_NS 100000000ull  // the others are drawn this far behind what was last heard (smooth between updates)
 #define TIMEOUT_NS 10000000000ull  // nothing heard for this long: the connection is gone
+#define STALE_NS 3000000000ull     // no state from a player for this long: he isn't shown (his game stopped, or his
+                                   // connection is going); the server drops a client after TIMEOUT_NS
 
 enum { M_HELLO = 1, M_WELCOME, M_REJECT, M_STATE, M_JOIN, M_LEAVE, M_CHAT, M_PING, M_PONG, M_EQUIP, M_SKEL };
 // SKEL: u8 Link's bone count, u8 his bow's, then each bone's rotation (smallest three of its quaternion: 2 bits which
@@ -58,6 +60,8 @@ typedef struct {
     char as[ONLINE_AS_CHANNELS][ONLINE_AS_MAX];  // OnlinePose ("" all: none; the others go by anim)
     uint8_t gear_bone[ONLINE_GEAR];
     float gear_rel[ONLINE_GEAR][12];
+    OnlineShots shots;
+    uint8_t effects;  // OnlinePose.effects
 } WireState;
 typedef struct { uint32_t magic; uint16_t version; char name[ONLINE_NAME_MAX], pass[ONLINE_NAME_MAX]; } WireHello;
 typedef struct { char armor[3][48], gear[ONLINE_GEAR][48]; } WireEquip;  // EQUIP: what a player wears (head,
@@ -157,6 +161,7 @@ typedef struct {
     bool have_last;
     WireEquip equip;
     bool have_equip;
+    uint64_t heard;  // (when it last sent anything: a client gone without closing is dropped after STALE_NS)
 } SClient;
 
 typedef struct {
@@ -288,7 +293,8 @@ static void srv_loop(Server *sv) {
             }
         struct timeval tv = {0, 100000};
         int n = select((int)mx + 1, &rd, NULL, NULL, &tv);
-        if (n <= 0) continue;
+        if (n < 0) continue;
+        if (n == 0) FD_ZERO(&rd);
         if (FD_ISSET(sv->listener, &rd)) {
             sock_t s = accept(sv->listener, NULL, NULL);
             if (s != SOCK_BAD) {
@@ -300,14 +306,20 @@ static void srv_loop(Server *sv) {
                     send_msg(s, M_REJECT, &why, 1, NULL, 0);
                     sock_close(s);
                 } else {
-                    sv->c[i] = (SClient){.s = s, .used = true};
+                    sv->c[i] = (SClient){.s = s, .used = true, .heard = plat_now_ns()};
                 }
             }
         }
+        uint64_t now = plat_now_ns();
         for (int i = 0; i < ONLINE_MAX; i++) {
             SClient *c = &sv->c[i];
-            if (!c->used || !FD_ISSET(c->s, &rd)) continue;
+            if (!c->used) continue;
+            if (!FD_ISSET(c->s, &rd)) {
+                if (now - c->heard > TIMEOUT_NS) srv_drop(sv, i);  // (gone without a word: a crash, the network)
+                continue;
+            }
             if (!recv_some(c->s, &c->rb)) { srv_drop(sv, i); continue; }
+            c->heard = now;
             int off = 0, len;
             uint8_t type;
             const uint8_t *p;
@@ -565,6 +577,8 @@ static bool sample_local(WireState *w) {
         memcpy(w->as, g_pose.as, sizeof w->as);
         memcpy(w->gear_bone, g_pose.gear_bone, sizeof w->gear_bone);
         memcpy(w->gear_rel, g_pose.gear_rel, sizeof w->gear_rel);
+        w->shots = g_pose.shots;
+        w->effects = g_pose.effects;
         w->yaw = g_pose.yaw;
     }
     pthread_mutex_unlock(&g_pose_lock);
@@ -601,7 +615,10 @@ static void remote_snap(int id, const WireState *w) {  // (lock held)
     for (int k = 0; k < ONLINE_AS_CHANNELS; k++) s->pose.as[k][ONLINE_AS_MAX - 1] = 0;
     memcpy(s->pose.gear_bone, w->gear_bone, sizeof s->pose.gear_bone);
     memcpy(s->pose.gear_rel, w->gear_rel, sizeof s->pose.gear_rel);
+    s->pose.shots = w->shots;
+    if (s->pose.shots.n > ONLINE_SHOTS) s->pose.shots.n = ONLINE_SHOTS;
     s->pose.yaw = w->yaw;
+    s->pose.effects = w->effects;
     s->pose.valid = w->as[0][0] != 0;
     r->head = (r->head + 1) % SNAPS;
     if (r->ns < SNAPS) r->ns++;
@@ -797,8 +814,8 @@ static void *cl_thread(void *arg) {
             if (sample_equip(&e) && (memcmp(&e, &last, sizeof e) || now >= next_equip)) {
                 next_equip = now + 5000000000ull;
                 if (memcmp(&e, &last, sizeof e))
-                    LOG("[online] wearing %s|%s|%s carrying %s|%s|%s|%s|%s\n", e.armor[0], e.armor[1], e.armor[2], e.gear[0],
-                        e.gear[1], e.gear[2], e.gear[3], e.gear[4]);
+                    LOG("[online] wearing %s|%s|%s carrying %s|%s|%s|%s|%s|%s\n", e.armor[0], e.armor[1], e.armor[2], e.gear[0],
+                        e.gear[1], e.gear[2], e.gear[3], e.gear[4], e.gear[5]);
                 last = e;
                 send_msg(s, M_EQUIP, &e, sizeof e, NULL, 0);
             }
@@ -896,6 +913,10 @@ bool online_players(OnlinePlayer out[ONLINE_MAX]) {
         memcpy(o->gear, r->gear, sizeof o->gear);
         o->ping_ms = i == g.id ? g.ping : r->ping;
         if (!r->ns) { o->flags = ONLINE_F_LOADING; continue; }
+        if (i != g.id && plat_now_ns() - r->s[(r->head + SNAPS - 1) % SNAPS].t > STALE_NS) {  // (nothing lately)
+            o->flags = ONLINE_F_LOADING;
+            continue;
+        }
         // the two snapshots around t (or the newest one)
         const Snap *a = NULL, *b = &r->s[(r->head + SNAPS - 1) % SNAPS];
         for (int k = 1; k < r->ns; k++) {
@@ -913,6 +934,12 @@ bool online_players(OnlinePlayer out[ONLINE_MAX]) {
         o->anim = b->anim;
         o->pose = b->pose;  // (the newer one: what he does next comes a little early, never late)
         o->pose.yaw = o->yaw;
+        for (int k = 0; k < o->pose.shots.n; k++)  // (a shot in both: where it was between them)
+            for (int j = 0; a != b && j < a->pose.shots.n; j++)
+                if (a->pose.shots.shot[j].id == o->pose.shots.shot[k].id)
+                    for (int q = 3; q < 12; q += 4)
+                        o->pose.shots.shot[k].m[q] = a->pose.shots.shot[j].m[q] +
+                                                     (b->pose.shots.shot[k].m[q] - a->pose.shots.shot[j].m[q]) * f;
     }
     pthread_mutex_unlock(&g.lock);
     return true;

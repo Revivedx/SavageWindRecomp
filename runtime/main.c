@@ -15,10 +15,12 @@
 #include "nvn/vulkan/shaders.h"  // (the shader key log: --scan-shaders)
 #endif
 #include "romfs_image.h"
+#include "services/save_convert.h"
 #include "settings.h"
 #include "hle.h"
 #include "kernel.h"
 #include "online.h"
+#include "control.h"
 
 const char *g_romfs_dir;
 uint64_t g_program_id;
@@ -167,6 +169,7 @@ static void boot(const char *root) {
     { extern void fs_title_version_patch(void); fs_title_version_patch(); }  // (runtime/services/fs.c)
     { extern void settings_load(void); settings_load(); }
     { extern void language_booted(void); language_booted(); }  // (runtime/language.c)
+    plat_cpu_placement();
     kernel_init();
     dispatch_init();
     { extern void jpeg_debug_init(void); jpeg_debug_init(); }
@@ -282,6 +285,19 @@ static int precompile_shaders(const char *root) {
             ok ? "done" : "stopped", p.shaders, p.keys, p.made, p.cached, p.failed, p.seconds, ok ? "" : ": ", ok ? "" : p.why);
     return ok ? 0 : 1;
 }
+
+// --export-pipeline-seed <file>: this install's pipeline list (cache/vk_pipelines.list) as a portable seed that any
+// install's precompilation reads (runtime/nvn/vulkan/precompile.c): a developer's playthrough gives every install its
+// first boot's pre-warm. Needs the Vulkan device (the list is named after it) and the game files.
+static int export_pipeline_seed(const char *root, const char *out) {
+    extern void ui_window_init(void);
+    ui_window_init();
+    char image[1100], why[256] = "";
+    snprintf(image, sizeof image, "%s/romfs", root);
+    bool ok = shader_precompile_export_seed(image, out, why, sizeof why);
+    fprintf(stderr, "[precompile] pipeline seed %s: %s%s\n", ok ? "written" : "NOT written", out, ok ? "" : why);
+    return ok ? 0 : 1;
+}
 #endif
 
 // --dump-romfs <file>: writes the RomFS image the game reads (runtime/romfs_image.h) to a file, to compare it with
@@ -347,11 +363,15 @@ int main(int argc, char **argv) {
 #else
     setvbuf(stderr, NULL, _IOLBF, 0);
 #endif
+    // every log starts with which Savage Wind made it: the version and the source it was built from (Makefile SW_SOURCE)
+    extern const char *rt_version(void);  // (runtime/ui/launcher.mm)
+    fprintf(stderr, "[savagewind] Savage Wind %s (%s)\n", rt_version(), SW_SOURCE);
+    control_init();
     const char *root = NULL;  // (NULL: own_game_dir, else extracted/ in the data root)
     bool skip_launcher = getenv("SAVAGEWIND_NO_LAUNCHER") || getenv("SAVAGEWIND_INPUT");  // tests boot straight in
     bool config = false;
     static char arg_root[1024];
-    const char *dump = NULL;
+    const char *dump = NULL, *seed_out = NULL;
     bool scan = false, precompile = false;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--play")) skip_launcher = true;
@@ -366,6 +386,7 @@ int main(int argc, char **argv) {
                 if (!strcmp(argv[k], "--password")) pass = argv[k + 1];
             return online_server_main(port > 0 && port < 65536 ? port : ONLINE_PORT, pass);
         }
+        else if (!strcmp(argv[i], "--export-pipeline-seed") && i + 1 < argc) seed_out = argv[++i];
         else if (argv[i][0] != '-' && !realpath(argv[i], arg_root)) root = argv[i];  // (relative to where we started)
         else if (argv[i][0] != '-') root = arg_root;
     }
@@ -377,21 +398,31 @@ int main(int argc, char **argv) {
     if (!root) root = own_game_dir();
     if (!root) root = "extracted";
     {   // online play's actors (tools/online_mod.py): its folder in the data root is the RomFS overlay, unless one is
-        // set; a source checkout makes it from the game files the first time (Python with oead: tools/setup_windows.ps1),
-        // and again over one older than the runtime's (without gear.txt: its players carried nothing)
+        // set; made from the game files the first time (a source checkout: Python with oead, tools/setup_windows.ps1; a
+        // release: the frozen helper, swonline/ next to the exe), and again over one older than the runtime's (without
+        // its version's file: v5)
         struct stat sb;
         const char *ov = getenv("SAVAGEWIND_ROMFS_OVERLAY");
 #ifdef _WIN32
         const char *py = "tools\\venv\\Scripts\\python.exe";
+        char helper[1100];
+        bool frozen = rt_resource("swonline\\swonline.exe", NULL, helper, sizeof helper);
 #else
         const char *py = "tools/venv/bin/python";
+        char helper[1100];
+        bool frozen = rt_resource("swonline/swonline", NULL, helper, sizeof helper);
 #endif
-        if ((!ov || !*ov) && stat("online_mod/gear.txt", &sb) != 0 && stat("tools/online_mod.py", &sb) == 0 &&
-            stat(py, &sb) == 0) {
-            char cmd[1400];
-            snprintf(cmd, sizeof cmd, "\"\"%s\" -I tools/online_mod.py \"%s/romfs\" online_mod\"", py, root);
-            LOG("[online] making online play's actors: %s\n", cmd);
-            if (system(cmd) != 0) LOG("[online] tools/online_mod.py failed (pip install oead?)\n");
+        if ((!ov || !*ov) && stat("online_mod/v5", &sb) != 0) {  // (tools/online_mod.py VERSION)
+            char cmd[2400];
+            cmd[0] = 0;
+            if (stat("tools/online_mod.py", &sb) == 0 && stat(py, &sb) == 0)
+                snprintf(cmd, sizeof cmd, "\"\"%s\" -I tools/online_mod.py \"%s/romfs\" online_mod\"", py, root);
+            else if (frozen)
+                snprintf(cmd, sizeof cmd, "\"\"%s\" \"%s/romfs\" online_mod\"", helper, root);
+            if (cmd[0]) {
+                LOG("[online] making online play's actors: %s\n", cmd);
+                if (system(cmd) != 0) LOG("[online] making online play's actors failed\n");
+            }
         }
         if ((!ov || !*ov) && stat("online_mod/online_mod.txt", &sb) == 0) {
             static char env[] = "SAVAGEWIND_ROMFS_OVERLAY=online_mod";
@@ -408,8 +439,10 @@ int main(int argc, char **argv) {
     if (scan) return scan_shaders(root);
 #ifndef __APPLE__
     if (precompile) return precompile_shaders(root);
+    if (seed_out) return export_pipeline_seed(root, seed_out);
 #else
     (void)precompile;
+    (void)seed_out;
 #endif
     // A plain start goes straight into the game once the game files are set up and the game code built from them
     // matches this build; the start screen only when there is something to set up, or when asked for.
@@ -422,9 +455,17 @@ int main(int argc, char **argv) {
         mode = test_mode && !strcmp(test_mode, "setup") ? LAUNCHER_SETUP : LAUNCHER_CONFIG;
     for (;;) {
         if (mode != LAUNCHER_NONE) launcher_run(root, mode);
+        // The game holds the lock on its save folder while it runs, so the Saves tab of another Savage Wind refuses to
+        // swap or copy saves under it. Not getting it (somebody else has it, or no lock file can be made) never stops
+        // the game; it is let go before the start screen of a reboot, which is this same process.
+        ScLock *save_lock = NULL;
+        const char *save_env = getenv("SAVAGEWIND_SAVE_DIR");
+        if (sc_lock_take(save_env && *save_env ? save_env : "save", &save_lock) == SC_LOCK_BUSY)
+            fprintf(stderr, "[saves] another Savage Wind is running with this save folder; saving from both can overwrite saves\n");
         boot(root);
         int kind = ui_run();  // window and input on the main thread; returns when a reboot is requested
         teardown();
+        sc_lock_drop(save_lock);
         mode = kind == RT_REBOOT_TITLE ? LAUNCHER_CONFIG : LAUNCHER_NONE;
     }
 }

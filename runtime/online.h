@@ -32,14 +32,34 @@ enum { ONLINE_A_WAIT, ONLINE_A_WALK, ONLINE_A_RUN, ONLINE_A_DASH, ONLINE_A_JUMP,
 // gear is (on which of Link's bones, and how) and his heading
 #define ONLINE_AS_CHANNELS 4
 #define ONLINE_AS_MAX 32
-#define ONLINE_GEAR 5  // weapon, shield, bow, sheath, quiver
+#define ONLINE_GEAR 6  // weapon, shield, bow, sheath, quiver, paraglider (while open)
+// What a player has thrown or shot, from his game: the bombs and arrows he holds or that fly (each as it is in the
+// world, by an id of his), and the bombs that went off lately (each by a number that only grows, sent for a while)
+#define ONLINE_SHOTS 8
+#define ONLINE_BOOMS 4
+enum { ONLINE_K_REMOTE_BOMB, ONLINE_K_REMOTE_BOMB_CUBE, ONLINE_K_REMOTE_BOMB2, ONLINE_K_REMOTE_BOMB_CUBE2,
+       ONLINE_K_NORMAL_ARROW, ONLINE_K_FIRE_ARROW, ONLINE_K_ICE_ARROW, ONLINE_K_ELECTRIC_ARROW, ONLINE_K_BOMB_ARROW,
+       ONLINE_K_ANCIENT_ARROW, ONLINE_K_BRIGHT_ARROW, ONLINE_K_BEAM, ONLINE_K_COUNT };  // (runtime/online_actors.c k_shot_names)
+#pragma pack(push, 1)
+typedef struct {
+    uint8_t n;
+    struct { uint16_t id; uint8_t kind; float m[12]; } shot[ONLINE_SHOTS];  // (m: Matrix34f, row-major)
+    struct { uint16_t seq; uint8_t kind; float pos[3]; } boom[ONLINE_BOOMS];  // (seq 0: none)
+} OnlineShots;
+#pragma pack(pop)
+
 typedef struct {
     char as[ONLINE_AS_CHANNELS][ONLINE_AS_MAX];  // "" none
     uint8_t gear_bone[ONLINE_GEAR];              // 0: not shown; else the bone + 1 (online_actors.c k_bones)
     float gear_rel[ONLINE_GEAR][12];             // the piece's matrix in that bone's space (Matrix34f, row-major)
     float yaw;                                   // heading, radians (0: +z), as his Link faces
     uint8_t valid;
+    OnlineShots shots;
+    uint8_t effects;                             // ONLINE_E_*: what shows on him
 } OnlinePose;
+// OnlinePose.effects: Daruk's Protection's shield taking a hit (KAGO), its ring while he guards with its charges left
+// (KAGO_COUNT: 1 to 3, in effects >> KAGO_COUNT_SHIFT)
+enum { ONLINE_E_KAGO = 1, ONLINE_E_KAGO_COUNT_SHIFT = 1, ONLINE_E_KAGO_COUNT = 3 << 1 };
 
 typedef struct {
     bool used;

@@ -20,7 +20,8 @@ Each player plays their own game (their save, their world: enemies, chests and q
 in it as Links: each other player is a Link in the world where he is, posed as his Link is in his game (his skeleton,
 bone by bone: walking, climbing, every swing of a sword, a shield's guard, drawing a bow, throwing...), in the armour he wears
 and with the weapon, shield, bow, sheath and quiver he carries, in his hands or on his back as in his game, with his
-name over him. The overlay adds the session's players (left, under the hearts), join / leave notices, the chat's last
+name over him. His Remote Bomb bombs (in his hands, thrown, rolling) and his arrows in flight are there too, and his
+bombs go off where they do (their effects and sound only: what hurts stays in his game). The overlay adds the session's players (left, under the hearts), join / leave notices, the chat's last
 lines and an arrow at the screen's edge for a player out of view. Chat from the Online tab.
 
 ### The players' Links (online_mod)
@@ -46,7 +47,7 @@ other players are the overlay's figures only.
 | OnlinePlayer and OnlineGear_*, from the game files | `tools/online_mod.py` |
 | Test player without a game | `tools/online_bot.c` |
 
-The wire (protocol 6): TCP, little-endian, `u16 length, u8 type, payload`. HELLO (magic `SWOL`, protocol version,
+The wire (protocol 9): TCP, little-endian, `u16 length, u8 type, payload`. HELLO (magic `SWOL`, protocol version,
 name, password) -> WELCOME (slot) or REJECT (full, version, password, name); JOIN / LEAVE; STATE 20 times a second
 (Link's feet position, heading, paused / loading flags, the sender's round trip, the pose: his AS and his gear's
 bones); SKEL 20 times a second (his skeleton and his bow's, its string: each bone's local rotation, the smallest
@@ -141,7 +142,16 @@ request under way can't be stopped (`0x70015168a8` releases only a failed one; t
 at +8, so each request has a handle of its own, never moved): it goes to the pool as it is and is taken when it comes.
 The pool goes when he leaves (deleted) or at a load.
 
-The others dress his Link in the game's own pieces, any of them: each is asked for (`0x7001535b10`, its model loaded
+**Now (model-only armour):** the game's own Armor_* actors, worn on a remote skeleton, crashed some games (mixed
+sets, fast changes) and a second one made for a player was never drawn. So tools/online_mod.py makes an actor per
+armour model list (`OnlineArmor_<ModelUser>`: the model with its physics, cloth and support bones; `armor.txt` maps
+each Armor_* piece to it, Link's default hair and shorts too), and `bones.txt` gives, for each unit of it, each
+bone's index in Link's skeleton (255: a bone Link hasn't). The runtime puts the piece on his Link's matrix and each
+frame writes Link's local bones into it (`0x7000f95fa8`): the skeleton he sent, or, without one (an older game, the
+test bot), his remote Link's own bones as its AS left them (`0x7000f960f8`). Dyed pieces share their model list,
+so they look undyed.
+
+What follows is how it was before (kept for what was learnt). The others dress his Link in the game's own pieces, any of them: each is asked for (`0x7001535b10`, its model loaded
 then), and once made worn on his Link as the player's armour code does (`0x70011750c8`): `0x700117363c`(armour,
 wearer) puts it on the wearer's model's skeleton (+0x840), then `0x7001173550`(armour). It moves with his skeleton,
 its cloth and support bones its own. No helmet: `Armor_Default_Head` (Link's hair: his model has none).
@@ -166,12 +176,75 @@ in his right hand pointing at his left.
 Each piece (weapon, shield, bow, sheath, quiver) is an OnlineGear actor, asked for when the player carries it; each
 frame its matrix is the bone's matrix on the remote Link times the piece's matrix in that bone's space as his game
 has it (STATE's pose: a bone is kept while the piece stays near it, so two bones as near don't flicker). A piece on
-no bone (thrown, dropped) goes under the world, out of sight.
+no bone (thrown, dropped) goes under the world, out of sight (farther than 0.6 m from every bone; a shield 1.5 m, so
+the one he surfs on, under his feet, stays).
+
+The paraglider is a sixth piece (protocol 8): the player links his `PlayerStole2` (or `_Vagrant`) actor, at player
++0x2c28 in 1.9.0 (found once by looking through the player for a link to it); it is sent only while his body plays
+a `Para*` AS (`ParaEquipOn`, `ParashawlGlide`, ...; not `ParaEquipOff`), on the bone it is nearest (3 m reach).
+
+The online actors have `traverseDist` 1000 in their ActorInfo: without it the game deleted the gear farther than
+about 50 m and the remote Link farther than about 80 to 140 m from the camera, and they were made again and again
+(a piece left standing where it was deleted). Requests still under way when everything is forgotten (a load, a
+shrine) are kept (`g_orphan`) and what they make is deleted when it comes, so no stray piece stays in the world.
+
+The Master Sword's online actor has the sword's own ELink, SLink and XLink (`GLOWS` in tools/online_mod.py).
+
+Daruk's Protection (protocol 9: STATE's `effects`): the player shows it with effects of his own ELink, each kept as a
+handle (the effect, its id; alive while the effect's +0x20 is that id): "Kago_Shield" (a hit taken on it) at player
++0x2350 and "Kago_ShieldCount_0<n>" (its ring while he guards, n charges left at player +0x1cd4) at +0x2360 (1.9.0
+0x7100cd39fc). His game sends which are on and n; the others play the same effects on his Link with `0x7001100bd0`
+(x8 the handle out, x0 the actor, x1 the effect's name) and end them with `0x700056d010`(handle). For that the
+OnlinePlayer has the player's ElinkUser, `Player_GameRom`.
+
+The Master Sword's beam is a `PlayerBeam` actor (a Bullet; the sword's `MagicName`), which the player doesn't link
+and which the game doesn't make through 0x7001535900 / 0x7001535b10 (those only preload it). Its AI action,
+`PlayerBeamMove` (crc 0xc38e3702 in the action factories: 0x7000b6d698, vtable 0x7001c1df30), has a method the AI
+asks while it flies (0x7000710498, x0 the action, its actor at +8): the patch `beam_move` puts the beam in the arrows'
+ring, and it goes as a shot (`ONLINE_K_BEAM`). The others show `OnlineBeam`: PlayerBeam's ELink and SLink with no
+model, AI or attack, on the matrices that come.
+
+### Throws and shots
+
+What a player throws or shoots goes with his state (OnlineShots: up to 8, each by an id of his, as it is in the world;
+the bombs that went off lately, each by a number that only grows, sent for two seconds). His game finds them where
+they are made, through two patches (tools/patches.py; sites in tools/game_sites.py, an optional group each):
+
+- `remote_bomb_made`: the Remote Bomb rune (1.9.0 0x7000b3ba04) makes its bombs with 0x7001535900 ("RemoteBomb",
+  "RemoteBombCube", "...2"); right after, the bomb (x22) is noted (`rt_online_bomb`). It is followed until it goes;
+  it went off when it starts its AS "Explode" (it goes some frames later), or when it is gone without it.
+- `arrow_move`: each update of an arrow's flight action (0x70005ee5dc; x0 the action, its actor at +8; the straight
+  part and the fall) notes the arrow (`rt_online_arrow`, in a ring: the actors update on several threads); the frame
+  loop takes those first seen within 4 m of the local Link (his, not an enemy's) and follows them.
+
+(The player links at +0xea8 what he holds or could pick up: a bomb in his hands, an arrow on the ground before him;
+not his arrows in flight, and a bomb only while it is in front of him.)
+
+The others show them with model-only actors (OnlineGear_* for the arrows; OnlineProj_<bomb>: the bomb's model, AS
+list and AS, its ELink "Bomb" and SLink, without its AI and physics, from tools/online_mod.py) on the matrices they
+come with (moved between two snapshots). A bomb gone off: the actor that showed it (a second actor of it would not
+be drawn, nor its effects), its materials hidden, at that place, plays its AS "Explode" (Bomb_Explode: the
+explosion's effects and sound), without the Explode actor that hurts.
+
+Players going: a player who sends no state for 3 s isn't shown (his actors to his pool, `STALE_NS`), and the server
+drops a client it hears nothing from for 10 s (a game that hung, a network gone without closing the connection) and
+tells the others he left. A game out of the session (it left, or lost the connection) deletes the others' actors at
+once instead of forgetting them (they would stay where they stood); a slot taken by another player before the first
+one's leaving was seen deletes the first one's actors.
+
+When the game deletes a remote Link (the local Link died: game over; a load), the world's actors are going: all are
+forgotten and made again two seconds later, and nothing is made while the local Link is dead (his AS Dead...);
+making them again during it crashed the game. The arrow on
+a drawn bow's string is no actor in his game: the others put a NormalArrow from his right hand toward his left while
+his upper body plays BowReload / BowCharge.
 
 ### Not done yet
 
 - Less to send: only the bones that moved, or fewer times a second (a session of 8 sends each player's skeleton to 7).
 
 - A dye's colour (the armour's `ArmorDyeColor` param when it is made, as `0x70011759a4` passes it).
-- The paraglider, arrows in flight, a thrown weapon's flight, effects (a sword's trail, a spin attack's light).
+- The beam is not seen working yet: in the test runs (full hearts, the Master Sword) the game fired none, with or
+  without online play, so `beam_move` and OnlineBeam are untested.
+- Mipha's Grace, Revali's Gale, Urbosa's Fury (the same way as Daruk's: "Kago_Heal", "Kago_Wind", "Kago_Lightning"),
+  a thrown weapon's flight, other effects (a sword's trail, a spin attack's light).
 - The world shared: enemies, items, time of day, quests (Milk Bar's quest and enemy sync); damage between players.

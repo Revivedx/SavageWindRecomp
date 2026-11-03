@@ -15,6 +15,7 @@ generated-*/
 build/
 /cache/
 save/
+/save.lock
 /savagewind.ini
 # tools and Python environments (machine-specific)
 tools/venv/
@@ -42,3 +43,4 @@ game_dir.txt
 /online.ini
 /online_mod*/
 /run.log
+/vk_pipelines.seed

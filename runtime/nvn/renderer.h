@@ -27,4 +27,5 @@ void renderer_mark_gpu_owned(NvnTexture *t);
 bool renderer_texture_scalable(NvnTexture *t);  // allocated at the output scale
 void renderer_make_scalable(NvnTexture *t);     // from now on (a target used with scaled ones)
 void input_handle_event(const SDL_Event *e);
+void input_focus_update(SDL_Window *w);
 bool input_user_blocked(const SDL_Event *e);

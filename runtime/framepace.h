@@ -18,6 +18,8 @@ bool framepace_title_ui(void);
 bool framepace_loading_ui(void);
 // The pause menu's pages or the map are up (16:9 layouts that cover the whole picture)
 bool framepace_menu_ui(void);
+// The map is active, rather than the inventory (both use pause state 2).
+bool framepace_map_ui(void);
 // The game is paused (the pause menu, the map) or the start screen's menu is up
 bool framepace_paused(void);
 // present_pace: a frame was presented at t (plat_now_ns), on its pace's grid or not.
@@ -34,3 +36,4 @@ uint64_t framepace_shown_frame(void);  // (the game's frames that were presented
 // SAVAGEWIND_SCRIPT_CLOCK=1: the frame number test scripts use, in 30ths of a second (once per presented frame);
 // otherwise the presented frames.
 uint64_t framepace_script_frame(uint64_t presented);
+uint64_t framepace_script_now(void);  // (read only: the script frames so far, 0 without SAVAGEWIND_SCRIPT_CLOCK)
