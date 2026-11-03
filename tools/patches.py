@@ -218,7 +218,9 @@ def _frame_wait(gen, a):
 
 def _vfr_ratio(gen, a):
     assert _word(gen, a) == 0xb9407a68, hex(_word(gen, a))  # ldr w8, [x19, #0x78]
-    return ('{ extern void rt_vfr_update(uint64_t); rt_vfr_update(c->x[19]); c->x[8] = LD32(c->x[19] + 0x78); }'
+    # (and online play's actors: runtime/online_actors.c, on this thread before the actors' update)
+    return ('{ extern void rt_vfr_update(uint64_t); extern void rt_online_frame(Cpu *); rt_vfr_update(c->x[19]); '
+            'rt_online_frame(c); c->x[8] = LD32(c->x[19] + 0x78); }'
             f'  /* {a:#x}: ldr w8, [x19, #0x78] (VFR: interval ratio) */')
 
 
@@ -257,6 +259,34 @@ def _surf_jump_request(gen, a):
     target = a + sext((w >> 5) & 0x3fff, 14) * 4
     return ('{ extern int rt_surf_jump_request(uint64_t); '
             f'if (!(c->x[0] & 1) || !rt_surf_jump_request(c->x[19])) goto L_{target:x}; }}')
+
+
+# Online play's arrows (runtime/online_actors.c rt_online_arrow): each update of an arrow's flight action (1.9.0
+# 0x70005ee5dc: x0 the action, its actor at +8; the straight part and the fall), the local player's are followed.
+
+def _arrow_move(gen, a):
+    assert _word(gen, a) == 0x39c50008, hex(_word(gen, a))  # ldrsb w8, [x0, #0x140]
+    return ('{ extern void rt_online_arrow(uint64_t); rt_online_arrow(c->x[0]); '
+            'c->x[8] = (uint32_t)(int32_t)(int8_t)LD8(c->x[0] + 0x140); }'
+            f'  /* {a:#x}: ldrsb w8, [x0, #0x140] (an arrow in flight) */')
+
+
+# Online play's bombs (runtime/online_actors.c rt_online_bomb): each bomb the Remote Bomb rune makes (1.9.0
+# 0x7000b3ba04, after its 0x7001535900 and its matrix: the bomb in x22).
+
+def _remote_bomb_made(gen, a):
+    assert _word(gen, a) == 0xf942aec8, hex(_word(gen, a))  # ldr x8, [x22, #0x558]
+    return ('{ extern void rt_online_bomb(uint64_t); rt_online_bomb(c->x[22]); c->x[8] = LD64(c->x[22] + 0x558); }'
+            f'  /* {a:#x}: ldr x8, [x22, #0x558] (a Remote Bomb bomb just made) */')
+
+
+# Online play's Master Sword beams (runtime/online_actors.c rt_online_arrow, with the arrows): a method of the beam's AI
+# action (PlayerBeamMove, 1.9.0 0x7000710498) that the AI asks while it flies; x0 the action, its actor at +8.
+
+def _beam_move(gen, a):
+    assert _word(gen, a) == 0xaa0003f3, hex(_word(gen, a))  # mov x19, x0
+    return ('{ extern void rt_online_arrow(uint64_t); rt_online_arrow(c->x[0]); c->x[19] = c->x[0]; }'
+            f'  /* {a:#x}: mov x19, x0 (a Master Sword beam flying) */')
 
 
 # The physics step's solver microsteps (runtime/hle/framepace.c rt_solver_steps, #161): before each Havok step the game
@@ -738,6 +768,9 @@ PATCHES = {
     'surf_contact': _surf_contact,
     'surf_boost_remove': _surf_boost_remove,
     'surf_jump_request': _surf_jump_request,
+    'arrow_move': _arrow_move,
+    'remote_bomb_made': _remote_bomb_made,
+    'beam_move': _beam_move,
     'phys_solver_steps': _solver_steps,
     'kf_angle': _kf_angle,
     'snd_frame_floor': _snd_frame_floor,

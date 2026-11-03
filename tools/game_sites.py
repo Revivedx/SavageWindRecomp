@@ -140,6 +140,17 @@ SITES = [
     Site('surf_contact', 'code', '3941d2a8 36080008/fff8001f bd4066a0 1e202008 5400000d/ff00001f bd403261 1e202028 5400000d/ff00001f', 0),
     Site('surf_boost_remove', 'code', '1e203820 2f00e401 aa1403e1 1e216800 bd003260 0f016680 f94006a0 94000000/fc000000', 0),
     Site('surf_jump_request', 'code', '36000000/fff8001f 52a82608 b9006668 b9008288 52800028 3900a288 2d488680 52800141', 0),
+    # arrows' flight (tools/patches.py _arrow_move): the load of the state of an arrow's flight action (x0, its actor
+    # at +8), each update of an arrow in flight
+    Site('arrow_move', 'code', '39c50008 aa0003f3 3100051f 54000000/ff00001f 34000008/ff00001f 7100051f '
+         '54000001/ff00001f aa1303e0', 0),
+    # the Remote Bomb rune's bombs (tools/patches.py _remote_bomb_made): the first load from a bomb just made (x22)
+    Site('remote_bomb_made', 'code', 'f942aec8 b4000008/ff00001f 528000a9 b9014909 91002288 52800509 9ba92269 '
+         '71000e7f', 0),
+    # the Master Sword beam's AI action (PlayerBeamMove, crc 0xc38e3702: 0x7000b6d698; its vtable 0x7001c1df30), a method
+    # the AI asks every update (tools/patches.py _beam_move): x0 the action, its actor at +8
+    Site('beam_move', 'code', 'aa0003f3 94000000/fc000000 36000000/fff8001f f9400bf3 52800020 a8c27bfd d65f03c0 '
+         'f9400660', 0),
     # the physics step's solver microsteps (tools/patches.py _solver_steps): the delta frame times 6
     Site('phys_solver_steps', 'code', '1e231002 1e3c1004 f9401a68 1e2c1009 1e220822 f9400108 1e202048 f9400514', 4),
     # a keyframed body's angular velocity toward its target (tools/patches.py _kf_angle): the call that takes the angle
@@ -277,6 +288,9 @@ OPTIONAL_GROUPS = [
     ('no_wear_hit', 'no_wear_ret'),
     ('link_life_store', 'link_life_tick'),
     ('stamina_store',),
+    ('arrow_move',),
+    ('remote_bomb_made',),
+    ('beam_move',),
 ]
 OPTIONAL = {n for g in OPTIONAL_GROUPS for n in g}
 
@@ -380,6 +394,9 @@ KNOWN = {
         'surf_contact': 0x70011e9e74,
         'surf_boost_remove': 0x70011e9e94,
         'surf_jump_request': 0x70011ea3d4,
+        'arrow_move': 0x70005ee5e8,
+        'remote_bomb_made': 0x7000b3bb5c,
+        'beam_move': 0x70007104a4,
         'phys_solver_steps': 0x700156f930,
         'kf_angle': 0x70012d57fc,
         'snd_frame_floor': 0x7001551004,

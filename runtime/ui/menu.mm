@@ -42,6 +42,7 @@ void controls_bindings_draw(float scale);  // controls_ui.mm
 #include "../input_bind.h"
 #include "../perfmon.h"
 #include "../paths.h"
+#include "../online.h"
 #include "../pc_cursor.h"
 }
 
@@ -76,6 +77,17 @@ static void push(const QEvent &e) {
 
 bool menu_is_open(void) { return g_open.load(); }
 static void set_open(bool open);
+// The game's Options screen (game_options.mm): Online opens this menu on its Online tab
+extern "C" void menu_open_online(void) {
+    extern int g_tab_request_ext;
+    g_tab_request_ext = 10;
+    set_open(true);
+}
+
+extern "C" void online_tab_draw(float scale);  // (online_ui.mm)
+extern "C" bool online_overlay_wanted(void);
+extern "C" void online_overlay_draw(float scale, ImFont *font);
+
 extern "C" void menu_test_open(void) {
     set_open(true);
     if (getenv("SAVAGEWIND_MENU_TAB")) { extern int g_tab_request_ext; g_tab_request_ext = atoi(getenv("SAVAGEWIND_MENU_TAB")); }
@@ -1320,11 +1332,11 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     int ntabs = 0;
     if (prelaunch) tabs[ntabs++] = {"Prelaunch", -1, true};
     // (ids 4-7 were Link's Awakening tabs; the ids stay: test hooks)
-    static const char *names[] = {"Video", "Audio", "Language", "Saves", "", "", "", "", "Controls", "Quit"};
-    static const int order[] = {8, 0, 1, 2, 3, 9};  // Controls, Video, Audio, Language, Saves, Quit
-    for (int i : order) {  // (Quit: in game only - the start screen has its own QUIT; Saves: on the start screen only,
-        if (i == 9 && prelaunch) continue;  //  the game must not be running while its saves change)
-        if (i == 3 && !prelaunch) continue;
+    static const char *names[] = {"Video", "Audio", "Language", "Saves", "", "", "", "", "Controls", "Quit", "Online"};
+    static const int order[] = {8, 0, 1, 2, 3, 10, 9};  // Controls, Video, Audio, Language, Saves, Online, Quit
+    for (int i : order) {  // (Quit and Online: in game only - the start screen has its own QUIT, and no world to share;
+        if ((i == 9 || i == 10) && prelaunch) continue;  //  Saves: on the start screen only, the game must not be
+        if (i == 3 && !prelaunch) continue;              //  running while its saves change)
         tabs[ntabs++] = {names[i], i, true};
     }
     int cur = 0;  // g_tab / g_tab_request hold ids
@@ -1407,6 +1419,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
                 case 3: saves_tab_draw(); break;
                 case 8: tab_about(); break;
                 case 9: tab_quit(scale, in_game); break;
+                case 10: online_tab_draw(scale); break;
                 }
                 static const char *scroll_test = getenv("SAVAGEWIND_MENU_SCROLL");  // test hook: page scroll, 0..1
                 if (scroll_test) ImGui::SetScrollY(ImGui::GetScrollMaxY() * (float)atof(scroll_test));
@@ -1446,7 +1459,7 @@ static bool menu_draws(bool *pointer_hover = NULL, float *pointer_box = NULL, bo
     if (pointer_hover) *pointer_hover = hover;
     if (gyro_show) *gyro_show = gyro_on;
     return g_open.load() || g_kbd.load() == 1 || g_sizes.load() || console_is_open() || gyro_on || hover ||
-           g_settings.perf_overlay != PERF_OFF;
+           g_settings.perf_overlay != PERF_OFF || online_overlay_wanted();  // (online play's overlay: online_ui.mm)
 }
 
 bool menu_render_needed(void) { return menu_draws(); }
@@ -1467,6 +1480,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     bool gyro_scene_show;
     float pointer_box[4];
     bool pointer_hover;
+    bool online = online_overlay_wanted();
     if (!menu_draws(&pointer_hover, pointer_box, &gyro_scene_show, &gyro_scene)) {
         if (g_inited) { pthread_mutex_lock(&q_lock); q_events.clear(); pthread_mutex_unlock(&q_lock); }
         return;
@@ -1529,6 +1543,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     }
 
     if (g_settings.perf_overlay != PERF_OFF) perf_overlay_draw(io, scale);
+    if (online) online_overlay_draw(scale, g_menu_font ? g_menu_font : ImGui::GetFont());  // (under the menu)
     if (!open && !kbd && !sizes && !con && gyro_scene_show) gyro_scene_draw(io, scale, gyro_scene);
 
     if (open) {

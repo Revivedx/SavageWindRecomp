@@ -89,7 +89,8 @@ void rt_paths_init(void) {
     char root[1024];
     const char *env = getenv("SAVAGEWIND_DATA_ROOT");
     if (env && *env) snprintf(root, sizeof root, "%s", env);
-    else if (is_dir("extracted")) snprintf(root, sizeof root, "%s", g_start), g_dev = true;  // dev / portable: as before
+    else if (is_dir("extracted") || access("game_dir.txt", F_OK) == 0)  // dev / portable: as before (game_dir.txt:
+        snprintf(root, sizeof root, "%s", g_start), g_dev = true;      // the game files elsewhere, runtime/main.c)
     else {
 #ifdef _WIN32
         snprintf(root, sizeof root, "%s", g_exe_dir);
