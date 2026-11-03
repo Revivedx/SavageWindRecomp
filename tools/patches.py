@@ -236,7 +236,8 @@ def _arrow_gravity(gen, a):
 
 
 # Experimental shield-surf takeoff grace (#305), runtime/hle/framepace.c. Preserve the original FP subtraction
-# through fp_op_s when the grace is inactive, including the game's FP exception/rounding behavior.
+# through rt_fsub_s (runtime/cpu.h: fp_op_s on x86-64, a native FSUB on AArch64) when the grace is inactive,
+# including the game's FP exception/rounding behavior.
 def _surf_contact(gen, a):
     assert _word(gen, a) == 0x3941d2a8  # ldrb w8, [x21, #0x74]
     return ('{ extern void rt_surf_contact(uint64_t, unsigned); '
@@ -247,7 +248,7 @@ def _surf_boost_remove(gen, a):
     assert _word(gen, a) == 0x1e203820  # fsub s0, s1, s0
     return ('{ extern int rt_surf_takeoff_pending(uint64_t); '
             'if (rt_surf_takeoff_pending(c->x[21])) c->v[0] = (uint32_t)c->v[1]; '
-            'else fp_op_s(c, FOP_SUB, 0, 1, 0); }')
+            'else rt_fsub_s(c, 0, 1, 0); }')
 
 
 def _surf_jump_request(gen, a):

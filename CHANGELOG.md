@@ -7,6 +7,10 @@ What changed in each Savage Wind release. The `test` branch holds what the next 
 **A quick fix update for Alpha 4.** Extract it over your Alpha 4 folder (Windows) or use the new AppImage (Linux): your
 game files, the game code built at setup, saves and settings stay, with no new setup.
 
+On Windows with an AMD card, if the window stays black after updating, reset AMD's shader cache once (AMD Software:
+Adrenalin Edition > Gaming > Graphics > Advanced > Reset Shader Cache), or rename the Savage Wind folder. AMD's
+driver can keep a damaged cache from an older version ([#339](https://github.com/Revivedx/SavageWindRecomp/issues/339), [#356](https://github.com/Revivedx/SavageWindRecomp/issues/356)).
+
 - **AMD graphics on Windows:** no more "GPU page fault" and device lost at boot or in the first cutscene on AMD's
   26.10 drivers (RX 9070 XT, RX 9060 XT, RX 7000 cards). AMD's shader compiler misread the game's memory past 2 GB in
   one kind of shader; Savage Wind now hands it the memory in two parts, each under 2 GB. Everything stays on, the GPU

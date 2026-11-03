@@ -44,6 +44,14 @@ mouse, and its text and voices in any of its languages.
 
 ## Getting started (Alpha 4)
 
+To choose a Vulkan GPU manually, close Savage Wind and edit `savagewind.ini` in the same data folder as
+`savagewind.log`. Set `gpu = 1`, for example, using the number printed beside your preferred adapter in the log's
+`[vk] gpu 0: ...`, `[vk] gpu 1: ...` lines, then restart. `gpu = auto` (the default) prefers a discrete GPU.
+An unavailable adapter falls back to automatic selection with a warning in the log. Adapter numbers can change
+after hardware or driver changes; check the log again if necessary. The `SAVAGEWIND_GPU` environment variable
+overrides this setting for one launch (an index or `auto`). This selects the rendering GPU; the `display` setting
+selects the monitor.
+
 **You need:** a 64-bit CPU with SSE4.2 (AVX2 runs faster), a GPU with a Vulkan 1.3 driver, and 16 GB of RAM. With
 integrated graphics, which share the PC's RAM, 8 GB isn't enough: the game's 3 GB of memory has to stay available
 to the GPU ([#117](https://github.com/Revivedx/SavageWindRecomp/issues/117)).
@@ -82,6 +90,11 @@ What's new is in [CHANGELOG.md](CHANGELOG.md).
 
 Coming from Alpha 4 (0.4.0): 0.4.1 is a quick fix update. Extract it over your Alpha 4 folder (Windows) or use the
 new AppImage (Linux): no new setup, everything stays.
+
+On Windows with an AMD card, if the window stays black after updating, reset AMD's shader cache once: in AMD Software:
+Adrenalin Edition go to Gaming > Graphics > Advanced and click Reset Shader Cache, then start Savage Wind again.
+AMD's driver can keep a damaged cache from an older version. Renaming the Savage Wind folder also gives the driver
+a fresh cache.
 
 To keep game files, saves and caches on another drive, see [Moving the data folder](docs/data-folder.md).
 
@@ -131,9 +144,9 @@ reads `extracted/` next to the program (git ignores this folder):
 extracted/
   exefs/   main, main.npdm, rtld, sdk, subsdk0
   romfs/   the complete RomFS (base game + the 1.9.0 update merged)
-  dlc1/    optional: the first DLC's RomFS (11 folders, about 7,000 files, 1.4 GB)
+  aoc1/    optional: the first DLC's RomFS (11 folders, about 7,000 files, 1.4 GB)
     Game/  Map/  Movie/  NavMesh/  Pack/  Physics/  Sound/  System/  Terrain/  UI/  Voice/
-  dlc2/    optional: the second DLC's RomFS (1 folder, 1 file)
+  aoc2/    optional: the second DLC's RomFS (1 folder, 1 file)
     System/AocVersion.txt
 ```
 
@@ -142,16 +155,18 @@ prints it and what the recompiler will find there.
 
 ### The DLC
 
-Each DLC's RomFS goes in a folder of its own, like `dlc1/` and `dlc2/` above: its folders right inside it
-(`dlc1/System/AocVersion.txt`) or one folder deeper (`dlc1/romfs/System/AocVersion.txt`); the setup finds either.
+Each DLC's RomFS goes in a folder of its own, named `aoc1/` and `aoc2/` as above, with its folders right inside it
+(`aoc1/System/AocVersion.txt`). Keep the two DLC apart: the second one's RomFS is a single file, and extracting both
+into one folder leaves only one DLC.
 
 - **With the game:** keep them in the same folder as `exefs/` and `romfs/`, and choose that folder at the first
   setup. The DLC is set up together with the game.
 - **Later:** in Savage Wind Configuration's game files page, choose a folder that holds just the DLC folders and set
   up. The DLC is added to the game files already set up, without building the game code again.
 
-The setup tells the game's RomFS (it has `System/Version.txt`) from a DLC's (`System/AocVersion.txt`), so the folder
-names don't matter. It copies them as `aoc1/` and `aoc2/` into the data folder. The game files page shows the DLC set
+The setup tells the game's RomFS (it has `System/Version.txt`) from a DLC's (`System/AocVersion.txt`) and copies the
+DLC as `aoc1/` and `aoc2/` into the data folder. A folder the game reads in place (an `extracted/` folder next to the
+program) is not copied, so there the DLC folders must already be named `aoc1/` and `aoc2/`. The game files page shows the DLC set
 up (for example "1 + 2 (3.0)") and removes it; your saves stay.
 
 The DLC are optional: the whole game plays without them. What you get depends on what you set up:

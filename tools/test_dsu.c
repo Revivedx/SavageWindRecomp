@@ -156,10 +156,111 @@ static void selection(void) {
     motion_sensor_event(&e); assert(backend.source==1);
     // Source changes must not synthesize angular velocity in the game-facing states.
     g_settings.motion_sens=1;
-    update(clock_ns); select_motion(2); g.started=true; g.q=euler_quat(1,.4,.3);
+    update(clock_ns); select_motion(2); g.started=true; g.q=g.aim_q=euler_quat(1,.4,.3);
     update(clock_ns+20000000);
     for(int i=0;i<3;i++) near(s.ring[s.head].gyro[i],0);
     motion_pad_closed();
     assert(!backend.enabled);
 }
-int main(void) { parsing(); freshness(); network(); selection(); puts("DSU tests passed"); }
+// Exercise the game-facing path from initially overhead and vertical poses, including
+// crossing both poles. At unit sensitivity the output must preserve the physical
+// rotation, with no frozen axes or synthetic yaw/roll half-turns.
+static void overhead(void) {
+    const double poses[] = {0, 79, 89.9, 90, 90.1, 120, 179, 180, -90, -120};
+    const int ticks[] = {1, 4, 16};
+    for (unsigned rate = 0; rate < sizeof ticks / sizeof ticks[0]; rate++)
+    for (unsigned p = 0; p < sizeof poses / sizeof poses[0]; p++)
+    for (int axis = 0; axis < 3; axis++)
+    for (int inverted = 0; inverted < 2; inverted++) {
+        motion_reboot_reset();
+        g_settings.motion_sens = inverted ? .5 : 1;
+        g_settings.motion_invert = inverted ? MOTION_INVERT_UD | MOTION_INVERT_LR : 0;
+        memset(&g, 0, sizeof g);
+        g.sensors = g.started = true;
+        g.q = g.aim_q = euler_quat(.3, poses[p] * PI / 180, .2);
+        backend.source = 2;
+        clock_ns += 1000000000;
+        update(clock_ns);
+        update(clock_ns += SAMPLE_NS);
+        for (int i = 0; i < 3; i++) assert(fabs(s.ring[s.head].gyro[i]) < 1e-6);
+        g.gyro_ts = clock_ns - ticks[rate] * SAMPLE_NS;
+        Mat initial;
+        memcpy(initial, s.m, sizeof initial);
+        for (int j = 1; j <= 200; j++) {
+            // 20 degrees/s about one controller axis, through the singularity.
+            double raw[3] = {0};
+            raw[axis] = 20 * PI / 180;
+            sensor_gyro(raw, clock_ns);
+            // q and -q encode the same orientation.
+            if (j & 1) g.aim_q = (Quat){-g.aim_q.w, -g.aim_q.x, -g.aim_q.y, -g.aim_q.z};
+            update(clock_ns += ticks[rate] * SAMPLE_NS);
+            const SixAxisState *st = &s.ring[s.head];
+            double scale = axis == 1 ? 1 : inverted ? -.5 : 1;
+            for (int i = 0; i < 3; i++) {
+                assert(isfinite(st->gyro[i]));
+                assert(fabs(st->gyro[i] - (i == axis ? scale * 20 / 360 : 0)) < 1e-5);
+            }
+            // Independent Rodrigues matrix for a single local-axis rotation.
+            double a = j * ticks[rate] * .1 * PI / 180 * scale;
+            int u = (axis + 1) % 3, v = (axis + 2) % 3;
+            double r[3][3] = {{1,0,0},{0,1,0},{0,0,1}};
+            r[u][u] = r[v][v] = cos(a); r[u][v] = -sin(a); r[v][u] = sin(a);
+            for (int row = 0; row < 3; row++) for (int col = 0; col < 3; col++) {
+                double expected = 0;
+                for (int k = 0; k < 3; k++) expected += initial[row][k] * r[k][col];
+                assert(fabs(st->dir[col][row] - expected) < 2e-5);
+            }
+        }
+        update(clock_ns += SAMPLE_NS);
+        for (int i = 0; i < 3; i++) assert(fabs(s.ring[s.head].gyro[i]) < 1e-6);
+    }
+    puts("Overhead/vertical poses, pole crossings, all axes, polling rates, quaternion signs, sensitivity/inversion and rest passed");
+}
+// Replay identical timestamped 250 Hz sensor input with different game polling
+// schedules. No wall clock, GPU, display refresh rate or running game is involved.
+static void fps_independence(void) {
+    const int rates[] = {250, 20, 30, 60, 120, 200, 1000, 0};
+    for (int config = 0; config < 3; config++) {
+        Mat reference;
+        for (unsigned rate = 0; rate < sizeof rates / sizeof rates[0]; rate++) {
+            motion_reboot_reset();
+            memset(&g, 0, sizeof g);
+            g.q = g.aim_q = euler_quat(0, 120 * PI / 180, 0);
+            g.sensors = g.started = true;
+            g_settings.motion_sens = config == 0 ? 1 : config == 1 ? .5 : 2;
+            g_settings.motion_invert = config == 2 ? MOTION_INVERT_UD | MOTION_INVERT_LR : 0;
+            uint64_t start = clock_ns += 1000000000;
+            update(clock_ns);
+            g.gyro_ts = start;
+            uint64_t next = start;
+            unsigned poll = 0;
+            for (int j = 1; j <= 4000; j++) {
+                clock_ns = start + j * 1000000ull;
+                // Alternating axes make frame-wise sensitivity scaling differ
+                // from processing each sensor increment (rotations don't commute).
+                if (j % 4 == 0) {
+                    double sample = j / 4;
+                    double raw[3] = {1.3 * sin(sample * .053), .8 * cos(sample * .071), 1.1 * cos(sample * .037)};
+                    sensor_gyro(raw, clock_ns);
+                }
+                if (clock_ns >= next) {
+                    update(clock_ns);
+                    poll++;
+                    next = rates[rate] ? start + poll * 1000000000ull / rates[rate]
+                                      : clock_ns + (poll % 5 == 0 ? 180000000 : 17000000);
+                }
+            }
+            update(clock_ns);
+            if (!rate) memcpy(reference, s.m, sizeof reference);
+            else {
+                double error = 0;
+                for (int r = 0; r < 3; r++) for (int c = 0; c < 3; c++)
+                    error = fmax(error, fabs(s.m[r][c] - reference[r][c]));
+                if (error > 2e-5) fprintf(stderr, "FPS dependence: config %d rate %d matrix error %.8f\n", config, rates[rate], error);
+                assert(error < 2e-5);
+            }
+        }
+    }
+    puts("Identical 250 Hz motion at 20/30/60/120/200/250/1000 FPS and stalls: identical final orientation passed");
+}
+int main(void) { parsing(); freshness(); network(); selection(); overhead(); fps_independence(); puts("DSU tests passed"); }

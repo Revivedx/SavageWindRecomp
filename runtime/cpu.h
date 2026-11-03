@@ -299,3 +299,20 @@ static inline uint32_t sdiv32(uint32_t a, uint32_t b) {
 #if !defined(__cplusplus) && !defined(__aarch64__)
 #include "simd.h"
 #endif
+
+// Scalar single FSUB for a patch (tools/patches.py _surf_boost_remove), whichever way the SIMD was lifted: through
+// the FP helpers of simd.h on x86-64, natively on AArch64 (there the host's FSUB is the guest's, and simd.h is only
+// included by --simd c, so fp_op_s does not exist in the default asm mode, #413).
+static inline void rt_fsub_s(Cpu *c, int d, int n, int m) {
+#if !defined(__cplusplus) && !defined(__aarch64__)
+    fp_op_s(c, FOP_SUB, d, n, m);
+#else
+    uint32_t au = (uint32_t)c->v[n], bu = (uint32_t)c->v[m], ru;
+    float a, b, r;
+    __builtin_memcpy(&a, &au, 4);
+    __builtin_memcpy(&b, &bu, 4);
+    r = a - b;
+    __builtin_memcpy(&ru, &r, 4);
+    c->v[d] = ru;
+#endif
+}
