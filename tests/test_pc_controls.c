@@ -12,7 +12,9 @@
 #include "../runtime/hle/bindings.c"
 
 Settings g_settings = {.mouse_camera = true, .pc_cursor = true};
-static bool pointer_ui, map_pointer, captured, freed, visible = true, relative, rotate_drag;
+static bool pointer_ui, map_pointer, captured, freed, visible = true, relative, rotate_drag, apparatus_ui;
+static double gyro_yaw_deg, gyro_pitch_deg;
+static bool gyro_cleared;
 static int relative_changes, visibility_changes;
 static uint64_t now = 1000000000;
 
@@ -26,9 +28,21 @@ bool menu_input_captured(void) { return captured; }
 bool menu_cursor_free(void) { return freed; }
 void vibration_update(SDL_Gamepad *p, bool focused) { (void)p; (void)focused; }
 void motion_tilt_held(bool held) { (void)held; }
-bool pc_gyro_keyboard_active(void) { return false; }
+bool pc_gyro_keyboard_active(void) { return apparatus_ui; }
+void pc_gyro_scene_tick(void) {}
 void motion_keyboard(int p,int r,int y,bool reset) { (void)p;(void)r;(void)y;(void)reset; }
 void motion_poll(void) {}
+bool motion_has_sensors(void) { return true; }
+bool motion_cam_consume(double *yaw, double *pitch) {
+    if (gyro_yaw_deg == 0 && gyro_pitch_deg == 0) return false;
+    *yaw = gyro_yaw_deg; *pitch = gyro_pitch_deg;
+    gyro_yaw_deg = gyro_pitch_deg = 0;
+    return true;
+}
+void motion_cam_clear(void) { gyro_yaw_deg = gyro_pitch_deg = 0; gyro_cleared = true; }
+void motion_dualstick(float lx, float ly, float rx, float ry, double dt, bool r) {
+    (void)lx; (void)ly; (void)rx; (void)ry; (void)dt; (void)r; abort();
+}
 bool control_enabled(void) { return false; }
 bool control_fly_toggle(void) { abort(); }
 void control_fly_wheel(float notches) { (void)notches;abort(); }
@@ -49,16 +63,17 @@ bool SDL_ShowCursor(void) { visible = true; visibility_changes++; return true; }
 bool SDL_HideCursor(void) { visible = false; visibility_changes++; return true; }
 SDL_MouseButtonFlags SDL_GetMouseState(float *x, float *y) { (void)x; (void)y; return 0; }
 
-// Unrelated game/window entry points must never run in this synthetic test.
-void pc_cursor_frame(void) { abort(); }
-bool framepace_menu_ui(void) { abort(); }
-bool framepace_title_ui(void) { abort(); }
+// Unrelated game/window entry points in this synthetic test.
+void pc_cursor_frame(void) {}
+bool framepace_menu_ui(void) { return false; }
+bool framepace_title_ui(void) { return false; }
 Cpu *kernel_current_cpu(void) { abort(); }
 bool pc_cursor_event(const SDL_Event *e) { (void)e; return false; }
 void motion_pad_opened(SDL_Gamepad *p) { (void)p; abort(); }
 void motion_pad_closed(void) { abort(); }
 void motion_sensor_event(const SDL_Event *e) { (void)e; abort(); }
 void motion_mouse(float x, float y) { (void)x; (void)y; abort(); }
+void motion_mouse_yaw(float y) { (void)y; abort(); }
 void motion_script(float p, float r, float x, float y) { (void)p; (void)r; (void)x; (void)y; abort(); }
 void watch_arm(void) { abort(); }
 
@@ -128,4 +143,35 @@ int main(void) {
     now+=16000000;input_pc_rotate_motion(-40,0);mouse_stick(&sx,&sy);assert(sx<0);
     rotate_drag=false;now+=16000000;mouse_stick(&sx,&sy);assert(sx==0&&sy==0);
     puts("PASS: pointer menus keep middle click bound; Rotate-mode drag turns Link through the right stick");
+
+    // Controller motion camera modes (Off / Exploration / Hold button / Always) and simultaneous right-stick mixing.
+    pointer_ui=false;win_focused=true;g_settings.motion_camera_sens=1.0f;
+    float cv[5]={0};
+    g_settings.motion_camera=GYRO_CAM_OFF;gyro_yaw_deg=2.0;gyro_pitch_deg=1.0;gyro_cleared=false;
+    input_cam_frame(0.5f);assert(gyro_cleared&&!rt_cam_stick((uintptr_t)cv,0));
+
+    g_settings.motion_camera=GYRO_CAM_EXPLORE;gyro_yaw_deg=2.0;gyro_pitch_deg=1.0;
+    input_cam_frame(0.5f);assert(rt_cam_stick((uintptr_t)cv,0)==1&&cv[0]>0&&cv[1]>0);
+    float py=cv[1];assert(rt_cam_pitch(&py)==1&&fabsf(py-cv[1]*CAM_PITCH_LINEAR)<1e-5f);
+    // Exploration mode yields during shrine apparatus puzzles and bow/rune aiming (no double-rotation).
+    apparatus_ui=true;gyro_yaw_deg=2.0;input_cam_frame(0.5f);assert(!rt_cam_stick((uintptr_t)cv,0));
+    apparatus_ui=false;
+    (void)rt_cam_pitch_scale(0x3f800000u,0x3f333333u);  // CameraAiming read
+    gyro_yaw_deg=2.0;input_cam_frame(0.5f);assert(!rt_cam_stick((uintptr_t)cv,0));
+    // Always mode keeps turning even while CameraAiming is active (when in-game motion aiming is off).
+    g_settings.motion_camera=GYRO_CAM_ALWAYS;gyro_yaw_deg=2.0;
+    input_cam_frame(0.5f);assert(rt_cam_stick((uintptr_t)cv,0)==1&&cv[0]>0);
+    now+=200000000;  // expire aiming window
+
+    // Hold-button mode turns only while BIND_GYRO_CAM is held, and coexists simultaneously with right stick deflection.
+    g_settings.motion_camera=GYRO_CAM_HOLD;pad_gyro_cam_held=false;
+    gyro_yaw_deg=2.0;input_cam_frame(0.5f);assert(!rt_cam_stick((uintptr_t)cv,0));
+    pad_gyro_cam_held=true;gyro_yaw_deg=2.0;gyro_pitch_deg=1.0;
+    input_cam_frame(0.5f);assert(rt_cam_stick((uintptr_t)cv,0)==1);
+    float gyro_only_x=cv[0];
+    pad_rx=16384;pad_ry=16384;gyro_yaw_deg=2.0;gyro_pitch_deg=1.0;
+    input_cam_frame(0.5f);assert(rt_cam_stick((uintptr_t)cv,0)==1&&cv[0]>gyro_only_x);
+    py=cv[1];assert(rt_cam_pitch(&py)==1&&!cam_only_lin);
+    pad_rx=pad_ry=0;pad_gyro_cam_held=false;
+    puts("PASS: controller motion camera modes, aiming/shrine suppression, and simultaneous right-stick + gyro mixing");
 }

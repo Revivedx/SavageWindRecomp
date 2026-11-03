@@ -33,6 +33,8 @@ Settings g_settings = {
     .mouse_sens = MOUSE_SENS_DEFAULT,
     .mouse_sens_y = 1.0f,
     .motion_sens = 1.0f,
+    .motion_camera = GYRO_CAM_OFF,
+    .motion_camera_sens = 1.0f,
     .pc_gyro = true,
     .gyro_scene = true,
     .stick_deadzone = {STICK_DEADZONE_DEFAULT, STICK_DEADZONE_DEFAULT},
@@ -68,7 +70,8 @@ static const char *const k_drawdist[DRAWDIST_COUNT] = {"original", "medium", "hi
 
 static const char *const k_icons[ICONS_COUNT] = {"auto", "keyboard", "xbox", "playstation", "nintendo"};
 
-static const char *const k_quality[UPQ_COUNT] = {"ultra_quality", "quality", "balanced", "performance", "ultra_performance"};
+static const char *const k_quality[UPQ_COUNT] = {"native", "ultra_quality", "quality", "balanced", "performance", "ultra_performance"};
+static const char *const k_gyro_cam[GYRO_CAM_COUNT] = {"off", "explore", "hold", "always"};
 
 // Debug overrides seed this boot's options; the Controls switches can still change them at once.
 static void pc_controls_env(void) {
@@ -130,10 +133,10 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "settings_version")) version = atoi(val);
         else if (!strcmp(key, "resolution")) snprintf(old_res, sizeof old_res, "%s", val);  // (version 1)
-        else if (!strcmp(key, "upscaler"))  // (metalfx / fsr1: this OS's spatial upscaler; fsr3: Vulkan, held back
-            // for now: FSR 1 with the same quality mode, nvn/output_scale.c fsr3_upscaler_enabled; dlss: not yet)
+        else if (!strcmp(key, "upscaler"))
             g_settings.upscaler = !strcmp(val, "fsr1") || !strcmp(val, "metalfx") ? UPSCALE_SPATIAL
                                 : !strcmp(val, "fsr3") ? (fsr3_upscaler_enabled() ? UPSCALE_FSR3_OR_SPATIAL : UPSCALE_SPATIAL)
+                                : !strcmp(val, "fsr4") ? (fsr3_upscaler_enabled() ? UPSCALE_FSR4_OR_SPATIAL : UPSCALE_SPATIAL)
                                                        : UPSCALE_OFF;
         else if (!strcmp(key, "upscaler_quality")) {
             for (int i = 0; i < UPQ_COUNT; i++)
@@ -172,6 +175,11 @@ void settings_load(void) {
                                        !strcmp(val, "up_down") ? MOTION_INVERT_UD :
                                        !strcmp(val, "left_right") ? MOTION_INVERT_LR : 0;
         }
+        else if (!strcmp(key, "motion_camera")) {
+            for (int i = 0; i < GYRO_CAM_COUNT; i++)
+                if (!strcmp(val, k_gyro_cam[i])) g_settings.motion_camera = i;
+        }
+        else if (!strcmp(key, "motion_camera_sensitivity")) g_settings.motion_camera_sens = (float)atof(val);
         else if (!strcmp(key, "button_icons")) {
             for (int i = 0; i < ICONS_COUNT; i++)
                 if (!strcmp(val, k_icons[i])) g_settings.button_icons = i;
@@ -256,6 +264,7 @@ void settings_load(void) {
     if (!(g_settings.mouse_sens >= 0.1f && g_settings.mouse_sens <= 10.0f)) g_settings.mouse_sens = MOUSE_SENS_DEFAULT;
     if (!(g_settings.mouse_sens_y >= 0.5f && g_settings.mouse_sens_y <= 2.0f)) g_settings.mouse_sens_y = 1.0f;
     if (!(g_settings.motion_sens >= 0.1f && g_settings.motion_sens <= 10.0f)) g_settings.motion_sens = 1.0f;
+    if (!(g_settings.motion_camera_sens >= 0.1f && g_settings.motion_camera_sens <= 10.0f)) g_settings.motion_camera_sens = 1.0f;
     if (g_settings.fov < 50 || g_settings.fov > 200) g_settings.fov = 100;
 #define CLAMP(v, lo, hi) ((v) < (lo) ? (lo) : (v) > (hi) ? (hi) : (v))
     g_settings.color_exposure = CLAMP(g_settings.color_exposure, -20, 20);
@@ -300,7 +309,7 @@ void settings_save(void) {
     fprintf(f, "reverb = %d\n", g_settings.reverb);
     fprintf(f, "movie_audio = %d\n", g_settings.movie_audio);
     fprintf(f, "perf_overlay = %s\n", g_settings.perf_overlay == PERF_FULL ? "full" : g_settings.perf_overlay == PERF_FPS ? "fps" : "off");
-    static const char *const ups[UPSCALE_COUNT] = {"off", "metalfx", "fsr1", "fsr3", "dlss"};
+    static const char *const ups[UPSCALE_COUNT] = {"off", "metalfx", "fsr1", "fsr3", "dlss", "fsr4"};
     int u = g_settings.upscaler, uq = g_settings.upscale_quality;
     fprintf(f, "upscaler = %s\n", u >= 0 && u < UPSCALE_COUNT ? ups[u] : "off");
     fprintf(f, "upscaler_quality = %s\n", k_quality[uq >= 0 && uq < UPQ_COUNT ? uq : UPQ_QUALITY]);
@@ -324,6 +333,9 @@ void settings_save(void) {
     fprintf(f, "motion_sensitivity = %.2f\n", g_settings.motion_sens);
     static const char *const inv[4] = {"off", "up_down", "left_right", "both"};
     fprintf(f, "motion_invert = %s\n", inv[g_settings.motion_invert & 3]);
+    int mc = g_settings.motion_camera;
+    fprintf(f, "motion_camera = %s\n", k_gyro_cam[mc >= 0 && mc < GYRO_CAM_COUNT ? mc : GYRO_CAM_OFF]);
+    fprintf(f, "motion_camera_sensitivity = %.2f\n", g_settings.motion_camera_sens);
     fprintf(f, "button_icons = %s\n", k_icons[g_settings.button_icons >= 0 && g_settings.button_icons < ICONS_COUNT ?
                                                 g_settings.button_icons : ICONS_AUTO]);
     fprintf(f, "async_shaders = %d\n", g_settings.async_shaders);

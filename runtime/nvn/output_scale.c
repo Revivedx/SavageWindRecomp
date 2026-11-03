@@ -32,12 +32,10 @@
 #ifndef __APPLE__
 bool fsr3_available(void);  // (vulkan/fsr3.h: built in)
 #endif
-// FSR 3 upscaling is held back until its cost on the thread that records the frame for Vulkan comes down (the draw
-// translation work in progress): today that thread limits 1080p and 1440p, and FSR 3's motion vectors make every mode
-// slower than native there. SAVAGEWIND_FSR3=1 offers it anyway (tests); TAA and frame generation stay as they are.
+// Temporal FSR 3.1.6 / FSR 4 upscaling is enabled by default; SAVAGEWIND_FSR3=0 hides/disables it for A/B tests.
 bool fsr3_upscaler_enabled(void) {
     static int on = -1;
-    if (on < 0) on = getenv("SAVAGEWIND_FSR3") && atoi(getenv("SAVAGEWIND_FSR3")) != 0;
+    if (on < 0) on = getenv("SAVAGEWIND_FSR3") ? atoi(getenv("SAVAGEWIND_FSR3")) != 0 : 1;
     return on;
 }
 
@@ -45,16 +43,20 @@ bool upscaler_available(int u) {
 #ifdef __APPLE__
     return u == UPSCALE_OFF || u == UPSCALE_METALFX;
 #else
-    return u == UPSCALE_OFF || u == UPSCALE_FSR1 || (u == UPSCALE_FSR3 && fsr3_available() && fsr3_upscaler_enabled());
+    return u == UPSCALE_OFF || u == UPSCALE_FSR1 ||
+           ((u == UPSCALE_FSR3 || u == UPSCALE_FSR4) && fsr3_available() && fsr3_upscaler_enabled());
 #endif
 }
 
-bool rt_fsr3(void) { return g_settings.upscaler == UPSCALE_FSR3 && upscaler_available(UPSCALE_FSR3); }
+bool rt_fsr3(void) {
+    return (g_settings.upscaler == UPSCALE_FSR3 || g_settings.upscaler == UPSCALE_FSR4) &&
+           upscaler_available(g_settings.upscaler);
+}
 
 bool rt_temporal(void) { return rt_antialias() == AA_TAA || rt_fsr3(); }
 
 double upscale_mode_factor(int q) {
-    static const double f[UPQ_COUNT] = {1.3, 1.5, 1.7, 2.0, 3.0};
+    static const double f[UPQ_COUNT] = {1.0, 1.3, 1.5, 1.7, 2.0, 3.0};
     return q == UPQ_COUNT ? 1.0 : q >= 0 && q < UPQ_COUNT ? f[q] : 1.5;  // (UPQ_COUNT: SAVAGEWIND_UPSCALE_AT fsr3-native)
 }
 
@@ -72,8 +74,10 @@ bool upscale_modes_available(void) {
 
 double upscale_factor(void) {
     int u = g_settings.upscaler;
-    return u != UPSCALE_OFF && upscaler_available(u) && upscale_modes_available()
-               ? upscale_mode_factor(g_settings.upscale_quality) : 1.0;
+    if (u == UPSCALE_OFF || !upscaler_available(u) || !upscale_modes_available()) return 1.0;
+    int q = g_settings.upscale_quality;
+    if (u == UPSCALE_FSR1 && q == UPQ_NATIVE) q = UPQ_ULTRA;  // (spatial FSR 1 scales up: 1.3x minimum)
+    return upscale_mode_factor(q);
 }
 
 // The window's shape over 16:9 while the game's views are widened to fill it, else 1; the field of view's factor in
@@ -349,6 +353,11 @@ void rt_persp_offset(uint64_t proj, uint32_t *x, uint32_t *y) {
     uint32_t w = __atomic_load_n(&jitter_size[0], __ATOMIC_RELAXED), h = __atomic_load_n(&jitter_size[1], __ATOMIC_RELAXED);
     if (nf[1] > 10001 && rt_jitter_on() && w && h) {
         uint32_t n = __atomic_load_n(&jitter_phases, __ATOMIC_RELAXED);
+        if (rt_fsr3() && n <= 8) {
+            double f = upscale_factor();
+            uint32_t fn = (uint32_t)(8.0 * f * f);
+            if (fn > n) n = fn;
+        }
         uint32_t i = (uint32_t)(framepace_shown_frame() % n) + 1;  // (from 1: Halton's 0 is 0)
         ox += (halton(i, 2) - 0.5f) / (float)w;
         oy += (halton(i, 3) - 0.5f) / (float)h;  // (the projection gets twice the offset: NDC is 2 wide)

@@ -31,6 +31,10 @@ void motion_virtual_end(void);
 void motion_script(float pitch_deg, float roll_deg, float pitch_speed, float yaw_speed);
 
 bool motion_has_sensors(void);  // usable motion source (Linux: fresh SDL sensor pair or DSU)
+// Controller motion camera (Controls > Motion camera, runtime/hle/input.c): world-up yaw and local pitch degrees
+// accumulated at sensor rate since the previous camera frame; motion_cam_clear drops unread deltas when inactive.
+bool motion_cam_consume(double *yaw_deg, double *pitch_deg);
+void motion_cam_clear(void);
 
 #ifdef __cplusplus
 }

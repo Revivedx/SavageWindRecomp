@@ -96,6 +96,22 @@ int main(void) {
     bind_capture_begin(BIND_DEV_KEY,BIND_GYRO_CENTER);
     e.key.scancode=SDL_SCANCODE_H;assert(bind_capture_event(&e));
     assert(g_bind_key[BIND_GYRO_CENTER]==SDL_SCANCODE_H&&g_bind_key[BIND_RS_UP]==camera_up);
-    puts("binding capture: confirm releases, assignments, cancellation and timeout passed");
+
+    // Controller motion-camera hold binding (BIND_GYRO_CAM) shares buttons with normal Switch actions without swapping them.
+    bind_reset(BIND_DEV_PAD);
+    assert(bind_is_default(BIND_DEV_PAD));
+    assert(g_bind_pad[BIND_GYRO_CAM]==SDL_GAMEPAD_BUTTON_RIGHT_STICK&&g_bind_pad[BIND_RSTICK]==SDL_GAMEPAD_BUTTON_RIGHT_STICK);
+    held=true;
+    bind_capture_begin(BIND_DEV_PAD,BIND_GYRO_CAM);
+    e=(SDL_Event){0};e.type=SDL_EVENT_GAMEPAD_BUTTON_UP;e.gbutton.button=SDL_GAMEPAD_BUTTON_EAST;
+    release_to_game(e);waiting();
+    e.type=SDL_EVENT_GAMEPAD_BUTTON_DOWN;e.gbutton.button=SDL_GAMEPAD_BUTTON_LEFT_SHOULDER;
+    assert(bind_capture_event(&e));
+    ended(1);
+    assert(g_bind_pad[BIND_GYRO_CAM]==SDL_GAMEPAD_BUTTON_LEFT_SHOULDER&&g_bind_pad[BIND_L]==SDL_GAMEPAD_BUTTON_LEFT_SHOULDER);
+    assert(!bind_is_default(BIND_DEV_PAD)&&!bind_is_default_slot(BIND_DEV_PAD,BIND_GYRO_CAM));
+    bind_reset(BIND_DEV_PAD);
+    assert(bind_is_default(BIND_DEV_PAD));
+    puts("binding capture: confirm releases, assignments, cancellation, timeout and gyro-cam modifier passed");
     return 0;
 }

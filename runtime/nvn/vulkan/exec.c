@@ -8133,10 +8133,17 @@ static void scene_post(Prog *pr, CmdRec *r) {
     if (oh > 16384) oh = 16384;
     {
         TexBackend *b = vk_tex(t, false);
-        // (else at its size in the window already; FSR 3: FSR 1 for a frame it can't do, its first)
+        if (fsr3) {
+            if (ow < b->width && ow + 2 >= b->width) ow = b->width;
+            if (oh < b->height && oh + 2 >= b->height) oh = b->height;
+        }
+        // (else at its size in the window already; FSR 3/4: FSR 1 for a frame it can't do, its first)
         bool up = (fsr || fsr3) && (ow > b->width + 1 || oh > b->height + 1);
         if (t != taa_t) taa = NULL;
-        scene_mip_bias = (taa || fsr3) && ow && b->width ? log2f((float)b->width / (float)ow) - 1.0f : 0.0f;
+        // At 1.0x (Native AA / TAA) a -1.0 mip bias undersamples high-frequency ground/foliage mips and shimmers;
+        // use -0.35 at native resolution and log2(render/output) - 1.0 when upscaling.
+        scene_mip_bias = (taa || fsr3) && ow && b->width
+                             ? log2f((float)b->width / (float)ow) - (ow > b->width + 1 ? 1.0f : 0.35f) : 0.0f;
         static const char *bias_env = (const char *)1;  // (testing) SAVAGEWIND_MIP_BIAS=<levels>: in place of that
         if (bias_env == (const char *)1) bias_env = getenv("SAVAGEWIND_MIP_BIAS");
         if (bias_env && (taa || fsr3)) scene_mip_bias = (float)atof(bias_env);
@@ -8223,7 +8230,8 @@ static void scene_post(Prog *pr, CmdRec *r) {
         if (b->width != lw || b->height != lh || w != low || h != loh || g_settings.sharpening != lcas || !!taa != ltaa ||
             !!f3 != lf3 || grade != lgrade)
             LOG("[post] scene %ux%u%s%s%s%s -> %ux%u%s (format %d)\n", b->width, b->height, grade ? " graded" : "",
-                taa ? " taa" : "", up ? " fsr1" : "", f3 ? " fsr3" : "", w, h, cas ? taa ? " rcas" : " cas" : "", b->format);
+                taa ? " taa" : "", up ? " fsr1" : "", f3 ? (g_settings.upscaler == UPSCALE_FSR4 ? " fsr4" : " fsr3") : "",
+                w, h, cas ? taa ? " rcas" : " cas" : "", b->format);
         lw = b->width; lh = b->height; low = w; loh = h; lcas = g_settings.sharpening; ltaa = !!taa; lf3 = !!f3; lgrade = grade;
         return;
     }
@@ -8779,6 +8787,7 @@ static TexBackend *fsr3_scene(VkCommandBuffer cb, TexBackend *b, uint32_t ow, ui
     uint64_t ns = SDL_GetTicksNS();
     Fsr3Dispatch d = {
         .dev = g_vk.dev, .phys = g_vk.phys, .cb = cb,
+        .mode = g_settings.upscaler,
         .color = {b->image, b->format, w, h}, .depth = {dep->image, dep->format, w, h},
         .motion = {v->image, v->format, w, h}, .reactive = {rea->image, rea->format, w, h},
         .output = {out->image, out->format, ow, oh},

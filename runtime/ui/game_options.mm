@@ -130,7 +130,7 @@ const char *const k_perf[] = {"Off", "FPS", "Full"};
 #ifdef __APPLE__
 const int k_ups_value[] = {UPSCALE_OFF, UPSCALE_METALFX};
 #else
-const int k_ups_value[] = {UPSCALE_OFF, UPSCALE_FSR1, UPSCALE_FSR3, UPSCALE_DLSS};
+const int k_ups_value[] = {UPSCALE_OFF, UPSCALE_FSR1, UPSCALE_FSR3, UPSCALE_FSR4, UPSCALE_DLSS};
 #endif
 #ifdef __APPLE__
 const int UPS_DEFAULT = 1;  // (UPSCALE_DEFAULT: MetalFX)
@@ -139,7 +139,7 @@ const int UPS_DEFAULT = 0;  // (UPSCALE_DEFAULT: Off, the window's resolution)
 #endif
 std::vector<int> g_shown;   // per item: the value shown instead of get(), one that can't be picked yet (-1: none)
 const char16_t GREY = 3;    // (the game's message colour for greyed values)
-const char *const k_modes[] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance"};
+const char *const k_modes[UPQ_COUNT] = {"Native AA", "Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance"};
 #ifdef __APPLE__
 const char *const k_aa[] = {"Off", "SMAA"};
 #else
@@ -171,6 +171,10 @@ constexpr int k_deadzone[] = {0, 3, 5, 8, 10, 12, 15, 20, 25, 30, 40};  // stick
 constexpr int DEADZONE_DEFAULT = 4;
 static_assert(k_deadzone[DEADZONE_DEFAULT] == (int)(STICK_DEADZONE_DEFAULT * 100 + 0.5f));
 const char *const k_invert[] = {"Off", "Up and down", "Left and right", "Both"};  // (MOTION_INVERT_* bits)
+const char *const k_gyro_cam[GYRO_CAM_COUNT] = {"Off", "Exploration", "Hold button", "Always"};
+constexpr int k_motion_cam_sens[] = {25, 33, 50, 75, 100, 125, 150, 200, 250, 300, 400, 500};
+constexpr int MOTION_CAM_SENS_DEFAULT = 4;
+static_assert(k_motion_cam_sens[MOTION_CAM_SENS_DEFAULT] == 100);
 #define N(a) (int)(sizeof(a) / sizeof((a)[0]))
 int g_nluts = 1;  // Colour > LUT's values (color_lut_list: None, the shipped ones, the player's), listed per opening
 
@@ -237,6 +241,7 @@ const char *ups_label(const Item &, int x) {
     if (u == UPSCALE_METALFX) return tr("MetalFX");
     if (u == UPSCALE_FSR1) return tr("AMD FSR 1");
     if (u == UPSCALE_FSR3) return upscaler_available(u) ? tr("AMD FSR 3") : soon("FSR 3");
+    if (u == UPSCALE_FSR4) return upscaler_available(u) ? tr("AMD FSR 4") : soon("FSR 4");
     return soon("DLSS", renderer_gpu_rtx() ? "(coming soon)" : "(NVIDIA RTX only)");
 }
 
@@ -387,10 +392,15 @@ void build_items(void) {
                                if (k_ups_value[i] == g_settings.upscaler) return i;
                            return 0;
                        },
-                       [](const Item &, int x) { g_settings.upscaler = k_ups_value[x]; }, UPS_DEFAULT));
+                       [](const Item &, int x) {
+                           g_settings.upscaler = k_ups_value[x];
+                           if (g_settings.upscaler == UPSCALE_FSR1 && g_settings.upscale_quality == UPQ_NATIVE)
+                               g_settings.upscale_quality = UPQ_ULTRA;
+                       }, UPS_DEFAULT));
     v.back().value_off = [](const Item &, int x) { return !upscaler_available(k_ups_value[x]); };
     v.back().desc_fn = [](const Item &) {  // (one line)
-        return g_settings.upscaler == UPSCALE_FSR3 ? tr("AMD FSR 3: renders smaller, then rebuilds detail from past frames.")
+        return g_settings.upscaler == UPSCALE_FSR4 ? tr("AMD FSR 4: ML upscaling and Native AA (FSR 3.1.6 fallback).")
+             : g_settings.upscaler == UPSCALE_FSR3 ? tr("AMD FSR 3: renders smaller, then rebuilds detail from past frames.")
                                                    : tr("Off: full resolution. AMD FSR 1: renders smaller, then upscales.");
     };
     // With Upscaler Off no mode applies: the row has the one value Off, greyed, so its arrows go nowhere (rt_opt_read
@@ -408,13 +418,16 @@ void build_items(void) {
                            if (g_settings.upscaler != UPSCALE_OFF) g_settings.upscale_quality = x;
                        },
                        UPQ_QUALITY);
-    mode.value_off = [](const Item &, int) { return !upscale_modes_available() || g_settings.upscaler == UPSCALE_OFF; };
+    mode.value_off = [](const Item &, int x) {
+        return !upscale_modes_available() || g_settings.upscaler == UPSCALE_OFF ||
+               (g_settings.upscaler == UPSCALE_FSR1 && x == UPQ_NATIVE);
+    };
     mode.reset = [](const Item &) { g_settings.upscale_quality = UPQ_QUALITY; };  // (also while Off)
     mode.desc_fn = [](const Item &) {
         // (one line: the game's description pane is one English line wide)
         return !upscale_modes_available()           ? tr("Renders smaller, then upscales. Coming in a later version.")
                : g_settings.upscaler == UPSCALE_OFF ? tr("Only with an upscaler: choose one above first.")
-                                                    : tr("Ultra Quality is the sharpest, Ultra Performance the fastest.");
+                                                    : tr("Native AA / Ultra Quality are sharpest, Ultra Performance fastest.");
     };
     v.push_back(mode);
     v.push_back(choice(P_VIDEO, "Anti-aliasing", "Smooths jagged edges. Best at a lower resolution.",
@@ -610,6 +623,30 @@ void build_items(void) {
                        [](const Item &, int x) { return tr(k_invert[x]); },
                        [](const Item &) { return g_settings.motion_invert & 3; },
                        [](const Item &, int x) { g_settings.motion_invert = x; }, 0));
+    v.push_back(choice(P_CONTROLS, "Motion camera", "Turn the camera by moving the controller. Exploration pauses when aiming.",
+                       [](const Item &) { return (int)GYRO_CAM_COUNT; },
+                       [](const Item &, int x) { return tr(k_gyro_cam[x]); },
+                       [](const Item &) { return g_settings.motion_camera; },
+                       [](const Item &, int x) { g_settings.motion_camera = x; }, GYRO_CAM_OFF));
+    v.push_back(choice(P_CONTROLS, "Motion camera sensitivity", "How fast turning the controller turns the camera.",
+                       [](const Item &) { return N(k_motion_cam_sens); },
+                       [](const Item &, int x) {
+                           static std::string s;
+                           s = pct(k_motion_cam_sens[x]);
+                           return s.c_str();
+                       },
+                       [](const Item &) {
+                           return nearest(k_motion_cam_sens, N(k_motion_cam_sens), g_settings.motion_camera_sens * 100);
+                       },
+                       [](const Item &, int x) { g_settings.motion_camera_sens = k_motion_cam_sens[x] / 100.0f; },
+                       MOTION_CAM_SENS_DEFAULT));
+    {   // controller hold button for GYRO_CAM_HOLD
+        Item it = button(P_CONTROLS, bind_input_name(BIND_GYRO_CAM),
+                         "Hold on the controller to turn the camera with motion (Hold button mode).", nullptr,
+                         A_BIND_PAD, BIND_GYRO_CAM);
+        it.label = bind_label;
+        v.push_back(it);
+    }
     {   // the tilt key: held, the mouse tilts the controller (for motion puzzles without a gyroscope)
         Item it = button(P_CONTROLS, bind_input_name(BIND_TILT),
                          "Hold it and move the mouse to tilt the controller. Press A, then the new key.", nullptr,
@@ -652,6 +689,7 @@ void build_items(void) {
     }
     v.push_back(button(P_STICKS, "Reset keyboard to defaults", "Every key back to its default.", "Reset", A_RESET_KEYS, 0));
     for (int s = 0; s < BIND_PAD_COUNT; s++) bind(P_PAD, A_BIND_PAD, s);
+    bind(P_PAD, A_BIND_PAD, BIND_GYRO_CAM);
     v.push_back(button(P_PAD, "Reset controller to defaults", "Every button back to its default.", "Reset", A_RESET_PAD, 0));
 
     // Language

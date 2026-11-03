@@ -1,9 +1,9 @@
-# AMD FidelityFX SDK 1.1.4 (subset)
+# AMD FidelityFX SDK 1.1.4 + FSR 3.1.6 + ffx_api v2.4.0 (subset)
 
-From <https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/tree/v1.1.4>, MIT (`LICENSE.txt`). Savage Wind uses
-FSR 3's frame interpolation and optical flow (`runtime/nvn/vulkan/framegen.cpp`) and its upscaler
-(`runtime/nvn/vulkan/fsr3.cpp`) on the Vulkan backend, driven directly, without the SDK's frame interpolation
-swapchain or its ffx-api DLL layer.
+From <https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK>, MIT (`LICENSE.txt`). Savage Wind uses
+FSR 3's frame interpolation and optical flow (`runtime/nvn/vulkan/framegen.cpp`) and its upscaler upgraded to
+FSR 3.1.6 (`runtime/nvn/vulkan/fsr3.cpp`) on the Vulkan backend, plus `ffx_api/` headers from SDK v2.4.0 (FSR 4.1.2)
+to dynamically load `amd_fidelityfx_loader_vk.dll` / `amd_fidelityfx_upscaler_vk.dll` when AMD FSR 4 is selected.
 
 What is here:
 

@@ -24,6 +24,7 @@ enum {
     BIND_TILT,                                           // keyboard only: held, the mouse tilts the controller (motion)
     BIND_GYRO_UP, BIND_GYRO_DOWN, BIND_GYRO_LEFT, BIND_GYRO_RIGHT,  // keyboard only: the virtual gyro during a shrine
     BIND_GYRO_TURN_LEFT, BIND_GYRO_TURN_RIGHT, BIND_GYRO_CENTER,    // apparatus (runtime/hle/motion.c motion_keyboard)
+    BIND_GYRO_CAM,                                       // controller: hold to turn camera with motion (GYRO_CAM_HOLD)
     BIND_FLY,                                            // toggles fly mode (control endpoint builds, runtime/control_fly.c): the one slot past the 16 buttons that the controller binds too; its row is on the Controls page only when the endpoint is on
     BIND_KEY_COUNT                                       // keyboard: buttons + both sticks + walk + tilt + gyro + fly
 };
@@ -32,6 +33,9 @@ enum { BIND_DEV_PAD, BIND_DEV_KEY };
 // another gyro key, never with the camera or movement keys it shares by default.
 static inline bool bind_key_gyro(int slot) { return slot >= BIND_GYRO_UP && slot <= BIND_GYRO_CENTER; }
 static inline bool bind_key_same_context(int a, int b) { return bind_key_gyro(a) == bind_key_gyro(b); }
+// BIND_GYRO_CAM is an optional hold modifier on the controller (defaults to R3 / right stick press): binding it never
+// unbinds or swaps with a Switch gameplay button.
+static inline bool bind_pad_same_context(int a, int b) { return (a == BIND_GYRO_CAM) == (b == BIND_GYRO_CAM); }
 // A keyboard binding can also be a mouse button: BIND_MOUSE + SDL_BUTTON_LEFT (1) .. SDL_BUTTON_X2 (5), past every
 // SDL scancode.
 #define BIND_MOUSE 0x400

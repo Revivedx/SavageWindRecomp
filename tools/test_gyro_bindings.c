@@ -35,6 +35,8 @@ void control_fly_wheel(float n){(void)n;abort();}
 void control_input_frame(uint64_t f){(void)f;}
 void control_input_apply(uint64_t *b,int32_t *lx,int32_t *ly,int32_t *rx,int32_t *ry){(void)b;(void)lx;(void)ly;(void)rx;(void)ry;}
 bool motion_has_sensors(void){return false;}
+bool motion_cam_consume(double *yaw,double *pitch){(void)yaw;(void)pitch;return false;}
+void motion_cam_clear(void){}
 void motion_dualstick(float lx,float ly,float rx,float ry,double dt,bool r){(void)lx;(void)ly;(void)rx;(void)ry;(void)dt;(void)r;abort();}
 void motion_poll(void){}
 uint64_t renderer_present_count(void){return 0;}

@@ -22,6 +22,7 @@ _Static_assert(PADB_LTRIGGER == SDL_GAMEPAD_BUTTON_COUNT, "trigger pseudo-button
     SDL_GAMEPAD_BUTTON_LEFT_STICK, SDL_GAMEPAD_BUTTON_RIGHT_STICK, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, \
     SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, PADB_LTRIGGER, PADB_RTRIGGER, SDL_GAMEPAD_BUTTON_START, SDL_GAMEPAD_BUTTON_BACK, \
     SDL_GAMEPAD_BUTTON_DPAD_LEFT, SDL_GAMEPAD_BUTTON_DPAD_UP, SDL_GAMEPAD_BUTTON_DPAD_RIGHT, SDL_GAMEPAD_BUTTON_DPAD_DOWN, \
+    [BIND_GYRO_CAM] = SDL_GAMEPAD_BUTTON_RIGHT_STICK, \
     [BIND_FLY] = SDL_GAMEPAD_BUTTON_MISC1}  /* fly mode (test builds): the Capture / Share / Mute button, which the game never uses */
 #define DEF_KEY { \
     SDL_SCANCODE_E, SDL_SCANCODE_LSHIFT, SDL_SCANCODE_SPACE, BIND_MOUSE + SDL_BUTTON_LEFT, SDL_SCANCODE_LCTRL, \
@@ -31,16 +32,17 @@ _Static_assert(PADB_LTRIGGER == SDL_GAMEPAD_BUTTON_COUNT, "trigger pseudo-button
     SDL_SCANCODE_W, SDL_SCANCODE_S, SDL_SCANCODE_A, SDL_SCANCODE_D, SDL_SCANCODE_I, SDL_SCANCODE_K, \
     SDL_SCANCODE_J, SDL_SCANCODE_L, SDL_SCANCODE_C, SDL_SCANCODE_T, \
     SDL_SCANCODE_I, SDL_SCANCODE_K, SDL_SCANCODE_J, SDL_SCANCODE_L, SDL_SCANCODE_U, SDL_SCANCODE_O, SDL_SCANCODE_P, \
-    SDL_SCANCODE_F7}
+    0, SDL_SCANCODE_F7}
 static const int16_t k_def_pad[BIND_KEY_COUNT] = DEF_PAD, k_def_key[BIND_KEY_COUNT] = DEF_KEY;
 int16_t g_bind_pad[BIND_KEY_COUNT] = DEF_PAD, g_bind_key[BIND_KEY_COUNT] = DEF_KEY;
 
-bool bind_pad_slot(int slot) { return (slot >= 0 && slot < BIND_PAD_COUNT) || slot == BIND_FLY; }
+bool bind_pad_slot(int slot) { return (slot >= 0 && slot < BIND_PAD_COUNT) || slot == BIND_GYRO_CAM || slot == BIND_FLY; }
 
 static const char *const k_ini[BIND_KEY_COUNT] = {
     "a", "b", "x", "y", "lstick", "rstick", "l", "r", "zl", "zr", "plus", "minus", "left", "up", "right", "down",
     "ls_up", "ls_down", "ls_left", "ls_right", "rs_up", "rs_down", "rs_left", "rs_right", "walk", "tilt",
-    "gyro_up", "gyro_down", "gyro_left", "gyro_right", "gyro_turn_left", "gyro_turn_right", "gyro_center", "fly",
+    "gyro_up", "gyro_down", "gyro_left", "gyro_right", "gyro_turn_left", "gyro_turn_right", "gyro_center",
+    "gyro_cam", "fly",
 };
 static const char *const k_names[BIND_KEY_COUNT] = {
     "A", "B", "X", "Y", "Left stick press", "Right stick press", "L", "R", "ZL", "ZR", "Plus", "Minus",
@@ -49,6 +51,7 @@ static const char *const k_names[BIND_KEY_COUNT] = {
     "Tilt with the mouse (hold)",
     "Gyro tilt up (only in shrines)", "Gyro tilt down (only in shrines)", "Gyro tilt left (only in shrines)", "Gyro tilt right (only in shrines)",
     "Gyro turn left (only in shrines)", "Gyro turn right (only in shrines)", "Gyro recenter (only in shrines)",
+    "Motion camera (hold)",
     "Fly mode (test builds)",
 };
 // controller buttons by position (savagewind.ini)
@@ -174,7 +177,10 @@ static void assign(int dev, int slot, int host) {
     int16_t *t = dev == BIND_DEV_PAD ? g_bind_pad : g_bind_key;
     int other = -1;
     for (int i = 0; i < BIND_KEY_COUNT; i++)
-        if (i != slot && (dev == BIND_DEV_KEY ? bind_key_same_context(i, slot) : bind_pad_slot(i)) && t[i] == host) {
+        if (i != slot &&
+            (dev == BIND_DEV_KEY ? bind_key_same_context(i, slot)
+                                 : (bind_pad_slot(i) && bind_pad_same_context(i, slot))) &&
+            t[i] == host) {
             other = i;
             t[i] = t[slot];
         }

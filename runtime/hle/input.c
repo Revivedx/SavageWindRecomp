@@ -49,6 +49,7 @@ static uint8_t mouse_down[8];  // SDL_BUTTON_LEFT .. X2 (keyboard bindings BIND_
 static SDL_Gamepad *pad;
 static _Atomic int64_t sampling;
 static _Atomic bool win_focused = true;  // main thread writes; guest input polls read
+static _Atomic bool pad_gyro_cam_held;   // BIND_GYRO_CAM held on the controller (GYRO_CAM_HOLD)
 
 // Host keys / buttons held by a test script (SAVAGEWIND_HOST_INPUT, input_frame): they go through the bindings
 static uint8_t test_keys[SDL_SCANCODE_COUNT];
@@ -136,6 +137,7 @@ static void dead_zone(_Atomic int32_t *x, _Atomic int32_t *y, int32_t rx, int32_
 static void recompute_pad(void) {
     if (!win_focused && !host_test) {
         pad_buttons = 0;
+        pad_gyro_cam_held = false;
         pad_lx = pad_ly = pad_rx = pad_ry = 0;
         return;
     }
@@ -146,6 +148,8 @@ static void recompute_pad(void) {
         if (SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 16000) host |= 1u << PADB_LTRIGGER;
         if (SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 16000) host |= 1u << PADB_RTRIGGER;
     }
+    int gc_host = g_bind_pad[BIND_GYRO_CAM];
+    pad_gyro_cam_held = gc_host >= 0 && gc_host < PADB_HOST_COUNT && (host >> gc_host & 1);
     uint64_t b = 0;
     for (int i = 0; i < BIND_PAD_COUNT; i++)
         if (g_bind_pad[i] >= 0 && g_bind_pad[i] < PADB_HOST_COUNT && (host >> g_bind_pad[i] & 1)) b |= 1ull << i;
@@ -203,13 +207,17 @@ static _Atomic bool mouse_held;                         // relative mode on (mai
 // SAVAGEWIND_MOUSE_NATIVE=0 moves the right stick instead; SAVAGEWIND_MOUSE_LOG=<n> logs n camera input reads (the
 // caller, the input and, from CameraChase's main update, the angles it starts from).
 #define CAM_DEG_PER_COUNT 0.022
+#define MOTION_CAM_DEG_PER_DEG 3.0    // 100% motion camera sensitivity = 3 degrees of camera per degree of controller turn
 #define CAM_YAW_PER_PITCH 1.78
 #define CAM_DEG_PER_TILT (1.6 * CAM_YAW_PER_PITCH)
 #define CAM_PITCH_LINEAR (float)(CAM_DEG_PER_TILT / (2.0892 * CAM_YAW_PER_PITCH))
 static bool test_mouse;               // SAVAGEWIND_HOST_INPUT moves the mouse ("mouse:"): taken as held
 static _Atomic uint64_t cam_read_ns;  // the last camera input read (rt_cam_stick): a camera runs, through the patch
-static _Atomic bool cam_mouse;        // the mouse gives this frame's camera input ...
-static float cam_vx, cam_vy;          // ... this one (game thread, input_cam_frame)
+static _Atomic uint64_t aim_cam_ns;   // the last CameraAiming / CameraAiming2 read (rt_cam_pitch_scale: bow, rune, throw)
+static _Atomic bool cam_mouse;        // linear camera input (mouse and/or controller motion camera) active this frame ...
+static _Atomic bool cam_only_lin;     // ... without right-stick deflection
+static float cam_vx, cam_vy;          // ... combined stick + linear velocity (game thread, input_cam_frame)
+static float cam_vy_chase;            // ... chase-camera vertical term: curved stick + linear mouse/gyro
 static _Atomic int cam_reverse;       // the game's Camera X-axis / Y-axis options: Inverted (bits 0 / 1, rt_cam_reverse)
 
 static int cam_log_left(void) {
@@ -252,13 +260,47 @@ void input_cam_frame(float ratio) {
     double dx = (double)atomic_exchange(&cam_dx_milli, 0) / 1000.0, dy = (double)atomic_exchange(&cam_dy_milli, 0) / 1000.0;
     if ((dx != 0 || dy != 0) && cam_log_left())
         LOG("[mouse] frame: %.1f %.1f counts, ratio %.3f, held %d/%d\n", dx, dy, ratio, (int)mouse_held, (int)test_mouse);
-    if (!cam_native_on() || !(mouse_held || test_mouse) || !g_settings.mouse_camera || tilt_held || (dx == 0 && dy == 0)) {
+    bool native = cam_native_on();
+    bool has_mouse = native && (mouse_held || test_mouse) && g_settings.mouse_camera && !tilt_held && (dx != 0 || dy != 0);
+
+    int mc_mode = g_settings.motion_camera;
+    uint64_t aim_t = aim_cam_ns;
+    bool aiming = aim_t && plat_now_ns() - aim_t < 100000000ull;
+    bool allow_gyro = native && mc_mode != GYRO_CAM_OFF && win_focused && !pc_menu_active && !menu_input_captured() &&
+                      !pc_gyro_keyboard_active() && (mc_mode == GYRO_CAM_ALWAYS || !aiming) &&
+                      (mc_mode != GYRO_CAM_HOLD || pad_gyro_cam_held);
+    double gyaw = 0, gpitch = 0;
+    bool has_gyro = false;
+    if (allow_gyro) has_gyro = motion_cam_consume(&gyaw, &gpitch);
+    else motion_cam_clear();
+
+    if (!has_mouse && !has_gyro) {
         cam_mouse = false;
         return;
     }
-    double k = CAM_DEG_PER_COUNT * g_settings.mouse_sens / (CAM_DEG_PER_TILT * (ratio > 0.05f ? ratio : 0.05f));
-    cam_vx = (float)(dx * k);
-    cam_vy = (float)(-dy * k * CAM_YAW_PER_PITCH * g_settings.mouse_sens_y * (g_settings.mouse_invert_y ? -1 : 1));  // (Controls > Mouse vertical sensitivity)
+    double denom = CAM_DEG_PER_TILT * (ratio > 0.05f ? ratio : 0.05f);
+    double lin_vx = 0, lin_vy = 0;
+    if (has_mouse) {
+        double k = CAM_DEG_PER_COUNT * g_settings.mouse_sens / denom;
+        lin_vx += dx * k;
+        lin_vy += -dy * k * CAM_YAW_PER_PITCH * g_settings.mouse_sens_y * (g_settings.mouse_invert_y ? -1 : 1);
+    }
+    if (has_gyro) {
+        double gk = MOTION_CAM_DEG_PER_DEG * g_settings.motion_camera_sens / denom;
+        lin_vx += gyaw * gk;
+        lin_vy += gpitch * gk * CAM_YAW_PER_PITCH;
+    }
+    // Preserve right-stick camera rotation simultaneously while linear motion (gyro or mouse) is active:
+    // apply the guest's radial clamp + quadratic response curve to the stick and add the linear velocity.
+    double sx = ((double)pad_rx + (double)key_rx) / 32767.0;
+    double sy = ((double)pad_ry + (double)key_ry) / 32767.0;
+    double sm = hypot(sx, sy);
+    if (sm > 1.0) { sx /= sm; sy /= sm; sm = 1.0; }
+    float stick_vx = (float)(sx * sm), stick_vy = (float)(sy * sm);
+    cam_vx = stick_vx + (float)lin_vx;
+    cam_vy = stick_vy + (float)lin_vy;
+    cam_vy_chase = stick_vy * fabsf(stick_vy) + (float)lin_vy * CAM_PITCH_LINEAR;
+    cam_only_lin = (stick_vx == 0.0f && stick_vy == 0.0f);
     cam_mouse = true;
 }
 
@@ -298,17 +340,19 @@ void rt_cam_reverse(int axis, int on) {
     else cam_reverse &= ~(1 << axis);
 }
 
-// tools/patches.py _cam_pitch: the chase-like cameras' vertical part, to be squared (0) or, from the mouse, scaled (1)
+// tools/patches.py _cam_pitch: the chase-like cameras' vertical part, to be squared (0) or, from mouse/gyro, scaled (1)
 int rt_cam_pitch(float *y) {
     if (!cam_mouse || !cam_native_on()) return 0;
-    *y *= CAM_PITCH_LINEAR;
+    if (cam_only_lin) { *y *= CAM_PITCH_LINEAR; return 1; }
+    *y = (cam_reverse & 2) ? -cam_vy_chase : cam_vy_chase;
     return 1;
 }
 
 // tools/patches.py _cam_pitch_aim: CameraAiming's scale for the vertical part (float bits): its latStickScale, or,
-// from the mouse, its lngStickScale (the horizontal part's)
+// from mouse/gyro alone, its lngStickScale (the horizontal part's); also records that an aiming camera is active.
 uint32_t rt_cam_pitch_scale(uint32_t lat, uint32_t lng) {
-    return cam_mouse && cam_native_on() ? lng : lat;
+    aim_cam_ns = plat_now_ns();
+    return cam_mouse && cam_only_lin && cam_native_on() ? lng : lat;
 }
 
 // A left-button drag in the inventory's Rotate mode, with the PC pointer on (runtime/pc_cursor.c): the drag turns Link

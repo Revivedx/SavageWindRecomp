@@ -283,7 +283,7 @@ static void create_device(void) {
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
     VkExtensionProperties *ep = calloc(ne, sizeof *ep);
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
-    const char *ext[24];
+    const char *ext[36];
     uint32_t n_ext = 0;
     ext[n_ext++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     bool addr_report = g_addr_report_hi && has_ext(ep, ne, VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME);
@@ -381,7 +381,6 @@ static void create_device(void) {
     // when each frame reached the display (SAVAGEWIND_LOG_PRESENT, tests: "present timing" below)
     bool pwait = getenv("SAVAGEWIND_LOG_PRESENT") && has_ext(ep, ne, VK_KHR_PRESENT_ID_EXTENSION_NAME) &&
                  has_ext(ep, ne, VK_KHR_PRESENT_WAIT_EXTENSION_NAME);
-    free(ep);
 
     // features the backend relies on (all present on current desktop drivers)
     VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT fbl_have = {
@@ -465,6 +464,8 @@ static void create_device(void) {
                                             .shaderDemoteToHelperInvocation = WANT(f13_have, shaderDemoteToHelperInvocation),
                                             .shaderTerminateInvocation = WANT(f13_have, shaderTerminateInvocation),
                                             .maintenance4 = WANT(f13_have, maintenance4),
+                                            .subgroupSizeControl = f13_have.subgroupSizeControl,
+                                            .computeFullSubgroups = f13_have.computeFullSubgroups,
                                             .pipelineCreationCacheControl = g_vk.gpl && f13_have.pipelineCreationCacheControl,
                                             .pNext = m5 ? (void *)&m5_on : g_vk.custom_border ? (void *)&cbc
                                                                          : g_vk.divisor ? (void *)&div : NULL};
@@ -483,6 +484,10 @@ static void create_device(void) {
                                             .samplerMirrorClampToEdge = WANT(f12_have, samplerMirrorClampToEdge),
                                             .uniformAndStorageBuffer8BitAccess = WANT(f12_have, uniformAndStorageBuffer8BitAccess),
                                             .storageBuffer8BitAccess = WANT(f12_have, storageBuffer8BitAccess),
+                                            .storagePushConstant8 = f12_have.storagePushConstant8,
+                                            .shaderSubgroupExtendedTypes = f12_have.shaderSubgroupExtendedTypes,
+                                            .vulkanMemoryModel = f12_have.vulkanMemoryModel,
+                                            .vulkanMemoryModelDeviceScope = f12_have.vulkanMemoryModelDeviceScope,
                                             .scalarBlockLayout = WANT(f12_have, scalarBlockLayout), .pNext = &f13};
     VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
                                             .storageBuffer16BitAccess = WANT(f11_have, storageBuffer16BitAccess),
@@ -574,6 +579,48 @@ static void create_device(void) {
         f.pNext = &eds_on;
         ext[n_ext++] = VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME;
     }
+#ifdef VK_KHR_cooperative_matrix
+    VkPhysicalDeviceCooperativeMatrixFeaturesKHR coop_on = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR};
+    if (!win_legacy && has_ext(ep, ne, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME)) {
+        VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &coop_on};
+        vkGetPhysicalDeviceFeatures2(g_vk.phys, &q);
+        if (coop_on.cooperativeMatrix) {
+            coop_on.pNext = f.pNext;
+            f.pNext = &coop_on;
+            ext[n_ext++] = VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME;
+            LOG("[vk] cooperative matrix on (ML upscaling)\n");
+        }
+    }
+#endif
+#ifdef VK_EXT_shader_float8
+    VkPhysicalDeviceShaderFloat8FeaturesEXT fp8_on = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT8_FEATURES_EXT};
+    if (!win_legacy && has_ext(ep, ne, VK_EXT_SHADER_FLOAT8_EXTENSION_NAME)) {
+        VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &fp8_on};
+        vkGetPhysicalDeviceFeatures2(g_vk.phys, &q);
+        if (fp8_on.shaderFloat8 || fp8_on.shaderFloat8CooperativeMatrix) {
+            fp8_on.pNext = f.pNext;
+            f.pNext = &fp8_on;
+            ext[n_ext++] = VK_EXT_SHADER_FLOAT8_EXTENSION_NAME;
+            LOG("[vk] shader float8 on (FSR 4 FP8)\n");
+        }
+    }
+#endif
+#ifdef VK_KHR_shader_bfloat16
+    VkPhysicalDeviceShaderBfloat16FeaturesKHR bf16_on = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_BFLOAT16_FEATURES_KHR};
+    if (!win_legacy && has_ext(ep, ne, VK_KHR_SHADER_BFLOAT16_EXTENSION_NAME)) {
+        VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &bf16_on};
+        vkGetPhysicalDeviceFeatures2(g_vk.phys, &q);
+        if (bf16_on.shaderBFloat16Type || bf16_on.shaderBFloat16CooperativeMatrix) {
+            bf16_on.pNext = f.pNext;
+            f.pNext = &bf16_on;
+            ext[n_ext++] = VK_KHR_SHADER_BFLOAT16_EXTENSION_NAME;
+        }
+    }
+#endif
+    free(ep);
     float prio[2] = {1.0f, 1.0f};
     // One queue: frames are presented on the game's own. A second one that presented (present thread below) went
     // wrong with others' code on it: NVIDIA's GPUs before Turing faulted writing to GPU address 0 within the first

@@ -67,7 +67,8 @@ void ComputeReprojectedUVs(FFX_PARAMETER_INOUT AccumulationPassCommonParams para
 FfxFloat32x4 HistorySampleCatmullRom5(FfxFloat32x2 fUv, FfxFloat32x2 fSize)
 {
     const FfxFloat32x2 fPx = fUv * fSize;
-    const FfxFloat32x2 fPx1 = floor(fPx - 0.5f) + 0.5f;
+    const FfxInt32x2 iPx0 = FfxInt32x2(floor(fPx - 0.5f));
+    const FfxFloat32x2 fPx1 = FfxFloat32x2(iPx0) + 0.5f;
     const FfxFloat32x2 f = fPx - fPx1;
     const FfxFloat32x2 w0 = f * (-0.5f + f * (1.0f - 0.5f * f));
     const FfxFloat32x2 w1 = 1.0f + f * f * (-2.5f + 1.5f * f);
@@ -83,7 +84,16 @@ FfxFloat32x4 HistorySampleCatmullRom5(FfxFloat32x2 fUv, FfxFloat32x2 fSize)
                    + SampleHistory(fUv12) * k2
                    + SampleHistory(FfxFloat32x2(fUv3.x, fUv12.y)) * k3
                    + SampleHistory(FfxFloat32x2(fUv12.x, fUv3.y)) * k4;
-    return ffxMax(c / (k0 + k1 + k2 + k3 + k4), FfxFloat32x4(0.0f, 0.0f, 0.0f, 0.0f));
+    c /= (k0 + k1 + k2 + k3 + k4);
+    const FfxInt32x2 iMax = FfxInt32x2(fSize) - FfxInt32x2(1, 1);
+    const FfxFloat32x3 s00 = LoadHistory(clamp(iPx0, FfxInt32x2(0, 0), iMax)).rgb;
+    const FfxFloat32x3 s10 = LoadHistory(clamp(iPx0 + FfxInt32x2(1, 0), FfxInt32x2(0, 0), iMax)).rgb;
+    const FfxFloat32x3 s01 = LoadHistory(clamp(iPx0 + FfxInt32x2(0, 1), FfxInt32x2(0, 0), iMax)).rgb;
+    const FfxFloat32x3 s11 = LoadHistory(clamp(iPx0 + FfxInt32x2(1, 1), FfxInt32x2(0, 0), iMax)).rgb;
+    const FfxFloat32x3 cMin = ffxMin(ffxMin(s00, s10), ffxMin(s01, s11));
+    const FfxFloat32x3 cMax = ffxMax(ffxMax(s00, s10), ffxMax(s01, s11));
+    c.rgb = clamp(c.rgb, cMin, cMax);
+    return ffxMax(c, FfxFloat32x4(0.0f, 0.0f, 0.0f, 0.0f));
 }
 #endif
 
@@ -91,9 +101,9 @@ void ReprojectHistoryColor(const AccumulationPassCommonParams params, FFX_PARAME
 
 {
 #if FFX_FSR3UPSCALER_OPTION_REPROJECT_CATMULL_ROM_5
-    const FfxFloat32x4 fReprojectedHistory = HistorySampleCatmullRom5(params.fReprojectedHrUv, FfxFloat32x2(UpscaleSize()));
+    const FfxFloat32x4 fReprojectedHistory = HistorySampleCatmullRom5(params.fReprojectedHrUv, FfxFloat32x2(PreviousFrameUpscaleSize()));
 #elif FFX_HALF && FFX_FSR3UPSCALER_OPTION_REPROJECT_SAMPLERS_USE_DATA_HALF
-    const FfxFloat32x4 fReprojectedHistory = FfxFloat32x4(HistorySample16(params.fReprojectedHrUv, UpscaleSize()));
+    const FfxFloat32x4 fReprojectedHistory = FfxFloat32x4(HistorySample16(params.fReprojectedHrUv, PreviousFrameUpscaleSize()));
 #else
     const FfxFloat32x4 fReprojectedHistory = HistorySample(params.fReprojectedHrUv, PreviousFrameUpscaleSize());
 #endif

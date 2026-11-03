@@ -3,22 +3,26 @@
 #include <stdbool.h>
 
 // Upscalers (Video > Upscaler; runtime/nvn/output_scale.c): Off renders at the window's size; the others render
-// smaller by their quality mode's factor and scale up to the window. DLSS is listed as coming later.
+// smaller by their quality mode's factor (or 1.0x at Native AA) and scale up to the window. DLSS is listed as coming later.
 enum { UPSCALE_OFF = 0, UPSCALE_METALFX = 1 /* macOS */, UPSCALE_FSR1 = 2 /* AMD FSR 1, Vulkan */,
-       UPSCALE_FSR3 = 3 /* AMD FSR 3.1, Vulkan where built in (vulkan/fsr3.h) */, UPSCALE_DLSS = 4 /* NVIDIA DLSS: not yet */,
+       UPSCALE_FSR3 = 3 /* AMD FSR 3.1.6, Vulkan */, UPSCALE_DLSS = 4 /* NVIDIA DLSS: not yet */,
+       UPSCALE_FSR4 = 5 /* AMD FSR 4 (FidelityFX API ML upscaler, FSR 3.1.6 fallback) */,
        UPSCALE_COUNT };
 #ifdef __APPLE__
 #define UPSCALE_SPATIAL UPSCALE_METALFX  // each OS's spatial upscaler
 #define UPSCALE_FSR3_OR_SPATIAL UPSCALE_METALFX  // (a settings file from another OS)
+#define UPSCALE_FSR4_OR_SPATIAL UPSCALE_METALFX
 #define UPSCALE_DEFAULT UPSCALE_METALFX  // (Metal has no internal resolution yet: MetalFX scales the image to the window)
 #else
 #define UPSCALE_SPATIAL UPSCALE_FSR1
 #define UPSCALE_FSR3_OR_SPATIAL UPSCALE_FSR3
+#define UPSCALE_FSR4_OR_SPATIAL UPSCALE_FSR4
 #define UPSCALE_DEFAULT UPSCALE_OFF      // the 3D image at the window's resolution
 #endif
-// quality modes, AMD's scale factors (per axis): Ultra Quality 1.3, Quality 1.5, Balanced 1.7, Performance 2.0,
-// Ultra Performance 3.0
-enum { UPQ_ULTRA = 0, UPQ_QUALITY = 1, UPQ_BALANCED = 2, UPQ_PERFORMANCE = 3, UPQ_ULTRA_PERFORMANCE = 4, UPQ_COUNT };
+// quality modes, AMD's scale factors (per axis): Native AA 1.0, Ultra Quality 1.3, Quality 1.5, Balanced 1.7,
+// Performance 2.0, Ultra Performance 3.0
+enum { UPQ_NATIVE = 0, UPQ_ULTRA = 1, UPQ_QUALITY = 2, UPQ_BALANCED = 3, UPQ_PERFORMANCE = 4,
+       UPQ_ULTRA_PERFORMANCE = 5, UPQ_COUNT };
 // TAA (Vulkan): the game's own motion vectors (vulkan/mvec.c) and a jittered camera (output_scale.c rt_jitter_on)
 // blend each frame with the ones before it (vulkan/exec.c mvec_taa)
 enum { AA_OFF = 0, AA_SMAA = 1, AA_TAA = 2 };
@@ -48,6 +52,10 @@ enum { HDR_AUTO = 0, HDR_ON = 1, HDR_OFF = 2, HDR_COUNT };
 // display's own mode at any other size it has; Borderless never changes the display's mode (another size is scaled to
 // the screen); Exclusive always uses a display mode (the desktop's size too, at its highest refresh rate)
 enum { FSMODE_AUTO = 0, FSMODE_BORDERLESS = 1, FSMODE_EXCLUSIVE = 2, FSMODE_COUNT };
+// Controls > Motion camera (runtime/hle/input.c): Off uses gyro only where the game asks for it (bow, runes, shrines);
+// Exploration turns the camera with the controller when not aiming or in shrines; Hold button turns the camera while
+// BIND_GYRO_CAM is held; Always turns the camera except during shrine apparatus puzzles.
+enum { GYRO_CAM_OFF = 0, GYRO_CAM_EXPLORE = 1, GYRO_CAM_HOLD = 2, GYRO_CAM_ALWAYS = 3, GYRO_CAM_COUNT };
 typedef struct {
     bool fullscreen;
     int fullscreen_mode;     // FSMODE_*
@@ -81,6 +89,8 @@ typedef struct {
     bool gyro_scene;     // left-drag rotation during a shrine apparatus interaction
     float motion_sens;   // motion controls: how far turning the controller turns the aim, 1 = 100%
     int motion_invert;   // MOTION_INVERT_* bits: turning the controller up / down, left / right goes the other way
+    int motion_camera;   // GYRO_CAM_*: controller motion turns the camera
+    float motion_camera_sens;  // controller motion camera speed, 1 = 100%
     int button_icons;    // ICONS_*: the game's button prompts show this device's buttons (Automatic: the one in use)
     bool async_shaders;  // draw on while new shaders compile (no stutter; what needs them is skipped meanwhile; on by
                          // default since settings_version 4; off: every draw waits for its shaders, as before)

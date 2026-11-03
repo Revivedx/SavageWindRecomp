@@ -85,7 +85,7 @@ void WriteUpscaledOutput(FFX_MIN16_U2 iPxHrPos, FfxFloat32x3 fUpscaledColor)
         FfxFloat32x3 c;
         FsrRcasF(c.r, c.g, c.b, pos, RCASConfig());
 
-        c /= Exposure();
+        c = ffxMax(c / Exposure(), FfxFloat32x3(0.0f, 0.0f, 0.0f));
 
         WriteUpscaledOutput(pos, c);
     }

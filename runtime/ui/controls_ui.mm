@@ -26,8 +26,9 @@ static void cell(int dev, int slot, int fam, int cap_dev, int cap_slot, int ms_l
     int pushed = 0;
     bool dup = false;
     for (int i = 0; i < BIND_KEY_COUNT; i++)
-        dup |= i != slot && (dev == BIND_DEV_KEY ? bind_key_same_context(i, slot) : bind_pad_slot(i)) && t[i] == t[slot] &&
-               t[slot] > (dev == BIND_DEV_PAD ? -1 : 0);
+        dup |= i != slot &&
+               (dev == BIND_DEV_KEY ? bind_key_same_context(i, slot) : (bind_pad_slot(i) && bind_pad_same_context(i, slot))) &&
+               t[i] == t[slot] && t[slot] > (dev == BIND_DEV_PAD ? -1 : 0);
     if (waiting) { ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.42f, 0.12f, 1)); pushed++; }
     else if (dup) { ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.16f, 0.12f, 1)); pushed++; }
     if (!bind_is_default_slot(dev, slot)) { ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.98f, 0.82f, 0.38f, 1)); pushed++; }
@@ -91,7 +92,7 @@ extern "C" void controls_bindings_draw(float scale) {
                                     BIND_LS_UP, BIND_LS_DOWN, BIND_LS_LEFT, BIND_LS_RIGHT, BIND_RS_UP, BIND_RS_DOWN,
                                     BIND_RS_LEFT, BIND_RS_RIGHT, BIND_WALK, BIND_TILT, BIND_GYRO_UP, BIND_GYRO_DOWN,
                                     BIND_GYRO_LEFT, BIND_GYRO_RIGHT, BIND_GYRO_TURN_LEFT, BIND_GYRO_TURN_RIGHT,
-                                    BIND_GYRO_CENTER, BIND_FLY};
+                                    BIND_GYRO_CENTER, BIND_GYRO_CAM, BIND_FLY};
         const int rows = (int)(sizeof order / sizeof *order) - (control_enabled() ? 0 : 1);  // (the fly row: test builds only)
         for (int row = 0; row < rows; row++) {
             const int slot = order[row];
@@ -104,7 +105,8 @@ extern "C" void controls_bindings_draw(float scale) {
             else ImGui::TextDisabled("%s", tr(slot == BIND_WALK ? "Tilt the stick" : slot == BIND_TILT ? "Motion sensors" :
                                               bind_key_gyro(slot) ? "Motion sensors" : slot < BIND_RS_UP ? "Left stick" : "Right stick"));
             ImGui::TableNextColumn();
-            cell(BIND_DEV_KEY, slot, fam, cd, cs, ms);
+            if (slot == BIND_GYRO_CAM) ImGui::TextDisabled("%s", tr("Mouse"));
+            else cell(BIND_DEV_KEY, slot, fam, cd, cs, ms);
         }
         ImGui::EndTable();
     }

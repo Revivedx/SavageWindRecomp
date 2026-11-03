@@ -1124,6 +1124,10 @@ static FfxErrorCode fsr3upscalerDispatch(FfxFsr3UpscalerContext_Private* context
         };
         for(int i = 0; i<_countof(aliasableResources); ++i)
         {
+            FfxGpuJobDescription barrierJob = { FFX_GPU_JOB_BARRIER };
+            barrierJob.barrierDescriptor = { aliasableResources[i], FFX_BARRIER_TYPE_TRANSITION, FFX_RESOURCE_STATE_UNORDERED_ACCESS, FFX_RESOURCE_STATE_UNORDERED_ACCESS, 0 };
+            context->contextDescription.backendInterface.fpScheduleGpuJob(&context->contextDescription.backendInterface, &barrierJob);
+
             FfxGpuJobDescription discardJob = { FFX_GPU_JOB_DISCARD };
             discardJob.discardJobDescriptor.target = aliasableResources[i];
             context->contextDescription.backendInterface.fpScheduleGpuJob(&context->contextDescription.backendInterface, &discardJob);

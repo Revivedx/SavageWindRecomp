@@ -130,6 +130,7 @@ static struct {
     int key_pitch, key_roll, key_yaw;  // gyro keys held: -1 / 0 / 1 per axis
     bool recenter;                     // the recenter key: take the nearest level pose, drop the turns still to come
     double sc_pitch, sc_roll, sc_pitch_speed, sc_yaw_speed;  // scripted (radians, radians per second)
+    double cam_yaw_deg, cam_pitch_deg; // controller motion camera deltas accumulated at sensor rate (degrees)
 } g = {.q = {1, 0, 0, 0}, .aim_q = {1, 0, 0, 0}, .acc = {0, 0, -1}};
 
 // The sensor stream's health, for the log (under g_lock)
@@ -173,6 +174,7 @@ static void select_motion(int source) {
     memset(g.lin, 0, sizeof g.lin);
     g.acc[0] = g.acc[1] = 0, g.acc[2] = -1;
     g.acc_mean = 1, g.acc_var = g.gyro_sd = 0;
+    g.cam_yaw_deg = g.cam_pitch_deg = 0;
     hs.host_ns = 0, hs.bad_run = 0;
 }
 #endif
@@ -182,6 +184,22 @@ bool motion_has_sensors(void) {
     bool sensors = g.sensors;
     pthread_mutex_unlock(&g_lock);
     return sensors;
+}
+
+bool motion_cam_consume(double *yaw_deg, double *pitch_deg) {
+    pthread_mutex_lock(&g_lock);
+    bool ok = g.sensors && g.started && (g.cam_yaw_deg != 0 || g.cam_pitch_deg != 0);
+    *yaw_deg = ok ? g.cam_yaw_deg : 0;
+    *pitch_deg = ok ? g.cam_pitch_deg : 0;
+    g.cam_yaw_deg = g.cam_pitch_deg = 0;
+    pthread_mutex_unlock(&g_lock);
+    return ok;
+}
+
+void motion_cam_clear(void) {
+    pthread_mutex_lock(&g_lock);
+    g.cam_yaw_deg = g.cam_pitch_deg = 0;
+    pthread_mutex_unlock(&g_lock);
 }
 
 void motion_pad_opened(SDL_Gamepad *pad) {
@@ -202,6 +220,7 @@ void motion_pad_opened(SDL_Gamepad *pad) {
     memset(g.mean, 0, sizeof g.mean);
     memset(g.var, 0, sizeof g.var);
     g.acc_mean = 1, g.acc_var = 0;
+    g.cam_yaw_deg = g.cam_pitch_deg = 0;
     memset(g.lin, 0, sizeof g.lin);
     float rate = on ? SDL_GetGamepadSensorDataRate(pad, SDL_SENSOR_GYRO) : 0;
     hs.period = rate > 1 ? 1.0 / rate : 0, hs.host_ns = 0, hs.bad_run = 0;
@@ -216,6 +235,7 @@ void motion_pad_opened(SDL_Gamepad *pad) {
 
 void motion_pad_closed(void) {
     pthread_mutex_lock(&g_lock);
+    g.cam_yaw_deg = g.cam_pitch_deg = 0;
 #ifdef __linux__
     backend.enabled = false;
     backend.acc_time = backend.gyro_time = 0;
@@ -265,8 +285,17 @@ static void fuse_gyro(const double raw[3], double dt) {
         for (int i = 0; i < 3; i++) g.bias[i] += (g.mean[i] - g.bias[i]) * k;
     }
     double w[3] = {raw[0] - g.bias[0], raw[1] - g.bias[1], raw[2] - g.bias[2]};
+    double wn = sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]);
     Mat m;
     quat_mat(g.q, m);
+    if (wn > 0.008 && !(only_gravity && sd < 0.006 && wn < 0.06)) {  // stillness & micro-noise gate
+        // World-up yaw (projected onto world +Z, m[2]) so horizontal wrist turns pan horizontally regardless of how
+        // steeply the controller is held, plus local X pitch (front up = look up).
+        double wz_world = m[2][0] * w[0] + m[2][1] * w[1] + m[2][2] * w[2];
+        double k_deg = (180.0 / PI) * dt;
+        g.cam_yaw_deg += -wz_world * k_deg * (g_settings.motion_invert & MOTION_INVERT_LR ? -1.0 : 1.0);
+        g.cam_pitch_deg += w[0] * k_deg * (g_settings.motion_invert & MOTION_INVERT_UD ? -1.0 : 1.0);
+    }
     if (an > 0.75 && an < 1.25) {  // (shaken or swung hard: the accelerometer isn't gravity, no pull)
         double v[3] = {-m[2][0], -m[2][1], -m[2][2]};  // gravity in the controller's axes, as the orientation has it
         double a[3] = {g.acc[0] / an, g.acc[1] / an, g.acc[2] / an};

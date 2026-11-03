@@ -222,6 +222,45 @@ static void dualstick_turns(void) {
     orientation(0, 0, 0);
     puts("Dualstick: 3-axis independent 360 turns, world-frame composition, inversion and sensitivity, R3/L3 reset PASS");
 }
+
+static void motion_cam_fusion(void) {
+    // 1. Desk stillness gate: small unlearned bias at rest produces zero camera delta.
+    fresh();
+    g.sensors = g.started = true;
+    g.acc[0] = 0; g.acc[1] = 0; g.acc[2] = -1;
+    g.acc_mean = 1; g.acc_var = 0;
+    const double desk_raw[3] = {0.02, -0.015, 0.025};
+    g.mean[0] = desk_raw[0]; g.mean[1] = desk_raw[1]; g.mean[2] = desk_raw[2];
+    for (int i = 0; i < 100; i++) fuse_gyro(desk_raw, 0.005);
+    double yaw = 0, pitch = 0;
+    assert(!motion_cam_consume(&yaw, &pitch) && yaw == 0 && pitch == 0);
+
+    // 2. World-up projected yaw while controller is pitched up 45 degrees:
+    // rotating around world +Z (body angular velocity proportional to m[2]) produces pure horizontal yaw and zero pitch!
+    fresh();
+    g.sensors = g.started = true;
+    g.q = euler_quat(0, 45 * PI / 180.0, 0);
+    Mat m;
+    quat_mat(g.q, m);
+    g.acc[0] = -m[2][0]; g.acc[1] = -m[2][1]; g.acc[2] = -m[2][2];
+    g.acc_mean = 1; g.acc_var = 0;
+    const double turn_rad_s = -90.0 * PI / 180.0;  // 90 deg/s right pan around world Z
+    const double world_z_turn[3] = {m[2][0] * turn_rad_s, m[2][1] * turn_rad_s, m[2][2] * turn_rad_s};
+    fuse_gyro(world_z_turn, 0.01);
+    assert(motion_cam_consume(&yaw, &pitch));
+    assert(fabs(yaw - 0.9) < 1e-4 && fabs(pitch) < 1e-6);
+
+    // 3. Local X pitch (tilting controller nose up) produces positive pitch delta and respects inversion.
+    g_settings.motion_invert = MOTION_INVERT_UD | MOTION_INVERT_LR;
+    const double pitch_up[3] = {60.0 * PI / 180.0, 0, 0};
+    fuse_gyro(pitch_up, 0.01);
+    assert(motion_cam_consume(&yaw, &pitch));
+    assert(fabs(pitch + 0.6) < 1e-4);
+    g_settings.motion_invert = 0;
+    motion_cam_clear();
+    assert(!motion_cam_consume(&yaw, &pitch));
+    puts("Motion camera fusion: desk stillness gate, 45-deg pitched world-up yaw decouple, local pitch and inversion PASS");
+}
 int main(void) {
     const int rates[] = {30,60,120,200,1000};
     for(unsigned k=0;k<sizeof rates/sizeof rates[0];k++) {
@@ -262,4 +301,5 @@ int main(void) {
     fast_mouse();
     arcball_composition();
     dualstick_turns();
+    motion_cam_fusion();
 }

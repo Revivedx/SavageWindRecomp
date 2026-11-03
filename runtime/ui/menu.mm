@@ -603,9 +603,12 @@ extern "C" void renderer_get_scene_scale(float *sx, float *sy);
 extern "C" bool renderer_gpu_rtx(void);  // (vulkan/device.c, metal.m)
 extern "C" volatile int g_fg_active;     // (hle/framepace.c: the last presented frame was generated)
 // Video > Upscaler mode's names, by UPQ_*
-static const char *const k_upscale_modes[UPQ_COUNT] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance"};
+static const char *const k_upscale_modes[UPQ_COUNT] = {"Native AA", "Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance"};
 extern "C" {
 #include "../nvn/output_scale.h"
+#ifndef __APPLE__
+const char *fsr_active_provider(void);
+#endif
 }
 
 #ifndef __APPLE__
@@ -837,6 +840,8 @@ static void tab_display(void) {
         // game's own 1920 x 1080 image to a bigger window.
         std::string fsr3 = upscaler_available(UPSCALE_FSR3) ? std::string(tr("AMD FSR 3"))
                                                             : std::string(tr("FSR 3")) + " " + tr("(coming soon)");
+        std::string fsr4 = upscaler_available(UPSCALE_FSR4) ? std::string(tr("AMD FSR 4"))
+                                                            : std::string(tr("FSR 4")) + " " + tr("(coming soon)");
         std::string dlss = std::string(tr("DLSS")) + " " + tr(renderer_gpu_rtx() ? "(coming soon)" : "(NVIDIA RTX only)");
 #ifdef __APPLE__
         const char *ups[] = {"Off", "MetalFX"};
@@ -845,19 +850,26 @@ static void tab_display(void) {
                          "scaling. MetalFX: Apple's upscaler, sharper.\n\nRendering below the window's size (the modes "
                          "below) is coming in a later version.";
 #else
-        const char *ups[] = {"Off", "AMD FSR 1", fsr3.c_str(), dlss.c_str()};
-        static const int ups_value[] = {UPSCALE_OFF, UPSCALE_FSR1, UPSCALE_FSR3, UPSCALE_DLSS};
-        // (the FSR 3 paragraph on its own: the first one keeps its translations)
+        const char *ups[] = {"Off", "AMD FSR 1", fsr3.c_str(), fsr4.c_str(), dlss.c_str()};
+        static const int ups_value[] = {UPSCALE_OFF, UPSCALE_FSR1, UPSCALE_FSR3, UPSCALE_FSR4, UPSCALE_DLSS};
+        // (the FSR 3 / FSR 4 paragraphs on their own: the first one keeps its translations)
         static std::string uds;
         uds = std::string(tr("Off: the 3D image renders at the window's resolution. AMD FSR 1: it renders smaller (the mode "
                              "below), then FSR 1's edge-aware upscaling and sharpening bring it to the window. The HUD and "
                              "menus always render at the window's resolution.")) + "\n\n" +
               (upscaler_available(UPSCALE_FSR3)
-                   ? tr("AMD FSR 3: it renders smaller and builds the full-resolution image from the frames before, "
-                        "following the game's motion: sharper and steadier than FSR 1, and anti-aliased (Anti-aliasing "
-                        "has no effect with it). Sharpening sets its own sharpening. NVIDIA DLSS (NVIDIA RTX graphics "
-                        "cards) is coming in a later version.")
+                   ? std::string(tr("AMD FSR 3: it renders smaller and builds the full-resolution image from the frames before, "
+                                    "following the game's motion: sharper and steadier than FSR 1, and anti-aliased (Anti-aliasing "
+                                    "has no effect with it). Sharpening sets its own sharpening. NVIDIA DLSS (NVIDIA RTX graphics "
+                                    "cards) is coming in a later version.")) + "\n\n" +
+                     tr("AMD FSR 4: AMD's latest machine-learning upscaler (FidelityFX API 4.1), with automatic fallback to "
+                        "anti-flicker FSR 3.1.6 when FSR 4 ML is not supported by the GPU or driver.")
                    : tr("AMD FSR 3 and NVIDIA DLSS (NVIDIA RTX graphics cards) are coming in a later version."));
+        if (fsr_active_provider()[0]) {
+            char active_buf[128];
+            snprintf(active_buf, sizeof active_buf, tr("Active: %s."), fsr_active_provider());
+            uds += std::string("\n\n") + active_buf;
+        }
         const char *ud = uds.c_str();
 #endif
         enum { NU = sizeof ups_value / sizeof ups_value[0] };
@@ -870,7 +882,11 @@ static void tab_display(void) {
         static int shown = -1;
         int udef = 0;  // (the reset value: UPSCALE_DEFAULT)
         for (int i = 0; i < NU; i++) if (ups_value[i] == UPSCALE_DEFAULT) udef = i;
-        if (opt_choice_avail("Upscaler", &ui, &shown, ups, avail, NU, udef, ud)) g_settings.upscaler = ups_value[ui];
+        if (opt_choice_avail("Upscaler", &ui, &shown, ups, avail, NU, udef, ud)) {
+            g_settings.upscaler = ups_value[ui];
+            if (g_settings.upscaler == UPSCALE_FSR1 && g_settings.upscale_quality == UPQ_NATIVE)
+                g_settings.upscale_quality = UPQ_ULTRA;
+        }
         // its mode (AMD's scale factors), one step in; greyed when the upscaler is off
         const char *const *modes = k_upscale_modes;
         bool modes_ok = upscale_modes_available();
@@ -880,15 +896,16 @@ static void tab_display(void) {
         for (int i = 0; i < UPQ_COUNT; i++) {
             mode_names[i] = modes_ok ? tr(modes[i]) : std::string(tr(modes[i])) + " " + tr("(coming soon)");
             mn[i] = mode_names[i].c_str();
-            mavail[i] = modes_ok;
+            mavail[i] = modes_ok && !(i == UPQ_NATIVE && g_settings.upscaler == UPSCALE_FSR1);
         }
         float sx, sy;  // the 3D scene's size (BOTW docked: 1600 x 900 times its scale)
         renderer_get_scene_scale(&sx, &sy);
         char rendering[100];
         snprintf(rendering, sizeof rendering, tr("Rendering at %.0f x %.0f."), 1600.0 * sx, 900.0 * sy);
         std::string md = std::string(tr("How much smaller the game renders before the upscaler brings it to the window, "
-                                        "on each side: Ultra Quality 1.3x, Quality 1.5x, Balanced 1.7x, Performance "
-                                        "2x, Ultra Performance 3x. Smaller is faster and softer.")) +
+                                        "on each side: Native AA 1.0x (FSR 3 / FSR 4 anti-aliasing at full resolution), "
+                                        "Ultra Quality 1.3x, Quality 1.5x, Balanced 1.7x, Performance 2x, Ultra Performance "
+                                        "3x. Smaller is faster and softer.")) +
                          "\n\n" + (modes_ok ? rendering : tr("Coming in a later version."));
         opt_indent(1);
         if (g_settings.upscaler == UPSCALE_OFF) opt_disable_next();
@@ -1049,6 +1066,18 @@ static void tab_about(void) {
     ImGui::Spacing();
     header("Controls");
     opt_toggle("Controller rumble", &g_settings.rumble, true, "Vibrate the controller during play.");
+    {
+        static const char *const gc_names[GYRO_CAM_COUNT] = {"Off", "Exploration", "Hold button", "Always"};
+        opt_choice("Motion camera", &g_settings.motion_camera, gc_names, GYRO_CAM_COUNT, GYRO_CAM_OFF,
+                   "Turn the camera by tilting and turning a controller with motion sensors, alongside the right stick. "
+                   "Exploration: pauses automatically while aiming a bow or rune or in a shrine apparatus. Hold button: "
+                   "active while Motion camera (hold) is held. Always: active while aiming too.", false);
+        float gcs = roundf(g_settings.motion_camera_sens * 100);
+        if (g_settings.motion_camera == GYRO_CAM_OFF) opt_disable_next();
+        if (opt_slider("Motion camera sensitivity", &gcs, 10, 500, 5, 100, "%g%%",
+                       "How fast turning the controller turns the camera."))
+            g_settings.motion_camera_sens = gcs / 100.0f;
+    }
     controls_bindings_draw(ImGui::GetFontSize() / 34);
     ImGui::Spacing();
     header("Menu");
@@ -1117,18 +1146,33 @@ static void perf_overlay_draw(ImGuiIO &io, float scale) {
     switch (up) {
         case UPSCALE_METALFX: line += tr("MetalFX"); break;
         case UPSCALE_FSR1: line += tr("FSR 1"); break;
-        case UPSCALE_FSR3: line += tr("FSR 3"); break;
+        case UPSCALE_FSR3:
+#ifndef __APPLE__
+            line += fsr_active_provider()[0] ? fsr_active_provider() : tr("FSR 3");
+#else
+            line += tr("FSR 3");
+#endif
+            break;
+        case UPSCALE_FSR4:
+#ifndef __APPLE__
+            line += fsr_active_provider()[0] ? fsr_active_provider() : tr("FSR 4");
+#else
+            line += tr("FSR 4");
+#endif
+            break;
         default: line += tr("Off");
     }
     int q = g_settings.upscale_quality;
-    if (up != UPSCALE_OFF && upscale_factor() > 1.0) {
+    if (up != UPSCALE_OFF && (upscale_factor() > 1.0 || up == UPSCALE_FSR3 || up == UPSCALE_FSR4)) {
         char f[16];
         snprintf(f, sizeof f, "%.1f", upscale_factor());
         line += std::string(" ") + (q >= 0 && q < UPQ_COUNT ? std::string(tr(k_upscale_modes[q])) + " " : "") + f + "x";
     }
-    // (FSR 3 anti-aliases the scene itself: the setting does nothing then)
+    // (FSR 3 / FSR 4 anti-aliases the scene itself: the setting does nothing then)
     int aa = rt_antialias();
-    line += std::string(" | ") + tr("Anti-aliasing") + ": " + (rt_fsr3() ? tr("FSR 3") : aa == AA_TAA ? tr("TAA") : aa == AA_SMAA ? tr("SMAA") : tr("Off"));
+    line += std::string(" | ") + tr("Anti-aliasing") + ": " +
+            (rt_fsr3() ? (g_settings.upscaler == UPSCALE_FSR4 ? tr("FSR 4") : tr("FSR 3"))
+                       : aa == AA_TAA ? tr("TAA") : aa == AA_SMAA ? tr("SMAA") : tr("Off"));
     ImGui::TextDisabled("%s", line.c_str());
     line.clear();
 #ifndef __APPLE__

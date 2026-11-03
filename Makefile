@@ -197,6 +197,7 @@ FFX_INC  := -I$(FFX)/sdk/include -I$(FFX)/sdk/src/components -I$(FFX)/sdk/src/sh
 ifneq ($(PLATFORM),macos)
 BACKEND_OBJ += $(FFX_OBJ)
 $(B)/rt/nvn/vulkan/fsr3.o: CXXFLAGS := -DSW_FSR3=1 -include $(FFX)/ffx_compat.h $(FFX_INC) $(CXXFLAGS)
+$(B)/rt/nvn/vulkan/fsr3.o: $(wildcard $(FFX)/ffx_api/*.h) $(wildcard $(FFX)/ffx_api/vk/*.h) $(FFX)/ffx_compat.h
 endif
 $(B)/ffx/%.o: $(FFX)/sdk/src/%.cpp $(FFX)/ffx_compat.h
 	@mkdir -p $(dir $@)
@@ -360,6 +361,7 @@ dist:
 	cp third_party/fonts/NotoSansThai/NotoSansThai-Medium.ttf "$(DIST)/"  # (Thai menus, OFL)
 	cp third_party/fonts/NotoSansThai/OFL.txt "$(DIST)/NotoSansThai-OFL.txt"
 	cp third_party/FidelityFX/LICENSE.txt "$(DIST)/FidelityFX-LICENSE.txt"  # (AMD FidelityFX SDK, MIT: README "License")
+	for dll in $(B)/amd_fidelityfx_*_vk.dll $(WIN_B)/amd_fidelityfx_*_vk.dll; do [ -f "$$dll" ] && cp -u "$$dll" "$(DIST)/" || true; done
 	mkdir "$(DIST)/colour-luts" && cp third_party/luts/*.cube third_party/luts/README.md "$(DIST)/colour-luts/"  # (CC0: Video > Colour)
 	cp README.md LICENSE "$(DIST)/"  # (licenses and source links of the bundled components: README "License")
 	PATH="$(CURDIR)/build/deps-win/bin:$$PATH" ldd $(WIN_B)/savagewind.exe | awk '(/ucrt64/ || /deps-win/) && !/vulkan-1/ {print $$3}' | sort -u | \
