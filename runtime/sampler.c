@@ -4,6 +4,8 @@
 // build/samples.txt; tools/profile_samples.py turns them into self / inclusive time per function, recompiled game
 // functions as f_<guest address>. A thread waiting in the kernel shows its wait; filter with the tool.
 // Each round of samples starts with "R <ns> <presented frame>", so a stretch of frames can be looked at alone.
+#include <math.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -12,18 +14,72 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#define PSAPI_VERSION 2
+#include <psapi.h>
 
 #define MAX_THREADS 128
 #define MAX_DEPTH 48
 
+enum { SAMPLE_IDLE, SAMPLE_STARTING, SAMPLE_SAMPLING, SAMPLE_WRITING, SAMPLE_DONE,
+       SAMPLE_MEMORY_ERROR, SAMPLE_FILE_ERROR, SAMPLE_THREAD_ERROR };
+static atomic_int sample_state;
+static struct { double start, seconds, us; } request;
+
+const char *sampler_status(void) {
+    static const char *const names[] = {"idle", "starting", "sampling", "writing", "done",
+        "failed: allocation; retry a shorter capture", "failed: output; create a writable build folder and retry",
+        "failed: worker creation; retry"};
+    return names[atomic_load(&sample_state)];
+}
+
+// The loaded images (taken before any thread is suspended: listing them then could wait on a suspended thread's
+// loader lock). Only their code is looked up and unwound: an address elsewhere (a stale frame) made
+// RtlLookupFunctionEntry fault and took the game down.
+static struct { uintptr_t lo, hi; } images[512];
+#define STACK_COPY (64u << 10)  // (the frames nearest the leaf: enough to tell work from a wait)
+static uint8_t stack_copy[STACK_COPY + 65536];  // (slack: an unwind may read a little past the end of the copy)
+static int nimages;
+static void images_list(void) {
+    HMODULE mods[512];
+    DWORD need = 0;
+    nimages = 0;
+    if (!EnumProcessModules(GetCurrentProcess(), mods, sizeof mods, &need)) return;
+    for (DWORD i = 0; i < need / sizeof *mods && i < 512; i++) {
+        MODULEINFO mi;
+        if (GetModuleInformation(GetCurrentProcess(), mods[i], &mi, sizeof mi))
+            images[nimages].lo = (uintptr_t)mi.lpBaseOfDll, images[nimages++].hi = (uintptr_t)mi.lpBaseOfDll + mi.SizeOfImage;
+    }
+}
+static bool in_image(uintptr_t a) {
+    for (int i = 0; i < nimages; i++) if (a >= images[i].lo && a < images[i].hi) return true;
+    return false;
+}
+
+// A thread's TEB, looked up once per thread: its NT_TIB says where its stack is (StackBase, the top, and StackLimit,
+// how far down it is committed; the guard page lies below that).
+typedef LONG (NTAPI *QueryThread)(HANDLE, int, void *, ULONG, ULONG *);
+static struct { HANDLE h; NT_TIB *tib; } tibs[MAX_THREADS * 2];
+static int ntibs;
+static NT_TIB *thread_tib(HANDLE h) {
+    for (int i = 0; i < ntibs; i++) if (tibs[i].h == h) return tibs[i].tib;
+    static QueryThread q;
+    if (!q) q = (QueryThread)(void *)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQueryInformationThread");
+    struct { LONG status; void *teb; uintptr_t pid, tid, affinity; LONG prio, base; } tbi;  // THREAD_BASIC_INFORMATION
+    NT_TIB *tib = q && q(h, 0, &tbi, sizeof tbi, NULL) >= 0 ? tbi.teb : NULL;
+    if (ntibs < MAX_THREADS * 2) tibs[ntibs].h = h, tibs[ntibs++].tib = tib;
+    return tib;
+}
+
 static void *sampler_main(void *arg) {
-    double start = 0, secs = 0, us = 1000;
-    sscanf((const char *)arg, "%lf:%lf:%lf", &start, &secs, &us);
-    if (secs <= 0) return NULL;
+    (void)arg;
+    double start = request.start, secs = request.seconds, us = request.us;
     plat_sleep_until_ns(plat_now_ns() + (uint64_t)(start * 1e9));
     size_t cap = 12u << 20, used = 0;  // words (96 MB), allocated up front: nothing may allocate while a thread is suspended
     uint64_t *buf = malloc(cap * sizeof *buf);
-    if (!buf) return NULL;
+    if (!buf) { atomic_store(&sample_state, SAMPLE_MEMORY_ERROR); return NULL; }
+    images_list();
+    ntibs = 0;  // (a handle can name another thread since the last capture)
+    atomic_store(&sample_state, SAMPLE_SAMPLING);
     pthread_t host[MAX_THREADS];
     uint32_t handle[MAX_THREADS];
     uint64_t entry[MAX_THREADS];
@@ -49,15 +105,33 @@ static void *sampler_main(void *arg) {
                 buf[used++] = handle[i];
                 buf[used++] = 0;  // depth, filled below
                 int d = 0;
-                for (; d < MAX_DEPTH && ctx.Rip; d++) {
+                // The unwind runs on a copy of the stack (from rsp up, at most STACK_COPY bytes), with rsp and the
+                // frame register moved into it: RtlVirtualUnwind then reads nothing but the copy, whatever state the
+                // thread was caught in (a bad rsp or frame register made it fault and took the game down).
+                NT_TIB *tib = thread_tib(h);
+                DWORD64 rsp0 = ctx.Rsp, top = tib ? (DWORD64)(uintptr_t)tib->StackBase : 0;
+                if (!tib || rsp0 < (DWORD64)(uintptr_t)tib->StackLimit) top = 0;  // (not on its own stack: the leaf only)
+                size_t len = top > rsp0 ? (size_t)(top - rsp0 < STACK_COPY ? top - rsp0 : STACK_COPY) : 0;
+                DWORD64 lo = (DWORD64)(uintptr_t)stack_copy, hi = lo + len, delta = lo - rsp0;
+                if (len) memcpy(stack_copy, (void *)(uintptr_t)rsp0, len);
+                ctx.Rsp += delta;
+                while (d < MAX_DEPTH && ctx.Rip) {
                     buf[used++] = ctx.Rip;
+                    d++;  // (counted here: every exit below leaves it matching what was stored)
+                    if (!in_image(ctx.Rip) || ctx.Rsp < lo || ctx.Rsp + 16 > hi) break;
                     DWORD64 base = 0;
                     PRUNTIME_FUNCTION f = RtlLookupFunctionEntry(ctx.Rip, &base, NULL);
                     if (!f) {  // a leaf without unwind data: the return address is on top of the stack
-                        if (!ctx.Rsp || IsBadReadPtr((void *)ctx.Rsp, 8)) break;
                         ctx.Rip = *(DWORD64 *)ctx.Rsp;
                         ctx.Rsp += 8;
                         continue;
+                    }
+                    const uint8_t *ui = (const uint8_t *)(base + f->UnwindData);
+                    unsigned freg = ui[3] & 15;
+                    if (freg) {  // (a register restored from the stack holds a real stack address: move it)
+                        DWORD64 *fv = &(&ctx.Rax)[freg];
+                        if (*fv >= rsp0 && *fv < rsp0 + len) *fv += delta;
+                        if (*fv < lo || *fv + 256 > hi) break;
                     }
                     void *hd = NULL;
                     DWORD64 fr = 0;
@@ -72,6 +146,7 @@ static void *sampler_main(void *arg) {
         if (next > now) plat_sleep_until_ns(next);
         else next = now;
     }
+    atomic_store(&sample_state, SAMPLE_WRITING);
     FILE *f = fopen("build/samples.txt", "w");
     if (f) {
         fprintf(f, "M exe %llx\nM swgame %llx\n", (unsigned long long)(uintptr_t)GetModuleHandleA(NULL),
@@ -90,18 +165,55 @@ static void *sampler_main(void *arg) {
             fputc('\n', f);
             p += 2 + d;
         }
-        fclose(f);
+        bool failed = ferror(f) != 0;
+        if (fclose(f)) failed = true;
+        if (failed) { free(buf); atomic_store(&sample_state, SAMPLE_FILE_ERROR); return NULL; }
     }
+    if (!f) { free(buf); atomic_store(&sample_state, SAMPLE_FILE_ERROR); return NULL; }
     LOG("[sample] %llu samples written to build/samples.txt\n", (unsigned long long)nsamples);
     free(buf);
+    atomic_store(&sample_state, SAMPLE_DONE);
     return NULL;
+}
+
+// Own the request until the worker has finished writing. No join, sleep or file I/O on the caller.
+static const char *sampler_launch(double start, double seconds, double us) {
+    int state = atomic_load(&sample_state);
+    do {
+        if (state >= SAMPLE_STARTING && state <= SAMPLE_WRITING)
+            return "already active; use sample status and wait for completion";
+    } while (!atomic_compare_exchange_weak(&sample_state, &state, SAMPLE_STARTING));
+    request.start = start;
+    request.seconds = seconds;
+    request.us = us;
+    pthread_t th;
+    if (pthread_create(&th, NULL, sampler_main, NULL)) {
+        atomic_store(&sample_state, SAMPLE_THREAD_ERROR);
+        return "cannot start worker; retry";
+    }
+    pthread_detach(th);
+    return NULL;
+}
+
+const char *sampler_request(double seconds, unsigned interval_us) {
+    if (!isfinite(seconds) || seconds < 0.001 || seconds > 3600 || interval_us < 100 || interval_us > 1000000)
+        return "use seconds 0.001-3600 and interval_us 100-1000000";
+    return sampler_launch(0, seconds, interval_us);
 }
 
 __attribute__((constructor)) static void sampler_start(void) {
     const char *e = getenv("SAVAGEWIND_SAMPLE");
     if (!e) return;
-    pthread_t th;
-    pthread_create(&th, NULL, sampler_main, (void *)e);
-    pthread_detach(th);
+    double start = 0, secs = 0, us = 1000;
+    sscanf(e, "%lf:%lf:%lf", &start, &secs, &us);
+    if (!isfinite(start) || !isfinite(secs) || !isfinite(us) || start < 0 || secs <= 0 || us <= 0 ||
+        start >= 1e9 || secs >= 1e9 || us >= 1e12) return;
+    (void)sampler_launch(start, secs, us);
+}
+#else
+const char *sampler_status(void) { return "unsupported: Windows only"; }
+const char *sampler_request(double seconds, unsigned interval_us) {
+    (void)seconds; (void)interval_us;
+    return "runtime sampling needs Windows; run the Windows build and use sample start <seconds> [interval_us]";
 }
 #endif

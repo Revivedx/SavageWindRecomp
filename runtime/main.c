@@ -18,6 +18,7 @@
 #include "settings.h"
 #include "hle.h"
 #include "kernel.h"
+#include "control.h"
 
 const char *g_romfs_dir;
 uint64_t g_program_id;
@@ -282,6 +283,19 @@ static int precompile_shaders(const char *root) {
             ok ? "done" : "stopped", p.shaders, p.keys, p.made, p.cached, p.failed, p.seconds, ok ? "" : ": ", ok ? "" : p.why);
     return ok ? 0 : 1;
 }
+
+// --export-pipeline-seed <file>: this install's pipeline list (cache/vk_pipelines.list) as a portable seed that any
+// install's precompilation reads (runtime/nvn/vulkan/precompile.c): a developer's playthrough gives every install its
+// first boot's pre-warm. Needs the Vulkan device (the list is named after it) and the game files.
+static int export_pipeline_seed(const char *root, const char *out) {
+    extern void ui_window_init(void);
+    ui_window_init();
+    char image[1100], why[256] = "";
+    snprintf(image, sizeof image, "%s/romfs", root);
+    bool ok = shader_precompile_export_seed(image, out, why, sizeof why);
+    fprintf(stderr, "[precompile] pipeline seed %s: %s%s\n", ok ? "written" : "NOT written", out, ok ? "" : why);
+    return ok ? 0 : 1;
+}
 #endif
 
 // --dump-romfs <file>: writes the RomFS image the game reads (runtime/romfs_image.h) to a file, to compare it with
@@ -327,11 +341,12 @@ int main(int argc, char **argv) {
     // every log starts with which Savage Wind made it: the version and the source it was built from (Makefile SW_SOURCE)
     extern const char *rt_version(void);  // (runtime/ui/launcher.mm)
     fprintf(stderr, "[savagewind] Savage Wind %s (%s)\n", rt_version(), SW_SOURCE);
+    control_init();
     const char *root = "extracted";  // (in the data root)
     bool skip_launcher = getenv("SAVAGEWIND_NO_LAUNCHER") || getenv("SAVAGEWIND_INPUT");  // tests boot straight in
     bool config = false;
     static char arg_root[1024];
-    const char *dump = NULL;
+    const char *dump = NULL, *seed_out = NULL;
     bool scan = false, precompile = false;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--play")) skip_launcher = true;
@@ -339,6 +354,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--dump-romfs") && i + 1 < argc) dump = argv[++i];
         else if (!strcmp(argv[i], "--scan-shaders")) scan = true;
         else if (!strcmp(argv[i], "--precompile-shaders")) precompile = true;
+        else if (!strcmp(argv[i], "--export-pipeline-seed") && i + 1 < argc) seed_out = argv[++i];
         else if (argv[i][0] != '-' && !realpath(argv[i], arg_root)) root = argv[i];  // (relative to where we started)
         else if (argv[i][0] != '-') root = arg_root;
     }
@@ -350,8 +366,10 @@ int main(int argc, char **argv) {
     if (scan) return scan_shaders(root);
 #ifndef __APPLE__
     if (precompile) return precompile_shaders(root);
+    if (seed_out) return export_pipeline_seed(root, seed_out);
 #else
     (void)precompile;
+    (void)seed_out;
 #endif
     // A plain start goes straight into the game once the game files are set up and the game code built from them
     // matches this build; the start screen only when there is something to set up, or when asked for.

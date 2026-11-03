@@ -609,6 +609,56 @@ Pendiente:
        solo con traducciones y SPIR-V precompilados, eran 12,7 s de compilaciones y 51 frames de más de 40 ms. Lo que
        queda: los enlaces y el precalentamiento al cargar el mundo (~500 en los primeros 2 s) y algún enlace suelto
        de 30-70 ms.
+     - Pipelines sin tirones (2026-11-01, rama `pipelines-a5`; medidas en `issue-logs/alpha5/pipelines.md`). Dos
+       causas distintas de los tirones por pipelines que quedaban:
+       - En el PC del usuario, `vk_precompiled.bin` se rechazaba entero ("made by another shader translator build or
+         device setup"): el id del traductor llevaba pegados dos interruptores que el backend fija según el
+         dispositivo (`-gs`: memoria global en dos bindings; `-gn`: las lecturas del HUD por copias, que pasó a estar
+         activo por defecto en `exec.c` después de la precompilación), así que un cambio de política en `exec.c`, de
+         driver o de GPU tiraba las 21.440 librerías, borraba la carpeta de traducciones y cada shader nuevo volvía a
+         costar una compilación entera (~30 ms; en la partida de prueba, 412 en 2 s y frames de 307 ms). Ahora el id
+         (`maxwell_translator_id`) es solo el hash de `translate.c` y `shader.h` (`TRANSLATOR_ID`), y lo que una
+         traducción lee además del binario y la clave (`maxwell_translation_variant`: los dos interruptores y la
+         ventana del heap) se guarda en cada fichero de `cache/xlate/` (formato `SWX3`, en una carpeta nueva; la
+         anterior se borra). Solo afecta a los shaders que leen memoria global (`ShaderInfo.uses_gmem`): uno de esos
+         hecho bajo otra variante se traduce otra vez y el fichero se sustituye; el resto, la lista de pipelines y las
+         cachés de pipelines (que el driver indexa por contenido) siguen valiendo. `cache/precompiled.txt` guarda la
+         versión completa (`vk_shader_version_full`), así que Configuración ofrece "Volver a hacer" tras un cambio de
+         variante, y esa pasada solo rehace los shaders de memoria global. Los ids salen de una cabecera generada por
+         el Makefile (`build/inc/shader_ids.h`, reescrita solo cuando cambia un hash; `-include` en `translate.o` y
+         `spirv.o`), y los mensajes de rechazo distinguen "another shader translator build" de "another device
+         setup". `warm_module` aplica el mismo arreglo del blur de distancia que `stage_build`: antes esas librerías
+         precompiladas nunca coincidían con el módulo del juego.
+       - En la Steam Deck, una instalación recién hecha enlazaba 270-706 pipelines en los primeros 45 s (hasta 236 en
+         un frame de 109 ms) con las 21.440 librerías precompiladas: la lista de pipelines estaba vacía, porque la
+         precompilación hace librerías y los pipelines finales (programa + estado fijo del draw) solo se conocen
+         jugando. Ahora hay una semilla (`vk_pipelines.seed`, `precompile.c`): la lista de una partida de un
+         desarrollador en forma portable (hash del binario de cada shader, su clave y el estado fijo; nada del juego),
+         que `savagewind --export-pipeline-seed <fichero>` escribe desde la lista de una instalación y la
+         precompilación lee del data root o de junto al ejecutable: sus claves se añaden a las traducciones y al
+         final sus registros a `vk_pipelines.list`, de modo que el primer arranque precalienta como el segundo.
+         Exportar una lista de una build anterior al cambio de id: `SAVAGEWIND_SEED_LIST_ID=<id viejo con -gs/-gn>`
+         y `SAVAGEWIND_PSO_ANY_VERSION=1` (una sola vez, sobre una copia de la lista). Se envía con el juego desde el
+         2026-11-02: `runtime/nvn/vulkan/vk_pipelines.seed` (la partida al 100% del usuario, 3.993 pipelines, 102 KB:
+         hashes y estado de render, nada del juego), copiado junto al ejecutable en el zip de Windows (`make dist`) y
+         en el AppImage (`tools/linux/package.sh`); una build de fuentes lo encuentra en el checkout. Como la lista
+         se lee al crear la ventana, antes de la precompilación de la pantalla de inicio, la precompilación vuelve a
+         leerla y arranca el precalentamiento cuando la semilla ha entrado (`vk_pso_rewarm`): si no, el primer
+         arranque tras la instalación enlazaba todo en el draw y solo el siguiente precalentaba.
+       - "Shaders asíncronos" pasa a estar activado por defecto (`settings_version` 4: los ficheros de la versión 3
+         con 0 toman el nuevo valor, porque el menú escribía todas las claves). Qué se salta y qué no
+         (`draw_` en `exec.c`): un draw cuyo pipeline aún se construye se salta cuando sus targets se dibujaron en el
+         frame anterior (vuelve al siguiente), y espera si el target no se dibujó el frame anterior (`one_shot_target`:
+         la captura de la pantalla de guardado, el fondo del menú de pausa), si es un array, 3D o cubo que no sigue
+         la escala de salida (`draw_must_happen`: las teselas del terreno) y, nuevo, en todos los dispatches de
+         cómputo (lo que escriben puede leerse para siempre; son 72 shaders). Con las librerías de las dos etapas ya
+         hechas (precompiladas o de un draw anterior), el enlace se hace en el propio draw (`link_now`, sin saltarse
+         nada) hasta `SAVAGEWIND_PIPE_LINK_MS` ms por frame presentado (3 por defecto; 0: todo a los hilos) y el
+         resto va a los hilos; una librería por compilar (5-50 ms) siempre va a un hilo. La línea de estadísticas
+         añade `links now N`. La idea del salto seguro por "target dibujado el frame anterior" y el enlace en el draw
+         vienen de TotK Recomp (`TOTK_PIPE_SKIP`, `docs/architecture.md`, MIT: `third_party/totk-pc-recomp/LICENSE`),
+         escrito aquí a nuestra manera. Desactivarlo (Opciones > Shaders asíncronos, o `SAVAGEWIND_SYNC_SHADERS=1`)
+         vuelve al comportamiento de antes: cada draw espera a su shader.
      Medición: `SAVAGEWIND_VK_PROF=1 SAVAGEWIND_HITCH_MS=1` registra cada frame con su desglose (traducción, esperas a
      la GPU, compilaciones, presentación, pausa del ritmo); `SAVAGEWIND_MAX_INTERVAL=2` impide que el juego pase a 20
      FPS, así su paso por frame es fijo y un recorrido con guion sigue siempre el mismo camino (comparaciones A/B);
@@ -691,7 +741,7 @@ Pendiente:
        dirección mantenida y algunas pulsaciones largas.
      Lo que hace Savage Wind (`runtime/hle/framepace.c`, dos parches en `tools/patches.py`):
      - `present_pace` espera el turno de cada presentación en una rejilla fija de 1/frecuencia (un frame tardío por
-       menos de un periodo no la mueve; uno más largo la reinicia). Sin límite: 300 FPS como mucho (con pasos más
+       menos de un periodo no la mueve; uno más largo la reinicia). Sin límite: 360 FPS como mucho (con pasos más
        cortos los relojes float del juego pierden precisión). La espera del bucle (0x7000d811fc) se salta.
      - Dentro de `updateInterval`, después de que el juego pone su razón y antes de los multiplicadores y los deltas,
        `rt_vfr_update` pone la duración real: razón = segundos x 30 (0,5 a 60 FPS, 0,25 a 120). Cuando las
@@ -732,6 +782,27 @@ Pendiente:
        0,56 m a ~90 FPS. Prueba (corridas ocultas en Kakariko, `SAVAGEWIND_TEST_WARP=1834.4,221.9,959.0`, coger el
        cuco con A y saltar con X, altura de Link en PlayerInfo +0x8c): 0,634 m a 30, 0,640 a 60, 0,639 a ~85-120;
        el salto normal sigue en 0,68.
+     - Bruma (Vídeo > Bruma, `haze` en el ini, `services/fs.c` `haze_patch`): la neblina del exterior de BOTW es su
+       dispersión atmosférica, por clima en `Pack/TitleBG.pack` `WorldMgr/normal.bwinfo` (AAMP, 20 climas en el objeto
+       raíz): `CalcMie` y `CalcRayleigh` (lo blanco y lo azul del aire: más bajos, más claro; a 0,6x el cielo se oscurece
+       y vira a turquesa) y `CalcSfParamNear` (0 o negativo: la bruma de cerca, la mínima en 0). El ajuste k (0-100 %)
+       da 0,7 + 0,3 k veces los dos primeros y k veces el tercero, como un parche de lectura sobre los bytes del archivo
+       (mismo tamaño; AAMP comparte los valores iguales entre parámetros: cada uno se cambia una vez). El juego lo lee
+       al arrancar: el cambio vale desde el siguiente inicio. 100 % no toca nada. Los objetos Fog de los perfiles de
+       entorno (`Env/env.sgenvb`, `fog_world` etc.) se probaron antes: a 0 no cambian nada visible. Comparado desde la
+       torre de Hebra a mediodía con cielo despejado (bruma 50 %: montañas lejanas con su color, cielo azul).
+     - Giro de los cuerpos que mueve el juego (#209): las piezas "keyframed" (el suelo de una Bestia Divina al
+       inclinarse, ascensores, puertas) reciben cada fotograma un objetivo (FUN_710130d19c, una matriz 3x4) y cada paso
+       de física la velocidad que las lleva a él (1.9.0 0x70012d5598): la angular sale del ángulo del giro que falta,
+       que Havok calcula como 2 acos(|w|) de su cuaternión (`hkQuaternion::getAngle`, 0x70000b06d4). Por debajo de
+       ~1 mrad, w redondea a 1 en float y el giro se lee como nulo. A 30 FPS el suelo de Vah Medoh gira ~1,7 mrad por
+       fotograma; a 120, 0,43: se quedaba quieto 1-3 pasos y luego recuperaba de golpe (0,0828 x raíz(1, 2, 3, 4)
+       rad/s para un giro constante de 0,0523), y Link encima daba saltitos (en el aire la mitad de los fotogramas,
+       relanzado al tocar el suelo). El parche `kf_angle` sustituye esa llamada por `rt_kf_angle`:
+       2 atan2(|xyz|, |w|), el mismo ángulo sin el redondeo (`SAVAGEWIND_KF_ANGLE=0` deja el del juego). Medido con
+       Link quieto sobre Medoh inclinándose a 120 FPS: velocidad angular del suelo constante (pasos parados del 49 % al
+       3 %, solo al arrancar o parar el giro); variación de la velocidad vertical de Link de 0,9-1,6 m/s a 0,07-0,13
+       (a 30 FPS, 0,04-0,05).
      - Vsync: Vídeo > Sincronización vertical (ver "VSync y VRR" abajo). Por defecto Rápida (MAILBOX), sin tearing;
        cada refresco muestra la imagen más nueva. Una frecuencia que divide la del monitor (60 en 60/120/240 Hz) es
        la más fluida; una que no (60 o 90 en 144 Hz) alterna 2 y 3 refrescos por imagen; por encima de la del

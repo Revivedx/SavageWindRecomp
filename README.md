@@ -13,9 +13,14 @@ version of your own copy of the game: a launcher, PC-style graphics options, mod
 mouse, and its text and voices in any of its languages.
 
 > [!WARNING]
-> **Playable, but how far is unknown.** Savage Wind plays the opening in the Shrine of Resurrection and the Great
-> Plateau around it at 60 fps, with sound, voices, the HUD, saving and loading. Nobody has played past the Great
-> Plateau on Savage Wind yet, so expect bugs or crashes further on. This is an alpha, a preview for testers. If you
+> **Playable from start to end, with some crashes on the way.** Savage Wind plays the game at 60 fps with sound, voices,
+> the HUD, saving and loading. A player has gone through the base game from the start to Calamity Ganon
+> ([#419](https://github.com/Revivedx/SavageWindRecomp/issues/419)), and the four Divine Beasts have been completed:
+> Vah Ruta ([#335](https://github.com/Revivedx/SavageWindRecomp/issues/335)), Vah Naboris
+> ([#380](https://github.com/Revivedx/SavageWindRecomp/issues/380)) and, by a player's report, all four and the DLC
+> ([#391](https://github.com/Revivedx/SavageWindRecomp/issues/391)). Expect bugs, white screens or crashes in some
+> places, and some mechanics that break above 30 fps ([#425](https://github.com/Revivedx/SavageWindRecomp/issues/425)).
+> This is an alpha, a preview for testers. If you
 > find a bug, please [report it on GitHub](https://github.com/Revivedx/SavageWindRecomp/issues/new/choose): every
 > report shows how far the game really works.
 
@@ -41,28 +46,34 @@ mouse, and its text and voices in any of its languages.
   `~/.local/share/savagewind/`. The game writes a new one each time it starts, so take it right after the bug.
 - Reports missing any of these get a `needs-info` label and are closed after 7 days without it.
 
-## Getting started (Alpha 3)
+## Getting started (Alpha 4)
+
+To choose a Vulkan GPU manually, close Savage Wind and edit `savagewind.ini` in the same data folder as
+`savagewind.log`. Set `gpu = 1`, for example, using the number printed beside your preferred adapter in the log's
+`[vk] gpu 0: ...`, `[vk] gpu 1: ...` lines, then restart. `gpu = auto` (the default) prefers a discrete GPU.
+An unavailable adapter falls back to automatic selection with a warning in the log. Adapter numbers can change
+after hardware or driver changes; check the log again if necessary. The `SAVAGEWIND_GPU` environment variable
+overrides this setting for one launch (an index or `auto`). This selects the rendering GPU; the `display` setting
+selects the monitor.
 
 **You need:** a 64-bit CPU with SSE4.2 (AVX2 runs faster), a GPU with a Vulkan 1.3 driver, and 16 GB of RAM. With
 integrated graphics, which share the PC's RAM, 8 GB isn't enough: the game's 3 GB of memory has to stay available
 to the GPU ([#117](https://github.com/Revivedx/SavageWindRecomp/issues/117)).
 
 1. Download from [Releases](https://github.com/Revivedx/SavageWindRecomp/releases):
-   - **Windows:** `SavageWind-0.3.1-alpha.3-windows.zip`. Extract it to a folder you can write to (not Program
-     Files): your game files, saves and settings are kept in that folder. 0.3.1 is a hotfix for AMD and Intel
-     graphics on Windows (a black window in 0.3.0, [#85](https://github.com/Revivedx/SavageWindRecomp/issues/85)); on
-     NVIDIA it runs exactly as 0.3.0.
-   - **Linux (x86-64, Steam Deck too):** `Savage_Wind-0.3.0-alpha.3-x86_64.AppImage`. Make it executable
+   - **Windows:** `SavageWind-0.4.1-alpha.4-windows.zip`. Extract it to a folder you can write to (not Program
+     Files): your game files, saves and settings are kept in that folder.
+   - **Linux (x86-64, Steam Deck too):** `Savage_Wind-0.4.1-alpha.4-x86_64.AppImage`. Make it executable
      (`chmod +x`) and run it; your game files, saves and settings go to `~/.local/share/savagewind`. See
      [docs/linux.md](docs/linux.md).
-   - **Linux on ARM (aarch64):** `Savage_Wind-0.3.0-alpha.3-aarch64.AppImage` is **highly experimental**: it has
-     never run on real ARM hardware. Reports from real hardware are welcome ([docs/linux.md](docs/linux.md),
-     "Testing on ARM").
+   - **Linux on ARM (aarch64):** `Savage_Wind-0.4.1-alpha.4-aarch64.AppImage` is **highly experimental**: so far
+     only a few contributors' boards have run it. Reports from real hardware are welcome
+     ([docs/linux.md](docs/linux.md), "Testing on ARM").
 2. Run `savagewind.exe` (or the AppImage). The first time it asks for your game files: pick the folder with your own
    extracted game (`exefs/` and `romfs/`, version 1.9.0, see below) and choose **Set up game files**. It checks the
    version, copies the files and recompiles the game code on your machine - once (about 6
    minutes for the game code with a 12-thread CPU, plus the copy and the optional shader precompilation). Your own
-   files aren't changed. When it's done the game starts. For the DLC (from the next release), see
+   files aren't changed. When it's done the game starts. For the DLC, see
    [The DLC](#the-dlc).
 3. From then on Savage Wind goes straight into the game. The settings, including the text and voice languages,
    are in the game's Options (pause menu > System > Options, or Options on the title screen).
@@ -71,9 +82,23 @@ to the GPU ([#117](https://github.com/Revivedx/SavageWindRecomp/issues/117)).
    files (set them up again, rebuild the game code, delete them) and Quit. In game, Quit to Start Screen also comes
    back to it.
 
-Coming from Alpha 2: extract Alpha 3 to a new folder and set the game files up again with your 1.9.0 files (the game
-code has to be built again); copy your `save` folder over to keep your progress. What's new is in
-[CHANGELOG.md](CHANGELOG.md).
+The file `vk_pipelines.seed` next to the executable is a list of shader hashes and draw states met in a full
+playthrough (about 4,000 pipelines, 100 KB; it holds nothing of the game itself). The shader precompilation reads it
+so that the first boot already has every pipeline that playthrough needed, instead of building each one the first
+time it is drawn. Deleting it only costs some stutter on the first boots while those pipelines are built as they
+appear.
+
+Coming from Alpha 3: extract Alpha 4 over your Alpha 3 folder (Windows) or use the new AppImage (Linux). Your game
+files, saves and settings stay; the start screen asks you to build the game code again (Set up game files) once.
+What's new is in [CHANGELOG.md](CHANGELOG.md).
+
+Coming from Alpha 4 (0.4.0): 0.4.1 is a quick fix update. Extract it over your Alpha 4 folder (Windows) or use the
+new AppImage (Linux): no new setup, everything stays.
+
+On Windows with an AMD card, if the window stays black after updating, reset AMD's shader cache once: in AMD Software:
+Adrenalin Edition go to Gaming > Graphics > Advanced and click Reset Shader Cache, then start Savage Wind again.
+AMD's driver can keep a damaged cache from an older version. Renaming the Savage Wind folder also gives the driver
+a fresh cache.
 
 To keep game files, saves and caches on another drive, see [Moving the data folder](docs/data-folder.md).
 
@@ -111,9 +136,8 @@ Played on the Wii U or in Cemu? Savage Wind Configuration can import that save: 
   console:
   - the **ExeFS** of that version (`main`, `main.npdm`, `rtld`, `sdk`, `subsdk0`)
   - the **RomFS** with that update applied (base game and update merged)
-- Optional, from the next release (Alpha 4; on the `test` branch now): the DLC, *The Master Trials* and *The
-  Champions' Ballad*, from your own copy: the **RomFS** of each of the two DLC, version 3.0 (see
-  [The DLC](#the-dlc) below).
+- Optional: the DLC, *The Master Trials* and *The Champions' Ballad*, from your own copy: the **RomFS** of each of
+  the two DLC, version 3.0 (see [The DLC](#the-dlc) below).
 - Windows 10 or later or Linux, on x86-64 (a CPU with SSE4.2; without AVX2 / FMA the game code runs in a slower
   compatible mode), and a GPU with Vulkan 1.3.
 
@@ -124,9 +148,9 @@ reads `extracted/` next to the program (git ignores this folder):
 extracted/
   exefs/   main, main.npdm, rtld, sdk, subsdk0
   romfs/   the complete RomFS (base game + the 1.9.0 update merged)
-  dlc1/    optional: the first DLC's RomFS (11 folders, about 7,000 files, 1.4 GB)
+  aoc1/    optional: the first DLC's RomFS (11 folders, about 7,000 files, 1.4 GB)
     Game/  Map/  Movie/  NavMesh/  Pack/  Physics/  Sound/  System/  Terrain/  UI/  Voice/
-  dlc2/    optional: the second DLC's RomFS (1 folder, 1 file)
+  aoc2/    optional: the second DLC's RomFS (1 folder, 1 file)
     System/AocVersion.txt
 ```
 
@@ -135,16 +159,18 @@ prints it and what the recompiler will find there.
 
 ### The DLC
 
-Each DLC's RomFS goes in a folder of its own, like `dlc1/` and `dlc2/` above: its folders right inside it
-(`dlc1/System/AocVersion.txt`) or one folder deeper (`dlc1/romfs/System/AocVersion.txt`); the setup finds either.
+Each DLC's RomFS goes in a folder of its own, named `aoc1/` and `aoc2/` as above, with its folders right inside it
+(`aoc1/System/AocVersion.txt`). Keep the two DLC apart: the second one's RomFS is a single file, and extracting both
+into one folder leaves only one DLC.
 
 - **With the game:** keep them in the same folder as `exefs/` and `romfs/`, and choose that folder at the first
   setup. The DLC is set up together with the game.
 - **Later:** in Savage Wind Configuration's game files page, choose a folder that holds just the DLC folders and set
   up. The DLC is added to the game files already set up, without building the game code again.
 
-The setup tells the game's RomFS (it has `System/Version.txt`) from a DLC's (`System/AocVersion.txt`), so the folder
-names don't matter. It copies them as `aoc1/` and `aoc2/` into the data folder. The game files page shows the DLC set
+The setup tells the game's RomFS (it has `System/Version.txt`) from a DLC's (`System/AocVersion.txt`) and copies the
+DLC as `aoc1/` and `aoc2/` into the data folder. A folder the game reads in place (an `extracted/` folder next to the
+program) is not copied, so there the DLC folders must already be named `aoc1/` and `aoc2/`. The game files page shows the DLC set
 up (for example "1 + 2 (3.0)") and removes it; your saves stay.
 
 The DLC are optional: the whole game plays without them. What you get depends on what you set up:
@@ -161,6 +187,9 @@ game that you have the second pack. So setting up only one of them never breaks 
 To unlock the DLC content, set up both, from your own console and your own Expansion Pass.
 
 ## Status
+
+Testing glitches such as windbombs, Bullet Time Bounce (BTB), or inventory tricks? Use the
+[glitch compatibility tracker](docs/glitch-compatibility.md) to record results by build and frame rate.
 
 Estimates of where each part stands. "Tested in game" is how much of the game has been played through on Savage Wind so far.
 
@@ -182,13 +211,13 @@ Estimates of where each part stands. "Tested in game" is how much of the game ha
 | ✅ | **Higher-resolution shadows** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Sun shadows at the console's 896x896, or sharper at 2048, 4096 or 8192 (Video > Shadow resolution) |
 | ✅ | **Shader and pipeline cache** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Places you've already seen don't stutter again |
 | ✅ | **Full shader precompilation** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Optional and on by default, at setup or later in Savage Wind Configuration: all of the game's ~14,000 shaders are translated and compiled ahead of time, so new places and effects don't stutter the first time |
-| ✅ | **Faster game code build** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | The one-time setup takes about 15 minutes instead of about 40 (12 threads) from the next release: the game code builds in about 6 minutes instead of 30 ([#43](https://github.com/Revivedx/SavageWindRecomp/pull/43), by [@adriadam10](https://github.com/adriadam10)) |
-| ✅ | **Frame rate** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | 60 fps by default, or 30, 90, 120 or no limit, with the game at the same speed; menus, cutscenes and conversations too, and videos at their own speed |
+| ✅ | **Faster game code build** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | The one-time setup takes about 15 minutes instead of about 40 (12 threads): the game code builds in about 6 minutes instead of 30 ([#43](https://github.com/Revivedx/SavageWindRecomp/pull/43), by [@adriadam10](https://github.com/adriadam10)) |
+| ✅ | **Frame rate** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | 60 fps by default, or 30, 90, 120, 144, 165, 240, 360 or no limit, with the game at the same speed; menus, cutscenes and conversations too, and videos at their own speed |
 | ✅ | **Field of view** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Video > Field of view: 70% to 150% of the game's own in play; cutscenes and conversations keep theirs |
 | ✅ | **Draw distance** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Video > Draw distance: Original (the game's own), Medium or High. Trees, rocks, buildings, enemies and villagers appear further out (1.5x at Medium, 1.6x at High, up to 2 km), buildings keep their full models further before their far versions take over, and distant landmarks such as Hyrule Castle and the terrain's distant trees stay drawn 1.5x as far. The grass reaches further too: the short grass 1.6x (Medium) or 2.5x (High), the tall grass about 1.15x or 2.45x. The terrain's own detail levels stay the game's ([#88](https://github.com/Revivedx/SavageWindRecomp/issues/88)) |
 | ✅ | **Steady 60 fps in the open world** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Holds 60 fps in real play on the Great Plateau (RTX 3060, Ryzen 5 5600X); steady 120 fps (8 ms frames) is the next goal |
 | ✅ | **Game version 1.9.0** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | The latest version and the supported one (its Thai text isn't offered yet). 1.8.2 still sets up and runs, but isn't supported: a bug is only fixed if it also happens on 1.9.0 |
-| ✅ | **DLC** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | *The Master Trials* and *The Champions' Ballad* from your own copy, set up with the game files or later ([The DLC](#the-dlc)), from the next release: Master Mode, the Trial of the Sword and the Travel Medallion work on a 100% save. The Champions' Ballad has been played through. |
+| ✅ | **DLC** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | *The Master Trials* and *The Champions' Ballad* from your own copy, set up with the game files or later ([The DLC](#the-dlc)): Master Mode, the Trial of the Sword and the Travel Medallion work on a 100% save. The Champions' Ballad has been played through. |
 | ✅ | **Variable refresh rate (VRR)** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Video > VSync: On lets G-SYNC and FreeSync displays show every frame as soon as it's ready, a little under the refresh rate; Fast (the default), Adaptive and Off too. Tried on a VRR display |
 | ✅ | **Motion controls (gyro)** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | The controller's gyroscope and accelerometer (DualSense, DualShock 4, Switch controllers, Steam Deck) for motion aiming and the tilt shrines; without one, hold T and move the mouse to tilt. Sensitivity and inversion in Options > Controls. Confirmed by players with real controllers |
 | 🔧 | **Horizon OS services** | ![90%](https://progress-bar.xyz/90/?width=150&style=square&progress_color=5cb85c) | Threads, files, controllers, applets and time: all the opening and the Great Plateau use |
@@ -196,7 +225,7 @@ Estimates of where each part stands. "Tested in game" is how much of the game ha
 | 🔧 | **Graphics (NVN on Vulkan)** | ![80%](https://progress-bar.xyz/80/?width=150&style=square&progress_color=5cb85c) | Shrine and Great Plateau look right, shadows included; far parts of the map can still be missing ([#20](https://github.com/Revivedx/SavageWindRecomp/issues/20)) |
 | 🔧 | **Controllers** | ![80%](https://progress-bar.xyz/80/?width=150&style=square&progress_color=5cb85c) | Any controller SDL knows, by button position, confirmed by players; automatic recognition is next, then camera speed set apart for each axis |
 | 🔧 | **Button icons for your device** | ![80%](https://progress-bar.xyz/80/?width=150&style=square&progress_color=5cb85c) | The game's button prompts show your bound keys and mouse buttons, or Xbox / PlayStation / Nintendo buttons, switching with the device you use |
-| 🔧 | **Tested in game** | ![50%](https://progress-bar.xyz/50/?width=150&style=square&progress_color=f0ad4e) | The Shrine of Resurrection, the Great Plateau, and a walk through every region on a 100% save file. The main quests and the Divine Beasts aren't tested yet, so expect bugs there: [report what breaks](https://github.com/Revivedx/SavageWindRecomp/issues/new/choose) |
+| 🔧 | **Tested in game** | ![75%](https://progress-bar.xyz/75/?width=150&style=square&progress_color=f0ad4e) | The Shrine of Resurrection, the Great Plateau, the four Divine Beasts and the main story up to Calamity Ganon, completed by players ([#335](https://github.com/Revivedx/SavageWindRecomp/issues/335), [#380](https://github.com/Revivedx/SavageWindRecomp/issues/380), [#419](https://github.com/Revivedx/SavageWindRecomp/issues/419)), and a walk through every region on a 100% save file. Some places still crash or show a white screen, and some mechanics break above 30 fps ([#425](https://github.com/Revivedx/SavageWindRecomp/issues/425)): [report what breaks](https://github.com/Revivedx/SavageWindRecomp/issues/new/choose) |
 | 🔧 | **Linux** | ![90%](https://progress-bar.xyz/90/?width=150&style=square&progress_color=5cb85c) | Builds and runs on x86-64 (from LAS Recomp); a steady 144 fps on an RTX 3070 Ti with a Ryzen 5 7600X, and no Linux-only issues so far |
 | 🔧 | **AMD FSR 3 + frame generation** | ![60%](https://progress-bar.xyz/60/?width=150&style=square&progress_color=f0ad4e) | Video > Frame generation (AMD FSR 3): a frame made between each two the game draws, about twice the frames on screen, with the HUD kept sharp. Motion vectors from depth and the camera, and Link's own; enemies and animals can still leave a faint smear. Smooth with VSync and G-SYNC. Works on Windows; Linux and the Steam Deck aren't tried yet. Only frame generation for now: FSR 3 upscaling is next |
 | 🗺️ | **NVIDIA DLSS (RTX)** | ![0%](https://progress-bar.xyz/0/?width=150&style=square&progress_color=d9534f) | Planned, after FSR 3; under NVIDIA's own SDK license |
@@ -291,6 +320,10 @@ switches - are in [docs/SAVAGE-WIND.md](docs/SAVAGE-WIND.md).
   this project is built on (MIT).
 - [Ryujinx](https://github.com/Ryujinx/Ryujinx) (MIT) - its shader decoder was the reference for instruction field
   layouts.
+- [TotK Recomp](https://github.com/valentderah/totk-pc-recomp) by Valiantsin Dzerakh (MIT) - the generator passes that
+  keep registers and flags in C locals (`tools/regs.py`, `tools/flags.py`, the flag helpers in `runtime/cpu.h`), and
+  the rule for skipping a draw whose pipeline is still building and linking ready stages inline (`TOTK_PIPE_SKIP`;
+  `runtime/nvn/vulkan/exec.c` one_shot_target, link_now; `third_party/totk-pc-recomp/LICENSE`).
 - [envytools](https://github.com/envytools/envytools) - NVIDIA GPU documentation used for the shader translator.
 - The Switch homebrew community's documentation ([Switchbrew](https://switchbrew.org)).
 - [Ghidra](https://github.com/NationalSecurityAgency/ghidra) and the

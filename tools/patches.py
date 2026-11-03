@@ -235,6 +235,30 @@ def _arrow_gravity(gen, a):
             f'  /* {a:#x}: ldr s1, [x20, #0x108] (arrow gravity) */')
 
 
+# Experimental shield-surf takeoff grace (#305), runtime/hle/framepace.c. Preserve the original FP subtraction
+# through rt_fsub_s (runtime/cpu.h: fp_op_s on x86-64, a native FSUB on AArch64) when the grace is inactive,
+# including the game's FP exception/rounding behavior.
+def _surf_contact(gen, a):
+    assert _word(gen, a) == 0x3941d2a8  # ldrb w8, [x21, #0x74]
+    return ('{ extern void rt_surf_contact(uint64_t, unsigned); '
+            'c->x[8] = LD8(c->x[21] + 0x74); rt_surf_contact(c->x[21], (unsigned)c->x[8]); }')
+
+
+def _surf_boost_remove(gen, a):
+    assert _word(gen, a) == 0x1e203820  # fsub s0, s1, s0
+    return ('{ extern int rt_surf_takeoff_pending(uint64_t); '
+            'if (rt_surf_takeoff_pending(c->x[21])) c->v[0] = (uint32_t)c->v[1]; '
+            'else rt_fsub_s(c, 0, 1, 0); }')
+
+
+def _surf_jump_request(gen, a):
+    w = _word(gen, a)
+    assert w & 0xfff8001f == 0x36000000  # tbz w0, #0, <no jump>
+    target = a + sext((w >> 5) & 0x3fff, 14) * 4
+    return ('{ extern int rt_surf_jump_request(uint64_t); '
+            f'if (!(c->x[0] & 1) || !rt_surf_jump_request(c->x[19])) goto L_{target:x}; }}')
+
+
 # The physics step's solver microsteps (runtime/hle/framepace.c rt_solver_steps, #161): before each Havok step the game
 # gives the solver round(delta frame x 6) microsteps (1.9.0 0x700156f930): 6 at 30 fps, 3 at 60, 2 at 120. With fewer
 # the solver gives way more to what is in contact with Link: holding a cucco, its body over his head held his jump
@@ -245,6 +269,21 @@ def _solver_steps(gen, a):
     return ('{ extern float rt_solver_steps(float, float); union { uint32_t u; float f; } d = { .u = (uint32_t)c->v[1] }, '
             'k = { .u = (uint32_t)c->v[2] }; k.f = rt_solver_steps(d.f, k.f); c->v[2] = k.u; }'
             f'  /* {a:#x}: fmul s2, s1, s2 (solver microsteps: delta frame x 6) */')
+
+
+# Keyframed bodies' turn (runtime/hle/framepace.c rt_kf_angle, #209): the platforms and parts the game moves (a Divine
+# Beast tilting, lifts, gates) get each physics step the angular velocity that takes them to their target, the angle
+# of the turn left over the step (1.9.0 0x70012d5598). That angle is 2 acos(|w|) of the turn's quaternion
+# (hkQuaternion::getAngle, 0x70000b06d4): below about a milliradian w rounds to 1 in a float, and a turn that small
+# reads as none. At 30 fps a tilting Vah Medoh turns its floor about 1.7 mrad a frame; at 120, 0.43: the floor stood
+# still for a few steps and then caught up at once (0.08 x sqrt(1, 2, 3, 4) rad/s for a steady 0.05), and Link on it
+# hopped. The runtime gives 2 atan2(|xyz|, |w|), the same angle without the rounding.
+
+def _kf_angle(gen, a):
+    assert _word(gen, a) >> 26 == 0x25, hex(_word(gen, a))  # bl (getAngle)
+    target = sext(_word(gen, a) & 0x3ffffff, 26) * 4 + a
+    return ('{ extern float rt_kf_angle(uint64_t); union { float f; uint32_t u; } r = { rt_kf_angle(c->x[0]) }; '
+            f'c->v[0] = r.u; }}  /* {a:#x}: bl {target:#x} (keyframed body: angle of the turn left) */')
 
 
 # The sound system's frame (runtime/hle/framepace.c rt_snd_frame_floor, #145): once a frame the game hands its sound
@@ -410,6 +449,26 @@ def _cam_reverse(axis):
     return patch
 
 
+def _pc_button_group(gen, a):
+    assert _word(gen, a) == _sub_sp(0x60), hex(_word(gen, a))
+    return ('{ extern void rt_pc_button_group(Cpu *); rt_pc_button_group(c); c->sp -= 0x60; }'
+            f' /* {a:#x}: native mouse pointer arguments */')
+
+def _pc_cursor_manager(gen, a):
+    assert _word(gen, a) == _sub_sp(0x50), hex(_word(gen, a))
+    return ('{ extern void rt_pc_cursor_manager(Cpu *, uint64_t, uint64_t); '
+            f'rt_pc_cursor_manager(c, {gen.sites["pc_cursor_activate"]:#x}ull, {gen.sites["pc_pane_bounds"]:#x}ull); '
+            'c->sp -= 0x50; }')
+
+def _pc_map_focus(position):
+    def patch(gen, a):
+        expected = _sub_sp(0x30) if position else 0xa9be7bfd
+        assert _word(gen, a) == expected, hex(_word(gen, a))
+        prologue = 'c->sp -= 0x30;' if position else 'c->sp -= 0x20; ST64(c->sp, c->x[29]); ST64(c->sp + 8, c->x[30]);'
+        return ('{ extern int rt_pc_map_focus(Cpu *, int); '
+                f'if (rt_pc_map_focus(c, {int(position)})) return; {prologue} }}')
+    return patch
+
 # Placed actors' traverse distance (1.9.0 0x70010a4640, 1.8.2 0x7000f908b0): how far from the camera an actor placed
 # on the map is created (trees and bushes 150 m, rocks and buildings 300-3000 m, the full model of a building with a
 # "_Far" version ~500 m, enemies 150 m). It is the actor's traverseDist (ActorInfo; 100 when unset) times a scale: the
@@ -541,6 +600,85 @@ def _tree_ranges(gen, a):
             f'  /* {a:#x}: adrp x8, {page:#x} (distant trees: their ranges) */')
 
 
+# Accessibility > Infinite arrows (runtime/assists.c rt_infinite_arrows). The pause menu data's arrow removal (1.9.0
+# 0x7000d93814; x0 the pause menu data, x1 the arrow's name, w2 how many) returns at once when the actor info doesn't
+# tag the item 0x19f6c13a (an arrow), else takes the count off the pouch's arrows of that name (each item's count at
+# +0x20; a stack that runs out goes to 0 and the rest comes off the next) and writes the counts to the game data
+# (PorchItem_Value1). Two places reach it, both for a bow the player holds: the bow's shot (1.9.0 0x700092ddb4) and a
+# weapon function that takes one arrow (its tail call at 0x70007fe9f8, after the weapon's vtable +0x4e8 says the
+# player holds it). With the option on it returns before taking any; the shot itself still needs an arrow in the pouch.
+
+def _remove_arrows(gen, a):
+    assert _word(gen, a) == _sub_sp(0x70), hex(_word(gen, a))
+    return ('{ extern int rt_infinite_arrows(void); if (rt_infinite_arrows()) return; c->sp -= 0x70; }'
+            f'  /* {a:#x}: sub sp, sp, #0x70 (remove arrows: none with Infinite arrows) */')
+
+
+# Accessibility > Unbreakable weapons (runtime/assists.c rt_keep_wear, rt_no_wear; from #296). The pouch's setter for
+# an equipped item's value (type w22: 0 weapon, 1 bow, 2 arrows, 3 shield; new value w20; the item x11, value at
+# +0x20) is where a hit's wear lands, in hundredths (1700 = 17). The runtime keeps the old value when the new one is
+# lower.
+
+def _no_wear(gen, a):
+    assert _word(gen, a) == 0xb9002174, hex(_word(gen, a))  # str w20, [x11, #0x20]
+    return ('{ extern int rt_keep_wear(uint32_t, int32_t, int32_t); '
+            'if (!rt_keep_wear((uint32_t)c->x[22], (int32_t)c->x[20], (int32_t)LD32(c->x[11] + 0x20))) '
+            'ST32(c->x[11] + 0x20, c->x[20]); }'
+            f'  /* {a:#x}: str w20, [x11, #0x20] (equipped item value: no wear) */')
+
+
+# Every life goes through one method (1.9.0 0x7000b952b8, 1.8.2 0x7000a81da8; x1 the life, a copy the caller stores):
+# every frame, for everything that has one, it takes the cost of the frame's hits (w9) off the life (w8) with
+# `sub w8, w8, w9`. The saved return address, at sp + 0x28, tells whose life it is: a weapon's durability, in
+# hundredths, when the call comes from the weapon's update (no_wear_ret, from #296: Unbreakable weapons, the actor's
+# own copy, which is what breaks); Link's hearts when it comes from his damage handling (the call just before
+# link_life_store; his losses are left to _link_life); anything else's otherwise (One-hit kill, the damage dealt).
+# runtime/assists.c rt_life_cost. Without Link's sites every call that isn't a weapon's counts as his.
+
+def _no_wear_hit(gen, a):
+    assert _word(gen, a) == 0x4b090108, hex(_word(gen, a))  # sub w8, w8, w9
+    wret = gen.sites['no_wear_ret']
+    if 'link_life_store' in gen.sites:
+        s = gen.sites['link_life_store']
+        bl = _word(gen, s - 0x20)  # (Link's call of this method: bl, then 6 instructions to the store)
+        assert bl >> 26 == 0x25 and 0 <= a - (s - 0x20 + sext(bl & 0x3FFFFFF, 26) * 4) < 0x400, hex(bl)
+        whose = f'r == {wret:#x}ull ? 1 : r == {s - 0x1c:#x}ull ? 2 : 0'
+    else:
+        whose = f'r == {wret:#x}ull ? 1 : 2'
+    return ('{ extern uint32_t rt_life_cost(uint32_t, int32_t, int); uint64_t r = LD64(c->sp + 0x28); '
+            f'c->x[8] = (uint32_t)((uint32_t)c->x[8] - rt_life_cost((uint32_t)c->x[9], (int32_t)c->x[8], {whose})); }}'
+            f'  /* {a:#x}: sub w8, w8, w9 (a life\'s hit: Accessibility) */')
+
+
+# Link's damage handling (1.9.0 0x7000cc4c3c; x21 his life, in quarter hearts) works on a copy of it (w25, also at
+# sp + 0xc): the frame's hits through the method above, a few cases of its own (one quarter, four, the death path,
+# which may leave one quarter), and stores the copy at its end (link_life_store, `str w25, [x21]`); another path takes
+# one quarter off and stores it at once (link_life_tick, `str w8, [x21]`). God mode keeps the old life, Damage taken
+# scales the loss (runtime/assists.c rt_link_life); the copy gets the same value, so what follows sees it.
+
+def _link_life(gen, a):
+    w = _word(gen, a)
+    if w == 0xb90002b9:  # str w25, [x21]
+        return ('{ extern int32_t rt_link_life(int32_t, int32_t); '
+                'int32_t v = rt_link_life((int32_t)LD32(c->x[21]), (int32_t)c->x[25]); '
+                'c->x[25] = (uint32_t)v; ST32(c->sp + 0xc, (uint32_t)v); ST32(c->x[21], (uint32_t)v); }'
+                f'  /* {a:#x}: str w25, [x21] (Link\'s life: Accessibility) */')
+    assert w == 0xb90002a8, hex(w)  # str w8, [x21]
+    return ('{ extern int32_t rt_link_life(int32_t, int32_t); '
+            'c->x[8] = (uint32_t)rt_link_life((int32_t)LD32(c->x[21]), (int32_t)c->x[8]); ST32(c->x[21], c->x[8]); }'
+            f'  /* {a:#x}: str w8, [x21] (Link\'s life: Accessibility) */')
+
+
+# Accessibility > Infinite stamina (runtime/assists.c rt_stamina): the stamina setter (1.9.0 0x7000cc7410; x0
+# PlayerInfo, s0 the new stamina, 1000 a wheel) stores it at +0xa4; with the option on a lower value isn't stored.
+
+def _stamina(gen, a):
+    assert _word(gen, a) == 0xbd00a668, hex(_word(gen, a))  # str s8, [x19, #0xa4]
+    return ('{ extern uint32_t rt_stamina(uint32_t, uint32_t); '
+            'ST32(c->x[19] + 0xa4, rt_stamina(LD32(c->x[19] + 0xa4), (uint32_t)c->v[8])); }'
+            f'  /* {a:#x}: str s8, [x19, #0xa4] (stamina: Accessibility) */')
+
+
 # tools/game_sites.py site -> its patch
 # BOTW's streaming Yaz0 decoder (1.9.0 0x700131d674; x0 its state, x1/w2 the input chunk): in native code
 # (runtime/hle/yaz0.c rt_yaz0, which declines the first call of a stream, the one that reads its header). Its return
@@ -557,7 +695,24 @@ def _yaz0_stream_ret(gen, a):
     return '{ extern void rt_yaz0_done(Cpu *); rt_yaz0_done(c); return; }' + f'  /* {a:#x}: ret (Yaz0 stream decoder) */'
 
 
+# A shrine apparatus (DungeonRotateGyro::calc_, 1.9.0): the call that fetches the mechanism's input, then a heartbeat
+# with the mechanism (x19) and what the call returned (x0), so runtime/pc_gyro_scene.c knows the player controls one.
+def _gyro_scene_actor(gen, a):
+    w = _word(gen, a)
+    assert w >> 26 == 0x25, hex(w)  # bl
+    t = a + sext(w & 0x3ffffff, 26) * 4
+    return (f'{{ extern void f_{t:x}(Cpu *); extern void rt_gyro_scene_actor(Cpu *, uint64_t, uint64_t); '
+            f'c->x[30] = {a + 4:#x}ull; f_{t:x}(c); rt_gyro_scene_actor(c, c->x[19], c->x[0]); }}'
+            f'  /* {a:#x}: bl (shrine apparatus input) */')
+
+
 PATCHES = {
+    'pc_map_focus': _pc_map_focus(False),
+    'pc_map_focus_target': _pc_map_focus(True),
+    'pc_map_focus_now': _pc_map_focus(True),
+    'pc_button_group': _pc_button_group,
+    'pc_cursor_manager': _pc_cursor_manager,
+    'gyro_scene_actor': _gyro_scene_actor,
     'pause_options_update': _pause_option_state,
     'opt_create_rows': _opt_rows,
     'opt_row_init_flag_type': _opt_flag_type,
@@ -580,7 +735,11 @@ PATCHES = {
     'gui_speed': _gui_speed,
     'quick_menu_capture_alpha': _quick_menu_capture_alpha,
     'arrow_fall_gravity': _arrow_gravity,
+    'surf_contact': _surf_contact,
+    'surf_boost_remove': _surf_boost_remove,
+    'surf_jump_request': _surf_jump_request,
     'phys_solver_steps': _solver_steps,
+    'kf_angle': _kf_angle,
     'snd_frame_floor': _snd_frame_floor,
     'persp_matrix': _persp_matrix,
     'persp_matrix_offset': _persp_matrix_offset,
@@ -612,6 +771,12 @@ PATCHES = {
     'grass_blade_lateral_near': _grass_blade_lateral,
     'grass_blade_lateral_far': _grass_blade_lateral,
     'tree_ranges': _tree_ranges,
+    'pouch_remove_arrows': _remove_arrows,
+    'no_wear_store': _no_wear,
+    'no_wear_hit': _no_wear_hit,
+    'link_life_store': _link_life,
+    'link_life_tick': _link_life,
+    'stamina_store': _stamina,
 }
 
 

@@ -33,12 +33,30 @@ int plat_protect(uint64_t addr, uint64_t size, int prot);  // 0 on success
 // resets: their addresses into pages (ascending, at most max). -1: not known here (only Windows tracks them: the
 // window is reserved with MEM_WRITE_WATCH), or more than max were written (then any page may have been).
 long plat_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, size_t max);
+// Whether any 4K page of [addr, addr + size) was written since plat_written_pages last reset it (1 / 0), without
+// resetting anything. -1: not known here.
+int plat_any_written(uint64_t addr, uint64_t size);
 
 // ---- time
 uint64_t plat_now_ns(void);                // monotonic
 void plat_sleep_until_ns(uint64_t t);      // precise wait for plat_now_ns() >= t
+void plat_wait_until_ns(uint64_t t);       // wait for plat_now_ns() >= t without spinning (the OS timer's precision)
 void plat_thread_realtime(uint64_t period_ns);  // periodic timing thread (vsync): don't coalesce its timers
-void plat_cpu_placement(void);  // (game start) one logical processor per core on CPUs with SMT and 8+ cores (Windows)
+int plat_cpu_count(void);       // logical processors this process may run on (its affinity, after plat_cpu_placement)
+void plat_cpu_placement(void);  // (game start) one logical processor per core where plat_one_per_core_default says
+// Whether the game runs on one logical processor per core when SAVAGEWIND_ONE_PER_CORE doesn't say (cores: physical
+// cores the process may use, logical: its logical processors). Measured on Windows with a Ryzen 5 5600X: against all
+// logical processors it was 6% faster on 6 cores and 18% on 4, and 24% slower on 2 (half the 1% lows: too few
+// processors for the game's busy threads). On Linux the Steam Deck (4 cores, 8 threads) lost 3% and a quarter of its
+// 1% lows with it, so Linux keeps every logical processor.
+static inline bool plat_one_per_core_default(int cores, int logical) {
+#ifdef _WIN32
+    return logical > cores && cores >= 4;
+#else
+    (void)cores, (void)logical;
+    return false;
+#endif
+}
 
 // ---- process
 void plat_init(void);                                // first thing in main()

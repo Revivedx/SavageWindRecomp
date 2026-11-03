@@ -132,6 +132,8 @@ static inline void *after(const void *args, size_t args_size) { return (uint8_t 
 // ---- the thread
 static void *run(void *arg) {
     (void)arg;
+    extern void control_prof_thread(const char *name);  // runtime/control_prof.c (`threads`)
+    control_prof_thread("recorder");
     uint64_t t = 0;
     for (;;) {
         uint64_t h = atomic_load_explicit(&head, memory_order_acquire);
@@ -179,8 +181,16 @@ void rec_init(void) {
         pthread_attr_init(&attr);
         pthread_attr_setstacksize(&attr, 1 << 20);
         ring_cap = cap;  // (before the thread exists)
-        if (!ring || pthread_create(&th, &attr, run, NULL) != 0) {
-            LOG("[vk] recorder thread: could not start (%s): Vulkan calls on the queue thread\n", ring ? "thread" : "memory");
+        int rc = ring ? pthread_create(&th, &attr, run, NULL) : 0;
+        if (rc) {
+            // glibc takes the static TLS of every thread out of its stack and fails with EINVAL when a requested
+            // size leaves no room for it; the default stack (8 MB on Linux) does
+            LOG("[vk] recorder thread: a 1 MB stack failed (%s), trying the default stack\n", strerror(rc));
+            rc = pthread_create(&th, NULL, run, NULL);
+        }
+        if (!ring || rc) {
+            LOG("[vk] recorder thread: could not start (%s, error %d): Vulkan calls on the queue thread\n",
+                ring ? strerror(rc) : "out of memory", rc);
             free(ring);
             ring = NULL;
             ring_cap = 0;
@@ -439,6 +449,23 @@ CMD_ARGS(CmdWriteTimestamp2, VkPipelineStageFlags2 stage; VkQueryPool pool; uint
 static void CmdWriteTimestamp2_run(const void *p) { const CmdWriteTimestamp2Args *a = p; vkCmdWriteTimestamp2(a->cb, a->stage, a->pool, a->query); }
 void rec_CmdWriteTimestamp2(VkCommandBuffer cb, VkPipelineStageFlags2 stage, VkQueryPool pool, uint32_t query) {
     CMD_QUEUE(CmdWriteTimestamp2, cb, stage, pool, query);
+}
+
+// (an extension's command: through its pointer, which the loader's own exports don't have)
+static void set_checkpoint(VkCommandBuffer cb, const void *marker) {
+    static PFN_vkCmdSetCheckpointNV set;
+    if (!set) set = (PFN_vkCmdSetCheckpointNV)vkGetDeviceProcAddr(g_vk.dev, "vkCmdSetCheckpointNV");
+    if (set) set(cb, marker);
+}
+CMD_ARGS(CmdSetCheckpointNV, const void *marker;)
+static void CmdSetCheckpointNV_run(const void *p) { const CmdSetCheckpointNVArgs *a = p; set_checkpoint(a->cb, a->marker); }
+void rec_CmdSetCheckpointNV(VkCommandBuffer cb, const void *marker) {
+    if (on <= 0) { set_checkpoint(cb, marker); return; }
+    ENQ_T0();
+    CmdSetCheckpointNVArgs *a_ = push(CmdSetCheckpointNV_run, sizeof *a_, 0);
+    *a_ = (CmdSetCheckpointNVArgs){cb, marker};
+    commit();
+    ENQ_END();
 }
 
 CMD_ARGS(CmdBeginQuery, VkQueryPool pool; uint32_t query; VkQueryControlFlags flags;)

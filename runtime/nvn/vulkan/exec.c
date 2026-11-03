@@ -14,6 +14,7 @@
 #include "../../kernel.h"
 #include "shaders.h"
 #include "vk.h"
+#include "vram.h"
 #include "fsr3.h"
 #include "fsr_api.h"
 #include "mvec.h"
@@ -27,8 +28,11 @@
 #include "../../game_sites.h"
 #include "../../framepace.h"
 #include "../../services/fs_layout.h"
+#include "../../perfcount.h"
+#include "../hud_scale.h"
 
 static uint64_t stat_build_waits;  // draws that waited for their pipeline (draw_must_happen)
+static uint64_t stat_links_now;    // pipelines linked on the render thread within the frame's budget (link_now)
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
 static uint64_t stat_gw_waits, stat_gw_holds;  // draws / dispatches that waited for a storing shader; lists held (gw_check)
 static uint64_t stat_uub, stat_uub_same, stat_gcopy_hit, stat_gcopy_miss, stat_gcopy_bytes;  // UpdateUniformBuffer; guest_copy cache
@@ -167,6 +171,7 @@ void vk_wait_seq(uint64_t seq) {
     VkResult r = vkWaitSemaphores(g_vk.dev, &wi, 10ull * 1000000000ull);
     stat_wait_ns += SDL_GetTicksNS() - t0;
     cum_wait += SDL_GetTicksNS() - t0;
+    perfcount_add(PC_GPU_WAIT_NS, SDL_GetTicksNS() - t0);
     if (in_execute) cum_xwait += SDL_GetTicksNS() - t0;
     if (r == VK_TIMEOUT) LOG("[vk] GPU did not finish submission %llu within 10 s (device lost?)\n", (unsigned long long)seq);
     else if (r != VK_SUCCESS) {
@@ -320,6 +325,51 @@ void vk_devlost_dump(void) {
     LOG("[vk] last GPU operations before the device loss (oldest first):\n");
     for (unsigned i = dl_n > 64 ? dl_n - 64 : 0; i < dl_n; i++) LOG("[vk]   %s\n", dl_ring[i & 63]);
 }
+// ---- GPU checkpoints (VK_NV_device_diagnostic_checkpoints, NVIDIA): a marker at each pass, dispatch and post step, so
+// that after a device loss the log says which of them the GPU had begun and finished (#252, #307: "address write
+// invalid" and nothing else to go on). The marker is the count of marks made: a record is still in the ring while fewer
+// than CK_N marks came after it. Records hold numbers only, written out by the report (text for ~200 marks a frame cost
+// ~0.2 ms of the render thread). SAVAGEWIND_VK_CHECKPOINTS=0 (device.c): none.
+#define CK_N 4096
+typedef struct { const char *what; uint32_t a, b, c, d, e; uint64_t code; } CkRec;  // what: "pass", "dispatch", a post shader
+static CkRec ck_rec[CK_N];
+static uint32_t ck_n;
+static void ck_mark(VkCommandBuffer cb, const char *what, uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint64_t code) {
+    if (!g_vk.nv_checkpoints) return;
+    uint32_t n = ++ck_n;
+    ck_rec[n & (CK_N - 1)] = (CkRec){what, a, b, c, d, e, code};
+    rec_CmdSetCheckpointNV(cb, (const void *)(uintptr_t)n);
+}
+void vk_checkpoints_report(void) {  // (device.c vk_device_fault_report, after the loss)
+    if (!g_vk.nv_checkpoints) return;
+    PFN_vkGetQueueCheckpointDataNV get = (PFN_vkGetQueueCheckpointDataNV)vkGetDeviceProcAddr(g_vk.dev, "vkGetQueueCheckpointDataNV");
+    if (!get) return;
+    VkQueue qs[2] = {g_vk.queue, g_vk.present_queue};
+    for (int q = 0; q < (g_vk.present_queue != g_vk.queue ? 2 : 1); q++) {
+        uint32_t n = 0;
+        get(qs[q], &n, NULL);
+        VkCheckpointDataNV d[16];
+        if (n > 16) n = 16;
+        for (uint32_t i = 0; i < n; i++) d[i] = (VkCheckpointDataNV){.sType = VK_STRUCTURE_TYPE_CHECKPOINT_DATA_NV};
+        get(qs[q], &n, d);
+        LOG("[vk] GPU checkpoints of the %s queue (%u marks made in all):\n", q ? "present" : "game", ck_n);
+        for (uint32_t i = 0; i < n; i++) {
+            uint32_t m = (uint32_t)(uintptr_t)d[i].pCheckpointMarker;
+            const char *stage = d[i].stage == VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT ? "begun" :
+                                d[i].stage == VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT ? "finished" : "reached";
+            const CkRec *r = m && ck_n - m < CK_N ? &ck_rec[m & (CK_N - 1)] : NULL;
+            if (!r) LOG("[vk]   %s mark %u (stage %#x): (record gone)\n", stage, m, (unsigned)d[i].stage);
+            else if (!strcmp(r->what, "pass"))
+                LOG("[vk]   %s mark %u (stage %#x): pass %u color %ux%u fmt %#x, depth %ux%u, fs %016llx\n", stage, m,
+                    (unsigned)d[i].stage, r->a, r->b, r->c, r->d, r->e >> 16, r->e & 0xffff, (unsigned long long)r->code);
+            else if (!strcmp(r->what, "dispatch"))
+                LOG("[vk]   %s mark %u (stage %#x): dispatch %ux%ux%u cs %016llx\n", stage, m, (unsigned)d[i].stage, r->a,
+                    r->b, r->c, (unsigned long long)r->code);
+            else LOG("[vk]   %s mark %u (stage %#x): post %s %ux%u\n", stage, m, (unsigned)d[i].stage, r->what, r->a, r->b);
+        }
+    }
+}
+
 static void gp_mark(VkCommandBuffer cb, const char *fmt, ...) {
     if (!g_gpuprof_frame || gp_n >= GP_MAX - 1) return;
     if (!gp_qp) {
@@ -449,12 +499,24 @@ uint64_t renderer_fence_seq(void) {
 static int gsnap_mode(void);
 // (device.c, before any translation) the translator's switches that depend on the device: global memory in two bindings
 // where one binding of the whole heap is past maxStorageBufferRange (Mali-G610: 2 GB, the heap 3.25 GB), and read-only
-// global memory through copied ranges where gsnap is on (Mali by default). The split is Mali-only: other drivers with a
-// smaller limit keep the one binding of the whole heap they had (SAVAGEWIND_VK_GMEM_SPLIT=0/1 turns it off or on).
+// global memory through copied ranges where gsnap is on (with the GPU overlap, #263). The split is for Mali and AMD's
+// Windows driver: other drivers with a smaller limit keep the one binding of the whole heap they had
+// (SAVAGEWIND_VK_GMEM_SPLIT=0/1 turns it off or on). AMD's driver (26.10, RX 9070 XT) lost the device seconds into every
+// boot with one 3 GB binding and gsnap's shaders, a "read invalid" GPU page fault (#331): it ran with both bindings
+// under 2 GB, with gsnap off, or with gsnap copying in every pass, so the in-place read of GLD, not the copies.
 void vk_translator_setup(void) {
+    VkPhysicalDeviceDriverProperties drv = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+    VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &drv};
+    vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
     const char *split = getenv("SAVAGEWIND_VK_GMEM_SPLIT");
-    maxwell_gmem_split = split ? atoi(split) != 0 : g_vk.is_mali && HEAP_MAX > g_vk.props.limits.maxStorageBufferRange;
+    maxwell_gmem_split = split ? atoi(split) != 0 : (g_vk.is_mali && HEAP_MAX > g_vk.props.limits.maxStorageBufferRange) ||
+                                                    drv.driverID == VK_DRIVER_ID_AMD_PROPRIETARY;
     maxwell_gmem_snap = gsnap_mode() != 0;
+    // (the heap window too, from here on: translate_program and the precompile set it before translating, but the
+    // pre-warm's loads of cached translations read the variant before any translation - with 0+0 there, the global
+    // memory shaders' translations were taken for another variant and their pipelines skipped)
+    maxwell_gmem_base = HEAP_BASE;
+    maxwell_gmem_size = HEAP_MAX;
     LOG("[vk] shader global memory: %s (storage buffer limit %u MB), the HUD's reads %s\n",
         maxwell_gmem_split ? "two bindings" : "one binding", g_vk.props.limits.maxStorageBufferRange >> 20,
         maxwell_gmem_snap ? "through copies" : "in place");
@@ -596,6 +658,7 @@ VkSpan vk_transient(uint64_t size, uint64_t align) {
             c->used = off + size;
             c->seq = pending;
             stat_upload_bytes += size;
+            perfcount_add(PC_UPLOAD_BYTES, size);
             return (VkSpan){c->buf, off, c->ptr + off};
         }
     }
@@ -608,6 +671,7 @@ VkSpan vk_transient(uint64_t size, uint64_t align) {
     chunks[pick].used = size;
     chunks[pick].seq = pending;
     stat_upload_bytes += size;
+    perfcount_add(PC_UPLOAD_BYTES, size);
     return (VkSpan){chunks[pick].buf, 0, chunks[pick].ptr};
 }
 
@@ -789,8 +853,9 @@ static void run_job(void (*fn)(void *), void *arg) {
     static bool started;
     if (!started) {
         started = true;
-        // first entry into an area builds dozens of pipelines at once: use most of the CPU (draws wait for them)
-        int n = SDL_GetNumLogicalCPUCores() - 4;
+        // first entry into an area builds dozens of pipelines at once: use most of the CPU (draws wait for them). The
+        // processors the game runs on (plat_cpu_placement may leave out SMT siblings), not every one of the system's.
+        int n = plat_cpu_count() - 4;
         if (n < 4) n = 4;
         if (n > 16) n = 16;
         for (int i = 0; i < n; i++) { pthread_t t; pthread_create(&t, NULL, worker, NULL); }
@@ -853,28 +918,30 @@ bool renderer_origin_lower_left(void) { return nvn_window_origin() == 0; }
 // present_ns: time in backend_present's acquire/blit/present.
 extern uint64_t g_pace_sleep_ns;  // (objects.c present_pace)
 void vk_prof_frame(uint64_t frame, uint64_t present_ns) {
+    perfcount_add(PC_PRESENT_NS, present_ns);
     if (!prof) return;
-    static uint64_t last_t, l_exec, l_wait, l_xwait, l_draws, l_subs, l_comp, hitch_ns;
+    static uint64_t last_t, l_exec, l_wait, l_xwait, l_draws, l_subs, l_comp, l_valloc, hitch_ns;
     if (!hitch_ns) hitch_ns = getenv("SAVAGEWIND_HITCH_MS") ? (uint64_t)atoi(getenv("SAVAGEWIND_HITCH_MS")) * 1000000ull : 50000000ull;
     uint64_t now = SDL_GetTicksNS();
-    uint64_t comp = prof_c_tr + prof_c_prog + prof_c_pipe + prof_c_comp;
+    uint64_t comp = prof_c_tr + prof_c_prog + prof_c_pipe + prof_c_comp, valloc = atomic_load(&g_vram_alloc_ns);
     if (comp < l_comp) l_comp = 0;  // (the fps line took the counters)
     if (last_t && now - last_t > hitch_ns) {
         uint64_t dt = now - last_t, ex = cum_exec - l_exec, wt = cum_wait - l_wait;
         extern uint64_t g_present_split[6];
         LOG("[hitch] frame %llu: %.0f ms = backend exec %.1f (of which GPU waits %.1f, compiles %.1f) + present %.1f (acquire %.1f "
             "end %.1f draw %.1f submit %.1f present %.1f slot %.1f) + other %.1f (pace %.1f); %llu draws, %llu submits, compiles %d pending; "
-            "exec waits %.1f\n",
+            "exec waits %.1f; vkAllocateMemory %.1f\n",
             (unsigned long long)frame, dt / 1e6, ex / 1e6, wt / 1e6, (comp - l_comp) / 1e6, present_ns / 1e6,
             g_present_split[0] / 1e6, g_present_split[1] / 1e6, g_present_split[2] / 1e6, g_present_split[3] / 1e6,
             g_present_split[4] / 1e6, g_present_split[5] / 1e6,
             ((double)dt - ex - present_ns) / 1e6, g_pace_sleep_ns / 1e6, (unsigned long long)(cum_draws - l_draws),
             (unsigned long long)(cum_submits - l_subs),
-            atomic_load(&stat_compiles), (cum_xwait - l_xwait) / 1e6);
+            atomic_load(&stat_compiles), (cum_xwait - l_xwait) / 1e6, (valloc - l_valloc) / 1e6);
     }
     { extern uint64_t g_present_split[6]; memset(g_present_split, 0, sizeof g_present_split); }
     g_pace_sleep_ns = 0;
     l_comp = comp;
+    l_valloc = valloc;
     last_t = now; l_exec = cum_exec; l_wait = cum_wait; l_xwait = cum_xwait; l_draws = cum_draws; l_subs = cum_submits;
 }
 
@@ -904,6 +971,9 @@ const char *renderer_stats(void) {
         n = strlen(stats_text);
         if (stat_build_waits) snprintf(stats_text + n, sizeof stats_text - n, ", build waits %llu", (unsigned long long)stat_build_waits);
         stat_build_waits = 0;
+        n = strlen(stats_text);
+        if (stat_links_now) snprintf(stats_text + n, sizeof stats_text - n, ", links now %llu", (unsigned long long)stat_links_now);
+        stat_links_now = 0;
         stat_uub = stat_uub_same = stat_gcopy_hit = stat_gcopy_miss = stat_gcopy_bytes = 0;
         stat_gw_waits = stat_gw_holds = 0;
         stat_sets = stat_sets_reused = 0;
@@ -1003,6 +1073,27 @@ void renderer_save_texture_tex(TexBackend *b, const char *path);
 static float pass_sx = 1, pass_sy = 1;
 static bool pass_out;  // the pass draws into the game's final image (RS_OUT: the HUD and menus draw there)
 static bool hud_clip;  // the draw in progress is a 16:9 layout's pane wholly off a 16:9 screen: not drawn (hud_patch)
+// Gameplay > HUD size this frame, 1: none. Only the HUD in play: not in menus, the title, a load or an event (a talk's text).
+#define HUD_QUICK_HOLD_NS 500000000ull  // (a quick menu's bar fades out after the pause state ends)
+static bool hud_quick;  // a quick menu's bar may be on screen: it keeps the game's size (hud_quick_keeps)
+static float hud_scale_now(void) {
+    extern bool framepace_menu_ui(void), framepace_title_ui(void), framepace_loading_ui(void), framepace_in_event(void);
+    extern bool framepace_quick_ui(void);
+    static uint64_t frame = ~0ull;
+    static float s = 1;
+    uint64_t now = renderer_present_count();
+    if (now != frame) {
+        frame = now;
+        // (not the quick menus, pause state 4: the game keeps the HUD up around them)
+        static uint64_t quick_ns;
+        uint64_t ns = plat_now_ns();
+        if (g_settings.hud_size != 100 && framepace_quick_ui()) quick_ns = ns;
+        hud_quick = quick_ns && ns - quick_ns < HUD_QUICK_HOLD_NS;
+        s = g_settings.hud_size == 100 || framepace_menu_ui() || framepace_title_ui() || framepace_loading_ui() ||
+            framepace_in_event() ? 1 : (float)g_settings.hud_size / 100;
+    }
+    return s;
+}
 static float vp_sx = 1, vp_sy = 1, vp_ox = 0, vp_oy = 0;
 static float tex_sc[2][64][2];
 static uint32_t tex_wh[2][64][2];
@@ -1660,6 +1751,9 @@ static void begin_pass(void) {
         NvnTexture *t0n = st.rt.ncolor ? st.rt.color[0] : NULL;
         dl_note("pass %d color %ux%u fmt %#x depth %p", st.rt.ncolor, t0n ? t0n->width : 0, t0n ? t0n->height : 0, t0n ? t0n->format : 0,
                 (void *)st.rt.depth);
+        ck_mark(cb, "pass", (uint32_t)st.rt.ncolor, t0n ? t0n->width : 0, t0n ? t0n->height : 0, t0n ? t0n->format : 0,
+                st.rt.depth ? st.rt.depth->width << 16 | (st.rt.depth->height & 0xffff) : 0,
+                st.program ? st.program->stages[1].code_addr : 0);
     }
     if (g_gpuprof_frame) {
         NvnTexture *t0 = st.rt.ncolor ? st.rt.color[0] : NULL;
@@ -1924,6 +2018,18 @@ static VkRect2D scissor_rect(void) {
         if (y > 0 || y + sh < gh - 0.5) {
             double c = gh / 2, y0 = c + (y - c) * shape, y1 = c + (y + sh - c) * shape;
             y = (int)floor(y0); sh = (int)ceil(y1) - y;
+        }
+    }
+    float hud_s = pass_out && sw < 16384 && sh < 16384 && pass_sx > 0 && pass_sy > 0 ? hud_scale_now() : 1;
+    if (hud_s != 1) {  // (the minimap's mask goes with the minimap: a scissor over about the whole image is left alone)
+        double gw = w / pass_sx, gh = h / pass_sy;
+        float mx = (float)((x + sw / 2.0) / gw * 2 - 1), my = (float)((y + sh / 2.0) / gh * 2 - 1);
+        if (sw < gw * 0.9 && sh < gh * 0.9 && !(hud_quick && fabsf(mx) < 0.72f && fabsf(my) < 0.6f)) {
+            double px = x, py = y, pw = sw, ph = sh;
+            hud_scale_span(&px, &pw, gw / 2, gw / 2 / fmax(shape, 1), hud_s);
+            hud_scale_span(&py, &ph, gh / 2, gh / 2 * fmin(shape, 1), hud_s);
+            x = (int)floor(px), y = (int)floor(py);
+            sw = (int)ceil(px + pw) - x, sh = (int)ceil(py + ph) - y;
         }
     }
     if (vp_sx != 1 || vp_sy != 1 || vp_ox != 0 || vp_oy != 0) {
@@ -2418,6 +2524,7 @@ static void compile_program(void *arg) {
     if (made) {
         atomic_fetch_add(&stat_compiles, 1);
         atomic_fetch_add(&prof_c_prog, SDL_GetTicksNS() - pt0); atomic_fetch_add(&prof_c_nprog, 1);
+        perfcount_add(PC_BUILDS, 1); perfcount_add(PC_BUILD_NS, SDL_GetTicksNS() - pt0);
     } else {
         atomic_fetch_add(&stat_warm, 1);
     }
@@ -2504,6 +2611,7 @@ static void translate_program(void *arg) {
                 p->fi ? p->fi->attr_mask : 0, fin, (unsigned long long)p->code[0], (unsigned long long)p->code[1]);
     }
     atomic_fetch_add(&prof_c_tr, SDL_GetTicksNS() - pt0); atomic_fetch_add(&prof_c_ntr, 1);
+    perfcount_add(PC_BUILDS, 1); perfcount_add(PC_BUILD_NS, SDL_GetTicksNS() - pt0);
     if (!p->vi->msl) {
         LOG("[shader] VS translate failed: %s (code %llx)\n", p->vi->error, (unsigned long long)p->code[0]);
         dump_failed_shader(p->code[0], p->cmax[0], "vs");
@@ -2931,13 +3039,20 @@ static VkResult create_pipeline_in(const PipeState *k, VkShaderModule vsm, VkSha
                                               .attachmentCount = k->ncolor, .pAttachments = cba};
     VkPipelineDynamicStateCreateInfo dy = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
                                            .dynamicStateCount = NDYN, .pDynamicStates = DYN};
+    VkPipelineRenderingCreateInfo ri = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+                                        .colorAttachmentCount = k->ncolor, .pColorAttachmentFormats = k->color,
+                                        .depthAttachmentFormat = k->depth, .stencilAttachmentFormat = k->stencil};
     VkPipelineCreationFeedback fb = {0};
     VkPipelineCreationFeedbackCreateInfo fci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO,
                                                 .pPipelineCreationFeedback = &fb};
-    VkPipelineRenderingCreateInfo ri = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO, .pNext = &fci,
-                                        .colorAttachmentCount = k->ncolor, .pColorAttachmentFormats = k->color,
-                                        .depthAttachmentFormat = k->depth, .stencilAttachmentFormat = k->stencil};
-    VkGraphicsPipelineCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &ri, .stageCount = 2,
+    // On AMD's Windows proprietary driver (e.g. RX 480 / Polaris), attaching VkPipelineCreationFeedbackCreateInfo
+    // causes vkCreateGraphicsPipelines to crash inside amdvlk64.dll.
+    void *pnext = &ri;
+    if (!g_vk.amd_proprietary) {
+        fci.pNext = &ri;
+        pnext = &fci;
+    }
+    VkGraphicsPipelineCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = pnext, .stageCount = 2,
                                        .pStages = stages, .pVertexInputState = &vi, .pInputAssemblyState = &ia, .pViewportState = &vs,
                                        .pRasterizationState = &rs, .pMultisampleState = &ms, .pDepthStencilState = &ds,
                                        .pColorBlendState = &cb, .pDynamicState = &dy, .layout = layout,
@@ -2948,7 +3063,12 @@ static VkResult create_pipeline_in(const PipeState *k, VkShaderModule vsm, VkSha
         static int n;
         if (n++ < 10) LOG("[vk] pipeline creation failed: %d\n", r);
     } else if (cache == g_vk.pcache) {
-        cache_feedback(&fb);
+        if (g_vk.amd_proprietary) {  // (no feedback asked for: the cache saver takes every pipeline as new)
+            extern void vk_pipeline_cache_note(bool hit);
+            vk_pipeline_cache_note(false);
+        } else {
+            cache_feedback(&fb);
+        }
     }
     return r;
 }
@@ -3260,7 +3380,7 @@ static void warm_done(WarmPipe *w, VkPipeline p, VkResult r) {
     pthread_mutex_unlock(&warm_lock);
 }
 
-static void pso_record(int kind, uint64_t id0, uint64_t id1, const void *state, size_t n);
+static bool pso_record(int kind, uint64_t id0, uint64_t id1, const void *state, size_t n);
 
 static void build_pipeline(void *arg) {
     Pipe *pp = arg;
@@ -3274,6 +3394,7 @@ static void build_pipeline(void *arg) {
         if (r == VK_SUCCESS) pso_record(1, vk_translate_id(k->prog->vi), vk_translate_id(k->prog->fi), &k->s, sizeof k->s);
         atomic_fetch_add(&stat_compiles, 1);
         atomic_fetch_add(&prof_c_pipe, SDL_GetTicksNS() - pt0); atomic_fetch_add(&prof_c_npipe, 1);
+        perfcount_add(PC_BUILDS, 1); perfcount_add(PC_BUILD_NS, SDL_GetTicksNS() - pt0);
     } else {
         atomic_fetch_add(&stat_warm, 1);
     }
@@ -3634,7 +3755,8 @@ static void resolve_feedback(Prog *pr) {
             // the pass ended and begun again). Instead the pass runs with the target as a feedback loop, and a barrier
             // inside it makes the earlier draws' writes visible to this one's reads at the same pixel; each draw sees
             // what the ones before it wrote, as with the copies. Fragment-shader reads only (a barrier inside the pass
-            // reaches no vertex shader). The first such draw ends the pass: it begins again with the loop enabled, and
+            // reaches no vertex shader; the barrier is a feedback loop dependency, VK_DEPENDENCY_FEEDBACK_LOOP_BIT_EXT, which
+            // the extension requires for it). The first such draw ends the pass: it begins again with the loop enabled, and
             // from then on every pass with that target does.
             static int nofbl = -1;
             if (nofbl < 0) nofbl = getenv("SAVAGEWIND_VK_FEEDBACK_COPY") != NULL;  // (debugging) copies, as before
@@ -3658,8 +3780,8 @@ static void resolve_feedback(Prog *pr) {
                                                    .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                                                    .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT};
                             VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                                                   .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT, .memoryBarrierCount = 1,
-                                                   .pMemoryBarriers = &mb};
+                                                   .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT | VK_DEPENDENCY_FEEDBACK_LOOP_BIT_EXT,
+                                                   .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
                             rec_CmdPipelineBarrier2(vk_cmd(), &di);
                             pass_color_unsynced = 0;  // (one barrier covers every target)
                             stat_feedback_barriers++;
@@ -3999,7 +4121,7 @@ static bool up_patch_frag(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *
 // In a copy of the buffer, as rt_persp makes them: m00 / shape on a wider window, m11 x shape on a narrower one.
 // - a pane wholly past the edges (a layout's parts kept off screen: a pane with a texture nothing draws into, at the
 //   inventory's description box) is not drawn (hud_clip, scissor_rect), as it is never seen on the console.
-// SAVAGEWIND_NO_HUD_FIX=1: off.
+// SAVAGEWIND_NO_HUD_FIX=1: off (Gameplay > HUD size, hud_scale.h, stays).
 static bool hud_frame_end(const float *g, const float *mv, const float *rc, float m00, float shape) {
     if (!framepace_menu_ui() || mv[8] || mv[9] || mv[11] >= 0) return false;
     // ui2d's window block has four border margins at c3[26] and its parent window size at c3[27].
@@ -4031,20 +4153,26 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
     static int off = -1;
     if (off < 0) off = getenv("SAVAGEWIND_NO_HUD_FIX") != NULL;
     extern float output_view_shape(void);
-    float shape = output_view_shape();
-    if (off || shape == 1 || size < 64 || !st.rt.ncolor || !st.rt.color[0]) return false;
+    float shape = off ? 1 : output_view_shape();
+    if (size < 64 || !st.rt.ncolor || !st.rt.color[0]) return false;
     TexBackend *tb = (TexBackend *)st.rt.color[0]->backend;
     if (!tb || tb->rs_group != RS_OUT) return false;
+    float hud_s = hud_scale_now();
+    if (shape == 1 && hud_s == 1) return false;
+    float edge_x = 1 / fmaxf(shape, 1), edge_y = fminf(shape, 1);  // (where the 16:9 HUD ends on this window)
     const float *g = (const float *)(uintptr_t)addr;
     // ui2d text combines the projection and each label's position into this smaller, Y-flipped matrix.
     // A cached 16:9 projection can survive a live resize; scale the whole X row so glyph widths and
     // positions follow the widened HUD together.
-    if (shape > 1 && size == 128 && g[0] > 0 && g[5] < 0 && g[14] == -1 && g[15] > 0 &&
+    if (shape >= 1 && size == 128 && g[0] > 0 && g[5] < 0 && g[14] == -1 && g[15] > 0 &&
         !g[1] && !g[2] && !g[4] && !g[6] && !g[8] && !g[9] && !g[12] && !g[13] &&
         fabsf(-g[5] / g[0] - 16.0f / 9.0f) < 0.002f) {
         float text_matrix[32];
         memcpy(text_matrix, g, sizeof text_matrix);
         for (int k = 0; k < 4; k++) text_matrix[k] /= shape;
+        float tx = text_matrix[3] / text_matrix[15], ty = text_matrix[7] / text_matrix[15];
+        if (hud_s != 1 && !(hud_quick && hud_quick_keeps(tx, ty, edge_x, edge_y)))
+            hud_scale_matrix(text_matrix, hud_s, hud_anchor(tx, edge_x), hud_anchor(ty, edge_y));
         *out = ubo_span(vk_transient_copy(text_matrix, sizeof text_matrix, 256), sizeof text_matrix);
         return true;
     }
@@ -4058,6 +4186,9 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         memcpy(buf, g, n);
         if (shape > 1) buf[0] /= shape, buf[3] /= shape;
         else buf[5] *= shape, buf[7] *= shape;
+        float tx = buf[3] / buf[15], ty = buf[7] / buf[15];
+        if (hud_s != 1 && !(hud_quick && hud_quick_keeps(tx, ty, edge_x, edge_y)))
+            hud_scale_matrix(buf, hud_s, hud_anchor(tx, edge_x), hud_anchor(ty, edge_y));
         *out = ubo_span(vk_transient_copy(buf, n, 256), n);
         return true;
     }
@@ -4101,11 +4232,31 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
             if (lo < 1e8f && (hi <= -edge || lo >= edge)) hud_clip = true;  // (wholly off a 16:9 screen)
         }
     }
-    if (m00 == g[0] && m11 == g[5]) return false;
+    // Gameplay > HUD size: a pane of a 40-degree layer, and not one over about the whole screen (a fade, a picture)
+    float hud_ax = 0, hud_ay = 0;
+    bool hud_scale = false;
+    if (hud_s != 1 && size >= 28 * 4 && fabsf((tall ? m11 / shape : m11) - 2.74748f) < 0.001f) {
+        const float *mv = g + 16, *rc = g + 33 * 4;
+        bool has_rect = size >= 34 * 16 && rc[0] > 0 && rc[1] > 0;
+        float x0 = 1e9f, x1 = -1e9f, y0 = 1e9f, y1 = -1e9f;
+        hud_scale = true;
+        for (int k = 0; k < 4; k++) {
+            float x = has_rect ? (k & 1) * rc[0] + rc[2] : 0, y = has_rect ? rc[3] - (k >> 1) * rc[1] : 0;
+            float w = -(mv[8] * x + mv[9] * y + mv[11]);
+            if (w <= 0) { hud_scale = false; break; }
+            float nx = m00 * (mv[0] * x + mv[1] * y + mv[3]) / w, ny = m11 * (mv[4] * x + mv[5] * y + mv[7]) / w;
+            x0 = fminf(x0, nx), x1 = fmaxf(x1, nx), y0 = fminf(y0, ny), y1 = fmaxf(y1, ny);
+        }
+        if (x1 - x0 >= 1.8f * edge_x || y1 - y0 >= 1.8f * edge_y) hud_scale = false;
+        if (hud_quick && hud_quick_keeps((x0 + x1) / 2, (y0 + y1) / 2, edge_x, edge_y)) hud_scale = false;
+        hud_ax = hud_anchor((x0 + x1) / 2, edge_x), hud_ay = hud_anchor((y0 + y1) / 2, edge_y);
+    }
+    if (m00 == g[0] && m11 == g[5] && !hud_scale) return false;
     static float buf[0x10000 / 4];
     uint64_t n = size > sizeof buf ? sizeof buf : size;
     memcpy(buf, g, n);
     buf[0] = m00, buf[5] = m11;
+    if (hud_scale) hud_scale_view(buf + 16, hud_s, m00, m11, hud_ax, hud_ay);
     *out = ubo_span(vk_transient_copy(buf, n, 256), n);
     return true;
 }
@@ -4325,6 +4476,8 @@ static void heap_export(uint64_t size) {
     }
     char how[64];
     snprintf(how, sizeof how, "exported dma-buf mapped at the heap, type %u", type);
+    extern uint64_t g_mem_direct_lo, g_mem_direct_hi;  // (control_mem.h: the control peeks copy in place here)
+    g_mem_direct_lo = HEAP_BASE, g_mem_direct_hi = HEAP_BASE + size;
     heap_done(buf, mem, size, how);
 }
 
@@ -4388,6 +4541,8 @@ static void heap_dmaheap(uint64_t size) {
     }
     char how[96];
     snprintf(how, sizeof how, "dma-buf from %s mapped at the heap, imported as type %u", path, type);
+    extern uint64_t g_mem_direct_lo, g_mem_direct_hi;  // (control_mem.h: the control peeks copy in place here)
+    g_mem_direct_lo = HEAP_BASE, g_mem_direct_hi = HEAP_BASE + size;
     heap_done(buf, mem, size, how);
 }
 
@@ -4521,7 +4676,7 @@ static bool gw_add(uint64_t lo, uint64_t hi) {  // false: no room
 
 static void gsnap_gpu_note(int stage);
 static void gw_note(int stage) {  // a shader of this stage that stores to global memory was recorded
-    if (gsnap_mode()) gsnap_gpu_note(stage);  // (the GPU data list is read only by the copies: gsnap on, Mali)
+    if (gsnap_mode()) gsnap_gpu_note(stage);  // (the GPU data list is read only by the copies: gsnap on)
     vtx_hazard = true;  // (the next pass's vertex stage may read it)
     static int hold = -1;
     if (hold < 0) hold = getenv("SAVAGEWIND_VK_GMEM_HOLD") != NULL;
@@ -4588,25 +4743,74 @@ static void gw_check(const uint32_t cbufs[6], bool vertices, uint64_t iaddr, uin
 // A fetch from pages the copy doesn't hold as they are now reads the import in place, as before, and its pages join
 // the next list's copy. What shaders store to (the gw set) is always read in place; CPU writes during a list
 // (UpdateUniformBuffer, CopyBufferToBuffer, readbacks) take their pages out of the copy until the next one.
-// Write-watch queries cost per call and per page, so they cover only spans around the geometry pages.
-// Off on integrated GPUs (the import is already their memory), outside Windows, without room for the copy in video
-// memory (4 GB besides it), and with SAVAGEWIND_VK_HEAP_COPY=0 (=1: on whatever the room).
-// SAVAGEWIND_VK_HEAP_COPY_LOG=<lists>: what was copied, every that many lists.
-// (Approach from Demetter's fork, savagewind-native-28oct; reimplemented.)
+// Write-watch queries cover only spans around the geometry pages held. One that resets (GetWriteWatch with
+// WRITE_WATCH_FLAG_RESET) costs ~10-15 us a call and ~1 us a MB it covers; one that only looks, ~0.6 us a call. So
+// the spans hug the geometry (up to 128 of them: ~140 MB for BOTW's ~50 MB), each is looked at first, and only the
+// ones written since (~8 a list) are queried and reset: 0.33 ms a list instead of 0.54 (6 spans over ~450 MB).
+// SAVAGEWIND_VK_HEAP_COPY_SPANS=<n>: at most n spans; SAVAGEWIND_VK_HEAP_COPY_PEEK=0: every span queried and reset.
+// Two shapes. With room for the whole heap in video memory and 4 GB besides it (8 GB cards and up): one buffer the
+// heap's size, made at once. With less (4-6 GB cards): the heap in chunks of HC_CHUNK_MB, each a buffer of its own
+// made where geometry is first fetched - on a thread of their own (hc_maker: a block of video memory can take
+// milliseconds), live from the list after - while the video memory in use (VK_EXT_memory_budget: the process's;
+// else VMA's count) stays within the plan: the smaller of the budget and 90% of the video memory, less HC_RESERVE_MB
+// for the game's own growth. A fetch inside one live chunk binds that chunk's buffer at its offset in it; one across a
+// chunk's edge, or in a chunk not made (over the plan), reads the import in place as before. Every HC_LOOK lists:
+// over the plan (the game's own memory grew), the least fetched live chunk goes (destroyed once the GPU is past it);
+// within it, chunks refused before may be made; and a chunk the GPU read in place much more than the least fetched
+// live one takes its place. BOTW's geometry (25-56 MB of the 3120 MB heap) sat in 17-20 chunks of 32 MB (~0.6 GB) in
+// every place tried, with ~1 fetch a list across a chunk's edge.
+// Off on integrated GPUs (the import is already their memory), outside Windows, and with SAVAGEWIND_VK_HEAP_COPY=0
+// (=1: one buffer whatever the room, =2: chunks whatever the room). SAVAGEWIND_VK_HEAP_COPY_BUDGET_MB=<n>: plan for a
+// card of n MB of video memory (the shape, and the chunks' plan: a smaller card simulated). _CHUNK_MB=<n>: the chunk
+// size (a power of 2, 4-1024). SAVAGEWIND_VK_HEAP_COPY_LOG=<lists>: what was copied, every that many lists.
+// (Approach from Demetter's fork, savagewind-native-28oct; reimplemented; chunks ours.)
 #define HC_PAGE 4096ull
-#define HC_SPANS 8
-static int hc_state = -1;  // -1: not decided yet, 0: off, 1: on
-static VkBuffer hc_buf;
-static VmaAllocation hc_mem;
+#define HC_SPANS_MAX 256
+#define HC_MAXCH 1024
+#define HC_CHUNK_MB 32
+#define HC_RESERVE_MB 512
+#define HC_LOOK 120
+enum { HC_NONE, HC_WANT, HC_MAKING, HC_MADE, HC_LIVE, HC_DYING, HC_OVER };  // a chunk's state
+typedef struct {
+    VkBuffer buf;
+    VmaAllocation mem;
+    _Atomic int state;       // HC_*: HC_MAKING -> HC_MADE / HC_OVER by hc_maker, every other change by this thread
+    uint64_t fetches, missed;  // fetches from it / in place for want of it, since the last look
+    uint64_t dead_seq;         // (HC_DYING) destroyed once this submission completes
+} HcChunk;
+static int hc_state = -1;  // -1: not decided yet, 0: off, 1: one buffer, 2: chunks
+static HcChunk hc_ch[HC_MAXCH];
+static int hc_nch;              // chunks the heap spans (one buffer: 1); 0: no copy
+static unsigned hc_shift;       // a heap offset's chunk: offset >> hc_shift
+static uint64_t hc_vram;        // video memory planned for (the device's, or SAVAGEWIND_VK_HEAP_COPY_BUDGET_MB)
 static uint64_t hc_size;          // bytes of the heap it mirrors (gmem_size when made)
 static uint64_t *hc_geo, *hc_ok;  // a bit per page: geometry / held by the copy as it is now
 static size_t hc_words;
 static uint64_t *hc_pages;  // (written pages, plat_written_pages)
 static size_t hc_pages_max;
-static struct { uint64_t lo, hi; } hc_span[HC_SPANS];  // heap offsets the write-watch queries cover
-static int hc_nspans;
-static bool hc_geo_new;  // pages became geometry since the spans were made
+static struct { uint64_t lo, hi; } hc_span[HC_SPANS_MAX];  // heap offsets the write-watch queries cover
+static int hc_nspans, hc_spans_cap = 128;  // (SAVAGEWIND_VK_HEAP_COPY_SPANS)
+static bool hc_geo_new;  // pages became geometry (or their chunk live) since the spans were made
+static bool hc_want_any, hc_dying_any;
+static uint64_t hc_lists;  // (chunks: lists since made, for HC_LOOK)
 static uint64_t hc_stat_lists, hc_stat_bytes, hc_stat_runs, hc_stat_inplace, hc_stat_mirror, hc_stat_query_ns, hc_stat_written;
+static uint64_t hc_stat_edge, hc_stat_nochunk, hc_made_total, hc_dropped_total, hc_stat_resets;
+static pthread_mutex_t hc_make_lock = PTHREAD_MUTEX_INITIALIZER;  // (hc_maker making a chunk; hc_free waits for it)
+static pthread_cond_t hc_make_cond = PTHREAD_COND_INITIALIZER;
+static bool hc_make_req, hc_maker_up;
+static uint64_t hc_gen;  // (under hc_make_lock) bumped by hc_free: a chunk made for the copy before is destroyed
+
+static uint64_t hc_base(int c) { return (uint64_t)c << hc_shift; }
+static uint64_t hc_chunk_size(int c) { uint64_t b = hc_base(c); return hc_nch == 1 ? hc_size : (hc_size - b < (1ull << hc_shift) ? hc_size - b : 1ull << hc_shift); }
+static bool hc_live(int c) { return atomic_load_explicit(&hc_ch[c].state, memory_order_relaxed) == HC_LIVE; }
+
+// What the plan lets video memory in use come to (chunks), and what is in use now
+static uint64_t hc_limit(uint64_t *usage) {
+    uint64_t budget;
+    vram_device_local(usage, &budget, NULL);
+    uint64_t plan = (budget < hc_vram / 10 * 9 ? budget : hc_vram / 10 * 9), reserve = (uint64_t)HC_RESERVE_MB << 20;
+    return plan > reserve ? plan - reserve : 0;
+}
 
 static bool hc_on(void) {
     if (hc_state >= 0) return hc_state;
@@ -4614,54 +4818,126 @@ static bool hc_on(void) {
     int force = e ? atoi(e) : -1;
     uint64_t probe;
     bool ww = plat_written_pages(HEAP_BASE, HC_PAGE, &probe, 2) >= 0;
-    VkPhysicalDeviceMemoryProperties mp;
-    vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
-    uint64_t vram = 0;
-    for (uint32_t i = 0; i < mp.memoryHeapCount; i++)
-        if ((mp.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) && mp.memoryHeaps[i].size > vram) vram = mp.memoryHeaps[i].size;
+    uint64_t vram;
+    vram_device_local(NULL, NULL, &vram);
+    const char *bm = getenv("SAVAGEWIND_VK_HEAP_COPY_BUDGET_MB");
+    hc_vram = bm && atoll(bm) > 0 ? (uint64_t)atoll(bm) << 20 : vram;
     bool discrete = g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
     uint64_t heap = kernel_heap_size();
-    hc_state = force == 0 || gmem_mapped || !ww ? 0 : force > 0 ? 1 : discrete && vram >= heap + (4ull << 30);
-    LOG("[vk] heap copy in video memory: %s (%s GPU, %llu MB of video memory, heap %llu MB, write watch %s)\n",
-        hc_state ? "on" : "off", discrete ? "discrete" : "not a discrete", (unsigned long long)(vram >> 20),
-        (unsigned long long)(heap >> 20), ww ? "yes" : "no");
+    hc_state = force == 0 || gmem_mapped || !ww ? 0 : force == 1 ? 1 : force == 2 ? 2 : !discrete ? 0
+             : hc_vram >= heap + (4ull << 30) ? 1 : 2;
+    const char *cm = getenv("SAVAGEWIND_VK_HEAP_COPY_CHUNK_MB");
+    unsigned mb = cm ? (unsigned)atoi(cm) : HC_CHUNK_MB;
+    if (mb < 4 || mb > 1024 || (mb & (mb - 1))) mb = HC_CHUNK_MB;
+    hc_shift = 20 + (unsigned)__builtin_ctz(mb);
+    uint64_t usage, lim = hc_limit(&usage);
+    LOG("[vk] heap copy in video memory: %s (%s GPU, %llu MB of video memory%s, heap %llu MB, write watch %s)\n",
+        hc_state == 1 ? "on, one buffer" : hc_state == 2 ? "on, in chunks" : "off", discrete ? "discrete" : "not a discrete",
+        (unsigned long long)(hc_vram >> 20), bm ? " (SAVAGEWIND_VK_HEAP_COPY_BUDGET_MB)" : "", (unsigned long long)(heap >> 20),
+        ww ? "yes" : "no");
+    if (hc_state == 2)
+        LOG("[vk] heap copy: chunks of %u MB while video memory in use stays within %llu MB (%llu MB in use now, budget %s)\n",
+            mb, (unsigned long long)(lim >> 20), (unsigned long long)(usage >> 20),
+            vram_budget_ext() ? "VK_EXT_memory_budget" : "VMA's estimate");
     return hc_state;
 }
 
+// (thread) makes the chunks asked for (HC_MAKING): a buffer of video memory each, outside the lock
+static void *hc_maker(void *arg) {
+    (void)arg;
+    pthread_mutex_lock(&hc_make_lock);
+    for (;;) {
+        while (!hc_make_req) pthread_cond_wait(&hc_make_cond, &hc_make_lock);
+        hc_make_req = false;
+        for (int c = 0; c < hc_nch; c++) {
+            if (atomic_load(&hc_ch[c].state) != HC_MAKING) continue;
+            uint64_t gen = hc_gen;
+            VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = hc_chunk_size(c),
+                                     .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+            VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, .flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT,
+                                          .requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT};
+            VkBuffer b;
+            VmaAllocation m;
+            pthread_mutex_unlock(&hc_make_lock);
+            bool ok = vmaCreateBuffer(g_vk.vma, &bi, &ai, &b, &m, NULL) == VK_SUCCESS;
+            pthread_mutex_lock(&hc_make_lock);
+            if (gen != hc_gen) {  // (hc_free meanwhile: for a copy gone)
+                if (ok) vmaDestroyBuffer(g_vk.vma, b, m);
+                break;
+            }
+            if (ok) hc_ch[c].buf = b, hc_ch[c].mem = m;
+            atomic_store(&hc_ch[c].state, ok ? HC_MADE : HC_OVER);
+        }
+    }
+    return NULL;
+}
+
+static void hc_chunk_destroy(int c) {
+    vmaDestroyBuffer(g_vk.vma, hc_ch[c].buf, hc_ch[c].mem);
+    hc_ch[c].buf = VK_NULL_HANDLE;
+    hc_ch[c].mem = NULL;
+}
+
 static void hc_free(void) {
-    if (hc_buf) {
+    pthread_mutex_lock(&hc_make_lock);  // (hc_maker between chunks)
+    bool any = false;
+    for (int c = 0; c < hc_nch; c++) any |= hc_ch[c].buf != VK_NULL_HANDLE;
+    if (any) {
         vk_wait_seq(submit_seq);
         vk_dyn_forget();  // (a new buffer may get the old handle: nothing recorded may be taken as still bound)
         setc_gen++;
-        vmaDestroyBuffer(g_vk.vma, hc_buf, hc_mem);
+        for (int c = 0; c < hc_nch; c++)
+            if (hc_ch[c].buf) hc_chunk_destroy(c);
     }
-    hc_buf = VK_NULL_HANDLE;
+    memset(hc_ch, 0, sizeof hc_ch);
+    hc_nch = 0;
+    hc_gen++;
+    pthread_mutex_unlock(&hc_make_lock);
     hc_size = 0;
     free(hc_geo), free(hc_ok), free(hc_pages);
     hc_geo = hc_ok = hc_pages = NULL;
     hc_nspans = 0;
+    hc_want_any = hc_dying_any = false;
 }
 
 static bool hc_ready(void) {  // the copy, made for the heap as imported now
     if (!gmem_buf || !hc_on()) return false;
-    if (hc_size == gmem_size) return hc_buf != VK_NULL_HANDLE;
+    if (hc_size == gmem_size) return hc_nch > 0;
     hc_free();
     hc_size = gmem_size;
-    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = gmem_size,
-                             .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
-    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, .flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT,
-                                  .requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT};
-    if (vmaCreateBuffer(g_vk.vma, &bi, &ai, &hc_buf, &hc_mem, NULL) != VK_SUCCESS) {
-        LOG("[vk] heap copy: no room for %llu MB in video memory, off\n", (unsigned long long)(gmem_size >> 20));
-        hc_buf = VK_NULL_HANDLE;
-        hc_state = 0;
-        return false;
+    while (hc_state == 2 && (hc_size + (1ull << hc_shift) - 1) >> hc_shift > HC_MAXCH) hc_shift++;
+    if (hc_state == 1) {
+        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = gmem_size,
+                                 .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, .flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT,
+                                      .requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT};
+        if (vmaCreateBuffer(g_vk.vma, &bi, &ai, &hc_ch[0].buf, &hc_ch[0].mem, NULL) != VK_SUCCESS) {
+            LOG("[vk] heap copy: no room for %llu MB in video memory, in chunks\n", (unsigned long long)(gmem_size >> 20));
+            hc_ch[0].buf = VK_NULL_HANDLE;
+            hc_state = 2;
+            hc_size = 0;
+            return hc_ready();
+        }
+        hc_shift = 63;
+        hc_nch = 1;
+        atomic_store(&hc_ch[0].state, HC_LIVE);
+        LOG("[vk] heap copy: %llu MB in video memory\n", (unsigned long long)(gmem_size >> 20));
+    } else {
+        pthread_mutex_lock(&hc_make_lock);
+        hc_nch = (int)((hc_size + (1ull << hc_shift) - 1) >> hc_shift);
+        pthread_mutex_unlock(&hc_make_lock);
+        if (!hc_maker_up) {
+            pthread_t t;
+            hc_maker_up = pthread_create(&t, NULL, hc_maker, NULL) == 0;
+            if (hc_maker_up) pthread_detach(t);
+            else { hc_nch = 0; hc_state = 0; return false; }
+        }
+        hc_lists = 0;
     }
     hc_words = (size_t)((gmem_size / HC_PAGE + 63) / 64);
     hc_geo = calloc(hc_words, 8), hc_ok = calloc(hc_words, 8);
     hc_pages_max = 65536;
     hc_pages = malloc(hc_pages_max * sizeof *hc_pages);
-    LOG("[vk] heap copy: %llu MB in video memory\n", (unsigned long long)(gmem_size >> 20));
     return true;
 }
 
@@ -4677,20 +4953,29 @@ static void hc_cpu_wrote(uint64_t addr, uint64_t size) {
     if (hc_ok && addr >= HEAP_BASE && addr < HEAP_BASE + hc_size) hc_stale(addr - HEAP_BASE, addr - HEAP_BASE + size);
 }
 
-// The spans the queries cover: runs of geometry words (64 pages, 256 KB) joined across gaps, with the smallest gap
-// that leaves at most HC_SPANS of them
+// (chunks: a word of hc_geo / hc_ok, 64 pages, lies in one chunk)
+static int hc_word_chunk(size_t w) { return (int)(((uint64_t)w * 64 * HC_PAGE) >> hc_shift); }
+
+// The spans the queries cover: runs of geometry words (64 pages, 256 KB) of live chunks joined across gaps, with the
+// smallest gap that leaves at most hc_spans_cap of them
 static void hc_spans_make(void) {
+    static bool env;
+    if (!env) {
+        env = true;
+        const char *e = getenv("SAVAGEWIND_VK_HEAP_COPY_SPANS");
+        if (e && atoi(e) > 0) hc_spans_cap = atoi(e) < HC_SPANS_MAX ? atoi(e) : HC_SPANS_MAX;
+    }
     for (size_t gap = 1;; gap *= 2) {
         int n = 0;
         size_t w = 0;
         bool over = false;
         while (w < hc_words) {
-            while (w < hc_words && !hc_geo[w]) w++;
+            while (w < hc_words && !(hc_geo[w] && hc_live(hc_word_chunk(w)))) w++;
             if (w == hc_words) break;
             size_t lo = w, last = w;
             for (; w < hc_words && w - last <= gap; w++)
-                if (hc_geo[w]) last = w;
-            if (n == HC_SPANS) { over = true; break; }
+                if (hc_geo[w] && hc_live(hc_word_chunk(w))) last = w;
+            if (n == hc_spans_cap) { over = true; break; }
             hc_span[n].lo = (uint64_t)lo * 64 * HC_PAGE;
             hc_span[n].hi = (uint64_t)(last + 1) * 64 * HC_PAGE;
             if (hc_span[n].hi > hc_size) hc_span[n].hi = hc_size;
@@ -4702,7 +4987,86 @@ static void hc_spans_make(void) {
     hc_geo_new = false;
 }
 
-static void hc_copy_flush(VkCommandBuffer *cb, VkBufferCopy *rg, int *nrg) {
+// A live chunk goes: out of the copy now, its buffer destroyed once the GPU is past what was recorded with it
+static void hc_chunk_drop(int c) {
+    atomic_store(&hc_ch[c].state, HC_DYING);
+    hc_ch[c].dead_seq = vk_pending_seq();
+    hc_stale(hc_base(c), hc_base(c) + hc_chunk_size(c));
+    hc_dying_any = true;
+    hc_geo_new = true;  // (spans without it)
+    hc_dropped_total++;
+}
+
+// (chunks, as a list begins) made chunks go live, dead ones are destroyed, wanted ones are asked for within the plan,
+// and every HC_LOOK lists the plan is looked at again
+static void hc_chunks_step(void) {
+    int live = 0, making = 0;
+    bool req = false;
+    uint64_t done = hc_dying_any ? vk_completed_seq() : 0;
+    bool dying = false;
+    for (int c = 0; c < hc_nch; c++) {
+        int s = atomic_load(&hc_ch[c].state);
+        if (s == HC_MADE) {  // (its pages aren't in hc_ok: this list copies them)
+            atomic_store(&hc_ch[c].state, s = HC_LIVE);
+            hc_geo_new = true;
+            hc_made_total++;
+        } else if (s == HC_DYING) {
+            if (done >= hc_ch[c].dead_seq) {
+                vk_dyn_forget();  // (as hc_free)
+                setc_gen++;
+                hc_chunk_destroy(c);
+                atomic_store(&hc_ch[c].state, s = HC_NONE);
+            } else dying = true;
+        }
+        live += s == HC_LIVE;
+        making += s == HC_MAKING;
+    }
+    hc_dying_any = dying;
+    uint64_t chunk = 1ull << hc_shift;
+    bool look = ++hc_lists % HC_LOOK == 0;
+    if (hc_want_any || look) {
+        uint64_t usage, lim = hc_limit(&usage);
+        usage += (uint64_t)making * chunk;
+        if (look) {
+            int worst = -1, best = -1;  // (the least fetched live chunk, the most missed one not made)
+            for (int c = 0; c < hc_nch; c++) {
+                int s = atomic_load(&hc_ch[c].state);
+                if (s == HC_LIVE && (worst < 0 || hc_ch[c].fetches < hc_ch[worst].fetches)) worst = c;
+                if ((s == HC_OVER || s == HC_WANT) && (best < 0 || hc_ch[c].missed > hc_ch[best].missed)) best = c;
+            }
+            if (worst >= 0 && usage > lim) hc_chunk_drop(worst), live--;  // (over the plan: one a look)
+            else if (worst >= 0 && best >= 0 && hc_ch[best].missed > 64 && hc_ch[best].missed > 4 * hc_ch[worst].fetches + 64 &&
+                     usage + chunk > lim)
+                hc_chunk_drop(worst), live--;  // (the room for a busier one, made from a later look)
+            for (int c = 0; c < hc_nch; c++) {
+                if (atomic_load(&hc_ch[c].state) == HC_OVER) atomic_store(&hc_ch[c].state, hc_ch[c].missed ? HC_WANT : HC_NONE);
+                hc_ch[c].fetches = hc_ch[c].missed = 0;
+            }
+            hc_want_any = true;
+        }
+        if (hc_want_any) {
+            hc_want_any = false;
+            for (;;) {  // (the most missed first)
+                int best = -1;
+                for (int c = 0; c < hc_nch; c++)
+                    if (atomic_load(&hc_ch[c].state) == HC_WANT && (best < 0 || hc_ch[c].missed > hc_ch[best].missed)) best = c;
+                if (best < 0) break;
+                if (usage + chunk > lim || hc_dying_any) { atomic_store(&hc_ch[best].state, HC_OVER); continue; }
+                atomic_store(&hc_ch[best].state, HC_MAKING);
+                usage += chunk;
+                req = true;
+            }
+        }
+    }
+    if (req) {
+        pthread_mutex_lock(&hc_make_lock);
+        hc_make_req = true;
+        pthread_cond_signal(&hc_make_cond);
+        pthread_mutex_unlock(&hc_make_lock);
+    }
+}
+
+static void hc_copy_flush(VkCommandBuffer *cb, VkBuffer dst, VkBufferCopy *rg, int *nrg) {
     if (!*nrg) return;
     if (!*cb) {
         *cb = vk_upload_cmd();
@@ -4712,23 +5076,29 @@ static void hc_copy_flush(VkCommandBuffer *cb, VkBufferCopy *rg, int *nrg) {
         rec_CmdPipelineBarrier2(*cb, &(VkDependencyInfo){.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1,
                                                          .pMemoryBarriers = &mb});
     }
-    rec_CmdCopyBuffer(*cb, gmem_buf, hc_buf, (uint32_t)*nrg, rg);
+    rec_CmdCopyBuffer(*cb, gmem_buf, dst, (uint32_t)*nrg, rg);
     for (int i = 0; i < *nrg; i++) hc_stat_bytes += rg[i].size;
     hc_stat_runs += (uint64_t)*nrg;
     *nrg = 0;
 }
 
-// A list begins: the written geometry pages leave the copy, and every geometry page it doesn't hold is copied over
-// (runs of pages, in the list's upload commands: before its draws)
+// A list begins: the written geometry pages leave the copy, and every geometry page of a live chunk it doesn't hold
+// is copied over (runs of pages, in the list's upload commands: before its draws)
 static void hc_list_begin(void) {
     if (!hc_ready()) return;
     uint64_t t0 = SDL_GetTicksNS();
     uint64_t b0 = hc_stat_bytes, r0 = hc_stat_runs, w0 = hc_stat_written;  // (the slow-list line below)
+    if (hc_state == 2) hc_chunks_step();
     bool remade = hc_geo_new, all = hc_all_stale;
     int full = 0;
     if (hc_geo_new) hc_spans_make();
     if (hc_all_stale) memset(hc_ok, 0, hc_words * 8), hc_all_stale = false;
+    static int peek = -1;
+    if (peek < 0) peek = !getenv("SAVAGEWIND_VK_HEAP_COPY_PEEK") || atoi(getenv("SAVAGEWIND_VK_HEAP_COPY_PEEK"));
     for (int i = 0; i < hc_nspans; i++) {
+        // (a write after the look is in the next list's query, as one after the query is)
+        if (peek && plat_any_written(HEAP_BASE + hc_span[i].lo, hc_span[i].hi - hc_span[i].lo) == 0) continue;
+        hc_stat_resets++;
         long n = plat_written_pages(HEAP_BASE + hc_span[i].lo, hc_span[i].hi - hc_span[i].lo, hc_pages, hc_pages_max);
         if (n < 0) { hc_stale(hc_span[i].lo, hc_span[i].hi); full++; continue; }
         hc_stat_written += (uint64_t)n;
@@ -4740,19 +5110,24 @@ static void hc_list_begin(void) {
     uint64_t tq = SDL_GetTicksNS() - t0;
     hc_stat_query_ns += tq;
     VkBufferCopy rg[256];
-    int nrg = 0;
+    int nrg = 0, rc = -1;  // (rc: the chunk rg's runs go to)
     VkCommandBuffer cb = VK_NULL_HANDLE;
     for (size_t w = 0; w < hc_words; w++) {
         uint64_t need = hc_geo[w] & ~hc_ok[w];
+        if (!need) continue;
+        int c = hc_nch == 1 ? 0 : hc_word_chunk(w);
+        if (!hc_live(c)) continue;  // (not held: fetched in place)
+        if (c != rc) hc_copy_flush(&cb, rc >= 0 ? hc_ch[rc].buf : VK_NULL_HANDLE, rg, &nrg), rc = c;
+        uint64_t base = hc_base(c);
         hc_ok[w] |= hc_geo[w];
         for (; need; need &= need - 1) {
             uint64_t off = ((uint64_t)w * 64 + (uint64_t)__builtin_ctzll(need)) * HC_PAGE;
             if (nrg && rg[nrg - 1].srcOffset + rg[nrg - 1].size == off) { rg[nrg - 1].size += HC_PAGE; continue; }
-            if (nrg == 256) hc_copy_flush(&cb, rg, &nrg);
-            rg[nrg++] = (VkBufferCopy){off, off, HC_PAGE};
+            if (nrg == 256) hc_copy_flush(&cb, hc_ch[c].buf, rg, &nrg);
+            rg[nrg++] = (VkBufferCopy){off, off - base, HC_PAGE};
         }
     }
-    hc_copy_flush(&cb, rg, &nrg);
+    if (rc >= 0) hc_copy_flush(&cb, hc_ch[rc].buf, rg, &nrg);
     if (cb) {
         VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
                                .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
@@ -4773,28 +5148,44 @@ static void hc_list_begin(void) {
     static int every = -1;
     if (every < 0) every = getenv("SAVAGEWIND_VK_HEAP_COPY_LOG") ? atoi(getenv("SAVAGEWIND_VK_HEAP_COPY_LOG")) : 0;
     if (every > 0 && ++hc_stat_lists >= (uint64_t)every) {
-        size_t geo = 0;
-        for (size_t w = 0; w < hc_words; w++) geo += (size_t)__builtin_popcountll(hc_geo[w]);
+        size_t geo = 0, geo_held = 0;
+        for (size_t w = 0; w < hc_words; w++) {
+            geo += (size_t)__builtin_popcountll(hc_geo[w]);
+            if (hc_live(hc_nch == 1 ? 0 : hc_word_chunk(w))) geo_held += (size_t)__builtin_popcountll(hc_geo[w]);
+        }
         double f = (double)hc_stat_lists;
-        LOG("[vk] heap copy, a list: %.1f KB copied in %.1f runs, %.0f pages written, query %.3f ms over %d spans; "
-            "fetches %.0f from the copy, %.0f in place; geometry %.1f MB\n", hc_stat_bytes / f / 1024, hc_stat_runs / f,
-            hc_stat_written / f, hc_stat_query_ns / f / 1e6, hc_nspans, hc_stat_mirror / f, hc_stat_inplace / f,
-            geo * HC_PAGE / 1048576.0);
+        uint64_t spanned = 0;
+        for (int i = 0; i < hc_nspans; i++) spanned += hc_span[i].hi - hc_span[i].lo;
+        LOG("[vk] heap copy, a list: %.1f KB copied in %.1f runs, %.0f pages written, query %.3f ms over %d spans (%.0f MB, %.1f reset); "
+            "fetches %.0f from the copy, %.0f in place (%.0f across a chunk's edge, %.0f in chunks not held); geometry %.1f MB "
+            "(%.1f MB in held chunks)\n", hc_stat_bytes / f / 1024, hc_stat_runs / f, hc_stat_written / f,
+            hc_stat_query_ns / f / 1e6, hc_nspans, spanned / 1048576.0, hc_stat_resets / f, hc_stat_mirror / f, hc_stat_inplace / f, hc_stat_edge / f,
+            hc_stat_nochunk / f, geo * HC_PAGE / 1048576.0, geo_held * HC_PAGE / 1048576.0);
+        if (hc_state == 2) {
+            int n[HC_OVER + 1] = {0};
+            for (int c = 0; c < hc_nch; c++) n[atomic_load(&hc_ch[c].state)]++;
+            uint64_t usage, lim = hc_limit(&usage);
+            LOG("[vk] heap copy, chunks of %u MB: %d live (%d made, %d dropped so far), %d being made, %d over the plan, "
+                "%d going; video memory in use %llu MB of %llu MB\n", 1u << (hc_shift - 20), n[HC_LIVE],
+                (int)hc_made_total, (int)hc_dropped_total, n[HC_MAKING] + n[HC_MADE], n[HC_OVER] + n[HC_WANT], n[HC_DYING],
+                (unsigned long long)(usage >> 20), (unsigned long long)(lim >> 20));
+        }
         hc_stat_lists = hc_stat_bytes = hc_stat_runs = hc_stat_inplace = hc_stat_mirror = hc_stat_query_ns = hc_stat_written = 0;
+        hc_stat_edge = hc_stat_nochunk = hc_stat_resets = 0;
     }
 }
 
-// A vertex or index fetch: from the copy if it holds [addr, addr + size) as it is now, else in place from the import
-// (guest_direct), its pages then geometry for the next list's copy. While a storing shader whose stores aren't
-// known holds the list (chunk_hold), in place.
+// A vertex or index fetch: from the copy if it holds [addr, addr + size) as it is now - within one live chunk - else
+// in place from the import (guest_direct), its pages then geometry for the next list's copy (and its chunk wanted).
+// While a storing shader whose stores aren't known holds the list (chunk_hold), in place.
 static bool guest_fetch(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSize *off) {
     if (!guest_direct(addr, size, buf, off)) return false;
-    if (!hc_buf) return true;
+    if (!hc_nch) return true;
     if (chunk_hold || !size || addr + size > HEAP_BASE + hc_size || gw_overlaps(addr, addr + size)) {
         hc_stat_inplace++;
         return true;
     }
-    uint64_t p0 = (addr - HEAP_BASE) / HC_PAGE, p1 = (addr - HEAP_BASE + size - 1) / HC_PAGE;
+    uint64_t o = addr - HEAP_BASE, p0 = o / HC_PAGE, p1 = (o + size - 1) / HC_PAGE;
     bool all = true;
     for (uint64_t w = p0 >> 6; w <= p1 >> 6; w++) {
         uint64_t m = ~0ull;
@@ -4803,9 +5194,27 @@ static bool guest_fetch(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSiz
         if ((hc_ok[w] & m) != m) all = false;
         if ((hc_geo[w] & m) != m) hc_geo[w] |= m, hc_geo_new = true;
     }
+    int c = (int)(o >> hc_shift), c1 = (int)((o + size - 1) >> hc_shift);
+    HcChunk *ch = &hc_ch[c];
+    if (c != c1) {  // (both wanted: their other fetches)
+        for (int k = c; k <= c1; k++)
+            if (atomic_load_explicit(&hc_ch[k].state, memory_order_relaxed) == HC_NONE)
+                atomic_store_explicit(&hc_ch[k].state, HC_WANT, memory_order_relaxed), hc_want_any = true;
+        hc_stat_edge++, hc_stat_inplace++;
+        return true;
+    }
+    int s = atomic_load_explicit(&ch->state, memory_order_relaxed);
+    if (s != HC_LIVE) {
+        if (s == HC_NONE) atomic_store_explicit(&ch->state, HC_WANT, memory_order_relaxed), hc_want_any = true;
+        ch->missed++;
+        hc_stat_nochunk++, hc_stat_inplace++;
+        return true;
+    }
     if (!all) { hc_stat_inplace++; return true; }
     hc_stat_mirror++;
-    *buf = hc_buf;
+    ch->fetches++;
+    *buf = ch->buf;
+    *off = o - hc_base(c);
     return true;
 }
 
@@ -4874,7 +5283,7 @@ static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo
     uint32_t tic = h & 0xFFFFF, tsc = (uint32_t)(h >> 20) & 0xFFF;
     // (vk_sampler's Video > Anisotropic filtering: not for textures with one mip level - the render targets BOTW reads
     // back - nor in blended draws - particles, effects, decals - whose quads' square edges it brought out)
-    bool all = aniso_all(), aniso_ok = all || !(st.color_state[0] & 1), material = false;
+    bool all = aniso_all(), aniso_ok = all || !(st.color_state[0] & 1), material = false, text_sheet = false;
     sc[0] = sc[1] = 1;
     wh[0] = wh[1] = 0;
     if (h && st.tpool && tic < (uint32_t)st.tpool->count) {
@@ -4902,6 +5311,7 @@ static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo
             }
             renderer_texture_scale(et, &sc[0], &sc[1]);
             material = et->backend && !((TexBackend *)et->backend)->gpu_owned;
+            text_sheet = et->backend && ((TexBackend *)et->backend)->text_scale;
             if (et == scene_up.t && stage == 1) {  // (with the texture's own swizzle: BOTW draws its weapon wheel's
                 // blurred capture of the scene, whose alpha is 0, with alpha forced to 1)
                 view = vk_image_view(scene_up.img, VK_IMAGE_VIEW_TYPE_2D, scene_up.img->format, 0, 1, 0, 1,
@@ -4934,6 +5344,7 @@ static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo
     float bias = material && stage == 1 && pass_mvec >= 0 && rt_jitter_on() ? scene_mip_bias : 0;
     if (h && st.spool && tsc < (uint32_t)st.spool->count)
         smp = vk_sampler(&((NvnSamplerDesc *)st.spool->entries)[tsc], aniso_ok, bias);
+    if (text_sheet) smp = vk_text_sampler();
     if (!view) view = vk_dummy_view(st_->type), layout = VK_IMAGE_LAYOUT_GENERAL;
     if (!smp) smp = vk_default_sampler(true);
     *out = (VkDescriptorImageInfo){smp, view, layout};
@@ -5001,7 +5412,11 @@ static VkDescriptorSet set_finish(VkDescriptorSetLayout layout, VkWriteDescripto
 // buffers a read-only stage has bound (and the bytes after them, gsnap_info) are copied with its constants, and its
 // shader reads those ranges from the copy (translate.c GLD, GSNAP_BUFFER_INDEX; the rest in place). Never ranges a
 // storing shader has bound (GPU data: gsnap_gpu_note).
-// Only with the overlap on, and by default on Mali only (other GPUs: as before). SAVAGEWIND_VK_GSNAP=0: off, =1: on; =all: the global memory copies in every pass (the vertex data
+// Not only Mali: a desktop GPU that falls behind (1440p at 90-120 fps, NVIDIA) read the speech and item text the same
+// way, a frame or two of misplaced letters as the text came up (#263). With the overlap, a dialogue line at the
+// Shrine of Resurrection's pedestal on an RTX 5060: 4 of its bound ranges and 98 times the bytes after them rewritten
+// before the GPU was done with them, none with the overlap off; with the copies, under 1 ms of CPU in 2 s in the game.
+// Only with the overlap on, on every GPU. SAVAGEWIND_VK_GSNAP=0: off, =1: on; =all: the global memory copies in every pass (the vertex data
 // still only the HUD's); SAVAGEWIND_VK_GSNAP_MAX=<KB>: the largest storage buffer copied (1024); SAVAGEWIND_DEBUG_GSNAP=1:
 // counts every 2 s.
 // GPU data (ranges a storing shader had bound): kept as sorted, merged intervals. When full, the two closest are
@@ -5015,7 +5430,7 @@ static int gsnap_mode(void) {
     static int m = -1;
     if (m < 0) {
         const char *e = getenv("SAVAGEWIND_VK_GSNAP");
-        m = !gpu_overlap() ? 0 : !e ? (g_vk.is_mali ? 1 : 0) : !strcmp(e, "all") ? 2 : atoi(e) ? 1 : 0;  // (Mali by default)
+        m = !gpu_overlap() ? 0 : !e ? 1 : !strcmp(e, "all") ? 2 : atoi(e) ? 1 : 0;
         LOG("[vk] global memory the HUD reads: %s\n",
             m == 2 ? "copied at translation (every pass, vertex data the HUD's)" : m ? "copied at translation (final image)" : "in place");
     }
@@ -5359,6 +5774,7 @@ static void build_compute(void *arg) {
         if (atomic_load(&c->state) == 2) pso_record(2, vk_translate_id(cp->si), 0, cp->local, sizeof cp->local);
         atomic_fetch_add(&stat_compiles, 1);
         atomic_fetch_add(&prof_c_comp, SDL_GetTicksNS() - pt0);
+        perfcount_add(PC_BUILDS, 1); perfcount_add(PC_BUILD_NS, SDL_GetTicksNS() - pt0);
     } else {
         atomic_fetch_add(&stat_warm, 1);
     }
@@ -5419,6 +5835,11 @@ static CsProg *compute_program(NvnProgram *np) {
 // header names the GPU and the shader translator build the list is for (each record's check covers them too):
 // another, and it starts over. Not the driver: a new driver empties the pipeline cache, and the list is what rebuilds
 // it before the game needs it. SAVAGEWIND_NO_SHADER_WARM=1: no pre-warm (pipelines are still recorded).
+// A fresh install has no list: setup's precompilation makes every shader's libraries, but the final pipelines (a
+// program with the fixed state of a draw) are only known from play, so a first boot still linked every one where
+// first drawn (270-706 in the first 45 s on the Steam Deck). The pipeline seed (precompile.c, vk_pipelines.seed: the
+// list of a developer's playthrough in a portable form, by shader binary hash and key) fills the list at the
+// precompilation, so the first boot pre-warms like a second one. vk_pso_add / vk_pso_records are its way in and out.
 #define PSO_LIST_VERSION 1
 #define PSO_WAIT_DRAWS 800
 typedef struct { char magic[8]; uint32_t version, rec_size, vendor, device; char shaders[64]; } PsoHeader;
@@ -5479,8 +5900,8 @@ static bool pso_known_add(uint64_t h) {  // (pso_lock held) false: there already
     return true;
 }
 
-static void pso_record(int kind, uint64_t id0, uint64_t id1, const void *state, size_t n) {
-    if (!id0 || (kind == 1 && !id1)) return;  // (translations not cached: debugging switches)
+static bool pso_record(int kind, uint64_t id0, uint64_t id1, const void *state, size_t n) {
+    if (!id0 || (kind == 1 && !id1)) return false;  // (translations not cached: debugging switches)
     PsoRec r;
     memset(&r, 0, sizeof r);
     r.kind = (uint32_t)kind;
@@ -5490,7 +5911,8 @@ static void pso_record(int kind, uint64_t id0, uint64_t id1, const void *state, 
     uint64_t h = pso_hash(&r);
     r.check = (uint32_t)h;
     pthread_mutex_lock(&pso_lock);
-    if (pso_known_add(h)) {
+    bool added = pso_known_add(h);
+    if (added) {
         if (pso_npend == pso_pend_cap) {
             pso_pend_cap = pso_pend_cap ? pso_pend_cap * 2 : 256;
             pso_pend = realloc(pso_pend, (size_t)pso_pend_cap * sizeof *pso_pend);
@@ -5498,6 +5920,7 @@ static void pso_record(int kind, uint64_t id0, uint64_t id1, const void *state, 
         pso_pend[pso_npend++] = r;
     }
     pthread_mutex_unlock(&pso_lock);
+    return added;
 }
 
 void vk_pso_flush(void) {
@@ -5522,7 +5945,10 @@ void vk_pso_flush(void) {
     pthread_mutex_unlock(&pso_lock);
 }
 
+static bool pso_loaded;
 static void pso_load(void) {
+    if (pso_loaded) return;
+    pso_loaded = true;
     PsoHeader want;
     pso_header(&want);
     pso_seed = hash_words(0xcbf29ce484222325ull, &want, sizeof want);
@@ -5538,9 +5964,13 @@ static void pso_load(void) {
         long size = ftell(f);
         fseek(f, 0, SEEK_SET);
         if (size < (long)sizeof h || fread(&h, sizeof h, 1, f) != 1) why = "too short";
-        else if (memcmp(h.magic, want.magic, 8) || h.version != want.version || h.rec_size != want.rec_size) why = "older format";
-        else if (h.vendor != want.vendor || h.device != want.device) why = "made on another GPU";
-        else if (memcmp(h.shaders, want.shaders, sizeof h.shaders)) why = "made by another shader translator build";
+        else if (getenv("SAVAGEWIND_PSO_ANY_VERSION")) {  // (the seed's export of another build's list: as the file names it)
+            memcpy(want.shaders, h.shaders, sizeof want.shaders);
+            pso_seed = hash_words(0xcbf29ce484222325ull, &want, sizeof want);
+        }
+        if (!why && (memcmp(h.magic, want.magic, 8) || h.version != want.version || h.rec_size != want.rec_size)) why = "older format";
+        else if (!why && (h.vendor != want.vendor || h.device != want.device)) why = "made on another GPU";
+        else if (!why && memcmp(h.shaders, want.shaders, sizeof h.shaders)) why = "made by another shader translator build";
         if (why) {
             rewrite = true;
         } else {
@@ -5572,6 +6002,27 @@ static void pso_load(void) {
     }
     if (why) LOG("[pso] pipeline list: starts empty (%s: %s)\n", path, why);
     else LOG("[pso] pipeline list: %d pipelines (%d damaged and %d repeated records dropped)\n", pso_nrecs, bad, dup);
+}
+
+// (precompile.c, the pipeline seed) the list's records, each as kind (1 graphics, 2 compute), its translation ids and
+// the fixed state's bytes (a PipeState, or the group size); and a record added (pending, written by vk_pso_flush;
+// one the list has is dropped). Both after the device is up (the list's header names it).
+size_t vk_pso_state_size(void) { return sizeof(PipeState); }
+
+int vk_pso_records(int (*fn)(void *ctx, int kind, const uint64_t id[2], const void *state, size_t n), void *ctx) {
+    pso_load();
+    int sent = 0;
+    for (int i = 0; i < pso_nrecs; i++) {
+        const PsoRec *r = &pso_recs[i];
+        if (fn(ctx, (int)r->kind, r->id, &r->u, r->kind == 1 ? sizeof r->u.g : sizeof r->u.local)) sent++;
+    }
+    return sent;
+}
+
+bool vk_pso_add(int kind, uint64_t id0, uint64_t id1, const void *state, size_t n) {
+    pso_load();
+    if ((kind != 1 && kind != 2) || n > sizeof(((PsoRec *)0)->u)) return false;
+    return pso_record(kind, id0, id1, state, n);
 }
 
 // The fixed state of a record is something this device can build (the list is not keyed by driver).
@@ -5668,7 +6119,9 @@ static void warm_outs_init(void) {  // (from the pipeline list read at start)
 
 static VkShaderModule warm_module(const ShaderInfo *si, int stage, VkBindingInfo *binds, int *nbinds, int max) {
     size_t n = 0;
-    uint32_t *spv = vk_glsl_to_spirv(si->msl, stage, "warm", &n);
+    char *blur = blur_edge_source(si, stage);  // (the same source as stage_build: else the precompiled library never matches)
+    uint32_t *spv = vk_glsl_to_spirv(blur ? blur : si->msl, stage, "warm", &n);
+    free(blur);
     if (!spv) return VK_NULL_HANDLE;
     *nbinds += vk_reflect(spv, n, binds + *nbinds, max - *nbinds);
     VkShaderModule m = vk_module(spv, n);
@@ -5780,21 +6233,53 @@ bool vk_pso_warm(const ShaderInfo *vi, const ShaderInfo *fi, const uint8_t attr_
     return ok;
 }
 
-static void pso_init(void) {
-    vk_cache_cleanup();
+static void pso_start(void) {  // the list read, and its pre-warm started
     pso_load();
     // (without the translation cache, draws translate anew and never meet what the pre-warm loads)
     if (!pso_nrecs || getenv("SAVAGEWIND_NO_SHADER_WARM") || getenv("SAVAGEWIND_NO_XLATE_CACHE") || maxwell_translation_uncacheable())
         return;
     // most of the CPU (as run_job), leaving some to the game booting meanwhile
-    int n = SDL_GetNumLogicalCPUCores() - 4;
+    int n = plat_cpu_count() - 4;
     if (n < 2) n = 2;
     if (n > 16) n = 16;
     pso_t0 = SDL_GetTicksNS();
+    atomic_store(&pso_next, 0);
+    atomic_store(&pso_finished, 0);
+    atomic_store(&pso_built, 0);
+    atomic_store(&pso_found, 0);
+    atomic_store(&pso_skipped, 0);
     atomic_store(&pso_workers, n);
     atomic_store(&pso_running, true);
     LOG("[pso] pre-warm: %d pipelines on %d threads\n", pso_nrecs, n);
     for (int i = 0; i < n; i++) { pthread_t t; pthread_create(&t, NULL, pso_worker, NULL); }
+}
+
+static void pso_init(void) {
+    vk_cache_cleanup();
+    pso_start();
+}
+
+// precompile.c, once the pipeline seed's records have joined the list in this process: the start screen's
+// precompilation runs after vk_exec_init read the list (at the window's creation), so the pre-warm of this start never
+// saw them, and the first boot after the setup would link every seeded pipeline where first drawn, as if there were
+// no seed, with only the next start pre-warming them. So the list is read again, as the file is now, and pre-warmed.
+// A pre-warm still going (a long list, the precompilation run again right after the start) is left to finish: the
+// next start takes the seed's records.
+void vk_pso_rewarm(void) {
+    if (atomic_load(&pso_running)) return;
+    pthread_mutex_lock(&pso_lock);
+    bool again = pso_npend == 0;  // (records vk_pso_flush could not write stay pending and known: the file lacks them)
+    if (again) {
+        free(pso_recs);
+        pso_recs = NULL;
+        pso_nrecs = 0;
+        free(pso_known);
+        pso_known = NULL;
+        pso_known_cap = pso_known_n = 0;
+        pso_loaded = false;
+    }
+    pthread_mutex_unlock(&pso_lock);
+    if (again) pso_start();
 }
 
 // device.c, once per frame presented: whether this frame waits for the pre-warm (it looks like gameplay and the
@@ -5812,16 +6297,21 @@ bool vk_pso_wait(int ms, float *done) {
     return !atomic_load(&pso_running);
 }
 
+static void wait_built(_Atomic int *state);
 static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     snap_reason = "compute"; snapshots_invalidate(NULL);
     if (!st.program || !gx || !gy || !gz) return;
     CsProg *cp = compute_program(st.program);
+    // (asynchronous shaders) a dispatch waits for its pipeline instead of being skipped: what a compute shader writes
+    // (skinning, particles, culling results) the game may read for good, and there are few of them (72 in BOTW)
+    if (cp && atomic_load(&cp->p.state) == 0) wait_built(&cp->p.state);
     if (!cp || atomic_load(&cp->p.state) != 1) { stat_skipped++; return; }
     gw_check((const uint32_t[6]){0, 0, 0, 0, 0, cp->si->cbuf_mask}, false, 0, 0);
     vk_end_pass();
     VkCommandBuffer cb = vk_cmd();
     vk_full_barrier(cb);
     gp_mark(cb, "dispatch %ux%ux%u (local %ux%ux%u)", gx, gy, gz, cp->local[0], cp->local[1], cp->local[2]);
+    ck_mark(cb, "dispatch", gx, gy, gz, 0, 0, st.program->stages[5].code_addr);
     dl_note("dispatch %ux%ux%u cs %llx gmem %d", gx, gy, gz, (unsigned long long)st.program->stages[5].code_addr, cp->si->uses_gmem);
     if (g_debug_frame) {
         LOG("[dispatch] %ux%ux%u cs %llx gmem %d cb %#x sbuf:", gx, gy, gz, (unsigned long long)st.program->stages[5].code_addr,
@@ -5991,6 +6481,14 @@ static uint64_t prof_tp_;
 // (the next frame has it), not for one drawn once and then only sampled. BOTW's pause menu blurs a capture of the
 // scene once when it opens (the background stayed black) and the save dialog's picture is made once. So a draw into
 // targets no pass drew in the previous frame waits for its shaders, as with synchronous shaders.
+// What is safe to skip, in all: a draw into targets some pass drew in the previous frame (the scene, the G-buffer,
+// shadow maps, depth pre-passes: the next frame draws them again; under an occlusion query the object counts as
+// hidden for that frame), feedback-loop draws included. What waits: one-shot targets (here), texture arrays, 3D and
+// cube textures the game fills once (draw_must_happen), every compute dispatch (dispatch_compute: its writes may be
+// read for good), and the runtime's own pipelines (present, blits, clears: made synchronously). The "skip when the
+// pass's targets were rendered in the previous frame, wait otherwise" rule and the inline link of ready stages
+// (link_now) follow TotK Recomp's TOTK_PIPE_SKIP (Valiantsin Dzerakh, MIT: third_party/totk-pc-recomp/LICENSE),
+// written here in this runtime's own terms.
 static bool one_shot_target(void) {
     uint64_t now = renderer_present_count();
     NvnTexture *ts[9];
@@ -6007,11 +6505,41 @@ static bool one_shot_target(void) {
 
 // Draws into one-shot targets (alpha3-glitches) or texture arrays, 3D and cube textures the game fills once (terrain
 // tiles: region-tests) wait for their program or pipeline instead of being skipped while it builds.
+// Asynchronous shaders, a pipeline whose stages' libraries are built already (the precompiled shaders', or a draw's
+// before): the draw links it here, now, instead of skipping a frame for a job that takes a fraction of a millisecond
+// (graphics pipeline libraries link without compiling; 0.2 ms each measured on the Steam Deck's RADV). Up to
+// SAVAGEWIND_PIPE_LINK_MS (default 3) per presented frame: a burst of hundreds of new pipelines (an area streamed in,
+// a fight) links that much here and hands the rest to the workers, skipping their draws until built, so no frame
+// stalls on them - where a first boot linked 236 pipelines in one 109 ms frame. A stage library still to compile
+// (5-50 ms) always goes to a worker. SAVAGEWIND_PIPE_LINK_MS=0: every build on a worker, as before.
+static void build_pipeline(void *arg);
+static bool link_now(Pipe *pp) {
+    static int64_t budget = -1;
+    if (budget < 0) budget = (getenv("SAVAGEWIND_PIPE_LINK_MS") ? atoi(getenv("SAVAGEWIND_PIPE_LINK_MS")) : 3) * 1000000ll;
+    const Prog *pr = pp->k.prog;
+    const PipeState *s = &pp->k.s;
+    const StageBuild *v = pr->stages.v, *f = pr->stages.f;
+    if (budget <= 0 || !g_vk.gpl || s->feedback || !v || !f) return false;
+    int vv = (s->depth_clamp ? 1 : 0) | (s->poly_fill ? 2 : 0), fv = (samples_log2(s->samples) << 1) | (s->a2c ? 1 : 0);
+    if (vv >= 8 || fv >= 8 || !atomic_load(&v->lib[vv]) || !atomic_load(&f->lib[fv])) return false;
+    static uint64_t frame, spent;
+    uint64_t now = renderer_present_count();
+    if (now != frame) { frame = now; spent = 0; }
+    if (spent >= (uint64_t)budget) return false;
+    uint64_t t0 = SDL_GetTicksNS();
+    build_pipeline(pp);
+    spent += SDL_GetTicksNS() - t0;
+    stat_links_now++;
+    return true;
+}
+
 static void wait_built(_Atomic int *state) {  // (0 building: until built or failed, 5 s at most)
     if (atomic_load(state) != 0 || sync_shaders()) return;
     uint64_t t0 = SDL_GetTicksNS();
     while (atomic_load(state) == 0 && SDL_GetTicksNS() - t0 < 5000000000ull) SDL_Delay(1);
     stat_build_waits++;
+    perfcount_add(PC_BUILD_WAITS, 1);
+    perfcount_add(PC_BUILD_WAIT_NS, SDL_GetTicksNS() - t0);
 }
 
 static void draw_(CmdRec *r, bool indexed) {
@@ -6360,7 +6888,7 @@ static void draw_(CmdRec *r, bool indexed) {
             pipe_tab[pslot].pipe = pp;
             VkPipeline ready = sync_shaders() ? VK_NULL_HANDLE : warm_ready(pr->vi, pr->fi, &k.s);
             if (ready) { pp->pipe = ready; atomic_store(&pp->state, 1); atomic_fetch_add(&stat_warm, 1); }
-            else run_job(build_pipeline, pp);
+            else if (sync_shaders() || !link_now(pp)) run_job(build_pipeline, pp);  // (asynchronous: a link alone is done here)
         }
         pipe_memo.k = k;
         pipe_memo.pp = pp;
@@ -7346,12 +7874,21 @@ static TexBackend *post_image_ex(int i, uint32_t w, uint32_t h, VkFormat f, VkIm
         d->mem = VK_NULL_HANDLE;
     }
     if (!d->image) {
+        vk_collect_dead();  // (images released earlier: room for this one on a card short of VRAM)
         VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
                                 .format = f, .extent = {w, h, 1}, .mipLevels = 1, .arrayLayers = 1,
                                 .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
                                 .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | extra};
         VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-        VK_CHECK(vmaCreateImage(g_vk.vma, &ci, &ai, &d->image, &d->mem, NULL));
+        VkResult r = vmaCreateImage(g_vk.vma, &ci, &ai, &d->image, &d->mem, NULL);
+        if (r != VK_SUCCESS) {
+            vk_collect_dead();
+            r = vmaCreateImage(g_vk.vma, &ci, &ai, &d->image, &d->mem, NULL);
+            if (r != VK_SUCCESS) {  // (still no room in VRAM: in system memory, slower but no abort)
+                ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+                VK_CHECK(vmaCreateImage(g_vk.vma, &ci, &ai, &d->image, &d->mem, NULL));
+            }
+        }
         usage[i] = extra;
         d->format = f; d->width = w; d->height = h; d->depth = 1; d->layers = 1; d->levels = 1;
         d->samples = 1; d->aspect = VK_IMAGE_ASPECT_COLOR_BIT; d->base_type = VK_IMAGE_VIEW_TYPE_2D;
@@ -7397,6 +7934,7 @@ static void post_pass_pc(VkCommandBuffer cb, const char *fs, const VkImageView *
     VkPipeline pipe = post_pipeline(fs, dst->format);  // (before the rendering begins: created inside it, the NVIDIA driver crashed)
     vk_full_barrier(cb);
     gp_mark(cb, "post %s %ux%u", fs, dst->width, dst->height);
+    ck_mark(cb, fs, dst->width, dst->height, 0, 0, 0, 0);
     VkRenderingAttachmentInfo ca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = post_view(dst),
                                     .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
                                     .loadOp = clear ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
@@ -7464,6 +8002,7 @@ static void cpost_pass(VkCommandBuffer cb, const char *cs, const VkImageView *sr
     }
     vk_full_barrier(cb);
     gp_mark(cb, "post %s %ux%u", cs, w, h);
+    ck_mark(cb, cs, w, h, 0, 0, 0, 0);
     VkDescriptorSet ds = vk_alloc_set(cpost_set_layout);
     VkDescriptorImageInfo ii[16];
     VkWriteDescriptorSet wr[16];

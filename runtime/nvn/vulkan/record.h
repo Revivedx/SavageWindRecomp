@@ -74,6 +74,7 @@ void rec_CmdSetStencilOp(VkCommandBuffer cb, VkStencilFaceFlags face, VkStencilO
                          VkCompareOp cmp);
 void rec_CmdResetQueryPool(VkCommandBuffer cb, VkQueryPool pool, uint32_t first, uint32_t n);
 void rec_CmdWriteTimestamp2(VkCommandBuffer cb, VkPipelineStageFlags2 stage, VkQueryPool pool, uint32_t query);
+void rec_CmdSetCheckpointNV(VkCommandBuffer cb, const void *marker);
 void rec_CmdBeginQuery(VkCommandBuffer cb, VkQueryPool pool, uint32_t query, VkQueryControlFlags flags);
 void rec_CmdEndQuery(VkCommandBuffer cb, VkQueryPool pool, uint32_t query);
 void rec_CmdClearAttachments(VkCommandBuffer cb, uint32_t na, const VkClearAttachment *at, uint32_t nr, const VkClearRect *r);
