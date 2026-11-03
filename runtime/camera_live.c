@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include "control_mem.h"
+#include "platform.h"
 #include "rt.h"
 #include "settings.h"
 
@@ -33,6 +34,7 @@ static int in_game = -1;                 // the style the game's parameter objec
 static char booted_kinds[MAX_KINDS][32];  // each camera's kind as the game made it
 static int nkinds;
 static int served = -1;                  // the style the actor is served with
+static bool ever_found;                  // the game's cameras were found once: it has made them (not the title screen)
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static atomic_int wanted = -1;
 static atomic_bool running;
@@ -60,6 +62,8 @@ static CameraValue *values_for(int style, int *n) {
     return v;
 }
 
+static void *watch(void *unused);
+
 // The game makes its cameras from the style's program: their kinds, and which styles keep them
 static void made_with(int style) {
     booted = style;
@@ -85,6 +89,9 @@ void camera_live_init(const uint8_t *program, size_t n, int style) {
     nwhere = 0;
     booted = -1, nkinds = 0;
     if (vanilla) made_with(style);
+    static bool watching;
+    pthread_t t;
+    if (vanilla && !watching && !pthread_create(&t, NULL, watch, NULL)) pthread_detach(t), watching = true;
     pthread_mutex_unlock(&lock);
 }
 
@@ -265,15 +272,32 @@ static int stand_in(int k, const CameraValue *want, int n) {
     return written;
 }
 
+// The game's cameras: where they were, or found again by the numbers they have now; after a load (a shrine, a death)
+// the game makes them again from the program it read first, so the style it booted with
+static bool cameras_found(void) {
+    if (objects_hold()) return true;
+    int n = 0;
+    CameraValue *v = in_game >= 0 ? values_for(in_game, &n) : NULL;
+    bool ok = v && find_objects(v, n);
+    free(v);
+    if (!ok && booted >= 0 && booted != in_game) {
+        v = values_for(booted, &n);
+        if ((ok = v && find_objects(v, n))) in_game = booted;
+        free(v);
+    }
+    if (ok) ever_found = true;
+    return ok;
+}
+
 static void apply(int style) {
-    int ncur = 0, nnew = 0, written = 0, nk = 0;
-    CameraValue *cur = in_game >= 0 ? values_for(in_game, &ncur) : NULL, *want = values_for(style, &nnew);
+    int nnew = 0, written = 0, nk = 0;
+    CameraValue *want = values_for(style, &nnew);
     size_t tn;
     uint8_t *tp = program_for(style, &tn);
     static char kinds[MAX_KINDS][32];
     nk = tp ? camera_program_kinds(tp, tn, kinds, MAX_KINDS) : 0;
     free(tp);
-    if (want && nk == nkinds && (objects_hold() || find_objects(cur, ncur))) {
+    if (want && nk == nkinds && cameras_found()) {
         for (int i = 0; i < nnew; i++)
             if (!strcmp(kinds[want[i].action], booted_kinds[want[i].action]))
                 written += put(want[i].action, want[i].crc, want[i].v, held_size(&want[i]));
@@ -287,14 +311,35 @@ static void apply(int style) {
         LOG("[camera] style %d in the game's cameras: %d numbers%s\n", style, written,
             stand ? " (cameras of another kind: as close as they can, exact after a restart)" : "");
         in_game = stand ? -1 : style;
-    } else {
-        // (not made yet, the title screen: the game makes them of the served style's kinds, whatever they are)
+    } else if (!ever_found) {
+        // (not made yet, the title screen: the game makes them from the served style, whatever its kinds)
         LOG("[camera] style %d: the game's cameras aren't made yet, they will be with it\n", style);
         if (!same_kinds[style]) made_with(style);
         in_game = style;
+    }  // (else a load: the watch puts the style in once they're there)
+    free(want);
+    if (served != style && camera_serve_style(style)) served = style;
+}
+
+// Every 2 s: after a load the game's cameras are made again with the style it booted with, elsewhere. Then the style
+// the settings have goes in again, as soon as they're there.
+static void *watch(void *unused) {
+    (void)unused;
+    for (;;) {
+        plat_sleep_until_ns(plat_now_ns() + 2000000000ull);
+        pthread_mutex_lock(&lock);
+        int s = g_settings.camera_style;
+        if (vanilla && ever_found && s >= 0 && s < CAMERA_STYLES) {
+            if (nwhere && !objects_hold()) {
+                nwhere = 0;
+                in_game = booted;  // (what the game makes them with)
+                LOG("[camera] the game made its cameras again (a load)\n");
+            }
+            if (s != in_game && !nwhere && cameras_found()) apply(s);
+        }
+        pthread_mutex_unlock(&lock);
     }
-    free(cur), free(want);
-    if (camera_serve_style(style)) served = style;
+    return NULL;
 }
 
 static void *worker(void *unused) {
