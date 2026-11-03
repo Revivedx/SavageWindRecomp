@@ -8,6 +8,9 @@
 #include <libavutil/aes.h>
 #include <libavutil/hmac.h>
 #include <libavutil/mem.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 typedef struct {
     uint8_t hmac_key[16];
