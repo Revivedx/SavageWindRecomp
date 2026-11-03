@@ -4260,6 +4260,23 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
     return true;
 }
 
+// Video > Game's FXAA off. BOTW's FXAA (3.11, console) is its scene -> final image composite shader (scene_composite):
+// four diagonal luma taps around the centre, then two or four along the edge. It filters only where the local luma
+// range exceeds max(luma max x c[3].x, c[3].y) of its constant buffer 3 (FXAA's edge threshold and its minimum);
+// elsewhere it gives the centre sample, a plain bilinear composite. Both thresholds out of reach turn it into that
+// everywhere. The shader by its [draw] fs hash (game 1.9.0).
+#define FXAA_FS_HASH 0x058188a1db3e22e9ull
+static bool fxaa_off;  // (the draw in progress)
+static bool fxaa_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out) {
+    if (size < 0x40) return false;
+    static float buf[0x10000 / 4];
+    uint64_t n = size > sizeof buf ? sizeof buf : size;
+    memcpy(buf, (const void *)(uintptr_t)addr, n);
+    buf[0x30 / 4] = buf[0x34 / 4] = 1e30f;
+    *out = ubo_span(vk_transient_copy(buf, n, 256), n);
+    return true;
+}
+
 // Constant buffer k of a stage (renderer.m bind_cbufs), copied into transient memory.
 static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32_t gx, uint32_t gy, uint32_t gz) {
     static const uint8_t zeros[0x10000];
@@ -4300,6 +4317,7 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
     if (size > r.size && r.size) size = r.size;
     if (size < 16) size = 16;
     VkDescriptorBufferInfo direct;
+    if (stage == 1 && k == 3 && fxaa_off && fxaa_patch(r.addr, size, &direct)) return direct;  // (see fxaa_patch)
     if (gw_ubo_direct(r.addr, size, &direct)) return direct;  // (written by a storing shader: read in place, see gw_note)
     if (stage == 1 && sdw_fix.s > 1 && sdw_patch(r.addr, size, &direct)) return direct;  // (texel size: see sdw_fix)
     if (stage == 0 && up_fix.sx > 0 && up_patch(r.addr, size, &direct)) return direct;  // (up_fix: texel grid)
@@ -7116,8 +7134,9 @@ have_pipe:
     apply_scissor();
     float rs0[4] = {vp_sx, vp_sy, vp_ox, vp_oy};
     uint64_t prof_t1_ = profd ? SDL_GetTicksNS() : 0;
+    fxaa_off = !g_settings.game_fxaa && g_cur_fs_hash == FXAA_FS_HASH;  // (Video > Game's FXAA: fxaa_patch)
     VkDescriptorSet fset = stage_set(pr, pr->set_layout[1], 1, 1, pr->fi, rs0, tint, 0, 0, 0, fii, dyn, &ndyn);
-    sdw_fix.s = 0, up_fix.sx = 0;
+    sdw_fix.s = 0, up_fix.sx = 0, fxaa_off = false;
     if (profd) prof_sets += SDL_GetTicksNS() - prof_t1_;
     VkDescriptorSet sets[2] = {vset, fset};
     if (ndyn > 32) ndyn = 32;
