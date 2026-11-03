@@ -1114,6 +1114,12 @@ static void create_swapchain(void) {
     if (hdr && !hdr_found) LOG("[vk] HDR wanted, but this display offers no HDR10 swapchain format: SDR\n");
     if (hdr_found) draw.format = VK_FORMAT_B8G8R8A8_UNORM;
     uint32_t count = caps.minImageCount + 2;  // (+1, and one for frame generation's queued pair: present_wait_room)
+    // External capture tools (Lossless Scaling, OBS, Windows Graphics Capture / DWM) can hold front-buffer images
+    // and starve vkAcquireNextImageKHR. Cost: one extra image in the swapchain can add up to one frame of input latency.
+    const char *cap_env = getenv("SAVAGEWIND_VK_CAPTURE_HEADROOM");
+    bool capture_on = g_settings.capture_headroom;
+    if (cap_env && *cap_env) capture_on = strcmp(cap_env, "0") != 0;
+    if (capture_on) count += 1;
     if (caps.maxImageCount && count > caps.maxImageCount) count = caps.maxImageCount;
     if (count > 8) count = 8;
     VkSwapchainKHR old = g_vk.swapchain;
@@ -1131,8 +1137,9 @@ static void create_swapchain(void) {
     const char *kind = !(wf & SDL_WINDOW_FULLSCREEN)   ? "window"
                      : SDL_GetWindowFullscreenMode(window) ? "exclusive fullscreen (its own display mode)"
                                                           : "borderless fullscreen (the desktop's mode)";
-    LOG("[vk] swapchain %ux%u, %u images, present mode %s (VSync %s; surface has %s), %s, display %.2f Hz\n",
-        ext.width, ext.height, count, present_mode_name(mode), present_mode_name(wanted_present_mode()), modes, kind,
+    LOG("[vk] swapchain %ux%u, %u images%s, present mode %s (VSync %s; surface has %s), %s, display %.2f Hz\n",
+        ext.width, ext.height, count, capture_on ? " (capture headroom)" : "",
+        present_mode_name(mode), present_mode_name(wanted_present_mode()), modes, kind,
         winsize_refresh_rate());
     VK_CHECK(vkCreateSwapchainKHR(g_vk.dev, &ci, NULL, &g_vk.swapchain));
     for (uint32_t i = 0; i < g_vk.sc_count; i++) vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);

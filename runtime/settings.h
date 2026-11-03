@@ -88,6 +88,7 @@ typedef struct {
     int shadow_res;      // SHADOW_*: shadow maps at the console's size or bigger
     int sharper_text;    // the game's font sheets enlarged this many times (2 or 4; 0: off), runtime/nvn/text_upscale.c
     bool wide_view;      // a window that isn't 16:9 shows more of the world instead of bars (runtime/nvn/output_scale.c)
+    bool capture_headroom; // extra swapchain image for external capture tools (cost: up to 1 frame input latency)
     int hdr;             // HDR_* (runtime/nvn/vulkan/device.c hdr_*)
     int hdr_white;       // nits of SDR white in HDR (0: what Windows gives SDR content on that monitor)
     int fov;             // field of view in play, percent of the game's own (FOV_CHOICES)
