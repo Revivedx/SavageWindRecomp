@@ -83,8 +83,7 @@ static bool replace_range(uint64_t address, uint64_t size) {
 }
 
 static bool replace_experiment(void) {
-    const char *v = ENV("SAVAGEWIND_QUICK_REPLACE");
-    return v && !strcmp(v, "1");
+    return quick_drop_action_enabled();
 }
 
 static int replace_name_category(const char *name) {
@@ -295,8 +294,7 @@ static bool replace_source_valid(Cpu *c, bool full) {
 }
 
 static bool replace_drop_selected(Cpu *c) {
-    const char *execute = ENV("SAVAGEWIND_QUICK_REPLACE_EXECUTE");
-    if (!execute || strcmp(execute, "1") || !quick_drop_action_enabled() || !replace_source_valid(c, true)) return false;
+    if (!quick_drop_action_enabled() || !replace_source_valid(c, true)) return false;
     uint64_t screen = replace_screen, mgr = LD64(screen + 0x3640);
     int selected = (int32_t)LD32(screen + 0x387c), count = (int32_t)LD32(screen + 0x3880);
     if (!replace_range(mgr, 0x45000) || count < 1 || count > 20 || selected < 0 || selected >= count) return false;
