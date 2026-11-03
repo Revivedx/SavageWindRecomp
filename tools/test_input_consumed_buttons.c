@@ -6,6 +6,7 @@
 #undef RT_ON_RESET
 #define RT_ON_RESET(fn) static void fn(void)
 #include "../runtime/hle/input.c"
+uint64_t quick_replace_buttons(uint64_t buttons) { return buttons; }
 int main(void) {
     uint64_t back = 1ull << BTN_B, right = 1ull << BTN_RIGHT, attack = 1ull << BTN_Y;
     assert(unconsumed_buttons(right | attack) == (right | attack));

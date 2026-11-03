@@ -15,6 +15,10 @@ extern bool quick_drop_action_enabled(void);
 extern bool quick_drop_action_init(void);
 extern void quick_drop_action_request(Cpu *, uint64_t, uint64_t, uint64_t, int, int, const char *);
 extern void quick_drop_action_close(Cpu *);
+extern void quick_replace_init(void);
+extern bool quick_replace_menu(Cpu *);
+extern bool quick_replace_active(void);
+extern bool quick_replace_bottom_layout(void);
 
 enum { QUICK_DROP_BUTTON = 1 << 3, QUICK_BACK_BUTTON = 1 << 1 };
 static uint64_t probe_screen, probe_buttons;
@@ -28,12 +32,13 @@ static uint64_t hint_now_ms(void) {
     return (uint64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000;
 }
 
-// 0 hidden, 1 unavailable (dim), 2 available, 3 back only. Expiry also handles reset/load
+// 0 hidden, 1/2 drop unavailable/available, 3 back only, 4/5 replacement, 6/7 chest replacement.
+// Expiry also handles reset/load
 // transitions that bypass the normal Menu callback.
 int quick_drop_hint_state(void) {
     uint64_t hint = atomic_load(&drop_hint);
-    if (!hint || hint_now_ms() - (hint >> 2) > 150) return 0;
-    return hint & 3;
+    if (!hint || hint_now_ms() - (hint >> 3) > 150) return 0;
+    return hint & 7;
 }
 
 static void update_drop_hint(Cpu *c) {
@@ -44,7 +49,7 @@ static void update_drop_hint(Cpu *c) {
     int category = (int32_t)LD32(screen + 0x3738);
     if (category < 0 || category > 4) return;
     if (category > 2) {
-        atomic_store(&drop_hint, (hint_now_ms() << 2) | 3);
+        atomic_store(&drop_hint, (hint_now_ms() << 3) | 3);
         return;
     }
     int selected = (int32_t)LD32(screen + 0x387c);
@@ -64,7 +69,8 @@ static void update_drop_hint(Cpu *c) {
         }
     }
     probe_call(c, 0x7000eaff18ull, mgr + 0x28, 0, 0);
-    atomic_store(&drop_hint, (hint_now_ms() << 2) | state);
+    if (quick_replace_active()) state += quick_replace_bottom_layout() ? 5 : 3;
+    atomic_store(&drop_hint, (hint_now_ms() << 3) | state);
 }
 static GuestFn probe_enter_original, probe_execute_original;
 
@@ -207,8 +213,10 @@ static void probe_enter(Cpu *c) {
 }
 
 static void probe_execute(Cpu *c) {
-    rt_quick_drop_probe(c);
-    quick_drop_action_close(c);
+    if (!quick_replace_menu(c)) {
+        rt_quick_drop_probe(c);
+        quick_drop_action_close(c);
+    }
     update_drop_hint(c);
     probe_execute_original(c);
 }
@@ -252,6 +260,7 @@ void quick_drop_probe_init(const char *exefs) {
     }
     hle_override(0x7000e283fcull, probe_enter, "quick-drop probe: Menu enter");
     hle_override(0x7000e28744ull, probe_execute, "quick-drop probe: Menu execute");
+    quick_replace_init();
     LOG("[quick-drop-probe] installed for 1.9.0 cd57b23fa4bbad65; %s\n",
         quick_drop_action_enabled() ? "Y requests experimental unequipped-item drop" : "Y logs only, inventory unchanged");
 }

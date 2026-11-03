@@ -14,6 +14,7 @@
 
 #include "i18n.h"
 #include "quick_hint_font.h"
+#include "quick_inventory_layout.h"
 #include "imgui.h"
 #include "gyro_drag.h"
 #include "option_rows.h"
@@ -1455,18 +1456,18 @@ static void quick_drop_hint_draw(const ImGuiIO &io, float scale, int state) {
     }
     bool keyboard = kind == ICONS_KEYBOARD;
     int family = kind == ICONS_XBOX ? 1 : kind == ICONS_PLAYSTATION ? 2 : 0;
-    // Anchor to the game's centered 16:9 canvas, directly below the item row.
-    // Use the canvas scale rather than the settings UI's minimum font scale.
-    scale = fminf(io.DisplaySize.x / 1920.0f, io.DisplaySize.y / 1080.0f);
-    // TOTK reference at 1920x1080: labels ~32 px, face buttons ~30 px.
-    // BOTW places its selector higher: keep this row just below the native
-    // right-stick prompt instead of copying TOTK's absolute screen position.
-    float fs = 32 * scale, radius = 15 * scale, gap = 10 * scale;
-    float y = io.DisplaySize.y * 0.5f - 15 * scale;
+    QuickInventoryLayout layout = quick_inventory_layout(io.DisplaySize.x, io.DisplaySize.y, state >= 6);
+    // Artwork sizes below are expressed at 1920x1080; positions use native
+    // layout units shared with the selector, including its chest translation.
+    scale = layout.scale / 1.5f;
+    float fs = layout.font_size, radius = 15 * scale, gap = 10 * scale;
+    float y = layout.controls_y;
     ImFont *fonts[2] = {};
     ImDrawList *draw = ImGui::GetForegroundDrawList();
-    const int bindings[] = {BIND_Y, BIND_B};
-    const char *actions[] = {tr("Drop"), tr("Back")};
+    bool replacement = state >= 4;
+    const int bindings[] = {replacement ? BIND_A : BIND_Y, BIND_B};
+    const char *actions[] = {replacement ? tr("Replace") : tr("Drop"),
+                             replacement ? tr("Cancel") : tr("Back")};
     float widths[2], badges[2];
     const char *buttons[2];
     const char *native[2] = {};
@@ -1508,7 +1509,7 @@ static void quick_drop_hint_draw(const ImGuiIO &io, float scale, int state) {
             draw->VtxBuffer[j].pos.x += (pos.y + fs * 0.8f - draw->VtxBuffer[j].pos.y) * 0.18f;
     };
     for (int i = first; i < 2; i++) {
-        int alpha = i == 0 && state == 1 ? 110 : 255;
+        int alpha = i == 0 && (state == 1 || state == 4 || state == 6) ? 110 : 255;
         ImVec2 text = fonts[i]->CalcTextSizeA(fs, FLT_MAX, 0, actions[i]);
         ImVec2 p(x, y - fs * 0.5f);
         label(fonts[i], ImVec2(p.x + scale, p.y + scale), IM_COL32(0, 0, 0, alpha / 3), actions[i]);

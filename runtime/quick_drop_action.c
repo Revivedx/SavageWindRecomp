@@ -6,6 +6,7 @@
 #include "settings.h"
 
 extern uint64_t input_buttons_now(void);
+extern bool quick_replace_card_drop_allowed(void);
 
 enum { DROP_NAME_CAP = 97 };
 static const uint64_t DROP_LOCK = 0x7000eaff08ull, DROP_UNLOCK = 0x7000eaff18ull;
@@ -81,7 +82,7 @@ static bool drop_allowed(Cpu *scratch, uint64_t item, int type, int value, const
     if (drop_call(scratch, 0x7000d388b0ull, 0, 0, 0)) return drop_reject("TrashProhibition");
     if (drop_call(scratch, 0x7000d35b80ull, 0, 0, 0)) return drop_reject("ChangeEquipProhibition");
     if (drop_call(scratch, 0x7000d1499cull, 0, 0, 0)) return drop_reject("active-event");
-    if (drop_call(scratch, 0x7000e7e750ull, 0, 0, 0)) return drop_reject("screen-0xb-open");
+    if (drop_call(scratch, 0x7000e7e750ull, 0, 0, 0) && !quick_replace_card_drop_allowed()) return drop_reject("screen-0xb-open");
     uint64_t info = LD64(0x7001e39450ull);
     if (!drop_range(g_site.player_info, 8)) return drop_reject("missing-player-info-site");
     uint64_t player_info = LD64(g_site.player_info);

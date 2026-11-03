@@ -5,6 +5,7 @@
 #include <pthread.h>
 #include <stdio.h>
 #include "../runtime/hle/input.c"
+uint64_t quick_replace_buttons(uint64_t buttons) { return buttons; }
 
 Settings g_settings;
 int16_t g_bind_key[BIND_KEY_COUNT];

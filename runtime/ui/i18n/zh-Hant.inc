@@ -621,6 +621,7 @@ T("The game's own edge smoothing. Off: sharper, more jagged edges.", "遊戲內�
 T("The game's own FXAA, which smooths edges as the 3D image is drawn into the final picture, as on the console. Off: a sharper image with more jagged edges; use it to replace FXAA with SMAA or TAA above, or to keep the image crisp at a high resolution.", "遊戲內建的 FXAA，在把 3D 畫面繪製到最終畫面時平滑邊緣，與主機上相同。關閉：畫面更銳利，但邊緣鋸齒更多；可用於以上方的 SMAA 或 TAA 取代 FXAA，或在高解析度下保持畫面清晰。")
 
 // Quick inventory actions and Gameplay setting.
+T("Replace", "替換")
 T("Drop", "丟棄")
 T("Back", "返回")
 T("Enhanced quick inventory", "增強快捷物品欄")

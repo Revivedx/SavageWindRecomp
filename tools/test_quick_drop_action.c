@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include "../runtime/quick_drop_action.c"
 
+static bool owned_card;
+bool quick_replace_card_drop_allowed(void) { return owned_card; }
 Settings g_settings;
 GameSites g_site;
 const char *g_game_version = "1.9.0";
@@ -209,6 +211,10 @@ int main(void) {
     setup(); equip_ban = true; reject_case(&c);
     setup(); event = true; reject_case(&c);
     setup(); popup = true; reject_case(&c);
+    setup(); popup = true; owned_card = true;
+    request(&c); quick_drop_action_close(&c); assert(discarded == 1);
+    setup(); popup = true; event = true; reject_case(&c);
+    owned_card = false;
     setup(); player_ban = true; reject_case(&c);
     setup(); ST8(player + 0xcf8, 4); reject_case(&c);
     setup(); lookup_ok = false; reject_case(&c); assert(!tag_calls);

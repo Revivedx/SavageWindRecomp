@@ -661,4 +661,14 @@ test-quick-inventory-font: $(B)/test_quick_hint_font
 	$(B)/test_quick_hint_font "$(ROMFS)"
 
 .PHONY: test-quick-inventory test-quick-inventory-font
+
+$(B)/test_quick_replace: tools/test_quick_replace.c runtime/quick_replace.c $(RT_HDRS)
+	@mkdir -p $(dir $@)
+	$(CC) -std=gnu11 -O1 -g $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $<
+
+test-quick-replace: $(B)/test_quick_replace
+	$(B)/test_quick_replace
+	$(B)/test_quick_replace execute
+
+.PHONY: test-quick-replace
 endif

@@ -621,6 +621,7 @@ T("The game's own edge smoothing. Off: sharper, more jagged edges.", "De randafv
 T("The game's own FXAA, which smooths edges as the 3D image is drawn into the final picture, as on the console. Off: a sharper image with more jagged edges; use it to replace FXAA with SMAA or TAA above, or to keep the image crisp at a high resolution.", "De FXAA van het spel zelf, die randen afvlakt terwijl het 3D-beeld in het eindbeeld wordt getekend, zoals op de console. Uit: een scherper beeld met hoekigere randen; gebruik dit om FXAA te vervangen door SMAA of TAA hierboven, of om het beeld scherp te houden op een hoge resolutie.")
 
 // Quick inventory actions and Gameplay setting.
+T("Replace", "Vervangen")
 T("Drop", "Weggooien")
 T("Back", "Terug")
 T("Enhanced quick inventory", "Uitgebreide snelle inventaris")

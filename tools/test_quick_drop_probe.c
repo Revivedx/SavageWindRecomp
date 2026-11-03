@@ -5,6 +5,7 @@
 #include <unistd.h>
 
 #include "../runtime/quick_drop.c"
+#include "../runtime/ui/quick_inventory_layout.h"
 
 const char *g_game_version = "1.9.0";
 static bool action_enabled;
@@ -16,6 +17,11 @@ void quick_drop_action_request(Cpu *c, uint64_t screen, uint64_t mgr, uint64_t i
     assert(0);
 }
 void quick_drop_action_close(Cpu *c) { (void)c; }
+void quick_replace_init(void) {}
+bool quick_replace_menu(Cpu *c) { (void)c; return false; }
+static bool replacement, bottom_layout;
+bool quick_replace_active(void) { return replacement; }
+bool quick_replace_bottom_layout(void) { return bottom_layout; }
 static uint64_t buttons;
 static int locks, unlocks, depth, reads, originals, overrides;
 static uint64_t live_item;
@@ -76,6 +82,16 @@ static void press(Cpu *c) {
 }
 
 int main(int argc, char **argv) {
+    // Chest controls follow exactly the native selector translation at each
+    // viewport shape, including a letterboxed Deck display and ultrawide.
+    const float viewports[][2] = {{1280, 720}, {1280, 800}, {1920, 1080}, {2560, 1080}};
+    for (unsigned i = 0; i < sizeof viewports / sizeof *viewports; ++i) {
+        QuickInventoryLayout normal = quick_inventory_layout(viewports[i][0], viewports[i][1], false);
+        QuickInventoryLayout chest = quick_inventory_layout(viewports[i][0], viewports[i][1], true);
+        assert(chest.scale == normal.scale && chest.font_size == normal.font_size);
+        assert(chest.controls_y - normal.controls_y == QUICK_INVENTORY_CHEST_SHIFT * normal.scale);
+        assert(chest.controls_y + 18 * chest.scale < viewports[i][1]);
+    }
     bool enabled = argc == 1 || strcmp(argv[1], "disabled");
     if (enabled) setenv("SAVAGEWIND_QUICK_DROP_PROBE", "1", 1);
     else unsetenv("SAVAGEWIND_QUICK_DROP_PROBE");
@@ -184,11 +200,18 @@ int main(int argc, char **argv) {
     strcpy((char *)(uintptr_t)(mgr + 0x49000), "Weapon_Sword_001");
     update_drop_hint(&c); assert(quick_drop_hint_state() == 2);
     assert(!memcmp(&c, &saved, sizeof c));
+    replacement = true;
+    update_drop_hint(&c); assert(quick_drop_hint_state() == 5);
+    bottom_layout = true;
+    update_drop_hint(&c); assert(quick_drop_hint_state() == 7);
+    ST8(item + 0x24, 1);
+    update_drop_hint(&c); assert(quick_drop_hint_state() == 6);
+    ST8(item + 0x24, 0); replacement = bottom_layout = false;
     ST32(screen + 0x3738, 4);
     update_drop_hint(&c); assert(quick_drop_hint_state() == 3);
     ST32(screen + 0x3738, 0); ST8(screen + 0x38e4, 2);
     update_drop_hint(&c); assert(quick_drop_hint_state() == 0);
-    atomic_store(&drop_hint, ((hint_now_ms() - 200) << 2) | 2);
+    atomic_store(&drop_hint, ((hint_now_ms() - 200) << 3) | 2);
     assert(quick_drop_hint_state() == 0);
     quick_drop_probe_reset(); assert(quick_drop_hint_state() == 0);
     // Back cancels the highlighted choice, wins over drop, works in empty

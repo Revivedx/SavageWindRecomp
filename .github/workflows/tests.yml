@@ -83,6 +83,7 @@ jobs:
           enable-cache: true
           cache-dependency-glob: .github/workflows/tests.yml
       - run: uv run --no-project --with lz4 --with capstone --with unicorn python tools/test_layout.py
+      - run: uv run --no-project --with lz4 --with capstone python tools/test_quick_replace_codegen.py
 
   # runtime/nvn/astc.c against ARM's astcenc. test_astc.sh clones astcenc's default branch when build/astc-encoder is
   # missing; a pinned release here keeps the reference the same between runs.

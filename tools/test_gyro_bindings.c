@@ -7,6 +7,7 @@
 #undef RT_ON_RESET
 #define RT_ON_RESET(fn) static void fn(void)
 #include "../runtime/hle/input.c"
+uint64_t quick_replace_buttons(uint64_t buttons) { return buttons; }
 #include "test_pointer_disabled.h"
 Settings g_settings;
 static int pitch,roll,yaw;static bool center,captured,paused,apparatus;

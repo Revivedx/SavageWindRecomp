@@ -621,6 +621,7 @@ T("The game's own edge smoothing. Off: sharper, more jagged edges.", "Le lissage
 T("The game's own FXAA, which smooths edges as the 3D image is drawn into the final picture, as on the console. Off: a sharper image with more jagged edges; use it to replace FXAA with SMAA or TAA above, or to keep the image crisp at a high resolution.", "Le FXAA du jeu, qui lisse les bords quand l'image 3D est dessinée dans l'image finale, comme sur la console. Désactivé : une image plus nette avec des bords plus crénelés ; utilisez-le pour remplacer le FXAA par le SMAA ou le TAA ci-dessus, ou pour garder une image nette en haute résolution.")
 
 // Quick inventory actions and Gameplay setting.
+T("Replace", "Remplacer")
 T("Drop", "Jeter")
 T("Back", "Retour")
 T("Enhanced quick inventory", "Inventaire rapide amélioré")

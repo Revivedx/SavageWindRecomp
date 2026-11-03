@@ -102,6 +102,14 @@ class Module:
         self.jt_cache = {}
         self.setjmps = self.setjmp_targets()
         self.sites, self.patches = {}, {}  # (main: tools/game_sites.py, tools/patches.py)
+        # These receive/quick-menu hooks must also see direct guest calls.
+        # Runtime overrides alone cover virtual calls, whereas normal in-module
+        # BL/B instructions call generated C directly. Keep the detour restricted
+        # to the NSO build whose calling conventions were inspected.
+        self.runtime_dispatch_targets = set()
+        if name == 'main' and n.build_id.startswith('cd57b23fa4bbad65'):
+            self.runtime_dispatch_targets = {base + a for a in
+                                             (0xbe21e0, 0xe68168, 0xe27c2c, 0xe78a30, 0xe7a7f0, 0xbe1e30, 0x13ed264)}
         self.locals = locals_  # Locals, or None: registers and flags stay in the Cpu
         self.entry_flags = {}  # (_entry_flags)
 
@@ -455,7 +463,7 @@ class Module:
             if t in self.setjmps:
                 refs.add(t)
                 return [setjmp_call(t, a + 4)]
-            if self.in_text(t):
+            if self.in_text(t) and t not in self.runtime_dispatch_targets:
                 refs.add(t)
                 return [f'c->x[30] = {hx(a + 4)}; {fname(t)}(c);']
             return [f'c->x[30] = {hx(a + 4)}; c->pc = {hx(t)}; rt_dispatch(c);']
@@ -591,7 +599,7 @@ class Module:
                     # its loop; locals are not memory, so they stay in registers.
                     return f'__asm__ volatile("" ::: "memory"); goto L_{t:x};'
                 return f'goto L_{t:x};'
-            if not self.in_text(t):
+            if not self.in_text(t) or t in self.runtime_dispatch_targets:
                 return f'{publish(i)}{spill}c->pc = {hx(t)}; __attribute__((musttail)) return rt_dispatch(c);'
             refs.add(t)
             return f'{publish(i)}{spill}__attribute__((musttail)) return {fname(t)}(c);'
@@ -646,7 +654,7 @@ class Module:
                     refs.add(t)
                     # (the longjmp lands in it with the registers the setjmp saved in the Cpu: all are loaded again)
                     emit(i, f'    {spill}{opaque}{setjmp_call(t, a + 4)}{end_opaque}{reload}{fload(i)}')
-                elif self.in_text(t):
+                elif self.in_text(t) and t not in self.runtime_dispatch_targets:
                     refs.add(t)
                     emit(i, f'    c->x[30] = {hx(a + 4)}; {publish(i)}{spill}{fname(t)}(c);{reload_call}{fload(i)}')
                 else:
