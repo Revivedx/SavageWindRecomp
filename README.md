@@ -184,6 +184,9 @@ To unlock the DLC content, set up both, from your own console and your own Expan
 
 ## Status
 
+Testing glitches such as windbombs, Bullet Time Bounce (BTB), or inventory tricks? Use the
+[glitch compatibility tracker](docs/glitch-compatibility.md) to record results by build and frame rate.
+
 Estimates of where each part stands. "Tested in game" is how much of the game has been played through on Savage Wind so far.
 
 | | Part | Progress | What it means |
