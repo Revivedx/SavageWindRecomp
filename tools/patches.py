@@ -600,6 +600,85 @@ def _tree_ranges(gen, a):
             f'  /* {a:#x}: adrp x8, {page:#x} (distant trees: their ranges) */')
 
 
+# Accessibility > Infinite arrows (runtime/assists.c rt_infinite_arrows). The pause menu data's arrow removal (1.9.0
+# 0x7000d93814; x0 the pause menu data, x1 the arrow's name, w2 how many) returns at once when the actor info doesn't
+# tag the item 0x19f6c13a (an arrow), else takes the count off the pouch's arrows of that name (each item's count at
+# +0x20; a stack that runs out goes to 0 and the rest comes off the next) and writes the counts to the game data
+# (PorchItem_Value1). Two places reach it, both for a bow the player holds: the bow's shot (1.9.0 0x700092ddb4) and a
+# weapon function that takes one arrow (its tail call at 0x70007fe9f8, after the weapon's vtable +0x4e8 says the
+# player holds it). With the option on it returns before taking any; the shot itself still needs an arrow in the pouch.
+
+def _remove_arrows(gen, a):
+    assert _word(gen, a) == _sub_sp(0x70), hex(_word(gen, a))
+    return ('{ extern int rt_infinite_arrows(void); if (rt_infinite_arrows()) return; c->sp -= 0x70; }'
+            f'  /* {a:#x}: sub sp, sp, #0x70 (remove arrows: none with Infinite arrows) */')
+
+
+# Accessibility > Unbreakable weapons (runtime/assists.c rt_keep_wear, rt_no_wear; from #296). The pouch's setter for
+# an equipped item's value (type w22: 0 weapon, 1 bow, 2 arrows, 3 shield; new value w20; the item x11, value at
+# +0x20) is where a hit's wear lands, in hundredths (1700 = 17). The runtime keeps the old value when the new one is
+# lower.
+
+def _no_wear(gen, a):
+    assert _word(gen, a) == 0xb9002174, hex(_word(gen, a))  # str w20, [x11, #0x20]
+    return ('{ extern int rt_keep_wear(uint32_t, int32_t, int32_t); '
+            'if (!rt_keep_wear((uint32_t)c->x[22], (int32_t)c->x[20], (int32_t)LD32(c->x[11] + 0x20))) '
+            'ST32(c->x[11] + 0x20, c->x[20]); }'
+            f'  /* {a:#x}: str w20, [x11, #0x20] (equipped item value: no wear) */')
+
+
+# Every life goes through one method (1.9.0 0x7000b952b8, 1.8.2 0x7000a81da8; x1 the life, a copy the caller stores):
+# every frame, for everything that has one, it takes the cost of the frame's hits (w9) off the life (w8) with
+# `sub w8, w8, w9`. The saved return address, at sp + 0x28, tells whose life it is: a weapon's durability, in
+# hundredths, when the call comes from the weapon's update (no_wear_ret, from #296: Unbreakable weapons, the actor's
+# own copy, which is what breaks); Link's hearts when it comes from his damage handling (the call just before
+# link_life_store; his losses are left to _link_life); anything else's otherwise (One-hit kill, the damage dealt).
+# runtime/assists.c rt_life_cost. Without Link's sites every call that isn't a weapon's counts as his.
+
+def _no_wear_hit(gen, a):
+    assert _word(gen, a) == 0x4b090108, hex(_word(gen, a))  # sub w8, w8, w9
+    wret = gen.sites['no_wear_ret']
+    if 'link_life_store' in gen.sites:
+        s = gen.sites['link_life_store']
+        bl = _word(gen, s - 0x20)  # (Link's call of this method: bl, then 6 instructions to the store)
+        assert bl >> 26 == 0x25 and 0 <= a - (s - 0x20 + sext(bl & 0x3FFFFFF, 26) * 4) < 0x400, hex(bl)
+        whose = f'r == {wret:#x}ull ? 1 : r == {s - 0x1c:#x}ull ? 2 : 0'
+    else:
+        whose = f'r == {wret:#x}ull ? 1 : 2'
+    return ('{ extern uint32_t rt_life_cost(uint32_t, int32_t, int); uint64_t r = LD64(c->sp + 0x28); '
+            f'c->x[8] = (uint32_t)((uint32_t)c->x[8] - rt_life_cost((uint32_t)c->x[9], (int32_t)c->x[8], {whose})); }}'
+            f'  /* {a:#x}: sub w8, w8, w9 (a life\'s hit: Accessibility) */')
+
+
+# Link's damage handling (1.9.0 0x7000cc4c3c; x21 his life, in quarter hearts) works on a copy of it (w25, also at
+# sp + 0xc): the frame's hits through the method above, a few cases of its own (one quarter, four, the death path,
+# which may leave one quarter), and stores the copy at its end (link_life_store, `str w25, [x21]`); another path takes
+# one quarter off and stores it at once (link_life_tick, `str w8, [x21]`). God mode keeps the old life, Damage taken
+# scales the loss (runtime/assists.c rt_link_life); the copy gets the same value, so what follows sees it.
+
+def _link_life(gen, a):
+    w = _word(gen, a)
+    if w == 0xb90002b9:  # str w25, [x21]
+        return ('{ extern int32_t rt_link_life(int32_t, int32_t); '
+                'int32_t v = rt_link_life((int32_t)LD32(c->x[21]), (int32_t)c->x[25]); '
+                'c->x[25] = (uint32_t)v; ST32(c->sp + 0xc, (uint32_t)v); ST32(c->x[21], (uint32_t)v); }'
+                f'  /* {a:#x}: str w25, [x21] (Link\'s life: Accessibility) */')
+    assert w == 0xb90002a8, hex(w)  # str w8, [x21]
+    return ('{ extern int32_t rt_link_life(int32_t, int32_t); '
+            'c->x[8] = (uint32_t)rt_link_life((int32_t)LD32(c->x[21]), (int32_t)c->x[8]); ST32(c->x[21], c->x[8]); }'
+            f'  /* {a:#x}: str w8, [x21] (Link\'s life: Accessibility) */')
+
+
+# Accessibility > Infinite stamina (runtime/assists.c rt_stamina): the stamina setter (1.9.0 0x7000cc7410; x0
+# PlayerInfo, s0 the new stamina, 1000 a wheel) stores it at +0xa4; with the option on a lower value isn't stored.
+
+def _stamina(gen, a):
+    assert _word(gen, a) == 0xbd00a668, hex(_word(gen, a))  # str s8, [x19, #0xa4]
+    return ('{ extern uint32_t rt_stamina(uint32_t, uint32_t); '
+            'ST32(c->x[19] + 0xa4, rt_stamina(LD32(c->x[19] + 0xa4), (uint32_t)c->v[8])); }'
+            f'  /* {a:#x}: str s8, [x19, #0xa4] (stamina: Accessibility) */')
+
+
 # tools/game_sites.py site -> its patch
 # BOTW's streaming Yaz0 decoder (1.9.0 0x700131d674; x0 its state, x1/w2 the input chunk): in native code
 # (runtime/hle/yaz0.c rt_yaz0, which declines the first call of a stream, the one that reads its header). Its return
@@ -692,6 +771,12 @@ PATCHES = {
     'grass_blade_lateral_near': _grass_blade_lateral,
     'grass_blade_lateral_far': _grass_blade_lateral,
     'tree_ranges': _tree_ranges,
+    'pouch_remove_arrows': _remove_arrows,
+    'no_wear_store': _no_wear,
+    'no_wear_hit': _no_wear_hit,
+    'link_life_store': _link_life,
+    'link_life_tick': _link_life,
+    'stamina_store': _stamina,
 }
 
 

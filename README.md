@@ -13,10 +13,14 @@ version of your own copy of the game: a launcher, PC-style graphics options, mod
 mouse, and its text and voices in any of its languages.
 
 > [!WARNING]
-> **Playable, but not yet confirmed to the end.** Savage Wind plays the opening in the Shrine of Resurrection and the
-> Great Plateau around it at 60 fps, with sound, voices, the HUD, saving and loading. A player has completed the first
-> Divine Beast, Vah Ruta, with no problems ([#335](https://github.com/Revivedx/SavageWindRecomp/issues/335)); the rest
-> of the main story isn't confirmed yet, so expect bugs or crashes further on. This is an alpha, a preview for testers. If you
+> **Playable from start to end, with some crashes on the way.** Savage Wind plays the game at 60 fps with sound, voices,
+> the HUD, saving and loading. A player has gone through the base game from the start to Calamity Ganon
+> ([#419](https://github.com/Revivedx/SavageWindRecomp/issues/419)), and the four Divine Beasts have been completed:
+> Vah Ruta ([#335](https://github.com/Revivedx/SavageWindRecomp/issues/335)), Vah Naboris
+> ([#380](https://github.com/Revivedx/SavageWindRecomp/issues/380)) and, by a player's report, all four and the DLC
+> ([#391](https://github.com/Revivedx/SavageWindRecomp/issues/391)). Expect bugs, white screens or crashes in some
+> places, and some mechanics that break above 30 fps ([#425](https://github.com/Revivedx/SavageWindRecomp/issues/425)).
+> This is an alpha, a preview for testers. If you
 > find a bug, please [report it on GitHub](https://github.com/Revivedx/SavageWindRecomp/issues/new/choose): every
 > report shows how far the game really works.
 
@@ -184,6 +188,9 @@ To unlock the DLC content, set up both, from your own console and your own Expan
 
 ## Status
 
+Testing glitches such as windbombs, Bullet Time Bounce (BTB), or inventory tricks? Use the
+[glitch compatibility tracker](docs/glitch-compatibility.md) to record results by build and frame rate.
+
 Estimates of where each part stands. "Tested in game" is how much of the game has been played through on Savage Wind so far.
 
 | | Part | Progress | What it means |
@@ -205,7 +212,7 @@ Estimates of where each part stands. "Tested in game" is how much of the game ha
 | ✅ | **Shader and pipeline cache** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Places you've already seen don't stutter again |
 | ✅ | **Full shader precompilation** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Optional and on by default, at setup or later in Savage Wind Configuration: all of the game's ~14,000 shaders are translated and compiled ahead of time, so new places and effects don't stutter the first time |
 | ✅ | **Faster game code build** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | The one-time setup takes about 15 minutes instead of about 40 (12 threads): the game code builds in about 6 minutes instead of 30 ([#43](https://github.com/Revivedx/SavageWindRecomp/pull/43), by [@adriadam10](https://github.com/adriadam10)) |
-| ✅ | **Frame rate** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | 60 fps by default, or 30, 90, 120 or no limit, with the game at the same speed; menus, cutscenes and conversations too, and videos at their own speed |
+| ✅ | **Frame rate** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | 60 fps by default, or 30, 90, 120, 144, 165, 240, 360 or no limit, with the game at the same speed; menus, cutscenes and conversations too, and videos at their own speed |
 | ✅ | **Field of view** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Video > Field of view: 70% to 150% of the game's own in play; cutscenes and conversations keep theirs |
 | ✅ | **Draw distance** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Video > Draw distance: Original (the game's own), Medium or High. Trees, rocks, buildings, enemies and villagers appear further out (1.5x at Medium, 1.6x at High, up to 2 km), buildings keep their full models further before their far versions take over, and distant landmarks such as Hyrule Castle and the terrain's distant trees stay drawn 1.5x as far. The grass reaches further too: the short grass 1.6x (Medium) or 2.5x (High), the tall grass about 1.15x or 2.45x. The terrain's own detail levels stay the game's ([#88](https://github.com/Revivedx/SavageWindRecomp/issues/88)) |
 | ✅ | **Steady 60 fps in the open world** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Holds 60 fps in real play on the Great Plateau (RTX 3060, Ryzen 5 5600X); steady 120 fps (8 ms frames) is the next goal |
@@ -218,7 +225,7 @@ Estimates of where each part stands. "Tested in game" is how much of the game ha
 | 🔧 | **Graphics (NVN on Vulkan)** | ![80%](https://progress-bar.xyz/80/?width=150&style=square&progress_color=5cb85c) | Shrine and Great Plateau look right, shadows included; far parts of the map can still be missing ([#20](https://github.com/Revivedx/SavageWindRecomp/issues/20)) |
 | 🔧 | **Controllers** | ![80%](https://progress-bar.xyz/80/?width=150&style=square&progress_color=5cb85c) | Any controller SDL knows, by button position, confirmed by players; automatic recognition is next, then camera speed set apart for each axis |
 | 🔧 | **Button icons for your device** | ![80%](https://progress-bar.xyz/80/?width=150&style=square&progress_color=5cb85c) | The game's button prompts show your bound keys and mouse buttons, or Xbox / PlayStation / Nintendo buttons, switching with the device you use |
-| 🔧 | **Tested in game** | ![50%](https://progress-bar.xyz/50/?width=150&style=square&progress_color=f0ad4e) | The Shrine of Resurrection, the Great Plateau, and a walk through every region on a 100% save file. Divine Beasts: 1 of 4 confirmed, Vah Ruta, completed by a player with no problems ([#335](https://github.com/Revivedx/SavageWindRecomp/issues/335)). The other three and the rest of the main quests aren't confirmed yet, so expect bugs there: [report what breaks](https://github.com/Revivedx/SavageWindRecomp/issues/new/choose) |
+| 🔧 | **Tested in game** | ![75%](https://progress-bar.xyz/75/?width=150&style=square&progress_color=f0ad4e) | The Shrine of Resurrection, the Great Plateau, the four Divine Beasts and the main story up to Calamity Ganon, completed by players ([#335](https://github.com/Revivedx/SavageWindRecomp/issues/335), [#380](https://github.com/Revivedx/SavageWindRecomp/issues/380), [#419](https://github.com/Revivedx/SavageWindRecomp/issues/419)), and a walk through every region on a 100% save file. Some places still crash or show a white screen, and some mechanics break above 30 fps ([#425](https://github.com/Revivedx/SavageWindRecomp/issues/425)): [report what breaks](https://github.com/Revivedx/SavageWindRecomp/issues/new/choose) |
 | 🔧 | **Linux** | ![90%](https://progress-bar.xyz/90/?width=150&style=square&progress_color=5cb85c) | Builds and runs on x86-64 (from LAS Recomp); a steady 144 fps on an RTX 3070 Ti with a Ryzen 5 7600X, and no Linux-only issues so far |
 | 🔧 | **AMD FSR 3 + frame generation** | ![60%](https://progress-bar.xyz/60/?width=150&style=square&progress_color=f0ad4e) | Video > Frame generation (AMD FSR 3): a frame made between each two the game draws, about twice the frames on screen, with the HUD kept sharp. Motion vectors from depth and the camera, and Link's own; enemies and animals can still leave a faint smear. Smooth with VSync and G-SYNC. Works on Windows; Linux and the Steam Deck aren't tried yet. Only frame generation for now: FSR 3 upscaling is next |
 | 🗺️ | **NVIDIA DLSS (RTX)** | ![0%](https://progress-bar.xyz/0/?width=150&style=square&progress_color=d9534f) | Planned, after FSR 3; under NVIDIA's own SDK license |

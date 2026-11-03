@@ -38,7 +38,7 @@ enum { PERF_OFF = 0, PERF_FPS = 1, PERF_FULL = 2 };
 // Frame rate (Video > Frame rate; runtime/hle/framepace.c): frames per second, 0 = no limit. The game's clock is the
 // same at every rate. The console runs the game at 30.
 #define FPS_DEFAULT 60
-#define FPS_CHOICES {0, 30, 60, 90, 120}
+#define FPS_CHOICES {0, 30, 60, 90, 120, 144, 165, 240, 360}
 // VSync (Video > VSync; runtime/nvn/vulkan/device.c picks the present mode): On waits for the display (FIFO; with
 // G-SYNC / FreeSync the display waits for the game instead), Fast shows the newest frame at each refresh (MAILBOX),
 // Adaptive is On but shows a late frame at once (FIFO_RELAXED), Off shows each frame at once (IMMEDIATE). With On and
@@ -96,11 +96,14 @@ typedef struct {
                          // default since settings_version 4; off: every draw waits for its shaders, as before)
     bool precompile_shaders;  // setting the game files up also precompiles every shader (runtime/nvn/precompile.h)
     int shadow_res;      // SHADOW_*: shadow maps at the console's size or bigger
+    int sharper_text;    // the game's font sheets enlarged this many times (2 or 4; 0: off), runtime/nvn/text_upscale.c
     bool wide_view;      // a window that isn't 16:9 shows more of the world instead of bars (runtime/nvn/output_scale.c)
     int hdr;             // HDR_* (runtime/nvn/vulkan/device.c hdr_*)
     int hdr_white;       // nits of SDR white in HDR (0: what Windows gives SDR content on that monitor)
     int fov;             // field of view in play, percent of the game's own (FOV_CHOICES)
+    int hud_size;        // the HUD's size in play, percent of the game's own (HUD_SIZE_CHOICES, runtime/nvn/hud_scale.h)
     int draw_distance;   // DRAWDIST_*: how far placed actors are kept (runtime/draw_distance.c)
+    int haze;            // the air's haze, percent of the game's (services/fs.c haze_patch; from the next start)
     // Video > Colour (runtime/color_grade.h): 0 everywhere and no LUT = the game's own colours (nothing runs)
     int color_exposure;      // tenths of an EV, -20..20
     int color_contrast;      // percent, -50..50
@@ -110,15 +113,26 @@ typedef struct {
     char color_lut[128];     // color_lut_id(): "" none, "sw:<file>" shipped, "<file>" the player's luts/ folder
     int color_lut_strength;  // percent, 0..100
     bool color_lut_set;      // the ini names a LUT (or none): the player chose; the first setup offers COLOR_LUT_RECOMMENDED
+    // Options > Accessibility (runtime/assists.c): assists, each off by default
+    bool no_weapon_wear;     // weapons, bows and shields lose no durability and never break
+    bool infinite_arrows;    // shooting a bow takes no arrows from the pouch
+    bool infinite_stamina;   // the stamina wheel never goes down
+    bool god_mode;           // Link takes no damage
+    bool one_hit_kill;       // whatever else takes damage loses all its life at once
+    int damage_taken;        // percent of the damage Link takes (DAMAGE_CHOICES)
+    int damage_dealt;        // percent of the damage everything else takes (DAMAGE_CHOICES)
     int text_language;   // index in g_text_languages (runtime/language.h), 0: the host's
     int voice_language;  // index in g_voice_languages, 0: the text language's voices
     bool menu_tip_seen;  // the start screen's one-time "how to open the menu" note was shown (first PLAY ever)
 } Settings;
 
 #define STICK_DEADZONE_DEFAULT 0.10f  // (the Switch's own input service has one: the game expects 0 at rest)
+#define HAZE_CHOICES {0, 25, 50, 75, 100}  // (percent of the game's haze)
 enum { DRAWDIST_ORIGINAL, DRAWDIST_MEDIUM, DRAWDIST_HIGH, DRAWDIST_COUNT };  // (Original: the game's own distances)
 float draw_distance_factor(void);  // the setting's factor on the game's distances (1: Original)
+#define DAMAGE_CHOICES {25, 50, 75, 100, 150, 200, 300, 400}  // (Accessibility's damage multipliers, percent)
 #define FOV_CHOICES {70, 80, 90, 100, 110, 120, 130, 140, 150}  // (percent; 100: the game's own)
+#define HUD_SIZE_CHOICES {50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120, 125, 130, 135, 140, 145, 150}  // (percent; 100: the game's own)
 #define MOUSE_SENS_DEFAULT 3.0f  // (300% of the first default, 1; user, 2026-10-19)
 #define MOUSE_SENS_Y_CHOICES {50, 60, 70, 80, 90, 100, 110, 125, 150, 175, 200}  // (percent of the horizontal)
 enum { MOTION_INVERT_UD = 1, MOTION_INVERT_LR = 2 };
