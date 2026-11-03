@@ -178,6 +178,10 @@ static void pick_device(void) {
     free(pd);
     vkGetPhysicalDeviceProperties(g_vk.phys, &g_vk.props);
     g_vk.is_mali = g_vk.props.vendorID == 0x13B5;  // (Arm)
+#ifdef _WIN32
+    plat_guest_sparse_heap_configure(g_vk.props.vendorID == 0x8086 &&
+                                     g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU);
+#endif
     { extern void vk_translator_setup(void); vk_translator_setup(); }
     uint32_t nq = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(g_vk.phys, &nq, NULL);
@@ -426,8 +430,11 @@ bool vk_shader_fp16(void) { return g_vk.fp16; }
 
 static void create_device(void) {
     uint32_t ne = 0;
-    LOG("[vk] sparse heap %s (SAVAGEWIND_VK_SPARSE_HEAP)\n",
-        plat_guest_sparse_heap_enabled() ? "enabled" : "disabled");
+    static const char *const sparse_heap_modes[SPARSE_HEAP_COUNT] = {"auto", "on", "off"};
+    LOG("[vk] sparse heap %s (sparse_heap=%s)\n",
+        plat_guest_sparse_heap_enabled() ? "enabled" : "disabled",
+        sparse_heap_modes[g_settings.sparse_heap >= 0 && g_settings.sparse_heap < SPARSE_HEAP_COUNT ?
+                              g_settings.sparse_heap : SPARSE_HEAP_AUTO]);
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
     VkExtensionProperties *ep = calloc(ne, sizeof *ep);
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);

@@ -4424,7 +4424,11 @@ static bool gmem_sparse_create(uint64_t size) {
 #ifdef _WIN32
     if (!plat_guest_sparse_heap_enabled()) return false;
     if (!g_vk.sparse_buffer || !g_vk.sparse_queue || !g_vk.sparse_nonresident_strict || !g_vk.sparse_host_import) {
-        LOG("[vk] sparse guest heap disabled (sparse features, strict nonresident access, or host import unavailable)\n");
+        LOG("[vk] sparse guest heap incompatible with GPU: \n sparse buffer %s\n sparse queue %s\n strict nonresident access %s\n host import %s\n",
+            g_vk.sparse_buffer ? "available" : "unavailable",
+            g_vk.sparse_queue ? "available" : "unavailable",
+            g_vk.sparse_nonresident_strict ? "available" : "unavailable",
+            g_vk.sparse_host_import ? "available" : "unavailable");
         return false;
     }
     VkPhysicalDeviceExternalBufferInfo ext_info = {

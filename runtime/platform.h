@@ -30,6 +30,7 @@ bool plat_reset_guest(uint64_t lo, uint64_t hi);
 bool plat_guest_sparse_heap_enabled(void);
 #ifdef _WIN32
 uint64_t plat_guest_commit_generation(void);
+void plat_guest_sparse_heap_configure(bool intel_integrated_gpu);
 void plat_guest_sparse_heap_range(uint64_t base, uint64_t size);
 uint64_t plat_guest_sparse_heap_committed_word(uint64_t word);
 bool plat_guest_commit_sparse_range(uint64_t addr, uint64_t size);

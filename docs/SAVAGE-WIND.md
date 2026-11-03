@@ -1554,12 +1554,14 @@ En Windows, el juego pide un heap invitado de 3120 MiB. No se debe reducir a un 
 generado es código de CPU traducido, no un inventario estático de los recursos ni de las direcciones que leerán o
 escribirán los shaders. Limitar las páginas visibles a 1 GiB podría dejar lecturas sin datos o perder escrituras.
 
-Para GPUs compatibles, `SAVAGEWIND_VK_SPARSE_HEAP=1` conserva el espacio de direcciones completo del heap y crea un
-buffer Vulkan sparse virtual de hasta 3328 MiB. Las páginas confirmadas del heap se exponen por ventanas de 1 MiB
-(alineación sparse de 64 KiB), mediante importación de la memoria host ya existente y enlaces sparse; no se copian
-las páginas a un pool de VRAM separado. En una Intel UHD, la memoria de GPU es memoria del sistema compartida. El
-tamaño virtual del buffer y los bytes enlazados no significan que exista esa cantidad de VRAM dedicada ni que el
-contador de memoria compartida de Windows aumente en la misma cantidad.
+La opción `sparse_heap` de `savagewind.ini` acepta `auto`, `on` y `off`. `auto` (por defecto) lo activa en una GPU
+integrada Intel y lo desactiva en las demás; el cambio se aplica al reiniciar. `SAVAGEWIND_VK_SPARSE_HEAP=1` fuerza
+la activación y cualquier otro valor explícito la desactiva. En GPUs compatibles, conserva el espacio de direcciones
+completo del heap y crea un buffer Vulkan sparse virtual de hasta 3328 MiB. Las páginas confirmadas del heap se
+exponen por ventanas de 1 MiB (alineación sparse de 64 KiB), mediante importación de la memoria host ya existente y
+enlaces sparse; no se copian las páginas a un pool de VRAM separado. En una Intel UHD, la memoria de GPU es memoria
+del sistema compartida. El tamaño virtual del buffer y los bytes enlazados no significan que exista esa cantidad de
+VRAM dedicada ni que el contador de memoria compartida de Windows aumente en la misma cantidad.
 
 Las ventanas enlazadas quedan enlazadas hasta limpiar el backend: no hay política de desalojo ni recarga de páginas
 en este mecanismo. Solo se omite la validación de rango del sistema operativo cuando la tabla confirma que todas las

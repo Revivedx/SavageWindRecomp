@@ -153,6 +153,9 @@ constexpr int k_haze[] = HAZE_CHOICES;  // percent (Video > Haze)
 const char *const k_shadow[] = {"Console (896)", "High (2048)", "Ultra (4096)", "Extreme (8192)"};  // (SHADOW_*)
 const char *const k_text[] = {"Off", "2x", "4x"};  // (sharper_text / 2)
 const char *const k_icons[] = {"Automatic", "Keyboard", "Xbox", "PlayStation", "Nintendo"};  // (ICONS_*)
+#ifdef _WIN32
+const char *const k_sparse_heap[SPARSE_HEAP_COUNT] = {"Automatic", "On", "Off"};
+#endif
 constexpr int k_fps[] = FPS_CHOICES;  // frame rate (0: Off, no limit)
 const char *const k_vsync[VSYNC_COUNT] = {"On", "Fast", "Adaptive", "Off"};  // (settings.h VSYNC_*)
 const char *const k_hdr[HDR_COUNT] = {"Automatic", "On", "Off"};               // (settings.h HDR_*)
@@ -410,6 +413,13 @@ void build_items(void) {
                        [](const Item &) { return N(k_perf); }, [](const Item &, int x) { return tr(k_perf[x]); },
                        [](const Item &) { return g_settings.perf_overlay; },
                        [](const Item &, int x) { g_settings.perf_overlay = x; }, PERF_OFF));
+#ifdef _WIN32
+    v.push_back(choice(P_VIDEO, "Sparse heap", "Auto: Intel only. On: sparse. Off: conventional. Restart required.",
+                       [](const Item &) { return (int)SPARSE_HEAP_COUNT; },
+                       [](const Item &, int x) { return tr(k_sparse_heap[x]); },
+                       [](const Item &) { return g_settings.sparse_heap; },
+                       [](const Item &, int x) { g_settings.sparse_heap = x; }, SPARSE_HEAP_AUTO));
+#endif
     v.push_back(choice(P_VIDEO, "Upscaler", "Off: full resolution. AMD FSR 1: renders smaller, then upscales.",
                        [](const Item &) { return N(k_ups_value); }, ups_label,
                        [](const Item &) {

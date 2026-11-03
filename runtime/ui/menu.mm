@@ -847,6 +847,14 @@ static void tab_display(void) {
     opt_choice("Performance overlay", &g_settings.perf_overlay, perf_names, 3, PERF_OFF,
                "FPS: the frame rate and frame time. Full: also CPU, memory and GPU load and temperatures, a "
                "frame time graph and Link's coordinates. F10 switches between them while you play.");
+#ifdef _WIN32
+    {   // Windows Vulkan sparse guest heap: selected at startup from the chosen GPU (runtime/platform/windows.c).
+        static const char *const names[SPARSE_HEAP_COUNT] = {"Automatic", "On", "Off"};
+        opt_choice("Sparse heap", &g_settings.sparse_heap, names, SPARSE_HEAP_COUNT, SPARSE_HEAP_AUTO,
+                   "Automatic: on Intel integrated graphics, off on other GPUs. On: always try the sparse guest heap; "
+                   "the GPU must support it. Off: use the conventional heap. Takes effect after restarting the game.");
+    }
+#endif
 
     opt_section("Rendering");
     {   // Upscaler: Off, this OS's spatial upscaler (its modes on the row below), and the temporal ones still to come.

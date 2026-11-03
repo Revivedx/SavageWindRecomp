@@ -12,6 +12,7 @@
 
 #include "../gamelib.h"
 #include "../platform.h"
+#include "../settings.h"
 
 // ---- guest address space
 // The window is reserved up front and committed per region (plat_commit from the loader / kernel). Anything
@@ -25,6 +26,8 @@ static uint64_t g_lo, g_hi;
 static atomic_uint_fast64_t guest_commit_gen;
 static uint64_t sparse_heap_base, sparse_heap_size;
 static atomic_uint_fast64_t sparse_heap_pages[SPARSE_HEAP_BITMAP_WORDS];
+static bool sparse_heap_enabled;
+static bool sparse_heap_configured;
 
 static void sparse_heap_note_commit(uint64_t addr, uint64_t size) {
     if (!size || addr >= sparse_heap_base + sparse_heap_size ||
@@ -56,12 +59,17 @@ static bool guest_page_allows_access(DWORD protect, ULONG_PTR access) {
 }
 
 bool plat_guest_sparse_heap_enabled(void) {
-    static int enabled = -1;
-    if (enabled < 0) {
-        const char *value = getenv("SAVAGEWIND_VK_SPARSE_HEAP");
-        enabled = value && !strcmp(value, "1");
-    }
-    return enabled != 0;
+    return sparse_heap_configured && sparse_heap_enabled;
+}
+
+void plat_guest_sparse_heap_configure(bool intel_integrated_gpu) {
+    const char *override = getenv("SAVAGEWIND_VK_SPARSE_HEAP");
+    if (override)
+        sparse_heap_enabled = !strcmp(override, "1");
+    else
+        sparse_heap_enabled = g_settings.sparse_heap == SPARSE_HEAP_ON ||
+                              (g_settings.sparse_heap == SPARSE_HEAP_AUTO && intel_integrated_gpu);
+    sparse_heap_configured = true;
 }
 
 static bool lazy_commit(uint64_t a, ULONG_PTR access) {
