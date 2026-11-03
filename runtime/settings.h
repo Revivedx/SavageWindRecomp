@@ -115,7 +115,7 @@ typedef struct {
     int text_language;   // index in g_text_languages (runtime/language.h), 0: the host's
     int voice_language;  // index in g_voice_languages, 0: the text language's voices
     bool menu_tip_seen;  // the start screen's one-time "how to open the menu" note was shown (first PLAY ever)
-    bool amiibo_repeat; // amiibo page: bypass the daily use check while preserving the figure identity
+    bool amiibo_repeat; // Accessibility: bypass daily use and Wolf Link death restrictions, keeping figure identity
     bool amiibo_auto_scan;
     bool amiibo_own_wolf;
     bool virtual_amiibo;

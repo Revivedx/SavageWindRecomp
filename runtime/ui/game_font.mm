@@ -1,3 +1,10 @@
+// The game's own fonts as ImGui fonts: see game_font.h.
+//
+// BFFNT (little-endian, version 4): FINF (font type, line height, ascent; where TGLP, CWDH and CMAP start), TGLP (cells
+// of cellW x cellH, 1 pixel apart, cols x rows a sheet, in sheets of BC4 or A8, block linear, stored bottom-up; the sheets
+// fill the end of the section, from a 4 KiB boundary), CWDH (a glyph's left, glyph width and advance), CMAP (characters
+// to glyph indices: a direct run, a table or a list). Font type 2 (NormalS_00, A8) keeps an edge: 0..128 is the edge's
+// coverage, 128..255 the glyph's over it.
 #include "game_font.h"
 
 #include <stdint.h>
@@ -22,9 +29,9 @@ struct GameFont {
     struct Width { int8_t left; uint8_t glyph, advance; };
     int cell_w = 0, cell_h = 0, cols = 0, rows = 0, sheet_w = 0, ascent = 0, line = 0;
     bool edged = false;
-    std::vector<std::vector<uint8_t>> sheets;
-    std::vector<Width> widths;
-    std::vector<uint16_t> index;
+    std::vector<std::vector<uint8_t>> sheets;  // decoded, top-down
+    std::vector<Width> widths;  // by glyph index
+    std::vector<uint16_t> index;  // by character (0xffff: none)
 };
 
 namespace {
@@ -63,6 +70,7 @@ bool parse(const uint8_t *font_bytes, size_t byte_count, GameFont &font) {
     font.edged = fi[8] == 2, font.ascent = fi[11], font.line = rd16(fi + 12);
     uint32_t glyph = rd32(fi + 20), width = rd32(fi + 24), map = rd32(fi + 28);
 
+    // TGLP: texture sheets begin on a 4 KiB boundary and fill the end of the section.
     if (glyph < 8 || (uint64_t)glyph + 0x18 > byte_count || memcmp(font_bytes + glyph - 8, "TGLP", 4)) return false;
     const uint8_t *texture_header = font_bytes + glyph;
     font.cell_w = texture_header[0], font.cell_h = texture_header[1];
@@ -78,7 +86,7 @@ bool parse(const uint8_t *font_bytes, size_t byte_count, GameFont &font) {
     if (end > byte_count || end < (uint64_t)sheets * bytes + glyph) return false;
     uint64_t data = (end - (uint64_t)sheets * bytes) & ~0xfffull;
     if (data < (uint64_t)glyph + 0x18 || data > byte_count || (uint64_t)sheets * bytes > byte_count - data) return false;
-    int bh = 4;
+    int bh = 4;  // block height: 16 GOBs, fewer for a short sheet
     while (bh > 0 && (hb + 7) / 8 <= (1u << (bh - 1))) bh--;
     std::vector<uint8_t> lin(bytes), img((size_t)font.sheet_w * sheet_h);
     for (int sheet_index = 0; sheet_index < sheets; sheet_index++) {
@@ -91,6 +99,7 @@ bool parse(const uint8_t *font_bytes, size_t byte_count, GameFont &font) {
         font.sheets.push_back(std::move(top));
     }
 
+    // CWDH: runs of glyphs, each {left, glyph width, advance}.
     for (uint32_t offset = width; offset >= 8 && (uint64_t)offset + 8 <= byte_count;) {
         uint32_t first = rd16(font_bytes + offset), last = rd16(font_bytes + offset + 2), next = rd32(font_bytes + offset + 4);
         if (last < first || offset + 8 + (uint64_t)(last - first + 1) * 3 > byte_count) return false;
@@ -105,6 +114,7 @@ bool parse(const uint8_t *font_bytes, size_t byte_count, GameFont &font) {
         offset = next;
     }
 
+    // CMAP: direct runs, indexed tables or sparse character/glyph pairs.
     font.index.assign(0x10000, 0xffff);
     for (uint32_t offset = map; offset >= 8 && (uint64_t)offset + 18 <= byte_count;) {
         uint32_t lo = rd32(font_bytes + offset), hi = rd32(font_bytes + offset + 4), how = rd16(font_bytes + offset + 8), next = rd32(font_bytes + offset + 12);
@@ -188,6 +198,7 @@ void game_font_finish(ImFontAtlas *atlas) {
             }
         }
 
+        // Custom glyphs follow the TTF glyphs; align their ascent to the fallback font's baseline.
         for (const Added &added_font : g_added) {
             float dy = added_font.font->Ascent - added_font.ascent;
             for (int glyph_index = added_font.font->Glyphs.Size - added_font.count; glyph_index < added_font.font->Glyphs.Size; glyph_index++)

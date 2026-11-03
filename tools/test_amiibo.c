@@ -24,7 +24,11 @@ const char *wolf_link_dump_status_text(WolfLinkStatus status) { (void)status; re
 void wolf_link_dump_nickname(const WolfLinkDump *tag, char out[41]) { (void)tag; memcpy(out, "My wolf", 8); }
 void amiibo_picker_open_scan(uint64_t generation) { picker_generation = generation; picker_opens++; }
 void amiibo_picker_cancel_scan(void) { picker_cancels++; }
-void settings_save(void) { settings_saves++; }
+void settings_save(void) {
+    assert(pthread_mutex_trylock(&nfp_lock) == 0);
+    pthread_mutex_unlock(&nfp_lock);
+    settings_saves++;
+}
 pthread_mutex_t g_klock = PTHREAD_MUTEX_INITIALIZER;
 static KEvent events[16];
 static unsigned nevents, next_handle = 0x100;

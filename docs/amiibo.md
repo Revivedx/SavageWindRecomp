@@ -7,7 +7,8 @@ In **Options > amiibo**:
 3. Choose a figure from the 952-entry offline library and confirm. The chosen figure is presented to the reader.
 
 While the picker is open, simulation waits at the next game-frame boundary and the last game image is re-presented
-with the live picker at up to 60 updates per second. The search keyboard remains usable. Confirming, cancelling or
+with the live picker at up to 60 updates per second. Pausing and resuming through the picker have been confirmed
+in game. The search keyboard remains usable. Confirming, cancelling or
 stopping detection releases the hold; reboot/shutdown can interrupt it too. This does not change the game's own
 pause flags, and time spent choosing is excluded from the next frame's elapsed time so gameplay does not catch up.
 
@@ -91,11 +92,15 @@ the offline catalog. The bitmap fonts remain the player's own game assets and ar
 
 ## Repeat scans and figure data
 
-**Repeat scans**, also on this page, is an optional saved setting (off by default). It bypasses the
+**Options > Accessibility > Repeat scans**, also reachable through the **Repeat scans** shortcut on the amiibo
+page, is an optional saved setting (off by default). It bypasses the
 UID-based daily-use check and, for Wolf Link, his separate death cooldown, while retaining each figure's stable
 serial number and the game's lifetime-use history.
 The game still selects the rewards. This is intended to allow Epona's first-use reward to give way to subsequent
 chest rolls instead of repeatedly presenting a brand-new figure. The revised bypass has been confirmed to produce subsequent chest rewards in game.
+This is a gameplay assist, off by default like the other Accessibility assists. The proposed achievement system
+(PR #236) is not merged into this base, so achievement integration remains future work. Synthetic 20-heart Wolf Link
+is also a gameplay modification; its existing behavior is retained pending the shared-reader integration.
 Turning repeat off restores the normal daily-use check; scans made while repeat was on still count in that history.
 
 Earlier builds used a fresh identity for each repeat scan. Those existing save records are left alone. The first
@@ -128,7 +133,8 @@ virtual identities; later entries use `id_` followed by the API's 16-digit head/
 stable virtual identity, including entries beyond index 255. The game determines compatibility and rewards;
 new entries have automated service coverage but still need gameplay testing. Images are not bundled.
 
-Catalog metadata is stored in `data/amiibo.json`, with a generated C catalog in `runtime/amiibo_catalog.h`.
+Catalog metadata is stored in `data/amiibo.json`, with a generated C catalog in `runtime/amiibo_catalog.c`
+and declarations in `runtime/amiibo_catalog.h`. All callers share this single definition.
 Credit goes to 8bitDream and contributors and the original AmiiboAPI by Nevin Vu (N3evin).
 See [catalog attribution](../data/README.md) and the preserved [MIT license](../data/AmiiboAPI-LICENSE.txt).
 The game never contacts the API. To update the catalog:
@@ -203,10 +209,11 @@ first attempt. Mario should exercise the generic non-Zelda reward path.
 ### Dedicated amiibo page checks
 
 - Open Options from both the title screen and the pause menu. The main list should contain **amiibo**; Gameplay
-  should no longer contain any amiibo controls. Back from the amiibo page should return to the main Options list.
+  should expose the same **amiibo rewards** toggle. Back from the amiibo page should return to the main Options list.
 - Turn **amiibo rewards** off and on. Leave Options and verify the rune is disabled/enabled accordingly and scans
   work when enabled. A second enable switch should not be needed.
-- Pick a figure and change **Repeat scans**; leave and reopen the page, then save and restart the application.
+- Pick a figure, follow the **Repeat scans** shortcut to Accessibility and change the setting; leave and reopen
+  the page, then save and restart the application.
   Verify all three values persist and that the rune and virtual scanning agree with the enable switch. Also try
   enabling from title-screen Options before loading a save.
 - Check mouse, keyboard and controller navigation, including scrolling to amiibo on the main Options page.

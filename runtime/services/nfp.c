@@ -178,6 +178,7 @@ static bool write_info(IpcReq *req, IpcResp *resp, const void *data, size_t size
 static void nfp_user(Service *s, IpcReq *req, IpcResp *resp) {
     (void)s;
     pthread_mutex_lock(&nfp_lock);
+    bool save_settings = scan_settings_pending;
     if (scan_settings_pending) {
         scan_settings_pending = false;
         memcpy(g_settings.amiibo_favorites, scan_result.favorites, sizeof scan_result.favorites);
@@ -185,7 +186,6 @@ static void nfp_user(Service *s, IpcReq *req, IpcResp *resp) {
             g_settings.amiibo_figure = scan_result.selected;
             amiibo_recent_push(g_settings.amiibo_recent, &g_settings.amiibo_recent_count, scan_result.selected);
         }
-        settings_save();
     }
     if (req->cmd != 19 && req->cmd != 20 && (enabled || req->cmd == 0)) LOG("[nfp] cmd %u state %u\n", req->cmd, device_state);
     // All device commands start with the eight-byte handle, except the global state/event queries.
@@ -355,6 +355,7 @@ static void nfp_user(Service *s, IpcReq *req, IpcResp *resp) {
     }
 done:
     pthread_mutex_unlock(&nfp_lock);
+    if (save_settings) settings_save();
 }
 
 SERVICE("nfp:user", nfp_user_manager) {

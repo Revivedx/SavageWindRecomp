@@ -1,6 +1,6 @@
 # amiibo catalog attribution
 
-The offline metadata in `amiibo.json` and the generated `runtime/amiibo_catalog.h`
+The offline metadata in `amiibo.json` and the generated `runtime/amiibo_catalog.c` (declared in `runtime/amiibo_catalog.h`)
 is adapted from [AmiiboAPI](https://amiiboapi.org/), maintained by
 [8bitDream and contributors](https://github.com/8bitDream/AmiiboAPI), building on
 the original [AmiiboAPI by Nevin Vu (N3evin) and contributors](https://github.com/N3evin/AmiiboAPI).

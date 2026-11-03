@@ -429,13 +429,13 @@ $(B)/test_pc_controls: tests/test_pc_controls.c runtime/hle/input.c runtime/hle/
 	@mkdir -p $(dir $@)
 	$(CC) -O2 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -isystem third_party -o $@ $< -fuse-ld=lld -Wl,--gc-sections $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) -lSDL3 -lm
 
-$(B)/test_pc_settings: tests/test_pc_settings.c runtime/settings.c runtime/settings.h runtime/hle/bindings.c
+$(B)/test_pc_settings: tests/test_pc_settings.c runtime/settings.c runtime/settings.h runtime/hle/bindings.c runtime/amiibo_catalog.c
 	@mkdir -p $(dir $@)
-	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< -lSDL3 -lm
+	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ runtime/amiibo_catalog.c $< -lSDL3 -lm
 
-$(B)/test_gpu_settings: tests/test_gpu_settings.c runtime/settings.c runtime/settings.h runtime/gpu_select.h runtime/hle/bindings.c
+$(B)/test_gpu_settings: tests/test_gpu_settings.c runtime/settings.c runtime/settings.h runtime/gpu_select.h runtime/hle/bindings.c runtime/amiibo_catalog.c
 	@mkdir -p $(dir $@)
-	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< -lSDL3 -lm
+	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ runtime/amiibo_catalog.c $< -lSDL3 -lm
 
 test-gpu-settings: $(B)/test_gpu_settings
 	@set -e; tmp=$$(mktemp); trap 'rm -f "$$tmp"' EXIT; \
@@ -507,9 +507,9 @@ $(B)/test_gyro_bindings: tools/test_gyro_bindings.c tools/test_pointer_disabled.
 	$(CC) -O1 -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_gyro_bindings.c \
 	    runtime/hle/bindings.c $(TEST_LD) -lSDL3 -lm
 
-$(B)/test_gyro_settings: tools/test_gyro_settings.c runtime/settings.c runtime/hle/bindings.c $(RT_HDRS)
+$(B)/test_gyro_settings: tools/test_gyro_settings.c runtime/settings.c runtime/hle/bindings.c $(RT_HDRS) runtime/amiibo_catalog.c
 	@mkdir -p $(B)
-	$(CC) -O1 -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_gyro_settings.c \
+	$(CC) -O1 -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ runtime/amiibo_catalog.c tools/test_gyro_settings.c \
 	    $(TEST_LD) -lSDL3 -lm
 
 $(B)/test_motion_keyboard: tools/test_motion_keyboard.c runtime/hle/motion.c $(RT_HDRS)
@@ -610,25 +610,25 @@ test-hour: $(B)/test_hour
 
 .PHONY: test-hour
 
-$(B)/test_amiibo: tools/test_amiibo.c runtime/services/nfp.c $(RT_HDRS)
+$(B)/test_amiibo: tools/test_amiibo.c runtime/services/nfp.c $(RT_HDRS) runtime/amiibo_catalog.c
 	@mkdir -p $(B)
-	$(CC) -O1 -g -ffunction-sections -fdata-sections -Wall -Wno-unused-function $(OSFLAGS) -Iruntime -o $@ $< $(TEST_LD) -lpthread
+	$(CC) -O1 -g -ffunction-sections -fdata-sections -Wall -Wno-unused-function $(OSFLAGS) -Iruntime -o $@ $< runtime/amiibo_catalog.c $(TEST_LD) -lpthread
 
-$(B)/test_amiibo_settings: tools/test_amiibo_settings.c runtime/settings.c runtime/hle/bindings.c $(RT_HDRS)
+$(B)/test_amiibo_settings: tools/test_amiibo_settings.c runtime/settings.c runtime/hle/bindings.c $(RT_HDRS) runtime/amiibo_catalog.c
 	@mkdir -p $(B)
-	$(CC) -O1 -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< $(TEST_LD) -lSDL3 -lm
+	$(CC) -O1 -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< runtime/amiibo_catalog.c $(TEST_LD) -lSDL3 -lm
 
 $(B)/test_amiibo_options: tools/test_amiibo_options.c runtime/amiibo_options.c $(RT_HDRS)
 	@mkdir -p $(B)
 	$(CC) -O1 -g -Wall $(OSFLAGS) -Iruntime -o $@ $<
 
-$(B)/test_amiibo_library: tools/test_amiibo_library.c $(RT_HDRS)
+$(B)/test_amiibo_library: tools/test_amiibo_library.c $(RT_HDRS) runtime/amiibo_catalog.c
 	@mkdir -p $(B)
-	$(CC) -O1 -g -Wall $(OSFLAGS) -Iruntime -o $@ $<
+	$(CC) -O1 -g -Wall $(OSFLAGS) -Iruntime -o $@ $< runtime/amiibo_catalog.c
 
-$(B)/test_amiibo_picker: tools/test_amiibo_picker.cpp runtime/ui/amiibo_picker.mm runtime/ui/amiibo_picker.h runtime/ui/osk.mm $(RT_HDRS) \
+$(B)/test_amiibo_picker: tools/test_amiibo_picker.cpp runtime/ui/amiibo_picker.mm runtime/ui/amiibo_picker.h runtime/ui/osk.mm $(RT_HDRS) $(B)/rt/amiibo_catalog.o \
                        $(B)/imgui/imgui.o $(B)/imgui/imgui_draw.o $(B)/imgui/imgui_tables.o $(B)/imgui/imgui_widgets.o
-	$(CXX) -O1 -g -std=c++17 -I$(IMGUI) -Iruntime -o $@ $< \
+	$(CXX) -O1 -g -std=c++17 -I$(IMGUI) -Iruntime -o $@ $< $(B)/rt/amiibo_catalog.o \
 	    $(B)/imgui/imgui.o $(B)/imgui/imgui_draw.o $(B)/imgui/imgui_tables.o $(B)/imgui/imgui_widgets.o -lpthread
 
 $(B)/test_game_font: tools/test_game_font.cpp runtime/ui/game_font.mm runtime/ui/game_font.h $(B)/rt/nvn/tegra.o $(B)/rt/services/archive.o $(B)/imgui/imgui.o $(B)/imgui/imgui_draw.o $(B)/imgui/imgui_tables.o $(B)/imgui/imgui_widgets.o

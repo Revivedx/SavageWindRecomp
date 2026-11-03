@@ -305,7 +305,8 @@ void build_items(void) {
         v.push_back(it);
     }
 
-    v.push_back(toggle(P_AMIIBO, "Repeat scans", "Use the same figure again without waiting until tomorrow. Keeps first-use reward history. Enable amiibo rewards first.",
+    v.push_back(button(P_AMIIBO, "Repeat scans", "Assists that make the game easier.", "Open", A_PAGE, P_ACCESS));
+    v.push_back(toggle(P_ACCESS, "Repeat scans", "Use the same figure again without waiting until tomorrow. Keeps first-use reward history. Enable amiibo rewards first.",
                        [](const Item &) { return (int)g_settings.amiibo_repeat; },
                        [](const Item &, int x) {
                            g_settings.amiibo_repeat = x;
