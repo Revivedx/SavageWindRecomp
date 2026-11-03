@@ -161,6 +161,110 @@ static inline uint32_t logic32(Cpu *c, uint32_t r) { c->nzcv = MKFLAGS(r >> 31, 
 ADC_IMPL(64, )
 ADC_IMPL(32, )
 
+// ---- function-local flags (tools/flags.py, gen.py --locals)
+// From TotK Recomp's runtime/cpu.h (https://github.com/valentderah/totk-pc-recomp, commit f469c5a), Copyright (c) 2026
+// Valiantsin Dzerakh, MIT License: third_party/totk-pc-recomp/LICENSE.
+// Functions generated with --locals keep NZCV in a local Flags F, and write c->nzcv only where they leave by a tail
+// exit or before a patch site. A definition of a known kind stores its operands (a - b, a + b, or a logic result in
+// a); fc_<kind>(&F, CC_xx) computes a condition from them, so a compare and its branch become one host compare. F.nz
+// holds the packed form for definitions only known packed (CCMP, FCMP, MSR, ADCS), for a call's flags and for
+// readers that several kinds of definition reach. Every helper is always inlined with a constant condition, so F
+// stays in registers and only the condition's own arithmetic remains.
+typedef struct { uint64_t a, b, nz; } Flags;
+enum { CC_EQ, CC_NE, CC_CS, CC_CC, CC_MI, CC_PL, CC_VS, CC_VC, CC_HI, CC_LS, CC_GE, CC_LT, CC_GT, CC_LE };
+#define CPU_FL static inline __attribute__((always_inline))
+
+CPU_FL int fl_cond(int cc, int n, int z, int cy, int v) {
+    switch (cc) {
+    case CC_EQ: return z;
+    case CC_NE: return !z;
+    case CC_CS: return cy;
+    case CC_CC: return !cy;
+    case CC_MI: return n;
+    case CC_PL: return !n;
+    case CC_VS: return v;
+    case CC_VC: return !v;
+    case CC_HI: return cy && !z;
+    case CC_LS: return !cy || z;
+    case CC_GE: return n == v;
+    case CC_LT: return n != v;
+    case CC_GT: return !z && n == v;
+    default: return z || n != v;
+    }
+}
+
+// Subtract (SUBS, CMP): conditions as host compares of the operands.
+#define FL_SUB(N, U, S)                                                                    \
+    CPU_FL U fsub##N(Flags *f, U a, U b) { f->a = a; f->b = b; return (U)(a - b); }            \
+    CPU_FL int fc_sub##N(const Flags *f, int cc) {                                             \
+        U a = (U)f->a, b = (U)f->b, r = (U)(a - b);                                        \
+        switch (cc) {                                                                      \
+        case CC_EQ: return a == b;                                                         \
+        case CC_NE: return a != b;                                                         \
+        case CC_CS: return a >= b;                                                         \
+        case CC_CC: return a < b;                                                          \
+        case CC_MI: return (S)r < 0;                                                       \
+        case CC_PL: return (S)r >= 0;                                                      \
+        case CC_VS: return (S)((a ^ b) & (a ^ r)) < 0;                                     \
+        case CC_VC: return (S)((a ^ b) & (a ^ r)) >= 0;                                    \
+        case CC_HI: return a > b;                                                          \
+        case CC_LS: return a <= b;                                                         \
+        case CC_GE: return (S)a >= (S)b;                                                   \
+        case CC_LT: return (S)a < (S)b;                                                    \
+        case CC_GT: return (S)a > (S)b;                                                    \
+        default: return (S)a <= (S)b;                                                      \
+        }                                                                                  \
+    }                                                                                      \
+    CPU_FL uint64_t nz_sub##N(U a, U b) {                                                      \
+        U r = (U)(a - b);                                                                  \
+        return MKFLAGS((S)r < 0, r == 0, a >= b, (S)((a ^ b) & (a ^ r)) < 0);              \
+    }                                                                                      \
+    CPU_FL uint64_t fnz_sub##N(const Flags *f) { return nz_sub##N((U)f->a, (U)f->b); }
+FL_SUB(64, uint64_t, int64_t)
+FL_SUB(32, uint32_t, int32_t)
+
+// Add (ADDS, CMN) and logic results (ANDS, TST, BICS): conditions from N, Z, C, V.
+#define FL_ADD(N, U, S)                                                                    \
+    CPU_FL U fadd##N(Flags *f, U a, U b) { f->a = a; f->b = b; return (U)(a + b); }            \
+    CPU_FL uint64_t nz_add##N(U a, U b) {                                                      \
+        U r = (U)(a + b);                                                                  \
+        return MKFLAGS((S)r < 0, r == 0, r < a, (S)((a ^ r) & (b ^ r)) < 0);               \
+    }                                                                                      \
+    CPU_FL int fc_add##N(const Flags *f, int cc) {                                             \
+        U a = (U)f->a, b = (U)f->b, r = (U)(a + b);                                        \
+        return fl_cond(cc, (S)r < 0, r == 0, r < a, (S)((a ^ r) & (b ^ r)) < 0);           \
+    }                                                                                      \
+    CPU_FL uint64_t fnz_add##N(const Flags *f) { return nz_add##N((U)f->a, (U)f->b); }         \
+    CPU_FL U flogic##N(Flags *f, U r) { f->a = r; return r; }                                  \
+    CPU_FL int fc_logic##N(const Flags *f, int cc) {                                           \
+        U r = (U)f->a;                                                                     \
+        return fl_cond(cc, (S)r < 0, r == 0, 0, 0);                                        \
+    }                                                                                      \
+    CPU_FL uint64_t fnz_logic##N(const Flags *f) { return MKFLAGS((S)f->a < 0, (U)f->a == 0, 0, 0); }
+FL_ADD(64, uint64_t, int64_t)
+FL_ADD(32, uint32_t, int32_t)
+
+// Packed flags.
+CPU_FL int fc_nz(const Flags *f, int cc) {
+    return fl_cond(cc, f->nz >> 31 & 1, f->nz >> 30 & 1, f->nz >> 29 & 1, f->nz >> 28 & 1);
+}
+CPU_FL uint64_t fnz_nz(const Flags *f) { return f->nz; }
+
+// ADC, SBC, ADCS, SBCS with the carry in from F.
+#define FL_ADC(N, U)                                                                       \
+    CPU_FL U adc##N##f(int cin, U a, U b) { return (U)(a + b + (U)cin); }                      \
+    CPU_FL U sbc##N##f(int cin, U a, U b) { return (U)(a - b - 1 + (U)cin); }                  \
+    CPU_FL U adcs##N##f(Flags *f, int cin, U a, U b) {                                         \
+        U r = (U)(a + b + (U)cin);                                                         \
+        int carry = cin ? r <= a : r < a;                                                  \
+        f->nz = MKFLAGS(r >> (N - 1), r == 0, carry, ((a ^ r) & (b ^ r)) >> (N - 1));      \
+        return r;                                                                          \
+    }                                                                                      \
+    CPU_FL U sbcs##N##f(Flags *f, int cin, U a, U b) { return adcs##N##f(f, cin, a, (U)~b); }
+FL_ADC(64, uint64_t)
+FL_ADC(32, uint32_t)
+#undef CPU_FL
+
 // ---- bit ops
 #define ROR64(v, r) ((uint64_t)(v) >> ((r) & 63) | (uint64_t)(v) << ((64 - ((r) & 63)) & 63))
 #define ROR32(v, r) ((uint32_t)(v) >> ((r) & 31) | (uint32_t)(v) << ((32 - ((r) & 31)) & 31))
@@ -195,3 +299,20 @@ static inline uint32_t sdiv32(uint32_t a, uint32_t b) {
 #if !defined(__cplusplus) && !defined(__aarch64__)
 #include "simd.h"
 #endif
+
+// Scalar single FSUB for a patch (tools/patches.py _surf_boost_remove), whichever way the SIMD was lifted: through
+// the FP helpers of simd.h on x86-64, natively on AArch64 (there the host's FSUB is the guest's, and simd.h is only
+// included by --simd c, so fp_op_s does not exist in the default asm mode, #413).
+static inline void rt_fsub_s(Cpu *c, int d, int n, int m) {
+#if !defined(__cplusplus) && !defined(__aarch64__)
+    fp_op_s(c, FOP_SUB, d, n, m);
+#else
+    uint32_t au = (uint32_t)c->v[n], bu = (uint32_t)c->v[m], ru;
+    float a, b, r;
+    __builtin_memcpy(&a, &au, 4);
+    __builtin_memcpy(&b, &bu, 4);
+    r = a - b;
+    __builtin_memcpy(&ru, &r, 4);
+    c->v[d] = ru;
+#endif
+}

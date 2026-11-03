@@ -19,9 +19,13 @@
 #include "../ipc.h"
 #include "../language.h"
 #include "../platform.h"
+#include "../nvn/text_upscale.h"
 #include "../romfs_image.h"
+#include "../settings.h"
 #include "archive.h"
 #include "fs_layout.h"
+#include "../perfcount.h"
+#include "../platform.h"
 
 #define FS_PATH_NOT_FOUND MAKE_RESULT(2, 1)
 #define FS_PATH_EXISTS MAKE_RESULT(2, 2)
@@ -724,6 +728,47 @@ static size_t hud_letters_flyt(const uint8_t *b, size_t n, uint8_t *out, int *pa
     return w;
 }
 
+// Gameplay > Sharper text: the font sheets in the game's own archives, so that their textures can be told from others
+// (runtime/nvn/text_upscale.c). External_00 is left out: glyphs.c redraws those, and Ancient_00's sheet is too small.
+static void text_sheets_scan(void) {
+    static const char *const fonts[] = {"Normal_00.bffnt", "NormalS_00.bffnt", "Caption_00.bffnt", "Special_00.bffnt"};
+    static bool done;
+    if (done || !g_settings.sharper_text || R != &images[0]) return;
+    done = true;
+    for (int k = 0; k < R->rom_nfiles; k++) {
+        const char *path = R->rom_files[k].path;
+        if (strncmp(path, "Font/Font_", 10) || !strstr(path, ".sbfarc")) continue;
+        size_t zn = R->rom_files[k].size, an = 0;
+        uint8_t *z = malloc(zn), *arc = NULL;
+        if (romfs_image_pread(R->img, z, zn, R->rom_files[k].off) == (ssize_t)zn) arc = yaz0_unpack(z, zn, &an);
+        for (size_t i = 0; arc && i < sizeof fonts / sizeof *fonts; i++) {
+            uint32_t doff, s, e;
+            if (sarc_find(arc, an, fonts[i], &doff, &s, &e) < 0 || e - s < 0x40) continue;
+            const uint8_t *f = arc + doff + s;
+            uint32_t n = e - s, p = *(const uint16_t *)(f + 6);
+            while (p + 32 <= n) {  // (FFNT sections: TGLP holds the sheets)
+                uint32_t size = *(const uint32_t *)(f + p + 4);
+                if (!memcmp(f + p, "TGLP", 4)) {  // (its sheets: the layers of one texture in a BNTX, texels after "BRTD")
+                    uint32_t off = *(const uint32_t *)(f + p + 28), format = *(const uint16_t *)(f + p + 18);
+                    uint32_t w = *(const uint16_t *)(f + p + 24), h = *(const uint16_t *)(f + p + 26);
+                    uint64_t bytes = (uint64_t)w * h / (format == 8 ? 1 : 2);  // (8: R8, 12: BC4)
+                    for (uint32_t a = off; a + 0x10 + bytes <= n && a < off + 0x2000; a += 4)
+                        if (!memcmp(f + a, "BRTD", 4)) {
+                            text_sheet_add(f + a + 0x10, bytes);
+                            break;
+                        }
+                    break;
+                }
+                if (size < 8) break;
+                p += size;
+            }
+        }
+        free(z);
+        free(arc);
+    }
+    LOG("[fs] sharper text: %d font sheets found\n", text_sheet_count());
+}
+
 static void hud_letters_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
     static const char pack_path[] = "Pack/Bootup.pack";
     static const char *const layouts[] = {"blyt/PaDoCommandA_00.bflyt", "blyt/PaDoCommandB_00.bflyt",
@@ -805,6 +850,97 @@ static void hud_letters_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz)
     R->grown[R->ngrown++] = (GrownFile){"Layout/Common.blarc", nn - an};
     LOG("[fs] HUD letters: %d button letters use the icon font (archive %zu -> %zu bytes, pack +%llu KB, %.0f ms)\n",
         panes, (size_t)old, zn, (unsigned long long)(delta >> 10), (plat_now_ns() - t0) / 1e6);
+}
+
+// (Savage Wind+) Video > Haze: the air's haze. BOTW's outdoor haze is its atmospheric scattering, set per climate in
+// Pack/TitleBG.pack's WorldMgr/normal.bwinfo (AAMP, 20 climates): CalcMie and CalcRayleigh (the white and the blue of
+// the air: lower, clearer; at 0.6x the sky darkens and turns teal) and CalcSfParamNear (0 or below: the haze close by,
+// least at 0). The setting's share k of the game's haze gives those 0.7 + 0.3 k times theirs (0.85 at 50 %, where far
+// mountains keep their colour and the sky its blue; seen from Hebra's tower at noon, clear sky) and k times the near
+// one. The file is read at the start: one patch over its bytes, the same size.
+static uint32_t crc32_str(const char *s) { return (uint32_t)crc32(0, (const uint8_t *)s, (uInt)strlen(s)); }
+static size_t haze_done[512];  // (the value offsets changed so far)
+static void haze_walk_list(uint8_t *d, size_t n, size_t o, const uint32_t h[3], const float f[3], int *changed, int depth) {
+    if (o + 12 > n || depth > 8) return;
+    uint16_t lo, ln, oo, on;
+    memcpy(&lo, d + o + 4, 2), memcpy(&ln, d + o + 6, 2), memcpy(&oo, d + o + 8, 2), memcpy(&on, d + o + 10, 2);
+    for (uint32_t i = 0; i < on; i++) {
+        size_t ob = o + (size_t)oo * 4 + i * 8;
+        if (ob + 8 > n) return;
+        uint16_t po, pn;
+        memcpy(&po, d + ob + 4, 2), memcpy(&pn, d + ob + 6, 2);
+        for (uint32_t j = 0; j < pn; j++) {
+            size_t pb = ob + (size_t)po * 4 + j * 8;
+            if (pb + 8 > n) return;
+            uint32_t ph, w;
+            memcpy(&ph, d + pb, 4), memcpy(&w, d + pb + 4, 4);
+            size_t vo = pb + (size_t)(w & 0xFFFFFF) * 4;
+            if (w >> 24 != 1 || vo + 4 > n) continue;  // (floats only)
+            bool seen = false;  // (AAMP shares equal values: one value is the data of several parameters)
+            for (int k = 0; k < *changed && !seen; k++) seen = haze_done[k] == vo;
+            if (seen) continue;
+            for (int k = 0; k < 3; k++)
+                if (ph == h[k] && *changed < 512) {
+                    haze_done[*changed] = vo;
+                    float v;
+                    memcpy(&v, d + vo, 4);
+                    v *= f[k];
+                    memcpy(d + vo, &v, 4);
+                    (*changed)++;
+                }
+        }
+    }
+    (void)lo, (void)ln, (void)depth;  // (the root's objects only: the climates. Lists under it hold values of the same
+                                      //  names that this scaling turned teal)
+}
+static void haze_patch(void) {
+    int pct = g_settings.haze;
+    if (pct >= 100 || R != &images[0] || R->npatches >= 8) return;
+    static const char pack_path[] = "Pack/TitleBG.pack", name[] = "WorldMgr/normal.bwinfo";
+    int k = 0;
+    while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, pack_path)) k++;
+    char host[1200];
+    if (k == R->rom_nfiles || overlay_file(pack_path, host, sizeof host)) return;
+    uint8_t head[0x20];
+    if (romfs_image_pread(R->img, head, 0x20, R->rom_files[k].off) != 0x20 || memcmp(head, "SARC", 4)) return;
+    uint32_t doff;
+    memcpy(&doff, head + 0xC, 4);
+    if (doff > (16u << 20) || doff > R->rom_files[k].size) return;
+    uint8_t *tab = malloc(doff);  // (the tables: the data starts at doff)
+    uint32_t ds = 0, de = 0;
+    bool found = false;
+    if (tab && romfs_image_pread(R->img, tab, doff, R->rom_files[k].off) == (ssize_t)doff) {
+        uint32_t cnt = tab[0x1A] | tab[0x1B] << 8;
+        size_t names = 0x20 + (size_t)cnt * 16 + 8;
+        for (uint32_t i = 0; i < cnt && names <= doff && !found; i++) {
+            uint32_t attr;
+            memcpy(&attr, tab + 0x20 + i * 16 + 4, 4);
+            size_t at = names + (size_t)(attr & 0xFFFFFF) * 4;
+            if (!(attr >> 24) || at + sizeof name > doff || memcmp(tab + at, name, sizeof name)) continue;
+            memcpy(&ds, tab + 0x20 + i * 16 + 8, 4), memcpy(&de, tab + 0x20 + i * 16 + 12, 4);
+            found = de > ds && de - ds < (4u << 20);
+        }
+    }
+    free(tab);
+    if (!found) { LOG("[fs] haze: %s not found, the game's haze stays\n", name); return; }
+    size_t n = de - ds;
+    uint64_t at = R->rom_files[k].off + doff + ds;
+    uint8_t *d = malloc(n);
+    if (!d || romfs_image_pread(R->img, d, n, at) != (ssize_t)n || memcmp(d, "AAMP", 4)) { free(d); return; }
+    float kk = pct / 100.0f, sc = 0.7f + 0.3f * kk;
+    const uint32_t h[3] = {crc32_str("CalcMie"), crc32_str("CalcRayleigh"), crc32_str("CalcSfParamNear")};
+    const float f[3] = {sc, sc, kk};
+    uint32_t pio;
+    memcpy(&pio, d + 0x14, 4);
+    int changed = 0;
+    haze_walk_list(d, n, 0x30 + (size_t)pio, h, f, &changed, 0);
+    if (!changed) { free(d); LOG("[fs] haze: no climate values found, the game's haze stays\n"); return; }
+    if (getenv("SAVAGEWIND_HAZE_DUMP")) {  // (tests) the patched file, to compare
+        FILE *df = fopen(getenv("SAVAGEWIND_HAZE_DUMP"), "wb");
+        if (df) fwrite(d, 1, n, df), fclose(df);
+    }
+    R->patches[R->npatches++] = (Patch){at, n, d};
+    LOG("[fs] haze %d %%: %d climate values (scattering x%.2f, near haze x%.2f)\n", pct, changed, sc, kk);
 }
 
 // An RSTB entry: names first (paths whose crc32 collides), then the crc32 table (sorted). NULL when it has none.
@@ -997,9 +1133,11 @@ static void rom_index(void) {
         break;
     }
     hud_letters_patch(fmeta, foff, fsz);
+    text_sheets_scan();
     if (R == &images[0] && !atomic_load_explicit(&inventory_clip_layout_valid, memory_order_acquire))
         LOG("[fs] Inventory clip layout unavailable; using the game's clipping\n");
     rstb_patch(fmeta, foff, fsz);
+    haze_patch();
     if (R->ov_n) LOG("[fs] overlay: %d romfs files replaced\n", R->ov_n);
     if (R->ov_meta) { R->patches[R->npatches++] = (Patch){R->ov_meta_off, R->ov_meta_size, R->ov_meta}; }
     add_new_files(h, dmeta, dsz, fsz);
@@ -1096,7 +1234,10 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
         if (!b) { resp->result = MAKE_RESULT(2, 6001); break; }
         if (size > b->size) size = b->size;
         kernel_watch_write("romfs read", b->addr, size);
+        uint64_t ft0 = plat_now_ns();
         ssize_t n = romfs_read(m, (uint8_t *)(uintptr_t)b->addr, size, off);
+        perfcount_add(PC_FILE_READS, 1), perfcount_add(PC_FILE_NS, plat_now_ns() - ft0);
+        if (n > 0) perfcount_add(PC_FILE_BYTES, (uint64_t)n);
         if (n < 0) LOG("[fs] storage read failed at %llx: %s\n", off, strerror(errno));
         if (m != &images[0]) break;
         {
@@ -1245,7 +1386,10 @@ static void file(Service *s, IpcReq *req, IpcResp *resp) {
             n = off >= 0 && (uint64_t)off < f->patched_size ? (ssize_t)((uint64_t)size < f->patched_size - (uint64_t)off ? (uint64_t)size : f->patched_size - (uint64_t)off) : 0;
             memcpy((void *)(uintptr_t)b->addr, f->patched + off, (size_t)n);
         } else {
+            uint64_t ft0 = plat_now_ns();
             n = pread(f->fd, (void *)(uintptr_t)b->addr, (size_t)size, off);
+            perfcount_add(PC_FILE_READS, 1), perfcount_add(PC_FILE_NS, plat_now_ns() - ft0);
+            if (n > 0) perfcount_add(PC_FILE_BYTES, (uint64_t)n);
         }
         if (strstr(f->path, "savedata")) {
             LOG("[save] read %s off %lld size %lld -> guest %llx\n", f->path, (long long)off, (long long)size, (unsigned long long)b->addr);

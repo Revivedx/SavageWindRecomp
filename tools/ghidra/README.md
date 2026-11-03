@@ -10,12 +10,16 @@ once; every query opens the project read-only, so nothing in it changes.
   built for that exact version (`SwitchLoader-1.6.1-...-Ghidra_12.1.2.zip`, unzipped into
   `<ghidra>/Ghidra/Extensions/`). Extensions only load in the Ghidra version they were built for.
 - A JDK 21 or newer.
-- Import and analyze `extracted/exefs/main` (several hours for BOTW's 131,000 functions):
+- Import and analyze the 1.9.0 `extracted/exefs/main`, then `sdk` and `subsdk0` the same way (about 22,
+  6 and 3 minutes on 8 threads of a Ryzen 5 5600X):
 
   ```
-  GHIDRA_HEADLESS_MAXMEM=12G <ghidra>/support/analyzeHeadless <repo>/../ghidra botw_1.8.2 \
-      -import <repo>/extracted/exefs/main -max-cpu 8 -log <repo>/../ghidra/analyze_main.log
+  GHIDRA_HEADLESS_MAXMEM=12G <ghidra>/support/analyzeHeadless <repo>/../ghidra botw_1.9.0 \
+      -import <repo>/extracted/exefs/main -max-cpu 8 -log <repo>/../ghidra/analyze190_main.log
   ```
+
+  `gq.py` opens `botw_1.9.0` by default, the supported version. An older `botw_1.8.2` project can be
+  kept next to it and queried with `SW_GHIDRA_NAME=botw_1.8.2`.
 
 - Point `gq.py` at the installation, through the environment or a git-ignored
   `tools/ghidra/gq.local.json`:

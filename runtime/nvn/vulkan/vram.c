@@ -25,6 +25,7 @@
 
 #include "vk.h"
 #include "vram.h"
+#include "../../perfcount.h"
 
 #define HR_PERIOD_MS 250
 #define HR_PRESSURE 0.90
@@ -61,7 +62,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL vram_allocate(VkDevice dev, const VkMemory
     uint32_t type = ai->memoryTypeIndex;
     uint64_t size = ai->allocationSize;
     bool block = r == VK_SUCCESS && !ded && size >= (16ull << 20) && !(size & (size - 1));  // (VMA's blocks: powers of 2)
-    if (!helper) atomic_fetch_add(&g_vram_alloc_ns, dt);
+    if (!helper) atomic_fetch_add(&g_vram_alloc_ns, dt), perfcount_add(PC_VALLOC_NS, dt);
     if (ded) atomic_fetch_add(&st_dedicated, 1), atomic_fetch_add(&st_dedicated_ns, dt);
     if (block) {
         if (helper) atomic_fetch_add(&st_helper_blocks, 1), atomic_fetch_add(&st_helper_ns, dt);
@@ -127,7 +128,22 @@ static void *hr_main(void *arg) {
     return NULL;
 }
 
+// (control `memstats`) every heap: VMA's usage and budget of it (the whole process's with VK_EXT_memory_budget), size
+static int gpu_heaps(uint64_t *usage, uint64_t *budget, uint64_t *size, uint32_t *device_local, int max) {
+    VmaBudget bud[VK_MAX_MEMORY_HEAPS];
+    vmaGetHeapBudgets(g_vk.vma, bud);
+    int n = 0;
+    for (uint32_t i = 0; i < hr_mp.memoryHeapCount && n < max; i++, n++) {
+        usage[n] = bud[i].usage;
+        budget[n] = bud[i].budget;
+        size[n] = hr_mp.memoryHeaps[i].size;
+        device_local[n] = (hr_mp.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0;
+    }
+    return n;
+}
+
 void vram_allocator_setup(VmaAllocatorCreateInfo *ai, VmaVulkanFunctions *fn, bool memory_budget) {
+    g_gpu_heaps = gpu_heaps;
     vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &hr_mp);
     budget_ext = memory_budget;
     memset(fn, 0, sizeof *fn);
