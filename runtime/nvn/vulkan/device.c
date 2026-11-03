@@ -431,10 +431,6 @@ bool vk_shader_fp16(void) { return g_vk.fp16; }
 static void create_device(void) {
     uint32_t ne = 0;
     static const char *const sparse_heap_modes[SPARSE_HEAP_COUNT] = {"auto", "on", "off"};
-    LOG("[vk] sparse heap %s (sparse_heap=%s)\n",
-        plat_guest_sparse_heap_enabled() ? "enabled" : "disabled",
-        sparse_heap_modes[g_settings.sparse_heap >= 0 && g_settings.sparse_heap < SPARSE_HEAP_COUNT ?
-                              g_settings.sparse_heap : SPARSE_HEAP_AUTO]);
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
     VkExtensionProperties *ep = calloc(ne, sizeof *ep);
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
@@ -854,6 +850,19 @@ static void create_device(void) {
     if (plat_guest_sparse_heap_enabled()) {
         sparse_host_import_probe();
     }
+    static const char *const device_types[] = {"other", "integrated", "discrete", "virtual", "cpu"};
+    int device_type = (int)g_vk.props.deviceType;
+    const char *type_name = device_type >= 0 && device_type < (int)(sizeof device_types / sizeof *device_types)
+                                ? device_types[device_type] : "unknown";
+    const char *probe = !plat_guest_sparse_heap_enabled() ? "not run" :
+                        g_vk.sparse_host_import ? "passed" : "failed";
+    const char *override = getenv("SAVAGEWIND_VK_SPARSE_HEAP");
+    LOG("[vk] sparse heap path: %s, adapter \"%s\", vendor %#06x, type %s, setting %s, override %s, host-import probe %s\n",
+        plat_guest_sparse_heap_enabled() ? "enabled" : "disabled", g_vk.props.deviceName, g_vk.props.vendorID,
+        type_name,
+        sparse_heap_modes[g_settings.sparse_heap >= 0 && g_settings.sparse_heap < SPARSE_HEAP_COUNT ?
+                              g_settings.sparse_heap : SPARSE_HEAP_AUTO],
+        override ? override : "unset", probe);
 
     VmaAllocatorCreateInfo ai = {.physicalDevice = g_vk.phys, .device = g_vk.dev, .instance = g_vk.inst,
                                  .vulkanApiVersion = VK_API_VERSION_1_3};
