@@ -4896,6 +4896,9 @@ static VkDescriptorBufferInfo gmem_info(void) {
                 if (want > gmem_size) gmem_size = want;
                 if (!gmem_sparse_refresh(gmem_size)) FATAL("sparse guest heap page binding failed\n");
             } else if (!gmem_buf && want && !gmem_sparse_create(want)) {
+                LOG("[vk] sparse guest heap initialization failed; changing sparse_heap to off for the next start\n");
+                g_settings.sparse_heap = SPARSE_HEAP_OFF;
+                settings_save();
                 FATAL("sparse guest heap initialization failed; refusing the slow dense fallback\n");
             }
         } else
