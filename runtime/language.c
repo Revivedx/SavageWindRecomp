@@ -118,3 +118,16 @@ const char *language_voice_folder(void) {
     int i = g_settings.voice_language;
     return i > 0 && i < g_nvoice_languages ? g_voice_languages[i].folder : NULL;
 }
+
+const char *language_text_folder(void) {
+    int index = language_text_index();
+    if (index > 0) return g_text_languages[index].folder;
+    const char *code = language_text_code();
+    for (int pass = 0; code && pass < 2; pass++)
+        for (int entry = 1; entry < language_text_count(); entry++) {
+            const char *candidate = g_text_languages[entry].code;
+            if (candidate && (pass ? !strncmp(candidate, code, 2) : !strcmp(candidate, code)))
+                return g_text_languages[entry].folder;
+        }
+    return "USen";
+}

@@ -9,6 +9,22 @@
 #include "../runtime/services/nfp.c"
 
 Settings g_settings;
+static uint64_t picker_generation;
+static int picker_opens, picker_cancels, settings_saves;
+static WolfLinkStatus mock_status = WOLF_DUMP_OK;
+static WolfLinkDump mock_wolf;
+static bool save_allowed = true;
+WolfLinkStatus wolf_link_dump_load(WolfLinkDump *result) { *result = mock_wolf; return mock_status; }
+bool wolf_link_dump_save(const WolfLinkDump *tag) {
+    if (!save_allowed) return false;
+    mock_wolf = *tag;
+    return true;
+}
+const char *wolf_link_dump_status_text(WolfLinkStatus status) { (void)status; return "Mock Wolf Link data"; }
+void wolf_link_dump_nickname(const WolfLinkDump *tag, char out[41]) { (void)tag; memcpy(out, "My wolf", 8); }
+void amiibo_picker_open_scan(uint64_t generation) { picker_generation = generation; picker_opens++; }
+void amiibo_picker_cancel_scan(void) { picker_cancels++; }
+void settings_save(void) { settings_saves++; }
 pthread_mutex_t g_klock = PTHREAD_MUTEX_INITIALIZER;
 static KEvent events[16];
 static unsigned nevents, next_handle = 0x100;
@@ -98,6 +114,7 @@ static void test_wolf_link(void) {
 }
 
 int main(void) {
+    g_settings.amiibo_auto_scan = true;
     uint8_t tag[0x58], model[0x41];
     uint64_t handle = 0;
     nfp_reset();
@@ -202,6 +219,86 @@ int main(void) {
     nfp_configure(false, AMIIBO_ARCHER, true);
     assert(!rt_amiibo_ignore_daily("AmiiboTouchHistory", 0));
     test_wolf_link();
+    g_settings.amiibo_auto_scan = false;
+    g_settings.virtual_amiibo = true;
+    assert(!request(0, NULL, 0).result);
+    assert(!request(3, NULL, 0).result && device_state == NFP_SEARCHING && !activate->signaled);
+    assert(picker_opens == 1);
+    uint64_t first_generation = picker_generation;
+    AmiiboPickerResult picked = {.selected = AMIIBO_GUARDIAN};
+    picked.favorites[AMIIBO_GUARDIAN] = true;
+    nfp_scan_complete(first_generation, &picked);
+    assert(device_state == NFP_FOUND && activate->signaled);
+    assert(settings_saves == 0);
+    assert(!request(13, tag, sizeof tag).result);
+    assert(settings_saves == 1 && g_settings.amiibo_figure == AMIIBO_GUARDIAN);
+    assert(g_settings.amiibo_favorites[AMIIBO_GUARDIAN]);
+    assert(g_settings.amiibo_recent[0] == AMIIBO_GUARDIAN);
+    assert(!request(4, NULL, 0).result && !request(3, NULL, 0).result);
+    nfp_scan_complete(first_generation, &picked);
+    assert(device_state == NFP_SEARCHING && !activate->signaled);
+    picked.selected = -1;
+    nfp_scan_complete(picker_generation, &picked);
+    assert(device_state == NFP_SEARCHING && !activate->signaled);
+    assert(!request(4, NULL, 0).result);
+    assert(settings_saves == 2);
+    assert(!request(3, NULL, 0).result);
+    uint64_t stopped_generation = picker_generation;
+    assert(!request(4, NULL, 0).result);
+    picked.selected = AMIIBO_MARIO;
+    nfp_scan_complete(stopped_generation, &picked);
+    assert(device_state == NFP_READY);
+    assert(!request(3, NULL, 0).result);
+    nfp_configure(false, AMIIBO_GUARDIAN, false);
+    nfp_scan_complete(picker_generation, &picked);
+    assert(device_state == NFP_SEARCHING && !activate->signaled);
+    g_settings.amiibo_auto_scan = true;
+    nfp_configure(true, AMIIBO_GUARDIAN, false);
+    assert(device_state == NFP_FOUND && activate->signaled && picker_cancels > 0);
+    int wolf = -1;
+    for (int figure = 0; figure < AMIIBO_COUNT; figure++)
+        if (!strcmp(virtual_amiibos[figure].id, "01030000024f0902")) wolf = figure;
+    assert(wolf >= 0);
+    g_settings.amiibo_own_wolf = true;
+    mock_wolf.flags = WOLF_REGISTERED | WOLF_HAS_AREA;
+    mock_wolf.app_id = 0x1019c800;
+    const uint8_t own_uid[7] = {4, 9, 8, 7, 6, 5, 4};
+    memcpy(mock_wolf.uid, own_uid, sizeof own_uid);
+    mock_wolf.area[0x12] = 36;
+    nfp_configure(true, wolf, true);
+    assert(!request(4, NULL, 0).result && !request(3, NULL, 0).result);
+    assert(!request(13, tag, sizeof tag).result && !memcmp(tag, own_uid, sizeof own_uid));
+    assert(!request(5, NULL, 0).result);
+    uint8_t registration[0x100], area[0xd8];
+    assert(!request(14, registration, sizeof registration).result && !strcmp((char *)registration + 0x5c, "My wolf"));
+    assert(!area_request(7, 0x1019c800, NULL, 0).result);
+    assert(!request(8, area, sizeof area).result && area[0x12] == 36);
+    area[0x12] = 60;
+    assert(!area_request(9, 0, area, sizeof area).result);
+    save_allowed = false;
+    assert(request(10, NULL, 0).result && wolf_area_dirty && mock_wolf.area[0x12] == 36);
+    assert(request(6, NULL, 0).result && device_state == NFP_MOUNTED);
+    save_allowed = true;
+    assert(!request(10, NULL, 0).result && !wolf_area_dirty && mock_wolf.area[0x12] == 60);
+    assert(!request(4, NULL, 0).result && !request(3, NULL, 0).result && !request(5, NULL, 0).result);
+    assert(!area_request(7, 0x1019c800, NULL, 0).result);
+    assert(!request(8, area, sizeof area).result && area[0x12] == 60);
+    g_settings.amiibo_own_wolf = false;
+    assert(!request(13, tag, sizeof tag).result && !memcmp(tag, own_uid, sizeof own_uid));
+    assert(!request(4, NULL, 0).result && !request(3, NULL, 0).result && !request(5, NULL, 0).result);
+    assert(!area_request(7, 0x1019c800, NULL, 0).result);
+    assert(!request(8, area, sizeof area).result && area[0x12] == 80);
+    g_settings.amiibo_own_wolf = true;
+    mock_status = WOLF_AUTH_FAILED;
+    assert(!request(4, NULL, 0).result && !request(3, NULL, 0).result);
+    assert(device_state == NFP_SEARCHING && !activate->signaled);
+    picked.selected = wolf;
+    assert(!nfp_scan_complete(picker_generation, &picked));
+    assert(device_state == NFP_SEARCHING && !activate->signaled);
+    picked.selected = AMIIBO_ARCHER;
+    assert(nfp_scan_complete(picker_generation, &picked));
+    assert(device_state == NFP_FOUND);
+    assert(!request(13, tag, sizeof tag).result && memcmp(tag, own_uid, sizeof own_uid));
     nfp_reset();
     assert(!initialized && !activate && !deactivate && !application_open);
     puts("PASS: virtual amiibo discovery, live controls, stable scans, catalog and reset");

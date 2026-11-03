@@ -116,7 +116,9 @@ typedef struct {
     int voice_language;  // index in g_voice_languages, 0: the text language's voices
     bool menu_tip_seen;  // the start screen's one-time "how to open the menu" note was shown (first PLAY ever)
     bool amiibo_repeat; // amiibo page: bypass the daily use check while preserving the figure identity
-    bool virtual_amiibo; // amiibo page: automatically present the chosen figure through the amiibo rune
+    bool amiibo_auto_scan;
+    bool amiibo_own_wolf;
+    bool virtual_amiibo;
     int amiibo_figure;   // AMIIBO_* (runtime/amiibo.h); stable key saved in the ini
     bool amiibo_favorites[AMIIBO_COUNT];
     int amiibo_recent[AMIIBO_RECENT_MAX], amiibo_recent_count;

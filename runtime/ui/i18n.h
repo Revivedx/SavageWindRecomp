@@ -7,6 +7,7 @@
 
 struct ImFontAtlas;
 struct ImFontConfig;
+const unsigned short *ui_lang_glyph_ranges(void);
 
 const char *tr(const char *en);
 // UTF-8 upper case (ASCII, Latin-1, Latin Extended-A, Greek, Cyrillic; other scripts as they are)

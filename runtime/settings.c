@@ -187,6 +187,8 @@ void settings_load(void) {
         else if (!strcmp(key, "pc_gyro")) g_settings.pc_gyro = atoi(val) != 0;
         else if (!strcmp(key, "gyro_scene")) g_settings.gyro_scene = atoi(val) != 0;
         else if (!strcmp(key, "amiibo_repeat")) g_settings.amiibo_repeat = atoi(val) != 0;
+        else if (!strcmp(key, "amiibo_auto_scan")) g_settings.amiibo_auto_scan = atoi(val) != 0;
+        else if (!strcmp(key, "amiibo_own_wolf")) g_settings.amiibo_own_wolf = atoi(val) != 0;
         else if (!strcmp(key, "virtual_amiibo")) g_settings.virtual_amiibo = atoi(val) != 0;
         else if (!strcmp(key, "amiibo_figure")) {
             for (int i = 0; i < AMIIBO_COUNT; i++)
@@ -375,6 +377,8 @@ void settings_save(void) {
     fprintf(f, "gyro_scene = %d\n", g_settings.gyro_scene);
     fprintf(f, "virtual_amiibo = %d\n", g_settings.virtual_amiibo);
     fprintf(f, "amiibo_repeat = %d\n", g_settings.amiibo_repeat);
+    fprintf(f, "amiibo_auto_scan = %d\n", g_settings.amiibo_auto_scan);
+    fprintf(f, "amiibo_own_wolf = %d\n", g_settings.amiibo_own_wolf);
     fprintf(f, "amiibo_figure = %s\n", virtual_amiibos[amiibo_valid_figure(g_settings.amiibo_figure)].key);
     for (int i = 0; i < AMIIBO_COUNT; i++)
         if (g_settings.amiibo_favorites[i]) fprintf(f, "amiibo_favorite = %s\n", virtual_amiibos[i].key);

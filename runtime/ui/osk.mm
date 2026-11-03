@@ -52,7 +52,7 @@ static int test_focus(const char *label) {
     return strstr(c + 1, ":edit") ? 2 : 1;
 }
 
-bool ui_input_text(const char *label, char *buf, size_t size, ImGuiInputTextFlags flags, const char *hint, const char *title) {
+bool ui_input_text(const char *label, char *buf, size_t size, ImGuiInputTextFlags flags, const char *hint, const char *title, bool open_keyboard) {
     ImGuiContext &g = *GImGui;
     int test = test_focus(label);
     if (test == 2) ImGui::SetKeyboardFocusHere();
@@ -76,8 +76,8 @@ bool ui_input_text(const char *label, char *buf, size_t size, ImGuiInputTextFlag
     }
     // activated from the controller: A (ImGui's "activate", which leaves a text field alone), Y (its "input"), or a
     // focus request (SetKeyboardFocusHere) while the controller drives the menu. A mouse click types directly.
-    bool by_nav = g.NavActivateId == id || (ImGui::IsItemActivated() && g.ActiveIdSource != ImGuiInputSource_Mouse);
-    if (by_nav && g.NavInputSource == ImGuiInputSource_Gamepad && !s.open && !(flags & ImGuiInputTextFlags_ReadOnly)) {
+    bool by_nav = open_keyboard || g.NavActivateId == id || (ImGui::IsItemActivated() && g.ActiveIdSource != ImGuiInputSource_Mouse);
+    if (by_nav && (open_keyboard || g.NavInputSource == ImGuiInputSource_Gamepad) && !s.open && !(flags & ImGuiInputTextFlags_ReadOnly)) {
         if (g.ActiveId == id) ImGui::ClearActiveID();
         s.open = 1, s.appearing = true, s.done = 0;
         s.field = id, s.buf = buf, s.size = size, s.flags = flags;

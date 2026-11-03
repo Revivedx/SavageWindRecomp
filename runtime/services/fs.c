@@ -1207,6 +1207,25 @@ static uint64_t romfs_file_start(uint64_t off) {
     return ~0ull;
 }
 
+uint8_t *fs_game_file(const char *path, size_t *out_size) {
+    const RomImage *image = &images[0];
+    *out_size = 0;
+    if (!image->img) return NULL;
+    for (int index = 0; index < image->rom_nfiles; index++) {
+        if (strcmp(image->rom_files[index].path, path)) continue;
+        size_t size = image->rom_files[index].size;
+        if (size > 64 * 1024 * 1024) return NULL;
+        uint8_t *data = malloc(size ? size : 1);
+        if (data && romfs_image_pread(image->img, data, size, image->rom_files[index].off) == (ssize_t)size) {
+            *out_size = size;
+            return data;
+        }
+        free(data);
+        return NULL;
+    }
+    return NULL;
+}
+
 // Path of the game's RomFS file containing image offset `off` (NULL if none).
 const char *romfs_file_at(uint64_t off) {
     const RomImage *m = &images[0];

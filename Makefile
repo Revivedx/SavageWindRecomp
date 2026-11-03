@@ -631,13 +631,28 @@ $(B)/test_amiibo_picker: tools/test_amiibo_picker.cpp runtime/ui/amiibo_picker.m
 	$(CXX) -O1 -g -std=c++17 -I$(IMGUI) -Iruntime -o $@ $< \
 	    $(B)/imgui/imgui.o $(B)/imgui/imgui_draw.o $(B)/imgui/imgui_tables.o $(B)/imgui/imgui_widgets.o -lpthread
 
-test-amiibo: $(B)/test_amiibo $(B)/test_amiibo_settings $(B)/test_amiibo_options $(B)/test_amiibo_library $(B)/test_amiibo_picker
+$(B)/test_game_font: tools/test_game_font.cpp runtime/ui/game_font.mm runtime/ui/game_font.h $(B)/rt/nvn/tegra.o $(B)/rt/services/archive.o $(B)/imgui/imgui.o $(B)/imgui/imgui_draw.o $(B)/imgui/imgui_tables.o $(B)/imgui/imgui_widgets.o
+	$(CXX) -O1 -g -std=c++17 -I$(IMGUI) -Iruntime -o $@ $< $(B)/rt/nvn/tegra.o $(B)/rt/services/archive.o \
+	    $(B)/imgui/imgui.o $(B)/imgui/imgui_draw.o $(B)/imgui/imgui_tables.o $(B)/imgui/imgui_widgets.o -lpthread
+
+$(B)/test_amiibo_pause: tools/test_amiibo_pause.c runtime/hle/framepace.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -O1 -ffunction-sections -fdata-sections $(OSFLAGS) -Iruntime -o $@ $< $(TEST_LD) -lm
+
+$(B)/test_wolf_link_dump: tools/test_wolf_link_dump.c runtime/wolf_link_dump.c runtime/wolf_link_dump.h
+	@mkdir -p $(B)
+	$(CC) -O1 -g -Wall $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< $(TEST_LD) -lavutil
+
+test-amiibo: $(B)/test_amiibo $(B)/test_amiibo_settings $(B)/test_amiibo_options $(B)/test_amiibo_library $(B)/test_amiibo_picker $(B)/test_game_font $(B)/test_amiibo_pause $(B)/test_wolf_link_dump
 	$(PY) tools/update_amiibo_catalog.py --check
 	$(PY) tools/test_amiibo_i18n.py
 	$(B)/test_amiibo
 	$(B)/test_amiibo_options
 	$(B)/test_amiibo_library
 	$(B)/test_amiibo_picker
+	$(B)/test_amiibo_pause
+	@set -eu; tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; $(B)/test_wolf_link_dump "$$tmp"
+	$(B)/test_game_font
 	CC='$(CC)' $(PY) tools/test_amiibo_patch.py
 	@set -eu; tmp=$$(mktemp); trap 'rm -f "$$tmp"' EXIT; \
 	 env -u SAVAGEWIND_AMIIBO $(B)/test_amiibo_settings "$$tmp" 0 0 1 1 0 1; \
@@ -652,6 +667,11 @@ test-amiibo: $(B)/test_amiibo $(B)/test_amiibo_settings $(B)/test_amiibo_options
 	 env -u SAVAGEWIND_AMIIBO $(B)/test_amiibo_settings "$$tmp" 0 0 0 0; \
 	 env -u SAVAGEWIND_AMIIBO SAVAGEWIND_TEST_AMIIBO_LIBRARY=write $(B)/test_amiibo_settings "$$tmp" 0 0 0 0; \
 	 env -u SAVAGEWIND_AMIIBO SAVAGEWIND_TEST_AMIIBO_LIBRARY=read $(B)/test_amiibo_settings "$$tmp" 0 0 0 0; \
-	 env -u SAVAGEWIND_AMIIBO SAVAGEWIND_TEST_AMIIBO_LIBRARY=removed $(B)/test_amiibo_settings "$$tmp" 0 0 0 0
+	 env -u SAVAGEWIND_AMIIBO SAVAGEWIND_TEST_AMIIBO_LIBRARY=removed $(B)/test_amiibo_settings "$$tmp" 0 0 0 0; \
+	 env -u SAVAGEWIND_AMIIBO SAVAGEWIND_TEST_AMIIBO_AUTO=write $(B)/test_amiibo_settings "$$tmp" 0 0 0 0; \
+	 env -u SAVAGEWIND_AMIIBO SAVAGEWIND_TEST_AMIIBO_AUTO=read $(B)/test_amiibo_settings "$$tmp" 0 0 0 0; \
+	 env -u SAVAGEWIND_AMIIBO SAVAGEWIND_TEST_OWN_WOLF=write $(B)/test_amiibo_settings "$$tmp" 0 0 0 0; \
+	 env -u SAVAGEWIND_AMIIBO SAVAGEWIND_TEST_OWN_WOLF=read $(B)/test_amiibo_settings "$$tmp" 0 0 0 0; \
+	 env -u SAVAGEWIND_AMIIBO $(B)/test_amiibo_settings "$$tmp" 0 0 0 0
 
 .PHONY: test-amiibo

@@ -20,6 +20,7 @@ extern const int g_nvoice_languages;
 
 // The LanguageCode the game gets: the setting's, or for Auto the host's UI language (en-US if none matches)
 const char *language_text_code(void);
+const char *language_text_folder(void);
 // How many of g_text_languages the game files have (Thai, the last, only from 1.9.0 on), and the setting's index
 // among those (0, Auto, for one they don't have): what the language menus show.
 int language_text_count(void);

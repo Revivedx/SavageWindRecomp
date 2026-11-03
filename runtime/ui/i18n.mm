@@ -189,16 +189,7 @@ static int ttc_face(const char *path, const char *lang) {
     return !strcmp(lang, "ko") ? 1 : !strcmp(lang, "zh-Hans") ? 2 : !strcmp(lang, "zh-Hant") ? 3 : 0;
 }
 
-bool ui_merge_fallback_font(ImFontAtlas *atlas, float size, const ImFontConfig *base) {
-    const char *lang = ui_lang();
-    const char *const *fonts = !strcmp(lang, "ru") ? cyrillic_fonts : !strcmp(lang, "ja") ? ja_fonts
-                             : !strcmp(lang, "ko") ? ko_fonts : !strcmp(lang, "zh-Hans") ? zh_hans_fonts
-                             : !strcmp(lang, "zh-Hant") ? zh_hant_fonts : !strcmp(lang, "th") ? th_fonts : nullptr;
-    if (!fonts) return false;
-    static char shipped[1100];
-    if (fonts == th_fonts && !rt_resource("NotoSansThai-Medium.ttf", "third_party/fonts/NotoSansThai/NotoSansThai-Medium.ttf",
-                                          shipped, sizeof shipped))
-        shipped[0] = 0;
+const ImWchar *ui_lang_glyph_ranges(void) {
     // only the glyphs the language's texts use (a CJK font's full range would not fit an atlas texture), in both cases:
     // option labels are drawn upper-cased (tr_upper), with capitals the texts themselves may never use
     static ImVector<ImWchar> ranges;
@@ -214,6 +205,20 @@ bool ui_merge_fallback_font(ImFontAtlas *atlas, float size, const ImFontConfig *
         ranges.clear();
         b.BuildRanges(&ranges);
     }
+    return ranges.Data;
+}
+
+bool ui_merge_fallback_font(ImFontAtlas *atlas, float size, const ImFontConfig *base) {
+    const char *lang = ui_lang();
+    const char *const *fonts = !strcmp(lang, "ru") ? cyrillic_fonts : !strcmp(lang, "ja") ? ja_fonts
+                             : !strcmp(lang, "ko") ? ko_fonts : !strcmp(lang, "zh-Hans") ? zh_hans_fonts
+                             : !strcmp(lang, "zh-Hant") ? zh_hant_fonts : !strcmp(lang, "th") ? th_fonts : nullptr;
+    if (!fonts) return false;
+    static char shipped[1100];
+    if (fonts == th_fonts && !rt_resource("NotoSansThai-Medium.ttf", "third_party/fonts/NotoSansThai/NotoSansThai-Medium.ttf",
+                                          shipped, sizeof shipped))
+        shipped[0] = 0;
+    const ImWchar *ranges = ui_lang_glyph_ranges();
     for (int i = -1; i < 0 || fonts[i]; i++) {
         const char *path = i < 0 ? (fonts == th_fonts ? shipped : "") : fonts[i];  // (-1: a shipped font)
         FILE *f = *path ? fopen(path, "rb") : nullptr;
@@ -223,7 +228,7 @@ bool ui_merge_fallback_font(ImFontAtlas *atlas, float size, const ImFontConfig *
         cfg.MergeMode = true;
         cfg.FontNo = ttc_face(path, lang);
         cfg.FontDataOwnedByAtlas = true;
-        atlas->AddFontFromFileTTF(path, size, &cfg, ranges.Data);
+        atlas->AddFontFromFileTTF(path, size, &cfg, ranges);
         return true;
     }
     return false;

@@ -79,7 +79,7 @@ def looks_like_text(s, in_tr=False):
         return False
     if in_tr and '/' not in s and '\\' not in s:  # (a word passed to tr() is text, however short)
         return True
-    if re.fullmatch(r'[\w./\\:%-]+\.(ttf|ttc|bfttf|pack|bin|txt|ini|png|dll|so|dylib|nso|npdm|mp4|webm)', s):
+    if re.fullmatch(r'[\w./\\:%-]+\.(ttf|ttc|bfttf|bffnt|sbfarc|pack|bin|txt|ini|png|dll|so|dylib|nso|npdm|mp4|webm)', s):
         return False
     if re.fullmatch(r'[a-z0-9_./-]+', s):  # identifiers, ini keys, folder names
         return False
@@ -118,6 +118,12 @@ def keys():
     text = open(path, encoding='utf-8').read()
     for m in re.finditer(r'^\s*\{"([^"]+)", -?\d', text, re.M):
         found.setdefault(m.group(1), f'{os.path.relpath(path, ROOT)}:{text[:m.start()].count(chr(10)) + 1}')
+    path = os.path.join(ROOT, 'runtime/wolf_link_dump.c')
+    text = open(path, encoding='utf-8').read()
+    status = re.search(r'const char \*wolf_link_dump_status_text\b[^{}]*\{([\s\S]*?)\n\}', text)
+    if status:
+        for _, key in literals(status.group(1)):
+            found.setdefault(key, 'runtime/wolf_link_dump.c')
     return found
 
 

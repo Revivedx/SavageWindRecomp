@@ -374,7 +374,27 @@ int rt_surf_jump_request(uint64_t controller) {
 static uint64_t shown_frames;
 uint64_t framepace_shown_frame(void) { return __atomic_load_n(&shown_frames, __ATOMIC_RELAXED); }
 
+static uint64_t hold_amiibo_picker(void) {
+    extern bool amiibo_picker_active(void);
+    extern void backend_represent(void);
+    if (g_rt_unwind || !amiibo_picker_active()) return 0;
+    uint64_t started = plat_now_ns();
+    while (!g_rt_unwind && amiibo_picker_active()) {
+        uint64_t frame_started = plat_now_ns();
+        backend_represent();
+        if (g_rt_unwind || !amiibo_picker_active()) break;
+        uint64_t next_frame = frame_started + 16666667;
+        if (plat_now_ns() < next_frame) kernel_sleep_until_ns(next_frame);
+    }
+    uint64_t finished = plat_now_ns();
+    return finished > started ? finished - started : 0;
+}
+
 void rt_vfr_update(uint64_t vfr) {
+    static uint64_t last_t;
+    uint64_t selection_time = hold_amiibo_picker();
+    if (g_rt_unwind) return;
+    if (last_t) last_t += selection_time;
     __atomic_fetch_add(&game_frames, 1, __ATOMIC_RELAXED);
     {
         extern uint64_t renderer_present_count(void);
@@ -394,7 +414,6 @@ void rt_vfr_update(uint64_t vfr) {
         input_cam_frame(VF(float, vfr, VFR_RATIO));
         return;
     }
-    static uint64_t last_t;
     static double real, given;  // seconds of real time and of game time handed out (only their gap matters)
     static double smooth;       // seconds between updates, averaged over about 20
     static double last_step;    // the step handed out last, seconds (0: none yet)

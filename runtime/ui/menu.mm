@@ -18,6 +18,7 @@
 #include "option_rows.h"
 #include "saves_tab.h"
 #include "amiibo_picker.h"
+#include "game_font.h"
 #include "imgui_internal.h"  // (NavCursorVisible)
 #include "osk.h"
 #include "console.h"
@@ -125,6 +126,9 @@ static ImGuiKey key_from_scancode(SDL_Scancode sc) {
     case SDL_SCANCODE_Z: return ImGuiKey_Z;
     case SDL_SCANCODE_Q: return ImGuiKey_Q;  // previous tab
     case SDL_SCANCODE_E: return ImGuiKey_E;  // next tab
+    case SDL_SCANCODE_F: return ImGuiKey_F;
+    case SDL_SCANCODE_LEFTBRACKET: return ImGuiKey_LeftBracket;
+    case SDL_SCANCODE_RIGHTBRACKET: return ImGuiKey_RightBracket;
     default: return ImGuiKey_None;
     }
 }
@@ -330,6 +334,11 @@ bool menu_handle_event(const SDL_Event *e) {
             int b = e->gbutton.button;
             if (b == g_bind_pad[BIND_A]) k = ImGuiKey_GamepadFaceDown;
             else if (b == g_bind_pad[BIND_B]) k = ImGuiKey_GamepadFaceRight;
+            else if (amiibo_picker_active() && b == g_bind_pad[BIND_Y]) k = ImGuiKey_F13;
+            else if (amiibo_picker_active() && b == g_bind_pad[BIND_X]) k = ImGuiKey_F14;
+            else if (amiibo_picker_active() && b == g_bind_pad[BIND_L]) k = ImGuiKey_GamepadL1;
+            else if (amiibo_picker_active() && b == g_bind_pad[BIND_R]) k = ImGuiKey_GamepadR1;
+            else if (amiibo_picker_active() && b == g_bind_pad[BIND_MINUS]) k = ImGuiKey_GamepadBack;
         }
         if (k != ImGuiKey_None) { QEvent q = {}; q.kind = QEvent::KEY; q.key = k; q.down = down; push(q); }
         return true;
@@ -402,6 +411,8 @@ static ImGuiContext *g_ctx;  // ours: the start screen (back to it after a reboo
 static ImFont *g_font, *g_font_big;
 static ImFont *g_font_mono;  // the console (columns line up); NULL: the normal font
 static ImFont *g_menu_font, *g_menu_font_big;  // the menu window (Fira Sans); everything else keeps g_font
+static ImFont *g_game_font, *g_game_bold, *g_game_edge;
+static bool g_game_font_wanted;
 static int g_tab, g_tab_request = -2;  // (-2: no request; -1 is the Prelaunch tab)
 static int g_focus_tab = -99;  // put the nav cursor on this tab next frame (-100: the selected one; -99: none)
 static int g_focus_frames;
@@ -452,6 +463,8 @@ static int g_fonts_lang = -1;
 static void load_fonts(void) {
     ImGuiIO &io = ImGui::GetIO();
     io.Fonts->Clear();
+    g_game_font = g_game_bold = g_game_edge = nullptr;
+    amiibo_picker_set_fonts(nullptr, nullptr, nullptr);
     g_font = g_font_big = g_menu_font = g_menu_font_big = g_font_mono = NULL;
     g_fonts_lang = ui_lang_generation();
     ImFontConfig cfg;
@@ -488,10 +501,36 @@ static void load_fonts(void) {
                  rt_resource("FiraSans-SemiBold.ttf", "third_party/fonts/FiraSans/FiraSans-SemiBold.ttf", semi, sizeof semi))) {
         g_menu_font = add(med, 29, cfg);
         g_menu_font_big = add(semi, 53.5f, cfg);
+        GameFont *light = g_game_font_wanted ? game_font_load("NormalS_00.bffnt") : nullptr;
+        GameFont *bold = light ? game_font_load("Normal_00.bffnt") : nullptr;
+        if (light && bold) {
+            static const ImWchar scripts[] = {0x0100, 0x017f, 0x0370, 0x03ff, 0x0400, 0x045f, 0x2010, 0x2027, 0};
+            ImFontGlyphRangesBuilder builder;
+            builder.AddRanges(io.Fonts->GetGlyphRangesDefault());
+            builder.AddRanges(scripts);
+            builder.AddRanges(ui_lang_glyph_ranges());
+            for (int figure = 0; figure < AMIIBO_COUNT; figure++) {
+                builder.AddText(virtual_amiibos[figure].name);
+                builder.AddText(amiibo_series_name(amiibo_series(figure)));
+            }
+            ImVector<ImWchar> ranges;
+            builder.BuildRanges(&ranges);
+            g_game_font = add(med, game_font_line(light), cfg);
+            game_font_add(light, io.Fonts, g_game_font, ranges.Data, GAME_FONT_FILL);
+            if (game_font_edged(light)) {
+                g_game_edge = add(med, game_font_line(light), cfg);
+                game_font_add(light, io.Fonts, g_game_edge, ranges.Data, GAME_FONT_EDGE);
+            }
+            g_game_bold = add(semi, game_font_line(bold), cfg);
+            game_font_add(bold, io.Fonts, g_game_bold, ranges.Data, GAME_FONT_FILL);
+        }
     }
     if (!g_font) g_font = io.Fonts->AddFontDefault();
     if (!g_font_big) g_font_big = g_font;
     if (!g_menu_font || !g_menu_font_big) g_menu_font = g_font, g_menu_font_big = g_font_big;
+    if (g_game_font) io.Fonts->Build();
+    game_font_finish(io.Fonts);
+    amiibo_picker_set_fonts(g_game_font, g_game_bold, g_game_edge);
 }
 
 // Before a frame: another menu language may need other glyphs - the fonts and their texture are made again
@@ -1091,6 +1130,8 @@ RT_ON_RESET(menu_reset) {
     set_open(false);
     g_kbd = 0;
     amiibo_picker_reset();
+    g_game_font_wanted = false;
+    g_fonts_lang = -1;
     g_text_busy = false;
     osk_cancel();
     pthread_mutex_lock(&q_lock);
@@ -1515,6 +1556,10 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         ImGui::GetStyle().ScaleAllSizes(scale);
         style_scale = scale;
     }
+    if (picker && !g_game_font_wanted) {
+        g_game_font_wanted = true;
+        g_fonts_lang = -1;
+    }
     fonts_follow_language();
 #ifdef __APPLE__
     ImGui_ImplMetal_NewFrame(rp);
@@ -1583,7 +1628,21 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     if (kbd) keyboard_draw(io, scale);
     if (sizes) size_list_draw(io, scale);
     if (picker) {
+        AmiiboPickerControls picker_controls;
+        if (g_last_pad.load()) {
+            int family = bind_label_family();
+            picker_controls.confirm = tr(bind_pad_label(g_bind_pad[BIND_A], family));
+            picker_controls.cancel = tr(bind_pad_label(g_bind_pad[BIND_B], family));
+            picker_controls.search = tr(bind_pad_label(g_bind_pad[BIND_Y], family));
+            picker_controls.clear = tr(bind_pad_label(g_bind_pad[BIND_X], family));
+            picker_controls.favorite = tr(bind_pad_label(g_bind_pad[BIND_MINUS], family));
+            picker_controls.series = std::string(bind_pad_label(g_bind_pad[BIND_L], family)) + " / " + bind_pad_label(g_bind_pad[BIND_R], family);
+            picker_controls.tabs = std::string(bind_pad_label(PADB_LTRIGGER, family)) + " / " + bind_pad_label(PADB_RTRIGGER, family);
+        }
+        amiibo_picker_set_controls(picker_controls);
+        ImGui::PushFont(g_game_font ? g_game_font : g_menu_font);
         amiibo_picker_draw(scale);
+        ImGui::PopFont();
         osk_draw(g_font_big, scale);
         if (!amiibo_picker_active()) g_sizes_hold = SDL_GetTicks() + 300;
     }

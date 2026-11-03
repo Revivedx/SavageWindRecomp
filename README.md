@@ -316,6 +316,13 @@ switches - are in [docs/SAVAGE-WIND.md](docs/SAVAGE-WIND.md).
 
 ## Credits
 
+- **[petrifiedsweets](https://github.com/petrifiedsweets)** - the game-styled amiibo picker, row/cursor drawing and
+  game-font reader adapted from [PR #422](https://github.com/Revivedx/SavageWindRecomp/pull/422) (MIT), whose
+  scan-time selection flow is now our default. Our integration retains the offline catalog, Favorites, Recent,
+  repeat scans and synthetic Wolf Link data. Optional Wolf Link dump parsing and key derivation also adapt that
+  PR's format handling, using the already-linked FFmpeg libavutil for AES and HMAC. Fonts are loaded from the
+  player's own RomFS, never bundled; personal amiibo dumps and keys are never shipped either.
+  See [adaptation details and source revision](docs/amiibo.md#ui-attribution).
 - [AmiiboAPI](https://amiiboapi.org/) by [8bitDream and contributors](https://github.com/8bitDream/AmiiboAPI),
   based on [Nevin Vu (N3evin)'s original project](https://github.com/N3evin/AmiiboAPI) (MIT) - metadata for the
   offline amiibo catalog. See [catalog attribution](data/README.md) and [upstream license](data/AmiiboAPI-LICENSE.txt).

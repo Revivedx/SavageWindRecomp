@@ -37,6 +37,7 @@ extern "C" {
 #include "../nvn/output_scale.h"
 #include "../settings.h"
 #include "../amiibo.h"
+#include "../wolf_link_dump.h"
 #include "../color_grade.h"
 #include "../pc_cursor.h"
 #include "../window_size.h"
@@ -287,13 +288,16 @@ void build_items(void) {
     v.push_back(button(P_MAIN, "Quit game", "To the desktop, or back to the Savage Wind start screen.", "Quit",
                        A_QUIT, 0));
 
-    v.push_back(toggle(P_AMIIBO, "amiibo rewards", "Enables the amiibo rune and automatically scans your selected figure. Use the rune in game to receive rewards.",
+    v.push_back(toggle(P_AMIIBO, "amiibo rewards", "Enables the amiibo rune and virtual reader. Use the rune in game to choose a figure and receive rewards.",
                        [](const Item &) { return (int)g_settings.virtual_amiibo; },
                        [](const Item &, int x) {
                            amiibo_set_game_enabled(x != 0);
                            g_settings.virtual_amiibo = x;
                            nfp_configure(g_settings.virtual_amiibo, g_settings.amiibo_figure, g_settings.amiibo_repeat);
                        }, 0));
+    Item gameplay_amiibo = v.back();
+    gameplay_amiibo.page = P_GAMEPLAY;
+    v.push_back(gameplay_amiibo);
     {
         Item it = button(P_AMIIBO, "Choose amiibo", "Search by character or series, pin favorites, or pick a recent figure.",
                          nullptr, A_AMIIBO_LIST, 0);
@@ -307,6 +311,31 @@ void build_items(void) {
                            g_settings.amiibo_repeat = x;
                            nfp_configure(g_settings.virtual_amiibo, g_settings.amiibo_figure, g_settings.amiibo_repeat);
                        }, 0));
+
+    v.push_back(toggle(P_AMIIBO, "Automatic scanning", "Off: choose a figure each time you use the rune. On: scan your saved selection automatically.",
+                       [](const Item &) { return (int)g_settings.amiibo_auto_scan; },
+                       [](const Item &, int enabled) {
+                           g_settings.amiibo_auto_scan = enabled;
+                           nfp_configure(g_settings.virtual_amiibo, g_settings.amiibo_figure, g_settings.amiibo_repeat);
+                       }, 0));
+
+    Item wolf_source = choice(P_AMIIBO, "Wolf Link data",
+        "Synthetic: 20 hearts. Own amiibo: place wolf_link.bin and key_retail.bin in the amiibo folder. Original files are never overwritten.",
+        [](const Item &) { return 2; },
+        [](const Item &, int value) { return tr(value ? "Own amiibo" : "Synthetic (20 hearts)"); },
+        [](const Item &) { return (int)g_settings.amiibo_own_wolf; },
+        [](const Item &, int value) { g_settings.amiibo_own_wolf = value != 0; }, 0);
+    wolf_source.desc_fn = [](const Item &item) {
+        static thread_local std::string description;
+        description = tr(item.desc);
+        if (g_settings.amiibo_own_wolf) {
+            WolfLinkDump imported;
+            description += " ";
+            description += tr(wolf_link_dump_status_text(wolf_link_dump_load(&imported)));
+        }
+        return description.c_str();
+    };
+    v.push_back(wolf_source);
 
     // Video (fullscreen and the window size are applied by the window loop: menu.mm)
     v.push_back(toggle(P_VIDEO, "Fullscreen", "Fills the screen. Also F11 or Alt+Enter.",

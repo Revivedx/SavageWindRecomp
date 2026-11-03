@@ -8,7 +8,7 @@
 // back into buf; with a mouse / keyboard it's typed into directly. Returns true when the text changed (typed, or OK
 // on the on-screen keyboard; with ImGuiInputTextFlags_EnterReturnsTrue: Enter / OK). title heads the keyboard.
 bool ui_input_text(const char *label, char *buf, size_t size, ImGuiInputTextFlags flags = 0, const char *hint = NULL,
-                   const char *title = NULL);
+                   const char *title = NULL, bool open_keyboard = false);
 // true (once) after the on-screen keyboard of the field just drawn with ui_input_text was cancelled
 bool ui_input_text_cancelled(void);
 

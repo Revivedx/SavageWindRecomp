@@ -13,6 +13,22 @@ int main(int argc, char **argv) {
     assert(argc == 6 || argc == 8);
     setenv("SAVAGEWIND_SETTINGS", argv[1], 1);
     settings_load();
+    const char *own_wolf = getenv("SAVAGEWIND_TEST_OWN_WOLF");
+    if (own_wolf && !strcmp(own_wolf, "write")) {
+        assert(!g_settings.amiibo_own_wolf);
+        g_settings.amiibo_own_wolf = true;
+    } else if (own_wolf && !strcmp(own_wolf, "read")) {
+        assert(g_settings.amiibo_own_wolf);
+        g_settings.amiibo_own_wolf = false;
+    } else assert(!g_settings.amiibo_own_wolf);
+    const char *automatic = getenv("SAVAGEWIND_TEST_AMIIBO_AUTO");
+    if (automatic && !strcmp(automatic, "write")) {
+        assert(!g_settings.amiibo_auto_scan);
+        g_settings.amiibo_auto_scan = true;
+    } else if (automatic && !strcmp(automatic, "read")) {
+        assert(g_settings.amiibo_auto_scan);
+        g_settings.amiibo_auto_scan = false;
+    } else assert(!g_settings.amiibo_auto_scan);
     assert(g_settings.virtual_amiibo == atoi(argv[2]));
     assert(g_settings.amiibo_figure == atoi(argv[3]));
     if (argc == 8) assert(g_settings.amiibo_repeat == atoi(argv[6]));

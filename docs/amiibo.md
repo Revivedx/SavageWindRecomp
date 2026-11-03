@@ -2,12 +2,51 @@
 
 In **Options > amiibo**:
 
-1. Turn **amiibo rewards** on. This enables the game's rune setting and virtual scanning together.
-2. Open **Choose amiibo** and select a figure from the 952-entry offline library. The button shows your current selection.
-3. Return to play and use the amiibo rune on suitable ground. The selected figure is scanned automatically.
+1. Turn **amiibo rewards** on (also available on Gameplay). This enables the rune and virtual reader together.
+2. Return to play and use the amiibo rune on suitable ground. The picker opens over the game.
+3. Choose a figure from the 952-entry offline library and confirm. The chosen figure is presented to the reader.
 
-The amiibo controls now have their own entry on the main Options page. The former Gameplay controls and separate
-game amiibo toggle are replaced by this page. The dedicated page, combined enable switch and searchable browser have been confirmed working in game.
+While the picker is open, simulation waits at the next game-frame boundary and the last game image is re-presented
+with the live picker at up to 60 updates per second. The search keyboard remains usable. Confirming, cancelling or
+stopping detection releases the hold; reboot/shutdown can interrupt it too. This does not change the game's own
+pause flags, and time spent choosing is excluded from the next frame's elapsed time so gameplay does not catch up.
+
+**Automatic scanning** is off by default: the scan-time picker is the chosen workflow. Turn it on to restore the previous workflow: choose a
+figure once in Options and automatically scan that saved selection whenever you use the rune. Options > Choose
+amiibo remains available in either mode. Selection, Favorites and Recent are saved after a scan choice too.
+Cancelling the scan picker presents no figure; use the game's Back action to leave the rune or start a new scan.
+
+### Optional personal Wolf Link
+
+**Options > amiibo > Wolf Link data** selects **Synthetic (20 hearts)** (the default) or **Own amiibo**.
+For Own amiibo, put your own encrypted Wolf Link NTAG215 dump and amiibo keys in the data root:
+
+```text
+amiibo/wolf_link.bin       (532, 540 or 572 bytes)
+amiibo/key_retail.bin      (160 bytes)
+```
+
+In a source checkout, this is the `amiibo/` folder alongside `extracted/`. No dumps or keys are supplied or
+downloaded. The loader checks the Wolf Link model ID, tag identity and both HMACs before presenting a figure.
+It uses the dump's serial number, nickname, registration flags and actual application data, not a forced heart
+count. A registered Wolf Link with Twilight Princess HD data uses the hearts saved in that data.
+
+Missing files, wrong keys, corrupt dumps or damaged saved application data show a warning and block Wolf Link's
+confirmation rather than silently falling back to synthetic data. Other catalog figures still work. After fixing
+files, close and reopen the picker to reload them. Switching the source affects the next scan, not a mounted tag.
+
+Game writes in Own amiibo mode go to `amiibo_data/wolf_link-<serial>.bin`, separately for each serial number.
+Flush, unmount and stop-detection save pending writes; write failures are reported to the game. The original
+dump and keys are never overwritten. Existing application-data files take precedence over the dump's initial
+data on later scans; back up and remove the matching file if you want to restore the dump's original game data.
+Both personal-data folders and `key_retail.bin` are Git-ignored and excluded from release packaging.
+
+This optional reader has automated crypto-vector, synthetic-dump, IPC and persistence tests, but still needs
+verification with a player's real Wolf Link dump in game. Repeat scans remains an independent setting.
+
+The amiibo controls have their own entry on the main Options page. Gameplay also exposes the same combined
+enable switch, rather than a separate game-only toggle. Both the original Options-based workflow and the new
+scan-time picker have been tried in game; the scan-time picker is the preferred interface.
 
 The enable setting, figure selection, Favorites and Recent list are saved in `savagewind.ini`. Changes take effect without restarting;
 changing the figure during a scan applies to the next scan. Each figure normally has its own stable virtual identity.
@@ -18,6 +57,39 @@ French, German, Italian, Dutch, Portuguese, Russian, Japanese, Korean, Simplifie
 The generic series filters (All series and Others) are translated too. Figure names and branded series titles
 remain the catalog's English names; search uses those catalog fields rather than translated names and does not
 perform Unicode case folding. The browser keeps a stable window identity when its translated title changes.
+
+The browser uses the full-screen layout and game-font reader from petrifiedsweets' PR #422: cream text, dark
+rows, a glowing corner cursor and a figure-details panel. NormalS_00 and Normal_00 are read from the player's
+regional font archive in RomFS. Missing bitmap fonts, including Korean, Chinese and Thai, use our existing
+Fira Sans/system-font fallbacks. No Nintendo fonts are shipped. Favorites, Recent and the offline catalog remain.
+
+Controller shortcuts: Y searches, X clears, L/R change series, triggers switch All/Favorites/Recent, and Minus/Back
+toggles a favorite. Confirm selects and B cancels; search also remains reachable through normal controller navigation.
+The compact button badges follow the active input device, controller family and mapped buttons instead of always
+showing Nintendo labels. The names above describe the default Nintendo layout.
+On the keyboard, Ctrl+F focuses search, Delete clears it, F toggles a favorite, brackets change series, and Q/E switch
+tabs. Enter after typing returns focus to the results. A mouse click previews a figure; double-click or the Choose
+amiibo button confirms. The star beside a figure toggles its favorite state without scanning it, and the small gold
+dot marks the saved selection. Empty filters hide stale details and disable confirmation; Reset filters restores
+the full catalog. The scrolling list renders only visible rows while keeping controller navigation across the catalog.
+
+## UI attribution
+
+Thanks to **[petrifiedsweets](https://github.com/petrifiedsweets)** for the amiibo reader and game-styled picker in
+[PR #422](https://github.com/Revivedx/SavageWindRecomp/pull/422). Our picker adapts the row/cursor drawing and
+game-font reader from [revision `3e329d0`](https://github.com/petrifiedsweets/SavageWindRecomp/tree/3e329d0d9dc722771ce8713ab4189d16999ff7ea),
+under the project's MIT license, and adopts its scan-time selection approach. The relevant upstream files are
+[`runtime/ui/menu.mm`](https://github.com/petrifiedsweets/SavageWindRecomp/blob/3e329d0d9dc722771ce8713ab4189d16999ff7ea/runtime/ui/menu.mm)
+and [`runtime/ui/game_font.mm`](https://github.com/petrifiedsweets/SavageWindRecomp/blob/3e329d0d9dc722771ce8713ab4189d16999ff7ea/runtime/ui/game_font.mm).
+The optional Wolf Link importer also adapts the tag ordering and key derivation from that revision's
+[`runtime/amiibo.c`](https://github.com/petrifiedsweets/SavageWindRecomp/blob/3e329d0d9dc722771ce8713ab4189d16999ff7ea/runtime/amiibo.c),
+using FFmpeg libavutil's AES and HMAC implementations instead of adding another crypto dependency.
+
+The integration keeps our synthetic offline figures, Favorites/Recent, settings, repeat-scan bypass and 20-heart
+Wolf Link support. Personal dump support is restricted to the optional Wolf Link source; it does not replace
+the offline catalog. The bitmap fonts remain the player's own game assets and are not included in releases.
+
+## Repeat scans and figure data
 
 **Repeat scans**, also on this page, is an optional saved setting (off by default). It bypasses the
 UID-based daily-use check and, for Wolf Link, his separate death cooldown, while retaining each figure's stable
@@ -34,11 +106,11 @@ This hook has been located and built for game version 1.9.0. Updating from the e
 the game code as well as the runtime (`make gen`, then `make -j` in a source checkout). The current workspace's
 binary and game library have already been rebuilt.
 
-No figure dumps or keys are needed. The original four figures (Archer Link, BOTW Zelda, Guardian and Bokoblin),
+No figure dumps or keys are needed for the default synthetic source. The original four figures (Archer Link, BOTW Zelda, Guardian and Bokoblin),
 previous Gameplay controls and the repeat cooldown bypass have been confirmed working in game. The expanded library still needs
-gameplay testing. Selecting **Midna & Wolf Link** now supplies synthetic registration and Twilight Princess HD
+gameplay testing. With the default source, selecting **Midna & Wolf Link** supplies synthetic registration and Twilight Princess HD
 application data for **20 hearts** (Cave of Shadows level 40). No dump or keys are required. This path has automated
-IPC coverage. Writes are retained only within the current detection window;
+IPC coverage. Synthetic writes are retained only within the current detection window;
 each new scan starts with 20 hearts. BOTW's own companion-health and daily-use rules may still affect a summon.
 With **Repeat scans** enabled and Wolf Link selected, reads of `WolfLink_DiedToday` now return false, allowing
 the game to attempt another summon after his death. The saved flag is not cleared; switching repeat off restores

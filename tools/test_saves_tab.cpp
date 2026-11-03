@@ -83,7 +83,7 @@ std::string tr_upper(const char *s) {
     for (char &c : r) c = (char)toupper((unsigned char)c);
     return r;
 }
-bool ui_input_text(const char *, char *, size_t, ImGuiInputTextFlags, const char *, const char *) { return false; }
+bool ui_input_text(const char *, char *, size_t, ImGuiInputTextFlags, const char *, const char *, bool) { return false; }
 bool ui_input_text_cancelled(void) { return false; }
 bool osk_is_open(void) { return false; }
 
