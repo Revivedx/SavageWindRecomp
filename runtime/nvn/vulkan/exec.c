@@ -3038,13 +3038,20 @@ static VkResult create_pipeline_in(const PipeState *k, VkShaderModule vsm, VkSha
                                               .attachmentCount = k->ncolor, .pAttachments = cba};
     VkPipelineDynamicStateCreateInfo dy = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
                                            .dynamicStateCount = NDYN, .pDynamicStates = DYN};
+    VkPipelineRenderingCreateInfo ri = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+                                        .colorAttachmentCount = k->ncolor, .pColorAttachmentFormats = k->color,
+                                        .depthAttachmentFormat = k->depth, .stencilAttachmentFormat = k->stencil};
     VkPipelineCreationFeedback fb = {0};
     VkPipelineCreationFeedbackCreateInfo fci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO,
                                                 .pPipelineCreationFeedback = &fb};
-    VkPipelineRenderingCreateInfo ri = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO, .pNext = &fci,
-                                        .colorAttachmentCount = k->ncolor, .pColorAttachmentFormats = k->color,
-                                        .depthAttachmentFormat = k->depth, .stencilAttachmentFormat = k->stencil};
-    VkGraphicsPipelineCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &ri, .stageCount = 2,
+    // On AMD's Windows proprietary driver (e.g. RX 480 / Polaris), attaching VkPipelineCreationFeedbackCreateInfo
+    // causes vkCreateGraphicsPipelines to crash inside amdvlk64.dll.
+    void *pnext = &ri;
+    if (!g_vk.amd_proprietary) {
+        fci.pNext = &ri;
+        pnext = &fci;
+    }
+    VkGraphicsPipelineCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = pnext, .stageCount = 2,
                                        .pStages = stages, .pVertexInputState = &vi, .pInputAssemblyState = &ia, .pViewportState = &vs,
                                        .pRasterizationState = &rs, .pMultisampleState = &ms, .pDepthStencilState = &ds,
                                        .pColorBlendState = &cb, .pDynamicState = &dy, .layout = layout,
@@ -3055,7 +3062,12 @@ static VkResult create_pipeline_in(const PipeState *k, VkShaderModule vsm, VkSha
         static int n;
         if (n++ < 10) LOG("[vk] pipeline creation failed: %d\n", r);
     } else if (cache == g_vk.pcache) {
-        cache_feedback(&fb);
+        if (g_vk.amd_proprietary) {  // (no feedback asked for: the cache saver takes every pipeline as new)
+            extern void vk_pipeline_cache_note(bool hit);
+            vk_pipeline_cache_note(false);
+        } else {
+            cache_feedback(&fb);
+        }
     }
     return r;
 }
@@ -3742,7 +3754,8 @@ static void resolve_feedback(Prog *pr) {
             // the pass ended and begun again). Instead the pass runs with the target as a feedback loop, and a barrier
             // inside it makes the earlier draws' writes visible to this one's reads at the same pixel; each draw sees
             // what the ones before it wrote, as with the copies. Fragment-shader reads only (a barrier inside the pass
-            // reaches no vertex shader). The first such draw ends the pass: it begins again with the loop enabled, and
+            // reaches no vertex shader; the barrier is a feedback loop dependency, VK_DEPENDENCY_FEEDBACK_LOOP_BIT_EXT, which
+            // the extension requires for it). The first such draw ends the pass: it begins again with the loop enabled, and
             // from then on every pass with that target does.
             static int nofbl = -1;
             if (nofbl < 0) nofbl = getenv("SAVAGEWIND_VK_FEEDBACK_COPY") != NULL;  // (debugging) copies, as before
@@ -3766,8 +3779,8 @@ static void resolve_feedback(Prog *pr) {
                                                    .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                                                    .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT};
                             VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                                                   .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT, .memoryBarrierCount = 1,
-                                                   .pMemoryBarriers = &mb};
+                                                   .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT | VK_DEPENDENCY_FEEDBACK_LOOP_BIT_EXT,
+                                                   .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
                             rec_CmdPipelineBarrier2(vk_cmd(), &di);
                             pass_color_unsynced = 0;  // (one barrier covers every target)
                             stat_feedback_barriers++;
