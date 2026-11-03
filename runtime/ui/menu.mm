@@ -5,6 +5,7 @@
 #ifdef __APPLE__
 #import <Metal/Metal.h>
 #endif
+#include "../camera_tune.h"
 #include <SDL3/SDL.h>
 #include <math.h>
 #include <pthread.h>
@@ -766,6 +767,17 @@ static void tab_display(void) {
                        "How much of the world the camera shows in play: 100% is the game's own. Cutscenes and "
                        "conversations keep theirs.", false))
             g_settings.fov = fov[cur];
+    }
+    {   // Camera (runtime/camera_tune.c): the game's camera or one of the Classic Camera mod's, as it is
+        static std::string names_buf[CAMERA_STYLES];
+        const char *names[CAMERA_STYLES];
+        for (int i = 0; i < CAMERA_STYLES; i++) {
+            names_buf[i] = tr(g_camera_style_names[i]);
+            names[i] = names_buf[i].c_str();
+        }
+        if (opt_choice("Camera type", &g_settings.camera_style, names, CAMERA_STYLES, 0,
+                       "A system of camera types.", false))
+            camera_live_apply(g_settings.camera_style);
     }
     {   // Draw distance (runtime/draw_distance.c)
         static const char *const names[DRAWDIST_COUNT] = {"Original", "Medium", "High"};  // (DRAWDIST_*)

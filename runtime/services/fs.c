@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
+#include <pthread.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,7 +18,9 @@
 #include "../game_sites.h"
 #include "../hle.h"
 #include "../ipc.h"
+#include "../camera_tune.h"
 #include "../language.h"
+#include "../settings.h"
 #include "../romfs_image.h"
 #include "archive.h"
 #include "fs_layout.h"
@@ -57,6 +60,8 @@ typedef struct {
     GrownFile *grown;
     int ngrown;
     uint8_t *rstb_blob;      // the patched ResourceSizeTable served from memory (rstb_patch)
+    uint8_t *camera_blob;    // the camera actor as Settings > Camera has it, served from memory (camera_patch)
+    size_t camera_blob_n;
     uint8_t *hud_pack;       // Pack/Bootup.pack with the HUD letters patched (hud_letters_patch)
     uint8_t *voice_banks;    // the text language's voice banks with the chosen voices' lengths (bars_hybrid)
 } RomImage;
@@ -76,7 +81,7 @@ RT_ON_RESET(fs_reset) {
         }
         for (int i = 0; i < m->npatches; i++) free(m->patches[i].data);  // (ov_meta and the extended table are among these)
         for (int i = 0; i < m->rom_nfiles; i++) free(m->rom_files[i].path);
-        free(m->ov), free(m->rom_files), free(m->grown), free(m->rstb_blob), free(m->hud_pack), free(m->voice_banks);
+        free(m->ov), free(m->rom_files), free(m->grown), free(m->rstb_blob), free(m->camera_blob), free(m->hud_pack), free(m->voice_banks);
         romfs_image_close(m->img);
         *m = (RomImage){0};
     }
@@ -922,6 +927,92 @@ static void rstb_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
             R->ngrown, changed, (unsigned long long)(added >> 10));
 }
 
+// Settings > Camera's style: the camera actor served from memory with its program as the style has it (runtime/
+// camera_tune.c), always, so a style chosen while the game runs can be served too (camera_serve_style). It gets
+// CAMERA_GROW bytes bigger, a multiple of the alignment of what follows it, and rstb_patch grows its ResourceSizeTable
+// entries with it. The overlay's own file if it has one.
+#define CAMERA_GROW 0x8000u  // (a style that turns cameras into other kinds grows their objects)
+static uint8_t *camera_pack;  // the actor unpacked and grown, its program the game's own (at camera_program)
+static size_t camera_pack_n, camera_program, camera_program_n;
+static pthread_mutex_t camera_lock = PTHREAD_MUTEX_INITIALIZER;
+
+// The actor with the style's program, packed again into camera_blob, which keeps its size (a literal Yaz0 of the same
+// bytes); how many values the style set, -1 if it can't
+static int camera_build(int style) {
+    uint8_t *d = malloc(camera_pack_n);
+    if (!d) return -1;
+    memcpy(d, camera_pack, camera_pack_n);
+    size_t size = camera_program_n, bn = 0;
+    int done = camera_style_program(d + camera_program, &size, camera_program_n + CAMERA_GROW, style);
+    uint8_t *z = yaz0_pack_literal(d, camera_pack_n, &bn);
+    free(d);
+    if (!z) return -1;
+    if (!R->camera_blob) R->camera_blob = z, R->camera_blob_n = bn;
+    else if (bn == R->camera_blob_n) memcpy(R->camera_blob, z, bn), free(z);
+    else { free(z); return -1; }
+    return done;
+}
+
+bool camera_serve_style(int style) {
+    pthread_mutex_lock(&camera_lock);
+    bool ok = camera_pack && R && R == &images[0] && R->camera_blob && camera_build(style) >= 0;
+    pthread_mutex_unlock(&camera_lock);
+    if (ok) LOG("[fs] camera: serving style %d\n", style);
+    return ok;
+}
+
+static void camera_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
+    static const char pack[] = "Actor/Pack/GameRomCamera.sbactorpack", program[] = "Actor/AIProgram/GameRomCamera.baiprog";
+    if (R != &images[0]) return;
+    int k = 0;
+    while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, pack)) k++;
+    if (k == R->rom_nfiles) { LOG("[fs] camera: no %s, the styles left out\n", pack); return; }
+    char host[1200];
+    struct stat over;
+    bool from_overlay = overlay_file(pack, host, sizeof host) && !stat(host, &over);
+    size_t zn = from_overlay ? (size_t)over.st_size : R->rom_files[k].size, n = 0;
+    uint8_t *z = malloc(zn), *d = NULL;
+    if (from_overlay) {
+        FILE *f = fopen(host, "rb");
+        if (f && fread(z, 1, zn, f) == zn) d = yaz0_unpack(z, zn, &n);
+        if (f) fclose(f);
+    } else if (romfs_image_pread(R->img, z, zn, R->rom_files[k].off) == (ssize_t)zn) {
+        d = yaz0_unpack(z, zn, &n);
+    }
+    free(z);
+    uint32_t data_off = 0, start = 0, end = 0;
+    CameraValue probe[4];
+    uint8_t *more = d ? realloc(d, n + CAMERA_GROW) : NULL;
+    if (more) d = more;
+    if (!more || sarc_find(d, n, program, &data_off, &start, &end) < 0 || data_off + (uint64_t)end > n ||
+        !camera_program_values(d + data_off + start, end - start, probe, 4) ||
+        !camera_sarc_grow(d, n, n + CAMERA_GROW, data_off, start, end, CAMERA_GROW)) {
+        LOG("[fs] camera: the camera program isn't as expected, the styles left out\n");
+        free(d);
+        return;
+    }
+    pthread_mutex_lock(&camera_lock);
+    free(camera_pack);
+    camera_pack = d, camera_pack_n = n + CAMERA_GROW, camera_program = data_off + start, camera_program_n = end - start;
+    free(R->camera_blob);
+    R->camera_blob = NULL;
+    int done = camera_build(g_settings.camera_style);
+    pthread_mutex_unlock(&camera_lock);
+    if (done < 0) { LOG("[fs] camera: can't pack the camera actor, the styles left out\n"); return; }
+    camera_live_init(camera_pack + camera_program, camera_program_n, g_settings.camera_style);
+    R->grown = realloc(R->grown, sizeof *R->grown * (R->ngrown + 2));
+    R->grown[R->ngrown++] = (GrownFile){"Actor/Pack/GameRomCamera.bactorpack", CAMERA_GROW};
+    R->grown[R->ngrown++] = (GrownFile){"Actor/AIProgram/GameRomCamera.baiprog", CAMERA_GROW};
+    meta_copy(fmeta, foff, fsz);
+    uint64_t rel = R->ov_end - R->rom_data_off, size = R->camera_blob_n;
+    memcpy(R->ov_meta + R->rom_files[k].meta + 8, &rel, 8);
+    memcpy(R->ov_meta + R->rom_files[k].meta + 0x10, &size, 8);
+    if (R->ov_n == R->ov_cap) { R->ov_cap = R->ov_cap ? R->ov_cap * 2 : 256; R->ov = realloc(R->ov, sizeof *R->ov * R->ov_cap); }
+    R->ov[R->ov_n++] = (Overlay){R->ov_end, size, NULL, -1, R->camera_blob};
+    R->ov_end = (R->ov_end + size + 0xF) & ~0xFull;
+    LOG("[fs] camera: style %d, %d values\n", g_settings.camera_style, done);
+}
+
 static void rom_index(void) {
     uint64_t h[10];
     if (romfs_image_pread(R->img, h, sizeof h, 0) != (ssize_t)sizeof h) return;
@@ -1000,6 +1091,7 @@ static void rom_index(void) {
     hud_letters_patch(fmeta, foff, fsz);
     if (R == &images[0] && !atomic_load_explicit(&inventory_clip_layout_valid, memory_order_acquire))
         LOG("[fs] Inventory clip layout unavailable; using the game's clipping\n");
+    camera_patch(fmeta, foff, fsz);
     rstb_patch(fmeta, foff, fsz);
     if (R->ov_n) LOG("[fs] overlay: %d romfs files replaced\n", R->ov_n);
     if (R->ov_meta) { R->patches[R->npatches++] = (Patch){R->ov_meta_off, R->ov_meta_size, R->ov_meta}; }

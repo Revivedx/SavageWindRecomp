@@ -11,6 +11,9 @@
 extern uint64_t g_mem_direct_lo, g_mem_direct_hi;
 bool control_mem_peek(uint64_t addr, void *buf, size_t n);        // read n bytes (committed guest memory only)
 bool control_mem_poke(uint64_t addr, const void *buf, size_t n);  // write n <= 64 bytes (ordinary writable pages only)
+// Where the u32 v (not 0) is, 4-aligned, in writable guest memory from lo to hi: up to max addresses to out; how many.
+// Blocks for the scan (about 0.3 s over the whole heap), so not on the game's threads. Also Settings > Camera's.
+size_t control_mem_find_u32(uint32_t v, uint64_t lo, uint64_t hi, uint64_t *out, size_t max);
 // Where three floats in a row are within tol of v[0..2] (writable memory), found on a background thread (about 0.3 s,
 // never blocks the caller). _start returns false if one is already running. _poll: 0 nothing started, 1 still running,
 // 2 done (writes up to max addresses to out and the count to *n; the result is handed over once).

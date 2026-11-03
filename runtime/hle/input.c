@@ -721,8 +721,9 @@ static void host_test_frame(uint64_t frame) {
 
 static uint64_t g_pad_obj;
 volatile int g_inject_plus;  // frames to hold Plus for the game (movie.c: A/B skip a skippable movie)
+volatile int g_inject_camera_reset;  // a tap of ZL once back in play (camera_live.c: the camera starts again)
 RT_ON_RESET(input_reboot_reset) {
-    g_pad_obj = 0; g_inject_plus = 0;
+    g_pad_obj = 0; g_inject_plus = 0; g_inject_camera_reset = 0;
 }  // (reboot: the controller object was guest memory)
 void input_frame(uint64_t frame) {
     extern uint64_t renderer_present_count(void);
@@ -824,6 +825,17 @@ static void fill_state(Cpu *c) {
         static uint64_t until;
         if (g_inject_plus > 0) { until = renderer_present_count() + 10; g_inject_plus = 0; }
         if (renderer_present_count() < until) b |= 1ull << BTN_PLUS;
+    }
+    {   // injected ZL: ~4 presented frames, once the player is back in play (not in a menu, a load, a cutscene)
+        extern uint64_t renderer_present_count(void);
+        extern bool framepace_paused(void), framepace_in_event(void);
+        static uint64_t until;
+        if (g_inject_camera_reset && !menu_input_captured() && !framepace_paused() && !framepace_title_ui() && !framepace_menu_ui() &&
+            !framepace_loading_ui() && !framepace_in_event()) {
+            until = renderer_present_count() + 4;
+            g_inject_camera_reset = 0;
+        }
+        if (renderer_present_count() < until) b |= 1ull << BTN_ZL;
     }
     // (the controller's sticks turning a shrine apparatus move neither Link nor the camera meanwhile)
     bool sticks = !menu && !dualstick_on();

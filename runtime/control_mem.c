@@ -533,6 +533,35 @@ no_scan:
 }
 // ---- for other control commands (runtime/control_mem.h)
 bool control_mem_peek(uint64_t a, void *buf, size_t n) { return peek(a, buf, n); }
+
+// control_mem_find_u32: one chunk, under the crash guard
+typedef struct { const MsMatch *m; uint64_t guest, *out; size_t max, n; } FindCtx;
+static size_t find_cb(const void *p, size_t n, void *vctx) {
+    FindCtx *c = vctx;
+    static uint32_t offs[4096];
+    MsStats st = {0, 0};
+    size_t room = c->max - c->n, k = ms_scan(p, n, c->m, true, offs, room < 4096 ? room : 4096, &st);
+    for (size_t i = 0; i < k; i++) c->out[c->n++] = c->guest + offs[i];
+    return k;
+}
+size_t control_mem_find_u32(uint32_t v, uint64_t lo, uint64_t hi, uint64_t *out, size_t max) {
+    static uint64_t addr[REGIONS], size[REGIONS];
+    static bool writable[REGIONS];
+    MsMatch m = {.type = MS_U32, .ulo = v, .uhi = v};
+    FindCtx c = {&m, 0, out, max, 0};
+    int n = v ? collect_regions(addr, size, writable) : -1;  // (0 can't be told from empty pages)
+    for (int i = 0; i < n && c.n < max; i++) {
+        uint64_t a = addr[i] > lo ? addr[i] : lo, end = addr[i] + size[i] < hi ? addr[i] + size[i] : hi;
+        if (!writable[i]) continue;
+        for (a = (a + 4095) & ~4095ull; a < end && c.n < max;) {
+            size_t len = (size_t)(end - a < CHUNK ? end - a : CHUNK) & ~(size_t)3, ret, before = c.n;
+            c.guest = a;
+            if (len && !ms_guarded((const void *)(uintptr_t)a, len, find_cb, &c, &ret)) c.n = before;  // (a page went away)
+            a += CHUNK;
+        }
+    }
+    return c.n;
+}
 // Windows: in place under the crash guard, like peek (a write to a page that is not writable faults inside the guard
 // and fails; copy_memory's VirtualQuery + WriteProcessMemory cost about a millisecond each). Elsewhere copy_memory.
 static size_t poke_fn(const void *p, size_t n, void *ctx) { PeekCtx *c = ctx; memcpy((void *)p, c->buf, c->n); return n; }

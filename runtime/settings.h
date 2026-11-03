@@ -91,6 +91,7 @@ typedef struct {
     int hdr_white;       // nits of SDR white in HDR (0: what Windows gives SDR content on that monitor)
     int fov;             // field of view in play, percent of the game's own (FOV_CHOICES)
     int draw_distance;   // DRAWDIST_*: how far placed actors are kept (runtime/draw_distance.c)
+    int camera_style;    // Settings > Camera (runtime/camera_tune.h): 0 the game's cameras, else one of the Classic Camera mod's, 1..CAMERA_STYLES-1
     // Video > Colour (runtime/color_grade.h): 0 everywhere and no LUT = the game's own colours (nothing runs)
     int color_exposure;      // tenths of an EV, -20..20
     int color_contrast;      // percent, -50..50

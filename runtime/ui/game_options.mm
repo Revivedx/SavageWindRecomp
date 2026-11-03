@@ -27,6 +27,7 @@
 #include <SDL3/SDL.h>
 
 #include "i18n.h"
+#include "../camera_tune.h"
 
 extern "C" {
 #include "../input_bind.h"
@@ -258,7 +259,7 @@ const char *bind_label(const Item &it, int) {
 void build_items(void) {
     std::vector<Item> &v = g_items;
     // first page: the sections (the game's own options are on Gameplay and Controls)
-    v.push_back(button(P_MAIN, "Gameplay", "Mini-map, HUD, jump button and more.", "Open", A_PAGE, P_GAMEPLAY));
+    v.push_back(button(P_MAIN, "Gameplay", "Camera type, field of view, mini-map, HUD, jump button and more.", "Open", A_PAGE, P_GAMEPLAY));
     v.push_back(button(P_MAIN, "Video", "Screen, resolution and image quality.", "Open", A_PAGE, P_VIDEO));
 #ifndef __APPLE__
     v.push_back(button(P_MAIN, "Colour", "Presets, exposure, contrast, saturation and LUTs.", "Open", A_PAGE, P_COLOUR));
@@ -271,6 +272,26 @@ void build_items(void) {
     v.push_back(button(P_MAIN, "Language", "Language of the texts and of the voices.", "Open", A_PAGE, P_LANGUAGE));
     v.push_back(button(P_MAIN, "Quit game", "To the desktop, or back to the Savage Wind start screen.", "Quit",
                        A_QUIT, 0));
+
+    // Gameplay: how the camera follows Link (after the game's own rows)
+    v.push_back(choice(P_GAMEPLAY, "Field of view", "How much the camera shows in play. Cutscenes keep their own.",
+                       [](const Item &) { return N(k_fov); },
+                       [](const Item &, int x) {
+                           static std::string str;
+                           str = pct(k_fov[x]);
+                           return str.c_str();
+                       },
+                       [](const Item &) { return nearest(k_fov, N(k_fov), (float)g_settings.fov); },
+                       [](const Item &, int x) { g_settings.fov = k_fov[x]; }, FOV_DEFAULT_INDEX));
+    // Camera (runtime/camera_tune.c): the game's camera or one of the Classic Camera mod's, as it is
+    v.push_back(choice(P_GAMEPLAY, "Camera type", "A system of camera types.",
+                       [](const Item &) { return CAMERA_STYLES; },
+                       [](const Item &, int x) { return tr(g_camera_style_names[x]); },
+                       [](const Item &) { return g_settings.camera_style; },
+                       [](const Item &, int x) {
+                           g_settings.camera_style = x;
+                           camera_live_apply(x);
+                       }, 0));
 
     // Video (fullscreen and the window size are applied by the window loop: menu.mm)
     v.push_back(toggle(P_VIDEO, "Fullscreen", "Fills the screen. Also F11 or Alt+Enter.",
@@ -332,15 +353,6 @@ void build_items(void) {
     v.push_back(toggle(P_VIDEO, "Fill wide screens", "Shows more of the world on screens that aren't 16:9 (wider or taller), instead of bars.",
                        [](const Item &) { return (int)g_settings.wide_view; },
                        [](const Item &, int x) { g_settings.wide_view = x; }, 1));
-    v.push_back(choice(P_VIDEO, "Field of view", "How much the camera shows in play. Cutscenes keep their own.",
-                       [](const Item &) { return N(k_fov); },
-                       [](const Item &, int x) {
-                           static std::string str;
-                           str = pct(k_fov[x]);
-                           return str.c_str();
-                       },
-                       [](const Item &) { return nearest(k_fov, N(k_fov), (float)g_settings.fov); },
-                       [](const Item &, int x) { g_settings.fov = k_fov[x]; }, FOV_DEFAULT_INDEX));
     // Draw distance (runtime/draw_distance.c): applied while playing, from the next placed actor the game looks at
     v.push_back(choice(P_VIDEO, "Draw distance", "How far out grass, trees, rocks, buildings and enemies appear. Higher costs more CPU and GPU time.",
                        [](const Item &) { return (int)DRAWDIST_COUNT; },
@@ -667,6 +679,7 @@ void build_items(void) {
                        [](const Item &, int x) { g_settings.voice_language = x; }, 0));
     v.push_back(button(P_LANGUAGE, "Restart now",
                        "Starts the game again with these languages. Unsaved progress is lost.", "Restart", A_RESTART, 0));
+
 }
 
 // The game's table, extended (first opening, and again after a reboot reloads the game's own)
@@ -961,7 +974,7 @@ extern "C" int rt_opt_decide(uint64_t row) {
         mark_all_rows(rd64(row));
         return 2;
     case A_RESTART:
-        if (language_pending()) {
+        if (language_pending() || camera_pending()) {
             settings_save();
             rt_request_reboot(1);
         }

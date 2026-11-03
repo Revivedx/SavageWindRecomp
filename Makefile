@@ -448,6 +448,10 @@ test-gpu-settings: $(B)/test_gpu_settings
 
 .PHONY: test-gpu-settings
 
+$(B)/test_camera_tune: tests/test_camera_tune.c runtime/camera_tune.c runtime/camera_tune.h runtime/camera_styles.inc
+	@mkdir -p $(dir $@)
+	$(CC) -O1 -Iruntime -o $@ $< -lm
+
 $(B)/test_options_pointer: tests/test_options_pointer.c runtime/pc_cursor.c runtime/pc_cursor.h runtime/pc_cursor_math.h
 	@mkdir -p $(dir $@)
 	$(CC) -O2 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -isystem third_party -o $@ $< -fuse-ld=lld -Wl,--gc-sections $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) -lSDL3 -lm
