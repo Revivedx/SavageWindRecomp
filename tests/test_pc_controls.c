@@ -12,7 +12,7 @@
 #include "../runtime/hle/bindings.c"
 
 Settings g_settings = {.mouse_camera = true, .pc_cursor = true};
-static bool pointer_ui, map_pointer, captured, freed, visible = true, relative;
+static bool pointer_ui, map_pointer, captured, freed, visible = true, relative, rotate_drag;
 static bool gyro_active, game_menu, title_menu, motion_tilt, gyro_reset;
 static int gyro_pitch, gyro_roll, gyro_yaw;
 static float tilt_mouse_x, tilt_mouse_y, tilt_mouse_yaw;
@@ -23,6 +23,7 @@ static uint64_t now = 1000000000;
 bool pc_cursor_active(void) { return pointer_ui; }
 bool pc_cursor_hide_system(void) { return map_pointer; }
 bool pc_cursor_map_navigation(void) { return map_pointer; }
+bool pc_cursor_rotate_drag(void) { return rotate_drag; }
 uint64_t pc_cursor_buttons(uint64_t buttons) { return buttons; }
 void pc_cursor_window(SDL_Window *w) { (void)w; }
 bool menu_input_captured(void) { return captured; }
@@ -177,4 +178,28 @@ int main(void) {
     keys_down[SDL_SCANCODE_K] = 0; test_pad = 0; recompute_pad(); assert(gyro_pitch == 0);
     puts("PASS: controller Walk/Tilt and all gyro bindings, mixed-device holds, menu/focus/context gates");
 
+    // With the PC pointer in a menu, left (click) and right (back) belong to the pointer, but middle click stays the
+    // right stick press: Rotate in the inventory (#346).
+    pointer_ui=true;mouse_held=false;  // (the menu state update() gives: no relative mode, mouse free)
+    e.type=SDL_EVENT_MOUSE_BUTTON_DOWN;e.button.button=SDL_BUTTON_MIDDLE;
+    input_handle_event(&e);assert(input_buttons_now()&(1ull<<BTN_RSTICK));
+    e.type=SDL_EVENT_MOUSE_BUTTON_UP;input_handle_event(&e);assert(!(input_buttons_now()&(1ull<<BTN_RSTICK)));
+    // Released after its menu closed (mouse camera off: no relative mode to reset the buttons): never stuck in play.
+    e.type=SDL_EVENT_MOUSE_BUTTON_DOWN;input_handle_event(&e);assert(input_buttons_now()&(1ull<<BTN_RSTICK));
+    pointer_ui=false;e.type=SDL_EVENT_MOUSE_BUTTON_UP;input_handle_event(&e);
+    assert(!(input_buttons_now()&(1ull<<BTN_RSTICK)));pointer_ui=true;
+    e.type=SDL_EVENT_MOUSE_BUTTON_DOWN;e.button.button=SDL_BUTTON_LEFT;
+    input_handle_event(&e);assert(!(input_buttons_now()&(1ull<<BTN_Y)));
+    e.type=SDL_EVENT_MOUSE_BUTTON_UP;input_handle_event(&e);
+    e.type=SDL_EVENT_MOUSE_BUTTON_DOWN;e.button.button=SDL_BUTTON_RIGHT;
+    input_handle_event(&e);assert(!(input_buttons_now()&(1ull<<BTN_ZL)));
+    e.type=SDL_EVENT_MOUSE_BUTTON_UP;input_handle_event(&e);
+    // A left-button drag in Rotate mode turns Link through the right stick, even with the mouse camera off.
+    int32_t sx,sy;g_settings.mouse_sens=g_settings.mouse_sens_y=1;  // (the defaults: unset in this synthetic Settings)
+    input_pc_rotate_motion(40,0);mouse_stick(&sx,&sy);assert(sx==0&&sy==0);  // no drag: discarded
+    rotate_drag=true;now+=16000000;
+    input_pc_rotate_motion(40,0);mouse_stick(&sx,&sy);assert(sx>0&&sy==0);
+    now+=16000000;input_pc_rotate_motion(-40,0);mouse_stick(&sx,&sy);assert(sx<0);
+    rotate_drag=false;now+=16000000;mouse_stick(&sx,&sy);assert(sx==0&&sy==0);
+    puts("PASS: pointer menus keep middle click bound; Rotate-mode drag turns Link through the right stick");
 }

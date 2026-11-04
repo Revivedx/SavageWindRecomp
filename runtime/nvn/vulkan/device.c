@@ -8,12 +8,16 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef _WIN32
+#include <malloc.h>
+#endif
 
 #include "../../framepace.h"
 #include "../../imageload.h"
 #include "../../paths.h"
 #include "../../perfmon.h"
 #include "../../settings.h"
+#include "../../gpu_select.h"
 #include "../../ui/menu.h"
 #include "../../window_size.h"
 #include "mvec.h"
@@ -136,22 +140,48 @@ static void pick_device(void) {
     if (!n) FATAL("no Vulkan device\n");
     VkPhysicalDevice *pd = calloc(n, sizeof *pd);
     vkEnumeratePhysicalDevices(g_vk.inst, &n, pd);
-    int want = getenv("SAVAGEWIND_GPU") ? atoi(getenv("SAVAGEWIND_GPU")) : -1, best = -1, best_score = -1;
+    const char *override = getenv("SAVAGEWIND_GPU");
+    int want = override && *override ? gpu_index_parse(override) : g_settings.gpu;
+    if (override && *override && want < 0 && strcmp(override, "auto"))
+        LOG("[vk] invalid SAVAGEWIND_GPU '%s'; using automatic selection\n", override);
+    int best = -1, best_score = -1;
     for (uint32_t i = 0; i < n; i++) {
         VkPhysicalDeviceProperties p;
         vkGetPhysicalDeviceProperties(pd[i], &p);
         LOG("[vk] gpu %u: %s (api %u.%u.%u)\n", i, p.deviceName, VK_API_VERSION_MAJOR(p.apiVersion),
             VK_API_VERSION_MINOR(p.apiVersion), VK_API_VERSION_PATCH(p.apiVersion));
         if (p.apiVersion < VK_API_VERSION_1_3) continue;
+        // Check presentation before scoring: a headless adapter must not hide a usable GPU.
+        uint32_t nq = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(pd[i], &nq, NULL);
+        VkQueueFamilyProperties *qp = calloc(nq ? nq : 1, sizeof *qp);
+        if (!qp) FATAL("cannot allocate GPU queue properties\n");
+        vkGetPhysicalDeviceQueueFamilyProperties(pd[i], &nq, qp);
+        bool usable = false;
+        for (uint32_t q = 0; q < nq; q++) {
+            VkBool32 present = VK_FALSE;
+            if (vkGetPhysicalDeviceSurfaceSupportKHR(pd[i], q, g_vk.surface, &present) == VK_SUCCESS &&
+                present && qp[q].queueCount && (qp[q].queueFlags & VK_QUEUE_GRAPHICS_BIT) &&
+                (qp[q].queueFlags & VK_QUEUE_COMPUTE_BIT)) usable = true;
+        }
+        free(qp);
+        if (!usable) continue;
         int score = p.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 3 : p.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 2 : 1;
         if ((int)i == want) score = 100;
         if (score > best_score) { best_score = score; best = (int)i; }
     }
-    if (best < 0) FATAL("no Vulkan 1.3 device\n");
+    if (best < 0) FATAL("no Vulkan 1.3 device with a graphics+compute+present queue\n");
+    if (want >= 0 && best != want)
+        LOG("[vk] requested GPU %d unavailable or unsuitable; falling back to GPU %d\n", want, best);
+    LOG("[vk] selected GPU %d (%s)\n", best, best == want ? "requested" : "automatic");
     g_vk.phys = pd[best];
     free(pd);
     vkGetPhysicalDeviceProperties(g_vk.phys, &g_vk.props);
     g_vk.is_mali = g_vk.props.vendorID == 0x13B5;  // (Arm)
+#ifdef _WIN32
+    plat_guest_sparse_heap_configure(g_vk.props.vendorID == 0x8086 &&
+                                     g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU);
+#endif
     { extern void vk_translator_setup(void); vk_translator_setup(); }
     uint32_t nq = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(g_vk.phys, &nq, NULL);
@@ -161,9 +191,13 @@ static void pick_device(void) {
     for (uint32_t i = 0; i < nq; i++) {
         VkBool32 present = VK_FALSE;
         vkGetPhysicalDeviceSurfaceSupportKHR(g_vk.phys, i, g_vk.surface, &present);
+        LOG("[vk] queue family %u: flags %#x, queues %u, present %s, sparse binding %s\n", i, qp[i].queueFlags,
+            qp[i].queueCount, present ? "yes" : "no",
+            (qp[i].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) ? "yes" : "no");
         if ((qp[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && (qp[i].queueFlags & VK_QUEUE_COMPUTE_BIT) && present) {
             g_vk.qfam = i;
             g_vk.qfam_count = qp[i].queueCount;
+            g_vk.sparse_queue = (qp[i].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) != 0;
             break;
         }
     }
@@ -199,6 +233,145 @@ static void pick_device(void) {
         free(ep);
     }
 #endif
+}
+
+static void sparse_host_import_probe(void) {
+    if (!g_vk.sparse_buffer || !g_vk.sparse_queue || !g_vk.host_import) {
+        LOG("[vk] sparse host-import binding probe: unavailable (requires sparse buffer, sparse queue, and external host memory)\n");
+        return;
+    }
+
+    VkPhysicalDeviceExternalBufferInfo ext_info = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_BUFFER_INFO,
+        .flags = VK_BUFFER_CREATE_SPARSE_BINDING_BIT | VK_BUFFER_CREATE_SPARSE_RESIDENCY_BIT,
+        .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT};
+    VkExternalBufferProperties ext_props = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_BUFFER_PROPERTIES};
+    vkGetPhysicalDeviceExternalBufferProperties(g_vk.phys, &ext_info, &ext_props);
+    if (!(ext_props.externalMemoryProperties.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT)) {
+        LOG("[vk] sparse host-import binding probe: sparse storage buffers cannot import host memory on this driver\n");
+        return;
+    }
+
+    VkExternalMemoryBufferCreateInfo external = {
+        .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
+        .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT};
+    VkBufferCreateInfo buffer_info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .pNext = &external,
+        .flags = VK_BUFFER_CREATE_SPARSE_BINDING_BIT | VK_BUFFER_CREATE_SPARSE_RESIDENCY_BIT,
+        .size = 16 * 1024 * 1024,
+        .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT};
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkResult r = vkCreateBuffer(g_vk.dev, &buffer_info, NULL, &buffer);
+    if (r != VK_SUCCESS) {
+        LOG("[vk] sparse host-import binding probe: sparse buffer creation failed (%d)\n", r);
+        return;
+    }
+
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(g_vk.dev, buffer, &req);
+    VkPhysicalDeviceExternalMemoryHostPropertiesEXT host_props = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};
+    VkPhysicalDeviceProperties2 props = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &host_props};
+    vkGetPhysicalDeviceProperties2(g_vk.phys, &props);
+    VkDeviceSize block_size = req.alignment;
+    VkDeviceSize pointer_alignment = host_props.minImportedHostPointerAlignment;
+    if (!block_size || block_size > SIZE_MAX || !pointer_alignment || pointer_alignment > SIZE_MAX) {
+        LOG("[vk] sparse host-import binding probe: invalid block/alignment (%llu/%llu)\n",
+            (unsigned long long)block_size, (unsigned long long)pointer_alignment);
+        vkDestroyBuffer(g_vk.dev, buffer, NULL);
+        return;
+    }
+    size_t alignment = (size_t)(block_size > pointer_alignment ? block_size : pointer_alignment);
+    size_t allocation_size = (size_t)block_size;
+#ifdef _WIN32
+    void *host = _aligned_malloc(allocation_size, alignment);
+#else
+    void *host = NULL;
+    if (posix_memalign(&host, alignment, allocation_size) != 0) host = NULL;
+#endif
+    if (!host) {
+        LOG("[vk] sparse host-import binding probe: aligned host allocation failed (%llu bytes)\n",
+            (unsigned long long)block_size);
+        vkDestroyBuffer(g_vk.dev, buffer, NULL);
+        return;
+    }
+    memset(host, 0, allocation_size);
+
+    PFN_vkGetMemoryHostPointerPropertiesEXT get_host_props =
+        (PFN_vkGetMemoryHostPointerPropertiesEXT)vkGetDeviceProcAddr(g_vk.dev, "vkGetMemoryHostPointerPropertiesEXT");
+    VkMemoryHostPointerPropertiesEXT host_memory = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
+    if (!get_host_props || get_host_props(g_vk.dev, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, host,
+                                          &host_memory) != VK_SUCCESS) {
+        LOG("[vk] sparse host-import binding probe: host pointer memory-type query failed\n");
+        goto cleanup;
+    }
+    VkPhysicalDeviceMemoryProperties memory_props;
+    vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &memory_props);
+    uint32_t memory_type = UINT32_MAX;
+    uint32_t compatible = req.memoryTypeBits & host_memory.memoryTypeBits;
+    for (uint32_t i = 0; i < memory_props.memoryTypeCount; i++) {
+        if (compatible & (1u << i)) {
+            memory_type = i;
+            break;
+        }
+    }
+    if (memory_type == UINT32_MAX) {
+        LOG("[vk] sparse host-import binding probe: no compatible memory type (buffer %#x, host %#x)\n",
+            req.memoryTypeBits, host_memory.memoryTypeBits);
+        goto cleanup;
+    }
+
+    VkImportMemoryHostPointerInfoEXT import = {
+        .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT,
+        .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
+        .pHostPointer = host};
+    VkMemoryAllocateInfo alloc = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                  .pNext = &import,
+                                  .allocationSize = block_size,
+                                  .memoryTypeIndex = memory_type};
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    r = vkAllocateMemory(g_vk.dev, &alloc, NULL, &memory);
+    if (r != VK_SUCCESS) {
+        LOG("[vk] sparse host-import binding probe: imported memory allocation failed (%d)\n", r);
+        goto cleanup;
+    }
+
+    VkSparseMemoryBind bind = {.resourceOffset = 0, .size = block_size, .memory = memory, .memoryOffset = 0};
+    VkSparseBufferMemoryBindInfo buffer_bind = {.buffer = buffer, .bindCount = 1, .pBinds = &bind};
+    VkBindSparseInfo bind_info = {.sType = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO,
+                                  .bufferBindCount = 1,
+                                  .pBufferBinds = &buffer_bind};
+    VkFenceCreateInfo fence_info = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    VkFence fence = VK_NULL_HANDLE;
+    bool bind_submitted = false;
+    r = vkCreateFence(g_vk.dev, &fence_info, NULL, &fence);
+    if (r == VK_SUCCESS) {
+        r = vkQueueBindSparse(g_vk.queue, 1, &bind_info, fence);
+        bind_submitted = r == VK_SUCCESS;
+    }
+    if (r == VK_SUCCESS) r = vkWaitForFences(g_vk.dev, 1, &fence, VK_TRUE, UINT64_MAX);
+    if (bind_submitted && r != VK_SUCCESS) vkQueueWaitIdle(g_vk.queue);
+    if (fence) vkDestroyFence(g_vk.dev, fence, NULL);
+    if (r == VK_SUCCESS) {
+        g_vk.sparse_host_import = true;
+        LOG("[vk] sparse host-import binding probe: PASS (block %llu bytes, memory type %u)\n",
+            (unsigned long long)block_size, memory_type);
+    } else {
+        LOG("[vk] sparse host-import binding probe: bind/wait failed (%d)\n", r);
+    }
+    vkDestroyBuffer(g_vk.dev, buffer, NULL);
+    vkFreeMemory(g_vk.dev, memory, NULL);
+    buffer = VK_NULL_HANDLE;
+cleanup:
+#ifdef _WIN32
+    _aligned_free(host);
+#else
+    free(host);
+#endif
+    if (buffer) vkDestroyBuffer(g_vk.dev, buffer, NULL);
 }
 
 // Video > Upscaler: NVIDIA DLSS needs an NVIDIA RTX GPU (tensor cores: GeForce / Quadro RTX, the RTX A / Ada
@@ -251,18 +424,105 @@ static bool radv_gcn(void) {
     return false;
 }
 
+// RADV on a Vega chip (GCN 5: Raven, Renoir, Vega 10 / 20, not Vega M, which is Polaris based)
+static bool radv_vega(void) {
+    const char *r = strstr(g_vk.props.deviceName, "(RADV ");
+    if (!r) return false;
+    r += 6;
+    return !strncmp(r, "RAVEN", 5) || !strncmp(r, "RENOIR", 6) || !strncmp(r, "GFX9", 4) ||
+           (!strncmp(r, "VEGA", 4) && strncmp(r, "VEGAM", 5));
+}
+
 // RADV on an RDNA 4 chip (RX 9060 / 9070): "AMD Radeon RX 9070 XT (RADV GFX1201)"
 static bool radv_gfx12(void) { return strstr(g_vk.props.deviceName, "(RADV GFX12") != NULL; }
 bool vk_shader_fp16(void) { return g_vk.fp16; }
 
 static void create_device(void) {
     uint32_t ne = 0;
+    static const char *const sparse_heap_modes[SPARSE_HEAP_COUNT] = {"auto", "on", "off"};
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
     VkExtensionProperties *ep = calloc(ne, sizeof *ep);
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
+    VkPhysicalDeviceFeatures2 sparse_features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    vkGetPhysicalDeviceFeatures2(g_vk.phys, &sparse_features);
+    LOG("[vk] sparse buffer capability: sparseBinding %s, sparseResidencyBuffer %s, address space %llu MB\n",
+        sparse_features.features.sparseBinding ? "yes" : "no",
+        sparse_features.features.sparseResidencyBuffer ? "yes" : "no",
+        (unsigned long long)(g_vk.props.limits.sparseAddressSpaceSize >> 20));
+#ifdef VK_EXT_external_memory_host
+    if (has_ext(ep, ne, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME)) {
+        VkPhysicalDeviceExternalMemoryHostPropertiesEXT host_props = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};
+        VkPhysicalDeviceProperties2 props = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &host_props};
+        vkGetPhysicalDeviceProperties2(g_vk.phys, &props);
+        LOG("[vk] external host memory import: supported, minimum pointer alignment %llu bytes\n",
+            (unsigned long long)host_props.minImportedHostPointerAlignment);
+    } else {
+        LOG("[vk] external host memory import: not supported\n");
+    }
+#endif
+    {
+        VkPhysicalDeviceMemoryProperties memory;
+        vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &memory);
+        for (uint32_t i = 0; i < memory.memoryHeapCount; i++) {
+            LOG("[vk] memory heap %u: %llu MB, flags %#x\n", i,
+                (unsigned long long)(memory.memoryHeaps[i].size >> 20), memory.memoryHeaps[i].flags);
+        }
+        for (uint32_t i = 0; i < memory.memoryTypeCount; i++) {
+            LOG("[vk] memory type %u: heap %u, flags %#x\n", i,
+                memory.memoryTypes[i].heapIndex, memory.memoryTypes[i].propertyFlags);
+        }
+    }
     const char *ext[24];
     uint32_t n_ext = 0;
     ext[n_ext++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+
+    const char *memory_priority_env = getenv("SAVAGEWIND_VK_MEMORY_PRIORITY");
+    bool request_memory_priority = memory_priority_env && !strcmp(memory_priority_env, "1");
+
+#ifdef VK_EXT_memory_budget
+    g_vk.memory_budget =
+        request_memory_priority &&
+        has_ext(ep, ne, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+
+    if (g_vk.memory_budget) {
+        ext[n_ext++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
+    }
+
+    LOG("[vk] memory budget extension %s\n",
+        !request_memory_priority ? "off" :
+        g_vk.memory_budget ? "on" : "not supported");
+#endif
+#ifdef VK_EXT_memory_priority
+    if (request_memory_priority && has_ext(ep, ne, VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME)) {
+        VkPhysicalDeviceMemoryPriorityFeaturesEXT priority_have = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PRIORITY_FEATURES_EXT};
+        VkPhysicalDeviceFeatures2 priority_query = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &priority_have};
+        vkGetPhysicalDeviceFeatures2(g_vk.phys, &priority_query);
+        g_vk.memory_priority = priority_have.memoryPriority;
+        if (g_vk.memory_priority) ext[n_ext++] = VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME;
+    }
+    const char *memory_priority_status = g_vk.memory_priority ? "on" :
+                                        request_memory_priority ? "not supported" :
+                                                                  "off (set SAVAGEWIND_VK_MEMORY_PRIORITY=1 to enable)";
+    LOG("[vk] memory priority %s\n", memory_priority_status);
+#endif
+#ifdef VK_EXT_pageable_device_local_memory
+    if (plat_guest_sparse_heap_enabled() &&
+            has_ext(ep, ne, VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME)) {
+            VkPhysicalDevicePageableDeviceLocalMemoryFeaturesEXT pageable_have = {
+                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PAGEABLE_DEVICE_LOCAL_MEMORY_FEATURES_EXT};
+            VkPhysicalDeviceFeatures2 pageable_query = {
+                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+                .pNext = &pageable_have};
+            vkGetPhysicalDeviceFeatures2(g_vk.phys, &pageable_query);
+            g_vk.pageable_device_local_memory = pageable_have.pageableDeviceLocalMemory;
+            if (g_vk.pageable_device_local_memory) ext[n_ext++] = VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME;
+        }
+    LOG("[vk] pageable device-local memory %s\n",
+        !plat_guest_sparse_heap_enabled() ? "off" :
+        g_vk.pageable_device_local_memory ? "on" : "not supported");
+#endif
     bool addr_report = g_addr_report_hi && has_ext(ep, ne, VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME);
     if (addr_report) ext[n_ext++] = VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME;
     if (g_addr_report_hi) LOG("[vk] address binding report %s\n", addr_report ? "on" : "not supported");
@@ -335,7 +595,13 @@ static void create_device(void) {
     // RADV on GCN chips (Polaris, Vega and older) drew the loops wrong: the pause menus' blurred background came out
     // black and their cursor off its slot (RX 560, issue #90); RDNA (the Steam Deck, a 660M) is fine. Those take the
     // copies; SAVAGEWIND_VK_FEEDBACK_LOOP=1 turns the loops on there anyway.
-    bool gcn_off = (radv_gcn() || win_legacy) && !getenv("SAVAGEWIND_VK_FEEDBACK_LOOP");
+    // Intel integrated GPUs (Iris Plus on Mesa ANV, UHD / Iris Xe on Intel's Windows driver) drew them wrong as well:
+    // flickering text and UI edges, white slivers in the sky, shredded menu labels (#342, #352, #399); with the copies
+    // all of it went away, and 0.3.1 (copies) never had it. They take the copies too.
+    bool intel_igpu = g_vk.props.vendorID == 0x8086 && g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+    // Vega (Renoir, Raven) draws the loops right: with the pipeline libraries off (below) the picture was correct at 45 to
+    // 60 fps with the loops on and 8 to 12 fps with the copies (#291).
+    bool gcn_off = ((radv_gcn() && !radv_vega()) || win_legacy || intel_igpu) && !getenv("SAVAGEWIND_VK_FEEDBACK_LOOP");
     bool fbl = !getenv("SAVAGEWIND_VK_NO_FEEDBACK_LOOP") && !gcn_off &&
                has_ext(ep, ne, VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME) &&
                has_ext(ep, ne, VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME);
@@ -348,7 +614,9 @@ static void create_device(void) {
     // the driver links them fast. SAVAGEWIND_VK_NO_GPL=1: whole pipelines, as before. RADV on RDNA 4 (Mesa 26.0, an
     // RX 9070 XT) hung the GPU ~46 s in, at the title screen, with them and ran without (#228); SAVAGEWIND_VK_GPL=1
     // turns them on there anyway.
-    bool gpl_off = (win_legacy || radv_gfx12()) && !getenv("SAVAGEWIND_VK_GPL");
+    // RADV on Vega (Renoir, Mesa 25.2): the world came out white with them, correct without (#291: two players on a Vega 8
+    // / Renoir; a Legion Go S, not a Vega, had it too and is not covered); SAVAGEWIND_VK_GPL=1 turns them on there anyway.
+    bool gpl_off = (win_legacy || radv_gfx12() || radv_vega()) && !getenv("SAVAGEWIND_VK_GPL");
     bool gpl = !getenv("SAVAGEWIND_VK_NO_GPL") && !gpl_off && has_ext(ep, ne, VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME) &&
                has_ext(ep, ne, VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
     // when each frame reached the display (SAVAGEWIND_LOG_PRESENT, tests: "present timing" below)
@@ -371,6 +639,20 @@ static void create_device(void) {
     VkPhysicalDeviceFeatures2 have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
                                       .pNext = gpl ? (void *)&gpl_have : fbl ? (void *)&lr_have : NULL};
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &have);
+    g_vk.sparse_buffer = false;
+    g_vk.sparse_nonresident_strict = false;
+
+    if (plat_guest_sparse_heap_enabled()) {
+        g_vk.sparse_buffer =
+            have.features.sparseBinding &&
+            have.features.sparseResidencyBuffer;
+
+        g_vk.sparse_nonresident_strict =
+            g_vk.props.sparseProperties.residencyNonResidentStrict;
+    }
+    LOG("[vk] sparse buffer feature enablement %s; nonresident strict %s\n",
+        g_vk.sparse_buffer && g_vk.sparse_queue ? "available on selected queue" : "unavailable on selected queue/device",
+        g_vk.sparse_nonresident_strict ? "yes" : "no");
     if (gpl) {
         VkPhysicalDeviceGraphicsPipelineLibraryPropertiesEXT gp = {
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_PROPERTIES_EXT};
@@ -395,7 +677,7 @@ static void create_device(void) {
         if (uil) ext[n_ext++] = VK_KHR_UNIFIED_IMAGE_LAYOUTS_EXTENSION_NAME;
 #endif
     }
-    LOG("[vk] attachment feedback loops %s\n", gcn_off ? win_legacy ? "off (target copies)" : "off on this GCN chip (target copies)"
+    LOG("[vk] attachment feedback loops %s\n", gcn_off ? win_legacy ? "off (target copies)" : intel_igpu ? "off on this Intel integrated GPU (target copies)" : "off on this GCN chip (target copies)"
                                                : !g_vk.feedback_loop ? "off (target copies)"
                                                : g_vk.feedback_layout ? "on (feedback loop layout)" : "on");
     // What the driver has of the features asked for below: only those are asked for (a driver refuses the device for
@@ -480,7 +762,18 @@ static void create_device(void) {
     VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT gpl_on = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT, .graphicsPipelineLibrary = VK_TRUE,
         .pNext = chain};
-    VkPhysicalDeviceFeatures2 f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = g_vk.gpl ? (void *)&gpl_on : chain};
+    void *next_feature = g_vk.gpl ? (void *)&gpl_on : chain;
+#ifdef VK_EXT_pageable_device_local_memory
+    VkPhysicalDevicePageableDeviceLocalMemoryFeaturesEXT pageable_on = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PAGEABLE_DEVICE_LOCAL_MEMORY_FEATURES_EXT,
+        .pageableDeviceLocalMemory = VK_TRUE, .pNext = next_feature};
+    if (g_vk.pageable_device_local_memory) next_feature = &pageable_on;
+#endif
+    VkPhysicalDeviceMemoryPriorityFeaturesEXT priority_on = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PRIORITY_FEATURES_EXT, .memoryPriority = VK_TRUE,
+        .pNext = next_feature};
+    VkPhysicalDeviceFeatures2 f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+                                   .pNext = g_vk.memory_priority ? (void *)&priority_on : next_feature};
     VkPhysicalDeviceFeatures *b = &f.features, *h = &have.features;
     b->independentBlend = h->independentBlend;
     b->dualSrcBlend = h->dualSrcBlend;
@@ -508,6 +801,8 @@ static void create_device(void) {
     b->vertexPipelineStoresAndAtomics = h->vertexPipelineStoresAndAtomics;
     b->robustBufferAccess = h->robustBufferAccess;  // guest shaders index cbufs freely: keep OOB reads harmless
     b->shaderClipDistance = h->shaderClipDistance;
+    b->sparseBinding = g_vk.sparse_buffer && g_vk.sparse_queue;
+    b->sparseResidencyBuffer = b->sparseBinding;
     if (!h->shaderInt64) LOG("[vk] warning: no shaderInt64 (64-bit address math in shaders)\n");
     VkPhysicalDevicePresentWaitFeaturesKHR pw_have = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR};
@@ -528,6 +823,25 @@ static void create_device(void) {
         ext[n_ext++] = VK_KHR_PRESENT_WAIT_EXTENSION_NAME;
     }
     g_vk.present_wait = pwait;
+    // The draws' depth test enable is dynamic state (Vulkan 1.3 core). Mesa 26.3+ RADV (ccb8eb5c) then gives fragment
+    // shaders that write depth a PS epilog, but only sets up its epilog cache when the EXT extendedDynamicState feature
+    // is on: without it a draw crashed in radv_shader_part_cache_get (RX 9060 XT, Mesa 27.0-devel). Asked for wherever
+    // the driver has it, so the cache exists; it changes nothing else (the same state is already core).
+    bool eds = false;
+    if (has_ext(ep, ne, VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME)) {
+        VkPhysicalDeviceExtendedDynamicStateFeaturesEXT eds_have = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT};
+        VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &eds_have};
+        vkGetPhysicalDeviceFeatures2(g_vk.phys, &q);
+        eds = eds_have.extendedDynamicState;
+    }
+    VkPhysicalDeviceExtendedDynamicStateFeaturesEXT eds_on = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT, .extendedDynamicState = VK_TRUE,
+        .pNext = f.pNext};
+    if (eds) {
+        f.pNext = &eds_on;
+        ext[n_ext++] = VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME;
+    }
     float prio[2] = {1.0f, 1.0f};
     // One queue: frames are presented on the game's own. A second one that presented (present thread below) went
     // wrong with others' code on it: NVIDIA's GPUs before Turing faulted writing to GPU address 0 within the first
@@ -546,11 +860,30 @@ static void create_device(void) {
     vkGetDeviceQueue(g_vk.dev, g_vk.qfam, 0, &g_vk.queue);
     g_vk.present_queue = g_vk.queue;
     if (qi.queueCount == 2) vkGetDeviceQueue(g_vk.dev, g_vk.qfam, 1, &g_vk.present_queue);
+    if (plat_guest_sparse_heap_enabled()) {
+        sparse_host_import_probe();
+    }
+    static const char *const device_types[] = {"other", "integrated", "discrete", "virtual", "cpu"};
+    int device_type = (int)g_vk.props.deviceType;
+    const char *type_name = device_type >= 0 && device_type < (int)(sizeof device_types / sizeof *device_types)
+                                ? device_types[device_type] : "unknown";
+    const char *probe = !plat_guest_sparse_heap_enabled() ? "not run" :
+                        g_vk.sparse_host_import ? "passed" : "failed";
+    const char *override = getenv("SAVAGEWIND_VK_SPARSE_HEAP");
+    LOG("[vk] sparse heap path: %s, adapter \"%s\", vendor %#06x, type %s, setting %s, override %s, host-import probe %s\n",
+        plat_guest_sparse_heap_enabled() ? "enabled" : "disabled", g_vk.props.deviceName, g_vk.props.vendorID,
+        type_name,
+        sparse_heap_modes[g_settings.sparse_heap >= 0 && g_settings.sparse_heap < SPARSE_HEAP_COUNT ?
+                              g_settings.sparse_heap : SPARSE_HEAP_AUTO],
+        override ? override : "unset", probe);
 
     VmaAllocatorCreateInfo ai = {.physicalDevice = g_vk.phys, .device = g_vk.dev, .instance = g_vk.inst,
                                  .vulkanApiVersion = VK_API_VERSION_1_3};
     VmaVulkanFunctions vfn;
     vram_allocator_setup(&ai, &vfn, mem_budget);
+#ifdef VK_EXT_memory_priority
+    if (g_vk.memory_priority) ai.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_PRIORITY_BIT;
+#endif
     VK_CHECK(vmaCreateAllocator(&ai, &g_vk.vma));
     vram_start();
 
@@ -647,7 +980,12 @@ static void *pc_read(FILE *f, size_t *size, const char **why) {
     if (memcmp(h.magic, want.magic, 8) || h.version != want.version) { *why = "older format"; return NULL; }
     if (h.vendor != want.vendor || h.device != want.device) { *why = "made on another GPU"; return NULL; }
     if (h.driver != want.driver || memcmp(h.uuid, want.uuid, VK_UUID_SIZE)) { *why = "made with another driver"; return NULL; }
-    if (memcmp(h.shaders, want.shaders, sizeof h.shaders)) { *why = "made by another shader translator build or device setup"; return NULL; }
+    if (memcmp(h.shaders, want.shaders, sizeof h.shaders)) {
+        const char *slash = strrchr(want.shaders, '/');  // (the device setup is after the last slash)
+        size_t n = slash ? (size_t)(slash - want.shaders) : sizeof h.shaders;
+        *why = memcmp(h.shaders, want.shaders, n) ? "made by another shader translator build" : "made for another device setup";
+        return NULL;
+    }
     if (h.size != (uint64_t)n - sizeof h) { *why = "cut short"; return NULL; }
     uint8_t *d = malloc(h.size ? h.size : 1);
     if (!d || fread(d, 1, h.size, f) != h.size || data_hash(d, h.size) != h.hash) { free(d); *why = "damaged"; return NULL; }
@@ -928,6 +1266,12 @@ static bool hdr_wanted(float *white) {
     float w = SDL_GetFloatProperty(p, SDL_PROP_WINDOW_SDR_WHITE_LEVEL_FLOAT, 0) * 80;  // (scRGB: 1.0 is 80 nits)
     if (g_settings.hdr == HDR_ON) on = true;
     if (g_settings.hdr == HDR_OFF) on = false;
+#ifdef __linux__
+    // On Wayland SDL reports exactly 1.0 when the compositor gives no SDR white level (the frog protocol, or an 80 nit
+    // reference): that is "unknown", not an SDR white of 80 nits, which came out dim and washed out (KWin, #369). On
+    // Windows 1.0 is the real lowest setting of the SDR content brightness slider.
+    if (w <= 80) w = 0;
+#endif
     *white = g_settings.hdr_white ? (float)g_settings.hdr_white : w >= 80 ? w : 200;
     return on && g_cs_ext;
 }
@@ -1914,6 +2258,12 @@ presented:
         extern bool g_gpuprof_frame;
         extern void vk_gpuprof_report(void);
         if (g_gpuprof_frame) { g_gpuprof_frame = false; vk_gpuprof_report(); }
+        extern volatile int g_gpuprof_request;  // (runtime/control_prof.c: the `gpuprof` command)
+        if (g_gpuprof_request) {
+            g_gpuprof_request = 0;
+            g_gpuprof_frame = true;
+            LOG("[gpuprof] capture of frame %llu (gpuprof command)\n", (unsigned long long)total_frames);
+        }
         const char *e = getenv("SAVAGEWIND_GPUPROF_AT");
         for (const char *p = e; p && *p;) {
             long at = strtol(p, (char **)&p, 10);

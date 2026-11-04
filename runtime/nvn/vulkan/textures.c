@@ -13,8 +13,11 @@
 #include "shaders.h"
 #include "../../settings.h"
 #include "../astc.h"
+#include "../../perfcount.h"
 #include "../glyphs.h"
 #include "../renderer.h"
+#include "../../platform.h"
+#include "../text_upscale.h"
 
 // ================================================================== formats
 typedef struct { VkFormat vf; uint8_t expand_rgb, alpha_one; } VkFmt;
@@ -304,6 +307,37 @@ typedef struct { VkImage img; VmaAllocation mem; VkImageView view; uint64_t seq;
 static Dead *dead;
 static int ndead, cap_dead;
 static void views_forget(TexBackend *b);
+static void evict_idle_images(void);
+static bool image_format_fallback_error(VkResult r);
+static bool image_out_of_memory(VkResult r);
+static void log_memory_budget(const char *when);
+
+static VmaPool image_priority_pools[VK_MAX_MEMORY_TYPES];
+static bool image_priority_pool_failed[VK_MAX_MEMORY_TYPES];
+
+static VmaAllocationCreateInfo image_allocation_info(const VkImageCreateInfo *ci) {
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+#ifdef VK_EXT_memory_priority
+    if (!g_vk.memory_priority) return ai;
+    uint32_t memory_type;
+    VkResult r = vmaFindMemoryTypeIndexForImageInfo(g_vk.vma, ci, &ai, &memory_type);
+    if (r != VK_SUCCESS) {
+        LOG("[vk] could not select low-priority image memory type (%d); using default allocation\n", r);
+        return ai;
+    }
+    if (!image_priority_pools[memory_type] && !image_priority_pool_failed[memory_type]) {
+        VmaPoolCreateInfo pi = {.memoryTypeIndex = memory_type, .priority = 1.0f};
+        r = vmaCreatePool(g_vk.vma, &pi, &image_priority_pools[memory_type]);
+        if (r != VK_SUCCESS) {
+            image_priority_pool_failed[memory_type] = true;
+            LOG("[vk] could not create high-priority image memory pool for type %u (%d); using default allocation\n",
+                memory_type, r);
+        }
+    }
+    if (image_priority_pools[memory_type]) ai.pool = image_priority_pools[memory_type];
+#endif
+    return ai;
+}
 
 void vk_collect_dead(void) {
     uint64_t done = vk_completed_seq();
@@ -314,6 +348,29 @@ void vk_collect_dead(void) {
         else vmaDestroyImage(g_vk.vma, dead[i].img, dead[i].mem);
     }
     ndead = k;
+}
+
+static uint64_t storage_size(const NvnTexture *t);
+
+// (control `memstats`) texture memory by kind: what an image holds of its memory, until it is destroyed
+static void texmem_note(const NvnTexture *t, TexBackend *b, bool depthfmt) {
+    VmaAllocationInfo mi;
+    vmaGetAllocationInfo(g_vk.vma, b->mem, &mi);
+    VkFormat f = b->format;
+    b->mem_kind = b->astc_bw ? TM_ASTC_RGBA8
+                : f >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && f <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK ? TM_ASTC_NATIVE
+                : f >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && f <= VK_FORMAT_BC7_SRGB_BLOCK ? TM_BC
+                : depthfmt || (t->flags & 9) ? TM_RT : TM_OTHER;  // (NVN compressible or display flag: render targets)
+    b->mem_bytes = (int64_t)mi.size;
+    b->mem_src = b->astc_bw ? (int64_t)storage_size(t) : 0;
+    texmem_add(b->mem_kind, b->mem_bytes, 1);
+    if (b->mem_src) texmem_add(TM_ASTC_SRC, b->mem_src, 1);
+}
+static void texmem_forget(TexBackend *b) {
+    if (!b->mem_bytes) return;
+    texmem_add(b->mem_kind, -b->mem_bytes, -1);
+    if (b->mem_src) texmem_add(TM_ASTC_SRC, -b->mem_src, -1);
+    b->mem_bytes = b->mem_src = 0;
 }
 
 static bool is_bc_or_astc(VkFormat f) {
@@ -396,6 +453,23 @@ static void create_image(NvnTexture *t, TexBackend *b) {
                                  t->format, (unsigned long long)t->addr);
         }
     }
+    // Gameplay > Sharper text: a font sheet of the game (BC4, or R8 for NormalS_00) gets an image larger than the game
+    // knows of. Its texture coordinates are fractions of the sheet, so nothing else changes.
+    b->text_scale = 0;
+    uint64_t sheet_bytes = (uint64_t)t->width * t->height / (t->format == 0x49 ? 2 : 1);
+    if (g_settings.sharper_text && !b->gpu_bc4 && (t->format == 0x49 || t->format == 0x01) && t->pool &&
+        t->layout.levels == 1 && t->addr >= t->pool->storage && t->addr + sheet_bytes <= t->pool->storage + t->pool->size &&
+        text_sheet_known((const uint8_t *)(uintptr_t)t->addr, sheet_bytes)) {
+        b->text_scale = (uint8_t)g_settings.sharper_text;
+        b->bc4_cpu = t->format == 0x49;
+        vf = VK_FORMAT_R8_UNORM;
+        LOG("[vk] sharper text: font sheet %ux%u (nvn %#x) enlarged %ux\n", t->width, t->height, t->format, b->text_scale);
+        tw *= b->text_scale;
+        th *= b->text_scale;
+        // Mip levels down to the sheet's own size. Text is often drawn smaller than an enlarged sheet (at 1440p, about
+        // 1.25 times the original): without them, its edges alias into stair steps on every diagonal.
+        levels = b->text_scale == 4 ? 3 : 2;
+    }
     if (!b->bc4_cpu && !format_supports(vf, need)) {
         bool astc = vf >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && vf <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK;
         const FormatInfo *fi = t->layout.fmt;
@@ -455,17 +529,36 @@ static void create_image(NvnTexture *t, TexBackend *b) {
                             .extent = {tw, th, depth}, .mipLevels = levels, .arrayLayers = layers,
                             .samples = (VkSampleCountFlagBits)samples, .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = usage,
                             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
-    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    const bool sparse = plat_guest_sparse_heap_enabled();
+    VmaAllocationCreateInfo ai = image_allocation_info(&ci);
     // 2D color targets may be sampled by the draws that render into them (exec.c resolve_feedback: a feedback loop)
     b->feedback_ok = g_vk.feedback_loop && type == VK_IMAGE_TYPE_2D && samples == 1 && (usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
     if (b->feedback_ok) ci.usage |= VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
     VkResult r = vmaCreateImage(g_vk.vma, &ci, &ai, &b->image, &b->mem, NULL);
-    if (r != VK_SUCCESS && b->feedback_ok) {
+    if (sparse && image_out_of_memory(r)) {
+        log_memory_budget("at image allocation failure");
+        LOG("[vk] image allocation ran out of memory (%ux%ux%u, %u layers, %u levels); draining GPU work and retrying\n",
+            tw, th, depth, layers, levels);
+        renderer_flush();
+        vk_collect_dead();
+        evict_idle_images();
+        VmaAllocationCreateInfo retry_ai = ai;
+#ifdef VK_EXT_memory_priority
+        if (g_vk.memory_priority) {
+            retry_ai.pool = VK_NULL_HANDLE;
+            retry_ai.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+            retry_ai.priority = 1.0f;
+            LOG("[vk] retrying image as dedicated high-priority memory\n");
+        }
+#endif
+        r = vmaCreateImage(g_vk.vma, &ci, &retry_ai, &b->image, &b->mem, NULL);
+    }
+    if ((sparse ? image_format_fallback_error(r) : r != VK_SUCCESS) && b->feedback_ok) {
         b->feedback_ok = false;
         ci.usage &= ~VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
         r = vmaCreateImage(g_vk.vma, &ci, &ai, &b->image, &b->mem, NULL);
     }
-    if (r != VK_SUCCESS) {
+    if (sparse ? image_format_fallback_error(r) : r != VK_SUCCESS) {
         LOG("[vk] image creation failed (%d): nvn fmt %#x %ux%ux%u target %u\n", r, t->format, t->width, t->height, t->depth, t->target);
         ci.format = vf = VK_FORMAT_R8G8B8A8_UNORM;
         ci.pNext = NULL;  // (the fallback image is mutable as before, no format list)
@@ -474,14 +567,21 @@ static void create_image(NvnTexture *t, TexBackend *b) {
         ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         ci.flags &= ~VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
-        VK_CHECK(vmaCreateImage(g_vk.vma, &ci, &ai, &b->image, &b->mem, NULL));
+        ai = image_allocation_info(&ci);
+        r = vmaCreateImage(g_vk.vma, &ci, &ai, &b->image, &b->mem, NULL);
         depthfmt = false;
+    }
+    if (r != VK_SUCCESS) {
+        if (sparse && image_out_of_memory(r)) log_memory_budget("after allocation retry failed");
+        if (sparse) LOG("[vk] image creation failed (%d): nvn fmt %#x %ux%ux%u target %u\n", r, t->format, t->width, t->height, t->depth, t->target);
+        VK_CHECK(r);
     }
     b->cube_ok = (ci.flags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) != 0;
     b->not_attachable = !(ci.usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT));
     static uint64_t serials;
     b->serial = __atomic_add_fetch(&serials, 1, __ATOMIC_RELAXED);
     b->format = vf;
+    texmem_note(t, b, depthfmt);
     b->width = tw; b->height = th; b->depth = depth; b->layers = layers; b->levels = levels; b->samples = samples;
     b->aspect = depthfmt ? aspect_of(t->format) : VK_IMAGE_ASPECT_COLOR_BIT;
     b->base_type = type == VK_IMAGE_TYPE_1D ? (layers > 1 ? VK_IMAGE_VIEW_TYPE_1D_ARRAY : VK_IMAGE_VIEW_TYPE_1D)
@@ -544,6 +644,30 @@ void vk_dl_note_upload(void *img, uint32_t w, uint32_t h, uint32_t lv);  // (exe
 static uint32_t level_w(const TexBackend *b, uint32_t lv) { uint32_t v = b->width >> lv; return v ? v : 1; }
 static uint32_t level_h(const TexBackend *b, uint32_t lv) { uint32_t v = b->height >> lv; return v ? v : 1; }
 
+static bool image_format_fallback_error(VkResult r) {
+    return r == VK_ERROR_FORMAT_NOT_SUPPORTED || r == VK_ERROR_FEATURE_NOT_PRESENT;
+}
+
+static bool image_out_of_memory(VkResult r) {
+    return r == VK_ERROR_OUT_OF_DEVICE_MEMORY || r == VK_ERROR_OUT_OF_HOST_MEMORY;
+}
+
+static void log_memory_budget(const char *when) {
+    VkPhysicalDeviceMemoryProperties mp;
+    VmaBudget budgets[VK_MAX_MEMORY_HEAPS] = {0};
+    vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
+    vmaGetHeapBudgets(g_vk.vma, budgets);
+    LOG("[vk] memory budget %s (VK_EXT_memory_budget %s)\n", when, g_vk.memory_budget ? "enabled" : "unavailable; VMA estimates");
+    for (uint32_t i = 0; i < mp.memoryHeapCount; i++) {
+        LOG("[vk]   heap %u flags %#x (device-local flag %s): size %llu MB, budget %llu MB, usage %llu MB; "
+            "VMA blocks %llu MB, allocations %llu MB\n",
+            i, mp.memoryHeaps[i].flags, (mp.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) ? "yes" : "no",
+            (unsigned long long)(mp.memoryHeaps[i].size >> 20), (unsigned long long)(budgets[i].budget >> 20),
+            (unsigned long long)(budgets[i].usage >> 20), (unsigned long long)(budgets[i].statistics.blockBytes >> 20),
+            (unsigned long long)(budgets[i].statistics.allocationBytes >> 20));
+    }
+}
+
 static void destroy_image(TexBackend *b) {
     for (int i = 0; i < 16; i++)
         if (b->block_lv[i]) {
@@ -553,6 +677,7 @@ static void destroy_image(TexBackend *b) {
         }
     b->block = NULL;
     views_forget(b);
+    texmem_forget(b);
     if (b->image || b->mem) defer((Dead){.img = b->image, .mem = b->mem});  // (never the same allocation twice)
     b->image = VK_NULL_HANDLE;
     b->mem = VK_NULL_HANDLE;
@@ -883,6 +1008,7 @@ static void upload_texture(NvnTexture *t, TexBackend *b, bool written) {
     if (b->uploaded && h != b->data_hash && !written) b->dynamic = true;
     b->data_hash = h;
     b->uploaded = true;
+    perfcount_add(PC_TEX_BYTES, total);
     {   // (debugging) SAVAGEWIND_DUMP_RAW=<w>x<h>x<nvn format hex>: the guest storage of such textures as uploaded
         static const char *e = (const char *)1;
         if (e == (const char *)1) e = getenv("SAVAGEWIND_DUMP_RAW");
@@ -955,6 +1081,67 @@ static void debug_mip_colour(uint8_t *p, uint32_t nvn_fmt, uint32_t bpb, uint64_
     for (uint64_t i = 0; i < nblocks; i++) memcpy(p + i * bpb, blk, bpb);
 }
 
+// One channel of BC4 blocks (blocks of `stride` bytes, the channel's 8 at `at`) -> tightly packed R8 texels
+static void bc4_channel(const uint8_t *blocks, uint32_t wb, uint32_t hb, uint32_t stride, uint32_t at, uint8_t *out) {
+    uint32_t pw = wb * 4;
+    for (uint32_t by = 0; by < hb; by++)
+        for (uint32_t bx = 0; bx < wb; bx++) {
+            const uint8_t *k = blocks + ((uint64_t)by * wb + bx) * stride + at;
+            int e0 = k[0], e1 = k[1], pal[8] = {e0, e1};
+            if (e0 > e1) for (int i = 1; i < 7; i++) pal[i + 1] = ((7 - i) * e0 + i * e1 + 3) / 7;
+            else {
+                for (int i = 1; i < 5; i++) pal[i + 1] = ((5 - i) * e0 + i * e1 + 2) / 5;
+                pal[6] = 0;
+                pal[7] = 255;
+            }
+            uint64_t bits = 0;
+            for (int i = 0; i < 6; i++) bits |= (uint64_t)k[2 + i] << (8 * i);
+            for (int i = 0; i < 16; i++) out[(uint64_t)(by * 4 + i / 4) * pw + bx * 4 + i % 4] = (uint8_t)pal[(bits >> (3 * i)) & 7];
+        }
+}
+
+// Gameplay > Sharper text: a font sheet, decoded and enlarged (create_image made its image for that)
+static void upload_text_sheet(VkCommandBuffer cb, NvnTexture *t, TexBackend *b, const LevelLayout *l, const uint8_t *src, bool linear,
+                              uint32_t layer) {
+    uint32_t bc4 = t->format == 0x49, stride = bc4 ? 8 : 1, s = b->text_scale, nlevels = b->levels;
+    uint32_t pw = l->wb * (bc4 ? 4 : 1), ph = l->hb * (bc4 ? 4 : 1), dw = pw * s, dh = ph * s;
+    uint8_t *blocks = malloc((uint64_t)l->wb * l->hb * stride), *plain = malloc((uint64_t)pw * ph), *big = malloc((uint64_t)dw * dh);
+    uint64_t total = 0;
+    for (uint32_t lv = 0; lv < nlevels; lv++) total += (uint64_t)(dw >> lv) * (dh >> lv);
+    VkSpan out = vk_transient(total, 16);
+    if (linear) for (uint32_t y = 0; y < l->hb; y++) memcpy(blocks + (uint64_t)y * l->wb * stride, src + (uint64_t)y * t->stride, l->wb * stride);
+    else tegra_deswizzle(src, blocks, l->wb, l->hb, 1, stride, l->block_height_log2, l->block_depth_log2);
+    uint64_t t0 = SDL_GetTicksNS();
+    if (bc4) bc4_channel(blocks, l->wb, l->hb, stride, 0, plain);
+    else memcpy(plain, blocks, (uint64_t)pw * ph);
+    if (!text_upscale(plain, pw, ph, s, bc4, big)) memset(big, 0, (uint64_t)dw * dh);
+    uint64_t at = 0;
+    for (uint32_t lv = 0; lv < nlevels; lv++) {
+        uint32_t w = dw >> lv, h = dh >> lv;
+        memcpy((uint8_t *)out.ptr + at, big, (uint64_t)w * h);
+        at += (uint64_t)w * h;
+        if (lv + 1 < nlevels)  // (2 x 2 texels -> 1, in place: each row is read before it is overwritten)
+            for (uint32_t y = 0; y < h / 2; y++)
+                for (uint32_t x = 0; x < w / 2; x++) {
+                    const uint8_t *a = big + (uint64_t)y * 2 * w + x * 2, *z = a + w;
+                    big[(uint64_t)y * (w / 2) + x] = (uint8_t)((a[0] + a[1] + z[0] + z[1] + 2) / 4);
+                }
+    }
+    LOG("[vk] sharper text: %ux%u sheet (nvn %#x) enlarged in %.0f ms\n", pw, ph, t->format, (SDL_GetTicksNS() - t0) / 1e6);
+    free(blocks);
+    free(plain);
+    free(big);
+    uint64_t off = out.off;
+    for (uint32_t lv = 0; lv < nlevels; lv++) {
+        uint32_t w = dw >> lv, h = dh >> lv;
+        VkBufferImageCopy rg = {.bufferOffset = off, .bufferRowLength = w, .bufferImageHeight = h,
+                                .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv, layer, 1},
+                                .imageExtent = {w < level_w(b, lv) ? w : level_w(b, lv), h < level_h(b, lv) ? h : level_h(b, lv), 1}};
+        rec_CmdCopyBufferToImage(cb, out.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+        off += (uint64_t)w * h;
+    }
+}
+
 // Guest memory -> image for the levels in level_mask (bit per level), every layer or slice.
 static void upload_levels(NvnTexture *t, TexBackend *b, uint32_t level_mask) {
     const FormatInfo *fi = t->layout.fmt;
@@ -971,6 +1158,10 @@ static void upload_levels(NvnTexture *t, TexBackend *b, uint32_t level_mask) {
         for (uint32_t lv = 0; lv < levels; lv++) {
             if (!((level_mask >> lv) & 1)) continue;
             LevelLayout l = tegra_level(&t->layout, lv);
+            if (b->text_scale) {
+                upload_text_sheet(cb, t, b, &l, (const uint8_t *)(uintptr_t)t->addr + layer * layer_size + l.offset, linear, layer);
+                continue;
+            }
             if (b->bc4_cpu) {  // blocks -> linear block rows -> R8 texels (BC4: two endpoints, 3-bit indices)
                 const uint8_t *src = (const uint8_t *)(uintptr_t)t->addr + layer * layer_size + l.offset;
                 uint8_t *blocks = malloc((uint64_t)l.wb * l.hb * 8);
@@ -1016,7 +1207,10 @@ static void upload_levels(NvnTexture *t, TexBackend *b, uint32_t level_mask) {
                 if (linear) for (uint32_t y = 0; y < l.hb; y++) memcpy(blocks + (uint64_t)y * l.wb * 16, src + (uint64_t)y * t->stride, l.wb * 16);
                 else tegra_deswizzle(src, blocks, l.wb, l.hb, 1, 16, l.block_height_log2, l.block_depth_log2);
                 VkSpan s = vk_transient((uint64_t)l.w * l.h * 4, 16);
+                uint64_t at0 = SDL_GetTicksNS();
                 astc_decode_ldr(blocks, l.w, l.h, b->astc_bw, b->astc_bh, b->astc_srgb, s.ptr);
+                perfcount_add(PC_ASTC_NS, SDL_GetTicksNS() - at0);
+                perfcount_add(PC_ASTC_BYTES, (uint64_t)l.w * l.h * 4);
                 free(blocks);
                 VkBufferImageCopy rg = {.bufferOffset = s.off, .bufferRowLength = l.w, .bufferImageHeight = l.h,
                                         .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv, layer, 1},
@@ -1229,10 +1423,23 @@ void renderer_make_scalable(NvnTexture *t) { vk_make_scalable_like(t, NULL); }
 void vk_make_scalable_like(NvnTexture *t, NvnTexture *like) {
     TexBackend *b = tex_backend(t);
     uint8_t g = like ? tex_backend(like)->rs_group : RS_SCENE;
-    if (b->rs_group || !g || (t->target != 1 && t->target != 4) || t->samples > 1) return;  // (a group stays)
+    if (b->native_post || b->rs_group || !g || (t->target != 1 && t->target != 4) || t->samples > 1) return;  // (a group stays)
     b->rs_group = g;
     destroy_image(b);
     create_image(t, b);
+}
+
+bool vk_native_post_target(NvnTexture *t) {
+    TexBackend *b = tex_backend(t);
+    if (b->native_post) return false;
+    b->native_post = true;
+    if (!b->rs_group) return false;
+    // The caller ended the previous render pass. Image destruction and view
+    // destruction are deferred until submitted work finishes, as for a resize.
+    b->rs_group = RS_NONE;
+    destroy_image(b);
+    create_image(t, b);
+    return true;
 }
 
 // A target found in a feedback loop (exec.c) made again without its view format list, contents copied: RADV keeps no
@@ -1244,6 +1451,7 @@ void vk_texture_drop_format_list(NvnTexture *t) {
     VkImage old = b->image;
     VmaAllocation old_mem = b->mem;
     views_forget(b);
+    texmem_forget(b);
     b->image = VK_NULL_HANDLE;
     b->mem = VK_NULL_HANDLE;
     create_image(t, b);  // (feedback_seen: no list; its layout is set in the upload buffer, which runs first)
@@ -1291,6 +1499,27 @@ static void views_forget(TexBackend *b) {
     vk_view_gen++;
     for (int i = 0; i < VIEW_TAB; i++)
         if (view_tab[i].b == b) { defer((Dead){.view = view_tab[i].view}); view_tab[i].b = NULL; view_tab[i].view = VK_NULL_HANDLE; }
+}
+
+static void evict_idle_images(void) {
+    for (int i = g_nidle - 1; i >= 0; i--) {
+        TexBackend *b = g_idle[i];
+        if (b->gpu_owned || b->kept || b->pending_rgba) continue;
+        // The caller drained the GPU; these unreferenced images can be rebuilt from guest memory.
+        vk_view_gen++;
+        for (int j = 0; j < VIEW_TAB; j++)
+            if (view_tab[j].b == b) {
+                vkDestroyImageView(g_vk.dev, view_tab[j].view, NULL);
+                view_tab[j].b = NULL;
+                view_tab[j].view = VK_NULL_HANDLE;
+            }
+        keyed_remove(b);
+        idle_remove(b);
+        images_remove(b);
+        if (b->image) vmaDestroyImage(g_vk.vma, b->image, b->mem);
+        free(b->pending_rgba);
+        free(b);
+    }
 }
 
 VkImageView vk_image_view(TexBackend *b, VkImageViewType type, VkFormat fmt, uint32_t lv0, uint32_t nlv, uint32_t ly0,
@@ -1569,6 +1798,7 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
     uint32_t ly0 = v && (v->setmask & 2) ? v->min_layer : 0;
     uint32_t nly = v && (v->setmask & 2) && v->num_layers ? v->num_layers : b->layers - (ly0 < b->layers ? ly0 : 0);
     if (lv0 >= b->levels) lv0 = b->levels - 1;
+    if (b->text_scale) nlv = b->levels;  // (the mip levels the game doesn't know of: create_image)
     if (lv0 + nlv > b->levels) nlv = b->levels - lv0;
     if (ly0 >= b->layers) ly0 = b->layers - 1;
     if (ly0 + nly > b->layers) nly = b->layers - ly0;
@@ -1827,6 +2057,20 @@ static VkSampler sampler_create(const NvnSamplerDesc *d, float aniso) {
         if (logged++ < 3) LOG("[vk] vkCreateSampler failed: %d (border %d, aniso %.0f, compare %u)\n", r, border, aniso,
                               d->compare_mode);
         return VK_NULL_HANDLE;
+    }
+    return s;
+}
+
+// An enlarged font sheet (Gameplay > Sharper text): the game samples its fonts without mip levels, these have some
+VkSampler vk_text_sampler(void) {
+    static VkSampler s;
+    if (!s) {
+        VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = VK_FILTER_LINEAR,
+                                  .minFilter = VK_FILTER_LINEAR, .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+                                  .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                                  .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                                  .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .maxLod = VK_LOD_CLAMP_NONE};
+        VK_CHECK(vkCreateSampler(g_vk.dev, &si, NULL, &s));
     }
     return s;
 }

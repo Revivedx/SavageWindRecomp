@@ -767,6 +767,24 @@ static void tab_display(void) {
                        "conversations keep theirs.", false))
             g_settings.fov = fov[cur];
     }
+    {   // HUD size (runtime/nvn/hud_scale.h)
+        static const int sizes[] = HUD_SIZE_CHOICES;
+        enum { NV = sizeof sizes / sizeof sizes[0] };
+        static char names_buf[NV][16];
+        const char *names[NV];
+        int cur = 0, def = 0;
+        for (int i = 0; i < NV; i++) {
+            snprintf(names_buf[i], sizeof names_buf[i], "%d%%", sizes[i]);
+            names[i] = names_buf[i];
+            if (sizes[i] == 100) def = i;
+        }
+        cur = def;
+        for (int i = 0; i < NV; i++)
+            if (sizes[i] == g_settings.hud_size) cur = i;
+        if (opt_choice("HUD size", &cur, names, NV, def,
+                       "How big the hearts, stamina, minimap and the rest of the HUD are. Each part stays in its corner.", false))
+            g_settings.hud_size = sizes[cur];
+    }
     {   // Draw distance (runtime/draw_distance.c)
         static const char *const names[DRAWDIST_COUNT] = {"Original", "Medium", "High"};  // (DRAWDIST_*)
         int cur = g_settings.draw_distance;
@@ -912,6 +930,11 @@ static void tab_display(void) {
                      "smooth and stop shimmering; slightly softer, use it with Sharpening.");
         opt_choice("Anti-aliasing", &g_settings.antialias, aa, 3, AA_OFF, d.c_str());
     }
+    // the game's own FXAA (vulkan/exec.c fxaa_patch)
+    opt_toggle("Game's FXAA", &g_settings.game_fxaa, true,
+               "The game's own FXAA, which smooths edges as the 3D image is drawn into the final picture, as on the "
+               "console. Off: a sharper image with more jagged edges; use it to replace FXAA with SMAA or TAA above, "
+               "or to keep the image crisp at a high resolution.");
 #endif
 #ifndef __APPLE__
     {   // Anisotropic filtering and sharpening (Vulkan: vulkan/textures.c sampler_aniso, vulkan/exec.c scene_post)
@@ -933,17 +956,27 @@ static void tab_display(void) {
                    "game's own frames. Fast moves can leave faint smears around Link and what moves on its own.");
     }
 #endif
-    opt_toggle("Asynchronous shaders", &g_settings.async_shaders, false,
-               "Off: the game waits for each new shader to compile, a short stutter the first time an effect "
-               "appears, and everything is drawn. On: no waiting, but what needs a shader still compiling is skipped "
-               "meanwhile: effects pop in late, and pictures the game draws only once (the save file's screenshot) "
-               "can come out as garbage.");
+    opt_toggle("Asynchronous shaders", &g_settings.async_shaders, true,
+               "On (default): the game never waits for a new shader to compile: what needs one still compiling is "
+               "left out until it is ready, usually one frame (an effect pops in a frame late). Pictures the game "
+               "draws only once (the save file's screenshot, the pause menu's background, terrain tiles) still wait "
+               "for theirs. Off: every draw waits for its shader, a short stutter the first time an effect appears.");
     // shadow resolution (its own block)
     static const char *shadow[] = {"Console (896)", "High (2048)", "Ultra (4096)", "Extreme (8192)"};
     opt_choice("Shadow resolution", &g_settings.shadow_res, shadow, SHADOW_COUNT, SHADOW_CONSOLE,
                "The size of the maps the sun's shadows are drawn from. Console: the game's own, 896 x 896. High (2048), "
                "Ultra (4096) and Extreme (8192) give sharper shadow edges (Link, trees, buildings) for more GPU time "
                "and video memory (Ultra: about 100 MB, Extreme: about 400 MB).");
+    {   // the game's font sheets enlarged (runtime/nvn/text_upscale.c): read when the game starts
+        static const char *text[] = {"Off", "2x", "4x"};
+        int cur = g_settings.sharper_text / 2;
+        if (opt_choice("Sharper text", &cur, text, 3, 0,
+                       "Makes the game's letters sharper on 1440p and 4K screens. It takes effect the next time you start "
+                       "the game. This is an upscale made on your computer from the game's own letters, not Nintendo's "
+                       "original art: the shapes are kept, but they aren't exactly as drawn. 4x takes a moment longer to "
+                       "start and uses more video memory.", false))
+            g_settings.sharper_text = cur * 2;
+    }
 #ifndef __APPLE__
     tab_colour();
 #endif
@@ -1048,6 +1081,7 @@ static void tab_about(void) {
     toggle("Invert mouse Y", &g_settings.mouse_invert_y);
     ImGui::Spacing();
     header("Controls");
+    opt_toggle("Controller rumble", &g_settings.rumble, true, "Vibrate the controller during play.");
     controls_bindings_draw(ImGui::GetFontSize() / 34);
     ImGui::Spacing();
     header("Menu");

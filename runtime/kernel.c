@@ -314,12 +314,16 @@ int kernel_data_regions(uint64_t *addr, uint64_t *size, int max) {
     return n;
 }
 
-static void region_add(uint64_t addr, uint64_t size, uint32_t type, uint32_t perm) {
+static void region_add_impl(uint64_t addr, uint64_t size, uint32_t type, uint32_t perm, bool commit) {
     if (nregions == 1024) FATAL("too many regions\n");
-    plat_commit(addr, size);  // back it before the OS writes there (Windows: file reads into the heap)
+    if (commit) plat_commit(addr, size);  // back it before the OS writes there (Windows: file reads into the region)
     int i = nregions++;
     while (i > 0 && regions[i - 1].addr > addr) { regions[i] = regions[i - 1]; i--; }
     regions[i] = (Region){addr, size, type, perm};
+}
+
+static void region_add(uint64_t addr, uint64_t size, uint32_t type, uint32_t perm) {
+    region_add_impl(addr, size, type, perm, true);
 }
 
 static bool region_remove(uint64_t addr) {  // (false: no region starts there)
@@ -915,11 +919,33 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
     switch (imm) {
     case 0x01: {  // SetHeapSize
         uint64_t size = x[1];
-        if (size > HEAP_MAX) { x[0] = R_OUT_OF_RESOURCE; break; }
+        LOG("[kernel] SetHeapSize request %llu MB (limit %llu MB)\n",
+            (unsigned long long)(size >> 20), (unsigned long long)(HEAP_MAX >> 20));
+        if (size > HEAP_MAX) {
+            LOG("[kernel] SetHeapSize rejected\n");
+            x[0] = R_OUT_OF_RESOURCE;
+            break;
+        }
         heap_size = size;
         backend_heap_set(size);  // (the renderer may back the heap with GPU memory: Linux, exec.c)
         region_remove(HEAP_BASE);
-        if (size) region_add(HEAP_BASE, size, 5, 3);
+        if (size) {
+            #ifdef _WIN32
+            bool eager = !plat_guest_sparse_heap_enabled();
+
+            if (plat_guest_sparse_heap_enabled())
+                plat_guest_sparse_heap_range(HEAP_BASE, size);
+
+            LOG("[kernel] guest heap backing: %s commit (sparse opt-in %s)\n",
+                eager ? "eager" : "lazy",
+                eager ? "off" : "on");
+            #else
+            bool eager = true;
+            #endif
+            region_add_impl(HEAP_BASE, size, 5, 3, eager);
+        }
+        LOG("[kernel] SetHeapSize accepted: %llu MB at %llx\n",
+            (unsigned long long)(size >> 20), (unsigned long long)HEAP_BASE);
         x[0] = R_OK;
         x[1] = HEAP_BASE;
         break;
@@ -964,11 +990,8 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         int64_t ns = (int64_t)x[0];
         if (ns <= 0) { core_yield(t_cur); break; }
         core_release(t_cur);
-        for (uint64_t end = plat_now_ns() + (uint64_t)ns, now; !g_rt_unwind && (now = plat_now_ns()) < end;) {
-            uint64_t d = end - now < 50000000 ? end - now : 50000000;
-            struct timespec ts = {(time_t)(d / 1000000000), (long)(d % 1000000000)};
-            nanosleep(&ts, NULL);
-        }
+        for (uint64_t end = plat_now_ns() + (uint64_t)ns, now; !g_rt_unwind && (now = plat_now_ns()) < end;)
+            plat_wait_until_ns(end - now < 50000000 ? end : now + 50000000);  // (not nanosleep: see plat_wait_until_ns)
         core_acquire(t_cur);
         break;
     }
@@ -1137,6 +1160,7 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         break;
     }
     case 0x2C:  // MapPhysicalMemory(addr, size)
+        LOG("[kernel] MapPhysicalMemory %llx+%llx\n", (unsigned long long)x[0], (unsigned long long)x[1]);
         memset((void *)x[0], 0, x[1]);
         region_add(x[0], x[1], 0x7, 3);
         x[0] = R_OK;

@@ -2428,18 +2428,26 @@ size_t maxwell_binary_size(const uint8_t *blob, size_t max_size, int stage) {
     return head + code_end(blob + head, (max_size - head) / 8) * 8;
 }
 
-// What the translations are made from: a hash of this file and shader.h (TRANSLATOR_ID, from the Makefile). The caches
-// of translated shaders (runtime/nvn/vulkan/shaders.c) are kept while it stays the same. Built some other way (the
-// test tools), the build time: those caches then start over with every build.
+// What the translations are made from: a hash of this file and shader.h (TRANSLATOR_ID, from the Makefile's generated
+// shader_ids.h). The caches of translated shaders (runtime/nvn/vulkan/shaders.c) are kept while it stays the same.
+// Built some other way (the test tools), the build time: those caches then start over with every build.
 #ifndef TRANSLATOR_ID
 #define TRANSLATOR_ID __DATE__ " " __TIME__
 #endif
+const char *maxwell_translator_id(void) { return TRANSLATOR_ID; }
+
+// What a translation depends on besides the binary, the key and the translator: the switches the Vulkan backend sets
+// for the device (global memory in two bindings, read-only global memory through copies) and the heap window, which
+// only reach the translations of shaders that read global memory (ShaderInfo.uses_gmem). A cached translation records
+// the variant it was made under; one of a global memory shader made under another is translated again
+// (shaders.c xlate_load), the rest are kept: a change of these switches (a device, a driver, a new default in exec.c)
+// no longer throws every cache away, as it did when they were part of the translator's id.
 bool maxwell_gmem_split, maxwell_gmem_snap;
-// (the two switches above change translations: they name caches of their own)
-const char *maxwell_translator_id(void) {
-    static __thread char id[64];  // (per thread: the precompile's workers ask for it at once)
-    snprintf(id, sizeof id, "%s%s%s", TRANSLATOR_ID, maxwell_gmem_split ? "-gs" : "", maxwell_gmem_snap ? "-gn" : "");
-    return id;
+const char *maxwell_translation_variant(void) {
+    static __thread char v[64];  // (per thread: the precompile's workers ask for it at once)
+    snprintf(v, sizeof v, "%s%s %llx+%llx", maxwell_gmem_split ? "s" : "-", maxwell_gmem_snap ? "n" : "-",
+             (unsigned long long)maxwell_gmem_base, (unsigned long long)maxwell_gmem_size);
+    return v;
 }
 
 // Whether a translation depends on more than the binary and the key (debugging switches): not to be cached.

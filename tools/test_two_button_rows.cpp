@@ -14,7 +14,11 @@ static Cpu test_cpu;
 static unsigned focused_kind, focus_count, help_count;
 static uint64_t focused_row;
 const char *tr(const char *s) { return s; }
+std::string ui_visual_order(const char *s) { return s; }  // (i18n.mm: right-to-left reordering, not under test)
 extern "C" {
+// Reached by live Options code (window size rows), never called by this routing test.
+void menu_request_window_apply(void) { abort(); }
+void winsize_name(WinSize, const char *, char *, int) { abort(); }
 // PE resolves unused UI references before discarding their sections. These unrelated
 // services must never be called by this routing test, on either test platform.
 #ifdef _WIN32
@@ -23,13 +27,11 @@ void pc_cursor_options_page_changed(void) { abort(); }
 void pc_cursor_options_tick(uint64_t) { abort(); }
 bool upscaler_available(int) { abort(); }
 bool renderer_gpu_rtx(void) { abort(); }
-void menu_request_window_apply(void) { abort(); }
 int windisplay_list(WinDisplay *) { abort(); }
 int windisplay_target(void) { abort(); }
 void windisplay_set(int) { abort(); }
 int winsize_list(WinSize *, bool) { abort(); }
 WinSize winsize_effective(bool) { abort(); }
-void winsize_name(WinSize, const char *, char *, int) { abort(); }
 WinSize winsize_desktop(void) { abort(); }
 float winsize_refresh_rate(void) { abort(); }
 bool upscale_modes_available(void) { abort(); }

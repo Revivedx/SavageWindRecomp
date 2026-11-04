@@ -94,6 +94,7 @@ static int compare(Value a, Value b) {
     if (type == 4) return (a.s > b.s) - (a.s < b.s);
     return (a.u > b.u) - (a.u < b.u);
 }
+uint64_t g_mem_direct_lo, g_mem_direct_hi;
 static bool window(uint64_t a, size_t n) {
     return a >= GUEST_LO && a < GUEST_HI && n <= GUEST_HI - a;
 }
@@ -128,6 +129,11 @@ static bool copy_memory(uint64_t a, void *buf, size_t n, bool write) {
     struct iovec local = {buf, n}, remote = {(void *)(uintptr_t)a, n};
     ssize_t done = write ? process_vm_writev(getpid(), &local, 1, &remote, 1, 0)
                          : process_vm_readv(getpid(), &local, 1, &remote, 1, 0);
+    if (done < 0 && a >= g_mem_direct_lo && a + n <= g_mem_direct_hi) {  // (the heap's dma-buf mapping: control_mem.h)
+        if (write) memcpy((void *)(uintptr_t)a, buf, n);
+        else memcpy(buf, (const void *)(uintptr_t)a, n);
+        return true;
+    }
     return done >= 0 && (size_t)done == n;
 #endif
 }

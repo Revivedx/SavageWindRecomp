@@ -24,6 +24,9 @@
 #ifndef GAMELIB_SHARED
 #define GAMELIB_SHARED "-shared"
 #endif
+#ifndef GAMELIB_GENARGS  // the generator's options that change the game code (RECOMP_LOCALS=1: --locals)
+#define GAMELIB_GENARGS ""
+#endif
 
 #ifdef _WIN32
 #define SEP "\\"
@@ -427,6 +430,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
         add(&a, layout);
         add(&a, g->out);
         if (strcmp(g->name, "main")) { add(&a, "--hle"); add(&a, t.hle); }
+        add_split(&a, GAMELIB_GENARGS);
         g->p = spawn(a.v, g->log);
         args_free(&a);
         if (!g->p) { snprintf(why, why_size, "the game code builder didn't start"); ok = false; }

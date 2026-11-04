@@ -28,10 +28,10 @@ static const Setting settings[] = {
     B(fullscreen), I(window_w, 0, 16384, NULL), I(window_h, 0, 16384, NULL),
     I(upscaler, 0, UPSCALE_COUNT - 1, "off|metalfx|fsr1|fsr3|dlss"),
     I(upscale_quality, 0, UPQ_COUNT - 1, "ultra_quality|quality|balanced|performance|ultra_performance"),
-    I(antialias, 0, AA_TAA, "off|smaa|taa"),
+    I(antialias, 0, AA_TAA, "off|smaa|taa"), B(game_fxaa),
     I(anisotropy, 0, 4, "game|2x|4x|8x|16x"), I(sharpening, 0, 10, NULL),
     B(frame_gen), F(volume, 0, 2), B(reverb), B(movie_audio),
-    I(perf_overlay, 0, PERF_FULL, "off|fps|full"), I(fps_limit, 0, 120, NULL),
+    I(perf_overlay, 0, PERF_FULL, "off|fps|full"), I(fps_limit, 0, 360, NULL),
     I(vsync, 0, VSYNC_COUNT - 1, "on|fast|adaptive|off"), B(dpad_move),
     {"stick_deadzone[0]", &g_settings.stick_deadzone[0], FLOAT, 0, .5, NULL},
     {"stick_deadzone[1]", &g_settings.stick_deadzone[1], FLOAT, 0, .5, NULL},
@@ -41,11 +41,12 @@ static const Setting settings[] = {
     B(async_shaders), B(precompile_shaders),
     I(shadow_res, 0, SHADOW_COUNT - 1, "console|high|ultra|extreme"), B(wide_view),
     I(hdr, 0, HDR_COUNT - 1, "auto|on|off"), I(hdr_white, 0, 1000, NULL),
-    I(fov, 50, 200, NULL), I(color_exposure, -20, 20, NULL), I(color_contrast, -50, 50, NULL),
+    I(fov, 50, 200, NULL), I(hud_size, 50, 150, NULL), I(color_exposure, -20, 20, NULL), I(color_contrast, -50, 50, NULL),
     I(color_saturation, -100, 100, NULL), I(color_temperature, -100, 100, NULL),
     I(color_tint, -100, 100, NULL),
     {"color_lut", g_settings.color_lut, TEXT, 0, 0, NULL},
-    I(color_lut_strength, 0, 100, NULL), B(color_lut_set),
+    I(color_lut_strength, 0, 100, NULL), B(color_lut_set), B(no_weapon_wear), B(infinite_arrows),
+    B(infinite_stamina), B(god_mode), B(one_hit_kill), I(damage_taken, 25, 400, NULL), I(damage_dealt, 25, 400, NULL),
     I(text_language, 0, 0, NULL), I(voice_language, 0, 0, NULL), B(menu_tip_seen),
 };
 #undef B
@@ -142,7 +143,7 @@ static void cmd_set(int argc, char **argv, ControlReply *r) {
         control_fail(r, "%s is read-only", s->key); return;
     }
 #ifdef __APPLE__
-    if (is(s, "anisotropy") || is(s, "sharpening") || is(s, "frame_gen") ||
+    if (is(s, "anisotropy") || is(s, "sharpening") || is(s, "frame_gen") || is(s, "game_fxaa") ||
         !strncmp(s->key, "color_", 6) || is(s, "hdr") || is(s, "hdr_white") || is(s, "vsync")) {
         control_fail(r, "%s is not supported by this backend", s->key); return;
     }
@@ -179,8 +180,11 @@ static void cmd_set(int argc, char **argv, ControlReply *r) {
                      s->names ? " or " : "", s->names ? s->names : ""); return;
     }
     int v = (int)value;
-    if (is(s, "fps_limit") && v != 0 && v != 30 && v != 60 && v != 90 && v != 120) {
-        control_fail(r, "fps must be 0 (unlimited), 30, 60, 90 or 120"); return;
+    if (is(s, "fps_limit")) {
+        static const int fps[] = FPS_CHOICES;
+        bool offered = false;
+        for (unsigned i = 0; i < sizeof fps / sizeof fps[0]; i++) offered |= fps[i] == v;
+        if (!offered) { control_fail(r, "fps must be 0 (unlimited), 30, 60, 90, 120, 144, 165, 240 or 360"); return; }
     }
     if (is(s, "hdr_white") && v != 0 && v < 80) {
         control_fail(r, "hdr_white must be 0 (automatic) or 80 to 1000 nits"); return;
