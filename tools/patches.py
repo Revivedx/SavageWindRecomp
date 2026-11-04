@@ -741,7 +741,19 @@ def _gyro_scene_actor(gen, a):
             f'  /* {a:#x}: bl (shrine apparatus input) */')
 
 
+# The free camera (runtime/hle/freecam.c rt_lookat): sead::LookAtCamera::doUpdateMatrix (1.9.0 0x7000eb2d5c) builds
+# a camera's view from its eye (+0x38), at (+0x44) and up (+0x50); the runtime sees each camera there first and may
+# put its own eye and at in place before they are read.
+
+def _lookat_update(gen, a):
+    assert _word(gen, a) == 0x2d470801, hex(_word(gen, a))  # ldp s1, s2, [x0, #0x38]
+    return ('{ extern void rt_lookat(uint64_t); rt_lookat(c->x[0]); c->v[1] = LD32(c->x[0] + 0x38); '
+            'c->v[2] = LD32(c->x[0] + 0x3c); }'
+            f'  /* {a:#x}: ldp s1, s2, [x0, #0x38] (LookAtCamera view: eye x, y) */')
+
+
 PATCHES = {
+    'lookat_update': _lookat_update,
     'pc_map_focus': _pc_map_focus(False),
     'pc_map_focus_target': _pc_map_focus(True),
     'pc_map_focus_now': _pc_map_focus(True),

@@ -394,6 +394,8 @@ void rt_vfr_update(uint64_t vfr) {
     if (nvn_timeline()) LOG("[tl] %.3f %x vfr\n", plat_now_ns() / 1e6, kernel_current_thread_handle());
     extern uint64_t g_fs_vfr;  // (SAVAGEWIND_FRAME_LOG=2, nvn/objects.c)
     g_fs_vfr = plat_now_ns();
+    extern void freecam_frame(void);  // (hle/freecam.c)
+    freecam_frame();
     clock_probe(vfr);
     log_screens();
     extern void input_cam_frame(float ratio);  // runtime/hle/input.c: the mouse's motion in the frame, for the cameras
@@ -444,6 +446,8 @@ void rt_vfr_update(uint64_t vfr) {
     }
     bool held = VF(uint8_t, vfr, VFR_OVERRIDE) && ratio > 1;  // (stage loading: the game asks for single steps)
     if (held) ratio = 1;
+    extern bool freecam_active(void);
+    if (freecam_active()) ratio = 0.001f;  // (the free camera: the world nearly stops)
     if (!paused) {
         given += ratio / 30.0;
         if (held || fabs(real - given) > 0.25) real = given;  // (nothing owed for a deliberate slow down)
