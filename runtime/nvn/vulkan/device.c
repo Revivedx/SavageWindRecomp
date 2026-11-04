@@ -274,6 +274,15 @@ static bool radv_gcn(void) {
     return false;
 }
 
+// RADV on a Vega chip (GCN 5: Raven, Renoir, Vega 10 / 20, not Vega M, which is Polaris based)
+static bool radv_vega(void) {
+    const char *r = strstr(g_vk.props.deviceName, "(RADV ");
+    if (!r) return false;
+    r += 6;
+    return !strncmp(r, "RAVEN", 5) || !strncmp(r, "RENOIR", 6) || !strncmp(r, "GFX9", 4) ||
+           (!strncmp(r, "VEGA", 4) && strncmp(r, "VEGAM", 5));
+}
+
 // RADV on an RDNA 4 chip (RX 9060 / 9070): "AMD Radeon RX 9070 XT (RADV GFX1201)"
 static bool radv_gfx12(void) { return strstr(g_vk.props.deviceName, "(RADV GFX12") != NULL; }
 bool vk_shader_fp16(void) { return g_vk.fp16; }
@@ -362,7 +371,9 @@ static void create_device(void) {
     // flickering text and UI edges, white slivers in the sky, shredded menu labels (#342, #352, #399); with the copies
     // all of it went away, and 0.3.1 (copies) never had it. They take the copies too.
     bool intel_igpu = g_vk.props.vendorID == 0x8086 && g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
-    bool gcn_off = (radv_gcn() || win_legacy || intel_igpu) && !getenv("SAVAGEWIND_VK_FEEDBACK_LOOP");
+    // Vega (Renoir, Raven) draws the loops right: with the pipeline libraries off (below) the picture was correct at 45 to
+    // 60 fps with the loops on and 8 to 12 fps with the copies (#291).
+    bool gcn_off = ((radv_gcn() && !radv_vega()) || win_legacy || intel_igpu) && !getenv("SAVAGEWIND_VK_FEEDBACK_LOOP");
     bool fbl = !getenv("SAVAGEWIND_VK_NO_FEEDBACK_LOOP") && !gcn_off &&
                has_ext(ep, ne, VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME) &&
                has_ext(ep, ne, VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME);
@@ -375,7 +386,9 @@ static void create_device(void) {
     // the driver links them fast. SAVAGEWIND_VK_NO_GPL=1: whole pipelines, as before. RADV on RDNA 4 (Mesa 26.0, an
     // RX 9070 XT) hung the GPU ~46 s in, at the title screen, with them and ran without (#228); SAVAGEWIND_VK_GPL=1
     // turns them on there anyway.
-    bool gpl_off = (win_legacy || radv_gfx12()) && !getenv("SAVAGEWIND_VK_GPL");
+    // RADV on Vega (Renoir, Mesa 25.2): the world came out white with them, correct without (#291: two players on a Vega 8
+    // / Renoir; a Legion Go S, not a Vega, had it too and is not covered); SAVAGEWIND_VK_GPL=1 turns them on there anyway.
+    bool gpl_off = (win_legacy || radv_gfx12() || radv_vega()) && !getenv("SAVAGEWIND_VK_GPL");
     bool gpl = !getenv("SAVAGEWIND_VK_NO_GPL") && !gpl_off && has_ext(ep, ne, VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME) &&
                has_ext(ep, ne, VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
     // when each frame reached the display (SAVAGEWIND_LOG_PRESENT, tests: "present timing" below)
