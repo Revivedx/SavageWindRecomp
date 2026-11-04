@@ -275,6 +275,9 @@ SITES = [
     # the pouch taking arrows off for the player's bow (tools/patches.py _remove_arrows; Accessibility > Infinite arrows)
     Site('pouch_remove_arrows', 'code', 'd101c3ff a9017bfd a9026ffc a90367fa a9045ff8 a90557f6 a9064ff4 910043fd '
          '90000008/9f00001f aa0003f3 f9400108/ffc003ff aa0103e0', 0),
+    # sead::LookAtCamera::doUpdateMatrix (tools/patches.py _lookat_update): its first load of the eye (+0x38); eye,
+    # at (+0x44) and up (+0x50) make the view matrix written to x1 (free camera, runtime/hle/freecam.c)
+    Site('lookat_update', 'code', '2d470801 2d480c00 1e232020 2d491404 1e240440 1e250400 54000000/ff00001f 1e233823', 0),
     Site('main_data', 'data', '', 0),
     Site('main_end', 'end', '', 0),
 ]
@@ -286,6 +289,7 @@ SITES = [
 # second group it turns it without the game's camera inversion options.
 OPTIONAL_GROUPS = [
     OPT_TWO_SITES,
+    ('lookat_update',),  # (the free camera: without it Home does nothing)
     ('gyro_scene_actor',),
     ('surf_contact', 'surf_boost_remove', 'surf_jump_request'),
     ('stale_actor_helper', 'stale_actor_target'),
@@ -386,7 +390,7 @@ KNOWN = {
         'opt_two_text': 0x7000e30ee0,
         'opt_two_help': 0x7000e30550,
         'opt_two_pane_calc': 0x70000276a0,
-
+        'lookat_update': 0x7000eb2d5c,
         'yaz0_stream': 0x700131d674,
         'yaz0_stream_ret': 0x700131d7e8,
         'opt_create_rows': 0x7000e2f0a8,

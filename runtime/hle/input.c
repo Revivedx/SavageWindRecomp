@@ -163,6 +163,38 @@ static void recompute_pad(void) {
         if (SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 16000) host |= 1u << PADB_LTRIGGER;
         if (SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 16000) host |= 1u << PADB_RTRIGGER;
     }
+    {   // The free camera (hle/freecam.c): both stick clicks together turn it on and off; while it is on the controller
+        // moves it and the game sees the controller at rest
+        extern bool freecam_active(void);
+        extern void freecam_toggle(void), freecam_pad(float lx, float ly, float rx, float ry, float up, float down, bool fast,
+                                                      bool slow);
+        static bool combo_was;
+        bool combo = pad && !host_test && (host >> SDL_GAMEPAD_BUTTON_LEFT_STICK & 1) && (host >> SDL_GAMEPAD_BUTTON_RIGHT_STICK & 1);
+        if (combo && !combo_was) freecam_toggle();
+        combo_was = combo;
+        if (combo) host &= ~(1u << SDL_GAMEPAD_BUTTON_LEFT_STICK | 1u << SDL_GAMEPAD_BUTTON_RIGHT_STICK);  // (not to the game)
+        if (freecam_active()) {
+            _Atomic int32_t lx, ly, rx, ry;
+            lx = ly = rx = ry = 0;
+            if (pad && !host_test) {
+                dead_zone(&lx, &ly, SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX), -SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY),
+                          g_settings.stick_deadzone[0]);
+                dead_zone(&rx, &ry, SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX), -SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY),
+                          g_settings.stick_deadzone[1]);
+                freecam_pad(lx / 32767.0f, ly / 32767.0f, rx / 32767.0f, ry / 32767.0f,
+                            SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) / 32767.0f,
+                            SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) / 32767.0f,
+                            host >> SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER & 1, host >> SDL_GAMEPAD_BUTTON_LEFT_SHOULDER & 1);
+            }
+            pad_buttons = 0;
+            host_buttons = 0;  // (the bindings see nothing either: the free camera has the controller)
+            recompute_motion();
+            act_publish(~0ull, 0);
+            pad_lx = pad_ly = pad_rx = pad_ry = 0;
+            return;
+        }
+        freecam_pad(0, 0, 0, 0, 0, 0, false, false);
+    }
     host_buttons = host;
     recompute_motion();
     uint64_t b = 0;
@@ -507,6 +539,17 @@ void input_handle_event(const SDL_Event *e) {
     }
     switch (e->type) {
     case SDL_EVENT_KEY_DOWN: case SDL_EVENT_KEY_UP:
+        {   // Home: the free camera (hle/freecam.c; F7 is fly mode's default); while it is on, keys move it, not Link
+            extern bool freecam_active(void);
+            extern void freecam_toggle(void), freecam_key(int scancode, bool down);
+            if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_HOME && !e->key.repeat) {
+                freecam_toggle();
+                memset(keys_down, 0, sizeof keys_down);  // (Link stops; held keys don't carry over either way)
+                recompute_keyboard();
+                break;
+            }
+            if (freecam_active()) { freecam_key(e->key.scancode, e->type == SDL_EVENT_KEY_DOWN); break; }
+        }
         if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_F9 && !e->key.repeat) g_debug_frame_request = 1;
         if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_F12 && !e->key.repeat)
             g_record_frames = !g_record_frames;
@@ -526,6 +569,11 @@ void input_handle_event(const SDL_Event *e) {
             motion_mouse_yaw(e->wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -e->wheel.y : e->wheel.y);
         break;
     case SDL_EVENT_MOUSE_MOTION:
+        {
+            extern bool freecam_active(void);
+            extern void freecam_mouse(float dx, float dy);
+            if (freecam_active()) { freecam_mouse(e->motion.xrel, e->motion.yrel); break; }
+        }
         if ((tilt_held || mouse_held) && fabsf(e->motion.xrel) + fabsf(e->motion.yrel) > 4) last_device = DEVICE_KEYBOARD;
         if (tilt_held) {
             motion_mouse(e->motion.xrel, e->motion.yrel);
@@ -943,7 +991,7 @@ HLE_FUNC("_ZN2nn3hid27BindNpadStyleSetUpdateEventERKjPNS_2os15SystemEventTypeENS
     KEvent *ev = kernel_create_event_pair(&w, &r);
     klock();
     kernel_signal(ev);
-    pthread_mutex_unlock(&g_klock);
+    kunlock();
     uint64_t clear_mode = c->x[2];
     c->x[0] = c->x[1];
     c->x[1] = r;
