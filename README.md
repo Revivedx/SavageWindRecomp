@@ -273,7 +273,10 @@ the device you use). The mouse turns the camera directly, as in a PC game: 0.022
 Quake and Source count it), on both axes (the vertical one scaled by Controls > Mouse vertical sensitivity), with no
 acceleration or top speed, the same at any frame rate. The bow's and the scope's own slower speeds stay, and so do the
 game's camera speed setting and its camera axis inversion options. Esc frees the cursor, a click in the window takes
-it back. F10 cycles the performance overlay (off, FPS, full). Full also shows Link's XYZ coordinates from the game's
+it back. Hold F5 for three seconds to request a panic blood moon in the overworld through the game's memory relief system.
+Releasing F5, losing window focus or leaving active gameplay cancels the hold.
+The shortcut is ignored while typing, in menus, while loading or during scripted events.
+F10 cycles the performance overlay (off, FPS, full). Full also shows Link's XYZ coordinates from the game's
 position copy, in game units, with one decimal place. The line is hidden on the title screen, while loading,
 during movies and scripted events (cutscenes, talks, item pickups), or when the position is unavailable.
 
