@@ -292,6 +292,14 @@ gen:  # every module of the exefs, at the addresses tools/layout.py gives them
 
 gen-objs: $(GEN_OBJ)
 
+# Discord Rich Presence's place names: the game's own text, written from your extracted/ and never committed
+ifneq ($(wildcard extracted/romfs/Pack/Bootup.pack),)
+PLACE_PY := $(firstword $(PY) python3)
+runtime/game_place_table.inc: tools/gen_place_table.py
+	$(PLACE_PY) tools/gen_place_table.py extracted/romfs/Pack $@
+$(B)/rt/game_place.o: runtime/game_place_table.inc
+endif
+
 # Runtime objects only (no generated code, no link): quick compile check
 runtime-objs: $(RT_OBJ) $(BACKEND_OBJ) $(UI_OBJ)
 
@@ -431,6 +439,14 @@ $(B)/test_pc_controls: tests/test_pc_controls.c runtime/hle/input.c runtime/hle/
 $(B)/test_pc_settings: tests/test_pc_settings.c runtime/settings.c runtime/settings.h runtime/hle/bindings.c
 	@mkdir -p $(dir $@)
 	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< -lSDL3 -lm
+
+$(B)/test_game_place: tests/test_game_place.c runtime/game_place.c runtime/game_place.h runtime/game_place_table.inc
+	@mkdir -p $(dir $@)
+	$(CC) -O1 -Iruntime -o $@ $<
+
+$(B)/test_discord_rpc: tests/test_discord_rpc.c runtime/discord_rpc.c runtime/discord_rpc.h
+	@mkdir -p $(dir $@)
+	$(CC) -O1 -Iruntime -o $@ $<
 
 $(B)/test_gpu_settings: tests/test_gpu_settings.c runtime/settings.c runtime/settings.h runtime/gpu_select.h runtime/hle/bindings.c
 	@mkdir -p $(dir $@)
