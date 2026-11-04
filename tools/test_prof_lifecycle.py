@@ -55,9 +55,6 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual([n for _, n in cap.frame_marks], [100, 101])
         self.assertEqual(swprof.analyse(cap)['frames']['count'], 1)
 
-    def test_legacy_single_frame_alias_has_both_boundaries(self):
-        self.assertEqual([n for _, n in self.run_case('alias').frame_marks], [100, 101])
-
     def test_final_totals_survive_worker_exit(self):
         cap = self.run_case('final')
         calls = sum(n for acc in cap.acc for _, sid, n, _ in acc if cap.sites[sid] == 'final total')

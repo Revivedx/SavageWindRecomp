@@ -120,6 +120,15 @@ void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
     }
     o->vx = (dw - o->vw) / 2; o->vy = (dh - o->vh) / 2;
     o->crop[0] = o->crop[1] = 0, o->crop[2] = o->crop[3] = 1;
+    // The map's frame stays 16:9, but its scrollable background can draw beyond the frame on taller windows
+    // (#303). Present only that centered 16:9 region, without resizing its targets or changing cursor coordinates.
+    if (reshape && shape < 1 && framepace_map_ui()) {
+        double map_h = o->vh * shape;
+        o->vy += (o->vh - map_h) / 2;
+        o->vh = map_h;
+        o->crop[1] = (1 - shape) / 2;
+        o->crop[3] = shape;
+    }
     // Pause pages keep their 16:9 layout centered while the wider or taller image remains visible around them.
     g_view_shape = (float)o->shape;
     // Video > Field of view: in play only (cutscenes and talks keep the game's framing), eased over about 1/4 s so

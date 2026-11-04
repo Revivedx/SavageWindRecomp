@@ -18,7 +18,7 @@ bool rec_on(void);  // commands go through the recorder thread
 // ---- command buffers, submissions
 void rec_BeginCommandBuffer(VkCommandBuffer cb);  // ONE_TIME_SUBMIT
 void rec_EndCommandBuffer(VkCommandBuffer cb);
-// Submits si (up to 2 command buffers, 1 wait, 2 signals; nothing chained) on g_vk.queue. seq: the timeline value it
+// Submits si (up to 2 command buffers, 2 waits, 2 signals; nothing chained) on g_vk.queue. seq: the timeline value it
 // signals, which rec_submitted() reaches once the driver has it.
 void rec_QueueSubmit2(const VkSubmitInfo2 *si, uint64_t seq);
 // n writes of one descriptor each (buffer or image info), in order with the commands
@@ -30,6 +30,14 @@ void rec_wait_submitted(uint64_t seq);  // until the driver has submission seq (
 // Everything queued so far is recorded and submitted (the translating thread): before vkDeviceWaitIdle, before
 // recording into a command buffer directly (the menu's ImGui, frame generation), before using the queue outside it.
 void rec_drain(void);
+
+// ---- profiling (SAVAGEWIND_VK_PROF): counts since the last take
+typedef struct {
+    uint64_t packets, bytes, enqueue_ns;  // packets queued, their bytes, the translating thread's time queuing them
+    uint64_t busy_ns, wakeups, submit_ns;  // the recorder's time making calls, times it woke, its time in vkQueueSubmit2
+    uint64_t drains, drain_ns, seq_waits, seq_wait_ns, full_waits, full_ns;  // waits on it: drains, submissions, ring full
+} RecStats;
+void rec_stats_take(RecStats *o);
 
 // ---- commands: as vkCmd*, the same arguments (arrays and structures copied; nothing chained through pNext)
 void rec_CmdBeginRendering(VkCommandBuffer cb, const VkRenderingInfo *ri);

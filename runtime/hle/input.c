@@ -21,6 +21,7 @@
 #include "../motion.h"
 #include "../pc_gyro_scene.h"
 #include "../vibration.h"
+#include "../framepace.h"
 #include "../prof.h"
 #include "../pc_cursor.h"
 
@@ -317,11 +318,19 @@ uint32_t rt_cam_pitch_scale(uint32_t lat, uint32_t lng) {
     return cam_mouse && cam_native_on() ? lng : lat;
 }
 
+// A left-button drag in the inventory's Rotate mode, with the PC pointer on (runtime/pc_cursor.c): the drag turns Link
+// through the right stick, as the mouse camera does with the pointer off (#346).
+void input_pc_rotate_motion(float dx, float dy) {
+    mouse_dx_milli += llround(dx * 1000);
+    mouse_dy_milli += llround(dy * 1000);
+}
+
 static void mouse_stick(int32_t *x, int32_t *y) {
     static uint64_t last_ns;
     static int32_t hx, hy;
     *x = *y = 0;
-    if (!(mouse_held || test_mouse) || !g_settings.mouse_camera || cam_reading()) {
+    bool drag = pc_cursor_rotate_drag();
+    if ((!drag && (!(mouse_held || test_mouse) || !g_settings.mouse_camera)) || cam_reading()) {
         mouse_dx_milli = mouse_dy_milli = 0;
         hx = hy = 0;
         return;
@@ -514,8 +523,12 @@ void input_handle_event(const SDL_Event *e) {
         }
         break;
     case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_BUTTON_UP:
+        // The PC pointer keeps left (click) and right (back) for itself. Middle and the side buttons stay bound, as with
+        // the pointer off: middle click is the right stick press, Rotate in the inventory (#346). A held button's release
+        // always counts, even after its menu closed, so it never stays pressed in play.
         if (e->button.button < sizeof mouse_down && (mouse_held ||
-            (pc_cursor_active() && e->button.button >= SDL_BUTTON_X1))) {
+            (e->type == SDL_EVENT_MOUSE_BUTTON_UP && mouse_down[e->button.button]) ||
+            (pc_cursor_active() && e->button.button != SDL_BUTTON_LEFT && e->button.button != SDL_BUTTON_RIGHT))) {
             if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN) last_device = DEVICE_KEYBOARD;
             mouse_down[e->button.button] = e->type == SDL_EVENT_MOUSE_BUTTON_DOWN;
             recompute_keyboard();

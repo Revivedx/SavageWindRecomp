@@ -9,3 +9,4 @@ void pc_cursor_window(SDL_Window *w) { (void)w; }
 bool pc_cursor_hide_system(void) { return false; }
 bool pc_cursor_map_navigation(void) { return false; }
 uint64_t pc_cursor_buttons(uint64_t buttons) { return buttons; }
+bool prof_toggle(void) { return false; }

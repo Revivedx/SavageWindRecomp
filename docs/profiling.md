@@ -9,7 +9,7 @@ no viewer is needed.
 | How | What it does |
 | --- | --- |
 | `F6` in the game | Starts a capture; `F6` again stops it. After a full buffer stops it automatically, the next press only acknowledges the stop; the press after that starts a new capture. Ignored while a menu captures input or F6 is assigned to a game control. |
-| `SAVAGEWIND_PROF=<first>[:<frames>]` | Starts at frame `<first>`; stops after `<frames>` frames (without a count: stays on until stopped). `SAVAGEWIND_GPUPROF_AT=<n>` still works and means `<n>:1`. |
+| `SAVAGEWIND_PROF=<first>[:<frames>]` | Starts at frame `<first>`; stops after `<frames>` frames (without a count: stays on until stopped). |
 | `prof start`, `prof stop`, `prof status` | The same, from the command layer (once it is merged). |
 
 A capture also ends by itself when its buffer is full (`SAVAGEWIND_PROF_MB`, default 256, 8 to 4096). The file is
@@ -108,9 +108,9 @@ prints synthetic marker costs with recording off and on. These numbers are not g
 
 See [profiler internals](profiler-internals.md) for the capture lifecycle, the thread ordering rules and the limits.
 
-The old `SAVAGEWIND_VK_PROF`, `SAVAGEWIND_TIMELINE` and `SAVAGEWIND_SAMPLE` interfaces were removed. Use
-`SAVAGEWIND_PROF`, `SAVAGEWIND_PROF_SAMPLE` and `swprof.py`. The single-frame `SAVAGEWIND_GPUPROF_AT=<n>` alias remains;
-its older comma-separated frame list is not supported. FNPROF and the F10 player overlay remain separate.
+The older tools stay: `SAVAGEWIND_VK_PROF`, `SAVAGEWIND_TIMELINE`, `SAVAGEWIND_GPUPROF_AT`, the `sample`, `vkprof`, `gpuprof` and
+`threads` control commands and `tools/profile_samples.py` are unchanged, and `tools/perf_routes.py` still uses them. `prof` is
+separate from them. FNPROF and the F10 player overlay remain separate.
 
 ## File format
 

@@ -140,6 +140,10 @@ SITES = [
     Site('surf_contact', 'code', '3941d2a8 36080008/fff8001f bd4066a0 1e202008 5400000d/ff00001f bd403261 1e202028 5400000d/ff00001f', 0),
     Site('surf_boost_remove', 'code', '1e203820 2f00e401 aa1403e1 1e216800 bd003260 0f016680 f94006a0 94000000/fc000000', 0),
     Site('surf_jump_request', 'code', '36000000/fff8001f 52a82608 b9006668 b9008288 52800028 3900a288 2d488680 52800141', 0),
+    # a stale actor in the target manager (tools/patches.py _stale_actor_helper, _stale_actor_target; #391, #393): the
+    # helper that asks an actor for its link, and the camera target's inline copy of it
+    Site('stale_actor_helper', 'code', 'b4000000/ff00001f f942b808 f9404500 14000000/fc000000 d65f03c0', 0),
+    Site('stale_actor_target', 'code', 'f942ba68 f9404500 94000000/fc000000 12000008 390006e8 37000000/fff8001f 394002e8 35000008/ff00001f', 0),
     # the physics step's solver microsteps (tools/patches.py _solver_steps): the delta frame times 6
     Site('phys_solver_steps', 'code', '1e231002 1e3c1004 f9401a68 1e2c1009 1e220822 f9400108 1e202048 f9400514', 4),
     # a keyframed body's angular velocity toward its target (tools/patches.py _kf_angle): the call that takes the angle
@@ -225,6 +229,27 @@ SITES = [
          'b4000008/ff00001f 39406108 37280008/fff8001f 39402008 36000008/fff8001f d10143ff', 0),
     # a shrine apparatus fetching its input (tools/patches.py _gyro_scene_actor; runtime/pc_gyro_scene.c)
     Site('gyro_scene_actor', 'code', '2d59b28f 2d5ab689 94000000/fc000000 b5000000/ff00001f 9101d280 9101a281', 2),
+    # the store of an equipped weapon's, bow's or shield's durability, x100 (tools/patches.py _no_wear; from #296: the
+    # setter 1.8.2 0x7000c809e8 finds the equipped item of a type w22 in the pouch and stores the new value w20)
+    Site('no_wear_store', 'code', 'b9002174 5288fb08 72a00088 38686aa8 35000008/ff00001f 2a1403e0 2a1f03e2 '
+         '94000000/fc000000', 0),
+    # the weapon actor's own durability, x100 (tools/patches.py _no_wear_hit): a hit takes its cost w9 off the value w8
+    Site('no_wear_hit', 'code', '4b090108 0aa87d08 1e220101 b9000268 1e212000 1a9f07e0 14000000/fc000000 f9400288', 0),
+    # where the weapon's update calls that (no_wear_hit's function, a virtual method that every damage goes through):
+    # the instruction after the call, the return address that tells a weapon's wear from damage to Link or an enemy
+    Site('no_wear_ret', 'code', 'f9400288 2a0003f5 aa1403e0 f9415d08 d63f0100 b5000000/ff00001f 52800036 '
+         '14000000/fc000000', 0),
+    # Link's damage handling storing his new life, in quarter hearts (tools/patches.py _link_life): at its end, and on
+    # the path that takes one quarter off
+    Site('link_life_store', 'code', 'b90002b9 f9400300 94000000/fc000000 6b00033f 5400000d/ff00001f f9400300 b9400ff5 '
+         '94000000/fc000000', 0),
+    Site('link_life_tick', 'code', 'b90002a8 1e212000 1a9f07e0 14000000/fc000000 2a1f03fa 39715288 36080008/fff8001f '
+         'bd42e660', 0),
+    # the stamina setter's store, PlayerInfo +0xa4 (tools/patches.py _stamina)
+    Site('stamina_store', 'code', '1e204008 94000000/fc000000 bd00a668 f9400ff3 a940fbfd fc4207e8 d65f03c0', 2),
+    # the pouch taking arrows off for the player's bow (tools/patches.py _remove_arrows; Accessibility > Infinite arrows)
+    Site('pouch_remove_arrows', 'code', 'd101c3ff a9017bfd a9026ffc a90367fa a9045ff8 a90557f6 a9064ff4 910043fd '
+         '90000008/9f00001f aa0003f3 f9400108/ffc003ff aa0103e0', 0),
     Site('main_data', 'data', '', 0),
     Site('main_end', 'end', '', 0),
 ]
@@ -237,6 +262,7 @@ SITES = [
 OPTIONAL_GROUPS = [
     ('gyro_scene_actor',),
     ('surf_contact', 'surf_boost_remove', 'surf_jump_request'),
+    ('stale_actor_helper', 'stale_actor_target'),
     ('quick_menu_capture_alpha',),
     ('kf_angle',),
     ('yaz0_stream', 'yaz0_stream_ret'),
@@ -251,6 +277,11 @@ OPTIONAL_GROUPS = [
      'grass_blade_lateral_near',
      'grass_blade_lateral_far'),
     ('tree_ranges',),
+    ('pouch_remove_arrows',),
+    ('no_wear_store',),
+    ('no_wear_hit', 'no_wear_ret'),
+    ('link_life_store', 'link_life_tick'),
+    ('stamina_store',),
 ]
 OPTIONAL = {n for g in OPTIONAL_GROUPS for n in g}
 
@@ -354,6 +385,8 @@ KNOWN = {
         'surf_contact': 0x70011e9e74,
         'surf_boost_remove': 0x70011e9e94,
         'surf_jump_request': 0x70011ea3d4,
+        'stale_actor_helper': 0x700120bc40,
+        'stale_actor_target': 0x7000dea400,
         'phys_solver_steps': 0x700156f930,
         'kf_angle': 0x70012d57fc,
         'snd_frame_floor': 0x7001551004,
@@ -392,6 +425,13 @@ KNOWN = {
         'grass_blade_lateral_near': 0x70013a8f0c,
         'grass_blade_lateral_far': 0x70013a8f20,
         'tree_ranges': 0x70013c94ac,
+        'pouch_remove_arrows': 0x7000d93814,
+        'no_wear_store': 0x7000d93d50,
+        'no_wear_hit': 0x7000b9542c,
+        'no_wear_ret': 0x70007b09f4,
+        'link_life_store': 0x7000cc4e70,
+        'link_life_tick': 0x7000cc4da4,
+        'stamina_store': 0x7000cc7430,
         'main_data': 0x7001b7a000,
         'main_end': 0x7001e98000,
     },

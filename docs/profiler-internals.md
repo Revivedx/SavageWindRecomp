@@ -1,6 +1,6 @@
 # Profiler internals
 
-How the profiler in `runtime/prof.c`, `runtime/sampler.c` and `tools/swprof.py` works, and the rules it relies on. For
+How the profiler in `runtime/prof.c`, `runtime/prof_sampler.c` and `tools/swprof.py` works, and the rules it relies on. For
 using it, see [profiling.md](profiling.md). No game files, generated code or captures belong in issues or pull requests.
 
 ## Capture ownership and producer completion

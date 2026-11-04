@@ -1,4 +1,4 @@
-// Frame rate (Video > Frame rate): Off (no limit), 30, 60 (the default), 90 or 120 frames per second, and the game's
+// Frame rate (Video > Frame rate): Off (no limit), 30, 60 (the default), 90, 120, 144, 165, 240 or 360 frames per second, and the game's
 // clock the same at every one of them. Shared by the macOS, Linux and Windows builds.
 //
 // How BOTW 1.8.2 keeps time (main module, runtime addresses):
@@ -15,7 +15,7 @@
 //     screen (0.2 s at 30 fps, 0.1 s at 120). The paused game (pause menu, map: the state at 0x7001cb48a4 is 2, 0
 //     while playing) updates VFR twice a frame.
 // So the game already runs at any frame rate as long as VFR is told how long a frame really took. Savage Wind:
-//   - paces the presents at the chosen rate on a steady grid (present_pace, framepace_period_ns; Off: 300 fps at
+//   - paces the presents at the chosen rate on a steady grid (present_pace, framepace_period_ns; Off: 360 fps at
 //     most, FPS_CEILING; with VSync On or Adaptive a little under the display's refresh rate), and skips the frame
 //     loop's vsync wait (rt_frame_wait, tools/patches.py);
 //   - tells VFR how long the frame really took (rt_vfr_update, inside updateInterval after the game set its ratio):
@@ -143,6 +143,16 @@ bool framepace_loading_ui(void) { return screen_up(0x55); }
 
 // (pause state 2: the pause menu's pages and the map; 4 is the quick menus over the game)
 bool framepace_menu_ui(void) { return *(uint32_t *)(uintptr_t)PAUSE_STATE == 2; }
+bool framepace_map_ui(void) {
+    if (!framepace_menu_ui()) return false;
+    uint64_t mgr = *(uint64_t *)(uintptr_t)g_site.screen_mgr;
+    if (!mgr || VF(uint32_t, mgr, 0x28) <= 0x2f) return false;
+    uint64_t arr = VF(uint64_t, mgr, 0x30);
+    if (!arr || VF(uint64_t, arr, 8 * 0x2f)) return false;  // inventory covers the map
+    uint64_t map = VF(uint64_t, arr, 8 * 0x2a);
+    return map && VF(uint8_t, map, 0xfe) == 2;  // same active map screen as pc_cursor.c
+}
+bool framepace_quick_ui(void) { return *(uint32_t *)(uintptr_t)PAUSE_STATE == 4; }
 bool framepace_paused(void) { return in_menu(); }
 
 int framepace_target(void) {
@@ -164,9 +174,11 @@ int framepace_target(void) {
     return fps;
 }
 
-// No limit still stops at 300 fps: shorter steps lose precision in the game's float clocks (the time of day, 0..360,
-// takes 1/30 of a minute times the step each frame: at 300 fps that is 1% of the value's rounding unit per frame).
-#define FPS_CEILING 300
+// No limit still stops at 360 fps: shorter steps lose precision in the game's float clocks (the time of day, 0..360,
+// takes 1/30 of a minute times the step each frame: at 360 fps that is 1.2% of the value's rounding unit per frame).
+// The game's clock and the menus' step stop here too (rt_vfr_update, framepace_presented): a frame rate above this
+// would run the game fast.
+#define FPS_CEILING 360
 
 // With VSync On or Adaptive (FIFO), a frame rate at or over the display's refresh rate waits for the display: up to a
 // refresh of delay, and with G-SYNC / FreeSync the display leaves its variable rate at the top of its range. So the
@@ -222,7 +234,8 @@ void framepace_presented(uint64_t t, bool on_grid) {
     if (s > 0.25) s = 0.25;
     smooth = smooth > 0 ? smooth + (s - smooth) * 0.25 : s;
     float step = (float)((on_grid ? s : smooth) * 30);
-    g_step = step < 0.1f ? 0.1f : step > 1.5f ? 1.5f : step;
+    float least = 30.0f / FPS_CEILING;
+    g_step = step < least ? least : step > 1.5f ? 1.5f : step;
     g_grid_streak = on_grid ? g_grid_streak + 1 : 0;
     static int fixed = -1;
     if (fixed < 0) fixed = env_int("SAVAGEWIND_NO_CONTROLLER_STEP", 0);
@@ -356,6 +369,14 @@ int rt_surf_jump_request(uint64_t controller) {
     return 1;
 }
 
+// A stale actor in the game's target manager was ignored (tools/patches.py _stale_actor_helper / _stale_actor_target,
+// #391, #393): the game would have crashed on it. Logged the first five times, then each power of two.
+void rt_stale_actor(void) {
+    static uint32_t n;
+    uint32_t k = __atomic_add_fetch(&n, 1, __ATOMIC_RELAXED);
+    if (k <= 5 || (k & (k - 1)) == 0) LOG("[game] a stale actor in the target manager was ignored (%u so far)\n", k);
+}
+
 // The game's frames that were presented: one step per presented frame, where game frames step twice while paused
 // (output_scale.c's jitter sequence: each presented frame gets the next phase)
 static uint64_t shown_frames;
@@ -369,6 +390,8 @@ void rt_vfr_update(uint64_t vfr) {
         uint64_t n = renderer_present_count();
         if (n != presented) presented = n, __atomic_fetch_add(&shown_frames, 1, __ATOMIC_RELAXED);
     }
+    extern bool nvn_timeline(void);
+    if (nvn_timeline()) LOG("[tl] %.3f %x vfr\n", plat_now_ns() / 1e6, kernel_current_thread_handle());
     extern uint64_t g_fs_vfr;  // (SAVAGEWIND_FRAME_LOG=2, nvn/objects.c)
     g_fs_vfr = plat_now_ns();
     clock_probe(vfr);

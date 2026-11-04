@@ -53,10 +53,10 @@ enum { PROF_GPU_COUNTER = PROF_COUNTER | 0x100 };  // a counter admitted during 
 // PROF_GPU: a stretch of GPU work (t0..t1 in cycle counter ticks, val = draws | frame << 32), written by whichever
 // thread reads the GPU's timestamps back; the tool shows these as a thread of their own, "gpu".
 
-// PROF_SAMPLE (the sampler, runtime/sampler.c): t0 = time, t1 = os thread id, val = kernel handle, kind >> 8 = the stack's
+// PROF_SAMPLE (the sampler, runtime/prof_sampler.c): t0 = time, t1 = os thread id, val = kernel handle, kind >> 8 = the stack's
 // depth; the PROF_STACK records after it hold the addresses, three to a record in t0, t1, val (innermost first).
 
-// ---- the sampler (runtime/sampler.c): prof_start and the capture's writer call these
+// ---- the sampler (runtime/prof_sampler.c): prof_start and the capture's writer call these
 enum { PROF_MODULE_RUNTIME = 1, PROF_MODULE_GAME = 2, PROF_MODULE_OTHER = 3 };
 typedef struct { uint64_t base, size, bias; uint32_t kind; char name[196]; } ProfModule;  // bias: add to a symbol's address
 void prof_sampler_begin(void);

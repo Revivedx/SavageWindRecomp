@@ -75,7 +75,7 @@ void kernel_sleep_until_ns(uint64_t t);  // host code on a guest thread waits un
 // for the GPU), between these two: its core is let go meanwhile, as the console's GPU works beside the CPU cores
 void kernel_host_work_begin(void);
 void kernel_host_work_end(void);
-// (profiling, runtime/sampler.c) the host threads of the guest threads running now: up to max, with their handles
+// (profiling, runtime/prof_sampler.c) the host threads of the guest threads running now: up to max, with their handles
 // and entry points; returns how many
 int kernel_running_threads(pthread_t *host, uint32_t *handle, uint64_t *entry, int max);
 void kernel_sample_host_thread(void);  // (profiling) the calling host thread is sampled too (handle 0xf000 + n)

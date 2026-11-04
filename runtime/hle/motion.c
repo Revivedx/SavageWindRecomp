@@ -13,9 +13,9 @@
 // held, the mouse rotates a virtual controller. Letting go retains its orientation so the mouse can be repositioned;
 // the recenter key levels it. A scripted run is another source.
 //
-// What the game gets: that orientation as yaw / pitch / roll, with the player's sensitivity and inversion applied to
-// yaw and pitch (Controls page: g_settings.motion_sens, motion_invert). Samples are made at the Switch's 200 Hz for the
-// time that passed; each one's angular velocity is the turn from the previous sample's orientation, its angle the sum
+// What the game gets: a full orientation, with sensitivity and inversion applied to physical rotation increments
+// (Controls page: g_settings.motion_sens, motion_invert), or to the virtual controller's yaw and pitch.
+// Samples are made at the Switch's 200 Hz for the time that passed; each one's angular velocity is the turn from the previous sample's orientation, its angle the sum
 // of those, its acceleration gravity in the controller's axes plus what the real accelerometer measured beyond
 // gravity. So everything the game reads agrees with the direction.
 //
@@ -102,23 +102,6 @@ static void euler_of(Mat m, double *yaw, double *pitch, double *roll) {
 
 static double wrap(double a) { return a - 2 * PI * floor((a + PI) / (2 * PI)); }  // to -pi..pi
 
-// The same orientation has two such triples: (yaw, pitch, roll) and (yaw + pi, +-pi - pitch, roll + pi). euler_of
-// keeps the pitch within +-90 degrees, so tilting the controller back past vertical turned yaw and roll by half a turn
-// at once (#164). This one takes the triple whose roll is nearest the last one: the pitch goes on past 90 degrees.
-static void euler_near(Mat m, double last_roll, double *yaw, double *pitch, double *roll) {
-    euler_of(m, yaw, pitch, roll);
-    double roll2 = wrap(*roll + PI);
-    if (fabs(wrap(roll2 - last_roll)) < fabs(wrap(*roll - last_roll))) {
-        *yaw = wrap(*yaw + PI);
-        *pitch = (*pitch >= 0 ? PI : -PI) - *pitch;
-        *roll = roll2;
-    }
-}
-
-// Pointing nearly straight up or down (within 10 degrees): yaw and roll mean little there and swing with the
-// sensors' noise
-static bool steep(double pitch) { return fabs(cos(pitch)) < 0.1736; }
-
 static double sens(void) {
     float k = g_settings.motion_sens;
     return k >= 0.1f && k <= 10 ? k : 1;
@@ -129,7 +112,8 @@ static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct {
     bool sensors;           // the controller has a gyroscope and an accelerometer (turned on)
     bool started;           // its orientation was set from gravity (first accelerometer reading)
-    Quat q;                 // its orientation
+    Quat q;                 // its physical orientation
+    Quat aim_q;             // sensitivity/inversion integrated at sensor rate, independent of game polling
     double bias[3];         // its gyroscope at rest (rad/s, Switch axes)
     double mean[3], var[3]; // its gyroscope's recent mean and variance (rad/s, (rad/s)^2; ~0.2 s)
     double acc_mean, acc_var;  // its accelerometer's recent strength, mean and variance (G, G^2; ~0.2 s)
@@ -146,7 +130,7 @@ static struct {
     int key_pitch, key_roll, key_yaw;  // gyro keys held: -1 / 0 / 1 per axis
     bool recenter;                     // the recenter key: take the nearest level pose, drop the turns still to come
     double sc_pitch, sc_roll, sc_pitch_speed, sc_yaw_speed;  // scripted (radians, radians per second)
-} g = {.q = {1, 0, 0, 0}, .acc = {0, 0, -1}};
+} g = {.q = {1, 0, 0, 0}, .aim_q = {1, 0, 0, 0}, .acc = {0, 0, -1}};
 
 // The sensor stream's health, for the log (under g_lock)
 static struct {
@@ -182,7 +166,7 @@ static void select_motion(int source) {
     backend.source = source;
     backend.epoch++;
     g.sensors = source != 0, g.started = false, g.gyro_ts = 0;
-    g.q = (Quat){1, 0, 0, 0};
+    g.q = g.aim_q = (Quat){1, 0, 0, 0};
     memset(g.bias, 0, sizeof g.bias);
     memset(g.mean, 0, sizeof g.mean);
     memset(g.var, 0, sizeof g.var);
@@ -242,6 +226,12 @@ void motion_pad_closed(void) {
     pthread_mutex_unlock(&g_lock);
 }
 
+static Quat rotation_step(const double w[3], double dt) {
+    double n = sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]), h = n * dt / 2;
+    double k = n > 1e-12 ? sin(h) / n : dt / 2;
+    return (Quat){cos(h), w[0] * k, w[1] * k, w[2] * k};
+}
+
 // One gyroscope reading (rad/s, Switch axes) over dt seconds: learn its bias at rest, pull the tilt toward gravity,
 // turn the orientation.
 // At rest a gyroscope reads its bias, not 0 (a few degrees per second on many controllers), and nothing corrects the
@@ -284,9 +274,15 @@ static void fuse_gyro(const double raw[3], double dt) {
         w[1] += KP * (a[2] * v[0] - a[0] * v[2]);
         w[2] += KP * (a[0] * v[1] - a[1] * v[0]);
     }
-    double n = sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]), h = n * dt / 2;
-    double s = n > 1e-12 ? sin(h) / n : dt / 2;
-    g.q = qnorm(qmul(g.q, (Quat){cos(h), w[0] * s, w[1] * s, w[2] * s}));
+    g.q = qnorm(qmul(g.q, rotation_step(w, dt)));
+    // Scale each sensor increment, before a window/game frame can batch rotations
+    // about different axes. Scaling their combined rotation is FPS dependent.
+    double aim[3] = {
+        w[0] * sens() * (g_settings.motion_invert & MOTION_INVERT_UD ? -1 : 1),
+        w[1],
+        w[2] * sens() * (g_settings.motion_invert & MOTION_INVERT_LR ? -1 : 1)
+    };
+    g.aim_q = qnorm(qmul(g.aim_q, rotation_step(aim, dt)));
 }
 
 // Shared fusion entry points: acceleration is gravity in G, gyro rad/s, both in Switch axes.
@@ -297,6 +293,7 @@ static void sensor_accel(const double acc[3]) {
     if (!g.started && an > 0.5) {
         double v = -g.acc[1] / an;
         g.q = euler_quat(0, asin(v > 1 ? 1 : v < -1 ? -1 : v), atan2(g.acc[0], -g.acc[2]));
+        g.aim_q = g.q;
         g.started = true;
     }
     Mat m;
@@ -487,6 +484,7 @@ static struct {
     int src;                     // last source: 0 still / mouse / script, positive = sensor source epoch
     double src_yaw;              // ... and its yaw then
     double yaw, pitch, roll;     // the newest sample's orientation as the game gets it
+    Quat sensor_q, output_q;     // physical pose last consumed, and delivered pose (no Euler singularity)
     Mat m;                       // ... as a matrix
     double angle[3];             // turns, summed
     uint64_t last_ns;            // last update (the mouse tilt's levelling, scripted turning)
@@ -506,13 +504,8 @@ RT_ON_RESET(motion_reboot_reset) {
 
 static void euler_mat(double yaw, double pitch, double roll, Mat m) { quat_mat(euler_quat(yaw, pitch, roll), m); }
 
-// The player's sensitivity and inversion: the game's turn for the source's, its pitch for the source's
+// The virtual controller's horizontal turn with sensitivity and inversion applied.
 static double game_turn(double turn) { return sens() * (g_settings.motion_invert & MOTION_INVERT_LR ? -turn : turn); }
-static double game_pitch(double pitch) {
-    double p = sens() * (g_settings.motion_invert & MOTION_INVERT_UD ? -pitch : pitch);
-    return p > PITCH_MAX ? PITCH_MAX : p < -PITCH_MAX ? -PITCH_MAX : p;
-}
-
 // The virtual controller as the game gets it (sensitivity and inversion applied; no pitch limit, it turns over)
 static double virtual_pitch(void) {
     double p = g.tilt_pitch + g.sc_pitch + s.sc_pitch + g.keyboard.pitch * PI / 180;
@@ -631,6 +624,48 @@ static void fill(SixAxisState *st, Mat m, const double gyro[3], const double lin
     st->attributes = 1;  // IsConnected
 }
 
+// Physical motion is an incremental rotation in controller axes. Euler yaw/roll become
+// ambiguous at vertical, and clamping Euler pitch makes an overhead controller stop
+// responding. Keep the full pose; sensitivity/inversion was already applied at sensor rate.
+static void sensor_samples(int kind, uint64_t n) {
+    Quat current = qnorm(g.aim_q);
+    double v[3] = {0};
+    if (kind != s.src) {
+        Mat m;
+        quat_mat(current, m);
+        double yaw, pitch, roll;
+        euler_of(m, &yaw, &pitch, &roll);
+        Quat heading = euler_quat(s.yaw - yaw, 0, 0);
+        s.output_q = qnorm(qmul(heading, current));
+    } else {
+        Quat prev = s.sensor_q;
+        Quat delta = qnorm(qmul((Quat){prev.w, -prev.x, -prev.y, -prev.z}, current));
+        if (delta.w < 0) delta = (Quat){-delta.w, -delta.x, -delta.y, -delta.z};
+        double sn = sqrt(delta.x * delta.x + delta.y * delta.y + delta.z * delta.z);
+        double k = sn > 1e-12 ? 2 * atan2(sn, delta.w) / sn : 2;
+        v[0] = delta.x * k;
+        v[1] = delta.y * k;
+        v[2] = delta.z * k;
+    }
+    double a = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    double h = a / (2 * n), k = a > 1e-12 ? sin(h) / a : 1.0 / (2 * n);
+    Quat step = {cos(h), v[0] * k, v[1] * k, v[2] * k};
+    double gyro[3];
+    for (int i = 0; i < 3; i++) gyro[i] = v[i] / (n * (SAMPLE_NS / 1e9) * 2 * PI);
+    for (uint64_t j = 0; j < n; j++) {
+        s.output_q = qnorm(qmul(s.output_q, step));
+        quat_mat(s.output_q, s.m);
+        for (int i = 0; i < 3; i++) s.angle[i] += gyro[i] * (SAMPLE_NS / 1e9);
+        s.head = (s.head + 1) % NSAMPLES;
+        SixAxisState *st = &s.ring[s.head];
+        st->sampling_number = ++s.sampling;
+        fill(st, s.m, gyro, g.lin);
+    }
+    s.sensor_q = current;
+    s.src = kind;
+    euler_of(s.m, &s.yaw, &s.pitch, &s.roll);  // diagnostics / transition to virtual controls only
+}
+
 // The samples due by now (200 Hz)
 static void update(uint64_t now) {
     double dt = s.last_ns && now > s.last_ns ? (double)(now - s.last_ns) / 1e9 : 0;
@@ -640,11 +675,15 @@ static void update(uint64_t now) {
         s.last_ns = now;
         Mat m;
         s.src = source(0, m);
-        euler_near(m, 0, &s.src_yaw, &s.pitch, &s.roll);
+        euler_of(m, &s.src_yaw, &s.pitch, &s.roll);
         if (!s.src) s.src_yaw = virtual_yaw(), s.pitch = virtual_pitch(), s.roll = virtual_roll();
-        else s.pitch = game_pitch(s.pitch);
         s.yaw = 0;
         euler_mat(s.yaw, s.pitch, s.roll, s.m);
+        if (s.src) {
+            s.sensor_q = qnorm(g.aim_q);
+            s.output_q = qnorm(qmul(euler_quat(-s.src_yaw, 0, 0), s.sensor_q));
+            quat_mat(s.output_q, s.m);
+        }
         for (int i = 0; i < NSAMPLES; i++) {
             s.ring[i].sampling_number = ++s.sampling;
             fill(&s.ring[i], s.m, zero, zero);
@@ -676,40 +715,23 @@ static void update(uint64_t now) {
             : !g.sensors                                        ? "nothing: no controller sensors (lying still)"
                                                                 : "nothing yet: no accelerometer reading (lying still)");
     }
-    double yaw, pitch, roll;
-    euler_near(src, s.roll, &yaw, &pitch, &roll);
-    // (the virtual controller's own continuous angles: from its matrix the pitch would fold at 90 degrees)
-    if (!kind) yaw = virtual_yaw(), pitch = virtual_pitch(), roll = virtual_roll();
-    // (switching between sources, or pointing nearly straight up or down where yaw means little: no turn)
-    bool hold = kind && kind == s.src && steep(pitch);
-    double turn = kind == s.src && !hold ? wrap(yaw - s.src_yaw) : 0;
-#ifdef __linux__
-    if (kind && kind != s.src) {
-        // Rebase tilt too: changing physical devices must not synthesize angular velocity. (A virtual source eases
-        // there from the last pose instead, pc_gyro_follow.)
-        s.pitch = game_pitch(pitch), s.roll = roll;
-        euler_mat(s.yaw, s.pitch, s.roll, s.m);
+    if (kind) {
+        sensor_samples(kind, n);
+        goto motion_log;
     }
-#endif
-    if (!hold) s.src_yaw = yaw;
-    s.src = kind;
-    double yaw1 = s.yaw + game_turn(turn), pitch1 = kind ? game_pitch(pitch) : pitch;
-    double dpitch = kind ? pitch1 - s.pitch : wrap(pitch1 - s.pitch);
-    double droll = hold ? 0 : wrap(roll - s.roll);
+    double yaw = virtual_yaw(), pitch = virtual_pitch(), roll = virtual_roll();
+    s.src = 0;
     // the virtual controller goes to its pose at a bounded speed, every turn of the way (pc_gyro_follow)
-    double virtual_now[3] = {s.yaw, s.pitch, s.roll}, virtual_target[3] = {game_turn(yaw), pitch1, roll};
-    if (!kind && g.recenter) {  // (the recenter key: the nearest level pose, not back through every turn made)
+    double virtual_now[3] = {s.yaw, s.pitch, s.roll}, virtual_target[3] = {game_turn(yaw), pitch, roll};
+    if (g.recenter) {  // (the recenter key: the nearest level pose, not back through every turn made)
         for (int i = 0; i < 3; i++) virtual_now[i] = wrap(virtual_now[i]);
         g.recenter = false;
     }
-    const double *lin = kind ? g.lin : zero;
+    const double *lin = zero;
     for (uint64_t j = 1; j <= n; j++) {  // (in between: the way there in equal steps)
-        double f = (double)j / (double)n;
         Mat m;
-        if (!kind) {
-            pc_gyro_follow(virtual_now, virtual_target, SAMPLE_NS / 1e9);
-            euler_mat(virtual_now[0], virtual_now[1], virtual_now[2], m);
-        } else euler_mat(s.yaw + (yaw1 - s.yaw) * f, s.pitch + dpitch * f, s.roll + droll * f, m);
+        pc_gyro_follow(virtual_now, virtual_target, SAMPLE_NS / 1e9);
+        euler_mat(virtual_now[0], virtual_now[1], virtual_now[2], m);
         // the turn from the last sample: R_last^T R_now as a rotation vector, per second, in turns
         Mat d;
         for (int r = 0; r < 3; r++)
@@ -728,8 +750,8 @@ static void update(uint64_t now) {
         st->sampling_number = ++s.sampling;
         fill(st, m, gyro, lin);
     }
-    if (!kind) s.yaw = virtual_now[0], s.pitch = virtual_now[1], s.roll = virtual_now[2];
-    else s.yaw = wrap(yaw1), s.pitch = pitch1, s.roll = wrap(s.roll + droll);
+    s.yaw = virtual_now[0], s.pitch = virtual_now[1], s.roll = virtual_now[2];
+motion_log:
     if (ENV("SAVAGEWIND_MOTION_LOG") && now - s.logged > 1000000000ull) {
         s.logged = now;
         const SixAxisState *st = &s.ring[s.head];

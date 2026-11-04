@@ -2245,6 +2245,7 @@ struct ImGuiContext
     ImGuiWindow*            NavWindowingTarget;                 // Target window when doing CTRL+Tab (or Pad Menu + FocusPrev/Next), this window is temporarily displayed top-most!
     ImGuiWindow*            NavWindowingTargetAnim;             // Record of last valid NavWindowingTarget until DimBgRatio and NavWindowingHighlightAlpha becomes 0.0f, so the fade-out can stay on it.
     ImGuiWindow*            NavWindowingListWindow;             // Internal window actually listing the CTRL+Tab contents
+    ImGuiInputSource        NavWindowingInputSource;            // (Savage Wind local patch, from 1.92.0: #8525) the device that started windowing / the layer toggle
     float                   NavWindowingTimer;
     float                   NavWindowingHighlightAlpha;
     bool                    NavWindowingToggleLayer;

@@ -155,9 +155,8 @@ int main(int argc, char **argv) {
         assert(prof_start()); prof_frame(2000);
         assert(prof_active());
         prof_stop(); idle();
-    } else if (!strcmp(argv[1], "one") || !strcmp(argv[1], "alias")) {
-        if (!strcmp(argv[1], "alias")) setenv("SAVAGEWIND_GPUPROF_AT", "100", 1);
-        else setenv("SAVAGEWIND_PROF", "100:1", 1);
+    } else if (!strcmp(argv[1], "one")) {
+        setenv("SAVAGEWIND_PROF", "100:1", 1);
         prof_frame(100); usleep(10000); prof_frame(101); idle();
     } else if (!strcmp(argv[1], "cross")) {
         assert(prof_start()); prof_frame(1);

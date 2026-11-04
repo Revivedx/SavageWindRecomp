@@ -1072,7 +1072,8 @@ SERVICE("audren:u", audren_u) {
 typedef struct {
     bool open;                   // the game's renderer is open
     _Atomic int threads;         // our render and event threads still running
-    _Atomic bool signal;         // a frame was rendered: the event thread signals the game's event
+    bool signal;                 // a frame was rendered: the event thread signals the game's event (g_sdk_lock)
+    bool pulled;                 // the device took data from the stream since the render thread looked (g_sdk_lock)
     uint64_t renderer, context;  // the game's AudioRendererHandle
     uint32_t rate, samples;      // AudioRendererParameter +0x00, +0x04
     SDL_AudioStream *stream;
@@ -1084,12 +1085,43 @@ typedef struct {
     float peak;
 } SdkRen;
 static SdkRen g_sdkren;
+// What our two threads wait for, instead of polling (the event thread's 0.5 ms poll kept a whole core busy): a
+// rendered frame (g_sdk_frame_cv, from the render thread) and the device taking data from the stream (g_sdk_pull_cv,
+// from SDL's device thread). Outside g_sdkren, which a reboot clears.
+static pthread_mutex_t g_sdk_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_sdk_frame_cv = PTHREAD_COND_INITIALIZER, g_sdk_pull_cv = PTHREAD_COND_INITIALIZER;
 static GuestFn g_sdk_process;  // the recompiled CommandListProcessor::Process, under our hook
 static _Atomic uint32_t g_sdk_short;  // device requests the stream couldn't fill: underruns (SAVAGEWIND_AUDIO_LOG)
 
+// SDL calls this with the stream locked, before the device's read: the render thread, woken here, sees the queue
+// as the read left it once SDL_GetAudioStreamQueued gets the lock.
 static void SDLCALL sdk_stream_get(void *u, SDL_AudioStream *st, int additional, int total) {
     (void)u, (void)st, (void)total;
     if (additional > 0 && g_sdkren.frames > 400) g_sdk_short++;
+    pthread_mutex_lock(&g_sdk_lock);
+    g_sdkren.pulled = true;
+    pthread_cond_signal(&g_sdk_pull_cv);
+    pthread_mutex_unlock(&g_sdk_lock);
+}
+
+// Our threads (guest threads off the cores, so no core is held) wait on cv until *flag is set or the renderer
+// closes, taking the flag, at most timeout_ns: a reboot doesn't signal cv, so the wait is short and the thread
+// unwinds after it (rt_unwind_point).
+static bool sdk_wait(pthread_cond_t *cv, bool *flag, uint64_t timeout_ns) {
+    pthread_mutex_lock(&g_sdk_lock);
+    if (!*flag && g_sdkren.open) {
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        ts.tv_sec += (time_t)(timeout_ns / 1000000000);
+        ts.tv_nsec += (long)(timeout_ns % 1000000000);
+        if (ts.tv_nsec >= 1000000000) { ts.tv_sec++; ts.tv_nsec -= 1000000000; }
+        pthread_cond_timedwait(cv, &g_sdk_lock, &ts);
+    }
+    bool got = *flag;
+    *flag = false;
+    pthread_mutex_unlock(&g_sdk_lock);
+    rt_unwind_point();
+    return got;
 }
 
 static bool sdk_renderer_on(void) {
@@ -1183,7 +1215,9 @@ static void sdk_render_thread(Cpu *c) {
             continue;
         }
         if (r->stream) {
-            if (SDL_GetAudioStreamQueued(r->stream) >= target) { sdk_sleep(c, 1000000); continue; }
+            // Full: until the device takes some (one read per device period), or 2 frames' time in case the
+            // device stops reading.
+            if (SDL_GetAudioStreamQueued(r->stream) >= target) { sdk_wait(&g_sdk_pull_cv, &r->pulled, 2 * frame_ns); continue; }
         } else {
             uint64_t now = plat_now_ns();
             if (now < next) { sdk_sleep(c, next - now); continue; }
@@ -1202,7 +1236,10 @@ static void sdk_render_thread(Cpu *c) {
         c->x[0] = mutex;
         guest_call(c, unlock);
         uint64_t t2 = plat_now_ns();
+        pthread_mutex_lock(&g_sdk_lock);
         r->signal = true;
+        pthread_cond_signal(&g_sdk_frame_cv);
+        pthread_mutex_unlock(&g_sdk_lock);
         uint32_t n = r->out_n ? r->out_n : N;
         if (!r->out_n) memset(r->out, 0, sizeof(float) * 2 * n);
         int bytes = (int)(n * 2 * sizeof(float));
@@ -1238,7 +1275,7 @@ static void sdk_event_thread(Cpu *c) {
     uint64_t sig = guest_sym("_ZN2nn2os17SignalSystemEventEPNS0_15SystemEventTypeE");
     kernel_thread_off_cores();
     while (r->open) {
-        if (!atomic_exchange(&r->signal, false)) { sdk_sleep(c, 500000); continue; }
+        if (!sdk_wait(&g_sdk_frame_cv, &r->signal, 50000000)) continue;
         c->x[0] = *(const uint64_t *)(uintptr_t)r->context;  // the event OpenAudioRenderer made (manual execution)
         guest_call(c, sig);
     }
@@ -1332,7 +1369,11 @@ HLE_FUNC("_ZN2nn5audio18CloseAudioRendererENS0_19AudioRendererHandleE", hle_audr
     SdkRen *r = &g_sdkren;
     if (r->open && c->x[0] == r->renderer) {
         uint64_t x0 = c->x[0], x1 = c->x[1];
+        pthread_mutex_lock(&g_sdk_lock);
         r->open = false;
+        pthread_cond_broadcast(&g_sdk_frame_cv);
+        pthread_cond_broadcast(&g_sdk_pull_cv);
+        pthread_mutex_unlock(&g_sdk_lock);
         while (r->threads) sdk_sleep(c, 1000000);  // (their frame and signal done: the renderer goes away next)
         c->x[0] = x0;
         c->x[1] = x1;

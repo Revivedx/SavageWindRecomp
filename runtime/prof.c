@@ -272,7 +272,6 @@ bool prof_gpu_enabled(uint32_t gen) {
 
 void prof_frame(uint64_t frame) {
     // SAVAGEWIND_PROF=<first frame>[:<frames>]: start at a frame, stop after some (without a count: when asked).
-    // SAVAGEWIND_GPUPROF_AT=<frame> is kept as SAVAGEWIND_PROF=<frame>:1.
     static int env_read, env_done;
     static long env_first = -1, env_count;
     static uint64_t env_stop_at;
@@ -280,11 +279,6 @@ void prof_frame(uint64_t frame) {
     if (!env_read) {
         env_read = 1;
         const char *e = getenv("SAVAGEWIND_PROF");
-        char alias[32];
-        if (!(e && *e) && getenv("SAVAGEWIND_GPUPROF_AT")) {  // the old per-pass GPU timing of one frame
-            snprintf(alias, sizeof alias, "%ld:1", strtol(getenv("SAVAGEWIND_GPUPROF_AT"), NULL, 10));
-            e = alias;
-        }
         if (e && *e) {
             char *end;
             env_first = strtol(e, &end, 10);
