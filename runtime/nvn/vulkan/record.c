@@ -52,6 +52,7 @@ static uint64_t wpos, published;  // (T) written end, the end last published
 static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t cv_work = PTHREAD_COND_INITIALIZER, cv_done = PTHREAD_COND_INITIALIZER;
 static _Atomic int asleep;
+static _Atomic int done_waiters;  // threads inside a cv_done wait (WAIT_DONE): R broadcasts only when there are any
 static _Atomic uint64_t submitted;
 static int on = -1;  // 1: the thread records, 0: calls at once, -1: not started
 static bool prof, prof_enq;  // SAVAGEWIND_VK_PROF; the time queuing each packet only when it isn't 2 (two clock reads a packet)
@@ -73,6 +74,25 @@ static void timed_wait(pthread_cond_t *cv, uint64_t ns) {  // (mu held)
     pthread_cond_timedwait(cv, &mu, &ts);
 }
 
+// A wait on cv_done (mu held): re-checks `cond` after announcing itself, so a broadcast R skips for want of waiters
+// can't be one this waiter needed (R stores tail / submitted, then reads done_waiters, both seq_cst)
+#define WAIT_DONE(cond, ns)                                                         \
+    for (;;) {                                                                      \
+        atomic_fetch_add_explicit(&done_waiters, 1, memory_order_seq_cst);          \
+        if (!(cond)) { atomic_fetch_sub_explicit(&done_waiters, 1, memory_order_seq_cst); break; } \
+        timed_wait(&cv_done, (ns));                                                 \
+        atomic_fetch_sub_explicit(&done_waiters, 1, memory_order_seq_cst);          \
+    }
+
+// R: wake whoever waits for a submission, a drain or ring room (nothing to do, and no syscall, when nobody waits)
+static void notify_done(void) {
+    atomic_thread_fence(memory_order_seq_cst);
+    if (!atomic_load_explicit(&done_waiters, memory_order_seq_cst)) return;
+    pthread_mutex_lock(&mu);
+    pthread_cond_broadcast(&cv_done);
+    pthread_mutex_unlock(&mu);
+}
+
 // T: what it wrote so far is the recorder's to run
 static void publish(void) {
     if (published == wpos) return;
@@ -92,7 +112,7 @@ static void wait_room(uint64_t need) {
     publish();
     uint64_t t0 = NOW();
     pthread_mutex_lock(&mu);
-    while (wpos + need - atomic_load_explicit(&tail, memory_order_acquire) > ring_cap) timed_wait(&cv_done, 1000000);
+    WAIT_DONE(wpos + need - atomic_load_explicit(&tail, memory_order_acquire) > ring_cap, 1000000);
     pthread_mutex_unlock(&mu);
     st_t.full_waits++;
     st_t.full_ns += NOW() - t0;
@@ -130,6 +150,27 @@ static void commit(void) {
 static inline void *after(const void *args, size_t args_size) { return (uint8_t *)args + AL16(args_size); }
 
 // ---- the thread
+// R spins this long for the next packets before it sleeps: T hands it a few KB every 50-100 us while it translates
+// a list, and each of those finds R asleep otherwise, a wake-up syscall (~6 us on T, ~25 us before R runs). On CPUs
+// with fewer than 6 logical processors R sleeps at once, as before. SAVAGEWIND_VK_RECORDER_SPIN=<us> (0: never sleeps
+// late; default 60).
+static uint64_t spin_ns;
+#if defined(__x86_64__) || defined(__i386__)
+#define RELAX() __builtin_ia32_pause()
+#elif defined(__aarch64__)
+#define RELAX() __asm__ volatile("yield")
+#else
+#define RELAX() ((void)0)
+#endif
+static uint64_t spin_for_work(uint64_t t) {  // the published end once it moves past t, else t
+    uint64_t t0 = NOW(), h;
+    for (unsigned i = 1;; i++) {
+        if ((h = atomic_load_explicit(&head, memory_order_acquire)) != t) return h;
+        RELAX();
+        if (!(i & 31) && NOW() - t0 > spin_ns) return t;
+    }
+}
+
 static void *run(void *arg) {
     (void)arg;
     extern void control_prof_thread(const char *name);  // runtime/control_prof.c (`threads`)
@@ -137,7 +178,9 @@ static void *run(void *arg) {
     uint64_t t = 0;
     for (;;) {
         uint64_t h = atomic_load_explicit(&head, memory_order_acquire);
-        if (h == t) {
+        if (h == t && spin_ns && (h = spin_for_work(t)) != t) {
+            // work came while spinning: no sleep, no wake-up syscall on T's side
+        } else if (h == t) {
             pthread_mutex_lock(&mu);
             atomic_store_explicit(&asleep, 1, memory_order_seq_cst);
             while ((h = atomic_load_explicit(&head, memory_order_seq_cst)) == t) pthread_cond_wait(&cv_work, &mu);
@@ -153,9 +196,7 @@ static void *run(void *arg) {
             atomic_store_explicit(&tail, t, memory_order_release);
         }
         if (prof) ADD(r_busy_ns, NOW() - t0);
-        pthread_mutex_lock(&mu);  // caught up: drains and waiters
-        pthread_cond_broadcast(&cv_done);
-        pthread_mutex_unlock(&mu);
+        notify_done();  // caught up: drains and waiters
     }
     return NULL;
 }
@@ -164,6 +205,12 @@ void rec_init(void) {
     if (on >= 0) return;
     prof = getenv("SAVAGEWIND_VK_PROF") != NULL;
     prof_enq = prof && atoi(getenv("SAVAGEWIND_VK_PROF")) != 2;
+    {
+        const char *sp = getenv("SAVAGEWIND_VK_RECORDER_SPIN");
+        long us = sp ? atol(sp) : 60;
+        if (!sp && plat_cpu_count() < 6) us = 0;
+        spin_ns = us > 0 ? (uint64_t)us * 1000 : 0;
+    }
     const char *e = getenv("SAVAGEWIND_VK_RECORDER");
     int want = !e || atoi(e) != 0;
     // ARM's Mali drivers: LAS Recomp lost the GPU a few seconds into its title screen with the recorder thread on
@@ -218,7 +265,7 @@ void rec_wait_submitted(uint64_t seq) {
     if (on <= 0 || rec_submitted() >= seq) return;
     uint64_t t0 = NOW();
     pthread_mutex_lock(&mu);
-    while (rec_submitted() < seq) timed_wait(&cv_done, 2000000);
+    WAIT_DONE(rec_submitted() < seq, 2000000);
     pthread_mutex_unlock(&mu);
     uint64_t dt = NOW() - t0;
     ADD(a_seq_waits, 1);
@@ -233,7 +280,7 @@ void rec_drain(void) {
     if (atomic_load_explicit(&tail, memory_order_acquire) >= upto) return;
     uint64_t t0 = NOW();
     pthread_mutex_lock(&mu);
-    while (atomic_load_explicit(&tail, memory_order_acquire) < upto) timed_wait(&cv_done, 2000000);
+    WAIT_DONE(atomic_load_explicit(&tail, memory_order_acquire) < upto, 2000000);
     pthread_mutex_unlock(&mu);
     uint64_t dt = NOW() - t0;
     st_t.drains++;
@@ -339,11 +386,7 @@ static void submit_run(const void *p) {
     if (r == VK_ERROR_DEVICE_LOST) { extern void vk_devlost_dump(void); vk_devlost_dump(); }
     VK_CHECK(r);
     atomic_store_explicit(&submitted, a->seq, memory_order_release);
-    if (on > 0) {
-        pthread_mutex_lock(&mu);
-        pthread_cond_broadcast(&cv_done);
-        pthread_mutex_unlock(&mu);
-    }
+    if (on > 0) notify_done();
 }
 void rec_QueueSubmit2(const VkSubmitInfo2 *si, uint64_t seq) {
     SubmitArgs a = {.ncb = si->commandBufferInfoCount, .nwait = si->waitSemaphoreInfoCount, .nsig = si->signalSemaphoreInfoCount, .seq = seq};
