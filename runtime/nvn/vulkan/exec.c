@@ -10,6 +10,10 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#endif
 
 #include "../../kernel.h"
 #include "shaders.h"
@@ -786,8 +790,13 @@ static Job *jobs_head, *jobs_tail;
 static pthread_mutex_t jobs_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t jobs_cond = PTHREAD_COND_INITIALIZER;
 
+static bool deck_background_compiles(void);
 static void *worker(void *a) {
     (void)a;
+#ifdef __linux__
+    if (deck_background_compiles())  // (per thread on Linux; raising nice needs no privilege)
+        setpriority(PRIO_PROCESS, (id_t)syscall(SYS_gettid), 5);
+#endif
     for (;;) {
         pthread_mutex_lock(&jobs_lock);
         while (!jobs_head) pthread_cond_wait(&jobs_cond, &jobs_lock);
@@ -847,6 +856,19 @@ static void run_translate(void (*fn)(void *), void *arg) {
     pthread_mutex_unlock(&tjobs_lock);
 }
 
+// Steam Deck with asynchronous shaders: draws don't wait for the compiles, so they only need to finish soon, and the
+// Deck's 8 logical processors (4 cores) are what the game's threads, the submission thread (the list's translation)
+// and the present thread run on. Two compile threads at a lower priority (nice 5) leave those their cores.
+// SAVAGEWIND_DECK_COMPILE_THREADS=<n>: n threads at the normal priority instead (0: as on other machines).
+static bool deck_background_compiles(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("SAVAGEWIND_DECK_COMPILE_THREADS");
+        on = settings_steam_deck() && !sync_shaders() && !(e && *e);
+    }
+    return on;
+}
+
 static void run_job(void (*fn)(void *), void *arg) {
     if (sync_shaders()) { fn(arg); return; }
     static bool started;
@@ -857,6 +879,11 @@ static void run_job(void (*fn)(void *), void *arg) {
         int n = plat_cpu_count() - 4;
         if (n < 4) n = 4;
         if (n > 16) n = 16;
+        const char *e = getenv("SAVAGEWIND_DECK_COMPILE_THREADS");
+        if (deck_background_compiles()) n = 2;
+        else if (e && atoi(e) > 0 && settings_steam_deck()) n = atoi(e) > 16 ? 16 : atoi(e);
+        if (settings_steam_deck()) LOG("[vk] Steam Deck: %d shader compile threads%s\n", n,
+                                       deck_background_compiles() ? " at a lower priority" : "");
         for (int i = 0; i < n; i++) { pthread_t t; pthread_create(&t, NULL, worker, NULL); }
     }
     Job *j = malloc(sizeof *j);
@@ -1702,9 +1729,14 @@ static void begin_pass(void) {
     // translated (~13 ms in the open world) and only then rendered it, and the game waits for the GPU to finish a frame
     // (nvnSyncWait) before it goes on: the two times added up, a fifth of the frames ran over 31.7 ms, and the game
     // went to 20 fps. A submission at a pass boundary every ~300 draws lets the GPU work on the frame meanwhile.
-    // SAVAGEWIND_VK_SUBMIT_DRAWS=<n> sets the count (0: one submission per command list, as before).
-    static int submit_draws = -1;
-    if (submit_draws < 0) submit_draws = getenv("SAVAGEWIND_VK_SUBMIT_DRAWS") ? atoi(getenv("SAVAGEWIND_VK_SUBMIT_DRAWS")) : 300;
+    // SAVAGEWIND_VK_SUBMIT_DRAWS=<n> sets the count (0: one submission per command list, as before). The Steam Deck's
+    // CPU translates the list more slowly, so the GPU there waits longer for each piece: 150, only while the heap is
+    // GPU memory (a submission ~0.03 ms; with the heap imported ~4 ms each, docs/linux.md, and twice as many cost more
+    // than the GPU gains).
+    static int env_draws = -2;
+    if (env_draws == -2) env_draws = getenv("SAVAGEWIND_VK_SUBMIT_DRAWS") ? atoi(getenv("SAVAGEWIND_VK_SUBMIT_DRAWS")) : -1;
+    extern bool vk_heap_is_gpu_memory(void);
+    int submit_draws = env_draws >= 0 ? env_draws : settings_steam_deck() && vk_heap_is_gpu_memory() ? 150 : 300;
     // Not once the list has recorded a shader that stores to guest memory (global memory, the imported heap): run
     // on the GPU while the rest of the list is translated, it wrote memory this thread was copying for later draws and
     // dispatches (uniforms, vertices), they got half-written data, and the GPU faulted on a write (~1 world load in
@@ -4358,6 +4390,7 @@ static bool gmem_import(uint64_t size) {
 
 static uint64_t gmem_tried;  // heap size the import was last attempted for (gmem_info imports / re-imports)
 static bool gmem_mapped;     // the heap is GPU memory mapped at its addresses (backend_heap_set): no import
+bool vk_heap_is_gpu_memory(void) { return gmem_mapped; }
 
 #ifdef __linux__
 #include <errno.h>

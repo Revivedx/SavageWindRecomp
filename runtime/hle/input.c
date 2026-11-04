@@ -449,26 +449,52 @@ bool input_user_blocked(const SDL_Event *e) {
 // controller's button or stick
 int input_last_device(void) { return pad ? last_device : DEVICE_KEYBOARD; }
 
-// Controller family for the Controls tab labels (runtime/hle/bindings.c): 0 Nintendo / other / none, 1 Xbox, 2 PlayStation.
-// SAVAGEWIND_PAD_TYPE=xbox|playstation|nintendo pretends one is attached (tests).
+// Controller family for the Controls tab labels (runtime/hle/bindings.c): 0 Nintendo / other / none, 1 Xbox, 2 PlayStation,
+// 3 Steam Deck (a Valve pad - the Deck's own controls, or Steam Input's virtual one - in Steam Deck mode).
+// SAVAGEWIND_PAD_TYPE=xbox|playstation|nintendo|steamdeck pretends one is attached (tests).
 static _Atomic int pad_family;
+static SDL_JoystickID first_valve;  // the first Valve pad opened: in Gaming Mode, Steam Input's one for the Deck's controls
 static void note_family(void) {
-    int f = 0;
-    if (pad) switch (SDL_GetGamepadType(pad)) {
-        case SDL_GAMEPAD_TYPE_XBOX360: case SDL_GAMEPAD_TYPE_XBOXONE: f = 1; break;
-        case SDL_GAMEPAD_TYPE_PS3: case SDL_GAMEPAD_TYPE_PS4: case SDL_GAMEPAD_TYPE_PS5: f = 2; break;
-        default: break;
-    }
-    if (f != pad_family) LOG("[input] button prompts: %s controller\n", f == 1 ? "Xbox" : f == 2 ? "PlayStation" : "Nintendo / other");
+    int f = pad ? bind_pad_family(SDL_GetGamepadType(pad), SDL_GetGamepadVendor(pad), SDL_GetGamepadProduct(pad),
+                                  SDL_GetGamepadName(pad), SDL_GetGamepadID(pad) == first_valve) : 0;
+    if (f != pad_family) LOG("[input] button prompts: %s controller (%s, %04x:%04x, type %d)\n", f == 1 ? "Xbox" :
+                             f == 2 ? "PlayStation" : f == 3 ? "Steam Deck" : "Nintendo / other",
+                             pad ? SDL_GetGamepadName(pad) : "none", pad ? SDL_GetGamepadVendor(pad) : 0,
+                             pad ? SDL_GetGamepadProduct(pad) : 0, pad ? (int)SDL_GetGamepadType(pad) : 0);
     pad_family = f;
 }
 int input_pad_family(void) {
     static int env = -2;
     if (env == -2) {
         const char *e = getenv("SAVAGEWIND_PAD_TYPE");
-        env = !e ? -1 : !strcmp(e, "xbox") ? 1 : !strcmp(e, "playstation") || !strcmp(e, "ps") ? 2 : 0;
+        env = !e ? -1 : !strcmp(e, "xbox") ? 1 : !strcmp(e, "playstation") || !strcmp(e, "ps") ? 2 : !strcmp(e, "steamdeck") ? 3 : 0;
     }
     return env >= 0 ? env : pad_family;
+}
+
+// Every controller connected is open; the game reads the one pressed last (pad): on a Steam Deck, the Deck's own
+// controls until an Xbox or PlayStation controller connected later is used, and back. (One only, opened at startup,
+// left a controller connected later unread.)
+static SDL_Gamepad *pads[8];
+static int npads;
+static void pad_use(SDL_Gamepad *p) {
+    if (p == pad) return;
+    if (pad) vibration_update(pad, false), motion_pad_closed();
+    pad = p;
+    if (pad) LOG("[input] gamepad in use: %s\n", SDL_GetGamepadName(pad)), motion_pad_opened(pad);
+    note_family();
+    recompute_pad();
+}
+static void pad_open(SDL_JoystickID id) {
+    for (int i = 0; i < npads; i++)
+        if (SDL_GetGamepadID(pads[i]) == id) return;
+    if (npads == (int)(sizeof pads / sizeof *pads)) return;
+    SDL_Gamepad *p = SDL_OpenGamepad(id);
+    if (!p) return;
+    pads[npads++] = p;
+    if (!first_valve && SDL_GetGamepadVendor(p) == BIND_VALVE_VENDOR) first_valve = id;
+    LOG("[input] gamepad: %s (%04x:%04x)\n", SDL_GetGamepadName(p), SDL_GetGamepadVendor(p), SDL_GetGamepadProduct(p));
+    if (!pad) pad_use(p);
 }
 
 void input_handle_event(const SDL_Event *e) {
@@ -478,8 +504,7 @@ void input_handle_event(const SDL_Event *e) {
         scanned = true;
         int n = 0;
         SDL_JoystickID *ids = SDL_GetGamepads(&n);
-        if (n > 0 && !pad) { pad = SDL_OpenGamepad(ids[0]); LOG("[input] gamepad: %s\n", SDL_GetGamepadName(pad)); note_family(); }
-        if (pad) motion_pad_opened(pad);
+        for (int i = 0; i < n; i++) pad_open(ids[i]);
         SDL_free(ids);
     }
     switch (e->type) {
@@ -529,20 +554,16 @@ void input_handle_event(const SDL_Event *e) {
         window_focus(e->type == SDL_EVENT_WINDOW_FOCUS_GAINED);
         break;
     case SDL_EVENT_GAMEPAD_ADDED:
-        if (!pad) {
-            pad = SDL_OpenGamepad(e->gdevice.which);
-            LOG("[input] gamepad: %s\n", SDL_GetGamepadName(pad));
-            note_family();
-            if (pad) motion_pad_opened(pad);
-        }
+        pad_open(e->gdevice.which);
         break;
     case SDL_EVENT_GAMEPAD_REMOVED:
-        if (pad && SDL_GetGamepadID(pad) == e->gdevice.which) {
-            vibration_update(pad, false);
-            SDL_CloseGamepad(pad);
-            pad = NULL;
-            note_family();
-            motion_pad_closed();
+        for (int i = 0; i < npads; i++) {
+            if (SDL_GetGamepadID(pads[i]) != e->gdevice.which) continue;
+            SDL_Gamepad *gone = pads[i];
+            pads[i] = pads[--npads];
+            if (gone == pad) pad_use(npads ? pads[0] : NULL);  // (the one in use: another connected one, if any)
+            SDL_CloseGamepad(gone);
+            break;
         }
         recompute_pad();
         break;
@@ -551,8 +572,12 @@ void input_handle_event(const SDL_Event *e) {
         break;
     case SDL_EVENT_GAMEPAD_AXIS_MOTION: case SDL_EVENT_GAMEPAD_BUTTON_DOWN: case SDL_EVENT_GAMEPAD_BUTTON_UP:
         if (win_focused && pad && !host_test && (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
-                                  (e->type == SDL_EVENT_GAMEPAD_AXIS_MOTION && abs(e->gaxis.value) > 16000)))
+                                  (e->type == SDL_EVENT_GAMEPAD_AXIS_MOTION && abs(e->gaxis.value) > 16000))) {
             last_device = DEVICE_PAD;
+            if (SDL_GetGamepadID(pad) != e->gdevice.which)  // (another controller pressed: it becomes the one read)
+                for (int i = 0; i < npads; i++)
+                    if (SDL_GetGamepadID(pads[i]) == e->gdevice.which) pad_use(pads[i]);
+        }
         recompute_pad();
         break;
     }
@@ -721,8 +746,9 @@ static void host_test_frame(uint64_t frame) {
 
 static uint64_t g_pad_obj;
 volatile int g_inject_plus;  // frames to hold Plus for the game (movie.c: A/B skip a skippable movie)
+volatile int g_inject_b;     // a B press for the game (game_options.mm: it closes the Options' question once answered)
 RT_ON_RESET(input_reboot_reset) {
-    g_pad_obj = 0; g_inject_plus = 0;
+    g_pad_obj = 0; g_inject_plus = 0; g_inject_b = 0;
 }  // (reboot: the controller object was guest memory)
 void input_frame(uint64_t frame) {
     extern uint64_t renderer_present_count(void);
@@ -824,6 +850,10 @@ static void fill_state(Cpu *c) {
         static uint64_t until;
         if (g_inject_plus > 0) { until = renderer_present_count() + 10; g_inject_plus = 0; }
         if (renderer_present_count() < until) b |= 1ull << BTN_PLUS;
+        static uint64_t b_until;  // (B: 2 presented frames, a press the dialog takes, gone before the page's input is back)
+        if (g_inject_b > 0) { b_until = renderer_present_count() + 2; g_inject_b = 0; }
+        { extern void glyphs_console_poll(void); glyphs_console_poll(); }  // (another controller: runtime/nvn/glyphs.c)
+        if (renderer_present_count() < b_until) b |= 1ull << BTN_B;
     }
     // (the controller's sticks turning a shrine apparatus move neither Link nor the camera meanwhile)
     bool sticks = !menu && !dualstick_on();

@@ -37,11 +37,11 @@ static const Setting settings[] = {
     {"stick_deadzone[1]", &g_settings.stick_deadzone[1], FLOAT, 0, .5, NULL},
     B(mouse_camera), F(mouse_sens, .1, 10), F(mouse_sens_y, .5, 2), B(mouse_invert_y),
     F(motion_sens, .1, 10), I(motion_invert, 0, 3, "off|up_down|left_right|both"),
-    I(button_icons, 0, ICONS_COUNT - 1, "auto|keyboard|xbox|playstation|nintendo"),
+    I(button_icons, 0, ICONS_COUNT - 1, "auto|keyboard|xbox|playstation|nintendo|steamdeck"),
     B(async_shaders), B(precompile_shaders),
     I(shadow_res, 0, SHADOW_COUNT - 1, "console|high|ultra|extreme"), B(wide_view),
     I(hdr, 0, HDR_COUNT - 1, "auto|on|off"), I(hdr_white, 0, 1000, NULL),
-    I(fov, 50, 200, NULL), I(hud_size, 50, 150, NULL), I(color_exposure, -20, 20, NULL), I(color_contrast, -50, 50, NULL),
+    I(fov, 50, 200, NULL), I(hud_size, 50, 150, NULL), I(deck_mode, 0, DECKMODE_COUNT - 1, "auto|on|off|custom"), I(color_exposure, -20, 20, NULL), I(color_contrast, -50, 50, NULL),
     I(color_saturation, -100, 100, NULL), I(color_temperature, -100, 100, NULL),
     I(color_tint, -100, 100, NULL),
     {"color_lut", g_settings.color_lut, TEXT, 0, 0, NULL},
@@ -95,6 +95,7 @@ static void window_size_reply(ControlReply *r) {
 }
 static void cmd_get(int argc, char **argv, ControlReply *r) {
     if (argc > 2) { control_fail(r, "Usage: get [key]"); return; }
+    settings_deck_sync();
     if (argc == 2) {
         if (!strcmp(argv[1], "window_size")) { window_size_reply(r); return; }
         const Setting *s = find(argv[1]);
@@ -181,10 +182,20 @@ static void cmd_set(int argc, char **argv, ControlReply *r) {
     }
     int v = (int)value;
     if (is(s, "fps_limit")) {
-        static const int fps[] = FPS_CHOICES;
-        bool offered = false;
-        for (unsigned i = 0; i < sizeof fps / sizeof fps[0]; i++) offered |= fps[i] == v;
-        if (!offered) { control_fail(r, "fps must be 0 (unlimited), 30, 60, 90, 120, 144, 165, 240 or 360"); return; }
+        const int *fps;
+        int nfps = fps_choices(&fps), ok = 0;
+        for (int i = 0; i < nfps; i++) ok |= fps[i] == v;
+        if (!ok) {
+            control_fail(r, settings_steam_deck() ? "fps must be 0 (unlimited), 30, 40, 45, 60 or 90"
+                                                  : "fps must be 0 (unlimited), 30, 60, 90, 120, 144, 165, 240 or 360"); return;
+        }
+    }
+    if (is(s, "deck_mode")) {  // (Enabled takes the Deck's settings again; Custom follows changes, it isn't set)
+        if (v != DECKMODE_ON && v != DECKMODE_OFF) { control_fail(r, "deck_mode must be on or off"); return; }
+        settings_set_deck_mode(v);
+        emit(s, r);
+        control_field_str(r, "applied", "live");
+        return;
     }
     if (is(s, "hdr_white") && v != 0 && v < 80) {
         control_fail(r, "hdr_white must be 0 (automatic) or 80 to 1000 nits"); return;

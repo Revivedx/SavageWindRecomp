@@ -42,13 +42,13 @@ static void cell(int dev, int slot, int fam, int cap_dev, int cap_slot, int ms_l
 extern "C" void controls_bindings_draw(float scale) {
     (void)scale;
     int fam = bind_label_family();
-    static const char *const fam_name[] = {"Nintendo", "Xbox", "PlayStation"};
+    static const char *const fam_name[] = {"Nintendo", "Xbox", "PlayStation", "Steam Deck"};
     int n = 0;
     SDL_JoystickID *ids = SDL_GetGamepads(&n);
     const char *pad_name = ids && n > 0 ? SDL_GetGamepadNameForID(ids[0]) : NULL;
     char line[300];
-    if (n > 0) snprintf(line, sizeof line, tr("Controller: %s  (%s button names)"), pad_name ? pad_name : tr("connected"), fam_name[fam % 3]);
-    else snprintf(line, sizeof line, tr("No controller connected  (%s button names shown)"), fam_name[fam % 3]);
+    if (n > 0) snprintf(line, sizeof line, tr("Controller: %s  (%s button names)"), pad_name ? pad_name : tr("connected"), fam_name[fam % 4]);
+    else snprintf(line, sizeof line, tr("No controller connected  (%s button names shown)"), fam_name[fam % 4]);
     SDL_free(ids);
     ImGui::TextUnformatted(line);
     ImGui::PushTextWrapPos(0);

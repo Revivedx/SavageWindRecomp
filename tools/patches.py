@@ -131,11 +131,12 @@ def _opt_tick(gen, a):
 
 
 def _opt_back(gen, a):
-    # B on the screen: it closes (after the save); on one of Savage Wind's pages it opens again on the first page
+    # B on the screen (x19 = the screen): it closes (after the save); on one of Savage Wind's pages it opens again on
+    # the first page. 3: the runtime asks a question first (the dialog over the screen, as Quit's), the page stays
     assert _word(gen, a) >> 26 == 0x25, hex(_word(gen, a))  # bl screen_back
     t, fn = gen.sites['screen_back'], _fn(gen, 'screen_back')
-    return (f'{{ extern void rt_opt_back(void); rt_opt_back(); extern void {fn}(Cpu *); '
-            f'c->x[30] = {a + 4:#x}ull; {fn}(c); }}'
+    return (f'{{ extern int rt_opt_back(void); if (rt_opt_back() == 3) {{ {_quit_dialog(gen, a + 4, "c->x[19]")} }} '
+            f'else {{ extern void {fn}(Cpu *); c->x[30] = {a + 4:#x}ull; {fn}(c); }} }}'
             f'  /* {a:#x}: bl {t:#x} (Options: back) */')
 
 

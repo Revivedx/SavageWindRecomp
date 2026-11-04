@@ -7,7 +7,7 @@
 // what changes, not the texts. nn::font copies the sheet into a texture memory pool of its own; the texture is
 // recognised by its size and contents, and on upload its texels are replaced by glyphs drawn here for the device in use,
 // in the same cells and inside each original glyph's box (the game's widths stay): keycaps and mouse buttons from the
-// keyboard bindings, Xbox or PlayStation buttons through the controller bindings, or the game's own glyphs (moved
+// keyboard bindings, Xbox, PlayStation or Steam Deck buttons through the controller bindings, or the game's own glyphs (moved
 // between cells when the controller bindings differ from the defaults). Nothing of Nintendo's is shipped: shapes are
 // drawn, labels set in Fira Sans (OFL, third_party/fonts).
 //
@@ -16,6 +16,9 @@
 //
 // SAVAGEWIND_GLYPH_DUMP=1 saves each sheet as uploaded, the original beside it (build/glyph_sheet_<n>.pgm, bottom-up).
 #include <math.h>
+#include <pthread.h>
+#include <stdatomic.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,6 +26,8 @@
 #include <SDL3/SDL.h>
 
 #include "glyphs.h"
+#include "hw_illust.h"
+#include "../hle.h"
 #include "../input_bind.h"
 #include "../paths.h"
 #include "../rt.h"
@@ -420,26 +425,27 @@ static int nintendo_code(int host) {
 }
 
 // A controller button as an Xbox / PlayStation icon
-static void pad_button(Canvas *c, Box b, int host, bool ps) {
+static void pad_button(Canvas *c, Box b, int host, int fam) {
+    bool ps = fam == 2, num = ps || fam == 3;  // (the Steam Deck: Xbox's letters, numbered shoulders and sticks)
     switch (host) {
     case SDL_GAMEPAD_BUTTON_SOUTH: case SDL_GAMEPAD_BUTTON_EAST: case SDL_GAMEPAD_BUTTON_WEST: case SDL_GAMEPAD_BUTTON_NORTH:
         if (ps) ps_face(c, b, host);
         else round_label(c, b, host == SDL_GAMEPAD_BUTTON_SOUTH ? "A" : host == SDL_GAMEPAD_BUTTON_EAST ? "B" :
                                host == SDL_GAMEPAD_BUTTON_WEST ? "X" : "Y");
         return;
-    case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER: tab_label(c, b, ps ? "L1" : "LB"); return;
-    case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: tab_label(c, b, ps ? "R1" : "RB"); return;
-    case PADB_LTRIGGER: tab_label(c, b, ps ? "L2" : "LT"); return;
-    case PADB_RTRIGGER: tab_label(c, b, ps ? "R2" : "RT"); return;
+    case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER: tab_label(c, b, num ? "L1" : "LB"); return;
+    case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: tab_label(c, b, num ? "R1" : "RB"); return;
+    case PADB_LTRIGGER: tab_label(c, b, num ? "L2" : "LT"); return;
+    case PADB_RTRIGGER: tab_label(c, b, num ? "R2" : "RT"); return;
     case SDL_GAMEPAD_BUTTON_START: menu_button(c, b, true, ps); return;
     case SDL_GAMEPAD_BUTTON_BACK: menu_button(c, b, false, ps); return;
-    case SDL_GAMEPAD_BUTTON_LEFT_STICK: round_label(c, b, ps ? "L3" : "LS"); return;
-    case SDL_GAMEPAD_BUTTON_RIGHT_STICK: round_label(c, b, ps ? "R3" : "RS"); return;
+    case SDL_GAMEPAD_BUTTON_LEFT_STICK: round_label(c, b, num ? "L3" : "LS"); return;
+    case SDL_GAMEPAD_BUTTON_RIGHT_STICK: round_label(c, b, num ? "R3" : "RS"); return;
     case SDL_GAMEPAD_BUTTON_DPAD_UP: dpad(c, b, DIR_U); return;
     case SDL_GAMEPAD_BUTTON_DPAD_DOWN: dpad(c, b, DIR_D); return;
     case SDL_GAMEPAD_BUTTON_DPAD_LEFT: dpad(c, b, DIR_L); return;
     case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: dpad(c, b, DIR_R); return;
-    default: tab_label(c, b, bind_pad_label(host, ps ? 2 : 1)); return;
+    default: tab_label(c, b, bind_pad_label(host, fam)); return;
     }
 }
 
@@ -513,7 +519,7 @@ static int resolve_kind(void) {
     if (k > ICONS_AUTO && k < ICONS_COUNT) return k;
     if (input_last_device() == DEVICE_KEYBOARD) return ICONS_KEYBOARD;
     int f = input_pad_family();
-    return f == 1 ? ICONS_XBOX : f == 2 ? ICONS_PLAYSTATION : ICONS_NINTENDO;
+    return f == 1 ? ICONS_XBOX : f == 2 ? ICONS_PLAYSTATION : f == 3 ? ICONS_STEAMDECK : ICONS_NINTENDO;
 }
 
 uint32_t glyphs_generation(void) {
@@ -528,14 +534,162 @@ uint32_t glyphs_generation(void) {
     return h | 1;
 }
 
-static const char *const k_kind_names[ICONS_COUNT] = {"auto", "keyboard", "Xbox", "PlayStation", "Nintendo"};
+int glyphs_console_wanted(void) {
+    switch (g_settings.button_icons) {
+    case ICONS_STEAMDECK: return HW_DEVICE_DECK;
+    case ICONS_XBOX: return HW_DEVICE_XBOX;
+    case ICONS_PLAYSTATION: return HW_DEVICE_PS5;
+    case ICONS_AUTO: {  // the controller in use (an Xbox or PlayStation one also on a Deck), else the Deck's own
+        int f = bind_label_family();  // (the controller connected, also before the game opens one)
+        if (f == 1 || f == 2) return f == 1 ? HW_DEVICE_XBOX : HW_DEVICE_PS5;
+        return f == 3 || settings_steam_deck() ? HW_DEVICE_DECK : -1;
+    }
+    default: return -1;  // (keyboard, Nintendo: the game's Switch)
+    }
+}
+
+static volatile int g_console = -2;  // (-2: not decided this boot)
+static int g_console_failed = -2;     // a device whose panes weren't found in memory (glyphs_console_poll)
+RT_ON_RESET(glyphs_console_reset) { g_console = -2, g_console_failed = -2; }  // (a restart decides again)
+
+int glyphs_console(void) {
+    if (g_console == -2) {
+        g_console = glyphs_console_wanted();
+        static const char *const names[HW_DEVICE_COUNT] = {"the Steam Deck", "an Xbox controller", "a DualSense"};
+        LOG("[glyphs] Controls page: %s\n", g_console >= 0 ? names[g_console] : "the game's Switch");
+    }
+    return g_console;
+}
+
+// Another device while the game runs (Button icons Automatic: another controller in use; or the option changed): the
+// Controls page's and the tips' panes move in guest memory, where the game built them at boot, then the drawings follow
+// (textures.c uploads them again for the new glyphs_console). Where they are is found once, on a thread, a few seconds
+// in (scan_places: each pane by its 40 bytes of translation, rotation, scale and size with its name next to it, as the
+// game's pane objects and its copy of the layout file both have them; a few GB read), and looked for again while some
+// aren't there yet. Then a device change only writes those places: at once.
+// None found (another version's objects): the drawings stay as they are, and leaving Options' Controls page asks for a
+// restart.
+int kernel_data_regions(uint64_t *addr, uint64_t *size, int max);  // (runtime/kernel.c)
+uint64_t renderer_present_count(void);
+enum { SCAN_FIRST = 300, SCAN_AGAIN = 600, SCANS_MAX = 12 };  // (presented frames: 5 s in, then every 10 s, 12 times)
+static uint64_t *g_at;           // the places found: a pane's 40 bytes in guest memory ...
+static int *g_of;                // ... and which pane (hw_illust_panes)
+static int g_nat;
+static bool g_complete;          // every pane found
+static int g_scans;
+static uint64_t g_next_scan;
+static atomic_int g_scanning, g_gen;
+RT_ON_RESET(glyphs_places_reset) {  // (a restart builds the screens again: other places)
+    atomic_fetch_add(&g_gen, 1);
+    free(g_at), free(g_of), g_at = NULL, g_of = NULL, g_nat = 0;
+    g_complete = false, g_scans = 0, g_next_scan = 0;
+}
+
+static const uint8_t *find_name(const uint8_t *lo, const uint8_t *hi, const char *name) {
+    size_t n = strlen(name) + 1;  // (with its NUL: P_Line_1 is not P_Line_13)
+    for (const uint8_t *p = lo; p + n <= hi; p++)
+        if (*p == (uint8_t)name[0] && !memcmp(p, name, n)) return p;
+    return NULL;
+}
+
+static void *scan_places(void *arg) {
+    int gen = (int)(intptr_t)arg, n = hw_illust_panes(), nat = 0, cap = 0;
+    uint64_t *at = NULL;
+    int *of = NULL, *count = calloc(n ? n : 1, sizeof *count);
+    enum { BITS = 16 };
+    static uint8_t filter[1 << BITS];  // (the first 8 bytes of each pane's values now, hashed)
+    memset(filter, 0, sizeof filter);
+    for (int i = 0; i < n; i++) {
+        uint64_t k;
+        memcpy(&k, hw_illust_pane_now(i), 8);
+        filter[(k * 0x9E3779B97F4A7C15ull) >> (64 - BITS)] = 1;
+    }
+    uint64_t addr[256], size[256];
+    int nr = n && count ? kernel_data_regions(addr, size, 256) : 0;
+    for (int r = 0; r < nr; r++) {
+        uint8_t *lo = (uint8_t *)(uintptr_t)addr[r], *hi = lo + size[r];
+        for (uint8_t *p = lo; p + HW_MOVE_BYTES <= hi; p += 4) {
+            uint64_t k;
+            memcpy(&k, p, 8);
+            if (!filter[(k * 0x9E3779B97F4A7C15ull) >> (64 - BITS)]) continue;
+            for (int i = 0; i < n; i++) {
+                if (memcmp(p, hw_illust_pane_now(i), HW_MOVE_BYTES)) continue;
+                const uint8_t *wlo = p - 0x200 > lo ? p - 0x200 : lo, *whi = p + 0x200 < hi ? p + 0x200 : hi;
+                if (!find_name(wlo, whi, hw_illust_pane_name(i))) continue;
+                if (nat == cap) {
+                    cap = cap ? cap * 2 : 512;
+                    uint64_t *a = realloc(at, sizeof *at * cap);
+                    int *o = realloc(of, sizeof *of * cap);
+                    if (a) at = a;
+                    if (o) of = o;
+                    if (!a || !o) { nat = 0; goto out; }
+                }
+                at[nat] = (uint64_t)(uintptr_t)p, of[nat++] = i, count[i]++;
+                break;
+            }
+        }
+    }
+out:;
+    bool complete = n > 0;
+    for (int i = 0; i < n; i++) complete &= count && count[i] >= 1;
+    free(count);
+    LOG("[glyphs] Controls page and tips: %d panes, %d places found in memory%s\n", n, nat,
+        complete ? "" : " (some not yet: looked for again later)");
+    if (gen == atomic_load(&g_gen)) {
+        free(g_at), free(g_of);
+        g_at = at, g_of = of, g_nat = nat, g_complete = complete;
+    } else {
+        free(at), free(of);
+    }
+    atomic_store(&g_scanning, 0);
+    return NULL;
+}
+
+bool glyphs_console_stuck(void) {
+    int want = glyphs_console_wanted();
+    return want != g_console && want == g_console_failed;
+}
+
+void glyphs_console_poll(void) {
+    if (g_console == -2 || atomic_load(&g_scanning)) return;
+    uint64_t now = renderer_present_count();
+    if (!g_complete && g_scans < SCANS_MAX && now >= SCAN_FIRST && now >= g_next_scan) {
+        g_scans++, g_next_scan = now + SCAN_AGAIN;
+        atomic_store(&g_scanning, 1);
+        pthread_t t;
+        if (pthread_create(&t, NULL, scan_places, (void *)(intptr_t)atomic_load(&g_gen))) atomic_store(&g_scanning, 0);
+        else pthread_detach(t);
+        return;
+    }
+    int want = glyphs_console_wanted();
+    if (want == g_console || want == g_console_failed || !g_scans) return;  // (the first scan comes first)
+    int n = hw_illust_panes(), moved = 0, wrong = 0;
+    for (int k = 0; k < g_nat; k++) {
+        uint8_t *p = (uint8_t *)(uintptr_t)g_at[k];
+        if (memcmp(p, hw_illust_pane_now(g_of[k]), HW_MOVE_BYTES)) { wrong++; continue; }  // (no longer there)
+        memcpy(p, hw_illust_pane_for(g_of[k], want), HW_MOVE_BYTES);
+        moved++;
+    }
+    if (wrong) g_complete = false, g_scans = g_scans < SCANS_MAX ? g_scans : SCANS_MAX - 1, g_next_scan = 0;
+    if (n && !moved) {
+        if (g_scans >= SCANS_MAX) g_console_failed = want;  // (never found: a restart shows it)
+        return;
+    }
+    hw_illust_shown(want);
+    g_console = want;
+    static const char *const names[HW_DEVICE_COUNT] = {"the Steam Deck", "an Xbox controller", "a DualSense"};
+    LOG("[glyphs] Controls page and tips now for %s: %d places moved\n", want >= 0 ? names[want] : "the game's Switch",
+        moved);
+}
+
+static const char *const k_kind_names[ICONS_COUNT] = {"auto", "keyboard", "Xbox", "PlayStation", "Nintendo", "Steam Deck"};
 
 // The icon for one glyph: false = keep the game's (or *copy: the game's glyph for that code instead)
 static bool draw_glyph(Canvas *c, Box b, int code, int kind, int *copy) {
     Meaning m = meaning(code);
     *copy = 0;
     if (m.kind == G_KEEP) return false;
-    bool ps = kind == ICONS_PLAYSTATION;
+    int fam = kind == ICONS_PLAYSTATION ? 2 : kind == ICONS_STEAMDECK ? 3 : 1;
     if (kind == ICONS_NINTENDO) {  // the game's glyphs, following the controller bindings
         int host = -1;
         if (m.kind == G_BUTTON) host = g_bind_pad[m.arg];
@@ -566,13 +720,13 @@ static bool draw_glyph(Canvas *c, Box b, int code, int kind, int *copy) {
         }
         }
     }
-    // Xbox / PlayStation: buttons through the bindings; the sticks keep the game's (L / R)
+    // Xbox / PlayStation / Steam Deck: buttons through the bindings; the sticks keep the game's (L / R)
     switch (m.kind) {
-    case G_BUTTON: pad_button(c, b, g_bind_pad[m.arg], ps); return true;
+    case G_BUTTON: pad_button(c, b, g_bind_pad[m.arg], fam); return true;
     case G_DPAD:
         if (!(m.arg & (m.arg - 1))) {
             int host = g_bind_pad[k_dpad_slot[dir_index(m.arg)]];
-            if (host != k_dpad_host[dir_index(m.arg)]) { pad_button(c, b, host, ps); return true; }
+            if (host != k_dpad_host[dir_index(m.arg)]) { pad_button(c, b, host, fam); return true; }
         }
         dpad(c, b, m.arg);
         return true;

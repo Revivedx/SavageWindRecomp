@@ -674,6 +674,37 @@ static void tab_display(void) {
     float scale = ImGui::GetFontSize() / 34;
     opt_begin("##video", scale);
     opt_section("Display");
+    {   // Steam Deck mode (settings.h DECKMODE_*): Enabled takes the Deck's own settings again (settings_set_deck_mode);
+        // Custom isn't picked, it shows that one of them changed since (settings_deck_sync)
+        static const char *const names[] = {"Enabled", "Disabled", "Custom"};
+        settings_deck_sync();
+        int cur = g_settings.deck_mode - DECKMODE_ON, m = g_settings.deck_mode;
+        const char *desc = m == DECKMODE_ON ? "Lighter settings and 40 or 45 FPS made for the Steam Deck. Changing one of "
+                                              "them makes the mode Custom. Some of it applies after a restart."
+                         : m == DECKMODE_CUSTOM ? "Some of the Steam Deck's settings were changed. Choose Enabled to put "
+                                                  "the Steam Deck's defaults back."
+                                                : "Every setting as on a PC, free to change.";
+        if (opt_choice("Steam Deck mode", &cur, names, 3, settings_deck_mode_default() - DECKMODE_ON, desc, false) &&
+            cur != DECKMODE_CUSTOM - DECKMODE_ON) {
+            if (cur == 0 && m == DECKMODE_CUSTOM) ImGui::OpenPopup("##deckdefaults");  // (the player's changes would go: ask)
+            else settings_set_deck_mode(cur + DECKMODE_ON);
+        }
+        if (ImGui::BeginPopupModal("##deckdefaults", NULL, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar)) {
+            ImGui::TextColored(ImVec4(1, 0.72f, 0.4f, 1), "%s", tr("Put the Steam Deck's defaults back?"));
+            ImGui::TextUnformatted(tr("Your changes to the Steam Deck's settings are lost."));
+            ImGui::Spacing();
+            if (ImGui::Button(tr("Defaults"), ImVec2(200 * scale, 0))) {
+                settings_set_deck_mode(DECKMODE_ON);
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            ImGui::SetItemDefaultFocus();
+            if (ImGui::Button(tr("Cancel"), ImVec2(200 * scale, 0)) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
+                ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+                ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
+    }
     bool fs = g_settings.fullscreen;
     if (opt_toggle("Fullscreen", &fs, false, "Fills the screen. Also: F11, Alt+Enter or Cmd+Ctrl+F.")) {
         g_settings.fullscreen = fs;
@@ -794,10 +825,10 @@ static void tab_display(void) {
             g_settings.draw_distance = cur;
     }
     {   // Frame rate (runtime/hle/framepace.c)
-        static const int fps[] = FPS_CHOICES;
-        enum { NF = sizeof fps / sizeof fps[0] };
-        static char names_buf[NF][32];
-        const char *names[NF];
+        const int *fps;
+        const int NF = fps_choices(&fps);  // (the Steam Deck's own)
+        static char names_buf[FPS_CHOICES_MAX][32];
+        const char *names[FPS_CHOICES_MAX];
         int cur = 0, def = 0;
         for (int i = 0; i < NF; i++) {
             if (fps[i]) snprintf(names_buf[i], sizeof names_buf[i], tr("%d FPS"), fps[i]);
@@ -943,8 +974,9 @@ static void tab_display(void) {
                    "AMD FidelityFX CAS sharpens the 3D image after the upscaler (or at the window's resolution with the "
                    "upscaler off), before the HUD is drawn over it: edges get crisper without halos. Most useful with "
                    "AMD FSR 1.", false);
-        // AMD FSR 3 frame generation (vulkan/framegen.cpp; the frame rate counts the presented frames: framepace.c)
-        opt_toggle("Frame generation (AMD FSR 3)", &g_settings.frame_gen, false,
+        // AMD FSR 3 frame generation (vulkan/framegen.cpp; the frame rate counts the presented frames: framepace.c; not
+        // on a Steam Deck: settings_deck_hardware)
+        if (!settings_deck_hardware()) opt_toggle("Frame generation (AMD FSR 3)", &g_settings.frame_gen, false,
                    "AMD FSR 3 makes a frame between each two the game draws: about twice the frames on screen. The "
                    "frame rate above counts them all, so the game itself draws half of it (60 with 120) and the "
                    "controls answer as at that rate, a little later. In play only: the menus and the map show the "

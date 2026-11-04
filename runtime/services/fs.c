@@ -21,6 +21,8 @@
 #include "../nvn/text_upscale.h"
 #include "../romfs_image.h"
 #include "../settings.h"
+#include "../nvn/glyphs.h"
+#include "../nvn/hw_illust.h"
 #include "archive.h"
 #include "fs_layout.h"
 #include "../perfcount.h"
@@ -810,6 +812,17 @@ static void hud_letters_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz)
         }
     }
     if (!why && panes != 12) why = "letters not as expected";
+    if (arc) {  // the Controls page's lines and the tips' marks to the device's buttons (runtime/nvn/hw_illust.c)
+        static const char *const lay[] = {"blyt/PaAllControllerTipsNN_00.bflyt", "blyt/PaMessageTipsDrcImageNN_00.bflyt"};
+        for (int i = 0; i < 2; i++) {  // (HW_LAYOUT_CONTROLS, _TIPS; kept for another device later: glyphs.c)
+            int li = sarc_find(arc, an, lay[i], &adoff, &as, &ae), dev = why ? -1 : glyphs_console();
+            int moved = li >= 0 && dev >= 0 ? hw_illust_layout(dev, i, arc2 + adoff + as, ae - as) : 0;
+            if (li >= 0) hw_illust_keep(i, arc + adoff + as, ae - as, moved ? dev : -1);
+            if (dev >= 0)
+                LOG("[fs] %s: %d panes moved to device %d's buttons%s\n", i ? "Tips" : "Controls page", moved, dev,
+                    moved ? "" : " (layout not as expected)");
+        }
+    }
     if (why) {
         LOG("[fs] HUD letters: %s, the game's letters stay\n", why);
         free(pack), free(arc), free(arc2);
