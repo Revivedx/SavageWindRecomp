@@ -613,6 +613,9 @@ T("Open them from the title screen, or pause the game and choose System > Option
 T("Controller rumble", "コントローラーの振動")
 T("Vibrate the controller during play.", "プレイ中にコントローラーを振動させます。")
 
-T("Sharper text", "")
+T("Sharper text", "文字をくっきり")
 T("Upscales the game's letters for 1440p and 4K, after a restart. Not the original art.", "1440pと4K向けにゲームの文字を拡大します（再起動後）。オリジナルの絵ではありません。")
 T("Makes the game's letters sharper on 1440p and 4K screens. It takes effect the next time you start the game. This is an upscale made on your computer from the game's own letters, not Nintendo's original art: the shapes are kept, but they aren't exactly as drawn. 4x takes a moment longer to start and uses more video memory.", "1440pと4Kの画面でゲームの文字をより鮮明にします。次にゲームを起動したときに反映されます。ゲーム自身の文字からお使いのコンピューターで拡大したもので、任天堂のオリジナルの絵ではありません。形は保たれますが、描かれたものと完全に同じではありません。4xは起動に少し時間がかかり、ビデオメモリをより多く使います。")
+T("Game's FXAA", "ゲームのFXAA")
+T("The game's own edge smoothing. Off: sharper, more jagged edges.", "ゲーム本来のエッジの平滑化。オフ: よりシャープになり、輪郭のギザギザが増えます。")
+T("The game's own FXAA, which smooths edges as the 3D image is drawn into the final picture, as on the console. Off: a sharper image with more jagged edges; use it to replace FXAA with SMAA or TAA above, or to keep the image crisp at a high resolution.", "ゲーム本来のFXAAです。3D画像を最終画面に描くときに輪郭を滑らかにします（本体と同じ）。オフ: よりシャープな画像になり、輪郭のギザギザが増えます。上のSMAAやTAAに置き換えるときや、高解像度で画像をくっきり保ちたいときに使います。")

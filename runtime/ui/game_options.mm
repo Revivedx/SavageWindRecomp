@@ -86,8 +86,8 @@ static_assert(sizeof(Entry) == 0x30);
 enum { KIND_TOGGLE = 0, KIND_CHOICE = 1, KIND_BUTTON = 2 };
 
 enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_COLOUR, P_AUDIO, P_CONTROLS, P_KEYS, P_STICKS, P_PAD, P_LANGUAGE, P_ACCESS,
-            P_COUNT };
-enum Action { A_NONE, A_PAGE, A_BIND_KEY, A_BIND_PAD, A_RESET_KEYS, A_RESET_PAD, A_RESTART, A_QUIT, A_SIZE_LIST };
+            P_SIZES, P_COUNT };
+enum Action { A_NONE, A_PAGE, A_BIND_KEY, A_BIND_PAD, A_RESET_KEYS, A_RESET_PAD, A_RESTART, A_QUIT, A_SIZE_LIST, A_SIZE_PICK };
 
 struct Item {
     int page;
@@ -110,6 +110,8 @@ std::vector<Item> g_items;
 std::vector<Entry> g_entries;
 std::vector<uint32_t> g_order[P_COUNT];
 std::vector<std::string> g_names;  // the entries' flag names (never a real game data flag)
+WinSize g_size_choices[WINSIZE_MAX];
+int g_size_choice_count;
 uint64_t g_installed;              // address of g_entries while the game uses it
 int g_cur_page = P_MAIN, g_next_page = P_MAIN;
 bool g_reopen;                     // a page change closed the screen: open it again once it has gone
@@ -319,7 +321,8 @@ void build_items(void) {
                        }, 0);
     disp.wrap = true;
     v.push_back(disp);
-    // Window size: a button showing the size; A drops the sizes down as a list over it (menu.mm size_list_draw)
+    // Window size opens another native Options page, with the game's own
+    // row layout, font, highlight and sound callbacks (no overlay picker).
     Item ws = button(P_VIDEO, "Window size", "", nullptr, A_SIZE_LIST, 0);
     ws.label = [](const Item &, int) {
         static char buf[64];
@@ -452,6 +455,10 @@ void build_items(void) {
                        [](const Item &) { return g_settings.antialias; },
                        [](const Item &, int x) { g_settings.antialias = x; }, AA_OFF));
 #ifndef __APPLE__
+    // the game's own FXAA (vulkan/exec.c fxaa_patch)
+    v.push_back(toggle(P_VIDEO, "Game's FXAA", "The game's own edge smoothing. Off: sharper, more jagged edges.",
+                       [](const Item &) { return (int)g_settings.game_fxaa; },
+                       [](const Item &, int x) { g_settings.game_fxaa = x; }, 1));
     // Anisotropic filtering and sharpening (Vulkan: vulkan/textures.c sampler_aniso, vulkan/exec.c scene_post)
     v.push_back(choice(P_VIDEO, "Anisotropic filtering", "Sharper ground and paths at a distance. Off: as on the console.",
                        [](const Item &) { return N(k_aniso); },
@@ -737,6 +744,11 @@ void build_items(void) {
     v.push_back(toggle(P_ACCESS, "Infinite stamina", "The stamina wheel never runs out.",
                        [](const Item &) { return (int)g_settings.infinite_stamina; },
                        [](const Item &, int x) { g_settings.infinite_stamina = x; }, 0));
+    for(int i=0;i<WINSIZE_MAX;i++) {
+        Item size=button(P_SIZES,"","",nullptr,A_SIZE_PICK,i);
+        size.desc_fn=ws.desc_fn;  // reuse the existing translated display-size help
+        v.push_back(size);
+    }
 }
 
 // The game's table, extended (first opening, and again after a reboot reloads the game's own)
@@ -888,6 +900,15 @@ extern "C" void rt_opt_rows(void) {
     int page = g_switching ? g_next_page : P_MAIN;
     g_switching = false;
     std::vector<uint32_t> &o = g_order[page];
+    if(page==P_SIZES) {
+        // Snapshot the offered modes on entry. A display/fullscreen change
+        // cannot make a visible row select a different mode halfway through.
+        g_size_choice_count=winsize_items(g_size_choices);
+        o.clear();
+        for(size_t i=0;i<g_items.size();i++)
+            if(g_items[i].action==A_SIZE_PICK&&g_items[i].arg<g_size_choice_count)
+                o.push_back(GAME_ENTRIES+(uint32_t)i);
+    }
     g_shown.assign(g_items.size(), -1);
     if (page == P_COLOUR) g_nluts = color_lut_list();  // (files the player added since the last opening)
     for (size_t i = 0; i < g_items.size(); i++) {  // (how many window sizes there are depends on the display)
@@ -920,7 +941,14 @@ extern "C" int rt_opt_read(uint64_t row) {
     const Item *it = item_of_row(row);
     if (!it) return 0;
     if (it->kind == KIND_BUTTON) {
-        wr8(row + 0x64, 0);
+        // The native button's two visual states supply the normal and soft-red
+        // text colours. Message palette tags instead produce saturated dialogue colours.
+        bool current=false;
+        if(it->action==A_SIZE_PICK&&it->arg>=0&&it->arg<g_size_choice_count) {
+            WinSize selected=winsize_effective(g_settings.fullscreen),size=g_size_choices[it->arg];
+            current=selected.w==size.w&&selected.h==size.h;
+        }
+        wr8(row + 0x64, it->action==A_SIZE_PICK&&!current?1:0);
         return 1;
     }
     size_t idx = (size_t)(it - g_items.data());
@@ -991,7 +1019,13 @@ extern "C" int rt_opt_msg(uint32_t id, uint64_t out) {
     if (!it) return 0;
     const char *s = "";
     bool grey = false;
-    if (part == MSG_TITLE) s = tr(it->title);
+    if(part==MSG_BUTTON&&it->action==A_SIZE_PICK&&it->arg>=0&&it->arg<g_size_choice_count) {
+        static char name[64];
+        WinSize size=g_size_choices[it->arg];
+        winsize_name(size,tr("native"),name,sizeof name);
+        s=name;
+    }
+    else if (part == MSG_TITLE) s = tr(it->title);
     else if (part == MSG_DESC) s = it->desc_fn ? it->desc_fn(*it) : tr(it->desc);
     else if (part == MSG_BUTTON) s = it->button ? tr(it->button) : it->label ? it->label(*it, -1) : "";
     else if (part >= MSG_VALUE && it->kind == KIND_CHOICE && (int)(part - MSG_VALUE) < game_count(*it)) {
@@ -1010,9 +1044,18 @@ extern "C" int rt_opt_decide(uint64_t row) {
     int d, s, ms;
     switch (it->action) {
     case A_SIZE_LIST:
-        g_size_row = row;
-        menu_size_list_open();
-        return 2;
+        g_next_page=P_SIZES;
+        g_reopen=g_switching=true;
+        return 1;
+    case A_SIZE_PICK:
+        if(it->arg<0||it->arg>=g_size_choice_count)return 2;
+        g_settings.window_w=g_size_choices[it->arg].w;
+        g_settings.window_h=g_size_choices[it->arg].h;
+        settings_save();
+        menu_request_window_apply();
+        g_next_page=P_VIDEO;
+        g_reopen=g_switching=true;
+        return 1;
     case A_PAGE:
         if (bind_capture_active(&d, &s, &ms)) return 2;
         g_next_page = it->arg;
@@ -1045,6 +1088,48 @@ extern "C" int rt_opt_decide(uint64_t row) {
 // Window size's list (menu.mm, render thread): a size was picked, the row shows it
 extern "C" void game_options_size_picked(void) { g_size_redraw = true; }
 
+// Native layout identifiers, not player-facing text.
+#define SIZE_LABEL_PANE "T_Option_00"
+#define SIZE_LABEL_BACKGROUND "W_Base_02"
+// Resolution choices reuse the native action button, without its separate label column.
+static uint64_t size_pane(uint64_t pane,const char *name,unsigned depth,unsigned &budget) {
+    if(pane<0x7000000000ull||pane>=0x8000000000ull||depth>16||!budget)return 0;
+    --budget;
+    if(!strncmp((const char *)(uintptr_t)(pane+0xb8),name,40))return pane;
+    uint64_t head=pane+0x20,link=rd64(head+8);
+    while(link>=0x7000000000ull&&link<0x8000000000ull&&link!=head&&budget) {
+        if(uint64_t found=size_pane(link-8,name,depth+1,budget))return found;
+        link=rd64(link+8);
+    }
+    return 0;
+}
+
+static void size_page_layout(uint64_t screen) {
+    if(g_cur_page!=P_SIZES)return;
+    uint32_t count=rd32(screen+g_site.opt_screen_rows);
+    uint64_t rows=rd64(screen+g_site.opt_screen_rows+8);
+    if(!rows||count>WINSIZE_MAX)return;
+    for(uint32_t i=0;i<count;i++) {
+        uint64_t row=rd64(rows+8*i);
+        const Item *it=row?item_of_row(row):nullptr;
+        if(!it||it->action!=A_SIZE_PICK)continue;
+        uint64_t root=rd64(row+0x80);
+        unsigned budget=128;
+        uint64_t label=size_pane(root,SIZE_LABEL_PANE,0,budget);
+        if(label)wr8(label+0x58,*(uint8_t *)(uintptr_t)(label+0x58)&~1u);
+        uint64_t action=rd64(row+0x28),cursor=action?rd64(action+0x60):0;
+        uint64_t button=cursor?rd64(cursor+0x18):0;
+        if(!button)continue;
+        budget=128;
+        uint64_t background=size_pane(button,SIZE_LABEL_BACKGROUND,0,budget);
+        if(background)wr8(background+0x58,*(uint8_t *)(uintptr_t)(background+0x58)&~1u);
+        if(*(float *)(uintptr_t)(button+0x30)!=0.f) {
+            *(float *)(uintptr_t)(button+0x30)=0.f;
+            wr8(button+0x58,*(uint8_t *)(uintptr_t)(button+0x58)|0x10u);
+        }
+    }
+}
+
 // Options update: a binding capture that ended redraws the page's rows (a conflict swaps two inputs)
 extern "C" uint64_t rt_opt_tick(uint64_t screen) {
     if (g_quit_dialog) {  // (the quit question is up: 1 skips the screen's update, whose dialog handling takes answers)
@@ -1059,6 +1144,7 @@ extern "C" uint64_t rt_opt_tick(uint64_t screen) {
         mark_all_rows(screen);
     }
     if (g_size_redraw.exchange(false) && g_size_row) g_dirty.push_back(g_size_row);
+    size_page_layout(screen);
     if (!game_options_input_hold()) pc_cursor_options_tick(screen);
     if (g_dirty.empty()) return 0;
     uint64_t r = g_dirty.back();
@@ -1077,7 +1163,7 @@ extern "C" void rt_opt_back(void) {
     bind_capture_cancel();
     g_cap_row = 0;
     if (g_installed && g_cur_page != P_MAIN) {
-        g_next_page = P_MAIN;
+        g_next_page = g_cur_page==P_SIZES?P_VIDEO:P_MAIN;
         g_reopen = g_switching = true;
     } else {
         g_reopen = g_switching = false;

@@ -113,6 +113,7 @@ typedef struct TexBackend {
     uint8_t nview_fmt;
     uint64_t data_hash, sample_hash, checked_frame, full_frame;
     bool scalable, presented;
+    bool native_post;           // shader-identified bloom target: never inherit a scene scale
     uint8_t rs_group;            // RS_*: which output scale its allocation follows (textures.c)
     uint32_t guest_w;            // (RS_SHADOW: the guest width its scale is worked out from)
     uint64_t touched_frame, frame_cleared;
@@ -173,6 +174,7 @@ void vk_defer_image(VkImage img, VmaAllocation mem);
 void vk_defer_view(VkImageView v);
 void vk_views_forget(TexBackend *b);  // drop (deferred) the cached views of an image being replaced
 void vk_make_scalable_like(NvnTexture *t, NvnTexture *like);  // a pass's attachments share one scale
+bool vk_native_post_target(NvnTexture *t);  // before its first write; contents may be discarded
 uint8_t vk_texture_scale_group(NvnTexture *t);
 bool vk_is_shadow_copy(const NvnTexture *t);  // the sun cascades' half-size R16 copy (textures.c)
 bool vk_shadow_direct(void);                  // its readers compare against the cascades (SAVAGEWIND_NO_SHADOW_DIRECT=1: off)

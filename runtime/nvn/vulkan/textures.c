@@ -1423,10 +1423,23 @@ void renderer_make_scalable(NvnTexture *t) { vk_make_scalable_like(t, NULL); }
 void vk_make_scalable_like(NvnTexture *t, NvnTexture *like) {
     TexBackend *b = tex_backend(t);
     uint8_t g = like ? tex_backend(like)->rs_group : RS_SCENE;
-    if (b->rs_group || !g || (t->target != 1 && t->target != 4) || t->samples > 1) return;  // (a group stays)
+    if (b->native_post || b->rs_group || !g || (t->target != 1 && t->target != 4) || t->samples > 1) return;  // (a group stays)
     b->rs_group = g;
     destroy_image(b);
     create_image(t, b);
+}
+
+bool vk_native_post_target(NvnTexture *t) {
+    TexBackend *b = tex_backend(t);
+    if (b->native_post) return false;
+    b->native_post = true;
+    if (!b->rs_group) return false;
+    // The caller ended the previous render pass. Image destruction and view
+    // destruction are deferred until submitted work finishes, as for a resize.
+    b->rs_group = RS_NONE;
+    destroy_image(b);
+    create_image(t, b);
+    return true;
 }
 
 // A target found in a feedback loop (exec.c) made again without its view format list, contents copied: RADV keeps no

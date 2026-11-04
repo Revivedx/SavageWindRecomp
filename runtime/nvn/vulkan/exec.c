@@ -17,6 +17,7 @@
 #include "../../platform.h"
 #include "shaders.h"
 #include "vk.h"
+#include "bloom_scale.h"
 #include "vram.h"
 #include "fsr3.h"
 #include "mvec.h"
@@ -4294,6 +4295,27 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
     return true;
 }
 
+// Video > Game's FXAA off. BOTW's FXAA (3.11, console) is its scene -> final image composite shader (scene_composite):
+// four diagonal luma taps around the centre, then two or four along the edge. It filters only where the local luma
+// range exceeds max(luma max x c[3].x, c[3].y) of its constant buffer 3 (FXAA's edge threshold and its minimum);
+// elsewhere it gives the centre sample, a plain bilinear composite. Both thresholds out of reach turn it into that
+// everywhere. The pause menu's composite uses FXAA 3.11's quality version instead (the edge search along the edge),
+// with the same early exit on the same two constants. The shaders by their [draw] fs hash (game 1.9.0).
+static bool fxaa_shader(uint64_t fs_hash) {
+    return fs_hash == 0x058188a1db3e22e9ull  // in play: console FXAA
+        || fs_hash == 0x0a849327680eee9full; // the pause menu: quality FXAA
+}
+static bool fxaa_off;  // (the draw in progress)
+static bool fxaa_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out) {
+    if (size < 0x40) return false;
+    static float buf[0x10000 / 4];
+    uint64_t n = size > sizeof buf ? sizeof buf : size;
+    memcpy(buf, (const void *)(uintptr_t)addr, n);
+    buf[0x30 / 4] = buf[0x34 / 4] = 1e30f;
+    *out = ubo_span(vk_transient_copy(buf, n, 256), n);
+    return true;
+}
+
 // Constant buffer k of a stage (renderer.m bind_cbufs), copied into transient memory.
 static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32_t gx, uint32_t gy, uint32_t gz) {
     static const uint8_t zeros[0x10000];
@@ -4334,6 +4356,7 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
     if (size > r.size && r.size) size = r.size;
     if (size < 16) size = 16;
     VkDescriptorBufferInfo direct;
+    if (stage == 1 && k == 3 && fxaa_off && fxaa_patch(r.addr, size, &direct)) return direct;  // (see fxaa_patch)
     if (gw_ubo_direct(r.addr, size, &direct)) return direct;  // (written by a storing shader: read in place, see gw_note)
     if (stage == 1 && sdw_fix.s > 1 && sdw_patch(r.addr, size, &direct)) return direct;  // (texel size: see sdw_fix)
     if (stage == 0 && up_fix.sx > 0 && up_patch(r.addr, size, &direct)) return direct;  // (up_fix: texel grid)
@@ -7019,6 +7042,27 @@ static void draw_(CmdRec *r, bool indexed) {
         if (g_debug_frame && getenv("SAVAGEWIND_LOG_FSHASH")) LOG("[fshash] fs=%llx hash %016llx\n", (unsigned long long)fs, (unsigned long long)last_hash);
         g_cur_fs_hash = last_hash;
     }
+    // The bloom's fixed tap offsets must address adjacent console-size texels.
+    // Enlarging those images spaces the taps apart and produces separate copies
+    // of emissive details; odd mip scratch sizes also stopped inheriting scale.
+    // Recognize the actual bloom shaders, not arbitrary small HDR scene targets.
+    static int bloom_scaled = -1;
+    if (bloom_scaled < 0) bloom_scaled = getenv("SAVAGEWIND_BLOOM_SCALED") != NULL;
+    if (!bloom_scaled) {
+        for (int i = 0; i < st.rt.ncolor; i++) {
+            NvnTexture *t = st.rt.color[i];
+            if (!t || !bloom_native_target(g_cur_fs_hash, t->target, t->format, t->width, t->height, t->samples)) continue;
+            TexBackend *b = vk_tex(t, true);
+            if (b->native_post) continue;
+            vk_end_pass();
+            if (vk_native_post_target(t)) {
+                static unsigned logged;
+                if (logged++ < 12) LOG("[bloom] native working target %ux%u, levels %u, fs %016llx\n",
+                                      t->width, t->height, t->levels, (unsigned long long)g_cur_fs_hash);
+            }
+            st.rt_dirty = true;
+        }
+    }
     if (g_debug_frame) { debug_draw(pr, r, indexed); pass_dbg_draws++; }
     {   // (debugging) SAVAGEWIND_LOG_FS_CB=<fs hash>:<k>:<first float>:<count>: each frame, those floats of fragment cbuf k
         // (c[k], as the debug frame's fcb<k>) at the first draw of that shader: a parameter's course over a scripted walk
@@ -7552,8 +7596,14 @@ have_pipe:
     apply_scissor();
     float rs0[4] = {vp_sx, vp_sy, vp_ox, vp_oy};
     uint64_t prof_t1_ = profd ? SDL_GetTicksNS() : 0;
+    fxaa_off = !g_settings.game_fxaa && fxaa_shader(g_cur_fs_hash);  // (Video > Game's FXAA: fxaa_patch)
+    if (fxaa_off) {
+        static uint64_t logged[2];
+        int i = g_cur_fs_hash == logged[0] ? -1 : !logged[0] ? 0 : g_cur_fs_hash == logged[1] ? -1 : !logged[1] ? 1 : -1;
+        if (i >= 0) LOG("[fxaa] the game's FXAA off (fs hash %016llx)\n", (unsigned long long)(logged[i] = g_cur_fs_hash));
+    }
     VkDescriptorSet fset = stage_set(pr, pr->set_layout[1], 1, 1, pr->fi, rs0, tint, 0, 0, 0, fii, dyn, &ndyn);
-    sdw_fix.s = 0, up_fix.sx = 0;
+    sdw_fix.s = 0, up_fix.sx = 0, fxaa_off = false;
     if (profd) prof_sets += SDL_GetTicksNS() - prof_t1_;
     VkDescriptorSet sets[2] = {vset, fset};
     if (ndyn > 32) ndyn = 32;
@@ -8617,6 +8667,9 @@ static bool grade_wanted(VkImageView *lut, float pc[16]) {
 // The draw is the scene -> final image composite: a few vertices into the final image (RS_OUT) over most of it,
 // sampling a full-size scene target (not one of its reduced steps: bloom, blur). Its scene texture, or NULL.
 static NvnTexture *scene_composite(Prog *pr, CmdRec *r) {
+    // BOTW draws its quick selector menus' (weapons, runes, shields) blurred scene capture quad
+    // (1280x720, HoldShortCutBg) with UI shader d4fa32dabc35066c; that UI pass is not the 3D scene composite.
+    if (g_cur_fs_hash == 0xd4fa32dabc35066cull) return NULL;
     NvnTexture *rt = st.rt.ncolor ? st.rt.color[0] : NULL;
     if (!rt || r->x[2] > 6 || !pr->fi->ntex || vk_texture_scale_group(rt) != RS_OUT) return NULL;
     const float *vp = st.viewport[0];
@@ -9090,6 +9143,7 @@ static TexBackend *mvec_taa(VkCommandBuffer cb, TexBackend *b, uint64_t frame);
 static TexBackend *taa_img;  // (this frame's TAA output, of the scene taa_tex)
 static NvnTexture *taa_tex;
 static bool mvec_scene_view(Prog *pr, CmdRec *r, NvnTexture **taa_t, TexBackend **taa) {
+    if (g_cur_fs_hash == 0xd4fa32dabc35066cull) return false;
     NvnTexture *rt = st.rt.ncolor ? st.rt.color[0] : NULL;
     if (!mvec_target_img || !rt || r->x[2] > 6 || !pr->fi->ntex || vk_texture_scale_group(rt) != RS_OUT) return false;
     const float *vp = st.viewport[0];
