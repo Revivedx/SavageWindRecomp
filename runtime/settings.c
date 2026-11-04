@@ -52,6 +52,7 @@ Settings g_settings = {
 
 static const char *const k_vsync[VSYNC_COUNT] = {"on", "fast", "adaptive", "off"};  // (VSYNC_*: the ini's words)
 static const char *const k_hdr[HDR_COUNT] = {"auto", "on", "off"};             // (HDR_*)
+static const char *const k_sparse_heap[SPARSE_HEAP_COUNT] = {"auto", "on", "off"};
 static const char *const k_fsmode[FSMODE_COUNT] = {"auto", "borderless", "exclusive"};  // (FSMODE_*)
 
 // settings_version 2 (2026-10-19): the upscaler's mode, the window size and the 300% mouse default. Older files: their
@@ -186,6 +187,10 @@ void settings_load(void) {
         else if (!strcmp(key, "hdr")) {
             for (int i = 0; i < HDR_COUNT; i++)
                 if (!strcmp(val, k_hdr[i])) g_settings.hdr = i;
+        }
+        else if (!strcmp(key, "sparse_heap")) {
+            for (int i = 0; i < SPARSE_HEAP_COUNT; i++)
+                if (!strcmp(val, k_sparse_heap[i])) g_settings.sparse_heap = i;
         }
         else if (!strcmp(key, "hdr_paper_white")) {  // (nits; 0: Windows' SDR content brightness)
             int n = atoi(val);
@@ -350,6 +355,8 @@ void settings_save(void) {
     fprintf(f, "sharper_text = %s\n", g_settings.sharper_text == 4 ? "4x" : g_settings.sharper_text == 2 ? "2x" : "off");
     fprintf(f, "wide_view = %d\n", g_settings.wide_view);
     fprintf(f, "hdr = %s\n", k_hdr[g_settings.hdr >= 0 && g_settings.hdr < HDR_COUNT ? g_settings.hdr : HDR_AUTO]);
+    fprintf(f, "sparse_heap = %s\n", k_sparse_heap[g_settings.sparse_heap >= 0 && g_settings.sparse_heap < SPARSE_HEAP_COUNT ?
+                                                       g_settings.sparse_heap : SPARSE_HEAP_AUTO]);
     if (g_settings.hdr_white) fprintf(f, "hdr_paper_white = %d\n", g_settings.hdr_white);
     fprintf(f, "field_of_view = %d\n", g_settings.fov);
     fprintf(f, "hud_size = %d\n", g_settings.hud_size);

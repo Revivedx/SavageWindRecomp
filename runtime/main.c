@@ -342,6 +342,11 @@ int main(int argc, char **argv) {
     extern const char *rt_version(void);  // (runtime/ui/launcher.mm)
     fprintf(stderr, "[savagewind] Savage Wind %s (%s)\n", rt_version(), SW_SOURCE);
     control_init();
+    settings_load();
+    static const char *const sparse_heap_modes[SPARSE_HEAP_COUNT] = {"auto", "on", "off"};
+    int sparse_heap = g_settings.sparse_heap;
+    if (sparse_heap < 0 || sparse_heap >= SPARSE_HEAP_COUNT) sparse_heap = SPARSE_HEAP_AUTO;
+    LOG("[settings] sparse_heap=%s\n", sparse_heap_modes[sparse_heap]);
     const char *root = "extracted";  // (in the data root)
     bool skip_launcher = getenv("SAVAGEWIND_NO_LAUNCHER") || getenv("SAVAGEWIND_INPUT");  // tests boot straight in
     bool config = false;
@@ -380,6 +385,12 @@ int main(int argc, char **argv) {
     if (test_mode || getenv("SAVAGEWIND_LAUNCHER_SHOT") || getenv("SAVAGEWIND_LAUNCHER_EXTRACT") ||
         getenv("SAVAGEWIND_LAUNCHER_SETUP") || getenv("SAVAGEWIND_LAUNCHER_DELETE"))
         mode = test_mode && !strcmp(test_mode, "setup") ? LAUNCHER_SETUP : LAUNCHER_CONFIG;
+#ifdef _WIN32
+    if (mode == LAUNCHER_NONE) {
+        extern void ui_window_init(void);  // Select the GPU before the game's SetHeapSize chooses eager or lazy backing.
+        ui_window_init();
+    }
+#endif
     for (;;) {
         if (mode != LAUNCHER_NONE) launcher_run(root, mode);
         // The game holds the lock on its save folder while it runs, so the Saves tab of another Savage Wind refuses to

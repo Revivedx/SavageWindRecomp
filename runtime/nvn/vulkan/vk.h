@@ -40,7 +40,8 @@ typedef struct {
     VkPipelineCache pcache_pre;  // the precompiled shaders' libraries (cache/vk_precompiled.bin; read only while playing)
     VkSemaphore timeline;      // value = last completed submission number
     VkCommandPool pool;        // render thread only
-    bool custom_border, divisor, host_import, wide_lines;
+    bool custom_border, divisor, host_import, memory_budget, memory_priority, pageable_device_local_memory, sparse_queue, sparse_buffer,
+        sparse_nonresident_strict, sparse_host_import, wide_lines;
     bool nv_checkpoints;  // VK_NV_device_diagnostic_checkpoints: where the GPU was when it was lost (exec.c ck_mark)
     bool feat_aniso;  // samplerAnisotropy (Video > Anisotropic filtering)
     bool storage_ext;  // shaderStorageImageExtendedFormats (TAA's R8 / R16F / RG16F storage images: exec.c mvec_taa)

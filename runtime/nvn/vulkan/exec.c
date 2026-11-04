@@ -1,10 +1,12 @@
 // Executes recorded NVN command lists with Vulkan (port of renderer.m; same structure, same behaviour).
+#include <SDL3/SDL.h>
 #include <SDL3/SDL_cpuinfo.h>
 #include <SDL3/SDL_timer.h>
 #include <float.h>
 #include <math.h>
 #include <stdarg.h>
 #include <pthread.h>
+#include <stdio.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,6 +14,7 @@
 #include <unistd.h>
 
 #include "../../kernel.h"
+#include "../../platform.h"
 #include "shaders.h"
 #include "vk.h"
 #include "vram.h"
@@ -52,6 +55,10 @@ static uint64_t stat_sets, stat_sets_reused;  // descriptor sets asked for / sha
 // sets = descriptor sets incl. cbuf copies, vtx = index scan + vertex copies, submit = vkQueueSubmit2)
 static int prof = -1;
 static uint64_t prof_exec, prof_draw, prof_sets, prof_vtx, prof_submit, prof_pre, prof_key, prof_dyn, prof_tex, prof_up, prof_gpu;
+static uint64_t prof_program, prof_render_prep, prof_indices, prof_vertex_bind;
+static uint64_t prof_index_direct, prof_index_copy, prof_vertex_direct, prof_vertex_copy;
+static uint64_t prof_feedback_resolve, prof_scene_post, prof_snapshots, prof_gw_check, prof_begin_pass;
+static uint64_t prof_heap_range_checks, prof_heap_range_cached, prof_heap_range_check_ns;
 static VkQueryPool prof_qp;
 static uint64_t cum_exec, cum_wait, cum_draws, cum_submits;  // (profiling) never reset: hitch log
 static uint64_t cum_xwait;  // (profiling) the part of cum_wait spent inside backend_execute
@@ -124,6 +131,8 @@ static Sub subs[SUBS];
 static int cur_sub;
 static uint64_t submit_seq;  // last submitted
 static pthread_mutex_t seq_lock = PTHREAD_MUTEX_INITIALIZER;
+static VkSemaphore gmem_sparse_timeline;
+static uint64_t gmem_sparse_bind_seq;
 static uint64_t deferred_seq;  // (seq_lock; renderer_wait_seq, GPU_OVERLAP) a fence the game was told is done whose
                                // submission wasn't waited for
 static uint64_t oneshot_seq;   // (seq_lock) the latest submission with a one-off readback: a wait on it is never deferred
@@ -427,11 +436,19 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
                                      .value = submit_seq + 1, .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT},
                                     {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = signal,
                                      .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT}};
-    VkSemaphoreSubmitInfo wt = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = wait,
-                                .stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT};
+    VkSemaphoreSubmitInfo wt[2];
+    uint32_t nwt = 0;
+    if (wait)
+        wt[nwt++] = (VkSemaphoreSubmitInfo){.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = wait,
+                                             .stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT};
+    if (gmem_sparse_bind_seq)
+        wt[nwt++] = (VkSemaphoreSubmitInfo){.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                                             .semaphore = gmem_sparse_timeline,
+                                             .value = gmem_sparse_bind_seq,
+                                             .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
     VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .commandBufferInfoCount = (uint32_t)n, .pCommandBufferInfos = cbs,
                         .signalSemaphoreInfoCount = signal ? 2 : 1, .pSignalSemaphoreInfos = sig,
-                        .waitSemaphoreInfoCount = wait ? 1 : 0, .pWaitSemaphoreInfos = &wt};
+                        .waitSemaphoreInfoCount = nwt, .pWaitSemaphoreInfos = wt};
     {
         PROF_T0();
         dl_note("submit %llu", (unsigned long long)submit_seq + 1);
@@ -992,6 +1009,19 @@ const char *renderer_stats(void) {
                  (unsigned long long)prof_tex_checks, (unsigned long long)prof_tex_samples, (unsigned long long)prof_tex_full,
                  prof_tex_full_bytes / 1048576.0, (unsigned long long)prof_tex_dyn);
         n = strlen(stats_text);
+        snprintf(stats_text + n, sizeof stats_text - n,
+                 " | draw prep %.0f program %.0f render %.0f ms (feedback %.0f scene %.0f snapshots %.0f gmem-check %.0f pass %.0f); "
+                 "indices %.0f ms (%llu direct %llu copied) vertices %.0f ms (%llu direct %llu copied)",
+                 prof_pre / 1e6, prof_program / 1e6, prof_render_prep / 1e6, prof_feedback_resolve / 1e6,
+                 prof_scene_post / 1e6, prof_snapshots / 1e6, prof_gw_check / 1e6, prof_begin_pass / 1e6,
+                 prof_indices / 1e6,
+                 (unsigned long long)prof_index_direct, (unsigned long long)prof_index_copy, prof_vertex_bind / 1e6,
+                 (unsigned long long)prof_vertex_direct, (unsigned long long)prof_vertex_copy);
+        n = strlen(stats_text);
+        snprintf(stats_text + n, sizeof stats_text - n, " | direct heap range checks %llu (%llu cached, %.0f ms)",
+                 (unsigned long long)prof_heap_range_checks, (unsigned long long)prof_heap_range_cached,
+                 prof_heap_range_check_ns / 1e6);
+        n = strlen(stats_text);
         snprintf(stats_text + n, sizeof stats_text - n, " | pass ends:");
         for (int l = 0; l < 4096; l++)
             if (prof_end_line[l] > 20) { n = strlen(stats_text); snprintf(stats_text + n, sizeof stats_text - n, " %d:%u", l, prof_end_line[l]); }
@@ -1016,6 +1046,10 @@ const char *renderer_stats(void) {
         prof_views_created = 0;
         prof_tex_checks = prof_tex_samples = prof_tex_full = prof_tex_full_bytes = prof_tex_dyn = 0;
         prof_exec = prof_draw = prof_sets = prof_vtx = prof_submit = prof_pre = prof_key = prof_dyn = prof_tex = prof_up = prof_gpu = 0;
+        prof_program = prof_render_prep = prof_indices = prof_vertex_bind = 0;
+        prof_index_direct = prof_index_copy = prof_vertex_direct = prof_vertex_copy = 0;
+        prof_feedback_resolve = prof_scene_post = prof_snapshots = prof_gw_check = prof_begin_pass = 0;
+        prof_heap_range_checks = prof_heap_range_cached = prof_heap_range_check_ns = 0;
     }
     stat_draws = stat_skipped = stat_passes = stat_dispatches = stat_flushes = stat_wait_ns = 0;
     return stats_text;
@@ -4311,13 +4345,27 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
     return ubo_span(guest_copy(r.addr, size), size);
 }
 
-// Global memory (shader LDG/STG, maxwell_gmem_base = HEAP_BASE): the guest heap imported as a GPU buffer
-// (VK_EXT_external_memory_host), zero-copy like metal.m's g_guest_buffer, so compute results land in guest
-// memory. The import pins its pages, so it covers only the heap the game set up (SetHeapSize), made on first use.
-// SAVAGEWIND_VK_NO_GMEM=1: no import, reads return zero.
+// Global memory (shader LDG/STG, maxwell_gmem_base = HEAP_BASE): on Windows, sparse-bind committed guest pages
+// imported with VK_EXT_external_memory_host; other paths retain the whole-heap import. GPU writes land in guest
+// memory. SAVAGEWIND_VK_NO_GMEM=1: no import, reads return zero.
 static VkBuffer gmem_buf;
 static VkDeviceMemory gmem_mem;
 static uint64_t gmem_size;
+static bool gmem_sparse;
+#define GMEM_SPARSE_PAGE_SIZE 0x10000ull
+#define GMEM_SPARSE_CHUNK_SIZE (1ull << 16)
+#define GMEM_SPARSE_CHUNK_PAGES (GMEM_SPARSE_CHUNK_SIZE / GMEM_SPARSE_PAGE_SIZE)
+#define GMEM_SPARSE_PAGE_COUNT ((HEAP_MAX + GMEM_SPARSE_PAGE_SIZE - 1) / GMEM_SPARSE_PAGE_SIZE)
+#define GMEM_SPARSE_MEM_COUNT GMEM_SPARSE_PAGE_COUNT
+static uint8_t gmem_sparse_bound_pages[GMEM_SPARSE_PAGE_COUNT];
+static uint64_t gmem_sparse_generation;
+static VkDeviceMemory gmem_sparse_mem[GMEM_SPARSE_MEM_COUNT];
+static VkSparseMemoryBind gmem_sparse_binds[GMEM_SPARSE_PAGE_COUNT];
+static uint32_t gmem_sparse_nmem;
+
+#ifdef _WIN32
+static bool gmem_sparse_refresh(uint64_t size);
+#endif
 
 static bool gmem_import(uint64_t size) {
     PFN_vkGetMemoryHostPointerPropertiesEXT props =
@@ -4326,13 +4374,30 @@ static bool gmem_import(uint64_t size) {
     if (!props || props(g_vk.dev, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, (void *)(uintptr_t)HEAP_BASE, &mp) != VK_SUCCESS ||
         !mp.memoryTypeBits)
         return false;
+    VkPhysicalDeviceMemoryProperties memory;
+    vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &memory);
+    uint32_t memory_type = (uint32_t)__builtin_ctz(mp.memoryTypeBits);
     VkImportMemoryHostPointerInfoEXT imp = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT,
                                             .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
                                             .pHostPointer = (void *)(uintptr_t)HEAP_BASE};
+#ifdef VK_EXT_memory_priority
+    VkMemoryPriorityAllocateInfoEXT priority = {.sType = VK_STRUCTURE_TYPE_MEMORY_PRIORITY_ALLOCATE_INFO_EXT,
+                                                .priority = 0.1f};
+    if (g_vk.memory_priority) imp.pNext = &priority;
+#endif
     VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &imp, .allocationSize = size,
-                               .memoryTypeIndex = (uint32_t)__builtin_ctz(mp.memoryTypeBits)};
+                               .memoryTypeIndex = memory_type};
     VkDeviceMemory mem;
-    if (vkAllocateMemory(g_vk.dev, &ai, NULL, &mem) != VK_SUCCESS) return false;
+    VkResult alloc_result = vkAllocateMemory(g_vk.dev, &ai, NULL, &mem);
+    if (alloc_result != VK_SUCCESS) {
+        LOG("[vk] guest heap import allocation failed (%d)\n", alloc_result);
+        return false;
+    }
+    VkMemoryPropertyFlags chosen_flags = memory.memoryTypes[memory_type].propertyFlags;
+    uint32_t chosen_heap = memory.memoryTypes[memory_type].heapIndex;
+    LOG("[vk] guest heap memory type %u on heap %u (%llu MB, flags %#x)%s\n",
+        memory_type, chosen_heap, (unsigned long long)(memory.memoryHeaps[chosen_heap].size >> 20), chosen_flags,
+        (chosen_flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ? "" : " (non-device-local preferred)");
     VkExternalMemoryBufferCreateInfo eb = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
                                            .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT};
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .pNext = &eb, .size = size,
@@ -4352,9 +4417,266 @@ static bool gmem_import(uint64_t size) {
     gmem_buf = buf;
     gmem_mem = mem;
     gmem_size = size;
-    LOG("[vk] guest heap imported for shader global memory: %llu MB\n", (unsigned long long)(size >> 20));
+    LOG("[vk] guest heap imported for shader global memory: %llu MB%s\n", (unsigned long long)(size >> 20),
+        g_vk.memory_priority ? " (low memory priority)" : "");
     return true;
 }
+
+static bool gmem_sparse_create(uint64_t size) {
+#ifdef _WIN32
+    if (!plat_guest_sparse_heap_enabled()) return false;
+    if (!g_vk.sparse_buffer || !g_vk.sparse_queue || !g_vk.sparse_nonresident_strict || !g_vk.sparse_host_import) {
+        LOG("[vk] sparse guest heap incompatible with GPU: \n sparse buffer %s\n sparse queue %s\n strict nonresident access %s\n host import %s\n",
+            g_vk.sparse_buffer ? "available" : "unavailable",
+            g_vk.sparse_queue ? "available" : "unavailable",
+            g_vk.sparse_nonresident_strict ? "available" : "unavailable",
+            g_vk.sparse_host_import ? "available" : "unavailable");
+        return false;
+    }
+    VkPhysicalDeviceExternalBufferInfo ext_info = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_BUFFER_INFO,
+        .flags = VK_BUFFER_CREATE_SPARSE_BINDING_BIT | VK_BUFFER_CREATE_SPARSE_RESIDENCY_BIT,
+        .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+        .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT};
+    VkExternalBufferProperties ext_props = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_BUFFER_PROPERTIES};
+    vkGetPhysicalDeviceExternalBufferProperties(g_vk.phys, &ext_info, &ext_props);
+    if (!(ext_props.externalMemoryProperties.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT)) {
+        LOG("[vk] sparse guest heap external host import unsupported for full buffer usage\n");
+        return false;
+    }
+    if (!gmem_sparse_timeline) {
+        VkSemaphoreTypeCreateInfo type = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+                                          .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
+                                          .initialValue = 0};
+        VkSemaphoreCreateInfo semaphore = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+                                           .pNext = &type};
+        VkResult sr = vkCreateSemaphore(g_vk.dev, &semaphore, NULL, &gmem_sparse_timeline);
+        if (sr != VK_SUCCESS) {
+            LOG("[vk] sparse guest heap timeline creation failed (%d)\n", sr);
+            return false;
+        }
+    }
+    VkExternalMemoryBufferCreateInfo external = {
+        .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
+        .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT};
+    VkBufferCreateInfo bi = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .pNext = &external,
+        .flags = VK_BUFFER_CREATE_SPARSE_BINDING_BIT | VK_BUFFER_CREATE_SPARSE_RESIDENCY_BIT,
+        .size = HEAP_MAX,
+        .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT};
+    VkBuffer buf = VK_NULL_HANDLE;
+    VkResult r = vkCreateBuffer(g_vk.dev, &bi, NULL, &buf);
+    if (r != VK_SUCCESS) {
+        LOG("[vk] sparse guest heap buffer creation failed (%d)\n", r);
+        return false;
+    }
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(g_vk.dev, buf, &req);
+    if (req.alignment != 0x10000 || req.size < HEAP_MAX) {
+        LOG("[vk] sparse guest heap alignment/size unsupported (%llu/%llu)\n",
+            (unsigned long long)req.alignment, (unsigned long long)req.size);
+        vkDestroyBuffer(g_vk.dev, buf, NULL);
+        return false;
+    }
+    gmem_buf = buf;
+    gmem_size = size;
+    gmem_sparse = true;
+    memset(gmem_sparse_bound_pages, 0, sizeof gmem_sparse_bound_pages);
+    gmem_sparse_generation = UINT64_MAX;
+    LOG("[vk] sparse guest heap buffer created: %llu MB virtual, %llu KiB binding alignment\n",
+        (unsigned long long)(HEAP_MAX >> 20), (unsigned long long)(req.alignment >> 10));
+    if (!gmem_sparse_refresh(size)) {
+        vkDestroyBuffer(g_vk.dev, gmem_buf, NULL);
+        gmem_buf = VK_NULL_HANDLE;
+        gmem_size = 0;
+        gmem_sparse = false;
+        memset(gmem_sparse_bound_pages, 0, sizeof gmem_sparse_bound_pages);
+        gmem_sparse_generation = UINT64_MAX;
+        return false;
+    }
+    return true;
+#else
+    (void)size;
+    return false;
+#endif
+}
+
+#ifdef _WIN32
+static bool gmem_sparse_import_range(uint64_t offset, uint64_t bytes, VkDeviceMemory *out_mem) {
+    uint64_t address = HEAP_BASE + offset;
+    if (!bytes || (offset % GMEM_SPARSE_PAGE_SIZE) || (bytes % GMEM_SPARSE_PAGE_SIZE) ||
+        offset > gmem_size || bytes > gmem_size - offset) return false;
+    if (!plat_guest_commit_sparse_range(address, bytes)) {
+        LOG("[vk] sparse guest heap could not commit GPU backing window %#llx+%#llx\n",
+            (unsigned long long)address, (unsigned long long)bytes);
+        return false;
+    }
+    static bool cache_ready;
+    static PFN_vkGetMemoryHostPointerPropertiesEXT get_host_props;
+    static VkMemoryRequirements req;
+    static VkPhysicalDeviceExternalMemoryHostPropertiesEXT host_props;
+    static VkPhysicalDeviceMemoryProperties memory;
+    if (!cache_ready) {
+        get_host_props = (PFN_vkGetMemoryHostPointerPropertiesEXT)vkGetDeviceProcAddr(g_vk.dev, "vkGetMemoryHostPointerPropertiesEXT");
+        vkGetBufferMemoryRequirements(g_vk.dev, gmem_buf, &req);
+        host_props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT;
+        VkPhysicalDeviceProperties2 props = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &host_props};
+        vkGetPhysicalDeviceProperties2(g_vk.phys, &props);
+        vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &memory);
+        if (!get_host_props || !host_props.minImportedHostPointerAlignment) {
+            LOG("[vk] sparse guest heap host-import properties unavailable\n");
+            return false;
+        }
+        cache_ready = true;
+    }
+    void *host = (void *)(uintptr_t)address;
+    VkMemoryHostPointerPropertiesEXT host_memory = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
+    if (((uintptr_t)host % host_props.minImportedHostPointerAlignment) != 0 ||
+        get_host_props(g_vk.dev, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, host, &host_memory) != VK_SUCCESS) {
+        LOG("[vk] sparse guest heap host pointer query failed at %#llx\n", (unsigned long long)address);
+        return false;
+    }
+    uint32_t type = UINT32_MAX;
+    uint32_t compatible = req.memoryTypeBits & host_memory.memoryTypeBits;
+    int best_score = -1;
+    for (uint32_t i = 0; i < memory.memoryTypeCount; i++) {
+        if (!(compatible & (1u << i))) continue;
+        VkMemoryPropertyFlags flags = memory.memoryTypes[i].propertyFlags;
+        int score = (flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ? 0 : 4;
+        if (flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) score += 2;
+        if (flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) score++;
+        if (score > best_score) {
+            best_score = score;
+            type = i;
+        }
+    }
+    if (type == UINT32_MAX) {
+        LOG("[vk] sparse guest heap has no compatible memory type at %#llx\n", (unsigned long long)address);
+        return false;
+    }
+    VkImportMemoryHostPointerInfoEXT import = {
+        .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT,
+        .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
+        .pHostPointer = host};
+    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                               .pNext = &import,
+                               .allocationSize = bytes,
+                               .memoryTypeIndex = type};
+    VkDeviceMemory mem = VK_NULL_HANDLE;
+    VkResult r = vkAllocateMemory(g_vk.dev, &ai, NULL, &mem);
+    if (r != VK_SUCCESS) {
+        LOG("[vk] sparse guest heap import failed for %llu MiB (%d)\n",
+            (unsigned long long)(bytes >> 20), r);
+        return false;
+    }
+    *out_mem = mem;
+    return true;
+}
+
+static bool gmem_sparse_range_bound(uint64_t addr, uint64_t end) {
+    if (!gmem_sparse || addr < HEAP_BASE || end <= addr || end > HEAP_BASE + gmem_size) return false;
+    uint64_t first = (addr - HEAP_BASE) / GMEM_SPARSE_CHUNK_SIZE;
+    uint64_t last = (end - 1 - HEAP_BASE) / GMEM_SPARSE_CHUNK_SIZE;
+    for (uint64_t chunk = first; chunk <= last; chunk++) {
+        uint64_t page = chunk * GMEM_SPARSE_CHUNK_PAGES;
+        if (page >= GMEM_SPARSE_PAGE_COUNT || !gmem_sparse_bound_pages[page]) return false;
+    }
+    return true;
+}
+
+static bool gmem_sparse_refresh(uint64_t size) {
+    uint64_t generation = plat_guest_commit_generation();
+    if (generation == gmem_sparse_generation) return true;
+
+    uint32_t first_new_mem = gmem_sparse_nmem;
+    uint32_t bind_count = 0;
+    uint64_t page_count = size / GMEM_SPARSE_PAGE_SIZE;
+    uint64_t chunk_count = (page_count + GMEM_SPARSE_CHUNK_PAGES - 1) / GMEM_SPARSE_CHUNK_PAGES;
+    uint64_t run_start = UINT64_MAX;
+    for (uint64_t chunk = 0; chunk <= chunk_count; chunk++) {
+        bool active = false;
+        if (chunk < chunk_count) {
+            uint64_t first_page = chunk * GMEM_SPARSE_CHUNK_PAGES;
+            uint64_t end_page = first_page + GMEM_SPARSE_CHUNK_PAGES;
+            if (end_page > page_count) end_page = page_count;
+            if (!gmem_sparse_bound_pages[first_page]) {
+                uint64_t first_word = first_page / 64;
+                uint64_t end_word = (end_page + 63) / 64;
+                for (uint64_t word = first_word; word < end_word && !active; word++) {
+                    uint64_t committed = plat_guest_sparse_heap_committed_word(word);
+                    uint64_t word_first_page = word * 64;
+                    uint64_t lo = first_page > word_first_page ? first_page - word_first_page : 0;
+                    uint64_t hi = end_page < word_first_page + 64 ? end_page - word_first_page : 64;
+                    uint64_t mask = (hi == 64 ? UINT64_MAX : (1ull << hi) - 1) & ~((1ull << lo) - 1);
+                    active = (committed & mask) != 0;
+                }
+            }
+        }
+        if (active && run_start == UINT64_MAX) run_start = chunk;
+        if (!active && run_start != UINT64_MAX) {
+            if (gmem_sparse_nmem >= GMEM_SPARSE_MEM_COUNT) {
+                LOG("[vk] sparse guest heap memory tracking overflow\n");
+                goto fail;
+            }
+            VkDeviceMemory mem = VK_NULL_HANDLE;
+            uint64_t offset = run_start * GMEM_SPARSE_CHUNK_SIZE;
+            uint64_t bytes = (chunk - run_start) * GMEM_SPARSE_CHUNK_SIZE;
+            if (offset + bytes > size) bytes = size - offset;
+            bool imported = gmem_sparse_import_range(offset, bytes, &mem);
+            if (!imported) goto fail;
+            gmem_sparse_mem[gmem_sparse_nmem++] = mem;
+            gmem_sparse_binds[bind_count++] = (VkSparseMemoryBind){
+                .resourceOffset = offset, .size = bytes, .memory = mem, .memoryOffset = 0};
+            run_start = UINT64_MAX;
+        }
+    }
+    if (bind_count) {
+        // Sparse binds and queue submissions share g_vk.queue, which Vulkan requires to be externally synchronized.
+        // Drain prior recorder packets before binding; later submissions wait on this bind's timeline value.
+        rec_drain();
+        VkSparseBufferMemoryBindInfo buffer_bind = {
+            .buffer = gmem_buf, .bindCount = bind_count, .pBinds = gmem_sparse_binds};
+        uint64_t wait_value = submit_seq;
+        uint64_t signal_value = gmem_sparse_bind_seq + 1;
+        VkTimelineSemaphoreSubmitInfo timeline = {
+            .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+            .waitSemaphoreValueCount = wait_value ? 1u : 0u,
+            .pWaitSemaphoreValues = wait_value ? &wait_value : NULL,
+            .signalSemaphoreValueCount = 1,
+            .pSignalSemaphoreValues = &signal_value};
+        VkBindSparseInfo bind_info = {
+            .sType = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO,
+            .pNext = &timeline,
+            .waitSemaphoreCount = wait_value ? 1u : 0u,
+            .pWaitSemaphores = wait_value ? &g_vk.timeline : NULL,
+            .bufferBindCount = 1,
+            .pBufferBinds = &buffer_bind,
+            .signalSemaphoreCount = 1,
+            .pSignalSemaphores = &gmem_sparse_timeline};
+        VkResult r = vkQueueBindSparse(g_vk.queue, 1, &bind_info, VK_NULL_HANDLE);
+        if (r != VK_SUCCESS) {
+            LOG("[vk] sparse guest heap batch binding failed (%d)\n", r);
+            goto fail;
+        }
+        gmem_sparse_bind_seq = signal_value;
+        for (uint32_t i = 0; i < bind_count; i++) {
+            uint64_t first = gmem_sparse_binds[i].resourceOffset / GMEM_SPARSE_PAGE_SIZE;
+            uint64_t pages = gmem_sparse_binds[i].size / GMEM_SPARSE_PAGE_SIZE;
+            memset(&gmem_sparse_bound_pages[first], 1, (size_t)pages);
+        }
+    }
+    gmem_sparse_generation = generation;
+    return true;
+
+fail:
+    while (gmem_sparse_nmem > first_new_mem) vkFreeMemory(g_vk.dev, gmem_sparse_mem[--gmem_sparse_nmem], NULL);
+    return false;
+}
+#endif
 
 static uint64_t gmem_tried;  // heap size the import was last attempted for (gmem_info imports / re-imports)
 static bool gmem_mapped;     // the heap is GPU memory mapped at its addresses (backend_heap_set): no import
@@ -4569,9 +4891,52 @@ static VkDescriptorBufferInfo gmem_info(void) {
     if (off < 0) off = getenv("SAVAGEWIND_VK_NO_GMEM") != NULL || !g_vk.host_import;
     uint64_t want = (kernel_heap_size() + 0xFFFF) & ~0xFFFFull;
     if (want > HEAP_MAX) want = HEAP_MAX;
-    if (!off && !gmem_mapped && want > gmem_size && !gmem_import(want)) {
-        LOG("[vk] guest heap import failed (%llu MB): shader global memory reads return zero\n", (unsigned long long)(want >> 20));
-        off = 1;
+    if (!off && !gmem_mapped) {
+#ifdef _WIN32
+        if (plat_guest_sparse_heap_enabled()) {
+            if (gmem_sparse) {
+                if (want > gmem_size) gmem_size = want;
+                if (!gmem_sparse_refresh(gmem_size)) FATAL("sparse guest heap page binding failed\n");
+            } else if (!gmem_buf && want && !gmem_sparse_create(want)) {
+                bool auto_mode = g_settings.sparse_heap == SPARSE_HEAP_AUTO;
+                if (auto_mode) {
+                    char reason[512];
+                    size_t n = 0;
+                    n += (size_t)snprintf(reason + n, sizeof reason - n, "The selected GPU cannot use the sparse guest heap:");
+                    if (!g_vk.sparse_buffer && n < sizeof reason)
+                        n += (size_t)snprintf(reason + n, sizeof reason - n, "\n- sparse buffer or residency support is unavailable");
+                    if (!g_vk.sparse_queue && n < sizeof reason)
+                        n += (size_t)snprintf(reason + n, sizeof reason - n, "\n- no selected queue supports sparse binding");
+                    if (!g_vk.sparse_nonresident_strict && n < sizeof reason)
+                        n += (size_t)snprintf(reason + n, sizeof reason - n, "\n- strict nonresident access is unavailable");
+                    if (!g_vk.sparse_host_import && n < sizeof reason)
+                        n += (size_t)snprintf(reason + n, sizeof reason - n, "\n- the sparse host-memory import probe failed");
+                    if (n < sizeof reason)
+                        snprintf(reason + n, sizeof reason - n,
+                                 "\n- sparse heap initialization or host-memory binding failed (see the log for details)");
+                    LOG("[vk] sparse guest heap initialization failed in auto mode; disabling it, saving sparse_heap=off and restarting after the error dialog closes\n");
+                    g_settings.sparse_heap = SPARSE_HEAP_OFF;
+                    settings_save();
+                    char message[1024];
+                    snprintf(message, sizeof message, "%s\n\nAdapter: %s\nSparse heap has been turned off in savagewind.ini. The game will restart when you close this message.",
+                             reason, g_vk.props.deviceName);
+                    if (!SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Sparse heap unavailable", message, NULL))
+                        LOG("[vk] could not show sparse heap error dialog: %s\n", SDL_GetError());
+                    if (setenv("SAVAGEWIND_VK_SPARSE_HEAP", "0", 1) != 0)
+                        FATAL("could not disable the sparse heap for the automatic restart\n");
+                    plat_exec(NULL);
+                    FATAL("could not restart with the sparse heap disabled\n");
+                }
+                LOG("[vk] sparse guest heap initialization failed with sparse_heap=on; leaving the setting unchanged\n");
+                FATAL("sparse guest heap initialization failed (the lines above say why): this GPU or driver can't use "
+                      "it. Set sparse_heap = auto in savagewind.ini, or start without SAVAGEWIND_VK_SPARSE_HEAP=1\n");
+            }
+        } else
+#endif
+        if (want > gmem_size && !gmem_import(want)) {
+            LOG("[vk] guest heap import failed (%llu MB): shader global memory reads return zero\n", (unsigned long long)(want >> 20));
+            off = 1;
+        }
     }
     if (gmem_buf) {
         // The heap's first GMEM_SPLIT bytes (GMEM_BUFFER_INDEX); the rest is the second binding (gmem_info_hi): one binding
@@ -4608,6 +4973,29 @@ static bool guest_direct(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSi
     if (copy < 0) copy = getenv("SAVAGEWIND_VK_COPY_VERTICES") != NULL;
     if (copy || addr < HEAP_BASE) return false;
     if (gsnap_verts()) return false;  // (SAVAGEWIND_VK_GSNAP_VERTS=1: the HUD's vertex data copied at translation too)
+#ifdef _WIN32
+    if (plat_guest_sparse_heap_enabled() && g_vk.sparse_buffer && g_vk.sparse_queue &&
+        g_vk.sparse_nonresident_strict && g_vk.sparse_host_import && addr < HEAP_BASE + HEAP_MAX &&
+        size && addr + size > addr) {
+        uint64_t end = addr + size;
+        uint64_t heap_size = (kernel_heap_size() + 0xFFFF) & ~0xFFFFull;
+        if (heap_size > HEAP_MAX) heap_size = HEAP_MAX;
+        if (end > HEAP_BASE + heap_size) end = HEAP_BASE + heap_size;
+        if (addr >= end) return false;
+        if (gmem_sparse_range_bound(addr, end)) {
+            if (profd) prof_heap_range_cached++;
+        } else {
+            uint64_t range_check_start = profd ? SDL_GetTicksNS() : 0;
+            bool committed = plat_guest_commit_sparse_range(addr, end - addr);
+            if (profd) {
+                prof_heap_range_checks++;
+                prof_heap_range_check_ns += SDL_GetTicksNS() - range_check_start;
+            }
+            if (!committed) return false;
+        }
+    }
+#endif
+    if (gmem_sparse) gmem_info();
     if (!gmem_mapped && addr + size > HEAP_BASE + gmem_size && kernel_heap_size() != gmem_tried) { gmem_tried = kernel_heap_size(); gmem_info(); }
     if (!gmem_buf || addr + size > HEAP_BASE + gmem_size) return false;
     *buf = gmem_buf;
@@ -5240,12 +5628,17 @@ void vk_exec_reset(void) {
     hc_free();  // (before the import goes: the copy mirrors it)
     if (gmem_buf) {
         vkDestroyBuffer(g_vk.dev, gmem_buf, NULL);
-        vkFreeMemory(g_vk.dev, gmem_mem, NULL);
+        if (gmem_mem) vkFreeMemory(g_vk.dev, gmem_mem, NULL);
         gmem_buf = VK_NULL_HANDLE;
         gmem_mem = VK_NULL_HANDLE;
     }
+    for (uint32_t i = 0; i < gmem_sparse_nmem; i++) vkFreeMemory(g_vk.dev, gmem_sparse_mem[i], NULL);
+    gmem_sparse_nmem = 0;
     gmem_size = gmem_tried = 0;
     gmem_mapped = false;  // (still mapped until main.c resets guest memory: the dma-buf lives on until then)
+    gmem_sparse = false;
+    memset(gmem_sparse_bound_pages, 0, sizeof gmem_sparse_bound_pages);
+    gmem_sparse_generation = UINT64_MAX;
     st_defaults();
 }
 
@@ -5628,6 +6021,32 @@ static VkDescriptorBufferInfo gsnap_info(int stage) {
 static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t set, int stage, ShaderInfo *si, const float *rscale_row0,
                                  const float tint[8], uint32_t gx, uint32_t gy, uint32_t gz, const VkDescriptorImageInfo *pre_ii,
                                  uint32_t *dyn, int *ndyn) {
+#ifdef _WIN32
+    if (si->uses_gmem) (void)gmem_info();
+    if (gmem_sparse && si->writes_gmem && stage >= 0 && stage < 6) {
+        bool tracked = false;
+        for (int i = 0; i < 16; i++) {
+            Range r = st.sbuf[stage][i];
+            if (!r.addr || !r.size || r.size > UINT64_MAX - r.addr) continue;
+            uint64_t end = r.addr + r.size;
+            if (r.addr >= HEAP_BASE + gmem_size || end <= HEAP_BASE) continue;
+            tracked = true;
+            uint64_t begin = r.addr < HEAP_BASE ? HEAP_BASE : r.addr;
+            if (end > HEAP_BASE + gmem_size) end = HEAP_BASE + gmem_size;
+            if (!plat_guest_commit_sparse_range(begin, end - begin))
+                FATAL("could not commit guest storage range for sparse GPU access (%#llx+%#llx)\n",
+                      (unsigned long long)begin, (unsigned long long)(end - begin));
+        }
+        if (!tracked) {
+            static bool warned;
+            if (!warned) {
+                LOG("[vk] shader writes guest memory without a tracked storage range; leaving nonresident heap pages unbound\n");
+                warned = true;
+            }
+        }
+    }
+    if (gmem_sparse && si->writes_gmem) (void)gmem_info();
+#endif
     struct { uint32_t binding, off; } dv[32];
     int nd = 0;
     VkWriteDescriptorSet w[MAX_BIND];
@@ -6573,6 +6992,7 @@ static void draw_(CmdRec *r, bool indexed) {
         stat_skipped++;
         return;
     }
+    //if (profd) prof_program += SDL_GetTicksNS() - prof_program_start;
     {   // fragment-shader hash: skip lists (SAVAGEWIND_SKIP_FSHASH), debug logs, GPU profile labels
         static uint64_t last_fs, last_hash;
         static bool last_skip;
@@ -6685,6 +7105,7 @@ static void draw_(CmdRec *r, bool indexed) {
     }
     fb_draws++;
     if (lst_on > 0) lst_draw(pr);
+    uint64_t prof_stage_start = profd ? SDL_GetTicksNS() : 0;
     if (det_on()) {  // (a draw into a color target left out of the open pass: the pass ends, the next has it, det_tab)
         uint8_t det = det_current(), want = 0;
         for (int i = 0; i < st.rt.ncolor && i < 8; i++) if (st.rt.color[i] && draw_writes_color(pr, i)) want |= (uint8_t)(1u << i);
@@ -6701,6 +7122,11 @@ static void draw_(CmdRec *r, bool indexed) {
     }
     resolve_feedback(pr);
     det_draw = 0;
+    if (profd) {
+        uint64_t now = SDL_GetTicksNS();
+        prof_feedback_resolve += now - prof_stage_start;
+        prof_stage_start = now;
+    }
     scene_post(pr, r);
     fg_draw(pr, r);
     snap_reason = "draw-depthwrite";
@@ -6708,10 +7134,20 @@ static void draw_(CmdRec *r, bool indexed) {
     snap_reason = "draw-colorwrite";
     for (int i = 0; i < st.rt.ncolor; i++)
         if (st.rt.color[i] && ((st.channel_mask >> (i * 4)) & 0xF)) snapshots_invalidate(st.rt.color[i]);
+    if (profd) {
+        uint64_t now = SDL_GetTicksNS();
+        prof_snapshots += now - prof_stage_start;
+        prof_stage_start = now;
+    }
     {
         uint32_t sm = st.program->stage_mask, all = ~0u;  // (geometry and tessellation stages: every bound buffer)
         uint32_t cbufs[6] = {pr->vi->cbuf_mask, pr->fi->cbuf_mask, sm & 4 ? all : 0, sm & 8 ? all : 0, sm & 16 ? all : 0, 0};
         gw_check(cbufs, true, indexed ? r->x[3] : 0, indexed ? (uint64_t)r->x[2] * 4 : 0);
+    }
+    if (profd) {
+        uint64_t now = SDL_GetTicksNS();
+        prof_gw_check += now - prof_stage_start;
+        prof_stage_start = now;
     }
     begin_pass();
     if (pass_void) { stat_skipped++; return; }
@@ -7131,6 +7567,7 @@ have_pipe:
     if (mvec_draw) rec_CmdPushConstants(cb, pr->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, MVEC_PUSH, mvec_pc);
 
     uint64_t prof_t2_ = profd ? SDL_GetTicksNS() : 0;
+    uint64_t prof_index_start = prof_t2_;
     // ---- indices (copied; the largest index bounds the vertex data copied below)
     uint32_t first = 0, count = (uint32_t)r->x[2], inst, base_inst, max_index = 0;
     int32_t base_vertex = 0;
@@ -7161,13 +7598,16 @@ have_pipe:
             itype_vk = itype == 1 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
             icount = count;
             if (iaddr % isz == 0 && guest_fetch(iaddr, (uint64_t)count * isz, &ib.buf, &ib.off)) {
+                if (profd) prof_index_direct++;
                 scan_src = src; scan_isz = isz; scan_restart = restart;  // max_index only if a stream gets copied
             } else {
+                if (profd) prof_index_copy++;
                 ib = vk_transient_copy(src, (uint64_t)count * isz + 4, 4);
                 if (isz == 2) { const uint16_t *s = src; for (uint32_t i = 0; i < count; i++) if (s[i] > max_index && s[i] != (uint16_t)restart) max_index = s[i]; }
                 else { const uint32_t *s = src; for (uint32_t i = 0; i < count; i++) if (s[i] > max_index && s[i] != restart) max_index = s[i]; }
             }
         } else if (native) {  // 8-bit indices: widen to 16
+            if (profd) prof_index_copy++;
             ib = vk_transient((uint64_t)count * 2 + 4, 4);
             uint16_t *w = ib.ptr;
             const uint8_t *s = src;
@@ -7175,6 +7615,7 @@ have_pipe:
             itype_vk = VK_INDEX_TYPE_UINT16;
             icount = count;
         } else {
+            if (profd) prof_index_copy++;
             uint32_t *e = expand_indices(mode, count, src, (int)itype, 0, &icount);
             for (uint32_t i = 0; i < icount; i++) if (e[i] > max_index) max_index = e[i];
             ib = vk_transient_copy(e, (uint64_t)icount * 4 + 4, 4);
@@ -7189,6 +7630,11 @@ have_pipe:
         rec_CmdBindIndexBuffer(cb, ib.buf, ib.off, itype_vk);
         dc.ibuf = ib.buf; dc.ioff = ib.off; dc.itype = itype_vk;
     }
+    if (profd) {
+        uint64_t now = SDL_GetTicksNS();
+        prof_indices += now - prof_index_start;
+        prof_index_start = now;
+    }
 
     // ---- vertex streams: the range this draw can read, copied once per submission
     for (int s = 0; s < 17; s++) {
@@ -7202,6 +7648,7 @@ have_pipe:
             VkBuffer dbuf;
             VkDeviceSize doff;
             if (v.addr && v.size && guest_fetch(v.addr, v.size, &dbuf, &doff)) {
+                if (profd) prof_vertex_direct++;
                 if (dc.vbuf[s] != dbuf || dc.voff[s] != doff) {
                     rec_CmdBindVertexBuffers(cb, (uint32_t)s, 1, &dbuf, &doff);
                     dc.vbuf[s] = dbuf; dc.voff[s] = doff;
@@ -7221,7 +7668,10 @@ have_pipe:
             else need = (uint64_t)max_index * stride + 256;
             if (v.size && need > v.size) need = v.size;
             if (!v.addr) { static const uint8_t zero[256]; sp = vk_transient_copy(zero, 256, 16); }
-            else sp = guest_copy(v.addr, need ? need : 16);
+            else {
+                if (profd) prof_vertex_copy++;
+                sp = guest_copy(v.addr, need ? need : 16);
+            }
         }
         VkDeviceSize off = sp.off;
         if (dc.vbuf[s] != sp.buf || dc.voff[s] != off) {
@@ -7230,6 +7680,7 @@ have_pipe:
         }
     }
 
+    if (profd) prof_vertex_bind += SDL_GetTicksNS() - prof_index_start;
     if (profd) prof_vtx += SDL_GetTicksNS() - prof_t2_;
     // ---- draw (inside an occlusion query while SAMPLES_PASSED counts)
     int oq = -1;
