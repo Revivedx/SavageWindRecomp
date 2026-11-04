@@ -8,6 +8,9 @@
 
 #include "game_sites.h"
 #include "hle.h"
+#include "quick_inventory_test.h"
+#include "quick_inventory_sort.h"
+#include "quick_equipment_trace.h"
 
 extern uint64_t input_buttons_now(void);
 extern void input_consume_buttons(uint64_t);
@@ -16,6 +19,7 @@ extern bool quick_drop_action_init(void);
 extern void quick_drop_action_request(Cpu *, uint64_t, uint64_t, uint64_t, int, int, const char *);
 extern void quick_drop_action_close(Cpu *);
 extern void quick_replace_init(void);
+extern bool quick_replace_tick_ready(void);
 extern bool quick_replace_menu(Cpu *);
 extern bool quick_replace_active(void);
 extern bool quick_replace_bottom_layout(void);
@@ -44,6 +48,7 @@ int quick_drop_hint_state(void) {
 static void update_drop_hint(Cpu *c) {
     uint64_t screen = c->x[0];
     atomic_store(&drop_hint, 0);
+    quick_inventory_sort_publish(0);
     if (!quick_drop_action_enabled() || !guest_range(screen, 0x38e5) ||
         LD8(screen + 0x38e4) == 2) return;
     int category = (int32_t)LD32(screen + 0x3738);
@@ -60,7 +65,7 @@ static void update_drop_hint(Cpu *c) {
     probe_call(c, 0x7000eaff08ull, mgr + 0x28, 0, 0);
     if (count > 0 && count <= 20 && selected >= 0 && selected < count) {
         uint64_t item = LD64(screen + 0x37c8 + (uint64_t)selected * 8);
-        if (guest_range(item, 0x38) && LD8(item + 0x25) && !LD8(item + 0x24) &&
+        if (guest_range(item, 0x38) && LD8(item + 0x25) &&
             (int32_t)LD32(item + 0x20) > 0) {
             uint64_t name = LD64(item + 0x30);
             if (guest_range(name, 97) &&
@@ -68,6 +73,7 @@ static void update_drop_hint(Cpu *c) {
                 strncmp((const char *)(uintptr_t)name, "Weapon_Sword_502", 97)) state = 2;
         }
     }
+    quick_inventory_sort_publish(screen);
     probe_call(c, 0x7000eaff18ull, mgr + 0x28, 0, 0);
     if (quick_replace_active()) state += quick_replace_bottom_layout() ? 5 : 3;
     atomic_store(&drop_hint, (hint_now_ms() << 3) | state);
@@ -92,6 +98,7 @@ void rt_quick_drop_probe_begin(Cpu *c) {
     if (!probe_enabled()) return;
     probe_screen = c->x[0];
     probe_buttons = input_buttons_now();
+    quick_inventory_sort_begin(c);
     LOG("[quick-drop-probe] Menu enter; Y held=%d (%s)\n", !!(probe_buttons & QUICK_DROP_BUTTON),
         quick_drop_action_enabled() ? "experimental drop" : "logging only");
 }
@@ -217,6 +224,7 @@ static void probe_execute(Cpu *c) {
         rt_quick_drop_probe(c);
         quick_drop_action_close(c);
     }
+    quick_inventory_sort_menu(c);
     update_drop_hint(c);
     probe_execute_original(c);
 }
@@ -260,7 +268,10 @@ void quick_drop_probe_init(const char *exefs) {
     }
     hle_override(0x7000e283fcull, probe_enter, "quick-drop probe: Menu enter");
     hle_override(0x7000e28744ull, probe_execute, "quick-drop probe: Menu execute");
+    quick_inventory_sort_init();
     quick_replace_init();
+    if (quick_replace_tick_ready()) quick_inventory_test_enable();
+    quick_equipment_trace_enable();
     LOG("[quick-drop-probe] installed for 1.9.0 cd57b23fa4bbad65; %s\n",
-        quick_drop_action_enabled() ? "Y requests experimental unequipped-item drop" : "Y logs only, inventory unchanged");
+        quick_drop_action_enabled() ? "Y requests guarded native item drop" : "Y logs only, inventory unchanged");
 }

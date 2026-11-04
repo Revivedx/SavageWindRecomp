@@ -23,6 +23,7 @@
 #include "../vibration.h"
 #include "../framepace.h"
 #include "../pc_cursor.h"
+#include "../quick_drop_action.h"
 
 enum {
     BTN_A = 0, BTN_B, BTN_X, BTN_Y, BTN_LSTICK, BTN_RSTICK, BTN_L, BTN_R, BTN_ZL, BTN_ZR, BTN_PLUS, BTN_MINUS,
@@ -905,6 +906,9 @@ static void fill_state(Cpu *c) {
     control_input_apply(&b, &lx, &ly, &rx, &ry);
     b = unconsumed_buttons(b);
     { extern uint64_t quick_replace_buttons(uint64_t); b = quick_replace_buttons(b); }
+    // The equipped transaction gate must see every injection, including PC
+    // pointer/Enter/Plus, control inputs and the replacement retry above.
+    b = quick_drop_action_filter_buttons(b);
     // stick directions also appear as buttons (bits 16-23)
     if (lx < -16000) b |= 1ull << 16;
     if (ly > 16000) b |= 1ull << 17;

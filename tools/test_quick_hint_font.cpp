@@ -4,7 +4,9 @@
 #include <string.h>
 #include "../runtime/ui/quick_hint_font.mm"
 extern "C" { const char *g_romfs_dir; }
-const char *tr(const char *s) { return !strcmp(s, "Drop") ? "Выбросить" : "Назад"; }
+const char *tr(const char *s) {
+    return !strcmp(s, "Drop") ? "Выбросить" : !strcmp(s, "Sort") ? "Сортировать" : "Назад";
+}
 int main(int argc, char **argv) {
     assert(argc == 2);
     ImGui::CreateContext();
@@ -19,6 +21,7 @@ int main(int argc, char **argv) {
     assert(text && buttons);
     assert(text->FindGlyphNoFallback(0x412)); // Cyrillic В from the game
     assert(text->FindGlyphNoFallback(0x44b)); // ы
+    assert(text->FindGlyphNoFallback(0x421)); // С appears only in the translated Sort label
     assert(buttons->FindGlyphNoFallback(0xe041));
     assert(text->CalcTextSizeA(32, FLT_MAX, 0, "Выбросить").x > 100);
     const ImFontGlyph *a = text->FindGlyphNoFallback('A');

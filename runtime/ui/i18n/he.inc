@@ -623,5 +623,6 @@ T("The game's own FXAA, which smooths edges as the 3D image is drawn into the fi
 T("Drop", "השלכה")
 T("Back", "חזרה")
 T("Enhanced quick inventory", "מלאי מהיר משופר")
-T("Drop unequipped gear or press Back to cancel the quick selection.", "השליכו ציוד שאינו מצויד או לחצו על חזרה כדי לבטל את הבחירה המהירה.")
+T("Drop or sort gear and replace pickups when the inventory is full.", "השליכו או מיינו ציוד והחליפו פריטים בעת איסוף כשהמלאי מלא.")
 T("Replace", "החלפה")
+T("Sort", "מיון")

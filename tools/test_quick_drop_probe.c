@@ -7,6 +7,14 @@
 #include "../runtime/quick_drop.c"
 #include "../runtime/ui/quick_inventory_layout.h"
 
+static unsigned inventory_test_enables;
+void quick_equipment_trace_enable(void) {}
+bool quick_inventory_sort_init(void) { return true; }
+void quick_inventory_sort_begin(Cpu *c) { (void)c; }
+void quick_inventory_sort_menu(Cpu *c) { (void)c; }
+void quick_inventory_sort_publish(uint64_t screen) { (void)screen; }
+void quick_inventory_test_enable(void) { inventory_test_enables++; }
+
 const char *g_game_version = "1.9.0";
 static bool action_enabled;
 bool quick_drop_action_enabled(void) { return action_enabled; }
@@ -18,6 +26,7 @@ void quick_drop_action_request(Cpu *c, uint64_t screen, uint64_t mgr, uint64_t i
 }
 void quick_drop_action_close(Cpu *c) { (void)c; }
 void quick_replace_init(void) {}
+bool quick_replace_tick_ready(void) { return true; }
 bool quick_replace_menu(Cpu *c) { (void)c; return false; }
 static bool replacement, bottom_layout;
 bool quick_replace_active(void) { return replacement; }
@@ -176,12 +185,14 @@ int main(int argc, char **argv) {
     assert(fwrite(header, 1, sizeof header, f) == sizeof header); fclose(f);
     quick_drop_probe_init(dir);
     assert(overrides == 0);
+    assert(inventory_test_enables == 0);
     const unsigned char build[] = {0xcd, 0x57, 0xb2, 0x3f, 0xa4, 0xbb, 0xad, 0x65};
     memcpy(header + 0x40, build, sizeof build);
     f = fopen(path, "wb"); assert(f);
     assert(fwrite(header, 1, sizeof header, f) == sizeof header); fclose(f);
     quick_drop_probe_init(dir);
     assert(overrides == 2 && installed_enter && installed_execute);
+    assert(inventory_test_enables == 1);
     quick_drop_probe_init(dir);
     assert(overrides == 2);
     installed_enter(&c);
@@ -195,7 +206,7 @@ int main(int argc, char **argv) {
     free(snapshot);
     // UI snapshot is published on the guest thread and never mutates Cpu.
     action_enabled = true;
-    update_drop_hint(&c); assert(quick_drop_hint_state() == 1); // protected/equipped
+    update_drop_hint(&c); assert(quick_drop_hint_state() == 1); // protected name
     ST8(item + 0x24, 0);
     strcpy((char *)(uintptr_t)(mgr + 0x49000), "Weapon_Sword_001");
     update_drop_hint(&c); assert(quick_drop_hint_state() == 2);
@@ -205,7 +216,7 @@ int main(int argc, char **argv) {
     bottom_layout = true;
     update_drop_hint(&c); assert(quick_drop_hint_state() == 7);
     ST8(item + 0x24, 1);
-    update_drop_hint(&c); assert(quick_drop_hint_state() == 6);
+    update_drop_hint(&c); assert(quick_drop_hint_state() == 7); // equipped is now eligible
     ST8(item + 0x24, 0); replacement = bottom_layout = false;
     ST32(screen + 0x3738, 4);
     update_drop_hint(&c); assert(quick_drop_hint_state() == 3);

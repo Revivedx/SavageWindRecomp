@@ -12,7 +12,10 @@ GameSites g_site;
 const char *g_game_version = "1.9.0";
 static uint64_t buttons;
 static int depth, discarded, original_calls, tag_calls, lookup_calls, missing;
-static int spawned;
+static int spawned, actor_drops, schedules, snapshots;
+static uint64_t saved_cache[4];
+static uint64_t native_equipment, current_player, frame, consumed;
+static bool owner_attached, weak_links, retain_failure, interleave_drop, protect_after_discard, consume_scheduler_immediately, snapshot_failure;
 static int sweeps;
 static int widget_count, widget_cursor;
 static bool sword_special;
@@ -25,22 +28,43 @@ static const uint64_t item = GUEST_LO + 0x2280000, stack = GUEST_LO + 0x2300000;
 static const uint64_t actor = GUEST_LO + 0x2310000, bg = GUEST_LO + 0x2320000;
 static const uint64_t info = GUEST_LO + 0x2400000, player_info = GUEST_LO + 0x2410000;
 static const uint64_t player = GUEST_LO + 0x2420000;
+static const uint64_t links = GUEST_LO + 0x2430000, equipment = GUEST_LO + 0x2440000, equipment_vt = GUEST_LO + 0x2450000;
+static const uint64_t equipment_block = GUEST_LO + 0x2460000, player_block = GUEST_LO + 0x2470000;
+static const uint64_t ui_manager = GUEST_LO + 0x2500000, ui_input = GUEST_LO + 0x2570000;
 
+void *hle_alloc(uint64_t size) { assert(size == 0x50); return (void *)(uintptr_t)links; }
+void input_consume_buttons(uint64_t mask) { consumed |= mask; }
+uint64_t renderer_present_count(void) { return frame; }
+static void actor_original(Cpu *c) {
+    assert(c->x[0] == equipment); actor_drops++;
+    ST8(equipment + 0x920, 2); ST8(equipment + 0x934, 1);
+    c->x[0] = 1; c->pc = 0x1234; c->v[0] = 0x4567;
+}
+
+static void consume_native_drop(Cpu *context) {
+    assert(LD8(player + drop_pending_offset(equipped_drop.actor_category)));
+    Cpu native = *context; native.x[0] = equipment; native.x[30] = 0x7001223f54ull;
+    installed(&native);
+    native_equipment = 0;
+    ST8(player + drop_pending_offset(equipped_drop.actor_category), 0);
+    ST8(equipment + 0x920, 0xff); ST8(equipment + 0x934, 0);
+    owner_attached = false;
+}
 uint64_t input_buttons_now(void) { return buttons; }
 static void original(Cpu *c) { (void)c; original_calls++; }
 GuestFn dispatch_lookup(uint64_t address) {
     if (missing && address == 0x700108e7a0ull) return NULL;
-    return original;
+    return address == 0x70007acaa0ull ? actor_original : original;
 }
 void hle_override(uint64_t addr, HostFn fn, const char *name) {
-    assert(addr == 0x7000e2835cull && name);
+    assert(addr == 0x70007acaa0ull && name);
     installed = fn;
 }
 void guest_call(Cpu *c, uint64_t fn) {
     assert(c->x[3] == 0);
     assert(c->sp == stack - 0x100);
-    if (fn == DROP_LOCK) { assert(c->x[0] == mgr + 0x28); depth++; c->x[0] = 0; }
-    else if (fn == DROP_UNLOCK) { assert(c->x[0] == mgr + 0x28); assert(depth == 1); depth--; c->x[0] = 0; }
+    if (fn == DROP_LOCK) { assert(c->x[0] == mgr + 0x28 || c->x[0] == player + 0xeb8 || c->x[0] == player + 0x13a0 || c->x[0] == player + 0x13e8 || c->x[0] == player + 0x1430); depth++; c->x[0] = 0; }
+    else if (fn == DROP_UNLOCK) { assert(c->x[0] == mgr + 0x28 || c->x[0] == player + 0xeb8 || c->x[0] == player + 0x13a0 || c->x[0] == player + 0x13e8 || c->x[0] == player + 0x1430); assert(depth > 0); depth--; c->x[0] = 0; }
     else if (fn == DROP_COUNT) {
         assert(depth == 1 && c->x[0] == mgr && c->x[1] < 2);
         c->x[0] = counts[c->x[1]];
@@ -51,7 +75,57 @@ void guest_call(Cpu *c, uint64_t fn) {
     else if (fn == 0x7000d35b80ull) { assert(c->x[0] == 0); c->x[0] = equip_ban; }
     else if (fn == 0x7000d1499cull) c->x[0] = event;
     else if (fn == 0x7000e7e750ull) c->x[0] = popup;
-    else if (fn == 0x7000cc6fd0ull) { assert(c->x[0] == player_info); c->x[0] = player; }
+    else if (fn == 0x7000cc6fd0ull) { assert(c->x[0] == player_info); c->x[0] = current_player; }
+    else if (fn == 0x7000d940c4ull) { assert(c->x[0] == mgr); c->x[0] = equipment_vt + 0x600; }
+    else if (fn == 0x7000d9f4a8ull) {
+        assert(depth == 1 && c->x[0] == mgr && LD8(item + 0x25));
+        snapshots++;
+        for (unsigned i = 0; i < 4; i++) { saved_cache[i] = LD64(mgr + 0x447e0 + i * 8); ST64(mgr + 0x447e0 + i * 8, 0); }
+        // Native snapshot is derived from flags in the locked live pouch,
+        // independently of the cache values that happened to exist on entry.
+        for (unsigned tab = 0; tab < 2; tab++) for (int slot = 0; slot < counts[tab]; slot++) {
+            uint64_t candidate = inventory[tab][slot];
+            if (!candidate) continue;
+            unsigned type = LD32(candidate + 0x18);
+            if (type < 4 && LD8(candidate + 0x24) && !snapshot_failure)
+                ST64(mgr + 0x447e0 + type * 8, candidate);
+        }
+    }
+    else if (fn == 0x7000cbe480ull) {
+        assert(discarded == 1 && quick_drop_action_busy() && snapshots == 1);
+        for (unsigned i = 0; i < 4; i++) assert(LD64(mgr + 0x447e0 + i * 8) == saved_cache[i]);
+        assert(LD8(player + drop_pending_offset(equipped_drop.actor_category)) || actor_drops == 1);
+        assert(quick_drop_action_filter_buttons(UINT64_MAX) == UINT64_C(0xff0000));
+        assert(c->x[0] == player && c->x[1] == equipment_vt + 0x600 && c->x[2] == 0xffffffffu);
+        schedules++; ST8(player + 0x1120 + equipped_drop.actor_category, 1);
+        ST32(player + 0xc98, LD32(player + 0xc98) | 0x20);
+        if (consume_scheduler_immediately) {
+            consume_native_drop(c);
+            ST8(player + 0x1120 + equipped_drop.actor_category, 0);
+        }
+    }
+    else if (fn == 0x7000570128ull) { assert(c->x[0] == player && c->x[1] <= 2); c->x[0] = native_equipment; }
+    else if (fn == 0x7001517e60ull) {
+        uint64_t out = c->x[0], target = c->x[1], block = LD64(target + 0x68);
+        assert((out == links || out == links + 0x10) && c->x[2] == 1);
+        if (retain_failure) { c->x[0] = 0; return; }
+        ST64(out, block); ST32(out + 8, LD32(target + 0x60)); ST8(out + 0xc, 1);
+        ST32(block + 0x50, LD32(block + 0x50) + 1); c->x[0] = 1;
+    }
+    else if (fn == 0x7001517abcull) {
+        uint64_t index = c->x[0], out = c->x[1], block = LD64(index);
+        assert((index == links || index == links + 0x10) && c->x[2] == 0);
+        assert(out == links + 0x20 || out == links + 0x38);
+        uint64_t target = LD32(index + 8) == LD32(block + 0x40) ? LD64(block + 0x48) : 0;
+        ST8(out, target && !weak_links); ST64(out + 8, target); c->x[0] = target;
+    }
+    else if (fn == 0x7001517f8cull) {
+        uint64_t index = c->x[0]; assert(index == links || index == links + 0x10);
+        if (LD8(index + 0xc)) { uint64_t block = LD64(index); assert(LD32(block + 0x50)); ST32(block + 0x50, LD32(block + 0x50) - 1); }
+        ST8(index + 0xc, 0); ST32(index + 8, UINT32_MAX);
+    }
+    else if (fn == 0x7001126464ull) { ST8(c->x[0], 0); ST64(c->x[0] + 8, 0); }
+    else if (fn == 0x7001517e0cull) { assert(c->x[0] == equipment + 0x938 || c->x[0] == equipment + 0x958); c->x[0] = owner_attached; }
     else if (fn == 0x7000cc0334ull) { assert(c->x[0] == player); c->x[0] = player_ban; }
     else if (fn == 0x700108dc0cull) {
         assert(c->x[0] == info && c->x[1] == stack - 0xf0 && c->x[2] == stack - 0xd0);
@@ -105,9 +179,22 @@ void guest_call(Cpu *c, uint64_t fn) {
     } else if (fn == 0x7000d9784cull) {
         assert(depth == 1 && c->x[0] == mgr && c->x[1] < 2 && c->x[2] < 2);
         assert(inventory[c->x[1]][c->x[2]] == item);
+        if (native_equipment) {
+            assert(quick_drop_action_busy() && schedules == 0 && snapshots == 1);
+            assert(LD64(mgr + 0x447e0 + (uint64_t)LD32(item + 0x18) * 8) == item);
+            assert(quick_drop_action_filter_buttons(UINT64_MAX) == UINT64_C(0xff0000));
+        }
         discarded++;
+        if (native_equipment) ST8(player + drop_pending_offset(equipped_drop.actor_category), 1);
         ST8(item + 0x25, 0);
         ST32(item + 0x20, 0);
+        if (interleave_drop) {
+            // Another guest worker consumes the established drop before the
+            // scheduler runs. Reversed ordering would unequip without intent.
+            assert(schedules == 0 && LD8(player + drop_pending_offset(equipped_drop.actor_category)));
+            consume_native_drop(c);
+        }
+        if (protect_after_discard) assert(!mprotect((void *)(uintptr_t)item, 0x1000, PROT_NONE));
         c->x[0] = 0;
     } else { fprintf(stderr, "unexpected native call %llx\n", (unsigned long long)fn); assert(0); }
     // Cloned Cpu must isolate all guest register clobbers from interrupted code.
@@ -119,11 +206,29 @@ static Cpu cpu(void) {
     Cpu c = {0}; c.x[0] = screen; c.x[4] = 44; c.nzcv = 55; c.sp = stack; return c;
 }
 static void setup(void) {
-    memset(&pending_drop, 0, sizeof pending_drop);
+    quick_drop_action_reset();
     memset((void *)(uintptr_t)screen, 0, 0x3900);
     memset((void *)(uintptr_t)mgr, 0, 0x45000);
     memset((void *)(uintptr_t)item, 0, 0x100);
-    memset((void *)(uintptr_t)player, 0, 0x1000);
+    memset((void *)(uintptr_t)player, 0, 0x2000);
+    memset((void *)(uintptr_t)equipment, 0, 0x1000);
+    memset((void *)(uintptr_t)links, 0, 0x100);
+    memset((void *)(uintptr_t)equipment_block, 0, 0x100);
+    memset((void *)(uintptr_t)player_block, 0, 0x100);
+    ST64(equipment + 0x68, equipment_block); ST32(equipment + 0x60, 42);
+    ST32(equipment_block + 0x40, 42); ST64(equipment_block + 0x48, equipment);
+    ST64(player + 0x68, player_block); ST32(player + 0x60, 73);
+    ST32(player_block + 0x40, 73); ST64(player_block + 0x48, player);
+    ST8(player + 0x64, 1);
+    ST8(equipment + 0x64, 1); ST8(equipment + 0x920, 0);
+    ST64(equipment + 0x190, equipment + 0x1000);
+    ST64(equipment, equipment_vt); ST64(equipment_vt + 0x588, 0x70007acaa0ull);
+    ST64(equipment + 0x10, actor);
+    memset((void *)(uintptr_t)ui_manager, 0, 0x65000);
+    memset((void *)(uintptr_t)ui_input, 0, 0x120);
+    ST64(ui_manager + 0x649f0, ui_input);
+    current_player = player; native_equipment = 0; frame = 1; consumed = 0;
+    owner_attached = true; weak_links = retain_failure = interleave_drop = protect_after_discard = consume_scheduler_immediately = snapshot_failure = false; actor_drops = schedules = snapshots = 0;
     g_site.player_info = 0x7001e13ed0ull;
     ST64(g_site.player_info, player_info);
     ST64(0x7001e39450ull, info);
@@ -156,7 +261,7 @@ int main(void) {
     g_settings.quick_inventory = true;
     setenv("SAVAGEWIND_QUICK_DROP", "1", 1);
     missing = 1; assert(!quick_drop_action_init() && !installed);
-    missing = 0; assert(quick_drop_action_init() && drop_ready && !installed);
+    missing = 0; assert(quick_drop_action_init() && drop_ready && installed);
     assert(quick_drop_action_init());
     setup(); Cpu c = cpu(); request(&c);
     assert(!pending_drop.item && !discarded);
@@ -168,7 +273,7 @@ int main(void) {
     // Held D-pad and visible background no longer block the action.
     ST32(bg + 0x20, 0x3f800000); buttons = 1 << 14;
     Cpu before = c; quick_drop_action_close(&c);
-    assert(discarded == 1 && sweeps == 1 && !pending_drop.item && depth == 0 && !memcmp(&c, &before, sizeof c));
+    assert(discarded == 1 && sweeps == 1 && !snapshots && !pending_drop.item && depth == 0 && !memcmp(&c, &before, sizeof c));
     assert(counts[0] == 0 && inventory[0][0] == 0);
     quick_drop_action_close(&c); assert(discarded == 1);
     assert(LD32(screen + 0x3880) == 0 && (int32_t)LD32(screen + 0x387c) == -1);
@@ -199,9 +304,14 @@ int main(void) {
     setup(); request(&c); ST32(item + 0x20, 14); hidden(); quick_drop_action_close(&c); assert(!discarded && !pending_drop.item);
     setup(); request(&c); inventory[0][0] = 0; hidden(); quick_drop_action_close(&c); assert(!discarded && !pending_drop.item);
     setup(); request(&c); ST8(item + 0x24, 1); hidden(); quick_drop_action_close(&c); assert(!discarded);
+    // The equipment cache can change after preflight, independently of the
+    // item's flag. Staged unequipped requests cannot become equipped drops.
+    setup(); request(&c); ST64(mgr + 0x447e0, item); hidden(); quick_drop_action_close(&c);
+    assert(!discarded && !pending_drop.item);
     setup(); request(&c); trash = true; hidden(); quick_drop_action_close(&c); assert(!discarded);
     // Enqueue guards, including every native restriction and actor lookup failure.
-    setup(); ST8(item + 0x24, 1); reject_case(&c);
+    setup(); ST8(item + 0x24, 1); request(&c); quick_drop_action_close(&c);
+    assert(!discarded && !quick_drop_action_busy()); // empty snapshot does not prove a live equipped actor
     setup(); ST8(item + 0x25, 0); reject_case(&c);
     setup(); ST32(item + 0x20, 0); reject_case(&c);
     setup(); ST32(item + 0x18, 2); reject_case(&c);
@@ -224,6 +334,16 @@ int main(void) {
     hidden(); quick_drop_action_close(&other); assert(!discarded && pending_drop.item);
     quick_drop_action_close(&other); assert(LD8(other.x[0] + 0x38e4) == 0);
     quick_drop_action_reset(); assert(!pending_drop.item);
+    // An interrupted menu must not execute an old request on a later visit.
+    setup(); request(&c); ST8(screen + 0x38e4, 2);
+    quick_drop_action_close(&c); assert(!pending_drop.item && !discarded);
+    ST8(screen + 0x38e4, 0); quick_drop_action_close(&c); assert(!discarded);
+    setup(); request(&c); ST32(screen + 0x3738, 3);
+    quick_drop_action_close(&c); assert(!pending_drop.item && !discarded);
+    setup(); request(&c); ST32(screen + 0x3738, 1);
+    quick_drop_action_close(&c); assert(!pending_drop.item && !discarded);
+    setup(); request(&c); Cpu bad_stack = c; bad_stack.sp |= 1;
+    quick_drop_action_close(&bad_stack); assert(!pending_drop.item && !discarded);
     setup();
     setenv("SAVAGEWIND_QUICK_DROP_SPAWN_ONLY", "1", 1);
     request(&c); hidden(); quick_drop_action_close(&c);
@@ -241,6 +361,154 @@ int main(void) {
     g_settings.quick_inventory = false;
     quick_drop_action_close(&c); assert(!pending_drop.item && !discarded);
     request(&c); assert(!pending_drop.item && !discarded);
+
+    g_settings.quick_inventory = true;
+    // Native consumer cannot advance under the selector. Each category closes
+    // first, issues one discard and waits for actual actor detach/placement.
+    for (int job_context = 0; job_context < 2; job_context++) for (int category = 0; category < 3; category++) {
+        setup();
+        weak_links = job_context;
+        int type = category == 0 ? 0 : category == 1 ? 3 : 1;
+        strcpy((char *)(uintptr_t)actor, category == 0 ? "Weapon_Sword_001" : category == 1 ? "Weapon_Shield_001" : "Weapon_Bow_001");
+        ST32(item + 0x18, type); ST32(screen + 0x3738, category);
+        ST8(item + 0x24, 1);
+        for (unsigned i = 0; i < 4; i++) if (i != (unsigned)type) ST64(mgr + 0x447e0 + i * 8, equipment + 0x100 + i * 8);
+        assert(!LD64(mgr + 0x447e0 + type * 8)); // native quick menu leaves this snapshot empty
+        native_equipment = equipment;
+        buttons = 1 | (1 << 3) | (1 << 14);
+        request(&c); assert(quick_drop_action_result() == QUICK_DROP_PENDING);
+        before = c; quick_drop_action_close(&c);
+        assert(!memcmp(&c, &before, sizeof c) && discarded == 1 && !sweeps && !spawned);
+        assert(quick_drop_action_busy() && LD8(screen + 0x38e4) == 2 && schedules == 1 && snapshots == 1);
+        for (unsigned i = 0; i < 4; i++) assert(LD64(mgr + 0x447e0 + i * 8) == saved_cache[i]);
+        assert(LD32(player + 0xc98) & 0x20);
+        assert(LD32(screen + 0x387c) == LD32(screen + 0x3878));
+        assert((consumed & buttons) == buttons);
+        assert(LD8(player + drop_pending_offset(category)));
+        quick_drop_action_close(&c); request(&c); assert(discarded == 1);
+        // No runtime item dereference is permitted after native invalidation.
+        assert(!mprotect((void *)(uintptr_t)item, 0x1000, PROT_NONE));
+        quick_drop_action_tick(&c); assert(!sweeps && quick_drop_action_busy());
+        // A cleared flag alone does not prove consumer work or world placement.
+        ST8(player + drop_pending_offset(category), 0);
+        quick_drop_action_tick(&c); assert(!sweeps && quick_drop_action_busy()); // getter still holds outgoing actor
+        native_equipment = 0;
+        ST8(equipment + 0x920, 0xff);
+        quick_drop_action_tick(&c); assert(!sweeps && quick_drop_action_busy());
+        // Only the real matching virtual call records consumption.
+        Cpu native = cpu(); native.x[0] = equipment; native.x[30] = 0x7001223f54ull;
+        Cpu native_expected = native; actor_original(&native_expected); actor_drops = 0;
+        installed(&native); assert(actor_drops == 1 && !memcmp(&native, &native_expected, sizeof native));
+        quick_drop_action_tick(&c); assert(!sweeps && quick_drop_action_busy());
+        ST8(equipment + 0x934, 0); ST8(equipment + 0x920, 0xff);
+        quick_drop_action_tick(&c); assert(!sweeps); // owner links still attached
+        owner_attached = false;
+        quick_drop_action_tick(&c); assert(!sweeps); // queued default update still pending
+        ST8(player + 0x1120 + category, 0);
+        assert(!mprotect((void *)(uintptr_t)item, 0x1000, PROT_READ | PROT_WRITE));
+        quick_drop_action_tick(&c);
+        assert(sweeps == 1 && discarded == 1 && !spawned && !quick_drop_action_busy());
+        assert(quick_drop_action_result() == QUICK_DROP_COMPLETE);
+        quick_drop_action_tick(&c); assert(sweeps == 1 && actor_drops == 1);
+    }
+    // A conflicting populated category snapshot and duplicate equipped flags
+    // reject rather than using a rebuilt snapshot to hide ambiguous identity.
+    setup(); ST8(item + 0x24, 1); native_equipment = equipment;
+    ST64(mgr + 0x447e0, item + 0x100); reject_case(&c); assert(!snapshots);
+    setup(); ST8(item + 0x24, 1); native_equipment = equipment;
+    inventory[0][1] = item + 0x100; counts[0] = 2;
+    ST32(item + 0x118, 0); ST8(item + 0x124, 1); ST8(item + 0x125, 1);
+    request(&c); quick_drop_action_close(&c);
+    assert(!discarded && !schedules && !snapshots && !quick_drop_action_busy());
+    // Snapshot preparation can fail without changing any of its four prior
+    // words, item validity, actor ownership, input gate, or inventory.
+    setup(); ST8(item + 0x24, 1); native_equipment = equipment; snapshot_failure = true;
+    for (unsigned i = 1; i < 4; i++) ST64(mgr + 0x447e0 + i * 8, equipment + i * 8);
+    request(&c); quick_drop_action_close(&c);
+    assert(snapshots == 1 && !discarded && !schedules && !quick_drop_action_busy());
+    assert(LD8(item + 0x25) && LD8(item + 0x24) && !LD8(links + 0xc) && LD32(links + 8) == UINT32_MAX);
+    for (unsigned i = 0; i < 4; i++) assert(LD64(mgr + 0x447e0 + i * 8) == saved_cache[i]);
+    // Every cached native action/edge is cleared on admission and each UI
+    // update, while a worker may interleave between discard and scheduling.
+    setup(); ST8(item + 0x24, 1); ST64(mgr + 0x447e0, item); native_equipment = equipment;
+    Cpu ui = cpu(); ui.x[0] = ui_manager;
+    ST32(ui_input + 0x114, UINT32_MAX); ST32(ui_input + 8, UINT32_MAX);
+    quick_drop_action_tick(&ui); // capture manager input before Menu::execute
+    assert(LD32(ui_input + 0x114) == UINT32_MAX); // inactive driver leaves input alone
+    interleave_drop = protect_after_discard = true;
+    request(&c); quick_drop_action_close(&c);
+    assert(discarded == 1 && schedules == 1 && actor_drops == 1 && !sweeps && !spawned);
+    assert(!LD32(ui_input + 0x114) && !LD32(ui_input + 8));
+    assert(quick_drop_action_result() == QUICK_DROP_PENDING && quick_drop_action_busy());
+    for (int poll = 0; poll < 7; poll++) {
+        ST32(ui_input + 0x114, UINT32_MAX); ST32(ui_input + 8, UINT32_MAX);
+        before = ui; quick_drop_action_tick(&ui);
+        assert(!memcmp(&ui, &before, sizeof ui));
+        assert(!LD32(ui_input + 0x114) && !LD32(ui_input + 8) && !sweeps);
+        assert(quick_drop_action_filter_buttons(UINT64_MAX) == UINT64_C(0xff0000));
+    }
+    g_settings.quick_inventory = false; frame += 700;
+    quick_drop_action_tick(&ui);
+    assert(quick_drop_action_busy() && quick_drop_action_result() == QUICK_DROP_PENDING && !sweeps);
+    assert(quick_drop_action_filter_buttons(UINT64_MAX) == UINT64_C(0xff0000));
+    ST8(player + 0x1120, 0);
+    assert(!mprotect((void *)(uintptr_t)item, 0x1000, PROT_READ | PROT_WRITE));
+    quick_drop_action_tick(&ui);
+    assert(!quick_drop_action_busy() && quick_drop_action_result() == QUICK_DROP_COMPLETE);
+    assert(sweeps == 1 && discarded == 1 && schedules == 1 && actor_drops == 1);
+    assert(quick_drop_action_filter_buttons(UINT64_MAX) == UINT64_MAX);
+    g_settings.quick_inventory = true;
+    // Scheduler may execute immediately too, with the source item page
+    // inaccessible already. Completion still awaits the guest driver/sweep.
+    setup(); ST8(item + 0x24, 1); ST64(mgr + 0x447e0, item); native_equipment = equipment;
+    protect_after_discard = consume_scheduler_immediately = true;
+    request(&c); quick_drop_action_close(&c);
+    assert(discarded == 1 && schedules == 1 && actor_drops == 1 && !sweeps);
+    assert(quick_drop_action_busy() && quick_drop_action_result() == QUICK_DROP_PENDING);
+    assert(!mprotect((void *)(uintptr_t)item, 0x1000, PROT_READ | PROT_WRITE));
+    quick_drop_action_tick(&ui);
+    assert(!quick_drop_action_busy() && quick_drop_action_result() == QUICK_DROP_COMPLETE);
+    assert(sweeps == 1 && discarded == 1 && actor_drops == 1 && !spawned);
+    setup(); ST8(item + 0x24, 1); ST64(mgr + 0x447e0, item); native_equipment = equipment;
+    setenv("SAVAGEWIND_QUICK_DROP_SPAWN_ONLY", "1", 1);
+    request(&c); quick_drop_action_close(&c);
+    assert(!discarded && !spawned && !quick_drop_action_busy() && quick_drop_action_result() == QUICK_DROP_REJECTED);
+    unsetenv("SAVAGEWIND_QUICK_DROP_SPAWN_ONLY");
+    setup(); ST8(item + 0x24, 1); ST64(mgr + 0x447e0, item); native_equipment = equipment;
+    weak_links = true; request(&c); quick_drop_action_close(&c);
+    assert(discarded == 1 && schedules == 1 && quick_drop_action_busy());
+    assert(LD32(equipment_block + 0x50) == 1 && LD32(player_block + 0x50) == 1);
+    assert(!LD64(links + 0x28) && !LD64(links + 0x40)); // callback links released
+    consume_native_drop(&c); ST8(player + 0x1120, 0); quick_drop_action_tick(&c);
+    assert(!quick_drop_action_busy() && quick_drop_action_result() == QUICK_DROP_COMPLETE);
+    assert(!LD32(equipment_block + 0x50) && !LD32(player_block + 0x50));
+    setup(); ST8(item + 0x24, 1); native_equipment = equipment;
+    retain_failure = true; request(&c); quick_drop_action_close(&c);
+    assert(!discarded && !schedules && !quick_drop_action_busy());
+    assert(quick_drop_action_result() == QUICK_DROP_REJECTED && !LD8(links + 0xc));
+    // Generation mismatch must stop before stale actor fields are read.
+    setup(); ST8(item + 0x24, 1); native_equipment = equipment;
+    weak_links = true; request(&c); quick_drop_action_close(&c);
+    ST32(equipment_block + 0x40, 43);
+    assert(!mprotect((void *)(uintptr_t)equipment, 0x1000, PROT_NONE));
+    quick_drop_action_tick(&c);
+    assert(quick_drop_action_busy() && equipped_drop.recovery && !sweeps);
+    assert(!mprotect((void *)(uintptr_t)equipment, 0x1000, PROT_READ | PROT_WRITE));
+    setup(); ST8(item + 0x24, 1); ST64(mgr + 0x447e0, item); native_equipment = equipment;
+    ST8(player + 0x1120, 1); request(&c); quick_drop_action_close(&c);
+    assert(!discarded && !quick_drop_action_busy() && quick_drop_action_result() == QUICK_DROP_REJECTED);
+    setup(); ST8(item + 0x24, 1); ST64(mgr + 0x447e0, item); native_equipment = equipment;
+    ST8(player + 0x13e0, 1); request(&c); quick_drop_action_close(&c);
+    assert(!discarded && !quick_drop_action_busy() && quick_drop_action_result() == QUICK_DROP_REJECTED);
+    setup(); ST8(item + 0x24, 1); ST64(mgr + 0x447e0, item); native_equipment = equipment;
+    request(&c); quick_drop_action_close(&c); assert(quick_drop_action_busy());
+    current_player = player + 0x2000; frame += 700; quick_drop_action_tick(&c);
+    assert(equipped_drop.recovery && quick_drop_action_busy() && discarded == 1 && !sweeps);
+    assert(quick_drop_action_result() == QUICK_DROP_PENDING);
+    g_settings.quick_inventory = false; quick_drop_action_close(&c); quick_drop_action_tick(&c);
+    assert(quick_drop_action_busy()); // settings/timeout cannot roll back invalidation
+    quick_drop_action_reset(); assert(!quick_drop_action_busy());
+
     puts("quick-drop action tests passed");
     return 0;
 }

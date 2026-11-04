@@ -630,18 +630,41 @@ $(B)/test_quick_drop_action: tools/test_quick_drop_action.c runtime/quick_drop_a
 	@mkdir -p $(B)
 	$(CC) -std=gnu11 -O1 -g $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $<
 
+$(B)/test_quick_inventory_sort: tools/test_quick_inventory_sort.c runtime/quick_inventory_sort.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -std=gnu11 -O1 -g $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $<
+
+test-quick-inventory-sort: $(B)/test_quick_inventory_sort
+	$(B)/test_quick_inventory_sort
+
+$(B)/test_quick_equipment_trace: tools/test_quick_equipment_trace.c runtime/quick_equipment_trace.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -std=gnu11 -O1 -g $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $<
+
+$(B)/test_quick_inventory_spawn: tools/test_quick_inventory_spawn.c runtime/quick_inventory_test.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -std=gnu11 -O1 -g $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< -pthread
+
+$(B)/test_quick_inventory_chest_spawn: tools/test_quick_inventory_chest_spawn.c runtime/quick_inventory_chest_test.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -std=gnu11 -O1 -g $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< -lm
+
 $(B)/test_quick_inventory_settings: tools/test_quick_inventory_settings.c runtime/settings.c runtime/hle/bindings.c $(RT_HDRS) Makefile
 	@mkdir -p $(B)
 	$(CC) -std=gnu11 -O1 -g $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< $(TEST_LD) $(if $(DEPS),-Wl$(comma)-rpath$(comma)$(abspath $(DEPS))/lib) -lSDL3 -lm
 
-$(B)/test_input_consumed_buttons: tools/test_input_consumed_buttons.c runtime/hle/input.c $(RT_HDRS)
+$(B)/test_input_consumed_buttons: tools/test_input_consumed_buttons.c runtime/hle/input.c runtime/quick_drop_action.c $(RT_HDRS)
 	@mkdir -p $(B)
-	$(CC) -std=gnu11 -O1 -g -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< $(TEST_LD)
+	$(CC) -std=gnu11 -O1 -g -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< $(TEST_LD) -lm
 
-test-quick-inventory: $(B)/test_quick_drop_probe $(B)/test_quick_drop_action $(B)/test_quick_inventory_settings $(B)/test_input_consumed_buttons
+test-quick-inventory: $(B)/test_quick_drop_probe $(B)/test_quick_drop_action $(B)/test_quick_inventory_sort $(B)/test_quick_equipment_trace $(B)/test_quick_inventory_spawn $(B)/test_quick_inventory_chest_spawn $(B)/test_quick_inventory_settings $(B)/test_input_consumed_buttons
 	$(B)/test_quick_drop_probe
 	$(B)/test_quick_drop_probe disabled
 	$(B)/test_quick_drop_action
+	$(B)/test_quick_inventory_sort
+	$(B)/test_quick_equipment_trace
+	$(B)/test_quick_inventory_spawn
+	$(B)/test_quick_inventory_chest_spawn
 	$(B)/test_input_consumed_buttons
 	@tmp=$$(mktemp); trap 'rm -f "$$tmp"' EXIT; \
 	 env -u SAVAGEWIND_QUICK_DROP $(B)/test_quick_inventory_settings "$$tmp" 0 && \
@@ -660,7 +683,7 @@ test-quick-inventory-font: $(B)/test_quick_hint_font
 	@test -n "$(ROMFS)" || { echo 'Set ROMFS to your own extracted game RomFS directory.'; exit 2; }
 	$(B)/test_quick_hint_font "$(ROMFS)"
 
-.PHONY: test-quick-inventory test-quick-inventory-font
+.PHONY: test-quick-inventory test-quick-inventory-font test-quick-inventory-sort
 
 $(B)/test_quick_replace: tools/test_quick_replace.c runtime/quick_replace.c $(RT_HDRS)
 	@mkdir -p $(dir $@)

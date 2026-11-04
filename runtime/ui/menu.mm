@@ -40,6 +40,7 @@ extern "C" {
 #include "menu.h"
 void input_reset(void);
 int quick_drop_hint_state(void);
+#include "../quick_inventory_sort.h"
 void input_pc_escape(bool down);
 void controls_bindings_draw(float scale);  // controls_ui.mm
 #include "../input_bind.h"
@@ -1462,20 +1463,23 @@ static void quick_drop_hint_draw(const ImGuiIO &io, float scale, int state) {
     scale = layout.scale / 1.5f;
     float fs = layout.font_size, radius = 15 * scale, gap = 10 * scale;
     float y = layout.controls_y;
-    ImFont *fonts[2] = {};
+    ImFont *fonts[3] = {};
     ImDrawList *draw = ImGui::GetForegroundDrawList();
     bool replacement = state >= 4;
-    const int bindings[] = {replacement ? BIND_A : BIND_Y, BIND_B};
+    const int bindings[] = {replacement ? BIND_A : BIND_Y, BIND_X, BIND_B};
     const char *actions[] = {replacement ? tr("Replace") : tr("Drop"),
-                             replacement ? tr("Cancel") : tr("Back")};
-    float widths[2], badges[2];
-    const char *buttons[2];
-    const char *native[2] = {};
+                             tr("Sort"), replacement ? tr("Cancel") : tr("Back")};
+    float widths[3], badges[3];
+    const char *buttons[3];
+    const char *native[3] = {};
     static const char face_letters[] = {'A', 'B', 'X', 'Y', 0};
     static const char *face[] = {"\xee\x81\x80", "\xee\x81\x81", "\xee\x81\x82", "\xee\x81\x83"};
     float width = 0;
-    int first = state == 3 ? 1 : 0;
-    for (int i = first; i < 2; i++) {
+    int first = state == 3 ? 2 : 0, visible = 0;
+    bool sorting = quick_inventory_sort_hint();
+    for (int i = first; i < 3; i++) {
+        if (i == 1 && !sorting) continue;
+        visible++;
         fonts[i] = g_hint_font ? g_hint_font : g_menu_font;
         // The European game bitmap lacks e.g. Thai and Hangul. Use the
         // already merged language fallback for the whole label when needed.
@@ -1498,7 +1502,7 @@ static void quick_drop_hint_draw(const ImGuiIO &io, float scale, int state) {
         widths[i] = fonts[i]->CalcTextSizeA(fs, FLT_MAX, 0, actions[i]).x + gap + badges[i];
         width += widths[i];
     }
-    if (first == 0) width += 60 * scale;
+    width += (visible - 1) * 60 * scale;
     float x = (io.DisplaySize.x - width) * 0.5f;
     auto label = [&](ImFont *font, ImVec2 pos, ImU32 color, const char *value) {
         int start = draw->VtxBuffer.Size;
@@ -1508,7 +1512,8 @@ static void quick_drop_hint_draw(const ImGuiIO &io, float scale, int state) {
         for (int j = start; font == g_hint_font && j < draw->VtxBuffer.Size; j++)
             draw->VtxBuffer[j].pos.x += (pos.y + fs * 0.8f - draw->VtxBuffer[j].pos.y) * 0.18f;
     };
-    for (int i = first; i < 2; i++) {
+    for (int i = first; i < 3; i++) {
+        if (i == 1 && !sorting) continue;
         int alpha = i == 0 && (state == 1 || state == 4 || state == 6) ? 110 : 255;
         ImVec2 text = fonts[i]->CalcTextSizeA(fs, FLT_MAX, 0, actions[i]);
         ImVec2 p(x, y - fs * 0.5f);

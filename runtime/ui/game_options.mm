@@ -564,7 +564,7 @@ void build_items(void) {
 
     // Gameplay
     v.push_back(toggle(P_GAMEPLAY, "Enhanced quick inventory",
-                       "Drop unequipped gear or press Back to cancel the quick selection.",
+                       "Drop or sort gear and replace pickups when the inventory is full.",
                        [](const Item &) { return (int)g_settings.quick_inventory; },
                        [](const Item &, int x) { g_settings.quick_inventory = x; }, 0));
 

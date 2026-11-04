@@ -11,6 +11,8 @@
 #include "perfmon.h"
 #include "rt.h"
 #include "game_sites.h"
+#include "quick_inventory_test.h"
+#include "quick_equipment_trace.h"
 
 uint64_t renderer_present_count(void);  // presented frames (the backend)
 bool control_camera_view(float view[12]);  // the world camera's view matrix (the backend; false: none)
@@ -381,6 +383,8 @@ void control_game_init(void) {
         {"time", "[freeze | unfreeze | set <0-24> | <0-24>]", "Show or change the hour of the day", cmd_time, 0},
         {"shot", "<file>", "Save a screenshot as PNG", cmd_shot, 0},
         {"goto", "<x> <y> <z> | <swr:1 line>", "Go to a place from pos or report", cmd_goto, 0},
+        {"equipment-trace", "reset|status", "Observe native equipment consumer scheduling", quick_equipment_trace_command, 0},
+        {"inventory-test", "spawn weapon|bow|shield <index> | chest weapon|bow|shield | status", "Spawn gear copies or basic reward chests for testing", quick_inventory_test_command, 0},
     };
     control_register(dev, (int)(sizeof dev / sizeof *dev));
     control_prof_init();
