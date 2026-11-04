@@ -618,6 +618,9 @@ T("Open them from the title screen, or pause the game and choose System > Option
 T("Controller rumble", "Controllertrilling")
 T("Vibrate the controller during play.", "Laat de controller tijdens het spelen trillen.")
 
-T("Sharper text", "")
+T("Sharper text", "Scherpere tekst")
 T("Upscales the game's letters for 1440p and 4K, after a restart. Not the original art.", "Vergroot de letters van het spel voor 1440p en 4K, na een herstart. Niet het originele ontwerp.")
 T("Makes the game's letters sharper on 1440p and 4K screens. It takes effect the next time you start the game. This is an upscale made on your computer from the game's own letters, not Nintendo's original art: the shapes are kept, but they aren't exactly as drawn. 4x takes a moment longer to start and uses more video memory.", "Maakt de letters van het spel scherper op 1440p- en 4K-schermen. Werkt vanaf de volgende keer dat je het spel start. Dit is een vergroting die op je computer is gemaakt van de letters van het spel zelf, niet het originele ontwerp van Nintendo: de vormen blijven behouden, maar zijn niet precies zoals getekend. 4x start iets langzamer en gebruikt meer videogeheugen.")
+T("Game's FXAA", "FXAA van het spel")
+T("The game's own edge smoothing. Off: sharper, more jagged edges.", "De randafvlakking van het spel zelf. Uit: scherper, met hoekigere randen.")
+T("The game's own FXAA, which smooths edges as the 3D image is drawn into the final picture, as on the console. Off: a sharper image with more jagged edges; use it to replace FXAA with SMAA or TAA above, or to keep the image crisp at a high resolution.", "De FXAA van het spel zelf, die randen afvlakt terwijl het 3D-beeld in het eindbeeld wordt getekend, zoals op de console. Uit: een scherper beeld met hoekigere randen; gebruik dit om FXAA te vervangen door SMAA of TAA hierboven, of om het beeld scherp te houden op een hoge resolutie.")

@@ -18,6 +18,7 @@
 #include "../hle.h"
 #include "../ipc.h"
 #include "../language.h"
+#include "../platform.h"
 #include "../nvn/text_upscale.h"
 #include "../romfs_image.h"
 #include "../settings.h"
@@ -712,7 +713,9 @@ static size_t hud_letters_flyt(const uint8_t *b, size_t n, uint8_t *out, int *pa
                     memcpy(sec + toff, &c, 2);
                     float fs[2];  // the font size: an icon fills less of its cell than a letter
                     memcpy(fs, sec + 0x70, 8);
-                    fs[0] *= HUD_ICON_SCALE, fs[1] *= HUD_ICON_SCALE;
+                    // (a letter is taller than wide, 20.4 x 25.5, but the icons of External_00.bffnt are square: both sizes
+                    // are the height's, or the three inactive buttons came out as ovals, #476)
+                    fs[1] *= HUD_ICON_SCALE, fs[0] = fs[1];
                     memcpy(sec + 0x70, fs, 8);
                     (*panes)++;
                 }
@@ -1377,6 +1380,9 @@ static void file(Service *s, IpcReq *req, IpcResp *resp) {
         IpcBuf *b = out_buf(req, 0);
         if ((uint64_t)size > b->size) size = (int64_t)b->size;
         kernel_watch_write("file read", b->addr, (uint64_t)size);
+        #ifdef _WIN32
+                if (plat_guest_sparse_heap_enabled()) plat_commit(b->addr, (uint64_t)size);
+        #endif
         ssize_t n;
         if (f->patched) {  // (test warp)
             n = off >= 0 && (uint64_t)off < f->patched_size ? (ssize_t)((uint64_t)size < f->patched_size - (uint64_t)off ? (uint64_t)size : f->patched_size - (uint64_t)off) : 0;

@@ -359,6 +359,8 @@ dist:
 	cp third_party/fonts/FiraSans/OFL.txt "$(DIST)/FiraSans-OFL.txt"
 	cp third_party/fonts/NotoSansThai/NotoSansThai-Medium.ttf "$(DIST)/"  # (Thai menus, OFL)
 	cp third_party/fonts/NotoSansThai/OFL.txt "$(DIST)/NotoSansThai-OFL.txt"
+	cp third_party/fonts/NotoSansHebrew/NotoSansHebrew-Medium.ttf "$(DIST)/"  # (Hebrew menus, OFL)
+	cp third_party/fonts/NotoSansHebrew/OFL.txt "$(DIST)/NotoSansHebrew-OFL.txt"
 	cp third_party/FidelityFX/LICENSE.txt "$(DIST)/FidelityFX-LICENSE.txt"  # (AMD FidelityFX SDK, MIT: README "License")
 	if [ -f build/fsr-dlls/amd_fidelityfx_loader_vk.dll ]; then cp build/fsr-dlls/amd_fidelityfx_*_vk.dll \
 	    build/fsr-dlls/AMD-FidelityFX-DLL-LICENSE.txt "$(DIST)/"; fi  # (AMD FSR 4: tools/fetch_fsr_dlls.py; AMD's licence allows binary redistribution with this notice)
@@ -463,9 +465,9 @@ test-pc-controls: $(B)/test_pc_controls $(B)/test_pc_settings $(B)/test_options_
 	$(B)/test_options_pointer
 	@set -e; tmp=$$(mktemp); trap 'rm -f "$$tmp"' EXIT; \
 	 printf 'settings_version = 3\npc_cursor = 1\n' > "$$tmp"; \
-	 $(B)/test_pc_settings "$$tmp" 1 1; \
-	 $(B)/test_pc_settings "$$tmp" 0 0; \
-	 SAVAGEWIND_PC_CURSOR=0 $(B)/test_pc_settings "$$tmp" 0 1
+	 $(B)/test_pc_settings "$$tmp" 1 1 0; \
+	 $(B)/test_pc_settings "$$tmp" 0 0 1; \
+	 SAVAGEWIND_PC_CURSOR=0 $(B)/test_pc_settings "$$tmp" 0 1 2
 
 .PHONY: test-pc-controls
 
@@ -610,3 +612,13 @@ test-hour: $(B)/test_hour
 	env SAVAGEWIND_TEST_TIME=18 $(B)/test_hour env
 
 .PHONY: test-hour
+
+# Guard shader-specific bloom scaling against unrelated scene, depth and UI targets.
+$(B)/test_bloom_scale: tests/test_bloom_scale.c runtime/nvn/vulkan/bloom_scale.h
+	@mkdir -p $(B)
+	$(CC) -O1 -Wall -Wextra -Werror -o $@ $<
+
+test-bloom-scale: $(B)/test_bloom_scale
+	$(B)/test_bloom_scale
+
+.PHONY: test-bloom-scale

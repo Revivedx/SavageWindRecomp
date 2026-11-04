@@ -618,6 +618,9 @@ T("Open them from the title screen, or pause the game and choose System > Option
 T("Controller rumble", "Vibração do controle")
 T("Vibrate the controller during play.", "Faz o controle vibrar durante o jogo.")
 
-T("Sharper text", "")
+T("Sharper text", "Texto mais nítido")
 T("Upscales the game's letters for 1440p and 4K, after a restart. Not the original art.", "Amplia as letras do jogo para 1440p e 4K, após reiniciar. Não é a arte original.")
 T("Makes the game's letters sharper on 1440p and 4K screens. It takes effect the next time you start the game. This is an upscale made on your computer from the game's own letters, not Nintendo's original art: the shapes are kept, but they aren't exactly as drawn. 4x takes a moment longer to start and uses more video memory.", "Deixa as letras do jogo mais nítidas em telas 1440p e 4K. Vale a partir da próxima vez que você iniciar o jogo. É uma ampliação feita no seu computador a partir das letras do próprio jogo, não a arte original da Nintendo: as formas são mantidas, mas não exatamente como foram desenhadas. 4x demora um pouco mais para iniciar e usa mais memória de vídeo.")
+T("Game's FXAA", "FXAA do jogo")
+T("The game's own edge smoothing. Off: sharper, more jagged edges.", "A suavização de bordas do próprio jogo. Desligado: mais nítido, bordas mais serrilhadas.")
+T("The game's own FXAA, which smooths edges as the 3D image is drawn into the final picture, as on the console. Off: a sharper image with more jagged edges; use it to replace FXAA with SMAA or TAA above, or to keep the image crisp at a high resolution.", "O FXAA do próprio jogo, que suaviza as bordas quando a imagem 3D é desenhada na imagem final, como no console. Desligado: uma imagem mais nítida com bordas mais serrilhadas; use para trocar o FXAA por SMAA ou TAA acima, ou para manter a imagem nítida em alta resolução.")

@@ -1361,7 +1361,7 @@ Pendiente:
      textos (`ui_merge_fallback_font`), y cada contexto rehace sus fuentes al cambiar el idioma.
      `tools/i18n_check.py` lista los textos que le faltan a cada tabla (`--missing <idioma>` los imprime como
      líneas `T(...)`); `SAVAGEWIND_MENU_LANG=<código>` (p. ej. `ja`) fuerza el idioma de los menús para probar.
-     Las doce tablas están completas (es, fr, de, it, nl, ru, pt, ja, ko, zh-Hans, zh-Hant, th). ImGui 1.91.9 solo
+     Las trece tablas están completas (es, fr, de, it, nl, ru, pt, ja, ko, zh-Hans, zh-Hant, th, he). ImGui 1.91.9 solo
      corta líneas en espacios: `third_party/imgui/imgui_draw.cpp` (`ImFont::CalcWordWrapPositionA`) lleva un
      parche local que también corta entre caracteres CJK, respetando la puntuación. El tailandés no separa
      palabras con espacios: sus textos llevan espacios entre frases, que es donde se cortan las líneas. Su fuente
@@ -1369,6 +1369,15 @@ Pendiente:
      del sistema (Leelawadee UI, Tahoma). ImGui no posiciona marcas combinantes con GPOS: las vocales y tonos de
      Noto Sans Thai tienen avance 0 y caen sobre la letra anterior, que se lee bien en los tamaños del menú.
      Dentro del juego, las páginas de Opciones se dibujan con la fuente tailandesa del propio juego.
+     El hebreo (`he`) no es un idioma de texto del juego: solo `SAVAGEWIND_MENU_LANG=he` lo elige. Se escribe de
+     derecha a izquierda: sus textos están en orden lógico (el de lectura) y cada línea se dibuja en orden visual,
+     con un subconjunto del algoritmo bidireccional de Unicode (`ui_visual_order` / `visual_line` en `i18n.mm`:
+     los tramos latinos y los números conservan su orden, el resto se invierte y los paréntesis se reflejan).
+     ImGui lo hace con otro parche local (`GImTextReorderLine`, `ImFont::RenderText`): corta las líneas sobre el
+     texto lógico, las reordena y alinea a la derecha las de un párrafo en el ancho de la más larga; la
+     disposición de los menús no se refleja. Las páginas de Opciones del juego reciben cada línea ya reordenada
+     (`put_text`) y necesitan una fuente del juego con hebreo. Fuente: Noto Sans Hebrew Medium (OFL,
+     `third_party/fonts/NotoSansHebrew`), y si falta, la del sistema (Segoe UI, Arial).
    - Ajustes dentro del juego (2026-10-18): la pantalla Ajustes del propio juego (pausa > Sistema > Ajustes, u
      Opciones en el menú del título) lleva las páginas de Savage Wind y sustituye al overlay en el juego (F1, Esc y el
      botón Home ya no lo abren; `SAVAGEWIND_OVERLAY=1` lo devuelve; Esc suelta el cursor). La primera página es una
@@ -1547,6 +1556,51 @@ Pendiente:
 Se conserva todo lo genérico: el lifter AArch64 → C, el kernel HLE, IPC y servicios, el HLE de NVN
 con el backend Vulkan, el traductor de shaders Maxwell, ASTC, audio, la UI de ajustes y la
 compilación local con `zig cc`.
+
+## Heap invitado y memoria sparse de GPU
+
+En Windows, el juego pide un heap invitado de 3120 MiB. No se debe reducir a un límite estimado de VRAM: el código
+generado es código de CPU traducido, no un inventario estático de los recursos ni de las direcciones que leerán o
+escribirán los shaders. Limitar las páginas visibles a 1 GiB podría dejar lecturas sin datos o perder escrituras.
+
+La opción `sparse_heap` de `savagewind.ini` acepta `auto`, `on` y `off`. `auto` (por defecto) lo activa en una GPU
+integrada Intel y lo desactiva en las demás; el cambio se aplica al reiniciar. `SAVAGEWIND_VK_SPARSE_HEAP=1` fuerza
+la activación y cualquier otro valor explícito la desactiva. En GPUs compatibles, conserva el espacio de direcciones
+completo del heap y crea un buffer Vulkan sparse virtual de hasta 3328 MiB. Las páginas confirmadas del heap se
+exponen por ventanas de 1 MiB (alineación sparse de 64 KiB), mediante importación de la memoria host ya existente y
+enlaces sparse; no se copian las páginas a un pool de VRAM separado. En una Intel UHD, la memoria de GPU es memoria
+del sistema compartida. El tamaño virtual del buffer y los bytes enlazados no significan que exista esa cantidad de
+VRAM dedicada ni que el contador de memoria compartida de Windows aumente en la misma cantidad.
+
+En un inicio directo del juego en Windows, Vulkan inicializa la ventana y selecciona la GPU antes del arranque del
+juego. Así `auto` ya conoce el adaptador cuando `SetHeapSize` decide entre confirmar el heap de inmediato o dejar que
+sus páginas se confirmen al usarse; sin esa selección temprana, el modo `auto` podía elegir el camino eager antes de
+saber que la GPU era Intel integrada. Desde la pantalla de inicio, la ventana y Vulkan ya se inicializan antes de
+iniciar el juego.
+
+Las ventanas enlazadas quedan enlazadas hasta limpiar el backend: no hay política de desalojo ni recarga de páginas
+en este mecanismo. Solo se omite la validación de rango del sistema operativo cuando la tabla confirma que todas las
+ventanas del rango están enlazadas; los rangos no confirmados siguen el camino de compromiso y validación normal.
+Esta ruta evita repetir consultas caras de memoria sin cambiar el tamaño del heap ni asumir que cualquier rango es
+seguro.
+
+La prioridad Vulkan de memoria es independiente del heap sparse y está desactivada por defecto. Para probar la
+política de prioridad del driver en imágenes y en el heap denso importado, iniciar con
+`SAVAGEWIND_VK_MEMORY_PRIORITY=1`. Sin el flag, las imágenes usan el asignador normal de VMA y no se solicita
+prioridad para la memoria importada. `VK_EXT_memory_budget` permanece habilitada cuando existe: da información de
+presupuesto a VMA y se consulta para diagnosticar fallos de asignación; no habilita la política de prioridad.
+
+### Diagnóstico de rendimiento
+
+En las pruebas con BOTW 1.8.2 en una Intel UHD, la configuración aceptó el heap de 3120 MiB y llegó a gameplay.
+Con FSR 1 Ultra Performance la escena se renderizaba a 640x360 y se ampliaba a 1280x720. El log sin perfil de GPU
+se estabilizó aproximadamente en 22-25 FPS (con intervalos iniciales de 30 FPS). En esos intervalos de unos dos
+segundos, las estadísticas llegaron a alrededor de 130 000-150 000 draws, 650-750 MiB de cargas contabilizadas y
+900-1040 ms de esperas a la GPU. Son totales del intervalo, no valores por frame; las cargas contabilizadas tampoco
+son una medida directa del ancho de banda físico de la memoria. Cuando el juego ya estaba en la escena estable, las
+operaciones de importación y enlace sparse eran escasas o nulas aunque el FPS seguía bajo. Esto descarta el enlace
+sparse repetido como explicación suficiente del bajo rendimiento, pero no identifica por sí solo el cuello de
+botella entre trabajo de GPU, sincronización y trabajo del juego.
 
 ## Módulos en memoria
 

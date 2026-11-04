@@ -1,3 +1,4 @@
+#include "../pc_cursor.h"
 // Button icons for the device in use.
 //
 // BOTW draws its button prompts (HUD hints, menus, dialogs) as characters of its own bitmap font External_00.bffnt
@@ -520,6 +521,7 @@ uint32_t glyphs_generation(void) {
     int k = resolve_kind();
     uint32_t h = 2166136261u ^ (uint32_t)k;
     if (k == ICONS_KEYBOARD) {
+        h = (h ^ pc_cursor_preview_active()) * 16777619u;
         for (int i = 0; i < BIND_KEY_COUNT; i++) h = (h ^ (uint16_t)g_bind_key[i]) * 16777619u;
         h = (h ^ g_settings.mouse_camera) * 16777619u;
     } else {
@@ -546,7 +548,9 @@ static bool draw_glyph(Canvas *c, Box b, int code, int kind, int *copy) {
     }
     if (kind == ICONS_KEYBOARD) {
         switch (m.kind) {
-        case G_BUTTON: key_icon(c, b, g_bind_key[m.arg]); return true;
+        case G_BUTTON:
+            if(m.arg==BIND_RSTICK&&pc_cursor_preview_active()) {mouse(c,b,SDL_BUTTON_LEFT,0);return true;}
+            key_icon(c, b, g_bind_key[m.arg]); return true;
         case G_DPAD:
             if (!(m.arg & (m.arg - 1))) key_icon(c, b, g_bind_key[k_dpad_slot[dir_index(m.arg)]]);
             else keys_icon(c, b, k_dpad_slot, m.arg);
@@ -558,6 +562,7 @@ static bool draw_glyph(Canvas *c, Box b, int code, int kind, int *copy) {
             return true;
         }
         default: {  // the right stick: the mouse when it turns the camera, else its keys
+            if(pc_cursor_preview_active()){mouse(c,b,SDL_BUTTON_LEFT,0);return true;}
             static const int rs[4] = {BIND_RS_UP, BIND_RS_DOWN, BIND_RS_LEFT, BIND_RS_RIGHT};
             if (g_settings.mouse_camera) mouse(c, b, 0, m.arg);
             else if (!(m.arg & (m.arg - 1))) key_icon(c, b, g_bind_key[rs[dir_index(m.arg)]]);

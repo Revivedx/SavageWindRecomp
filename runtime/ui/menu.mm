@@ -936,6 +936,11 @@ static void tab_display(void) {
                      "smooth and stop shimmering; slightly softer, use it with Sharpening.");
         opt_choice("Anti-aliasing", &g_settings.antialias, aa, 3, AA_OFF, d.c_str());
     }
+    // the game's own FXAA (vulkan/exec.c fxaa_patch)
+    opt_toggle("Game's FXAA", &g_settings.game_fxaa, true,
+               "The game's own FXAA, which smooths edges as the 3D image is drawn into the final picture, as on the "
+               "console. Off: a sharper image with more jagged edges; use it to replace FXAA with SMAA or TAA above, "
+               "or to keep the image crisp at a high resolution.");
 #endif
 #ifndef __APPLE__
     {   // Anisotropic filtering and sharpening (Vulkan: vulkan/textures.c sampler_aniso, vulkan/exec.c scene_post)
