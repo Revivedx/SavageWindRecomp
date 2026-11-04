@@ -13,6 +13,8 @@
 
 static _Atomic bool active, focused = true;
 static _Atomic bool dialogue_active;
+static _Atomic bool item_message_active,preview_available;
+static _Atomic uint64_t item_confirm_until;
 static _Atomic uint64_t quantity_until;
 static _Atomic int quantity_value,quantity_max,quantity_request=-1;
 static _Atomic bool quantity_edit,quantity_replace;
@@ -91,6 +93,7 @@ static bool enabled(void) {
 bool pc_cursor_enabled(void) { return enabled(); }
 extern bool menu_cursor_free(void);
 bool pc_cursor_active(void) { return enabled() && active && (focused || pointer_test()) && !menu_cursor_free(); }
+bool pc_cursor_preview_active(void) { return pc_cursor_active()&&preview_available; }
 bool pc_cursor_map_navigation(void) { return pc_cursor_active() && map_canvas_active && !pointer_gamepad_input; }
 bool pc_cursor_hide_system(void) {
     return (pc_cursor_active()&&quick_wheel_only)||
@@ -108,7 +111,7 @@ void pc_cursor_frame(void) {
     // window and the native manager hook has no reason to run this frame.
     if(pointer_gamepad_input)map_release_to_controller();
     uint64_t game_over_modal=0;
-    bool dialogue=false,quick=false;shop_screen=game_over_screen=0;
+    bool dialogue=false,item_message=false,preview=false,quick=false;shop_screen=game_over_screen=0;
     if(g_site.screen_mgr) {
         uint64_t mgr=LD64(g_site.screen_mgr),arr=mgr?LD64(mgr+0x30):0;
         unsigned count=mgr?LD32(mgr+0x28):0;
@@ -122,6 +125,11 @@ void pc_cursor_frame(void) {
             if(i==0x30&&LD64(text)==0x7001cef0a8ull)game_over_screen=text;
             if(i==0x39&&LD64(text)==0x7001cfffe0ull)game_over_modal=text;
             if(LD64(text)==0x7001d4ed48ull)dialogue=true;
+            // New-item descriptions use Confirm without registered button nodes.
+            if(LD64(text)==0x7001cf5e78ull)item_message=true;
+            if(i==0x2e&&LD64(text)==0x7001cf9ad8ull&&g_site.pause_state&&
+               LD32(g_site.pause_state)==2&&LD32(text+0x3a48)==0)preview=true;
+            if(i>=0x30&&i<=0x3a)preview=false;
             uint64_t name=LD64(text+0xd0);
             if(name>=GUEST_LO&&name<GUEST_HI-32&&!strncmp((char*)(uintptr_t)name,"ShopBtnList",11))shop_screen=text;
         }
@@ -146,8 +154,11 @@ void pc_cursor_frame(void) {
     }
     if(dialogue_active&&!dialogue)confirm_until=0;
     dialogue_active=dialogue;
+    item_message_active=item_message&&!game_over_screen;
+    if(!item_message_active||!enabled()||!focused)item_confirm_until=0;
+    preview_available=preview&&!game_over_screen;
     if(game_over_screen){dialogue_active=false;shop_screen=0;}
-    bool ui = game_over_screen || (g_site.pause_state &&
+    bool ui = game_over_screen || item_message_active || (g_site.pause_state &&
         (dialogue || shop_screen || framepace_menu_ui() || framepace_title_ui() || *(uint32_t *)(uintptr_t)g_site.pause_state == 4));
     active = enabled() && ui;
     quick_wheel_only=enabled()&&quick;
@@ -269,6 +280,7 @@ bool pc_cursor_event(const SDL_Event *e) {
     extern void input_pc_escape(bool down);
     if (e->type == SDL_EVENT_WINDOW_FOCUS_LOST) {
         focused = false; held = false; releases++;
+        item_confirm_until=0;
         if(right_back_held){input_pc_escape(false);right_back_held=false;}
     }
     if (e->type == SDL_EVENT_WINDOW_FOCUS_GAINED) focused = true;
@@ -341,6 +353,12 @@ bool pc_cursor_event(const SDL_Event *e) {
         held = e->type == SDL_EVENT_MOUSE_BUTTON_DOWN;
         window_position(e->button.x,e->button.y);
         motion_at=plat_now_ns();
+        if(item_message_active) {
+            // One short native A pulse per press; no synthetic hover or held
+            // confirmation can leak into gameplay after this popup closes.
+            if(held)item_confirm_until=plat_now_ns()+50000000;
+            return true;
+        }
         if (held) presses++; else releases++;
         return true;
     }
@@ -568,6 +586,7 @@ static bool options_pointer(Cpu *c,uint64_t screens,uint64_t bounds) {
 uint64_t pc_cursor_buttons(uint64_t b) {
     uint64_t now=plat_now_ns();
     if(now<confirm_until)b|=1;
+    if(item_message_active&&pc_cursor_active()&&now<item_confirm_until)b|=1;
     if(now<guide_until)b|=1ull<<guide_bit;
     return b;
 }
@@ -1189,6 +1208,39 @@ static bool dialogue_choices(Cpu *c,uint64_t screens,unsigned count) {
     return false;
 }
 
+// Wheel navigation on the selling category strip skips empty/unavailable
+// columns, using the same native transition as a direct category click.
+static void shop_category_scroll(Cpu *c,uint64_t list,uint64_t array,unsigned columns,int scroll) {
+    int current=(int)LD32(list+0x2e8),step=scroll>0?-1:1;
+    if(!scroll||current<0||current>=(int)columns)return;
+    for(int next=current+step;next>=0&&next<(int)columns;next+=step) {
+        uint64_t column=LD64(array+8*next);
+        if(!ptr(column)||!LD32(column+0x29c)||LD8(column+0x38c)||LD8(column+0x38d))continue;
+        call(c,0x7000d6c244,list,0,next);
+        return;
+    }
+}
+
+// The list page index is global across all columns (including unavailable
+// categories), while each column stores its own page count.
+static void shop_page_scroll(Cpu *c,uint64_t list,uint64_t array,unsigned columns,int scroll) {
+    unsigned col=LD32(list+0x2e8);
+    if(!scroll||col>=columns)return;
+    unsigned first=0;
+    for(unsigned i=0;i<col;i++) {
+        uint64_t column=LD64(array+8*i);
+        unsigned pages=ptr(column)?LD32(column+0x2f4):0;
+        if(pages>1000||first+pages>1000)return;
+        first+=pages;
+    }
+    uint64_t column=LD64(array+8*col);
+    unsigned pages=ptr(column)?LD32(column+0x2f4):0;
+    int current=(int)LD32(list+0x2dc),next=current+(scroll>0?-1:1);
+    if(!pages||pages>1000||current<(int)first||current>=(int)(first+pages))return;
+    if(next>=(int)first&&next<(int)(first+pages))call(c,0x7000d6c54c,list,next,0);
+    else shop_category_scroll(c,list,array,columns,scroll);
+}
+
 static bool shop_pointer(Cpu *c) {
     uint64_t s=shop_screen;
     if(!ptr(s)||pointer_keyboard_input)return false;
@@ -1203,6 +1255,11 @@ static bool shop_pointer(Cpu *c) {
         float x=*(float*)(pane+0x7c),y=*(float*)(pane+0x8c);
         if(fabsf(point[0]-x)>28||fabsf(point[1]-y)>28)continue;
         set_hover(x,y,27);
+        int scroll=atomic_exchange(&wheel,0);
+        if(scroll) {
+            shop_category_scroll(c,list,array,columns,scroll);
+            return true;
+        }
         if(click_pending) {
             click_pending=false;
             uint64_t column=i<columns?LD64(array+8*i):0;
@@ -1212,12 +1269,7 @@ static bool shop_pointer(Cpu *c) {
         return true;
     }
     int scroll=atomic_exchange(&wheel,0);
-    if(scroll) {
-        unsigned col=LD32(list+0x2e8);uint64_t column=col<columns?LD64(array+8*col):0;
-        unsigned pages=ptr(column)?LD32(column+0x2f4):0;
-        int page=(int)LD32(list+0x2dc)-(scroll>0?1:-1);
-        if(pages&&pages<1000){if(page<0)page=0;if(page>=(int)pages)page=pages-1;call(c,0x7000d6c54c,list,page,0);}
-    }
+    if(scroll)shop_page_scroll(c,list,array,columns,scroll);
     return false;
 }
 
@@ -1423,6 +1475,7 @@ void rt_pc_cursor_manager(Cpu *c, uint64_t activate, uint64_t bounds) {
 }
 
 RT_ON_RESET(pc_cursor_reset) {
+    item_message_active=preview_available=false;item_confirm_until=0;
     dialogue_active=false;shop_screen=game_over_screen=quantity_screen=0;quantity_until=0;quantity_edit=false;quantity_request=-1;
     quantity_hold=0;quantity_repeat_at=0;preview_defaults_saved=false;sound_hover_key=sound_hover_until=0;
     hover_leave();

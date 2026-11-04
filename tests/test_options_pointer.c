@@ -28,6 +28,8 @@ static unsigned actions,refreshes,last_action,scroll_updates,activations,help_up
 static uint64_t activated_node;
 static uint64_t quest_screen,quest_widget,quest_control,quest_nodes[2],quest_icons[4];
 static uint64_t quest_master;
+static uint64_t shop_scroll_test_list;
+static unsigned shop_test_pages,last_shop_page;
 static unsigned quest_selections,quest_categories_clicked,last_category;
 static unsigned page_changes;
 static uint64_t quick_test_screen,quick_test_list;
@@ -56,6 +58,7 @@ void guest_call(Cpu *cpu,uint64_t address){
         cpu->x[0]=cpu->x[0]!=quest_widget?UINT32_MAX:
             cpu->x[1]==quest_nodes[0]?0:cpu->x[1]==quest_nodes[1]?1:UINT32_MAX;
     }else if(address==0x7000d6c54cull){
+        if(shop_scroll_test_list&&cpu->x[0]==shop_scroll_test_list){shop_test_pages++;last_shop_page=(unsigned)cpu->x[1];cpu->x[0]=0;return;}
         assert(quick_test_list&&cpu->x[0]==quick_test_list&&cpu->x[1]<3);quick_test_moves++;
     }else if(address==0x7000e2785cull){
         assert(cpu->x[0]==quick_test_screen&&cpu->x[1]<3);
@@ -509,6 +512,67 @@ int main(void) {
     ST32(manager+0x10,0);click_pending=true;rt_pc_cursor_manager(&cpu,0x7000f57da8,0x7000123404);
     assert(activated_node==modal_node&&LD32(manager+0x10)==1&&!click_pending);
     quit_dialog=0;ST64(sa+8*0x39,0);ST64(sa+8*0x34,0);pc_cursor_frame();assert(!game_over_screen);
+    // MessageGet has no registered buttons and can open without a pause menu.
+    // Recognition is by type, not index, and never steals ordinary attack clicks.
+    for(unsigned i=0;i<0x4b;i++)ST64(sa+8*i,0);
+    ST32(sm+0x28,0x4b);ST32(g_site.pause_state,0);test_menu_ui=false;
+    ST64(sa+8*0x0b,header);ST64(header,0x7001cf5e78ull);ST8(header+0xfe,2);
+    focused=true;pc_cursor_frame();assert(item_message_active&&pc_cursor_active());
+    event.type=SDL_EVENT_MOUSE_BUTTON_DOWN;event.button.button=SDL_BUTTON_LEFT;
+    assert(pc_cursor_event(&event)&&(pc_cursor_buttons(0)&1));
+    event.type=SDL_EVENT_MOUSE_BUTTON_UP;assert(pc_cursor_event(&event));
+    now+=60000000;assert(pc_cursor_buttons(0)==0);
+    event.type=SDL_EVENT_MOUSE_BUTTON_DOWN;assert(pc_cursor_event(&event));
+    ST8(header+0xfe,0);pc_cursor_frame();assert(!item_message_active&&pc_cursor_buttons(0)==0);
+    ST8(header+0xfe,2);g_settings.pc_cursor=false;pc_cursor_frame();
+    assert(!pc_cursor_event(&event)&&pc_cursor_buttons(0)==0);
+    g_settings.pc_cursor=true;pc_cursor_frame();assert(pc_cursor_event(&event));
+    event.type=SDL_EVENT_WINDOW_FOCUS_LOST;pc_cursor_event(&event);assert(pc_cursor_buttons(0)==0);
+    focused=true;pc_cursor_frame();event.type=SDL_EVENT_MOUSE_BUTTON_DOWN;assert(pc_cursor_event(&event));
+    pc_cursor_reset();assert(!item_message_active&&!item_confirm_until&&pc_cursor_buttons(0)==0);
+    // Selling category wheel skips disabled/empty columns, clamps both ends,
+    // and does not depend on the number of item pages within a category.
+    uint64_t saved_master=quest_master;
+    quest_master=quest_widget;
+    uint64_t shop_columns=GUEST_LO+0xb000;
+    for(unsigned i=0;i<7;i++) {
+        uint64_t column=GUEST_LO+0xb100+0x400*i;
+        ST64(shop_columns+8*i,column);
+        ST32(column+0x29c,i>=3&&i<=5?4:0);
+        ST8(column+0x38c,0);ST8(column+0x38d,0);
+    }
+    ST32(quest_widget+0x2e8,5);
+    unsigned category_before=quest_categories_clicked;
+    shop_category_scroll(&cpu,quest_widget,shop_columns,7,1);
+    assert(quest_categories_clicked==category_before+1&&last_category==4);
+    ST32(quest_widget+0x2e8,3);
+    shop_category_scroll(&cpu,quest_widget,shop_columns,7,1);
+    assert(quest_categories_clicked==category_before+1);
+    shop_category_scroll(&cpu,quest_widget,shop_columns,7,-1);
+    assert(quest_categories_clicked==category_before+2&&last_category==4);
+    ST8(LD64(shop_columns+8*4)+0x38c,1);
+    shop_category_scroll(&cpu,quest_widget,shop_columns,7,-1);
+    assert(quest_categories_clicked==category_before+3&&last_category==5);
+    ST32(quest_widget+0x2e8,5);
+    shop_category_scroll(&cpu,quest_widget,shop_columns,7,-1);
+    assert(quest_categories_clicked==category_before+3);
+    // Actual selling layout: food is global page 8, not local page 0.
+    for(unsigned i=0;i<7;i++)ST32(LD64(shop_columns+8*i)+0x2f4,i==4?4:1);
+    ST8(LD64(shop_columns+8*4)+0x38c,0);
+    shop_scroll_test_list=quest_widget;shop_test_pages=0;
+    ST32(quest_widget+0x2e8,5);ST32(quest_widget+0x2dc,8);
+    shop_page_scroll(&cpu,quest_widget,shop_columns,7,1);
+    assert(last_category==4&&shop_test_pages==0);
+    ST32(quest_widget+0x2e8,4);ST32(quest_widget+0x2dc,7);
+    shop_page_scroll(&cpu,quest_widget,shop_columns,7,1);
+    assert(shop_test_pages==1&&last_shop_page==6);
+    shop_page_scroll(&cpu,quest_widget,shop_columns,7,-1);
+    assert(last_category==5&&shop_test_pages==1);
+    ST32(quest_widget+0x2dc,4);
+    shop_page_scroll(&cpu,quest_widget,shop_columns,7,1);
+    assert(last_category==3&&shop_test_pages==1);
+    shop_scroll_test_list=0;
+    quest_master=saved_master;
     puts("PASS: Options scroll/click/shared focus, SDL ownership/cursor visibility, page rebuild, Adventure Log/Ability Controls list registry, stationary hover, nested category clicks/locks, viewport preservation, pause header transitions/modal priority, quit question over Options, setting gate and reboot reset (synthetic host state).");
 #ifdef _WIN32
     VirtualFree(vt_memory,0,MEM_RELEASE);
