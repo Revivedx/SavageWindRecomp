@@ -1,6 +1,5 @@
 // Spanish menu texts (runtime/ui/i18n.mm): T("English", "Español"); "" keeps the English text.
 // Regenerate the list of texts it lacks with tools/i18n_check.py --missing es.
-T("Window or fullscreen size.", "Tamaño de la ventana o de la pantalla completa.")
 T("Press a button...", "Pulsa un botón...")
 T("Press a key...", "Pulsa una tecla...")
 T("Nintendo", "")

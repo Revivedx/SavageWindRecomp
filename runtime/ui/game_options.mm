@@ -740,8 +740,11 @@ void build_items(void) {
     v.push_back(toggle(P_ACCESS, "Infinite stamina", "The stamina wheel never runs out.",
                        [](const Item &) { return (int)g_settings.infinite_stamina; },
                        [](const Item &, int x) { g_settings.infinite_stamina = x; }, 0));
-    for(int i=0;i<WINSIZE_MAX;i++)
-        v.push_back(button(P_SIZES,"","Window or fullscreen size.",nullptr,A_SIZE_PICK,i));
+    for(int i=0;i<WINSIZE_MAX;i++) {
+        Item size=button(P_SIZES,"","",nullptr,A_SIZE_PICK,i);
+        size.desc_fn=ws.desc_fn;  // reuse the existing translated display-size help
+        v.push_back(size);
+    }
 }
 
 // The game's table, extended (first opening, and again after a reboot reloads the game's own)
@@ -1081,6 +1084,9 @@ extern "C" int rt_opt_decide(uint64_t row) {
 // Window size's list (menu.mm, render thread): a size was picked, the row shows it
 extern "C" void game_options_size_picked(void) { g_size_redraw = true; }
 
+// Native layout identifiers, not player-facing text.
+#define SIZE_LABEL_PANE "T_Option_00"
+#define SIZE_LABEL_BACKGROUND "W_Base_02"
 // Resolution choices reuse the native action button, without its separate label column.
 static uint64_t size_pane(uint64_t pane,const char *name,unsigned depth,unsigned &budget) {
     if(pane<0x7000000000ull||pane>=0x8000000000ull||depth>16||!budget)return 0;
@@ -1105,13 +1111,13 @@ static void size_page_layout(uint64_t screen) {
         if(!it||it->action!=A_SIZE_PICK)continue;
         uint64_t root=rd64(row+0x80);
         unsigned budget=128;
-        uint64_t label=size_pane(root,"T_Option_00",0,budget);
+        uint64_t label=size_pane(root,SIZE_LABEL_PANE,0,budget);
         if(label)wr8(label+0x58,*(uint8_t *)(uintptr_t)(label+0x58)&~1u);
         uint64_t action=rd64(row+0x28),cursor=action?rd64(action+0x60):0;
         uint64_t button=cursor?rd64(cursor+0x18):0;
         if(!button)continue;
         budget=128;
-        uint64_t background=size_pane(button,"W_Base_02",0,budget);
+        uint64_t background=size_pane(button,SIZE_LABEL_BACKGROUND,0,budget);
         if(background)wr8(background+0x58,*(uint8_t *)(uintptr_t)(background+0x58)&~1u);
         if(*(float *)(uintptr_t)(button+0x30)!=0.f) {
             *(float *)(uintptr_t)(button+0x30)=0.f;
