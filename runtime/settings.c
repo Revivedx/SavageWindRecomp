@@ -78,6 +78,8 @@ static const char *const k_quality[UPQ_COUNT] = {"ultra_quality", "quality", "ba
 
 // Debug overrides seed this boot's options; the Controls switches can still change them at once.
 static void pc_controls_env(void) {
+    const char *quick = getenv("SAVAGEWIND_QUICK_DROP");
+    if (quick) g_settings.quick_inventory = !strcmp(quick, "1");
     const char *cursor = getenv("SAVAGEWIND_PC_CURSOR");
     if (cursor) g_settings.pc_cursor = atoi(cursor) != 0;
 }
@@ -163,6 +165,7 @@ void settings_load(void) {
             g_settings.sharpening = p < 0 ? 0 : p > 100 ? 10 : (p + 5) / 10;
         }
         else if (!strcmp(key, "rumble")) g_settings.rumble = atoi(val) != 0;
+        else if (!strcmp(key, "quick_inventory")) g_settings.quick_inventory = atoi(val) != 0;
         else if (!strcmp(key, "dpad_move")) g_settings.dpad_move = atoi(val) != 0;
         else if (!strcmp(key, "left_stick_deadzone")) g_settings.stick_deadzone[0] = (float)atof(val) / 100;  // (percent)
         else if (!strcmp(key, "right_stick_deadzone")) g_settings.stick_deadzone[1] = (float)atof(val) / 100;
@@ -335,6 +338,7 @@ void settings_save(void) {
     fprintf(f, "sharpening = %d\n", g_settings.sharpening * 10);
     fprintf(f, "frame_generation = %d\n", g_settings.frame_gen ? 1 : 0);
     fprintf(f, "rumble = %d\n", g_settings.rumble);
+    fprintf(f, "quick_inventory = %d\n", g_settings.quick_inventory);
     fprintf(f, "dpad_move = %d\n", g_settings.dpad_move);
     fprintf(f, "left_stick_deadzone = %.0f\n", g_settings.stick_deadzone[0] * 100);
     fprintf(f, "right_stick_deadzone = %.0f\n", g_settings.stick_deadzone[1] * 100);

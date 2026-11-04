@@ -619,3 +619,11 @@ T("Makes the game's letters sharper on 1440p and 4K screens. It takes effect the
 T("Game's FXAA", "FXAA del gioco")
 T("The game's own edge smoothing. Off: sharper, more jagged edges.", "L'antialiasing dei bordi del gioco. Disattivato: più nitido, bordi più seghettati.")
 T("The game's own FXAA, which smooths edges as the 3D image is drawn into the final picture, as on the console. Off: a sharper image with more jagged edges; use it to replace FXAA with SMAA or TAA above, or to keep the image crisp at a high resolution.", "L'FXAA del gioco, che leviga i bordi mentre l'immagine 3D viene disegnata nell'immagine finale, come su console. Disattivato: un'immagine più nitida con bordi più seghettati; usalo per sostituire l'FXAA con SMAA o TAA qui sopra, o per mantenere l'immagine nitida ad alta risoluzione.")
+
+// Quick inventory actions and Gameplay setting.
+T("Replace", "Sostituisci")
+T("Drop", "Getta")
+T("Back", "Indietro")
+T("Enhanced quick inventory", "Inventario rapido migliorato")
+T("Drop or sort gear and replace pickups when the inventory is full.", "Getta o ordina l'equipaggiamento e sostituisci gli oggetti raccolti quando l'inventario è pieno.")
+T("Sort", "Ordina")

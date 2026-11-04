@@ -562,6 +562,12 @@ void build_items(void) {
                        [](const Item &, int x) { g_settings.color_lut_strength = x * 10; }, 10));
 #endif
 
+    // Gameplay
+    v.push_back(toggle(P_GAMEPLAY, "Enhanced quick inventory",
+                       "Drop or sort gear and replace pickups when the inventory is full.",
+                       [](const Item &) { return (int)g_settings.quick_inventory; },
+                       [](const Item &, int x) { g_settings.quick_inventory = x; }, 0));
+
     // Audio
     v.push_back(choice(P_AUDIO, "Volume", "The game's volume. 100% is its own level.",
                        [](const Item &) { return 21; },

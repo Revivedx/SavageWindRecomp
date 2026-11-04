@@ -13,6 +13,8 @@
 #include <vector>
 
 #include "i18n.h"
+#include "quick_hint_font.h"
+#include "quick_inventory_layout.h"
 #include "imgui.h"
 #include "gyro_drag.h"
 #include "option_rows.h"
@@ -37,6 +39,8 @@ extern "C" {
 }
 #include "menu.h"
 void input_reset(void);
+int quick_drop_hint_state(void);
+#include "../quick_inventory_sort.h"
 void input_pc_escape(bool down);
 void controls_bindings_draw(float scale);  // controls_ui.mm
 #include "../input_bind.h"
@@ -399,6 +403,8 @@ void menu_apply_window_requests(void *win) {
 static bool g_inited;
 static ImGuiContext *g_ctx;  // ours: the start screen (back to it after a reboot) has its own context
 static ImFont *g_font, *g_font_big;
+static ImFont *g_hint_font, *g_hint_buttons;
+static bool g_hint_font_attempted;
 static ImFont *g_font_mono;  // the console (columns line up); NULL: the normal font
 static ImFont *g_menu_font, *g_menu_font_big;  // the menu window (Fira Sans); everything else keeps g_font
 static int g_tab, g_tab_request = -2;  // (-2: no request; -1 is the Prelaunch tab)
@@ -491,12 +497,16 @@ static void load_fonts(void) {
     if (!g_font) g_font = io.Fonts->AddFontDefault();
     if (!g_font_big) g_font_big = g_font;
     if (!g_menu_font || !g_menu_font_big) g_menu_font = g_font, g_menu_font_big = g_font_big;
+    g_hint_font = g_hint_buttons = nullptr;
+    g_hint_font_attempted = g_romfs_dir && g_settings.quick_inventory;
+    if (g_hint_font_attempted) quick_hint_fonts_load(io.Fonts, &g_hint_font, &g_hint_buttons);
 }
 
 // Before a frame: another menu language may need other glyphs - the fonts and their texture are made again
 extern "C" void vk_imgui_fonts_changed(void);  // (runtime/nvn/vulkan/imgui_glue.cpp)
 static void fonts_follow_language(void) {
-    if (g_fonts_lang == ui_lang_generation()) return;
+    bool need_hint_fonts = g_settings.quick_inventory && g_romfs_dir && !g_hint_font_attempted;
+    if (g_fonts_lang == ui_lang_generation() && !need_hint_fonts) return;
     load_fonts();
 #ifdef __APPLE__
     ImGui_ImplMetal_DestroyFontsTexture();  // (NewFrame makes it again)
@@ -1436,6 +1446,95 @@ void menu_tabs_draw(float scale, ImFont *font, ImFont *font_big, bool in_game, v
     g_font = f0, g_font_big = f1;
 }
 
+// Like the quick-selector prompts in TOTK: action text followed by a white
+// button badge. Draw-only: it never captures input or changes game focus.
+static void quick_drop_hint_draw(const ImGuiIO &io, float scale, int state) {
+    int kind = g_settings.button_icons;
+    if (kind <= ICONS_AUTO || kind >= ICONS_COUNT) {
+        int family = input_pad_family();
+        kind = input_last_device() == DEVICE_KEYBOARD ? ICONS_KEYBOARD :
+            family == 1 ? ICONS_XBOX : family == 2 ? ICONS_PLAYSTATION : ICONS_NINTENDO;
+    }
+    bool keyboard = kind == ICONS_KEYBOARD;
+    int family = kind == ICONS_XBOX ? 1 : kind == ICONS_PLAYSTATION ? 2 : 0;
+    QuickInventoryLayout layout = quick_inventory_layout(io.DisplaySize.x, io.DisplaySize.y, state >= 6);
+    // Artwork sizes below are expressed at 1920x1080; positions use native
+    // layout units shared with the selector, including its chest translation.
+    scale = layout.scale / 1.5f;
+    float fs = layout.font_size, radius = 15 * scale, gap = 10 * scale;
+    float y = layout.controls_y;
+    ImFont *fonts[3] = {};
+    ImDrawList *draw = ImGui::GetForegroundDrawList();
+    bool replacement = state >= 4;
+    const int bindings[] = {replacement ? BIND_A : BIND_Y, BIND_X, BIND_B};
+    const char *actions[] = {replacement ? tr("Replace") : tr("Drop"),
+                             tr("Sort"), replacement ? tr("Cancel") : tr("Back")};
+    float widths[3], badges[3];
+    const char *buttons[3];
+    const char *native[3] = {};
+    static const char face_letters[] = {'A', 'B', 'X', 'Y', 0};
+    static const char *face[] = {"\xee\x81\x80", "\xee\x81\x81", "\xee\x81\x82", "\xee\x81\x83"};
+    float width = 0;
+    int first = state == 3 ? 2 : 0, visible = 0;
+    bool sorting = quick_inventory_sort_hint();
+    for (int i = first; i < 3; i++) {
+        if (i == 1 && !sorting) continue;
+        visible++;
+        fonts[i] = g_hint_font ? g_hint_font : g_menu_font;
+        // The European game bitmap lacks e.g. Thai and Hangul. Use the
+        // already merged language fallback for the whole label when needed.
+        for (const char *p = actions[i]; *p;) {
+            unsigned code; int n = ImTextCharFromUtf8(&code, p, nullptr);
+            if (!n) break;
+            p += n;
+            if (!fonts[i]->FindGlyphNoFallback((ImWchar)code)) { fonts[i] = g_menu_font; break; }
+        }
+        buttons[i] = keyboard ? tr(bind_key_label(g_bind_key[bindings[i]])) :
+            tr(bind_pad_label(g_bind_pad[bindings[i]], family));
+        // Both Nintendo and Xbox use round lettered faces. Read the original
+        // circle/letter artwork from the player's font instead of approximating it.
+        if (!keyboard && family != 2 && g_hint_buttons && buttons[i][0] && !buttons[i][1]) {
+            const char *at = strchr(face_letters, buttons[i][0]);
+            if (at) native[i] = face[at - face_letters];
+        }
+        badges[i] = native[i] ? 44 * scale : fmaxf(radius * 2,
+            g_font->CalcTextSizeA(fs * 0.65f, FLT_MAX, 0, buttons[i]).x + 14 * scale);
+        widths[i] = fonts[i]->CalcTextSizeA(fs, FLT_MAX, 0, actions[i]).x + gap + badges[i];
+        width += widths[i];
+    }
+    width += (visible - 1) * 60 * scale;
+    float x = (io.DisplaySize.x - width) * 0.5f;
+    auto label = [&](ImFont *font, ImVec2 pos, ImU32 color, const char *value) {
+        int start = draw->VtxBuffer.Size;
+        draw->AddText(font, fs, pos, color, value);
+        // Zelda's layout applies italic to its normal bitmap font. Match that
+        // slant on text only; controller badges remain upright.
+        for (int j = start; font == g_hint_font && j < draw->VtxBuffer.Size; j++)
+            draw->VtxBuffer[j].pos.x += (pos.y + fs * 0.8f - draw->VtxBuffer[j].pos.y) * 0.18f;
+    };
+    for (int i = first; i < 3; i++) {
+        if (i == 1 && !sorting) continue;
+        int alpha = i == 0 && (state == 1 || state == 4 || state == 6) ? 110 : 255;
+        ImVec2 text = fonts[i]->CalcTextSizeA(fs, FLT_MAX, 0, actions[i]);
+        ImVec2 p(x, y - fs * 0.5f);
+        label(fonts[i], ImVec2(p.x + scale, p.y + scale), IM_COL32(0, 0, 0, alpha / 3), actions[i]);
+        label(fonts[i], p, IM_COL32(245, 246, 232, alpha), actions[i]);
+        float bx = x + text.x + gap;
+        if (native[i]) {
+            // Compensate for the original glyph cell's transparent margins.
+            draw->AddText(g_hint_buttons, 54 * scale, ImVec2(bx - 5 * scale, y - 27 * scale),
+                          IM_COL32(245, 246, 232, alpha), native[i]);
+        } else {
+            ImVec2 key = g_font->CalcTextSizeA(fs * 0.65f, FLT_MAX, 0, buttons[i]);
+            ImVec2 a(bx, y - radius), b(bx + badges[i], y + radius);
+            draw->AddRectFilled(a, b, IM_COL32(245, 246, 232, alpha), keyboard ? 4 * scale : radius);
+            draw->AddText(g_font, fs * 0.65f, ImVec2(a.x + (badges[i] - key.x) * 0.5f, y - key.y * 0.5f),
+                          IM_COL32(25, 28, 24, alpha), buttons[i]);
+        }
+        x += widths[i] + 60 * scale;
+    }
+}
+
 #ifndef __APPLE__
 extern "C" void rec_drain(void);  // (runtime/nvn/vulkan/record.c)
 #endif
@@ -1451,7 +1550,7 @@ static bool menu_draws(bool *pointer_hover = NULL, float *pointer_box = NULL, bo
     if (pointer_hover) *pointer_hover = hover;
     if (gyro_show) *gyro_show = gyro_on;
     return g_open.load() || g_kbd.load() == 1 || g_sizes.load() || console_is_open() || gyro_on || hover ||
-           g_settings.perf_overlay != PERF_OFF;
+           g_settings.perf_overlay != PERF_OFF || quick_drop_hint_state();
 }
 
 bool menu_render_needed(void) { return menu_draws(); }
@@ -1466,6 +1565,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     bool open = g_open.load();
     bool kbd = g_kbd.load() == 1;
     bool sizes = g_sizes.load();
+    int drop_hint = quick_drop_hint_state();
     bool con = console_is_open();
     console_collect();
     GyroScene gyro_scene;
@@ -1534,6 +1634,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     }
 
     if (g_settings.perf_overlay != PERF_OFF) perf_overlay_draw(io, scale);
+    if (drop_hint && !open && !kbd && !sizes && !con) quick_drop_hint_draw(io, scale, drop_hint);
     if (!open && !kbd && !sizes && !con && gyro_scene_show) gyro_scene_draw(io, scale, gyro_scene);
 
     if (open) {

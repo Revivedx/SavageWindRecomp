@@ -10,7 +10,10 @@
 #undef RT_ON_RESET
 #define RT_ON_RESET(fn) static void fn(void)
 #include "../runtime/hle/input.c"
+uint64_t quick_replace_buttons(uint64_t buttons) { return buttons; }
+uint64_t quick_drop_action_filter_buttons(uint64_t buttons) { return buttons; }
 #include "test_pointer_disabled.h"
+#include "test_freecam_disabled.h"
 
 Settings g_settings;
 int16_t g_bind_key[BIND_KEY_COUNT], g_bind_pad[BIND_KEY_COUNT];

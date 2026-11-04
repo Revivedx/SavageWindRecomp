@@ -40,3 +40,9 @@ docs/RAMAS.md
 # the player's own colour LUTs (runtime/color_grade.h): in the data root, which is the checkout in a source build
 /luts/
 /vk_pipelines.seed
+
+# Local Codex instructions, skills and test-session helpers
+/AGENTS.md
+/.agents/
+/.codex/
+/local-agent/

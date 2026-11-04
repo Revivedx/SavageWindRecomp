@@ -171,6 +171,7 @@ static void boot(const char *root) {
     kernel_init();
     dispatch_init();
     { extern void jpeg_debug_init(void); jpeg_debug_init(); }
+    { extern void quick_drop_probe_init(const char *); quick_drop_probe_init(exefs); }
 
     uint32_t stack_size = 0x100000;
     int prio = 44;

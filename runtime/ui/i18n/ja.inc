@@ -619,3 +619,11 @@ T("Makes the game's letters sharper on 1440p and 4K screens. It takes effect the
 T("Game's FXAA", "ゲームのFXAA")
 T("The game's own edge smoothing. Off: sharper, more jagged edges.", "ゲーム本来のエッジの平滑化。オフ: よりシャープになり、輪郭のギザギザが増えます。")
 T("The game's own FXAA, which smooths edges as the 3D image is drawn into the final picture, as on the console. Off: a sharper image with more jagged edges; use it to replace FXAA with SMAA or TAA above, or to keep the image crisp at a high resolution.", "ゲーム本来のFXAAです。3D画像を最終画面に描くときに輪郭を滑らかにします（本体と同じ）。オフ: よりシャープな画像になり、輪郭のギザギザが増えます。上のSMAAやTAAに置き換えるときや、高解像度で画像をくっきり保ちたいときに使います。")
+
+// Quick inventory actions and Gameplay setting.
+T("Replace", "入れ替える")
+T("Drop", "ポーチから出す")
+T("Back", "もどる")
+T("Enhanced quick inventory", "クイックポーチの機能拡張")
+T("Drop or sort gear and replace pickups when the inventory is full.", "装備品を捨てたり並べ替えたりでき、ポーチがいっぱいのときは拾うアイテムと入れ替えられます。")
+T("Sort", "並べ替え")

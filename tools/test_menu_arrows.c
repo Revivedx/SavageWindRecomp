@@ -5,6 +5,9 @@
 #include <pthread.h>
 #include <stdio.h>
 #include "../runtime/hle/input.c"
+#include "test_freecam_disabled.h"
+uint64_t quick_replace_buttons(uint64_t buttons) { return buttons; }
+uint64_t quick_drop_action_filter_buttons(uint64_t buttons) { return buttons; }
 
 Settings g_settings;
 int16_t g_bind_key[BIND_KEY_COUNT];

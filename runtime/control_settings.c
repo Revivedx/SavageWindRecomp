@@ -38,7 +38,7 @@ static const Setting settings[] = {
     B(mouse_camera), F(mouse_sens, .1, 10), F(mouse_sens_y, .5, 2), B(mouse_invert_y),
     F(motion_sens, .1, 10), I(motion_invert, 0, 3, "off|up_down|left_right|both"),
     I(button_icons, 0, ICONS_COUNT - 1, "auto|keyboard|xbox|playstation|nintendo"),
-    B(async_shaders), B(precompile_shaders),
+    B(async_shaders), B(precompile_shaders), B(quick_inventory),
     I(shadow_res, 0, SHADOW_COUNT - 1, "console|high|ultra|extreme"), B(wide_view),
     I(hdr, 0, HDR_COUNT - 1, "auto|on|off"), I(hdr_white, 0, 1000, NULL),
     I(fov, 50, 200, NULL), I(hud_size, 50, 150, NULL), I(color_exposure, -20, 20, NULL), I(color_contrast, -50, 50, NULL),
