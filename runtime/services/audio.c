@@ -685,7 +685,7 @@ static void *renderer_tick(void *arg) {
         }
         klock();
         kernel_signal(r->event);
-        pthread_mutex_unlock(&g_klock);
+        kunlock();
     }
     return NULL;
 }
@@ -1494,7 +1494,7 @@ static void *audout_thread(void *arg) {
         pthread_mutex_unlock(&a->lock);
         klock();
         kernel_signal(a->event);
-        pthread_mutex_unlock(&g_klock);
+        kunlock();
     }
     return NULL;
 }
