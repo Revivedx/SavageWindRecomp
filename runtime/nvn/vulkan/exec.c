@@ -14,6 +14,7 @@
 #include "../../kernel.h"
 #include "shaders.h"
 #include "vk.h"
+#include "bloom_scale.h"
 #include "vram.h"
 #include "fsr3.h"
 #include "mvec.h"
@@ -6598,6 +6599,27 @@ static void draw_(CmdRec *r, bool indexed) {
         if (last_skip && !g_skip_fs_off) { stat_skipped++; return; }
         if (g_debug_frame && getenv("SAVAGEWIND_LOG_FSHASH")) LOG("[fshash] fs=%llx hash %016llx\n", (unsigned long long)fs, (unsigned long long)last_hash);
         g_cur_fs_hash = last_hash;
+    }
+    // The bloom's fixed tap offsets must address adjacent console-size texels.
+    // Enlarging those images spaces the taps apart and produces separate copies
+    // of emissive details; odd mip scratch sizes also stopped inheriting scale.
+    // Recognize the actual bloom shaders, not arbitrary small HDR scene targets.
+    static int bloom_scaled = -1;
+    if (bloom_scaled < 0) bloom_scaled = getenv("SAVAGEWIND_BLOOM_SCALED") != NULL;
+    if (!bloom_scaled) {
+        for (int i = 0; i < st.rt.ncolor; i++) {
+            NvnTexture *t = st.rt.color[i];
+            if (!t || !bloom_native_target(g_cur_fs_hash, t->target, t->format, t->width, t->height, t->samples)) continue;
+            TexBackend *b = vk_tex(t, true);
+            if (b->native_post) continue;
+            vk_end_pass();
+            if (vk_native_post_target(t)) {
+                static unsigned logged;
+                if (logged++ < 12) LOG("[bloom] native working target %ux%u, levels %u, fs %016llx\n",
+                                      t->width, t->height, t->levels, (unsigned long long)g_cur_fs_hash);
+            }
+            st.rt_dirty = true;
+        }
     }
     if (g_debug_frame) { debug_draw(pr, r, indexed); pass_dbg_draws++; }
     {   // (debugging) SAVAGEWIND_LOG_FS_CB=<fs hash>:<k>:<first float>:<count>: each frame, those floats of fragment cbuf k

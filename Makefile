@@ -608,3 +608,13 @@ test-hour: $(B)/test_hour
 	env SAVAGEWIND_TEST_TIME=18 $(B)/test_hour env
 
 .PHONY: test-hour
+
+# Guard shader-specific bloom scaling against unrelated scene, depth and UI targets.
+$(B)/test_bloom_scale: tests/test_bloom_scale.c runtime/nvn/vulkan/bloom_scale.h
+	@mkdir -p $(B)
+	$(CC) -O1 -Wall -Wextra -Werror -o $@ $<
+
+test-bloom-scale: $(B)/test_bloom_scale
+	$(B)/test_bloom_scale
+
+.PHONY: test-bloom-scale
