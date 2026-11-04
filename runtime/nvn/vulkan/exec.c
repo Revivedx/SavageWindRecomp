@@ -4259,8 +4259,11 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
             // Full-width panes slide between pause pages: keep their projection wide throughout the move, so test the
             // width, not the position.
             bool frame_end = !tall && hud_frame_end(g, mv, rc, m00, shape);
+            // Taller map views are cropped to their 16:9 frame at presentation (output_scale.c).
+            // Stretching a scrollable pane here separates its pan/zoom from the icons over it.
             if (lo < 1e8f && (tall ? lo <= -edge + 0.01f && hi >= edge - 0.01f && lo >= -over && hi <= over
-                                    : (hi - lo >= 2 / shape - 0.02f && hi - lo <= 2 * over) || frame_end)) {
+                                    : (hi - lo >= 2 / shape - 0.02f && hi - lo <= 2 * over) || frame_end) &&
+                !(tall && framepace_map_ui())) {
                 if (tall) m11 /= shape;
                 else m00 *= shape;
             }
