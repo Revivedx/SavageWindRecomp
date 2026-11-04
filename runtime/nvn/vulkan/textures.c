@@ -15,6 +15,7 @@
 #include "../astc.h"
 #include "../../perfcount.h"
 #include "../glyphs.h"
+#include "../hw_illust.h"
 #include "../renderer.h"
 #include "../text_upscale.h"
 
@@ -1157,6 +1158,14 @@ static void upload_levels(NvnTexture *t, TexBackend *b, uint32_t level_mask) {
             if (lv == 0 && layer == 0 && t->format == 0x01 && !linear &&  // (the HUD's button textures, likewise)
                 glyphs_apply_layout(t->format, l.w, l.h, lin, row))
                 b->glyph_gen = glyphs_generation();
+            if (lv == 0 && layer == 0 && t->format == 0x0D && !linear) {  // (the Controls page's and tips' drawings)
+                int which = hw_illust_which(l.w, l.h, lin, row), dev = glyphs_console();
+                if (which >= 0) {
+                    if (dev >= 0) hw_illust_draw(dev, which, l.w, l.h, lin, row);
+                    b->illust_dev = dev + 2;  // (another device later: uploaded again, vk_tex)
+                    LOG("[glyphs] Controls page drawing %d: device %d\n", which, dev);
+                }
+            }
             if (t->target == 2 && lv == 0 && getenv("SAVAGEWIND_DUMP_TEX3D")) {  // (debugging) 3D texels as uploaded
                 char path[128];
                 snprintf(path, sizeof path, "build/tex3d_%llu_%ux%ux%u_f%x.raw", (unsigned long long)t->debug_id, l.w, l.h, l.d,
@@ -1305,6 +1314,7 @@ TexBackend *vk_tex(NvnTexture *t, bool for_render) {
         vk_trace_event(t, 1, NULL, 0, "use: CPU-owned, uploaded %d dynamic %d", b->uploaded, b->dynamic);
     if (b->pending_rgba) upload_pending(b);
     if (b->glyph_gen && b->glyph_gen != glyphs_generation()) upload_levels(t, b, 1);  // (button icons: other device)
+    if (b->illust_dev && b->illust_dev != glyphs_console() + 2) upload_levels(t, b, 1);  // (the drawings: likewise)
     // Levels nvnTextureWriteTexels filled go up now, also into an image the GPU draws into: BOTW writes level 0 of its
     // 32x32x32 noise that way and then renders the smaller levels from it (the noise stayed black: GPU-owned images
     // never read guest memory again).

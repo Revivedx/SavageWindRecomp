@@ -15,3 +15,13 @@ bool glyphs_apply_layout(uint32_t format, uint32_t w, uint32_t h, uint8_t *lin, 
 
 // Changes whenever the icons to draw change (device, bindings, setting): sheets uploaded under another one go up again.
 uint32_t glyphs_generation(void);
+
+// The device the Controls page and the tips draw instead of the Switch (runtime/nvn/hw_illust.c HW_DEVICE_*), -1 for
+// the Switch: Button icons' device, or on Automatic the controller in use (the Steam Deck's own in Steam Deck mode).
+// glyphs_console: the one they show, first decided when the game files are opened (their layouts are patched then);
+// glyphs_console_wanted: what it would be now; glyphs_console_poll (each frame): another one moves them to it while the
+// game runs (their drawings follow: textures.c), or, if their panes aren't found, leaves it to a restart.
+int glyphs_console(void);
+int glyphs_console_wanted(void);
+void glyphs_console_poll(void);
+bool glyphs_console_stuck(void);  // another device wanted, but its panes weren't found: only a restart shows it

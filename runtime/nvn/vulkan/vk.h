@@ -126,6 +126,7 @@ typedef struct TexBackend {
     bool bc4_cpu;                // BC4 decoded to R8 on upload (SAVAGEWIND_VK_BC4_CPU=1: Mali text / sprites test)
     uint8_t text_scale;          // a font sheet enlarged by this much on upload (runtime/nvn/text_upscale.c); 0: not one
     uint32_t glyph_gen;          // a button glyph sheet (runtime/nvn/glyphs.c): the icons it was uploaded with
+    int illust_dev;              // a device drawing (runtime/nvn/hw_illust.c): its device + 2 (1: the Switch's), 0: none
     // textures.c: one image per memory and shape, shared by every texture made there
     uint64_t key_addr;           // 0: not shared
     uint32_t key[7];             // target, format, width, height, depth, levels, samples

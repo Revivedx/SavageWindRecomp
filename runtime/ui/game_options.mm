@@ -38,6 +38,7 @@ extern "C" {
 #include "../color_grade.h"
 #include "../pc_cursor.h"
 #include "../window_size.h"
+#include "../nvn/glyphs.h"
 void rt_request_reboot(int kind);           // runtime/main.c (1: start the game again)
 void menu_request_window_apply(void);       // menu.mm (fullscreen / window size, applied by the window loop)
 void menu_size_list_open(void);             // menu.mm (Window size's list, over the screen)
@@ -117,6 +118,18 @@ bool g_switching;                  // ... and its next opening shows g_next_page
 uint64_t g_quit_dialog;            // the quit question's dialog while it is up
 uint64_t g_quit_owner;             // ... and the screen it came from (title menu or Options; its input is off meanwhile)
 bool g_quit_texts;                 // ... and its texts are still to be given (its two-button layout comes next)
+// The two-button question asked: Quit (Quit's button, the title menu), or one asked when a page is left (rt_opt_back):
+// restart for the Controls page's drawing (Button icons: another device), put the Steam Deck's defaults back (Steam
+// Deck mode: Enabled chosen). The game's dialog stays up after an answer: Cancel and the defaults close it with a B
+// for the game (input.c g_inject_b), which closes it without an answer (rt_quit_dialog_back). Quit from Options asks
+// where to (the game's title screen or the desktop), then whether to leave, unsaved progress lost (Q_CONFIRM_*): the
+// first dialog closes with a B, a second B a moment later opens the next one through rt_opt_back.
+enum Question { Q_QUIT, Q_RESTART_ICONS, Q_DECK_DEFAULTS, Q_CONFIRM_TITLE, Q_CONFIRM_DESKTOP } g_question = Q_QUIT;
+int g_confirm_next = -1;           // Q_CONFIRM_* to ask once the quit question has gone (-1: none)
+std::chrono::steady_clock::time_point g_confirm_at;  // ... when its B goes (zero: not yet)
+bool g_dialog_closing;             // ... an answer taken, the B on its way: the dialog goes, then the page gets its input
+int g_icons_declined = -2;         // the Controls page device whose restart was cancelled (not asked again for it)
+extern "C" volatile int g_inject_b;  // (runtime/hle/input.c)
 uint64_t g_cap_row;                // a binding row whose capture is running
 uint64_t g_size_row;               // the Window size row whose list was opened
 std::atomic<bool> g_size_redraw;   // ... and a size was picked there (render thread): redraw it
@@ -152,13 +165,21 @@ const char *const k_drawdist[] = {"Original", "Medium", "High"};  // (settings.h
 constexpr int k_haze[] = HAZE_CHOICES;  // percent (Video > Haze)
 const char *const k_shadow[] = {"Console (896)", "High (2048)", "Ultra (4096)", "Extreme (8192)"};  // (SHADOW_*)
 const char *const k_text[] = {"Off", "2x", "4x"};  // (sharper_text / 2)
-const char *const k_icons[] = {"Automatic", "Keyboard", "Xbox", "PlayStation", "Nintendo"};  // (ICONS_*)
-constexpr int k_fps[] = FPS_CHOICES;  // frame rate (0: Off, no limit)
+const char *const k_icons[] = {"Automatic", "Keyboard", "Xbox", "PlayStation", "Nintendo", "Steam Deck"};  // (ICONS_*)
+constexpr int k_fps_pc[] = FPS_CHOICES;
+static int fps_at(int x) { const int *l; return fps_choices(&l), l[x]; }  // frame rate (0: Off, no limit; Steam Deck's own)
+static int fps_count() { const int *l; return fps_choices(&l); }
+static int fps_default_index() {
+    for (int i = 0; i < fps_count(); i++)
+        if (fps_at(i) == FPS_DEFAULT) return i;
+    return 0;
+}
 const char *const k_vsync[VSYNC_COUNT] = {"On", "Fast", "Adaptive", "Off"};  // (settings.h VSYNC_*)
 const char *const k_hdr[HDR_COUNT] = {"Automatic", "On", "Off"};               // (settings.h HDR_*)
 const char *const k_fsmode[FSMODE_COUNT] = {"Automatic", "Borderless", "Exclusive"};  // (settings.h FSMODE_*)
-constexpr int FPS_DEFAULT_INDEX = 2;
-static_assert(k_fps[FPS_DEFAULT_INDEX] == FPS_DEFAULT);
+const char *const k_deckmode[] = {"Enabled", "Custom", "Disabled"};
+constexpr int k_deck_of[] = {DECKMODE_ON, DECKMODE_CUSTOM, DECKMODE_OFF};  // (the row's values: settings.h DECKMODE_*)
+static_assert(k_fps_pc[2] == FPS_DEFAULT);
 constexpr int k_sens[] = {10, 25, 50, 75, 100, 125, 150, 200, 250, 300, 400, 500, 600, 800, 1000};  // mouse sensitivity, %
 constexpr int SENS_DEFAULT = 9;  // (300%: MOUSE_SENS_DEFAULT)
 static_assert(k_sens[SENS_DEFAULT] == 300);
@@ -198,6 +219,23 @@ Item toggle(int page, const char *title, const char *desc, int (*get)(const Item
     Item it = {};
     it.page = page, it.kind = KIND_TOGGLE, it.title = title, it.desc = desc, it.get = get, it.set = set, it.def = def;
     return it;
+}
+
+// Video > Steam Deck mode's description: what the mode it is on does (also menu.mm)
+static bool deck_pending(const Item &it) {  // Enabled shown, not yet on: leaving the page asks to put the defaults back
+    size_t idx = (size_t)(&it - g_items.data());
+    return g_settings.deck_mode != DECKMODE_ON && idx < g_shown.size() && g_shown[idx] == 0;
+}
+static const char *deck_mode_desc(const Item &it) {
+    settings_deck_sync();
+    if (deck_pending(it))
+        return tr("Leave this page to put the Steam Deck's defaults back: you are asked first.");
+    if (g_settings.deck_mode == DECKMODE_ON)
+        return tr("Lighter settings and 40 or 45 FPS made for the Steam Deck. Changing one of them makes the mode Custom. "
+                  "Some of it applies after a restart.");
+    if (g_settings.deck_mode == DECKMODE_CUSTOM)
+        return tr("Some of the Steam Deck's settings were changed. Choose Enabled to put the Steam Deck's defaults back.");
+    return tr("Every setting as on a PC, free to change.");
 }
 
 Item choice(int page, const char *title, const char *desc, int (*count)(const Item &),
@@ -252,8 +290,8 @@ const char *ups_label(const Item &, int x) {
 
 const char *fps_label(const Item &, int x) {
     static char buf[32];
-    if (!k_fps[x]) return tr("Off");
-    snprintf(buf, sizeof buf, tr("%d FPS"), k_fps[x]);
+    if (!fps_at(x)) return tr("Off");
+    snprintf(buf, sizeof buf, tr("%d FPS"), fps_at(x));
     return buf;
 }
 
@@ -280,10 +318,25 @@ void build_items(void) {
     v.push_back(button(P_MAIN, "Controller", "Which controller button does each button.", "Open", A_PAGE, P_PAD));
     v.push_back(button(P_MAIN, "Language", "Language of the texts and of the voices.", "Open", A_PAGE, P_LANGUAGE));
     v.push_back(button(P_MAIN, "Accessibility", "Assists that make the game easier.", "Open", A_PAGE, P_ACCESS));
-    v.push_back(button(P_MAIN, "Quit game", "To the desktop, or back to the Savage Wind start screen.", "Quit",
-                       A_QUIT, 0));
+    v.push_back(button(P_MAIN, "Quit game", "To the game's title screen, or to the desktop.", "Quit", A_QUIT, 0));
 
     // Video (fullscreen and the window size are applied by the window loop: menu.mm)
+    {   // Steam Deck mode (settings.h DECKMODE_*): Enabled takes the Deck's own settings again (settings_set_deck_mode);
+        // Custom isn't picked, it shows that one of them changed since (settings_deck_sync)
+        Item it = choice(P_VIDEO, "Steam Deck mode", nullptr, [](const Item &) { return 3; },
+                         [](const Item &, int x) { return tr(k_deckmode[x]); },
+                         [](const Item &) {
+                             settings_deck_sync();
+                             return g_settings.deck_mode == DECKMODE_ON ? 0 : g_settings.deck_mode == DECKMODE_CUSTOM ? 1 : 2;
+                         },
+                         [](const Item &, int x) { settings_set_deck_mode(k_deck_of[x]); },
+                         settings_deck_mode_default() == DECKMODE_ON ? 0 : 2);
+        // (Custom: never picked; Enabled from another mode: shown until the page is left, then asked: rt_opt_back)
+        it.value_off = [](const Item &, int x) { return x == 1 || (x == 0 && g_settings.deck_mode != DECKMODE_ON); };
+        it.desc_fn = [](const Item &self) { return deck_mode_desc(self); };
+        it.reset = [](const Item &) { settings_set_deck_mode(settings_deck_mode_default()); };
+        v.push_back(it);
+    }
     v.push_back(toggle(P_VIDEO, "Fullscreen", "Fills the screen. Also F11 or Alt+Enter.",
                        [](const Item &) { return (int)g_settings.fullscreen; },
                        [](const Item &, int x) { g_settings.fullscreen = x; menu_request_window_apply(); }, 0));
@@ -378,13 +431,13 @@ void build_items(void) {
                        [](const Item &) { return nearest(k_haze, N(k_haze), (float)g_settings.haze); },
                        [](const Item &, int x) { g_settings.haze = k_haze[x]; }, N(k_haze) - 1));
     Item fps = choice(P_VIDEO, "Frame rate", "",
-                      [](const Item &) { return N(k_fps); }, fps_label,
+                      [](const Item &) { return fps_count(); }, fps_label,
                       [](const Item &) {
-                          for (int i = 0; i < N(k_fps); i++)
-                              if (k_fps[i] == g_settings.fps_limit) return i;
-                          return FPS_DEFAULT_INDEX;
+                          for (int i = 0; i < fps_count(); i++)
+                              if (fps_at(i) == g_settings.fps_limit) return i;
+                          return fps_default_index();
                       },
-                      [](const Item &, int x) { g_settings.fps_limit = k_fps[x]; }, FPS_DEFAULT_INDEX);
+                      [](const Item &, int x) { g_settings.fps_limit = fps_at(x); }, fps_default_index());
     fps.desc_fn = [](const Item &) {  // (one line)
         static char buf[256];
         int hz = (int)lroundf(winsize_refresh_rate());
@@ -467,10 +520,11 @@ void build_items(void) {
                        },
                        [](const Item &) { return g_settings.sharpening; },
                        [](const Item &, int x) { g_settings.sharpening = x; }, 0));
-    // AMD FSR 3 frame generation (vulkan/framegen.cpp)
-    v.push_back(toggle(P_VIDEO, "Frame generation (AMD FSR 3)", "Twice the frames on screen. Adds a little delay.",
-                       [](const Item &) { return (int)g_settings.frame_gen; },
-                       [](const Item &, int x) { g_settings.frame_gen = x; }, 0));
+    // AMD FSR 3 frame generation (vulkan/framegen.cpp; not on a Steam Deck: settings_deck_hardware)
+    if (!settings_deck_hardware())
+        v.push_back(toggle(P_VIDEO, "Frame generation (AMD FSR 3)", "Twice the frames on screen. Adds a little delay.",
+                           [](const Item &) { return (int)g_settings.frame_gen; },
+                           [](const Item &, int x) { g_settings.frame_gen = x; }, 0));
 #endif
     v.push_back(toggle(P_VIDEO, "Asynchronous shaders", "On: no stutter, but some effects appear late.",
                        [](const Item &) { return (int)g_settings.async_shaders; },
@@ -652,12 +706,21 @@ void build_items(void) {
         it.label = bind_label;
         v.push_back(it);
     }
-    v.push_back(choice(P_CONTROLS, "Button icons",
-                       "The buttons the game's prompts show. Automatic: the device you used last.",
-                       [](const Item &) { return N(k_icons); },
-                       [](const Item &, int x) { return tr(k_icons[x]); },
-                       [](const Item &) { return g_settings.button_icons; },
-                       [](const Item &, int x) { g_settings.button_icons = x; }, ICONS_AUTO));
+    {   // (the Controls page's drawing follows it at the next start: leaving the page asks to restart, rt_opt_back)
+        Item it = choice(P_CONTROLS, "Button icons",
+                         "The buttons the game's prompts show. Automatic: the device you used last.",
+                         [](const Item &) { return N(k_icons); },
+                         [](const Item &, int x) { return tr(k_icons[x]); },
+                         [](const Item &) { return g_settings.button_icons; },
+                         [](const Item &, int x) { g_settings.button_icons = x; }, ICONS_AUTO);
+        it.desc_fn = [](const Item &self) {
+            return !glyphs_console_stuck()
+                       ? tr(self.desc)
+                       : tr("The buttons the game's prompts show. Automatic: the device you used last. The Controls "
+                            "page shows another device after a restart: you are asked when you leave this page.");
+        };
+        v.push_back(it);
+    }
 
     // Keyboard and controller: one button per Switch input, showing what drives it; A waits for the new one
     auto bind = [&](int page, int action, int slot) {
@@ -851,11 +914,53 @@ void put_text(uint32_t id, const char *s, uint64_t out, bool grey = false) {
 void quit_poll(void) {
     if (!g_quit_dialog) return;
     uint32_t a = rd32(DIALOG_ANSWER);
-    if (a == 0 || a == 1) {
+    if ((a == 0 || a == 1) && g_question != Q_QUIT) {  // (upper button: 0, the question's yes; lower: 1, Cancel)
+        wr32(DIALOG_ANSWER, DIALOG_NO_ANSWER);
+        if ((g_question == Q_CONFIRM_TITLE || g_question == Q_CONFIRM_DESKTOP) && a == 0) {
+            bool title = g_question == Q_CONFIRM_TITLE;
+            g_quit_dialog = 0;
+            g_question = Q_QUIT;
+            settings_save();
+            fprintf(stderr, "[options] quit: %s\n", title ? "the game's title screen" : "desktop");
+            if (title) {
+                rt_request_reboot(1);  // (RT_REBOOT_GAME: the game starts again, at its title screen)
+            } else {
+                SDL_Event q = {};
+                q.type = SDL_EVENT_QUIT;
+                SDL_PushEvent(&q);
+            }
+            return;
+        }
+        if (g_question == Q_RESTART_ICONS && a == 0) {
+            g_quit_dialog = 0;
+            g_question = Q_QUIT;
+            settings_save();
+            fprintf(stderr, "[options] restart for the Controls page\n");
+            rt_request_reboot(1);  // (RT_REBOOT_GAME)
+            return;
+        }
+        if (g_question == Q_RESTART_ICONS) g_icons_declined = glyphs_console_wanted();
+        if (g_question == Q_DECK_DEFAULTS && a == 0) settings_set_deck_mode(DECKMODE_ON);
+        settings_save();
+        for (int &s : g_shown) s = -1;  // (Enabled shown: now the mode itself, or back to it)
+        fprintf(stderr, "[options] %s: %s\n", g_question == Q_DECK_DEFAULTS ? "Steam Deck defaults" :
+                g_question == Q_RESTART_ICONS ? "restart" : "quit", a == 0 ? "yes" : "cancelled");
+        g_dialog_closing = true;
+        g_inject_b = 1;  // (the dialog closes on it; the page gets its input back below, once it has gone)
+        return;
+    }
+    if ((a == 0 || a == 1) && g_quit_owner && g_quit_owner == options_screen()) {  // (Options: asked again first)
+        wr32(DIALOG_ANSWER, DIALOG_NO_ANSWER);
+        g_confirm_next = a == 1 ? Q_CONFIRM_TITLE : Q_CONFIRM_DESKTOP;
+        g_dialog_closing = true;
+        g_inject_b = 1;
+        return;
+    }
+    if (a == 0 || a == 1) {  // (the title menu's: nothing to lose there)
         wr32(DIALOG_ANSWER, DIALOG_NO_ANSWER);
         g_quit_dialog = 0;
-        fprintf(stderr, "[options] quit: %s\n", a == 1 ? "start screen" : "desktop");
         settings_save();
+        fprintf(stderr, "[options] quit: %s\n", a == 1 ? "start screen" : "desktop");
         if (a == 1) {
             rt_request_reboot(2);  // (RT_REBOOT_TITLE: the start screen)
         } else {
@@ -865,12 +970,16 @@ void quit_poll(void) {
         }
     } else if (screen_by_id(SCREEN_DIALOG) != g_quit_dialog) {  // (closed with B: the asking screen gets its input back)
         g_quit_dialog = 0;
+        g_question = Q_QUIT;
+        g_dialog_closing = false;
         if (g_quit_owner && rd64(g_quit_owner + 0x38)) {
             uint64_t in = rd64(g_quit_owner + 0x38) + 0x38;
             wr32(in, rd32(in) | 2u);
         }
         if (g_quit_owner == options_screen()) mark_all_rows(g_quit_owner);  // (the pressed button looks pressed)
         g_quit_owner = 0;
+        if (g_confirm_next >= 0)  // (the confirmation's B: once this one's is surely over)
+            g_confirm_at = std::chrono::steady_clock::now() + std::chrono::milliseconds(150);
     }
 }
 
@@ -1037,6 +1146,7 @@ extern "C" int rt_opt_decide(uint64_t row) {
         }
         return 2;
     case A_QUIT:
+        g_question = Q_QUIT;
         return 3;
     }
     return 2;
@@ -1050,6 +1160,11 @@ extern "C" uint64_t rt_opt_tick(uint64_t screen) {
     if (g_quit_dialog) {  // (the quit question is up: 1 skips the screen's update, whose dialog handling takes answers)
         quit_poll();
         if (g_quit_dialog) return 1;
+    }
+    if (g_confirm_next >= 0 && g_confirm_at.time_since_epoch().count() &&
+        std::chrono::steady_clock::now() >= g_confirm_at) {  // (Quit's confirmation: a B opens it, rt_opt_back)
+        g_confirm_at = {};
+        g_inject_b = 1;
     }
     int d, s, ms;
     if (g_cap_row && !bind_capture_active(&d, &s, &ms)) {
@@ -1073,15 +1188,36 @@ extern "C" uint64_t rt_opt_tick(uint64_t screen) {
 }
 
 // B: from one of these pages back to the first one
-extern "C" void rt_opt_back(void) {
+// B on the screen: 3 asks a question instead (the page stays): Enabled chosen in Steam Deck mode (Video), another device
+// for the Controls page (Controls); otherwise it closes, and on one of Savage Wind's pages opens again on the first
+extern "C" int rt_opt_back(void) {
     bind_capture_cancel();
     g_cap_row = 0;
+    if (g_installed && !g_quit_dialog && g_confirm_next >= 0) {  // (Quit's confirmation, after its first question)
+        g_question = (Question)g_confirm_next;
+        g_confirm_next = -1;
+        g_confirm_at = {};
+        return 3;
+    }
+    if (g_installed && !g_quit_dialog && g_cur_page == P_VIDEO) {
+        for (const Item &it : g_items)
+            if (it.page == P_VIDEO && !strcmp(it.title, "Steam Deck mode") && deck_pending(it)) {
+                g_question = Q_DECK_DEFAULTS;
+                return 3;
+            }
+    }
+    if (g_installed && !g_quit_dialog && g_cur_page == P_CONTROLS && glyphs_console_stuck() &&
+        glyphs_console_wanted() != g_icons_declined) {
+        g_question = Q_RESTART_ICONS;
+        return 3;
+    }
     if (g_installed && g_cur_page != P_MAIN) {
         g_next_page = P_MAIN;
         g_reopen = g_switching = true;
     } else {
         g_reopen = g_switching = false;
     }
+    return 0;
 }
 
 // The title menu's Downloadable Content button (id 0x6d) is gone until Savage Wind has DLC: its eShop button opened the
@@ -1217,6 +1353,30 @@ extern "C" uint64_t rt_quit_dialog_begin(uint64_t owner) {
 extern "C" void rt_quit_dialog_texts(uint64_t msg, uint64_t left, uint64_t right) {
     if (!g_quit_texts) return;
     g_quit_texts = false;
+    if (g_question == Q_RESTART_ICONS || g_question == Q_DECK_DEFAULTS) {  // (left, the cursor's: Cancel)
+        if (g_question == Q_RESTART_ICONS)
+            put_text(MSG_QUIT_QUESTION, tr("Restart the game to show this device on the Controls page? Unsaved progress "
+                                           "is lost."), msg);
+        else
+            put_text(MSG_QUIT_QUESTION, tr("Put the Steam Deck's defaults back? Your changes to its settings are lost."), msg);
+        put_text(MSG_QUIT_START, tr("Cancel"), left);
+        put_text(MSG_QUIT_DESKTOP, tr(g_question == Q_RESTART_ICONS ? "Restart" : "Defaults"), right);
+        return;
+    }
+    if (g_question == Q_CONFIRM_TITLE || g_question == Q_CONFIRM_DESKTOP) {  // (left, the cursor's: Cancel)
+        bool title = g_question == Q_CONFIRM_TITLE;
+        put_text(MSG_QUIT_QUESTION, tr(title ? "Go back to the game's title screen? Unsaved progress is lost."
+                                             : "Quit to the desktop? Unsaved progress is lost."), msg);
+        put_text(MSG_QUIT_START, tr("Cancel"), left);
+        put_text(MSG_QUIT_DESKTOP, tr(title ? "Title screen" : "Desktop"), right);
+        return;
+    }
+    if (g_quit_owner && g_quit_owner == options_screen()) {  // (Options: where to; the next question confirms)
+        put_text(MSG_QUIT_QUESTION, tr("Go back to the game's title screen, or quit to the desktop?"), msg);
+        put_text(MSG_QUIT_START, tr("Title screen"), left);
+        put_text(MSG_QUIT_DESKTOP, tr("Desktop"), right);
+        return;
+    }
     put_text(MSG_QUIT_QUESTION, tr("Quit to the desktop, or back to the Savage Wind start screen? Unsaved progress "
                                    "is lost."), msg);
     // (left: the lower button, 0x5a, the cursor's and B's; right: the upper one, 0x5b)

@@ -70,9 +70,100 @@ static const char *const k_fsmode[FSMODE_COUNT] = {"auto", "borderless", "exclus
 
 static const char *const k_drawdist[DRAWDIST_COUNT] = {"original", "medium", "high"};  // (DRAWDIST_*)
 
-static const char *const k_icons[ICONS_COUNT] = {"auto", "keyboard", "xbox", "playstation", "nintendo"};
+static const char *const k_icons[ICONS_COUNT] = {"auto", "keyboard", "xbox", "playstation", "nintendo", "steamdeck"};
 
 static const char *const k_quality[UPQ_COUNT] = {"ultra_quality", "quality", "balanced", "performance", "ultra_performance"};
+
+static const char *const k_deckmode[DECKMODE_COUNT] = {"auto", "on", "off", "custom"};  // (DECKMODE_*)
+
+// This is a Steam Deck: Steam's own SteamDeck=1, or the board, Valve's Jupiter (LCD) or Galileo (OLED). (Windows on a
+// Deck has no DMI files to read: the menu's On, or SAVAGEWIND_STEAM_DECK=1.)
+static bool deck_hardware(void) {
+    static int deck = -1;
+    if (deck >= 0) return deck;
+    const char *e = getenv("SteamDeck");
+    deck = e && atoi(e) != 0;
+#ifdef __linux__
+    char vendor[32] = "", product[32] = "";
+    FILE *f = fopen("/sys/devices/virtual/dmi/id/board_vendor", "r");
+    if (f) { if (!fgets(vendor, sizeof vendor, f)) vendor[0] = 0; fclose(f); }
+    f = fopen("/sys/devices/virtual/dmi/id/product_name", "r");
+    if (f) { if (!fgets(product, sizeof product, f)) product[0] = 0; fclose(f); }
+    vendor[strcspn(vendor, "\r\n")] = 0, product[strcspn(product, "\r\n")] = 0;
+    if (!strcmp(vendor, "Valve") && (!strcmp(product, "Jupiter") || !strcmp(product, "Galileo"))) deck = 1;
+#endif
+    return deck;
+}
+
+// SAVAGEWIND_STEAM_DECK=0|1 decides it (tests); otherwise the menu's Steam Deck mode
+bool settings_steam_deck(void) {
+    static int env = -2;
+    if (env == -2) {
+        const char *e = getenv("SAVAGEWIND_STEAM_DECK");
+        env = e && *e ? atoi(e) != 0 : -1;
+    }
+    if (env >= 0) return env;
+    int m = g_settings.deck_mode;
+    return m == DECKMODE_ON || m == DECKMODE_CUSTOM || (m == DECKMODE_AUTO && deck_hardware());
+}
+
+int settings_deck_mode_default(void) { return deck_hardware() ? DECKMODE_ON : DECKMODE_OFF; }
+bool settings_deck_hardware(void) { return deck_hardware(); }
+
+void settings_set_deck_mode(int mode) {
+    if (mode == DECKMODE_ON) {
+        g_settings.deck_mode = DECKMODE_ON;
+        settings_steam_deck_defaults();
+    } else if (mode == DECKMODE_OFF) {
+        g_settings.deck_mode = DECKMODE_OFF;
+        if (!settings_steam_deck()) {  // (40 and 45 are the Deck's only)
+            const int *fps;
+            int n = fps_choices(&fps), ok = 0;
+            for (int i = 0; i < n; i++) ok |= fps[i] == g_settings.fps_limit;
+            if (!ok) g_settings.fps_limit = FPS_DEFAULT;
+        }
+    }
+}
+
+int fps_choices(const int **list) {
+    static const int pc[] = FPS_CHOICES, deck[] = FPS_CHOICES_DECK;
+    _Static_assert(sizeof pc / sizeof pc[0] <= FPS_CHOICES_MAX && sizeof deck / sizeof deck[0] <= FPS_CHOICES_MAX, "");
+    bool d = settings_steam_deck();
+    *list = d ? deck : pc;
+    return d ? (int)(sizeof deck / sizeof deck[0]) : (int)(sizeof pc / sizeof pc[0]);
+}
+
+// The Steam Deck's own defaults, for a first launch on one (no settings file yet) and the menu's Steam Deck mode turned
+// on: each option that costs GPU or CPU time takes its Deck value here, not in g_settings' defaults (a PC keeps those).
+// Measured on a Deck LCD (docs/linux.md, 2026-10-23): about 40 fps on the Great Plateau at the window's 1280x800.
+static void deck_defaults(Settings *s) {
+    // the 3D image at the screen's own 1280x800: FSR 1's smaller one (985x615) gained little on the Deck and looked
+    // worse (tested on an LCD); SMAA smooths its edges instead
+    s->upscaler = UPSCALE_OFF;
+    s->upscale_quality = UPQ_ULTRA;  // (kept for an upscaler chosen later)
+    s->shadow_res = SHADOW_CONSOLE;  // (bigger ones show glitches on RADV)
+    s->draw_distance = DRAWDIST_ORIGINAL;
+    s->anisotropy = 0;
+    s->antialias = AA_SMAA;
+    s->sharpening = 0;  // (CAS was for the upscaled image's softness)
+    s->async_shaders = true;  // (a shader the precompile missed would stall a frame on the Deck's 4 cores)
+}
+void settings_steam_deck_defaults(void) {
+    deck_defaults(&g_settings);
+    LOG("[settings] Steam Deck: its own defaults (native resolution, SMAA, console shadows, asynchronous shaders)\n");
+}
+
+void settings_deck_sync(void) {
+    int m = g_settings.deck_mode;
+    if (m != DECKMODE_ON && m != DECKMODE_CUSTOM) return;
+    Settings d = g_settings;
+    deck_defaults(&d);
+    bool same = d.upscaler == g_settings.upscaler && d.upscale_quality == g_settings.upscale_quality &&
+                d.shadow_res == g_settings.shadow_res && d.draw_distance == g_settings.draw_distance &&
+                d.anisotropy == g_settings.anisotropy && d.antialias == g_settings.antialias &&
+                d.sharpening == g_settings.sharpening && d.async_shaders == g_settings.async_shaders;
+    g_settings.deck_mode = same ? DECKMODE_ON : DECKMODE_CUSTOM;
+}
 
 // Debug overrides seed this boot's options; the Controls switches can still change them at once.
 static void pc_controls_env(void) {
@@ -93,12 +184,17 @@ void settings_load(void) {
     loaded = true;
     FILE *f = fopen(SETTINGS_FILE, "r");
     if (!f) {
+        if (settings_steam_deck()) {
+            settings_steam_deck_defaults();
+            g_settings.fullscreen = true;  // (Gaming Mode shows it full screen anyway; Desktop Mode would open 1280x800)
+        }
+        if (g_settings.deck_mode == DECKMODE_AUTO) g_settings.deck_mode = settings_deck_mode_default();
         gyro_startup_overrides();
         pc_controls_env();
         return;
     }
     char line[256];
-    bool tip_key = false;
+    bool tip_key = false, deck_on = false;
     int version = 1;
     char old_res[16] = "";
     while (fgets(line, sizeof line, f)) {
@@ -193,6 +289,11 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "field_of_view")) g_settings.fov = atoi(val);  // (percent)
         else if (!strcmp(key, "hud_size")) g_settings.hud_size = atoi(val);  // (percent)
+        else if (!strcmp(key, "steam_deck_mode")) {
+            for (int i = 0; i < DECKMODE_COUNT; i++)
+                if (!strcmp(val, k_deckmode[i])) g_settings.deck_mode = i;
+            deck_on = g_settings.deck_mode == DECKMODE_ON;
+        }
         else if (!strcmp(key, "draw_distance")) {
             for (int i = 0; i < DRAWDIST_COUNT; i++)
                 if (!strcmp(val, k_drawdist[i])) g_settings.draw_distance = i;
@@ -258,13 +359,17 @@ void settings_load(void) {
         LOG("[settings] %s: version %d async_shaders 0 -> 1 (the new default)\n", SETTINGS_FILE, version);
     }
     if (!tip_key) g_settings.menu_tip_seen = true;  // (a settings file from before the note: not a first launch)
+    if (g_settings.deck_mode == DECKMODE_AUTO) g_settings.deck_mode = settings_deck_mode_default();
+    if (deck_on) deck_defaults(&g_settings);  // (Enabled saved: the Deck's defaults as they are now, also once changed)
+    settings_deck_sync();  // (a file from before the mode, on a Deck: Custom unless its settings are the Deck's)
+    if (deck_hardware()) g_settings.frame_gen = false;  // (FSR 3 frame generation: not offered on a Deck, the menus)
     if (g_settings.volume < 0) g_settings.volume = 0;
     if (g_settings.volume > 2) g_settings.volume = 2;
     if (g_settings.fps_limit < 0) g_settings.fps_limit = 0;
     if (g_settings.fps_limit > 0) {  // (a frame rate not offered: the nearest one that is)
-        static const int fps[] = FPS_CHOICES;
-        int best = FPS_DEFAULT;
-        for (unsigned i = 1; i < sizeof fps / sizeof fps[0]; i++)
+        const int *fps;
+        int nfps = fps_choices(&fps), best = FPS_DEFAULT;
+        for (int i = 1; i < nfps; i++)
             if (abs(fps[i] - g_settings.fps_limit) < abs(best - g_settings.fps_limit)) best = fps[i];
         g_settings.fps_limit = best;
     }
@@ -363,6 +468,9 @@ void settings_save(void) {
     fprintf(f, "damage_taken = %d\n", g_settings.damage_taken);
     fprintf(f, "damage_dealt = %d\n", g_settings.damage_dealt);
     fprintf(f, "haze = %d\n", g_settings.haze);
+    settings_deck_sync();
+    int dm = g_settings.deck_mode;
+    fprintf(f, "steam_deck_mode = %s\n", k_deckmode[dm >= 0 && dm < DECKMODE_COUNT ? dm : DECKMODE_AUTO]);
     fprintf(f, "colour_exposure = %.1f\n", g_settings.color_exposure / 10.0);
     fprintf(f, "colour_contrast = %d\n", g_settings.color_contrast);
     fprintf(f, "colour_saturation = %d\n", g_settings.color_saturation);

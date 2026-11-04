@@ -35,6 +35,11 @@ enum { PERF_OFF = 0, PERF_FPS = 1, PERF_FULL = 2 };
 // same at every rate. The console runs the game at 30.
 #define FPS_DEFAULT 60
 #define FPS_CHOICES {0, 30, 60, 90, 120, 144, 165, 240, 360}
+// Steam Deck: 40 divides its LCD set to 40 Hz (Steam's quick menu > Performance > Refresh rate), 45 its OLED's 90 Hz;
+// a steady 40 is smoother there than an unsteady 40-50 under a 60 cap. 120 is past both displays.
+#define FPS_CHOICES_DECK {0, 30, 40, 45, 60, 90}
+#define FPS_CHOICES_MAX 9
+int fps_choices(const int **list);  // this device's frame rates (FPS_CHOICES, or FPS_CHOICES_DECK): their count
 // VSync (Video > VSync; runtime/nvn/vulkan/device.c picks the present mode): On waits for the display (FIFO; with
 // G-SYNC / FreeSync the display waits for the game instead), Fast shows the newest frame at each refresh (MAILBOX),
 // Adaptive is On but shows a late frame at once (FIFO_RELAXED), Off shows each frame at once (IMMEDIATE). With On and
@@ -48,6 +53,10 @@ enum { HDR_AUTO = 0, HDR_ON = 1, HDR_OFF = 2, HDR_COUNT };
 // display's own mode at any other size it has; Borderless never changes the display's mode (another size is scaled to
 // the screen); Exclusive always uses a display mode (the desktop's size too, at its highest refresh rate)
 enum { FSMODE_AUTO = 0, FSMODE_BORDERLESS = 1, FSMODE_EXCLUSIVE = 2, FSMODE_COUNT };
+// Video > Steam Deck mode (settings_steam_deck): Enabled takes the Deck's own settings, Custom is Enabled with some of
+// them changed since (settings_deck_sync tells), Disabled leaves every setting free. Not chosen yet (no settings file,
+// or one from before the mode): Enabled on a Steam Deck, Disabled elsewhere.
+enum { DECKMODE_AUTO = 0, DECKMODE_ON = 1, DECKMODE_OFF = 2, DECKMODE_CUSTOM = 3, DECKMODE_COUNT };
 typedef struct {
     bool fullscreen;
     int fullscreen_mode;     // FSMODE_*
@@ -94,6 +103,7 @@ typedef struct {
     int hud_size;        // the HUD's size in play, percent of the game's own (HUD_SIZE_CHOICES, runtime/nvn/hud_scale.h)
     int draw_distance;   // DRAWDIST_*: how far placed actors are kept (runtime/draw_distance.c)
     int haze;            // the air's haze, percent of the game's (services/fs.c haze_patch; from the next start)
+    int deck_mode;       // DECKMODE_*
     // Video > Colour (runtime/color_grade.h): 0 everywhere and no LUT = the game's own colours (nothing runs)
     int color_exposure;      // tenths of an EV, -20..20
     int color_contrast;      // percent, -50..50
@@ -126,9 +136,22 @@ float draw_distance_factor(void);  // the setting's factor on the game's distanc
 #define MOUSE_SENS_DEFAULT 3.0f  // (300% of the first default, 1; user, 2026-10-19)
 #define MOUSE_SENS_Y_CHOICES {50, 60, 70, 80, 90, 100, 110, 125, 150, 175, 200}  // (percent of the horizontal)
 enum { MOTION_INVERT_UD = 1, MOTION_INVERT_LR = 2 };
-enum { ICONS_AUTO, ICONS_KEYBOARD, ICONS_XBOX, ICONS_PLAYSTATION, ICONS_NINTENDO, ICONS_COUNT };
+enum { ICONS_AUTO, ICONS_KEYBOARD, ICONS_XBOX, ICONS_PLAYSTATION, ICONS_NINTENDO, ICONS_STEAMDECK, ICONS_COUNT };
 
 extern Settings g_settings;
 
 void settings_load(void);
 void settings_save(void);
+// The Steam Deck mode is on (Video > Steam Deck mode; SAVAGEWIND_STEAM_DECK=0|1 overrides): a first launch on a Deck
+// takes the Deck's own defaults (settings_steam_deck_defaults), where each performance option gets its Deck value
+bool settings_steam_deck(void);
+void settings_steam_deck_defaults(void);
+// The menu's Steam Deck mode: Enabled takes the Deck's defaults (again, from Custom); Disabled sends a frame rate only
+// the Deck offers back to the default; Custom isn't chosen, it follows. (The shader compile threads follow the mode
+// from the next start: runtime/nvn/vulkan/exec.c.)
+void settings_set_deck_mode(int mode);
+int settings_deck_mode_default(void);  // the mode a first launch takes: Enabled on a Steam Deck, Disabled elsewhere
+bool settings_deck_hardware(void);     // this is a Steam Deck (whatever the mode): FSR 3 frame generation not offered
+// Enabled with a Deck setting changed since becomes Custom; Custom with them all back at the Deck's values, Enabled
+// again (the menus call it before showing the mode, settings_save before writing it)
+void settings_deck_sync(void);

@@ -115,6 +115,51 @@ code (~16 minutes on the Deck's 8 threads), precompiling the shaders (~7 minutes
   Measured standing on the Great Plateau after Continue: about 40 fps with the 60 fps cap, a steady 30 with the 30
   fps cap.
 - Shadow resolutions above Console show graphical glitches on RADV.
+
+### Steam Deck settings
+Video > Steam Deck mode (Enabled, Disabled, Custom; `steam_deck_mode` in `savagewind.ini`: on, off, custom) turns the
+Deck's own settings on. A first launch picks Enabled on a Steam Deck, recognised by its board (Valve Jupiter or
+Galileo) or Steam's `SteamDeck=1`, and Disabled elsewhere; Enabled can also be chosen anywhere (Windows on a Deck).
+`SAVAGEWIND_STEAM_DECK=0|1` overrides the setting (tests).
+Enabled sets the Deck's defaults instead of the PC's: the 3D image at the screen's own 1280x800 (no upscaler: AMD FSR
+1's smaller image gained little on the Deck and looked worse), SMAA anti-aliasing, no sharpening, Console shadows,
+Original draw distance, the game's own texture filtering and asynchronous shaders (and fullscreen at the first launch). Everything can still be changed in
+Options: changing one of those makes the mode Custom (still the Deck's mode, with the player's choices), choosing
+Enabled again puts the Deck's defaults back, and Disabled leaves the settings as they are.
+
+With the mode on the game also:
+
+- offers 40 and 45 fps in Video > Frame rate (30, 40, 45, 60, 90 and Off): 40 is smooth with the LCD set to 40 Hz in
+  Steam's quick menu (Performance > Refresh rate), 45 on the OLED at 90 Hz;
+- with asynchronous shaders, compiles them on 2 threads at a lower priority (nice 5) instead of 4 at the game's, from the next start:
+  draws don't wait for them, and the game, submission and present threads keep the 4 cores
+  (`SAVAGEWIND_DECK_COMPILE_THREADS=<n>`: n threads at the normal priority; `=0`: as on a PC);
+- hands the frame's command list to the GPU every 150 draws instead of 300, so the GPU starts sooner while the
+  slower CPU translates the rest (`SAVAGEWIND_VK_SUBMIT_DRAWS=300`: as on a PC);
+- with Controls > Button icons on Automatic, shows the Deck's buttons (A B X Y, L1 R1, L2 R2, L3 R3, View and Menu)
+  for its own controls or Steam Input's virtual pad; Button icons > Steam Deck shows them anywhere;
+- draws the Steam Deck instead of the Switch on the pause menu's Controls page, its lines moved to the Deck's buttons
+  (runtime/nvn/hw_illust.c).
+
+The Controls page draws the device of Controls > Button icons the same way, and so do the tips' close-ups of the
+Switch's shoulders and sides: the Steam Deck, an Xbox controller or a DualSense (on Automatic: the Deck in Steam Deck mode, else the controller connected; Keyboard and Nintendo keep the
+Switch). It is decided when the game starts: after another choice the option's description says so, and A on it asks to
+restart. In Steam Deck mode, choosing Enabled again from Custom asks first (A on the option in game, a question in
+Savage Wind Configuration), as it puts the Deck's defaults back.
+
+`SAVAGEWIND_FRAME_LOG=2` logs where each frame's time went (`[fsplit]` lines), to compare them.
+
+### Steam Deck diagnostic
+`python3 tools/deck_diag.py` (from the repo root; `--game <AppImage>` for a release, `--quick` for two runs instead of
+four) starts the game several times: with the Deck's changes, without them (`SAVAGEWIND_STEAM_DECK=0`), and without
+each of them. In the first run load a save, walk to an open place and let go of the controls; the next runs put Link
+back there by themselves (load any save). Each run measures native resolution and FSR 1 with no frame cap at noon
+(frame times, GPU busy and clock, CPU use of each core and of the game's busiest threads, power, temperature) and
+the game closes by itself. It writes `savagewind-deck-diag-<time>.tar.gz` (logs, system information, the numbers)
+and prints its `summary.txt`. A copy of the settings file is used; the player's own is not changed.
+
+A change for performance on the Deck sets its Deck value in `settings_steam_deck_defaults()` (`runtime/settings.c`), or checks
+`settings_steam_deck()` where it runs, and leaves the PC as it is.
 - Started in Desktop Mode, Steam's desktop controller layout also sends keys and mouse motion. Gaming Mode is untested.
 
 ## Building from source
