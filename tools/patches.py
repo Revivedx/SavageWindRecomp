@@ -251,6 +251,41 @@ def _surf_boost_remove(gen, a):
             'else rt_fsub_s(c, 0, 1, 0); }')
 
 
+# A stale actor (#391, #393): the game's target manager (the Sheikah Slate's magnesis and camera targets) keeps a pointer
+# to an actor that is already gone. The helper that asks an actor for its link (1.9.0 0x700120bc40: actor + 0x570, then
+# + 0x88) got a freed pointer (#391: a garbage value, a crash in the next load) and one inline copy of it
+# (1.9.0 0x7000dea400, the camera target) got an actor whose + 0x570 is null (#393: accessing 0x88). Both now treat
+# such an actor as none: the helper answers 0, the inline copy leaves its function by the path of "no target".
+def _stale_actor_helper(gen, a):
+    w = _word(gen, a)
+    assert w & 0xff00001f == 0xb4000000, hex(w)  # cbz x0, <ret>
+    target = a + sext((w >> 5) & 0x7ffff, 19) * 4
+    return ('{ extern void rt_stale_actor(void); '
+            'if (!c->x[0]) goto L_%x; '
+            'if (c->x[0] - 0x7000000000ull >= 0x320000000ull || !LD64(c->x[0] + 0x570)) { rt_stale_actor(); c->x[0] = 0; goto L_%x; } }'
+            % (target, target))
+
+
+def _stale_actor_target(gen, a):
+    assert _word(gen, a) == 0xf942ba68, hex(_word(gen, a))  # ldr x8, [x19, #0x570]
+    # the epilogue of "no target": the function's own early exit (cbz x0 / cbnz x19 above this site)
+    exit_at = _stale_target_exit(gen, a)
+    return ('{ extern void rt_stale_actor(void); '
+            'if (c->x[19] - 0x7000000000ull >= 0x320000000ull || !LD64(c->x[19] + 0x570)) { rt_stale_actor(); goto L_%x; } '
+            'c->x[8] = LD64(c->x[19] + 0x570); }' % exit_at)
+
+
+def _stale_target_exit(gen, a):
+    # walk back to the cbnz x19 that jumps to this code: its fall-through (the next word) is the epilogue's first word
+    b = a
+    while b > a - 0x80:
+        b -= 4
+        w = _word(gen, b)
+        if w & 0xff00001f == 0xb5000013:  # cbnz x19, <this code>
+            return b + 4
+    raise AssertionError('stale target: no cbnz x19 above %#x' % a)
+
+
 def _surf_jump_request(gen, a):
     w = _word(gen, a)
     assert w & 0xfff8001f == 0x36000000  # tbz w0, #0, <no jump>
@@ -738,6 +773,8 @@ PATCHES = {
     'surf_contact': _surf_contact,
     'surf_boost_remove': _surf_boost_remove,
     'surf_jump_request': _surf_jump_request,
+    'stale_actor_helper': _stale_actor_helper,
+    'stale_actor_target': _stale_actor_target,
     'phys_solver_steps': _solver_steps,
     'kf_angle': _kf_angle,
     'snd_frame_floor': _snd_frame_floor,
