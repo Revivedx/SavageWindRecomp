@@ -710,9 +710,10 @@ static size_t hud_letters_flyt(const uint8_t *b, size_t n, uint8_t *out, int *pa
                     sec[0x5A] = 1, sec[0x5B] = 0;  // (the font: the second)
                     uint16_t c = (uint16_t)(0xE040 + (k - "ABXY"));
                     memcpy(sec + toff, &c, 2);
-                    float fs[2];  // the font size: an icon fills less of its cell than a letter
+                    float fs[2];  // the font size: an icon fills less of its cell than a letter, and button icons are 1:1 square
                     memcpy(fs, sec + 0x70, 8);
-                    fs[0] *= HUD_ICON_SCALE, fs[1] *= HUD_ICON_SCALE;
+                    fs[1] *= HUD_ICON_SCALE;
+                    fs[0] = fs[1];  // match width to height so button glyphs are not squished horizontally
                     memcpy(sec + 0x70, fs, 8);
                     (*panes)++;
                 }
