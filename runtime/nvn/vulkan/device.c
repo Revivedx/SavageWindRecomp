@@ -645,7 +645,7 @@ static void create_device(void) {
     // when each frame reached the display (SAVAGEWIND_LOG_PRESENT, tests: "present timing" below)
     bool pwait = getenv("SAVAGEWIND_LOG_PRESENT") && has_ext(ep, ne, VK_KHR_PRESENT_ID_EXTENSION_NAME) &&
                  has_ext(ep, ne, VK_KHR_PRESENT_WAIT_EXTENSION_NAME);
-    free(ep);
+    // (ep is freed once the device is made: the extended dynamic state and FSR 4 checks below read it too)
 
     // features the backend relies on (all present on current desktop drivers)
     VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT fbl_have = {
@@ -962,6 +962,7 @@ static void create_device(void) {
     VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f, .queueCreateInfoCount = 1,
                              .pQueueCreateInfos = &qi, .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext};
     VK_CHECK(vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.dev));
+    free(ep);
     fsr_api_probe(g_vk.dev, g_vk.phys);  // (logs what AMD's FSR DLLs offer this device; a no-op without them)
     vkGetDeviceQueue(g_vk.dev, g_vk.qfam, 0, &g_vk.queue);
     g_vk.present_queue = g_vk.queue;
