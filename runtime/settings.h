@@ -6,14 +6,17 @@
 // smaller by their quality mode's factor and scale up to the window. DLSS is listed as coming later.
 enum { UPSCALE_OFF = 0, UPSCALE_METALFX = 1 /* macOS */, UPSCALE_FSR1 = 2 /* AMD FSR 1, Vulkan */,
        UPSCALE_FSR3 = 3 /* AMD FSR 3.1, Vulkan where built in (vulkan/fsr3.h) */, UPSCALE_DLSS = 4 /* NVIDIA DLSS: not yet */,
+       UPSCALE_FSR4 = 5 /* AMD FSR 4, Vulkan on Windows with AMD's DLLs and an AMD Radeon (vulkan/fsr_api.h) */,
        UPSCALE_COUNT };
 #ifdef __APPLE__
 #define UPSCALE_SPATIAL UPSCALE_METALFX  // each OS's spatial upscaler
 #define UPSCALE_FSR3_OR_SPATIAL UPSCALE_METALFX  // (a settings file from another OS)
+#define UPSCALE_FSR4_OR_SPATIAL UPSCALE_METALFX
 #define UPSCALE_DEFAULT UPSCALE_METALFX  // (Metal has no internal resolution yet: MetalFX scales the image to the window)
 #else
 #define UPSCALE_SPATIAL UPSCALE_FSR1
 #define UPSCALE_FSR3_OR_SPATIAL UPSCALE_FSR3
+#define UPSCALE_FSR4_OR_SPATIAL UPSCALE_FSR4  // (without FSR 4 on this PC: vulkan/device.c moves it to FSR 3 or 1)
 #define UPSCALE_DEFAULT UPSCALE_OFF      // the 3D image at the window's resolution
 #endif
 // quality modes, AMD's scale factors (per axis): Ultra Quality 1.3, Quality 1.5, Balanced 1.7, Performance 2.0,

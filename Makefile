@@ -228,6 +228,8 @@ $(B)/rt/gamebuild.o: RTFLAGS += -DGAMELIB_CFLAGS='"$(strip $(filter-out -Iruntim
                                 $(if $(GENFLAGS_COMPAT),-DGAMELIB_CFLAGS_COMPAT='"$(strip $(filter-out -Iruntime,$(GENFLAGS_COMPAT)))"') \
                                 -DGAMELIB_ZIGFLAGS='"$(GENFLAGS_ZIG)"' -DGAMELIB_SHARED='"$(GAMELIB_SHARED)"' -DGAMELIB_GENARGS='"$(GENLOCALS)"'
 
+# The profiler's Windows sampler guards its stack walks with SEH (__try).
+$(B)/rt/prof_sampler.o: RTFLAGS += -fms-extensions
 # Windows guarded memory scans use SEH.
 $(B)/rt/memscan_os.o: RTFLAGS += -fms-extensions
 
@@ -362,6 +364,8 @@ dist:
 	cp third_party/fonts/NotoSansHebrew/NotoSansHebrew-Medium.ttf "$(DIST)/"  # (Hebrew menus, OFL)
 	cp third_party/fonts/NotoSansHebrew/OFL.txt "$(DIST)/NotoSansHebrew-OFL.txt"
 	cp third_party/FidelityFX/LICENSE.txt "$(DIST)/FidelityFX-LICENSE.txt"  # (AMD FidelityFX SDK, MIT: README "License")
+	if [ -f build/fsr-dlls/amd_fidelityfx_loader_vk.dll ]; then cp build/fsr-dlls/amd_fidelityfx_*_vk.dll \
+	    build/fsr-dlls/AMD-FidelityFX-DLL-LICENSE.txt "$(DIST)/"; fi  # (AMD FSR 4: tools/fetch_fsr_dlls.py; AMD's licence allows binary redistribution with this notice)
 	mkdir "$(DIST)/colour-luts" && cp third_party/luts/*.cube third_party/luts/README.md "$(DIST)/colour-luts/"  # (CC0: Video > Colour)
 	cp README.md LICENSE "$(DIST)/"  # (licenses and source links of the bundled components: README "License")
 	PATH="$(CURDIR)/build/deps-win/bin:$$PATH" ldd $(WIN_B)/savagewind.exe | awk '(/ucrt64/ || /deps-win/) && !/vulkan-1/ {print $$3}' | sort -u | \
@@ -426,6 +430,18 @@ test-bind-capture: $(B)/test_bind_capture
 
 .PHONY: test-bind-capture
 
+# Per-action bindings (docs/ACTIONS.md): the answers to the game's hold / pressed queries, menus, shared keys, capture and
+# savagewind.ini, then the patch the hook is written with (no game files)
+$(B)/test_actions: tools/test_actions.c runtime/hle/bindings.c runtime/input_bind.h
+	@mkdir -p $(B)
+	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_actions.c runtime/hle/bindings.c -lSDL3
+
+test-actions: $(B)/test_actions
+	$(B)/test_actions
+	python3 tools/test_act_site.py
+
+.PHONY: test-actions
+
 $(B)/test_pc_controls: tests/test_pc_controls.c runtime/hle/input.c runtime/hle/bindings.c runtime/settings.h
 	@mkdir -p $(dir $@)
 	$(CC) -O2 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -isystem third_party -o $@ $< -fuse-ld=lld -Wl,--gc-sections $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) -lSDL3 -lm
@@ -486,6 +502,22 @@ test-vibration: $(B)/test_vibration
 	$(B)/test_vibration
 
 .PHONY: test-vibration
+
+$(B)/test_prof: tools/test_prof.c runtime/prof.c runtime/prof_sampler.c runtime/prof.h runtime/rt.h
+	@mkdir -p $(B)
+	$(CC) -O2 -std=gnu11 -Wall -Wextra -Werror $(OSFLAGS) -Iruntime -o $@ tools/test_prof.c runtime/prof.c runtime/prof_sampler.c -lpthread
+
+# (POSIX only: mkdtemp, nanosleep)
+$(B)/test_prof_lifecycle: tools/test_prof_lifecycle.c runtime/prof.c runtime/prof_sampler.c runtime/prof.h runtime/rt.h
+	@mkdir -p $(B)
+	$(CC) -O2 -std=gnu11 -Wall -Wextra -Werror $(OSFLAGS) -Iruntime -o $@ tools/test_prof_lifecycle.c runtime/prof.c runtime/prof_sampler.c -lpthread
+
+test-prof: $(B)/test_prof $(B)/test_prof_lifecycle
+	$(B)/test_prof
+	python3 -m unittest tools.test_swprof
+	SWPROF_TEST_BIN=$(B)/test_prof_lifecycle python3 -m unittest tools.test_prof_lifecycle
+
+.PHONY: test-prof
 
 # The input test includes input.c; discard its unused HLE functions and their runtime dependencies.
 $(B)/test_input_focus: tools/test_input_focus.c tools/test_pointer_disabled.h runtime/hle/input.c $(RT_HDRS)
@@ -611,6 +643,19 @@ test-hour: $(B)/test_hour
 
 .PHONY: test-hour
 
+# Real Options routing + binding capture, using synthetic guest rows rather than game assets.
+$(B)/two_button_bindings.o: runtime/hle/bindings.c runtime/input_bind.h
+	@mkdir -p $(B)
+	$(CC) -O1 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -c $< -o $@
+
+$(B)/test_two_button_rows: tools/test_two_button_rows.cpp runtime/ui/game_options.mm runtime/ui/binding_row_layout.h $(B)/two_button_bindings.o
+	$(CXX) -std=c++17 -O1 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -Ithird_party -o $@ $< $(B)/two_button_bindings.o -fuse-ld=lld -Wl,--gc-sections $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) -lSDL3 -lm
+
+test-two-button-rows: $(B)/test_two_button_rows
+	$(B)/test_two_button_rows
+	python3 tools/test_two_button_sites.py
+
+.PHONY: test-two-button-rows
 # Guard shader-specific bloom scaling against unrelated scene, depth and UI targets.
 $(B)/test_bloom_scale: tests/test_bloom_scale.c runtime/nvn/vulkan/bloom_scale.h
 	@mkdir -p $(B)

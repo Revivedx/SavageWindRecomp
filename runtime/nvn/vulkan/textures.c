@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "vk.h"
+#include "../../prof.h"
 #include "record.h"
 #include "shaders.h"
 #include "../../settings.h"
@@ -988,6 +989,7 @@ static void upload_texture(NvnTexture *t, TexBackend *b, bool written) {
     }
     b->checked_frame = frame;
     prof_tex_checks++;
+    SW_TALLY("tex/checks");
     if (t->flags & 0x10) b->dynamic = true;
     if (full_hash_budget_frame != frame) { full_hash_budget_frame = frame; full_hash_budget = 4 << 20; }
     const uint8_t *mem = (const uint8_t *)(uintptr_t)t->addr;
@@ -997,10 +999,14 @@ static void upload_texture(NvnTexture *t, TexBackend *b, bool written) {
     if (!full && frame - b->full_frame >= 120 && full_hash_budget >= total) { full = true; full_hash_budget -= total; }
     if (!full) {
         prof_tex_samples++;
+        SW_TALLY("tex/sampled");
         uint64_t sh = fnv_sample(mem, total);
         if (sh == b->sample_hash) return;
     }
     prof_tex_full++; prof_tex_full_bytes += total; if (b->dynamic) prof_tex_dyn++;
+    if (b->dynamic) SW_TALLY("tex/full hash (dynamic)");
+    else SW_TALLY("tex/full hash");
+    SW_COUNT("tex full hash bytes", total);
     uint64_t h = hash_full(mem, total);
     b->full_frame = frame;
     b->sample_hash = fnv_sample(mem, total);
@@ -1398,6 +1404,7 @@ TexBackend *vk_tex(NvnTexture *t, bool for_render) {
     else if (!b->gpu_owned) {
         extern uint64_t prof_up_ns;
         uint64_t t0 = prof_up_ns != ~0ull ? SDL_GetTicksNS() : 0;
+        SW_ACC("tex/upload check");
         upload_texture(t, b, false);
         if (prof_up_ns != ~0ull) prof_up_ns += SDL_GetTicksNS() - t0;
     }
@@ -1536,6 +1543,7 @@ VkImageView vk_image_view(TexBackend *b, VkImageViewType type, VkFormat fmt, uin
     }
     extern uint64_t prof_views_created;
     prof_views_created++;
+    SW_TALLY("tex/views created");
     VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = b->image, .viewType = type,
                                 .format = fmt, .components = sw, .subresourceRange = {aspect, lv0, nlv, ly0, nly}};
     VkImageView v;

@@ -55,7 +55,28 @@ BLADE_LATERAL = ('bd4207e0 bd420be1 1e298821 1f0d0402 1f2d0400 1e202048 1e20cc40
 TRAVERSE = ('b9400028 2f00e400 36600008/fff8001f d65f03c0 a9bf7bfd 910003fd 12000042 12000083 94000000/fc000000 '
             '90000008/9f00001f 91000108/ffc003ff f9400108 b4000008/ff00001f bd431101 52a85908 1e202008 1e270102 1e22cc00 '
             '1e210800 a8c17bfd 14000000/fc000000 1e2e1001')
+# The game's input queries: isHold(pad, action) / isTrig(pad, action). Both load the action's pad mask from a table of 41
+# (cmp w1, #0x29) and test it against the pad object's held word (+0x11c) or pressed word (+0x10)
+PAD_QUERY = ('a9be7bfd a9014ff4 910003fd 7100a43f 90000008/9f00001f 91000108/ffc003ff 1a9f3029 aa0003f3 b8695914 '
+             '7100229f 7a421a84 54000001/ff00001f 2a1f03e0 94000000/fc000000 71000a9f 52800048 52800109 1a880128 '
+             '7200001f 1a941114')
+OPT_TWO_SITES = ('opt_two_redraw', 'opt_two_select', 'opt_two_state', 'opt_two_decide', 'opt_two_after', 'opt_two_row_state', 'opt_two_update_control', 'opt_two_initial_control', 'opt_two_left', 'opt_two_right', 'opt_two_text', 'opt_two_help', 'opt_two_pane_calc')
+
 SITES = [
+    # Experimental dual binding cells. Every pattern must match; no KNOWN fallback.
+    Site('opt_two_redraw', 'code', 'd10103ff a9017bfd a90257f6 a9034ff4 910043fd 90000009/9f00001f 91000129/ffc003ff b9405008', 0),
+    Site('opt_two_select', 'code', 'b976b008 7100051f 5400000b/ff00001f a9be7bfd a9014ff4 910003fd 9000000b/9f00001f 9100016b/ffc003ff', 0),
+    Site('opt_two_state', 'code', 'b976b008 7100051f 5400000b/ff00001f 9000000b/9f00001f 9100016b/ffc003ff f95b5c09 b940016a 5280060c f940056b f940012d b400000d/ff00001f b94051ae 6b0e015f 1a9f81ce 9b2c2dce b94011ce 710009df 54000000/ff00001f 710005df 54000000/ff00001f 3500000e/ff00001f 910061ad 14000000/fc000000 9100a1ad 14000000/fc000000 910081ad f94001ad eb0101bf 54000000/ff00001f 91002129 f1000508 54000001/ff00001f 14000000/fc000000 aa1f03ed 14000000/fc000000 d65f03c0 f9400120 17ffff20', 0),
+    Site('opt_two_decide', 'code', 'b976b008 7100051f 5400000b/ff00001f 9000000b/9f00001f 9100016b/ffc003ff f95b5c09 b940016a 5280060c f940056b f940012d b400000d/ff00001f b94051ae 6b0e015f 1a9f81ce 9b2c2dce b94011ce 710009df 54000000/ff00001f 710005df 54000000/ff00001f 3500000e/ff00001f 910061ad 14000000/fc000000 9100a1ad 14000000/fc000000 910081ad f94001ad eb0101bf 54000000/ff00001f 91002129 f1000508 54000001/ff00001f 14000000/fc000000 aa1f03ed 14000000/fc000000 d65f03c0 f9400120 14000001', 0),
+    Site('opt_two_after', 'code', 'b976b008 7100051f 5400000b/ff00001f 90000009/9f00001f 91000129/ffc003ff f95b5c0a b940012b 5280060c', 0),
+    Site('opt_two_row_state', 'code', '90000008/9f00001f 91000108/ffc003ff b9405009 b940010a 6b09015f f9400508 5280060a 1a9f8129 9b2a2128', 0),
+    Site('opt_two_update_control', 'code', 'f9400129 eb09011f 54000000/ff00001f b976c268 71000d1f 54000001/ff00001f f9401e68 3940e108', 0),
+    Site('opt_two_initial_control', 'code', 'f9400161 b4000001/ff00001f aa1303e0 94000000/fc000000 aa0003e1 aa1303e0 94000000/fc000000 b9405288', 0),
+    Site('opt_two_left', 'code', 'b936c268 f95b6668 f940068b b9405109 6b09015f 5280060a 1a9f8129 9b2a2d29 b9401129 34000009/ff00001f 7100053f 54000001/ff00001f b9405909', 0),
+    Site('opt_two_right', 'code', 'b936c268 f95b6668 f940068b b9405109 6b09015f 5280060a 1a9f8129 9b2a2d29 b9401129 34000009/ff00001f 7100053f 54000001/ff00001f 294b250a', 0),
+    Site('opt_two_text', 'code', 'b4000000/ff00001f d10583ff a9137bfd a91457fc a9154ff4 9104c3fd 90000009/9f00001f 910063e8', 0),
+    Site('opt_two_help', 'code', 'd100c3ff a9017bfd f90013f3 910043fd aa0003f3 94000000/fc000000 90000009/9f00001f 91000129/ffc003ff', 0),
+    Site('opt_two_pane_calc', 'code', 'd10243ff fd0023e8 f9002ff9 a904fbfd a9065ff8 a90757f6 a9084ff4 910123fd 39416008', 0),
     # The Options screen (tools/patches.py; runtime/ui/game_options.mm)
     Site('opt_create_rows', 'code', 'd10303ff a9067bfd a9076ffc a90867fa a9095ff8 a90a57f6 a90b4ff4 910183fd '
          '90000008/9f00001f b9400118/ffc003ff', 0),
@@ -229,6 +250,10 @@ SITES = [
          'b4000008/ff00001f 39406108 37280008/fff8001f 39402008 36000008/fff8001f d10143ff', 0),
     # a shrine apparatus fetching its input (tools/patches.py _gyro_scene_actor; runtime/pc_gyro_scene.c)
     Site('gyro_scene_actor', 'code', '2d59b28f 2d5ab689 94000000/fc000000 b5000000/ff00001f 9101d280 9101a281', 2),
+    # per-action bindings (tools/patches.py _act_query; runtime/hle/bindings.c): the two queries and the mask table
+    Site('act_hold', 'code', PAD_QUERY + ' b9411e68', 0),
+    Site('act_trig', 'code', PAD_QUERY + ' b9401268', 0),
+    Site('act_masks', 'ref', PAD_QUERY + ' b9401268', 5),
     # the store of an equipped weapon's, bow's or shield's durability, x100 (tools/patches.py _no_wear; from #296: the
     # setter 1.8.2 0x7000c809e8 finds the equipped item of a type w22 in the pouch and stores the new value w20)
     Site('no_wear_store', 'code', 'b9002174 5288fb08 72a00088 38686aa8 35000008/ff00001f 2a1403e0 2a1f03e2 '
@@ -263,6 +288,7 @@ SITES = [
 # Without them the mouse turns the camera through the right stick, as before (runtime/hle/input.c); without the
 # second group it turns it without the game's camera inversion options.
 OPTIONAL_GROUPS = [
+    OPT_TWO_SITES,
     ('lookat_update',),  # (the free camera: without it Home does nothing)
     ('gyro_scene_actor',),
     ('surf_contact', 'surf_boost_remove', 'surf_jump_request'),
@@ -281,6 +307,7 @@ OPTIONAL_GROUPS = [
      'grass_blade_lateral_near',
      'grass_blade_lateral_far'),
     ('tree_ranges',),
+    ('act_hold', 'act_trig', 'act_masks'),
     ('pouch_remove_arrows',),
     ('no_wear_store',),
     ('no_wear_hit', 'no_wear_ret'),
@@ -350,6 +377,19 @@ KNOWN = {
         'main_end': 0x7001d37000,
     },
     '1.9.0': {
+        'opt_two_redraw': 0x7000e2eed8,
+        'opt_two_select': 0x7000e3047c,
+        'opt_two_state': 0x7000e305d0,
+        'opt_two_decide': 0x7000e30668,
+        'opt_two_after': 0x7000e30a90,
+        'opt_two_row_state': 0x7000e302e4,
+        'opt_two_update_control': 0x7000e2f7c8,
+        'opt_two_initial_control': 0x7000e3019c,
+        'opt_two_left': 0x7000e2fa50,
+        'opt_two_right': 0x7000e2fae4,
+        'opt_two_text': 0x7000e30ee0,
+        'opt_two_help': 0x7000e30550,
+        'opt_two_pane_calc': 0x70000276a0,
         'lookat_update': 0x7000eb2d5c,
         'yaz0_stream': 0x700131d674,
         'yaz0_stream_ret': 0x700131d7e8,
@@ -430,6 +470,9 @@ KNOWN = {
         'grass_blade_lateral_near': 0x70013a8f0c,
         'grass_blade_lateral_far': 0x70013a8f20,
         'tree_ranges': 0x70013c94ac,
+        'act_hold': 0x7000d16f0c,
+        'act_trig': 0x7000d16f74,
+        'act_masks': 0x70016d89b4,
         'pouch_remove_arrows': 0x7000d93814,
         'no_wear_store': 0x7000d93d50,
         'no_wear_hit': 0x7000b9542c,
@@ -679,6 +722,13 @@ def resolve(main, known=None, log=None):
             found, hits = main.locate(s)
         except SiteError as e:
             problems.append(f'{s.name}: {e}')
+            continue
+        # This experiment changes native object routing. A stale KNOWN address
+        # must never turn it on after a failed signature check.
+        if s.name in OPT_TWO_SITES and (found is None or
+                                      (known and s.name in known and found != known[s.name])):
+            if log:
+                log(f'game_sites: {s.name}: spike signature did not match')
             continue
         k = (known or {}).get(s.name)
         if found is not None and k is not None and found != k:

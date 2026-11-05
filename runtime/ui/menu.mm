@@ -159,6 +159,8 @@ static int g_kbd_max = 8;
 // closed it is kept from the game
 static std::atomic<bool> g_sizes{false};
 static std::atomic<uint64_t> g_sizes_hold{0};  // SDL_GetTicks()
+static std::atomic<bool> g_sizes_eat_up{false};  // the list closed with the left button down: its release isn't the game's
+extern "C" bool menu_size_list_up(void) { return g_sizes.load(); }
 extern "C" void game_options_size_picked(void);  // game_options.mm (the row shows the new size)
 extern "C" void menu_size_list_open(void) {
     input_reset();
@@ -358,6 +360,9 @@ bool menu_handle_event(const SDL_Event *e) {
         { QEvent q = {}; q.kind = QEvent::MOUSE_POS; q.x = e->motion.x * g_pixel_density; q.y = e->motion.y * g_pixel_density; push(q); }
         return true;
     case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_BUTTON_UP:
+        if (e->type == SDL_EVENT_MOUSE_BUTTON_UP && e->button.button == SDL_BUTTON_LEFT && g_sizes_eat_up.exchange(false) &&
+            !capturing())
+            return true;
         if (!capturing() && !pc_gyro_scene_active()) return false;
         {
             QEvent q = {};
@@ -855,6 +860,9 @@ static void tab_display(void) {
         // game's own 1920 x 1080 image to a bigger window.
         std::string fsr3 = upscaler_available(UPSCALE_FSR3) ? std::string(tr("AMD FSR 3"))
                                                             : std::string(tr("FSR 3")) + " " + tr("(coming soon)");
+        std::string fsr4 = upscaler_available(UPSCALE_FSR4)
+                               ? std::string(tr("AMD FSR 4"))
+                               : std::string(tr("FSR 4")) + " " + tr(fsr4_offered() ? "(coming soon)" : "(AMD Radeon only)");
         std::string dlss = std::string(tr("DLSS")) + " " + tr(renderer_gpu_rtx() ? "(coming soon)" : "(NVIDIA RTX only)");
 #ifdef __APPLE__
         const char *ups[] = {"Off", "MetalFX"};
@@ -863,8 +871,8 @@ static void tab_display(void) {
                          "scaling. MetalFX: Apple's upscaler, sharper.\n\nRendering below the window's size (the modes "
                          "below) is coming in a later version.";
 #else
-        const char *ups[] = {"Off", "AMD FSR 1", fsr3.c_str(), dlss.c_str()};
-        static const int ups_value[] = {UPSCALE_OFF, UPSCALE_FSR1, UPSCALE_FSR3, UPSCALE_DLSS};
+        const char *ups[] = {"Off", "AMD FSR 1", fsr3.c_str(), fsr4.c_str(), dlss.c_str()};
+        static const int ups_value[] = {UPSCALE_OFF, UPSCALE_FSR1, UPSCALE_FSR3, UPSCALE_FSR4, UPSCALE_DLSS};
         // (the FSR 3 paragraph on its own: the first one keeps its translations)
         static std::string uds;
         uds = std::string(tr("Off: the 3D image renders at the window's resolution. AMD FSR 1: it renders smaller (the mode "
@@ -876,6 +884,9 @@ static void tab_display(void) {
                         "has no effect with it). Sharpening sets its own sharpening. NVIDIA DLSS (NVIDIA RTX graphics "
                         "cards) is coming in a later version.")
                    : tr("AMD FSR 3 and NVIDIA DLSS (NVIDIA RTX graphics cards) are coming in a later version."));
+        if (upscaler_available(UPSCALE_FSR4))  // (its own paragraph: the ones above keep their translations)
+            uds += std::string("\n\n") + tr("AMD FSR 4: like FSR 3, but AMD's machine learning rebuilds the image. For AMD Radeon "
+                                              "graphics cards on Windows. Sharpening sets its own sharpening.");
         const char *ud = uds.c_str();
 #endif
         enum { NU = sizeof ups_value / sizeof ups_value[0] };
@@ -1151,6 +1162,7 @@ static void perf_overlay_draw(ImGuiIO &io, float scale) {
         case UPSCALE_METALFX: line += tr("MetalFX"); break;
         case UPSCALE_FSR1: line += tr("FSR 1"); break;
         case UPSCALE_FSR3: line += tr("FSR 3"); break;
+        case UPSCALE_FSR4: line += tr("FSR 4"); break;
         default: line += tr("Off");
     }
     int q = g_settings.upscale_quality;
@@ -1161,7 +1173,7 @@ static void perf_overlay_draw(ImGuiIO &io, float scale) {
     }
     // (FSR 3 anti-aliases the scene itself: the setting does nothing then)
     int aa = rt_antialias();
-    line += std::string(" | ") + tr("Anti-aliasing") + ": " + (rt_fsr3() ? tr("FSR 3") : aa == AA_TAA ? tr("TAA") : aa == AA_SMAA ? tr("SMAA") : tr("Off"));
+    line += std::string(" | ") + tr("Anti-aliasing") + ": " + (rt_fsr4() ? tr("FSR 4") : rt_fsr3() ? tr("FSR 3") : aa == AA_TAA ? tr("TAA") : aa == AA_SMAA ? tr("SMAA") : tr("Off"));
     ImGui::TextDisabled("%s", line.c_str());
     line.clear();
 #ifndef __APPLE__
@@ -1274,7 +1286,8 @@ static void size_list_draw(ImGuiIO &io, float scale) {
     if (const char *t = getenv("SAVAGEWIND_SIZE_PICK"); t && frames == 180) picked = atoi(t) < n ? atoi(t) : cur;
     bool cancel = !appearing && (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
                                  ImGui::IsKeyPressed(ImGuiKey_Escape, false) ||
-                                 (ImGui::IsMouseClicked(0) && !ImGui::IsWindowHovered()));
+                                 (ImGui::IsMouseClicked(0) && !ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)));
+    // (a press on a size makes it the active item: without that flag the list counted it as a click outside)
     ImGui::PopFont();
     ImGui::End();
     ImGui::PopStyleColor(6);
@@ -1287,6 +1300,7 @@ static void size_list_draw(ImGuiIO &io, float scale) {
     }
     if (picked >= 0 || cancel) {
         g_sizes_hold = SDL_GetTicks() + 300;  // (the A / B that closed it, still down, stays out of the game)
+        if (ImGui::IsMouseDown(0)) g_sizes_eat_up = true;  // (and the mouse button's release: the pointer would click the row)
         g_sizes = false;
         was_open = false;
     }
@@ -1436,6 +1450,48 @@ void menu_tabs_draw(float scale, ImFont *font, ImFont *font_big, bool in_game, v
     g_font = f0, g_font_big = f1;
 }
 
+// Logging build (SAVAGEWIND_ACTLOG=1): the actions the game says are pressed / held, live, so a play session can be read off
+// the screen as well as the log ("[act] poll N: game says ..."). A big flash of the latest in the top middle, the list left.
+static void act_overlay_draw(ImGuiIO &io, float scale) {
+    ActLogRow rows[12];
+    int n = act_log_rows(rows, 12);
+    uint32_t now = SDL_GetTicks();
+    const ImGuiWindowFlags fl = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
+                                ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoSavedSettings;
+    ImGui::SetNextWindowPos(ImVec2(16 * scale, 170 * scale), 0, ImVec2(0, 0));
+    ImGui::SetNextWindowBgAlpha(0.7f);
+    ImGui::Begin("##actlog", NULL, fl);
+    ImGui::SetWindowFontScale(0.72f);
+    ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "Actions the game asks for (also in the log)");
+    if (!n) ImGui::TextDisabled("press something");
+    for (int i = 0; i < n; i++) {
+        const ActLogRow &r = rows[i];
+        float age = (float)(now - r.last_ms) / 1000.f;
+        ImVec4 c = r.holding || age < 1.5f ? ImVec4(1, 0.9f, 0.35f, 1) : age < 8 ? ImVec4(0.92f, 0.92f, 0.92f, 1) : ImVec4(0.6f, 0.6f, 0.6f, 1);
+        const char *nm = act_name(r.id);
+        ImGui::TextColored(c, "%2d  %s   pressed x%u   held x%u%s", r.id, nm ? nm : "?", r.pressed, r.held,
+                           r.holding ? "   [HELD]" : "");
+    }
+    ImGui::End();
+    // the latest, big, fading over 1.5 s; one line per action pressed in that time
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, 60 * scale), 0, ImVec2(0.5f, 0));
+    ImGui::SetNextWindowBgAlpha(0);
+    ImGui::Begin("##actbig", NULL, fl | ImGuiWindowFlags_NoBackground);
+    ImGui::PushFont(g_font_big);
+    ImGui::SetWindowFontScale(1.5f);
+    int shown = 0;
+    for (int i = 0; i < n && shown < 4; i++) {
+        float age = (float)(now - rows[i].last_ms) / 1000.f;
+        if (age >= 1.5f && !rows[i].holding) continue;
+        float a = rows[i].holding ? 1.f : 1.f - age / 1.5f;
+        const char *nm = act_name(rows[i].id);
+        ImGui::TextColored(ImVec4(1, 0.9f, 0.35f, a), "%d%s%s%s", rows[i].id, nm ? " " : "", nm ? nm : "", rows[i].holding ? "  (held)" : "");
+        shown++;
+    }
+    ImGui::PopFont();
+    ImGui::End();
+}
+
 #ifndef __APPLE__
 extern "C" void rec_drain(void);  // (runtime/nvn/vulkan/record.c)
 #endif
@@ -1451,7 +1507,7 @@ static bool menu_draws(bool *pointer_hover = NULL, float *pointer_box = NULL, bo
     if (pointer_hover) *pointer_hover = hover;
     if (gyro_show) *gyro_show = gyro_on;
     return g_open.load() || g_kbd.load() == 1 || g_sizes.load() || console_is_open() || gyro_on || hover ||
-           g_settings.perf_overlay != PERF_OFF;
+           g_settings.perf_overlay != PERF_OFF || act_log_enabled();
 }
 
 bool menu_render_needed(void) { return menu_draws(); }
@@ -1524,7 +1580,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
 #endif
     ImGui::NewFrame();
 
-    if(pointer_hover&&!open&&!kbd) {
+    if(pointer_hover&&!open&&!kbd&&!sizes) {
         float s=fminf(io.DisplaySize.x/1280.f,io.DisplaySize.y/720.f);
         ImVec2 a(io.DisplaySize.x*.5f+pointer_box[0]*s,io.DisplaySize.y*.5f-pointer_box[3]*s);
         ImVec2 b(io.DisplaySize.x*.5f+pointer_box[2]*s,io.DisplaySize.y*.5f-pointer_box[1]*s);
@@ -1534,6 +1590,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     }
 
     if (g_settings.perf_overlay != PERF_OFF) perf_overlay_draw(io, scale);
+    if (act_log_enabled()) act_overlay_draw(io, scale);
     if (!open && !kbd && !sizes && !con && gyro_scene_show) gyro_scene_draw(io, scale, gyro_scene);
 
     if (open) {

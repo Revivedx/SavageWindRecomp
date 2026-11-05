@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "control.h"
+#include "prof.h"
 #include "kernel.h"
 #include "perfcount.h"
 #include "platform.h"
@@ -22,7 +23,7 @@
 #include <time.h>
 #endif
 
-// sampler.c: status is a static string; start returns NULL on success, an error otherwise.
+// sampler.c (the legacy `sample` command): status is a static string; start returns NULL on success, an error otherwise.
 const char *sampler_status(void);
 const char *sampler_request(double seconds, unsigned interval_us);
 
@@ -266,6 +267,14 @@ static void cmd_gpuprof(int argc, char **argv, ControlReply *r) {
     control_field_str(r, "status", "requested: GPU time per pass of the next frame, as [gpuprof] lines in the log");
     control_field_int(r, "presents", (int64_t)renderer_present_count());
 }
+// prof [start | stop | toggle | status | report]: the on-demand profiler (runtime/prof.h; report with tools/swprof.py)
+static void cmd_prof(int argc, char **argv, ControlReply *r) {
+    char out[512];
+    bool ok = prof_command(argc, argv, out, sizeof out);
+    if (!ok) { control_fail(r, "prof: %s", out); return; }
+    control_field_str(r, "status", out);
+    control_field_str(r, "file", prof_last_file());
+}
 static void cmd_frametrace(int argc, char **argv, ControlReply *r) {
     if (argc == 2 && !strcmp(argv[1], "start")) {
         if (!ft_rows) {
@@ -410,6 +419,7 @@ void control_prof_init(void) {
         {"vkprof", "[0|1|2]", "Vulkan timers (startup setting)", cmd_vkprof},
         {"gpuprof", "", "GPU time per pass of the next frame, to the log", cmd_gpuprof},
         {"threads", "", "CPU time so far of each game thread and the render threads (ms)", cmd_threads},
+        {"prof", "[start | stop | toggle | status | report]", "Profiler capture (swprof.py reads the file)", cmd_prof},
     };
     ns0 = plat_now_ns();
 #ifdef _WIN32

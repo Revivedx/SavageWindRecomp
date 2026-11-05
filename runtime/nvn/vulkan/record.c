@@ -28,7 +28,9 @@
 //   packets             workers) before the packet that names them; destroyed by T only once the submission that could
 //                       use them is done on the GPU - again after R recorded and submitted it
 //   stats               RecStats: T's fields plain, R's and the waits' _Atomic relaxed adds; read by T
+//   profiling           the profiler's markers (runtime/prof.h): the recorder thread's batches and submits, T's waits on it
 #include "record.h"
+#include "../../prof.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -105,17 +107,20 @@ static void publish(void) {
     }
 }
 
+static void slow_wait(const char *what, uint64_t ns);
 // T: room for `need` bytes at wpos (the recorder frees room as it records; a full ring means it is behind by its
 // whole size, 16 MB of packets, so the wait is rare)
 static void wait_room(uint64_t need) {
     if (wpos + need - atomic_load_explicit(&tail, memory_order_acquire) <= ring_cap) return;
     publish();
+    SW_ZONE("recorder ring full");
     uint64_t t0 = NOW();
     pthread_mutex_lock(&mu);
     WAIT_DONE(wpos + need - atomic_load_explicit(&tail, memory_order_acquire) > ring_cap, 1000000);
     pthread_mutex_unlock(&mu);
     st_t.full_waits++;
     st_t.full_ns += NOW() - t0;
+    slow_wait("room in the ring", NOW() - t0);
 }
 
 // T: a packet for fn with `args` bytes of arguments (+ `extra` bytes of arrays after them, each caller aligns its
@@ -140,6 +145,7 @@ static void *push(PktFn fn, size_t args, size_t extra) {
     wpos += need;
     st_t.packets++;
     st_t.bytes += need;
+    SW_TALLY("vk packets");
     return h + 1;
 }
 static void commit(void) {
@@ -173,6 +179,7 @@ static uint64_t spin_for_work(uint64_t t) {  // the published end once it moves 
 
 static void *run(void *arg) {
     (void)arg;
+    prof_thread_name("vk-record");
     extern void control_prof_thread(const char *name);  // runtime/control_prof.c (`threads`)
     control_prof_thread("recorder");
     uint64_t t = 0;
@@ -189,6 +196,7 @@ static void *run(void *arg) {
             ADD(r_wakeups, 1);
         }
         uint64_t t0 = prof ? NOW() : 0;
+        SW_ZONE("record packets");
         while (t != h) {
             const PktHdr *p = (const PktHdr *)(ring + (t & (ring_cap - 1)));
             if (p->fn) p->fn(p + 1);
@@ -263,6 +271,7 @@ uint64_t rec_submitted(void) { return atomic_load_explicit(&submitted, memory_or
 
 void rec_wait_submitted(uint64_t seq) {
     if (on <= 0 || rec_submitted() >= seq) return;
+    SW_ZONE("wait for recorder submit");
     uint64_t t0 = NOW();
     pthread_mutex_lock(&mu);
     WAIT_DONE(rec_submitted() < seq, 2000000);
@@ -278,6 +287,7 @@ void rec_drain(void) {
     publish();
     uint64_t upto = wpos;
     if (atomic_load_explicit(&tail, memory_order_acquire) >= upto) return;
+    SW_ZONE("recorder drain");
     uint64_t t0 = NOW();
     pthread_mutex_lock(&mu);
     WAIT_DONE(atomic_load_explicit(&tail, memory_order_acquire) < upto, 2000000);
@@ -300,7 +310,8 @@ void rec_stats_take(RecStats *o) {
 }
 
 // (T) time spent queuing: around every rec_* that queues, when profiling in detail
-#define ENQ_T0() uint64_t enq_t0_ = prof_enq ? NOW() : 0
+// (and, in the profiler's capture (runtime/prof.h), added up under one name)
+#define ENQ_T0() SW_ACC("vk enqueue"); uint64_t enq_t0_ = prof_enq ? NOW() : 0
 #define ENQ_END() do { if (prof_enq) st_t.enqueue_ns += NOW() - enq_t0_; } while (0)
 
 // ================================================================== descriptor writes
@@ -375,6 +386,7 @@ static void submit_run(const void *p) {
     VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .commandBufferInfoCount = a->ncb, .pCommandBufferInfos = a->cbs,
                         .signalSemaphoreInfoCount = a->nsig, .pSignalSemaphoreInfos = a->sig,
                         .waitSemaphoreInfoCount = a->nwait, .pWaitSemaphoreInfos = a->wait};
+    SW_ZONE("vkQueueSubmit2");
     uint64_t t0 = NOW();
     VkResult r = vkQueueSubmit2(g_vk.queue, 1, &si, VK_NULL_HANDLE);
     uint64_t dt = NOW() - t0;

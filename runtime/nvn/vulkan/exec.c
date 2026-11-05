@@ -12,14 +12,20 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef _WIN32
+#define NOUSER
+#include <windows.h>
+#endif
 
 #include "../../kernel.h"
+#include "../../prof.h"
 #include "../../platform.h"
 #include "shaders.h"
 #include "vk.h"
 #include "bloom_scale.h"
 #include "vram.h"
 #include "fsr3.h"
+#include "fsr_api.h"
 #include "mvec.h"
 #include "../output_scale.h"
 #include "record.h"
@@ -74,6 +80,16 @@ uint64_t prof_up_ns = ~0ull;  // textures.c upload checks (~0: profiling off)
 static int profd;
 #define PROFD_T0() uint64_t prof_t0_ = profd ? SDL_GetTicksNS() : 0
 #define PROFD_ADD(v) do { if (profd) v += SDL_GetTicksNS() - prof_t0_; } while (0)
+static uint64_t cum_draws;  // draws so far (vk_pso_wait_needed)
+// The profiler's draw-path timers (runtime/prof.h): stamps taken only while a capture runs, the time between two of them
+// added up per frame under a name ("/" nests it under the one before it in the report)
+#define PZ_NOW() (prof_enabled() ? prof_zone_begin(NULL) : (ProfZone){0})
+#define PZ_SPAN(name, a, b) do { \
+    static ProfSite pz_site_ = {name, 0}; \
+    ProfZone pz_a_ = (a), pz_b_ = (b); \
+    if (pz_a_.t0 && pz_b_.t0 && pz_a_.gen == pz_b_.gen) \
+        prof_acc_add_gen(pz_a_.gen, &pz_site_, pz_b_.t0 - pz_a_.t0); \
+} while (0)
 
 // Command buffer state draw_ recorded last, so a draw records only what differs (one draw set ~20 pieces of state;
 // the open world has ~5000 draws a frame). dyn_epoch changes with each command buffer begun and wherever other code
@@ -177,7 +193,11 @@ void vk_wait_seq(uint64_t seq) {
     VkSemaphoreWaitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1, .pSemaphores = &g_vk.timeline,
                               .pValues = &seq};
     uint64_t t0 = SDL_GetTicksNS();
-    VkResult r = vkWaitSemaphores(g_vk.dev, &wi, 10ull * 1000000000ull);
+    VkResult r;
+    {
+        SW_ZONE("gpu_wait");
+        r = vkWaitSemaphores(g_vk.dev, &wi, 10ull * 1000000000ull);
+    }
     stat_wait_ns += SDL_GetTicksNS() - t0;
     cum_wait += SDL_GetTicksNS() - t0;
     perfcount_add(PC_GPU_WAIT_NS, SDL_GetTicksNS() - t0);
@@ -194,6 +214,8 @@ void vk_wait_seq(uint64_t seq) {
 
 uint64_t vk_pending_seq(void) { return submit_seq + 1; }
 
+uint64_t renderer_present_count(void);
+static void gp_collect(bool block);
 static Sub *sub(void) {
     Sub *s = &subs[cur_sub];
     if (s->seq != submit_seq + 1) {  // slot reused: its previous submission must be done
@@ -204,6 +226,7 @@ static Sub *sub(void) {
                 prof_gpu += (uint64_t)((double)(t[1] - t[0]) * g_vk.props.limits.timestampPeriod);
             s->ts = false;
         }
+        gp_collect(false);  // (the profiler: that submission's GPU time, and any older)
         for (int i = 0; i < s->npools; i++) vkResetDescriptorPool(g_vk.dev, s->pools[i], 0);
         s->cur_pool = 0;
         s->seq = submit_seq + 1;
@@ -219,6 +242,7 @@ static void begin_cb(VkCommandBuffer *cb, bool *begun) {  // (the buffers: alloc
 }
 
 static void gp_mark(VkCommandBuffer cb, const char *fmt, ...);
+static void gp_begin(VkCommandBuffer cb);
 VkCommandBuffer vk_cmd(void) {
     Sub *s = sub();
     if (!s->main_begun) {
@@ -230,6 +254,7 @@ VkCommandBuffer vk_cmd(void) {
             rec_CmdWriteTimestamp2(s->main, VK_PIPELINE_STAGE_2_NONE, prof_qp, (uint32_t)cur_sub * 2);
             s->ts = true;
         }
+        gp_begin(s->main);
     }
     return s->main;
 }
@@ -310,11 +335,30 @@ static void ring_retire(void);
 // ---- SAVAGEWIND_GPUPROF_AT=<frame>: GPU time per pass / dispatch / copy of that frame, logged as "[gpuprof]".
 // A timestamp (ALL_COMMANDS: after everything before it) at each mark; a row = the work since the previous mark.
 bool g_gpuprof_frame;
-static VkQueryPool gp_qp;
+// ---- GPU time per pass, in the profiler's capture (runtime/prof.h)
+// While a capture runs a timestamp (ALL_COMMANDS: after everything before it) is written at the start of each submission,
+// pass, dispatch and copy; a row = the GPU work from one timestamp to the next, named by what starts it. Each finished
+// submission's rows are written as GPU events (tools/swprof.py shows them as the thread "gpu"), placed on the CPU clock by
+// VK_EXT_calibrated_timestamps, with the idle time between submissions as a row of its own.
+#define GPQ 2048  // timestamps a submission can hold (a long command list ends the submission earlier anyway)
+typedef struct {
+    uint32_t n, gen;
+    bool started;
+    uint64_t frame, seq, submit_ticks;
+    uint32_t site[GPQ], draws[GPQ];
+} GpSub;
+static GpSub gp_sub[SUBS];
+static VkQueryPool gp_qp;  // (the one frame of SAVAGEWIND_GPUPROF_AT)
+static VkQueryPool gpp_qp;  // (the profiler's capture: GPQ timestamps for each submission)
 static int gp_n;
 #define GP_MAX 4096  // (an open-world frame has ~1500 marks)
 static char gp_label[GP_MAX][112];
 static uint32_t gp_draws[GP_MAX];
+static bool gp_failed;
+static uint8_t gp_fifo[SUBS];  // submissions with timestamps not read yet, oldest first
+static unsigned gp_head, gp_tail;
+static uint64_t gp_prev_end;  // CPU ticks where the GPU finished its last read submission (0: none in this capture)
+static uint32_t gp_prev_gen;
 // SAVAGEWIND_VK_DEVLOST_TRACE=1: the last 64 GPU operations, dumped on device loss (with SAVAGEWIND_SYNC_SUBMIT=1 the
 // dump ends with the command list that faulted).
 static char dl_ring[64][128];
@@ -333,6 +377,14 @@ void vk_devlost_dump(void) {
     if (!dl_on) return;
     LOG("[vk] last GPU operations before the device loss (oldest first):\n");
     for (unsigned i = dl_n > 64 ? dl_n - 64 : 0; i < dl_n; i++) LOG("[vk]   %s\n", dl_ring[i & 63]);
+}
+static bool gp_ready(void) {
+    if (gpp_qp) return true;
+    if (gp_failed) return false;
+    VkQueryPoolCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP,
+                                .queryCount = SUBS * GPQ};
+    if (vkCreateQueryPool(g_vk.dev, &qi, NULL, &gpp_qp) != VK_SUCCESS) { gp_failed = true; gpp_qp = VK_NULL_HANDLE; }
+    return gpp_qp != VK_NULL_HANDLE;
 }
 // ---- GPU checkpoints (VK_NV_device_diagnostic_checkpoints, NVIDIA): a marker at each pass, dispatch and post step, so
 // that after a device loss the log says which of them the GPU had begun and finished (#252, #307: "address write
@@ -379,25 +431,111 @@ void vk_checkpoints_report(void) {  // (device.c vk_device_fault_report, after t
     }
 }
 
+// The profiler's row boundary: a timestamp, named by what starts the row (the label is already formatted).
+static void gpp_mark(VkCommandBuffer cb, const char *label) {
+    GpSub *g = &gp_sub[cur_sub];
+    if (!g->started || g->gen != prof_generation() || !prof_enabled() || g->n >= GPQ - 1) return;
+    g->site[g->n] = prof_site_dyn(label);
+    g->draws[g->n] = 0;
+    rec_CmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, gpp_qp, (uint32_t)(cur_sub * GPQ) + g->n);
+    g->n++;
+}
+
+// A mark for both: the one frame of SAVAGEWIND_GPUPROF_AT / `gpuprof` (the "[gpuprof]" log lines), and the profiler's capture.
 static void gp_mark(VkCommandBuffer cb, const char *fmt, ...) {
-    if (!g_gpuprof_frame || gp_n >= GP_MAX - 1) return;
-    if (!gp_qp) {
-        VkQueryPoolCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP, .queryCount = GP_MAX};
-        if (vkCreateQueryPool(g_vk.dev, &qi, NULL, &gp_qp) != VK_SUCCESS) { g_gpuprof_frame = false; return; }
-    }
-    if (!gp_n) rec_CmdResetQueryPool(cb, gp_qp, 0, GP_MAX);
-    rec_CmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, gp_qp, (uint32_t)gp_n);
+    bool legacy = g_gpuprof_frame && gp_n < GP_MAX - 1;
+    if (!legacy && !prof_enabled()) return;
+    char buf[160];
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(gp_label[gp_n], sizeof gp_label[0], fmt, ap);
+    vsnprintf(buf, sizeof buf, fmt, ap);
     va_end(ap);
-    gp_draws[gp_n] = 0;
-    gp_n++;
+    if (legacy) {
+        if (!gp_qp) {
+            VkQueryPoolCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP, .queryCount = GP_MAX};
+            if (vkCreateQueryPool(g_vk.dev, &qi, NULL, &gp_qp) != VK_SUCCESS) { g_gpuprof_frame = false; legacy = false; }
+        }
+        if (legacy) {
+            if (!gp_n) rec_CmdResetQueryPool(cb, gp_qp, 0, GP_MAX);
+            rec_CmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, gp_qp, (uint32_t)gp_n);
+            snprintf(gp_label[gp_n], sizeof gp_label[0], "%s", buf);
+            gp_draws[gp_n] = 0;
+            gp_n++;
+        }
+    }
+    gpp_mark(cb, buf);
+}
+
+// A submission's first command buffer begins (outside any render pass): its queries are reset and the first row starts.
+static void gp_begin(VkCommandBuffer cb) {
+    GpSub *g = &gp_sub[cur_sub];
+    g->n = 0;
+    g->started = false;
+    if (!prof_enabled() || !gp_ready()) return;
+    g->gen = prof_generation();
+    g->frame = renderer_present_count();
+    g->started = true;
+    rec_CmdResetQueryPool(cb, gpp_qp, (uint32_t)(cur_sub * GPQ), GPQ);
+    gpp_mark(cb, "submission start");
+}
+
+// The submission is complete: the closing timestamp, and its results are read once it has finished.
+static void gp_end(VkCommandBuffer cb, uint64_t seq) {
+    GpSub *g = &gp_sub[cur_sub];
+    if (!g->started) return;
+    g->started = false;
+    if (!g->n) return;
+    rec_CmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, gpp_qp, (uint32_t)(cur_sub * GPQ) + g->n);
+    g->seq = seq;
+    g->submit_ticks = prof_ticks();
+    gp_fifo[gp_tail++ % SUBS] = (uint8_t)cur_sub;
+}
+
+// Query the device and an advertised host time domain together. Bracketing a device-only driver call with rdtsc
+// cannot bound its alignment error: the driver may sample the GPU at any point inside that call.
+static bool gp_clocks(uint64_t *gpu, uint64_t *cpu, uint64_t *deviation) {
+    static PFN_vkGetCalibratedTimestampsEXT get;
+    static int host_ok = -1;
+#ifdef _WIN32
+    const VkTimeDomainEXT host = VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_EXT;
+#else
+    const VkTimeDomainEXT host = VK_TIME_DOMAIN_CLOCK_MONOTONIC_EXT;
+#endif
+    if (!g_vk.calibrated) return false;
+    if (!get) get = (PFN_vkGetCalibratedTimestampsEXT)vkGetDeviceProcAddr(g_vk.dev, "vkGetCalibratedTimestampsEXT");
+    if (!get) return false;
+    if (host_ok < 0) {
+        host_ok = 0;
+        PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsEXT domains =
+            (PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsEXT)vkGetInstanceProcAddr(g_vk.inst, "vkGetPhysicalDeviceCalibrateableTimeDomainsEXT");
+        VkTimeDomainEXT supported[8];
+        uint32_t n = 8;
+        if (domains && domains(g_vk.phys, &n, supported) == VK_SUCCESS)
+            for (uint32_t i = 0; i < n; i++) if (supported[i] == host) host_ok = 1;
+    }
+    if (!host_ok) return false;
+    VkCalibratedTimestampInfoEXT info[2] = {
+        {.sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT, .timeDomain = VK_TIME_DOMAIN_DEVICE_EXT},
+        {.sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT, .timeDomain = host}};
+    uint64_t stamp[2];
+    if (get(g_vk.dev, 2, info, stamp, deviation) != VK_SUCCESS) return false;
+    uint64_t host_ns = stamp[1];
+#ifdef _WIN32
+    LARGE_INTEGER frequency;
+    QueryPerformanceFrequency(&frequency);
+    host_ns = (uint64_t)((unsigned __int128)host_ns * 1000000000ull / (uint64_t)frequency.QuadPart);
+#endif
+    uint64_t c0 = prof_ticks(), now = plat_now_ns(), c1 = prof_ticks();
+    double delta = ((double)host_ns - (double)now) * prof_ticks_per_ns();
+    *cpu = (uint64_t)((double)(c0 + (c1 - c0) / 2) + delta);
+    *deviation += (uint64_t)((double)(c1 - c0) / prof_ticks_per_ns());
+    *gpu = stamp[0];
+    return true;
 }
 
 // (SAVAGEWIND_GPUPROF_AT) a mark from code outside this file: the FidelityFX backend's job labels (vulkan/fsr3.cpp)
 void vk_gpuprof_mark(VkCommandBuffer cb, const char *what) {
-    if (g_gpuprof_frame) gp_mark(cb, "%s", what);
+    gp_mark(cb, "%s", what);
 }
 void renderer_flush(void);
 void vk_gpuprof_report(void) {
@@ -416,6 +554,64 @@ void vk_gpuprof_report(void) {
     gp_n = 0;
 }
 
+// Differences of GPU timestamps wrap at the queue's valid bits (36 on some Intel chips).
+static uint64_t gp_mask(void) {
+    static uint64_t mask;
+    if (!mask) {
+        uint32_t n = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(g_vk.phys, &n, NULL);
+        VkQueueFamilyProperties *q = calloc(n ? n : 1, sizeof *q);
+        vkGetPhysicalDeviceQueueFamilyProperties(g_vk.phys, &n, q);
+        uint32_t bits = g_vk.qfam < n ? q[g_vk.qfam].timestampValidBits : 64;
+        free(q);
+        mask = bits >= 64 || bits == 0 ? ~0ull : (1ull << bits) - 1;
+    }
+    return mask;
+}
+
+static void gp_read(GpSub *g, unsigned si) {
+    if (!prof_gpu_enabled(g->gen) || !g->n) return;
+    static uint64_t t[GPQ + 1];
+    if (vkGetQueryPoolResults(g_vk.dev, gpp_qp, (uint32_t)(si * GPQ), g->n + 1, sizeof t, t, 8, VK_QUERY_RESULT_64_BIT) != VK_SUCCESS) return;
+    double tpn = prof_ticks_per_ns() * g_vk.props.limits.timestampPeriod;  // CPU ticks per GPU tick
+    uint64_t gpu_now, cpu_now, deviation = 0;
+    uint64_t base;  // CPU tick of t[0]
+    bool calibrated = gp_clocks(&gpu_now, &cpu_now, &deviation);
+    if (calibrated) base = cpu_now - (uint64_t)((double)((gpu_now - t[0]) & gp_mask()) * tpn);
+    else base = g->submit_ticks;  // (no calibration: the submission started when it was handed over, the GPU not backed up)
+    static uint32_t calibration_site, deviation_site;
+    if (!calibration_site) calibration_site = prof_site_dyn("GPU clock calibrated");
+    if (!deviation_site) deviation_site = prof_site_dyn("GPU clock deviation ns");
+    prof_put_gen(g->gen, PROF_GPU_COUNTER, calibration_site, base, calibrated, 0);
+    if (calibrated) prof_put_gen(g->gen, PROF_GPU_COUNTER, deviation_site, base, deviation, 0);
+    if (gp_prev_gen != g->gen) { gp_prev_gen = g->gen; gp_prev_end = 0; }
+    static uint32_t idle_site;
+    if (!idle_site) idle_site = prof_site_dyn("(gpu idle)");
+    if (gp_prev_end && base > gp_prev_end) prof_put_gpu(g->gen, idle_site, gp_prev_end, base, g->frame << 32);
+    for (uint32_t i = 0; i < g->n; i++) {
+        uint64_t a = base + (uint64_t)((double)((t[i] - t[0]) & gp_mask()) * tpn), b = base + (uint64_t)((double)((t[i + 1] - t[0]) & gp_mask()) * tpn);
+        prof_put_gpu(g->gen, g->site[i], a, b, g->draws[i] | (g->frame << 32));
+    }
+    gp_prev_end = base + (uint64_t)((double)((t[g->n] - t[0]) & gp_mask()) * tpn);
+}
+
+// Read the submissions that have finished, oldest first (all of them, waiting if need be, with `block`).
+static void gp_collect(bool block) {
+    while (gp_head != gp_tail) {
+        unsigned si = gp_fifo[gp_head % SUBS];
+        GpSub *g = &gp_sub[si];
+        if (vk_completed_seq() < g->seq) {
+            if (!block) return;
+            vk_wait_seq(g->seq);
+        }
+        gp_read(g, si);
+        gp_head++;
+    }
+}
+void vk_gpu_collect(void) {
+    if (gp_head != gp_tail) gp_collect(false);
+}
+
 // Submit the pending work (if any). wait/signal: binary semaphores for presentation (may be null).
 void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra) {
     (void)extra;
@@ -431,6 +627,7 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
     }
     vk_cmd();  // (an empty main buffer still carries the semaphores)
     if (s->ts) rec_CmdWriteTimestamp2(s->main, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, prof_qp, (uint32_t)cur_sub * 2 + 1);
+    gp_end(s->main, submit_seq + 1);
     rec_EndCommandBuffer(s->main);
     cbs[n++] = (VkCommandBufferSubmitInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = s->main};
     VkSemaphoreSubmitInfo sig[2] = {{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = g_vk.timeline,
@@ -452,6 +649,7 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
                         .waitSemaphoreInfoCount = nwt, .pWaitSemaphoreInfos = wt};
     {
         PROF_T0();
+        SW_ACC("submit");
         dl_note("submit %llu", (unsigned long long)submit_seq + 1);
         rec_QueueSubmit2(&si, submit_seq + 1);  // (the recorder: in order with the commands)
         PROF_ADD(prof_submit);
@@ -471,6 +669,15 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
 void renderer_submit(void) {
     gpu_lock();
     vk_submit_extra(VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    gpu_unlock();
+}
+
+// Stop admitting new CPU markers first, then close the in-progress submission and retain its delayed results.
+// This runs on the profiler's writer, with the same renderer lock as normal submission and query collection.
+static void gp_finish_capture(void) {
+    gpu_lock();
+    renderer_submit();
+    gp_collect(true);
     gpu_unlock();
 }
 
@@ -806,6 +1013,7 @@ static pthread_cond_t jobs_cond = PTHREAD_COND_INITIALIZER;
 
 static void *worker(void *a) {
     (void)a;
+    prof_thread_name("shader-worker");
     for (;;) {
         pthread_mutex_lock(&jobs_lock);
         while (!jobs_head) pthread_cond_wait(&jobs_cond, &jobs_lock);
@@ -839,6 +1047,7 @@ static pthread_mutex_t tjobs_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t tjobs_cond = PTHREAD_COND_INITIALIZER;
 static void *translator(void *a) {
     (void)a;
+    prof_thread_name("translator");
     for (;;) {
         pthread_mutex_lock(&tjobs_lock);
         while (!tjobs_head) pthread_cond_wait(&tjobs_cond, &tjobs_lock);
@@ -1075,6 +1284,7 @@ static void st_defaults(void) {
 void vk_exec_init(void) {
     prof = getenv("SAVAGEWIND_VK_PROF") != NULL;
     profd = prof && atoi(getenv("SAVAGEWIND_VK_PROF")) != 2;
+    prof_gpu_finish_hook(gp_finish_capture);
     no_dyn_cache = getenv("SAVAGEWIND_VK_NO_DYN_CACHE") != NULL;
     if (prof) {
         prof_up_ns = 0;
@@ -1665,6 +1875,15 @@ void vk_end_pass(void) { vk_end_pass_at(0); }
 static void vk_end_pass_at(int line) {
     if (!in_pass) return;
     if (prof && line < 4096) prof_end_line[line]++;
+    if (prof_enabled() && line < 4096) {  // (the profiler) passes ended, by the line that ended them
+        static ProfSite end_site[4096];
+        if (!end_site[line].id) {
+            char nm[40];
+            snprintf(nm, sizeof nm, "pass ended at exec.c:%d", line);
+            end_site[line].id = prof_site_dyn(nm);
+        }
+        prof_acc_add_gen(prof_generation(), &end_site[line], 0);
+    }
     if (!pass_void) rec_CmdEndRendering(vk_cmd());
     in_pass = false;
     pass_void = false;
@@ -1789,7 +2008,7 @@ static void begin_pass(void) {
                 st.rt.depth ? st.rt.depth->width << 16 | (st.rt.depth->height & 0xffff) : 0,
                 st.program ? st.program->stages[1].code_addr : 0);
     }
-    if (g_gpuprof_frame) {
+    if (g_gpuprof_frame || prof_enabled()) {
         NvnTexture *t0 = st.rt.ncolor ? st.rt.color[0] : NULL;
         NvnTexture *d = st.rt.depth;
         gp_mark(cb, "pass: %d color %ux%u fmt %#x, depth %ux%u", st.rt.ncolor, t0 ? t0->width : 0, t0 ? t0->height : 0,
@@ -2544,6 +2763,7 @@ static const ProgBuild *prog_build(const ShaderInfo *vi, const ShaderInfo *fi, b
 static void compile_program(void *arg) {
     Prog *p = arg;
     uint64_t pt0 = SDL_GetTicksNS();
+    SW_ZONE("compile program");
     bool made;
     const ProgBuild *b = prog_build(p->vi, p->fi, &made);
     if (!b) { atomic_store(&p->state, 2); return; }
@@ -2608,6 +2828,7 @@ static bool fs_sel_match(const FsSel *f, uint64_t code, uint64_t hash) {
 static void translate_program(void *arg) {
     Prog *p = arg;
     uint64_t pt0 = SDL_GetTicksNS();
+    SW_ZONE("translate shaders");
     maxwell_gmem_base = HEAP_BASE;
     maxwell_gmem_size = HEAP_MAX;
     pthread_mutex_lock(&translate_lock);
@@ -3420,6 +3641,7 @@ static bool pso_record(int kind, uint64_t id0, uint64_t id1, const void *state, 
 static void build_pipeline(void *arg) {
     Pipe *pp = arg;
     uint64_t pt0 = SDL_GetTicksNS();
+    SW_ZONE("compile pipeline");
     PipeKey *k = &pp->k;
     WarmPipe *w;
     if (warm_get(k->prog->vi, k->prog->fi, &k->s, &w)) {
@@ -6211,6 +6433,7 @@ static void cs_make(CsBuild *c) {
 static void build_compute(void *arg) {
     CsProg *cp = arg;
     uint64_t pt0 = SDL_GetTicksNS();
+    SW_ZONE("compile compute");
     CsBuild *c;
     if (cs_get(cp->si, cp->local, &c)) {
         cs_make(c);
@@ -6505,6 +6728,7 @@ static void pso_warm_one(const PsoRec *r) {
 
 static void *pso_worker(void *arg) {
     (void)arg;
+    prof_thread_name("pso-worker");
     // (debugging) SAVAGEWIND_PSO_SLOW_MS=<n>: each pipeline takes n ms longer, to see the wait and its bar (device.c
     // then saves the first bar frame as build/pso_wait.png)
     int slow = getenv("SAVAGEWIND_PSO_SLOW_MS") ? atoi(getenv("SAVAGEWIND_PSO_SLOW_MS")) : 0;
@@ -6916,6 +7140,7 @@ static void draw(CmdRec *r, bool indexed) {
     // has nothing left to do (a vertex shader writing storage buffers or images would be the one difference).
     if (st.rasterizer_discard) { stat_discarded++; return; }
     PROFD_T0();
+    SW_ACC("exec/draw");
     draw_(r, indexed);
     PROFD_ADD(prof_draw);
 }
@@ -6987,6 +7212,7 @@ static void wait_built(_Atomic int *state) {  // (0 building: until built or fai
 
 static void draw_(CmdRec *r, bool indexed) {
     if (profd) prof_tp_ = SDL_GetTicksNS();
+    ProfZone pz0 = PZ_NOW();
     fg_before_draw();
     if (!st.program) { stat_skipped++; return; }
     static int no_key_gen = -1;
@@ -7294,6 +7520,8 @@ static void draw_(CmdRec *r, bool indexed) {
 
     uint64_t prof_tk_ = profd ? SDL_GetTicksNS() : 0;
     if (profd) prof_pre += prof_tk_ - prof_tp_;
+    ProfZone pz1 = PZ_NOW();
+    PZ_SPAN("exec/draw/pre", pz0, pz1);
     // ---- pipeline
     static struct { uint64_t gen; Prog *pr; uint8_t cls, fb; } km;
     Pipe *pp;
@@ -7388,6 +7616,8 @@ have_pipe:
     if (!DYN_SAME(pipe, pp->pipe)) rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pp->pipe);
     uint64_t prof_td_ = profd ? SDL_GetTicksNS() : 0;
     if (profd) prof_key += prof_td_ - prof_tk_;
+    ProfZone pz2 = PZ_NOW();
+    PZ_SPAN("exec/draw/key", pz1, pz2);
 
     // ---- depth / stencil (dynamic)
     static int nodt = -1;
@@ -7479,11 +7709,15 @@ have_pipe:
     // build the vertex set now and the fragment set after the decision (stage_set fills tex_sc for stage 1).
     if (profd) prof_dyn += SDL_GetTicksNS() - prof_td_;
     PROFD_T0();
+    ProfZone pz3 = PZ_NOW();
+    PZ_SPAN("exec/draw/dyn", pz2, pz3);
     uint32_t dyn[64];
     int ndyn = 0;
     hud_clip = false;  // (hud_patch, while the vertex stage's constant buffers are bound)
     VkDescriptorSet vset = stage_set(pr, pr->set_layout[0], 0, 0, pr->vi, NULL, NULL, 0, 0, 0, NULL, dyn, &ndyn);
     PROFD_ADD(prof_sets);
+    ProfZone pz4 = PZ_NOW();
+    PZ_SPAN("exec/draw/sets", pz3, pz4);
     VkDescriptorImageInfo fii[64];
     uint64_t prof_tx_ = profd ? SDL_GetTicksNS() : 0;
     sdw_fix.s = 0;
@@ -7520,6 +7754,8 @@ have_pipe:
         }
     }
     if (profd) prof_tex += SDL_GetTicksNS() - prof_tx_;
+    ProfZone pz5 = PZ_NOW();
+    PZ_SPAN("exec/draw/tex", pz4, pz5);
     if (fabsf(pass_sx - pass_sy) > 0.01f * pass_sy && st.rt.ncolor && renderer_texture_presented(st.rt.color[0])) {
         // Draws into the swapchain image (see renderer.m): composites fill the window, UI goes in a centred 16:9 box.
         bool reads_scene = false;
@@ -7599,6 +7835,7 @@ have_pipe:
     apply_scissor();
     float rs0[4] = {vp_sx, vp_sy, vp_ox, vp_oy};
     uint64_t prof_t1_ = profd ? SDL_GetTicksNS() : 0;
+    ProfZone pz6 = PZ_NOW();
     fxaa_off = !g_settings.game_fxaa && fxaa_shader(g_cur_fs_hash);  // (Video > Game's FXAA: fxaa_patch)
     if (fxaa_off) {
         static uint64_t logged[2];
@@ -7608,6 +7845,7 @@ have_pipe:
     VkDescriptorSet fset = stage_set(pr, pr->set_layout[1], 1, 1, pr->fi, rs0, tint, 0, 0, 0, fii, dyn, &ndyn);
     sdw_fix.s = 0, up_fix.sx = 0, fxaa_off = false;
     if (profd) prof_sets += SDL_GetTicksNS() - prof_t1_;
+    PZ_SPAN("exec/draw/sets", pz6, PZ_NOW());
     VkDescriptorSet sets[2] = {vset, fset};
     if (ndyn > 32) ndyn = 32;
     if (dc.layout != pr->layout || dc.sets[0] != vset || dc.sets[1] != fset || dc.ndyn != (uint32_t)ndyn ||
@@ -7620,6 +7858,7 @@ have_pipe:
     if (mvec_draw) rec_CmdPushConstants(cb, pr->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, MVEC_PUSH, mvec_pc);
 
     uint64_t prof_t2_ = profd ? SDL_GetTicksNS() : 0;
+    ProfZone pz7 = PZ_NOW();
     uint64_t prof_index_start = prof_t2_;
     // ---- indices (copied; the largest index bounds the vertex data copied below)
     uint32_t first = 0, count = (uint32_t)r->x[2], inst, base_inst, max_index = 0;
@@ -7735,6 +7974,7 @@ have_pipe:
 
     if (profd) prof_vertex_bind += SDL_GetTicksNS() - prof_index_start;
     if (profd) prof_vtx += SDL_GetTicksNS() - prof_t2_;
+    PZ_SPAN("exec/draw/vtx", pz7, PZ_NOW());
     // ---- draw (inside an occlusion query while SAMPLES_PASSED counts)
     int oq = -1;
     if (oq_counting && oq_nrun < OQ_RUN && oq_on()) {
@@ -7772,6 +8012,10 @@ have_pipe:
             snprintf(gp_label[gp_n - 1] + l, sizeof gp_label[0] - l, ", first fs %016llx", (unsigned long long)g_cur_fs_hash);
         }
         gp_draws[gp_n - 1]++;
+    }
+    {   // (the profiler) a draw in the GPU row now open
+        GpSub *g = &gp_sub[cur_sub];
+        if (g->started && g->n && g->gen == prof_generation() && prof_enabled()) g->draws[g->n - 1]++;
     }
 }
 
@@ -8753,7 +8997,7 @@ static void scene_post(Prog *pr, CmdRec *r) {
         if (grade) {
             TexBackend *g = post_image(32, w, h, b->format);
             VkImageView gi[3] = {src, lut};
-            if (g_gpuprof_frame) gp_mark(cb, "colour grading%s", lut ? " + LUT" : "");
+            gp_mark(cb, "colour grading%s", lut ? " + LUT" : "");
             post_pass_pc(cb, lut ? "grade_lut.frag" : "grade.frag", gi, lut ? 2 : 1, g, gpc, sizeof gpc, false);
             src = post_view(g);
             out = in = g;
@@ -8768,7 +9012,7 @@ static void scene_post(Prog *pr, CmdRec *r) {
             return;
         }
         if (up) {
-            if (g_gpuprof_frame) gp_mark(cb, "scene FSR 1");
+            gp_mark(cb, "scene FSR 1");
             TexBackend *e = post_image(5, ow, oh, b->format), *o = post_image(6, ow, oh, b->format);
             float iw = (float)b->width, ih = (float)b->height;
             // (the scene is linear light - the composite gamma-encodes it -: EASU and RCAS work on its gamma 2.0 in
@@ -9094,7 +9338,7 @@ TexBackend *vk_fg_generate(NvnTexture *t, TexBackend *b) {
                         mvec_vectors_img->height == db->height;
             if (!mvec_for_framegen()) objv = false;  // (the default: they break up foliage, mvec.c mvec_for_framegen)
             if (objv) mv = mvec_vectors_img;
-            if (g_gpuprof_frame) gp_mark(cb, "frame generation: motion vectors");
+            gp_mark(cb, "frame generation: motion vectors");
             if (!objv) post_pass_pc(cb, "fg_mv.frag", &dv, 1, mv, pc, sizeof pc, false);
             TexBackend *hl = fg_image(0, b->width, b->height, srgb_of(unorm_of(b->format)), VK_IMAGE_USAGE_TRANSFER_DST_BIT);
             {   // (testing) SAVAGEWIND_FG_INPUTS_AT=<n>: the n-th generated frame's HUD-less image and motion vectors
@@ -9129,14 +9373,14 @@ TexBackend *vk_fg_generate(NvnTexture *t, TexBackend *b) {
             memcpy(f.cam_right, right, sizeof right), memcpy(f.cam_fwd, fwd, sizeof fwd);
             if (!g_fg_vk.dev) g_fg_vk = (FgVk){g_vk.phys, g_vk.dev, vk_fg_wait_idle};
             vk_full_barrier(cb);
-            if (g_gpuprof_frame) gp_mark(cb, "frame generation: FSR 3 optical flow + interpolation");
+            gp_mark(cb, "frame generation: FSR 3 optical flow + interpolation");
             static int test = -1;  // (measuring) SAVAGEWIND_FG_TEST=2: no interpolation (the HUD-less copy shown instead)
             if (test < 0) test = getenv("SAVAGEWIND_FG_TEST") ? atoi(getenv("SAVAGEWIND_FG_TEST")) : 0;
             if (test != 2) rec_drain();  // (FidelityFX records into cb itself: what was queued before goes first)
             ok = test == 2 ? true : fg_dispatch(cb, &cfg, &f);
             if (test == 2) o = hl;
             vk_full_barrier(cb);
-            if (g_gpuprof_frame) gp_mark(cb, "frame generation: done");
+            gp_mark(cb, "frame generation: done");
             vk_dyn_forget();
             if (ok) out = o;
             static int logged;
@@ -9342,7 +9586,7 @@ static TexBackend *mvec_taa(VkCommandBuffer cb, TexBackend *b, uint64_t frame) {
     return out;
 }
 
-// AMD FSR 3.1 (Video > Upscaler FSR 3; fsr3.h): the scene b (render size, jittered: output_scale.c rt_persp_offset with
+// AMD FSR 3.1 (Video > Upscaler FSR 3; fsr3.h) or FSR 4 (Upscaler FSR 4; fsr_api.h): the scene b (render size, jittered: output_scale.c rt_persp_offset with
 // FSR's sequence, rt_jitter_set_phases) to ow x oh (post image 13), from this frame's motion vectors (just filled), the
 // scene depth (as R32F, post image 14) and the reactive mask (the vectors' .z as R8, post image 15). The vectors are
 // clip-space NDC differences (y up, the image's y down: mvec_fill.frag), FSR wants the UV offset to where the pixel was:
@@ -9366,13 +9610,13 @@ static TexBackend *fsr3_scene(VkCommandBuffer cb, TexBackend *b, uint32_t ow, ui
     TexBackend *out = post_image_ex(13, ow, oh, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT);
     float pc[8] = {0};
     VkImageView di[3] = {vk_image_view(db, VK_IMAGE_VIEW_TYPE_2D, db->format, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_DEPTH_BIT)};
-    if (g_gpuprof_frame) gp_mark(cb, "FSR 3 depth copy");
+    gp_mark(cb, "FSR 3 depth copy");
     post_pass(cb, "fsr3_depth.frag", di, 1, dep, pc, false);
     VkImageView ri[3] = {post_view(v)};
     static int reactive = -1;  // SAVAGEWIND_FSR3_REACTIVE=0: (testing) no reactive mask (all zero)
     if (reactive < 0) reactive = !getenv("SAVAGEWIND_FSR3_REACTIVE") || atoi(getenv("SAVAGEWIND_FSR3_REACTIVE")) != 0;
     float rpc[8] = {reactive ? 1.0f : 0.0f};
-    if (g_gpuprof_frame) gp_mark(cb, "FSR 3 reactive mask");
+    gp_mark(cb, "FSR 3 reactive mask");
     post_pass(cb, "fsr3_reactive.frag", ri, 1, rea, rpc, false);
     vk_full_barrier(cb);
     float flip = nvn_window_origin() == 0 ? -1.0f : 1.0f;  // (the game's NDC y to clip y: mvec_fill.frag's a.x)
@@ -9391,10 +9635,20 @@ static TexBackend *fsr3_scene(VkCommandBuffer cb, TexBackend *b, uint32_t ow, ui
         .reset = last == ~0ull || last + 1 != frame,
     };
     last_ns = ns;
-    if (g_gpuprof_frame) gp_mark(cb, "FSR 3 upscaler");
+    // Upscaler FSR 4, or SAVAGEWIND_FSR3_API=1: AMD's DLLs (fsr_api.h); else the built-in FSR 3.1 (fsr3.h)
+    int api = rt_fsr4() ? 4 : fsr3_api_wanted() ? 3 : 0;
+    if (api && !fsr_api_usable(api)) api = 0;  // (it failed before: the built-in one from here on)
+    static int last_api = -1;  // (another upscaler: its own history, from none)
+    if (api != last_api) d.reset = true;
+    last_api = api;
+    gp_mark(cb, api == 4 ? "FSR 4 upscaler" : "FSR 3 upscaler");
     rec_drain();  // (FidelityFX records into cb itself, and may wait for the device: what was queued before goes first)
-    if (!fsr3_dispatch(&d)) return NULL;
-    if (g_gpuprof_frame) gp_mark(cb, "after FSR 3");
+    // (AMD's failing, logged there: the built-in FSR 3.1 in its place, from this frame on, without the history of the
+    // other upscaler)
+    bool amd_ok = api && fsr_api_dispatch(&d, api);
+    if (api && !amd_ok) d.reset = true, api = 0, last_api = 0;
+    if (!amd_ok && !(fsr3_available() && fsr3_dispatch(&d))) return NULL;
+    gp_mark(cb, api == 4 ? "after FSR 4" : "after FSR 3");
     last = frame;
     vk_dyn_forget();  // (FSR's own pipelines and sets were bound)
     vk_full_barrier(cb);
@@ -9921,13 +10175,17 @@ static void exec_list(uint64_t handle, int depth) {
 
 void backend_execute(uint64_t handle) {
     readbacks_apply();
-    gpu_lock();
+    SW_ZONE("backend_execute");
+    { SW_ACC("exec_lock"); gpu_lock(); }
     if (g_debug_frame && getenv("SAVAGEWIND_LOG_OPS")) LOG("[submit] %llx\n", (unsigned long long)handle);
     PROF_T0();
     in_execute = true;
-    guest_copy_flush();  // (a new list: the game may have written the memory of the last one's copies since)
-    hc_list_begin();
-    exec_list(handle, 0);
+    {
+        SW_ACC("exec");
+        guest_copy_flush();  // (a new list: the game may have written the memory of the last one's copies since)
+        hc_list_begin();
+        exec_list(handle, 0);
+    }
     in_execute = false;
     PROF_ADD(prof_exec);
     if (prof) cum_exec += SDL_GetTicksNS() - prof_t0_;

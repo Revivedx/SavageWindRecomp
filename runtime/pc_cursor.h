@@ -20,3 +20,5 @@ int rt_pc_map_focus(Cpu *c, int position);
 
 void pc_cursor_options_page_changed(void);
 void pc_cursor_options_tick(uint64_t screen);
+
+void pc_cursor_options_focus(uint64_t screen, uint64_t row, unsigned kind);

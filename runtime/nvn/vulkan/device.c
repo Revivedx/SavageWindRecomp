@@ -16,6 +16,7 @@
 #include "../../imageload.h"
 #include "../../paths.h"
 #include "../../perfmon.h"
+#include "../../prof.h"
 #include "../../settings.h"
 #include "../../gpu_select.h"
 #include "../../ui/menu.h"
@@ -24,6 +25,7 @@
 #include "vk.h"
 #include "vram.h"
 #include "record.h"
+#include "fsr_api.h"
 #include "../output_scale.h"
 #include "../renderer.h"
 
@@ -68,7 +70,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_cb(VkDebugUtilsMessageSeverityFlagBi
 static void create_instance(void) {
     Uint32 n_sdl = 0;
     const char *const *sdl_ext = SDL_Vulkan_GetInstanceExtensions(&n_sdl);
-    const char *ext[24];
+    const char *ext[28];
     uint32_t n_ext = 0;
     for (Uint32 i = 0; i < n_sdl && n_ext < 14; i++) ext[n_ext++] = sdl_ext[i];
     {   // the HDR10 colour space of an HDR swapchain (Video > HDR) comes with VK_EXT_swapchain_colorspace
@@ -473,7 +475,7 @@ static void create_device(void) {
                 memory.memoryTypes[i].heapIndex, memory.memoryTypes[i].propertyFlags);
         }
     }
-    const char *ext[24];
+    const char *ext[32];
     uint32_t n_ext = 0;
     ext[n_ext++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
 
@@ -534,6 +536,8 @@ static void create_device(void) {
     }
     g_vk.custom_border = has_ext(ep, ne, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
     if (g_vk.custom_border) ext[n_ext++] = VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME;
+    g_vk.calibrated = has_ext(ep, ne, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
+    if (g_vk.calibrated) ext[n_ext++] = VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME;
     g_vk.divisor = has_ext(ep, ne, VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
     if (g_vk.divisor) ext[n_ext++] = VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME;
     g_vk.host_import = has_ext(ep, ne, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);  // guest heap as a GPU buffer (exec.c)
@@ -842,6 +846,75 @@ static void create_device(void) {
         f.pNext = &eds_on;
         ext[n_ext++] = VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME;
     }
+    // AMD FSR 4 (vulkan/fsr_api.h): AMD's upscaler DLL runs its network with cooperative matrices (FP8 on the RX 9000,
+    // INT8 on older Radeons), integer dot products, compute derivatives and a chosen subgroup size. They go on
+    // only for an AMD Radeon with the DLLs next to the game; each only where the driver has it (fsr_api_probe says
+    // after the device is made whether AMD's DLL then offers FSR 4).
+    VkPhysicalDeviceCooperativeMatrixFeaturesKHR coop_on = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR,
+                                                            .cooperativeMatrix = VK_TRUE};
+#ifdef VK_EXT_shader_float8
+    VkPhysicalDeviceShaderFloat8FeaturesEXT f8_on = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT8_FEATURES_EXT,
+                                                     .shaderFloat8 = VK_TRUE, .shaderFloat8CooperativeMatrix = VK_TRUE};
+#endif
+#ifdef VK_KHR_compute_shader_derivatives
+    VkPhysicalDeviceComputeShaderDerivativesFeaturesKHR deriv_on = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_KHR};
+#endif
+    if (g_vk.props.vendorID == 0x1002 && fsr_api_present()) {
+        const char *got[4];
+        int n_got = 0;
+        bool coop = has_ext(ep, ne, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
+        if (coop) {
+            VkPhysicalDeviceCooperativeMatrixFeaturesKHR q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR};
+            VkPhysicalDeviceFeatures2 q2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &q};
+            vkGetPhysicalDeviceFeatures2(g_vk.phys, &q2);
+            coop = q.cooperativeMatrix;
+        }
+        if (coop) {
+            ext[n_ext++] = VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME;
+            coop_on.pNext = f.pNext, f.pNext = &coop_on;
+            got[n_got++] = "cooperative matrix";
+        }
+#ifdef VK_EXT_shader_float8
+        bool f8 = has_ext(ep, ne, VK_EXT_SHADER_FLOAT8_EXTENSION_NAME);
+        if (f8) {
+            VkPhysicalDeviceShaderFloat8FeaturesEXT q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT8_FEATURES_EXT};
+            VkPhysicalDeviceFeatures2 q2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &q};
+            vkGetPhysicalDeviceFeatures2(g_vk.phys, &q2);
+            f8 = q.shaderFloat8 && q.shaderFloat8CooperativeMatrix;  // (AMD's sample wants both, or neither)
+        }
+        if (f8) {
+            ext[n_ext++] = VK_EXT_SHADER_FLOAT8_EXTENSION_NAME;
+            f8_on.pNext = f.pNext, f.pNext = &f8_on;
+            got[n_got++] = "FP8";
+        }
+#endif
+#ifdef VK_KHR_compute_shader_derivatives
+        bool dv = has_ext(ep, ne, VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME);
+        if (dv) {
+            VkPhysicalDeviceComputeShaderDerivativesFeaturesKHR q = {
+                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_KHR};
+            VkPhysicalDeviceFeatures2 q2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &q};
+            vkGetPhysicalDeviceFeatures2(g_vk.phys, &q2);
+            deriv_on.computeDerivativeGroupLinear = q.computeDerivativeGroupLinear;
+            deriv_on.computeDerivativeGroupQuads = q.computeDerivativeGroupQuads;
+            dv = q.computeDerivativeGroupLinear || q.computeDerivativeGroupQuads;
+        }
+        if (dv) {
+            ext[n_ext++] = VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME;
+            deriv_on.pNext = f.pNext, f.pNext = &deriv_on;
+            got[n_got++] = "compute derivatives";
+        }
+#endif
+        // (Vulkan 1.3 core, in the f13 above)
+        f13.shaderIntegerDotProduct = f13_have.shaderIntegerDotProduct;
+        f13.subgroupSizeControl = f13_have.subgroupSizeControl;
+        f13.computeFullSubgroups = f13_have.computeFullSubgroups;
+        char list[96] = "";
+        for (int i = 0; i < n_got; i++) snprintf(list + strlen(list), sizeof list - strlen(list), "%s%s", i ? ", " : "", got[i]);
+        LOG("[vk] AMD FSR 4 device features: %s%s integer dot product %s, subgroup size control %s\n", list, n_got ? "," : "none,",
+            f13.shaderIntegerDotProduct ? "on" : "off", f13.subgroupSizeControl && f13.computeFullSubgroups ? "on" : "off");
+    }
     float prio[2] = {1.0f, 1.0f};
     // One queue: frames are presented on the game's own. A second one that presented (present thread below) went
     // wrong with others' code on it: NVIDIA's GPUs before Turing faulted writing to GPU address 0 within the first
@@ -857,6 +930,7 @@ static void create_device(void) {
     VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f, .queueCreateInfoCount = 1,
                              .pQueueCreateInfos = &qi, .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext};
     VK_CHECK(vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.dev));
+    fsr_api_probe(g_vk.dev, g_vk.phys);  // (logs what AMD's FSR DLLs offer this device; a no-op without them)
     vkGetDeviceQueue(g_vk.dev, g_vk.qfam, 0, &g_vk.queue);
     g_vk.present_queue = g_vk.queue;
     if (qi.queueCount == 2) vkGetDeviceQueue(g_vk.dev, g_vk.qfam, 1, &g_vk.present_queue);
@@ -1650,6 +1724,7 @@ static void present_wait_turn(int kind, uint64_t seq) {
 
 static void *present_thread(void *arg) {
     (void)arg;
+    prof_thread_name("present");
     pthread_mutex_lock(&pres_m);
     for (;;) {
         while (!presq_n) pthread_cond_wait(&pres_cv, &pres_m);
@@ -1843,7 +1918,7 @@ bool vk_frame_begin(const float clear[4]) {
     // minimised (Windows keeps the window's size then, but its surface is 0 x 0: every acquire was out of date)
     if (!w || !h || (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED)) return false;
     uint64_t tp = SDL_GetTicksNS();
-    present_wait_room();
+    { SW_ZONE("present/wait_room"); present_wait_room(); }
     g_present_split[4] += SDL_GetTicksNS() - tp;
     float white;  // (Windows HDR turned on or off, the window moved to another display, Video > HDR changed)
     bool hdr = hdr_wanted(&white);
@@ -1858,10 +1933,11 @@ bool vk_frame_begin(const float clear[4]) {
     slot = (slot + 1) % FRAMES;
     if (!acquire_sem[slot]) acquire_sem[slot] = binary_semaphore();
     uint64_t tw = SDL_GetTicksNS();
-    vk_wait_seq(slot_seq[slot]);
+    { SW_ZONE("present/slot_wait"); vk_wait_seq(slot_seq[slot]); }
     g_present_split[5] += SDL_GetTicksNS() - tw;
     uint64_t ta = SDL_GetTicksNS();
-    VkResult r = acquire_image(acquire_sem[slot], &cur_frame.image);
+    VkResult r;
+    { SW_ZONE("present/acquire"); r = acquire_image(acquire_sem[slot], &cur_frame.image); }
     g_present_split[0] += SDL_GetTicksNS() - ta;
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         recreate_swapchain();
@@ -1958,10 +2034,12 @@ void vk_frame_end(const char *shot_path) {
     if (!done_sem[img]) done_sem[img] = binary_semaphore();
     uint64_t seq = vk_pending_seq();
     uint64_t ts = SDL_GetTicksNS();
-    vk_submit_extra(cur_frame.acquired, done_sem[img], VK_NULL_HANDLE);
+    { SW_ZONE("present/submit"); vk_submit_extra(cur_frame.acquired, done_sem[img], VK_NULL_HANDLE); }
     g_present_split[3] += SDL_GetTicksNS() - ts;
     ts = SDL_GetTicksNS();
-    if (!present_image(img, done_sem[img], frame_kind, seq)) recreate_swapchain();
+    bool presented_ok;
+    { SW_ZONE("present/queue_present"); presented_ok = present_image(img, done_sem[img], frame_kind, seq); }
+    if (!presented_ok) recreate_swapchain();
     frame_kind = PRES_PLAIN;
     g_present_split[4] += SDL_GetTicksNS() - ts;
     cur_frame.ok = false;
@@ -2101,11 +2179,12 @@ static void present_locked(NvnTexture *t) {
     ctl_present_tex = b;
     b->presented = true;
     uint64_t t0 = SDL_GetTicksNS();
-    vk_end_pass();
+    { SW_ZONE("present/end_pass"); vk_end_pass(); }
     g_present_split[1] += SDL_GetTicksNS() - t0;
     t0 += pso_wait();  // (not the acquire's time)
     // Frame generation: the frame between the last one and this (exec.c vk_fg_generate), presented first
-    TexBackend *gen = vk_fg_generate(t, b);
+    TexBackend *gen;
+    { SW_ZONE("present/frame_gen"); gen = vk_fg_generate(t, b); }
     {   // (measuring) SAVAGEWIND_FG_TEST=1: the frame made, not presented
         static int test = -1;
         if (test < 0) test = getenv("SAVAGEWIND_FG_TEST") ? atoi(getenv("SAVAGEWIND_FG_TEST")) : 0;
@@ -2113,7 +2192,8 @@ static void present_locked(NvnTexture *t) {
     }
     g_fg_active = gen != NULL;
     static const float black[4] = {0, 0, 0, 1};
-    bool have = vk_frame_begin(black);
+    bool have;
+    { SW_ZONE("present/frame_begin"); have = vk_frame_begin(black); }
     uint64_t nd = SDL_GetTicksNS() - t0;
     if (nd > 30000000) {
         static int warned;
@@ -2176,12 +2256,12 @@ static void present_locked(NvnTexture *t) {
             if (!vk_frame_begin(black)) { renderer_submit(); goto presented; }
             cb = vk_cmd();
         }
-        vk_present_draw(cb, b, (float)vx, (float)vy, (float)vw, (float)vh, pv);
+        { SW_ZONE("present/draw"); vk_present_draw(cb, b, (float)vx, (float)vy, (float)vw, (float)vh, pv); }
         static long menu_at = -1;
         if (menu_at < 0) menu_at = getenv("SAVAGEWIND_MENU_AT") ? atol(getenv("SAVAGEWIND_MENU_AT")) : 0;
         if (menu_at && (long)total_frames + 1 == menu_at) { extern void menu_test_open(void); menu_test_open(); }
         if (menu_render_needed()) rec_drain();  // (ImGui records into cb itself, and may upload its fonts on the queue)
-        menu_render((void *)cb, g_vk.sc_extent.width, g_vk.sc_extent.height);
+        { SW_ZONE("present/menu"); menu_render((void *)cb, g_vk.sc_extent.width, g_vk.sc_extent.height); }
         g_present_split[2] += SDL_GetTicksNS() - td;
         static long win_shot = -1;
         if (win_shot < 0) win_shot = getenv("SAVAGEWIND_WINDOW_SHOT") ? atol(getenv("SAVAGEWIND_WINDOW_SHOT")) : 0;
@@ -2234,6 +2314,7 @@ presented:
     static long slow_ms = -1;
     if (slow_ms < 0) slow_ms = getenv("SAVAGEWIND_SLOW_FRAME_MS") ? atol(getenv("SAVAGEWIND_SLOW_FRAME_MS")) : 0;
     if (slow_ms > 0 && total_frames > 2600) SDL_Delay((Uint32)slow_ms);
+    prof_frame(total_frames);  // (the profiler: a new frame starts here, for every thread's events)
     extern void fnprof_frame(uint64_t frame);
     fnprof_frame(total_frames);
     extern void reboot_test_frame(uint64_t frame);  // runtime/main.c (SAVAGEWIND_REBOOT_AT)
@@ -2271,6 +2352,8 @@ presented:
             if (*p == ',') p++; else break;
         }
     }
+    extern void vk_gpu_collect(void);
+    vk_gpu_collect();  // (the profiler: GPU time of the submissions that have finished)
     if (g_debug_frame) LOG("===== debug frame %llu =====\n", (unsigned long long)total_frames);
     {   // (testing) SAVAGEWIND_UPSCALE_AT=<frame>:<off|ultra|quality|balanced|performance>,... (ascending): the
         // upscaler from that frame on, as the Video page sets it (A/B of the same view a few frames apart): FSR 1, or
@@ -2285,13 +2368,13 @@ presented:
             if ((long)total_frames < at) break;
             const char *m = *end == ':' ? end + 1 : end;
             static const char *const names[] = {"ultra", "quality", "balanced", "performance", "ultraperf"};  // (UPQ_*; a later match wins)
-            bool f3 = !strncmp(m, "fsr3-", 5);
-            if (f3) m += 5;
+            bool f4 = !strncmp(m, "fsr4-", 5), f3 = !strncmp(m, "fsr3-", 5);  // (fsr4-<mode>: AMD FSR 4)
+            if (f3 || f4) m += 5;
+            int tu = f4 ? UPSCALE_FSR4 : f3 ? UPSCALE_FSR3 : UPSCALE_FSR1;
             g_settings.upscaler = UPSCALE_OFF;
             for (int i = 0; i < 5; i++)
-                if (!strncmp(m, names[i], strlen(names[i])))
-                    g_settings.upscaler = f3 ? UPSCALE_FSR3 : UPSCALE_FSR1, g_settings.upscale_quality = i;
-            if (f3 && !strncmp(m, "native", 6)) g_settings.upscaler = UPSCALE_FSR3, g_settings.upscale_quality = UPQ_COUNT;
+                if (!strncmp(m, names[i], strlen(names[i]))) g_settings.upscaler = tu, g_settings.upscale_quality = i;
+            if ((f3 || f4) && !strncmp(m, "native", 6)) g_settings.upscaler = tu, g_settings.upscale_quality = UPQ_COUNT;
             LOG("[test] frame %llu: upscaler %d mode %d\n", (unsigned long long)total_frames, g_settings.upscaler,
                 g_settings.upscale_quality);
             next = strchr(m, ',');
@@ -2469,6 +2552,10 @@ void ui_window_init(void) {
     if (!SDL_Vulkan_CreateSurface(window, g_vk.inst, NULL, &g_vk.surface)) FATAL("SDL_Vulkan_CreateSurface: %s\n", SDL_GetError());
     pick_device();
     create_device();
+    if (g_settings.upscaler == UPSCALE_FSR4 && !fsr4_available()) {  // (a settings file from a PC with an AMD Radeon)
+        g_settings.upscaler = fsr3_available() && fsr3_upscaler_enabled() ? UPSCALE_FSR3 : UPSCALE_SPATIAL;
+        LOG("[fsr] FSR 4 is not offered on this GPU: upscaler %d instead\n", g_settings.upscaler);
+    }
     create_swapchain();
     vk_exec_init();
     vk_shaders_init();
