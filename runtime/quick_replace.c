@@ -29,6 +29,7 @@ static char replace_award_name[97];
 static uint64_t replace_event;
 static bool replace_event_ready;
 static bool replace_ground_preview;
+static bool replace_ground_shop;
 static uint32_t replace_ground_flags, replace_ground_modifier;
 static unsigned replace_event_wait;
 static int replace_category = -1, replace_frames;
@@ -76,6 +77,7 @@ RT_ON_RESET(quick_replace_reset) {
     replace_event = 0;
     replace_event_ready = false;
     replace_ground_preview = false;
+    replace_ground_shop = false;
     replace_ground_flags = replace_ground_modifier = 0;
     replace_event_wait = 0;
     replace_toast = replace_toast_tick = 0;
@@ -166,6 +168,7 @@ static bool replace_index_identity(uint64_t index, uint64_t actor) {
 
 static void replace_ground_release(Cpu *c) {
     replace_retry_until = 0;
+    replace_ground_shop = false;
     if (replace_handle) replace_call(c, g_site.actor_link_release, replace_handle, 0, 0);
     if (replace_ground_index) replace_call(c, g_site.actor_index_release, replace_ground_index, 0, 0);
 }
@@ -248,6 +251,7 @@ void rt_quick_replace_popup(Cpu *c) {
                 replace_ground_preview = false;
                 memcpy(replace_incoming, name, sizeof name);
                 replace_capture_known_ground_preview(c);
+                replace_ground_shop = true;
                 replace_start(category);
                 return;
             }
@@ -366,9 +370,17 @@ static bool replace_ground_target(Cpu *c, bool full) {
     memset((void *)(uintptr_t)handle, 0, 0x18);
     replace_call(&scratch, g_site.replace_interaction_target, mgr, handle, 0);
     bool same = LD64(handle + 8) == actor;
-    int result = same ? (int)replace_call(&scratch, g_site.replace_pickup_status, handle, 0, 0) : -1;
+    bool accepted = false;
+    if (same && replace_ground_shop) {
+        int result = (int)replace_call(&scratch, g_site.replace_pickup_status, handle, 0, 0);
+        accepted = result == (full ? 7 : 0);
+    } else if (same) {
+        // Ordinary gear pickup checks capacity, not the shop's buying price.
+        bool available = replace_call(&scratch, g_site.pouch_can_receive, actor + 8, 0, 0) & 1;
+        accepted = available != full;
+    }
     replace_call(&scratch, g_site.actor_link_release, handle, 0, 0);
-    return same && result == (full ? 7 : 0);
+    return accepted;
 }
 
 static bool replace_chest_owner_live(Cpu *c) {

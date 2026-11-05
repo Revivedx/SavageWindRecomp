@@ -147,13 +147,17 @@ void guest_call(Cpu *c, uint64_t address) {
         assert(LD64(c->x[1] + 8) == 0x700164f739ull);
         c->x[0] = chest_ready;
     } else if (address == 0x7000be21e0ull) {
-        assert(c->x[0] == input + 0x600 || c->x[0] == input + 0x200 || c->x[0] == input + 0x4028 ||
-               c->x[0] == c->sp + 0x10);
-        if (c->x[0] == c->sp + 0x10) {
-            assert(LD64(c->x[0]) == manager + 0x10);
-            assert(!strcmp((char *)(uintptr_t)LD64(c->x[0] + 8), replace_incoming));
+        if (ground_actor && c->x[0] == ground_actor + 8) {
+            c->x[0] = ground_result == 0;
+        } else {
+            assert(c->x[0] == input + 0x600 || c->x[0] == input + 0x200 || c->x[0] == input + 0x4028 ||
+                   c->x[0] == c->sp + 0x10);
+            if (c->x[0] == c->sp + 0x10) {
+                assert(LD64(c->x[0]) == manager + 0x10);
+                assert(!strcmp((char *)(uintptr_t)LD64(c->x[0] + 8), replace_incoming));
+            }
+            c->x[0] = chest_capacity;
         }
-        c->x[0] = chest_capacity;
     } else if (address == 0x7001070ce0ull) {
         memcpy((void *)(uintptr_t)c->x[0], (void *)(uintptr_t)c->x[1], 0x18);
         if (weak_ref) ST8(c->x[0], 0);
@@ -471,6 +475,7 @@ static void test_ground_retry_handoff(void) {
         presents = deadline + 1;
         tick_with(0, 0);
         assert(replace_ground_actor(&popup) == actor && LD8(replace_ground_index + 0xc));
+        assert(replace_ground_shop == (route == 1));
         assert(handoff_buttons == 0x40);
         uint64_t new_block = LD64(replace_ground_index);
         assert(new_block != old_block && LD32(new_block + 0x50) == existing_refs + 1);
@@ -1021,6 +1026,27 @@ int main(int argc, char **argv) {
     assert(quick_replace_menu(&menu_cpu));
     assert(!replace_closing && !replace_confirmed && !drops);
     assert(LD8(screen + 0x38e4) == 0 && LD32(screen + 0x387c) == 1);
+    // A dropped weapon can fail the shop's price check despite being a valid
+    // ground pickup. Capacity still changes only after the outgoing discard.
+    ground_actor = actor; ground_result = 2;
+    assert(replace_ground_shop && !replace_source_valid(&menu_cpu, true));
+    replace_ground_release(&menu_cpu);
+    quick_replace_reset();
+    item_popup.x[30] = 0x7000cb0ce8ull;
+    replace_item_popup(&item_popup);
+    assert(!replace_ground_shop && replace_category == 2);
+    replace_fill(&menu_cpu);
+    ST8(screen + 0x38e4, 0); ST32(screen + 0x387c, 1);
+    Cpu before_capacity = menu_cpu;
+    assert(replace_source_valid(&menu_cpu, true));
+    assert(!replace_source_valid(&menu_cpu, false));
+    assert(!memcmp(&menu_cpu, &before_capacity, sizeof menu_cpu));
+    ground_actor = 0;
+    assert(!replace_source_valid(&menu_cpu, true));
+    ground_actor = actor; ground_result = 0;
+    assert(!replace_source_valid(&menu_cpu, true));
+    assert(replace_source_valid(&menu_cpu, false));
+    ground_result = 2;
     // Restoring the exact source permits ordinary native confirmation.
     buttons = 0; quick_replace_menu(&menu_cpu); ground_actor = actor; buttons = 1;
     {

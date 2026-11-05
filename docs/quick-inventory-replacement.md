@@ -22,6 +22,10 @@ guarded action as quick drop. Equipped items finish their asynchronous native
 detach before the incoming pickup is retried. Source replacement, actor teardown
 or a changed interaction target cancels that retry.
 
+Ordinary ground gear uses the native capacity check. Shop sources retain their
+purchase eligibility check; ordinary pickups never depend on the item's buying
+price or the player's rupees.
+
 Chest replacement defers the existing pending receive context. Canceling still
 runs native cleanup, while confirming preserves the original reward, modifier
 and event context. The owned preview card is the only modal exception; unrelated
@@ -55,6 +59,18 @@ code covers the checked gates, original prologues, query/chest/toast contexts,
 all toast exits, callback LR, scalar/vector results and flags with and without
 register locals. Existing input, drop and sorting checks cover the shared
 action gate, replacement retry injection and scoped modal exceptions.
+
+The ground-pickup regression also checks that insufficient rupees reject a
+shop source while permitting ordinary full-inventory replacement. It checks
+capacity transitions, missing targets, CPU preservation and origin handoff.
+The same validation fix was verified in the combined-feature Linux runtime on
+an isolated player-save copy with a native gear-copy fixture and a real discard:
+Lightning Rod durability 900, cancel/reopen, reciprocal exchange restoring all
+original inventory signatures and 9/6/3 weapon/bow/shield counts. The received
+world actor disappeared; the outgoing boomerang retained durability 2300.
+Steam Deck VANGOGH, RADV Mesa 26.2 development driver, 1280x800, AA off,
+60 FPS cap; the complete replacement window and host prompts were inspected.
+The updated split runtime was built and its lifecycle tests passed separately.
 
 Linux regeneration and runtime/game-library builds passed for 1.9.0 with 193
 resolved sites. The native font check passed with 118 text glyphs, translated
