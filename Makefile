@@ -643,6 +643,25 @@ test-hour: $(B)/test_hour
 
 .PHONY: test-hour
 
+# The BC5 view format (NVN 0x4C, SAVAGEWIND_BC5_UNORM): vk_format is the only function the section GC keeps from
+# textures.c, so no Vulkan device is needed. Run twice so both initial environment states cache the right format.
+ifneq ($(PLATFORM),macos)
+$(B)/test_textures_format: tests/test_textures_format.c runtime/nvn/vulkan/textures.c $(RT_HDRS)
+	@mkdir -p $(dir $@)
+	$(CC) -O2 -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -Iruntime/nvn -isystem third_party -isystem third_party/stb \
+	    -o $@ tests/test_textures_format.c runtime/nvn/vulkan/textures.c -fuse-ld=lld -Wl,--gc-sections \
+	    $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) -lpthread -lm
+
+test-textures: $(B)/test_textures_format
+	env -u SAVAGEWIND_BC5_UNORM $(B)/test_textures_format
+	env SAVAGEWIND_BC5_UNORM=1 $(B)/test_textures_format
+
+bench-textures: $(B)/test_textures_format
+	$(B)/test_textures_format --bench
+
+.PHONY: test-textures bench-textures
+endif
+
 # Real Options routing + binding capture, using synthetic guest rows rather than game assets.
 $(B)/two_button_bindings.o: runtime/hle/bindings.c runtime/input_bind.h
 	@mkdir -p $(B)
