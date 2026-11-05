@@ -612,6 +612,8 @@ T("Open them from the title screen, or pause the game and choose System > Option
 
 T("Controller rumble", "컨트롤러 진동")
 T("Vibrate the controller during play.", "플레이 중 컨트롤러가 진동합니다.")
+T("Free camera with both sticks", "양쪽 스틱으로 자유 카메라")
+T("Clicking both sticks together turns the free camera on and off. Home on the keyboard always does.", "양쪽 스틱을 함께 누르면 자유 카메라가 켜지고 꺼집니다. 키보드의 Home 키는 항상 작동합니다.")
 
 T("Sharper text", "더 선명한 글자")
 T("Upscales the game's letters for 1440p and 4K, after a restart. Not the original art.", "1440p와 4K용으로 게임 글자를 확대합니다(재시작 후). 원본 그림이 아닙니다.")

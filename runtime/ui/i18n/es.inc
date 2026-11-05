@@ -612,6 +612,8 @@ T("Open them from the title screen, or pause the game and choose System > Option
 
 T("Controller rumble", "Vibración del mando")
 T("Vibrate the controller during play.", "Hace vibrar el mando durante el juego.")
+T("Free camera with both sticks", "Cámara libre con ambos sticks")
+T("Clicking both sticks together turns the free camera on and off. Home on the keyboard always does.", "Pulsar ambos sticks a la vez activa y desactiva la cámara libre. Inicio en el teclado siempre lo hace.")
 T("Sharper text", "Texto más nítido")
 T("Upscales the game's letters for 1440p and 4K, after a restart. Not the original art.", "Amplía las letras del juego para 1440p y 4K, tras reiniciar. No es el arte original.")
 T("Makes the game's letters sharper on 1440p and 4K screens. It takes effect the next time you start the game. This is an upscale made on your computer from the game's own letters, not Nintendo's original art: the shapes are kept, but they aren't exactly as drawn. 4x takes a moment longer to start and uses more video memory.", "Hace más nítidas las letras del juego en pantallas 1440p y 4K. Se aplica la próxima vez que inicies el juego. Es una ampliación hecha en tu ordenador a partir de las letras del propio juego, no el arte original de Nintendo: las formas se conservan, pero no son exactamente como se dibujaron. 4x tarda un poco más en iniciar y usa más memoria de vídeo.")

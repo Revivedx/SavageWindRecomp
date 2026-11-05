@@ -612,6 +612,8 @@ T("Open them from the title screen, or pause the game and choose System > Option
 
 T("Controller rumble", "控制器震動")
 T("Vibrate the controller during play.", "遊玩時讓控制器震動。")
+T("Free camera with both sticks", "雙搖桿切換自由視角")
+T("Clicking both sticks together turns the free camera on and off. Home on the keyboard always does.", "同時按下兩個搖桿可開啟或關閉自由視角。鍵盤上的 Home 鍵始終可用。")
 
 T("Sharper text", "更清晰的文字")
 T("Upscales the game's letters for 1440p and 4K, after a restart. Not the original art.", "為 1440p 和 4K 放大遊戲的文字，重新啟動後生效。不是原版美術。")

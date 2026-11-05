@@ -612,6 +612,8 @@ T("Reset orientation and stop pending rotation.", "איפוס הכיוון וע�
 T("Open them from the title screen, or pause the game and choose System > Options. Esc opens pause or goes back. F2 frees the mouse cursor.", "פתחו אותן ממסך הכותרת, או השהו את המשחק ובחרו System > Options. Esc פותח השהיה או חוזר אחורה. F2 משחרר את סמן העכבר.")
 T("Controller rumble", "רטט בקר")
 T("Vibrate the controller during play.", "הבקר רוטט בזמן המשחק.")
+T("Free camera with both sticks", "מצלמה חופשית עם שני הסטיקים")
+T("Clicking both sticks together turns the free camera on and off. Home on the keyboard always does.", "לחיצה על שני הסטיקים יחד מפעילה ומכבה את המצלמה החופשית. Home במקלדת תמיד עושה זאת.")
 T("Sharper text", "טקסט חד יותר")
 T("Upscales the game's letters for 1440p and 4K, after a restart. Not the original art.", "מגדיל את האותיות של המשחק ל-1440p ו-4K, אחרי הפעלה מחדש. לא העיצוב המקורי.")
 T("Makes the game's letters sharper on 1440p and 4K screens. It takes effect the next time you start the game. This is an upscale made on your computer from the game's own letters, not Nintendo's original art: the shapes are kept, but they aren't exactly as drawn. 4x takes a moment longer to start and uses more video memory.", "הופך את האותיות של המשחק לחדות יותר במסכי 1440p ו-4K. זה נכנס לתוקף בפעם הבאה שתפעילו את המשחק. זו הגדלה שנעשית במחשב שלכם מתוך האותיות של המשחק עצמו, לא העיצוב המקורי של Nintendo: הצורות נשמרות, אבל הן לא בדיוק כפי שצוירו. 4x לוקח קצת יותר זמן להפעלה ומשתמש ביותר זיכרון וידאו.")

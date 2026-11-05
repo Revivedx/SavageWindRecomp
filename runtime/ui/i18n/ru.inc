@@ -612,6 +612,8 @@ T("Open them from the title screen, or pause the game and choose System > Option
 
 T("Controller rumble", "Вибрация контроллера")
 T("Vibrate the controller during play.", "Контроллер вибрирует во время игры.")
+T("Free camera with both sticks", "Свободная камера обоими стиками")
+T("Clicking both sticks together turns the free camera on and off. Home on the keyboard always does.", "Одновременное нажатие обоих стиков включает и выключает свободную камеру. Клавиша Home на клавиатуре работает всегда.")
 
 T("Sharper text", "Более чёткий текст")
 T("Upscales the game's letters for 1440p and 4K, after a restart. Not the original art.", "Увеличивает буквы игры для 1440p и 4K после перезапуска. Не оригинальная графика.")

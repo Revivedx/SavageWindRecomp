@@ -612,6 +612,8 @@ T("Open them from the title screen, or pause the game and choose System > Option
 
 T("Controller rumble", "การสั่นของคอนโทรลเลอร์")
 T("Vibrate the controller during play.", "ให้คอนโทรลเลอร์สั่นระหว่างเล่น")
+T("Free camera with both sticks", "กล้องอิสระด้วยสติกทั้งสอง")
+T("Clicking both sticks together turns the free camera on and off. Home on the keyboard always does.", "กดสติกทั้งสองพร้อมกันเพื่อเปิดและปิดกล้องอิสระ ปุ่ม Home บนคีย์บอร์ดใช้ได้เสมอ")
 
 T("Sharper text", "ตัวอักษรคมชัดขึ้น")
 T("Upscales the game's letters for 1440p and 4K, after a restart. Not the original art.", "ขยายตัวอักษรของเกมสำหรับ 1440p และ 4K หลังเริ่มใหม่ ไม่ใช่ภาพต้นฉบับ")
