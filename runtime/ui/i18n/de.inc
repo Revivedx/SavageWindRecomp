@@ -787,3 +787,9 @@ T("Sort", "Sortieren")
 T("Home: exit   W A S D: move   E / Q: up, down   Shift / Ctrl: faster, slower   F8: filter   [ ]: hour   F7: picture", "Pos1: beenden   W A S D: bewegen   E / Q: hoch, runter   Umschalt / Strg: schneller, langsamer   F8: Filter   [ ]: Uhrzeit   F7: Foto")
 T("Both stick clicks: exit   Left stick: move   ZR / ZL: up, down   D-pad up: filter   D-pad left / right: hour   D-pad down: picture", "Beide Sticks drücken: beenden   Linker Stick: bewegen   ZR / ZL: hoch, runter   Steuerkreuz oben: Filter   Steuerkreuz links / rechts: Uhrzeit   Steuerkreuz unten: Foto")
 T("Picture saved", "Foto gespeichert")
+
+// Quick inventory dropping.
+T("Quick inventory dropping", "Ausrüstung im Schnellinventar ablegen")
+T("Drop weapons, bows and shields from the quick selector. Requires game version 1.9.0.", "Waffen, Bögen und Schilde aus der Schnellauswahl ablegen. Erfordert Spielversion 1.9.0.")
+T("Drop", "Wegwerfen")
+T("Back", "Zurück")

@@ -10,6 +10,7 @@
 #undef RT_ON_RESET
 #define RT_ON_RESET(fn) static void fn(void)
 #include "../runtime/hle/input.c"
+uint64_t quick_drop_action_filter_buttons(uint64_t b) { return b; }
 #include "test_pointer_disabled.h"
 
 Settings g_settings;
@@ -225,3 +226,5 @@ int main(void) {
     SDL_Quit();
     puts("input focus checks passed");
 }
+
+void photo_pad(uint32_t buttons) { (void)buttons; }

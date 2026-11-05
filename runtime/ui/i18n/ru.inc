@@ -787,3 +787,9 @@ T("Sort", "Сортировать")
 T("Home: exit   W A S D: move   E / Q: up, down   Shift / Ctrl: faster, slower   F8: filter   [ ]: hour   F7: picture", "Home: выход   W A S D: движение   E / Q: вверх, вниз   Shift / Ctrl: быстрее, медленнее   F8: фильтр   [ ]: время   F7: снимок")
 T("Both stick clicks: exit   Left stick: move   ZR / ZL: up, down   D-pad up: filter   D-pad left / right: hour   D-pad down: picture", "Нажать оба стика: выход   Левый стик: движение   ZR / ZL: вверх, вниз   Крестовина вверх: фильтр   Крестовина влево / вправо: время   Крестовина вниз: снимок")
 T("Picture saved", "Снимок сохранён")
+
+// Quick inventory dropping.
+T("Quick inventory dropping", "Выбрасывание из быстрого инвентаря")
+T("Drop weapons, bows and shields from the quick selector. Requires game version 1.9.0.", "Выбрасывайте оружие, луки и щиты из меню быстрого выбора. Требуется версия игры 1.9.0.")
+T("Drop", "Выбросить")
+T("Back", "Назад")

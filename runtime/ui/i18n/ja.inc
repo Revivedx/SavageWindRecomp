@@ -787,3 +787,9 @@ T("Sort", "並べ替え")
 T("Home: exit   W A S D: move   E / Q: up, down   Shift / Ctrl: faster, slower   F8: filter   [ ]: hour   F7: picture", "Home: 終了   W A S D: 移動   E / Q: 上昇・下降   Shift / Ctrl: 速く・遅く   F8: フィルター   [ ]: 時刻   F7: 写真")
 T("Both stick clicks: exit   Left stick: move   ZR / ZL: up, down   D-pad up: filter   D-pad left / right: hour   D-pad down: picture", "両スティック押し込み: 終了   左スティック: 移動   ZR / ZL: 上昇・下降   十字上: フィルター   十字左右: 時刻   十字下: 写真")
 T("Picture saved", "写真を保存しました")
+
+// Quick inventory dropping.
+T("Quick inventory dropping", "クイックポーチから捨てる")
+T("Drop weapons, bows and shields from the quick selector. Requires game version 1.9.0.", "クイック選択から武器・弓・盾を捨てられます。ゲームのバージョン1.9.0が必要です。")
+T("Drop", "ポーチから出す")
+T("Back", "もどる")

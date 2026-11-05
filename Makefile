@@ -768,3 +768,26 @@ test-quick-inventory-font: $(B)/test_quick_hint_font
 
 .PHONY: test-quick-inventory-font
 endif
+
+ifeq ($(PLATFORM),linux)
+$(B)/test_quick_drop_action: tools/test_quick_drop_action.c runtime/quick_drop_action.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -std=gnu11 -O1 -g $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $<
+
+$(B)/test_quick_drop_input: tools/test_quick_drop_input.c runtime/quick_drop_action.c runtime/hle/input.c tools/test_freecam_disabled.h $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -std=gnu11 -O1 -g -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< $(TEST_LD) -lm
+
+$(B)/test_quick_drop_menu: tools/test_quick_drop_menu.c runtime/quick_drop.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -std=gnu11 -O1 -g $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $<
+
+test-quick-drop-native: $(B)/test_quick_drop_action $(B)/test_quick_drop_menu
+	$(B)/test_quick_drop_action
+	$(B)/test_quick_drop_menu
+
+test-quick-drop: test-quick-drop-native $(B)/test_quick_drop_input
+	$(B)/test_quick_drop_input
+
+.PHONY: test-quick-drop test-quick-drop-native
+endif

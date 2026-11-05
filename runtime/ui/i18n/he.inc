@@ -786,3 +786,9 @@ T("Sort", "מיון")
 T("Home: exit   W A S D: move   E / Q: up, down   Shift / Ctrl: faster, slower   F8: filter   [ ]: hour   F7: picture", "Home: יציאה   W A S D: תנועה   E / Q: למעלה, למטה   Shift / Ctrl: מהר יותר, לאט יותר   F8: פילטר   [ ]: שעה   F7: תמונה")
 T("Both stick clicks: exit   Left stick: move   ZR / ZL: up, down   D-pad up: filter   D-pad left / right: hour   D-pad down: picture", "לחיצה על שתי הסטיקים: יציאה   סטיק שמאלי: תנועה   ZR / ZL: למעלה, למטה   חץ למעלה: פילטר   חץ שמאלה / ימינה: שעה   חץ למטה: תמונה")
 T("Picture saved", "התמונה נשמרה")
+
+// Quick inventory dropping.
+T("Quick inventory dropping", "השלכה מהמלאי המהיר")
+T("Drop weapons, bows and shields from the quick selector. Requires game version 1.9.0.", "השלכת נשקים, קשתות ומגנים מתפריט הבחירה המהירה. נדרשת גרסת משחק 1.9.0.")
+T("Drop", "השלכה")
+T("Back", "חזרה")

@@ -787,3 +787,9 @@ T("Sort", "จัดเรียง")
 T("Home: exit   W A S D: move   E / Q: up, down   Shift / Ctrl: faster, slower   F8: filter   [ ]: hour   F7: picture", "Home: ออก   W A S D: เคลื่อนที่   E / Q: ขึ้น, ลง   Shift / Ctrl: เร็วขึ้น, ช้าลง   F8: ฟิลเตอร์   [ ]: เวลา   F7: ถ่ายภาพ")
 T("Both stick clicks: exit   Left stick: move   ZR / ZL: up, down   D-pad up: filter   D-pad left / right: hour   D-pad down: picture", "กดสติ๊กทั้งสอง: ออก   สติ๊กซ้าย: เคลื่อนที่   ZR / ZL: ขึ้น, ลง   ปุ่มทิศขึ้น: ฟิลเตอร์   ปุ่มทิศซ้าย / ขวา: เวลา   ปุ่มทิศลง: ถ่ายภาพ")
 T("Picture saved", "บันทึกภาพแล้ว")
+
+// Quick inventory dropping.
+T("Quick inventory dropping", "ทิ้งจากช่องเก็บของด่วน")
+T("Drop weapons, bows and shields from the quick selector. Requires game version 1.9.0.", "ทิ้งอาวุธ ธนู และโล่จากเมนูเลือกด่วน ต้องใช้เกมเวอร์ชัน 1.9.0")
+T("Drop", "ทิ้ง")
+T("Back", "กลับ")

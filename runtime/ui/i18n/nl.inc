@@ -787,3 +787,9 @@ T("Sort", "Sorteren")
 T("Home: exit   W A S D: move   E / Q: up, down   Shift / Ctrl: faster, slower   F8: filter   [ ]: hour   F7: picture", "Home: stoppen   W A S D: bewegen   E / Q: omhoog, omlaag   Shift / Ctrl: sneller, langzamer   F8: filter   [ ]: uur   F7: foto")
 T("Both stick clicks: exit   Left stick: move   ZR / ZL: up, down   D-pad up: filter   D-pad left / right: hour   D-pad down: picture", "Beide sticks indrukken: stoppen   Linkerstick: bewegen   ZR / ZL: omhoog, omlaag   D-pad omhoog: filter   D-pad links / rechts: uur   D-pad omlaag: foto")
 T("Picture saved", "Foto opgeslagen")
+
+// Quick inventory dropping.
+T("Quick inventory dropping", "Weggooien uit de snelinventaris")
+T("Drop weapons, bows and shields from the quick selector. Requires game version 1.9.0.", "Gooi wapens, bogen en schilden weg vanuit het snelkeuzemenu. Vereist spelversie 1.9.0.")
+T("Drop", "Weggooien")
+T("Back", "Terug")

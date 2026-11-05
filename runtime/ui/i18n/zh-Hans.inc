@@ -787,3 +787,9 @@ T("Sort", "排序")
 T("Home: exit   W A S D: move   E / Q: up, down   Shift / Ctrl: faster, slower   F8: filter   [ ]: hour   F7: picture", "Home：退出   W A S D：移动   E / Q：上升、下降   Shift / Ctrl：加速、减速   F8：滤镜   [ ]：时间   F7：拍照")
 T("Both stick clicks: exit   Left stick: move   ZR / ZL: up, down   D-pad up: filter   D-pad left / right: hour   D-pad down: picture", "同时按下两个摇杆：退出   左摇杆：移动   ZR / ZL：上升、下降   十字键上：滤镜   十字键左 / 右：时间   十字键下：拍照")
 T("Picture saved", "照片已保存")
+
+// Quick inventory dropping.
+T("Quick inventory dropping", "从快捷物品栏丢弃")
+T("Drop weapons, bows and shields from the quick selector. Requires game version 1.9.0.", "从快捷选择菜单中丢弃武器、弓和盾。需要游戏版本1.9.0。")
+T("Drop", "丢弃")
+T("Back", "返回")

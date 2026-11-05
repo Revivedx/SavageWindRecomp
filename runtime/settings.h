@@ -83,6 +83,7 @@ typedef struct {
     bool rumble;         // controller vibration
     bool freecam_sticks; // both stick clicks together turn the free camera on and off (hle/input.c)
     int gpu;             // Vulkan adapter index from the startup log; -1: automatic (restart required)
+    bool quick_drop;      // native dropping from the quick equipment selector
     bool quick_sort;      // native sorting in the quick equipment selector
     bool dpad_move;      // the d-pad (and arrow keys) also act as the left stick while it is at rest
     bool stick_cam_on;   // Controls > Controller camera speed: stick_cam_x and _y apply (off: the game's own speed)

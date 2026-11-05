@@ -787,3 +787,9 @@ T("Sort", "정렬")
 T("Home: exit   W A S D: move   E / Q: up, down   Shift / Ctrl: faster, slower   F8: filter   [ ]: hour   F7: picture", "Home: 종료   W A S D: 이동   E / Q: 위, 아래   Shift / Ctrl: 빠르게, 느리게   F8: 필터   [ ]: 시간   F7: 사진")
 T("Both stick clicks: exit   Left stick: move   ZR / ZL: up, down   D-pad up: filter   D-pad left / right: hour   D-pad down: picture", "양쪽 스틱 누르기: 종료   왼쪽 스틱: 이동   ZR / ZL: 위, 아래   십자 위: 필터   십자 좌우: 시간   십자 아래: 사진")
 T("Picture saved", "사진 저장됨")
+
+// Quick inventory dropping.
+T("Quick inventory dropping", "빠른 인벤토리에서 버리기")
+T("Drop weapons, bows and shields from the quick selector. Requires game version 1.9.0.", "빠른 선택 메뉴에서 무기, 활, 방패를 버립니다. 게임 버전 1.9.0이 필요합니다.")
+T("Drop", "버리기")
+T("Back", "뒤로")
