@@ -61,7 +61,8 @@ Most of them rely on addresses found in game version 1.9.0 and are untested on o
 | `ping` | Check that the game answers (data: `pong` = true) |
 | `time [freeze \| unfreeze \| set <0-24> \| <0-24>]` | Show the hour of the day. `set <hour>` or just `<hour>` sets it and keeps the clock running or frozen as it was. `freeze` holds the current hour, `unfreeze` continues from it at the normal speed. It writes both `WM_Time` buffers and lifts the early game 11:00 clock cap, without touching the paraglider quest flag. `SAVAGEWIND_TEST_TIME` still holds its configured hour |
 | `shot <file>` | Save a screenshot as PNG, on the machine the game runs on (Vulkan only for now). The file must be a `.png` inside the game's folder: a relative path without `..` |
-| `goto <x> <y> <z>` \| `goto <swr:1 line>` | Go to a place from `pos` or `report`: move Link, set the hour of the line (the clock keeps running, or stays frozen if it was) and turn the camera to its yaw and pitch like `look`. Same limits as `teleport` |
+| `goto <x> <y> <z>` \| `goto <swr:1 line>` \| `goto <place>` | Go to a place from `pos` or `report`: move Link, set the hour of the line (the clock keeps running, or stays frozen if it was) and turn the camera to its yaw and pitch like `look`. Same limits as `teleport`. Or go to a named place: `goto shrine 5`, `goto korok H23`, `goto stable wetland`, `goto tower 7`, `goto hateno`, `goto nearest korok` (see "Named places" below). Link arrives 2 to 3 units above the ground and drops the rest |
+| `places [<kind>] [words]` | List the places `goto` knows: without arguments the kinds and how many there are, with a kind (`shrine`, `tower`, `stable`, `village`, `landmark`, `korok`) their numbers and names, and words narrow the list (`places shrine akkala`). Shows 40 at most |
 | `teleport <x> <y> <z>` \| `teleport status` \| `teleport forget` | Move Link. Writes the real position, reached through a pointer chain from `PlayerInfo` (found with `mem path`, checked against `pos`). If the chain does not match it falls back to a background search that never blocks a frame; poll `teleport status` (`scanning`, `probing`, `testing`, `verifying`, `done`, `failed`). Stand still when you start; do not use it while riding, in a cutscene or loading. A target below the ground makes Link fall. `forget` drops the saved address |
 | `look <yaw> <pitch>` \| `look status` \| `look stop` | Turn the camera (degrees, either may be `keep`, pitch within -89..89). Writes the camera cells and checks again each frame, because the game moves the eye a little after a write. Without the cells it falls back to the right stick (needs the TAA camera read). Returns at once, poll `look status` (`running`, `done`, `timeout`, `failed`) |
 | `fly [on \| off \| toggle \| mode look \| level \| speed <n>]` | Fly mode: Link floats and the controls steer him through the world. Left stick moves along the camera (`mode look`) or the ground (`mode level`), X and B go up and down, left stick press is a 6x boost, the mouse wheel changes the speed. Fall damage cells are kept at his height, so flying down costs nothing. With the endpoint on, the Controls page gets a "Fly mode (test builds)" row (default F7, ini `bind_key_fly`, gamepad `bind_pad_fly`) |
@@ -82,6 +83,34 @@ Most of them rely on addresses found in game version 1.9.0 and are untested on o
 | `press <button> [frames]`, `hold <button>`, `release [<button>\|all]`, `stick <l\|r> <x> <y> [frames]`, `input` | Scripted controller input, merged with the real one. Buttons: a b x y l r zl zr plus minus up down left right lstick rstick. Sticks run from -1 to 1, positive y is up |
 
 To use `goto` with a line from an issue, run it in developer mode: `swctl goto "swr:1 x=... y=... z=... yaw=... pitch=... hour=..."`.
+
+### Named places
+
+`goto` also takes a kind and a number or a name. It finds a shrine, tower, stable, village, landmark or Korok without looking up any coordinates:
+
+```
+swctl goto shrine 5            the shrine with the game's number 5 (Ne'ez Yohma)
+swctl goto shrine oman au      by name; apostrophes and capital letters do not matter
+swctl goto shrine pushing power   or by the title the game gives the shrine's trial
+swctl goto korok H23           a Korok by the game's own id (see below)
+swctl goto korok 10            the 10th of 900, in the order `places korok` shows
+swctl goto stable 2            the 2nd stable in alphabetical order (East Akkala)
+swctl goto tower 7             the game's tower number (7 is Great Plateau Tower)
+swctl goto stable wetland      or: swctl goto wetland
+swctl goto hateno              names without a kind work when only one place has that name
+swctl goto nearest korok       the closest of a kind to where Link is now (works for every kind)
+```
+
+If a name matches several places, the reply names them. `places <kind>` prints the numbers and names. What the numbers mean:
+
+- Shrines use the game's own number (`Dungeon005` is shrine 5, 0 to 135; 120 and above are the DLC shrines). That is the number in the game's data and on the ZeldaMods object map, not an order the game shows to players.
+- Towers use the game's tower number (1 to 15).
+- Stables, villages and landmarks are numbered alphabetically by their English name.
+- Koroks have no number in the game. Each one has an id like `H23` (the id the object map uses). `korok 10` counts the 900 in map order: square `A-1`, `A-2` ... then by id. `places korok` shows the order.
+
+The coordinates are the game's world coordinates, the same frame as `pos`. They come from the data behind the [ZeldaMods object map](https://objmap.zeldamods.org) (extracted from the game files of Breath of the Wild; the map is open source at [zeldamods/objmap](https://github.com/zeldamods/objmap)). The table is `runtime/control_places_data.inc`, generated by `python3 tools/gen_places.py` (needs network access). Shrines, stables, villages and landmarks use the position of the place's location marker in the world, towers the position of their map marker (the top of the tower), Koroks the position of the Korok. `make test-places` tests the lookup.
+
+Limits: the heights are from the game data and were not checked place by place in the game. A place inside a cave, under a roof or at the top of a tower may put Link inside something solid. Use `pos` afterwards to check where he is.
 
 `savagewind.log` gets the same line every 30 seconds while Link moves (`[place] swr:1 ...`; none while he stands still), so the log attached to an issue says where its bug happened. `SAVAGEWIND_PLACE_LOG=0` turns these lines off.
 
