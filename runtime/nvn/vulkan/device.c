@@ -1283,7 +1283,7 @@ static const char *present_mode_name(VkPresentModeKHR m) {
 }
 
 // The wanted mode, or what comes closest on this surface: Adaptive -> On, Off -> Fast (no waiting either), Fast -> On
-// or Immediate (surfaces without mailbox — Intel's have fifo and immediate — must not land on FIFO: it would queue
+// or Immediate (surfaces without mailbox , Intel's have fifo and immediate , must not land on FIFO: it would queue
 // every present on the display's refresh and fight framepace's own pacing; 120 on a 160 Hz display then judders,
 // one long wait every few seconds). *have: the surface's modes, for the log.
 static VkPresentModeKHR present_mode(char *have, size_t cap) {
@@ -2137,6 +2137,13 @@ extern volatile int g_fg_want;
 extern volatile int g_fg_active;  // (framepace.c: the game draws every other presented frame)
 TexBackend *vk_fg_generate(NvnTexture *t, TexBackend *b);
 static uint64_t gen_frames;
+#ifdef SW_PGO_GENERATE
+static void write_runtime_profile(void) {
+    extern int __llvm_profile_write_file(void);
+    if (__llvm_profile_write_file()) LOG("[pgo] could not write the runtime profile\n");
+}
+#endif
+
 static char fg_real_shot[256];  // (SAVAGEWIND_FG_SHOT_AT: the game's frame after a generated one saved)
 
 void vk_fg_wait_idle(void) {
@@ -2312,7 +2319,14 @@ presented:
     {   // SAVAGEWIND_EXIT_AT=<frame> (counted as SAVAGEWIND_INPUT): end the run there
         static long exit_at = -1;
         if (exit_at < 0) exit_at = getenv("SAVAGEWIND_EXIT_AT") ? atol(getenv("SAVAGEWIND_EXIT_AT")) : 0;
-        if (exit_at && (long)script_frame >= exit_at) { fflush(stderr); _exit(0); }
+        if (exit_at && (long)script_frame >= exit_at) {
+#ifdef SW_PGO_GENERATE
+            // The scripted exit skips atexit, so finish the runtime training profile explicitly.
+            write_runtime_profile();
+#endif
+            fflush(stderr);
+            _exit(0);
+        }
     }
     static long slow_ms = -1;
     if (slow_ms < 0) slow_ms = getenv("SAVAGEWIND_SLOW_FRAME_MS") ? atol(getenv("SAVAGEWIND_SLOW_FRAME_MS")) : 0;

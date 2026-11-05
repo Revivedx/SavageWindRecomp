@@ -181,6 +181,34 @@ RT_OBJ   := $(patsubst runtime/%.c,$(B)/rt/%.o,$(RT_SRC))
 RTFLAGS  := -O2 -g -fno-strict-aliasing -Wall -Wno-unused-function -Iruntime -Iruntime/nvn -isystem third_party -isystem third_party/stb $(DEPINC) $(OSFLAGS)
 CXXFLAGS := -O2 -g -std=c++17 -I$(IMGUI) -I$(IMGUI)/backends -Iruntime -Iruntime/nvn -isystem third_party -Ithird_party/stb $(DEPINC)
 
+# Optional runtime-only optimization. The generated game library keeps GENFLAGS and its build ID.
+# Use a separate B for each mode; the stamp also rebuilds runtime objects when flags or profiles change.
+PGO ?=
+LTO ?=
+PGO_PROFILE ?= $(B)/runtime.profdata
+ifneq ($(filter-out gen use,$(PGO)),)
+$(error PGO must be empty, gen, or use)
+endif
+ifneq ($(filter-out thin,$(LTO)),)
+$(error LTO must be empty or thin)
+endif
+RUNTIME_OPTFLAGS := $(if $(LTO),-flto=thin)
+RUNTIME_LINKFLAGS := $(if $(LTO),-flto=thin)
+ifeq ($(PGO),gen)
+RUNTIME_OPTFLAGS += -fprofile-instr-generate -fprofile-update=atomic -mllvm -enable-value-profiling=false -DSW_PGO_GENERATE=1
+RUNTIME_LINKFLAGS += -fprofile-instr-generate
+endif
+ifeq ($(PGO),use)
+ifeq ($(wildcard $(PGO_PROFILE)),)
+$(error PGO=use needs PGO_PROFILE pointing to a merged runtime profile)
+endif
+RUNTIME_OPTFLAGS += -fprofile-instr-use=$(PGO_PROFILE)
+endif
+LDFLAGS += $(RUNTIME_LINKFLAGS)
+RUNTIME_CONFIG := $(strip $(RUNTIME_OPTFLAGS))
+$(shell mkdir -p $(B) && [ -f $(B)/runtime_config ] && [ "$$(cat $(B)/runtime_config 2>/dev/null)" = '$(RUNTIME_CONFIG)' ] || echo '$(RUNTIME_CONFIG)' > $(B)/runtime_config)
+$(RT_OBJ) $(filter $(B)/rt/%,$(BACKEND_OBJ)) $(UI_OBJ): $(B)/runtime_config $(if $(filter use,$(PGO)),$(PGO_PROFILE))
+
 .DEFAULT_GOAL := all
 
 # AMD FidelityFX SDK 1.1.4 (third_party/FidelityFX, MIT): FSR 3 frame interpolation and optical flow
@@ -235,7 +263,7 @@ $(B)/rt/memscan_os.o: RTFLAGS += -fms-extensions
 
 $(B)/rt/%.o: runtime/%.c $(RT_HDRS)
 	@mkdir -p $(dir $@)
-	$(CC) $(RTFLAGS) -c $< -o $@
+	$(CC) $(RTFLAGS) $(RUNTIME_OPTFLAGS) -c $< -o $@
 
 # SMAA (third_party/smaa, MIT): the reference shader as a C string for runtime/nvn/smaa_data.c (both backends build
 # their passes from it); the non-ASCII bytes in its comments become '?', and its CRLF line ends plain LF (a CR left in
@@ -248,11 +276,11 @@ $(B)/rt/nvn/smaa_data.o: RTFLAGS += -I$(B)/inc -Ithird_party/smaa/Textures
 
 $(B)/rt/%.o: runtime/%.cpp $(RT_HDRS)
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $(OSFLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(RUNTIME_OPTFLAGS) $(OSFLAGS) -c $< -o $@
 
 $(B)/rt/%.o: runtime/%.m $(RT_HDRS)
 	@mkdir -p $(dir $@)
-	$(CC) $(RTFLAGS) -fobjc-arc -c $< -o $@
+	$(CC) $(RTFLAGS) $(RUNTIME_OPTFLAGS) -fobjc-arc -c $< -o $@
 
 # linked to a temp file, then renamed over: a copy of the game still running keeps its (old) file - relinking in
 # place gets running copies killed by macOS (code signature of the changed pages). The temp file keeps the real name
@@ -271,7 +299,7 @@ $(GAMELIB): $(GEN_OBJ) | $(EXE)
 $(B)/rt/ui/i18n.o: $(wildcard runtime/ui/i18n/*.inc) runtime/ui/i18n.h
 $(B)/rt/ui/%.o: runtime/ui/%.mm $(RT_HDRS)
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $(UIFLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(RUNTIME_OPTFLAGS) $(UIFLAGS) -c $< -o $@
 
 $(B)/imgui/%.o: $(IMGUI)/%.cpp
 	@mkdir -p $(dir $@)
