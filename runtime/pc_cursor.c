@@ -100,6 +100,7 @@ extern bool menu_cursor_free(void);
 bool pc_cursor_active(void) { return enabled() && active && (focused || pointer_test()) && !menu_cursor_free(); }
 bool pc_cursor_preview_active(void) { return pc_cursor_active()&&preview_available; }
 bool pc_cursor_map_navigation(void) { return pc_cursor_active() && map_canvas_active && !pointer_gamepad_input; }
+bool pc_cursor_sensor_active(void) { return pc_cursor_map_navigation(); }
 bool pc_cursor_hide_system(void) {
     return (pc_cursor_active()&&quick_wheel_only)||
         (position_inside&&(pc_cursor_map_navigation()||(pc_cursor_active()&&pointer_keyboard_input)));
@@ -616,6 +617,10 @@ static bool options_pointer(Cpu *c,uint64_t screens,uint64_t bounds) {
 }
 
 uint64_t pc_cursor_buttons(uint64_t b) {
+    // Pointer confirmation consumes left click (normally Y). Reuse the bound
+    // D-pad Left action for the sensor; controllers retain their native Y.
+    if(pc_cursor_sensor_active()&&(b&(1ull<<12)))b=(b&~(1ull<<12))|8;
+
     uint64_t now=plat_now_ns();
     if(now<confirm_until)b|=1;
     if(item_message_active&&pc_cursor_active()&&now<item_confirm_until)b|=1;
@@ -769,6 +774,8 @@ static void inventory_pointer(Cpu *c) {
     }
 }
 
+static bool map_sensor_panel(Cpu *c,uint64_t screen);
+
 static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
     extern uint64_t renderer_present_count(void);
     uint64_t f=renderer_present_count();
@@ -807,6 +814,13 @@ static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
             }
         }
         return true;
+    }
+    // Sensor choices belong to AppMap itself. Use the animated panel's real
+    // visibility, including the return from the compendium; input flags are
+    // transient requests, not persistent modal state.
+    if(map_sensor_panel(c,screen)) {
+        map_down=false;map_anchor_active=map_picker_seen=false;map_view_valid=false;
+        map_canvas_active=false;return false;
     }
     // A modal over the map owns normal hover/confirmation.
     uint64_t modal=LD64(screens+8*0x39);
@@ -1178,6 +1192,12 @@ static uint64_t pane_named(uint64_t pane,const char *name,unsigned depth,unsigne
         link=LD64(link+8);
     }
     return 0;
+}
+
+static bool map_sensor_panel(Cpu *c,uint64_t screen) {
+    uint64_t panel=call(c,0x7000f6f800,screen,(uintptr_t)"Pa_SensorBox_00",0);
+    unsigned budget=512;uint64_t all=pane_named(panel,"N_All_00",0,&budget);
+    return ptr(all)&&(LD8(all+0x58)&1)&&LD8(all+0x5a)>0;
 }
 
 // DLCWindow scrolls a native page list, rather than BoxCursor rows. The title
