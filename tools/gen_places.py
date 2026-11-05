@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+"""Regenerate runtime/control_places_data.inc, the table behind `goto shrine 5`, `goto korok H23`, `goto stable ...`.
+
+The coordinates are the game's own world coordinates (the same frame as `pos`), taken from the data behind the ZeldaMods
+object map (https://objmap.zeldamods.org, https://github.com/zeldamods/objmap):
+  game_files/map_summary/MainField/static.json   shrines, towers, villages, stables, Koroks (marker positions)
+  game_files/text/StaticMsg/*.json               English names
+  radar.zeldamods.org /objs/MainField/           the LocationTag object of each marker (the marker icons float above the
+                                                 ground, the tag sits where the place really is)
+
+Run it when you want newer data; it needs network access and only the Python standard library:
+  python3 tools/gen_places.py [--out runtime/control_places_data.inc]
+"""
+import argparse
+import json
+import re
+import sys
+import urllib.parse
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+
+GAME_FILES = "https://objmap.zeldamods.org/game_files"
+RADAR = "https://radar.zeldamods.org"
+
+
+def fetch_json(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "swr-gen-places"})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return json.load(r)
+
+
+def location_tag(message_id):
+    """Position of the LocationTag with this message id, or None."""
+    url = RADAR + "/objs/MainField/?q=" + urllib.parse.quote(message_id)
+    for o in fetch_json(url):
+        if o.get("name") == "LocationTag" and o.get("messageid") == message_id:
+            return o["pos"]
+    return None
+
+
+def c_str(s):
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def grid_key(name):
+    m = re.fullmatch(r"([A-Z])-(\d+)", name)
+    return (m.group(1), int(m.group(2))) if m else (name, 0)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--out", default="runtime/control_places_data.inc")
+    args = ap.parse_args()
+
+    markers = fetch_json(GAME_FILES + "/map_summary/MainField/static.json")["markers"]
+    loc_names = fetch_json(GAME_FILES + "/text/StaticMsg/LocationMarker.json")
+    dungeon_names = fetch_json(GAME_FILES + "/text/StaticMsg/Dungeon.json")
+
+    # Each entry: kind, number (0 = assigned by order), key, name, sub, position, source of the position
+    entries = []
+
+    def add(kind, number, key, name, sub, pos, ground_tag):
+        entries.append({"kind": kind, "number": number, "key": key, "name": name, "sub": sub, "pos": pos, "tag": ground_tag})
+
+    # Everything that has a message id also has a LocationTag in the world; fetch them all in parallel.
+    ids = [m["MessageID"] for k in ("Dungeon", "Place", "Labo") for m in markers[k]]
+    ids += [m["MessageID"] for m in markers["Tower"]]
+    with ThreadPoolExecutor(8) as pool:
+        tags = dict(zip(ids, pool.map(location_tag, ids)))
+
+    def position(m, prefer_tag):
+        t = tags.get(m["MessageID"]) if prefer_tag else None
+        tr = m["Translate"]
+        return (t, True) if t else ([tr["X"], tr["Y"], tr["Z"]], False)
+
+    for m in markers["Dungeon"]:
+        mid = m["MessageID"]
+        n = int(mid.replace("Dungeon", ""))
+        pos, tag = position(m, True)
+        add("shrine", n, mid, dungeon_names[mid], dungeon_names.get(mid + "_sub", ""), pos, tag)
+    for m in markers["Tower"]:
+        # The tower's marker sits on the top platform, its tag at the foot inside the tower: use the marker.
+        pos, tag = position(m, False)
+        add("tower", int(m["MessageID"].replace("Tower", "")), m["MessageID"], loc_names[m["MessageID"]], "", pos, tag)
+    for m in markers["Place"]:
+        pos, tag = position(m, True)
+        kind = {"Hatago": "stable", "Village": "village"}.get(m["Icon"], "landmark")
+        add(kind, 0, m["MessageID"], loc_names[m["MessageID"]], "", pos, tag)
+    for m in markers["Labo"]:
+        pos, tag = position(m, True)
+        add("landmark", 0, m["MessageID"], loc_names[m["MessageID"]], "", pos, tag)
+
+    # Koroks: the game's ids (A01 ... Z99) are unique; number them in map grid order, then id
+    for m in sorted(markers["Korok"], key=lambda k: (grid_key(k["map_name"]), k["id"])):
+        tr = m["Translate"]
+        add("korok", 0, m["id"], m["id"], m["map_name"], [tr["X"], tr["Y"], tr["Z"]], False)
+
+    order = ["shrine", "tower", "stable", "village", "landmark", "korok"]
+    out = []
+    for kind in order:
+        group = [e for e in entries if e["kind"] == kind]
+        if kind in ("stable", "village", "landmark"):
+            group.sort(key=lambda e: e["name"].lower())
+        elif kind in ("shrine", "tower"):
+            group.sort(key=lambda e: e["number"])
+        for i, e in enumerate(group, 1):
+            e["number"] = e["number"] if kind in ("shrine", "tower") else i
+            out.append(e)
+
+    missing = [e["key"] for e in out if e["kind"] in ("shrine", "stable", "village") and not e["tag"]]
+    if missing:
+        print("warning: no LocationTag for", ", ".join(missing), "(marker position used, it floats above the ground)", file=sys.stderr)
+
+    with open(args.out, "w") as f:
+        f.write("// Generated by tools/gen_places.py, do not edit.\n")
+        f.write("// Game world coordinates (the frame of `pos`) from the ZeldaMods object map data (https://objmap.zeldamods.org).\n")
+        f.write("// PLACE(kind, number, key, name, sub, x, y, z)\n")
+        for e in out:
+            x, y, z = e["pos"]
+            f.write("PLACE(PLACE_%s, %d, %s, %s, %s, %.2ff, %.2ff, %.2ff)\n" % (
+                e["kind"].upper(), e["number"], c_str(e["key"]), c_str(e["name"]), c_str(e["sub"]), x, y, z))
+    counts = {k: sum(1 for e in out if e["kind"] == k) for k in order}
+    print("wrote %s: %s" % (args.out, counts))
+
+
+if __name__ == "__main__":
+    main()
