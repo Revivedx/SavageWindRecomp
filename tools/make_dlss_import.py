@@ -6,6 +6,7 @@ Visual Studio CRT dependency while keeping the SDK headers and API checks.
 """
 from __future__ import annotations
 
+import os
 import pathlib
 import re
 import subprocess
@@ -47,10 +48,14 @@ def main() -> int:
     if not names:
         raise RuntimeError(f"no NGX exports found in {dll}")
     output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory() as td:
+    # Temporary files in the build folder: MSYS2's make passes no TEMP / TMP / TMPDIR to what it runs, and dlltool
+    # (its as files, libiberty's choose_tmpdir) then falls back to C:\WINDOWS\ and aborts (exit 0xC0000409).
+    with tempfile.TemporaryDirectory(dir=output.parent) as td:
         definition = pathlib.Path(td) / "nvngx_dlss.def"
         definition.write_text("LIBRARY nvngx_dlss.dll\nEXPORTS\n" + "".join(f"  {n}\n" for n in names), encoding="ascii")
-        subprocess.check_call([dlltool, "-d", str(definition), "-D", "nvngx_dlss.dll", "-l", str(output)])
+        env = dict(os.environ, TMP=td, TEMP=td, TMPDIR=td)
+        subprocess.check_call([dlltool, "-d", str(definition), "-D", "nvngx_dlss.dll", "-l", str(output),
+                               "-t", str(pathlib.Path(td) / "nvngx_dlss")], env=env)
     return 0
 
 
