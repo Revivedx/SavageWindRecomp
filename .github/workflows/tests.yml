@@ -30,11 +30,22 @@ jobs:
       astc: ${{ steps.filter.outputs.astc }}
       simd: ${{ steps.filter.outputs.simd }}
       translate: ${{ steps.filter.outputs.translate }}
+      quick_sort: ${{ steps.filter.outputs.quick_sort }}
     steps:
       - uses: dorny/paths-filter@v4
         id: filter
         with:
           filters: |
+            quick_sort:
+              - 'runtime/quick_inventory_sort.*'
+              - 'runtime/game_sites.h'
+              - 'runtime/gamelib.c'
+              - 'tools/test_quick_inventory_sort*'
+              - 'tools/test_gamelib_sites.c'
+              - 'tools/game_sites.py'
+              - 'tools/patches.py'
+              - 'Makefile'
+              - '.github/workflows/tests.yml'
             i18n:
               - 'runtime/ui/**'
               - 'runtime/language.c'
@@ -59,6 +70,19 @@ jobs:
               - 'runtime/nvn/maxwell/**'
               - 'tools/test_translate*'
               - '.github/workflows/tests.yml'
+
+  # Sorting and optional helpers use synthetic guest memory; no game files.
+  quick-sort:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.quick_sort == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - run: make test-quick-inventory-sort
+      - uses: astral-sh/setup-uv@v10.3.3
+      - run: uv run --no-project --with lz4 --with capstone --with unicorn python tools/test_game_sites.py
+      - run: uv run --no-project --with lz4 --with capstone --with unicorn python tools/test_quick_inventory_sort_codegen.py
 
   # Every text the menus use has a translation in each runtime/ui/i18n/<lang>.inc, and none is left unused.
   i18n:

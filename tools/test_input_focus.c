@@ -83,7 +83,7 @@ static void pump(void) {
         if (!input_user_blocked(&e)) input_handle_event(&e);
 }
 
-static void sample(uint64_t buttons, bool tilted) {
+static void sample_raw(uint64_t buttons, bool tilted, uint64_t raw) {
     uint64_t state[5] = {0};
     uint32_t id = 0;
     Cpu c = {0};
@@ -95,12 +95,14 @@ static void sample(uint64_t buttons, bool tilted) {
         fprintf(stderr, "buttons: expected %#llx, got %#llx\n",
                 (unsigned long long)(buttons | directions), (unsigned long long)state[1]);
     assert(state[1] == (buttons | directions));
-    assert(input_buttons_now() == buttons);
+    assert(input_buttons_now() == raw);
     int32_t *sticks = (int32_t *)((uint8_t *)state + 16);
     if (tilted) assert(sticks[0] > 16000 && sticks[1] > 16000 && sticks[2] < -16000 && sticks[3] < -16000);
     else assert(!sticks[0] && !sticks[1] && !sticks[2] && !sticks[3]);
     assert(*(uint32_t *)((uint8_t *)state + 32) == 1);  // still connected while unfocused
 }
+
+static void sample(uint64_t buttons, bool tilted) { sample_raw(buttons, tilted, buttons); }
 
 static void controls(SDL_Joystick *joy, bool held) {
     assert(SDL_SetJoystickVirtualButton(joy, SDL_GAMEPAD_BUTTON_EAST, held));
@@ -175,6 +177,22 @@ int main(void) {
     // Scripted input remains usable for unattended tests while the window is unfocused.
     script_buttons = 1ull << BTN_B;
     sample(1ull << BTN_B, false);
+    // Sorting consumes X for the guest, while edge detection still sees the
+    // held physical button. Other inputs and the next press remain usable.
+    uint64_t x = 1ull << BTN_X, b = 1ull << BTN_B;
+    script_buttons = x | b;
+    input_consume_buttons(x);
+    for (int i = 0; i < 5; i++) sample_raw(b, false, x | b);
+    script_buttons = b;
+    sample(b, false);
+    script_buttons = x;
+    sample(x, false);
+    input_consume_buttons(x);
+    input_reset();
+    sample(x, false);
+    input_consume_buttons(x);
+    input_reboot_reset();
+    sample(x, false);
     script_buttons = 0;
     host_test = true;
     test_pad = 1u << SDL_GAMEPAD_BUTTON_EAST;

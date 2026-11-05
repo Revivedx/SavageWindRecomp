@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "i18n.h"
+#include "quick_hint_font.h"
 #include "imgui.h"
 #include "gyro_drag.h"
 #include "option_rows.h"
@@ -30,6 +31,8 @@ extern "C" bool vk_imgui_backend_init(void);  // runtime/nvn/vulkan/imgui_glue.c
 extern "C" {
 #include "../hle.h"
 #include "../settings.h"
+#include "../quick_inventory_sort.h"
+#include "../nvn/glyphs.h"
 #include "../color_grade.h"
 #include "../window_size.h"
 extern "C" {
@@ -403,6 +406,9 @@ void menu_apply_window_requests(void *win) {
 // ------------------------------------------------------------------ render thread
 static bool g_inited;
 static ImGuiContext *g_ctx;  // ours: the start screen (back to it after a reboot) has its own context
+static ImFont *g_hint_font, *g_hint_buttons;
+static bool g_hint_font_attempted;
+static uint32_t g_hint_generation;
 static ImFont *g_font, *g_font_big;
 static ImFont *g_font_mono;  // the console (columns line up); NULL: the normal font
 static ImFont *g_menu_font, *g_menu_font_big;  // the menu window (Fira Sans); everything else keeps g_font
@@ -454,6 +460,7 @@ static void style_init(void) {
 // menu language changes (fonts_follow_language).
 static int g_fonts_lang = -1;
 static void load_fonts(void) {
+    uint32_t icons_generation = glyphs_generation();
     ImGuiIO &io = ImGui::GetIO();
     io.Fonts->Clear();
     g_font = g_font_big = g_menu_font = g_menu_font_big = g_font_mono = NULL;
@@ -496,12 +503,18 @@ static void load_fonts(void) {
     if (!g_font) g_font = io.Fonts->AddFontDefault();
     if (!g_font_big) g_font_big = g_font;
     if (!g_menu_font || !g_menu_font_big) g_menu_font = g_font, g_menu_font_big = g_font_big;
+    g_hint_font = g_hint_buttons = nullptr;
+    g_hint_font_attempted = g_romfs_dir && g_settings.quick_sort;
+    if (g_hint_font_attempted) quick_hint_fonts_load(io.Fonts, &g_hint_font, &g_hint_buttons);
+    g_hint_generation = icons_generation;
 }
 
 // Before a frame: another menu language may need other glyphs - the fonts and their texture are made again
 extern "C" void vk_imgui_fonts_changed(void);  // (runtime/nvn/vulkan/imgui_glue.cpp)
 static void fonts_follow_language(void) {
-    if (g_fonts_lang == ui_lang_generation()) return;
+    bool need_hint_fonts = g_settings.quick_sort && g_romfs_dir && !g_hint_font_attempted;
+    bool icons_changed = g_settings.quick_sort && g_hint_generation != glyphs_generation();
+    if (g_fonts_lang == ui_lang_generation() && !need_hint_fonts && !icons_changed) return;
     load_fonts();
 #ifdef __APPLE__
     ImGui_ImplMetal_DestroyFontsTexture();  // (NewFrame makes it again)
@@ -1496,6 +1509,60 @@ static void act_overlay_draw(ImGuiIO &io, float scale) {
 extern "C" void rec_drain(void);  // (runtime/nvn/vulkan/record.c)
 #endif
 
+// Native-style selector prompt. Draw-only: input still belongs to the game.
+static void quick_sort_hint_draw(const ImGuiIO &io) {
+    int kind = g_settings.button_icons;
+    if (kind <= ICONS_AUTO || kind >= ICONS_COUNT) {
+        int family = input_pad_family();
+        kind = input_last_device() == DEVICE_KEYBOARD ? ICONS_KEYBOARD :
+            family == 1 ? ICONS_XBOX : family == 2 ? ICONS_PLAYSTATION : ICONS_NINTENDO;
+    }
+    bool keyboard = kind == ICONS_KEYBOARD;
+    int family = kind == ICONS_XBOX ? 1 : kind == ICONS_PLAYSTATION ? 2 : 0;
+    float canvas = fminf(io.DisplaySize.x / 1280.f, io.DisplaySize.y / 720.f);
+    float scale = canvas / 1.5f, fs = 32 * scale, radius = 15 * scale, gap = 10 * scale;
+    // The native right-stick guide ends seven canvas units above center;
+    // reserve a 12-unit gap and an 18-unit half-row below it.
+    float y = io.DisplaySize.y * .5f + 23 * canvas;
+    const char *action = tr("Sort");
+    ImFont *font = g_hint_font ? g_hint_font : g_menu_font;
+    for (const char *p = action; *p;) {
+        unsigned code; int n = ImTextCharFromUtf8(&code, p, nullptr);
+        if (!n) break;
+        p += n;
+        if (!font->FindGlyphNoFallback((ImWchar)code)) { font = g_menu_font; break; }
+    }
+    const char *button = keyboard ? tr(bind_key_label(g_bind_key[BIND_X])) :
+        tr(bind_pad_label(g_bind_pad[BIND_X], family));
+    // E042 means the Switch X action. Its pixels already follow the same
+    // device, bindings and modded font as the game's other text prompts.
+    const char *native = g_hint_buttons ? "\xee\x81\x82" : nullptr;
+    ImVec2 text = font->CalcTextSizeA(fs, FLT_MAX, 0, action);
+    ImVec2 key = g_font->CalcTextSizeA(fs * .65f, FLT_MAX, 0, button);
+    float badge = native ? 44 * scale : fmaxf(radius * 2, key.x + 14 * scale);
+    float x = (io.DisplaySize.x - text.x - gap - badge) * .5f;
+    ImDrawList *draw = ImGui::GetForegroundDrawList();
+    auto label = [&](ImVec2 pos, ImU32 color) {
+        int start = draw->VtxBuffer.Size;
+        draw->AddText(font, fs, pos, color, action);
+        // Native layouts italicize the text; button artwork stays upright.
+        for (int j = start; font == g_hint_font && j < draw->VtxBuffer.Size; j++)
+            draw->VtxBuffer[j].pos.x += (pos.y + fs * .8f - draw->VtxBuffer[j].pos.y) * .18f;
+    };
+    label(ImVec2(x + scale, y - fs * .5f + scale), IM_COL32(0, 0, 0, 85));
+    label(ImVec2(x, y - fs * .5f), IM_COL32(245, 246, 232, 255));
+    float bx = x + text.x + gap;
+    if (native) {
+        draw->AddText(g_hint_buttons, 54 * scale, ImVec2(bx - 5 * scale, y - 27 * scale),
+                      IM_COL32(245, 246, 232, 255), native);
+    } else {
+        ImVec2 a(bx, y - radius), b(bx + badge, y + radius);
+        draw->AddRectFilled(a, b, IM_COL32(245, 246, 232, 255), keyboard ? 4 * scale : radius);
+        draw->AddText(g_font, fs * .65f, ImVec2(a.x + (badge - key.x) * .5f, y - key.y * .5f),
+                      IM_COL32(25, 28, 24, 255), button);
+    }
+}
+
 // Everything menu_render draws, in one place: menu_render_needed (the caller's cue to drain the recorder first) and
 // menu_render (which decides again, and drains itself) must agree on it. The pointer's hover box, the console and the
 // gyro drag were missing here: their frames went to the command buffer while the recorder thread was still filling it.
@@ -1507,7 +1574,7 @@ static bool menu_draws(bool *pointer_hover = NULL, float *pointer_box = NULL, bo
     if (pointer_hover) *pointer_hover = hover;
     if (gyro_show) *gyro_show = gyro_on;
     return g_open.load() || g_kbd.load() == 1 || g_sizes.load() || console_is_open() || gyro_on || hover ||
-           g_settings.perf_overlay != PERF_OFF || act_log_enabled();
+           g_settings.perf_overlay != PERF_OFF || act_log_enabled() || quick_inventory_sort_hint();
 }
 
 bool menu_render_needed(void) { return menu_draws(); }
@@ -1591,6 +1658,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
 
     if (g_settings.perf_overlay != PERF_OFF) perf_overlay_draw(io, scale);
     if (act_log_enabled()) act_overlay_draw(io, scale);
+    if (!open && !kbd && !sizes && !con && quick_inventory_sort_hint()) quick_sort_hint_draw(io);
     if (!open && !kbd && !sizes && !con && gyro_scene_show) gyro_scene_draw(io, scale, gyro_scene);
 
     if (open) {

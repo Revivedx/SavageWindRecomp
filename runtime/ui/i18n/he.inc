@@ -680,3 +680,8 @@ T("Throw distance", "מרחק זריקה")
 T("Cycle accelerate", "אופנוע: האצה")
 T("Cycle brake", "אופנוע: בלימה")
 T("Cycle jump", "אופנוע: קפיצה")
+
+// Quick inventory sorting.
+T("Quick inventory sorting", "מיון המלאי המהיר")
+T("Sort weapons, bows and shields in the quick selector. Requires game version 1.9.0.", "מיון נשקים, קשתות ומגנים בתפריט הבחירה המהירה. נדרשת גרסת משחק 1.9.0.")
+T("Sort", "מיון")
