@@ -101,7 +101,17 @@ static struct { bool have, use_yaw, use_pitch; double yaw, pitch; } then_look;
 void control_tp_then_look(bool use_yaw, double yaw, bool use_pitch, double pitch) {
     then_look.have = true; then_look.use_yaw = use_yaw; then_look.yaw = yaw; then_look.use_pitch = use_pitch; then_look.pitch = pitch;
 }
+// After an arrival Link drops the last bit onto the ground; a target that is higher than the ground (a place's data is only
+// as good as its height) must not hurt him, so for a few seconds the fall height follows him down instead of staying at the top.
+#define LAND_NS 4000000000ull
+static uint64_t land_until;
+static void land_follow(const float *pp) {
+    double y = pp[1];
+    control_cell_set(&control_cell_player_fall_top, &y);
+    control_cell_set(&control_cell_player_fall_top2, &y);
+}
 static void finish(int st, const char *msg) {
+    if (st == DONE) land_until = plat_now_ns() + LAND_NS;
     if (st == FAILED || st == DONE) hold_stop();
     state = st;
     snprintf(why, sizeof why, "%s", msg);
@@ -142,6 +152,10 @@ static void start_round(uint64_t frame, bool first) {
 
 void control_tp_frame(uint64_t frame) {
     const float *pp = pinfo_pos();
+    if (land_until) {
+        if (pp && plat_now_ns() < land_until && state != HOLD) land_follow(pp);
+        else if (state != HOLD) land_until = 0;
+    }
     if (state == SCAN) {
         size_t n = 0;
         int st = control_mem_find_vec3_poll(cand, MAX_CAND, &n);
