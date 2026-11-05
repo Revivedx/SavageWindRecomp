@@ -225,7 +225,28 @@ int rt_frame_wait(void) { return framepace_on(); }
 static float g_step = 1;         // the last frame's length between presents, in console frames
 static int g_grid_streak;        // presents in a row that kept the pace
 
+// A loading screen up for minutes (#438: stuck after a Divine Beast's cutscene, the screen running, no error): what each
+// of the game's threads waits for goes to the log, at 90 s and again at 210 s of the same loading screen, so a player's
+// log shows where it stopped. SAVAGEWIND_LOAD_WATCH=<seconds> for the first dump, 0 off.
+static void load_watch(uint64_t t) {
+    extern void kernel_dump_threads(void);  // runtime/kernel.c
+    static int first = -1;
+    static uint64_t since;
+    static int dumps;
+    if (first < 0) first = env_int("SAVAGEWIND_LOAD_WATCH", 90);
+    if (!first || !framepace_loading_ui()) { since = 0; dumps = 0; return; }
+    if (!since) since = t;
+    uint64_t at = (uint64_t)(first + 120 * dumps) * 1000000000ull;
+    if (dumps < 2 && t - since >= at) {
+        LOG("[load-watch] the loading screen has been up for %d s (event %s): the game's threads\n",
+            (int)((t - since) / 1000000000ull), event_name());
+        kernel_dump_threads();
+        dumps++;
+    }
+}
+
 void framepace_presented(uint64_t t, bool on_grid) {
+    load_watch(t);
     if (!framepace_on()) return;
     static uint64_t prev;
     static double smooth;

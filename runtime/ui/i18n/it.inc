@@ -489,6 +489,7 @@ T("The size of the maps the sun's shadows are drawn from. Console: the game's ow
 T("It has no System/Version.txt.", "Non ha un System/Version.txt.")
 T("Its System/Version.txt says %s.", "Il suo System/Version.txt indica %s.")
 T("It has %u files; with the update applied it has %u.", "Ha %u file; con l'aggiornamento applicato ne ha %u.")
+T("Its files add up to %llu MB; with the update applied they are %llu MB.", "I suoi file occupano %llu MB in tutto; con l'aggiornamento applicato sono %llu MB.")
 T("The RomFS isn't version %s with the update applied", "Il RomFS non è quello della versione %s con l'aggiornamento applicato")
 T("Savage Wind needs the RomFS of version %s with the update applied over the base game. Extract the RomFS again that way and choose that folder.", "Savage Wind richiede il RomFS della versione %s con l'aggiornamento applicato sul gioco base. Estrai di nuovo il RomFS in questo modo e scegli quella cartella.")
 T("Checking the game files...", "Controllo dei file di gioco...")
@@ -674,6 +675,8 @@ T("Open them from the title screen, or pause the game and choose System > Option
 
 T("Controller rumble", "Vibrazione del controller")
 T("Vibrate the controller during play.", "Fa vibrare il controller durante il gioco.")
+T("Free camera with both sticks", "Telecamera libera con entrambe le levette")
+T("Clicking both sticks together turns the free camera on and off. Home on the keyboard always does.", "Premere entrambe le levette insieme attiva e disattiva la telecamera libera. Home sulla tastiera lo fa sempre.")
 
 T("Sharper text", "Testo più nitido")
 T("Upscales the game's letters for 1440p and 4K, after a restart. Not the original art.", "Ingrandisce le lettere del gioco per 1440p e 4K, dopo un riavvio. Non è la grafica originale.")

@@ -158,6 +158,14 @@ void pc_cursor_frame(void) {
             preview_defaults_saved=false;
         }
     }
+    // The same MessageDialog shows lines spoken during play (Revali in Vah Medoh's fight, #486): the camera still takes
+    // the stick there, and the mouse stays the camera's. A conversation's camera doesn't read it.
+    extern bool input_cam_live(void);
+    static bool spoken_logged;
+    if(dialogue&&input_cam_live()) {
+        if(!spoken_logged)LOG("[pc-pointer] message box over play: the mouse stays the camera's\n");
+        spoken_logged=true;dialogue=false;
+    } else if(!dialogue)spoken_logged=false;
     if(dialogue_active&&!dialogue)confirm_until=0;
     dialogue_active=dialogue;
     item_message_active=item_message&&!game_over_screen;
@@ -769,6 +777,7 @@ static void inventory_pointer(Cpu *c) {
     }
 }
 
+static bool map_guides(Cpu *c,uint64_t screens);
 static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
     extern uint64_t renderer_present_count(void);
     uint64_t f=renderer_present_count();
@@ -815,6 +824,8 @@ static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
     // Its Edit/Delete/Cancel nodes must use normal dialog navigation, not canvas input.
     modal=LD64(screens+8*0x3e);
     if(ptr(modal)&&LD8(modal+0xfe)==2){map_down=false;map_anchor_active=map_picker_seen=false;map_view_valid=false;return false;}
+    // The prompt bar lies below the canvas: a click there presses the prompt's button (#451).
+    if(!map_anchor_active&&!map_down&&map_guides(c,screens))return true;
     click_pending=false;
     uint64_t map=LD64(screen+0x3628),d=ptr(map)?LD64(map+0x8d8):0;
     if(!ptr(d))return true;
@@ -1276,6 +1287,7 @@ static int guide_button(uint16_t glyph) {
 static bool pane_shown(uint64_t pane) {
     return ptr(pane)&&(LD8(pane+0x58)&1)&&LD8(pane+0x5a)>=0x80;  // visible, global alpha at least half
 }
+static bool guide_hit(Cpu *c,uint64_t info,unsigned i,const char *slot,uint64_t icon,uint64_t label,uint64_t area);
 static bool pause_guides(Cpu *c,uint64_t screen,uint64_t screens,unsigned count) {
     if(!ptr(screen)||LD64(screen)!=0x7001cf9ad8ull||LD8(screen+0xfe)!=2||count<=0x2f)return false;
     for(unsigned i=0x30;i<=0x3a&&i<count;i++) {
@@ -1291,27 +1303,52 @@ static bool pause_guides(Cpu *c,uint64_t screen,uint64_t screens,unsigned count)
         budget=8;uint64_t icon=pane_named(group,"T_Icon_00",0,&budget);
         budget=8;uint64_t label=pane_named(group,"T_Guide_00",0,&budget);
         if(i==0){rotate_info=info;rotate_group=group;}
-        if(!pane_shown(slot)||!pane_shown(group)||!pane_shown(icon))continue;
-        uint64_t glyphs=LD64(icon+0xe0);
-        int button=ptr(glyphs)?guide_button(LD16(glyphs)):-1;
-        float box[4],text[4];
-        if(button<0||!options_box(icon,box))continue;
-        if(pane_shown(label)&&options_box(label,text)) {
-            box[0]=fminf(box[0],text[0]);box[1]=fminf(box[1],text[1]);
-            box[2]=fmaxf(box[2],text[2]);box[3]=fmaxf(box[3],text[3]);
-        }
-        box[1]-=4;box[3]+=4;
-        if(point[0]<box[0]||point[0]>box[2]||point[1]<box[1]||point[1]>box[3])continue;
-        set_hover_rect(box);
-        pointer_hover_sound(c,info,info+0x400+i);
-        if(click_pending) {
-            // The game plays the action's own sound: no extra cue here.
-            click_pending=false;
-            guide_bit=(unsigned)button;guide_until=plat_now_ns()+80000000;
-        }
-        return true;
+        if(!pane_shown(slot)||!pane_shown(group))continue;
+        if(guide_hit(c,info,i,slots[i],icon,label,0))return true;
     }
     return false;
+}
+// The map's prompt bar (Sheikah Sensor, Hero's Path, Zoom...) belongs to the slate frame AppHome_00 (#451). Its
+// prompts are drawn through a capture texture: the glyph sits in N_CaptureText_00 in local coordinates, and the
+// P_Text_00 picture in N_InOut_00 shows it on screen.
+static bool map_guides(Cpu *c,uint64_t screens) {
+    uint64_t home=LD64(screens+8*0x2c),name=ptr(home)?LD64(home+0xd0):0;
+    if(!ptr(home)||LD8(home+0xfe)!=2||!ptr(name)||strncmp((char*)(uintptr_t)name,"AppHome_00",11))return false;
+    uint64_t root=call(c,0x7000f6f800,home,(uintptr_t)"RootPane",0);
+    static const char *const slots[]={"Pa_Guide_00","Pa_Guide_01","Pa_Guide_02","Pa_Guide_03","Pa_Guide_04","Pa_Guide_05"};
+    for(unsigned i=0;i<sizeof slots/sizeof*slots;i++) {
+        unsigned budget=256;uint64_t slot=pane_named(root,slots[i],0,&budget);
+        budget=8;uint64_t group=pane_named(slot,"N_InOut_00",0,&budget);
+        budget=8;uint64_t picture=pane_named(group,"P_Text_00",0,&budget);
+        budget=8;uint64_t capture=pane_named(slot,"N_CaptureText_00",0,&budget);
+        budget=8;uint64_t icon=pane_named(capture,"T_Icon_00",0,&budget);
+        if(!pane_shown(slot)||!pane_shown(group)||!pane_shown(picture))continue;
+        if(guide_hit(c,home,i,slots[i],icon,0,picture))return true;
+    }
+    return false;
+}
+// One prompt: its glyph names the button; the box is the glyph with its label, or the picture that shows both.
+static bool guide_hit(Cpu *c,uint64_t info,unsigned i,const char *slot,uint64_t icon,uint64_t label,uint64_t area) {
+    if(!pane_shown(icon))return false;
+    uint64_t glyphs=LD64(icon+0xe0);
+    int button=ptr(glyphs)?guide_button(LD16(glyphs)):-1;
+    float box[4],text[4];
+    if(button<0||!options_box(area?area:icon,box))return false;
+    if(pane_shown(label)&&options_box(label,text)) {
+        box[0]=fminf(box[0],text[0]);box[1]=fminf(box[1],text[1]);
+        box[2]=fmaxf(box[2],text[2]);box[3]=fmaxf(box[3],text[3]);
+    }
+    box[1]-=4;box[3]+=4;
+    if(point[0]<box[0]||point[0]>box[2]||point[1]<box[1]||point[1]>box[3])return false;
+    set_hover_rect(box);
+    pointer_hover_sound(c,info,info+0x400+i);
+    if(click_pending) {
+        // The game plays the action's own sound: no extra cue here.
+        click_pending=false;
+        guide_bit=(unsigned)button;guide_until=plat_now_ns()+80000000;
+        if(getenv("SAVAGEWIND_PC_CURSOR_LOG"))LOG("[pc-guide] %s button %d\n",slot,button);
+    }
+    return true;
 }
 
 // Other menus enter a button once per hover, rather than replaying its focus

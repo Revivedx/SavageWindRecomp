@@ -32,7 +32,7 @@ static const Setting settings[] = {
     I(anisotropy, 0, 4, "game|2x|4x|8x|16x"), I(sharpening, 0, 10, NULL),
     B(frame_gen), F(volume, 0, 2), B(reverb), B(movie_audio),
     I(perf_overlay, 0, PERF_FULL, "off|fps|full"), I(fps_limit, 0, 360, NULL),
-    I(vsync, 0, VSYNC_COUNT - 1, "on|fast|adaptive|off"), B(dpad_move),
+    I(vsync, 0, VSYNC_COUNT - 1, "on|fast|adaptive|off"), B(dpad_move), B(freecam_sticks),
     {"stick_deadzone[0]", &g_settings.stick_deadzone[0], FLOAT, 0, .5, NULL},
     {"stick_deadzone[1]", &g_settings.stick_deadzone[1], FLOAT, 0, .5, NULL},
     B(mouse_camera), F(mouse_sens, .1, 10), F(mouse_sens_y, .5, 2), B(mouse_invert_y),

@@ -164,6 +164,7 @@ T("Version %s isn't supported yet", "ยังไม่รองรับเว�
 T("It has no System/Version.txt.", "ไม่มี System/Version.txt")
 T("Its System/Version.txt says %s.", "System/Version.txt ระบุว่า %s")
 T("It has %u files; with the update applied it has %u.", "มี %u ไฟล์ เมื่อรวมอัปเดตแล้วควรมี %u")
+T("Its files add up to %llu MB; with the update applied they are %llu MB.", "ไฟล์ทั้งหมดรวมกันได้ %llu MB เมื่อรวมอัปเดตแล้วควรเป็น %llu MB")
 T("Game files unreadable (exefs/main is not an NSO)", "อ่านไฟล์เกมไม่ได้ (exefs/main ไม่ใช่ NSO)")
 T("Game data missing", "ข้อมูลเกมหายไป")
 T("No game files found in that folder", "ไม่พบไฟล์เกมในโฟลเดอร์นั้น")
@@ -674,6 +675,8 @@ T("Open them from the title screen, or pause the game and choose System > Option
 
 T("Controller rumble", "การสั่นของคอนโทรลเลอร์")
 T("Vibrate the controller during play.", "ให้คอนโทรลเลอร์สั่นระหว่างเล่น")
+T("Free camera with both sticks", "กล้องอิสระด้วยสติกทั้งสอง")
+T("Clicking both sticks together turns the free camera on and off. Home on the keyboard always does.", "กดสติกทั้งสองพร้อมกันเพื่อเปิดและปิดกล้องอิสระ ปุ่ม Home บนคีย์บอร์ดใช้ได้เสมอ")
 
 T("Sharper text", "ตัวอักษรคมชัดขึ้น")
 T("Upscales the game's letters for 1440p and 4K, after a restart. Not the original art.", "ขยายตัวอักษรของเกมสำหรับ 1440p และ 4K หลังเริ่มใหม่ ไม่ใช่ภาพต้นฉบับ")

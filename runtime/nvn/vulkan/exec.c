@@ -4497,8 +4497,11 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
             // Full-width panes slide between pause pages: keep their projection wide throughout the move, so test the
             // width, not the position.
             bool frame_end = !tall && hud_frame_end(g, mv, rc, m00, shape);
+            // Taller map views are cropped to their 16:9 frame at presentation (output_scale.c).
+            // Stretching a scrollable pane here separates its pan/zoom from the icons over it.
             if (lo < 1e8f && (tall ? lo <= -edge + 0.01f && hi >= edge - 0.01f && lo >= -over && hi <= over
-                                    : (hi - lo >= 2 / shape - 0.02f && hi - lo <= 2 * over) || frame_end)) {
+                                    : (hi - lo >= 2 / shape - 0.02f && hi - lo <= 2 * over) || frame_end) &&
+                !(tall && framepace_map_ui())) {
                 if (tall) m11 /= shape;
                 else m00 *= shape;
             }
@@ -5253,11 +5256,11 @@ static VkDescriptorBufferInfo gmem_info_hi(void) {
 // g_guest_buffer): no per-draw copy, no index scan for the copy size. The game fences its CPU writes as on the
 // Switch. Falls back to copies outside the heap or without the import; SAVAGEWIND_VK_COPY_VERTICES=1 forces copies.
 static bool gsnap_verts(void);
+static uint64_t gsnap_verts_max(void);
 static bool guest_direct(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSize *off) {
     static int copy = -1;
     if (copy < 0) copy = getenv("SAVAGEWIND_VK_COPY_VERTICES") != NULL;
     if (copy || addr < HEAP_BASE) return false;
-    if (gsnap_verts()) return false;  // (SAVAGEWIND_VK_GSNAP_VERTS=1: the HUD's vertex data copied at translation too)
 #ifdef _WIN32
     if (plat_guest_sparse_heap_enabled() && g_vk.sparse_buffer && g_vk.sparse_queue &&
         g_vk.sparse_nonresident_strict && g_vk.sparse_host_import && addr < HEAP_BASE + HEAP_MAX &&
@@ -5851,6 +5854,7 @@ static void hc_list_begin(void) {
 // in place from the import (guest_direct), its pages then geometry for the next list's copy (and its chunk wanted).
 // While a storing shader whose stores aren't known holds the list (chunk_hold), in place.
 static bool guest_fetch(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSize *off) {
+    if (gsnap_verts() && size && size <= gsnap_verts_max() && !gw_overlaps(addr, addr + size)) return false;  // (copied)
     if (!guest_direct(addr, size, buf, off)) return false;
     if (!hc_nch) return true;
     if (chunk_hold || !size || addr + size > HEAP_BASE + hc_size || gw_overlaps(addr, addr + size)) {
@@ -6094,9 +6098,13 @@ static VkDescriptorSet set_finish(VkDescriptorSetLayout layout, VkWriteDescripto
 // way, a frame or two of misplaced letters as the text came up (#263). With the overlap, a dialogue line at the
 // Shrine of Resurrection's pedestal on an RTX 5060: 4 of its bound ranges and 98 times the bytes after them rewritten
 // before the GPU was done with them, none with the overlap off; with the copies, under 1 ms of CPU in 2 s in the game.
-// Only with the overlap on, on every GPU. SAVAGEWIND_VK_GSNAP=0: off, =1: on; =all: the global memory copies in every pass (the vertex data
-// still only the HUD's); SAVAGEWIND_VK_GSNAP_MAX=<KB>: the largest storage buffer copied (1024); SAVAGEWIND_DEBUG_GSNAP=1:
-// counts every 2 s.
+// Every pass, not only the final image (#452): the HUD's button prompt shadows are drawn once into a texture of their
+// own from the prompt's text, and at 120 fps that pass read glyph positions the game had already rewritten - a shadow
+// out of place for as long as the prompt kept its text. In Kakariko uncapped (RTX 3060) 175.1 -> 173.4 fps, ~1.7 ms of
+// CPU in 2 s: every global memory read the game makes is the HUD's.
+// Only with the overlap on, on every GPU. SAVAGEWIND_VK_GSNAP=0: off, =1: final image only; =all (default): every pass
+// (the vertex data still only the HUD's); SAVAGEWIND_VK_GSNAP_MAX=<KB>: the largest storage buffer copied (1024);
+// SAVAGEWIND_DEBUG_GSNAP=1: counts every 2 s.
 // GPU data (ranges a storing shader had bound): kept as sorted, merged intervals. When full, the two closest are
 // joined (the gap between them counts as GPU data too: fewer copies, never a stale one).
 #define GSNAP_GPU_MAX 512
@@ -6108,7 +6116,7 @@ static int gsnap_mode(void) {
     static int m = -1;
     if (m < 0) {
         const char *e = getenv("SAVAGEWIND_VK_GSNAP");
-        m = !gpu_overlap() ? 0 : !e ? 1 : !strcmp(e, "all") ? 2 : atoi(e) ? 1 : 0;
+        m = !gpu_overlap() ? 0 : !e || !strcmp(e, "all") ? 2 : atoi(e) ? 1 : 0;
         LOG("[vk] global memory the HUD reads: %s\n",
             m == 2 ? "copied at translation (every pass, vertex data the HUD's)" : m ? "copied at translation (final image)" : "in place");
     }
@@ -6178,13 +6186,19 @@ static bool gsnap_gpu_hit(Range r) {
     return i < ngsnap_gpu && gsnap_gpu[i].lo < r.addr + r.size;
 }
 
-// SAVAGEWIND_VK_GSNAP_VERTS=1 (test): the HUD's vertex and index data copied too (guest_direct), in passes into the
-// final image. Off by default: with it, the prompt fix cost 30 -> 17 FPS on Mali-G610 (the storage buffer copies
-// themselves ~0.3 ms in 2 s).
+// The HUD's vertex and index data copied too (guest_fetch), in passes into the final image: fetches of up to
+// SAVAGEWIND_VK_GSNAP_VERTS_MAX KB (64) that no storing shader wrote. Every fetch there copied, with constant buffers
+// and fetches in the set of GPU writes waiting for the GPU, cost 30 -> 17 FPS on Mali-G610 and 176 -> 94 fps in
+// Kakariko uncapped (RTX 3060); the small ones alone 174.2 -> 176.0 (noise). SAVAGEWIND_VK_GSNAP_VERTS=0: off.
 static bool gsnap_verts(void) {
     static int on = -1;
-    if (on < 0) on = getenv("SAVAGEWIND_VK_GSNAP_VERTS") != NULL;
+    if (on < 0) on = !getenv("SAVAGEWIND_VK_GSNAP_VERTS") || atoi(getenv("SAVAGEWIND_VK_GSNAP_VERTS"));
     return on && gsnap_mode() && pass_out;
+}
+static uint64_t gsnap_verts_max(void) {
+    static int64_t kb = -1;
+    if (kb < 0) { const char *e = getenv("SAVAGEWIND_VK_GSNAP_VERTS_MAX"); kb = e ? atoll(e) : 64; }
+    return (uint64_t)kb << 10;
 }
 
 static bool gsnap_linear_hit(Range r) {  // (render targets also written into the heap on the GPU: GPU data)
@@ -6200,8 +6214,8 @@ static bool gsnap_linear_hit(Range r) {  // (render targets also written into th
 // The ranges a read-only stage's global memory reads are copied from (translate.c GLD: up to GSNAP_N): its storage
 // buffers, each with SAVAGEWIND_VK_GSNAP_EXT bytes after it. BOTW's HUD text shader reads its glyphs past the size its storage
 // buffer is bound with: copied at the bound size (~500 bytes) the prompt still broke, with the bytes after it it
-// didn't. (Where that reaches GPU data, the bound size only.) In passes into the final image; SAVAGEWIND_VK_GSNAP=all:
-// every pass. SAVAGEWIND_VK_GSNAP_EXT=<KB>: the bytes after (16).
+// didn't. (Where that reaches GPU data, the bound size only.) In every pass; SAVAGEWIND_VK_GSNAP=1: passes into the
+// final image only. SAVAGEWIND_VK_GSNAP_EXT=<KB>: the bytes after (16).
 #define GSNAP_N 4
 static VkDescriptorBufferInfo gsnap_info(int stage) {
     static struct { uint64_t seq; int n; Range r[GSNAP_N]; VkDescriptorBufferInfo bi; } cache[32];
@@ -7154,6 +7168,9 @@ static bool topology(uint32_t mode, VkPrimitiveTopology *t, uint8_t *cls) {
     case 3: *t = VK_PRIMITIVE_TOPOLOGY_LINE_STRIP; *cls = 1; return true;
     case 4: *t = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; *cls = 2; return true;
     case 5: *t = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP; *cls = 2; return true;
+    // Quad strip: each quad (v0 v1 v3 v2) is the strip's two triangles (v0 v1 v2) and (v1 v2 v3), the same pixels in the
+    // same order. The map's Hero's Path draws its line as one at the two nearer zooms (#441): left out, it was missing.
+    case 8: *t = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP; *cls = 2; return true;
     default: *t = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; *cls = 2; return false;
     }
 }
