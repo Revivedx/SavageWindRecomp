@@ -90,6 +90,11 @@ static float gesture_start[2],gesture_last[2],gesture_delta[2];
 static void sample_pointer(void);
 static void inventory_pointer(Cpu *c);
 static void dlc_pointer(Cpu *c);
+static uint64_t pane_named(uint64_t pane,const char *name,unsigned depth,unsigned *budget);
+static bool beast_pointer(Cpu *c);
+static uint64_t beast_frame=UINT64_MAX;
+static bool beast_rotating;
+static int beast_hover=-1;
 static bool pointer_test(void) { return getenv("SAVAGEWIND_PC_POINTER_SCRIPT") != NULL; }
 
 static bool enabled(void) {
@@ -377,6 +382,7 @@ void rt_pc_button_group(Cpu *c) {
     if(quick_wheel_only)return;
     sample_pointer();
     if(dlc_screen){dlc_pointer(c);return;}
+    if(beast_pointer(c))return;
     inventory_pointer(c);
     extern uint64_t renderer_present_count(void);
     if (getenv("SAVAGEWIND_PC_DUMP_UI") && renderer_present_count() >= 180) {
@@ -652,6 +658,89 @@ static void inventory_rotate(Cpu *c,float dx) {
         memcpy(preview_defaults,yaw,sizeof preview_defaults);preview_defaults_saved=true;
     }
     for(unsigned i=0;i<2;i++)yaw[i]=remainderf(yaw[i]+dx*.46f,360.f);
+}
+
+// AppMapDungeon has no ordinary menu cursor: the pink controls are projected
+// by its own 3D camera. Use the current projected positions, not screen pixels
+// or the capture panes (which remain in their original layout positions).
+static bool beast_pointer(Cpu *c) {
+    if(!g_site.beast_world || !g_site.screen_mgr || !g_site.pause_state)return false;
+    uint64_t mgr=LD64(g_site.screen_mgr),screens=ptr(mgr)?LD64(mgr+0x30):0;
+    uint64_t s=ptr(screens)&&LD32(mgr+0x28)>0x22?LD64(screens+8*0x22):0;
+    if(!ptr(s)||LD64(s)!=0x7001ce7c18ull||LD8(s+0xfe)!=2||LD32(g_site.pause_state)!=2) {
+        beast_rotating=false;beast_hover=-1;return false;
+    }
+    uint64_t wrapper=LD64(s+0x30),root=ptr(wrapper)?LD64(wrapper+0x18):0;
+    if(!ptr(root)||!LD8(root+0x5a))return false;
+    extern uint64_t renderer_present_count(void);
+    uint64_t frame=renderer_present_count();
+    if(beast_frame==frame)return true;
+    beast_frame=frame;
+    if(pointer_keyboard_input||pointer_gamepad_input||!position_inside) {
+        beast_rotating=false;beast_hover=-1;return true;
+    }
+    unsigned budget=2048;
+    uint64_t panel=pane_named(root,"Pa_SensorBox_00",0,&budget);
+    uint64_t content=pane_named(panel,"N_All_00",0,&budget);
+    if(ptr(content)&&(LD8(content+0x58)&1)&&LD8(content+0x5a)) {
+        beast_rotating=false;beast_hover=-1;
+        return true;
+    }
+    unsigned count=LD32(s+0x118c8);uint64_t array=LD64(s+0x118d0);
+    if(count>11||!ptr(array))return true;
+    int hit=-1;float distance=32.f*32.f;
+    for(unsigned i=0;i<count;i++) {
+        uint64_t p=LD64(array+8*i);if(!ptr(p))continue;
+        float x=*(float*)(p+8),y=*(float*)(p+12);
+        float d=(point[0]-x)*(point[0]-x)+(point[1]-y)*(point[1]-y);
+        if(isfinite(d)&&d<distance){distance=d;hit=(int)i;}
+    }
+    uint64_t world=LD64(g_site.beast_world);
+    unsigned kind=ptr(world)?LD32(world+0x64c38):UINT32_MAX;
+    if(kind==3&&hit>=3)hit=-1;
+    if(!beast_rotating&&hit>=0) {
+        if(hit!=beast_hover) {
+            // The native focus transition already owns its feedback. Do not
+            // replay an extra cursor cue or restart the same focus animation.
+            if((int32_t)LD32(s+0x118c4)!=hit)
+                call(c,kind==3?g_site.beast_focus_axes:g_site.beast_focus_linear,s,hit,0);
+            beast_hover=hit;
+        }
+        if(click_pending) {
+            click_pending=false;
+            if(kind==3)call(c,g_site.beast_confirm_axes,s,s+0x11820+hit*0x30,0);
+            else call(c,g_site.beast_confirm_linear,s,0,0);
+        }
+        return true;
+    }
+    if(!beast_rotating)beast_hover=-1;
+    if(frame_press&&hit<0&&fabsf(point[0])<590&&point[1]<275&&point[1]>-280) {
+        // Release the native pink-control hover/preview before giving the
+        // gesture to the camera. Otherwise its selection animation survives
+        // under the drag even after the mouse button is released.
+        if(kind!=3&&(int32_t)LD32(s+0x118c4)>=0)
+            call(c,g_site.beast_focus_linear,s,UINT32_MAX,0);
+        beast_rotating=true;hover_until=0;
+    }
+    if(beast_rotating) {
+        click_pending=false;
+        if(frame_held&&(gesture_delta[0]||gesture_delta[1])) {
+            float *pitch=(float*)(s+0x3670),*yaw=(float*)(s+0x3674);
+            float radius=*(float*)(s+0x3678);
+            if(isfinite(*pitch)&&isfinite(*yaw)&&isfinite(radius)&&radius>0) {
+                *pitch+=gesture_delta[1]*.006f;
+                *yaw=remainderf(*yaw-gesture_delta[0]*.006f,6.28318530718f);
+                call(c,g_site.beast_clamp_pitch,s,0,0);call(c,g_site.beast_wrap_yaw,s,0,0);
+                *(float*)(s+0x36d0)=*(float*)(s+0x368c)+cosf(*pitch)*sinf(*yaw)*radius;
+                *(float*)(s+0x36d4)=*(float*)(s+0x3690)-sinf(*pitch)*radius;
+                *(float*)(s+0x36d8)=*(float*)(s+0x3694)+cosf(*pitch)*cosf(*yaw)*radius;
+                uint64_t v=LD64(s+0x3698);
+                if(ptr(v))call(c,LD64(v+0x20),s+0x3698,s+0x36a0,0);
+            }
+        }
+        if(frame_release||!frame_held)beast_rotating=false;
+    }
+    return true;
 }
 
 static void inventory_pointer(Cpu *c) {
@@ -1498,6 +1587,7 @@ void rt_pc_cursor_manager(Cpu *c, uint64_t activate, uint64_t bounds) {
     if (!pc_cursor_active()) return;
     sample_pointer();
     if(dlc_screen){dlc_pointer(c);return;}
+    if(beast_pointer(c))return;
     if (!quick_wheel_only && !pointer_test() && !position_inside) {
         float keys[2];extern void input_pc_map_axes(float out[2]);input_pc_map_axes(keys);
         if(keys[0]==0&&keys[1]==0)return;
@@ -1614,6 +1704,7 @@ void rt_pc_cursor_manager(Cpu *c, uint64_t activate, uint64_t bounds) {
 RT_ON_RESET(pc_cursor_reset) {
     dlc_screen=dlc_back_until=0;dlc_frame=UINT64_MAX;dlc_drag=0;
     quest_scroll_frame=UINT64_MAX;
+    beast_frame=UINT64_MAX;beast_rotating=false;beast_hover=-1;
     item_message_active=preview_available=false;item_confirm_until=0;
     dialogue_active=false;shop_screen=game_over_screen=quantity_screen=0;quantity_until=0;quantity_edit=false;quantity_request=-1;
     quantity_hold=0;quantity_repeat_at=0;preview_defaults_saved=false;sound_hover_key=sound_hover_until=0;
