@@ -187,6 +187,11 @@ int framepace_target(void) {
 static double vsync_cap(void) {
     if (g_settings.vsync != VSYNC_ON && g_settings.vsync != VSYNC_ADAPTIVE) return 0;
     double hz = winsize_refresh_rate();
+    // SAVAGEWIND_VSYNC_MARGIN=0: the cap at the refresh rate itself. The margin is for VRR; on a fixed-rate display (the
+    // Steam Deck in Game Mode) it only costs frames: 87.6 shown at 89.9 Hz
+    static int margin = -1;
+    if (margin < 0) margin = !getenv("SAVAGEWIND_VSYNC_MARGIN") || atoi(getenv("SAVAGEWIND_VSYNC_MARGIN")) != 0;
+    if (!margin) return hz >= 30 ? hz : 0;
     return hz >= 30 ? hz - hz * hz / 3600 : 0;
 }
 
