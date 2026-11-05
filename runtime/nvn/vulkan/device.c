@@ -2316,6 +2316,12 @@ presented:
     extern uint64_t framepace_script_frame(uint64_t presented);
     uint64_t script_frame = framepace_script_frame(total_frames);  // (SAVAGEWIND_SCRIPT_CLOCK: 30ths of a second)
     input_frame(script_frame);
+#ifdef SW_PGO_GENERATE
+    {   // a training run played by hand ends however the window is closed: keep the profile on disk as it goes
+        static unsigned pgo_frames;
+        if (++pgo_frames % 3000 == 0) write_runtime_profile();
+    }
+#endif
     {   // SAVAGEWIND_EXIT_AT=<frame> (counted as SAVAGEWIND_INPUT): end the run there
         static long exit_at = -1;
         if (exit_at < 0) exit_at = getenv("SAVAGEWIND_EXIT_AT") ? atol(getenv("SAVAGEWIND_EXIT_AT")) : 0;
