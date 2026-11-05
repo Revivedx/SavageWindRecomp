@@ -1003,3 +1003,7 @@ T("A screenshot", "ภาพหน้าจอ")
 T("Latest save", "เซฟล่าสุด")
 T("Loading picture", "ภาพขณะโหลด")
 T("Shows that picture while the game loads. Turned off, the window stays black until the game's title screen: loading takes just as long.", "แสดงภาพนั้นขณะโหลดเกม หากปิดไว้ หน้าต่างจะเป็นสีดำจนถึงหน้าจอชื่อเกม โดยใช้เวลาโหลดเท่าเดิม")
+
+T("Replace", "แทนที่")
+T("Quick inventory replacement", "เปลี่ยนอุปกรณ์ในกระเป๋าด่วน")
+T("Choose equipment to drop when its inventory is full, then receive the new item. Requires game version 1.9.0.", "เลือกอุปกรณ์ที่จะทิ้งเมื่อกระเป๋าเต็ม แล้วรับไอเทมใหม่ ต้องใช้เกมเวอร์ชัน 1.9.0")

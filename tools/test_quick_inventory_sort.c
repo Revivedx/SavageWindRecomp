@@ -8,7 +8,7 @@ const char *g_game_version = "1.9.0";
 static const uint64_t mgr = 0x7240000000ull, screen = 0x7240050000ull;
 static const uint64_t item_base = 0x7240048000ull, widget = 0x7240054000ull;
 static uint64_t buttons, consumed, live[20];
-static bool unknown, duplicate, event, modal, missing_helper;
+static bool unknown, duplicate, event, modal, missing_helper, owned_card;
 static int depth, locks, unlocks, sorts, fill_calls, widget_calls, labels, category, count = 3;
 static int expected_cursor, expected_cells;
 
@@ -158,6 +158,21 @@ int main(void) {
     quick_inventory_sort_reset(); assert(!quick_inventory_sort_hint());
     assert(!memcmp(&c, &original, sizeof c) && depth == 0 && locks == unlocks);
     assert(fill_calls == sorts && labels == sorts && widget_calls == sorts && consumed == SORT_X);
+    count = 3; expected_cursor = 3; expected_cells = 4;
+    setup(0); buttons = 0; rt_quick_inventory_sort_begin(&c);
+    modal = owned_card = true;
+    int owned_before = sorts;
+    edge(&c, SORT_X); assert(sorts == owned_before + 1);
+    event = true; edge(&c, SORT_X); assert(sorts == owned_before + 1);
+    event = false; g_settings.quick_sort = false;
+    edge(&c, SORT_X); assert(sorts == owned_before + 1);
+    modal = owned_card = false;
     munmap(mem, 0x60000);
     puts("ok: native sort categories, duplicate instance identity, equipment, CPU/locks, edges, cancel priority and guards");
 }
+
+// These standalone tests do not own a replacement selector.
+bool quick_replace_enabled(void) { return false; }
+bool quick_replace_active(void) { return false; }
+bool quick_replace_card_drop_allowed(void) { return false; }
+bool quick_replace_card_sort_allowed(uint64_t scr) { return owned_card && scr == screen; }

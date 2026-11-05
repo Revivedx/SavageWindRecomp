@@ -1003,3 +1003,7 @@ T("A screenshot", "Ein Screenshot")
 T("Latest save", "Letzter Spielstand")
 T("Loading picture", "Ladebild")
 T("Shows that picture while the game loads. Turned off, the window stays black until the game's title screen: loading takes just as long.", "Zeigt dieses Bild, während das Spiel lädt. Aus: Das Fenster bleibt bis zum Titelbildschirm schwarz; das Laden dauert genauso lange.")
+
+T("Replace", "Ersetzen")
+T("Quick inventory replacement", "Ausrüstung im Schnellinventar ersetzen")
+T("Choose equipment to drop when its inventory is full, then receive the new item. Requires game version 1.9.0.", "Wähle bei vollem Inventar Ausrüstung zum Ablegen und nimm dann den neuen Gegenstand auf. Erfordert Spielversion 1.9.0.")

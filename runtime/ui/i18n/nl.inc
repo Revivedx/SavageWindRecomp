@@ -1003,3 +1003,7 @@ T("A screenshot", "Een screenshot")
 T("Latest save", "Laatste opslag")
 T("Loading picture", "Laadafbeelding")
 T("Shows that picture while the game loads. Turned off, the window stays black until the game's title screen: loading takes just as long.", "Toont die afbeelding tijdens het laden van het spel. Uitgeschakeld blijft het venster zwart tot het titelscherm: laden duurt even lang.")
+
+T("Replace", "Vervangen")
+T("Quick inventory replacement", "Uitrusting vervangen via snelmenu")
+T("Choose equipment to drop when its inventory is full, then receive the new item. Requires game version 1.9.0.", "Kies uitrusting om weg te gooien als de inventaris vol is en ontvang daarna het nieuwe voorwerp. Vereist spelversie 1.9.0.")

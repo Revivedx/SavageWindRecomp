@@ -26,7 +26,7 @@ bool rt_resource(const char *name, const char *dev_rel, char *out, size_t cap) {
 }
 }
 const char *tr(const char *s) {
-    return !strcmp(s, "Sort") ? "Сортировать" : !strcmp(s, "Drop") ? "Выбросить" : !strcmp(s, "Back") ? "Назад" : s;
+    return !strcmp(s, "Sort") ? "Сортировать" : !strcmp(s, "Drop") ? "Выбросить" : !strcmp(s, "Back") ? "Назад" : !strcmp(s, "Replace") ? "Заменить" : s;
 }
 
 static std::vector<unsigned char> button_mask(int kind) {
@@ -67,6 +67,10 @@ int main(int argc, char **argv) {
     assert(text->FindGlyphNoFallback(0x440)); // Cyrillic р from the translated Sort label
     assert(text->FindGlyphNoFallback(0x412)); // Cyrillic В from Drop
     assert(text->FindGlyphNoFallback(0x44b)); // ы from Drop
+    assert(text->FindGlyphNoFallback(0x417)); // З from Replace
+    assert(text->FindGlyphNoFallback(0x43c)); // м from Replace
+    assert(text->FindGlyphNoFallback(0x435)); // е from Replace
+    assert(text->FindGlyphNoFallback(0x43d)); // н from Replace
     assert(text->FindGlyphNoFallback(0x421)); // С appears only in the translated Sort label
     assert(buttons->FindGlyphNoFallback(0xe041));
     assert(text->CalcTextSizeA(32, FLT_MAX, 0, "Сортировать").x > 100);

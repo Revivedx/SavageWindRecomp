@@ -1002,3 +1002,7 @@ T("A screenshot", "צילום מסך")
 T("Latest save", "שמירה אחרונה")
 T("Loading picture", "תמונת טעינה")
 T("Shows that picture while the game loads. Turned off, the window stays black until the game's title screen: loading takes just as long.", "מציג את התמונה הזו בזמן שהמשחק נטען. כשכבוי, החלון נשאר שחור עד מסך הכותרת של המשחק: הטעינה נמשכת אותו זמן.")
+
+T("Replace", "החלפה")
+T("Quick inventory replacement", "החלפת ציוד במלאי המהיר")
+T("Choose equipment to drop when its inventory is full, then receive the new item. Requires game version 1.9.0.", "בחרו ציוד להשלכה כשהמלאי שלו מלא, ואז קבלו את הפריט החדש. נדרשת גרסת משחק 1.9.0.")

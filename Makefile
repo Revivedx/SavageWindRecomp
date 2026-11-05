@@ -917,3 +917,14 @@ test-quick-drop: test-quick-drop-native $(B)/test_quick_drop_input
 
 .PHONY: test-quick-drop test-quick-drop-native
 endif
+
+ifeq ($(PLATFORM),linux)
+$(B)/test_quick_replace: tools/test_quick_replace.c runtime/quick_replace.c runtime/quick_replace.h $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -std=gnu11 -O1 -g $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $<
+
+test-quick-replace: $(B)/test_quick_replace
+	$(B)/test_quick_replace
+
+.PHONY: test-quick-replace
+endif

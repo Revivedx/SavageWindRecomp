@@ -7,6 +7,7 @@
 #include "hle.h"
 #include "settings.h"
 #include "quick_drop_action.h"
+#include "quick_replace.h"
 
 extern uint64_t input_buttons_now(void);
 extern void input_consume_buttons(uint64_t);
@@ -69,6 +70,12 @@ bool quick_drop_action_enabled(void) {
     return g_settings.quick_drop && !strcmp(g_game_version, "1.9.0");
 }
 
+// Both frontends use the guarded native action. Ordinary Y remains gated by
+// quick_drop_action_enabled; replacement can request only its owned selector.
+static bool drop_action_enabled(void) {
+    return quick_drop_action_enabled() || (quick_replace_enabled() && quick_replace_active());
+}
+
 static bool drop_range(uint64_t addr, uint64_t size) {
     return addr >= GUEST_LO && addr < GUEST_HI && size <= GUEST_HI - addr;
 }
@@ -125,7 +132,8 @@ static bool drop_allowed(Cpu *scratch, uint64_t item, int type, int value, const
     if (drop_call(scratch, g_site.quick_drop_trash_prohibited, 0, 0, 0)) return drop_reject("TrashProhibition");
     if (drop_call(scratch, g_site.quick_sort_player_busy, 0, 0, 0)) return drop_reject("ChangeEquipProhibition");
     if (drop_call(scratch, g_site.quick_sort_event, 0, 0, 0)) return drop_reject("active-event");
-    if (drop_call(scratch, g_site.quick_sort_modal, 0, 0, 0)) return drop_reject("screen-0xb-open");
+    if (drop_call(scratch, g_site.quick_sort_modal, 0, 0, 0) && !quick_replace_card_drop_allowed())
+        return drop_reject("screen-0xb-open");
     if (!drop_range(g_site.actor_info, 8)) return drop_reject("missing-actor-info-site");
     uint64_t info = LD64(g_site.actor_info);
     if (!drop_range(g_site.player_info, 8)) return drop_reject("missing-player-info-site");
@@ -209,7 +217,7 @@ void quick_drop_action_request(Cpu *c, uint64_t screen, uint64_t mgr, uint64_t i
                                int tab, int slot, const char *name) {
     if (equipped_drop.active || pending_drop.item) return;
     drop_result = QUICK_DROP_REJECTED;
-    if (!drop_ready || !quick_drop_action_enabled() || pending_drop.item || !name ||
+    if (!drop_ready || !drop_action_enabled() || pending_drop.item || !name ||
         !drop_range(screen, 0x38e5) || !drop_range(mgr, 0x45000) ||
         !drop_range(item, 0x38) || tab < 0 || tab >= 50 || slot < 0 || slot >= 20 ||
         strnlen(name, DROP_NAME_CAP) >= DROP_NAME_CAP) return;
@@ -246,7 +254,7 @@ void quick_drop_action_request(Cpu *c, uint64_t screen, uint64_t mgr, uint64_t i
 static void drop_execute(Cpu *c) {
     uint64_t screen = c->x[0];
     if (equipped_drop.active) return;
-    if (!quick_drop_action_enabled()) { memset(&pending_drop, 0, sizeof pending_drop); drop_result = QUICK_DROP_REJECTED; return; }
+    if (!drop_action_enabled()) { memset(&pending_drop, 0, sizeof pending_drop); drop_result = QUICK_DROP_REJECTED; return; }
     // A request belongs to the menu state in which it was queued. If that
     // screen has moved on, do not leave it armed for a later menu session.
     if (pending_drop.item && pending_drop.screen == screen &&

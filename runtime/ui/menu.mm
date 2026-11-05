@@ -37,6 +37,7 @@ extern "C" {
 #include "../gamelib.h"
 #include "../quick_inventory_sort.h"
 #include "../quick_drop.h"
+#include "../ui/quick_inventory_layout.h"
 #include "../nvn/glyphs.h"
 #include "../color_grade.h"
 #include "../window_size.h"
@@ -1918,9 +1919,11 @@ static void quick_inventory_hint_draw(const ImGuiIO &io) {
     int family = kind == ICONS_XBOX ? 1 : kind == ICONS_PLAYSTATION ? 2 : 0;
     float canvas = fminf(io.DisplaySize.x / 1280.f, io.DisplaySize.y / 720.f);
     float scale = canvas / 1.5f, fs = 32 * scale, radius = 15 * scale, gap = 10 * scale;
-    float y = io.DisplaySize.y * .5f + 23 * canvas;
+    int drop = quick_drop_hint_state();
+    float y = quick_inventory_layout(io.DisplaySize.x, io.DisplaySize.y, drop >= 6).controls_y;
     struct Prompt { const char *label, *icon; int binding; bool enabled; } prompts[3];
-    int count = 0, drop = quick_drop_hint_state();
+    int count = 0;
+    if (drop >= 4) prompts[count++] = {tr("Replace"), "\xee\x81\x80", BIND_A, drop == 5 || drop == 7};
     if (drop == 1 || drop == 2) prompts[count++] = {tr("Drop"), "\xee\x81\x83", BIND_Y, drop == 2};
     if (quick_inventory_sort_hint()) prompts[count++] = {tr("Sort"), "\xee\x81\x82", BIND_X, true};
     if (drop) prompts[count++] = {tr("Back"), "\xee\x81\x81", BIND_B, true};

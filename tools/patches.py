@@ -51,6 +51,116 @@ def _quick_drop_actor_call(gen, a):
             'rt_quick_drop_actor_end(token, actor, c->x[0]); }')
 
 
+# Replacement observes checked native functions rather than redirecting every
+# generated direct call. Query/chest/toast have no computed entry paths; their
+# invocation locals stay in the generated C frame until the checked exits.
+def _replace_call(gen, a, word, hook, target=None):
+    assert _word(gen, a) == word, hex(_word(gen, a))
+    dest = target if target is not None else gen.lift(a).target
+    native = f'f_{dest:x}'
+    return (f'{{ extern void {native}(Cpu *); extern void {hook}(Cpu *, void (*)(Cpu *)); '
+            f'c->x[30] = {a + 4:#x}ull; {hook}(c, {native}); }}')
+
+
+def _replace_tick_call(gen, a):
+    return _replace_call(gen, a, 0x940004f3, 'rt_quick_replace_tick')
+
+
+def _replace_fill_call(gen, a):
+    return _replace_call(gen, a, 0x97fffdbd, 'rt_quick_replace_fill')
+
+
+def _replace_full_info_call(gen, a):
+    return _replace_call(gen, a, 0x94224eaf, 'rt_quick_replace_full_info')
+
+
+def _replace_popup(gen, a):
+    assert _word(gen, a) == _sub_sp(0x40), hex(_word(gen, a))
+    return ('{ extern void rt_quick_replace_popup(Cpu *); rt_quick_replace_popup(c); c->sp -= 0x40; }')
+
+
+def _replace_item_popup(gen, a):
+    assert _word(gen, a) == 0xf9400408, hex(_word(gen, a))
+    return ('{ extern void rt_quick_replace_item_popup(Cpu *); rt_quick_replace_item_popup(c); '
+            'c->x[8] = LD64(c->x[0] + 8); }')
+
+
+def _replace_gate(gen, a, word, hook, original):
+    assert _word(gen, a) == word, hex(_word(gen, a))
+    return f'{{ extern _Bool {hook}(Cpu *); if ({hook}(c)) return; {original} }}'
+
+
+def _replace_receive(gen, a):
+    return _replace_gate(gen, a, _sub_sp(0x1b0), 'rt_quick_replace_receive', 'c->sp -= 0x1b0;')
+
+
+def _replace_card_close(gen, a):
+    return _replace_gate(gen, a, _sub_sp(0x30), 'rt_quick_replace_card_close', 'c->sp -= 0x30;')
+
+
+def _replace_card_action(gen, a):
+    return _replace_gate(gen, a, _sub_sp(0x90), 'rt_quick_replace_card_action', 'c->sp -= 0x90;')
+
+
+def _replace_pane(gen, a):
+    return _replace_gate(gen, a, 0x39416008, 'rt_quick_replace_pane', 'c->x[8] = LD8(c->x[0] + 0x58);')
+
+
+def _replace_anim(gen, a):
+    return _replace_gate(gen, a, 0xbd405001, 'rt_quick_replace_anim',
+                         'c->v[1] = LD32(c->x[0] + 0x50);')
+
+
+def _replace_query(gen, a):
+    assert _word(gen, a) == 0xa9bf7bfd, hex(_word(gen, a))
+    return ('uint64_t qr_query = c->x[0]; '
+            '{ uint64_t ea = c->sp - 0x10; ST64(ea, c->x[29]); ST64(ea + 8, c->x[30]); c->sp = ea; }')
+
+
+def _replace_query_return(gen, a):
+    assert _word(gen, a) == 0xd65f03c0, hex(_word(gen, a))
+    return '{ extern void rt_quick_replace_query(Cpu *, uint64_t); rt_quick_replace_query(c, qr_query); return; }'
+
+
+def _replace_chest(gen, a):
+    assert _word(gen, a) == _sub_sp(0x70), hex(_word(gen, a))
+    return ('extern unsigned rt_quick_replace_chest_begin(Cpu *); '
+            'uint64_t qr_chest_ai = c->x[0]; unsigned qr_chest_mode = rt_quick_replace_chest_begin(c); '
+            'if (!qr_chest_mode) return; c->sp -= 0x70;')
+
+
+def _replace_chest_return(gen, a):
+    assert _word(gen, a) == 0xd65f03c0, hex(_word(gen, a))
+    return ('{ extern void rt_quick_replace_chest_end(Cpu *, uint64_t, unsigned); '
+            'rt_quick_replace_chest_end(c, qr_chest_ai, qr_chest_mode); return; }')
+
+
+def _replace_toast(gen, a):
+    assert _word(gen, a) == 0xa9be7bfd, hex(_word(gen, a))
+    return ('extern int rt_quick_replace_toast_begin(Cpu *); '
+            'uint64_t qr_toast = c->x[0]; int qr_toast_saved = rt_quick_replace_toast_begin(c); '
+            '{ uint64_t ea = c->sp - 0x20; ST64(ea, c->x[29]); ST64(ea + 8, c->x[30]); c->sp = ea; }')
+
+
+def _replace_toast_exit(gen, a):
+    word = _word(gen, a)
+    assert word in (0xd65f03c0, 0x17ffffb3, 0x17fffd8f), hex(word)
+    native = ''
+    if word != 0xd65f03c0:
+        dest = gen.lift(a).target
+        native = f'extern void f_{dest:x}(Cpu *); f_{dest:x}(c); '
+    return ('{ extern void rt_quick_replace_toast_end(uint64_t, int); '+native+
+            'rt_quick_replace_toast_end(qr_toast, qr_toast_saved); return; }')
+
+
+def _replace_ui_draw(gen, a):
+    assert _word(gen, a) == 0x17ee0583, hex(_word(gen, a))
+    native = f'f_{gen.sites["replace_ui_draw_native"]:x}'
+    return (f'{{ extern void {native}(Cpu *); '
+            'extern void rt_quick_replace_ui_draw(Cpu *, void (*)(Cpu *)); '
+            f'rt_quick_replace_ui_draw(c, {native}); return; }}')
+
+
 def _fn(gen, site):  # the generated function at a site's address
     return f'f_{gen.sites[site]:x}'
 
@@ -877,6 +987,25 @@ def _tp_gate(gen, a):
 
 
 PATCHES = {
+    'replace_tick_call': _replace_tick_call,
+    'replace_fill_call': _replace_fill_call,
+    'replace_full_info_call': _replace_full_info_call,
+    'replace_popup': _replace_popup,
+    'replace_item_popup': _replace_item_popup,
+    'replace_receive': _replace_receive,
+    'replace_card_close_gate': _replace_card_close,
+    'replace_card_action': _replace_card_action,
+    'replace_pane_draw': _replace_pane,
+    'replace_anim_advance': _replace_anim,
+    'replace_query': _replace_query,
+    'replace_query_return': _replace_query_return,
+    'replace_chest_update': _replace_chest,
+    'replace_chest_return': _replace_chest_return,
+    'replace_toast_update': _replace_toast,
+    'replace_toast_return': _replace_toast_exit,
+    'replace_toast_tail_a': _replace_toast_exit,
+    'replace_toast_tail_b': _replace_toast_exit,
+    'replace_ui_draw': _replace_ui_draw,
     'quick_drop_tick': _quick_drop_tick,
     'quick_drop_actor_call': _quick_drop_actor_call,
     'quick_sort_enter': _quick_sort_enter,

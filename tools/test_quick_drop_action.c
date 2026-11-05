@@ -16,7 +16,7 @@ static uint64_t native_equipment, current_player, frame, consumed;
 static bool owner_attached, weak_links, retain_failure, interleave_drop, protect_after_discard, consume_scheduler_immediately, snapshot_failure;
 static int sweeps;
 static int widget_count, widget_cursor;
-static bool sword_special;
+static bool sword_special, replace_enabled, replace_owned, replace_modal;
 static bool lookup_ok = true, tag_important, tag_notdrop, trash, equip_ban, event, popup, player_ban;
 static uint64_t inventory[2][2];
 static int counts[2];
@@ -518,6 +518,24 @@ int main(void) {
     assert(quick_drop_action_busy()); // settings/timeout cannot roll back invalidation
     quick_drop_action_reset(); assert(!quick_drop_action_busy());
 
+    // Only an owned replacement selector may use the action while Y is off.
+    setup(); g_settings.quick_drop = false;
+    replace_enabled = true; replace_owned = false;
+    reject_case(&c);
+    replace_owned = true; popup = true;
+    reject_case(&c); // An unrelated modal remains prohibited.
+    replace_modal = true; event = true;
+    reject_case(&c); // The card exception never bypasses active events.
+    event = false;
+    request(&c); quick_drop_action_close(&c);
+    assert(discarded == 1 && !quick_drop_action_enabled());
+    replace_enabled = replace_owned = replace_modal = false;
     puts("quick-drop action tests passed");
     return 0;
 }
+
+// These standalone tests do not own a replacement selector.
+bool quick_replace_enabled(void) { return replace_enabled; }
+bool quick_replace_active(void) { return replace_owned; }
+bool quick_replace_card_drop_allowed(void) { return replace_modal; }
+bool quick_replace_card_sort_allowed(uint64_t screen) { (void)screen; return false; }

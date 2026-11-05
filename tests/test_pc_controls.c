@@ -230,3 +230,5 @@ int main(void) {
     assert(photo_takes == shots_before + 1);
     puts("PASS: PrintScreen triggers screenshot capture");
 }
+
+uint64_t quick_replace_buttons(uint64_t b) { return b; }
