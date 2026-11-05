@@ -806,6 +806,22 @@ def _lookat_update(gen, a):
             f'  /* {a:#x}: ldp s1, s2, [x0, #0x38] (LookAtCamera view: eye x, y) */')
 
 
+# The wait for the ground. Every game update asks (at 1.9.0 FUN_71010b7a40, called from the code that raises pause reason
+# 9, bit 9 of the flags at pause_state + 0 / 0x7001e1611c) whether the map sections around Link (his position +-200 on
+# x and z) are still loading. While they are, reason 9 pauses the world, and the world's own update is what loads
+# them, so after a jump of a few hundred units it waits for itself and the world is frozen for good. The control
+# endpoint's teleport (runtime/control_tp.c) asks for the question to be answered "ready" for a while: the world keeps
+# running (and loads) while the runtime holds Link in the air, and the real answer is reported back so the hold ends
+# when the ground is there. The patch runs the game's own function and only changes what its caller sees.
+def _tp_gate(gen, a):
+    assert _word(gen, a) == _sub_sp(0xa0), hex(_word(gen, a))
+    fn = _fn(gen, 'tp_gate')
+    return ('{ extern int rt_tp_gate_begin(void); extern void rt_tp_gate_end(uint64_t); '
+            f'if (rt_tp_gate_begin()) {{ {fn}(c); rt_tp_gate_end(c->x[0]); c->x[0] = 0; return; }} '
+            'c->sp -= 0xa0; }'
+            f'  /* {a:#x}: sub sp, sp, #0xa0 (is the ground around Link still loading?) */')
+
+
 PATCHES = {
     'lookat_update': _lookat_update,
     'pc_map_focus': _pc_map_focus(False),
@@ -863,6 +879,7 @@ PATCHES = {
     'frustum_lr1': _frustum_load(0x2d550c02, (2, 3), 'lr'),
     'frustum_tb0': _frustum_load(0x2d540800, (0, 2), 'tb'),
     'frustum_tb1': _frustum_load(0x2d540c02, (2, 3), 'tb'),
+    'tp_gate': _tp_gate,
     'cam_stick': _cam_stick,
     'cam_pitch_chase': _cam_pitch,
     'cam_pitch_surf': _cam_pitch,
