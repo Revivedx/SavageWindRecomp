@@ -35,6 +35,7 @@ extern bool vk_dlss_available(void);
 
 #ifndef __APPLE__
 bool fsr3_available(void);  // (vulkan/fsr3.h: built in)
+bool fsr4_available(void);  // (vulkan/fsr_api.h: AMD's DLLs, on an AMD Radeon)
 #endif
 // FSR 3 upscaling is held back until its cost on the thread that records the frame for Vulkan comes down (the draw
 // translation work in progress): today that thread limits 1080p and 1440p, and FSR 3's motion vectors make every mode
@@ -49,12 +50,25 @@ bool upscaler_available(int u) {
 #ifdef __APPLE__
     return u == UPSCALE_OFF || u == UPSCALE_METALFX;
 #else
-    return u == UPSCALE_OFF || u == UPSCALE_FSR1 || (u == UPSCALE_FSR3 && fsr3_available() && fsr3_upscaler_enabled()) ||
-           (u == UPSCALE_DLSS && vk_dlss_available());
+    return u == UPSCALE_OFF || u == UPSCALE_FSR1 || (u == UPSCALE_FSR3 && fsr3_available() && fsr3_upscaler_enabled())
+        || (u == UPSCALE_FSR4 && fsr4_available() && fsr3_upscaler_enabled())  // (FSR 4: the same hold-back as FSR 3)
+        || (u == UPSCALE_DLSS && vk_dlss_available());
 #endif
 }
 
-bool rt_fsr3(void) { return g_settings.upscaler == UPSCALE_FSR3 && upscaler_available(UPSCALE_FSR3); }
+// FSR 4 is on this PC (an AMD Radeon, AMD's DLLs found), whether or not it is held back (the menu says which)
+bool fsr4_offered(void) {
+#ifdef __APPLE__
+    return false;
+#else
+    return fsr4_available();
+#endif
+}
+
+bool rt_fsr4(void) { return g_settings.upscaler == UPSCALE_FSR4 && upscaler_available(UPSCALE_FSR4); }
+// FSR 4 takes the same inputs and does the same jobs (anti-aliasing, sharpening) as FSR 3: everything that asks for
+// FSR 3 asks for either; vulkan/exec.c fsr3_scene picks the one to run
+bool rt_fsr3(void) { return (g_settings.upscaler == UPSCALE_FSR3 && upscaler_available(UPSCALE_FSR3)) || rt_fsr4(); }
 
 bool rt_dlss(void) { return g_settings.upscaler == UPSCALE_DLSS && upscaler_available(UPSCALE_DLSS); }
 
@@ -127,6 +141,15 @@ void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
     }
     o->vx = (dw - o->vw) / 2; o->vy = (dh - o->vh) / 2;
     o->crop[0] = o->crop[1] = 0, o->crop[2] = o->crop[3] = 1;
+    // The map's frame stays 16:9, but its scrollable background can draw beyond the frame on taller windows
+    // (#303). Present only that centered 16:9 region, without resizing its targets or changing cursor coordinates.
+    if (reshape && shape < 1 && framepace_map_ui()) {
+        double map_h = o->vh * shape;
+        o->vy += (o->vh - map_h) / 2;
+        o->vh = map_h;
+        o->crop[1] = (1 - shape) / 2;
+        o->crop[3] = shape;
+    }
     // Pause pages keep their 16:9 layout centered while the wider or taller image remains visible around them.
     g_view_shape = (float)o->shape;
     // Video > Field of view: in play only (cutscenes and talks keep the game's framing), eased over about 1/4 s so

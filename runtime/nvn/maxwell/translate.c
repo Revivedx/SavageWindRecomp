@@ -1738,6 +1738,12 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         else sprintf(addr, "(ulong(%s) + ulong(%lld))", R(a), (long long)off);
         sp(&c->body, "    { ulong ga = %s - 0x%llxul; bool ok = ga < 0x%llxul;\n", addr,
            (unsigned long long)maxwell_gmem_base, (unsigned long long)maxwell_gmem_size);
+        if (c->glsl && maxwell_gmem_bda) {
+            // An address has no robustBufferAccess bounds: check the whole access (a sub-word one's containing word)
+            // against the memory actually mapped, before any read or write through it.
+            unsigned bytes = size < 4 ? 4 : size == 5 ? 8 : size >= 6 ? 16 : 4;
+            sp(&c->body, "      ok = ok && gmem_addr != 0ul && gmem_size >= %uu && (ga & ~3ul) <= gmem_size - %uu;\n", bytes, bytes);
+        }
         static const char *const ld_small[] = {"uint(gmem[ga])", "uint(int(char(gmem[ga])))",
                                                "uint(*(device ushort *)(gmem + ga))", "uint(int(*(device short *)(gmem + ga)))"};
         int nw = size == 5 ? 2 : size >= 6 ? 4 : 1;
@@ -2237,9 +2243,15 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     if (info->uses_gmem) {
         // The heap in one storage buffer, or (maxwell_gmem_split: the device's maxStorageBufferRange is below the heap,
         // Mali-G610's 2 GB against 3 GB) in two, split at GMEM_SPLIT. GLD / GST read and write a word of it.
-        bool split = maxwell_gmem_split;
-        sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GMem { uint w[]; } gmem_;\n", set, GMEM_BUFFER_INDEX,
-           c->uses_gmem_store ? "" : "readonly ");
+        bool split = maxwell_gmem_split && !maxwell_gmem_bda;
+        if (maxwell_gmem_bda)  // (the heap by address: GMemInfo holds it and its mapped size; emit_insn checks every access)
+            sp(&s, "#extension GL_EXT_buffer_reference : require\n"
+                   "layout(buffer_reference, std430, buffer_reference_align = 4) %sbuffer GMem { uint w[]; };\n"
+                   "layout(std140, set = %d, binding = %d) uniform GMemInfo { uint64_t gmem_addr; uint64_t gmem_size; };\n"
+                   "#define gmem_ GMem(gmem_addr)\n", c->uses_gmem_store ? "" : "readonly ", set, GMEM_BUFFER_INDEX);
+        else
+            sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GMem { uint w[]; } gmem_;\n", set, GMEM_BUFFER_INDEX,
+               c->uses_gmem_store ? "" : "readonly ");
         if (split)
             sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GMem2 { uint w[]; } gmem2_;\n", set, GMEM2_BUFFER_INDEX,
                c->uses_gmem_store ? "" : "readonly ");
@@ -2428,18 +2440,27 @@ size_t maxwell_binary_size(const uint8_t *blob, size_t max_size, int stage) {
     return head + code_end(blob + head, (max_size - head) / 8) * 8;
 }
 
-// What the translations are made from: a hash of this file and shader.h (TRANSLATOR_ID, from the Makefile). The caches
-// of translated shaders (runtime/nvn/vulkan/shaders.c) are kept while it stays the same. Built some other way (the
-// test tools), the build time: those caches then start over with every build.
+// What the translations are made from: a hash of this file and shader.h (TRANSLATOR_ID, from the Makefile's generated
+// shader_ids.h). The caches of translated shaders (runtime/nvn/vulkan/shaders.c) are kept while it stays the same.
+// Built some other way (the test tools), the build time: those caches then start over with every build.
 #ifndef TRANSLATOR_ID
 #define TRANSLATOR_ID __DATE__ " " __TIME__
 #endif
-bool maxwell_gmem_split, maxwell_gmem_snap;
-// (the two switches above change translations: they name caches of their own)
-const char *maxwell_translator_id(void) {
-    static __thread char id[64];  // (per thread: the precompile's workers ask for it at once)
-    snprintf(id, sizeof id, "%s%s%s", TRANSLATOR_ID, maxwell_gmem_split ? "-gs" : "", maxwell_gmem_snap ? "-gn" : "");
-    return id;
+const char *maxwell_translator_id(void) { return TRANSLATOR_ID; }
+
+// What a translation depends on besides the binary, the key and the translator: the switches the Vulkan backend sets
+// for the device (global memory in two bindings, read-only global memory through copies) and the heap window, which
+// only reach the translations of shaders that read global memory (ShaderInfo.uses_gmem). A cached translation records
+// the variant it was made under; one of a global memory shader made under another is translated again
+// (shaders.c xlate_load), the rest are kept: a change of these switches (a device, a driver, a new default in exec.c)
+// no longer throws every cache away, as it did when they were part of the translator's id.
+bool maxwell_gmem_split, maxwell_gmem_snap, maxwell_gmem_bda;
+const char *maxwell_translation_variant(void) {
+    static __thread char v[64];  // (per thread: the precompile's workers ask for it at once)
+    snprintf(v, sizeof v, "%s%s%s %llx+%llx", maxwell_gmem_split ? "s" : "-", maxwell_gmem_snap ? "n" : "-",
+             maxwell_gmem_bda ? "a" : "",  // (by address: Turnip; nothing added otherwise, so other caches stay valid)
+             (unsigned long long)maxwell_gmem_base, (unsigned long long)maxwell_gmem_size);
+    return v;
 }
 
 // Whether a translation depends on more than the binary and the key (debugging switches): not to be cached.

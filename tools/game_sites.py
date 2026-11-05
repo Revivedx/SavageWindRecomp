@@ -55,7 +55,28 @@ BLADE_LATERAL = ('bd4207e0 bd420be1 1e298821 1f0d0402 1f2d0400 1e202048 1e20cc40
 TRAVERSE = ('b9400028 2f00e400 36600008/fff8001f d65f03c0 a9bf7bfd 910003fd 12000042 12000083 94000000/fc000000 '
             '90000008/9f00001f 91000108/ffc003ff f9400108 b4000008/ff00001f bd431101 52a85908 1e202008 1e270102 1e22cc00 '
             '1e210800 a8c17bfd 14000000/fc000000 1e2e1001')
+# The game's input queries: isHold(pad, action) / isTrig(pad, action). Both load the action's pad mask from a table of 41
+# (cmp w1, #0x29) and test it against the pad object's held word (+0x11c) or pressed word (+0x10)
+PAD_QUERY = ('a9be7bfd a9014ff4 910003fd 7100a43f 90000008/9f00001f 91000108/ffc003ff 1a9f3029 aa0003f3 b8695914 '
+             '7100229f 7a421a84 54000001/ff00001f 2a1f03e0 94000000/fc000000 71000a9f 52800048 52800109 1a880128 '
+             '7200001f 1a941114')
+OPT_TWO_SITES = ('opt_two_redraw', 'opt_two_select', 'opt_two_state', 'opt_two_decide', 'opt_two_after', 'opt_two_row_state', 'opt_two_update_control', 'opt_two_initial_control', 'opt_two_left', 'opt_two_right', 'opt_two_text', 'opt_two_help', 'opt_two_pane_calc')
+
 SITES = [
+    # Experimental dual binding cells. Every pattern must match; no KNOWN fallback.
+    Site('opt_two_redraw', 'code', 'd10103ff a9017bfd a90257f6 a9034ff4 910043fd 90000009/9f00001f 91000129/ffc003ff b9405008', 0),
+    Site('opt_two_select', 'code', 'b976b008 7100051f 5400000b/ff00001f a9be7bfd a9014ff4 910003fd 9000000b/9f00001f 9100016b/ffc003ff', 0),
+    Site('opt_two_state', 'code', 'b976b008 7100051f 5400000b/ff00001f 9000000b/9f00001f 9100016b/ffc003ff f95b5c09 b940016a 5280060c f940056b f940012d b400000d/ff00001f b94051ae 6b0e015f 1a9f81ce 9b2c2dce b94011ce 710009df 54000000/ff00001f 710005df 54000000/ff00001f 3500000e/ff00001f 910061ad 14000000/fc000000 9100a1ad 14000000/fc000000 910081ad f94001ad eb0101bf 54000000/ff00001f 91002129 f1000508 54000001/ff00001f 14000000/fc000000 aa1f03ed 14000000/fc000000 d65f03c0 f9400120 17ffff20', 0),
+    Site('opt_two_decide', 'code', 'b976b008 7100051f 5400000b/ff00001f 9000000b/9f00001f 9100016b/ffc003ff f95b5c09 b940016a 5280060c f940056b f940012d b400000d/ff00001f b94051ae 6b0e015f 1a9f81ce 9b2c2dce b94011ce 710009df 54000000/ff00001f 710005df 54000000/ff00001f 3500000e/ff00001f 910061ad 14000000/fc000000 9100a1ad 14000000/fc000000 910081ad f94001ad eb0101bf 54000000/ff00001f 91002129 f1000508 54000001/ff00001f 14000000/fc000000 aa1f03ed 14000000/fc000000 d65f03c0 f9400120 14000001', 0),
+    Site('opt_two_after', 'code', 'b976b008 7100051f 5400000b/ff00001f 90000009/9f00001f 91000129/ffc003ff f95b5c0a b940012b 5280060c', 0),
+    Site('opt_two_row_state', 'code', '90000008/9f00001f 91000108/ffc003ff b9405009 b940010a 6b09015f f9400508 5280060a 1a9f8129 9b2a2128', 0),
+    Site('opt_two_update_control', 'code', 'f9400129 eb09011f 54000000/ff00001f b976c268 71000d1f 54000001/ff00001f f9401e68 3940e108', 0),
+    Site('opt_two_initial_control', 'code', 'f9400161 b4000001/ff00001f aa1303e0 94000000/fc000000 aa0003e1 aa1303e0 94000000/fc000000 b9405288', 0),
+    Site('opt_two_left', 'code', 'b936c268 f95b6668 f940068b b9405109 6b09015f 5280060a 1a9f8129 9b2a2d29 b9401129 34000009/ff00001f 7100053f 54000001/ff00001f b9405909', 0),
+    Site('opt_two_right', 'code', 'b936c268 f95b6668 f940068b b9405109 6b09015f 5280060a 1a9f8129 9b2a2d29 b9401129 34000009/ff00001f 7100053f 54000001/ff00001f 294b250a', 0),
+    Site('opt_two_text', 'code', 'b4000000/ff00001f d10583ff a9137bfd a91457fc a9154ff4 9104c3fd 90000009/9f00001f 910063e8', 0),
+    Site('opt_two_help', 'code', 'd100c3ff a9017bfd f90013f3 910043fd aa0003f3 94000000/fc000000 90000009/9f00001f 91000129/ffc003ff', 0),
+    Site('opt_two_pane_calc', 'code', 'd10243ff fd0023e8 f9002ff9 a904fbfd a9065ff8 a90757f6 a9084ff4 910123fd 39416008', 0),
     # The Options screen (tools/patches.py; runtime/ui/game_options.mm)
     Site('opt_create_rows', 'code', 'd10303ff a9067bfd a9076ffc a90867fa a9095ff8 a90a57f6 a90b4ff4 910183fd '
          '90000008/9f00001f b9400118/ffc003ff', 0),
@@ -136,8 +157,20 @@ SITES = [
     Site('persp_unproject_x', 'code', 'bd409800 f900003f 1e201004 1e214000 bd000820 bd409800 bd40ac01 bd400442', 18),
     # arrows' fall (tools/patches.py _arrow_gravity): the load of the gravity added to an arrow's velocity per update
     Site('arrow_fall_gravity', 'code', 'bd410a81 1e212849 bd410e81 1e21280a 94000000/fc000000 36000000/fff8001f f9404288 2d400500', 0),
+    # Experimental shield-surf takeoff grace (#305): contact update, boost removal and launch request.
+    Site('surf_contact', 'code', '3941d2a8 36080008/fff8001f bd4066a0 1e202008 5400000d/ff00001f bd403261 1e202028 5400000d/ff00001f', 0),
+    Site('surf_boost_remove', 'code', '1e203820 2f00e401 aa1403e1 1e216800 bd003260 0f016680 f94006a0 94000000/fc000000', 0),
+    Site('surf_jump_request', 'code', '36000000/fff8001f 52a82608 b9006668 b9008288 52800028 3900a288 2d488680 52800141', 0),
+    # a stale actor in the target manager (tools/patches.py _stale_actor_helper, _stale_actor_target; #391, #393): the
+    # helper that asks an actor for its link, and the camera target's inline copy of it
+    Site('stale_actor_helper', 'code', 'b4000000/ff00001f f942b808 f9404500 14000000/fc000000 d65f03c0', 0),
+    Site('stale_actor_target', 'code', 'f942ba68 f9404500 94000000/fc000000 12000008 390006e8 37000000/fff8001f 394002e8 35000008/ff00001f', 0),
     # the physics step's solver microsteps (tools/patches.py _solver_steps): the delta frame times 6
     Site('phys_solver_steps', 'code', '1e231002 1e3c1004 f9401a68 1e2c1009 1e220822 f9400108 1e202048 f9400514', 4),
+    # a keyframed body's angular velocity toward its target (tools/patches.py _kf_angle): the call that takes the angle
+    # of the turn left (hkQuaternion::getAngle, 2 acos(|w|))
+    Site('kf_angle', 'code', '0e612800 0e0e3c08 0e040d00 0f3f5400 0ea0a800 6e180400 4e221c00 6e211c00 3c9983a0 '
+         '94000000/fc000000 3cd883a6 1e2008c0', 9),
     # the sound system's frame (tools/patches.py _snd_frame_floor): the delta frame, at least 0.5, its timers' step
     Site('snd_frame_floor', 'code', '1e2c1001 1e212000 1e204c28 94000000/fc000000 b4000000/ff00001f bd415660 '
          'aa0003f4 7e21d800', 0),
@@ -180,6 +213,15 @@ SITES = [
          '94000000/fc000000 36000000/fff8001f', 0),
     Site('cam_reverse_y', 'code', '94000000/fc000000 36000000/fff8001f bd413660 1e214000 bd013660 a9424ff4 a9417bfd '
          '9100c3ff', 0),
+    Site('pc_button_group', 'code', 'd10183ff a9017bfd a90267fa a9035ff8 a90457f6 a9054ff4 910043fd '
+         'aa0003f3 f90003e0 f9401800 2a0403f8 2a0303f5 2a0203f6 aa0103f4 b9000bff', 0),
+    Site('pc_cursor_manager', 'code', 'd10143ff a9017bfd a9025ff8 a90357f6 a9044ff4 910043fd b9000be1 91006008', 0),
+    Site('pc_cursor_activate', 'code', 'a9bd7bfd f9000bf5 a9024ff4 910003fd f9402415 aa0103f3 aa0003f4 f9002401', 0),
+    Site('pc_pane_bounds', 'code', 'bd407020 2d4a0821 1e200824 bd408423 1e208825 1e230841 1e238842 1e2c1003', 0),
+    # Map focus helpers: retain marker targeting without controller-style recentering on hover.
+    Site('pc_map_focus', 'code', 'a9be7bfd f9000bf3 910003fd bd786800 aa0003f3 910063a1 bd786c01 91214000', 0),
+    Site('pc_map_focus_target', 'code', 'd100c3ff a9017bfd a9024ff4 910043fd aa0103f3 aa0003f4 97ffffdc aa1403e0', 0),
+    Site('pc_map_focus_now', 'code', 'd100c3ff a9017bfd a9024ff4 910043fd aa0103f3 aa0003f4 97ffffb3 aa1403e0', 0),
     # placed actors' traverse distance (tools/patches.py _traverse_scale): the scale the game multiplies every one by,
     # loaded from the actor debug manager, or 1 without it (Video > Draw distance)
     Site('traverse_scale', 'code', TRAVERSE, 13),
@@ -206,6 +248,36 @@ SITES = [
     # the terrain's distant trees (tools/patches.py _tree_ranges): the entry of their per-frame shader setup
     Site('tree_ranges', 'code', '90000008/9f00001f 91000108/ffc003ff f9400108 b4000008/ff00001f f9452908 '
          'b4000008/ff00001f 39406108 37280008/fff8001f 39402008 36000008/fff8001f d10143ff', 0),
+    # a shrine apparatus fetching its input (tools/patches.py _gyro_scene_actor; runtime/pc_gyro_scene.c)
+    Site('gyro_scene_actor', 'code', '2d59b28f 2d5ab689 94000000/fc000000 b5000000/ff00001f 9101d280 9101a281', 2),
+    # per-action bindings (tools/patches.py _act_query; runtime/hle/bindings.c): the two queries and the mask table
+    Site('act_hold', 'code', PAD_QUERY + ' b9411e68', 0),
+    Site('act_trig', 'code', PAD_QUERY + ' b9401268', 0),
+    Site('act_masks', 'ref', PAD_QUERY + ' b9401268', 5),
+    # the store of an equipped weapon's, bow's or shield's durability, x100 (tools/patches.py _no_wear; from #296: the
+    # setter 1.8.2 0x7000c809e8 finds the equipped item of a type w22 in the pouch and stores the new value w20)
+    Site('no_wear_store', 'code', 'b9002174 5288fb08 72a00088 38686aa8 35000008/ff00001f 2a1403e0 2a1f03e2 '
+         '94000000/fc000000', 0),
+    # the weapon actor's own durability, x100 (tools/patches.py _no_wear_hit): a hit takes its cost w9 off the value w8
+    Site('no_wear_hit', 'code', '4b090108 0aa87d08 1e220101 b9000268 1e212000 1a9f07e0 14000000/fc000000 f9400288', 0),
+    # where the weapon's update calls that (no_wear_hit's function, a virtual method that every damage goes through):
+    # the instruction after the call, the return address that tells a weapon's wear from damage to Link or an enemy
+    Site('no_wear_ret', 'code', 'f9400288 2a0003f5 aa1403e0 f9415d08 d63f0100 b5000000/ff00001f 52800036 '
+         '14000000/fc000000', 0),
+    # Link's damage handling storing his new life, in quarter hearts (tools/patches.py _link_life): at its end, and on
+    # the path that takes one quarter off
+    Site('link_life_store', 'code', 'b90002b9 f9400300 94000000/fc000000 6b00033f 5400000d/ff00001f f9400300 b9400ff5 '
+         '94000000/fc000000', 0),
+    Site('link_life_tick', 'code', 'b90002a8 1e212000 1a9f07e0 14000000/fc000000 2a1f03fa 39715288 36080008/fff8001f '
+         'bd42e660', 0),
+    # the stamina setter's store, PlayerInfo +0xa4 (tools/patches.py _stamina)
+    Site('stamina_store', 'code', '1e204008 94000000/fc000000 bd00a668 f9400ff3 a940fbfd fc4207e8 d65f03c0', 2),
+    # the pouch taking arrows off for the player's bow (tools/patches.py _remove_arrows; Accessibility > Infinite arrows)
+    Site('pouch_remove_arrows', 'code', 'd101c3ff a9017bfd a9026ffc a90367fa a9045ff8 a90557f6 a9064ff4 910043fd '
+         '90000008/9f00001f aa0003f3 f9400108/ffc003ff aa0103e0', 0),
+    # sead::LookAtCamera::doUpdateMatrix (tools/patches.py _lookat_update): its first load of the eye (+0x38); eye,
+    # at (+0x44) and up (+0x50) make the view matrix written to x1 (free camera, runtime/hle/freecam.c)
+    Site('lookat_update', 'code', '2d470801 2d480c00 1e232020 2d491404 1e240440 1e250400 54000000/ff00001f 1e233823', 0),
     Site('main_data', 'data', '', 0),
     Site('main_end', 'end', '', 0),
 ]
@@ -216,8 +288,17 @@ SITES = [
 # Without them the mouse turns the camera through the right stick, as before (runtime/hle/input.c); without the
 # second group it turns it without the game's camera inversion options.
 OPTIONAL_GROUPS = [
+    OPT_TWO_SITES,
+    ('lookat_update',),  # (the free camera: without it Home does nothing)
+    ('gyro_scene_actor',),
+    ('surf_contact', 'surf_boost_remove', 'surf_jump_request'),
+    ('stale_actor_helper', 'stale_actor_target'),
     ('quick_menu_capture_alpha',),
+    ('kf_angle',),
     ('yaz0_stream', 'yaz0_stream_ret'),
+    ('pc_map_focus', 'pc_map_focus_target', 'pc_map_focus_now'),
+    ('pc_button_group',),
+    ('pc_cursor_manager', 'pc_cursor_activate', 'pc_pane_bounds'),
     ('cam_stick', 'cam_pitch_chase', 'cam_pitch_surf', 'cam_pitch_wakeboard', 'cam_pitch_aim', 'cam_pitch_item'),
     ('cam_reverse_x', 'cam_reverse_y'),
     ('traverse_scale', 'traverse_scale_default'),
@@ -226,6 +307,12 @@ OPTIONAL_GROUPS = [
      'grass_blade_lateral_near',
      'grass_blade_lateral_far'),
     ('tree_ranges',),
+    ('act_hold', 'act_trig', 'act_masks'),
+    ('pouch_remove_arrows',),
+    ('no_wear_store',),
+    ('no_wear_hit', 'no_wear_ret'),
+    ('link_life_store', 'link_life_tick'),
+    ('stamina_store',),
 ]
 OPTIONAL = {n for g in OPTIONAL_GROUPS for n in g}
 
@@ -290,6 +377,20 @@ KNOWN = {
         'main_end': 0x7001d37000,
     },
     '1.9.0': {
+        'opt_two_redraw': 0x7000e2eed8,
+        'opt_two_select': 0x7000e3047c,
+        'opt_two_state': 0x7000e305d0,
+        'opt_two_decide': 0x7000e30668,
+        'opt_two_after': 0x7000e30a90,
+        'opt_two_row_state': 0x7000e302e4,
+        'opt_two_update_control': 0x7000e2f7c8,
+        'opt_two_initial_control': 0x7000e3019c,
+        'opt_two_left': 0x7000e2fa50,
+        'opt_two_right': 0x7000e2fae4,
+        'opt_two_text': 0x7000e30ee0,
+        'opt_two_help': 0x7000e30550,
+        'opt_two_pane_calc': 0x70000276a0,
+        'lookat_update': 0x7000eb2d5c,
         'yaz0_stream': 0x700131d674,
         'yaz0_stream_ret': 0x700131d7e8,
         'opt_create_rows': 0x7000e2f0a8,
@@ -326,7 +427,13 @@ KNOWN = {
         'gui_speed': 0x7001280ee8,
         'quick_menu_capture_alpha': 0x7000e26a38,
         'arrow_fall_gravity': 0x70005ee734,
+        'surf_contact': 0x70011e9e74,
+        'surf_boost_remove': 0x70011e9e94,
+        'surf_jump_request': 0x70011ea3d4,
+        'stale_actor_helper': 0x700120bc40,
+        'stale_actor_target': 0x7000dea400,
         'phys_solver_steps': 0x700156f930,
+        'kf_angle': 0x70012d57fc,
         'snd_frame_floor': 0x7001551004,
         'persp_matrix': 0x7000eb4a50,
         'persp_matrix_offset': 0x7000eb4a58,
@@ -363,6 +470,16 @@ KNOWN = {
         'grass_blade_lateral_near': 0x70013a8f0c,
         'grass_blade_lateral_far': 0x70013a8f20,
         'tree_ranges': 0x70013c94ac,
+        'act_hold': 0x7000d16f0c,
+        'act_trig': 0x7000d16f74,
+        'act_masks': 0x70016d89b4,
+        'pouch_remove_arrows': 0x7000d93814,
+        'no_wear_store': 0x7000d93d50,
+        'no_wear_hit': 0x7000b9542c,
+        'no_wear_ret': 0x70007b09f4,
+        'link_life_store': 0x7000cc4e70,
+        'link_life_tick': 0x7000cc4da4,
+        'stamina_store': 0x7000cc7430,
         'main_data': 0x7001b7a000,
         'main_end': 0x7001e98000,
     },
@@ -605,6 +722,13 @@ def resolve(main, known=None, log=None):
             found, hits = main.locate(s)
         except SiteError as e:
             problems.append(f'{s.name}: {e}')
+            continue
+        # This experiment changes native object routing. A stale KNOWN address
+        # must never turn it on after a failed signature check.
+        if s.name in OPT_TWO_SITES and (found is None or
+                                      (known and s.name in known and found != known[s.name])):
+            if log:
+                log(f'game_sites: {s.name}: spike signature did not match')
             continue
         k = (known or {}).get(s.name)
         if found is not None and k is not None and found != k:

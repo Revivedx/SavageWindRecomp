@@ -6,6 +6,7 @@
 #include <execinfo.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <dirent.h>
 #include <sched.h>
 #include <signal.h>
 #include <stdio.h>
@@ -38,6 +39,7 @@ bool plat_reserve_guest(uint64_t lo, uint64_t hi) {
 
 // Fresh zero pages over the whole window (the old ones are released at once).
 long plat_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, size_t max) { return -1; }  // (not tracked)
+int plat_any_written(uint64_t addr, uint64_t size) { return -1; }
 
 bool plat_reset_guest(uint64_t lo, uint64_t hi) {
     return mmap((void *)(uintptr_t)lo, hi - lo, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED,
@@ -68,7 +70,54 @@ void plat_sleep_until_ns(uint64_t t) {
     while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL) == EINTR) {}
 }
 
-void plat_cpu_placement(void) {}  // (one logical processor per core: measured on Windows only)
+void plat_wait_until_ns(uint64_t t) { plat_sleep_until_ns(t); }  // (clock_nanosleep doesn't spin)
+
+int plat_cpu_count(void) {
+    cpu_set_t s;
+    if (sched_getaffinity(0, sizeof s, &s) == 0 && CPU_COUNT(&s) > 0) return CPU_COUNT(&s);
+    return SDL_GetNumLogicalCPUCores();
+}
+
+// The lowest logical processor of cpu's core (its SMT siblings) that the process may run on.
+static int core_first(int cpu, const cpu_set_t *all) {
+    char path[96], list[256];
+    snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/topology/thread_siblings_list", cpu);
+    FILE *f = fopen(path, "r");
+    if (!f) return cpu;
+    bool got = fgets(list, sizeof list, f) != NULL;
+    fclose(f);
+    int first = cpu;
+    for (char *p = list; got && *p && *p != '\n';) {  // "0,8" or "0-1"
+        char *end;
+        long a = strtol(p, &end, 10), b = a;
+        if (end == p) break;
+        if (*end == '-') b = strtol(end + 1, &end, 10);
+        for (long i = a; i <= b && i < CPU_SETSIZE; i++)
+            if (i < first && CPU_ISSET((int)i, all)) first = (int)i;
+        p = *end == ',' ? end + 1 : end;
+    }
+    return first;
+}
+
+// One logical processor per physical core, as on Windows (runtime/platform/windows.c): the first of each core's
+// SMT siblings within the process's affinity, set on every thread the process has so far (later ones inherit it).
+void plat_cpu_placement(void) {
+    cpu_set_t all, one;
+    if (sched_getaffinity(0, sizeof all, &all)) return;
+    CPU_ZERO(&one);
+    int logical = CPU_COUNT(&all), cores = 0;
+    for (int c = 0; c < CPU_SETSIZE; c++)
+        if (CPU_ISSET(c, &all) && core_first(c, &all) == c) CPU_SET(c, &one), cores++;
+    const char *x = getenv("SAVAGEWIND_ONE_PER_CORE");
+    bool on = cores && (x ? atoi(x) != 0 : plat_one_per_core_default(cores, logical));
+    fprintf(stderr, "[cpu] %d cores, %d logical processors: %s\n", cores, logical,
+            on ? "one logical processor per core" : "all logical processors");
+    if (!on || cores == logical) return;
+    DIR *d = opendir("/proc/self/task");
+    for (struct dirent *e; d && (e = readdir(d));)
+        if (e->d_name[0] != '.') sched_setaffinity((pid_t)atoi(e->d_name), sizeof one, &one);
+    if (d) closedir(d);
+}
 
 // Real-time scheduling where the user may have it (rtkit / limits.conf), else just a higher priority: keeps the
 // vsync thread on time while the guest threads load every core.
@@ -261,8 +310,19 @@ PlatProc plat_spawn(const char *const argv[], const char *log_path, bool append_
     posix_spawnattr_init(&at);
     posix_spawnattr_setflags(&at, POSIX_SPAWN_SETPGROUP);
     posix_spawnattr_setpgroup(&at, 0);
+    // The child's environment without LD_PRELOAD: Steam sets it to its x86 overlay libraries, which an aarch64 swgen or
+    // compiler cannot load, and ld.so then prints "wrong ELF class" into the output the launcher shows as the error
+    // (#413). None of these children (the generator, the compilers) needs the overlay.
+    size_t n = 0;
+    while (environ[n]) n++;
+    char **env = malloc((n + 1) * sizeof *env);
+    size_t k = 0;
+    for (size_t i = 0; env && i < n; i++)
+        if (strncmp(environ[i], "LD_PRELOAD=", 11)) env[k++] = environ[i];
+    if (env) env[k] = NULL;
     pid_t pid;
-    int rc = posix_spawn(&pid, argv[0], &fa, &at, (char *const *)argv, environ);
+    int rc = posix_spawn(&pid, argv[0], &fa, &at, (char *const *)argv, env ? env : environ);
+    free(env);
     posix_spawnattr_destroy(&at);
     posix_spawn_file_actions_destroy(&fa);
     return rc ? 0 : (PlatProc)pid;
@@ -290,3 +350,5 @@ bool plat_remove_tree(const char *dir) { return nftw(dir, rm_entry, 16, FTW_DEPT
 // End the process at once, skipping the library teardown: as on Windows, the GPU driver's threads crashed in exit()
 // while the game's threads still submitted work.
 void plat_terminate(void) { _exit(0); }
+
+bool plat_guest_sparse_heap_enabled(void) { return false; }

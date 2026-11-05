@@ -38,10 +38,13 @@ rm -rf "$APPDIR" && mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib"
 cp "$B/savagewind" "$APPDIR/usr/bin/"
 llvm-strip --strip-debug "$APPDIR/usr/bin/savagewind"  # (symbols stay: crash backtraces name functions)
 cp docs/icon/icon_1024.png "$APPDIR/usr/bin/icon.png"
+cp runtime/nvn/vulkan/vk_pipelines.seed "$APPDIR/usr/bin/"  # (the pipeline seed the precompilation reads: hashes and render state, nothing of the game)
 cp third_party/fonts/FiraSans/FiraSans-SemiBold.ttf third_party/fonts/FiraSans/FiraSans-Medium.ttf "$APPDIR/usr/bin/"  # (menus, OFL)
 cp third_party/fonts/FiraSans/OFL.txt "$APPDIR/usr/bin/FiraSans-OFL.txt"
 cp third_party/fonts/NotoSansThai/NotoSansThai-Medium.ttf "$APPDIR/usr/bin/"  # (Thai menus, OFL)
 cp third_party/fonts/NotoSansThai/OFL.txt "$APPDIR/usr/bin/NotoSansThai-OFL.txt"
+cp third_party/fonts/NotoSansHebrew/NotoSansHebrew-Medium.ttf "$APPDIR/usr/bin/"  # (Hebrew menus, OFL)
+cp third_party/fonts/NotoSansHebrew/OFL.txt "$APPDIR/usr/bin/NotoSansHebrew-OFL.txt"
 cp third_party/FidelityFX/LICENSE.txt "$APPDIR/usr/bin/FidelityFX-LICENSE.txt"  # (AMD FidelityFX SDK, MIT: frame generation)
 mkdir "$APPDIR/usr/bin/colour-luts" && cp third_party/luts/*.cube third_party/luts/README.md "$APPDIR/usr/bin/colour-luts/"  # (CC0: Video > Colour)
 cp README.md LICENSE "$APPDIR/usr/bin/"  # (licenses and source links of the bundled components: README "License")

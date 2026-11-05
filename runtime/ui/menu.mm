@@ -14,10 +14,12 @@
 
 #include "i18n.h"
 #include "imgui.h"
+#include "gyro_drag.h"
 #include "option_rows.h"
 #include "saves_tab.h"
 #include "imgui_internal.h"  // (NavCursorVisible)
 #include "osk.h"
+#include "console.h"
 #ifdef __APPLE__
 #include "imgui_impl_metal.h"
 #else
@@ -35,10 +37,12 @@ extern "C" {
 }
 #include "menu.h"
 void input_reset(void);
+void input_pc_escape(bool down);
 void controls_bindings_draw(float scale);  // controls_ui.mm
 #include "../input_bind.h"
 #include "../perfmon.h"
 #include "../paths.h"
+#include "../pc_cursor.h"
 }
 
 // ------------------------------------------------------------------ state shared with the main thread
@@ -155,27 +159,59 @@ static int g_kbd_max = 8;
 // closed it is kept from the game
 static std::atomic<bool> g_sizes{false};
 static std::atomic<uint64_t> g_sizes_hold{0};  // SDL_GetTicks()
+static std::atomic<bool> g_sizes_eat_up{false};  // the list closed with the left button down: its release isn't the game's
+extern "C" bool menu_size_list_up(void) { return g_sizes.load(); }
 extern "C" void game_options_size_picked(void);  // game_options.mm (the row shows the new size)
 extern "C" void menu_size_list_open(void) {
     input_reset();
     g_sizes = true;
 }
-static bool capturing() { return g_open.load() || g_kbd.load() == 1 || g_sizes.load(); }
+static bool capturing() { return g_open.load() || g_kbd.load() == 1 || g_sizes.load() || console_is_open(); }
 // The game gets no input while this is true (runtime/hle/input.c): menu or name entry up, or a binding capture begun
 // from the game's Options screen.
 extern "C" bool menu_input_captured(void) {
     return capturing() || game_options_input_hold() || SDL_GetTicks() < g_sizes_hold.load();
 }
 
-// In game the settings are the game's own Options screen (game_options.mm): F1, Esc and the controller's home button no
-// longer open this menu (SAVAGEWIND_OVERLAY=1 brings it back). Esc frees the mouse cursor instead, a click in the
+// Esc opens the game's pause screen or backs out of a menu. F2 frees the mouse cursor; a click in the
 // window holds it again (runtime/hle/input.c).
 static bool overlay_enabled(void) {
     static const bool on = getenv("SAVAGEWIND_OVERLAY") && *getenv("SAVAGEWIND_OVERLAY") != '0';
     return on;
 }
 static std::atomic<bool> g_cursor_free{false};
-extern "C" bool menu_cursor_free(void) { return g_cursor_free.load(); }
+extern "C" bool menu_cursor_free(void) { return g_cursor_free.load() || pc_gyro_scene_active(); }
+
+// The console (console.mm): ` or F12 opens and closes it; the game gets no input meanwhile (capturing)
+static void set_console(bool open) {
+    if (open == console_is_open()) return;
+    console_set_open(open);
+    input_reset();  // nothing held leaks into the game
+}
+// Ctrl+V: the system clipboard as typed text (ImGui has a clipboard of its own, which is not the system's). One line,
+// at most 1000 bytes, in pieces that fit a text event, each ending on a whole character.
+static void console_paste(void) {
+    char *clip = SDL_GetClipboardText();
+    if (!clip) return;
+    const char *p = clip;
+    int total = 0;
+    while (*p && total < 1000) {
+        QEvent q = {};
+        q.kind = QEvent::TEXT;
+        size_t n = 0;
+        while (*p && n + 4 < sizeof q.text && total < 1000) {
+            unsigned char c = (unsigned char)*p;
+            size_t len = c < 0x80 ? 1 : c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC0 ? 2 : 1;
+            if (strnlen(p, len) < len) { p += strnlen(p, len); break; }  // (cut off in the middle of a character)
+            if (c < 0x20 || c == 0x7F) { if (n && q.text[n - 1] != ' ') q.text[n++] = ' '; p++; total++; continue; }
+            memcpy(q.text + n, p, len);
+            n += len; p += len; total += (int)len;
+        }
+        q.text[n] = 0;
+        if (n) push(q);
+    }
+    SDL_free(clip);
+}
 
 bool menu_handle_event(const SDL_Event *e) {
     static bool back_down, start_down;
@@ -200,17 +236,40 @@ bool menu_handle_event(const SDL_Event *e) {
         return true;
     }
     // typing (a text field, the on-screen keyboard, the name entry): keys are text, not menu shortcuts
-    bool typing = g_kbd.load() == 1 || (g_open.load() && g_text_busy.load());
-    if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN && g_cursor_free.load() && !capturing()) {
+    bool typing = g_kbd.load() == 1 || console_is_open() || (g_open.load() && g_text_busy.load());
+    if (e->type == SDL_EVENT_KEY_UP && e->key.scancode == SDL_SCANCODE_ESCAPE)
+        input_pc_escape(false);
+    if (pc_cursor_enabled() && !capturing() && !typing && !game_options_input_hold() &&
+        (e->type == SDL_EVENT_KEY_DOWN || e->type == SDL_EVENT_KEY_UP) && e->key.scancode == SDL_SCANCODE_ESCAPE) {
+        if (!e->key.repeat) input_pc_escape(e->type == SDL_EVENT_KEY_DOWN);
+        return true;
+    }
+    if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN && g_cursor_free.load() && !capturing() && !pc_cursor_active() && !pc_gyro_scene_active()) {
         g_cursor_free = false;  // (the click only takes the cursor back)
         return true;
     }
     switch (e->type) {
     case SDL_EVENT_KEY_DOWN:
+        if (!e->key.repeat && (e->key.scancode == SDL_SCANCODE_GRAVE || e->key.scancode == SDL_SCANCODE_F12) &&
+            !g_open.load() && g_kbd.load() != 1 && !g_sizes.load()) {
+            set_console(!console_is_open());
+            return true;
+        }
+        if (console_is_open()) {
+            if (e->key.scancode == SDL_SCANCODE_ESCAPE) { if (!e->key.repeat) set_console(false); return true; }
+            if (e->key.scancode == SDL_SCANCODE_V && (e->key.mod & (SDL_KMOD_CTRL | SDL_KMOD_GUI))) {
+                if (!e->key.repeat) console_paste();
+                return true;
+            }
+        }
+        if (!e->key.repeat && pc_cursor_enabled() && e->key.scancode == SDL_SCANCODE_F2 && !typing) {
+            g_cursor_free = !g_cursor_free.load();
+            return true;
+        }
         if (!e->key.repeat && (e->key.scancode == SDL_SCANCODE_F1 ||
-                               (e->key.scancode == SDL_SCANCODE_ESCAPE && !g_open.load()))) {
+                               (!pc_cursor_enabled() && e->key.scancode == SDL_SCANCODE_ESCAPE && !g_open.load()))) {
             if (!overlay_enabled()) {
-                if (e->key.scancode == SDL_SCANCODE_ESCAPE && !typing) g_cursor_free = !g_cursor_free.load();
+                if (e->key.scancode == (pc_cursor_enabled() ? SDL_SCANCODE_F2 : SDL_SCANCODE_ESCAPE) && !typing) g_cursor_free = !g_cursor_free.load();
                 return true;
             }
             if (!typing) set_open(!g_open.load());  // (Esc with the menu open goes to ImGui below: it cancels a field)
@@ -252,6 +311,9 @@ bool menu_handle_event(const SDL_Event *e) {
     }
     case SDL_EVENT_TEXT_INPUT:
         if (!capturing()) return false;
+        if (console_is_open() && (!strcmp(e->text.text, "`") || !strcmp(e->text.text, "^") || !strcmp(e->text.text, "~") ||
+                                  !strcmp(e->text.text, "\xC2\xB0")))
+            return true;  // (the key that opens the console is no text; ^ is that key on a German keyboard)
         { QEvent q = {}; q.kind = QEvent::TEXT; strlcpy(q.text, e->text.text, sizeof q.text); push(q); }
         return true;
     case SDL_EVENT_GAMEPAD_BUTTON_DOWN: case SDL_EVENT_GAMEPAD_BUTTON_UP: {
@@ -294,11 +356,14 @@ bool menu_handle_event(const SDL_Event *e) {
         return true;
     }
     case SDL_EVENT_MOUSE_MOTION:
-        if (!capturing()) return false;
+        if (!capturing() && !pc_gyro_scene_active()) return false;
         { QEvent q = {}; q.kind = QEvent::MOUSE_POS; q.x = e->motion.x * g_pixel_density; q.y = e->motion.y * g_pixel_density; push(q); }
         return true;
     case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_BUTTON_UP:
-        if (!capturing()) return false;
+        if (e->type == SDL_EVENT_MOUSE_BUTTON_UP && e->button.button == SDL_BUTTON_LEFT && g_sizes_eat_up.exchange(false) &&
+            !capturing())
+            return true;
+        if (!capturing() && !pc_gyro_scene_active()) return false;
         {
             QEvent q = {};
             q.kind = QEvent::MOUSE_BUTTON;
@@ -308,7 +373,7 @@ bool menu_handle_event(const SDL_Event *e) {
         }
         return true;
     case SDL_EVENT_MOUSE_WHEEL:
-        if (!capturing()) return false;
+        if (!capturing() && !pc_gyro_scene_active()) return false;
         { QEvent q = {}; q.kind = QEvent::WHEEL; q.x = e->wheel.x; q.y = e->wheel.y; push(q); }
         return true;
     default:
@@ -326,6 +391,8 @@ void menu_apply_window_requests(void *win) {
         else SDL_StopTextInput(w);
         text_input = want_text;
     }
+    char *copy;
+    if (console_take_copy(&copy)) { SDL_SetClipboardText(copy); free(copy); }
     // (the window was made at its size and fullscreen mode: ui_window_init)
     uint64_t at = g_size_apply_at.load();
     if (at && SDL_GetTicks() >= at && g_size_apply_at.compare_exchange_strong(at, 0)) g_want_window_apply.store(true);
@@ -337,6 +404,7 @@ void menu_apply_window_requests(void *win) {
 static bool g_inited;
 static ImGuiContext *g_ctx;  // ours: the start screen (back to it after a reboot) has its own context
 static ImFont *g_font, *g_font_big;
+static ImFont *g_font_mono;  // the console (columns line up); NULL: the normal font
 static ImFont *g_menu_font, *g_menu_font_big;  // the menu window (Fira Sans); everything else keeps g_font
 static int g_tab, g_tab_request = -2;  // (-2: no request; -1 is the Prelaunch tab)
 static int g_focus_tab = -99;  // put the nav cursor on this tab next frame (-100: the selected one; -99: none)
@@ -388,7 +456,7 @@ static int g_fonts_lang = -1;
 static void load_fonts(void) {
     ImGuiIO &io = ImGui::GetIO();
     io.Fonts->Clear();
-    g_font = g_font_big = g_menu_font = g_menu_font_big = NULL;
+    g_font = g_font_big = g_menu_font = g_menu_font_big = g_font_mono = NULL;
     g_fonts_lang = ui_lang_generation();
     ImFontConfig cfg;
     cfg.OversampleH = 2;
@@ -405,6 +473,15 @@ static void load_fonts(void) {
         else continue;
         if (!g_font) g_font = add(p, 34, cfg);
         if (g_font && !g_font_big) { ImFontConfig b = cfg; b.FontNo = 0; g_font_big = add(p, 56, b); }
+    }
+    const char *mono_paths[] = {"/System/Library/Fonts/Menlo.ttc", "C:/Windows/Fonts/consola.ttf",
+                                "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+                                "/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono.ttf"};
+    for (const char *p : mono_paths) {
+        if (FILE *f = fopen(p, "rb")) fclose(f);
+        else continue;
+        g_font_mono = add(p, 28, cfg);
+        if (g_font_mono) break;
     }
     // the menu window itself: Fira Sans, as on the start screen (shipped, OFL) - Medium for the rows, SemiBold for the
     // titles - at its Settings window's sizes; the FPS counter, overlays and on-screen keyboard keep the fonts above
@@ -695,6 +772,24 @@ static void tab_display(void) {
                        "conversations keep theirs.", false))
             g_settings.fov = fov[cur];
     }
+    {   // HUD size (runtime/nvn/hud_scale.h)
+        static const int sizes[] = HUD_SIZE_CHOICES;
+        enum { NV = sizeof sizes / sizeof sizes[0] };
+        static char names_buf[NV][16];
+        const char *names[NV];
+        int cur = 0, def = 0;
+        for (int i = 0; i < NV; i++) {
+            snprintf(names_buf[i], sizeof names_buf[i], "%d%%", sizes[i]);
+            names[i] = names_buf[i];
+            if (sizes[i] == 100) def = i;
+        }
+        cur = def;
+        for (int i = 0; i < NV; i++)
+            if (sizes[i] == g_settings.hud_size) cur = i;
+        if (opt_choice("HUD size", &cur, names, NV, def,
+                       "How big the hearts, stamina, minimap and the rest of the HUD are. Each part stays in its corner.", false))
+            g_settings.hud_size = sizes[cur];
+    }
     {   // Draw distance (runtime/draw_distance.c)
         static const char *const names[DRAWDIST_COUNT] = {"Original", "Medium", "High"};  // (DRAWDIST_*)
         int cur = g_settings.draw_distance;
@@ -765,6 +860,9 @@ static void tab_display(void) {
         // game's own 1920 x 1080 image to a bigger window.
         std::string fsr3 = upscaler_available(UPSCALE_FSR3) ? std::string(tr("AMD FSR 3"))
                                                             : std::string(tr("FSR 3")) + " " + tr("(coming soon)");
+        std::string fsr4 = upscaler_available(UPSCALE_FSR4)
+                               ? std::string(tr("AMD FSR 4"))
+                               : std::string(tr("FSR 4")) + " " + tr(fsr4_offered() ? "(coming soon)" : "(AMD Radeon only)");
         std::string dlss = upscaler_available(UPSCALE_DLSS) ? std::string(tr("DLSS")) :
                            std::string(tr("DLSS")) + " " + tr("(NVIDIA RTX only)");
 #ifdef __APPLE__
@@ -774,8 +872,8 @@ static void tab_display(void) {
                          "scaling. MetalFX: Apple's upscaler, sharper.\n\nRendering below the window's size (the modes "
                          "below) is coming in a later version.";
 #else
-        const char *ups[] = {"Off", "AMD FSR 1", fsr3.c_str(), dlss.c_str()};
-        static const int ups_value[] = {UPSCALE_OFF, UPSCALE_FSR1, UPSCALE_FSR3, UPSCALE_DLSS};
+        const char *ups[] = {"Off", "AMD FSR 1", fsr3.c_str(), fsr4.c_str(), dlss.c_str()};
+        static const int ups_value[] = {UPSCALE_OFF, UPSCALE_FSR1, UPSCALE_FSR3, UPSCALE_FSR4, UPSCALE_DLSS};
         // (the FSR 3 paragraph on its own: the first one keeps its translations)
         static std::string uds;
         uds = std::string(tr("Off: the 3D image renders at the window's resolution. AMD FSR 1: it renders smaller (the mode "
@@ -787,6 +885,9 @@ static void tab_display(void) {
                         "has no effect with it). Sharpening sets its own sharpening. NVIDIA DLSS (NVIDIA RTX graphics "
                         "cards) is coming in a later version.")
                    : tr("AMD FSR 3 and NVIDIA DLSS (NVIDIA RTX graphics cards) are coming in a later version."));
+        if (upscaler_available(UPSCALE_FSR4))  // (its own paragraph: the ones above keep their translations)
+            uds += std::string("\n\n") + tr("AMD FSR 4: like FSR 3, but AMD's machine learning rebuilds the image. For AMD Radeon "
+                                              "graphics cards on Windows. Sharpening sets its own sharpening.");
         const char *ud = uds.c_str();
 #endif
         enum { NU = sizeof ups_value / sizeof ups_value[0] };
@@ -841,6 +942,11 @@ static void tab_display(void) {
                      "smooth and stop shimmering; slightly softer, use it with Sharpening.");
         opt_choice("Anti-aliasing", &g_settings.antialias, aa, 3, AA_OFF, d.c_str());
     }
+    // the game's own FXAA (vulkan/exec.c fxaa_patch)
+    opt_toggle("Game's FXAA", &g_settings.game_fxaa, true,
+               "The game's own FXAA, which smooths edges as the 3D image is drawn into the final picture, as on the "
+               "console. Off: a sharper image with more jagged edges; use it to replace FXAA with SMAA or TAA above, "
+               "or to keep the image crisp at a high resolution.");
 #endif
 #ifndef __APPLE__
     {   // Anisotropic filtering and sharpening (Vulkan: vulkan/textures.c sampler_aniso, vulkan/exec.c scene_post)
@@ -862,17 +968,27 @@ static void tab_display(void) {
                    "game's own frames. Fast moves can leave faint smears around Link and what moves on its own.");
     }
 #endif
-    opt_toggle("Asynchronous shaders", &g_settings.async_shaders, false,
-               "Off: the game waits for each new shader to compile, a short stutter the first time an effect "
-               "appears, and everything is drawn. On: no waiting, but what needs a shader still compiling is skipped "
-               "meanwhile: effects pop in late, and pictures the game draws only once (the save file's screenshot) "
-               "can come out as garbage.");
+    opt_toggle("Asynchronous shaders", &g_settings.async_shaders, true,
+               "On (default): the game never waits for a new shader to compile: what needs one still compiling is "
+               "left out until it is ready, usually one frame (an effect pops in a frame late). Pictures the game "
+               "draws only once (the save file's screenshot, the pause menu's background, terrain tiles) still wait "
+               "for theirs. Off: every draw waits for its shader, a short stutter the first time an effect appears.");
     // shadow resolution (its own block)
     static const char *shadow[] = {"Console (896)", "High (2048)", "Ultra (4096)", "Extreme (8192)"};
     opt_choice("Shadow resolution", &g_settings.shadow_res, shadow, SHADOW_COUNT, SHADOW_CONSOLE,
                "The size of the maps the sun's shadows are drawn from. Console: the game's own, 896 x 896. High (2048), "
                "Ultra (4096) and Extreme (8192) give sharper shadow edges (Link, trees, buildings) for more GPU time "
                "and video memory (Ultra: about 100 MB, Extreme: about 400 MB).");
+    {   // the game's font sheets enlarged (runtime/nvn/text_upscale.c): read when the game starts
+        static const char *text[] = {"Off", "2x", "4x"};
+        int cur = g_settings.sharper_text / 2;
+        if (opt_choice("Sharper text", &cur, text, 3, 0,
+                       "Makes the game's letters sharper on 1440p and 4K screens. It takes effect the next time you start "
+                       "the game. This is an upscale made on your computer from the game's own letters, not Nintendo's "
+                       "original art: the shapes are kept, but they aren't exactly as drawn. 4x takes a moment longer to "
+                       "start and uses more video memory.", false))
+            g_settings.sharper_text = cur * 2;
+    }
 #ifndef __APPLE__
     tab_colour();
 #endif
@@ -963,8 +1079,10 @@ static void tab_about(void) {
     hint("The d-pad (and the arrow keys) also move like the left stick while the stick is at rest.");
     ImGui::Spacing();
     header("Mouse");
+    opt_toggle("PC mouse pointer", &g_settings.pc_cursor, true,
+               "Point and click in menus and map. Esc pauses/goes back; F2 frees the cursor.");
     toggle("Mouse camera", &g_settings.mouse_camera);
-    hint("The mouse turns the camera. While you play, the cursor stays in the window; Esc or F1 frees it.");
+    hint("The mouse turns the camera. Pointer off: Esc frees it; pointer on: F2 frees it.");
     float sens = roundf(g_settings.mouse_sens * 100);
     if (opt_slider("Mouse sensitivity", &sens, 10, 1000, 5, MOUSE_SENS_DEFAULT * 100, "%g%%", "How fast the mouse turns the camera."))
         g_settings.mouse_sens = sens / 100.0f;
@@ -975,6 +1093,7 @@ static void tab_about(void) {
     toggle("Invert mouse Y", &g_settings.mouse_invert_y);
     ImGui::Spacing();
     header("Controls");
+    opt_toggle("Controller rumble", &g_settings.rumble, true, "Vibrate the controller during play.");
     controls_bindings_draw(ImGui::GetFontSize() / 34);
     ImGui::Spacing();
     header("Menu");
@@ -1044,6 +1163,7 @@ static void perf_overlay_draw(ImGuiIO &io, float scale) {
         case UPSCALE_METALFX: line += tr("MetalFX"); break;
         case UPSCALE_FSR1: line += tr("FSR 1"); break;
         case UPSCALE_FSR3: line += tr("FSR 3"); break;
+        case UPSCALE_FSR4: line += tr("FSR 4"); break;
         default: line += tr("Off");
     }
     int q = g_settings.upscale_quality;
@@ -1054,7 +1174,7 @@ static void perf_overlay_draw(ImGuiIO &io, float scale) {
     }
     // (FSR 3 anti-aliases the scene itself: the setting does nothing then)
     int aa = rt_antialias();
-    line += std::string(" | ") + tr("Anti-aliasing") + ": " + (rt_fsr3() ? tr("FSR 3") : aa == AA_TAA ? tr("TAA") : aa == AA_SMAA ? tr("SMAA") : tr("Off"));
+    line += std::string(" | ") + tr("Anti-aliasing") + ": " + (rt_fsr4() ? tr("FSR 4") : rt_fsr3() ? tr("FSR 3") : aa == AA_TAA ? tr("TAA") : aa == AA_SMAA ? tr("SMAA") : tr("Off"));
     ImGui::TextDisabled("%s", line.c_str());
     line.clear();
 #ifndef __APPLE__
@@ -1167,7 +1287,8 @@ static void size_list_draw(ImGuiIO &io, float scale) {
     if (const char *t = getenv("SAVAGEWIND_SIZE_PICK"); t && frames == 180) picked = atoi(t) < n ? atoi(t) : cur;
     bool cancel = !appearing && (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
                                  ImGui::IsKeyPressed(ImGuiKey_Escape, false) ||
-                                 (ImGui::IsMouseClicked(0) && !ImGui::IsWindowHovered()));
+                                 (ImGui::IsMouseClicked(0) && !ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)));
+    // (a press on a size makes it the active item: without that flag the list counted it as a click outside)
     ImGui::PopFont();
     ImGui::End();
     ImGui::PopStyleColor(6);
@@ -1180,6 +1301,7 @@ static void size_list_draw(ImGuiIO &io, float scale) {
     }
     if (picked >= 0 || cancel) {
         g_sizes_hold = SDL_GetTicks() + 300;  // (the A / B that closed it, still down, stays out of the game)
+        if (ImGui::IsMouseDown(0)) g_sizes_eat_up = true;  // (and the mouse button's release: the pointer would click the row)
         g_sizes = false;
         was_open = false;
     }
@@ -1329,9 +1451,67 @@ void menu_tabs_draw(float scale, ImFont *font, ImFont *font_big, bool in_game, v
     g_font = f0, g_font_big = f1;
 }
 
-bool menu_render_needed(void) {
-    return g_open.load() || g_kbd.load() == 1 || g_sizes.load() || g_settings.perf_overlay != PERF_OFF;
+// Logging build (SAVAGEWIND_ACTLOG=1): the actions the game says are pressed / held, live, so a play session can be read off
+// the screen as well as the log ("[act] poll N: game says ..."). A big flash of the latest in the top middle, the list left.
+static void act_overlay_draw(ImGuiIO &io, float scale) {
+    ActLogRow rows[12];
+    int n = act_log_rows(rows, 12);
+    uint32_t now = SDL_GetTicks();
+    const ImGuiWindowFlags fl = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
+                                ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoSavedSettings;
+    ImGui::SetNextWindowPos(ImVec2(16 * scale, 170 * scale), 0, ImVec2(0, 0));
+    ImGui::SetNextWindowBgAlpha(0.7f);
+    ImGui::Begin("##actlog", NULL, fl);
+    ImGui::SetWindowFontScale(0.72f);
+    ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "Actions the game asks for (also in the log)");
+    if (!n) ImGui::TextDisabled("press something");
+    for (int i = 0; i < n; i++) {
+        const ActLogRow &r = rows[i];
+        float age = (float)(now - r.last_ms) / 1000.f;
+        ImVec4 c = r.holding || age < 1.5f ? ImVec4(1, 0.9f, 0.35f, 1) : age < 8 ? ImVec4(0.92f, 0.92f, 0.92f, 1) : ImVec4(0.6f, 0.6f, 0.6f, 1);
+        const char *nm = act_name(r.id);
+        ImGui::TextColored(c, "%2d  %s   pressed x%u   held x%u%s", r.id, nm ? nm : "?", r.pressed, r.held,
+                           r.holding ? "   [HELD]" : "");
+    }
+    ImGui::End();
+    // the latest, big, fading over 1.5 s; one line per action pressed in that time
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, 60 * scale), 0, ImVec2(0.5f, 0));
+    ImGui::SetNextWindowBgAlpha(0);
+    ImGui::Begin("##actbig", NULL, fl | ImGuiWindowFlags_NoBackground);
+    ImGui::PushFont(g_font_big);
+    ImGui::SetWindowFontScale(1.5f);
+    int shown = 0;
+    for (int i = 0; i < n && shown < 4; i++) {
+        float age = (float)(now - rows[i].last_ms) / 1000.f;
+        if (age >= 1.5f && !rows[i].holding) continue;
+        float a = rows[i].holding ? 1.f : 1.f - age / 1.5f;
+        const char *nm = act_name(rows[i].id);
+        ImGui::TextColored(ImVec4(1, 0.9f, 0.35f, a), "%d%s%s%s", rows[i].id, nm ? " " : "", nm ? nm : "", rows[i].holding ? "  (held)" : "");
+        shown++;
+    }
+    ImGui::PopFont();
+    ImGui::End();
 }
+
+#ifndef __APPLE__
+extern "C" void rec_drain(void);  // (runtime/nvn/vulkan/record.c)
+#endif
+
+// Everything menu_render draws, in one place: menu_render_needed (the caller's cue to drain the recorder first) and
+// menu_render (which decides again, and drains itself) must agree on it. The pointer's hover box, the console and the
+// gyro drag were missing here: their frames went to the command buffer while the recorder thread was still filling it.
+static bool menu_draws(bool *pointer_hover = NULL, float *pointer_box = NULL, bool *gyro_show = NULL, GyroScene *gyro = NULL) {
+    float box[4];
+    GyroScene gs;
+    bool hover = pc_cursor_hover_box(pointer_box ? pointer_box : box);
+    bool gyro_on = pc_gyro_scene_view(gyro ? gyro : &gs);
+    if (pointer_hover) *pointer_hover = hover;
+    if (gyro_show) *gyro_show = gyro_on;
+    return g_open.load() || g_kbd.load() == 1 || g_sizes.load() || console_is_open() || gyro_on || hover ||
+           g_settings.perf_overlay != PERF_OFF || act_log_enabled();
+}
+
+bool menu_render_needed(void) { return menu_draws(); }
 
 #ifdef __APPLE__
 void menu_render(id<MTLDevice> dev, id<MTLCommandBuffer> cb, id<MTLTexture> target) {
@@ -1343,10 +1523,22 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     bool open = g_open.load();
     bool kbd = g_kbd.load() == 1;
     bool sizes = g_sizes.load();
-    if (!open && !kbd && !sizes && g_settings.perf_overlay == PERF_OFF) {
+    bool con = console_is_open();
+    console_collect();
+    GyroScene gyro_scene;
+    bool gyro_scene_show;
+    float pointer_box[4];
+    bool pointer_hover;
+    if (!menu_draws(&pointer_hover, pointer_box, &gyro_scene_show, &gyro_scene)) {
         if (g_inited) { pthread_mutex_lock(&q_lock); q_events.clear(); pthread_mutex_unlock(&q_lock); }
         return;
     }
+#ifndef __APPLE__
+    // ImGui records into the frame's command buffer from this thread, which is the recorder's until it has caught up.
+    // The caller drains when menu_render_needed said so, but the pointer's hover box can appear (and the console and
+    // the gyro drag can open) between that call and this one: draining again here is cheap when nothing is queued.
+    rec_drain();
+#endif
 #ifdef __APPLE__
     if (!g_inited) init(dev);
 #else
@@ -1389,7 +1581,18 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
 #endif
     ImGui::NewFrame();
 
+    if(pointer_hover&&!open&&!kbd&&!sizes) {
+        float s=fminf(io.DisplaySize.x/1280.f,io.DisplaySize.y/720.f);
+        ImVec2 a(io.DisplaySize.x*.5f+pointer_box[0]*s,io.DisplaySize.y*.5f-pointer_box[3]*s);
+        ImVec2 b(io.DisplaySize.x*.5f+pointer_box[2]*s,io.DisplaySize.y*.5f-pointer_box[1]*s);
+        bool pressed=pc_cursor_hover_pressed();
+        if(pressed)ImGui::GetForegroundDrawList()->AddRectFilled(a,b,IM_COL32(250,250,220,45),2.f*s);
+        ImGui::GetForegroundDrawList()->AddRect(a,b,pressed?IM_COL32(255,235,155,255):IM_COL32(250,250,220,255),2.f*s,0,2.f*s);
+    }
+
     if (g_settings.perf_overlay != PERF_OFF) perf_overlay_draw(io, scale);
+    if (act_log_enabled()) act_overlay_draw(io, scale);
+    if (!open && !kbd && !sizes && !con && gyro_scene_show) gyro_scene_draw(io, scale, gyro_scene);
 
     if (open) {
         // dim the game behind the menu
@@ -1438,6 +1641,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
 
     if (kbd) keyboard_draw(io, scale);
     if (sizes) size_list_draw(io, scale);
+    if (con) console_draw(io, scale, g_font_mono ? g_font_mono : g_font);
     ImGui::Render();
     g_text_busy = open && ui_text_busy();
 #ifdef __APPLE__

@@ -244,18 +244,29 @@ static bool copy_file(const char *src, const char *dst, uint64_t size, uint64_t 
     if (link(src, dst) == 0) goto linked;  // (same volume: a hard link)
 #endif
     {
+        // A read error ends fread as the end of the file does: the copy is whole only with the size the folder listed.
+        // A shorter one (an unreadable sector, a drive that went away) would be served to the game as it is, its tail
+        // missing, and could crash it only at the first scene that loads it (#368 looks like one): the setup fails.
         FILE *in = fopen(src, "rb"), *out = in ? fopen(dst, "wb") : NULL;
         bool ok = in && out;
+        uint64_t copied = 0;
         static uint8_t buf[1 << 20];
         while (ok) {
             size_t n = fread(buf, 1, sizeof buf, in);
-            if (!n) break;
+            if (!n) { ok = !ferror(in); break; }
             if (fwrite(buf, 1, n, out) != n) ok = false;
+            copied += n;
             *done += n;
             if (progress) progress(*done, total);
         }
         if (in) fclose(in);
         if (out && fclose(out) != 0) ok = false;
+        if (ok && copied != size) ok = false;
+        if (!ok && out) {
+            fprintf(stderr, "[romfs] copying %s: %llu of %llu bytes\n", src, (unsigned long long)copied,
+                    (unsigned long long)size);
+            remove(dst);
+        }
         return ok;
     }
 linked:

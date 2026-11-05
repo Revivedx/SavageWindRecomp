@@ -7,6 +7,10 @@
 // name (as in tools/game_sites.py) and what is there
 #define GAME_SITES(X)                                                                                                  \
     X(opt_table)               /* the Options screen's option table: u32 count, +8 entries, +0x10 rows, +0x18 order */ \
+    X(opt_two_redraw)          /* optional all-or-nothing dual-row spike gate */                                      \
+    X(opt_two_text)            /* native Options message-to-layout text setter */                                    \
+    X(opt_two_help)            /* native row description update */                                                   \
+    X(opt_two_pane_calc)       /* verified local transform/dirty-bit contract */                                      \
     X(screen_mgr)              /* ScreenMgr *: +0x28 screen count, +0x30 screen pointers by id */                      \
     X(opt_screen_rows)         /* field: the Options screen's row count, +8 its rows (1.8.2 +0x3698, 1.9.0 +0x36b0) */ \
     X(title_options_state)     /* field: the title menu's active button screen (0x6a: Options; 1.8.2 +0x363c) */       \

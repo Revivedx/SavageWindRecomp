@@ -30,6 +30,7 @@ bool plat_reserve_guest(uint64_t lo, uint64_t hi) {
 
 // Fresh zero pages over the whole window (the old ones are released at once).
 long plat_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, size_t max) { return -1; }  // (not tracked)
+int plat_any_written(uint64_t addr, uint64_t size) { return -1; }
 
 bool plat_reset_guest(uint64_t lo, uint64_t hi) {
     mach_vm_address_t a = lo;
@@ -54,6 +55,10 @@ void plat_sleep_until_ns(uint64_t t) {
     if (!tb.denom) mach_timebase_info(&tb);
     mach_wait_until(t * tb.denom / tb.numer);
 }
+
+void plat_wait_until_ns(uint64_t t) { plat_sleep_until_ns(t); }  // (mach_wait_until doesn't spin)
+
+int plat_cpu_count(void) { int n = (int)sysconf(_SC_NPROCESSORS_ONLN); return n > 0 ? n : 1; }
 
 void plat_cpu_placement(void) {}  // (one logical processor per core: measured on Windows only)
 
@@ -166,3 +171,5 @@ static int rm_entry(const char *path, const struct stat *sb, int flag, struct FT
     return remove(path);
 }
 bool plat_remove_tree(const char *dir) { return nftw(dir, rm_entry, 16, FTW_DEPTH | FTW_PHYS) == 0; }
+
+bool plat_guest_sparse_heap_enabled(void) { return false; }

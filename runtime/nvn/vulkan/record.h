@@ -18,7 +18,7 @@ bool rec_on(void);  // commands go through the recorder thread
 // ---- command buffers, submissions
 void rec_BeginCommandBuffer(VkCommandBuffer cb);  // ONE_TIME_SUBMIT
 void rec_EndCommandBuffer(VkCommandBuffer cb);
-// Submits si (up to 2 command buffers, 1 wait, 2 signals; nothing chained) on g_vk.queue. seq: the timeline value it
+// Submits si (up to 2 command buffers, 2 waits, 2 signals; nothing chained) on g_vk.queue. seq: the timeline value it
 // signals, which rec_submitted() reaches once the driver has it.
 void rec_QueueSubmit2(const VkSubmitInfo2 *si, uint64_t seq);
 // n writes of one descriptor each (buffer or image info), in order with the commands
@@ -74,6 +74,7 @@ void rec_CmdSetStencilOp(VkCommandBuffer cb, VkStencilFaceFlags face, VkStencilO
                          VkCompareOp cmp);
 void rec_CmdResetQueryPool(VkCommandBuffer cb, VkQueryPool pool, uint32_t first, uint32_t n);
 void rec_CmdWriteTimestamp2(VkCommandBuffer cb, VkPipelineStageFlags2 stage, VkQueryPool pool, uint32_t query);
+void rec_CmdSetCheckpointNV(VkCommandBuffer cb, const void *marker);
 void rec_CmdBeginQuery(VkCommandBuffer cb, VkQueryPool pool, uint32_t query, VkQueryControlFlags flags);
 void rec_CmdEndQuery(VkCommandBuffer cb, VkQueryPool pool, uint32_t query);
 void rec_CmdClearAttachments(VkCommandBuffer cb, uint32_t na, const VkClearAttachment *at, uint32_t nr, const VkClearRect *r);

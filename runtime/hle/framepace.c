@@ -1,4 +1,4 @@
-// Frame rate (Video > Frame rate): Off (no limit), 30, 60 (the default), 90 or 120 frames per second, and the game's
+// Frame rate (Video > Frame rate): Off (no limit), 30, 60 (the default), 90, 120, 144, 165, 240 or 360 frames per second, and the game's
 // clock the same at every one of them. Shared by the macOS, Linux and Windows builds.
 //
 // How BOTW 1.8.2 keeps time (main module, runtime addresses):
@@ -15,7 +15,7 @@
 //     screen (0.2 s at 30 fps, 0.1 s at 120). The paused game (pause menu, map: the state at 0x7001cb48a4 is 2, 0
 //     while playing) updates VFR twice a frame.
 // So the game already runs at any frame rate as long as VFR is told how long a frame really took. Savage Wind:
-//   - paces the presents at the chosen rate on a steady grid (present_pace, framepace_period_ns; Off: 300 fps at
+//   - paces the presents at the chosen rate on a steady grid (present_pace, framepace_period_ns; Off: 360 fps at
 //     most, FPS_CEILING; with VSync On or Adaptive a little under the display's refresh rate), and skips the frame
 //     loop's vsync wait (rt_frame_wait, tools/patches.py);
 //   - tells VFR how long the frame really took (rt_vfr_update, inside updateInterval after the game set its ratio):
@@ -143,6 +143,16 @@ bool framepace_loading_ui(void) { return screen_up(0x55); }
 
 // (pause state 2: the pause menu's pages and the map; 4 is the quick menus over the game)
 bool framepace_menu_ui(void) { return *(uint32_t *)(uintptr_t)PAUSE_STATE == 2; }
+bool framepace_map_ui(void) {
+    if (!framepace_menu_ui()) return false;
+    uint64_t mgr = *(uint64_t *)(uintptr_t)g_site.screen_mgr;
+    if (!mgr || VF(uint32_t, mgr, 0x28) <= 0x2f) return false;
+    uint64_t arr = VF(uint64_t, mgr, 0x30);
+    if (!arr || VF(uint64_t, arr, 8 * 0x2f)) return false;  // inventory covers the map
+    uint64_t map = VF(uint64_t, arr, 8 * 0x2a);
+    return map && VF(uint8_t, map, 0xfe) == 2;  // same active map screen as pc_cursor.c
+}
+bool framepace_quick_ui(void) { return *(uint32_t *)(uintptr_t)PAUSE_STATE == 4; }
 bool framepace_paused(void) { return in_menu(); }
 
 int framepace_target(void) {
@@ -164,9 +174,11 @@ int framepace_target(void) {
     return fps;
 }
 
-// No limit still stops at 300 fps: shorter steps lose precision in the game's float clocks (the time of day, 0..360,
-// takes 1/30 of a minute times the step each frame: at 300 fps that is 1% of the value's rounding unit per frame).
-#define FPS_CEILING 300
+// No limit still stops at 360 fps: shorter steps lose precision in the game's float clocks (the time of day, 0..360,
+// takes 1/30 of a minute times the step each frame: at 360 fps that is 1.2% of the value's rounding unit per frame).
+// The game's clock and the menus' step stop here too (rt_vfr_update, framepace_presented): a frame rate above this
+// would run the game fast.
+#define FPS_CEILING 360
 
 // With VSync On or Adaptive (FIFO), a frame rate at or over the display's refresh rate waits for the display: up to a
 // refresh of delay, and with G-SYNC / FreeSync the display leaves its variable rate at the top of its range. So the
@@ -222,7 +234,8 @@ void framepace_presented(uint64_t t, bool on_grid) {
     if (s > 0.25) s = 0.25;
     smooth = smooth > 0 ? smooth + (s - smooth) * 0.25 : s;
     float step = (float)((on_grid ? s : smooth) * 30);
-    g_step = step < 0.1f ? 0.1f : step > 1.5f ? 1.5f : step;
+    float least = 30.0f / FPS_CEILING;
+    g_step = step < least ? least : step > 1.5f ? 1.5f : step;
     g_grid_streak = on_grid ? g_grid_streak + 1 : 0;
     static int fixed = -1;
     if (fixed < 0) fixed = env_int("SAVAGEWIND_NO_CONTROLLER_STEP", 0);
@@ -278,6 +291,18 @@ float rt_solver_steps(float delta_frame, float per_frame) {
     return keep && delta_frame > 0 && delta_frame < 1 ? per_frame / sqrtf(delta_frame) : delta_frame * per_frame;
 }
 
+// Keyframed bodies' turn (tools/patches.py _kf_angle, #209): the angle of a keyframed body's turn toward its target,
+// 2 atan2(|xyz|, |w|) of the turn's quaternion at q (x, y, z, w) instead of the game's 2 acos(|w|), which reads turns
+// under about a milliradian (a Divine Beast's floor over one 120 fps frame) as none. SAVAGEWIND_KF_ANGLE=0: the game's.
+static int g_kf_angle = -1;
+float rt_kf_angle(uint64_t q) {
+    const float *v = (const float *)(uintptr_t)q;
+    if (g_kf_angle < 0) g_kf_angle = env_int("SAVAGEWIND_KF_ANGLE", 1) != 0;
+    float w = fabsf(v[3]);
+    if (!g_kf_angle) return w >= 1.0f ? 0.0f : 2.0f * acosf(w);
+    return 2.0f * atan2f(sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]), w);
+}
+
 // The sound system's frame (tools/patches.py _snd_frame_floor, #145): the game gives it the delta frame, at least 0.5
 // (a 60 fps frame), and every sound timer and fade steps by it: above 60 fps the sound's clock ran ahead of the game's
 // (x1.6 at ~95 fps, x2 at 120), and the field battle music started each segment while the last one still played. The
@@ -291,6 +316,67 @@ float rt_snd_frame_floor(void) {
 
 static uint64_t game_frames;  // rt_vfr_update calls: the game's frames (framepace_game_frame)
 uint64_t framepace_game_frame(void) { return __atomic_load_n(&game_frames, __ATOMIC_RELAXED); }
+// Experimental #305: the surf controller can still report contact on the update after takeoff at 120 fps.
+// Removing its previous 11-unit boost then can cancel the jump. Protect takeoff for one console frame, with
+// one impulse only. Lower rates keep the original path. This hypothesis still needs in-game validation.
+// SAVAGEWIND_SURF_TAKEOFF=0 disables it; SAVAGEWIND_LOG_SURF=1 logs launch/contact/timeout transitions.
+static struct {
+    uint64_t controller, frame;
+    float remaining;  // console frames, at most 1/30 second (not presented-frame counts)
+} surf_takeoff;
+
+static int surf_takeoff_enabled(void) {
+    return framepace_on() && env_int("SAVAGEWIND_SURF_TAKEOFF", 1) != 0;
+}
+
+static void surf_takeoff_log(const char *event) {
+    if (env_int("SAVAGEWIND_LOG_SURF", 0))
+        LOG("[surf] %s controller %#llx frame %llu ratio %.4f grace %.4f\n", event,
+            (unsigned long long)surf_takeoff.controller, (unsigned long long)surf_takeoff.frame,
+            g_frame_ratio, surf_takeoff.remaining);
+}
+
+void rt_surf_contact(uint64_t controller, unsigned flags) {
+    uint64_t frame = framepace_game_frame();
+    if (surf_takeoff.controller != controller || frame - surf_takeoff.frame > 1 || !surf_takeoff_enabled())
+        surf_takeoff.remaining = 0;
+    if (surf_takeoff.remaining > 0 && frame != surf_takeoff.frame) {
+        if (!(flags & 2)) {
+            surf_takeoff.remaining = 0;
+            surf_takeoff_log("airborne");
+        } else {
+            surf_takeoff.remaining -= g_frame_ratio;
+            if (surf_takeoff.remaining <= 0) surf_takeoff_log("timeout");
+        }
+    }
+    surf_takeoff.controller = controller;
+    surf_takeoff.frame = frame;
+}
+
+int rt_surf_takeoff_pending(uint64_t controller) {
+    return surf_takeoff_enabled() && surf_takeoff.controller == controller && surf_takeoff.remaining > 0 &&
+           surf_takeoff.frame == framepace_game_frame();
+}
+
+int rt_surf_jump_request(uint64_t controller) {
+    if (rt_surf_takeoff_pending(controller)) return 0;
+    if (surf_takeoff_enabled() && g_frame_ratio > 0 && g_frame_ratio < 0.30f) {
+        surf_takeoff.controller = controller;
+        surf_takeoff.frame = framepace_game_frame();
+        surf_takeoff.remaining = 1;
+        surf_takeoff_log("launch");
+    }
+    return 1;
+}
+
+// A stale actor in the game's target manager was ignored (tools/patches.py _stale_actor_helper / _stale_actor_target,
+// #391, #393): the game would have crashed on it. Logged the first five times, then each power of two.
+void rt_stale_actor(void) {
+    static uint32_t n;
+    uint32_t k = __atomic_add_fetch(&n, 1, __ATOMIC_RELAXED);
+    if (k <= 5 || (k & (k - 1)) == 0) LOG("[game] a stale actor in the target manager was ignored (%u so far)\n", k);
+}
+
 // The game's frames that were presented: one step per presented frame, where game frames step twice while paused
 // (output_scale.c's jitter sequence: each presented frame gets the next phase)
 static uint64_t shown_frames;
@@ -308,6 +394,8 @@ void rt_vfr_update(uint64_t vfr) {
     if (nvn_timeline()) LOG("[tl] %.3f %x vfr\n", plat_now_ns() / 1e6, kernel_current_thread_handle());
     extern uint64_t g_fs_vfr;  // (SAVAGEWIND_FRAME_LOG=2, nvn/objects.c)
     g_fs_vfr = plat_now_ns();
+    extern void freecam_frame(void);  // (hle/freecam.c)
+    freecam_frame();
     clock_probe(vfr);
     log_screens();
     extern void input_cam_frame(float ratio);  // runtime/hle/input.c: the mouse's motion in the frame, for the cameras
@@ -358,6 +446,8 @@ void rt_vfr_update(uint64_t vfr) {
     }
     bool held = VF(uint8_t, vfr, VFR_OVERRIDE) && ratio > 1;  // (stage loading: the game asks for single steps)
     if (held) ratio = 1;
+    extern bool freecam_active(void);
+    if (freecam_active()) ratio = 0.001f;  // (the free camera: the world nearly stops)
     if (!paused) {
         given += ratio / 30.0;
         if (held || fabs(real - given) > 0.25) real = given;  // (nothing owed for a deliberate slow down)

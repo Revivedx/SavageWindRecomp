@@ -13,6 +13,7 @@ generated-*/
 /splash.png
 # build output, caches, saves and settings
 build/
+/profile/
 /cache/
 save/
 /save.lock
@@ -36,5 +37,7 @@ tools/ghidra/gq.local.json
 
 # Internal work-branch log, local only
 docs/RAMAS.md
+.clangd
 # the player's own colour LUTs (runtime/color_grade.h): in the data root, which is the checkout in a source build
 /luts/
+/vk_pipelines.seed

@@ -28,7 +28,7 @@ static void am_init_once(void) {
     msg_queue[msg_count++] = 15;  // FocusStateChanged
     klock();
     kernel_signal(msg_event);
-    pthread_mutex_unlock(&g_klock);
+    kunlock();
 }
 
 static uint32_t new_event(void) {
@@ -43,7 +43,7 @@ static uint32_t new_signaled_event(void) {
     KEvent *ev = kernel_create_event_pair(&w, &r);
     klock();
     kernel_signal(ev);
-    pthread_mutex_unlock(&g_klock);
+    kunlock();
     return r;
 }
 
@@ -76,7 +76,7 @@ static void common_state_getter(Service *s, IpcReq *req, IpcResp *resp) {
         } else {
             resp->result = AM_NO_MESSAGE;
         }
-        pthread_mutex_unlock(&g_klock);
+        kunlock();
         break;
     case 5: OUT(uint8_t, 0) = 1; resp_size(resp, 1); break;   // GetOperationMode: docked
     case 6: OUT(uint32_t, 0) = 1; resp_size(resp, 4); break;  // GetPerformanceMode: boost
