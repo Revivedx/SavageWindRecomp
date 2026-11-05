@@ -1283,7 +1283,7 @@ static const char *present_mode_name(VkPresentModeKHR m) {
 }
 
 // The wanted mode, or what comes closest on this surface: Adaptive -> On, Off -> Fast (no waiting either), Fast -> On
-// or Immediate (surfaces without mailbox , Intel's have fifo and immediate , must not land on FIFO: it would queue
+// or Immediate (surfaces without mailbox — Intel's have fifo and immediate — must not land on FIFO: it would queue
 // every present on the display's refresh and fight framepace's own pacing; 120 on a 160 Hz display then judders,
 // one long wait every few seconds). *have: the surface's modes, for the log.
 static VkPresentModeKHR present_mode(char *have, size_t cap) {

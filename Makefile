@@ -183,6 +183,12 @@ CXXFLAGS := -O2 -g -std=c++17 -I$(IMGUI) -I$(IMGUI)/backends -Iruntime -Iruntime
 
 # Optional runtime-only optimization. The generated game library keeps GENFLAGS and its build ID.
 # Use a separate B for each mode; the stamp also rebuilds runtime objects when flags or profiles change.
+# Profile-guided build of the runtime (not the game library), in three steps, each with its own B:
+#   make PGO=gen B=build-gen            instrumented savagewind.exe
+#   run it on a scripted walk that ends with SAVAGEWIND_EXIT_AT=<frame>, with LLVM_PROFILE_FILE=<dir>/rt-%p.profraw
+#   llvm-profdata merge -o <B>/runtime.profdata <dir>/*.profraw
+#   make PGO=use B=build-pgo            optimized build (reads $(B)/runtime.profdata, or PGO_PROFILE=<file>)
+# A profile only fits the compiler that made it: regenerate it after a clang update.
 PGO ?=
 LTO ?=
 PGO_PROFILE ?= $(B)/runtime.profdata
