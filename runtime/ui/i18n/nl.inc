@@ -684,3 +684,8 @@ T("Makes the game's letters sharper on 1440p and 4K screens. It takes effect the
 T("Game's FXAA", "FXAA van het spel")
 T("The game's own edge smoothing. Off: sharper, more jagged edges.", "De randafvlakking van het spel zelf. Uit: scherper, met hoekigere randen.")
 T("The game's own FXAA, which smooths edges as the 3D image is drawn into the final picture, as on the console. Off: a sharper image with more jagged edges; use it to replace FXAA with SMAA or TAA above, or to keep the image crisp at a high resolution.", "De FXAA van het spel zelf, die randen afvlakt terwijl het 3D-beeld in het eindbeeld wordt getekend, zoals op de console. Uit: een scherper beeld met hoekigere randen; gebruik dit om FXAA te vervangen door SMAA of TAA hierboven, of om het beeld scherp te houden op een hoge resolutie.")
+
+// Quick inventory sorting.
+T("Quick inventory sorting", "Snelinventaris sorteren")
+T("Sort weapons, bows and shields in the quick selector. Requires game version 1.9.0.", "Sorteer wapens, bogen en schilden in het snelkeuzemenu. Vereist spelversie 1.9.0.")
+T("Sort", "Sorteren")

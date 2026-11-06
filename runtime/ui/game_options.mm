@@ -594,6 +594,12 @@ void build_items(void) {
                        [](const Item &, int x) { g_settings.color_lut_strength = x * 10; }, 10));
 #endif
 
+    // Gameplay
+    v.push_back(toggle(P_GAMEPLAY, "Quick inventory sorting",
+                       "Sort weapons, bows and shields in the quick selector. Requires game version 1.9.0.",
+                       [](const Item &) { return (int)g_settings.quick_sort; },
+                       [](const Item &, int x) { g_settings.quick_sort = x; }, 0));
+
     // Audio
     v.push_back(choice(P_AUDIO, "Volume", "The game's volume. 100% is its own level.",
                        [](const Item &) { return 21; },

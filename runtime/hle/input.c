@@ -33,6 +33,14 @@ enum {
 _Static_assert(BTN_DOWN == BIND_DOWN && BTN_ZL == BIND_ZL, "bindings follow the button bits");
 
 static _Atomic uint64_t key_buttons, pad_buttons;
+// A contextual action consumes a held button until release, while observers
+// still read the raw snapshot to detect the next physical press.
+static _Atomic uint64_t consumed_buttons;
+void input_consume_buttons(uint64_t buttons) { atomic_fetch_or(&consumed_buttons, buttons); }
+static uint64_t unconsumed_buttons(uint64_t buttons) {
+    return buttons & ~atomic_fetch_and(&consumed_buttons, buttons);
+}
+
 static _Atomic int map_key_x,map_key_y;
 void input_pc_map_axes(float out[2]) { out[0]=map_key_x;out[1]=map_key_y; }
 static _Atomic uint64_t escape_buttons;
@@ -229,6 +237,7 @@ static void recompute_pad(void) {
 
 // Forget held keys (the menu took focus); the gamepad is re-read on its next event.
 void input_reset(void) {
+    consumed_buttons = 0;
     escape_buttons = 0;
     memset(keys_down, 0, sizeof keys_down);
     memset(mouse_down, 0, sizeof mouse_down);
@@ -804,6 +813,7 @@ static void host_test_frame(uint64_t frame) {
 static uint64_t g_pad_obj;
 volatile int g_inject_plus;  // frames to hold Plus for the game (movie.c: A/B skip a skippable movie)
 RT_ON_RESET(input_reboot_reset) {
+    consumed_buttons = 0;
     g_pad_obj = 0; g_inject_plus = 0;
 }  // (reboot: the controller object was guest memory)
 void input_frame(uint64_t frame) {
@@ -935,6 +945,7 @@ static void fill_state(Cpu *c) {
         if (dx || dy) lx = dx * m, ly = dy * m;
     }
     control_input_apply(&b, &lx, &ly, &rx, &ry);
+    b = unconsumed_buttons(b);
     // stick directions also appear as buttons (bits 16-23)
     if (lx < -16000) b |= 1ull << 16;
     if (ly > 16000) b |= 1ull << 17;

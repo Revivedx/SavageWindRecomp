@@ -719,3 +719,33 @@ test-bloom-scale: $(B)/test_bloom_scale
 	$(B)/test_bloom_scale
 
 .PHONY: test-bloom-scale
+
+# Native quick-selector sorting: synthetic Linux guest memory, no game files.
+ifeq ($(PLATFORM),linux)
+$(B)/test_quick_inventory_sort: tools/test_quick_inventory_sort.c runtime/quick_inventory_sort.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -std=gnu11 -O1 -g $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $<
+
+$(B)/test_gamelib_sites: tools/test_gamelib_sites.c runtime/gamelib.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -std=gnu11 -O1 -g -ffunction-sections -fdata-sections $(OSFLAGS) -Iruntime -o $@ $< -Wl,--gc-sections -ldl
+
+test-quick-inventory-sort: $(B)/test_quick_inventory_sort $(B)/test_gamelib_sites
+	$(B)/test_quick_inventory_sort
+	$(B)/test_gamelib_sites
+
+.PHONY: test-quick-inventory-sort
+
+$(B)/test_quick_hint_font: tools/test_quick_hint_font.cpp runtime/ui/quick_hint_font.mm runtime/ui/quick_hint_font.h \
+                         $(B)/imgui/imgui.o $(B)/imgui/imgui_draw.o $(B)/imgui/imgui_tables.o $(B)/imgui/imgui_widgets.o \
+                         $(B)/rt/services/archive.o $(B)/rt/nvn/tegra.o $(B)/rt/nvn/glyphs.o $(B)/rt/hle/bindings.o
+	@mkdir -p $(B)
+	$(CXX) $(CXXFLAGS) -o $@ $< $(filter %.o,$^) $(TEST_LD) -lSDL3 -lm
+
+# The player supplies RomFS locally; no fonts or game fixtures are distributed.
+test-quick-inventory-font: $(B)/test_quick_hint_font
+	@test -n "$(ROMFS)" || { echo 'Set ROMFS to your own extracted game RomFS directory.'; exit 2; }
+	$(B)/test_quick_hint_font "$(ROMFS)"
+
+.PHONY: test-quick-inventory-font
+endif

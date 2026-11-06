@@ -25,9 +25,26 @@
     X(main_data)               /* main's .data (then .bss, up to main_end) */                                           \
     X(main_end)
 
+// Optional helpers are zero when their complete feature group was not found.
+#define GAME_SITES_OPTIONAL(X) \
+    X(pouch_lock)             /* native recursive inventory mutex */ \
+    X(pouch_unlock)           \
+    X(pouch_page_count)       /* entries on an inventory page */ \
+    X(pouch_page_item)        /* PouchItem * at a page and slot */ \
+    X(pouch_item_type)        /* equipment category from an actor name */ \
+    X(pouch_sort)             /* native category sort */ \
+    X(quick_sort_event)       /* native event restriction */ \
+    X(quick_sort_player_busy) /* native player-state restriction */ \
+    X(quick_sort_modal)       /* another modal screen is open */ \
+    X(quick_sort_refill)      /* rebuild the quick selector's item list */ \
+    X(quick_sort_mapping)     /* rebuild visible slot mapping */ \
+    X(quick_sort_cursor)      /* move the native cursor */ \
+    X(quick_sort_labels)      /* update selected item labels */
+
 typedef struct {
 #define GAME_SITE_FIELD(n) uint64_t n;
     GAME_SITES(GAME_SITE_FIELD)
+    GAME_SITES_OPTIONAL(GAME_SITE_FIELD)
 #undef GAME_SITE_FIELD
 } GameSites;
 
