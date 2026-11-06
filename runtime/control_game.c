@@ -312,7 +312,8 @@ static void cmd_goto(int argc, char **argv, ControlReply *r) {
     double hour = -1, yaw = 0, pitch = 0;
     bool have_look[2] = {false, false};
     bool have[3] = {false, false, false};
-    static const char *usage = "goto: use goto <x> <y> <z>, or paste a line from pos or report (swr:1 x=.. y=.. z=.. [hour=..])";
+    char usage[200];  // (named after the command used, goto or tp)
+    snprintf(usage, sizeof usage, "%s: use %s <x> <y> <z>, or paste a line from pos or report (swr:1 x=.. y=.. z=.. [hour=..])", argv[0], argv[0]);
     int numbers = 0;
     for (int i = 1; i < argc; i++) {
         // A quoted line (swctl goto "swr:1 x=.. y=.. z=..") arrives as one argument, so split every argument at spaces.
@@ -381,6 +382,7 @@ void control_game_init(void) {
         {"time", "[freeze | unfreeze | set <0-24> | <0-24>]", "Show or change the hour of the day", cmd_time, 0},
         {"shot", "<file>", "Save a screenshot as PNG", cmd_shot, 0},
         {"goto", "<x> <y> <z> | <swr:1 line>", "Go to a place from pos or report", cmd_goto, 0},
+        {"tp", "<x> <y> <z> | <swr:1 line>", "Same as goto", cmd_goto, 0},
     };
     control_register(dev, (int)(sizeof dev / sizeof *dev));
     control_prof_init();
