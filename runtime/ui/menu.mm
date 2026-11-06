@@ -6,6 +6,7 @@
 #import <Metal/Metal.h>
 #endif
 #include <SDL3/SDL.h>
+#include <ctype.h>
 #include <math.h>
 #include <pthread.h>
 #include <atomic>
@@ -28,6 +29,7 @@ extern "C" bool vk_imgui_backend_init(void);  // runtime/nvn/vulkan/imgui_glue.c
 #endif
 
 extern "C" {
+#include "../amiibo.h"
 #include "../hle.h"
 #include "../settings.h"
 #include "../color_grade.h"
@@ -1008,6 +1010,70 @@ static void tab_audio(void) {
     opt_end();
 }
 
+// Case-insensitive: does s contain needle (an empty needle matches)
+static bool has_text(const char *s, const char *needle) {
+    size_t n = strlen(needle);
+    for (size_t i = 0; s[i]; i++) {
+        size_t k = 0;
+        while (k < n && tolower((unsigned char)s[i + k]) == tolower((unsigned char)needle[k])) k++;
+        if (k == n) return true;
+    }
+    return n == 0;
+}
+
+// The amiibo tab (runtime/amiibo.h): the figure on the virtual reader. When the game looks for a figure (the amiibo
+// rune), the one chosen here is the one it finds; none, and it finds none. Only the player's own dumps (.bin) are read.
+// A collection can be big (a folder per series): a search and the series narrow the list, as on the Cheats tab.
+static void tab_amiibo(void) {
+    static char search[64];
+    static int series;  // 0: all
+    opt_begin("##amiibo", ImGui::GetFontSize() / 34);
+    opt_section("Virtual reader");
+    int n = amiibo_count(), on = amiibo_on_reader();
+    const Amiibo *cur = amiibo_at(on);
+    char desc[1400];
+    snprintf(desc, sizeof desc, tr("The figure the game's reader finds when it looks for an amiibo (the amiibo rune). None: it finds no figure. The figures are the dumps (.bin) in the folder %s."), amiibo_folder());
+    opt_action("On the reader", cur ? cur->name : tr("None"), desc);
+    auto choose = [](int i) {
+        char key[256] = "";
+        if (i >= 0) amiibo_key(i, key, sizeof key);
+        snprintf(g_settings.amiibo_reader, sizeof g_settings.amiibo_reader, "%s", key);
+        settings_save();
+    };
+    if (!n) {
+        snprintf(desc, sizeof desc, tr("No figure dumps yet. Put the dumps (.bin) in the folder %s, then choose one here."), amiibo_folder());
+        hint(desc);
+    }
+    if (!amiibo_has_keys()) {
+        snprintf(desc, sizeof desc, tr("Without the keys (key_retail.bin in the folder %s), figures give no game data: no nickname, no hearts."), amiibo_folder());
+        hint(desc);
+    }
+    if (n) {
+        std::vector<const char *> names = {tr("All")};  // (the figures come sorted by series)
+        for (int i = 0; i < n; i++)
+            if (amiibo_at(i)->series[0] && strcmp(names.back(), amiibo_at(i)->series)) names.push_back(amiibo_at(i)->series);
+        opt_text("Search", search, sizeof search, "", "Only the figures whose name or series contains this text.");
+        opt_choice("Series", &series, names.data(), (int)names.size(), 0, "The figures of one series.", false);
+        if (opt_action("None", on < 0 ? tr("On the reader") : "", "The figure the game's reader finds when it looks for an amiibo (the amiibo rune). None: it finds no figure.", false))
+            choose(-1);
+        for (int i = 0; i < n; i++) {
+            const Amiibo *f = amiibo_at(i);
+            if (series > 0 && series < (int)names.size() && strcmp(f->series, names[series])) continue;
+            if (search[0] && !has_text(f->name, search) && !has_text(f->series, search)) continue;
+            std::string d;
+            if (ImGui::IsRectVisible(ImVec2(ImGui::GetContentRegionAvail().x, ImGui::GetFontSize() * 1.9f))) {  // (only a row on screen can show it)
+                char id[17];
+                for (int k = 0; k < 8; k++) snprintf(id + 2 * k, 3, "%02x", f->id[k]);
+                d = std::string(f->name) + "\n" + tr("Series") + ": " + f->series + "\n" + tr("amiibo ID") + ": " + id;
+            }
+            ImGui::PushID(i);  // (two series can have a figure of the same name)
+            if (opt_action(f->name, i == on ? tr("On the reader") : "", d.c_str(), false)) choose(i);
+            ImGui::PopID();
+        }
+    }
+    opt_end();
+}
+
 extern "C" void rt_request_reboot(int kind);  // runtime/main.c (RT_REBOOT_GAME = 1, RT_REBOOT_TITLE = 2)
 
 // Text and voice languages (runtime/language.c). The game reads both when it starts: in game they apply after
@@ -1340,9 +1406,9 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     Tab tabs[11];
     int ntabs = 0;
     if (prelaunch) tabs[ntabs++] = {"Prelaunch", -1, true};
-    // (ids 4-7 were Link's Awakening tabs; the ids stay: test hooks)
-    static const char *names[] = {"Video", "Audio", "Language", "Saves", "", "", "", "", "Controls", "Quit"};
-    static const int order[] = {8, 0, 1, 2, 3, 9};  // Controls, Video, Audio, Language, Saves, Quit
+    // (ids 5-7 were Link's Awakening tabs; the ids stay: test hooks)
+    static const char *names[] = {"Video", "Audio", "Language", "Saves", "amiibo", "", "", "", "Controls", "Quit"};
+    static const int order[] = {8, 0, 1, 2, 4, 3, 9};  // Controls, Video, Audio, Language, amiibo, Saves, Quit
     for (int i : order) {  // (Quit: in game only - the start screen has its own QUIT; Saves: on the start screen only,
         if (i == 9 && prelaunch) continue;  //  the game must not be running while its saves change)
         if (i == 3 && !prelaunch) continue;
@@ -1426,6 +1492,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
                 case 1: tab_audio(); break;
                 case 2: tab_language(in_game); break;
                 case 3: saves_tab_draw(); break;
+                case 4: tab_amiibo(); break;
                 case 8: tab_about(); break;
                 case 9: tab_quit(scale, in_game); break;
                 }
