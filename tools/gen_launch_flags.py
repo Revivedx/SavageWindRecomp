@@ -81,7 +81,7 @@ def curated():
                 sys.exit('%s:%d: expected "group NAME | example | description"' % (CURATED, n))
             if parts[1] in out:
                 sys.exit('%s:%d: %s is listed twice' % (CURATED, n, parts[1]))
-            if '—' in desc or '–' in desc or ' - ' in desc:
+            if '\u2014' in desc or '\u2013' in desc or ' - ' in desc:
                 sys.exit('%s:%d: no dashes in descriptions' % (CURATED, n))
             out[parts[1]] = (parts[0], example.strip(), desc.strip())
     return out
