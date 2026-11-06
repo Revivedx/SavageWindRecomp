@@ -39,8 +39,13 @@ const GameItem *items_at(int i);
 bool items_available(void);  // the game code has the item get (its sites were found)
 // Puts `count` of item i in the pouch on the game thread's next frame in play (a stack takes them at once, anything
 // else one entry each, at most ITEMS_MAX_EACH). false: the queue is full.
-#define ITEMS_MAX_EACH 20
+#define ITEMS_MAX_EACH 99
 bool items_request(int i, int count);
+// How many requests were made so far, and the last one the game thread carried out: its number among them (0: none yet),
+// and how many of it went in the pouch. item -1: dropped, the game rebooted before it could be carried out.
+typedef struct { unsigned seq; int item, asked, added; } ItemResult;
+unsigned items_requested(void);
+ItemResult items_last_result(void);
 // Item i's picture in the pouch as RGBA8 rows, w x h (free() it); NULL without one
 unsigned char *items_icon(int i, int *w, int *h);
 
