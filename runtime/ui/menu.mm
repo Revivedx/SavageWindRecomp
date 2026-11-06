@@ -6,6 +6,7 @@
 #import <Metal/Metal.h>
 #endif
 #include <SDL3/SDL.h>
+#include <ctype.h>
 #include <math.h>
 #include <pthread.h>
 #include <atomic>
@@ -29,6 +30,7 @@ extern "C" bool vk_imgui_backend_init(void);  // runtime/nvn/vulkan/imgui_glue.c
 
 extern "C" {
 #include "../hle.h"
+#include "../items.h"
 #include "../settings.h"
 #include "../color_grade.h"
 #include "../window_size.h"
@@ -1072,6 +1074,55 @@ static void tab_quit(float scale, bool in_game) {
     opt_end();
 }
 
+// Case-insensitive: does s contain needle (an empty needle matches)
+static bool has_text(const char *s, const char *needle) {
+    size_t n = strlen(needle);
+    for (size_t i = 0; s[i]; i++) {
+        size_t k = 0;
+        while (k < n && tolower((unsigned char)s[i + k]) == tolower((unsigned char)needle[k])) k++;
+        if (k == n) return true;
+    }
+    return n == 0;
+}
+
+// The Cheats tab (in game only): any of the game's items, in any amount, into the pouch through the game's own item
+// get (runtime/items.h; the console's give command does the same). Cheats, and labelled so: the game's own menus
+// stay as they are.
+static void tab_cheats(void) {
+    static char search[64];
+    static int cat;  // 0: all, else ITEMCAT_* + 1
+    static float amount = 1;
+    static char notice[160];
+    opt_begin("##cheats", ImGui::GetFontSize() / 34);
+    opt_section(tr("Cheats"));
+    hint(tr("These are cheats: they put items in your pouch. The list comes from your game files; nothing of the game is shipped."));
+    if (!items_available()) {
+        hint(tr("Items are added in game only."));
+        opt_end();
+        return;
+    }
+    static const char *cats[] = {"All", "Weapons", "Bows", "Shields", "Arrows", "Armour", "Materials"};
+    std::vector<const char *> cn;
+    for (const char *c : cats) cn.push_back(tr(c));
+    opt_text(tr("Search"), search, sizeof search, "", tr("Only the items whose name or actor contains this text."));
+    opt_choice(tr("Category"), &cat, cn.data(), (int)cn.size(), 0, tr("The items of one kind."), false);
+    opt_slider(tr("Amount"), &amount, 1, 99, 1, 1, "%g",
+               tr("How many the Add button puts in the pouch. Stacks (arrows, materials) take them at once."));
+    if (notice[0]) ImGui::TextDisabled("%s", notice);
+    for (int i = 0, n = items_count(); i < n; i++) {
+        const GameItem *it = items_at(i);
+        if (cat && it->cat != cat - 1) continue;
+        if (search[0] && !has_text(it->name, search) && !has_text(it->actor, search)) continue;
+        if (opt_action(it->name, tr("Add"), it->actor, false)) {
+            if (items_request(i, (int)amount))
+                snprintf(notice, sizeof notice, tr("Added %d x %s to the pouch."), (int)amount, it->name);
+            else
+                snprintf(notice, sizeof notice, "%s", tr("Too many requests waiting; try again in a moment."));
+        }
+    }
+    opt_end();
+}
+
 static void tab_about(void) {
     header("Movement");
     toggle("D-pad as left stick", &g_settings.dpad_move);
@@ -1340,12 +1391,13 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     Tab tabs[11];
     int ntabs = 0;
     if (prelaunch) tabs[ntabs++] = {"Prelaunch", -1, true};
-    // (ids 4-7 were Link's Awakening tabs; the ids stay: test hooks)
-    static const char *names[] = {"Video", "Audio", "Language", "Saves", "", "", "", "", "Controls", "Quit"};
-    static const int order[] = {8, 0, 1, 2, 3, 9};  // Controls, Video, Audio, Language, Saves, Quit
+    // (ids 4, 6 and 7 were Link's Awakening tabs; the ids stay: test hooks)
+    static const char *names[] = {"Video", "Audio", "Language", "Saves", "", "Cheats", "", "", "Controls", "Quit"};
+    static const int order[] = {8, 0, 1, 2, 5, 3, 9};  // Controls, Video, Audio, Language, Cheats, Saves, Quit
     for (int i : order) {  // (Quit: in game only - the start screen has its own QUIT; Saves: on the start screen only,
         if (i == 9 && prelaunch) continue;  //  the game must not be running while its saves change)
         if (i == 3 && !prelaunch) continue;
+        if (i == 5 && !in_game) continue;  // (Cheats: in game only)
         tabs[ntabs++] = {names[i], i, true};
     }
     int cur = 0;  // g_tab / g_tab_request hold ids
@@ -1426,6 +1478,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
                 case 1: tab_audio(); break;
                 case 2: tab_language(in_game); break;
                 case 3: saves_tab_draw(); break;
+                case 5: tab_cheats(); break;
                 case 8: tab_about(); break;
                 case 9: tab_quit(scale, in_game); break;
                 }
