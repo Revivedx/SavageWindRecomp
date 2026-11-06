@@ -56,4 +56,3 @@ close Savage Wind Configuration, and copy the files into `save-profiles/<name>/s
   says so.
 - Old profile folders and `save_profile.txt` come along when you move the data folder: copy `save-profiles/` and
   `save_profile.txt` together with `save/` (see [Moving the data folder](data-folder.md)).
-- The menu texts for profiles are in English in every language for now.
