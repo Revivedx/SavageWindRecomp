@@ -62,6 +62,12 @@ static char *trim(char *s) {
 
 void lf_normalize_name(char *name) {
     trim(name);
+    if (!ci_prefix(name, PREFIX) && strlen(name) + sizeof PREFIX <= LF_NAME_MAX + 8) {
+        // A short name ("FPS_CAP") means the listed flag of that name, so it must not end up as a different variable
+        char full[LF_NAME_MAX + 8];
+        snprintf(full, sizeof full, PREFIX "%s", name);
+        if (lf_find(full)) memcpy(name, full, strlen(full) + 1);
+    }
     if (ci_prefix(name, PREFIX))
         for (char *c = name; *c; c++) *c = (char)toupper((unsigned char)*c);
 }

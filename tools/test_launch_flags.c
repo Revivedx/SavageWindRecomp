@@ -86,6 +86,12 @@ int main(void) {
     CHECK(lf_set(&l, "SAVAGEWIND_FSR3", "2") == LF_OK && l.n == 2 && !strcmp(l.flag[0].value, "2"));  // edit in place
     CHECK(lf_index(&l, "savagewind_fsr3") == 0 && lf_index(&l, "NOPE") == -1);
     CHECK(lf_set(&l, "SAVAGEWIND_REEXEC", "1") == LF_ERR_INTERNAL && l.n == 2);
+    // short names mean the listed SAVAGEWIND_ flag (and are checked as it)
+    CHECK(lf_set(&l, "no_launcher", "1") == LF_ERR_LAUNCHER && l.n == 2);
+    CHECK(lf_set(&l, "REEXEC", "1") == LF_ERR_INTERNAL && l.n == 2);
+    CHECK(lf_set(&l, "fps_cap", "30") == LF_OK && l.n == 3 && !strcmp(l.flag[2].name, "SAVAGEWIND_FPS_CAP"));
+    CHECK(lf_set(&l, "FPS_CAP", "45") == LF_OK && l.n == 3 && !strcmp(l.flag[2].value, "45"));  // same entry
+    lf_remove(&l, 2);
     lf_remove(&l, 0);
     CHECK(l.n == 1 && !strcmp(l.flag[0].name, "MY_CUSTOM_flag"));
     lf_remove(&l, 5), lf_remove(&l, -1);
