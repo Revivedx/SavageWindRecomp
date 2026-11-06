@@ -6,6 +6,9 @@
 #include <unistd.h>
 
 #include "../runtime/launch_flags.h"
+#ifdef _WIN32
+#include "../runtime/platform/win_compat.h"  // (setenv, unsetenv)
+#endif
 
 static int failures, checks;
 #define CHECK(cond) do { checks++; if (!(cond)) { failures++; printf("FAIL line %d: %s\n", __LINE__, #cond); } } while (0)
