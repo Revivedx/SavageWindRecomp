@@ -2,6 +2,15 @@
 
 What changed in each Savage Wind release. The `test` branch holds what the next one will contain.
 
+## Next (on the `test` branch)
+
+- **Launch options on the start screen:** testers can now set the environment flags we ask for (`SAVAGEWIND_FSR3=1`
+  and so on) without a terminal. The first page of the start screen has a **Launch options** list, empty at first:
+  type a name and a value, press Enter, and it is kept until you remove it. Matching suggestions appear while you
+  type, and any other name works too. Press Play and Savage Wind restarts once so the options are there from the very
+  start. Opening the start screen with `--config` always ignores them, `--no-launch-flags` starts the game without
+  them, and deleting `launch-flags.txt` clears them ([docs/launch-options.md](docs/launch-options.md)).
+
 ## Alpha 4.1 (0.4.1-alpha.4) - 2026-11-01
 
 **A quick fix update for Alpha 4.** Extract it over your Alpha 4 folder (Windows) or use the new AppImage (Linux): your
