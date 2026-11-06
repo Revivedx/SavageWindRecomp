@@ -779,11 +779,36 @@ static bool keep_ok(TexBackend *b, uint64_t *bytes) {
     return ai.size <= KEEP_MAX_IMAGE;
 }
 
+// At most SAVAGEWIND_TEX_FREE_MAX images freed a frame (64), the oldest first: an area the game lets go of
+// released thousands of textures at once, all freed in one frame PARK_FRAMES later (TotK Recomp measured 333-422 ms
+// frames from such a sweep on a GTX 1050 Ti, its 166e5a7). SAVAGEWIND_TEX_FREE_MAX=<n> (0: no limit).
+static int expire_max = -1;
 static void idle_expire(void) {  // (gpu lock held)
     uint64_t now = renderer_present_count(), bytes;
+    if (expire_max < 0) {
+        const char *e = getenv("SAVAGEWIND_TEX_FREE_MAX");
+        expire_max = e ? atoi(e) : 64;
+        if (expire_max <= 0) expire_max = 1 << 30;
+    }
+    int freed = 0, due = 0;
+    uint64_t oldest = ~0ull;
+    for (int i = 0; i < g_nidle; i++)
+        if (!g_idle[i]->kept && now - g_idle[i]->idle_frame > PARK_FRAMES) {
+            due++;
+            if (g_idle[i]->idle_frame < oldest) oldest = g_idle[i]->idle_frame;
+        }
+    // (the list's order is not the release order: removals swap the last one in) the frames released in, oldest
+    // first, up to the one that brings the count to the limit
+    uint64_t upto = now - PARK_FRAMES - 1;
+    if (due > expire_max)
+        for (uint64_t f = oldest, n = 0; f <= now - PARK_FRAMES - 1; f++) {
+            for (int i = 0; i < g_nidle; i++) n += !g_idle[i]->kept && g_idle[i]->idle_frame == f;
+            if ((int)n >= expire_max) { upto = f; break; }
+        }
     for (int i = g_nidle - 1; i >= 0; i--) {
         TexBackend *b = g_idle[i];
-        if (b->kept || now - b->idle_frame <= PARK_FRAMES) continue;
+        if (b->kept || now - b->idle_frame <= PARK_FRAMES || b->idle_frame > upto || freed >= expire_max) continue;
+        freed++;
         if (!keep_ok(b, &bytes)) { free_backend(b); continue; }
         b->kept = true;
         b->kept_bytes = bytes;
@@ -796,6 +821,12 @@ static void idle_expire(void) {  // (gpu lock held)
             if (g_idle[i]->kept && (!old || g_idle[i]->idle_frame < old->idle_frame)) old = g_idle[i];
         if (!old) break;
         free_backend(old);
+    }
+    static uint64_t last_log;
+    if (due > expire_max && now - last_log > 600) {
+        last_log = now;
+        LOG("[tex] frame %llu: %d released images due, %d let go this frame (SAVAGEWIND_TEX_FREE_MAX)\n",
+            (unsigned long long)now, due, freed);
     }
 }
 

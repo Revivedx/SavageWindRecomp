@@ -62,7 +62,13 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_cb(VkDebugUtilsMessageSeverityFlagBi
         return VK_FALSE;
     }
     static int n;
-    if (sev >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT && n++ < 500) LOG("[vk] %s\n", d->pMessage);
+    if (sev >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT && n++ < 500) {
+        LOG("[vk] %s\n", d->pMessage);
+        // SAVAGEWIND_VK_VALIDATION_BT=1: the call stack of each error (with SAVAGEWIND_VK_RECORDER=0 it is the caller's)
+        static int bt = -1;
+        if (bt < 0) bt = getenv("SAVAGEWIND_VK_VALIDATION_BT") != NULL;
+        if (bt && sev >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) plat_print_backtrace();
+    }
     return VK_FALSE;
 }
 
@@ -543,6 +549,19 @@ static void create_device(void) {
     }
     g_vk.custom_border = has_ext(ep, ne, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
     if (g_vk.custom_border) ext[n_ext++] = VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME;
+    {   // NVN (as GL) takes a flat output from a primitive's last vertex, Vulkan from its first: flat-interpolated values
+        // (material and instance indices, flat normals) came from the wrong vertex. VK_EXT_provoking_vertex's last-vertex
+        // mode where the driver has it; SAVAGEWIND_VK_PROVOKING_LAST=0: Vulkan's first vertex, as before.
+        const char *e = getenv("SAVAGEWIND_VK_PROVOKING_LAST");
+        if (has_ext(ep, ne, VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME) && !(e && !strcmp(e, "0"))) {
+            VkPhysicalDeviceProvokingVertexFeaturesEXT pv = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT};
+            VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &pv};
+            vkGetPhysicalDeviceFeatures2(g_vk.phys, &q);
+            g_vk.provoking_last = pv.provokingVertexLast;
+        }
+        if (g_vk.provoking_last) ext[n_ext++] = VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME;
+        LOG("[vk] provoking vertex: %s\n", g_vk.provoking_last ? "last (as NVN)" : "first (no VK_EXT_provoking_vertex last mode)");
+    }
     g_vk.calibrated = has_ext(ep, ne, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
     if (g_vk.calibrated) ext[n_ext++] = VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME;
     g_vk.divisor = has_ext(ep, ne, VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
@@ -788,8 +807,11 @@ static void create_device(void) {
     VkPhysicalDeviceMemoryPriorityFeaturesEXT priority_on = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PRIORITY_FEATURES_EXT, .memoryPriority = VK_TRUE,
         .pNext = next_feature};
-    VkPhysicalDeviceFeatures2 f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-                                   .pNext = g_vk.memory_priority ? (void *)&priority_on : next_feature};
+    if (g_vk.memory_priority) next_feature = &priority_on;
+    VkPhysicalDeviceProvokingVertexFeaturesEXT pv_on = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT,
+                                                         .provokingVertexLast = VK_TRUE, .pNext = next_feature};
+    if (g_vk.provoking_last) next_feature = &pv_on;
+    VkPhysicalDeviceFeatures2 f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = next_feature};
     VkPhysicalDeviceFeatures *b = &f.features, *h = &have.features;
     b->independentBlend = h->independentBlend;
     b->dualSrcBlend = h->dualSrcBlend;

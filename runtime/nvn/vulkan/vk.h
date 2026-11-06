@@ -40,6 +40,7 @@ typedef struct {
     VkPipelineCache pcache_pre;  // the precompiled shaders' libraries (cache/vk_precompiled.bin; read only while playing)
     VkSemaphore timeline;      // value = last completed submission number
     VkCommandPool pool;        // render thread only
+    bool provoking_last;  // VK_EXT_provoking_vertex: flat outputs from a primitive's last vertex, as NVN
     bool custom_border, divisor, host_import, memory_budget, memory_priority, pageable_device_local_memory, sparse_queue, sparse_buffer,
         sparse_nonresident_strict, sparse_host_import, wide_lines;
     bool calibrated;  // VK_EXT_calibrated_timestamps (the profiler aligns GPU timestamps to the CPU clock)
