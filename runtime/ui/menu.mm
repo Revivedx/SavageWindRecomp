@@ -977,7 +977,9 @@ static void tab_display(void) {
     opt_choice("Shadow resolution", &g_settings.shadow_res, shadow, SHADOW_COUNT, SHADOW_CONSOLE,
                "The size of the maps the sun's shadows are drawn from. Console: the game's own, 896 x 896. High (2048), "
                "Ultra (4096) and Extreme (8192) give sharper shadow edges (Link, trees, buildings) for more GPU time "
-               "and video memory (Ultra: about 100 MB, Extreme: about 400 MB).");
+               "and video memory (Ultra: about 100 MB, Extreme: about 400 MB). Extreme is very heavy where there is a lot "
+               "of foliage: in a forest it can cut the frame rate to a third, even on a fast GPU. Ultra or lower suits "
+               "most GPUs.");
     {   // the game's font sheets enlarged (runtime/nvn/text_upscale.c): read when the game starts
         static const char *text[] = {"Off", "2x", "4x"};
         int cur = g_settings.sharper_text / 2;

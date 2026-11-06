@@ -515,7 +515,7 @@ void build_items(void) {
                        [](const Item &) { return (int)g_settings.async_shaders; },
                        [](const Item &, int x) { g_settings.async_shaders = x; }, 0));
     // shadow resolution (its own block)
-    v.push_back(choice(P_VIDEO, "Shadow resolution", "Sharper sun shadows. Higher costs more GPU time.",
+    v.push_back(choice(P_VIDEO, "Shadow resolution", "Sharper sun shadows. Extreme can cut the frame rate to a third in forests, even on a fast GPU.",
                        [](const Item &) { return N(k_shadow); }, [](const Item &, int x) { return tr(k_shadow[x]); },
                        [](const Item &) { return g_settings.shadow_res; },
                        [](const Item &, int x) { g_settings.shadow_res = x; }, SHADOW_CONSOLE));

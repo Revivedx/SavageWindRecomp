@@ -97,6 +97,7 @@ typedef struct {
 #define GMEM2_BUFFER_INDEX 20       // (Vulkan) the heap past GMEM_SPLIT: a second binding
 #define GMEM_SPLIT 0x68000000ull    // bytes in the first binding; both stay under 2 GB for the whole heap (HEAP_MAX)
 #define GSNAP_BUFFER_INDEX 21       // (Vulkan, read-only global memory) ranges of it copied at translation: exec.c gsnap
+#define GATHER_BIAS_ID 100          // (Vulkan) the specialization constant glsl_gather moves its coordinates by (exec.c vk_gather_spec)
 extern uint64_t maxwell_gmem_base, maxwell_gmem_size;
 // Set by the Vulkan backend before translating: global memory in two bindings (maxStorageBufferRange below the heap),
 // read-only global memory through the copied ranges at GSNAP_BUFFER_INDEX (exec.c gsnap), or (maxwell_gmem_bda: even

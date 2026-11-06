@@ -987,14 +987,19 @@ VkSpan vk_transient_copy(const void *data, uint64_t size, uint64_t align) {
 // Per-draw constants that usually repeat the previous draw's (scale table, tint, driver constants): reuse that copy
 // while it's identical, within one submission. slot: one per kind of data.
 enum { DEDUPE_RSCALE_V, DEDUPE_RSCALE_F, DEDUPE_TINT, DEDUPE_DRV_V, DEDUPE_DRV_F, DEDUPE_DRV_C, DEDUPE_GMEM, DEDUPE_SLOTS };
-static VkSpan copy_dedupe(int slot, const void *data, uint64_t size, uint64_t align) {
+// alloc: the span's size when more than the bytes compared and copied (the rest is never read)
+static VkSpan copy_dedupe_in(int slot, const void *data, uint64_t size, uint64_t alloc, uint64_t align) {
     static struct { uint64_t seq, size; uint8_t data[0x800]; VkSpan span; } last[DEDUPE_SLOTS];
     uint64_t seq = vk_pending_seq();
     if (size > sizeof last[0].data) return vk_transient_copy(data, size, align);
     if (last[slot].seq == seq && last[slot].size == size && !memcmp(last[slot].data, data, size)) return last[slot].span;
-    VkSpan s = vk_transient_copy(data, size, align);
+    VkSpan s = vk_transient(alloc > size ? alloc : size ? size : 16, align);
+    if (size) memcpy(s.ptr, data, size);
     last[slot].seq = seq; last[slot].size = size; memcpy(last[slot].data, data, size); last[slot].span = s;
     return s;
+}
+static VkSpan copy_dedupe(int slot, const void *data, uint64_t size, uint64_t align) {
+    return copy_dedupe_in(slot, data, size, 0, align);
 }
 
 // Guest memory copied once per command list: draws binding the same range share the copy, also across the pieces the
@@ -3297,6 +3302,27 @@ static void cache_feedback(const VkPipelineCreationFeedback *fb) {
     vk_pipeline_cache_note(hit);
 }
 
+// The game shaders' specialization: GATHER_BIAS (translate.c glsl_gather), how far a gather's coordinates move to pick
+// the texels Maxwell picks: 0 on NVIDIA, which rounds as Maxwell does, else 1 / 2^(subTexelPrecisionBits + 1) of a texel.
+// SAVAGEWIND_VK_GATHER_BIAS=0: none, =1: that bias on NVIDIA too (A/B).
+static float gather_bias = -1;
+static float vk_gather_bias(void) {
+    if (gather_bias < 0) {
+        const char *e = getenv("SAVAGEWIND_VK_GATHER_BIAS");
+        bool on = e ? atoi(e) != 0 : g_vk.props.vendorID != 0x10DE;
+        uint32_t bits = g_vk.props.limits.subTexelPrecisionBits;
+        gather_bias = on ? 1.0f / (float)(1u << ((bits ? bits : 8) + 1)) : 0.0f;
+        LOG("[vk] gather bias: %g of a texel (%u sub-texel bits%s)\n", gather_bias, bits, on ? "" : ", off");
+    }
+    return gather_bias;
+}
+static const VkSpecializationMapEntry gather_spec_entry = {GATHER_BIAS_ID, 0, 4};
+static const VkSpecializationInfo *vk_gather_spec(void) {
+    static VkSpecializationInfo si = {1, &gather_spec_entry, 4, &gather_bias};
+    vk_gather_bias();
+    return &si;
+}
+
 static VkResult create_pipeline_in(const PipeState *k, VkShaderModule vsm, VkShaderModule fsm, VkPipelineLayout layout,
                                    VkPipelineCache cache, VkPipeline *out);
 static VkResult create_pipeline(const PipeState *k, VkShaderModule vsm, VkShaderModule fsm, VkPipelineLayout layout, VkPipeline *out) {
@@ -3306,8 +3332,10 @@ static VkResult create_pipeline(const PipeState *k, VkShaderModule vsm, VkShader
 static VkResult create_pipeline_in(const PipeState *k, VkShaderModule vsm, VkShaderModule fsm, VkPipelineLayout layout,
                                    VkPipelineCache cache, VkPipeline *out) {
     VkPipelineShaderStageCreateInfo stages[2] = {
-        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vsm, .pName = "main"},
-        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fsm, .pName = "main"}};
+        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vsm, .pName = "main",
+         .pSpecializationInfo = vk_gather_spec()},
+        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fsm, .pName = "main",
+         .pSpecializationInfo = vk_gather_spec()}};
     VkVertexInputAttributeDescription va[32];
     VkVertexInputBindingDescription vb[17];
     VkVertexInputBindingDivisorDescriptionEXT vd[17];
@@ -3452,7 +3480,7 @@ static VkPipeline gpl_shader_lib(VkShaderModule m, int stage, VkPipelineLayout l
                                  bool lookup) {
     VkPipelineShaderStageCreateInfo st = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                                           .stage = stage == STAGE_VERTEX ? VK_SHADER_STAGE_VERTEX_BIT : VK_SHADER_STAGE_FRAGMENT_BIT,
-                                          .module = m, .pName = "main"};
+                                          .module = m, .pName = "main", .pSpecializationInfo = vk_gather_spec()};
     VkPipelineRenderingCreateInfo ri = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
     VkGraphicsPipelineCreateInfo pi = {.pNext = &ri, .stageCount = 1, .pStages = &st, .layout = layout,
                                        .flags = lookup ? VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT : 0};
@@ -6400,8 +6428,13 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
     VkDescriptorImageInfo ii[MAX_BIND];
     int n = 0;
     int sg = stage == 1 ? 1 : 0;
-    float rs[65][4] = {{1, 1, 0, 0}};
+    // The scale table: row 0, then one per texture (translate.c reads rscale[1 + slot], slot < ntex). Only those rows
+    // are filled, compared and copied: the whole 65-row table, zeroed, compared and copied twice a draw (~8000 times a
+    // frame in the open world), was a share of the translation thread's time. The span keeps the declared size.
+    int rows = 1 + (si->ntex < 64 ? si->ntex : 64);
+    float rs[65][4];
     if (rscale_row0) memcpy(rs[0], rscale_row0, 16);
+    else rs[0][0] = rs[0][1] = 1, rs[0][2] = rs[0][3] = 0;
     for (int i = 0; i < p->nbinds; i++) {
         VkBindingInfo *b = &p->binds[i];
         if (b->set != set) continue;
@@ -6449,8 +6482,9 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
         w[n] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = VK_NULL_HANDLE, .dstBinding = b->binding,
                                       .descriptorCount = 1, .descriptorType = b->type};
         if (b->binding == 18) {
-            for (int t = 0; t < si->ntex && t < 64; t++) { rs[1 + t][0] = tex_sc[sg][t][0]; rs[1 + t][1] = tex_sc[sg][t][1]; }
-            bi[n] = ubo_span(copy_dedupe(sg ? DEDUPE_RSCALE_F : DEDUPE_RSCALE_V, rs, sizeof rs, 256), sizeof rs);
+            for (int t = 0; t < si->ntex && t < 64; t++)
+                rs[1 + t][0] = tex_sc[sg][t][0], rs[1 + t][1] = tex_sc[sg][t][1], rs[1 + t][2] = rs[1 + t][3] = 0;
+            bi[n] = ubo_span(copy_dedupe_in(sg ? DEDUPE_RSCALE_F : DEDUPE_RSCALE_V, rs, (uint64_t)rows * 16, sizeof rs, 256), sizeof rs);
         } else {
             float zero[8] = {0};
             bi[n] = ubo_span(copy_dedupe(DEDUPE_TINT, tint ? tint : zero, 32, 256), 32);
@@ -6512,8 +6546,9 @@ static void cs_make(CsBuild *c) {
         VkDescriptorSetLayout sl[2] = {0};
         c->layout = make_layout(c->binds, c->nbinds, sl, 1, VK_SHADER_STAGE_COMPUTE_BIT, 0, false);
         c->set_layout = sl[0];
-        VkSpecializationMapEntry me[3] = {{0, 0, 4}, {1, 4, 4}, {2, 8, 4}};
-        VkSpecializationInfo spec = {3, me, 12, c->local};
+        VkSpecializationMapEntry me[4] = {{0, 0, 4}, {1, 4, 4}, {2, 8, 4}, {GATHER_BIAS_ID, 12, 4}};
+        struct { uint32_t local[3]; float bias; } sd = {{c->local[0], c->local[1], c->local[2]}, vk_gather_bias()};
+        VkSpecializationInfo spec = {4, me, sizeof sd, &sd};
         VkPipelineCreationFeedback fb = {0};
         VkPipelineCreationFeedbackCreateInfo fci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO,
                                                     .pPipelineCreationFeedback = &fb};
@@ -6931,8 +6966,9 @@ bool vk_pso_warm_compute(const ShaderInfo *si, const uint32_t local[3]) {
     if (!m) return false;
     VkDescriptorSetLayout sl[2] = {0};
     VkPipelineLayout l = make_layout(binds, nb, sl, 1, VK_SHADER_STAGE_COMPUTE_BIT, 0, false);
-    VkSpecializationMapEntry me[3] = {{0, 0, 4}, {1, 4, 4}, {2, 8, 4}};
-    VkSpecializationInfo spec = {3, me, 12, local};
+    VkSpecializationMapEntry me[4] = {{0, 0, 4}, {1, 4, 4}, {2, 8, 4}, {GATHER_BIAS_ID, 12, 4}};
+    struct { uint32_t local[3]; float bias; } sd = {{local[0], local[1], local[2]}, vk_gather_bias()};
+    VkSpecializationInfo spec = {4, me, sizeof sd, &sd};
     VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
                                       .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                                                 .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main",

@@ -94,6 +94,7 @@ typedef struct {
     // (GLSL, key->mvec) glsl_rewrite for the previous frame's copy of a vertex body: the game's constant buffers
     // (cb3..cb16) read from the motion history (ph, at the push constants' pb offsets), the outputs to locals
     bool rw_prev;
+    bool uses_gather;  // (GLSL) a gather: the GATHER_BIAS specialization constant is declared
 } Ctx;
 
 static uint64_t bits(uint64_t w, int lo, int n) { return (w >> lo) & ((n == 64) ? ~0ull : ((1ull << n) - 1)); }
@@ -913,13 +914,20 @@ static void glsl_gather(Ctx *c, char *out, int slot, const char *const *co, cons
         return;
     }
     if (cube && noff) noff = 0;  // (cube lookups take no offset)
+    // A coordinate halfway between two texels picks the texel past it on Maxwell, the one before it on AMD and Intel,
+    // whose sub-texel rounding differs: the shadow filters' gathers then read the neighbouring texels, dark dashes
+    // along edges that move with the camera. GATHER_BIAS (a specialization constant: 0 on NVIDIA, 1 / 2^(subTexel
+    // precision bits + 1) elsewhere, exec.c vk_gather_spec) moves the 2D coordinates by that much of a texel.
+    // (As yuzu's "subpixel offset for correct rounding at ImageGather", behaviour only, and Ryujinx's
+    // InsertCoordGatherBias (MIT), which TotK Recomp turns on the same way.)
+    c->uses_gather = true;
     char P[4][700], call[4][1000];
     int n = noff == 4 ? 4 : 1;
     for (int i = 0; i < n; i++) {
         char xy[500];
         if (cube) snprintf(xy, sizeof xy, "vec3(%s, %s, %s)", co[0], co[1], co[2]);
-        else if (noff) snprintf(xy, sizeof xy, "(vec2(%s, %s) + vec2(%s)%s / vec2(tsize%d(0).xy))", co[0], co[1], off[i], off_scale(c, slot, 2), slot);
-        else snprintf(xy, sizeof xy, "vec2(%s, %s)", co[0], co[1]);
+        else if (noff) snprintf(xy, sizeof xy, "(vec2(%s, %s) + (vec2(%s)%s + GATHER_BIAS) / vec2(tsize%d(0).xy))", co[0], co[1], off[i], off_scale(c, slot, 2), slot);
+        else snprintf(xy, sizeof xy, "(vec2(%s, %s) + GATHER_BIAS / vec2(tsize%d(0).xy))", co[0], co[1], slot);
         if (layer) snprintf(P[i], sizeof P[i], "vec%d(%s, float(%s))", cube ? 4 : 3, xy, layer);
         else snprintf(P[i], sizeof P[i], "%s", xy);
         if (t->shadow) snprintf(call[i], sizeof call[i], "textureGather(t%d, %s, %s)", slot, P[i], dref);
@@ -2284,6 +2292,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         sp(&s, "layout(std140, set = %d, binding = 19) uniform Tint { vec4 ltint[2]; };\n", set);
         info->uses_tint = true;
     }
+    if (c->uses_gather) sp(&s, "layout(constant_id = %d) const float GATHER_BIAS = 0.0f;\n", GATHER_BIAS_ID);  // (glsl_gather)
     for (int i = 0; i < info->ntex; i++) {
         ShaderTexture *t = &info->tex[i];
         sp(&s, "layout(set = %d, binding = %d) uniform %s t%d;\n", set, 32 + i, glsl_sampler_type(t), i);

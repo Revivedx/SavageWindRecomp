@@ -1696,10 +1696,10 @@ VkComponentMapping vk_sample_swizzle(NvnTexture *t, const NvnTextureView *v) {
 
 static bool is_bc(VkFormat f) { return f >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && f <= VK_FORMAT_BC7_SRGB_BLOCK; }
 
-// Attachment view for a draw into the blocks of level lv of BC image b, a texel a 4x4 block in format fmt (the game's
-// view: RGBA16 UINT for 8-byte blocks): a view of b->block_lv[lv], made for it, that vk_block_flush copies (or, Mali's
-// R8 images, decodes) into that level of b after the pass. lv > 0 only on the Mali R8 path (vk_view).
-static VkImageView block_view(TexBackend *b, VkFormat fmt, uint32_t lv) {
+// Attachment view for a draw into the blocks of level lv, layer or 3D slice z of BC image b, a texel a 4x4 block in format
+// fmt (the game's view: RGBA16 UINT for 8-byte blocks): a view of b->block_lv[lv], made for it, that vk_block_flush
+// copies (or, Mali's R8 images, decodes) into that level and slice of b after the pass.
+static VkImageView block_view(TexBackend *b, VkFormat fmt, uint32_t lv, uint32_t z) {
     if (lv >= 16 || lv >= b->levels) return VK_NULL_HANDLE;
     TexBackend *s = b->block_lv[lv];
     if (s && s->format != fmt) {
@@ -1738,6 +1738,7 @@ static VkImageView block_view(TexBackend *b, VkFormat fmt, uint32_t lv) {
     }
     b->block = s;
     b->block_level = (uint8_t)lv;
+    b->block_slice = (uint16_t)z;
     b->block_pending = true;
     return vk_image_view(s, VK_IMAGE_VIEW_TYPE_2D, fmt, 0, 1, 0, 1, IDENTITY, VK_IMAGE_ASPECT_COLOR_BIT);
 }
@@ -1749,8 +1750,10 @@ void vk_block_flush(VkCommandBuffer cb, TexBackend *b) {
     if (!s) return;
     if (b->bc4_cpu) { bc4_decode(cb, b); return; }
     vk_full_barrier(cb);
+    bool vol = b->base_type == VK_IMAGE_VIEW_TYPE_3D;  // (a 3D image's slice is a depth offset, an array's a layer)
     VkImageCopy c = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                     .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, b->block_level, 0, 1}, .extent = {s->width, s->height, 1}};
+                     .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, b->block_level, vol ? 0 : b->block_slice, 1},
+                     .dstOffset = {0, 0, vol ? b->block_slice : 0}, .extent = {s->width, s->height, 1}};
     rec_CmdCopyImage(cb, s->image, VK_IMAGE_LAYOUT_GENERAL, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
     vk_full_barrier(cb);
 }
@@ -1891,7 +1894,7 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
         } else if (b->layers == 1 && b->depth == 1 && lv < b->levels) {
             // (every level: the R8 image's own levels never take the game's integers; a level the game encodes but
             // that wasn't decoded would show whenever the bubble is drawn smaller than its texture)
-            return block_view(b, fmt_of(v->format).vf, lv);
+            return block_view(b, fmt_of(v->format).vf, lv, 0);
         } else {
             static int nskip;
             if (nskip++ < 4) LOG("[vk] BC4 texture drawn into at level %u layer %u of %u: not handled (stays as uploaded)\n", lv,
@@ -1912,8 +1915,20 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
     if (lv0 + nlv > b->levels) nlv = b->levels - lv0;
     if (ly0 >= b->layers) ly0 = b->layers - 1;
     if (ly0 + nly > b->layers) nly = b->layers - ly0;
-    if (render && fmt != b->format && is_bc(b->format) && !is_bc(fmt) && lv0 == 0 && b->layers == 1 && b->depth == 1)
-        return block_view(b, fmt, 0);  // (drawn into through a view of its blocks)
+    static int block_all = -1;  // SAVAGEWIND_VK_BLOCK_ALL=0: single-layer 2D level 0 only, as before (A/B)
+    if (block_all < 0) block_all = !getenv("SAVAGEWIND_VK_BLOCK_ALL") || atoi(getenv("SAVAGEWIND_VK_BLOCK_ALL")) != 0;
+    if (render && fmt != b->format && is_bc(b->format) && !is_bc(fmt) &&
+        (block_all || (lv0 == 0 && b->layers == 1 && b->depth == 1))) {
+        // (drawn into through a view of its blocks: any level, and one layer of an array or one slice of a volume. A 3D
+        // view's layer is the slice, as for the uncompressed volumes below; a slice past the level's depth is its last)
+        uint32_t z = ly0;
+        if (b->base_type == VK_IMAGE_VIEW_TYPE_3D) {
+            uint32_t d = b->depth >> lv0 ? b->depth >> lv0 : 1;
+            z = v && (v->setmask & 2) ? v->min_layer : 0;
+            if (z >= d) z = d - 1;
+        }
+        return block_view(b, fmt, lv0, z);
+    }
     if (render) {
         // A view to draw into must be of an image made to be drawn into, in a format that can be (the image's usage,
         // the view format's features). Anything else, such as a compressed image's blocks the path above doesn't take
