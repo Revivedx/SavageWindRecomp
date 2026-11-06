@@ -751,6 +751,20 @@ def _stamina(gen, a):
     return ('{ extern uint32_t rt_stamina(uint32_t, uint32_t); '
             'ST32(c->x[19] + 0xa4, rt_stamina(LD32(c->x[19] + 0xa4), (uint32_t)c->v[8])); }'
             f'  /* {a:#x}: str s8, [x19, #0xa4] (stamina: Accessibility) */')
+# Add items (runtime/items.c rt_item_tick): at the entry of Link's damage handling (every frame in play, on the game
+# thread, as picking an item up is) the runtime calls the pause menu data's item get for what was asked for. The item
+# get takes the item's name as a sead::SafeString; its vtable is the one the item get itself loads (`adrp x26` /
+# `ldr x26, [x26, #off]` at +0x24 / +0x30, then +0x10).
+
+def _item_tick(gen, a):
+    assert _word(gen, a) == _sub_sp(0x70), hex(_word(gen, a))
+    get = gen.sites['pouch_item_get']
+    adrp, ldr = _word(gen, get + 0x24), _word(gen, get + 0x30)
+    assert adrp & 0x9f00001f == 0x9000001a and ldr & 0xffc003ff == 0xf940035a, (hex(adrp), hex(ldr))  # x26
+    got = adrp_page(adrp, get + 0x24) + ((ldr >> 10) & 0xfff) * 8
+    return ('{ extern void rt_item_tick(Cpu *, uint64_t, uint64_t, uint64_t); '
+            f'rt_item_tick(c, {get:#x}ull, {gen.sites["pouch_mgr"]:#x}ull, LD64({got:#x}ull) + 0x10); c->sp -= 0x70; }}'
+            f'  /* {a:#x}: sub sp, sp, #0x70 (Link\'s damage handling: Add items) */')
 
 
 # tools/game_sites.py site -> its patch
@@ -892,6 +906,7 @@ PATCHES = {
     'link_life_store': _link_life,
     'link_life_tick': _link_life,
     'stamina_store': _stamina,
+    'item_tick': _item_tick,
 }
 
 
