@@ -13,6 +13,7 @@
 
 #ifdef _WIN32
 #include "../runtime/platform/win_compat.h"  // (setenv, unsetenv, mkdir with a mode)
+#include <windows.h>
 #include <direct.h>
 #include <io.h>
 #endif
@@ -327,7 +328,11 @@ static void test_copy(void) {
 
     // a broken copy (a file that can't be read) leaves no half profile
     snprintf(p, sizeof p, "%s/save-profiles/Full 100/save/save_0/0/game_data.sav", root);
+#ifdef _WIN32
+    if (0) {  // (no chmod 000 there)
+#else
     if (geteuid() != 0) {
+#endif
         chmod(p, 0000);
         CHECK(sp_copy(root, "Full 100", "Broken", NULL) == SP_IO);
         chmod(p, 0644);
