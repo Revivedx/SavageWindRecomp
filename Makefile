@@ -719,3 +719,15 @@ test-bloom-scale: $(B)/test_bloom_scale
 	$(B)/test_bloom_scale
 
 .PHONY: test-bloom-scale
+
+# Launch options (docs/launch-options.md): the checks, the file, the environment and the suggestions (no game files), and
+# the generated table of the flags the code reads (tools/gen_launch_flags.py --check fails when it is stale)
+$(B)/test_launch_flags: tools/test_launch_flags.c runtime/launch_flags.c runtime/launch_flags_table.c runtime/launch_flags.h
+	@mkdir -p $(B)
+	$(CC) -O1 -g -Wall -Wextra $(OSFLAGS) -Iruntime -o $@ tools/test_launch_flags.c runtime/launch_flags.c runtime/launch_flags_table.c
+
+test-launch-flags: $(B)/test_launch_flags
+	$(B)/test_launch_flags
+	python3 tools/gen_launch_flags.py --check
+
+.PHONY: test-launch-flags

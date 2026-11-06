@@ -19,6 +19,7 @@
 #include "hle.h"
 #include "kernel.h"
 #include "control.h"
+#include "launch_flags_boot.h"
 
 const char *g_romfs_dir;
 uint64_t g_program_id;
@@ -343,6 +344,7 @@ int main(int argc, char **argv) {
     // every log starts with which Savage Wind made it: the version and the source it was built from (Makefile SW_SOURCE)
     extern const char *rt_version(void);  // (runtime/ui/launcher.mm)
     fprintf(stderr, "[savagewind] Savage Wind %s (%s)\n", rt_version(), SW_SOURCE);
+    launch_flags_boot(argc, argv);  // the saved launch options (runtime/launch_flags.h): in the environment before anything reads it
     control_init();
     settings_load();
     static const char *const sparse_heap_modes[SPARSE_HEAP_COUNT] = {"auto", "on", "off"};
