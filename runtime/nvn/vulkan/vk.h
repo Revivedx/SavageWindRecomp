@@ -140,6 +140,8 @@ typedef struct TexBackend {
     uint64_t guest_size;         // bytes of guest storage its last texture covered (textures.c: kept images)
     uint64_t kept_hash, kept_bytes;
     bool kept;                   // parked past PARK_FRAMES with its contents (textures.c idle_expire)
+    bool evicted;                // its image let go over the video memory budget: made and uploaded again when used (vram_trim)
+    uint64_t seen_frame;         // last frame a texture asked for it (textures.c tex_backend)
     uint64_t drawn_frame, prev_drawn;  // last two frames a pass drew into it (exec.c: one-shot draws)
     uint64_t serial;             // which image this is: every image made gets a new one (exec.c's linear targets)
     // A compressed image drawn into through an uncompressed view of its blocks (a texel a block: BOTW encodes its NPC

@@ -20,6 +20,7 @@ uint64_t renderer_present_count(void){return frame;}
 static bool test_menu_ui=true;
 bool framepace_menu_ui(void){return test_menu_ui;}
 bool framepace_title_ui(void){return false;}
+bool input_cam_live(void){return false;}
 uint64_t framepace_script_frame(uint64_t value){return value;}
 void input_pc_escape(bool down){(void)down;abort();}
 void input_pc_map_axes(float out[2]){(void)out;abort();}

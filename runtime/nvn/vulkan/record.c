@@ -776,6 +776,37 @@ void rec_CmdPipelineBarrier2(VkCommandBuffer cb, const VkDependencyInfo *di) {
 // ---- rendering: the info, its colour attachments, then the depth and stencil ones. Chained: only a colour
 // attachment's VkAttachmentFeedbackLoopInfoEXT (exec.c begin_pass, VK_KHR_unified_image_layouts), carried as a mask
 CMD_ARGS(CmdBeginRendering, VkRenderingInfo ri; VkRenderingAttachmentInfo depth, stencil; uint8_t has_depth, has_stencil; uint16_t fbl;)  // then colour[]
+// The rendering info being handed to vkCmdBeginRendering, for a crash inside the driver: Intel's Windows driver for
+// UHD 620 / HD 630 read 0x298 there in 0.4.1, in the first minute of play (#332), and the log didn't say which pass.
+static const VkRenderingInfo *volatile begin_cur;
+void vk_view_describe(VkImageView v, char *s, size_t n);  // textures.c
+static void begin_note_attachment(const char *what, const VkRenderingAttachmentInfo *at) {
+    char d[160];
+    vk_view_describe(at->imageView, d, sizeof d);
+    fprintf(stderr, "  %s: view %p %s, layout %d, load %d store %d%s\n", what, (void *)at->imageView, d, (int)at->imageLayout,
+            (int)at->loadOp, (int)at->storeOp, at->pNext ? ", feedback loop" : "");
+}
+static void begin_note(void) {
+    const VkRenderingInfo *ri = begin_cur;
+    if (!ri) return;
+    fprintf(stderr, "in vkCmdBeginRendering: area %dx%d at %d,%d, %u layers, %u color attachments%s%s\n",
+            (int)ri->renderArea.extent.width, (int)ri->renderArea.extent.height, ri->renderArea.offset.x, ri->renderArea.offset.y,
+            ri->layerCount, ri->colorAttachmentCount, ri->pDepthAttachment ? ", depth" : "", ri->pStencilAttachment ? ", stencil" : "");
+    char what[16];
+    for (uint32_t i = 0; i < ri->colorAttachmentCount && i < 16; i++) {
+        snprintf(what, sizeof what, "color %u", i);
+        begin_note_attachment(what, &ri->pColorAttachments[i]);
+    }
+    if (ri->pDepthAttachment) begin_note_attachment("depth", ri->pDepthAttachment);
+    if (ri->pStencilAttachment) begin_note_attachment("stencil", ri->pStencilAttachment);
+}
+static void begin_rendering(VkCommandBuffer cb, const VkRenderingInfo *ri) {
+    rt_crash_note = begin_note;
+    begin_cur = ri;
+    vkCmdBeginRendering(cb, ri);
+    begin_cur = NULL;
+}
+
 static void CmdBeginRendering_run(const void *p) {
     const CmdBeginRenderingArgs *a = p;
     VkRenderingInfo ri = a->ri;
@@ -798,10 +829,10 @@ static void CmdBeginRendering_run(const void *p) {
     }
     ri.pDepthAttachment = a->has_depth ? &a->depth : NULL;
     ri.pStencilAttachment = a->has_stencil ? &a->stencil : NULL;
-    vkCmdBeginRendering(a->cb, &ri);
+    begin_rendering(a->cb, &ri);
 }
 void rec_CmdBeginRendering(VkCommandBuffer cb, const VkRenderingInfo *ri) {
-    if (on <= 0) { vkCmdBeginRendering(cb, ri); return; }
+    if (on <= 0) { begin_rendering(cb, ri); return; }
     if (ri->pNext) FATAL("[vk] recorder: a chained rendering info\n");
     if (ri->colorAttachmentCount > 16) FATAL("[vk] recorder: %u colour attachments\n", ri->colorAttachmentCount);
     uint16_t fbl = 0;

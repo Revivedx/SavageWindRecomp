@@ -489,6 +489,7 @@ T("The size of the maps the sun's shadows are drawn from. Console: the game's ow
 T("It has no System/Version.txt.", "System/Version.txt가 없습니다.")
 T("Its System/Version.txt says %s.", "System/Version.txt에 %s(이)라고 되어 있습니다.")
 T("It has %u files; with the update applied it has %u.", "파일이 %u개입니다. 업데이트를 적용하면 %u개입니다.")
+T("Its files add up to %llu MB; with the update applied they are %llu MB.", "파일 합계가 %llu MB입니다. 업데이트를 적용하면 %llu MB입니다.")
 T("The RomFS isn't version %s with the update applied", "RomFS가 업데이트를 적용한 버전 %s의 것이 아닙니다")
 T("Savage Wind needs the RomFS of version %s with the update applied over the base game. Extract the RomFS again that way and choose that folder.", "Savage Wind에는 기본 게임에 업데이트를 적용한 버전 %s의 RomFS가 필요합니다. 그렇게 RomFS를 다시 추출한 다음 그 폴더를 선택하세요.")
 T("Checking the game files...", "게임 파일을 확인하는 중...")
@@ -679,6 +680,8 @@ T("Open them from the title screen, or pause the game and choose System > Option
 
 T("Controller rumble", "컨트롤러 진동")
 T("Vibrate the controller during play.", "플레이 중 컨트롤러가 진동합니다.")
+T("Free camera with both sticks", "양쪽 스틱으로 자유 카메라")
+T("Clicking both sticks together turns the free camera on and off. Home on the keyboard always does.", "양쪽 스틱을 함께 누르면 자유 카메라가 켜지고 꺼집니다. 키보드의 Home 키는 항상 작동합니다.")
 
 T("Sharper text", "더 선명한 글자")
 T("Upscales the game's letters for 1440p and 4K, after a restart. Not the original art.", "1440p와 4K용으로 게임 글자를 확대합니다(재시작 후). 원본 그림이 아닙니다.")

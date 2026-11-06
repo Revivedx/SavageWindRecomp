@@ -489,6 +489,7 @@ T("The size of the maps the sun's shadows are drawn from. Console: the game's ow
 T("It has no System/Version.txt.", "В нём нет System/Version.txt.")
 T("Its System/Version.txt says %s.", "Его System/Version.txt указывает %s.")
 T("It has %u files; with the update applied it has %u.", "В нём %u файлов; с применённым обновлением их %u.")
+T("Its files add up to %llu MB; with the update applied they are %llu MB.", "Его файлы занимают %llu МБ; с применённым обновлением они занимают %llu МБ.")
 T("The RomFS isn't version %s with the update applied", "Это не RomFS версии %s с применённым обновлением")
 T("Savage Wind needs the RomFS of version %s with the update applied over the base game. Extract the RomFS again that way and choose that folder.", "Для Savage Wind нужен RomFS версии %s с обновлением, применённым к базовой игре. Извлеките RomFS заново таким образом и выберите эту папку.")
 T("Checking the game files...", "Проверка файлов игры...")
@@ -679,6 +680,8 @@ T("Open them from the title screen, or pause the game and choose System > Option
 
 T("Controller rumble", "Вибрация контроллера")
 T("Vibrate the controller during play.", "Контроллер вибрирует во время игры.")
+T("Free camera with both sticks", "Свободная камера обоими стиками")
+T("Clicking both sticks together turns the free camera on and off. Home on the keyboard always does.", "Одновременное нажатие обоих стиков включает и выключает свободную камеру. Клавиша Home на клавиатуре работает всегда.")
 
 T("Sharper text", "Более чёткий текст")
 T("Upscales the game's letters for 1440p and 4K, after a restart. Not the original art.", "Увеличивает буквы игры для 1440p и 4K после перезапуска. Не оригинальная графика.")

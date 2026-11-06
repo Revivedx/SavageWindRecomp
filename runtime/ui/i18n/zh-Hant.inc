@@ -489,6 +489,7 @@ T("The size of the maps the sun's shadows are drawn from. Console: the game's ow
 T("It has no System/Version.txt.", "沒有System/Version.txt。")
 T("Its System/Version.txt says %s.", "其System/Version.txt寫的是%s。")
 T("It has %u files; with the update applied it has %u.", "它有%u個檔案；套用更新後應有%u個。")
+T("Its files add up to %llu MB; with the update applied they are %llu MB.", "它的檔案共%llu MB；套用更新後應為%llu MB。")
 T("The RomFS isn't version %s with the update applied", "該RomFS不是套用了更新的%s版")
 T("Savage Wind needs the RomFS of version %s with the update applied over the base game. Extract the RomFS again that way and choose that folder.", "Savage\u00a0Wind需要在基礎遊戲上套用了更新的%s版RomFS。請以此方式重新擷取RomFS，然後選擇該資料夾。")
 T("Checking the game files...", "正在檢查遊戲檔案...")
@@ -679,6 +680,8 @@ T("Open them from the title screen, or pause the game and choose System > Option
 
 T("Controller rumble", "控制器震動")
 T("Vibrate the controller during play.", "遊玩時讓控制器震動。")
+T("Free camera with both sticks", "雙搖桿切換自由視角")
+T("Clicking both sticks together turns the free camera on and off. Home on the keyboard always does.", "同時按下兩個搖桿可開啟或關閉自由視角。鍵盤上的 Home 鍵始終可用。")
 
 T("Sharper text", "更清晰的文字")
 T("Upscales the game's letters for 1440p and 4K, after a restart. Not the original art.", "為 1440p 和 4K 放大遊戲的文字，重新啟動後生效。不是原版美術。")

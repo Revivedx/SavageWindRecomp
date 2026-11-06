@@ -170,13 +170,13 @@ static void recompute_pad(void) {
         if (SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 16000) host |= 1u << PADB_LTRIGGER;
         if (SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 16000) host |= 1u << PADB_RTRIGGER;
     }
-    {   // The free camera (hle/freecam.c): both stick clicks together turn it on and off; while it is on the controller
-        // moves it and the game sees the controller at rest
+    {   // The free camera (hle/freecam.c): both stick clicks together turn it on and off (with the Controls option off they
+        // only turn it off); while it is on the controller moves it and the game sees the controller at rest
         extern bool freecam_active(void);
         extern void freecam_toggle(void), freecam_pad(float lx, float ly, float rx, float ry, float up, float down, bool fast,
                                                       bool slow);
         static bool combo_was;
-        bool combo = pad && !host_test && (host >> SDL_GAMEPAD_BUTTON_LEFT_STICK & 1) && (host >> SDL_GAMEPAD_BUTTON_RIGHT_STICK & 1);
+        bool combo = pad && !host_test && (g_settings.freecam_sticks || freecam_active()) && (host >> SDL_GAMEPAD_BUTTON_LEFT_STICK & 1) && (host >> SDL_GAMEPAD_BUTTON_RIGHT_STICK & 1);
         if (combo && !combo_was) freecam_toggle();
         combo_was = combo;
         if (combo) host &= ~(1u << SDL_GAMEPAD_BUTTON_LEFT_STICK | 1u << SDL_GAMEPAD_BUTTON_RIGHT_STICK);  // (not to the game)
@@ -291,6 +291,8 @@ static bool cam_reading(void) {
     uint64_t t = cam_read_ns;
     return cam_native_on() && t && plat_now_ns() - t < 250000000;
 }
+// (runtime/pc_cursor.c: a message box while the camera still takes input is speech over play, not a conversation)
+bool input_cam_live(void) { return cam_reading(); }
 
 // A controller without a gyroscope at a shrine apparatus (or with the tilt key held): its sticks turn the virtual
 // controller (runtime/hle/motion.c motion_dualstick), and R3 / L3 recenter it
