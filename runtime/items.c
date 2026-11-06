@@ -237,6 +237,7 @@ static void list_read(void) {
         for (size_t p = 0; p < sizeof profiles / sizeof *profiles; p++)
             if (!strcmp(profile, profiles[p].profile)) cat = profiles[p].cat;
         if (cat < 0 || (cat == ITEMCAT_ARROW && !has_tag(&b, a, arrow))) continue;
+        if (cat == ITEMCAT_MATERIAL && !strncmp(actor, "Obj_", 4) && strstr(actor, "Arrow")) cat = ITEMCAT_ARROW;  // (bundles: Obj_AncientArrow_C_01)
         const char *name = msg_name(actor);
         if (!name) continue;
         GameItem *it = &g_items[g_nitems++];
@@ -304,11 +305,43 @@ bool items_available(void) {
 }
 
 // ---- requests, carried out on the game thread
-typedef struct { char actor[64]; int value, times; } Request;
+typedef struct { char actor[64]; int item, value, times, asked; unsigned seq; bool stack; } Request;
 static Request g_req[32];
 static int g_nreq;
 static atomic_int g_pending;
+static unsigned g_seq;
+static ItemResult g_result;
 static pthread_mutex_t g_req_lock = PTHREAD_MUTEX_INITIALIZER;
+
+RT_ON_RESET(items_reset) {  // (what was asked for in the last boot isn't for this one)
+    pthread_mutex_lock(&g_req_lock);
+    g_nreq = 0;
+    atomic_store(&g_pending, 0);
+    g_result = (ItemResult){g_seq, -1, 0, 0};
+    pthread_mutex_unlock(&g_req_lock);
+}
+
+unsigned items_requested(void) {
+    pthread_mutex_lock(&g_req_lock);
+    unsigned n = g_seq;
+    pthread_mutex_unlock(&g_req_lock);
+    return n;
+}
+
+ItemResult items_last_result(void) {
+    pthread_mutex_lock(&g_req_lock);
+    ItemResult r = g_result;
+    pthread_mutex_unlock(&g_req_lock);
+    return r;
+}
+
+// How many entries the pouch has: the pause menu data's list of them at +0x78, its free entries at +0x90, 420 in all
+// (seen comparing the object around item gets, 1.9.0). The item get adds nothing when the player has no free slot of
+// that kind, and says nothing of it. -1: not those fields, this game version has them elsewhere.
+static int pouch_entries(uint64_t pmdm) {
+    uint32_t used = *(volatile uint32_t *)(uintptr_t)(pmdm + 0x78), free_ = *(volatile uint32_t *)(uintptr_t)(pmdm + 0x90);
+    return used + free_ == 420 ? (int)used : -1;
+}
 
 bool items_request(int i, int count) {
     const GameItem *it = items_at(i);
@@ -318,8 +351,11 @@ bool items_request(int i, int count) {
     if (ok) {
         Request *r = &g_req[g_nreq++];
         snprintf(r->actor, sizeof r->actor, "%s", it->actor);
+        r->item = i, r->seq = ++g_seq;
         r->value = it->stack ? (count > 999 ? 999 : count) : it->value;
         r->times = it->stack ? 1 : (count > ITEMS_MAX_EACH ? ITEMS_MAX_EACH : count);
+        r->asked = it->stack ? r->value : r->times;
+        r->stack = it->stack;
         atomic_store(&g_pending, g_nreq);
     }
     pthread_mutex_unlock(&g_req_lock);
@@ -348,12 +384,21 @@ void rt_item_tick(Cpu *c, uint64_t get, uint64_t mgr, uint64_t sstr_vt) {
         memcpy((void *)(uintptr_t)(buf + 0x20), req[r].actor, sizeof req[r].actor);
         *(uint64_t *)(uintptr_t)buf = sstr_vt;
         *(uint64_t *)(uintptr_t)(buf + 8) = buf + 0x20;
+        bool stack = req[r].stack;
+        int added = stack ? req[r].asked : 0;  // (a stack: all of it at once)
         for (int k = 0; k < req[r].times; k++) {
+            int before = pouch_entries(pmdm);
             c->sp = buf;
             c->x[0] = pmdm, c->x[1] = buf, c->x[2] = (uint32_t)req[r].value, c->x[3] = 0;
             guest_call(c, get);
+            // (a stack may only grow an entry it has: there no new entry says nothing)
+            if (!stack && before >= 0 && pouch_entries(pmdm) == before) break;
+            if (!stack) added++;
         }
-        LOG("[items] %s: value %d, %d time%s\n", req[r].actor, req[r].value, req[r].times, req[r].times == 1 ? "" : "s");
+        LOG("[items] %s: value %d, %d of %d\n", req[r].actor, req[r].value, added, req[r].asked);
+        pthread_mutex_lock(&g_req_lock);
+        g_result = (ItemResult){req[r].seq, req[r].item, req[r].asked, added};
+        pthread_mutex_unlock(&g_req_lock);
     }
     memcpy(c, keep, sizeof *c);
     free(keep);
