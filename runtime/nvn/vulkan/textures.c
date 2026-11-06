@@ -89,7 +89,11 @@ static VkFmt fmt_of(uint32_t f) {
     case 0x4A: return (VkFmt){VK_FORMAT_BC4_SNORM_BLOCK};
     case 0x4B: return (VkFmt){VK_FORMAT_BC5_UNORM_BLOCK};
     // 0x4C = signed RGTC2; SAVAGEWIND_BC5_UNORM=1 decodes it unsigned (see metal.m / notes/PLAN.md)
-    case 0x4C: return (VkFmt){getenv("SAVAGEWIND_BC5_UNORM") ? VK_FORMAT_BC5_UNORM_BLOCK : VK_FORMAT_BC5_SNORM_BLOCK};
+    case 0x4C: {
+        static int unorm = -1;
+        if (unorm < 0) unorm = getenv("SAVAGEWIND_BC5_UNORM") != NULL;
+        return (VkFmt){unorm ? VK_FORMAT_BC5_UNORM_BLOCK : VK_FORMAT_BC5_SNORM_BLOCK};
+    }
     case 0x4D: return (VkFmt){VK_FORMAT_BC7_UNORM_BLOCK};
     case 0x4E: return (VkFmt){VK_FORMAT_BC7_SRGB_BLOCK};
     case 0x4F: return (VkFmt){VK_FORMAT_BC6H_SFLOAT_BLOCK};

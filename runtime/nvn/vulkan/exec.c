@@ -130,6 +130,9 @@ static _Atomic int stat_warm;      // ... found built: by the pre-warm (pso_init
 static void pso_init(void);
 static _Atomic uint64_t prof_c_tr, prof_c_prog, prof_c_pipe, prof_c_comp, prof_c_ntr, prof_c_nprog, prof_c_npipe;  // (VK_PROF) compile ns / counts
 static uint64_t op_counts[CMD_COUNT];
+// An environment flag read once per call site: getenv scans the whole environment block (on Windows the CRT also
+// compares case-insensitively), ~0.14 ms a frame at the sites below (a clear, a storing dispatch, a copy).
+#define ENV_ONCE(name) ({ static int env_once_ = -1; if (env_once_ < 0) env_once_ = getenv(name) != NULL; env_once_; })
 bool g_debug_frame;
 static char stats_text[2048];
 void vk_collect_dead(void);
@@ -833,7 +836,37 @@ void renderer_wait_seq(uint64_t seq) {
     vk_wait_seq(seq);
 }
 
+// A call per set costs the driver a lock, a free-list walk and a handle write (~0.25 ms a frame at ~3000 new sets). Sets
+// are taken from the pool in growing batches of one layout (a few draws' worth: 1, 2, 4, 8, 16) and handed out one by
+// one; a batch belongs to one submission's pool, so it dies with that pool's reset (the slot's seq changes then).
+#define ASET_CACHE 16
+#define ASET_BATCH 16
+static VkDescriptorSet vk_alloc_set_one(VkDescriptorSetLayout layout, int count, VkDescriptorSet *out);
 VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout layout) {
+    static struct { VkDescriptorSetLayout layout; Sub *s; uint64_t seq; int pool, n, next; VkDescriptorSet set[ASET_BATCH]; } cache[ASET_CACHE];
+    Sub *s = sub();
+    uint32_t h = (uint32_t)(((uintptr_t)layout >> 4) * 2654435761u) >> 28;  // (16 entries)
+    __typeof__(cache[0]) *c = &cache[h];
+    if (c->layout == layout && c->s == s && c->seq == s->seq && c->pool == s->cur_pool && c->n > 0) return c->set[--c->n];
+    if (c->layout != layout) { c->layout = layout; c->next = 1; }
+    else if (c->next < ASET_BATCH) c->next *= 2;
+    VkDescriptorSet got[ASET_BATCH];
+    int want = c->next;
+    VkDescriptorSet first = vk_alloc_set_one(layout, want, got);
+    // (vk_alloc_set_one returned with the pool that served it in s->cur_pool; want sets are in got[], or one in `first`)
+    if (want > 1 && first == VK_NULL_HANDLE) {
+        for (int i = 1; i < want; i++) c->set[i - 1] = got[i];
+        c->n = want - 1;
+        c->s = s; c->seq = s->seq; c->pool = s->cur_pool;
+        return got[0];
+    }
+    c->n = 0;
+    return first;
+}
+
+// count sets of one layout. count > 1: filled into out[] and VK_NULL_HANDLE returned when a pool took them all in one
+// call; otherwise (single set, or the batch didn't fit) one set returned.
+static VkDescriptorSet vk_alloc_set_one(VkDescriptorSetLayout layout, int count, VkDescriptorSet *out) {
     Sub *s = sub();
     for (;;) {
         if (s->cur_pool == s->npools) {
@@ -846,6 +879,14 @@ VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout layout) {
             VkDescriptorPoolCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 8192,
                                              .poolSizeCount = 7, .pPoolSizes = sizes};
             VK_CHECK(vkCreateDescriptorPool(g_vk.dev, &ci, NULL, &s->pools[s->npools++]));
+        }
+        if (count > 1) {
+            VkDescriptorSetLayout ls[ASET_BATCH];
+            for (int i = 0; i < count; i++) ls[i] = layout;
+            VkDescriptorSetAllocateInfo bai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                                               .descriptorPool = s->pools[s->cur_pool], .descriptorSetCount = (uint32_t)count, .pSetLayouts = ls};
+            if (vkAllocateDescriptorSets(g_vk.dev, &bai, out) == VK_SUCCESS) return VK_NULL_HANDLE;
+            count = 1;  // (this pool is nearly full: take sets one at a time, as before, until it is)
         }
         VkDescriptorSetAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
                                           .descriptorPool = s->pools[s->cur_pool], .descriptorSetCount = 1, .pSetLayouts = &layout};
@@ -7051,7 +7092,7 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     stat_dispatches++;
     chunk_draws++;
     if (cp->si->writes_gmem) {
-        if (getenv("SAVAGEWIND_LOG_HOLD")) {
+        if (ENV_ONCE("SAVAGEWIND_LOG_HOLD")) {
             LOG("[hold] frame %llu draw %llu: cs %llx sbuf:", (unsigned long long)renderer_present_count(),
                 (unsigned long long)stat_draws, (unsigned long long)st.program->stages[5].code_addr);
             for (int i = 0; i < 16; i++)
@@ -7873,7 +7914,7 @@ have_pipe:
                 x >= lim->viewportBoundsRange[0] && y >= lim->viewportBoundsRange[0] &&
                 x + w <= lim->viewportBoundsRange[1] && y + h <= lim->viewportBoundsRange[1]) {
                 vp_sx = sx; vp_sy = sy; vp_ox = x; vp_oy = y;
-                if (getenv("SAVAGEWIND_LOG_COPIES"))
+                if (ENV_ONCE("SAVAGEWIND_LOG_COPIES"))
                     LOG("[copy] fixed-aspect capture %ux%u backing %ux%u -> %ux%u: viewport %.3fx%.3f at %.3f,%.3f\n",
                         src->width, src->height, s->width, s->height, dst->width, dst->height, w, h, x, y);
             }
@@ -8057,7 +8098,7 @@ have_pipe:
         bar_other = true;
         if (pr->vi->writes_gmem) gw_note(0);
         if (pr->fi->writes_gmem) gw_note(1);
-        if (getenv("SAVAGEWIND_LOG_HOLD")) LOG("[hold] frame %llu draw %llu: vs %llx (%d) fs %llx (%d) fs hash %016llx\n",
+        if (ENV_ONCE("SAVAGEWIND_LOG_HOLD")) LOG("[hold] frame %llu draw %llu: vs %llx (%d) fs %llx (%d) fs hash %016llx\n",
                                                (unsigned long long)renderer_present_count(), (unsigned long long)stat_draws,
                                                (unsigned long long)st.program->stages[0].code_addr, pr->vi->writes_gmem,
                                                (unsigned long long)st.program->stages[1].code_addr, pr->fi->writes_gmem,
@@ -8335,7 +8376,7 @@ static void copy_buffer_to_texture(uint64_t src, const TexRefRec *dst) {
     TexBackend *b = vk_tex(t, false);  // prior CPU contents uploaded first
     renderer_mark_gpu_owned(t);
     vk_trace_event(t, 0, NULL, 0, "copy from buffer %llx", (unsigned long long)src);
-    if (getenv("SAVAGEWIND_LOG_COPIES")) {  // (debugging)
+    if (ENV_ONCE("SAVAGEWIND_LOG_COPIES")) {  // (debugging)
         static int n;
         if (n++ < 200)
             LOG("[copy] buffer %llx -> #%llu %ux%ux%u target %u f%#x level %d region %d,%d,%d %dx%dx%d view set %#x layer %u\n",
@@ -8469,7 +8510,7 @@ static void copy_texture(const TexRefRec *src, const TexRefRec *dst, uint64_t fl
     dl_note("copy texture %ux%u f%#x -> %ux%u f%#x (%p -> %p)", st_->width, st_->height, st_->format, dt->width, dt->height,
             dt->format, (void *)st_, (void *)dt);
     TexBackend *s = vk_tex(st_, false), *d = vk_tex(dt, true);
-    if (getenv("SAVAGEWIND_LOG_COPIES")) {  // (debugging)
+    if (ENV_ONCE("SAVAGEWIND_LOG_COPIES")) {  // (debugging)
         static int n;
         if (n++ < 300)
             LOG("[copy] tex #%llu %ux%ux%u t%u f%#x lv%u (%d,%d,%d %dx%dx%d) view %#x/%u/%u -> #%llu %ux%ux%u t%u f%#x lv%u "
@@ -9942,6 +9983,8 @@ static void exec_list(uint64_t handle, int depth) {
         // (the records were written by another core: the first touch of each one missed the cache)
         __builtin_prefetch((const char *)r + 256);
         __builtin_prefetch((const char *)r + 320);
+        __builtin_prefetch((const char *)r + 640);  // (a draw's records run to several hundred bytes: one more stride ahead)
+        __builtin_prefetch((const char *)r + 704);
         if (r->op < CMD_COUNT) op_counts[r->op]++;
         if (g_debug_frame && getenv("SAVAGEWIND_LOG_OPS"))
             LOG("[op] %u depth %d: %llx %llx %llx %llx %llx\n", r->op, depth, (unsigned long long)r->x[0], (unsigned long long)r->x[1],
@@ -10106,7 +10149,7 @@ static void exec_list(uint64_t handle, int depth) {
         case CMD_CLEAR_COLOR: {
             snap_reason = "clear-color"; snapshots_invalidate(NULL);
             int index = (int)r->x[0];
-            if (getenv("SAVAGEWIND_LOG_CLEARS") && index < st.rt.ncolor && st.rt.color[index])
+            if (ENV_ONCE("SAVAGEWIND_LOG_CLEARS") && index < st.rt.ncolor && st.rt.color[index])
                 LOG("[cclear] frame %llu idx %d %ux%u f%#x mask %#x\n", (unsigned long long)renderer_present_count(), index,
                     st.rt.color[index]->width, st.rt.color[index]->height, st.rt.color[index]->format, (uint32_t)r->x[2]);
             if (index < st.rt.ncolor && st.rt.color[index]) clear(index, (int)r->x[5], x, (uint32_t)r->x[2], false, 0, false, 0, 0);
