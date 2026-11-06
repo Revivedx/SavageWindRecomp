@@ -415,8 +415,18 @@ static void test_cleanup(void) {
     mk("save-profiles/.tmp-new/save");
     char p[1100];
     snprintf(p, sizeof p, "%s/save-profiles/.tmp-old", root);
+#ifdef _WIN32
+    {  // (utime can't open a folder here)
+        HANDLE h = CreateFileA(p, FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                               OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+        FILETIME ft = {0, 0x01B21DD2};  // (about 1970; any time long ago)
+        CHECK(h != INVALID_HANDLE_VALUE && SetFileTime(h, NULL, NULL, &ft));
+        CloseHandle(h);
+    }
+#else
     struct utimbuf old = {1, 1};  // (1970)
     utime(p, &old);
+#endif
     sp_cleanup(root);
     CHECK(!there("save-profiles/.deleting-a"));
     CHECK(!there("save-profiles/.tmp-old"));
