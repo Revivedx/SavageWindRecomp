@@ -12,6 +12,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "../platform.h"  // (Windows: mkdir with a mode)
 #include "save_convert.h"
 #ifdef _WIN32
 #include <windows.h>
