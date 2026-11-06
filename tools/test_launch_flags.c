@@ -131,7 +131,11 @@ int main(void) {
     CHECK(lf_parse(&r, text) == 0 && r.n == 2 && !strcmp(r.flag[1].value, "x y"));
 
     char path[200];
+#ifdef _WIN32
+    snprintf(path, sizeof path, "%s/sw_lf_test_%d.txt", getenv("TEMP") ? getenv("TEMP") : ".", (int)getpid());
+#else
     snprintf(path, sizeof path, "/tmp/sw_lf_test_%d.txt", (int)getpid());
+#endif
     CHECK(!lf_load(&r, path) && r.n == 0);  // no file = empty
     CHECK(lf_save(&q, path));
     CHECK(lf_load(&r, path) && r.n == 2 && !strcmp(r.flag[0].name, "SAVAGEWIND_FSR3"));
