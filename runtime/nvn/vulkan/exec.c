@@ -4109,14 +4109,19 @@ static void resolve_feedback(Prog *pr) {
                     continue;
                 }
             }
-            // SAVAGEWIND_VK_FEEDBACK_ONCE=1: one snapshot of a target per frame, later draws that sample it get that one
-            // (they miss what the frame drew into it since). Each snapshot ends the pass and starts it again: on a tiler
-            // (Mali) the copies and restarts were most of the GPU's frame. For measuring, and where the effects allow.
+            // One snapshot of a target per frame, later draws that sample it get that one (they miss what the frame drew
+            // into it since). Each snapshot ends the pass and starts it again: on a tiler (Mali) the copies and restarts
+            // were most of the GPU's frame. On by default where the device has no feedback loops (RADV on Polaris and
+            // older, Intel's integrated GPUs, AMD's Windows driver for Polaris: #332): a copy before each of the
+            // terrain's ~200 draws that sample their own target halved the frame rate (RTX 3060 with the loops off,
+            // 1280x720: castle 65 -> 133 fps, Great Plateau 66 -> 141; the picture the same as with the loops).
+            // SAVAGEWIND_VK_FEEDBACK_ONCE=0: a copy each time; =1: on wherever copies are made.
             static int once = -1;
             static uint64_t snap_frame[8], snap_pass[8];
             if (once < 0) {
-                once = getenv("SAVAGEWIND_VK_FEEDBACK_ONCE") != NULL;
-                if (once) LOG("[vk] feedback snapshots: one per target per frame, until written\n");
+                const char *e = getenv("SAVAGEWIND_VK_FEEDBACK_ONCE");
+                once = e ? atoi(e) != 0 : !g_vk.feedback_loop;
+                if (once) LOG("[vk] feedback snapshots: one per target per frame, until written%s\n", e ? "" : " (no feedback loops)");
             }
             // (once: reused past draws into the target since - that is its point, a pass break and a copy saved each
             // time, ~450 a frame in the open world: refusing every one took Mali-G610 from 30 to 7 FPS. But not for
