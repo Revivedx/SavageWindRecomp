@@ -39,7 +39,6 @@ message instead.
 - Options shown in orange are for developers. Some of them make the game much slower or write very large files.
 - Savage Wind does not accept options that would lock you out of this screen or break the start (for example
   `SAVAGEWIND_NO_LAUNCHER`), or system settings such as `PATH`.
-
 - If the same variable is also set outside Savage Wind (in a shortcut or a terminal), the value in this list wins.
 
 ## If something goes wrong
