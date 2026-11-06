@@ -20,6 +20,9 @@ a save Savage Wind can load. You do not need Python or a terminal. It reads only
 5. The tab shows what was imported: the slots, how many flags were kept, set to their defaults or dropped, and how
    many Hero's Path blocks, album pictures and compendium pictures came along. The slot list below it is read again.
 
+With [save profiles](save-profiles.md), everything on this page works on the profile in use: the import and its backup
+folder are in that profile, and the other profiles are not touched. "Your `save` folder" below is the Default profile.
+
 The import replaces the whole of `save_0` (all slots, `option.sav`, the Hero's Path, the album and the compendium
 pictures), not just some files in it. Mixing slots of two games would give a Hero's Path that does not match the save.
 To go back to what you had: close the game, rename `save` to something else, and rename the backup folder to `save`.

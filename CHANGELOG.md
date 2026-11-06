@@ -2,6 +2,13 @@
 
 What changed in each Savage Wind release. The `test` branch holds what the next one will contain.
 
+## Next (on the `test` branch)
+
+- **Save profiles:** keep several complete sets of saves and switch between them in **Settings > Saves**, for example
+  your own playthrough and a 100% save for testing. Each profile has its own slots, so they never touch each other.
+  Create, copy, rename and delete profiles there. Your existing `save` folder is the **Default** profile and needs no
+  action. See [Save profiles](docs/save-profiles.md).
+
 ## Alpha 4.1 (0.4.1-alpha.4) - 2026-11-01
 
 **A quick fix update for Alpha 4.** Extract it over your Alpha 4 folder (Windows) or use the new AppImage (Linux): your
