@@ -26,6 +26,7 @@ Settings g_settings = {
     .reverb = true,
     .movie_audio = true,
     .rumble = true,
+    .freecam_sticks = true,
     .damage_taken = 100,
     .damage_dealt = 100,
     .upscaler = UPSCALE_DEFAULT,  // (Off: the window's resolution; MetalFX on macOS)
@@ -165,6 +166,7 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "rumble")) g_settings.rumble = atoi(val) != 0;
         else if (!strcmp(key, "quick_sort")) g_settings.quick_sort = atoi(val) != 0;
+        else if (!strcmp(key, "freecam_sticks")) g_settings.freecam_sticks = atoi(val) != 0;
         else if (!strcmp(key, "dpad_move")) g_settings.dpad_move = atoi(val) != 0;
         else if (!strcmp(key, "left_stick_deadzone")) g_settings.stick_deadzone[0] = (float)atof(val) / 100;  // (percent)
         else if (!strcmp(key, "right_stick_deadzone")) g_settings.stick_deadzone[1] = (float)atof(val) / 100;
@@ -338,6 +340,7 @@ void settings_save(void) {
     fprintf(f, "frame_generation = %d\n", g_settings.frame_gen ? 1 : 0);
     fprintf(f, "rumble = %d\n", g_settings.rumble);
     fprintf(f, "quick_sort = %d\n", g_settings.quick_sort);
+    fprintf(f, "freecam_sticks = %d\n", g_settings.freecam_sticks);
     fprintf(f, "dpad_move = %d\n", g_settings.dpad_move);
     fprintf(f, "left_stick_deadzone = %.0f\n", g_settings.stick_deadzone[0] * 100);
     fprintf(f, "right_stick_deadzone = %.0f\n", g_settings.stick_deadzone[1] * 100);

@@ -999,13 +999,18 @@ static void rstb_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
         return;
     }
     if (k == R->rom_nfiles) { LOG("[fs] voices: no %s, %d bigger banks left as they are\n", rstb_path, R->ngrown); return; }
-    if (overlay_file(rstb_path, host, sizeof host)) {
-        LOG("[fs] voices: the overlay folder replaces the ResourceSizeTable: %d bigger banks left to it\n", R->ngrown);
-        return;
-    }
-    size_t zn = R->rom_files[k].size, n = 0;
+    // A mod's table (the overlay folder's) needs the same growth: without it the game can't load what grew here
+    struct stat over;
+    bool from_overlay = overlay_file(rstb_path, host, sizeof host) && !stat(host, &over);
+    size_t zn = from_overlay ? (size_t)over.st_size : R->rom_files[k].size, n = 0;
     uint8_t *z = malloc(zn), *d = NULL;
-    if (romfs_image_pread(R->img, z, zn, R->rom_files[k].off) == (ssize_t)zn) d = yaz0_unpack(z, zn, &n);
+    if (from_overlay) {
+        FILE *f = fopen(host, "rb");
+        if (f && fread(z, 1, zn, f) == zn) d = yaz0_unpack(z, zn, &n);
+        if (f) fclose(f);
+    } else if (romfs_image_pread(R->img, z, zn, R->rom_files[k].off) == (ssize_t)zn) {
+        d = yaz0_unpack(z, zn, &n);
+    }
     free(z);
     uint32_t ncrc = 0, nname = 0;
     if (d && n >= 12) memcpy(&ncrc, d + 4, 4), memcpy(&nname, d + 8, 4);
@@ -1223,6 +1228,17 @@ const char *romfs_file_at(uint64_t off) {
     return NULL;
 }
 
+// The last RomFS files the game read, newest last, for a crash report (runtime/dispatch.c): a file that makes the
+// game's parser run out of its resource heap names itself only this way (#363).
+static const char *recent_files[8];
+static _Atomic unsigned recent_n;
+int fs_recent_files(const char **out, int max) {
+    unsigned n = atomic_load(&recent_n);
+    int k = 0;
+    for (unsigned i = n > 8 ? n - 8 : 0; i < n && k < max; i++) out[k++] = recent_files[i & 7];
+    return k;
+}
+
 // ------------------------------------------------------------------ IStorage (raw RomFS image)
 typedef struct { RomImage *img; uint64_t size; } Storage;
 
@@ -1247,6 +1263,7 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
             static const char *last;
             if (path && path != last) {
                 last = path;
+                recent_files[atomic_load(&recent_n) & 7] = path, atomic_fetch_add(&recent_n, 1);
                 if (getenv("SAVAGEWIND_LOG_FILES")) LOG("[fs] read %s\n", path);
             }
             // SAVAGEWIND_LOG_STREAMS=1: every read of a stream's header (a .bfstm read from its start: the sound

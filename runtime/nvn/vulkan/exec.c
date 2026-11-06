@@ -130,6 +130,9 @@ static _Atomic int stat_warm;      // ... found built: by the pre-warm (pso_init
 static void pso_init(void);
 static _Atomic uint64_t prof_c_tr, prof_c_prog, prof_c_pipe, prof_c_comp, prof_c_ntr, prof_c_nprog, prof_c_npipe;  // (VK_PROF) compile ns / counts
 static uint64_t op_counts[CMD_COUNT];
+// An environment flag read once per call site: getenv scans the whole environment block (on Windows the CRT also
+// compares case-insensitively), ~0.14 ms a frame at the sites below (a clear, a storing dispatch, a copy).
+#define ENV_ONCE(name) ({ static int env_once_ = -1; if (env_once_ < 0) env_once_ = getenv(name) != NULL; env_once_; })
 bool g_debug_frame;
 static char stats_text[2048];
 void vk_collect_dead(void);
@@ -833,7 +836,37 @@ void renderer_wait_seq(uint64_t seq) {
     vk_wait_seq(seq);
 }
 
+// A call per set costs the driver a lock, a free-list walk and a handle write (~0.25 ms a frame at ~3000 new sets). Sets
+// are taken from the pool in growing batches of one layout (a few draws' worth: 1, 2, 4, 8, 16) and handed out one by
+// one; a batch belongs to one submission's pool, so it dies with that pool's reset (the slot's seq changes then).
+#define ASET_CACHE 16
+#define ASET_BATCH 16
+static VkDescriptorSet vk_alloc_set_one(VkDescriptorSetLayout layout, int count, VkDescriptorSet *out);
 VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout layout) {
+    static struct { VkDescriptorSetLayout layout; Sub *s; uint64_t seq; int pool, n, next; VkDescriptorSet set[ASET_BATCH]; } cache[ASET_CACHE];
+    Sub *s = sub();
+    uint32_t h = (uint32_t)(((uintptr_t)layout >> 4) * 2654435761u) >> 28;  // (16 entries)
+    __typeof__(cache[0]) *c = &cache[h];
+    if (c->layout == layout && c->s == s && c->seq == s->seq && c->pool == s->cur_pool && c->n > 0) return c->set[--c->n];
+    if (c->layout != layout) { c->layout = layout; c->next = 1; }
+    else if (c->next < ASET_BATCH) c->next *= 2;
+    VkDescriptorSet got[ASET_BATCH];
+    int want = c->next;
+    VkDescriptorSet first = vk_alloc_set_one(layout, want, got);
+    // (vk_alloc_set_one returned with the pool that served it in s->cur_pool; want sets are in got[], or one in `first`)
+    if (want > 1 && first == VK_NULL_HANDLE) {
+        for (int i = 1; i < want; i++) c->set[i - 1] = got[i];
+        c->n = want - 1;
+        c->s = s; c->seq = s->seq; c->pool = s->cur_pool;
+        return got[0];
+    }
+    c->n = 0;
+    return first;
+}
+
+// count sets of one layout. count > 1: filled into out[] and VK_NULL_HANDLE returned when a pool took them all in one
+// call; otherwise (single set, or the batch didn't fit) one set returned.
+static VkDescriptorSet vk_alloc_set_one(VkDescriptorSetLayout layout, int count, VkDescriptorSet *out) {
     Sub *s = sub();
     for (;;) {
         if (s->cur_pool == s->npools) {
@@ -846,6 +879,14 @@ VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout layout) {
             VkDescriptorPoolCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 8192,
                                              .poolSizeCount = 7, .pPoolSizes = sizes};
             VK_CHECK(vkCreateDescriptorPool(g_vk.dev, &ci, NULL, &s->pools[s->npools++]));
+        }
+        if (count > 1) {
+            VkDescriptorSetLayout ls[ASET_BATCH];
+            for (int i = 0; i < count; i++) ls[i] = layout;
+            VkDescriptorSetAllocateInfo bai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                                               .descriptorPool = s->pools[s->cur_pool], .descriptorSetCount = (uint32_t)count, .pSetLayouts = ls};
+            if (vkAllocateDescriptorSets(g_vk.dev, &bai, out) == VK_SUCCESS) return VK_NULL_HANDLE;
+            count = 1;  // (this pool is nearly full: take sets one at a time, as before, until it is)
         }
         VkDescriptorSetAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
                                           .descriptorPool = s->pools[s->cur_pool], .descriptorSetCount = 1, .pSetLayouts = &layout};
@@ -4068,14 +4109,19 @@ static void resolve_feedback(Prog *pr) {
                     continue;
                 }
             }
-            // SAVAGEWIND_VK_FEEDBACK_ONCE=1: one snapshot of a target per frame, later draws that sample it get that one
-            // (they miss what the frame drew into it since). Each snapshot ends the pass and starts it again: on a tiler
-            // (Mali) the copies and restarts were most of the GPU's frame. For measuring, and where the effects allow.
+            // One snapshot of a target per frame, later draws that sample it get that one (they miss what the frame drew
+            // into it since). Each snapshot ends the pass and starts it again: on a tiler (Mali) the copies and restarts
+            // were most of the GPU's frame. On by default where the device has no feedback loops (RADV on Polaris and
+            // older, Intel's integrated GPUs, AMD's Windows driver for Polaris: #332): a copy before each of the
+            // terrain's ~200 draws that sample their own target halved the frame rate (RTX 3060 with the loops off,
+            // 1280x720: castle 65 -> 133 fps, Great Plateau 66 -> 141; the picture the same as with the loops).
+            // SAVAGEWIND_VK_FEEDBACK_ONCE=0: a copy each time; =1: on wherever copies are made.
             static int once = -1;
             static uint64_t snap_frame[8], snap_pass[8];
             if (once < 0) {
-                once = getenv("SAVAGEWIND_VK_FEEDBACK_ONCE") != NULL;
-                if (once) LOG("[vk] feedback snapshots: one per target per frame, until written\n");
+                const char *e = getenv("SAVAGEWIND_VK_FEEDBACK_ONCE");
+                once = e ? atoi(e) != 0 : !g_vk.feedback_loop;
+                if (once) LOG("[vk] feedback snapshots: one per target per frame, until written%s\n", e ? "" : " (no feedback loops)");
             }
             // (once: reused past draws into the target since - that is its point, a pass break and a copy saved each
             // time, ~450 a frame in the open world: refusing every one took Mali-G610 from 30 to 7 FPS. But not for
@@ -4497,8 +4543,11 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
             // Full-width panes slide between pause pages: keep their projection wide throughout the move, so test the
             // width, not the position.
             bool frame_end = !tall && hud_frame_end(g, mv, rc, m00, shape);
+            // Taller map views are cropped to their 16:9 frame at presentation (output_scale.c).
+            // Stretching a scrollable pane here separates its pan/zoom from the icons over it.
             if (lo < 1e8f && (tall ? lo <= -edge + 0.01f && hi >= edge - 0.01f && lo >= -over && hi <= over
-                                    : (hi - lo >= 2 / shape - 0.02f && hi - lo <= 2 * over) || frame_end)) {
+                                    : (hi - lo >= 2 / shape - 0.02f && hi - lo <= 2 * over) || frame_end) &&
+                !(tall && framepace_map_ui())) {
                 if (tall) m11 /= shape;
                 else m00 *= shape;
             }
@@ -5253,11 +5302,11 @@ static VkDescriptorBufferInfo gmem_info_hi(void) {
 // g_guest_buffer): no per-draw copy, no index scan for the copy size. The game fences its CPU writes as on the
 // Switch. Falls back to copies outside the heap or without the import; SAVAGEWIND_VK_COPY_VERTICES=1 forces copies.
 static bool gsnap_verts(void);
+static uint64_t gsnap_verts_max(void);
 static bool guest_direct(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSize *off) {
     static int copy = -1;
     if (copy < 0) copy = getenv("SAVAGEWIND_VK_COPY_VERTICES") != NULL;
     if (copy || addr < HEAP_BASE) return false;
-    if (gsnap_verts()) return false;  // (SAVAGEWIND_VK_GSNAP_VERTS=1: the HUD's vertex data copied at translation too)
 #ifdef _WIN32
     if (plat_guest_sparse_heap_enabled() && g_vk.sparse_buffer && g_vk.sparse_queue &&
         g_vk.sparse_nonresident_strict && g_vk.sparse_host_import && addr < HEAP_BASE + HEAP_MAX &&
@@ -5851,6 +5900,7 @@ static void hc_list_begin(void) {
 // in place from the import (guest_direct), its pages then geometry for the next list's copy (and its chunk wanted).
 // While a storing shader whose stores aren't known holds the list (chunk_hold), in place.
 static bool guest_fetch(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSize *off) {
+    if (gsnap_verts() && size && size <= gsnap_verts_max() && !gw_overlaps(addr, addr + size)) return false;  // (copied)
     if (!guest_direct(addr, size, buf, off)) return false;
     if (!hc_nch) return true;
     if (chunk_hold || !size || addr + size > HEAP_BASE + hc_size || gw_overlaps(addr, addr + size)) {
@@ -6094,9 +6144,13 @@ static VkDescriptorSet set_finish(VkDescriptorSetLayout layout, VkWriteDescripto
 // way, a frame or two of misplaced letters as the text came up (#263). With the overlap, a dialogue line at the
 // Shrine of Resurrection's pedestal on an RTX 5060: 4 of its bound ranges and 98 times the bytes after them rewritten
 // before the GPU was done with them, none with the overlap off; with the copies, under 1 ms of CPU in 2 s in the game.
-// Only with the overlap on, on every GPU. SAVAGEWIND_VK_GSNAP=0: off, =1: on; =all: the global memory copies in every pass (the vertex data
-// still only the HUD's); SAVAGEWIND_VK_GSNAP_MAX=<KB>: the largest storage buffer copied (1024); SAVAGEWIND_DEBUG_GSNAP=1:
-// counts every 2 s.
+// Every pass, not only the final image (#452): the HUD's button prompt shadows are drawn once into a texture of their
+// own from the prompt's text, and at 120 fps that pass read glyph positions the game had already rewritten - a shadow
+// out of place for as long as the prompt kept its text. In Kakariko uncapped (RTX 3060) 175.1 -> 173.4 fps, ~1.7 ms of
+// CPU in 2 s: every global memory read the game makes is the HUD's.
+// Only with the overlap on, on every GPU. SAVAGEWIND_VK_GSNAP=0: off, =1: final image only; =all (default): every pass
+// (the vertex data still only the HUD's); SAVAGEWIND_VK_GSNAP_MAX=<KB>: the largest storage buffer copied (1024);
+// SAVAGEWIND_DEBUG_GSNAP=1: counts every 2 s.
 // GPU data (ranges a storing shader had bound): kept as sorted, merged intervals. When full, the two closest are
 // joined (the gap between them counts as GPU data too: fewer copies, never a stale one).
 #define GSNAP_GPU_MAX 512
@@ -6108,7 +6162,7 @@ static int gsnap_mode(void) {
     static int m = -1;
     if (m < 0) {
         const char *e = getenv("SAVAGEWIND_VK_GSNAP");
-        m = !gpu_overlap() ? 0 : !e ? 1 : !strcmp(e, "all") ? 2 : atoi(e) ? 1 : 0;
+        m = !gpu_overlap() ? 0 : !e || !strcmp(e, "all") ? 2 : atoi(e) ? 1 : 0;
         LOG("[vk] global memory the HUD reads: %s\n",
             m == 2 ? "copied at translation (every pass, vertex data the HUD's)" : m ? "copied at translation (final image)" : "in place");
     }
@@ -6178,13 +6232,19 @@ static bool gsnap_gpu_hit(Range r) {
     return i < ngsnap_gpu && gsnap_gpu[i].lo < r.addr + r.size;
 }
 
-// SAVAGEWIND_VK_GSNAP_VERTS=1 (test): the HUD's vertex and index data copied too (guest_direct), in passes into the
-// final image. Off by default: with it, the prompt fix cost 30 -> 17 FPS on Mali-G610 (the storage buffer copies
-// themselves ~0.3 ms in 2 s).
+// The HUD's vertex and index data copied too (guest_fetch), in passes into the final image: fetches of up to
+// SAVAGEWIND_VK_GSNAP_VERTS_MAX KB (64) that no storing shader wrote. Every fetch there copied, with constant buffers
+// and fetches in the set of GPU writes waiting for the GPU, cost 30 -> 17 FPS on Mali-G610 and 176 -> 94 fps in
+// Kakariko uncapped (RTX 3060); the small ones alone 174.2 -> 176.0 (noise). SAVAGEWIND_VK_GSNAP_VERTS=0: off.
 static bool gsnap_verts(void) {
     static int on = -1;
-    if (on < 0) on = getenv("SAVAGEWIND_VK_GSNAP_VERTS") != NULL;
+    if (on < 0) on = !getenv("SAVAGEWIND_VK_GSNAP_VERTS") || atoi(getenv("SAVAGEWIND_VK_GSNAP_VERTS"));
     return on && gsnap_mode() && pass_out;
+}
+static uint64_t gsnap_verts_max(void) {
+    static int64_t kb = -1;
+    if (kb < 0) { const char *e = getenv("SAVAGEWIND_VK_GSNAP_VERTS_MAX"); kb = e ? atoll(e) : 64; }
+    return (uint64_t)kb << 10;
 }
 
 static bool gsnap_linear_hit(Range r) {  // (render targets also written into the heap on the GPU: GPU data)
@@ -6200,8 +6260,8 @@ static bool gsnap_linear_hit(Range r) {  // (render targets also written into th
 // The ranges a read-only stage's global memory reads are copied from (translate.c GLD: up to GSNAP_N): its storage
 // buffers, each with SAVAGEWIND_VK_GSNAP_EXT bytes after it. BOTW's HUD text shader reads its glyphs past the size its storage
 // buffer is bound with: copied at the bound size (~500 bytes) the prompt still broke, with the bytes after it it
-// didn't. (Where that reaches GPU data, the bound size only.) In passes into the final image; SAVAGEWIND_VK_GSNAP=all:
-// every pass. SAVAGEWIND_VK_GSNAP_EXT=<KB>: the bytes after (16).
+// didn't. (Where that reaches GPU data, the bound size only.) In every pass; SAVAGEWIND_VK_GSNAP=1: passes into the
+// final image only. SAVAGEWIND_VK_GSNAP_EXT=<KB>: the bytes after (16).
 #define GSNAP_N 4
 static VkDescriptorBufferInfo gsnap_info(int stage) {
     static struct { uint64_t seq; int n; Range r[GSNAP_N]; VkDescriptorBufferInfo bi; } cache[32];
@@ -7037,7 +7097,7 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     stat_dispatches++;
     chunk_draws++;
     if (cp->si->writes_gmem) {
-        if (getenv("SAVAGEWIND_LOG_HOLD")) {
+        if (ENV_ONCE("SAVAGEWIND_LOG_HOLD")) {
             LOG("[hold] frame %llu draw %llu: cs %llx sbuf:", (unsigned long long)renderer_present_count(),
                 (unsigned long long)stat_draws, (unsigned long long)st.program->stages[5].code_addr);
             for (int i = 0; i < 16; i++)
@@ -7154,6 +7214,9 @@ static bool topology(uint32_t mode, VkPrimitiveTopology *t, uint8_t *cls) {
     case 3: *t = VK_PRIMITIVE_TOPOLOGY_LINE_STRIP; *cls = 1; return true;
     case 4: *t = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; *cls = 2; return true;
     case 5: *t = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP; *cls = 2; return true;
+    // Quad strip: each quad (v0 v1 v3 v2) is the strip's two triangles (v0 v1 v2) and (v1 v2 v3), the same pixels in the
+    // same order. The map's Hero's Path draws its line as one at the two nearer zooms (#441): left out, it was missing.
+    case 8: *t = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP; *cls = 2; return true;
     default: *t = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; *cls = 2; return false;
     }
 }
@@ -7856,7 +7919,7 @@ have_pipe:
                 x >= lim->viewportBoundsRange[0] && y >= lim->viewportBoundsRange[0] &&
                 x + w <= lim->viewportBoundsRange[1] && y + h <= lim->viewportBoundsRange[1]) {
                 vp_sx = sx; vp_sy = sy; vp_ox = x; vp_oy = y;
-                if (getenv("SAVAGEWIND_LOG_COPIES"))
+                if (ENV_ONCE("SAVAGEWIND_LOG_COPIES"))
                     LOG("[copy] fixed-aspect capture %ux%u backing %ux%u -> %ux%u: viewport %.3fx%.3f at %.3f,%.3f\n",
                         src->width, src->height, s->width, s->height, dst->width, dst->height, w, h, x, y);
             }
@@ -8040,7 +8103,7 @@ have_pipe:
         bar_other = true;
         if (pr->vi->writes_gmem) gw_note(0);
         if (pr->fi->writes_gmem) gw_note(1);
-        if (getenv("SAVAGEWIND_LOG_HOLD")) LOG("[hold] frame %llu draw %llu: vs %llx (%d) fs %llx (%d) fs hash %016llx\n",
+        if (ENV_ONCE("SAVAGEWIND_LOG_HOLD")) LOG("[hold] frame %llu draw %llu: vs %llx (%d) fs %llx (%d) fs hash %016llx\n",
                                                (unsigned long long)renderer_present_count(), (unsigned long long)stat_draws,
                                                (unsigned long long)st.program->stages[0].code_addr, pr->vi->writes_gmem,
                                                (unsigned long long)st.program->stages[1].code_addr, pr->fi->writes_gmem,
@@ -8318,7 +8381,7 @@ static void copy_buffer_to_texture(uint64_t src, const TexRefRec *dst) {
     TexBackend *b = vk_tex(t, false);  // prior CPU contents uploaded first
     renderer_mark_gpu_owned(t);
     vk_trace_event(t, 0, NULL, 0, "copy from buffer %llx", (unsigned long long)src);
-    if (getenv("SAVAGEWIND_LOG_COPIES")) {  // (debugging)
+    if (ENV_ONCE("SAVAGEWIND_LOG_COPIES")) {  // (debugging)
         static int n;
         if (n++ < 200)
             LOG("[copy] buffer %llx -> #%llu %ux%ux%u target %u f%#x level %d region %d,%d,%d %dx%dx%d view set %#x layer %u\n",
@@ -8452,7 +8515,7 @@ static void copy_texture(const TexRefRec *src, const TexRefRec *dst, uint64_t fl
     dl_note("copy texture %ux%u f%#x -> %ux%u f%#x (%p -> %p)", st_->width, st_->height, st_->format, dt->width, dt->height,
             dt->format, (void *)st_, (void *)dt);
     TexBackend *s = vk_tex(st_, false), *d = vk_tex(dt, true);
-    if (getenv("SAVAGEWIND_LOG_COPIES")) {  // (debugging)
+    if (ENV_ONCE("SAVAGEWIND_LOG_COPIES")) {  // (debugging)
         static int n;
         if (n++ < 300)
             LOG("[copy] tex #%llu %ux%ux%u t%u f%#x lv%u (%d,%d,%d %dx%dx%d) view %#x/%u/%u -> #%llu %ux%ux%u t%u f%#x lv%u "
@@ -9925,6 +9988,8 @@ static void exec_list(uint64_t handle, int depth) {
         // (the records were written by another core: the first touch of each one missed the cache)
         __builtin_prefetch((const char *)r + 256);
         __builtin_prefetch((const char *)r + 320);
+        __builtin_prefetch((const char *)r + 640);  // (a draw's records run to several hundred bytes: one more stride ahead)
+        __builtin_prefetch((const char *)r + 704);
         if (r->op < CMD_COUNT) op_counts[r->op]++;
         if (g_debug_frame && getenv("SAVAGEWIND_LOG_OPS"))
             LOG("[op] %u depth %d: %llx %llx %llx %llx %llx\n", r->op, depth, (unsigned long long)r->x[0], (unsigned long long)r->x[1],
@@ -10089,7 +10154,7 @@ static void exec_list(uint64_t handle, int depth) {
         case CMD_CLEAR_COLOR: {
             snap_reason = "clear-color"; snapshots_invalidate(NULL);
             int index = (int)r->x[0];
-            if (getenv("SAVAGEWIND_LOG_CLEARS") && index < st.rt.ncolor && st.rt.color[index])
+            if (ENV_ONCE("SAVAGEWIND_LOG_CLEARS") && index < st.rt.ncolor && st.rt.color[index])
                 LOG("[cclear] frame %llu idx %d %ux%u f%#x mask %#x\n", (unsigned long long)renderer_present_count(), index,
                     st.rt.color[index]->width, st.rt.color[index]->height, st.rt.color[index]->format, (uint32_t)r->x[2]);
             if (index < st.rt.ncolor && st.rt.color[index]) clear(index, (int)r->x[5], x, (uint32_t)r->x[2], false, 0, false, 0, 0);

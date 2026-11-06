@@ -5,6 +5,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "control_mem.h"
 #include "gamelib.h"
 #include "hle.h"
 #include "kernel.h"
@@ -218,16 +219,43 @@ static const char *host_sym(uint64_t pc, uint64_t *offset) {
     return s ? s : rt_host_fn_name(pc, offset);
 }
 
+void (*rt_crash_note)(void);
+
 void rt_fatal_trace(void) {
     fprintf(stderr, "host backtrace (guest functions are f_<addr>):\n");
     plat_print_backtrace();
+    if (rt_crash_note) rt_crash_note();
     Cpu *c = kernel_current_cpu();
     if (c) {
         fprintf(stderr, "guest: sp=%llx lr=%llx\n", c->sp, c->x[30]);
         for (int i = 0; i < 31; i += 4)
             fprintf(stderr, "  x%-2d %016llx  x%-2d %016llx  x%-2d %016llx  x%-2d %016llx\n", i, c->x[i], i + 1,
                     c->x[i + 1], i + 2, c->x[i + 2], i + 3, c->x[i + 3]);
+        // Who called: the frame records ([fp] the caller's fp, [fp + 8] its return address). And what the registers
+        // point at: an object's first word inside the game's modules is its vtable, which names its class. (A crash
+        // writing 0x8 after the game's allocator returned NULL, #363, showed only lr.)
+        fprintf(stderr, "guest frames:");
+        uint64_t fp = c->x[29];
+        for (int i = 0; i < 16 && fp; i++) {
+            uint64_t rec[2];
+            if ((fp & 7) || !control_mem_peek(fp, rec, sizeof rec)) break;
+            fprintf(stderr, " %llx", (unsigned long long)rec[1]);
+            if (rec[0] <= fp) break;
+            fp = rec[0];
+        }
+        fprintf(stderr, "\n");
+        for (int i = 0; i < 31; i++) {
+            uint64_t w;
+            if ((c->x[i] & 7) || !control_mem_peek(c->x[i], &w, sizeof w) || w < MAIN_BASE || w >= MAIN_BASE + 0x4000000)
+                continue;
+            fprintf(stderr, "  x%d -> %llx\n", i, (unsigned long long)w);
+        }
     }
+    extern int fs_recent_files(const char **out, int max);  // runtime/services/fs.c
+    const char *files[8];
+    int nfiles = fs_recent_files(files, 8);
+    if (nfiles) fprintf(stderr, "last RomFS files read (newest last):\n");
+    for (int i = 0; i < nfiles; i++) fprintf(stderr, "  %s\n", files[i]);
     plat_fatal_notice();
     // our crash handler also catches SIGABRT: without this abort() re-entered it forever (a 5 GB log)
     signal(SIGABRT, SIG_DFL);

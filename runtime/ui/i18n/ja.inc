@@ -489,6 +489,7 @@ T("The size of the maps the sun's shadows are drawn from. Console: the game's ow
 T("It has no System/Version.txt.", "System/Version.txtがありません。")
 T("Its System/Version.txt says %s.", "System/Version.txtの内容は%sです。")
 T("It has %u files; with the update applied it has %u.", "ファイルは%u個です。更新データを適用したものは%u個あります。")
+T("Its files add up to %llu MB; with the update applied they are %llu MB.", "ファイルの合計は%llu MBです。更新データを適用したものは%llu MBあります。")
 T("The RomFS isn't version %s with the update applied", "RomFSが、更新データを適用したバージョン%sのものではありません")
 T("Savage Wind needs the RomFS of version %s with the update applied over the base game. Extract the RomFS again that way and choose that folder.", "Savage\u00a0Windには、ベースのゲームに更新データを適用したバージョン%sのRomFSが必要です。そのようにRomFSをもう一度抽出して、そのフォルダを選んでください。")
 T("Checking the game files...", "ゲームファイルを確認しています...")
@@ -674,6 +675,8 @@ T("Open them from the title screen, or pause the game and choose System > Option
 
 T("Controller rumble", "コントローラーの振動")
 T("Vibrate the controller during play.", "プレイ中にコントローラーを振動させます。")
+T("Free camera with both sticks", "両スティックでフリーカメラ")
+T("Clicking both sticks together turns the free camera on and off. Home on the keyboard always does.", "両方のスティックを同時に押し込むとフリーカメラのオン/オフを切り替えます。キーボードの Home キーでは常に切り替えられます。")
 
 T("Sharper text", "文字をくっきり")
 T("Upscales the game's letters for 1440p and 4K, after a restart. Not the original art.", "1440pと4K向けにゲームの文字を拡大します（再起動後）。オリジナルの絵ではありません。")

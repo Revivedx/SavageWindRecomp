@@ -8,5 +8,7 @@ void vram_allocator_setup(VmaAllocatorCreateInfo *ai, VmaVulkanFunctions *fn, bo
 void vram_start(void);
 // The largest device-local heap's index: VMA's usage and budget of it, its size (any of them may be NULL)
 uint32_t vram_device_local(uint64_t *usage, uint64_t *budget, uint64_t *size);
+void vram_device_local_allocated(uint64_t *allocated, uint64_t *budget);  // its allocations' bytes (blocks' room left out)
+uint64_t vram_budget_cap(uint64_t budget);  // SAVAGEWIND_VRAM_BUDGET_MB: no bigger than that
 bool vram_budget_ext(void);
 extern _Atomic uint64_t g_vram_alloc_ns;  // vkAllocateMemory time on the game's threads so far

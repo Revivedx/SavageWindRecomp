@@ -72,6 +72,7 @@ uint64_t hle_register(const char *name, HostFn fn);  // returns fake guest addre
 HostFn hle_lookup_impl(const char *name);
 void hle_override(uint64_t guest_addr, HostFn fn, const char *name);
 void rt_fatal_trace(void) __attribute__((noreturn));
+extern void (*rt_crash_note)(void);  // (set by the Vulkan recorder) what it was handing the driver, printed by rt_fatal_trace
 void crash_handler_install(void);  // per thread (alternate signal stack)
 
 // ---- kernel.c
