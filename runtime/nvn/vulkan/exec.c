@@ -45,6 +45,9 @@ static uint64_t stat_links_now;    // pipelines linked on the render thread with
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
 static uint64_t stat_gw_waits, stat_gw_holds;  // draws / dispatches that waited for a storing shader; lists held (gw_check)
 static uint64_t stat_uub, stat_uub_same, stat_gcopy_hit, stat_gcopy_miss, stat_gcopy_bytes;  // UpdateUniformBuffer; guest_copy cache
+static uint64_t stat_ubo_direct;  // constant buffers bound in place (ubo_direct)
+static void ubo_check_done(bool report);
+static void ubo_check_submit(uint64_t seq);
 static uint64_t stat_feedback_live;  // depth attachments sampled as they are (read-only feedback, no copy)
 static uint64_t stat_feedback_loops, stat_feedback_barriers;  // draws sampling a target they write, in a feedback loop
 static bool pass_ds_written;         // a draw of the current pass wrote depth or stencil
@@ -654,6 +657,7 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
         PROF_T0();
         SW_ACC("submit");
         dl_note("submit %llu", (unsigned long long)submit_seq + 1);
+        ubo_check_submit(submit_seq + 1);
         rec_QueueSubmit2(&si, submit_seq + 1);  // (the recorder: in order with the commands)
         PROF_ADD(prof_submit);
     }
@@ -1252,12 +1256,15 @@ const char *renderer_stats(void) {
                  (unsigned long long)stat_uub, (unsigned long long)stat_uub_same, (unsigned long long)stat_gcopy_hit,
                  (unsigned long long)stat_gcopy_miss, stat_gcopy_bytes / 1048576.0);
         n = strlen(stats_text);
+        if (stat_ubo_direct) snprintf(stats_text + n, sizeof stats_text - n, ", cbuf in place %llu", (unsigned long long)stat_ubo_direct);
+        n = strlen(stats_text);
         if (stat_build_waits) snprintf(stats_text + n, sizeof stats_text - n, ", build waits %llu", (unsigned long long)stat_build_waits);
         stat_build_waits = 0;
         n = strlen(stats_text);
         if (stat_links_now) snprintf(stats_text + n, sizeof stats_text - n, ", links now %llu", (unsigned long long)stat_links_now);
         stat_links_now = 0;
-        stat_uub = stat_uub_same = stat_gcopy_hit = stat_gcopy_miss = stat_gcopy_bytes = 0;
+        stat_uub = stat_uub_same = stat_gcopy_hit = stat_gcopy_miss = stat_gcopy_bytes = stat_ubo_direct = 0;
+        ubo_check_done(true);
         stat_gw_waits = stat_gw_holds = 0;
         stat_sets = stat_sets_reused = 0;
         stat_feedback_loops = stat_feedback_barriers = 0;
@@ -2365,7 +2372,21 @@ static VkRect2D scissor_rect(void) {
 }
 
 static void apply_scissor(void) {
-    VkRect2D r = scissor_rect();
+    // (passes outside the final image: the rectangle depends on nothing else than these, the same for most of a pass's
+    // draws; scissor_rect was ~2 % of the render thread)
+    static struct { const void *c, *d; uint32_t w, h; float s[6]; int32_t sc[4]; VkRect2D r; bool ok; } m;
+    VkRect2D r;
+    const float s6[6] = {pass_sx, pass_sy, vp_sx, vp_sy, vp_ox, vp_oy};
+    if (!pass_out && m.ok && m.c == st.rt.color[0] && m.d == st.rt.depth && m.w == pass_w && m.h == pass_h &&
+        !memcmp(m.s, s6, sizeof s6) && !memcmp(m.sc, st.scissor[0], sizeof m.sc)) {
+        r = m.r;
+    } else {
+        r = scissor_rect();
+        m.ok = !pass_out;
+        m.c = st.rt.color[0], m.d = st.rt.depth, m.w = pass_w, m.h = pass_h, m.r = r;
+        memcpy(m.s, s6, sizeof s6);
+        memcpy(m.sc, st.scissor[0], sizeof m.sc);
+    }
     dyn_check();
     if (!memcmp(&dc.sc, &r, sizeof r)) return;
     rec_CmdSetScissor(vk_cmd(), 0, 1, &r);
@@ -4330,6 +4351,7 @@ static VkDescriptorBufferInfo ubo_span(VkSpan s, uint64_t size) {
 }
 
 static bool gw_ubo_direct(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out);
+static bool ubo_direct(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out);
 
 // Shadow maps made bigger than the game's (Video > Shadow resolution, textures.c RS_SHADOW): the shaders that filter
 // them offset their taps by a texel size the game passes in a constant buffer (BOTW's deferred sun shadow passes:
@@ -4671,6 +4693,8 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
         NvnShaderStage *ss = &st.program->stages[stage];
         uint64_t size = ss->const_size ? ss->const_size : 16;
         if (size < si->cbuf_size[1]) size = si->cbuf_size[1];
+        VkDescriptorBufferInfo direct;
+        if (ubo_direct(ss->code_addr + ss->const_offset, size, &direct)) return direct;  // (constants: never rewritten)
         return ubo_span(guest_copy(ss->code_addr + ss->const_offset, size), size);  // (constant: shared per submission)
     }
     int idx = k - 3;  // cbuf_base
@@ -4687,6 +4711,7 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
     if (stage == 0 && up_fix.sx > 0 && up_patch(r.addr, size, &direct)) return direct;  // (up_fix: texel grid)
     if (stage == 1 && up_fix.sx > 0 && up_patch_frag(r.addr, size, &direct)) return direct;  // (up_fix: texel step)
     if (stage == 0 && k == 3 && hud_patch(r.addr, size, &direct)) return direct;  // (a 16:9 HUD layer: see hud_patch)
+    if (ubo_direct(r.addr, size, &direct)) return direct;  // (an integrated GPU reads the game's memory itself)
     // snapshot: later CPU writes must not leak in. Shared by the draws of one submission binding the same range:
     // within a command list nothing writes guest memory (no inline UpdateUniformBuffer: that writes through below
     // and drops the shared copies).
@@ -5460,6 +5485,70 @@ static bool gw_ubo_direct(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *
     return true;
 }
 
+// Constant buffers read by the GPU in place, from the imported heap, instead of a copy per command list (guest_copy:
+// about a tenth of the render thread at Rito). On an integrated GPU that memory is the GPU's own, so the reads cost
+// what the copy's would, and the copy goes. A discrete GPU reads them across PCIe, a little GPU time (RTX 3060 at the
+// castle, 1280x720: 4.5 -> 4.95 ms) for render thread time (7.6 -> 7.2 ms): where the CPU has 4 cores or fewer to run
+// the game on, the render thread is the limit and it pays off (4 cores: Rito 84 -> 95 fps, the castle 129 -> 141).
+// Read through the heap copy in video memory instead (guest_fetch) was slower on both sides. The game writes the next frame's constants while the GPU draws this one,
+// as on the Switch, whose GPU also reads them in place: it keeps them apart and waits on its fences before it
+// reuses them, and those fences come back once our GPU is done. What stays a copy: ranges UpdateUniformBuffer writes
+// inside a list (uubt: draws before the update must not see it).
+// SAVAGEWIND_VK_UBO_DIRECT=0/1: off / on whatever the GPU (on a discrete GPU the reads cross PCIe).
+// SAVAGEWIND_VK_UBO_CHECK=1: each direct range hashed when bound and again once its submission is done, mismatches
+// counted (the CPU wrote it while the GPU could still read it; a write after the GPU finished counts too).
+static int ubo_direct_on = -1, ubo_check;
+#define UBOC_N 65536
+static struct { uint64_t addr, size, hash, seq; } uboc[UBOC_N];
+static uint64_t uboc_w, uboc_r, uboc_bad, uboc_n, uboc_lost, uboc_sub_bad, uboc_sub_n, uboc_s;
+static void ubo_check_submit(uint64_t seq) {  // (before submission seq goes to the GPU) its ranges hashed again: a change here is certain
+    if (!ubo_check) return;
+    if (uboc_s < uboc_r) uboc_s = uboc_r;
+    for (; uboc_s < uboc_w && uboc[uboc_s % UBOC_N].seq <= seq; uboc_s++) {
+        __typeof__(uboc[0]) *e = &uboc[uboc_s % UBOC_N];
+        uboc_sub_n++;
+        if (hash_words(0x9E3779B97F4A7C15ull, (const void *)(uintptr_t)e->addr, e->size) != e->hash) uboc_sub_bad++;
+    }
+}
+static void ubo_check_add(uint64_t addr, uint64_t size) {
+    if (uboc_w - uboc_r >= UBOC_N) { uboc_lost++; return; }
+    __typeof__(uboc[0]) *e = &uboc[uboc_w++ % UBOC_N];
+    e->addr = addr, e->size = size, e->seq = vk_pending_seq();
+    e->hash = hash_words(0x9E3779B97F4A7C15ull, (const void *)(uintptr_t)addr, size);
+}
+static void ubo_check_done(bool report) {  // (the stats line) the ranges whose submissions are done, hashed again
+    if (!ubo_check) return;
+    uint64_t done = vk_completed_seq();
+    for (; uboc_r < uboc_w && uboc[uboc_r % UBOC_N].seq <= done; uboc_r++) {
+        __typeof__(uboc[0]) *e = &uboc[uboc_r % UBOC_N];
+        uboc_n++;
+        if (hash_words(0x9E3779B97F4A7C15ull, (const void *)(uintptr_t)e->addr, e->size) != e->hash) uboc_bad++;
+    }
+    if (report) LOG("[vk] constant buffers in place: %llu checked, %llu changed before their submission was seen done, %llu not checked; at submission %llu checked, %llu changed\n",
+                    (unsigned long long)uboc_n, (unsigned long long)uboc_bad, (unsigned long long)uboc_lost,
+                    (unsigned long long)uboc_sub_n, (unsigned long long)uboc_sub_bad);
+}
+static bool ubo_direct(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out) {
+    if (ubo_direct_on < 0) {
+        const char *e = getenv("SAVAGEWIND_VK_UBO_DIRECT");
+        bool igpu = g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+        ubo_direct_on = e ? atoi(e) != 0 : igpu || plat_cpu_count() <= 4;
+        ubo_check = getenv("SAVAGEWIND_VK_UBO_CHECK") != NULL;
+        LOG("[vk] constant buffers: %s%s\n", ubo_direct_on ? "read in place" : "copied per list (SAVAGEWIND_VK_UBO_DIRECT=1: in place)",
+            ubo_direct_on && ubo_check ? ", checked" : "");
+    }
+    if (!ubo_direct_on || addr % g_vk.props.limits.minUniformBufferOffsetAlignment) return false;
+    for (int i = 0; i < nuub; i++)
+        if (addr < uubt[i].hi && uubt[i].lo < addr + size) return false;
+    VkBuffer b;
+    VkDeviceSize off;
+    if (!guest_direct(addr, size, &b, &off)) return false;
+    *out = (VkDescriptorBufferInfo){b, off, size};
+    stat_ubo_direct++;
+    if (ubo_check) ubo_check_add(addr, size);
+    return true;
+}
+
 static bool gw_ubo_copied(int stage, uint32_t cbuf_mask) {  // a constant buffer the stage reads would be copied from the set
     for (uint32_t m = cbuf_mask >> 3; m; m &= m - 1) {  // (cbuf k is bound slot k - 3)
         int i = __builtin_ctz(m);
@@ -5481,11 +5570,13 @@ static void gw_check(const uint32_t cbufs[6], bool vertices, uint64_t iaddr, uin
         if (cbufs[s]) wait = gw_ubo_copied(s, cbufs[s]);
     VkBuffer b;
     VkDeviceSize off;
+    // (the overlap first: it is rarely there, and guest_direct is the dearer of the two)
     for (int i = 0; i < 16 && vertices && !wait; i++) {
         Range v = st.vbuf[i];
-        if (v.addr && !guest_direct(v.addr, v.size ? v.size : 256, &b, &off)) wait = gw_overlaps(v.addr, v.addr + (v.size ? v.size : 256));
+        uint64_t n = v.size ? v.size : 256;
+        if (v.addr && gw_overlaps(v.addr, v.addr + n)) wait = !guest_direct(v.addr, n, &b, &off);
     }
-    if (iaddr && !wait && !guest_direct(iaddr, isize, &b, &off)) wait = gw_overlaps(iaddr, iaddr + isize);
+    if (iaddr && !wait && gw_overlaps(iaddr, iaddr + isize)) wait = !guest_direct(iaddr, isize, &b, &off);
     if (!wait) return;
     stat_gw_waits++;
     vk_submit_extra(VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE);
@@ -6038,7 +6129,58 @@ static bool aniso_all(void) {
 // luminance for the exposure, probes) at exact levels, and a level off there lit every surface white. Nor the vertex
 // stage's terrain and grass lookups, shadows, the HUD.
 static float scene_mip_bias;
+static void texture_info_(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo *out, float sc[2], uint32_t wh[2]);
+// The whole answer for a texture handle, kept for the rest of the frame: a draw's textures are mostly the last draws'
+// (materials, the G-buffer), and each lookup hashed its view, probed the view memo and the sampler table (~5 % of the
+// render thread at Rito). Not for depth-compare textures (their shadow copies and depth twins come and go within a
+// frame), nor while this draw has feedback copies or a scene composite in play; a view that may have been destroyed
+// bumps vk_view_gen, which drops them all. SAVAGEWIND_VK_NO_TEX_MEMO=1: off, with the view memo.
 static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo *out, float sc[2], uint32_t wh[2]) {
+    ShaderTexture *st_ = &si->tex[i];
+    int slot = ((int)st_->handle_offset - 0x20) / 8;
+    uint64_t h = (slot >= 0 && slot < 32) ? st.tex[stage][slot] : 0;
+    extern uint32_t vk_view_gen;
+    extern uint64_t vk_frame_counter(void);
+    static int nomemo = -1;
+    if (nomemo < 0) nomemo = getenv("SAVAGEWIND_VK_NO_TEX_MEMO") != NULL;
+    uint32_t tic = h & 0xFFFFF;
+    NvnTexEntry *te = st.tpool && tic < (uint32_t)st.tpool->count ? &((NvnTexEntry *)st.tpool->entries)[tic] : NULL;
+    TexBackend *tb = te && te->tex ? (TexBackend *)te->tex->backend : NULL;
+    if (nomemo || !h || !te || !te->tex || st_->shadow || nfeedback || scene_up.t || (tb && tb->in_feedback_layout)) {
+        texture_info_(stage, si, i, out, sc, wh);
+        return;
+    }
+    static struct {
+        uint64_t h, frame;
+        const void *tpool, *spool, *tex;
+        NvnTextureView view;
+        uint8_t has_view;
+        uint32_t gen;
+        uint8_t type, stage, blend, valid;
+        float bias, sc[2];
+        uint32_t wh[2];
+        VkDescriptorImageInfo ii;
+    } m[2048];
+    uint8_t blend = st.color_state[0] & 1;
+    float bias = stage == 1 && pass_mvec >= 0 && rt_jitter_on() ? scene_mip_bias : 0;  // (the material bias, if it is one)
+    uint64_t frame = vk_frame_counter();
+    uint32_t k = (uint32_t)((h * 0x9E3779B97F4A7C15ull ^ (uint64_t)st_->type << 3 ^ (uint64_t)stage << 7 ^ blend) >> 53) & 2047;
+    __typeof__(m[0]) *e = &m[k];
+    if (e->valid && e->h == h && e->frame == frame && e->gen == vk_view_gen && e->tpool == st.tpool && e->spool == st.spool &&
+        e->type == st_->type && e->stage == stage && e->blend == blend && e->bias == bias && e->tex == te->tex &&
+        e->has_view == te->has_view && (!te->has_view || !memcmp(&e->view, &te->view, sizeof te->view))) {
+        *out = e->ii;
+        sc[0] = e->sc[0], sc[1] = e->sc[1], wh[0] = e->wh[0], wh[1] = e->wh[1];
+        return;
+    }
+    texture_info_(stage, si, i, out, sc, wh);
+    *e = (__typeof__(*e)){.h = h, .frame = frame, .tpool = st.tpool, .spool = st.spool, .tex = te->tex, .view = te->view,
+                          .has_view = te->has_view, .gen = vk_view_gen, .type = (uint8_t)st_->type,
+                          .stage = (uint8_t)stage, .blend = blend, .valid = 1, .bias = bias, .sc = {sc[0], sc[1]},
+                          .wh = {wh[0], wh[1]}, .ii = *out};
+}
+
+static void texture_info_(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo *out, float sc[2], uint32_t wh[2]) {
     ShaderTexture *st_ = &si->tex[i];
     int slot = ((int)st_->handle_offset - 0x20) / 8;  // 64-bit handles from offset 0x20
     uint64_t h = (slot >= 0 && slot < 32) ? st.tex[stage][slot] : 0;
@@ -9113,9 +9255,15 @@ static void scene_post(Prog *pr, CmdRec *r) {
     if (fsr_on < 0) fsr_on = getenv("SAVAGEWIND_SCENE_FSR") ? atoi(getenv("SAVAGEWIND_SCENE_FSR")) : 1;
     if (cas_on < 0) cas_on = getenv("SAVAGEWIND_SCENE_CAS") ? atoi(getenv("SAVAGEWIND_SCENE_CAS")) : 1;
     bool fsr = fsr_on && g_settings.upscaler == UPSCALE_FSR1, cas = cas_on && g_settings.sharpening > 0;
-    VkImageView lut;
-    float gpc[16];
-    bool grade = grade_wanted(&lut, gpc);
+    // (once a frame: this runs for every draw, and only the scene's composite uses it)
+    static uint64_t grade_frame = ~0ull;
+    static VkImageView lut;
+    static float gpc[16];
+    static bool grade;
+    if (grade_frame != renderer_present_count()) {
+        grade_frame = renderer_present_count();
+        grade = grade_wanted(&lut, gpc);
+    }
     bool fsr3 = fsr_on && rt_fsr3() && mvec_enabled();  // (FSR 3: its own sharpening, RCAS, in place of CAS)
     if (!fsr3) rt_jitter_set_phases(8);
     if (!fsr && !cas && !taa && !fsr3 && !grade) return;
@@ -10329,6 +10477,7 @@ static void exec_list(uint64_t handle, int depth) {
 
 void backend_execute(uint64_t handle) {
     readbacks_apply();
+    ubo_check_done(false);  // (SAVAGEWIND_VK_UBO_CHECK: as soon after each submission is done as the lists come)
     SW_ZONE("backend_execute");
     { SW_ACC("exec_lock"); gpu_lock(); }
     if (g_debug_frame && getenv("SAVAGEWIND_LOG_OPS")) LOG("[submit] %llx\n", (unsigned long long)handle);
