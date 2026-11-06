@@ -1,4 +1,4 @@
-// The developer item list (give): see runtime/items.h.
+// The game's items, for the give command and the overlay's Cheats tab: see runtime/items.h.
 //
 // The list: every actor of Actor/ActorInfo.product.sbyml (BYML) tagged CanGetPouch, by profile (weapons, bows,
 // shields, arrows, armour, materials), leaving out the ones tagged Important (the Sheikah Slate, the Master Sword,
@@ -12,6 +12,7 @@
 // is how many, a weapon's its durability x 100 (a new one: generalLife x 100). The game thread calls it from
 // rt_item_tick (tools/patches.py _item_tick), at the entry of Link's damage handling, which runs every frame in play,
 // as picking an item up does.
+#include <ctype.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -24,6 +25,7 @@
 #include "hle.h"
 #include "items.h"
 #include "language.h"
+#include "nvn/tegra.h"
 #include "rt.h"
 #include "services/archive.h"
 
@@ -261,6 +263,38 @@ static void list_read(void) {
 int items_count(void) { pthread_once(&g_once, list_read); return g_nitems; }
 const GameItem *items_at(int i) { return i >= 0 && i < items_count() ? &g_items[i] : NULL; }
 
+// ---- the item's picture in the pouch: UI/StockItem/<actor>.sbitemico, a Yaz0 BFRES whose BNTX holds one RGBA8
+// texture (BRTI: format 0x0bXX at +0x1c, width and height at +0x24, GOBs per block (log2) at +0x34), block linear,
+// its data 16 bytes into the BRTD section
+static const uint8_t *find4(const uint8_t *p, const uint8_t *end, const char *magic) {
+    for (; p + 4 <= end; p++)
+        if (!memcmp(p, magic, 4)) return p;
+    return NULL;
+}
+unsigned char *items_icon(int i, int *w, int *h) {
+    const GameItem *it = items_at(i);
+    if (!it) return NULL;
+    char path[128];
+    snprintf(path, sizeof path, "UI/StockItem/%s.sbitemico", it->actor);
+    size_t zn = 0, n = 0;
+    uint8_t *z = fs_game_file(path, &zn), *d = z ? yaz0_unpack(z, zn, &n) : NULL, *out = NULL;
+    free(z);
+    const uint8_t *end = d ? d + n : NULL, *k = d ? find4(d, end, "BNTX") : NULL;
+    const uint8_t *r = k ? find4(k, end, "BRTI") : NULL, *t = k ? find4(k, end, "BRTD") : NULL;
+    if (r && t && r + 0x38 <= end) {
+        uint32_t fmt = rd32(r + 0x1c), iw = rd32(r + 0x24), ih = rd32(r + 0x28), bh = rd32(r + 0x34);
+        uint64_t gob_rows = 8ull << (bh < 6 ? bh : 0), rows = (ih + gob_rows - 1) / gob_rows * gob_rows;
+        uint64_t size = ((uint64_t)iw * 4 + 63) / 64 * 64 * rows;
+        if ((fmt >> 8) == 0x0b && iw && ih && iw <= 512 && ih <= 512 && bh < 6 && (uint64_t)(end - t) >= 16 + size &&
+            (out = malloc((size_t)iw * ih * 4))) {
+            tegra_deswizzle(t + 16, out, iw, ih, 1, 4, bh, 0);
+            *w = (int)iw, *h = (int)ih;
+        }
+    }
+    free(d);
+    return out;
+}
+
 bool items_available(void) {
     const GameLibTables *t = gamelib_tables();
     if (!t) return false;
@@ -326,11 +360,45 @@ void rt_item_tick(Cpu *c, uint64_t get, uint64_t mgr, uint64_t sstr_vt) {
 }
 
 // ---- give <actor> [count]
+static bool has_text(const char *s, const char *t) {  // (ignoring case)
+    size_t n = strlen(t);
+    for (; *s; s++) {
+        size_t k = 0;
+        while (k < n && tolower((unsigned char)s[k]) == tolower((unsigned char)t[k])) k++;
+        if (k == n) return true;
+    }
+    return false;
+}
+
 static void cmd_give(int argc, char **argv, ControlReply *r) {
-    if (argc < 2 || argc > 3) { control_fail(r, "Usage: give <actor> [count]"); return; }
+    if (argc < 2 || argc > 3) { control_fail(r, "Usage: give <actor or part of a name> [count]"); return; }
     int count = argc == 3 ? atoi(argv[2]) : 1, i = 0, n = items_count();
     while (i < n && strcmp(g_items[i].actor, argv[1])) i++;
-    if (i == n) { control_fail(r, "Not an item that can be added"); return; }
+    if (i == n) {  // not an actor: the items whose name or actor has this in it. One is given, several are listed
+        int found = 0, first = n;
+        for (int k = 0; k < n; k++) {
+            if (!has_text(g_items[k].name, argv[1]) && !has_text(g_items[k].actor, argv[1])) continue;
+            if (!found++) first = k;
+        }
+        if (!found) { control_fail(r, "No item has this in its name or actor"); return; }
+        if (found > 1) {
+            // (the fields for scripts, the lines for the console, which prints them instead)
+            char list[2048] = "";
+            size_t at = 0;
+            int shown = 0;
+            for (int k = first; k < n && shown < 30; k++) {
+                if (!has_text(g_items[k].name, argv[1]) && !has_text(g_items[k].actor, argv[1])) continue;
+                control_text(r, "%s  %s", g_items[k].actor, g_items[k].name);
+                if (at < sizeof list) at += (size_t)snprintf(list + at, sizeof list - at, "%s%s", shown ? " " : "", g_items[k].actor);
+                shown++;
+            }
+            control_text(r, "%d items match: give one by its actor", found);
+            control_field_int(r, "matches", found);
+            control_field_str(r, "actors", list);
+            return;
+        }
+        i = first;
+    }
     if (!items_available()) { control_fail(r, "The game code has no item get"); return; }
     if (!items_request(i, count)) { control_fail(r, "Too many requests waiting"); return; }
     control_field_str(r, "name", g_items[i].name);
@@ -340,7 +408,7 @@ static void cmd_give(int argc, char **argv, ControlReply *r) {
 
 void control_items_init(void) {
     static const ControlCmd cmds[] = {
-        {"give", "<actor> [count]", "Put an item in the pouch, in play", cmd_give},
+        {"give", "<actor or part of a name> [count]", "Put an item in the pouch, in play (several matches: lists them)", cmd_give},
     };
     control_register(cmds, (int)(sizeof cmds / sizeof *cmds));
 }

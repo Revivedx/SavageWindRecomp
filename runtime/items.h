@@ -1,4 +1,4 @@
-// The game's own items (runtime/items.c, the give command), read from the player's RomFS (their
+// The game's own items (runtime/items.c; the give command, the overlay's Cheats tab), read from the player's RomFS (their
 // actors in Actor/ActorInfo.product.sbyml, their names in the text language's Pack/Bootup_<lang>.pack), and requests
 // to put some of them in the pouch, which the game thread carries out through the game's own item get
 // (tools/patches.py _item_tick).
@@ -41,6 +41,8 @@ bool items_available(void);  // the game code has the item get (its sites were f
 // else one entry each, at most ITEMS_MAX_EACH). false: the queue is full.
 #define ITEMS_MAX_EACH 20
 bool items_request(int i, int count);
+// Item i's picture in the pouch as RGBA8 rows, w x h (free() it); NULL without one
+unsigned char *items_icon(int i, int *w, int *h);
 
 #ifdef __cplusplus
 }
