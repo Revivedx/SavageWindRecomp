@@ -120,7 +120,7 @@ The coordinates are the game's world coordinates, the same frame as `pos`. The t
 
 After a far jump the screen can look wrong for a second or two (dark or stale picture, camera low in the grass or inside the terrain): the game pauses the world while it loads the map around the new spot and only then settles the camera. It corrects itself. The camera values (`camera.eye` and the rest) cannot be read yet at that point, so `goto` cannot fix it earlier.
 
-Known crash: now and then (2 times in about 190 `goto`s in test runs) the game itself crashes within seconds of a far jump. The failing allocation is the game's own, 120 bytes in the code that builds the terrain model (`Terrain.bfres`), so most likely a heap of the game ran out of memory while the new terrain loaded. It was not reproduced from a fresh start. If it happens, start the game again.
+Known crash: now and then (2 times in about 190 `goto`s in test runs) the game itself crashes within seconds of a far jump. It happens on a loader thread while the game builds a model from a resource file (`Model/<name>.Tex.bfres` loading, in the step after "HeapAdjust"): the game gives each resource its own heap, sized from the ResourceSizeTable, and a 120 byte allocation in it comes back empty, which the game does not check. So that heap was too small or already full. The cause is not found; it was not reproduced from a fresh start. If it happens, start the game again.
 
 Limits: places that still use marker data can put Link inside a wall, a rock or under the ground, or high above it. Use `pos` afterwards to check where he is. Move him with `teleport` if he is stuck.
 
