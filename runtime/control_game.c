@@ -328,8 +328,9 @@ static bool goto_is_place(int nwords, char **words) {
     double d;
     return nwords > 0 && strcmp(words[0], "swr:1") && !strchr(words[0], '=') && !parse_number(words[0], &d);
 }
-// How far above a place's ground position Link arrives (he drops the last bit, it is not enough to hurt).
-static double place_lift(const Place *p) { return p->kind == PLACE_KOROK ? 2.0 : 3.0; }
+// How far above a place's position Link arrives (he drops the last bit, it is not enough to hurt). A start position of the game
+// is ground, so a small lift is enough (a stable floor can be 0.5 above it); marker positions are not, they get a larger one.
+static double place_lift(const Place *p) { return p->ground ? 1.0 : p->kind == PLACE_KOROK ? 2.0 : 3.0; }
 static void cmd_goto(int argc, char **argv, ControlReply *r) {
     double v[3];
     const Place *place = NULL;

@@ -14,6 +14,7 @@ typedef struct {
     const char *name;  // English name ("Ne'ez Yohma Shrine", "Rito Stable", Korok: the id)
     const char *sub;   // shrine: the quest title; Korok: the map square; else empty
     float x, y, z;
+    bool ground;       // the position is a spot the game itself puts Link on (a start position), so he needs only a small lift
 } Place;
 
 const char *place_kind_name(PlaceKind kind);  // "shrine", "korok", ...

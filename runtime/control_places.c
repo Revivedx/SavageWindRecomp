@@ -7,7 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define PLACE(kind, number, key, name, sub, x, y, z) {kind, number, key, name, sub, x, y, z},
+#define PLACE(kind, number, key, name, sub, x, y, z, ground) {kind, number, key, name, sub, x, y, z, ground},
 static const Place table[] = {
 #include "control_places_data.inc"
 };

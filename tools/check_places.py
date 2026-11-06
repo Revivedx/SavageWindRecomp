@@ -22,17 +22,17 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import swctl  # noqa: E402
 
 TABLE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'runtime', 'control_places_data.inc')
-ROW = re.compile(r'PLACE\(PLACE_(\w+), (\d+), "([^"]*)", "((?:[^"\\]|\\.)*)", "[^"]*", (-?[\d.]+)f, (-?[\d.]+)f, (-?[\d.]+)f\)')
+ROW = re.compile(r'PLACE\(PLACE_(\w+), (\d+), "([^"]*)", "((?:[^"\\]|\\.)*)", "[^"]*", (-?[\d.]+)f, (-?[\d.]+)f, (-?[\d.]+)f, (true|false)\)')
 
 
 def load_targets():
-    """name -> where goto sends Link (the table position plus the lift goto adds: 2 for Koroks, else 3)."""
+    """name -> where goto sends Link (the table position plus the lift goto adds: 1 for places on a start position of the game, else 2 for Koroks and 3)."""
     targets = {}
     with open(TABLE, encoding='utf-8') as f:
         for line in f:
             m = ROW.match(line)
             if m:
-                lift = 2.0 if m.group(1) == 'KOROK' else 3.0
+                lift = 1.0 if m.group(8) == 'true' else 2.0 if m.group(1) == 'KOROK' else 3.0
                 targets[m.group(4).replace('\\"', '"')] = (float(m.group(5)), float(m.group(6)) + lift, float(m.group(7)))
     return targets
 
