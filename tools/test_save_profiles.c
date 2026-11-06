@@ -11,10 +11,49 @@
 #include <utime.h>
 #include <dirent.h>
 
+#ifdef _WIN32
+#include "../runtime/platform/win_compat.h"  // (setenv, unsetenv, mkdir with a mode)
+#include <direct.h>
+#include <io.h>
+#endif
 #include "../runtime/services/save_profiles.h"
 #include "../runtime/services/save_convert.h"
 
 static int checks;
+// A directory link: a symlink here, a junction on Windows (needs no privilege there)
+static int make_link(const char *target, const char *link) {
+#ifdef _WIN32
+    char cmd[2400], t[1100], l[1100];
+    snprintf(t, sizeof t, "%s", target), snprintf(l, sizeof l, "%s", link);
+    for (char *c = t; *c; c++) if (*c == '/') *c = '\\';
+    for (char *c = l; *c; c++) if (*c == '/') *c = '\\';
+    snprintf(cmd, sizeof cmd, "cmd /c mklink /J \"%s\" \"%s\" >nul", l, t);
+    return system(cmd) == 0 ? 0 : -1;
+#else
+    return symlink(target, link);
+#endif
+}
+
+static void drop_link(const char *link) {
+#ifdef _WIN32
+    RemoveDirectoryA(link);
+#else
+    unlink(link);
+#endif
+}
+
+static int mk_tmp_root(char *out, size_t cap) {
+#ifdef _WIN32
+    const char *t = getenv("TEMP");
+    snprintf(out, cap, "%s/sp-test-%d", t ? t : ".", (int)getpid());
+    for (char *c = out; *c; c++) if (*c == '\\') *c = '/';
+    return mkdir(out, 0755) == 0 || errno == EEXIST ? 0 : -1;
+#else
+    snprintf(out, cap, "/tmp/sp-test-XXXXXX");
+    return mkdtemp(out) ? 0 : -1;
+#endif
+}
+
 #define CHECK(c) do { checks++; if (!(c)) { fprintf(stderr, "%s:%d: check failed: %s (%s)\n", __FILE__, __LINE__, #c, sp_detail()); exit(1); } } while (0)
 
 static char root[512];
@@ -344,16 +383,16 @@ static void test_rename_delete(void) {
     mkdir(target, 0755);
     put("elsewhere/precious", "keep");
     snprintf(link, sizeof link, "%s/save-profiles/Linked", root);
-    CHECK(symlink(target, link) == 0);
+    CHECK(make_link(target, link) == 0);
     CHECK(listed("Linked"));
     CHECK(sp_delete(root, "Linked") == SP_LINKED);
     CHECK(!strcmp(get("elsewhere/precious"), "keep"));
-    unlink(link);
+    drop_link(link);
 
     // a link INSIDE a profile is removed as a link, never followed
     CHECK(sp_create(root, "WithLink") == SP_OK);
     snprintf(link, sizeof link, "%s/save-profiles/WithLink/save/out", root);
-    CHECK(symlink(target, link) == 0);
+    CHECK(make_link(target, link) == 0);
     CHECK(sp_delete(root, "WithLink") == SP_OK);
     CHECK(!strcmp(get("elsewhere/precious"), "keep"));
 
@@ -381,8 +420,8 @@ static void test_cleanup(void) {
 }
 
 int main(void) {
-    char tmpl[] = "/tmp/sp-test-XXXXXX";
-    if (!mkdtemp(tmpl)) { perror("mkdtemp"); return 1; }
+    char tmpl[1100];
+    if (mk_tmp_root(tmpl, sizeof tmpl)) { perror("temp folder"); return 1; }
     snprintf(root, sizeof root, "%s", tmpl);
     unsetenv("SAVAGEWIND_SAVE_DIR");
     test_names();
