@@ -219,9 +219,12 @@ static const char *host_sym(uint64_t pc, uint64_t *offset) {
     return s ? s : rt_host_fn_name(pc, offset);
 }
 
+void (*rt_crash_note)(void);
+
 void rt_fatal_trace(void) {
     fprintf(stderr, "host backtrace (guest functions are f_<addr>):\n");
     plat_print_backtrace();
+    if (rt_crash_note) rt_crash_note();
     Cpu *c = kernel_current_cpu();
     if (c) {
         fprintf(stderr, "guest: sp=%llx lr=%llx\n", c->sp, c->x[30]);

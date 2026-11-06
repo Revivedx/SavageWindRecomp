@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "vk.h"
+#include "vram.h"
 #include "../../prof.h"
 #include "record.h"
 #include "shaders.h"
@@ -825,9 +826,90 @@ static void zombies_expire(void) {  // (gpu lock held)
     g_nzombies = k;
 }
 
+// ---- over the video memory budget (#332: an MX350's 2 GB filled up after half an hour of play, the driver moved
+// memory out to system RAM, a pass sampling it took seconds and Windows reset the GPU). Images the GPU never drew
+// into are a copy of guest memory: past VT_MIN_AGE frames unasked for, the oldest are let go, until VMA's allocations
+// in video memory are under VT_TARGET of the budget, at most VT_MAX_BYTES a check (re-uploads cost the render
+// thread). The next texture that asks for one makes it again and uploads it (tex_backend). Freed room in VMA's blocks
+// takes the game's next images, so the blocks stop growing past the budget. SAVAGEWIND_VRAM_TRIM=0: off;
+// SAVAGEWIND_VRAM_BUDGET_MB=<n>: a smaller budget (vram.c), to try it on a big card.
+#define VT_EVERY 30
+#define VT_MIN_AGE 240
+#define VT_TARGET 0.85
+#define VT_MAX_BYTES (128ull << 20)
+static uint64_t vt_evicted, vt_evicted_bytes, vt_back;
+
+static bool vt_evictable(const TexBackend *b, uint64_t now) {
+    return b->refs > 0 && b->image && b->mem && !b->gpu_owned && !b->evicted && !b->pending_rgba && !b->glyph_gen && !b->block &&
+           !b->bc4_cpu && !b->gpu_bc4 && !b->kept && b->samples <= 1 && now - b->seen_frame > VT_MIN_AGE;
+}
+
+static int vt_older(const void *x, const void *y) {
+    const TexBackend *a = *(TexBackend *const *)x, *b = *(TexBackend *const *)y;
+    return a->seen_frame < b->seen_frame ? -1 : a->seen_frame > b->seen_frame;
+}
+
+static void vram_trim(void) {  // (gpu lock held; once a frame from tex_backend)
+    static int off = -1;
+    if (off < 0) off = getenv("SAVAGEWIND_VRAM_TRIM") && !atoi(getenv("SAVAGEWIND_VRAM_TRIM"));
+    uint64_t now = renderer_present_count();
+    if (off || now % VT_EVERY) return;
+    // Either count: the budget is of VMA's blocks (usage), which hold free room between images let go (VMA gives a block
+    // back only once it is empty); room freed there takes the next images instead of a new block.
+    uint64_t allocated, budget, usage;
+    vram_device_local_allocated(&allocated, &budget);
+    vram_device_local(&usage, NULL, NULL);
+    uint64_t target = (uint64_t)(budget * VT_TARGET), held = usage > allocated ? usage : allocated;
+    if (!budget || held <= target) return;
+    static TexBackend **cand;
+    static int cap;
+    int n = 0;
+    uint64_t gpu_bytes = 0, cpu_bytes = 0, old_bytes = 0;  // (the log: what the images take, by kind)
+    for (int i = 0; i < g_nimages; i++) {
+        TexBackend *b = g_images[i];
+        uint64_t sz = b->mem_bytes > 0 ? (uint64_t)b->mem_bytes : 0;
+        if (b->gpu_owned) gpu_bytes += sz;
+        else cpu_bytes += sz;
+        if (!vt_evictable(b, now)) continue;
+        old_bytes += sz;
+        if (n == cap) { cap = cap ? cap * 2 : 1024; cand = realloc(cand, cap * sizeof *cand); }
+        cand[n++] = b;
+    }
+    qsort(cand, n, sizeof *cand, vt_older);
+    uint64_t freed = 0, need = held - target;
+    int k = 0;
+    for (; k < n && freed < need && freed < VT_MAX_BYTES; k++) {
+        TexBackend *b = cand[k];
+        VmaAllocationInfo ai;
+        vmaGetAllocationInfo(g_vk.vma, b->mem, &ai);
+        destroy_image(b);
+        b->evicted = true;
+        b->uploaded = false;
+        freed += ai.size;
+    }
+    vt_evicted += k;
+    vt_evicted_bytes += freed;
+    static uint64_t last_log;
+    if (k && (now - last_log > 600 || !last_log)) {
+        last_log = now;
+        LOG("[vram] frame %llu: %llu MB in blocks, %llu MB allocated, of %llu MB budget (images the GPU draws %llu MB, from guest memory %llu MB, "
+            "%llu MB of them unused for %d+ frames; the rest buffers and the heap copy): %d images (%llu MB) let go; %llu let "
+            "go so far (%llu MB), %llu made again\n", (unsigned long long)now, (unsigned long long)(usage >> 20),
+            (unsigned long long)(allocated >> 20), (unsigned long long)(budget >> 20), (unsigned long long)(gpu_bytes >> 20), (unsigned long long)(cpu_bytes >> 20),
+            (unsigned long long)(old_bytes >> 20), VT_MIN_AGE, k, (unsigned long long)(freed >> 20),
+            (unsigned long long)vt_evicted, (unsigned long long)(vt_evicted_bytes >> 20), (unsigned long long)vt_back);
+    }
+}
+
 static TexBackend *tex_backend(NvnTexture *t) {
     TexBackend *b = t->backend;
     if (b) {
+        b->seen_frame = renderer_present_count();
+        if (b->evicted) {  // (vram_trim) made again; vk_tex uploads it (uploaded false)
+            b->evicted = false;
+            create_image(t, b);
+            vt_back++;
+        }
         if (t->finalized) b->used_frame = renderer_present_count();
         if (rs_stale(b)) {  // output resolution changed: reallocate
             destroy_image(b);
@@ -841,6 +923,7 @@ static TexBackend *tex_backend(NvnTexture *t) {
         vk_collect_dead();
         zombies_expire();
         idle_expire();
+        vram_trim();
     }
     b = t->addr ? keyed_find(t) : NULL;
     if (b && b->kept) {  // (idle_expire) its contents, unless the CPU wrote that memory meanwhile
@@ -866,6 +949,7 @@ static TexBackend *tex_backend(NvnTexture *t) {
         if (t->addr) keyed_add(b, t);
     }
     idle_remove(b);
+    b->seen_frame = renderer_present_count();
     b->refs++;
     t->backend = b;
     holders_add(t);
@@ -1502,6 +1586,20 @@ static ViewEnt view_tab[VIEW_TAB];
 // Views may still be referenced by submitted or pending work: destroyed once that has completed.
 void vk_views_forget(TexBackend *b) { views_forget(b); }
 uint32_t vk_view_gen;  // bumped whenever a cached view may be destroyed (exec.c's per-frame texture memo)
+// (crash report, record.c) the image a view is of, from the view table; no lock: the process is going down
+void vk_view_describe(VkImageView v, char *s, size_t n) {
+    if (!v) { snprintf(s, n, "(none)"); return; }
+    for (int i = 0; i < VIEW_TAB; i++) {
+        TexBackend *b = view_tab[i].b;
+        if (view_tab[i].view != v || !b) continue;
+        snprintf(s, n, "of a %ux%ux%u image, format %d, view type %d, %u levels, %u layers, %u samples%s", b->width, b->height,
+                 b->depth, (int)b->format, (int)b->base_type, b->levels, b->layers, b->samples,
+                 b->not_attachable ? ", not attachable" : "");
+        return;
+    }
+    snprintf(s, n, "not in the view table (a backend's own image, or destroyed)");
+}
+
 static void views_forget(TexBackend *b) {
     vk_view_gen++;
     for (int i = 0; i < VIEW_TAB; i++)
