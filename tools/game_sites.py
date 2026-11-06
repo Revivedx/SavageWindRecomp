@@ -312,6 +312,13 @@ SITES = [
          '2a1f03e1 94000000/fc000000 aa1303e0 aa1403e1', 0),
     Site('quick_sort_player_busy', 'call', '94000000/fc000000 2a0003f4 d10183a0 94000000/fc000000 90000015/9f00001f 90000008/9f00001f '
          '91000108/ffc003ff 14000000/fc000000', 0),
+    # Add items (tools/patches.py _item_tick; runtime/items.c): the entry of Link's damage handling (every frame in
+    # play: the game thread's place for the item get), the pause menu data's item get, and where the pause menu data's
+    # address is (its load in the pickup code)
+    Site('item_tick', 'code', 'd101c3ff fd000be8 a9027bfd a90367fa a9045ff8 a90557f6 a9064ff4 910083fd f9400c14', 0),
+    Site('pouch_item_get', 'code', 'd10243ff a9037bfd a9046ffc a90567fa a9065ff8 a90757f6 a9084ff4 9100c3fd f90003e3', 0),
+    Site('pouch_mgr', 'got', '90000017/9f00001f aa0003f5 f94002f7/ffc003ff 910003e0 f94002f6 94000000/fc000000 2a0003e2 '
+         'aa1603e0', 2),
     Site('main_data', 'data', '', 0),
     Site('main_end', 'end', '', 0),
 ]
@@ -354,6 +361,7 @@ OPTIONAL_GROUPS = [
     ('link_life_store', 'link_life_tick'),
     ('stamina_store',),
     ('tp_gate',),  # (a far teleport of the control endpoint: without it a long jump freezes the world)
+    ('item_tick', 'pouch_item_get', 'pouch_mgr'),
 ]
 OPTIONAL = {n for g in OPTIONAL_GROUPS for n in g}
 
@@ -545,6 +553,9 @@ KNOWN = {
         'link_life_store': 0x7000cc4e70,
         'link_life_tick': 0x7000cc4da4,
         'stamina_store': 0x7000cc7430,
+        'item_tick': 0x7000cc4c3c,
+        'pouch_item_get': 0x7000d921bc,
+        'pouch_mgr': 0x7001e18570,
         'main_data': 0x7001b7a000,
         'main_end': 0x7001e98000,
     },
