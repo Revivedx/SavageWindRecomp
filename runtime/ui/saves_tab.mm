@@ -564,6 +564,9 @@ void draw_confirm(int phase) {
 
 }  // namespace
 
+unsigned long long ui_texture_rgba(const unsigned char *px, int w, int h) { return texture_rgba(px, w, h); }
+void ui_texture_free(unsigned long long tex) { texture_free(tex); }
+
 void saves_tab_set_game_files(const char *root) { g_game_root = root; }
 
 bool saves_tab_busy(void) {

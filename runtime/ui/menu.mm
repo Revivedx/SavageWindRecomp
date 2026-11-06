@@ -1185,6 +1185,52 @@ static bool has_text(const char *s, const char *needle) {
     return n == 0;
 }
 
+// An item's picture for the description pane: made when its row is first hovered or selected (only is_shown: the
+// list's other rows offer theirs if they have one) and kept, the last 64 of them.
+struct ItemIcon { int item, w, h; unsigned long long tex; };
+static const ItemIcon *item_icon(int i, bool is_shown) {
+    static std::vector<ItemIcon> icons;  // (most recently made last)
+    for (const ItemIcon &c : icons)
+        if (c.item == i) return &c;
+    if (!is_shown) return NULL;
+    ItemIcon c = {i, 0, 0, 0};
+    if (unsigned char *px = items_icon(i, &c.w, &c.h)) {
+        c.tex = ui_texture_rgba(px, c.w, c.h);
+        free(px);
+    }
+    if (icons.size() >= 64) {
+        if (icons[0].tex) ui_texture_free(icons[0].tex);
+        icons.erase(icons.begin());
+    }
+    icons.push_back(c);
+    return &icons.back();
+}
+
+// What the pouch tells of an item: its name, its values and its actor (the name the give command takes)
+static std::string item_desc(const GameItem *it) {
+    std::string d = it->name;
+    auto row = [&](const char *label, const std::string &value) { d += std::string("\n") + tr(label) + ": " + value; };
+    if (it->cat <= ITEMCAT_BOW || (it->cat == ITEMCAT_ARROW && it->attack)) row("Attack power", std::to_string(it->attack));
+    if (it->cat == ITEMCAT_SHIELD) row("Guard", std::to_string(it->guard));
+    if (it->cat == ITEMCAT_ARMOR) row("Defense", std::to_string(it->defense));
+    if (it->durability) row("Durability", std::to_string(it->durability));
+    if (it->hearts > 0) {  // (in quarter hearts)
+        char v[32];
+        snprintf(v, sizeof v, "%g", it->hearts / 4.0);
+        row("Hearts", v);
+    }
+    static const char *const fx[ITEMFX_COUNT] = {
+        "", "Attack up", "Defense up", "Climb speed up", "Sword beam up", "Stealth up", "Guardian resist up",
+        "Flame guard", "Cold resistance", "Shock resistance", "Unfreezable", "Heat resistance", "Lightning proof",
+        "Sand speed up", "Snow speed up", "Swim speed up", "Extra stamina", "Fireproof",
+        "Stamina recovery", "Extra hearts", "Speed up",
+    };
+    for (int e = 0; e < 2; e++)
+        if (it->effect[e]) row("Effect", tr(fx[it->effect[e]]));
+    if (it->cat == ITEMCAT_MATERIAL && it->price > 0) row("Selling price", std::to_string(it->price));  // (gear can't be sold)
+    return d + "\n\n" + it->actor;
+}
+
 // The Cheats tab (in game only): any of the game's items, in any amount, into the pouch through the game's own item
 // get (runtime/items.h; the console's give command does the same). Cheats, and labelled so: the game's own menus
 // stay as they are.
@@ -1213,12 +1259,17 @@ static void tab_cheats(void) {
         const GameItem *it = items_at(i);
         if (cat && it->cat != cat - 1) continue;
         if (search[0] && !has_text(it->name, search) && !has_text(it->actor, search)) continue;
-        if (opt_action(it->name, tr("Add"), it->actor, false)) {
+        // (only a row on screen can be hovered or selected: the list is long, its other rows need no description)
+        bool seen = ImGui::IsRectVisible(ImVec2(ImGui::GetContentRegionAvail().x, ImGui::GetFontSize() * 1.9f));
+        if (opt_action(it->name, tr("Add"), seen ? item_desc(it).c_str() : NULL, false)) {
             if (items_request(i, (int)amount))
                 snprintf(notice, sizeof notice, tr("Added %d x %s to the pouch."), (int)amount, it->name);
             else
                 snprintf(notice, sizeof notice, "%s", tr("Too many requests waiting; try again in a moment."));
         }
+        bool shown = ImGui::IsItemHovered() || (ImGui::IsItemFocused() && ImGui::GetCurrentContext()->NavCursorVisible);
+        const ItemIcon *icon = item_icon(i, shown);
+        if (icon && icon->tex) opt_desc_image(icon->tex, icon->w, icon->h);
     }
     opt_end();
 }

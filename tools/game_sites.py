@@ -313,6 +313,7 @@ SITES = [
     Site('quick_sort_player_busy', 'call', '94000000/fc000000 2a0003f4 d10183a0 94000000/fc000000 90000015/9f00001f 90000008/9f00001f '
          '91000108/ffc003ff 14000000/fc000000', 0),
     # Add items (tools/patches.py _item_tick; runtime/items.c): the entry of Link's damage handling (every frame in
+    # Adding items (tools/patches.py _item_tick; runtime/items.c): the entry of Link's damage handling (every frame in
     # play: the game thread's place for the item get), the pause menu data's item get, and where the pause menu data's
     # address is (its load in the pickup code)
     Site('item_tick', 'code', 'd101c3ff fd000be8 a9027bfd a90367fa a9045ff8 a90557f6 a9064ff4 910083fd f9400c14', 0),
