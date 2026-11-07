@@ -47,7 +47,7 @@ static const Setting settings[] = {
     {"color_lut", g_settings.color_lut, TEXT, 0, 0, NULL},
     I(color_lut_strength, 0, 100, NULL), B(color_lut_set), B(no_weapon_wear), B(infinite_arrows),
     B(infinite_stamina), B(god_mode), B(one_hit_kill), I(damage_taken, 25, 400, NULL), I(damage_dealt, 25, 400, NULL),
-    I(text_language, 0, 0, NULL), I(voice_language, 0, 0, NULL), B(menu_tip_seen),
+    I(text_language, 0, 0, NULL), I(voice_language, 0, 0, NULL), B(save_backups), B(menu_tip_seen),
 };
 #undef B
 #undef I
