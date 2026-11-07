@@ -476,6 +476,23 @@ static void create_image(NvnTexture *t, TexBackend *b) {
         // 1.25 times the original): without them, its edges alias into stair steps on every diagonal.
         levels = b->text_scale == 4 ? 3 : 2;
     }
+    // Gameplay > Sharper menus: the same for the menus' one-channel textures (shapes, frames, glows), not small ones
+    // (nothing to gain)
+    b->menu_tex = false;
+    if (!b->text_scale && g_settings.sharper_menus && !b->gpu_bc4 && (t->format == 0x49 || t->format == 0x01) && t->pool &&
+        t->layout.levels == 1 && t->width >= 16 && t->height >= 16 && t->addr >= t->pool->storage &&
+        t->addr + sheet_bytes <= t->pool->storage + t->pool->size &&
+        menu_tex_known((const uint8_t *)(uintptr_t)t->addr, sheet_bytes)) {
+        b->text_scale = (uint8_t)g_settings.sharper_menus;
+        b->menu_tex = true;
+        static int nlog;
+        if (nlog++ < 400) LOG("[vk] sharper menus: %ux%u (nvn %#x) enlarged %ux\n", t->width, t->height, t->format, b->text_scale);
+        b->bc4_cpu = t->format == 0x49;
+        vf = VK_FORMAT_R8_UNORM;
+        tw *= b->text_scale;
+        th *= b->text_scale;
+        levels = b->text_scale == 4 ? 3 : 2;
+    }
     if (!b->bc4_cpu && !format_supports(vf, need)) {
         bool astc = vf >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && vf <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK;
         const FormatInfo *fi = t->layout.fmt;
@@ -1239,7 +1256,8 @@ static void upload_text_sheet(VkCommandBuffer cb, NvnTexture *t, TexBackend *b, 
     uint64_t t0 = SDL_GetTicksNS();
     if (bc4) bc4_channel(blocks, l->wb, l->hb, stride, 0, plain);
     else memcpy(plain, blocks, (uint64_t)pw * ph);
-    if (!text_upscale(plain, pw, ph, s, bc4, big)) memset(big, 0, (uint64_t)dw * dh);
+    // (the menus' textures are shapes and glows, not a letter's coverage: interpolated only, no edges redrawn)
+    if (!text_upscale(plain, pw, ph, s, bc4 && !b->menu_tex, big)) memset(big, 0, (uint64_t)dw * dh);
     uint64_t at = 0;
     for (uint32_t lv = 0; lv < nlevels; lv++) {
         uint32_t w = dw >> lv, h = dh >> lv;
