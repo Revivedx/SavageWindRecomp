@@ -491,6 +491,10 @@ void build_items(void) {
     v.push_back(toggle(P_VIDEO, "Game's FXAA", "The game's own edge smoothing. Off: sharper, more jagged edges.",
                        [](const Item &) { return (int)g_settings.game_fxaa; },
                        [](const Item &, int x) { g_settings.game_fxaa = x; }, 1));
+    // the wet lighting passes' sun glare (maxwell/translate.c maxwell_wet_lighting): their translations, made at the start
+    v.push_back(toggle(P_VIDEO, "Wet grass fix", "Tames the white glare on grass and roofs in rain with the sun out. From the next start.",
+                       [](const Item &) { return (int)g_settings.wet_fix; },
+                       [](const Item &, int x) { g_settings.wet_fix = x; }, 0));
     // Anisotropic filtering and sharpening (Vulkan: vulkan/textures.c sampler_aniso, vulkan/exec.c scene_post)
     v.push_back(choice(P_VIDEO, "Anisotropic filtering", "Sharper ground and paths at a distance. Off: as on the console.",
                        [](const Item &) { return N(k_aniso); },
