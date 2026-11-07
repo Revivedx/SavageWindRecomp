@@ -12,6 +12,13 @@
     X(opt_two_help)            /* native row description update */                                                   \
     X(opt_two_pane_calc)       /* verified local transform/dirty-bit contract */                                      \
     X(screen_mgr)              /* ScreenMgr *: +0x28 screen count, +0x30 screen pointers by id */                      \
+    X(beast_focus_axes)                                                                                                \
+    X(beast_focus_linear)                                                                                              \
+    X(beast_confirm_axes)                                                                                              \
+    X(beast_confirm_linear)                                                                                            \
+    X(beast_clamp_pitch)                                                                                               \
+    X(beast_wrap_yaw)                                                                                                  \
+    X(beast_world)                                                                                                     \
     X(opt_screen_rows)         /* field: the Options screen's row count, +8 its rows (1.8.2 +0x3698, 1.9.0 +0x36b0) */ \
     X(title_options_state)     /* field: the title menu's active button screen (0x6a: Options; 1.8.2 +0x363c) */       \
     X(dialog_answer)           /* the two-button dialog's answer (u32) */                                              \
