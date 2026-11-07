@@ -2924,8 +2924,28 @@ static bool program_ready_now(Prog *p) {
     return true;
 }
 
-#define PROG_TAB 4096
-static struct { uint64_t key; Prog *prog; } prog_tab[PROG_TAB];
+// Programs and pipelines (pipe_tab below) are open-addressing tables grown, rehashed, at half load: a fixed table
+// filled up after about three hours of play (every slot holding another key), and the probe loop never ended.
+#define PROG_TAB 4096  // (the first size)
+typedef struct { uint64_t key; Prog *prog; } ProgSlot;
+static ProgSlot *prog_tab;
+static uint32_t prog_cap, prog_n;
+static uint32_t prog_slot_of(uint64_t h, uint32_t cap) { return (uint32_t)(h ^ (h >> 31)) & (cap - 1); }
+static void prog_tab_grow(void) {
+    uint32_t cap = prog_cap ? prog_cap * 2 : PROG_TAB;
+    ProgSlot *nt = calloc(cap, sizeof *nt);
+    if (!nt) { LOG("FATAL: program table: out of memory (%u slots)\n", cap); abort(); }
+    for (uint32_t i = 0; i < prog_cap; i++) {
+        if (!prog_tab[i].key) continue;
+        uint32_t s = prog_slot_of(prog_tab[i].key, cap);
+        while (nt[s].key) s = (s + 1) & (cap - 1);
+        nt[s] = prog_tab[i];
+    }
+    if (prog_cap) LOG("[vk] program table: %u programs, %u -> %u slots\n", prog_n, prog_cap, cap);
+    free(prog_tab);
+    prog_tab = nt;
+    prog_cap = cap;
+}
 
 // The last program and pipeline draw_ looked up (consecutive draws mostly repeat them; cleared by vk_exec_reset). Two
 // programs: the game's, and their motion vector variants (a draw of a motion pass looks up both; one memo for both
@@ -2959,12 +2979,19 @@ static Prog *get_program_(NvnProgram *np, ShaderKey *vkey, ShaderKey *fkey) {
     for (int i = 0; i < 8; i++) { h ^= fkey->rt_kind[i]; h *= 0x100000001B3ull; }
     h ^= fkey->mvec_rt; h *= 0x100000001B3ull;  // (a motion vector program's output: the pass's motion target slot)
     if (!h) h = 1;
-    uint32_t slot = (uint32_t)(h ^ (h >> 31)) & (PROG_TAB - 1);
-    while (prog_tab[slot].key && prog_tab[slot].key != h) slot = (slot + 1) & (PROG_TAB - 1);
+    if (!prog_tab) prog_tab_grow();
+    uint32_t slot = prog_slot_of(h, prog_cap);
+    while (prog_tab[slot].key && prog_tab[slot].key != h) slot = (slot + 1) & (prog_cap - 1);
     if (prog_tab[slot].key) return prog_tab[slot].prog;
+    if ((prog_n + 1) * 2 > prog_cap) {  // (an insertion: grow first, then find the slot again in the new table)
+        prog_tab_grow();
+        slot = prog_slot_of(h, prog_cap);
+        while (prog_tab[slot].key) slot = (slot + 1) & (prog_cap - 1);
+    }
     Prog *p = calloc(1, sizeof *p);
     prog_tab[slot].key = h;
     prog_tab[slot].prog = p;
+    prog_n++;
     for (int i = 0; i < 2; i++) {
         p->code[i] = np->stages[i].code_addr;
         p->cmax[i] = np->stages[i].const_offset ? np->stages[i].const_offset : 0x10000;
@@ -3222,8 +3249,26 @@ typedef struct {
 typedef struct { Prog *prog; PipeState s; } PipeKey;
 
 typedef struct { PipeKey k; uint64_t hash; VkPipeline pipe; _Atomic int state; } Pipe;  // state: 0 building, 1 ready, 2 failed
-#define PIPE_TAB 8192
-static struct { uint64_t key; Pipe *pipe; } pipe_tab[PIPE_TAB];
+#define PIPE_TAB 8192  // (the first size; grown at half load like prog_tab)
+typedef struct { uint64_t key; Pipe *pipe; } PipeSlot;
+static PipeSlot *pipe_tab;
+static uint32_t pipe_cap, pipe_n;
+static uint32_t pipe_slot_of(uint64_t h, uint32_t cap) { return (uint32_t)(h ^ (h >> 29)) & (cap - 1); }
+static void pipe_tab_grow(void) {
+    uint32_t cap = pipe_cap ? pipe_cap * 2 : PIPE_TAB;
+    PipeSlot *nt = calloc(cap, sizeof *nt);
+    if (!nt) { LOG("FATAL: pipeline table: out of memory (%u slots)\n", cap); abort(); }
+    for (uint32_t i = 0; i < pipe_cap; i++) {
+        if (!pipe_tab[i].key) continue;
+        uint32_t s = pipe_slot_of(pipe_tab[i].key, cap);
+        while (nt[s].key) s = (s + 1) & (cap - 1);
+        nt[s] = pipe_tab[i];
+    }
+    if (pipe_cap) LOG("[vk] pipeline table: %u pipelines, %u -> %u slots\n", pipe_n, pipe_cap, cap);
+    free(pipe_tab);
+    pipe_tab = nt;
+    pipe_cap = cap;
+}
 static struct { PipeKey k; Pipe *pp; } pipe_memo;  // (see prog_memo)
 
 // 8 bytes a step (PipeKey is ~700 bytes, hashed per draw); in-memory tables only - hmix values are compared with
@@ -5903,8 +5948,9 @@ void vk_exec_reset(void) {
     guest_copy_flush();
     gw_lo = ~0ull;
     gw_hi = 0;
-    memset(prog_tab, 0, sizeof prog_tab);
-    memset(pipe_tab, 0, sizeof pipe_tab);
+    if (prog_tab) memset(prog_tab, 0, prog_cap * sizeof *prog_tab);  // (the grown capacity is kept for the next boot)
+    if (pipe_tab) memset(pipe_tab, 0, pipe_cap * sizeof *pipe_tab);
+    prog_n = pipe_n = 0;
     memset(prog_memo, 0, sizeof prog_memo);
     memset(&pipe_memo, 0, sizeof pipe_memo);
     key_gen++;
@@ -7630,14 +7676,21 @@ static void draw_(CmdRec *r, bool indexed) {
     if (!pp || memcmp(&pipe_memo.k, &k, sizeof k)) {
         uint64_t ph = hash_words(0xcbf29ce484222325ull, &k, sizeof k);
         if (!ph) ph = 1;
-        uint32_t pslot = (uint32_t)(ph ^ (ph >> 29)) & (PIPE_TAB - 1);
-        while (pipe_tab[pslot].key && pipe_tab[pslot].key != ph) pslot = (pslot + 1) & (PIPE_TAB - 1);
+        if (!pipe_tab) pipe_tab_grow();
+        uint32_t pslot = pipe_slot_of(ph, pipe_cap);
+        while (pipe_tab[pslot].key && pipe_tab[pslot].key != ph) pslot = (pslot + 1) & (pipe_cap - 1);
         pp = pipe_tab[pslot].pipe;
         if (!pp) {
+            if ((pipe_n + 1) * 2 > pipe_cap) {  // (an insertion: grow first, then find the slot again)
+                pipe_tab_grow();
+                pslot = pipe_slot_of(ph, pipe_cap);
+                while (pipe_tab[pslot].key) pslot = (pslot + 1) & (pipe_cap - 1);
+            }
             pp = calloc(1, sizeof *pp);
             pp->k = k;
             pipe_tab[pslot].key = ph;
             pipe_tab[pslot].pipe = pp;
+            pipe_n++;
             VkPipeline ready = sync_shaders() ? VK_NULL_HANDLE : warm_ready(pr->vi, pr->fi, &k.s);
             if (ready) { pp->pipe = ready; atomic_store(&pp->state, 1); atomic_fetch_add(&stat_warm, 1); }
             else if (sync_shaders() || !link_now(pp)) run_job(build_pipeline, pp);  // (asynchronous: a link alone is done here)
