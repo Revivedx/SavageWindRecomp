@@ -676,6 +676,11 @@ T("Open them from the title screen, or pause the game and choose System > Option
 T("Controller rumble", "Controller-Vibration")
 T("Vibrate the controller during play.", "Lässt den Controller beim Spielen vibrieren.")
 T("Free camera with both sticks", "Freie Kamera mit beiden Sticks")
+T("Controller camera speed", "Kamerageschwindigkeit (Controller)")
+T("The right stick turns the camera faster than the game allows, at the two speeds below.", "Der rechte Stick dreht die Kamera schneller, als das Spiel erlaubt, mit den zwei Geschwindigkeiten unten.")
+T("Left and right speed", "Geschwindigkeit links und rechts")
+T("Up and down speed", "Geschwindigkeit hoch und runter")
+T("100% is the game's own speed.", "100% ist die Geschwindigkeit des Spiels.")
 T("Clicking both sticks together turns the free camera on and off. Home on the keyboard always does.", "Beide Sticks gleichzeitig drücken schaltet die freie Kamera ein und aus. Pos1 auf der Tastatur tut das immer.")
 
 T("Sharper text", "Schärfere Schrift")

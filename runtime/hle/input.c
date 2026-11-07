@@ -362,9 +362,21 @@ void rt_cam_reverse(int axis, int on) {
     else cam_reverse &= ~(1 << axis);
 }
 
+// tools/patches.py _cam_stick_end: the stick's value for the camera, as the game worked it out (the mouse's doesn't come
+// here). Controls > Controller camera speed: faster than the game's top speed, as it scales the value past full tilt.
+void rt_cam_stick_end(uint64_t out) {
+    if (!g_settings.stick_cam_on) return;
+    float *v = (float *)(uintptr_t)out;
+    v[0] *= g_settings.stick_cam_x / 100.0f, v[1] *= g_settings.stick_cam_y / 100.0f;
+}
+
 // tools/patches.py _cam_pitch: the chase-like cameras' vertical part, to be squared (0) or, from the mouse, scaled (1)
 int rt_cam_pitch(float *y) {
-    if (!cam_mouse || !cam_native_on()) return 0;
+    if (!cam_mouse || !cam_native_on()) {
+        // (squared next: so that Controller camera speed multiplies the turn once, as it does the horizontal part)
+        if (g_settings.stick_cam_on) *y /= sqrtf(g_settings.stick_cam_y / 100.0f);
+        return 0;
+    }
     *y *= CAM_PITCH_LINEAR;
     return 1;
 }

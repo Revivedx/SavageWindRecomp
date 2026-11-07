@@ -676,6 +676,11 @@ T("Open them from the title screen, or pause the game and choose System > Option
 T("Controller rumble", "控制器振动")
 T("Vibrate the controller during play.", "游玩时让控制器振动。")
 T("Free camera with both sticks", "双摇杆切换自由视角")
+T("Controller camera speed", "手柄镜头速度")
+T("The right stick turns the camera faster than the game allows, at the two speeds below.", "右摇杆转动镜头的速度可超过游戏上限，速度由下方两项设定。")
+T("Left and right speed", "左右速度")
+T("Up and down speed", "上下速度")
+T("100% is the game's own speed.", "100% 为游戏原本的速度。")
 T("Clicking both sticks together turns the free camera on and off. Home on the keyboard always does.", "同时按下两个摇杆可开启或关闭自由视角。键盘上的 Home 键始终可用。")
 
 T("Sharper text", "更清晰的文字")

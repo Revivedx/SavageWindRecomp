@@ -195,6 +195,8 @@ SITES = [
     # stick input, which every camera action reads, and the square that the chase-like cameras apply to its vertical
     # part
     Site('cam_stick', 'code', 'd100c3ff fd000be8 f90017f3 a901fbfd 910063fd aa0003f3 f900001f 52800060', 0),
+    # (the end of the camera's stick input, with the stick's value written: tools/patches.py _cam_stick_end)
+    Site('cam_stick_end', 'code', 'f9409408 910023e0 f90007e8 94000000/fc000000 360000c0 fd400be8 f94017f3', 5),
     Site('cam_pitch_chase', 'code', '1e208803 1e202008 bd41ce80 1e23cc2b bd41d281 1e212000 54000001/ff00001f '
          '52800039', 0),
     Site('cam_pitch_surf', 'code', '1e208803 1e202008 bd430260 1e23cc2d bd430661 1e212000 54000001/ff00001f '
@@ -301,6 +303,7 @@ OPTIONAL_GROUPS = [
     ('pc_cursor_manager', 'pc_cursor_activate', 'pc_pane_bounds'),
     ('cam_stick', 'cam_pitch_chase', 'cam_pitch_surf', 'cam_pitch_wakeboard', 'cam_pitch_aim', 'cam_pitch_item'),
     ('cam_reverse_x', 'cam_reverse_y'),
+    ('cam_stick_end',),  # (Controls > Controller camera speed: without it the setting does nothing)
     ('traverse_scale', 'traverse_scale_default'),
     ('grass_range', 'grass_fade_blades', 'grass_fade_quads'),
     ('grass_blade_slots', 'grass_blade_cap_a', 'grass_blade_cap_b', 'grass_blade_cap_c', 'grass_blade_cap_c_max',
@@ -450,6 +453,7 @@ KNOWN = {
         'player_info': 0x7001e13ed0,
         'world_mgr': 0x7001e57580,
         'cam_stick': 0x7000d57fe0,
+        'cam_stick_end': 0x7000d5801c,
         'cam_pitch_chase': 0x7000bf5334,
         'cam_pitch_surf': 0x7000c1a52c,
         'cam_pitch_wakeboard': 0x7000c22104,

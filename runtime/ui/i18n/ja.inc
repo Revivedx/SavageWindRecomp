@@ -676,6 +676,11 @@ T("Open them from the title screen, or pause the game and choose System > Option
 T("Controller rumble", "コントローラーの振動")
 T("Vibrate the controller during play.", "プレイ中にコントローラーを振動させます。")
 T("Free camera with both sticks", "両スティックでフリーカメラ")
+T("Controller camera speed", "コントローラーのカメラ速度")
+T("The right stick turns the camera faster than the game allows, at the two speeds below.", "右スティックでゲームの上限より速くカメラを回します。速さは下の2つで決めます。")
+T("Left and right speed", "左右の速さ")
+T("Up and down speed", "上下の速さ")
+T("100% is the game's own speed.", "100%がゲーム本来の速さです。")
 T("Clicking both sticks together turns the free camera on and off. Home on the keyboard always does.", "両方のスティックを同時に押し込むとフリーカメラのオン/オフを切り替えます。キーボードの Home キーでは常に切り替えられます。")
 
 T("Sharper text", "文字をくっきり")

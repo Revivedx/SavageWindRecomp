@@ -1097,6 +1097,17 @@ static void tab_about(void) {
     opt_toggle("Controller rumble", &g_settings.rumble, true, "Vibrate the controller during play.");
     opt_toggle("Free camera with both sticks", &g_settings.freecam_sticks, true,
                "Clicking both sticks together turns the free camera on and off. Home on the keyboard always does.");
+    opt_toggle("Controller camera speed", &g_settings.stick_cam_on, false,
+               "The right stick turns the camera faster than the game allows, at the two speeds below.");
+    if (g_settings.stick_cam_on) {
+        float cx = (float)g_settings.stick_cam_x, cy = (float)g_settings.stick_cam_y;
+        if (opt_slider("Left and right speed", &cx, STICK_CAM_MIN, STICK_CAM_MAX, 25, STICK_CAM_DEFAULT, "%g%%",
+                       "100% is the game's own speed."))
+            g_settings.stick_cam_x = (int)cx;
+        if (opt_slider("Up and down speed", &cy, STICK_CAM_MIN, STICK_CAM_MAX, 25, STICK_CAM_DEFAULT, "%g%%",
+                       "100% is the game's own speed."))
+            g_settings.stick_cam_y = (int)cy;
+    }
     controls_bindings_draw(ImGui::GetFontSize() / 34);
     ImGui::Spacing();
     header("Menu");
