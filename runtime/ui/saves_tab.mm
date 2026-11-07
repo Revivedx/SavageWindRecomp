@@ -36,6 +36,7 @@
 extern "C" {
 #include "../paths.h"
 #include "../services/save_convert.h"
+#include "../settings.h"
 SDL_Window *ui_window(void);
 #ifdef __APPLE__
 void *ui_metal_device(void);
@@ -515,6 +516,11 @@ void saves_tab_draw(void) {
                    "Copies the whole save folder to a new dated folder in save-backups, next to it. Your saves stay "
                    "where they are.") && !busy)
         start(JOB_BACKUP), phase = WORKING, working = busy = true;
+    if (busy) opt_disable_next();
+    if (opt_toggle("Back up at each start", &g_settings.save_backups, false,
+                   "A copy of the save folder each time the game starts, if anything in it changed. The last 5 are kept "
+                   "in save-backups; the ones you make yourself are never removed."))
+        settings_save();
     if (working) opt_disable_next();
     if (opt_action("Open save folder", "", "Opens the folder with your saves in your file manager.") && !working) {
         if (recovery) reveal_folder(g_recovery.imported);

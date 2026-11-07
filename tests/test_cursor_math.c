@@ -62,4 +62,21 @@ int main(void) {
     assert(pc_map_clamp_center(-2000,-FLT_MAX,1500)==-1500);
     assert(pc_map_clamp_center(INFINITY,-2000,FLT_MAX)==0);
     puts("PASS: pan limits at every zoom, unbounded native sentinel, all directions and escaped-view recovery");
+    // A wheel zoom anchored on the pointer: the world point under it stays under it at every zoom step, for any pointer
+    // position and starting view, in and out.
+    for(int from=0;from<4;from++)for(int to=0;to<4;to++)for(int frame=0;frame<100;frame++) {
+        float point[2]={-620+frame*12.5f,-270+frame*5.5f};
+        float center[2]={-3115.94f+frame*40,6108.09f-frame*30};
+        float translation[2]={center[0]*zooms[from],center[1]*zooms[from]},world[2];
+        pc_cursor_map_world(point,translation,zooms[from],world);
+        for(int step=0;step<=10;step++) {
+            float zoom=zooms[from]+(zooms[to]-zooms[from])*step/10.f,c[2],under[2];
+            pc_map_anchor_center(point,world,zoom,c);
+            float t[2]={c[0]*zoom,c[1]*zoom};
+            pc_cursor_map_world(point,t,zoom,under);
+            assert(fabsf(under[0]-world[0])<.01f&&fabsf(under[1]-world[1])<.01f);
+            assert(fabsf(world[0]*zoom+t[0]-point[0])<.01f&&fabsf(world[1]*zoom+t[1]-point[1])<.01f);
+        }
+    }
+    puts("PASS: wheel zoom keeps the world point under the pointer, 1600 pointer/view/zoom-step combinations");
 }

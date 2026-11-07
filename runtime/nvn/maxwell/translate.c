@@ -59,6 +59,7 @@ typedef struct {
     const uint8_t *code;   // first instruction group
     size_t ninsts;         // number of 8-byte words to scan
     int stage;
+    bool wet;              // one of the game's wet lighting passes, with Video > Wet grass fix on (maxwell_wet_lighting)
     const ShaderKey *key;
     ShaderInfo *info;
     Str body;
@@ -94,6 +95,7 @@ typedef struct {
     // (GLSL, key->mvec) glsl_rewrite for the previous frame's copy of a vertex body: the game's constant buffers
     // (cb3..cb16) read from the motion history (ph, at the push constants' pb offsets), the outputs to locals
     bool rw_prev;
+    bool uses_gather;  // (GLSL) a gather: the GATHER_BIAS specialization constant is declared
 } Ctx;
 
 static uint64_t bits(uint64_t w, int lo, int n) { return (w >> lo) & ((n == 64) ? ~0ull : ((1ull << n) - 1)); }
@@ -913,13 +915,20 @@ static void glsl_gather(Ctx *c, char *out, int slot, const char *const *co, cons
         return;
     }
     if (cube && noff) noff = 0;  // (cube lookups take no offset)
+    // A coordinate halfway between two texels picks the texel past it on Maxwell, the one before it on AMD and Intel,
+    // whose sub-texel rounding differs: the shadow filters' gathers then read the neighbouring texels, dark dashes
+    // along edges that move with the camera. GATHER_BIAS (a specialization constant: 0 on NVIDIA, 1 / 2^(subTexel
+    // precision bits + 1) elsewhere, exec.c vk_gather_spec) moves the 2D coordinates by that much of a texel.
+    // (As yuzu's "subpixel offset for correct rounding at ImageGather", behaviour only, and Ryujinx's
+    // InsertCoordGatherBias (MIT), which TotK Recomp turns on the same way.)
+    c->uses_gather = true;
     char P[4][700], call[4][1000];
     int n = noff == 4 ? 4 : 1;
     for (int i = 0; i < n; i++) {
         char xy[500];
         if (cube) snprintf(xy, sizeof xy, "vec3(%s, %s, %s)", co[0], co[1], co[2]);
-        else if (noff) snprintf(xy, sizeof xy, "(vec2(%s, %s) + vec2(%s)%s / vec2(tsize%d(0).xy))", co[0], co[1], off[i], off_scale(c, slot, 2), slot);
-        else snprintf(xy, sizeof xy, "vec2(%s, %s)", co[0], co[1]);
+        else if (noff) snprintf(xy, sizeof xy, "(vec2(%s, %s) + (vec2(%s)%s + GATHER_BIAS) / vec2(tsize%d(0).xy))", co[0], co[1], off[i], off_scale(c, slot, 2), slot);
+        else snprintf(xy, sizeof xy, "(vec2(%s, %s) + GATHER_BIAS / vec2(tsize%d(0).xy))", co[0], co[1], slot);
         if (layer) snprintf(P[i], sizeof P[i], "vec%d(%s, float(%s))", cube ? 4 : 3, xy, layer);
         else snprintf(P[i], sizeof P[i], "%s", xy);
         if (t->shadow) snprintf(call[i], sizeof call[i], "textureGather(t%d, %s, %s)", slot, P[i], dref);
@@ -2204,6 +2213,20 @@ static void glsl_body(Ctx *c, Str *s, const char *body, bool any_branch, bool db
     }
 }
 
+// Video > Wet grass fix. The game adds three full-screen lighting passes only while things are wet. In rain with the
+// sun out (its BlueskyRain weather) their sun reflection blows grass and roofs out to white: about 9% of the ground in
+// an open field at noon on 1.9.0. That white is what all three colour channels share, so most of it above 0.5 is taken
+// off (glsl_finish) and the grass keeps its colour and a soft sheen. The passes are found by an FNV-1a hash of their
+// SPH and first code (0x200 bytes from the blob's 0x30), the game's own bytes, so no GPU, driver or translator change
+// moves the match; a game version whose passes differ doesn't match and keeps the game's look.
+bool maxwell_wet_fix;
+bool maxwell_wet_lighting(const uint8_t *blob, size_t max_size, int stage) {
+    if (!maxwell_wet_fix || stage != STAGE_FRAGMENT || max_size < 0x230) return false;
+    uint64_t h = 1469598103934665603ull;
+    for (size_t i = 0x30; i < 0x230; i++) h = (h ^ blob[i]) * 0x100000001B3ull;
+    return h == 0x970f06ddc0d6fa0aull || h == 0xb19a04739cefe2b2ull || h == 0xdae9df4164496f40ull;
+}
+
 // Declarations + entry point around the (rewritten) body; mirrors the MSL assembly in maxwell_translate.
 static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     ShaderInfo *info = c->info;
@@ -2284,6 +2307,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         sp(&s, "layout(std140, set = %d, binding = 19) uniform Tint { vec4 ltint[2]; };\n", set);
         info->uses_tint = true;
     }
+    if (c->uses_gather) sp(&s, "layout(constant_id = %d) const float GATHER_BIAS = 0.0f;\n", GATHER_BIAS_ID);  // (glsl_gather)
     for (int i = 0; i < info->ntex; i++) {
         ShaderTexture *t = &info->tex[i];
         sp(&s, "layout(set = %d, binding = %d) uniform %s t%d;\n", set, 32 + i, glsl_sampler_type(t), i);
@@ -2394,6 +2418,8 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         if (tint)
             sp(&s, "  if (ltint[0].w > 0.0f) { vec3 g = c0.rgb; float l = dot(g, vec3(0.299f, 0.587f, 0.114f));\n"
                    "    c0.rgb = mix(g, ltint[0].rgb * pow(l, ltint[1].w) + ltint[1].rgb * l, ltint[0].w); }\n");
+        if (c->wet && !dbg)  // (Video > Wet grass fix: maxwell_wet_lighting)
+            sp(&s, "  c0.rgb -= 0.9f * max(min(c0.r, min(c0.g, c0.b)) - 0.5f, 0.0f);\n");
         if (c->omap_depth) {
             if (c->reg_used[r + 1]) sp(&s, "  gl_FragDepth = as_f(r%d);\n", r + 1);
             else sp(&s, "  gl_FragDepth = gl_FragCoord.z;\n");
@@ -3006,6 +3032,7 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
     // compute programs have neither the 0x30-byte NVN header nor an SPH: code starts at the blob
     if (stage == STAGE_COMPUTE) code = blob;
     c->code = code;
+    c->wet = maxwell_wet_lighting(blob, max_size, stage);
     if (stage == STAGE_FRAGMENT) {
         c->omap_target = *(const uint32_t *)(sph + 0x48);
         c->omap_depth = (*(const uint32_t *)(sph + 0x4C) >> 1) & 1;
