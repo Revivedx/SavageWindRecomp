@@ -5494,7 +5494,13 @@ static bool gw_ubo_direct(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *
 // as on the Switch, whose GPU also reads them in place: it keeps them apart and waits on its fences before it
 // reuses them, and those fences come back once our GPU is done. What stays a copy: ranges UpdateUniformBuffer writes
 // inside a list (uubt: draws before the update must not see it).
-// SAVAGEWIND_VK_UBO_DIRECT=0/1: off / on whatever the GPU (on a discrete GPU the reads cross PCIe).
+// Not with the GPU overlap (gpu_overlap, the default): its fence waits come one frame late, so the game rewrites
+// constants the GPU has yet to read, which it can only do while they are copied. In place under it, the world turned
+// magenta or white and textures flickered (#332: Vega 7 RADV with the recorder off every time, an RTX 3060 1 boot in 3).
+// The overlap is worth more than the in-place reads (4 cores, 720p: in place without it 112 / 90 / 110 fps at the
+// plateau / Rito / the castle, copies with it 125 / 96 / 141).
+// SAVAGEWIND_VK_UBO_DIRECT=0/1: off / on whatever the GPU (on a discrete GPU the reads cross PCIe; with the overlap,
+// wrong constants now and then).
 // SAVAGEWIND_VK_UBO_CHECK=1: each direct range hashed when bound and again once its submission is done, mismatches
 // counted (the CPU wrote it while the GPU could still read it; a write after the GPU finished counts too).
 static int ubo_direct_on = -1, ubo_check;
@@ -5532,7 +5538,7 @@ static bool ubo_direct(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out
     if (ubo_direct_on < 0) {
         const char *e = getenv("SAVAGEWIND_VK_UBO_DIRECT");
         bool igpu = g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
-        ubo_direct_on = e ? atoi(e) != 0 : igpu || plat_cpu_count() <= 4;
+        ubo_direct_on = e ? atoi(e) != 0 : (igpu || plat_cpu_count() <= 4) && !gpu_overlap();
         ubo_check = getenv("SAVAGEWIND_VK_UBO_CHECK") != NULL;
         LOG("[vk] constant buffers: %s%s\n", ubo_direct_on ? "read in place" : "copied per list (SAVAGEWIND_VK_UBO_DIRECT=1: in place)",
             ubo_direct_on && ubo_check ? ", checked" : "");
