@@ -41,6 +41,8 @@ void control_fly_wheel(float notches) { (void)notches;abort(); }
 bool freecam_active(void) { return false; }
 void freecam_toggle(void) { abort(); }
 void freecam_key(int scancode, bool down) { (void)scancode; (void)down; abort(); }
+static int photo_takes = 0;
+void photo_take(void) { photo_takes++; }
 void photo_pad(uint32_t buttons) { (void)buttons; }
 void freecam_mouse(float dx, float dy) { (void)dx; (void)dy; abort(); }
 void freecam_pad(float lx, float ly, float rx, float ry, float up, float down, bool fast, bool slow) {
@@ -212,4 +214,17 @@ int main(void) {
     now+=16000000;input_pc_rotate_motion(-40,0);mouse_stick(&sx,&sy);assert(sx<0);
     rotate_drag=false;now+=16000000;mouse_stick(&sx,&sy);assert(sx==0&&sy==0);
     puts("PASS: pointer menus keep middle click bound; Rotate-mode drag turns Link through the right stick");
+
+    // PrintScreen captures a screenshot and does not get swallowed by normal button actions
+    int shots_before = photo_takes;
+    e.type = SDL_EVENT_KEY_DOWN; e.key.scancode = SDL_SCANCODE_PRINTSCREEN; e.key.repeat = false;
+    input_handle_event(&e);
+    assert(photo_takes == shots_before + 1);
+    e.key.repeat = true;
+    input_handle_event(&e);
+    assert(photo_takes == shots_before + 1);  // key repeat ignored
+    e.type = SDL_EVENT_KEY_UP;
+    input_handle_event(&e);
+    assert(photo_takes == shots_before + 1);
+    puts("PASS: PrintScreen triggers screenshot capture");
 }
