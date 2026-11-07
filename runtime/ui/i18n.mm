@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <deque>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -89,6 +90,55 @@ const char *menu_lang_for(const char *code) {
     return "en";
 }
 
+// A language pack: lang/<menu language>.txt in the data folder (docs/menu-language-packs.md), its lines over the built-in
+// table, so players can fix or finish a translation without a new build. Each language's pack is read once and kept
+// for the whole run: tr() hands out pointers into it.
+void read_pack(const char *ui) {
+    static std::unordered_map<std::string, std::deque<std::string>> packs;  // (deque: its strings never move)
+    auto at = packs.find(ui);
+    if (at == packs.end()) {
+        std::deque<std::string> &text = packs[ui];
+        char path[64];
+        snprintf(path, sizeof path, "lang/%s.txt", ui);
+        FILE *f = fopen(path, "rb");
+        if (!f) return;
+        std::string line;
+        int c, lines = 0, bad = 0;
+        auto unescape = [](const std::string &s) {
+            std::string o;
+            for (size_t i = 0; i < s.size(); i++) {
+                if (s[i] == '\\' && i + 1 < s.size() && (s[i + 1] == 'n' || s[i + 1] == 't' || s[i + 1] == '\\')) {
+                    o += s[i + 1] == 'n' ? '\n' : s[i + 1] == 't' ? '\t' : '\\';
+                    i++;
+                } else o += s[i];
+            }
+            return o;
+        };
+        do {
+            c = fgetc(f);
+            if (c != '\n' && c != EOF) { line += (char)c; continue; }
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (lines == 0 && line.size() >= 3 && (unsigned char)line[0] == 0xEF && (unsigned char)line[1] == 0xBB &&
+                (unsigned char)line[2] == 0xBF)
+                line.erase(0, 3);  // (a UTF-8 mark at the start)
+            size_t tab = line.find('\t');
+            if (!line.empty() && line[0] != '#') {
+                if (tab == std::string::npos || tab == 0) bad++;
+                else {
+                    text.push_back(unescape(line.substr(0, tab)));
+                    text.push_back(unescape(line.substr(tab + 1)));
+                }
+            }
+            lines++;
+            line.clear();
+        } while (c != EOF);
+        fclose(f);
+        fprintf(stderr, "[i18n] %s: %zu texts%s\n", path, text.size() / 2, bad ? " (lines without a tab skipped)" : "");
+        at = packs.find(ui);
+    }
+    for (size_t i = 0; i + 1 < at->second.size(); i += 2) by_text[at->second[i]] = at->second[i + 1].c_str();
+}
+
 bool rtl_lang(const char *ui) { return !strcmp(ui, "he"); }
 void visual_line(const char *b, const char *e, char *out);  // (right to left, below)
 
@@ -96,7 +146,7 @@ void refresh(void) {  // (lock held)
     // SAVAGEWIND_MENU_LANG=<LanguageCode> (testing): the menus in that language, whatever the settings say
     static const char *forced = getenv("SAVAGEWIND_MENU_LANG");
     const char *ui = menu_lang_for(forced && *forced ? forced : language_text_code());
-    if (ui == cur_ui) return;
+    if (ui == cur_ui && generation) return;  // (the first time English too: its pack, if any)
     cur_ui = ui;
     generation++;
     GImTextReorderLine = rtl_lang(ui) ? visual_line : nullptr;  // (ImGui draws right-to-left lines with it)
@@ -104,6 +154,7 @@ void refresh(void) {  // (lock held)
     for (const Table &t : tables)
         if (!strcmp(t.lang, ui))
             for (const Entry *e = t.entries; e->en; e++) by_text[e->en] = e->tr;
+    read_pack(ui);
 }
 }  // namespace
 
