@@ -24,6 +24,9 @@ void plat_commit(uint64_t addr, uint64_t size);
 // Give the backing of [addr, addr+size) inside the guest window back to the OS (the guest unmapped it): the pages
 // read as zero if anything touches them again (Windows: committed again on the first access). The window stays claimed.
 void plat_decommit(uint64_t addr, uint64_t size);
+// The first run of committed memory at or after addr and before end: *a .. *e (false: none). For reading the game's
+// memory from a thread of ours without committing what the game never touched (runtime/rupees.c).
+bool plat_committed_range(uint64_t addr, uint64_t end, uint64_t *a, uint64_t *e);
 // In-place reboot: every page of [lo, hi) back to zero (and unbacked), the window still claimed.
 bool plat_reset_guest(uint64_t lo, uint64_t hi);
 // Vulkan sparse guest-heap backing: report committed 64 KiB pages in a reserved guest range.
