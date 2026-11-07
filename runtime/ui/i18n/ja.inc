@@ -120,6 +120,8 @@ T("Shows more of the world on screens that aren't 16:9 (wider or taller), instea
 T("On a window or screen that isn't 16:9 the game shows more of the world instead of black bars: to the sides when it's wider (21:9, 32:9), above and below when it's taller (16:10, 4:3). The HUD stays 16:9 in the middle; the pause menu, the map and the start screen are shown 16:9.", "16:9以外のウィンドウや画面では、黒い帯の代わりに世界がより広く見えます。横長（21:9、32:9）なら左右が、縦長（16:10、4:3）なら上下が広がります。HUDは中央に16:9のまま表示され、ポーズメニュー、マップ、タイトル画面は16:9で表示されます。")
 T("Field of view", "視野")
 T("HUD size", "HUDのサイズ")
+T("Start at Continue", "「つづきから」で開始")
+T("Goes past the title screen into your latest save by itself. Any button stops it. From the next start.", "タイトル画面を自動で進み、最新のセーブから始めます。どのボタンでも止まります。次の起動から。")
 T("How big the hearts, stamina, minimap and the rest of the HUD are. Each part stays in its corner.", "ハート、がんばりゲージ、ミニマップなどのHUDの大きさです。各パーツは画面の隅に残ります。")
 T("Draw distance", "描画距離")
 T("Haze", "もや")

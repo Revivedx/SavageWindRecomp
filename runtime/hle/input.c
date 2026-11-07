@@ -806,6 +806,30 @@ volatile int g_inject_plus;  // frames to hold Plus for the game (movie.c: A/B s
 RT_ON_RESET(input_reboot_reset) {
     g_pad_obj = 0; g_inject_plus = 0;
 }  // (reboot: the controller object was guest memory)
+
+// Gameplay > Start at Continue: past the start screen by itself, into the latest save. A is pressed now and then while
+// the start screen or its menus are up (Press A, then Continue, which the game selects first; B for the downloadable
+// content notice, which only B closes), once per game start, until the game has left the start screen. Any button of
+// the player's stops it at once. The setting is read at each game start.
+static bool auto_armed, auto_read, auto_title_seen;
+RT_ON_RESET(auto_continue_reset) { auto_read = auto_armed = auto_title_seen = false; }
+static uint64_t auto_continue_buttons(uint64_t player) {
+    if (!auto_read) auto_read = true, auto_armed = g_settings.auto_continue;
+    if (!auto_armed) return 0;
+    if (player) {
+        auto_armed = false;
+        LOG("[input] start at continue: stopped by a button\n");
+        return 0;
+    }
+    if (!framepace_title_ui()) {
+        if (auto_title_seen) auto_armed = false;  // (in the game, or loading it: done)
+        return 0;
+    }
+    auto_title_seen = true;
+    uint64_t now = plat_now_ns();
+    if (framepace_dlc_ui()) return now % 1500000000ull < 125000000ull ? 1ull << BTN_B : 0;
+    return now % 1200000000ull < 125000000ull ? 1ull << BTN_A : 0;
+}
 void input_frame(uint64_t frame) {
     extern uint64_t renderer_present_count(void);
     control_input_frame(renderer_present_count());
@@ -903,6 +927,7 @@ static void fill_state(Cpu *c) {
     // the window unfocused or the overlay up, use the Switch layer, so no binding can lock the player out.
     act_poll(!menu && !framepace_title_ui() && !framepace_menu_ui());
     uint64_t b = menu ? script_buttons : key_buttons | pad_buttons | escape_buttons | script_buttons;
+    if (!menu) b |= auto_continue_buttons(b);  // (not while the overlay has the controls)
     b=pc_cursor_buttons(b);
     {   // injected Plus: held for ~10 presented frames (the game polls several times per frame)
         extern uint64_t renderer_present_count(void);

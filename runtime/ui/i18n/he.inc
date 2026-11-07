@@ -478,6 +478,8 @@ T("Muted", "מאופק")
 
 T("FPS: the frame rate and frame time. Full: also CPU, memory and GPU load and temperatures, a frame time graph and Link's coordinates. F10 switches between them while you play.", "FPS: קצב הפריימים וזמן הפריים. מלא: גם עומס וטמפרטורות של המעבד, הזיכרון וכרטיס המסך, גרף זמני פריים והקואורדינטות של לינק. F10 מחליף ביניהם בזמן המשחק.")
 T("HUD size", "גודל ממשק")
+T("Start at Continue", "התחלה בהמשך")
+T("Goes past the title screen into your latest save by itself. Any button stops it. From the next start.", "עובר לבד את מסך הפתיחה אל השמירה האחרונה. כל כפתור עוצר. מההפעלה הבאה.")
 T("How big the hearts, stamina, minimap and the rest of the HUD are. Each part stays in its corner.", "כמה גדולים הלבבות, הסיבולת, המפה הקטנה ושאר הממשק. כל חלק נשאר בפינה שלו.")
 T("Draw distance", "מרחק תצוגה")
 T("Haze", "אובך")

@@ -71,6 +71,8 @@ T("Shows more of the world on screens that aren't 16:9 (wider or taller), instea
 T("On a window or screen that isn't 16:9 the game shows more of the world instead of black bars: to the sides when it's wider (21:9, 32:9), above and below when it's taller (16:10, 4:3). The HUD stays 16:9 in the middle; the pause menu, the map and the start screen are shown 16:9.", "บนหน้าต่างหรือจอที่ไม่ใช่ 16:9 เกมจะแสดงโลกได้มากขึ้นแทนแถบดำ: ด้านข้างเมื่อจอกว้างกว่า (21:9, 32:9) และด้านบนกับด้านล่างเมื่อจอสูงกว่า (16:10, 4:3) HUD ยังคงเป็น 16:9 อยู่ตรงกลาง ส่วนเมนูหยุดชั่วคราว แผนที่ และหน้าจอเริ่มต้นจะแสดงเป็น 16:9")
 T("Field of view", "ระยะการมองเห็น")
 T("HUD size", "ขนาด HUD")
+T("Start at Continue", "เริ่มที่เล่นต่อ")
+T("Goes past the title screen into your latest save by itself. Any button stops it. From the next start.", "ข้ามหน้าจอเริ่มเกมไปยังเซฟล่าสุดเอง กดปุ่มใดก็ได้เพื่อหยุด มีผลในการเปิดครั้งถัดไป")
 T("How big the hearts, stamina, minimap and the rest of the HUD are. Each part stays in its corner.", "ขนาดของหัวใจ ค่าพละกำลัง แผนที่ย่อ และ HUD ส่วนอื่น แต่ละส่วนจะอยู่ที่มุมของตัวเอง")
 T("Draw distance", "ระยะการแสดงผล")
 T("Haze", "หมอกควัน")
