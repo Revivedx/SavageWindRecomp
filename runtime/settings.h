@@ -154,3 +154,8 @@ extern Settings g_settings;
 
 void settings_load(void);
 void settings_save(void);
+// Settings profiles 0..2 (settings-profiles/profile-<n>.ini, a copy of the settings file; Options >
+// Settings profiles). Save writes the current settings first; load reads the copy as at a start (defaults, then the file).
+bool settings_profile_exists(int i);
+bool settings_profile_save(int i);
+bool settings_profile_load(int i);

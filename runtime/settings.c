@@ -5,6 +5,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#ifdef _WIN32
+#include <direct.h>
+#endif
 
 #include "hle.h"
 #include "input_bind.h"
@@ -13,6 +17,9 @@
 bool fsr3_upscaler_enabled(void);  // (nvn/output_scale.c: FSR 3 upscaling held back for now)
 
 #define SETTINGS_FILE settings_file()
+
+static bool s_loaded;
+static Settings s_defaults;  // g_settings as built in, before the file: what a profile load starts from
 
 // SAVAGEWIND_SETTINGS=<path>: another settings file (test runs never touch the player's savagewind.ini)
 static const char *settings_file(void) {
@@ -94,9 +101,10 @@ static void gyro_startup_overrides(void) {
     if (v && *v) g_settings.gyro_scene = atoi(v) != 0;
 }
 void settings_load(void) {
-    static bool loaded;
-    if (loaded) return;
-    loaded = true;
+    static bool have_defaults;
+    if (s_loaded) return;
+    s_loaded = true;
+    if (!have_defaults) s_defaults = g_settings, have_defaults = true;
     FILE *f = fopen(SETTINGS_FILE, "r");
     if (!f) {
         gyro_startup_overrides();
@@ -429,4 +437,62 @@ void graphics_preset_apply(int preset) {
     g_settings.bloom = k_gpreset[preset].bloom;
     g_settings.depth_of_field = k_gpreset[preset].depth_of_field;
     g_settings.dynamic_res = k_gpreset[preset].dynamic_res;
+}
+
+// ------------------------------------------------------------------ settings profiles
+// Three slots in the Options (Settings profiles page, runtime/ui/game_options.mm), each a copy of the whole settings file in the data folder's
+// settings-profiles/. Loading one copies it over the settings file and reads it as at a start: the built-in defaults
+// first, so a setting the profile doesn't name goes back to its default instead of keeping the current value. The
+// saves are not part of a profile (save profiles, which switch the save folder, are another thing).
+#define PROFILE_DIR "settings-profiles"
+
+static void profile_path(int i, char *p, size_t n) { snprintf(p, n, PROFILE_DIR "/profile-%d.ini", i + 1); }
+
+static bool copy_file(const char *from, const char *to) {
+    FILE *a = fopen(from, "rb"), *b = a ? fopen(to, "wb") : NULL;
+    bool ok = a && b;
+    char buf[8192];
+    size_t got;
+    while (ok && (got = fread(buf, 1, sizeof buf, a)) > 0) ok = fwrite(buf, 1, got, b) == got;
+    if (a) fclose(a);
+    if (b && fclose(b)) ok = false;
+    return ok;
+}
+
+bool settings_profile_exists(int i) {
+    char p[64];
+    profile_path(i, p, sizeof p);
+    FILE *f = fopen(p, "rb");
+    if (f) fclose(f);
+    return f != NULL;
+}
+
+bool settings_profile_save(int i) {
+    char p[64];
+    settings_save();
+#ifdef _WIN32
+    _mkdir(PROFILE_DIR);
+#else
+    mkdir(PROFILE_DIR, 0755);
+#endif
+    profile_path(i, p, sizeof p);
+    bool ok = copy_file(SETTINGS_FILE, p);
+    LOG("[settings] profile %d %s\n", i + 1, ok ? "saved" : "not saved: cannot write it");
+    return ok;
+}
+
+bool settings_profile_load(int i) {
+    char p[64];
+    profile_path(i, p, sizeof p);
+    if (!settings_profile_exists(i) || !copy_file(p, SETTINGS_FILE)) {
+        LOG("[settings] profile %d not loaded\n", i + 1);
+        return false;
+    }
+    g_settings = s_defaults;
+    bind_reset(BIND_DEV_PAD);
+    bind_reset(BIND_DEV_KEY);
+    s_loaded = false;
+    settings_load();
+    LOG("[settings] profile %d loaded\n", i + 1);
+    return true;
 }

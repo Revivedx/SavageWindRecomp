@@ -91,9 +91,9 @@ struct Entry {           // the game's option entry (0x30)
 static_assert(sizeof(Entry) == 0x30);
 enum { KIND_TOGGLE = 0, KIND_CHOICE = 1, KIND_BUTTON = 2 };
 
-enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_COLOUR, P_AUDIO, P_CONTROLS, P_BINDS, P_LANGUAGE, P_ACCESS, P_VIDEO_ADV, P_COUNT };
+enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_COLOUR, P_AUDIO, P_CONTROLS, P_BINDS, P_LANGUAGE, P_ACCESS, P_VIDEO_ADV, P_PROFILES, P_COUNT };
 // A_FIXED: a greyed row for an input that can never be rebound (Item.arg: 0 Esc, 1 F2); A_BIND: Item.arg is a binding slot (an input, or BIND_ACTION + an action); the next key, mouse button or controller button binds it
-enum Action { A_NONE, A_PAGE, A_BIND, A_BINDS_HEADER, A_RESET_BINDS, A_RESTART, A_QUIT, A_SIZE_LIST, A_FIXED };
+enum Action { A_NONE, A_PAGE, A_BIND, A_BINDS_HEADER, A_RESET_BINDS, A_RESTART, A_QUIT, A_SIZE_LIST, A_FIXED, A_PROFILE_LOAD, A_PROFILE_SAVE };
 
 struct Item {
     int page;
@@ -319,6 +319,9 @@ void build_items(void) {
     v.push_back(button(P_MAIN, "Key bindings", "Which key, mouse button or controller button does what.", "Open", A_PAGE, P_BINDS));
     v.push_back(button(P_MAIN, "Language", "Language of the texts and of the voices.", "Open", A_PAGE, P_LANGUAGE));
     v.push_back(button(P_MAIN, "Accessibility", "Assists that make the game easier.", "Open", A_PAGE, P_ACCESS));
+    v.push_back(button(P_MAIN, "Settings profiles",
+                       "Three slots, each a copy of all your settings: video, sound, controls and the rest. Your saves aren't part of them.",
+                       "Open", A_PAGE, P_PROFILES));
     v.push_back(button(P_MAIN, "Quit game", "To the desktop, or back to the Savage Wind start screen.", "Quit",
                        A_QUIT, 0));
 
@@ -781,6 +784,19 @@ void build_items(void) {
                        "Starts the game again with these languages. Unsaved progress is lost.", "Restart", A_RESTART, 0));
 
     // Accessibility (runtime/assists.c): applied at once, while playing
+    // Settings profiles (runtime/settings.c: a copy of the whole settings file in each)
+    static const char *const load_title[3] = {"Load profile 1", "Load profile 2", "Load profile 3"};
+    static const char *const save_title[3] = {"Save as profile 1", "Save as profile 2", "Save as profile 3"};
+    for (int i = 0; i < 3; i++) {
+        Item l = button(P_PROFILES, load_title[i], "Every setting as saved in this profile. A few apply from the next start.",
+                        nullptr, A_PROFILE_LOAD, i);
+        l.label = [](const Item &it, int) { return settings_profile_exists(it.arg) ? tr("Load") : tr("(empty)"); };
+        v.push_back(l);
+    }
+    for (int i = 0; i < 3; i++)
+        v.push_back(button(P_PROFILES, save_title[i], "Keeps all your current settings in this slot, over what was there.",
+                           "Save", A_PROFILE_SAVE, i));
+
     v.push_back(toggle(P_ACCESS, "God mode", "Link takes no damage.",
                        [](const Item &) { return (int)g_settings.god_mode; },
                        [](const Item &, int x) { g_settings.god_mode = x; }, 0));
@@ -1660,6 +1676,14 @@ extern "C" int rt_opt_decide(uint64_t row) {
         return 2;
     case A_QUIT:
         return 3;
+    case A_PROFILE_SAVE:
+        settings_profile_save(it->arg);
+        mark_all_rows(rd64(row));  // (its Load row now says Load)
+        return 2;
+    case A_PROFILE_LOAD:
+        if (settings_profile_load(it->arg)) menu_request_window_apply();  // (fullscreen, window size: menu.mm)
+        mark_all_rows(rd64(row));
+        return 2;
     }
     return 2;
 }
