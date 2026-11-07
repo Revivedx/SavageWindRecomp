@@ -112,6 +112,7 @@ typedef struct {
     bool color_lut_set;      // the ini names a LUT (or none): the player chose; the first setup offers COLOR_LUT_RECOMMENDED
     // Options > Accessibility (runtime/assists.c): assists, each off by default
     bool no_weapon_wear;     // weapons, bows and shields lose no durability and never break
+    int weapon_wear;         // how fast they wear out otherwise, percent of the game's (WEAPON_WEAR_MIN..MAX)
     bool infinite_arrows;    // shooting a bow takes no arrows from the pouch
     bool infinite_stamina;   // the stamina wheel never goes down
     bool god_mode;           // Link takes no damage
@@ -127,6 +128,8 @@ typedef struct {
 #define HAZE_CHOICES {0, 25, 50, 75, 100}  // (percent of the game's haze)
 enum { DRAWDIST_ORIGINAL, DRAWDIST_MEDIUM, DRAWDIST_HIGH, DRAWDIST_COUNT };  // (Original: the game's own distances)
 float draw_distance_factor(void);  // the setting's factor on the game's distances (1: Original)
+#define WEAPON_WEAR_MIN 10   // (Accessibility > Weapon wear, percent, in steps of 10)
+#define WEAPON_WEAR_MAX 300
 #define DAMAGE_CHOICES {25, 50, 75, 100, 150, 200, 300, 400}  // (Accessibility's damage multipliers, percent)
 #define FOV_CHOICES {70, 80, 90, 100, 110, 120, 130, 140, 150}  // (percent; 100: the game's own)
 #define HUD_SIZE_CHOICES {50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120, 125, 130, 135, 140, 145, 150}  // (percent; 100: the game's own)

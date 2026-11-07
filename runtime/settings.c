@@ -29,6 +29,7 @@ Settings g_settings = {
     .freecam_sticks = true,
     .damage_taken = 100,
     .damage_dealt = 100,
+    .weapon_wear = 100,
     .upscaler = UPSCALE_DEFAULT,  // (Off: the window's resolution; MetalFX on macOS)
     .upscale_quality = UPQ_QUALITY,
     .game_fxaa = true,
@@ -208,6 +209,7 @@ void settings_load(void) {
                 if (!strcmp(val, k_drawdist[i])) g_settings.draw_distance = i;
         }
         else if (!strcmp(key, "no_weapon_wear")) g_settings.no_weapon_wear = atoi(val) != 0;
+        else if (!strcmp(key, "weapon_wear")) g_settings.weapon_wear = atoi(val);  // (percent)
         else if (!strcmp(key, "infinite_arrows")) g_settings.infinite_arrows = atoi(val) != 0;
         else if (!strcmp(key, "infinite_stamina")) g_settings.infinite_stamina = atoi(val) != 0;
         else if (!strcmp(key, "god_mode")) g_settings.god_mode = atoi(val) != 0;
@@ -290,6 +292,7 @@ void settings_load(void) {
     g_settings.color_temperature = CLAMP(g_settings.color_temperature, -100, 100);
     g_settings.color_tint = CLAMP(g_settings.color_tint, -100, 100);
     g_settings.color_lut_strength = CLAMP(g_settings.color_lut_strength, 0, 100);
+    g_settings.weapon_wear = CLAMP(g_settings.weapon_wear, WEAPON_WEAR_MIN, WEAPON_WEAR_MAX);
 #undef CLAMP
     for (int i = 0; i < 2; i++)
         if (!(g_settings.stick_deadzone[i] >= 0 && g_settings.stick_deadzone[i] <= 0.5f))
@@ -370,6 +373,7 @@ void settings_save(void) {
     int dd = g_settings.draw_distance;
     fprintf(f, "draw_distance = %s\n", k_drawdist[dd >= 0 && dd < DRAWDIST_COUNT ? dd : DRAWDIST_ORIGINAL]);
     fprintf(f, "no_weapon_wear = %d\n", g_settings.no_weapon_wear);
+    fprintf(f, "weapon_wear = %d\n", g_settings.weapon_wear);
     fprintf(f, "infinite_arrows = %d\n", g_settings.infinite_arrows);
     fprintf(f, "infinite_stamina = %d\n", g_settings.infinite_stamina);
     fprintf(f, "god_mode = %d\n", g_settings.god_mode);

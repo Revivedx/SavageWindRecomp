@@ -141,6 +141,8 @@ T("Accessibility", "การช่วยเหลือการเข้าถ
 T("Assists that make the game easier.", "ตัวช่วยที่ทำให้เล่นเกมง่ายขึ้น")
 T("Unbreakable weapons", "อาวุธไม่มีวันพัง")
 T("Weapons, bows and shields lose no durability and never break.", "อาวุธ ธนู และโล่ไม่เสียความทนทานและไม่มีวันพัง")
+T("Weapon wear", "การสึกหรอของอาวุธ")
+T("How fast weapons, bows and shields wear out. 100% is the game's own.", "อาวุธ ธนู และโล่สึกหรอเร็วแค่ไหน 100% คือค่าของเกม")
 T("Infinite arrows", "ลูกธนูไม่จำกัด")
 T("Shooting a bow uses up no arrows. You still need one to shoot.", "ยิงธนูโดยไม่เสียลูกธนู แต่ยังต้องมีอย่างน้อยหนึ่งดอกจึงจะยิงได้")
 T("God mode", "อมตะ")
