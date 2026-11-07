@@ -183,6 +183,10 @@ SITES = [
     # the wait for the ground (tools/patches.py _tp_gate): is the map around Link not loaded yet? (the world pauses for it)
     Site('tp_gate', 'code', 'd10283ff fd002be8 f90037f9 a905fbfd a9075ff8 a90857f6 a9094ff4 910163fd '
          '90000016/9f00001f', 0),
+    # Havok's deactivation clock (tools/patches.py _deact_count, _deact_gate): the integrate loop of the physics step
+    # counts a body's steps (ldrb w8, [x20, #0xd]; add w8, w8, #1) and runs its sleep test every 4th and 16th step
+    Site('deact_count', 'code', '39403688 11000508 39003688 12000509 35000009/ff00001f 12000d09 34000009/ff00001f aa1f03e8 14000000/fc000000', 1),
+    Site('deact_gate', 'code', '39403688 11000508 39003688 12000509 35000009/ff00001f 12000d09 34000009/ff00001f aa1f03e8 14000000/fc000000', 3),
     Site('pause_state', 'ref', '90000013/9f00001f b9400268/ffc003ff 35000008/ff00001f 90000008/9f00001f '
          'b9400108/ffc003ff 35000008/ff00001f b9400268/ffc003ff 34000008/ff00001f', 1),
     Site('event_mgr', 'ref', '9000000d/9f00001f 910001ad/ffc003ff f94001a0 aa1703e1 94000000/fc000000 aa1703e0 '
@@ -353,6 +357,7 @@ OPTIONAL_GROUPS = [
     ('no_wear_hit', 'no_wear_ret'),
     ('link_life_store', 'link_life_tick'),
     ('stamina_store',),
+    ('deact_count', 'deact_gate'),  # (without them slow bodies fall asleep too soon above 30 fps)
     ('tp_gate',),  # (a far teleport of the control endpoint: without it a long jump freezes the world)
 ]
 OPTIONAL = {n for g in OPTIONAL_GROUPS for n in g}
@@ -509,6 +514,8 @@ KNOWN = {
         'persp_unproject_x': 0x7000eb4b58,
         'pause_state': 0x7001e1611c,
         'tp_gate': 0x70010b7a40,
+        'deact_count': 0x700011f960,
+        'deact_gate': 0x700011f968,
         'event_mgr': 0x7001e3a638,
         'controller_step': 0x7001dad0e0,
         'player_info': 0x7001e13ed0,
