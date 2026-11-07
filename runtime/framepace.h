@@ -14,6 +14,8 @@ bool framepace_on(void);
 bool framepace_in_event(void);
 // The start screen or one of its menus is up (a 16:9 layout over pictures of its own)
 bool framepace_title_ui(void);
+// The "downloadable content" notice the game shows over the start screen (only B closes it)
+bool framepace_dlc_ui(void);
 // The loading screen is up (a 16:9 layout: its tip, the logo)
 bool framepace_loading_ui(void);
 // The pause menu's pages or the map are up (16:9 layouts that cover the whole picture)

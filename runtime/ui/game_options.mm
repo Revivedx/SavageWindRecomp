@@ -386,6 +386,9 @@ void build_items(void) {
                        },
                        [](const Item &) { return nearest(k_fov, N(k_fov), (float)g_settings.fov); },
                        [](const Item &, int x) { g_settings.fov = k_fov[x]; }, FOV_DEFAULT_INDEX));
+    v.push_back(toggle(P_GAMEPLAY, "Start at Continue", "Goes past the title screen into your latest save by itself. Any button stops it. From the next start.",
+                       [](const Item &) { return (int)g_settings.auto_continue; },
+                       [](const Item &, int x) { g_settings.auto_continue = x; }, 0));
     v.push_back(choice(P_GAMEPLAY, "HUD size", "How big the hearts, stamina, minimap and the rest of the HUD are. Each part stays in its corner.",
                        [](const Item &) { return N(k_hud_size); },
                        [](const Item &, int x) {

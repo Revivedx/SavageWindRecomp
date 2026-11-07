@@ -120,6 +120,8 @@ T("Shows more of the world on screens that aren't 16:9 (wider or taller), instea
 T("On a window or screen that isn't 16:9 the game shows more of the world instead of black bars: to the sides when it's wider (21:9, 32:9), above and below when it's taller (16:10, 4:3). The HUD stays 16:9 in the middle; the pause menu, the map and the start screen are shown 16:9.", "En una ventana o pantalla que no es 16:9 el juego muestra más del mundo en vez de bandas negras: a los lados si es más ancha (21:9, 32:9), arriba y abajo si es más alta (16:10, 4:3). El HUD sigue en 16:9 en el centro; el menú de pausa, el mapa y la pantalla de título se muestran en 16:9.")
 T("Field of view", "Campo de visión")
 T("HUD size", "Tamaño del HUD")
+T("Start at Continue", "Empezar en Continuar")
+T("Goes past the title screen into your latest save by itself. Any button stops it. From the next start.", "Pasa sola la pantalla de título y carga tu última partida. Cualquier botón la detiene. Desde el próximo inicio.")
 T("How big the hearts, stamina, minimap and the rest of the HUD are. Each part stays in its corner.", "Tamaño de los corazones, la resistencia, el minimapa y el resto del HUD. Cada parte se queda en su esquina.")
 T("Draw distance", "Distancia de dibujado")
 T("Haze", "Bruma")

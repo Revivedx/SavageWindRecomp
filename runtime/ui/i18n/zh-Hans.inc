@@ -120,6 +120,8 @@ T("Shows more of the world on screens that aren't 16:9 (wider or taller), instea
 T("On a window or screen that isn't 16:9 the game shows more of the world instead of black bars: to the sides when it's wider (21:9, 32:9), above and below when it's taller (16:10, 4:3). The HUD stays 16:9 in the middle; the pause menu, the map and the start screen are shown 16:9.", "在不是16:9的窗口或屏幕上，游戏会显示更多画面，而不是黑边：更宽时（21:9、32:9）在两侧，更高时（16:10、4:3）在上下。HUD保持16:9，位于中间；暂停菜单、地图和标题画面以16:9显示。")
 T("Field of view", "视野")
 T("HUD size", "HUD 大小")
+T("Start at Continue", "直接继续游戏")
+T("Goes past the title screen into your latest save by itself. Any button stops it. From the next start.", "自动跳过标题画面，读取最新存档。按任意键停止。下次启动生效。")
 T("How big the hearts, stamina, minimap and the rest of the HUD are. Each part stays in its corner.", "心、精力、小地图等 HUD 元素的大小。各部分保持在原来的角落。")
 T("Draw distance", "绘制距离")
 T("Haze", "雾霾")
