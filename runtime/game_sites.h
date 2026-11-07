@@ -28,7 +28,7 @@
     X(frame_loop_interval_ret) /* the frame loop's return address from setting the present interval */                \
     X(title_version_format)    /* "Ver.%s": the title screen's version line */                                         \
     X(player_info)             /* uking::act::PlayerInfo * (test tools) */                                              \
-    X(world_mgr)               /* ksys::world::Manager * (test tools) */                                                \
+    X(world_mgr)               /* ksys::world::Manager * (test tools, weather.c)*/                                                \
     X(main_data)               /* main's .data (then .bss, up to main_end) */                                           \
     X(main_end)
 

@@ -83,6 +83,9 @@ static const char *const k_fsmode[FSMODE_COUNT] = {"auto", "borderless", "exclus
 
 static const char *const k_drawdist[DRAWDIST_COUNT] = {"original", "medium", "high", "potato"};  // (DRAWDIST_*)
 
+static const char *const k_weather[WEATHER_COUNT] = {"game", "no_rain", "no_storms", "clear", "cloudy", "rain",
+                                                     "heavy_rain", "snow", "heavy_snow", "thunderstorm", "thunder_rain",
+                                                     "sun_shower"};  // (weather)
 static const char *const k_icons[ICONS_COUNT] = {"auto", "keyboard", "xbox", "playstation", "nintendo"};
 
 static const char *const k_quality[UPQ_COUNT] = {"ultra_quality", "quality", "balanced", "performance", "ultra_performance"};
@@ -249,6 +252,11 @@ void settings_load(void) {
         else if (!strcmp(key, "start_at_continue")) g_settings.auto_continue = atoi(val) != 0;
         else if (!strcmp(key, "infinite_stamina")) g_settings.infinite_stamina = atoi(val) != 0;
         else if (!strcmp(key, "infinite_rupees")) g_settings.infinite_rupees = atoi(val) != 0;
+        else if (!strcmp(key, "weather")) {
+            g_settings.weather = 0;
+            for (int i = 0; i < WEATHER_COUNT; i++)
+                if (!strcmp(val, k_weather[i])) g_settings.weather = i;
+        }
         else if (!strcmp(key, "god_mode")) g_settings.god_mode = atoi(val) != 0;
         else if (!strcmp(key, "one_hit_kill")) g_settings.one_hit_kill = atoi(val) != 0;
         else if (!strcmp(key, "damage_taken")) g_settings.damage_taken = atoi(val);  // (percent)
@@ -437,6 +445,8 @@ void settings_save(void) {
     fprintf(f, "infinite_arrows = %d\n", g_settings.infinite_arrows);
     fprintf(f, "infinite_stamina = %d\n", g_settings.infinite_stamina);
     fprintf(f, "infinite_rupees = %d\n", g_settings.infinite_rupees);
+    int wx = g_settings.weather;
+    fprintf(f, "weather = %s\n", k_weather[wx >= 0 && wx < WEATHER_COUNT ? wx : 0]);
     fprintf(f, "god_mode = %d\n", g_settings.god_mode);
     fprintf(f, "one_hit_kill = %d\n", g_settings.one_hit_kill);
     fprintf(f, "damage_taken = %d\n", g_settings.damage_taken);

@@ -906,6 +906,17 @@ void build_items(void) {
     v.push_back(toggle(P_ACCESS, "Infinite stamina", "The stamina wheel never runs out.",
                        [](const Item &) { return (int)g_settings.infinite_stamina; },
                        [](const Item &, int x) { g_settings.infinite_stamina = x; }, 0));
+    // the world's weather held or limited each frame (runtime/weather.c); cutscenes keep theirs
+    v.push_back(choice(P_ACCESS, "Weather", "Holds the weather you pick, or keeps out rain or thunderstorms. Cutscenes keep theirs.",
+                       [](const Item &) { return WEATHER_COUNT; },
+                       [](const Item &, int x) {
+                           static const char *const w[WEATHER_COUNT] = {"Automatic", "No rain", "No thunderstorms", "Clear",
+                                                                        "Cloudy", "Rain", "Heavy rain", "Snow", "Heavy snow",
+                                                                        "Thunderstorm", "Thunder rain", "Rain in sunshine"};
+                           return tr(w[x]);
+                       },
+                       [](const Item &) { return g_settings.weather; },
+                       [](const Item &, int x) { g_settings.weather = x; }, 0));
 
 }
 

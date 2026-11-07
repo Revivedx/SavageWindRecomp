@@ -134,6 +134,7 @@ typedef struct {
     bool infinite_arrows;    // shooting a bow takes no arrows from the pouch
     bool infinite_stamina;   // the stamina wheel never goes down
     bool infinite_rupees;    // the wallet is kept at 9999 rupees (runtime/rupees.c)
+    int weather;             // WEATHER_COUNT: the game's, rain or thunderstorms kept out, or one weather held (weather.c)
     bool god_mode;           // Link takes no damage
     bool one_hit_kill;       // whatever else takes damage loses all its life at once
     int damage_taken;        // percent of the damage Link takes (DAMAGE_CHOICES)
@@ -163,6 +164,7 @@ void graphics_preset_apply(int preset);
 const char *settings_file(void);  // savagewind.ini, or SAVAGEWIND_SETTINGS
 #define WEAPON_WEAR_MIN 0    // (Accessibility > Weapon wear, percent: 0 = never wear out, as no_weapon_wear)
 #define WEAPON_WEAR_MAX 300
+#define WEATHER_COUNT 12  // (weather: 0 the game's, 1 no rain, 2 no thunderstorms, 3 + the game's weather type, held)
 #define DAMAGE_CHOICES {25, 50, 75, 100, 150, 200, 300, 400}  // (Accessibility's damage multipliers, percent)
 #define FOV_CHOICES {70, 80, 90, 100, 110, 120, 130, 140, 150}  // (percent; 100: the game's own)
 #define HUD_SIZE_CHOICES {50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120, 125, 130, 135, 140, 145, 150}  // (percent; 100: the game's own)

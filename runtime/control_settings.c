@@ -49,7 +49,9 @@ static const Setting settings[] = {
     {"color_lut", g_settings.color_lut, TEXT, 0, 0, NULL},
     I(color_lut_strength, 0, 100, NULL), B(color_lut_set), B(no_weapon_wear),
     I(weapon_wear, WEAPON_WEAR_MIN, WEAPON_WEAR_MAX, NULL), B(infinite_arrows),
-    B(infinite_stamina), B(infinite_rupees), B(god_mode), B(one_hit_kill), I(damage_taken, 25, 400, NULL), I(damage_dealt, 25, 400, NULL),
+    B(infinite_stamina), B(infinite_rupees), I(weather, 0, WEATHER_COUNT - 1,
+                           "game|no_rain|no_storms|clear|cloudy|rain|heavy_rain|snow|heavy_snow|thunderstorm|thunder_rain|sun_shower"),
+    B(god_mode), B(one_hit_kill), I(damage_taken, 25, 400, NULL), I(damage_dealt, 25, 400, NULL),
     I(text_language, 0, 0, NULL), I(voice_language, 0, 0, NULL), B(save_backups), B(stick_cam_on), I(stick_cam_x, STICK_CAM_MIN, STICK_CAM_MAX, NULL),
     I(stick_cam_y, STICK_CAM_MIN, STICK_CAM_MAX, NULL), B(auto_continue), B(menu_tip_seen),
 };
