@@ -139,11 +139,12 @@ bool settings_handheld_size(int *w, int *h) {
 }
 
 int settings_aa_row(void) {
-    return g_settings.antialias == AA_TAA ? AA_ROW_TAA : g_settings.antialias == AA_SMAA ? AA_ROW_SMAA
-         : g_settings.game_fxaa ? AA_ROW_FXAA : AA_ROW_OFF;
+    return g_settings.antialias == AA_FSR4 ? AA_ROW_FSR4 : g_settings.antialias == AA_TAA ? AA_ROW_TAA
+         : g_settings.antialias == AA_SMAA ? AA_ROW_SMAA : g_settings.game_fxaa ? AA_ROW_FXAA : AA_ROW_OFF;
 }
 void settings_aa_row_set(int row) {
-    g_settings.antialias = row == AA_ROW_TAA ? AA_TAA : row == AA_ROW_SMAA ? AA_SMAA : AA_OFF;
+    g_settings.antialias = row == AA_ROW_FSR4 ? AA_FSR4 : row == AA_ROW_TAA ? AA_TAA : row == AA_ROW_SMAA ? AA_SMAA
+                         : AA_OFF;
     g_settings.game_fxaa = row == AA_ROW_FXAA;
 }
 
@@ -242,8 +243,9 @@ void settings_load(void) {
             if (sscanf(val, "%dx%d", &w, &h) == 2 && w >= 320 && h >= 200 && w <= 16384 && h <= 16384)
                 g_settings.window_w = w, g_settings.window_h = h;
         }
-        else if (!strcmp(key, "antialias"))  // ("fxaa": SMAA now; "taa": Vulkan only)
-            g_settings.antialias = !strcmp(val, "off") ? AA_OFF : !strcmp(val, "taa") ? AA_TAA_OR_SMAA : AA_SMAA;
+        else if (!strcmp(key, "antialias"))  // ("fxaa": SMAA now; "taa", "fsr4": Vulkan only)
+            g_settings.antialias = !strcmp(val, "off") ? AA_OFF : !strcmp(val, "taa") ? AA_TAA_OR_SMAA
+                                 : !strcmp(val, "fsr4") ? AA_FSR4_OR_SMAA : AA_SMAA;
         else if (!strcmp(key, "render_scale")) {  // (percent: 50, 75, 100, 125, 150, 200)
             int p = atoi(val);
             g_settings.render_scale = p >= 200 ? RSCALE_200 : p >= 150 ? RSCALE_150 : p >= 125 ? RSCALE_125
@@ -485,7 +487,8 @@ void settings_save(void) {
         int r = g_settings.render_scale;
         fprintf(f, "render_scale = %d\n", rs[r >= 0 && r < RSCALE_COUNT ? r : RSCALE_100]);
     }
-    fprintf(f, "antialias = %s\n", g_settings.antialias == AA_TAA ? "taa" : g_settings.antialias == AA_SMAA ? "smaa" : "off");
+    fprintf(f, "antialias = %s\n", g_settings.antialias == AA_FSR4 ? "fsr4" : g_settings.antialias == AA_TAA ? "taa"
+                                 : g_settings.antialias == AA_SMAA ? "smaa" : "off");
     fprintf(f, "game_fxaa = %d\n", g_settings.game_fxaa ? 1 : 0);
     fprintf(f, "wet_fix = %d\n", g_settings.wet_fix ? 1 : 0);
     int an = g_settings.anisotropy;

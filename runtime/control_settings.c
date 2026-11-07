@@ -28,7 +28,7 @@ static const Setting settings[] = {
     B(fullscreen), I(window_w, 0, 16384, NULL), I(window_h, 0, 16384, NULL),
     I(upscaler, 0, UPSCALE_COUNT - 1, "off|metalfx|fsr1|fsr3|dlss"),
     I(upscale_quality, 0, UPQ_COUNT - 1, "ultra_quality|quality|balanced|performance|ultra_performance"),
-    I(antialias, 0, AA_TAA, "off|smaa|taa"), B(game_fxaa), B(wet_fix),
+    I(antialias, 0, AA_FSR4, "off|smaa|taa|fsr4"), B(game_fxaa), B(wet_fix),
     I(render_scale, 0, RSCALE_COUNT - 1, "50|75|100|125|150|200"),
     I(anisotropy, 0, 4, "game|2x|4x|8x|16x"), I(tex_lod_bias, 0, TEX_LOD_COUNT - 1, "default|sharp|sharper"), I(sharpening, 0, 10, NULL),
     B(frame_gen), F(volume, 0, 2), I(audio_output, 0, AUDIO_OUT_COUNT - 1, "stereo|surround_51|headphones_3d"),
@@ -210,8 +210,8 @@ static void cmd_set(int argc, char **argv, ControlReply *r) {
         control_fail(r, "Quality modes unavailable"); return;
     }
 #ifdef __APPLE__
-    if (is(s, "antialias") && v == AA_TAA) {
-        control_fail(r, "TAA requires the Vulkan backend"); return;
+    if (is(s, "antialias") && v >= AA_TAA) {
+        control_fail(r, "TAA and FSR 4 require the Vulkan backend"); return;
     }
 #endif
     if (s->kind == BOOL) *(bool *)s->value = value != 0;

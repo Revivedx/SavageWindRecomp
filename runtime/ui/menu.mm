@@ -988,14 +988,24 @@ static void tab_display(void) {
                "blends only along them, so textures stay sharp. Most useful with an upscaler.");
 #else
     {   // (the TAA sentence on its own: the first one keeps its translations)
-        static const char *aa[] = {"Off", "FXAA", "SMAA", "TAA"};  // (settings.h AA_ROW_*)
+        // (AMD FSR 4: greyed without an AMD Radeon and AMD's DLLs, output_scale.c rt_fsr4)
+        static std::string fsr4;
+        fsr4 = fsr4_offered() ? std::string(tr("AMD FSR 4")) : std::string(tr("FSR 4")) + " " + tr("(AMD Radeon only)");
+        const char *aa[] = {"Off", "FXAA", "SMAA", "TAA", fsr4.c_str()};  // (settings.h AA_ROW_*)
+        bool aa_ok[] = {true, true, true, true, fsr4_offered()};
         static std::string d;
         d = std::string(tr("FXAA: the game's own, as on the console: cheap, a little soft.")) + " " + std::string(tr("Smooths jagged edges of the game image before it is scaled to the window. SMAA: finds the "
                            "edges and blends only along them, so textures stay sharp. Most useful with an upscaler.")) +
             " " + tr("TAA: blends each frame with the ones before it, following the game's motion, so edges stay "
                      "smooth and stop shimmering; slightly softer, use it with Sharpening.");
+        if (fsr4_offered())  // (its own sentence: the ones above keep their translations)
+            d += std::string(" ") + tr("AMD FSR 4: TAA's job done by AMD's machine learning, at full resolution (nothing is "
+                                       "upscaled): sharper and steadier. Sharpening sets its own sharpening. With "
+                                       "Upscaler Off; with an upscaler it is TAA.");
         int row = settings_aa_row();
-        if (opt_choice("Anti-aliasing", &row, aa, AA_ROW_COUNT, AA_ROW_FXAA, d.c_str())) settings_aa_row_set(row);
+        static int aa_shown = -1;
+        if (opt_choice_avail("Anti-aliasing", &row, &aa_shown, aa, aa_ok, AA_ROW_COUNT, AA_ROW_FXAA, d.c_str()))
+            settings_aa_row_set(row);
     }
     // the wet lighting passes' sun glare (maxwell/translate.c maxwell_wet_lighting)
     opt_toggle("Wet grass fix", &g_settings.wet_fix, false,

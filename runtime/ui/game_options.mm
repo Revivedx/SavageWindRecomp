@@ -154,7 +154,7 @@ const char *const k_modes[] = {"Ultra Quality", "Quality", "Balanced", "Performa
 #ifdef __APPLE__
 const char *const k_aa[] = {"Off", "SMAA"};
 #else
-const char *const k_aa[] = {"Off", "FXAA", "SMAA", "TAA"};  // (settings.h AA_ROW_*)
+const char *const k_aa[] = {"Off", "FXAA", "SMAA", "TAA", "AMD FSR 4"};  // (settings.h AA_ROW_*)
 #endif
 const char *const k_aniso[] = {"Off", "2x", "4x", "8x", "16x"};  // (settings anisotropy 0..4)
 const char *const k_tex_lod[] = {"Default", "Sharp", "Sharper"};  // (settings tex_lod_bias 0..2)
@@ -503,13 +503,25 @@ void build_items(void) {
                        },
                        [](const Item &, int x) { g_settings.draw_distance = k_drawdist_order[x]; }, 1));
     v.push_back(choice(P_VIDEO_ADV, "Anti-aliasing", "Smooths jagged edges. Best at a lower resolution.",
-                       [](const Item &) { return N(k_aa); }, [](const Item &, int x) { return tr(k_aa[x]); },
+                       [](const Item &) { return N(k_aa); },
+                       [](const Item &, int x) {
+#ifndef __APPLE__
+                           if (x == AA_ROW_FSR4 && !fsr4_offered()) return soon("FSR 4", "(AMD Radeon only)");
+#endif
+                           return tr(k_aa[x]);
+                       },
 #ifdef __APPLE__
                        [](const Item &) { return g_settings.antialias; },
                        [](const Item &, int x) { g_settings.antialias = x; }, AA_OFF));
 #else
                        [](const Item &) { return settings_aa_row(); },
                        [](const Item &, int x) { settings_aa_row_set(x); }, AA_ROW_FXAA));
+    // (AMD FSR 4: greyed without an AMD Radeon and AMD's DLLs, output_scale.c rt_fsr4)
+    v.back().value_off = [](const Item &, int x) { return x == AA_ROW_FSR4 && !fsr4_offered(); };
+    v.back().desc_fn = [](const Item &) {  // (one line)
+        return g_settings.antialias == AA_FSR4 ? tr("AMD FSR 4: TAA by machine learning, at full resolution. Upscaler Off only.")
+                                               : tr("Smooths jagged edges. Best at a lower resolution.");
+    };
 #endif
     v.push_back(choice(P_VIDEO_ADV, "Upscaler", "Off: full resolution. AMD FSR 1: renders smaller, then upscales.",
                        [](const Item &) { return N(k_ups_value); }, ups_label,

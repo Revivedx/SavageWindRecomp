@@ -24,17 +24,21 @@ enum { UPSCALE_OFF = 0, UPSCALE_METALFX = 1 /* macOS */, UPSCALE_FSR1 = 2 /* AMD
 enum { UPQ_ULTRA = 0, UPQ_QUALITY = 1, UPQ_BALANCED = 2, UPQ_PERFORMANCE = 3, UPQ_ULTRA_PERFORMANCE = 4, UPQ_COUNT };
 // TAA (Vulkan): the game's own motion vectors (vulkan/mvec.c) and a jittered camera (output_scale.c rt_jitter_on)
 // blend each frame with the ones before it (vulkan/exec.c mvec_taa)
-enum { AA_OFF = 0, AA_SMAA = 1, AA_TAA = 2 };
-// Video > Anti-aliasing's row: the game's own FXAA (game_fxaa) is one of its choices, never on with SMAA or TAA
-enum { AA_ROW_OFF, AA_ROW_FXAA, AA_ROW_SMAA, AA_ROW_TAA, AA_ROW_COUNT };
+// AA_FSR4: AMD FSR 4 in TAA's place at the window's size (anti-aliasing, no upscaling: output_scale.c rt_fsr4), with
+// Upscaler Off on an AMD Radeon with AMD's DLLs; anywhere else it is TAA
+enum { AA_OFF = 0, AA_SMAA = 1, AA_TAA = 2, AA_FSR4 = 3 };
+// Video > Anti-aliasing's row: the game's own FXAA (game_fxaa) is one of its choices, never on with SMAA, TAA or FSR 4
+enum { AA_ROW_OFF, AA_ROW_FXAA, AA_ROW_SMAA, AA_ROW_TAA, AA_ROW_FSR4, AA_ROW_COUNT };
 int settings_aa_row(void);
 void settings_aa_row_set(int row);
 // Video > Render scale: 50%, 75%, 100% (the window's size), 125%, 150%, 200%
 enum { RSCALE_50 = 0, RSCALE_75 = 1, RSCALE_100 = 2, RSCALE_125 = 3, RSCALE_150 = 4, RSCALE_200 = 5, RSCALE_COUNT };
 #ifdef __APPLE__
 #define AA_TAA_OR_SMAA AA_SMAA
+#define AA_FSR4_OR_SMAA AA_SMAA  // (a settings file from another OS)
 #else
 #define AA_TAA_OR_SMAA AA_TAA
+#define AA_FSR4_OR_SMAA AA_FSR4
 #endif
 // Shadow resolution (Video > Shadow resolution; runtime/nvn/output_scale.c shadow_map_size): the sun's shadow maps at
 // the console's size (BOTW: 896 x 896) or made bigger, for sharper shadows at some GPU time.
