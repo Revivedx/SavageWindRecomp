@@ -255,7 +255,12 @@ const char *ups_label(const Item &, int x) {
     if (u == UPSCALE_FSR3) return upscaler_available(u) ? tr("AMD FSR 3") : soon("FSR 3");
     if (u == UPSCALE_FSR4)
         return upscaler_available(u) ? tr("AMD FSR 4") : soon("FSR 4", fsr4_offered() ? "(coming soon)" : "(AMD Radeon only)");
-    return soon("DLSS", renderer_gpu_rtx() ? "(coming soon)" : "(NVIDIA RTX only)");
+    if (upscaler_available(UPSCALE_DLSS)) {
+        static std::string available;
+        available = tr("DLSS");
+        return available.c_str();
+    }
+    return soon("DLSS", "(NVIDIA RTX only)");
 }
 
 const char *fps_label(const Item &, int x) {
