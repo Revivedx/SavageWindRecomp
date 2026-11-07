@@ -8,7 +8,7 @@
 #include <sys/mman.h>
 #endif
 
-#include "simd.h"
+#include "cpu.h"
 
 extern GuestFn tests[];
 extern int ntests;

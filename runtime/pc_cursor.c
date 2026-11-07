@@ -81,6 +81,11 @@ static float map_view_center[2];
 static float map_sent_world[2];
 static bool map_sent_valid,map_native_snapped;
 static bool map_zooming;
+// A wheel zoom is anchored on the map point under the pointer: that world point stays under the pointer while the game animates the zoom.
+#define ZOOM_EASE_RATE 9.f  // per second: how fast a wheel zoom approaches the game's zoom for the level
+static bool map_zoom_anchored;
+static float map_zoom_world[2],map_zoom_point[2],map_zoom_translation[2],map_zoom_scale,map_zoom_goal,map_zoom_written,map_zoom_rate,map_zoom_rate_trend;
+static bool map_zoom_have_step,map_zoom_rate_valid;
 static uint64_t map_select_until;
 static uint64_t special_frame=UINT64_MAX;
 static uint64_t sampled_frame=UINT64_MAX;
@@ -90,6 +95,11 @@ static float gesture_start[2],gesture_last[2],gesture_delta[2];
 static void sample_pointer(void);
 static void inventory_pointer(Cpu *c);
 static void dlc_pointer(Cpu *c);
+static uint64_t pane_named(uint64_t pane,const char *name,unsigned depth,unsigned *budget);
+static bool beast_pointer(Cpu *c);
+static uint64_t beast_frame=UINT64_MAX;
+static bool beast_rotating;
+static int beast_hover=-1;
 static bool pointer_test(void) { return getenv("SAVAGEWIND_PC_POINTER_SCRIPT") != NULL; }
 
 static bool enabled(void) {
@@ -100,14 +110,15 @@ extern bool menu_cursor_free(void);
 bool pc_cursor_active(void) { return enabled() && active && (focused || pointer_test()) && !menu_cursor_free(); }
 bool pc_cursor_preview_active(void) { return pc_cursor_active()&&preview_available; }
 bool pc_cursor_map_navigation(void) { return pc_cursor_active() && map_canvas_active && !pointer_gamepad_input; }
+bool pc_cursor_sensor_active(void) { return pc_cursor_map_navigation(); }
 bool pc_cursor_hide_system(void) {
     return (pc_cursor_active()&&quick_wheel_only)||
         (position_inside&&(pc_cursor_map_navigation()||(pc_cursor_active()&&pointer_keyboard_input)));
 }
 static void map_release_to_controller(void) {
-    map_down=map_dragged=false;map_anchor_active=map_picker_seen=false;
+    map_down=map_dragged=false;map_anchor_active=map_picker_seen=map_zoom_anchored=false;
     map_canvas_active=map_view_valid=map_sent_valid=map_native_snapped=false;
-    map_nav_ns=map_select_until=0;map_snap_button=0;map_zooming=false;
+    map_nav_ns=map_select_until=0;map_snap_button=0;map_zooming=false;map_zoom_anchored=false;
     click_pending=false;
 }
 
@@ -182,7 +193,7 @@ void pc_cursor_frame(void) {
         options_scroll_valid=false;options_screen_active=options_rows_active=0;
         map_canvas_active=false;map_nav_ns=0;map_view_valid=false;
         held=false;last_press=presses;last_release=releases;wheel=0;click_pending=false;
-        gesture_down=map_down=false;map_anchor_active=map_picker_seen=false;
+        gesture_down=map_down=false;map_anchor_active=map_picker_seen=map_zoom_anchored=false;
     }
     if(getenv("SAVAGEWIND_PC_DUMP_UI")&&ui) {
         static uint8_t seen[256];
@@ -385,6 +396,7 @@ void rt_pc_button_group(Cpu *c) {
     if(quick_wheel_only)return;
     sample_pointer();
     if(dlc_screen){dlc_pointer(c);return;}
+    if(beast_pointer(c))return;
     inventory_pointer(c);
     extern uint64_t renderer_present_count(void);
     if (getenv("SAVAGEWIND_PC_DUMP_UI") && renderer_present_count() >= 180) {
@@ -624,6 +636,10 @@ static bool options_pointer(Cpu *c,uint64_t screens,uint64_t bounds) {
 }
 
 uint64_t pc_cursor_buttons(uint64_t b) {
+    // Pointer confirmation consumes left click (normally Y). Reuse the bound
+    // D-pad Left action for the sensor; controllers retain their native Y.
+    if(pc_cursor_sensor_active()&&(b&(1ull<<12)))b=(b&~(1ull<<12))|8;
+
     uint64_t now=plat_now_ns();
     if(now<confirm_until)b|=1;
     if(item_message_active&&pc_cursor_active()&&now<item_confirm_until)b|=1;
@@ -660,6 +676,89 @@ static void inventory_rotate(Cpu *c,float dx) {
         memcpy(preview_defaults,yaw,sizeof preview_defaults);preview_defaults_saved=true;
     }
     for(unsigned i=0;i<2;i++)yaw[i]=remainderf(yaw[i]+dx*.46f,360.f);
+}
+
+// AppMapDungeon has no ordinary menu cursor: the pink controls are projected
+// by its own 3D camera. Use the current projected positions, not screen pixels
+// or the capture panes (which remain in their original layout positions).
+static bool beast_pointer(Cpu *c) {
+    if(!g_site.beast_world || !g_site.screen_mgr || !g_site.pause_state)return false;
+    uint64_t mgr=LD64(g_site.screen_mgr),screens=ptr(mgr)?LD64(mgr+0x30):0;
+    uint64_t s=ptr(screens)&&LD32(mgr+0x28)>0x22?LD64(screens+8*0x22):0;
+    if(!ptr(s)||LD64(s)!=0x7001ce7c18ull||LD8(s+0xfe)!=2||LD32(g_site.pause_state)!=2) {
+        beast_rotating=false;beast_hover=-1;return false;
+    }
+    uint64_t wrapper=LD64(s+0x30),root=ptr(wrapper)?LD64(wrapper+0x18):0;
+    if(!ptr(root)||!LD8(root+0x5a))return false;
+    extern uint64_t renderer_present_count(void);
+    uint64_t frame=renderer_present_count();
+    if(beast_frame==frame)return true;
+    beast_frame=frame;
+    if(pointer_keyboard_input||pointer_gamepad_input||!position_inside) {
+        beast_rotating=false;beast_hover=-1;return true;
+    }
+    unsigned budget=2048;
+    uint64_t panel=pane_named(root,"Pa_SensorBox_00",0,&budget);
+    uint64_t content=pane_named(panel,"N_All_00",0,&budget);
+    if(ptr(content)&&(LD8(content+0x58)&1)&&LD8(content+0x5a)) {
+        beast_rotating=false;beast_hover=-1;
+        return true;
+    }
+    unsigned count=LD32(s+0x118c8);uint64_t array=LD64(s+0x118d0);
+    if(count>11||!ptr(array))return true;
+    int hit=-1;float distance=32.f*32.f;
+    for(unsigned i=0;i<count;i++) {
+        uint64_t p=LD64(array+8*i);if(!ptr(p))continue;
+        float x=*(float*)(p+8),y=*(float*)(p+12);
+        float d=(point[0]-x)*(point[0]-x)+(point[1]-y)*(point[1]-y);
+        if(isfinite(d)&&d<distance){distance=d;hit=(int)i;}
+    }
+    uint64_t world=LD64(g_site.beast_world);
+    unsigned kind=ptr(world)?LD32(world+0x64c38):UINT32_MAX;
+    if(kind==3&&hit>=3)hit=-1;
+    if(!beast_rotating&&hit>=0) {
+        if(hit!=beast_hover) {
+            // The native focus transition already owns its feedback. Do not
+            // replay an extra cursor cue or restart the same focus animation.
+            if((int32_t)LD32(s+0x118c4)!=hit)
+                call(c,kind==3?g_site.beast_focus_axes:g_site.beast_focus_linear,s,hit,0);
+            beast_hover=hit;
+        }
+        if(click_pending) {
+            click_pending=false;
+            if(kind==3)call(c,g_site.beast_confirm_axes,s,s+0x11820+hit*0x30,0);
+            else call(c,g_site.beast_confirm_linear,s,0,0);
+        }
+        return true;
+    }
+    if(!beast_rotating)beast_hover=-1;
+    if(frame_press&&hit<0&&fabsf(point[0])<590&&point[1]<275&&point[1]>-280) {
+        // Release the native pink-control hover/preview before giving the
+        // gesture to the camera. Otherwise its selection animation survives
+        // under the drag even after the mouse button is released.
+        if(kind!=3&&(int32_t)LD32(s+0x118c4)>=0)
+            call(c,g_site.beast_focus_linear,s,UINT32_MAX,0);
+        beast_rotating=true;hover_until=0;
+    }
+    if(beast_rotating) {
+        click_pending=false;
+        if(frame_held&&(gesture_delta[0]||gesture_delta[1])) {
+            float *pitch=(float*)(s+0x3670),*yaw=(float*)(s+0x3674);
+            float radius=*(float*)(s+0x3678);
+            if(isfinite(*pitch)&&isfinite(*yaw)&&isfinite(radius)&&radius>0) {
+                *pitch+=gesture_delta[1]*.006f;
+                *yaw=remainderf(*yaw-gesture_delta[0]*.006f,6.28318530718f);
+                call(c,g_site.beast_clamp_pitch,s,0,0);call(c,g_site.beast_wrap_yaw,s,0,0);
+                *(float*)(s+0x36d0)=*(float*)(s+0x368c)+cosf(*pitch)*sinf(*yaw)*radius;
+                *(float*)(s+0x36d4)=*(float*)(s+0x3690)-sinf(*pitch)*radius;
+                *(float*)(s+0x36d8)=*(float*)(s+0x3694)+cosf(*pitch)*cosf(*yaw)*radius;
+                uint64_t v=LD64(s+0x3698);
+                if(ptr(v))call(c,LD64(v+0x20),s+0x3698,s+0x36a0,0);
+            }
+        }
+        if(frame_release||!frame_held)beast_rotating=false;
+    }
+    return true;
 }
 
 static void inventory_pointer(Cpu *c) {
@@ -778,6 +877,8 @@ static void inventory_pointer(Cpu *c) {
 }
 
 static bool map_guides(Cpu *c,uint64_t screens);
+static bool map_sensor_panel(Cpu *c,uint64_t screen);
+
 static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
     extern uint64_t renderer_present_count(void);
     uint64_t f=renderer_present_count();
@@ -786,7 +887,7 @@ static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
     bool is_quick=pause==4&&ptr(quick)&&LD64(quick)==0x7001cf51d8ull;
     bool inventory=ptr(LD64(screens+8*0x2f));
     bool is_map=pause==2&&!inventory&&ptr(screen)&&LD8(screen+0xfe)==2&&LD64(screen)==0x7001ce8298ull;
-    if(!is_map&&!is_quick){map_down=false;map_anchor_active=map_picker_seen=false;map_canvas_active=false;map_view_valid=map_sent_valid=map_native_snapped=false;map_nav_ns=0;return false;}
+    if(!is_map&&!is_quick){map_down=false;map_anchor_active=map_picker_seen=map_zoom_anchored=false;map_canvas_active=false;map_view_valid=map_sent_valid=map_native_snapped=false;map_nav_ns=0;return false;}
     if(pointer_gamepad_input) {
         // Leave the original cursor/pan/zoom helpers in charge. In particular,
         // never restore the PC viewport or write the mouse cursor over a stick.
@@ -817,13 +918,20 @@ static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
         }
         return true;
     }
+    // Sensor choices belong to AppMap itself. Use the animated panel's real
+    // visibility, including the return from the compendium; input flags are
+    // transient requests, not persistent modal state.
+    if(map_sensor_panel(c,screen)) {
+        map_down=false;map_anchor_active=map_picker_seen=false;map_view_valid=false;
+        map_canvas_active=false;return false;
+    }
     // A modal over the map owns normal hover/confirmation.
     uint64_t modal=LD64(screens+8*0x39);
-    if(ptr(modal)&&LD8(modal+0xfe)==2){map_down=false;map_anchor_active=map_picker_seen=false;map_view_valid=false;return false;}
+    if(ptr(modal)&&LD8(modal+0xfe)==2){map_down=false;map_anchor_active=map_picker_seen=map_zoom_anchored=false;map_view_valid=false;return false;}
     // Editing an existing stamp opens a separate ScreenAppSystemWindow (0x3e).
     // Its Edit/Delete/Cancel nodes must use normal dialog navigation, not canvas input.
     modal=LD64(screens+8*0x3e);
-    if(ptr(modal)&&LD8(modal+0xfe)==2){map_down=false;map_anchor_active=map_picker_seen=false;map_view_valid=false;return false;}
+    if(ptr(modal)&&LD8(modal+0xfe)==2){map_down=false;map_anchor_active=map_picker_seen=map_zoom_anchored=false;map_view_valid=false;return false;}
     // The prompt bar lies below the canvas: a click there presses the prompt's button (#451).
     if(!map_anchor_active&&!map_down&&map_guides(c,screens))return true;
     click_pending=false;
@@ -880,11 +988,13 @@ static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
         return true;
     }
     if(map_anchor_active) {
-        map_anchor_active=map_picker_seen=false;
+        map_anchor_active=map_picker_seen=map_zoom_anchored=false;
         if(getenv("SAVAGEWIND_PC_CURSOR_LOG"))LOG("[pc-map-anchor] unlock\n");
     }
     float zoom=*(float*)(d+0x878);
     if(!isfinite(zoom)||zoom<=0)return true;
+    // Wheel-zoom diagnostics (SAVAGEWIND_PC_CURSOR_LOG): the world point under the pointer as the game left the view last frame.
+    float zoom_in_world[2]={(point[0]-*(float*)(d+0x870))/zoom,(point[1]-*(float*)(d+0x874))/zoom};
     // Recover an already escaped view as well as limiting future input. Clamp
     // the retained viewport too, otherwise idle-hover restoration brings it back.
     for(unsigned axis=0;axis<2;axis++) {
@@ -897,7 +1007,7 @@ static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
     bool area=fabsf(point[0])<=633&&fabsf(point[1])<=285;
     int scroll=atomic_exchange(&wheel,0);
     map_canvas_active=true;
-    bool zooming=scroll||fabsf(zoom-*(float*)(d+0x888))>.001f;
+    bool zooming=scroll||map_zoom_anchored||fabsf(zoom-*(float*)(d+0x888))>.001f;
     map_zooming=zooming;
     if(zooming)map_view_valid=false;
     else if(!map_view_valid) {
@@ -910,8 +1020,50 @@ static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
         *(float*)(d+0x870)=map_view_center[0]*zoom;*(float*)(d+0x874)=map_view_center[1]*zoom;
     }
     if(area&&scroll) {
+        if(!map_zoom_anchored) {
+            // The world point under the pointer, as drawn now and before the game starts the zoom.
+            float translation[2]={*(float*)(d+0x870),*(float*)(d+0x874)};
+            pc_cursor_map_world(point,translation,zoom,map_zoom_world);
+            memcpy(map_zoom_translation,translation,sizeof translation);memcpy(map_zoom_point,point,sizeof point);
+            map_zoom_scale=zoom;map_zoom_anchored=true;map_zoom_have_step=map_zoom_rate_valid=false;map_zoom_rate_trend=0;
+        }
         call(c,scroll>0?0x7000dc24a4:0x7000dc25e8,map,0,0);
-        if(getenv("SAVAGEWIND_PC_CURSOR_LOG"))LOG("[pc-map-wheel] %d zoom level %u\n",scroll,LD32(d+0x898));
+        map_zoom_goal=*(float*)(d+0x888);  // the game's new zoom for this level
+        if(getenv("SAVAGEWIND_PC_CURSOR_LOG"))LOG("[pc-map-wheel] %d zoom level %u goal %.3f\n",scroll,LD32(d+0x898),map_zoom_goal);
+    }
+    if(map_zoom_anchored) {
+        // The game eases the zoom by itself and steps it once more after this hook, so the view it draws is one step past
+        // the one anchored here and the point under the pointer slides. Drive the zoom from here instead: ease it toward
+        // the game's goal, write the value one game step short of it so the game's own step lands exactly on it, and hold
+        // the anchored world point under the pointer at that zoom, every frame. The game's step is read back from the
+        // last frame and is never allowed to pass the goal.
+        float goal=map_zoom_goal,now=map_zoom_scale;
+        if(!isfinite(goal)||goal<=0||!isfinite(now)||now<=0)goal=now=zoom;
+        // The game moves a fixed fraction of the way to its goal each step, so read that fraction back from the last frame.
+        if(map_zoom_have_step&&isfinite(zoom-map_zoom_written)&&fabsf(goal-map_zoom_written)>1e-4f) {
+            float seen=(zoom-map_zoom_written)/(goal-map_zoom_written);
+            if(map_zoom_rate_valid)map_zoom_rate_trend=seen-map_zoom_rate;
+            map_zoom_rate=seen;map_zoom_rate_valid=true;
+            if(getenv("SAVAGEWIND_PC_CURSOR_LOG"))LOG("[pc-map-zoom-rate] frame %llu %.4f\n",f,map_zoom_rate);
+        }
+        float ease=1-expf(-fminf(.1f,nav_dt)*ZOOM_EASE_RATE),remaining=logf(goal/now);
+        if(fabsf(remaining)<.002f)now=goal;else now*=expf(remaining*ease);
+        float rate=map_zoom_have_step?fmaxf(0,fminf(.5f,map_zoom_rate+map_zoom_rate_trend)):(goal>now?.025f:.21f),room=goal-now;  // the fraction drifts a little each step: follow it
+        float step=now==goal?0:rate*room/(1-rate);  // the game steps from now-step, so that it lands on now
+        if(fabsf(step)>fabsf(room))step=room;
+        if(hypotf(point[0]-map_zoom_point[0],point[1]-map_zoom_point[1])>.5f)
+            pc_cursor_map_world(point,map_zoom_translation,map_zoom_scale,map_zoom_world);  // the pointer moved: anchor what is under it now
+        float center[2];
+        pc_map_anchor_center(point,map_zoom_world,now,center);
+        for(unsigned axis=0;axis<2;axis++) {
+            center[axis]=pc_map_clamp_center(center[axis],*(float*)(d+0x8d0+4*axis),*(float*)(d+0x8d8+4*axis));
+            *(float*)(d+0x880+4*axis)=*(float*)(d+0x890+4*axis)=center[axis];
+            map_zoom_translation[axis]=*(float*)(d+0x870+4*axis)=center[axis]*now;
+        }
+        map_zoom_written=*(float*)(d+0x878)=now-step;map_zoom_have_step=true;
+        *(float*)(d+0x888)=goal;
+        memcpy(map_zoom_point,point,sizeof point);map_zoom_scale=zoom=now;
+        if(now==goal)map_zoom_anchored=false;
     }
     if(frame_press&&area) {
         map_down=true;map_dragged=false;
@@ -920,6 +1072,7 @@ static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
     if(map_down&&frame_held) {
         if(hypotf(point[0]-map_origin[0],point[1]-map_origin[1])>5)map_dragged=true;
         if(map_dragged) {
+            map_zoom_anchored=false;
             float dx=(point[0]-map_last[0])/zoom,dy=(point[1]-map_last[1])/zoom;
             *(float*)(d+0x880)=pc_map_clamp_center(*(float*)(d+0x880)+dx,*(float*)(d+0x8d0),*(float*)(d+0x8d8));
             *(float*)(d+0x884)=pc_map_clamp_center(*(float*)(d+0x884)+dy,*(float*)(d+0x8d4),*(float*)(d+0x8dc));
@@ -963,6 +1116,7 @@ static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
     float keys[2],pan[2];extern void input_pc_map_axes(float out[2]);input_pc_map_axes(keys);
     pc_map_navigation(point,keys[0],keys[1],!frame_held&&!snapped&&!native_snap&&(pointer_test()||position_inside),nav_dt,zoom,pan);
     if(!frame_held&&(pan[0]||pan[1])) {
+        map_zoom_anchored=false;
         *(float*)(d+0x880)=pc_map_clamp_center(*(float*)(d+0x880)+pan[0],*(float*)(d+0x8d0),*(float*)(d+0x8d8));
         *(float*)(d+0x884)=pc_map_clamp_center(*(float*)(d+0x884)+pan[1],*(float*)(d+0x8d4),*(float*)(d+0x8dc));
         *(float*)(d+0x890)=*(float*)(d+0x880);*(float*)(d+0x894)=*(float*)(d+0x884);
@@ -978,6 +1132,10 @@ static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
         memcpy(map_sent_world,p,sizeof p);map_sent_valid=true;
         call(c,0x7000d8c780,d,(uintptr_t)p,0);
         call(c,0x7000d8c6bc,d,(uintptr_t)p,0);
+        if(zooming&&getenv("SAVAGEWIND_PC_CURSOR_LOG")) {
+            uint64_t pane=call(c,0x7000f6f800,screen,(uintptr_t)"Pa_Cursor_00",0);
+            LOG("[pc-map-zoom] frame %llu point %.1f %.1f zoom %.3f target %.3f center %.2f %.2f under-in %.2f %.2f under-out %.2f %.2f drawn %.1f %.1f\n",f,point[0],point[1],zoom,*(float*)(d+0x888),*(float*)(d+0x880),*(float*)(d+0x884),zoom_in_world[0],zoom_in_world[1],p[0],p[1],ptr(pane)?*(float*)(pane+0x7c):0.f,ptr(pane)?*(float*)(pane+0x8c):0.f);
+        }
         if(getenv("SAVAGEWIND_PC_TRACK_LOG")&&f%10==0) {
             uint64_t pane=call(c,0x7000f6f800,screen,(uintptr_t)"Pa_Cursor_00",0);
             if(ptr(pane))LOG("[pc-map-track] frame %llu input %.2f %.2f drawn %.2f %.2f zoom %.3f\n",f,point[0],point[1],*(float*)(pane+0x7c),*(float*)(pane+0x8c),zoom);
@@ -1189,6 +1347,12 @@ static uint64_t pane_named(uint64_t pane,const char *name,unsigned depth,unsigne
         link=LD64(link+8);
     }
     return 0;
+}
+
+static bool map_sensor_panel(Cpu *c,uint64_t screen) {
+    uint64_t panel=call(c,0x7000f6f800,screen,(uintptr_t)"Pa_SensorBox_00",0);
+    unsigned budget=512;uint64_t all=pane_named(panel,"N_All_00",0,&budget);
+    return ptr(all)&&(LD8(all+0x58)&1)&&LD8(all+0x5a)>0;
 }
 
 // DLCWindow scrolls a native page list, rather than BoxCursor rows. The title
@@ -1535,6 +1699,7 @@ void rt_pc_cursor_manager(Cpu *c, uint64_t activate, uint64_t bounds) {
     if (!pc_cursor_active()) return;
     sample_pointer();
     if(dlc_screen){dlc_pointer(c);return;}
+    if(beast_pointer(c))return;
     if (!quick_wheel_only && !pointer_test() && !position_inside) {
         float keys[2];extern void input_pc_map_axes(float out[2]);input_pc_map_axes(keys);
         if(keys[0]==0&&keys[1]==0)return;
@@ -1651,6 +1816,7 @@ void rt_pc_cursor_manager(Cpu *c, uint64_t activate, uint64_t bounds) {
 RT_ON_RESET(pc_cursor_reset) {
     dlc_screen=dlc_back_until=0;dlc_frame=UINT64_MAX;dlc_drag=0;
     quest_scroll_frame=UINT64_MAX;
+    beast_frame=UINT64_MAX;beast_rotating=false;beast_hover=-1;
     item_message_active=preview_available=false;item_confirm_until=0;
     dialogue_active=false;shop_screen=game_over_screen=quantity_screen=0;quantity_until=0;quantity_edit=false;quantity_request=-1;
     quantity_hold=0;quantity_repeat_at=0;preview_defaults_saved=false;sound_hover_key=sound_hover_until=0;
@@ -1663,7 +1829,7 @@ RT_ON_RESET(pc_cursor_reset) {
     confirm_until=hover_until=guide_until=0;wheel=0;map_down=false;special_frame=UINT64_MAX;
     rotate_mode=false;rotate_info=rotate_group=0;
     sampled_frame=UINT64_MAX;gesture_down=gesture_dragged=false;
-    map_anchor_active=map_picker_seen=false;map_anchor_deadline=0;
+    map_anchor_active=map_picker_seen=map_zoom_anchored=false;map_anchor_deadline=0;
     map_canvas_active=false;map_nav_ns=map_snap_button=0;map_view_valid=false;
     map_sent_valid=map_native_snapped=false;
     presses = releases = last_press = last_release = 0;

@@ -686,9 +686,9 @@ static void tab_display(void) {
         names[GPRESET_COUNT] = "Custom";
         int p = graphics_preset_current(), cur = p < 0 ? GPRESET_COUNT : p;
         if (opt_choice("Graphics preset", &cur, names, GPRESET_COUNT + 1, GPRESET_ORIGINAL,
-                       "Sets the draw distance, the shadow resolution and the Advanced options at once. Potato: for weak "
-                       "PCs (nearer, smaller shadows, no bloom or depth of field, dynamic resolution). Original: as on the "
-                       "console. High and Savage: further and sharper, for faster PCs.", false))
+                       "Sets the draw distance, shadows, upscaler, anti-aliasing, texture filtering and the Advanced "
+                       "options at once. Potato: for weak PCs (nearer, smaller shadows, FSR 1, no bloom or depth of "
+                       "field). Original: as on the console. High and Savage: further and sharper, for faster PCs.", false))
             graphics_preset_apply(cur);
     }
     bool fs = g_settings.fullscreen;
@@ -819,7 +819,7 @@ static void tab_display(void) {
         static const int fps[] = FPS_CHOICES;
         enum { NF = sizeof fps / sizeof fps[0] };
         static char names_buf[NF][32];
-        const char *names[NF];
+        const char *names[NF + 1];  // (the rates, then Match display)
         int cur = 0, def = 0;
         for (int i = 0; i < NF; i++) {
             if (fps[i]) snprintf(names_buf[i], sizeof names_buf[i], tr("%d FPS"), fps[i]);
@@ -827,6 +827,8 @@ static void tab_display(void) {
             if (fps[i] == g_settings.fps_limit) cur = i;
             if (fps[i] == FPS_DEFAULT) def = i;
         }
+        names[NF] = "Match display";
+        if (g_settings.fps_display) cur = NF;
         std::string desc = tr("How many pictures a second the game draws. The game itself runs at the same speed at "
                               "every rate (the console runs it at 30). Higher rates need a faster computer. Menus, "
                               "cutscenes and conversations use it too, and videos play at their own speed. Off: as "
@@ -838,7 +840,11 @@ static void tab_display(void) {
                                            "pictures, and one that divides it evenly is the smoothest."), hz);
             desc += std::string("\n\n") + line;
         }
-        if (opt_choice("Frame rate", &cur, names, NF, def, desc.c_str(), false)) g_settings.fps_limit = fps[cur];
+        if (opt_choice("Frame rate", &cur, names, NF + 1, def, desc.c_str(), false)) {
+            g_settings.fps_display = cur == NF;
+            if (g_settings.fps_display) settings_fps_for_display(winsize_refresh_rate());
+            else g_settings.fps_limit = fps[cur];
+        }
     }
     {   // VSync (settings.h VSYNC_*: runtime/nvn/vulkan/device.c, runtime/hle/framepace.c)
         static const char *const names[VSYNC_COUNT] = {"On", "Fast", "Adaptive", "Off"};
@@ -963,11 +969,23 @@ static void tab_display(void) {
                "The game's own FXAA, which smooths edges as the 3D image is drawn into the final picture, as on the "
                "console. Off: a sharper image with more jagged edges; use it to replace FXAA with SMAA or TAA above, "
                "or to keep the image crisp at a high resolution.");
+    // the wet lighting passes' sun glare (maxwell/translate.c maxwell_wet_lighting)
+    opt_toggle("Wet grass fix", &g_settings.wet_fix, false,
+               "In rain with the sun out, the game's wet lighting blows grass and roofs out to white. On: most of that "
+               "glare goes, and the grass keeps its colour and a soft sheen. Applies from the next start.");
 #endif
+    {   // supersampling (nvn/output_scale.c): applies at once
+        static const char *const rscale[] = {"50%", "75%", "100%", "125%", "150%", "200%"};
+        opt_choice("Render scale", &g_settings.render_scale, rscale, RSCALE_COUNT, RSCALE_100,
+                   "Below 100% the game renders at a lower resolution than the window and is scaled up to it: faster, "
+                   "but blurrier (50% is a quarter of the pixels, for weak graphics cards). Above 100% it renders at a "
+                   "higher resolution and is scaled down to it, the cleanest way to smooth edges and shimmer. 200% is "
+                   "4x the pixels: for fast graphics cards.", false);
+    }
 #ifndef __APPLE__
     {   // Anisotropic filtering and sharpening (Vulkan: vulkan/textures.c sampler_aniso, vulkan/exec.c scene_post)
         static const char *const aniso[] = {"Off", "2x", "4x", "8x", "16x"};
-        opt_choice("Anisotropic filtering", &g_settings.anisotropy, aniso, 5, 0,
+        opt_choice("Anisotropic filtering", &g_settings.anisotropy, aniso, 5, 1,
                    "Keeps the textures of ground, paths and walls sharp where you look along them into the distance. "
                    "Off: the game's own filtering, as on the console. 16x is the sharpest and costs very little on a PC "
                    "graphics card.", false);
@@ -991,15 +1009,15 @@ static void tab_display(void) {
                "for theirs. Off: every draw waits for its shader, a short stutter the first time an effect appears.");
     // shadow resolution (its own block)
     // (Potato first, the smallest: order maps a row to SHADOW_*)
-    static const char *shadow[] = {"Potato (448)", "Console (896)", "High (2048)", "Ultra (4096)", "Extreme (8192)"};
+    static const char *shadow[] = {"Potato (448)", "Console (896)", "High (2048)", "Ultra (4096)", "Savage (8192)"};
     static const int shadow_order[SHADOW_COUNT] = {SHADOW_POTATO, SHADOW_CONSOLE, SHADOW_HIGH, SHADOW_ULTRA, SHADOW_EXTREME};
     int shadow_row = 1;
     for (int i = 0; i < SHADOW_COUNT; i++)
         if (shadow_order[i] == g_settings.shadow_res) shadow_row = i;
     opt_choice("Shadow resolution", &shadow_row, shadow, SHADOW_COUNT, 1,
                "The size of the maps the sun's shadows are drawn from. Console: the game's own, 896 x 896. High (2048), "
-               "Ultra (4096) and Extreme (8192) give sharper shadow edges (Link, trees, buildings) for more GPU time "
-               "and video memory (Ultra: about 100 MB, Extreme: about 400 MB). Extreme is very heavy where there is a lot "
+               "Ultra (4096) and Savage (8192) give sharper shadow edges (Link, trees, buildings) for more GPU time "
+               "and video memory (Ultra: about 100 MB, Savage: about 400 MB). Savage is very heavy where there is a lot "
                "of foliage: in a forest it can cut the frame rate to a third, even on a fast GPU. Ultra or lower suits "
                "most GPUs. Potato (448): softer edges, for weak GPUs.");
     g_settings.shadow_res = shadow_order[shadow_row];
@@ -1019,7 +1037,7 @@ static void tab_display(void) {
                "little faster, a flatter image.");
     opt_toggle("Depth of field", &g_settings.depth_of_field, true, "The game blurs the far distance a little. Off: sharp "
                "out to the horizon, a little faster.");
-    opt_toggle("Dynamic resolution", &g_settings.dynamic_res, false, "As on the console: the game lowers its 3D "
+    opt_toggle("Dynamic resolution", &g_settings.dynamic_res, true, "As on the console: the game lowers its 3D "
                "resolution (down to 1280x720 before upscaling) while frames take long, and raises it again after. "
                "Off: always the full resolution. On with the Potato preset.");
     if (gamelib_compat())  // (runtime/gamelib.h: a CPU without FMA instructions; simd.h simd_fma_unfused)
@@ -1058,6 +1076,8 @@ static void tab_audio(void) {
                "The game's echo in caves, dungeons and big rooms.");
     opt_toggle("Movie audio", &g_settings.movie_audio, true,
                "Sound in the game's movies (the opening and the ending). Applies the next time a movie starts.");
+    opt_toggle("Mute in background", &g_settings.mute_unfocused, false,
+               "Mute audio while the game window is in the background or minimized.");
     opt_end();
 }
 
@@ -1143,11 +1163,26 @@ static void tab_about(void) {
                    "Up and down, as a percentage of the mouse sensitivity."))
         g_settings.mouse_sens_y = sens_y / 100.0f;
     toggle("Invert mouse Y", &g_settings.mouse_invert_y);
+    opt_toggle("Mouse bow aiming", &g_settings.pc_bow, false,
+               "Hold the right mouse button to draw and aim your bow, click the left button to fire, and let go of the "
+               "right button to put it away. While this is on, the right mouse button no longer raises the shield: "
+               "bind the shield to another key under Key bindings.");
     ImGui::Spacing();
     header("Controls");
     opt_toggle("Controller rumble", &g_settings.rumble, true, "Vibrate the controller during play.");
     opt_toggle("Free camera with both sticks", &g_settings.freecam_sticks, true,
                "Clicking both sticks together turns the free camera on and off. Home on the keyboard always does.");
+    opt_toggle("Controller camera speed", &g_settings.stick_cam_on, false,
+               "The right stick turns the camera faster than the game allows, at the two speeds below.");
+    if (g_settings.stick_cam_on) {
+        float cx = (float)g_settings.stick_cam_x, cy = (float)g_settings.stick_cam_y;
+        if (opt_slider("Left and right speed", &cx, STICK_CAM_MIN, STICK_CAM_MAX, 25, STICK_CAM_DEFAULT, "%g%%",
+                       "100% is the game's own speed."))
+            g_settings.stick_cam_x = (int)cx;
+        if (opt_slider("Up and down speed", &cy, STICK_CAM_MIN, STICK_CAM_MAX, 25, STICK_CAM_DEFAULT, "%g%%",
+                       "100% is the game's own speed."))
+            g_settings.stick_cam_y = (int)cy;
+    }
     controls_bindings_draw(ImGui::GetFontSize() / 34);
     ImGui::Spacing();
     header("Menu");

@@ -39,6 +39,7 @@ static float quest_test_origin=784;
 static uint64_t quick_test_screen,quick_test_list;
 static unsigned quick_test_moves;
 static uint64_t navigation;
+static uint64_t sensor_test_screen, sensor_test_panel;
 static Cpu test_cpu;
 Cpu *kernel_current_cpu(void){return &test_cpu;}
 uint64_t input_buttons_now(void){return navigation;}
@@ -91,6 +92,10 @@ void guest_call(Cpu *cpu,uint64_t address){
         // Leave the manager unchanged: the hook must also reconcile visible
         // focus when a native list's router has not applied it yet.
     }else if(address==0x7000f6f800ull){
+        if(sensor_test_screen&&cpu->x[0]==sensor_test_screen) {
+            assert(!strcmp((char*)(uintptr_t)cpu->x[1],"Pa_SensorBox_00"));
+            cpu->x[0]=sensor_test_panel;return;
+        }
         unsigned category;assert(cpu->x[0]==quest_screen);
         assert(sscanf((char*)(uintptr_t)cpu->x[1],"Pa_ChallengeCategory_%u",&category)==1&&category<4);
         cpu->x[0]=quest_icons[category];
@@ -706,6 +711,29 @@ int main(void) {
     pointer_keyboard_input=false;ST32(screen+0x3a48,1);frame++;assert(!quest_scroll(&cpu,screen));
     ST32(screen+0x3a48,0);frame++;assert(!quest_scroll(&cpu,screen));
     pc_cursor_reset();assert(quest_scroll_frame==UINT64_MAX);
+    // Only pointer-owned map navigation borrows D-pad Left for native Y.
+    pc_cursor_reset();active=focused=true;g_settings.pc_cursor=true;map_canvas_active=true;
+    assert(pc_cursor_sensor_active());
+    assert(pc_cursor_buttons((1ull<<12)|(1ull<<5))==(8|(1ull<<5)));
+    assert(pc_cursor_buttons(1ull<<5)==(1ull<<5));
+    pointer_gamepad_input=true;assert(!pc_cursor_sensor_active());
+    assert(pc_cursor_buttons(1ull<<12)==(1ull<<12));
+    pointer_gamepad_input=false;map_canvas_active=false;
+    assert(pc_cursor_buttons(1ull<<12)==(1ull<<12));
+    map_canvas_active=true;g_settings.pc_cursor=false;
+    assert(pc_cursor_buttons(1ull<<12)==(1ull<<12));g_settings.pc_cursor=true;
+    // The panel's visibility survives a trip to the compendium; a one-tick
+    // open request cannot tell us who should receive input on return.
+    sensor_test_screen=(uint64_t)(uintptr_t)memory+0xb000;
+    sensor_test_panel=(uint64_t)(uintptr_t)memory+0xc000;
+    memset((void*)(uintptr_t)sensor_test_panel,0,0x200);
+    strcpy((char*)(uintptr_t)(sensor_test_panel+0xb8),"N_All_00");
+    ST8(sensor_test_panel+0x58,1);ST8(sensor_test_panel+0x5a,255);
+    assert(map_sensor_panel(&cpu,sensor_test_screen));
+    ST8(sensor_test_panel+0x5a,0);assert(!map_sensor_panel(&cpu,sensor_test_screen));
+    ST8(sensor_test_panel+0x5a,255);assert(map_sensor_panel(&cpu,sensor_test_screen));
+    ST8(sensor_test_panel+0x58,0);assert(!map_sensor_panel(&cpu,sensor_test_screen));
+    sensor_test_screen=sensor_test_panel=0;pc_cursor_reset();assert(!pc_cursor_sensor_active());
     puts("PASS: DLC navigation and Adventure Log scrolling; Options scroll/click/shared focus, SDL ownership/cursor visibility, page rebuild, Adventure Log/Ability Controls list registry, stationary hover, nested category clicks/locks, viewport preservation, pause header transitions/modal priority, quit question over Options, setting gate and reboot reset (synthetic host state).");
 #ifdef _WIN32
     VirtualFree(vt_memory,0,MEM_RELEASE);

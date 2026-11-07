@@ -761,6 +761,8 @@ void vk_translator_setup(void) {
     // memory shaders' translations were taken for another variant and their pipelines skipped)
     maxwell_gmem_base = HEAP_BASE;
     maxwell_gmem_size = HEAP_MAX;
+    maxwell_wet_fix = g_settings.wet_fix;  // (Video > Wet grass fix: from the next start, as the translations are made)
+    if (maxwell_wet_fix) LOG("[vk] wet grass fix on\n");
     LOG("[vk] shader global memory: %s (storage buffer limit %u MB), the HUD's reads %s\n",
         maxwell_gmem_bda ? "by address" : maxwell_gmem_split ? "two bindings" : "one binding", lim >> 20,
         maxwell_gmem_snap ? "through copies" : "in place");
@@ -1417,6 +1419,12 @@ static uint32_t pass_ncolor, pass_samples = 1, pass_w, pass_h;
 static int pass_mvec = -1;
 static uint64_t mvec_cleared = ~0ull;
 static TexBackend *post_image(int i, uint32_t w, uint32_t h, VkFormat f);
+// A native-size background capture excludes the map cursor from refraction.
+static TexBackend *map_background;
+static NvnTexture *map_background_target;
+static uint64_t map_background_frame = UINT64_MAX, map_background_main_frame = UINT64_MAX;
+static void map_background_before_cursor(void);
+
 static VkImageView post_view(TexBackend *d);
 // The motion target for a pass writing `depth` (minw x minh: the pass's size): the internal-resolution scene depth's
 // size (the largest RS_SCENE depth of the last frame, or of this one when larger: the scene shrinks when the upscaler
@@ -6097,6 +6105,8 @@ static int g_cs_n;  // (compute program table below)
 // address (the old Prog / Pipe objects are leaked, so pipeline keys holding their pointers can't collide), compute
 // programs, shared copies - and the heap import: its pages are replaced (re-imported on first use).
 void vk_exec_reset(void) {
+    map_background_target = NULL;
+    map_background_frame = map_background_main_frame = UINT64_MAX;
     oq_counting = false;
     oq_nrun = oq_nreports = 0;  // (pending reports pointed at the old boot's memory)
     ngw = 0;
@@ -7641,6 +7651,7 @@ static void draw_(CmdRec *r, bool indexed) {
             st.rt_dirty = true;
         }
     }
+    map_background_before_cursor();
     if (g_debug_frame) { debug_draw(pr, r, indexed); pass_dbg_draws++; }
     {   // (debugging) SAVAGEWIND_LOG_FS_CB=<fs hash>:<k>:<first float>:<count>: each frame, those floats of fragment cbuf k
         // (c[k], as the debug frame's fcb<k>) at the first draw of that shader: a parameter's course over a scripted walk
@@ -8074,6 +8085,16 @@ have_pipe:
     for (int i = 0; i < pr->fi->ntex && i < 64; i++) {
         float sc[2]; uint32_t wh[2];
         texture_info(1, pr->fi, i, &fii[i], sc, wh);
+        // The map's animated refraction must sample the background, before the
+        // interactive cursor and its labels. Sampling the finished UI produces
+        // a second, displaced scanline-shaped copy of "Mark" as the cursor moves.
+        if (g_cur_fs_hash == 0xe91b1fb6e1eb920bULL && i == 1 && map_background &&
+            map_background_frame == renderer_present_count()) {
+            fii[i].imageView = post_view(map_background);
+            fii[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            sc[0] = sc[1] = 1;
+        }
+
         tex_sc[1][i][0] = sc[0]; tex_sc[1][i][1] = sc[1]; tex_wh[1][i][0] = wh[0]; tex_wh[1][i][1] = wh[1];
         if (sc[0] > 1 && wh[0] == wh[1] && !sdw_fix.s) {  // a shadow map made bigger (its texel size: cbuf_info)
             NvnTexture *t = shader_texture_object(1, &pr->fi->tex[i]);
@@ -8953,11 +8974,48 @@ static VkPipeline post_pipeline(const char *fs, VkFormat fmt) {
 
 // Post image `i` at w x h in format f (kept until the size or format changes). 0, 1: SMAA edges / weights, 2: SMAA
 // output, 3, 4: FSR EASU / RCAS of the presented image; 5, 6: FSR EASU / RCAS of the 3D scene, 7: its CAS
-// sharpening (scene_post), 32: its colour grading.
-enum { POST_IMAGES = 33 };  // (mvec: 8 the object vectors, 9 the debug view, 10 the motion vectors, 11 / 12 TAA's
+// sharpening (scene_post), 32: its colour grading, 33: the map background before cursor UI.
+enum { POST_IMAGES = 34 };  // (mvec: 8 the object vectors, 9 the debug view, 10 the motion vectors, 11 / 12 TAA's
                             //  history; FSR 3: 13 its output, 14 the depth, 15 the reactive mask; 16-31 TAA: mvec_taa)
 static TexBackend *post_image_ex(int i, uint32_t w, uint32_t h, VkFormat f, VkImageUsageFlags extra);
 static TexBackend *post_image(int i, uint32_t w, uint32_t h, VkFormat f) { return post_image_ex(i, w, h, f, 0); }
+// Keep the map's decorative refraction separate from its interactive UI.
+// The 830x160 caption capture precedes the cursor's arrows and text. At that
+// point the main target still contains only the map and its world markers.
+static void map_background_before_cursor(void) {
+    uint64_t frame = renderer_present_count();
+    if (!g_site.pause_state || LD32(g_site.pause_state) != 2) {
+        map_background_target = NULL; map_background_main_frame = map_background_frame = UINT64_MAX;
+        return;
+    }
+    NvnTexture *rt = st.rt.ncolor == 1 ? st.rt.color[0] : NULL;
+    if (!rt) return;
+    if (rt->width == 1920 && rt->height == 1080 && rt->backend) {
+        map_background_target = rt; map_background_main_frame = frame; return;
+    }
+    if (rt->width != 830 || rt->height != 160 || !map_background_target ||
+        map_background_main_frame != frame || map_background_frame == frame) return;
+    TexBackend *src = map_background_target->backend;
+    if (!src || src->samples != 1 || src->aspect != VK_IMAGE_ASPECT_COLOR_BIT) return;
+    vk_end_pass();
+    map_background = post_image_ex(33, 1920, 912, src->format, VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    if (!map_background) return;
+    VkCommandBuffer cb = vk_cmd();
+    vk_full_barrier(cb);
+    VkImageBlit region = {
+        .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .srcOffsets = {{0, (int32_t)(src->height * 56 / 720), 0},
+                       {(int32_t)src->width, (int32_t)(src->height * 664 / 720), 1}},
+        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .dstOffsets = {{0, 0, 0}, {1920, 912, 1}}
+    };
+    rec_CmdBlitImage(cb, src->image, VK_IMAGE_LAYOUT_GENERAL, map_background->image,
+                     VK_IMAGE_LAYOUT_GENERAL, 1, &region, VK_FILTER_LINEAR);
+    vk_full_barrier(cb);
+    vk_dyn_forget();
+    map_background_frame = frame;
+}
+
 // (extra: usages besides sampling, rendering and copying from, e.g. storage for TAA's passes and FSR 3's output)
 static TexBackend *post_image_ex(int i, uint32_t w, uint32_t h, VkFormat f, VkImageUsageFlags extra) {
     static TexBackend img[POST_IMAGES];

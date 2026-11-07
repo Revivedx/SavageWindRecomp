@@ -25,6 +25,8 @@ enum { UPQ_ULTRA = 0, UPQ_QUALITY = 1, UPQ_BALANCED = 2, UPQ_PERFORMANCE = 3, UP
 // TAA (Vulkan): the game's own motion vectors (vulkan/mvec.c) and a jittered camera (output_scale.c rt_jitter_on)
 // blend each frame with the ones before it (vulkan/exec.c mvec_taa)
 enum { AA_OFF = 0, AA_SMAA = 1, AA_TAA = 2 };
+// Video > Render scale: 50%, 75%, 100% (the window's size), 125%, 150%, 200%
+enum { RSCALE_50 = 0, RSCALE_75 = 1, RSCALE_100 = 2, RSCALE_125 = 3, RSCALE_150 = 4, RSCALE_200 = 5, RSCALE_COUNT };
 #ifdef __APPLE__
 #define AA_TAA_OR_SMAA AA_SMAA
 #else
@@ -65,20 +67,27 @@ typedef struct {
     int upscale_quality; // UPQ_*: the upscaler's mode (how much smaller it renders)
     int antialias;       // AA_*: anti-aliasing of the game image before it is scaled to the window
     bool game_fxaa;      // the game's own FXAA, in its scene -> final image composite (vulkan/exec.c fxaa_patch)
+    bool wet_fix;        // Video > Wet grass fix: tames the white glare of rain in sunshine (maxwell/translate.c maxwell_wet_lighting)
+    int render_scale;    // 50%, 75%, 100% (RSCALE_100: the window's size), 125%, 150%, 200% (nvn/output_scale.c)
     int anisotropy;      // texture filtering: 0 the game's own, 1..4 = 2x, 4x, 8x, 16x (vulkan/textures.c)
     int sharpening;      // AMD CAS sharpening of the 3D image, 0 (off) .. 10 (100%) (vulkan/exec.c scene_post)
     bool frame_gen;      // AMD FSR 3 frame generation: a frame made between each two the game draws (vulkan/framegen.cpp)
     float volume;        // master volume, 1 = 100%
     bool reverb;         // room reverb effect
     bool movie_audio;
+    bool mute_unfocused; // mute audio while the window is in the background or minimized
     int perf_overlay;    // PERF_*: the performance overlay (F10 cycles it)
     int fps_limit;       // frame rate, frames per second (FPS_CHOICES; 0: no limit)
+    bool fps_display;    // Frame rate > Match display: fps_limit follows the display (settings_fps_for_display)
     int vsync;           // VSYNC_*
     bool rumble;         // controller vibration
     bool freecam_sticks; // both stick clicks together turn the free camera on and off (hle/input.c)
     int gpu;             // Vulkan adapter index from the startup log; -1: automatic (restart required)
     bool dpad_move;      // the d-pad (and arrow keys) also act as the left stick while it is at rest
+    bool stick_cam_on;   // Controls > Controller camera speed: stick_cam_x and _y apply (off: the game's own speed)
+    int stick_cam_x, stick_cam_y;  // the right stick's camera speed, left and right / up and down, percent of the game's
     float stick_deadzone[2];  // left, right stick: a controller's stick reads 0 within this much of full tilt (radial)
+    bool pc_bow;         // Mouse bow aiming: right button held aims the bow, a left click fires (runtime/pc_bow.h)
     bool mouse_camera;   // the mouse turns the camera (right stick); the cursor is held in the window while playing
     bool pc_cursor;      // mouse pointer in menus, inventory, quick selectors and the map
     float mouse_sens;    // mouse camera speed, 1 = 100% (default MOUSE_SENS_DEFAULT)
@@ -127,9 +136,14 @@ typedef struct {
     int damage_dealt;        // percent of the damage everything else takes (DAMAGE_CHOICES)
     int text_language;   // index in g_text_languages (runtime/language.h), 0: the host's
     int voice_language;  // index in g_voice_languages, 0: the text language's voices
+    bool save_backups;   // Saves > Back up at each start: a copy of the save folder as the game starts (runtime/save_backup.c)
+    bool auto_continue;  // Gameplay > Start at Continue: past the start screen into the latest save (hle/input.c)
     bool menu_tip_seen;  // the start screen's one-time "how to open the menu" note was shown (first PLAY ever)
 } Settings;
 
+#define STICK_CAM_MIN 100      // (Controller camera speed, percent, in steps of 25; 200 to start with)
+#define STICK_CAM_MAX 600
+#define STICK_CAM_DEFAULT 200
 #define STICK_DEADZONE_DEFAULT 0.10f  // (the Switch's own input service has one: the game expects 0 at rest)
 #define HAZE_CHOICES {0, 25, 50, 75, 100}  // (percent of the game's haze)
 enum { DRAWDIST_ORIGINAL, DRAWDIST_MEDIUM, DRAWDIST_HIGH, DRAWDIST_POTATO, DRAWDIST_COUNT };  // (Original: the game's own
@@ -154,3 +168,6 @@ extern Settings g_settings;
 
 void settings_load(void);
 void settings_save(void);
+// Frame rate > Match display: fps_limit becomes the highest offered rate the display (hz) can show, at least 30 (a
+// 280 Hz display: 240; a 60 Hz one: 60). Nothing with another rate chosen or hz unknown (runtime/window_size.c).
+void settings_fps_for_display(float hz);
