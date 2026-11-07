@@ -124,6 +124,18 @@ int language_pending(void) {
     return booted_text >= 0 && (booted_text != g_settings.text_language || booted_voice != g_settings.voice_language);
 }
 
+const char *language_text_folder(void) {
+    int li = language_text_index();
+    if (li > 0) return g_text_languages[li].folder;
+    const char *code = language_text_code();  // (Automatic: the language the game is given, by its code)
+    for (int pass = 0; code && pass < 2; pass++)
+        for (int k = 1; k < g_ntext_languages; k++) {
+            const char *kc = g_text_languages[k].code;
+            if (kc && (pass ? !strncmp(kc, code, 2) : !strcmp(kc, code))) return g_text_languages[k].folder;
+        }
+    return "USen";
+}
+
 const char *language_voice_folder(void) {
     int i = g_settings.voice_language;
     return i > 0 && i < g_nvoice_languages ? g_voice_languages[i].folder : NULL;

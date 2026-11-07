@@ -6,6 +6,7 @@
 #import <Metal/Metal.h>
 #endif
 #include <SDL3/SDL.h>
+#include <ctype.h>
 #include <math.h>
 #include <pthread.h>
 #include <atomic>
@@ -29,6 +30,7 @@ extern "C" bool vk_imgui_backend_init(void);  // runtime/nvn/vulkan/imgui_glue.c
 
 extern "C" {
 #include "../hle.h"
+#include "../items.h"
 #include "../settings.h"
 #include "../color_grade.h"
 #include "../window_size.h"
@@ -1074,6 +1076,118 @@ static void tab_quit(float scale, bool in_game) {
     opt_end();
 }
 
+// Case-insensitive: does s contain needle (an empty needle matches)
+static bool has_text(const char *s, const char *needle) {
+    size_t n = strlen(needle);
+    for (size_t i = 0; s[i]; i++) {
+        size_t k = 0;
+        while (k < n && tolower((unsigned char)s[i + k]) == tolower((unsigned char)needle[k])) k++;
+        if (k == n) return true;
+    }
+    return n == 0;
+}
+
+// An item's picture for the description pane: made when its row is first hovered or selected (only is_shown: the
+// list's other rows offer theirs if they have one) and kept, the last 64 of them.
+struct ItemIcon { int item, w, h; unsigned long long tex; };
+static const ItemIcon *item_icon(int i, bool is_shown) {
+    static std::vector<ItemIcon> icons;  // (most recently made last)
+    for (const ItemIcon &c : icons)
+        if (c.item == i) return &c;
+    if (!is_shown) return NULL;
+    ItemIcon c = {i, 0, 0, 0};
+    if (unsigned char *px = items_icon(i, &c.w, &c.h)) {
+        c.tex = ui_texture_rgba(px, c.w, c.h);
+        free(px);
+    }
+    if (icons.size() >= 64) {
+        if (icons[0].tex) ui_texture_free(icons[0].tex);
+        icons.erase(icons.begin());
+    }
+    icons.push_back(c);
+    return &icons.back();
+}
+
+// What the pouch tells of an item: its name, its values and its actor (the name the give command takes)
+static std::string item_desc(const GameItem *it) {
+    std::string d = it->name;
+    auto row = [&](const char *label, const std::string &value) { d += std::string("\n") + tr(label) + ": " + value; };
+    if (it->cat <= ITEMCAT_BOW || (it->cat == ITEMCAT_ARROW && it->attack)) row("Attack power", std::to_string(it->attack));
+    if (it->cat == ITEMCAT_SHIELD) row("Guard", std::to_string(it->guard));
+    if (it->cat == ITEMCAT_ARMOR) row("Defense", std::to_string(it->defense));
+    if (it->durability) row("Durability", std::to_string(it->durability));
+    if (it->hearts > 0) {  // (in quarter hearts)
+        char v[32];
+        snprintf(v, sizeof v, "%g", it->hearts / 4.0);
+        row("Hearts", v);
+    }
+    static const char *const fx[ITEMFX_COUNT] = {
+        "", "Attack up", "Defense up", "Climb speed up", "Sword beam up", "Stealth up", "Guardian resist up",
+        "Flame guard", "Cold resistance", "Shock resistance", "Unfreezable", "Heat resistance", "Lightning proof",
+        "Sand speed up", "Snow speed up", "Swim speed up", "Extra stamina", "Fireproof",
+        "Stamina recovery", "Extra hearts", "Speed up",
+    };
+    for (int e = 0; e < 2; e++)
+        if (it->effect[e]) row("Effect", tr(fx[it->effect[e]]));
+    if (it->cat == ITEMCAT_MATERIAL && it->price > 0) row("Selling price", std::to_string(it->price));  // (gear can't be sold)
+    return d + "\n\n" + it->actor;
+}
+
+// The Cheats tab (in game only): any of the game's items, in any amount, into the pouch through the game's own item
+// get (runtime/items.h; the console's give command does the same). Cheats, and labelled so: the game's own menus
+// stay as they are.
+static void tab_cheats(void) {
+    static char search[64];
+    static int cat;  // 0: all, else ITEMCAT_* + 1
+    static float amount = 1;
+    static char notice[160];
+    static unsigned waiting;  // the request the notice waits to tell the result of
+    opt_begin("##cheats", ImGui::GetFontSize() / 34);
+    opt_section(tr("Cheats"));
+    hint(tr("These are cheats: they put items in your pouch. The list comes from your game files; nothing of the game is shipped."));
+    if (!items_available()) {
+        hint(tr("Items are added in game only."));
+        opt_end();
+        return;
+    }
+    static const char *cats[] = {"All", "Weapons", "Bows", "Shields", "Arrows", "Armour", "Materials"};
+    std::vector<const char *> cn;
+    for (const char *c : cats) cn.push_back(tr(c));
+    opt_text(tr("Search"), search, sizeof search, "", tr("Only the items whose name or actor contains this text."));
+    opt_choice(tr("Category"), &cat, cn.data(), (int)cn.size(), 0, tr("The items of one kind."), false);
+    opt_slider(tr("Amount"), &amount, 1, 99, 1, 1, "%g",
+               tr("How many the Add button puts in the pouch. Stacks (arrows, materials) take them at once."));
+    if (waiting) {
+        ItemResult done = items_last_result();
+        if (done.seq >= waiting) {
+            waiting = 0;
+            const GameItem *got = items_at(done.item);
+            if (!got) notice[0] = 0;
+            else if (done.added == done.asked) snprintf(notice, sizeof notice, tr("Added %d x %s to the pouch."), done.added, got->name);
+            else snprintf(notice, sizeof notice, tr("No room in the pouch: added %d of %d x %s."), done.added, done.asked, got->name);
+        }
+    }
+    if (notice[0]) ImGui::TextDisabled("%s", notice);
+    for (int i = 0, n = items_count(); i < n; i++) {
+        const GameItem *it = items_at(i);
+        if (cat && it->cat != cat - 1) continue;
+        if (search[0] && !has_text(it->name, search) && !has_text(it->actor, search)) continue;
+        // (only a row on screen can be hovered or selected: the list is long, its other rows need no description)
+        bool seen = ImGui::IsRectVisible(ImVec2(ImGui::GetContentRegionAvail().x, ImGui::GetFontSize() * 1.9f));
+        if (opt_action(it->name, tr("Add"), seen ? item_desc(it).c_str() : NULL, false)) {
+            if (items_request(i, (int)amount)) {
+                waiting = items_requested();
+                snprintf(notice, sizeof notice, tr("Waiting until you are in play: %d x %s."), (int)amount, it->name);
+            } else
+                snprintf(notice, sizeof notice, "%s", tr("Too many requests waiting; try again in a moment."));
+        }
+        bool shown = ImGui::IsItemHovered() || (ImGui::IsItemFocused() && ImGui::GetCurrentContext()->NavCursorVisible);
+        const ItemIcon *icon = item_icon(i, shown);
+        if (icon && icon->tex) opt_desc_image(icon->tex, icon->w, icon->h);
+    }
+    opt_end();
+}
+
 static void tab_about(void) {
     header("Movement");
     toggle("D-pad as left stick", &g_settings.dpad_move);
@@ -1342,12 +1456,13 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     Tab tabs[11];
     int ntabs = 0;
     if (prelaunch) tabs[ntabs++] = {"Prelaunch", -1, true};
-    // (ids 4-7 were Link's Awakening tabs; the ids stay: test hooks)
-    static const char *names[] = {"Video", "Audio", "Language", "Saves", "", "", "", "", "Controls", "Quit"};
-    static const int order[] = {8, 0, 1, 2, 3, 9};  // Controls, Video, Audio, Language, Saves, Quit
+    // (ids 4, 6 and 7 were Link's Awakening tabs; the ids stay: test hooks)
+    static const char *names[] = {"Video", "Audio", "Language", "Saves", "", "Cheats", "", "", "Controls", "Quit"};
+    static const int order[] = {8, 0, 1, 2, 5, 3, 9};  // Controls, Video, Audio, Language, Cheats, Saves, Quit
     for (int i : order) {  // (Quit: in game only - the start screen has its own QUIT; Saves: on the start screen only,
         if (i == 9 && prelaunch) continue;  //  the game must not be running while its saves change)
         if (i == 3 && !prelaunch) continue;
+        if (i == 5 && !in_game) continue;  // (Cheats: in game only)
         tabs[ntabs++] = {names[i], i, true};
     }
     int cur = 0;  // g_tab / g_tab_request hold ids
@@ -1428,6 +1543,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
                 case 1: tab_audio(); break;
                 case 2: tab_language(in_game); break;
                 case 3: saves_tab_draw(); break;
+                case 5: tab_cheats(); break;
                 case 8: tab_about(); break;
                 case 9: tab_quit(scale, in_game); break;
                 }
