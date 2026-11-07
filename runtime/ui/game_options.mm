@@ -486,6 +486,12 @@ void build_items(void) {
                        [](const Item &) { return N(k_aa); }, [](const Item &, int x) { return tr(k_aa[x]); },
                        [](const Item &) { return g_settings.antialias; },
                        [](const Item &, int x) { g_settings.antialias = x; }, AA_OFF));
+    // supersampling (nvn/output_scale.c): applies at once
+    v.push_back(choice(P_VIDEO, "Render scale", "Above 100%: renders bigger, then shrinks to the window. Smoothest edges.",
+                       [](const Item &) { return 4; },
+                       [](const Item &, int x) { static const char *const r[] = {"100%", "125%", "150%", "200%"}; return r[x]; },
+                       [](const Item &) { return g_settings.render_scale; },
+                       [](const Item &, int x) { g_settings.render_scale = x; }, 0));
 #ifndef __APPLE__
     // the game's own FXAA (vulkan/exec.c fxaa_patch)
     v.push_back(toggle(P_VIDEO, "Game's FXAA", "The game's own edge smoothing. Off: sharper, more jagged edges.",

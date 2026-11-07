@@ -947,6 +947,13 @@ static void tab_display(void) {
                "console. Off: a sharper image with more jagged edges; use it to replace FXAA with SMAA or TAA above, "
                "or to keep the image crisp at a high resolution.");
 #endif
+    {   // supersampling (nvn/output_scale.c): applies at once
+        static const char *const rscale[] = {"100%", "125%", "150%", "200%"};
+        opt_choice("Render scale", &g_settings.render_scale, rscale, 4, 0,
+                   "Supersampling: above 100% the game renders at a higher resolution than the window and is scaled "
+                   "down to it, the cleanest way to smooth edges and shimmer. 200% is 4x the pixels: for fast "
+                   "graphics cards.", false);
+    }
 #ifndef __APPLE__
     {   // Anisotropic filtering and sharpening (Vulkan: vulkan/textures.c sampler_aniso, vulkan/exec.c scene_post)
         static const char *const aniso[] = {"Off", "2x", "4x", "8x", "16x"};
