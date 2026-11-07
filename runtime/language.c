@@ -5,12 +5,14 @@
 // folder (runtime/services/fs.c, voice_redirect).
 #include "language.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
 #include "paths.h"
+#include "platform.h"
 #include "settings.h"
 #ifdef _WIN32
 #include <windows.h>
@@ -40,11 +42,19 @@ const int g_ntext_languages = sizeof g_text_languages / sizeof g_text_languages[
 
 // Thai came with 1.9.0 (Pack/Bootup_THth.pack and its fonts; the game takes the LanguageCode "th"): offered when the
 // game files have it. On 1.8.2 a Thai setting is kept but reads as Auto.
+// (every menu text asks, through language_text_code: a stat a call was hundreds a frame with the overlay up; the answer
+// is looked at again at most once a second, as a setup may extract the pack meanwhile)
 static bool has_thai(void) {
+    static bool have;
+    static uint64_t checked_ns;
+    uint64_t now = plat_now_ns();
+    if (checked_ns && now - checked_ns < 1000000000ull) return have;
+    checked_ns = now;
     char p[1200];
     struct stat st;
     snprintf(p, sizeof p, "%s/extracted/romfs/Pack/Bootup_THth.pack", rt_data_root());
-    return stat(p, &st) == 0;
+    have = stat(p, &st) == 0;
+    return have;
 }
 
 int language_text_count(void) { return has_thai() ? g_ntext_languages : g_ntext_languages - 1; }

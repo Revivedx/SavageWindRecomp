@@ -987,10 +987,24 @@ static void rstb_name(const char *path, char *out, size_t cap) {
     if (dot && dot[1] == 's' && strcmp(dot, ".sarc") && !strchr(dot, '/')) memmove(dot + 1, dot + 2, strlen(dot + 2) + 1);
 }
 
+// Room the model loader gets on top of the ResourceSizeTable's size for each model (.bfres), in KB. The loader makes a
+// temporary heap from a model's entry and allocates one node per material from it without checking for failure; in
+// the Gerudo desert (the Wasteland Tower save) a few models (FldObj_RuinStatueKnight_A-03) overflow it, and the
+// allocation returns NULL: "access violation: write at 0x8" about one load in five. 64 KB held for 20 loads in a row
+// (unpatched, a crash came within 7 loads each time); 256 KB held for 20. SAVAGEWIND_RSTB_MODEL_KB=n changes it, 0 leaves the table as it is.
+#define RSTB_MODEL_KB 64
+
+static uint32_t rstb_model_grow(void) {
+    const char *e = getenv("SAVAGEWIND_RSTB_MODEL_KB");
+    long kb = e && *e ? atol(e) : RSTB_MODEL_KB;
+    return kb > 0 ? (uint32_t)kb << 10 : 0;
+}
+
 static void rstb_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
     static const char rstb_path[] = "System/Resource/ResourceSizeTable.product.srsizetable";
     bool merged = R == &images[0] && romfs_has_dlc_merged();
-    if (!R->ngrown && !merged) return;
+    uint32_t model_grow = R == &images[0] ? rstb_model_grow() : 0;
+    if (!R->ngrown && !merged && !model_grow) return;
     int k = 0;
     while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, rstb_path)) k++;
     char host[1200];
@@ -999,13 +1013,18 @@ static void rstb_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
         return;
     }
     if (k == R->rom_nfiles) { LOG("[fs] voices: no %s, %d bigger banks left as they are\n", rstb_path, R->ngrown); return; }
-    if (overlay_file(rstb_path, host, sizeof host)) {
-        LOG("[fs] voices: the overlay folder replaces the ResourceSizeTable: %d bigger banks left to it\n", R->ngrown);
-        return;
-    }
-    size_t zn = R->rom_files[k].size, n = 0;
+    // A mod's table (the overlay folder's) needs the same growth: without it the game can't load what grew here
+    struct stat over;
+    bool from_overlay = overlay_file(rstb_path, host, sizeof host) && !stat(host, &over);
+    size_t zn = from_overlay ? (size_t)over.st_size : R->rom_files[k].size, n = 0;
     uint8_t *z = malloc(zn), *d = NULL;
-    if (romfs_image_pread(R->img, z, zn, R->rom_files[k].off) == (ssize_t)zn) d = yaz0_unpack(z, zn, &n);
+    if (from_overlay) {
+        FILE *f = fopen(host, "rb");
+        if (f && fread(z, 1, zn, f) == zn) d = yaz0_unpack(z, zn, &n);
+        if (f) fclose(f);
+    } else if (romfs_image_pread(R->img, z, zn, R->rom_files[k].off) == (ssize_t)zn) {
+        d = yaz0_unpack(z, zn, &n);
+    }
     free(z);
     uint32_t ncrc = 0, nname = 0;
     if (d && n >= 12) memcpy(&ncrc, d + 4, 4), memcpy(&nname, d + 8, 4);
@@ -1042,6 +1061,20 @@ static void rstb_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
         }
         LOG("[fs] the RomFS has the DLC merged into it: %d ResourceSizeTable entries grown to the DLC's (%llu KB)\n",
             dlc_changed, (unsigned long long)(dlc_added >> 10));
+    }
+    if (model_grow) {
+        int mg = 0;
+        char name[300];
+        for (int i = 0; i < R->rom_nfiles; i++) {
+            size_t pl = strlen(R->rom_files[i].path);
+            if (pl < 8 || strcmp(R->rom_files[i].path + pl - 7, ".sbfres")) continue;
+            rstb_name(R->rom_files[i].path, name, sizeof name);
+            uint32_t *e = rstb_entry(d, ncrc, nname, name), v;
+            if (!e) continue;
+            memcpy(&v, e, 4), v += model_grow, memcpy(e, &v, 4);
+            mg++;
+        }
+        LOG("[fs] ResourceSizeTable: %d model entries grown by %u KB\n", mg, model_grow >> 10);
     }
     size_t bn = 0;
     free(R->rstb_blob);
@@ -1223,6 +1256,17 @@ const char *romfs_file_at(uint64_t off) {
     return NULL;
 }
 
+// The last RomFS files the game read, newest last, for a crash report (runtime/dispatch.c): a file that makes the
+// game's parser run out of its resource heap names itself only this way (#363).
+static const char *recent_files[8];
+static _Atomic unsigned recent_n;
+int fs_recent_files(const char **out, int max) {
+    unsigned n = atomic_load(&recent_n);
+    int k = 0;
+    for (unsigned i = n > 8 ? n - 8 : 0; i < n && k < max; i++) out[k++] = recent_files[i & 7];
+    return k;
+}
+
 // ------------------------------------------------------------------ IStorage (raw RomFS image)
 typedef struct { RomImage *img; uint64_t size; } Storage;
 
@@ -1247,6 +1291,7 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
             static const char *last;
             if (path && path != last) {
                 last = path;
+                recent_files[atomic_load(&recent_n) & 7] = path, atomic_fetch_add(&recent_n, 1);
                 if (getenv("SAVAGEWIND_LOG_FILES")) LOG("[fs] read %s\n", path);
             }
             // SAVAGEWIND_LOG_STREAMS=1: every read of a stream's header (a .bfstm read from its start: the sound

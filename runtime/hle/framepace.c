@@ -50,6 +50,7 @@
 #include "../rt.h"
 #include "../settings.h"
 #include "../framepace.h"
+#include "../gamelib.h"
 #include "../window_size.h"
 
 extern volatile int g_movie_playing;  // runtime/hle/movie.c: video decoders running
@@ -137,6 +138,7 @@ bool framepace_title_ui(void) {
     if (*(uint32_t *)(uintptr_t)PAUSE_STATE) return false;
     return screen_up(1) || screen_up(0x38);
 }
+bool framepace_dlc_ui(void) { return screen_up(0x3f); }  // (screen 0x3f)
 
 // (screen 0x55: the loading screen with its tip, up from a load's start until its fade into the game is over)
 bool framepace_loading_ui(void) { return screen_up(0x55); }
@@ -187,6 +189,11 @@ int framepace_target(void) {
 static double vsync_cap(void) {
     if (g_settings.vsync != VSYNC_ON && g_settings.vsync != VSYNC_ADAPTIVE) return 0;
     double hz = winsize_refresh_rate();
+    // SAVAGEWIND_VSYNC_MARGIN=0: the cap at the refresh rate itself. The margin is for VRR; on a fixed-rate display (the
+    // Steam Deck in Game Mode) it only costs frames: 87.6 shown at 89.9 Hz
+    static int margin = -1;
+    if (margin < 0) margin = !getenv("SAVAGEWIND_VSYNC_MARGIN") || atoi(getenv("SAVAGEWIND_VSYNC_MARGIN")) != 0;
+    if (!margin) return hz >= 30 ? hz : 0;
     return hz >= 30 ? hz - hz * hz / 3600 : 0;
 }
 
@@ -225,7 +232,28 @@ int rt_frame_wait(void) { return framepace_on(); }
 static float g_step = 1;         // the last frame's length between presents, in console frames
 static int g_grid_streak;        // presents in a row that kept the pace
 
+// A loading screen up for minutes (#438: stuck after a Divine Beast's cutscene, the screen running, no error): what each
+// of the game's threads waits for goes to the log, at 90 s and again at 210 s of the same loading screen, so a player's
+// log shows where it stopped. SAVAGEWIND_LOAD_WATCH=<seconds> for the first dump, 0 off.
+static void load_watch(uint64_t t) {
+    extern void kernel_dump_threads(void);  // runtime/kernel.c
+    static int first = -1;
+    static uint64_t since;
+    static int dumps;
+    if (first < 0) first = env_int("SAVAGEWIND_LOAD_WATCH", 90);
+    if (!first || !framepace_loading_ui()) { since = 0; dumps = 0; return; }
+    if (!since) since = t;
+    uint64_t at = (uint64_t)(first + 120 * dumps) * 1000000000ull;
+    if (dumps < 2 && t - since >= at) {
+        LOG("[load-watch] the loading screen has been up for %d s (event %s): the game's threads\n",
+            (int)((t - since) / 1000000000ull), event_name());
+        kernel_dump_threads();
+        dumps++;
+    }
+}
+
 void framepace_presented(uint64_t t, bool on_grid) {
+    load_watch(t);
     if (!framepace_on()) return;
     static uint64_t prev;
     static double smooth;
@@ -384,6 +412,7 @@ uint64_t framepace_shown_frame(void) { return __atomic_load_n(&shown_frames, __A
 
 void rt_vfr_update(uint64_t vfr) {
     __atomic_fetch_add(&game_frames, 1, __ATOMIC_RELAXED);
+    gamelib_sync();
     {
         extern uint64_t renderer_present_count(void);
         static uint64_t presented = ~0ull;

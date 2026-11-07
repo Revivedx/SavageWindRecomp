@@ -148,8 +148,9 @@ static void *push(PktFn fn, size_t args, size_t extra) {
     SW_TALLY("vk packets");
     return h + 1;
 }
+static uint64_t publish_every = PUBLISH_EVERY;  // (rec_init: 64 KB where R doesn't spin)
 static void commit(void) {
-    if (wpos - published >= PUBLISH_EVERY) publish();
+    if (wpos - published >= publish_every) publish();
 }
 // (the arrays of a packet: after its arguments, 16-aligned)
 #define AL16(n) (((n) + 15) & ~(size_t)15)
@@ -219,6 +220,13 @@ void rec_init(void) {
         if (!sp && plat_cpu_count() < 6) us = 0;
         spin_ns = us > 0 ? (uint64_t)us * 1000 : 0;
     }
+    // Where R sleeps at once (no spin: fewer than 6 logical processors), each publish of 4 KB woke it, a syscall on T
+    // (6.7% of T's busy time, 4 cores, Rito): 64 KB there (RTX 3060 limited to 4 cores at 720p: Rito 102 -> 106 fps,
+    // castle 149 -> 153; 2 cores / 4 threads: Rito 76 -> 81, castle 105 -> 110). Submissions and waits still publish
+    // at once. With the spin, the same either way. SAVAGEWIND_VK_PUBLISH_KB=<KB> sets it.
+    if (!spin_ns) publish_every = 64u << 10;
+    if (getenv("SAVAGEWIND_VK_PUBLISH_KB") && atoi(getenv("SAVAGEWIND_VK_PUBLISH_KB")) > 0)
+        publish_every = (uint64_t)atoi(getenv("SAVAGEWIND_VK_PUBLISH_KB")) << 10;
     const char *e = getenv("SAVAGEWIND_VK_RECORDER");
     int want = !e || atoi(e) != 0;
     // ARM's Mali drivers: LAS Recomp lost the GPU a few seconds into its title screen with the recorder thread on
@@ -410,6 +418,19 @@ void rec_QueueSubmit2(const VkSubmitInfo2 *si, uint64_t seq) {
     ENQ_T0();
     *(SubmitArgs *)push(submit_run, sizeof a, 0) = a;
     publish();  // (whoever waits for the submission must not wait for the next batch)
+    ENQ_END();
+}
+
+// fn(arg) made by the recorder in its turn, in order with the commands; published at once, as its caller may count on
+// what fn does (device.c's presents)
+typedef struct { void (*fn)(void *); void *arg; } CustomArgs;
+static void custom_run(const void *p) { const CustomArgs *a = p; a->fn(a->arg); }
+void rec_custom(void (*fn)(void *), void *arg) {
+    CustomArgs a = {fn, arg};
+    if (on <= 0) { custom_run(&a); return; }
+    ENQ_T0();
+    *(CustomArgs *)push(custom_run, sizeof a, 0) = a;
+    publish();
     ENQ_END();
 }
 
@@ -770,6 +791,37 @@ void rec_CmdPipelineBarrier2(VkCommandBuffer cb, const VkDependencyInfo *di) {
 // ---- rendering: the info, its colour attachments, then the depth and stencil ones. Chained: only a colour
 // attachment's VkAttachmentFeedbackLoopInfoEXT (exec.c begin_pass, VK_KHR_unified_image_layouts), carried as a mask
 CMD_ARGS(CmdBeginRendering, VkRenderingInfo ri; VkRenderingAttachmentInfo depth, stencil; uint8_t has_depth, has_stencil; uint16_t fbl;)  // then colour[]
+// The rendering info being handed to vkCmdBeginRendering, for a crash inside the driver: Intel's Windows driver for
+// UHD 620 / HD 630 read 0x298 there in 0.4.1, in the first minute of play (#332), and the log didn't say which pass.
+static const VkRenderingInfo *volatile begin_cur;
+void vk_view_describe(VkImageView v, char *s, size_t n);  // textures.c
+static void begin_note_attachment(const char *what, const VkRenderingAttachmentInfo *at) {
+    char d[160];
+    vk_view_describe(at->imageView, d, sizeof d);
+    fprintf(stderr, "  %s: view %p %s, layout %d, load %d store %d%s\n", what, (void *)at->imageView, d, (int)at->imageLayout,
+            (int)at->loadOp, (int)at->storeOp, at->pNext ? ", feedback loop" : "");
+}
+static void begin_note(void) {
+    const VkRenderingInfo *ri = begin_cur;
+    if (!ri) return;
+    fprintf(stderr, "in vkCmdBeginRendering: area %dx%d at %d,%d, %u layers, %u color attachments%s%s\n",
+            (int)ri->renderArea.extent.width, (int)ri->renderArea.extent.height, ri->renderArea.offset.x, ri->renderArea.offset.y,
+            ri->layerCount, ri->colorAttachmentCount, ri->pDepthAttachment ? ", depth" : "", ri->pStencilAttachment ? ", stencil" : "");
+    char what[16];
+    for (uint32_t i = 0; i < ri->colorAttachmentCount && i < 16; i++) {
+        snprintf(what, sizeof what, "color %u", i);
+        begin_note_attachment(what, &ri->pColorAttachments[i]);
+    }
+    if (ri->pDepthAttachment) begin_note_attachment("depth", ri->pDepthAttachment);
+    if (ri->pStencilAttachment) begin_note_attachment("stencil", ri->pStencilAttachment);
+}
+static void begin_rendering(VkCommandBuffer cb, const VkRenderingInfo *ri) {
+    rt_crash_note = begin_note;
+    begin_cur = ri;
+    vkCmdBeginRendering(cb, ri);
+    begin_cur = NULL;
+}
+
 static void CmdBeginRendering_run(const void *p) {
     const CmdBeginRenderingArgs *a = p;
     VkRenderingInfo ri = a->ri;
@@ -792,10 +844,10 @@ static void CmdBeginRendering_run(const void *p) {
     }
     ri.pDepthAttachment = a->has_depth ? &a->depth : NULL;
     ri.pStencilAttachment = a->has_stencil ? &a->stencil : NULL;
-    vkCmdBeginRendering(a->cb, &ri);
+    begin_rendering(a->cb, &ri);
 }
 void rec_CmdBeginRendering(VkCommandBuffer cb, const VkRenderingInfo *ri) {
-    if (on <= 0) { vkCmdBeginRendering(cb, ri); return; }
+    if (on <= 0) { begin_rendering(cb, ri); return; }
     if (ri->pNext) FATAL("[vk] recorder: a chained rendering info\n");
     if (ri->colorAttachmentCount > 16) FATAL("[vk] recorder: %u colour attachments\n", ri->colorAttachmentCount);
     uint16_t fbl = 0;

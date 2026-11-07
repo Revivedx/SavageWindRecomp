@@ -62,7 +62,13 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_cb(VkDebugUtilsMessageSeverityFlagBi
         return VK_FALSE;
     }
     static int n;
-    if (sev >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT && n++ < 500) LOG("[vk] %s\n", d->pMessage);
+    if (sev >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT && n++ < 500) {
+        LOG("[vk] %s\n", d->pMessage);
+        // SAVAGEWIND_VK_VALIDATION_BT=1: the call stack of each error (with SAVAGEWIND_VK_RECORDER=0 it is the caller's)
+        static int bt = -1;
+        if (bt < 0) bt = getenv("SAVAGEWIND_VK_VALIDATION_BT") != NULL;
+        if (bt && sev >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) plat_print_backtrace();
+    }
     return VK_FALSE;
 }
 
@@ -435,6 +441,13 @@ static bool radv_vega(void) {
            (!strncmp(r, "VEGA", 4) && strncmp(r, "VEGAM", 5));
 }
 
+// RADV from a Mesa before 26.2 (its driverVersion is Mesa's own major.minor.patch, "26.2.0-devel" included)
+static bool radv_before_mesa_26_2(void) {
+    if (!strstr(g_vk.props.deviceName, "(RADV ")) return false;
+    uint32_t v = g_vk.props.driverVersion, major = VK_VERSION_MAJOR(v), minor = VK_VERSION_MINOR(v);
+    return major < 26 || (major == 26 && minor < 2);
+}
+
 // RADV on an RDNA 4 chip (RX 9060 / 9070): "AMD Radeon RX 9070 XT (RADV GFX1201)"
 static bool radv_gfx12(void) { return strstr(g_vk.props.deviceName, "(RADV GFX12") != NULL; }
 bool vk_shader_fp16(void) { return g_vk.fp16; }
@@ -536,6 +549,19 @@ static void create_device(void) {
     }
     g_vk.custom_border = has_ext(ep, ne, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
     if (g_vk.custom_border) ext[n_ext++] = VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME;
+    {   // NVN (as GL) takes a flat output from a primitive's last vertex, Vulkan from its first: flat-interpolated values
+        // (material and instance indices, flat normals) came from the wrong vertex. VK_EXT_provoking_vertex's last-vertex
+        // mode where the driver has it; SAVAGEWIND_VK_PROVOKING_LAST=0: Vulkan's first vertex, as before.
+        const char *e = getenv("SAVAGEWIND_VK_PROVOKING_LAST");
+        if (has_ext(ep, ne, VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME) && !(e && !strcmp(e, "0"))) {
+            VkPhysicalDeviceProvokingVertexFeaturesEXT pv = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT};
+            VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &pv};
+            vkGetPhysicalDeviceFeatures2(g_vk.phys, &q);
+            g_vk.provoking_last = pv.provokingVertexLast;
+        }
+        if (g_vk.provoking_last) ext[n_ext++] = VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME;
+        LOG("[vk] provoking vertex: %s\n", g_vk.provoking_last ? "last (as NVN)" : "first (no VK_EXT_provoking_vertex last mode)");
+    }
     g_vk.calibrated = has_ext(ep, ne, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
     if (g_vk.calibrated) ext[n_ext++] = VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME;
     g_vk.divisor = has_ext(ep, ne, VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
@@ -619,15 +645,15 @@ static void create_device(void) {
     // the driver links them fast. SAVAGEWIND_VK_NO_GPL=1: whole pipelines, as before. RADV on RDNA 4 (Mesa 26.0, an
     // RX 9070 XT) hung the GPU ~46 s in, at the title screen, with them and ran without (#228); SAVAGEWIND_VK_GPL=1
     // turns them on there anyway.
-    // RADV on Vega (Renoir, Mesa 25.2): the world came out white with them, correct without (#291: two players on a Vega 8
-    // / Renoir; a Legion Go S, not a Vega, had it too and is not covered); SAVAGEWIND_VK_GPL=1 turns them on there anyway.
-    bool gpl_off = (win_legacy || radv_gfx12() || radv_vega()) && !getenv("SAVAGEWIND_VK_GPL");
+    // RADV from a Mesa before 26.2: the world came out white with them, correct without, whatever the chip (#291, #332:
+    // Vega 8 / Renoir and RX 580 on Mesa 25.2.8, an RX 580 on 26.0.8, a Legion Go S on SteamOS). On 26.2 they draw right
+    // (RX 560, Renoir, the Steam Deck, RX 7900 XTX, 890M); SAVAGEWIND_VK_GPL=1 turns them on anyway.
+    bool gpl_off = (win_legacy || radv_gfx12() || radv_before_mesa_26_2()) && !getenv("SAVAGEWIND_VK_GPL");
     bool gpl = !getenv("SAVAGEWIND_VK_NO_GPL") && !gpl_off && has_ext(ep, ne, VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME) &&
                has_ext(ep, ne, VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
     // when each frame reached the display (SAVAGEWIND_LOG_PRESENT, tests: "present timing" below)
     bool pwait = getenv("SAVAGEWIND_LOG_PRESENT") && has_ext(ep, ne, VK_KHR_PRESENT_ID_EXTENSION_NAME) &&
                  has_ext(ep, ne, VK_KHR_PRESENT_WAIT_EXTENSION_NAME);
-    free(ep);
 
     // features the backend relies on (all present on current desktop drivers)
     VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT fbl_have = {
@@ -669,7 +695,9 @@ static void create_device(void) {
         ext[n_ext++] = VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME;
         ext[n_ext++] = VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME;
     }
-    LOG("[vk] graphics pipeline libraries %s\n", g_vk.gpl ? "on (shaders compiled apart from the fixed state)" : "off");
+    LOG("[vk] graphics pipeline libraries %s\n", g_vk.gpl ? "on (shaders compiled apart from the fixed state)"
+                                                 : gpl_off && radv_before_mesa_26_2() ? "off (RADV before Mesa 26.2)"
+                                                                                      : "off");
     g_vk.feedback_loop = fbl && fbl_have.attachmentFeedbackLoopLayout && lr_have.dynamicRenderingLocalRead;
 #ifdef VK_KHR_unified_image_layouts
     uil = uil && uil_have.unifiedImageLayouts;
@@ -779,8 +807,11 @@ static void create_device(void) {
     VkPhysicalDeviceMemoryPriorityFeaturesEXT priority_on = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PRIORITY_FEATURES_EXT, .memoryPriority = VK_TRUE,
         .pNext = next_feature};
-    VkPhysicalDeviceFeatures2 f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-                                   .pNext = g_vk.memory_priority ? (void *)&priority_on : next_feature};
+    if (g_vk.memory_priority) next_feature = &priority_on;
+    VkPhysicalDeviceProvokingVertexFeaturesEXT pv_on = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT,
+                                                         .provokingVertexLast = VK_TRUE, .pNext = next_feature};
+    if (g_vk.provoking_last) next_feature = &pv_on;
+    VkPhysicalDeviceFeatures2 f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = next_feature};
     VkPhysicalDeviceFeatures *b = &f.features, *h = &have.features;
     b->independentBlend = h->independentBlend;
     b->dualSrcBlend = h->dualSrcBlend;
@@ -933,6 +964,7 @@ static void create_device(void) {
     VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f, .queueCreateInfoCount = 1,
                              .pQueueCreateInfos = &qi, .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext};
     VK_CHECK(vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.dev));
+    free(ep);  // (read up to here: extended dynamic state and the FSR 4 checks above, #488)
     fsr_api_probe(g_vk.dev, g_vk.phys);  // (logs what AMD's FSR DLLs offer this device; a no-op without them)
     vkGetDeviceQueue(g_vk.dev, g_vk.qfam, 0, &g_vk.queue);
     g_vk.present_queue = g_vk.queue;
@@ -1817,8 +1849,9 @@ static bool acquire_test_timeout(void) {
     return from > 0 && f >= (uint64_t)from && f < (uint64_t)(from + n);
 }
 
+static bool present_on_recorder(void);
 static VkResult acquire_image(VkSemaphore sem, uint32_t *img) {
-    bool threaded = present_threaded();
+    bool threaded = present_threaded() || present_on_recorder();  // (another thread presents: sc_lock, short waits)
     uint64_t t0 = SDL_GetTicksNS();
     for (;;) {  // (threaded: a short timeout at a time, not holding the swapchain while the present thread needs it)
         uint64_t tc = SDL_GetTicksNS();
@@ -1837,9 +1870,44 @@ static VkResult acquire_image(VkSemaphore sem, uint32_t *img) {
     }
 }
 
+// A plain present made by the recorder thread (record.c), in its turn right after the frame's submission: the
+// translating thread queues it and goes on to the next frame instead of waiting for the recorder to have submitted
+// (rec_wait_submitted, ~9 % of that thread at Rito on 4 cores) and for the present itself. The recorder owns the queue;
+// sc_lock keeps it off the swapchain while the translating thread acquires. A present that says the swapchain is out
+// of date or suboptimal is seen at the next one (rec_present_stale), which makes the swapchain again.
+// SAVAGEWIND_VK_PRESENT_RECORDER=0: presents on the calling thread after its submission, as before.
+#define RECP_N 64
+static struct { VkSwapchainKHR sc; VkSemaphore sem; uint32_t img; } recp[RECP_N];
+static unsigned recp_n;
+static _Atomic int rec_present_stale;
+static void rec_present_run(void *arg) {
+    const __typeof__(recp[0]) *q = arg;
+    VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &q->sem,
+                           .swapchainCount = 1, .pSwapchains = &q->sc, .pImageIndices = &q->img};
+    pthread_mutex_lock(&sc_lock);
+    VkResult r = queue_present(g_vk.queue, &pi);
+    pthread_mutex_unlock(&sc_lock);
+    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) atomic_store(&rec_present_stale, 1);
+}
+static bool present_on_recorder(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("SAVAGEWIND_VK_PRESENT_RECORDER");
+        on = rec_on() && !(e && !strcmp(e, "0"));
+        LOG("[vk] plain presents made by %s\n", on ? "the recorder thread, after the frame's submission" : "the calling thread");
+    }
+    return on;
+}
+
 // Present window image img once sem is signalled (kind, seq: frame generation's pair and the frame's submission, see
 // present_wait_turn). Returns false when the swapchain must be made again.
 static bool present_image(uint32_t img, VkSemaphore sem, int kind, uint64_t seq) {
+    if (!present_threaded() && kind == PRES_PLAIN && present_on_recorder()) {
+        __typeof__(recp[0]) *q = &recp[recp_n++ % RECP_N];
+        *q = (__typeof__(recp[0])){g_vk.swapchain, sem, img};
+        rec_custom(rec_present_run, q);
+        return !atomic_exchange(&rec_present_stale, 0);
+    }
     if (!present_threaded()) {
         VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &sem,
                                .swapchainCount = 1, .pSwapchains = &g_vk.swapchain, .pImageIndices = &img};
@@ -2137,6 +2205,13 @@ extern volatile int g_fg_want;
 extern volatile int g_fg_active;  // (framepace.c: the game draws every other presented frame)
 TexBackend *vk_fg_generate(NvnTexture *t, TexBackend *b);
 static uint64_t gen_frames;
+#ifdef SW_PGO_GENERATE
+static void write_runtime_profile(void) {
+    extern int __llvm_profile_write_file(void);
+    if (__llvm_profile_write_file()) LOG("[pgo] could not write the runtime profile\n");
+}
+#endif
+
 static char fg_real_shot[256];  // (SAVAGEWIND_FG_SHOT_AT: the game's frame after a generated one saved)
 
 void vk_fg_wait_idle(void) {
@@ -2309,10 +2384,23 @@ presented:
     extern uint64_t framepace_script_frame(uint64_t presented);
     uint64_t script_frame = framepace_script_frame(total_frames);  // (SAVAGEWIND_SCRIPT_CLOCK: 30ths of a second)
     input_frame(script_frame);
+#ifdef SW_PGO_GENERATE
+    {   // a training run played by hand ends however the window is closed: keep the profile on disk as it goes
+        static unsigned pgo_frames;
+        if (++pgo_frames % 3000 == 0) write_runtime_profile();
+    }
+#endif
     {   // SAVAGEWIND_EXIT_AT=<frame> (counted as SAVAGEWIND_INPUT): end the run there
         static long exit_at = -1;
         if (exit_at < 0) exit_at = getenv("SAVAGEWIND_EXIT_AT") ? atol(getenv("SAVAGEWIND_EXIT_AT")) : 0;
-        if (exit_at && (long)script_frame >= exit_at) { fflush(stderr); _exit(0); }
+        if (exit_at && (long)script_frame >= exit_at) {
+#ifdef SW_PGO_GENERATE
+            // The scripted exit skips atexit, so finish the runtime training profile explicitly.
+            write_runtime_profile();
+#endif
+            fflush(stderr);
+            _exit(0);
+        }
     }
     static long slow_ms = -1;
     if (slow_ms < 0) slow_ms = getenv("SAVAGEWIND_SLOW_FRAME_MS") ? atol(getenv("SAVAGEWIND_SLOW_FRAME_MS")) : 0;
@@ -2479,6 +2567,19 @@ presented:
         if (last_fps_time > 0)
             LOG("[vk] t=%.1f frame %llu %.1f fps max %.0fms (%s)\n", now, (unsigned long long)total_frames,
                 frames / (now - last_fps_time), max_gap * 1000.0, renderer_stats());
+        {   // Video memory over its budget: the driver moves memory out to system RAM, and draws that sample it there
+            // crawl. On an MX350 (2 GB) that took a pass seconds after half an hour of play and Windows reset the GPU
+            // (#332). Said when it starts and when it ends, with the numbers, so a slow-frame report shows it.
+            static bool over;
+            uint64_t usage, budget, size;
+            vram_device_local(&usage, &budget, &size);
+            if (budget && (usage > budget) != over) {
+                over = !over;
+                LOG("[vram] t=%.1f video memory %s its budget: %llu MB in use of %llu MB (%llu MB on the card)\n", now,
+                    over ? "over" : "back under", (unsigned long long)(usage >> 20), (unsigned long long)(budget >> 20),
+                    (unsigned long long)(size >> 20));
+            }
+        }
         if (gen_frames && last_fps_time > 0)
             LOG("[fg] %.1f generated frames/s: %.1f presented\n", gen_frames / (now - last_fps_time),
                 (frames + gen_frames) / (now - last_fps_time));

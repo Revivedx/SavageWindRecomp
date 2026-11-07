@@ -39,6 +39,7 @@ static const WarpPlace warp_places[] = {
     {"zora", 3315.6f, 255.6f, -501.0f},              // Zora's Domain, goddess statue (GoddessZora)
     {"goron", 1719.0f, 498.9f, -2456.2f},            // Goron City (GoddessGoron)
     {"rito", -3607.2f, 286.3f, -1805.5f},            // Rito Village (GoddessRito)
+    {"korok", 418.1f, 258.5f, -2177.6f},             // Korok Forest (GoddessKorok)
     {"ruta", 48.0f, 6.3f, 3.0f, "MainFieldDungeon", "RemainsWater"},     // inside Divine Beast Vah Ruta (Entrance_1)
     {"rudania", 0.0f, 16.8f, 69.5f, "MainFieldDungeon", "RemainsFire"},  // inside Divine Beast Vah Rudania
 };

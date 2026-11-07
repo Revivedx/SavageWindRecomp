@@ -198,6 +198,8 @@ SITES = [
     # stick input, which every camera action reads, and the square that the chase-like cameras apply to its vertical
     # part
     Site('cam_stick', 'code', 'd100c3ff fd000be8 f90017f3 a901fbfd 910063fd aa0003f3 f900001f 52800060', 0),
+    # (the end of the camera's stick input, with the stick's value written: tools/patches.py _cam_stick_end)
+    Site('cam_stick_end', 'code', 'f9409408 910023e0 f90007e8 94000000/fc000000 360000c0 fd400be8 f94017f3', 5),
     Site('cam_pitch_chase', 'code', '1e208803 1e202008 bd41ce80 1e23cc2b bd41d281 1e212000 54000001/ff00001f '
          '52800039', 0),
     Site('cam_pitch_surf', 'code', '1e208803 1e202008 bd430260 1e23cc2d bd430661 1e212000 54000001/ff00001f '
@@ -222,6 +224,13 @@ SITES = [
     Site('pc_cursor_activate', 'code', 'a9bd7bfd f9000bf5 a9024ff4 910003fd f9402415 aa0103f3 aa0003f4 f9002401', 0),
     Site('pc_pane_bounds', 'code', 'bd407020 2d4a0821 1e200824 bd408423 1e208825 1e230841 1e238842 1e2c1003', 0),
     # Map focus helpers: retain marker targeting without controller-style recentering on hover.
+    Site('beast_focus_axes', 'code', 'a9bd7bfd f9000bf5 a9024ff4 910003fd 91404408 2a0103f3 aa0003f4 91231115', 0),
+    Site('beast_focus_linear', 'code', 'a9bd7bfd a90157f6 a9024ff4 910003fd 91404408 2a0103f3 aa0003f4 911f2116', 0),
+    Site('beast_confirm_axes', 'code', 'a9ba7bfd a9016ffc a90267fa a9035ff8 a90457f6 a9054ff4 910003fd 52831888', 0),
+    Site('beast_confirm_linear', 'code', 'fc1b0fe8 a900fbfd f9000ff9 a9025ff8 a90357f6 a9044ff4 910023fd 90000018/9f00001f 91000318/ffc003ff', 0),
+    Site('beast_clamp_pitch', 'code', 'd101c3ff a9057bfd f90033f3 910143fd 52800409 39012fff 910023e8 b9002be9', 0),
+    Site('beast_wrap_yaw', 'code', 'b9762808 7100051f 54000000/ff00001f 35000008/ff00001f bd767400 90000008/9f00001f 1e202008 bd4aa101', 0),
+    Site('beast_world', 'got', '90000009/9f00001f 52898708 72a000c8 f9400129/ffc003ff aa0103f4 f9400129 aa0003f3 b8686928', 3),
     Site('pc_map_focus', 'code', 'a9be7bfd f9000bf3 910003fd bd786800 aa0003f3 910063a1 bd786c01 91214000', 0),
     Site('pc_map_focus_target', 'code', 'd100c3ff a9017bfd a9024ff4 910043fd aa0103f3 aa0003f4 97ffffdc aa1403e0', 0),
     Site('pc_map_focus_now', 'code', 'd100c3ff a9017bfd a9024ff4 910043fd aa0103f3 aa0003f4 97ffffb3 aa1403e0', 0),
@@ -300,10 +309,13 @@ OPTIONAL_GROUPS = [
     ('kf_angle',),
     ('yaz0_stream', 'yaz0_stream_ret'),
     ('pc_map_focus', 'pc_map_focus_target', 'pc_map_focus_now'),
+    ('beast_focus_axes', 'beast_focus_linear', 'beast_confirm_axes', 'beast_confirm_linear',
+     'beast_clamp_pitch', 'beast_wrap_yaw', 'beast_world'),
     ('pc_button_group',),
     ('pc_cursor_manager', 'pc_cursor_activate', 'pc_pane_bounds'),
     ('cam_stick', 'cam_pitch_chase', 'cam_pitch_surf', 'cam_pitch_wakeboard', 'cam_pitch_aim', 'cam_pitch_item'),
     ('cam_reverse_x', 'cam_reverse_y'),
+    ('cam_stick_end',),  # (Controls > Controller camera speed: without it the setting does nothing)
     ('traverse_scale', 'traverse_scale_default'),
     ('grass_range', 'grass_fade_blades', 'grass_fade_quads'),
     ('grass_blade_slots', 'grass_blade_cap_a', 'grass_blade_cap_b', 'grass_blade_cap_c', 'grass_blade_cap_c_max',
@@ -415,6 +427,13 @@ KNOWN = {
         'screen_open': 0x70013ed220,
         'screen_close': 0x70013ed264,
         'screen_mgr': 0x7001e374b8,
+        'beast_focus_axes': 0x7000df31bc,
+        'beast_focus_linear': 0x7000df3438,
+        'beast_confirm_axes': 0x7000df326c,
+        'beast_confirm_linear': 0x7000df3710,
+        'beast_clamp_pitch': 0x7000df38f4,
+        'beast_wrap_yaw': 0x7000df3988,
+        'beast_world': 0x7001e328d8,
         'pause_options_update': 0x7000dd0384,
         'opt_screen_rows': 0x36b0,
         'dialog_texts': 0x7000e57af8,
@@ -455,6 +474,7 @@ KNOWN = {
         'player_info': 0x7001e13ed0,
         'world_mgr': 0x7001e57580,
         'cam_stick': 0x7000d57fe0,
+        'cam_stick_end': 0x7000d5801c,
         'cam_pitch_chase': 0x7000bf5334,
         'cam_pitch_surf': 0x7000c1a52c,
         'cam_pitch_wakeboard': 0x7000c22104,

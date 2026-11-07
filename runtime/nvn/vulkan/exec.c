@@ -45,6 +45,9 @@ static uint64_t stat_links_now;    // pipelines linked on the render thread with
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
 static uint64_t stat_gw_waits, stat_gw_holds;  // draws / dispatches that waited for a storing shader; lists held (gw_check)
 static uint64_t stat_uub, stat_uub_same, stat_gcopy_hit, stat_gcopy_miss, stat_gcopy_bytes;  // UpdateUniformBuffer; guest_copy cache
+static uint64_t stat_ubo_direct, stat_chain_barriers;  // constant buffers bound in place (ubo_direct)
+static void ubo_check_done(bool report);
+static void ubo_check_submit(uint64_t seq);
 static uint64_t stat_feedback_live;  // depth attachments sampled as they are (read-only feedback, no copy)
 static uint64_t stat_feedback_loops, stat_feedback_barriers;  // draws sampling a target they write, in a feedback loop
 static bool pass_ds_written;         // a draw of the current pass wrote depth or stencil
@@ -130,6 +133,9 @@ static _Atomic int stat_warm;      // ... found built: by the pre-warm (pso_init
 static void pso_init(void);
 static _Atomic uint64_t prof_c_tr, prof_c_prog, prof_c_pipe, prof_c_comp, prof_c_ntr, prof_c_nprog, prof_c_npipe;  // (VK_PROF) compile ns / counts
 static uint64_t op_counts[CMD_COUNT];
+// An environment flag read once per call site: getenv scans the whole environment block (on Windows the CRT also
+// compares case-insensitively), ~0.14 ms a frame at the sites below (a clear, a storing dispatch, a copy).
+#define ENV_ONCE(name) ({ static int env_once_ = -1; if (env_once_ < 0) env_once_ = getenv(name) != NULL; env_once_; })
 bool g_debug_frame;
 static char stats_text[2048];
 void vk_collect_dead(void);
@@ -282,8 +288,10 @@ void vk_pass_barrier_forget(void) { bar_other = true; }
 // preceded by a full barrier, below) or a draw that stores to memory may have written what a later pass's vertex stage
 // reads (vertex data, instance data a compute shader culled): the next pass begins behind a full barrier then.
 static bool vtx_hazard = true;
+static bool after_dispatch;  // nothing recorded since the last dispatch but its own commands (dispatch_compute)
 void vk_full_barrier(VkCommandBuffer cb) {
     vtx_hazard = true;  // (begin_pass clears it after its own)
+    after_dispatch = false;
     VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                            .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT, .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                            .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
@@ -651,6 +659,7 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
         PROF_T0();
         SW_ACC("submit");
         dl_note("submit %llu", (unsigned long long)submit_seq + 1);
+        ubo_check_submit(submit_seq + 1);
         rec_QueueSubmit2(&si, submit_seq + 1);  // (the recorder: in order with the commands)
         PROF_ADD(prof_submit);
     }
@@ -752,6 +761,8 @@ void vk_translator_setup(void) {
     // memory shaders' translations were taken for another variant and their pipelines skipped)
     maxwell_gmem_base = HEAP_BASE;
     maxwell_gmem_size = HEAP_MAX;
+    maxwell_wet_fix = g_settings.wet_fix;  // (Video > Wet grass fix: from the next start, as the translations are made)
+    if (maxwell_wet_fix) LOG("[vk] wet grass fix on\n");
     LOG("[vk] shader global memory: %s (storage buffer limit %u MB), the HUD's reads %s\n",
         maxwell_gmem_bda ? "by address" : maxwell_gmem_split ? "two bindings" : "one binding", lim >> 20,
         maxwell_gmem_snap ? "through copies" : "in place");
@@ -833,7 +844,37 @@ void renderer_wait_seq(uint64_t seq) {
     vk_wait_seq(seq);
 }
 
+// A call per set costs the driver a lock, a free-list walk and a handle write (~0.25 ms a frame at ~3000 new sets). Sets
+// are taken from the pool in growing batches of one layout (a few draws' worth: 1, 2, 4, 8, 16) and handed out one by
+// one; a batch belongs to one submission's pool, so it dies with that pool's reset (the slot's seq changes then).
+#define ASET_CACHE 16
+#define ASET_BATCH 16
+static VkDescriptorSet vk_alloc_set_one(VkDescriptorSetLayout layout, int count, VkDescriptorSet *out);
 VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout layout) {
+    static struct { VkDescriptorSetLayout layout; Sub *s; uint64_t seq; int pool, n, next; VkDescriptorSet set[ASET_BATCH]; } cache[ASET_CACHE];
+    Sub *s = sub();
+    uint32_t h = (uint32_t)(((uintptr_t)layout >> 4) * 2654435761u) >> 28;  // (16 entries)
+    __typeof__(cache[0]) *c = &cache[h];
+    if (c->layout == layout && c->s == s && c->seq == s->seq && c->pool == s->cur_pool && c->n > 0) return c->set[--c->n];
+    if (c->layout != layout) { c->layout = layout; c->next = 1; }
+    else if (c->next < ASET_BATCH) c->next *= 2;
+    VkDescriptorSet got[ASET_BATCH];
+    int want = c->next;
+    VkDescriptorSet first = vk_alloc_set_one(layout, want, got);
+    // (vk_alloc_set_one returned with the pool that served it in s->cur_pool; want sets are in got[], or one in `first`)
+    if (want > 1 && first == VK_NULL_HANDLE) {
+        for (int i = 1; i < want; i++) c->set[i - 1] = got[i];
+        c->n = want - 1;
+        c->s = s; c->seq = s->seq; c->pool = s->cur_pool;
+        return got[0];
+    }
+    c->n = 0;
+    return first;
+}
+
+// count sets of one layout. count > 1: filled into out[] and VK_NULL_HANDLE returned when a pool took them all in one
+// call; otherwise (single set, or the batch didn't fit) one set returned.
+static VkDescriptorSet vk_alloc_set_one(VkDescriptorSetLayout layout, int count, VkDescriptorSet *out) {
     Sub *s = sub();
     for (;;) {
         if (s->cur_pool == s->npools) {
@@ -846,6 +887,14 @@ VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout layout) {
             VkDescriptorPoolCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 8192,
                                              .poolSizeCount = 7, .pPoolSizes = sizes};
             VK_CHECK(vkCreateDescriptorPool(g_vk.dev, &ci, NULL, &s->pools[s->npools++]));
+        }
+        if (count > 1) {
+            VkDescriptorSetLayout ls[ASET_BATCH];
+            for (int i = 0; i < count; i++) ls[i] = layout;
+            VkDescriptorSetAllocateInfo bai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                                               .descriptorPool = s->pools[s->cur_pool], .descriptorSetCount = (uint32_t)count, .pSetLayouts = ls};
+            if (vkAllocateDescriptorSets(g_vk.dev, &bai, out) == VK_SUCCESS) return VK_NULL_HANDLE;
+            count = 1;  // (this pool is nearly full: take sets one at a time, as before, until it is)
         }
         VkDescriptorSetAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
                                           .descriptorPool = s->pools[s->cur_pool], .descriptorSetCount = 1, .pSetLayouts = &layout};
@@ -946,14 +995,19 @@ VkSpan vk_transient_copy(const void *data, uint64_t size, uint64_t align) {
 // Per-draw constants that usually repeat the previous draw's (scale table, tint, driver constants): reuse that copy
 // while it's identical, within one submission. slot: one per kind of data.
 enum { DEDUPE_RSCALE_V, DEDUPE_RSCALE_F, DEDUPE_TINT, DEDUPE_DRV_V, DEDUPE_DRV_F, DEDUPE_DRV_C, DEDUPE_GMEM, DEDUPE_SLOTS };
-static VkSpan copy_dedupe(int slot, const void *data, uint64_t size, uint64_t align) {
+// alloc: the span's size when more than the bytes compared and copied (the rest is never read)
+static VkSpan copy_dedupe_in(int slot, const void *data, uint64_t size, uint64_t alloc, uint64_t align) {
     static struct { uint64_t seq, size; uint8_t data[0x800]; VkSpan span; } last[DEDUPE_SLOTS];
     uint64_t seq = vk_pending_seq();
     if (size > sizeof last[0].data) return vk_transient_copy(data, size, align);
     if (last[slot].seq == seq && last[slot].size == size && !memcmp(last[slot].data, data, size)) return last[slot].span;
-    VkSpan s = vk_transient_copy(data, size, align);
+    VkSpan s = vk_transient(alloc > size ? alloc : size ? size : 16, align);
+    if (size) memcpy(s.ptr, data, size);
     last[slot].seq = seq; last[slot].size = size; memcpy(last[slot].data, data, size); last[slot].span = s;
     return s;
+}
+static VkSpan copy_dedupe(int slot, const void *data, uint64_t size, uint64_t align) {
+    return copy_dedupe_in(slot, data, size, 0, align);
 }
 
 // Guest memory copied once per command list: draws binding the same range share the copy, also across the pieces the
@@ -1206,12 +1260,17 @@ const char *renderer_stats(void) {
                  (unsigned long long)stat_uub, (unsigned long long)stat_uub_same, (unsigned long long)stat_gcopy_hit,
                  (unsigned long long)stat_gcopy_miss, stat_gcopy_bytes / 1048576.0);
         n = strlen(stats_text);
+        if (stat_ubo_direct) snprintf(stats_text + n, sizeof stats_text - n, ", cbuf in place %llu", (unsigned long long)stat_ubo_direct);
+        n = strlen(stats_text);
+        if (stat_chain_barriers) snprintf(stats_text + n, sizeof stats_text - n, ", dispatch chain barriers %llu", (unsigned long long)stat_chain_barriers);
+        n = strlen(stats_text);
         if (stat_build_waits) snprintf(stats_text + n, sizeof stats_text - n, ", build waits %llu", (unsigned long long)stat_build_waits);
         stat_build_waits = 0;
         n = strlen(stats_text);
         if (stat_links_now) snprintf(stats_text + n, sizeof stats_text - n, ", links now %llu", (unsigned long long)stat_links_now);
         stat_links_now = 0;
-        stat_uub = stat_uub_same = stat_gcopy_hit = stat_gcopy_miss = stat_gcopy_bytes = 0;
+        stat_uub = stat_uub_same = stat_gcopy_hit = stat_gcopy_miss = stat_gcopy_bytes = stat_ubo_direct = stat_chain_barriers = 0;
+        ubo_check_done(true);
         stat_gw_waits = stat_gw_holds = 0;
         stat_sets = stat_sets_reused = 0;
         stat_feedback_loops = stat_feedback_barriers = 0;
@@ -1360,6 +1419,12 @@ static uint32_t pass_ncolor, pass_samples = 1, pass_w, pass_h;
 static int pass_mvec = -1;
 static uint64_t mvec_cleared = ~0ull;
 static TexBackend *post_image(int i, uint32_t w, uint32_t h, VkFormat f);
+// A native-size background capture excludes the map cursor from refraction.
+static TexBackend *map_background;
+static NvnTexture *map_background_target;
+static uint64_t map_background_frame = UINT64_MAX, map_background_main_frame = UINT64_MAX;
+static void map_background_before_cursor(void);
+
 static VkImageView post_view(TexBackend *d);
 // The motion target for a pass writing `depth` (minw x minh: the pass's size): the internal-resolution scene depth's
 // size (the largest RS_SCENE depth of the last frame, or of this one when larger: the scene shrinks when the upscaler
@@ -1937,6 +2002,7 @@ static void vk_end_pass_at(int line) {
 static uint32_t level_extent(uint32_t v, uint32_t lv) { v >>= lv; return v ? v : 1; }
 
 static void begin_pass(void) {
+    after_dispatch = false;  // (dispatch_compute: a pass in between)
     if (in_pass && !st.rt_dirty) return;
     uint64_t new_key = det_on() ? det_key() : 0;  // (the hash of st.rt: only where targets are left out, Mali)
     uint8_t new_detached = det_predict(new_key);
@@ -2319,7 +2385,21 @@ static VkRect2D scissor_rect(void) {
 }
 
 static void apply_scissor(void) {
-    VkRect2D r = scissor_rect();
+    // (passes outside the final image: the rectangle depends on nothing else than these, the same for most of a pass's
+    // draws; scissor_rect was ~2 % of the render thread)
+    static struct { const void *c, *d; uint32_t w, h; float s[6]; int32_t sc[4]; VkRect2D r; bool ok; } m;
+    VkRect2D r;
+    const float s6[6] = {pass_sx, pass_sy, vp_sx, vp_sy, vp_ox, vp_oy};
+    if (!pass_out && m.ok && m.c == st.rt.color[0] && m.d == st.rt.depth && m.w == pass_w && m.h == pass_h &&
+        !memcmp(m.s, s6, sizeof s6) && !memcmp(m.sc, st.scissor[0], sizeof m.sc)) {
+        r = m.r;
+    } else {
+        r = scissor_rect();
+        m.ok = !pass_out;
+        m.c = st.rt.color[0], m.d = st.rt.depth, m.w = pass_w, m.h = pass_h, m.r = r;
+        memcpy(m.s, s6, sizeof s6);
+        memcpy(m.sc, st.scissor[0], sizeof m.sc);
+    }
     dyn_check();
     if (!memcmp(&dc.sc, &r, sizeof r)) return;
     rec_CmdSetScissor(vk_cmd(), 0, 1, &r);
@@ -3256,6 +3336,34 @@ static void cache_feedback(const VkPipelineCreationFeedback *fb) {
     vk_pipeline_cache_note(hit);
 }
 
+// The game shaders' specialization: GATHER_BIAS (translate.c glsl_gather), how far a gather's coordinates move to pick
+// the texels Maxwell picks: 0 on NVIDIA, which rounds as Maxwell does, else 1 / 2^(subTexelPrecisionBits + 1) of a texel.
+// SAVAGEWIND_VK_GATHER_BIAS=0: none, =1: that bias on NVIDIA too (A/B).
+// The game's pipelines take flat outputs from the last vertex, as NVN, where the device can (device.c provoking_last)
+static const void *vk_provoking_state(void) {
+    static const VkPipelineRasterizationProvokingVertexStateCreateInfoEXT pv = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_PROVOKING_VERTEX_STATE_CREATE_INFO_EXT,
+        .provokingVertexMode = VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT};
+    return g_vk.provoking_last ? &pv : NULL;
+}
+static float gather_bias = -1;
+static float vk_gather_bias(void) {
+    if (gather_bias < 0) {
+        const char *e = getenv("SAVAGEWIND_VK_GATHER_BIAS");
+        bool on = e ? atoi(e) != 0 : g_vk.props.vendorID != 0x10DE;
+        uint32_t bits = g_vk.props.limits.subTexelPrecisionBits;
+        gather_bias = on ? 1.0f / (float)(1u << ((bits ? bits : 8) + 1)) : 0.0f;
+        LOG("[vk] gather bias: %g of a texel (%u sub-texel bits%s)\n", gather_bias, bits, on ? "" : ", off");
+    }
+    return gather_bias;
+}
+static const VkSpecializationMapEntry gather_spec_entry = {GATHER_BIAS_ID, 0, 4};
+static const VkSpecializationInfo *vk_gather_spec(void) {
+    static VkSpecializationInfo si = {1, &gather_spec_entry, 4, &gather_bias};
+    vk_gather_bias();
+    return &si;
+}
+
 static VkResult create_pipeline_in(const PipeState *k, VkShaderModule vsm, VkShaderModule fsm, VkPipelineLayout layout,
                                    VkPipelineCache cache, VkPipeline *out);
 static VkResult create_pipeline(const PipeState *k, VkShaderModule vsm, VkShaderModule fsm, VkPipelineLayout layout, VkPipeline *out) {
@@ -3265,8 +3373,10 @@ static VkResult create_pipeline(const PipeState *k, VkShaderModule vsm, VkShader
 static VkResult create_pipeline_in(const PipeState *k, VkShaderModule vsm, VkShaderModule fsm, VkPipelineLayout layout,
                                    VkPipelineCache cache, VkPipeline *out) {
     VkPipelineShaderStageCreateInfo stages[2] = {
-        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vsm, .pName = "main"},
-        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fsm, .pName = "main"}};
+        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vsm, .pName = "main",
+         .pSpecializationInfo = vk_gather_spec()},
+        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fsm, .pName = "main",
+         .pSpecializationInfo = vk_gather_spec()}};
     VkVertexInputAttributeDescription va[32];
     VkVertexInputBindingDescription vb[17];
     VkVertexInputBindingDivisorDescriptionEXT vd[17];
@@ -3288,6 +3398,7 @@ static VkResult create_pipeline_in(const PipeState *k, VkShaderModule vsm, VkSha
                                                  .topology = topo_class_base(k->topo_class)};
     VkPipelineViewportStateCreateInfo vs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1};
     VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+                                                 .pNext = vk_provoking_state(),
                                                  .depthClampEnable = k->depth_clamp && g_vk.depth_clamp,
                                                  .polygonMode = k->poly_fill ? VK_POLYGON_MODE_FILL : VK_POLYGON_MODE_LINE, .lineWidth = 1};
     VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
@@ -3411,7 +3522,7 @@ static VkPipeline gpl_shader_lib(VkShaderModule m, int stage, VkPipelineLayout l
                                  bool lookup) {
     VkPipelineShaderStageCreateInfo st = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                                           .stage = stage == STAGE_VERTEX ? VK_SHADER_STAGE_VERTEX_BIT : VK_SHADER_STAGE_FRAGMENT_BIT,
-                                          .module = m, .pName = "main"};
+                                          .module = m, .pName = "main", .pSpecializationInfo = vk_gather_spec()};
     VkPipelineRenderingCreateInfo ri = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
     VkGraphicsPipelineCreateInfo pi = {.pNext = &ri, .stageCount = 1, .pStages = &st, .layout = layout,
                                        .flags = lookup ? VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT : 0};
@@ -3420,6 +3531,7 @@ static VkPipeline gpl_shader_lib(VkShaderModule m, int stage, VkPipelineLayout l
         VkPipelineViewportStateCreateInfo vs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1,
                                                 .scissorCount = 1};
         VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+                                                     .pNext = vk_provoking_state(),
                                                      .depthClampEnable = (variant & 1) && g_vk.depth_clamp,
                                                      .polygonMode = (variant & 2) ? VK_POLYGON_MODE_FILL : VK_POLYGON_MODE_LINE,
                                                      .lineWidth = 1};
@@ -4068,14 +4180,19 @@ static void resolve_feedback(Prog *pr) {
                     continue;
                 }
             }
-            // SAVAGEWIND_VK_FEEDBACK_ONCE=1: one snapshot of a target per frame, later draws that sample it get that one
-            // (they miss what the frame drew into it since). Each snapshot ends the pass and starts it again: on a tiler
-            // (Mali) the copies and restarts were most of the GPU's frame. For measuring, and where the effects allow.
+            // One snapshot of a target per frame, later draws that sample it get that one (they miss what the frame drew
+            // into it since). Each snapshot ends the pass and starts it again: on a tiler (Mali) the copies and restarts
+            // were most of the GPU's frame. On by default where the device has no feedback loops (RADV on Polaris and
+            // older, Intel's integrated GPUs, AMD's Windows driver for Polaris: #332): a copy before each of the
+            // terrain's ~200 draws that sample their own target halved the frame rate (RTX 3060 with the loops off,
+            // 1280x720: castle 65 -> 133 fps, Great Plateau 66 -> 141; the picture the same as with the loops).
+            // SAVAGEWIND_VK_FEEDBACK_ONCE=0: a copy each time; =1: on wherever copies are made.
             static int once = -1;
             static uint64_t snap_frame[8], snap_pass[8];
             if (once < 0) {
-                once = getenv("SAVAGEWIND_VK_FEEDBACK_ONCE") != NULL;
-                if (once) LOG("[vk] feedback snapshots: one per target per frame, until written\n");
+                const char *e = getenv("SAVAGEWIND_VK_FEEDBACK_ONCE");
+                once = e ? atoi(e) != 0 : !g_vk.feedback_loop;
+                if (once) LOG("[vk] feedback snapshots: one per target per frame, until written%s\n", e ? "" : " (no feedback loops)");
             }
             // (once: reused past draws into the target since - that is its point, a pass break and a copy saved each
             // time, ~450 a frame in the open world: refusing every one took Mali-G610 from 30 to 7 FPS. But not for
@@ -4247,6 +4364,7 @@ static VkDescriptorBufferInfo ubo_span(VkSpan s, uint64_t size) {
 }
 
 static bool gw_ubo_direct(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out);
+static bool ubo_direct(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out);
 
 // Shadow maps made bigger than the game's (Video > Shadow resolution, textures.c RS_SHADOW): the shaders that filter
 // them offset their taps by a texel size the game passes in a constant buffer (BOTW's deferred sun shadow passes:
@@ -4497,8 +4615,11 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
             // Full-width panes slide between pause pages: keep their projection wide throughout the move, so test the
             // width, not the position.
             bool frame_end = !tall && hud_frame_end(g, mv, rc, m00, shape);
+            // Taller map views are cropped to their 16:9 frame at presentation (output_scale.c).
+            // Stretching a scrollable pane here separates its pan/zoom from the icons over it.
             if (lo < 1e8f && (tall ? lo <= -edge + 0.01f && hi >= edge - 0.01f && lo >= -over && hi <= over
-                                    : (hi - lo >= 2 / shape - 0.02f && hi - lo <= 2 * over) || frame_end)) {
+                                    : (hi - lo >= 2 / shape - 0.02f && hi - lo <= 2 * over) || frame_end) &&
+                !(tall && framepace_map_ui())) {
                 if (tall) m11 /= shape;
                 else m00 *= shape;
             }
@@ -4585,6 +4706,8 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
         NvnShaderStage *ss = &st.program->stages[stage];
         uint64_t size = ss->const_size ? ss->const_size : 16;
         if (size < si->cbuf_size[1]) size = si->cbuf_size[1];
+        VkDescriptorBufferInfo direct;
+        if (ubo_direct(ss->code_addr + ss->const_offset, size, &direct)) return direct;  // (constants: never rewritten)
         return ubo_span(guest_copy(ss->code_addr + ss->const_offset, size), size);  // (constant: shared per submission)
     }
     int idx = k - 3;  // cbuf_base
@@ -4601,6 +4724,7 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
     if (stage == 0 && up_fix.sx > 0 && up_patch(r.addr, size, &direct)) return direct;  // (up_fix: texel grid)
     if (stage == 1 && up_fix.sx > 0 && up_patch_frag(r.addr, size, &direct)) return direct;  // (up_fix: texel step)
     if (stage == 0 && k == 3 && hud_patch(r.addr, size, &direct)) return direct;  // (a 16:9 HUD layer: see hud_patch)
+    if (ubo_direct(r.addr, size, &direct)) return direct;  // (an integrated GPU reads the game's memory itself)
     // snapshot: later CPU writes must not leak in. Shared by the draws of one submission binding the same range:
     // within a command list nothing writes guest memory (no inline UpdateUniformBuffer: that writes through below
     // and drops the shared copies).
@@ -5253,11 +5377,11 @@ static VkDescriptorBufferInfo gmem_info_hi(void) {
 // g_guest_buffer): no per-draw copy, no index scan for the copy size. The game fences its CPU writes as on the
 // Switch. Falls back to copies outside the heap or without the import; SAVAGEWIND_VK_COPY_VERTICES=1 forces copies.
 static bool gsnap_verts(void);
+static uint64_t gsnap_verts_max(void);
 static bool guest_direct(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSize *off) {
     static int copy = -1;
     if (copy < 0) copy = getenv("SAVAGEWIND_VK_COPY_VERTICES") != NULL;
     if (copy || addr < HEAP_BASE) return false;
-    if (gsnap_verts()) return false;  // (SAVAGEWIND_VK_GSNAP_VERTS=1: the HUD's vertex data copied at translation too)
 #ifdef _WIN32
     if (plat_guest_sparse_heap_enabled() && g_vk.sparse_buffer && g_vk.sparse_queue &&
         g_vk.sparse_nonresident_strict && g_vk.sparse_host_import && addr < HEAP_BASE + HEAP_MAX &&
@@ -5317,15 +5441,27 @@ static int gw_find(uint64_t addr) {  // the first range ending after addr
     return a;
 }
 
+// The set changes rarely (it lasts the boot) while the same buffers are looked up every frame: answers are kept by
+// range, until the set changes (gw_gen). The search was 3% of the render thread's time (4 cores, Rito).
+// SAVAGEWIND_VK_NO_GW_MEMO=1: search every time.
+static uint32_t gw_gen = 1;
 static bool gw_overlaps(uint64_t lo, uint64_t hi) {
     if (!ngw || hi <= gw_lo || lo >= gw_hi) return false;
+    static struct { uint64_t lo, hi; uint32_t gen; bool r; } memo[1024];
+    static int on = -1;
+    if (on < 0) on = getenv("SAVAGEWIND_VK_NO_GW_MEMO") == NULL;
+    uint32_t k = (uint32_t)(((lo >> 6) ^ (hi >> 4)) * 0x9E3779B1u) >> 22;
+    if (on && memo[k].gen == gw_gen && memo[k].lo == lo && memo[k].hi == hi) return memo[k].r;
     int i = gw_find(lo);
-    return i < ngw && gw[i].lo < hi;
+    bool r = i < ngw && gw[i].lo < hi;
+    memo[k].lo = lo, memo[k].hi = hi, memo[k].gen = gw_gen, memo[k].r = r;
+    return r;
 }
 
 static bool gw_add(uint64_t lo, uint64_t hi) {  // false: no room
     int i = gw_find(lo);
     if (i < ngw && gw[i].lo <= lo && hi <= gw[i].hi) return true;  // (already in)
+    gw_gen++;
     if (i > 0 && gw[i - 1].hi == lo) i--;  // (touching on the left: merge)
     int j = i;
     while (j < ngw && gw[j].lo <= hi) j++;  // [i, j): overlapping or touching
@@ -5374,6 +5510,76 @@ static bool gw_ubo_direct(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *
     return true;
 }
 
+// Constant buffers read by the GPU in place, from the imported heap, instead of a copy per command list (guest_copy:
+// about a tenth of the render thread at Rito). On an integrated GPU that memory is the GPU's own, so the reads cost
+// what the copy's would, and the copy goes. A discrete GPU reads them across PCIe, a little GPU time (RTX 3060 at the
+// castle, 1280x720: 4.5 -> 4.95 ms) for render thread time (7.6 -> 7.2 ms): where the CPU has 4 cores or fewer to run
+// the game on, the render thread is the limit and it pays off (4 cores: Rito 84 -> 95 fps, the castle 129 -> 141).
+// Read through the heap copy in video memory instead (guest_fetch) was slower on both sides. The game writes the next frame's constants while the GPU draws this one,
+// as on the Switch, whose GPU also reads them in place: it keeps them apart and waits on its fences before it
+// reuses them, and those fences come back once our GPU is done. What stays a copy: ranges UpdateUniformBuffer writes
+// inside a list (uubt: draws before the update must not see it).
+// Not with the GPU overlap (gpu_overlap, the default): its fence waits come one frame late, so the game rewrites
+// constants the GPU has yet to read, which it can only do while they are copied. In place under it, the world turned
+// magenta or white and textures flickered (#332: Vega 7 RADV with the recorder off every time, an RTX 3060 1 boot in 3).
+// The overlap is worth more than the in-place reads (4 cores, 720p: in place without it 112 / 90 / 110 fps at the
+// plateau / Rito / the castle, copies with it 125 / 96 / 141).
+// SAVAGEWIND_VK_UBO_DIRECT=0/1: off / on whatever the GPU (on a discrete GPU the reads cross PCIe; with the overlap,
+// wrong constants now and then).
+// SAVAGEWIND_VK_UBO_CHECK=1: each direct range hashed when bound and again once its submission is done, mismatches
+// counted (the CPU wrote it while the GPU could still read it; a write after the GPU finished counts too).
+static int ubo_direct_on = -1, ubo_check;
+#define UBOC_N 65536
+static struct { uint64_t addr, size, hash, seq; } uboc[UBOC_N];
+static uint64_t uboc_w, uboc_r, uboc_bad, uboc_n, uboc_lost, uboc_sub_bad, uboc_sub_n, uboc_s;
+static void ubo_check_submit(uint64_t seq) {  // (before submission seq goes to the GPU) its ranges hashed again: a change here is certain
+    if (!ubo_check) return;
+    if (uboc_s < uboc_r) uboc_s = uboc_r;
+    for (; uboc_s < uboc_w && uboc[uboc_s % UBOC_N].seq <= seq; uboc_s++) {
+        __typeof__(uboc[0]) *e = &uboc[uboc_s % UBOC_N];
+        uboc_sub_n++;
+        if (hash_words(0x9E3779B97F4A7C15ull, (const void *)(uintptr_t)e->addr, e->size) != e->hash) uboc_sub_bad++;
+    }
+}
+static void ubo_check_add(uint64_t addr, uint64_t size) {
+    if (uboc_w - uboc_r >= UBOC_N) { uboc_lost++; return; }
+    __typeof__(uboc[0]) *e = &uboc[uboc_w++ % UBOC_N];
+    e->addr = addr, e->size = size, e->seq = vk_pending_seq();
+    e->hash = hash_words(0x9E3779B97F4A7C15ull, (const void *)(uintptr_t)addr, size);
+}
+static void ubo_check_done(bool report) {  // (the stats line) the ranges whose submissions are done, hashed again
+    if (!ubo_check) return;
+    uint64_t done = vk_completed_seq();
+    for (; uboc_r < uboc_w && uboc[uboc_r % UBOC_N].seq <= done; uboc_r++) {
+        __typeof__(uboc[0]) *e = &uboc[uboc_r % UBOC_N];
+        uboc_n++;
+        if (hash_words(0x9E3779B97F4A7C15ull, (const void *)(uintptr_t)e->addr, e->size) != e->hash) uboc_bad++;
+    }
+    if (report) LOG("[vk] constant buffers in place: %llu checked, %llu changed before their submission was seen done, %llu not checked; at submission %llu checked, %llu changed\n",
+                    (unsigned long long)uboc_n, (unsigned long long)uboc_bad, (unsigned long long)uboc_lost,
+                    (unsigned long long)uboc_sub_n, (unsigned long long)uboc_sub_bad);
+}
+static bool ubo_direct(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out) {
+    if (ubo_direct_on < 0) {
+        const char *e = getenv("SAVAGEWIND_VK_UBO_DIRECT");
+        bool igpu = g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+        ubo_direct_on = e ? atoi(e) != 0 : (igpu || plat_cpu_count() <= 4) && !gpu_overlap();
+        ubo_check = getenv("SAVAGEWIND_VK_UBO_CHECK") != NULL;
+        LOG("[vk] constant buffers: %s%s\n", ubo_direct_on ? "read in place" : "copied per list (SAVAGEWIND_VK_UBO_DIRECT=1: in place)",
+            ubo_direct_on && ubo_check ? ", checked" : "");
+    }
+    if (!ubo_direct_on || addr % g_vk.props.limits.minUniformBufferOffsetAlignment) return false;
+    for (int i = 0; i < nuub; i++)
+        if (addr < uubt[i].hi && uubt[i].lo < addr + size) return false;
+    VkBuffer b;
+    VkDeviceSize off;
+    if (!guest_direct(addr, size, &b, &off)) return false;
+    *out = (VkDescriptorBufferInfo){b, off, size};
+    stat_ubo_direct++;
+    if (ubo_check) ubo_check_add(addr, size);
+    return true;
+}
+
 static bool gw_ubo_copied(int stage, uint32_t cbuf_mask) {  // a constant buffer the stage reads would be copied from the set
     for (uint32_t m = cbuf_mask >> 3; m; m &= m - 1) {  // (cbuf k is bound slot k - 3)
         int i = __builtin_ctz(m);
@@ -5395,11 +5601,13 @@ static void gw_check(const uint32_t cbufs[6], bool vertices, uint64_t iaddr, uin
         if (cbufs[s]) wait = gw_ubo_copied(s, cbufs[s]);
     VkBuffer b;
     VkDeviceSize off;
+    // (the overlap first: it is rarely there, and guest_direct is the dearer of the two)
     for (int i = 0; i < 16 && vertices && !wait; i++) {
         Range v = st.vbuf[i];
-        if (v.addr && !guest_direct(v.addr, v.size ? v.size : 256, &b, &off)) wait = gw_overlaps(v.addr, v.addr + (v.size ? v.size : 256));
+        uint64_t n = v.size ? v.size : 256;
+        if (v.addr && gw_overlaps(v.addr, v.addr + n)) wait = !guest_direct(v.addr, n, &b, &off);
     }
-    if (iaddr && !wait && !guest_direct(iaddr, isize, &b, &off)) wait = gw_overlaps(iaddr, iaddr + isize);
+    if (iaddr && !wait && gw_overlaps(iaddr, iaddr + isize)) wait = !guest_direct(iaddr, isize, &b, &off);
     if (!wait) return;
     stat_gw_waits++;
     vk_submit_extra(VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE);
@@ -5851,6 +6059,7 @@ static void hc_list_begin(void) {
 // in place from the import (guest_direct), its pages then geometry for the next list's copy (and its chunk wanted).
 // While a storing shader whose stores aren't known holds the list (chunk_hold), in place.
 static bool guest_fetch(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSize *off) {
+    if (gsnap_verts() && size && size <= gsnap_verts_max() && !gw_overlaps(addr, addr + size)) return false;  // (copied)
     if (!guest_direct(addr, size, buf, off)) return false;
     if (!hc_nch) return true;
     if (chunk_hold || !size || addr + size > HEAP_BASE + hc_size || gw_overlaps(addr, addr + size)) {
@@ -5896,9 +6105,12 @@ static int g_cs_n;  // (compute program table below)
 // address (the old Prog / Pipe objects are leaked, so pipeline keys holding their pointers can't collide), compute
 // programs, shared copies - and the heap import: its pages are replaced (re-imported on first use).
 void vk_exec_reset(void) {
+    map_background_target = NULL;
+    map_background_frame = map_background_main_frame = UINT64_MAX;
     oq_counting = false;
     oq_nrun = oq_nreports = 0;  // (pending reports pointed at the old boot's memory)
     ngw = 0;
+    gw_gen++;
     nuub = 0;
     guest_copy_flush();
     gw_lo = ~0ull;
@@ -5951,7 +6163,58 @@ static bool aniso_all(void) {
 // luminance for the exposure, probes) at exact levels, and a level off there lit every surface white. Nor the vertex
 // stage's terrain and grass lookups, shadows, the HUD.
 static float scene_mip_bias;
+static void texture_info_(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo *out, float sc[2], uint32_t wh[2]);
+// The whole answer for a texture handle, kept for the rest of the frame: a draw's textures are mostly the last draws'
+// (materials, the G-buffer), and each lookup hashed its view, probed the view memo and the sampler table (~5 % of the
+// render thread at Rito). Not for depth-compare textures (their shadow copies and depth twins come and go within a
+// frame), nor while this draw has feedback copies or a scene composite in play; a view that may have been destroyed
+// bumps vk_view_gen, which drops them all. SAVAGEWIND_VK_NO_TEX_MEMO=1: off, with the view memo.
 static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo *out, float sc[2], uint32_t wh[2]) {
+    ShaderTexture *st_ = &si->tex[i];
+    int slot = ((int)st_->handle_offset - 0x20) / 8;
+    uint64_t h = (slot >= 0 && slot < 32) ? st.tex[stage][slot] : 0;
+    extern uint32_t vk_view_gen;
+    extern uint64_t vk_frame_counter(void);
+    static int nomemo = -1;
+    if (nomemo < 0) nomemo = getenv("SAVAGEWIND_VK_NO_TEX_MEMO") != NULL;
+    uint32_t tic = h & 0xFFFFF;
+    NvnTexEntry *te = st.tpool && tic < (uint32_t)st.tpool->count ? &((NvnTexEntry *)st.tpool->entries)[tic] : NULL;
+    TexBackend *tb = te && te->tex ? (TexBackend *)te->tex->backend : NULL;
+    if (nomemo || !h || !te || !te->tex || st_->shadow || nfeedback || scene_up.t || (tb && tb->in_feedback_layout)) {
+        texture_info_(stage, si, i, out, sc, wh);
+        return;
+    }
+    static struct {
+        uint64_t h, frame;
+        const void *tpool, *spool, *tex;
+        NvnTextureView view;
+        uint8_t has_view;
+        uint32_t gen;
+        uint8_t type, stage, blend, valid;
+        float bias, sc[2];
+        uint32_t wh[2];
+        VkDescriptorImageInfo ii;
+    } m[2048];
+    uint8_t blend = st.color_state[0] & 1;
+    float bias = stage == 1 && pass_mvec >= 0 && rt_jitter_on() ? scene_mip_bias : 0;  // (the material bias, if it is one)
+    uint64_t frame = vk_frame_counter();
+    uint32_t k = (uint32_t)((h * 0x9E3779B97F4A7C15ull ^ (uint64_t)st_->type << 3 ^ (uint64_t)stage << 7 ^ blend) >> 53) & 2047;
+    __typeof__(m[0]) *e = &m[k];
+    if (e->valid && e->h == h && e->frame == frame && e->gen == vk_view_gen && e->tpool == st.tpool && e->spool == st.spool &&
+        e->type == st_->type && e->stage == stage && e->blend == blend && e->bias == bias && e->tex == te->tex &&
+        e->has_view == te->has_view && (!te->has_view || !memcmp(&e->view, &te->view, sizeof te->view))) {
+        *out = e->ii;
+        sc[0] = e->sc[0], sc[1] = e->sc[1], wh[0] = e->wh[0], wh[1] = e->wh[1];
+        return;
+    }
+    texture_info_(stage, si, i, out, sc, wh);
+    *e = (__typeof__(*e)){.h = h, .frame = frame, .tpool = st.tpool, .spool = st.spool, .tex = te->tex, .view = te->view,
+                          .has_view = te->has_view, .gen = vk_view_gen, .type = (uint8_t)st_->type,
+                          .stage = (uint8_t)stage, .blend = blend, .valid = 1, .bias = bias, .sc = {sc[0], sc[1]},
+                          .wh = {wh[0], wh[1]}, .ii = *out};
+}
+
+static void texture_info_(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo *out, float sc[2], uint32_t wh[2]) {
     ShaderTexture *st_ = &si->tex[i];
     int slot = ((int)st_->handle_offset - 0x20) / 8;  // 64-bit handles from offset 0x20
     uint64_t h = (slot >= 0 && slot < 32) ? st.tex[stage][slot] : 0;
@@ -6094,9 +6357,13 @@ static VkDescriptorSet set_finish(VkDescriptorSetLayout layout, VkWriteDescripto
 // way, a frame or two of misplaced letters as the text came up (#263). With the overlap, a dialogue line at the
 // Shrine of Resurrection's pedestal on an RTX 5060: 4 of its bound ranges and 98 times the bytes after them rewritten
 // before the GPU was done with them, none with the overlap off; with the copies, under 1 ms of CPU in 2 s in the game.
-// Only with the overlap on, on every GPU. SAVAGEWIND_VK_GSNAP=0: off, =1: on; =all: the global memory copies in every pass (the vertex data
-// still only the HUD's); SAVAGEWIND_VK_GSNAP_MAX=<KB>: the largest storage buffer copied (1024); SAVAGEWIND_DEBUG_GSNAP=1:
-// counts every 2 s.
+// Every pass, not only the final image (#452): the HUD's button prompt shadows are drawn once into a texture of their
+// own from the prompt's text, and at 120 fps that pass read glyph positions the game had already rewritten - a shadow
+// out of place for as long as the prompt kept its text. In Kakariko uncapped (RTX 3060) 175.1 -> 173.4 fps, ~1.7 ms of
+// CPU in 2 s: every global memory read the game makes is the HUD's.
+// Only with the overlap on, on every GPU. SAVAGEWIND_VK_GSNAP=0: off, =1: final image only; =all (default): every pass
+// (the vertex data still only the HUD's); SAVAGEWIND_VK_GSNAP_MAX=<KB>: the largest storage buffer copied (1024);
+// SAVAGEWIND_DEBUG_GSNAP=1: counts every 2 s.
 // GPU data (ranges a storing shader had bound): kept as sorted, merged intervals. When full, the two closest are
 // joined (the gap between them counts as GPU data too: fewer copies, never a stale one).
 #define GSNAP_GPU_MAX 512
@@ -6108,7 +6375,7 @@ static int gsnap_mode(void) {
     static int m = -1;
     if (m < 0) {
         const char *e = getenv("SAVAGEWIND_VK_GSNAP");
-        m = !gpu_overlap() ? 0 : !e ? 1 : !strcmp(e, "all") ? 2 : atoi(e) ? 1 : 0;
+        m = !gpu_overlap() ? 0 : !e || !strcmp(e, "all") ? 2 : atoi(e) ? 1 : 0;
         LOG("[vk] global memory the HUD reads: %s\n",
             m == 2 ? "copied at translation (every pass, vertex data the HUD's)" : m ? "copied at translation (final image)" : "in place");
     }
@@ -6178,13 +6445,19 @@ static bool gsnap_gpu_hit(Range r) {
     return i < ngsnap_gpu && gsnap_gpu[i].lo < r.addr + r.size;
 }
 
-// SAVAGEWIND_VK_GSNAP_VERTS=1 (test): the HUD's vertex and index data copied too (guest_direct), in passes into the
-// final image. Off by default: with it, the prompt fix cost 30 -> 17 FPS on Mali-G610 (the storage buffer copies
-// themselves ~0.3 ms in 2 s).
+// The HUD's vertex and index data copied too (guest_fetch), in passes into the final image: fetches of up to
+// SAVAGEWIND_VK_GSNAP_VERTS_MAX KB (64) that no storing shader wrote. Every fetch there copied, with constant buffers
+// and fetches in the set of GPU writes waiting for the GPU, cost 30 -> 17 FPS on Mali-G610 and 176 -> 94 fps in
+// Kakariko uncapped (RTX 3060); the small ones alone 174.2 -> 176.0 (noise). SAVAGEWIND_VK_GSNAP_VERTS=0: off.
 static bool gsnap_verts(void) {
     static int on = -1;
-    if (on < 0) on = getenv("SAVAGEWIND_VK_GSNAP_VERTS") != NULL;
+    if (on < 0) on = !getenv("SAVAGEWIND_VK_GSNAP_VERTS") || atoi(getenv("SAVAGEWIND_VK_GSNAP_VERTS"));
     return on && gsnap_mode() && pass_out;
+}
+static uint64_t gsnap_verts_max(void) {
+    static int64_t kb = -1;
+    if (kb < 0) { const char *e = getenv("SAVAGEWIND_VK_GSNAP_VERTS_MAX"); kb = e ? atoll(e) : 64; }
+    return (uint64_t)kb << 10;
 }
 
 static bool gsnap_linear_hit(Range r) {  // (render targets also written into the heap on the GPU: GPU data)
@@ -6200,8 +6473,8 @@ static bool gsnap_linear_hit(Range r) {  // (render targets also written into th
 // The ranges a read-only stage's global memory reads are copied from (translate.c GLD: up to GSNAP_N): its storage
 // buffers, each with SAVAGEWIND_VK_GSNAP_EXT bytes after it. BOTW's HUD text shader reads its glyphs past the size its storage
 // buffer is bound with: copied at the bound size (~500 bytes) the prompt still broke, with the bytes after it it
-// didn't. (Where that reaches GPU data, the bound size only.) In passes into the final image; SAVAGEWIND_VK_GSNAP=all:
-// every pass. SAVAGEWIND_VK_GSNAP_EXT=<KB>: the bytes after (16).
+// didn't. (Where that reaches GPU data, the bound size only.) In every pass; SAVAGEWIND_VK_GSNAP=1: passes into the
+// final image only. SAVAGEWIND_VK_GSNAP_EXT=<KB>: the bytes after (16).
 #define GSNAP_N 4
 static VkDescriptorBufferInfo gsnap_info(int stage) {
     static struct { uint64_t seq; int n; Range r[GSNAP_N]; VkDescriptorBufferInfo bi; } cache[32];
@@ -6340,8 +6613,13 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
     VkDescriptorImageInfo ii[MAX_BIND];
     int n = 0;
     int sg = stage == 1 ? 1 : 0;
-    float rs[65][4] = {{1, 1, 0, 0}};
+    // The scale table: row 0, then one per texture (translate.c reads rscale[1 + slot], slot < ntex). Only those rows
+    // are filled, compared and copied: the whole 65-row table, zeroed, compared and copied twice a draw (~8000 times a
+    // frame in the open world), was a share of the translation thread's time. The span keeps the declared size.
+    int rows = 1 + (si->ntex < 64 ? si->ntex : 64);
+    float rs[65][4];
     if (rscale_row0) memcpy(rs[0], rscale_row0, 16);
+    else rs[0][0] = rs[0][1] = 1, rs[0][2] = rs[0][3] = 0;
     for (int i = 0; i < p->nbinds; i++) {
         VkBindingInfo *b = &p->binds[i];
         if (b->set != set) continue;
@@ -6389,8 +6667,9 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
         w[n] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = VK_NULL_HANDLE, .dstBinding = b->binding,
                                       .descriptorCount = 1, .descriptorType = b->type};
         if (b->binding == 18) {
-            for (int t = 0; t < si->ntex && t < 64; t++) { rs[1 + t][0] = tex_sc[sg][t][0]; rs[1 + t][1] = tex_sc[sg][t][1]; }
-            bi[n] = ubo_span(copy_dedupe(sg ? DEDUPE_RSCALE_F : DEDUPE_RSCALE_V, rs, sizeof rs, 256), sizeof rs);
+            for (int t = 0; t < si->ntex && t < 64; t++)
+                rs[1 + t][0] = tex_sc[sg][t][0], rs[1 + t][1] = tex_sc[sg][t][1], rs[1 + t][2] = rs[1 + t][3] = 0;
+            bi[n] = ubo_span(copy_dedupe_in(sg ? DEDUPE_RSCALE_F : DEDUPE_RSCALE_V, rs, (uint64_t)rows * 16, sizeof rs, 256), sizeof rs);
         } else {
             float zero[8] = {0};
             bi[n] = ubo_span(copy_dedupe(DEDUPE_TINT, tint ? tint : zero, 32, 256), 32);
@@ -6452,8 +6731,9 @@ static void cs_make(CsBuild *c) {
         VkDescriptorSetLayout sl[2] = {0};
         c->layout = make_layout(c->binds, c->nbinds, sl, 1, VK_SHADER_STAGE_COMPUTE_BIT, 0, false);
         c->set_layout = sl[0];
-        VkSpecializationMapEntry me[3] = {{0, 0, 4}, {1, 4, 4}, {2, 8, 4}};
-        VkSpecializationInfo spec = {3, me, 12, c->local};
+        VkSpecializationMapEntry me[4] = {{0, 0, 4}, {1, 4, 4}, {2, 8, 4}, {GATHER_BIAS_ID, 12, 4}};
+        struct { uint32_t local[3]; float bias; } sd = {{c->local[0], c->local[1], c->local[2]}, vk_gather_bias()};
+        VkSpecializationInfo spec = {4, me, sizeof sd, &sd};
         VkPipelineCreationFeedback fb = {0};
         VkPipelineCreationFeedbackCreateInfo fci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO,
                                                     .pPipelineCreationFeedback = &fb};
@@ -6871,8 +7151,9 @@ bool vk_pso_warm_compute(const ShaderInfo *si, const uint32_t local[3]) {
     if (!m) return false;
     VkDescriptorSetLayout sl[2] = {0};
     VkPipelineLayout l = make_layout(binds, nb, sl, 1, VK_SHADER_STAGE_COMPUTE_BIT, 0, false);
-    VkSpecializationMapEntry me[3] = {{0, 0, 4}, {1, 4, 4}, {2, 8, 4}};
-    VkSpecializationInfo spec = {3, me, 12, local};
+    VkSpecializationMapEntry me[4] = {{0, 0, 4}, {1, 4, 4}, {2, 8, 4}, {GATHER_BIAS_ID, 12, 4}};
+    struct { uint32_t local[3]; float bias; } sd = {{local[0], local[1], local[2]}, vk_gather_bias()};
+    VkSpecializationInfo spec = {4, me, sizeof sd, &sd};
     VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
                                       .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                                                 .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main",
@@ -7018,7 +7299,23 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     gw_check((const uint32_t[6]){0, 0, 0, 0, 0, cp->si->cbuf_mask}, false, 0, 0);
     vk_end_pass();
     VkCommandBuffer cb = vk_cmd();
-    vk_full_barrier(cb);
+    // Right after another dispatch (BOTW runs chains of ~40 single-group ones a frame, reductions each reading the
+    // last one's results: 0.6 ms of an RTX 3060, 1.3-1.6 ms of the Steam Deck's GPU), a compute-to-compute barrier
+    // keeps them in order without the full barrier's flush of every cache (on AMD the whole L2). Anything else in
+    // between (a pass, a copy: their full barriers) takes the full one as before. SAVAGEWIND_VK_DISPATCH_CHAIN=0: always
+    // the full barrier.
+    static int chain = -1;
+    if (chain < 0) chain = !getenv("SAVAGEWIND_VK_DISPATCH_CHAIN") || atoi(getenv("SAVAGEWIND_VK_DISPATCH_CHAIN"));
+    if (chain && after_dispatch) {
+        VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                               .srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT, .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                               .dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_UNIFORM_READ_BIT};
+        rec_CmdPipelineBarrier2(cb, &(VkDependencyInfo){.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1,
+                                                        .pMemoryBarriers = &mb});
+        stat_chain_barriers++;
+    } else {
+        vk_full_barrier(cb);
+    }
     gp_mark(cb, "dispatch %ux%ux%u (local %ux%ux%u)", gx, gy, gz, cp->local[0], cp->local[1], cp->local[2]);
     ck_mark(cb, "dispatch", gx, gy, gz, 0, 0, st.program->stages[5].code_addr);
     dl_note("dispatch %ux%ux%u cs %llx gmem %d", gx, gy, gz, (unsigned long long)st.program->stages[5].code_addr, cp->si->uses_gmem);
@@ -7035,9 +7332,10 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cp->p.layout, 0, 1, &ds, 0, NULL);
     rec_CmdDispatch(cb, gx, gy, gz);
     stat_dispatches++;
+    after_dispatch = true;
     chunk_draws++;
     if (cp->si->writes_gmem) {
-        if (getenv("SAVAGEWIND_LOG_HOLD")) {
+        if (ENV_ONCE("SAVAGEWIND_LOG_HOLD")) {
             LOG("[hold] frame %llu draw %llu: cs %llx sbuf:", (unsigned long long)renderer_present_count(),
                 (unsigned long long)stat_draws, (unsigned long long)st.program->stages[5].code_addr);
             for (int i = 0; i < 16; i++)
@@ -7154,6 +7452,9 @@ static bool topology(uint32_t mode, VkPrimitiveTopology *t, uint8_t *cls) {
     case 3: *t = VK_PRIMITIVE_TOPOLOGY_LINE_STRIP; *cls = 1; return true;
     case 4: *t = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; *cls = 2; return true;
     case 5: *t = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP; *cls = 2; return true;
+    // Quad strip: each quad (v0 v1 v3 v2) is the strip's two triangles (v0 v1 v2) and (v1 v2 v3), the same pixels in the
+    // same order. The map's Hero's Path draws its line as one at the two nearer zooms (#441): left out, it was missing.
+    case 8: *t = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP; *cls = 2; return true;
     default: *t = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; *cls = 2; return false;
     }
 }
@@ -7313,6 +7614,22 @@ static void draw_(CmdRec *r, bool indexed) {
         if (g_debug_frame && getenv("SAVAGEWIND_LOG_FSHASH")) LOG("[fshash] fs=%llx hash %016llx\n", (unsigned long long)fs, (unsigned long long)last_hash);
         g_cur_fs_hash = last_hash;
     }
+    // Video > Advanced: Bloom off: the bloom's draws (bloom_scale.h) clear their images instead, so the glow added over
+    // the scene is black; Depth of field off: the distance blur's draw (fs f7731492223eb16a, blended over the distant
+    // pixels) is skipped.
+    if (!g_settings.bloom) {
+        bool bloom = false;
+        for (int i = 0; i < st.rt.ncolor; i++) {
+            NvnTexture *t = st.rt.color[i];
+            if (t && bloom_native_target(g_cur_fs_hash, t->target, t->format, t->width, t->height, t->samples)) {
+                static const float zero[4];
+                clear(i, 0, zero, 0xF, false, 0, false, 0, 0);
+                bloom = true;
+            }
+        }
+        if (bloom) { stat_skipped++; return; }
+    }
+    if (!g_settings.depth_of_field && g_cur_fs_hash == UINT64_C(0xf7731492223eb16a)) { stat_skipped++; return; }
     // The bloom's fixed tap offsets must address adjacent console-size texels.
     // Enlarging those images spaces the taps apart and produces separate copies
     // of emissive details; odd mip scratch sizes also stopped inheriting scale.
@@ -7334,6 +7651,7 @@ static void draw_(CmdRec *r, bool indexed) {
             st.rt_dirty = true;
         }
     }
+    map_background_before_cursor();
     if (g_debug_frame) { debug_draw(pr, r, indexed); pass_dbg_draws++; }
     {   // (debugging) SAVAGEWIND_LOG_FS_CB=<fs hash>:<k>:<first float>:<count>: each frame, those floats of fragment cbuf k
         // (c[k], as the debug frame's fcb<k>) at the first draw of that shader: a parameter's course over a scripted walk
@@ -7767,6 +8085,16 @@ have_pipe:
     for (int i = 0; i < pr->fi->ntex && i < 64; i++) {
         float sc[2]; uint32_t wh[2];
         texture_info(1, pr->fi, i, &fii[i], sc, wh);
+        // The map's animated refraction must sample the background, before the
+        // interactive cursor and its labels. Sampling the finished UI produces
+        // a second, displaced scanline-shaped copy of "Mark" as the cursor moves.
+        if (g_cur_fs_hash == 0xe91b1fb6e1eb920bULL && i == 1 && map_background &&
+            map_background_frame == renderer_present_count()) {
+            fii[i].imageView = post_view(map_background);
+            fii[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            sc[0] = sc[1] = 1;
+        }
+
         tex_sc[1][i][0] = sc[0]; tex_sc[1][i][1] = sc[1]; tex_wh[1][i][0] = wh[0]; tex_wh[1][i][1] = wh[1];
         if (sc[0] > 1 && wh[0] == wh[1] && !sdw_fix.s) {  // a shadow map made bigger (its texel size: cbuf_info)
             NvnTexture *t = shader_texture_object(1, &pr->fi->tex[i]);
@@ -7856,7 +8184,7 @@ have_pipe:
                 x >= lim->viewportBoundsRange[0] && y >= lim->viewportBoundsRange[0] &&
                 x + w <= lim->viewportBoundsRange[1] && y + h <= lim->viewportBoundsRange[1]) {
                 vp_sx = sx; vp_sy = sy; vp_ox = x; vp_oy = y;
-                if (getenv("SAVAGEWIND_LOG_COPIES"))
+                if (ENV_ONCE("SAVAGEWIND_LOG_COPIES"))
                     LOG("[copy] fixed-aspect capture %ux%u backing %ux%u -> %ux%u: viewport %.3fx%.3f at %.3f,%.3f\n",
                         src->width, src->height, s->width, s->height, dst->width, dst->height, w, h, x, y);
             }
@@ -8040,7 +8368,7 @@ have_pipe:
         bar_other = true;
         if (pr->vi->writes_gmem) gw_note(0);
         if (pr->fi->writes_gmem) gw_note(1);
-        if (getenv("SAVAGEWIND_LOG_HOLD")) LOG("[hold] frame %llu draw %llu: vs %llx (%d) fs %llx (%d) fs hash %016llx\n",
+        if (ENV_ONCE("SAVAGEWIND_LOG_HOLD")) LOG("[hold] frame %llu draw %llu: vs %llx (%d) fs %llx (%d) fs hash %016llx\n",
                                                (unsigned long long)renderer_present_count(), (unsigned long long)stat_draws,
                                                (unsigned long long)st.program->stages[0].code_addr, pr->vi->writes_gmem,
                                                (unsigned long long)st.program->stages[1].code_addr, pr->fi->writes_gmem,
@@ -8318,7 +8646,7 @@ static void copy_buffer_to_texture(uint64_t src, const TexRefRec *dst) {
     TexBackend *b = vk_tex(t, false);  // prior CPU contents uploaded first
     renderer_mark_gpu_owned(t);
     vk_trace_event(t, 0, NULL, 0, "copy from buffer %llx", (unsigned long long)src);
-    if (getenv("SAVAGEWIND_LOG_COPIES")) {  // (debugging)
+    if (ENV_ONCE("SAVAGEWIND_LOG_COPIES")) {  // (debugging)
         static int n;
         if (n++ < 200)
             LOG("[copy] buffer %llx -> #%llu %ux%ux%u target %u f%#x level %d region %d,%d,%d %dx%dx%d view set %#x layer %u\n",
@@ -8452,7 +8780,7 @@ static void copy_texture(const TexRefRec *src, const TexRefRec *dst, uint64_t fl
     dl_note("copy texture %ux%u f%#x -> %ux%u f%#x (%p -> %p)", st_->width, st_->height, st_->format, dt->width, dt->height,
             dt->format, (void *)st_, (void *)dt);
     TexBackend *s = vk_tex(st_, false), *d = vk_tex(dt, true);
-    if (getenv("SAVAGEWIND_LOG_COPIES")) {  // (debugging)
+    if (ENV_ONCE("SAVAGEWIND_LOG_COPIES")) {  // (debugging)
         static int n;
         if (n++ < 300)
             LOG("[copy] tex #%llu %ux%ux%u t%u f%#x lv%u (%d,%d,%d %dx%dx%d) view %#x/%u/%u -> #%llu %ux%ux%u t%u f%#x lv%u "
@@ -8646,11 +8974,48 @@ static VkPipeline post_pipeline(const char *fs, VkFormat fmt) {
 
 // Post image `i` at w x h in format f (kept until the size or format changes). 0, 1: SMAA edges / weights, 2: SMAA
 // output, 3, 4: FSR EASU / RCAS of the presented image; 5, 6: FSR EASU / RCAS of the 3D scene, 7: its CAS
-// sharpening (scene_post), 32: its colour grading.
-enum { POST_IMAGES = 33 };  // (mvec: 8 the object vectors, 9 the debug view, 10 the motion vectors, 11 / 12 TAA's
+// sharpening (scene_post), 32: its colour grading, 33: the map background before cursor UI.
+enum { POST_IMAGES = 34 };  // (mvec: 8 the object vectors, 9 the debug view, 10 the motion vectors, 11 / 12 TAA's
                             //  history; FSR 3: 13 its output, 14 the depth, 15 the reactive mask; 16-31 TAA: mvec_taa)
 static TexBackend *post_image_ex(int i, uint32_t w, uint32_t h, VkFormat f, VkImageUsageFlags extra);
 static TexBackend *post_image(int i, uint32_t w, uint32_t h, VkFormat f) { return post_image_ex(i, w, h, f, 0); }
+// Keep the map's decorative refraction separate from its interactive UI.
+// The 830x160 caption capture precedes the cursor's arrows and text. At that
+// point the main target still contains only the map and its world markers.
+static void map_background_before_cursor(void) {
+    uint64_t frame = renderer_present_count();
+    if (!g_site.pause_state || LD32(g_site.pause_state) != 2) {
+        map_background_target = NULL; map_background_main_frame = map_background_frame = UINT64_MAX;
+        return;
+    }
+    NvnTexture *rt = st.rt.ncolor == 1 ? st.rt.color[0] : NULL;
+    if (!rt) return;
+    if (rt->width == 1920 && rt->height == 1080 && rt->backend) {
+        map_background_target = rt; map_background_main_frame = frame; return;
+    }
+    if (rt->width != 830 || rt->height != 160 || !map_background_target ||
+        map_background_main_frame != frame || map_background_frame == frame) return;
+    TexBackend *src = map_background_target->backend;
+    if (!src || src->samples != 1 || src->aspect != VK_IMAGE_ASPECT_COLOR_BIT) return;
+    vk_end_pass();
+    map_background = post_image_ex(33, 1920, 912, src->format, VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    if (!map_background) return;
+    VkCommandBuffer cb = vk_cmd();
+    vk_full_barrier(cb);
+    VkImageBlit region = {
+        .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .srcOffsets = {{0, (int32_t)(src->height * 56 / 720), 0},
+                       {(int32_t)src->width, (int32_t)(src->height * 664 / 720), 1}},
+        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .dstOffsets = {{0, 0, 0}, {1920, 912, 1}}
+    };
+    rec_CmdBlitImage(cb, src->image, VK_IMAGE_LAYOUT_GENERAL, map_background->image,
+                     VK_IMAGE_LAYOUT_GENERAL, 1, &region, VK_FILTER_LINEAR);
+    vk_full_barrier(cb);
+    vk_dyn_forget();
+    map_background_frame = frame;
+}
+
 // (extra: usages besides sampling, rendering and copying from, e.g. storage for TAA's passes and FSR 3's output)
 static TexBackend *post_image_ex(int i, uint32_t w, uint32_t h, VkFormat f, VkImageUsageFlags extra) {
     static TexBackend img[POST_IMAGES];
@@ -8892,7 +9257,7 @@ static VkImageView grade_lut(int *n, float dmin[3], float dscale[3]) {
                 VK_CHECK(vmaCreateImage(g_vk.vma, &ci, &ai, &t.image, &t.mem, NULL));
                 t.format = ci.format; t.width = t.height = t.depth = m; t.layers = 1; t.levels = 1;
                 t.samples = 1; t.aspect = VK_IMAGE_ASPECT_COLOR_BIT; t.base_type = VK_IMAGE_VIEW_TYPE_3D;
-                vk_image_init_layout(vk_cmd(), t.image, t.aspect);
+                vk_image_init_layout(vk_upload_cmd(), t.image, t.aspect);
             }
             size_t texels = (size_t)m * m * m;
             VkSpan sp = vk_transient(texels * 8, 16);
@@ -8903,7 +9268,9 @@ static VkImageView grade_lut(int *n, float dmin[3], float dscale[3]) {
                     memcpy(&h[i * 4 + c], &v, 2);
                 }
             }
-            VkCommandBuffer cb = vk_cmd();
+            // (the upload buffer: it runs before the submission's passes, and the LUT is first read inside one, the
+            // scene's last draw: copies and their barriers can't be recorded in a pass)
+            VkCommandBuffer cb = vk_upload_cmd();
             vk_full_barrier(cb);
             VkBufferImageCopy c = {.bufferOffset = sp.off, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                                    .imageExtent = {m, m, m}};
@@ -9003,9 +9370,15 @@ static void scene_post(Prog *pr, CmdRec *r) {
     if (fsr_on < 0) fsr_on = getenv("SAVAGEWIND_SCENE_FSR") ? atoi(getenv("SAVAGEWIND_SCENE_FSR")) : 1;
     if (cas_on < 0) cas_on = getenv("SAVAGEWIND_SCENE_CAS") ? atoi(getenv("SAVAGEWIND_SCENE_CAS")) : 1;
     bool fsr = fsr_on && g_settings.upscaler == UPSCALE_FSR1, cas = cas_on && g_settings.sharpening > 0;
-    VkImageView lut;
-    float gpc[16];
-    bool grade = grade_wanted(&lut, gpc);
+    // (once a frame: this runs for every draw, and only the scene's composite uses it)
+    static uint64_t grade_frame = ~0ull;
+    static VkImageView lut;
+    static float gpc[16];
+    static bool grade;
+    if (grade_frame != renderer_present_count()) {
+        grade_frame = renderer_present_count();
+        grade = grade_wanted(&lut, gpc);
+    }
     bool fsr3 = fsr_on && rt_fsr3() && mvec_enabled();  // (FSR 3: its own sharpening, RCAS, in place of CAS)
     if (!fsr3) rt_jitter_set_phases(8);
     if (!fsr && !cas && !taa && !fsr3 && !grade) return;
@@ -9925,6 +10298,8 @@ static void exec_list(uint64_t handle, int depth) {
         // (the records were written by another core: the first touch of each one missed the cache)
         __builtin_prefetch((const char *)r + 256);
         __builtin_prefetch((const char *)r + 320);
+        __builtin_prefetch((const char *)r + 640);  // (a draw's records run to several hundred bytes: one more stride ahead)
+        __builtin_prefetch((const char *)r + 704);
         if (r->op < CMD_COUNT) op_counts[r->op]++;
         if (g_debug_frame && getenv("SAVAGEWIND_LOG_OPS"))
             LOG("[op] %u depth %d: %llx %llx %llx %llx %llx\n", r->op, depth, (unsigned long long)r->x[0], (unsigned long long)r->x[1],
@@ -10089,7 +10464,7 @@ static void exec_list(uint64_t handle, int depth) {
         case CMD_CLEAR_COLOR: {
             snap_reason = "clear-color"; snapshots_invalidate(NULL);
             int index = (int)r->x[0];
-            if (getenv("SAVAGEWIND_LOG_CLEARS") && index < st.rt.ncolor && st.rt.color[index])
+            if (ENV_ONCE("SAVAGEWIND_LOG_CLEARS") && index < st.rt.ncolor && st.rt.color[index])
                 LOG("[cclear] frame %llu idx %d %ux%u f%#x mask %#x\n", (unsigned long long)renderer_present_count(), index,
                     st.rt.color[index]->width, st.rt.color[index]->height, st.rt.color[index]->format, (uint32_t)r->x[2]);
             if (index < st.rt.ncolor && st.rt.color[index]) clear(index, (int)r->x[5], x, (uint32_t)r->x[2], false, 0, false, 0, 0);
@@ -10158,8 +10533,9 @@ static void exec_list(uint64_t handle, int depth) {
             // 1600x900 down to 1280x720, a scene target of its own per size). Timed here they measured our command
             // translation, not GPU work, and the open world dropped to 1280x720 times the internal-resolution
             // scale. A PC GPU does that work in a fraction of the Switch's time: every counter of a presented frame
-            // gets the same timestamp (no GPU time), so the game keeps 1600x900. SAVAGEWIND_VK_COUNTER=live: the
-            // time of each counter (as before).
+            // gets the same timestamp (no GPU time), so the game keeps 1600x900. Video > Advanced > Dynamic
+            // resolution (on with the Potato preset), or SAVAGEWIND_VK_COUNTER=live: the time of each counter (as
+            // before): the game lowers its 3D resolution when the frame takes long.
             uint64_t *out = (uint64_t *)(uintptr_t)r->x[1];
             uint32_t type = (uint32_t)r->x[0];
             static uint32_t seen;
@@ -10173,8 +10549,9 @@ static void exec_list(uint64_t handle, int depth) {
             if (frozen < 0) { const char *e = getenv("SAVAGEWIND_VK_COUNTER"); frozen = !e || strcmp(e, "live"); }
             static uint64_t frame_seen = ~0ull, frame_ts;
             extern uint64_t vk_frame_counter(void);
-            if (frozen && vk_frame_counter() != frame_seen) { frame_seen = vk_frame_counter(); frame_ts = SDL_GetTicksNS(); }
-            uint64_t ts = frozen ? frame_ts : SDL_GetTicksNS();
+            bool fixed = frozen && !g_settings.dynamic_res;
+            if (fixed && vk_frame_counter() != frame_seen) { frame_seen = vk_frame_counter(); frame_ts = SDL_GetTicksNS(); }
+            uint64_t ts = fixed ? frame_ts : SDL_GetTicksNS();
             if (type == 1 && out && oq_on()) {  // SAMPLES_PASSED: written once the queries' submission is done
                 pthread_mutex_lock(&readback_lock);
                 if (oq_nreports == 32) { pthread_mutex_unlock(&readback_lock); renderer_flush(); pthread_mutex_lock(&readback_lock); oq_apply(); }
@@ -10217,6 +10594,7 @@ static void exec_list(uint64_t handle, int depth) {
 
 void backend_execute(uint64_t handle) {
     readbacks_apply();
+    ubo_check_done(false);  // (SAVAGEWIND_VK_UBO_CHECK: as soon after each submission is done as the lists come)
     SW_ZONE("backend_execute");
     { SW_ACC("exec_lock"); gpu_lock(); }
     if (g_debug_frame && getenv("SAVAGEWIND_LOG_OPS")) LOG("[submit] %llx\n", (unsigned long long)handle);

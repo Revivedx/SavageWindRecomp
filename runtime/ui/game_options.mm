@@ -37,6 +37,7 @@ extern "C" {
 #include "../game_sites.h"
 #include "../nvn/output_scale.h"
 #include "../settings.h"
+#include "../gamelib.h"
 #include "../color_grade.h"
 #include "../pc_cursor.h"
 #include "../window_size.h"
@@ -90,7 +91,7 @@ struct Entry {           // the game's option entry (0x30)
 static_assert(sizeof(Entry) == 0x30);
 enum { KIND_TOGGLE = 0, KIND_CHOICE = 1, KIND_BUTTON = 2 };
 
-enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_COLOUR, P_AUDIO, P_CONTROLS, P_BINDS, P_LANGUAGE, P_ACCESS, P_COUNT };
+enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_COLOUR, P_AUDIO, P_CONTROLS, P_BINDS, P_LANGUAGE, P_ACCESS, P_VIDEO_ADV, P_COUNT };
 // A_FIXED: a greyed row for an input that can never be rebound (Item.arg: 0 Esc, 1 F2); A_BIND: Item.arg is a binding slot (an input, or BIND_ACTION + an action); the next key, mouse button or controller button binds it
 enum Action { A_NONE, A_PAGE, A_BIND, A_BINDS_HEADER, A_RESET_BINDS, A_RESTART, A_QUIT, A_SIZE_LIST, A_FIXED };
 
@@ -154,9 +155,13 @@ const char *const k_aa[] = {"Off", "SMAA"};
 const char *const k_aa[] = {"Off", "SMAA", "TAA"};  // (settings.h AA_*)
 #endif
 const char *const k_aniso[] = {"Off", "2x", "4x", "8x", "16x"};  // (settings anisotropy 0..4)
-const char *const k_drawdist[] = {"Original", "Medium", "High"};  // (settings.h DRAWDIST_*)
+// (shown with Potato first, the nearest: k_drawdist_order maps a row index to settings.h DRAWDIST_*)
+const char *const k_drawdist[] = {"Original", "High", "Savage", "Potato"};  // (settings.h DRAWDIST_*; the ini: medium, high)
+const int k_drawdist_order[] = {DRAWDIST_POTATO, DRAWDIST_ORIGINAL, DRAWDIST_MEDIUM, DRAWDIST_HIGH};
 constexpr int k_haze[] = HAZE_CHOICES;  // percent (Video > Haze)
-const char *const k_shadow[] = {"Console (896)", "High (2048)", "Ultra (4096)", "Extreme (8192)"};  // (SHADOW_*)
+// (shown with Potato first, the smallest: k_shadow_order maps a row index to settings.h SHADOW_*)
+const char *const k_shadow[] = {"Console (896)", "High (2048)", "Ultra (4096)", "Savage (8192)", "Potato (448)"};  // (SHADOW_*)
+const int k_shadow_order[] = {SHADOW_POTATO, SHADOW_CONSOLE, SHADOW_HIGH, SHADOW_ULTRA, SHADOW_EXTREME};
 const char *const k_text[] = {"Off", "2x", "4x"};  // (sharper_text / 2)
 const char *const k_icons[] = {"Automatic", "Keyboard", "Xbox", "PlayStation", "Nintendo"};  // (ICONS_*)
 constexpr int k_fps[] = FPS_CHOICES;  // frame rate (0: Off, no limit)
@@ -260,6 +265,7 @@ const char *ups_label(const Item &, int x) {
 
 const char *fps_label(const Item &, int x) {
     static char buf[32];
+    if (x == N(k_fps)) return tr("Match display");  // (settings fps_display)
     if (!k_fps[x]) return tr("Off");
     snprintf(buf, sizeof buf, tr("%d FPS"), k_fps[x]);
     return buf;
@@ -318,6 +324,19 @@ void build_items(void) {
                        A_QUIT, 0));
 
     // Video (fullscreen and the window size are applied by the window loop: menu.mm)
+    // Graphics preset (settings.c k_gpreset): sets rows of the Advanced page; "Custom"
+    // (settings matching no preset) is shown, never picked
+    Item gp = choice(P_VIDEO, "Graphics preset", "Potato: for weak PCs. Original: as on the console. High and Savage: further and sharper.",
+                     [](const Item &) { return GPRESET_COUNT + 1; },
+                     [](const Item &, int x) { return tr(x < GPRESET_COUNT ? g_gpreset_names[x] : "Custom"); },
+                     [](const Item &) {
+                         int p = graphics_preset_current();
+                         return p < 0 ? (int)GPRESET_COUNT : p;
+                     },
+                     [](const Item &, int x) { graphics_preset_apply(x); }, GPRESET_ORIGINAL);
+    gp.value_off = [](const Item &, int x) { return x >= GPRESET_COUNT; };
+    v.push_back(gp);
+    v.push_back(button(P_VIDEO, "Advanced options", "Draw distance, upscaler, anti-aliasing, shadows, bloom and more.", "Open", A_PAGE, P_VIDEO_ADV));
     v.push_back(toggle(P_VIDEO, "Fullscreen", "Fills the screen. Also F11 or Alt+Enter.",
                        [](const Item &) { return (int)g_settings.fullscreen; },
                        [](const Item &, int x) { g_settings.fullscreen = x; menu_request_window_apply(); }, 0));
@@ -386,6 +405,9 @@ void build_items(void) {
                        },
                        [](const Item &) { return nearest(k_fov, N(k_fov), (float)g_settings.fov); },
                        [](const Item &, int x) { g_settings.fov = k_fov[x]; }, FOV_DEFAULT_INDEX));
+    v.push_back(toggle(P_GAMEPLAY, "Start at Continue", "Goes past the title screen into your latest save by itself. Any button stops it. From the next start.",
+                       [](const Item &) { return (int)g_settings.auto_continue; },
+                       [](const Item &, int x) { g_settings.auto_continue = x; }, 0));
     v.push_back(choice(P_GAMEPLAY, "HUD size", "How big the hearts, stamina, minimap and the rest of the HUD are. Each part stays in its corner.",
                        [](const Item &) { return N(k_hud_size); },
                        [](const Item &, int x) {
@@ -395,30 +417,20 @@ void build_items(void) {
                        },
                        [](const Item &) { return nearest(k_hud_size, N(k_hud_size), (float)g_settings.hud_size); },
                        [](const Item &, int x) { g_settings.hud_size = k_hud_size[x]; }, HUD_SIZE_DEFAULT_INDEX));
-    // Draw distance (runtime/draw_distance.c): applied while playing, from the next placed actor the game looks at
-    v.push_back(choice(P_VIDEO, "Draw distance", "How far out grass, trees, rocks, buildings and enemies appear. Higher costs more CPU and GPU time.",
-                       [](const Item &) { return (int)DRAWDIST_COUNT; },
-                       [](const Item &, int x) { return tr(k_drawdist[x]); },
-                       [](const Item &) { return g_settings.draw_distance; },
-                       [](const Item &, int x) { g_settings.draw_distance = x; }, DRAWDIST_ORIGINAL));
-    // the air's haze (services/fs.c haze_patch): the game reads it at the start
-    v.push_back(choice(P_VIDEO, "Haze", "How hazy the air is. Lower: clearer distances. From the next start.",
-                       [](const Item &) { return N(k_haze); },
-                       [](const Item &, int x) {
-                           static std::string s;
-                           s = pct(k_haze[x]);
-                           return s.c_str();
-                       },
-                       [](const Item &) { return nearest(k_haze, N(k_haze), (float)g_settings.haze); },
-                       [](const Item &, int x) { g_settings.haze = k_haze[x]; }, N(k_haze) - 1));
     Item fps = choice(P_VIDEO, "Frame rate", "",
-                      [](const Item &) { return N(k_fps); }, fps_label,
+                      [](const Item &) { return N(k_fps) + 1; }, fps_label,
                       [](const Item &) {
+                          if (g_settings.fps_display) return N(k_fps);
                           for (int i = 0; i < N(k_fps); i++)
                               if (k_fps[i] == g_settings.fps_limit) return i;
                           return FPS_DEFAULT_INDEX;
                       },
-                      [](const Item &, int x) { g_settings.fps_limit = k_fps[x]; }, FPS_DEFAULT_INDEX);
+                      [](const Item &, int x) {
+                          g_settings.fps_display = x == N(k_fps);
+                          if (g_settings.fps_display) settings_fps_for_display(winsize_refresh_rate());
+                          else g_settings.fps_limit = k_fps[x];
+                      },
+                      FPS_DEFAULT_INDEX);
     fps.desc_fn = [](const Item &) {  // (one line)
         static char buf[256];
         int hz = (int)lroundf(winsize_refresh_rate());
@@ -444,7 +456,22 @@ void build_items(void) {
                        [](const Item &) { return N(k_perf); }, [](const Item &, int x) { return tr(k_perf[x]); },
                        [](const Item &) { return g_settings.perf_overlay; },
                        [](const Item &, int x) { g_settings.perf_overlay = x; }, PERF_OFF));
-    v.push_back(choice(P_VIDEO, "Upscaler", "Off: full resolution. AMD FSR 1: renders smaller, then upscales.",
+    // Advanced options: what the graphics presets set (settings.c k_gpreset), and the rest of the image quality.
+    // Draw distance (runtime/draw_distance.c): applied while playing, from the next placed actor the game looks at
+    v.push_back(choice(P_VIDEO_ADV, "Draw distance", "How far out grass, trees, rocks, buildings and enemies appear. Higher costs more CPU and GPU time. Potato: nearer than on the console, for weak PCs.",
+                       [](const Item &) { return (int)DRAWDIST_COUNT; },
+                       [](const Item &, int x) { return tr(k_drawdist[k_drawdist_order[x]]); },
+                       [](const Item &) {
+                           for (int i = 0; i < DRAWDIST_COUNT; i++)
+                               if (k_drawdist_order[i] == g_settings.draw_distance) return i;
+                           return 1;
+                       },
+                       [](const Item &, int x) { g_settings.draw_distance = k_drawdist_order[x]; }, 1));
+    v.push_back(choice(P_VIDEO_ADV, "Anti-aliasing", "Smooths jagged edges. Best at a lower resolution.",
+                       [](const Item &) { return N(k_aa); }, [](const Item &, int x) { return tr(k_aa[x]); },
+                       [](const Item &) { return g_settings.antialias; },
+                       [](const Item &, int x) { g_settings.antialias = x; }, AA_OFF));
+    v.push_back(choice(P_VIDEO_ADV, "Upscaler", "Off: full resolution. AMD FSR 1: renders smaller, then upscales.",
                        [](const Item &) { return N(k_ups_value); }, ups_label,
                        [](const Item &) {
                            for (int i = 0; i < N(k_ups_value); i++)
@@ -461,7 +488,7 @@ void build_items(void) {
     // With Upscaler Off no mode applies: the row has the one value Off, greyed, so its arrows go nowhere (rt_opt_read
     // gives the row its range at each redraw, and a change of the Upscaler row redraws the page); the mode chosen
     // before stays stored and comes back with an upscaler.
-    Item mode = choice(P_VIDEO, "Upscaler mode", "",
+    Item mode = choice(P_VIDEO_ADV, "Upscaler mode", "",
                        [](const Item &) { return g_settings.upscaler == UPSCALE_OFF ? 1 : N(k_modes); },
                        [](const Item &, int x) {
                            return g_settings.upscaler == UPSCALE_OFF ? tr("Off")
@@ -482,22 +509,31 @@ void build_items(void) {
                                                     : tr("Ultra Quality is the sharpest, Ultra Performance the fastest.");
     };
     v.push_back(mode);
-    v.push_back(choice(P_VIDEO, "Anti-aliasing", "Smooths jagged edges. Best at a lower resolution.",
-                       [](const Item &) { return N(k_aa); }, [](const Item &, int x) { return tr(k_aa[x]); },
-                       [](const Item &) { return g_settings.antialias; },
-                       [](const Item &, int x) { g_settings.antialias = x; }, AA_OFF));
+    // supersampling (nvn/output_scale.c): applies at once
+    v.push_back(choice(P_VIDEO_ADV, "Render scale", "Below 100%: faster, blurrier. Above 100%: renders bigger, then shrinks to the window. Smoothest edges.",
+                       [](const Item &) { return (int)RSCALE_COUNT; },
+                       [](const Item &, int x) {
+                           static const char *const r[] = {"50%", "75%", "100%", "125%", "150%", "200%"};
+                           return r[x];
+                       },
+                       [](const Item &) { return g_settings.render_scale; },
+                       [](const Item &, int x) { g_settings.render_scale = x; }, RSCALE_100));
 #ifndef __APPLE__
     // the game's own FXAA (vulkan/exec.c fxaa_patch)
-    v.push_back(toggle(P_VIDEO, "Game's FXAA", "The game's own edge smoothing. Off: sharper, more jagged edges.",
+    v.push_back(toggle(P_VIDEO_ADV, "Game's FXAA", "The game's own edge smoothing. Off: sharper, more jagged edges.",
                        [](const Item &) { return (int)g_settings.game_fxaa; },
                        [](const Item &, int x) { g_settings.game_fxaa = x; }, 1));
+    // the wet lighting passes' sun glare (maxwell/translate.c maxwell_wet_lighting): their translations, made at the start
+    v.push_back(toggle(P_VIDEO_ADV, "Wet grass fix", "Tames the white glare on grass and roofs in rain with the sun out. From the next start.",
+                       [](const Item &) { return (int)g_settings.wet_fix; },
+                       [](const Item &, int x) { g_settings.wet_fix = x; }, 0));
     // Anisotropic filtering and sharpening (Vulkan: vulkan/textures.c sampler_aniso, vulkan/exec.c scene_post)
-    v.push_back(choice(P_VIDEO, "Anisotropic filtering", "Sharper ground and paths at a distance. Off: as on the console.",
+    v.push_back(choice(P_VIDEO_ADV, "Anisotropic filtering", "Sharper ground and paths at a distance. Off: as on the console.",
                        [](const Item &) { return N(k_aniso); },
                        [](const Item &, int x) { return x ? k_aniso[x] : tr("Off"); },
                        [](const Item &) { return g_settings.anisotropy; },
-                       [](const Item &, int x) { g_settings.anisotropy = x; }, 0));
-    v.push_back(choice(P_VIDEO, "Sharpening (AMD CAS)", "Sharpens the 3D image, not the HUD. Most useful with FSR 1.",
+                       [](const Item &, int x) { g_settings.anisotropy = x; }, 1));
+    v.push_back(choice(P_VIDEO_ADV, "Sharpening (AMD CAS)", "Sharpens the 3D image, not the HUD. Most useful with FSR 1.",
                        [](const Item &) { return 11; },
                        [](const Item &, int x) {
                            static std::string s;
@@ -507,18 +543,46 @@ void build_items(void) {
                        [](const Item &) { return g_settings.sharpening; },
                        [](const Item &, int x) { g_settings.sharpening = x; }, 0));
     // AMD FSR 3 frame generation (vulkan/framegen.cpp)
-    v.push_back(toggle(P_VIDEO, "Frame generation (AMD FSR 3)", "Twice the frames on screen. Adds a little delay.",
+    v.push_back(toggle(P_VIDEO_ADV, "Frame generation (AMD FSR 3)", "Twice the frames on screen. Adds a little delay.",
                        [](const Item &) { return (int)g_settings.frame_gen; },
                        [](const Item &, int x) { g_settings.frame_gen = x; }, 0));
 #endif
-    v.push_back(toggle(P_VIDEO, "Asynchronous shaders", "On: no stutter, but some effects appear late.",
+    v.push_back(toggle(P_VIDEO_ADV, "Asynchronous shaders", "On: no stutter, but some effects appear late.",
                        [](const Item &) { return (int)g_settings.async_shaders; },
                        [](const Item &, int x) { g_settings.async_shaders = x; }, 0));
     // shadow resolution (its own block)
-    v.push_back(choice(P_VIDEO, "Shadow resolution", "Sharper sun shadows. Higher costs more GPU time.",
-                       [](const Item &) { return N(k_shadow); }, [](const Item &, int x) { return tr(k_shadow[x]); },
-                       [](const Item &) { return g_settings.shadow_res; },
-                       [](const Item &, int x) { g_settings.shadow_res = x; }, SHADOW_CONSOLE));
+    v.push_back(choice(P_VIDEO_ADV, "Shadow resolution", "Sharper sun shadows. Savage can cut the frame rate to a third in forests, even on a fast GPU.",
+                       [](const Item &) { return N(k_shadow); }, [](const Item &, int x) { return tr(k_shadow[k_shadow_order[x]]); },
+                       [](const Item &) {
+                           for (int i = 0; i < SHADOW_COUNT; i++)
+                               if (k_shadow_order[i] == g_settings.shadow_res) return i;
+                           return 1;
+                       },
+                       [](const Item &, int x) { g_settings.shadow_res = k_shadow_order[x]; }, 1));
+    // bloom's and the distance blur's draws (exec.c); dynamic resolution (CMD_REPORT_COUNTER); the air's haze
+    // (services/fs.c haze_patch, read at the start)
+    v.push_back(toggle(P_VIDEO_ADV, "Bloom", "The glow around bright light. Off: a little faster.",
+                       [](const Item &) { return (int)g_settings.bloom; },
+                       [](const Item &, int x) { g_settings.bloom = x; }, 1));
+    v.push_back(toggle(P_VIDEO_ADV, "Depth of field", "Blurs the far distance. Off: sharp out to the horizon.",
+                       [](const Item &) { return (int)g_settings.depth_of_field; },
+                       [](const Item &, int x) { g_settings.depth_of_field = x; }, 1));
+    v.push_back(toggle(P_VIDEO_ADV, "Dynamic resolution", "Lowers the 3D resolution when a frame takes long, as on the console.",
+                       [](const Item &) { return (int)g_settings.dynamic_res; },
+                       [](const Item &, int x) { g_settings.dynamic_res = x; }, 1));
+    if (gamelib_compat())  // (runtime/gamelib.h: a CPU without FMA instructions; simd.h simd_fma_unfused)
+        v.push_back(toggle(P_VIDEO_ADV, "Fast math", "Your CPU has no FMA instructions. On: faster, some results round a tiny bit differently from the console.",
+                           [](const Item &) { return (int)g_settings.fast_fma; },
+                           [](const Item &, int x) { g_settings.fast_fma = x; }, 1));
+    v.push_back(choice(P_VIDEO_ADV, "Haze", "How hazy the air is. Lower: clearer distances. From the next start.",
+                       [](const Item &) { return N(k_haze); },
+                       [](const Item &, int x) {
+                           static std::string s;
+                           s = pct(k_haze[x]);
+                           return s.c_str();
+                       },
+                       [](const Item &) { return nearest(k_haze, N(k_haze), (float)g_settings.haze); },
+                       [](const Item &, int x) { g_settings.haze = k_haze[x]; }, N(k_haze) - 1));
     // the game's font sheets enlarged (runtime/nvn/text_upscale.c): read when the game starts
     v.push_back(choice(P_GAMEPLAY, "Sharper text", "Upscales the game's letters for 1440p and 4K, after a restart. Not the original art.",
                        [](const Item &) { return N(k_text); }, [](const Item &, int x) { return tr(k_text[x]); },
@@ -610,11 +674,19 @@ void build_items(void) {
     v.push_back(toggle(P_AUDIO, "Movie audio", "Sound in the game's movies.",
                        [](const Item &) { return (int)g_settings.movie_audio; },
                        [](const Item &, int x) { g_settings.movie_audio = x; }, 1));
+    v.push_back(toggle(P_AUDIO, "Mute in background",
+                       "Mute audio while the game window is in the background or minimized.",
+                       [](const Item &) { return (int)g_settings.mute_unfocused; },
+                       [](const Item &, int x) { g_settings.mute_unfocused = x; }, 0));
 
     // Controls
     v.push_back(toggle(P_CONTROLS, "Controller rumble", "Vibrate the controller during play.",
                        [](const Item &) { return (int)g_settings.rumble; },
                        [](const Item &, int x) { g_settings.rumble = x; }, 1));
+    v.push_back(toggle(P_CONTROLS, "Free camera with both sticks",
+                       "Clicking both sticks together turns the free camera on and off. Home on the keyboard always does.",
+                       [](const Item &) { return (int)g_settings.freecam_sticks; },
+                       [](const Item &, int x) { g_settings.freecam_sticks = x; }, 1));
     v.push_back(toggle(P_CONTROLS, "D-pad as left stick", "The d-pad also moves like the left stick.",
                        [](const Item &) { return (int)g_settings.dpad_move; },
                        [](const Item &, int x) { g_settings.dpad_move = x; }, 0));
@@ -632,6 +704,25 @@ void build_items(void) {
                            s ? [](const Item &, int x) { g_settings.stick_deadzone[1] = k_deadzone[x] / 100.0f; }
                              : [](const Item &, int x) { g_settings.stick_deadzone[0] = k_deadzone[x] / 100.0f; },
                            DEADZONE_DEFAULT));
+    v.push_back(toggle(P_CONTROLS, "Controller camera speed",
+                       "The right stick turns the camera faster than the game allows, at the two speeds below.",
+                       [](const Item &) { return (int)g_settings.stick_cam_on; },
+                       [](const Item &, int x) { g_settings.stick_cam_on = x; }, 0));
+    for (int vert = 0; vert < 2; vert++) {  // (runtime/hle/input.c rt_cam_stick_end)
+        Item it = choice(P_CONTROLS, vert ? "Up and down speed" : "Left and right speed", "100% is the game's own speed.",
+                         [](const Item &) { return (STICK_CAM_MAX - STICK_CAM_MIN) / 25 + 1; },
+                         [](const Item &, int x) {
+                             static std::string s;
+                             s = pct(STICK_CAM_MIN + 25 * x);
+                             return s.c_str();
+                         },
+                         nullptr, nullptr, (STICK_CAM_DEFAULT - STICK_CAM_MIN) / 25);
+        it.arg = vert;
+        it.get = [](const Item &i) { return ((i.arg ? g_settings.stick_cam_y : g_settings.stick_cam_x) - STICK_CAM_MIN) / 25; };
+        it.set = [](const Item &i, int x) { (i.arg ? g_settings.stick_cam_y : g_settings.stick_cam_x) = STICK_CAM_MIN + 25 * x; };
+        it.value_off = [](const Item &, int) { return !g_settings.stick_cam_on; };
+        v.push_back(it);
+    }
     v.push_back(toggle(P_CONTROLS, "PC mouse pointer", "Point and click in menus and map. Esc pauses/goes back; F2 frees the cursor.",
                        [](const Item &) { return (int)g_settings.pc_cursor; },
                        [](const Item &, int x) { g_settings.pc_cursor = x; }, 1));
@@ -660,6 +751,9 @@ void build_items(void) {
     v.push_back(toggle(P_CONTROLS, "Invert mouse Y", "Only the mouse. The camera Y-axis option inverts both.",
                        [](const Item &) { return (int)g_settings.mouse_invert_y; },
                        [](const Item &, int x) { g_settings.mouse_invert_y = x; }, 0));
+    v.push_back(toggle(P_CONTROLS, "Mouse bow aiming", "Hold right mouse to aim a bow, left click to fire. Right mouse no longer raises the shield.",
+                       [](const Item &) { return (int)g_settings.pc_bow; },
+                       [](const Item &, int x) { g_settings.pc_bow = x; }, 0));
     v.push_back(toggle(P_CONTROLS, "Shrine keyboard gyro",
                        "Only while controlling a shrine apparatus. Remap under Key bindings. Outside it, camera keys keep working.",
                        [](const Item &) { return (int)g_settings.pc_gyro; },
@@ -1501,7 +1595,7 @@ extern "C" int rt_opt_store(uint64_t row) {
     // (the sizes offered follow Fullscreen, texts and Upscaler mode's values the upscaler; Colour: the preset sets the
     // sliders, they the preset). A value kept on show because it couldn't be picked goes once it can (Upscaler mode
     // after Off: the mode stored, not the Off shown).
-    if (it->page == P_VIDEO || it->page == P_COLOUR) {
+    if (it->page == P_VIDEO || it->page == P_VIDEO_ADV || it->page == P_COLOUR) {
         for (size_t i = 0; i < g_items.size() && i < g_shown.size(); i++) {
             const Item &o = g_items[i];
             if (g_shown[i] >= 0 && (!o.value_off || !o.value_off(o, g_shown[i]))) g_shown[i] = -1;
@@ -1659,7 +1753,7 @@ extern "C" void rt_opt_back(void) {
     bind_capture_cancel();
     g_cap_row = 0;
     if (g_installed && g_cur_page != P_MAIN) {
-        g_next_page = P_MAIN;
+        g_next_page = g_cur_page == P_VIDEO_ADV ? P_VIDEO : P_MAIN;
         g_reopen = g_switching = true;
     } else {
         g_reopen = g_switching = false;

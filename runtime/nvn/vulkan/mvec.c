@@ -402,13 +402,15 @@ static int32_t prev_match(MvecRec *r) {
     for (int k = 0; k <= 2 * MATCH_WINDOW && bd > 0; k++) {  // (at, at + 1, at - 1, at + 2, ...)
         int i = at + (k & 1 ? (k + 1) / 2 : -(k / 2));
         if (i < lo || i >= end || ptaken[i] || rtaken[pidx[i]]) continue;
+        if (slots[prev].rec[pidx[i]].ninst != r->ninst) continue;
         float d = fingerprint_distance(r, &slots[prev].rec[pidx[i]]);
         if (d < bd) bd = d, best = i;
     }
     if (best < 0) return -1;
     static float limit = -1;  // SAVAGEWIND_MVEC_MATCH_LIMIT: the largest fingerprint distance of a match (default 0.2)
     if (limit < 0) limit = getenv("SAVAGEWIND_MVEC_MATCH_LIMIT") ? (float)atof(getenv("SAVAGEWIND_MVEC_MATCH_LIMIT")) : 0.2f;
-    if (bd >= limit) { mstat.dist_hist[ncand > 1][5]++; return -1; }  // (a new object: the camera's vector)
+    float max_d = r->ninst ? fminf(limit, 0.05f) : limit;
+    if (bd >= max_d) { mstat.dist_hist[ncand > 1][5]++; return -1; }  // (a new object: the camera's vector)
     ptaken[best] = true;
     rtaken[pidx[best]] = true;
     r->dist = bd;
@@ -569,6 +571,18 @@ int mvec_record(const MvecDrawIn *d) {
         memcpy(&r->feat[r->nfeat], (const void *)(uintptr_t)d->cb[k].addr, 48);
         r->nfeat += 12;
     }
+    if (r->ninst > 0 && r->nfeat + 4 <= MVEC_FEAT) {
+        const MvecStream *m = &d->stream[r->inst_stream[0]];
+        uint64_t ioff = m->divisor ? (uint64_t)(d->base_inst / m->divisor) * m->stride : 0;
+        if (m->addr && ioff + 16 <= r->inst_size[0]) {
+            uint64_t avail = r->inst_size[0] - ioff;
+            int nf = (int)(avail / 4);
+            if (nf > 12) nf = 12;
+            if (r->nfeat + nf > MVEC_FEAT) nf = MVEC_FEAT - r->nfeat;
+            memcpy(&r->feat[r->nfeat], (const uint8_t *)(uintptr_t)m->addr + ioff, (size_t)nf * 4);
+            r->nfeat += (uint8_t)nf;
+        }
+    }
     r->key = key;
     r->key2 = key2;
     r->ord = next_ordinal(key);
@@ -576,7 +590,7 @@ int mvec_record(const MvecDrawIn *d) {
     r->prev = by_order ? prev_lookup(key, r->ord) : prev_match(r);
     static int loose = -1;  // SAVAGEWIND_MVEC_LOOSE=0: (testing) no prev_match_loose
     if (loose < 0) loose = !getenv("SAVAGEWIND_MVEC_LOOSE") || atoi(getenv("SAVAGEWIND_MVEC_LOOSE")) != 0;
-    if (r->prev < 0 && !by_order && loose) r->prev = prev_match_loose(r);
+    if (r->prev < 0 && !by_order && loose && !r->ninst) r->prev = prev_match_loose(r);
     if (log_every() > 0) {  // (statistics) the object's world position (slot 4's translation) against each matching's previous draw
         int32_t po = prev_lookup(key, r->ord), pf = by_order ? -1 : r->prev;
         if (r->nfeat >= 12 && r->cb_slot[0] == 3 && r->cb_slot[1] == 4 && po >= 0 && pf >= 0) {

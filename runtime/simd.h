@@ -253,6 +253,12 @@ SI void rt_fpcr_write(Cpu *c, uint64_t v) { c->fpcr = v & 0x7c00000ull; }
 #if defined(__x86_64__) && !defined(__FMA__)
 #include "simd_softfma.h"
 #define SIMD_SOFT_FMA 1
+// Set (by runtime/gamelib.c, from settings.h fast_fma): x*y + z with two roundings in place of the exact fma, which
+// costs the compatible target ~10% of its frame rate. The last bit of a result can differ from the console's.
+#ifndef _WIN32
+__attribute__((visibility("hidden")))
+#endif
+extern int simd_fma_unfused;
 #endif
 
 #define F s

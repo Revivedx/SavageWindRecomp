@@ -23,6 +23,16 @@
 // crashed while it loaded the world (a null call from 1.9.0 0x7001405cd8, or an access to 0): 2.5x at Gerudo Town,
 // 3x at Korok Forest and Gerudo Town, 4x at Kakariko, Hateno and Gerudo Town; 2.25x loaded everywhere.
 //
+// The nearer actors also stop at NEAR_MAX (#384, #453: rock edges and a Korok's statues missing at High in dense
+// places). What drops them is the number of long-range actors, not one distance: at 1.75x in front of the castle,
+// with the nearer actors held to 1000 or 1250 m the wall and banners were there, at 1312 m the banners went, from
+// 1375 m both. The game's lists there were all under capacity (the placement manager's near lists 3900 and 4060,
+// its placed actors 3874 of 6000, resource heaps far from full), so the budget it runs out of was not found. NEAR_MAX
+// was 1250 m until bushes popped in near and far at High around Rito Village, and only at High (user play test
+// 2026-11-05): 1000 m made it rarer, and so did leaving actors under 300 m at the game's distance, about as
+// much. 1000 m keeps the whole factor for anything whose own distance is under 1000 / factor (about 830 m at
+// High): trees, rocks, enemies and most buildings.
+//
 // Grass (tools/patches.py _grass_range, _grass_fade, _grass_blade_*). Each layer (blades: 3 m cells in a 47-cell grid,
 // +-69 m; crossed quads: 10 m cells, 59-cell grid, +-290 m) makes grass in the cells of a region in front of the
 // camera (blades about 24 m in play, crossed quads 120 m), lists them nearest first (blades: at most 512, crossed quads
@@ -44,6 +54,7 @@
 // (tests) SAVAGEWIND_TRAVERSE_SCALE=<x>: this factor instead of the setting's; SAVAGEWIND_FAR_SCALE=<x>: the far
 // models' and the distant trees' factor; SAVAGEWIND_GRASS_BLADES / _QUADS=<x>: the grass layers' factors;
 // SAVAGEWIND_GRASS_PROBE=1: their numbers in the log; SAVAGEWIND_DRAWDIST_AT=<frame>:<level>,...: levels in one run.
+// SAVAGEWIND_NEAR_MAX=<m>: the nearer actors' cap; SAVAGEWIND_NEAR_MIN=<m>: actors nearer than it at the game's distance.
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -53,9 +64,10 @@
 #include "settings.h"
 
 #define FAR_DIST 2000.0f  // (metres)
+#define NEAR_MAX 1000.0f  // (metres: the nearer actors' scaled distance at most)
 #define FAR_MAX 1.5f
 
-// the level in use: the setting's, or (tests) SAVAGEWIND_DRAWDIST_AT=<script frame>:<level 0-2>,... from that frame of
+// the level in use: the setting's, or (tests) SAVAGEWIND_DRAWDIST_AT=<script frame>:<level 0-3>,... from that frame of
 // SAVAGEWIND_SCRIPT_CLOCK on, so one run (one weather, one camera) shows several levels
 static int level(void) {
     static const char *at;
@@ -76,8 +88,14 @@ static int level(void) {
 // The nearer actors' factors were 1.5 and 1.6 until 2026-10-30: at Rito Village, a denser place than the six of round
 // 3, the game then left the entrance bridge, its rocks and the houses out (only the far model of the cliffs was drawn,
 // right next to Link). Walking onto that bridge from a save there (High's other factors kept): 1.1, 1.25 and 1.4 kept
-// them, 1.5 and 1.6 did not. Medium 1.15 and High 1.3 (the user's choice) keep a margin under that.
-static const float k_factor[DRAWDIST_COUNT] = {1.0f, 1.15f, 1.3f};  // (DRAWDIST_*)
+// them, 1.5 and 1.6 did not. Medium 1.15 and High 1.3 (the user's choice) kept a margin under that, until High left
+// out the wooden bridge with lanterns east of the village and its Rito NPC (user play test 2026-11-05, at
+// -3421.5, 251, -1871.9): there 1.1, 1.2 and 1.25 kept them and 1.3 did not. High is 1.2 since.
+// Potato (Alpha 5): nearer than on the console, for weak PCs, where the render thread's draws are the limit. 0.6 of the
+// game's distances for the actors and the grass, 0.75 for the far models and the distant trees (RTX 3060 limited to
+// 4 cores at 1280x720: Rito 101 -> 120 fps, the castle 148 -> 190-200, Kakariko 148 -> 159, Korok Forest 181 -> 197).
+static const float k_factor[DRAWDIST_COUNT] = {1.0f, 1.15f, 1.2f, 0.6f};  // (DRAWDIST_*)
+#define POTATO_FAR 0.75f
 
 float draw_distance_factor(void) {
     static float env = -1;
@@ -100,6 +118,7 @@ static float far_factor(void) {
         env = f >= 0.25f && f <= 8.0f ? f : 0;
     }
     if (env > 0) return env;
+    if (level() == DRAWDIST_POTATO && !getenv("SAVAGEWIND_TRAVERSE_SCALE")) return POTATO_FAR;
     float f = draw_distance_factor();
     return f > FAR_MAX ? FAR_MAX : f;
 }
@@ -111,8 +130,8 @@ static float far_factor(void) {
 //   (seen at 3x). The factor in use follows the list (blades_factor).
 // - Crossed quads: their fade only. Their region (about 120 m in play) already holds the cells, and its list is full
 //   in the game's own play (718-768 of 768).
-static const float k_blades[DRAWDIST_COUNT] = {1.0f, 1.15f, 2.5f};  // (DRAWDIST_*)
-static const float k_quads[DRAWDIST_COUNT] = {1.0f, 1.6f, 2.5f};
+static const float k_blades[DRAWDIST_COUNT] = {1.0f, 1.15f, 2.5f, 0.6f};  // (DRAWDIST_*)
+static const float k_quads[DRAWDIST_COUNT] = {1.0f, 1.6f, 2.5f, 0.6f};
 #define BLADE_LIST 512
 #define BLADE_LIST_HIGH 485  // (listed cells past this: the factor goes down)
 #define BLADE_LIST_LOW 455   // (below this: back up towards the level's)
@@ -325,10 +344,17 @@ void rt_tree_ranges(uint64_t tree) {
 uint32_t rt_traverse_scale(uint32_t scale, uint32_t dist) {
     float f = draw_distance_factor();
     if (f == 1.0f) return scale;  // (Original: the game's own, bit for bit)
+    static float near_max = -1, near_min = -1;
+    if (near_max < 0) {
+        const char *a = getenv("SAVAGEWIND_NEAR_MAX"), *b = getenv("SAVAGEWIND_NEAR_MIN");
+        near_max = a && atof(a) >= 100 ? (float)atof(a) : NEAR_MAX;
+        near_min = b ? (float)atof(b) : 0;
+    }
     union { uint32_t u; float f; } s = {.u = scale}, d = {.u = dist};
     float game = (d.f > 0 ? d.f : 100.0f) * s.f;  // (the game's distance)
     if (game >= FAR_DIST) f = far_factor();
-    else if (f > 1.0f && game * f > FAR_DIST) f = FAR_DIST / game;
+    else if (game < near_min) f = 1.0f;
+    else if (f > 1.0f && game * f > near_max) f = game < near_max ? near_max / game : 1.0f;  // (never below the game's)
     s.f *= f;
     return s.u;
 }
