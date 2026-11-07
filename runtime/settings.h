@@ -55,6 +55,9 @@ enum { SPARSE_HEAP_AUTO = 0, SPARSE_HEAP_ON = 1, SPARSE_HEAP_OFF = 2, SPARSE_HEA
 // display's own mode at any other size it has; Borderless never changes the display's mode (another size is scaled to
 // the screen); Exclusive always uses a display mode (the desktop's size too, at its highest refresh rate)
 enum { FSMODE_AUTO = 0, FSMODE_BORDERLESS = 1, FSMODE_EXCLUSIVE = 2, FSMODE_COUNT };
+// Texture LOD bias (Video > Texture sharpness): pulls forward mipmaps for sharper ground/object textures.
+enum { TEX_LOD_DEFAULT = 0, TEX_LOD_SHARP = 1, TEX_LOD_SHARPER = 2, TEX_LOD_COUNT };
+
 typedef struct {
     bool fullscreen;
     int fullscreen_mode;     // FSMODE_*
@@ -70,6 +73,7 @@ typedef struct {
     bool wet_fix;        // Video > Wet grass fix: tames the white glare of rain in sunshine (maxwell/translate.c maxwell_wet_lighting)
     int render_scale;    // 50%, 75%, 100% (RSCALE_100: the window's size), 125%, 150%, 200% (nvn/output_scale.c)
     int anisotropy;      // texture filtering: 0 the game's own, 1..4 = 2x, 4x, 8x, 16x (vulkan/textures.c)
+    int tex_lod_bias;    // TEX_LOD_*: texture LOD bias, 0 = default (0.0), 1 = sharp (-0.5), 2 = sharper (-1.0)
     int sharpening;      // AMD CAS sharpening of the 3D image, 0 (off) .. 10 (100%) (vulkan/exec.c scene_post)
     bool frame_gen;      // AMD FSR 3 frame generation: a frame made between each two the game draws (vulkan/framegen.cpp)
     float volume;        // master volume, 1 = 100%

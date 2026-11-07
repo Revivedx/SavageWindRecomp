@@ -516,9 +516,9 @@ test-pc-controls: $(B)/test_pc_controls $(B)/test_pc_settings $(B)/test_options_
 	$(B)/test_options_pointer
 	@set -e; tmp=$$(mktemp); trap 'rm -f "$$tmp"' EXIT; \
 	 printf 'settings_version = 3\npc_cursor = 1\n' > "$$tmp"; \
-	 $(B)/test_pc_settings "$$tmp" 1 1 0; \
-	 $(B)/test_pc_settings "$$tmp" 0 0 1; \
-	 SAVAGEWIND_PC_CURSOR=0 $(B)/test_pc_settings "$$tmp" 0 1 2
+	 $(B)/test_pc_settings "$$tmp" 1 1 0 0; \
+	 $(B)/test_pc_settings "$$tmp" 0 0 1 1; \
+	 SAVAGEWIND_PC_CURSOR=0 $(B)/test_pc_settings "$$tmp" 0 1 2 2
 
 .PHONY: test-pc-controls
 

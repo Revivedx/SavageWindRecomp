@@ -1007,6 +1007,10 @@ static void tab_display(void) {
                    "Keeps the textures of ground, paths and walls sharp where you look along them into the distance. "
                    "Off: the game's own filtering, as on the console. 16x is the sharpest and costs very little on a PC "
                    "graphics card.", false);
+        static const char *const tex_lod[] = {"Default", "Sharp", "Sharper"};
+        opt_choice("Texture sharpness", &g_settings.tex_lod_bias, tex_lod, 3, 0,
+                   "Pulls forward mipmap levels on 3D textures for increased clarity on surfaces and distant objects. "
+                   "Sharp uses a -0.5 bias; Sharper uses -1.0.", false);
         static const char *const sharp[] = {"Off", "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%", "100%"};
         opt_choice("Sharpening (AMD CAS)", &g_settings.sharpening, sharp, 11, 0,
                    "AMD FidelityFX CAS sharpens the 3D image after the upscaler (or at the window's resolution with the "

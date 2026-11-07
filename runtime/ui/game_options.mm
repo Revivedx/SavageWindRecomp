@@ -157,6 +157,7 @@ const char *const k_aa[] = {"Off", "SMAA"};
 const char *const k_aa[] = {"Off", "SMAA", "TAA"};  // (settings.h AA_*)
 #endif
 const char *const k_aniso[] = {"Off", "2x", "4x", "8x", "16x"};  // (settings anisotropy 0..4)
+const char *const k_tex_lod[] = {"Default", "Sharp", "Sharper"};  // (settings tex_lod_bias 0..2)
 // (shown with Potato first, the nearest: k_drawdist_order maps a row index to settings.h DRAWDIST_*)
 const char *const k_drawdist[] = {"Original", "High", "Savage", "Potato"};  // (settings.h DRAWDIST_*; the ini: medium, high)
 const int k_drawdist_order[] = {DRAWDIST_POTATO, DRAWDIST_ORIGINAL, DRAWDIST_MEDIUM, DRAWDIST_HIGH};
@@ -549,6 +550,11 @@ void build_items(void) {
                        [](const Item &, int x) { return x ? k_aniso[x] : tr("Off"); },
                        [](const Item &) { return g_settings.anisotropy; },
                        [](const Item &, int x) { g_settings.anisotropy = x; }, 1));
+    v.push_back(choice(P_VIDEO_ADV, "Texture sharpness", "Sharpens textures by biasing mipmap levels. Sharp (-0.5), Sharper (-1.0).",
+                       [](const Item &) { return N(k_tex_lod); },
+                       [](const Item &, int x) { return tr(k_tex_lod[x]); },
+                       [](const Item &) { return g_settings.tex_lod_bias; },
+                       [](const Item &, int x) { g_settings.tex_lod_bias = x; }, 0));
     v.push_back(choice(P_VIDEO_ADV, "Sharpening (AMD CAS)", "Sharpens the 3D image, not the HUD. Most useful with FSR 1.",
                        [](const Item &) { return 11; },
                        [](const Item &, int x) {
