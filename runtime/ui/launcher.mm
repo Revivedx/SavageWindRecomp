@@ -1074,6 +1074,98 @@ static void launcher_fonts_follow_language(void) {
 #endif
 }
 
+// The start screen's shadow banner, fading in from the left behind its menu (and the boot picture's title)
+static void left_shade(ImDrawList *bg, ImVec2 ds) {
+    const float stops[][2] = {{0.0f, 225}, {0.3f, 215}, {0.44f, 165}, {0.55f, 95}, {0.64f, 35}, {0.74f, 0}};
+    for (int i = 0; i + 1 < (int)(sizeof stops / sizeof stops[0]); i++) {
+        ImU32 a = IM_COL32(6, 10, 34, (int)stops[i][1]), b = IM_COL32(6, 10, 34, (int)stops[i + 1][1]);
+        bg->AddRectFilledMultiColor(ImVec2(ds.x * stops[i][0], 0), ImVec2(ds.x * stops[i + 1][0], ds.y), a, b, b, a);
+    }
+}
+
+#ifndef __APPLE__
+// ---- the boot picture (vulkan/device.c boot_splash_start): the start screen's background, moving as it does there,
+// with the name, from the game's start until its title screen is up. Without it the window is black for ~11 s on a
+// plain start: ~5 s of Savage Wind loading (the game code, the RomFS image) with nothing to draw, then ~6 s of the
+// game's own black frames while it loads the title's world (on the console its startup logo covers those). Its own
+// ImGui context, drawn from whichever thread presents at the time, always with the GPU lock held.
+static ImGuiContext *g_boot_ctx;
+static ImFont *g_boot_font;
+static uint64_t g_boot_t0, g_boot_last;
+
+extern "C" void boot_splash_open(void) {
+    if (g_boot_ctx) return;
+    ImGuiContext *prev = ImGui::GetCurrentContext();
+    g_boot_ctx = ImGui::CreateContext();
+    ImGui::SetCurrentContext(g_boot_ctx);
+    ImGuiIO &io = ImGui::GetIO();
+    io.IniFilename = NULL;
+    // only the name's font (the start screen's title font, launcher_fonts): all of the start screen's, with every
+    // language's fallbacks, took ~2 s to make, with nothing on screen yet
+    char semi[1024];
+    g_boot_font = NULL;
+    if (rt_resource("FiraSans-SemiBold.ttf", "third_party/fonts/FiraSans/FiraSans-SemiBold.ttf", semi, sizeof semi))
+        g_boot_font = io.Fonts->AddFontFromFileTTF(semi, 92 * 1.6f);
+    if (!g_boot_font) g_boot_font = io.Fonts->AddFontDefault();
+    vk_imgui_backend_init();
+    splash_load();
+    g_boot_t0 = SDL_GetTicksNS(), g_boot_last = 0;
+    ImGui::SetCurrentContext(prev);
+}
+
+extern "C" bool boot_splash_active(void) { return g_boot_ctx != NULL; }
+
+// One picture into the window image vk_frame_begin began (cmd: vk_frame_cmd), over what is there at `alpha` (1: all
+// of it; less while it fades into the game's title screen)
+extern "C" void boot_splash_draw(void *cmd, uint32_t w, uint32_t h, float alpha) {
+    if (!g_boot_ctx) return;
+    ImGuiContext *prev = ImGui::GetCurrentContext();
+    ImGui::SetCurrentContext(g_boot_ctx);
+    ImGuiIO &io = ImGui::GetIO();
+    io.DisplaySize = ImVec2((float)w, (float)h);
+    io.DisplayFramebufferScale = ImVec2(1, 1);
+    uint64_t now = SDL_GetTicksNS();
+    io.DeltaTime = g_boot_last && now > g_boot_last ? (float)((now - g_boot_last) / 1e9) : 1.0f / 60;
+    g_boot_last = now;
+    ImGui_ImplVulkan_NewFrame();
+    ImGui::NewFrame();
+    ImVec2 ds = io.DisplaySize;
+    float s = ds.y / 720.0f;  // (the start screen's layout scale)
+    io.FontGlobalScale = s * 0.5f;
+    ImDrawList *bg = ImGui::GetBackgroundDrawList();
+    splash_draw(bg, ds, (float)((now - g_boot_t0) / 1e9));
+    left_shade(bg, ds);
+    // the name where the start screen has it, gold to orange, shadowed
+    ImGui::PushFont(g_boot_font);
+    float fs = ImGui::GetFontSize();
+    ImGui::PopFont();
+    text_fx(bg, g_boot_font, fs, ImVec2(90 * s, 120 * s), IM_COL32(255, 232, 120, 255), IM_COL32(255, 138, 48, 255),
+            "Savage Wind", 3 * s);
+    if (alpha < 1) {  // (all of it at once: every vertex's alpha)
+        int a = (int)(alpha * 256);
+        for (ImDrawVert &v : bg->VtxBuffer) {
+            unsigned va = (v.col >> IM_COL32_A_SHIFT) & 0xFF;
+            v.col = (v.col & ~IM_COL32_A_MASK) | ((ImU32)((va * (unsigned)(a > 0 ? a : 0)) >> 8) << IM_COL32_A_SHIFT);
+        }
+    }
+    ImGui::Render();
+    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), (VkCommandBuffer)cmd);
+    ImGui::SetCurrentContext(prev);
+}
+
+// Its textures and ImGui's Vulkan data (device idle: vk_imgui_backend_shutdown), and the context
+extern "C" void boot_splash_close(void) {
+    if (!g_boot_ctx) return;
+    ImGuiContext *prev = ImGui::GetCurrentContext();
+    ImGui::SetCurrentContext(g_boot_ctx);
+    splash_unload();
+    vk_imgui_backend_shutdown();
+    ImGui::DestroyContext(g_boot_ctx);
+    ImGui::SetCurrentContext(prev == g_boot_ctx ? NULL : prev);
+    g_boot_ctx = NULL;
+}
+#endif
+
 // mode (runtime/main.c): 0 setup - the game files page alone, the game starts once they're ready; 1 configuration.
 // Returns when the game is to start; QUIT (and closing the setup page) exits.
 static bool g_setup_only;
@@ -1246,11 +1338,7 @@ extern "C" void launcher_run(const char *root, int mode) {
             ImDrawList *bg = ImGui::GetBackgroundDrawList();
             splash_draw(bg, ds, (float)ImGui::GetTime());  // (the player's picture, or Savage Wind's own art)
             {  // a shadow banner fading in from the left behind the menu, and one from the right behind the version
-                const float stops[][2] = {{0.0f, 225}, {0.3f, 215}, {0.44f, 165}, {0.55f, 95}, {0.64f, 35}, {0.74f, 0}};
-                for (int i = 0; i + 1 < (int)(sizeof stops / sizeof stops[0]); i++) {
-                    ImU32 a = IM_COL32(6, 10, 34, (int)stops[i][1]), b = IM_COL32(6, 10, 34, (int)stops[i + 1][1]);
-                    bg->AddRectFilledMultiColor(ImVec2(ds.x * stops[i][0], 0), ImVec2(ds.x * stops[i + 1][0], ds.y), a, b, b, a);
-                }
+                left_shade(bg, ds);
                 float y0 = ds.y - 190 * s, y1 = ds.y - 135 * s, y2 = ds.y - 40 * s, y3 = ds.y, x0r = ds.x * 0.5f;
                 ImU32 c0 = IM_COL32(6, 10, 34, 0), c1 = IM_COL32(6, 10, 34, 235);
                 bg->AddRectFilledMultiColor(ImVec2(x0r, y0), ImVec2(ds.x, y1), c0, c0, c1, c0);  // (feathered top)
