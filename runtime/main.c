@@ -389,8 +389,10 @@ int main(int argc, char **argv) {
         mode = test_mode && !strcmp(test_mode, "setup") ? LAUNCHER_SETUP : LAUNCHER_CONFIG;
 #ifdef _WIN32
     if (mode == LAUNCHER_NONE) {
-        extern void ui_window_init(void);  // Select the GPU before the game's SetHeapSize chooses eager or lazy backing.
-        ui_window_init();
+        // Select the GPU before the game's SetHeapSize chooses eager or lazy backing. (Hidden: shown with the boot
+        // picture's first frame, boot_splash_start, not as an empty black window while the game code loads.)
+        extern void ui_window_init_hidden(void);
+        ui_window_init_hidden();
     }
 #endif
     for (;;) {
@@ -402,6 +404,12 @@ int main(int argc, char **argv) {
         const char *save_env = getenv("SAVAGEWIND_SAVE_DIR");
         if (sc_lock_take(save_env && *save_env ? save_env : "save", &save_lock) == SC_LOCK_BUSY)
             fprintf(stderr, "[saves] another Savage Wind is running with this save folder; saving from both can overwrite saves\n");
+#ifndef __APPLE__
+        // the start screen's picture, moving, until the game's title screen is up (vulkan/device.c; a window made
+        // already: Windows, or back from the start screen)
+        extern void boot_splash_start(void);
+        boot_splash_start();
+#endif
         boot(root);
         int kind = ui_run();  // window and input on the main thread; returns when a reboot is requested
         teardown();
