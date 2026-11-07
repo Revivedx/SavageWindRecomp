@@ -309,6 +309,7 @@ T("Esc or B stops it: what is done is kept.", "אפשר לעצור עם Esc או
 T("Precompiling shaders", "מקמפל שיידרים מראש")
 T("Setting up the game files...", "מתקין את קובצי המשחק...")
 T("main build id %s", "מזהה הבנייה של main: %s")
+T("Shaders out of date: see Game Files.", "השיידרים לא מעודכנים: ראו קובצי המשחק.")
 T("Set up the game files to play.", "כדי לשחק, התקינו את קובצי המשחק.")
 T("Version %s", "גרסה %s")
 T("Ready-made looks for the 3D image, made from the sliders below: Natural is the game's own colours, Warm and Cool shift the light, Vivid and Cinematic add contrast, Muted calms the colours. The HUD and menus keep their colours.", "הגדרות מוכנות למראה של תמונת ה-3D, שבנויות מהמחוונים שלמטה. טבעי: הצבעים המקוריים של המשחק. חם וקר: משנים את צבע האור. תוסס וקולנועי: מוסיפים ניגודיות. מאופק: מרכך את הצבעים. ה-HUD והתפריטים שומרים על הצבעים שלהם.")

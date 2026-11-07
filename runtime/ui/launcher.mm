@@ -1703,6 +1703,20 @@ extern "C" void launcher_run(const char *root, int mode) {
                 ImGui::SetCursorPosX(x0);
                 if (main_id.empty() && !nso_build_id(g_root + "/exefs/main", &main_id)) main_id = "?";
                 ImGui::TextColored(ImVec4(0.66f, 0.76f, 0.98f, 1), tr("main build id %s"), main_id.c_str());
+#ifndef __APPLE__
+                {   // the precompiled shaders were made by another translator or driver: the first play stutters until
+                    // they are made again (Game Files > Precompile shaders says so too, but only there). Asked once.
+                    static int stale = -1;
+                    if (stale < 0) {
+                        stale = shader_precompile_available() && shader_precompile_status(NULL, NULL, 0) == 2;
+                        if (stale) fprintf(stderr, "[launcher] the precompiled shaders are out of date (a new driver or translator)\n");
+                    }
+                    if (stale) {
+                        ImGui::SetCursorPosX(x0);
+                        ImGui::TextColored(ImVec4(1, 0.72f, 0.4f, 1), "%s", tr("Shaders out of date: see Game Files."));
+                    }
+                }
+#endif
             } else {
                 ImGui::TextColored(ImVec4(1, 0.72f, 0.4f, 1), "!  %s", trv(busy ? "Setting up the game files..." : status).c_str());
                 ImGui::SetCursorPosX(x0);
