@@ -630,6 +630,17 @@ test-save-convert: $(B)/test_save_convert
 
 .PHONY: test-save-convert
 
+# Save profiles (runtime/services/save_profiles.c): names, create / copy / rename / delete, the active profile and the
+# legacy `save` folder, on tiny fake folders in a temporary directory (no game files, no real saves)
+$(B)/test_save_profiles: tools/test_save_profiles.c runtime/services/save_profiles.c runtime/services/save_profiles.h runtime/services/save_convert.c runtime/services/save_convert.h runtime/services/archive.c runtime/services/archive.h
+	@mkdir -p $(B)
+	$(CC) -O1 -Wall -std=gnu11 -D_FILE_OFFSET_BITS=64 -Iruntime -o $@ tools/test_save_profiles.c runtime/services/save_profiles.c runtime/services/save_convert.c runtime/services/archive.c
+
+test-save-profiles: $(B)/test_save_profiles
+	$(B)/test_save_profiles
+
+.PHONY: test-save-profiles
+
 $(B)/test_game_file_size: tools/test_game_file_size.c runtime/game_file_size.c runtime/game_file_size.h runtime/game_files.h
 	@mkdir -p $(B)
 	$(CC) -O1 -Wall $(OSFLAGS) -Iruntime -o $@ tools/test_game_file_size.c runtime/game_file_size.c
