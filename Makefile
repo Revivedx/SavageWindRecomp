@@ -268,6 +268,8 @@ $(B)/rt/prof_sampler.o: RTFLAGS += -fms-extensions
 # Windows guarded memory scans use SEH.
 $(B)/rt/memscan_os.o: RTFLAGS += -fms-extensions
 
+$(B)/rt/control_places.o: runtime/control_places_data.inc  # (the generated table of shrines, Koroks ...)
+
 $(B)/rt/%.o: runtime/%.c $(RT_HDRS)
 	@mkdir -p $(dir $@)
 	$(CC) $(RTFLAGS) $(RUNTIME_OPTFLAGS) -c $< -o $@
@@ -657,6 +659,16 @@ test-control: $(B)/test_control
 	env -u SAVAGEWIND_CONTROL SAVAGEWIND_DEV=1 $(B)/test_control dev
 
 .PHONY: test-control
+
+# the named places behind goto (shrine 5, korok H23, stable wetland ...)
+$(B)/test_places: tools/test_places.c runtime/control_places.c runtime/control_places.h runtime/control_places_data.inc
+	@mkdir -p $(B)
+	$(CC) -O1 -g -Wall $(OSFLAGS) -Iruntime -o $@ tools/test_places.c runtime/control_places.c
+
+test-places: $(B)/test_places
+	$(B)/test_places
+
+.PHONY: test-places
 
 # the in-game console's lines, history and completion
 $(B)/test_console_core: tools/test_console_core.c runtime/console_core.c runtime/console_core.h

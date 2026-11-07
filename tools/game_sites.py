@@ -180,6 +180,9 @@ SITES = [
     Site('quick_menu_capture_alpha', 'code', 'f9400268/ffc003ff bd405100 1e202008 54000000/ff00001f '
          'bd402100 1e2e1001 1e212000 54000001/ff00001f 90000001/9f00001f 91000021/ffc003ff '
          'aa1303e0 94000000/fc000000 52801fe8 39016408', 7),
+    # the wait for the ground (tools/patches.py _tp_gate): is the map around Link not loaded yet? (the world pauses for it)
+    Site('tp_gate', 'code', 'd10283ff fd002be8 f90037f9 a905fbfd a9075ff8 a90857f6 a9094ff4 910163fd '
+         '90000016/9f00001f', 0),
     Site('pause_state', 'ref', '90000013/9f00001f b9400268/ffc003ff 35000008/ff00001f 90000008/9f00001f '
          'b9400108/ffc003ff 35000008/ff00001f b9400268/ffc003ff 34000008/ff00001f', 1),
     Site('event_mgr', 'ref', '9000000d/9f00001f 910001ad/ffc003ff f94001a0 aa1703e1 94000000/fc000000 aa1703e0 '
@@ -313,6 +316,7 @@ OPTIONAL_GROUPS = [
     ('no_wear_hit', 'no_wear_ret'),
     ('link_life_store', 'link_life_tick'),
     ('stamina_store',),
+    ('tp_gate',),  # (a far teleport of the control endpoint: without it a long jump freezes the world)
 ]
 OPTIONAL = {n for g in OPTIONAL_GROUPS for n in g}
 
@@ -445,6 +449,7 @@ KNOWN = {
         'frustum_tb1': 0x7000eb4f80,
         'persp_unproject_x': 0x7000eb4b58,
         'pause_state': 0x7001e1611c,
+        'tp_gate': 0x70010b7a40,
         'event_mgr': 0x7001e3a638,
         'controller_step': 0x7001dad0e0,
         'player_info': 0x7001e13ed0,
