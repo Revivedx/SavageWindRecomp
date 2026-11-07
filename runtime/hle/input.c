@@ -24,6 +24,7 @@
 #include "../framepace.h"
 #include "../prof.h"
 #include "../pc_cursor.h"
+#include "../pc_bow.h"
 
 enum {
     BTN_A = 0, BTN_B, BTN_X, BTN_Y, BTN_LSTICK, BTN_RSTICK, BTN_L, BTN_R, BTN_ZL, BTN_ZR, BTN_PLUS, BTN_MINUS,
@@ -37,6 +38,24 @@ static _Atomic int map_key_x,map_key_y;
 void input_pc_map_axes(float out[2]) { out[0]=map_key_x;out[1]=map_key_y; }
 static _Atomic uint64_t escape_buttons;
 static _Atomic bool pc_menu_active;
+// Controls > Mouse bow aiming (runtime/pc_bow.h): the right button held and the left button's clicks, from the main
+// thread's events; the state machine runs where the game reads the controller
+static _Atomic bool pc_bow_wanted;
+static _Atomic unsigned pc_bow_shots;
+static PcBow pc_bow;
+static unsigned pc_bow_seen_shots;
+
+static uint64_t pc_bow_sample(void) {
+    extern bool menu_cursor_free(void);
+    // (turned off, or the cursor freed, while drawing: the arrow is put away rather than shot)
+    if (!g_settings.pc_bow || menu_cursor_free()) pc_bow_wanted = false;
+    uint64_t now = plat_now_ns();
+    bool wanted = pc_bow_wanted && !pc_menu_active;
+    if (pc_bow.aiming != wanted) pc_bow_aim(&pc_bow, wanted, now);
+    unsigned shots = pc_bow_shots;
+    if (shots != pc_bow_seen_shots) { pc_bow_fire(&pc_bow, now); pc_bow_seen_shots = shots; }
+    return pc_bow_buttons(&pc_bow, now);
+}
 // Main thread: Esc opens inventory in play and backs out of an existing menu.
 // Keep its release independent of the current screen and of player bindings.
 void input_pc_escape(bool down) {
@@ -230,6 +249,7 @@ static void recompute_pad(void) {
 // Forget held keys (the menu took focus); the gamepad is re-read on its next event.
 void input_reset(void) {
     escape_buttons = 0;
+    pc_bow_wanted = false;
     memset(keys_down, 0, sizeof keys_down);
     memset(mouse_down, 0, sizeof mouse_down);
     recompute_keyboard();
@@ -306,6 +326,7 @@ static bool dualstick_on(void) {
 void input_cam_frame(float ratio) {
     pc_cursor_frame();
     pc_menu_active = framepace_menu_ui() || framepace_title_ui() || pc_cursor_active();
+    if (pc_menu_active) pc_bow_wanted = false;
     pc_gyro_scene_tick();
     if (dualstick_on()) {  // (ratio: this frame's length in 30 fps frames)
         uint64_t held = pad_buttons;
@@ -537,6 +558,23 @@ int input_pad_family(void) {
 
 void input_handle_event(const SDL_Event *e) {
     if (pc_cursor_event(e)) return;
+    // Mouse bow aiming, in play only: the right button aims (instead of its binding, the shield by default) and the
+    // left one fires while it is held (otherwise the left button keeps its binding)
+    extern bool menu_cursor_free(void);
+    if (g_settings.pc_bow && !pc_menu_active && !menu_input_captured() && !menu_cursor_free() &&
+        (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN || e->type == SDL_EVENT_MOUSE_BUTTON_UP)) {
+        bool down = e->type == SDL_EVENT_MOUSE_BUTTON_DOWN;
+        if (e->button.button == SDL_BUTTON_RIGHT) {
+            pc_bow_wanted = down;
+            last_device = DEVICE_KEYBOARD;
+            return;
+        }
+        if (e->button.button == SDL_BUTTON_LEFT && pc_bow_wanted) {
+            if (down) pc_bow_shots++;
+            last_device = DEVICE_KEYBOARD;
+            return;
+        }
+    }
     static bool scanned;  // pads present at startup: their ADDED event may have gone to the start screen's loop
     if (!scanned) {
         scanned = true;
@@ -902,7 +940,8 @@ static void fill_state(Cpu *c) {
     // Customized actions use host bindings during play. Factory-default actions and all queries in menus, with
     // the window unfocused or the overlay up, use the Switch layer, so no binding can lock the player out.
     act_poll(!menu && !framepace_title_ui() && !framepace_menu_ui());
-    uint64_t b = menu ? script_buttons : key_buttons | pad_buttons | escape_buttons | script_buttons;
+    uint64_t bow = pc_bow_sample();
+    uint64_t b = menu ? script_buttons : key_buttons | pad_buttons | escape_buttons | bow | script_buttons;
     b=pc_cursor_buttons(b);
     {   // injected Plus: held for ~10 presented frames (the game polls several times per frame)
         extern uint64_t renderer_present_count(void);
