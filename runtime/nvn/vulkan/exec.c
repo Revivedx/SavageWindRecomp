@@ -45,7 +45,7 @@ static uint64_t stat_links_now;    // pipelines linked on the render thread with
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
 static uint64_t stat_gw_waits, stat_gw_holds;  // draws / dispatches that waited for a storing shader; lists held (gw_check)
 static uint64_t stat_uub, stat_uub_same, stat_gcopy_hit, stat_gcopy_miss, stat_gcopy_bytes;  // UpdateUniformBuffer; guest_copy cache
-static uint64_t stat_ubo_direct;  // constant buffers bound in place (ubo_direct)
+static uint64_t stat_ubo_direct, stat_chain_barriers;  // constant buffers bound in place (ubo_direct)
 static void ubo_check_done(bool report);
 static void ubo_check_submit(uint64_t seq);
 static uint64_t stat_feedback_live;  // depth attachments sampled as they are (read-only feedback, no copy)
@@ -288,8 +288,10 @@ void vk_pass_barrier_forget(void) { bar_other = true; }
 // preceded by a full barrier, below) or a draw that stores to memory may have written what a later pass's vertex stage
 // reads (vertex data, instance data a compute shader culled): the next pass begins behind a full barrier then.
 static bool vtx_hazard = true;
+static bool after_dispatch;  // nothing recorded since the last dispatch but its own commands (dispatch_compute)
 void vk_full_barrier(VkCommandBuffer cb) {
     vtx_hazard = true;  // (begin_pass clears it after its own)
+    after_dispatch = false;
     VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                            .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT, .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                            .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
@@ -1258,12 +1260,14 @@ const char *renderer_stats(void) {
         n = strlen(stats_text);
         if (stat_ubo_direct) snprintf(stats_text + n, sizeof stats_text - n, ", cbuf in place %llu", (unsigned long long)stat_ubo_direct);
         n = strlen(stats_text);
+        if (stat_chain_barriers) snprintf(stats_text + n, sizeof stats_text - n, ", dispatch chain barriers %llu", (unsigned long long)stat_chain_barriers);
+        n = strlen(stats_text);
         if (stat_build_waits) snprintf(stats_text + n, sizeof stats_text - n, ", build waits %llu", (unsigned long long)stat_build_waits);
         stat_build_waits = 0;
         n = strlen(stats_text);
         if (stat_links_now) snprintf(stats_text + n, sizeof stats_text - n, ", links now %llu", (unsigned long long)stat_links_now);
         stat_links_now = 0;
-        stat_uub = stat_uub_same = stat_gcopy_hit = stat_gcopy_miss = stat_gcopy_bytes = stat_ubo_direct = 0;
+        stat_uub = stat_uub_same = stat_gcopy_hit = stat_gcopy_miss = stat_gcopy_bytes = stat_ubo_direct = stat_chain_barriers = 0;
         ubo_check_done(true);
         stat_gw_waits = stat_gw_holds = 0;
         stat_sets = stat_sets_reused = 0;
@@ -1990,6 +1994,7 @@ static void vk_end_pass_at(int line) {
 static uint32_t level_extent(uint32_t v, uint32_t lv) { v >>= lv; return v ? v : 1; }
 
 static void begin_pass(void) {
+    after_dispatch = false;  // (dispatch_compute: a pass in between)
     if (in_pass && !st.rt_dirty) return;
     uint64_t new_key = det_on() ? det_key() : 0;  // (the hash of st.rt: only where targets are left out, Mali)
     uint8_t new_detached = det_predict(new_key);
@@ -5428,15 +5433,27 @@ static int gw_find(uint64_t addr) {  // the first range ending after addr
     return a;
 }
 
+// The set changes rarely (it lasts the boot) while the same buffers are looked up every frame: answers are kept by
+// range, until the set changes (gw_gen). The search was 3% of the render thread's time (4 cores, Rito).
+// SAVAGEWIND_VK_NO_GW_MEMO=1: search every time.
+static uint32_t gw_gen = 1;
 static bool gw_overlaps(uint64_t lo, uint64_t hi) {
     if (!ngw || hi <= gw_lo || lo >= gw_hi) return false;
+    static struct { uint64_t lo, hi; uint32_t gen; bool r; } memo[1024];
+    static int on = -1;
+    if (on < 0) on = getenv("SAVAGEWIND_VK_NO_GW_MEMO") == NULL;
+    uint32_t k = (uint32_t)(((lo >> 6) ^ (hi >> 4)) * 0x9E3779B1u) >> 22;
+    if (on && memo[k].gen == gw_gen && memo[k].lo == lo && memo[k].hi == hi) return memo[k].r;
     int i = gw_find(lo);
-    return i < ngw && gw[i].lo < hi;
+    bool r = i < ngw && gw[i].lo < hi;
+    memo[k].lo = lo, memo[k].hi = hi, memo[k].gen = gw_gen, memo[k].r = r;
+    return r;
 }
 
 static bool gw_add(uint64_t lo, uint64_t hi) {  // false: no room
     int i = gw_find(lo);
     if (i < ngw && gw[i].lo <= lo && hi <= gw[i].hi) return true;  // (already in)
+    gw_gen++;
     if (i > 0 && gw[i - 1].hi == lo) i--;  // (touching on the left: merge)
     int j = i;
     while (j < ngw && gw[j].lo <= hi) j++;  // [i, j): overlapping or touching
@@ -6083,6 +6100,7 @@ void vk_exec_reset(void) {
     oq_counting = false;
     oq_nrun = oq_nreports = 0;  // (pending reports pointed at the old boot's memory)
     ngw = 0;
+    gw_gen++;
     nuub = 0;
     guest_copy_flush();
     gw_lo = ~0ull;
@@ -7271,7 +7289,23 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     gw_check((const uint32_t[6]){0, 0, 0, 0, 0, cp->si->cbuf_mask}, false, 0, 0);
     vk_end_pass();
     VkCommandBuffer cb = vk_cmd();
-    vk_full_barrier(cb);
+    // Right after another dispatch (BOTW runs chains of ~40 single-group ones a frame, reductions each reading the
+    // last one's results: 0.6 ms of an RTX 3060, 1.3-1.6 ms of the Steam Deck's GPU), a compute-to-compute barrier
+    // keeps them in order without the full barrier's flush of every cache (on AMD the whole L2). Anything else in
+    // between (a pass, a copy: their full barriers) takes the full one as before. SAVAGEWIND_VK_DISPATCH_CHAIN=0: always
+    // the full barrier.
+    static int chain = -1;
+    if (chain < 0) chain = !getenv("SAVAGEWIND_VK_DISPATCH_CHAIN") || atoi(getenv("SAVAGEWIND_VK_DISPATCH_CHAIN"));
+    if (chain && after_dispatch) {
+        VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                               .srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT, .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                               .dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_UNIFORM_READ_BIT};
+        rec_CmdPipelineBarrier2(cb, &(VkDependencyInfo){.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1,
+                                                        .pMemoryBarriers = &mb});
+        stat_chain_barriers++;
+    } else {
+        vk_full_barrier(cb);
+    }
     gp_mark(cb, "dispatch %ux%ux%u (local %ux%ux%u)", gx, gy, gz, cp->local[0], cp->local[1], cp->local[2]);
     ck_mark(cb, "dispatch", gx, gy, gz, 0, 0, st.program->stages[5].code_addr);
     dl_note("dispatch %ux%ux%u cs %llx gmem %d", gx, gy, gz, (unsigned long long)st.program->stages[5].code_addr, cp->si->uses_gmem);
@@ -7288,6 +7322,7 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cp->p.layout, 0, 1, &ds, 0, NULL);
     rec_CmdDispatch(cb, gx, gy, gz);
     stat_dispatches++;
+    after_dispatch = true;
     chunk_draws++;
     if (cp->si->writes_gmem) {
         if (ENV_ONCE("SAVAGEWIND_LOG_HOLD")) {
@@ -7569,6 +7604,22 @@ static void draw_(CmdRec *r, bool indexed) {
         if (g_debug_frame && getenv("SAVAGEWIND_LOG_FSHASH")) LOG("[fshash] fs=%llx hash %016llx\n", (unsigned long long)fs, (unsigned long long)last_hash);
         g_cur_fs_hash = last_hash;
     }
+    // Video > Advanced: Bloom off: the bloom's draws (bloom_scale.h) clear their images instead, so the glow added over
+    // the scene is black; Depth of field off: the distance blur's draw (fs f7731492223eb16a, blended over the distant
+    // pixels) is skipped.
+    if (!g_settings.bloom) {
+        bool bloom = false;
+        for (int i = 0; i < st.rt.ncolor; i++) {
+            NvnTexture *t = st.rt.color[i];
+            if (t && bloom_native_target(g_cur_fs_hash, t->target, t->format, t->width, t->height, t->samples)) {
+                static const float zero[4];
+                clear(i, 0, zero, 0xF, false, 0, false, 0, 0);
+                bloom = true;
+            }
+        }
+        if (bloom) { stat_skipped++; return; }
+    }
+    if (!g_settings.depth_of_field && g_cur_fs_hash == UINT64_C(0xf7731492223eb16a)) { stat_skipped++; return; }
     // The bloom's fixed tap offsets must address adjacent console-size texels.
     // Enlarging those images spaces the taps apart and produces separate copies
     // of emissive details; odd mip scratch sizes also stopped inheriting scale.
@@ -10424,8 +10475,9 @@ static void exec_list(uint64_t handle, int depth) {
             // 1600x900 down to 1280x720, a scene target of its own per size). Timed here they measured our command
             // translation, not GPU work, and the open world dropped to 1280x720 times the internal-resolution
             // scale. A PC GPU does that work in a fraction of the Switch's time: every counter of a presented frame
-            // gets the same timestamp (no GPU time), so the game keeps 1600x900. SAVAGEWIND_VK_COUNTER=live: the
-            // time of each counter (as before).
+            // gets the same timestamp (no GPU time), so the game keeps 1600x900. Video > Advanced > Dynamic
+            // resolution (on with the Potato preset), or SAVAGEWIND_VK_COUNTER=live: the time of each counter (as
+            // before): the game lowers its 3D resolution when the frame takes long.
             uint64_t *out = (uint64_t *)(uintptr_t)r->x[1];
             uint32_t type = (uint32_t)r->x[0];
             static uint32_t seen;
@@ -10439,8 +10491,9 @@ static void exec_list(uint64_t handle, int depth) {
             if (frozen < 0) { const char *e = getenv("SAVAGEWIND_VK_COUNTER"); frozen = !e || strcmp(e, "live"); }
             static uint64_t frame_seen = ~0ull, frame_ts;
             extern uint64_t vk_frame_counter(void);
-            if (frozen && vk_frame_counter() != frame_seen) { frame_seen = vk_frame_counter(); frame_ts = SDL_GetTicksNS(); }
-            uint64_t ts = frozen ? frame_ts : SDL_GetTicksNS();
+            bool fixed = frozen && !g_settings.dynamic_res;
+            if (fixed && vk_frame_counter() != frame_seen) { frame_seen = vk_frame_counter(); frame_ts = SDL_GetTicksNS(); }
+            uint64_t ts = fixed ? frame_ts : SDL_GetTicksNS();
             if (type == 1 && out && oq_on()) {  // SAMPLES_PASSED: written once the queries' submission is done
                 pthread_mutex_lock(&readback_lock);
                 if (oq_nreports == 32) { pthread_mutex_unlock(&readback_lock); renderer_flush(); pthread_mutex_lock(&readback_lock); oq_apply(); }

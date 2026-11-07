@@ -37,6 +37,7 @@ extern "C" {
 #include "../game_sites.h"
 #include "../nvn/output_scale.h"
 #include "../settings.h"
+#include "../gamelib.h"
 #include "../color_grade.h"
 #include "../pc_cursor.h"
 #include "../window_size.h"
@@ -90,7 +91,7 @@ struct Entry {           // the game's option entry (0x30)
 static_assert(sizeof(Entry) == 0x30);
 enum { KIND_TOGGLE = 0, KIND_CHOICE = 1, KIND_BUTTON = 2 };
 
-enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_COLOUR, P_AUDIO, P_CONTROLS, P_BINDS, P_LANGUAGE, P_ACCESS, P_COUNT };
+enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_COLOUR, P_AUDIO, P_CONTROLS, P_BINDS, P_LANGUAGE, P_ACCESS, P_VIDEO_ADV, P_COUNT };
 // A_FIXED: a greyed row for an input that can never be rebound (Item.arg: 0 Esc, 1 F2); A_BIND: Item.arg is a binding slot (an input, or BIND_ACTION + an action); the next key, mouse button or controller button binds it
 enum Action { A_NONE, A_PAGE, A_BIND, A_BINDS_HEADER, A_RESET_BINDS, A_RESTART, A_QUIT, A_SIZE_LIST, A_FIXED };
 
@@ -154,9 +155,13 @@ const char *const k_aa[] = {"Off", "SMAA"};
 const char *const k_aa[] = {"Off", "SMAA", "TAA"};  // (settings.h AA_*)
 #endif
 const char *const k_aniso[] = {"Off", "2x", "4x", "8x", "16x"};  // (settings anisotropy 0..4)
-const char *const k_drawdist[] = {"Original", "Medium", "High"};  // (settings.h DRAWDIST_*)
+// (shown with Potato first, the nearest: k_drawdist_order maps a row index to settings.h DRAWDIST_*)
+const char *const k_drawdist[] = {"Original", "High", "Savage", "Potato"};  // (settings.h DRAWDIST_*; the ini: medium, high)
+const int k_drawdist_order[] = {DRAWDIST_POTATO, DRAWDIST_ORIGINAL, DRAWDIST_MEDIUM, DRAWDIST_HIGH};
 constexpr int k_haze[] = HAZE_CHOICES;  // percent (Video > Haze)
-const char *const k_shadow[] = {"Console (896)", "High (2048)", "Ultra (4096)", "Extreme (8192)"};  // (SHADOW_*)
+// (shown with Potato first, the smallest: k_shadow_order maps a row index to settings.h SHADOW_*)
+const char *const k_shadow[] = {"Console (896)", "High (2048)", "Ultra (4096)", "Extreme (8192)", "Potato (448)"};  // (SHADOW_*)
+const int k_shadow_order[] = {SHADOW_POTATO, SHADOW_CONSOLE, SHADOW_HIGH, SHADOW_ULTRA, SHADOW_EXTREME};
 const char *const k_text[] = {"Off", "2x", "4x"};  // (sharper_text / 2)
 const char *const k_icons[] = {"Automatic", "Keyboard", "Xbox", "PlayStation", "Nintendo"};  // (ICONS_*)
 constexpr int k_fps[] = FPS_CHOICES;  // frame rate (0: Off, no limit)
@@ -318,6 +323,19 @@ void build_items(void) {
                        A_QUIT, 0));
 
     // Video (fullscreen and the window size are applied by the window loop: menu.mm)
+    // Graphics preset (settings.c k_gpreset): sets the draw distance, the shadows and the Advanced page; "Custom"
+    // (settings matching no preset) is shown, never picked
+    Item gp = choice(P_VIDEO, "Graphics preset", "Potato: for weak PCs. Original: as on the console. High and Savage: further and sharper.",
+                     [](const Item &) { return GPRESET_COUNT + 1; },
+                     [](const Item &, int x) { return tr(x < GPRESET_COUNT ? g_gpreset_names[x] : "Custom"); },
+                     [](const Item &) {
+                         int p = graphics_preset_current();
+                         return p < 0 ? (int)GPRESET_COUNT : p;
+                     },
+                     [](const Item &, int x) { graphics_preset_apply(x); }, GPRESET_ORIGINAL);
+    gp.value_off = [](const Item &, int x) { return x >= GPRESET_COUNT; };
+    v.push_back(gp);
+    v.push_back(button(P_VIDEO, "Advanced options", "Bloom, depth of field, haze and dynamic resolution.", "Open", A_PAGE, P_VIDEO_ADV));
     v.push_back(toggle(P_VIDEO, "Fullscreen", "Fills the screen. Also F11 or Alt+Enter.",
                        [](const Item &) { return (int)g_settings.fullscreen; },
                        [](const Item &, int x) { g_settings.fullscreen = x; menu_request_window_apply(); }, 0));
@@ -396,13 +414,31 @@ void build_items(void) {
                        [](const Item &) { return nearest(k_hud_size, N(k_hud_size), (float)g_settings.hud_size); },
                        [](const Item &, int x) { g_settings.hud_size = k_hud_size[x]; }, HUD_SIZE_DEFAULT_INDEX));
     // Draw distance (runtime/draw_distance.c): applied while playing, from the next placed actor the game looks at
-    v.push_back(choice(P_VIDEO, "Draw distance", "How far out grass, trees, rocks, buildings and enemies appear. Higher costs more CPU and GPU time.",
+    v.push_back(choice(P_VIDEO, "Draw distance", "How far out grass, trees, rocks, buildings and enemies appear. Higher costs more CPU and GPU time. Potato: nearer than on the console, for weak PCs.",
                        [](const Item &) { return (int)DRAWDIST_COUNT; },
-                       [](const Item &, int x) { return tr(k_drawdist[x]); },
-                       [](const Item &) { return g_settings.draw_distance; },
-                       [](const Item &, int x) { g_settings.draw_distance = x; }, DRAWDIST_ORIGINAL));
+                       [](const Item &, int x) { return tr(k_drawdist[k_drawdist_order[x]]); },
+                       [](const Item &) {
+                           for (int i = 0; i < DRAWDIST_COUNT; i++)
+                               if (k_drawdist_order[i] == g_settings.draw_distance) return i;
+                           return 1;
+                       },
+                       [](const Item &, int x) { g_settings.draw_distance = k_drawdist_order[x]; }, 1));
     // the air's haze (services/fs.c haze_patch): the game reads it at the start
-    v.push_back(choice(P_VIDEO, "Haze", "How hazy the air is. Lower: clearer distances. From the next start.",
+    // Advanced (exec.c: bloom's and the distance blur's draws; CMD_REPORT_COUNTER: dynamic resolution)
+    v.push_back(toggle(P_VIDEO_ADV, "Bloom", "The glow around bright light. Off: a little faster.",
+                       [](const Item &) { return (int)g_settings.bloom; },
+                       [](const Item &, int x) { g_settings.bloom = x; }, 1));
+    v.push_back(toggle(P_VIDEO_ADV, "Depth of field", "Blurs the far distance. Off: sharp out to the horizon.",
+                       [](const Item &) { return (int)g_settings.depth_of_field; },
+                       [](const Item &, int x) { g_settings.depth_of_field = x; }, 1));
+    v.push_back(toggle(P_VIDEO_ADV, "Dynamic resolution", "Lowers the 3D resolution when a frame takes long, as on the console.",
+                       [](const Item &) { return (int)g_settings.dynamic_res; },
+                       [](const Item &, int x) { g_settings.dynamic_res = x; }, 0));
+    if (gamelib_compat())  // (runtime/gamelib.h: a CPU without FMA instructions; simd.h simd_fma_unfused)
+        v.push_back(toggle(P_VIDEO_ADV, "Fast math", "Your CPU has no FMA instructions. On: faster, some results round a tiny bit differently from the console.",
+                           [](const Item &) { return (int)g_settings.fast_fma; },
+                           [](const Item &, int x) { g_settings.fast_fma = x; }, 1));
+    v.push_back(choice(P_VIDEO_ADV, "Haze", "How hazy the air is. Lower: clearer distances. From the next start.",
                        [](const Item &) { return N(k_haze); },
                        [](const Item &, int x) {
                            static std::string s;
@@ -516,9 +552,13 @@ void build_items(void) {
                        [](const Item &, int x) { g_settings.async_shaders = x; }, 0));
     // shadow resolution (its own block)
     v.push_back(choice(P_VIDEO, "Shadow resolution", "Sharper sun shadows. Extreme can cut the frame rate to a third in forests, even on a fast GPU.",
-                       [](const Item &) { return N(k_shadow); }, [](const Item &, int x) { return tr(k_shadow[x]); },
-                       [](const Item &) { return g_settings.shadow_res; },
-                       [](const Item &, int x) { g_settings.shadow_res = x; }, SHADOW_CONSOLE));
+                       [](const Item &) { return N(k_shadow); }, [](const Item &, int x) { return tr(k_shadow[k_shadow_order[x]]); },
+                       [](const Item &) {
+                           for (int i = 0; i < SHADOW_COUNT; i++)
+                               if (k_shadow_order[i] == g_settings.shadow_res) return i;
+                           return 1;
+                       },
+                       [](const Item &, int x) { g_settings.shadow_res = k_shadow_order[x]; }, 1));
     // the game's font sheets enlarged (runtime/nvn/text_upscale.c): read when the game starts
     v.push_back(choice(P_GAMEPLAY, "Sharper text", "Upscales the game's letters for 1440p and 4K, after a restart. Not the original art.",
                        [](const Item &) { return N(k_text); }, [](const Item &, int x) { return tr(k_text[x]); },
@@ -1505,7 +1545,7 @@ extern "C" int rt_opt_store(uint64_t row) {
     // (the sizes offered follow Fullscreen, texts and Upscaler mode's values the upscaler; Colour: the preset sets the
     // sliders, they the preset). A value kept on show because it couldn't be picked goes once it can (Upscaler mode
     // after Off: the mode stored, not the Off shown).
-    if (it->page == P_VIDEO || it->page == P_COLOUR) {
+    if (it->page == P_VIDEO || it->page == P_VIDEO_ADV || it->page == P_COLOUR) {
         for (size_t i = 0; i < g_items.size() && i < g_shown.size(); i++) {
             const Item &o = g_items[i];
             if (g_shown[i] >= 0 && (!o.value_off || !o.value_off(o, g_shown[i]))) g_shown[i] = -1;
@@ -1663,7 +1703,7 @@ extern "C" void rt_opt_back(void) {
     bind_capture_cancel();
     g_cap_row = 0;
     if (g_installed && g_cur_page != P_MAIN) {
-        g_next_page = P_MAIN;
+        g_next_page = g_cur_page == P_VIDEO_ADV ? P_VIDEO : P_MAIN;
         g_reopen = g_switching = true;
     } else {
         g_reopen = g_switching = false;

@@ -376,11 +376,12 @@ void output_scale_screen(double sw, double sh, int iw, int ih, OutScale *o) {
     o->vw *= k; o->vh *= k;
 }
 
-// Console: the game's own size (BOTW: 896 x 896 per cascade); High 2048, Ultra 4096, Extreme 8192. Test override:
+// Console: the game's own size (BOTW: 896 x 896 per cascade); High 2048, Ultra 4096, Extreme 8192; Potato 448, half the
+// game's (softer edges, a quarter of the pixels to draw: for weak GPUs). Test override:
 // SAVAGEWIND_SHADOW_AT=<frame>:<console|high|ultra|extreme|width>,... from that presented frame on (same-view A/B in one
 // run).
 unsigned shadow_map_size(unsigned long long frame) {
-    static const unsigned size[SHADOW_COUNT] = {0, 2048, 4096, 8192};
+    static const unsigned size[SHADOW_COUNT] = {0, 2048, 4096, 8192, 448};
     static int n = -1;
     static unsigned long long at[8];
     static unsigned w[8];
@@ -390,7 +391,7 @@ unsigned shadow_map_size(unsigned long long frame) {
             char name[16] = "";
             if (sscanf(e, "%llu:%15[^,]", &at[n], name) != 2) break;
             w[n++] = !strcmp(name, "console") ? 0 : !strcmp(name, "high") ? 2048 : !strcmp(name, "ultra") ? 4096
-                   : !strcmp(name, "extreme") ? 8192 : (unsigned)atoi(name);
+                   : !strcmp(name, "extreme") ? 8192 : !strcmp(name, "potato") ? 448 : (unsigned)atoi(name);
             e = strchr(e, ',');
             if (e) e++;
         }

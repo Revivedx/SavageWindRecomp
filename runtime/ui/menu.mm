@@ -30,6 +30,7 @@ extern "C" bool vk_imgui_backend_init(void);  // runtime/nvn/vulkan/imgui_glue.c
 extern "C" {
 #include "../hle.h"
 #include "../settings.h"
+#include "../gamelib.h"
 #include "../color_grade.h"
 #include "../window_size.h"
 extern "C" {
@@ -679,6 +680,17 @@ static void tab_display(void) {
     float scale = ImGui::GetFontSize() / 34;
     opt_begin("##video", scale);
     opt_section("Display");
+    {   // Graphics preset (settings.c k_gpreset): Custom (matching no preset) is shown, never picked
+        const char *names[GPRESET_COUNT + 1];
+        for (int i = 0; i < GPRESET_COUNT; i++) names[i] = g_gpreset_names[i];
+        names[GPRESET_COUNT] = "Custom";
+        int p = graphics_preset_current(), cur = p < 0 ? GPRESET_COUNT : p;
+        if (opt_choice("Graphics preset", &cur, names, GPRESET_COUNT + 1, GPRESET_ORIGINAL,
+                       "Sets the draw distance, the shadow resolution and the Advanced options at once. Potato: for weak "
+                       "PCs (nearer, smaller shadows, no bloom or depth of field, dynamic resolution). Original: as on the "
+                       "console. High and Savage: further and sharper, for faster PCs.", false))
+            graphics_preset_apply(cur);
+    }
     bool fs = g_settings.fullscreen;
     if (opt_toggle("Fullscreen", &fs, false, "Fills the screen. Also: F11, Alt+Enter or Cmd+Ctrl+F.")) {
         g_settings.fullscreen = fs;
@@ -791,12 +803,17 @@ static void tab_display(void) {
             g_settings.hud_size = sizes[cur];
     }
     {   // Draw distance (runtime/draw_distance.c)
-        static const char *const names[DRAWDIST_COUNT] = {"Original", "Medium", "High"};  // (DRAWDIST_*)
-        int cur = g_settings.draw_distance;
-        if (opt_choice("Draw distance", &cur, names, DRAWDIST_COUNT, DRAWDIST_ORIGINAL,
-                       "How far out grass, trees, rocks, buildings and enemies appear. Higher costs more CPU and GPU time.",
+        // (Potato first, the nearest: order maps a row to DRAWDIST_*)
+        static const char *const names[DRAWDIST_COUNT] = {"Potato", "Original", "High", "Savage"};  // (ini: medium, high)
+        static const int order[DRAWDIST_COUNT] = {DRAWDIST_POTATO, DRAWDIST_ORIGINAL, DRAWDIST_MEDIUM, DRAWDIST_HIGH};
+        int cur = 1;
+        for (int i = 0; i < DRAWDIST_COUNT; i++)
+            if (order[i] == g_settings.draw_distance) cur = i;
+        if (opt_choice("Draw distance", &cur, names, DRAWDIST_COUNT, 1,
+                       "How far out grass, trees, rocks, buildings and enemies appear. Higher costs more CPU and GPU time. "
+                       "Potato: nearer than on the console, for weak PCs.",
                        true))
-            g_settings.draw_distance = cur;
+            g_settings.draw_distance = order[cur];
     }
     {   // Frame rate (runtime/hle/framepace.c)
         static const int fps[] = FPS_CHOICES;
@@ -973,13 +990,19 @@ static void tab_display(void) {
                "draws only once (the save file's screenshot, the pause menu's background, terrain tiles) still wait "
                "for theirs. Off: every draw waits for its shader, a short stutter the first time an effect appears.");
     // shadow resolution (its own block)
-    static const char *shadow[] = {"Console (896)", "High (2048)", "Ultra (4096)", "Extreme (8192)"};
-    opt_choice("Shadow resolution", &g_settings.shadow_res, shadow, SHADOW_COUNT, SHADOW_CONSOLE,
+    // (Potato first, the smallest: order maps a row to SHADOW_*)
+    static const char *shadow[] = {"Potato (448)", "Console (896)", "High (2048)", "Ultra (4096)", "Extreme (8192)"};
+    static const int shadow_order[SHADOW_COUNT] = {SHADOW_POTATO, SHADOW_CONSOLE, SHADOW_HIGH, SHADOW_ULTRA, SHADOW_EXTREME};
+    int shadow_row = 1;
+    for (int i = 0; i < SHADOW_COUNT; i++)
+        if (shadow_order[i] == g_settings.shadow_res) shadow_row = i;
+    opt_choice("Shadow resolution", &shadow_row, shadow, SHADOW_COUNT, 1,
                "The size of the maps the sun's shadows are drawn from. Console: the game's own, 896 x 896. High (2048), "
                "Ultra (4096) and Extreme (8192) give sharper shadow edges (Link, trees, buildings) for more GPU time "
                "and video memory (Ultra: about 100 MB, Extreme: about 400 MB). Extreme is very heavy where there is a lot "
                "of foliage: in a forest it can cut the frame rate to a third, even on a fast GPU. Ultra or lower suits "
-               "most GPUs.");
+               "most GPUs. Potato (448): softer edges, for weak GPUs.");
+    g_settings.shadow_res = shadow_order[shadow_row];
     {   // the game's font sheets enlarged (runtime/nvn/text_upscale.c): read when the game starts
         static const char *text[] = {"Off", "2x", "4x"};
         int cur = g_settings.sharper_text / 2;
@@ -989,6 +1012,34 @@ static void tab_display(void) {
                        "original art: the shapes are kept, but they aren't exactly as drawn. 4x takes a moment longer to "
                        "start and uses more video memory.", false))
             g_settings.sharper_text = cur * 2;
+    }
+    // Advanced (vulkan/exec.c: bloom's and the distance blur's draws; CMD_REPORT_COUNTER: dynamic resolution)
+    opt_section("Advanced");
+    opt_toggle("Bloom", &g_settings.bloom, true, "The glow around bright light: the sun, fire, glowing eyes. Off: a "
+               "little faster, a flatter image.");
+    opt_toggle("Depth of field", &g_settings.depth_of_field, true, "The game blurs the far distance a little. Off: sharp "
+               "out to the horizon, a little faster.");
+    opt_toggle("Dynamic resolution", &g_settings.dynamic_res, false, "As on the console: the game lowers its 3D "
+               "resolution (down to 1280x720 before upscaling) while frames take long, and raises it again after. "
+               "Off: always the full resolution. On with the Potato preset.");
+    if (gamelib_compat())  // (runtime/gamelib.h: a CPU without FMA instructions; simd.h simd_fma_unfused)
+        opt_toggle("Fast math", &g_settings.fast_fma, true, "Your CPU has no FMA instructions, so the game's math runs "
+                   "in software. On: about 10% faster; some results round a tiny bit differently from the console, "
+                   "which doesn't show in play. Off: exact, as on the console.");
+    {   // the air's haze (services/fs.c haze_patch): the game reads it at the start
+        static const int haze[] = HAZE_CHOICES;
+        enum { NH = sizeof haze / sizeof haze[0] };
+        static char buf[NH][16];
+        const char *names[NH];
+        int cur = NH - 1;
+        for (int i = 0; i < NH; i++) {
+            snprintf(buf[i], sizeof buf[i], "%d%%", haze[i]);
+            names[i] = buf[i];
+            if (haze[i] == g_settings.haze) cur = i;
+        }
+        if (opt_choice("Haze", &cur, names, NH, NH - 1, "How hazy the air is. Lower: clearer distances. It takes effect "
+                       "the next time you start the game.", false))
+            g_settings.haze = haze[cur];
     }
 #ifndef __APPLE__
     tab_colour();

@@ -50,6 +50,9 @@ Settings g_settings = {
     .hud_size = 100,
     .color_lut_strength = 100,
     .haze = 100,
+    .bloom = true,
+    .depth_of_field = true,
+    .fast_fma = true,
 };
 
 static const char *const k_vsync[VSYNC_COUNT] = {"on", "fast", "adaptive", "off"};  // (VSYNC_*: the ini's words)
@@ -71,7 +74,7 @@ static const char *const k_fsmode[FSMODE_COUNT] = {"auto", "borderless", "exclus
 // it; one who left it off was on the default, since the menu wrote every key).
 #define SETTINGS_VERSION 4
 
-static const char *const k_drawdist[DRAWDIST_COUNT] = {"original", "medium", "high"};  // (DRAWDIST_*)
+static const char *const k_drawdist[DRAWDIST_COUNT] = {"original", "medium", "high", "potato"};  // (DRAWDIST_*)
 
 static const char *const k_icons[ICONS_COUNT] = {"auto", "keyboard", "xbox", "playstation", "nintendo"};
 
@@ -215,6 +218,10 @@ void settings_load(void) {
         else if (!strcmp(key, "damage_taken")) g_settings.damage_taken = atoi(val);  // (percent)
         else if (!strcmp(key, "damage_dealt")) g_settings.damage_dealt = atoi(val);
         else if (!strcmp(key, "haze")) { int v = atoi(val); g_settings.haze = v < 0 ? 0 : v > 100 ? 100 : v; }  // (percent)
+        else if (!strcmp(key, "bloom")) g_settings.bloom = atoi(val) != 0;
+        else if (!strcmp(key, "depth_of_field")) g_settings.depth_of_field = atoi(val) != 0;
+        else if (!strcmp(key, "dynamic_resolution")) g_settings.dynamic_res = atoi(val) != 0;
+        else if (!strcmp(key, "fast_fma")) g_settings.fast_fma = atoi(val) != 0;
         else if (!strcmp(key, "colour_exposure")) g_settings.color_exposure = (int)lroundf((float)atof(val) * 10);  // (EV)
         else if (!strcmp(key, "colour_contrast")) g_settings.color_contrast = atoi(val);  // (percent)
         else if (!strcmp(key, "colour_saturation")) g_settings.color_saturation = atoi(val);
@@ -229,7 +236,8 @@ void settings_load(void) {
             g_settings.sharper_text = !strcmp(val, "4x") ? 4 : !strcmp(val, "2x") ? 2 : 0;
         else if (!strcmp(key, "shadow_resolution"))  // (console / high / ultra / extreme)
             g_settings.shadow_res = !strcmp(val, "extreme") ? SHADOW_EXTREME : !strcmp(val, "ultra") ? SHADOW_ULTRA
-                                  : !strcmp(val, "high") ? SHADOW_HIGH : SHADOW_CONSOLE;
+                                  : !strcmp(val, "high") ? SHADOW_HIGH : !strcmp(val, "potato") ? SHADOW_POTATO
+                                  : SHADOW_CONSOLE;
         else if (!strcmp(key, "text_language")) {  // (a region language: USen, EUes, ...; auto)
             g_settings.text_language = 0;
             for (int i = 1; i < g_ntext_languages; i++)
@@ -356,7 +364,7 @@ void settings_save(void) {
                                                 g_settings.button_icons : ICONS_AUTO]);
     fprintf(f, "async_shaders = %d\n", g_settings.async_shaders);
     fprintf(f, "precompile_shaders = %d\n", g_settings.precompile_shaders);
-    static const char *const shadow[SHADOW_COUNT] = {"console", "high", "ultra", "extreme"};
+    static const char *const shadow[SHADOW_COUNT] = {"console", "high", "ultra", "extreme", "potato"};
     int sr = g_settings.shadow_res;
     fprintf(f, "shadow_resolution = %s\n", shadow[sr >= 0 && sr < SHADOW_COUNT ? sr : SHADOW_CONSOLE]);
     fprintf(f, "sharper_text = %s\n", g_settings.sharper_text == 4 ? "4x" : g_settings.sharper_text == 2 ? "2x" : "off");
@@ -377,6 +385,10 @@ void settings_save(void) {
     fprintf(f, "damage_taken = %d\n", g_settings.damage_taken);
     fprintf(f, "damage_dealt = %d\n", g_settings.damage_dealt);
     fprintf(f, "haze = %d\n", g_settings.haze);
+    fprintf(f, "bloom = %d\n", g_settings.bloom ? 1 : 0);
+    fprintf(f, "depth_of_field = %d\n", g_settings.depth_of_field ? 1 : 0);
+    fprintf(f, "dynamic_resolution = %d\n", g_settings.dynamic_res ? 1 : 0);
+    fprintf(f, "fast_fma = %d\n", g_settings.fast_fma ? 1 : 0);
     fprintf(f, "colour_exposure = %.1f\n", g_settings.color_exposure / 10.0);
     fprintf(f, "colour_contrast = %d\n", g_settings.color_contrast);
     fprintf(f, "colour_saturation = %d\n", g_settings.color_saturation);
@@ -390,4 +402,31 @@ void settings_save(void) {
     fprintf(f, "menu_tip_seen = %d\n", g_settings.menu_tip_seen);
     bind_settings_save(f);
     fclose(f);
+}
+
+// (settings.h GPRESET_*: draw distance, shadow resolution, bloom, depth of field, dynamic resolution)
+static const struct { int draw_distance, shadow_res; bool bloom, depth_of_field, dynamic_res; } k_gpreset[GPRESET_COUNT] = {
+    {DRAWDIST_POTATO, SHADOW_POTATO, false, false, true},
+    {DRAWDIST_ORIGINAL, SHADOW_CONSOLE, true, true, false},
+    {DRAWDIST_MEDIUM, SHADOW_HIGH, true, true, false},
+    {DRAWDIST_HIGH, SHADOW_ULTRA, true, true, false},
+};
+const char *const g_gpreset_names[GPRESET_COUNT] = {"Potato", "Original", "High", "Savage"};
+
+int graphics_preset_current(void) {
+    for (int i = 0; i < GPRESET_COUNT; i++)
+        if (g_settings.draw_distance == k_gpreset[i].draw_distance && g_settings.shadow_res == k_gpreset[i].shadow_res &&
+            g_settings.bloom == k_gpreset[i].bloom && g_settings.depth_of_field == k_gpreset[i].depth_of_field &&
+            g_settings.dynamic_res == k_gpreset[i].dynamic_res)
+            return i;
+    return -1;
+}
+
+void graphics_preset_apply(int preset) {
+    if (preset < 0 || preset >= GPRESET_COUNT) return;
+    g_settings.draw_distance = k_gpreset[preset].draw_distance;
+    g_settings.shadow_res = k_gpreset[preset].shadow_res;
+    g_settings.bloom = k_gpreset[preset].bloom;
+    g_settings.depth_of_field = k_gpreset[preset].depth_of_field;
+    g_settings.dynamic_res = k_gpreset[preset].dynamic_res;
 }

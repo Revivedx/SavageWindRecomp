@@ -50,6 +50,7 @@
 #include "../rt.h"
 #include "../settings.h"
 #include "../framepace.h"
+#include "../gamelib.h"
 #include "../window_size.h"
 
 extern volatile int g_movie_playing;  // runtime/hle/movie.c: video decoders running
@@ -410,6 +411,7 @@ uint64_t framepace_shown_frame(void) { return __atomic_load_n(&shown_frames, __A
 
 void rt_vfr_update(uint64_t vfr) {
     __atomic_fetch_add(&game_frames, 1, __ATOMIC_RELAXED);
+    gamelib_sync();
     {
         extern uint64_t renderer_present_count(void);
         static uint64_t presented = ~0ull;

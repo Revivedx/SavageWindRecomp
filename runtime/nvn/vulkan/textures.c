@@ -175,8 +175,8 @@ static bool format_is_float(VkFormat f) {  // (uncompressed: these can hold NaN 
 //             HUD and menus are drawn sharp at any window size
 //   RS_SCENE  the 3D scene's targets (1600x900 docked, and their fractions): the internal resolution, the window's
 //             with the upscaler off, smaller by the upscaler's factor with it on (exec.c upscales at the composite)
-//   RS_SHADOW shadow maps (BOTW's sun cascades: D16 896x896x3): Video > Shadow resolution, a width (2048 to 8192) they
-//             are made at instead of the game's; never smaller than the game's (output_scale.c shadow_map_size). Also
+//   RS_SHADOW shadow maps (BOTW's sun cascades: D16 896x896x3): Video > Shadow resolution, a width (448 for Potato,
+//             2048 to 8192) they are made at instead of the game's (output_scale.c shadow_map_size). Also
 //             their half-size copy (R16 448x448x3, the max of each 2x2), at the same factor: water and the other
 //             forward-shaded surfaces take their shadows from it (issue #101)
 static float g_rs[4][2] = {{1, 1}, {1, 1}, {1, 1}, {1, 1}};
@@ -191,7 +191,8 @@ void renderer_set_shadow_size(uint32_t n) {  // (never past what the GPU can mak
 uint64_t renderer_present_count(void);
 static float rs_want(const TexBackend *b, int axis) {  // the scale a texture of b's group is wanted at now
     if (b->rs_group != RS_SHADOW) return g_rs[b->rs_group][axis];
-    return b->guest_w && g_shadow_size > b->guest_w ? (float)g_shadow_size / (float)b->guest_w : 1.0f;  // (square)
+    // (square) bigger than the game's (High and up), or smaller (Potato); 0: the game's own
+    return b->guest_w && g_shadow_size && g_shadow_size != b->guest_w ? (float)g_shadow_size / (float)b->guest_w : 1.0f;
 }
 static bool rs_stale(const TexBackend *b) {
     return b->rs_group && (b->sx != rs_want(b, 0) || b->sy != rs_want(b, 1));

@@ -32,7 +32,8 @@ enum { AA_OFF = 0, AA_SMAA = 1, AA_TAA = 2 };
 #endif
 // Shadow resolution (Video > Shadow resolution; runtime/nvn/output_scale.c shadow_map_size): the sun's shadow maps at
 // the console's size (BOTW: 896 x 896) or made bigger, for sharper shadows at some GPU time.
-enum { SHADOW_CONSOLE = 0, SHADOW_HIGH = 1 /* 2048 */, SHADOW_ULTRA = 2 /* 4096 */, SHADOW_EXTREME = 3 /* 8192 */, SHADOW_COUNT };
+enum { SHADOW_CONSOLE = 0, SHADOW_HIGH = 1 /* 2048 */, SHADOW_ULTRA = 2 /* 4096 */, SHADOW_EXTREME = 3 /* 8192 */,
+       SHADOW_POTATO = 4 /* 448 */, SHADOW_COUNT };
 enum { PERF_OFF = 0, PERF_FPS = 1, PERF_FULL = 2 };
 // Frame rate (Video > Frame rate; runtime/hle/framepace.c): frames per second, 0 = no limit. The game's clock is the
 // same at every rate. The console runs the game at 30.
@@ -91,7 +92,7 @@ typedef struct {
     bool async_shaders;  // draw on while new shaders compile (no stutter; what needs them is skipped meanwhile; on by
                          // default since settings_version 4; off: every draw waits for its shaders, as before)
     bool precompile_shaders;  // setting the game files up also precompiles every shader (runtime/nvn/precompile.h)
-    int shadow_res;      // SHADOW_*: shadow maps at the console's size or bigger
+    int shadow_res;      // SHADOW_*: shadow maps at the console's size, bigger, or (Potato) smaller
     int sharper_text;    // the game's font sheets enlarged this many times (2 or 4; 0: off), runtime/nvn/text_upscale.c
     bool wide_view;      // a window that isn't 16:9 shows more of the world instead of bars (runtime/nvn/output_scale.c)
     int hdr;             // HDR_* (runtime/nvn/vulkan/device.c hdr_*)
@@ -101,6 +102,12 @@ typedef struct {
     int hud_size;        // the HUD's size in play, percent of the game's own (HUD_SIZE_CHOICES, runtime/nvn/hud_scale.h)
     int draw_distance;   // DRAWDIST_*: how far placed actors are kept (runtime/draw_distance.c)
     int haze;            // the air's haze, percent of the game's (services/fs.c haze_patch; from the next start)
+    bool bloom;          // the glow around bright light (off: its draws clear their images: vulkan/exec.c)
+    bool depth_of_field; // the distance blur over far pixels (off: its draw is skipped: vulkan/exec.c)
+    bool dynamic_res;    // the game lowers its 3D resolution (1600x900 down to 1280x720) when a frame takes long
+                         // (vulkan/exec.c CMD_REPORT_COUNTER); off: it keeps 1600x900
+    bool fast_fma;       // CPUs without FMA instructions (gamelib_compat): the game's fused multiply-adds rounded twice,
+                         // faster (simd.h simd_fma_unfused); off: exact, as the console
     // Video > Colour (runtime/color_grade.h): 0 everywhere and no LUT = the game's own colours (nothing runs)
     int color_exposure;      // tenths of an EV, -20..20
     int color_contrast;      // percent, -50..50
@@ -125,8 +132,16 @@ typedef struct {
 
 #define STICK_DEADZONE_DEFAULT 0.10f  // (the Switch's own input service has one: the game expects 0 at rest)
 #define HAZE_CHOICES {0, 25, 50, 75, 100}  // (percent of the game's haze)
-enum { DRAWDIST_ORIGINAL, DRAWDIST_MEDIUM, DRAWDIST_HIGH, DRAWDIST_COUNT };  // (Original: the game's own distances)
+enum { DRAWDIST_ORIGINAL, DRAWDIST_MEDIUM, DRAWDIST_HIGH, DRAWDIST_POTATO, DRAWDIST_COUNT };  // (Original: the game's own
+                                                                                  // distances; Potato: nearer)
 float draw_distance_factor(void);  // the setting's factor on the game's distances (1: Original)
+// Video > Graphics preset: draw distance, shadow resolution, bloom, depth of field and dynamic resolution at once.
+// Potato: for weak PCs (nearer, smaller shadows, no bloom or distance blur, the game's dynamic resolution); Original:
+// as on the console; High: draw distance Medium, shadows 2048; Savage: draw distance High, shadows 4096.
+enum { GPRESET_POTATO, GPRESET_ORIGINAL, GPRESET_HIGH, GPRESET_SAVAGE, GPRESET_COUNT };
+extern const char *const g_gpreset_names[GPRESET_COUNT];
+int graphics_preset_current(void);  // the preset the settings match, or -1 (Custom)
+void graphics_preset_apply(int preset);
 #define DAMAGE_CHOICES {25, 50, 75, 100, 150, 200, 300, 400}  // (Accessibility's damage multipliers, percent)
 #define FOV_CHOICES {70, 80, 90, 100, 110, 120, 130, 140, 150}  // (percent; 100: the game's own)
 #define HUD_SIZE_CHOICES {50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120, 125, 130, 135, 140, 145, 150}  // (percent; 100: the game's own)

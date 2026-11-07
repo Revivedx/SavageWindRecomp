@@ -1849,8 +1849,9 @@ static bool acquire_test_timeout(void) {
     return from > 0 && f >= (uint64_t)from && f < (uint64_t)(from + n);
 }
 
+static bool present_on_recorder(void);
 static VkResult acquire_image(VkSemaphore sem, uint32_t *img) {
-    bool threaded = present_threaded();
+    bool threaded = present_threaded() || present_on_recorder();  // (another thread presents: sc_lock, short waits)
     uint64_t t0 = SDL_GetTicksNS();
     for (;;) {  // (threaded: a short timeout at a time, not holding the swapchain while the present thread needs it)
         uint64_t tc = SDL_GetTicksNS();
@@ -1869,9 +1870,44 @@ static VkResult acquire_image(VkSemaphore sem, uint32_t *img) {
     }
 }
 
+// A plain present made by the recorder thread (record.c), in its turn right after the frame's submission: the
+// translating thread queues it and goes on to the next frame instead of waiting for the recorder to have submitted
+// (rec_wait_submitted, ~9 % of that thread at Rito on 4 cores) and for the present itself. The recorder owns the queue;
+// sc_lock keeps it off the swapchain while the translating thread acquires. A present that says the swapchain is out
+// of date or suboptimal is seen at the next one (rec_present_stale), which makes the swapchain again.
+// SAVAGEWIND_VK_PRESENT_RECORDER=0: presents on the calling thread after its submission, as before.
+#define RECP_N 64
+static struct { VkSwapchainKHR sc; VkSemaphore sem; uint32_t img; } recp[RECP_N];
+static unsigned recp_n;
+static _Atomic int rec_present_stale;
+static void rec_present_run(void *arg) {
+    const __typeof__(recp[0]) *q = arg;
+    VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &q->sem,
+                           .swapchainCount = 1, .pSwapchains = &q->sc, .pImageIndices = &q->img};
+    pthread_mutex_lock(&sc_lock);
+    VkResult r = queue_present(g_vk.queue, &pi);
+    pthread_mutex_unlock(&sc_lock);
+    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) atomic_store(&rec_present_stale, 1);
+}
+static bool present_on_recorder(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("SAVAGEWIND_VK_PRESENT_RECORDER");
+        on = rec_on() && !(e && !strcmp(e, "0"));
+        LOG("[vk] plain presents made by %s\n", on ? "the recorder thread, after the frame's submission" : "the calling thread");
+    }
+    return on;
+}
+
 // Present window image img once sem is signalled (kind, seq: frame generation's pair and the frame's submission, see
 // present_wait_turn). Returns false when the swapchain must be made again.
 static bool present_image(uint32_t img, VkSemaphore sem, int kind, uint64_t seq) {
+    if (!present_threaded() && kind == PRES_PLAIN && present_on_recorder()) {
+        __typeof__(recp[0]) *q = &recp[recp_n++ % RECP_N];
+        *q = (__typeof__(recp[0])){g_vk.swapchain, sem, img};
+        rec_custom(rec_present_run, q);
+        return !atomic_exchange(&rec_present_stale, 0);
+    }
     if (!present_threaded()) {
         VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &sem,
                                .swapchainCount = 1, .pSwapchains = &g_vk.swapchain, .pImageIndices = &img};
