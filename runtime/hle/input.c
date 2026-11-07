@@ -426,6 +426,9 @@ static void window_focus(bool focused) {
 void input_focus_update(SDL_Window *w) {
     window_focus(w && (SDL_GetWindowFlags(w) & SDL_WINDOW_INPUT_FOCUS));
 }
+bool input_window_focused(void) {
+    return win_focused;
+}
 void input_mouse_update(SDL_Window *w) {
     motion_poll();
     input_focus_update(w);

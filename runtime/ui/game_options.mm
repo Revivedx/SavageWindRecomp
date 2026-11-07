@@ -610,6 +610,10 @@ void build_items(void) {
     v.push_back(toggle(P_AUDIO, "Movie audio", "Sound in the game's movies.",
                        [](const Item &) { return (int)g_settings.movie_audio; },
                        [](const Item &, int x) { g_settings.movie_audio = x; }, 1));
+    v.push_back(toggle(P_AUDIO, "Mute in background",
+                       "Mute audio while the game window is in the background or minimized.",
+                       [](const Item &) { return (int)g_settings.mute_unfocused; },
+                       [](const Item &, int x) { g_settings.mute_unfocused = x; }, 0));
 
     // Controls
     v.push_back(toggle(P_CONTROLS, "Controller rumble", "Vibrate the controller during play.",
