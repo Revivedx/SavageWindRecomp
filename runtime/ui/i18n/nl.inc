@@ -715,6 +715,8 @@ T("Open them from the title screen, or pause the game and choose System > Option
 
 T("Controller rumble", "Controllertrilling")
 T("Vibrate the controller during play.", "Laat de controller tijdens het spelen trillen.")
+T("Rumble strength", "Trillingssterkte")
+T("100% is the game's own.", "100% is die van het spel.")
 T("Free camera with both sticks", "Vrije camera met beide sticks")
 T("Controller camera speed", "Camerasnelheid controller")
 T("The right stick turns the camera faster than the game allows, at the two speeds below.", "De rechterstick draait de camera sneller dan het spel toestaat, met de twee snelheden hieronder.")

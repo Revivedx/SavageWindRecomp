@@ -715,6 +715,8 @@ T("Quick menu: weapons", "Menú rápido: armas")
 
 T("Controller rumble", "Vibración del mando")
 T("Vibrate the controller during play.", "Hace vibrar el mando durante el juego.")
+T("Rumble strength", "Intensidad de vibración")
+T("100% is the game's own.", "100% es el del juego.")
 T("Free camera with both sticks", "Cámara libre con ambos sticks")
 T("Controller camera speed", "Velocidad de cámara del mando")
 T("The right stick turns the camera faster than the game allows, at the two speeds below.", "El stick derecho gira la cámara más rápido de lo que permite el juego, con las dos velocidades de abajo.")

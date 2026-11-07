@@ -81,6 +81,7 @@ typedef struct {
     bool fps_display;    // Frame rate > Match display: fps_limit follows the display (settings_fps_for_display)
     int vsync;           // VSYNC_*
     bool rumble;         // controller vibration
+    int rumble_strength; // vibration intensity percent: 10..100 (default 100)
     bool freecam_sticks; // both stick clicks together turn the free camera on and off (hle/input.c)
     int gpu;             // Vulkan adapter index from the startup log; -1: automatic (restart required)
     bool quick_sort;      // native sorting in the quick equipment selector
@@ -144,6 +145,9 @@ typedef struct {
     bool menu_tip_seen;  // the start screen's one-time "how to open the menu" note was shown (first PLAY ever)
 } Settings;
 
+#define RUMBLE_STRENGTH_MIN 10
+#define RUMBLE_STRENGTH_MAX 100
+#define RUMBLE_STRENGTH_DEFAULT 100
 #define STICK_CAM_MIN 100      // (Controller camera speed, percent, in steps of 25; 200 to start with)
 #define STICK_CAM_MAX 600
 #define STICK_CAM_DEFAULT 200

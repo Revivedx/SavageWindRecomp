@@ -715,6 +715,8 @@ T("Open them from the title screen, or pause the game and choose System > Option
 
 T("Controller rumble", "コントローラーの振動")
 T("Vibrate the controller during play.", "プレイ中にコントローラーを振動させます。")
+T("Rumble strength", "振動の強さ")
+T("100% is the game's own.", "100%はゲーム自体の値。")
 T("Free camera with both sticks", "両スティックでフリーカメラ")
 T("Controller camera speed", "コントローラーのカメラ速度")
 T("The right stick turns the camera faster than the game allows, at the two speeds below.", "右スティックでゲームの上限より速くカメラを回します。速さは下の2つで決めます。")

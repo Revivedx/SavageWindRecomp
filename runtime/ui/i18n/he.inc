@@ -629,6 +629,8 @@ T("Reset orientation and stop pending rotation.", "איפוס הכיוון וע�
 T("Open them from the title screen, or pause the game and choose System > Options. Esc opens pause or goes back. F2 frees the mouse cursor.", "פתחו אותן ממסך הכותרת, או השהו את המשחק ובחרו System > Options. Esc פותח השהיה או חוזר אחורה. F2 משחרר את סמן העכבר.")
 T("Controller rumble", "רטט בקר")
 T("Vibrate the controller during play.", "הבקר רוטט בזמן המשחק.")
+T("Rumble strength", "עוצמת רטט")
+T("100% is the game's own.", "100% הוא של המשחק עצמו.")
 T("Free camera with both sticks", "מצלמה חופשית עם שני הסטיקים")
 T("Controller camera speed", "מהירות מצלמה בבקר")
 T("The right stick turns the camera faster than the game allows, at the two speeds below.", "הסטיק הימני מסובב את המצלמה מהר יותר ממה שהמשחק מאפשר, בשתי המהירויות שלמטה.")

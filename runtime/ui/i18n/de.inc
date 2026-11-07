@@ -715,6 +715,8 @@ T("Open them from the title screen, or pause the game and choose System > Option
 
 T("Controller rumble", "Controller-Vibration")
 T("Vibrate the controller during play.", "Lässt den Controller beim Spielen vibrieren.")
+T("Rumble strength", "Vibrationsstärke")
+T("100% is the game's own.", "100 % ist der des Spiels.")
 T("Free camera with both sticks", "Freie Kamera mit beiden Sticks")
 T("Controller camera speed", "Kamerageschwindigkeit (Controller)")
 T("The right stick turns the camera faster than the game allows, at the two speeds below.", "Der rechte Stick dreht die Kamera schneller, als das Spiel erlaubt, mit den zwei Geschwindigkeiten unten.")

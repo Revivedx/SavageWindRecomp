@@ -715,6 +715,8 @@ T("Open them from the title screen, or pause the game and choose System > Option
 
 T("Controller rumble", "컨트롤러 진동")
 T("Vibrate the controller during play.", "플레이 중 컨트롤러가 진동합니다.")
+T("Rumble strength", "진동 세기")
+T("100% is the game's own.", "100%는 게임 기본값입니다.")
 T("Free camera with both sticks", "양쪽 스틱으로 자유 카메라")
 T("Controller camera speed", "컨트롤러 카메라 속도")
 T("The right stick turns the camera faster than the game allows, at the two speeds below.", "오른쪽 스틱으로 게임이 허용하는 것보다 빠르게 카메라를 돌립니다. 속도는 아래 두 항목으로 정합니다.")

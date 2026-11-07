@@ -34,6 +34,7 @@ static const Setting settings[] = {
     B(frame_gen), F(volume, 0, 2), B(reverb), B(movie_audio), B(mute_unfocused),
     I(perf_overlay, 0, PERF_FULL, "off|fps|full"), I(fps_limit, 0, 360, NULL), B(fps_display),
     I(vsync, 0, VSYNC_COUNT - 1, "on|fast|adaptive|off"), B(dpad_move), B(freecam_sticks),
+    B(rumble), I(rumble_strength, RUMBLE_STRENGTH_MIN, RUMBLE_STRENGTH_MAX, NULL),
     {"stick_deadzone[0]", &g_settings.stick_deadzone[0], FLOAT, 0, .5, NULL},
     {"stick_deadzone[1]", &g_settings.stick_deadzone[1], FLOAT, 0, .5, NULL},
     B(mouse_camera), B(pc_bow), F(mouse_sens, .1, 10), F(mouse_sens_y, .5, 2), B(mouse_invert_y),

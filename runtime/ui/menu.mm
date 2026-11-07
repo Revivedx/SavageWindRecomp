@@ -1197,6 +1197,12 @@ static void tab_about(void) {
     ImGui::Spacing();
     header("Controls");
     opt_toggle("Controller rumble", &g_settings.rumble, true, "Vibrate the controller during play.");
+    if (g_settings.rumble) {
+        float r = (float)g_settings.rumble_strength;
+        if (opt_slider("Rumble strength", &r, RUMBLE_STRENGTH_MIN, RUMBLE_STRENGTH_MAX, 10, RUMBLE_STRENGTH_DEFAULT, "%g%%",
+                       "100% is the game's own."))
+            g_settings.rumble_strength = (int)r;
+    }
     opt_toggle("Free camera with both sticks", &g_settings.freecam_sticks, true,
                "Clicking both sticks together turns the free camera on and off. Home on the keyboard always does. "
                "While it's on: F8 or d-pad up changes the filter, [ and ] or d-pad left and right the hour, F7 or "

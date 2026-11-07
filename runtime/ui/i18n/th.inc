@@ -715,6 +715,8 @@ T("Open them from the title screen, or pause the game and choose System > Option
 
 T("Controller rumble", "การสั่นของคอนโทรลเลอร์")
 T("Vibrate the controller during play.", "ให้คอนโทรลเลอร์สั่นระหว่างเล่น")
+T("Rumble strength", "ความแรงของการสั่น")
+T("100% is the game's own.", "100% คือค่าเดิมของเกม")
 T("Free camera with both sticks", "กล้องอิสระด้วยสติกทั้งสอง")
 T("Controller camera speed", "ความเร็วกล้องด้วยคอนโทรลเลอร์")
 T("The right stick turns the camera faster than the game allows, at the two speeds below.", "สติกขวาหมุนกล้องได้เร็วกว่าที่เกมกำหนด ตามความเร็วสองค่าด้านล่าง")
