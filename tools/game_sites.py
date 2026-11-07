@@ -290,6 +290,28 @@ SITES = [
     # sead::LookAtCamera::doUpdateMatrix (tools/patches.py _lookat_update): its first load of the eye (+0x38); eye,
     # at (+0x44) and up (+0x50) make the view matrix written to x1 (free camera, runtime/hle/freecam.c)
     Site('lookat_update', 'code', '2d470801 2d480c00 1e232020 2d491404 1e240440 1e250400 54000000/ff00001f 1e233823', 0),
+    # Native quick-selector sorting (runtime/quick_inventory_sort.c), optional as a complete group.
+    Site('quick_sort_enter', 'code', 'fc1d0fe8 a900fbfd f9000ff5 a9024ff4 910023fd b978e014 aa0003f3 7100069f', 0),
+    Site('quick_sort_menu', 'code', 'a9be7bfd a9014ff4 910003fd 52871b08 aa0003f3 8b080014 f95bd400 b4000000/ff00001f', 0),
+    Site('pouch_page_count', 'code', '2a0103e9 7100c83f 5288460a 72a0008a 9a9f3129 8b090c09 f86a692c b9407809', 0),
+    Site('pouch_page_item', 'code', '7100c43f 5400000d/ff00001f aa1f03e0 d65f03c0 a9bd7bfd f9000bf5 a9024ff4 910003fd 2a0203f3 '
+         '2a0103f5 aa0003f4 94000000/fc000000 2a0003e8 2a1503e9 7100cabf aa1f03e0 9a9f3129 6b13011f '
+         '5400000d/ff00001f 8b090e88 52884609 72a00089 f869690b', 0),
+    Site('pouch_item_type', 'code', 'd101c3ff a9037bfd f90023f7 a90557f6 a9064ff4 9100c3fd 90000016/9f00001f 90000008/9f00001f', 0),
+    Site('quick_sort_modal', 'code', '90000008/9f00001f 91000108/ffc003ff f9400108 b9402909 f9401908 71002d3f 52800b09 9a9f8129 '
+         'f8696900 b4000000/ff00001f 14000000/fc000000 d65f03c0', 0),
+    Site('pouch_sort', 'code', 'd10103ff a9017bfd a90257f6 a9034ff4 910043fd 9100a013 aa0003f4 2a0203f5', 0),
+    Site('quick_sort_refill', 'code', 'a9be7bfd a9014ff4 910003fd aa0003f3 71000c3f 54000008/ff00001f 2a0103e8 90000009/9f00001f', 0),
+    Site('quick_sort_mapping', 'code', 'a9be7bfd a9014ff4 910003fd b9773814 aa0003f3 7100069f 54000000/ff00001f 35000014/ff00001f', 0),
+    Site('quick_sort_cursor', 'code', 'a9bd7bfd f9000bf5 a9024ff4 910003fd 2a0203f3 2a0103f4 2a0203e1 2a1f03e2', 0),
+    Site('quick_sort_labels', 'code', 'd10483ff a90e7bfd f9007bfc a91057f6 a9114ff4 910383fd aa0003f3 d10043a0', 0),
+    Site('pouch_lock', 'call', '94000000/fc000000 f9401be9 f9400fa0 14000000/fc000000 aa1403e0 aa0903f4 94000000/fc000000 '
+         'aa1403e9', 0),
+    Site('pouch_unlock', 'call', '94000000/fc000000 aa1403e9 14000000/fc000000 f9000fa0 aa0803e0 52800601 52800082 d63f0120', 0),
+    Site('quick_sort_event', 'call', '94000000/fc000000 37000000/fff8001f 2a1f03e0 94000000/fc000000 36000000/fff8001f 2a1f03e0 '
+         '2a1f03e1 94000000/fc000000 aa1303e0 aa1403e1', 0),
+    Site('quick_sort_player_busy', 'call', '94000000/fc000000 2a0003f4 d10183a0 94000000/fc000000 90000015/9f00001f 90000008/9f00001f '
+         '91000108/ffc003ff 14000000/fc000000', 0),
     Site('main_data', 'data', '', 0),
     Site('main_end', 'end', '', 0),
 ]
@@ -300,6 +322,9 @@ SITES = [
 # Without them the mouse turns the camera through the right stick, as before (runtime/hle/input.c); without the
 # second group it turns it without the game's camera inversion options.
 OPTIONAL_GROUPS = [
+    ('quick_sort_enter', 'quick_sort_menu', 'pouch_page_count', 'pouch_page_item', 'pouch_item_type',
+     'quick_sort_modal', 'pouch_sort', 'quick_sort_refill', 'quick_sort_mapping', 'quick_sort_cursor',
+     'quick_sort_labels', 'pouch_lock', 'pouch_unlock', 'quick_sort_event', 'quick_sort_player_busy'),
     OPT_TWO_SITES,
     ('lookat_update',),  # (the free camera: without it Home does nothing)
     ('gyro_scene_actor',),
@@ -393,6 +418,21 @@ KNOWN = {
         'main_end': 0x7001d37000,
     },
     '1.9.0': {
+        'quick_sort_enter': 0x7000e283fc,
+        'quick_sort_menu': 0x7000e28744,
+        'pouch_page_count': 0x7000d970a8,
+        'pouch_page_item': 0x7000d992ac,
+        'pouch_item_type': 0x7000d91414,
+        'quick_sort_modal': 0x7000e7e750,
+        'pouch_sort': 0x7000d980a0,
+        'quick_sort_refill': 0x7000e27c2c,
+        'quick_sort_mapping': 0x7000e28070,
+        'quick_sort_cursor': 0x7000d665a4,
+        'quick_sort_labels': 0x7000e278c0,
+        'pouch_lock': 0x7000eaff08,
+        'pouch_unlock': 0x7000eaff18,
+        'quick_sort_event': 0x7000d1499c,
+        'quick_sort_player_busy': 0x7000d35b80,
         'opt_two_redraw': 0x7000e2eed8,
         'opt_two_select': 0x7000e3047c,
         'opt_two_state': 0x7000e305d0,

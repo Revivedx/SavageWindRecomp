@@ -268,6 +268,8 @@ $(B)/rt/prof_sampler.o: RTFLAGS += -fms-extensions
 # Windows guarded memory scans use SEH.
 $(B)/rt/memscan_os.o: RTFLAGS += -fms-extensions
 
+$(B)/rt/control_places.o: runtime/control_places_data.inc  # (the generated table of shrines, Koroks ...)
+
 $(B)/rt/%.o: runtime/%.c $(RT_HDRS)
 	@mkdir -p $(dir $@)
 	$(CC) $(RTFLAGS) $(RUNTIME_OPTFLAGS) -c $< -o $@
@@ -644,7 +646,14 @@ $(B)/test_file_size_cache: tools/test_file_size_cache.cpp runtime/ui/file_size_c
 test-file-size-cache: $(B)/test_file_size_cache
 	$(B)/test_file_size_cache
 
-.PHONY: test-game-file-size test-file-size-cache
+$(B)/test_dlc_check: tools/test_dlc_check.c runtime/dlc_check.c runtime/dlc_check.h runtime/romfs_build.c runtime/romfs_build.h
+	@mkdir -p $(B)
+	$(CC) -O1 -std=gnu11 -Wall -Wextra -Werror $(OSFLAGS) -Iruntime -o $@ tools/test_dlc_check.c runtime/dlc_check.c runtime/romfs_build.c
+
+test-dlc-check: $(B)/test_dlc_check
+	$(B)/test_dlc_check
+
+.PHONY: test-game-file-size test-file-size-cache test-dlc-check
 
 # the command layer of the control endpoint (who may run what, the queue, the text)
 $(B)/test_control: tools/test_control.c runtime/control.c runtime/control.h
@@ -657,6 +666,16 @@ test-control: $(B)/test_control
 	env -u SAVAGEWIND_CONTROL SAVAGEWIND_DEV=1 $(B)/test_control dev
 
 .PHONY: test-control
+
+# the named places behind goto (shrine 5, korok H23, stable wetland ...)
+$(B)/test_places: tools/test_places.c runtime/control_places.c runtime/control_places.h runtime/control_places_data.inc
+	@mkdir -p $(B)
+	$(CC) -O1 -g -Wall $(OSFLAGS) -Iruntime -o $@ tools/test_places.c runtime/control_places.c
+
+test-places: $(B)/test_places
+	$(B)/test_places
+
+.PHONY: test-places
 
 # the in-game console's lines, history and completion
 $(B)/test_console_core: tools/test_console_core.c runtime/console_core.c runtime/console_core.h
@@ -719,3 +738,33 @@ test-bloom-scale: $(B)/test_bloom_scale
 	$(B)/test_bloom_scale
 
 .PHONY: test-bloom-scale
+
+# Native quick-selector sorting: synthetic Linux guest memory, no game files.
+ifeq ($(PLATFORM),linux)
+$(B)/test_quick_inventory_sort: tools/test_quick_inventory_sort.c runtime/quick_inventory_sort.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -std=gnu11 -O1 -g $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $<
+
+$(B)/test_gamelib_sites: tools/test_gamelib_sites.c runtime/gamelib.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -std=gnu11 -O1 -g -ffunction-sections -fdata-sections $(OSFLAGS) -Iruntime -o $@ $< -Wl,--gc-sections -ldl
+
+test-quick-inventory-sort: $(B)/test_quick_inventory_sort $(B)/test_gamelib_sites
+	$(B)/test_quick_inventory_sort
+	$(B)/test_gamelib_sites
+
+.PHONY: test-quick-inventory-sort
+
+$(B)/test_quick_hint_font: tools/test_quick_hint_font.cpp runtime/ui/quick_hint_font.mm runtime/ui/quick_hint_font.h \
+                         $(B)/imgui/imgui.o $(B)/imgui/imgui_draw.o $(B)/imgui/imgui_tables.o $(B)/imgui/imgui_widgets.o \
+                         $(B)/rt/services/archive.o $(B)/rt/nvn/tegra.o $(B)/rt/nvn/glyphs.o $(B)/rt/hle/bindings.o
+	@mkdir -p $(B)
+	$(CXX) $(CXXFLAGS) -o $@ $< $(filter %.o,$^) $(TEST_LD) -lSDL3 -lm
+
+# The player supplies RomFS locally; no fonts or game fixtures are distributed.
+test-quick-inventory-font: $(B)/test_quick_hint_font
+	@test -n "$(ROMFS)" || { echo 'Set ROMFS to your own extracted game RomFS directory.'; exit 2; }
+	$(B)/test_quick_hint_font "$(ROMFS)"
+
+.PHONY: test-quick-inventory-font
+endif

@@ -36,6 +36,7 @@ extern "C" {
 #include "../language.h"
 #include "../game_sites.h"
 #include "../nvn/output_scale.h"
+#include "../problem_report.h"
 #include "../settings.h"
 #include "../gamelib.h"
 #include "../color_grade.h"
@@ -93,7 +94,8 @@ enum { KIND_TOGGLE = 0, KIND_CHOICE = 1, KIND_BUTTON = 2 };
 
 enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_COLOUR, P_AUDIO, P_CONTROLS, P_BINDS, P_LANGUAGE, P_ACCESS, P_VIDEO_ADV, P_COUNT };
 // A_FIXED: a greyed row for an input that can never be rebound (Item.arg: 0 Esc, 1 F2); A_BIND: Item.arg is a binding slot (an input, or BIND_ACTION + an action); the next key, mouse button or controller button binds it
-enum Action { A_NONE, A_PAGE, A_BIND, A_BINDS_HEADER, A_RESET_BINDS, A_RESTART, A_QUIT, A_SIZE_LIST, A_FIXED };
+enum Action { A_NONE, A_PAGE, A_BIND, A_BINDS_HEADER, A_RESET_BINDS, A_RESTART, A_QUIT, A_SIZE_LIST, A_FIXED, A_REPORT };
+static char g_report_dir[64];  // Problem report: the folder made this run (its row's description names it)
 
 struct Item {
     int page;
@@ -158,7 +160,11 @@ const char *const k_aniso[] = {"Off", "2x", "4x", "8x", "16x"};  // (settings an
 // (shown with Potato first, the nearest: k_drawdist_order maps a row index to settings.h DRAWDIST_*)
 const char *const k_drawdist[] = {"Original", "High", "Savage", "Potato"};  // (settings.h DRAWDIST_*; the ini: medium, high)
 const int k_drawdist_order[] = {DRAWDIST_POTATO, DRAWDIST_ORIGINAL, DRAWDIST_MEDIUM, DRAWDIST_HIGH};
-constexpr int k_haze[] = HAZE_CHOICES;  // percent (Video > Haze)
+constexpr int k_haze[] = HAZE_CHOICES;
+// Accessibility > Weapon wear: percent of the game's wear, a name and the factor shown beside it
+constexpr int k_wear[] = {0, 50, 100, 150, 200, 250, 300};
+const char *const k_wear_name[] = {"Fairy", "Peter Pan", "Hylian", "Hero", "Master", "Legend", "Dude, are you ok?"};
+const char *const k_wear_times[] = {"0x", "0.5x", "1x", "1.5x", "2x", "2.5x", "3x"};  // percent (Video > Haze)
 // (shown with Potato first, the smallest: k_shadow_order maps a row index to settings.h SHADOW_*)
 const char *const k_shadow[] = {"Console (896)", "High (2048)", "Ultra (4096)", "Savage (8192)", "Potato (448)"};  // (SHADOW_*)
 const int k_shadow_order[] = {SHADOW_POTATO, SHADOW_CONSOLE, SHADOW_HIGH, SHADOW_ULTRA, SHADOW_EXTREME};
@@ -320,6 +326,16 @@ void build_items(void) {
     v.push_back(button(P_MAIN, "Key bindings", "Which key, mouse button or controller button does what.", "Open", A_PAGE, P_BINDS));
     v.push_back(button(P_MAIN, "Language", "Language of the texts and of the voices.", "Open", A_PAGE, P_LANGUAGE));
     v.push_back(button(P_MAIN, "Accessibility", "Assists that make the game easier.", "Open", A_PAGE, P_ACCESS));
+    v.push_back(button(P_MAIN, "Problem report",
+                       "A folder to attach to a bug report: the log of the last two runs, your settings and a short "
+                       "system summary. No game files and no saves.",
+                       "Make", A_REPORT, 0));
+    v.back().desc_fn = [](const Item &it) {
+        static char buf[256];
+        if (!g_report_dir[0]) return it.desc;
+        snprintf(buf, sizeof buf, tr("Made the folder %s. Attach its files to your report."), g_report_dir);
+        return (const char *)buf;
+    };
     v.push_back(button(P_MAIN, "Quit game", "To the desktop, or back to the Savage Wind start screen.", "Quit",
                        A_QUIT, 0));
 
@@ -588,6 +604,11 @@ void build_items(void) {
                        [](const Item &) { return N(k_text); }, [](const Item &, int x) { return tr(k_text[x]); },
                        [](const Item &) { return g_settings.sharper_text / 2; },
                        [](const Item &, int x) { g_settings.sharper_text = x * 2; }, 0));
+    // the menus' one-channel textures enlarged the same way (runtime/nvn/text_upscale.c): read when the game starts
+    v.push_back(choice(P_GAMEPLAY, "Sharper menus", "Upscales the shapes and frames of the menus, after a restart. Not the original art.",
+                       [](const Item &) { return N(k_text); }, [](const Item &, int x) { return tr(k_text[x]); },
+                       [](const Item &) { return g_settings.sharper_menus / 2; },
+                       [](const Item &, int x) { g_settings.sharper_menus = x * 2; }, 0));
 
 #ifndef __APPLE__
     // Colour (runtime/color_grade.h; vulkan/exec.c scene_post): the 3D image only, the HUD keeps its colours. The preset
@@ -658,6 +679,12 @@ void build_items(void) {
                        [](const Item &, int x) { g_settings.color_lut_strength = x * 10; }, 10));
 #endif
 
+    // Gameplay
+    v.push_back(toggle(P_GAMEPLAY, "Quick inventory sorting",
+                       "Sort weapons, bows and shields in the quick selector. Requires game version 1.9.0.",
+                       [](const Item &) { return (int)g_settings.quick_sort; },
+                       [](const Item &, int x) { g_settings.quick_sort = x; }, 0));
+
     // Audio
     v.push_back(choice(P_AUDIO, "Volume", "The game's volume. 100% is its own level.",
                        [](const Item &) { return 21; },
@@ -684,7 +711,9 @@ void build_items(void) {
                        [](const Item &) { return (int)g_settings.rumble; },
                        [](const Item &, int x) { g_settings.rumble = x; }, 1));
     v.push_back(toggle(P_CONTROLS, "Free camera with both sticks",
-                       "Clicking both sticks together turns the free camera on and off. Home on the keyboard always does.",
+                       "Clicking both sticks together turns the free camera on and off. Home on the keyboard always does. "
+                       "While it's on: F8 or d-pad up changes the filter, [ and ] or d-pad left and right the hour, F7 or "
+                       "d-pad down saves a picture in the screenshots folder.",
                        [](const Item &) { return (int)g_settings.freecam_sticks; },
                        [](const Item &, int x) { g_settings.freecam_sticks = x; }, 1));
     v.push_back(toggle(P_CONTROLS, "D-pad as left stick", "The d-pad also moves like the left stick.",
@@ -855,9 +884,22 @@ void build_items(void) {
         it.set = [](const Item &i, int x) { (i.arg ? g_settings.damage_dealt : g_settings.damage_taken) = k_damage[x]; };
         v.push_back(it);
     }
-    v.push_back(toggle(P_ACCESS, "Unbreakable weapons", "Weapons, bows and shields lose no durability and never break.",
-                       [](const Item &) { return (int)g_settings.no_weapon_wear; },
-                       [](const Item &, int x) { g_settings.no_weapon_wear = x; }, 0));
+    // Weapon wear (assists.c rt_life_cost): Fairy never wears out (what Unbreakable weapons was), Hylian is the game's
+    v.push_back(choice(P_ACCESS, "Weapon wear", "How fast weapons, bows and shields wear out. Fairy: never. Hylian: the game's own.",
+                       [](const Item &) { return N(k_wear); },
+                       [](const Item &, int x) {
+                           static char buf[4][64];
+                           static int k;
+                           char *b = buf[k++ & 3];
+                           snprintf(b, sizeof buf[0], "%s (%s)", tr(k_wear_name[x]), k_wear_times[x]);
+                           return (const char *)b;
+                       },
+                       [](const Item &) { return nearest(k_wear, N(k_wear), (float)g_settings.weapon_wear); },
+                       [](const Item &, int x) {
+                           g_settings.weapon_wear = k_wear[x];
+                           g_settings.no_weapon_wear = k_wear[x] == 0;
+                       },
+                       2));
     v.push_back(toggle(P_ACCESS, "Infinite arrows", "Shooting a bow uses up no arrows. You still need one to shoot.",
                        [](const Item &) { return (int)g_settings.infinite_arrows; },
                        [](const Item &, int x) { g_settings.infinite_arrows = x; }, 0));
@@ -1710,6 +1752,10 @@ extern "C" int rt_opt_decide(uint64_t row) {
         return 2;
     case A_QUIT:
         return 3;
+    case A_REPORT: {  // (runtime/problem_report.c) made in the data folder; no file manager over the game
+        snprintf(g_report_dir, sizeof g_report_dir, "%s", problem_report_make());
+        return 2;
+    }
     }
     return 2;
 }
