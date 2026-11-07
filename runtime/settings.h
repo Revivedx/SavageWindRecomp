@@ -72,6 +72,7 @@ typedef struct {
     bool movie_audio;
     int perf_overlay;    // PERF_*: the performance overlay (F10 cycles it)
     int fps_limit;       // frame rate, frames per second (FPS_CHOICES; 0: no limit)
+    bool fps_display;    // Frame rate > Match display: fps_limit follows the display (settings_fps_for_display)
     int vsync;           // VSYNC_*
     bool rumble;         // controller vibration
     bool freecam_sticks; // both stick clicks together turn the free camera on and off (hle/input.c)
@@ -139,3 +140,6 @@ extern Settings g_settings;
 
 void settings_load(void);
 void settings_save(void);
+// Frame rate > Match display: fps_limit becomes the highest offered rate the display (hz) can show, at least 30 (a
+// 280 Hz display: 240; a 60 Hz one: 60). Nothing with another rate chosen or hz unknown (runtime/window_size.c).
+void settings_fps_for_display(float hz);

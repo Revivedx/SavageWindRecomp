@@ -276,6 +276,7 @@ static void refresh_display(SDL_DisplayID d) {
     WinSize desk = {(int)lroundf(dm->w * density), (int)lroundf(dm->h * density)};
     const SDL_DisplayMode *cur = SDL_GetCurrentDisplayMode(d);  // (exclusive fullscreen: the mode in use)
     float hz = cur && cur->refresh_rate > 0 ? cur->refresh_rate : dm->refresh_rate;
+    settings_fps_for_display(hz);  // (Frame rate > Match display)
     pthread_mutex_lock(&g_m);
     g_hz = hz;
     bool known = d == g_display && same(desk, g_desk);

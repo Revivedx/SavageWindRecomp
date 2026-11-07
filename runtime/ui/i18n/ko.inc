@@ -447,6 +447,7 @@ T("To change settings or the game files later, open Savage Wind Configuration.",
 T("To change settings or the game files later, start Savage Wind with --config.", "나중에 설정이나 게임 파일을 변경하려면 --config 옵션으로 Savage Wind를 시작하세요.")
 T("To change settings or the game files later, hold Option while you open Savage Wind.", "나중에 설정이나 게임 파일을 변경하려면 Option 키를 누른 채로 Savage Wind를 여세요.")
 T("%d FPS", "")
+T("Match display", "디스플레이에 맞춤")
 T("Frame rate", "프레임 레이트")
 T("Game speed stays the same at every rate. Your display: %d Hz.", "어떤 프레임 레이트에서도 게임 속도는 같습니다. 화면: %d Hz.")
 T("Game speed stays the same at every rate.", "어떤 프레임 레이트에서도 게임 속도는 같습니다.")
