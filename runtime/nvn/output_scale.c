@@ -60,7 +60,20 @@ bool fsr4_offered(void) {
 #endif
 }
 
-bool rt_fsr4(void) { return g_settings.upscaler == UPSCALE_FSR4 && upscaler_available(UPSCALE_FSR4); }
+// Anti-aliasing FSR 4: FSR 4 at the window's size, the scene in and out at the same size, so nothing is upscaled. Not
+// held back with the upscaler (fsr3_upscaler_enabled): what holds that back is the motion vectors' cost making a
+// smaller render slower than native, and TAA, which this replaces, already pays for them. Only with Upscaler Off (FSR 1
+// renders smaller: FSR 4 would upscale), else TAA.
+static bool fsr4_native_aa(void) {
+#ifdef __APPLE__
+    return false;
+#else
+    return g_settings.antialias == AA_FSR4 && g_settings.upscaler == UPSCALE_OFF && fsr4_available();
+#endif
+}
+bool rt_fsr4(void) {
+    return (g_settings.upscaler == UPSCALE_FSR4 && upscaler_available(UPSCALE_FSR4)) || fsr4_native_aa();
+}
 // FSR 4 takes the same inputs and does the same jobs (anti-aliasing, sharpening) as FSR 3: everything that asks for
 // FSR 3 asks for either; vulkan/exec.c fsr3_scene picks the one to run
 bool rt_fsr3(void) { return (g_settings.upscaler == UPSCALE_FSR3 && upscaler_available(UPSCALE_FSR3)) || rt_fsr4(); }
@@ -334,7 +347,7 @@ int rt_antialias(void) {
             if (e) e++;
         }
     }
-    int r = g_settings.antialias;
+    int r = g_settings.antialias == AA_FSR4 ? AA_TAA_OR_SMAA : g_settings.antialias;  // (FSR 4 wants all TAA does)
     uint64_t frame = n ? renderer_present_count() : 0;
     for (int i = 0; i < n; i++)
         if (frame >= at[i]) r = mode[i];

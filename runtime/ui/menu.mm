@@ -950,13 +950,22 @@ static void tab_display(void) {
                "blends only along them, so textures stay sharp. Most useful with an upscaler.");
 #else
     {   // (the TAA sentence on its own: the first one keeps its translations)
-        static const char *aa[] = {"Off", "SMAA", "TAA"};  // (settings.h AA_*)
+        // (AMD FSR 4: greyed without an AMD Radeon and AMD's DLLs, output_scale.c rt_fsr4)
+        static std::string fsr4;
+        fsr4 = fsr4_offered() ? std::string(tr("AMD FSR 4")) : std::string(tr("FSR 4")) + " " + tr("(AMD Radeon only)");
+        const char *aa[] = {"Off", "SMAA", "TAA", fsr4.c_str()};  // (settings.h AA_*)
+        bool aa_ok[] = {true, true, true, fsr4_offered()};
         static std::string d;
         d = std::string(tr("Smooths jagged edges of the game image before it is scaled to the window. SMAA: finds the "
                            "edges and blends only along them, so textures stay sharp. Most useful with an upscaler.")) +
             " " + tr("TAA: blends each frame with the ones before it, following the game's motion, so edges stay "
                      "smooth and stop shimmering; slightly softer, use it with Sharpening.");
-        opt_choice("Anti-aliasing", &g_settings.antialias, aa, 3, AA_OFF, d.c_str());
+        if (fsr4_offered())  // (its own sentence: the ones above keep their translations)
+            d += std::string(" ") + tr("AMD FSR 4: TAA's job done by AMD's machine learning, at full resolution (nothing is "
+                                       "upscaled): sharper and steadier. Sharpening sets its own sharpening. With "
+                                       "Upscaler Off; with an upscaler it is TAA.");
+        static int aa_shown = -1;
+        opt_choice_avail("Anti-aliasing", &g_settings.antialias, &aa_shown, aa, aa_ok, 4, AA_OFF, d.c_str());
     }
     // the game's own FXAA (vulkan/exec.c fxaa_patch)
     opt_toggle("Game's FXAA", &g_settings.game_fxaa, true,
