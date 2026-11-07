@@ -290,6 +290,7 @@ T("Esc or B stops it: what is done is kept.", "Esc หรือ B เพื่�
 T("Precompiling shaders", "กำลังคอมไพล์เชดเดอร์ล่วงหน้า")
 T("Setting up the game files...", "กำลังตั้งค่าไฟล์เกม...")
 T("main build id %s", "build id ของ main %s")
+T("Shaders out of date: see Game Files.", "เชดเดอร์ล้าสมัย: ดูที่ไฟล์เกม")
 T("Set up the game files to play.", "ตั้งค่าไฟล์เกมเพื่อเล่น")
 T("Version %s", "เวอร์ชัน %s")
 T("Display", "จอภาพ")
