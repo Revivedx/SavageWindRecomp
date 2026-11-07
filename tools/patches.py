@@ -375,6 +375,22 @@ def _kf_angle(gen, a):
             f'c->v[0] = r.u; }}  /* {a:#x}: bl {target:#x} (keyframed body: angle of the turn left) */')
 
 
+# The physics step's impulse entries (runtime/hle/framepace.c rt_impulse_flush_due): the game notes a pair of bodies
+# when Havok reports their collision (ContactMgr::addImpulseEntry, with their speeds) and fills the note in at the
+# pair's first contact point (setImpulseEntryContactInfo, only if a note exists); a note that got no contact point
+# is thrown away by processImpulseEntries, called once right after every Havok step (1.9.0 0x700156f36c), and the
+# filled in ones become the hits that make a door, a crate or a breakable react. Above 60 fps the contact point comes
+# more steps after the collision, so the note is gone and the hit is lost. The runtime runs it every Nth step.
+
+def _impulse_flush(gen, a):
+    w = _word(gen, a)
+    assert w >> 26 == 0x25, hex(w)  # bl ContactMgr::processImpulseEntries
+    t = a + sext(w & 0x3FFFFFF, 26) * 4
+    return (f'{{ extern int rt_impulse_flush_due(void); extern void f_{t:x}(Cpu *); '
+            f'if (rt_impulse_flush_due()) {{ c->x[30] = {a + 4:#x}ull; f_{t:x}(c); }} }}'
+            f'  /* {a:#x}: bl {t:#x} (ContactMgr::processImpulseEntries) */')
+
+
 # The sound system's frame (runtime/hle/framepace.c rt_snd_frame_floor, #145): once a frame the game hands its sound
 # system the delta frame, at least 0.5 (1.9.0 0x7001551004; 1.8.2 0x710143ce64 in the Ghidra project): in console
 # frames, with the frame rate (30) it makes the seconds every sound timer and fade steps by. The floor is a 60 fps
@@ -894,6 +910,7 @@ PATCHES = {
     'stale_actor_target': _stale_actor_target,
     'phys_solver_steps': _solver_steps,
     'kf_angle': _kf_angle,
+    'impulse_flush': _impulse_flush,
     'snd_frame_floor': _snd_frame_floor,
     'persp_matrix': _persp_matrix,
     'persp_matrix_offset': _persp_matrix_offset,
