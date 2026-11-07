@@ -260,6 +260,7 @@ const char *ups_label(const Item &, int x) {
 
 const char *fps_label(const Item &, int x) {
     static char buf[32];
+    if (x == N(k_fps)) return tr("Match display");  // (settings fps_display)
     if (!k_fps[x]) return tr("Off");
     snprintf(buf, sizeof buf, tr("%d FPS"), k_fps[x]);
     return buf;
@@ -412,13 +413,19 @@ void build_items(void) {
                        [](const Item &) { return nearest(k_haze, N(k_haze), (float)g_settings.haze); },
                        [](const Item &, int x) { g_settings.haze = k_haze[x]; }, N(k_haze) - 1));
     Item fps = choice(P_VIDEO, "Frame rate", "",
-                      [](const Item &) { return N(k_fps); }, fps_label,
+                      [](const Item &) { return N(k_fps) + 1; }, fps_label,
                       [](const Item &) {
+                          if (g_settings.fps_display) return N(k_fps);
                           for (int i = 0; i < N(k_fps); i++)
                               if (k_fps[i] == g_settings.fps_limit) return i;
                           return FPS_DEFAULT_INDEX;
                       },
-                      [](const Item &, int x) { g_settings.fps_limit = k_fps[x]; }, FPS_DEFAULT_INDEX);
+                      [](const Item &, int x) {
+                          g_settings.fps_display = x == N(k_fps);
+                          if (g_settings.fps_display) settings_fps_for_display(winsize_refresh_rate());
+                          else g_settings.fps_limit = k_fps[x];
+                      },
+                      FPS_DEFAULT_INDEX);
     fps.desc_fn = [](const Item &) {  // (one line)
         static char buf[256];
         int hz = (int)lroundf(winsize_refresh_rate());

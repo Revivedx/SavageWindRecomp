@@ -447,6 +447,7 @@ T("To change settings or the game files later, open Savage Wind Configuration.",
 T("To change settings or the game files later, start Savage Wind with --config.", "Чтобы позже изменить настройки или файлы игры, запустите Savage Wind с параметром --config.")
 T("To change settings or the game files later, hold Option while you open Savage Wind.", "Чтобы позже изменить настройки или файлы игры, удерживайте клавишу Option при открытии Savage Wind.")
 T("%d FPS", "%d к/с")
+T("Match display", "Как у дисплея")
 T("Frame rate", "Частота кадров")
 T("Game speed stays the same at every rate. Your display: %d Hz.", "Скорость игры одинакова при любой частоте. Ваш экран: %d Гц.")
 T("Game speed stays the same at every rate.", "Скорость игры одинакова при любой частоте.")

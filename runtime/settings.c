@@ -90,6 +90,16 @@ static void gyro_startup_overrides(void) {
     v = getenv("SAVAGEWIND_GYRO_SCENE");
     if (v && *v) g_settings.gyro_scene = atoi(v) != 0;
 }
+void settings_fps_for_display(float hz) {
+    if (!g_settings.fps_display || hz < 20) return;
+    static const int fps[] = FPS_CHOICES;
+    int best = 30;
+    for (unsigned i = 0; i < sizeof fps / sizeof fps[0]; i++)
+        if (fps[i] && fps[i] <= hz + 1 && fps[i] > best) best = fps[i];
+    if (g_settings.fps_limit != best) LOG("[settings] frame rate %d (Match display: %.0f Hz)\n", best, hz);
+    g_settings.fps_limit = best;
+}
+
 void settings_load(void) {
     static bool loaded;
     if (loaded) return;
@@ -130,7 +140,10 @@ void settings_load(void) {
         else if (!strcmp(key, "movie_audio")) g_settings.movie_audio = atoi(val) != 0;
         else if (!strcmp(key, "show_fps")) g_settings.perf_overlay = atoi(val) ? PERF_FPS : PERF_OFF;  // (older files)
         else if (!strcmp(key, "perf_overlay")) g_settings.perf_overlay = !strcmp(val, "full") ? PERF_FULL : !strcmp(val, "fps") ? PERF_FPS : PERF_OFF;
-        else if (!strcmp(key, "frame_rate")) g_settings.fps_limit = !strcmp(val, "off") ? 0 : atoi(val);  // (fps / off)
+        else if (!strcmp(key, "frame_rate")) {  // (fps / off / display)
+            g_settings.fps_display = !strcmp(val, "display");
+            if (!g_settings.fps_display) g_settings.fps_limit = !strcmp(val, "off") ? 0 : atoi(val);
+        }
         else if (!strcmp(key, "vsync")) {
             for (int i = 0; i < VSYNC_COUNT; i++)
                 if (!strcmp(val, k_vsync[i])) g_settings.vsync = i;
@@ -278,6 +291,7 @@ void settings_load(void) {
             if (abs(fps[i] - g_settings.fps_limit) < abs(best - g_settings.fps_limit)) best = fps[i];
         g_settings.fps_limit = best;
     }
+    { extern float winsize_refresh_rate(void); settings_fps_for_display(winsize_refresh_rate()); }  // (a reboot: known)
     if (!(g_settings.mouse_sens >= 0.1f && g_settings.mouse_sens <= 10.0f)) g_settings.mouse_sens = MOUSE_SENS_DEFAULT;
     if (!(g_settings.mouse_sens_y >= 0.5f && g_settings.mouse_sens_y <= 2.0f)) g_settings.mouse_sens_y = 1.0f;
     if (!(g_settings.motion_sens >= 0.1f && g_settings.motion_sens <= 10.0f)) g_settings.motion_sens = 1.0f;
@@ -316,7 +330,9 @@ void settings_save(void) {
         fprintf(f, "window_size = %dx%d\n", g_settings.window_w, g_settings.window_h);
     else
         fprintf(f, "window_size = default\n");
-    if (g_settings.fps_limit > 0)
+    if (g_settings.fps_display)
+        fprintf(f, "frame_rate = display\n");
+    else if (g_settings.fps_limit > 0)
         fprintf(f, "frame_rate = %d\n", g_settings.fps_limit);
     else
         fprintf(f, "frame_rate = off\n");

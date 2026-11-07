@@ -447,6 +447,7 @@ T("To change settings or the game files later, open Savage Wind Configuration.",
 T("To change settings or the game files later, start Savage Wind with --config.", "Para mudar as configurações ou os arquivos do jogo depois, inicie o Savage Wind com --config.")
 T("To change settings or the game files later, hold Option while you open Savage Wind.", "Para mudar as configurações ou os arquivos do jogo depois, mantenha a tecla Option pressionada ao abrir o Savage Wind.")
 T("%d FPS", "")
+T("Match display", "Igual à tela")
 T("Frame rate", "Quadros por segundo")
 T("Game speed stays the same at every rate. Your display: %d Hz.", "A velocidade do jogo é a mesma em qualquer taxa. Sua tela: %d Hz.")
 T("Game speed stays the same at every rate.", "A velocidade do jogo é a mesma em qualquer taxa.")

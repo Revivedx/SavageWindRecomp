@@ -447,6 +447,7 @@ T("To change settings or the game files later, open Savage Wind Configuration.",
 T("To change settings or the game files later, start Savage Wind with --config.", "以后要更改设置或游戏文件，请用--config启动Savage\u00a0Wind。")
 T("To change settings or the game files later, hold Option while you open Savage Wind.", "以后要更改设置或游戏文件，请按住Option键打开Savage\u00a0Wind。")
 T("%d FPS", "")
+T("Match display", "匹配显示器")
 T("Frame rate", "帧率")
 T("Game speed stays the same at every rate. Your display: %d Hz.", "任何帧率下游戏速度都相同。你的显示器：%d Hz。")
 T("Game speed stays the same at every rate.", "任何帧率下游戏速度都相同。")

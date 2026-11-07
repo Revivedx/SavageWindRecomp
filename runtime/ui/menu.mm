@@ -802,7 +802,7 @@ static void tab_display(void) {
         static const int fps[] = FPS_CHOICES;
         enum { NF = sizeof fps / sizeof fps[0] };
         static char names_buf[NF][32];
-        const char *names[NF];
+        const char *names[NF + 1];  // (the rates, then Match display)
         int cur = 0, def = 0;
         for (int i = 0; i < NF; i++) {
             if (fps[i]) snprintf(names_buf[i], sizeof names_buf[i], tr("%d FPS"), fps[i]);
@@ -810,6 +810,8 @@ static void tab_display(void) {
             if (fps[i] == g_settings.fps_limit) cur = i;
             if (fps[i] == FPS_DEFAULT) def = i;
         }
+        names[NF] = "Match display";
+        if (g_settings.fps_display) cur = NF;
         std::string desc = tr("How many pictures a second the game draws. The game itself runs at the same speed at "
                               "every rate (the console runs it at 30). Higher rates need a faster computer. Menus, "
                               "cutscenes and conversations use it too, and videos play at their own speed. Off: as "
@@ -821,7 +823,11 @@ static void tab_display(void) {
                                            "pictures, and one that divides it evenly is the smoothest."), hz);
             desc += std::string("\n\n") + line;
         }
-        if (opt_choice("Frame rate", &cur, names, NF, def, desc.c_str(), false)) g_settings.fps_limit = fps[cur];
+        if (opt_choice("Frame rate", &cur, names, NF + 1, def, desc.c_str(), false)) {
+            g_settings.fps_display = cur == NF;
+            if (g_settings.fps_display) settings_fps_for_display(winsize_refresh_rate());
+            else g_settings.fps_limit = fps[cur];
+        }
     }
     {   // VSync (settings.h VSYNC_*: runtime/nvn/vulkan/device.c, runtime/hle/framepace.c)
         static const char *const names[VSYNC_COUNT] = {"On", "Fast", "Adaptive", "Off"};
