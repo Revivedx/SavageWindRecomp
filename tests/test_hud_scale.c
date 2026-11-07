@@ -57,5 +57,34 @@ int main(void) {
     assert(hud_quick_keeps(0, 0.27f, 1, 1) && hud_quick_keeps(-0.5f, 0.3f, 1, 1) && hud_quick_keeps(0.64f, 0.63f, 1, 1));
     assert(!hud_quick_keeps(-0.85f, 0.85f, 1, 1) && !hud_quick_keeps(0.8f, -0.75f, 1, 1) && !hud_quick_keeps(0.5f, -0.8f, 1, 1));
 
+    // HUD at edges on taller windows (shape < 1)
+    assert(NEAR(hud_edge_dy(0.8f, 0.8f, 0.8f), 0.2f));
+    assert(NEAR(hud_edge_dy(-0.8f, 0.8f, 0.8f), -0.2f));
+    assert(NEAR(hud_edge_dy(0, 0.8f, 0.8f), 0));
+    assert(NEAR(hud_edge_dy(0.8f, 0.8f, 1.2f), 0));  // (wide window: no vertical edge shift)
+
+    // Top and bottom pane view matrices shifted to window edges
+    float v_top[12] = {1, 0, 0, -600, 0, 1, 0, 300, 0, 0, 1, -1000};
+    project(v_top, m00, m11, 0, 0, &x0, &y0);
+    hud_edge_view(v_top, m11, 0.2f);
+    project(v_top, m00, m11, 0, 0, &a0, &b0);
+    assert(NEAR(a0, x0) && NEAR(b0, y0 + 0.2f));
+
+    float v_bot[12] = {1, 0, 0, 600, 0, 1, 0, -300, 0, 0, 1, -1000};
+    project(v_bot, m00, m11, 0, 0, &x0, &y0);
+    hud_edge_view(v_bot, m11, -0.2f);
+    project(v_bot, m00, m11, 0, 0, &a0, &b0);
+    assert(NEAR(a0, x0) && NEAR(b0, y0 - 0.2f));
+
+    // Matrix with view in it (clock, text)
+    float m_top[16] = {0.002f, 0, 0, 0.8f, 0, -0.003f, 0, 0.6f, 0, 0, 0, 0, 0, 0, -1, 1};
+    hud_edge_matrix(m_top, 0.2f);
+    assert(NEAR(m_top[7] / m_top[15], 0.8f));
+
+    // Scissor vertical offset on 1080h display with shape 0.8 (shift is 540 * 0.2 = 108)
+    assert(NEAR(hud_edge_scissor_dy(900, 1080, 0.8), 108.0));
+    assert(NEAR(hud_edge_scissor_dy(180, 1080, 0.8), -108.0));
+    assert(NEAR(hud_edge_scissor_dy(540, 1080, 0.8), 0.0));
+
     puts("PASS: hud_scale");
 }

@@ -785,6 +785,12 @@ static void tab_display(void) {
                        "16:9."))
             g_settings.wide_view = wv;
     }
+    {   // HUD at edges
+        bool he = g_settings.hud_edges;
+        if (opt_toggle("HUD at edges", &he, false,
+                       "On windows taller than 16:9 with Fill wide screens, anchors the top and bottom HUD to the window edges."))
+            g_settings.hud_edges = he;
+    }
     {   // Field of view (runtime/nvn/output_scale.c rt_persp)
         static const int fov[] = FOV_CHOICES;
         enum { NV = sizeof fov / sizeof fov[0] };

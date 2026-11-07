@@ -40,7 +40,7 @@ static const Setting settings[] = {
     F(motion_sens, .1, 10), I(motion_invert, 0, 3, "off|up_down|left_right|both"),
     I(button_icons, 0, ICONS_COUNT - 1, "auto|keyboard|xbox|playstation|nintendo"),
     B(async_shaders), B(precompile_shaders), B(quick_sort),
-    I(shadow_res, 0, SHADOW_COUNT - 1, "console|high|ultra|extreme|potato"), B(wide_view),
+    I(shadow_res, 0, SHADOW_COUNT - 1, "console|high|ultra|extreme|potato"), B(wide_view), B(hud_edges),
     I(hdr, 0, HDR_COUNT - 1, "auto|on|off"), I(hdr_white, 0, 1000, NULL),
     I(fov, 50, 200, NULL), I(hud_size, 50, 150, NULL), B(bloom), B(depth_of_field),
     B(dynamic_res), B(fast_fma),I(color_exposure, -20, 20, NULL), I(color_contrast, -50, 50, NULL),

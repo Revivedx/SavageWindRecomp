@@ -53,6 +53,7 @@ Settings g_settings = {
     .vsync = VSYNC_DEFAULT,
     .gpu = -1,
     .wide_view = true,
+    .hud_edges = false,
     .fov = 100,
     .hud_size = 100,
     .color_lut_strength = 100,
@@ -221,6 +222,7 @@ void settings_load(void) {
         else if (!strcmp(key, "async_shaders")) g_settings.async_shaders = atoi(val) != 0;
         else if (!strcmp(key, "precompile_shaders")) g_settings.precompile_shaders = atoi(val) != 0;
         else if (!strcmp(key, "wide_view")) g_settings.wide_view = atoi(val) != 0;
+        else if (!strcmp(key, "hud_edges")) g_settings.hud_edges = atoi(val) != 0;
         else if (!strcmp(key, "hdr")) {
             for (int i = 0; i < HDR_COUNT; i++)
                 if (!strcmp(val, k_hdr[i])) g_settings.hdr = i;
@@ -423,6 +425,7 @@ void settings_save(void) {
     fprintf(f, "sharper_menus = %s\n", g_settings.sharper_menus == 4 ? "4x" : g_settings.sharper_menus == 2 ? "2x" : "off");
     fprintf(f, "sharper_text = %s\n", g_settings.sharper_text == 4 ? "4x" : g_settings.sharper_text == 2 ? "2x" : "off");
     fprintf(f, "wide_view = %d\n", g_settings.wide_view);
+    fprintf(f, "hud_edges = %d\n", g_settings.hud_edges);
     fprintf(f, "hdr = %s\n", k_hdr[g_settings.hdr >= 0 && g_settings.hdr < HDR_COUNT ? g_settings.hdr : HDR_AUTO]);
     fprintf(f, "sparse_heap = %s\n", k_sparse_heap[g_settings.sparse_heap >= 0 && g_settings.sparse_heap < SPARSE_HEAP_COUNT ?
                                                        g_settings.sparse_heap : SPARSE_HEAP_AUTO]);

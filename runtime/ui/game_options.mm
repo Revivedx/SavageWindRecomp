@@ -412,6 +412,9 @@ void build_items(void) {
     v.push_back(toggle(P_VIDEO, "Fill wide screens", "Shows more of the world on screens that aren't 16:9 (wider or taller), instead of bars.",
                        [](const Item &) { return (int)g_settings.wide_view; },
                        [](const Item &, int x) { g_settings.wide_view = x; }, 1));
+    v.push_back(toggle(P_VIDEO, "HUD at edges", "On windows taller than 16:9 with Fill wide screens, anchors the top and bottom HUD to the window edges.",
+                       [](const Item &) { return (int)g_settings.hud_edges; },
+                       [](const Item &, int x) { g_settings.hud_edges = x; }, 0));
     v.push_back(choice(P_VIDEO, "Field of view", "How much the camera shows in play. Cutscenes keep their own.",
                        [](const Item &) { return N(k_fov); },
                        [](const Item &, int x) {

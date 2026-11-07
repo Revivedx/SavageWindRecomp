@@ -2350,6 +2350,11 @@ static VkRect2D scissor_rect(void) {
         if (y > 0 || y + sh < gh - 0.5) {
             double c = gh / 2, y0 = c + (y - c) * shape, y1 = c + (y + sh - c) * shape;
             y = (int)floor(y0); sh = (int)ceil(y1) - y;
+            if (g_settings.hud_edges) {
+                double sdy = hud_edge_scissor_dy((y0 + y1) / 2.0, gh, shape);
+                if (sdy != 0 && !(hud_quick && fabsf((float)((y0 + y1) / gh - 1.0)) < 0.6f))
+                    y += (int)round(sdy);
+            }
         }
     }
     float hud_s = pass_out && sw < 16384 && sh < 16384 && pass_sx > 0 && pass_sy > 0 ? hud_scale_now() : 1;
@@ -4552,6 +4557,8 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
     if (!tb || tb->rs_group != RS_OUT) return false;
     float hud_s = hud_scale_now();
     if (shape == 1 && hud_s == 1) return false;
+    bool hud_edge_active = g_settings.hud_edges && shape < 1 && !framepace_menu_ui() &&
+                           !framepace_title_ui() && !framepace_loading_ui();
     float edge_x = 1 / fmaxf(shape, 1), edge_y = fminf(shape, 1);  // (where the 16:9 HUD ends on this window)
     const float *g = (const float *)(uintptr_t)addr;
     // ui2d text combines the projection and each label's position into this smaller, Y-flipped matrix.
@@ -4582,6 +4589,11 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         float tx = buf[3] / buf[15], ty = buf[7] / buf[15];
         if (hud_s != 1 && !(hud_quick && hud_quick_keeps(tx, ty, edge_x, edge_y)))
             hud_scale_matrix(buf, hud_s, hud_anchor(tx, edge_x), hud_anchor(ty, edge_y));
+        if (hud_edge_active && !(hud_quick && hud_quick_keeps(tx, ty, edge_x, edge_y))) {
+            float ay = hud_anchor(ty, edge_y);
+            float dy = hud_edge_dy(ay, edge_y, shape);
+            if (dy != 0) hud_edge_matrix(buf, dy);
+        }
         *out = ubo_span(vk_transient_copy(buf, n, 256), n);
         return true;
     }
@@ -4631,7 +4643,8 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
     // Gameplay > HUD size: a pane of a 40-degree layer, and not one over about the whole screen (a fade, a picture)
     float hud_ax = 0, hud_ay = 0;
     bool hud_scale = false;
-    if (hud_s != 1 && size >= 28 * 4 && fabsf((tall ? m11 / shape : m11) - 2.74748f) < 0.001f) {
+    float edge_dy = 0;
+    if ((hud_s != 1 || hud_edge_active) && size >= 28 * 4 && fabsf((tall ? m11 / shape : m11) - 2.74748f) < 0.001f) {
         const float *mv = g + 16, *rc = g + 33 * 4;
         bool has_rect = size >= 34 * 16 && rc[0] > 0 && rc[1] > 0;
         float x0 = 1e9f, x1 = -1e9f, y0 = 1e9f, y1 = -1e9f;
@@ -4645,14 +4658,20 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         }
         if (x1 - x0 >= 1.8f * edge_x || y1 - y0 >= 1.8f * edge_y) hud_scale = false;
         if (hud_quick && hud_quick_keeps((x0 + x1) / 2, (y0 + y1) / 2, edge_x, edge_y)) hud_scale = false;
-        hud_ax = hud_anchor((x0 + x1) / 2, edge_x), hud_ay = hud_anchor((y0 + y1) / 2, edge_y);
+        if (hud_scale) {
+            hud_ax = hud_anchor((x0 + x1) / 2, edge_x);
+            hud_ay = hud_anchor((y0 + y1) / 2, edge_y);
+            hud_scale = hud_s != 1;
+            if (hud_edge_active) edge_dy = hud_edge_dy(hud_ay, edge_y, shape);
+        }
     }
-    if (m00 == g[0] && m11 == g[5] && !hud_scale) return false;
+    if (m00 == g[0] && m11 == g[5] && !hud_scale && edge_dy == 0) return false;
     static float buf[0x10000 / 4];
     uint64_t n = size > sizeof buf ? sizeof buf : size;
     memcpy(buf, g, n);
     buf[0] = m00, buf[5] = m11;
     if (hud_scale) hud_scale_view(buf + 16, hud_s, m00, m11, hud_ax, hud_ay);
+    if (edge_dy != 0) hud_edge_view(buf + 16, m11, edge_dy);
     *out = ubo_span(vk_transient_copy(buf, n, 256), n);
     return true;
 }
