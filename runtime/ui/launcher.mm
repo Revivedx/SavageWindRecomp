@@ -50,6 +50,7 @@ extern "C" {
 #include "gamelib.h"
 #include "game_versions.h"
 #include "romfs_build.h"
+#include "problem_report.h"
 #include "settings.h"
 #include "color_grade.h"
 #include "pc_cursor.h"
@@ -1002,6 +1003,22 @@ static void prelaunch_tab(float sc) {
     if (gamelib_compat()) {  // (runtime/gamelib.h: built for CPUs without AVX2 / FMA)
         ImGui::Spacing();
         ImGui::TextDisabled("%s", tr("Game code: compatible mode (this CPU has no AVX2 / FMA), slower"));
+    }
+    ImGui::Spacing();
+    ImGui::Spacing();
+    heading("Problem report");
+    {
+        static std::string made;
+        if (ImGui::Button(tr("Make a problem report"))) {
+            made = problem_report_make();  // (runtime/problem_report.c)
+            if (!made.empty()) reveal_folder(made);
+        }
+        ImGui::PushTextWrapPos(0);
+        if (made.empty())
+            ImGui::TextDisabled("%s", tr("A folder to attach to a bug report: the log of the last two runs, your settings and "
+                                         "a short system summary. No game files and no saves."));
+        else ImGui::Text(tr("Made the folder %s. Attach its files to your report."), made.c_str());
+        ImGui::PopTextWrapPos();
     }
     ImGui::Spacing();
     ImGui::Spacing();

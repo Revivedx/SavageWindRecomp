@@ -36,6 +36,7 @@ extern "C" {
 #include "../language.h"
 #include "../game_sites.h"
 #include "../nvn/output_scale.h"
+#include "../problem_report.h"
 #include "../settings.h"
 #include "../gamelib.h"
 #include "../color_grade.h"
@@ -93,7 +94,7 @@ enum { KIND_TOGGLE = 0, KIND_CHOICE = 1, KIND_BUTTON = 2 };
 
 enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_COLOUR, P_AUDIO, P_CONTROLS, P_BINDS, P_LANGUAGE, P_ACCESS, P_VIDEO_ADV, P_COUNT };
 // A_FIXED: a greyed row for an input that can never be rebound (Item.arg: 0 Esc, 1 F2); A_BIND: Item.arg is a binding slot (an input, or BIND_ACTION + an action); the next key, mouse button or controller button binds it
-enum Action { A_NONE, A_PAGE, A_BIND, A_BINDS_HEADER, A_RESET_BINDS, A_RESTART, A_QUIT, A_SIZE_LIST, A_FIXED };
+enum Action { A_NONE, A_PAGE, A_BIND, A_BINDS_HEADER, A_RESET_BINDS, A_RESTART, A_QUIT, A_SIZE_LIST, A_FIXED, A_REPORT };
 
 struct Item {
     int page;
@@ -319,6 +320,10 @@ void build_items(void) {
     v.push_back(button(P_MAIN, "Key bindings", "Which key, mouse button or controller button does what.", "Open", A_PAGE, P_BINDS));
     v.push_back(button(P_MAIN, "Language", "Language of the texts and of the voices.", "Open", A_PAGE, P_LANGUAGE));
     v.push_back(button(P_MAIN, "Accessibility", "Assists that make the game easier.", "Open", A_PAGE, P_ACCESS));
+    v.push_back(button(P_MAIN, "Problem report",
+                       "A folder to attach to a bug report: the log of the last two runs, your settings and a short "
+                       "system summary. No game files and no saves.",
+                       "Make", A_REPORT, 0));
     v.push_back(button(P_MAIN, "Quit game", "To the desktop, or back to the Savage Wind start screen.", "Quit",
                        A_QUIT, 0));
 
@@ -1660,6 +1665,10 @@ extern "C" int rt_opt_decide(uint64_t row) {
         return 2;
     case A_QUIT:
         return 3;
+    case A_REPORT: {  // (runtime/problem_report.c) made, then shown in the file manager
+        problem_report_show(problem_report_make());
+        return 2;
+    }
     }
     return 2;
 }
