@@ -524,6 +524,11 @@ void build_items(void) {
                        [](const Item &) { return N(k_text); }, [](const Item &, int x) { return tr(k_text[x]); },
                        [](const Item &) { return g_settings.sharper_text / 2; },
                        [](const Item &, int x) { g_settings.sharper_text = x * 2; }, 0));
+    // the menus' one-channel textures enlarged the same way (runtime/nvn/text_upscale.c): read when the game starts
+    v.push_back(choice(P_GAMEPLAY, "Sharper menus", "Upscales the shapes and frames of the menus, after a restart. Not the original art.",
+                       [](const Item &) { return N(k_text); }, [](const Item &, int x) { return tr(k_text[x]); },
+                       [](const Item &) { return g_settings.sharper_menus / 2; },
+                       [](const Item &, int x) { g_settings.sharper_menus = x * 2; }, 0));
 
 #ifndef __APPLE__
     // Colour (runtime/color_grade.h; vulkan/exec.c scene_post): the 3D image only, the HUD keeps its colours. The preset

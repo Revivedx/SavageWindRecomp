@@ -679,6 +679,9 @@ T("Free camera with both sticks", "กล้องอิสระด้วยส
 T("Clicking both sticks together turns the free camera on and off. Home on the keyboard always does.", "กดสติกทั้งสองพร้อมกันเพื่อเปิดและปิดกล้องอิสระ ปุ่ม Home บนคีย์บอร์ดใช้ได้เสมอ")
 
 T("Sharper text", "ตัวอักษรคมชัดขึ้น")
+T("Sharper menus", "เมนูคมชัดขึ้น")
+T("Upscales the shapes and frames of the menus, after a restart. Not the original art.", "ขยายรูปทรงและกรอบของเมนู หลังเริ่มใหม่ ไม่ใช่ภาพต้นฉบับ")
+T("Makes the shapes and frames of the game's menus (panels, borders, icons drawn in one colour) sharper on 1440p and 4K screens. It takes effect the next time you start the game. This is an upscale made on your computer from the game's own art, not Nintendo's original art.", "ทำให้รูปทรงและกรอบของเมนูในเกม (แผง ขอบ ไอคอนสีเดียว) คมชัดขึ้นบนจอ 1440p และ 4K มีผลเมื่อเริ่มเกมครั้งถัดไป เป็นการขยายภาพที่ทำบนคอมพิวเตอร์ของคุณจากภาพของเกมเอง ไม่ใช่ภาพต้นฉบับของ Nintendo")
 T("Upscales the game's letters for 1440p and 4K, after a restart. Not the original art.", "ขยายตัวอักษรของเกมสำหรับ 1440p และ 4K หลังเริ่มใหม่ ไม่ใช่ภาพต้นฉบับ")
 T("Makes the game's letters sharper on 1440p and 4K screens. It takes effect the next time you start the game. This is an upscale made on your computer from the game's own letters, not Nintendo's original art: the shapes are kept, but they aren't exactly as drawn. 4x takes a moment longer to start and uses more video memory.", "ทำให้ตัวอักษรของเกมคมชัดขึ้นบนจอ 1440p และ 4K มีผลเมื่อเริ่มเกมครั้งถัดไป เป็นการขยายที่ทำบนคอมพิวเตอร์ของคุณจากตัวอักษรของเกมเอง ไม่ใช่ภาพต้นฉบับของ Nintendo รูปทรงยังคงเดิมแต่ไม่เหมือนที่วาดไว้ทุกประการ 4x ใช้เวลาเริ่มนานขึ้นเล็กน้อยและใช้หน่วยความจำวิดีโอมากขึ้น")
 T("Game's FXAA", "FXAA ของเกม")

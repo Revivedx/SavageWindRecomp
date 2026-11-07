@@ -990,6 +990,15 @@ static void tab_display(void) {
                        "start and uses more video memory.", false))
             g_settings.sharper_text = cur * 2;
     }
+    {   // the menus' one-channel textures enlarged the same way (runtime/nvn/text_upscale.c): read when the game starts
+        static const char *menus[] = {"Off", "2x", "4x"};
+        int cur = g_settings.sharper_menus / 2;
+        if (opt_choice("Sharper menus", &cur, menus, 3, 0,
+                       "Makes the shapes and frames of the game's menus (panels, borders, icons drawn in one colour) "
+                       "sharper on 1440p and 4K screens. It takes effect the next time you start the game. This is an "
+                       "upscale made on your computer from the game's own art, not Nintendo's original art.", false))
+            g_settings.sharper_menus = cur * 2;
+    }
 #ifndef __APPLE__
     tab_colour();
 #endif

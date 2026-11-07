@@ -679,6 +679,9 @@ T("Free camera with both sticks", "Свободная камера обоими 
 T("Clicking both sticks together turns the free camera on and off. Home on the keyboard always does.", "Одновременное нажатие обоих стиков включает и выключает свободную камеру. Клавиша Home на клавиатуре работает всегда.")
 
 T("Sharper text", "Более чёткий текст")
+T("Sharper menus", "Более чёткие меню")
+T("Upscales the shapes and frames of the menus, after a restart. Not the original art.", "Увеличивает формы и рамки меню после перезапуска. Не оригинальная графика.")
+T("Makes the shapes and frames of the game's menus (panels, borders, icons drawn in one colour) sharper on 1440p and 4K screens. It takes effect the next time you start the game. This is an upscale made on your computer from the game's own art, not Nintendo's original art.", "Делает формы и рамки игровых меню (панели, границы, одноцветные значки) чётче на экранах 1440p и 4K. Вступает в силу при следующем запуске игры. Это увеличение, сделанное на вашем компьютере из графики самой игры, а не оригинальная графика Nintendo.")
 T("Upscales the game's letters for 1440p and 4K, after a restart. Not the original art.", "Увеличивает буквы игры для 1440p и 4K после перезапуска. Не оригинальная графика.")
 T("Makes the game's letters sharper on 1440p and 4K screens. It takes effect the next time you start the game. This is an upscale made on your computer from the game's own letters, not Nintendo's original art: the shapes are kept, but they aren't exactly as drawn. 4x takes a moment longer to start and uses more video memory.", "Делает буквы игры чётче на экранах 1440p и 4K. Действует со следующего запуска игры. Это увеличение, сделанное на вашем компьютере из букв самой игры, а не оригинальная графика Nintendo: формы сохраняются, но не совсем такие, как нарисованы. 4x запускается чуть дольше и использует больше видеопамяти.")
 T("Game's FXAA", "FXAA игры")
