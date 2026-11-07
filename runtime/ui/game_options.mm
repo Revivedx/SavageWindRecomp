@@ -152,7 +152,7 @@ const char *const k_modes[] = {"Ultra Quality", "Quality", "Balanced", "Performa
 #ifdef __APPLE__
 const char *const k_aa[] = {"Off", "SMAA"};
 #else
-const char *const k_aa[] = {"Off", "SMAA", "TAA"};  // (settings.h AA_*)
+const char *const k_aa[] = {"Off", "SMAA", "TAA", "AMD FSR 4"};  // (settings.h AA_*)
 #endif
 const char *const k_aniso[] = {"Off", "2x", "4x", "8x", "16x"};  // (settings anisotropy 0..4)
 // (shown with Potato first, the nearest: k_drawdist_order maps a row index to settings.h DRAWDIST_*)
@@ -519,9 +519,22 @@ void build_items(void) {
     };
     v.push_back(mode);
     v.push_back(choice(P_VIDEO, "Anti-aliasing", "Smooths jagged edges. Best at a lower resolution.",
-                       [](const Item &) { return N(k_aa); }, [](const Item &, int x) { return tr(k_aa[x]); },
+                       [](const Item &) { return N(k_aa); },
+                       [](const Item &, int x) {
+#ifndef __APPLE__
+                           if (x == AA_FSR4 && !fsr4_offered()) return soon("FSR 4", "(AMD Radeon only)");
+#endif
+                           return tr(k_aa[x]);
+                       },
                        [](const Item &) { return g_settings.antialias; },
                        [](const Item &, int x) { g_settings.antialias = x; }, AA_OFF));
+#ifndef __APPLE__
+    v.back().value_off = [](const Item &, int x) { return x == AA_FSR4 && !fsr4_offered(); };
+    v.back().desc_fn = [](const Item &) {  // (one line)
+        return g_settings.antialias == AA_FSR4 ? tr("AMD FSR 4: TAA by machine learning, at full resolution. Upscaler Off only.")
+                                               : tr("Smooths jagged edges. Best at a lower resolution.");
+    };
+#endif
 #ifndef __APPLE__
     // the game's own FXAA (vulkan/exec.c fxaa_patch)
     v.push_back(toggle(P_VIDEO, "Game's FXAA", "The game's own edge smoothing. Off: sharper, more jagged edges.",
