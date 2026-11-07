@@ -25,6 +25,8 @@ enum { UPQ_ULTRA = 0, UPQ_QUALITY = 1, UPQ_BALANCED = 2, UPQ_PERFORMANCE = 3, UP
 // TAA (Vulkan): the game's own motion vectors (vulkan/mvec.c) and a jittered camera (output_scale.c rt_jitter_on)
 // blend each frame with the ones before it (vulkan/exec.c mvec_taa)
 enum { AA_OFF = 0, AA_SMAA = 1, AA_TAA = 2 };
+// Video > Render scale: 50%, 75%, 100% (the window's size), 125%, 150%, 200%
+enum { RSCALE_50 = 0, RSCALE_75 = 1, RSCALE_100 = 2, RSCALE_125 = 3, RSCALE_150 = 4, RSCALE_200 = 5, RSCALE_COUNT };
 #ifdef __APPLE__
 #define AA_TAA_OR_SMAA AA_SMAA
 #else
@@ -32,7 +34,8 @@ enum { AA_OFF = 0, AA_SMAA = 1, AA_TAA = 2 };
 #endif
 // Shadow resolution (Video > Shadow resolution; runtime/nvn/output_scale.c shadow_map_size): the sun's shadow maps at
 // the console's size (BOTW: 896 x 896) or made bigger, for sharper shadows at some GPU time.
-enum { SHADOW_CONSOLE = 0, SHADOW_HIGH = 1 /* 2048 */, SHADOW_ULTRA = 2 /* 4096 */, SHADOW_EXTREME = 3 /* 8192 */, SHADOW_COUNT };
+enum { SHADOW_CONSOLE = 0, SHADOW_HIGH = 1 /* 2048 */, SHADOW_ULTRA = 2 /* 4096 */, SHADOW_EXTREME = 3 /* 8192 */,
+       SHADOW_POTATO = 4 /* 448 */, SHADOW_COUNT };
 enum { PERF_OFF = 0, PERF_FPS = 1, PERF_FULL = 2 };
 // Frame rate (Video > Frame rate; runtime/hle/framepace.c): frames per second, 0 = no limit. The game's clock is the
 // same at every rate. The console runs the game at 30.
@@ -64,20 +67,27 @@ typedef struct {
     int upscale_quality; // UPQ_*: the upscaler's mode (how much smaller it renders)
     int antialias;       // AA_*: anti-aliasing of the game image before it is scaled to the window
     bool game_fxaa;      // the game's own FXAA, in its scene -> final image composite (vulkan/exec.c fxaa_patch)
+    bool wet_fix;        // Video > Wet grass fix: tames the white glare of rain in sunshine (maxwell/translate.c maxwell_wet_lighting)
+    int render_scale;    // 50%, 75%, 100% (RSCALE_100: the window's size), 125%, 150%, 200% (nvn/output_scale.c)
     int anisotropy;      // texture filtering: 0 the game's own, 1..4 = 2x, 4x, 8x, 16x (vulkan/textures.c)
     int sharpening;      // AMD CAS sharpening of the 3D image, 0 (off) .. 10 (100%) (vulkan/exec.c scene_post)
     bool frame_gen;      // AMD FSR 3 frame generation: a frame made between each two the game draws (vulkan/framegen.cpp)
     float volume;        // master volume, 1 = 100%
     bool reverb;         // room reverb effect
     bool movie_audio;
+    bool mute_unfocused; // mute audio while the window is in the background or minimized
     int perf_overlay;    // PERF_*: the performance overlay (F10 cycles it)
     int fps_limit;       // frame rate, frames per second (FPS_CHOICES; 0: no limit)
+    bool fps_display;    // Frame rate > Match display: fps_limit follows the display (settings_fps_for_display)
     int vsync;           // VSYNC_*
     bool rumble;         // controller vibration
     bool freecam_sticks; // both stick clicks together turn the free camera on and off (hle/input.c)
     int gpu;             // Vulkan adapter index from the startup log; -1: automatic (restart required)
     bool dpad_move;      // the d-pad (and arrow keys) also act as the left stick while it is at rest
+    bool stick_cam_on;   // Controls > Controller camera speed: stick_cam_x and _y apply (off: the game's own speed)
+    int stick_cam_x, stick_cam_y;  // the right stick's camera speed, left and right / up and down, percent of the game's
     float stick_deadzone[2];  // left, right stick: a controller's stick reads 0 within this much of full tilt (radial)
+    bool pc_bow;         // Mouse bow aiming: right button held aims the bow, a left click fires (runtime/pc_bow.h)
     bool mouse_camera;   // the mouse turns the camera (right stick); the cursor is held in the window while playing
     bool pc_cursor;      // mouse pointer in menus, inventory, quick selectors and the map
     float mouse_sens;    // mouse camera speed, 1 = 100% (default MOUSE_SENS_DEFAULT)
@@ -91,7 +101,7 @@ typedef struct {
     bool async_shaders;  // draw on while new shaders compile (no stutter; what needs them is skipped meanwhile; on by
                          // default since settings_version 4; off: every draw waits for its shaders, as before)
     bool precompile_shaders;  // setting the game files up also precompiles every shader (runtime/nvn/precompile.h)
-    int shadow_res;      // SHADOW_*: shadow maps at the console's size or bigger
+    int shadow_res;      // SHADOW_*: shadow maps at the console's size, bigger, or (Potato) smaller
     int sharper_text;    // the game's font sheets enlarged this many times (2 or 4; 0: off), runtime/nvn/text_upscale.c
     bool wide_view;      // a window that isn't 16:9 shows more of the world instead of bars (runtime/nvn/output_scale.c)
     int hdr;             // HDR_* (runtime/nvn/vulkan/device.c hdr_*)
@@ -101,6 +111,12 @@ typedef struct {
     int hud_size;        // the HUD's size in play, percent of the game's own (HUD_SIZE_CHOICES, runtime/nvn/hud_scale.h)
     int draw_distance;   // DRAWDIST_*: how far placed actors are kept (runtime/draw_distance.c)
     int haze;            // the air's haze, percent of the game's (services/fs.c haze_patch; from the next start)
+    bool bloom;          // the glow around bright light (off: its draws clear their images: vulkan/exec.c)
+    bool depth_of_field; // the distance blur over far pixels (off: its draw is skipped: vulkan/exec.c)
+    bool dynamic_res;    // the game lowers its 3D resolution (1600x900 down to 1280x720) when a frame takes long
+                         // (vulkan/exec.c CMD_REPORT_COUNTER); off: it keeps 1600x900
+    bool fast_fma;       // CPUs without FMA instructions (gamelib_compat): the game's fused multiply-adds rounded twice,
+                         // faster (simd.h simd_fma_unfused); off: exact, as the console
     // Video > Colour (runtime/color_grade.h): 0 everywhere and no LUT = the game's own colours (nothing runs)
     int color_exposure;      // tenths of an EV, -20..20
     int color_contrast;      // percent, -50..50
@@ -120,13 +136,26 @@ typedef struct {
     int damage_dealt;        // percent of the damage everything else takes (DAMAGE_CHOICES)
     int text_language;   // index in g_text_languages (runtime/language.h), 0: the host's
     int voice_language;  // index in g_voice_languages, 0: the text language's voices
+    bool save_backups;   // Saves > Back up at each start: a copy of the save folder as the game starts (runtime/save_backup.c)
+    bool auto_continue;  // Gameplay > Start at Continue: past the start screen into the latest save (hle/input.c)
     bool menu_tip_seen;  // the start screen's one-time "how to open the menu" note was shown (first PLAY ever)
 } Settings;
 
+#define STICK_CAM_MIN 100      // (Controller camera speed, percent, in steps of 25; 200 to start with)
+#define STICK_CAM_MAX 600
+#define STICK_CAM_DEFAULT 200
 #define STICK_DEADZONE_DEFAULT 0.10f  // (the Switch's own input service has one: the game expects 0 at rest)
 #define HAZE_CHOICES {0, 25, 50, 75, 100}  // (percent of the game's haze)
-enum { DRAWDIST_ORIGINAL, DRAWDIST_MEDIUM, DRAWDIST_HIGH, DRAWDIST_COUNT };  // (Original: the game's own distances)
+enum { DRAWDIST_ORIGINAL, DRAWDIST_MEDIUM, DRAWDIST_HIGH, DRAWDIST_POTATO, DRAWDIST_COUNT };  // (Original: the game's own
+                                                                                  // distances; Potato: nearer)
 float draw_distance_factor(void);  // the setting's factor on the game's distances (1: Original)
+// Video > Graphics preset: draw distance, shadow resolution, bloom, depth of field and dynamic resolution at once.
+// Potato: for weak PCs (nearer, smaller shadows, no bloom or distance blur, the game's dynamic resolution); Original:
+// as on the console; High: draw distance Medium, shadows 2048; Savage: draw distance High, shadows 4096.
+enum { GPRESET_POTATO, GPRESET_ORIGINAL, GPRESET_HIGH, GPRESET_SAVAGE, GPRESET_COUNT };
+extern const char *const g_gpreset_names[GPRESET_COUNT];
+int graphics_preset_current(void);  // the preset the settings match, or -1 (Custom)
+void graphics_preset_apply(int preset);
 #define DAMAGE_CHOICES {25, 50, 75, 100, 150, 200, 300, 400}  // (Accessibility's damage multipliers, percent)
 #define FOV_CHOICES {70, 80, 90, 100, 110, 120, 130, 140, 150}  // (percent; 100: the game's own)
 #define HUD_SIZE_CHOICES {50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120, 125, 130, 135, 140, 145, 150}  // (percent; 100: the game's own)
@@ -139,3 +168,6 @@ extern Settings g_settings;
 
 void settings_load(void);
 void settings_save(void);
+// Frame rate > Match display: fps_limit becomes the highest offered rate the display (hz) can show, at least 30 (a
+// 280 Hz display: 240; a 60 Hz one: 60). Nothing with another rate chosen or hz unknown (runtime/window_size.c).
+void settings_fps_for_display(float hz);

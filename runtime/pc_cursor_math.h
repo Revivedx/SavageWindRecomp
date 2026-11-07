@@ -28,6 +28,11 @@ static inline void pc_cursor_map_world(const float point[2],const float translat
     out[0]=(point[0]-translation[0])/zoom;
     out[1]=(point[1]-translation[1])/zoom;
 }
+// The view centre that keeps `world` under `point` at `zoom` (translation = centre * zoom, so screen = (world + centre) * zoom).
+static inline void pc_map_anchor_center(const float point[2],const float world[2],float zoom,float out[2]) {
+    out[0]=point[0]/zoom-world[0];
+    out[1]=point[1]/zoom-world[1];
+}
 
 // Navigation direction, not drag direction: looking right moves the map image left.
 // Edge zones belong to the map canvas, below the top tabs and above the footer.

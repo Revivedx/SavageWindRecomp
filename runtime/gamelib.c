@@ -14,6 +14,7 @@
 #include "game_sites.h"
 #include "paths.h"
 #include "rt.h"
+#include "settings.h"
 
 static const GameLibTables *g_tables;
 static char g_error[256];
@@ -210,3 +211,22 @@ bool gamelib_load(const char *game_dir, char *why, size_t why_size) {
 }
 
 const GameLibTables *gamelib_tables(void) { return g_tables; }
+
+#ifndef _WIN32
+__attribute__((visibility("hidden")))
+#endif
+int simd_fma_unfused;  // (the runtime's own copy, for its code built without FMA instructions)
+
+void gamelib_sync(void) {
+    static int env = -2, cur = -1;
+    if (env == -2) {  // SAVAGEWIND_FAST_FMA=0/1: in place of the setting
+        const char *e = getenv("SAVAGEWIND_FAST_FMA");
+        env = e && *e ? strcmp(e, "0") != 0 : -1;
+    }
+    int want = gamelib_compat() && (env >= 0 ? env : g_settings.fast_fma);
+    if (!g_tables || want == cur) return;
+    cur = want;
+    if (g_tables->fma_unfused) *g_tables->fma_unfused = want;
+    simd_fma_unfused = want;
+    if (gamelib_compat()) LOG("[gamelib] fma: %s\n", want ? "fast (two roundings)" : "exact (as the console)");
+}

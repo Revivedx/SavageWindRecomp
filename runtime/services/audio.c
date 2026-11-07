@@ -10,6 +10,7 @@
 
 #include "../hle.h"
 #include "../settings.h"
+#include "../input_bind.h"
 #include "../ipc.h"
 #include "../prof.h"
 
@@ -618,11 +619,12 @@ static void render_frame(Renderer *r, float *stereo) {
     }
 }
 
-// Output gain: menu volume times SAVAGEWIND_AUDIO_GAIN (applied live).
+// Output gain: menu volume times SAVAGEWIND_AUDIO_GAIN (applied live), muted if unfocused.
 static void apply_gain(SDL_AudioStream *st) {
     static double env = -1;
     if (env < 0) env = getenv("SAVAGEWIND_AUDIO_GAIN") ? atof(getenv("SAVAGEWIND_AUDIO_GAIN")) : 1.0;
-    float g = (float)(env * g_settings.volume);
+    float vol = (g_settings.mute_unfocused && !input_window_focused()) ? 0.0f : g_settings.volume;
+    float g = (float)(env * vol);
     if (st && SDL_GetAudioStreamGain(st) != g) SDL_SetAudioStreamGain(st, g);
 }
 

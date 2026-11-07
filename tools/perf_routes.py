@@ -48,6 +48,7 @@ ROUTES = [
     ('rito',     'rito',      180.0, -8.0, 10.0, (-3610.0, 300.0, -1730.0)),
     ('castle',   'castle',    180.0, 0.0, 10.0, (-254.0, 260.0, -400.0)),
     ('hateno',   'hateno',     90.0, -8.0, 10.0, None),
+    ('korok',    '462.6,249.6,-2110.1', 0.0, -8.0, 10.0, None),
 ]
 
 CONTINUE = '150:A:2,170:A:2,190:A:2,210:A:2'  # (SAVAGEWIND_SCRIPT_CLOCK=1: 30ths of a second) title, Continue
@@ -195,6 +196,30 @@ def reset_cache(args, run_dir):
     return {'MESA_SHADER_CACHE_DIR': mesa}
 
 
+def one_per_core(cores):
+    """Affinity mask with one logical processor on each of the first `cores` physical cores (no SMT siblings)."""
+    if os.name != 'nt':
+        sib = {}
+        for cpu in sorted(os.sched_getaffinity(0)):
+            try:
+                with open('/sys/devices/system/cpu/cpu{}/topology/core_id'.format(cpu)) as f:
+                    sib.setdefault(f.read().strip(), cpu)
+            except OSError:
+                sib[cpu] = cpu
+        firsts = sorted(sib.values())
+    else:  # GetLogicalProcessorInformation: one RelationProcessorCore (0) record per physical core, with its mask
+        class Info(ctypes.Structure):
+            _fields_ = [('mask', ctypes.c_size_t), ('rel', ctypes.c_int), ('pad', ctypes.c_ubyte * 16)]
+        k32 = ctypes.WinDLL('kernel32')
+        size = ctypes.c_uint32(0)
+        k32.GetLogicalProcessorInformation(None, ctypes.byref(size))
+        buf = (Info * (size.value // ctypes.sizeof(Info)))()
+        if not k32.GetLogicalProcessorInformation(buf, ctypes.byref(size)):
+            raise OSError('GetLogicalProcessorInformation failed')
+        firsts = sorted((r.mask & -r.mask).bit_length() - 1 for r in buf if r.rel == 0)
+    return sum(1 << c for c in firsts[:cores])
+
+
 def launch(args, run_dir, size, affinity, extra_env):
     save = os.path.join(run_dir, 'save')
     shutil.copytree(args.save, save)
@@ -204,6 +229,8 @@ def launch(args, run_dir, size, affinity, extra_env):
             key = line.split('=', 1)[0].strip()
             forced = {'window_size': size, 'frame_rate': '0', 'vsync': 'off', 'perf_overlay': 'off',
                       'frame_generation': '0', 'fullscreen': '1' if args.fullscreen else '0'}
+            if args.potato:  # (a weak PC plays with the console's shadows: Extreme alone costs ~13 ms of GPU in a forest)
+                forced['shadow_resolution'] = 'console'
             ini.append('{} = {}\n'.format(key, forced[key]) if key in forced else line)
     ini_path = os.path.join(run_dir, 'settings.ini')
     with open(ini_path, 'w', encoding='utf-8') as f:
@@ -223,7 +250,11 @@ def launch(args, run_dir, size, affinity, extra_env):
         env[k] = v
     exe = args.exe or os.path.join(args.tree, 'build', 'savagewind.exe' if os.name == 'nt' else 'savagewind')
     log = open(os.path.join(run_dir, 'log.txt'), 'wb')
-    flags = 0x4 if (os.name == 'nt' and affinity) else 0  # CREATE_SUSPENDED: the mask is in place before any thread runs
+    if args.vram_mb:
+        env['SAVAGEWIND_VRAM_BUDGET_MB'] = str(args.vram_mb)  # (the budget the trim and the logs see)
+        env.setdefault('SAVAGEWIND_VK_HEAP_COPY_BUDGET_MB', str(args.vram_mb))  # (the heap copy plans for that card too)
+    # CREATE_SUSPENDED: the mask and the memory cap are in place before any thread runs
+    flags = 0x4 if (os.name == 'nt' and (affinity or args.ram_mb)) else 0
     argv = [exe] if args.data_root else [exe, 'extracted']  # (a data root of its own: its extracted/, as a player's)
     proc = subprocess.Popen(argv, cwd=args.tree, env=env, stdout=log, stderr=subprocess.STDOUT,
                             creationflags=flags, start_new_session=os.name != 'nt')  # (Linux: its own group, killed whole)
@@ -232,9 +263,15 @@ def launch(args, run_dir, size, affinity, extra_env):
     if flags:
         k32 = ctypes.WinDLL('kernel32')
         k32.SetProcessAffinityMask.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
-        if not k32.SetProcessAffinityMask(int(proc._handle), affinity):
+        if affinity and not k32.SetProcessAffinityMask(int(proc._handle), affinity):
             proc.kill()
             raise OSError('SetProcessAffinityMask failed')
+        # --ram-mb: a hard cap on the working set (QUOTA_LIMITS_HARDWS_MIN_DISABLE | HARDWS_MAX_ENABLE). Windows keeps the
+        # pages over it on the standby list, so this imitates a small RAM's trimming, not a page file on a slow disk.
+        k32.SetProcessWorkingSetSizeEx.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_uint32]
+        if args.ram_mb and not k32.SetProcessWorkingSetSizeEx(int(proc._handle), 64 << 20, args.ram_mb << 20, 0x2 | 0x4):
+            proc.kill()
+            raise OSError('SetProcessWorkingSetSizeEx failed ({})'.format(ctypes.GetLastError()))
         ctypes.WinDLL('ntdll').NtResumeProcess(ctypes.c_void_p(int(proc._handle)))
     elif affinity:
         os.sched_setaffinity(proc.pid, [i for i in range(64) if affinity >> i & 1])
@@ -768,6 +805,11 @@ def main(argv=None):
     rp.add_argument('--port', type=int, default=7790)
     rp.add_argument('--affinity', type=lambda s: int(s, 0), default=0, help='CPU mask, e.g. 0xff (logical processors 0-7)')
     rp.add_argument('--env', nargs='*', default=[], help='extra VAR=value for the game')
+    rp.add_argument('--ram-mb', type=int, default=0, help='Windows: hard working-set cap of the game process (MB)')
+    rp.add_argument('--vram-mb', type=int, default=0, help='video memory budget the game sees (SAVAGEWIND_VRAM_BUDGET_MB)')
+    rp.add_argument('--potato', action='store_true', help='a weak PC: 4 cores without SMT, 1280x720, 4 GB of RAM for '
+                    'the game, a 2 GB card (unless --affinity / --size / --ram-mb / --vram-mb say otherwise), the '
+                    "console's shadow resolution")
     rp.add_argument('--top', type=int, default=3)
     rp.add_argument('--sample', type=float, default=5, help='seconds of stack samples for the thread shares (0: none)')
     rp.add_argument('--sample-us', type=int, default=2000, help='stack sample interval (us)')
@@ -794,6 +836,11 @@ def main(argv=None):
         os.environ['PATH'] = r'C:\msys64\ucrt64\bin;' + os.environ.get('PATH', '')
     if args.action in ('run', 'boot'):
         args.ini = args.ini or os.path.join(args.tree, 'savagewind.ini')
+        if args.potato:
+            args.affinity = args.affinity or one_per_core(4)
+            args.size = args.size if '--size' in (argv or sys.argv) else ['1280x720']
+            args.ram_mb = args.ram_mb or 4096
+            args.vram_mb = args.vram_mb or 2048
         return run(args) if args.action == 'run' else boot(args)
     return table(args) if args.action == 'table' else rehitch(args)
 

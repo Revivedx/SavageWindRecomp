@@ -24,6 +24,7 @@
 #include "../framepace.h"
 #include "../prof.h"
 #include "../pc_cursor.h"
+#include "../pc_bow.h"
 
 enum {
     BTN_A = 0, BTN_B, BTN_X, BTN_Y, BTN_LSTICK, BTN_RSTICK, BTN_L, BTN_R, BTN_ZL, BTN_ZR, BTN_PLUS, BTN_MINUS,
@@ -37,6 +38,24 @@ static _Atomic int map_key_x,map_key_y;
 void input_pc_map_axes(float out[2]) { out[0]=map_key_x;out[1]=map_key_y; }
 static _Atomic uint64_t escape_buttons;
 static _Atomic bool pc_menu_active;
+// Controls > Mouse bow aiming (runtime/pc_bow.h): the right button held and the left button's clicks, from the main
+// thread's events; the state machine runs where the game reads the controller
+static _Atomic bool pc_bow_wanted;
+static _Atomic unsigned pc_bow_shots;
+static PcBow pc_bow;
+static unsigned pc_bow_seen_shots;
+
+static uint64_t pc_bow_sample(void) {
+    extern bool menu_cursor_free(void);
+    // (turned off, or the cursor freed, while drawing: the arrow is put away rather than shot)
+    if (!g_settings.pc_bow || menu_cursor_free()) pc_bow_wanted = false;
+    uint64_t now = plat_now_ns();
+    bool wanted = pc_bow_wanted && !pc_menu_active;
+    if (pc_bow.aiming != wanted) pc_bow_aim(&pc_bow, wanted, now);
+    unsigned shots = pc_bow_shots;
+    if (shots != pc_bow_seen_shots) { pc_bow_fire(&pc_bow, now); pc_bow_seen_shots = shots; }
+    return pc_bow_buttons(&pc_bow, now);
+}
 // Main thread: Esc opens inventory in play and backs out of an existing menu.
 // Keep its release independent of the current screen and of player bindings.
 void input_pc_escape(bool down) {
@@ -230,6 +249,7 @@ static void recompute_pad(void) {
 // Forget held keys (the menu took focus); the gamepad is re-read on its next event.
 void input_reset(void) {
     escape_buttons = 0;
+    pc_bow_wanted = false;
     memset(keys_down, 0, sizeof keys_down);
     memset(mouse_down, 0, sizeof mouse_down);
     recompute_keyboard();
@@ -306,6 +326,7 @@ static bool dualstick_on(void) {
 void input_cam_frame(float ratio) {
     pc_cursor_frame();
     pc_menu_active = framepace_menu_ui() || framepace_title_ui() || pc_cursor_active();
+    if (pc_menu_active) pc_bow_wanted = false;
     pc_gyro_scene_tick();
     if (dualstick_on()) {  // (ratio: this frame's length in 30 fps frames)
         uint64_t held = pad_buttons;
@@ -362,9 +383,21 @@ void rt_cam_reverse(int axis, int on) {
     else cam_reverse &= ~(1 << axis);
 }
 
+// tools/patches.py _cam_stick_end: the stick's value for the camera, as the game worked it out (the mouse's doesn't come
+// here). Controls > Controller camera speed: faster than the game's top speed, as it scales the value past full tilt.
+void rt_cam_stick_end(uint64_t out) {
+    if (!g_settings.stick_cam_on) return;
+    float *v = (float *)(uintptr_t)out;
+    v[0] *= g_settings.stick_cam_x / 100.0f, v[1] *= g_settings.stick_cam_y / 100.0f;
+}
+
 // tools/patches.py _cam_pitch: the chase-like cameras' vertical part, to be squared (0) or, from the mouse, scaled (1)
 int rt_cam_pitch(float *y) {
-    if (!cam_mouse || !cam_native_on()) return 0;
+    if (!cam_mouse || !cam_native_on()) {
+        // (squared next: so that Controller camera speed multiplies the turn once, as it does the horizontal part)
+        if (g_settings.stick_cam_on) *y /= sqrtf(g_settings.stick_cam_y / 100.0f);
+        return 0;
+    }
     *y *= CAM_PITCH_LINEAR;
     return 1;
 }
@@ -425,6 +458,9 @@ static void window_focus(bool focused) {
 }
 void input_focus_update(SDL_Window *w) {
     window_focus(w && (SDL_GetWindowFlags(w) & SDL_WINDOW_INPUT_FOCUS));
+}
+bool input_window_focused(void) {
+    return win_focused;
 }
 void input_mouse_update(SDL_Window *w) {
     motion_poll();
@@ -537,6 +573,23 @@ int input_pad_family(void) {
 
 void input_handle_event(const SDL_Event *e) {
     if (pc_cursor_event(e)) return;
+    // Mouse bow aiming, in play only: the right button aims (instead of its binding, the shield by default) and the
+    // left one fires while it is held (otherwise the left button keeps its binding)
+    extern bool menu_cursor_free(void);
+    if (g_settings.pc_bow && !pc_menu_active && !menu_input_captured() && !menu_cursor_free() &&
+        (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN || e->type == SDL_EVENT_MOUSE_BUTTON_UP)) {
+        bool down = e->type == SDL_EVENT_MOUSE_BUTTON_DOWN;
+        if (e->button.button == SDL_BUTTON_RIGHT) {
+            pc_bow_wanted = down;
+            last_device = DEVICE_KEYBOARD;
+            return;
+        }
+        if (e->button.button == SDL_BUTTON_LEFT && pc_bow_wanted) {
+            if (down) pc_bow_shots++;
+            last_device = DEVICE_KEYBOARD;
+            return;
+        }
+    }
     static bool scanned;  // pads present at startup: their ADDED event may have gone to the start screen's loop
     if (!scanned) {
         scanned = true;
@@ -806,6 +859,30 @@ volatile int g_inject_plus;  // frames to hold Plus for the game (movie.c: A/B s
 RT_ON_RESET(input_reboot_reset) {
     g_pad_obj = 0; g_inject_plus = 0;
 }  // (reboot: the controller object was guest memory)
+
+// Gameplay > Start at Continue: past the start screen by itself, into the latest save. A is pressed now and then while
+// the start screen or its menus are up (Press A, then Continue, which the game selects first; B for the downloadable
+// content notice, which only B closes), once per game start, until the game has left the start screen. Any button of
+// the player's stops it at once. The setting is read at each game start.
+static bool auto_armed, auto_read, auto_title_seen;
+RT_ON_RESET(auto_continue_reset) { auto_read = auto_armed = auto_title_seen = false; }
+static uint64_t auto_continue_buttons(uint64_t player) {
+    if (!auto_read) auto_read = true, auto_armed = g_settings.auto_continue;
+    if (!auto_armed) return 0;
+    if (player) {
+        auto_armed = false;
+        LOG("[input] start at continue: stopped by a button\n");
+        return 0;
+    }
+    if (!framepace_title_ui()) {
+        if (auto_title_seen) auto_armed = false;  // (in the game, or loading it: done)
+        return 0;
+    }
+    auto_title_seen = true;
+    uint64_t now = plat_now_ns();
+    if (framepace_dlc_ui()) return now % 1500000000ull < 125000000ull ? 1ull << BTN_B : 0;
+    return now % 1200000000ull < 125000000ull ? 1ull << BTN_A : 0;
+}
 void input_frame(uint64_t frame) {
     extern uint64_t renderer_present_count(void);
     control_input_frame(renderer_present_count());
@@ -902,7 +979,9 @@ static void fill_state(Cpu *c) {
     // Customized actions use host bindings during play. Factory-default actions and all queries in menus, with
     // the window unfocused or the overlay up, use the Switch layer, so no binding can lock the player out.
     act_poll(!menu && !framepace_title_ui() && !framepace_menu_ui());
-    uint64_t b = menu ? script_buttons : key_buttons | pad_buttons | escape_buttons | script_buttons;
+    uint64_t bow = pc_bow_sample();
+    uint64_t b = menu ? script_buttons : key_buttons | pad_buttons | escape_buttons | bow | script_buttons;
+    if (!menu) b |= auto_continue_buttons(b);  // (not while the overlay has the controls)
     b=pc_cursor_buttons(b);
     {   // injected Plus: held for ~10 presented frames (the game polls several times per frame)
         extern uint64_t renderer_present_count(void);
