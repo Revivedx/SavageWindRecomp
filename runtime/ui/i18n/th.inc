@@ -676,6 +676,11 @@ T("Open them from the title screen, or pause the game and choose System > Option
 T("Controller rumble", "การสั่นของคอนโทรลเลอร์")
 T("Vibrate the controller during play.", "ให้คอนโทรลเลอร์สั่นระหว่างเล่น")
 T("Free camera with both sticks", "กล้องอิสระด้วยสติกทั้งสอง")
+T("Controller camera speed", "ความเร็วกล้องด้วยคอนโทรลเลอร์")
+T("The right stick turns the camera faster than the game allows, at the two speeds below.", "สติกขวาหมุนกล้องได้เร็วกว่าที่เกมกำหนด ตามความเร็วสองค่าด้านล่าง")
+T("Left and right speed", "ความเร็วซ้ายขวา")
+T("Up and down speed", "ความเร็วขึ้นลง")
+T("100% is the game's own speed.", "100% คือความเร็วของเกม")
 T("Clicking both sticks together turns the free camera on and off. Home on the keyboard always does.", "กดสติกทั้งสองพร้อมกันเพื่อเปิดและปิดกล้องอิสระ ปุ่ม Home บนคีย์บอร์ดใช้ได้เสมอ")
 
 T("Sharper text", "ตัวอักษรคมชัดขึ้น")

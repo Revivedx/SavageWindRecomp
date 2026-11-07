@@ -676,6 +676,11 @@ T("Open them from the title screen, or pause the game and choose System > Option
 T("Controller rumble", "컨트롤러 진동")
 T("Vibrate the controller during play.", "플레이 중 컨트롤러가 진동합니다.")
 T("Free camera with both sticks", "양쪽 스틱으로 자유 카메라")
+T("Controller camera speed", "컨트롤러 카메라 속도")
+T("The right stick turns the camera faster than the game allows, at the two speeds below.", "오른쪽 스틱으로 게임이 허용하는 것보다 빠르게 카메라를 돌립니다. 속도는 아래 두 항목으로 정합니다.")
+T("Left and right speed", "좌우 속도")
+T("Up and down speed", "상하 속도")
+T("100% is the game's own speed.", "100%가 게임 본래의 속도입니다.")
 T("Clicking both sticks together turns the free camera on and off. Home on the keyboard always does.", "양쪽 스틱을 함께 누르면 자유 카메라가 켜지고 꺼집니다. 키보드의 Home 키는 항상 작동합니다.")
 
 T("Sharper text", "더 선명한 글자")

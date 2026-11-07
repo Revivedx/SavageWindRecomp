@@ -77,6 +77,8 @@ typedef struct {
     bool freecam_sticks; // both stick clicks together turn the free camera on and off (hle/input.c)
     int gpu;             // Vulkan adapter index from the startup log; -1: automatic (restart required)
     bool dpad_move;      // the d-pad (and arrow keys) also act as the left stick while it is at rest
+    bool stick_cam_on;   // Controls > Controller camera speed: stick_cam_x and _y apply (off: the game's own speed)
+    int stick_cam_x, stick_cam_y;  // the right stick's camera speed, left and right / up and down, percent of the game's
     float stick_deadzone[2];  // left, right stick: a controller's stick reads 0 within this much of full tilt (radial)
     bool mouse_camera;   // the mouse turns the camera (right stick); the cursor is held in the window while playing
     bool pc_cursor;      // mouse pointer in menus, inventory, quick selectors and the map
@@ -123,6 +125,9 @@ typedef struct {
     bool menu_tip_seen;  // the start screen's one-time "how to open the menu" note was shown (first PLAY ever)
 } Settings;
 
+#define STICK_CAM_MIN 100      // (Controller camera speed, percent, in steps of 25; 200 to start with)
+#define STICK_CAM_MAX 600
+#define STICK_CAM_DEFAULT 200
 #define STICK_DEADZONE_DEFAULT 0.10f  // (the Switch's own input service has one: the game expects 0 at rest)
 #define HAZE_CHOICES {0, 25, 50, 75, 100}  // (percent of the game's haze)
 enum { DRAWDIST_ORIGINAL, DRAWDIST_MEDIUM, DRAWDIST_HIGH, DRAWDIST_COUNT };  // (Original: the game's own distances)

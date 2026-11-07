@@ -636,6 +636,25 @@ void build_items(void) {
                            s ? [](const Item &, int x) { g_settings.stick_deadzone[1] = k_deadzone[x] / 100.0f; }
                              : [](const Item &, int x) { g_settings.stick_deadzone[0] = k_deadzone[x] / 100.0f; },
                            DEADZONE_DEFAULT));
+    v.push_back(toggle(P_CONTROLS, "Controller camera speed",
+                       "The right stick turns the camera faster than the game allows, at the two speeds below.",
+                       [](const Item &) { return (int)g_settings.stick_cam_on; },
+                       [](const Item &, int x) { g_settings.stick_cam_on = x; }, 0));
+    for (int vert = 0; vert < 2; vert++) {  // (runtime/hle/input.c rt_cam_stick_end)
+        Item it = choice(P_CONTROLS, vert ? "Up and down speed" : "Left and right speed", "100% is the game's own speed.",
+                         [](const Item &) { return (STICK_CAM_MAX - STICK_CAM_MIN) / 25 + 1; },
+                         [](const Item &, int x) {
+                             static std::string s;
+                             s = pct(STICK_CAM_MIN + 25 * x);
+                             return s.c_str();
+                         },
+                         nullptr, nullptr, (STICK_CAM_DEFAULT - STICK_CAM_MIN) / 25);
+        it.arg = vert;
+        it.get = [](const Item &i) { return ((i.arg ? g_settings.stick_cam_y : g_settings.stick_cam_x) - STICK_CAM_MIN) / 25; };
+        it.set = [](const Item &i, int x) { (i.arg ? g_settings.stick_cam_y : g_settings.stick_cam_x) = STICK_CAM_MIN + 25 * x; };
+        it.value_off = [](const Item &, int) { return !g_settings.stick_cam_on; };
+        v.push_back(it);
+    }
     v.push_back(toggle(P_CONTROLS, "PC mouse pointer", "Point and click in menus and map. Esc pauses/goes back; F2 frees the cursor.",
                        [](const Item &) { return (int)g_settings.pc_cursor; },
                        [](const Item &, int x) { g_settings.pc_cursor = x; }, 1));

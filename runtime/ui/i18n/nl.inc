@@ -676,6 +676,11 @@ T("Open them from the title screen, or pause the game and choose System > Option
 T("Controller rumble", "Controllertrilling")
 T("Vibrate the controller during play.", "Laat de controller tijdens het spelen trillen.")
 T("Free camera with both sticks", "Vrije camera met beide sticks")
+T("Controller camera speed", "Camerasnelheid controller")
+T("The right stick turns the camera faster than the game allows, at the two speeds below.", "De rechterstick draait de camera sneller dan het spel toestaat, met de twee snelheden hieronder.")
+T("Left and right speed", "Snelheid links en rechts")
+T("Up and down speed", "Snelheid omhoog en omlaag")
+T("100% is the game's own speed.", "100% is de snelheid van het spel.")
 T("Clicking both sticks together turns the free camera on and off. Home on the keyboard always does.", "Beide sticks tegelijk indrukken zet de vrije camera aan en uit. Home op het toetsenbord doet dat altijd.")
 
 T("Sharper text", "Scherpere tekst")
