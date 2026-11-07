@@ -29,7 +29,7 @@ static const Setting settings[] = {
     I(upscaler, 0, UPSCALE_COUNT - 1, "off|metalfx|fsr1|fsr3|dlss"),
     I(upscale_quality, 0, UPQ_COUNT - 1, "ultra_quality|quality|balanced|performance|ultra_performance"),
     I(antialias, 0, AA_TAA, "off|smaa|taa"), B(game_fxaa),
-    I(anisotropy, 0, 4, "game|2x|4x|8x|16x"), I(sharpening, 0, 10, NULL),
+    I(render_scale, 0, 3, "100|125|150|200"), I(anisotropy, 0, 4, "game|2x|4x|8x|16x"), I(sharpening, 0, 10, NULL),
     B(frame_gen), F(volume, 0, 2), B(reverb), B(movie_audio),
     I(perf_overlay, 0, PERF_FULL, "off|fps|full"), I(fps_limit, 0, 360, NULL),
     I(vsync, 0, VSYNC_COUNT - 1, "on|fast|adaptive|off"), B(dpad_move), B(freecam_sticks),

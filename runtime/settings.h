@@ -64,6 +64,7 @@ typedef struct {
     int upscale_quality; // UPQ_*: the upscaler's mode (how much smaller it renders)
     int antialias;       // AA_*: anti-aliasing of the game image before it is scaled to the window
     bool game_fxaa;      // the game's own FXAA, in its scene -> final image composite (vulkan/exec.c fxaa_patch)
+    int render_scale;    // supersampling: 0 = 100% (the window's size), 1 = 125%, 2 = 150%, 3 = 200% (nvn/output_scale.c)
     int anisotropy;      // texture filtering: 0 the game's own, 1..4 = 2x, 4x, 8x, 16x (vulkan/textures.c)
     int sharpening;      // AMD CAS sharpening of the 3D image, 0 (off) .. 10 (100%) (vulkan/exec.c scene_post)
     bool frame_gen;      // AMD FSR 3 frame generation: a frame made between each two the game draws (vulkan/framegen.cpp)

@@ -113,7 +113,12 @@ void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
 #else
     double out_div = 1.0, scene_div = upscale_factor();
 #endif
-    double h = forced > 0 ? forced : (reshape ? dh / 1080.0 : fit) / out_div;
+    // Video > Render scale: above 100% everything renders bigger than the window and is scaled down to it
+    // (supersampling: the cleanest anti-aliasing, at the GPU's cost). MAX_TEX below still caps it.
+    static const double ss_f[4] = {1.0, 1.25, 1.5, 2.0};
+    int rsi = g_settings.render_scale;
+    double ss = rsi >= 0 && rsi < 4 ? ss_f[rsi] : 1.0;
+    double h = forced > 0 ? forced : (reshape ? dh / 1080.0 : fit) / out_div * ss;
     h = fmax(h, 0.1);  // (a tiny window)
     double sx = h * shape, sy = h;
     double cap = fmin(MAX_TEX / (1920.0 * sx), MAX_TEX / (1080.0 * sy));
