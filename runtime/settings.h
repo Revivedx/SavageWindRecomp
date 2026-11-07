@@ -78,6 +78,7 @@ typedef struct {
     int gpu;             // Vulkan adapter index from the startup log; -1: automatic (restart required)
     bool dpad_move;      // the d-pad (and arrow keys) also act as the left stick while it is at rest
     float stick_deadzone[2];  // left, right stick: a controller's stick reads 0 within this much of full tilt (radial)
+    bool pc_bow;         // Mouse bow aiming: right button held aims the bow, a left click fires (runtime/pc_bow.h)
     bool mouse_camera;   // the mouse turns the camera (right stick); the cursor is held in the window while playing
     bool pc_cursor;      // mouse pointer in menus, inventory, quick selectors and the map
     float mouse_sens;    // mouse camera speed, 1 = 100% (default MOUSE_SENS_DEFAULT)

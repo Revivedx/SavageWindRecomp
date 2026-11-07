@@ -1092,6 +1092,10 @@ static void tab_about(void) {
                    "Up and down, as a percentage of the mouse sensitivity."))
         g_settings.mouse_sens_y = sens_y / 100.0f;
     toggle("Invert mouse Y", &g_settings.mouse_invert_y);
+    opt_toggle("Mouse bow aiming", &g_settings.pc_bow, false,
+               "Hold the right mouse button to draw and aim your bow, click the left button to fire, and let go of the "
+               "right button to put it away. While this is on, the right mouse button no longer raises the shield: "
+               "bind the shield to another key under Key bindings.");
     ImGui::Spacing();
     header("Controls");
     opt_toggle("Controller rumble", &g_settings.rumble, true, "Vibrate the controller during play.");

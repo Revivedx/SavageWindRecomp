@@ -664,6 +664,9 @@ void build_items(void) {
     v.push_back(toggle(P_CONTROLS, "Invert mouse Y", "Only the mouse. The camera Y-axis option inverts both.",
                        [](const Item &) { return (int)g_settings.mouse_invert_y; },
                        [](const Item &, int x) { g_settings.mouse_invert_y = x; }, 0));
+    v.push_back(toggle(P_CONTROLS, "Mouse bow aiming", "Hold right mouse to aim a bow, left click to fire. Right mouse no longer raises the shield.",
+                       [](const Item &) { return (int)g_settings.pc_bow; },
+                       [](const Item &, int x) { g_settings.pc_bow = x; }, 0));
     v.push_back(toggle(P_CONTROLS, "Shrine keyboard gyro",
                        "Only while controlling a shrine apparatus. Remap under Key bindings. Outside it, camera keys keep working.",
                        [](const Item &) { return (int)g_settings.pc_gyro; },
