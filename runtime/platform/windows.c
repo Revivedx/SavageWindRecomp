@@ -239,6 +239,19 @@ bool plat_guest_commit_sparse_range(uint64_t addr, uint64_t size) {
     return true;
 }
 
+bool plat_committed_range(uint64_t addr, uint64_t end, uint64_t *a, uint64_t *e) {
+    MEMORY_BASIC_INFORMATION mi;
+    while (addr < end && VirtualQuery((void *)(uintptr_t)addr, &mi, sizeof mi)) {
+        uint64_t re = (uint64_t)(uintptr_t)mi.BaseAddress + mi.RegionSize;
+        if (mi.State == MEM_COMMIT && !(mi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) {
+            *a = addr, *e = re < end ? re : end;
+            return true;
+        }
+        addr = re;
+    }
+    return false;
+}
+
 void plat_decommit(uint64_t addr, uint64_t size) {
     uint64_t a = (addr + 0xFFF) & ~0xFFFull, e = (addr + size) & ~0xFFFull;  // (whole pages inside the range only)
     if (e > a && a >= g_lo && e <= g_hi) VirtualFree((void *)(uintptr_t)a, e - a, MEM_DECOMMIT);
