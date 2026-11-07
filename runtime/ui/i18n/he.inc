@@ -590,7 +590,7 @@ T("Open them from the title screen, or pause the game and choose System > Option
 T("Controller rumble", "רטט בקר")
 T("Vibrate the controller during play.", "הבקר רוטט בזמן המשחק.")
 T("Free camera with both sticks", "מצלמה חופשית עם שני הסטיקים")
-T("Clicking both sticks together turns the free camera on and off. Home on the keyboard always does.", "לחיצה על שני הסטיקים יחד מפעילה ומכבה את המצלמה החופשית. Home במקלדת תמיד עושה זאת.")
+T("Clicking both sticks together turns the free camera on and off. Home on the keyboard always does. While it's on: F8 or d-pad up changes the filter, [ and ] or d-pad left and right the hour, F7 or d-pad down saves a picture in the screenshots folder.", "לחיצה על שני הסטיקים יחד מפעילה ומכבה את המצלמה החופשית. Home במקלדת תמיד עושה זאת. כשהיא פועלת: F8 או החץ למעלה מחליף מסנן, [ ו-] או החצים שמאלה וימינה משנים את השעה, F7 או החץ למטה שומר תמונה בתיקייה screenshots.")
 T("Sharper text", "טקסט חד יותר")
 T("Upscales the game's letters for 1440p and 4K, after a restart. Not the original art.", "מגדיל את האותיות של המשחק ל-1440p ו-4K, אחרי הפעלה מחדש. לא העיצוב המקורי.")
 T("Makes the game's letters sharper on 1440p and 4K screens. It takes effect the next time you start the game. This is an upscale made on your computer from the game's own letters, not Nintendo's original art: the shapes are kept, but they aren't exactly as drawn. 4x takes a moment longer to start and uses more video memory.", "הופך את האותיות של המשחק לחדות יותר במסכי 1440p ו-4K. זה נכנס לתוקף בפעם הבאה שתפעילו את המשחק. זו הגדלה שנעשית במחשב שלכם מתוך האותיות של המשחק עצמו, לא העיצוב המקורי של Nintendo: הצורות נשמרות, אבל הן לא בדיוק כפי שצוירו. 4x לוקח קצת יותר זמן להפעלה ומשתמש ביותר זיכרון וידאו.")

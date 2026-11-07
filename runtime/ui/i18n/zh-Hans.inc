@@ -676,7 +676,7 @@ T("Open them from the title screen, or pause the game and choose System > Option
 T("Controller rumble", "控制器振动")
 T("Vibrate the controller during play.", "游玩时让控制器振动。")
 T("Free camera with both sticks", "双摇杆切换自由视角")
-T("Clicking both sticks together turns the free camera on and off. Home on the keyboard always does.", "同时按下两个摇杆可开启或关闭自由视角。键盘上的 Home 键始终可用。")
+T("Clicking both sticks together turns the free camera on and off. Home on the keyboard always does. While it's on: F8 or d-pad up changes the filter, [ and ] or d-pad left and right the hour, F7 or d-pad down saves a picture in the screenshots folder.", "同时按下两个摇杆可开启或关闭自由视角。键盘上的 Home 键始终可用。开启时：F8 或十字键上切换滤镜，[ 和 ] 或十字键左右调整时间，F7 或十字键下将图片保存到 screenshots 文件夹。")
 
 T("Sharper text", "更清晰的文字")
 T("Upscales the game's letters for 1440p and 4K, after a restart. Not the original art.", "为 1440p 和 4K 放大游戏的文字，重启后生效。不是原版美术。")

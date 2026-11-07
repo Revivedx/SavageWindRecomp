@@ -616,7 +616,9 @@ void build_items(void) {
                        [](const Item &) { return (int)g_settings.rumble; },
                        [](const Item &, int x) { g_settings.rumble = x; }, 1));
     v.push_back(toggle(P_CONTROLS, "Free camera with both sticks",
-                       "Clicking both sticks together turns the free camera on and off. Home on the keyboard always does.",
+                       "Clicking both sticks together turns the free camera on and off. Home on the keyboard always does. "
+                       "While it's on: F8 or d-pad up changes the filter, [ and ] or d-pad left and right the hour, F7 or "
+                       "d-pad down saves a picture in the screenshots folder.",
                        [](const Item &) { return (int)g_settings.freecam_sticks; },
                        [](const Item &, int x) { g_settings.freecam_sticks = x; }, 1));
     v.push_back(toggle(P_CONTROLS, "D-pad as left stick", "The d-pad also moves like the left stick.",

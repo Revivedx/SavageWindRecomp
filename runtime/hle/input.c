@@ -175,6 +175,7 @@ static void recompute_pad(void) {
         extern bool freecam_active(void);
         extern void freecam_toggle(void), freecam_pad(float lx, float ly, float rx, float ry, float up, float down, bool fast,
                                                       bool slow);
+        extern void photo_pad(uint32_t buttons);
         static bool combo_was;
         bool combo = pad && !host_test && (g_settings.freecam_sticks || freecam_active()) && (host >> SDL_GAMEPAD_BUTTON_LEFT_STICK & 1) && (host >> SDL_GAMEPAD_BUTTON_RIGHT_STICK & 1);
         if (combo && !combo_was) freecam_toggle();
@@ -192,6 +193,7 @@ static void recompute_pad(void) {
                             SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) / 32767.0f,
                             SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) / 32767.0f,
                             host >> SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER & 1, host >> SDL_GAMEPAD_BUTTON_LEFT_SHOULDER & 1);
+                photo_pad(host);  // (hle/photo.c: the d-pad's filter, hour and picture)
             }
             pad_buttons = 0;
             host_buttons = 0;  // (the bindings see nothing either: the free camera has the controller)
@@ -201,6 +203,7 @@ static void recompute_pad(void) {
             return;
         }
         freecam_pad(0, 0, 0, 0, 0, 0, false, false);
+        photo_pad(0);
     }
     host_buttons = host;
     recompute_motion();
@@ -557,7 +560,12 @@ void input_handle_event(const SDL_Event *e) {
                 recompute_keyboard();
                 break;
             }
-            if (freecam_active()) { freecam_key(e->key.scancode, e->type == SDL_EVENT_KEY_DOWN); break; }
+            if (freecam_active()) {
+                extern bool photo_key(int scancode);  // (hle/photo.c: filter, hour, picture)
+                if (e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat && photo_key(e->key.scancode)) break;
+                freecam_key(e->key.scancode, e->type == SDL_EVENT_KEY_DOWN);
+                break;
+            }
         }
         if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_F9 && !e->key.repeat) g_debug_frame_request = 1;
         if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_F6 && !e->key.repeat && profiler_key_available())

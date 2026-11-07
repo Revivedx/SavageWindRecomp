@@ -676,7 +676,7 @@ T("Open them from the title screen, or pause the game and choose System > Option
 T("Controller rumble", "コントローラーの振動")
 T("Vibrate the controller during play.", "プレイ中にコントローラーを振動させます。")
 T("Free camera with both sticks", "両スティックでフリーカメラ")
-T("Clicking both sticks together turns the free camera on and off. Home on the keyboard always does.", "両方のスティックを同時に押し込むとフリーカメラのオン/オフを切り替えます。キーボードの Home キーでは常に切り替えられます。")
+T("Clicking both sticks together turns the free camera on and off. Home on the keyboard always does. While it's on: F8 or d-pad up changes the filter, [ and ] or d-pad left and right the hour, F7 or d-pad down saves a picture in the screenshots folder.", "両方のスティックを同時に押し込むとフリーカメラのオン/オフを切り替えます。キーボードの Home キーは常に使えます。オンの間：F8 または十字キー上でフィルター、[ と ] または十字キー左右で時刻を変え、F7 または十字キー下で screenshots フォルダーに画像を保存します。")
 
 T("Sharper text", "文字をくっきり")
 T("Upscales the game's letters for 1440p and 4K, after a restart. Not the original art.", "1440pと4K向けにゲームの文字を拡大します（再起動後）。オリジナルの絵ではありません。")

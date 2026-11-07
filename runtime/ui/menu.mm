@@ -1096,7 +1096,9 @@ static void tab_about(void) {
     header("Controls");
     opt_toggle("Controller rumble", &g_settings.rumble, true, "Vibrate the controller during play.");
     opt_toggle("Free camera with both sticks", &g_settings.freecam_sticks, true,
-               "Clicking both sticks together turns the free camera on and off. Home on the keyboard always does.");
+               "Clicking both sticks together turns the free camera on and off. Home on the keyboard always does. "
+               "While it's on: F8 or d-pad up changes the filter, [ and ] or d-pad left and right the hour, F7 or "
+               "d-pad down saves a picture in the screenshots folder.");
     controls_bindings_draw(ImGui::GetFontSize() / 34);
     ImGui::Spacing();
     header("Menu");

@@ -676,7 +676,7 @@ T("Open them from the title screen, or pause the game and choose System > Option
 T("Controller rumble", "Controller-Vibration")
 T("Vibrate the controller during play.", "Lässt den Controller beim Spielen vibrieren.")
 T("Free camera with both sticks", "Freie Kamera mit beiden Sticks")
-T("Clicking both sticks together turns the free camera on and off. Home on the keyboard always does.", "Beide Sticks gleichzeitig drücken schaltet die freie Kamera ein und aus. Pos1 auf der Tastatur tut das immer.")
+T("Clicking both sticks together turns the free camera on and off. Home on the keyboard always does. While it's on: F8 or d-pad up changes the filter, [ and ] or d-pad left and right the hour, F7 or d-pad down saves a picture in the screenshots folder.", "Beide Sticks gleichzeitig drücken schaltet die freie Kamera ein und aus. Pos1 auf der Tastatur tut das immer. Solange sie an ist: F8 oder Steuerkreuz oben wechselt den Filter, [ und ] oder Steuerkreuz links und rechts die Uhrzeit, F7 oder Steuerkreuz unten speichert ein Bild im Ordner screenshots.")
 
 T("Sharper text", "Schärfere Schrift")
 T("Upscales the game's letters for 1440p and 4K, after a restart. Not the original art.", "Vergrößert die Schrift des Spiels für 1440p und 4K, nach einem Neustart. Nicht die Originalgrafik.")

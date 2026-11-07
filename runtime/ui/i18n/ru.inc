@@ -676,7 +676,7 @@ T("Open them from the title screen, or pause the game and choose System > Option
 T("Controller rumble", "Вибрация контроллера")
 T("Vibrate the controller during play.", "Контроллер вибрирует во время игры.")
 T("Free camera with both sticks", "Свободная камера обоими стиками")
-T("Clicking both sticks together turns the free camera on and off. Home on the keyboard always does.", "Одновременное нажатие обоих стиков включает и выключает свободную камеру. Клавиша Home на клавиатуре работает всегда.")
+T("Clicking both sticks together turns the free camera on and off. Home on the keyboard always does. While it's on: F8 or d-pad up changes the filter, [ and ] or d-pad left and right the hour, F7 or d-pad down saves a picture in the screenshots folder.", "Одновременное нажатие обоих стиков включает и выключает свободную камеру. Home на клавиатуре делает это всегда. Пока она включена: F8 или крестовина вверх меняет фильтр, [ и ] или крестовина влево и вправо — время суток, F7 или крестовина вниз сохраняет снимок в папку screenshots.")
 
 T("Sharper text", "Более чёткий текст")
 T("Upscales the game's letters for 1440p and 4K, after a restart. Not the original art.", "Увеличивает буквы игры для 1440p и 4K после перезапуска. Не оригинальная графика.")

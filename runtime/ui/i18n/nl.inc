@@ -676,7 +676,7 @@ T("Open them from the title screen, or pause the game and choose System > Option
 T("Controller rumble", "Controllertrilling")
 T("Vibrate the controller during play.", "Laat de controller tijdens het spelen trillen.")
 T("Free camera with both sticks", "Vrije camera met beide sticks")
-T("Clicking both sticks together turns the free camera on and off. Home on the keyboard always does.", "Beide sticks tegelijk indrukken zet de vrije camera aan en uit. Home op het toetsenbord doet dat altijd.")
+T("Clicking both sticks together turns the free camera on and off. Home on the keyboard always does. While it's on: F8 or d-pad up changes the filter, [ and ] or d-pad left and right the hour, F7 or d-pad down saves a picture in the screenshots folder.", "Beide sticks tegelijk indrukken zet de vrije camera aan en uit. Home op het toetsenbord doet dat altijd. Zolang hij aan staat: F8 of de d-pad omhoog wisselt het filter, [ en ] of de d-pad links en rechts het uur, F7 of de d-pad omlaag bewaart een afbeelding in de map screenshots.")
 
 T("Sharper text", "Scherpere tekst")
 T("Upscales the game's letters for 1440p and 4K, after a restart. Not the original art.", "Vergroot de letters van het spel voor 1440p en 4K, na een herstart. Niet het originele ontwerp.")
