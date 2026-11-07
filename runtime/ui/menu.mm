@@ -946,6 +946,10 @@ static void tab_display(void) {
                "The game's own FXAA, which smooths edges as the 3D image is drawn into the final picture, as on the "
                "console. Off: a sharper image with more jagged edges; use it to replace FXAA with SMAA or TAA above, "
                "or to keep the image crisp at a high resolution.");
+    // the wet lighting passes' sun glare (maxwell/translate.c maxwell_wet_lighting)
+    opt_toggle("Wet grass fix", &g_settings.wet_fix, false,
+               "In rain with the sun out, the game's wet lighting blows grass and roofs out to white. On: most of that "
+               "glare goes, and the grass keeps its colour and a soft sheen. Applies from the next start.");
 #endif
 #ifndef __APPLE__
     {   // Anisotropic filtering and sharpening (Vulkan: vulkan/textures.c sampler_aniso, vulkan/exec.c scene_post)

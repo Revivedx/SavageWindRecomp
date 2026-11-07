@@ -455,6 +455,7 @@ static uint64_t xlate_id(const uint8_t *code, size_t max_size, int stage, const 
     uint64_t h = hash64(0xcbf29ce484222325ull, id, strlen(id));
     h = hash64(h, hd, sizeof *hd);
     h = hash64(h, code, hd->bin_size);
+    if (maxwell_wet_lighting(code, max_size, stage)) h = hash64(h, "wet", 3);  // (Video > Wet grass fix: its own translation)
     return h ? h : 1;
 }
 

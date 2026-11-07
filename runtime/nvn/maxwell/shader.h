@@ -105,6 +105,11 @@ extern uint64_t maxwell_gmem_base, maxwell_gmem_size;
 // then a uniform buffer { uint64_t address, size } and every access is checked against that size. All change
 // translations.
 extern bool maxwell_gmem_split, maxwell_gmem_snap, maxwell_gmem_bda;
+// Video > Wet grass fix (settings.h wet_fix), set by the Vulkan backend before translating. It changes the
+// translations of the game's wet lighting passes only (maxwell_wet_lighting), and is part of their ids
+// (shaders.c xlate_id), so each choice keeps its own cached translations of them.
+extern bool maxwell_wet_fix;
+bool maxwell_wet_lighting(const uint8_t *blob, size_t max_size, int stage);
 // Debug: when translating the shader whose code starts at maxwell_dbg_code, output register
 // maxwell_dbg_reg as captured after the instruction at maxwell_dbg_pc (greyscale, all targets).
 extern const uint8_t *maxwell_dbg_code;
