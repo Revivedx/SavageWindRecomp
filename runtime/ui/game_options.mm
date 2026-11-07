@@ -768,6 +768,16 @@ void build_items(void) {
     v.push_back(toggle(P_ACCESS, "Unbreakable weapons", "Weapons, bows and shields lose no durability and never break.",
                        [](const Item &) { return (int)g_settings.no_weapon_wear; },
                        [](const Item &, int x) { g_settings.no_weapon_wear = x; }, 0));
+    v.push_back(choice(P_ACCESS, "Weapon wear", "How fast weapons, bows and shields wear out. 100% is the game's own.",
+                       [](const Item &) { return (WEAPON_WEAR_MAX - WEAPON_WEAR_MIN) / 10 + 1; },
+                       [](const Item &, int x) {
+                           static std::string s;
+                           s = pct(WEAPON_WEAR_MIN + 10 * x);
+                           return s.c_str();
+                       },
+                       [](const Item &) { return (g_settings.weapon_wear - WEAPON_WEAR_MIN) / 10; },
+                       [](const Item &, int x) { g_settings.weapon_wear = WEAPON_WEAR_MIN + 10 * x; },
+                       (100 - WEAPON_WEAR_MIN) / 10));
     v.push_back(toggle(P_ACCESS, "Infinite arrows", "Shooting a bow uses up no arrows. You still need one to shoot.",
                        [](const Item &) { return (int)g_settings.infinite_arrows; },
                        [](const Item &, int x) { g_settings.infinite_arrows = x; }, 0));

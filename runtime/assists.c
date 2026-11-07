@@ -14,11 +14,16 @@ static int32_t scaled(int32_t d, int pct) {
 }
 
 // The cost a hit takes off a life (tools/patches.py _no_wear_hit: every life goes through that function), by whose life
-// it is: a weapon's, bow's or shield's durability (LIFE_WEAPON: Unbreakable weapons, from #296), Link's hearts
+// it is: a weapon's, bow's or shield's durability (LIFE_WEAPON: Unbreakable weapons, from #296, else Weapon wear's share
+// of the game's cost, rounded down: a light hit at a low setting can cost nothing), Link's hearts
 // (LIFE_LINK: left to rt_link_life, which sees every loss of his), or anything else's (One-hit kill, the damage dealt).
 enum { LIFE_OTHER, LIFE_WEAPON, LIFE_LINK };
 uint32_t rt_life_cost(uint32_t cost, int32_t life, int whose) {
-    if (whose == LIFE_WEAPON) return g_settings.no_weapon_wear ? 0 : cost;
+    if (whose == LIFE_WEAPON) {
+        if (g_settings.no_weapon_wear) return 0;
+        int pct = g_settings.weapon_wear;
+        return pct == 100 || (int32_t)cost <= 0 ? cost : (uint32_t)((uint64_t)cost * (uint32_t)pct / 100);
+    }
     if (whose == LIFE_LINK || (int32_t)cost <= 0) return cost;
     if (g_settings.one_hit_kill) return life > (int32_t)cost ? (uint32_t)life : cost;
     return (uint32_t)scaled((int32_t)cost, g_settings.damage_dealt);
