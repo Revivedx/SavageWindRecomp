@@ -133,6 +133,7 @@ typedef struct {
     int weapon_wear;         // how fast they wear out otherwise, percent of the game's (WEAPON_WEAR_MIN..MAX)
     bool infinite_arrows;    // shooting a bow takes no arrows from the pouch
     bool infinite_stamina;   // the stamina wheel never goes down
+    bool infinite_rupees;    // the wallet is kept at 9999 rupees (runtime/rupees.c)
     bool god_mode;           // Link takes no damage
     bool one_hit_kill;       // whatever else takes damage loses all its life at once
     int damage_taken;        // percent of the damage Link takes (DAMAGE_CHOICES)

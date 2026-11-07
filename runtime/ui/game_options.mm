@@ -906,6 +906,9 @@ void build_items(void) {
     v.push_back(toggle(P_ACCESS, "Infinite stamina", "The stamina wheel never runs out.",
                        [](const Item &) { return (int)g_settings.infinite_stamina; },
                        [](const Item &, int x) { g_settings.infinite_stamina = x; }, 0));
+    v.push_back(toggle(P_ACCESS, "Infinite rupees", "Keeps your wallet at 9999 rupees, topped up every few seconds.",
+                       [](const Item &) { return (int)g_settings.infinite_rupees; },
+                       [](const Item &, int x) { g_settings.infinite_rupees = x; }, 0));
 
 }
 
