@@ -399,6 +399,7 @@ int main(int argc, char **argv) {
         // The game holds the lock on its save folder while it runs, so the Saves tab of another Savage Wind refuses to
         // swap or copy saves under it. Not getting it (somebody else has it, or no lock file can be made) never stops
         // the game; it is let go before the start screen of a reboot, which is this same process.
+        { extern void save_backup_at_start(void); save_backup_at_start(); }  // (Saves > Back up at each start; before the lock)
         ScLock *save_lock = NULL;
         sp_session_begin();  // the save profile chosen on the start screen (runtime/services/save_profiles.h)
         if (sc_lock_take(sp_session_save_dir(), &save_lock) == SC_LOCK_BUSY)

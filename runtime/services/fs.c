@@ -988,10 +988,24 @@ static void rstb_name(const char *path, char *out, size_t cap) {
     if (dot && dot[1] == 's' && strcmp(dot, ".sarc") && !strchr(dot, '/')) memmove(dot + 1, dot + 2, strlen(dot + 2) + 1);
 }
 
+// Room the model loader gets on top of the ResourceSizeTable's size for each model (.bfres), in KB. The loader makes a
+// temporary heap from a model's entry and allocates one node per material from it without checking for failure; in
+// the Gerudo desert (the Wasteland Tower save) a few models (FldObj_RuinStatueKnight_A-03) overflow it, and the
+// allocation returns NULL: "access violation: write at 0x8" about one load in five. 64 KB held for 20 loads in a row
+// (unpatched, a crash came within 7 loads each time); 256 KB held for 20. SAVAGEWIND_RSTB_MODEL_KB=n changes it, 0 leaves the table as it is.
+#define RSTB_MODEL_KB 64
+
+static uint32_t rstb_model_grow(void) {
+    const char *e = getenv("SAVAGEWIND_RSTB_MODEL_KB");
+    long kb = e && *e ? atol(e) : RSTB_MODEL_KB;
+    return kb > 0 ? (uint32_t)kb << 10 : 0;
+}
+
 static void rstb_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
     static const char rstb_path[] = "System/Resource/ResourceSizeTable.product.srsizetable";
     bool merged = R == &images[0] && romfs_has_dlc_merged();
-    if (!R->ngrown && !merged) return;
+    uint32_t model_grow = R == &images[0] ? rstb_model_grow() : 0;
+    if (!R->ngrown && !merged && !model_grow) return;
     int k = 0;
     while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, rstb_path)) k++;
     char host[1200];
@@ -1048,6 +1062,20 @@ static void rstb_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
         }
         LOG("[fs] the RomFS has the DLC merged into it: %d ResourceSizeTable entries grown to the DLC's (%llu KB)\n",
             dlc_changed, (unsigned long long)(dlc_added >> 10));
+    }
+    if (model_grow) {
+        int mg = 0;
+        char name[300];
+        for (int i = 0; i < R->rom_nfiles; i++) {
+            size_t pl = strlen(R->rom_files[i].path);
+            if (pl < 8 || strcmp(R->rom_files[i].path + pl - 7, ".sbfres")) continue;
+            rstb_name(R->rom_files[i].path, name, sizeof name);
+            uint32_t *e = rstb_entry(d, ncrc, nname, name), v;
+            if (!e) continue;
+            memcpy(&v, e, 4), v += model_grow, memcpy(e, &v, 4);
+            mg++;
+        }
+        LOG("[fs] ResourceSizeTable: %d model entries grown by %u KB\n", mg, model_grow >> 10);
     }
     size_t bn = 0;
     free(R->rstb_blob);

@@ -3,7 +3,7 @@
 #include <math.h>
 #include <stdio.h>
 #include "../runtime/nvn/output_scale.c"
-Settings g_settings = {.wide_view = true, .fov = 100};
+Settings g_settings = {.wide_view = true, .fov = 100, .render_scale = RSCALE_100};
 static bool title, loading, map;
 bool framepace_map_ui(void) { return map; }
 bool framepace_title_ui(void) { return title; }

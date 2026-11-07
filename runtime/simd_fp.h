@@ -55,13 +55,17 @@ SN T FN(nan3)(Cpu *c, T a, T b, T d) {
 
 // x*y + z with one rounding, for scalars and vectors (simd.h: the FMA instructions or simd_softfma.h)
 #ifdef SIMD_SOFT_FMA
+SI T FN(sel_fma)(T x, T y, T z) {
+    return __builtin_expect(simd_fma_unfused, 1) ? x * y + z : FN(simd_soft_fma)(x, y, z);
+}
 SI VT FN(vsoft_fma)(VT x, VT y, VT z) {
+    if (__builtin_expect(simd_fma_unfused, 1)) return x * y + z;
     VT r;
     for (int i = 0; i < NL; i++) r[i] = FN(simd_soft_fma)(x[i], y[i], z[i]);
     return r;
 }
 #ifndef SIMD_FMA
-#define SIMD_FMA(x, y, z) _Generic((x), T: FN(simd_soft_fma), VT: FN(vsoft_fma))(x, y, z)
+#define SIMD_FMA(x, y, z) _Generic((x), T: FN(sel_fma), VT: FN(vsoft_fma))(x, y, z)
 #endif
 #elif !defined(SIMD_FMA)
 #define SIMD_FMA(x, y, z) __builtin_elementwise_fma(x, y, z)

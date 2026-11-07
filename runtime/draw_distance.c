@@ -67,7 +67,7 @@
 #define NEAR_MAX 1000.0f  // (metres: the nearer actors' scaled distance at most)
 #define FAR_MAX 1.5f
 
-// the level in use: the setting's, or (tests) SAVAGEWIND_DRAWDIST_AT=<script frame>:<level 0-2>,... from that frame of
+// the level in use: the setting's, or (tests) SAVAGEWIND_DRAWDIST_AT=<script frame>:<level 0-3>,... from that frame of
 // SAVAGEWIND_SCRIPT_CLOCK on, so one run (one weather, one camera) shows several levels
 static int level(void) {
     static const char *at;
@@ -91,7 +91,11 @@ static int level(void) {
 // them, 1.5 and 1.6 did not. Medium 1.15 and High 1.3 (the user's choice) kept a margin under that, until High left
 // out the wooden bridge with lanterns east of the village and its Rito NPC (user play test 2026-11-05, at
 // -3421.5, 251, -1871.9): there 1.1, 1.2 and 1.25 kept them and 1.3 did not. High is 1.2 since.
-static const float k_factor[DRAWDIST_COUNT] = {1.0f, 1.15f, 1.2f};  // (DRAWDIST_*)
+// Potato (Alpha 5): nearer than on the console, for weak PCs, where the render thread's draws are the limit. 0.6 of the
+// game's distances for the actors and the grass, 0.75 for the far models and the distant trees (RTX 3060 limited to
+// 4 cores at 1280x720: Rito 101 -> 120 fps, the castle 148 -> 190-200, Kakariko 148 -> 159, Korok Forest 181 -> 197).
+static const float k_factor[DRAWDIST_COUNT] = {1.0f, 1.15f, 1.2f, 0.6f};  // (DRAWDIST_*)
+#define POTATO_FAR 0.75f
 
 float draw_distance_factor(void) {
     static float env = -1;
@@ -114,6 +118,7 @@ static float far_factor(void) {
         env = f >= 0.25f && f <= 8.0f ? f : 0;
     }
     if (env > 0) return env;
+    if (level() == DRAWDIST_POTATO && !getenv("SAVAGEWIND_TRAVERSE_SCALE")) return POTATO_FAR;
     float f = draw_distance_factor();
     return f > FAR_MAX ? FAR_MAX : f;
 }
@@ -125,8 +130,8 @@ static float far_factor(void) {
 //   (seen at 3x). The factor in use follows the list (blades_factor).
 // - Crossed quads: their fade only. Their region (about 120 m in play) already holds the cells, and its list is full
 //   in the game's own play (718-768 of 768).
-static const float k_blades[DRAWDIST_COUNT] = {1.0f, 1.15f, 2.5f};  // (DRAWDIST_*)
-static const float k_quads[DRAWDIST_COUNT] = {1.0f, 1.6f, 2.5f};
+static const float k_blades[DRAWDIST_COUNT] = {1.0f, 1.15f, 2.5f, 0.6f};  // (DRAWDIST_*)
+static const float k_quads[DRAWDIST_COUNT] = {1.0f, 1.6f, 2.5f, 0.6f};
 #define BLADE_LIST 512
 #define BLADE_LIST_HIGH 485  // (listed cells past this: the factor goes down)
 #define BLADE_LIST_LOW 455   // (below this: back up towards the level's)

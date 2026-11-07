@@ -40,6 +40,7 @@ typedef struct {
     VkPipelineCache pcache_pre;  // the precompiled shaders' libraries (cache/vk_precompiled.bin; read only while playing)
     VkSemaphore timeline;      // value = last completed submission number
     VkCommandPool pool;        // render thread only
+    bool provoking_last;  // VK_EXT_provoking_vertex: flat outputs from a primitive's last vertex, as NVN
     bool custom_border, divisor, host_import, memory_budget, memory_priority, pageable_device_local_memory, sparse_queue, sparse_buffer,
         sparse_nonresident_strict, sparse_host_import, wide_lines;
     bool calibrated;  // VK_EXT_calibrated_timestamps (the profiler aligns GPU timestamps to the CPU clock)
@@ -147,11 +148,13 @@ typedef struct TexBackend {
     // A compressed image drawn into through an uncompressed view of its blocks (a texel a block: BOTW encodes its NPC
     // speech bubbles to BC4 on the GPU that way). Vulkan draws into no compressed image: the draw goes into this
     // block-sized image instead, copied into this one after the pass (textures.c block_view, vk_block_flush).
-    // block is the one the open pass draws into: one of block_lv (a block image per level of b drawn into that way;
-    // only level 0 outside the Mali R8 path), block_level the level of b its texels are the blocks of.
+    // block is the one the open pass draws into: one of block_lv (a block image per level of b drawn into that way),
+    // block_level the level of b its texels are the blocks of, block_slice the layer (array) or slice (3D) of it. agl's
+    // GPU BC4 encoder fills a 32x32x32 BC4 volume that way, one slice a pass; each slice goes through the same image.
     struct TexBackend *block;
     struct TexBackend *block_lv[16];
     uint8_t block_level;
+    uint16_t block_slice;
     bool gpu_bc4;                // BC4 kept as BC4 though SAVAGEWIND_VK_BC4_CPU is on: the GPU draws into its blocks
     bool block_pending;          // (exec.c) the attachment view just made is block's: copy it after the pass
 } TexBackend;
