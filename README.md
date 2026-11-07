@@ -102,6 +102,9 @@ a fresh cache.
 
 To keep game files, saves and caches on another drive, see [Moving the data folder](docs/data-folder.md).
 
+To start with an extra test setting (an environment flag we asked you to try) without a terminal, use the Launch options
+list on the start screen: [docs/launch-options.md](docs/launch-options.md).
+
 The setup and configuration screens show Savage Wind's own art. To see a picture of your own there instead, put it
 next to `savagewind.exe` (on Linux, in the data folder) as `splash.jpg` or `splash.png`; it's only read from your folder and never part of
 Savage Wind.

@@ -18,6 +18,7 @@ build/
 save/
 /save.lock
 /savagewind.ini
+/launch-flags.txt
 # tools and Python environments (machine-specific)
 tools/venv/
 venv/
