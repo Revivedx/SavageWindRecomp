@@ -1007,6 +1007,8 @@ static void tab_audio(void) {
                "The game's echo in caves, dungeons and big rooms.");
     opt_toggle("Movie audio", &g_settings.movie_audio, true,
                "Sound in the game's movies (the opening and the ending). Applies the next time a movie starts.");
+    opt_toggle("Mute in background", &g_settings.mute_unfocused, false,
+               "Mute audio while the game window is in the background or minimized.");
     opt_end();
 }
 
