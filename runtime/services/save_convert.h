@@ -32,6 +32,7 @@ typedef enum {
     SC_SEARCH_LIMIT,  // the folder search ran out of time or visits: choose a closer folder
     SC_CANCELLED,     // the caller requested cancellation before installation
     SC_IN_USE,        // a running game holds the save folder's lock (see sc_lock_take): close it first
+    SC_WIIU_SAVE,     // the save is already in the Wii U byte order: nothing to convert
 } ScCode;
 
 // One converted flag file: what it held and what became of it
@@ -66,7 +67,10 @@ void sc_format_free(ScFormat *f);
 uint32_t sc_format_revision(const ScFormat *f);
 
 // ---- converting
-enum { SC_ALLOW_SWITCH = 1 };  // (tests) a little-endian source is converted for its revision instead of refused
+enum {
+    SC_ALLOW_SWITCH = 1,  // (tests) a little-endian source is converted for its revision instead of refused
+    SC_TO_WIIU      = 2,  // converts to Wii U (big-endian) directly into stage_dir (no save_0 wrapping)
+};
 
 // The profile folder in dir: dir itself if it holds numbered slot folders with a game_data.sav, else the first folder
 // below it (up to 10 levels, in name order) that does; one in the Wii U's byte order is preferred to any other. SC_NO_SAVE
@@ -88,6 +92,12 @@ ScCode sc_convert_cancel(const char *src, const char *stage_dir, const ScFormat 
 // (sdcard, ...) is copied over. If the second step fails the first is undone. Consumes the stage only on success.
 // After SC_MOVED, use sc_stage_keep to preserve the new saves for recovery; other failures can discard the stage.
 ScCode sc_stage_install(ScStage *stage, const char *save_dir, const char *backup_dir, ScReport *r);
+// Moves the staged export folder to dst_dir: creates dst_dir and its subfolders if needed, moves or copies staged files
+// to dst_dir, and preserves any existing files in dst_dir with a dated .bak suffix. Frees stage.
+ScCode sc_stage_export(ScStage *stage, const char *dst_dir, ScReport *r);
+// Converts the Switch profile found in src_dir (or src_dir/save_0) into dst_dir, in the Wii U's big-endian byte order.
+// Existing files in dst_dir are preserved with a dated .bak suffix.
+ScCode sc_export(const char *src_dir, const char *dst_dir, const ScFormat *fmt, const ScCancel *cancel, ScReport *r);
 // Removes the files and folders the conversion made (and only those) and frees the stage.
 void sc_stage_discard(ScStage *stage);
 // Frees the stage without removing its files: keep the new saves for recovery after SC_MOVED.
@@ -104,6 +114,7 @@ ScCode sc_cleanup_stages(const char *save_dir, const char *keep_dir, ScRecovery 
 // the staging folder's: <save_dir>-import-YYYYMMDD-HHMMSS.
 void sc_backup_path(const char *save_dir, char *out, size_t cap);
 void sc_stage_path(const char *save_dir, char *out, size_t cap);
+void sc_stage_export_path(const char *save_dir, char *out, size_t cap);
 // Copies save_dir whole into the new folder backup_dir (made, with its parents). SC_NO_SAVE: nothing to copy. On
 // failure the copy made so far is removed again.
 ScCode sc_backup(const char *save_dir, const char *backup_dir, ScReport *r);
