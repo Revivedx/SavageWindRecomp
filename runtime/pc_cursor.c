@@ -130,14 +130,19 @@ void pc_cursor_frame(void) {
             if(i==0x3f&&LD64(text)==0x7001ced520ull)dlc_screen=text;
             if(i==0x30&&LD64(text)==0x7001cef0a8ull)game_over_screen=text;
             if(i==0x39&&LD64(text)==0x7001cfffe0ull)game_over_modal=text;
-            if(LD64(text)==0x7001d4ed48ull)dialogue=true;
+
             // New-item descriptions use Confirm without registered button nodes.
             if(LD64(text)==0x7001cf5e78ull)item_message=true;
             if(i==0x2e&&LD64(text)==0x7001cf9ad8ull&&g_site.pause_state&&
                LD32(g_site.pause_state)==2&&LD32(text+0x3a48)==0)preview=true;
             if(i>=0x30&&i<=0x3a)preview=false;
             uint64_t name=LD64(text+0xd0);
-            if(name>=GUEST_LO&&name<GUEST_HI-32&&!strncmp((char*)(uintptr_t)name,"ShopBtnList",11))shop_screen=text;
+            bool name_readable=name>=GUEST_LO&&name<GUEST_HI-32;
+            // Timed combat hints share the dialogue screen but need no pointer.
+            if(LD64(text)==0x7001d4ed48ull&&
+               !(name_readable&&!strcmp((const char *)(uintptr_t)name,"MessageSp_00_NoTop")))
+                dialogue=true;
+            if(name_readable&&!strncmp((char*)(uintptr_t)name,"ShopBtnList",11))shop_screen=text;
         }
         rotate_mode=enabled()&&arr&&count>0x2f&&g_site.pause_state&&LD32(g_site.pause_state)==2&&ptr(rotate_info)&&
             LD64(arr+8*0x2f)==rotate_info&&LD8(rotate_info+0xfe)==2&&ptr(rotate_group)&&
