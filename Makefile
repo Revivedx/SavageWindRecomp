@@ -644,7 +644,14 @@ $(B)/test_file_size_cache: tools/test_file_size_cache.cpp runtime/ui/file_size_c
 test-file-size-cache: $(B)/test_file_size_cache
 	$(B)/test_file_size_cache
 
-.PHONY: test-game-file-size test-file-size-cache
+$(B)/test_dlc_check: tools/test_dlc_check.c runtime/dlc_check.c runtime/dlc_check.h runtime/romfs_build.c runtime/romfs_build.h
+	@mkdir -p $(B)
+	$(CC) -O1 -std=gnu11 -Wall -Wextra -Werror $(OSFLAGS) -Iruntime -o $@ tools/test_dlc_check.c runtime/dlc_check.c runtime/romfs_build.c
+
+test-dlc-check: $(B)/test_dlc_check
+	$(B)/test_dlc_check
+
+.PHONY: test-game-file-size test-file-size-cache test-dlc-check
 
 # the command layer of the control endpoint (who may run what, the queue, the text)
 $(B)/test_control: tools/test_control.c runtime/control.c runtime/control.h

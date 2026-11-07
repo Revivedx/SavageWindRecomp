@@ -49,6 +49,7 @@ extern "C" {
 #include "gamebuild.h"
 #include "gamelib.h"
 #include "game_versions.h"
+#include "dlc_check.h"
 #include "romfs_build.h"
 #include "settings.h"
 #include "color_grade.h"
@@ -488,20 +489,24 @@ static std::string precompile_line(void) {
 }
 #endif
 
-static bool pc_only_finished(void) {  // (a precompilation alone just finished: the game files page stays)
+static std::atomic<bool> g_stay_on_setup{false}, g_dlc_checking{false};
+
+static bool stay_on_setup_finished(void) {  // (a check, shader precompilation or failed setup: the game files page stays)
+    bool stay = g_stay_on_setup.exchange(false);
 #ifndef __APPLE__
-    return g_pc_only.exchange(false);
-#else
-    return false;
+    stay |= g_pc_only.exchange(false);
 #endif
+    return stay;
 }
 
-// ---- downloadable content (runtime/services/fs.c): each DLC's RomFS is copied to aoc<index>/ and gets its own image,
-// aoc<index>.bin, which the game mounts by itself as on the console. On the Switch the first DLC (01007EF00011F001, The
-// Master Trials) holds the data of both; the second's RomFS has only its version: the one with more files is 1.
-static const int DLC_MAX = 8;
+// ---- downloadable content (runtime/services/fs.c, runtime/dlc_check.c): each DLC's RomFS is copied to aoc<index>/ and
+// mounted by the game as on the console. On the Switch the first DLC (01007EF00011F001, The Master Trials) holds the
+// data of both; the second's RomFS has only its version: the one with more files is 1, and the game unlocks the DLC
+// content only when it finds both (#470, #497).
+static const int DLC_MAX = RT_DLC_MAX;
 #define AOC_DIR "aoc%d"
 #define AOC_IMAGE "aoc%d.bin"  // (images older setups built: removed with the folder)
+static RtDlcCheck g_dlc;       // guarded by g_lock when updated from a worker thread
 static std::string aoc_name(const char *fmt, int i) {
     char n[32];
     snprintf(n, sizeof n, fmt, i);
@@ -519,13 +524,123 @@ static std::string aoc_version(const std::string &dir) {
     return v;
 }
 
-// The DLC set up: "" none, else e.g. "1 + 2 (3.0)"
-static std::string dlc_installed(const std::string &root) {
+static std::string dlc_folders_list(unsigned mask) {
     std::string list;
     for (int i = 1; i <= DLC_MAX; i++)
-        if (is_dir(root + "/" + aoc_name(AOC_DIR, i))) list += (list.empty() ? "" : " + ") + std::to_string(i);
-    std::string v = aoc_version(root + "/aoc1");
-    return list.empty() || v.empty() ? list : list + " (" + v + ")";
+        if (mask & (1u << (i - 1))) list += (list.empty() ? "" : " + ") + std::to_string(i);
+    return list;
+}
+
+static std::string dlc_value_text(const RtDlcCheck &c) {
+    switch (c.state) {
+    case RT_DLC_NONE: return tr("Not set up");
+    case RT_DLC_READY: return dlc_folders_list(c.present_mask) + " (" + c.version + ")";
+    case RT_DLC_ONLY_ONE: return tr("1 of 2");
+    case RT_DLC_WRONG_VERSION: {
+        char b[64];
+        snprintf(b, sizeof b, tr("Version %s"), c.version);
+        return b;
+    }
+    default: return tr("Not ready");
+    }
+}
+
+static void dlc_problem_text(const RtDlcCheck &c, std::string *head, std::string *hint) {
+    char b[512];
+    switch (c.state) {
+    case RT_DLC_ONLY_ONE:
+        *head = tr("Only one of the two DLC is set up");
+        *hint = tr("The game unlocks the DLC content only when it finds both DLC in separate folders (aoc1 and aoc2). "
+                   "Extracting both into one folder leaves only one.");
+        break;
+    case RT_DLC_SWAPPED:
+        *head = tr("The two DLC folders are swapped");
+        *hint = tr("aoc1 must hold the first DLC's RomFS (about 1.4 GB) and aoc2 the second's (System/AocVersion.txt).");
+        break;
+    case RT_DLC_WRONG_VERSION:
+        *head = tr("The DLC isn't version 3.0");
+        snprintf(b, sizeof b,
+                 tr("Its System/AocVersion.txt says %s. Savage Wind needs Switch DLC version 3.0, updated on your "
+                    "console and extracted again."),
+                 c.version[0] ? c.version : "?");
+        *hint = b;
+        break;
+    case RT_DLC_MERGED:
+        *head = tr("The DLC is merged into the game's romfs");
+        *hint = tr("The game unlocks the DLC only when aoc1 and aoc2 are in their own folders, apart from romfs. "
+                   "Extract the base game + update RomFS and the two DLC into separate folders and set them up again.");
+        break;
+    case RT_DLC_MISNAMED:
+        *head = tr("DLC folder isn't named aoc1 / aoc2");
+        snprintf(b, sizeof b,
+                 tr("Found a DLC RomFS in %s, which the game doesn't read in place. Name the two DLC folders aoc1 and "
+                    "aoc2, or set them up from here."),
+                 c.detail[0] ? c.detail : "?");
+        *hint = b;
+        break;
+    default:
+        *head = tr("Downloadable content incomplete");
+        if (c.nested)
+            *hint = tr("The DLC's files are inside a subfolder: System/AocVersion.txt must be right inside aoc1/System/ "
+                       "and aoc2/System/.");
+        else {
+            snprintf(b, sizeof b, tr("Missing or unreadable: %s. Extract both DLC again in separate folders and set them up."),
+                     c.detail[0] ? c.detail : "aoc1");
+            *hint = b;
+        }
+        break;
+    }
+}
+
+static void dlc_log(const RtDlcCheck &c) {
+    static RtDlcState last_state = (RtDlcState)-1;
+    static std::string last_detail;
+    std::string cur = std::string(c.version) + "|" + c.detail + (c.nested ? "|1" : "|0");
+    if (c.state == last_state && cur == last_detail) return;
+    last_state = c.state, last_detail = cur;
+    if (c.state == RT_DLC_NONE) return;
+    if (c.state == RT_DLC_READY)
+        fprintf(stderr, "[launcher] dlc: ready (aoc1 + aoc2, version \"%s\")\n", c.version);
+    else
+        fprintf(stderr, "[launcher] dlc: %s (mask=0x%x version=\"%s\" detail=\"%s\"%s)\n", rt_dlc_state_name(c.state),
+                c.present_mask, c.version, c.detail, c.nested ? " nested" : "");
+}
+
+static void refresh_dlc(void) {
+    RtDlcCheck c = rt_dlc_check(g_root.c_str());
+    pthread_mutex_lock(&g_lock);
+    g_dlc = c;
+    pthread_mutex_unlock(&g_lock);
+    dlc_log(c);
+}
+
+static void *dlc_check_thread(void *) {
+    g_dlc_checking = true;
+    set_job("Checking downloadable content...");
+    RtDlcCheck c = rt_dlc_verify(g_root.c_str());
+    g_dlc_checking = false;
+    pthread_mutex_lock(&g_lock);
+    g_dlc = c;
+    pthread_mutex_unlock(&g_lock);
+    dlc_log(c);
+    if (c.state == RT_DLC_READY) {
+        fprintf(stderr, "[launcher] dlc verified: %u files, %llu bytes (version \"%s\")\n", c.files,
+                (unsigned long long)c.bytes, c.version);
+        char ok[256];
+        snprintf(ok, sizeof ok, tr("Downloadable content verified: %u files, %llu MB (version %s)."), c.files,
+                 (unsigned long long)(c.bytes >> 20), c.version);
+        set_job(ok);
+    } else if (c.state == RT_DLC_NONE) {
+        set_job("No downloadable content is set up.");
+    } else {
+        std::string head, hint;
+        dlc_problem_text(c, &head, &hint);
+        set_job(head, true, hint);
+    }
+    pthread_mutex_lock(&g_lock);
+    g_busy = false;
+    pthread_mutex_unlock(&g_lock);
+    return NULL;
 }
 
 static void remove_dlc(const std::string &root) {
@@ -644,12 +759,24 @@ check:
 #ifndef __APPLE__
         if (why.empty() && !dlc_only && g_settings.precompile_shaders && shader_precompile_available()) run_precompile();
 #endif
-        if (why.empty()) set_job(dlc_only ? "Downloadable content ready." : "Game files ready.");
-        else set_failure(why.find("NSO") != std::string::npos ? FAIL_VERSION
-                         : version_failure(why) ? version_failure(why) : FAIL_MISSING);
+        RtDlcCheck dc = rt_dlc_check(g_root.c_str());
+        pthread_mutex_lock(&g_lock);
+        g_dlc = dc;
+        pthread_mutex_unlock(&g_lock);
+        dlc_log(dc);
+        if (!why.empty())
+            set_failure(why.find("NSO") != std::string::npos ? FAIL_VERSION
+                        : version_failure(why) ? version_failure(why) : FAIL_MISSING);
+        else if (dlc_only && dc.state != RT_DLC_READY) {
+            std::string head, hint;
+            dlc_problem_text(dc, &head, &hint);
+            set_job(head, true, hint);
+        } else
+            set_job(dlc_only ? "Downloadable content ready." : "Game files ready.");
     }
 done:
     pthread_mutex_lock(&g_lock);
+    if (g_job_failed) g_stay_on_setup = true;
     g_busy = false;
     pthread_mutex_unlock(&g_lock);
     return NULL;
@@ -1122,6 +1249,7 @@ extern "C" void launcher_run(const char *root, int mode) {
 
     remove_old_image(g_root);
     std::string status = check_game_files(g_root);
+    refresh_dlc();
     Page page = status.empty() && !g_setup_only ? MAIN : SETUP;
     set_job("");  // (an earlier visit's result)
     explain_status(status);
@@ -1178,6 +1306,7 @@ extern "C" void launcher_run(const char *root, int mode) {
         double gb = rt_game_files_size(g_root.c_str()) / 1e9;
         bool ok = rt_remove_game_files(g_root.c_str());
         status = check_game_files(g_root);
+        refresh_dlc();
         fprintf(stderr, "[launcher] delete %.1f GB: %s -> %s\n", gb, ok ? "ok" : "refused", status.c_str());
         if (!status.empty()) page = SETUP;
     }
@@ -1187,6 +1316,7 @@ extern "C" void launcher_run(const char *root, int mode) {
         if (g_files_deleted) {  // (Settings > Prelaunch deleted them)
             g_files_deleted = false;
             status = check_game_files(g_root);
+            refresh_dlc();
             if (!status.empty()) { bind_capture_cancel(); settings_save(); page = SETUP; }
         }
         SDL_Event e;
@@ -1194,10 +1324,17 @@ extern "C" void launcher_run(const char *root, int mode) {
             if (page == SETTINGS && bind_capture_event(&e)) continue;  // (waiting for a new binding: controls_ui.mm)
             if (!launcher_pad_event(e)) ImGui_ImplSDL3_ProcessEvent(&e);
             if (e.type == SDL_EVENT_QUIT) exit(0);
+            if (e.type == SDL_EVENT_WINDOW_FOCUS_GAINED) {
+                pthread_mutex_lock(&g_lock);
+                bool b = g_busy;
+                pthread_mutex_unlock(&g_lock);
+                if (!b) refresh_dlc();
+            }
         }
         // extraction finished: re-check
         pthread_mutex_lock(&g_lock);
         bool busy = g_busy;
+        RtDlcCheck dlc_st = g_dlc;
         pthread_mutex_unlock(&g_lock);
         g_file_size.set_suspended(busy);
         if (was_busy && !busy) {
@@ -1205,7 +1342,7 @@ extern "C" void launcher_run(const char *root, int mode) {
             if (status.empty() && g_setup_only) {  // set up: on into the game (after the first-start note)
                 if (g_settings.menu_tip_seen) play = true;
                 else tip_then_play = true;
-            } else if (status.empty() && !pc_only_finished()) page = MAIN;
+            } else if (status.empty() && !stay_on_setup_finished()) page = MAIN;
         }
         was_busy = busy;
 
@@ -1330,7 +1467,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                 }
                 ImGui::SetCursorPosX(x0);  // (set up, set up again, delete: the game files page)
                 if (g_refocus == SETUP) ImGui::SetKeyboardFocusHere(), g_refocus = MAIN;
-                if (menu_item(status.empty() ? "GAME FILES" : "SET UP GAME FILES", !busy)) page = SETUP;
+                if (menu_item(status.empty() ? "GAME FILES" : "SET UP GAME FILES", !busy)) refresh_dlc(), page = SETUP;
                 ImGui::SetCursorPosX(x0);
                 if (menu_item("QUIT", true)) exit(0);
                 g_menu_gap = 0.35f;
@@ -1386,7 +1523,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                 // SETUP: the game files, in a window like Settings (option rows: runtime/ui/option_rows.h) - choose the
                 // folder with the game files, set up; once set up, delete or set up again. Each row's explanation on
                 // the right. A card on the left: the background shows beside it. The first start's is the welcome.
-                float sc = ds.y / 1080.0f, w = fminf(ds.x * 0.66f, 1320 * sc), h = fminf(ds.y - 2 * 18 * sc, 780 * sc);
+                float sc = ds.y / 1080.0f, w = fminf(ds.x * 0.66f, 1320 * sc), h = fminf(ds.y - 2 * 18 * sc, 820 * sc);
                 ImGui::GetWindowDrawList()->AddRectFilled(ImGui::GetWindowPos(), ImVec2(ImGui::GetWindowPos().x + ds.x,
                                                           ImGui::GetWindowPos().y + ds.y), IM_COL32(0, 0, 0, 50));
                 ImVec2 wp = ImGui::GetWindowPos();
@@ -1438,7 +1575,6 @@ extern "C" void launcher_run(const char *root, int mode) {
                 // explanation, and choosing again opens the picker again
                 std::string src_v = tr(src.empty() ? "Choose..." : "Selected");
                 auto check_left_of_value = [&](const std::string &v) {
-                    if (src.empty()) return;
                     ImVec2 rb = ImGui::GetItemRectMax(), ra = ImGui::GetItemRectMin();
                     float fs = ImGui::GetFontSize(), vw = ImGui::CalcTextSize(v.c_str()).x;
                     float x = rb.x - 16 * sc - vw - fs * 0.95f, cy = (ra.y + rb.y) * 0.5f, u = fs * 0.62f;
@@ -1487,6 +1623,8 @@ extern "C" void launcher_run(const char *root, int mode) {
                             g_file_size.invalidate();
                             bool ok = rt_remove_game_files(g_root.c_str());
                             status = check_game_files(g_root);
+                            refresh_dlc();
+                            dlc_st = g_dlc;
                             if (ok) set_job("Game files deleted.");
                             else set_job("Couldn't delete the game files", true, "They aren't in Savage Wind's data folder, "
                                          "so they were left alone.");
@@ -1494,9 +1632,35 @@ extern "C" void launcher_run(const char *root, int mode) {
                         }
                         if (opt_action("Cancel", "", "Keeps the game files.", true)) g_confirm_delete = false;
                     }
-                    if (!g_confirm_delete) {  // the DLC set up (added from the folder chosen below), and removing it
-                        std::string dl = dlc_installed(g_root);
+                    if (!g_confirm_delete) {  // the DLC set up (added from the folder chosen below), checking and removing it
+                        std::string dlc_v = dlc_value_text(dlc_st);
+                        std::string dlc_d = tr("Checks whether The Master Trials and The Champions' Ballad are complete and "
+                                               "recognized by the game.");
+                        if (dlc_st.state == RT_DLC_READY) {
+                            char ok[256];
+                            snprintf(ok, sizeof ok, tr("Both DLC are set up (aoc1 + aoc2, version %s). The title screen shows DLC Ver.%s."),
+                                     dlc_st.version, dlc_st.version);
+                            dlc_d += std::string("\n\n") + ok;
+                        } else if (dlc_st.state == RT_DLC_NONE) {
+                            dlc_d += std::string("\n\n") + tr("No downloadable content is set up.");
+                        } else {
+                            std::string head, hint;
+                            dlc_problem_text(dlc_st, &head, &hint);
+                            dlc_d += "\n\n" + head + ". " + hint;
+                        }
                         opt_section("Downloadable content");
+                        if (opt_action("Check downloadable content", dlc_v.c_str(), dlc_d.c_str(), true)) {
+                            g_file_size.set_suspended(true);
+                            pthread_mutex_lock(&g_lock);
+                            g_busy = true;
+                            pthread_mutex_unlock(&g_lock);
+                            g_stay_on_setup = true;
+                            pthread_t t;
+                            pthread_create(&t, NULL, dlc_check_thread, NULL);
+                            pthread_detach(t);
+                        }
+                        if (dlc_st.state == RT_DLC_READY) check_left_of_value(dlc_v);
+                        std::string dl = dlc_folders_list(dlc_st.present_mask);
                         if (dl.empty()) opt_disable_next();
                         if (opt_action("Remove downloadable content", dl.empty() ? tr("Not set up") : dl.c_str(),
                                        tr("The Master Trials and The Champions' Ballad, from your own copy of them. To add "
@@ -1504,6 +1668,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                                           "they're in it) below and set up. Removing them keeps your saves."), true)) {
                             g_file_size.invalidate();
                             remove_dlc(g_root);
+                            refresh_dlc();
                             set_job("Downloadable content removed.");
                         }
                     }
@@ -1541,7 +1706,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                     if (busy) opt_disable_next();
                     if (opt_action("Game files folder", src_v.c_str(), src_d.c_str(), true))
                         SDL_ShowOpenFolderDialog(picked, NULL, win, NULL, false);
-                    check_left_of_value(src_v);
+                    if (!src.empty()) check_left_of_value(src_v);
                     if (!ready) {
                         first_row();
                         opt_section("Set up");
@@ -1621,6 +1786,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                     settings_save();
                     if (g_setup_only) exit(0);
                     g_confirm_delete = false;
+                    refresh_dlc();
                     page = MAIN, g_refocus = SETUP;
                 }
                 static bool test_busy = getenv("SAVAGEWIND_LAUNCHER_SHOT") && strstr(getenv("SAVAGEWIND_LAUNCHER_SHOT"), ":extracting");
@@ -1630,11 +1796,12 @@ extern "C" void launcher_run(const char *root, int mode) {
                     fg->AddRectFilled(o, ImVec2(o.x + ds.x, o.y + ds.y), IM_COL32(0, 0, 0, 170));
                     float f = test_busy ? 0.42f : extract_progress();
                     // (while the game code is built: what's happening, on whose files - runtime/gamebuild.c)
-                    bool recompiling = g_build_frac >= 0;
-                    const char *title = tr(recompiling ? "Recompiling the game" : "Setting up the game files");
+                    bool recompiling = g_build_frac >= 0, dlc_check = g_dlc_checking;
+                    const char *title = tr(dlc_check ? "Downloadable content"
+                                           : recompiling ? "Recompiling the game" : "Setting up the game files");
                     const char *const notes[] = {tr("This only needs to be done once and may take a while."),
                                                  tr("Esc or B stops it: what is done is kept.")};
-                    int nnotes = recompiling ? 1 : 0;
+                    int nnotes = dlc_check ? 0 : recompiling ? 1 : 0;
 #ifndef __APPLE__
                     bool shaders = g_precompiling;
                     if (shaders) {
@@ -1666,7 +1833,8 @@ extern "C" void launcher_run(const char *root, int mode) {
 #else
                     std::string step = tr(test_busy ? "Setting up the game files..." : job.c_str());
 #endif
-                    snprintf(line, sizeof line, "%s   %d%%", step.c_str(), (int)(f * 100));
+                    if (dlc_check) snprintf(line, sizeof line, "%s", step.c_str());
+                    else snprintf(line, sizeof line, "%s   %d%%", step.c_str(), (int)(f * 100));
                     ImVec2 ls = g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, line);
                     fg->AddText(g_font_small, sfs, ImVec2((a.x + b.x - ls.x) * 0.5f, bb.y + 26 * sc), IM_COL32(220, 216, 205, 255), line);
                     for (int i = 0; i < nnotes; i++) {
@@ -1687,22 +1855,31 @@ extern "C" void launcher_run(const char *root, int mode) {
             if (page != SETTINGS) {
             ImGui::PushFont(g_font_small);
             if (page == MAIN) {
-            ImGui::SetCursorPos(ImVec2(x0, ds.y - 118 * s));
+            ImGui::SetCursorPos(ImVec2(x0, ds.y - (status.empty() && dlc_st.state != RT_DLC_NONE ? 140 : 118) * s));
             static std::string main_id;  // (read again after the game files change)
             if (!status.empty()) main_id.clear();
+            auto draw_ready_mark = [&] {  // a drawn check mark (the Switch font has no ✓)
+                ImVec2 p = ImGui::GetCursorScreenPos();
+                float u = ImGui::GetTextLineHeight();
+                ImU32 g = IM_COL32(140, 230, 140, 255);
+                ImGui::GetWindowDrawList()->AddLine(ImVec2(p.x + u * 0.1f, p.y + u * 0.55f), ImVec2(p.x + u * 0.35f, p.y + u * 0.8f), g, u * 0.12f);
+                ImGui::GetWindowDrawList()->AddLine(ImVec2(p.x + u * 0.35f, p.y + u * 0.8f), ImVec2(p.x + u * 0.85f, p.y + u * 0.2f), g, u * 0.12f);
+                ImGui::SetCursorPosX(x0 + u * 1.3f);
+            };
             if (status.empty()) {
-                {  // a drawn check mark (the Switch font has no ✓)
-                    ImVec2 p = ImGui::GetCursorScreenPos();
-                    float u = ImGui::GetTextLineHeight();
-                    ImU32 g = IM_COL32(140, 230, 140, 255);
-                    ImGui::GetWindowDrawList()->AddLine(ImVec2(p.x + u * 0.1f, p.y + u * 0.55f), ImVec2(p.x + u * 0.35f, p.y + u * 0.8f), g, u * 0.12f);
-                    ImGui::GetWindowDrawList()->AddLine(ImVec2(p.x + u * 0.35f, p.y + u * 0.8f), ImVec2(p.x + u * 0.85f, p.y + u * 0.2f), g, u * 0.12f);
-                    ImGui::SetCursorPosX(x0 + u * 1.3f);
-                }
+                draw_ready_mark();
                 ImGui::TextColored(ImVec4(0.45f, 0.95f, 0.55f, 1), "%s", tr("Game files ready."));
                 ImGui::SetCursorPosX(x0);
                 if (main_id.empty() && !nso_build_id(g_root + "/exefs/main", &main_id)) main_id = "?";
                 ImGui::TextColored(ImVec4(0.66f, 0.76f, 0.98f, 1), tr("main build id %s"), main_id.c_str());
+                if (dlc_st.state == RT_DLC_READY) {
+                    ImGui::SetCursorPosX(x0);
+                    draw_ready_mark();
+                    ImGui::TextColored(ImVec4(0.45f, 0.95f, 0.55f, 1), tr("DLC %s ready."), dlc_st.version);
+                } else if (dlc_st.state != RT_DLC_NONE) {
+                    ImGui::SetCursorPosX(x0);
+                    ImGui::TextColored(ImVec4(1, 0.72f, 0.4f, 1), "!  %s", tr("DLC not ready: see Game Files."));
+                }
             } else {
                 ImGui::TextColored(ImVec4(1, 0.72f, 0.4f, 1), "!  %s", trv(busy ? "Setting up the game files..." : status).c_str());
                 ImGui::SetCursorPosX(x0);
