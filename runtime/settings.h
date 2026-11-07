@@ -70,6 +70,7 @@ typedef struct {
     float volume;        // master volume, 1 = 100%
     bool reverb;         // room reverb effect
     bool movie_audio;
+    char amiibo_reader[128]; // the figure on the virtual reader: its dump as "<series>/<name>" ("": none; runtime/amiibo.h)
     int perf_overlay;    // PERF_*: the performance overlay (F10 cycles it)
     int fps_limit;       // frame rate, frames per second (FPS_CHOICES; 0: no limit)
     int vsync;           // VSYNC_*
