@@ -46,7 +46,8 @@
     X(quick_sort_refill)      /* rebuild the quick selector's item list */ \
     X(quick_sort_mapping)     /* rebuild visible slot mapping */ \
     X(quick_sort_cursor)      /* move the native cursor */ \
-    X(quick_sort_labels)      /* update selected item labels */
+    X(quick_sort_labels)      /* update selected item labels */ \
+    X(horse_cam_lr)           /* CameraHorse's return address after calling the camera stick input */
 
 typedef struct {
 #define GAME_SITE_FIELD(n) uint64_t n;

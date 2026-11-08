@@ -12,6 +12,7 @@
 #include "../runtime/hle/input.c"
 #include "test_pointer_disabled.h"
 
+GameSites g_site;
 Settings g_settings;
 int16_t g_bind_key[BIND_KEY_COUNT], g_bind_pad[BIND_KEY_COUNT];
 uint64_t g_watch_lo, g_watch_hi;
@@ -28,7 +29,8 @@ void motion_pad_closed(void) {}
 void motion_sensor_event(const SDL_Event *e) { (void)e; sensor_events++; }
 void vibration_update(SDL_Gamepad *p, bool focused) { (void)p; vibrating = focused; }
 uint64_t renderer_present_count(void) { return 0; }
-uint64_t plat_now_ns(void) { return 0; }
+static uint64_t test_now_ns;
+uint64_t plat_now_ns(void) { return test_now_ns; }
 
 // PE linkers also keep exported helpers from input.c. These paths are outside this harness.
 static _Noreturn void unexpected_helper(void) { fputs("unexpected runtime helper\n", stderr); abort(); }
@@ -58,6 +60,7 @@ void freecam_pad(float lx, float ly, float rx, float ry, float up, float down, b
     (void)lx; (void)ly; (void)rx; (void)ry; (void)up; (void)down; (void)fast; (void)slow;
 }
 void control_input_frame(uint64_t frame) { (void)frame; }
+void photo_pad(uint32_t buttons) { (void)buttons; }
 void control_input_apply(uint64_t *b, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) { (void)b; (void)lx; (void)ly; (void)rx; (void)ry; }
 bool pc_gyro_keyboard_active(void) { return false; }
 void pc_gyro_scene_tick(void) {}
@@ -103,6 +106,25 @@ static void sample_raw(uint64_t buttons, bool tilted, uint64_t raw) {
 }
 
 static void sample(uint64_t buttons, bool tilted) { sample_raw(buttons, tilted, buttons); }
+static void steering_axes(int32_t key_x, int32_t key_y, int32_t pad_y, bool riding,
+                          int32_t expected_x, int32_t expected_y) {
+    key_lx = key_x;
+    key_ly = key_y;
+    pad_lx = 0;
+    pad_ly = pad_y;
+    script_lx = script_ly = 0;
+    g_site.horse_cam_lr = 0x1234;
+    horse_cam_ns = riding ? test_now_ns : 0;
+
+    uint64_t state[5] = {0};
+    uint32_t id = 0;
+    Cpu c = {0};
+    c.x[0] = (uintptr_t)state;
+    c.x[1] = (uintptr_t)&id;
+    fill_state(&c);
+    int32_t *sticks = (int32_t *)((uint8_t *)state + 16);
+    assert(sticks[0] == expected_x && sticks[1] == expected_y);
+}
 
 static void controls(SDL_Joystick *joy, bool held) {
     assert(SDL_SetJoystickVirtualButton(joy, SDL_GAMEPAD_BUTTON_EAST, held));
@@ -222,6 +244,24 @@ int main(void) {
     pump();
     sample(0, false);
     SDL_CloseJoystick(joy);
+
+    // While mounted, keyboard forward is suppressed when steering; other input sources stay unchanged.
+    focus(true);
+    test_now_ns = 1000000000;
+    g_site.horse_cam_lr = 0;
+    horse_cam_ns = test_now_ns;
+    cam_caller(0x1234, test_now_ns);
+    assert(!horse_riding());
+    g_site.horse_cam_lr = 0x1234;
+    cam_caller(0x1234, test_now_ns);
+    assert(horse_riding());
+    steering_axes(32767, 32767, 0, true, 32767, 0);
+    steering_axes(-32767, 32767, 0, true, -32767, 0);
+    steering_axes(0, 32767, 0, true, 0, 32767);
+    steering_axes(-32767, 0, 0, true, -32767, 0);
+    steering_axes(32767, 32767, 5000, true, 32767, 5000);
+    steering_axes(32767, 32767, 0, false, 32767, 32767);
+
     SDL_Quit();
     puts("input focus checks passed");
 }
