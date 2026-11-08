@@ -19,6 +19,7 @@
 #include "../ipc.h"
 #include "../language.h"
 #include "../platform.h"
+#include "../nvn/glyphs.h"
 #include "../nvn/text_upscale.h"
 #include "../romfs_image.h"
 #include "../settings.h"
@@ -669,13 +670,18 @@ static void inventory_layout_from_overlay(const char *host) {
 #define HUD_ICON_SCALE 1.5f
 
 // One layout (FLYT, little-endian, a single font), patched into out (room for n + 64 bytes); returns its size or 0
-static size_t hud_letters_flyt(const uint8_t *b, size_t n, uint8_t *out, int *panes) {
+static size_t hud_letters_flyt(const uint8_t *b, size_t n, uint8_t *out, int which, const int pos[4], int *panes) {
     static const char icon_font[] = "External_00.bffnt";
+    static const float k_act_xy[4][2] = {{26.0f, 0.0f}, {0.0f, -26.0f}, {0.0f, 26.0f}, {-26.0f, 0.0f}};
+    static const float k_dim_xy[4][2] = {{26.2f, 0.8f}, {1.0f, -26.0f}, {0.8f, 26.0f}, {-25.5f, -0.2f}};
     if (n < 0x14 || memcmp(b, "FLYT", 4) || b[4] != 0xFF || b[5] != 0xFE) return 0;
     size_t hs = b[6] | b[7] << 8, o = hs, w = hs;
     if (hs > n) return 0;
     memcpy(out, b, hs);
-    bool fonts = false;
+    bool fonts = false, seen_capture = false;
+    bool reorder = pos && (pos[0] != 0 || pos[1] != 1 || pos[2] != 2 || pos[3] != 3);
+    int act = reorder && which >= 0 && which < 4 ? pos[which] : which;
+    bool west = act == 3;
     while (o + 8 <= n) {
         uint32_t sz;
         memcpy(&sz, b + o + 4, 4);
@@ -702,14 +708,20 @@ static size_t hud_letters_flyt(const uint8_t *b, size_t n, uint8_t *out, int *pa
             continue;
         }
         memcpy(sec, b + o, sz);
+        if (reorder && !memcmp(sec, "txl1", 4)) {
+            for (uint32_t j = 12; j + 18 <= sz; j++)
+                if (!memcmp(sec + j, "Nt_KeyBtnSubBase", 16))
+                    sec[j + 16] = (act == 0 || act == 3) ? 'A' : 'B';
+        }
         if (!memcmp(sec, "txt1", 4) && sz >= 0x68) {
             uint32_t toff;
             memcpy(&toff, sec + 0x64, 4);
             if (toff && toff + 4 <= sz && !sec[toff + 1] && !sec[toff + 2] && !sec[toff + 3]) {
                 const char *k = strchr("ABXY", sec[toff]);
                 if (k && *k) {
+                    int btn = (int)(k - "ABXY");
                     sec[0x5A] = 1, sec[0x5B] = 0;  // (the font: the second)
-                    uint16_t c = (uint16_t)(0xE040 + (k - "ABXY"));
+                    uint16_t c = (uint16_t)(0xE040 + btn);
                     memcpy(sec + toff, &c, 2);
                     float fs[2];  // the font size: an icon fills less of its cell than a letter
                     memcpy(fs, sec + 0x70, 8);
@@ -717,8 +729,49 @@ static size_t hud_letters_flyt(const uint8_t *b, size_t n, uint8_t *out, int *pa
                     // are the height's, or the three inactive buttons came out as ovals, #476)
                     fs[1] *= HUD_ICON_SCALE, fs[0] = fs[1];
                     memcpy(sec + 0x70, fs, 8);
+                    if (reorder && pos[btn] >= 0 && pos[btn] < 4)
+                        memcpy(sec + 44, k_dim_xy[pos[btn]], 8);
                     (*panes)++;
                 }
+            }
+        }
+        if (reorder && sz >= 84 &&
+            (!memcmp(sec, "pan1", 4) || !memcmp(sec, "pic1", 4) || !memcmp(sec, "wnd1", 4) || !memcmp(sec, "txt1", 4))) {
+            char name[25] = {0};
+            memcpy(name, sec + 12, 24);
+            if (!strncmp(name, "P_Base", 6)) {
+                float rz = (act == 2 || act == 3) ? 180.0f : 0.0f, sx = act == 2 ? -1.0f : 1.0f;
+                memcpy(sec + 64, &rz, 4);
+                memcpy(sec + 68, &sx, 4);
+            } else if (!strncmp(name, "N_Btn", 5)) {
+                memcpy(sec + 44, k_act_xy[act], 8);
+            } else if (!strncmp(name, "W_Base", 6)) {
+                float wx = west ? 33.0f : -33.0f, wsx = west ? -1.0f : 1.0f;
+                memcpy(sec + 44, &wx, 4);
+                memcpy(sec + 68, &wsx, 4);
+            } else if (!strncmp(name, "T_Guide", 7) && sz >= 96) {
+                if (strstr(name, "_01")) {
+                    float gx = west ? -23.0f : 21.0f;
+                    sec[40] = west ? 2 : 1, sec[93] = west ? 2 : 1;
+                    memcpy(sec + 44, &gx, 4);
+                } else if (strstr(name, "_00")) {
+                    float gx[2] = {west ? 37.0f : -39.0f, 0.0f};
+                    sec[40] = west ? 2 : 1, sec[93] = west ? 2 : 1;
+                    memcpy(sec + 44, gx, 8);
+                }
+            } else if (!strncmp(name, "Nt_KeyTex", 9) && strstr(name, "_01")) {
+                float kx[2] = {west ? 60.0f : -60.0f, 0.0f};
+                memcpy(sec + 44, kx, 8);
+            } else if (!strncmp(name, "N_Capture", 9)) {
+                float cx[2] = {k_act_xy[act][0] + (west ? -60.0f : 60.0f), k_act_xy[act][1]};
+                memcpy(sec + 44, cx, 8);
+                seen_capture = true;
+            } else if (!strncmp(name, "P_CaptureUse", 12)) {
+                float px[2] = {
+                    (seen_capture ? k_act_xy[act][0] : 0.0f) + (west ? -60.0f : 60.0f),
+                    seen_capture ? k_act_xy[act][1] : 0.0f,
+                };
+                memcpy(sec + 44, px, 8);
             }
         }
         w += sz;
@@ -847,6 +900,8 @@ static void hud_letters_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz)
     if (R == &images[0] && arc) inventory_layout_from_common(arc, an);
     if (getenv("SAVAGEWIND_NO_HUD_LETTERS")) { free(pack), free(arc); return; }
     const char *why = node < 0 ? "no Layout/Common.sblarc" : !arc ? "archive not readable" : NULL;
+    int pos[4];
+    glyphs_hud_positions(pos);
     if (!why) {
         arc2 = malloc(an + 4 * (0x80 + 0x2000));
         memcpy(arc2, arc, an);
@@ -857,7 +912,7 @@ static void hud_letters_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz)
             size_t at = (nn + 0x7F) & ~(size_t)0x7F;
             memset(arc2 + nn, 0, at - nn);
             nn = at;
-            size_t ln = hud_letters_flyt(arc + adoff + as, ae - as, arc2 + nn, &panes);
+            size_t ln = hud_letters_flyt(arc + adoff + as, ae - as, arc2 + nn, i, pos, &panes);
             if (!ln) { why = "layout not as expected"; break; }
             uint32_t s = (uint32_t)(nn - adoff), e = (uint32_t)(nn - adoff + ln);
             memcpy(arc2 + 0x20 + li * 16 + 8, &s, 4);

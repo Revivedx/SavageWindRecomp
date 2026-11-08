@@ -85,6 +85,8 @@ static const char *const k_drawdist[DRAWDIST_COUNT] = {"original", "medium", "hi
 
 static const char *const k_icons[ICONS_COUNT] = {"auto", "keyboard", "xbox", "playstation", "nintendo"};
 
+static const char *const k_button_layout[BUTTON_LAYOUT_COUNT] = {"auto", "nintendo", "swap_ab", "xbox", "swap_xy", "gamecube"};
+
 static const char *const k_quality[UPQ_COUNT] = {"ultra_quality", "quality", "balanced", "performance", "ultra_performance"};
 
 // Debug overrides seed this boot's options; the Controls switches can still change them at once.
@@ -217,6 +219,10 @@ void settings_load(void) {
         else if (!strcmp(key, "button_icons")) {
             for (int i = 0; i < ICONS_COUNT; i++)
                 if (!strcmp(val, k_icons[i])) g_settings.button_icons = i;
+        }
+        else if (!strcmp(key, "button_layout")) {
+            for (int i = 0; i < BUTTON_LAYOUT_COUNT; i++)
+                if (!strcmp(val, k_button_layout[i])) g_settings.button_layout = i;
         }
         else if (!strcmp(key, "async_shaders")) g_settings.async_shaders = atoi(val) != 0;
         else if (!strcmp(key, "precompile_shaders")) g_settings.precompile_shaders = atoi(val) != 0;
@@ -415,6 +421,9 @@ void settings_save(void) {
     fprintf(f, "motion_invert = %s\n", inv[g_settings.motion_invert & 3]);
     fprintf(f, "button_icons = %s\n", k_icons[g_settings.button_icons >= 0 && g_settings.button_icons < ICONS_COUNT ?
                                                 g_settings.button_icons : ICONS_AUTO]);
+    fprintf(f, "button_layout = %s\n",
+            k_button_layout[g_settings.button_layout >= 0 && g_settings.button_layout < BUTTON_LAYOUT_COUNT ?
+                                g_settings.button_layout : BUTTON_LAYOUT_AUTO]);
     fprintf(f, "async_shaders = %d\n", g_settings.async_shaders);
     fprintf(f, "precompile_shaders = %d\n", g_settings.precompile_shaders);
     static const char *const shadow[SHADOW_COUNT] = {"console", "high", "ultra", "extreme", "potato"};

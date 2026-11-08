@@ -517,6 +517,54 @@ static int resolve_kind(void) {
     return f == 1 ? ICONS_XBOX : f == 2 ? ICONS_PLAYSTATION : ICONS_NINTENDO;
 }
 
+static int face_vertex(int host) {
+    switch (host) {
+    case SDL_GAMEPAD_BUTTON_EAST: return 0;
+    case SDL_GAMEPAD_BUTTON_SOUTH: return 1;
+    case SDL_GAMEPAD_BUTTON_NORTH: return 2;
+    case SDL_GAMEPAD_BUTTON_WEST: return 3;
+    default: return -1;
+    }
+}
+
+void glyphs_hud_positions(int pos[4]) {
+    static const int k_presets[BUTTON_LAYOUT_COUNT][4] = {
+        {0, 1, 2, 3},  // BUTTON_LAYOUT_AUTO (fallback: Nintendo)
+        {0, 1, 2, 3},  // BUTTON_LAYOUT_NINTENDO: East A, South B, North X, West Y
+        {1, 0, 2, 3},  // BUTTON_LAYOUT_SWAP_AB:  South A, East B, North X, West Y
+        {1, 0, 3, 2},  // BUTTON_LAYOUT_XBOX:     South A, East B, West X, North Y
+        {0, 1, 3, 2},  // BUTTON_LAYOUT_SWAP_XY:  East A, South B, West X, North Y
+        {1, 3, 0, 2},  // BUTTON_LAYOUT_GAMECUBE: South A, West B, East X, North Y
+    };
+    int layout = g_settings.button_layout;
+    if (layout > BUTTON_LAYOUT_AUTO && layout < BUTTON_LAYOUT_COUNT) {
+        memcpy(pos, k_presets[layout], 4 * sizeof(int));
+        return;
+    }
+    int p[4], mask = 0;
+    for (int i = 0; i < 4; i++) {
+        p[i] = face_vertex(g_bind_pad[BIND_A + i]);
+        if (p[i] >= 0) mask |= 1 << p[i];
+    }
+    if (mask == 0xF && (p[0] != 0 || p[1] != 1 || p[2] != 2 || p[3] != 3)) {
+        memcpy(pos, p, sizeof p);
+        return;
+    }
+    static const int k_acts[4] = {0, 14, 2, 3};  // Interact (A), Cancel (B), Jump (X), Attack (Y)
+    mask = 0;
+    for (int i = 0; i < 4; i++) {
+        int h = g_act_pad[k_acts[i]];
+        if (h == ACT_FOLLOW) h = g_bind_pad[BIND_A + i];
+        p[i] = face_vertex(h);
+        if (p[i] >= 0) mask |= 1 << p[i];
+    }
+    if (mask == 0xF) {
+        memcpy(pos, p, sizeof p);
+        return;
+    }
+    memcpy(pos, k_presets[0], 4 * sizeof(int));
+}
+
 uint32_t glyphs_generation(void) {
     int k = resolve_kind();
     uint32_t h = 2166136261u ^ (uint32_t)k;
@@ -717,7 +765,12 @@ bool glyphs_apply_layout(uint32_t format, uint32_t w, uint32_t h, uint8_t *lin, 
     static Canvas cv;
     memset(&cv, 0, sizeof cv);
     int kind = resolve_kind(), copy = 0;
-    bool drawn = draw_glyph(&cv, b, li->code, kind, &copy);  // (Nintendo: the game's own, even with other bindings)
+    bool drawn = draw_glyph(&cv, b, li->code, kind, &copy);
+    if (!drawn && copy >= 0xE040 && copy <= 0xE043) {
+        static const char *const nin[4] = {"A", "B", "X", "Y"};
+        round_label(&cv, b, nin[copy - 0xE040]);
+        drawn = true;
+    }
     if (drawn)
         for (int y = 0; y < (int)h; y++)
             for (int x = 0; x < (int)w; x++) {  // (bilinear from the canvas)
