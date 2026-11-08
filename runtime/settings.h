@@ -83,6 +83,7 @@ typedef struct {
     bool rumble;         // controller vibration
     bool freecam_sticks; // both stick clicks together turn the free camera on and off (hle/input.c)
     int gpu;             // Vulkan adapter index from the startup log; -1: automatic (restart required)
+    bool quick_sort;      // native sorting in the quick equipment selector
     bool dpad_move;      // the d-pad (and arrow keys) also act as the left stick while it is at rest
     bool stick_cam_on;   // Controls > Controller camera speed: stick_cam_x and _y apply (off: the game's own speed)
     int stick_cam_x, stick_cam_y;  // the right stick's camera speed, left and right / up and down, percent of the game's
@@ -102,6 +103,7 @@ typedef struct {
                          // default since settings_version 4; off: every draw waits for its shaders, as before)
     bool precompile_shaders;  // setting the game files up also precompiles every shader (runtime/nvn/precompile.h)
     int shadow_res;      // SHADOW_*: shadow maps at the console's size, bigger, or (Potato) smaller
+    int sharper_menus;   // the menus' one-channel textures enlarged this many times (2 or 4; 0: off), runtime/nvn/text_upscale.c
     int sharper_text;    // the game's font sheets enlarged this many times (2 or 4; 0: off), runtime/nvn/text_upscale.c
     bool wide_view;      // a window that isn't 16:9 shows more of the world instead of bars (runtime/nvn/output_scale.c)
     int hdr;             // HDR_* (runtime/nvn/vulkan/device.c hdr_*)
@@ -128,6 +130,7 @@ typedef struct {
     bool color_lut_set;      // the ini names a LUT (or none): the player chose; the first setup offers COLOR_LUT_RECOMMENDED
     // Options > Accessibility (runtime/assists.c): assists, each off by default
     bool no_weapon_wear;     // weapons, bows and shields lose no durability and never break
+    int weapon_wear;         // how fast they wear out otherwise, percent of the game's (WEAPON_WEAR_MIN..MAX)
     bool infinite_arrows;    // shooting a bow takes no arrows from the pouch
     bool infinite_stamina;   // the stamina wheel never goes down
     bool god_mode;           // Link takes no damage
@@ -149,13 +152,16 @@ typedef struct {
 enum { DRAWDIST_ORIGINAL, DRAWDIST_MEDIUM, DRAWDIST_HIGH, DRAWDIST_POTATO, DRAWDIST_COUNT };  // (Original: the game's own
                                                                                   // distances; Potato: nearer)
 float draw_distance_factor(void);  // the setting's factor on the game's distances (1: Original)
-// Video > Graphics preset: draw distance, shadow resolution, bloom, depth of field and dynamic resolution at once.
-// Potato: for weak PCs (nearer, smaller shadows, no bloom or distance blur, the game's dynamic resolution); Original:
-// as on the console; High: draw distance Medium, shadows 2048; Savage: draw distance High, shadows 4096.
+// Video > Graphics preset: the Advanced options' draw distance, shadows, bloom, depth of field, dynamic resolution,
+// anisotropic filtering, anti-aliasing, the game's FXAA, upscaler, asynchronous shaders and render scale at once
+// (settings.c k_gpreset). Potato: for weak PCs; Original: as on the console (the defaults); High; Savage.
 enum { GPRESET_POTATO, GPRESET_ORIGINAL, GPRESET_HIGH, GPRESET_SAVAGE, GPRESET_COUNT };
 extern const char *const g_gpreset_names[GPRESET_COUNT];
 int graphics_preset_current(void);  // the preset the settings match, or -1 (Custom)
 void graphics_preset_apply(int preset);
+const char *settings_file(void);  // savagewind.ini, or SAVAGEWIND_SETTINGS
+#define WEAPON_WEAR_MIN 0    // (Accessibility > Weapon wear, percent: 0 = never wear out, as no_weapon_wear)
+#define WEAPON_WEAR_MAX 300
 #define DAMAGE_CHOICES {25, 50, 75, 100, 150, 200, 300, 400}  // (Accessibility's damage multipliers, percent)
 #define FOV_CHOICES {70, 80, 90, 100, 110, 120, 130, 140, 150}  // (percent; 100: the game's own)
 #define HUD_SIZE_CHOICES {50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120, 125, 130, 135, 140, 145, 150}  // (percent; 100: the game's own)

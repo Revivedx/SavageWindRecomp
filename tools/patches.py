@@ -19,6 +19,21 @@ def _word(gen, a):
     return struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
 
 
+def _quick_sort_enter(gen, a):
+    # Menu::enter: sample held X before the selector initializes its list.
+    assert _word(gen, a) == 0xfc1d0fe8, hex(_word(gen, a))  # str d8, [sp, #-0x30]!
+    return ('{ extern void rt_quick_inventory_sort_begin(Cpu *); rt_quick_inventory_sort_begin(c); '
+            'uint64_t ea = c->sp - 0x30; ST64(ea, (uint64_t)c->v[8]); c->sp = ea; }')
+
+
+def _quick_sort_menu(gen, a):
+    # Menu::execute: sort before native selection/close handling. An entry
+    # patch also covers generated direct calls without routing them to dispatch.
+    assert _word(gen, a) == 0xa9be7bfd, hex(_word(gen, a))  # stp x29, x30, [sp, #-0x20]!
+    return ('{ extern void rt_quick_inventory_sort_menu(Cpu *); rt_quick_inventory_sort_menu(c); '
+            'uint64_t ea = c->sp - 0x20; ST64(ea, c->x[29]); ST64(ea + 8, c->x[30]); c->sp = ea; }')
+
+
 def _fn(gen, site):  # the generated function at a site's address
     return f'f_{gen.sites[site]:x}'
 
@@ -831,6 +846,8 @@ def _tp_gate(gen, a):
 
 
 PATCHES = {
+    'quick_sort_enter': _quick_sort_enter,
+    'quick_sort_menu': _quick_sort_menu,
     'lookat_update': _lookat_update,
     'pc_map_focus': _pc_map_focus(False),
     'pc_map_focus_target': _pc_map_focus(True),
