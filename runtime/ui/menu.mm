@@ -516,7 +516,7 @@ static void load_fonts(void) {
     if (!g_font_big) g_font_big = g_font;
     if (!g_menu_font || !g_menu_font_big) g_menu_font = g_font, g_menu_font_big = g_font_big;
     g_hint_font = g_hint_buttons = nullptr;
-    g_hint_font_attempted = g_romfs_dir && (g_settings.quick_sort || g_settings.quick_drop);
+    g_hint_font_attempted = g_romfs_dir && (g_settings.quick_sort || g_settings.quick_drop || g_settings.quick_replace);
     if (g_hint_font_attempted) quick_hint_fonts_load(io.Fonts, &g_hint_font, &g_hint_buttons);
     g_hint_generation = icons_generation;
 }
@@ -524,8 +524,8 @@ static void load_fonts(void) {
 // Before a frame: another menu language may need other glyphs - the fonts and their texture are made again
 extern "C" void vk_imgui_fonts_changed(void);  // (runtime/nvn/vulkan/imgui_glue.cpp)
 static void fonts_follow_language(void) {
-    bool need_hint_fonts = (g_settings.quick_sort || g_settings.quick_drop) && g_romfs_dir && !g_hint_font_attempted;
-    bool icons_changed = (g_settings.quick_sort || g_settings.quick_drop) && g_hint_generation != glyphs_font_generation();
+    bool need_hint_fonts = (g_settings.quick_sort || g_settings.quick_drop || g_settings.quick_replace) && g_romfs_dir && !g_hint_font_attempted;
+    bool icons_changed = (g_settings.quick_sort || g_settings.quick_drop || g_settings.quick_replace) && g_hint_generation != glyphs_font_generation();
     int current_fonts_gen = ui_lang_generation() * 10007 + ui_dynamic_generation();
     if (g_fonts_lang == current_fonts_gen && !need_hint_fonts && !icons_changed) return;
     load_fonts();
