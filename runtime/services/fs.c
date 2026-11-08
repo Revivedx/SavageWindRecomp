@@ -1453,6 +1453,29 @@ static uint32_t errno_result(void) {
     return MAKE_RESULT(2, 4000);
 }
 
+// A save operation that failed: whether to try again (it waited). On Windows another program can hold a save file for a
+// moment (OneDrive's sync of a Desktop folder, an antivirus scan, a backup): opening, writing or renaming it then fails
+// with EACCES. The game takes any error there as fatal: an SDK assertion in SaveMgrThread, "svcBreak(reason=0)" while
+// "Saving..." showed (#568, #567; the same here with the save files held open by another process). So those errors
+// are retried for up to 30 s (only the save thread waits: the game goes on with "Saving..." up). Errors the game
+// expects (a file that doesn't exist yet, or already does) aren't logged.
+static bool fs_retry(int *tries, const char *op, const char *path) {
+    int e = errno;
+    if (e == ENOENT || e == ENOTDIR || e == EEXIST || e == ENOTEMPTY) return false;
+#ifdef _WIN32
+    if ((e == EACCES || e == EBUSY || e == EPERM) && *tries < 600) {
+        if (!(*tries)++) LOG("[fs] %s %s: %s, another program may hold it; trying again for up to 30 s\n", op, path, strerror(e));
+        plat_sleep_until_ns(plat_now_ns() + 50000000ull);
+        errno = e;
+        return true;
+    }
+#endif
+    LOG("[fs] %s %s failed: %s%s\n", op, path, strerror(e),
+        *tries ? " (still held by another program: OneDrive, an antivirus or a backup tool can lock the save folder)" : "");
+    errno = e;
+    return false;
+}
+
 // The game closed the file's session: its host descriptor (a Windows handle each) and the copy of the save go.
 static void file_close(Service *s) {
     HostFile *f = s->state;
@@ -1504,13 +1527,21 @@ static void file(Service *s, IpcReq *req, IpcResp *resp) {
         IpcBuf *a = in_buf(req, 0);
         if (strstr(f->path, "savedata"))
             LOG("[save] write %s off %lld size %lld <- guest %llx\n", f->path, (long long)off, (long long)size, (unsigned long long)a->addr);
-        if (pwrite(f->fd, (void *)(uintptr_t)a->addr, (size_t)size, off) < 0) resp->result = errno_result();
+        int tries = 0;
+        ssize_t w;
+        while ((w = pwrite(f->fd, (void *)(uintptr_t)a->addr, (size_t)size, off)) < 0 && fs_retry(&tries, "write", f->path)) {}
+        if (w < 0) resp->result = errno_result();
         free(f->patched);  // (the game saved: its own data from now on)
         f->patched = NULL;
         break;
     }
     case 2: fsync(f->fd); break;
-    case 3: if (ftruncate(f->fd, IN(int64_t, 0))) resp->result = errno_result(); break;
+    case 3: {
+        int tries = 0, r;
+        while ((r = ftruncate(f->fd, IN(int64_t, 0))) && fs_retry(&tries, "resize", f->path)) {}
+        if (r) resp->result = errno_result();
+        break;
+    }
     case 4: {
         struct stat sb;
         fstat(f->fd, &sb);
@@ -1590,21 +1621,34 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
     HostFs *fs = s->state;
     char p[2048], p2[2048];
     host_path(fs, in_path(req, 0), p, sizeof p);
+    int tries = 0, r;
     switch (req->cmd) {
     case 0: {  // CreateFile(option, size)
-        int fd = open(p, O_CREAT | O_EXCL | O_RDWR, 0644);
+        int fd;
+        while ((fd = open(p, O_CREAT | O_EXCL | O_RDWR, 0644)) < 0 && fs_retry(&tries, "create", p)) {}
         if (fd < 0) { resp->result = errno_result(); break; }
-        if (ftruncate(fd, IN(int64_t, 8))) resp->result = errno_result();
+        while ((r = ftruncate(fd, IN(int64_t, 8))) && fs_retry(&tries, "resize", p)) {}
+        if (r) resp->result = errno_result();
         close(fd);
         break;
     }
-    case 1: if (unlink(p)) resp->result = errno_result(); break;
+    case 1:
+        while ((r = unlink(p)) && fs_retry(&tries, "delete", p)) {}
+        if (r) resp->result = errno_result();
+        break;
     case 2: if (mkdir(p, 0755)) resp->result = errno_result(); break;
-    case 3: if (rmdir(p)) resp->result = errno_result(); break;
-    case 4: if (rm_rf(p, false)) resp->result = errno_result(); break;
+    case 3:
+        while ((r = rmdir(p)) && fs_retry(&tries, "delete folder", p)) {}
+        if (r) resp->result = errno_result();
+        break;
+    case 4:
+        while ((r = rm_rf(p, false)) && fs_retry(&tries, "delete folder", p)) {}
+        if (r) resp->result = errno_result();
+        break;
     case 5: case 6:
         host_path(fs, in_path(req, 1), p2, sizeof p2);
-        if (rename(p, p2)) resp->result = errno_result();
+        while ((r = rename(p, p2)) && fs_retry(&tries, "rename", p)) {}
+        if (r) resp->result = errno_result();
         break;
     case 7: {  // GetEntryType
         struct stat sb;
@@ -1615,7 +1659,8 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
     }
     case 8: {  // OpenFile(mode)
         uint32_t mode = IN(uint32_t, 0);
-        int fd = open(p, (mode & 2) ? O_RDWR : O_RDONLY);
+        int fd;
+        while ((fd = open(p, (mode & 2) ? O_RDWR : O_RDONLY)) < 0 && fs_retry(&tries, "open", p)) {}
         if (fd < 0) { resp->result = errno_result(); break; }
         HostFile *f = calloc(1, sizeof *f);
         f->fd = fd;
