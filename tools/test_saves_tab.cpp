@@ -80,6 +80,8 @@ void SDL_ShowOpenFolderDialog(SDL_DialogFileCallback, void *, SDL_Window *, cons
 }
 void reveal_folder(const std::string &dir) { printf("REVEAL %s\n", dir.c_str()); }
 const char *tr(const char *en) { return en; }
+Settings g_settings;         // (Saves > Back up at each start, #537)
+extern "C" void settings_save(void) {}
 std::string tr_upper(const char *s) {
     std::string r = s;
     for (char &c : r) c = (char)toupper((unsigned char)c);
@@ -126,7 +128,7 @@ static void key(ImGuiKey k) {
 
 static void pick(const std::string &folder) {
     const char *list[] = {folder.c_str(), NULL};
-    folder_picked(NULL, list, 0);
+    folder_picked_import(NULL, list, 0);
 }
 
 static bool in_confirm() { return g_phase.load() == CONFIRM; }
@@ -157,7 +159,7 @@ static int run(const std::string &scenario, const std::string &src) {
     g_io->AddMousePosEvent(-1000, -1000);
     if (scenario == "profiles") {
         auto job = [&](ProfileOp op, const char *a, const char *b) {
-            start(JOB_PROFILE, a, op, b);
+            start(JOB_PROFILE, a, b, op);
             bool ok = until(is_done);
             frames(5);  // (the result and the new list are taken)
             return ok;

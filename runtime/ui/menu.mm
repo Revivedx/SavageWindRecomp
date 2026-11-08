@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "i18n.h"
+#include "quick_hint_font.h"
 #include "imgui.h"
 #include "gyro_drag.h"
 #include "option_rows.h"
@@ -31,6 +32,8 @@ extern "C" {
 #include "../hle.h"
 #include "../settings.h"
 #include "../gamelib.h"
+#include "../quick_inventory_sort.h"
+#include "../nvn/glyphs.h"
 #include "../color_grade.h"
 #include "../window_size.h"
 extern "C" {
@@ -44,6 +47,11 @@ void controls_bindings_draw(float scale);  // controls_ui.mm
 #include "../perfmon.h"
 #include "../paths.h"
 #include "../pc_cursor.h"
+#include "../imageload.h"
+#ifndef __APPLE__
+extern "C" uint64_t vk_imgui_texture_rgba(const void *rgba, int w, int h);  // runtime/nvn/vulkan/imgui_glue.cpp
+extern "C" void vk_imgui_texture_free(uint64_t id);
+#endif
 }
 
 // ------------------------------------------------------------------ state shared with the main thread
@@ -404,6 +412,9 @@ void menu_apply_window_requests(void *win) {
 // ------------------------------------------------------------------ render thread
 static bool g_inited;
 static ImGuiContext *g_ctx;  // ours: the start screen (back to it after a reboot) has its own context
+static ImFont *g_hint_font, *g_hint_buttons;
+static bool g_hint_font_attempted;
+static uint32_t g_hint_generation;
 static ImFont *g_font, *g_font_big;
 static ImFont *g_font_mono;  // the console (columns line up); NULL: the normal font
 static ImFont *g_menu_font, *g_menu_font_big;  // the menu window (Fira Sans); everything else keeps g_font
@@ -455,6 +466,7 @@ static void style_init(void) {
 // menu language changes (fonts_follow_language).
 static int g_fonts_lang = -1;
 static void load_fonts(void) {
+    uint32_t icons_generation = glyphs_generation();
     ImGuiIO &io = ImGui::GetIO();
     io.Fonts->Clear();
     g_font = g_font_big = g_menu_font = g_menu_font_big = g_font_mono = NULL;
@@ -497,12 +509,18 @@ static void load_fonts(void) {
     if (!g_font) g_font = io.Fonts->AddFontDefault();
     if (!g_font_big) g_font_big = g_font;
     if (!g_menu_font || !g_menu_font_big) g_menu_font = g_font, g_menu_font_big = g_font_big;
+    g_hint_font = g_hint_buttons = nullptr;
+    g_hint_font_attempted = g_romfs_dir && g_settings.quick_sort;
+    if (g_hint_font_attempted) quick_hint_fonts_load(io.Fonts, &g_hint_font, &g_hint_buttons);
+    g_hint_generation = icons_generation;
 }
 
 // Before a frame: another menu language may need other glyphs - the fonts and their texture are made again
 extern "C" void vk_imgui_fonts_changed(void);  // (runtime/nvn/vulkan/imgui_glue.cpp)
 static void fonts_follow_language(void) {
-    if (g_fonts_lang == ui_lang_generation()) return;
+    bool need_hint_fonts = g_settings.quick_sort && g_romfs_dir && !g_hint_font_attempted;
+    bool icons_changed = g_settings.quick_sort && g_hint_generation != glyphs_generation();
+    if (g_fonts_lang == ui_lang_generation() && !need_hint_fonts && !icons_changed) return;
     load_fonts();
 #ifdef __APPLE__
     ImGui_ImplMetal_DestroyFontsTexture();  // (NewFrame makes it again)
@@ -1031,6 +1049,15 @@ static void tab_display(void) {
                        "start and uses more video memory.", false))
             g_settings.sharper_text = cur * 2;
     }
+    {   // the menus' one-channel textures enlarged the same way (runtime/nvn/text_upscale.c): read when the game starts
+        static const char *menus[] = {"Off", "2x", "4x"};
+        int cur = g_settings.sharper_menus / 2;
+        if (opt_choice("Sharper menus", &cur, menus, 3, 0,
+                       "Makes the shapes and frames of the game's menus (panels, borders, icons drawn in one colour) "
+                       "sharper on 1440p and 4K screens. It takes effect the next time you start the game. This is an "
+                       "upscale made on your computer from the game's own art, not Nintendo's original art.", false))
+            g_settings.sharper_menus = cur * 2;
+    }
     // Advanced (vulkan/exec.c: bloom's and the distance blur's draws; CMD_REPORT_COUNTER: dynamic resolution)
     opt_section("Advanced");
     opt_toggle("Bloom", &g_settings.bloom, true, "The glow around bright light: the sun, fire, glowing eyes. Off: a "
@@ -1171,7 +1198,9 @@ static void tab_about(void) {
     header("Controls");
     opt_toggle("Controller rumble", &g_settings.rumble, true, "Vibrate the controller during play.");
     opt_toggle("Free camera with both sticks", &g_settings.freecam_sticks, true,
-               "Clicking both sticks together turns the free camera on and off. Home on the keyboard always does.");
+               "Clicking both sticks together turns the free camera on and off. Home on the keyboard always does. "
+               "While it's on: F8 or d-pad up changes the filter, [ and ] or d-pad left and right the hour, F7 or "
+               "d-pad down saves a picture in the screenshots folder.");
     opt_toggle("Controller camera speed", &g_settings.stick_cam_on, false,
                "The right stick turns the camera faster than the game allows, at the two speeds below.");
     if (g_settings.stick_cam_on) {
@@ -1208,6 +1237,73 @@ static void perf_cell(const char *fmt, float v) {
     if (v < 0) ImGui::TextDisabled("-");
     else ImGui::Text(fmt, v);
 }
+// ------------------------------------------------------------------ photo mode (hle/freecam.c, hle/photo.c)
+// While the free camera is on: a strip at the bottom with its keys (or the controller's). A picture saved: a notice
+// with a thumbnail in the bottom-right corner for a few seconds. Neither is in the picture (that is the game image).
+extern "C" bool freecam_active(void);
+extern "C" int photo_saved_seq(const char **path);
+static void photo_overlay_draw(ImGuiIO &io, float scale) {
+    ImDrawList *dl = ImGui::GetForegroundDrawList();
+    if (freecam_active()) {
+        const char *keys = input_last_device() == DEVICE_PAD
+            ? tr("Both stick clicks: exit   Left stick: move   ZR / ZL: up, down   D-pad up: filter   D-pad left / right: hour   D-pad down: picture")
+            : tr("Home: exit   W A S D: move   E / Q: up, down   Shift / Ctrl: faster, slower   F8: filter   [ ]: hour   F7: picture");
+        float fs = ImGui::GetFontSize() * 0.8f;
+        ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0, keys);
+        float pad = 10 * scale, y = io.DisplaySize.y - ts.y - 3 * pad;
+        ImVec2 a((io.DisplaySize.x - ts.x) * 0.5f - pad, y - pad), b((io.DisplaySize.x + ts.x) * 0.5f + pad, y + ts.y + pad);
+        dl->AddRectFilled(a, b, IM_COL32(0, 0, 0, 150), 6 * scale);
+        dl->AddText(ImGui::GetFont(), fs, ImVec2(a.x + pad, y), IM_COL32(240, 240, 230, 255), keys);
+    }
+    static int seen = -1;
+    static uint64_t tex;
+    static int tw, th;
+    static double shown_at;
+    const char *path;
+    int seq = photo_saved_seq(&path);
+    if (seen < 0) seen = seq;
+    double now = SDL_GetTicks() / 1000.0;
+    if (seq != seen) {
+        seen = seq;
+        shown_at = now;
+#ifndef __APPLE__
+        if (tex) vk_imgui_texture_free(tex), tex = 0;
+        int w, h;
+        unsigned char *px = rt_image_rgba(path, &w, &h);
+        if (px && w > 0 && h > 0) {  // (a thumbnail 240 wide, nearest pixel: it only has to be recognisable)
+            tw = 240, th = (int)((int64_t)h * tw / w);
+            if (th < 1) th = 1;
+            std::vector<unsigned char> small((size_t)tw * th * 4);
+            for (int y = 0; y < th; y++)
+                for (int x = 0; x < tw; x++)
+                    memcpy(&small[((size_t)y * tw + x) * 4], px + (((size_t)y * h / th) * w + (size_t)x * w / tw) * 4, 4);
+            for (size_t i = 3; i < small.size(); i += 4) small[i] = 255;
+            tex = vk_imgui_texture_rgba(small.data(), tw, th);
+        }
+        if (px) rt_image_free(px);
+#endif
+    }
+    if (!shown_at) return;
+    double age = now - shown_at;
+    if (age > 3.0) {
+#ifndef __APPLE__
+        if (tex) vk_imgui_texture_free(tex), tex = 0;
+#endif
+        shown_at = 0;
+        return;
+    }
+    int alpha = age < 2.5 ? 255 : (int)(255 * (3.0 - age) / 0.5);
+    const char *msg = tr("Picture saved");
+    float pad = 10 * scale, iw = tex ? 240 * scale : 0, ih = tex ? th * scale * 240 / tw : 0;
+    ImVec2 ts = ImGui::CalcTextSize(msg);
+    float w = fmaxf(iw, ts.x) + 2 * pad, h = ih + ts.y + 3 * pad;
+    ImVec2 a(io.DisplaySize.x - w - 20 * scale, io.DisplaySize.y - h - 20 * scale), b(a.x + w, a.y + h);
+    dl->AddRectFilled(a, b, IM_COL32(0, 0, 0, alpha * 170 / 255), 6 * scale);
+    if (tex) dl->AddImage((ImTextureID)tex, ImVec2(a.x + pad, a.y + pad), ImVec2(a.x + pad + iw, a.y + pad + ih),
+                          ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, alpha));
+    dl->AddText(ImVec2(a.x + pad, a.y + ih + 2 * pad), IM_COL32(240, 240, 230, alpha), msg);
+}
+
 static void perf_overlay_draw(ImGuiIO &io, float scale) {
     PerfStats s;
     perfmon_snapshot(&s);
@@ -1586,6 +1682,60 @@ static void act_overlay_draw(ImGuiIO &io, float scale) {
 extern "C" void rec_drain(void);  // (runtime/nvn/vulkan/record.c)
 #endif
 
+// Native-style selector prompt. Draw-only: input still belongs to the game.
+static void quick_sort_hint_draw(const ImGuiIO &io) {
+    int kind = g_settings.button_icons;
+    if (kind <= ICONS_AUTO || kind >= ICONS_COUNT) {
+        int family = input_pad_family();
+        kind = input_last_device() == DEVICE_KEYBOARD ? ICONS_KEYBOARD :
+            family == 1 ? ICONS_XBOX : family == 2 ? ICONS_PLAYSTATION : ICONS_NINTENDO;
+    }
+    bool keyboard = kind == ICONS_KEYBOARD;
+    int family = kind == ICONS_XBOX ? 1 : kind == ICONS_PLAYSTATION ? 2 : 0;
+    float canvas = fminf(io.DisplaySize.x / 1280.f, io.DisplaySize.y / 720.f);
+    float scale = canvas / 1.5f, fs = 32 * scale, radius = 15 * scale, gap = 10 * scale;
+    // The native right-stick guide ends seven canvas units above center;
+    // reserve a 12-unit gap and an 18-unit half-row below it.
+    float y = io.DisplaySize.y * .5f + 23 * canvas;
+    const char *action = tr("Sort");
+    ImFont *font = g_hint_font ? g_hint_font : g_menu_font;
+    for (const char *p = action; *p;) {
+        unsigned code; int n = ImTextCharFromUtf8(&code, p, nullptr);
+        if (!n) break;
+        p += n;
+        if (!font->FindGlyphNoFallback((ImWchar)code)) { font = g_menu_font; break; }
+    }
+    const char *button = keyboard ? tr(bind_key_label(g_bind_key[BIND_X])) :
+        tr(bind_pad_label(g_bind_pad[BIND_X], family));
+    // E042 means the Switch X action. Its pixels already follow the same
+    // device, bindings and modded font as the game's other text prompts.
+    const char *native = g_hint_buttons ? "\xee\x81\x82" : nullptr;
+    ImVec2 text = font->CalcTextSizeA(fs, FLT_MAX, 0, action);
+    ImVec2 key = g_font->CalcTextSizeA(fs * .65f, FLT_MAX, 0, button);
+    float badge = native ? 44 * scale : fmaxf(radius * 2, key.x + 14 * scale);
+    float x = (io.DisplaySize.x - text.x - gap - badge) * .5f;
+    ImDrawList *draw = ImGui::GetForegroundDrawList();
+    auto label = [&](ImVec2 pos, ImU32 color) {
+        int start = draw->VtxBuffer.Size;
+        draw->AddText(font, fs, pos, color, action);
+        // Native layouts italicize the text; button artwork stays upright.
+        for (int j = start; font == g_hint_font && j < draw->VtxBuffer.Size; j++)
+            draw->VtxBuffer[j].pos.x += (pos.y + fs * .8f - draw->VtxBuffer[j].pos.y) * .18f;
+    };
+    label(ImVec2(x + scale, y - fs * .5f + scale), IM_COL32(0, 0, 0, 85));
+    label(ImVec2(x, y - fs * .5f), IM_COL32(245, 246, 232, 255));
+    float bx = x + text.x + gap;
+    if (native) {
+        draw->AddText(g_hint_buttons, 54 * scale, ImVec2(bx - 5 * scale, y - 27 * scale),
+                      IM_COL32(245, 246, 232, 255), native);
+    } else {
+        ImVec2 a(bx, y - radius), b(bx + badge, y + radius);
+        draw->AddRectFilled(a, b, IM_COL32(245, 246, 232, 255), keyboard ? 4 * scale : radius);
+        draw->AddText(g_font, fs * .65f, ImVec2(a.x + (badge - key.x) * .5f, y - key.y * .5f),
+                      IM_COL32(25, 28, 24, 255), button);
+    }
+}
+
 // Everything menu_render draws, in one place: menu_render_needed (the caller's cue to drain the recorder first) and
 // menu_render (which decides again, and drains itself) must agree on it. The pointer's hover box, the console and the
 // gyro drag were missing here: their frames went to the command buffer while the recorder thread was still filling it.
@@ -1597,7 +1747,7 @@ static bool menu_draws(bool *pointer_hover = NULL, float *pointer_box = NULL, bo
     if (pointer_hover) *pointer_hover = hover;
     if (gyro_show) *gyro_show = gyro_on;
     return g_open.load() || g_kbd.load() == 1 || g_sizes.load() || console_is_open() || gyro_on || hover ||
-           g_settings.perf_overlay != PERF_OFF || act_log_enabled();
+           g_settings.perf_overlay != PERF_OFF || act_log_enabled() || quick_inventory_sort_hint();
 }
 
 bool menu_render_needed(void) { return menu_draws(); }
@@ -1681,6 +1831,8 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
 
     if (g_settings.perf_overlay != PERF_OFF) perf_overlay_draw(io, scale);
     if (act_log_enabled()) act_overlay_draw(io, scale);
+    if (!open && !kbd && !sizes && !con && quick_inventory_sort_hint()) quick_sort_hint_draw(io);
+    if (!open && !kbd && !sizes && !con) photo_overlay_draw(io, scale);
     if (!open && !kbd && !sizes && !con && gyro_scene_show) gyro_scene_draw(io, scale, gyro_scene);
 
     if (open) {

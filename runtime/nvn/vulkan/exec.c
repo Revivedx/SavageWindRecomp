@@ -43,6 +43,8 @@
 static uint64_t stat_build_waits;  // draws that waited for their pipeline (draw_must_happen)
 static uint64_t stat_links_now;    // pipelines linked on the render thread within the frame's budget (link_now)
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
+static uint64_t draws_total;  // (every draw since the start, never reset: vk_draw_total)
+uint64_t vk_draw_total(void) { return draws_total; }  // (device.c boot_held: how much the game draws a frame)
 static uint64_t stat_gw_waits, stat_gw_holds;  // draws / dispatches that waited for a storing shader; lists held (gw_check)
 static uint64_t stat_uub, stat_uub_same, stat_gcopy_hit, stat_gcopy_miss, stat_gcopy_bytes;  // UpdateUniformBuffer; guest_copy cache
 static uint64_t stat_ubo_direct, stat_chain_barriers;  // constant buffers bound in place (ubo_direct)
@@ -4583,6 +4585,21 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         *out = ubo_span(vk_transient_copy(buf, n, 256), n);
         return true;
     }
+    // The world map's stamps (#514) and its other 2D sprites: no projection, four values of their own (a stamp: its
+    // place in the stamp atlas), then a 2D transform straight to clip space, the sprite's place on the 16:9 screen (rows
+    // x: scale 0 0 offset, y: 0 scale 0 offset, 0 0 0 -1). Unchanged they spread over the whole wider window while the
+    // map and its icons keep the 16:9 layout, so the stamps slid ~shape x faster than the map when it scrolled. On a
+    // wider window they narrow like the rest; taller map views are cropped to 16:9 at presentation (output_scale.c).
+    // (The same shader's whole-screen quads, scale 2, are left as they are.)
+    if (shape > 1 && size >= 64 && framepace_map_ui() && g[4] > 0 && g[4] < 1 && !g[5] && !g[6] && !g[8] && g[9] > 0 &&
+        g[9] < 1 && !g[10] && !g[12] && !g[13] && !g[14] && g[15] == -1) {
+        static float buf[0x10000 / 4];
+        uint64_t n = size > sizeof buf ? sizeof buf : size;
+        memcpy(buf, g, n);
+        buf[4] /= shape, buf[7] /= shape;
+        *out = ubo_span(vk_transient_copy(buf, n, 256), n);
+        return true;
+    }
     if (!(g[0] > 0 && g[5] > 0 && g[14] == -1 && !g[1] && !g[2] && !g[3] && !g[4] && !g[6] && !g[7] && !g[8] && !g[9] &&
           !g[12] && !g[13] && !g[15]))
         return false;
@@ -6224,7 +6241,7 @@ static void texture_info_(int stage, ShaderInfo *si, int i, VkDescriptorImageInf
     uint32_t tic = h & 0xFFFFF, tsc = (uint32_t)(h >> 20) & 0xFFF;
     // (vk_sampler's Video > Anisotropic filtering: not for textures with one mip level - the render targets BOTW reads
     // back - nor in blended draws - particles, effects, decals - whose quads' square edges it brought out)
-    bool all = aniso_all(), aniso_ok = all || !(st.color_state[0] & 1), material = false, text_sheet = false;
+    bool all = aniso_all(), aniso_ok = all || !(st.color_state[0] & 1), material = false, text_sheet = false, menu_tex = false;
     sc[0] = sc[1] = 1;
     wh[0] = wh[1] = 0;
     if (h && st.tpool && tic < (uint32_t)st.tpool->count) {
@@ -6253,6 +6270,7 @@ static void texture_info_(int stage, ShaderInfo *si, int i, VkDescriptorImageInf
             renderer_texture_scale(et, &sc[0], &sc[1]);
             material = et->backend && !((TexBackend *)et->backend)->gpu_owned;
             text_sheet = et->backend && ((TexBackend *)et->backend)->text_scale;
+            menu_tex = text_sheet && ((TexBackend *)et->backend)->menu_tex;
             if (et == scene_up.t && stage == 1) {  // (with the texture's own swizzle: BOTW draws its weapon wheel's
                 // blurred capture of the scene, whose alpha is 0, with alpha forced to 1)
                 view = vk_image_view(scene_up.img, VK_IMAGE_VIEW_TYPE_2D, scene_up.img->format, 0, 1, 0, 1,
@@ -6285,7 +6303,13 @@ static void texture_info_(int stage, ShaderInfo *si, int i, VkDescriptorImageInf
     float bias = material && stage == 1 && pass_mvec >= 0 && rt_jitter_on() ? scene_mip_bias : 0;
     if (h && st.spool && tsc < (uint32_t)st.spool->count)
         smp = vk_sampler(&((NvnSamplerDesc *)st.spool->entries)[tsc], aniso_ok, bias);
-    if (text_sheet) smp = vk_text_sampler();
+    if (menu_tex && h && st.spool && tsc < (uint32_t)st.spool->count) {
+        // Sharper menus: the game's own sampler, as some of these textures tile, but filtering between the mip levels
+        // the enlarged image has and the game doesn't know of
+        NvnSamplerDesc d = ((NvnSamplerDesc *)st.spool->entries)[tsc];
+        d.min_filter = 5, d.lod_min = 0, d.lod_max = 16;
+        smp = vk_sampler(&d, false, 0);
+    } else if (text_sheet) smp = vk_text_sampler();
     if (!view) view = vk_dummy_view(st_->type), layout = VK_IMAGE_LAYOUT_GENERAL;
     if (!smp) smp = vk_default_sampler(true);
     *out = (VkDescriptorImageInfo){smp, view, layout};
@@ -8363,6 +8387,7 @@ have_pipe:
     else rec_CmdDrawIndexed(cb, icount, inst, 0, base_vertex, base_inst);
     if (oq >= 0) rec_CmdEndQuery(cb, oq_pool, (uint32_t)oq);
     stat_draws++;
+    draws_total++;
     chunk_draws++;
     if (pr->vi->writes_gmem || pr->fi->writes_gmem) {
         bar_other = true;

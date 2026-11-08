@@ -1,6 +1,7 @@
 // Builds the game code library on the player's machine (runtime/gamebuild.h).
 #include "gamebuild.h"
 
+#include <dirent.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -327,6 +328,133 @@ static void add_cflags(Args *a, const Tools *t) {
     if (t->zig) add_split(a, GAMELIB_ZIGFLAGS);  // (after them: the last -O that reaches clang wins)
 }
 
+// ------------------------------------------------------------------ pieces kept between builds
+// Every compiled piece of game code is kept in <data root>/cache/gamecode/, named by a hash of its C, the compiler
+// (zig's executable), the flags and the headers it includes. The game code is rebuilt after every Savage Wind update,
+// but most of the generated C comes out the same, so a rebuild compiles only the pieces that changed. After a good
+// build only the pieces it used stay, so the folder holds about one build. SAVAGEWIND_NO_GAMECODE_CACHE=1: not used.
+// Unit 0, the shipped entry file, is always compiled: it carries this build's GAMELIB_ID.
+static char gc_dir[1100];
+static uint64_t gc_seed;  // the hash everything but the C itself adds up to; 0: off
+static uint64_t *gc_used;
+static int gc_nused, gc_cap, gc_reused;
+
+static uint64_t gc_hash_bytes(uint64_t h, const void *p_, size_t n) {  // (FNV-1a)
+    const uint8_t *p = (const uint8_t *)p_;
+    for (size_t i = 0; i < n; i++) h = (h ^ p[i]) * 1099511628211ull;
+    return h;
+}
+
+static uint64_t gc_hash_file(uint64_t h, const char *path) {  // 0: unreadable
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    static char buf[1 << 16];  // (the build's own thread only)
+    size_t n;
+    while ((n = fread(buf, 1, sizeof buf, f)) > 0) h = gc_hash_bytes(h, buf, n);
+    fclose(f);
+    return h ? h : 1;
+}
+
+static void gc_begin(const Tools *t) {
+    gc_nused = gc_reused = 0;
+    gc_seed = 0;
+    const char *off = getenv("SAVAGEWIND_NO_GAMECODE_CACHE");
+    if (off && *off && strcmp(off, "0")) return;
+    uint64_t h = gc_hash_file(1469598103934665603ull, t->cc);
+    if (!h) return;
+    Args a = {0};  // the compile line but the file names: the flags, the target, the id define left out (unit 0 only)
+    add_cflags(&a, t);
+    for (int i = 0; i < a.n; i++) h = gc_hash_bytes(h, a.v[i], strlen(a.v[i]) + 1);
+    args_free(&a);
+    DIR *d = opendir(t->inc);  // the headers: names and contents, summed so the order readdir gives doesn't matter
+    if (!d) return;
+    uint64_t sum = 0;
+    for (struct dirent *e; (e = readdir(d));) {
+        if (e->d_name[0] == '.') continue;
+        char p[1400];
+        snprintf(p, sizeof p, "%s" SEP "%s", t->inc, e->d_name);
+        sum += gc_hash_file(gc_hash_bytes(h, e->d_name, strlen(e->d_name)), p);
+    }
+    closedir(d);
+    h = gc_hash_bytes(h, &sum, sizeof sum);
+    snprintf(gc_dir, sizeof gc_dir, "%s" SEP "cache", rt_data_root());
+    mkdir(gc_dir, 0755);
+    snprintf(gc_dir, sizeof gc_dir, "%s" SEP "cache" SEP "gamecode", rt_data_root());
+    mkdir(gc_dir, 0755);
+    gc_seed = h ? h : 1;
+}
+
+static bool gc_copy(const char *from, const char *to) {
+    FILE *a = fopen(from, "rb"), *b = a ? fopen(to, "wb") : NULL;
+    static char buf[1 << 16];
+    bool ok = a && b;
+    size_t n;
+    while (ok && (n = fread(buf, 1, sizeof buf, a)) > 0) ok = fwrite(buf, 1, n, b) == n;
+    if (a) fclose(a);
+    if (b && fclose(b)) ok = false;
+    if (!ok && b) remove(to);
+    return ok;
+}
+
+static void gc_path(uint64_t key, char *p, size_t n) {
+    snprintf(p, n, "%s" SEP "%016llx.o", gc_dir, (unsigned long long)key);
+}
+
+static void gc_note(uint64_t key) {
+    if (gc_nused == gc_cap) gc_used = (uint64_t *)realloc(gc_used, sizeof *gc_used * (gc_cap = gc_cap ? gc_cap * 2 : 1024));
+    gc_used[gc_nused++] = key;
+}
+
+// A piece compiled before: its object put in place, true
+static bool gc_take(const Unit *u) {
+    uint64_t key = gc_seed ? gc_hash_file(gc_seed, u->src) : 0;
+    char p[1200];
+    gc_path(key, p, sizeof p);
+    if (!key || !gc_copy(p, u->obj)) return false;
+    gc_note(key);
+    gc_reused++;
+    return true;
+}
+
+static void gc_store(const Unit *u) {
+    uint64_t key = gc_seed ? gc_hash_file(gc_seed, u->src) : 0;
+    char p[1200], tmp[1300];
+    gc_path(key, p, sizeof p);
+    snprintf(tmp, sizeof tmp, "%s.tmp", p);  // (then renamed: a build stopped midway leaves no half piece behind)
+    if (!key || !gc_copy(u->obj, tmp)) return;
+    remove(p);
+    if (rename(tmp, p) == 0) gc_note(key);
+    else remove(tmp);
+}
+
+static int gc_cmp(const void *a, const void *b) {
+    uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
+    return x < y ? -1 : x > y;
+}
+
+// After the build: only the pieces it used stay. After a failed one that took pieces, none: the next build compiles
+// everything, in case a kept piece was the problem.
+static void gc_finish(bool ok, int units) {
+    if (!gc_seed || (!ok && !gc_reused)) return;  // (failed with nothing taken: what it compiled is good to keep)
+    if (!ok) gc_nused = 0;
+    qsort(gc_used, gc_nused, sizeof *gc_used, gc_cmp);
+    int removed = 0;
+    DIR *d = opendir(gc_dir);
+    for (struct dirent *e; d && (e = readdir(d));) {
+        unsigned long long k;
+        char end;
+        size_t n = strlen(e->d_name);
+        if ((n != 18 && n != 22) || sscanf(e->d_name, "%16llx.%c", &k, &end) != 2 || end != 'o') continue;  // (.o, .o.tmp)
+        uint64_t key = k;
+        if (n == 18 && gc_nused && bsearch(&key, gc_used, gc_nused, sizeof *gc_used, gc_cmp)) continue;
+        char p[1200];
+        snprintf(p, sizeof p, "%s" SEP "%s", gc_dir, e->d_name);
+        if (remove(p) == 0) removed++;
+    }
+    if (d) closedir(d);
+    LOG("[gamebuild] %d of %d pieces reused from cache/gamecode (%d old ones removed)\n", gc_reused, units - 1, removed);
+}
+
 static PlatProc start_compile(const Tools *t, const Unit *u) {
     Args a = {0};
     compiler(&a, t);
@@ -436,6 +564,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
         if (!g->p) { snprintf(why, why_size, "the game code builder didn't start"); ok = false; }
     }
 
+    gc_begin(&t);
     Units units = {0};
     int queued[MAX_MODULES] = {0};  // chunk files of each module put in units so far
     bool tables[MAX_MODULES] = {false};
@@ -492,6 +621,12 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
 
         // compiles
         while (nrun < jobs && next < units.n) {
+            if (next > 0 && gc_take(&units.u[next])) {  // (compiled by an earlier build: no compile)
+                done_bytes += units.u[next].bytes;
+                remove(units.u[next].src);
+                next++;
+                continue;
+            }
             PlatProc p = start_compile(&t, &units.u[next]);
             if (!p) { snprintf(why, why_size, "the compiler didn't start"); ok = false; break; }
             run[nrun].p = p, run[nrun].unit = next++;
@@ -509,6 +644,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
                 snprintf(why, why_size, "the game code didn't compile");
                 ok = false;
             }
+            if (r == 0 && run[k].unit > 0 && gc_seed) gc_store(u);
             done_bytes += u->bytes;
             if (run[k].unit > 0) remove(u->src);  // (generated C, done with: not kept. Unit 0 is the shipped entry file)
             run[k--] = run[--nrun];
@@ -597,6 +733,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
         }
         if (f) fclose(f);
     }
+    gc_finish(ok, units.n);
     free(units.u);
     rt_remove_game_file(game_dir, ".gamebuild");  // the C, the objects, the logs
     LOG("[gamebuild] %s in %.0fs\n", ok ? "done" : "failed", (double)(plat_now_ns() - t0) / 1e9);

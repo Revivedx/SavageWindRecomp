@@ -8,6 +8,7 @@
 
 #include "control.h"
 #include "control_cells.h"
+#include "control_places.h"
 #include "perfmon.h"
 #include "rt.h"
 #include "game_sites.h"
@@ -295,7 +296,8 @@ static void cmd_report(int argc, char **argv, ControlReply *r) {
     control_copy(r, block);
 }
 
-// ---- goto <x> <y> <z> | goto <swr:1 line>: back to a place `pos` or `report` gave (developer mode)
+// ---- goto <x> <y> <z> | goto <swr:1 line> | goto <named place>: back to a place `pos` or `report` gave, or to a shrine, Korok,
+// tower, stable, village ... by number or name (developer mode)
 void control_tp_run(int argc, char **argv, ControlReply *r);  // runtime/control_tp.c: the teleport command
 static bool parse_number(const char *s, double *out) {
     char *end;
@@ -307,14 +309,52 @@ static bool parse_number(const char *s, double *out) {
 }
 bool control_look_start(bool use_yaw, double yaw, bool use_pitch, double pitch, int settle);  // runtime/control_input.c
 void control_tp_then_look(bool use_yaw, double yaw, bool use_pitch, double pitch);           // runtime/control_tp.c
+// Split the arguments at spaces (a quoted line arrives as one argument). Returns how many words (at most max).
+static int split_words(int argc, char **argv, char (*store)[64], char **words, int max) {
+    int n = 0;
+    for (int i = 1; i < argc; i++) {
+        char copy[256];
+        if (snprintf(copy, sizeof copy, "%s", argv[i]) >= (int)sizeof copy) return -1;
+        for (char *a = strtok(copy, " \t"); a; a = strtok(NULL, " \t")) {
+            if (n >= max || snprintf(store[n], 64, "%s", a) >= 64) return -1;
+            words[n] = store[n];
+            n++;
+        }
+    }
+    return n;
+}
+// The first word says what the rest is: a number, a name=value pair or the swr:1 tag mean coordinates, a word means a place.
+static bool goto_is_place(int nwords, char **words) {
+    double d;
+    return nwords > 0 && strcmp(words[0], "swr:1") && !strchr(words[0], '=') && !parse_number(words[0], &d);
+}
+// How far above a place's position Link arrives (he drops the last bit, it is not enough to hurt). A start position of the game
+// is ground, so a small lift is enough (a stable floor can be 0.5 above it); marker positions are not, they get a larger one.
+static double place_lift(const Place *p) { return p->ground ? 1.0 : p->kind == PLACE_KOROK ? 2.0 : 3.0; }
 static void cmd_goto(int argc, char **argv, ControlReply *r) {
     double v[3];
+    const Place *place = NULL;
+    {
+        char store[24][64], *words[24];
+        int nwords = split_words(argc, argv, store, words, 24);
+        if (nwords < 0) { control_fail(r, "goto: too many words"); return; }
+        if (goto_is_place(nwords, words)) {
+            float here[3];
+            char why[400];
+            place = place_find(nwords, words, link_position(here) ? here : NULL, why, sizeof why);
+            if (!place) { control_fail(r, "%s", why); return; }
+            v[0] = place->x; v[1] = place->y + place_lift(place); v[2] = place->z;
+        }
+    }
     double hour = -1, yaw = 0, pitch = 0;
     bool have_look[2] = {false, false};
     bool have[3] = {false, false, false};
-    static const char *usage = "goto: use goto <x> <y> <z>, or paste a line from pos or report (swr:1 x=.. y=.. z=.. [hour=..])";
+    char usage[300];  // (named after the command used, goto or tp)
+    snprintf(usage, sizeof usage, "%s: use %s <x> <y> <z>, a line from pos or report (swr:1 x=.. y=.. z=.. [hour=..]), "
+             "or a place (shrine 5, korok H23, stable wetland, tower 2, hateno)", argv[0], argv[0]);
     int numbers = 0;
-    for (int i = 1; i < argc; i++) {
+    if (place) have[0] = have[1] = have[2] = true;
+    for (int i = 1; i < argc && !place; i++) {
         // A quoted line (swctl goto "swr:1 x=.. y=.. z=..") arrives as one argument, so split every argument at spaces.
         char word[256];
         if (snprintf(word, sizeof word, "%s", argv[i]) >= (int)sizeof word) { control_fail(r, "%s", usage); return; }
@@ -348,7 +388,13 @@ static void cmd_goto(int argc, char **argv, ControlReply *r) {
         if (control_reply_failed(r)) return;
     } else control_field_str(r, "state", "already_there");
     if (hour >= 0) test_warp_set_hour((float)hour);
-    control_text(r, already ? "Already there" : "Teleporting to %.2f %.2f %.2f", v[0], v[1], v[2]);
+    if (place) {
+        control_field_str(r, "place", place->name);
+        control_field_str(r, "kind", place_kind_name(place->kind));
+        control_field_int(r, "number", place->number);
+    }
+    if (place) control_text(r, already ? "Already at %s" : "Going to %s", place->name);
+    else control_text(r, already ? "Already there" : "Teleporting to %.2f %.2f %.2f", v[0], v[1], v[2]);
     if (hour >= 0) control_text(r, "Time set to %.2f", hour);
     if (have_look[0] || have_look[1]) {   // the camera turns once Link is there (look status shows when it holds)
         if (already ? control_look_start(have_look[0], yaw, have_look[1], pitch, 30) : (control_tp_then_look(have_look[0], yaw, have_look[1], pitch), true))
@@ -356,6 +402,30 @@ static void cmd_goto(int argc, char **argv, ControlReply *r) {
         else
             control_text(r, "Camera not found");
     }
+}
+
+// ---- places [kind] [words]: what `goto` knows
+#define PLACES_SHOWN 40
+static void cmd_places(int argc, char **argv, ControlReply *r) {
+    char store[24][64], *words[24];
+    int nwords = split_words(argc, argv, store, words, 24);
+    if (nwords < 0) { control_fail(r, "places: too many words"); return; }
+    if (nwords == 0) {
+        for (int k = 0; k < PLACE_KINDS; k++) control_text(r, "%-9s %4d", place_kind_name((PlaceKind)k), place_kind_count((PlaceKind)k));
+        control_text(r, "places <kind> [words] lists them, goto <kind> <number or name> goes there");
+        return;
+    }
+    int kind = place_kind_from_word(words[0]);
+    const Place *shown[PLACES_SHOWN];
+    int total = place_list(kind, nwords - (kind >= 0), words + (kind >= 0), shown, PLACES_SHOWN);
+    control_field_int(r, "count", total);
+    for (int i = 0; i < total && i < PLACES_SHOWN; i++) {
+        const Place *p = shown[i];
+        if (kind >= 0) control_text(r, "%4d  %s%s%s%s", p->number, p->name, *p->sub ? " (" : "", p->sub, *p->sub ? ")" : "");
+        else control_text(r, "%-8s %4d  %s", place_kind_name(p->kind), p->number, p->name);
+    }
+    if (total > PLACES_SHOWN) control_text(r, "... %d more, add words to narrow it down", total - PLACES_SHOWN);
+    if (!total) control_text(r, "Nothing found");
 }
 
 void control_settings_init(void);  // runtime/control_settings.c
@@ -380,7 +450,9 @@ void control_game_init(void) {
     static const ControlCmd dev[] = {
         {"time", "[freeze | unfreeze | set <0-24> | <0-24>]", "Show or change the hour of the day", cmd_time, 0},
         {"shot", "<file>", "Save a screenshot as PNG", cmd_shot, 0},
-        {"goto", "<x> <y> <z> | <swr:1 line>", "Go to a place from pos or report", cmd_goto, 0},
+        {"goto", "<x> <y> <z> | <swr:1 line> | <place>", "Go to coordinates, a place from pos or report, or a shrine, Korok, tower, stable, village by number or name", cmd_goto, 0},
+        {"places", "[<kind>] [words]", "List the places goto knows (shrine, tower, stable, village, landmark, korok)", cmd_places, 0},
+        {"tp", "<x> <y> <z> | <swr:1 line> | <place>", "Same as goto", cmd_goto, 0},
     };
     control_register(dev, (int)(sizeof dev / sizeof *dev));
     control_prof_init();
