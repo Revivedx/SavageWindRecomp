@@ -9,6 +9,9 @@ build: a text file in the data folder that the menus read over the built-in tabl
 - **Format:** UTF-8, one text per line: the English text exactly as in the program, a tab, then the translation.
   `\n` stands for a line break, `\t` for a tab and `\\` for a backslash. Lines starting with `#` and empty lines are
   skipped. A line without a tab is skipped too (the log says so).
+- **Formats:** some texts hold numbers or names, such as `%d x %d` or `%s`. The translation must have the same `%`
+  codes in the same order (`%%` is a percent sign and doesn't count). A line where they differ is skipped and the
+  log names it, since the menu would otherwise show garbage or crash.
 - **Which texts:** the English side is the first string of each `T("English", "...")` line in
   `runtime/ui/i18n/<language>.inc`. A text the pack doesn't name keeps the built-in translation.
 - **When:** the pack is read the first time its language is shown, so restart Savage Wind after changing it. The log

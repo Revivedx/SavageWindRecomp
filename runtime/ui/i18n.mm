@@ -3,6 +3,7 @@
 // once (the start screen and the overlay rebuild their fonts when the new language needs other glyphs).
 #include "i18n.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -93,7 +94,32 @@ const char *menu_lang_for(const char *code) {
 // A language pack: lang/<menu language>.txt in the data folder (docs/menu-language-packs.md), its lines over the built-in
 // table, so players can fix or finish a translation without a new build. Each language's pack is read once and kept
 // for the whole run: tr() hands out pointers into it.
-void read_pack(const char *ui) {
+
+// A text's printf conversions in order ("%d", "%.1f", "%s"; "%%" is a percent sign, not one), each ended by a '|'.
+// A pack line whose translation lists other ones than its English text would make snprintf(tr(...)) read the wrong
+// arguments, or crash.
+static std::string printf_specs(const std::string &s) {
+    std::string out;
+    for (size_t i = 0; i < s.size(); i++) {
+        if (s[i] != '%') continue;
+        if (i + 1 < s.size() && s[i + 1] == '%') {
+            i++;
+            continue;
+        }
+        size_t j = i + 1;
+        while (j < s.size() && strchr("-+ #0", s[j])) j++;                          // flags
+        while (j < s.size() && (isdigit((unsigned char)s[j]) || s[j] == '*')) j++;  // width
+        if (j < s.size() && s[j] == '.')
+            for (j++; j < s.size() && (isdigit((unsigned char)s[j]) || s[j] == '*'); j++) {}  // precision
+        while (j < s.size() && strchr("hlLqjzt", s[j])) j++;                                 // length i18n-skip
+        out.append(s, i, j - i + (j < s.size()));  // (with the conversion letter)
+        out += '|';
+        i = j;
+    }
+    return out;
+}
+
+static void read_pack(const char *ui) {
     static std::unordered_map<std::string, std::deque<std::string>> packs;  // (deque: its strings never move)
     auto at = packs.find(ui);
     if (at == packs.end()) {
@@ -103,7 +129,7 @@ void read_pack(const char *ui) {
         FILE *f = fopen(path, "rb");
         if (!f) return;
         std::string line;
-        int c, lines = 0, bad = 0;
+        int c, lines = 0, bad = 0, badfmt = 0;
         auto unescape = [](const std::string &s) {
             std::string o;
             for (size_t i = 0; i < s.size(); i++) {
@@ -125,15 +151,24 @@ void read_pack(const char *ui) {
             if (!line.empty() && line[0] != '#') {
                 if (tab == std::string::npos || tab == 0) bad++;
                 else {
-                    text.push_back(unescape(line.substr(0, tab)));
-                    text.push_back(unescape(line.substr(tab + 1)));
+                    std::string en = unescape(line.substr(0, tab)), translated = unescape(line.substr(tab + 1));
+                    if (printf_specs(en) != printf_specs(translated)) {
+                        fprintf(stderr, "[i18n] %s:%d: skipped, its %% formats differ from the English text's: %s\n",
+                                path, lines + 1, en.c_str());
+                        badfmt++;
+                    } else {
+                        text.push_back(std::move(en));
+                        text.push_back(std::move(translated));
+                    }
                 }
             }
             lines++;
             line.clear();
         } while (c != EOF);
         fclose(f);
-        fprintf(stderr, "[i18n] %s: %zu texts%s\n", path, text.size() / 2, bad ? " (lines without a tab skipped)" : "");
+        fprintf(stderr, "[i18n] %s: %zu texts%s", path, text.size() / 2, bad ? " (lines without a tab skipped)" : "");
+        if (badfmt) fprintf(stderr, " (%d with other %% formats than the English text skipped)", badfmt);
+        fputc('\n', stderr);
         at = packs.find(ui);
     }
     for (size_t i = 0; i + 1 < at->second.size(); i += 2) by_text[at->second[i]] = at->second[i + 1].c_str();
