@@ -17,6 +17,11 @@ const char *tr(const char *s) { return s; }
 std::string ui_visual_order(const char *s) { return s; }  // (i18n.mm: right-to-left reordering, not under test)
 extern "C" {
 // Reached by live Options code (window size rows), never called by this routing test.
+bool gamelib_compat(void) { return false; }
+int graphics_preset_current(void) { abort(); }
+void graphics_preset_apply(int) { abort(); }
+const char *const g_gpreset_names[GPRESET_COUNT] = {"Potato", "Original", "High", "Savage"};
+const char *problem_report_make(void) { abort(); }
 void menu_request_window_apply(void) { abort(); }
 void winsize_name(WinSize, const char *, char *, int) { abort(); }
 // PE resolves unused UI references before discarding their sections. These unrelated

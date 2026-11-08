@@ -14,6 +14,13 @@
 #include "../platform.h"
 #include "../settings.h"
 
+// Hybrid laptops: the dedicated GPU. NVIDIA's Optimus driver can hide its GPU from a program it runs on the
+// integrated one (an RTX 3050 laptop ran on its Intel GPU whatever the Windows and NVIDIA settings said, #415); AMD's
+// switchable graphics read the second export. The executable's own exports, read when it starts. The GPU setting
+// (SAVAGEWIND_GPU, Options) still picks another one.
+__declspec(dllexport) DWORD NvOptimusEnablement = 1;
+__declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+
 // ---- guest address space
 // The window is reserved up front and committed per region (plat_commit from the loader / kernel). Anything
 // the guest touches outside a committed region is committed on its first access by the exception handler
@@ -447,6 +454,8 @@ int plat_cpu_count(void) {
     GetSystemInfo(&si);
     return (int)si.dwNumberOfProcessors;
 }
+
+const char *plat_log_path(void) { return g_log_path; }
 
 bool plat_exe_path(char *buf, size_t size) {
     DWORD n = GetModuleFileNameA(NULL, buf, (DWORD)size);

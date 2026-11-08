@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "i18n.h"
+#include "quick_hint_font.h"
 #include "imgui.h"
 #include "gyro_drag.h"
 #include "option_rows.h"
@@ -30,6 +31,9 @@ extern "C" bool vk_imgui_backend_init(void);  // runtime/nvn/vulkan/imgui_glue.c
 extern "C" {
 #include "../hle.h"
 #include "../settings.h"
+#include "../gamelib.h"
+#include "../quick_inventory_sort.h"
+#include "../nvn/glyphs.h"
 #include "../color_grade.h"
 #include "../window_size.h"
 extern "C" {
@@ -43,6 +47,11 @@ void controls_bindings_draw(float scale);  // controls_ui.mm
 #include "../perfmon.h"
 #include "../paths.h"
 #include "../pc_cursor.h"
+#include "../imageload.h"
+#ifndef __APPLE__
+extern "C" uint64_t vk_imgui_texture_rgba(const void *rgba, int w, int h);  // runtime/nvn/vulkan/imgui_glue.cpp
+extern "C" void vk_imgui_texture_free(uint64_t id);
+#endif
 }
 
 // ------------------------------------------------------------------ state shared with the main thread
@@ -403,6 +412,9 @@ void menu_apply_window_requests(void *win) {
 // ------------------------------------------------------------------ render thread
 static bool g_inited;
 static ImGuiContext *g_ctx;  // ours: the start screen (back to it after a reboot) has its own context
+static ImFont *g_hint_font, *g_hint_buttons;
+static bool g_hint_font_attempted;
+static uint32_t g_hint_generation;
 static ImFont *g_font, *g_font_big;
 static ImFont *g_font_mono;  // the console (columns line up); NULL: the normal font
 static ImFont *g_menu_font, *g_menu_font_big;  // the menu window (Fira Sans); everything else keeps g_font
@@ -454,6 +466,7 @@ static void style_init(void) {
 // menu language changes (fonts_follow_language).
 static int g_fonts_lang = -1;
 static void load_fonts(void) {
+    uint32_t icons_generation = glyphs_generation();
     ImGuiIO &io = ImGui::GetIO();
     io.Fonts->Clear();
     g_font = g_font_big = g_menu_font = g_menu_font_big = g_font_mono = NULL;
@@ -496,12 +509,18 @@ static void load_fonts(void) {
     if (!g_font) g_font = io.Fonts->AddFontDefault();
     if (!g_font_big) g_font_big = g_font;
     if (!g_menu_font || !g_menu_font_big) g_menu_font = g_font, g_menu_font_big = g_font_big;
+    g_hint_font = g_hint_buttons = nullptr;
+    g_hint_font_attempted = g_romfs_dir && g_settings.quick_sort;
+    if (g_hint_font_attempted) quick_hint_fonts_load(io.Fonts, &g_hint_font, &g_hint_buttons);
+    g_hint_generation = icons_generation;
 }
 
 // Before a frame: another menu language may need other glyphs - the fonts and their texture are made again
 extern "C" void vk_imgui_fonts_changed(void);  // (runtime/nvn/vulkan/imgui_glue.cpp)
 static void fonts_follow_language(void) {
-    if (g_fonts_lang == ui_lang_generation()) return;
+    bool need_hint_fonts = g_settings.quick_sort && g_romfs_dir && !g_hint_font_attempted;
+    bool icons_changed = g_settings.quick_sort && g_hint_generation != glyphs_generation();
+    if (g_fonts_lang == ui_lang_generation() && !need_hint_fonts && !icons_changed) return;
     load_fonts();
 #ifdef __APPLE__
     ImGui_ImplMetal_DestroyFontsTexture();  // (NewFrame makes it again)
@@ -679,6 +698,17 @@ static void tab_display(void) {
     float scale = ImGui::GetFontSize() / 34;
     opt_begin("##video", scale);
     opt_section("Display");
+    {   // Graphics preset (settings.c k_gpreset): Custom (matching no preset) is shown, never picked
+        const char *names[GPRESET_COUNT + 1];
+        for (int i = 0; i < GPRESET_COUNT; i++) names[i] = g_gpreset_names[i];
+        names[GPRESET_COUNT] = "Custom";
+        int p = graphics_preset_current(), cur = p < 0 ? GPRESET_COUNT : p;
+        if (opt_choice("Graphics preset", &cur, names, GPRESET_COUNT + 1, GPRESET_ORIGINAL,
+                       "Sets the draw distance, shadows, upscaler, anti-aliasing, texture filtering and the Advanced "
+                       "options at once. Potato: for weak PCs (nearer, smaller shadows, FSR 1, no bloom or depth of "
+                       "field). Original: as on the console. High and Savage: further and sharper, for faster PCs.", false))
+            graphics_preset_apply(cur);
+    }
     bool fs = g_settings.fullscreen;
     if (opt_toggle("Fullscreen", &fs, false, "Fills the screen. Also: F11, Alt+Enter or Cmd+Ctrl+F.")) {
         g_settings.fullscreen = fs;
@@ -791,18 +821,23 @@ static void tab_display(void) {
             g_settings.hud_size = sizes[cur];
     }
     {   // Draw distance (runtime/draw_distance.c)
-        static const char *const names[DRAWDIST_COUNT] = {"Original", "Medium", "High"};  // (DRAWDIST_*)
-        int cur = g_settings.draw_distance;
-        if (opt_choice("Draw distance", &cur, names, DRAWDIST_COUNT, DRAWDIST_ORIGINAL,
-                       "How far out grass, trees, rocks, buildings and enemies appear. Higher costs more CPU and GPU time.",
+        // (Potato first, the nearest: order maps a row to DRAWDIST_*)
+        static const char *const names[DRAWDIST_COUNT] = {"Potato", "Original", "High", "Savage"};  // (ini: medium, high)
+        static const int order[DRAWDIST_COUNT] = {DRAWDIST_POTATO, DRAWDIST_ORIGINAL, DRAWDIST_MEDIUM, DRAWDIST_HIGH};
+        int cur = 1;
+        for (int i = 0; i < DRAWDIST_COUNT; i++)
+            if (order[i] == g_settings.draw_distance) cur = i;
+        if (opt_choice("Draw distance", &cur, names, DRAWDIST_COUNT, 1,
+                       "How far out grass, trees, rocks, buildings and enemies appear. Higher costs more CPU and GPU time. "
+                       "Potato: nearer than on the console, for weak PCs.",
                        true))
-            g_settings.draw_distance = cur;
+            g_settings.draw_distance = order[cur];
     }
     {   // Frame rate (runtime/hle/framepace.c)
         static const int fps[] = FPS_CHOICES;
         enum { NF = sizeof fps / sizeof fps[0] };
         static char names_buf[NF][32];
-        const char *names[NF];
+        const char *names[NF + 1];  // (the rates, then Match display)
         int cur = 0, def = 0;
         for (int i = 0; i < NF; i++) {
             if (fps[i]) snprintf(names_buf[i], sizeof names_buf[i], tr("%d FPS"), fps[i]);
@@ -810,6 +845,8 @@ static void tab_display(void) {
             if (fps[i] == g_settings.fps_limit) cur = i;
             if (fps[i] == FPS_DEFAULT) def = i;
         }
+        names[NF] = "Match display";
+        if (g_settings.fps_display) cur = NF;
         std::string desc = tr("How many pictures a second the game draws. The game itself runs at the same speed at "
                               "every rate (the console runs it at 30). Higher rates need a faster computer. Menus, "
                               "cutscenes and conversations use it too, and videos play at their own speed. Off: as "
@@ -821,7 +858,11 @@ static void tab_display(void) {
                                            "pictures, and one that divides it evenly is the smoothest."), hz);
             desc += std::string("\n\n") + line;
         }
-        if (opt_choice("Frame rate", &cur, names, NF, def, desc.c_str(), false)) g_settings.fps_limit = fps[cur];
+        if (opt_choice("Frame rate", &cur, names, NF + 1, def, desc.c_str(), false)) {
+            g_settings.fps_display = cur == NF;
+            if (g_settings.fps_display) settings_fps_for_display(winsize_refresh_rate());
+            else g_settings.fps_limit = fps[cur];
+        }
     }
     {   // VSync (settings.h VSYNC_*: runtime/nvn/vulkan/device.c, runtime/hle/framepace.c)
         static const char *const names[VSYNC_COUNT] = {"On", "Fast", "Adaptive", "Off"};
@@ -947,11 +988,23 @@ static void tab_display(void) {
                "The game's own FXAA, which smooths edges as the 3D image is drawn into the final picture, as on the "
                "console. Off: a sharper image with more jagged edges; use it to replace FXAA with SMAA or TAA above, "
                "or to keep the image crisp at a high resolution.");
+    // the wet lighting passes' sun glare (maxwell/translate.c maxwell_wet_lighting)
+    opt_toggle("Wet grass fix", &g_settings.wet_fix, false,
+               "In rain with the sun out, the game's wet lighting blows grass and roofs out to white. On: most of that "
+               "glare goes, and the grass keeps its colour and a soft sheen. Applies from the next start.");
 #endif
+    {   // supersampling (nvn/output_scale.c): applies at once
+        static const char *const rscale[] = {"50%", "75%", "100%", "125%", "150%", "200%"};
+        opt_choice("Render scale", &g_settings.render_scale, rscale, RSCALE_COUNT, RSCALE_100,
+                   "Below 100% the game renders at a lower resolution than the window and is scaled up to it: faster, "
+                   "but blurrier (50% is a quarter of the pixels, for weak graphics cards). Above 100% it renders at a "
+                   "higher resolution and is scaled down to it, the cleanest way to smooth edges and shimmer. 200% is "
+                   "4x the pixels: for fast graphics cards.", false);
+    }
 #ifndef __APPLE__
     {   // Anisotropic filtering and sharpening (Vulkan: vulkan/textures.c sampler_aniso, vulkan/exec.c scene_post)
         static const char *const aniso[] = {"Off", "2x", "4x", "8x", "16x"};
-        opt_choice("Anisotropic filtering", &g_settings.anisotropy, aniso, 5, 0,
+        opt_choice("Anisotropic filtering", &g_settings.anisotropy, aniso, 5, 1,
                    "Keeps the textures of ground, paths and walls sharp where you look along them into the distance. "
                    "Off: the game's own filtering, as on the console. 16x is the sharpest and costs very little on a PC "
                    "graphics card.", false);
@@ -974,11 +1027,19 @@ static void tab_display(void) {
                "draws only once (the save file's screenshot, the pause menu's background, terrain tiles) still wait "
                "for theirs. Off: every draw waits for its shader, a short stutter the first time an effect appears.");
     // shadow resolution (its own block)
-    static const char *shadow[] = {"Console (896)", "High (2048)", "Ultra (4096)", "Extreme (8192)"};
-    opt_choice("Shadow resolution", &g_settings.shadow_res, shadow, SHADOW_COUNT, SHADOW_CONSOLE,
+    // (Potato first, the smallest: order maps a row to SHADOW_*)
+    static const char *shadow[] = {"Potato (448)", "Console (896)", "High (2048)", "Ultra (4096)", "Savage (8192)"};
+    static const int shadow_order[SHADOW_COUNT] = {SHADOW_POTATO, SHADOW_CONSOLE, SHADOW_HIGH, SHADOW_ULTRA, SHADOW_EXTREME};
+    int shadow_row = 1;
+    for (int i = 0; i < SHADOW_COUNT; i++)
+        if (shadow_order[i] == g_settings.shadow_res) shadow_row = i;
+    opt_choice("Shadow resolution", &shadow_row, shadow, SHADOW_COUNT, 1,
                "The size of the maps the sun's shadows are drawn from. Console: the game's own, 896 x 896. High (2048), "
-               "Ultra (4096) and Extreme (8192) give sharper shadow edges (Link, trees, buildings) for more GPU time "
-               "and video memory (Ultra: about 100 MB, Extreme: about 400 MB).");
+               "Ultra (4096) and Savage (8192) give sharper shadow edges (Link, trees, buildings) for more GPU time "
+               "and video memory (Ultra: about 100 MB, Savage: about 400 MB). Savage is very heavy where there is a lot "
+               "of foliage: in a forest it can cut the frame rate to a third, even on a fast GPU. Ultra or lower suits "
+               "most GPUs. Potato (448): softer edges, for weak GPUs.");
+    g_settings.shadow_res = shadow_order[shadow_row];
     {   // the game's font sheets enlarged (runtime/nvn/text_upscale.c): read when the game starts
         static const char *text[] = {"Off", "2x", "4x"};
         int cur = g_settings.sharper_text / 2;
@@ -988,6 +1049,43 @@ static void tab_display(void) {
                        "original art: the shapes are kept, but they aren't exactly as drawn. 4x takes a moment longer to "
                        "start and uses more video memory.", false))
             g_settings.sharper_text = cur * 2;
+    }
+    {   // the menus' one-channel textures enlarged the same way (runtime/nvn/text_upscale.c): read when the game starts
+        static const char *menus[] = {"Off", "2x", "4x"};
+        int cur = g_settings.sharper_menus / 2;
+        if (opt_choice("Sharper menus", &cur, menus, 3, 0,
+                       "Makes the shapes and frames of the game's menus (panels, borders, icons drawn in one colour) "
+                       "sharper on 1440p and 4K screens. It takes effect the next time you start the game. This is an "
+                       "upscale made on your computer from the game's own art, not Nintendo's original art.", false))
+            g_settings.sharper_menus = cur * 2;
+    }
+    // Advanced (vulkan/exec.c: bloom's and the distance blur's draws; CMD_REPORT_COUNTER: dynamic resolution)
+    opt_section("Advanced");
+    opt_toggle("Bloom", &g_settings.bloom, true, "The glow around bright light: the sun, fire, glowing eyes. Off: a "
+               "little faster, a flatter image.");
+    opt_toggle("Depth of field", &g_settings.depth_of_field, true, "The game blurs the far distance a little. Off: sharp "
+               "out to the horizon, a little faster.");
+    opt_toggle("Dynamic resolution", &g_settings.dynamic_res, true, "As on the console: the game lowers its 3D "
+               "resolution (down to 1280x720 before upscaling) while frames take long, and raises it again after. "
+               "Off: always the full resolution. On with the Potato preset.");
+    if (gamelib_compat())  // (runtime/gamelib.h: a CPU without FMA instructions; simd.h simd_fma_unfused)
+        opt_toggle("Fast math", &g_settings.fast_fma, true, "Your CPU has no FMA instructions, so the game's math runs "
+                   "in software. On: about 10% faster; some results round a tiny bit differently from the console, "
+                   "which doesn't show in play. Off: exact, as on the console.");
+    {   // the air's haze (services/fs.c haze_patch): the game reads it at the start
+        static const int haze[] = HAZE_CHOICES;
+        enum { NH = sizeof haze / sizeof haze[0] };
+        static char buf[NH][16];
+        const char *names[NH];
+        int cur = NH - 1;
+        for (int i = 0; i < NH; i++) {
+            snprintf(buf[i], sizeof buf[i], "%d%%", haze[i]);
+            names[i] = buf[i];
+            if (haze[i] == g_settings.haze) cur = i;
+        }
+        if (opt_choice("Haze", &cur, names, NH, NH - 1, "How hazy the air is. Lower: clearer distances. It takes effect "
+                       "the next time you start the game.", false))
+            g_settings.haze = haze[cur];
     }
 #ifndef __APPLE__
     tab_colour();
@@ -1006,6 +1104,8 @@ static void tab_audio(void) {
                "The game's echo in caves, dungeons and big rooms.");
     opt_toggle("Movie audio", &g_settings.movie_audio, true,
                "Sound in the game's movies (the opening and the ending). Applies the next time a movie starts.");
+    opt_toggle("Mute in background", &g_settings.mute_unfocused, false,
+               "Mute audio while the game window is in the background or minimized.");
     opt_end();
 }
 
@@ -1091,9 +1191,28 @@ static void tab_about(void) {
                    "Up and down, as a percentage of the mouse sensitivity."))
         g_settings.mouse_sens_y = sens_y / 100.0f;
     toggle("Invert mouse Y", &g_settings.mouse_invert_y);
+    opt_toggle("Mouse bow aiming", &g_settings.pc_bow, false,
+               "Hold the right mouse button to draw and aim your bow, click the left button to fire, and let go of the "
+               "right button to put it away. While this is on, the right mouse button no longer raises the shield: "
+               "bind the shield to another key under Key bindings.");
     ImGui::Spacing();
     header("Controls");
     opt_toggle("Controller rumble", &g_settings.rumble, true, "Vibrate the controller during play.");
+    opt_toggle("Free camera with both sticks", &g_settings.freecam_sticks, true,
+               "Clicking both sticks together turns the free camera on and off. Home on the keyboard always does. "
+               "While it's on: F8 or d-pad up changes the filter, [ and ] or d-pad left and right the hour, F7 or "
+               "d-pad down saves a picture in the screenshots folder.");
+    opt_toggle("Controller camera speed", &g_settings.stick_cam_on, false,
+               "The right stick turns the camera faster than the game allows, at the two speeds below.");
+    if (g_settings.stick_cam_on) {
+        float cx = (float)g_settings.stick_cam_x, cy = (float)g_settings.stick_cam_y;
+        if (opt_slider("Left and right speed", &cx, STICK_CAM_MIN, STICK_CAM_MAX, 25, STICK_CAM_DEFAULT, "%g%%",
+                       "100% is the game's own speed."))
+            g_settings.stick_cam_x = (int)cx;
+        if (opt_slider("Up and down speed", &cy, STICK_CAM_MIN, STICK_CAM_MAX, 25, STICK_CAM_DEFAULT, "%g%%",
+                       "100% is the game's own speed."))
+            g_settings.stick_cam_y = (int)cy;
+    }
     controls_bindings_draw(ImGui::GetFontSize() / 34);
     ImGui::Spacing();
     header("Menu");
@@ -1119,6 +1238,73 @@ static void perf_cell(const char *fmt, float v) {
     if (v < 0) ImGui::TextDisabled("-");
     else ImGui::Text(fmt, v);
 }
+// ------------------------------------------------------------------ photo mode (hle/freecam.c, hle/photo.c)
+// While the free camera is on: a strip at the bottom with its keys (or the controller's). A picture saved: a notice
+// with a thumbnail in the bottom-right corner for a few seconds. Neither is in the picture (that is the game image).
+extern "C" bool freecam_active(void);
+extern "C" int photo_saved_seq(const char **path);
+static void photo_overlay_draw(ImGuiIO &io, float scale) {
+    ImDrawList *dl = ImGui::GetForegroundDrawList();
+    if (freecam_active()) {
+        const char *keys = input_last_device() == DEVICE_PAD
+            ? tr("Both stick clicks: exit   Left stick: move   ZR / ZL: up, down   D-pad up: filter   D-pad left / right: hour   D-pad down: picture")
+            : tr("Home: exit   W A S D: move   E / Q: up, down   Shift / Ctrl: faster, slower   F8: filter   [ ]: hour   F7: picture");
+        float fs = ImGui::GetFontSize() * 0.8f;
+        ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0, keys);
+        float pad = 10 * scale, y = io.DisplaySize.y - ts.y - 3 * pad;
+        ImVec2 a((io.DisplaySize.x - ts.x) * 0.5f - pad, y - pad), b((io.DisplaySize.x + ts.x) * 0.5f + pad, y + ts.y + pad);
+        dl->AddRectFilled(a, b, IM_COL32(0, 0, 0, 150), 6 * scale);
+        dl->AddText(ImGui::GetFont(), fs, ImVec2(a.x + pad, y), IM_COL32(240, 240, 230, 255), keys);
+    }
+    static int seen = -1;
+    static uint64_t tex;
+    static int tw, th;
+    static double shown_at;
+    const char *path;
+    int seq = photo_saved_seq(&path);
+    if (seen < 0) seen = seq;
+    double now = SDL_GetTicks() / 1000.0;
+    if (seq != seen) {
+        seen = seq;
+        shown_at = now;
+#ifndef __APPLE__
+        if (tex) vk_imgui_texture_free(tex), tex = 0;
+        int w, h;
+        unsigned char *px = rt_image_rgba(path, &w, &h);
+        if (px && w > 0 && h > 0) {  // (a thumbnail 240 wide, nearest pixel: it only has to be recognisable)
+            tw = 240, th = (int)((int64_t)h * tw / w);
+            if (th < 1) th = 1;
+            std::vector<unsigned char> small((size_t)tw * th * 4);
+            for (int y = 0; y < th; y++)
+                for (int x = 0; x < tw; x++)
+                    memcpy(&small[((size_t)y * tw + x) * 4], px + (((size_t)y * h / th) * w + (size_t)x * w / tw) * 4, 4);
+            for (size_t i = 3; i < small.size(); i += 4) small[i] = 255;
+            tex = vk_imgui_texture_rgba(small.data(), tw, th);
+        }
+        if (px) rt_image_free(px);
+#endif
+    }
+    if (!shown_at) return;
+    double age = now - shown_at;
+    if (age > 3.0) {
+#ifndef __APPLE__
+        if (tex) vk_imgui_texture_free(tex), tex = 0;
+#endif
+        shown_at = 0;
+        return;
+    }
+    int alpha = age < 2.5 ? 255 : (int)(255 * (3.0 - age) / 0.5);
+    const char *msg = tr("Picture saved");
+    float pad = 10 * scale, iw = tex ? 240 * scale : 0, ih = tex ? th * scale * 240 / tw : 0;
+    ImVec2 ts = ImGui::CalcTextSize(msg);
+    float w = fmaxf(iw, ts.x) + 2 * pad, h = ih + ts.y + 3 * pad;
+    ImVec2 a(io.DisplaySize.x - w - 20 * scale, io.DisplaySize.y - h - 20 * scale), b(a.x + w, a.y + h);
+    dl->AddRectFilled(a, b, IM_COL32(0, 0, 0, alpha * 170 / 255), 6 * scale);
+    if (tex) dl->AddImage((ImTextureID)tex, ImVec2(a.x + pad, a.y + pad), ImVec2(a.x + pad + iw, a.y + pad + ih),
+                          ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, alpha));
+    dl->AddText(ImVec2(a.x + pad, a.y + ih + 2 * pad), IM_COL32(240, 240, 230, alpha), msg);
+}
+
 static void perf_overlay_draw(ImGuiIO &io, float scale) {
     PerfStats s;
     perfmon_snapshot(&s);
@@ -1497,6 +1683,60 @@ static void act_overlay_draw(ImGuiIO &io, float scale) {
 extern "C" void rec_drain(void);  // (runtime/nvn/vulkan/record.c)
 #endif
 
+// Native-style selector prompt. Draw-only: input still belongs to the game.
+static void quick_sort_hint_draw(const ImGuiIO &io) {
+    int kind = g_settings.button_icons;
+    if (kind <= ICONS_AUTO || kind >= ICONS_COUNT) {
+        int family = input_pad_family();
+        kind = input_last_device() == DEVICE_KEYBOARD ? ICONS_KEYBOARD :
+            family == 1 ? ICONS_XBOX : family == 2 ? ICONS_PLAYSTATION : ICONS_NINTENDO;
+    }
+    bool keyboard = kind == ICONS_KEYBOARD;
+    int family = kind == ICONS_XBOX ? 1 : kind == ICONS_PLAYSTATION ? 2 : 0;
+    float canvas = fminf(io.DisplaySize.x / 1280.f, io.DisplaySize.y / 720.f);
+    float scale = canvas / 1.5f, fs = 32 * scale, radius = 15 * scale, gap = 10 * scale;
+    // The native right-stick guide ends seven canvas units above center;
+    // reserve a 12-unit gap and an 18-unit half-row below it.
+    float y = io.DisplaySize.y * .5f + 23 * canvas;
+    const char *action = tr("Sort");
+    ImFont *font = g_hint_font ? g_hint_font : g_menu_font;
+    for (const char *p = action; *p;) {
+        unsigned code; int n = ImTextCharFromUtf8(&code, p, nullptr);
+        if (!n) break;
+        p += n;
+        if (!font->FindGlyphNoFallback((ImWchar)code)) { font = g_menu_font; break; }
+    }
+    const char *button = keyboard ? tr(bind_key_label(g_bind_key[BIND_X])) :
+        tr(bind_pad_label(g_bind_pad[BIND_X], family));
+    // E042 means the Switch X action. Its pixels already follow the same
+    // device, bindings and modded font as the game's other text prompts.
+    const char *native = g_hint_buttons ? "\xee\x81\x82" : nullptr;
+    ImVec2 text = font->CalcTextSizeA(fs, FLT_MAX, 0, action);
+    ImVec2 key = g_font->CalcTextSizeA(fs * .65f, FLT_MAX, 0, button);
+    float badge = native ? 44 * scale : fmaxf(radius * 2, key.x + 14 * scale);
+    float x = (io.DisplaySize.x - text.x - gap - badge) * .5f;
+    ImDrawList *draw = ImGui::GetForegroundDrawList();
+    auto label = [&](ImVec2 pos, ImU32 color) {
+        int start = draw->VtxBuffer.Size;
+        draw->AddText(font, fs, pos, color, action);
+        // Native layouts italicize the text; button artwork stays upright.
+        for (int j = start; font == g_hint_font && j < draw->VtxBuffer.Size; j++)
+            draw->VtxBuffer[j].pos.x += (pos.y + fs * .8f - draw->VtxBuffer[j].pos.y) * .18f;
+    };
+    label(ImVec2(x + scale, y - fs * .5f + scale), IM_COL32(0, 0, 0, 85));
+    label(ImVec2(x, y - fs * .5f), IM_COL32(245, 246, 232, 255));
+    float bx = x + text.x + gap;
+    if (native) {
+        draw->AddText(g_hint_buttons, 54 * scale, ImVec2(bx - 5 * scale, y - 27 * scale),
+                      IM_COL32(245, 246, 232, 255), native);
+    } else {
+        ImVec2 a(bx, y - radius), b(bx + badge, y + radius);
+        draw->AddRectFilled(a, b, IM_COL32(245, 246, 232, 255), keyboard ? 4 * scale : radius);
+        draw->AddText(g_font, fs * .65f, ImVec2(a.x + (badge - key.x) * .5f, y - key.y * .5f),
+                      IM_COL32(25, 28, 24, 255), button);
+    }
+}
+
 // Everything menu_render draws, in one place: menu_render_needed (the caller's cue to drain the recorder first) and
 // menu_render (which decides again, and drains itself) must agree on it. The pointer's hover box, the console and the
 // gyro drag were missing here: their frames went to the command buffer while the recorder thread was still filling it.
@@ -1508,7 +1748,7 @@ static bool menu_draws(bool *pointer_hover = NULL, float *pointer_box = NULL, bo
     if (pointer_hover) *pointer_hover = hover;
     if (gyro_show) *gyro_show = gyro_on;
     return g_open.load() || g_kbd.load() == 1 || g_sizes.load() || console_is_open() || gyro_on || hover ||
-           g_settings.perf_overlay != PERF_OFF || act_log_enabled();
+           g_settings.perf_overlay != PERF_OFF || act_log_enabled() || quick_inventory_sort_hint();
 }
 
 bool menu_render_needed(void) { return menu_draws(); }
@@ -1592,6 +1832,8 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
 
     if (g_settings.perf_overlay != PERF_OFF) perf_overlay_draw(io, scale);
     if (act_log_enabled()) act_overlay_draw(io, scale);
+    if (!open && !kbd && !sizes && !con && quick_inventory_sort_hint()) quick_sort_hint_draw(io);
+    if (!open && !kbd && !sizes && !con) photo_overlay_draw(io, scale);
     if (!open && !kbd && !sizes && !con && gyro_scene_show) gyro_scene_draw(io, scale, gyro_scene);
 
     if (open) {

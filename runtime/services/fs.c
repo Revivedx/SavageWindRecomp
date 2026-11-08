@@ -730,6 +730,59 @@ static size_t hud_letters_flyt(const uint8_t *b, size_t n, uint8_t *out, int *pa
     return w;
 }
 
+// Gameplay > Sharper menus: every BNTX in an archive, its one-channel textures of one level added to the list
+// (runtime/nvn/text_upscale.c). BRTI: the header's 0x16 mip count, 0x1c format, 0x24 width and height, 0x70 where the
+// table of its levels' data is, from the BNTX's start.
+static void menu_tex_bntx(const uint8_t *b, size_t n) {
+    for (size_t p = 0x20; p + 0x78 <= n; p += 8) {
+        if (memcmp(b + p, "BRTI", 4)) continue;
+        uint32_t format = *(const uint32_t *)(b + p + 0x1c), w = *(const uint32_t *)(b + p + 0x24), h = *(const uint32_t *)(b + p + 0x28);
+        uint16_t mips = *(const uint16_t *)(b + p + 0x16);
+        uint64_t ptrs = *(const uint64_t *)(b + p + 0x70);
+        if (mips != 1 || (format >> 8 != 0x1d && format >> 8 != 0x02) || ptrs + 8 > n || w < 16 || h < 16) continue;
+        uint64_t at = *(const uint64_t *)(b + ptrs), bytes = (uint64_t)w * h / (format >> 8 == 0x1d ? 2 : 1);
+        if (at + bytes <= n) menu_tex_add(b + at, bytes);
+    }
+}
+
+static void menu_tex_arc(const uint8_t *a, size_t an, int depth) {
+    if (an < 0x20 || memcmp(a, "SARC", 4)) return;
+    uint32_t cnt = *(const uint16_t *)(a + 0x1A), dd = *(const uint32_t *)(a + 0xC);
+    for (uint32_t i = 0; i < cnt && 0x20 + (i + 1) * 16 <= an; i++) {
+        uint32_t s = *(const uint32_t *)(a + 0x20 + i * 16 + 8), e = *(const uint32_t *)(a + 0x20 + i * 16 + 12);
+        if (e <= s || dd + e > an || e - s < 8) continue;
+        const uint8_t *f = a + dd + s;
+        if (!memcmp(f, "BNTX", 4)) menu_tex_bntx(f, e - s);
+        else if (depth < 3 && !memcmp(f, "SARC", 4)) menu_tex_arc(f, e - s, depth + 1);
+        else if (depth < 3 && !memcmp(f, "Yaz0", 4)) {
+            size_t un = 0;
+            uint8_t *u = yaz0_unpack(f, e - s, &un);
+            if (u) menu_tex_arc(u, un, depth + 1);
+            free(u);
+        }
+    }
+}
+
+static void menu_tex_scan(void) {
+    static bool done;
+    if (done || !g_settings.sharper_menus || R != &images[0]) return;
+    done = true;
+    for (int k = 0; k < R->rom_nfiles; k++) {
+        const char *path = R->rom_files[k].path;
+        // (most of the menus' art is in the boot pack, the rest in Layout/)
+        if (strcmp(path, "Pack/Bootup.pack") && (strncmp(path, "Layout/", 7) || !strstr(path, ".sblarc"))) continue;
+        size_t zn = R->rom_files[k].size, an = 0;
+        uint8_t *z = malloc(zn), *arc = NULL;
+        if (z && romfs_image_pread(R->img, z, zn, R->rom_files[k].off) == (ssize_t)zn) {
+            if (!memcmp(z, "SARC", 4)) menu_tex_arc(z, zn, 0);
+            else if ((arc = yaz0_unpack(z, zn, &an))) menu_tex_arc(arc, an, 0);
+        }
+        free(z);
+        free(arc);
+    }
+    LOG("[fs] sharper menus: %d textures found\n", menu_tex_count());
+}
+
 // Gameplay > Sharper text: the font sheets in the game's own archives, so that their textures can be told from others
 // (runtime/nvn/text_upscale.c). External_00 is left out: glyphs.c redraws those, and Ancient_00's sheet is too small.
 static void text_sheets_scan(void) {
@@ -987,10 +1040,24 @@ static void rstb_name(const char *path, char *out, size_t cap) {
     if (dot && dot[1] == 's' && strcmp(dot, ".sarc") && !strchr(dot, '/')) memmove(dot + 1, dot + 2, strlen(dot + 2) + 1);
 }
 
+// Room the model loader gets on top of the ResourceSizeTable's size for each model (.bfres), in KB. The loader makes a
+// temporary heap from a model's entry and allocates one node per material from it without checking for failure; in
+// the Gerudo desert (the Wasteland Tower save) a few models (FldObj_RuinStatueKnight_A-03) overflow it, and the
+// allocation returns NULL: "access violation: write at 0x8" about one load in five. 64 KB held for 20 loads in a row
+// (unpatched, a crash came within 7 loads each time); 256 KB held for 20. SAVAGEWIND_RSTB_MODEL_KB=n changes it, 0 leaves the table as it is.
+#define RSTB_MODEL_KB 64
+
+static uint32_t rstb_model_grow(void) {
+    const char *e = getenv("SAVAGEWIND_RSTB_MODEL_KB");
+    long kb = e && *e ? atol(e) : RSTB_MODEL_KB;
+    return kb > 0 ? (uint32_t)kb << 10 : 0;
+}
+
 static void rstb_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
     static const char rstb_path[] = "System/Resource/ResourceSizeTable.product.srsizetable";
     bool merged = R == &images[0] && romfs_has_dlc_merged();
-    if (!R->ngrown && !merged) return;
+    uint32_t model_grow = R == &images[0] ? rstb_model_grow() : 0;
+    if (!R->ngrown && !merged && !model_grow) return;
     int k = 0;
     while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, rstb_path)) k++;
     char host[1200];
@@ -999,13 +1066,18 @@ static void rstb_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
         return;
     }
     if (k == R->rom_nfiles) { LOG("[fs] voices: no %s, %d bigger banks left as they are\n", rstb_path, R->ngrown); return; }
-    if (overlay_file(rstb_path, host, sizeof host)) {
-        LOG("[fs] voices: the overlay folder replaces the ResourceSizeTable: %d bigger banks left to it\n", R->ngrown);
-        return;
-    }
-    size_t zn = R->rom_files[k].size, n = 0;
+    // A mod's table (the overlay folder's) needs the same growth: without it the game can't load what grew here
+    struct stat over;
+    bool from_overlay = overlay_file(rstb_path, host, sizeof host) && !stat(host, &over);
+    size_t zn = from_overlay ? (size_t)over.st_size : R->rom_files[k].size, n = 0;
     uint8_t *z = malloc(zn), *d = NULL;
-    if (romfs_image_pread(R->img, z, zn, R->rom_files[k].off) == (ssize_t)zn) d = yaz0_unpack(z, zn, &n);
+    if (from_overlay) {
+        FILE *f = fopen(host, "rb");
+        if (f && fread(z, 1, zn, f) == zn) d = yaz0_unpack(z, zn, &n);
+        if (f) fclose(f);
+    } else if (romfs_image_pread(R->img, z, zn, R->rom_files[k].off) == (ssize_t)zn) {
+        d = yaz0_unpack(z, zn, &n);
+    }
     free(z);
     uint32_t ncrc = 0, nname = 0;
     if (d && n >= 12) memcpy(&ncrc, d + 4, 4), memcpy(&nname, d + 8, 4);
@@ -1042,6 +1114,20 @@ static void rstb_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
         }
         LOG("[fs] the RomFS has the DLC merged into it: %d ResourceSizeTable entries grown to the DLC's (%llu KB)\n",
             dlc_changed, (unsigned long long)(dlc_added >> 10));
+    }
+    if (model_grow) {
+        int mg = 0;
+        char name[300];
+        for (int i = 0; i < R->rom_nfiles; i++) {
+            size_t pl = strlen(R->rom_files[i].path);
+            if (pl < 8 || strcmp(R->rom_files[i].path + pl - 7, ".sbfres")) continue;
+            rstb_name(R->rom_files[i].path, name, sizeof name);
+            uint32_t *e = rstb_entry(d, ncrc, nname, name), v;
+            if (!e) continue;
+            memcpy(&v, e, 4), v += model_grow, memcpy(e, &v, 4);
+            mg++;
+        }
+        LOG("[fs] ResourceSizeTable: %d model entries grown by %u KB\n", mg, model_grow >> 10);
     }
     size_t bn = 0;
     free(R->rstb_blob);
@@ -1136,6 +1222,7 @@ static void rom_index(void) {
     }
     hud_letters_patch(fmeta, foff, fsz);
     text_sheets_scan();
+    menu_tex_scan();
     if (R == &images[0] && !atomic_load_explicit(&inventory_clip_layout_valid, memory_order_acquire))
         LOG("[fs] Inventory clip layout unavailable; using the game's clipping\n");
     rstb_patch(fmeta, foff, fsz);
@@ -1223,6 +1310,17 @@ const char *romfs_file_at(uint64_t off) {
     return NULL;
 }
 
+// The last RomFS files the game read, newest last, for a crash report (runtime/dispatch.c): a file that makes the
+// game's parser run out of its resource heap names itself only this way (#363).
+static const char *recent_files[8];
+static _Atomic unsigned recent_n;
+int fs_recent_files(const char **out, int max) {
+    unsigned n = atomic_load(&recent_n);
+    int k = 0;
+    for (unsigned i = n > 8 ? n - 8 : 0; i < n && k < max; i++) out[k++] = recent_files[i & 7];
+    return k;
+}
+
 // ------------------------------------------------------------------ IStorage (raw RomFS image)
 typedef struct { RomImage *img; uint64_t size; } Storage;
 
@@ -1247,6 +1345,7 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
             static const char *last;
             if (path && path != last) {
                 last = path;
+                recent_files[atomic_load(&recent_n) & 7] = path, atomic_fetch_add(&recent_n, 1);
                 if (getenv("SAVAGEWIND_LOG_FILES")) LOG("[fs] read %s\n", path);
             }
             // SAVAGEWIND_LOG_STREAMS=1: every read of a stream's header (a .bfstm read from its start: the sound

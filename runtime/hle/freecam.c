@@ -5,6 +5,7 @@
 // nearly stops (framepace.c) and the keyboard and mouse move the camera instead of Link (hle/input.c):
 // W/S/A/D forward, back, left, right; E/Q up, down; Shift faster, Ctrl slower; the mouse turns it. On a controller
 // both stick clicks turn it on and off; left stick moves, right stick turns, ZR / ZL up / down, R faster, L slower.
+// Its photo extras (a filter, the hour, a picture) are in hle/photo.c.
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -13,6 +14,8 @@
 
 #include "../hle.h"
 #include "../platform.h"
+#include "../framepace.h"
+#include "../game_sites.h"
 
 static bool active;
 static float eye[3], yaw, pitch;   // yaw around +y from +z, pitch up from the horizon (radians)
@@ -59,7 +62,17 @@ void rt_lookat(uint64_t cam) {
 
 void freecam_toggle(void) {
     if (!active && !seen) return;  // (no view camera yet: the title screen)
+    // Only in play: not while the game is paused (its menus, the map, a pause for loading), on the start screen or
+    // while the overlay has the controls. Turning it off always works.
+    extern bool menu_input_captured(void);
+    bool paused = g_site.pause_state && LD32(g_site.pause_state) != 0;
+    if (!active && (paused || framepace_title_ui() || framepace_loading_ui() || menu_input_captured())) {
+        LOG("[freecam] not now: the game is paused or in a menu\n");
+        return;
+    }
     active = !active;
+    extern void photo_reset(bool on);  // (hle/photo.c: its filter and hour go with the free camera)
+    photo_reset(active);
     if (active) {
         memcpy(eye, seen_eye, sizeof eye);
         float dx = seen_at[0] - seen_eye[0], dy = seen_at[1] - seen_eye[1], dz = seen_at[2] - seen_eye[2];
@@ -107,6 +120,8 @@ void freecam_frame(void) {
             at = -1;
         }
     }
+    extern void photo_frame(void);  // (hle/photo.c) the hour asked for, or put back
+    photo_frame();
     if (!active) return;
     uint64_t now = plat_now_ns();
     float dt = last_ns ? (float)((now - last_ns) / 1e9) : 0;

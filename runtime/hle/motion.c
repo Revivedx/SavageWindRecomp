@@ -9,7 +9,8 @@
 //
 // Where the motion comes from: the controller's gyroscope and accelerometer (SDL3 sensor events: DualShock 4,
 // DualSense, Switch Pro, Joy-Con, Steam Deck...), fused into an orientation on the main thread (the gyroscope turns it,
-// gravity slowly corrects its tilt), with a Linux DSU fallback through the same fusion; or, while the tilt key is
+// gravity slowly corrects its tilt), with Linux fallbacks through the same fusion: the Steam Deck's own sensors read
+// from its HID node when Steam Input's gamepad has none (runtime/deck_imu.c), then DSU; or, while the tilt key is
 // held, the mouse rotates a virtual controller. Letting go retains its orientation so the mouse can be repositioned;
 // the recenter key levels it. A scripted run is another source.
 //
@@ -42,6 +43,7 @@
 #include "../pc_gyro.h"
 #include "../pc_gyro_scene.h"
 #ifdef __linux__
+#include "../deck_imu.h"
 #include "../dsu.h"
 #endif
 
@@ -148,9 +150,11 @@ static struct {
     bool enabled;
     uint64_t acc_time, gyro_time, acc_ts, gyro_ts;
     float acc[3];
-    int source;  // 0 none, 1 SDL, 2 DSU
+    int source;  // 0 none, 1 SDL, 2 DSU, 3 the Steam Deck's HID
     unsigned epoch, dsu_generation;
+    bool steam_pad;  // the gamepad is Steam Input's (Valve's vendor ID) and has no sensors
     DsuClient dsu;
+    DeckImu deck;
 } backend;
 
 static bool native_fresh(uint64_t now) {
@@ -161,8 +165,8 @@ static bool native_fresh(uint64_t now) {
 // Called under g_lock. Never carry bias, gravity, timestamps or integration across devices.
 static void select_motion(int source) {
     if (backend.source == source) return;
-    LOG("[motion] source: %s -> %s\n", backend.source == 1 ? "SDL" : backend.source == 2 ? "DSU" : "none",
-        source == 1 ? "SDL" : source == 2 ? "DSU" : "none");
+    static const char *const names[] = {"none", "SDL", "DSU", "Steam Deck"};
+    LOG("[motion] source: %s -> %s\n", names[backend.source], names[source]);
     backend.source = source;
     backend.epoch++;
     g.sensors = source != 0, g.started = false, g.gyro_ts = 0;
@@ -191,6 +195,7 @@ void motion_pad_opened(SDL_Gamepad *pad) {
     pthread_mutex_lock(&g_lock);
 #ifdef __linux__
     backend.enabled = on;
+    backend.steam_pad = !on && SDL_GetGamepadVendor(pad) == 0x28de;
     backend.acc_time = backend.gyro_time = backend.acc_ts = backend.gyro_ts = 0;
     select_motion(0);
     g.sensors = false;
@@ -217,7 +222,7 @@ void motion_pad_opened(SDL_Gamepad *pad) {
 void motion_pad_closed(void) {
     pthread_mutex_lock(&g_lock);
 #ifdef __linux__
-    backend.enabled = false;
+    backend.enabled = backend.steam_pad = false;
     backend.acc_time = backend.gyro_time = 0;
     if (backend.source == 1) select_motion(0);
 #else
@@ -405,13 +410,23 @@ static void dsu_sample(const DsuPacket *p, uint32_t generation, void *user) {
     // Microseconds -> ns, without overflowing on a malformed timestamp.
     sensor_gyro(p->gyro, p->timestamp <= UINT64_MAX / 1000 ? p->timestamp * 1000 : 0);
 }
+
+static void deck_sample(const DsuPacket *p, uint32_t generation, void *user) {
+    (void)generation, (void)user;
+    select_motion(3);
+    sensor_accel(p->acc);
+    sensor_gyro(p->gyro, p->timestamp * 1000);
+}
 #endif
 
 void motion_poll(void) {
 #ifdef __linux__
-    static bool initialized, enabled, force;
+    static bool initialized, enabled, force, deck_on;
     if (!initialized) {
         initialized = true;
+        // SAVAGEWIND_DECK_IMU=0: not the Steam Deck's own sensors
+        deck_on = !getenv("SAVAGEWIND_DECK_IMU") || atoi(getenv("SAVAGEWIND_DECK_IMU"));
+        deck_imu_init(&backend.deck);
         const char *mode = getenv("SAVAGEWIND_DSU");
         enabled = !mode || strcmp(mode, "off");
         force = mode && !strcmp(mode, "on");
@@ -427,7 +442,12 @@ void motion_poll(void) {
         LOG("[motion] SDL motion timeout; trying fallback\n");
         select_motion(0);
     }
-    if (enabled && (force || !native)) dsu_poll(&backend.dsu, now, dsu_sample, NULL);
+    // With Steam Input's gamepad (no sensors), the Deck's own sensors, unless DSU is asked for (SAVAGEWIND_DSU=on)
+    bool deck = deck_on && !native && !force && backend.steam_pad;
+    if (deck) deck_imu_poll(&backend.deck, now, deck_sample, NULL);
+    else if (backend.deck.fd >= 0) deck_imu_close(&backend.deck);
+    if (backend.source == 3 && !backend.deck.fresh) select_motion(0);
+    if (enabled && (force || (!native && !backend.deck.fresh))) dsu_poll(&backend.dsu, now, dsu_sample, NULL);
     else if (enabled && backend.dsu.fd >= 0) dsu_close(&backend.dsu);
     if (backend.source == 2 && !backend.dsu.fresh) select_motion(0);
     pthread_mutex_unlock(&g_lock);

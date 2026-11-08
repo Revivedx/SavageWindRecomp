@@ -63,7 +63,13 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_cb(VkDebugUtilsMessageSeverityFlagBi
         return VK_FALSE;
     }
     static int n;
-    if (sev >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT && n++ < 500) LOG("[vk] %s\n", d->pMessage);
+    if (sev >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT && n++ < 500) {
+        LOG("[vk] %s\n", d->pMessage);
+        // SAVAGEWIND_VK_VALIDATION_BT=1: the call stack of each error (with SAVAGEWIND_VK_RECORDER=0 it is the caller's)
+        static int bt = -1;
+        if (bt < 0) bt = getenv("SAVAGEWIND_VK_VALIDATION_BT") != NULL;
+        if (bt && sev >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) plat_print_backtrace();
+    }
     return VK_FALSE;
 }
 
@@ -444,6 +450,13 @@ static bool radv_vega(void) {
            (!strncmp(r, "VEGA", 4) && strncmp(r, "VEGAM", 5));
 }
 
+// RADV from a Mesa before 26.2 (its driverVersion is Mesa's own major.minor.patch, "26.2.0-devel" included)
+static bool radv_before_mesa_26_2(void) {
+    if (!strstr(g_vk.props.deviceName, "(RADV ")) return false;
+    uint32_t v = g_vk.props.driverVersion, major = VK_VERSION_MAJOR(v), minor = VK_VERSION_MINOR(v);
+    return major < 26 || (major == 26 && minor < 2);
+}
+
 // RADV on an RDNA 4 chip (RX 9060 / 9070): "AMD Radeon RX 9070 XT (RADV GFX1201)"
 static bool radv_gfx12(void) { return strstr(g_vk.props.deviceName, "(RADV GFX12") != NULL; }
 bool vk_shader_fp16(void) { return g_vk.fp16; }
@@ -552,6 +565,19 @@ static void create_device(void) {
     }
     g_vk.custom_border = has_ext(ep, ne, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
     if (g_vk.custom_border) ext[n_ext++] = VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME;
+    {   // NVN (as GL) takes a flat output from a primitive's last vertex, Vulkan from its first: flat-interpolated values
+        // (material and instance indices, flat normals) came from the wrong vertex. VK_EXT_provoking_vertex's last-vertex
+        // mode where the driver has it; SAVAGEWIND_VK_PROVOKING_LAST=0: Vulkan's first vertex, as before.
+        const char *e = getenv("SAVAGEWIND_VK_PROVOKING_LAST");
+        if (has_ext(ep, ne, VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME) && !(e && !strcmp(e, "0"))) {
+            VkPhysicalDeviceProvokingVertexFeaturesEXT pv = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT};
+            VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &pv};
+            vkGetPhysicalDeviceFeatures2(g_vk.phys, &q);
+            g_vk.provoking_last = pv.provokingVertexLast;
+        }
+        if (g_vk.provoking_last) ext[n_ext++] = VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME;
+        LOG("[vk] provoking vertex: %s\n", g_vk.provoking_last ? "last (as NVN)" : "first (no VK_EXT_provoking_vertex last mode)");
+    }
     g_vk.calibrated = has_ext(ep, ne, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
     if (g_vk.calibrated) ext[n_ext++] = VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME;
     g_vk.divisor = has_ext(ep, ne, VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
@@ -635,15 +661,15 @@ static void create_device(void) {
     // the driver links them fast. SAVAGEWIND_VK_NO_GPL=1: whole pipelines, as before. RADV on RDNA 4 (Mesa 26.0, an
     // RX 9070 XT) hung the GPU ~46 s in, at the title screen, with them and ran without (#228); SAVAGEWIND_VK_GPL=1
     // turns them on there anyway.
-    // RADV on Vega (Renoir, Mesa 25.2): the world came out white with them, correct without (#291: two players on a Vega 8
-    // / Renoir; a Legion Go S, not a Vega, had it too and is not covered); SAVAGEWIND_VK_GPL=1 turns them on there anyway.
-    bool gpl_off = (win_legacy || radv_gfx12() || radv_vega()) && !getenv("SAVAGEWIND_VK_GPL");
+    // RADV from a Mesa before 26.2: the world came out white with them, correct without, whatever the chip (#291, #332:
+    // Vega 8 / Renoir and RX 580 on Mesa 25.2.8, an RX 580 on 26.0.8, a Legion Go S on SteamOS). On 26.2 they draw right
+    // (RX 560, Renoir, the Steam Deck, RX 7900 XTX, 890M); SAVAGEWIND_VK_GPL=1 turns them on anyway.
+    bool gpl_off = (win_legacy || radv_gfx12() || radv_before_mesa_26_2()) && !getenv("SAVAGEWIND_VK_GPL");
     bool gpl = !getenv("SAVAGEWIND_VK_NO_GPL") && !gpl_off && has_ext(ep, ne, VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME) &&
                has_ext(ep, ne, VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
     // when each frame reached the display (SAVAGEWIND_LOG_PRESENT, tests: "present timing" below)
     bool pwait = getenv("SAVAGEWIND_LOG_PRESENT") && has_ext(ep, ne, VK_KHR_PRESENT_ID_EXTENSION_NAME) &&
                  has_ext(ep, ne, VK_KHR_PRESENT_WAIT_EXTENSION_NAME);
-    free(ep);
 
     // features the backend relies on (all present on current desktop drivers)
     VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT fbl_have = {
@@ -685,7 +711,9 @@ static void create_device(void) {
         ext[n_ext++] = VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME;
         ext[n_ext++] = VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME;
     }
-    LOG("[vk] graphics pipeline libraries %s\n", g_vk.gpl ? "on (shaders compiled apart from the fixed state)" : "off");
+    LOG("[vk] graphics pipeline libraries %s\n", g_vk.gpl ? "on (shaders compiled apart from the fixed state)"
+                                                 : gpl_off && radv_before_mesa_26_2() ? "off (RADV before Mesa 26.2)"
+                                                                                      : "off");
     g_vk.feedback_loop = fbl && fbl_have.attachmentFeedbackLoopLayout && lr_have.dynamicRenderingLocalRead;
 #ifdef VK_KHR_unified_image_layouts
     uil = uil && uil_have.unifiedImageLayouts;
@@ -795,8 +823,11 @@ static void create_device(void) {
     VkPhysicalDeviceMemoryPriorityFeaturesEXT priority_on = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PRIORITY_FEATURES_EXT, .memoryPriority = VK_TRUE,
         .pNext = next_feature};
-    VkPhysicalDeviceFeatures2 f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-                                   .pNext = g_vk.memory_priority ? (void *)&priority_on : next_feature};
+    if (g_vk.memory_priority) next_feature = &priority_on;
+    VkPhysicalDeviceProvokingVertexFeaturesEXT pv_on = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT,
+                                                         .provokingVertexLast = VK_TRUE, .pNext = next_feature};
+    if (g_vk.provoking_last) next_feature = &pv_on;
+    VkPhysicalDeviceFeatures2 f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = next_feature};
     VkPhysicalDeviceFeatures *b = &f.features, *h = &have.features;
     b->independentBlend = h->independentBlend;
     b->dualSrcBlend = h->dualSrcBlend;
@@ -958,6 +989,7 @@ static void create_device(void) {
     VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f, .queueCreateInfoCount = 1,
                              .pQueueCreateInfos = &qi, .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext};
     VK_CHECK(vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.dev));
+    free(ep);  // (read up to here: extended dynamic state and the FSR 4 checks above, #488)
     fsr_api_probe(g_vk.dev, g_vk.phys);  // (logs what AMD's FSR DLLs offer this device; a no-op without them)
     vkGetDeviceQueue(g_vk.dev, g_vk.qfam, 0, &g_vk.queue);
     g_vk.present_queue = g_vk.queue;
@@ -1848,8 +1880,9 @@ static bool acquire_test_timeout(void) {
     return from > 0 && f >= (uint64_t)from && f < (uint64_t)(from + n);
 }
 
+static bool present_on_recorder(void);
 static VkResult acquire_image(VkSemaphore sem, uint32_t *img) {
-    bool threaded = present_threaded();
+    bool threaded = present_threaded() || present_on_recorder();  // (another thread presents: sc_lock, short waits)
     uint64_t t0 = SDL_GetTicksNS();
     for (;;) {  // (threaded: a short timeout at a time, not holding the swapchain while the present thread needs it)
         uint64_t tc = SDL_GetTicksNS();
@@ -1868,9 +1901,44 @@ static VkResult acquire_image(VkSemaphore sem, uint32_t *img) {
     }
 }
 
+// A plain present made by the recorder thread (record.c), in its turn right after the frame's submission: the
+// translating thread queues it and goes on to the next frame instead of waiting for the recorder to have submitted
+// (rec_wait_submitted, ~9 % of that thread at Rito on 4 cores) and for the present itself. The recorder owns the queue;
+// sc_lock keeps it off the swapchain while the translating thread acquires. A present that says the swapchain is out
+// of date or suboptimal is seen at the next one (rec_present_stale), which makes the swapchain again.
+// SAVAGEWIND_VK_PRESENT_RECORDER=0: presents on the calling thread after its submission, as before.
+#define RECP_N 64
+static struct { VkSwapchainKHR sc; VkSemaphore sem; uint32_t img; } recp[RECP_N];
+static unsigned recp_n;
+static _Atomic int rec_present_stale;
+static void rec_present_run(void *arg) {
+    const __typeof__(recp[0]) *q = arg;
+    VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &q->sem,
+                           .swapchainCount = 1, .pSwapchains = &q->sc, .pImageIndices = &q->img};
+    pthread_mutex_lock(&sc_lock);
+    VkResult r = queue_present(g_vk.queue, &pi);
+    pthread_mutex_unlock(&sc_lock);
+    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) atomic_store(&rec_present_stale, 1);
+}
+static bool present_on_recorder(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("SAVAGEWIND_VK_PRESENT_RECORDER");
+        on = rec_on() && !(e && !strcmp(e, "0"));
+        LOG("[vk] plain presents made by %s\n", on ? "the recorder thread, after the frame's submission" : "the calling thread");
+    }
+    return on;
+}
+
 // Present window image img once sem is signalled (kind, seq: frame generation's pair and the frame's submission, see
 // present_wait_turn). Returns false when the swapchain must be made again.
 static bool present_image(uint32_t img, VkSemaphore sem, int kind, uint64_t seq) {
+    if (!present_threaded() && kind == PRES_PLAIN && present_on_recorder()) {
+        __typeof__(recp[0]) *q = &recp[recp_n++ % RECP_N];
+        *q = (__typeof__(recp[0])){g_vk.swapchain, sem, img};
+        rec_custom(rec_present_run, q);
+        return !atomic_exchange(&rec_present_stale, 0);
+    }
     if (!present_threaded()) {
         VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &sem,
                                .swapchainCount = 1, .pSwapchains = &g_vk.swapchain, .pImageIndices = &img};
@@ -2168,6 +2236,13 @@ extern volatile int g_fg_want;
 extern volatile int g_fg_active;  // (framepace.c: the game draws every other presented frame)
 TexBackend *vk_fg_generate(NvnTexture *t, TexBackend *b);
 static uint64_t gen_frames;
+#ifdef SW_PGO_GENERATE
+static void write_runtime_profile(void) {
+    extern int __llvm_profile_write_file(void);
+    if (__llvm_profile_write_file()) LOG("[pgo] could not write the runtime profile\n");
+}
+#endif
+
 static char fg_real_shot[256];  // (SAVAGEWIND_FG_SHOT_AT: the game's frame after a generated one saved)
 
 void vk_fg_wait_idle(void) {
@@ -2207,6 +2282,113 @@ bool control_camera_view(float view[12]) {
     return true;
 }
 
+// ---- the boot picture (ui/launcher.mm boot_splash_*): the start screen's background, moving, in the window from the
+// game's start until its title screen shows, in place of ~11 s of black (launcher.mm says where they come from). A
+// thread draws it while Savage Wind loads and the game has presented nothing (the main thread is busy in boot, then
+// waits for events); from the game's first present on, present_locked draws it instead of the game's frames. The
+// game's title screen is up ~2.5 s before anything of it shows (its world loads, black): the picture stays until the
+// draws a frame have settled (BOOT_SETTLE_NS within 15 % of each other, at least BOOT_MIN_DRAWS: the title's world is
+// drawn), then fades into the game's frames over BOOT_FADE_NS. A loading screen (a start straight into the world) ends
+// it too, and BOOT_MAX_NS. Off with SAVAGEWIND_HIDDEN (tests) and SAVAGEWIND_NO_BOOT_SPLASH.
+void boot_splash_open(void);
+bool boot_splash_active(void);
+void boot_splash_draw(void *cmd, uint32_t w, uint32_t h, float alpha);
+void boot_splash_close(void);
+uint64_t vk_draw_total(void);  // (exec.c)
+#define BOOT_SETTLE_NS 400000000ull
+#define BOOT_FADE_NS 500000000ull
+#define BOOT_MAX_NS 30000000000ull
+#define BOOT_MIN_DRAWS 20
+static bool boot_hold;          // (GPU lock) the picture is up
+static float boot_alpha = 1;    // (GPU lock) how much of it (fading out: below 1)
+static atomic_bool boot_drawing;  // the thread draws it (until the game's first present)
+static uint64_t boot_hold_since, boot_title_at, boot_settled_at, boot_fade_at, boot_draws_last, boot_draws_prev;
+
+static void boot_splash_frame(void) {  // (GPU lock held)
+    static const float black[4] = {0, 0, 0, 1};
+    vk_end_pass();
+    if (!vk_frame_begin(black)) return;
+    boot_splash_draw(vk_frame_cmd(), g_vk.sc_extent.width, g_vk.sc_extent.height, 1);
+    vk_frame_end(NULL);
+}
+
+static int boot_splash_thread(void *arg) {
+    (void)arg;
+    while (atomic_load(&boot_drawing)) {
+        gpu_lock();
+        if (atomic_load(&boot_drawing)) boot_splash_frame();
+        gpu_unlock();
+        SDL_Delay(16);  // (~60 a second: the picture moves slowly)
+    }
+    return 0;
+}
+
+static bool window_hidden;  // (made hidden: ui_window_init_hidden) until ui_window_show
+static void ui_window_show(void) {
+    if (window && window_hidden && !getenv("SAVAGEWIND_HIDDEN")) SDL_ShowWindow(window);
+    window_hidden = false;
+}
+
+// (runtime/main.c, before each boot; the main thread) the picture up, and the window shown with it
+void boot_splash_start(void) {
+    if (!window) return;  // (made later, in ui_run: Linux and macOS)
+    if (!getenv("SAVAGEWIND_HIDDEN") && !getenv("SAVAGEWIND_NO_BOOT_SPLASH")) {
+        gpu_lock();
+        boot_splash_open();
+        boot_hold = true, boot_alpha = 1, boot_hold_since = SDL_GetTicksNS();
+        boot_title_at = boot_settled_at = boot_fade_at = boot_draws_prev = 0;
+        boot_draws_last = vk_draw_total();
+        boot_splash_frame();
+        gpu_unlock();
+        LOG("[boot] picture up (%.0f ms to make)\n", (SDL_GetTicksNS() - boot_hold_since) / 1e6);
+        atomic_store(&boot_drawing, true);
+        SDL_Thread *th = SDL_CreateThread(boot_splash_thread, "boot picture", NULL);
+        if (th) SDL_DetachThread(th);
+        else atomic_store(&boot_drawing, false);
+    }
+    ui_window_show();
+}
+
+static bool boot_held(void) {  // (GPU lock held: present_locked)
+    if (!boot_hold) return false;
+    atomic_store(&boot_drawing, false);  // (the game presents: the picture goes with its frames now)
+    uint64_t now = SDL_GetTicksNS();
+    if (boot_fade_at) {  // fading into the game's frames
+        boot_alpha = 1.0f - (float)(now - boot_fade_at) / (float)BOOT_FADE_NS;
+        if (boot_alpha <= 0) {
+            boot_hold = false, boot_alpha = 1;
+            LOG("[boot] picture gone %.2f s after the start (frame %llu)\n", (now - boot_hold_since) / 1e9,
+                (unsigned long long)total_frames);
+        }
+        return boot_hold;
+    }
+    // the draws of the frame before this one
+    uint64_t total = vk_draw_total(), d = total - boot_draws_last;
+    boot_draws_last = total;
+    if (!boot_title_at && framepace_title_ui()) {
+        boot_title_at = now;
+        LOG("[boot] title screen up %.2f s after the start (frame %llu)\n", (now - boot_hold_since) / 1e9,
+            (unsigned long long)total_frames);
+    }
+    if (boot_title_at) {
+        bool steady = d >= BOOT_MIN_DRAWS && boot_draws_prev && d * 100 >= boot_draws_prev * 85 &&
+                      d * 85 <= boot_draws_prev * 100;
+        if (!steady) boot_settled_at = 0;
+        else if (!boot_settled_at) boot_settled_at = now;
+        boot_draws_prev = d;
+    }
+    const char *why = boot_settled_at && now - boot_settled_at > BOOT_SETTLE_NS ? "title screen drawn"
+                    : framepace_loading_ui()                                    ? "loading screen"
+                    : now - boot_hold_since > BOOT_MAX_NS                       ? "time limit"
+                                                                                : NULL;
+    if (why) {
+        LOG("[boot] picture fading %.2f s after the start (frame %llu, %s, %llu draws a frame)\n",
+            (now - boot_hold_since) / 1e9, (unsigned long long)total_frames, why, (unsigned long long)d);
+        boot_fade_at = now;
+    }
+    return boot_hold;
+}
+
 static void present_locked(NvnTexture *t) {
     g_last_presented = t;
     TexBackend *b = vk_tex(t, true);
@@ -2216,9 +2398,11 @@ static void present_locked(NvnTexture *t) {
     { SW_ZONE("present/end_pass"); vk_end_pass(); }
     g_present_split[1] += SDL_GetTicksNS() - t0;
     t0 += pso_wait();  // (not the acquire's time)
+    bool held = boot_held();
+    if (!held && boot_splash_active()) boot_splash_close();  // (the game's own frames from here on)
     // Frame generation: the frame between the last one and this (exec.c vk_fg_generate), presented first
     TexBackend *gen;
-    { SW_ZONE("present/frame_gen"); gen = vk_fg_generate(t, b); }
+    { SW_ZONE("present/frame_gen"); gen = held ? NULL : vk_fg_generate(t, b); }
     {   // (measuring) SAVAGEWIND_FG_TEST=1: the frame made, not presented
         static int test = -1;
         if (test < 0) test = getenv("SAVAGEWIND_FG_TEST") ? atoi(getenv("SAVAGEWIND_FG_TEST")) : 0;
@@ -2252,6 +2436,11 @@ static void present_locked(NvnTexture *t) {
         renderer_set_scale((float)sx, (float)sy);
         renderer_set_scene_scale((float)os.scene_sx, (float)os.scene_sy);
         renderer_set_shadow_size(shadow_map_size(total_frames + 1));
+        if (held && !boot_fade_at) {  // (the game's frame is still black: the boot picture in its place)
+            boot_splash_draw(vk_frame_cmd(), g_vk.sc_extent.width, g_vk.sc_extent.height, 1);
+            vk_frame_end(NULL);
+            goto presented;
+        }
         VkCommandBuffer cb = vk_cmd();
         float pv[8] = {renderer_origin_lower_left() ? 1.0f : 0.0f, 0, 0, 0, crop[0], crop[1], crop[2], crop[3]};
         memcpy(g_shot_crop, crop, sizeof crop);
@@ -2291,6 +2480,8 @@ static void present_locked(NvnTexture *t) {
             cb = vk_cmd();
         }
         { SW_ZONE("present/draw"); vk_present_draw(cb, b, (float)vx, (float)vy, (float)vw, (float)vh, pv); }
+        if (held)  // (fading into the game's title screen: the boot picture over it, less each frame)
+            boot_splash_draw(vk_frame_cmd(), g_vk.sc_extent.width, g_vk.sc_extent.height, boot_alpha);
         static long menu_at = -1;
         if (menu_at < 0) menu_at = getenv("SAVAGEWIND_MENU_AT") ? atol(getenv("SAVAGEWIND_MENU_AT")) : 0;
         if (menu_at && (long)total_frames + 1 == menu_at) { extern void menu_test_open(void); menu_test_open(); }
@@ -2340,10 +2531,23 @@ presented:
     extern uint64_t framepace_script_frame(uint64_t presented);
     uint64_t script_frame = framepace_script_frame(total_frames);  // (SAVAGEWIND_SCRIPT_CLOCK: 30ths of a second)
     input_frame(script_frame);
+#ifdef SW_PGO_GENERATE
+    {   // a training run played by hand ends however the window is closed: keep the profile on disk as it goes
+        static unsigned pgo_frames;
+        if (++pgo_frames % 3000 == 0) write_runtime_profile();
+    }
+#endif
     {   // SAVAGEWIND_EXIT_AT=<frame> (counted as SAVAGEWIND_INPUT): end the run there
         static long exit_at = -1;
         if (exit_at < 0) exit_at = getenv("SAVAGEWIND_EXIT_AT") ? atol(getenv("SAVAGEWIND_EXIT_AT")) : 0;
-        if (exit_at && (long)script_frame >= exit_at) { fflush(stderr); _exit(0); }
+        if (exit_at && (long)script_frame >= exit_at) {
+#ifdef SW_PGO_GENERATE
+            // The scripted exit skips atexit, so finish the runtime training profile explicitly.
+            write_runtime_profile();
+#endif
+            fflush(stderr);
+            _exit(0);
+        }
     }
     static long slow_ms = -1;
     if (slow_ms < 0) slow_ms = getenv("SAVAGEWIND_SLOW_FRAME_MS") ? atol(getenv("SAVAGEWIND_SLOW_FRAME_MS")) : 0;
@@ -2475,6 +2679,15 @@ presented:
             if (*next == ',') next++;
         }
     }
+    {   // A picture asked for (runtime/hle/photo.c, the free camera's F7; test scripts' `shot`): this game image
+        extern char g_window_shot_request[256];
+        if (g_window_shot_request[0]) {
+            extern void photo_saved(const char *path);  // (hle/photo.c: its own pictures get a notice)
+            renderer_save_texture_tex(b, g_window_shot_request);
+            photo_saved(g_window_shot_request);
+            g_window_shot_request[0] = 0;
+        }
+    }
     {   // F12 (runtime/hle/input.c): every other game image -> build/frames/rec_N.png until F12 again (catches flicker
         // too short to see; the saves slow the game down meanwhile)
         extern volatile int g_record_frames;
@@ -2510,6 +2723,19 @@ presented:
         if (last_fps_time > 0)
             LOG("[vk] t=%.1f frame %llu %.1f fps max %.0fms (%s)\n", now, (unsigned long long)total_frames,
                 frames / (now - last_fps_time), max_gap * 1000.0, renderer_stats());
+        {   // Video memory over its budget: the driver moves memory out to system RAM, and draws that sample it there
+            // crawl. On an MX350 (2 GB) that took a pass seconds after half an hour of play and Windows reset the GPU
+            // (#332). Said when it starts and when it ends, with the numbers, so a slow-frame report shows it.
+            static bool over;
+            uint64_t usage, budget, size;
+            vram_device_local(&usage, &budget, &size);
+            if (budget && (usage > budget) != over) {
+                over = !over;
+                LOG("[vram] t=%.1f video memory %s its budget: %llu MB in use of %llu MB (%llu MB on the card)\n", now,
+                    over ? "over" : "back under", (unsigned long long)(usage >> 20), (unsigned long long)(budget >> 20),
+                    (unsigned long long)(size >> 20));
+            }
+        }
         if (gen_frames && last_fps_time > 0)
             LOG("[fg] %.1f generated frames/s: %.1f presented\n", gen_frames / (now - last_fps_time),
                 (frames + gen_frames) / (now - last_fps_time));
@@ -2567,7 +2793,7 @@ void ui_window_init(void) {
     int win_w = (int)lroundf(ws.w / density), win_h = (int)lroundf(ws.h / density);
     if (getenv("SAVAGEWIND_WINDOW")) sscanf(getenv("SAVAGEWIND_WINDOW"), "%dx%d", &win_w, &win_h);
     SDL_WindowFlags wflags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
-    if (getenv("SAVAGEWIND_HIDDEN")) wflags |= SDL_WINDOW_HIDDEN;
+    if (getenv("SAVAGEWIND_HIDDEN") || window_hidden) wflags |= SDL_WINDOW_HIDDEN;
     SDL_PropertiesID props = SDL_CreateProperties();
     SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING, "Savage Wind");
     SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, win_w);
@@ -2597,6 +2823,12 @@ void ui_window_init(void) {
 }
 
 SDL_Window *ui_window(void) { return window; }
+
+// (runtime/main.c: a start straight into the game) the window made hidden, shown with the boot picture's first frame
+void ui_window_init_hidden(void) {
+    if (!window) window_hidden = true;
+    ui_window_init();
+}
 
 void vk_wait_ready(void) {  // (a guest thread: the window and device are the main thread's, ui_run)
     while (!atomic_load(&ui_ready)) SDL_Delay(1);
@@ -2645,6 +2877,7 @@ static void window_event_log(const SDL_Event *e) {
 
 int ui_run(void) {
     ui_window_init();
+    ui_window_show();  // (made hidden for a boot picture that couldn't be shown)
     input_focus_update(window);
     atomic_store(&ui_ready, true);
     for (;;) {

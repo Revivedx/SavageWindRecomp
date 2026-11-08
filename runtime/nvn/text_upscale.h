@@ -10,6 +10,11 @@ int text_sheet_count(void);
 // The texture memory at texels is one of those sheets
 bool text_sheet_known(const uint8_t *texels, size_t bytes);
 
+// Gameplay > Sharper menus: the same for the menus' one-channel textures in the game's layout archives
+void menu_tex_add(const uint8_t *texels, size_t bytes);
+int menu_tex_count(void);
+bool menu_tex_known(const uint8_t *texels, size_t bytes);
+
 // src: w x h texels, tightly packed. dst: room for (w * scale) x (h * scale) texels. scale: 2 to 4.
 // edges: they are coverage, whose edges can be drawn again; without it they are only interpolated.
 bool text_upscale(const uint8_t *src, uint32_t w, uint32_t h, uint32_t scale, bool edges, uint8_t *dst);

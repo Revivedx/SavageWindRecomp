@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "vk.h"
+#include "vram.h"
 #include "../../prof.h"
 #include "record.h"
 #include "shaders.h"
@@ -88,7 +89,11 @@ static VkFmt fmt_of(uint32_t f) {
     case 0x4A: return (VkFmt){VK_FORMAT_BC4_SNORM_BLOCK};
     case 0x4B: return (VkFmt){VK_FORMAT_BC5_UNORM_BLOCK};
     // 0x4C = signed RGTC2; SAVAGEWIND_BC5_UNORM=1 decodes it unsigned (see metal.m / notes/PLAN.md)
-    case 0x4C: return (VkFmt){getenv("SAVAGEWIND_BC5_UNORM") ? VK_FORMAT_BC5_UNORM_BLOCK : VK_FORMAT_BC5_SNORM_BLOCK};
+    case 0x4C: {
+        static int unorm = -1;
+        if (unorm < 0) unorm = getenv("SAVAGEWIND_BC5_UNORM") != NULL;
+        return (VkFmt){unorm ? VK_FORMAT_BC5_UNORM_BLOCK : VK_FORMAT_BC5_SNORM_BLOCK};
+    }
     case 0x4D: return (VkFmt){VK_FORMAT_BC7_UNORM_BLOCK};
     case 0x4E: return (VkFmt){VK_FORMAT_BC7_SRGB_BLOCK};
     case 0x4F: return (VkFmt){VK_FORMAT_BC6H_SFLOAT_BLOCK};
@@ -170,8 +175,8 @@ static bool format_is_float(VkFormat f) {  // (uncompressed: these can hold NaN 
 //             HUD and menus are drawn sharp at any window size
 //   RS_SCENE  the 3D scene's targets (1600x900 docked, and their fractions): the internal resolution, the window's
 //             with the upscaler off, smaller by the upscaler's factor with it on (exec.c upscales at the composite)
-//   RS_SHADOW shadow maps (BOTW's sun cascades: D16 896x896x3): Video > Shadow resolution, a width (2048 to 8192) they
-//             are made at instead of the game's; never smaller than the game's (output_scale.c shadow_map_size). Also
+//   RS_SHADOW shadow maps (BOTW's sun cascades: D16 896x896x3): Video > Shadow resolution, a width (448 for Potato,
+//             2048 to 8192) they are made at instead of the game's (output_scale.c shadow_map_size). Also
 //             their half-size copy (R16 448x448x3, the max of each 2x2), at the same factor: water and the other
 //             forward-shaded surfaces take their shadows from it (issue #101)
 static float g_rs[4][2] = {{1, 1}, {1, 1}, {1, 1}, {1, 1}};
@@ -186,7 +191,8 @@ void renderer_set_shadow_size(uint32_t n) {  // (never past what the GPU can mak
 uint64_t renderer_present_count(void);
 static float rs_want(const TexBackend *b, int axis) {  // the scale a texture of b's group is wanted at now
     if (b->rs_group != RS_SHADOW) return g_rs[b->rs_group][axis];
-    return b->guest_w && g_shadow_size > b->guest_w ? (float)g_shadow_size / (float)b->guest_w : 1.0f;  // (square)
+    // (square) bigger than the game's (High and up), or smaller (Potato); 0: the game's own
+    return b->guest_w && g_shadow_size && g_shadow_size != b->guest_w ? (float)g_shadow_size / (float)b->guest_w : 1.0f;
 }
 static bool rs_stale(const TexBackend *b) {
     return b->rs_group && (b->sx != rs_want(b, 0) || b->sy != rs_want(b, 1));
@@ -469,6 +475,23 @@ static void create_image(NvnTexture *t, TexBackend *b) {
         th *= b->text_scale;
         // Mip levels down to the sheet's own size. Text is often drawn smaller than an enlarged sheet (at 1440p, about
         // 1.25 times the original): without them, its edges alias into stair steps on every diagonal.
+        levels = b->text_scale == 4 ? 3 : 2;
+    }
+    // Gameplay > Sharper menus: the same for the menus' one-channel textures (shapes, frames, glows), not small ones
+    // (nothing to gain)
+    b->menu_tex = false;
+    if (!b->text_scale && g_settings.sharper_menus && !b->gpu_bc4 && (t->format == 0x49 || t->format == 0x01) && t->pool &&
+        t->layout.levels == 1 && t->width >= 16 && t->height >= 16 && t->addr >= t->pool->storage &&
+        t->addr + sheet_bytes <= t->pool->storage + t->pool->size &&
+        menu_tex_known((const uint8_t *)(uintptr_t)t->addr, sheet_bytes)) {
+        b->text_scale = (uint8_t)g_settings.sharper_menus;
+        b->menu_tex = true;
+        static int nlog;
+        if (nlog++ < 400) LOG("[vk] sharper menus: %ux%u (nvn %#x) enlarged %ux\n", t->width, t->height, t->format, b->text_scale);
+        b->bc4_cpu = t->format == 0x49;
+        vf = VK_FORMAT_R8_UNORM;
+        tw *= b->text_scale;
+        th *= b->text_scale;
         levels = b->text_scale == 4 ? 3 : 2;
     }
     if (!b->bc4_cpu && !format_supports(vf, need)) {
@@ -774,11 +797,36 @@ static bool keep_ok(TexBackend *b, uint64_t *bytes) {
     return ai.size <= KEEP_MAX_IMAGE;
 }
 
+// At most SAVAGEWIND_TEX_FREE_MAX images freed a frame (64), the oldest first: an area the game lets go of
+// released thousands of textures at once, all freed in one frame PARK_FRAMES later (TotK Recomp measured 333-422 ms
+// frames from such a sweep on a GTX 1050 Ti, its 166e5a7). SAVAGEWIND_TEX_FREE_MAX=<n> (0: no limit).
+static int expire_max = -1;
 static void idle_expire(void) {  // (gpu lock held)
     uint64_t now = renderer_present_count(), bytes;
+    if (expire_max < 0) {
+        const char *e = getenv("SAVAGEWIND_TEX_FREE_MAX");
+        expire_max = e ? atoi(e) : 64;
+        if (expire_max <= 0) expire_max = 1 << 30;
+    }
+    int freed = 0, due = 0;
+    uint64_t oldest = ~0ull;
+    for (int i = 0; i < g_nidle; i++)
+        if (!g_idle[i]->kept && now - g_idle[i]->idle_frame > PARK_FRAMES) {
+            due++;
+            if (g_idle[i]->idle_frame < oldest) oldest = g_idle[i]->idle_frame;
+        }
+    // (the list's order is not the release order: removals swap the last one in) the frames released in, oldest
+    // first, up to the one that brings the count to the limit
+    uint64_t upto = now - PARK_FRAMES - 1;
+    if (due > expire_max)
+        for (uint64_t f = oldest, n = 0; f <= now - PARK_FRAMES - 1; f++) {
+            for (int i = 0; i < g_nidle; i++) n += !g_idle[i]->kept && g_idle[i]->idle_frame == f;
+            if ((int)n >= expire_max) { upto = f; break; }
+        }
     for (int i = g_nidle - 1; i >= 0; i--) {
         TexBackend *b = g_idle[i];
-        if (b->kept || now - b->idle_frame <= PARK_FRAMES) continue;
+        if (b->kept || now - b->idle_frame <= PARK_FRAMES || b->idle_frame > upto || freed >= expire_max) continue;
+        freed++;
         if (!keep_ok(b, &bytes)) { free_backend(b); continue; }
         b->kept = true;
         b->kept_bytes = bytes;
@@ -791,6 +839,12 @@ static void idle_expire(void) {  // (gpu lock held)
             if (g_idle[i]->kept && (!old || g_idle[i]->idle_frame < old->idle_frame)) old = g_idle[i];
         if (!old) break;
         free_backend(old);
+    }
+    static uint64_t last_log;
+    if (due > expire_max && now - last_log > 600) {
+        last_log = now;
+        LOG("[tex] frame %llu: %d released images due, %d let go this frame (SAVAGEWIND_TEX_FREE_MAX)\n",
+            (unsigned long long)now, due, freed);
     }
 }
 
@@ -825,9 +879,90 @@ static void zombies_expire(void) {  // (gpu lock held)
     g_nzombies = k;
 }
 
+// ---- over the video memory budget (#332: an MX350's 2 GB filled up after half an hour of play, the driver moved
+// memory out to system RAM, a pass sampling it took seconds and Windows reset the GPU). Images the GPU never drew
+// into are a copy of guest memory: past VT_MIN_AGE frames unasked for, the oldest are let go, until VMA's allocations
+// in video memory are under VT_TARGET of the budget, at most VT_MAX_BYTES a check (re-uploads cost the render
+// thread). The next texture that asks for one makes it again and uploads it (tex_backend). Freed room in VMA's blocks
+// takes the game's next images, so the blocks stop growing past the budget. SAVAGEWIND_VRAM_TRIM=0: off;
+// SAVAGEWIND_VRAM_BUDGET_MB=<n>: a smaller budget (vram.c), to try it on a big card.
+#define VT_EVERY 30
+#define VT_MIN_AGE 240
+#define VT_TARGET 0.85
+#define VT_MAX_BYTES (128ull << 20)
+static uint64_t vt_evicted, vt_evicted_bytes, vt_back;
+
+static bool vt_evictable(const TexBackend *b, uint64_t now) {
+    return b->refs > 0 && b->image && b->mem && !b->gpu_owned && !b->evicted && !b->pending_rgba && !b->glyph_gen && !b->block &&
+           !b->bc4_cpu && !b->gpu_bc4 && !b->kept && b->samples <= 1 && now - b->seen_frame > VT_MIN_AGE;
+}
+
+static int vt_older(const void *x, const void *y) {
+    const TexBackend *a = *(TexBackend *const *)x, *b = *(TexBackend *const *)y;
+    return a->seen_frame < b->seen_frame ? -1 : a->seen_frame > b->seen_frame;
+}
+
+static void vram_trim(void) {  // (gpu lock held; once a frame from tex_backend)
+    static int off = -1;
+    if (off < 0) off = getenv("SAVAGEWIND_VRAM_TRIM") && !atoi(getenv("SAVAGEWIND_VRAM_TRIM"));
+    uint64_t now = renderer_present_count();
+    if (off || now % VT_EVERY) return;
+    // Either count: the budget is of VMA's blocks (usage), which hold free room between images let go (VMA gives a block
+    // back only once it is empty); room freed there takes the next images instead of a new block.
+    uint64_t allocated, budget, usage;
+    vram_device_local_allocated(&allocated, &budget);
+    vram_device_local(&usage, NULL, NULL);
+    uint64_t target = (uint64_t)(budget * VT_TARGET), held = usage > allocated ? usage : allocated;
+    if (!budget || held <= target) return;
+    static TexBackend **cand;
+    static int cap;
+    int n = 0;
+    uint64_t gpu_bytes = 0, cpu_bytes = 0, old_bytes = 0;  // (the log: what the images take, by kind)
+    for (int i = 0; i < g_nimages; i++) {
+        TexBackend *b = g_images[i];
+        uint64_t sz = b->mem_bytes > 0 ? (uint64_t)b->mem_bytes : 0;
+        if (b->gpu_owned) gpu_bytes += sz;
+        else cpu_bytes += sz;
+        if (!vt_evictable(b, now)) continue;
+        old_bytes += sz;
+        if (n == cap) { cap = cap ? cap * 2 : 1024; cand = realloc(cand, cap * sizeof *cand); }
+        cand[n++] = b;
+    }
+    qsort(cand, n, sizeof *cand, vt_older);
+    uint64_t freed = 0, need = held - target;
+    int k = 0;
+    for (; k < n && freed < need && freed < VT_MAX_BYTES; k++) {
+        TexBackend *b = cand[k];
+        VmaAllocationInfo ai;
+        vmaGetAllocationInfo(g_vk.vma, b->mem, &ai);
+        destroy_image(b);
+        b->evicted = true;
+        b->uploaded = false;
+        freed += ai.size;
+    }
+    vt_evicted += k;
+    vt_evicted_bytes += freed;
+    static uint64_t last_log;
+    if (k && (now - last_log > 600 || !last_log)) {
+        last_log = now;
+        LOG("[vram] frame %llu: %llu MB in blocks, %llu MB allocated, of %llu MB budget (images the GPU draws %llu MB, from guest memory %llu MB, "
+            "%llu MB of them unused for %d+ frames; the rest buffers and the heap copy): %d images (%llu MB) let go; %llu let "
+            "go so far (%llu MB), %llu made again\n", (unsigned long long)now, (unsigned long long)(usage >> 20),
+            (unsigned long long)(allocated >> 20), (unsigned long long)(budget >> 20), (unsigned long long)(gpu_bytes >> 20), (unsigned long long)(cpu_bytes >> 20),
+            (unsigned long long)(old_bytes >> 20), VT_MIN_AGE, k, (unsigned long long)(freed >> 20),
+            (unsigned long long)vt_evicted, (unsigned long long)(vt_evicted_bytes >> 20), (unsigned long long)vt_back);
+    }
+}
+
 static TexBackend *tex_backend(NvnTexture *t) {
     TexBackend *b = t->backend;
     if (b) {
+        b->seen_frame = renderer_present_count();
+        if (b->evicted) {  // (vram_trim) made again; vk_tex uploads it (uploaded false)
+            b->evicted = false;
+            create_image(t, b);
+            vt_back++;
+        }
         if (t->finalized) b->used_frame = renderer_present_count();
         if (rs_stale(b)) {  // output resolution changed: reallocate
             destroy_image(b);
@@ -841,6 +976,7 @@ static TexBackend *tex_backend(NvnTexture *t) {
         vk_collect_dead();
         zombies_expire();
         idle_expire();
+        vram_trim();
     }
     b = t->addr ? keyed_find(t) : NULL;
     if (b && b->kept) {  // (idle_expire) its contents, unless the CPU wrote that memory meanwhile
@@ -866,6 +1002,7 @@ static TexBackend *tex_backend(NvnTexture *t) {
         if (t->addr) keyed_add(b, t);
     }
     idle_remove(b);
+    b->seen_frame = renderer_present_count();
     b->refs++;
     t->backend = b;
     holders_add(t);
@@ -1120,7 +1257,8 @@ static void upload_text_sheet(VkCommandBuffer cb, NvnTexture *t, TexBackend *b, 
     uint64_t t0 = SDL_GetTicksNS();
     if (bc4) bc4_channel(blocks, l->wb, l->hb, stride, 0, plain);
     else memcpy(plain, blocks, (uint64_t)pw * ph);
-    if (!text_upscale(plain, pw, ph, s, bc4, big)) memset(big, 0, (uint64_t)dw * dh);
+    // (the menus' textures are shapes and glows, not a letter's coverage: interpolated only, no edges redrawn)
+    if (!text_upscale(plain, pw, ph, s, bc4 && !b->menu_tex, big)) memset(big, 0, (uint64_t)dw * dh);
     uint64_t at = 0;
     for (uint32_t lv = 0; lv < nlevels; lv++) {
         uint32_t w = dw >> lv, h = dh >> lv;
@@ -1502,6 +1640,20 @@ static ViewEnt view_tab[VIEW_TAB];
 // Views may still be referenced by submitted or pending work: destroyed once that has completed.
 void vk_views_forget(TexBackend *b) { views_forget(b); }
 uint32_t vk_view_gen;  // bumped whenever a cached view may be destroyed (exec.c's per-frame texture memo)
+// (crash report, record.c) the image a view is of, from the view table; no lock: the process is going down
+void vk_view_describe(VkImageView v, char *s, size_t n) {
+    if (!v) { snprintf(s, n, "(none)"); return; }
+    for (int i = 0; i < VIEW_TAB; i++) {
+        TexBackend *b = view_tab[i].b;
+        if (view_tab[i].view != v || !b) continue;
+        snprintf(s, n, "of a %ux%ux%u image, format %d, view type %d, %u levels, %u layers, %u samples%s", b->width, b->height,
+                 b->depth, (int)b->format, (int)b->base_type, b->levels, b->layers, b->samples,
+                 b->not_attachable ? ", not attachable" : "");
+        return;
+    }
+    snprintf(s, n, "not in the view table (a backend's own image, or destroyed)");
+}
+
 static void views_forget(TexBackend *b) {
     vk_view_gen++;
     for (int i = 0; i < VIEW_TAB; i++)
@@ -1594,10 +1746,10 @@ VkComponentMapping vk_sample_swizzle(NvnTexture *t, const NvnTextureView *v) {
 
 static bool is_bc(VkFormat f) { return f >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && f <= VK_FORMAT_BC7_SRGB_BLOCK; }
 
-// Attachment view for a draw into the blocks of level lv of BC image b, a texel a 4x4 block in format fmt (the game's
-// view: RGBA16 UINT for 8-byte blocks): a view of b->block_lv[lv], made for it, that vk_block_flush copies (or, Mali's
-// R8 images, decodes) into that level of b after the pass. lv > 0 only on the Mali R8 path (vk_view).
-static VkImageView block_view(TexBackend *b, VkFormat fmt, uint32_t lv) {
+// Attachment view for a draw into the blocks of level lv, layer or 3D slice z of BC image b, a texel a 4x4 block in format
+// fmt (the game's view: RGBA16 UINT for 8-byte blocks): a view of b->block_lv[lv], made for it, that vk_block_flush
+// copies (or, Mali's R8 images, decodes) into that level and slice of b after the pass.
+static VkImageView block_view(TexBackend *b, VkFormat fmt, uint32_t lv, uint32_t z) {
     if (lv >= 16 || lv >= b->levels) return VK_NULL_HANDLE;
     TexBackend *s = b->block_lv[lv];
     if (s && s->format != fmt) {
@@ -1636,6 +1788,7 @@ static VkImageView block_view(TexBackend *b, VkFormat fmt, uint32_t lv) {
     }
     b->block = s;
     b->block_level = (uint8_t)lv;
+    b->block_slice = (uint16_t)z;
     b->block_pending = true;
     return vk_image_view(s, VK_IMAGE_VIEW_TYPE_2D, fmt, 0, 1, 0, 1, IDENTITY, VK_IMAGE_ASPECT_COLOR_BIT);
 }
@@ -1647,8 +1800,10 @@ void vk_block_flush(VkCommandBuffer cb, TexBackend *b) {
     if (!s) return;
     if (b->bc4_cpu) { bc4_decode(cb, b); return; }
     vk_full_barrier(cb);
+    bool vol = b->base_type == VK_IMAGE_VIEW_TYPE_3D;  // (a 3D image's slice is a depth offset, an array's a layer)
     VkImageCopy c = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                     .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, b->block_level, 0, 1}, .extent = {s->width, s->height, 1}};
+                     .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, b->block_level, vol ? 0 : b->block_slice, 1},
+                     .dstOffset = {0, 0, vol ? b->block_slice : 0}, .extent = {s->width, s->height, 1}};
     rec_CmdCopyImage(cb, s->image, VK_IMAGE_LAYOUT_GENERAL, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
     vk_full_barrier(cb);
 }
@@ -1789,7 +1944,7 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
         } else if (b->layers == 1 && b->depth == 1 && lv < b->levels) {
             // (every level: the R8 image's own levels never take the game's integers; a level the game encodes but
             // that wasn't decoded would show whenever the bubble is drawn smaller than its texture)
-            return block_view(b, fmt_of(v->format).vf, lv);
+            return block_view(b, fmt_of(v->format).vf, lv, 0);
         } else {
             static int nskip;
             if (nskip++ < 4) LOG("[vk] BC4 texture drawn into at level %u layer %u of %u: not handled (stays as uploaded)\n", lv,
@@ -1810,8 +1965,20 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
     if (lv0 + nlv > b->levels) nlv = b->levels - lv0;
     if (ly0 >= b->layers) ly0 = b->layers - 1;
     if (ly0 + nly > b->layers) nly = b->layers - ly0;
-    if (render && fmt != b->format && is_bc(b->format) && !is_bc(fmt) && lv0 == 0 && b->layers == 1 && b->depth == 1)
-        return block_view(b, fmt, 0);  // (drawn into through a view of its blocks)
+    static int block_all = -1;  // SAVAGEWIND_VK_BLOCK_ALL=0: single-layer 2D level 0 only, as before (A/B)
+    if (block_all < 0) block_all = !getenv("SAVAGEWIND_VK_BLOCK_ALL") || atoi(getenv("SAVAGEWIND_VK_BLOCK_ALL")) != 0;
+    if (render && fmt != b->format && is_bc(b->format) && !is_bc(fmt) &&
+        (block_all || (lv0 == 0 && b->layers == 1 && b->depth == 1))) {
+        // (drawn into through a view of its blocks: any level, and one layer of an array or one slice of a volume. A 3D
+        // view's layer is the slice, as for the uncompressed volumes below; a slice past the level's depth is its last)
+        uint32_t z = ly0;
+        if (b->base_type == VK_IMAGE_VIEW_TYPE_3D) {
+            uint32_t d = b->depth >> lv0 ? b->depth >> lv0 : 1;
+            z = v && (v->setmask & 2) ? v->min_layer : 0;
+            if (z >= d) z = d - 1;
+        }
+        return block_view(b, fmt, lv0, z);
+    }
     if (render) {
         // A view to draw into must be of an image made to be drawn into, in a format that can be (the image's usage,
         // the view format's features). Anything else, such as a compressed image's blocks the path above doesn't take

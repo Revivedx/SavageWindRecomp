@@ -1314,6 +1314,8 @@ static void dump_threads(void) {
     kunlock();
 }
 
+void kernel_dump_threads(void) { dump_threads(); }  // (hle/framepace.c: a loading screen that never ends)
+
 static void *thread_dump_timer(void *arg) {
     const char *p = arg;
     double start = plat_now_ns() / 1e9;

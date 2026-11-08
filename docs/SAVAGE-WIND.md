@@ -782,7 +782,7 @@ Pendiente:
        0,56 m a ~90 FPS. Prueba (corridas ocultas en Kakariko, `SAVAGEWIND_TEST_WARP=1834.4,221.9,959.0`, coger el
        cuco con A y saltar con X, altura de Link en PlayerInfo +0x8c): 0,634 m a 30, 0,640 a 60, 0,639 a ~85-120;
        el salto normal sigue en 0,68.
-     - Bruma (Vídeo > Bruma, `haze` en el ini, `services/fs.c` `haze_patch`): la neblina del exterior de BOTW es su
+     - Bruma (Vídeo > Opciones avanzadas > Bruma, `haze` en el ini, `services/fs.c` `haze_patch`): la neblina del exterior de BOTW es su
        dispersión atmosférica, por clima en `Pack/TitleBG.pack` `WorldMgr/normal.bwinfo` (AAMP, 20 climas en el objeto
        raíz): `CalcMie` y `CalcRayleigh` (lo blanco y lo azul del aire: más bajos, más claro; a 0,6x el cielo se oscurece
        y vira a turquesa) y `CalcSfParamNear` (0 o negativo: la bruma de cerca, la mínima en 0). El ajuste k (0-100 %)
@@ -791,6 +791,16 @@ Pendiente:
        al arrancar: el cambio vale desde el siguiente inicio. 100 % no toca nada. Los objetos Fog de los perfiles de
        entorno (`Env/env.sgenvb`, `fog_world` etc.) se probaron antes: a 0 no cambian nada visible. Comparado desde la
        torre de Hebra a mediodía con cielo despejado (bruma 50 %: montañas lejanas con su color, cielo azul).
+     - Preset gráfico y Opciones avanzadas (Alpha 5, `settings.c` `k_gpreset`, `vulkan/exec.c`): el preset fija a la vez
+       distancia de dibujado, resolución de sombras, bloom, profundidad de campo y resolución dinámica. Potato: distancia
+       Potato, sombras 448, sin bloom ni desenfoque lejano, resolución dinámica; Original: como la consola; High: distancia
+       "High" (`medium` en el ini), sombras 2048; Savage: distancia "Savage" (`high` en el ini), sombras 4096. Lo que no
+       coincide con ninguno se muestra como Personalizado. Bloom off (`bloom = 0`): los draws del bloom
+       (`bloom_scale.h` `bloom_native_target`) limpian su imagen a negro en vez de dibujar; profundidad de campo off
+       (`depth_of_field = 0`): se salta el desenfoque lejano (fs f7731492223eb16a). Resolución dinámica
+       (`dynamic_resolution = 1`): los ReportCounter llevan su tiempo real y el juego baja su 3D de 1600x900 hacia
+       1280x720 cuando el fotograma tarda (como `SAVAGEWIND_VK_COUNTER=live`). Densidad de pasto: pendiente, no se
+       encontró aún el draw de las hojas de pasto.
      - Giro de los cuerpos que mueve el juego (#209): las piezas "keyframed" (el suelo de una Bestia Divina al
        inclinarse, ascensores, puertas) reciben cada fotograma un objetivo (FUN_710130d19c, una matriz 3x4) y cada paso
        de física la velocidad que las lleva a él (1.9.0 0x70012d5598): la angular sale del ángulo del giro que falta,
@@ -915,6 +925,11 @@ Pendiente:
        a compilar. Sin instrucciones FMA `simd.h` usa su propio fma (`simd_softfma.h`, que sigue al MXCSR como
        ellas; `tools/test_softfma.c` lo compara bit a bit): el de glibc se equivoca con FTZ / DAZ o redondeos
        dirigidos. `SAVAGEWIND_COMPAT_CPU=1` elige el compatible en cualquier CPU (para comparar los dos).
+       Ese fma exacto le cuesta ~10% de fps al compatible (4 núcleos, 720p: Kakariko 134 frente a 154). Por eso
+       "Cálculo rápido" (Video > Opciones avanzadas, `fast_fma`, solo en esas CPUs, activado por defecto) lo cambia
+       por x*y + z con dos redondeos (`simd_fma_unfused`, que el runtime pone en la librería por `GameLibTables`
+       una vez por frame, `gamelib_sync`): 151 fps, a ~2% del v3. El último bit de algunos resultados puede salir
+       distinto del de la consola. `SAVAGEWIND_FAST_FMA=0/1` manda sobre el ajuste; el log dice cuál está activo.
      - Unos ~10 dispatches por frame escriben en la memoria del juego con STG (sus storage buffers, 7-8 por dispatch,
        pequeños, en el heap importado), el primero ~100 draws dentro del frame. Para no copiar en la CPU memoria a
        medio escribir, el resto de la lista iba a la GPU de una vez al final: la GPU esperaba a que se tradujera todo

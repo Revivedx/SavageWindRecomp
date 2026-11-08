@@ -522,6 +522,7 @@ uint32_t glyphs_generation(void) {
     uint32_t h = 2166136261u ^ (uint32_t)k;
     if (k == ICONS_KEYBOARD) {
         h = (h ^ pc_cursor_preview_active()) * 16777619u;
+        h = (h ^ pc_cursor_sensor_active()) * 16777619u;
         for (int i = 0; i < BIND_KEY_COUNT; i++) h = (h ^ (uint16_t)g_bind_key[i]) * 16777619u;
         h = (h ^ g_settings.mouse_camera) * 16777619u;
     } else {
@@ -550,7 +551,7 @@ static bool draw_glyph(Canvas *c, Box b, int code, int kind, int *copy) {
         switch (m.kind) {
         case G_BUTTON:
             if(m.arg==BIND_RSTICK&&pc_cursor_preview_active()) {mouse(c,b,SDL_BUTTON_LEFT,0);return true;}
-            key_icon(c, b, g_bind_key[m.arg]); return true;
+            key_icon(c, b, m.arg==BIND_Y&&pc_cursor_sensor_active()?g_bind_key[BIND_LEFT]:g_bind_key[m.arg]); return true;
         case G_DPAD:
             if (!(m.arg & (m.arg - 1))) key_icon(c, b, g_bind_key[k_dpad_slot[dir_index(m.arg)]]);
             else keys_icon(c, b, k_dpad_slot, m.arg);

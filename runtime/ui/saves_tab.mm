@@ -36,6 +36,7 @@
 extern "C" {
 #include "../paths.h"
 #include "../services/save_convert.h"
+#include "../settings.h"
 SDL_Window *ui_window(void);
 #ifdef __APPLE__
 void *ui_metal_device(void);
@@ -49,13 +50,13 @@ void reveal_folder(const std::string &dir);  // launcher.mm: Explorer / Finder /
 namespace {
 
 enum Phase { IDLE, WORKING, CONFIRM, DONE, LOADING };  // of the worker; DONE: the result stays shown until the next job
-enum Kind { NONE, IMPORTED, IMPORT_FAILED, BACKED_UP, BACKUP_FAILED, CANCELLED };
-enum Job { JOB_CONVERT, JOB_INSTALL, JOB_BACKUP, JOB_LIST };
+enum Kind { NONE, IMPORTED, IMPORT_FAILED, BACKED_UP, BACKUP_FAILED, CANCELLED, EXPORTED, EXPORT_FAILED };  // (new kinds at the end: tools/test_saves_tab.cpp prints the numbers)
+enum Job { JOB_CONVERT, JOB_INSTALL, JOB_BACKUP, JOB_LIST, JOB_EXPORT_STAGE, JOB_EXPORT_INSTALL };
 
 std::string g_game_root;                // <root>/romfs/Pack/Bootup.pack has the flag tables
 std::atomic<int> g_phase{IDLE};         // written by the worker, read here (release / acquire: the fields below follow it)
 pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
-std::string g_picked;                   // the folder the dialog gave (SDL calls back on any thread)
+std::string g_picked_import, g_picked_export;  // the folders the dialogs gave (SDL calls back on any thread)
 pthread_t g_worker;
 bool g_joinable;                       // only the UI / exit thread starts and joins workers
 std::atomic<bool> g_cancel{false};
@@ -66,7 +67,8 @@ Kind g_kind = NONE;
 int g_code;                             // ScCode of a failure
 std::string g_detail;                   // its variable part (a path or a reason)
 std::string g_backup;                   // the backup folder made (or to be made)
-ScReport g_rep;                         // an import: the slots and the flag counts
+std::string g_export_dst;               // the destination folder for export
+ScReport g_rep;                         // an import/export: the slots and the flag counts
 ScStage *g_stage;                       // converted, waiting for the player's yes
 std::string g_stage_dir;
 bool g_had_saves;                       // the save folder is there: the import backs it up
@@ -168,7 +170,7 @@ void take_slots() {
 }
 
 // ------------------------------------------------------------------ the worker
-struct Work { int what; std::string src; };
+struct Work { int what; std::string src, dst; };
 
 bool cancel_work(void *) { return g_cancel.load(std::memory_order_relaxed); }
 
@@ -226,6 +228,45 @@ void *worker(void *p) {
         sc_report_free(&r);
         if (c == SC_OK || c == SC_MOVED) read_slots();
         g_phase.store(DONE, std::memory_order_release);
+    } else if (w->what == JOB_EXPORT_STAGE) {
+        ScFormat *fmt = NULL;
+        ScStage *st = NULL;
+        char stage[1100];
+        sc_stage_export_path(save.c_str(), stage, sizeof stage);
+        ScLock *probe = NULL;
+        bool in_use = sc_lock_take(save.c_str(), &probe) == SC_LOCK_BUSY;
+        sc_lock_drop(probe);
+        if (in_use) {
+            r.code = SC_IN_USE;
+        } else if (cancel_work(NULL)) {
+            r.code = SC_CANCELLED;
+        } else if (sc_format_load((g_game_root + "/romfs/Pack/Bootup.pack").c_str(), &fmt, &r) == SC_OK) {
+            ScCancel cancel = {cancel_work, NULL};
+            sc_convert_cancel(w->src.c_str(), stage, fmt, SC_TO_WIIU, &cancel, &st, &r);
+            sc_format_free(fmt);
+        }
+        g_code = r.code, g_detail = r.detail;
+        g_rep = r;
+        if (r.code == SC_OK) {
+            g_stage = st, g_stage_dir = stage, g_export_dst = w->dst;
+            g_phase.store(CONFIRM, std::memory_order_release);
+        } else {
+            g_kind = r.code == SC_CANCELLED ? CANCELLED : EXPORT_FAILED;
+            g_phase.store(DONE, std::memory_order_release);
+        }
+    } else if (w->what == JOB_EXPORT_INSTALL) {
+        ScCode c = sc_stage_export(g_stage, w->dst.c_str(), &r);
+        g_code = c, g_detail = r.detail, g_warnings = r.warnings;
+        if (c == SC_OK) {
+            g_stage = NULL;
+            g_kind = EXPORTED;
+        } else {
+            sc_stage_discard(g_stage);
+            g_stage = NULL;
+            g_kind = EXPORT_FAILED;
+        }
+        sc_report_free(&r);
+        g_phase.store(DONE, std::memory_order_release);
     } else {
         char backup[1100];
         sc_backup_path(save.c_str(), backup, sizeof backup);
@@ -250,34 +291,43 @@ void drop_stage_at_exit() {
     if (g_stage) sc_stage_discard(g_stage), g_stage = NULL;
 }
 
-void start(int what, const std::string &src = "") {
+void start(int what, const std::string &src = "", const std::string &dst = "") {
     static bool registered;
     if (!registered) registered = true, atexit(drop_stage_at_exit);
     join_worker();  // (the last job has published its result and can now be reaped)
     g_cancel.store(false, std::memory_order_relaxed);
     if (what == JOB_LIST) g_list_return_phase = g_phase.load();
-    if (what != JOB_INSTALL && what != JOB_LIST) {
+    if (what != JOB_INSTALL && what != JOB_EXPORT_INSTALL && what != JOB_LIST) {
         sc_report_free(&g_rep);
-        g_kind = NONE, g_code = 0, g_detail.clear(), g_backup.clear(), g_warnings = 0, g_files = 0;
+        g_kind = NONE, g_code = 0, g_detail.clear(), g_backup.clear(), g_export_dst.clear(), g_warnings = 0, g_files = 0;
     }
     g_seen_done = false;
     g_phase.store(what == JOB_LIST ? LOADING : WORKING, std::memory_order_release);
-    Work *w = new Work{what, src};
+    Work *w = new Work{what, src, dst};
     int err = pthread_create(&g_worker, NULL, worker, w);
     if (!err) g_joinable = true;
     else {
         delete w;
         if (g_stage) sc_stage_discard(g_stage), g_stage = NULL;
         g_code = SC_IO, g_detail = strerror(err);
-        g_kind = what == JOB_BACKUP ? BACKUP_FAILED : IMPORT_FAILED;
+        g_kind = what == JOB_BACKUP ? BACKUP_FAILED : (what == JOB_EXPORT_STAGE || what == JOB_EXPORT_INSTALL) ? EXPORT_FAILED : IMPORT_FAILED;
         g_phase.store(DONE, std::memory_order_release);
     }
 }
 
-void SDLCALL folder_picked(void *, const char *const *files, int) {
+void SDLCALL folder_picked_import(void *, const char *const *files, int) {
     if (files && files[0]) {
         pthread_mutex_lock(&g_lock);
-        g_picked = files[0];
+        g_picked_import = files[0];
+        pthread_mutex_unlock(&g_lock);
+    }
+    g_dialog = false;
+}
+
+void SDLCALL folder_picked_export(void *, const char *const *files, int) {
+    if (files && files[0]) {
+        pthread_mutex_lock(&g_lock);
+        g_picked_export = files[0];
         pthread_mutex_unlock(&g_lock);
     }
     g_dialog = false;
@@ -331,11 +381,12 @@ std::string slot_list(const ScReport &r) {
 }
 
 // What went wrong: a headline and what to do about it (translated here, when it is shown)
-void failure_text(int code, bool backup, std::string *head, std::string *hint) {
+void failure_text(int code, Kind kind, std::string *head, std::string *hint) {
     *hint = "";
     switch (code) {
     case SC_NO_SAVE:
-        if (backup) { *head = tr("There are no saves to back up yet"); break; }
+        if (kind == BACKUP_FAILED) { *head = tr("There are no saves to back up yet"); break; }
+        if (kind == EXPORT_FAILED) { *head = tr("There are no saves to export yet"); break; }
         *head = tr("No Breath of the Wild save found in that folder");
         *hint = tr("Choose the Cemu profile folder (.../user/80000001) or a folder above it.");
         break;
@@ -345,6 +396,10 @@ void failure_text(int code, bool backup, std::string *head, std::string *hint) {
     case SC_SWITCH_SAVE:
         *head = tr("That is a Switch save already");
         *hint = tr("Savage Wind uses those as they are: copy its files into the save folder instead.");
+        break;
+    case SC_WIIU_SAVE:
+        *head = tr("That is a Wii U save already");
+        *hint = tr("Only Switch saves can be exported to Wii U format.");
         break;
     case SC_BAD_SAVE: *head = tr("A save file is damaged or incomplete"); break;
     case SC_NO_BOOTUP:
@@ -401,28 +456,79 @@ void draw_result(int phase) {
         if (g_warnings)
             ImGui::TextColored(bad, "%s", fmt("%d files of the old save folder could not be copied over; they are in the backup.",
                                               g_warnings).c_str());
+    } else if (g_kind == EXPORTED) {
+        ImGui::TextColored(gold, "%s", tr("Export finished"));
+        ImGui::TextWrapped("%s", fmt("Slots exported: %s", slot_list(g_rep).c_str()).c_str());
+        ImGui::TextDisabled("%s", fmt("To: %s", shown_path(g_export_dst).c_str()).c_str());
+        ImGui::TextWrapped("%s", fmt("Flags: %u kept, %u set to defaults (not in the old save), %u dropped (not in this game "
+                                     "version).", g_rep.kept, g_rep.defaulted, g_rep.dropped).c_str());
+        for (int i = 0; i < g_rep.nslots; i++) {
+            unsigned def = 0, drop = 0;
+            for (int k = 0; k < g_rep.nfiles; k++) {
+                const ScFlagFile &f = g_rep.files[k];
+                size_t n = strlen(g_rep.slots[i]);
+                if (!strncmp(f.file, g_rep.slots[i], n) && f.file[n] == '/') def += f.defaulted, drop += f.dropped;
+            }
+            ImGui::TextDisabled("%s", fmt("Slot %s: %u defaulted, %u dropped", g_rep.slots[i], def, drop).c_str());
+        }
+        ImGui::TextWrapped("%s", fmt("Hero's Path: %d files. Album: %d pictures. Compendium: %d pictures.", g_rep.n_tracker,
+                                     g_rep.n_album, g_rep.n_pict).c_str());
+        if (g_warnings)
+            ImGui::TextColored(bad, "%s", fmt("%d files could not be copied over.", g_warnings).c_str());
     } else if (g_kind == BACKED_UP) {
         ImGui::TextColored(gold, "%s", tr("Backup finished"));
         ImGui::TextWrapped("%s", fmt("%d files copied to %s", g_files, shown_path(g_backup).c_str()).c_str());
     } else if (g_kind == CANCELLED) {
-        ImGui::TextColored(gold, "%s", tr("Import cancelled"));
+        ImGui::TextColored(gold, "%s", g_export_dst.empty() ? tr("Import cancelled") : tr("Export cancelled"));
         ImGui::TextWrapped("%s", tr("Nothing was changed."));
-    } else if (g_kind == IMPORT_FAILED || g_kind == BACKUP_FAILED) {
+    } else if (g_kind == IMPORT_FAILED || g_kind == EXPORT_FAILED || g_kind == BACKUP_FAILED) {
         std::string head, hint;
-        failure_text(g_code, g_kind == BACKUP_FAILED, &head, &hint);
+        failure_text(g_code, g_kind, &head, &hint);
         ImGui::TextColored(bad, "%s", head.c_str());
         if (!hint.empty()) ImGui::TextWrapped("%s", hint.c_str());
-        if (!g_detail.empty() && g_code != SC_NO_SAVE && g_code != SC_SWITCH_SAVE)
+        if (!g_detail.empty() && g_code != SC_NO_SAVE && g_code != SC_SWITCH_SAVE && g_code != SC_WIIU_SAVE)
             ImGui::TextDisabled("%s", (g_code == SC_MOVED ? shown_path(g_detail) : g_detail).c_str());  // (that one is the backup folder)
         if (g_code != SC_MOVED) ImGui::TextWrapped("%s", tr("Nothing was changed."));
     }
     ImGui::PopTextWrapPos();
 }
 
-// "Import this save?": what comes in, and where the old saves go first
+// "Import this save?" / "Export this save?": what comes in, and where the old saves go first
 void draw_confirm(int phase) {
-    if (phase == CONFIRM && !g_popup_shown) ImGui::OpenPopup("##importok"), g_popup_shown = true;
+    if (phase == CONFIRM && !g_popup_shown) {
+        ImGui::OpenPopup(g_export_dst.empty() ? "##importok" : "##exportok");
+        g_popup_shown = true;
+    }
     if (phase != CONFIRM) g_popup_shown = false;
+    if (!g_export_dst.empty()) {
+        if (!ImGui::BeginPopupModal("##exportok", NULL, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar)) return;
+        ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", tr("Export this save?"));
+        ImGui::PushTextWrapPos(fminf(ImGui::GetFontSize() * 34, ImGui::GetIO().DisplaySize.x * 0.7f));
+        ImGui::TextWrapped("%s", fmt("Slots: %s", slot_list(g_rep).c_str()).c_str());
+        ImGui::TextDisabled("%s", fmt("To: %s", shown_path(g_export_dst).c_str()).c_str());
+        ImGui::Spacing();
+        ImGui::TextWrapped("%s", tr("Your Savage Wind saves will stay as they are. Existing files in the destination are preserved with a dated .bak suffix."));
+        ImGui::PopTextWrapPos();
+        ImGui::Spacing();
+        bool yes = ImGui::Button(tr("Export"), ImVec2(ImGui::GetFontSize() * 9, 0));
+        ImGui::SetItemDefaultFocus();
+        ImGui::SameLine();
+        bool no = ImGui::Button(tr("Cancel"), ImVec2(ImGui::GetFontSize() * 9, 0)) ||
+                  ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+        if (yes) {
+            ImGui::CloseCurrentPopup();
+            start(JOB_EXPORT_INSTALL, "", g_export_dst);
+        } else if (no) {
+            ImGui::CloseCurrentPopup();
+            sc_stage_discard(g_stage);
+            g_stage = NULL;
+            g_kind = CANCELLED;
+            g_seen_done = true;
+            g_phase.store(DONE, std::memory_order_release);
+        }
+        ImGui::EndPopup();
+        return;
+    }
     if (!ImGui::BeginPopupModal("##importok", NULL, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar)) return;
     ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", tr("Import this save?"));
     ImGui::PushTextWrapPos(fminf(ImGui::GetFontSize() * 34, ImGui::GetIO().DisplaySize.x * 0.7f));  // (a small window too)
@@ -474,6 +580,7 @@ void saves_tab_unload(void) {
     g_phase.store(IDLE);
     sc_report_free(&g_rep);
     g_kind = NONE;
+    g_export_dst.clear();
     g_last_frame = -100;
 }
 
@@ -483,18 +590,23 @@ void saves_tab_draw(void) {
         int p = g_phase.load(std::memory_order_acquire);
         if (p == IDLE || p == DONE) start(JOB_LIST);
         pthread_mutex_lock(&g_lock);
-        g_picked.clear();  // (a folder chosen while the tab was away: not started by surprise)
+        g_picked_import.clear();
+        g_picked_export.clear();  // (a folder chosen while the tab was away: not started by surprise)
         pthread_mutex_unlock(&g_lock);
     }
     g_last_frame = frame;
     int phase = g_phase.load(std::memory_order_acquire);
     if (phase != WORKING && phase != LOADING && g_slots_ready) take_slots();
     if (phase == DONE && !g_seen_done) g_seen_done = true;
-    std::string picked;
+    std::string picked_import, picked_export;
     pthread_mutex_lock(&g_lock);
-    picked.swap(g_picked);
+    picked_import.swap(g_picked_import);
+    picked_export.swap(g_picked_export);
     pthread_mutex_unlock(&g_lock);
-    if (!picked.empty() && (phase == IDLE || phase == DONE) && !g_recovery.imported[0]) start(JOB_CONVERT, picked), phase = WORKING;
+    if (!picked_import.empty() && (phase == IDLE || phase == DONE) && !g_recovery.imported[0])
+        start(JOB_CONVERT, picked_import), phase = WORKING;
+    if (!picked_export.empty() && (phase == IDLE || phase == DONE) && !g_recovery.imported[0])
+        start(JOB_EXPORT_STAGE, save_dir(), picked_export), phase = WORKING;
     load_one_thumb();
 
     bool working = phase == WORKING || phase == CONFIRM || phase == LOADING;
@@ -508,13 +620,26 @@ void saves_tab_draw(void) {
                    "(.../user/80000001) or any folder above it. The Hero's Path, the album and the compendium pictures "
                    "come along. Nothing changes until you confirm, and your current saves are backed up first.") && !busy &&
         !g_dialog.exchange(true))
-        SDL_ShowOpenFolderDialog(folder_picked, NULL, ui_window(), NULL, false);
+        SDL_ShowOpenFolderDialog(folder_picked_import, NULL, ui_window(), NULL, false);
+    opt_section("Export");
+    if (busy || g_slots.empty()) opt_disable_next();
+    if (opt_action("Export to Wii U / Cemu...", "",
+                   "Exports your current saves to Wii U / Cemu format. Choose the destination folder (such as a Cemu "
+                   "profile folder, e.g. .../user/80000001). The Hero's Path, the album and the compendium pictures "
+                   "are converted. Existing files in the destination are preserved with a dated .bak suffix.") && !busy &&
+        !g_slots.empty() && !g_dialog.exchange(true))
+        SDL_ShowOpenFolderDialog(folder_picked_export, NULL, ui_window(), NULL, false);
     opt_section("Backup");
     if (busy) opt_disable_next();
     if (opt_action("Back up saves", "",
                    "Copies the whole save folder to a new dated folder in save-backups, next to it. Your saves stay "
                    "where they are.") && !busy)
         start(JOB_BACKUP), phase = WORKING, working = busy = true;
+    if (busy) opt_disable_next();
+    if (opt_toggle("Back up at each start", &g_settings.save_backups, false,
+                   "A copy of the save folder each time the game starts, if anything in it changed. The last 5 are kept "
+                   "in save-backups; the ones you make yourself are never removed."))
+        settings_save();
     if (working) opt_disable_next();
     if (opt_action("Open save folder", "", "Opens the folder with your saves in your file manager.") && !working) {
         if (recovery) reveal_folder(g_recovery.imported);
