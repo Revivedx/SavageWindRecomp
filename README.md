@@ -102,6 +102,9 @@ a fresh cache.
 
 To keep game files, saves and caches on another drive, see [Moving the data folder](docs/data-folder.md).
 
+To start with an extra test setting (an environment flag we asked you to try) without a terminal, use the Launch options
+list on the start screen: [docs/launch-options.md](docs/launch-options.md).
+
 The setup and configuration screens show Savage Wind's own art. To see a picture of your own there instead, put it
 next to `savagewind.exe` (on Linux, in the data folder) as `splash.jpg` or `splash.png`; it's only read from your folder and never part of
 Savage Wind.
@@ -125,6 +128,9 @@ the data folder actually in use. `SAVAGEWIND_SAVE_DIR`, when set for a test run,
 
 To back up your progress or move it to another Savage Wind installation, close the game and copy the **whole
 `save` folder**, including `save_0` and its contents. Keep a backup of the destination's saves before replacing them.
+
+Want more than one set of saves, for example your own playthrough and a 100% save for testing? **Settings > Saves**
+keeps several profiles and switches between them. See [Save profiles](docs/save-profiles.md).
 
 Played on the Wii U or in Cemu? Savage Wind Configuration can import that save: open **Settings > Saves** and choose
 **Import from Wii U / Cemu...**. It backs up your current saves first and asks before it replaces them. See
@@ -294,6 +300,13 @@ More detail in [docs/BUILD-windows.md](docs/BUILD-windows.md).
      minute) and `make -j` again (builds it into `build/swgame.dll`; the first build takes 15-20 minutes).
 3. Run: `build/savagewind.exe extracted --play`, from a shell with `C:\msys64\ucrt64\bin` on PATH.
 
+DLSS is optional on Windows. It builds from NVIDIA's SDK, [NVIDIA/DLSS](https://github.com/NVIDIA/DLSS), cloned beside
+this repository (`../DLSS`, the default) or anywhere else with `make DLSS_SDK=/path/to/DLSS -j`. Check out one of its
+release tags (tested: `v310.9.16`) and keep that tag's own `nvngx_dlss.dll`: the headers and the static library the
+game is linked with must be the same SDK version as the DLL it loads, so don't swap in a DLL from elsewhere. The
+release build copies `nvngx_dlss.dll` and the NVIDIA license when that SDK path is available. If the SDK or runtime
+DLL is absent, the game still builds and DLSS stays unavailable in Video > Upscaler.
+
 ### Linux
 
 See [docs/linux.md](docs/linux.md): the same steps with the distribution's clang, SDL 3, FFmpeg, shaderc and Vulkan
@@ -331,6 +344,7 @@ switches - are in [docs/SAVAGE-WIND.md](docs/SAVAGE-WIND.md).
   [Switch Loader](https://github.com/Adubbz/Ghidra-Switch-Loader) - used for reverse engineering (not bundled).
 - Libraries: [SDL 3](https://libsdl.org) (zlib), [FFmpeg](https://ffmpeg.org) (LGPL),
   [Dear ImGui](https://github.com/ocornut/imgui) (MIT),
+  [NVIDIA DLSS SDK](https://github.com/NVIDIA/DLSS) (NVIDIA's own license; optional, Windows; `make dist` adds its `LICENSE.txt`),
   [Vulkan Memory Allocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator) (MIT),
   [SMAA](https://github.com/iryoku/smaa) (MIT), [AMD FidelityFX Super Resolution 1](https://github.com/GPUOpen-Effects/FidelityFX-FSR)
   (MIT), [AMD FidelityFX CAS](https://github.com/GPUOpen-Effects/FidelityFX-CAS) (MIT),

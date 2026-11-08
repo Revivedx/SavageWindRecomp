@@ -117,6 +117,21 @@ GENFLAGS += -D_FILE_OFFSET_BITS=64 $(GENARCH)
 LDFLAGS  := -fuse-ld=lld -Wl,--stack,268435456 $(if $(DEPS),-L$(DEPS)/lib) -lSDL3 -lavformat -lavcodec -lavutil -lswscale \
             -lvulkan-1 -lwinmm -lole32 -lshell32 -lcomdlg32 -luuid -lshaderc_shared -lpdh -lws2_32 -l:libz.a \
             $(if $(RELEASE),-Wl$(comma)--subsystem$(comma)windows)  # release: no console window (log -> savagewind.log)
+# NVIDIA DLSS is an optional external SDK. Keep proprietary files out of this
+# repository; source builds can point at the sibling checkout with DLSS_SDK=../DLSS.
+DLSS_SDK ?= ../DLSS
+DLSS_DLL := $(DLSS_SDK)/lib/Windows_x86_64/rel/nvngx_dlss.dll
+DLSS_IMPORT := $(B)/nvngx_dlss.a
+DLSS_LIB := $(DLSS_SDK)/lib/Windows_x86_64/x64/nvsdk_ngx_s.lib
+ifneq ($(wildcard $(DLSS_DLL)),)
+DEPINC += -I$(DLSS_SDK)/include -DDLSS_SDK_PRESENT=1
+LDFLAGS += $(DLSS_IMPORT) $(DLSS_LIB)
+# The SDK wrapper is built with MSVC's CRT directives. Use the MinGW CRT and
+# provide the small ABI shim in runtime/nvn/vulkan/dlss_compat.c.
+LDFLAGS += -Wl,/NODEFAULTLIB:libcmt.lib -Wl,/NODEFAULTLIB:libcpmt.lib -Wl,/NODEFAULTLIB:OLDNAMES.lib
+else
+DEPINC += -DDLSS_SDK_PRESENT=0
+endif
 BACKEND_SRC := $(wildcard runtime/nvn/vulkan/*.c) $(wildcard runtime/nvn/vulkan/*.cpp)
 BACKEND_OBJ := $(patsubst runtime/%.cpp,$(B)/rt/%.o,$(patsubst runtime/%.c,$(B)/rt/%.o,$(BACKEND_SRC)))
 BACKEND_OBJ += $(B)/rt/platform/windows_rc.o  # the .exe's icon (Explorer, taskbar)
@@ -294,7 +309,7 @@ $(B)/rt/%.o: runtime/%.m $(RT_HDRS)
 # linked to a temp file, then renamed over: a copy of the game still running keeps its (old) file - relinking in
 # place gets running copies killed by macOS (code signature of the changed pages). The temp file keeps the real name
 # (in a folder of its own): on Windows the import library records the name the game code library loads it by.
-$(EXE): $(RT_OBJ) $(BACKEND_OBJ) $(UI_OBJ) $(IMGUI_OBJ)
+$(EXE): $(RT_OBJ) $(BACKEND_OBJ) $(UI_OBJ) $(IMGUI_OBJ) $(if $(wildcard $(DLSS_DLL)),$(DLSS_IMPORT) $(DLSS_LIB))
 	@mkdir -p $(dir $@)link
 	$(CXX) -o $(dir $@)link/$(notdir $@) $^ $(LDFLAGS)
 	mv -f $(dir $@)link/$(notdir $@) $@
@@ -309,6 +324,11 @@ $(B)/rt/ui/i18n.o: $(wildcard runtime/ui/i18n/*.inc) runtime/ui/i18n.h
 $(B)/rt/ui/%.o: runtime/ui/%.mm $(RT_HDRS)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(RUNTIME_OPTFLAGS) $(UIFLAGS) -c $< -o $@
+
+ifneq ($(wildcard $(DLSS_DLL)),)
+$(DLSS_IMPORT): $(DLSS_DLL) tools/make_dlss_import.py
+	python tools/make_dlss_import.py $< $@
+endif
 
 $(B)/imgui/%.o: $(IMGUI)/%.cpp
 	@mkdir -p $(dir $@)
@@ -405,6 +425,10 @@ dist:
 	    build/fsr-dlls/AMD-FidelityFX-DLL-LICENSE.txt "$(DIST)/"; fi  # (AMD FSR 4: tools/fetch_fsr_dlls.py; AMD's licence allows binary redistribution with this notice)
 	mkdir "$(DIST)/colour-luts" && cp third_party/luts/*.cube third_party/luts/README.md "$(DIST)/colour-luts/"  # (CC0: Video > Colour)
 	cp README.md LICENSE "$(DIST)/"  # (licenses and source links of the bundled components: README "License")
+	if [ -f "$(DLSS_SDK)/lib/Windows_x86_64/rel/nvngx_dlss.dll" ]; then \
+		cp "$(DLSS_SDK)/lib/Windows_x86_64/rel/nvngx_dlss.dll" "$(DIST)/"; \
+		cp "$(DLSS_SDK)/LICENSE.txt" "$(DIST)/NVIDIA-DLSS-LICENSE.txt"; \
+	fi
 	PATH="$(CURDIR)/build/deps-win/bin:$$PATH" ldd $(WIN_B)/savagewind.exe | awk '(/ucrt64/ || /deps-win/) && !/vulkan-1/ {print $$3}' | sort -u | \
 	    xargs -I{} cp -u {} "$(DIST)/"
 	! ls "$(DIST)" | grep -iE 'x264|x265|xvid|postproc'  # (no GPL codec libraries in the release)
@@ -655,6 +679,17 @@ test-save-convert: $(B)/test_save_convert
 
 .PHONY: test-save-convert
 
+# Save profiles (runtime/services/save_profiles.c): names, create / copy / rename / delete, the active profile and the
+# legacy `save` folder, on tiny fake folders in a temporary directory (no game files, no real saves)
+$(B)/test_save_profiles: tools/test_save_profiles.c runtime/services/save_profiles.c runtime/services/save_profiles.h runtime/services/save_convert.c runtime/services/save_convert.h runtime/services/archive.c runtime/services/archive.h
+	@mkdir -p $(B)
+	$(CC) -O1 -Wall -std=gnu11 -D_FILE_OFFSET_BITS=64 -Iruntime -o $@ tools/test_save_profiles.c runtime/services/save_profiles.c runtime/services/save_convert.c runtime/services/archive.c
+
+test-save-profiles: $(B)/test_save_profiles
+	$(B)/test_save_profiles
+
+.PHONY: test-save-profiles
+
 $(B)/test_game_file_size: tools/test_game_file_size.c runtime/game_file_size.c runtime/game_file_size.h runtime/game_files.h
 	@mkdir -p $(B)
 	$(CC) -O1 -Wall $(OSFLAGS) -Iruntime -o $@ tools/test_game_file_size.c runtime/game_file_size.c
@@ -770,6 +805,17 @@ test-audio-mix: $(B)/test_audio_mix
 	$(B)/test_audio_mix
 
 .PHONY: test-audio-mix
+# Launch options (docs/launch-options.md): the checks, the file, the environment and the suggestions (no game files), and
+# the generated table of the flags the code reads (tools/gen_launch_flags.py --check fails when it is stale)
+$(B)/test_launch_flags: tools/test_launch_flags.c runtime/launch_flags.c runtime/launch_flags_table.c runtime/launch_flags.h
+	@mkdir -p $(B)
+	$(CC) -O1 -g -Wall -Wextra $(OSFLAGS) -Iruntime -o $@ tools/test_launch_flags.c runtime/launch_flags.c runtime/launch_flags_table.c
+
+test-launch-flags: $(B)/test_launch_flags
+	$(B)/test_launch_flags
+	python3 tools/gen_launch_flags.py --check
+
+.PHONY: test-launch-flags
 
 # Native quick-selector sorting: synthetic Linux guest memory, no game files.
 ifeq ($(PLATFORM),linux)
@@ -799,4 +845,27 @@ test-quick-inventory-font: $(B)/test_quick_hint_font
 	$(B)/test_quick_hint_font "$(ROMFS)"
 
 .PHONY: test-quick-inventory-font
+endif
+
+ifeq ($(PLATFORM),linux)
+$(B)/test_quick_drop_action: tools/test_quick_drop_action.c runtime/quick_drop_action.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -std=gnu11 -O1 -g $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $<
+
+$(B)/test_quick_drop_input: tools/test_quick_drop_input.c runtime/quick_drop_action.c runtime/hle/input.c tools/test_freecam_disabled.h $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -std=gnu11 -O1 -g -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< $(TEST_LD) -lm
+
+$(B)/test_quick_drop_menu: tools/test_quick_drop_menu.c runtime/quick_drop.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -std=gnu11 -O1 -g $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $<
+
+test-quick-drop-native: $(B)/test_quick_drop_action $(B)/test_quick_drop_menu
+	$(B)/test_quick_drop_action
+	$(B)/test_quick_drop_menu
+
+test-quick-drop: test-quick-drop-native $(B)/test_quick_drop_input
+	$(B)/test_quick_drop_input
+
+.PHONY: test-quick-drop test-quick-drop-native
 endif

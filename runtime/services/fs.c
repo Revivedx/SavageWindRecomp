@@ -27,6 +27,7 @@
 #include "../shrine_sensor.h"
 #include "archive.h"
 #include "fs_layout.h"
+#include "save_profiles.h"
 #include "../perfcount.h"
 #include "../platform.h"
 
@@ -1423,6 +1424,25 @@ static uint64_t romfs_file_start(uint64_t off) {
     return ~0ull;
 }
 
+// A whole file of the game's own RomFS image, as the image has it (not the overlay folder's), malloc'd (free it); NULL
+// if it isn't there. For host features that read the player's game data (runtime/items.c).
+uint8_t *fs_game_file(const char *path, size_t *out_n) {
+    RomImage *m = &images[0];
+    if (!m->img) return NULL;
+    for (int k = 0; k < m->rom_nfiles; k++) {
+        if (strcmp(m->rom_files[k].path, path)) continue;
+        size_t n = m->rom_files[k].size;
+        uint8_t *d = malloc(n ? n : 1);
+        if (d && romfs_image_pread(m->img, d, n, m->rom_files[k].off) == (ssize_t)n) {
+            *out_n = n;
+            return d;
+        }
+        free(d);
+        return NULL;
+    }
+    return NULL;
+}
+
 // Path of the game's RomFS file containing image offset `off` (NULL if none).
 const char *romfs_file_at(uint64_t off) {
     const RomImage *m = &images[0];
@@ -1830,7 +1850,7 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
 
 static Service *open_host_fs(const char *sub) {
     HostFs *fs = calloc(1, sizeof *fs);
-    if (getenv("SAVAGEWIND_SAVE_DIR")) g_save_dir = getenv("SAVAGEWIND_SAVE_DIR");  // test runs use a scratch copy
+    g_save_dir = sp_session_save_dir();  // SAVAGEWIND_SAVE_DIR (test runs use a scratch copy), else the active save profile
     snprintf(fs->root, sizeof fs->root, "%s/%s", g_save_dir, sub);
     char cmd[1200];
     snprintf(cmd, sizeof cmd, "%s", fs->root);

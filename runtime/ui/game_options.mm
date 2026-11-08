@@ -277,7 +277,12 @@ const char *ups_label(const Item &, int x) {
     if (u == UPSCALE_FSR3) return upscaler_available(u) ? tr("AMD FSR 3") : soon("FSR 3");
     if (u == UPSCALE_FSR4)
         return upscaler_available(u) ? tr("AMD FSR 4") : soon("FSR 4", fsr4_offered() ? "(coming soon)" : "(AMD Radeon only)");
-    return soon("DLSS", renderer_gpu_rtx() ? "(coming soon)" : "(NVIDIA RTX only)");
+    if (upscaler_available(UPSCALE_DLSS)) {
+        static std::string available;
+        available = tr("DLSS");
+        return available.c_str();
+    }
+    return soon("DLSS", "(NVIDIA RTX only)");
 }
 
 const char *fps_label(const Item &, int x) {
@@ -706,6 +711,11 @@ void build_items(void) {
                        [](const Item &) { return (int)g_settings.quick_sort; },
                        [](const Item &, int x) { g_settings.quick_sort = x; }, 0));
 
+    v.push_back(toggle(P_GAMEPLAY, "Quick inventory dropping",
+                       "Drop weapons, bows and shields from the quick selector. Requires game version 1.9.0.",
+                       [](const Item &) { return (int)g_settings.quick_drop; },
+                       [](const Item &, int x) { g_settings.quick_drop = x; }, 0));
+
     // Audio
     v.push_back(choice(P_AUDIO, "Volume", "The game's volume. 100% is its own level.",
                        [](const Item &) { return 21; },
@@ -999,11 +1009,12 @@ bool install(void) {
         g_entries.push_back(e);
     }
     for (auto &o : g_order) o.clear();
-    // the game's rows: camera and motion aiming ones on Controls; amiibo, the voice language (Language has the voices)
-    // and the VR goggles mode (no use on a PC screen) left out; the rest on Gameplay
+    // the game's rows: camera and motion aiming ones on Controls; the voice language (Language has the voices) and the
+    // VR goggles mode (no use on a PC screen) left out; the rest on Gameplay, amiibo too (the virtual reader: the
+    // figure is chosen in Savage Wind's amiibo tab, runtime/amiibo.h)
     for (uint32_t r = 0; r < rows; r++) {
         uint32_t e = ((const uint32_t *)(uintptr_t)order)[r];
-        if (e == GAME_AMIIBO || e == GAME_VOICE_BUTTON || e == GAME_VOICE_LEVEL || e == GAME_VR) continue;
+        if (e == GAME_VOICE_BUTTON || e == GAME_VOICE_LEVEL || e == GAME_VR) continue;
         bool camera = e == GAME_CAMERA_Y || e == GAME_CAMERA_X || e == GAME_GYRO || e == GAME_CAMERA_SENSITIVITY;
         g_order[camera ? P_CONTROLS : P_GAMEPLAY].push_back(e);
     }
@@ -1970,7 +1981,7 @@ extern "C" uint64_t rt_opt_screen(void) { return options_screen(); }
 // (lower). Its buttons write their answer to dialog_answer (1.8.2 0x7001c4b308; upper 0x5b: 0, lower 0x5a: 1;
 // FUN_7100d46598) and leave the dialog up; B closes it without an answer (rt_quit_dialog_back).
 
-// The title menu's amiibo settings button (Savage Wind has no amiibo support) is Quit
+// The title menu's amiibo settings button is Quit (the figure is chosen in the overlay's amiibo tab)
 extern "C" int rt_title_event(uint32_t id) { return id == TITLE_AMIIBO_BUTTON; }
 
 // LayoutMsg/Title_00 lookups: "0003" (the amiibo settings button) reads Quit

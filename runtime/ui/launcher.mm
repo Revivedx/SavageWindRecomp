@@ -26,6 +26,7 @@
 #include <atomic>
 
 #include "i18n.h"
+#include "launch_flags_ui.h"
 #include "file_size_cache.h"
 #include "imgui.h"
 #include "imgui_internal.h"  // (SetKeyOwner)
@@ -1166,6 +1167,10 @@ static void prelaunch_tab(float sc) {
         ImGui::SameLine();
         if (ImGui::Button(tr("Use substitute font"))) remove_fonts();
     }
+    ImGui::Spacing();
+    ImGui::Spacing();
+    heading("Launch options");
+    launch_flags_ui(sc);  // (runtime/ui/launch_flags_ui.mm)
 }
 
 // The start screen's fonts, with the menu language's glyphs that Latin fonts lack merged in (runtime/ui/i18n.mm); made

@@ -9,6 +9,7 @@
 #undef RT_ON_RESET
 #define RT_ON_RESET(fn) static void fn(void)
 #include "../runtime/hle/input.c"
+uint64_t quick_drop_action_filter_buttons(uint64_t b) { return b; }
 #include "../runtime/hle/bindings.c"
 
 Settings g_settings = {.mouse_camera = true, .pc_cursor = true};

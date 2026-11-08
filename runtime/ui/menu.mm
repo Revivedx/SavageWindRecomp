@@ -6,6 +6,7 @@
 #import <Metal/Metal.h>
 #endif
 #include <SDL3/SDL.h>
+#include <ctype.h>
 #include <math.h>
 #include <pthread.h>
 #include <atomic>
@@ -29,10 +30,13 @@ extern "C" bool vk_imgui_backend_init(void);  // runtime/nvn/vulkan/imgui_glue.c
 #endif
 
 extern "C" {
+#include "../amiibo.h"
 #include "../hle.h"
+#include "../items.h"
 #include "../settings.h"
 #include "../gamelib.h"
 #include "../quick_inventory_sort.h"
+#include "../quick_drop.h"
 #include "../nvn/glyphs.h"
 #include "../color_grade.h"
 #include "../window_size.h"
@@ -511,7 +515,7 @@ static void load_fonts(void) {
     if (!g_font_big) g_font_big = g_font;
     if (!g_menu_font || !g_menu_font_big) g_menu_font = g_font, g_menu_font_big = g_font_big;
     g_hint_font = g_hint_buttons = nullptr;
-    g_hint_font_attempted = g_romfs_dir && g_settings.quick_sort;
+    g_hint_font_attempted = g_romfs_dir && (g_settings.quick_sort || g_settings.quick_drop);
     if (g_hint_font_attempted) quick_hint_fonts_load(io.Fonts, &g_hint_font, &g_hint_buttons);
     g_hint_generation = icons_generation;
 }
@@ -519,8 +523,8 @@ static void load_fonts(void) {
 // Before a frame: another menu language may need other glyphs - the fonts and their texture are made again
 extern "C" void vk_imgui_fonts_changed(void);  // (runtime/nvn/vulkan/imgui_glue.cpp)
 static void fonts_follow_language(void) {
-    bool need_hint_fonts = g_settings.quick_sort && g_romfs_dir && !g_hint_font_attempted;
-    bool icons_changed = g_settings.quick_sort && g_hint_generation != glyphs_generation();
+    bool need_hint_fonts = (g_settings.quick_sort || g_settings.quick_drop) && g_romfs_dir && !g_hint_font_attempted;
+    bool icons_changed = (g_settings.quick_sort || g_settings.quick_drop) && g_hint_generation != glyphs_generation();
     if (g_fonts_lang == ui_lang_generation() && !need_hint_fonts && !icons_changed) return;
     load_fonts();
 #ifdef __APPLE__
@@ -904,8 +908,8 @@ static void tab_display(void) {
                "frame time graph and Link's coordinates. F10 switches between them while you play.");
 
     opt_section("Rendering");
-    {   // Upscaler: Off, this OS's spatial upscaler (its modes on the row below), and the temporal ones still to come.
-        // Values that can't be picked yet are shown greyed ("coming soon"); stepping onto them keeps the one in use.
+    {   // Upscaler: Off, this OS's spatial upscaler (its modes on the row below), DLSS where NGX runs, and FSR 3 still
+        // to come. Values that can't be picked are shown greyed; stepping onto them keeps the one in use.
         // The modes wait for render-target scaling (upscale_modes_available): until then the upscaler brings the
         // game's own 1920 x 1080 image to a bigger window.
         std::string fsr3 = upscaler_available(UPSCALE_FSR3) ? std::string(tr("AMD FSR 3"))
@@ -913,7 +917,8 @@ static void tab_display(void) {
         std::string fsr4 = upscaler_available(UPSCALE_FSR4)
                                ? std::string(tr("AMD FSR 4"))
                                : std::string(tr("FSR 4")) + " " + tr(fsr4_offered() ? "(coming soon)" : "(AMD Radeon only)");
-        std::string dlss = std::string(tr("DLSS")) + " " + tr(renderer_gpu_rtx() ? "(coming soon)" : "(NVIDIA RTX only)");
+        std::string dlss = upscaler_available(UPSCALE_DLSS) ? std::string(tr("DLSS")) :
+                           std::string(tr("DLSS")) + " " + tr("(NVIDIA RTX only)");
 #ifdef __APPLE__
         const char *ups[] = {"Off", "MetalFX"};
         static const int ups_value[] = {UPSCALE_OFF, UPSCALE_METALFX};
@@ -1126,6 +1131,83 @@ static void tab_audio(void) {
     opt_end();
 }
 
+// Cheats: what hands the player things or changes the world (the game's own menus keep to options and assists, so
+// these are only here). The same as the developer console commands next to them (rupees: runtime/rupees.c;
+// weather: runtime/weather.c).
+static void cheats_options(void) {
+    opt_toggle("Infinite rupees", &g_settings.infinite_rupees, false,
+               "Keeps your wallet at 9999 rupees, topped up every few seconds.");
+    static const char *const weather[WEATHER_COUNT] = {"Automatic", "No rain", "No thunderstorms", "Clear", "Cloudy",
+                                                       "Rain", "Heavy rain", "Snow", "Heavy snow", "Thunderstorm",
+                                                       "Thunder rain", "Rain in sunshine"};  // (settings.h weather)
+    opt_choice("Weather", &g_settings.weather, weather, WEATHER_COUNT, 0,
+               "Holds the weather you pick, or keeps out rain or thunderstorms. Cutscenes keep theirs.");
+}
+
+// Case-insensitive: does s contain needle (an empty needle matches)
+static bool has_text(const char *s, const char *needle) {
+    size_t n = strlen(needle);
+    for (size_t i = 0; s[i]; i++) {
+        size_t k = 0;
+        while (k < n && tolower((unsigned char)s[i + k]) == tolower((unsigned char)needle[k])) k++;
+        if (k == n) return true;
+    }
+    return n == 0;
+}
+
+// The amiibo tab (runtime/amiibo.h): the figure on the virtual reader. When the game looks for a figure (the amiibo
+// rune), the one chosen here is the one it finds; none, and it finds none. Only the player's own dumps (.bin) are read.
+// A collection can be big (a folder per series): a search and the series narrow the list, as on the Cheats tab.
+static void tab_amiibo(void) {
+    static char search[64];
+    static int series;  // 0: all
+    opt_begin("##amiibo", ImGui::GetFontSize() / 34);
+    opt_section("Virtual reader");
+    int n = amiibo_count(), on = amiibo_on_reader();
+    const Amiibo *cur = amiibo_at(on);
+    char desc[1400];
+    snprintf(desc, sizeof desc, tr("The figure the game's reader finds when it looks for an amiibo (the amiibo rune). None: it finds no figure. The figures are the dumps (.bin) in the folder %s."), amiibo_folder());
+    opt_action("On the reader", cur ? cur->name : tr("None"), desc);
+    auto choose = [](int i) {
+        char key[256] = "";
+        if (i >= 0) amiibo_key(i, key, sizeof key);
+        snprintf(g_settings.amiibo_reader, sizeof g_settings.amiibo_reader, "%s", key);
+        settings_save();
+    };
+    if (!n) {
+        snprintf(desc, sizeof desc, tr("No figure dumps yet. Put the dumps (.bin) in the folder %s, then choose one here."), amiibo_folder());
+        hint(desc);
+    }
+    if (!amiibo_has_keys()) {
+        snprintf(desc, sizeof desc, tr("Without the keys (key_retail.bin in the folder %s), figures give no game data: no nickname, no hearts."), amiibo_folder());
+        hint(desc);
+    }
+    if (n) {
+        std::vector<const char *> names = {tr("All")};  // (the figures come sorted by series)
+        for (int i = 0; i < n; i++)
+            if (amiibo_at(i)->series[0] && strcmp(names.back(), amiibo_at(i)->series)) names.push_back(amiibo_at(i)->series);
+        opt_text("Search", search, sizeof search, "", "Only the figures whose name or series contains this text.");
+        opt_choice("Series", &series, names.data(), (int)names.size(), 0, "The figures of one series.", false);
+        if (opt_action("None", on < 0 ? tr("On the reader") : "", "The figure the game's reader finds when it looks for an amiibo (the amiibo rune). None: it finds no figure.", false))
+            choose(-1);
+        for (int i = 0; i < n; i++) {
+            const Amiibo *f = amiibo_at(i);
+            if (series > 0 && series < (int)names.size() && strcmp(f->series, names[series])) continue;
+            if (search[0] && !has_text(f->name, search) && !has_text(f->series, search)) continue;
+            std::string d;
+            if (ImGui::IsRectVisible(ImVec2(ImGui::GetContentRegionAvail().x, ImGui::GetFontSize() * 1.9f))) {  // (only a row on screen can show it)
+                char id[17];
+                for (int k = 0; k < 8; k++) snprintf(id + 2 * k, 3, "%02x", f->id[k]);
+                d = std::string(f->name) + "\n" + tr("Series") + ": " + f->series + "\n" + tr("amiibo ID") + ": " + id;
+            }
+            ImGui::PushID(i);  // (two series can have a figure of the same name)
+            if (opt_action(f->name, i == on ? tr("On the reader") : "", d.c_str(), false)) choose(i);
+            ImGui::PopID();
+        }
+    }
+    opt_end();
+}
+
 extern "C" void rt_request_reboot(int kind);  // runtime/main.c (RT_REBOOT_GAME = 1, RT_REBOOT_TITLE = 2)
 
 // Text and voice languages (runtime/language.c). The game reads both when it starts: in game they apply after
@@ -1186,6 +1268,108 @@ static void tab_quit(float scale, bool in_game) {
             ask = 0;
         }
         if (opt_action("Cancel", "", "Stays where you are.")) ask = 0;
+    }
+    opt_end();
+}
+
+// An item's picture for the description pane: made when its row is first hovered or selected (only is_shown: the
+// list's other rows offer theirs if they have one) and kept, the last 64 of them.
+struct ItemIcon { int item, w, h; unsigned long long tex; };
+static const ItemIcon *item_icon(int i, bool is_shown) {
+    static std::vector<ItemIcon> icons;  // (most recently made last)
+    for (const ItemIcon &c : icons)
+        if (c.item == i) return &c;
+    if (!is_shown) return NULL;
+    ItemIcon c = {i, 0, 0, 0};
+    if (unsigned char *px = items_icon(i, &c.w, &c.h)) {
+        c.tex = ui_texture_rgba(px, c.w, c.h);
+        free(px);
+    }
+    if (icons.size() >= 64) {
+        if (icons[0].tex) ui_texture_free(icons[0].tex);
+        icons.erase(icons.begin());
+    }
+    icons.push_back(c);
+    return &icons.back();
+}
+
+// What the pouch tells of an item: its name, its values and its actor (the name the give command takes)
+static std::string item_desc(const GameItem *it) {
+    std::string d = it->name;
+    auto row = [&](const char *label, const std::string &value) { d += std::string("\n") + tr(label) + ": " + value; };
+    if (it->cat <= ITEMCAT_BOW || (it->cat == ITEMCAT_ARROW && it->attack)) row("Attack power", std::to_string(it->attack));
+    if (it->cat == ITEMCAT_SHIELD) row("Guard", std::to_string(it->guard));
+    if (it->cat == ITEMCAT_ARMOR) row("Defense", std::to_string(it->defense));
+    if (it->durability) row("Durability", std::to_string(it->durability));
+    if (it->hearts > 0) {  // (in quarter hearts)
+        char v[32];
+        snprintf(v, sizeof v, "%g", it->hearts / 4.0);
+        row("Hearts", v);
+    }
+    static const char *const fx[ITEMFX_COUNT] = {
+        "", "Attack up", "Defense up", "Climb speed up", "Sword beam up", "Stealth up", "Guardian resist up",
+        "Flame guard", "Cold resistance", "Shock resistance", "Unfreezable", "Heat resistance", "Lightning proof",
+        "Sand speed up", "Snow speed up", "Swim speed up", "Extra stamina", "Fireproof",
+        "Stamina recovery", "Extra hearts", "Speed up",
+    };
+    for (int e = 0; e < 2; e++)
+        if (it->effect[e]) row("Effect", tr(fx[it->effect[e]]));
+    if (it->cat == ITEMCAT_MATERIAL && it->price > 0) row("Selling price", std::to_string(it->price));  // (gear can't be sold)
+    return d + "\n\n" + it->actor;
+}
+
+// The Cheats tab (in game only): any of the game's items, in any amount, into the pouch through the game's own item
+// get (runtime/items.h; the console's give command does the same). Cheats, and labelled so: the game's own menus
+// stay as they are.
+static void tab_cheats(void) {
+    static char search[64];
+    static int cat;  // 0: all, else ITEMCAT_* + 1
+    static float amount = 1;
+    static char notice[160];
+    static unsigned waiting;  // the request the notice waits to tell the result of
+    opt_begin("##cheats", ImGui::GetFontSize() / 34);
+    opt_section(tr("Cheats"));
+    cheats_options();
+    hint(tr("These are cheats: they put items in your pouch. The list comes from your game files; nothing of the game is shipped."));
+    if (!items_available()) {
+        hint(tr("Items are added in game only."));
+        opt_end();
+        return;
+    }
+    static const char *cats[] = {"All", "Weapons", "Bows", "Shields", "Arrows", "Armour", "Materials"};
+    std::vector<const char *> cn;
+    for (const char *c : cats) cn.push_back(tr(c));
+    opt_text(tr("Search"), search, sizeof search, "", tr("Only the items whose name or actor contains this text."));
+    opt_choice(tr("Category"), &cat, cn.data(), (int)cn.size(), 0, tr("The items of one kind."), false);
+    opt_slider(tr("Amount"), &amount, 1, 99, 1, 1, "%g",
+               tr("How many the Add button puts in the pouch. Stacks (arrows, materials) take them at once."));
+    if (waiting) {
+        ItemResult done = items_last_result();
+        if (done.seq >= waiting) {
+            waiting = 0;
+            const GameItem *got = items_at(done.item);
+            if (!got) notice[0] = 0;
+            else if (done.added == done.asked) snprintf(notice, sizeof notice, tr("Added %d x %s to the pouch."), done.added, got->name);
+            else snprintf(notice, sizeof notice, tr("No room in the pouch: added %d of %d x %s."), done.added, done.asked, got->name);
+        }
+    }
+    if (notice[0]) ImGui::TextDisabled("%s", notice);
+    for (int i = 0, n = items_count(); i < n; i++) {
+        const GameItem *it = items_at(i);
+        if (cat && it->cat != cat - 1) continue;
+        if (search[0] && !has_text(it->name, search) && !has_text(it->actor, search)) continue;
+        // (only a row on screen can be hovered or selected: the list is long, its other rows need no description)
+        bool seen = ImGui::IsRectVisible(ImVec2(ImGui::GetContentRegionAvail().x, ImGui::GetFontSize() * 1.9f));
+        if (opt_action(it->name, tr("Add"), seen ? item_desc(it).c_str() : NULL, false)) {
+            if (items_request(i, (int)amount)) {
+                waiting = items_requested();
+                snprintf(notice, sizeof notice, tr("Waiting until you are in play: %d x %s."), (int)amount, it->name);
+            } else
+                snprintf(notice, sizeof notice, "%s", tr("Too many requests waiting; try again in a moment."));
+        }
+        bool shown = ImGui::IsItemHovered() || (ImGui::IsItemFocused() && ImGui::GetCurrentContext()->NavCursorVisible);
+        const ItemIcon *icon = item_icon(i, shown);
+        if (icon && icon->tex) opt_desc_image(icon->tex, icon->w, icon->h);
     }
     opt_end();
 }
@@ -1548,12 +1732,13 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     Tab tabs[11];
     int ntabs = 0;
     if (prelaunch) tabs[ntabs++] = {"Prelaunch", -1, true};
-    // (ids 4-7 were Link's Awakening tabs; the ids stay: test hooks)
-    static const char *names[] = {"Video", "Audio", "Language", "Saves", "", "", "", "", "Controls", "Quit"};
-    static const int order[] = {8, 0, 1, 2, 3, 9};  // Controls, Video, Audio, Language, Saves, Quit
+    // (ids 5-7 were Link's Awakening tabs; the ids stay: test hooks)
+    static const char *names[] = {"Video", "Audio", "Language", "Saves", "amiibo", "", "", "", "Controls", "Quit", "Cheats"};
+    static const int order[] = {8, 0, 1, 2, 4, 3, 10, 9};  // Controls, Video, Audio, Language, amiibo, Saves, Cheats, Quit
     for (int i : order) {  // (Quit: in game only - the start screen has its own QUIT; Saves: on the start screen only,
         if (i == 9 && prelaunch) continue;  //  the game must not be running while its saves change)
         if (i == 3 && !prelaunch) continue;
+        if (i == 10 && !in_game) continue;  // (Cheats: in game only)
         tabs[ntabs++] = {names[i], i, true};
     }
     int cur = 0;  // g_tab / g_tab_request hold ids
@@ -1644,8 +1829,10 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
                 case 1: tab_audio(); break;
                 case 2: tab_language(in_game); break;
                 case 3: saves_tab_draw(); break;
+                case 4: tab_amiibo(); break;
                 case 8: tab_about(); break;
                 case 9: tab_quit(scale, in_game); break;
+                case 10: tab_cheats(); break;
                 }
                 static const char *scroll_test = getenv("SAVAGEWIND_MENU_SCROLL");  // test hook: page scroll, 0..1
                 if (scroll_test) ImGui::SetScrollY(ImGui::GetScrollMaxY() * (float)atof(scroll_test));
@@ -1719,7 +1906,7 @@ extern "C" void rec_drain(void);  // (runtime/nvn/vulkan/record.c)
 #endif
 
 // Native-style selector prompt. Draw-only: input still belongs to the game.
-static void quick_sort_hint_draw(const ImGuiIO &io) {
+static void quick_inventory_hint_draw(const ImGuiIO &io) {
     int kind = g_settings.button_icons;
     if (kind <= ICONS_AUTO || kind >= ICONS_COUNT) {
         int family = input_pad_family();
@@ -1730,45 +1917,56 @@ static void quick_sort_hint_draw(const ImGuiIO &io) {
     int family = kind == ICONS_XBOX ? 1 : kind == ICONS_PLAYSTATION ? 2 : 0;
     float canvas = fminf(io.DisplaySize.x / 1280.f, io.DisplaySize.y / 720.f);
     float scale = canvas / 1.5f, fs = 32 * scale, radius = 15 * scale, gap = 10 * scale;
-    // The native right-stick guide ends seven canvas units above center;
-    // reserve a 12-unit gap and an 18-unit half-row below it.
     float y = io.DisplaySize.y * .5f + 23 * canvas;
-    const char *action = tr("Sort");
-    ImFont *font = g_hint_font ? g_hint_font : g_menu_font;
-    for (const char *p = action; *p;) {
-        unsigned code; int n = ImTextCharFromUtf8(&code, p, nullptr);
-        if (!n) break;
-        p += n;
-        if (!font->FindGlyphNoFallback((ImWchar)code)) { font = g_menu_font; break; }
+    struct Prompt { const char *label, *icon; int binding; bool enabled; } prompts[3];
+    int count = 0, drop = quick_drop_hint_state();
+    if (drop == 1 || drop == 2) prompts[count++] = {tr("Drop"), "\xee\x81\x83", BIND_Y, drop == 2};
+    if (quick_inventory_sort_hint()) prompts[count++] = {tr("Sort"), "\xee\x81\x82", BIND_X, true};
+    if (drop) prompts[count++] = {tr("Back"), "\xee\x81\x81", BIND_B, true};
+    ImFont *fonts[3];
+    ImVec2 text[3], key[3];
+    const char *buttons[3];
+    float badges[3], width = 0;
+    for (int i = 0; i < count; i++) {
+        fonts[i] = g_hint_font ? g_hint_font : g_menu_font;
+        for (const char *p = prompts[i].label; *p;) {
+            unsigned code; int n = ImTextCharFromUtf8(&code, p, nullptr);
+            if (!n) break;
+            p += n;
+            if (!fonts[i]->FindGlyphNoFallback((ImWchar)code)) { fonts[i] = g_menu_font; break; }
+        }
+        int binding = prompts[i].binding;
+        buttons[i] = keyboard ? tr(bind_key_label(g_bind_key[binding])) : tr(bind_pad_label(g_bind_pad[binding], family));
+        text[i] = fonts[i]->CalcTextSizeA(fs, FLT_MAX, 0, prompts[i].label);
+        key[i] = g_font->CalcTextSizeA(fs * .65f, FLT_MAX, 0, buttons[i]);
+        badges[i] = g_hint_buttons ? 44 * scale : fmaxf(radius * 2, key[i].x + 14 * scale);
+        width += text[i].x + gap + badges[i];
     }
-    const char *button = keyboard ? tr(bind_key_label(g_bind_key[BIND_X])) :
-        tr(bind_pad_label(g_bind_pad[BIND_X], family));
-    // E042 means the Switch X action. Its pixels already follow the same
-    // device, bindings and modded font as the game's other text prompts.
-    const char *native = g_hint_buttons ? "\xee\x81\x82" : nullptr;
-    ImVec2 text = font->CalcTextSizeA(fs, FLT_MAX, 0, action);
-    ImVec2 key = g_font->CalcTextSizeA(fs * .65f, FLT_MAX, 0, button);
-    float badge = native ? 44 * scale : fmaxf(radius * 2, key.x + 14 * scale);
-    float x = (io.DisplaySize.x - text.x - gap - badge) * .5f;
+    width += (count - 1) * 60 * scale;
+    float x = (io.DisplaySize.x - width) * .5f;
     ImDrawList *draw = ImGui::GetForegroundDrawList();
-    auto label = [&](ImVec2 pos, ImU32 color) {
-        int start = draw->VtxBuffer.Size;
-        draw->AddText(font, fs, pos, color, action);
-        // Native layouts italicize the text; button artwork stays upright.
-        for (int j = start; font == g_hint_font && j < draw->VtxBuffer.Size; j++)
-            draw->VtxBuffer[j].pos.x += (pos.y + fs * .8f - draw->VtxBuffer[j].pos.y) * .18f;
-    };
-    label(ImVec2(x + scale, y - fs * .5f + scale), IM_COL32(0, 0, 0, 85));
-    label(ImVec2(x, y - fs * .5f), IM_COL32(245, 246, 232, 255));
-    float bx = x + text.x + gap;
-    if (native) {
-        draw->AddText(g_hint_buttons, 54 * scale, ImVec2(bx - 5 * scale, y - 27 * scale),
-                      IM_COL32(245, 246, 232, 255), native);
-    } else {
-        ImVec2 a(bx, y - radius), b(bx + badge, y + radius);
-        draw->AddRectFilled(a, b, IM_COL32(245, 246, 232, 255), keyboard ? 4 * scale : radius);
-        draw->AddText(g_font, fs * .65f, ImVec2(a.x + (badge - key.x) * .5f, y - key.y * .5f),
-                      IM_COL32(25, 28, 24, 255), button);
+    for (int i = 0; i < count; i++) {
+        ImFont *font = fonts[i];
+        int alpha = prompts[i].enabled ? 255 : 110;
+        auto label = [&](ImVec2 pos, ImU32 color) {
+            int start = draw->VtxBuffer.Size;
+            draw->AddText(font, fs, pos, color, prompts[i].label);
+            for (int j = start; font == g_hint_font && j < draw->VtxBuffer.Size; j++)
+                draw->VtxBuffer[j].pos.x += (pos.y + fs * .8f - draw->VtxBuffer[j].pos.y) * .18f;
+        };
+        label(ImVec2(x + scale, y - fs * .5f + scale), IM_COL32(0, 0, 0, alpha / 3));
+        label(ImVec2(x, y - fs * .5f), IM_COL32(245, 246, 232, alpha));
+        float bx = x + text[i].x + gap;
+        if (g_hint_buttons) {
+            draw->AddText(g_hint_buttons, 54 * scale, ImVec2(bx - 5 * scale, y - 27 * scale),
+                          IM_COL32(245, 246, 232, alpha), prompts[i].icon);
+        } else {
+            ImVec2 a(bx, y - radius), b(bx + badges[i], y + radius);
+            draw->AddRectFilled(a, b, IM_COL32(245, 246, 232, alpha), keyboard ? 4 * scale : radius);
+            draw->AddText(g_font, fs * .65f, ImVec2(a.x + (badges[i] - key[i].x) * .5f, y - key[i].y * .5f),
+                          IM_COL32(25, 28, 24, alpha), buttons[i]);
+        }
+        x += text[i].x + gap + badges[i] + 60 * scale;
     }
 }
 
@@ -1783,7 +1981,7 @@ static bool menu_draws(bool *pointer_hover = NULL, float *pointer_box = NULL, bo
     if (pointer_hover) *pointer_hover = hover;
     if (gyro_show) *gyro_show = gyro_on;
     return g_open.load() || g_kbd.load() == 1 || g_sizes.load() || console_is_open() || gyro_on || hover ||
-           g_settings.perf_overlay != PERF_OFF || act_log_enabled() || quick_inventory_sort_hint();
+           g_settings.perf_overlay != PERF_OFF || act_log_enabled() || quick_inventory_sort_hint() || quick_drop_hint_state();
 }
 
 bool menu_render_needed(void) { return menu_draws(); }
@@ -1867,7 +2065,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
 
     if (g_settings.perf_overlay != PERF_OFF) perf_overlay_draw(io, scale);
     if (act_log_enabled()) act_overlay_draw(io, scale);
-    if (!open && !kbd && !sizes && !con && quick_inventory_sort_hint()) quick_sort_hint_draw(io);
+    if (!open && !kbd && !sizes && !con && (quick_inventory_sort_hint() || quick_drop_hint_state())) quick_inventory_hint_draw(io);
     if (!open && !kbd && !sizes && !con) photo_overlay_draw(io, scale);
     if (!open && !kbd && !sizes && !con && gyro_scene_show) gyro_scene_draw(io, scale, gyro_scene);
 

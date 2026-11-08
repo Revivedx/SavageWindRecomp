@@ -635,7 +635,8 @@ def build_ui(tmp):
              (cxx, cxxflags, os.path.join(HERE, 'test_saves_tab.cpp'))]
     cflags = ['-std=gnu11', '-O1', '-D_FILE_OFFSET_BITS=64', '-I' + rt, '-I' + st]
     jobs += [(cc, cflags, os.path.join(rt, 'imageload.c')), (cc, cflags + ['-DSC_TEST'], os.path.join(rt, 'services', 'save_convert.c')),
-             (cc, cflags, os.path.join(rt, 'services', 'archive.c'))]
+             (cc, cflags, os.path.join(rt, 'services', 'archive.c')),
+             (cc, cflags, os.path.join(rt, 'services', 'save_profiles.c'))]
     procs, objs = [], []
     for i, (c, flags, src) in enumerate(jobs):
         o = os.path.join(d, '%d.o' % i)
@@ -830,6 +831,25 @@ def ui_cases(r):
     rc, o, log = ui_run(exe, 'backup', save, game, cwd=data)
     r.result('Saves tab: Back up saves with no saves says so and makes nothing',
              [] if (rc == 0 and o.get('KIND') == '4' and o.get('CODE') == '1' and not os.path.exists(os.path.join(data, 'save-backups'))) else [log[-300:]])
+
+
+    # save profiles: create / copy / switch / refuse / delete through the tab's jobs; the player's own save folder is never touched
+    data, save, before = fresh('profiles')
+    rc, o, log = ui_run(exe, 'profiles', save, game, cwd=data)
+    problems = []
+    if rc != 0 or o.get('DONE') is None:
+        problems.append('the harness failed (exit %d): %s' % (rc, log[-600:]))
+    else:
+        if tree(save) != before:
+            problems.append('the Default save folder changed')
+        left = sorted(os.listdir(os.path.join(data, 'save-profiles')))
+        if left != ['Mine']:
+            problems.append('profiles left: %s' % left)
+        elif tree(os.path.join(data, 'save-profiles', 'Mine', 'save')) != before:
+            problems.append('the copy is not the Default save folder')
+        if open(os.path.join(data, 'save_profile.txt')).read().strip() != 'Default':
+            problems.append('active profile: %s' % open(os.path.join(data, 'save_profile.txt')).read())
+    r.result('Saves tab: profiles (create, copy, switch, refusals, delete) leave the Default saves alone', problems)
 
 
 def real(r, src, bootup, allow_switch):

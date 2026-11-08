@@ -28,6 +28,7 @@
 #include "fsr_api.h"
 #include "../output_scale.h"
 #include "../renderer.h"
+#include "dlss.h"
 
 #ifdef _WIN32  // (kernel32; windows.h itself clashes with names used here)
 __declspec(dllimport) int __stdcall MoveFileExA(const char *from, const char *to, unsigned long flags);
@@ -88,6 +89,14 @@ static void create_instance(void) {
             if (!strcmp(ie[i].extensionName, VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME)) g_cs_ext = true;
         if (g_cs_ext) ext[n_ext++] = VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME;
         free(ie);
+    }
+    const char **ngx_ext = NULL;
+    unsigned n_ngx_ext = 0;
+    vk_dlss_required_instance_extensions(&ngx_ext, &n_ngx_ext);
+    for (unsigned i = 0; i < n_ngx_ext && n_ext < sizeof(ext) / sizeof(ext[0]); i++) {
+        bool duplicate = false;
+        for (uint32_t j = 0; j < n_ext; j++) duplicate |= !strcmp(ext[j], ngx_ext[i]);
+        if (!duplicate) ext[n_ext++] = ngx_ext[i];
     }
     bool validate = getenv("SAVAGEWIND_VK_VALIDATION") != NULL;
     // (debugging) SAVAGEWIND_VK_ADDR_REPORT=<lo>-<hi> (hex GPU addresses): every bind and unbind of GPU memory in that
@@ -488,7 +497,7 @@ static void create_device(void) {
                 memory.memoryTypes[i].heapIndex, memory.memoryTypes[i].propertyFlags);
         }
     }
-    const char *ext[32];
+    const char *ext[64];
     uint32_t n_ext = 0;
     ext[n_ext++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
 
@@ -538,6 +547,13 @@ static void create_device(void) {
         !plat_guest_sparse_heap_enabled() ? "off" :
         g_vk.pageable_device_local_memory ? "on" : "not supported");
 #endif
+    const char **ngx_ext = NULL;
+    unsigned n_ngx_ext = 0;
+    vk_dlss_required_device_extensions(&ngx_ext, &n_ngx_ext);
+    for (unsigned i = 0; i < n_ngx_ext && n_ext < sizeof(ext) / sizeof(ext[0]); i++) {
+        if (has_ext(ep, ne, ngx_ext[i])) ext[n_ext++] = ngx_ext[i];
+        else LOG("[dlss] required device extension unavailable: %s\n", ngx_ext[i]);
+    }
     bool addr_report = g_addr_report_hi && has_ext(ep, ne, VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME);
     if (addr_report) ext[n_ext++] = VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME;
     if (g_addr_report_hi) LOG("[vk] address binding report %s\n", addr_report ? "on" : "not supported");
@@ -961,6 +977,15 @@ static void create_device(void) {
     bool two_q = g_vk.qfam_count >= 2 && pt_env && strcmp(pt_env, "0") != 0;
     VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_vk.qfam,
                                   .queueCount = two_q ? 2 : 1, .pQueuePriorities = prio};
+    {   // (each once: NGX's list, above, may name one the device enables for itself below)
+        uint32_t k = 0;
+        for (uint32_t i = 0; i < n_ext; i++) {
+            bool dup = false;
+            for (uint32_t j = 0; j < k; j++) dup |= !strcmp(ext[j], ext[i]);
+            if (!dup) ext[k++] = ext[i];
+        }
+        n_ext = k;
+    }
     VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f, .queueCreateInfoCount = 1,
                              .pQueueCreateInfos = &qi, .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext};
     VK_CHECK(vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.dev));
@@ -1005,6 +1030,12 @@ static void create_device(void) {
     VK_CHECK(vkCreateCommandPool(g_vk.dev, &pi, NULL, &g_vk.pool));
 
     pipeline_cache_load();
+    // NGX on the device just made. Optional: without the SDK's DLL or an RTX driver the renderer runs as before, and
+    // a settings file asking for DLSS gets FSR 1
+    if (!vk_dlss_init() && g_settings.upscaler == UPSCALE_DLSS) {
+        g_settings.upscaler = UPSCALE_FSR1;
+        LOG("[dlss] unavailable: FSR 1 instead\n");
+    }
     pthread_t saver;
     pthread_create(&saver, NULL, pc_saver, NULL);
 }
@@ -2528,6 +2559,8 @@ presented:
     reboot_test_frame(total_frames);
     extern void test_warp_frame(uint64_t frame);  // runtime/services/test_warp.c (SAVAGEWIND_TEST_TIME)
     test_warp_frame(total_frames);
+    extern void weather_frame(void);  // runtime/weather.c (Cheats > Weather, `weather`)
+    weather_frame();
     extern void control_frame(uint64_t frame);  // runtime/control.c (SAVAGEWIND_CONTROL)
     control_frame(total_frames);
     static long shot_every = -1;
@@ -2729,6 +2762,7 @@ static void quick_exit_handler(void) {
         vk_present_idle();
         rec_drain();
         vkDeviceWaitIdle(g_vk.dev);
+        vk_dlss_shutdown();
         if (trace) LOG("[vk] exit: saving the pipeline cache\n");
         vk_pipeline_cache_save();
         extern void vk_pso_flush(void);

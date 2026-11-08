@@ -29,7 +29,8 @@ bool rt_jitter_on(void);
 int rt_antialias(void);  // Video > Anti-aliasing (settings.h AA_*), or SAVAGEWIND_AA_AT's
 bool rt_fsr3(void);      // Video > Upscaler FSR 3, built in, or FSR 4 (both temporal, with the same inputs)
 bool rt_fsr4(void);      // Video > Upscaler FSR 4 (vulkan/fsr_api.h)
-bool rt_temporal(void);  // TAA or FSR 3: motion vectors and the jitter on (vulkan/mvec.c, rt_jitter_on)
+bool rt_dlss(void);      // Video > Upscaler DLSS, and NGX can run it
+bool rt_temporal(void);  // TAA, FSR 3 / 4 or DLSS: motion vectors and the jitter on (vulkan/mvec.c, rt_jitter_on)
 void rt_jitter_set_phases(uint32_t n);  // (FSR 3: the jitter sequence's length, fsr3_jitter_phases)
 bool upscale_modes_available(void);  // (rendering below the window's size: needs render-target scaling)
 double upscale_mode_factor(int q);

@@ -15,6 +15,7 @@ static int device = DEVICE_PAD, family;
 int input_last_device(void) { return device; }
 int input_pad_family(void) { return family; }
 bool pc_cursor_preview_active(void) { return false; }
+bool pc_cursor_sensor_active(void) { return false; }
 bool rt_resource(const char *name, const char *dev_rel, char *out, size_t cap) {
     (void)name;
     snprintf(out, cap, "%s", dev_rel);
@@ -25,7 +26,7 @@ bool rt_resource(const char *name, const char *dev_rel, char *out, size_t cap) {
 }
 }
 const char *tr(const char *s) {
-    return !strcmp(s, "Sort") ? "Сортировать" : s;
+    return !strcmp(s, "Sort") ? "Сортировать" : !strcmp(s, "Drop") ? "Выбросить" : !strcmp(s, "Back") ? "Назад" : s;
 }
 
 static std::vector<unsigned char> button_mask(int kind) {
@@ -64,6 +65,8 @@ int main(int argc, char **argv) {
     quick_hint_fonts_load(atlas, &text, &buttons);
     assert(text && buttons);
     assert(text->FindGlyphNoFallback(0x440)); // Cyrillic р from the translated Sort label
+    assert(text->FindGlyphNoFallback(0x412)); // Cyrillic В from Drop
+    assert(text->FindGlyphNoFallback(0x44b)); // ы from Drop
     assert(text->FindGlyphNoFallback(0x421)); // С appears only in the translated Sort label
     assert(buttons->FindGlyphNoFallback(0xe041));
     assert(text->CalcTextSizeA(32, FLT_MAX, 0, "Сортировать").x > 100);

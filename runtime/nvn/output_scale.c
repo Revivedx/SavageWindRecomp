@@ -26,6 +26,10 @@
 #include "../settings.h"
 #include "output_scale.h"
 
+#ifndef __APPLE__
+extern bool vk_dlss_available(void);
+#endif
+
 #define MAX_TEX 16384.0
 #define SCENE_LINES 900.0  // the height of the game's 3D scene targets (docked)
 
@@ -47,7 +51,8 @@ bool upscaler_available(int u) {
     return u == UPSCALE_OFF || u == UPSCALE_METALFX;
 #else
     return u == UPSCALE_OFF || u == UPSCALE_FSR1 || (u == UPSCALE_FSR3 && fsr3_available() && fsr3_upscaler_enabled())
-        || (u == UPSCALE_FSR4 && fsr4_available() && fsr3_upscaler_enabled());  // (FSR 4: the same hold-back as FSR 3)
+        || (u == UPSCALE_FSR4 && fsr4_available() && fsr3_upscaler_enabled())  // (FSR 4: the same hold-back as FSR 3)
+        || (u == UPSCALE_DLSS && vk_dlss_available());
 #endif
 }
 
@@ -65,7 +70,9 @@ bool rt_fsr4(void) { return g_settings.upscaler == UPSCALE_FSR4 && upscaler_avai
 // FSR 3 asks for either; vulkan/exec.c fsr3_scene picks the one to run
 bool rt_fsr3(void) { return (g_settings.upscaler == UPSCALE_FSR3 && upscaler_available(UPSCALE_FSR3)) || rt_fsr4(); }
 
-bool rt_temporal(void) { return rt_antialias() == AA_TAA || rt_fsr3(); }
+bool rt_dlss(void) { return g_settings.upscaler == UPSCALE_DLSS && upscaler_available(UPSCALE_DLSS); }
+
+bool rt_temporal(void) { return rt_antialias() == AA_TAA || rt_fsr3() || rt_dlss(); }
 
 double upscale_mode_factor(int q) {
     static const double f[UPQ_COUNT] = {1.3, 1.5, 1.7, 2.0, 3.0};
@@ -319,7 +326,7 @@ bool rt_jitter_on(void) {
     return env >= 0 ? env : rt_temporal();
 }
 
-// The jitter sequence's length: 8, or FSR 3's for its upscale (fsr3_jitter_phases, set by vulkan/exec.c)
+// The jitter sequence's length: 8, or the temporal upscaler's (FSR 3's fsr3_jitter_phases, DLSS's; set by vulkan/exec.c)
 static uint32_t jitter_phases = 8;
 void rt_jitter_set_phases(uint32_t n) { __atomic_store_n(&jitter_phases, n ? n : 8, __ATOMIC_RELAXED); }
 

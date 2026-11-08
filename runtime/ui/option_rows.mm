@@ -294,8 +294,10 @@ void opt_end(void) {
     ImGui::PopStyleVar();
     if (g_img_shown.tex && g_img_shown.w > 0) {  // the picture of the selected row, above its text
         ImVec2 at = ImGui::GetCursorScreenPos();
-        float w = ImGui::GetContentRegionAvail().x, h = w * g_img_shown.h / g_img_shown.w;
-        ImGui::Dummy(ImVec2(w, h + 8 * g_scale));
+        ImVec2 room = ImGui::GetContentRegionAvail();
+        float w = room.x, h = w * g_img_shown.h / g_img_shown.w, most = room.y * 0.45f;  // (the text below has to fit)
+        if (h > most) w = w * most / h, h = most, at.x += (room.x - w) * 0.5f;
+        ImGui::Dummy(ImVec2(room.x, h + 8 * g_scale));
         ImGui::GetWindowDrawList()->AddImageRounded((ImTextureID)g_img_shown.tex, at, ImVec2(at.x + w, at.y + h), ImVec2(0, 0),
                                                     ImVec2(1, 1), IM_COL32_WHITE, 8 * g_scale);
     }

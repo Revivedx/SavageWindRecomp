@@ -1,0 +1,68 @@
+# Launch options (runtime/launch_flags.h): what the start screen knows about SAVAGEWIND_* environment flags.
+# tools/gen_launch_flags.py scans runtime/ for every flag the code reads and writes runtime/launch_flags_table.c from
+# the scan and this file. Run it after adding, renaming or removing a flag: `python3 tools/gen_launch_flags.py`
+# (`make test-launch-flags` fails when the table is stale).
+#
+# A flag that is not listed here is still offered while typing (as "other", or "developer" when its name says it
+# dumps, traces, logs, profiles or tests something). Only the lines below change how it is treated.
+#
+# Line format: group NAME | example value | description    (description: one short line, plain words, no dashes)
+#
+# Groups that can NOT be added from the start screen (a typed entry is refused with the reason):
+#   internal  used by Savage Wind itself, or read before the saved options can be found
+#   launcher  skips or locks the start screen, or hides the window: the player could not undo the entry
+#   build     configures the game code build, not the game
+# Group that is suggested first, as a flag a tester may be asked to set:
+#   play      safe to try; the example value is what the suggestion fills in
+
+internal SAVAGEWIND_REEXEC | | Counter for the automatic restart that finds free memory for the game.
+internal SAVAGEWIND_LAUNCH_FLAGS_APPLIED | | Remembers which launch options this run started with.
+internal SAVAGEWIND_DATA_ROOT | | Where Savage Wind keeps its files. It is read before launch options can be found.
+internal SAVAGEWIND_SETTINGS | | Another settings file. It is read before launch options can be found.
+internal SAVAGEWIND_X | | An example name in a code comment.
+
+launcher SAVAGEWIND_NO_LAUNCHER | | Skips the start screen.
+launcher SAVAGEWIND_INPUT | | Plays a recorded input script and blocks the keyboard and controller.
+launcher SAVAGEWIND_HOST_INPUT | | Test input that replaces the keyboard and controller.
+launcher SAVAGEWIND_NO_USER_INPUT | | Blocks the keyboard and controller.
+launcher SAVAGEWIND_BIND_TEST | | Test input that replaces the keyboard and controller.
+launcher SAVAGEWIND_HIDDEN | | Hides the game window.
+launcher SAVAGEWIND_SETUP_FROM | | Starts the game files setup by itself.
+launcher SAVAGEWIND_EXIT_AT | | Closes the game after a number of frames.
+launcher SAVAGEWIND_EXIT_AFTER_SHOT | | Closes the game after a screenshot.
+launcher SAVAGEWIND_LAUNCHER_AUTOPLAY | | Test hook of the start screen.
+launcher SAVAGEWIND_LAUNCHER_DELETE | | Test hook of the start screen.
+launcher SAVAGEWIND_LAUNCHER_EXTRACT | | Test hook of the start screen.
+launcher SAVAGEWIND_LAUNCHER_FONT | | Test hook of the start screen.
+launcher SAVAGEWIND_LAUNCHER_MODE | | Test hook of the start screen.
+launcher SAVAGEWIND_LAUNCHER_SETUP | | Test hook of the start screen.
+launcher SAVAGEWIND_LAUNCHER_SHOT | | Test hook of the start screen.
+
+build SAVAGEWIND_GEN | | The program that builds the game code.
+build SAVAGEWIND_CC | | The compiler that builds the game code.
+
+play SAVAGEWIND_FSR3 | 1 | Offers AMD FSR 3 upscaling in the Video menu (builds that include it).
+play SAVAGEWIND_VK_NO_FEEDBACK_LOOP | 1 | Draws with copies instead of feedback loops. Fixes a wrong picture on some graphics cards, slower on others.
+play SAVAGEWIND_VK_FEEDBACK_LOOP | 1 | Turns feedback loops on where they are held back for your graphics card.
+play SAVAGEWIND_VK_GPL | 1 | Turns pipeline libraries on where they are held back for your graphics driver.
+play SAVAGEWIND_VK_NO_GPL | 1 | Turns pipeline libraries off.
+play SAVAGEWIND_VK_M5 | 1 | Turns on a Vulkan feature that the older-graphics-card mode leaves off.
+play SAVAGEWIND_VK_LEGACY | 1 | Uses the settings of Alpha 2 for the graphics driver: no maintenance5, pipeline libraries or feedback loops.
+play SAVAGEWIND_VK_HEAP_IMPORT | 1 | Gives the game's memory to the graphics card by import instead of export.
+play SAVAGEWIND_VK_SPARSE_HEAP | 0 | Sparse memory for the game. 1 forces it on, 0 forces it off.
+play SAVAGEWIND_VK_NO_GMEM | 1 | Turns off the single memory mapping of the game's heap.
+play SAVAGEWIND_VK_NO_PIPELINE_CACHE | 1 | Ignores the saved pipeline cache.
+play SAVAGEWIND_VK_NO_SPIRV_CACHE | 1 | Ignores the saved shader cache.
+play SAVAGEWIND_GPU_OVERLAP | 0 | Overlap of CPU and GPU work. 0 turns it off.
+play SAVAGEWIND_NO_OCCLUSION_QUERY | 1 | Turns off occlusion queries.
+play SAVAGEWIND_NO_PREEMPT | 1 | Turns off thread preemption in the game's scheduler.
+play SAVAGEWIND_ONE_PER_CORE | 0 | Uses one logical processor per core. 0 uses all of them.
+play SAVAGEWIND_COMPAT_CPU | 1 | Uses the game code for processors without AVX2 and FMA, if it was built.
+play SAVAGEWIND_KSYNC | 0 | Fast locks in the game. 0 turns them off.
+play SAVAGEWIND_FPS_CAP | 60 | Frame rate cap of the presenter. 0 means no cap.
+play SAVAGEWIND_NO_AUDIO | 1 | Turns the sound off.
+play SAVAGEWIND_NO_REVERB | 1 | Turns the room reverb off.
+play SAVAGEWIND_DSU | off | Motion controls from a DSU server (Linux). on, off or auto.
+play SAVAGEWIND_DSU_ENDPOINT | 127.0.0.1:26760 | Address of the DSU server for motion controls (Linux).
+play SAVAGEWIND_GPU | auto | Which graphics card to use: a number, part of its name, or auto.
+play SAVAGEWIND_MENU_LANG | en | The language of the menus, by code.

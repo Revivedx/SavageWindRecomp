@@ -48,6 +48,12 @@ bool plat_reset_guest(uint64_t lo, uint64_t hi) {
 
 void plat_commit(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
 
+bool plat_committed_range(uint64_t addr, uint64_t end, uint64_t *a, uint64_t *e) {  // (the whole window is backed)
+    if (addr >= end) return false;
+    *a = addr, *e = end;
+    return true;
+}
+
 void plat_decommit(uint64_t addr, uint64_t size) {
     uint64_t a = (addr + 0xFFF) & ~0xFFFull, e = (addr + size) & ~0xFFFull;  // (whole pages inside the range only)
     if (e > a) madvise((void *)(uintptr_t)a, e - a, MADV_DONTNEED);  // (private anonymous memory: freed, reads as zero)

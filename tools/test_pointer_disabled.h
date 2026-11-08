@@ -12,4 +12,3 @@ bool pc_cursor_map_navigation(void) { return false; }
 uint64_t pc_cursor_buttons(uint64_t buttons) { return buttons; }
 bool prof_toggle(void) { return false; }
 void photo_take(void) {}
-void photo_pad(uint32_t buttons) { (void)buttons; }
