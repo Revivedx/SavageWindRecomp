@@ -169,6 +169,12 @@ Each DLC's RomFS goes in a folder of its own, named `aoc1/` and `aoc2/` as above
 (`aoc1/System/AocVersion.txt`). Keep the two DLC apart: the second one's RomFS is a single file, and extracting both
 into one folder leaves only one DLC.
 
+Do not merge the DLC into the game's `romfs/` either. A `romfs/` with the DLC inside (about 47,700 files instead of
+41,062) lets the game start, but the loading screen after a Divine Beast boss then never ends
+([#438](https://github.com/Revivedx/SavageWindRecomp/issues/438), [#570](https://github.com/Revivedx/SavageWindRecomp/issues/570)):
+the same save loads on to the inside of the beast with a `romfs/` of 41,062 files and the DLC in `aoc1/` and `aoc2/`.
+The game files page tells you when the DLC is merged.
+
 - **With the game:** keep them in the same folder as `exefs/` and `romfs/`, and choose that folder at the first
   setup. The DLC is set up together with the game.
 - **Later:** in Savage Wind Configuration's game files page, choose a folder that holds just the DLC folders and set
