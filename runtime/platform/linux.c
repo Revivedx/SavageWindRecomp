@@ -173,6 +173,8 @@ void plat_init(void) {
 }
 
 // (inside an AppImage: the binary in its mount, which stays mounted while this process lives - re-exec included)
+const char *plat_log_path(void) { return g_log_path; }
+
 bool plat_exe_path(char *buf, size_t size) {
     ssize_t n = readlink("/proc/self/exe", buf, size - 1);
     if (n <= 0) return false;

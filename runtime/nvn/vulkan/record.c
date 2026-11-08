@@ -152,8 +152,9 @@ static void *push(PktFn fn, size_t args, size_t extra) {
     SW_TALLY("vk packets");
     return h + 1;
 }
+static uint64_t publish_every = PUBLISH_EVERY;  // (rec_init: 64 KB where R doesn't spin)
 static void commit(void) {
-    if (wpos - published >= PUBLISH_EVERY) publish();
+    if (wpos - published >= publish_every) publish();
 }
 // (the arrays of a packet: after its arguments, 16-aligned)
 #define AL16(n) (((n) + 15) & ~(size_t)15)
@@ -223,6 +224,13 @@ void rec_init(void) {
         if (!sp && plat_cpu_count() < 6) us = 0;
         spin_ns = us > 0 ? (uint64_t)us * 1000 : 0;
     }
+    // Where R sleeps at once (no spin: fewer than 6 logical processors), each publish of 4 KB woke it, a syscall on T
+    // (6.7% of T's busy time, 4 cores, Rito): 64 KB there (RTX 3060 limited to 4 cores at 720p: Rito 102 -> 106 fps,
+    // castle 149 -> 153; 2 cores / 4 threads: Rito 76 -> 81, castle 105 -> 110). Submissions and waits still publish
+    // at once. With the spin, the same either way. SAVAGEWIND_VK_PUBLISH_KB=<KB> sets it.
+    if (!spin_ns) publish_every = 64u << 10;
+    if (getenv("SAVAGEWIND_VK_PUBLISH_KB") && atoi(getenv("SAVAGEWIND_VK_PUBLISH_KB")) > 0)
+        publish_every = (uint64_t)atoi(getenv("SAVAGEWIND_VK_PUBLISH_KB")) << 10;
     const char *e = getenv("SAVAGEWIND_VK_RECORDER");
     int want = !e || atoi(e) != 0;
     // ARM's Mali drivers: LAS Recomp lost the GPU a few seconds into its title screen with the recorder thread on
@@ -416,6 +424,19 @@ void rec_QueueSubmit2(const VkSubmitInfo2 *si, uint64_t seq) {
     ENQ_T0();
     *(SubmitArgs *)push(submit_run, sizeof a, 0) = a;
     publish();  // (whoever waits for the submission must not wait for the next batch)
+    ENQ_END();
+}
+
+// fn(arg) made by the recorder in its turn, in order with the commands; published at once, as its caller may count on
+// what fn does (device.c's presents)
+typedef struct { void (*fn)(void *); void *arg; } CustomArgs;
+static void custom_run(const void *p) { const CustomArgs *a = p; a->fn(a->arg); }
+void rec_custom(void (*fn)(void *), void *arg) {
+    CustomArgs a = {fn, arg};
+    if (on <= 0) { custom_run(&a); return; }
+    ENQ_T0();
+    *(CustomArgs *)push(custom_run, sizeof a, 0) = a;
+    publish();
     ENQ_END();
 }
 

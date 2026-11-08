@@ -76,6 +76,11 @@ those logical processors only (the mask is set before any thread runs). Results 
 per run and route; each run's folder holds the log, the settings and the screenshot. A route whose game crashed or
 lost its camera is tried once more, in a `<run>_attempt2` folder (the failed one keeps its log).
 
+`--potato` imitates a weak PC: one logical processor on each of 4 cores, 1280x720, a 4 GB hard cap on the game's
+working set (`--ram-mb`, Windows; pages over it go to the standby list, so it shows trimming, not a slow page file) and
+a 2 GB card (`--vram-mb`: the budget the VRAM trim sees and the heap copy's plan), with the console's shadow
+resolution whatever the ini says. Each of the limits can be given on its own. The GPU itself stays as fast as it is.
+
 ### On the Steam Deck (Linux)
 
 The script runs on the Deck itself (its python3; it needs only `tools/perf_routes.py`, `swctl.py` and

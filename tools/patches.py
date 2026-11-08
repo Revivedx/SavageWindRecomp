@@ -19,6 +19,21 @@ def _word(gen, a):
     return struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
 
 
+def _quick_sort_enter(gen, a):
+    # Menu::enter: sample held X before the selector initializes its list.
+    assert _word(gen, a) == 0xfc1d0fe8, hex(_word(gen, a))  # str d8, [sp, #-0x30]!
+    return ('{ extern void rt_quick_inventory_sort_begin(Cpu *); rt_quick_inventory_sort_begin(c); '
+            'uint64_t ea = c->sp - 0x30; ST64(ea, (uint64_t)c->v[8]); c->sp = ea; }')
+
+
+def _quick_sort_menu(gen, a):
+    # Menu::execute: sort before native selection/close handling. An entry
+    # patch also covers generated direct calls without routing them to dispatch.
+    assert _word(gen, a) == 0xa9be7bfd, hex(_word(gen, a))  # stp x29, x30, [sp, #-0x20]!
+    return ('{ extern void rt_quick_inventory_sort_menu(Cpu *); rt_quick_inventory_sort_menu(c); '
+            'uint64_t ea = c->sp - 0x20; ST64(ea, c->x[29]); ST64(ea + 8, c->x[30]); c->sp = ea; }')
+
+
 def _fn(gen, site):  # the generated function at a site's address
     return f'f_{gen.sites[site]:x}'
 
@@ -488,11 +503,19 @@ def _cam_stick(gen, a):
             f'  /* {a:#x}: sub sp, sp, #0x30 (camera stick input) */')
 
 
+# Its way out, for every path through it: x19 is where the stick's value went. The game keeps that within the stick's
+# circle, so Controls > Controller camera speed scales it here (runtime/hle/input.c rt_cam_stick_end), past full tilt.
+def _cam_stick_end(gen, a):
+    assert _word(gen, a) == 0xfd400be8, hex(_word(gen, a))  # ldr d8, [sp, #0x10]
+    return ('{ extern void rt_cam_stick_end(uint64_t); rt_cam_stick_end(c->x[19]); c->v[8] = LD64(c->sp + 0x10); }'
+            f'  /* {a:#x}: ldr d8, [sp, #0x10] (camera stick input: its end) */')
+
+
 def _cam_pitch(gen, a):
     # fmul s1, s0, s0 just above, fnmul s3, s0, s0 here: the vertical part kept its sign squared, s1 or s3 by s0's sign
     assert _word(gen, a) == 0x1e208803 and _word(gen, a - 4) == 0x1e200801, hex(_word(gen, a))
     return ('{ extern int rt_cam_pitch(float *); union { uint32_t u; float f; } y = { .u = (uint32_t)c->v[0] }; '
-            'if (rt_cam_pitch(&y.f)) c->v[1] = y.u; else y.f = -(y.f * y.f); c->v[3] = y.u; }'
+            'if (rt_cam_pitch(&y.f)) c->v[1] = y.u; else { y.f = y.f * y.f; c->v[1] = y.u; y.f = -y.f; } c->v[3] = y.u; }'
             f'  /* {a:#x}: fnmul s3, s0, s0 (camera: the vertical stick part squared) */')
 
 
@@ -806,7 +829,25 @@ def _lookat_update(gen, a):
             f'  /* {a:#x}: ldp s1, s2, [x0, #0x38] (LookAtCamera view: eye x, y) */')
 
 
+# The wait for the ground. Every game update asks (at 1.9.0 FUN_71010b7a40, called from the code that raises pause reason
+# 9, bit 9 of the flags at pause_state + 0 / 0x7001e1611c) whether the map sections around Link (his position +-200 on
+# x and z) are still loading. While they are, reason 9 pauses the world, and the world's own update is what loads
+# them, so after a jump of a few hundred units it waits for itself and the world is frozen for good. The control
+# endpoint's teleport (runtime/control_tp.c) asks for the question to be answered "ready" for a while: the world keeps
+# running (and loads) while the runtime holds Link in the air, and the real answer is reported back so the hold ends
+# when the ground is there. The patch runs the game's own function and only changes what its caller sees.
+def _tp_gate(gen, a):
+    assert _word(gen, a) == _sub_sp(0xa0), hex(_word(gen, a))
+    fn = _fn(gen, 'tp_gate')
+    return ('{ extern int rt_tp_gate_begin(void); extern void rt_tp_gate_end(uint64_t); '
+            f'if (rt_tp_gate_begin()) {{ {fn}(c); rt_tp_gate_end(c->x[0]); c->x[0] = 0; return; }} '
+            'c->sp -= 0xa0; }'
+            f'  /* {a:#x}: sub sp, sp, #0xa0 (is the ground around Link still loading?) */')
+
+
 PATCHES = {
+    'quick_sort_enter': _quick_sort_enter,
+    'quick_sort_menu': _quick_sort_menu,
     'lookat_update': _lookat_update,
     'pc_map_focus': _pc_map_focus(False),
     'pc_map_focus_target': _pc_map_focus(True),
@@ -863,7 +904,9 @@ PATCHES = {
     'frustum_lr1': _frustum_load(0x2d550c02, (2, 3), 'lr'),
     'frustum_tb0': _frustum_load(0x2d540800, (0, 2), 'tb'),
     'frustum_tb1': _frustum_load(0x2d540c02, (2, 3), 'tb'),
+    'tp_gate': _tp_gate,
     'cam_stick': _cam_stick,
+    'cam_stick_end': _cam_stick_end,
     'cam_pitch_chase': _cam_pitch,
     'cam_pitch_surf': _cam_pitch,
     'cam_pitch_wakeboard': _cam_pitch,

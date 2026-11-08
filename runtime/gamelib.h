@@ -24,7 +24,7 @@
 #ifndef GAMELIB_ID
 #define GAMELIB_ID "dev"
 #endif
-#define GAMELIB_ABI 3
+#define GAMELIB_ABI 4
 
 // One exefs module as the game code was generated for it: where it goes (tools/layout.py, the generated layout.c)
 // and its functions. runtime/loader.c loads the module there.
@@ -52,6 +52,7 @@ typedef struct {
     const char *version;  // the game version ("1.8.2")
     const GameLibSite *sites;
     const uint32_t *nsites;
+    int *fma_unfused;  // the library's simd_fma_unfused (simd.h; only read by the compatible target's code)
 } GameLibTables;
 
 // The library's one exported function (tools/gamelib_entry.c).
@@ -67,6 +68,8 @@ extern "C" {
 bool gamelib_load(const char *game_dir, char *why, size_t why_size);
 // The tables of the loaded library (NULL before gamelib_load succeeds).
 const GameLibTables *gamelib_tables(void);
+// Once a game frame: passes settings.h fast_fma on to the compatible target's game code (logs each change)
+void gamelib_sync(void);
 // True when a library usable with this build is in one of those places (without loading it).
 bool gamelib_present(const char *game_dir);
 
