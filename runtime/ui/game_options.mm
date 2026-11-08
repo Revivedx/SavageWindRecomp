@@ -695,6 +695,14 @@ void build_items(void) {
                        },
                        [](const Item &) { return (int)lroundf(g_settings.volume * 10); },
                        [](const Item &, int x) { g_settings.volume = x / 10.0f; }, 10));
+    v.push_back(choice(P_AUDIO, "Audio output", "Stereo, 5.1 surround speakers, or 3D spatial sound for headphones.",
+                       [](const Item &) { return (int)AUDIO_OUT_COUNT; },
+                       [](const Item &, int x) {
+                           static const char *const o[AUDIO_OUT_COUNT] = {"Stereo", "Surround 5.1", "3D Headphones"};
+                           return tr(o[x]);
+                       },
+                       [](const Item &) { return g_settings.audio_output; },
+                       [](const Item &, int x) { g_settings.audio_output = x; }, AUDIO_OUT_STEREO));
     v.push_back(toggle(P_AUDIO, "Room reverb", "Echo in caves, shrines and big rooms.",
                        [](const Item &) { return (int)g_settings.reverb; },
                        [](const Item &, int x) { g_settings.reverb = x; }, 1));

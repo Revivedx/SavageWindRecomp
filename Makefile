@@ -739,6 +739,15 @@ test-bloom-scale: $(B)/test_bloom_scale
 
 .PHONY: test-bloom-scale
 
+$(B)/test_audio_mix: tests/test_audio_mix.c runtime/audio_mix.h runtime/settings.h
+	@mkdir -p $(B)
+	$(CC) -O1 -Wall -Wextra -Werror -o $@ $< -lm
+
+test-audio-mix: $(B)/test_audio_mix
+	$(B)/test_audio_mix
+
+.PHONY: test-audio-mix
+
 # Native quick-selector sorting: synthetic Linux guest memory, no game files.
 ifeq ($(PLATFORM),linux)
 $(B)/test_quick_inventory_sort: tools/test_quick_inventory_sort.c runtime/quick_inventory_sort.c $(RT_HDRS)

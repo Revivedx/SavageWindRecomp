@@ -19,10 +19,12 @@ int main(int argc, char **argv) {
     assert(g_settings.pc_cursor == (atoi(argv[2]) != 0));
     assert(g_settings.rumble == (atoi(argv[3]) != 0));
     assert(g_settings.sparse_heap == atoi(argv[4]));
+    assert(g_settings.audio_output == atoi(argv[4]));
     g_settings.rumble = !g_settings.rumble;
     // UI changes must remain possible even when startup debug overrides were supplied.
     g_settings.pc_cursor = !g_settings.pc_cursor;
     g_settings.sparse_heap = (g_settings.sparse_heap + 1) % SPARSE_HEAP_COUNT;
+    g_settings.audio_output = (g_settings.audio_output + 1) % AUDIO_OUT_COUNT;
     settings_save();
     printf("PASS: load cursor=%s, toggle and save for next boot\n", argv[2]);
 }

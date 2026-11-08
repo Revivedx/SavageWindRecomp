@@ -55,6 +55,10 @@ enum { SPARSE_HEAP_AUTO = 0, SPARSE_HEAP_ON = 1, SPARSE_HEAP_OFF = 2, SPARSE_HEA
 // display's own mode at any other size it has; Borderless never changes the display's mode (another size is scaled to
 // the screen); Exclusive always uses a display mode (the desktop's size too, at its highest refresh rate)
 enum { FSMODE_AUTO = 0, FSMODE_BORDERLESS = 1, FSMODE_EXCLUSIVE = 2, FSMODE_COUNT };
+// Audio > Audio output (runtime/services/audio.c): Stereo mixes the game's 6 channels (FL, FR, FC, LFE, BL, BR) down
+// to 2; Surround 5.1 sends all 6 channels to the audio device; 3D Headphones mixes the 6 channels to stereo with
+// binaural head-shadow and ear-delay cues for headphones.
+enum { AUDIO_OUT_STEREO = 0, AUDIO_OUT_SURROUND_51 = 1, AUDIO_OUT_HEADPHONES_3D = 2, AUDIO_OUT_COUNT };
 typedef struct {
     bool fullscreen;
     int fullscreen_mode;     // FSMODE_*
@@ -73,6 +77,7 @@ typedef struct {
     int sharpening;      // AMD CAS sharpening of the 3D image, 0 (off) .. 10 (100%) (vulkan/exec.c scene_post)
     bool frame_gen;      // AMD FSR 3 frame generation: a frame made between each two the game draws (vulkan/framegen.cpp)
     float volume;        // master volume, 1 = 100%
+    int audio_output;    // AUDIO_OUT_*: Stereo, Surround 5.1, or 3D Headphones
     bool reverb;         // room reverb effect
     bool movie_audio;
     bool mute_unfocused; // mute audio while the window is in the background or minimized
