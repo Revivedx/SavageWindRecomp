@@ -25,6 +25,10 @@ enum { UPQ_ULTRA = 0, UPQ_QUALITY = 1, UPQ_BALANCED = 2, UPQ_PERFORMANCE = 3, UP
 // TAA (Vulkan): the game's own motion vectors (vulkan/mvec.c) and a jittered camera (output_scale.c rt_jitter_on)
 // blend each frame with the ones before it (vulkan/exec.c mvec_taa)
 enum { AA_OFF = 0, AA_SMAA = 1, AA_TAA = 2 };
+// Video > Anti-aliasing's row: the game's own FXAA (game_fxaa) is one of its choices, never on with SMAA or TAA
+enum { AA_ROW_OFF, AA_ROW_FXAA, AA_ROW_SMAA, AA_ROW_TAA, AA_ROW_COUNT };
+int settings_aa_row(void);
+void settings_aa_row_set(int row);
 // Video > Render scale: 50%, 75%, 100% (the window's size), 125%, 150%, 200%
 enum { RSCALE_50 = 0, RSCALE_75 = 1, RSCALE_100 = 2, RSCALE_125 = 3, RSCALE_150 = 4, RSCALE_200 = 5, RSCALE_COUNT };
 #ifdef __APPLE__
@@ -41,6 +45,10 @@ enum { PERF_OFF = 0, PERF_FPS = 1, PERF_FULL = 2 };
 // same at every rate. The console runs the game at 30.
 #define FPS_DEFAULT 60
 #define FPS_CHOICES {0, 30, 60, 90, 120, 144, 165, 240, 360}
+// PC handhelds (settings_handheld): 40 for a screen at 40 or 80 Hz, 45 at 90 Hz; no Off, no Match display
+#define FPS_CHOICES_HANDHELD {30, 40, 45, 60}
+#define FPS_CHOICES_MAX 9
+int fps_choices(const int **list);  // this machine's frame rates (FPS_CHOICES, or FPS_CHOICES_HANDHELD): their count
 // VSync (Video > VSync; runtime/nvn/vulkan/device.c picks the present mode): On waits for the display (FIFO; with
 // G-SYNC / FreeSync the display waits for the game instead), Fast shows the newest frame at each refresh (MAILBOX),
 // Adaptive is On but shows a late frame at once (FIFO_RELAXED), Off shows each frame at once (IMMEDIATE). With On and
@@ -123,6 +131,7 @@ typedef struct {
     int hdr_white;       // nits of SDR white in HDR (0: what Windows gives SDR content on that monitor)
     int sparse_heap;     // SPARSE_HEAP_*: guest heap backing (Windows Vulkan; applied on next start)
     int fov;             // field of view in play, percent of the game's own (FOV_CHOICES)
+    bool handheld_setup; // a PC handheld's own settings were taken once (settings_load)
     int hud_size;        // the HUD's size in play, percent of the game's own (HUD_SIZE_CHOICES, runtime/nvn/hud_scale.h)
     int draw_distance;   // DRAWDIST_*: how far placed actors are kept (runtime/draw_distance.c)
     int haze;            // the air's haze, percent of the game's (services/fs.c haze_patch; from the next start)
@@ -171,10 +180,16 @@ float draw_distance_factor(void);  // the setting's factor on the game's distanc
 // Video > Graphics preset: the Advanced options' draw distance, shadows, bloom, depth of field, dynamic resolution,
 // anisotropic filtering, anti-aliasing, the game's FXAA, upscaler, asynchronous shaders and render scale at once
 // (settings.c k_gpreset). Potato: for weak PCs; Original: as on the console (the defaults); High; Savage.
-enum { GPRESET_POTATO, GPRESET_ORIGINAL, GPRESET_HIGH, GPRESET_SAVAGE, GPRESET_COUNT };
+// PC Handheld: only on one (settings_handheld), taken by itself the first time the game starts there.
+enum { GPRESET_POTATO, GPRESET_ORIGINAL, GPRESET_HIGH, GPRESET_SAVAGE, GPRESET_HANDHELD, GPRESET_COUNT };
 extern const char *const g_gpreset_names[GPRESET_COUNT];
 int graphics_preset_current(void);  // the preset the settings match, or -1 (Custom)
 void graphics_preset_apply(int preset);
+int graphics_preset_count(void);    // the presets offered on this machine
+// This machine is a PC handheld (runtime/handheld.h), a Steam Deck; the size of its screen (false: the desktop's)
+bool settings_handheld(void);
+bool settings_steam_deck(void);
+bool settings_handheld_size(int *w, int *h);
 const char *settings_file(void);  // savagewind.ini, or SAVAGEWIND_SETTINGS
 #define WEAPON_WEAR_MIN 0    // (Accessibility > Weapon wear, percent: 0 = never wear out, as no_weapon_wear)
 #define WEAPON_WEAR_MAX 300
@@ -184,7 +199,7 @@ const char *settings_file(void);  // savagewind.ini, or SAVAGEWIND_SETTINGS
 #define MOUSE_SENS_DEFAULT 3.0f  // (300% of the first default, 1; user, 2026-10-19)
 #define MOUSE_SENS_Y_CHOICES {50, 60, 70, 80, 90, 100, 110, 125, 150, 175, 200}  // (percent of the horizontal)
 enum { MOTION_INVERT_UD = 1, MOTION_INVERT_LR = 2 };
-enum { ICONS_AUTO, ICONS_KEYBOARD, ICONS_XBOX, ICONS_PLAYSTATION, ICONS_NINTENDO, ICONS_COUNT };
+enum { ICONS_AUTO, ICONS_KEYBOARD, ICONS_XBOX, ICONS_PLAYSTATION, ICONS_NINTENDO, ICONS_STEAMDECK, ICONS_COUNT };
 enum {
     BUTTON_LAYOUT_AUTO,
     BUTTON_LAYOUT_NINTENDO,

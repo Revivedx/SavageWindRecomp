@@ -394,7 +394,8 @@ void menu_apply_window_requests(void *win) {
     SDL_Window *w = (SDL_Window *)win;
     g_pixel_density = SDL_GetWindowPixelDensity(w);
     static bool text_input;
-    bool want_text = capturing();
+    // (only while typing: text input brings up the Steam Deck's on-screen keyboard)
+    bool want_text = g_kbd.load() == 1 || console_is_open() || (g_open.load() && g_text_busy.load());
     if (want_text != text_input) {
         if (want_text) SDL_StartTextInput(w);
         else SDL_StopTextInput(w);
@@ -702,9 +703,10 @@ static void tab_display(void) {
     {   // Graphics preset (settings.c k_gpreset): Custom (matching no preset) is shown, never picked
         const char *names[GPRESET_COUNT + 1];
         for (int i = 0; i < GPRESET_COUNT; i++) names[i] = g_gpreset_names[i];
-        names[GPRESET_COUNT] = "Custom";
-        int p = graphics_preset_current(), cur = p < 0 ? GPRESET_COUNT : p;
-        if (opt_choice("Graphics preset", &cur, names, GPRESET_COUNT + 1, GPRESET_ORIGINAL,
+        const int np = graphics_preset_count();
+        names[np] = "Custom";
+        int p = graphics_preset_current(), cur = p < 0 ? np : p;
+        if (opt_choice("Graphics preset", &cur, names, np + 1, GPRESET_ORIGINAL,
                        "Sets the draw distance, shadows, upscaler, anti-aliasing, texture filtering and the Advanced "
                        "options at once. Potato: for weak PCs (nearer, smaller shadows, FSR 1, no bloom or depth of "
                        "field). Original: as on the console. High and Savage: further and sharper, for faster PCs.", false))
@@ -841,10 +843,10 @@ static void tab_display(void) {
             g_settings.draw_distance = order[cur];
     }
     {   // Frame rate (runtime/hle/framepace.c)
-        static const int fps[] = FPS_CHOICES;
-        enum { NF = sizeof fps / sizeof fps[0] };
-        static char names_buf[NF][32];
-        const char *names[NF + 1];  // (the rates, then Match display)
+        const int *fps;
+        const int NF = fps_choices(&fps);
+        static char names_buf[FPS_CHOICES_MAX][32];
+        const char *names[FPS_CHOICES_MAX + 1];  // (the rates, then Match display; a handheld has only the rates)
         int cur = 0, def = 0;
         for (int i = 0; i < NF; i++) {
             if (fps[i]) snprintf(names_buf[i], sizeof names_buf[i], tr("%d FPS"), fps[i]);
@@ -865,7 +867,7 @@ static void tab_display(void) {
                                            "pictures, and one that divides it evenly is the smoothest."), hz);
             desc += std::string("\n\n") + line;
         }
-        if (opt_choice("Frame rate", &cur, names, NF + 1, def, desc.c_str(), false)) {
+        if (opt_choice("Frame rate", &cur, names, NF + (settings_handheld() ? 0 : 1), def, desc.c_str(), false)) {
             g_settings.fps_display = cur == NF;
             if (g_settings.fps_display) settings_fps_for_display(winsize_refresh_rate());
             else g_settings.fps_limit = fps[cur];
@@ -981,19 +983,15 @@ static void tab_display(void) {
                "blends only along them, so textures stay sharp. Most useful with an upscaler.");
 #else
     {   // (the TAA sentence on its own: the first one keeps its translations)
-        static const char *aa[] = {"Off", "SMAA", "TAA"};  // (settings.h AA_*)
+        static const char *aa[] = {"Off", "FXAA", "SMAA", "TAA"};  // (settings.h AA_ROW_*)
         static std::string d;
-        d = std::string(tr("Smooths jagged edges of the game image before it is scaled to the window. SMAA: finds the "
+        d = std::string(tr("FXAA: the game's own, as on the console: cheap, a little soft.")) + " " + std::string(tr("Smooths jagged edges of the game image before it is scaled to the window. SMAA: finds the "
                            "edges and blends only along them, so textures stay sharp. Most useful with an upscaler.")) +
             " " + tr("TAA: blends each frame with the ones before it, following the game's motion, so edges stay "
                      "smooth and stop shimmering; slightly softer, use it with Sharpening.");
-        opt_choice("Anti-aliasing", &g_settings.antialias, aa, 3, AA_OFF, d.c_str());
+        int row = settings_aa_row();
+        if (opt_choice("Anti-aliasing", &row, aa, AA_ROW_COUNT, AA_ROW_FXAA, d.c_str())) settings_aa_row_set(row);
     }
-    // the game's own FXAA (vulkan/exec.c fxaa_patch)
-    opt_toggle("Game's FXAA", &g_settings.game_fxaa, true,
-               "The game's own FXAA, which smooths edges as the 3D image is drawn into the final picture, as on the "
-               "console. Off: a sharper image with more jagged edges; use it to replace FXAA with SMAA or TAA above, "
-               "or to keep the image crisp at a high resolution.");
     // the wet lighting passes' sun glare (maxwell/translate.c maxwell_wet_lighting)
     opt_toggle("Wet grass fix", &g_settings.wet_fix, false,
                "In rain with the sun out, the game's wet lighting blows grass and roofs out to white. On: most of that "
@@ -1385,7 +1383,7 @@ static void perf_overlay_draw(ImGuiIO &io, float scale) {
     }
     // (FSR 3 anti-aliases the scene itself: the setting does nothing then)
     int aa = rt_antialias();
-    line += std::string(" | ") + tr("Anti-aliasing") + ": " + (rt_fsr4() ? tr("FSR 4") : rt_fsr3() ? tr("FSR 3") : aa == AA_TAA ? tr("TAA") : aa == AA_SMAA ? tr("SMAA") : tr("Off"));
+    line += std::string(" | ") + tr("Anti-aliasing") + ": " + (rt_fsr4() ? tr("FSR 4") : rt_fsr3() ? tr("FSR 3") : aa == AA_TAA ? tr("TAA") : aa == AA_SMAA ? tr("SMAA") : g_settings.game_fxaa ? "FXAA" : tr("Off"));
     ImGui::TextDisabled("%s", line.c_str());
     line.clear();
 #ifndef __APPLE__

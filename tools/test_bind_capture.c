@@ -9,6 +9,7 @@
 static uint64_t now;
 Uint64 SDL_GetTicks(void) { return now; }
 int input_pad_family(void) { return 1; }
+bool settings_steam_deck(void) { return false; }
 
 // Model the held state on the other side of the same event routing as the window loop. No window or controller.
 static bool held;

@@ -8,6 +8,7 @@
 #define RT_ON_RESET(fn) static void fn(void)
 #include "../runtime/hle/input.c"
 #include "test_pointer_disabled.h"
+bool settings_steam_deck(void) { return false; }
 Settings g_settings;
 static int pitch,roll,yaw;static bool center,captured,paused,apparatus;
 void motion_keyboard(int p,int r,int y,bool c){pitch=p;roll=r;yaw=y;center=c;}

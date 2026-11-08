@@ -41,7 +41,7 @@ static const Setting settings[] = {
     {"stick_deadzone[1]", &g_settings.stick_deadzone[1], FLOAT, 0, .5, NULL},
     B(mouse_camera), B(pc_bow), F(mouse_sens, .1, 10), F(mouse_sens_y, .5, 2), B(mouse_invert_y),
     F(motion_sens, .1, 10), I(motion_invert, 0, 3, "off|up_down|left_right|both"),
-    I(button_icons, 0, ICONS_COUNT - 1, "auto|keyboard|xbox|playstation|nintendo"),
+    I(button_icons, 0, ICONS_COUNT - 1, "auto|keyboard|xbox|playstation|nintendo|steamdeck"),
     I(button_layout, 0, BUTTON_LAYOUT_COUNT - 1, "auto|nintendo|swap_ab|xbox|swap_xy|gamecube"),
     B(async_shaders), B(precompile_shaders), B(quick_sort),
     I(shadow_res, 0, SHADOW_COUNT - 1, "console|high|ultra|extreme|potato"), B(wide_view), B(hud_edges),
@@ -189,10 +189,14 @@ static void cmd_set(int argc, char **argv, ControlReply *r) {
     }
     int v = (int)value;
     if (is(s, "fps_limit")) {
-        static const int fps[] = FPS_CHOICES;
+        const int *fps;
+        int nfps = fps_choices(&fps);
         bool offered = false;
-        for (unsigned i = 0; i < sizeof fps / sizeof fps[0]; i++) offered |= fps[i] == v;
-        if (!offered) { control_fail(r, "fps must be 0 (unlimited), 30, 60, 90, 120, 144, 165, 240 or 360"); return; }
+        for (int i = 0; i < nfps; i++) offered |= fps[i] == v;
+        if (!offered) {
+            control_fail(r, settings_handheld() ? "fps must be 30, 40, 45 or 60" : "fps must be 0 (unlimited), 30, 60, 90, 120, 144, 165, 240 or 360");
+            return;
+        }
     }
     if (is(s, "hdr_white") && v != 0 && v < 80) {
         control_fail(r, "hdr_white must be 0 (automatic) or 80 to 1000 nits"); return;

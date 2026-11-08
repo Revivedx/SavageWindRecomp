@@ -18,3 +18,8 @@ uint32_t glyphs_generation(void);
 
 // The diamond vertex (0: East, 1: South, 2: North, 3: West) for each Switch face button (A, B, X, Y) on the HUD.
 void glyphs_hud_positions(int pos[4]);
+
+// The device the Controls page and the tips draw instead of the Switch (runtime/nvn/hw_illust.c HW_DEVICE_*), -1 for
+// the Switch: Button icons' device, or on Automatic the controller connected. Decided when the game files are opened
+// (the layouts are patched then): another one shows from the next start.
+int glyphs_console(void);

@@ -20,6 +20,12 @@ extern "C" {
 bool gamelib_compat(void) { return false; }
 int graphics_preset_current(void) { abort(); }
 void graphics_preset_apply(int) { abort(); }
+int settings_aa_row(void) { abort(); }
+void settings_aa_row_set(int) { abort(); }
+int graphics_preset_count(void) { abort(); }
+bool settings_handheld(void) { return false; }
+bool settings_steam_deck(void) { return false; }
+int fps_choices(const int **list) { static const int l[] = FPS_CHOICES; *list = l; return (int)(sizeof l / sizeof *l); }
 const char *const g_gpreset_names[GPRESET_COUNT] = {"Potato", "Original", "High", "Savage"};
 const char *problem_report_make(void) { abort(); }
 void menu_request_window_apply(void) { abort(); }

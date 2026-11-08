@@ -42,8 +42,13 @@ static inline bool bind_key_same_context(int a, int b) {
 // What the player uses (runtime/hle/input.c input_last_device)
 enum { DEVICE_KEYBOARD, DEVICE_PAD };
 int input_last_device(void);
-int input_pad_family(void);  // the open controller: 0 Nintendo / other / none, 1 Xbox, 2 PlayStation
+int input_pad_family(void);  // the open controller: 0 Nintendo / other / none, 1 Xbox, 2 PlayStation, 3 Steam Deck
 bool input_window_focused(void);
+#define BIND_VALVE_VENDOR 0x28de  // (USB vendor of the Steam Deck's controls and of Steam Input's virtual pads)
+#define BIND_DECK_PRODUCT 0x1205  // (the Steam Deck's controls, read directly)
+// A controller's family for its icons and drawings (the numbers above), from what SDL says of it (type, USB vendor and
+// product, name; first: the first Valve pad opened); runtime/hle/bindings.c
+int bind_pad_family(int type, int vendor, int product, const char *name, bool first);
 
 // Controller binding values: an SDL_GamepadButton, or the analog triggers as buttons
 enum { PADB_LTRIGGER = 26 /* SDL_GAMEPAD_BUTTON_COUNT */, PADB_RTRIGGER, PADB_HOST_COUNT };

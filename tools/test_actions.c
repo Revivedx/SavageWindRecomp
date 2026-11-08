@@ -12,6 +12,7 @@
 static uint64_t now;
 Uint64 SDL_GetTicks(void) { return now; }
 int input_pad_family(void) { return 0; }
+bool settings_steam_deck(void) { return false; }
 
 // Actions 2 / 3 / 5 / 9 read X / Y / A / B (the pad mask bits are sead's), the rest A
 static uint32_t masks[ACT_COUNT];

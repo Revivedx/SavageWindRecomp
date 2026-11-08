@@ -9,6 +9,7 @@
 #include "hle.h"
 #include "input_bind.h"
 #include "language.h"
+#include "handheld.h"
 
 bool fsr3_upscaler_enabled(void);  // (nvn/output_scale.c: FSR 3 upscaling held back for now)
 
@@ -88,7 +89,7 @@ static const char *const k_audio_out[AUDIO_OUT_COUNT] = {"stereo", "surround_51"
 
 static const char *const k_drawdist[DRAWDIST_COUNT] = {"original", "medium", "high", "potato"};  // (DRAWDIST_*)
 
-static const char *const k_icons[ICONS_COUNT] = {"auto", "keyboard", "xbox", "playstation", "nintendo"};
+static const char *const k_icons[ICONS_COUNT] = {"auto", "keyboard", "xbox", "playstation", "nintendo", "steamdeck"};
 
 static const char *const k_button_layout[BUTTON_LAYOUT_COUNT] = {"auto", "nintendo", "swap_ab", "xbox", "swap_xy", "gamecube"};
 
@@ -117,12 +118,60 @@ void settings_fps_for_display(float hz) {
     g_settings.fps_limit = best;
 }
 
+static const Handheld *handheld(void) {
+    static Handheld h;
+    static bool done;
+    if (!done) {
+        h = handheld_detect(), done = true;
+        if (h.on) LOG("[settings] PC handheld%s, screen %d x %d\n", h.deck ? " (Steam Deck)" : "", h.w, h.h);
+    }
+    return &h;
+}
+bool settings_handheld(void) { return handheld()->on; }
+bool settings_steam_deck(void) { return handheld()->deck; }
+bool settings_handheld_size(int *w, int *h) {
+    if (handheld()->w <= 0) return false;
+    *w = handheld()->w, *h = handheld()->h;
+    return true;
+}
+
+int settings_aa_row(void) {
+    return g_settings.antialias == AA_TAA ? AA_ROW_TAA : g_settings.antialias == AA_SMAA ? AA_ROW_SMAA
+         : g_settings.game_fxaa ? AA_ROW_FXAA : AA_ROW_OFF;
+}
+void settings_aa_row_set(int row) {
+    g_settings.antialias = row == AA_ROW_TAA ? AA_TAA : row == AA_ROW_SMAA ? AA_SMAA : AA_OFF;
+    g_settings.game_fxaa = row == AA_ROW_FXAA;
+}
+
+int fps_choices(const int **list) {
+    static const int pc[] = FPS_CHOICES, hh[] = FPS_CHOICES_HANDHELD;
+    _Static_assert(sizeof pc / sizeof pc[0] <= FPS_CHOICES_MAX, "");
+    bool h = settings_handheld();
+    *list = h ? hh : pc;
+    return h ? (int)(sizeof hh / sizeof hh[0]) : (int)(sizeof pc / sizeof pc[0]);
+}
+
+// The first start on a handheld, also with settings from before this: the handheld's preset, full screen at its size
+static void handheld_first_setup(void) {
+    if (!settings_handheld() || g_settings.handheld_setup) return;
+    g_settings.handheld_setup = true;
+    graphics_preset_apply(GPRESET_HANDHELD);
+    g_settings.fullscreen = true;
+    g_settings.window_w = g_settings.window_h = 0;
+    g_settings.fps_limit = FPS_DEFAULT, g_settings.fps_display = false;
+    g_settings.fov = 80, g_settings.hud_edges = true;
+    g_settings.sharper_menus = g_settings.sharper_text = 2;  // (small screen: the letters and menus stay crisp)
+    LOG("[settings] PC handheld: its own settings, the first time\n");
+}
+
 void settings_load(void) {
     static bool loaded;
     if (loaded) return;
     loaded = true;
     FILE *f = fopen(SETTINGS_FILE, "r");
     if (!f) {
+        handheld_first_setup();
         gyro_startup_overrides();
         pc_controls_env();
         return;
@@ -257,6 +306,7 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "field_of_view")) g_settings.fov = atoi(val);  // (percent)
         else if (!strcmp(key, "hud_size")) g_settings.hud_size = atoi(val);  // (percent)
+        else if (!strcmp(key, "handheld_setup")) g_settings.handheld_setup = atoi(val) != 0;
         else if (!strcmp(key, "draw_distance")) {
             for (int i = 0; i < DRAWDIST_COUNT; i++)
                 if (!strcmp(val, k_drawdist[i])) g_settings.draw_distance = i;
@@ -339,12 +389,18 @@ void settings_load(void) {
     if (g_settings.volume > 2) g_settings.volume = 2;
     if (g_settings.shrine_sensor_volume < 0) g_settings.shrine_sensor_volume = 0;
     if (g_settings.shrine_sensor_volume > 100) g_settings.shrine_sensor_volume = 100;
+    if (g_settings.antialias != AA_OFF) g_settings.game_fxaa = false;  // (one anti-aliasing at a time: settings_aa_row)
+    handheld_first_setup();
+    if (settings_handheld()) {  // (neither is offered on one)
+        g_settings.fps_display = false;
+        if (g_settings.fps_limit <= 0) g_settings.fps_limit = FPS_DEFAULT;
+    }
     if (g_settings.fps_limit < 0) g_settings.fps_limit = 0;
     if (g_settings.fps_limit > 0) {  // (a frame rate not offered: the nearest one that is)
-        static const int fps[] = FPS_CHOICES;
-        int best = FPS_DEFAULT;
-        for (unsigned i = 1; i < sizeof fps / sizeof fps[0]; i++)
-            if (abs(fps[i] - g_settings.fps_limit) < abs(best - g_settings.fps_limit)) best = fps[i];
+        const int *fps;
+        int nfps = fps_choices(&fps), best = FPS_DEFAULT;
+        for (int i = 0; i < nfps; i++)
+            if (fps[i] && abs(fps[i] - g_settings.fps_limit) < abs(best - g_settings.fps_limit)) best = fps[i];
         g_settings.fps_limit = best;
     }
     { extern float winsize_refresh_rate(void); settings_fps_for_display(winsize_refresh_rate()); }  // (a reboot: known)
@@ -464,6 +520,7 @@ void settings_save(void) {
     if (g_settings.hdr_white) fprintf(f, "hdr_paper_white = %d\n", g_settings.hdr_white);
     fprintf(f, "field_of_view = %d\n", g_settings.fov);
     fprintf(f, "hud_size = %d\n", g_settings.hud_size);
+    if (g_settings.handheld_setup) fprintf(f, "handheld_setup = 1\n");
     int dd = g_settings.draw_distance;
     fprintf(f, "draw_distance = %s\n", k_drawdist[dd >= 0 && dd < DRAWDIST_COUNT ? dd : DRAWDIST_ORIGINAL]);
     fprintf(f, "no_weapon_wear = %d\n", g_settings.no_weapon_wear);
@@ -513,11 +570,14 @@ static const struct {
     {DRAWDIST_ORIGINAL, SHADOW_CONSOLE, true, true, true, 1 /* 2x */, AA_OFF, true, UPSCALE_DEFAULT, UPQ_QUALITY, true, RSCALE_100},
     {DRAWDIST_MEDIUM, SHADOW_HIGH, true, true, false, 3 /* 8x */, AA_SMAA, false, UPSCALE_DEFAULT, UPQ_QUALITY, false, RSCALE_125},
     {DRAWDIST_HIGH, SHADOW_EXTREME, true, true, false, 4 /* 16x */, AA_TAA_OR_SMAA, false, UPSCALE_DEFAULT, UPQ_QUALITY, false, RSCALE_150},
+    {DRAWDIST_ORIGINAL, SHADOW_CONSOLE, true, true, true, 1 /* 2x */, AA_OFF, true, UPSCALE_SPATIAL, UPQ_ULTRA, true, RSCALE_100},
 };
-const char *const g_gpreset_names[GPRESET_COUNT] = {"Potato", "Original", "High", "Savage"};
+const char *const g_gpreset_names[GPRESET_COUNT] = {"Potato", "Original", "High", "Savage", "PC Handheld"};
+
+int graphics_preset_count(void) { return settings_handheld() ? GPRESET_COUNT : GPRESET_HANDHELD; }
 
 int graphics_preset_current(void) {
-    for (int i = 0; i < GPRESET_COUNT; i++)
+    for (int i = 0; i < graphics_preset_count(); i++)
         if (g_settings.draw_distance == k_gpreset[i].draw_distance && g_settings.shadow_res == k_gpreset[i].shadow_res &&
             g_settings.bloom == k_gpreset[i].bloom && g_settings.depth_of_field == k_gpreset[i].depth_of_field &&
             g_settings.dynamic_res == k_gpreset[i].dynamic_res && g_settings.anisotropy == k_gpreset[i].anisotropy &&
@@ -543,4 +603,5 @@ void graphics_preset_apply(int preset) {
     if (g_settings.upscaler != UPSCALE_OFF) g_settings.upscale_quality = k_gpreset[preset].upscale_quality;
     g_settings.async_shaders = k_gpreset[preset].async_shaders;
     g_settings.render_scale = k_gpreset[preset].render_scale;
+    if (preset == GPRESET_HANDHELD) g_settings.sharpening = 7, g_settings.tex_lod_bias = TEX_LOD_SHARP;  // (the upscaled image's softness)
 }

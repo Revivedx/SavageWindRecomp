@@ -154,7 +154,7 @@ const char *const k_modes[] = {"Ultra Quality", "Quality", "Balanced", "Performa
 #ifdef __APPLE__
 const char *const k_aa[] = {"Off", "SMAA"};
 #else
-const char *const k_aa[] = {"Off", "SMAA", "TAA"};  // (settings.h AA_*)
+const char *const k_aa[] = {"Off", "FXAA", "SMAA", "TAA"};  // (settings.h AA_ROW_*)
 #endif
 const char *const k_aniso[] = {"Off", "2x", "4x", "8x", "16x"};  // (settings anisotropy 0..4)
 const char *const k_tex_lod[] = {"Default", "Sharp", "Sharper"};  // (settings tex_lod_bias 0..2)
@@ -170,16 +170,20 @@ const char *const k_wear_times[] = {"0x", "0.5x", "1x", "1.5x", "2x", "2.5x", "3
 const char *const k_shadow[] = {"Console (896)", "High (2048)", "Ultra (4096)", "Savage (8192)", "Potato (448)"};  // (SHADOW_*)
 const int k_shadow_order[] = {SHADOW_POTATO, SHADOW_CONSOLE, SHADOW_HIGH, SHADOW_ULTRA, SHADOW_EXTREME};
 const char *const k_text[] = {"Off", "2x", "4x"};  // (sharper_text / 2)
-const char *const k_icons[] = {"Automatic", "Keyboard", "Xbox", "PlayStation", "Nintendo"};  // (ICONS_*)
+const char *const k_icons[] = {"Automatic", "Keyboard", "Xbox", "PlayStation", "Nintendo", "Steam Deck"};  // (ICONS_*)
 const char *const k_button_layout[BUTTON_LAYOUT_COUNT] = {
     "Automatic", "Nintendo", "Swap A / B", "Xbox", "Swap X / Y", "GameCube"
 };  // (BUTTON_LAYOUT_*)
-constexpr int k_fps[] = FPS_CHOICES;  // frame rate (0: Off, no limit)
+static int fps_at(int x) { const int *l; fps_choices(&l); return l[x]; }  // frame rate (0: Off, no limit)
+static int fps_count() { const int *l; return fps_choices(&l); }
+static int fps_default_index() {
+    for (int i = 0; i < fps_count(); i++)
+        if (fps_at(i) == FPS_DEFAULT) return i;
+    return 0;
+}
 const char *const k_vsync[VSYNC_COUNT] = {"On", "Fast", "Adaptive", "Off"};  // (settings.h VSYNC_*)
 const char *const k_hdr[HDR_COUNT] = {"Automatic", "On", "Off"};               // (settings.h HDR_*)
 const char *const k_fsmode[FSMODE_COUNT] = {"Automatic", "Borderless", "Exclusive"};  // (settings.h FSMODE_*)
-constexpr int FPS_DEFAULT_INDEX = 2;
-static_assert(k_fps[FPS_DEFAULT_INDEX] == FPS_DEFAULT);
 constexpr int k_sens[] = {10, 25, 50, 75, 100, 125, 150, 200, 250, 300, 400, 500, 600, 800, 1000};  // mouse sensitivity, %
 constexpr int SENS_DEFAULT = 9;  // (300%: MOUSE_SENS_DEFAULT)
 static_assert(k_sens[SENS_DEFAULT] == 300);
@@ -278,9 +282,9 @@ const char *ups_label(const Item &, int x) {
 
 const char *fps_label(const Item &, int x) {
     static char buf[32];
-    if (x == N(k_fps)) return tr("Match display");  // (settings fps_display)
-    if (!k_fps[x]) return tr("Off");
-    snprintf(buf, sizeof buf, tr("%d FPS"), k_fps[x]);
+    if (x == fps_count()) return tr("Match display");  // (settings fps_display)
+    if (!fps_at(x)) return tr("Off");
+    snprintf(buf, sizeof buf, tr("%d FPS"), fps_at(x));
     return buf;
 }
 
@@ -350,14 +354,14 @@ void build_items(void) {
     // Graphics preset (settings.c k_gpreset): sets rows of the Advanced page; "Custom"
     // (settings matching no preset) is shown, never picked
     Item gp = choice(P_VIDEO, "Graphics preset", "Potato: for weak PCs. Original: as on the console. High and Savage: further and sharper.",
-                     [](const Item &) { return GPRESET_COUNT + 1; },
-                     [](const Item &, int x) { return tr(x < GPRESET_COUNT ? g_gpreset_names[x] : "Custom"); },
+                     [](const Item &) { return graphics_preset_count() + 1; },
+                     [](const Item &, int x) { return tr(x < graphics_preset_count() ? g_gpreset_names[x] : "Custom"); },
                      [](const Item &) {
                          int p = graphics_preset_current();
-                         return p < 0 ? (int)GPRESET_COUNT : p;
+                         return p < 0 ? graphics_preset_count() : p;
                      },
                      [](const Item &, int x) { graphics_preset_apply(x); }, GPRESET_ORIGINAL);
-    gp.value_off = [](const Item &, int x) { return x >= GPRESET_COUNT; };
+    gp.value_off = [](const Item &, int x) { return x >= graphics_preset_count(); };
     v.push_back(gp);
     v.push_back(button(P_VIDEO, "Advanced options", "Draw distance, upscaler, anti-aliasing, shadows, bloom and more.", "Open", A_PAGE, P_VIDEO_ADV));
     v.push_back(toggle(P_VIDEO, "Fullscreen", "Fills the screen. Also F11 or Alt+Enter.",
@@ -444,19 +448,19 @@ void build_items(void) {
                        [](const Item &) { return nearest(k_hud_size, N(k_hud_size), (float)g_settings.hud_size); },
                        [](const Item &, int x) { g_settings.hud_size = k_hud_size[x]; }, HUD_SIZE_DEFAULT_INDEX));
     Item fps = choice(P_VIDEO, "Frame rate", "",
-                      [](const Item &) { return N(k_fps) + 1; }, fps_label,
+                      [](const Item &) { return fps_count() + (settings_handheld() ? 0 : 1); }, fps_label,
                       [](const Item &) {
-                          if (g_settings.fps_display) return N(k_fps);
-                          for (int i = 0; i < N(k_fps); i++)
-                              if (k_fps[i] == g_settings.fps_limit) return i;
-                          return FPS_DEFAULT_INDEX;
+                          if (g_settings.fps_display) return fps_count();
+                          for (int i = 0; i < fps_count(); i++)
+                              if (fps_at(i) == g_settings.fps_limit) return i;
+                          return fps_default_index();
                       },
                       [](const Item &, int x) {
-                          g_settings.fps_display = x == N(k_fps);
+                          g_settings.fps_display = x == fps_count();
                           if (g_settings.fps_display) settings_fps_for_display(winsize_refresh_rate());
-                          else g_settings.fps_limit = k_fps[x];
+                          else g_settings.fps_limit = fps_at(x);
                       },
-                      FPS_DEFAULT_INDEX);
+                      fps_default_index());
     fps.desc_fn = [](const Item &) {  // (one line)
         static char buf[256];
         int hz = (int)lroundf(winsize_refresh_rate());
@@ -495,8 +499,13 @@ void build_items(void) {
                        [](const Item &, int x) { g_settings.draw_distance = k_drawdist_order[x]; }, 1));
     v.push_back(choice(P_VIDEO_ADV, "Anti-aliasing", "Smooths jagged edges. Best at a lower resolution.",
                        [](const Item &) { return N(k_aa); }, [](const Item &, int x) { return tr(k_aa[x]); },
+#ifdef __APPLE__
                        [](const Item &) { return g_settings.antialias; },
                        [](const Item &, int x) { g_settings.antialias = x; }, AA_OFF));
+#else
+                       [](const Item &) { return settings_aa_row(); },
+                       [](const Item &, int x) { settings_aa_row_set(x); }, AA_ROW_FXAA));
+#endif
     v.push_back(choice(P_VIDEO_ADV, "Upscaler", "Off: full resolution. AMD FSR 1: renders smaller, then upscales.",
                        [](const Item &) { return N(k_ups_value); }, ups_label,
                        [](const Item &) {
@@ -546,9 +555,6 @@ void build_items(void) {
                        [](const Item &, int x) { g_settings.render_scale = x; }, RSCALE_100));
 #ifndef __APPLE__
     // the game's own FXAA (vulkan/exec.c fxaa_patch)
-    v.push_back(toggle(P_VIDEO_ADV, "Game's FXAA", "The game's own edge smoothing. Off: sharper, more jagged edges.",
-                       [](const Item &) { return (int)g_settings.game_fxaa; },
-                       [](const Item &, int x) { g_settings.game_fxaa = x; }, 1));
     // the wet lighting passes' sun glare (maxwell/translate.c maxwell_wet_lighting): their translations, made at the start
     v.push_back(toggle(P_VIDEO_ADV, "Wet grass fix", "Tames the white glare on grass and roofs in rain with the sun out. From the next start.",
                        [](const Item &) { return (int)g_settings.wet_fix; },
