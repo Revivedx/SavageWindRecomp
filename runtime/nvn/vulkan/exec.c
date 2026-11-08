@@ -1678,16 +1678,28 @@ static void readback_schedule(VkCommandBuffer cb, NvnTexture *t, const NvnTextur
     nreadbacks++;
     {   // (GPU_OVERLAP) a target not read back within the last 16 frames (a photo; not the sky / exposure ones, read
         // every frame or in turns: 8 128x128 targets one after another): the wait on this submission is a real one,
-        // so the game reads this frame's pixels
+        // so the game reads this frame's pixels. The 1x1 ones (light and exposure values) are waited for too: read a
+        // frame late in their first reads after a start or a load, the water could stay milky white until the next
+        // load (#362, #332). It took a GPU slower than the game (Vega 7 every time; an RTX 3060 at 4K, 21 fps, 11 runs
+        // in 14), and none in 13 with these waits. Only their first 300 reads after a loading screen: waiting for them
+        // in every frame cost the overlap's gain at 4K (21 -> 16 fps), waiting for the first ones costs nothing.
+        // SAVAGEWIND_VK_WAIT_TINY_READBACKS=<n>: n reads (0: as before, -1: always).
         extern uint64_t vk_frame_counter(void);
-        static struct { uint64_t addr, frame; } last[64];
+        extern bool framepace_loading_ui(void);
+        static struct { uint64_t addr, frame, n; } last[64];
         uint64_t fr = vk_frame_counter();
+        if (framepace_loading_ui())
+            for (int j = 0; j < 64; j++) last[j].n = 0;
         int k = 0;
         while (k < 63 && last[k].addr && last[k].addr != r->addr) k++;
         bool streaming = last[k].addr == r->addr && last[k].frame + 16 >= fr;
+        if (last[k].addr != r->addr) last[k].n = 0;
         last[k].addr = r->addr;
         last[k].frame = fr;
-        if (!streaming) {
+        last[k].n++;
+        static int tiny_wait = -1;
+        if (tiny_wait < 0) tiny_wait = getenv("SAVAGEWIND_VK_WAIT_TINY_READBACKS") ? atoi(getenv("SAVAGEWIND_VK_WAIT_TINY_READBACKS")) : 300;
+        if (!streaming || (w * h <= 16 && (tiny_wait < 0 || last[k].n <= (uint64_t)tiny_wait))) {
             pthread_mutex_lock(&seq_lock);
             if (r->seq > oneshot_seq) oneshot_seq = r->seq;
             pthread_mutex_unlock(&seq_lock);
