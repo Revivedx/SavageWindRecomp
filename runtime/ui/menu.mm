@@ -590,7 +590,8 @@ static bool choice(const char *label, int *value, const char *const *names, int 
     ImGui::PushID(label);
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(tr(label));
-    ImGui::SameLine(ImGui::GetContentRegionAvail().x * 0.45f);
+    // SameLine()'s offset counts from the window's left edge: skip the content padding the page card puts there
+    ImGui::SameLine(ImGui::GetCurrentWindow()->WindowPadding.x + ImGui::GetContentRegionAvail().x * 0.45f);
     bool changed = false;
     ImGui::SetNextItemWidth(reserve > 0 ? -reserve : -1);
     if (ImGui::BeginCombo("##c", tr(names[*value]))) {
@@ -784,6 +785,12 @@ static void tab_display(void) {
                        "The HUD stays 16:9 in the middle; the pause menu, the map and the start screen are shown "
                        "16:9."))
             g_settings.wide_view = wv;
+    }
+    {   // HUD at edges
+        bool he = g_settings.hud_edges;
+        if (opt_toggle("HUD at edges", &he, false,
+                       "On windows taller than 16:9 with Fill wide screens, anchors the top and bottom HUD to the window edges."))
+            g_settings.hud_edges = he;
     }
     {   // Field of view (runtime/nvn/output_scale.c rt_persp)
         static const int fov[] = FOV_CHOICES;
@@ -1007,6 +1014,10 @@ static void tab_display(void) {
                    "Keeps the textures of ground, paths and walls sharp where you look along them into the distance. "
                    "Off: the game's own filtering, as on the console. 16x is the sharpest and costs very little on a PC "
                    "graphics card.", false);
+        static const char *const tex_lod[] = {"Default", "Sharp", "Sharper"};
+        opt_choice("Texture sharpness", &g_settings.tex_lod_bias, tex_lod, 3, 0,
+                   "Pulls forward mipmap levels on 3D textures for increased clarity on surfaces and distant objects. "
+                   "Sharp uses a -0.5 bias; Sharper uses -1.0.", false);
         static const char *const sharp[] = {"Off", "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%", "100%"};
         opt_choice("Sharpening (AMD CAS)", &g_settings.sharpening, sharp, 11, 0,
                    "AMD FidelityFX CAS sharpens the 3D image after the upscaler (or at the window's resolution with the "
@@ -1197,6 +1208,12 @@ static void tab_about(void) {
     ImGui::Spacing();
     header("Controls");
     opt_toggle("Controller rumble", &g_settings.rumble, true, "Vibrate the controller during play.");
+    if (g_settings.rumble) {
+        float r = (float)g_settings.rumble_strength;
+        if (opt_slider("Rumble strength", &r, RUMBLE_STRENGTH_MIN, RUMBLE_STRENGTH_MAX, 10, RUMBLE_STRENGTH_DEFAULT, "%g%%",
+                       "100% is the game's own."))
+            g_settings.rumble_strength = (int)r;
+    }
     opt_toggle("Free camera with both sticks", &g_settings.freecam_sticks, true,
                "Clicking both sticks together turns the free camera on and off. Home on the keyboard always does. "
                "While it's on: F8 or d-pad up changes the filter, [ and ] or d-pad left and right the hour, F7 or "
@@ -1595,8 +1612,18 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
             if (open) {
                 g_tab = t.id;
                 ImGui::Spacing();
-                ImGui::BeginChild("##page", ImVec2(0, 0), ImGuiChildFlags_None,  // (the rest of the window: no hint line)
-                                  ImGuiWindowFlags_NavFlattened);
+                // the page's background reaches the ends of the line under the tabs (it sticks out half the window
+                // padding each side); the same half goes in as padding, so text and rows stay where they were on a
+                // wider card
+                float side = IM_TRUNC(ImGui::GetCurrentWindow()->WindowPadding.x * 0.5f);
+                float width = ImGui::GetContentRegionAvail().x + 2 * side;
+                float max_x = ImGui::GetCurrentWindow()->DC.CursorMaxPos.x;
+                ImVec2 at = ImGui::GetCursorScreenPos();
+                ImGui::SetCursorScreenPos(ImVec2(at.x - side, at.y));
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(side, 0));
+                ImGui::BeginChild("##page", ImVec2(width, 0), ImGuiChildFlags_AlwaysUseWindowPadding,
+                                  ImGuiWindowFlags_NavFlattened);  // (the rest of the window: no hint line)
+                ImGui::PopStyleVar();
                 // Down from the tab bar, pages that aren't option rows (Prelaunch, Controls): their first control
                 // (option-row pages: opt_focus_first)
                 if (down_from_tab && (t.id == -1 || t.id == 8)) {
@@ -1616,6 +1643,8 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
                 static const char *scroll_test = getenv("SAVAGEWIND_MENU_SCROLL");  // test hook: page scroll, 0..1
                 if (scroll_test) ImGui::SetScrollY(ImGui::GetScrollMaxY() * (float)atof(scroll_test));
                 ImGui::EndChild();
+                // the wider card is paint only: don't let it extend the window's content (a horizontal wheel could pan it)
+                ImGui::GetCurrentWindow()->DC.CursorMaxPos.x = ImMax(max_x, ImGui::GetCurrentWindow()->ContentRegionRect.Max.x);
                 ImGui::EndTabItem();
             }
         }

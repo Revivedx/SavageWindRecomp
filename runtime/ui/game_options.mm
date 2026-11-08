@@ -157,6 +157,7 @@ const char *const k_aa[] = {"Off", "SMAA"};
 const char *const k_aa[] = {"Off", "SMAA", "TAA"};  // (settings.h AA_*)
 #endif
 const char *const k_aniso[] = {"Off", "2x", "4x", "8x", "16x"};  // (settings anisotropy 0..4)
+const char *const k_tex_lod[] = {"Default", "Sharp", "Sharper"};  // (settings tex_lod_bias 0..2)
 // (shown with Potato first, the nearest: k_drawdist_order maps a row index to settings.h DRAWDIST_*)
 const char *const k_drawdist[] = {"Original", "High", "Savage", "Potato"};  // (settings.h DRAWDIST_*; the ini: medium, high)
 const int k_drawdist_order[] = {DRAWDIST_POTATO, DRAWDIST_ORIGINAL, DRAWDIST_MEDIUM, DRAWDIST_HIGH};
@@ -197,6 +198,9 @@ static_assert(k_hud_size[HUD_SIZE_DEFAULT_INDEX] == 100);
 constexpr int k_deadzone[] = {0, 3, 5, 8, 10, 12, 15, 20, 25, 30, 40};  // stick dead zone, % of full tilt
 constexpr int DEADZONE_DEFAULT = 4;
 static_assert(k_deadzone[DEADZONE_DEFAULT] == (int)(STICK_DEADZONE_DEFAULT * 100 + 0.5f));
+constexpr int k_rumble_strength[] = {10, 20, 30, 40, 50, 60, 70, 80, 90, 100};  // vibration strength %
+constexpr int RUMBLE_STRENGTH_DEFAULT_INDEX = 9;
+static_assert(k_rumble_strength[RUMBLE_STRENGTH_DEFAULT_INDEX] == 100);
 const char *const k_invert[] = {"Off", "Up and down", "Left and right", "Both"};  // (MOTION_INVERT_* bits)
 #define N(a) (int)(sizeof(a) / sizeof((a)[0]))
 int g_nluts = 1;  // Colour > LUT's values (color_lut_list: None, the shipped ones, the player's), listed per opening
@@ -412,6 +416,9 @@ void build_items(void) {
     v.push_back(toggle(P_VIDEO, "Fill wide screens", "Shows more of the world on screens that aren't 16:9 (wider or taller), instead of bars.",
                        [](const Item &) { return (int)g_settings.wide_view; },
                        [](const Item &, int x) { g_settings.wide_view = x; }, 1));
+    v.push_back(toggle(P_VIDEO, "HUD at edges", "On windows taller than 16:9 with Fill wide screens, anchors the top and bottom HUD to the window edges.",
+                       [](const Item &) { return (int)g_settings.hud_edges; },
+                       [](const Item &, int x) { g_settings.hud_edges = x; }, 0));
     v.push_back(choice(P_VIDEO, "Field of view", "How much the camera shows in play. Cutscenes keep their own.",
                        [](const Item &) { return N(k_fov); },
                        [](const Item &, int x) {
@@ -549,6 +556,11 @@ void build_items(void) {
                        [](const Item &, int x) { return x ? k_aniso[x] : tr("Off"); },
                        [](const Item &) { return g_settings.anisotropy; },
                        [](const Item &, int x) { g_settings.anisotropy = x; }, 1));
+    v.push_back(choice(P_VIDEO_ADV, "Texture sharpness", "Sharpens textures by biasing mipmap levels. Sharp (-0.5), Sharper (-1.0).",
+                       [](const Item &) { return N(k_tex_lod); },
+                       [](const Item &, int x) { return tr(k_tex_lod[x]); },
+                       [](const Item &) { return g_settings.tex_lod_bias; },
+                       [](const Item &, int x) { g_settings.tex_lod_bias = x; }, 0));
     v.push_back(choice(P_VIDEO_ADV, "Sharpening (AMD CAS)", "Sharpens the 3D image, not the HUD. Most useful with FSR 1.",
                        [](const Item &) { return 11; },
                        [](const Item &, int x) {
@@ -710,6 +722,18 @@ void build_items(void) {
     v.push_back(toggle(P_CONTROLS, "Controller rumble", "Vibrate the controller during play.",
                        [](const Item &) { return (int)g_settings.rumble; },
                        [](const Item &, int x) { g_settings.rumble = x; }, 1));
+    Item it_rumble = choice(P_CONTROLS, "Rumble strength", "100% is the game's own.",
+                            [](const Item &) { return N(k_rumble_strength); },
+                            [](const Item &, int x) {
+                                static std::string str;
+                                str = pct(k_rumble_strength[x]);
+                                return str.c_str();
+                            },
+                            [](const Item &) { return nearest(k_rumble_strength, N(k_rumble_strength), (float)g_settings.rumble_strength); },
+                            [](const Item &, int x) { g_settings.rumble_strength = k_rumble_strength[x]; },
+                            RUMBLE_STRENGTH_DEFAULT_INDEX);
+    it_rumble.value_off = [](const Item &, int) { return !g_settings.rumble; };
+    v.push_back(it_rumble);
     v.push_back(toggle(P_CONTROLS, "Free camera with both sticks",
                        "Clicking both sticks together turns the free camera on and off. Home on the keyboard always does. "
                        "While it's on: F8 or d-pad up changes the filter, [ and ] or d-pad left and right the hour, F7 or "

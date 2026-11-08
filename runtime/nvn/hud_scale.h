@@ -36,3 +36,31 @@ static inline void hud_scale_span(double *pos, double *len, double c, double edg
     *pos = a + (*pos - a) * s;
     *len *= s;
 }
+
+// On windows taller than 16:9 (shape < 1), outer vertical anchors move from the 16:9 edge (shape) to the window edge (1)
+static inline float hud_edge_dy(float ay, float edge_y, float shape) {
+    if (shape >= 1 || edge_y <= 0) return 0;
+    return (ay / edge_y) * (1.0f - shape);
+}
+
+// Offset a pane's view matrix vertically by dy in projected coordinates
+static inline void hud_edge_view(float *v, float m11, float dy) {
+    if (dy == 0) return;
+    for (int k = 0; k < 4; k++)
+        v[4 + k] -= dy / m11 * v[8 + k];
+}
+
+// Offset a matrix with the view already in it (text, the clock) vertically by dy
+static inline void hud_edge_matrix(float *m, float dy) {
+    if (dy == 0) return;
+    for (int k = 0; k < 4; k++)
+        m[4 + k] += dy * m[12 + k];
+}
+
+// Offset a scissor rectangle vertically on a screen taller than 16:9
+static inline double hud_edge_scissor_dy(double y_center, double gh, double shape) {
+    if (shape >= 1 || gh <= 0) return 0;
+    float my = (float)(y_center / gh * 2.0 - 1.0);
+    double dir = my > 1.0f / 3.0f ? 1.0 : my < -1.0f / 3.0f ? -1.0 : 0.0;
+    return dir * (gh / 2.0) * (1.0 - shape);
+}

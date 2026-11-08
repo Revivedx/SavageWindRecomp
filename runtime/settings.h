@@ -55,6 +55,9 @@ enum { SPARSE_HEAP_AUTO = 0, SPARSE_HEAP_ON = 1, SPARSE_HEAP_OFF = 2, SPARSE_HEA
 // display's own mode at any other size it has; Borderless never changes the display's mode (another size is scaled to
 // the screen); Exclusive always uses a display mode (the desktop's size too, at its highest refresh rate)
 enum { FSMODE_AUTO = 0, FSMODE_BORDERLESS = 1, FSMODE_EXCLUSIVE = 2, FSMODE_COUNT };
+// Texture LOD bias (Video > Texture sharpness): pulls forward mipmaps for sharper ground/object textures.
+enum { TEX_LOD_DEFAULT = 0, TEX_LOD_SHARP = 1, TEX_LOD_SHARPER = 2, TEX_LOD_COUNT };
+
 typedef struct {
     bool fullscreen;
     int fullscreen_mode;     // FSMODE_*
@@ -70,6 +73,7 @@ typedef struct {
     bool wet_fix;        // Video > Wet grass fix: tames the white glare of rain in sunshine (maxwell/translate.c maxwell_wet_lighting)
     int render_scale;    // 50%, 75%, 100% (RSCALE_100: the window's size), 125%, 150%, 200% (nvn/output_scale.c)
     int anisotropy;      // texture filtering: 0 the game's own, 1..4 = 2x, 4x, 8x, 16x (vulkan/textures.c)
+    int tex_lod_bias;    // TEX_LOD_*: texture LOD bias, 0 = default (0.0), 1 = sharp (-0.5), 2 = sharper (-1.0)
     int sharpening;      // AMD CAS sharpening of the 3D image, 0 (off) .. 10 (100%) (vulkan/exec.c scene_post)
     bool frame_gen;      // AMD FSR 3 frame generation: a frame made between each two the game draws (vulkan/framegen.cpp)
     float volume;        // master volume, 1 = 100%
@@ -81,6 +85,7 @@ typedef struct {
     bool fps_display;    // Frame rate > Match display: fps_limit follows the display (settings_fps_for_display)
     int vsync;           // VSYNC_*
     bool rumble;         // controller vibration
+    int rumble_strength; // vibration intensity percent: 10..100 (default 100)
     bool freecam_sticks; // both stick clicks together turn the free camera on and off (hle/input.c)
     int gpu;             // Vulkan adapter index from the startup log; -1: automatic (restart required)
     bool quick_sort;      // native sorting in the quick equipment selector
@@ -106,6 +111,7 @@ typedef struct {
     int sharper_menus;   // the menus' one-channel textures enlarged this many times (2 or 4; 0: off), runtime/nvn/text_upscale.c
     int sharper_text;    // the game's font sheets enlarged this many times (2 or 4; 0: off), runtime/nvn/text_upscale.c
     bool wide_view;      // a window that isn't 16:9 shows more of the world instead of bars (runtime/nvn/output_scale.c)
+    bool hud_edges;      // on windows taller than 16:9 with wide_view, anchor HUD to the window edges
     int hdr;             // HDR_* (runtime/nvn/vulkan/device.c hdr_*)
     int hdr_white;       // nits of SDR white in HDR (0: what Windows gives SDR content on that monitor)
     int sparse_heap;     // SPARSE_HEAP_*: guest heap backing (Windows Vulkan; applied on next start)
@@ -144,6 +150,9 @@ typedef struct {
     bool menu_tip_seen;  // the start screen's one-time "how to open the menu" note was shown (first PLAY ever)
 } Settings;
 
+#define RUMBLE_STRENGTH_MIN 10
+#define RUMBLE_STRENGTH_MAX 100
+#define RUMBLE_STRENGTH_DEFAULT 100
 #define STICK_CAM_MIN 100      // (Controller camera speed, percent, in steps of 25; 200 to start with)
 #define STICK_CAM_MAX 600
 #define STICK_CAM_DEFAULT 200

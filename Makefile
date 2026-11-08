@@ -507,6 +507,11 @@ $(B)/test_hud_scale: tests/test_hud_scale.c runtime/nvn/hud_scale.h
 	@mkdir -p $(dir $@)
 	$(CC) -O1 -Iruntime -o $@ $< -lm
 
+test-hud-scale: $(B)/test_hud_scale
+	$(B)/test_hud_scale
+
+.PHONY: test-hud-scale
+
 $(B)/test_options_pointer: tests/test_options_pointer.c runtime/pc_cursor.c runtime/pc_cursor.h runtime/pc_cursor_math.h
 	@mkdir -p $(dir $@)
 	$(CC) -O2 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -isystem third_party -o $@ $< -fuse-ld=lld -Wl,--gc-sections $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) -lSDL3 -lm
@@ -516,9 +521,9 @@ test-pc-controls: $(B)/test_pc_controls $(B)/test_pc_settings $(B)/test_options_
 	$(B)/test_options_pointer
 	@set -e; tmp=$$(mktemp); trap 'rm -f "$$tmp"' EXIT; \
 	 printf 'settings_version = 3\npc_cursor = 1\n' > "$$tmp"; \
-	 $(B)/test_pc_settings "$$tmp" 1 1 0; \
-	 $(B)/test_pc_settings "$$tmp" 0 0 1; \
-	 SAVAGEWIND_PC_CURSOR=0 $(B)/test_pc_settings "$$tmp" 0 1 2
+	 $(B)/test_pc_settings "$$tmp" 1 1 0 0; \
+	 $(B)/test_pc_settings "$$tmp" 0 0 1 1; \
+	 SAVAGEWIND_PC_CURSOR=0 $(B)/test_pc_settings "$$tmp" 0 1 2 2
 
 .PHONY: test-pc-controls
 

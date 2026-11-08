@@ -2165,15 +2165,19 @@ static void begin_pass(void) {
         }
         if (!v) continue;
         if (pass_detached & (1u << i)) continue;  // (left out: this pass doesn't draw into it, det_tab)
-        if (g_vk.is_mali) {  // The same view in two slots (BOTW's G-buffer binds targets 1 / 3 again as 2 / 4, never writing
-            // those): attached once on Mali. Twice is undefined in Vulkan, and a tiler stores each slot's tile copy at the end
-            // of the pass, so the unwritten slot put the loaded contents back over the drawn ones (the shrine's G-buffer:
-            // specks / tiles). Other GPUs: attached as before (the pipelines' rendering formats unchanged).
+        // #385: RenderDoc also shows duplicate G-buffer attachments on RADV Phoenix.
+        // Opt-in test of the existing Mali correction, without enabling unrelated Mali paths.
+        static int dedup = -1;
+        if (dedup < 0) dedup = getenv("SAVAGEWIND_VK_DEDUP_ATTACHMENTS") &&
+                              atoi(getenv("SAVAGEWIND_VK_DEDUP_ATTACHMENTS")) != 0;
+        if (g_vk.is_mali || dedup) {  // BOTW binds targets 1 / 3 again as 2 / 4, never writing the duplicates.
+            // Twice is undefined in Vulkan; an unwritten slot can store loaded contents over the drawn one.
+            // Keep only the first view. Its pipeline format is retained; the duplicate stays UNDEFINED.
             int dup = -1;
             for (int j = 0; j < i && dup < 0; j++) if (ca[j].imageView == v) dup = j;
             if (dup >= 0) {
                 static int nlog;
-                if (nlog++ < 4) LOG("[vk] render target slot %d is slot %d again: attached once\n", i, dup);
+                if (nlog++ < 4) LOG("[vk] render target slot %d is slot %d again: attached once (dedup %d)\n", i, dup, dedup);
                 continue;
             }
         }
@@ -2362,6 +2366,11 @@ static VkRect2D scissor_rect(void) {
         if (y > 0 || y + sh < gh - 0.5) {
             double c = gh / 2, y0 = c + (y - c) * shape, y1 = c + (y + sh - c) * shape;
             y = (int)floor(y0); sh = (int)ceil(y1) - y;
+            if (g_settings.hud_edges) {
+                double sdy = hud_edge_scissor_dy((y0 + y1) / 2.0, gh, shape);
+                if (sdy != 0 && !(hud_quick && fabsf((float)((y0 + y1) / gh - 1.0)) < 0.6f))
+                    y += (int)round(sdy);
+            }
         }
     }
     float hud_s = pass_out && sw < 16384 && sh < 16384 && pass_sx > 0 && pass_sy > 0 ? hud_scale_now() : 1;
@@ -3018,8 +3027,28 @@ static bool program_ready_now(Prog *p) {
     return true;
 }
 
-#define PROG_TAB 4096
-static struct { uint64_t key; Prog *prog; } prog_tab[PROG_TAB];
+// Programs and pipelines (pipe_tab below) are open-addressing tables grown, rehashed, at half load: a fixed table
+// filled up after about three hours of play (every slot holding another key), and the probe loop never ended.
+#define PROG_TAB 4096  // (the first size)
+typedef struct { uint64_t key; Prog *prog; } ProgSlot;
+static ProgSlot *prog_tab;
+static uint32_t prog_cap, prog_n;
+static uint32_t prog_slot_of(uint64_t h, uint32_t cap) { return (uint32_t)(h ^ (h >> 31)) & (cap - 1); }
+static void prog_tab_grow(void) {
+    uint32_t cap = prog_cap ? prog_cap * 2 : PROG_TAB;
+    ProgSlot *nt = calloc(cap, sizeof *nt);
+    if (!nt) { LOG("FATAL: program table: out of memory (%u slots)\n", cap); abort(); }
+    for (uint32_t i = 0; i < prog_cap; i++) {
+        if (!prog_tab[i].key) continue;
+        uint32_t s = prog_slot_of(prog_tab[i].key, cap);
+        while (nt[s].key) s = (s + 1) & (cap - 1);
+        nt[s] = prog_tab[i];
+    }
+    if (prog_cap) LOG("[vk] program table: %u programs, %u -> %u slots\n", prog_n, prog_cap, cap);
+    free(prog_tab);
+    prog_tab = nt;
+    prog_cap = cap;
+}
 
 // The last program and pipeline draw_ looked up (consecutive draws mostly repeat them; cleared by vk_exec_reset). Two
 // programs: the game's, and their motion vector variants (a draw of a motion pass looks up both; one memo for both
@@ -3053,12 +3082,19 @@ static Prog *get_program_(NvnProgram *np, ShaderKey *vkey, ShaderKey *fkey) {
     for (int i = 0; i < 8; i++) { h ^= fkey->rt_kind[i]; h *= 0x100000001B3ull; }
     h ^= fkey->mvec_rt; h *= 0x100000001B3ull;  // (a motion vector program's output: the pass's motion target slot)
     if (!h) h = 1;
-    uint32_t slot = (uint32_t)(h ^ (h >> 31)) & (PROG_TAB - 1);
-    while (prog_tab[slot].key && prog_tab[slot].key != h) slot = (slot + 1) & (PROG_TAB - 1);
+    if (!prog_tab) prog_tab_grow();
+    uint32_t slot = prog_slot_of(h, prog_cap);
+    while (prog_tab[slot].key && prog_tab[slot].key != h) slot = (slot + 1) & (prog_cap - 1);
     if (prog_tab[slot].key) return prog_tab[slot].prog;
+    if ((prog_n + 1) * 2 > prog_cap) {  // (an insertion: grow first, then find the slot again in the new table)
+        prog_tab_grow();
+        slot = prog_slot_of(h, prog_cap);
+        while (prog_tab[slot].key) slot = (slot + 1) & (prog_cap - 1);
+    }
     Prog *p = calloc(1, sizeof *p);
     prog_tab[slot].key = h;
     prog_tab[slot].prog = p;
+    prog_n++;
     for (int i = 0; i < 2; i++) {
         p->code[i] = np->stages[i].code_addr;
         p->cmax[i] = np->stages[i].const_offset ? np->stages[i].const_offset : 0x10000;
@@ -3316,8 +3352,26 @@ typedef struct {
 typedef struct { Prog *prog; PipeState s; } PipeKey;
 
 typedef struct { PipeKey k; uint64_t hash; VkPipeline pipe; _Atomic int state; } Pipe;  // state: 0 building, 1 ready, 2 failed
-#define PIPE_TAB 8192
-static struct { uint64_t key; Pipe *pipe; } pipe_tab[PIPE_TAB];
+#define PIPE_TAB 8192  // (the first size; grown at half load like prog_tab)
+typedef struct { uint64_t key; Pipe *pipe; } PipeSlot;
+static PipeSlot *pipe_tab;
+static uint32_t pipe_cap, pipe_n;
+static uint32_t pipe_slot_of(uint64_t h, uint32_t cap) { return (uint32_t)(h ^ (h >> 29)) & (cap - 1); }
+static void pipe_tab_grow(void) {
+    uint32_t cap = pipe_cap ? pipe_cap * 2 : PIPE_TAB;
+    PipeSlot *nt = calloc(cap, sizeof *nt);
+    if (!nt) { LOG("FATAL: pipeline table: out of memory (%u slots)\n", cap); abort(); }
+    for (uint32_t i = 0; i < pipe_cap; i++) {
+        if (!pipe_tab[i].key) continue;
+        uint32_t s = pipe_slot_of(pipe_tab[i].key, cap);
+        while (nt[s].key) s = (s + 1) & (cap - 1);
+        nt[s] = pipe_tab[i];
+    }
+    if (pipe_cap) LOG("[vk] pipeline table: %u pipelines, %u -> %u slots\n", pipe_n, pipe_cap, cap);
+    free(pipe_tab);
+    pipe_tab = nt;
+    pipe_cap = cap;
+}
 static struct { PipeKey k; Pipe *pp; } pipe_memo;  // (see prog_memo)
 
 // 8 bytes a step (PipeKey is ~700 bytes, hashed per draw); in-memory tables only - hmix values are compared with
@@ -4003,6 +4057,27 @@ static bool draw_writes_color(Prog *pr, int i) {
     return ((pr->fi->out_mask >> (i * 4)) & 0xF) && ((st.channel_mask >> (i * 4)) & 0xF);
 }
 
+// #385: repeated G-buffer slots can alias one image, but only the first slot writes it.
+// Selecting the last (masked-off) alias incorrectly takes the read-only path and skips feedback barriers.
+static int feedback_color_slot(Prog *pr, NvnTexture *t) {
+    int last = -1, writable = -1;
+    for (int k = 0; k < st.rt.ncolor; k++) {
+        if (!same_image(st.rt.color[k], t)) continue;
+        last = k;
+        if (draw_writes_color(pr, k)) writable = k;
+    }
+    static int fix = -1;
+    if (fix < 0) fix = getenv("SAVAGEWIND_VK_FEEDBACK_ALIAS_FIX") &&
+                       atoi(getenv("SAVAGEWIND_VK_FEEDBACK_ALIAS_FIX")) != 0;
+    if (fix && writable >= 0) {
+        static int nlog;
+        if (last != writable && nlog++ < 8)
+            LOG("[feedback-alias] slot %d aliases writable slot %d: feedback path selected\n", last, writable);
+        return writable;
+    }
+    return last;
+}
+
 // The draw writes neither depth nor stencil: its depth attachment is only read.
 static bool depth_read_only(void) {
     if (st.ds[0] && st.ds[1]) return false;
@@ -4079,8 +4154,7 @@ static void resolve_feedback(Prog *pr) {
             // by an earlier pass, which ended with a barrier.
             if (!nolive && !is_depth) {
                 const NvnTexEntry *e = shader_texture_entry(sg, &infos[sg]->tex[i]);
-                int ci = -1;
-                for (int k = 0; k < st.rt.ncolor; k++) if (same_image(st.rt.color[k], t)) ci = k;
+                int ci = feedback_color_slot(pr, t);
                 const NvnTextureView *cv = ci >= 0 && st.rt.has_cview[ci] ? &st.rt.cview[ci] : NULL;
                 uint32_t nl = t->levels ? t->levels : 1, tl = cv && (cv->setmask & 1) ? cv->base_level : 0;
                 bool sv = e && e->has_view && (e->view.setmask & 1);
@@ -4160,8 +4234,7 @@ static void resolve_feedback(Prog *pr) {
             static int nofbl = -1;
             if (nofbl < 0) nofbl = getenv("SAVAGEWIND_VK_FEEDBACK_COPY") != NULL;  // (debugging) copies, as before
             if (!nofbl && sg == 1 && !is_depth && src->feedback_ok) {
-                int ci = -1;
-                for (int k = 0; k < st.rt.ncolor; k++) if (same_image(st.rt.color[k], t)) ci = k;
+                int ci = feedback_color_slot(pr, t);
                 if (ci >= 0) {
                     if (!src->feedback_seen && src->nview_fmt) {  // (outside a pass: no DCC for it from now on)
                         vk_end_pass();
@@ -4328,8 +4401,7 @@ static void resolve_feedback(Prog *pr) {
             else if (logfb > 0) {
                 logfb--;
                 const NvnTexEntry *e = shader_texture_entry(sg, &infos[sg]->tex[i]);
-                int ci = -1;
-                for (int k = 0; k < st.rt.ncolor; k++) if (same_image(st.rt.color[k], t)) ci = k;
+                int ci = feedback_color_slot(pr, t);
                 const NvnTextureView *cv = ci >= 0 && st.rt.has_cview[ci] ? &st.rt.cview[ci] : NULL;
                 LOG("[feedback] fs %016llx @%llx %s %ux%u fmt %#x levels %u | target view mask %#x level %u layer %u+%u | sampled view %d mask %#x "
                     "level %u+%u layer %u+%u | stage %d t%d target %d of %d out %#x mask %#x blend %d draws since %u\n", (unsigned long long)g_cur_fs_hash, (unsigned long long)st.program->stages[1].code_addr, is_depth ? "depth" : "color", src->width, src->height, t->format,
@@ -4564,6 +4636,8 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
     if (!tb || tb->rs_group != RS_OUT) return false;
     float hud_s = hud_scale_now();
     if (shape == 1 && hud_s == 1) return false;
+    bool hud_edge_active = g_settings.hud_edges && shape < 1 && !framepace_menu_ui() &&
+                           !framepace_title_ui() && !framepace_loading_ui();
     float edge_x = 1 / fmaxf(shape, 1), edge_y = fminf(shape, 1);  // (where the 16:9 HUD ends on this window)
     const float *g = (const float *)(uintptr_t)addr;
     // ui2d text combines the projection and each label's position into this smaller, Y-flipped matrix.
@@ -4594,6 +4668,11 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         float tx = buf[3] / buf[15], ty = buf[7] / buf[15];
         if (hud_s != 1 && !(hud_quick && hud_quick_keeps(tx, ty, edge_x, edge_y)))
             hud_scale_matrix(buf, hud_s, hud_anchor(tx, edge_x), hud_anchor(ty, edge_y));
+        if (hud_edge_active && !(hud_quick && hud_quick_keeps(tx, ty, edge_x, edge_y))) {
+            float ay = hud_anchor(ty, edge_y);
+            float dy = hud_edge_dy(ay, edge_y, shape);
+            if (dy != 0) hud_edge_matrix(buf, dy);
+        }
         *out = ubo_span(vk_transient_copy(buf, n, 256), n);
         return true;
     }
@@ -4658,7 +4737,8 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
     // Gameplay > HUD size: a pane of a 40-degree layer, and not one over about the whole screen (a fade, a picture)
     float hud_ax = 0, hud_ay = 0;
     bool hud_scale = false;
-    if (hud_s != 1 && size >= 28 * 4 && fabsf((tall ? m11 / shape : m11) - 2.74748f) < 0.001f) {
+    float edge_dy = 0;
+    if ((hud_s != 1 || hud_edge_active) && size >= 28 * 4 && fabsf((tall ? m11 / shape : m11) - 2.74748f) < 0.001f) {
         const float *mv = g + 16, *rc = g + 33 * 4;
         bool has_rect = size >= 34 * 16 && rc[0] > 0 && rc[1] > 0;
         float x0 = 1e9f, x1 = -1e9f, y0 = 1e9f, y1 = -1e9f;
@@ -4672,14 +4752,20 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         }
         if (x1 - x0 >= 1.8f * edge_x || y1 - y0 >= 1.8f * edge_y) hud_scale = false;
         if (hud_quick && hud_quick_keeps((x0 + x1) / 2, (y0 + y1) / 2, edge_x, edge_y)) hud_scale = false;
-        hud_ax = hud_anchor((x0 + x1) / 2, edge_x), hud_ay = hud_anchor((y0 + y1) / 2, edge_y);
+        if (hud_scale) {
+            hud_ax = hud_anchor((x0 + x1) / 2, edge_x);
+            hud_ay = hud_anchor((y0 + y1) / 2, edge_y);
+            hud_scale = hud_s != 1;
+            if (hud_edge_active) edge_dy = hud_edge_dy(hud_ay, edge_y, shape);
+        }
     }
-    if (m00 == g[0] && m11 == g[5] && !hud_scale) return false;
+    if (m00 == g[0] && m11 == g[5] && !hud_scale && edge_dy == 0) return false;
     static float buf[0x10000 / 4];
     uint64_t n = size > sizeof buf ? sizeof buf : size;
     memcpy(buf, g, n);
     buf[0] = m00, buf[5] = m11;
     if (hud_scale) hud_scale_view(buf + 16, hud_s, m00, m11, hud_ax, hud_ay);
+    if (edge_dy != 0) hud_edge_view(buf + 16, m11, edge_dy);
     *out = ubo_span(vk_transient_copy(buf, n, 256), n);
     return true;
 }
@@ -6144,8 +6230,9 @@ void vk_exec_reset(void) {
     guest_copy_flush();
     gw_lo = ~0ull;
     gw_hi = 0;
-    memset(prog_tab, 0, sizeof prog_tab);
-    memset(pipe_tab, 0, sizeof pipe_tab);
+    if (prog_tab) memset(prog_tab, 0, prog_cap * sizeof *prog_tab);  // (the grown capacity is kept for the next boot)
+    if (pipe_tab) memset(pipe_tab, 0, pipe_cap * sizeof *pipe_tab);
+    prog_n = pipe_n = 0;
     memset(prog_memo, 0, sizeof prog_memo);
     memset(&pipe_memo, 0, sizeof pipe_memo);
     key_gen++;
@@ -7984,14 +8071,21 @@ static void draw_(CmdRec *r, bool indexed) {
     if (!pp || memcmp(&pipe_memo.k, &k, sizeof k)) {
         uint64_t ph = hash_words(0xcbf29ce484222325ull, &k, sizeof k);
         if (!ph) ph = 1;
-        uint32_t pslot = (uint32_t)(ph ^ (ph >> 29)) & (PIPE_TAB - 1);
-        while (pipe_tab[pslot].key && pipe_tab[pslot].key != ph) pslot = (pslot + 1) & (PIPE_TAB - 1);
+        if (!pipe_tab) pipe_tab_grow();
+        uint32_t pslot = pipe_slot_of(ph, pipe_cap);
+        while (pipe_tab[pslot].key && pipe_tab[pslot].key != ph) pslot = (pslot + 1) & (pipe_cap - 1);
         pp = pipe_tab[pslot].pipe;
         if (!pp) {
+            if ((pipe_n + 1) * 2 > pipe_cap) {  // (an insertion: grow first, then find the slot again)
+                pipe_tab_grow();
+                pslot = pipe_slot_of(ph, pipe_cap);
+                while (pipe_tab[pslot].key) pslot = (pslot + 1) & (pipe_cap - 1);
+            }
             pp = calloc(1, sizeof *pp);
             pp->k = k;
             pipe_tab[pslot].key = ph;
             pipe_tab[pslot].pipe = pp;
+            pipe_n++;
             VkPipeline ready = sync_shaders() ? VK_NULL_HANDLE : warm_ready(pr->vi, pr->fi, &k.s);
             if (ready) { pp->pipe = ready; atomic_store(&pp->state, 1); atomic_fetch_add(&stat_warm, 1); }
             else if (sync_shaders() || !link_now(pp)) run_job(build_pipeline, pp);  // (asynchronous: a link alone is done here)
