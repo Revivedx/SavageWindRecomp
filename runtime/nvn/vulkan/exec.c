@@ -4585,6 +4585,21 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         *out = ubo_span(vk_transient_copy(buf, n, 256), n);
         return true;
     }
+    // The world map's stamps (#514) and its other 2D sprites: no projection, four values of their own (a stamp: its
+    // place in the stamp atlas), then a 2D transform straight to clip space, the sprite's place on the 16:9 screen (rows
+    // x: scale 0 0 offset, y: 0 scale 0 offset, 0 0 0 -1). Unchanged they spread over the whole wider window while the
+    // map and its icons keep the 16:9 layout, so the stamps slid ~shape x faster than the map when it scrolled. On a
+    // wider window they narrow like the rest; taller map views are cropped to 16:9 at presentation (output_scale.c).
+    // (The same shader's whole-screen quads, scale 2, are left as they are.)
+    if (shape > 1 && size >= 64 && framepace_map_ui() && g[4] > 0 && g[4] < 1 && !g[5] && !g[6] && !g[8] && g[9] > 0 &&
+        g[9] < 1 && !g[10] && !g[12] && !g[13] && !g[14] && g[15] == -1) {
+        static float buf[0x10000 / 4];
+        uint64_t n = size > sizeof buf ? sizeof buf : size;
+        memcpy(buf, g, n);
+        buf[4] /= shape, buf[7] /= shape;
+        *out = ubo_span(vk_transient_copy(buf, n, 256), n);
+        return true;
+    }
     if (!(g[0] > 0 && g[5] > 0 && g[14] == -1 && !g[1] && !g[2] && !g[3] && !g[4] && !g[6] && !g[7] && !g[8] && !g[9] &&
           !g[12] && !g[13] && !g[15]))
         return false;

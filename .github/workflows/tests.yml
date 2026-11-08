@@ -110,7 +110,7 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: .github/workflows/tests.yml
-      - run: uv run --no-project --with unicorn --with capstone python tools/test_simd.py --jobs "$(nproc)"
+      - run: uv run --no-project --with lz4 --with unicorn --with capstone python tools/test_simd.py --jobs "$(nproc)"
 
   # Every GLSL translation of random Maxwell programs compiles (shaderc) and validates (SPIRV-Tools).
   translate:
