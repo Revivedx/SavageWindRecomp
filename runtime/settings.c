@@ -26,6 +26,7 @@ Settings g_settings = {
     .reverb = true,
     .movie_audio = true,
     .mute_unfocused = false,
+    .shrine_sensor_volume = 100,
     .rumble = true,
     .rumble_strength = RUMBLE_STRENGTH_DEFAULT,
     .freecam_sticks = true,
@@ -69,6 +70,7 @@ static const char *const k_hdr[HDR_COUNT] = {"auto", "on", "off"};             /
 static const char *const k_sparse_heap[SPARSE_HEAP_COUNT] = {"auto", "on", "off"};
 static const char *const k_tex_lod_bias[TEX_LOD_COUNT] = {"default", "sharp", "sharper"};
 static const char *const k_fsmode[FSMODE_COUNT] = {"auto", "borderless", "exclusive"};  // (FSMODE_*)
+static const char *const k_audio_out[AUDIO_OUT_COUNT] = {"stereo", "surround_51", "headphones_3d"};  // (AUDIO_OUT_*)
 
 // settings_version 2 (2026-10-19): the upscaler's mode, the window size and the 300% mouse default. Older files: their
 // "resolution" (the internal resolution, removed) gives the upscaler's mode, and a mouse sensitivity at the old
@@ -87,6 +89,8 @@ static const char *const k_fsmode[FSMODE_COUNT] = {"auto", "borderless", "exclus
 static const char *const k_drawdist[DRAWDIST_COUNT] = {"original", "medium", "high", "potato"};  // (DRAWDIST_*)
 
 static const char *const k_icons[ICONS_COUNT] = {"auto", "keyboard", "xbox", "playstation", "nintendo"};
+
+static const char *const k_button_layout[BUTTON_LAYOUT_COUNT] = {"auto", "nintendo", "swap_ab", "xbox", "swap_xy", "gamecube"};
 
 static const char *const k_quality[UPQ_COUNT] = {"ultra_quality", "quality", "balanced", "performance", "ultra_performance"};
 
@@ -149,9 +153,14 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "gpu")) g_settings.gpu = gpu_index_parse(val);
         else if (!strcmp(key, "volume")) g_settings.volume = (float)atof(val);
+        else if (!strcmp(key, "audio_output")) {
+            for (int i = 0; i < AUDIO_OUT_COUNT; i++)
+                if (!strcmp(val, k_audio_out[i])) g_settings.audio_output = i;
+        }
         else if (!strcmp(key, "reverb")) g_settings.reverb = atoi(val) != 0;
         else if (!strcmp(key, "movie_audio")) g_settings.movie_audio = atoi(val) != 0;
         else if (!strcmp(key, "mute_unfocused")) g_settings.mute_unfocused = atoi(val) != 0;
+        else if (!strcmp(key, "shrine_sensor_volume")) g_settings.shrine_sensor_volume = atoi(val);
         else if (!strcmp(key, "show_fps")) g_settings.perf_overlay = atoi(val) ? PERF_FPS : PERF_OFF;  // (older files)
         else if (!strcmp(key, "perf_overlay")) g_settings.perf_overlay = !strcmp(val, "full") ? PERF_FULL : !strcmp(val, "fps") ? PERF_FPS : PERF_OFF;
         else if (!strcmp(key, "frame_rate")) {  // (fps / off / display)
@@ -225,6 +234,10 @@ void settings_load(void) {
         else if (!strcmp(key, "button_icons")) {
             for (int i = 0; i < ICONS_COUNT; i++)
                 if (!strcmp(val, k_icons[i])) g_settings.button_icons = i;
+        }
+        else if (!strcmp(key, "button_layout")) {
+            for (int i = 0; i < BUTTON_LAYOUT_COUNT; i++)
+                if (!strcmp(val, k_button_layout[i])) g_settings.button_layout = i;
         }
         else if (!strcmp(key, "async_shaders")) g_settings.async_shaders = atoi(val) != 0;
         else if (!strcmp(key, "precompile_shaders")) g_settings.precompile_shaders = atoi(val) != 0;
@@ -324,6 +337,8 @@ void settings_load(void) {
     if (!tip_key) g_settings.menu_tip_seen = true;  // (a settings file from before the note: not a first launch)
     if (g_settings.volume < 0) g_settings.volume = 0;
     if (g_settings.volume > 2) g_settings.volume = 2;
+    if (g_settings.shrine_sensor_volume < 0) g_settings.shrine_sensor_volume = 0;
+    if (g_settings.shrine_sensor_volume > 100) g_settings.shrine_sensor_volume = 100;
     if (g_settings.fps_limit < 0) g_settings.fps_limit = 0;
     if (g_settings.fps_limit > 0) {  // (a frame rate not offered: the nearest one that is)
         static const int fps[] = FPS_CHOICES;
@@ -385,9 +400,12 @@ void settings_save(void) {
     int vs = g_settings.vsync >= 0 && g_settings.vsync < VSYNC_COUNT ? g_settings.vsync : VSYNC_DEFAULT;
     fprintf(f, "vsync = %s\n", k_vsync[vs]);
     fprintf(f, "volume = %.2f\n", g_settings.volume);
+    int ao = g_settings.audio_output >= 0 && g_settings.audio_output < AUDIO_OUT_COUNT ? g_settings.audio_output : AUDIO_OUT_STEREO;
+    fprintf(f, "audio_output = %s\n", k_audio_out[ao]);
     fprintf(f, "reverb = %d\n", g_settings.reverb);
     fprintf(f, "movie_audio = %d\n", g_settings.movie_audio);
     fprintf(f, "mute_unfocused = %d\n", g_settings.mute_unfocused);
+    fprintf(f, "shrine_sensor_volume = %d\n", g_settings.shrine_sensor_volume);
     fprintf(f, "perf_overlay = %s\n", g_settings.perf_overlay == PERF_FULL ? "full" : g_settings.perf_overlay == PERF_FPS ? "fps" : "off");
     static const char *const ups[UPSCALE_COUNT] = {"off", "metalfx", "fsr1", "fsr3", "dlss", "fsr4"};
     int u = g_settings.upscaler, uq = g_settings.upscale_quality;
@@ -428,6 +446,9 @@ void settings_save(void) {
     fprintf(f, "motion_invert = %s\n", inv[g_settings.motion_invert & 3]);
     fprintf(f, "button_icons = %s\n", k_icons[g_settings.button_icons >= 0 && g_settings.button_icons < ICONS_COUNT ?
                                                 g_settings.button_icons : ICONS_AUTO]);
+    fprintf(f, "button_layout = %s\n",
+            k_button_layout[g_settings.button_layout >= 0 && g_settings.button_layout < BUTTON_LAYOUT_COUNT ?
+                                g_settings.button_layout : BUTTON_LAYOUT_AUTO]);
     fprintf(f, "async_shaders = %d\n", g_settings.async_shaders);
     fprintf(f, "precompile_shaders = %d\n", g_settings.precompile_shaders);
     static const char *const shadow[SHADOW_COUNT] = {"console", "high", "ultra", "extreme", "potato"};

@@ -58,6 +58,10 @@ enum { FSMODE_AUTO = 0, FSMODE_BORDERLESS = 1, FSMODE_EXCLUSIVE = 2, FSMODE_COUN
 // Texture LOD bias (Video > Texture sharpness): pulls forward mipmaps for sharper ground/object textures.
 enum { TEX_LOD_DEFAULT = 0, TEX_LOD_SHARP = 1, TEX_LOD_SHARPER = 2, TEX_LOD_COUNT };
 
+// Audio > Audio output (runtime/services/audio.c): Stereo mixes the game's 6 channels (FL, FR, FC, LFE, BL, BR) down
+// to 2; Surround 5.1 sends all 6 channels to the audio device; 3D Headphones mixes the 6 channels to stereo with
+// binaural head-shadow and ear-delay cues for headphones.
+enum { AUDIO_OUT_STEREO = 0, AUDIO_OUT_SURROUND_51 = 1, AUDIO_OUT_HEADPHONES_3D = 2, AUDIO_OUT_COUNT };
 typedef struct {
     bool fullscreen;
     int fullscreen_mode;     // FSMODE_*
@@ -77,9 +81,11 @@ typedef struct {
     int sharpening;      // AMD CAS sharpening of the 3D image, 0 (off) .. 10 (100%) (vulkan/exec.c scene_post)
     bool frame_gen;      // AMD FSR 3 frame generation: a frame made between each two the game draws (vulkan/framegen.cpp)
     float volume;        // master volume, 1 = 100%
+    int audio_output;    // AUDIO_OUT_*: Stereo, Surround 5.1, or 3D Headphones
     bool reverb;         // room reverb effect
     bool movie_audio;
     bool mute_unfocused; // mute audio while the window is in the background or minimized
+    int shrine_sensor_volume; // Sheikah sensor volume: 0% (mute) .. 100% (normal)
     int perf_overlay;    // PERF_*: the performance overlay (F10 cycles it)
     int fps_limit;       // frame rate, frames per second (FPS_CHOICES; 0: no limit)
     bool fps_display;    // Frame rate > Match display: fps_limit follows the display (settings_fps_for_display)
@@ -104,6 +110,7 @@ typedef struct {
     float motion_sens;   // motion controls: how far turning the controller turns the aim, 1 = 100%
     int motion_invert;   // MOTION_INVERT_* bits: turning the controller up / down, left / right goes the other way
     int button_icons;    // ICONS_*: the game's button prompts show this device's buttons (Automatic: the one in use)
+    int button_layout;   // BUTTON_LAYOUT_*: where A, B, X and Y sit on the HUD's four-button diamond (Automatic: bindings)
     bool async_shaders;  // draw on while new shaders compile (no stutter; what needs them is skipped meanwhile; on by
                          // default since settings_version 4; off: every draw waits for its shaders, as before)
     bool precompile_shaders;  // setting the game files up also precompiles every shader (runtime/nvn/precompile.h)
@@ -178,6 +185,15 @@ const char *settings_file(void);  // savagewind.ini, or SAVAGEWIND_SETTINGS
 #define MOUSE_SENS_Y_CHOICES {50, 60, 70, 80, 90, 100, 110, 125, 150, 175, 200}  // (percent of the horizontal)
 enum { MOTION_INVERT_UD = 1, MOTION_INVERT_LR = 2 };
 enum { ICONS_AUTO, ICONS_KEYBOARD, ICONS_XBOX, ICONS_PLAYSTATION, ICONS_NINTENDO, ICONS_COUNT };
+enum {
+    BUTTON_LAYOUT_AUTO,
+    BUTTON_LAYOUT_NINTENDO,
+    BUTTON_LAYOUT_SWAP_AB,
+    BUTTON_LAYOUT_XBOX,
+    BUTTON_LAYOUT_SWAP_XY,
+    BUTTON_LAYOUT_GAMECUBE,
+    BUTTON_LAYOUT_COUNT
+};
 
 extern Settings g_settings;
 

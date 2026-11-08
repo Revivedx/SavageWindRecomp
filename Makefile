@@ -512,6 +512,24 @@ test-hud-scale: $(B)/test_hud_scale
 
 .PHONY: test-hud-scale
 
+$(B)/test_shrine_sensor: tests/test_shrine_sensor.c runtime/shrine_sensor.c runtime/shrine_sensor.h runtime/settings.h
+	@mkdir -p $(dir $@)
+	$(CC) -O1 -Iruntime -o $@ tests/test_shrine_sensor.c runtime/shrine_sensor.c -lm
+
+test-shrine-sensor: $(B)/test_shrine_sensor
+	$(B)/test_shrine_sensor
+
+.PHONY: test-shrine-sensor
+
+$(B)/test_hud_button_layout: tests/test_hud_button_layout.c runtime/nvn/glyphs.c runtime/services/fs.c runtime/settings.c runtime/hle/bindings.c
+	@mkdir -p $(dir $@)
+	$(CC) -O1 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< -fuse-ld=lld -Wl,--gc-sections $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) -lSDL3 -lz -lm
+
+test-hud-button-layout: $(B)/test_hud_button_layout
+	$(B)/test_hud_button_layout
+
+.PHONY: test-hud-button-layout
+
 $(B)/test_options_pointer: tests/test_options_pointer.c runtime/pc_cursor.c runtime/pc_cursor.h runtime/pc_cursor_math.h
 	@mkdir -p $(dir $@)
 	$(CC) -O2 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -isystem third_party -o $@ $< -fuse-ld=lld -Wl,--gc-sections $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) -lSDL3 -lm
@@ -743,6 +761,15 @@ test-bloom-scale: $(B)/test_bloom_scale
 	$(B)/test_bloom_scale
 
 .PHONY: test-bloom-scale
+
+$(B)/test_audio_mix: tests/test_audio_mix.c runtime/audio_mix.h runtime/settings.h
+	@mkdir -p $(B)
+	$(CC) -O1 -Wall -Wextra -Werror -o $@ $< -lm
+
+test-audio-mix: $(B)/test_audio_mix
+	$(B)/test_audio_mix
+
+.PHONY: test-audio-mix
 
 # Native quick-selector sorting: synthetic Linux guest memory, no game files.
 ifeq ($(PLATFORM),linux)

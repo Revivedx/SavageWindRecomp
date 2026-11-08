@@ -171,6 +171,9 @@ const char *const k_shadow[] = {"Console (896)", "High (2048)", "Ultra (4096)", 
 const int k_shadow_order[] = {SHADOW_POTATO, SHADOW_CONSOLE, SHADOW_HIGH, SHADOW_ULTRA, SHADOW_EXTREME};
 const char *const k_text[] = {"Off", "2x", "4x"};  // (sharper_text / 2)
 const char *const k_icons[] = {"Automatic", "Keyboard", "Xbox", "PlayStation", "Nintendo"};  // (ICONS_*)
+const char *const k_button_layout[BUTTON_LAYOUT_COUNT] = {
+    "Automatic", "Nintendo", "Swap A / B", "Xbox", "Swap X / Y", "GameCube"
+};  // (BUTTON_LAYOUT_*)
 constexpr int k_fps[] = FPS_CHOICES;  // frame rate (0: Off, no limit)
 const char *const k_vsync[VSYNC_COUNT] = {"On", "Fast", "Adaptive", "Off"};  // (settings.h VSYNC_*)
 const char *const k_hdr[HDR_COUNT] = {"Automatic", "On", "Off"};               // (settings.h HDR_*)
@@ -707,6 +710,26 @@ void build_items(void) {
                        },
                        [](const Item &) { return (int)lroundf(g_settings.volume * 10); },
                        [](const Item &, int x) { g_settings.volume = x / 10.0f; }, 10));
+    v.push_back(choice(P_AUDIO, "Shrine sensor volume",
+                       "Volume of the Sheikah Slate sensor beeps. 0% silences the sensor. From the next start.",
+                       [](const Item &) { return 11; },
+                       [](const Item &, int x) {
+                           static std::string s;
+                           s = x ? pct(x * 10) : std::string(tr("Off"));
+                           return s.c_str();
+                       },
+                       [](const Item &) { return (int)lroundf(g_settings.shrine_sensor_volume / 10.0f); },
+                       [](const Item &, int x) {
+                           g_settings.shrine_sensor_volume = x * 10;
+                       }, 10));
+    v.push_back(choice(P_AUDIO, "Audio output", "Stereo, 5.1 surround speakers, or 3D spatial sound for headphones. Surround 5.1 is untested on real 5.1 speakers.",
+                       [](const Item &) { return (int)AUDIO_OUT_COUNT; },
+                       [](const Item &, int x) {
+                           static const char *const o[AUDIO_OUT_COUNT] = {"Stereo", "Surround 5.1", "3D Headphones"};
+                           return tr(o[x]);
+                       },
+                       [](const Item &) { return g_settings.audio_output; },
+                       [](const Item &, int x) { g_settings.audio_output = x; }, AUDIO_OUT_STEREO));
     v.push_back(toggle(P_AUDIO, "Room reverb", "Echo in caves, shrines and big rooms.",
                        [](const Item &) { return (int)g_settings.reverb; },
                        [](const Item &, int x) { g_settings.reverb = x; }, 1));
@@ -837,6 +860,12 @@ void build_items(void) {
                        [](const Item &, int x) { return tr(k_icons[x]); },
                        [](const Item &) { return g_settings.button_icons; },
                        [](const Item &, int x) { g_settings.button_icons = x; }, ICONS_AUTO));
+    v.push_back(choice(P_CONTROLS, "HUD button layout",
+                       "Where the four face buttons sit on the HUD diamond, from the next start. Automatic: follows your bindings.",
+                       [](const Item &) { return N(k_button_layout); },
+                       [](const Item &, int x) { return tr(k_button_layout[x]); },
+                       [](const Item &) { return g_settings.button_layout; },
+                       [](const Item &, int x) { g_settings.button_layout = x; }, BUTTON_LAYOUT_AUTO));
 
     // Key bindings: one row per action (key | controller button), then the inputs no action covers. A waits for the
     // next press: a key or mouse button binds the keyboard side, a controller button the controller side
