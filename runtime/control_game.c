@@ -436,6 +436,7 @@ void control_tp_init(void);        // runtime/control_tp.c
 void control_cells_init(void);     // runtime/control_cells.c
 void control_fly_init(void);       // runtime/control_fly.c
 void rupees_control_init(void);    // runtime/rupees.c (cheat)
+void weather_control_init(void);   // runtime/weather.c (cheat)
 
 void control_game_init(void) {
     static const ControlCmd player[] = {
@@ -463,4 +464,5 @@ void control_game_init(void) {
     control_fly_init();
     control_tp_init();
     rupees_control_init();
+    weather_control_init();
 }

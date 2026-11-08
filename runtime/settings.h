@@ -165,6 +165,7 @@ const char *settings_file(void);  // savagewind.ini, or SAVAGEWIND_SETTINGS
 #define WEAPON_WEAR_MIN 0    // (Accessibility > Weapon wear, percent: 0 = never wear out, as no_weapon_wear)
 #define WEAPON_WEAR_MAX 300
 #define WEATHER_COUNT 12  // (weather: 0 the game's, 1 no rain, 2 no thunderstorms, 3 + the game's weather type, held)
+extern const char *const g_weather_keys[WEATHER_COUNT];  // (the ini and `weather` names: game, no_rain, ..., sun_shower)
 #define DAMAGE_CHOICES {25, 50, 75, 100, 150, 200, 300, 400}  // (Accessibility's damage multipliers, percent)
 #define FOV_CHOICES {70, 80, 90, 100, 110, 120, 130, 140, 150}  // (percent; 100: the game's own)
 #define HUD_SIZE_CHOICES {50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120, 125, 130, 135, 140, 145, 150}  // (percent; 100: the game's own)

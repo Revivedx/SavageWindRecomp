@@ -1109,12 +1109,18 @@ static void tab_audio(void) {
 }
 
 // Cheats: what hands the player things or changes the world (the game's own menus keep to options and assists, so
-// these are only here). The same as the developer console commands next to them (rupees: runtime/rupees.c).
+// these are only here). The same as the developer console commands next to them (rupees: runtime/rupees.c;
+// weather: runtime/weather.c).
 static void tab_cheats(void) {
     opt_begin("##cheats", ImGui::GetFontSize() / 34);
     opt_section("Cheats");
     opt_toggle("Infinite rupees", &g_settings.infinite_rupees, false,
                "Keeps your wallet at 9999 rupees, topped up every few seconds.");
+    static const char *const weather[WEATHER_COUNT] = {"Automatic", "No rain", "No thunderstorms", "Clear", "Cloudy",
+                                                       "Rain", "Heavy rain", "Snow", "Heavy snow", "Thunderstorm",
+                                                       "Thunder rain", "Rain in sunshine"};  // (settings.h weather)
+    opt_choice("Weather", &g_settings.weather, weather, WEATHER_COUNT, 0,
+               "Holds the weather you pick, or keeps out rain or thunderstorms. Cutscenes keep theirs.");
     opt_end();
 }
 
