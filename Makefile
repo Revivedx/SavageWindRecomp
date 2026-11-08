@@ -507,6 +507,15 @@ $(B)/test_hud_scale: tests/test_hud_scale.c runtime/nvn/hud_scale.h
 	@mkdir -p $(dir $@)
 	$(CC) -O1 -Iruntime -o $@ $< -lm
 
+$(B)/test_shrine_sensor: tests/test_shrine_sensor.c runtime/shrine_sensor.c runtime/shrine_sensor.h runtime/settings.h
+	@mkdir -p $(dir $@)
+	$(CC) -O1 -Iruntime -o $@ tests/test_shrine_sensor.c runtime/shrine_sensor.c -lm
+
+test-shrine-sensor: $(B)/test_shrine_sensor
+	$(B)/test_shrine_sensor
+
+.PHONY: test-shrine-sensor
+
 $(B)/test_options_pointer: tests/test_options_pointer.c runtime/pc_cursor.c runtime/pc_cursor.h runtime/pc_cursor_math.h
 	@mkdir -p $(dir $@)
 	$(CC) -O2 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -isystem third_party -o $@ $< -fuse-ld=lld -Wl,--gc-sections $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) -lSDL3 -lm

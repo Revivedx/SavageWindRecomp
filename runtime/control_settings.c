@@ -32,6 +32,7 @@ static const Setting settings[] = {
     I(render_scale, 0, RSCALE_COUNT - 1, "50|75|100|125|150|200"),
     I(anisotropy, 0, 4, "game|2x|4x|8x|16x"), I(sharpening, 0, 10, NULL),
     B(frame_gen), F(volume, 0, 2), B(reverb), B(movie_audio), B(mute_unfocused),
+    I(shrine_sensor_volume, 0, 100, NULL),
     I(perf_overlay, 0, PERF_FULL, "off|fps|full"), I(fps_limit, 0, 360, NULL), B(fps_display),
     I(vsync, 0, VSYNC_COUNT - 1, "on|fast|adaptive|off"), B(dpad_move), B(freecam_sticks),
     {"stick_deadzone[0]", &g_settings.stick_deadzone[0], FLOAT, 0, .5, NULL},

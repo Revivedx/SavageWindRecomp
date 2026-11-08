@@ -176,6 +176,8 @@ T("On (default): the game never waits for a new shader to compile: what needs on
 T("Sound", "サウンド")
 T("Volume", "音量")
 T("The game's volume. 100% is the game's own level; above it, louder.", "ゲームの音量です。100%がゲーム本来の音量で、それより上は大きくなります。")
+T("Shrine sensor volume", "シーカーストーンセンサーの音量")
+T("Volume of the Sheikah Slate sensor beeps. 0% silences the sensor.", "シーカーストーンのセンサー音の音量です。0%で消音します。")
 T("Room reverb", "残響")
 T("The game's echo in caves, dungeons and big rooms.", "洞窟、ダンジョン、広い部屋でのゲームの反響音です。")
 T("Movie audio", "ムービーの音声")

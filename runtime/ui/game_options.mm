@@ -38,6 +38,7 @@ extern "C" {
 #include "../nvn/output_scale.h"
 #include "../problem_report.h"
 #include "../settings.h"
+#include "../shrine_sensor.h"
 #include "../gamelib.h"
 #include "../color_grade.h"
 #include "../pc_cursor.h"
@@ -695,6 +696,19 @@ void build_items(void) {
                        },
                        [](const Item &) { return (int)lroundf(g_settings.volume * 10); },
                        [](const Item &, int x) { g_settings.volume = x / 10.0f; }, 10));
+    v.push_back(choice(P_AUDIO, "Shrine sensor volume",
+                       "Volume of the Sheikah Slate sensor beeps. 0% silences the sensor.",
+                       [](const Item &) { return 11; },
+                       [](const Item &, int x) {
+                           static std::string s;
+                           s = x ? pct(x * 10) : std::string(tr("Off"));
+                           return s.c_str();
+                       },
+                       [](const Item &) { return (int)lroundf(g_settings.shrine_sensor_volume / 10.0f); },
+                       [](const Item &, int x) {
+                           g_settings.shrine_sensor_volume = x * 10;
+                           shrine_sensor_apply();
+                       }, 10));
     v.push_back(toggle(P_AUDIO, "Room reverb", "Echo in caves, shrines and big rooms.",
                        [](const Item &) { return (int)g_settings.reverb; },
                        [](const Item &, int x) { g_settings.reverb = x; }, 1));

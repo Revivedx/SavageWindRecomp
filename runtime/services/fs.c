@@ -22,6 +22,7 @@
 #include "../nvn/text_upscale.h"
 #include "../romfs_image.h"
 #include "../settings.h"
+#include "../shrine_sensor.h"
 #include "archive.h"
 #include "fs_layout.h"
 #include "../perfcount.h"
@@ -48,7 +49,7 @@ typedef struct { const char *path; uint64_t grow; } GrownFile;
 typedef struct {
     RomfsImage *img;         // (runtime/romfs_image.h; NULL: not opened)
     const char *ov_sub;      // where its files are in the overlay folder ("": the game's own)
-    Patch patches[8];
+    Patch patches[16];
     int npatches;
     Overlay *ov;
     int ov_n, ov_cap;
@@ -950,7 +951,7 @@ static void haze_walk_list(uint8_t *d, size_t n, size_t o, const uint32_t h[3], 
 }
 static void haze_patch(void) {
     int pct = g_settings.haze;
-    if (pct >= 100 || R != &images[0] || R->npatches >= 8) return;
+    if (pct >= 100 || R != &images[0] || R->npatches >= 16) return;
     static const char pack_path[] = "Pack/TitleBG.pack", name[] = "WorldMgr/normal.bwinfo";
     int k = 0;
     while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, pack_path)) k++;
@@ -996,6 +997,64 @@ static void haze_patch(void) {
     }
     R->patches[R->npatches++] = (Patch){at, n, d};
     LOG("[fs] haze %d %%: %d climate values (scattering x%.2f, near haze x%.2f)\n", pct, changed, sc, kk);
+}
+
+static void shrine_sensor_patch(void) {
+    if (R != &images[0] || R->npatches >= 16) return;
+    static const char pack_path[] = "Pack/Bootup.pack", name[] = "Sound/Resource/M_UI.bars";
+    int k = 0;
+    while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, pack_path)) k++;
+    char host[1200];
+    if (k == R->rom_nfiles || overlay_file(pack_path, host, sizeof host)) return;
+    uint8_t head[0x20];
+    if (romfs_image_pread(R->img, head, 0x20, R->rom_files[k].off) != 0x20 || memcmp(head, "SARC", 4)) return;
+    uint32_t doff;
+    memcpy(&doff, head + 0xC, 4);
+    if (doff > (16u << 20) || doff > R->rom_files[k].size) return;
+    uint8_t *tab = malloc(doff);
+    uint32_t ds = 0, de = 0;
+    bool found = false;
+    if (tab && romfs_image_pread(R->img, tab, doff, R->rom_files[k].off) == (ssize_t)doff) {
+        uint32_t cnt = tab[0x1A] | tab[0x1B] << 8;
+        size_t names = 0x20 + (size_t)cnt * 16 + 8;
+        for (uint32_t i = 0; i < cnt && names <= doff && !found; i++) {
+            uint32_t attr;
+            memcpy(&attr, tab + 0x20 + i * 16 + 4, 4);
+            size_t at = names + (size_t)(attr & 0xFFFFFF) * 4;
+            if (!(attr >> 24) || at + sizeof name > doff || memcmp(tab + at, name, sizeof name)) continue;
+            memcpy(&ds, tab + 0x20 + i * 16 + 8, 4), memcpy(&de, tab + 0x20 + i * 16 + 12, 4);
+            found = de > ds && de - ds < (32u << 20);
+        }
+    }
+    free(tab);
+    if (!found) {
+        k = 0;
+        while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, name)) k++;
+        if (k == R->rom_nfiles) return;
+        size_t n = R->rom_files[k].size;
+        uint64_t at = R->rom_files[k].off;
+        uint8_t *d = malloc(n);
+        if (!d || romfs_image_pread(R->img, d, n, at) != (ssize_t)n) { free(d); return; }
+        if (!shrine_sensor_patch_bars(d, n, g_settings.shrine_sensor_volume)) { free(d); return; }
+        if (g_settings.shrine_sensor_volume < 100) {
+            R->patches[R->npatches++] = (Patch){at, n, d};
+        } else {
+            free(d);
+        }
+        LOG("[fs] shrine sensor: volume %d%%\n", g_settings.shrine_sensor_volume);
+        return;
+    }
+    size_t n = de - ds;
+    uint64_t at = R->rom_files[k].off + doff + ds;
+    uint8_t *d = malloc(n);
+    if (!d || romfs_image_pread(R->img, d, n, at) != (ssize_t)n) { free(d); return; }
+    if (!shrine_sensor_patch_bars(d, n, g_settings.shrine_sensor_volume)) { free(d); return; }
+    if (g_settings.shrine_sensor_volume < 100) {
+        R->patches[R->npatches++] = (Patch){at, n, d};
+    } else {
+        free(d);
+    }
+    LOG("[fs] shrine sensor: volume %d%%\n", g_settings.shrine_sensor_volume);
 }
 
 // An RSTB entry: names first (paths whose crc32 collides), then the crc32 table (sorted). NULL when it has none.
@@ -1227,6 +1286,7 @@ static void rom_index(void) {
         LOG("[fs] Inventory clip layout unavailable; using the game's clipping\n");
     rstb_patch(fmeta, foff, fsz);
     haze_patch();
+    shrine_sensor_patch();
     if (R->ov_n) LOG("[fs] overlay: %d romfs files replaced\n", R->ov_n);
     if (R->ov_meta) { R->patches[R->npatches++] = (Patch){R->ov_meta_off, R->ov_meta_size, R->ov_meta}; }
     add_new_files(h, dmeta, dsz, fsz);

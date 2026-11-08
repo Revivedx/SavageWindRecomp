@@ -176,6 +176,8 @@ T("On (default): the game never waits for a new shader to compile: what needs on
 T("Sound", "사운드")
 T("Volume", "음량")
 T("The game's volume. 100% is the game's own level; above it, louder.", "게임의 음량입니다. 100%가 게임 본래의 음량이며, 그 이상은 더 커집니다.")
+T("Shrine sensor volume", "시커 센서 음량")
+T("Volume of the Sheikah Slate sensor beeps. 0% silences the sensor.", "시커스톤 센서 신호음의 음량입니다. 0%로 설정하면 무음이 됩니다.")
 T("Room reverb", "잔향")
 T("The game's echo in caves, dungeons and big rooms.", "동굴, 던전, 넓은 방에서 들리는 게임의 울림입니다.")
 T("Movie audio", "동영상 소리")

@@ -18,6 +18,7 @@
 #include "gyro_drag.h"
 #include "option_rows.h"
 #include "saves_tab.h"
+#include "../shrine_sensor.h"
 #include "imgui_internal.h"  // (NavCursorVisible)
 #include "osk.h"
 #include "console.h"
@@ -1099,6 +1100,12 @@ static void tab_audio(void) {
     if (opt_slider("Volume", &pct, 0, 200, 5, 100, "%g%%",
                    "The game's volume. 100% is the game's own level; above it, louder."))
         g_settings.volume = pct / 100.0f;
+    float sensor_pct = (float)g_settings.shrine_sensor_volume;
+    if (opt_slider("Shrine sensor volume", &sensor_pct, 0, 100, 10, 100, "%g%%",
+                   "Volume of the Sheikah Slate sensor beeps. 0% silences the sensor.")) {
+        g_settings.shrine_sensor_volume = (int)lroundf(sensor_pct);
+        shrine_sensor_apply();
+    }
     opt_toggle("Room reverb", &g_settings.reverb, true,
                "The game's echo in caves, dungeons and big rooms.");
     opt_toggle("Movie audio", &g_settings.movie_audio, true,

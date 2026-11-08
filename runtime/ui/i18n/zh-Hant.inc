@@ -176,6 +176,8 @@ T("On (default): the game never waits for a new shader to compile: what needs on
 T("Sound", "聲音")
 T("Volume", "音量")
 T("The game's volume. 100% is the game's own level; above it, louder.", "遊戲的音量。100%為遊戲原本的音量；高於此值會更大聲。")
+T("Shrine sensor volume", "希卡感應器音量")
+T("Volume of the Sheikah Slate sensor beeps. 0% silences the sensor.", "希卡之石感應器提示音的音量。0%為靜音。")
 T("Room reverb", "空間殘響")
 T("The game's echo in caves, dungeons and big rooms.", "遊戲在洞窟、地城和大房間中的回音。")
 T("Movie audio", "影片聲音")

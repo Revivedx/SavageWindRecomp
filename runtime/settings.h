@@ -76,6 +76,7 @@ typedef struct {
     bool reverb;         // room reverb effect
     bool movie_audio;
     bool mute_unfocused; // mute audio while the window is in the background or minimized
+    int shrine_sensor_volume; // Sheikah sensor volume: 0% (mute) .. 100% (normal)
     int perf_overlay;    // PERF_*: the performance overlay (F10 cycles it)
     int fps_limit;       // frame rate, frames per second (FPS_CHOICES; 0: no limit)
     bool fps_display;    // Frame rate > Match display: fps_limit follows the display (settings_fps_for_display)

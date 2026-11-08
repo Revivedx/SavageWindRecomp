@@ -176,6 +176,8 @@ T("On (default): the game never waits for a new shader to compile: what needs on
 T("Sound", "Звук")
 T("Volume", "Громкость")
 T("The game's volume. 100% is the game's own level; above it, louder.", "Громкость игры. 100% — собственный уровень игры; выше — громче.")
+T("Shrine sensor volume", "Громкость датчика святилищ")
+T("Volume of the Sheikah Slate sensor beeps. 0% silences the sensor.", "Громкость звуковых сигналов датчика Камня Шейка. 0% отключает звук датчика.")
 T("Room reverb", "Реверберация")
 T("The game's echo in caves, dungeons and big rooms.", "Эхо в пещерах, подземельях и больших залах.")
 T("Movie audio", "Звук роликов")

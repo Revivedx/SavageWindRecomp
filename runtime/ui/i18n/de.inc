@@ -176,6 +176,8 @@ T("On (default): the game never waits for a new shader to compile: what needs on
 T("Sound", "Ton")
 T("Volume", "Lautstärke")
 T("The game's volume. 100% is the game's own level; above it, louder.", "Die Lautstärke des Spiels. 100% ist der eigene Pegel des Spiels; darüber lauter.")
+T("Shrine sensor volume", "Lautstärke des Shiekah-Sensors")
+T("Volume of the Sheikah Slate sensor beeps. 0% silences the sensor.", "Lautstärke der Signaltöne des Shiekah-Sensors. 0% schaltet den Sensor stumm.")
 T("Room reverb", "Raumhall")
 T("The game's echo in caves, dungeons and big rooms.", "Das Echo des Spiels in Höhlen, Dungeons und großen Räumen.")
 T("Movie audio", "Video-Ton")

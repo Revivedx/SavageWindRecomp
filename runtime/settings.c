@@ -26,6 +26,7 @@ Settings g_settings = {
     .reverb = true,
     .movie_audio = true,
     .mute_unfocused = false,
+    .shrine_sensor_volume = 100,
     .rumble = true,
     .freecam_sticks = true,
     .damage_taken = 100,
@@ -149,6 +150,7 @@ void settings_load(void) {
         else if (!strcmp(key, "reverb")) g_settings.reverb = atoi(val) != 0;
         else if (!strcmp(key, "movie_audio")) g_settings.movie_audio = atoi(val) != 0;
         else if (!strcmp(key, "mute_unfocused")) g_settings.mute_unfocused = atoi(val) != 0;
+        else if (!strcmp(key, "shrine_sensor_volume")) g_settings.shrine_sensor_volume = atoi(val);
         else if (!strcmp(key, "show_fps")) g_settings.perf_overlay = atoi(val) ? PERF_FPS : PERF_OFF;  // (older files)
         else if (!strcmp(key, "perf_overlay")) g_settings.perf_overlay = !strcmp(val, "full") ? PERF_FULL : !strcmp(val, "fps") ? PERF_FPS : PERF_OFF;
         else if (!strcmp(key, "frame_rate")) {  // (fps / off / display)
@@ -315,6 +317,8 @@ void settings_load(void) {
     if (!tip_key) g_settings.menu_tip_seen = true;  // (a settings file from before the note: not a first launch)
     if (g_settings.volume < 0) g_settings.volume = 0;
     if (g_settings.volume > 2) g_settings.volume = 2;
+    if (g_settings.shrine_sensor_volume < 0) g_settings.shrine_sensor_volume = 0;
+    if (g_settings.shrine_sensor_volume > 100) g_settings.shrine_sensor_volume = 100;
     if (g_settings.fps_limit < 0) g_settings.fps_limit = 0;
     if (g_settings.fps_limit > 0) {  // (a frame rate not offered: the nearest one that is)
         static const int fps[] = FPS_CHOICES;
@@ -378,6 +382,7 @@ void settings_save(void) {
     fprintf(f, "reverb = %d\n", g_settings.reverb);
     fprintf(f, "movie_audio = %d\n", g_settings.movie_audio);
     fprintf(f, "mute_unfocused = %d\n", g_settings.mute_unfocused);
+    fprintf(f, "shrine_sensor_volume = %d\n", g_settings.shrine_sensor_volume);
     fprintf(f, "perf_overlay = %s\n", g_settings.perf_overlay == PERF_FULL ? "full" : g_settings.perf_overlay == PERF_FPS ? "fps" : "off");
     static const char *const ups[UPSCALE_COUNT] = {"off", "metalfx", "fsr1", "fsr3", "dlss", "fsr4"};
     int u = g_settings.upscaler, uq = g_settings.upscale_quality;
