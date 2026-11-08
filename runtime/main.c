@@ -172,7 +172,7 @@ static void boot(const char *root) {
     plat_cpu_placement();
     kernel_init();
     dispatch_init();
-    { extern void rupees_start(void); rupees_start(); }  // (Accessibility > Infinite rupees: runtime/rupees.c)
+    { extern void rupees_start(void); rupees_start(); }  // (Cheats > Infinite rupees, `rupees`: runtime/rupees.c)
     { extern void jpeg_debug_init(void); jpeg_debug_init(); }
 
     uint32_t stack_size = 0x100000;

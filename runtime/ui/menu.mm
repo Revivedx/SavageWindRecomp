@@ -1108,6 +1108,16 @@ static void tab_audio(void) {
     opt_end();
 }
 
+// Cheats: what hands the player things or changes the world (the game's own menus keep to options and assists, so
+// these are only here). The same as the developer console commands next to them (rupees: runtime/rupees.c).
+static void tab_cheats(void) {
+    opt_begin("##cheats", ImGui::GetFontSize() / 34);
+    opt_section("Cheats");
+    opt_toggle("Infinite rupees", &g_settings.infinite_rupees, false,
+               "Keeps your wallet at 9999 rupees, topped up every few seconds.");
+    opt_end();
+}
+
 extern "C" void rt_request_reboot(int kind);  // runtime/main.c (RT_REBOOT_GAME = 1, RT_REBOOT_TITLE = 2)
 
 // Text and voice languages (runtime/language.c). The game reads both when it starts: in game they apply after
@@ -1525,8 +1535,8 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     int ntabs = 0;
     if (prelaunch) tabs[ntabs++] = {"Prelaunch", -1, true};
     // (ids 4-7 were Link's Awakening tabs; the ids stay: test hooks)
-    static const char *names[] = {"Video", "Audio", "Language", "Saves", "", "", "", "", "Controls", "Quit"};
-    static const int order[] = {8, 0, 1, 2, 3, 9};  // Controls, Video, Audio, Language, Saves, Quit
+    static const char *names[] = {"Video", "Audio", "Language", "Saves", "", "", "", "", "Controls", "Quit", "Cheats"};
+    static const int order[] = {8, 0, 1, 2, 3, 10, 9};  // Controls, Video, Audio, Language, Saves, Cheats, Quit
     for (int i : order) {  // (Quit: in game only - the start screen has its own QUIT; Saves: on the start screen only,
         if (i == 9 && prelaunch) continue;  //  the game must not be running while its saves change)
         if (i == 3 && !prelaunch) continue;
@@ -1612,6 +1622,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
                 case 3: saves_tab_draw(); break;
                 case 8: tab_about(); break;
                 case 9: tab_quit(scale, in_game); break;
+                case 10: tab_cheats(); break;
                 }
                 static const char *scroll_test = getenv("SAVAGEWIND_MENU_SCROLL");  // test hook: page scroll, 0..1
                 if (scroll_test) ImGui::SetScrollY(ImGui::GetScrollMaxY() * (float)atof(scroll_test));
