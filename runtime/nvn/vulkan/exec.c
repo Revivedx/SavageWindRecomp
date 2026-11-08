@@ -2165,15 +2165,19 @@ static void begin_pass(void) {
         }
         if (!v) continue;
         if (pass_detached & (1u << i)) continue;  // (left out: this pass doesn't draw into it, det_tab)
-        if (g_vk.is_mali) {  // The same view in two slots (BOTW's G-buffer binds targets 1 / 3 again as 2 / 4, never writing
-            // those): attached once on Mali. Twice is undefined in Vulkan, and a tiler stores each slot's tile copy at the end
-            // of the pass, so the unwritten slot put the loaded contents back over the drawn ones (the shrine's G-buffer:
-            // specks / tiles). Other GPUs: attached as before (the pipelines' rendering formats unchanged).
+        // #385: RenderDoc also shows duplicate G-buffer attachments on RADV Phoenix.
+        // Opt-in test of the existing Mali correction, without enabling unrelated Mali paths.
+        static int dedup = -1;
+        if (dedup < 0) dedup = getenv("SAVAGEWIND_VK_DEDUP_ATTACHMENTS") &&
+                              atoi(getenv("SAVAGEWIND_VK_DEDUP_ATTACHMENTS")) != 0;
+        if (g_vk.is_mali || dedup) {  // BOTW binds targets 1 / 3 again as 2 / 4, never writing the duplicates.
+            // Twice is undefined in Vulkan; an unwritten slot can store loaded contents over the drawn one.
+            // Keep only the first view. Its pipeline format is retained; the duplicate stays UNDEFINED.
             int dup = -1;
             for (int j = 0; j < i && dup < 0; j++) if (ca[j].imageView == v) dup = j;
             if (dup >= 0) {
                 static int nlog;
-                if (nlog++ < 4) LOG("[vk] render target slot %d is slot %d again: attached once\n", i, dup);
+                if (nlog++ < 4) LOG("[vk] render target slot %d is slot %d again: attached once (dedup %d)\n", i, dup, dedup);
                 continue;
             }
         }
@@ -4003,6 +4007,27 @@ static bool draw_writes_color(Prog *pr, int i) {
     return ((pr->fi->out_mask >> (i * 4)) & 0xF) && ((st.channel_mask >> (i * 4)) & 0xF);
 }
 
+// #385: repeated G-buffer slots can alias one image, but only the first slot writes it.
+// Selecting the last (masked-off) alias incorrectly takes the read-only path and skips feedback barriers.
+static int feedback_color_slot(Prog *pr, NvnTexture *t) {
+    int last = -1, writable = -1;
+    for (int k = 0; k < st.rt.ncolor; k++) {
+        if (!same_image(st.rt.color[k], t)) continue;
+        last = k;
+        if (draw_writes_color(pr, k)) writable = k;
+    }
+    static int fix = -1;
+    if (fix < 0) fix = getenv("SAVAGEWIND_VK_FEEDBACK_ALIAS_FIX") &&
+                       atoi(getenv("SAVAGEWIND_VK_FEEDBACK_ALIAS_FIX")) != 0;
+    if (fix && writable >= 0) {
+        static int nlog;
+        if (last != writable && nlog++ < 8)
+            LOG("[feedback-alias] slot %d aliases writable slot %d: feedback path selected\n", last, writable);
+        return writable;
+    }
+    return last;
+}
+
 // The draw writes neither depth nor stencil: its depth attachment is only read.
 static bool depth_read_only(void) {
     if (st.ds[0] && st.ds[1]) return false;
@@ -4079,8 +4104,7 @@ static void resolve_feedback(Prog *pr) {
             // by an earlier pass, which ended with a barrier.
             if (!nolive && !is_depth) {
                 const NvnTexEntry *e = shader_texture_entry(sg, &infos[sg]->tex[i]);
-                int ci = -1;
-                for (int k = 0; k < st.rt.ncolor; k++) if (same_image(st.rt.color[k], t)) ci = k;
+                int ci = feedback_color_slot(pr, t);
                 const NvnTextureView *cv = ci >= 0 && st.rt.has_cview[ci] ? &st.rt.cview[ci] : NULL;
                 uint32_t nl = t->levels ? t->levels : 1, tl = cv && (cv->setmask & 1) ? cv->base_level : 0;
                 bool sv = e && e->has_view && (e->view.setmask & 1);
@@ -4160,8 +4184,7 @@ static void resolve_feedback(Prog *pr) {
             static int nofbl = -1;
             if (nofbl < 0) nofbl = getenv("SAVAGEWIND_VK_FEEDBACK_COPY") != NULL;  // (debugging) copies, as before
             if (!nofbl && sg == 1 && !is_depth && src->feedback_ok) {
-                int ci = -1;
-                for (int k = 0; k < st.rt.ncolor; k++) if (same_image(st.rt.color[k], t)) ci = k;
+                int ci = feedback_color_slot(pr, t);
                 if (ci >= 0) {
                     if (!src->feedback_seen && src->nview_fmt) {  // (outside a pass: no DCC for it from now on)
                         vk_end_pass();
@@ -4328,8 +4351,7 @@ static void resolve_feedback(Prog *pr) {
             else if (logfb > 0) {
                 logfb--;
                 const NvnTexEntry *e = shader_texture_entry(sg, &infos[sg]->tex[i]);
-                int ci = -1;
-                for (int k = 0; k < st.rt.ncolor; k++) if (same_image(st.rt.color[k], t)) ci = k;
+                int ci = feedback_color_slot(pr, t);
                 const NvnTextureView *cv = ci >= 0 && st.rt.has_cview[ci] ? &st.rt.cview[ci] : NULL;
                 LOG("[feedback] fs %016llx @%llx %s %ux%u fmt %#x levels %u | target view mask %#x level %u layer %u+%u | sampled view %d mask %#x "
                     "level %u+%u layer %u+%u | stage %d t%d target %d of %d out %#x mask %#x blend %d draws since %u\n", (unsigned long long)g_cur_fs_hash, (unsigned long long)st.program->stages[1].code_addr, is_depth ? "depth" : "color", src->width, src->height, t->format,
