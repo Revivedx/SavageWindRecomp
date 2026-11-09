@@ -148,8 +148,6 @@ int bind_label_family(void) {
 
 static void result(int kind, int dev, int slot, int other);
 static int act_default(int dev, int id);
-static void act_refresh(void);
-static bool act_raw_moved(int id);
 
 void bind_reset(int dev) {
     if (dev == BIND_DEV_PAD) memcpy(g_bind_pad, k_def_pad, sizeof g_bind_pad);
@@ -168,7 +166,6 @@ void bind_reset_slot(int slot) {
     if (slot < 0 || slot >= BIND_KEY_COUNT) return;
     g_bind_key[slot] = k_def_key[slot];
     if (bind_pad_slot(slot)) g_bind_pad[slot] = k_def_pad[slot];
-    act_refresh();
 }
 
 bool bind_is_default(int dev) {
@@ -227,9 +224,9 @@ int bind_last_result(int *dev, int *slot, int *other, int *serial) {
     return res_kind;
 }
 
-// Bind `host` to `slot`; only legacy host slots swap. Actions, Walk, Tilt and gyro allow shared inputs.
+// Bind `host` to `slot`. Every input may share its key or button with any other: nothing swaps and nothing else moves.
 static void assign(int dev, int slot, int host) {
-    if (bind_slot_is_action(slot)) {  // an action may share its key with any other: nothing swaps
+    if (bind_slot_is_action(slot)) {
         act_set(dev, slot - BIND_ACTION, host);
         LOG("[input] %s action %d -> %s\n", dev == BIND_DEV_PAD ? "controller" : "keyboard", slot - BIND_ACTION,
             dev == BIND_DEV_PAD ? k_pad_ini[host] : bind_key_label(host));
@@ -237,19 +234,10 @@ static void assign(int dev, int slot, int host) {
         return;
     }
     int16_t *t = dev == BIND_DEV_PAD ? g_bind_pad : g_bind_key;
-    int other = -1;
-    for (int i = 0; i < BIND_KEY_COUNT; i++)
-        if (i != slot && (dev == BIND_DEV_KEY ? bind_key_same_context(i, slot) : (bind_pad_slot(i) && bind_key_same_context(i, slot))) && t[i] == host) {
-            other = i;
-            t[i] = t[slot];
-        }
     t[slot] = (int16_t)host;
-    LOG("[input] %s %s -> %s%s%s%s\n", dev == BIND_DEV_PAD ? "controller" : "keyboard", k_names[slot],
-        dev == BIND_DEV_PAD ? k_pad_ini[host] : bind_key_label(host), other >= 0 ? " (swapped with " : "",
-        other >= 0 ? k_names[other] : "", other >= 0 ? ")" : "");
-    if (other >= 0) LOG("[input]   %s -> %s\n", k_names[other], dev == BIND_DEV_PAD ? bind_pad_label(t[other], 0) : bind_key_label(t[other]));
-    act_refresh();  // a moved Switch button must not drag the game's actions along (see act_refresh)
-    result(other >= 0 ? 2 : 1, dev, slot, other);
+    LOG("[input] %s %s -> %s\n", dev == BIND_DEV_PAD ? "controller" : "keyboard", k_names[slot],
+        dev == BIND_DEV_PAD ? k_pad_ini[host] : bind_key_label(host));
+    result(1, dev, slot, -1);
 }
 
 bool bind_capture_event(const SDL_Event *e) {
@@ -328,7 +316,6 @@ bool bind_settings_load(const char *key, const char *val) {
         }
         if (i < BIND_PAD_COUNT) act_migrate(pad ? BIND_DEV_PAD : BIND_DEV_KEY, i);
     }
-    act_refresh();
     return true;
 }
 
@@ -378,13 +365,10 @@ bool act_is_default(int id) {
         (g_act_key[id] == act_default(BIND_DEV_KEY, id) && g_act_pad[id] == act_default(BIND_DEV_PAD, id));
 }
 
-// An action answers from its own host bindings when it differs from its factory default, and also when its Switch
-// button was rebound: the game would answer from the Switch layer and the action would follow that button (#608:
-// moving "Menu: sort / sensor" took Attack along). The menus keep reading the Switch layer either way.
 static void act_refresh(void) {
     uint64_t custom = 0;
     for (int id = 0; id < ACT_COUNT; id++)
-        if (!act_is_default(id) || act_raw_moved(id)) custom |= 1ull << id;
+        if (!act_is_default(id)) custom |= 1ull << id;
     a_custom = custom;
 }
 
@@ -441,12 +425,6 @@ static const uint32_t k_masks_190[ACT_COUNT] = {
     0x10000, 0x20000, 0x10000, 0x20000, 0x2, 0x1, 0x2000, 0x4000, 0x4, 0x2, 0x4000, 0x4000, 0x2000, 0x1, 0x20000,
     0x10, 0x20000, 0x1, 0x2, 0x2000};
 
-// The Switch button an action reads in the 1.9.0 table has been rebound (the menu rows of the Key bindings page).
-static bool act_raw_moved(int id) {
-    int b = mask_button(k_masks_190[id]);
-    return b >= 0 && (g_bind_key[b] != k_def_key[b] || (bind_pad_slot(b) && g_bind_pad[b] != k_def_pad[b]));
-}
-
 static int act_default(int dev, int id) {
     int b = mask_button(k_masks_190[id]);
     if (b < 0) return ACT_NONE;
@@ -468,6 +446,37 @@ static void act_migrate(int dev, int slot) {
 int act_switch_button(int id) {
     if (id < 0 || id >= ACT_COUNT) return -1;
     return mask_button((k_masks ? k_masks : k_masks_190)[id]);
+}
+
+// In play the game's A / B / X / Y / L / R / ZL / ZR / stick-press bits are built from the actions, never from the menu
+// rows: a key given to "Menu: sort / sensor" must not press Attack, and rebinding Jump must not take Space away from the
+// other actions that default to the same Switch button. A bit is set by the default binding of an action (still on its
+// factory binding, so the game answers it from this bit) that reads that button. The menus keep using the menu rows.
+#define ACT_RAW_SLOTS ((1u << BIND_A) | (1u << BIND_B) | (1u << BIND_X) | (1u << BIND_Y) | (1u << BIND_LSTICK) | \
+                       (1u << BIND_RSTICK) | (1u << BIND_L) | (1u << BIND_R) | (1u << BIND_ZL) | (1u << BIND_ZR))
+uint64_t act_raw_slots(void) { return ACT_RAW_SLOTS; }
+// Only once the game has asked about an action (its hook is there); until then, and for game versions without the hook,
+// the menu rows keep driving every button as before.
+bool act_play_active(void) { return k_masks != NULL; }
+
+uint64_t act_play_keys(int (*held)(int scancode)) {
+    uint64_t out = 0;
+    for (int id = 0; id < ACT_COUNT; id++) {
+        int slot = act_switch_button(id), k = g_act_key[id];
+        if (slot < 0 || !(ACT_RAW_SLOTS >> slot & 1) || (a_custom >> id & 1)) continue;
+        if (k > 0 && held(k)) out |= 1ull << slot;
+    }
+    return out;
+}
+
+uint64_t act_play_pads(uint32_t host_buttons) {
+    uint64_t out = 0;
+    for (int id = 0; id < ACT_COUNT; id++) {
+        int slot = act_switch_button(id), k = g_act_pad[id];
+        if (slot < 0 || !(ACT_RAW_SLOTS >> slot & 1) || (a_custom >> id & 1)) continue;
+        if (k >= 0 && k < PADB_HOST_COUNT && (host_buttons >> k & 1)) out |= 1ull << slot;
+    }
+    return out;
 }
 
 uint64_t act_scan_keys(uint64_t key_buttons, int (*held)(int scancode)) {

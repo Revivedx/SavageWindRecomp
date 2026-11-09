@@ -3,7 +3,7 @@
 Each game action owns one keyboard/mouse binding and one controller binding. Its factory defaults are copied from
 its Switch button's original layout using the fixed 1.9.0 mask table below: Jump starts on Space / North, Interact
 on E / East, and so on. If either device differs from its factory default, the action reads its own host bindings on
-both devices, independent of raw Switch rebinds. With both devices at factory defaults and the action's Switch button not rebound, the game answers through the
+both devices, independent of raw Switch rebinds. With both devices at factory defaults, the game answers through the
 Switch layer as before, preserving its Jump button change option and raw Switch injection. Multiple actions may share
 an input. Reset restores each action's factory defaults. `ACT_FOLLOW` remains a reset command accepted by `act_set`;
 it is no longer stored in `g_act_key` or `g_act_pad`. `ACT_NONE` unbinds an action side.
@@ -13,11 +13,17 @@ seven gyro slots accept both devices; their new controller sides default to unbo
 left stick to 40%. Tilt holds the mouse clutch and enables the existing sensorless controller stick tilt path. Gyro
 buttons and keys combine per direction, only while `gyro_keys_live()`; simultaneous opposite directions cancel.
 Walk, Tilt, gyro and game action bindings allow shared inputs on both devices. Assigning one never changes another
-slot, including raw Switch menu buttons; rebinding a raw slot also leaves these shared bindings intact. Legacy
-host slots still swap among themselves on the same device, including the raw Switch buttons (0 to 15).
+slot, including raw Switch menu buttons; rebinding a raw slot also leaves these shared bindings intact. Raw Switch
+slots (0 to 15) no longer swap either: a host input already on another slot is simply shared (result kind 2 is unused).
 
-The game's title, pause and map menus still use the raw Switch layer, including legacy raw-button rebinds. Rebinding a raw Switch button (for example "Menu: sort / sensor", Y) makes the actions that read it answer from their own
-host bindings, so they stay where they were instead of following the menu button (#608). The runtime
+In play, the raw A / B / X / Y / L / R / ZL / ZR / stick-press bits the game reads are built only from actions still at
+their factory binding (`act_play_keys` / `act_play_pads`), never from the "Menu: ..." rows. So a key given to
+"Menu: sort / sensor" cannot press Attack, rebinding Jump leaves Space on the raw X bit for the other X actions, and the
+new key does not set it. D-pad, Plus and Minus stay on their rows (quick menu, pause, map). The menus and the title keep
+using the rows. This only switches on once the game has asked about an action (`act_play_active()`); before that, and on
+game versions without the hook, the rows drive every button as before.
+
+The game's title, pause and map menus still use the raw Switch layer, including legacy raw-button rebinds. The runtime
 overlay and launcher keep their fixed navigation shortcuts. The separate UI update can use `bind_input_name`,
 and `bind_input_group` ("gyro" or NULL). Raw Switch inputs are named by what they do (`bind_input_name(BIND_A)` is
 "Menu: confirm"), never by the button. No slots are hidden by these helpers; the page and overlay simply do not list
@@ -171,7 +177,7 @@ synthetic rows (needs no game files).
 
 `make test-actions` (no game files): the answers to the hold / pressed queries, menus falling back, two actions on one
 key, factory-default fallthrough, customization on either device, legacy migration in either order, one-time schema
-migration and reload idempotence, shared action/Walk/Tilt/gyro captures on both devices, preserved raw Switch swaps,
+migration and reload idempotence, shared action/Walk/Tilt/gyro captures on both devices, raw Switch slots sharing instead of swapping, menu rows not reaching the play bits,
 reset and ini round trips
 (`tools/test_actions.c`), and the generated hook (`tools/test_act_site.py`).
 `make test-pc-controls` also checks Walk scaling, shared key/pad Tilt, mouse routing, sensorless dual-stick eligibility,

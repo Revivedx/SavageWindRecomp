@@ -55,7 +55,8 @@ int main(void) {
     e = (SDL_Event){0}; e.type = SDL_EVENT_GAMEPAD_BUTTON_UP; e.gbutton.button = SDL_GAMEPAD_BUTTON_EAST;
     release_to_game(e); waiting();
     e.type = SDL_EVENT_GAMEPAD_BUTTON_DOWN; e.gbutton.button = SDL_GAMEPAD_BUTTON_SOUTH;
-    assert(bind_capture_event(&e)); ended(2);  // B already uses the south button: swap
+    assert(bind_capture_event(&e)); ended(1);  // B already uses the south button: shared, nothing swaps
+    assert(g_bind_pad[BIND_RIGHT] == SDL_GAMEPAD_BUTTON_SOUTH && g_bind_pad[BIND_B] == SDL_GAMEPAD_BUTTON_SOUTH);
 
     const int devices[] = {BIND_DEV_KEY, BIND_DEV_PAD};
     for (unsigned i = 0; i < sizeof devices / sizeof *devices; i++) {
@@ -85,7 +86,8 @@ int main(void) {
     e.gaxis.axis = SDL_GAMEPAD_AXIS_LEFT_TRIGGER;
     assert(bind_capture_event(&e));
     assert(g_bind_pad[BIND_A] == PADB_LTRIGGER);
-    ended(2);  // ZL already uses the left trigger
+    ended(1);  // ZL already uses the left trigger: shared, nothing swaps
+    assert(g_bind_pad[BIND_ZL] == PADB_LTRIGGER);
     // Optional gyro bindings may overlap normal keys and each other without mutating existing bindings.
     bind_reset(BIND_DEV_KEY);
     int camera_up=g_bind_key[BIND_RS_UP];
