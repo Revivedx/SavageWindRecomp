@@ -176,9 +176,24 @@ uint32_t vram_device_local(uint64_t *usage, uint64_t *budget, uint64_t *size) {
     VmaBudget bud[VK_MAX_MEMORY_HEAPS];
     vmaGetHeapBudgets(g_vk.vma, bud);
     if (usage) *usage = bud[best].usage;
-    if (budget) *budget = bud[best].budget;
+    if (budget) *budget = vram_budget_cap(bud[best].budget);
     if (size) *size = sz;
     return best;
+}
+
+// SAVAGEWIND_VRAM_BUDGET_MB=<n>: a budget no bigger than n MB (to try a small card's limits on a big one)
+uint64_t vram_budget_cap(uint64_t budget) {
+    static int64_t cap = -1;
+    if (cap < 0) cap = getenv("SAVAGEWIND_VRAM_BUDGET_MB") ? (int64_t)atoll(getenv("SAVAGEWIND_VRAM_BUDGET_MB")) << 20 : 0;
+    return cap && (uint64_t)cap < budget ? (uint64_t)cap : budget;
+}
+
+// The largest device-local heap: the bytes VMA's allocations take in it (its blocks' free room left out), its budget
+void vram_device_local_allocated(uint64_t *allocated, uint64_t *budget) {
+    uint32_t best = vram_device_local(NULL, budget, NULL);
+    VmaBudget bud[VK_MAX_MEMORY_HEAPS];
+    vmaGetHeapBudgets(g_vk.vma, bud);
+    *allocated = bud[best].statistics.allocationBytes;
 }
 
 bool vram_budget_ext(void) { return budget_ext; }

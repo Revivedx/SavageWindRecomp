@@ -14,8 +14,8 @@ mouse, and its text and voices in any of its languages.
 
 > [!WARNING]
 > **Playable from start to end, with some crashes on the way.** Savage Wind plays the game at 60 fps with sound, voices,
-> the HUD, saving and loading. A player has gone through the base game from the start to Calamity Ganon
-> ([#419](https://github.com/Revivedx/SavageWindRecomp/issues/419)), and the four Divine Beasts have been completed:
+> the HUD, saving and loading. Players have finished the base game from the start, through Calamity Ganon to Dark Beast
+> Ganon ([#419](https://github.com/Revivedx/SavageWindRecomp/issues/419), [#436](https://github.com/Revivedx/SavageWindRecomp/issues/436)), and the four Divine Beasts have been completed:
 > Vah Ruta ([#335](https://github.com/Revivedx/SavageWindRecomp/issues/335)), Vah Naboris
 > ([#380](https://github.com/Revivedx/SavageWindRecomp/issues/380)) and, by a player's report, all four and the DLC
 > ([#391](https://github.com/Revivedx/SavageWindRecomp/issues/391)). Expect bugs, white screens or crashes in some
@@ -199,7 +199,7 @@ Estimates of where each part stands. "Tested in game" is how much of the game ha
 | ✅ | **Game files setup** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Version check, copy, data image and code build, all from your own files |
 | ✅ | **Text and voice languages** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Any of the game's 15 text languages (16 with 1.9.0's Thai) with any of its 8 voice languages |
 | ✅ | **Voices in another language: crash fix** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Fixed ([#2](https://github.com/Revivedx/SavageWindRecomp/issues/2)): the game now sets aside enough memory for voice banks bigger than its own, so any voice language works with any text language |
-| ✅ | **Menus in 12 languages** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Savage Wind's own screens follow the text language |
+| ✅ | **Menus in 13 languages** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Savage Wind's own screens follow the text language. Hebrew, right to left, which the game has no text language for: `SAVAGEWIND_MENU_LANG=he` |
 | ✅ | **Sound and voices** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Mixed by the game SDK's own audio renderer, with room reverb |
 | ✅ | **Keyboard and mouse** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Every key and mouse button remappable, mouse camera |
 | ✅ | **Settings in the game's Options** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Video, audio, controls and language pages drawn by the game itself |
@@ -225,7 +225,7 @@ Estimates of where each part stands. "Tested in game" is how much of the game ha
 | 🔧 | **Graphics (NVN on Vulkan)** | ![80%](https://progress-bar.xyz/80/?width=150&style=square&progress_color=5cb85c) | Shrine and Great Plateau look right, shadows included; far parts of the map can still be missing ([#20](https://github.com/Revivedx/SavageWindRecomp/issues/20)) |
 | 🔧 | **Controllers** | ![80%](https://progress-bar.xyz/80/?width=150&style=square&progress_color=5cb85c) | Any controller SDL knows, by button position, confirmed by players; automatic recognition is next, then camera speed set apart for each axis |
 | 🔧 | **Button icons for your device** | ![80%](https://progress-bar.xyz/80/?width=150&style=square&progress_color=5cb85c) | The game's button prompts show your bound keys and mouse buttons, or Xbox / PlayStation / Nintendo buttons, switching with the device you use |
-| 🔧 | **Tested in game** | ![75%](https://progress-bar.xyz/75/?width=150&style=square&progress_color=f0ad4e) | The Shrine of Resurrection, the Great Plateau, the four Divine Beasts and the main story up to Calamity Ganon, completed by players ([#335](https://github.com/Revivedx/SavageWindRecomp/issues/335), [#380](https://github.com/Revivedx/SavageWindRecomp/issues/380), [#419](https://github.com/Revivedx/SavageWindRecomp/issues/419)), and a walk through every region on a 100% save file. Some places still crash or show a white screen, and some mechanics break above 30 fps ([#425](https://github.com/Revivedx/SavageWindRecomp/issues/425)): [report what breaks](https://github.com/Revivedx/SavageWindRecomp/issues/new/choose) |
+| 🔧 | **Tested in game** | ![75%](https://progress-bar.xyz/75/?width=150&style=square&progress_color=f0ad4e) | The Shrine of Resurrection, the Great Plateau, the four Divine Beasts and the main story to the end, Dark Beast Ganon, completed by players ([#335](https://github.com/Revivedx/SavageWindRecomp/issues/335), [#380](https://github.com/Revivedx/SavageWindRecomp/issues/380), [#419](https://github.com/Revivedx/SavageWindRecomp/issues/419), [#436](https://github.com/Revivedx/SavageWindRecomp/issues/436)), and a walk through every region on a 100% save file. Some places still crash or show a white screen, and some mechanics break above 30 fps ([#425](https://github.com/Revivedx/SavageWindRecomp/issues/425)): [report what breaks](https://github.com/Revivedx/SavageWindRecomp/issues/new/choose) |
 | 🔧 | **Linux** | ![90%](https://progress-bar.xyz/90/?width=150&style=square&progress_color=5cb85c) | Builds and runs on x86-64 (from LAS Recomp); a steady 144 fps on an RTX 3070 Ti with a Ryzen 5 7600X, and no Linux-only issues so far |
 | 🔧 | **AMD FSR 3 + frame generation** | ![60%](https://progress-bar.xyz/60/?width=150&style=square&progress_color=f0ad4e) | Video > Frame generation (AMD FSR 3): a frame made between each two the game draws, about twice the frames on screen, with the HUD kept sharp. Motion vectors from depth and the camera, and Link's own; enemies and animals can still leave a faint smear. Smooth with VSync and G-SYNC. Works on Windows; Linux and the Steam Deck aren't tried yet. Only frame generation for now: FSR 3 upscaling is next |
 | 🗺️ | **NVIDIA DLSS (RTX)** | ![0%](https://progress-bar.xyz/0/?width=150&style=square&progress_color=d9534f) | Planned, after FSR 3; under NVIDIA's own SDK license |
@@ -266,8 +266,9 @@ Keyboard and mouse defaults:
 | Inventory (Plus) | Tab | Map (Minus) | M |
 | Tilt the controller (hold, motion puzzles) | T + mouse | | |
 
-Every key and mouse button can be remapped in the game's Options (the Keyboard pages), next to the mouse sensitivity
-(horizontal and vertical) and Y inversion, motion sensitivity and inversion and the tilt key (Controls). The game's
+Every game action has its own key and its own controller button, set on the Key bindings page of the game's Options
+(a keyboard/mouse button and a controller button per row; see [docs/ACTIONS.md](docs/ACTIONS.md)). Mouse sensitivity
+(horizontal and vertical), Y inversion and motion sensitivity and inversion are on the Controls page. The game's
 button prompts show the keys you bound, or your controller's own buttons (Controls > Button icons: Automatic follows
 the device you use). The mouse turns the camera directly, as in a PC game: 0.022° per count at 100% sensitivity (as
 Quake and Source count it), on both axes (the vertical one scaled by Controls > Mouse vertical sensitivity), with no
@@ -336,7 +337,7 @@ switches - are in [docs/SAVAGE-WIND.md](docs/SAVAGE-WIND.md).
   [AMD FidelityFX SDK 1.1.4](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/tree/v1.1.4) (MIT: FSR 3 frame
   generation),
   [Fira Sans](https://github.com/mozilla/Fira) (SIL OFL 1.1), [Noto Sans Thai](https://github.com/notofonts/thai)
-  (SIL OFL 1.1), [stb_image / stb_image_write](https://github.com/nothings/stb)
+  (SIL OFL 1.1), [Noto Sans Hebrew](https://github.com/notofonts/hebrew) (SIL OFL 1.1), [stb_image / stb_image_write](https://github.com/nothings/stb)
   (public domain / MIT), [shaderc](https://github.com/google/shaderc)
   (Apache 2.0), [Zig](https://ziglang.org) (MIT), [Capstone](https://www.capstone-engine.org) (BSD),
   [Unicorn](https://www.unicorn-engine.org) (GPL 2.0), [python-lz4](https://github.com/python-lz4/python-lz4) (BSD).
@@ -368,6 +369,7 @@ The Windows release zip also bundles, unchanged unless noted, under their own li
 - AMD FidelityFX SDK 1.1.4 (MIT, `FidelityFX-LICENSE.txt`), compiled into savagewind.exe: FSR 3 frame interpolation,
   optical flow and the Vulkan backend, from [its source](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/tree/v1.1.4)
   with two alignment fixes (`third_party/FidelityFX/README.md`) and shaders compiled by `tools/ffx_shaders.py`.
-- The Fira Sans font, Medium and SemiBold (SIL OFL 1.1, `FiraSans-OFL.txt`), and the Noto Sans Thai font, Medium,
-  for the menus in Thai (SIL OFL 1.1, `NotoSansThai-OFL.txt`).
+- The Fira Sans font, Medium and SemiBold (SIL OFL 1.1, `FiraSans-OFL.txt`), and the Noto Sans Thai and Noto Sans
+  Hebrew fonts, Medium, for the menus in Thai and Hebrew (SIL OFL 1.1, `NotoSansThai-OFL.txt`,
+  `NotoSansHebrew-OFL.txt`).
 - Three colour LUTs in `colour-luts/` (CC0 1.0, from FreshLUTs: see "Credits" and `colour-luts/README.md`).

@@ -5,8 +5,8 @@
 // Upscalers (Video > Upscaler; runtime/nvn/output_scale.c): Off renders at the window's size; the others render
 // smaller by their quality mode's factor (or 1.0x at Native AA) and scale up to the window. DLSS is listed as coming later.
 enum { UPSCALE_OFF = 0, UPSCALE_METALFX = 1 /* macOS */, UPSCALE_FSR1 = 2 /* AMD FSR 1, Vulkan */,
-       UPSCALE_FSR3 = 3 /* AMD FSR 3.1.6, Vulkan */, UPSCALE_DLSS = 4 /* NVIDIA DLSS: not yet */,
-       UPSCALE_FSR4 = 5 /* AMD FSR 4 (FidelityFX API ML upscaler, FSR 3.1.6 fallback) */,
+       UPSCALE_FSR3 = 3 /* AMD FSR 3.1.6, Vulkan where built in (vulkan/fsr3.h) */, UPSCALE_DLSS = 4 /* NVIDIA DLSS: not yet */,
+       UPSCALE_FSR4 = 5 /* AMD FSR 4, Vulkan on Windows with AMD's DLLs and an AMD Radeon (vulkan/fsr_api.h; FSR 3.1.6 fallback) */,
        UPSCALE_COUNT };
 #ifdef __APPLE__
 #define UPSCALE_SPATIAL UPSCALE_METALFX  // each OS's spatial upscaler
@@ -16,7 +16,7 @@ enum { UPSCALE_OFF = 0, UPSCALE_METALFX = 1 /* macOS */, UPSCALE_FSR1 = 2 /* AMD
 #else
 #define UPSCALE_SPATIAL UPSCALE_FSR1
 #define UPSCALE_FSR3_OR_SPATIAL UPSCALE_FSR3
-#define UPSCALE_FSR4_OR_SPATIAL UPSCALE_FSR4
+#define UPSCALE_FSR4_OR_SPATIAL UPSCALE_FSR4  // (without FSR 4 on this PC: vulkan/device.c moves it to FSR 3 or 1)
 #define UPSCALE_DEFAULT UPSCALE_OFF      // the 3D image at the window's resolution
 #endif
 // quality modes, AMD's scale factors (per axis): Native AA 1.0, Ultra Quality 1.3, Quality 1.5, Balanced 1.7,
@@ -48,6 +48,7 @@ enum { VSYNC_ON = 0, VSYNC_FAST = 1, VSYNC_ADAPTIVE = 2, VSYNC_OFF = 3, VSYNC_CO
 // Video > HDR: Auto presents in HDR10 while Windows HDR is on for the window's monitor, On always (where the display
 // takes it), Off never (an SDR picture, which Windows shows dim and dull while its HDR is on)
 enum { HDR_AUTO = 0, HDR_ON = 1, HDR_OFF = 2, HDR_COUNT };
+enum { SPARSE_HEAP_AUTO = 0, SPARSE_HEAP_ON = 1, SPARSE_HEAP_OFF = 2, SPARSE_HEAP_COUNT };
 // Video > Fullscreen mode (runtime/window_size.c winsize_apply): Automatic is borderless at the desktop's size and the
 // display's own mode at any other size it has; Borderless never changes the display's mode (another size is scaled to
 // the screen); Exclusive always uses a display mode (the desktop's size too, at its highest refresh rate)
@@ -67,6 +68,7 @@ typedef struct {
     int upscaler;        // UPSCALE_*: Off (render at the window's size), or render smaller and scale up
     int upscale_quality; // UPQ_*: the upscaler's mode (how much smaller it renders)
     int antialias;       // AA_*: anti-aliasing of the game image before it is scaled to the window
+    bool game_fxaa;      // the game's own FXAA, in its scene -> final image composite (vulkan/exec.c fxaa_patch)
     int anisotropy;      // texture filtering: 0 the game's own, 1..4 = 2x, 4x, 8x, 16x (vulkan/textures.c)
     int sharpening;      // AMD CAS sharpening of the 3D image, 0 (off) .. 10 (100%) (vulkan/exec.c scene_post)
     bool frame_gen;      // AMD FSR 3 frame generation: a frame made between each two the game draws (vulkan/framegen.cpp)
@@ -77,6 +79,7 @@ typedef struct {
     int fps_limit;       // frame rate, frames per second (FPS_CHOICES; 0: no limit)
     int vsync;           // VSYNC_*
     bool rumble;         // controller vibration
+    bool freecam_sticks; // both stick clicks together turn the free camera on and off (hle/input.c)
     int gpu;             // Vulkan adapter index from the startup log; -1: automatic (restart required)
     bool dpad_move;      // the d-pad (and arrow keys) also act as the left stick while it is at rest
     float stick_deadzone[2];  // left, right stick: a controller's stick reads 0 within this much of full tilt (radial)
@@ -100,6 +103,7 @@ typedef struct {
     bool wide_view;      // a window that isn't 16:9 shows more of the world instead of bars (runtime/nvn/output_scale.c)
     int hdr;             // HDR_* (runtime/nvn/vulkan/device.c hdr_*)
     int hdr_white;       // nits of SDR white in HDR (0: what Windows gives SDR content on that monitor)
+    int sparse_heap;     // SPARSE_HEAP_*: guest heap backing (Windows Vulkan; applied on next start)
     int fov;             // field of view in play, percent of the game's own (FOV_CHOICES)
     int hud_size;        // the HUD's size in play, percent of the game's own (HUD_SIZE_CHOICES, runtime/nvn/hud_scale.h)
     int draw_distance;   // DRAWDIST_*: how far placed actors are kept (runtime/draw_distance.c)

@@ -17,6 +17,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <atomic>
@@ -28,6 +29,7 @@
 #include <SDL3/SDL.h>
 
 #include "i18n.h"
+#include "binding_row_layout.h"
 
 extern "C" {
 #include "../input_bind.h"
@@ -38,9 +40,12 @@ extern "C" {
 #include "../color_grade.h"
 #include "../pc_cursor.h"
 #include "../window_size.h"
+void guest_call(Cpu *, uint64_t);
+Cpu *kernel_current_cpu(void);
 void rt_request_reboot(int kind);           // runtime/main.c (1: start the game again)
 void menu_request_window_apply(void);       // menu.mm (fullscreen / window size, applied by the window loop)
 void menu_size_list_open(void);             // menu.mm (Window size's list, over the screen)
+bool menu_size_list_up(void);
 bool renderer_gpu_rtx(void);                // vulkan/device.c, metal.m
 }
 
@@ -71,7 +76,7 @@ const int GAME_ENTRIES = 14;
 const uint32_t GAME_CAMERA_Y = 1, GAME_CAMERA_X = 2, GAME_GYRO = 4, GAME_CAMERA_SENSITIVITY = 7, GAME_AMIIBO = 9,
                GAME_VOICE_BUTTON = 11, GAME_VOICE_LEVEL = 12, GAME_VR = 13;
 const uint32_t MSG_BASE = 9000;  // this file's message ids: MSG_BASE + item * 256 + part (the game's are 0000-0100)
-enum { MSG_TITLE = 0, MSG_DESC = 1, MSG_BUTTON = 2, MSG_VALUE = 16 };
+enum { MSG_TITLE = 0, MSG_DESC = 1, MSG_BUTTON = 2, MSG_KEY = 3, MSG_PAD = 4, MSG_VALUE = 16 };
 enum { MSG_TITLE_QUIT = 1, MSG_QUIT_QUESTION, MSG_QUIT_DESKTOP, MSG_QUIT_START };  // (storage ids below MSG_BASE)
 
 // Row object (0x98 bytes, FUN_7100d1d828): +0x00 screen, +0x50 entry, +0x54 on/off, +0x58 value, +0x5c max,
@@ -85,9 +90,9 @@ struct Entry {           // the game's option entry (0x30)
 static_assert(sizeof(Entry) == 0x30);
 enum { KIND_TOGGLE = 0, KIND_CHOICE = 1, KIND_BUTTON = 2 };
 
-enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_COLOUR, P_AUDIO, P_CONTROLS, P_KEYS, P_STICKS, P_PAD, P_LANGUAGE, P_ACCESS,
-            P_COUNT };
-enum Action { A_NONE, A_PAGE, A_BIND_KEY, A_BIND_PAD, A_RESET_KEYS, A_RESET_PAD, A_RESTART, A_QUIT, A_SIZE_LIST };
+enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_COLOUR, P_AUDIO, P_CONTROLS, P_BINDS, P_LANGUAGE, P_ACCESS, P_COUNT };
+// A_FIXED: a greyed row for an input that can never be rebound (Item.arg: 0 Esc, 1 F2); A_BIND: Item.arg is a binding slot (an input, or BIND_ACTION + an action); the next key, mouse button or controller button binds it
+enum Action { A_NONE, A_PAGE, A_BIND, A_BINDS_HEADER, A_RESET_BINDS, A_RESTART, A_QUIT, A_SIZE_LIST, A_FIXED };
 
 struct Item {
     int page;
@@ -118,6 +123,7 @@ uint64_t g_quit_dialog;            // the quit question's dialog while it is up
 uint64_t g_quit_owner;             // ... and the screen it came from (title menu or Options; its input is off meanwhile)
 bool g_quit_texts;                 // ... and its texts are still to be given (its two-button layout comes next)
 uint64_t g_cap_row;                // a binding row whose capture is running
+int cap_slot_was = -1;             // ... and its slot (for the redraw once it has ended)
 uint64_t g_size_row;               // the Window size row whose list was opened
 std::atomic<bool> g_size_redraw;   // ... and a size was picked there (render thread): redraw it
 std::vector<uint64_t> g_dirty;     // rows to redraw, one per frame
@@ -251,7 +257,8 @@ const char *ups_label(const Item &, int x) {
     if (u == UPSCALE_METALFX) return tr("MetalFX");
     if (u == UPSCALE_FSR1) return tr("AMD FSR 1");
     if (u == UPSCALE_FSR3) return upscaler_available(u) ? tr("AMD FSR 3") : soon("FSR 3");
-    if (u == UPSCALE_FSR4) return upscaler_available(u) ? tr("AMD FSR 4") : soon("FSR 4");
+    if (u == UPSCALE_FSR4)
+        return upscaler_available(u) ? tr("AMD FSR 4") : soon("FSR 4", fsr4_offered() ? "(coming soon)" : "(AMD Radeon only)");
     return soon("DLSS", renderer_gpu_rtx() ? "(coming soon)" : "(NVIDIA RTX only)");
 }
 
@@ -262,12 +269,40 @@ const char *fps_label(const Item &, int x) {
     return buf;
 }
 
+// What a slot is bound to on the keyboard / mouse and on the controller. An action without a binding of its own shows
+// the button its Switch input has (what it follows).
+const char *slot_key_text(int slot) {
+    if (bind_slot_is_action(slot)) {
+        int h = g_act_key[slot - BIND_ACTION];
+        if (h == ACT_FOLLOW) {
+            int b = act_switch_button(slot - BIND_ACTION);
+            h = b < 0 ? ACT_NONE : g_bind_key[b];
+        }
+        return h == ACT_NONE ? tr("Unbound") : tr(bind_key_label(h));
+    }
+    return tr(bind_key_label(g_bind_key[slot]));
+}
+const char *slot_pad_text(int slot) {
+    if (bind_slot_is_action(slot)) {
+        int h = g_act_pad[slot - BIND_ACTION];
+        if (h == ACT_FOLLOW) {
+            int b = act_switch_button(slot - BIND_ACTION);
+            h = b < 0 ? ACT_NONE : g_bind_pad[b];
+        }
+        return h == ACT_NONE ? tr("Unbound") : tr(bind_pad_label(h, bind_label_family()));
+    }
+    return tr(bind_pad_label(g_bind_pad[slot], bind_label_family()));
+}
+bool slot_has_pad(int slot) { return bind_slot_is_action(slot) || bind_pad_slot(slot); }
+
 const char *bind_label(const Item &it, int) {
+    static char buf[160];
     int dev, slot, ms;
-    bool key = it.action == A_BIND_KEY;
-    if (bind_capture_active(&dev, &slot, &ms) && dev == (key ? BIND_DEV_KEY : BIND_DEV_PAD) && slot == it.arg)
-        return tr(key ? "Press a key..." : "Press a button...");
-    return tr(key ? bind_key_label(g_bind_key[it.arg]) : bind_pad_label(g_bind_pad[it.arg], bind_label_family()));
+    if (bind_capture_active(&dev, &slot, &ms) && slot == it.arg)
+        return tr(slot_has_pad(slot) ? "Press a key or button..." : "Press a key...");
+    if (slot_has_pad(it.arg)) snprintf(buf, sizeof buf, "%s  |  %s", slot_key_text(it.arg), slot_pad_text(it.arg));
+    else snprintf(buf, sizeof buf, "%s", slot_key_text(it.arg));
+    return buf;
 }
 
 void build_items(void) {
@@ -280,9 +315,7 @@ void build_items(void) {
 #endif
     v.push_back(button(P_MAIN, "Audio", "Volume and sound effects.", "Open", A_PAGE, P_AUDIO));
     v.push_back(button(P_MAIN, "Controls", "Camera, motion, d-pad, mouse and button icons.", "Open", A_PAGE, P_CONTROLS));
-    v.push_back(button(P_MAIN, "Keyboard (buttons)", "Which key does each button.", "Open", A_PAGE, P_KEYS));
-    v.push_back(button(P_MAIN, "Keyboard (sticks)", "Keys for the sticks and for walking.", "Open", A_PAGE, P_STICKS));
-    v.push_back(button(P_MAIN, "Controller", "Which controller button does each button.", "Open", A_PAGE, P_PAD));
+    v.push_back(button(P_MAIN, "Key bindings", "Which key, mouse button or controller button does what.", "Open", A_PAGE, P_BINDS));
     v.push_back(button(P_MAIN, "Language", "Language of the texts and of the voices.", "Open", A_PAGE, P_LANGUAGE));
     v.push_back(button(P_MAIN, "Accessibility", "Assists that make the game easier.", "Open", A_PAGE, P_ACCESS));
     v.push_back(button(P_MAIN, "Quit game", "To the desktop, or back to the Savage Wind start screen.", "Quit",
@@ -429,7 +462,7 @@ void build_items(void) {
                        }, UPS_DEFAULT));
     v.back().value_off = [](const Item &, int x) { return !upscaler_available(k_ups_value[x]); };
     v.back().desc_fn = [](const Item &) {  // (one line)
-        return g_settings.upscaler == UPSCALE_FSR4 ? tr("AMD FSR 4: ML upscaling and Native AA (FSR 3.1.6 fallback).")
+        return g_settings.upscaler == UPSCALE_FSR4 ? tr("AMD FSR 4: renders smaller, then rebuilds detail with machine learning.")
              : g_settings.upscaler == UPSCALE_FSR3 ? tr("AMD FSR 3: renders smaller, then rebuilds detail from past frames.")
                                                    : tr("Off: full resolution. AMD FSR 1: renders smaller, then upscales.");
     };
@@ -465,6 +498,10 @@ void build_items(void) {
                        [](const Item &) { return g_settings.antialias; },
                        [](const Item &, int x) { g_settings.antialias = x; }, AA_OFF));
 #ifndef __APPLE__
+    // the game's own FXAA (vulkan/exec.c fxaa_patch)
+    v.push_back(toggle(P_VIDEO, "Game's FXAA", "The game's own edge smoothing. Off: sharper, more jagged edges.",
+                       [](const Item &) { return (int)g_settings.game_fxaa; },
+                       [](const Item &, int x) { g_settings.game_fxaa = x; }, 1));
     // Anisotropic filtering and sharpening (Vulkan: vulkan/textures.c sampler_aniso, vulkan/exec.c scene_post)
     v.push_back(choice(P_VIDEO, "Anisotropic filtering", "Sharper ground and paths at a distance. Off: as on the console.",
                        [](const Item &) { return N(k_aniso); },
@@ -489,7 +526,7 @@ void build_items(void) {
                        [](const Item &) { return (int)g_settings.async_shaders; },
                        [](const Item &, int x) { g_settings.async_shaders = x; }, 0));
     // shadow resolution (its own block)
-    v.push_back(choice(P_VIDEO, "Shadow resolution", "Sharper sun shadows. Higher costs more GPU time.",
+    v.push_back(choice(P_VIDEO, "Shadow resolution", "Sharper sun shadows. Extreme can cut the frame rate to a third in forests, even on a fast GPU.",
                        [](const Item &) { return N(k_shadow); }, [](const Item &, int x) { return tr(k_shadow[x]); },
                        [](const Item &) { return g_settings.shadow_res; },
                        [](const Item &, int x) { g_settings.shadow_res = x; }, SHADOW_CONSOLE));
@@ -589,6 +626,10 @@ void build_items(void) {
     v.push_back(toggle(P_CONTROLS, "Controller rumble", "Vibrate the controller during play.",
                        [](const Item &) { return (int)g_settings.rumble; },
                        [](const Item &, int x) { g_settings.rumble = x; }, 1));
+    v.push_back(toggle(P_CONTROLS, "Free camera with both sticks",
+                       "Clicking both sticks together turns the free camera on and off. Home on the keyboard always does.",
+                       [](const Item &) { return (int)g_settings.freecam_sticks; },
+                       [](const Item &, int x) { g_settings.freecam_sticks = x; }, 1));
     v.push_back(toggle(P_CONTROLS, "D-pad as left stick", "The d-pad also moves like the left stick.",
                        [](const Item &) { return (int)g_settings.dpad_move; },
                        [](const Item &, int x) { g_settings.dpad_move = x; }, 0));
@@ -635,7 +676,7 @@ void build_items(void) {
                        [](const Item &) { return (int)g_settings.mouse_invert_y; },
                        [](const Item &, int x) { g_settings.mouse_invert_y = x; }, 0));
     v.push_back(toggle(P_CONTROLS, "Shrine keyboard gyro",
-                       "Only while controlling a shrine apparatus. Remap on Keyboard (sticks). Outside it, camera keys keep working.",
+                       "Only while controlling a shrine apparatus. Remap under Key bindings. Outside it, camera keys keep working.",
                        [](const Item &) { return (int)g_settings.pc_gyro; },
                        [](const Item &, int x) { g_settings.pc_gyro = x; }, 1));
     v.push_back(toggle(P_CONTROLS, "Shrine mouse drag",
@@ -675,20 +716,6 @@ void build_items(void) {
                        },
                        [](const Item &, int x) { g_settings.motion_camera_sens = k_motion_cam_sens[x] / 100.0f; },
                        MOTION_CAM_SENS_DEFAULT));
-    {   // controller hold button for GYRO_CAM_HOLD
-        Item it = button(P_CONTROLS, bind_input_name(BIND_GYRO_CAM),
-                         "Hold on the controller to turn the camera with motion (Hold button mode).", nullptr,
-                         A_BIND_PAD, BIND_GYRO_CAM);
-        it.label = bind_label;
-        v.push_back(it);
-    }
-    {   // the tilt key: held, the mouse tilts the controller (for motion puzzles without a gyroscope)
-        Item it = button(P_CONTROLS, bind_input_name(BIND_TILT),
-                         "Hold it and move the mouse to tilt the controller. Press A, then the new key.", nullptr,
-                         A_BIND_KEY, BIND_TILT);
-        it.label = bind_label;
-        v.push_back(it);
-    }
     v.push_back(choice(P_CONTROLS, "Button icons",
                        "The buttons the game's prompts show. Automatic: the device you used last.",
                        [](const Item &) { return N(k_icons); },
@@ -696,36 +723,38 @@ void build_items(void) {
                        [](const Item &) { return g_settings.button_icons; },
                        [](const Item &, int x) { g_settings.button_icons = x; }, ICONS_AUTO));
 
-    // Keyboard and controller: one button per Switch input, showing what drives it; A waits for the new one
-    auto bind = [&](int page, int action, int slot) {
-        Item it = button(page, bind_input_name(slot),
-                         action == A_BIND_KEY ? "Press A, then the new key. Esc cancels."
-                                              : "Press A, then the new button.",
-                         nullptr, action, slot);
+    // Key bindings: one row per action (key | controller button), then the inputs no action covers. A waits for the
+    // next press: a key or mouse button binds the keyboard side, a controller button the controller side
+    v.push_back(button(P_BINDS, "", "Press A, then the new key or button. Esc cancels.", "", A_BINDS_HEADER, 0));
+    auto bind = [&](int slot, const char *title) {
+        Item it = button(P_BINDS, title, "Press A, then the new key or button. Esc cancels.", nullptr, A_BIND, slot);
         it.label = bind_label;
-        if (action == A_BIND_KEY) it.desc_fn = [](const Item &) {
-            static std::string desc;
-            desc = std::string(tr("Press A, then the new key. Esc cancels.")) + " " +
-                   tr("In the title, pause and map menus, unbound arrow keys act as the left stick and Enter selects.");
-            return desc.c_str();
-        };
+        if (!slot_has_pad(slot)) it.desc = "Press A, then the new key. Esc cancels.";
         v.push_back(it);
     };
-    for (int s = 0; s < BIND_PAD_COUNT; s++) bind(P_KEYS, A_BIND_KEY, s);
-    bind(P_KEYS, A_BIND_KEY, BIND_WALK);
-    v.push_back(button(P_KEYS, "Reset keyboard to defaults", "Every key back to its default.", "Reset", A_RESET_KEYS, 0));
-    for (int s = BIND_LS_UP; s <= BIND_RS_RIGHT; s++) bind(P_STICKS, A_BIND_KEY, s);
+    for (int id = 0; id < ACT_COUNT; id++)
+        if (!act_hidden(id) && act_name(id)) bind(BIND_ACTION + id, act_name(id));
+    // the game's menus: what the Switch buttons do outside the actions, listed by function (never by button name)
+    for (int sl : {BIND_PLUS, BIND_MINUS, BIND_UP, BIND_LEFT, BIND_RIGHT, BIND_A, BIND_B, BIND_X, BIND_Y, BIND_L, BIND_R,
+                   BIND_ZL, BIND_ZR, BIND_RSTICK})
+        bind(sl, bind_input_name(sl));
+    // Esc and F2 are hard-wired (the game can always be paused, the cursor freed): shown greyed, never rebound
+    v.push_back(button(P_BINDS, "Pause menu / back", "Fixed: this key always works.", "", A_FIXED, 0));
+    v.push_back(button(P_BINDS, "Free mouse cursor", "Fixed: this key frees the mouse cursor.", "", A_FIXED, 1));
+    for (int sl = BIND_LS_UP; sl <= BIND_RS_RIGHT; sl++) bind(sl, bind_input_name(sl));
+    bind(BIND_WALK, bind_input_name(BIND_WALK));
+    bind(BIND_TILT, bind_input_name(BIND_TILT));
+    v.back().desc = "Hold it and move the mouse to tilt the controller. Press A, then the new key.";
     static const char *const gyro_help[] = {"Tilt upward.", "Tilt downward.", "Tilt left.", "Tilt right.",
                                             "Rotate left on the third axis.", "Rotate right on the third axis.",
                                             "Reset orientation and stop pending rotation."};
-    for (int s = BIND_GYRO_UP; s <= BIND_GYRO_CENTER; s++) {  // (the virtual gyro at a shrine apparatus)
-        bind(P_STICKS, A_BIND_KEY, s);
-        v.back().desc = gyro_help[s - BIND_GYRO_UP];
+    for (int sl = BIND_GYRO_UP; sl <= BIND_GYRO_CENTER; sl++) {  // (the virtual gyro at a shrine apparatus)
+        bind(sl, bind_input_name(sl));
+        v.back().desc = gyro_help[sl - BIND_GYRO_UP];
     }
-    v.push_back(button(P_STICKS, "Reset keyboard to defaults", "Every key back to its default.", "Reset", A_RESET_KEYS, 0));
-    for (int s = 0; s < BIND_PAD_COUNT; s++) bind(P_PAD, A_BIND_PAD, s);
-    bind(P_PAD, A_BIND_PAD, BIND_GYRO_CAM);
-    v.push_back(button(P_PAD, "Reset controller to defaults", "Every button back to its default.", "Reset", A_RESET_PAD, 0));
+    bind(BIND_GYRO_CAM, bind_input_name(BIND_GYRO_CAM));
+    v.back().desc = "Hold on the controller to turn the camera with motion (Hold button mode).";
+    v.push_back(button(P_BINDS, "Reset all bindings", "Every key and button back to its default.", "Reset", A_RESET_BINDS, 0));
 
     // Language
     v.push_back(choice(P_LANGUAGE, "Text", "Texts and menus. Applies after a restart.",
@@ -831,6 +860,394 @@ const Item *item_of_index(uint32_t idx) {
 }
 const Item *item_of_row(uint64_t row) { return row ? item_of_index(rd32(row + 0x50)) : nullptr; }
 
+// Three rows plus the column header row. No guest object is enlarged and no shared archive is changed.
+// The row band is the toggle part's own plate (Pa_Btn_00, hidden natively, drawn before both buttons): full width, bright
+// while the row is selected. Under the button that is not selected, that part's box (a darkener) cancels the band
+// shining through the semi-transparent native box, so that button keeps its base colour in a selected row.
+struct TwoRow {
+    uint64_t row, tog, band, disable, dark, box[2];
+    float dark_x[2];
+    int dark_col;  // the column the darkener sits under now (-1: not placed yet)
+};
+std::vector<TwoRow> g_two_rows;
+uint64_t g_band_row;
+int g_band_col;
+uint64_t g_two_header;
+int g_two_column;
+uint64_t g_two_current;
+bool g_two_focusing;
+// Debug log of the two-button rows (SAVAGEWIND_ROW_SPIKE_LOG=1); every stderr line costs about 6 ms on Windows
+bool two_log(void) {
+    static int on = -1;
+    if (on < 0) on = getenv("SAVAGEWIND_ROW_SPIKE_LOG") != nullptr;
+    return on;
+}
+
+bool is_binds_header(const Item *it) { return it && it->action == A_BINDS_HEADER; }
+bool row_is_header(uint64_t row) { return row && (row == g_two_header || is_binds_header(item_of_row(row))); }
+bool two_enabled(void) {
+    return g_site.opt_two_redraw && g_site.opt_two_text && g_site.opt_two_help &&
+           g_site.opt_two_pane_calc && g_game_version && !strcmp(g_game_version, "1.9.0") &&
+           (!getenv("SAVAGEWIND_TWO_BUTTON_ROWS") || strcmp(getenv("SAVAGEWIND_TWO_BUTTON_ROWS"), "0"));
+}
+float two_header_scale(void) {
+    const char *env = getenv("SAVAGEWIND_HEADER_SCALE");
+    if (env && *env) {
+        char *end = nullptr;
+        float v = strtof(env, &end);
+        if (end != env && isfinite(v) && v > 0.1f && v <= 4.f) return v;
+    }
+    return binding_row_header_scale;
+}
+bool two_candidate(uint64_t row) {
+    const Item *it = item_of_row(row);
+    if (g_cur_page != P_BINDS || !two_enabled() || !it) return false;
+    if (is_binds_header(it)) return true;
+    return it->action == A_BIND || it->action == A_FIXED;  // every binding row: label, keyboard/mouse button, controller button
+}
+bool two_ready(uint64_t row) {
+    for (const auto &r : g_two_rows) if (r.row == row) return true;
+    return false;
+}
+uint64_t two_call(uint64_t fn, uint64_t a = 0, uint64_t b = 0, uint64_t d = 0) {
+    Cpu *c = kernel_current_cpu();
+    if (!c) return 0;
+    Cpu saved = *c;
+    c->x[0] = a; c->x[1] = b; c->x[2] = d;
+    guest_call(c, fn);
+    uint64_t result = c->x[0];
+    *c = saved;
+    return result;
+}
+bool two_ptr(uint64_t p) { return p >= 0x7000000000ull && p < 0x7320000000ull; }
+uint64_t two_pane(uint64_t root, const char *name, unsigned depth = 0) {
+    if (!two_ptr(root) || depth > 16) return 0;
+    if (!strncmp((const char *)(uintptr_t)(root + 0xb8), name, 40)) return root;
+    uint64_t head = root + 0x20, link = rd64(head + 8);
+    for (unsigned n = 0; n < 128 && two_ptr(link) && link != head; n++, link = rd64(link + 8))
+        if (uint64_t p = two_pane(link - 8, name, depth + 1)) return p;
+    return 0;
+}
+void two_float(uint64_t pane, unsigned field, float value) {
+    *(float *)(uintptr_t)(pane + field) = value;
+    // Pane::Calculate at opt_two_pane_calc consumes this bit, rebuilds +0x70,
+    // then passes force=true to descendants. Never edit the cached world matrix.
+    wr8(pane + 0x58, *(uint8_t *)(uintptr_t)(pane + 0x58) | 0x10);
+}
+struct TwoButtonPanes {
+    uint64_t root, texts[2], frames[8], plate;
+};
+bool two_button_panes(uint64_t root, TwoButtonPanes &p) {
+    p.root = root;
+    const char *frames[] = {"N_Cursor_00", "B_Hit_00", "W_Base_00", "W_Base_01",
+                            "W_BaseLine_02", "W_BaseLine_01", "W_Decide_00", "Window_00"};
+    for (int i = 0; i < 2; i++)
+        if (!(p.texts[i] = two_pane(root, i ? "T_Text_01" : "T_Text_00"))) return false;
+    for (int i = 0; i < 8; i++)
+        if (!(p.frames[i] = two_pane(root, frames[i]))) return false;
+    return (p.plate = two_pane(root, "W_Base_02")) != 0;
+}
+void two_geometry(const TwoButtonPanes &p, BindingRowColumn col) {
+    const auto layout = binding_row_layout();
+    two_float(p.root, 0x30, col.center());
+    two_float(p.root, 0x48, 1.f);
+    // Resize native nine-slice frames, hit area and cursor together. Glyphs stay at native scale.
+    for (uint64_t text : p.texts) {
+        two_float(text, 0x48, 1.f);
+        two_float(text, 0x4c, 1.f);
+        two_float(text, 0x50, col.width - layout.text_inset);
+    }
+    for (int i = 0; i < 8; i++)
+        two_float(p.frames[i], 0x50, col.width + (i == 7 ? layout.glow_extra : 0.f));
+    // The part's own row plate is drawn over the first button's box when it is the second part, and is bright only while
+    // its own button is the selected one: both are hidden, the toggle part's plate is the row band (two_band).
+    wr8(p.plate + 0x58, *(uint8_t *)(uintptr_t)(p.plate + 0x58) & ~1u);
+}
+void two_header_geometry(const TwoButtonPanes &p, BindingRowColumn col, float scale) {
+    two_float(p.root, 0x30, col.center());
+    two_float(p.root, 0x48, 1.f);
+    for (uint64_t text : p.texts) {
+        two_float(text, 0x30, 0.f);
+        two_float(text, 0x34, binding_row_header_y);
+        two_float(text, 0x48, scale);
+        two_float(text, 0x4c, scale);
+        two_float(text, 0x50, col.width / scale);
+    }
+    for (uint64_t frame : p.frames)
+        wr8(frame + 0x58, *(uint8_t *)(uintptr_t)(frame + 0x58) & ~1u);
+    wr8(p.plate + 0x58, *(uint8_t *)(uintptr_t)(p.plate + 0x58) & ~1u);
+}
+// Window pane colours are materials: the white colour's alpha is the brightness (band, box). Seen at two places of the pane.
+constexpr unsigned two_mat_alpha[2] = {0x16f, 0x207};
+constexpr uint8_t two_band_selected = 0x10, two_band_faint = 0x02;  // the native values of a focused / unfocused plate
+constexpr uint8_t two_dark_alpha = 0x92;   // the darkener under the other button (one value fits both columns' backdrop)
+constexpr uint8_t two_hover_alpha = 0xde;  // pane alpha of the selected button's box: the band shows through a little
+// The selected button's box is black natively; a little white (linear colour) in it lifts it a notch above the others.
+constexpr unsigned two_mat_white[2] = {0x16c, 0x204};
+constexpr uint8_t two_hover_tint = 0x06;
+void two_alpha(uint64_t pane, uint8_t v) {
+    for (unsigned o : two_mat_alpha) if (*(uint8_t *)(uintptr_t)(pane + o) != v) wr8(pane + o, v);
+}
+void two_tint(uint64_t pane, uint8_t v) {
+    for (unsigned o : two_mat_white)
+        for (unsigned i = 0; i < 3; i++)
+            if (*(uint8_t *)(uintptr_t)(pane + o + i) != v) wr8(pane + o + i, v);
+}
+void two_show(uint64_t pane, bool on) {
+    uint8_t f = *(uint8_t *)(uintptr_t)(pane + 0x58);
+    if ((f & 1u) != (on ? 1u : 0u)) wr8(pane + 0x58, on ? f | 0x11u : (f & ~1u) | 0x10u);
+}
+void two_pane_alpha(uint64_t pane, uint8_t v) {
+    if (*(uint8_t *)(uintptr_t)(pane + 0x59) == v) return;
+    wr8(pane + 0x59, v);
+    wr8(pane + 0x58, *(uint8_t *)(uintptr_t)(pane + 0x58) | 0x10u);
+}
+void two_band_row(TwoRow &r, bool selected, int col) {
+    two_show(r.tog, true);
+    two_show(r.band, true);
+    two_alpha(r.band, selected ? two_band_selected : two_band_faint);
+    two_show(r.disable, selected);
+    if (selected) {
+        int other = 1 - col;
+        if (r.dark_col != other) {
+            two_float(r.dark, 0x30, r.dark_x[other]);
+            r.dark_col = other;
+        }
+        two_alpha(r.dark, two_dark_alpha);
+    }
+    for (int i = 0; i < 2; i++) {
+        bool hover = selected && i == col;
+        two_pane_alpha(r.box[i], hover ? two_hover_alpha : 0xff);
+        two_tint(r.box[i], hover ? two_hover_tint : 0);
+    }
+}
+// One row at a time is the selected one; the rest show the faint band. Also run every frame (two_band_refresh): the
+// game redraws a row's parts when a binding changes.
+void two_band(uint64_t selected, int col) {
+    g_band_row = selected; g_band_col = col;
+    for (auto &r : g_two_rows) two_band_row(r, r.row == selected, col);
+}
+// The native selection brackets are not clipped by the list: when the wheel scrolls the selected row out of view they
+// would stay behind, floating over the title. So after a wheel scroll a selection outside the list moves to the nearest
+// row inside it. (Rows are 50 apart; y is 150 for the first row at scroll 0, grows as the list scrolls down, and the list
+// shows about y -305 .. 205 with the outer rows faded. A row the list no longer draws stops updating its y, so the selected
+// row's position is carried along with the scroll offset from the last frame its y changed.)
+void two_focus(uint64_t screen, uint64_t row, int col);
+int g_wheel_frames;
+struct SelTrack { uint64_t row; float raw_y, y, off; bool seen; } g_sel;
+void two_wheel_scrolled(void) { g_wheel_frames = 6; }
+void two_follow_wheel(uint64_t screen) {
+    if (g_wheel_frames <= 0) return;
+    g_wheel_frames--;
+    uint64_t row = g_band_row;
+    const int col = g_band_col < 0 ? 0 : g_band_col;
+    if (!row || !two_ready(row)) return;
+    auto hit_y = [&](uint64_t r) {
+        uint64_t button = rd64(r + 0x20), hit = two_ptr(button) ? rd64(button + 0x60) : 0;
+        return two_ptr(hit) ? *(float *)(uintptr_t)(hit + 0x8c) : NAN;
+    };
+    const float off = *(float *)(uintptr_t)(screen + 0x3628 + 0x2c), raw = hit_y(row);
+    if (!isfinite(off) || !isfinite(raw)) return;
+    if (g_sel.row != row || !g_sel.seen || raw != g_sel.raw_y) g_sel = {row, raw, raw, off, true};
+    const float y = g_sel.y + (off - g_sel.off);
+    if (y <= 205.f && y >= -305.f) return;
+    uint64_t best = 0;
+    float best_y = 0;
+    for (const auto &r : g_two_rows) {
+        if (r.row == row || row_is_header(r.row)) continue;
+        const float ry = hit_y(r.row);
+        if (!isfinite(ry) || ry > 150.f || ry < -250.f) continue;
+        if (!best || (y > 205.f ? ry > best_y : ry < best_y)) best = r.row, best_y = ry;
+    }
+    if (best) two_focus(screen, best, col);
+}
+void two_band_refresh(uint64_t screen) {
+    if (g_two_rows.empty() || rd64(g_two_rows[0].row) != screen) return;
+    two_band(g_band_row, g_band_col);
+    two_follow_wheel(screen);
+}
+uint64_t first_selectable_row(uint64_t screen) {
+    if (!screen) return 0;
+    uint32_t nrows = rd32(screen + g_site.opt_screen_rows);
+    uint64_t rows = rd64(screen + g_site.opt_screen_rows + 8);
+    if (!rows || !nrows || nrows > 64) return g_two_rows.empty() ? 0 : g_two_rows[0].row;
+    uint32_t norder = g_site.opt_table ? rd32(OPT_ROWS) : 0;
+    uint64_t order = g_site.opt_table ? rd64(OPT_ORDER) : 0;
+    for (uint32_t oi = 0; oi < norder && oi < 64 && order; oi++) {
+        uint32_t want = rd32(order + 4 * oi);
+        if (is_binds_header(item_of_index(want))) continue;
+        for (uint32_t ri = 0; ri < nrows; ri++) {
+            uint64_t r = rd64(rows + 8 * ri);
+            if (r && rd32(r + 0x50) == want) return r;
+        }
+    }
+    for (uint32_t ri = 0; ri < nrows; ri++) {
+        uint64_t r = rd64(rows + 8 * ri);
+        if (r && !row_is_header(r)) return r;
+    }
+    return 0;
+}
+uint64_t row_active_control(uint64_t r) {
+    if (!r) return 0;
+    if (two_ready(r)) return rd64(r + (g_two_column ? 0x28 : 0x20));
+    const Item *it = item_of_row(r);
+    int kind = it ? it->kind : KIND_BUTTON;
+    return rd64(r + (kind == KIND_TOGGLE ? 0x18 : kind == KIND_CHOICE ? 0x20 : 0x28));
+}
+void two_focus(uint64_t screen, uint64_t row, int col) {
+    if (g_two_focusing) return;
+    g_two_focusing = true;
+    g_two_column = col; g_two_current = row;
+    pc_cursor_options_focus(screen, row, col ? KIND_BUTTON : KIND_CHOICE);
+    g_two_focusing = false;
+}
+void two_text(uint64_t layout, const char *pane, uint32_t id) {
+    uint64_t name[] = {g_entries[0].name_vtbl, (uint64_t)(uintptr_t)pane};
+    two_call(g_site.opt_two_text, layout, (uint64_t)(uintptr_t)name, id);
+}
+void hide_failed_header(uint64_t row) {
+    uint64_t btn = rd64(row + 0x28);
+    if (two_ptr(btn) && two_ptr(rd64(btn)) && two_ptr(rd64(rd64(btn) + 0x60)))
+        two_call(rd64(rd64(btn) + 0x60), btn, 0);
+    if (uint64_t root = rd64(row + 0x80); two_ptr(root))
+        wr8(root + 0x58, *(uint8_t *)(uintptr_t)(root + 0x58) & ~1u);
+    g_two_header = row;
+}
+// The scale that fits a row name before the keyboard button: widths are estimated per character (the game's font is
+// proportional): narrow marks count less, kana / hanzi / hangul double, Thai combining marks nothing.
+float label_fit(const char *text) {
+    float w = 0;
+    for (const unsigned char *p = (const unsigned char *)text; *p;) {
+        unsigned cp = *p, n = 1;
+        if (cp >= 0xf0) cp &= 0x07, n = 4;
+        else if (cp >= 0xe0) cp &= 0x0f, n = 3;
+        else if (cp >= 0xc0) cp &= 0x1f, n = 2;
+        for (unsigned i = 1; i < n && p[i]; i++) cp = cp << 6 | (p[i] & 0x3f);
+        p += n;
+        if (cp == 0x0e31 || (cp >= 0x0e34 && cp <= 0x0e3a) || (cp >= 0x0e47 && cp <= 0x0e4e)) continue;
+        const bool narrow = cp == ' ' || cp == '.' || cp == ',' || cp == ':' || cp == ';' || cp == '\'' || cp == '!' ||
+                            cp == '|' || cp == 'i' || cp == 'l' || cp == '(' || cp == ')' || cp == '/' || cp == '-';
+        w += cp >= 0x2e80 ? 2.f : narrow ? .55f : 1.f;
+    }
+    const float room = binding_row_layout().label_width / 9.7f;  // (9.7 layout units per average character)
+    return w <= room ? 1.f : fmaxf(room / w, .62f);
+}
+// The label box (right edge fixed, text left-aligned); a name still too long shrinks to fit before the first button
+void label_geometry(uint64_t title, const char *text) {
+    const auto layout = binding_row_layout();
+    const float fit = label_fit(text);
+    two_float(title, 0x30, layout.label_right);
+    two_float(title, 0x48, fit);
+    two_float(title, 0x4c, fit);
+    two_float(title, 0x50, layout.label_width / fit);  // (scaled about its centre: the box grows so its edges stay)
+}
+// The Reset row's button spans both columns (key and controller), like the rows above it
+void wide_button(uint64_t row) {
+    uint64_t button = rd64(row + 0x28);
+    if (!two_ptr(button) || !two_ptr(rd64(button + 0x20))) return;
+    uint64_t root = rd64(rd64(button + 0x20) + 0x18);
+    TwoButtonPanes p;
+    if (!two_ptr(root) || !two_button_panes(root, p)) return;
+    const auto layout = binding_row_layout();
+    const uint8_t plate = *(uint8_t *)(uintptr_t)(p.plate + 0x58);  // (the row's own band: stays)
+    const BindingRowColumn span{layout.key.x, layout.pad.x + layout.pad.width - layout.key.x};
+    // The band is a child of the button and would move with it: its offset takes the move back
+    const float moved = *(float *)(uintptr_t)(root + 0x30) - span.center();
+    if (fabsf(moved) > .01f) two_float(p.plate, 0x30, *(float *)(uintptr_t)(p.plate + 0x30) + moved);
+    two_geometry(p, span);
+    two_float(p.plate, 0x50, binding_row_plate_width);
+    wr8(p.plate + 0x58, plate | 0x10);
+    uint64_t row_layout = rd64(row + 0x10);
+    uint64_t layout_root = two_ptr(row_layout) ? rd64(row_layout + 0x18) : 0;
+    uint64_t title = two_ptr(layout_root) ? two_pane(layout_root, "T_Option_00") : 0;
+    if (title) if (const Item *it = item_of_row(row)) label_geometry(title, tr(it->title));
+}
+bool two_configure(uint64_t row) {
+    bool header = is_binds_header(item_of_row(row));
+    if (header ? g_two_header == row : two_ready(row)) return true;
+    if (!two_candidate(row) || !kernel_current_cpu()) {
+        if (header && kernel_current_cpu()) hide_failed_header(row);
+        return false;
+    }
+    uint64_t roots[2], buttons[2], arrows[4];
+    TwoButtonPanes panes[2];
+    const char *arrow_names[] = {"Pa_ArrowL_00", "Pa_ArrowR_00", "P_Arrow_00", "P_Arrow_01"};
+    for (int col = 0; col < 2; col++) {
+        buttons[col] = rd64(row + (col ? 0x28 : 0x20));
+        if (!two_ptr(buttons[col]) || !two_ptr(rd64(buttons[col] + 0x20))) {
+            if (header) hide_failed_header(row);
+            return false;
+        }
+        roots[col] = rd64(rd64(buttons[col] + 0x20) + 0x18);
+        if (!two_ptr(roots[col]) || !two_ptr(rd64(buttons[col] + 0x60)) || !two_button_panes(roots[col], panes[col])) {
+            if (header) hide_failed_header(row);
+            return false;
+        }
+    }
+    for (int i = 0; i < 4; i++) {
+        arrows[i] = two_pane(roots[0], arrow_names[i]);
+        if (!arrows[i]) {
+            if (header) hide_failed_header(row);
+            return false;
+        }
+    }
+    uint64_t row_layout = rd64(row + 0x10);
+    uint64_t layout_root = two_ptr(row_layout) ? rd64(row_layout + 0x18) : 0;
+    uint64_t title = two_ptr(layout_root) ? two_pane(layout_root, "T_Option_00") : 0;
+    TwoRow band = {row, 0, 0, 0, 0, {panes[0].frames[2], panes[1].frames[2]}, {0, 0}, -1};
+    if (!header && title) {
+        band.tog = two_pane(layout_root, "Pa_Btn_00");
+        band.band = two_pane(band.tog, "W_Base_02");
+        band.disable = two_pane(band.tog, "N_Disable_00");
+        band.dark = two_pane(band.disable, "W_Base_00");
+        if (!band.band || !band.disable || !band.dark) title = 0;
+    }
+    if (!title) {
+        if (header) hide_failed_header(row);
+        return false;
+    }
+    // Validate all panes before the first mutation, leaving ordinary rows usable on failure.
+    const auto layout = binding_row_layout();
+    float hscale = header ? two_header_scale() : 1.f;
+    for (int col = 0; col < 2; col++) {
+        two_call(rd64(rd64(buttons[col]) + 0x60), buttons[col], header ? 0 : 1);
+        wr8(roots[col] + 0x58, *(uint8_t *)(uintptr_t)(roots[col] + 0x58) | 1);
+        const auto column = col ? layout.pad : layout.key;
+        if (header) two_header_geometry(panes[col], column, hscale);
+        else two_geometry(panes[col], column);
+    }
+    for (uint64_t arrow : arrows) wr8(arrow + 0x58, *(uint8_t *)(uintptr_t)(arrow + 0x58) & ~1u);
+    if (header) {
+        wr8(title + 0x58, *(uint8_t *)(uintptr_t)(title + 0x58) & ~1u);
+        g_two_header = row;
+    } else {
+        if (const Item *it = item_of_row(row)) label_geometry(title, tr(it->title));
+        // The toggle part: only its plate and its box stay (its other panes are hidden for good).
+        float togx = *(float *)(uintptr_t)(band.tog + 0x30);
+        for (uint64_t c = band.tog, n = 0; n < 2; n++) {
+            uint64_t head = c + 0x20, link = rd64(head + 8);
+            for (unsigned k = 0; k < 16 && two_ptr(link) && link != head; k++, link = rd64(link + 8)) {
+                uint64_t child = link - 8;
+                if (child == band.band || child == band.disable || child == band.dark) continue;
+                wr8(child + 0x58, *(uint8_t *)(uintptr_t)(child + 0x58) & ~1u);
+            }
+            c = band.disable;
+        }
+        two_float(band.band, 0x50, binding_row_plate_width);
+        band.dark_x[0] = layout.key.center() - togx;
+        band.dark_x[1] = layout.pad.center() - togx;
+        two_float(band.dark, 0x48, 1.f);
+        two_float(band.dark, 0x4c, 1.f);
+        two_float(band.dark, 0x34, 0.f);
+        two_float(band.dark, 0x50, layout.key.width);
+        two_float(band.dark, 0x54, *(float *)(uintptr_t)(panes[0].frames[2] + 0x54));
+        for (int col = 0; col < 2; col++) wr8(panes[col].plate + 0x58, *(uint8_t *)(uintptr_t)(panes[col].plate + 0x58) & ~1u);
+        g_two_rows.push_back(band);
+        two_band_row(g_two_rows.back(), false, 0);
+    }
+    return true;
+}
+
 int clamp_value(const Item &it, int x) {
     int n = it.kind == KIND_CHOICE ? it.count(it) : 2;
     return x < 0 ? 0 : x >= n ? n - 1 : x;
@@ -842,6 +1259,19 @@ void mark_all_rows(uint64_t screen) {
     uint64_t rows = rd64(screen + g_site.opt_screen_rows + 8);
     for (int i = 0; i < n && i < 64 && rows; i++)
         if (uint64_t r = rd64(rows + 8 * i)) g_dirty.push_back(r);
+}
+
+// Only the binding rows of these two slots (the one just bound and the one it swapped with): a page of ~55 rows
+// redrawn one per frame took two seconds to show the new key
+void mark_bind_rows(uint64_t screen, int slot, int other) {
+    if (!screen) return;
+    int n = (int)rd32(screen + g_site.opt_screen_rows);
+    uint64_t rows = rd64(screen + g_site.opt_screen_rows + 8);
+    for (int i = 0; i < n && i < 64 && rows; i++) {
+        uint64_t r = rd64(rows + 8 * i);
+        const Item *it = item_of_row(r);
+        if (it && it->action == A_BIND && (it->arg == slot || it->arg == other)) g_dirty.push_back(r);
+    }
 }
 
 uint64_t screen_by_id(uint32_t id) {
@@ -874,10 +1304,11 @@ std::u16string utf16(const char *s) {
 }
 
 // A message for the game ({char16_t *, u32 length with the terminator} at out); id: its storage. grey: in the
-// game's grey (its message colour tag: 0x0e, group 0, tag 3, 2 bytes of colour; 0xffff back to the text's own)
+// game's grey (its message colour tag: 0x0e, group 0, tag 3, 2 bytes of colour; 0xffff back to the text's own).
+// Right-to-left menus: the game draws text left to right, so it gets each line in visual order.
 void put_text(uint32_t id, const char *s, uint64_t out, bool grey = false) {
     std::u16string &t = g_text[id];
-    std::u16string n = utf16(s);
+    std::u16string n = utf16(ui_visual_order(s).c_str());
     static const char16_t tag[] = {0x0e, 0, 3, 2};  // (then the colour)
     if (grey) n = std::u16string(tag, 4) + GREY + n + std::u16string(tag, 4) + (char16_t)0xffff;
     if (t != n) t = n;
@@ -932,18 +1363,128 @@ extern "C" void rt_opt_rows(void) {
         Entry &e = g_entries[GAME_ENTRIES + i];
         if (g_items[i].kind == KIND_CHOICE) e.last_value = e.first_value + game_count(g_items[i]) - 1;
     }
-    wr64(OPT_ORDER, (uint64_t)(uintptr_t)o.data());
-    wr32(OPT_ROWS, (uint32_t)o.size());
+    const uint32_t *order_data = o.data();
+    uint32_t order_count = (uint32_t)o.size();
+    if (page == P_BINDS && order_count > 0 && !two_enabled() && is_binds_header(item_of_index(order_data[0]))) {
+        order_data++;
+        order_count--;
+    }
+    wr64(OPT_ORDER, (uint64_t)(uintptr_t)order_data);
+    wr32(OPT_ROWS, order_count);
     pc_cursor_options_page_changed();
     g_cur_page = page;
     g_reopen = false;
     g_dirty.clear();
+    g_two_rows.clear(); g_two_header = 0; g_two_column = 0; g_two_current = 0;
+}
+
+// Called only by the strict optional hook group. Other pages use their original instructions.
+extern "C" int rt_opt_two_column(uint64_t row) { return two_ready(row) ? g_two_column : -1; }
+extern "C" uint64_t rt_opt_two_control(uint64_t row) {
+    if (row_is_header(row)) {
+        uint64_t screen = rd64(row);
+        uint64_t first = first_selectable_row(screen);
+        if (first && screen) {
+            g_two_current = first;
+            wr64(screen + 0x36c8, first);
+        }
+        return row_active_control(first);
+    }
+    return two_ready(row) ? rd64(row + (g_two_column ? 0x28 : 0x20)) : 0;
+}
+extern "C" int rt_opt_two_row_state(uint64_t row) {
+    if (row_is_header(row)) {
+        for (unsigned offset : {0x18u, 0x20u, 0x28u})
+            if (uint64_t button = rd64(row + offset); two_ptr(button))
+                *(uint16_t *)(uintptr_t)(button + 0x3a) &= ~4u;
+        return 1;
+    }
+    if (!two_ready(row)) return 0;
+    for (unsigned offset : {0x20u, 0x28u}) {
+        uint64_t button = rd64(row + offset);
+        *(uint16_t *)(uintptr_t)(button + 0x3a) |= 4; // both behave as confirmable ordinary controls
+    }
+    return 1;
+}
+extern "C" void rt_opt_wheel_scrolled(void) { two_wheel_scrolled(); }
+extern "C" int rt_opt_two_redraw(uint64_t row) {
+    if (g_cur_page == P_BINDS && two_enabled()) {
+        const Item *it = item_of_row(row);
+        if (it && it->action == A_RESET_BINDS) wide_button(row);
+    }
+    if (!two_configure(row)) return 0;
+    uint32_t msg = MSG_BASE + (rd32(row + 0x50) - GAME_ENTRIES) * 256;
+    for (int col = 0; col < 2; col++) {
+        uint64_t layout = rd64(rd64(row + (col ? 0x28 : 0x20)) + 0x20);
+        two_text(layout, "T_Text_00", msg + (col ? MSG_PAD : MSG_KEY));
+        two_text(layout, "T_Text_01", msg + (col ? MSG_PAD : MSG_KEY));
+    }
+    rt_opt_two_row_state(row);
+    return 1;
+}
+extern "C" int rt_opt_decide(uint64_t row);
+extern "C" int rt_opt_pointer_kind(uint64_t row);
+extern "C" int rt_opt_two_callback(uint64_t screen, uint64_t button, int which) {
+    if (g_two_header && rd64(g_two_header) == screen) {
+        for (unsigned off : {0x18u, 0x20u, 0x28u}) {
+            if (button && button == rd64(g_two_header + off)) {
+                if (which == 0) {
+                    if (uint64_t first = first_selectable_row(screen)) {
+                        if (two_ready(first)) two_focus(screen, first, g_two_column);
+                        else if (int k = rt_opt_pointer_kind(first); k >= 0)
+                            pc_cursor_options_focus(screen, first, (unsigned)k);
+                    }
+                }
+                return 1;
+            }
+        }
+    }
+    for (const auto &r : g_two_rows) {
+        uint64_t row = r.row;
+        if (rd64(row) != screen) continue;
+        int col = button == rd64(row + 0x20) ? 0 : button == rd64(row + 0x28) ? 1 : -1;
+        if (col < 0) continue;
+        if (which == 0) {
+            // Up/down keeps the selected device. Mouse focus sets current row first below.
+            int want = !g_two_current || g_two_current == row ? col : g_two_column;
+            g_two_column = want; g_two_current = row;
+            wr64(screen + 0x36c8, row);
+            two_call(g_site.opt_two_help, row);
+            two_band(row, want);
+            if (want != col) two_focus(screen, row, want);
+            if (two_log()) fprintf(stderr, "[row-spike] select row %llx column %d\n", (unsigned long long)row, want);
+        } else if (which == 1) rt_opt_two_row_state(row);
+        else if (which == 2) {
+            uint32_t action = rd32(screen + 0x36c0);
+            wr32(screen + 0x36c0, 0); // this callback is the native control's confirmed event
+            rt_opt_decide(row);
+            wr32(screen + 0x36c0, action);
+        }
+        return 1;
+    }
+    if (which == 0 && !g_two_rows.empty() && rd64(g_two_rows[0].row) == screen) two_band(0, 0);  // (another row: Reset)
+    return 0;
+}
+extern "C" void rt_opt_two_pointer(uint64_t row, unsigned kind) {
+    if (two_ready(row)) g_two_current = row, g_two_column = kind == KIND_BUTTON;
+}
+extern "C" void rt_opt_two_horizontal(uint64_t screen, unsigned action) {
+    uint64_t row = rd64(screen + 0x36c8);
+    if (row_is_header(row)) {
+        if (uint64_t first = first_selectable_row(screen); two_ready(first))
+            two_focus(screen, first, action == 2);
+        wr32(screen + 0x36c0, 3);
+        return;
+    }
+    if (!two_ready(row)) return;
+    two_focus(screen, row, action == 2);
+    wr32(screen + 0x36c0, 3); // movement is never confirmation or a value change
 }
 
 // Row init: the flag type of an entry (0 bool, 1 s32); -1: the game's own entry
 // The installed entries are a host vector, not guest-heap pointers.
 extern "C" int rt_opt_pointer_kind(uint64_t row) {
-    if(!g_installed||rd64(OPT_ENTRIES)!=g_installed||!row||game_options_input_hold())return -1;
+    if(!g_installed||rd64(OPT_ENTRIES)!=g_installed||!row||game_options_input_hold()||row_is_header(row))return -1;
     uint32_t index=rd32(row+0x50);
     return index<g_entries.size()?(int)g_entries[index].kind:-1;
 }
@@ -1015,8 +1556,8 @@ extern "C" int rt_opt_reset(uint64_t row) {
     if (idx < g_shown.size()) g_shown[idx] = -1;
     if (it->reset) it->reset(*it);
     else if (it->kind != KIND_BUTTON) it->set(*it, it->def);
-    else if (it->action == A_BIND_KEY || it->action == A_RESET_KEYS) bind_reset(BIND_DEV_KEY);
-    else if (it->action == A_BIND_PAD || it->action == A_RESET_PAD) bind_reset(BIND_DEV_PAD);
+    else if (it->action == A_BIND) bind_reset_slot(it->arg);
+    else if (it->action == A_RESET_BINDS) bind_reset(BIND_DEV_KEY), bind_reset(BIND_DEV_PAD), act_reset();
     settings_save();
     return 1;
 }
@@ -1029,8 +1570,33 @@ extern "C" int rt_opt_msg(uint32_t id, uint64_t out) {
     if (!it) return 0;
     const char *s = "";
     bool grey = false;
-    if (part == MSG_TITLE) s = tr(it->title);
+    if (part == MSG_TITLE) {
+        const char *title = it->title;
+        // Probe fixture only: exercise long labels without changing the actions being captured.
+        if (g_cur_page == P_BINDS && it->action == A_BIND && getenv("SAVAGEWIND_TWO_BUTTON_LABEL_TEST")) {
+            if (it->arg == BIND_ACTION) title = "Guard / lock on";
+            if (it->arg == BIND_ACTION + 2) title = "Use rune";  // (test fixture, not shown) i18n-skip
+            if (it->arg == BIND_ACTION + 3) title = "Master Cycle jump";  // (test fixture, not shown) i18n-skip
+        }
+        s = tr(title);
+    }
     else if (part == MSG_DESC) s = it->desc_fn ? it->desc_fn(*it) : tr(it->desc);
+    else if (part == MSG_KEY || part == MSG_PAD) {
+        bool key = part == MSG_KEY;
+        if (is_binds_header(it)) {
+            s = tr(key ? "Keyboard/Mouse" : "Controller");
+        } else if (it->action == A_FIXED) {
+            grey = true;
+            s = key ? tr(bind_key_label(it->arg ? SDL_SCANCODE_F2 : SDL_SCANCODE_ESCAPE)) : "-";
+        } else {
+            int dev, slot, ms;
+            bool capture = bind_capture_active(&dev, &slot, &ms) && slot == it->arg &&
+                           dev == (key ? BIND_DEV_KEY : BIND_DEV_PAD);
+            if (!key && !slot_has_pad(it->arg)) s = tr("Stick"), grey = true;  // (keys only: a stick direction)
+            else s = capture ? tr(key ? "Press a key..." : "Press a button...") :
+                              key ? slot_key_text(it->arg) : slot_pad_text(it->arg);
+        }
+    }
     else if (part == MSG_BUTTON) s = it->button ? tr(it->button) : it->label ? it->label(*it, -1) : "";
     else if (part >= MSG_VALUE && it->kind == KIND_CHOICE && (int)(part - MSG_VALUE) < game_count(*it)) {
         int v = game_value(*it, (int)(part - MSG_VALUE));
@@ -1056,15 +1622,22 @@ extern "C" int rt_opt_decide(uint64_t row) {
         g_next_page = it->arg;
         g_reopen = g_switching = true;
         return 1;
-    case A_BIND_KEY:
-    case A_BIND_PAD:
-        bind_capture_begin(it->action == A_BIND_KEY ? BIND_DEV_KEY : BIND_DEV_PAD, it->arg);
+    case A_FIXED:
+        return 2;
+    case A_BIND:
+        if (two_ready(row) && rd32(rd64(row) + 0x36c0) != 0) return 2;
+        if (two_ready(row) && g_two_column && !slot_has_pad(it->arg)) return 2;  // (no controller side to bind)
+        bind_capture_begin(two_ready(row) ? (g_two_column ? BIND_DEV_PAD : BIND_DEV_KEY) : BIND_DEV_ANY, it->arg);
+        cap_slot_was = it->arg;
+        if (two_ready(row) && two_log()) fprintf(stderr, "[row-spike] capture slot %d device %s\n", it->arg,
+                                   g_two_column ? "pad" : "key");
         g_cap_row = row;
         g_dirty.push_back(row);
         return 2;
-    case A_RESET_KEYS:
-    case A_RESET_PAD:
-        bind_reset(it->action == A_RESET_KEYS ? BIND_DEV_KEY : BIND_DEV_PAD);
+    case A_RESET_BINDS:
+        bind_reset(BIND_DEV_KEY);
+        bind_reset(BIND_DEV_PAD);
+        act_reset();
         settings_save();
         mark_all_rows(rd64(row));
         return 2;
@@ -1090,14 +1663,18 @@ extern "C" uint64_t rt_opt_tick(uint64_t screen) {
         if (g_quit_dialog) return 1;
     }
     int d, s, ms;
+    if (g_cap_row && bind_capture_active(&d, &s, &ms)) cap_slot_was = s;
     if (g_cap_row && !bind_capture_active(&d, &s, &ms)) {
         g_cap_row = 0;
         g_hold_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(400);
         settings_save();
-        mark_all_rows(screen);
+        int rd, rs, other, serial;
+        bind_last_result(&rd, &rs, &other, &serial);
+        mark_bind_rows(screen, cap_slot_was, other);
     }
     if (g_size_redraw.exchange(false) && g_size_row) g_dirty.push_back(g_size_row);
-    if (!game_options_input_hold()) pc_cursor_options_tick(screen);
+    if (!game_options_input_hold() && !menu_size_list_up()) pc_cursor_options_tick(screen);  // (the list has the pointer)
+    two_band_refresh(screen);
     if (g_dirty.empty()) return 0;
     uint64_t r = g_dirty.back();
     g_dirty.pop_back();

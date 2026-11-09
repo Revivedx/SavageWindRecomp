@@ -134,15 +134,16 @@ static bool nso_build_id(const std::string &main_path, std::string *hex) {
 
 // The game versions this build sets up (runtime/game_versions.h), told by the main module's build id (its first 8
 // bytes; tools/sw_probe.py prints it). A known version that isn't supported yet is refused with its own message. The
-// RomFS that goes with it is checked before the setup copies anything: its System/Version.txt and about how many files
-// it has with the update applied over the base game (check_romfs).
+// RomFS that goes with it is checked before the setup copies anything: its System/Version.txt, and how many files it
+// has with the update applied over the base game and their sizes added up (check_romfs).
 struct GameVersion {
     const char *name, *id;
     bool supported;
-    unsigned romfs_files;  // (0: not counted)
+    unsigned romfs_files;            // (0: not counted)
+    unsigned long long romfs_bytes;  // (0: not counted)
 };
 static const GameVersion VERSIONS[] = {
-#define GAME_VERSION_ENTRY(v, id, ok, files) {v, id, ok, files},
+#define GAME_VERSION_ENTRY(v, id, ok, files, bytes) {v, id, ok, files, bytes},
     GAME_VERSIONS(GAME_VERSION_ENTRY)
 #undef GAME_VERSION_ENTRY
 };
@@ -173,8 +174,6 @@ static std::string trv(const std::string &key) {
     return s;
 }
 
-static const float ROMFS_FILES_MARGIN = 0.95f;  // (a few files short still passes: some tools skip empty ones)
-
 // Files under dir; the count stops at `enough` (a whole RomFS has tens of thousands: no need to walk them all)
 static unsigned count_files(const std::string &dir, unsigned enough, unsigned n = 0) {
     DIR *d = opendir(dir.c_str());
@@ -189,6 +188,21 @@ static unsigned count_files(const std::string &dir, unsigned enough, unsigned n 
     }
     closedir(d);
     return n;
+}
+
+// Files under dir and their sizes added up, added to *files and *bytes
+static void tally_files(const std::string &dir, unsigned *files, unsigned long long *bytes) {
+    DIR *d = opendir(dir.c_str());
+    if (!d) return;
+    while (struct dirent *e = readdir(d)) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        std::string p = dir + "/" + e->d_name;
+        struct stat st;
+        if (stat(p.c_str(), &st)) continue;
+        if (S_ISDIR(st.st_mode)) tally_files(p, files, bytes);
+        else ++*files, *bytes += (unsigned long long)st.st_size;
+    }
+    closedir(d);
 }
 
 // The cutscene videos: all 30 in Movie/. A RomFS without that folder (left out when it was extracted, or lost copying
@@ -212,18 +226,24 @@ static std::string check_romfs(const std::string &romfs, const GameVersion &v) {
         while (b > a && isspace((unsigned char)b[-1])) *--b = 0;
         memmove(found, a, strlen(a) + 1);
     }
-    unsigned want = (unsigned)(v.romfs_files * ROMFS_FILES_MARGIN);
-    unsigned files = strcmp(found, v.name) || !want ? 0 : count_files(romfs, want);  // (only for the right version)
-    fprintf(stderr, "[launcher] romfs: version \"%s\", %u%s files (%s wants \"%s\", %u)\n", found, files,
-            want && files >= want ? "+" : "", v.id, v.name, v.romfs_files);
+    // Every file and every byte: an extraction a few files short, or with some cut short, is incomplete (#472), and the
+    // game fails on the first of them it reads. More is fine (a RomFS with the DLC merged into it).
+    unsigned files = 0;
+    unsigned long long bytes = 0;
+    if (!strcmp(found, v.name) && v.romfs_files) tally_files(romfs, &files, &bytes);  // (only for the right version)
+    fprintf(stderr, "[launcher] romfs: version \"%s\", %u files, %llu bytes (%s wants \"%s\", %u, %llu)\n", found, files,
+            bytes, v.id, v.name, v.romfs_files, v.romfs_bytes);
     char msg[400] = "";
     if (!*found) snprintf(msg, sizeof msg, "%s", tr("It has no System/Version.txt."));
     else if (strcmp(found, v.name)) {
         for (char *c = found; *c; c++)  // (shown as text: printable, and no % - trv fills those in)
             if ((unsigned char)*c < 0x20 || (unsigned char)*c > 0x7e || *c == '%') *c = '?';
         snprintf(msg, sizeof msg, tr("Its System/Version.txt says %s."), found);
-    } else if (files < want) snprintf(msg, sizeof msg, tr("It has %u files; with the update applied it has %u."), files,
-                                      v.romfs_files);
+    } else if (files < v.romfs_files)
+        snprintf(msg, sizeof msg, tr("It has %u files; with the update applied it has %u."), files, v.romfs_files);
+    else if (bytes < v.romfs_bytes)
+        snprintf(msg, sizeof msg, tr("Its files add up to %llu MB; with the update applied they are %llu MB."), bytes >> 20,
+                 v.romfs_bytes >> 20);
     return msg;
 }
 

@@ -3464,6 +3464,11 @@ struct ImFontAtlas
     //typedef ImFontGlyphRangesBuilder GlyphRangesBuilder;      // OBSOLETED in 1.67+
 };
 
+// (Savage Wind local patch) Right-to-left text: when set, ImFont::RenderText draws each line in visual order, which
+// this function makes from the line as typed (`out` gets the same number of bytes). runtime/ui/i18n.mm sets it for a
+// right-to-left menu language.
+extern IMGUI_API void (*GImTextReorderLine)(const char* begin, const char* end, char* out);
+
 // Font runtime data and rendering
 // ImFontAtlas automatically loads a default embedded font for you when you call GetTexDataAsAlpha8() or GetTexDataAsRGBA32().
 struct ImFont

@@ -245,7 +245,7 @@ void loader_load(const char *exefs) {
     const char *main_id = NULL;
     for (uint32_t i = 0; i < *g->nmodules; i++)
         if (!strcmp(g->modules[i].name, "main")) main_id = g->modules[i].build_id;
-#define KNOWN_MAIN(ver, id, ok, files) known = known || (main_id && !strncmp(main_id, id, 16));
+#define KNOWN_MAIN(ver, id, ok, files, bytes) known = known || (main_id && !strncmp(main_id, id, 16));
     GAME_VERSIONS(KNOWN_MAIN)
 #undef KNOWN_MAIN
     for (int i = 0; i < 10; i++) {

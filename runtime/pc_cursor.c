@@ -13,12 +13,18 @@
 
 static _Atomic bool active, focused = true;
 static _Atomic bool dialogue_active;
+static _Atomic bool item_message_active,preview_available;
+static _Atomic uint64_t item_confirm_until;
 static _Atomic uint64_t quantity_until;
 static _Atomic int quantity_value,quantity_max,quantity_request=-1;
 static _Atomic bool quantity_edit,quantity_replace;
 static uint64_t quantity_screen;
 static uint64_t shop_screen;
 static uint64_t game_over_screen;  // the one screen that owns the pointer: Game Over, or a quit window over it or a menu
+static uint64_t dlc_screen,dlc_frame=UINT64_MAX;
+static float dlc_drag;
+static uint64_t quest_scroll_frame=UINT64_MAX;
+static _Atomic uint64_t dlc_back_until;
 static bool ptr(uint64_t p);
 static bool preview_defaults_saved;
 static float preview_defaults[2];
@@ -83,6 +89,7 @@ static bool gesture_down,gesture_dragged;
 static float gesture_start[2],gesture_last[2],gesture_delta[2];
 static void sample_pointer(void);
 static void inventory_pointer(Cpu *c);
+static void dlc_pointer(Cpu *c);
 static bool pointer_test(void) { return getenv("SAVAGEWIND_PC_POINTER_SCRIPT") != NULL; }
 
 static bool enabled(void) {
@@ -91,6 +98,7 @@ static bool enabled(void) {
 bool pc_cursor_enabled(void) { return enabled(); }
 extern bool menu_cursor_free(void);
 bool pc_cursor_active(void) { return enabled() && active && (focused || pointer_test()) && !menu_cursor_free(); }
+bool pc_cursor_preview_active(void) { return pc_cursor_active()&&preview_available; }
 bool pc_cursor_map_navigation(void) { return pc_cursor_active() && map_canvas_active && !pointer_gamepad_input; }
 bool pc_cursor_hide_system(void) {
     return (pc_cursor_active()&&quick_wheel_only)||
@@ -108,7 +116,7 @@ void pc_cursor_frame(void) {
     // window and the native manager hook has no reason to run this frame.
     if(pointer_gamepad_input)map_release_to_controller();
     uint64_t game_over_modal=0;
-    bool dialogue=false,quick=false;shop_screen=game_over_screen=0;
+    bool dialogue=false,item_message=false,preview=false,quick=false;shop_screen=game_over_screen=dlc_screen=0;
     if(g_site.screen_mgr) {
         uint64_t mgr=LD64(g_site.screen_mgr),arr=mgr?LD64(mgr+0x30):0;
         unsigned count=mgr?LD32(mgr+0x28):0;
@@ -119,9 +127,15 @@ void pc_cursor_frame(void) {
             if(!text)continue;
             if(i==0x2d&&g_site.pause_state&&LD32(g_site.pause_state)==4&&LD64(text)==0x7001cf51d8ull)quick=true;
             if(LD8(text+0xfe)!=2)continue;
+            if(i==0x3f&&LD64(text)==0x7001ced520ull)dlc_screen=text;
             if(i==0x30&&LD64(text)==0x7001cef0a8ull)game_over_screen=text;
             if(i==0x39&&LD64(text)==0x7001cfffe0ull)game_over_modal=text;
             if(LD64(text)==0x7001d4ed48ull)dialogue=true;
+            // New-item descriptions use Confirm without registered button nodes.
+            if(LD64(text)==0x7001cf5e78ull)item_message=true;
+            if(i==0x2e&&LD64(text)==0x7001cf9ad8ull&&g_site.pause_state&&
+               LD32(g_site.pause_state)==2&&LD32(text+0x3a48)==0)preview=true;
+            if(i>=0x30&&i<=0x3a)preview=false;
             uint64_t name=LD64(text+0xd0);
             if(name>=GUEST_LO&&name<GUEST_HI-32&&!strncmp((char*)(uintptr_t)name,"ShopBtnList",11))shop_screen=text;
         }
@@ -144,10 +158,21 @@ void pc_cursor_frame(void) {
             preview_defaults_saved=false;
         }
     }
+    // The same MessageDialog shows lines spoken during play (Revali in Vah Medoh's fight, #486): the camera still takes
+    // the stick there, and the mouse stays the camera's. A conversation's camera doesn't read it.
+    extern bool input_cam_live(void);
+    static bool spoken_logged;
+    if(dialogue&&input_cam_live()) {
+        if(!spoken_logged)LOG("[pc-pointer] message box over play: the mouse stays the camera's\n");
+        spoken_logged=true;dialogue=false;
+    } else if(!dialogue)spoken_logged=false;
     if(dialogue_active&&!dialogue)confirm_until=0;
     dialogue_active=dialogue;
+    item_message_active=item_message&&!game_over_screen;
+    if(!item_message_active||!enabled()||!focused)item_confirm_until=0;
+    preview_available=preview&&!game_over_screen;
     if(game_over_screen){dialogue_active=false;shop_screen=0;}
-    bool ui = game_over_screen || (g_site.pause_state &&
+    bool ui = game_over_screen || dlc_screen || item_message_active || (g_site.pause_state &&
         (dialogue || shop_screen || framepace_menu_ui() || framepace_title_ui() || *(uint32_t *)(uintptr_t)g_site.pause_state == 4));
     active = enabled() && ui;
     quick_wheel_only=enabled()&&quick;
@@ -269,6 +294,7 @@ bool pc_cursor_event(const SDL_Event *e) {
     extern void input_pc_escape(bool down);
     if (e->type == SDL_EVENT_WINDOW_FOCUS_LOST) {
         focused = false; held = false; releases++;
+        item_confirm_until=0;
         if(right_back_held){input_pc_escape(false);right_back_held=false;}
     }
     if (e->type == SDL_EVENT_WINDOW_FOCUS_GAINED) focused = true;
@@ -341,6 +367,12 @@ bool pc_cursor_event(const SDL_Event *e) {
         held = e->type == SDL_EVENT_MOUSE_BUTTON_DOWN;
         window_position(e->button.x,e->button.y);
         motion_at=plat_now_ns();
+        if(item_message_active) {
+            // One short native A pulse per press; no synthetic hover or held
+            // confirmation can leak into gameplay after this popup closes.
+            if(held)item_confirm_until=plat_now_ns()+50000000;
+            return true;
+        }
         if (held) presses++; else releases++;
         return true;
     }
@@ -352,6 +384,7 @@ void rt_pc_button_group(Cpu *c) {
     if (!pc_cursor_active()) return;
     if(quick_wheel_only)return;
     sample_pointer();
+    if(dlc_screen){dlc_pointer(c);return;}
     inventory_pointer(c);
     extern uint64_t renderer_present_count(void);
     if (getenv("SAVAGEWIND_PC_DUMP_UI") && renderer_present_count() >= 180) {
@@ -422,6 +455,9 @@ int rt_pc_map_focus(Cpu *c, int position) {
 }
 
 extern int rt_opt_pointer_kind(uint64_t row);
+extern int rt_opt_two_column(uint64_t row);
+extern void rt_opt_two_pointer(uint64_t row,unsigned kind);
+extern void rt_opt_wheel_scrolled(void);
 static void options_click(Cpu *c,uint64_t screen,uint64_t row,unsigned kind,const float box[4]);
 static bool options_box(uint64_t pane,float box[4]) {
     if(!ptr(pane))return false;
@@ -453,6 +489,14 @@ static uint64_t options_row_at(uint64_t screen,float box[4],unsigned *kind_out) 
     for(unsigned i=0;i<count;i++) {
         uint64_t row=LD64(rows+i*8);if(!ptr(row))continue;
         int kind=rt_opt_pointer_kind(row);if(kind<0||kind>2)continue;
+        if(rt_opt_two_column(row)>=0) {
+            for(unsigned cell=1;cell<=2;cell++) {
+                uint64_t button=LD64(row+(cell==1?0x20:0x28));
+                if(!ptr(button)||!options_box(LD64(button+0x60),box))continue;
+                if(point[0]>=box[0]&&point[0]<=box[2]&&point[1]>=box[1]&&point[1]<=box[3]) {*kind_out=cell;return row;}
+            }
+            continue;
+        }
         uint64_t button=LD64(row+(kind==0?0x18:kind==1?0x20:0x28));
         if(!ptr(button)||!options_box(LD64(button+0x60),box))continue;
         if(point[0]>=-280&&point[0]<=box[2]&&point[1]>=box[1]&&point[1]<=box[3]) {*kind_out=(unsigned)kind;return row;}
@@ -486,6 +530,7 @@ void pc_cursor_options_tick(uint64_t screen) {
         Cpu*c=kernel_current_cpu();if(c){Cpu saved=*c;c->x[0]=view;float ratio=1;memcpy(&c->v[0],&ratio,4);guest_call(c,0x7000d671d4);*c=saved;}
     }
     int scroll=atomic_exchange(&wheel,0);
+    if(scroll)rt_opt_wheel_scrolled();
     if(!options_mouse_owns_focus(scroll!=0))return;
     float current=*(float*)(view+0x2c),height=*(float*)(view+0x48)-*(float*)(view+0x40);
     float content=*(float*)(view+0x28),maximum=fmaxf(0,content-height);
@@ -504,17 +549,26 @@ void pc_cursor_options_tick(uint64_t screen) {
     uint64_t row=options_row_at(screen,box,&kind);
     if(row) {
         if(!options_scroll_valid&&isfinite(current)){options_scroll=current;options_scroll_valid=true;}
+        rt_opt_two_pointer(row,kind);
         Cpu *focus_cpu=kernel_current_cpu();if(focus_cpu)options_focus(focus_cpu,screen,row,kind);
         if(click_pending) {click_pending=false;Cpu*c=kernel_current_cpu();if(c)options_click(c,screen,row,kind,box);}
     }
 }
 
 static void options_click(Cpu *c,uint64_t screen,uint64_t row,unsigned kind,const float box[4]) {
+    if(rt_opt_two_column(row)>=0) {
+        uint64_t button=LD64(row+(kind==1?0x20:0x28));
+        // Same native Decide request used by Options update: +0x38. The button
+        // owns the animation/sound and later invokes its confirmed callback.
+        // Calling row-decide directly here would bypass that native feedback.
+        if(ptr(button)&&ptr(LD64(button)))call(c,LD64(LD64(button)+0x38),button,0,0);
+        return;
+    }
     unsigned action=0;
     if(kind==0) {
         bool want=point[0]<box[0] ? LD8(row+0x54)==0 : point[0]<(box[0]+box[2])*.5f;
         if(want==(LD8(row+0x54)!=0))return;
-    } else if(kind==1) {
+    } else if(kind==1&&rt_opt_two_column(row)<0) {
         float edge=fminf(36,(box[2]-box[0])*.2f);
         if(point[0]<box[0]+edge)action=1;
         else if(point[0]>box[2]-edge)action=2;
@@ -546,7 +600,7 @@ static void options_focus(Cpu *c,uint64_t screen,uint64_t row,unsigned kind) {
                 // Activation changes the shared highlight and calls the native
                 // Options help callback. No independent PC rectangle is drawn.
                 call(c,0x7000f57da8,control,node,0);
-                if(LD64(screen+0x36c8)!=row)call(c,0x7000e3047c,screen,button,0);
+                if(LD64(screen+0x36c8)!=row||rt_opt_two_column(row)>=0)call(c,0x7000e3047c,screen,button,0);
                 ST8(screen+0x106,1);
                 if(isfinite(current)) {
                     options_scroll=current;options_scroll_valid=true;
@@ -558,6 +612,10 @@ static void options_focus(Cpu *c,uint64_t screen,uint64_t row,unsigned kind) {
         link=LD64(link+8);
     }
 }
+// Also used by the dual-row experiment for pad/keyboard column changes.
+void pc_cursor_options_focus(uint64_t screen,uint64_t row,unsigned kind) {
+    Cpu *c=kernel_current_cpu();if(c)options_focus(c,screen,row,kind);
+}
 static bool options_pointer(Cpu *c,uint64_t screens,uint64_t bounds) {
     (void)c;(void)bounds;
     uint64_t screen=LD64(screens+8*0x34);
@@ -568,7 +626,9 @@ static bool options_pointer(Cpu *c,uint64_t screens,uint64_t bounds) {
 uint64_t pc_cursor_buttons(uint64_t b) {
     uint64_t now=plat_now_ns();
     if(now<confirm_until)b|=1;
+    if(item_message_active&&pc_cursor_active()&&now<item_confirm_until)b|=1;
     if(now<guide_until)b|=1ull<<guide_bit;
+    if(dlc_screen&&now<dlc_back_until)b|=2;
     return b;
 }
 bool pc_cursor_hover_box(float box[4]) {
@@ -717,6 +777,7 @@ static void inventory_pointer(Cpu *c) {
     }
 }
 
+static bool map_guides(Cpu *c,uint64_t screens);
 static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
     extern uint64_t renderer_present_count(void);
     uint64_t f=renderer_present_count();
@@ -763,6 +824,8 @@ static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
     // Its Edit/Delete/Cancel nodes must use normal dialog navigation, not canvas input.
     modal=LD64(screens+8*0x3e);
     if(ptr(modal)&&LD8(modal+0xfe)==2){map_down=false;map_anchor_active=map_picker_seen=false;map_view_valid=false;return false;}
+    // The prompt bar lies below the canvas: a click there presses the prompt's button (#451).
+    if(!map_anchor_active&&!map_down&&map_guides(c,screens))return true;
     click_pending=false;
     uint64_t map=LD64(screen+0x3628),d=ptr(map)?LD64(map+0x8d8):0;
     if(!ptr(d))return true;
@@ -1011,6 +1074,64 @@ static bool quest_focus(Cpu *c,uint64_t screen,uint64_t node) {
     return false;
 }
 
+static bool quest_scroll(Cpu *c,uint64_t screen) {
+    if(!quest_list(screen)||LD32(screen+0x3a48)!=2||pointer_keyboard_input)return false;
+    extern uint64_t renderer_present_count(void);
+    uint64_t frame=renderer_present_count();
+    if(quest_scroll_frame==frame)return true;
+    uint64_t module=LD64(screen+0x3bb0),master=ptr(module)?LD64(module+0x300):0;
+    if(!native_item_list(master))return false;
+    unsigned category=LD32(master+0x2e8),count=LD32(screen+0x388);
+    uint64_t lists=LD64(screen+0x390);
+    if(!ptr(lists)||count>8)return false;
+    // The registry also retains the category strip and hidden detail lists.
+    // Only the visible row list in the selected category owns wheel scrolling.
+    for(unsigned i=0;i<count;i++) {
+        uint64_t list=LD64(lists+8*i);
+        if(list==master||!native_item_list(list)||!(LD8(list+0x2c)&1)||
+           LD32(list+0x2e8)!=category||LD32(list+0xc0)!=1)continue;
+        unsigned columns=LD32(list+0x288);uint64_t array=LD64(list+0x290);
+        uint64_t column=category<columns&&columns<=16&&ptr(array)?LD64(array+8*category):0;
+        if(!ptr(column)||!LD32(column+0x29c))continue;
+        // Child lists retain cached offscreen origins after category changes
+        // (e.g. Side Quests at -1960,-380). Their viewport is positioned by
+        // the outer category list; use that stable origin for wheel hit tests.
+        float x=*(float*)(master+0x304),y=*(float*)(master+0x308);
+        float left=x+*(float*)(column+0x2f8),right=x+*(float*)(column+0x300);
+        float bottom=y+*(float*)(column+0x2fc),top=y+*(float*)(column+0x304);
+        if(!isfinite(left)||!isfinite(right)||!isfinite(bottom)||!isfinite(top)||
+           point[0]<left||point[0]>right||point[1]<bottom||point[1]>top)continue;
+        int scroll=atomic_exchange(&wheel,0);if(!scroll)return false;
+        float current=*(float*)(list+0x2d4),minimum=*(float*)(list+0x2b4),maximum=*(float*)(list+0x2bc);
+        uint64_t view=LD64(column+0x10);unsigned rows=LD32(column+0x29c);
+        if(!ptr(view)||rows>10000)return false;
+        float row_height=*(float*)(view+0x34),stride=*(float*)(view+0x44),height=top-bottom;
+        if(!isfinite(current)||!isfinite(minimum)||!isfinite(maximum)||maximum<minimum||
+           !isfinite(row_height)||!isfinite(stride)||row_height<=0||stride<=0||height<=0)return false;
+        // Categories share a virtual canvas, including space reserved for
+        // empty preceding categories. Ask the game for this category's first
+        // page origin; zero and the global extent are not its scroll bounds.
+        float origin[2]={NAN,NAN};Cpu saved_origin=*c;
+        c->x[0]=list;c->x[1]=0;c->x[2]=category;c->x[3]=(uintptr_t)origin;
+        guest_call(c,0x7000d6ea78);*c=saved_origin;
+        if(!isfinite(origin[1]))return false;
+        minimum=fmaxf(minimum,-origin[1]);
+        float content=row_height+(rows-1)*stride;
+        maximum=fmaxf(minimum,fminf(maximum,minimum+fmaxf(0,content-height)));
+        float next=fminf(maximum,fmaxf(minimum,current-scroll*stride)),delta=next-current;
+        quest_scroll_frame=frame;hover_leave();hover_until=0;
+        if(delta) {
+            // Queue the native scroll for its own tick, as stick scrolling does.
+            // Immediate mode rebuilds row layouts while the cursor manager is
+            // still traversing them, which can displace or hide the list.
+            Cpu saved=*c;c->x[0]=list;c->x[1]=0;memcpy(&c->v[0],&delta,4);
+            guest_call(c,0x7000d6e8e0);*c=saved;
+        }
+        return true;
+    }
+    return false;
+}
+
 // These category panes belong to nested button layouts, not the screen root.
 static uint64_t button_parent_named(uint64_t screen,const char *name) {
     uint64_t head=screen+0x88,link=LD64(head+8);int offset=(int)LD32(screen+0x9c);
@@ -1070,6 +1191,51 @@ static uint64_t pane_named(uint64_t pane,const char *name,unsigned depth,unsigne
     return 0;
 }
 
+// DLCWindow scrolls a native page list, rather than BoxCursor rows. The title
+// remains loaded underneath it and must not react to the same mouse gesture.
+static void dlc_pointer(Cpu *c) {
+    uint64_t s=dlc_screen;
+    extern uint64_t renderer_present_count(void);
+    uint64_t frame=renderer_present_count();
+    if(!ptr(s)||dlc_frame==frame)return;
+    dlc_frame=frame;
+    if(pointer_keyboard_input||!position_inside||LD32(s+0x38c0)!=1||
+       !(LD16(s+0x2aa)&0x40))return;
+    uint64_t list=LD64(s+0x3628);
+    if(!ptr(list)||LD64(list)!=0x7001cdbb58ull)return;
+    int count=LD32(list+0x2ac),current=LD32(list+0x2dc);
+    if(count<1||count>32||current<0||current>=count)return;
+    int step=-atomic_exchange(&wheel,0);
+    if(frame_press)dlc_drag=0;
+    if(gesture_down&&gesture_dragged) {
+        dlc_drag+=gesture_delta[1];click_pending=false;
+        int pages=(int)(dlc_drag/80);
+        if(pages){step+=pages;dlc_drag-=pages*80;}
+    }
+    uint64_t layout=LD64(s+0x30),root=ptr(layout)?LD64(layout+0x18):0;
+    const char *names[]={"Pa_ArrowU_00","Pa_ArrowD_00","Pa_GuideY_00","Pa_GuideB_00"};
+    for(unsigned i=0;i<4;i++) {
+        if((i==0&&current==0)||(i==1&&current==count-1))continue;
+        unsigned budget=2048;uint64_t pane=pane_named(root,names[i],0,&budget);float box[4];
+        if(!options_box(pane,box))continue;
+        if(i>=2)box[0]=fmaxf(box[0],440);
+        box[2]=fminf(box[2],632);
+        if(point[0]<box[0]||point[0]>box[2]||point[1]<box[1]||point[1]>box[3])continue;
+        set_hover_rect(box);pointer_hover_sound(c,s,pane);
+        if(click_pending) {
+            click_pending=false;
+            if(i<2)step+=i?1:-1;
+            else if(i==2) {
+                // Queue the request consumed by the native Staff Credits tick.
+                ST8(s+0x38c4,1);pointer_sound(c,s,"mc_Decide");
+            } else dlc_back_until=plat_now_ns()+50000000;
+        }
+        break;
+    }
+    int next=current+step;if(next<0)next=0;if(next>=count)next=count-1;
+    if(next!=current)call(c,0x7000d6c54c,list,next,0);
+}
+
 static bool pause_headers(Cpu *c,uint64_t screen,uint64_t screens,unsigned count) {
     if(!quest_list(screen)||count<=0x2f)return false;
     // Submenus retain the pause screen underneath them, but own the input.
@@ -1121,6 +1287,7 @@ static int guide_button(uint16_t glyph) {
 static bool pane_shown(uint64_t pane) {
     return ptr(pane)&&(LD8(pane+0x58)&1)&&LD8(pane+0x5a)>=0x80;  // visible, global alpha at least half
 }
+static bool guide_hit(Cpu *c,uint64_t info,unsigned i,const char *slot,uint64_t icon,uint64_t label,uint64_t area);
 static bool pause_guides(Cpu *c,uint64_t screen,uint64_t screens,unsigned count) {
     if(!ptr(screen)||LD64(screen)!=0x7001cf9ad8ull||LD8(screen+0xfe)!=2||count<=0x2f)return false;
     for(unsigned i=0x30;i<=0x3a&&i<count;i++) {
@@ -1136,27 +1303,52 @@ static bool pause_guides(Cpu *c,uint64_t screen,uint64_t screens,unsigned count)
         budget=8;uint64_t icon=pane_named(group,"T_Icon_00",0,&budget);
         budget=8;uint64_t label=pane_named(group,"T_Guide_00",0,&budget);
         if(i==0){rotate_info=info;rotate_group=group;}
-        if(!pane_shown(slot)||!pane_shown(group)||!pane_shown(icon))continue;
-        uint64_t glyphs=LD64(icon+0xe0);
-        int button=ptr(glyphs)?guide_button(LD16(glyphs)):-1;
-        float box[4],text[4];
-        if(button<0||!options_box(icon,box))continue;
-        if(pane_shown(label)&&options_box(label,text)) {
-            box[0]=fminf(box[0],text[0]);box[1]=fminf(box[1],text[1]);
-            box[2]=fmaxf(box[2],text[2]);box[3]=fmaxf(box[3],text[3]);
-        }
-        box[1]-=4;box[3]+=4;
-        if(point[0]<box[0]||point[0]>box[2]||point[1]<box[1]||point[1]>box[3])continue;
-        set_hover_rect(box);
-        pointer_hover_sound(c,info,info+0x400+i);
-        if(click_pending) {
-            // The game plays the action's own sound: no extra cue here.
-            click_pending=false;
-            guide_bit=(unsigned)button;guide_until=plat_now_ns()+80000000;
-        }
-        return true;
+        if(!pane_shown(slot)||!pane_shown(group))continue;
+        if(guide_hit(c,info,i,slots[i],icon,label,0))return true;
     }
     return false;
+}
+// The map's prompt bar (Sheikah Sensor, Hero's Path, Zoom...) belongs to the slate frame AppHome_00 (#451). Its
+// prompts are drawn through a capture texture: the glyph sits in N_CaptureText_00 in local coordinates, and the
+// P_Text_00 picture in N_InOut_00 shows it on screen.
+static bool map_guides(Cpu *c,uint64_t screens) {
+    uint64_t home=LD64(screens+8*0x2c),name=ptr(home)?LD64(home+0xd0):0;
+    if(!ptr(home)||LD8(home+0xfe)!=2||!ptr(name)||strncmp((char*)(uintptr_t)name,"AppHome_00",11))return false;
+    uint64_t root=call(c,0x7000f6f800,home,(uintptr_t)"RootPane",0);
+    static const char *const slots[]={"Pa_Guide_00","Pa_Guide_01","Pa_Guide_02","Pa_Guide_03","Pa_Guide_04","Pa_Guide_05"};
+    for(unsigned i=0;i<sizeof slots/sizeof*slots;i++) {
+        unsigned budget=256;uint64_t slot=pane_named(root,slots[i],0,&budget);
+        budget=8;uint64_t group=pane_named(slot,"N_InOut_00",0,&budget);
+        budget=8;uint64_t picture=pane_named(group,"P_Text_00",0,&budget);
+        budget=8;uint64_t capture=pane_named(slot,"N_CaptureText_00",0,&budget);
+        budget=8;uint64_t icon=pane_named(capture,"T_Icon_00",0,&budget);
+        if(!pane_shown(slot)||!pane_shown(group)||!pane_shown(picture))continue;
+        if(guide_hit(c,home,i,slots[i],icon,0,picture))return true;
+    }
+    return false;
+}
+// One prompt: its glyph names the button; the box is the glyph with its label, or the picture that shows both.
+static bool guide_hit(Cpu *c,uint64_t info,unsigned i,const char *slot,uint64_t icon,uint64_t label,uint64_t area) {
+    if(!pane_shown(icon))return false;
+    uint64_t glyphs=LD64(icon+0xe0);
+    int button=ptr(glyphs)?guide_button(LD16(glyphs)):-1;
+    float box[4],text[4];
+    if(button<0||!options_box(area?area:icon,box))return false;
+    if(pane_shown(label)&&options_box(label,text)) {
+        box[0]=fminf(box[0],text[0]);box[1]=fminf(box[1],text[1]);
+        box[2]=fmaxf(box[2],text[2]);box[3]=fmaxf(box[3],text[3]);
+    }
+    box[1]-=4;box[3]+=4;
+    if(point[0]<box[0]||point[0]>box[2]||point[1]<box[1]||point[1]>box[3])return false;
+    set_hover_rect(box);
+    pointer_hover_sound(c,info,info+0x400+i);
+    if(click_pending) {
+        // The game plays the action's own sound: no extra cue here.
+        click_pending=false;
+        guide_bit=(unsigned)button;guide_until=plat_now_ns()+80000000;
+        if(getenv("SAVAGEWIND_PC_CURSOR_LOG"))LOG("[pc-guide] %s button %d\n",slot,button);
+    }
+    return true;
 }
 
 // Other menus enter a button once per hover, rather than replaying its focus
@@ -1189,6 +1381,39 @@ static bool dialogue_choices(Cpu *c,uint64_t screens,unsigned count) {
     return false;
 }
 
+// Wheel navigation on the selling category strip skips empty/unavailable
+// columns, using the same native transition as a direct category click.
+static void shop_category_scroll(Cpu *c,uint64_t list,uint64_t array,unsigned columns,int scroll) {
+    int current=(int)LD32(list+0x2e8),step=scroll>0?-1:1;
+    if(!scroll||current<0||current>=(int)columns)return;
+    for(int next=current+step;next>=0&&next<(int)columns;next+=step) {
+        uint64_t column=LD64(array+8*next);
+        if(!ptr(column)||!LD32(column+0x29c)||LD8(column+0x38c)||LD8(column+0x38d))continue;
+        call(c,0x7000d6c244,list,0,next);
+        return;
+    }
+}
+
+// The list page index is global across all columns (including unavailable
+// categories), while each column stores its own page count.
+static void shop_page_scroll(Cpu *c,uint64_t list,uint64_t array,unsigned columns,int scroll) {
+    unsigned col=LD32(list+0x2e8);
+    if(!scroll||col>=columns)return;
+    unsigned first=0;
+    for(unsigned i=0;i<col;i++) {
+        uint64_t column=LD64(array+8*i);
+        unsigned pages=ptr(column)?LD32(column+0x2f4):0;
+        if(pages>1000||first+pages>1000)return;
+        first+=pages;
+    }
+    uint64_t column=LD64(array+8*col);
+    unsigned pages=ptr(column)?LD32(column+0x2f4):0;
+    int current=(int)LD32(list+0x2dc),next=current+(scroll>0?-1:1);
+    if(!pages||pages>1000||current<(int)first||current>=(int)(first+pages))return;
+    if(next>=(int)first&&next<(int)(first+pages))call(c,0x7000d6c54c,list,next,0);
+    else shop_category_scroll(c,list,array,columns,scroll);
+}
+
 static bool shop_pointer(Cpu *c) {
     uint64_t s=shop_screen;
     if(!ptr(s)||pointer_keyboard_input)return false;
@@ -1203,6 +1428,11 @@ static bool shop_pointer(Cpu *c) {
         float x=*(float*)(pane+0x7c),y=*(float*)(pane+0x8c);
         if(fabsf(point[0]-x)>28||fabsf(point[1]-y)>28)continue;
         set_hover(x,y,27);
+        int scroll=atomic_exchange(&wheel,0);
+        if(scroll) {
+            shop_category_scroll(c,list,array,columns,scroll);
+            return true;
+        }
         if(click_pending) {
             click_pending=false;
             uint64_t column=i<columns?LD64(array+8*i):0;
@@ -1212,12 +1442,7 @@ static bool shop_pointer(Cpu *c) {
         return true;
     }
     int scroll=atomic_exchange(&wheel,0);
-    if(scroll) {
-        unsigned col=LD32(list+0x2e8);uint64_t column=col<columns?LD64(array+8*col):0;
-        unsigned pages=ptr(column)?LD32(column+0x2f4):0;
-        int page=(int)LD32(list+0x2dc)-(scroll>0?1:-1);
-        if(pages&&pages<1000){if(page<0)page=0;if(page>=(int)pages)page=pages-1;call(c,0x7000d6c54c,list,page,0);}
-    }
+    if(scroll)shop_page_scroll(c,list,array,columns,scroll);
     return false;
 }
 
@@ -1309,6 +1534,7 @@ void rt_pc_cursor_manager(Cpu *c, uint64_t activate, uint64_t bounds) {
     }
     if (!pc_cursor_active()) return;
     sample_pointer();
+    if(dlc_screen){dlc_pointer(c);return;}
     if (!quick_wheel_only && !pointer_test() && !position_inside) {
         float keys[2];extern void input_pc_map_axes(float out[2]);input_pc_map_axes(keys);
         if(keys[0]==0&&keys[1]==0)return;
@@ -1330,7 +1556,7 @@ void rt_pc_cursor_manager(Cpu *c, uint64_t activate, uint64_t bounds) {
     if(!game_over_screen&&n>0x2e&&ptr(screens)) {
         uint64_t screen=LD64(screens+8*0x2e);
         if(ptr(screen)&&hover_target(c,screen,target)&&
-           (pause_headers(c,screen,screens,n)||pause_guides(c,screen,screens,n)||quest_categories(c,screen))){hover_leave();return;}
+           (quest_scroll(c,screen)||pause_headers(c,screen,screens,n)||pause_guides(c,screen,screens,n)||quest_categories(c,screen))){hover_leave();return;}
     }
     uint64_t hit=0,hit_screen=0;float best=1e30f;bool choices=dialogue_choices(c,screens,n);
     if(shop_screen&&!choices&&shop_pointer(c))return;
@@ -1423,6 +1649,9 @@ void rt_pc_cursor_manager(Cpu *c, uint64_t activate, uint64_t bounds) {
 }
 
 RT_ON_RESET(pc_cursor_reset) {
+    dlc_screen=dlc_back_until=0;dlc_frame=UINT64_MAX;dlc_drag=0;
+    quest_scroll_frame=UINT64_MAX;
+    item_message_active=preview_available=false;item_confirm_until=0;
     dialogue_active=false;shop_screen=game_over_screen=quantity_screen=0;quantity_until=0;quantity_edit=false;quantity_request=-1;
     quantity_hold=0;quantity_repeat_at=0;preview_defaults_saved=false;sound_hover_key=sound_hover_until=0;
     hover_leave();

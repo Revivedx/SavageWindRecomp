@@ -76,7 +76,6 @@ static void api_message(uint32_t type, const wchar_t *msg) {
 }
 
 extern "C" bool fsr3_available(void) { return true; }
-extern "C" bool fsr4_available(void) { return true; }
 extern "C" const char *fsr_active_provider(void) { return active_provider; }
 
 extern "C" void fsr3_destroy(void) {
@@ -101,7 +100,7 @@ extern "C" void fsr3_destroy(void) {
 // The backend's device functions: an extension's KHR name that this device was not made with is the core function
 // it was promoted to (the backend calls vkGetBufferMemoryRequirements2KHR without checking it), and its debug labels
 // do nothing without VK_EXT_debug_utils (as framegen.cpp's)
-// (its job labels become SAVAGEWIND_GPUPROF_AT marks: the time of each of FSR's passes)
+// (its job labels become SAVAGEWIND_GPUPROF_AT marks and marks in the profiler's GPU rows: the time of each of FSR 3's passes)
 extern "C" void vk_gpuprof_mark(VkCommandBuffer cb, const char *what);
 static VKAPI_ATTR void VKAPI_CALL no_label(VkCommandBuffer cb, const VkDebugUtilsLabelEXT *l) {
     char buf[96];
@@ -479,7 +478,6 @@ extern "C" void fsr3_jitter_offset(int i, int phases, float *x, float *y) {
 
 #else
 extern "C" bool fsr3_available(void) { return false; }
-extern "C" bool fsr4_available(void) { return false; }
 extern "C" const char *fsr_active_provider(void) { return ""; }
 extern "C" bool fsr3_dispatch(const Fsr3Dispatch *) { return false; }
 extern "C" int fsr3_jitter_phases(uint32_t, uint32_t) { return 8; }

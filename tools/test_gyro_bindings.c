@@ -32,6 +32,14 @@ bool framepace_title_ui(void){return false;}
 bool control_enabled(void){return false;}
 bool control_fly_toggle(void){abort();}
 void control_fly_wheel(float n){(void)n;abort();}
+// (the free camera, hle/freecam.c: off here)
+bool freecam_active(void) { return false; }
+void freecam_toggle(void) { abort(); }
+void freecam_key(int scancode, bool down) { (void)scancode; (void)down; abort(); }
+void freecam_mouse(float dx, float dy) { (void)dx; (void)dy; abort(); }
+void freecam_pad(float lx, float ly, float rx, float ry, float up, float down, bool fast, bool slow) {
+    (void)lx; (void)ly; (void)rx; (void)ry; (void)up; (void)down; (void)fast; (void)slow;
+}
 void control_input_frame(uint64_t f){(void)f;}
 void control_input_apply(uint64_t *b,int32_t *lx,int32_t *ly,int32_t *rx,int32_t *ry){(void)b;(void)lx;(void)ly;(void)rx;(void)ry;}
 bool motion_has_sensors(void){return false;}

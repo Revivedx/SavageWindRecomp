@@ -28,11 +28,11 @@ static const Setting settings[] = {
     B(fullscreen), I(window_w, 0, 16384, NULL), I(window_h, 0, 16384, NULL),
     I(upscaler, 0, UPSCALE_COUNT - 1, "off|metalfx|fsr1|fsr3|dlss"),
     I(upscale_quality, 0, UPQ_COUNT - 1, "ultra_quality|quality|balanced|performance|ultra_performance"),
-    I(antialias, 0, AA_TAA, "off|smaa|taa"),
+    I(antialias, 0, AA_TAA, "off|smaa|taa"), B(game_fxaa),
     I(anisotropy, 0, 4, "game|2x|4x|8x|16x"), I(sharpening, 0, 10, NULL),
     B(frame_gen), F(volume, 0, 2), B(reverb), B(movie_audio),
     I(perf_overlay, 0, PERF_FULL, "off|fps|full"), I(fps_limit, 0, 360, NULL),
-    I(vsync, 0, VSYNC_COUNT - 1, "on|fast|adaptive|off"), B(dpad_move),
+    I(vsync, 0, VSYNC_COUNT - 1, "on|fast|adaptive|off"), B(dpad_move), B(freecam_sticks),
     {"stick_deadzone[0]", &g_settings.stick_deadzone[0], FLOAT, 0, .5, NULL},
     {"stick_deadzone[1]", &g_settings.stick_deadzone[1], FLOAT, 0, .5, NULL},
     B(mouse_camera), F(mouse_sens, .1, 10), F(mouse_sens_y, .5, 2), B(mouse_invert_y),
@@ -143,7 +143,7 @@ static void cmd_set(int argc, char **argv, ControlReply *r) {
         control_fail(r, "%s is read-only", s->key); return;
     }
 #ifdef __APPLE__
-    if (is(s, "anisotropy") || is(s, "sharpening") || is(s, "frame_gen") ||
+    if (is(s, "anisotropy") || is(s, "sharpening") || is(s, "frame_gen") || is(s, "game_fxaa") ||
         !strncmp(s->key, "color_", 6) || is(s, "hdr") || is(s, "hdr_white") || is(s, "vsync")) {
         control_fail(r, "%s is not supported by this backend", s->key); return;
     }

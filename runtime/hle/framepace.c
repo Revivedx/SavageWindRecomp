@@ -187,6 +187,11 @@ int framepace_target(void) {
 static double vsync_cap(void) {
     if (g_settings.vsync != VSYNC_ON && g_settings.vsync != VSYNC_ADAPTIVE) return 0;
     double hz = winsize_refresh_rate();
+    // SAVAGEWIND_VSYNC_MARGIN=0: the cap at the refresh rate itself. The margin is for VRR; on a fixed-rate display (the
+    // Steam Deck in Game Mode) it only costs frames: 87.6 shown at 89.9 Hz
+    static int margin = -1;
+    if (margin < 0) margin = !getenv("SAVAGEWIND_VSYNC_MARGIN") || atoi(getenv("SAVAGEWIND_VSYNC_MARGIN")) != 0;
+    if (!margin) return hz >= 30 ? hz : 0;
     return hz >= 30 ? hz - hz * hz / 3600 : 0;
 }
 
@@ -225,7 +230,28 @@ int rt_frame_wait(void) { return framepace_on(); }
 static float g_step = 1;         // the last frame's length between presents, in console frames
 static int g_grid_streak;        // presents in a row that kept the pace
 
+// A loading screen up for minutes (#438: stuck after a Divine Beast's cutscene, the screen running, no error): what each
+// of the game's threads waits for goes to the log, at 90 s and again at 210 s of the same loading screen, so a player's
+// log shows where it stopped. SAVAGEWIND_LOAD_WATCH=<seconds> for the first dump, 0 off.
+static void load_watch(uint64_t t) {
+    extern void kernel_dump_threads(void);  // runtime/kernel.c
+    static int first = -1;
+    static uint64_t since;
+    static int dumps;
+    if (first < 0) first = env_int("SAVAGEWIND_LOAD_WATCH", 90);
+    if (!first || !framepace_loading_ui()) { since = 0; dumps = 0; return; }
+    if (!since) since = t;
+    uint64_t at = (uint64_t)(first + 120 * dumps) * 1000000000ull;
+    if (dumps < 2 && t - since >= at) {
+        LOG("[load-watch] the loading screen has been up for %d s (event %s): the game's threads\n",
+            (int)((t - since) / 1000000000ull), event_name());
+        kernel_dump_threads();
+        dumps++;
+    }
+}
+
 void framepace_presented(uint64_t t, bool on_grid) {
+    load_watch(t);
     if (!framepace_on()) return;
     static uint64_t prev;
     static double smooth;
@@ -369,6 +395,14 @@ int rt_surf_jump_request(uint64_t controller) {
     return 1;
 }
 
+// A stale actor in the game's target manager was ignored (tools/patches.py _stale_actor_helper / _stale_actor_target,
+// #391, #393): the game would have crashed on it. Logged the first five times, then each power of two.
+void rt_stale_actor(void) {
+    static uint32_t n;
+    uint32_t k = __atomic_add_fetch(&n, 1, __ATOMIC_RELAXED);
+    if (k <= 5 || (k & (k - 1)) == 0) LOG("[game] a stale actor in the target manager was ignored (%u so far)\n", k);
+}
+
 // The game's frames that were presented: one step per presented frame, where game frames step twice while paused
 // (output_scale.c's jitter sequence: each presented frame gets the next phase)
 static uint64_t shown_frames;
@@ -386,6 +420,8 @@ void rt_vfr_update(uint64_t vfr) {
     if (nvn_timeline()) LOG("[tl] %.3f %x vfr\n", plat_now_ns() / 1e6, kernel_current_thread_handle());
     extern uint64_t g_fs_vfr;  // (SAVAGEWIND_FRAME_LOG=2, nvn/objects.c)
     g_fs_vfr = plat_now_ns();
+    extern void freecam_frame(void);  // (hle/freecam.c)
+    freecam_frame();
     clock_probe(vfr);
     log_screens();
     extern void input_cam_frame(float ratio);  // runtime/hle/input.c: the mouse's motion in the frame, for the cameras
@@ -436,6 +472,8 @@ void rt_vfr_update(uint64_t vfr) {
     }
     bool held = VF(uint8_t, vfr, VFR_OVERRIDE) && ratio > 1;  // (stage loading: the game asks for single steps)
     if (held) ratio = 1;
+    extern bool freecam_active(void);
+    if (freecam_active()) ratio = 0.001f;  // (the free camera: the world nearly stops)
     if (!paused) {
         given += ratio / 30.0;
         if (held || fabs(real - given) > 0.25) real = given;  // (nothing owed for a deliberate slow down)

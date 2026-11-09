@@ -130,6 +130,45 @@ def _opt_tick(gen, a):
             f'  /* {a:#x}: sub sp, sp, #0x40 (Options: update) */')
 
 
+# Dual native binding cells: only emitted when the entire strict optional group matched.
+def _opt_two_redraw(gen, a):
+    assert _word(gen, a) == _sub_sp(0x40)
+    return ('{ extern int rt_opt_two_redraw(uint64_t); if (rt_opt_two_redraw(c->x[0])) return; c->sp -= 0x40; }')
+
+
+def _opt_two_callback(which):
+    def patch(gen, a):
+        assert _word(gen, a) == 0xb976b008  # ldr w8, [x0, #0x36b0]
+        return ('{ extern int rt_opt_two_callback(uint64_t, uint64_t, int); '
+                f'if (rt_opt_two_callback(c->x[0], c->x[1], {which})) return; '
+                'c->x[8] = LD32(c->x[0] + 0x36b0); }')
+    return patch
+
+
+def _opt_two_row_state(gen, a):
+    assert _word(gen, a) & 0x9f00001f == 0x90000008
+    page = adrp_page(_word(gen, a), a)
+    return ('{ extern int rt_opt_two_row_state(uint64_t); '
+            f'if (rt_opt_two_row_state(c->x[0])) return; c->x[8] = {page:#x}ull; }}')
+
+
+def _opt_two_control(initial):
+    def patch(gen, a):
+        assert _word(gen, a) == (0xf9400161 if initial else 0xf9400129)
+        # x11 / x9 is the original field address; the row stays x20 on initial focus.
+        expr = 'c->x[20]' if initial else 'c->x[9] - 0x28'
+        reg, field = (1, 11) if initial else (9, 9)
+        return ('{ extern uint64_t rt_opt_two_control(uint64_t); '
+                f'uint64_t b = rt_opt_two_control({expr}); c->x[{reg}] = b ? b : LD64(c->x[{field}]); }}')
+    return patch
+
+
+def _opt_two_horizontal(gen, a):
+    assert _word(gen, a) == 0xb936c268  # str w8, [x19, #0x36c0]
+    return ('{ extern void rt_opt_two_horizontal(uint64_t, unsigned); '
+            'ST32(c->x[19] + 0x36c0, c->x[8]); rt_opt_two_horizontal(c->x[19], (unsigned)c->x[8]); }')
+
+
 def _opt_back(gen, a):
     # B on the screen: it closes (after the save); on one of Savage Wind's pages it opens again on the first page
     assert _word(gen, a) >> 26 == 0x25, hex(_word(gen, a))  # bl screen_back
@@ -249,6 +288,41 @@ def _surf_boost_remove(gen, a):
     return ('{ extern int rt_surf_takeoff_pending(uint64_t); '
             'if (rt_surf_takeoff_pending(c->x[21])) c->v[0] = (uint32_t)c->v[1]; '
             'else rt_fsub_s(c, 0, 1, 0); }')
+
+
+# A stale actor (#391, #393): the game's target manager (the Sheikah Slate's magnesis and camera targets) keeps a pointer
+# to an actor that is already gone. The helper that asks an actor for its link (1.9.0 0x700120bc40: actor + 0x570, then
+# + 0x88) got a freed pointer (#391: a garbage value, a crash in the next load) and one inline copy of it
+# (1.9.0 0x7000dea400, the camera target) got an actor whose + 0x570 is null (#393: accessing 0x88). Both now treat
+# such an actor as none: the helper answers 0, the inline copy leaves its function by the path of "no target".
+def _stale_actor_helper(gen, a):
+    w = _word(gen, a)
+    assert w & 0xff00001f == 0xb4000000, hex(w)  # cbz x0, <ret>
+    target = a + sext((w >> 5) & 0x7ffff, 19) * 4
+    return ('{ extern void rt_stale_actor(void); '
+            'if (!c->x[0]) goto L_%x; '
+            'if (c->x[0] - 0x7000000000ull >= 0x320000000ull || !LD64(c->x[0] + 0x570)) { rt_stale_actor(); c->x[0] = 0; goto L_%x; } }'
+            % (target, target))
+
+
+def _stale_actor_target(gen, a):
+    assert _word(gen, a) == 0xf942ba68, hex(_word(gen, a))  # ldr x8, [x19, #0x570]
+    # the epilogue of "no target": the function's own early exit (cbz x0 / cbnz x19 above this site)
+    exit_at = _stale_target_exit(gen, a)
+    return ('{ extern void rt_stale_actor(void); '
+            'if (c->x[19] - 0x7000000000ull >= 0x320000000ull || !LD64(c->x[19] + 0x570)) { rt_stale_actor(); goto L_%x; } '
+            'c->x[8] = LD64(c->x[19] + 0x570); }' % exit_at)
+
+
+def _stale_target_exit(gen, a):
+    # walk back to the cbnz x19 that jumps to this code: its fall-through (the next word) is the epilogue's first word
+    b = a
+    while b > a - 0x80:
+        b -= 4
+        w = _word(gen, b)
+        if w & 0xff00001f == 0xb5000013:  # cbnz x19, <this code>
+            return b + 4
+    raise AssertionError('stale target: no cbnz x19 above %#x' % a)
 
 
 def _surf_jump_request(gen, a):
@@ -706,7 +780,34 @@ def _gyro_scene_actor(gen, a):
             f'  /* {a:#x}: bl (shrine apparatus input) */')
 
 
+# Per-action bindings (runtime/hle/bindings.c, docs/ACTIONS.md). The game reads its pad object through two functions,
+# isHold(pad, action) and isTrig(pad, action): each looks the action's pad mask up in a table of 41 (act_masks) and tests
+# it against the pad object's held (+0x11c) or pressed (+0x10) word. An action the player gave a binding of its own is
+# answered by the runtime from the host key / button instead (rt_act_query); every other answer stays the game's.
+def _act_query(kind):
+    def patch(gen, a):
+        assert _word(gen, a) == 0xa9be7bfd, hex(_word(gen, a))  # stp x29, x30, [sp, #-0x20]!
+        return ('{ extern int rt_act_query(int, uint64_t, uint64_t, uint64_t, uint64_t); '
+                f'int r = rt_act_query({kind}, c->x[0], c->x[1], c->x[30], {gen.sites["act_masks"]:#x}ull); '
+                'if (r >= 0) { c->x[0] = (uint64_t)r; return; } '
+                'uint64_t ea = c->sp - 0x20; ST64(ea, c->x[29]); ST64(ea + 8, c->x[30]); c->sp = ea; }'
+                f'  /* {a:#x}: stp x29, x30, [sp, #-0x20]! ({"pressed" if kind else "held"} query of an action) */')
+    return patch
+
+
+# The free camera (runtime/hle/freecam.c rt_lookat): sead::LookAtCamera::doUpdateMatrix (1.9.0 0x7000eb2d5c) builds
+# a camera's view from its eye (+0x38), at (+0x44) and up (+0x50); the runtime sees each camera there first and may
+# put its own eye and at in place before they are read.
+
+def _lookat_update(gen, a):
+    assert _word(gen, a) == 0x2d470801, hex(_word(gen, a))  # ldp s1, s2, [x0, #0x38]
+    return ('{ extern void rt_lookat(uint64_t); rt_lookat(c->x[0]); c->v[1] = LD32(c->x[0] + 0x38); '
+            'c->v[2] = LD32(c->x[0] + 0x3c); }'
+            f'  /* {a:#x}: ldp s1, s2, [x0, #0x38] (LookAtCamera view: eye x, y) */')
+
+
 PATCHES = {
+    'lookat_update': _lookat_update,
     'pc_map_focus': _pc_map_focus(False),
     'pc_map_focus_target': _pc_map_focus(True),
     'pc_map_focus_now': _pc_map_focus(True),
@@ -714,6 +815,16 @@ PATCHES = {
     'pc_cursor_manager': _pc_cursor_manager,
     'gyro_scene_actor': _gyro_scene_actor,
     'pause_options_update': _pause_option_state,
+    'opt_two_redraw': _opt_two_redraw,
+    'opt_two_select': _opt_two_callback(0),
+    'opt_two_state': _opt_two_callback(1),
+    'opt_two_decide': _opt_two_callback(2),
+    'opt_two_after': _opt_two_callback(3),
+    'opt_two_row_state': _opt_two_row_state,
+    'opt_two_update_control': _opt_two_control(False),
+    'opt_two_initial_control': _opt_two_control(True),
+    'opt_two_left': _opt_two_horizontal,
+    'opt_two_right': _opt_two_horizontal,
     'opt_create_rows': _opt_rows,
     'opt_row_init_flag_type': _opt_flag_type,
     'opt_read': _opt_read,
@@ -738,6 +849,8 @@ PATCHES = {
     'surf_contact': _surf_contact,
     'surf_boost_remove': _surf_boost_remove,
     'surf_jump_request': _surf_jump_request,
+    'stale_actor_helper': _stale_actor_helper,
+    'stale_actor_target': _stale_actor_target,
     'phys_solver_steps': _solver_steps,
     'kf_angle': _kf_angle,
     'snd_frame_floor': _snd_frame_floor,
@@ -771,6 +884,8 @@ PATCHES = {
     'grass_blade_lateral_near': _grass_blade_lateral,
     'grass_blade_lateral_far': _grass_blade_lateral,
     'tree_ranges': _tree_ranges,
+    'act_hold': _act_query(0),
+    'act_trig': _act_query(1),
     'pouch_remove_arrows': _remove_arrows,
     'no_wear_store': _no_wear,
     'no_wear_hit': _no_wear_hit,

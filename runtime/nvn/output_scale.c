@@ -31,6 +31,7 @@
 
 #ifndef __APPLE__
 bool fsr3_available(void);  // (vulkan/fsr3.h: built in)
+bool fsr4_available(void);  // (vulkan/fsr_api.h: AMD's DLLs, on an AMD Radeon)
 #endif
 // Temporal FSR 3.1.6 / FSR 4 upscaling is enabled by default; SAVAGEWIND_FSR3=0 hides/disables it for A/B tests.
 bool fsr3_upscaler_enabled(void) {
@@ -43,15 +44,24 @@ bool upscaler_available(int u) {
 #ifdef __APPLE__
     return u == UPSCALE_OFF || u == UPSCALE_METALFX;
 #else
-    return u == UPSCALE_OFF || u == UPSCALE_FSR1 ||
-           ((u == UPSCALE_FSR3 || u == UPSCALE_FSR4) && fsr3_available() && fsr3_upscaler_enabled());
+    return u == UPSCALE_OFF || u == UPSCALE_FSR1 || (u == UPSCALE_FSR3 && fsr3_available() && fsr3_upscaler_enabled())
+        || (u == UPSCALE_FSR4 && (fsr4_available() || fsr3_available()) && fsr3_upscaler_enabled());
 #endif
 }
 
-bool rt_fsr3(void) {
-    return (g_settings.upscaler == UPSCALE_FSR3 || g_settings.upscaler == UPSCALE_FSR4) &&
-           upscaler_available(g_settings.upscaler);
+// FSR 4 is on this PC (an AMD Radeon, AMD's DLLs found), whether or not it is held back (the menu says which)
+bool fsr4_offered(void) {
+#ifdef __APPLE__
+    return false;
+#else
+    return fsr4_available() || fsr3_available();
+#endif
 }
+
+bool rt_fsr4(void) { return g_settings.upscaler == UPSCALE_FSR4 && upscaler_available(UPSCALE_FSR4); }
+// FSR 4 takes the same inputs and does the same jobs (anti-aliasing, sharpening) as FSR 3: everything that asks for
+// FSR 3 asks for either; vulkan/exec.c fsr3_scene picks the one to run
+bool rt_fsr3(void) { return (g_settings.upscaler == UPSCALE_FSR3 && upscaler_available(UPSCALE_FSR3)) || rt_fsr4(); }
 
 bool rt_temporal(void) { return rt_antialias() == AA_TAA || rt_fsr3(); }
 
