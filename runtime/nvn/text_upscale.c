@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "glyphs.h"
 #include "text_upscale.h"
 
 #define MAX_SCALE 4
@@ -55,7 +56,9 @@ static int nmenu;
 
 void menu_tex_add(const uint8_t *texels, size_t bytes) {
     if (nmenu >= (1 << MENU_TEX_BITS) / 2) return;
-    uint64_t h = sheet_hash(texels, bytes) | 1;  // (| 1: 0 marks an empty slot)
+    uint64_t raw_h = sheet_hash(texels, bytes);
+    if (glyphs_is_layout_icon_hash(raw_h)) return;  // HUD button prompt glyphs stay dynamic
+    uint64_t h = raw_h | 1;  // (| 1: 0 marks an empty slot)
     for (uint32_t i = (uint32_t)h >> 3;; i++) {
         uint64_t *e = &menu_tex[i & ((1 << MENU_TEX_BITS) - 1)];
         if (*e == h) return;
@@ -67,7 +70,9 @@ int menu_tex_count(void) { return nmenu; }
 
 bool menu_tex_known(const uint8_t *texels, size_t bytes) {
     if (!nmenu) return false;
-    uint64_t h = sheet_hash(texels, bytes) | 1;
+    uint64_t raw_h = sheet_hash(texels, bytes);
+    if (glyphs_is_layout_icon_hash(raw_h)) return false;
+    uint64_t h = raw_h | 1;
     for (uint32_t i = (uint32_t)h >> 3;; i++) {
         uint64_t e = menu_tex[i & ((1 << MENU_TEX_BITS) - 1)];
         if (e == h) return true;

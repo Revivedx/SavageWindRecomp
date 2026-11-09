@@ -765,6 +765,12 @@ static const LayoutIcon k_layout_icons[] = {
     {64, 64, 0xc171fee97aa2e0b1ull, 0xE049},  // ButtonIconL46NN_00: the d-pad (the shortcuts at the top left)
 };
 
+bool glyphs_is_layout_icon_hash(uint64_t hash) {
+    for (size_t i = 0; i < sizeof k_layout_icons / sizeof *k_layout_icons; i++)
+        if (k_layout_icons[i].hash == hash) return true;
+    return false;
+}
+
 bool glyphs_apply_layout(uint32_t format, uint32_t w, uint32_t h, uint8_t *lin, uint32_t row) {
     if (format != FMT_R8 || w > 2 * CELL || h > 2 * CELL || row < w) return false;
     const LayoutIcon *li = NULL;
