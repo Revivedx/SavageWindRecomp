@@ -316,3 +316,27 @@ static inline void rt_fsub_s(Cpu *c, int d, int n, int m) {
     c->v[d] = ru;
 #endif
 }
+
+// Scalar single float from a vector register for a patch (tools/patches.py _grass_blade_lateral), whichever
+// way the SIMD was lifted.
+static inline float rt_vf32(const Cpu *c, int n) {
+    uint32_t u = (uint32_t)c->v[n];
+    float f;
+    __builtin_memcpy(&f, &u, 4);
+    return f;
+}
+
+// Scalar single FCMP for a patch (tools/patches.py _grass_blade_lateral), returning NZCV flags in bits 31..28,
+// whichever way the SIMD was lifted: through the FP helpers of simd.h on x86-64, natively on AArch64 (where
+// simd.h is only included by --simd c, so cmp_s does not exist in the default asm mode, #612).
+static inline uint64_t rt_fcmp_s(Cpu *c, float a, float b) {
+#if !defined(__cplusplus) && !defined(__aarch64__)
+    return cmp_s(c, a, b);
+#elif defined(__aarch64__)
+    uint64_t nzcv;
+    __asm__("fcmp %s1, %s2\n\tmrs %0, nzcv" : "=r"(nzcv) : "w"(a), "w"(b));
+    return nzcv;
+#else
+    return a == b ? 0x60000000ull : a < b ? 0x80000000ull : a > b ? 0x20000000ull : 0x30000000ull;
+#endif
+}
