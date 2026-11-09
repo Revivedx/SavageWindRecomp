@@ -15,10 +15,20 @@
 // What the translated shaders depend on besides their binaries: the translator's sources (maxwell_translator_id)
 // and the GLSL -> SPIR-V step's (vk_spirv_id). Caches built from translated shaders (cache/xlate, the pipeline cache,
 // the pipeline list) are valid for one value of this only; both ids are hashes of those sources (Makefile), so
-// builds that do not change them keep the caches.
+// builds that do not change them keep the caches. The device-dependent switches a translation also depends on
+// (maxwell_translation_variant) are not in it: cache/xlate records them per file, and the pipeline caches and list
+// hold their entries by content, so a change of the switches costs the translations of the shaders it reaches, not
+// the caches. vk_shader_version_full adds them: what the precompilation was made under (precompiled.txt), so that the
+// start screen offers it again after such a change.
 const char *vk_shader_version(void) {
     static char v[64];
     if (!v[0]) snprintf(v, sizeof v, "%s/%s", maxwell_translator_id(), vk_spirv_id());
+    return v;
+}
+
+const char *vk_shader_version_full(void) {
+    static __thread char v[128];
+    snprintf(v, sizeof v, "%s+%s", vk_shader_version(), maxwell_translation_variant());
     return v;
 }
 
@@ -43,7 +53,12 @@ void vk_cache_path(char *out, size_t n, const char *name) {
 // disk as cache/xlate/<hash>.bin, so a shader seen in an earlier session costs a file read. The hash covers the bytes
 // the translator reads, the key and the translator's build (a new build of translate.c starts over).
 // The hash is also the translation's id (vk_translate_id): the pipeline list (exec.c) names shaders by it.
+// The variant (maxwell_translation_variant: the device's global memory switches) is not in the hash: a file records
+// it, and only a translation that reads global memory made under another variant is a miss (translated again, the
+// file replaced). So a switch that changes keeps every other translation, and the pipeline list stays valid.
 typedef struct { char magic[4]; uint32_t info_size, msl_len, bin_size; ShaderKey key; int32_t stage; } XlateHeader;
+#define XLATE_MAGIC "SWX3"  // (SWX2: without the variant record; its folder is removed, vk_cache_cleanup)
+#define XLATE_VARIANT 64    // bytes of the variant string in a file
 #define XLATE_TAB 16384
 static struct { uint64_t h; ShaderInfo *si; } xlate_tab[XLATE_TAB];
 static struct { const ShaderInfo *si; uint64_t h; } xlate_ids[XLATE_TAB];  // the other way round
@@ -58,11 +73,24 @@ static uint64_t hash64(uint64_t h, const void *p, size_t n) {
 
 // want: the header the file must have (all but msl_len), or NULL to take the one in the file (by id: the hash
 // covers it) when it is sane and of that stage.
-// A file: the header, the ShaderInfo, the GLSL's deflated size and the GLSL deflated (zlib: a sixth of the size). In
-// cache/xlate/<id>/ (the translator's id, vk_cache_dir_id): another build's folder is removed (vk_cache_cleanup).
+// A file: the header, the ShaderInfo, the variant it was made under (XLATE_VARIANT bytes), the GLSL's deflated size
+// and the GLSL deflated (zlib: a sixth of the size). In cache/xlate/<id>/ (the translator's id and the file format,
+// xlate_dir_id): another build's folder is removed (vk_cache_cleanup).
+static char xlate_dir[20];
+static pthread_once_t xlate_dir_once = PTHREAD_ONCE_INIT;
+static void xlate_dir_init(void) {
+    char v[96];
+    snprintf(v, sizeof v, "%s/%s", maxwell_translator_id(), XLATE_MAGIC);
+    snprintf(xlate_dir, sizeof xlate_dir, "%s", vk_cache_dir_id(v));
+}
+static const char *xlate_dir_id(void) {  // (once: the cleanup thread, the pre-warm's and the precompile's workers ask at the same time)
+    pthread_once(&xlate_dir_once, xlate_dir_init);
+    return xlate_dir;
+}
+
 static void xlate_path(char *path, size_t n, uint64_t h) {
     char name[96];
-    snprintf(name, sizeof name, "xlate/%s/%016llx.xlz", vk_cache_dir_id(maxwell_translator_id()), (unsigned long long)h);
+    snprintf(name, sizeof name, "xlate/%s/%016llx.xlz", xlate_dir_id(), (unsigned long long)h);
     vk_cache_path(path, n, name);
 }
 
@@ -78,14 +106,24 @@ static ShaderInfo *xlate_load(uint64_t h, const XlateHeader *want, int stage) {
         ok = !memcmp(&hd, want, offsetof(XlateHeader, msl_len)) && hd.bin_size == want->bin_size &&
              !memcmp(&hd.key, &want->key, sizeof hd.key) && hd.stage == want->stage;
     else if (ok)
-        ok = !memcmp(hd.magic, "SWX2", 4) && hd.info_size == sizeof(ShaderInfo) && hd.stage == stage && hd.msl_len;
+        ok = !memcmp(hd.magic, XLATE_MAGIC, 4) && hd.info_size == sizeof(ShaderInfo) && hd.stage == stage && hd.msl_len;
     uint32_t zn = 0;
     if (ok) {
         si = malloc(sizeof *si);
         char *msl = malloc(hd.msl_len + 1);
         uint8_t *z = NULL;
-        bool got = si && msl && fread(si, sizeof *si, 1, f) == 1 && fread(&zn, 4, 1, f) == 1 && zn < (64u << 20) &&
-                   (z = malloc(zn ? zn : 1)) && fread(z, 1, zn, f) == zn && si->stage == hd.stage;
+        char variant[XLATE_VARIANT];
+        bool got = si && msl && fread(si, sizeof *si, 1, f) == 1 && fread(variant, sizeof variant, 1, f) == 1 &&
+                   fread(&zn, 4, 1, f) == 1 && zn < (64u << 20) && (z = malloc(zn ? zn : 1)) && fread(z, 1, zn, f) == zn &&
+                   si->stage == hd.stage;
+        variant[XLATE_VARIANT - 1] = 0;
+        // (made under other global memory switches: only a shader that reads global memory translates differently)
+        if (got && si->uses_gmem && strcmp(variant, maxwell_translation_variant())) {
+            static int nlog;
+            if (nlog++ < 3) LOG("[xlate] translation %016llx made under other global memory switches (%s, now %s): translated again\n",
+                                (unsigned long long)h, variant, maxwell_translation_variant());
+            got = false;
+        }
         uLongf len = hd.msl_len;
         if (got && uncompress((Bytef *)msl, &len, z, zn) == Z_OK && len == hd.msl_len) {
             msl[hd.msl_len] = 0;
@@ -152,7 +190,7 @@ static void xlate_store(uint64_t h, const XlateHeader *hd, const ShaderInfo *si)
         made = 1;
         vk_cache_path(path, sizeof path, "xlate");
         mkdir(path, 0755);
-        snprintf(name, sizeof name, "xlate/%s", vk_cache_dir_id(maxwell_translator_id()));
+        snprintf(name, sizeof name, "xlate/%s", xlate_dir_id());
         vk_cache_path(path, sizeof path, name);
         mkdir(path, 0755);
     }
@@ -164,13 +202,17 @@ static void xlate_store(uint64_t h, const XlateHeader *hd, const ShaderInfo *si)
     bool ok = compress2(z, &zn, (const Bytef *)si->msl, hd->msl_len, 1) == Z_OK;
     ShaderInfo copy = *si;
     copy.msl = NULL;
+    char variant[XLATE_VARIANT] = {0};
+    snprintf(variant, sizeof variant, "%s", maxwell_translation_variant());
     uint32_t zn32 = (uint32_t)zn;
     FILE *f = ok ? fopen(tmp, "wb") : NULL;
-    ok = f && fwrite(hd, sizeof *hd, 1, f) == 1 && fwrite(&copy, sizeof copy, 1, f) == 1 && fwrite(&zn32, 4, 1, f) == 1 &&
-         fwrite(z, 1, zn, f) == zn;
+    ok = f && fwrite(hd, sizeof *hd, 1, f) == 1 && fwrite(&copy, sizeof copy, 1, f) == 1 &&
+         fwrite(variant, sizeof variant, 1, f) == 1 && fwrite(&zn32, 4, 1, f) == 1 && fwrite(z, 1, zn, f) == zn;
     if (f && fclose(f)) ok = false;
     free(z);
-    if (f && (!ok || rename(tmp, path) != 0)) remove(tmp);  // (another thread may have stored it first)
+    // (another thread may have stored it first; a file of another variant is replaced)
+    if (f && ok && !vk_replace_file(tmp, path)) ok = false;
+    if (f && !ok) remove(tmp);
 }
 
 // A cache folder's name for an id (TRANSLATOR_ID / SPIRV_ID are 16 hex digits; built without the Makefile, a date)
@@ -189,7 +231,7 @@ const char *vk_cache_dir_id(const char *id) {
 // that updates do not pile them up (the whole game's precompiled shaders are ~0.4 GB). Runs on a thread of its own.
 static void *cleanup_thread(void *arg) {
     (void)arg;
-    const char *keep[2] = {vk_cache_dir_id(maxwell_translator_id()), vk_cache_dir_id(vk_spirv_id())};
+    const char *keep[2] = {xlate_dir_id(), vk_cache_dir_id(vk_spirv_id())};
     static const char *const sub[2] = {"xlate", "spirv"};
     int removed = 0;
     for (int i = 0; i < 2; i++) {
@@ -404,7 +446,7 @@ int vk_keylog_read(VkKeyLogEntry **out) {
 // The translation's id (its cache/xlate name) and the header its file has
 static uint64_t xlate_id(const uint8_t *code, size_t max_size, int stage, const ShaderKey *key, XlateHeader *hd) {
     memset(hd, 0, sizeof *hd);
-    memcpy(hd->magic, "SWX2", 4);
+    memcpy(hd->magic, XLATE_MAGIC, 4);
     hd->info_size = sizeof(ShaderInfo);
     hd->bin_size = (uint32_t)maxwell_binary_size(code, max_size, stage);
     hd->key = *key;
@@ -413,6 +455,28 @@ static uint64_t xlate_id(const uint8_t *code, size_t max_size, int stage, const 
     uint64_t h = hash64(0xcbf29ce484222325ull, id, strlen(id));
     h = hash64(h, hd, sizeof *hd);
     h = hash64(h, code, hd->bin_size);
+    if (maxwell_wet_lighting(code, max_size, stage)) h = hash64(h, "wet", 3);  // (Video > Wet grass fix: its own translation)
+    return h ? h : 1;
+}
+
+// The id a translation of this binary with this key has (precompile.c: the pipeline seed names shaders by binary
+// hash and key, the list by this)
+uint64_t vk_translate_id_for(const uint8_t *code, size_t max_size, int stage, const ShaderKey *key) {
+    XlateHeader hd;
+    // (the seed's export only) SAVAGEWIND_SEED_LIST_ID=<translator id>: the ids as a list of a build before the
+    // variant change named them (its translator id with the switches in it, the SWX2 file format), so a playthrough's
+    // list from such a build can be exported once
+    const char *old = getenv("SAVAGEWIND_SEED_LIST_ID");
+    if (!old || !*old) return xlate_id(code, max_size, stage, key, &hd);
+    memset(&hd, 0, sizeof hd);
+    memcpy(hd.magic, "SWX2", 4);
+    hd.info_size = sizeof(ShaderInfo);
+    hd.bin_size = (uint32_t)maxwell_binary_size(code, max_size, stage);
+    hd.key = *key;
+    hd.stage = stage;
+    uint64_t h = hash64(0xcbf29ce484222325ull, old, strlen(old));
+    h = hash64(h, &hd, sizeof hd);
+    h = hash64(h, code, hd.bin_size);
     return h ? h : 1;
 }
 

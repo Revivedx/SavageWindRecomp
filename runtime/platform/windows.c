@@ -1,8 +1,10 @@
 // Windows host layer (runtime/platform.h).
 #include <windows.h>
+#include <pthread.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <shellapi.h>
 #include <timeapi.h>
@@ -10,6 +12,14 @@
 
 #include "../gamelib.h"
 #include "../platform.h"
+#include "../settings.h"
+
+// Hybrid laptops: the dedicated GPU. NVIDIA's Optimus driver can hide its GPU from a program it runs on the
+// integrated one (an RTX 3050 laptop ran on its Intel GPU whatever the Windows and NVIDIA settings said, #415); AMD's
+// switchable graphics read the second export. The executable's own exports, read when it starts. The GPU setting
+// (SAVAGEWIND_GPU, Options) still picks another one.
+__declspec(dllexport) DWORD NvOptimusEnablement = 1;
+__declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
 
 // ---- guest address space
 // The window is reserved up front and committed per region (plat_commit from the loader / kernel). Anything
@@ -18,13 +28,76 @@
 // does not fault: such buffers must be inside committed regions.
 static uint64_t g_lo, g_hi;
 #define COMMIT_CHUNK 0x10000ull
+#define SPARSE_HEAP_MAX_PAGES (4ull * 1024 * 1024 * 1024 / COMMIT_CHUNK)
+#define SPARSE_HEAP_BITMAP_WORDS ((SPARSE_HEAP_MAX_PAGES + 63) / 64)
+static atomic_uint_fast64_t guest_commit_gen;
+static uint64_t sparse_heap_base, sparse_heap_size;
+static atomic_uint_fast64_t sparse_heap_pages[SPARSE_HEAP_BITMAP_WORDS];
+static bool sparse_heap_enabled;
+static bool sparse_heap_configured;
 
-static bool lazy_commit(uint64_t a) {
+static void sparse_heap_note_commit(uint64_t addr, uint64_t size) {
+    if (!size || addr >= sparse_heap_base + sparse_heap_size ||
+        (addr < sparse_heap_base && size <= sparse_heap_base - addr)) return;
+    uint64_t end = addr + size;
+    if (end < addr || end > sparse_heap_base + sparse_heap_size) end = sparse_heap_base + sparse_heap_size;
+    uint64_t first = (addr < sparse_heap_base ? 0 : addr - sparse_heap_base) / COMMIT_CHUNK;
+    uint64_t last = (end - sparse_heap_base + COMMIT_CHUNK - 1) / COMMIT_CHUNK;
+    for (uint64_t page = first; page < last && page < SPARSE_HEAP_MAX_PAGES; page++)
+        atomic_fetch_or_explicit(&sparse_heap_pages[page / 64], 1ull << (page % 64), memory_order_relaxed);
+}
+
+static void sparse_heap_clear_pages(void) {
+    for (size_t i = 0; i < SPARSE_HEAP_BITMAP_WORDS; i++)
+        atomic_store_explicit(&sparse_heap_pages[i], 0, memory_order_relaxed);
+}
+
+static bool guest_page_allows_access(DWORD protect, ULONG_PTR access) {
+    if (protect & PAGE_GUARD) return false;
+    protect &= 0xFF;
+    if (access == 1)
+        return protect == PAGE_READWRITE || protect == PAGE_WRITECOPY ||
+               protect == PAGE_EXECUTE_READWRITE || protect == PAGE_EXECUTE_WRITECOPY;
+    if (access == 8)
+        return protect == PAGE_EXECUTE || protect == PAGE_EXECUTE_READ ||
+               protect == PAGE_EXECUTE_READWRITE || protect == PAGE_EXECUTE_WRITECOPY;
+    return protect == PAGE_READONLY || protect == PAGE_READWRITE || protect == PAGE_WRITECOPY ||
+           protect == PAGE_EXECUTE_READ || protect == PAGE_EXECUTE_READWRITE || protect == PAGE_EXECUTE_WRITECOPY;
+}
+
+bool plat_guest_sparse_heap_enabled(void) {
+    return sparse_heap_configured && sparse_heap_enabled;
+}
+
+void plat_guest_sparse_heap_configure(bool intel_integrated_gpu) {
+    const char *override = getenv("SAVAGEWIND_VK_SPARSE_HEAP");
+    if (override)
+        sparse_heap_enabled = !strcmp(override, "1");
+    else
+        sparse_heap_enabled = g_settings.sparse_heap == SPARSE_HEAP_ON ||
+                              (g_settings.sparse_heap == SPARSE_HEAP_AUTO && intel_integrated_gpu);
+    sparse_heap_configured = true;
+}
+
+static bool lazy_commit(uint64_t a, ULONG_PTR access) {
     if (a < g_lo || a >= g_hi) return false;
     MEMORY_BASIC_INFORMATION mi;
-    if (!VirtualQuery((void *)(uintptr_t)a, &mi, sizeof mi) || mi.State != MEM_RESERVE) return false;
-    uint64_t base = a & ~(COMMIT_CHUNK - 1);
-    return VirtualAlloc((void *)(uintptr_t)base, COMMIT_CHUNK, MEM_COMMIT, PAGE_READWRITE) != NULL;
+    bool handled = false;
+    if (VirtualQuery((void *)(uintptr_t)a, &mi, sizeof mi)) {
+        if (mi.State == MEM_RESERVE) {
+            uint64_t base = a & ~(COMMIT_CHUNK - 1);
+            if (VirtualAlloc((void *)(uintptr_t)base, COMMIT_CHUNK, MEM_COMMIT, PAGE_READWRITE)) {
+                atomic_fetch_add_explicit(&guest_commit_gen, 1, memory_order_relaxed);
+                sparse_heap_note_commit(base, COMMIT_CHUNK);
+                handled = true;
+            } else if (VirtualQuery((void *)(uintptr_t)a, &mi, sizeof mi) && mi.State == MEM_COMMIT) {
+                handled = guest_page_allows_access(mi.Protect, access);
+            }
+        } else if (mi.State == MEM_COMMIT) {
+            handled = guest_page_allows_access(mi.Protect, access);
+        }
+    }
+    return handled;
 }
 
 static bool g_report_crashes;
@@ -52,7 +125,7 @@ static LONG CALLBACK vectored_handler(EXCEPTION_POINTERS *ep) {
     }
     if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || er->NumberParameters < 2) return EXCEPTION_CONTINUE_SEARCH;
     uint64_t fa = er->ExceptionInformation[1];
-    if (lazy_commit(fa)) return EXCEPTION_CONTINUE_EXECUTION;
+    if (lazy_commit(fa, er->ExceptionInformation[0])) return EXCEPTION_CONTINUE_EXECUTION;
     g_fault_is_write = er->ExceptionInformation[0] == 1;
     if (g_report_crashes && rt_fault_watch(fa, ep->ContextRecord->Rip)) {
         extern uint64_t rt_watch_step_page(uint64_t fa);  // runtime/dispatch.c: the page to close again, or 0
@@ -68,8 +141,18 @@ static LONG CALLBACK vectored_handler(EXCEPTION_POINTERS *ep) {
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
+// MEM_WRITE_WATCH: Windows keeps which pages were written (plat_written_pages; the Vulkan backend refreshes its copy of
+// the heap's geometry from it). SAVAGEWIND_NO_WRITE_WATCH=1, or a system that refuses it: a plain reservation.
+static bool g_write_watch;
+
 bool plat_reserve_guest(uint64_t lo, uint64_t hi) {
-    void *p = VirtualAlloc((void *)(uintptr_t)lo, hi - lo, MEM_RESERVE, PAGE_READWRITE);
+    void *p = NULL;
+    if (!getenv("SAVAGEWIND_NO_WRITE_WATCH")) {
+        p = VirtualAlloc((void *)(uintptr_t)lo, hi - lo, MEM_RESERVE | MEM_WRITE_WATCH, PAGE_READWRITE);
+        if (p && p != (void *)(uintptr_t)lo) VirtualFree(p, 0, MEM_RELEASE), p = NULL;
+        g_write_watch = p != NULL;
+    }
+    if (!p) p = VirtualAlloc((void *)(uintptr_t)lo, hi - lo, MEM_RESERVE, PAGE_READWRITE);
     if (p != (void *)(uintptr_t)lo) return false;
     g_lo = lo;
     g_hi = hi;
@@ -77,9 +160,32 @@ bool plat_reserve_guest(uint64_t lo, uint64_t hi) {
     return true;
 }
 
+long plat_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, size_t max) {
+    if (!g_write_watch || addr < g_lo || addr + size > g_hi || !max) return -1;
+    ULONG_PTR n = max;
+    DWORD gran;
+    if (GetWriteWatch(WRITE_WATCH_FLAG_RESET, (void *)(uintptr_t)addr, size, (void **)pages, &n, &gran) != 0) return -1;
+    return n >= max ? -1 : (long)n;  // (a full list may have left pages out)
+}
+
+int plat_any_written(uint64_t addr, uint64_t size) {
+    if (!g_write_watch || addr < g_lo || addr + size > g_hi) return -1;
+    void *page;
+    ULONG_PTR n = 1;
+    DWORD gran;
+    if (GetWriteWatch(0, (void *)(uintptr_t)addr, size, &page, &n, &gran) != 0) return -1;
+    return n != 0;
+}
+
 // Decommit everything: the range stays reserved, and pages come back zeroed when committed again (lazily).
 bool plat_reset_guest(uint64_t lo, uint64_t hi) {
-    return VirtualFree((void *)(uintptr_t)lo, hi - lo, MEM_DECOMMIT) != 0;
+    bool ok = VirtualFree((void *)(uintptr_t)lo, hi - lo, MEM_DECOMMIT) != 0;
+    if (ok) {
+        atomic_fetch_add_explicit(&guest_commit_gen, 1, memory_order_relaxed);
+        if (lo < sparse_heap_base + sparse_heap_size && hi > sparse_heap_base)
+            sparse_heap_clear_pages();
+    }
+    return ok;
 }
 
 void plat_commit(uint64_t addr, uint64_t size) {
@@ -88,6 +194,67 @@ void plat_commit(uint64_t addr, uint64_t size) {
     if (!VirtualAlloc((void *)(uintptr_t)a, e - a, MEM_COMMIT, PAGE_READWRITE))
         fprintf(stderr, "[plat] commit %llx+%llx failed (%lu)\n", (unsigned long long)addr,
                 (unsigned long long)size, GetLastError());
+    else {
+        atomic_fetch_add_explicit(&guest_commit_gen, 1, memory_order_relaxed);
+        sparse_heap_note_commit(a, e - a);
+    }
+}
+
+uint64_t plat_guest_commit_generation(void) {
+    return atomic_load_explicit(&guest_commit_gen, memory_order_relaxed);
+}
+
+void plat_guest_sparse_heap_range(uint64_t base, uint64_t size) {
+    sparse_heap_base = base;
+    sparse_heap_size = size;
+    sparse_heap_clear_pages();
+}
+
+uint64_t plat_guest_sparse_heap_committed_word(uint64_t word) {
+    if (word >= SPARSE_HEAP_BITMAP_WORDS) return 0;
+    return atomic_load_explicit(&sparse_heap_pages[word], memory_order_relaxed);
+}
+
+bool plat_guest_commit_sparse_range(uint64_t addr, uint64_t size) {
+    if (!size || addr < g_lo || addr >= g_hi || size > g_hi - addr) return false;
+    uint64_t begin = addr & ~(COMMIT_CHUNK - 1);
+    uint64_t end = (addr + size + COMMIT_CHUNK - 1) & ~(COMMIT_CHUNK - 1);
+    if (end > g_hi) end = g_hi;
+    bool needs_commit = false;
+    for (uint64_t at = begin; at < end;) {
+        MEMORY_BASIC_INFORMATION mi;
+        if (!VirtualQuery((void *)(uintptr_t)at, &mi, sizeof mi) || !mi.RegionSize) return false;
+        if (mi.State != MEM_COMMIT) needs_commit = true;
+        uint64_t next = (uint64_t)(uintptr_t)mi.BaseAddress + mi.RegionSize;
+        at = next < end ? next : end;
+    }
+    if (!needs_commit) return true;
+    if (!VirtualAlloc((void *)(uintptr_t)begin, end - begin, MEM_COMMIT, PAGE_READWRITE)) {
+        fprintf(stderr, "[plat] sparse guest commit %llx+%llx failed (%lu)\n",
+                (unsigned long long)addr, (unsigned long long)size, GetLastError());
+        return false;
+    }
+    atomic_fetch_add_explicit(&guest_commit_gen, 1, memory_order_relaxed);
+    sparse_heap_note_commit(begin, end - begin);
+    return true;
+}
+
+bool plat_committed_range(uint64_t addr, uint64_t end, uint64_t *a, uint64_t *e) {
+    MEMORY_BASIC_INFORMATION mi;
+    while (addr < end && VirtualQuery((void *)(uintptr_t)addr, &mi, sizeof mi)) {
+        uint64_t re = (uint64_t)(uintptr_t)mi.BaseAddress + mi.RegionSize;
+        if (mi.State == MEM_COMMIT && !(mi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) {
+            *a = addr, *e = re < end ? re : end;
+            return true;
+        }
+        addr = re;
+    }
+    return false;
+}
+
+void plat_decommit(uint64_t addr, uint64_t size) {
+    uint64_t a = (addr + 0xFFF) & ~0xFFFull, e = (addr + size) & ~0xFFFull;  // (whole pages inside the range only)
+    if (e > a && a >= g_lo && e <= g_hi) VirtualFree((void *)(uintptr_t)a, e - a, MEM_DECOMMIT);
 }
 
 int plat_protect(uint64_t addr, uint64_t size, int prot) {
@@ -110,18 +277,44 @@ uint64_t plat_now_ns(void) {
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x2
 #endif
 
-void plat_sleep_until_ns(uint64_t t) {
+// (one timer per thread, closed when the thread ends: guest threads come and go, a death reload creates new ones)
+static pthread_key_t timer_key;
+static pthread_once_t timer_once = PTHREAD_ONCE_INIT;
+static void timer_close(void *h) { CloseHandle((HANDLE)h); }
+static void timer_key_init(void) { pthread_key_create(&timer_key, timer_close); }
+
+static HANDLE thread_timer(void) {
     static __thread HANDLE timer;
     if (!timer) {
         timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
         if (!timer) timer = CreateWaitableTimerExW(NULL, NULL, 0, TIMER_ALL_ACCESS);
+        if (timer) {
+            pthread_once(&timer_once, timer_key_init);
+            pthread_setspecific(timer_key, timer);
+        }
     }
+    return timer;
+}
+
+void plat_sleep_until_ns(uint64_t t) {
+    HANDLE timer = thread_timer();
     for (;;) {
         uint64_t now = plat_now_ns();
         if (now >= t) return;
         uint64_t left = t - now;
         if (left < 200000) { YieldProcessor(); continue; }  // last 0.2 ms: spin (timer slack)
         LARGE_INTEGER due = {.QuadPart = -(LONGLONG)((left - 100000) / 100)};  // relative, 100 ns units
+        if (!timer || !SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE)) { Sleep(1); continue; }
+        WaitForSingleObject(timer, INFINITE);
+    }
+}
+
+// The same timer, without the spin: back about 0.5 ms late at worst. (MinGW's nanosleep counts whole milliseconds:
+// under 1 ms it returns at once, so a loop around it spins, and 1.9 ms sleeps 1 ms.)
+void plat_wait_until_ns(uint64_t t) {
+    HANDLE timer = thread_timer();
+    for (uint64_t now; (now = plat_now_ns()) < t;) {
+        LARGE_INTEGER due = {.QuadPart = -(LONGLONG)((t - now + 99) / 100)};
         if (!timer || !SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE)) { Sleep(1); continue; }
         WaitForSingleObject(timer, INFINITE);
     }
@@ -225,24 +418,29 @@ void plat_init(void) {
     _setmode(_fileno(stdout), _O_BINARY);
     _setmode(_fileno(stderr), _O_BINARY);
     SetConsoleOutputCP(CP_UTF8);
-    timeBeginPeriod(1);  // 1 ms Sleep / condition-variable timeouts (default 15.6 ms)
-    // Opt out of EcoQoS and of Windows 11 ignoring the timer resolution while the window is occluded.
+    // Opt out of EcoQoS and of Windows 11 ignoring the timer resolution while the window is occluded, before asking
+    // for 1 ms: a request made earlier stays ignored (Sleep(1) took 15.6 ms in hidden test runs).
     PROCESS_POWER_THROTTLING_STATE pt = {
         .Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION,
         .ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
         .StateMask = 0,
     };
     SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &pt, sizeof pt);
+    timeBeginPeriod(1);  // 1 ms Sleep / condition-variable timeouts (default 15.6 ms)
 }
 
 // One logical processor per physical core for the whole process: the game's main thread and the render thread then
-// never share a core with another busy thread of the game, or with a helper spinning for work. With fewer cores than
-// the game's busy threads (main, two job workers, render, audio, file loading) they would queue for one instead, so by
-// default only with SMT and 8 or more physical cores. SAVAGEWIND_ONE_PER_CORE=1: always, 0: never. Called when the game
-// starts, so what the start screen runs (the game code build) keeps every logical processor.
+// never share a core with another busy thread of the game. With fewer cores than the game's busy threads (main, two job
+// workers, render, recorder, audio, file loading) they queue for one instead: by default with SMT and 4 or more
+// physical cores (plat_one_per_core_default). SAVAGEWIND_ONE_PER_CORE=1: always, 0: never. Called when the game
+// starts, so what the start screen runs (the game code build) keeps every logical processor. Under Wine / Proton the
+// Linux kernel schedules the threads, and there the Steam Deck measured one processor per core as a loss
+// (platform.h): the default keeps every logical processor, as the Linux build does.
 void plat_cpu_placement(void) {
     DWORD_PTR all, sys, one = 0;
     if (!GetProcessAffinityMask(GetCurrentProcess(), &all, &sys)) return;
+    HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+    bool wine = ntdll && GetProcAddress(ntdll, "wine_get_version") != NULL;
     int logical = __builtin_popcountll((unsigned long long)all), cores = 0;
     DWORD len = 0;
     GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &len);
@@ -256,11 +454,21 @@ void plat_cpu_placement(void) {
         }
     free(buf);
     const char *x = getenv("SAVAGEWIND_ONE_PER_CORE");
-    bool on = one && (x ? atoi(x) != 0 : cores >= 8 && logical > cores);
-    fprintf(stderr, "[cpu] %d cores, %d logical processors: %s\n", cores, logical,
-            on ? "one logical processor per core" : "all logical processors");
+    bool on = one && (x ? atoi(x) != 0 : !wine && plat_one_per_core_default(cores, logical));
+    fprintf(stderr, "[cpu] %d cores, %d logical processors: %s%s\n", cores, logical,
+            on ? "one logical processor per core" : "all logical processors", wine && !x ? " (Wine)" : "");
     if (on) SetProcessAffinityMask(GetCurrentProcess(), one);
 }
+
+int plat_cpu_count(void) {
+    DWORD_PTR proc, sys;
+    if (GetProcessAffinityMask(GetCurrentProcess(), &proc, &sys) && proc) return __builtin_popcountll((unsigned long long)proc);
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    return (int)si.dwNumberOfProcessors;
+}
+
+const char *plat_log_path(void) { return g_log_path; }
 
 bool plat_exe_path(char *buf, size_t size) {
     DWORD n = GetModuleFileNameA(NULL, buf, (DWORD)size);
@@ -345,6 +553,19 @@ void plat_print_backtrace(void) {
 static LONG WINAPI unhandled_filter(EXCEPTION_POINTERS *ep) {
     EXCEPTION_RECORD *er = ep->ExceptionRecord;
     uint64_t fa = er->NumberParameters >= 2 ? er->ExceptionInformation[1] : 0;
+    if (er->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && er->NumberParameters >= 2) {
+        MEMORY_BASIC_INFORMATION mi = {0};
+        const char *access = er->ExceptionInformation[0] == 0 ? "read" :
+                             er->ExceptionInformation[0] == 1 ? "write" :
+                             er->ExceptionInformation[0] == 8 ? "execute" : "unknown";
+        if (VirtualQuery((void *)(uintptr_t)fa, &mi, sizeof mi))
+            fprintf(stderr, "[plat] access violation: %s at %#llx, allocation %#llx+%#llx, state %#lx, protection %#lx\n",
+                    access, (unsigned long long)fa, (unsigned long long)(uintptr_t)mi.AllocationBase,
+                    (unsigned long long)mi.RegionSize, (unsigned long)mi.State, (unsigned long)mi.Protect);
+        else
+            fprintf(stderr, "[plat] access violation: %s at %#llx, VirtualQuery failed (%lu)\n",
+                    access, (unsigned long long)fa, GetLastError());
+    }
     char what[48];
     snprintf(what, sizeof what, "exception %08lx", er->ExceptionCode);
     // x64 has no link register: report the return address on top of the stack (valid at function entry).
@@ -409,7 +630,28 @@ PlatProc plat_spawn(const char *const argv[], const char *log_path, bool append_
     MultiByteToWideChar(CP_UTF8, 0, argv[0], -1, wprog, MAX_PATH);
     for (wchar_t *p = wprog; *p; p++) if (*p == L'/') *p = L'\\';
     const wchar_t *app = GetFullPathNameW(wprog, MAX_PATH, wfull, NULL) ? wfull : NULL;
-    BOOL ok = CreateProcessW(app, wcmd, NULL, NULL, TRUE, CREATE_NO_WINDOW | CREATE_SUSPENDED, NULL, NULL, &si, &pi);
+    // The game code generator (swgen.exe, PyInstaller) without Control Flow Guard, whatever its header says: its code
+    // generator longjmps out of the code it generated, which CFG ends the process for. Clearing the header bit
+    // (tools/pe_no_cfg.py) isn't enough on some Windows 11 builds (#113); this is what Exploit protection's per-program
+    // "CFG: off" does, for this process only. Without the attribute (older Windows), started as before.
+    const char *base = strrchr(argv[0], '\\') > strrchr(argv[0], '/') ? strrchr(argv[0], '\\') : strrchr(argv[0], '/');
+    base = base ? base + 1 : argv[0];
+    BOOL ok = FALSE;
+    if (!_stricmp(base, "swgen.exe")) {
+        static __thread uint8_t attrs[256];
+        LPPROC_THREAD_ATTRIBUTE_LIST list = (LPPROC_THREAD_ATTRIBUTE_LIST)attrs;
+        SIZE_T size = sizeof attrs;
+        DWORD64 policy = PROCESS_CREATION_MITIGATION_POLICY_CONTROL_FLOW_GUARD_ALWAYS_OFF;
+        if (InitializeProcThreadAttributeList(list, 1, 0, &size)) {
+            STARTUPINFOEXW six = {.StartupInfo = si, .lpAttributeList = list};
+            six.StartupInfo.cb = sizeof six;
+            if (UpdateProcThreadAttribute(list, 0, PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, &policy, sizeof policy, NULL, NULL))
+                ok = CreateProcessW(app, wcmd, NULL, NULL, TRUE, CREATE_NO_WINDOW | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT,
+                                    NULL, NULL, &six.StartupInfo, &pi);
+            DeleteProcThreadAttributeList(list);
+        }
+    }
+    if (!ok) ok = CreateProcessW(app, wcmd, NULL, NULL, TRUE, CREATE_NO_WINDOW | CREATE_SUSPENDED, NULL, NULL, &si, &pi);
     if (!ok) fprintf(stderr, "[plat] could not start %s (error %lu)\n", argv[0], GetLastError());
     CloseHandle(log);
     if (!ok) return 0;

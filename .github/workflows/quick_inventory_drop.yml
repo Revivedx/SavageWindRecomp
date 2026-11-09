@@ -1,0 +1,35 @@
+name: Quick inventory dropping
+
+on:
+  pull_request:
+    branches: [test, main]
+    paths:
+      - 'runtime/quick_drop*'
+      - 'runtime/game_sites.h'
+      - 'tools/game_sites.py'
+      - 'tools/patches.py'
+      - 'tools/gen.py'
+      - 'tools/test_quick_drop*'
+      - 'Makefile'
+      - '.github/workflows/quick_inventory_drop.yml'
+  push:
+    branches: [test, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quick-drop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quick-drop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - run: make test-quick-drop-native
+      - uses: astral-sh/setup-uv@v10.3.3
+      - run: uv run --no-project --with lz4 --with capstone --with unicorn python tools/test_game_sites.py
+      - run: uv run --no-project --with lz4 --with capstone --with unicorn python tools/test_quick_drop_codegen.py

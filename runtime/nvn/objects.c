@@ -5,6 +5,7 @@
 #include "../framepace.h"
 #include "../game_sites.h"
 #include "../kernel.h"
+#include "../prof.h"
 #include "../perfmon.h"
 #include "nvn.h"
 
@@ -222,7 +223,10 @@ static void qop_run(const QOp *o) {
 
 static void *queue_thread(void *arg) {
     (void)arg;
+    prof_thread_name("nvn-queue");
     kernel_sample_host_thread();
+    extern void control_prof_thread(const char *name);  // runtime/control_prof.c (`threads`)
+    control_prof_thread("render");
     pthread_mutex_lock(&g_q_lock);
     for (;;) {
         while (g_q_done == g_q_put) pthread_cond_wait(&g_q_work, &g_q_lock);
@@ -282,6 +286,7 @@ static void queue_wait(uint64_t k) {
 void nvn_queue_idle(void) { if (async_exec()) queue_wait(~0ull); }  // (runtime/main.c reboot: guest threads stopped)
 
 NVN(nvnQueueSubmitCommands) {
+    SW_ZONE("nvnQueueSubmitCommands");
     int n = (int)A(1);
     const uint64_t *handles = AP(2);
     TL("submit %d lists (lr %llx)", n, (unsigned long long)c->x[30]);
@@ -341,6 +346,7 @@ NVN(nvnSyncFinalize) {
 NVN(nvnSyncSetDebugLabel) { (void)c; }
 void renderer_flush(void);
 NVN(nvnSyncWait) {  // NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED
+    SW_ZONE("nvnSyncWait");
     static int flush = -1;
     static uint64_t n;
     if (flush < 0) flush = getenv("SAVAGEWIND_SYNC_FLUSH") ? 1 : 0;
@@ -1194,6 +1200,7 @@ NVN(nvnQueueAcquireTexture) {
 // SAVAGEWIND_FPS_CAP allows (default 60; 0 = no cap).
 uint64_t g_pace_sleep_ns;  // (VK_PROF hitch lines) time present_pace slept
 static void present_pace(int interval) {
+    SW_ZONE("present pace");
     static int cap = -1;
     static uint64_t last;
     if (cap < 0) cap = getenv("SAVAGEWIND_FPS_CAP") ? atoi(getenv("SAVAGEWIND_FPS_CAP")) : 60;
@@ -1214,6 +1221,7 @@ static void present_pace(int interval) {
 }
 
 NVN(nvnQueuePresentTexture) {
+    SW_ZONE("nvnQueuePresentTexture");
     NvnWindow *w = HOST(NvnWindow, A(1));
     int i = (int)A(2);
     static int logged = -1;

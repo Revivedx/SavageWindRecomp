@@ -59,6 +59,7 @@ typedef struct {
     const uint8_t *code;   // first instruction group
     size_t ninsts;         // number of 8-byte words to scan
     int stage;
+    bool wet;              // one of the game's wet lighting passes, with Video > Wet grass fix on (maxwell_wet_lighting)
     const ShaderKey *key;
     ShaderInfo *info;
     Str body;
@@ -94,6 +95,7 @@ typedef struct {
     // (GLSL, key->mvec) glsl_rewrite for the previous frame's copy of a vertex body: the game's constant buffers
     // (cb3..cb16) read from the motion history (ph, at the push constants' pb offsets), the outputs to locals
     bool rw_prev;
+    bool uses_gather;  // (GLSL) a gather: the GATHER_BIAS specialization constant is declared
 } Ctx;
 
 static uint64_t bits(uint64_t w, int lo, int n) { return (w >> lo) & ((n == 64) ? ~0ull : ((1ull << n) - 1)); }
@@ -913,13 +915,20 @@ static void glsl_gather(Ctx *c, char *out, int slot, const char *const *co, cons
         return;
     }
     if (cube && noff) noff = 0;  // (cube lookups take no offset)
+    // A coordinate halfway between two texels picks the texel past it on Maxwell, the one before it on AMD and Intel,
+    // whose sub-texel rounding differs: the shadow filters' gathers then read the neighbouring texels, dark dashes
+    // along edges that move with the camera. GATHER_BIAS (a specialization constant: 0 on NVIDIA, 1 / 2^(subTexel
+    // precision bits + 1) elsewhere, exec.c vk_gather_spec) moves the 2D coordinates by that much of a texel.
+    // (As yuzu's "subpixel offset for correct rounding at ImageGather", behaviour only, and Ryujinx's
+    // InsertCoordGatherBias (MIT), which TotK Recomp turns on the same way.)
+    c->uses_gather = true;
     char P[4][700], call[4][1000];
     int n = noff == 4 ? 4 : 1;
     for (int i = 0; i < n; i++) {
         char xy[500];
         if (cube) snprintf(xy, sizeof xy, "vec3(%s, %s, %s)", co[0], co[1], co[2]);
-        else if (noff) snprintf(xy, sizeof xy, "(vec2(%s, %s) + vec2(%s)%s / vec2(tsize%d(0).xy))", co[0], co[1], off[i], off_scale(c, slot, 2), slot);
-        else snprintf(xy, sizeof xy, "vec2(%s, %s)", co[0], co[1]);
+        else if (noff) snprintf(xy, sizeof xy, "(vec2(%s, %s) + (vec2(%s)%s + GATHER_BIAS) / vec2(tsize%d(0).xy))", co[0], co[1], off[i], off_scale(c, slot, 2), slot);
+        else snprintf(xy, sizeof xy, "(vec2(%s, %s) + GATHER_BIAS / vec2(tsize%d(0).xy))", co[0], co[1], slot);
         if (layer) snprintf(P[i], sizeof P[i], "vec%d(%s, float(%s))", cube ? 4 : 3, xy, layer);
         else snprintf(P[i], sizeof P[i], "%s", xy);
         if (t->shadow) snprintf(call[i], sizeof call[i], "textureGather(t%d, %s, %s)", slot, P[i], dref);
@@ -1738,6 +1747,12 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         else sprintf(addr, "(ulong(%s) + ulong(%lld))", R(a), (long long)off);
         sp(&c->body, "    { ulong ga = %s - 0x%llxul; bool ok = ga < 0x%llxul;\n", addr,
            (unsigned long long)maxwell_gmem_base, (unsigned long long)maxwell_gmem_size);
+        if (c->glsl && maxwell_gmem_bda) {
+            // An address has no robustBufferAccess bounds: check the whole access (a sub-word one's containing word)
+            // against the memory actually mapped, before any read or write through it.
+            unsigned bytes = size < 4 ? 4 : size == 5 ? 8 : size >= 6 ? 16 : 4;
+            sp(&c->body, "      ok = ok && gmem_addr != 0ul && gmem_size >= %uu && (ga & ~3ul) <= gmem_size - %uu;\n", bytes, bytes);
+        }
         static const char *const ld_small[] = {"uint(gmem[ga])", "uint(int(char(gmem[ga])))",
                                                "uint(*(device ushort *)(gmem + ga))", "uint(int(*(device short *)(gmem + ga)))"};
         int nw = size == 5 ? 2 : size >= 6 ? 4 : 1;
@@ -2198,6 +2213,20 @@ static void glsl_body(Ctx *c, Str *s, const char *body, bool any_branch, bool db
     }
 }
 
+// Video > Wet grass fix. The game adds three full-screen lighting passes only while things are wet. In rain with the
+// sun out (its BlueskyRain weather) their sun reflection blows grass and roofs out to white: about 9% of the ground in
+// an open field at noon on 1.9.0. That white is what all three colour channels share, so most of it above 0.5 is taken
+// off (glsl_finish) and the grass keeps its colour and a soft sheen. The passes are found by an FNV-1a hash of their
+// SPH and first code (0x200 bytes from the blob's 0x30), the game's own bytes, so no GPU, driver or translator change
+// moves the match; a game version whose passes differ doesn't match and keeps the game's look.
+bool maxwell_wet_fix;
+bool maxwell_wet_lighting(const uint8_t *blob, size_t max_size, int stage) {
+    if (!maxwell_wet_fix || stage != STAGE_FRAGMENT || max_size < 0x230) return false;
+    uint64_t h = 1469598103934665603ull;
+    for (size_t i = 0x30; i < 0x230; i++) h = (h ^ blob[i]) * 0x100000001B3ull;
+    return h == 0x970f06ddc0d6fa0aull || h == 0xb19a04739cefe2b2ull || h == 0xdae9df4164496f40ull;
+}
+
 // Declarations + entry point around the (rewritten) body; mirrors the MSL assembly in maxwell_translate.
 static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     ShaderInfo *info = c->info;
@@ -2237,9 +2266,15 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     if (info->uses_gmem) {
         // The heap in one storage buffer, or (maxwell_gmem_split: the device's maxStorageBufferRange is below the heap,
         // Mali-G610's 2 GB against 3 GB) in two, split at GMEM_SPLIT. GLD / GST read and write a word of it.
-        bool split = maxwell_gmem_split;
-        sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GMem { uint w[]; } gmem_;\n", set, GMEM_BUFFER_INDEX,
-           c->uses_gmem_store ? "" : "readonly ");
+        bool split = maxwell_gmem_split && !maxwell_gmem_bda;
+        if (maxwell_gmem_bda)  // (the heap by address: GMemInfo holds it and its mapped size; emit_insn checks every access)
+            sp(&s, "#extension GL_EXT_buffer_reference : require\n"
+                   "layout(buffer_reference, std430, buffer_reference_align = 4) %sbuffer GMem { uint w[]; };\n"
+                   "layout(std140, set = %d, binding = %d) uniform GMemInfo { uint64_t gmem_addr; uint64_t gmem_size; };\n"
+                   "#define gmem_ GMem(gmem_addr)\n", c->uses_gmem_store ? "" : "readonly ", set, GMEM_BUFFER_INDEX);
+        else
+            sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GMem { uint w[]; } gmem_;\n", set, GMEM_BUFFER_INDEX,
+               c->uses_gmem_store ? "" : "readonly ");
         if (split)
             sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GMem2 { uint w[]; } gmem2_;\n", set, GMEM2_BUFFER_INDEX,
                c->uses_gmem_store ? "" : "readonly ");
@@ -2272,6 +2307,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         sp(&s, "layout(std140, set = %d, binding = 19) uniform Tint { vec4 ltint[2]; };\n", set);
         info->uses_tint = true;
     }
+    if (c->uses_gather) sp(&s, "layout(constant_id = %d) const float GATHER_BIAS = 0.0f;\n", GATHER_BIAS_ID);  // (glsl_gather)
     for (int i = 0; i < info->ntex; i++) {
         ShaderTexture *t = &info->tex[i];
         sp(&s, "layout(set = %d, binding = %d) uniform %s t%d;\n", set, 32 + i, glsl_sampler_type(t), i);
@@ -2382,6 +2418,8 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         if (tint)
             sp(&s, "  if (ltint[0].w > 0.0f) { vec3 g = c0.rgb; float l = dot(g, vec3(0.299f, 0.587f, 0.114f));\n"
                    "    c0.rgb = mix(g, ltint[0].rgb * pow(l, ltint[1].w) + ltint[1].rgb * l, ltint[0].w); }\n");
+        if (c->wet && !dbg)  // (Video > Wet grass fix: maxwell_wet_lighting)
+            sp(&s, "  c0.rgb -= 0.9f * max(min(c0.r, min(c0.g, c0.b)) - 0.5f, 0.0f);\n");
         if (c->omap_depth) {
             if (c->reg_used[r + 1]) sp(&s, "  gl_FragDepth = as_f(r%d);\n", r + 1);
             else sp(&s, "  gl_FragDepth = gl_FragCoord.z;\n");
@@ -2428,18 +2466,27 @@ size_t maxwell_binary_size(const uint8_t *blob, size_t max_size, int stage) {
     return head + code_end(blob + head, (max_size - head) / 8) * 8;
 }
 
-// What the translations are made from: a hash of this file and shader.h (TRANSLATOR_ID, from the Makefile). The caches
-// of translated shaders (runtime/nvn/vulkan/shaders.c) are kept while it stays the same. Built some other way (the
-// test tools), the build time: those caches then start over with every build.
+// What the translations are made from: a hash of this file and shader.h (TRANSLATOR_ID, from the Makefile's generated
+// shader_ids.h). The caches of translated shaders (runtime/nvn/vulkan/shaders.c) are kept while it stays the same.
+// Built some other way (the test tools), the build time: those caches then start over with every build.
 #ifndef TRANSLATOR_ID
 #define TRANSLATOR_ID __DATE__ " " __TIME__
 #endif
-bool maxwell_gmem_split, maxwell_gmem_snap;
-// (the two switches above change translations: they name caches of their own)
-const char *maxwell_translator_id(void) {
-    static __thread char id[64];  // (per thread: the precompile's workers ask for it at once)
-    snprintf(id, sizeof id, "%s%s%s", TRANSLATOR_ID, maxwell_gmem_split ? "-gs" : "", maxwell_gmem_snap ? "-gn" : "");
-    return id;
+const char *maxwell_translator_id(void) { return TRANSLATOR_ID; }
+
+// What a translation depends on besides the binary, the key and the translator: the switches the Vulkan backend sets
+// for the device (global memory in two bindings, read-only global memory through copies) and the heap window, which
+// only reach the translations of shaders that read global memory (ShaderInfo.uses_gmem). A cached translation records
+// the variant it was made under; one of a global memory shader made under another is translated again
+// (shaders.c xlate_load), the rest are kept: a change of these switches (a device, a driver, a new default in exec.c)
+// no longer throws every cache away, as it did when they were part of the translator's id.
+bool maxwell_gmem_split, maxwell_gmem_snap, maxwell_gmem_bda;
+const char *maxwell_translation_variant(void) {
+    static __thread char v[64];  // (per thread: the precompile's workers ask for it at once)
+    snprintf(v, sizeof v, "%s%s%s %llx+%llx", maxwell_gmem_split ? "s" : "-", maxwell_gmem_snap ? "n" : "-",
+             maxwell_gmem_bda ? "a" : "",  // (by address: Turnip; nothing added otherwise, so other caches stay valid)
+             (unsigned long long)maxwell_gmem_base, (unsigned long long)maxwell_gmem_size);
+    return v;
 }
 
 // Whether a translation depends on more than the binary and the key (debugging switches): not to be cached.
@@ -2985,6 +3032,7 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
     // compute programs have neither the 0x30-byte NVN header nor an SPH: code starts at the blob
     if (stage == STAGE_COMPUTE) code = blob;
     c->code = code;
+    c->wet = maxwell_wet_lighting(blob, max_size, stage);
     if (stage == STAGE_FRAGMENT) {
         c->omap_target = *(const uint32_t *)(sph + 0x48);
         c->omap_depth = (*(const uint32_t *)(sph + 0x4C) >> 1) & 1;

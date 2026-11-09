@@ -1,0 +1,65 @@
+# Posts GitHub activity to a chat webhook: issues labelled bug, issues labelled enhancement, every pull request and
+# published releases, each to its own channel. The webhook URLs are repository secrets (FEED_WEBHOOK_*); without them
+# the job does nothing. It only reads the event's text: nothing is checked out, no code from an issue, a pull request
+# or the repository runs, and the token has no permissions. It runs as pull_request_target so pull requests from
+# forks can read the secrets, which is safe because the event's text only ever reaches the script through
+# environment variables and jq --arg, never inside the script itself.
+name: Activity feed
+
+on:
+  issues:
+    types: [labeled]
+  pull_request_target:
+    types: [opened, reopened, ready_for_review, closed]
+  release:
+    types: [published]
+
+permissions: {}
+
+jobs:
+  notify:
+    if: github.repository == 'Revivedx/SavageWindRecomp'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post to the webhook
+        env:
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          LABEL: ${{ github.event.label.name }}
+          NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+          TITLE: ${{ github.event.issue.title || github.event.pull_request.title || github.event.release.name || github.event.release.tag_name }}
+          URL: ${{ github.event.issue.html_url || github.event.pull_request.html_url || github.event.release.html_url }}
+          AUTHOR: ${{ github.event.issue.user.login || github.event.pull_request.user.login || github.event.release.author.login }}
+          MERGED: ${{ github.event.pull_request.merged }}
+          HOOK_BUGS: ${{ secrets.FEED_WEBHOOK_BUGS }}
+          HOOK_ENHANCEMENTS: ${{ secrets.FEED_WEBHOOK_ENHANCEMENTS }}
+          HOOK_PRS: ${{ secrets.FEED_WEBHOOK_PRS }}
+          HOOK_ANNOUNCEMENTS: ${{ secrets.FEED_WEBHOOK_ANNOUNCEMENTS }}
+        run: |
+          set -eu
+          case "$EVENT" in
+            issues)
+              case "$LABEL" in
+                bug) HOOK="$HOOK_BUGS"; PREFIX="Bug #$NUMBER"; COLOR=15158332 ;;
+                enhancement) HOOK="$HOOK_ENHANCEMENTS"; PREFIX="Enhancement #$NUMBER"; COLOR=3447003 ;;
+                *) exit 0 ;;
+              esac ;;
+            pull_request_target)
+              HOOK="$HOOK_PRS"; COLOR=10181046
+              if [ "$ACTION" = closed ]; then
+                if [ "$MERGED" = true ]; then STATE=merged; else STATE=closed; fi
+              else
+                STATE="$ACTION"
+              fi
+              PREFIX="PR #$NUMBER ($STATE)" ;;
+            release)
+              HOOK="$HOOK_ANNOUNCEMENTS"; PREFIX="Release"; COLOR=3066993 ;;
+            *) exit 0 ;;
+          esac
+          [ -n "$HOOK" ] || { echo "Webhook secret not set, skipping"; exit 0; }
+          jq -n --arg title "$PREFIX: $TITLE" --arg url "$URL" --arg by "$AUTHOR" \
+                --argjson color "$COLOR" \
+            '{allowed_mentions: {parse: []},
+              embeds: [{title: ($title | .[0:250]), url: $url, color: $color,
+                        footer: {text: ("by " + $by)}}]}' \
+            | curl -fsS -H "Content-Type: application/json" -d @- "$HOOK"

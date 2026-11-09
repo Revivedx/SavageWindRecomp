@@ -6,6 +6,8 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <math.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -17,7 +19,18 @@
 #include "../hle.h"
 #include "../ipc.h"
 #include "../language.h"
+#include "../platform.h"
+#include "../nvn/glyphs.h"
+#include "../nvn/hw_illust.h"
+#include "../nvn/text_upscale.h"
 #include "../romfs_image.h"
+#include "../settings.h"
+#include "../shrine_sensor.h"
+#include "archive.h"
+#include "fs_layout.h"
+#include "save_profiles.h"
+#include "../perfcount.h"
+#include "../platform.h"
 
 #define FS_PATH_NOT_FOUND MAKE_RESULT(2, 1)
 #define FS_PATH_EXISTS MAKE_RESULT(2, 2)
@@ -40,7 +53,7 @@ typedef struct { const char *path; uint64_t grow; } GrownFile;
 typedef struct {
     RomfsImage *img;         // (runtime/romfs_image.h; NULL: not opened)
     const char *ov_sub;      // where its files are in the overlay folder ("": the game's own)
-    Patch patches[8];
+    Patch patches[16];
     int npatches;
     Overlay *ov;
     int ov_n, ov_cap;
@@ -59,6 +72,8 @@ typedef struct {
 #define AOC_MAX 8
 static RomImage images[1 + AOC_MAX];  // [0] the game's, [index] add-on content
 static RomImage *R = &images[0];
+static FsInventoryClipLayout inventory_clip_layout;
+static _Atomic bool inventory_clip_layout_valid;
 
 // Reboot: the next boot builds its own index / overlay when the game opens the RomFS again.
 RT_ON_RESET(fs_reset) {
@@ -75,6 +90,7 @@ RT_ON_RESET(fs_reset) {
         *m = (RomImage){0};
     }
     R = &images[0];
+    atomic_store_explicit(&inventory_clip_layout_valid, false, memory_order_release);
     g_save_dir = "save";
 }
 
@@ -400,28 +416,6 @@ static void voice_redirect(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
 // it loads the Demo*.bars banks). So the RSTB the game reads is a copy whose entries for those paths grow by as much
 // as their data did (and a little: the room varies with alignment), served from memory like Version.txt. Its format:
 // Yaz0 over "RSTB", u32 CRC count, u32 name count, {crc32(path), size} sorted by crc32, then {char[128], size}.
-static uint8_t *yaz0_unpack(const uint8_t *d, size_t n, size_t *out_n) {
-    if (n < 16 || memcmp(d, "Yaz0", 4)) return NULL;
-    size_t size = (size_t)d[4] << 24 | (size_t)d[5] << 16 | (size_t)d[6] << 8 | d[7], s = 16, w = 0;
-    uint8_t *o = malloc(size ? size : 1);
-    while (w < size && s < n) {
-        uint8_t code = d[s++];
-        for (int b = 0; b < 8 && w < size && s < n; b++) {
-            if (code & (0x80 >> b)) { o[w++] = d[s++]; continue; }
-            if (s + 1 >= n) break;
-            size_t dist = (size_t)((d[s] & 0xF) << 8 | d[s + 1]) + 1, cnt = d[s] >> 4;
-            s += 2;
-            if (!cnt) cnt = s < n ? (size_t)d[s++] + 0x12 : 0;
-            else cnt += 2;
-            if (dist > w) { free(o); return NULL; }  // (damaged)
-            for (size_t i = 0; i < cnt && w < size; i++, w++) o[w] = o[w - dist];
-        }
-    }
-    if (w < size) { free(o); return NULL; }
-    *out_n = size;
-    return o;
-}
-
 // Yaz0 with literal bytes only (a 0xFF flag before every 8): what the game's decoder reads, no search needed
 static uint8_t *yaz0_pack_literal(const uint8_t *d, size_t n, size_t *out_n) {
     uint8_t *o = malloc(16 + n + (n + 7) / 8), *w = o;
@@ -494,25 +488,179 @@ static uint8_t *yaz0_pack(const uint8_t *d, size_t n, const uint8_t *hdr, size_t
     return o;
 }
 
-// SARC (little-endian): the node of `name` (its index; start and end in the data, which begins at *data_off), or -1
-static int sarc_find(const uint8_t *d, size_t n, const char *name, uint32_t *data_off, uint32_t *start, uint32_t *end) {
-    if (n < 0x20 || memcmp(d, "SARC", 4) || d[6] != 0xFF || d[7] != 0xFE || memcmp(d + 0x14, "SFAT", 4)) return -1;
-    uint32_t doff, cnt = d[0x1A] | d[0x1B] << 8;
-    memcpy(&doff, d + 0xC, 4);
-    size_t names = 0x20 + (size_t)cnt * 16 + 8;
-    if (names > n || doff > n) return -1;
-    for (uint32_t i = 0; i < cnt; i++) {
-        uint32_t attr, s, e;
-        memcpy(&attr, d + 0x20 + i * 16 + 4, 4);
-        memcpy(&s, d + 0x20 + i * 16 + 8, 4);
-        memcpy(&e, d + 0x20 + i * 16 + 12, 4);
-        size_t at = names + (size_t)(attr & 0xFFFFFF) * 4;
-        if (!(attr >> 24) || at >= n || strncmp((const char *)d + at, name, n - at)) continue;
-        if (s > e || doff + (uint64_t)e > n) return -1;
-        *data_off = doff, *start = s, *end = e;
-        return (int)i;
+bool fs_inventory_clip_layout(FsInventoryClipLayout *out) {
+    if (!out || !atomic_load_explicit(&inventory_clip_layout_valid, memory_order_acquire)) return false;
+    *out = inventory_clip_layout;
+    return true;
+}
+
+typedef struct { float x, y, sx, sy; unsigned kind; } LayoutPane;
+enum { PANE_OTHER, PANE_ROOT, PANE_SLIDE, PANE_INOUT, PANE_CUT, PANE_PORCH_LEFT, PANE_PORCH_MIDDLE };
+
+static bool layout_name(const uint8_t *sec, const char *name) { return !strncmp((const char *)sec + 12, name, 24); }
+
+static bool layout_part(const uint8_t *sec, size_t n, const char *part) {
+    size_t k = strlen(part) + 1;
+    for (size_t i = 84; i + k <= n; i++) if (!memcmp(sec + i, part, k)) return true;
+    return false;
+}
+
+// Follow only the named branch of PauseMenu_00's pane hierarchy. Positions and sizes come from the
+// player's loaded layout, never from a particular window size or a copied game asset.
+static bool pause_inventory_panes(const uint8_t *d, size_t n, float *root_w, float *root_h,
+                                  LayoutPane *cut, float *cut_w, float *cut_h, LayoutPane *left) {
+    if (n < 20 || memcmp(d, "FLYT", 4) || d[4] != 0xFF || d[5] != 0xFE) return false;
+    size_t p = (size_t)d[6] | (size_t)d[7] << 8;
+    LayoutPane stack[16] = {{0}}, last = {0}, middle = {0};
+    unsigned depth = 0, found = 0;
+    while (p + 8 <= n) {
+        const uint8_t *sec = d + p;
+        uint32_t sz;
+        memcpy(&sz, sec + 4, 4);
+        if (sz < 8 || sz > n - p) return false;
+        if (!memcmp(sec, "pas1", 4)) {
+            if (depth == 16) return false;
+            stack[depth++] = last;
+        } else if (!memcmp(sec, "pae1", 4)) {
+            if (!depth) return false;
+            depth--;
+        } else if (!memcmp(sec, "pan1", 4) || !memcmp(sec, "prt1", 4) ||
+                   !memcmp(sec, "pic1", 4) || !memcmp(sec, "txt1", 4) ||
+                   !memcmp(sec, "wnd1", 4) || !memcmp(sec, "bnd1", 4)) {
+            if (sz < 84) return false;
+            float v[10];
+            memcpy(v, sec + 44, sizeof v);
+            LayoutPane parent = depth ? stack[depth - 1] : (LayoutPane){.sx = 1, .sy = 1};
+            last = (LayoutPane){parent.x + parent.sx * v[0], parent.y + parent.sy * v[1],
+                                parent.sx * v[6], parent.sy * v[7], PANE_OTHER};
+            if (depth == 0 && layout_name(sec, "RootPane")) {
+                if (found & 1) return false;
+                *root_w = v[8], *root_h = v[9];
+                last.kind = PANE_ROOT;
+                found |= 1;
+            } else if (parent.kind == PANE_ROOT && layout_name(sec, "N_Slide_01")) {
+                last.kind = PANE_SLIDE;
+            } else if (parent.kind == PANE_SLIDE && layout_name(sec, "N_InOut_00")) {
+                last.kind = PANE_INOUT;
+            } else if (parent.kind == PANE_INOUT && layout_name(sec, "N_Cut_00")) {
+                if (found & 2 || sec[11] != 2) return false;  // center origin; other origins need different bounds
+                *cut = last; *cut_w = v[8] * last.sx; *cut_h = v[9] * last.sy;
+                last.kind = PANE_CUT;
+                found |= 2;
+            } else if (parent.kind == PANE_CUT && layout_name(sec, "Pa_PagePorch_00")) {
+                if (found & 4 || !layout_part(sec, sz, "PaPage20_00")) return false;
+                *left = last;
+                last.kind = PANE_PORCH_LEFT;
+                found |= 4;
+            } else if (parent.kind == PANE_CUT && layout_name(sec, "Pa_PagePorch_01")) {
+                if (found & 8 || !layout_part(sec, sz, "PaPage20_00")) return false;
+                middle = last;
+                last.kind = PANE_PORCH_MIDDLE;
+                found |= 8;
+            }
+        }
+        p += sz;
     }
-    return -1;
+    return p == n && depth == 0 && found == 15 && left->x < middle.x &&
+           isfinite(*root_w) && isfinite(*root_h) && *root_w > 0 && *root_h > 0 &&
+           isfinite(*cut_w) && isfinite(*cut_h) && *cut_w > 0 && *cut_h > 0 &&
+           isfinite(left->x) && isfinite(left->sx) && left->sx > 0;
+}
+
+// PaPage20_00 is the grid of inventory items. Its rightmost item column is the part of
+// the previous page visible through N_Cut_00's left edge.
+static bool pause_inventory_last_column(const uint8_t *d, size_t n, float *x, float *half_w,
+                                        float *root_w, float *root_h) {
+    if (n < 20 || memcmp(d, "FLYT", 4) || d[4] != 0xFF || d[5] != 0xFE) return false;
+    size_t p = (size_t)d[6] | (size_t)d[7] << 8;
+    LayoutPane stack[16] = {{0}}, last = {0};
+    unsigned depth = 0, count = 0, roots = 0;
+    *x = -INFINITY;
+    while (p + 8 <= n) {
+        const uint8_t *sec = d + p;
+        uint32_t sz;
+        memcpy(&sz, sec + 4, 4);
+        if (sz < 8 || sz > n - p) return false;
+        if (!memcmp(sec, "pas1", 4)) {
+            if (depth == 16) return false;
+            stack[depth++] = last;
+        } else if (!memcmp(sec, "pae1", 4)) {
+            if (!depth) return false;
+            depth--;
+        } else if (!memcmp(sec, "pan1", 4) || !memcmp(sec, "prt1", 4) ||
+                   !memcmp(sec, "pic1", 4) || !memcmp(sec, "txt1", 4) ||
+                   !memcmp(sec, "wnd1", 4) || !memcmp(sec, "bnd1", 4)) {
+            if (sz < 84) return false;
+            float v[10];
+            memcpy(v, sec + 44, sizeof v);
+            LayoutPane parent = depth ? stack[depth - 1] : (LayoutPane){.sx = 1, .sy = 1};
+            last = (LayoutPane){parent.x + parent.sx * v[0], parent.y + parent.sy * v[1],
+                                parent.sx * v[6], parent.sy * v[7], PANE_OTHER};
+            if (depth == 0 && layout_name(sec, "RootPane")) {
+                if (roots++) return false;
+                *root_w = v[8], *root_h = v[9];
+                last.kind = PANE_ROOT;
+            } else if (parent.kind == PANE_ROOT && !memcmp(sec, "prt1", 4) &&
+                       !strncmp((const char *)sec + 12, "Pa_Btn_", 7)) {
+                if (!isfinite(last.x) || !isfinite(last.sx) || !isfinite(v[8])) return false;
+                if (last.x > *x) *x = last.x, *half_w = v[8] * last.sx * 0.5f;
+                count++;
+            }
+        }
+        p += sz;
+    }
+    return p == n && depth == 0 && roots == 1 && count > 1 &&
+           isfinite(*root_w) && isfinite(*root_h) && *root_w > 0 && *root_h > 0 &&
+           isfinite(*x) && isfinite(*half_w) && *half_w > 0;
+}
+
+static void inventory_layout_from_common(const uint8_t *arc, size_t an) {
+    uint32_t adoff, as, ae;
+    int pa = sarc_find(arc, an, "blyt/PauseMenu_00.bflyt", &adoff, &as, &ae);
+    if (pa < 0) return;
+    float root_w = 0, root_h = 0, cut_w = 0, cut_h = 0, page_root_w = 0, page_root_h = 0;
+    float last_x = 0, last_half_w = 0;
+    LayoutPane cut = {0}, left = {0};
+    if (!pause_inventory_panes(arc + adoff + as, ae - as, &root_w, &root_h, &cut, &cut_w, &cut_h, &left)) return;
+    if (sarc_find(arc, an, "blyt/PaPage20_00.bflyt", &adoff, &as, &ae) < 0 ||
+        !pause_inventory_last_column(arc + adoff + as, ae - as, &last_x, &last_half_w,
+                                     &page_root_w, &page_root_h)) return;
+    if (fabsf(page_root_w - root_w) > 0.01f || fabsf(page_root_h - root_h) > 0.01f) return;
+    FsInventoryClipLayout layout = {
+        .root_w = root_w, .root_h = root_h,
+        .clip_x = root_w * 0.5f + cut.x - cut_w * 0.5f,
+        .clip_y = root_h * 0.5f - cut.y - cut_h * 0.5f,
+        .clip_w = cut_w, .clip_h = cut_h,
+        .previous_item_x = root_w * 0.5f + left.x + left.sx * last_x,
+    };
+    // The original left edge crosses the previous item's right half; its center gives a half-item hint.
+    if (!isfinite(layout.clip_x) || !isfinite(layout.clip_y) || !isfinite(layout.previous_item_x) ||
+        !(layout.clip_x < layout.previous_item_x &&
+          layout.previous_item_x < layout.clip_x + last_half_w * left.sx &&
+          layout.previous_item_x < layout.clip_x + layout.clip_w)) return;
+    inventory_clip_layout = layout;
+    atomic_store_explicit(&inventory_clip_layout_valid, true, memory_order_release);
+    LOG("[fs] Inventory clip layout: root %.0fx%.0f, pane %.1f %.1f %.1fx%.1f, previous item x %.1f\n",
+        root_w, root_h, layout.clip_x, layout.clip_y, layout.clip_w, layout.clip_h, layout.previous_item_x);
+}
+
+static void inventory_layout_from_overlay(const char *host) {
+    int fd = open(host, O_RDONLY);
+    if (fd < 0) return;
+    struct stat sb;
+    // The replacement is a complete Bootup.pack. Bound the read before trusting its archive sizes.
+    if (fstat(fd, &sb) || sb.st_size < 0x20 || sb.st_size > 128 * 1024 * 1024) { close(fd); return; }
+    size_t pn = (size_t)sb.st_size, an = 0;
+    uint8_t *pack = malloc(pn);
+    uint32_t pdoff, ps, pe;
+    if (pack && pread(fd, pack, pn, 0) == (ssize_t)pn &&
+        sarc_find(pack, pn, "Layout/Common.sblarc", &pdoff, &ps, &pe) >= 0) {
+        uint8_t *arc = yaz0_unpack(pack + pdoff + ps, pe - ps, &an);
+        if (arc) inventory_layout_from_common(arc, an);
+        free(arc);
+    }
+    free(pack);
+    close(fd);
 }
 
 // The HUD's prompt with its diamond of the other buttons (Layout/Common.sblarc, PaDoCommandA/B/X/Y_00: "Pick up",
@@ -527,13 +675,18 @@ static int sarc_find(const uint8_t *d, size_t n, const char *name, uint32_t *dat
 #define HUD_ICON_SCALE 1.5f
 
 // One layout (FLYT, little-endian, a single font), patched into out (room for n + 64 bytes); returns its size or 0
-static size_t hud_letters_flyt(const uint8_t *b, size_t n, uint8_t *out, int *panes) {
+static size_t hud_letters_flyt(const uint8_t *b, size_t n, uint8_t *out, int which, const int pos[4], int *panes) {
     static const char icon_font[] = "External_00.bffnt";
+    static const float k_act_xy[4][2] = {{26.0f, 0.0f}, {0.0f, -26.0f}, {0.0f, 26.0f}, {-26.0f, 0.0f}};
+    static const float k_dim_xy[4][2] = {{26.2f, 0.8f}, {1.0f, -26.0f}, {0.8f, 26.0f}, {-25.5f, -0.2f}};
     if (n < 0x14 || memcmp(b, "FLYT", 4) || b[4] != 0xFF || b[5] != 0xFE) return 0;
     size_t hs = b[6] | b[7] << 8, o = hs, w = hs;
     if (hs > n) return 0;
     memcpy(out, b, hs);
-    bool fonts = false;
+    bool fonts = false, seen_capture = false;
+    bool reorder = pos && (pos[0] != 0 || pos[1] != 1 || pos[2] != 2 || pos[3] != 3);
+    int act = reorder && which >= 0 && which < 4 ? pos[which] : which;
+    bool west = act == 3;
     while (o + 8 <= n) {
         uint32_t sz;
         memcpy(&sz, b + o + 4, 4);
@@ -560,21 +713,70 @@ static size_t hud_letters_flyt(const uint8_t *b, size_t n, uint8_t *out, int *pa
             continue;
         }
         memcpy(sec, b + o, sz);
+        if (reorder && !memcmp(sec, "txl1", 4)) {
+            for (uint32_t j = 12; j + 18 <= sz; j++)
+                if (!memcmp(sec + j, "Nt_KeyBtnSubBase", 16))
+                    sec[j + 16] = (act == 0 || act == 3) ? 'A' : 'B';
+        }
         if (!memcmp(sec, "txt1", 4) && sz >= 0x68) {
             uint32_t toff;
             memcpy(&toff, sec + 0x64, 4);
             if (toff && toff + 4 <= sz && !sec[toff + 1] && !sec[toff + 2] && !sec[toff + 3]) {
                 const char *k = strchr("ABXY", sec[toff]);
                 if (k && *k) {
+                    int btn = (int)(k - "ABXY");
                     sec[0x5A] = 1, sec[0x5B] = 0;  // (the font: the second)
-                    uint16_t c = (uint16_t)(0xE040 + (k - "ABXY"));
+                    uint16_t c = (uint16_t)(0xE040 + btn);
                     memcpy(sec + toff, &c, 2);
                     float fs[2];  // the font size: an icon fills less of its cell than a letter
                     memcpy(fs, sec + 0x70, 8);
-                    fs[0] *= HUD_ICON_SCALE, fs[1] *= HUD_ICON_SCALE;
+                    // (a letter is taller than wide, 20.4 x 25.5, but the icons of External_00.bffnt are square: both sizes
+                    // are the height's, or the three inactive buttons came out as ovals, #476)
+                    fs[1] *= HUD_ICON_SCALE, fs[0] = fs[1];
                     memcpy(sec + 0x70, fs, 8);
+                    if (reorder && pos[btn] >= 0 && pos[btn] < 4)
+                        memcpy(sec + 44, k_dim_xy[pos[btn]], 8);
                     (*panes)++;
                 }
+            }
+        }
+        if (reorder && sz >= 84 &&
+            (!memcmp(sec, "pan1", 4) || !memcmp(sec, "pic1", 4) || !memcmp(sec, "wnd1", 4) || !memcmp(sec, "txt1", 4))) {
+            char name[25] = {0};
+            memcpy(name, sec + 12, 24);
+            if (!strncmp(name, "P_Base", 6)) {
+                float rz = (act == 2 || act == 3) ? 180.0f : 0.0f, sx = act == 2 ? -1.0f : 1.0f;
+                memcpy(sec + 64, &rz, 4);
+                memcpy(sec + 68, &sx, 4);
+            } else if (!strncmp(name, "N_Btn", 5)) {
+                memcpy(sec + 44, k_act_xy[act], 8);
+            } else if (!strncmp(name, "W_Base", 6)) {
+                float wx = west ? 33.0f : -33.0f, wsx = west ? -1.0f : 1.0f;
+                memcpy(sec + 44, &wx, 4);
+                memcpy(sec + 68, &wsx, 4);
+            } else if (!strncmp(name, "T_Guide", 7) && sz >= 96) {
+                if (strstr(name, "_01")) {
+                    float gx = west ? -23.0f : 21.0f;
+                    sec[40] = west ? 2 : 1, sec[93] = west ? 2 : 1;
+                    memcpy(sec + 44, &gx, 4);
+                } else if (strstr(name, "_00")) {
+                    float gx[2] = {west ? 37.0f : -39.0f, 0.0f};
+                    sec[40] = west ? 2 : 1, sec[93] = west ? 2 : 1;
+                    memcpy(sec + 44, gx, 8);
+                }
+            } else if (!strncmp(name, "Nt_KeyTex", 9) && strstr(name, "_01")) {
+                float kx[2] = {west ? 60.0f : -60.0f, 0.0f};
+                memcpy(sec + 44, kx, 8);
+            } else if (!strncmp(name, "N_Capture", 9)) {
+                float cx[2] = {k_act_xy[act][0] + (west ? -60.0f : 60.0f), k_act_xy[act][1]};
+                memcpy(sec + 44, cx, 8);
+                seen_capture = true;
+            } else if (!strncmp(name, "P_CaptureUse", 12)) {
+                float px[2] = {
+                    (seen_capture ? k_act_xy[act][0] : 0.0f) + (west ? -60.0f : 60.0f),
+                    seen_capture ? k_act_xy[act][1] : 0.0f,
+                };
+                memcpy(sec + 44, px, 8);
             }
         }
         w += sz;
@@ -627,15 +829,112 @@ static size_t serve_pack(int k, const uint8_t *pack, size_t pn, int node, uint32
     return zn;
 }
 
+// Gameplay > Sharper menus: every BNTX in an archive, its one-channel textures of one level added to the list
+// (runtime/nvn/text_upscale.c). BRTI: the header's 0x16 mip count, 0x1c format, 0x24 width and height, 0x70 where the
+// table of its levels' data is, from the BNTX's start.
+static void menu_tex_bntx(const uint8_t *b, size_t n) {
+    for (size_t p = 0x20; p + 0x78 <= n; p += 8) {
+        if (memcmp(b + p, "BRTI", 4)) continue;
+        uint32_t format = *(const uint32_t *)(b + p + 0x1c), w = *(const uint32_t *)(b + p + 0x24), h = *(const uint32_t *)(b + p + 0x28);
+        uint16_t mips = *(const uint16_t *)(b + p + 0x16);
+        uint64_t ptrs = *(const uint64_t *)(b + p + 0x70);
+        if (mips != 1 || (format >> 8 != 0x1d && format >> 8 != 0x02) || ptrs + 8 > n || w < 16 || h < 16) continue;
+        uint64_t at = *(const uint64_t *)(b + ptrs), bytes = (uint64_t)w * h / (format >> 8 == 0x1d ? 2 : 1);
+        if (at + bytes <= n) menu_tex_add(b + at, bytes);
+    }
+}
+
+static void menu_tex_arc(const uint8_t *a, size_t an, int depth) {
+    if (an < 0x20 || memcmp(a, "SARC", 4)) return;
+    uint32_t cnt = *(const uint16_t *)(a + 0x1A), dd = *(const uint32_t *)(a + 0xC);
+    for (uint32_t i = 0; i < cnt && 0x20 + (i + 1) * 16 <= an; i++) {
+        uint32_t s = *(const uint32_t *)(a + 0x20 + i * 16 + 8), e = *(const uint32_t *)(a + 0x20 + i * 16 + 12);
+        if (e <= s || dd + e > an || e - s < 8) continue;
+        const uint8_t *f = a + dd + s;
+        if (!memcmp(f, "BNTX", 4)) menu_tex_bntx(f, e - s);
+        else if (depth < 3 && !memcmp(f, "SARC", 4)) menu_tex_arc(f, e - s, depth + 1);
+        else if (depth < 3 && !memcmp(f, "Yaz0", 4)) {
+            size_t un = 0;
+            uint8_t *u = yaz0_unpack(f, e - s, &un);
+            if (u) menu_tex_arc(u, un, depth + 1);
+            free(u);
+        }
+    }
+}
+
+static void menu_tex_scan(void) {
+    static bool done;
+    if (done || !g_settings.sharper_menus || R != &images[0]) return;
+    done = true;
+    for (int k = 0; k < R->rom_nfiles; k++) {
+        const char *path = R->rom_files[k].path;
+        // (most of the menus' art is in the boot pack, the rest in Layout/)
+        if (strcmp(path, "Pack/Bootup.pack") && (strncmp(path, "Layout/", 7) || !strstr(path, ".sblarc"))) continue;
+        size_t zn = R->rom_files[k].size, an = 0;
+        uint8_t *z = malloc(zn), *arc = NULL;
+        if (z && romfs_image_pread(R->img, z, zn, R->rom_files[k].off) == (ssize_t)zn) {
+            if (!memcmp(z, "SARC", 4)) menu_tex_arc(z, zn, 0);
+            else if ((arc = yaz0_unpack(z, zn, &an))) menu_tex_arc(arc, an, 0);
+        }
+        free(z);
+        free(arc);
+    }
+    LOG("[fs] sharper menus: %d textures found\n", menu_tex_count());
+}
+
+// Gameplay > Sharper text: the font sheets in the game's own archives, so that their textures can be told from others
+// (runtime/nvn/text_upscale.c). External_00 is left out: glyphs.c redraws those, and Ancient_00's sheet is too small.
+static void text_sheets_scan(void) {
+    static const char *const fonts[] = {"Normal_00.bffnt", "NormalS_00.bffnt", "Caption_00.bffnt", "Special_00.bffnt"};
+    static bool done;
+    if (done || !g_settings.sharper_text || R != &images[0]) return;
+    done = true;
+    for (int k = 0; k < R->rom_nfiles; k++) {
+        const char *path = R->rom_files[k].path;
+        if (strncmp(path, "Font/Font_", 10) || !strstr(path, ".sbfarc")) continue;
+        size_t zn = R->rom_files[k].size, an = 0;
+        uint8_t *z = malloc(zn), *arc = NULL;
+        if (romfs_image_pread(R->img, z, zn, R->rom_files[k].off) == (ssize_t)zn) arc = yaz0_unpack(z, zn, &an);
+        for (size_t i = 0; arc && i < sizeof fonts / sizeof *fonts; i++) {
+            uint32_t doff, s, e;
+            if (sarc_find(arc, an, fonts[i], &doff, &s, &e) < 0 || e - s < 0x40) continue;
+            const uint8_t *f = arc + doff + s;
+            uint32_t n = e - s, p = *(const uint16_t *)(f + 6);
+            while (p + 32 <= n) {  // (FFNT sections: TGLP holds the sheets)
+                uint32_t size = *(const uint32_t *)(f + p + 4);
+                if (!memcmp(f + p, "TGLP", 4)) {  // (its sheets: the layers of one texture in a BNTX, texels after "BRTD")
+                    uint32_t off = *(const uint32_t *)(f + p + 28), format = *(const uint16_t *)(f + p + 18);
+                    uint32_t w = *(const uint16_t *)(f + p + 24), h = *(const uint16_t *)(f + p + 26);
+                    uint64_t bytes = (uint64_t)w * h / (format == 8 ? 1 : 2);  // (8: R8, 12: BC4)
+                    for (uint32_t a = off; a + 0x10 + bytes <= n && a < off + 0x2000; a += 4)
+                        if (!memcmp(f + a, "BRTD", 4)) {
+                            text_sheet_add(f + a + 0x10, bytes);
+                            break;
+                        }
+                    break;
+                }
+                if (size < 8) break;
+                p += size;
+            }
+        }
+        free(z);
+        free(arc);
+    }
+    LOG("[fs] sharper text: %d font sheets found\n", text_sheet_count());
+}
+
 static void hud_letters_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
     static const char pack_path[] = "Pack/Bootup.pack";
     static const char *const layouts[] = {"blyt/PaDoCommandA_00.bflyt", "blyt/PaDoCommandB_00.bflyt",
                                           "blyt/PaDoCommandX_00.bflyt", "blyt/PaDoCommandY_00.bflyt"};
-    if (getenv("SAVAGEWIND_NO_HUD_LETTERS")) return;
     int k = 0;
     while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, pack_path)) k++;
     char host[1200];
-    if (k == R->rom_nfiles || overlay_file(pack_path, host, sizeof host)) return;
+    if (k == R->rom_nfiles) return;
+    if (overlay_file(pack_path, host, sizeof host)) {
+        if (R == &images[0]) inventory_layout_from_overlay(host);
+        return;
+    }
     uint64_t t0 = plat_now_ns();
     size_t pn = R->rom_files[k].size, an = 0, nn = 0;
     uint8_t *pack = malloc(pn), *arc = NULL, *arc2 = NULL;
@@ -644,7 +943,11 @@ static void hud_letters_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz)
     if (romfs_image_pread(R->img, pack, pn, R->rom_files[k].off) == (ssize_t)pn)
         node = sarc_find(pack, pn, "Layout/Common.sblarc", &pdoff, &ps, &pe);
     if (node >= 0) arc = yaz0_unpack(pack + pdoff + ps, pe - ps, &an);
+    if (R == &images[0] && arc) inventory_layout_from_common(arc, an);
+    if (getenv("SAVAGEWIND_NO_HUD_LETTERS")) { free(pack), free(arc); return; }
     const char *why = node < 0 ? "no Layout/Common.sblarc" : !arc ? "archive not readable" : NULL;
+    int pos[4];
+    glyphs_hud_positions(pos);
     if (!why) {
         arc2 = malloc(an + 4 * (0x80 + 0x2000));
         memcpy(arc2, arc, an);
@@ -655,7 +958,7 @@ static void hud_letters_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz)
             size_t at = (nn + 0x7F) & ~(size_t)0x7F;
             memset(arc2 + nn, 0, at - nn);
             nn = at;
-            size_t ln = hud_letters_flyt(arc + adoff + as, ae - as, arc2 + nn, &panes);
+            size_t ln = hud_letters_flyt(arc + adoff + as, ae - as, arc2 + nn, i, pos, &panes);
             if (!ln) { why = "layout not as expected"; break; }
             uint32_t s = (uint32_t)(nn - adoff), e = (uint32_t)(nn - adoff + ln);
             memcpy(arc2 + 0x20 + li * 16 + 8, &s, 4);
@@ -664,6 +967,16 @@ static void hud_letters_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz)
         }
     }
     if (!why && panes != 12) why = "letters not as expected";
+    if (arc && !why) {  // the Controls page's lines and the tips' marks to the device's buttons (runtime/nvn/hw_illust.c)
+        static const char *const lay[] = {"blyt/PaAllControllerTipsNN_00.bflyt", "blyt/PaMessageTipsDrcImageNN_00.bflyt"};
+        int dev = glyphs_console();
+        for (int i = 0; i < 2 && dev >= 0; i++) {  // (HW_LAYOUT_CONTROLS, _TIPS)
+            int li = sarc_find(arc, an, lay[i], &adoff, &as, &ae);
+            int moved = li >= 0 ? hw_illust_layout(dev, i, arc2 + adoff + as, ae - as) : 0;
+            LOG("[fs] %s: %d panes moved to device %d's buttons%s\n", i ? "Tips" : "Controls page", moved, dev,
+                moved ? "" : " (layout not as expected)");
+        }
+    }
     if (why) {
         LOG("[fs] HUD letters: %s, the game's letters stay\n", why);
         free(pack), free(arc), free(arc2);
@@ -792,6 +1105,155 @@ static void title_button_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz
     free(pack), free(arc), free(arc2);
 }
 
+// (Savage Wind+) Video > Haze: the air's haze. BOTW's outdoor haze is its atmospheric scattering, set per climate in
+// Pack/TitleBG.pack's WorldMgr/normal.bwinfo (AAMP, 20 climates): CalcMie and CalcRayleigh (the white and the blue of
+// the air: lower, clearer; at 0.6x the sky darkens and turns teal) and CalcSfParamNear (0 or below: the haze close by,
+// least at 0). The setting's share k of the game's haze gives those 0.7 + 0.3 k times theirs (0.85 at 50 %, where far
+// mountains keep their colour and the sky its blue; seen from Hebra's tower at noon, clear sky) and k times the near
+// one. The file is read at the start: one patch over its bytes, the same size.
+static uint32_t crc32_str(const char *s) { return (uint32_t)crc32(0, (const uint8_t *)s, (uInt)strlen(s)); }
+static size_t haze_done[512];  // (the value offsets changed so far)
+static void haze_walk_list(uint8_t *d, size_t n, size_t o, const uint32_t h[3], const float f[3], int *changed, int depth) {
+    if (o + 12 > n || depth > 8) return;
+    uint16_t lo, ln, oo, on;
+    memcpy(&lo, d + o + 4, 2), memcpy(&ln, d + o + 6, 2), memcpy(&oo, d + o + 8, 2), memcpy(&on, d + o + 10, 2);
+    for (uint32_t i = 0; i < on; i++) {
+        size_t ob = o + (size_t)oo * 4 + i * 8;
+        if (ob + 8 > n) return;
+        uint16_t po, pn;
+        memcpy(&po, d + ob + 4, 2), memcpy(&pn, d + ob + 6, 2);
+        for (uint32_t j = 0; j < pn; j++) {
+            size_t pb = ob + (size_t)po * 4 + j * 8;
+            if (pb + 8 > n) return;
+            uint32_t ph, w;
+            memcpy(&ph, d + pb, 4), memcpy(&w, d + pb + 4, 4);
+            size_t vo = pb + (size_t)(w & 0xFFFFFF) * 4;
+            if (w >> 24 != 1 || vo + 4 > n) continue;  // (floats only)
+            bool seen = false;  // (AAMP shares equal values: one value is the data of several parameters)
+            for (int k = 0; k < *changed && !seen; k++) seen = haze_done[k] == vo;
+            if (seen) continue;
+            for (int k = 0; k < 3; k++)
+                if (ph == h[k] && *changed < 512) {
+                    haze_done[*changed] = vo;
+                    float v;
+                    memcpy(&v, d + vo, 4);
+                    v *= f[k];
+                    memcpy(d + vo, &v, 4);
+                    (*changed)++;
+                }
+        }
+    }
+    (void)lo, (void)ln, (void)depth;  // (the root's objects only: the climates. Lists under it hold values of the same
+                                      //  names that this scaling turned teal)
+}
+static void haze_patch(void) {
+    int pct = g_settings.haze;
+    if (pct >= 100 || R != &images[0] || R->npatches >= 16) return;
+    static const char pack_path[] = "Pack/TitleBG.pack", name[] = "WorldMgr/normal.bwinfo";
+    int k = 0;
+    while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, pack_path)) k++;
+    char host[1200];
+    if (k == R->rom_nfiles || overlay_file(pack_path, host, sizeof host)) return;
+    uint8_t head[0x20];
+    if (romfs_image_pread(R->img, head, 0x20, R->rom_files[k].off) != 0x20 || memcmp(head, "SARC", 4)) return;
+    uint32_t doff;
+    memcpy(&doff, head + 0xC, 4);
+    if (doff > (16u << 20) || doff > R->rom_files[k].size) return;
+    uint8_t *tab = malloc(doff);  // (the tables: the data starts at doff)
+    uint32_t ds = 0, de = 0;
+    bool found = false;
+    if (tab && romfs_image_pread(R->img, tab, doff, R->rom_files[k].off) == (ssize_t)doff) {
+        uint32_t cnt = tab[0x1A] | tab[0x1B] << 8;
+        size_t names = 0x20 + (size_t)cnt * 16 + 8;
+        for (uint32_t i = 0; i < cnt && names <= doff && !found; i++) {
+            uint32_t attr;
+            memcpy(&attr, tab + 0x20 + i * 16 + 4, 4);
+            size_t at = names + (size_t)(attr & 0xFFFFFF) * 4;
+            if (!(attr >> 24) || at + sizeof name > doff || memcmp(tab + at, name, sizeof name)) continue;
+            memcpy(&ds, tab + 0x20 + i * 16 + 8, 4), memcpy(&de, tab + 0x20 + i * 16 + 12, 4);
+            found = de > ds && de - ds < (4u << 20);
+        }
+    }
+    free(tab);
+    if (!found) { LOG("[fs] haze: %s not found, the game's haze stays\n", name); return; }
+    size_t n = de - ds;
+    uint64_t at = R->rom_files[k].off + doff + ds;
+    uint8_t *d = malloc(n);
+    if (!d || romfs_image_pread(R->img, d, n, at) != (ssize_t)n || memcmp(d, "AAMP", 4)) { free(d); return; }
+    float kk = pct / 100.0f, sc = 0.7f + 0.3f * kk;
+    const uint32_t h[3] = {crc32_str("CalcMie"), crc32_str("CalcRayleigh"), crc32_str("CalcSfParamNear")};
+    const float f[3] = {sc, sc, kk};
+    uint32_t pio;
+    memcpy(&pio, d + 0x14, 4);
+    int changed = 0;
+    haze_walk_list(d, n, 0x30 + (size_t)pio, h, f, &changed, 0);
+    if (!changed) { free(d); LOG("[fs] haze: no climate values found, the game's haze stays\n"); return; }
+    if (getenv("SAVAGEWIND_HAZE_DUMP")) {  // (tests) the patched file, to compare
+        FILE *df = fopen(getenv("SAVAGEWIND_HAZE_DUMP"), "wb");
+        if (df) fwrite(d, 1, n, df), fclose(df);
+    }
+    R->patches[R->npatches++] = (Patch){at, n, d};
+    LOG("[fs] haze %d %%: %d climate values (scattering x%.2f, near haze x%.2f)\n", pct, changed, sc, kk);
+}
+
+static void shrine_sensor_patch(void) {
+    if (R != &images[0] || R->npatches >= 16) return;
+    static const char pack_path[] = "Pack/Bootup.pack", name[] = "Sound/Resource/M_UI.bars";
+    int k = 0;
+    while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, pack_path)) k++;
+    char host[1200];
+    if (k == R->rom_nfiles || overlay_file(pack_path, host, sizeof host)) return;
+    uint8_t head[0x20];
+    if (romfs_image_pread(R->img, head, 0x20, R->rom_files[k].off) != 0x20 || memcmp(head, "SARC", 4)) return;
+    uint32_t doff;
+    memcpy(&doff, head + 0xC, 4);
+    if (doff > (16u << 20) || doff > R->rom_files[k].size) return;
+    uint8_t *tab = malloc(doff);
+    uint32_t ds = 0, de = 0;
+    bool found = false;
+    if (tab && romfs_image_pread(R->img, tab, doff, R->rom_files[k].off) == (ssize_t)doff) {
+        uint32_t cnt = tab[0x1A] | tab[0x1B] << 8;
+        size_t names = 0x20 + (size_t)cnt * 16 + 8;
+        for (uint32_t i = 0; i < cnt && names <= doff && !found; i++) {
+            uint32_t attr;
+            memcpy(&attr, tab + 0x20 + i * 16 + 4, 4);
+            size_t at = names + (size_t)(attr & 0xFFFFFF) * 4;
+            if (!(attr >> 24) || at + sizeof name > doff || memcmp(tab + at, name, sizeof name)) continue;
+            memcpy(&ds, tab + 0x20 + i * 16 + 8, 4), memcpy(&de, tab + 0x20 + i * 16 + 12, 4);
+            found = de > ds && de - ds < (32u << 20);
+        }
+    }
+    free(tab);
+    if (!found) {
+        k = 0;
+        while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, name)) k++;
+        if (k == R->rom_nfiles) return;
+        size_t n = R->rom_files[k].size;
+        uint64_t at = R->rom_files[k].off;
+        uint8_t *d = malloc(n);
+        if (!d || romfs_image_pread(R->img, d, n, at) != (ssize_t)n) { free(d); return; }
+        if (!shrine_sensor_patch_bars(d, n, g_settings.shrine_sensor_volume)) { free(d); return; }
+        if (g_settings.shrine_sensor_volume < 100) {
+            R->patches[R->npatches++] = (Patch){at, n, d};
+        } else {
+            free(d);
+        }
+        LOG("[fs] shrine sensor: volume %d%%\n", g_settings.shrine_sensor_volume);
+        return;
+    }
+    size_t n = de - ds;
+    uint64_t at = R->rom_files[k].off + doff + ds;
+    uint8_t *d = malloc(n);
+    if (!d || romfs_image_pread(R->img, d, n, at) != (ssize_t)n) { free(d); return; }
+    if (!shrine_sensor_patch_bars(d, n, g_settings.shrine_sensor_volume)) { free(d); return; }
+    if (g_settings.shrine_sensor_volume < 100) {
+        R->patches[R->npatches++] = (Patch){at, n, d};
+    } else {
+        free(d);
+    }
+    LOG("[fs] shrine sensor: volume %d%%\n", g_settings.shrine_sensor_volume);
+}
+
 // An RSTB entry: names first (paths whose crc32 collides), then the crc32 table (sorted). NULL when it has none.
 static uint32_t *rstb_entry(uint8_t *d, uint32_t ncrc, uint32_t nname, const char *path) {
     for (uint32_t i = 0; i < nname; i++)
@@ -834,10 +1296,24 @@ static void rstb_name(const char *path, char *out, size_t cap) {
     if (dot && dot[1] == 's' && strcmp(dot, ".sarc") && !strchr(dot, '/')) memmove(dot + 1, dot + 2, strlen(dot + 2) + 1);
 }
 
+// Room the model loader gets on top of the ResourceSizeTable's size for each model (.bfres), in KB. The loader makes a
+// temporary heap from a model's entry and allocates one node per material from it without checking for failure; in
+// the Gerudo desert (the Wasteland Tower save) a few models (FldObj_RuinStatueKnight_A-03) overflow it, and the
+// allocation returns NULL: "access violation: write at 0x8" about one load in five. 64 KB held for 20 loads in a row
+// (unpatched, a crash came within 7 loads each time); 256 KB held for 20. SAVAGEWIND_RSTB_MODEL_KB=n changes it, 0 leaves the table as it is.
+#define RSTB_MODEL_KB 64
+
+static uint32_t rstb_model_grow(void) {
+    const char *e = getenv("SAVAGEWIND_RSTB_MODEL_KB");
+    long kb = e && *e ? atol(e) : RSTB_MODEL_KB;
+    return kb > 0 ? (uint32_t)kb << 10 : 0;
+}
+
 static void rstb_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
     static const char rstb_path[] = "System/Resource/ResourceSizeTable.product.srsizetable";
     bool merged = R == &images[0] && romfs_has_dlc_merged();
-    if (!R->ngrown && !merged) return;
+    uint32_t model_grow = R == &images[0] ? rstb_model_grow() : 0;
+    if (!R->ngrown && !merged && !model_grow) return;
     int k = 0;
     while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, rstb_path)) k++;
     char host[1200];
@@ -846,13 +1322,18 @@ static void rstb_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
         return;
     }
     if (k == R->rom_nfiles) { LOG("[fs] voices: no %s, %d bigger banks left as they are\n", rstb_path, R->ngrown); return; }
-    if (overlay_file(rstb_path, host, sizeof host)) {
-        LOG("[fs] voices: the overlay folder replaces the ResourceSizeTable: %d bigger banks left to it\n", R->ngrown);
-        return;
-    }
-    size_t zn = R->rom_files[k].size, n = 0;
+    // A mod's table (the overlay folder's) needs the same growth: without it the game can't load what grew here
+    struct stat over;
+    bool from_overlay = overlay_file(rstb_path, host, sizeof host) && !stat(host, &over);
+    size_t zn = from_overlay ? (size_t)over.st_size : R->rom_files[k].size, n = 0;
     uint8_t *z = malloc(zn), *d = NULL;
-    if (romfs_image_pread(R->img, z, zn, R->rom_files[k].off) == (ssize_t)zn) d = yaz0_unpack(z, zn, &n);
+    if (from_overlay) {
+        FILE *f = fopen(host, "rb");
+        if (f && fread(z, 1, zn, f) == zn) d = yaz0_unpack(z, zn, &n);
+        if (f) fclose(f);
+    } else if (romfs_image_pread(R->img, z, zn, R->rom_files[k].off) == (ssize_t)zn) {
+        d = yaz0_unpack(z, zn, &n);
+    }
     free(z);
     uint32_t ncrc = 0, nname = 0;
     if (d && n >= 12) memcpy(&ncrc, d + 4, 4), memcpy(&nname, d + 8, 4);
@@ -889,6 +1370,20 @@ static void rstb_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
         }
         LOG("[fs] the RomFS has the DLC merged into it: %d ResourceSizeTable entries grown to the DLC's (%llu KB)\n",
             dlc_changed, (unsigned long long)(dlc_added >> 10));
+    }
+    if (model_grow) {
+        int mg = 0;
+        char name[300];
+        for (int i = 0; i < R->rom_nfiles; i++) {
+            size_t pl = strlen(R->rom_files[i].path);
+            if (pl < 8 || strcmp(R->rom_files[i].path + pl - 7, ".sbfres")) continue;
+            rstb_name(R->rom_files[i].path, name, sizeof name);
+            uint32_t *e = rstb_entry(d, ncrc, nname, name), v;
+            if (!e) continue;
+            memcpy(&v, e, 4), v += model_grow, memcpy(e, &v, 4);
+            mg++;
+        }
+        LOG("[fs] ResourceSizeTable: %d model entries grown by %u KB\n", mg, model_grow >> 10);
     }
     size_t bn = 0;
     free(R->rstb_blob);
@@ -983,7 +1478,13 @@ static void rom_index(void) {
     }
     hud_letters_patch(fmeta, foff, fsz);
     title_button_patch(fmeta, foff, fsz);
+    text_sheets_scan();
+    menu_tex_scan();
+    if (R == &images[0] && !atomic_load_explicit(&inventory_clip_layout_valid, memory_order_acquire))
+        LOG("[fs] Inventory clip layout unavailable; using the game's clipping\n");
     rstb_patch(fmeta, foff, fsz);
+    haze_patch();
+    shrine_sensor_patch();
     if (R->ov_n) LOG("[fs] overlay: %d romfs files replaced\n", R->ov_n);
     if (R->ov_meta) { R->patches[R->npatches++] = (Patch){R->ov_meta_off, R->ov_meta_size, R->ov_meta}; }
     add_new_files(h, dmeta, dsz, fsz);
@@ -1054,6 +1555,25 @@ static uint64_t romfs_file_start(uint64_t off) {
     return ~0ull;
 }
 
+// A whole file of the game's own RomFS image, as the image has it (not the overlay folder's), malloc'd (free it); NULL
+// if it isn't there. For host features that read the player's game data (runtime/items.c).
+uint8_t *fs_game_file(const char *path, size_t *out_n) {
+    RomImage *m = &images[0];
+    if (!m->img) return NULL;
+    for (int k = 0; k < m->rom_nfiles; k++) {
+        if (strcmp(m->rom_files[k].path, path)) continue;
+        size_t n = m->rom_files[k].size;
+        uint8_t *d = malloc(n ? n : 1);
+        if (d && romfs_image_pread(m->img, d, n, m->rom_files[k].off) == (ssize_t)n) {
+            *out_n = n;
+            return d;
+        }
+        free(d);
+        return NULL;
+    }
+    return NULL;
+}
+
 // Path of the game's RomFS file containing image offset `off` (NULL if none).
 const char *romfs_file_at(uint64_t off) {
     const RomImage *m = &images[0];
@@ -1065,6 +1585,17 @@ const char *romfs_file_at(uint64_t off) {
         else return m->rom_files[mid].path;
     }
     return NULL;
+}
+
+// The last RomFS files the game read, newest last, for a crash report (runtime/dispatch.c): a file that makes the
+// game's parser run out of its resource heap names itself only this way (#363).
+static const char *recent_files[8];
+static _Atomic unsigned recent_n;
+int fs_recent_files(const char **out, int max) {
+    unsigned n = atomic_load(&recent_n);
+    int k = 0;
+    for (unsigned i = n > 8 ? n - 8 : 0; i < n && k < max; i++) out[k++] = recent_files[i & 7];
+    return k;
 }
 
 // ------------------------------------------------------------------ IStorage (raw RomFS image)
@@ -1080,7 +1611,10 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
         if (!b) { resp->result = MAKE_RESULT(2, 6001); break; }
         if (size > b->size) size = b->size;
         kernel_watch_write("romfs read", b->addr, size);
+        uint64_t ft0 = plat_now_ns();
         ssize_t n = romfs_read(m, (uint8_t *)(uintptr_t)b->addr, size, off);
+        perfcount_add(PC_FILE_READS, 1), perfcount_add(PC_FILE_NS, plat_now_ns() - ft0);
+        if (n > 0) perfcount_add(PC_FILE_BYTES, (uint64_t)n);
         if (n < 0) LOG("[fs] storage read failed at %llx: %s\n", off, strerror(errno));
         if (m != &images[0]) break;
         {
@@ -1088,6 +1622,7 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
             static const char *last;
             if (path && path != last) {
                 last = path;
+                recent_files[atomic_load(&recent_n) & 7] = path, atomic_fetch_add(&recent_n, 1);
                 if (getenv("SAVAGEWIND_LOG_FILES")) LOG("[fs] read %s\n", path);
             }
             // SAVAGEWIND_LOG_STREAMS=1: every read of a stream's header (a .bfstm read from its start: the sound
@@ -1195,6 +1730,47 @@ static uint32_t errno_result(void) {
     return MAKE_RESULT(2, 4000);
 }
 
+// A save operation that failed: whether to try again (it waited). On Windows another program can hold a save file for a
+// moment (OneDrive's sync of a Desktop folder, an antivirus scan, a backup): opening, writing or renaming it then fails
+// with EACCES. The game takes any error there as fatal: an SDK assertion in SaveMgrThread, "svcBreak(reason=0)" while
+// "Saving..." showed (#568, #567; the same here with the save files held open by another process). So those errors
+// are retried for up to 30 s (only the save thread waits: the game goes on with "Saving..." up). Errors the game
+// expects (a file that doesn't exist yet, or already does) aren't logged.
+static bool fs_retry(int *tries, const char *op, const char *path) {
+    int e = errno;
+    if (e == ENOENT || e == ENOTDIR || e == EEXIST || e == ENOTEMPTY) return false;
+#ifdef _WIN32
+    if ((e == EACCES || e == EBUSY || e == EPERM) && *tries < 600) {
+        if (!(*tries)++) LOG("[fs] %s %s: %s, another program may hold it; trying again for up to 30 s\n", op, path, strerror(e));
+        plat_sleep_until_ns(plat_now_ns() + 50000000ull);
+        errno = e;
+        return true;
+    }
+#endif
+    LOG("[fs] %s %s failed: %s%s\n", op, path, strerror(e),
+        *tries ? " (still held by another program: OneDrive, an antivirus or a backup tool can lock the save folder)" : "");
+    errno = e;
+    return false;
+}
+
+// The game closed the file's session: its host descriptor (a Windows handle each) and the copy of the save go.
+static void file_close(Service *s) {
+    HostFile *f = s->state;
+    if (!f) return;
+    s->state = NULL;
+    if (f->fd >= 0) close(f->fd);
+    free(f->patched);
+    free(f);
+}
+
+static void dir_close(Service *s) {
+    HostDir *d = s->state;
+    if (!d) return;
+    s->state = NULL;
+    if (d->d) closedir(d->d);
+    free(d);
+}
+
 static void file(Service *s, IpcReq *req, IpcResp *resp) {
     HostFile *f = s->state;
     switch (req->cmd) {
@@ -1203,12 +1779,18 @@ static void file(Service *s, IpcReq *req, IpcResp *resp) {
         IpcBuf *b = out_buf(req, 0);
         if ((uint64_t)size > b->size) size = (int64_t)b->size;
         kernel_watch_write("file read", b->addr, (uint64_t)size);
+        #ifdef _WIN32
+                if (plat_guest_sparse_heap_enabled()) plat_commit(b->addr, (uint64_t)size);
+        #endif
         ssize_t n;
         if (f->patched) {  // (test warp)
             n = off >= 0 && (uint64_t)off < f->patched_size ? (ssize_t)((uint64_t)size < f->patched_size - (uint64_t)off ? (uint64_t)size : f->patched_size - (uint64_t)off) : 0;
             memcpy((void *)(uintptr_t)b->addr, f->patched + off, (size_t)n);
         } else {
+            uint64_t ft0 = plat_now_ns();
             n = pread(f->fd, (void *)(uintptr_t)b->addr, (size_t)size, off);
+            perfcount_add(PC_FILE_READS, 1), perfcount_add(PC_FILE_NS, plat_now_ns() - ft0);
+            if (n > 0) perfcount_add(PC_FILE_BYTES, (uint64_t)n);
         }
         if (strstr(f->path, "savedata")) {
             LOG("[save] read %s off %lld size %lld -> guest %llx\n", f->path, (long long)off, (long long)size, (unsigned long long)b->addr);
@@ -1222,13 +1804,21 @@ static void file(Service *s, IpcReq *req, IpcResp *resp) {
         IpcBuf *a = in_buf(req, 0);
         if (strstr(f->path, "savedata"))
             LOG("[save] write %s off %lld size %lld <- guest %llx\n", f->path, (long long)off, (long long)size, (unsigned long long)a->addr);
-        if (pwrite(f->fd, (void *)(uintptr_t)a->addr, (size_t)size, off) < 0) resp->result = errno_result();
+        int tries = 0;
+        ssize_t w;
+        while ((w = pwrite(f->fd, (void *)(uintptr_t)a->addr, (size_t)size, off)) < 0 && fs_retry(&tries, "write", f->path)) {}
+        if (w < 0) resp->result = errno_result();
         free(f->patched);  // (the game saved: its own data from now on)
         f->patched = NULL;
         break;
     }
     case 2: fsync(f->fd); break;
-    case 3: if (ftruncate(f->fd, IN(int64_t, 0))) resp->result = errno_result(); break;
+    case 3: {
+        int tries = 0, r;
+        while ((r = ftruncate(f->fd, IN(int64_t, 0))) && fs_retry(&tries, "resize", f->path)) {}
+        if (r) resp->result = errno_result();
+        break;
+    }
     case 4: {
         struct stat sb;
         fstat(f->fd, &sb);
@@ -1316,21 +1906,34 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
         LOG("[fs] save: %s %s%s%s\n", req->cmd == 13 ? "clean dir" : what[req->cmd], p,
             req->cmd == 5 || req->cmd == 6 ? " -> " : "", req->cmd == 5 || req->cmd == 6 ? p2 : "");
     }
+    int tries = 0, r;
     switch (req->cmd) {
     case 0: {  // CreateFile(option, size)
-        int fd = open(p, O_CREAT | O_EXCL | O_RDWR, 0644);
+        int fd;
+        while ((fd = open(p, O_CREAT | O_EXCL | O_RDWR, 0644)) < 0 && fs_retry(&tries, "create", p)) {}
         if (fd < 0) { resp->result = errno_result(); break; }
-        if (ftruncate(fd, IN(int64_t, 8))) resp->result = errno_result();
+        while ((r = ftruncate(fd, IN(int64_t, 8))) && fs_retry(&tries, "resize", p)) {}
+        if (r) resp->result = errno_result();
         close(fd);
         break;
     }
-    case 1: if (unlink(p)) resp->result = errno_result(); break;
+    case 1:
+        while ((r = unlink(p)) && fs_retry(&tries, "delete", p)) {}
+        if (r) resp->result = errno_result();
+        break;
     case 2: if (mkdir(p, 0755)) resp->result = errno_result(); break;
-    case 3: if (rmdir(p)) resp->result = errno_result(); break;
-    case 4: if (rm_rf(p, false)) resp->result = errno_result(); break;
+    case 3:
+        while ((r = rmdir(p)) && fs_retry(&tries, "delete folder", p)) {}
+        if (r) resp->result = errno_result();
+        break;
+    case 4:
+        while ((r = rm_rf(p, false)) && fs_retry(&tries, "delete folder", p)) {}
+        if (r) resp->result = errno_result();
+        break;
     case 5: case 6:
         host_path(fs, in_path(req, 1), p2, sizeof p2);
-        if (rename(p, p2)) resp->result = errno_result();
+        while ((r = rename(p, p2)) && fs_retry(&tries, "rename", p)) {}
+        if (r) resp->result = errno_result();
         else if (strlen(p2) >= 13 && !strcmp(p2 + strlen(p2) - 13, "game_data.sav")) ach_set_active(p2);  // (saved via a temp file)
         break;
     case 7: {  // GetEntryType
@@ -1342,7 +1945,8 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
     }
     case 8: {  // OpenFile(mode)
         uint32_t mode = IN(uint32_t, 0);
-        int fd = open(p, (mode & 2) ? O_RDWR : O_RDONLY);
+        int fd;
+        while ((fd = open(p, (mode & 2) ? O_RDWR : O_RDONLY)) < 0 && fs_retry(&tries, "open", p)) {}
         if (fd < 0) { resp->result = errno_result(); break; }
         HostFile *f = calloc(1, sizeof *f);
         f->fd = fd;
@@ -1364,7 +1968,9 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
                 f->patched = NULL;
             }
         }
-        ipc_return_object(resp, service_new("IFile", file, f));
+        Service *fsvc = service_new("IFile", file, f);
+        fsvc->on_close = file_close;
+        ipc_return_object(resp, fsvc);
         break;
     }
     case 9: {  // OpenDirectory(mode)
@@ -1374,7 +1980,9 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
         hd->d = d;
         hd->mode = (int)IN(uint32_t, 0);
         snprintf(hd->path, sizeof hd->path, "%s", p);
-        ipc_return_object(resp, service_new("IDirectory", directory, hd));
+        Service *dsvc = service_new("IDirectory", directory, hd);
+        dsvc->on_close = dir_close;
+        ipc_return_object(resp, dsvc);
         break;
     }
     case 10: break;  // Commit
@@ -1387,7 +1995,7 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
 
 static Service *open_host_fs(const char *sub) {
     HostFs *fs = calloc(1, sizeof *fs);
-    if (getenv("SAVAGEWIND_SAVE_DIR")) g_save_dir = getenv("SAVAGEWIND_SAVE_DIR");  // test runs use a scratch copy
+    g_save_dir = sp_session_save_dir();  // SAVAGEWIND_SAVE_DIR (test runs use a scratch copy), else the active save profile
     snprintf(fs->root, sizeof fs->root, "%s/%s", g_save_dir, sub);
     char cmd[1200];
     snprintf(cmd, sizeof cmd, "%s", fs->root);

@@ -10,7 +10,7 @@
 // half-precision `(op & mask) == value` tests, read from the source file): the unmasked bits are random, with
 // register / predicate / cbuf / texture / attribute / branch fields biased towards meaningful values.
 //
-// usage: test_translate <translate.c> <count> <seed> [msl|glsl|both] [dump_dir]
+// usage: test_translate <translate.c> <count> <seed> [msl|glsl|glsl-bda|both] [dump_dir]
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -246,13 +246,14 @@ static bool reach_tests(void) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 4) { fprintf(stderr, "usage: %s <translate.c> <count> <seed> [msl|glsl|both] [dump_dir]\n", argv[0]); return 2; }
+    if (argc < 4) { fprintf(stderr, "usage: %s <translate.c> <count> <seed> [msl|glsl|glsl-bda|both] [dump_dir]\n", argv[0]); return 2; }
     load_patterns(argv[1]);
     long count = atol(argv[2]);
     rng_state = g_seed = strtoull(argv[3], NULL, 0);
     const char *mode = argc > 4 ? argv[4] : "both";
     const char *dir = argc > 5 ? argv[5] : NULL;
-    bool do_msl = strcmp(mode, "glsl") != 0, do_glsl = strcmp(mode, "msl") != 0;
+    bool do_msl = strcmp(mode, "glsl") != 0 && strcmp(mode, "glsl-bda") != 0, do_glsl = strcmp(mode, "msl") != 0;
+    maxwell_gmem_bda = !strcmp(mode, "glsl-bda");  // (global memory by address: Turnip)
     maxwell_gmem_base = 0x80000000ull;
     maxwell_gmem_size = 0x10000000ull;
 #ifdef MSL_REF

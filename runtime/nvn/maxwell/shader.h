@@ -97,10 +97,19 @@ typedef struct {
 #define GMEM2_BUFFER_INDEX 20       // (Vulkan) the heap past GMEM_SPLIT: a second binding
 #define GMEM_SPLIT 0x68000000ull    // bytes in the first binding; both stay under 2 GB for the whole heap (HEAP_MAX)
 #define GSNAP_BUFFER_INDEX 21       // (Vulkan, read-only global memory) ranges of it copied at translation: exec.c gsnap
+#define GATHER_BIAS_ID 100          // (Vulkan) the specialization constant glsl_gather moves its coordinates by (exec.c vk_gather_spec)
 extern uint64_t maxwell_gmem_base, maxwell_gmem_size;
 // Set by the Vulkan backend before translating: global memory in two bindings (maxStorageBufferRange below the heap),
-// read-only global memory through the copied ranges at GSNAP_BUFFER_INDEX (exec.c gsnap). Both change translations.
-extern bool maxwell_gmem_split, maxwell_gmem_snap;
+// read-only global memory through the copied ranges at GSNAP_BUFFER_INDEX (exec.c gsnap), or (maxwell_gmem_bda: even
+// two bindings can't cover the heap, Turnip's 128 MB) through its buffer device address: binding GMEM_BUFFER_INDEX is
+// then a uniform buffer { uint64_t address, size } and every access is checked against that size. All change
+// translations.
+extern bool maxwell_gmem_split, maxwell_gmem_snap, maxwell_gmem_bda;
+// Video > Wet grass fix (settings.h wet_fix), set by the Vulkan backend before translating. It changes the
+// translations of the game's wet lighting passes only (maxwell_wet_lighting), and is part of their ids
+// (shaders.c xlate_id), so each choice keeps its own cached translations of them.
+extern bool maxwell_wet_fix;
+bool maxwell_wet_lighting(const uint8_t *blob, size_t max_size, int stage);
 // Debug: when translating the shader whose code starts at maxwell_dbg_code, output register
 // maxwell_dbg_reg as captured after the instruction at maxwell_dbg_pc (greyscale, all targets).
 extern const uint8_t *maxwell_dbg_code;
@@ -117,6 +126,9 @@ void maxwell_free(ShaderInfo *s);
 // translator's build, and whether debugging switches make the output depend on more than binary and key.
 size_t maxwell_binary_size(const uint8_t *code, size_t max_size, int stage);
 const char *maxwell_translator_id(void);
+// The run-time switches and heap window a translation is made under (translate.c): what a translation of a shader
+// that reads global memory depends on besides the binary, the key and the translator's id.
+const char *maxwell_translation_variant(void);
 bool maxwell_translation_uncacheable(void);
 // Disassemble for debugging (writes text to f).
 void maxwell_disassemble(const uint8_t *code, size_t max_size, int stage, void *file);

@@ -15,6 +15,7 @@
 #pragma once
 #include <stdbool.h>
 #include <stddef.h>
+#include "game_file_size.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -24,6 +25,9 @@ extern "C" {
 
 void rt_paths_init(void);         // first thing in main(), after plat_init
 const char *rt_data_root(void);   // absolute
+// Where the data root will be, before rt_paths_init (which also makes the folder and moves into it): for what has to be
+// read at the very start (runtime/launch_flags_boot.c). Same choice, nothing created.
+bool rt_peek_data_root(char *out, size_t n);
 bool rt_dev_mode(void);           // dev / portable mode (rule 2 above): e.g. a source checkout
 
 // A shipped file: `name` next to the executable or in Contents/Resources, else `dev_rel` in the source tree (the
@@ -39,8 +43,6 @@ bool rt_remove_game_file(const char *game_dir, const char *name);
 bool rt_remove_game_files(const char *game_dir);
 // A symlink or junction, a broken one too (not followed)
 bool rt_is_link(const char *p);
-// Bytes taken by the extracted game files in game_dir (links not followed).
-unsigned long long rt_game_files_size(const char *game_dir);
 
 typedef struct SDL_Window SDL_Window;
 bool rt_user_splash(char *out, size_t n);  // the player's splash.jpg / .png in the data root, if any

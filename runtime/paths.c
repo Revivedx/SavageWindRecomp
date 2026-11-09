@@ -12,7 +12,7 @@
 #include <windows.h>
 #endif
 
-#include "gamelib.h"
+#include "game_files.h"
 #include "imageload.h"
 #include "paths.h"
 #include "platform.h"
@@ -79,30 +79,51 @@ static void fail(const char *msg) {
 static bool g_dev;  // the data root is the starting folder because it has extracted/ (a source checkout)
 bool rt_dev_mode(void) { return g_dev; }
 
-void rt_paths_init(void) {
-    if (!getcwd(g_start, sizeof g_start)) g_start[0] = 0;
-    if (plat_exe_path(g_exe_dir, sizeof g_exe_dir)) {
-        char *s = strrchr(g_exe_dir, '/'), *b = strrchr(g_exe_dir, '\\');
-        if (b > s) s = b;
-        if (s) *s = 0;
-    }
-    char root[1024];
+// The data root as rules 1-3 of paths.h choose it, from the starting folder and the executable's folder.
+static void choose_root(char *root, size_t n, bool *dev, const char *start, const char *exe_dir) {
     const char *env = getenv("SAVAGEWIND_DATA_ROOT");
-    if (env && *env) snprintf(root, sizeof root, "%s", env);
-    else if (is_dir("extracted")) snprintf(root, sizeof root, "%s", g_start), g_dev = true;  // dev / portable: as before
-    else {
+    if (dev) *dev = false;
+    if (env && *env) snprintf(root, n, "%s", env);
+    else if (is_dir("extracted")) {  // dev / portable: as before
+        snprintf(root, n, "%s", start);
+        if (dev) *dev = true;
+    } else {
 #ifdef _WIN32
-        snprintf(root, sizeof root, "%s", g_exe_dir);
+        snprintf(root, n, "%s", exe_dir);
 #elif defined(__linux__)
         // (the AppImage is read-only): $XDG_DATA_HOME/savagewind, ~/.local/share/savagewind by default
         const char *xdg = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
-        if (xdg && *xdg == '/') snprintf(root, sizeof root, "%s/savagewind", xdg);
-        else snprintf(root, sizeof root, "%s/.local/share/savagewind", home && *home ? home : "/tmp");
+        (void)exe_dir;
+        if (xdg && *xdg == '/') snprintf(root, n, "%s/savagewind", xdg);
+        else snprintf(root, n, "%s/.local/share/savagewind", home && *home ? home : "/tmp");
 #else
         const char *home = getenv("HOME");
-        snprintf(root, sizeof root, "%s/Library/Application Support/" RT_BUNDLE_ID, home && *home ? home : "/tmp");
+        (void)exe_dir;
+        snprintf(root, n, "%s/Library/Application Support/" RT_BUNDLE_ID, home && *home ? home : "/tmp");
 #endif
     }
+}
+
+static void exe_folder(char *out, size_t n) {
+    if (!plat_exe_path(out, n)) return;
+    char *s = strrchr(out, '/'), *b = strrchr(out, '\\');
+    if (b > s) s = b;
+    if (s) *s = 0;
+}
+
+bool rt_peek_data_root(char *out, size_t n) {
+    char start[1024], exe[1024] = "";
+    if (!getcwd(start, sizeof start)) return false;
+    exe_folder(exe, sizeof exe);
+    choose_root(out, n, NULL, start, exe);
+    return out[0] != 0;
+}
+
+void rt_paths_init(void) {
+    if (!getcwd(g_start, sizeof g_start)) g_start[0] = 0;
+    exe_folder(g_exe_dir, sizeof g_exe_dir);
+    char root[1024];
+    choose_root(root, sizeof root, &g_dev, g_start, g_exe_dir);
     mkdirs(root);
     char msg[1400];
     if (!is_dir(root) || !writable(root) || chdir(root) != 0) {
@@ -137,14 +158,6 @@ bool rt_resource(const char *name, const char *dev_rel, char *out, size_t n) {
 }
 
 // ---- game files
-// What the setup (runtime/ui/launcher.mm) creates in extracted/, plus what older versions' extraction and manual
-// extractions left there (never read at run time).
-static const char *const GAME_FILES[] = {"exefs", "romfs", "romfs.bin", GAMELIB_NAME, GAMELIB_NAME ".id", ".gamebuild",
-                                         ".extract", "extract.log", "xci_secure", "nso_raw", "update_pfs", ".DS_Store",
-                                         // downloadable content (runtime/services/fs.c: aoc<index>/ and its image)
-                                         "aoc1", "aoc1.bin", "aoc2", "aoc2.bin", "aoc3", "aoc3.bin", "aoc4", "aoc4.bin",
-                                         "aoc5", "aoc5.bin", "aoc6", "aoc6.bin", "aoc7", "aoc7.bin", "aoc8", "aoc8.bin"};
-
 // game_dir must be <data root>/extracted, a real folder (a dev worktree's symlinked extracted/ is refused)
 static bool game_dir_ok(const char *game_dir) {
     char want[1100], got[1100];
@@ -181,35 +194,6 @@ bool rt_remove_game_files(const char *game_dir) {
     for (size_t i = 0; i < sizeof GAME_FILES / sizeof *GAME_FILES; i++) ok &= rt_remove_game_file(game_dir, GAME_FILES[i]);
     rmdir(game_dir);  // only if empty: anything else in there stays
     return ok;
-}
-
-static unsigned long long tree_size(const char *p) {
-    struct stat st;
-    if (is_link(p) || stat(p, &st) != 0) return 0;
-    if (!S_ISDIR(st.st_mode)) return (unsigned long long)st.st_size;
-    unsigned long long n = 0;
-    DIR *d = opendir(p);
-    if (d) {
-        struct dirent *e;
-        while ((e = readdir(d))) {
-            if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
-            char c[2048];
-            snprintf(c, sizeof c, "%s" SEP "%s", p, e->d_name);
-            n += tree_size(c);
-        }
-        closedir(d);
-    }
-    return n;
-}
-
-unsigned long long rt_game_files_size(const char *game_dir) {
-    unsigned long long n = 0;
-    char p[1100];
-    for (size_t i = 0; i < sizeof GAME_FILES / sizeof *GAME_FILES; i++) {
-        snprintf(p, sizeof p, "%s" SEP "%s", game_dir, GAME_FILES[i]);
-        n += tree_size(p);
-    }
-    return n;
 }
 
 // The player's own start screen picture (runtime/ui/splash.mm): splash.jpg / splash.jpeg / splash.png in the data root

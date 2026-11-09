@@ -85,7 +85,7 @@ def image(fn_at, data, got, callee, got_value, filler=0x40):
 def main():
     # ---- the lists agree
     h = open(os.path.join(ROOT, 'runtime', 'game_versions.h'), encoding='utf-8').read()
-    hv = re.findall(r'X\("([^"]*)", "([0-9a-f]*)", ([01]), \d+\)', h)  # (the RomFS file count is the setup's alone)
+    hv = re.findall(r'X\("([^"]*)", "([0-9a-f]*)", ([01]), \d+, \d+(?:ull)?\)', h)  # (the RomFS counts: the setup's alone)
     check(hv == [(v.name, v.build_id, str(int(v.supported))) for v in gs.VERSIONS],
           f'runtime/game_versions.h {hv} == game_sites.VERSIONS')
     names = {s.name for s in gs.SITES}
@@ -99,6 +99,9 @@ def main():
             check(names - gs.OPTIONAL <= listed <= names, f'{v.name}: KNOWN lists every site (optional ones may be left '
                   f'out): {names - gs.OPTIONAL - listed or listed - names}')
     check(gs.OPTIONAL <= names, f'optional sites are in SITES: {gs.OPTIONAL - names}')
+    header = open(os.path.join(ROOT, 'runtime', 'game_sites.h'), encoding='utf-8').read()
+    optional_runtime = set(re.findall(r'X\((\w+)\)', header.split('#define GAME_SITES_OPTIONAL(X)')[1].split('typedef struct')[0]))
+    check(optional_runtime <= gs.OPTIONAL, 'optional runtime helpers belong to optional pattern groups')
     check(all(gs.compile_pattern(p) for s in gs.SITES if s.pattern
               for p in ([q for q, _ in s.pattern] if isinstance(s.pattern, list) else [s.pattern])),
           'every pattern compiles')
@@ -176,6 +179,23 @@ def main():
         check(False, 'an unknown main module is refused')
     except gs.SiteError as e:
         check('not a version Savage Wind knows' in str(e), str(e))
+    # Entry hooks must retain the original guest stack/register effects on the
+    # unhandled path, and refuse a mismatched instruction rather than corrupt it.
+    for name, word, stack in [('pc_map_focus', 0xa9be7bfd, 0x20),
+                              ('pc_map_focus_target', 0xd100c3ff, 0x30),
+                              ('pc_map_focus_now', 0xd100c3ff, 0x30)]:
+        g = SimpleNamespace(base=BASE, nso=SimpleNamespace(image=struct.pack('<I', word)))
+        code = patches.PATCHES[name](g, BASE)
+        check(f'c->sp -= {stack:#x};' in code and 'return;' in code, f'{name}: guarded original stack effect')
+        if stack == 0x20:
+            check('ST64(c->sp, c->x[29])' in code and 'ST64(c->sp + 8, c->x[30])' in code,
+                  'map focus STP preserves guest FP and LR')
+        g.nso.image = struct.pack('<I', NOP)
+        try:
+            patches.PATCHES[name](g, BASE)
+            check(False, f'{name}: mismatched opcode accepted')
+        except AssertionError:
+            check(True, f'{name}: mismatched opcode refused')
     print(f'ok: {checks} checks')
 
 
