@@ -148,7 +148,7 @@ void vk_collect_dead(void);
 
 // ================================================================== submissions
 // A submission = optional upload command buffer + the main one, signalling the timeline with its number.
-#define SUBS 32  // (several a frame: long command lists go to the GPU in pieces, see begin_pass)
+#define SUBS 64  // (several a frame: long command lists go to the GPU in pieces, see begin_pass)
 typedef struct {
     VkCommandBuffer main, upload;
     bool main_begun, upload_begun, ts;  // ts: GPU timestamps written (profiling)
@@ -169,6 +169,14 @@ static bool in_pass;
 static bool pass_void;  // the pass in progress has nothing to draw into: not begun, its draws and clears skipped (begin_pass)
 static uint32_t chunk_draws;  // draws and dispatches recorded since the last submission
 static bool chunk_hold;       // a shader that stores to guest memory was recorded since the last submission
+
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+#define RELAX() __builtin_ia32_pause()
+#elif defined(__aarch64__) || defined(_M_ARM64)
+#define RELAX() __asm__ volatile("yield")
+#else
+#define RELAX() ((void)0)
+#endif
 
 static pthread_mutex_t gpu_mutex;
 static pthread_once_t gpu_mutex_once = PTHREAD_ONCE_INIT;
@@ -202,6 +210,12 @@ void vk_wait_seq(uint64_t seq) {
     // (NVIDIA's vkWaitSemaphores is not cheap even for a value already reached: ~6% of the submission thread went
     // there in the open world, recycling submission slots whose work had long finished)
     if (vk_completed_seq() >= seq) { readbacks_apply(); return; }
+    uint64_t poll_t0 = SDL_GetTicksNS();
+    for (unsigned i = 1;; i++) {
+        RELAX();
+        if (vk_completed_seq() >= seq) { readbacks_apply(); return; }
+        if (!(i & 15) && SDL_GetTicksNS() - poll_t0 > 30000ull) break;
+    }
     VkSemaphoreWaitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1, .pSemaphores = &g_vk.timeline,
                               .pValues = &seq};
     uint64_t t0 = SDL_GetTicksNS();
@@ -1530,6 +1544,15 @@ static bool linear_target_behind(NvnTexture *t) {
         if (linear_mem[i].addr == t->addr && linear_mem[i].size == size)
             behind = linear_mem[i].pending && linear_mem[i].serial != serial;
     pthread_mutex_unlock(&readback_lock);
+    if (behind) {
+        readbacks_apply();
+        behind = false;
+        pthread_mutex_lock(&readback_lock);
+        for (int i = 0; i < nlinear_mem; i++)
+            if (linear_mem[i].addr == t->addr && linear_mem[i].size == size)
+                behind = linear_mem[i].pending && linear_mem[i].serial != serial;
+        pthread_mutex_unlock(&readback_lock);
+    }
     return behind;
 }
 
@@ -1715,7 +1738,7 @@ static void readback_schedule(VkCommandBuffer cb, NvnTexture *t, const NvnTextur
         last[k].frame = fr;
         last[k].n++;
         static int tiny_wait = -1;
-        if (tiny_wait < 0) tiny_wait = getenv("SAVAGEWIND_VK_WAIT_TINY_READBACKS") ? atoi(getenv("SAVAGEWIND_VK_WAIT_TINY_READBACKS")) : 300;
+        if (tiny_wait < 0) tiny_wait = getenv("SAVAGEWIND_VK_WAIT_TINY_READBACKS") ? atoi(getenv("SAVAGEWIND_VK_WAIT_TINY_READBACKS")) : 30;
         if (!streaming || (w * h <= 16 && (tiny_wait < 0 || last[k].n <= (uint64_t)tiny_wait))) {
             pthread_mutex_lock(&seq_lock);
             if (r->seq > oneshot_seq) oneshot_seq = r->seq;

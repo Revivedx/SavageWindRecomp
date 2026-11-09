@@ -279,10 +279,18 @@ uint64_t rec_submitted(void) { return atomic_load_explicit(&submitted, memory_or
 
 void rec_wait_submitted(uint64_t seq) {
     if (on <= 0 || rec_submitted() >= seq) return;
+    if (spin_ns) {
+        uint64_t spin_t0 = NOW();
+        for (unsigned i = 1;; i++) {
+            if (rec_submitted() >= seq) return;
+            RELAX();
+            if (!(i & 31) && NOW() - spin_t0 > spin_ns) break;
+        }
+    }
     SW_ZONE("wait for recorder submit");
     uint64_t t0 = NOW();
     pthread_mutex_lock(&mu);
-    WAIT_DONE(rec_submitted() < seq, 2000000);
+    WAIT_DONE(rec_submitted() < seq, 1000000);
     pthread_mutex_unlock(&mu);
     uint64_t dt = NOW() - t0;
     ADD(a_seq_waits, 1);
@@ -295,10 +303,18 @@ void rec_drain(void) {
     publish();
     uint64_t upto = wpos;
     if (atomic_load_explicit(&tail, memory_order_acquire) >= upto) return;
+    if (spin_ns) {
+        uint64_t spin_t0 = NOW();
+        for (unsigned i = 1;; i++) {
+            if (atomic_load_explicit(&tail, memory_order_acquire) >= upto) return;
+            RELAX();
+            if (!(i & 31) && NOW() - spin_t0 > spin_ns) break;
+        }
+    }
     SW_ZONE("recorder drain");
     uint64_t t0 = NOW();
     pthread_mutex_lock(&mu);
-    WAIT_DONE(atomic_load_explicit(&tail, memory_order_acquire) < upto, 2000000);
+    WAIT_DONE(atomic_load_explicit(&tail, memory_order_acquire) < upto, 1000000);
     pthread_mutex_unlock(&mu);
     uint64_t dt = NOW() - t0;
     st_t.drains++;
