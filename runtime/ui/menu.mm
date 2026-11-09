@@ -475,7 +475,7 @@ static void load_fonts(void) {
     ImGuiIO &io = ImGui::GetIO();
     io.Fonts->Clear();
     g_font = g_font_big = g_menu_font = g_menu_font_big = g_font_mono = NULL;
-    g_fonts_lang = ui_lang_generation();
+    g_fonts_lang = ui_lang_generation() * 10007 + ui_dynamic_generation();
     ImFontConfig cfg;
     cfg.OversampleH = 2;
     auto add = [&](const char *path, float size, ImFontConfig c) {
@@ -525,7 +525,8 @@ extern "C" void vk_imgui_fonts_changed(void);  // (runtime/nvn/vulkan/imgui_glue
 static void fonts_follow_language(void) {
     bool need_hint_fonts = (g_settings.quick_sort || g_settings.quick_drop) && g_romfs_dir && !g_hint_font_attempted;
     bool icons_changed = (g_settings.quick_sort || g_settings.quick_drop) && g_hint_generation != glyphs_generation();
-    if (g_fonts_lang == ui_lang_generation() && !need_hint_fonts && !icons_changed) return;
+    int current_fonts_gen = ui_lang_generation() * 10007 + ui_dynamic_generation();
+    if (g_fonts_lang == current_fonts_gen && !need_hint_fonts && !icons_changed) return;
     load_fonts();
 #ifdef __APPLE__
     ImGui_ImplMetal_DestroyFontsTexture();  // (NewFrame makes it again)

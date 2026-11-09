@@ -1179,7 +1179,7 @@ static int g_fonts_lang = -1;
 static void launcher_fonts(void) {
     ImGuiIO &io = ImGui::GetIO();
     io.Fonts->Clear();
-    g_fonts_lang = ui_lang_generation();
+    g_fonts_lang = ui_lang_generation() * 10007 + ui_dynamic_generation();
     g_font_small = g_font_menu = g_font_title = NULL;
     // Fira Sans (OFL, shipped: third_party/fonts/FiraSans) - a clean humanist sans, like the game's own menu text:
     // SemiBold for the title and the menu, Medium for the rest. It has Cyrillic too (Russian menus).
@@ -1214,7 +1214,7 @@ static void launcher_fonts(void) {
 
 extern "C" void vk_imgui_fonts_changed(void);  // (runtime/nvn/vulkan/imgui_glue.cpp)
 static void launcher_fonts_follow_language(void) {
-    if (g_fonts_lang == ui_lang_generation()) return;
+    if (g_fonts_lang == ui_lang_generation() * 10007 + ui_dynamic_generation()) return;
     launcher_fonts();
 #ifdef __APPLE__
     ImGui_ImplMetal_DestroyFontsTexture();  // (NewFrame makes it again)

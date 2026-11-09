@@ -13,6 +13,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "imgui.h"
@@ -231,6 +232,35 @@ static void encode(std::string &s, unsigned c) {
     else
         s += (char)(0xF0 | c >> 18), s += (char)(0x80 | (c >> 12 & 0x3F)), s += (char)(0x80 | (c >> 6 & 0x3F)),
             s += (char)(0x80 | (c & 0x3F));
+}
+
+// ------------------------------------------------------------------ dynamic glyphs
+static std::mutex dyn_lock;
+static std::unordered_set<uint32_t> seen_glyphs;
+static std::string dynamic_glyphs;
+static int dynamic_gen = 0;
+
+extern "C" void ui_register_glyphs(const char *text) {
+    if (!text || !*text) return;
+    std::lock_guard<std::mutex> g(dyn_lock);
+    bool added = false;
+    const unsigned char *p = (const unsigned char *)text;
+    while (*p) {
+        const unsigned char *start = p;
+        unsigned c = decode(p);
+        if (c >= 0x80) {
+            if (seen_glyphs.insert(c).second) {
+                dynamic_glyphs.append((const char *)start, (size_t)(p - start));
+                added = true;
+            }
+        }
+    }
+    if (added) dynamic_gen++;
+}
+
+extern "C" int ui_dynamic_generation(void) {
+    std::lock_guard<std::mutex> g(dyn_lock);
+    return dynamic_gen;
 }
 
 static unsigned upper(unsigned c) {
@@ -465,40 +495,14 @@ static int ttc_face(const char *path, const char *lang) {
     return !strcmp(lang, "ko") ? 1 : !strcmp(lang, "zh-Hans") ? 2 : !strcmp(lang, "zh-Hant") ? 3 : 0;
 }
 
-bool ui_merge_fallback_font(ImFontAtlas *atlas, float size, const ImFontConfig *base) {
-    const char *lang = ui_lang();
-    const char *const *fonts = !strcmp(lang, "ru") ? cyrillic_fonts : !strcmp(lang, "ja") ? ja_fonts
-                             : !strcmp(lang, "ko") ? ko_fonts : !strcmp(lang, "zh-Hans") ? zh_hans_fonts
-                             : !strcmp(lang, "zh-Hant") ? zh_hant_fonts : !strcmp(lang, "th") ? th_fonts
-                             : !strcmp(lang, "he") ? he_fonts : nullptr;
+static bool add_single_fallback(ImFontAtlas *atlas, float size, const ImFontConfig *base,
+                                const char *const *fonts, const char *lang,
+                                const ImVector<ImWchar> &ranges, const char *shipped_path = nullptr) {
     if (!fonts) return false;
-    static char shipped[1100];
-    shipped[0] = 0;
-    if (fonts == th_fonts && !rt_resource("NotoSansThai-Medium.ttf", "third_party/fonts/NotoSansThai/NotoSansThai-Medium.ttf",
-                                          shipped, sizeof shipped))
-        shipped[0] = 0;
-    if (fonts == he_fonts &&
-        !rt_resource("NotoSansHebrew-Medium.ttf", "third_party/fonts/NotoSansHebrew/NotoSansHebrew-Medium.ttf", shipped,
-                     sizeof shipped))
-        shipped[0] = 0;
-    // only the glyphs the language's texts use (a CJK font's full range would not fit an atlas texture), in both cases:
-    // option labels are drawn upper-cased (tr_upper), with capitals the texts themselves may never use
-    static ImVector<ImWchar> ranges;
-    static int ranges_gen = -1;
-    if (ranges_gen != ui_lang_generation()) {
-        ranges_gen = ui_lang_generation();
-        ImFontGlyphRangesBuilder b;
-        {
-            std::lock_guard<std::mutex> g(lock);
-            for (auto &kv : by_text) b.AddText(kv.second), b.AddText(tr_upper(kv.second).c_str());
-        }
-        b.AddText("0123456789%()/:.,-+ ");
-        ranges.clear();
-        b.BuildRanges(&ranges);
-    }
     for (int i = -1; i < 0 || fonts[i]; i++) {
-        const char *path = i < 0 ? shipped : fonts[i];  // (-1: a shipped font)
-        FILE *f = *path ? fopen(path, "rb") : nullptr;
+        const char *path = (i < 0 && shipped_path) ? shipped_path : (i >= 0 ? fonts[i] : nullptr);
+        if (!path || !*path) continue;
+        FILE *f = fopen(path, "rb");
         if (!f) continue;
         fclose(f);
         ImFontConfig cfg = base ? *base : ImFontConfig();
@@ -509,4 +513,95 @@ bool ui_merge_fallback_font(ImFontAtlas *atlas, float size, const ImFontConfig *
         return true;
     }
     return false;
+}
+
+bool ui_merge_fallback_font(ImFontAtlas *atlas, float size, const ImFontConfig *base) {
+    const char *lang = ui_lang();
+    const char *game_lang = menu_lang_for(language_text_code());
+
+    bool has_cjk = false, has_kana = false, has_hangul = false;
+    {
+        std::lock_guard<std::mutex> g(dyn_lock);
+        for (uint32_t c : seen_glyphs) {
+            if ((c >= 0x2E80 && c <= 0x9FFF) || (c >= 0xF900 && c <= 0xFAFF)) has_cjk = true;
+            if (c >= 0x3040 && c <= 0x30FF) { has_cjk = true; has_kana = true; }
+            if (c >= 0xAC00 && c <= 0xD7AF) { has_cjk = true; has_hangul = true; }
+        }
+    }
+
+    bool is_cjk = !strcmp(lang, "ja") || !strcmp(lang, "ko") ||
+                  !strcmp(lang, "zh-Hans") || !strcmp(lang, "zh-Hant") ||
+                  !strcmp(game_lang, "ja") || !strcmp(game_lang, "ko") ||
+                  !strcmp(game_lang, "zh-Hans") || !strcmp(game_lang, "zh-Hant") ||
+                  has_cjk;
+
+    bool is_ru = !strcmp(lang, "ru") || !strcmp(game_lang, "ru");
+    bool is_th = !strcmp(lang, "th") || !strcmp(game_lang, "th");
+    bool is_he = !strcmp(lang, "he") || !strcmp(game_lang, "he");
+
+    if (!is_cjk && !is_ru && !is_th && !is_he) return false;
+
+    // only the glyphs the language's texts use (a CJK font's full range would not fit an atlas texture), in both cases:
+    // option labels are drawn upper-cased (tr_upper), with capitals the texts themselves may never use
+    static ImVector<ImWchar> ranges;
+    static int ranges_gen = -1;
+    int cur_gen = ui_lang_generation() * 10007 + ui_dynamic_generation();
+    if (ranges_gen != cur_gen) {
+        ranges_gen = cur_gen;
+        ImFontGlyphRangesBuilder b;
+        {
+            std::lock_guard<std::mutex> g(lock);
+            for (auto &kv : by_text) b.AddText(kv.second), b.AddText(tr_upper(kv.second).c_str());
+        }
+        {
+            std::lock_guard<std::mutex> g(dyn_lock);
+            if (!dynamic_glyphs.empty()) b.AddText(dynamic_glyphs.c_str());
+        }
+        b.AddText("0123456789%()/:.,-+ ");
+        ranges.clear();
+        b.BuildRanges(&ranges);
+    }
+
+    bool merged = false;
+
+    if (is_cjk) {
+        const char *cjk_lang = (!strcmp(lang, "ja") || !strcmp(lang, "ko") ||
+                                !strcmp(lang, "zh-Hans") || !strcmp(lang, "zh-Hant")) ? lang :
+                               (!strcmp(game_lang, "ja") || !strcmp(game_lang, "ko") ||
+                                !strcmp(game_lang, "zh-Hans") || !strcmp(game_lang, "zh-Hant")) ? game_lang :
+                               has_hangul ? "ko" : has_kana ? "ja" : "zh-Hans";
+
+        const char *const *fonts = !strcmp(cjk_lang, "ja") ? ja_fonts
+                                 : !strcmp(cjk_lang, "ko") ? ko_fonts
+                                 : !strcmp(cjk_lang, "zh-Hant") ? zh_hant_fonts
+                                 : zh_hans_fonts;
+
+        merged |= add_single_fallback(atlas, size, base, fonts, cjk_lang, ranges);
+    }
+
+    if (is_ru) {
+        merged |= add_single_fallback(atlas, size, base, cyrillic_fonts, "ru", ranges);
+    }
+
+    if (is_th) {
+        static char shipped[1100];
+        if (!shipped[0]) {
+            if (!rt_resource("NotoSansThai-Medium.ttf", "third_party/fonts/NotoSansThai/NotoSansThai-Medium.ttf",
+                             shipped, sizeof shipped))
+                shipped[0] = 0;
+        }
+        merged |= add_single_fallback(atlas, size, base, th_fonts, "th", ranges, shipped[0] ? shipped : nullptr);
+    }
+
+    if (is_he) {
+        static char shipped[1100];
+        if (!shipped[0]) {
+            if (!rt_resource("NotoSansHebrew-Medium.ttf", "third_party/fonts/NotoSansHebrew/NotoSansHebrew-Medium.ttf",
+                             shipped, sizeof shipped))
+                shipped[0] = 0;
+        }
+        merged |= add_single_fallback(atlas, size, base, he_fonts, "he", ranges, shipped[0] ? shipped : nullptr);
+    }
+
+    return merged;
 }

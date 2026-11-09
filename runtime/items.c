@@ -28,6 +28,7 @@
 #include "nvn/tegra.h"
 #include "rt.h"
 #include "services/archive.h"
+#include "ui/i18n.h"
 
 uint8_t *fs_game_file(const char *path, size_t *out_n);  // runtime/services/fs.c
 
@@ -257,6 +258,7 @@ static void list_read(void) {
     for (int i = 0; i < g_nitems; i++)
         if (!w || g_items[w - 1].cat != g_items[i].cat || strcmp(g_items[w - 1].name, g_items[i].name)) g_items[w++] = g_items[i];
     g_nitems = w;
+    for (int i = 0; i < g_nitems; i++) ui_register_glyphs(g_items[i].name);
     LOG("[items] %d items can be added\n", g_nitems);
     free(d);
 }
