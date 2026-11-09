@@ -147,7 +147,16 @@ before the next poll is kept for the next query, so a short tap is not lost.
   actions retain the game's option.
 - Raw Switch injection (`SAVAGEWIND_INPUT` or a control-endpoint button) reaches factory-default actions through the
   game, but customized actions require host key/controller injection.
-- The button icons the game draws follow the Switch layer and the controller family, not the per-action bindings.
+- On 1.9.0, classified contextual guides for Interact, Jump, Attack, Soothe the horse, Paraglider and Activate rune
+  can follow a customized controller binding when it has a matching face-button pane or the native L guide.
+  The diamond places controller glyphs at their physical positions, with Button icons choosing the symbols.
+  The active pane follows the action's effective input. Factory-default Jump and Paraglider retain the game's
+  own selection to respect its Jump button option.
+  The Climb guide uses Jump in the tested context and has a separate native dodge path. Keyboard guides still
+  follow the Switch layer and the selected icon style.
+- Separate HUD control hints can follow the corresponding actions for climbing, swimming, surfing, horse riding,
+  Master Cycle controls, throwing and putting down objects, cancelling, targeting and detonating remote bombs.
+  This path uses a native icon for a matching raw button or key, including D-pad directions and triggers.
 - The 13 ids the game never asks about (1, 4, 6, 7, 8, 16, 20 to 24, 29, 30) are not on the page. No id above 40 is used:
   all 175 query sites (157 calls and 18 tail branches, in 91 functions) pass a constant from 0 to 40.
 
