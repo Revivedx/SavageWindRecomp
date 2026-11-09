@@ -1,4 +1,5 @@
-// Optional NVIDIA DLSS Super Resolution and Frame Generation backend (Windows + external NGX SDK).
+// NVIDIA DLSS Super Resolution and Frame Generation (Windows): the NVIDIA driver's NGX, loaded at run time, and
+// NVIDIA's DLLs next to savagewind.exe (dlss.c; ../../dlss_fetch.h downloads them). Elsewhere: unavailable.
 #pragma once
 
 #include <stdbool.h>
@@ -10,10 +11,9 @@ extern "C" {
 
 #include "vk.h"
 
-bool vk_dlss_compiled(void);
 void vk_dlss_required_instance_extensions(const char ***names, unsigned *count);
 void vk_dlss_required_device_extensions(const char ***names, unsigned *count);
-bool vk_dlss_init(void);  // NGX on g_vk.dev (false: no SDK, DLL or NVIDIA driver for it)
+bool vk_dlss_init(void);  // NGX on g_vk.dev (false: no NVIDIA DLLs here, or no NVIDIA driver with NGX)
 void vk_dlss_shutdown(void);
 
 // NVIDIA DLSS Super Resolution (Video > Upscaler)

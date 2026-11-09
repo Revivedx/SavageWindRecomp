@@ -1910,8 +1910,8 @@ frame's PSNR against each is 1.5-2.5 dB over theirs against each other, so it li
 ## Frame generation (NVIDIA DLSS)
 
 Video > Frame generation: NVIDIA DLSS (`frame_generation = 2`; greyed where it can't run) makes the frames between each
-two with NVIDIA's DLSS Frame Generation on GeForce RTX 40 and later (Windows; the DLSS SDK's `nvngx_dlss.dll` and
-`nvngx_dlssg.dll`, README "Building"). Elsewhere, or when NGX can't make the feature, the choice runs AMD FSR 3.
+two with NVIDIA's DLSS Frame Generation on GeForce RTX 40 and later (Windows; NVIDIA's `nvngx_dlssg.dll`, which the
+setup downloads: "No SDK" below). Elsewhere, or when NGX can't make the feature, the choice runs AMD FSR 3.
 
 **Multi frame generation.** Video > Frame generation multiplier (`frame_generation_multiplier = 2|3|4`;
 `SAVAGEWIND_FG_MULT` in tests): with DLSS, the frames on screen for each the game draws. 3x and 4x make two or three
@@ -1925,14 +1925,25 @@ one image more for each frame DLSS can make, and the game is paced at 1 / (n + 1
 (`framepace_period_ns`, `g_fg_active` = n). `SAVAGEWIND_FG_SHOT_AT` saves `_gen`, `_gen2`, `_gen3`.
 
 **Driving it.** NVIDIA's recommended path is Streamline, which takes over the swapchain's present and needs Reflex.
-Savage Wind uses NGX's own frame generation API instead (`nvsdk_ngx_helpers_dlssg_vk.h`, the DLSS SDK):
-`runtime/nvn/vulkan/dlss.cpp` `vk_dlssg_dispatch` records the interpolation into the frame's command buffer, in place
+Savage Wind uses NGX's own frame generation feature instead, with the parameters NVIDIA's SDK documents for it:
+`runtime/nvn/vulkan/dlss.c` `vk_dlssg_dispatch` records the interpolation into the frame's command buffer, in place
 of FSR 3's (`exec.c` `vk_fg_generate`), and everything around it stays as above: the same inputs (the final image, the
 HUD-less copy, the world camera's depth and motion vectors with Link's box), the present thread's pacing of the pair,
 the frame rate at half. The feature is made at the first generated frame and again when the final image's size or
 format or the depth's size changes; switching to FSR 3 or Off frees it (about 0.5 GB at 4K), and FSR 3's contexts
 when switching to DLSS. The device gets what NGX asks for frame generation besides its general list
 (`VK_KHR_buffer_device_address` in place of the EXT one, and bufferDeviceAddress).
+
+**No SDK.** Nothing of NVIDIA's SDK is compiled in, linked or shipped, for Super Resolution as for Frame Generation.
+`dlss.c` finds the NVIDIA driver's NGX core (`_nvngx.dll`, through `HKLM\SOFTWARE\NVIDIA Corporation\Global\NGXCore`),
+takes its Vulkan entry points with `GetProcAddress`, and declares the few NGX types, values and parameter names it
+uses from the SDK's documented interface. NGX's parameter object is a C++ class reached through its vtable (MSVC's
+layout: each group of overloads in reverse order); a set-then-get round trip checks the layout first, and DLSS stays
+off if it fails. NGX is loaded only when NVIDIA's DLLs are next to `savagewind.exe`: `nvngx_dlss.dll` (Super
+Resolution) and `nvngx_dlssg.dll` (Frame Generation), NVIDIA's own. The setup page's Download NVIDIA DLSS (on PCs with
+an NVIDIA driver; `dlss_download = 1`, the default) and the game files page download them, with NVIDIA's
+`LICENSE.txt` as `NVIDIA-DLSS-LICENSE.txt`, from NVIDIA/DLSS on GitHub at release `v310.9.16` (`runtime/dlss_fetch.c`:
+WinHTTP; size and SHA-256 checked, written as `.part` and renamed only when both match).
 
 **The camera.** Besides the vectors, NGX takes the camera's matrices (clip to the previous frame's clip and back, view
 to clip and back), row-major for a row vector times the matrix (D3D's way, as Streamline's), and its position, axes,

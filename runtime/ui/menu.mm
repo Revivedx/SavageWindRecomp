@@ -40,6 +40,7 @@ extern "C" {
 #include "../quick_drop.h"
 #include "../nvn/glyphs.h"
 #include "../color_grade.h"
+#include "../dlss_fetch.h"
 #include "../window_size.h"
 extern "C" {
 #include "../language.h"
@@ -919,7 +920,8 @@ static void tab_display(void) {
                                ? std::string(tr("AMD FSR 4"))
                                : std::string(tr("FSR 4")) + " " + tr(fsr4_offered() ? "(coming soon)" : "(AMD Radeon only)");
         std::string dlss = upscaler_available(UPSCALE_DLSS) ? std::string(tr("DLSS")) :
-                           std::string(tr("DLSS")) + " " + tr("(NVIDIA RTX only)");
+                           std::string(tr("DLSS")) + " " +
+                               tr(dlss_fetch_missing() ? "(download it in Savage Wind Configuration)" : "(NVIDIA RTX only)");
 #ifdef __APPLE__
         const char *ups[] = {"Off", "MetalFX"};
         static const int ups_value[] = {UPSCALE_OFF, UPSCALE_METALFX};
@@ -1027,10 +1029,11 @@ static void tab_display(void) {
                    "AMD FidelityFX CAS sharpens the 3D image after the upscaler (or at the window's resolution with the "
                    "upscaler off), before the HUD is drawn over it: edges get crisper without halos. Most useful with "
                    "AMD FSR 1.", false);
-        // Frame generation: AMD FSR 3 (vulkan/framegen.cpp) or NVIDIA DLSS (vulkan/dlss.cpp, greyed off RTX 40
+        // Frame generation: AMD FSR 3 (vulkan/framegen.cpp) or NVIDIA DLSS (vulkan/dlss.c, greyed off RTX 40
         // and later); the frame rate counts the presented frames (framepace.c)
         std::string fg_dlss = frame_gen_available(FG_DLSS) ? std::string(tr("NVIDIA DLSS")) :
-                              std::string(tr("NVIDIA DLSS")) + " " + tr("(NVIDIA RTX 40 and later)");
+                              std::string(tr("NVIDIA DLSS")) + " " +
+                                  tr(dlss_fetch_missing() ? "(download it in Savage Wind Configuration)" : "(NVIDIA RTX 40 and later)");
         const char *fgn[] = {"Off", "AMD FSR 3", fg_dlss.c_str()};
         bool fg_avail[FG_COUNT];
         for (int i = 0; i < FG_COUNT; i++) fg_avail[i] = frame_gen_available(i);

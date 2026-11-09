@@ -40,6 +40,7 @@ extern "C" {
 #include "../settings.h"
 #include "../gamelib.h"
 #include "../color_grade.h"
+#include "../dlss_fetch.h"
 #include "../pc_cursor.h"
 #include "../window_size.h"
 void guest_call(Cpu *, uint64_t);
@@ -282,7 +283,7 @@ const char *ups_label(const Item &, int x) {
         available = tr("DLSS");
         return available.c_str();
     }
-    return soon("DLSS", "(NVIDIA RTX only)");
+    return soon("DLSS", dlss_fetch_missing() ? "(download it in Savage Wind Configuration)" : "(NVIDIA RTX only)");
 }
 
 const char *fps_label(const Item &, int x) {
@@ -584,7 +585,7 @@ void build_items(void) {
                        },
                        [](const Item &) { return g_settings.sharpening; },
                        [](const Item &, int x) { g_settings.sharpening = x; }, 0));
-    // Frame generation: AMD FSR 3 (vulkan/framegen.cpp) or NVIDIA DLSS (vulkan/dlss.cpp, greyed where it can't run)
+    // Frame generation: AMD FSR 3 (vulkan/framegen.cpp) or NVIDIA DLSS (vulkan/dlss.c, greyed where it can't run)
     v.push_back(choice(P_VIDEO_ADV, "Frame generation", "Twice the frames on screen. Adds a little delay.",
                        [](const Item &) { return (int)FG_COUNT; },
                        [](const Item &, int x) {

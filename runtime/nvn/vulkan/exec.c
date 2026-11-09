@@ -10005,7 +10005,7 @@ int vk_fg_generate(NvnTexture *t, TexBackend *b, TexBackend **gens) {
             if (test < 0) test = getenv("SAVAGEWIND_FG_TEST") ? atoi(getenv("SAVAGEWIND_FG_TEST")) : 0;
             if (test != 2) rec_drain();  // (FidelityFX and NGX record into cb themselves: what was queued before goes first)
             if (test == 2) ok = true;
-            else if (dlss) {  // NVIDIA DLSS Frame Generation (dlss.cpp): the same inputs, and the camera's matrices
+            else if (dlss) {  // NVIDIA DLSS Frame Generation (dlss.c): the same inputs, and the camera's matrices
                 DlssgFrame d = {.color = b, .hudless = hl, .view_format = unorm_of(b->format), .depth = db, .motion = mv,
                                 .out = {outs[0], outs[n > 1 ? 1 : 0], outs[n > 2 ? 2 : 0]}, .count = n,
                                 .ysign = fg_ysign(), .gl_depth = nvn_depth_mode() == 0, .near_ = f.near_, .far_ = f.far_, .fovy = f.fovy,
@@ -10042,7 +10042,7 @@ int vk_fg_generate(NvnTexture *t, TexBackend *b, TexBackend **gens) {
     return ngen;
 }
 
-// ================================================================== DLSS (Video > Upscaler; dlss.cpp)
+// ================================================================== DLSS (Video > Upscaler; dlss.c)
 // NVIDIA DLSS Super Resolution at the scene -> final image composite (scene_post): the 3D scene, at its internal
 // resolution (RS_SCENE), to its size in the final image before the HUD is drawn over it. Besides the colour it takes
 // the world camera's depth and the camera's motion vectors, the ones frame generation makes (fg_draw finds the camera,
