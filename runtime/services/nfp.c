@@ -17,6 +17,7 @@
 #include "../amiibo.h"
 #include "../hle.h"
 #include "../ipc.h"
+#include "../settings.h"
 
 enum { DEV_INITIALIZED, DEV_SEARCHING, DEV_FOUND, DEV_REMOVED, DEV_MOUNTED, DEV_UNAVAILABLE, DEV_FINALIZED };
 enum { E_DEVICE_NOT_FOUND = 64, E_WRONG_STATE = 73, E_TAG_REMOVED = 97, E_NOT_SET_UP = 120, E_AREA_NOT_INITIALIZED = 128,
@@ -36,9 +37,11 @@ static uint32_t g_area_id;
 static bool g_area_open, g_area_dirty;
 static AmiiboData g_data;  // what the mounted figure holds (amiibo_read_data)
 static bool g_data_ok;     // ... read with the amiibo keys
+static uint8_t g_scan_uid[7];  // the serial number the game is told for this scan (scan_uid)
+static uint16_t g_scans;
 
 RT_ON_RESET(nfp_reset) {
-    g_state = DEV_INITIALIZED, g_fig = -1, g_initialized = false;
+    g_state = DEV_INITIALIZED, g_fig = -1, g_initialized = false, g_scans = 0;
     g_activate = g_deactivate = NULL, g_activate_h = g_deactivate_h = g_avail_h = 0;
     g_area_size = -1, g_area_open = g_area_dirty = false, g_data_ok = false;
 }
@@ -70,6 +73,16 @@ static void today(uint8_t *p) {  // {u16 year, u8 month, u8 day}
     p[0] = (uint8_t)y, p[1] = (uint8_t)(y >> 8), p[2] = (uint8_t)(tm.tm_mon + 1), p[3] = (uint8_t)tm.tm_mday;
 }
 
+// The serial number of this scan: the figure's own. The game knows a figure by a hash of it and turns one away that
+// was already scanned that day, so with Unlimited amiibo usage each scan is a serial number it hasn't seen (the clock
+// and a count, never the same twice). A figure's game data stays under its own (amiibo_area_load).
+static void scan_uid(const Amiibo *a) {
+    memcpy(g_scan_uid, a->uid, sizeof g_scan_uid);
+    if (!g_settings.unlimited_amiibo) return;
+    uint64_t v = (uint64_t)(uint32_t)time(NULL) << 16 | g_scans++;
+    for (int i = 1; i < 7; i++) g_scan_uid[i] ^= (uint8_t)(v >> (8 * (i - 1)));
+}
+
 static void nfp_user(Service *s, IpcReq *req, IpcResp *resp) {
     (void)s;
     const Amiibo *a;
@@ -87,6 +100,7 @@ static void nfp_user(Service *s, IpcReq *req, IpcResp *resp) {
         int i = amiibo_on_reader();
         g_fig = i, g_state = i >= 0 ? DEV_FOUND : DEV_SEARCHING;
         if (i >= 0) {
+            scan_uid(amiibo_at(i));
             LOG("[nfp] %s on the reader\n", amiibo_at(i)->name);
             fire(g_activate);
         } else {
@@ -152,7 +166,7 @@ static void nfp_user(Service *s, IpcReq *req, IpcResp *resp) {
         int st = g_state;
         if (st != DEV_FOUND && st != DEV_MOUNTED) { resp->result = NFP_ERROR(st == DEV_REMOVED ? E_TAG_REMOVED : E_WRONG_STATE); break; }
         uint8_t t[0x58] = {0};
-        memcpy(t, amiibo_at(g_fig)->uid, 7);
+        memcpy(t, g_scan_uid, 7);
         t[0x0a] = 7, t[0x20] = 1, t[0x24] = 2;
         write_out(req, t, sizeof t);
         break;

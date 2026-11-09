@@ -157,6 +157,7 @@ typedef struct {
     int weapon_wear;         // how fast they wear out otherwise, percent of the game's (WEAPON_WEAR_MIN..MAX)
     bool infinite_arrows;    // shooting a bow takes no arrows from the pouch
     bool infinite_stamina;   // the stamina wheel never goes down
+    bool unlimited_amiibo;   // the once-a-day limit per figure doesn't apply (runtime/services/nfp.c)
     bool infinite_rupees;    // the wallet is kept at 9999 rupees (runtime/rupees.c)
     int weather;             // WEATHER_COUNT: the game's, rain or thunderstorms kept out, or one weather held (weather.c)
     bool god_mode;           // Link takes no damage
