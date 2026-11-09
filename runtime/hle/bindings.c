@@ -148,6 +148,8 @@ int bind_label_family(void) {
 
 static void result(int kind, int dev, int slot, int other);
 static int act_default(int dev, int id);
+static void act_refresh(void);
+static bool act_raw_moved(int id);
 
 void bind_reset(int dev) {
     if (dev == BIND_DEV_PAD) memcpy(g_bind_pad, k_def_pad, sizeof g_bind_pad);
@@ -166,6 +168,7 @@ void bind_reset_slot(int slot) {
     if (slot < 0 || slot >= BIND_KEY_COUNT) return;
     g_bind_key[slot] = k_def_key[slot];
     if (bind_pad_slot(slot)) g_bind_pad[slot] = k_def_pad[slot];
+    act_refresh();
 }
 
 bool bind_is_default(int dev) {
@@ -245,6 +248,7 @@ static void assign(int dev, int slot, int host) {
         dev == BIND_DEV_PAD ? k_pad_ini[host] : bind_key_label(host), other >= 0 ? " (swapped with " : "",
         other >= 0 ? k_names[other] : "", other >= 0 ? ")" : "");
     if (other >= 0) LOG("[input]   %s -> %s\n", k_names[other], dev == BIND_DEV_PAD ? bind_pad_label(t[other], 0) : bind_key_label(t[other]));
+    act_refresh();  // a moved Switch button must not drag the game's actions along (see act_refresh)
     result(other >= 0 ? 2 : 1, dev, slot, other);
 }
 
@@ -324,6 +328,7 @@ bool bind_settings_load(const char *key, const char *val) {
         }
         if (i < BIND_PAD_COUNT) act_migrate(pad ? BIND_DEV_PAD : BIND_DEV_KEY, i);
     }
+    act_refresh();
     return true;
 }
 
@@ -373,10 +378,13 @@ bool act_is_default(int id) {
         (g_act_key[id] == act_default(BIND_DEV_KEY, id) && g_act_pad[id] == act_default(BIND_DEV_PAD, id));
 }
 
+// An action answers from its own host bindings when it differs from its factory default, and also when its Switch
+// button was rebound: the game would answer from the Switch layer and the action would follow that button (#608:
+// moving "Menu: sort / sensor" took Attack along). The menus keep reading the Switch layer either way.
 static void act_refresh(void) {
     uint64_t custom = 0;
     for (int id = 0; id < ACT_COUNT; id++)
-        if (!act_is_default(id)) custom |= 1ull << id;
+        if (!act_is_default(id) || act_raw_moved(id)) custom |= 1ull << id;
     a_custom = custom;
 }
 
@@ -432,6 +440,12 @@ static const uint32_t k_masks_190[ACT_COUNT] = {
     0x1, 0x2, 0x8, 0x10, 0x8, 0x1, 0x8, 0x2, 0x8, 0x2, 0x8, 0x8, 0x2, 0x4, 0x2, 0x40, 0x1, 0x80, 0x20, 0x8, 0x2,
     0x10000, 0x20000, 0x10000, 0x20000, 0x2, 0x1, 0x2000, 0x4000, 0x4, 0x2, 0x4000, 0x4000, 0x2000, 0x1, 0x20000,
     0x10, 0x20000, 0x1, 0x2, 0x2000};
+
+// The Switch button an action reads in the 1.9.0 table has been rebound (the menu rows of the Key bindings page).
+static bool act_raw_moved(int id) {
+    int b = mask_button(k_masks_190[id]);
+    return b >= 0 && (g_bind_key[b] != k_def_key[b] || (bind_pad_slot(b) && g_bind_pad[b] != k_def_pad[b]));
+}
 
 static int act_default(int dev, int id) {
     int b = mask_button(k_masks_190[id]);

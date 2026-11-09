@@ -360,7 +360,8 @@ static void schema_migration_is_one_time(void) {
         assert(g_act_key[19] == SDL_SCANCODE_H && g_act_pad[19] == SDL_GAMEPAD_BUTTON_SOUTH);
         host(0, 0, 0);
         act_poll(true);
-        assert(hold(JUMP) == -1 && trig(JUMP) == -1 && hold(19) == 0);
+        // (X is rebound, so Jump answers from its own Space / north, not from the moved Switch button)
+        assert(hold(JUMP) == 0 && trig(JUMP) == 0 && hold(19) == 0);
         char *again = save_bindings();
         assert(!strcmp(saved, again));
         free(saved);
@@ -507,6 +508,43 @@ static void names_and_groups(void) {
         for (unsigned i = 0; i < sizeof raw / sizeof *raw; i++) assert(strcmp(bind_input_name(slot), raw[i]));
 }
 
+// #608: moving "Menu: sort / sensor" (the raw Y slot) used to take Attack along, because a factory-default action is
+// answered by the game from the Switch layer. The action keeps its own key; the menus still see the moved button.
+static void a_moved_menu_button_leaves_its_actions_alone(void) {
+    SDL_Event e = {0};
+    reset_bindings();
+    bind_settings_load("act_schema", "2");
+    act_poll(true);
+    assert(hold(ATTACK) == -1);  // all defaults: the game answers
+    bind_capture_begin(BIND_DEV_KEY, BIND_Y);
+    e.type = SDL_EVENT_KEY_DOWN; e.key.scancode = SDL_SCANCODE_LALT;
+    assert(bind_capture_event(&e) && g_bind_key[BIND_Y] == SDL_SCANCODE_LALT);
+    assert(g_act_key[ATTACK] == BIND_MOUSE + SDL_BUTTON_LEFT && act_is_default(ATTACK));
+    act_poll(true);
+    assert(hold(ATTACK) == 0 && hold(JUMP) == -1);  // Attack now answered from its own (unchanged) key; Jump reads X
+    key_down[SDL_SCANCODE_LALT] = 1;
+    host(0, 0, 0);
+    act_poll(true);
+    assert(hold(ATTACK) == 0 && trig(ATTACK) == 0);  // Alt is the menu's sort button, not Attack
+    key_down[SDL_SCANCODE_LALT] = 0;
+    key_down[BIND_MOUSE + SDL_BUTTON_LEFT] = 1;
+    host(0, 0, 0);
+    act_poll(true);
+    assert(hold(ATTACK) == 1 && trig(ATTACK) == 1);
+    act_poll(false);
+    assert(hold(ATTACK) == -1);  // menus: the Switch layer answers
+    key_down[BIND_MOUSE + SDL_BUTTON_LEFT] = 0;
+    host(0, 0, 0);
+    // the same through the controller side, and a reset puts the game back in charge
+    bind_capture_begin(BIND_DEV_PAD, BIND_Y);
+    e.type = SDL_EVENT_GAMEPAD_BUTTON_DOWN; e.gbutton.button = SDL_GAMEPAD_BUTTON_LEFT_SHOULDER;
+    assert(bind_capture_event(&e));
+    bind_reset_slot(BIND_Y);
+    act_poll(true);
+    assert(hold(ATTACK) == -1);
+    reset_bindings();
+}
+
 int main(void) {
     for (int i = 0; i < ACT_COUNT; i++) masks[i] = 0x1;
     masks[JUMP] = 0x8, masks[ATTACK] = 0x10, masks[INTERACT] = 0x1, masks[CANCEL] = 0x2;
@@ -525,6 +563,7 @@ int main(void) {
     captures_allow_shared_action_inputs();
     host_pad_slots();
     names_and_groups();
+    a_moved_menu_button_leaves_its_actions_alone();
     puts("action bindings: default fallthrough, custom host bindings, schema migration, held / pressed, menus, shared keys, pad capture, contexts, reset and ini passed");
     return 0;
 }

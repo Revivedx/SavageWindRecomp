@@ -3,7 +3,7 @@
 Each game action owns one keyboard/mouse binding and one controller binding. Its factory defaults are copied from
 its Switch button's original layout using the fixed 1.9.0 mask table below: Jump starts on Space / North, Interact
 on E / East, and so on. If either device differs from its factory default, the action reads its own host bindings on
-both devices, independent of raw Switch rebinds. With both devices at factory defaults, the game answers through the
+both devices, independent of raw Switch rebinds. With both devices at factory defaults and the action's Switch button not rebound, the game answers through the
 Switch layer as before, preserving its Jump button change option and raw Switch injection. Multiple actions may share
 an input. Reset restores each action's factory defaults. `ACT_FOLLOW` remains a reset command accepted by `act_set`;
 it is no longer stored in `g_act_key` or `g_act_pad`. `ACT_NONE` unbinds an action side.
@@ -16,7 +16,8 @@ Walk, Tilt, gyro and game action bindings allow shared inputs on both devices. A
 slot, including raw Switch menu buttons; rebinding a raw slot also leaves these shared bindings intact. Legacy
 host slots still swap among themselves on the same device, including the raw Switch buttons (0 to 15).
 
-The game's title, pause and map menus still use the raw Switch layer, including legacy raw-button rebinds. The runtime
+The game's title, pause and map menus still use the raw Switch layer, including legacy raw-button rebinds. Rebinding a raw Switch button (for example "Menu: sort / sensor", Y) makes the actions that read it answer from their own
+host bindings, so they stay where they were instead of following the menu button (#608). The runtime
 overlay and launcher keep their fixed navigation shortcuts. The separate UI update can use `bind_input_name`,
 and `bind_input_group` ("gyro" or NULL). Raw Switch inputs are named by what they do (`bind_input_name(BIND_A)` is
 "Menu: confirm"), never by the button. No slots are hidden by these helpers; the page and overlay simply do not list
