@@ -685,24 +685,44 @@ static void inventory_layout_from_overlay(const char *host) {
 
 #define HUD_ICON_SCALE 1.5f
 
+// Action IDs in the game's input table.
+enum HudAction {
+    HUD_ACTION_UNKNOWN = -1,
+    HUD_ACTION_INTERACT = 0,
+    HUD_ACTION_JUMP = 2,
+    HUD_ACTION_ATTACK = 3,
+    HUD_ACTION_GUARD = 13,
+    HUD_ACTION_CANCEL = 14,
+    HUD_ACTION_PARAGLIDER = 19,
+    HUD_ACTION_HORSE_SPEED = 26,
+    HUD_ACTION_HORSE_SOOTHE = 27,
+    HUD_ACTION_THROW_WEAPON = 28,
+    HUD_ACTION_ACTIVATE_RUNE = 34,
+    HUD_ACTION_WATER_SPIN = 36,
+    HUD_ACTION_THROW_DISTANCE = 37,
+    HUD_ACTION_CYCLE_ACCELERATE = 38,
+    HUD_ACTION_CYCLE_BRAKE = 39,
+    HUD_ACTION_CYCLE_JUMP = 40,
+};
+
 // Indices in 1.9.0's DoCommand prompt table. The separate command table maps 0x42 to Descend (2),
 // 0x0e to Pull (26), 0x3c to Swim Upward (33), and 0x53 to the contextual Dash guide (35).
 // Prompts without a known action keep their native selection.
 static int hud_prompt_action(uint32_t prompt) {
     switch (prompt) {
-    case 0: return 19;  // Glide
+    case 0: return HUD_ACTION_PARAGLIDER;  // Glide
     case 1: case 2: case 3: case 4: case 5: case 6: case 7: case 8: case 9: case 10: case 11:
     case 13: case 14: case 15: case 17: case 18: case 20: case 21: case 22: case 23: case 24: case 25:
     case 26: case 27: case 33: case 34: case 35: case 36: case 37: case 38: case 39: case 40:
     case 41: case 42: case 44: case 45: case 47:
-        return 0;  // Contextual interactions accepted by the game's isTrig(Interact) paths
-    case 12: return 27;  // Soothe the horse
-    case 16: return 2;  // Climb: the observed Jump prompt. The same command also confirms in a dodge path.
+        return HUD_ACTION_INTERACT;  // Contextual interactions accepted by the game's isTrig(Interact) paths
+    case 12: return HUD_ACTION_HORSE_SOOTHE;  // Soothe the horse
+    case 16: return HUD_ACTION_JUMP;  // Climb: the observed Jump prompt. The same command also confirms in a dodge path.
     case 19: case 32: case 43:
-        return 3;  // Flurry Rush / Sneakstrike / Hit
+        return HUD_ACTION_ATTACK;  // Flurry Rush / Sneakstrike / Hit
     case 28: case 29: case 30: case 31: case 46:
-        return 34;  // Stop Time / Activate / Freeze / Shatter / Summon
-    default: return -1;
+        return HUD_ACTION_ACTIVATE_RUNE;  // Stop Time / Activate / Freeze / Shatter / Summon
+    default: return HUD_ACTION_UNKNOWN;
     }
 }
 
@@ -714,7 +734,7 @@ int rt_hud_action_button(uint32_t prompt) {
     int host;
     if (act_is_default(action)) {
         // Keep the game's own Jump button option for its factory-default actions.
-        if (action == 2 || action == 19) return -1;
+        if (action == HUD_ACTION_JUMP || action == HUD_ACTION_PARAGLIDER) return -1;
         int raw = act_switch_button(action);
         if (raw < 0) return -1;
         host = g_bind_pad[raw];
@@ -741,20 +761,20 @@ int rt_hud_action_refresh(uint64_t screen, uint32_t pending, uint32_t shown) {
 // SousaGuide's numbered entries are separate from DoCommand's contextual diamond.
 static int hud_guide_action(uint32_t guide) {
     switch (guide) {
-    case 0: return 26;  // Speed up horse
-    case 2: return 27;  // Soothe horse
-    case 3: return 13;  // Target / center
-    case 4: case 5: return 37;  // Throw distance
-    case 6: case 15: case 22: case 31: case 32: return 14;  // Cancel
-    case 7: case 9: case 14: return 2;  // Jump / swim dash
-    case 8: case 13: return 0;  // Descend / run in the contextual guide
-    case 24: return 34;  // Detonate remote bomb
-    case 25: return 36;  // Zora Helm spin attack
-    case 26: return 38;  // Master Cycle accelerate
-    case 27: return 39;  // Master Cycle brake
-    case 28: return 40;  // Master Cycle jump
-    case 29: case 30: return 28;  // Put down / throw held object
-    default: return -1;
+    case 0: return HUD_ACTION_HORSE_SPEED;  // Speed up horse
+    case 2: return HUD_ACTION_HORSE_SOOTHE;  // Soothe horse
+    case 3: return HUD_ACTION_GUARD;  // Target / center
+    case 4: case 5: return HUD_ACTION_THROW_DISTANCE;  // Throw distance
+    case 6: case 15: case 22: case 31: case 32: return HUD_ACTION_CANCEL;  // Cancel
+    case 7: case 9: case 14: return HUD_ACTION_JUMP;  // Jump / swim dash
+    case 8: case 13: return HUD_ACTION_INTERACT;  // Descend / run in the contextual guide
+    case 24: return HUD_ACTION_ACTIVATE_RUNE;  // Detonate remote bomb
+    case 25: return HUD_ACTION_WATER_SPIN;  // Zora Helm spin attack
+    case 26: return HUD_ACTION_CYCLE_ACCELERATE;  // Master Cycle accelerate
+    case 27: return HUD_ACTION_CYCLE_BRAKE;  // Master Cycle brake
+    case 28: return HUD_ACTION_CYCLE_JUMP;  // Master Cycle jump
+    case 29: case 30: return HUD_ACTION_THROW_WEAPON;  // Put down / throw held object
+    default: return HUD_ACTION_UNKNOWN;
     }
 }
 
