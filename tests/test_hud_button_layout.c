@@ -139,6 +139,31 @@ static size_t build_synthetic_padocommand(uint8_t *b, int which) {
     return o;
 }
 
+static size_t build_synthetic_padocommand_l(uint8_t *b) {
+    memset(b, 0, 1024);
+    memcpy(b, "FLYT\xFF\xFE\x14\x00\x00\x02\x08\x05", 12);
+    size_t o = 0x14;
+    uint8_t txl[24] = {0};
+    o = append_sec(b, o, "txl1", txl, sizeof txl);
+    uint8_t fnl[28] = {0};
+    fnl[0] = 1;
+    uint32_t foff = 8;
+    memcpy(fnl + 4, &foff, 4);
+    strcpy((char *)fnl + 8, "Normal_00.bffnt");
+    o = append_sec(b, o, "fnl1", fnl, sizeof fnl);
+    uint8_t text_body[192] = {0};
+    strncpy((char *)text_body + 4, "T_GuideL_00", 24);
+    uint32_t text_offset = 0x80;
+    memcpy(text_body + 0x5C, &text_offset, 4);
+    text_body[0x78] = 'L';
+    o = append_sec(b, o, "txt1", text_body, sizeof text_body);
+    o = append_pane(b, o, "pic1", "Nt_KeyTexL_00", -60.0f, 0.0f, 0.0f, 1.0f);
+    o = append_pane(b, o, "pic1", "Nt_KeyTexL_01", 0.0f, 0.0f, 0.0f, 1.0f);
+    uint32_t total = (uint32_t)o;
+    memcpy(b + 0xC, &total, 4);
+    return o;
+}
+
 static const uint8_t *find_pane(const uint8_t *b, size_t n, const char *name) {
     size_t o = b[6] | b[7] << 8;
     while (o + 8 <= n) {
@@ -222,10 +247,22 @@ static void test_contextual_binding(void) {
     assert(rt_hud_action_guide_button(9, 0x1d) == 0x0f);
     bind_reset(BIND_DEV_KEY);
     g_settings.button_icons = ICONS_XBOX;
+    glyphs_fixed_hud(true);
     act_set(BIND_DEV_PAD, 0, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER);
     assert(rt_hud_action_button(2) == 4);
+    assert(glyphs_context_button_current() == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER);
     act_set(BIND_DEV_PAD, 0, SDL_GAMEPAD_BUTTON_DPAD_UP);
-    assert(rt_hud_action_button(2) == -1);
+    assert(rt_hud_action_button(2) == 4);
+    assert(glyphs_context_button_current() == SDL_GAMEPAD_BUTTON_DPAD_UP);
+    act_set(BIND_DEV_PAD, 0, PADB_RTRIGGER);
+    assert(rt_hud_action_button(2) == 4);
+    assert(glyphs_context_button_current() == PADB_RTRIGGER);
+    act_set(BIND_DEV_PAD, 0, SDL_GAMEPAD_BUTTON_LEFT_STICK);
+    assert(rt_hud_action_button(2) == 4);
+    assert(glyphs_context_button_current() == SDL_GAMEPAD_BUTTON_LEFT_STICK);
+    act_set(BIND_DEV_PAD, 0, SDL_GAMEPAD_BUTTON_SOUTH);
+    assert(rt_hud_action_button(2) == BIND_B);
+    assert(glyphs_context_button_current() == -1);
 
     hud_faces_ready = false;
     hud_display.screen = 0;
@@ -254,7 +291,7 @@ int main(void) {
     for (int w = 0; w < 4; w++) {
         uint8_t src[2048], dst[2112];
         size_t sn = build_synthetic_padocommand(src, w);
-        size_t dn = hud_letters_flyt(src, sn, dst, w, pos, true, &panes);
+        size_t dn = hud_letters_flyt(src, sn, dst, w, pos, true, NULL, 0, &panes);
         assert(dn > sn);
         const uint8_t *btn = find_pane(dst, dn, "N_BtnA_00");
         const uint8_t *base = find_pane(dst, dn, "P_Base_00");
@@ -280,6 +317,32 @@ int main(void) {
         assert(nearf(shadow_x, act == 3 ? -60.0f : 60.0f));
         assert(nearf(shadow_y, act == 0 ? 4.0f : 0.0f));
     }
+
+    uint8_t l_src[1024], l_dst[1280], text_template[176] = {0};
+    memcpy(text_template, "txt1", 4);
+    uint32_t template_size = sizeof text_template, template_text_offset = 0xA8;
+    memcpy(text_template + 4, &template_size, 4);
+    memcpy(text_template + 12, "T_B_00", 6);
+    memcpy(text_template + 0x64, &template_text_offset, 4);
+    text_template[0xA8] = 'B';
+    text_template[0xAC] = '-';
+    size_t l_size = build_synthetic_padocommand_l(l_src);
+    int l_panes = 0;
+    size_t l_result = hud_letters_flyt(l_src, l_size, l_dst, 4, pos, true,
+                                       text_template, sizeof text_template, &l_panes);
+    assert(l_result > l_size && l_panes == 2);
+    const uint8_t *l_icon = find_pane(l_dst, l_result, "Nt_KeyTexL_00");
+    assert(l_icon && !memcmp(l_icon, "txt1", 4));
+    uint32_t l_text_offset;
+    memcpy(&l_text_offset, l_icon + 0x64, sizeof l_text_offset);
+    uint16_t l_code;
+    memcpy(&l_code, l_icon + l_text_offset, sizeof l_code);
+    assert(l_code == HUD_CONTEXT_CODE);
+    uint16_t l_end;
+    memcpy(&l_end, l_icon + l_text_offset + 2, sizeof l_end);
+    assert(l_end == 0);
+    assert(!find_pane(l_dst, l_result, "Nt_KeyTexL_01") ||
+           !memcmp(find_pane(l_dst, l_result, "Nt_KeyTexL_01"), "txt1", 4));
     assert(panes == 12);
 
     puts("PASS: HUD button layout positions and FLYT patching");

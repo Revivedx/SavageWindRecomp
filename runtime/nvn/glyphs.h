@@ -16,10 +16,12 @@ bool glyphs_apply_layout(uint32_t format, uint32_t w, uint32_t h, uint8_t *lin, 
 bool glyphs_is_layout_icon(uint32_t w, uint32_t h, const uint8_t *lin, uint32_t row);
 
 // The rombo's face icons use their own characters and cells in External_00.bffnt.
-enum { HUD_FACE_CODE = 0xE068, HUD_FACE_INDEX = 51, HUD_FACE_COUNT = 4 };
+enum { HUD_FACE_CODE = 0xE068, HUD_FACE_INDEX = 51, HUD_FACE_COUNT = 4, HUD_CONTEXT_CODE = 0xE06C };
 extern const int glyphs_face_buttons[HUD_FACE_COUNT];  // East, South, North, West
 void glyphs_fixed_hud(bool enabled);
 bool glyphs_hud_faces_fixed(void);
+void glyphs_context_button(int host_button);
+int glyphs_context_button_current(void);
 
 // Changes whenever the icons to draw change (device, bindings, setting): sheets uploaded under another one go up again.
 uint32_t glyphs_generation(void);
