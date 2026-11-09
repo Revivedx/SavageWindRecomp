@@ -978,9 +978,10 @@ static void hud_letters_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz)
 // (Savage Wind+) Video > Haze: the air's haze. BOTW's outdoor haze is its atmospheric scattering, set per climate in
 // Pack/TitleBG.pack's WorldMgr/normal.bwinfo (AAMP, 20 climates): CalcMie and CalcRayleigh (the white and the blue of
 // the air: lower, clearer; at 0.6x the sky darkens and turns teal) and CalcSfParamNear (0 or below: the haze close by,
-// least at 0). The setting's share k of the game's haze gives those 0.7 + 0.3 k times theirs (0.85 at 50 %, where far
-// mountains keep their colour and the sky its blue; seen from Hebra's tower at noon, clear sky) and k times the near
-// one. The file is read at the start: one patch over its bytes, the same size.
+// least at 0). The setting's share k of the game's haze gives those 0.7 + 0.3 k times theirs and k times the near one.
+// k stays at 75 % or more (HAZE_MIN): at 50 % (0.85x) the sky, the far mountains and the ground already turn
+// green-teal on the Great Plateau at day, so 0-50 are left out. The file is read at the start: one patch over its
+// bytes, the same size.
 static uint32_t crc32_str(const char *s) { return (uint32_t)crc32(0, (const uint8_t *)s, (uInt)strlen(s)); }
 static size_t haze_done[512];  // (the value offsets changed so far)
 static void haze_walk_list(uint8_t *d, size_t n, size_t o, const uint32_t h[3], const float f[3], int *changed, int depth) {
@@ -1017,7 +1018,7 @@ static void haze_walk_list(uint8_t *d, size_t n, size_t o, const uint32_t h[3], 
                                       //  names that this scaling turned teal)
 }
 static void haze_patch(void) {
-    int pct = g_settings.haze;
+    int pct = g_settings.haze < HAZE_MIN ? HAZE_MIN : g_settings.haze;
     if (pct >= 100 || R != &images[0] || R->npatches >= 16) return;
     static const char pack_path[] = "Pack/TitleBG.pack", name[] = "WorldMgr/normal.bwinfo";
     int k = 0;
