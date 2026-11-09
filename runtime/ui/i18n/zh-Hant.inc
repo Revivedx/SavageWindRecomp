@@ -907,6 +907,8 @@ T("Drop weapons, bows and shields from the quick selector. Requires game version
 T("Drop", "丟棄")
 T("Back", "返回")
 T("Virtual reader", "虛擬讀取器")
+T("Random tag UUID", "隨機標籤UUID")
+T("Generates a new tag serial number on every scan: bypasses the once-per-day limit so an amiibo can be used again and again.", "每次掃描時產生新的標籤序號：繞過每天一次的限制，以便可以重複使用同一個amiibo。")
 T("The figure the game's reader finds when it looks for an amiibo (the amiibo rune). None: it finds no figure. The figures are the dumps (.bin) in the folder %s.", "遊戲的讀取器在尋找 amiibo（amiibo 符文）時找到的公仔。無：找不到任何公仔。公仔是資料夾 %s 中的傾印檔（.bin）。")
 T("No figure dumps yet. Put the dumps (.bin) in the folder %s, then choose one here.", "還沒有公仔傾印檔。把傾印檔（.bin）放進資料夾 %s，然後在這裡選一個。")
 T("Without the keys (key_retail.bin in the folder %s), figures give no game data: no nickname, no hearts.", "沒有金鑰（資料夾 %s 中的 key_retail.bin）時，公仔不提供遊戲資料：沒有暱稱，也沒有心心。")

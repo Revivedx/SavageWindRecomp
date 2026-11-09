@@ -907,6 +907,8 @@ T("Drop weapons, bows and shields from the quick selector. Requires game version
 T("Drop", "ポーチから出す")
 T("Back", "もどる")
 T("Virtual reader", "仮想リーダー")
+T("Random tag UUID", "ランダムなタグUUID")
+T("Generates a new tag serial number on every scan: bypasses the once-per-day limit so an amiibo can be used again and again.", "スキャンごとに新しいタグシリアル番号を生成し、1日1回の制限を回避して同じamiiboを何度でも使用できるようにします。")
 T("The figure the game's reader finds when it looks for an amiibo (the amiibo rune). None: it finds no figure. The figures are the dumps (.bin) in the folder %s.", "ゲームのリーダーがamiiboを探すとき（amiiboのルーン）に見つけるフィギュア。なしの場合、フィギュアは見つからない。フィギュアは %s フォルダー内のダンプ（.bin）。")
 T("No figure dumps yet. Put the dumps (.bin) in the folder %s, then choose one here.", "フィギュアのダンプはまだありません。ダンプ（.bin）を %s フォルダーに入れてから、ここで選んでください。")
 T("Without the keys (key_retail.bin in the folder %s), figures give no game data: no nickname, no hearts.", "鍵（フォルダー %s 内の key_retail.bin）がないと、フィギュアはゲームのデータを持ちません（ニックネームやハートなし）。")

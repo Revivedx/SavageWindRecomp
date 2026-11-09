@@ -906,6 +906,8 @@ T("Drop weapons, bows and shields from the quick selector. Requires game version
 T("Drop", "השלכה")
 T("Back", "חזרה")
 T("Virtual reader", "קורא וירטואלי")
+T("Random tag UUID", "UUID תג אקראי")
+T("Generates a new tag serial number on every scan: bypasses the once-per-day limit so an amiibo can be used again and again.", "מייצר מספר סידורי חדש בכל סריקה: עוקף את מגבלת הסריקה היומית כך שניתן להשתמש באותו amiibo שוב ושוב.")
 T("The figure the game's reader finds when it looks for an amiibo (the amiibo rune). None: it finds no figure. The figures are the dumps (.bin) in the folder %s.", "הדמות שקורא המשחק מוצא כשהוא מחפש amiibo (הרונה של amiibo). ללא: הוא לא מוצא דמות. הדמויות הן קבצי הגיבוי (.bin) בתיקייה %s.")
 T("No figure dumps yet. Put the dumps (.bin) in the folder %s, then choose one here.", "עדיין אין קבצי גיבוי של דמויות. שים את הקבצים (.bin) בתיקייה %s, ואז בחר אחד כאן.")
 T("Without the keys (key_retail.bin in the folder %s), figures give no game data: no nickname, no hearts.", "בלי המפתחות (key_retail.bin בתיקייה %s), דמויות לא נותנות נתוני משחק: לא כינוי ולא לבבות.")

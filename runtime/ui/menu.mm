@@ -1168,6 +1168,9 @@ static void tab_amiibo(void) {
     char desc[1400];
     snprintf(desc, sizeof desc, tr("The figure the game's reader finds when it looks for an amiibo (the amiibo rune). None: it finds no figure. The figures are the dumps (.bin) in the folder %s."), amiibo_folder());
     opt_action("On the reader", cur ? cur->name : tr("None"), desc);
+    if (opt_toggle("Random tag UUID", &g_settings.amiibo_random_uuid, false,
+                   "Generates a new tag serial number on every scan: bypasses the once-per-day limit so an amiibo can be used again and again."))
+        settings_save();
     auto choose = [](int i) {
         char key[256] = "";
         if (i >= 0) amiibo_key(i, key, sizeof key);

@@ -907,6 +907,8 @@ T("Drop weapons, bows and shields from the quick selector. Requires game version
 T("Drop", "Getta")
 T("Back", "Indietro")
 T("Virtual reader", "Lettore virtuale")
+T("Random tag UUID", "UUID tag casuale")
+T("Generates a new tag serial number on every scan: bypasses the once-per-day limit so an amiibo can be used again and again.", "Genera un nuovo numero di serie a ogni scansione: aggira il limite di una volta al giorno per usare lo stesso amiibo più volte.")
 T("The figure the game's reader finds when it looks for an amiibo (the amiibo rune). None: it finds no figure. The figures are the dumps (.bin) in the folder %s.", "La statuina che il lettore del gioco trova quando cerca un amiibo (la runa amiibo). Nessuna: non ne trova nessuna. Le statuine sono i dump (.bin) nella cartella %s.")
 T("No figure dumps yet. Put the dumps (.bin) in the folder %s, then choose one here.", "Nessun dump di statuine per ora. Metti i dump (.bin) nella cartella %s, poi scegline uno qui.")
 T("Without the keys (key_retail.bin in the folder %s), figures give no game data: no nickname, no hearts.", "Senza le chiavi (key_retail.bin nella cartella %s), le statuine non danno dati di gioco: né soprannome né cuori.")
