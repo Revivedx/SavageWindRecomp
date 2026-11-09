@@ -578,6 +578,15 @@ test-output-scale: $(B)/test_output_scale
 
 .PHONY: test-output-scale
 
+$(B)/test_window_size: tests/test_window_size.c runtime/window_size.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tests/test_window_size.c runtime/window_size.c -lSDL3 -lpthread -lm
+
+test-window-size: $(B)/test_window_size
+	$(B)/test_window_size
+
+.PHONY: test-window-size
+
 $(B)/test_vibration: tools/test_vibration.c runtime/hle/vibration.c runtime/vibration.h runtime/settings.h runtime/services/hid_set.c
 	@mkdir -p $(B)
 	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_vibration.c -lpthread -lm
