@@ -7,6 +7,7 @@
 
 #include "../hle.h"
 #include "../input_bind.h"
+#include "../settings.h"
 
 _Static_assert(PADB_LTRIGGER == SDL_GAMEPAD_BUTTON_COUNT, "trigger pseudo-buttons follow SDL's buttons");
 
@@ -98,8 +99,13 @@ const char *bind_pad_label(int host, int fam) {
         "D-pad Up", "D-pad Down", "D-pad Left", "D-pad Right", "Mute", "Right back button", "Left back button",
         "Right Fn", "Left Fn", "Touchpad", "Misc 2", "Misc 3", "Misc 4", "Misc 5", "Misc 6", "L2", "R2",
     };
+    static const char *const deck[PADB_HOST_COUNT] = {
+        "A", "B", "X", "Y", "View", "Steam", "Menu", "L3", "R3", "L1", "R1",
+        "D-pad Up", "D-pad Down", "D-pad Left", "D-pad Right", "...", "R4", "L4",
+        "R5", "L5", "Touchpad", "Misc 2", "Misc 3", "Misc 4", "Misc 5", "Misc 6", "L2", "R2",
+    };
     if (host < 0 || host >= PADB_HOST_COUNT) return "(none)";
-    return fam == 1 ? xb[host] : fam == 2 ? ps[host] : nin[host];
+    return fam == 1 ? xb[host] : fam == 2 ? ps[host] : fam == 3 ? deck[host] : nin[host];
 }
 
 static const char *const k_mouse[5] = {"Mouse Left", "Mouse Middle", "Mouse Right", "Mouse Back", "Mouse Forward"};
@@ -111,16 +117,33 @@ const char *bind_key_label(int sc) {
     return n && *n ? n : "(unnamed key)";
 }
 
+// Steam Input (a Deck's Gaming Mode) shows every controller as a virtual one of Valve's, an "Xbox 360" pad; SDL gives
+// the controller behind it (type, name) when Steam says, often it doesn't (an 8BitDo: "Steam Virtual Gamepad"). So:
+// PlayStation by its type; Nintendo's by theirs; a controller not Valve's by its type (Xbox, or none of these); a Valve pad is the Deck's own controls when it says so (the Deck's product, its
+// name) or, saying nothing, when it is the first one opened (Steam Input's for the Deck's controls, there from boot) in
+// Steam Deck mode; Steam Input's for another controller, an Xbox one. (A Valve vendor alone made each the Deck's.)
+int bind_pad_family(int type, int vendor, int product, const char *name, bool first) {
+    if (type == SDL_GAMEPAD_TYPE_PS3 || type == SDL_GAMEPAD_TYPE_PS4 || type == SDL_GAMEPAD_TYPE_PS5) return 2;
+    if (type == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO || type == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT ||
+        type == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT || type == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR)
+        return 0;
+    if (vendor != BIND_VALVE_VENDOR) return type == SDL_GAMEPAD_TYPE_XBOX360 || type == SDL_GAMEPAD_TYPE_XBOXONE ? 1 : 0;
+    if (product == BIND_DECK_PRODUCT || (name && strstr(name, "Steam Deck"))) return 3;
+    bool unnamed = !name || !*name || strstr(name, "Steam Virtual") || strstr(name, "Steam Controller");
+    return unnamed && first && settings_steam_deck() ? 3 : 1;
+}
+
 int bind_label_family(void) {
     extern int input_pad_family(void);  // runtime/hle/input.c (the game's open pad, or SAVAGEWIND_PAD_TYPE)
     int f = input_pad_family();
     if (f) return f;
-    int n = 0, t = 0;  // start screen: input.c hasn't opened a pad yet
+    int n = 0;  // start screen: input.c hasn't opened a pad yet
     SDL_JoystickID *ids = SDL_GetGamepads(&n);
-    if (ids && n > 0) t = SDL_GetGamepadTypeForID(ids[0]);
+    if (ids && n > 0)
+        f = bind_pad_family(SDL_GetGamepadTypeForID(ids[0]), SDL_GetGamepadVendorForID(ids[0]),
+                            SDL_GetGamepadProductForID(ids[0]), SDL_GetGamepadNameForID(ids[0]), true);
     SDL_free(ids);
-    return t == SDL_GAMEPAD_TYPE_XBOX360 || t == SDL_GAMEPAD_TYPE_XBOXONE ? 1 :
-           t == SDL_GAMEPAD_TYPE_PS3 || t == SDL_GAMEPAD_TYPE_PS4 || t == SDL_GAMEPAD_TYPE_PS5 ? 2 : 0;
+    return f;
 }
 
 static void result(int kind, int dev, int slot, int other);
@@ -235,10 +258,11 @@ bool bind_capture_event(const SDL_Event *e) {
     case SDL_EVENT_KEY_DOWN:
         if (e->key.repeat) return true;
         if (e->key.scancode == SDL_SCANCODE_ESCAPE) { bind_capture_cancel(); return true; }
-        // F1 (menu), F9 (frame dump), F11 (fullscreen), F12 and the key left of 1 (the console) stay the overlay's; a
-        // controller capture ignores keys
+        // F1 (menu), F9 (frame dump), F11 (fullscreen), F12 and the key left of 1 (the console), and PrintScreen
+        // (screenshot) stay the overlay's; a controller capture ignores keys
         if (!kd || e->key.scancode == SDL_SCANCODE_F1 || e->key.scancode == SDL_SCANCODE_F9 ||
             e->key.scancode == SDL_SCANCODE_F11 || e->key.scancode == SDL_SCANCODE_F12 ||
+            e->key.scancode == SDL_SCANCODE_PRINTSCREEN ||
             e->key.scancode == SDL_SCANCODE_GRAVE || e->key.scancode >= SDL_SCANCODE_COUNT) return true;
         cap_dev = -1;
         assign(BIND_DEV_KEY, cap_slot, e->key.scancode);

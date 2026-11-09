@@ -104,10 +104,28 @@ static const char *event_name(void) {
     return n && n < 32 && !p[n] ? p : "";
 }
 
-// Events held at the console's 30 fps whatever the chosen rate: a wait in them counts frames and can miss its end.
-//   Demo014_0: Master Kohga's entrance in the Yiga Clan hideout (Assassin_Leader) froze after "The strong, the burly..."
-//              at 120 fps, and played through at 30 (#196). It depends on the exact rate: one run at about 80 fps passed.
-static const char *const events_at_30[] = {"Demo014_0"};
+// Events held at the console's 30 fps whatever the chosen rate: a wait in them can miss its moment at another rate.
+//   Master Kohga's entrance in the Yiga Clan hideout froze after "The strong! The burly!!" (#196, #455, #533): the picture
+//   went on, the cutscene never finished. The hideout's EventTag starts Electric_Relic<WaitStable>, which calls the demo
+//   Demo347_0<Appear>; the log names the event Electric_Relic for all of it. Between Kohga's lines the demo waits for
+//   a trigger in his animation (Demo_WaitForASTriggerEvent), and that trigger exists only in the update in which the
+//   animation crosses its frame: a wait that starts a moment later never ends. Whether it does depends on the exact rate:
+//   it froze at 120 fps and with 55-70 fps, one run at about 80 fps passed, and every run at 30 played through.
+//   Electric_Relic is also the Thunder Helm quest's talks in Gerudo Town, so it is held only within `r` metres of
+//   Kohga's room (its x, z); r = 0: anywhere. (Demo014_0, held before, is a Yiga guard spotting Link, not Kohga.)
+static const struct { const char *name; float x, z, r; } events_at_30[] = {
+    {"Electric_Relic", -3481.0f, 1315.0f, 150.0f},
+    {"Demo347_0", 0, 0, 0},
+};
+
+// Link is within r metres of x, z (or r is 0)
+static bool link_near(float x, float z, float r) {
+    if (r <= 0) return true;
+    uint64_t pinfo = g_site.player_info ? *(uint64_t *)(uintptr_t)g_site.player_info : 0;
+    if (!pinfo) return false;
+    float dx = *(float *)(uintptr_t)(pinfo + 0x88) - x, dz = *(float *)(uintptr_t)(pinfo + 0x90) - z;
+    return dx * dx + dz * dz <= r * r;
+}
 
 // The event running now is one of those (and its name, logged once per event)
 static bool event_at_30(void) {
@@ -117,7 +135,8 @@ static bool event_at_30(void) {
     const char *name = event_name();
     bool hold = false;
     for (size_t i = 0; i < sizeof events_at_30 / sizeof *events_at_30; i++)
-        if (!strcmp(name, events_at_30[i])) hold = true;
+        if (!strcmp(name, events_at_30[i].name) && link_near(events_at_30[i].x, events_at_30[i].z, events_at_30[i].r))
+            hold = true;
     if (ev != last && *name) {
         last = ev;
         LOG("[event] %s%s\n", name, hold ? ": at 30 fps (its waits count frames)" : "");
@@ -308,15 +327,20 @@ float rt_arrow_gravity(uint64_t arrow, float g) {
     return g * g_frame_ratio;
 }
 
-// The physics step's solver microsteps (tools/patches.py _solver_steps, #161): the game asks for delta frame x 6 (6 at
-// 30 fps, 2 at 120), the same microstep length at any frame rate; the runtime gives 6 / sqrt(delta frame) on shorter
-// steps (8.5 at 60 fps, 12 at 120). With the game's count the solver gave way to what touches Link more and more as the
-// steps got shorter: a held cucco over his head cut his jump to 0.25 m at ~90 fps (0.63 at 30); 6 a step still left
-// 0.56, 6 / sqrt the 0.64 of 30 fps (SAVAGEWIND_SOLVER_STEPS=0: the game's count).
+// The physics step's solver microsteps (tools/patches.py _solver_steps, #161, #425): the game asks for delta frame x 6,
+// rounded (1.9.0 0x700156f930): 6 at 30 fps, 3 at 60, 2 at ~90, 1 or 2 at 120 (its delta frame wobbles around 0.25),
+// 1 from ~150. Holding a cucco over his head, Link's jump (0.61-0.63 m at 30 fps) depends on that count: 2 gave 0.13-0.20,
+// 3 0.25, 4 0.42, 6 0.51-0.56, 1 0.56-0.61, 10-12 0.62-0.64. And many microsteps a second keep a Magnesis door on its
+// hinges: Oman Au's doors opened in 1 of 5 tries with 12 a step at 120 fps (1440 a second), and every time with 1, 6
+// (720) or the game's count, also at ~190 fps. So up to ~75 fps the runtime gives 6 / sqrt(delta frame) (6 at 30, 8.5
+// at 60: the door opens, the cucco 0.64), above that 1 (90 fps: cucco 0.61, 120-140: 0.59, the doors open). (The
+// border is past 60 so that 60 fps, whose delta frame wobbles around 0.5, keeps one count.) SAVAGEWIND_SOLVER_STEPS=0:
+// the game's count.
 float rt_solver_steps(float delta_frame, float per_frame) {
     static int keep = -1;
     if (keep < 0) keep = env_int("SAVAGEWIND_SOLVER_STEPS", 1) != 0;
-    return keep && delta_frame > 0 && delta_frame < 1 ? per_frame / sqrtf(delta_frame) : delta_frame * per_frame;
+    if (!keep || delta_frame <= 0 || delta_frame >= 1) return delta_frame * per_frame;
+    return delta_frame >= 0.4f ? per_frame / sqrtf(delta_frame) : 1.0f;
 }
 
 // Keyframed bodies' turn (tools/patches.py _kf_angle, #209): the angle of a keyframed body's turn toward its target,

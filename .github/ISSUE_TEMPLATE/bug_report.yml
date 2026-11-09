@@ -6,8 +6,9 @@ body:
     attributes:
       value: |
         Thanks for testing Savage Wind! Every report shows how far the game really works.
-        **Never attach or link game files, keys, firmware, generated game code or save files**, and no links to
-        copies of the game: issues with any of them are removed.
+        **Never attach or link game files, keys, firmware or generated game code**, and no links to copies of the
+        game: issues with any of them are removed. Your own save files are welcome: they show us whether a problem
+        comes from the game's mechanics.
 
         Reports without `savagewind.log`, from an older release or from game version 1.8.2 get a `needs-info`
         label, and are closed after 7 days if nothing changes (you can reopen them any time).
@@ -26,7 +27,7 @@ body:
       label: Savage Wind version
       description: Shown on the game's title screen, in Savage Wind Configuration and on the first line of `savagewind.log`.
       options:
-        - "0.4.1-alpha.4 (latest)"
+        - "0.5.0-alpha.5 (latest)"
         - "Built from the test branch"
         - "An older release (please update and try again first)"
     validations:
@@ -80,14 +81,24 @@ body:
         Drag the file here. On Windows it's next to savagewind.exe, in the Savage Wind folder; on Linux, in
         ~/.local/share/savagewind/. The game writes a new one each time it starts, so take it right after the bug
         happened, before starting the game again; if you already did, savagewind.prev.log next to it is the run
-        before. Screenshots or a short video help too.
-      placeholder: Drag savagewind.log here
+        before. Options > Problem report (in the game, or the start screen's Prelaunch tab) makes one zip with
+        both logs and your settings: drag that here instead. Screenshots or a short video help too.
+      placeholder: Drag savagewind.log or the problem report zip here
     validations:
       required: true
+  - type: textarea
+    id: save
+    attributes:
+      label: Save file (for crashes and problems with the game's mechanics)
+      description: >-
+        Optional, and it helps a lot with crashes. Close the game, compress the whole `save` folder into a zip and
+        drag it here (GitHub doesn't take folders). On Windows it's next to savagewind.exe; on Linux,
+        ~/.local/share/savagewind/save/. If you can, use the last save before the problem.
+      placeholder: Drag save.zip here
   - type: checkboxes
     id: legal
     attributes:
       label: Before sending
       options:
-        - label: This report contains no game files, keys, firmware, generated game code, save files or links to copies of the game.
+        - label: This report contains no game files, keys, firmware, generated game code or links to copies of the game.
           required: true

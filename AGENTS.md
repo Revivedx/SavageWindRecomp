@@ -21,8 +21,9 @@ targets; macOS/Metal is retained but unmaintained.
 ━━ Code and data rules
 
 • Never commit or upload Nintendo files, keys, firmware, game assets/fonts,
-  saves, extracted files, generated game code, or disassembly/decompilation
-  output. Do not copy from decompilation projects. Use synthetic test fixtures.
+  extracted files, generated game code, or disassembly/decompilation output.
+  Never commit saves; players may attach their own to issues. Do not copy from
+  decompilation projects. Use synthetic test fixtures.
 
 • Preserve unrelated edits and the user's local game files, settings, and
   saves. If unsure whether an operation could overwrite, delete, or expose game

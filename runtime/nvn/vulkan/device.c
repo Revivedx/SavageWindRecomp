@@ -1034,9 +1034,13 @@ static void create_device(void) {
     VK_CHECK(vkCreateCommandPool(g_vk.dev, &pi, NULL, &g_vk.pool));
 
     pipeline_cache_load();
-    // NGX on the device just made. Optional: without the SDK's DLL or an RTX 40 and later driver the renderer runs as
-    // before, and a settings file asking for DLSS Frame Generation gets AMD FSR 3 (fg_wanted)
+    // NGX on the device just made. Optional: without NVIDIA's DLLs or an RTX driver the renderer runs as before; a
+    // settings file asking for DLSS gets FSR 1, and one asking for DLSS Frame Generation AMD FSR 3 (fg_wanted)
     vk_dlss_init();
+    if (g_settings.upscaler == UPSCALE_DLSS && !vk_dlss_available()) {
+        g_settings.upscaler = UPSCALE_FSR1;
+        LOG("[dlss] unavailable: FSR 1 instead\n");
+    }
     pthread_t saver;
     pthread_create(&saver, NULL, pc_saver, NULL);
 }
@@ -2608,6 +2612,8 @@ presented:
     reboot_test_frame(total_frames);
     extern void test_warp_frame(uint64_t frame);  // runtime/services/test_warp.c (SAVAGEWIND_TEST_TIME)
     test_warp_frame(total_frames);
+    extern void weather_frame(void);  // runtime/weather.c (Cheats > Weather, `weather`)
+    weather_frame();
     extern void control_frame(uint64_t frame);  // runtime/control.c (SAVAGEWIND_CONTROL)
     control_frame(total_frames);
     static long shot_every = -1;

@@ -28,7 +28,7 @@
     X(frame_loop_interval_ret) /* the frame loop's return address from setting the present interval */                \
     X(title_version_format)    /* "Ver.%s": the title screen's version line */                                         \
     X(player_info)             /* uking::act::PlayerInfo * (test tools) */                                              \
-    X(world_mgr)               /* ksys::world::Manager * (test tools) */                                                \
+    X(world_mgr)               /* ksys::world::Manager * (test tools, weather.c)*/                                                \
     X(main_data)               /* main's .data (then .bss, up to main_end) */                                           \
     X(main_end)
 
@@ -46,7 +46,25 @@
     X(quick_sort_refill)      /* rebuild the quick selector's item list */ \
     X(quick_sort_mapping)     /* rebuild visible slot mapping */ \
     X(quick_sort_cursor)      /* move the native cursor */ \
-    X(quick_sort_labels)      /* update selected item labels */
+    X(quick_sort_labels)      /* update selected item labels */ \
+    X(player_drop_forbidden) \
+    X(actor_info_lookup) \
+    X(actor_info_has_tag) \
+    X(pouch_discard) \
+    X(player_equipment) \
+    X(pouch_default_name) \
+    X(player_schedule_equip) \
+    X(pouch_equipped_snapshot) \
+    X(actor_index_assign) \
+    X(actor_index_resolve) \
+    X(actor_index_release) \
+    X(actor_link_release) \
+    X(actor_link_alive) \
+    X(pouch_cleanup) \
+    X(player_actor) \
+    X(quick_drop_trash_prohibited) \
+    X(quick_drop_actor_method) \
+    X(actor_info)
 
 typedef struct {
 #define GAME_SITE_FIELD(n) uint64_t n;

@@ -19,7 +19,7 @@ From an MSYS2 UCRT64 shell, or Git Bash with MSYS2 first on PATH:
     make gen        # once: recompile the game from extracted/exefs (your own game files; see the start screen)
     make -j         # -> build/savagewind.exe and the game code library build/swgame.dll
 
-DLSS Frame Generation is optional and uses NVIDIA's SDK, not part of this repository:
+DLSS (Super Resolution and Frame Generation) is optional and uses NVIDIA's SDK, not part of this repository:
 `git clone https://github.com/NVIDIA/DLSS` beside it, check out a release tag (tested: `v310.9.16`), and the default
 works as-is; otherwise pass its location explicitly: `make DLSS_SDK=/path/to/DLSS -j`. The runtime DLLs are not copied
 into the source tree. `make dist` includes `nvngx_dlss.dll`, `nvngx_dlssg.dll` and the SDK license when the SDK path

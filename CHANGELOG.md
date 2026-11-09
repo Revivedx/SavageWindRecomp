@@ -2,6 +2,100 @@
 
 What changed in each Savage Wind release. The `test` branch holds what the next one will contain.
 
+## Next (on the `test` branch)
+
+Nothing yet.
+
+## Alpha 5 (0.5.0-alpha.5) - 2026-11-08
+
+**The Potato Edition.** Alpha 5 brings the game to weaker PCs with options below the console's settings, runs faster
+on every CPU, fixes most of what players reported on Alpha 4, and adds a long list of options, many from the community.
+
+**Updating:** extract it over your Alpha 4 folder (Windows) or use the new AppImage (Linux). Your game files, saves and
+settings stay. The start screen asks you to build the game code again (Set up game files) once, and to run Precompile
+shaders again. Don't merge the DLC into `romfs`: keep it in `aoc1/` and `aoc2/` ([#438](https://github.com/Revivedx/SavageWindRecomp/issues/438), [#570](https://github.com/Revivedx/SavageWindRecomp/issues/570)).
+
+### Performance
+
+- **Faster on every CPU:** recompiled code keeps each function's most used registers and flags in C locals, about 8%
+  less main-thread time and 26% less on 4 cores, and a smaller game library (227 MB instead of 263 MB).
+- **Lighter locks and waits:** the game's locks and waits spin briefly and then sleep ([#431](https://github.com/Revivedx/SavageWindRecomp/issues/431), [#432](https://github.com/Revivedx/SavageWindRecomp/issues/432)). Kakariko on an
+  RTX 3060 and a Ryzen 5 5600X, uncapped: 148 to 181 fps.
+- **Render thread:** cheaper draws, batched descriptor sets and presents made by the recorder ([#489](https://github.com/Revivedx/SavageWindRecomp/issues/489), [#492](https://github.com/Revivedx/SavageWindRecomp/issues/492)). With 4
+  cores at 720p, Rito went from 85 to 106 fps and the castle from 129 to 154 fps.
+- **CPUs without FMA:** a Fast math option, on by default, runs the compatible build at the speed of the normal build
+  (4 cores, 720p: Kakariko 130 to 151 fps).
+- **Less first-play stutter:** a shipped pipeline list builds the pipelines of a full playthrough ahead of time, and
+  shader caches survive rebuilds, updates and device changes.
+- **Audio threads** wait for their wake-ups instead of polling, and Windows sleeps under 1 ms correctly.
+
+### Weaker PCs and handhelds
+
+- **Graphics presets:** Potato, Original, High and Savage, plus an Advanced options page with bloom, depth of field,
+  dynamic resolution, haze and more.
+- **Potato steps** for draw distance and shadow resolution, below the console's.
+- **Render scale:** 50% to 200%, supersampling included ([#544](https://github.com/Revivedx/SavageWindRecomp/issues/544)).
+- **PC handhelds** are recognised by maker and model, with a PC Handheld preset, the screen's own size and frame
+  rates of 30, 40, 45 and 60.
+- **Older GPUs ([#332](https://github.com/Revivedx/SavageWindRecomp/issues/332)):** RADV white world on Mesa before 26.2 ([#291](https://github.com/Revivedx/SavageWindRecomp/issues/291)), feedback snapshots once a frame where loops are
+  missing (an RTX 3060 forced into that path went from 65 to 133 fps at the castle), gather rounding on AMD and Intel,
+  video memory trimmed when it goes over budget, sparse guest heap for Intel integrated GPUs ([#197](https://github.com/Revivedx/SavageWindRecomp/issues/197)), and hybrid laptops
+  asking for the dedicated GPU.
+- **Intel integrated GPUs** draw with target copies, without the flicker and shredded menu text ([#342](https://github.com/Revivedx/SavageWindRecomp/issues/342), [#352](https://github.com/Revivedx/SavageWindRecomp/issues/352), [#399](https://github.com/Revivedx/SavageWindRecomp/issues/399)).
+- **Adreno / Turnip on ARM:** three fixes for the black picture, and the game code builds without a workaround
+  ([#287](https://github.com/Revivedx/SavageWindRecomp/issues/287), [#413](https://github.com/Revivedx/SavageWindRecomp/issues/413)). Not tested on ARM hardware by us.
+
+### New options
+
+- **Accessibility:** God mode, One-hit kill, damage taken and dealt, Infinite arrows and stamina, and Weapon wear from
+  Fairy (never breaks) to "Dude, are you ok?" (3x) ([#374](https://github.com/Revivedx/SavageWindRecomp/issues/374), [#534](https://github.com/Revivedx/SavageWindRecomp/issues/534)).
+- **Savage Wind overlay:** F1 opens it during play (on a controller, Back + Start or Home / Guide).
+- **Overlay Cheats:** Infinite rupees, Weather, and any of the game's items into the pouch, also as console commands
+  ([#423](https://github.com/Revivedx/SavageWindRecomp/issues/423), [#535](https://github.com/Revivedx/SavageWindRecomp/issues/535), [#545](https://github.com/Revivedx/SavageWindRecomp/issues/545)).
+- **Overlay amiibo:** a virtual reader for your own figure dumps. Nothing of a figure or a key is included ([#422](https://github.com/Revivedx/SavageWindRecomp/issues/422)).
+- **Free camera and photo mode:** Home or both stick clicks, with filters, the hour of the day and F7 for a picture
+  ([#318](https://github.com/Revivedx/SavageWindRecomp/issues/318), [#487](https://github.com/Revivedx/SavageWindRecomp/issues/487), [#554](https://github.com/Revivedx/SavageWindRecomp/issues/554)).
+- **Upscaling and image:** AMD FSR 4 and FSR 3.1.6 on Windows, opt-in ([#308](https://github.com/Revivedx/SavageWindRecomp/issues/308)), anti-aliasing as Off / FXAA / SMAA / TAA,
+  texture sharpness ([#564](https://github.com/Revivedx/SavageWindRecomp/issues/564)), wet grass fix ([#531](https://github.com/Revivedx/SavageWindRecomp/issues/531)), sharper text and menus ([#325](https://github.com/Revivedx/SavageWindRecomp/issues/325), [#543](https://github.com/Revivedx/SavageWindRecomp/issues/543)).
+- **Frame rate:** 144, 165, 240 and 360 fps ([#323](https://github.com/Revivedx/SavageWindRecomp/issues/323)), and Match display ([#538](https://github.com/Revivedx/SavageWindRecomp/issues/538)).
+- **Screen:** smaller HUD ([#420](https://github.com/Revivedx/SavageWindRecomp/issues/420)), HUD at edges for screens taller than 16:9 ([#558](https://github.com/Revivedx/SavageWindRecomp/issues/558)), 16:10, 4:3 and more 21:9 sizes
+  ([#396](https://github.com/Revivedx/SavageWindRecomp/issues/396), [#303](https://github.com/Revivedx/SavageWindRecomp/issues/303)).
+- **Controls:** key bindings with a keyboard key and a controller button per action ([#329](https://github.com/Revivedx/SavageWindRecomp/issues/329)), every connected controller
+  open with the last one used shown in the prompts ([#469](https://github.com/Revivedx/SavageWindRecomp/issues/469)), Steam Deck icons, controller camera speed ([#540](https://github.com/Revivedx/SavageWindRecomp/issues/540)), mouse bow
+  aiming ([#546](https://github.com/Revivedx/SavageWindRecomp/issues/546)), vibration strength ([#563](https://github.com/Revivedx/SavageWindRecomp/issues/563)), rumble toggle ([#395](https://github.com/Revivedx/SavageWindRecomp/issues/395)), HUD button layout ([#574](https://github.com/Revivedx/SavageWindRecomp/issues/574)) and quick inventory sort and
+  drop ([#502](https://github.com/Revivedx/SavageWindRecomp/issues/502), [#580](https://github.com/Revivedx/SavageWindRecomp/issues/580)).
+- **Audio:** Surround 5.1 and 3D Headphones ([#576](https://github.com/Revivedx/SavageWindRecomp/issues/576); 5.1 not tested on real speakers), shrine sensor volume ([#571](https://github.com/Revivedx/SavageWindRecomp/issues/571)), and
+  mute in background ([#548](https://github.com/Revivedx/SavageWindRecomp/issues/548)).
+- **Saves:** profiles, complete sets of saves to switch between in Settings > Saves ([#521](https://github.com/Revivedx/SavageWindRecomp/issues/521)), a backup at each start
+  with the last 5 kept ([#537](https://github.com/Revivedx/SavageWindRecomp/issues/537)), export to Wii U / Cemu ([#549](https://github.com/Revivedx/SavageWindRecomp/issues/549)).
+- **Start screen and setup:** an editable list of launch options ([#520](https://github.com/Revivedx/SavageWindRecomp/issues/520), [docs/launch-options.md](docs/launch-options.md)),
+  a DLC check in Game Files ([#550](https://github.com/Revivedx/SavageWindRecomp/issues/550)), a picture from the first moment ([#552](https://github.com/Revivedx/SavageWindRecomp/issues/552)), Start at Continue ([#536](https://github.com/Revivedx/SavageWindRecomp/issues/536)), and an update
+  rebuilds only the game code that changed ([#553](https://github.com/Revivedx/SavageWindRecomp/issues/553)).
+- **Menus:** Hebrew drawn right to left ([#273](https://github.com/Revivedx/SavageWindRecomp/issues/273)), and language packs read from `lang/<language>.txt` ([#557](https://github.com/Revivedx/SavageWindRecomp/issues/557)).
+- **Reports:** Options > Problem report makes one zip with the logs and settings to attach to an issue ([#556](https://github.com/Revivedx/SavageWindRecomp/issues/556)), F6
+  starts a profiler capture ([#309](https://github.com/Revivedx/SavageWindRecomp/issues/309)), and PrintScreen saves a screenshot ([#562](https://github.com/Revivedx/SavageWindRecomp/issues/562)).
+
+### Fixes
+
+- **Crashes:** Gerudo desert model loader ([#524](https://github.com/Revivedx/SavageWindRecomp/issues/524)), crash while saving when OneDrive or an antivirus holds a save file
+  ([#567](https://github.com/Revivedx/SavageWindRecomp/issues/567), [#568](https://github.com/Revivedx/SavageWindRecomp/issues/568)), a render thread that looped forever after about 3 hours ([#565](https://github.com/Revivedx/SavageWindRecomp/issues/565)), magnesis and camera targets ([#391](https://github.com/Revivedx/SavageWindRecomp/issues/391),
+  [#393](https://github.com/Revivedx/SavageWindRecomp/issues/393)), and RADV on Mesa 27 ([#354](https://github.com/Revivedx/SavageWindRecomp/issues/354), [#406](https://github.com/Revivedx/SavageWindRecomp/issues/406)).
+- **White water:** lakes and puddles no longer stay milky white until the next load ([#362](https://github.com/Revivedx/SavageWindRecomp/issues/362), [#332](https://github.com/Revivedx/SavageWindRecomp/issues/332)).
+- **High frame rates:** Magnesis doors open again above 60 fps ([#349](https://github.com/Revivedx/SavageWindRecomp/issues/349), [#388](https://github.com/Revivedx/SavageWindRecomp/issues/388), [#566](https://github.com/Revivedx/SavageWindRecomp/issues/566)), and Master Kohga's entrance no longer
+  freezes ([#196](https://github.com/Revivedx/SavageWindRecomp/issues/196), [#455](https://github.com/Revivedx/SavageWindRecomp/issues/455), [#533](https://github.com/Revivedx/SavageWindRecomp/issues/533)).
+- **Gyro:** Steam Deck uses its own gyroscope in Gaming mode with no DSU server ([#136](https://github.com/Revivedx/SavageWindRecomp/issues/136)), and aiming is no longer
+  inverted and doesn't depend on the frame rate ([#381](https://github.com/Revivedx/SavageWindRecomp/issues/381)).
+- **Draw distance:** High keeps its range without losing rock edges, statues, and the bridge near Rito ([#384](https://github.com/Revivedx/SavageWindRecomp/issues/384), [#453](https://github.com/Revivedx/SavageWindRecomp/issues/453)).
+- **Map:** stamps stay in place on wide windows ([#514](https://github.com/Revivedx/SavageWindRecomp/issues/514)), parallax on taller displays ([#483](https://github.com/Revivedx/SavageWindRecomp/issues/483)), the Hero's Path line
+  ([#441](https://github.com/Revivedx/SavageWindRecomp/issues/441)), the Divine Beast map with the mouse ([#511](https://github.com/Revivedx/SavageWindRecomp/issues/511)), and wheel zoom on the point under the pointer ([#506](https://github.com/Revivedx/SavageWindRecomp/issues/506)).
+- **Mouse:** inventory tabs and prompts ([#346](https://github.com/Revivedx/SavageWindRecomp/issues/346), [#360](https://github.com/Revivedx/SavageWindRecomp/issues/360), [#372](https://github.com/Revivedx/SavageWindRecomp/issues/372)), Adventure Log scrolling ([#370](https://github.com/Revivedx/SavageWindRecomp/issues/370)), and many small menu fixes
+  ([#376](https://github.com/Revivedx/SavageWindRecomp/issues/376), [#451](https://github.com/Revivedx/SavageWindRecomp/issues/451), [#473](https://github.com/Revivedx/SavageWindRecomp/issues/473), [#486](https://github.com/Revivedx/SavageWindRecomp/issues/486), [#499](https://github.com/Revivedx/SavageWindRecomp/issues/499), [#500](https://github.com/Revivedx/SavageWindRecomp/issues/500)).
+- **Linux:** settings are read again, the recorder thread starts ([#397](https://github.com/Revivedx/SavageWindRecomp/issues/397)), `savagewind.log` is written from a terminal
+  too ([#527](https://github.com/Revivedx/SavageWindRecomp/issues/527)), HDR white level ([#369](https://github.com/Revivedx/SavageWindRecomp/issues/369)), and Steam's LD_PRELOAD no longer reaches the setup ([#413](https://github.com/Revivedx/SavageWindRecomp/issues/413)).
+- **Setup:** every RomFS file and byte is checked ([#472](https://github.com/Revivedx/SavageWindRecomp/issues/472)), and a copy cut short fails instead of being kept ([#390](https://github.com/Revivedx/SavageWindRecomp/issues/390)).
+- **Graphics:** quick menu background ([#475](https://github.com/Revivedx/SavageWindRecomp/issues/475)), bloom at high resolutions ([#478](https://github.com/Revivedx/SavageWindRecomp/issues/478)), HUD icons ([#452](https://github.com/Revivedx/SavageWindRecomp/issues/452), [#476](https://github.com/Revivedx/SavageWindRecomp/issues/476)), and FSR motion
+  vectors for instanced draws ([#493](https://github.com/Revivedx/SavageWindRecomp/issues/493)).
+
 ## Alpha 4.1 (0.4.1-alpha.4) - 2026-11-01
 
 **A quick fix update for Alpha 4.** Extract it over your Alpha 4 folder (Windows) or use the new AppImage (Linux): your

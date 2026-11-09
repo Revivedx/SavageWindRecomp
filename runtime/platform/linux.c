@@ -48,6 +48,12 @@ bool plat_reset_guest(uint64_t lo, uint64_t hi) {
 
 void plat_commit(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
 
+bool plat_committed_range(uint64_t addr, uint64_t end, uint64_t *a, uint64_t *e) {  // (the whole window is backed)
+    if (addr >= end) return false;
+    *a = addr, *e = end;
+    return true;
+}
+
 void plat_decommit(uint64_t addr, uint64_t size) {
     uint64_t a = (addr + 0xFFF) & ~0xFFFull, e = (addr + size) & ~0xFFFull;  // (whole pages inside the range only)
     if (e > a) madvise((void *)(uintptr_t)a, e - a, MADV_DONTNEED);  // (private anonymous memory: freed, reads as zero)
@@ -129,13 +135,31 @@ void plat_thread_realtime(uint64_t period_ns) {
 }
 
 // ---- process
-// Started from a desktop (the AppImage) there is no terminal: stdout / stderr go to savagewind.log in the data folder
-// (runtime/paths.h; rt_paths_init runs later, so the same rule is applied here). Processes started by this one (the
-// start screen re-executing itself for the game) append to the same log.
+// stdout / stderr go to savagewind.log in the data folder (runtime/paths.h; rt_paths_init runs later, so the same rule
+// is applied here). Processes started by this one (the start screen re-executing itself for the game) append to the
+// same log. Started from a terminal (how players set SAVAGEWIND_* switches for a test) the log is shown there too:
+// before, the terminal had it instead of the file, and players attached an older savagewind.log (#527). The file is
+// written directly, so a crash's last lines are in it; a thread copies what it gets to the terminal, whose descriptor
+// stays open across the re-exec (SAVAGEWIND_LOG_ECHO_FD). In a development tree (an extracted/ folder here) stderr
+// stays where it goes.
 static char g_log_path[1024];
+static off_t g_echo_from;  // (where this process's part of the log starts)
 
-static void log_to_file_without_terminal(void) {
-    if (isatty(STDERR_FILENO)) return;
+static void *log_echo_thread(void *arg) {
+    int out = (int)(intptr_t)arg, in = open(g_log_path, O_RDONLY);
+    if (in < 0) return NULL;
+    lseek(in, g_echo_from, SEEK_SET);  // (this process's part: the start screen's part was shown by it)
+    char buf[8192];
+    for (;;) {
+        ssize_t n = read(in, buf, sizeof buf);
+        if (n > 0) { if (write(out, buf, (size_t)n) < 0) break; continue; }
+        usleep(100000);
+    }
+    close(in);
+    return NULL;
+}
+
+static void log_to_file(void) {
     char dir[900];
     const char *env = getenv("SAVAGEWIND_DATA_ROOT"), *xdg = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
     struct stat st;
@@ -153,9 +177,21 @@ static void log_to_file_without_terminal(void) {
         snprintf(prev, sizeof prev, "%s/savagewind.prev.log", dir);
         rename(g_log_path, prev);
     }
+    const char *e = getenv("SAVAGEWIND_LOG_ECHO_FD");
+    int echo = e && isatty(atoi(e)) ? atoi(e) : -1;
+    if (echo < 0 && isatty(STDERR_FILENO) && (echo = dup(STDERR_FILENO)) >= 0) {  // (no close-on-exec: kept by the game)
+        char fd[16];
+        snprintf(fd, sizeof fd, "%d", echo);
+        setenv("SAVAGEWIND_LOG_ECHO_FD", fd, 1);
+        dprintf(echo, "[log] written to %s and shown here\n", g_log_path);
+    }
     if (!freopen(g_log_path, append ? "a" : "w", stderr)) { g_log_path[0] = 0; return; }
+    setvbuf(stderr, NULL, _IONBF, 0);  // (reopened, stderr was buffered: lines lost at the re-exec, or in a crash)
     dup2(STDERR_FILENO, STDOUT_FILENO);
     setenv("SAVAGEWIND_LOG_APPEND", "1", 1);
+    g_echo_from = lseek(STDERR_FILENO, 0, SEEK_END);
+    pthread_t t;
+    if (echo >= 0 && pthread_create(&t, NULL, log_echo_thread, (void *)(intptr_t)echo) == 0) pthread_detach(t);
 }
 
 // The recompiled game code is built for a target this CPU runs (runtime/gamelib.h): say so instead of crashing with an
@@ -168,7 +204,7 @@ static void require_cpu(void) {
 }
 
 void plat_init(void) {
-    log_to_file_without_terminal();
+    log_to_file();
     require_cpu();
 }
 

@@ -21,6 +21,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SOURCES = sorted(p for p in glob.glob(os.path.join(ROOT, 'runtime/ui/*.mm')) if not p.endswith('console.mm')) + [
     os.path.join(ROOT, 'runtime/language.c'),
     os.path.join(ROOT, 'runtime/hle/bindings.c'),
+    os.path.join(ROOT, 'runtime/launch_flags.c'),
 ]
 SKIP_LINE = re.compile(r'\b(LOG|_Static_assert|static_assert|fprintf|printf|getenv|strcmp|strncmp|memcmp|strstr|fopen|file_exists|mkdir|unlink|rt_resource|rt_remove_game_file|'
                        r'PushID|BeginChild|BeginTable|BeginPopup|OpenPopup|IsPopupOpen|InvisibleButton|GetID|Begin)\s*\(|'

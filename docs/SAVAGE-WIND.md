@@ -1490,7 +1490,7 @@ Pendiente:
        imágenes y tarda minutos). `SAVAGEWIND_HIDDEN=1` corre sin ventana visible.
      - `SAVAGEWIND_SHADER_DUMP=1`: el código Maxwell de los shaders que no traducen, en `build/shaders/`.
      - `SAVAGEWIND_DEBUG_PASS_FROM=<n>`, `SAVAGEWIND_DEBUG_PASS_TO=<n>` y `SAVAGEWIND_DEBUG_MAIN_ONLY=1` (con el
-       frame de depuración, F9): guarda solo esos pases y solo el primer target de cada uno. Con
+       frame de depuración, F9 en modo desarrollador, `SAVAGEWIND_DEV=1`): guarda solo esos pases y solo el primer target de cada uno. Con
        `SAVAGEWIND_DEBUG_FRAMES=<n>`, n frames seguidos (`build/pass_<frame>_NNN.png`).
      - F12: guarda una imagen del juego de cada dos en `build/frames/rec_N.png` hasta el siguiente F12, para ver
        parpadeos de un frame (el juego va más lento mientras graba).

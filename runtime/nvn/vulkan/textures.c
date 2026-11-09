@@ -17,6 +17,7 @@
 #include "../astc.h"
 #include "../../perfcount.h"
 #include "../glyphs.h"
+#include "../hw_illust.h"
 #include "../renderer.h"
 #include "../../platform.h"
 #include "../text_upscale.h"
@@ -1382,6 +1383,13 @@ static void upload_levels(NvnTexture *t, TexBackend *b, uint32_t level_mask) {
             if (lv == 0 && layer == 0 && t->format == 0x01 && !linear &&  // (the HUD's button textures, likewise)
                 glyphs_apply_layout(t->format, l.w, l.h, lin, row))
                 b->glyph_gen = glyphs_generation();
+            if (lv == 0 && layer == 0 && t->format == 0x0D && !linear) {  // (the Controls page's and tips' drawings)
+                int which = hw_illust_which(l.w, l.h, lin, row), dev = glyphs_console();
+                if (which >= 0) {
+                    if (dev >= 0) hw_illust_draw(dev, which, l.w, l.h, lin, row);
+                    LOG("[glyphs] Controls page drawing %d: device %d\n", which, dev);
+                }
+            }
             if (t->target == 2 && lv == 0 && getenv("SAVAGEWIND_DUMP_TEX3D")) {  // (debugging) 3D texels as uploaded
                 char path[128];
                 snprintf(path, sizeof path, "build/tex3d_%llu_%ux%ux%u_f%x.raw", (unsigned long long)t->debug_id, l.w, l.h, l.d,
@@ -2093,6 +2101,13 @@ static float sampler_aniso(const NvnSamplerDesc *d, bool aniso_ok) {
     return fminf((float)(1 << a), g_vk.props.limits.maxSamplerAnisotropy);
 }
 
+static float sampler_user_lod_bias(const NvnSamplerDesc *d) {
+    if (d->min_filter <= 1 || d->compare_mode) return 0.0f;
+    if (g_settings.tex_lod_bias == TEX_LOD_SHARP) return -0.5f;
+    if (g_settings.tex_lod_bias == TEX_LOD_SHARPER) return -1.0f;
+    return 0.0f;
+}
+
 // One VkSampler per distinct setting (pool entries repeat the same few hundred), so a change of the anisotropy makes
 // new ones without destroying samplers that submitted work may still use.
 static struct { NvnSamplerDesc key; VkSampler s; } *g_samplers;
@@ -2103,16 +2118,18 @@ static VkSampler sampler_create(const NvnSamplerDesc *d, float aniso);
 
 VkSampler vk_sampler(NvnSamplerDesc *d, bool aniso_ok, float bias) {
     float an = sampler_aniso(d, aniso_ok);
-    if (d->min_filter <= 1) bias = 0;  // (no mip levels: nothing to bias)
+    float user_bias = sampler_user_lod_bias(d);
+    float total_bias = bias + user_bias;
+    if (d->min_filter <= 1) total_bias = 0;  // (no mip levels: nothing to bias)
     int k = aniso_ok ? 1 : 0;
-    void **slot = bias != 0 ? &d->backend_bias[k] : aniso_ok ? &d->backend : &d->backend_plain;
-    float *slot_aniso = bias != 0 ? &d->backend_bias_aniso[k] : aniso_ok ? &d->backend_aniso : &d->backend_plain_aniso;
-    if (*slot && *slot_aniso == an && (bias == 0 || d->backend_bias_lod[k] == bias)) return (VkSampler)*slot;
+    void **slot = total_bias != 0 ? &d->backend_bias[k] : aniso_ok ? &d->backend : &d->backend_plain;
+    float *slot_aniso = total_bias != 0 ? &d->backend_bias_aniso[k] : aniso_ok ? &d->backend_aniso : &d->backend_plain_aniso;
+    if (*slot && *slot_aniso == an && (total_bias == 0 || d->backend_bias_lod[k] == total_bias)) return (VkSampler)*slot;
     NvnSamplerDesc key = *d;
     key.backend = key.backend_plain = key.backend_bias[0] = key.backend_bias[1] = NULL;
     key.backend_aniso = an, key.backend_plain_aniso = 0;
     key.backend_bias_aniso[0] = key.backend_bias_aniso[1] = key.backend_bias_lod[0] = key.backend_bias_lod[1] = 0;
-    key.lod_bias += bias;
+    key.lod_bias += total_bias;
     pthread_mutex_lock(&g_sampler_lock);
     VkSampler s = VK_NULL_HANDLE;
     for (int i = 0; i < g_nsamplers && !s; i++)
@@ -2145,7 +2162,7 @@ VkSampler vk_sampler(NvnSamplerDesc *d, bool aniso_ok, float bias) {
         pthread_mutex_unlock(&g_sampler_lock);
         *slot = (void *)s;
         *slot_aniso = an;
-        if (bias != 0) d->backend_bias_lod[k] = bias;
+        if (total_bias != 0) d->backend_bias_lod[k] = total_bias;
         return s;
     }
     if (!found) {
@@ -2167,7 +2184,7 @@ VkSampler vk_sampler(NvnSamplerDesc *d, bool aniso_ok, float bias) {
     pthread_mutex_unlock(&g_sampler_lock);
     *slot = (void *)s;
     *slot_aniso = an;
-    if (bias != 0) d->backend_bias_lod[k] = bias;
+    if (total_bias != 0) d->backend_bias_lod[k] = total_bias;
     return s;
 }
 

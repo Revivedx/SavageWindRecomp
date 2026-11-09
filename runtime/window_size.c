@@ -141,10 +141,15 @@ static WinSize resolve(WinSize want, bool fullscreen) {
 }
 
 WinSize winsize_effective(bool fullscreen) {
+    if (g_settings.window_w <= 0 || g_settings.window_h <= 0) return winsize_default(fullscreen);
     return resolve((WinSize){g_settings.window_w, g_settings.window_h}, fullscreen);
 }
 
-WinSize winsize_default(bool fullscreen) { return resolve((WinSize){0, 0}, fullscreen); }
+WinSize winsize_default(bool fullscreen) {
+    WinSize s = {0, 0};
+    if (!settings_handheld_size(&s.w, &s.h)) s.w = s.h = 0;  // (a handheld: its screen's own size)
+    return resolve(s, fullscreen);
+}
 
 void winsize_name(WinSize s, const char *native, char *buf, int n) {
     const char *a = winsize_aspect(s.w, s.h);
@@ -334,6 +339,15 @@ void winsize_apply(void *win) {
     first = false;
     read_displays();
     bool fs = g_settings.fullscreen && !test;
+    // Steam's Gaming Mode on a handheld: gamescope's game display can be another shape than the screen (1920x1080 on a
+    // Deck's 1280x800: bars), and fullscreen takes that size. A plain window of the size set fills the screen instead.
+    const char *cd = getenv("XDG_CURRENT_DESKTOP");
+    int hw, hh;
+    if (fs && settings_handheld_size(&hw, &hh) && (getenv("GAMESCOPE_WAYLAND_DISPLAY") || (cd && !strcmp(cd, "gamescope")))) {
+        fs = false;
+        static bool logged;
+        if (!logged) LOG("[window] gamescope: a window, not fullscreen\n"), logged = true;
+    }
     // Video > Monitor: to that display first (out of fullscreen for the move: a fullscreen window keeps its display)
     SDL_DisplayID to = test ? 0 : target_display(), d = SDL_GetDisplayForWindow(w);
     if (to && to != d) {

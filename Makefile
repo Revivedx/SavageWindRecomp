@@ -532,6 +532,29 @@ $(B)/test_hud_scale: tests/test_hud_scale.c runtime/nvn/hud_scale.h
 	@mkdir -p $(dir $@)
 	$(CC) -O1 -Iruntime -o $@ $< -lm
 
+test-hud-scale: $(B)/test_hud_scale
+	$(B)/test_hud_scale
+
+.PHONY: test-hud-scale
+
+$(B)/test_shrine_sensor: tests/test_shrine_sensor.c runtime/shrine_sensor.c runtime/shrine_sensor.h runtime/settings.h
+	@mkdir -p $(dir $@)
+	$(CC) -O1 -Iruntime -o $@ tests/test_shrine_sensor.c runtime/shrine_sensor.c -lm
+
+test-shrine-sensor: $(B)/test_shrine_sensor
+	$(B)/test_shrine_sensor
+
+.PHONY: test-shrine-sensor
+
+$(B)/test_hud_button_layout: tests/test_hud_button_layout.c runtime/nvn/glyphs.c runtime/services/fs.c runtime/settings.c runtime/hle/bindings.c
+	@mkdir -p $(dir $@)
+	$(CC) -O1 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< -fuse-ld=lld -Wl,--gc-sections $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) -lSDL3 -lz -lm
+
+test-hud-button-layout: $(B)/test_hud_button_layout
+	$(B)/test_hud_button_layout
+
+.PHONY: test-hud-button-layout
+
 $(B)/test_options_pointer: tests/test_options_pointer.c runtime/pc_cursor.c runtime/pc_cursor.h runtime/pc_cursor_math.h
 	@mkdir -p $(dir $@)
 	$(CC) -O2 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -isystem third_party -o $@ $< -fuse-ld=lld -Wl,--gc-sections $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) -lSDL3 -lm
@@ -541,9 +564,9 @@ test-pc-controls: $(B)/test_pc_controls $(B)/test_pc_settings $(B)/test_options_
 	$(B)/test_options_pointer
 	@set -e; tmp=$$(mktemp); trap 'rm -f "$$tmp"' EXIT; \
 	 printf 'settings_version = 3\npc_cursor = 1\n' > "$$tmp"; \
-	 $(B)/test_pc_settings "$$tmp" 1 1 0; \
-	 $(B)/test_pc_settings "$$tmp" 0 0 1; \
-	 SAVAGEWIND_PC_CURSOR=0 $(B)/test_pc_settings "$$tmp" 0 1 2
+	 $(B)/test_pc_settings "$$tmp" 1 1 0 0; \
+	 $(B)/test_pc_settings "$$tmp" 0 0 1 1; \
+	 SAVAGEWIND_PC_CURSOR=0 $(B)/test_pc_settings "$$tmp" 0 1 2 2
 
 .PHONY: test-pc-controls
 
@@ -657,6 +680,17 @@ test-save-convert: $(B)/test_save_convert
 
 .PHONY: test-save-convert
 
+# Save profiles (runtime/services/save_profiles.c): names, create / copy / rename / delete, the active profile and the
+# legacy `save` folder, on tiny fake folders in a temporary directory (no game files, no real saves)
+$(B)/test_save_profiles: tools/test_save_profiles.c runtime/services/save_profiles.c runtime/services/save_profiles.h runtime/services/save_convert.c runtime/services/save_convert.h runtime/services/archive.c runtime/services/archive.h
+	@mkdir -p $(B)
+	$(CC) -O1 -Wall -std=gnu11 -D_FILE_OFFSET_BITS=64 -Iruntime -o $@ tools/test_save_profiles.c runtime/services/save_profiles.c runtime/services/save_convert.c runtime/services/archive.c
+
+test-save-profiles: $(B)/test_save_profiles
+	$(B)/test_save_profiles
+
+.PHONY: test-save-profiles
+
 $(B)/test_game_file_size: tools/test_game_file_size.c runtime/game_file_size.c runtime/game_file_size.h runtime/game_files.h
 	@mkdir -p $(B)
 	$(CC) -O1 -Wall $(OSFLAGS) -Iruntime -o $@ tools/test_game_file_size.c runtime/game_file_size.c
@@ -764,6 +798,26 @@ test-bloom-scale: $(B)/test_bloom_scale
 
 .PHONY: test-bloom-scale
 
+$(B)/test_audio_mix: tests/test_audio_mix.c runtime/audio_mix.h runtime/settings.h
+	@mkdir -p $(B)
+	$(CC) -O1 -Wall -Wextra -Werror -o $@ $< -lm
+
+test-audio-mix: $(B)/test_audio_mix
+	$(B)/test_audio_mix
+
+.PHONY: test-audio-mix
+# Launch options (docs/launch-options.md): the checks, the file, the environment and the suggestions (no game files), and
+# the generated table of the flags the code reads (tools/gen_launch_flags.py --check fails when it is stale)
+$(B)/test_launch_flags: tools/test_launch_flags.c runtime/launch_flags.c runtime/launch_flags_table.c runtime/launch_flags.h
+	@mkdir -p $(B)
+	$(CC) -O1 -g -Wall -Wextra $(OSFLAGS) -Iruntime -o $@ tools/test_launch_flags.c runtime/launch_flags.c runtime/launch_flags_table.c
+
+test-launch-flags: $(B)/test_launch_flags
+	$(B)/test_launch_flags
+	python3 tools/gen_launch_flags.py --check
+
+.PHONY: test-launch-flags
+
 # Native quick-selector sorting: synthetic Linux guest memory, no game files.
 ifeq ($(PLATFORM),linux)
 $(B)/test_quick_inventory_sort: tools/test_quick_inventory_sort.c runtime/quick_inventory_sort.c $(RT_HDRS)
@@ -792,4 +846,27 @@ test-quick-inventory-font: $(B)/test_quick_hint_font
 	$(B)/test_quick_hint_font "$(ROMFS)"
 
 .PHONY: test-quick-inventory-font
+endif
+
+ifeq ($(PLATFORM),linux)
+$(B)/test_quick_drop_action: tools/test_quick_drop_action.c runtime/quick_drop_action.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -std=gnu11 -O1 -g $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $<
+
+$(B)/test_quick_drop_input: tools/test_quick_drop_input.c runtime/quick_drop_action.c runtime/hle/input.c tools/test_freecam_disabled.h $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -std=gnu11 -O1 -g -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< $(TEST_LD) -lm
+
+$(B)/test_quick_drop_menu: tools/test_quick_drop_menu.c runtime/quick_drop.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -std=gnu11 -O1 -g $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $<
+
+test-quick-drop-native: $(B)/test_quick_drop_action $(B)/test_quick_drop_menu
+	$(B)/test_quick_drop_action
+	$(B)/test_quick_drop_menu
+
+test-quick-drop: test-quick-drop-native $(B)/test_quick_drop_input
+	$(B)/test_quick_drop_input
+
+.PHONY: test-quick-drop test-quick-drop-native
 endif

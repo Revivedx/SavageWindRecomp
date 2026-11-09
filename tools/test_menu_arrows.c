@@ -5,6 +5,7 @@
 #include <pthread.h>
 #include <stdio.h>
 #include "../runtime/hle/input.c"
+uint64_t quick_drop_action_filter_buttons(uint64_t b) { return b; }
 
 Settings g_settings;
 int16_t g_bind_key[BIND_KEY_COUNT];
@@ -242,3 +243,5 @@ int main(void) {
     puts("menu arrows and Enter: gating, independent bindings, reset and concurrent publication passed");
     return 0;
 }
+
+void photo_pad(uint32_t buttons) { (void)buttons; }

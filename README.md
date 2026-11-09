@@ -13,13 +13,16 @@ version of your own copy of the game: a launcher, PC-style graphics options, mod
 mouse, and its text and voices in any of its languages.
 
 > [!WARNING]
-> **Playable from start to end, with some crashes on the way.** Savage Wind plays the game at 60 fps with sound, voices,
+> **The whole game can be finished from start to end.** Savage Wind plays the game at 60 fps with sound, voices,
 > the HUD, saving and loading. Players have finished the base game from the start, through Calamity Ganon to Dark Beast
 > Ganon ([#419](https://github.com/Revivedx/SavageWindRecomp/issues/419), [#436](https://github.com/Revivedx/SavageWindRecomp/issues/436)), and the four Divine Beasts have been completed:
 > Vah Ruta ([#335](https://github.com/Revivedx/SavageWindRecomp/issues/335)), Vah Naboris
 > ([#380](https://github.com/Revivedx/SavageWindRecomp/issues/380)) and, by a player's report, all four and the DLC
 > ([#391](https://github.com/Revivedx/SavageWindRecomp/issues/391)). Expect bugs, white screens or crashes in some
 > places, and some mechanics that break above 30 fps ([#425](https://github.com/Revivedx/SavageWindRecomp/issues/425)).
+> Bugs in cutscenes are a known issue: if a cutscene freezes or breaks, lower the frame rate to 30 fps
+> (Options > Video > Frame rate) for that scene to get past it, and [open an issue](https://github.com/Revivedx/SavageWindRecomp/issues/new/choose)
+> with your save so we can fix it.
 > This is an alpha, a preview for testers. If you
 > find a bug, please [report it on GitHub](https://github.com/Revivedx/SavageWindRecomp/issues/new/choose): every
 > report shows how far the game really works.
@@ -44,9 +47,11 @@ mouse, and its text and voices in any of its languages.
 - **Search the [existing issues](https://github.com/Revivedx/SavageWindRecomp/issues?q=is%3Aissue)** first.
 - **Attach `savagewind.log`.** On Windows it's next to `savagewind.exe`, in the Savage Wind folder; on Linux, in
   `~/.local/share/savagewind/`. The game writes a new one each time it starts, so take it right after the bug.
+- **Crash or cutscene bug? Attach your save too.** Close the game and zip the whole
+  [`save` folder](#where-are-my-saves): it shows us whether the problem comes from the game's mechanics.
 - Reports missing any of these get a `needs-info` label and are closed after 7 days without it.
 
-## Getting started (Alpha 4)
+## Getting started (Alpha 5)
 
 To choose a Vulkan GPU manually, close Savage Wind and edit `savagewind.ini` in the same data folder as
 `savagewind.log`. Set `gpu = 1`, for example, using the number printed beside your preferred adapter in the log's
@@ -61,12 +66,12 @@ integrated graphics, which share the PC's RAM, 8 GB isn't enough: the game's 3 G
 to the GPU ([#117](https://github.com/Revivedx/SavageWindRecomp/issues/117)).
 
 1. Download from [Releases](https://github.com/Revivedx/SavageWindRecomp/releases):
-   - **Windows:** `SavageWind-0.4.1-alpha.4-windows.zip`. Extract it to a folder you can write to (not Program
+   - **Windows:** `SavageWind-0.5.0-alpha.5-windows.zip`. Extract it to a folder you can write to (not Program
      Files): your game files, saves and settings are kept in that folder.
-   - **Linux (x86-64, Steam Deck too):** `Savage_Wind-0.4.1-alpha.4-x86_64.AppImage`. Make it executable
+   - **Linux (x86-64, Steam Deck too):** `Savage_Wind-0.5.0-alpha.5-x86_64.AppImage`. Make it executable
      (`chmod +x`) and run it; your game files, saves and settings go to `~/.local/share/savagewind`. See
      [docs/linux.md](docs/linux.md).
-   - **Linux on ARM (aarch64):** `Savage_Wind-0.4.1-alpha.4-aarch64.AppImage` is **highly experimental**: so far
+   - **Linux on ARM (aarch64):** `Savage_Wind-0.5.0-alpha.5-aarch64.AppImage` is **highly experimental**: so far
      only a few contributors' boards have run it. Reports from real hardware are welcome
      ([docs/linux.md](docs/linux.md), "Testing on ARM").
 2. Run `savagewind.exe` (or the AppImage). The first time it asks for your game files: pick the folder with your own
@@ -88,12 +93,9 @@ so that the first boot already has every pipeline that playthrough needed, inste
 time it is drawn. Deleting it only costs some stutter on the first boots while those pipelines are built as they
 appear.
 
-Coming from Alpha 3: extract Alpha 4 over your Alpha 3 folder (Windows) or use the new AppImage (Linux). Your game
-files, saves and settings stay; the start screen asks you to build the game code again (Set up game files) once.
+Coming from Alpha 4 (0.4.x): extract Alpha 5 over your Alpha 4 folder (Windows) or use the new AppImage (Linux). Your
+game files, saves and settings stay; the start screen asks you to build the game code again (Set up game files) once.
 What's new is in [CHANGELOG.md](CHANGELOG.md).
-
-Coming from Alpha 4 (0.4.0): 0.4.1 is a quick fix update. Extract it over your Alpha 4 folder (Windows) or use the
-new AppImage (Linux): no new setup, everything stays.
 
 On Windows with an AMD card, if the window stays black after updating, reset AMD's shader cache once: in AMD Software:
 Adrenalin Edition go to Gaming > Graphics > Advanced and click Reset Shader Cache, then start Savage Wind again.
@@ -101,6 +103,9 @@ AMD's driver can keep a damaged cache from an older version. Renaming the Savage
 a fresh cache.
 
 To keep game files, saves and caches on another drive, see [Moving the data folder](docs/data-folder.md).
+
+To start with an extra test setting (an environment flag we asked you to try) without a terminal, use the Launch options
+list on the start screen: [docs/launch-options.md](docs/launch-options.md).
 
 The setup and configuration screens show Savage Wind's own art. To see a picture of your own there instead, put it
 next to `savagewind.exe` (on Linux, in the data folder) as `splash.jpg` or `splash.png`; it's only read from your folder and never part of
@@ -125,6 +130,9 @@ the data folder actually in use. `SAVAGEWIND_SAVE_DIR`, when set for a test run,
 
 To back up your progress or move it to another Savage Wind installation, close the game and copy the **whole
 `save` folder**, including `save_0` and its contents. Keep a backup of the destination's saves before replacing them.
+
+Want more than one set of saves, for example your own playthrough and a 100% save for testing? **Settings > Saves**
+keeps several profiles and switches between them. See [Save profiles](docs/save-profiles.md).
 
 Played on the Wii U or in Cemu? Savage Wind Configuration can import that save: open **Settings > Saves** and choose
 **Import from Wii U / Cemu...**. It backs up your current saves first and asks before it replaces them. See
@@ -163,6 +171,12 @@ Each DLC's RomFS goes in a folder of its own, named `aoc1/` and `aoc2/` as above
 (`aoc1/System/AocVersion.txt`). Keep the two DLC apart: the second one's RomFS is a single file, and extracting both
 into one folder leaves only one DLC.
 
+Do not merge the DLC into the game's `romfs/` either. A `romfs/` with the DLC inside (about 47,700 files instead of
+41,062) lets the game start, but the loading screen after a Divine Beast boss then never ends
+([#438](https://github.com/Revivedx/SavageWindRecomp/issues/438), [#570](https://github.com/Revivedx/SavageWindRecomp/issues/570)):
+the same save loads on to the inside of the beast with a `romfs/` of 41,062 files and the DLC in `aoc1/` and `aoc2/`.
+The game files page tells you when the DLC is merged.
+
 - **With the game:** keep them in the same folder as `exefs/` and `romfs/`, and choose that folder at the first
   setup. The DLC is set up together with the game.
 - **Later:** in Savage Wind Configuration's game files page, choose a folder that holds just the DLC folders and set
@@ -195,52 +209,56 @@ Estimates of where each part stands. "Tested in game" is how much of the game ha
 
 | | Part | Progress | What it means |
 |---|---|---|---|
-| ✅ | **Recompiler** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | The whole game (main, sdk and multimedia modules) recompiles to native code |
-| ✅ | **Game files setup** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Version check, copy, data image and code build, all from your own files |
-| ✅ | **Text and voice languages** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Any of the game's 15 text languages (16 with 1.9.0's Thai) with any of its 8 voice languages |
-| ✅ | **Voices in another language: crash fix** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Fixed ([#2](https://github.com/Revivedx/SavageWindRecomp/issues/2)): the game now sets aside enough memory for voice banks bigger than its own, so any voice language works with any text language |
-| ✅ | **Menus in 13 languages** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Savage Wind's own screens follow the text language. Hebrew, right to left, which the game has no text language for: `SAVAGEWIND_MENU_LANG=he` |
-| ✅ | **Sound and voices** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Mixed by the game SDK's own audio renderer, with room reverb |
-| ✅ | **Keyboard and mouse** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Every key and mouse button remappable, mouse camera |
-| ✅ | **Settings in the game's Options** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Video, audio, controls and language pages drawn by the game itself |
-| ✅ | **Direct start + Configuration** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | savagewind.exe goes straight into the game; Savage Wind Configuration has the rest |
-| ✅ | **Window sizes and fullscreen** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | The sizes your display can show; windowed, borderless or exclusive |
-| ✅ | **Ultrawide** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Video > Fill wide screens (on by default): a window or screen wider than 16:9 (21:9, 32:9) shows more of the world to the sides instead of bars, and a taller one (16:10, 4:3) more above and below. The HUD stays 16:9 in the middle; the pause menu, the map, the loading screen and the start screen are shown 16:9 |
-| ✅ | **Internal resolution and FSR 1** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Native resolution up to 4K, or AMD FSR 1 quality modes |
-| ✅ | **Anisotropic filtering and sharpening** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Ground and paths sharp at a distance (2x to 16x); AMD CAS sharpening of the 3D image, useful with FSR 1 |
-| ✅ | **Higher-resolution shadows** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Sun shadows at the console's 896x896, or sharper at 2048, 4096 or 8192 (Video > Shadow resolution) |
-| ✅ | **Shader and pipeline cache** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Places you've already seen don't stutter again |
-| ✅ | **Full shader precompilation** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Optional and on by default, at setup or later in Savage Wind Configuration: all of the game's ~14,000 shaders are translated and compiled ahead of time, so new places and effects don't stutter the first time |
-| ✅ | **Faster game code build** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | The one-time setup takes about 15 minutes instead of about 40 (12 threads): the game code builds in about 6 minutes instead of 30 ([#43](https://github.com/Revivedx/SavageWindRecomp/pull/43), by [@adriadam10](https://github.com/adriadam10)) |
-| ✅ | **Frame rate** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | 60 fps by default, or 30, 90, 120, 144, 165, 240, 360 or no limit, with the game at the same speed; menus, cutscenes and conversations too, and videos at their own speed |
-| ✅ | **Field of view** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Video > Field of view: 70% to 150% of the game's own in play; cutscenes and conversations keep theirs |
-| ✅ | **Draw distance** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Video > Draw distance: Original (the game's own), Medium or High. Trees, rocks, buildings, enemies and villagers appear further out (1.5x at Medium, 1.6x at High, up to 2 km), buildings keep their full models further before their far versions take over, and distant landmarks such as Hyrule Castle and the terrain's distant trees stay drawn 1.5x as far. The grass reaches further too: the short grass 1.6x (Medium) or 2.5x (High), the tall grass about 1.15x or 2.45x. The terrain's own detail levels stay the game's ([#88](https://github.com/Revivedx/SavageWindRecomp/issues/88)) |
-| ✅ | **Steady 60 fps in the open world** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Holds 60 fps in real play on the Great Plateau (RTX 3060, Ryzen 5 5600X); steady 120 fps (8 ms frames) is the next goal |
-| ✅ | **Game version 1.9.0** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | The latest version and the supported one (its Thai text isn't offered yet). 1.8.2 still sets up and runs, but isn't supported: a bug is only fixed if it also happens on 1.9.0 |
-| ✅ | **DLC** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | *The Master Trials* and *The Champions' Ballad* from your own copy, set up with the game files or later ([The DLC](#the-dlc)): Master Mode, the Trial of the Sword and the Travel Medallion work on a 100% save. The Champions' Ballad has been played through. |
-| ✅ | **Variable refresh rate (VRR)** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | Video > VSync: On lets G-SYNC and FreeSync displays show every frame as soon as it's ready, a little under the refresh rate; Fast (the default), Adaptive and Off too. Tried on a VRR display |
-| ✅ | **Motion controls (gyro)** | ![100%](https://progress-bar.xyz/100/?width=150&style=square&progress_color=5cb85c) | The controller's gyroscope and accelerometer (DualSense, DualShock 4, Switch controllers, Steam Deck) for motion aiming and the tilt shrines; without one, hold T and move the mouse to tilt. Sensitivity and inversion in Options > Controls. Confirmed by players with real controllers |
-| 🔧 | **Horizon OS services** | ![90%](https://progress-bar.xyz/90/?width=150&style=square&progress_color=5cb85c) | Threads, files, controllers, applets and time: all the opening and the Great Plateau use |
-| 🔧 | **Maxwell shader translator** | ![90%](https://progress-bar.xyz/90/?width=150&style=square&progress_color=5cb85c) | Every shader seen so far translates to Vulkan |
-| 🔧 | **Graphics (NVN on Vulkan)** | ![80%](https://progress-bar.xyz/80/?width=150&style=square&progress_color=5cb85c) | Shrine and Great Plateau look right, shadows included; far parts of the map can still be missing ([#20](https://github.com/Revivedx/SavageWindRecomp/issues/20)) |
-| 🔧 | **Controllers** | ![80%](https://progress-bar.xyz/80/?width=150&style=square&progress_color=5cb85c) | Any controller SDL knows, by button position, confirmed by players; automatic recognition is next, then camera speed set apart for each axis |
-| 🔧 | **Button icons for your device** | ![80%](https://progress-bar.xyz/80/?width=150&style=square&progress_color=5cb85c) | The game's button prompts show your bound keys and mouse buttons, or Xbox / PlayStation / Nintendo buttons, switching with the device you use |
-| 🔧 | **Tested in game** | ![75%](https://progress-bar.xyz/75/?width=150&style=square&progress_color=f0ad4e) | The Shrine of Resurrection, the Great Plateau, the four Divine Beasts and the main story to the end, Dark Beast Ganon, completed by players ([#335](https://github.com/Revivedx/SavageWindRecomp/issues/335), [#380](https://github.com/Revivedx/SavageWindRecomp/issues/380), [#419](https://github.com/Revivedx/SavageWindRecomp/issues/419), [#436](https://github.com/Revivedx/SavageWindRecomp/issues/436)), and a walk through every region on a 100% save file. Some places still crash or show a white screen, and some mechanics break above 30 fps ([#425](https://github.com/Revivedx/SavageWindRecomp/issues/425)): [report what breaks](https://github.com/Revivedx/SavageWindRecomp/issues/new/choose) |
-| 🔧 | **Linux** | ![90%](https://progress-bar.xyz/90/?width=150&style=square&progress_color=5cb85c) | Builds and runs on x86-64 (from LAS Recomp); a steady 144 fps on an RTX 3070 Ti with a Ryzen 5 7600X, and no Linux-only issues so far |
-| 🔧 | **AMD FSR 3 + frame generation** | ![60%](https://progress-bar.xyz/60/?width=150&style=square&progress_color=f0ad4e) | Video > Frame generation (AMD FSR 3): a frame made between each two the game draws, about twice the frames on screen, with the HUD kept sharp. Motion vectors from depth and the camera, and Link's own; enemies and animals can still leave a faint smear. Smooth with VSync and G-SYNC. Works on Windows; Linux and the Steam Deck aren't tried yet. Only frame generation for now: FSR 3 upscaling is next |
-| 🗺️ | **NVIDIA DLSS (RTX)** | ![0%](https://progress-bar.xyz/0/?width=150&style=square&progress_color=d9534f) | Planned, after FSR 3; under NVIDIA's own SDK license |
-| 🔧 | **Colour grading and HDR** | ![50%](https://progress-bar.xyz/50/?width=150&style=square&progress_color=f0ad4e) | Options > Colour: presets, exposure, contrast, saturation, temperature, tint and LUTs (three CC0 ones included; your own .cube files and ReShade .png strips go in the `luts` folder), on the 3D image only: the HUD keeps its colours. Windows and Linux. Planned: fog and bloom on or off, and real HDR output on HDR displays |
-| 🗺️ | **Draw distance and detail** | ![0%](https://progress-bar.xyz/0/?width=150&style=square&progress_color=d9534f) | Planned: trees, grass and objects drawn farther away on strong PCs, or nearer for more fps, and a fixed level of detail (the most detailed models at any distance) |
-| 🗺️ | **Free camera and photo mode** | ![0%](https://progress-bar.xyz/0/?width=150&style=square&progress_color=d9534f) | Planned: a free camera with the HUD hidden and its own speed and sensitivity, for screenshots, and camera paths through keyframes for videos |
-| 🗺️ | **Effects on or off** | ![0%](https://progress-bar.xyz/0/?width=150&style=square&progress_color=d9534f) | Planned: a Video page that turns each of the game's own effects on or off, where BOTW has them: ambient occlusion, volumetric fog, grass (3 layers), character light (normal and custom), tone mapper, fragment and main lighting, bloom (3 layers), lens flare, cel shading, fog effects, water, torch fire, the sword sheath, depth of field (also when aiming the bow), screen-space reflections, global illumination and far lights |
-| 🗺️ | **Graphics extras** | ![0%](https://progress-bar.xyz/0/?width=150&style=square&progress_color=d9534f) | Later: ambient occlusion, volumetric fog and depth of field |
-| 🗺️ | **Built-in benchmark** | ![0%](https://progress-bar.xyz/0/?width=150&style=square&progress_color=d9534f) | Planned: fixed camera routes that measure fps and frame times and save the results, to compare settings |
-| 🗺️ | **GPU readings on AMD and Intel (Windows)** | ![0%](https://progress-bar.xyz/0/?width=150&style=square&progress_color=d9534f) | Planned: the performance overlay's GPU use and VRAM for any GPU on Windows ([#58](https://github.com/Revivedx/SavageWindRecomp/issues/58)); today only NVIDIA, and AMD on Linux |
-| 🗺️ | **Mods** | ![0%](https://progress-bar.xyz/0/?width=150&style=square&progress_color=d9534f) | Planned |
-| 🗺️ | **Accessibility and assists** | ![0%](https://progress-bar.xyz/0/?width=150&style=square&progress_color=d9534f) | Planned: text size, colour-blind filters and toggles in place of held buttons; enemy and Link health, damage dealt and taken, weapon durability and stamina use on screen; optional assists: infinite stamina, health or weapon durability, arrows and rupees, no damage at all, no fall damage, health that refills over time, nearby enemies defeated at once, and multipliers for weapon durability, stamina use, damage dealt and taken, and walking, running, climbing, swimming and gliding speed |
-| 🗺️ | **Teleport with bookmarks** | ![0%](https://progress-bar.xyz/0/?width=150&style=square&progress_color=d9534f) | Planned: save places and travel back to them |
-| 🗺️ | **Achievements** | ![0%](https://progress-bar.xyz/0/?width=150&style=square&progress_color=d9534f) | Planned: achievements from your save's progress, from start to finish ([#236](https://github.com/Revivedx/SavageWindRecomp/pull/236)) |
-| 🗺️ | **amiibo rewards without figures** | ![0%](https://progress-bar.xyz/0/?width=150&style=square&progress_color=d9534f) | Planned |
+| ✅ | **Recompiler** | ![100%](docs/media/progress/100.svg) | The whole game (main, sdk and multimedia modules) recompiles to native code |
+| ✅ | **Game files setup** | ![100%](docs/media/progress/100.svg) | Version check, copy, data image and code build, all from your own files |
+| ✅ | **Text and voice languages** | ![100%](docs/media/progress/100.svg) | Any of the game's 15 text languages (16 with 1.9.0's Thai) with any of its 8 voice languages |
+| ✅ | **Voices in another language: crash fix** | ![100%](docs/media/progress/100.svg) | Fixed ([#2](https://github.com/Revivedx/SavageWindRecomp/issues/2)): the game now sets aside enough memory for voice banks bigger than its own, so any voice language works with any text language |
+| ✅ | **Menus in 13 languages** | ![100%](docs/media/progress/100.svg) | Savage Wind's own screens follow the text language. Hebrew, right to left, which the game has no text language for: `SAVAGEWIND_MENU_LANG=he` |
+| ✅ | **Sound and voices** | ![100%](docs/media/progress/100.svg) | Mixed by the game SDK's own audio renderer, with room reverb |
+| ✅ | **Keyboard and mouse** | ![100%](docs/media/progress/100.svg) | Every key and mouse button remappable, mouse camera |
+| ✅ | **Settings in the game's Options** | ![100%](docs/media/progress/100.svg) | Video, audio, controls and language pages drawn by the game itself |
+| ✅ | **Direct start + Configuration** | ![100%](docs/media/progress/100.svg) | savagewind.exe goes straight into the game; Savage Wind Configuration has the rest |
+| ✅ | **Window sizes and fullscreen** | ![100%](docs/media/progress/100.svg) | The sizes your display can show; windowed, borderless or exclusive |
+| ✅ | **Ultrawide** | ![100%](docs/media/progress/100.svg) | Video > Fill wide screens (on by default): a window or screen wider than 16:9 (21:9, 32:9) shows more of the world to the sides instead of bars, and a taller one (16:10, 4:3) more above and below. The HUD stays 16:9 in the middle; the pause menu, the map, the loading screen and the start screen are shown 16:9 |
+| ✅ | **Internal resolution and FSR 1** | ![100%](docs/media/progress/100.svg) | Native resolution up to 4K, or AMD FSR 1 quality modes |
+| ✅ | **Anisotropic filtering and sharpening** | ![100%](docs/media/progress/100.svg) | Ground and paths sharp at a distance (2x to 16x); AMD CAS sharpening of the 3D image, useful with FSR 1 |
+| ✅ | **Higher-resolution shadows** | ![100%](docs/media/progress/100.svg) | Sun shadows at the console's 896x896, or sharper at 2048, 4096 or 8192 (Video > Shadow resolution) |
+| ✅ | **Shader and pipeline cache** | ![100%](docs/media/progress/100.svg) | Places you've already seen don't stutter again |
+| ✅ | **Full shader precompilation** | ![100%](docs/media/progress/100.svg) | Optional and on by default, at setup or later in Savage Wind Configuration: all of the game's ~14,000 shaders are translated and compiled ahead of time, so new places and effects don't stutter the first time |
+| ✅ | **Faster game code build** | ![100%](docs/media/progress/100.svg) | The one-time setup takes about 15 minutes instead of about 40 (12 threads): the game code builds in about 6 minutes instead of 30 ([#43](https://github.com/Revivedx/SavageWindRecomp/pull/43), by [@adriadam10](https://github.com/adriadam10)) |
+| ✅ | **Frame rate** | ![100%](docs/media/progress/100.svg) | 60 fps by default, or 30, 90, 120, 144, 165, 240, 360 or no limit, with the game at the same speed; menus, cutscenes and conversations too, and videos at their own speed |
+| ✅ | **Field of view** | ![100%](docs/media/progress/100.svg) | Video > Field of view: 70% to 150% of the game's own in play; cutscenes and conversations keep theirs |
+| ✅ | **Draw distance** | ![100%](docs/media/progress/100.svg) | Video > Draw distance: Original (the game's own), Medium or High. Trees, rocks, buildings, enemies and villagers appear further out (1.5x at Medium, 1.6x at High, up to 2 km), buildings keep their full models further before their far versions take over, and distant landmarks such as Hyrule Castle and the terrain's distant trees stay drawn 1.5x as far. The grass reaches further too: the short grass 1.6x (Medium) or 2.5x (High), the tall grass about 1.15x or 2.45x. The terrain's own detail levels stay the game's ([#88](https://github.com/Revivedx/SavageWindRecomp/issues/88)) |
+| ✅ | **Steady 60 fps in the open world** | ![100%](docs/media/progress/100.svg) | Holds 60 fps in real play on the Great Plateau (RTX 3060, Ryzen 5 5600X); steady 120 fps (8 ms frames) is the next goal |
+| ✅ | **Game version 1.9.0** | ![100%](docs/media/progress/100.svg) | The latest version and the supported one (its Thai text isn't offered yet). 1.8.2 still sets up and runs, but isn't supported: a bug is only fixed if it also happens on 1.9.0 |
+| ✅ | **DLC** | ![100%](docs/media/progress/100.svg) | *The Master Trials* and *The Champions' Ballad* from your own copy, set up with the game files or later ([The DLC](#the-dlc)): Master Mode, the Trial of the Sword and the Travel Medallion work on a 100% save. The Champions' Ballad has been played through. |
+| ✅ | **Variable refresh rate (VRR)** | ![100%](docs/media/progress/100.svg) | Video > VSync: On lets G-SYNC and FreeSync displays show every frame as soon as it's ready, a little under the refresh rate; Fast (the default), Adaptive and Off too. Tried on a VRR display |
+| ✅ | **Motion controls (gyro)** | ![100%](docs/media/progress/100.svg) | The controller's gyroscope and accelerometer (DualSense, DualShock 4, Switch controllers, Steam Deck) for motion aiming and the tilt shrines; without one, hold T and move the mouse to tilt. Sensitivity and inversion in Options > Controls. Confirmed by players with real controllers |
+| ✅ | **Graphics presets and Potato settings** | ![100%](docs/media/progress/100.svg) | Video > Graphics preset: Potato, Original, High or Savage, plus an Advanced options page; draw distance and shadows below the console's for weaker PCs |
+| ✅ | **Save profiles and backups** | ![100%](docs/media/progress/100.svg) | Settings > Saves: complete sets of saves to switch between ([#521](https://github.com/Revivedx/SavageWindRecomp/issues/521)), a backup at each start with the last 5 kept ([#537](https://github.com/Revivedx/SavageWindRecomp/issues/537)), and export to Wii U / Cemu ([#549](https://github.com/Revivedx/SavageWindRecomp/issues/549)) |
+| ✅ | **Cheats** | ![100%](docs/media/progress/100.svg) | Overlay (F1) > Cheats and the console: infinite rupees, weather, and any of the game's items into the pouch ([#423](https://github.com/Revivedx/SavageWindRecomp/issues/423), [#535](https://github.com/Revivedx/SavageWindRecomp/issues/535), [#545](https://github.com/Revivedx/SavageWindRecomp/issues/545)) |
+| 🔧 | **Horizon OS services** | ![95%](docs/media/progress/95.svg) | Threads, files, controllers, applets and time: everything the game uses from start to end |
+| 🔧 | **Maxwell shader translator** | ![90%](docs/media/progress/90.svg) | Every shader seen so far translates to Vulkan |
+| 🔧 | **Graphics (NVN on Vulkan)** | ![90%](docs/media/progress/90.svg) | The whole game draws correctly, shadows included, on NVIDIA, AMD, Intel and Steam Deck; older GPUs still have open reports ([#332](https://github.com/Revivedx/SavageWindRecomp/issues/332)) |
+| 🔧 | **Controllers** | ![90%](docs/media/progress/90.svg) | Any controller SDL knows, by button position, confirmed by players. Every connected controller is open and the last one used is read, Steam Input pads are told apart, and camera speed and vibration strength are in Options > Controls ([#469](https://github.com/Revivedx/SavageWindRecomp/issues/469), [#540](https://github.com/Revivedx/SavageWindRecomp/issues/540), [#563](https://github.com/Revivedx/SavageWindRecomp/issues/563)). Next: camera speed set apart for each axis |
+| 🔧 | **Button icons for your device** | ![90%](docs/media/progress/90.svg) | The game's button prompts show your bound keys and mouse buttons, or Xbox / PlayStation / Nintendo / Steam Deck buttons, switching with the device you use ([#469](https://github.com/Revivedx/SavageWindRecomp/issues/469)) |
+| 🔧 | **Tested in game** | ![90%](docs/media/progress/90.svg) | The whole game can be finished: the Shrine of Resurrection, the Great Plateau, the four Divine Beasts and the main story to Dark Beast Ganon, completed by players ([#335](https://github.com/Revivedx/SavageWindRecomp/issues/335), [#380](https://github.com/Revivedx/SavageWindRecomp/issues/380), [#419](https://github.com/Revivedx/SavageWindRecomp/issues/419), [#436](https://github.com/Revivedx/SavageWindRecomp/issues/436)), and a walk through every region on a 100% save file. Cutscene bugs are known: lower the frame rate to 30 fps for that scene and open an issue with your save. Some places still crash, and some mechanics break above 30 fps ([#425](https://github.com/Revivedx/SavageWindRecomp/issues/425)): [report what breaks](https://github.com/Revivedx/SavageWindRecomp/issues/new/choose) |
+| 🔧 | **Linux** | ![90%](docs/media/progress/90.svg) | Builds and runs on x86-64 (from LAS Recomp); a steady 144 fps on an RTX 3070 Ti with a Ryzen 5 7600X, and no Linux-only issues so far |
+| 🔧 | **AMD FSR 3 + frame generation** | ![80%](docs/media/progress/80.svg) | Video > Upscaler: AMD FSR 3, and FSR 4 on Windows, opt-in ([#308](https://github.com/Revivedx/SavageWindRecomp/issues/308)). Video > Frame generation (AMD FSR 3): a frame made between each two the game draws, about twice the frames on screen, with the HUD kept sharp. Enemies and animals can still leave a faint smear. Works on Windows; Linux and the Steam Deck aren't tried yet |
+| 🔧 | **NVIDIA DLSS (RTX)** | ![50%](docs/media/progress/50.svg) | The code is in ([#111](https://github.com/Revivedx/SavageWindRecomp/issues/111)), but it needs NVIDIA's SDK at build time, so the option stays greyed out in these builds |
+| 🔧 | **Colour grading and HDR** | ![80%](docs/media/progress/80.svg) | Options > Colour: presets, exposure, contrast, saturation, temperature, tint and LUTs (three CC0 ones included; your own .cube files and ReShade .png strips go in the `luts` folder), on the 3D image only: the HUD keeps its colours. HDR10 output on HDR displays. Next: finer HDR controls |
+| 🔧 | **Draw distance and detail** | ![80%](docs/media/progress/80.svg) | Draw distance and shadows from Potato, below the console, to far beyond it, with presets and a render scale of 50% to 200%. Planned: a fixed level of detail (the most detailed models at any distance) |
+| 🔧 | **Free camera and photo mode** | ![80%](docs/media/progress/80.svg) | Home or both stick clicks: a free camera with the HUD hidden. F8 filters, [ ] the hour of the day, F7 a picture ([#318](https://github.com/Revivedx/SavageWindRecomp/issues/318), [#554](https://github.com/Revivedx/SavageWindRecomp/issues/554)). Planned: camera paths through keyframes for videos |
+| 🔧 | **Effects on or off** | ![30%](docs/media/progress/30.svg) | Video > Advanced options: bloom, depth of field, dynamic resolution and haze, and Video > Anti-aliasing turns the game's FXAA off. Planned for the rest, where BOTW has them: ambient occlusion, volumetric fog, grass (3 layers), character light, tone mapper, lens flare, cel shading, water, torch fire, screen-space reflections, global illumination and far lights |
+| 🔧 | **Built-in benchmark** | ![30%](docs/media/progress/30.svg) | For developers: `tools/perf_routes.py` drives fixed routes that measure fps and frame times (docs/PERF-ROUTES.md). Planned: the same from inside the game |
+| 🔧 | **GPU readings on AMD and Intel (Windows)** | ![90%](docs/media/progress/90.svg) | The performance overlay's GPU use and VRAM on Windows: NVIDIA through its driver, AMD's load, clock, temperature and power through AMD's library ([#547](https://github.com/Revivedx/SavageWindRecomp/issues/547)), and any other GPU through the Windows counters (not tested on Intel by us) |
+| 🔧 | **Mods** | ![20%](docs/media/progress/20.svg) | Language packs: `lang/<language>.txt` in the data folder is read over the built-in translations ([#557](https://github.com/Revivedx/SavageWindRecomp/issues/557)). Planned: a loader for other mods |
+| 🔧 | **Accessibility and assists** | ![50%](docs/media/progress/50.svg) | Options > Accessibility: God mode, One-hit kill, damage dealt and taken, weapon wear levels, infinite arrows and stamina ([#374](https://github.com/Revivedx/SavageWindRecomp/issues/374), [#534](https://github.com/Revivedx/SavageWindRecomp/issues/534)); rupees and weather are under Cheats. Planned: text size, colour-blind filters and toggles in place of held buttons; enemy and Link health on screen; no fall damage, health that refills over time, and speed multipliers |
+| 🔧 | **amiibo rewards without figures** | ![50%](docs/media/progress/50.svg) | Overlay (F1) > amiibo: a virtual reader for your own figure dumps, nothing of a figure or a key is included ([#422](https://github.com/Revivedx/SavageWindRecomp/issues/422)). Planned: the rewards without any figure |
+| 🔧 | **PC handhelds** | ![80%](docs/media/progress/80.svg) | Recognised by maker and model, with a PC Handheld preset, the screen's own size and 30, 40, 45 and 60 fps. Tested on the Steam Deck only |
+| 🗺️ | **Graphics extras** | ![0%](docs/media/progress/0.svg) | Later: ambient occlusion, volumetric fog and depth of field |
+| 🗺️ | **Teleport with bookmarks** | ![0%](docs/media/progress/0.svg) | Planned: save places and travel back to them |
+| 🗺️ | **Achievements** | ![0%](docs/media/progress/0.svg) | Planned: achievements from your save's progress, from start to finish ([#236](https://github.com/Revivedx/SavageWindRecomp/pull/236)) |
 
 ✅ done · 🔧 in progress · 🗺️ roadmap
 
@@ -294,13 +312,13 @@ More detail in [docs/BUILD-windows.md](docs/BUILD-windows.md).
      minute) and `make -j` again (builds it into `build/swgame.dll`; the first build takes 15-20 minutes).
 3. Run: `build/savagewind.exe extracted --play`, from a shell with `C:\msys64\ucrt64\bin` on PATH.
 
-NVIDIA DLSS Frame Generation is optional on Windows. It builds from NVIDIA's SDK,
+DLSS (Super Resolution and Frame Generation) is optional on Windows. It builds from NVIDIA's SDK,
 [NVIDIA/DLSS](https://github.com/NVIDIA/DLSS), cloned beside this repository (`../DLSS`, the default) or anywhere else
 with `make DLSS_SDK=/path/to/DLSS -j`. Check out one of its release tags (tested: `v310.9.16`) and keep that tag's own
 `nvngx_dlss.dll` and `nvngx_dlssg.dll`: the headers and the static library the game is linked with must be the same
 SDK version as the DLLs it loads, so don't swap in DLLs from elsewhere. The release build copies both DLLs and the
 NVIDIA license when that SDK path is available. If the SDK or runtime DLLs are absent, the game still builds and NVIDIA
-DLSS stays unavailable in Video > Frame generation.
+DLSS stays unavailable in Video > Upscaler and Video > Frame generation.
 
 ### Linux
 

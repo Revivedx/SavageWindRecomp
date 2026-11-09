@@ -25,6 +25,7 @@
 #include "../prof.h"
 #include "../pc_cursor.h"
 #include "../pc_bow.h"
+#include "../quick_drop_action.h"
 
 enum {
     BTN_A = 0, BTN_B, BTN_X, BTN_Y, BTN_LSTICK, BTN_RSTICK, BTN_L, BTN_R, BTN_ZL, BTN_ZR, BTN_PLUS, BTN_MINUS,
@@ -511,7 +512,7 @@ void input_mouse_update(SDL_Window *w) {
     LOG("[input] mouse %s\n", want ? "held in the window (camera)" : "free");
 }
 
-volatile int g_debug_frame_request;  // F9: dump the next frame's passes (build/pass_*.png) + draw log
+volatile int g_debug_frame_request;  // F9, developer mode only: dump the next frame's passes (build/pass_*.png) + draw log
 volatile int g_record_frames;        // F12: (debugging) save every other game image to build/frames/ until F12 again
 volatile int g_skip_fs_off;          // F8: (debugging) draw the shaders SAVAGEWIND_SKIP_FSHASH names, until F8 again
 
@@ -561,26 +562,52 @@ bool input_user_blocked(const SDL_Event *e) {
 // controller's button or stick
 int input_last_device(void) { return pad ? last_device : DEVICE_KEYBOARD; }
 
-// Controller family for the Controls tab labels (runtime/hle/bindings.c): 0 Nintendo / other / none, 1 Xbox, 2 PlayStation.
-// SAVAGEWIND_PAD_TYPE=xbox|playstation|nintendo pretends one is attached (tests).
+// Controller family for the Controls tab labels (runtime/hle/bindings.c): 0 Nintendo / other / none, 1 Xbox, 2 PlayStation,
+// 3 Steam Deck (a Valve pad - the Deck's own controls, or Steam Input's virtual one - in Steam Deck mode).
+// SAVAGEWIND_PAD_TYPE=xbox|playstation|nintendo|steamdeck pretends one is attached (tests).
 static _Atomic int pad_family;
+static SDL_JoystickID first_valve;  // the first Valve pad opened: in Gaming Mode, Steam Input's one for the Deck's controls
 static void note_family(void) {
-    int f = 0;
-    if (pad) switch (SDL_GetGamepadType(pad)) {
-        case SDL_GAMEPAD_TYPE_XBOX360: case SDL_GAMEPAD_TYPE_XBOXONE: f = 1; break;
-        case SDL_GAMEPAD_TYPE_PS3: case SDL_GAMEPAD_TYPE_PS4: case SDL_GAMEPAD_TYPE_PS5: f = 2; break;
-        default: break;
-    }
-    if (f != pad_family) LOG("[input] button prompts: %s controller\n", f == 1 ? "Xbox" : f == 2 ? "PlayStation" : "Nintendo / other");
+    int f = pad ? bind_pad_family(SDL_GetGamepadType(pad), SDL_GetGamepadVendor(pad), SDL_GetGamepadProduct(pad),
+                                  SDL_GetGamepadName(pad), SDL_GetGamepadID(pad) == first_valve) : 0;
+    if (f != pad_family) LOG("[input] button prompts: %s controller (%s, %04x:%04x, type %d)\n", f == 1 ? "Xbox" :
+                             f == 2 ? "PlayStation" : f == 3 ? "Steam Deck" : "Nintendo / other",
+                             pad ? SDL_GetGamepadName(pad) : "none", pad ? SDL_GetGamepadVendor(pad) : 0,
+                             pad ? SDL_GetGamepadProduct(pad) : 0, pad ? (int)SDL_GetGamepadType(pad) : 0);
     pad_family = f;
 }
 int input_pad_family(void) {
     static int env = -2;
     if (env == -2) {
         const char *e = getenv("SAVAGEWIND_PAD_TYPE");
-        env = !e ? -1 : !strcmp(e, "xbox") ? 1 : !strcmp(e, "playstation") || !strcmp(e, "ps") ? 2 : 0;
+        env = !e ? -1 : !strcmp(e, "xbox") ? 1 : !strcmp(e, "playstation") || !strcmp(e, "ps") ? 2 : !strcmp(e, "steamdeck") ? 3 : 0;
     }
     return env >= 0 ? env : pad_family;
+}
+
+// Every controller connected is open; the game reads the one pressed last (pad): on a Steam Deck, the Deck's own
+// controls until an Xbox or PlayStation controller connected later is used, and back. (One only, opened at startup,
+// left a controller connected later unread.)
+static SDL_Gamepad *pads[8];
+static int npads;
+static void pad_use(SDL_Gamepad *p) {
+    if (p == pad) return;
+    if (pad) vibration_update(pad, false), motion_pad_closed();
+    pad = p;
+    if (pad) LOG("[input] gamepad in use: %s\n", SDL_GetGamepadName(pad)), motion_pad_opened(pad);
+    note_family();
+    recompute_pad();
+}
+static void pad_open(SDL_JoystickID id) {
+    for (int i = 0; i < npads; i++)
+        if (SDL_GetGamepadID(pads[i]) == id) return;
+    if (npads == (int)(sizeof pads / sizeof *pads)) return;
+    SDL_Gamepad *p = SDL_OpenGamepad(id);
+    if (!p) return;
+    pads[npads++] = p;
+    if (!first_valve && SDL_GetGamepadVendor(p) == BIND_VALVE_VENDOR) first_valve = id;
+    LOG("[input] gamepad: %s (%04x:%04x)\n", SDL_GetGamepadName(p), SDL_GetGamepadVendor(p), SDL_GetGamepadProduct(p));
+    if (!pad) pad_use(p);
 }
 
 void input_handle_event(const SDL_Event *e) {
@@ -607,8 +634,7 @@ void input_handle_event(const SDL_Event *e) {
         scanned = true;
         int n = 0;
         SDL_JoystickID *ids = SDL_GetGamepads(&n);
-        if (n > 0 && !pad) { pad = SDL_OpenGamepad(ids[0]); LOG("[input] gamepad: %s\n", SDL_GetGamepadName(pad)); note_family(); }
-        if (pad) motion_pad_opened(pad);
+        for (int i = 0; i < n; i++) pad_open(ids[i]);
         SDL_free(ids);
     }
     switch (e->type) {
@@ -629,7 +655,12 @@ void input_handle_event(const SDL_Event *e) {
                 break;
             }
         }
-        if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_F9 && !e->key.repeat) g_debug_frame_request = 1;
+        if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_PRINTSCREEN && !e->key.repeat) {
+            extern void photo_take(void);
+            photo_take();
+        }
+        if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_F9 && !e->key.repeat && control_enabled())
+            g_debug_frame_request = 1;
         if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_F6 && !e->key.repeat && profiler_key_available())
             prof_toggle();  // start, stop, or acknowledge a full buffer (runtime/prof.h; report: tools/swprof.py)
         if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_F12 && !e->key.repeat)
@@ -681,20 +712,16 @@ void input_handle_event(const SDL_Event *e) {
         window_focus(e->type == SDL_EVENT_WINDOW_FOCUS_GAINED);
         break;
     case SDL_EVENT_GAMEPAD_ADDED:
-        if (!pad) {
-            pad = SDL_OpenGamepad(e->gdevice.which);
-            LOG("[input] gamepad: %s\n", SDL_GetGamepadName(pad));
-            note_family();
-            if (pad) motion_pad_opened(pad);
-        }
+        pad_open(e->gdevice.which);
         break;
     case SDL_EVENT_GAMEPAD_REMOVED:
-        if (pad && SDL_GetGamepadID(pad) == e->gdevice.which) {
-            vibration_update(pad, false);
-            SDL_CloseGamepad(pad);
-            pad = NULL;
-            note_family();
-            motion_pad_closed();
+        for (int i = 0; i < npads; i++) {
+            if (SDL_GetGamepadID(pads[i]) != e->gdevice.which) continue;
+            SDL_Gamepad *gone = pads[i];
+            pads[i] = pads[--npads];
+            if (gone == pad) pad_use(npads ? pads[0] : NULL);  // (the one in use: another connected one, if any)
+            SDL_CloseGamepad(gone);
+            break;
         }
         recompute_pad();
         break;
@@ -703,8 +730,14 @@ void input_handle_event(const SDL_Event *e) {
         break;
     case SDL_EVENT_GAMEPAD_AXIS_MOTION: case SDL_EVENT_GAMEPAD_BUTTON_DOWN: case SDL_EVENT_GAMEPAD_BUTTON_UP:
         if (win_focused && pad && !host_test && (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
-                                  (e->type == SDL_EVENT_GAMEPAD_AXIS_MOTION && abs(e->gaxis.value) > 16000)))
+                                  (e->type == SDL_EVENT_GAMEPAD_AXIS_MOTION && abs(e->gaxis.value) > 16000))) {
             last_device = DEVICE_PAD;
+            // (a button pressed on another controller: it becomes the one read. Not its sticks: a pad seen twice, by
+            // Steam or DS4Windows, or a drifting one would take over by itself)
+            if (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && SDL_GetGamepadID(pad) != e->gdevice.which)
+                for (int i = 0; i < npads; i++)
+                    if (SDL_GetGamepadID(pads[i]) == e->gdevice.which) pad_use(pads[i]);
+        }
         recompute_pad();
         break;
     }
@@ -1033,6 +1066,7 @@ static void fill_state(Cpu *c) {
     }
     control_input_apply(&b, &lx, &ly, &rx, &ry);
     b = unconsumed_buttons(b);
+    b = quick_drop_action_filter_buttons(b);
     // stick directions also appear as buttons (bits 16-23)
     if (lx < -16000) b |= 1ull << 16;
     if (ly > 16000) b |= 1ull << 17;

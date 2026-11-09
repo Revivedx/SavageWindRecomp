@@ -21,7 +21,8 @@ Nothing owned by Nintendo may ever be committed or attached to an issue or pull 
   player's machine
 
 Pull requests that include Nintendo files can't be merged and will be closed. Screenshots and short clips of the
-game in bug reports are fine.
+game in bug reports are fine, and so are your own save files, zipped and attached to the issue: a crash or a problem
+with the game's mechanics can often only be followed from the save. Saves are for issues: don't commit them.
 
 ## Moderation
 

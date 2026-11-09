@@ -58,6 +58,8 @@ volatile int g_fnprof;
 void fnprof_hit(uint64_t a, uint64_t b, uint64_t d) {{ (void)a; (void)b; (void)d; }}
 static Cpu expected;
 static int calls;
+void rt_quick_drop_begin(Cpu *c) {{ assert(!memcmp(c, &expected, sizeof *c)); }}
+void rt_quick_drop_menu(Cpu *c) {{ assert(!memcmp(c, &expected, sizeof *c)); }}
 void {hook}(Cpu *c) {{ assert(!memcmp(c, &expected, sizeof *c)); calls++; }}
 void {gen.fname(TARGET)}(Cpu *c);
 {caller}

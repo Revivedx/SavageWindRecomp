@@ -23,6 +23,7 @@ def _quick_sort_enter(gen, a):
     # Menu::enter: sample held X before the selector initializes its list.
     assert _word(gen, a) == 0xfc1d0fe8, hex(_word(gen, a))  # str d8, [sp, #-0x30]!
     return ('{ extern void rt_quick_inventory_sort_begin(Cpu *); rt_quick_inventory_sort_begin(c); '
+            'extern void rt_quick_drop_begin(Cpu *); rt_quick_drop_begin(c); '
             'uint64_t ea = c->sp - 0x30; ST64(ea, (uint64_t)c->v[8]); c->sp = ea; }')
 
 
@@ -30,8 +31,24 @@ def _quick_sort_menu(gen, a):
     # Menu::execute: sort before native selection/close handling. An entry
     # patch also covers generated direct calls without routing them to dispatch.
     assert _word(gen, a) == 0xa9be7bfd, hex(_word(gen, a))  # stp x29, x30, [sp, #-0x20]!
-    return ('{ extern void rt_quick_inventory_sort_menu(Cpu *); rt_quick_inventory_sort_menu(c); '
+    return ('{ extern void rt_quick_drop_menu(Cpu *); rt_quick_drop_menu(c); '
+            'extern void rt_quick_inventory_sort_menu(Cpu *); rt_quick_inventory_sort_menu(c); '
             'uint64_t ea = c->sp - 0x20; ST64(ea, c->x[29]); ST64(ea + 8, c->x[30]); c->sp = ea; }')
+
+
+def _quick_drop_tick(gen, a):
+    assert _word(gen, a) == _sub_sp(0x60), hex(_word(gen, a))
+    return ('{ extern void quick_drop_action_tick(Cpu *); quick_drop_action_tick(c); c->sp -= 0x60; }')
+
+
+def _quick_drop_actor_call(gen, a):
+    assert _word(gen, a) == 0xd63f0100, hex(_word(gen, a))  # blr x8
+    return ('{ extern uint64_t rt_quick_drop_actor_begin(uint64_t, uint64_t); '
+            'extern void rt_quick_drop_actor_end(uint64_t, uint64_t, uint64_t); '
+            'uint64_t actor = c->x[0], method = c->x[8]; '
+            'uint64_t token = rt_quick_drop_actor_begin(actor, method); '
+            f'c->pc = method; c->x[30] = {a + 4:#x}ull; rt_dispatch(c); '
+            'rt_quick_drop_actor_end(token, actor, c->x[0]); }')
 
 
 def _fn(gen, site):  # the generated function at a site's address
@@ -774,6 +791,20 @@ def _stamina(gen, a):
     return ('{ extern uint32_t rt_stamina(uint32_t, uint32_t); '
             'ST32(c->x[19] + 0xa4, rt_stamina(LD32(c->x[19] + 0xa4), (uint32_t)c->v[8])); }'
             f'  /* {a:#x}: str s8, [x19, #0xa4] (stamina: Accessibility) */')
+# Adding items (runtime/items.c rt_item_tick): at the entry of Link's damage handling (every frame in play, on the game
+# thread, as picking an item up is) the runtime calls the pause menu data's item get for what was asked for. The item
+# get takes the item's name as a sead::SafeString; its vtable is the one the item get itself loads (`adrp x26` /
+# `ldr x26, [x26, #off]` at +0x24 / +0x30, then +0x10).
+
+def _item_tick(gen, a):
+    assert _word(gen, a) == _sub_sp(0x70), hex(_word(gen, a))
+    get = gen.sites['pouch_item_get']
+    adrp, ldr = _word(gen, get + 0x24), _word(gen, get + 0x30)
+    assert adrp & 0x9f00001f == 0x9000001a and ldr & 0xffc003ff == 0xf940035a, (hex(adrp), hex(ldr))  # x26
+    got = adrp_page(adrp, get + 0x24) + ((ldr >> 10) & 0xfff) * 8
+    return ('{ extern void rt_item_tick(Cpu *, uint64_t, uint64_t, uint64_t); '
+            f'rt_item_tick(c, {get:#x}ull, {gen.sites["pouch_mgr"]:#x}ull, LD64({got:#x}ull) + 0x10); c->sp -= 0x70; }}'
+            f'  /* {a:#x}: sub sp, sp, #0x70 (Link\'s damage handling: adding items) */')
 
 
 # tools/game_sites.py site -> its patch
@@ -846,6 +877,8 @@ def _tp_gate(gen, a):
 
 
 PATCHES = {
+    'quick_drop_tick': _quick_drop_tick,
+    'quick_drop_actor_call': _quick_drop_actor_call,
     'quick_sort_enter': _quick_sort_enter,
     'quick_sort_menu': _quick_sort_menu,
     'lookat_update': _lookat_update,
@@ -935,6 +968,7 @@ PATCHES = {
     'link_life_store': _link_life,
     'link_life_tick': _link_life,
     'stamina_store': _stamina,
+    'item_tick': _item_tick,
 }
 
 

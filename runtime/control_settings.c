@@ -30,18 +30,22 @@ static const Setting settings[] = {
     I(upscale_quality, 0, UPQ_COUNT - 1, "ultra_quality|quality|balanced|performance|ultra_performance"),
     I(antialias, 0, AA_TAA, "off|smaa|taa"), B(game_fxaa), B(wet_fix),
     I(render_scale, 0, RSCALE_COUNT - 1, "50|75|100|125|150|200"),
-    I(anisotropy, 0, 4, "game|2x|4x|8x|16x"), I(sharpening, 0, 10, NULL),
+    I(anisotropy, 0, 4, "game|2x|4x|8x|16x"), I(tex_lod_bias, 0, TEX_LOD_COUNT - 1, "default|sharp|sharper"), I(sharpening, 0, 10, NULL),
     I(frame_gen, 0, FG_COUNT - 1, "off|fsr3|dlss"), I(frame_gen_mult, FG_MULT_MIN, FG_MULT_MAX, NULL),
-    F(volume, 0, 2), B(reverb), B(movie_audio), B(mute_unfocused),
+    F(volume, 0, 2), I(audio_output, 0, AUDIO_OUT_COUNT - 1, "stereo|surround_51|headphones_3d"),
+    B(reverb), B(movie_audio), B(mute_unfocused),
+    I(shrine_sensor_volume, 0, 100, NULL),
     I(perf_overlay, 0, PERF_FULL, "off|fps|full"), I(fps_limit, 0, 360, NULL), B(fps_display),
     I(vsync, 0, VSYNC_COUNT - 1, "on|fast|adaptive|off"), B(dpad_move), B(freecam_sticks),
+    B(rumble), I(rumble_strength, RUMBLE_STRENGTH_MIN, RUMBLE_STRENGTH_MAX, NULL),
     {"stick_deadzone[0]", &g_settings.stick_deadzone[0], FLOAT, 0, .5, NULL},
     {"stick_deadzone[1]", &g_settings.stick_deadzone[1], FLOAT, 0, .5, NULL},
     B(mouse_camera), B(pc_bow), F(mouse_sens, .1, 10), F(mouse_sens_y, .5, 2), B(mouse_invert_y),
     F(motion_sens, .1, 10), I(motion_invert, 0, 3, "off|up_down|left_right|both"),
-    I(button_icons, 0, ICONS_COUNT - 1, "auto|keyboard|xbox|playstation|nintendo"),
-    B(async_shaders), B(precompile_shaders), B(quick_sort),
-    I(shadow_res, 0, SHADOW_COUNT - 1, "console|high|ultra|extreme|potato"), B(wide_view),
+    I(button_icons, 0, ICONS_COUNT - 1, "auto|keyboard|xbox|playstation|nintendo|steamdeck"),
+    I(button_layout, 0, BUTTON_LAYOUT_COUNT - 1, "auto|nintendo|swap_ab|xbox|swap_xy|gamecube"),
+    B(async_shaders), B(precompile_shaders), B(quick_sort), B(quick_drop),
+    I(shadow_res, 0, SHADOW_COUNT - 1, "console|high|ultra|extreme|potato"), B(wide_view), B(hud_edges),
     I(hdr, 0, HDR_COUNT - 1, "auto|on|off"), I(hdr_white, 0, 1000, NULL),
     I(fov, 50, 200, NULL), I(hud_size, 50, 150, NULL), B(bloom), B(depth_of_field),
     B(dynamic_res), B(fast_fma),I(color_exposure, -20, 20, NULL), I(color_contrast, -50, 50, NULL),
@@ -50,7 +54,9 @@ static const Setting settings[] = {
     {"color_lut", g_settings.color_lut, TEXT, 0, 0, NULL},
     I(color_lut_strength, 0, 100, NULL), B(color_lut_set), B(no_weapon_wear),
     I(weapon_wear, WEAPON_WEAR_MIN, WEAPON_WEAR_MAX, NULL), B(infinite_arrows),
-    B(infinite_stamina), B(god_mode), B(one_hit_kill), I(damage_taken, 25, 400, NULL), I(damage_dealt, 25, 400, NULL),
+    B(infinite_stamina), B(infinite_rupees), I(weather, 0, WEATHER_COUNT - 1,
+                           "game|no_rain|no_storms|clear|cloudy|rain|heavy_rain|snow|heavy_snow|thunderstorm|thunder_rain|sun_shower"),
+    B(god_mode), B(one_hit_kill), I(damage_taken, 25, 400, NULL), I(damage_dealt, 25, 400, NULL),
     I(text_language, 0, 0, NULL), I(voice_language, 0, 0, NULL), B(save_backups), B(stick_cam_on), I(stick_cam_x, STICK_CAM_MIN, STICK_CAM_MAX, NULL),
     I(stick_cam_y, STICK_CAM_MIN, STICK_CAM_MAX, NULL), B(auto_continue), B(menu_tip_seen),
 };
@@ -186,10 +192,14 @@ static void cmd_set(int argc, char **argv, ControlReply *r) {
     }
     int v = (int)value;
     if (is(s, "fps_limit")) {
-        static const int fps[] = FPS_CHOICES;
+        const int *fps;
+        int nfps = fps_choices(&fps);
         bool offered = false;
-        for (unsigned i = 0; i < sizeof fps / sizeof fps[0]; i++) offered |= fps[i] == v;
-        if (!offered) { control_fail(r, "fps must be 0 (unlimited), 30, 60, 90, 120, 144, 165, 240 or 360"); return; }
+        for (int i = 0; i < nfps; i++) offered |= fps[i] == v;
+        if (!offered) {
+            control_fail(r, settings_handheld() ? "fps must be 30, 40, 45 or 60" : "fps must be 0 (unlimited), 30, 60, 90, 120, 144, 165, 240 or 360");
+            return;
+        }
     }
     if (is(s, "hdr_white") && v != 0 && v < 80) {
         control_fail(r, "hdr_white must be 0 (automatic) or 80 to 1000 nits"); return;

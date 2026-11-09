@@ -312,6 +312,41 @@ SITES = [
          '2a1f03e1 94000000/fc000000 aa1303e0 aa1403e1', 0),
     Site('quick_sort_player_busy', 'call', '94000000/fc000000 2a0003f4 d10183a0 94000000/fc000000 90000015/9f00001f 90000008/9f00001f '
          '91000108/ffc003ff 14000000/fc000000', 0),
+    # Native quick-selector drop and asynchronous equipped-item completion.
+    Site('quick_drop_tick', 'code', 'd10183ff a9027bfd a9035ff8 a90457f6 a9054ff4 910083fd 91419008 aa0003f3', 0),
+    Site('quick_drop_actor_call', 'code', 'd63f0100 aa1503e0 94000000/fc000000 a9424ff4 52800020 f9400bf5 a8c37bfd d65f03c0', 0),
+    Site('player_drop_forbidden', 'code', 'a9be7bfd f9000bf3 910003fd aa0003f3 94000000/fc000000 36000000/fff8001f 2a1f03e0 '
+         '14000000/fc000000', 0),
+    Site('actor_info_lookup', 'code', 'd10103ff a9017bfd a90257f6 a9034ff4 910043fd aa0003f6 aa0203e0 2a0303f5', 0),
+    Site('actor_info_has_tag', 'code', 'd10203ff a9047bfd a9055ff8 a90657f6 a9074ff4 910103fd aa0103f4 f9400421', 0),
+    Site('pouch_discard', 'code', 'd10183ff a9027bfd a9035ff8 a90457f6 a9054ff4 910083fd 9100a013 aa0003f4', 0),
+    Site('player_equipment', 'code', 'a9be7bfd f9000bf3 910003fd f9400008 2a0103f3 f9418908 d63f0100 2a1303e1 94000000/fc000000', 0),
+    Site('pouch_default_name', 'code', '90000009/9f00001f 90000008/9f00001f 91000108/ffc003ff f9400129/ffc003ff 71001c3f 8b215108 '
+         '7a423824 9a891100', 0),
+    Site('player_schedule_equip', 'code', 'd100c3ff a9017bfd a9024ff4 910043fd 12800003 910023e4 f90007ff aa0003f3', 0),
+    Site('pouch_equipped_snapshot', 'code', 'a9bd7bfd f9000bf5 a9024ff4 910003fd 91411008 9100a013 aa0003f4 911f8115', 0),
+    Site('actor_index_assign', 'code', 'd10503ff a9127bfd a9134ffc 910483fd 39403008 aa0103f3 34000008/ff00001f f9400008', 0),
+    Site('actor_index_resolve', 'code', 'd10143ff a9017bfd a9025ff8 a90357f6 a9044ff4 910043fd b9400808 3100051f', 0),
+    Site('actor_index_release', 'code', '39403008 35000008/ff00001f 12800008 b9000808 d65f03c0 f9400008 3900301f b4000008/ff00001f', 0),
+    Site('actor_link_release', 'code', 'a9be7bfd f9000bf3 910003fd 39400008 aa0003f3 34000008/ff00001f f9400660 b4000000/ff00001f', 0),
+    Site('actor_link_alive', 'code', 'b9400809 3100053f 54000000/ff00001f f9400008 b940410a 6b09015f 54000001/ff00001f 39403009', 0),
+    Site('pouch_cleanup', 'code', 'a9bb7bfd a90167fa a9025ff8 a90357f6 a9044ff4 910003fd 9100a013 aa0003f4', 0),
+    Site('player_actor', 'call', '94000000/fc000000 b4000000/ff00001f 91316015 aa0003f4 aa1503e0 94000000/fc000000 b94c9a88 '
+         'aa1503e0 321b0108 b90c9a88 94000000/fc000000 aa1303e0', 0),
+    Site('quick_drop_trash_prohibited', 'call', '94000000/fc000000 36000000/fff8001f 52800037 14000000/fc000000 1e229000 d63f0100 d2800ba9 '
+         '5286db88', 0),
+    Site('quick_drop_actor_method', 'code', 'f942cc08 b4000008/ff00001f 79404d09 32000129 79004d09 14000000/fc000000 f942cc08 '
+         'b4000008/ff00001f', 0),
+    Site('actor_info', 'ref', '90000008/9f00001f 91000108/ffc003ff f9400117 b4000017/ff00001f f94006a8 3940011b '
+         '3400001b/ff00001f f94002a8', 1),
+    # Add items (tools/patches.py _item_tick; runtime/items.c): the entry of Link's damage handling (every frame in
+    # Adding items (tools/patches.py _item_tick; runtime/items.c): the entry of Link's damage handling (every frame in
+    # play: the game thread's place for the item get), the pause menu data's item get, and where the pause menu data's
+    # address is (its load in the pickup code)
+    Site('item_tick', 'code', 'd101c3ff fd000be8 a9027bfd a90367fa a9045ff8 a90557f6 a9064ff4 910083fd f9400c14', 0),
+    Site('pouch_item_get', 'code', 'd10243ff a9037bfd a9046ffc a90567fa a9065ff8 a90757f6 a9084ff4 9100c3fd f90003e3', 0),
+    Site('pouch_mgr', 'got', '90000017/9f00001f aa0003f5 f94002f7/ffc003ff 910003e0 f94002f6 94000000/fc000000 2a0003e2 '
+         'aa1603e0', 2),
     Site('main_data', 'data', '', 0),
     Site('main_end', 'end', '', 0),
 ]
@@ -322,6 +357,11 @@ SITES = [
 # Without them the mouse turns the camera through the right stick, as before (runtime/hle/input.c); without the
 # second group it turns it without the game's camera inversion options.
 OPTIONAL_GROUPS = [
+    ('quick_drop_tick', 'quick_drop_actor_call', 'player_drop_forbidden', 'actor_info_lookup',
+     'actor_info_has_tag', 'pouch_discard', 'player_equipment', 'pouch_default_name',
+     'player_schedule_equip', 'pouch_equipped_snapshot', 'actor_index_assign', 'actor_index_resolve',
+     'actor_index_release', 'actor_link_release', 'actor_link_alive', 'pouch_cleanup', 'player_actor',
+     'quick_drop_trash_prohibited', 'quick_drop_actor_method', 'actor_info'),
     ('quick_sort_enter', 'quick_sort_menu', 'pouch_page_count', 'pouch_page_item', 'pouch_item_type',
      'quick_sort_modal', 'pouch_sort', 'quick_sort_refill', 'quick_sort_mapping', 'quick_sort_cursor',
      'quick_sort_labels', 'pouch_lock', 'pouch_unlock', 'quick_sort_event', 'quick_sort_player_busy'),
@@ -354,6 +394,7 @@ OPTIONAL_GROUPS = [
     ('link_life_store', 'link_life_tick'),
     ('stamina_store',),
     ('tp_gate',),  # (a far teleport of the control endpoint: without it a long jump freezes the world)
+    ('item_tick', 'pouch_item_get', 'pouch_mgr'),
 ]
 OPTIONAL = {n for g in OPTIONAL_GROUPS for n in g}
 
@@ -418,6 +459,26 @@ KNOWN = {
         'main_end': 0x7001d37000,
     },
     '1.9.0': {
+        'quick_drop_tick': 0x7000e68168,
+        'quick_drop_actor_call': 0x7001223f50,
+        'player_drop_forbidden': 0x7000cc0334,
+        'actor_info_lookup': 0x700108dc0c,
+        'actor_info_has_tag': 0x700108e7a0,
+        'pouch_discard': 0x7000d9784c,
+        'player_equipment': 0x7000570128,
+        'pouch_default_name': 0x7000d940c4,
+        'player_schedule_equip': 0x7000cbe480,
+        'pouch_equipped_snapshot': 0x7000d9f4a8,
+        'actor_index_assign': 0x7001517e60,
+        'actor_index_resolve': 0x7001517abc,
+        'actor_index_release': 0x7001517f8c,
+        'actor_link_release': 0x7001126464,
+        'actor_link_alive': 0x7001517e0c,
+        'pouch_cleanup': 0x7000d97f68,
+        'player_actor': 0x7000cc6fd0,
+        'quick_drop_trash_prohibited': 0x7000d388b0,
+        'quick_drop_actor_method': 0x70007acaa0,
+        'actor_info': 0x7001e39450,
         'quick_sort_enter': 0x7000e283fc,
         'quick_sort_menu': 0x7000e28744,
         'pouch_page_count': 0x7000d970a8,
@@ -545,6 +606,9 @@ KNOWN = {
         'link_life_store': 0x7000cc4e70,
         'link_life_tick': 0x7000cc4da4,
         'stamina_store': 0x7000cc7430,
+        'item_tick': 0x7000cc4c3c,
+        'pouch_item_get': 0x7000d921bc,
+        'pouch_mgr': 0x7001e18570,
         'main_data': 0x7001b7a000,
         'main_end': 0x7001e98000,
     },

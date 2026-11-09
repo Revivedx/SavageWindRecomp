@@ -15,10 +15,12 @@
 #endif
 #include "romfs_image.h"
 #include "services/save_convert.h"
+#include "services/save_profiles.h"
 #include "settings.h"
 #include "hle.h"
 #include "kernel.h"
 #include "control.h"
+#include "launch_flags_boot.h"
 
 const char *g_romfs_dir;
 uint64_t g_program_id;
@@ -172,6 +174,7 @@ static void boot(const char *root) {
     plat_cpu_placement();
     kernel_init();
     dispatch_init();
+    { extern void rupees_start(void); rupees_start(); }  // (Cheats > Infinite rupees, `rupees`: runtime/rupees.c)
     { extern void jpeg_debug_init(void); jpeg_debug_init(); }
 
     uint32_t stack_size = 0x100000;
@@ -343,12 +346,8 @@ int main(int argc, char **argv) {
     // every log starts with which Savage Wind made it: the version and the source it was built from (Makefile SW_SOURCE)
     extern const char *rt_version(void);  // (runtime/ui/launcher.mm)
     fprintf(stderr, "[savagewind] Savage Wind %s (%s)\n", rt_version(), SW_SOURCE);
+    launch_flags_boot(argc, argv);  // the saved launch options (runtime/launch_flags.h): in the environment before anything reads it
     control_init();
-    settings_load();
-    static const char *const sparse_heap_modes[SPARSE_HEAP_COUNT] = {"auto", "on", "off"};
-    int sparse_heap = g_settings.sparse_heap;
-    if (sparse_heap < 0 || sparse_heap >= SPARSE_HEAP_COUNT) sparse_heap = SPARSE_HEAP_AUTO;
-    LOG("[settings] sparse_heap=%s\n", sparse_heap_modes[sparse_heap]);
     const char *root = "extracted";  // (in the data root)
     bool skip_launcher = getenv("SAVAGEWIND_NO_LAUNCHER") || getenv("SAVAGEWIND_INPUT");  // tests boot straight in
     bool config = false;
@@ -369,6 +368,12 @@ int main(int argc, char **argv) {
     if (launcher_config_key_held()) config = true;  // (the Mac's "Savage Wind Configuration": Option held)
 #endif
     rt_paths_init();  // the data root becomes the working directory (runtime/paths.h)
+    // (after it: savagewind.ini is in the data root; before it the file wasn't found where that isn't where we started)
+    settings_load();
+    static const char *const sparse_heap_modes[SPARSE_HEAP_COUNT] = {"auto", "on", "off"};
+    int sparse_heap = g_settings.sparse_heap;
+    if (sparse_heap < 0 || sparse_heap >= SPARSE_HEAP_COUNT) sparse_heap = SPARSE_HEAP_AUTO;
+    LOG("[settings] sparse_heap=%s\n", sparse_heap_modes[sparse_heap]);
     if (dump) return dump_romfs(root, dump);
     if (scan) return scan_shaders(root);
 #ifndef __APPLE__
@@ -396,14 +401,17 @@ int main(int argc, char **argv) {
     }
 #endif
     for (;;) {
-        if (mode != LAUNCHER_NONE) launcher_run(root, mode);
+        if (mode != LAUNCHER_NONE) {
+            launcher_run(root, mode);
+            launch_flags_play(root);  // changed launch options: restart straight into the game with them
+        }
         // The game holds the lock on its save folder while it runs, so the Saves tab of another Savage Wind refuses to
         // swap or copy saves under it. Not getting it (somebody else has it, or no lock file can be made) never stops
         // the game; it is let go before the start screen of a reboot, which is this same process.
         { extern void save_backup_at_start(void); save_backup_at_start(); }  // (Saves > Back up at each start; before the lock)
         ScLock *save_lock = NULL;
-        const char *save_env = getenv("SAVAGEWIND_SAVE_DIR");
-        if (sc_lock_take(save_env && *save_env ? save_env : "save", &save_lock) == SC_LOCK_BUSY)
+        sp_session_begin();  // the save profile chosen on the start screen (runtime/services/save_profiles.h)
+        if (sc_lock_take(sp_session_save_dir(), &save_lock) == SC_LOCK_BUSY)
             fprintf(stderr, "[saves] another Savage Wind is running with this save folder; saving from both can overwrite saves\n");
 #ifndef __APPLE__
         // the start screen's picture, moving, until the game's title screen is up (vulkan/device.c; a window made
