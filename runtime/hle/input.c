@@ -1025,7 +1025,10 @@ void input_frame(uint64_t frame) {
 // Buttons held right now (keyboard, gamepad, test script), independent of whether the game polls (movies).
 uint64_t input_buttons_now(void) {
     bool muted = (!win_focused && !host_test) || menu_input_captured();
-    uint64_t b = (muted ? 0 : key_buttons | pad_buttons | escape_buttons) | script_buttons;
+    uint64_t raw = muted ? 0 : key_buttons | pad_buttons;
+    if (!muted && !framepace_title_ui() && !framepace_menu_ui() && !pc_cursor_active())
+        raw = act_gameplay_buttons(raw, game_key, host_buttons);
+    uint64_t b = raw | (muted ? 0 : escape_buttons) | script_buttons;
     control_input_apply(&b, NULL, NULL, NULL, NULL);
     return b;
 }
@@ -1057,7 +1060,9 @@ static void fill_state(Cpu *c) {
     // the window unfocused or the overlay up, use the Switch layer, so no binding can lock the player out.
     act_poll(!menu && !framepace_title_ui() && !framepace_menu_ui());
     uint64_t bow = pc_bow_sample();
-    uint64_t b = menu ? script_buttons : key_buttons | pad_buttons | escape_buttons | bow | script_buttons;
+    bool in_menu = menu || framepace_title_ui() || framepace_menu_ui();
+    uint64_t raw = menu ? 0 : (in_menu ? (key_buttons | pad_buttons) : act_gameplay_buttons(key_buttons | pad_buttons, game_key, host_buttons));
+    uint64_t b = raw | (menu ? 0 : escape_buttons | bow) | script_buttons;
     if (!menu) b |= auto_continue_buttons(b);  // (not while the overlay has the controls)
     b=pc_cursor_buttons(b);
     {   // injected Plus: held for ~10 presented frames (the game polls several times per frame)

@@ -125,6 +125,25 @@ int main(void) {
     e.type=SDL_EVENT_MOUSE_BUTTON_DOWN;e.button.button=SDL_BUTTON_LEFT;
     input_handle_event(&e);assert(input_buttons_now()&(1ull<<BTN_Y));
     e.type=SDL_EVENT_MOUSE_BUTTON_UP;input_handle_event(&e);
+
+    // Rebinding "Menu: sort / sensor" to a key must not hijack Attack in play (#608)
+    int16_t saved_bind_y = g_bind_key[BIND_Y];
+    g_bind_key[BIND_Y] = SDL_SCANCODE_Y;
+    e.type=SDL_EVENT_KEY_DOWN;e.key.scancode=SDL_SCANCODE_Y;
+    input_handle_event(&e);
+    assert(!(input_buttons_now()&(1ull<<BTN_Y)));  // Y key does NOT attack in gameplay
+    e.type=SDL_EVENT_MOUSE_BUTTON_DOWN;e.button.button=SDL_BUTTON_LEFT;
+    input_handle_event(&e);
+    assert(input_buttons_now()&(1ull<<BTN_Y));     // mouse left still attacks
+    e.type=SDL_EVENT_MOUSE_BUTTON_UP;input_handle_event(&e);
+    e.type=SDL_EVENT_KEY_UP;e.key.scancode=SDL_SCANCODE_Y;input_handle_event(&e);
+    g_bind_key[BIND_Y] = saved_bind_y;
+
+    // Scripted/console A/B/X/Y buttons must still reach the game in play
+    script_buttons = (1ull << BTN_A) | (1ull << BTN_B) | (1ull << BTN_X) | (1ull << BTN_Y);
+    assert((input_buttons_now() & script_buttons) == script_buttons);
+    script_buttons = 0;
+
     puts("PASS: F bow, right-mouse shield/lock-on and left-mouse attack use ordinary bindings");
 
     // Controller Walk scales both left-stick axes and returns to full speed on release (never cumulative).
