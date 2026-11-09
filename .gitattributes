@@ -1,3 +1,4 @@
 # Savage Wind: LF everywhere (the Makefile, shell scripts and the generator expect it)
 * text=auto eol=lf
 *.ps1 text eol=crlf
+*.seed binary

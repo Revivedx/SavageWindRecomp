@@ -217,6 +217,7 @@ static void ping(int argc, char **argv, ControlReply *r) {
 }
 static void quit(int argc, char **argv, ControlReply *r) {
     (void)argc; (void)argv;
+    LOG("[control] exit command: the game ends once its reply is sent\n");  // (stop() leaves no other trace)
     r->exit_after = true;
 }
 

@@ -5,9 +5,10 @@ The keys are the English texts themselves. This collects the string literals of 
 joined, as the compiler does) that read like text shown to the player - not IDs ("##..."), paths, environment variable
 names or log messages - and compares them with each table's T("English", "...") entries.
 
-An entry with an empty translation, T("...", ""), keeps the English text (names, units).
+An entry with an empty translation, T("...", ""), keeps the English text (names, units). The ones that read like a
+phrase are listed as left in English: usually a text added without its translation (only listed, not an error).
 
-usage: tools/i18n_check.py [lang ...]           report missing / unused entries (all tables when no lang given)
+usage: tools/i18n_check.py [lang ...]           report missing, unused, left-in-English entries (all tables by default)
        tools/i18n_check.py --missing <lang>     print the missing keys as T("...", "") lines
 """
 import glob
@@ -20,8 +21,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SOURCES = sorted(p for p in glob.glob(os.path.join(ROOT, 'runtime/ui/*.mm')) if not p.endswith('console.mm')) + [
     os.path.join(ROOT, 'runtime/language.c'),
     os.path.join(ROOT, 'runtime/hle/bindings.c'),
+    os.path.join(ROOT, 'runtime/launch_flags.c'),
 ]
-SKIP_LINE = re.compile(r'\b(LOG|fprintf|printf|getenv|strcmp|strncmp|memcmp|strstr|fopen|file_exists|mkdir|unlink|rt_resource|rt_remove_game_file|'
+SKIP_LINE = re.compile(r'\b(LOG|_Static_assert|static_assert|fprintf|printf|getenv|strcmp|strncmp|memcmp|strstr|fopen|file_exists|mkdir|unlink|rt_resource|rt_remove_game_file|'
                        r'PushID|BeginChild|BeginTable|BeginPopup|OpenPopup|IsPopupOpen|InvisibleButton|GetID|Begin)\s*\(|'
                        r'#include|#define|SAVAGEWIND_|//')
 
@@ -76,9 +78,13 @@ def literals(text):
 def looks_like_text(s, in_tr=False):
     if not re.search(r'[A-Za-z]{2}', s) or s.startswith('##') or '###' in s:
         return False
+    if re.fullmatch(r'[A-Za-z]+(_[A-Za-z0-9]+)+', s):  # layout pane names (W_Base_00)
+        return False
     if in_tr and '/' not in s and '\\' not in s:  # (a word passed to tr() is text, however short)
         return True
-    if re.fullmatch(r'[\w./\\:%-]+\.(ttf|ttc|bfttf|pack|bin|txt|ini|png|dll|so|dylib|nso|npdm|mp4|webm)', s):
+    if re.fullmatch(r'(?:\\x[0-9a-fA-F]{2})+', s):  # encoded icon glyphs, not words
+        return False
+    if re.fullmatch(r'[\w./\\:%-]+\.(ttf|ttc|bfttf|bffnt|sbfarc|pack|bin|txt|ini|png|dll|so|dylib|nso|npdm|mp4|webm)', s):
         return False
     if re.fullmatch(r'[a-z0-9_./-]+', s):  # identifiers, ini keys, folder names
         return False
@@ -89,6 +95,17 @@ def looks_like_text(s, in_tr=False):
     return True
 
 
+def in_log_call(lines, i):
+    """line i continues a LOG / fprintf / printf call begun on a line above, still open there"""
+    start = i
+    while start > 0 and i - start < 6 and lines[start - 1].rstrip() and lines[start - 1].rstrip()[-1] not in ';{}':
+        start -= 1
+        if re.match(r'\s*(LOG|fprintf|printf)\s*\(', lines[start]):
+            code = re.sub(r'"(?:[^"\\]|\\.)*"', '""', ''.join(lines[start:i]))
+            return code.count('(') > code.count(')')
+    return False
+
+
 def keys():
     found = {}
     for path in SOURCES:
@@ -96,7 +113,8 @@ def keys():
         lines = text.split('\n')
         for ln, s in literals(text):
             src = lines[ln - 1] if ln - 1 < len(lines) else ''
-            if SKIP_LINE.search(src.split('"')[0]) or not looks_like_text(s, 'tr(' in src):
+            if 'i18n-skip' in src or SKIP_LINE.search(src.split('"')[0]) or in_log_call(lines, ln - 1) or \
+                    not looks_like_text(s, 'tr(' in src):
                 continue
             found.setdefault(s, f'{os.path.relpath(path, ROOT)}:{ln}')
     # the colour presets' names (runtime/color_grade.c g_color_presets: shown through tr() by both menus)
@@ -120,6 +138,12 @@ def table(lang):
     return entries
 
 
+def is_sentence(s):
+    """reads like a phrase to translate, not a name or unit: three words or more, two of them lowercase"""
+    words = re.findall(r'[A-Za-z]{2,}', s)
+    return len(words) >= 3 and sum(w.islower() for w in words) >= 2
+
+
 def c_quote(s):
     return '"' + s.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\t', '\\t') + '"'
 
@@ -140,11 +164,15 @@ def main():
         have = table(lang)
         missing = [k for k in want if k not in have]
         unused = [k for k in have if k not in want]
-        print(f'{lang}: {len(have)} entries, {len(missing)} missing, {len(unused)} unused')
+        english = [k for k in want if have.get(k) == '' and is_sentence(k)]
+        print(f'{lang}: {len(have)} entries, {len(missing)} missing, {len(unused)} unused, '
+              f'{len(english)} left in English')
         for k in missing[:20]:
             print(f'  missing: {k[:90]!r}  ({want[k]})')
         for k in unused[:20]:
             print(f'  unused:  {k[:90]!r}')
+        for k in english[:20]:
+            print(f'  english: {k[:90]!r}  ({want[k]})')
         bad |= bool(missing)
     sys.exit(1 if bad else 0)
 

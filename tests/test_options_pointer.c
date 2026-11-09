@@ -20,26 +20,51 @@ uint64_t renderer_present_count(void){return frame;}
 static bool test_menu_ui=true;
 bool framepace_menu_ui(void){return test_menu_ui;}
 bool framepace_title_ui(void){return false;}
+bool input_cam_live(void){return false;}
 uint64_t framepace_script_frame(uint64_t value){return value;}
 void input_pc_escape(bool down){(void)down;abort();}
 void input_pc_map_axes(float out[2]){(void)out;abort();}
-static unsigned actions,refreshes,last_action,scroll_updates,activations,help_updates;
+void input_pc_rotate_motion(float dx,float dy){(void)dx;(void)dy;abort();}
+static unsigned actions,refreshes,last_action,scroll_updates,activations,help_updates,native_decides;
 static uint64_t activated_node;
 static uint64_t quest_screen,quest_widget,quest_control,quest_nodes[2],quest_icons[4];
 static uint64_t quest_master;
+static uint64_t shop_scroll_test_list;
+static unsigned shop_test_pages,last_shop_page;
 static unsigned quest_selections,quest_categories_clicked,last_category;
-static unsigned page_changes;
+static unsigned page_changes,dlc_pages;
+static uint64_t dlc_test_list,wheel_quest_list;
+static unsigned quest_view_scrolls;
+static float quest_test_origin=784;
 static uint64_t quick_test_screen,quick_test_list;
 static unsigned quick_test_moves;
 static uint64_t navigation;
+static uint64_t sensor_test_screen, sensor_test_panel;
 static Cpu test_cpu;
 Cpu *kernel_current_cpu(void){return &test_cpu;}
 uint64_t input_buttons_now(void){return navigation;}
+static uint64_t dual_row;
+void rt_opt_two_pointer(uint64_t row,unsigned kind){(void)row;(void)kind;}
+void rt_opt_wheel_scrolled(void){}
+int rt_opt_two_column(uint64_t row){return row==dual_row?0:-1;}
 int rt_opt_pointer_kind(uint64_t row){return (int)LD32(row+0x50);}
+static int quit_dialog;
+int rt_quit_dialog_back(void){return quit_dialog;}
 void guest_call(Cpu *cpu,uint64_t address){
     if(address==0x7000e30700ull){actions++;last_action=LD32(LD64(cpu->x[0])+0x36c0);}
     else if(address==0x7000e2eed8ull)refreshes++;
     else if(address==0x7000d671d4ull)scroll_updates++;
+    else if(address==0x7000d6ea78ull){
+        assert(cpu->x[0]==wheel_quest_list&&cpu->x[1]==0);
+        float *origin=(float*)(uintptr_t)cpu->x[3];origin[0]=0;origin[1]=-quest_test_origin;
+    }
+    else if(address==0x7000d6e8e0ull){
+        assert(cpu->x[0]==wheel_quest_list&&cpu->x[1]==0);
+        float delta;memcpy(&delta,&cpu->v[0],4);quest_view_scrolls++;
+        *(float*)(wheel_quest_list+0x2d4)+=delta;
+        // Deferred scrolling changes only the target; the game tick moves rows.
+        cpu->x[0]=0xdead; // the caller's CPU must be restored
+    }
     else if(address==0x7000f6e2c8ull){assert(LD8(cpu->x[0]+0xfc)==1);cpu->x[0]=0;}
     else if(address==0x7000f57da8ull){
         activations++;activated_node=cpu->x[1];ST64(cpu->x[0]+0x48,cpu->x[1]);
@@ -53,6 +78,8 @@ void guest_call(Cpu *cpu,uint64_t address){
         cpu->x[0]=cpu->x[0]!=quest_widget?UINT32_MAX:
             cpu->x[1]==quest_nodes[0]?0:cpu->x[1]==quest_nodes[1]?1:UINT32_MAX;
     }else if(address==0x7000d6c54cull){
+        if(dlc_test_list&&cpu->x[0]==dlc_test_list){dlc_pages++;ST32(dlc_test_list+0x2dc,cpu->x[1]);return;}
+        if(shop_scroll_test_list&&cpu->x[0]==shop_scroll_test_list){shop_test_pages++;last_shop_page=(unsigned)cpu->x[1];cpu->x[0]=0;return;}
         assert(quick_test_list&&cpu->x[0]==quick_test_list&&cpu->x[1]<3);quick_test_moves++;
     }else if(address==0x7000e2785cull){
         assert(cpu->x[0]==quick_test_screen&&cpu->x[1]<3);
@@ -65,6 +92,10 @@ void guest_call(Cpu *cpu,uint64_t address){
         // Leave the manager unchanged: the hook must also reconcile visible
         // focus when a native list's router has not applied it yet.
     }else if(address==0x7000f6f800ull){
+        if(sensor_test_screen&&cpu->x[0]==sensor_test_screen) {
+            assert(!strcmp((char*)(uintptr_t)cpu->x[1],"Pa_SensorBox_00"));
+            cpu->x[0]=sensor_test_panel;return;
+        }
         unsigned category;assert(cpu->x[0]==quest_screen);
         assert(sscanf((char*)(uintptr_t)cpu->x[1],"Pa_ChallengeCategory_%u",&category)==1&&category<4);
         cpu->x[0]=quest_icons[category];
@@ -80,6 +111,7 @@ void guest_call(Cpu *cpu,uint64_t address){
         assert(cpu->x[0]==quest_screen+0x178&&cpu->x[1]==0x7001e2f4a8ull);page_changes++;
     }else if(address==0x7000123408ull){abort();} // Native clipping mutates focus; never scan through it.
     else if(address==0x700012340cull){cpu->x[0]=1;}
+    else if(address==0x7000123410ull){native_decides++;}
     else if(address==0x70013f59f8ull){assert(cpu->x[0]==quantity_screen);}
     else abort();
 }
@@ -172,6 +204,28 @@ int main(void) {
     event.type=SDL_EVENT_MOUSE_BUTTON_DOWN;event.button.button=SDL_BUTTON_LEFT;
     assert(pc_cursor_event(&event));ST64(control+0x48,0);pc_cursor_options_tick(screen);assert(activations==4);
     g_settings.pc_cursor=false;click_pending=true;pc_cursor_options_tick(screen);assert(click_pending&&actions==7);
+    // A dual row has two disjoint native hit panes. The label and gap are not buttons.
+    uint64_t key_button=GUEST_LO+0xc00,key_pane=GUEST_LO+0xd00;
+    uint64_t pad_button=GUEST_LO+0xe00,pad_pane=GUEST_LO+0xf00;
+    dual_row=row;ST32(row+0x50,2);ST64(row+0x20,key_button);ST64(row+0x28,pad_button);
+    ST64(key_button+0x60,key_pane);ST64(pad_button+0x60,pad_pane);
+    for(unsigned col=0;col<2;col++) {
+        uint64_t p=col?pad_pane:key_pane;
+        *(float*)(p+0x50)=120;*(float*)(p+0x54)=40;
+        *(float*)(p+0x70)=*(float*)(p+0x84)=1;
+        *(float*)(p+0x7c)=col?200:50;*(float*)(p+0x8c)=200;
+    }
+    unsigned cell=99;point[1]=200;point[0]=50;
+    assert(options_row_at(screen,box,&cell)==row&&cell==1);
+    point[0]=200;assert(options_row_at(screen,box,&cell)==row&&cell==2);
+    unsigned action_count=actions;
+    point[0]=125;assert(!options_row_at(screen,box,&cell));
+    point[0]=-100;assert(!options_row_at(screen,box,&cell));
+    uint64_t cell_vt=GUEST_LO+0x1600;
+    ST64(key_button,cell_vt);ST64(cell_vt+0x38,0x7000123410ull);
+    point[0]=0;options_click(&cpu,screen,row,1,box);
+    assert(actions==action_count&&native_decides==1); // the native button animates before its confirmed callback
+    dual_row=0;ST32(row+0x50,0);
     uint64_t router=GUEST_LO+0x5900,router_vt=GUEST_LO+0x5a00;
     ST64(ui+0x48,router);ST64(router,router_vt);ST64(router_vt+0x28,0x7000123400ull);
     assert(hover_target(&cpu,screen,0)&&!hover_target(&cpu,screen,1));
@@ -498,7 +552,189 @@ int main(void) {
     rt_pc_cursor_manager(&cpu,0x7000f57da8,0x7000123404);assert(activated_node==other);
     g_settings.pc_cursor=false;pc_cursor_frame();assert(!pc_cursor_active());
     g_settings.pc_cursor=true;ST64(sa+8*0x30,0);pc_cursor_frame();assert(!game_over_screen&&!pc_cursor_active());
-    puts("PASS: Options scroll/click/shared focus, SDL ownership/cursor visibility, page rebuild, Adventure Log/Ability Controls list registry, stationary hover, nested category clicks/locks, viewport preservation, pause header transitions/modal priority, setting gate and reboot reset (synthetic host state).");
+    // Savage Wind's quit question over Options is the same window, with Options still shown under it and its input
+    // off. The question's buttons take the click; Options must not swallow it (#360).
+    ST64(sa+8*0x39,modal);ST64(sa+8*0x34,screen);point[1]=-154;
+    pc_cursor_frame();assert(!game_over_screen);
+    quit_dialog=1;pc_cursor_frame();assert(game_over_screen==modal&&pc_cursor_active());
+    ST32(manager+0x10,0);click_pending=true;rt_pc_cursor_manager(&cpu,0x7000f57da8,0x7000123404);
+    assert(activated_node==modal_node&&LD32(manager+0x10)==1&&!click_pending);
+    quit_dialog=0;ST64(sa+8*0x39,0);ST64(sa+8*0x34,0);pc_cursor_frame();assert(!game_over_screen);
+    // MessageGet has no registered buttons and can open without a pause menu.
+    // Recognition is by type, not index, and never steals ordinary attack clicks.
+    for(unsigned i=0;i<0x4b;i++)ST64(sa+8*i,0);
+    ST32(sm+0x28,0x4b);ST32(g_site.pause_state,0);test_menu_ui=false;
+    ST64(sa+8*0x0b,header);ST64(header,0x7001cf5e78ull);ST8(header+0xfe,2);
+    focused=true;pc_cursor_frame();assert(item_message_active&&pc_cursor_active());
+    event.type=SDL_EVENT_MOUSE_BUTTON_DOWN;event.button.button=SDL_BUTTON_LEFT;
+    assert(pc_cursor_event(&event)&&(pc_cursor_buttons(0)&1));
+    event.type=SDL_EVENT_MOUSE_BUTTON_UP;assert(pc_cursor_event(&event));
+    now+=60000000;assert(pc_cursor_buttons(0)==0);
+    event.type=SDL_EVENT_MOUSE_BUTTON_DOWN;assert(pc_cursor_event(&event));
+    ST8(header+0xfe,0);pc_cursor_frame();assert(!item_message_active&&pc_cursor_buttons(0)==0);
+    ST8(header+0xfe,2);g_settings.pc_cursor=false;pc_cursor_frame();
+    assert(!pc_cursor_event(&event)&&pc_cursor_buttons(0)==0);
+    g_settings.pc_cursor=true;pc_cursor_frame();assert(pc_cursor_event(&event));
+    event.type=SDL_EVENT_WINDOW_FOCUS_LOST;pc_cursor_event(&event);assert(pc_cursor_buttons(0)==0);
+    focused=true;pc_cursor_frame();event.type=SDL_EVENT_MOUSE_BUTTON_DOWN;assert(pc_cursor_event(&event));
+    pc_cursor_reset();assert(!item_message_active&&!item_confirm_until&&pc_cursor_buttons(0)==0);
+    // Selling category wheel skips disabled/empty columns, clamps both ends,
+    // and does not depend on the number of item pages within a category.
+    uint64_t saved_master=quest_master;
+    quest_master=quest_widget;
+    uint64_t shop_columns=GUEST_LO+0xb000;
+    for(unsigned i=0;i<7;i++) {
+        uint64_t column=GUEST_LO+0xb100+0x400*i;
+        ST64(shop_columns+8*i,column);
+        ST32(column+0x29c,i>=3&&i<=5?4:0);
+        ST8(column+0x38c,0);ST8(column+0x38d,0);
+    }
+    ST32(quest_widget+0x2e8,5);
+    unsigned category_before=quest_categories_clicked;
+    shop_category_scroll(&cpu,quest_widget,shop_columns,7,1);
+    assert(quest_categories_clicked==category_before+1&&last_category==4);
+    ST32(quest_widget+0x2e8,3);
+    shop_category_scroll(&cpu,quest_widget,shop_columns,7,1);
+    assert(quest_categories_clicked==category_before+1);
+    shop_category_scroll(&cpu,quest_widget,shop_columns,7,-1);
+    assert(quest_categories_clicked==category_before+2&&last_category==4);
+    ST8(LD64(shop_columns+8*4)+0x38c,1);
+    shop_category_scroll(&cpu,quest_widget,shop_columns,7,-1);
+    assert(quest_categories_clicked==category_before+3&&last_category==5);
+    ST32(quest_widget+0x2e8,5);
+    shop_category_scroll(&cpu,quest_widget,shop_columns,7,-1);
+    assert(quest_categories_clicked==category_before+3);
+    // Actual selling layout: food is global page 8, not local page 0.
+    for(unsigned i=0;i<7;i++)ST32(LD64(shop_columns+8*i)+0x2f4,i==4?4:1);
+    ST8(LD64(shop_columns+8*4)+0x38c,0);
+    shop_scroll_test_list=quest_widget;shop_test_pages=0;
+    ST32(quest_widget+0x2e8,5);ST32(quest_widget+0x2dc,8);
+    shop_page_scroll(&cpu,quest_widget,shop_columns,7,1);
+    assert(last_category==4&&shop_test_pages==0);
+    ST32(quest_widget+0x2e8,4);ST32(quest_widget+0x2dc,7);
+    shop_page_scroll(&cpu,quest_widget,shop_columns,7,1);
+    assert(shop_test_pages==1&&last_shop_page==6);
+    shop_page_scroll(&cpu,quest_widget,shop_columns,7,-1);
+    assert(last_category==5&&shop_test_pages==1);
+    ST32(quest_widget+0x2dc,4);
+    shop_page_scroll(&cpu,quest_widget,shop_columns,7,1);
+    assert(last_category==3&&shop_test_pages==1);
+    shop_scroll_test_list=0;
+    quest_master=saved_master;
+    // DLC pages own input while the title remains underneath. Wheel is
+    // consumed once, stays within the native page count, and yields to keys.
+    pc_cursor_reset();ST64(sa+8*0x3f,screen);ST64(screen,0x7001ced520ull);
+    ST8(screen+0xfe,2);ST16(screen+0x2aa,0x40);ST32(screen+0x38c0,1);
+    dlc_test_list=GUEST_LO+0xb000;ST64(screen+0x3628,dlc_test_list);
+    ST64(dlc_test_list,0x7001cdbb58ull);ST32(dlc_test_list+0x2ac,10);
+    ST32(dlc_test_list+0x2dc,0);ST64(screen+0x30,0);
+    pc_cursor_frame();assert(dlc_screen==screen&&pc_cursor_active());
+    position_inside=true;pointer_keyboard_input=false;wheel=-1;frame++;
+    dlc_pointer(&cpu);assert(dlc_pages==1&&LD32(dlc_test_list+0x2dc)==1);
+    dlc_pointer(&cpu);assert(dlc_pages==1);
+    wheel=-100;frame++;dlc_pointer(&cpu);assert(LD32(dlc_test_list+0x2dc)==9);
+    wheel=100;frame++;dlc_pointer(&cpu);assert(LD32(dlc_test_list+0x2dc)==0);
+    pointer_keyboard_input=true;wheel=-1;frame++;dlc_pointer(&cpu);assert(LD32(dlc_test_list+0x2dc)==0);
+    pointer_keyboard_input=false;wheel=0;gesture_down=gesture_dragged=true;
+    gesture_delta[1]=81;frame++;dlc_pointer(&cpu);assert(LD32(dlc_test_list+0x2dc)==1);
+    ST32(screen+0x38c0,2);wheel=-1;frame++;dlc_pointer(&cpu);assert(LD32(dlc_test_list+0x2dc)==1);
+    // Hit the game's own arrow and footer layouts, using their measured
+    // layout coordinates. Credits is deferred to the screen's normal tick.
+    ST32(screen+0x38c0,1);wheel=0;gesture_down=gesture_dragged=false;
+    uint64_t dl=GUEST_LO+0xe200,dp=GUEST_LO+0xe400;
+    ST64(screen+0x30,dl);ST64(dl+0x18,dp);ST64(dp+0x28,dp+0x20);
+    strcpy((char*)(uintptr_t)(dp+0xb8),"Pa_ArrowD_00");
+    *(float*)(dp+0x70)=*(float*)(dp+0x84)=1;
+    *(float*)(dp+0x74)=*(float*)(dp+0x80)=0;
+    *(float*)(dp+0x7c)=166;*(float*)(dp+0x8c)=-187.2f;
+    *(float*)(dp+0x50)=36;*(float*)(dp+0x54)=64;
+    point[0]=166;point[1]=-187.2f;click_pending=true;frame++;
+    dlc_pointer(&cpu);assert(LD32(dlc_test_list+0x2dc)==2&&!click_pending);
+    strcpy((char*)(uintptr_t)(dp+0xb8),"Pa_GuideY_00");
+    *(float*)(dp+0x7c)=559;*(float*)(dp+0x8c)=-285;
+    *(float*)(dp+0x50)=440;*(float*)(dp+0x54)=40;
+    point[0]=550;point[1]=-285;click_pending=true;frame++;
+    dlc_pointer(&cpu);assert(LD8(screen+0x38c4)==1&&!click_pending);
+    strcpy((char*)(uintptr_t)(dp+0xb8),"Pa_GuideB_00");
+    *(float*)(dp+0x8c)=-318;point[1]=-318;click_pending=true;frame++;
+    dlc_pointer(&cpu);assert((pc_cursor_buttons(0)&2)&&!click_pending);
+    dlc_back_until=now+100;assert(pc_cursor_buttons(0)&2);
+    pc_cursor_reset();assert(!dlc_screen&&!dlc_back_until&&dlc_frame==UINT64_MAX);
+    // Adventure Log scrolls its visible mission viewport. The registry
+    // contains both its category strip and a hidden list for another tab.
+    uint64_t qm=GUEST_LO+0x4000,category_list=GUEST_LO+0x5000;
+    uint64_t qr=GUEST_LO+0xd000,qhidden=GUEST_LO+0xa000,qcols=GUEST_LO+0xc000,qcol=GUEST_LO+0xc200;
+    wheel_quest_list=GUEST_LO+0xb000;
+    ST64(screen,0x7001cf9ad8ull);ST8(screen+0xfe,2);ST32(screen+0x3a48,2);
+    ST32(screen+0x388,3);ST64(screen+0x390,qr);ST64(screen+0x3bb0,qm);ST64(qm+0x300,category_list);
+    ST64(qr,category_list);ST64(qr+8,qhidden);ST64(qr+16,wheel_quest_list);
+    ST64(category_list,0x7001cdbb58ull);ST32(category_list+0x2e8,2);
+    ST64(qhidden,0x7001cdbb58ull);ST8(qhidden+0x2c,0);
+    ST64(wheel_quest_list,0x7001cdbb58ull);ST8(wheel_quest_list+0x2c,1);
+    ST32(wheel_quest_list+0xc0,1);ST32(wheel_quest_list+0x2e8,2);
+    ST32(wheel_quest_list+0x288,4);ST64(wheel_quest_list+0x290,qcols);ST64(qcols+16,qcol);ST32(qcol+0x29c,14);
+    uint64_t qview=GUEST_LO+0xe800;ST64(qcol+0x10,qview);
+    *(float*)(qview+0x34)=126;*(float*)(qview+0x44)=70;
+    // Child row caches can retain the previous category's displaced origin.
+    // The master viewport remains at the actual visible panel position.
+    *(float*)(category_list+0x304)=-260;*(float*)(category_list+0x308)=-30;
+    *(float*)(wheel_quest_list+0x304)=-1960;*(float*)(wheel_quest_list+0x308)=-380;
+    *(float*)(qcol+0x2f8)=-243;*(float*)(qcol+0x300)=243;
+    *(float*)(qcol+0x2fc)=-203;*(float*)(qcol+0x304)=203;
+    *(float*)(wheel_quest_list+0x2b4)=0;*(float*)(wheel_quest_list+0x2bc)=3000;
+    *(float*)(wheel_quest_list+0x2c4)=1134;*(float*)(wheel_quest_list+0x2d4)=1134;ST32(wheel_quest_list+0x30c,6);ST32(wheel_quest_list+0x310,6);
+    point[0]=-260;point[1]=0;wheel=-1;frame++;cpu.x[0]=manager;
+    assert(quest_scroll(&cpu,screen)&&quest_view_scrolls==1&&cpu.x[0]==manager);
+    assert(*(float*)(wheel_quest_list+0x2c4)==1134);
+    assert(*(float*)(wheel_quest_list+0x2d4)==1204&&LD32(wheel_quest_list+0x30c)==6&&LD32(wheel_quest_list+0x310)==6);
+    assert(quest_scroll(&cpu,screen)&&quest_view_scrolls==1);
+    wheel=-100;frame++;assert(quest_scroll(&cpu,screen));assert(*(float*)(wheel_quest_list+0x2d4)==1414);
+    wheel=100;frame++;assert(quest_scroll(&cpu,screen));assert(*(float*)(wheel_quest_list+0x2d4)==784);
+    // Fourteen rows at 70px pitch with 126px cells occupy 1036px;
+    // a 406px viewport ends 630px after the native category origin.
+    wheel=-100;frame++;assert(quest_scroll(&cpu,screen));
+    unsigned end_calls=quest_view_scrolls;wheel=-100;frame++;
+    assert(quest_scroll(&cpu,screen)&&quest_view_scrolls==end_calls);
+    ST32(qcol+0x29c,3);wheel=-1;frame++;assert(quest_scroll(&cpu,screen));
+    assert(*(float*)(wheel_quest_list+0x2d4)==784); // short lists cannot scroll
+    ST32(qcol+0x29c,14);*(float*)(wheel_quest_list+0x2b4)=900;
+    wheel=-100;frame++;assert(quest_scroll(&cpu,screen));assert(*(float*)(wheel_quest_list+0x2d4)==1530);
+    wheel=100;frame++;assert(quest_scroll(&cpu,screen));assert(*(float*)(wheel_quest_list+0x2d4)==900);
+    // Memories starts after three reserved category slots, not at zero.
+    *(float*)(wheel_quest_list+0x2b4)=0;quest_test_origin=1176;
+    ST32(category_list+0x2e8,3);ST32(wheel_quest_list+0x2e8,3);ST64(qcols+24,qcol);ST32(qcol+0x29c,18);
+    wheel=-100;frame++;assert(quest_scroll(&cpu,screen));assert(*(float*)(wheel_quest_list+0x2d4)==2086);
+    wheel=100;frame++;assert(quest_scroll(&cpu,screen));assert(*(float*)(wheel_quest_list+0x2d4)==1176);
+    point[0]=300;wheel=-1;frame++;assert(!quest_scroll(&cpu,screen)&&wheel==-1);
+    point[0]=-260;pointer_keyboard_input=true;frame++;assert(!quest_scroll(&cpu,screen));
+    // The loaded Adventure Log is page 2; page 1 is an intermediate state.
+    pointer_keyboard_input=false;ST32(screen+0x3a48,1);frame++;assert(!quest_scroll(&cpu,screen));
+    ST32(screen+0x3a48,0);frame++;assert(!quest_scroll(&cpu,screen));
+    pc_cursor_reset();assert(quest_scroll_frame==UINT64_MAX);
+    // Only pointer-owned map navigation borrows D-pad Left for native Y.
+    pc_cursor_reset();active=focused=true;g_settings.pc_cursor=true;map_canvas_active=true;
+    assert(pc_cursor_sensor_active());
+    assert(pc_cursor_buttons((1ull<<12)|(1ull<<5))==(8|(1ull<<5)));
+    assert(pc_cursor_buttons(1ull<<5)==(1ull<<5));
+    pointer_gamepad_input=true;assert(!pc_cursor_sensor_active());
+    assert(pc_cursor_buttons(1ull<<12)==(1ull<<12));
+    pointer_gamepad_input=false;map_canvas_active=false;
+    assert(pc_cursor_buttons(1ull<<12)==(1ull<<12));
+    map_canvas_active=true;g_settings.pc_cursor=false;
+    assert(pc_cursor_buttons(1ull<<12)==(1ull<<12));g_settings.pc_cursor=true;
+    // The panel's visibility survives a trip to the compendium; a one-tick
+    // open request cannot tell us who should receive input on return.
+    sensor_test_screen=(uint64_t)(uintptr_t)memory+0xb000;
+    sensor_test_panel=(uint64_t)(uintptr_t)memory+0xc000;
+    memset((void*)(uintptr_t)sensor_test_panel,0,0x200);
+    strcpy((char*)(uintptr_t)(sensor_test_panel+0xb8),"N_All_00");
+    ST8(sensor_test_panel+0x58,1);ST8(sensor_test_panel+0x5a,255);
+    assert(map_sensor_panel(&cpu,sensor_test_screen));
+    ST8(sensor_test_panel+0x5a,0);assert(!map_sensor_panel(&cpu,sensor_test_screen));
+    ST8(sensor_test_panel+0x5a,255);assert(map_sensor_panel(&cpu,sensor_test_screen));
+    ST8(sensor_test_panel+0x58,0);assert(!map_sensor_panel(&cpu,sensor_test_screen));
+    sensor_test_screen=sensor_test_panel=0;pc_cursor_reset();assert(!pc_cursor_sensor_active());
+    puts("PASS: DLC navigation and Adventure Log scrolling; Options scroll/click/shared focus, SDL ownership/cursor visibility, page rebuild, Adventure Log/Ability Controls list registry, stationary hover, nested category clicks/locks, viewport preservation, pause header transitions/modal priority, quit question over Options, setting gate and reboot reset (synthetic host state).");
 #ifdef _WIN32
     VirtualFree(vt_memory,0,MEM_RELEASE);
     VirtualFree(memory,0,MEM_RELEASE);

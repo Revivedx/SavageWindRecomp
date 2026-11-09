@@ -60,25 +60,73 @@ Most of them rely on addresses found in game version 1.9.0 and are untested on o
 |---|---|
 | `ping` | Check that the game answers (data: `pong` = true) |
 | `time [freeze \| unfreeze \| set <0-24> \| <0-24>]` | Show the hour of the day. `set <hour>` or just `<hour>` sets it and keeps the clock running or frozen as it was. `freeze` holds the current hour, `unfreeze` continues from it at the normal speed. It writes both `WM_Time` buffers and lifts the early game 11:00 clock cap, without touching the paraglider quest flag. `SAVAGEWIND_TEST_TIME` still holds its configured hour |
+| `rupees [<0-9999> \| lock \| unlock]` | Cheat. Without an argument: whether Infinite rupees is on and the last wallet count read. `<n>` sets the wallet once; `lock` turns on Infinite rupees (the wallet kept at 9999, the same as the overlay's Cheats tab) and `unlock` turns it off. The rupee count is found in the game's memory by a background thread, so the first write takes a few seconds (`runtime/rupees.c`). Like `set`, no settings file is written |
+| `weather [game \| no_rain \| no_storms \| clear \| cloudy \| rain \| heavy_rain \| snow \| heavy_snow \| thunderstorm \| thunder_rain \| sun_shower]` | Cheat. Without an argument: the weather setting and, with a world loaded, the weather now. `no_rain` turns any rain into clouds, `no_storms` turns thunderstorms into clouds or rain, a weather type holds it, and `game` gives the weather back to the game. The same as Weather in the overlay's Cheats tab: applied from the next frame, and a cutscene keeps its own weather (`runtime/weather.c`). Like `set`, no settings file is written |
 | `shot <file>` | Save a screenshot as PNG, on the machine the game runs on (Vulkan only for now). The file must be a `.png` inside the game's folder: a relative path without `..` |
-| `goto <x> <y> <z>` \| `goto <swr:1 line>` | Go to a place from `pos` or `report`: move Link, set the hour of the line (the clock keeps running, or stays frozen if it was) and turn the camera to its yaw and pitch like `look`. Same limits as `teleport` |
-| `teleport <x> <y> <z>` \| `teleport status` \| `teleport forget` | Move Link. Writes the real position, reached through a pointer chain from `PlayerInfo` (found with `mem path`, checked against `pos`). If the chain does not match it falls back to a background search that never blocks a frame; poll `teleport status` (`scanning`, `probing`, `testing`, `verifying`, `done`, `failed`). Stand still when you start; do not use it while riding, in a cutscene or loading. A target below the ground makes Link fall. `forget` drops the saved address |
+| `goto <x> <y> <z>` \| `goto <swr:1 line>` \| `goto <place>` | Go to a place from `pos` or `report`: move Link, set the hour of the line (the clock keeps running, or stays frozen if it was) and turn the camera to its yaw and pitch like `look`. Same limits as `teleport`. Or go to a named place: `goto shrine 5`, `goto korok H23`, `goto stable wetland`, `goto tower 7`, `goto hateno`, `goto nearest korok` (see "Named places" below). Link arrives 2 to 3 units above the ground and drops the rest |
+| `tp ...` | Same as `goto`, with the same arguments |
+| `places [<kind>] [words]` | List the places `goto` knows: without arguments the kinds and how many there are, with a kind (`shrine`, `tower`, `stable`, `village`, `landmark`, `korok`) their numbers and names, and words narrow the list (`places shrine akkala`). Shows 40 at most |
+| `teleport <x> <y> <z>` \| `teleport status` \| `teleport forget` | Move Link. Writes the real position, reached through a pointer chain from `PlayerInfo` (found with `mem path`, checked against `pos`). If the chain does not match it falls back to a background search that never blocks a frame; poll `teleport status` (`scanning`, `probing`, `testing`, `verifying`, `settling`, `done`, `failed`). A jump of 300 units or more also holds Link at the target (`settling`) until the game has loaded the map around him: the game pauses the world while it does and loads it with the world's own update, so without the hold a far jump froze the world for good (the hold needs the `tp_gate` patch of the generated game code). Stand still when you start; do not use it while riding, in a cutscene or loading. A target below the ground makes Link fall. `forget` drops the saved address |
 | `look <yaw> <pitch>` \| `look status` \| `look stop` | Turn the camera (degrees, either may be `keep`, pitch within -89..89). Writes the camera cells and checks again each frame, because the game moves the eye a little after a write. Without the cells it falls back to the right stick (needs the TAA camera read). Returns at once, poll `look status` (`running`, `done`, `timeout`, `failed`) |
 | `fly [on \| off \| toggle \| mode look \| level \| speed <n>]` | Fly mode: Link floats and the controls steer him through the world. Left stick moves along the camera (`mode look`) or the ground (`mode level`), X and B go up and down, left stick press is a 6x boost, the mouse wheel changes the speed. Fall damage cells are kept at his height, so flying down costs nothing. With the endpoint on, the Controls page gets a "Fly mode (test builds)" row (default F7, ini `bind_key_fly`, gamepad `bind_pad_fly`) |
 | `cell [<name> [<value>...]]` | List, read or write a named game state cell. A cell is a recipe: a root object, pointer chains found once with `mem path` and a check that tells a right chain from a stale one. Cells: `player.pos`, `player.fall_top`, `player.fall_top2`, `camera.eye`, `camera.target`, `camera.pitch`. A new cell is one entry in `runtime/control_cells.c` |
 | `sites` | The known root addresses (`runtime/game_sites.h`) and the value stored at each, as the start for `mem path` |
 | `set <key> <value>` | Change a setting in memory. Answers with the new value and `applied: live` or `needs_restart`. Examples: `set upscaler fsr3`, `set antialias taa`, `set vsync off`, `set fps 120`. Enums accept names or indices, booleans on/off, true/false or 1/0. Unavailable backend options are rejected. No settings file is written, but a later menu save may keep the change |
 | `frames [seconds]` | Frame intervals of the last seconds (default 5, max 60): count, fps average, frame time average, p50, p95, p99 and max, and the number of frames over 33 and 50 ms. Includes pacing and hitches, not GPU time alone |
+| `prof [start \| stop \| toggle \| status \| report]` | The on-demand profiler: records zones, counters, GPU time and stack samples into a capture file, reported with `tools/swprof.py` (see `docs/profiling.md`). `status` shows the state and the last file |
 | `sample start <seconds> [interval_us]` \| `sample status` | Windows only: background stack capture, written to `build/samples.txt` (analyse with `tools/profile_samples.py`). Refuses overlapping captures |
-| `vkprof`, `gpuprof` | Only explain how to turn the profilers on, with `SAVAGEWIND_VK_PROF` and `SAVAGEWIND_GPUPROF_AT` at startup, because they cannot be switched safely at runtime |
+| `vkprof` | Only explains how to turn the Vulkan timers on, with `SAVAGEWIND_VK_PROF` at startup, because they cannot be switched safely at runtime |
+| `gpuprof` | GPU time per pass, dispatch and copy of the next frame, as `[gpuprof]` lines in the log (the capture `SAVAGEWIND_GPUPROF_AT` takes at a fixed frame). The capture waits for the GPU once, a short hitch. The `prof` command's capture has the same rows in the `gpu` thread |
+| `threads` | CPU time used so far (ms) by each guest thread (`guest.<handle>_<entry>`) and by the render threads (`host.render`, the NVN queue thread; `host.recorder` when the recorder runs), with `now_ms` and `presents`. Two calls give each thread's CPU time per frame. Some threads spin while they wait, so CPU time is not work: `tools/perf_routes.py` takes the work share from `sample` |
 | `mem regions` | Readable mappings inside the guest window |
 | `mem read <addr> <len> [u8\|u16\|u32\|u64\|s32\|f32\|f64\|hex]` | Read 1 to 4096 bytes |
 | `mem write <addr> <type> <value>` | Write one numeric value; rejects inaccessible ranges and values outside the type |
 | `mem scan <type> <value> [tolerance] [region=..] [from=.. to=..] [resident=1]`, `mem scan status`, `mem rescan <changed\|unchanged\|increased\|decreased\|equal <v>\|near <v> <tol>>`, `mem list [n]`, `mem reset` | Search guest memory for a value on a background thread and narrow the candidates, like a memory scanner. One session is shared by all clients. Poll `mem scan status` |
 | `mem path <root> <target> [depth=1..6] [window=16..65528]` | Find how to reach `target` from the object at `root`, as pointer offsets. Poll `mem path status`. Heap addresses move between runs but layouts do not, so a chain found once keeps working |
+| `give <actor or part of a name> [count]` | Put an item in the pouch through the game's own item get, on the next frame in play. Not an exact actor: the items whose name or actor has that text in them; one is given, several are listed. What went in the pouch is in the log (`[items] <actor>: value <n>, <added> of <asked>`): weapons, bows and shields stop when the player has no free slot |
 | `press <button> [frames]`, `hold <button>`, `release [<button>\|all]`, `stick <l\|r> <x> <y> [frames]`, `input` | Scripted controller input, merged with the real one. Buttons: a b x y l r zl zr plus minus up down left right lstick rstick. Sticks run from -1 to 1, positive y is up |
 
 To use `goto` with a line from an issue, run it in developer mode: `swctl goto "swr:1 x=... y=... z=... yaw=... pitch=... hour=..."`.
+
+### Named places
+
+`goto` also takes a kind and a number or a name. It finds a shrine, tower, stable, village, landmark or Korok without looking up any coordinates:
+
+```
+swctl goto shrine 5            the shrine with the game's number 5 (Ne'ez Yohma)
+swctl goto shrine oman au      by name; apostrophes and capital letters do not matter
+swctl goto shrine pushing power   or by the title the game gives the shrine's trial
+swctl goto korok H23           a Korok by the game's own id (see below)
+swctl goto korok 10            the 10th of 900, in the order `places korok` shows
+swctl goto stable 2            the 2nd stable in alphabetical order (East Akkala)
+swctl goto tower 7             the game's tower number (7 is Great Plateau Tower)
+swctl goto stable wetland      or: swctl goto wetland
+swctl goto hateno              names without a kind work when only one place has that name
+swctl goto nearest korok       the closest of a kind to where Link is now (works for every kind)
+```
+
+If a name matches several places, the reply names them. `places <kind>` prints the numbers and names. What the numbers mean:
+
+- Shrines use the game's own number (`Dungeon005` is shrine 5, 0 to 135; 120 and above are the DLC shrines). That is the number in the game's data and on the ZeldaMods object map, not an order the game shows to players.
+- Towers use the game's tower number (1 to 15).
+- Stables, villages and landmarks are numbered alphabetically by their English name.
+- Koroks have no number in the game. Each one has an id like `H23` (the id the object map uses). `korok 10` counts the 900 in map order: square `A-1`, `A-2` ... then by id. `places korok` shows the order.
+
+The coordinates are the game's world coordinates, the same frame as `pos`. The table is `runtime/control_places_data.inc`, generated by `python3 tools/gen_places.py` (needs network access). Two sources feed it:
+
+- 154 places (120 shrines, all 15 towers, the villages, some stables and landmarks, Hyrule Castle) use the game's own start positions: the `StartPos` entries of `Map/MainField/Static.smubin` in `Bootup.pack`, which is where the game puts Link when he warps there, so it is ground he can stand on. `tools/dump_startpos.py` reads them from your own copy of the game (`python3 tools/dump_startpos.py --pack <Bootup.pack>`) and writes `tools/places_startpos.json`, which holds only coordinates and is checked in.
+- 15 more places (14 DLC shrines, the Forgotten Temple) use `tools/places_measured.json`: the height Link really stood at after a `goto` dropped him from the marker position, measured in a running game with `tools/check_places.py` (marker heights were up to 100 units too high there).
+- Everything else (the 2 other DLC shrines, the remaining stables and landmarks, all Koroks) uses the data behind the [ZeldaMods object map](https://objmap.zeldamods.org) (extracted from the game files of Breath of the Wild; the map is open source at [zeldamods/objmap](https://github.com/zeldamods/objmap)): the position of the place's marker or of the Korok. Those are not standing spots.
+
+`make test-places` tests the lookup.
+
+`goto` adds a small lift above the table height (1 unit for the places above that stand on ground, 2 for Koroks, 3 for the rest), so Link arrives in the air and drops onto the ground. For 4 seconds after any arrival the fall damage cells follow his height, so a place that is a little too high costs no hearts.
+
+After a far jump the screen can look wrong for a second or two (dark or stale picture, camera low in the grass or inside the terrain): the game pauses the world while it loads the map around the new spot and only then settles the camera. It corrects itself. The camera values (`camera.eye` and the rest) cannot be read yet at that point, so `goto` cannot fix it earlier.
+
+Known crash: the game itself can crash on a loader thread while it builds a model (`access violation: write at 0x8`). It is not caused by `goto`: it also happens on a plain load of a save in the Gerudo desert, about one load in five. The model loader makes a temporary heap from the model's ResourceSizeTable entry and does not check when an allocation in it fails; a few big models (`FldObj_RuinStatueKnight_A-03`) overflow it. Giving every model's entry 64 KB more stopped it in 40 loads in a row. The fix is in PR #524 (`SAVAGEWIND_RSTB_MODEL_KB`); without it, start the game again.
+
+Limits: places that still use marker data can put Link inside a wall, a rock or under the ground, or high above it. Use `pos` afterwards to check where he is. Move him with `teleport` if he is stuck.
 
 `savagewind.log` gets the same line every 30 seconds while Link moves (`[place] swr:1 ...`; none while he stands still), so the log attached to an issue says where its bug happened. `SAVAGEWIND_PLACE_LOG=0` turns these lines off.
 

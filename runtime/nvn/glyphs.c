@@ -1,3 +1,4 @@
+#include "../pc_cursor.h"
 // Button icons for the device in use.
 //
 // BOTW draws its button prompts (HUD hints, menus, dialogs) as characters of its own bitmap font External_00.bffnt
@@ -7,7 +8,7 @@
 // what changes, not the texts. nn::font copies the sheet into a texture memory pool of its own; the texture is
 // recognised by its size and contents, and on upload its texels are replaced by glyphs drawn here for the device in use,
 // in the same cells and inside each original glyph's box (the game's widths stay): keycaps and mouse buttons from the
-// keyboard bindings, Xbox or PlayStation buttons through the controller bindings, or the game's own glyphs (moved
+// keyboard bindings, Xbox, PlayStation or Steam Deck buttons through the controller bindings, or the game's own glyphs (moved
 // between cells when the controller bindings differ from the defaults). Nothing of Nintendo's is shipped: shapes are
 // drawn, labels set in Fira Sans (OFL, third_party/fonts).
 //
@@ -16,6 +17,7 @@
 //
 // SAVAGEWIND_GLYPH_DUMP=1 saves each sheet as uploaded, the original beside it (build/glyph_sheet_<n>.pgm, bottom-up).
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,6 +25,8 @@
 #include <SDL3/SDL.h>
 
 #include "glyphs.h"
+#include "hw_illust.h"
+#include "../hle.h"
 #include "../input_bind.h"
 #include "../paths.h"
 #include "../rt.h"
@@ -420,26 +424,27 @@ static int nintendo_code(int host) {
 }
 
 // A controller button as an Xbox / PlayStation icon
-static void pad_button(Canvas *c, Box b, int host, bool ps) {
+static void pad_button(Canvas *c, Box b, int host, int fam) {
+    bool ps = fam == 2, num = ps || fam == 3;  // (the Steam Deck: Xbox's letters, numbered shoulders and sticks)
     switch (host) {
     case SDL_GAMEPAD_BUTTON_SOUTH: case SDL_GAMEPAD_BUTTON_EAST: case SDL_GAMEPAD_BUTTON_WEST: case SDL_GAMEPAD_BUTTON_NORTH:
         if (ps) ps_face(c, b, host);
         else round_label(c, b, host == SDL_GAMEPAD_BUTTON_SOUTH ? "A" : host == SDL_GAMEPAD_BUTTON_EAST ? "B" :
                                host == SDL_GAMEPAD_BUTTON_WEST ? "X" : "Y");
         return;
-    case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER: tab_label(c, b, ps ? "L1" : "LB"); return;
-    case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: tab_label(c, b, ps ? "R1" : "RB"); return;
-    case PADB_LTRIGGER: tab_label(c, b, ps ? "L2" : "LT"); return;
-    case PADB_RTRIGGER: tab_label(c, b, ps ? "R2" : "RT"); return;
+    case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER: tab_label(c, b, num ? "L1" : "LB"); return;
+    case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: tab_label(c, b, num ? "R1" : "RB"); return;
+    case PADB_LTRIGGER: tab_label(c, b, num ? "L2" : "LT"); return;
+    case PADB_RTRIGGER: tab_label(c, b, num ? "R2" : "RT"); return;
     case SDL_GAMEPAD_BUTTON_START: menu_button(c, b, true, ps); return;
     case SDL_GAMEPAD_BUTTON_BACK: menu_button(c, b, false, ps); return;
-    case SDL_GAMEPAD_BUTTON_LEFT_STICK: round_label(c, b, ps ? "L3" : "LS"); return;
-    case SDL_GAMEPAD_BUTTON_RIGHT_STICK: round_label(c, b, ps ? "R3" : "RS"); return;
+    case SDL_GAMEPAD_BUTTON_LEFT_STICK: round_label(c, b, num ? "L3" : "LS"); return;
+    case SDL_GAMEPAD_BUTTON_RIGHT_STICK: round_label(c, b, num ? "R3" : "RS"); return;
     case SDL_GAMEPAD_BUTTON_DPAD_UP: dpad(c, b, DIR_U); return;
     case SDL_GAMEPAD_BUTTON_DPAD_DOWN: dpad(c, b, DIR_D); return;
     case SDL_GAMEPAD_BUTTON_DPAD_LEFT: dpad(c, b, DIR_L); return;
     case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: dpad(c, b, DIR_R); return;
-    default: tab_label(c, b, bind_pad_label(host, ps ? 2 : 1)); return;
+    default: tab_label(c, b, bind_pad_label(host, fam)); return;
     }
 }
 
@@ -513,13 +518,63 @@ static int resolve_kind(void) {
     if (k > ICONS_AUTO && k < ICONS_COUNT) return k;
     if (input_last_device() == DEVICE_KEYBOARD) return ICONS_KEYBOARD;
     int f = input_pad_family();
-    return f == 1 ? ICONS_XBOX : f == 2 ? ICONS_PLAYSTATION : ICONS_NINTENDO;
+    return f == 1 ? ICONS_XBOX : f == 2 ? ICONS_PLAYSTATION : f == 3 ? ICONS_STEAMDECK : ICONS_NINTENDO;
+}
+
+static int face_vertex(int host) {
+    switch (host) {
+    case SDL_GAMEPAD_BUTTON_EAST: return 0;
+    case SDL_GAMEPAD_BUTTON_SOUTH: return 1;
+    case SDL_GAMEPAD_BUTTON_NORTH: return 2;
+    case SDL_GAMEPAD_BUTTON_WEST: return 3;
+    default: return -1;
+    }
+}
+
+void glyphs_hud_positions(int pos[4]) {
+    static const int k_presets[BUTTON_LAYOUT_COUNT][4] = {
+        {0, 1, 2, 3},  // BUTTON_LAYOUT_AUTO (fallback: Nintendo)
+        {0, 1, 2, 3},  // BUTTON_LAYOUT_NINTENDO: East A, South B, North X, West Y
+        {1, 0, 2, 3},  // BUTTON_LAYOUT_SWAP_AB:  South A, East B, North X, West Y
+        {1, 0, 3, 2},  // BUTTON_LAYOUT_XBOX:     South A, East B, West X, North Y
+        {0, 1, 3, 2},  // BUTTON_LAYOUT_SWAP_XY:  East A, South B, West X, North Y
+        {1, 3, 0, 2},  // BUTTON_LAYOUT_GAMECUBE: South A, West B, East X, North Y
+    };
+    int layout = g_settings.button_layout;
+    if (layout > BUTTON_LAYOUT_AUTO && layout < BUTTON_LAYOUT_COUNT) {
+        memcpy(pos, k_presets[layout], 4 * sizeof(int));
+        return;
+    }
+    int p[4], mask = 0;
+    for (int i = 0; i < 4; i++) {
+        p[i] = face_vertex(g_bind_pad[BIND_A + i]);
+        if (p[i] >= 0) mask |= 1 << p[i];
+    }
+    if (mask == 0xF && (p[0] != 0 || p[1] != 1 || p[2] != 2 || p[3] != 3)) {
+        memcpy(pos, p, sizeof p);
+        return;
+    }
+    static const int k_acts[4] = {0, 14, 2, 3};  // Interact (A), Cancel (B), Jump (X), Attack (Y)
+    mask = 0;
+    for (int i = 0; i < 4; i++) {
+        int h = g_act_pad[k_acts[i]];
+        if (h == ACT_FOLLOW) h = g_bind_pad[BIND_A + i];
+        p[i] = face_vertex(h);
+        if (p[i] >= 0) mask |= 1 << p[i];
+    }
+    if (mask == 0xF) {
+        memcpy(pos, p, sizeof p);
+        return;
+    }
+    memcpy(pos, k_presets[0], 4 * sizeof(int));
 }
 
 uint32_t glyphs_generation(void) {
     int k = resolve_kind();
     uint32_t h = 2166136261u ^ (uint32_t)k;
     if (k == ICONS_KEYBOARD) {
+        h = (h ^ pc_cursor_preview_active()) * 16777619u;
+        h = (h ^ pc_cursor_sensor_active()) * 16777619u;
         for (int i = 0; i < BIND_KEY_COUNT; i++) h = (h ^ (uint16_t)g_bind_key[i]) * 16777619u;
         h = (h ^ g_settings.mouse_camera) * 16777619u;
     } else {
@@ -528,14 +583,40 @@ uint32_t glyphs_generation(void) {
     return h | 1;
 }
 
-static const char *const k_kind_names[ICONS_COUNT] = {"auto", "keyboard", "Xbox", "PlayStation", "Nintendo"};
+static int glyphs_console_wanted(void) {
+    switch (g_settings.button_icons) {
+    case ICONS_STEAMDECK: return HW_DEVICE_DECK;
+    case ICONS_XBOX: return HW_DEVICE_XBOX;
+    case ICONS_PLAYSTATION: return HW_DEVICE_PS5;
+    case ICONS_AUTO: {  // the controller in use (an Xbox or PlayStation one also on a Deck), else the Deck's own
+        int f = bind_label_family();  // (the controller connected, also before the game opens one)
+        if (f == 1 || f == 2) return f == 1 ? HW_DEVICE_XBOX : HW_DEVICE_PS5;
+        return f == 3 || settings_steam_deck() ? HW_DEVICE_DECK : -1;
+    }
+    default: return -1;  // (keyboard, Nintendo: the game's Switch)
+    }
+}
+
+static volatile int g_console = -2;  // (-2: not decided this boot)
+RT_ON_RESET(glyphs_console_reset) { g_console = -2; }  // (a restart decides again)
+
+int glyphs_console(void) {
+    if (g_console == -2) {
+        g_console = glyphs_console_wanted();
+        static const char *const names[HW_DEVICE_COUNT] = {"the Steam Deck", "an Xbox controller", "a DualSense"};
+        LOG("[glyphs] Controls page: %s\n", g_console >= 0 ? names[g_console] : "the game's Switch");
+    }
+    return g_console;
+}
+
+static const char *const k_kind_names[ICONS_COUNT] = {"auto", "keyboard", "Xbox", "PlayStation", "Nintendo", "Steam Deck"};
 
 // The icon for one glyph: false = keep the game's (or *copy: the game's glyph for that code instead)
 static bool draw_glyph(Canvas *c, Box b, int code, int kind, int *copy) {
     Meaning m = meaning(code);
     *copy = 0;
     if (m.kind == G_KEEP) return false;
-    bool ps = kind == ICONS_PLAYSTATION;
+    int fam = kind == ICONS_PLAYSTATION ? 2 : kind == ICONS_STEAMDECK ? 3 : 1;
     if (kind == ICONS_NINTENDO) {  // the game's glyphs, following the controller bindings
         int host = -1;
         if (m.kind == G_BUTTON) host = g_bind_pad[m.arg];
@@ -546,7 +627,9 @@ static bool draw_glyph(Canvas *c, Box b, int code, int kind, int *copy) {
     }
     if (kind == ICONS_KEYBOARD) {
         switch (m.kind) {
-        case G_BUTTON: key_icon(c, b, g_bind_key[m.arg]); return true;
+        case G_BUTTON:
+            if(m.arg==BIND_RSTICK&&pc_cursor_preview_active()) {mouse(c,b,SDL_BUTTON_LEFT,0);return true;}
+            key_icon(c, b, m.arg==BIND_Y&&pc_cursor_sensor_active()?g_bind_key[BIND_LEFT]:g_bind_key[m.arg]); return true;
         case G_DPAD:
             if (!(m.arg & (m.arg - 1))) key_icon(c, b, g_bind_key[k_dpad_slot[dir_index(m.arg)]]);
             else keys_icon(c, b, k_dpad_slot, m.arg);
@@ -558,6 +641,7 @@ static bool draw_glyph(Canvas *c, Box b, int code, int kind, int *copy) {
             return true;
         }
         default: {  // the right stick: the mouse when it turns the camera, else its keys
+            if(pc_cursor_preview_active()){mouse(c,b,SDL_BUTTON_LEFT,0);return true;}
             static const int rs[4] = {BIND_RS_UP, BIND_RS_DOWN, BIND_RS_LEFT, BIND_RS_RIGHT};
             if (g_settings.mouse_camera) mouse(c, b, 0, m.arg);
             else if (!(m.arg & (m.arg - 1))) key_icon(c, b, g_bind_key[rs[dir_index(m.arg)]]);
@@ -566,13 +650,13 @@ static bool draw_glyph(Canvas *c, Box b, int code, int kind, int *copy) {
         }
         }
     }
-    // Xbox / PlayStation: buttons through the bindings; the sticks keep the game's (L / R)
+    // Xbox / PlayStation / Steam Deck: buttons through the bindings; the sticks keep the game's (L / R)
     switch (m.kind) {
-    case G_BUTTON: pad_button(c, b, g_bind_pad[m.arg], ps); return true;
+    case G_BUTTON: pad_button(c, b, g_bind_pad[m.arg], fam); return true;
     case G_DPAD:
         if (!(m.arg & (m.arg - 1))) {
             int host = g_bind_pad[k_dpad_slot[dir_index(m.arg)]];
-            if (host != k_dpad_host[dir_index(m.arg)]) { pad_button(c, b, host, ps); return true; }
+            if (host != k_dpad_host[dir_index(m.arg)]) { pad_button(c, b, host, fam); return true; }
         }
         dpad(c, b, m.arg);
         return true;

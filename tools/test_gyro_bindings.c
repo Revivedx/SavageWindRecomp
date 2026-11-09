@@ -7,7 +7,9 @@
 #undef RT_ON_RESET
 #define RT_ON_RESET(fn) static void fn(void)
 #include "../runtime/hle/input.c"
+uint64_t quick_drop_action_filter_buttons(uint64_t b) { return b; }
 #include "test_pointer_disabled.h"
+bool settings_steam_deck(void) { return false; }
 Settings g_settings;
 static int pitch,roll,yaw;static bool center,captured,paused,apparatus;
 void motion_keyboard(int p,int r,int y,bool c){pitch=p;roll=r;yaw=y;center=c;}
@@ -32,6 +34,14 @@ bool framepace_title_ui(void){return false;}
 bool control_enabled(void){return false;}
 bool control_fly_toggle(void){abort();}
 void control_fly_wheel(float n){(void)n;abort();}
+// (the free camera, hle/freecam.c: off here)
+bool freecam_active(void) { return false; }
+void freecam_toggle(void) { abort(); }
+void freecam_key(int scancode, bool down) { (void)scancode; (void)down; abort(); }
+void freecam_mouse(float dx, float dy) { (void)dx; (void)dy; abort(); }
+void freecam_pad(float lx, float ly, float rx, float ry, float up, float down, bool fast, bool slow) {
+    (void)lx; (void)ly; (void)rx; (void)ry; (void)up; (void)down; (void)fast; (void)slow;
+}
 void control_input_frame(uint64_t f){(void)f;}
 void control_input_apply(uint64_t *b,int32_t *lx,int32_t *ly,int32_t *rx,int32_t *ry){(void)b;(void)lx;(void)ly;(void)rx;(void)ry;}
 bool motion_has_sensors(void){return false;}
@@ -63,3 +73,5 @@ int main(void){
     recompute_keyboard();assert(pitch==-1);
     puts("PASS: gyro defaults, pitch direction, U/O/P, remapping, camera ownership, disabling, pause/capture/focus and mouse bindings");
 }
+
+void photo_pad(uint32_t buttons) { (void)buttons; }

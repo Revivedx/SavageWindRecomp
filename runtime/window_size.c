@@ -1,5 +1,6 @@
 // Window size (Video > Window size). The list (user, 2026-10-19), by shape: 16:9 640x360 .. 7680x4320, 21:9
-// 2560x1080 / 3440x1440 / 3840x1600, 16:10 1280x800 / 1680x1050 / 2560x1600, 4:3 and 5:4 640x480 .. 1600x1200. Offered:
+// 1280x540 / 1708x720 / 1920x810 / 2134x900 / 2560x1080 / 3440x1440 / 3840x1600, 16:10 1280x800 / 1680x1050 /
+// 1920x1200 / 2560x1600, 4:3 and 5:4 640x480 .. 1600x1200. Offered:
 // those that fit on the window's display (its desktop size), and the desktop size itself; fullscreen also offers
 // bigger ones the display has a mode for (GPU downsampling such as NVIDIA DSR adds them).
 //   In a window: the window's inside is that size (in pixels), centred on its display.
@@ -26,8 +27,8 @@
 static const WinSize k_sizes[] = {
     {640, 360}, {960, 540}, {1280, 720}, {1920, 1080}, {2560, 1440}, {3840, 2160},  // 16:9
     {5120, 2880}, {7680, 4320},
-    {2560, 1080}, {3440, 1440}, {3840, 1600},                                            // 21:9
-    {1280, 800}, {1680, 1050}, {2560, 1600},                                             // 16:10
+    {1280, 540}, {1708, 720}, {1920, 810}, {2134, 900}, {2560, 1080}, {3440, 1440}, {3840, 1600}, // 21:9
+    {1280, 800}, {1680, 1050}, {1920, 1200}, {2560, 1600},                               // 16:10
     {640, 480}, {800, 600}, {1024, 768}, {1280, 1024}, {1600, 1200},                     // 4:3, 5:4
 };
 #define NSIZES (int)(sizeof k_sizes / sizeof k_sizes[0])
@@ -140,10 +141,15 @@ static WinSize resolve(WinSize want, bool fullscreen) {
 }
 
 WinSize winsize_effective(bool fullscreen) {
+    if (g_settings.window_w <= 0 || g_settings.window_h <= 0) return winsize_default(fullscreen);
     return resolve((WinSize){g_settings.window_w, g_settings.window_h}, fullscreen);
 }
 
-WinSize winsize_default(bool fullscreen) { return resolve((WinSize){0, 0}, fullscreen); }
+WinSize winsize_default(bool fullscreen) {
+    WinSize s = {0, 0};
+    if (!settings_handheld_size(&s.w, &s.h)) s.w = s.h = 0;  // (a handheld: its screen's own size)
+    return resolve(s, fullscreen);
+}
 
 void winsize_name(WinSize s, const char *native, char *buf, int n) {
     const char *a = winsize_aspect(s.w, s.h);
@@ -275,6 +281,7 @@ static void refresh_display(SDL_DisplayID d) {
     WinSize desk = {(int)lroundf(dm->w * density), (int)lroundf(dm->h * density)};
     const SDL_DisplayMode *cur = SDL_GetCurrentDisplayMode(d);  // (exclusive fullscreen: the mode in use)
     float hz = cur && cur->refresh_rate > 0 ? cur->refresh_rate : dm->refresh_rate;
+    settings_fps_for_display(hz);  // (Frame rate > Match display)
     pthread_mutex_lock(&g_m);
     g_hz = hz;
     bool known = d == g_display && same(desk, g_desk);
@@ -332,6 +339,15 @@ void winsize_apply(void *win) {
     first = false;
     read_displays();
     bool fs = g_settings.fullscreen && !test;
+    // Steam's Gaming Mode on a handheld: gamescope's game display can be another shape than the screen (1920x1080 on a
+    // Deck's 1280x800: bars), and fullscreen takes that size. A plain window of the size set fills the screen instead.
+    const char *cd = getenv("XDG_CURRENT_DESKTOP");
+    int hw, hh;
+    if (fs && settings_handheld_size(&hw, &hh) && (getenv("GAMESCOPE_WAYLAND_DISPLAY") || (cd && !strcmp(cd, "gamescope")))) {
+        fs = false;
+        static bool logged;
+        if (!logged) LOG("[window] gamescope: a window, not fullscreen\n"), logged = true;
+    }
     // Video > Monitor: to that display first (out of fullscreen for the move: a fullscreen window keeps its display)
     SDL_DisplayID to = test ? 0 : target_display(), d = SDL_GetDisplayForWindow(w);
     if (to && to != d) {

@@ -24,8 +24,20 @@ void plat_commit(uint64_t addr, uint64_t size);
 // Give the backing of [addr, addr+size) inside the guest window back to the OS (the guest unmapped it): the pages
 // read as zero if anything touches them again (Windows: committed again on the first access). The window stays claimed.
 void plat_decommit(uint64_t addr, uint64_t size);
+// The first run of committed memory at or after addr and before end: *a .. *e (false: none). For reading the game's
+// memory from a thread of ours without committing what the game never touched (runtime/rupees.c).
+bool plat_committed_range(uint64_t addr, uint64_t end, uint64_t *a, uint64_t *e);
 // In-place reboot: every page of [lo, hi) back to zero (and unbacked), the window still claimed.
 bool plat_reset_guest(uint64_t lo, uint64_t hi);
+// Vulkan sparse guest-heap backing: report committed 64 KiB pages in a reserved guest range.
+bool plat_guest_sparse_heap_enabled(void);
+#ifdef _WIN32
+uint64_t plat_guest_commit_generation(void);
+void plat_guest_sparse_heap_configure(bool intel_integrated_gpu);
+void plat_guest_sparse_heap_range(uint64_t base, uint64_t size);
+uint64_t plat_guest_sparse_heap_committed_word(uint64_t word);
+bool plat_guest_commit_sparse_range(uint64_t addr, uint64_t size);
+#endif
 enum { PLAT_PROT_NONE = 0, PLAT_PROT_READ = 1, PLAT_PROT_RW = 3 };
 int plat_protect(uint64_t addr, uint64_t size, int prot);  // 0 on success
 #define PLAT_PAGE 0x4000ull  // largest page size we deal with (macOS 16K; multiple of Windows' 4K)
@@ -40,12 +52,28 @@ int plat_any_written(uint64_t addr, uint64_t size);
 // ---- time
 uint64_t plat_now_ns(void);                // monotonic
 void plat_sleep_until_ns(uint64_t t);      // precise wait for plat_now_ns() >= t
+void plat_wait_until_ns(uint64_t t);       // wait for plat_now_ns() >= t without spinning (the OS timer's precision)
 void plat_thread_realtime(uint64_t period_ns);  // periodic timing thread (vsync): don't coalesce its timers
-void plat_cpu_placement(void);  // (game start) one logical processor per core on CPUs with SMT and 8+ cores (Windows)
+int plat_cpu_count(void);       // logical processors this process may run on (its affinity, after plat_cpu_placement)
+void plat_cpu_placement(void);  // (game start) one logical processor per core where plat_one_per_core_default says
+// Whether the game runs on one logical processor per core when SAVAGEWIND_ONE_PER_CORE doesn't say (cores: physical
+// cores the process may use, logical: its logical processors). Measured on Windows with a Ryzen 5 5600X: against all
+// logical processors it was 6% faster on 6 cores and 18% on 4, and 24% slower on 2 (half the 1% lows: too few
+// processors for the game's busy threads). On Linux the Steam Deck (4 cores, 8 threads) lost 3% and a quarter of its
+// 1% lows with it, so Linux keeps every logical processor.
+static inline bool plat_one_per_core_default(int cores, int logical) {
+#ifdef _WIN32
+    return logical > cores && cores >= 4;
+#else
+    (void)cores, (void)logical;
+    return false;
+#endif
+}
 
 // ---- process
 void plat_init(void);                                // first thing in main()
 bool plat_exe_path(char *buf, size_t size);
+const char *plat_log_path(void);  // the log file this run writes ("": stderr goes to a console, pipe or file)
 void plat_exec(char *const argv[]);  // replace the process (NULL = same command line); returns only on failure
 #if defined(_WIN32) || defined(__linux__)
 void plat_terminate(void);  // end the process now, skipping DLL teardown (exit status 0)

@@ -13,12 +13,18 @@
 
 static _Atomic bool active, focused = true;
 static _Atomic bool dialogue_active;
+static _Atomic bool item_message_active,preview_available;
+static _Atomic uint64_t item_confirm_until;
 static _Atomic uint64_t quantity_until;
 static _Atomic int quantity_value,quantity_max,quantity_request=-1;
 static _Atomic bool quantity_edit,quantity_replace;
 static uint64_t quantity_screen;
 static uint64_t shop_screen;
-static uint64_t game_over_screen;
+static uint64_t game_over_screen;  // the one screen that owns the pointer: Game Over, or a quit window over it or a menu
+static uint64_t dlc_screen,dlc_frame=UINT64_MAX;
+static float dlc_drag;
+static uint64_t quest_scroll_frame=UINT64_MAX;
+static _Atomic uint64_t dlc_back_until;
 static bool ptr(uint64_t p);
 static bool preview_defaults_saved;
 static float preview_defaults[2];
@@ -56,6 +62,13 @@ static uint64_t options_keyboard_mouse_events;
 static bool options_page_pending;
 static _Atomic bool quick_wheel_only;
 static _Atomic uint64_t confirm_until, hover_until, hover_rect[2], motion_at;
+static _Atomic uint64_t guide_until;  // a clicked button prompt holds its button until then (pause_guides)
+static _Atomic unsigned guide_bit;
+// The inventory's Rotate mode, told by its own Back prompt (Pa_RotateGuide_00) being shown: a left-button drag turns Link
+static uint64_t rotate_info,rotate_group;
+static _Atomic bool rotate_mode;
+static bool pane_shown(uint64_t pane);
+extern void input_pc_rotate_motion(float dx,float dy);
 static bool map_down, map_dragged;
 static float map_origin[2],map_last[2];
 static bool map_anchor_active,map_picker_seen;
@@ -68,6 +81,11 @@ static float map_view_center[2];
 static float map_sent_world[2];
 static bool map_sent_valid,map_native_snapped;
 static bool map_zooming;
+// A wheel zoom is anchored on the map point under the pointer: that world point stays under the pointer while the game animates the zoom.
+#define ZOOM_EASE_RATE 9.f  // per second: how fast a wheel zoom approaches the game's zoom for the level
+static bool map_zoom_anchored;
+static float map_zoom_world[2],map_zoom_point[2],map_zoom_translation[2],map_zoom_scale,map_zoom_goal,map_zoom_written,map_zoom_rate,map_zoom_rate_trend;
+static bool map_zoom_have_step,map_zoom_rate_valid;
 static uint64_t map_select_until;
 static uint64_t special_frame=UINT64_MAX;
 static uint64_t sampled_frame=UINT64_MAX;
@@ -76,6 +94,12 @@ static bool gesture_down,gesture_dragged;
 static float gesture_start[2],gesture_last[2],gesture_delta[2];
 static void sample_pointer(void);
 static void inventory_pointer(Cpu *c);
+static void dlc_pointer(Cpu *c);
+static uint64_t pane_named(uint64_t pane,const char *name,unsigned depth,unsigned *budget);
+static bool beast_pointer(Cpu *c);
+static uint64_t beast_frame=UINT64_MAX;
+static bool beast_rotating;
+static int beast_hover=-1;
 static bool pointer_test(void) { return getenv("SAVAGEWIND_PC_POINTER_SCRIPT") != NULL; }
 
 static bool enabled(void) {
@@ -84,15 +108,17 @@ static bool enabled(void) {
 bool pc_cursor_enabled(void) { return enabled(); }
 extern bool menu_cursor_free(void);
 bool pc_cursor_active(void) { return enabled() && active && (focused || pointer_test()) && !menu_cursor_free(); }
+bool pc_cursor_preview_active(void) { return pc_cursor_active()&&preview_available; }
 bool pc_cursor_map_navigation(void) { return pc_cursor_active() && map_canvas_active && !pointer_gamepad_input; }
+bool pc_cursor_sensor_active(void) { return pc_cursor_map_navigation(); }
 bool pc_cursor_hide_system(void) {
     return (pc_cursor_active()&&quick_wheel_only)||
         (position_inside&&(pc_cursor_map_navigation()||(pc_cursor_active()&&pointer_keyboard_input)));
 }
 static void map_release_to_controller(void) {
-    map_down=map_dragged=false;map_anchor_active=map_picker_seen=false;
+    map_down=map_dragged=false;map_anchor_active=map_picker_seen=map_zoom_anchored=false;
     map_canvas_active=map_view_valid=map_sent_valid=map_native_snapped=false;
-    map_nav_ns=map_select_until=0;map_snap_button=0;map_zooming=false;
+    map_nav_ns=map_select_until=0;map_snap_button=0;map_zooming=false;map_zoom_anchored=false;
     click_pending=false;
 }
 
@@ -101,7 +127,7 @@ void pc_cursor_frame(void) {
     // window and the native manager hook has no reason to run this frame.
     if(pointer_gamepad_input)map_release_to_controller();
     uint64_t game_over_modal=0;
-    bool dialogue=false,quick=false;shop_screen=game_over_screen=0;
+    bool dialogue=false,item_message=false,preview=false,quick=false;shop_screen=game_over_screen=dlc_screen=0;
     if(g_site.screen_mgr) {
         uint64_t mgr=LD64(g_site.screen_mgr),arr=mgr?LD64(mgr+0x30):0;
         unsigned count=mgr?LD32(mgr+0x28):0;
@@ -112,16 +138,29 @@ void pc_cursor_frame(void) {
             if(!text)continue;
             if(i==0x2d&&g_site.pause_state&&LD32(g_site.pause_state)==4&&LD64(text)==0x7001cf51d8ull)quick=true;
             if(LD8(text+0xfe)!=2)continue;
+            if(i==0x3f&&LD64(text)==0x7001ced520ull)dlc_screen=text;
             if(i==0x30&&LD64(text)==0x7001cef0a8ull)game_over_screen=text;
             if(i==0x39&&LD64(text)==0x7001cfffe0ull)game_over_modal=text;
             if(LD64(text)==0x7001d4ed48ull)dialogue=true;
+            // New-item descriptions use Confirm without registered button nodes.
+            if(LD64(text)==0x7001cf5e78ull)item_message=true;
+            if(i==0x2e&&LD64(text)==0x7001cf9ad8ull&&g_site.pause_state&&
+               LD32(g_site.pause_state)==2&&LD32(text+0x3a48)==0)preview=true;
+            if(i>=0x30&&i<=0x3a)preview=false;
             uint64_t name=LD64(text+0xd0);
             if(name>=GUEST_LO&&name<GUEST_HI-32&&!strncmp((char*)(uintptr_t)name,"ShopBtnList",11))shop_screen=text;
         }
+        rotate_mode=enabled()&&arr&&count>0x2f&&g_site.pause_state&&LD32(g_site.pause_state)==2&&ptr(rotate_info)&&
+            LD64(arr+8*0x2f)==rotate_info&&LD8(rotate_info+0xfe)==2&&ptr(rotate_group)&&
+            !strncmp((char*)(uintptr_t)(rotate_group+0xb8),"N_InOut_00",11)&&pane_shown(rotate_group);
     }
     // Quit opens a native SystemWindow over Game Over. Only its buttons
     // own pointer input until it closes; then focus returns to Continue/Quit.
     if(game_over_screen&&game_over_modal)game_over_screen=game_over_modal;
+    // Savage Wind's own quit question (Options or the title menu: runtime/ui/game_options.mm) is the same window over
+    // a screen whose input is off meanwhile, so it alone owns the pointer too (#360).
+    extern int rt_quit_dialog_back(void);
+    if(!game_over_screen&&game_over_modal&&rt_quit_dialog_back())game_over_screen=game_over_modal;
     if(preview_defaults_saved) {
         uint64_t m=LD64(g_site.screen_mgr),a=ptr(m)?LD64(m+0x30):0;
         uint64_t inv=ptr(a)?LD64(a+8*0x2e):0;
@@ -130,10 +169,21 @@ void pc_cursor_frame(void) {
             preview_defaults_saved=false;
         }
     }
+    // The same MessageDialog shows lines spoken during play (Revali in Vah Medoh's fight, #486): the camera still takes
+    // the stick there, and the mouse stays the camera's. A conversation's camera doesn't read it.
+    extern bool input_cam_live(void);
+    static bool spoken_logged;
+    if(dialogue&&input_cam_live()) {
+        if(!spoken_logged)LOG("[pc-pointer] message box over play: the mouse stays the camera's\n");
+        spoken_logged=true;dialogue=false;
+    } else if(!dialogue)spoken_logged=false;
     if(dialogue_active&&!dialogue)confirm_until=0;
     dialogue_active=dialogue;
+    item_message_active=item_message&&!game_over_screen;
+    if(!item_message_active||!enabled()||!focused)item_confirm_until=0;
+    preview_available=preview&&!game_over_screen;
     if(game_over_screen){dialogue_active=false;shop_screen=0;}
-    bool ui = game_over_screen || (g_site.pause_state &&
+    bool ui = game_over_screen || dlc_screen || item_message_active || (g_site.pause_state &&
         (dialogue || shop_screen || framepace_menu_ui() || framepace_title_ui() || *(uint32_t *)(uintptr_t)g_site.pause_state == 4));
     active = enabled() && ui;
     quick_wheel_only=enabled()&&quick;
@@ -143,7 +193,7 @@ void pc_cursor_frame(void) {
         options_scroll_valid=false;options_screen_active=options_rows_active=0;
         map_canvas_active=false;map_nav_ns=0;map_view_valid=false;
         held=false;last_press=presses;last_release=releases;wheel=0;click_pending=false;
-        gesture_down=map_down=false;map_anchor_active=map_picker_seen=false;
+        gesture_down=map_down=false;map_anchor_active=map_picker_seen=map_zoom_anchored=false;
     }
     if(getenv("SAVAGEWIND_PC_DUMP_UI")&&ui) {
         static uint8_t seen[256];
@@ -255,6 +305,7 @@ bool pc_cursor_event(const SDL_Event *e) {
     extern void input_pc_escape(bool down);
     if (e->type == SDL_EVENT_WINDOW_FOCUS_LOST) {
         focused = false; held = false; releases++;
+        item_confirm_until=0;
         if(right_back_held){input_pc_escape(false);right_back_held=false;}
     }
     if (e->type == SDL_EVENT_WINDOW_FOCUS_GAINED) focused = true;
@@ -271,7 +322,7 @@ bool pc_cursor_event(const SDL_Event *e) {
     }
     if(pad_input) {
         pointer_gamepad_input=pointer_keyboard_input=true;
-        hover_until=confirm_until=0;wheel=0;held=false;releases++;
+        hover_until=confirm_until=guide_until=0;wheel=0;held=false;releases++;
         quantity_edit=false;
     } else if(e->type==SDL_EVENT_KEY_DOWN||e->type==SDL_EVENT_MOUSE_BUTTON_DOWN||
               e->type==SDL_EVENT_MOUSE_WHEEL||
@@ -309,7 +360,10 @@ bool pc_cursor_event(const SDL_Event *e) {
        e->type==SDL_EVENT_MOUSE_WHEEL||e->type==SDL_EVENT_MOUSE_BUTTON_DOWN) {
         pointer_keyboard_input=false;pointer_mouse_events++;
     }
-    if (e->type == SDL_EVENT_MOUSE_MOTION) { window_position(e->motion.x,e->motion.y);motion_at=plat_now_ns(); return true; }
+    if (e->type == SDL_EVENT_MOUSE_MOTION) {
+        if(rotate_mode&&held)input_pc_rotate_motion(e->motion.xrel,e->motion.yrel);
+        window_position(e->motion.x,e->motion.y);motion_at=plat_now_ns(); return true;
+    }
     if (e->type == SDL_EVENT_MOUSE_WHEEL) {
         wheel+=(e->wheel.y>0)-(e->wheel.y<0); motion_at=plat_now_ns();return true;
     }
@@ -324,6 +378,12 @@ bool pc_cursor_event(const SDL_Event *e) {
         held = e->type == SDL_EVENT_MOUSE_BUTTON_DOWN;
         window_position(e->button.x,e->button.y);
         motion_at=plat_now_ns();
+        if(item_message_active) {
+            // One short native A pulse per press; no synthetic hover or held
+            // confirmation can leak into gameplay after this popup closes.
+            if(held)item_confirm_until=plat_now_ns()+50000000;
+            return true;
+        }
         if (held) presses++; else releases++;
         return true;
     }
@@ -335,6 +395,8 @@ void rt_pc_button_group(Cpu *c) {
     if (!pc_cursor_active()) return;
     if(quick_wheel_only)return;
     sample_pointer();
+    if(dlc_screen){dlc_pointer(c);return;}
+    if(beast_pointer(c))return;
     inventory_pointer(c);
     extern uint64_t renderer_present_count(void);
     if (getenv("SAVAGEWIND_PC_DUMP_UI") && renderer_present_count() >= 180) {
@@ -405,6 +467,9 @@ int rt_pc_map_focus(Cpu *c, int position) {
 }
 
 extern int rt_opt_pointer_kind(uint64_t row);
+extern int rt_opt_two_column(uint64_t row);
+extern void rt_opt_two_pointer(uint64_t row,unsigned kind);
+extern void rt_opt_wheel_scrolled(void);
 static void options_click(Cpu *c,uint64_t screen,uint64_t row,unsigned kind,const float box[4]);
 static bool options_box(uint64_t pane,float box[4]) {
     if(!ptr(pane))return false;
@@ -436,6 +501,14 @@ static uint64_t options_row_at(uint64_t screen,float box[4],unsigned *kind_out) 
     for(unsigned i=0;i<count;i++) {
         uint64_t row=LD64(rows+i*8);if(!ptr(row))continue;
         int kind=rt_opt_pointer_kind(row);if(kind<0||kind>2)continue;
+        if(rt_opt_two_column(row)>=0) {
+            for(unsigned cell=1;cell<=2;cell++) {
+                uint64_t button=LD64(row+(cell==1?0x20:0x28));
+                if(!ptr(button)||!options_box(LD64(button+0x60),box))continue;
+                if(point[0]>=box[0]&&point[0]<=box[2]&&point[1]>=box[1]&&point[1]<=box[3]) {*kind_out=cell;return row;}
+            }
+            continue;
+        }
         uint64_t button=LD64(row+(kind==0?0x18:kind==1?0x20:0x28));
         if(!ptr(button)||!options_box(LD64(button+0x60),box))continue;
         if(point[0]>=-280&&point[0]<=box[2]&&point[1]>=box[1]&&point[1]<=box[3]) {*kind_out=(unsigned)kind;return row;}
@@ -469,6 +542,7 @@ void pc_cursor_options_tick(uint64_t screen) {
         Cpu*c=kernel_current_cpu();if(c){Cpu saved=*c;c->x[0]=view;float ratio=1;memcpy(&c->v[0],&ratio,4);guest_call(c,0x7000d671d4);*c=saved;}
     }
     int scroll=atomic_exchange(&wheel,0);
+    if(scroll)rt_opt_wheel_scrolled();
     if(!options_mouse_owns_focus(scroll!=0))return;
     float current=*(float*)(view+0x2c),height=*(float*)(view+0x48)-*(float*)(view+0x40);
     float content=*(float*)(view+0x28),maximum=fmaxf(0,content-height);
@@ -487,17 +561,26 @@ void pc_cursor_options_tick(uint64_t screen) {
     uint64_t row=options_row_at(screen,box,&kind);
     if(row) {
         if(!options_scroll_valid&&isfinite(current)){options_scroll=current;options_scroll_valid=true;}
+        rt_opt_two_pointer(row,kind);
         Cpu *focus_cpu=kernel_current_cpu();if(focus_cpu)options_focus(focus_cpu,screen,row,kind);
         if(click_pending) {click_pending=false;Cpu*c=kernel_current_cpu();if(c)options_click(c,screen,row,kind,box);}
     }
 }
 
 static void options_click(Cpu *c,uint64_t screen,uint64_t row,unsigned kind,const float box[4]) {
+    if(rt_opt_two_column(row)>=0) {
+        uint64_t button=LD64(row+(kind==1?0x20:0x28));
+        // Same native Decide request used by Options update: +0x38. The button
+        // owns the animation/sound and later invokes its confirmed callback.
+        // Calling row-decide directly here would bypass that native feedback.
+        if(ptr(button)&&ptr(LD64(button)))call(c,LD64(LD64(button)+0x38),button,0,0);
+        return;
+    }
     unsigned action=0;
     if(kind==0) {
         bool want=point[0]<box[0] ? LD8(row+0x54)==0 : point[0]<(box[0]+box[2])*.5f;
         if(want==(LD8(row+0x54)!=0))return;
-    } else if(kind==1) {
+    } else if(kind==1&&rt_opt_two_column(row)<0) {
         float edge=fminf(36,(box[2]-box[0])*.2f);
         if(point[0]<box[0]+edge)action=1;
         else if(point[0]>box[2]-edge)action=2;
@@ -529,7 +612,7 @@ static void options_focus(Cpu *c,uint64_t screen,uint64_t row,unsigned kind) {
                 // Activation changes the shared highlight and calls the native
                 // Options help callback. No independent PC rectangle is drawn.
                 call(c,0x7000f57da8,control,node,0);
-                if(LD64(screen+0x36c8)!=row)call(c,0x7000e3047c,screen,button,0);
+                if(LD64(screen+0x36c8)!=row||rt_opt_two_column(row)>=0)call(c,0x7000e3047c,screen,button,0);
                 ST8(screen+0x106,1);
                 if(isfinite(current)) {
                     options_scroll=current;options_scroll_valid=true;
@@ -541,6 +624,10 @@ static void options_focus(Cpu *c,uint64_t screen,uint64_t row,unsigned kind) {
         link=LD64(link+8);
     }
 }
+// Also used by the dual-row experiment for pad/keyboard column changes.
+void pc_cursor_options_focus(uint64_t screen,uint64_t row,unsigned kind) {
+    Cpu *c=kernel_current_cpu();if(c)options_focus(c,screen,row,kind);
+}
 static bool options_pointer(Cpu *c,uint64_t screens,uint64_t bounds) {
     (void)c;(void)bounds;
     uint64_t screen=LD64(screens+8*0x34);
@@ -549,7 +636,15 @@ static bool options_pointer(Cpu *c,uint64_t screens,uint64_t bounds) {
 }
 
 uint64_t pc_cursor_buttons(uint64_t b) {
-    if(plat_now_ns()<confirm_until)b|=1;
+    // Pointer confirmation consumes left click (normally Y). Reuse the bound
+    // D-pad Left action for the sensor; controllers retain their native Y.
+    if(pc_cursor_sensor_active()&&(b&(1ull<<12)))b=(b&~(1ull<<12))|8;
+
+    uint64_t now=plat_now_ns();
+    if(now<confirm_until)b|=1;
+    if(item_message_active&&pc_cursor_active()&&now<item_confirm_until)b|=1;
+    if(now<guide_until)b|=1ull<<guide_bit;
+    if(dlc_screen&&now<dlc_back_until)b|=2;
     return b;
 }
 bool pc_cursor_hover_box(float box[4]) {
@@ -557,6 +652,7 @@ bool pc_cursor_hover_box(float box[4]) {
     uint64_t p[2]={hover_rect[0],hover_rect[1]};memcpy(box,p,16);return true;
 }
 bool pc_cursor_hover_pressed(void) { return pc_cursor_active()&&held; }
+bool pc_cursor_rotate_drag(void) { return pc_cursor_active()&&rotate_mode&&held; }
 static void set_hover_rect(const float box[4]) {
     uint64_t p[2];memcpy(p,box,16);
     hover_rect[0]=p[0];hover_rect[1]=p[1];hover_until=plat_now_ns()+50000000;
@@ -582,8 +678,92 @@ static void inventory_rotate(Cpu *c,float dx) {
     for(unsigned i=0;i<2;i++)yaw[i]=remainderf(yaw[i]+dx*.46f,360.f);
 }
 
+// AppMapDungeon has no ordinary menu cursor: the pink controls are projected
+// by its own 3D camera. Use the current projected positions, not screen pixels
+// or the capture panes (which remain in their original layout positions).
+static bool beast_pointer(Cpu *c) {
+    if(!g_site.beast_world || !g_site.screen_mgr || !g_site.pause_state)return false;
+    uint64_t mgr=LD64(g_site.screen_mgr),screens=ptr(mgr)?LD64(mgr+0x30):0;
+    uint64_t s=ptr(screens)&&LD32(mgr+0x28)>0x22?LD64(screens+8*0x22):0;
+    if(!ptr(s)||LD64(s)!=0x7001ce7c18ull||LD8(s+0xfe)!=2||LD32(g_site.pause_state)!=2) {
+        beast_rotating=false;beast_hover=-1;return false;
+    }
+    uint64_t wrapper=LD64(s+0x30),root=ptr(wrapper)?LD64(wrapper+0x18):0;
+    if(!ptr(root)||!LD8(root+0x5a))return false;
+    extern uint64_t renderer_present_count(void);
+    uint64_t frame=renderer_present_count();
+    if(beast_frame==frame)return true;
+    beast_frame=frame;
+    if(pointer_keyboard_input||pointer_gamepad_input||!position_inside) {
+        beast_rotating=false;beast_hover=-1;return true;
+    }
+    unsigned budget=2048;
+    uint64_t panel=pane_named(root,"Pa_SensorBox_00",0,&budget);
+    uint64_t content=pane_named(panel,"N_All_00",0,&budget);
+    if(ptr(content)&&(LD8(content+0x58)&1)&&LD8(content+0x5a)) {
+        beast_rotating=false;beast_hover=-1;
+        return true;
+    }
+    unsigned count=LD32(s+0x118c8);uint64_t array=LD64(s+0x118d0);
+    if(count>11||!ptr(array))return true;
+    int hit=-1;float distance=32.f*32.f;
+    for(unsigned i=0;i<count;i++) {
+        uint64_t p=LD64(array+8*i);if(!ptr(p))continue;
+        float x=*(float*)(p+8),y=*(float*)(p+12);
+        float d=(point[0]-x)*(point[0]-x)+(point[1]-y)*(point[1]-y);
+        if(isfinite(d)&&d<distance){distance=d;hit=(int)i;}
+    }
+    uint64_t world=LD64(g_site.beast_world);
+    unsigned kind=ptr(world)?LD32(world+0x64c38):UINT32_MAX;
+    if(kind==3&&hit>=3)hit=-1;
+    if(!beast_rotating&&hit>=0) {
+        if(hit!=beast_hover) {
+            // The native focus transition already owns its feedback. Do not
+            // replay an extra cursor cue or restart the same focus animation.
+            if((int32_t)LD32(s+0x118c4)!=hit)
+                call(c,kind==3?g_site.beast_focus_axes:g_site.beast_focus_linear,s,hit,0);
+            beast_hover=hit;
+        }
+        if(click_pending) {
+            click_pending=false;
+            if(kind==3)call(c,g_site.beast_confirm_axes,s,s+0x11820+hit*0x30,0);
+            else call(c,g_site.beast_confirm_linear,s,0,0);
+        }
+        return true;
+    }
+    if(!beast_rotating)beast_hover=-1;
+    if(frame_press&&hit<0&&fabsf(point[0])<590&&point[1]<275&&point[1]>-280) {
+        // Release the native pink-control hover/preview before giving the
+        // gesture to the camera. Otherwise its selection animation survives
+        // under the drag even after the mouse button is released.
+        if(kind!=3&&(int32_t)LD32(s+0x118c4)>=0)
+            call(c,g_site.beast_focus_linear,s,UINT32_MAX,0);
+        beast_rotating=true;hover_until=0;
+    }
+    if(beast_rotating) {
+        click_pending=false;
+        if(frame_held&&(gesture_delta[0]||gesture_delta[1])) {
+            float *pitch=(float*)(s+0x3670),*yaw=(float*)(s+0x3674);
+            float radius=*(float*)(s+0x3678);
+            if(isfinite(*pitch)&&isfinite(*yaw)&&isfinite(radius)&&radius>0) {
+                *pitch+=gesture_delta[1]*.006f;
+                *yaw=remainderf(*yaw-gesture_delta[0]*.006f,6.28318530718f);
+                call(c,g_site.beast_clamp_pitch,s,0,0);call(c,g_site.beast_wrap_yaw,s,0,0);
+                *(float*)(s+0x36d0)=*(float*)(s+0x368c)+cosf(*pitch)*sinf(*yaw)*radius;
+                *(float*)(s+0x36d4)=*(float*)(s+0x3690)-sinf(*pitch)*radius;
+                *(float*)(s+0x36d8)=*(float*)(s+0x3694)+cosf(*pitch)*cosf(*yaw)*radius;
+                uint64_t v=LD64(s+0x3698);
+                if(ptr(v))call(c,LD64(v+0x20),s+0x3698,s+0x36a0,0);
+            }
+        }
+        if(frame_release||!frame_held)beast_rotating=false;
+    }
+    return true;
+}
+
 static void inventory_pointer(Cpu *c) {
     if(LD32(g_site.pause_state)!=2)return;
+    if(rotate_mode){atomic_exchange(&wheel,0);return;}  // Rotate owns the inventory: no page change waits for its end
     uint64_t mgr=LD64(g_site.screen_mgr),arr=ptr(mgr)?LD64(mgr+0x30):0;
     uint64_t s=ptr(arr)?LD64(arr+8*0x2e):0;
     if(!ptr(s)||LD64(s)!=0x7001cf9ad8ull||LD8(s+0xfe)!=2||LD32(s+0x3a48)!=0||LD64(s+0x38)!=c->x[0]||pointer_keyboard_input)return;
@@ -593,6 +773,7 @@ static void inventory_pointer(Cpu *c) {
     extern uint64_t renderer_present_count(void);
     uint64_t f=renderer_present_count();if(frame==f)return;frame=f;
     static int target=-1;
+    bool refocus=false;
     // A gesture keeps its original owner until release, even when it crosses
     // the item grid. Do not let pending page motion or settling consume it.
     bool preview=gesture_down&&gesture_start[0]>=70&&gesture_start[1]<155&&gesture_start[1]>-260;
@@ -616,13 +797,24 @@ static void inventory_pointer(Cpu *c) {
                 pointer_sound(c,s,"mc_Decide");
                 int page=LD32(s+0x3708+0x80*i);
                 if(page>=0&&page<total&&(unsigned)call(c,0x7000e71080,page,0,0)==i&&page!=current) {
-                    // Refill the existing three-page ring directly. A global
-                    // inventory refresh also restores unrelated pouch state.
+                    // Rebuild the existing three-page ring around the page, as
+                    // the screen does when it opens (not a global inventory
+                    // refresh, which also restores unrelated pouch state). It
+                    // also shows/hides each slot and places the neighbours: a
+                    // bare refill left a slot hidden from an edge page, so A/D
+                    // then slid onto an empty page (#360). A page slide still
+                    // in flight is dropped, as the game's own jump does: the
+                    // centre page goes back to rest (f_7000dc6fdc's stores),
+                    // and the rebuild places the neighbours from it.
                     unsigned ring=LD8(s+0x3a30);
                     if(ring<3) {
                         ST32(s+0x365c,page);ST32(s+0x3660,page);
-                        for(int d=-1;d<=1;d++)if(page+d>=0&&page+d<total)
-                            call(c,0x7000e3c424,s,(ring+d+3)%3,page+d);
+                        *(float*)(s+0x3668)=0;ST8(s+0x3678,0);ST8(s+0x3679,0);
+                        uint64_t centre=LD64(s+0x3a18+8*ring),layout=ptr(centre)?LD64(centre+0x20):0;
+                        uint64_t root=ptr(layout)?LD64(layout+0x18):0;
+                        if(ptr(root)){*(float*)(root+0x30)=*(float*)(s+0x366c);ST32(root+0x38,0);ST8(root+0x58,LD8(root+0x58)|0x10);}
+                        call(c,0x7000e3af74,s,0,0);
+                        refocus=true;
                     }
                     target=-1;
                 }
@@ -664,6 +856,15 @@ static void inventory_pointer(Cpu *c) {
         }
         call(c,0x7000e3e284,s,now,now==0?1:0);
     }
+    if(refocus) {
+        // The focused cell now holds the new page's item, but its focus didn't
+        // change, so the info pane kept the old page's item until the pointer
+        // moved. Replay the screen's focus callback f_7000e3bacc on that cell:
+        // it reads only the button's cell id (+0x44), so the screen's own copy
+        // of the id stands in for the button.
+        int cell=(int)LD32(s+0x3650);
+        if(cell>=9&&cell<=0x44)call(c,0x7000e3bacc,s,s+0x3650-0x44,0);
+    }
     if(!dragging&&(target<0||target==now)) {
         unsigned ring=LD8(s+0x3a30);
         uint64_t page=ring<3?LD64(s+0x3a18+8*ring):0,layout=ptr(page)?LD64(page+0x20):0;
@@ -675,6 +876,9 @@ static void inventory_pointer(Cpu *c) {
     }
 }
 
+static bool map_guides(Cpu *c,uint64_t screens);
+static bool map_sensor_panel(Cpu *c,uint64_t screen);
+
 static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
     extern uint64_t renderer_present_count(void);
     uint64_t f=renderer_present_count();
@@ -683,7 +887,7 @@ static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
     bool is_quick=pause==4&&ptr(quick)&&LD64(quick)==0x7001cf51d8ull;
     bool inventory=ptr(LD64(screens+8*0x2f));
     bool is_map=pause==2&&!inventory&&ptr(screen)&&LD8(screen+0xfe)==2&&LD64(screen)==0x7001ce8298ull;
-    if(!is_map&&!is_quick){map_down=false;map_anchor_active=map_picker_seen=false;map_canvas_active=false;map_view_valid=map_sent_valid=map_native_snapped=false;map_nav_ns=0;return false;}
+    if(!is_map&&!is_quick){map_down=false;map_anchor_active=map_picker_seen=map_zoom_anchored=false;map_canvas_active=false;map_view_valid=map_sent_valid=map_native_snapped=false;map_nav_ns=0;return false;}
     if(pointer_gamepad_input) {
         // Leave the original cursor/pan/zoom helpers in charge. In particular,
         // never restore the PC viewport or write the mouse cursor over a stick.
@@ -714,13 +918,22 @@ static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
         }
         return true;
     }
+    // Sensor choices belong to AppMap itself. Use the animated panel's real
+    // visibility, including the return from the compendium; input flags are
+    // transient requests, not persistent modal state.
+    if(map_sensor_panel(c,screen)) {
+        map_down=false;map_anchor_active=map_picker_seen=false;map_view_valid=false;
+        map_canvas_active=false;return false;
+    }
     // A modal over the map owns normal hover/confirmation.
     uint64_t modal=LD64(screens+8*0x39);
-    if(ptr(modal)&&LD8(modal+0xfe)==2){map_down=false;map_anchor_active=map_picker_seen=false;map_view_valid=false;return false;}
+    if(ptr(modal)&&LD8(modal+0xfe)==2){map_down=false;map_anchor_active=map_picker_seen=map_zoom_anchored=false;map_view_valid=false;return false;}
     // Editing an existing stamp opens a separate ScreenAppSystemWindow (0x3e).
     // Its Edit/Delete/Cancel nodes must use normal dialog navigation, not canvas input.
     modal=LD64(screens+8*0x3e);
-    if(ptr(modal)&&LD8(modal+0xfe)==2){map_down=false;map_anchor_active=map_picker_seen=false;map_view_valid=false;return false;}
+    if(ptr(modal)&&LD8(modal+0xfe)==2){map_down=false;map_anchor_active=map_picker_seen=map_zoom_anchored=false;map_view_valid=false;return false;}
+    // The prompt bar lies below the canvas: a click there presses the prompt's button (#451).
+    if(!map_anchor_active&&!map_down&&map_guides(c,screens))return true;
     click_pending=false;
     uint64_t map=LD64(screen+0x3628),d=ptr(map)?LD64(map+0x8d8):0;
     if(!ptr(d))return true;
@@ -775,11 +988,13 @@ static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
         return true;
     }
     if(map_anchor_active) {
-        map_anchor_active=map_picker_seen=false;
+        map_anchor_active=map_picker_seen=map_zoom_anchored=false;
         if(getenv("SAVAGEWIND_PC_CURSOR_LOG"))LOG("[pc-map-anchor] unlock\n");
     }
     float zoom=*(float*)(d+0x878);
     if(!isfinite(zoom)||zoom<=0)return true;
+    // Wheel-zoom diagnostics (SAVAGEWIND_PC_CURSOR_LOG): the world point under the pointer as the game left the view last frame.
+    float zoom_in_world[2]={(point[0]-*(float*)(d+0x870))/zoom,(point[1]-*(float*)(d+0x874))/zoom};
     // Recover an already escaped view as well as limiting future input. Clamp
     // the retained viewport too, otherwise idle-hover restoration brings it back.
     for(unsigned axis=0;axis<2;axis++) {
@@ -792,7 +1007,7 @@ static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
     bool area=fabsf(point[0])<=633&&fabsf(point[1])<=285;
     int scroll=atomic_exchange(&wheel,0);
     map_canvas_active=true;
-    bool zooming=scroll||fabsf(zoom-*(float*)(d+0x888))>.001f;
+    bool zooming=scroll||map_zoom_anchored||fabsf(zoom-*(float*)(d+0x888))>.001f;
     map_zooming=zooming;
     if(zooming)map_view_valid=false;
     else if(!map_view_valid) {
@@ -805,8 +1020,50 @@ static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
         *(float*)(d+0x870)=map_view_center[0]*zoom;*(float*)(d+0x874)=map_view_center[1]*zoom;
     }
     if(area&&scroll) {
+        if(!map_zoom_anchored) {
+            // The world point under the pointer, as drawn now and before the game starts the zoom.
+            float translation[2]={*(float*)(d+0x870),*(float*)(d+0x874)};
+            pc_cursor_map_world(point,translation,zoom,map_zoom_world);
+            memcpy(map_zoom_translation,translation,sizeof translation);memcpy(map_zoom_point,point,sizeof point);
+            map_zoom_scale=zoom;map_zoom_anchored=true;map_zoom_have_step=map_zoom_rate_valid=false;map_zoom_rate_trend=0;
+        }
         call(c,scroll>0?0x7000dc24a4:0x7000dc25e8,map,0,0);
-        if(getenv("SAVAGEWIND_PC_CURSOR_LOG"))LOG("[pc-map-wheel] %d zoom level %u\n",scroll,LD32(d+0x898));
+        map_zoom_goal=*(float*)(d+0x888);  // the game's new zoom for this level
+        if(getenv("SAVAGEWIND_PC_CURSOR_LOG"))LOG("[pc-map-wheel] %d zoom level %u goal %.3f\n",scroll,LD32(d+0x898),map_zoom_goal);
+    }
+    if(map_zoom_anchored) {
+        // The game eases the zoom by itself and steps it once more after this hook, so the view it draws is one step past
+        // the one anchored here and the point under the pointer slides. Drive the zoom from here instead: ease it toward
+        // the game's goal, write the value one game step short of it so the game's own step lands exactly on it, and hold
+        // the anchored world point under the pointer at that zoom, every frame. The game's step is read back from the
+        // last frame and is never allowed to pass the goal.
+        float goal=map_zoom_goal,now=map_zoom_scale;
+        if(!isfinite(goal)||goal<=0||!isfinite(now)||now<=0)goal=now=zoom;
+        // The game moves a fixed fraction of the way to its goal each step, so read that fraction back from the last frame.
+        if(map_zoom_have_step&&isfinite(zoom-map_zoom_written)&&fabsf(goal-map_zoom_written)>1e-4f) {
+            float seen=(zoom-map_zoom_written)/(goal-map_zoom_written);
+            if(map_zoom_rate_valid)map_zoom_rate_trend=seen-map_zoom_rate;
+            map_zoom_rate=seen;map_zoom_rate_valid=true;
+            if(getenv("SAVAGEWIND_PC_CURSOR_LOG"))LOG("[pc-map-zoom-rate] frame %llu %.4f\n",f,map_zoom_rate);
+        }
+        float ease=1-expf(-fminf(.1f,nav_dt)*ZOOM_EASE_RATE),remaining=logf(goal/now);
+        if(fabsf(remaining)<.002f)now=goal;else now*=expf(remaining*ease);
+        float rate=map_zoom_have_step?fmaxf(0,fminf(.5f,map_zoom_rate+map_zoom_rate_trend)):(goal>now?.025f:.21f),room=goal-now;  // the fraction drifts a little each step: follow it
+        float step=now==goal?0:rate*room/(1-rate);  // the game steps from now-step, so that it lands on now
+        if(fabsf(step)>fabsf(room))step=room;
+        if(hypotf(point[0]-map_zoom_point[0],point[1]-map_zoom_point[1])>.5f)
+            pc_cursor_map_world(point,map_zoom_translation,map_zoom_scale,map_zoom_world);  // the pointer moved: anchor what is under it now
+        float center[2];
+        pc_map_anchor_center(point,map_zoom_world,now,center);
+        for(unsigned axis=0;axis<2;axis++) {
+            center[axis]=pc_map_clamp_center(center[axis],*(float*)(d+0x8d0+4*axis),*(float*)(d+0x8d8+4*axis));
+            *(float*)(d+0x880+4*axis)=*(float*)(d+0x890+4*axis)=center[axis];
+            map_zoom_translation[axis]=*(float*)(d+0x870+4*axis)=center[axis]*now;
+        }
+        map_zoom_written=*(float*)(d+0x878)=now-step;map_zoom_have_step=true;
+        *(float*)(d+0x888)=goal;
+        memcpy(map_zoom_point,point,sizeof point);map_zoom_scale=zoom=now;
+        if(now==goal)map_zoom_anchored=false;
     }
     if(frame_press&&area) {
         map_down=true;map_dragged=false;
@@ -815,6 +1072,7 @@ static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
     if(map_down&&frame_held) {
         if(hypotf(point[0]-map_origin[0],point[1]-map_origin[1])>5)map_dragged=true;
         if(map_dragged) {
+            map_zoom_anchored=false;
             float dx=(point[0]-map_last[0])/zoom,dy=(point[1]-map_last[1])/zoom;
             *(float*)(d+0x880)=pc_map_clamp_center(*(float*)(d+0x880)+dx,*(float*)(d+0x8d0),*(float*)(d+0x8d8));
             *(float*)(d+0x884)=pc_map_clamp_center(*(float*)(d+0x884)+dy,*(float*)(d+0x8d4),*(float*)(d+0x8dc));
@@ -858,6 +1116,7 @@ static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
     float keys[2],pan[2];extern void input_pc_map_axes(float out[2]);input_pc_map_axes(keys);
     pc_map_navigation(point,keys[0],keys[1],!frame_held&&!snapped&&!native_snap&&(pointer_test()||position_inside),nav_dt,zoom,pan);
     if(!frame_held&&(pan[0]||pan[1])) {
+        map_zoom_anchored=false;
         *(float*)(d+0x880)=pc_map_clamp_center(*(float*)(d+0x880)+pan[0],*(float*)(d+0x8d0),*(float*)(d+0x8d8));
         *(float*)(d+0x884)=pc_map_clamp_center(*(float*)(d+0x884)+pan[1],*(float*)(d+0x8d4),*(float*)(d+0x8dc));
         *(float*)(d+0x890)=*(float*)(d+0x880);*(float*)(d+0x894)=*(float*)(d+0x884);
@@ -873,6 +1132,10 @@ static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
         memcpy(map_sent_world,p,sizeof p);map_sent_valid=true;
         call(c,0x7000d8c780,d,(uintptr_t)p,0);
         call(c,0x7000d8c6bc,d,(uintptr_t)p,0);
+        if(zooming&&getenv("SAVAGEWIND_PC_CURSOR_LOG")) {
+            uint64_t pane=call(c,0x7000f6f800,screen,(uintptr_t)"Pa_Cursor_00",0);
+            LOG("[pc-map-zoom] frame %llu point %.1f %.1f zoom %.3f target %.3f center %.2f %.2f under-in %.2f %.2f under-out %.2f %.2f drawn %.1f %.1f\n",f,point[0],point[1],zoom,*(float*)(d+0x888),*(float*)(d+0x880),*(float*)(d+0x884),zoom_in_world[0],zoom_in_world[1],p[0],p[1],ptr(pane)?*(float*)(pane+0x7c):0.f,ptr(pane)?*(float*)(pane+0x8c):0.f);
+        }
         if(getenv("SAVAGEWIND_PC_TRACK_LOG")&&f%10==0) {
             uint64_t pane=call(c,0x7000f6f800,screen,(uintptr_t)"Pa_Cursor_00",0);
             if(ptr(pane))LOG("[pc-map-track] frame %llu input %.2f %.2f drawn %.2f %.2f zoom %.3f\n",f,point[0],point[1],*(float*)(pane+0x7c),*(float*)(pane+0x8c),zoom);
@@ -969,6 +1232,64 @@ static bool quest_focus(Cpu *c,uint64_t screen,uint64_t node) {
     return false;
 }
 
+static bool quest_scroll(Cpu *c,uint64_t screen) {
+    if(!quest_list(screen)||LD32(screen+0x3a48)!=2||pointer_keyboard_input)return false;
+    extern uint64_t renderer_present_count(void);
+    uint64_t frame=renderer_present_count();
+    if(quest_scroll_frame==frame)return true;
+    uint64_t module=LD64(screen+0x3bb0),master=ptr(module)?LD64(module+0x300):0;
+    if(!native_item_list(master))return false;
+    unsigned category=LD32(master+0x2e8),count=LD32(screen+0x388);
+    uint64_t lists=LD64(screen+0x390);
+    if(!ptr(lists)||count>8)return false;
+    // The registry also retains the category strip and hidden detail lists.
+    // Only the visible row list in the selected category owns wheel scrolling.
+    for(unsigned i=0;i<count;i++) {
+        uint64_t list=LD64(lists+8*i);
+        if(list==master||!native_item_list(list)||!(LD8(list+0x2c)&1)||
+           LD32(list+0x2e8)!=category||LD32(list+0xc0)!=1)continue;
+        unsigned columns=LD32(list+0x288);uint64_t array=LD64(list+0x290);
+        uint64_t column=category<columns&&columns<=16&&ptr(array)?LD64(array+8*category):0;
+        if(!ptr(column)||!LD32(column+0x29c))continue;
+        // Child lists retain cached offscreen origins after category changes
+        // (e.g. Side Quests at -1960,-380). Their viewport is positioned by
+        // the outer category list; use that stable origin for wheel hit tests.
+        float x=*(float*)(master+0x304),y=*(float*)(master+0x308);
+        float left=x+*(float*)(column+0x2f8),right=x+*(float*)(column+0x300);
+        float bottom=y+*(float*)(column+0x2fc),top=y+*(float*)(column+0x304);
+        if(!isfinite(left)||!isfinite(right)||!isfinite(bottom)||!isfinite(top)||
+           point[0]<left||point[0]>right||point[1]<bottom||point[1]>top)continue;
+        int scroll=atomic_exchange(&wheel,0);if(!scroll)return false;
+        float current=*(float*)(list+0x2d4),minimum=*(float*)(list+0x2b4),maximum=*(float*)(list+0x2bc);
+        uint64_t view=LD64(column+0x10);unsigned rows=LD32(column+0x29c);
+        if(!ptr(view)||rows>10000)return false;
+        float row_height=*(float*)(view+0x34),stride=*(float*)(view+0x44),height=top-bottom;
+        if(!isfinite(current)||!isfinite(minimum)||!isfinite(maximum)||maximum<minimum||
+           !isfinite(row_height)||!isfinite(stride)||row_height<=0||stride<=0||height<=0)return false;
+        // Categories share a virtual canvas, including space reserved for
+        // empty preceding categories. Ask the game for this category's first
+        // page origin; zero and the global extent are not its scroll bounds.
+        float origin[2]={NAN,NAN};Cpu saved_origin=*c;
+        c->x[0]=list;c->x[1]=0;c->x[2]=category;c->x[3]=(uintptr_t)origin;
+        guest_call(c,0x7000d6ea78);*c=saved_origin;
+        if(!isfinite(origin[1]))return false;
+        minimum=fmaxf(minimum,-origin[1]);
+        float content=row_height+(rows-1)*stride;
+        maximum=fmaxf(minimum,fminf(maximum,minimum+fmaxf(0,content-height)));
+        float next=fminf(maximum,fmaxf(minimum,current-scroll*stride)),delta=next-current;
+        quest_scroll_frame=frame;hover_leave();hover_until=0;
+        if(delta) {
+            // Queue the native scroll for its own tick, as stick scrolling does.
+            // Immediate mode rebuilds row layouts while the cursor manager is
+            // still traversing them, which can displace or hide the list.
+            Cpu saved=*c;c->x[0]=list;c->x[1]=0;memcpy(&c->v[0],&delta,4);
+            guest_call(c,0x7000d6e8e0);*c=saved;
+        }
+        return true;
+    }
+    return false;
+}
+
 // These category panes belong to nested button layouts, not the screen root.
 static uint64_t button_parent_named(uint64_t screen,const char *name) {
     uint64_t head=screen+0x88,link=LD64(head+8);int offset=(int)LD32(screen+0x9c);
@@ -1028,6 +1349,57 @@ static uint64_t pane_named(uint64_t pane,const char *name,unsigned depth,unsigne
     return 0;
 }
 
+static bool map_sensor_panel(Cpu *c,uint64_t screen) {
+    uint64_t panel=call(c,0x7000f6f800,screen,(uintptr_t)"Pa_SensorBox_00",0);
+    unsigned budget=512;uint64_t all=pane_named(panel,"N_All_00",0,&budget);
+    return ptr(all)&&(LD8(all+0x58)&1)&&LD8(all+0x5a)>0;
+}
+
+// DLCWindow scrolls a native page list, rather than BoxCursor rows. The title
+// remains loaded underneath it and must not react to the same mouse gesture.
+static void dlc_pointer(Cpu *c) {
+    uint64_t s=dlc_screen;
+    extern uint64_t renderer_present_count(void);
+    uint64_t frame=renderer_present_count();
+    if(!ptr(s)||dlc_frame==frame)return;
+    dlc_frame=frame;
+    if(pointer_keyboard_input||!position_inside||LD32(s+0x38c0)!=1||
+       !(LD16(s+0x2aa)&0x40))return;
+    uint64_t list=LD64(s+0x3628);
+    if(!ptr(list)||LD64(list)!=0x7001cdbb58ull)return;
+    int count=LD32(list+0x2ac),current=LD32(list+0x2dc);
+    if(count<1||count>32||current<0||current>=count)return;
+    int step=-atomic_exchange(&wheel,0);
+    if(frame_press)dlc_drag=0;
+    if(gesture_down&&gesture_dragged) {
+        dlc_drag+=gesture_delta[1];click_pending=false;
+        int pages=(int)(dlc_drag/80);
+        if(pages){step+=pages;dlc_drag-=pages*80;}
+    }
+    uint64_t layout=LD64(s+0x30),root=ptr(layout)?LD64(layout+0x18):0;
+    const char *names[]={"Pa_ArrowU_00","Pa_ArrowD_00","Pa_GuideY_00","Pa_GuideB_00"};
+    for(unsigned i=0;i<4;i++) {
+        if((i==0&&current==0)||(i==1&&current==count-1))continue;
+        unsigned budget=2048;uint64_t pane=pane_named(root,names[i],0,&budget);float box[4];
+        if(!options_box(pane,box))continue;
+        if(i>=2)box[0]=fmaxf(box[0],440);
+        box[2]=fminf(box[2],632);
+        if(point[0]<box[0]||point[0]>box[2]||point[1]<box[1]||point[1]>box[3])continue;
+        set_hover_rect(box);pointer_hover_sound(c,s,pane);
+        if(click_pending) {
+            click_pending=false;
+            if(i<2)step+=i?1:-1;
+            else if(i==2) {
+                // Queue the request consumed by the native Staff Credits tick.
+                ST8(s+0x38c4,1);pointer_sound(c,s,"mc_Decide");
+            } else dlc_back_until=plat_now_ns()+50000000;
+        }
+        break;
+    }
+    int next=current+step;if(next<0)next=0;if(next>=count)next=count-1;
+    if(next!=current)call(c,0x7000d6c54c,list,next,0);
+}
+
 static bool pause_headers(Cpu *c,uint64_t screen,uint64_t screens,unsigned count) {
     if(!quest_list(screen)||count<=0x2f)return false;
     // Submenus retain the pause screen underneath them, but own the input.
@@ -1062,6 +1434,87 @@ static bool pause_headers(Cpu *c,uint64_t screen,uint64_t screens,unsigned count
     return false;
 }
 
+// The button prompts along the bottom of the pause menu (Sort, Select, Back, Rotate...) and the one beside Link's
+// preview. Clicking one presses its button, so actions whose keyboard binding is a mouse button the pointer keeps for
+// itself (Sort is left click by default) stay reachable (#346). Each prompt is a T_Icon_00 glyph (U+E040.. A B X Y,
+// runtime/nvn/glyphs.c) beside its T_Guide_00 label; hidden slots fade their N_InOut_00 group out.
+static int guide_button(uint16_t glyph) {
+    switch(glyph) {
+    case 0xE040: case 0xE041: case 0xE042: case 0xE043: return glyph-0xE040;  // A B X Y
+    case 0xE044: return 6;  case 0xE045: return 7;   // L R
+    case 0xE046: return 8;  case 0xE047: return 9;   // ZL ZR
+    case 0xE04B: return 10; case 0xE04C: return 11;  // Plus Minus
+    case 0xE056: return 4;  case 0xE057: return 5;   // stick presses
+    default: return -1;
+    }
+}
+static bool pane_shown(uint64_t pane) {
+    return ptr(pane)&&(LD8(pane+0x58)&1)&&LD8(pane+0x5a)>=0x80;  // visible, global alpha at least half
+}
+static bool guide_hit(Cpu *c,uint64_t info,unsigned i,const char *slot,uint64_t icon,uint64_t label,uint64_t area);
+static bool pause_guides(Cpu *c,uint64_t screen,uint64_t screens,unsigned count) {
+    if(!ptr(screen)||LD64(screen)!=0x7001cf9ad8ull||LD8(screen+0xfe)!=2||count<=0x2f)return false;
+    for(unsigned i=0x30;i<=0x3a&&i<count;i++) {
+        uint64_t modal=LD64(screens+8*i);
+        if(ptr(modal)&&LD8(modal+0xfe)==2)return false;
+    }
+    uint64_t info=LD64(screens+8*0x2f),name=ptr(info)?LD64(info+0xd0):0;
+    if(!ptr(info)||LD8(info+0xfe)!=2||!ptr(name)||strncmp((char*)(uintptr_t)name,"PauseMenuInfo_00",17))return false;
+    static const char *const slots[]={"Pa_RotateGuide_00","Pa_Guide_00","Pa_Guide_01","Pa_Guide_02","Pa_Guide_03","Pa_Guide_04"};
+    for(unsigned i=0;i<sizeof slots/sizeof*slots;i++) {
+        uint64_t slot=call(c,0x7000f6f800,info,(uintptr_t)slots[i],0);
+        unsigned budget=8;uint64_t group=pane_named(slot,"N_InOut_00",0,&budget);
+        budget=8;uint64_t icon=pane_named(group,"T_Icon_00",0,&budget);
+        budget=8;uint64_t label=pane_named(group,"T_Guide_00",0,&budget);
+        if(i==0){rotate_info=info;rotate_group=group;}
+        if(!pane_shown(slot)||!pane_shown(group))continue;
+        if(guide_hit(c,info,i,slots[i],icon,label,0))return true;
+    }
+    return false;
+}
+// The map's prompt bar (Sheikah Sensor, Hero's Path, Zoom...) belongs to the slate frame AppHome_00 (#451). Its
+// prompts are drawn through a capture texture: the glyph sits in N_CaptureText_00 in local coordinates, and the
+// P_Text_00 picture in N_InOut_00 shows it on screen.
+static bool map_guides(Cpu *c,uint64_t screens) {
+    uint64_t home=LD64(screens+8*0x2c),name=ptr(home)?LD64(home+0xd0):0;
+    if(!ptr(home)||LD8(home+0xfe)!=2||!ptr(name)||strncmp((char*)(uintptr_t)name,"AppHome_00",11))return false;
+    uint64_t root=call(c,0x7000f6f800,home,(uintptr_t)"RootPane",0);
+    static const char *const slots[]={"Pa_Guide_00","Pa_Guide_01","Pa_Guide_02","Pa_Guide_03","Pa_Guide_04","Pa_Guide_05"};
+    for(unsigned i=0;i<sizeof slots/sizeof*slots;i++) {
+        unsigned budget=256;uint64_t slot=pane_named(root,slots[i],0,&budget);
+        budget=8;uint64_t group=pane_named(slot,"N_InOut_00",0,&budget);
+        budget=8;uint64_t picture=pane_named(group,"P_Text_00",0,&budget);
+        budget=8;uint64_t capture=pane_named(slot,"N_CaptureText_00",0,&budget);
+        budget=8;uint64_t icon=pane_named(capture,"T_Icon_00",0,&budget);
+        if(!pane_shown(slot)||!pane_shown(group)||!pane_shown(picture))continue;
+        if(guide_hit(c,home,i,slots[i],icon,0,picture))return true;
+    }
+    return false;
+}
+// One prompt: its glyph names the button; the box is the glyph with its label, or the picture that shows both.
+static bool guide_hit(Cpu *c,uint64_t info,unsigned i,const char *slot,uint64_t icon,uint64_t label,uint64_t area) {
+    if(!pane_shown(icon))return false;
+    uint64_t glyphs=LD64(icon+0xe0);
+    int button=ptr(glyphs)?guide_button(LD16(glyphs)):-1;
+    float box[4],text[4];
+    if(button<0||!options_box(area?area:icon,box))return false;
+    if(pane_shown(label)&&options_box(label,text)) {
+        box[0]=fminf(box[0],text[0]);box[1]=fminf(box[1],text[1]);
+        box[2]=fmaxf(box[2],text[2]);box[3]=fmaxf(box[3],text[3]);
+    }
+    box[1]-=4;box[3]+=4;
+    if(point[0]<box[0]||point[0]>box[2]||point[1]<box[1]||point[1]>box[3])return false;
+    set_hover_rect(box);
+    pointer_hover_sound(c,info,info+0x400+i);
+    if(click_pending) {
+        // The game plays the action's own sound: no extra cue here.
+        click_pending=false;
+        guide_bit=(unsigned)button;guide_until=plat_now_ns()+80000000;
+        if(getenv("SAVAGEWIND_PC_CURSOR_LOG"))LOG("[pc-guide] %s button %d\n",slot,button);
+    }
+    return true;
+}
+
 // Other menus enter a button once per hover, rather than replaying its focus
 // callback whenever the screen rebuilds a transient cursor field.
 static bool hover_enter(Cpu *c,uint64_t control,uint64_t screen,uint64_t node,uint64_t activate) {
@@ -1092,6 +1545,39 @@ static bool dialogue_choices(Cpu *c,uint64_t screens,unsigned count) {
     return false;
 }
 
+// Wheel navigation on the selling category strip skips empty/unavailable
+// columns, using the same native transition as a direct category click.
+static void shop_category_scroll(Cpu *c,uint64_t list,uint64_t array,unsigned columns,int scroll) {
+    int current=(int)LD32(list+0x2e8),step=scroll>0?-1:1;
+    if(!scroll||current<0||current>=(int)columns)return;
+    for(int next=current+step;next>=0&&next<(int)columns;next+=step) {
+        uint64_t column=LD64(array+8*next);
+        if(!ptr(column)||!LD32(column+0x29c)||LD8(column+0x38c)||LD8(column+0x38d))continue;
+        call(c,0x7000d6c244,list,0,next);
+        return;
+    }
+}
+
+// The list page index is global across all columns (including unavailable
+// categories), while each column stores its own page count.
+static void shop_page_scroll(Cpu *c,uint64_t list,uint64_t array,unsigned columns,int scroll) {
+    unsigned col=LD32(list+0x2e8);
+    if(!scroll||col>=columns)return;
+    unsigned first=0;
+    for(unsigned i=0;i<col;i++) {
+        uint64_t column=LD64(array+8*i);
+        unsigned pages=ptr(column)?LD32(column+0x2f4):0;
+        if(pages>1000||first+pages>1000)return;
+        first+=pages;
+    }
+    uint64_t column=LD64(array+8*col);
+    unsigned pages=ptr(column)?LD32(column+0x2f4):0;
+    int current=(int)LD32(list+0x2dc),next=current+(scroll>0?-1:1);
+    if(!pages||pages>1000||current<(int)first||current>=(int)(first+pages))return;
+    if(next>=(int)first&&next<(int)(first+pages))call(c,0x7000d6c54c,list,next,0);
+    else shop_category_scroll(c,list,array,columns,scroll);
+}
+
 static bool shop_pointer(Cpu *c) {
     uint64_t s=shop_screen;
     if(!ptr(s)||pointer_keyboard_input)return false;
@@ -1106,6 +1592,11 @@ static bool shop_pointer(Cpu *c) {
         float x=*(float*)(pane+0x7c),y=*(float*)(pane+0x8c);
         if(fabsf(point[0]-x)>28||fabsf(point[1]-y)>28)continue;
         set_hover(x,y,27);
+        int scroll=atomic_exchange(&wheel,0);
+        if(scroll) {
+            shop_category_scroll(c,list,array,columns,scroll);
+            return true;
+        }
         if(click_pending) {
             click_pending=false;
             uint64_t column=i<columns?LD64(array+8*i):0;
@@ -1115,12 +1606,7 @@ static bool shop_pointer(Cpu *c) {
         return true;
     }
     int scroll=atomic_exchange(&wheel,0);
-    if(scroll) {
-        unsigned col=LD32(list+0x2e8);uint64_t column=col<columns?LD64(array+8*col):0;
-        unsigned pages=ptr(column)?LD32(column+0x2f4):0;
-        int page=(int)LD32(list+0x2dc)-(scroll>0?1:-1);
-        if(pages&&pages<1000){if(page<0)page=0;if(page>=(int)pages)page=pages-1;call(c,0x7000d6c54c,list,page,0);}
-    }
+    if(scroll)shop_page_scroll(c,list,array,columns,scroll);
     return false;
 }
 
@@ -1212,6 +1698,8 @@ void rt_pc_cursor_manager(Cpu *c, uint64_t activate, uint64_t bounds) {
     }
     if (!pc_cursor_active()) return;
     sample_pointer();
+    if(dlc_screen){dlc_pointer(c);return;}
+    if(beast_pointer(c))return;
     if (!quick_wheel_only && !pointer_test() && !position_inside) {
         float keys[2];extern void input_pc_map_axes(float out[2]);input_pc_map_axes(keys);
         if(keys[0]==0&&keys[1]==0)return;
@@ -1233,7 +1721,7 @@ void rt_pc_cursor_manager(Cpu *c, uint64_t activate, uint64_t bounds) {
     if(!game_over_screen&&n>0x2e&&ptr(screens)) {
         uint64_t screen=LD64(screens+8*0x2e);
         if(ptr(screen)&&hover_target(c,screen,target)&&
-           (pause_headers(c,screen,screens,n)||quest_categories(c,screen))){hover_leave();return;}
+           (quest_scroll(c,screen)||pause_headers(c,screen,screens,n)||pause_guides(c,screen,screens,n)||quest_categories(c,screen))){hover_leave();return;}
     }
     uint64_t hit=0,hit_screen=0;float best=1e30f;bool choices=dialogue_choices(c,screens,n);
     if(shop_screen&&!choices&&shop_pointer(c))return;
@@ -1326,6 +1814,10 @@ void rt_pc_cursor_manager(Cpu *c, uint64_t activate, uint64_t bounds) {
 }
 
 RT_ON_RESET(pc_cursor_reset) {
+    dlc_screen=dlc_back_until=0;dlc_frame=UINT64_MAX;dlc_drag=0;
+    quest_scroll_frame=UINT64_MAX;
+    beast_frame=UINT64_MAX;beast_rotating=false;beast_hover=-1;
+    item_message_active=preview_available=false;item_confirm_until=0;
     dialogue_active=false;shop_screen=game_over_screen=quantity_screen=0;quantity_until=0;quantity_edit=false;quantity_request=-1;
     quantity_hold=0;quantity_repeat_at=0;preview_defaults_saved=false;sound_hover_key=sound_hover_until=0;
     hover_leave();
@@ -1334,9 +1826,10 @@ RT_ON_RESET(pc_cursor_reset) {
     quick_wheel_only=false;
     click_pending=false;
     injected_manager=0;
-    confirm_until=hover_until=0;wheel=0;map_down=false;special_frame=UINT64_MAX;
+    confirm_until=hover_until=guide_until=0;wheel=0;map_down=false;special_frame=UINT64_MAX;
+    rotate_mode=false;rotate_info=rotate_group=0;
     sampled_frame=UINT64_MAX;gesture_down=gesture_dragged=false;
-    map_anchor_active=map_picker_seen=false;map_anchor_deadline=0;
+    map_anchor_active=map_picker_seen=map_zoom_anchored=false;map_anchor_deadline=0;
     map_canvas_active=false;map_nav_ns=map_snap_button=0;map_view_valid=false;
     map_sent_valid=map_native_snapped=false;
     presses = releases = last_press = last_release = 0;

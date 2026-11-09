@@ -1,4 +1,4 @@
-// Frame rate (Video > Frame rate): Off (no limit), 30, 60 (the default), 90 or 120 frames per second, and the game's
+// Frame rate (Video > Frame rate): Off (no limit), 30, 60 (the default), 90, 120, 144, 165, 240 or 360 frames per second, and the game's
 // clock the same at every one of them. Shared by the macOS, Linux and Windows builds.
 //
 // How BOTW 1.8.2 keeps time (main module, runtime addresses):
@@ -15,7 +15,7 @@
 //     screen (0.2 s at 30 fps, 0.1 s at 120). The paused game (pause menu, map: the state at 0x7001cb48a4 is 2, 0
 //     while playing) updates VFR twice a frame.
 // So the game already runs at any frame rate as long as VFR is told how long a frame really took. Savage Wind:
-//   - paces the presents at the chosen rate on a steady grid (present_pace, framepace_period_ns; Off: 300 fps at
+//   - paces the presents at the chosen rate on a steady grid (present_pace, framepace_period_ns; Off: 360 fps at
 //     most, FPS_CEILING; with VSync On or Adaptive a little under the display's refresh rate), and skips the frame
 //     loop's vsync wait (rt_frame_wait, tools/patches.py);
 //   - tells VFR how long the frame really took (rt_vfr_update, inside updateInterval after the game set its ratio):
@@ -50,6 +50,7 @@
 #include "../rt.h"
 #include "../settings.h"
 #include "../framepace.h"
+#include "../gamelib.h"
 #include "../window_size.h"
 
 extern volatile int g_movie_playing;  // runtime/hle/movie.c: video decoders running
@@ -103,10 +104,28 @@ static const char *event_name(void) {
     return n && n < 32 && !p[n] ? p : "";
 }
 
-// Events held at the console's 30 fps whatever the chosen rate: a wait in them counts frames and can miss its end.
-//   Demo014_0: Master Kohga's entrance in the Yiga Clan hideout (Assassin_Leader) froze after "The strong, the burly..."
-//              at 120 fps, and played through at 30 (#196). It depends on the exact rate: one run at about 80 fps passed.
-static const char *const events_at_30[] = {"Demo014_0"};
+// Events held at the console's 30 fps whatever the chosen rate: a wait in them can miss its moment at another rate.
+//   Master Kohga's entrance in the Yiga Clan hideout froze after "The strong! The burly!!" (#196, #455, #533): the picture
+//   went on, the cutscene never finished. The hideout's EventTag starts Electric_Relic<WaitStable>, which calls the demo
+//   Demo347_0<Appear>; the log names the event Electric_Relic for all of it. Between Kohga's lines the demo waits for
+//   a trigger in his animation (Demo_WaitForASTriggerEvent), and that trigger exists only in the update in which the
+//   animation crosses its frame: a wait that starts a moment later never ends. Whether it does depends on the exact rate:
+//   it froze at 120 fps and with 55-70 fps, one run at about 80 fps passed, and every run at 30 played through.
+//   Electric_Relic is also the Thunder Helm quest's talks in Gerudo Town, so it is held only within `r` metres of
+//   Kohga's room (its x, z); r = 0: anywhere. (Demo014_0, held before, is a Yiga guard spotting Link, not Kohga.)
+static const struct { const char *name; float x, z, r; } events_at_30[] = {
+    {"Electric_Relic", -3481.0f, 1315.0f, 150.0f},
+    {"Demo347_0", 0, 0, 0},
+};
+
+// Link is within r metres of x, z (or r is 0)
+static bool link_near(float x, float z, float r) {
+    if (r <= 0) return true;
+    uint64_t pinfo = g_site.player_info ? *(uint64_t *)(uintptr_t)g_site.player_info : 0;
+    if (!pinfo) return false;
+    float dx = *(float *)(uintptr_t)(pinfo + 0x88) - x, dz = *(float *)(uintptr_t)(pinfo + 0x90) - z;
+    return dx * dx + dz * dz <= r * r;
+}
 
 // The event running now is one of those (and its name, logged once per event)
 static bool event_at_30(void) {
@@ -116,7 +135,8 @@ static bool event_at_30(void) {
     const char *name = event_name();
     bool hold = false;
     for (size_t i = 0; i < sizeof events_at_30 / sizeof *events_at_30; i++)
-        if (!strcmp(name, events_at_30[i])) hold = true;
+        if (!strcmp(name, events_at_30[i].name) && link_near(events_at_30[i].x, events_at_30[i].z, events_at_30[i].r))
+            hold = true;
     if (ev != last && *name) {
         last = ev;
         LOG("[event] %s%s\n", name, hold ? ": at 30 fps (its waits count frames)" : "");
@@ -137,12 +157,23 @@ bool framepace_title_ui(void) {
     if (*(uint32_t *)(uintptr_t)PAUSE_STATE) return false;
     return screen_up(1) || screen_up(0x38);
 }
+bool framepace_dlc_ui(void) { return screen_up(0x3f); }  // (screen 0x3f)
 
 // (screen 0x55: the loading screen with its tip, up from a load's start until its fade into the game is over)
 bool framepace_loading_ui(void) { return screen_up(0x55); }
 
 // (pause state 2: the pause menu's pages and the map; 4 is the quick menus over the game)
 bool framepace_menu_ui(void) { return *(uint32_t *)(uintptr_t)PAUSE_STATE == 2; }
+bool framepace_map_ui(void) {
+    if (!framepace_menu_ui()) return false;
+    uint64_t mgr = *(uint64_t *)(uintptr_t)g_site.screen_mgr;
+    if (!mgr || VF(uint32_t, mgr, 0x28) <= 0x2f) return false;
+    uint64_t arr = VF(uint64_t, mgr, 0x30);
+    if (!arr || VF(uint64_t, arr, 8 * 0x2f)) return false;  // inventory covers the map
+    uint64_t map = VF(uint64_t, arr, 8 * 0x2a);
+    return map && VF(uint8_t, map, 0xfe) == 2;  // same active map screen as pc_cursor.c
+}
+bool framepace_quick_ui(void) { return *(uint32_t *)(uintptr_t)PAUSE_STATE == 4; }
 bool framepace_paused(void) { return in_menu(); }
 
 int framepace_target(void) {
@@ -164,9 +195,11 @@ int framepace_target(void) {
     return fps;
 }
 
-// No limit still stops at 300 fps: shorter steps lose precision in the game's float clocks (the time of day, 0..360,
-// takes 1/30 of a minute times the step each frame: at 300 fps that is 1% of the value's rounding unit per frame).
-#define FPS_CEILING 300
+// No limit still stops at 360 fps: shorter steps lose precision in the game's float clocks (the time of day, 0..360,
+// takes 1/30 of a minute times the step each frame: at 360 fps that is 1.2% of the value's rounding unit per frame).
+// The game's clock and the menus' step stop here too (rt_vfr_update, framepace_presented): a frame rate above this
+// would run the game fast.
+#define FPS_CEILING 360
 
 // With VSync On or Adaptive (FIFO), a frame rate at or over the display's refresh rate waits for the display: up to a
 // refresh of delay, and with G-SYNC / FreeSync the display leaves its variable rate at the top of its range. So the
@@ -175,6 +208,11 @@ int framepace_target(void) {
 static double vsync_cap(void) {
     if (g_settings.vsync != VSYNC_ON && g_settings.vsync != VSYNC_ADAPTIVE) return 0;
     double hz = winsize_refresh_rate();
+    // SAVAGEWIND_VSYNC_MARGIN=0: the cap at the refresh rate itself. The margin is for VRR; on a fixed-rate display (the
+    // Steam Deck in Game Mode) it only costs frames: 87.6 shown at 89.9 Hz
+    static int margin = -1;
+    if (margin < 0) margin = !getenv("SAVAGEWIND_VSYNC_MARGIN") || atoi(getenv("SAVAGEWIND_VSYNC_MARGIN")) != 0;
+    if (!margin) return hz >= 30 ? hz : 0;
     return hz >= 30 ? hz - hz * hz / 3600 : 0;
 }
 
@@ -213,7 +251,28 @@ int rt_frame_wait(void) { return framepace_on(); }
 static float g_step = 1;         // the last frame's length between presents, in console frames
 static int g_grid_streak;        // presents in a row that kept the pace
 
+// A loading screen up for minutes (#438: stuck after a Divine Beast's cutscene, the screen running, no error): what each
+// of the game's threads waits for goes to the log, at 90 s and again at 210 s of the same loading screen, so a player's
+// log shows where it stopped. SAVAGEWIND_LOAD_WATCH=<seconds> for the first dump, 0 off.
+static void load_watch(uint64_t t) {
+    extern void kernel_dump_threads(void);  // runtime/kernel.c
+    static int first = -1;
+    static uint64_t since;
+    static int dumps;
+    if (first < 0) first = env_int("SAVAGEWIND_LOAD_WATCH", 90);
+    if (!first || !framepace_loading_ui()) { since = 0; dumps = 0; return; }
+    if (!since) since = t;
+    uint64_t at = (uint64_t)(first + 120 * dumps) * 1000000000ull;
+    if (dumps < 2 && t - since >= at) {
+        LOG("[load-watch] the loading screen has been up for %d s (event %s): the game's threads\n",
+            (int)((t - since) / 1000000000ull), event_name());
+        kernel_dump_threads();
+        dumps++;
+    }
+}
+
 void framepace_presented(uint64_t t, bool on_grid) {
+    load_watch(t);
     if (!framepace_on()) return;
     static uint64_t prev;
     static double smooth;
@@ -222,7 +281,8 @@ void framepace_presented(uint64_t t, bool on_grid) {
     if (s > 0.25) s = 0.25;
     smooth = smooth > 0 ? smooth + (s - smooth) * 0.25 : s;
     float step = (float)((on_grid ? s : smooth) * 30);
-    g_step = step < 0.1f ? 0.1f : step > 1.5f ? 1.5f : step;
+    float least = 30.0f / FPS_CEILING;
+    g_step = step < least ? least : step > 1.5f ? 1.5f : step;
     g_grid_streak = on_grid ? g_grid_streak + 1 : 0;
     static int fixed = -1;
     if (fixed < 0) fixed = env_int("SAVAGEWIND_NO_CONTROLLER_STEP", 0);
@@ -267,15 +327,20 @@ float rt_arrow_gravity(uint64_t arrow, float g) {
     return g * g_frame_ratio;
 }
 
-// The physics step's solver microsteps (tools/patches.py _solver_steps, #161): the game asks for delta frame x 6 (6 at
-// 30 fps, 2 at 120), the same microstep length at any frame rate; the runtime gives 6 / sqrt(delta frame) on shorter
-// steps (8.5 at 60 fps, 12 at 120). With the game's count the solver gave way to what touches Link more and more as the
-// steps got shorter: a held cucco over his head cut his jump to 0.25 m at ~90 fps (0.63 at 30); 6 a step still left
-// 0.56, 6 / sqrt the 0.64 of 30 fps (SAVAGEWIND_SOLVER_STEPS=0: the game's count).
+// The physics step's solver microsteps (tools/patches.py _solver_steps, #161, #425): the game asks for delta frame x 6,
+// rounded (1.9.0 0x700156f930): 6 at 30 fps, 3 at 60, 2 at ~90, 1 or 2 at 120 (its delta frame wobbles around 0.25),
+// 1 from ~150. Holding a cucco over his head, Link's jump (0.61-0.63 m at 30 fps) depends on that count: 2 gave 0.13-0.20,
+// 3 0.25, 4 0.42, 6 0.51-0.56, 1 0.56-0.61, 10-12 0.62-0.64. And many microsteps a second keep a Magnesis door on its
+// hinges: Oman Au's doors opened in 1 of 5 tries with 12 a step at 120 fps (1440 a second), and every time with 1, 6
+// (720) or the game's count, also at ~190 fps. So up to ~75 fps the runtime gives 6 / sqrt(delta frame) (6 at 30, 8.5
+// at 60: the door opens, the cucco 0.64), above that 1 (90 fps: cucco 0.61, 120-140: 0.59, the doors open). (The
+// border is past 60 so that 60 fps, whose delta frame wobbles around 0.5, keeps one count.) SAVAGEWIND_SOLVER_STEPS=0:
+// the game's count.
 float rt_solver_steps(float delta_frame, float per_frame) {
     static int keep = -1;
     if (keep < 0) keep = env_int("SAVAGEWIND_SOLVER_STEPS", 1) != 0;
-    return keep && delta_frame > 0 && delta_frame < 1 ? per_frame / sqrtf(delta_frame) : delta_frame * per_frame;
+    if (!keep || delta_frame <= 0 || delta_frame >= 1) return delta_frame * per_frame;
+    return delta_frame >= 0.4f ? per_frame / sqrtf(delta_frame) : 1.0f;
 }
 
 // Keyframed bodies' turn (tools/patches.py _kf_angle, #209): the angle of a keyframed body's turn toward its target,
@@ -356,6 +421,14 @@ int rt_surf_jump_request(uint64_t controller) {
     return 1;
 }
 
+// A stale actor in the game's target manager was ignored (tools/patches.py _stale_actor_helper / _stale_actor_target,
+// #391, #393): the game would have crashed on it. Logged the first five times, then each power of two.
+void rt_stale_actor(void) {
+    static uint32_t n;
+    uint32_t k = __atomic_add_fetch(&n, 1, __ATOMIC_RELAXED);
+    if (k <= 5 || (k & (k - 1)) == 0) LOG("[game] a stale actor in the target manager was ignored (%u so far)\n", k);
+}
+
 // The game's frames that were presented: one step per presented frame, where game frames step twice while paused
 // (output_scale.c's jitter sequence: each presented frame gets the next phase)
 static uint64_t shown_frames;
@@ -363,6 +436,7 @@ uint64_t framepace_shown_frame(void) { return __atomic_load_n(&shown_frames, __A
 
 void rt_vfr_update(uint64_t vfr) {
     __atomic_fetch_add(&game_frames, 1, __ATOMIC_RELAXED);
+    gamelib_sync();
     {
         extern uint64_t renderer_present_count(void);
         static uint64_t presented = ~0ull;
@@ -373,6 +447,8 @@ void rt_vfr_update(uint64_t vfr) {
     if (nvn_timeline()) LOG("[tl] %.3f %x vfr\n", plat_now_ns() / 1e6, kernel_current_thread_handle());
     extern uint64_t g_fs_vfr;  // (SAVAGEWIND_FRAME_LOG=2, nvn/objects.c)
     g_fs_vfr = plat_now_ns();
+    extern void freecam_frame(void);  // (hle/freecam.c)
+    freecam_frame();
     clock_probe(vfr);
     log_screens();
     extern void input_cam_frame(float ratio);  // runtime/hle/input.c: the mouse's motion in the frame, for the cameras
@@ -423,6 +499,8 @@ void rt_vfr_update(uint64_t vfr) {
     }
     bool held = VF(uint8_t, vfr, VFR_OVERRIDE) && ratio > 1;  // (stage loading: the game asks for single steps)
     if (held) ratio = 1;
+    extern bool freecam_active(void);
+    if (freecam_active()) ratio = 0.001f;  // (the free camera: the world nearly stops)
     if (!paused) {
         given += ratio / 30.0;
         if (held || fabs(real - given) > 0.25) real = given;  // (nothing owed for a deliberate slow down)

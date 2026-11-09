@@ -15,10 +15,12 @@
 #endif
 #include "romfs_image.h"
 #include "services/save_convert.h"
+#include "services/save_profiles.h"
 #include "settings.h"
 #include "hle.h"
 #include "kernel.h"
 #include "control.h"
+#include "launch_flags_boot.h"
 
 const char *g_romfs_dir;
 uint64_t g_program_id;
@@ -135,6 +137,8 @@ static void reboot_idle(void) {  // (main thread, while guest threads stop) keep
 }
 
 static void teardown(void) {
+    extern void prof_shutdown(void);
+    prof_shutdown();  // finish sampling before guest thread handles or the game library can be replaced
     uint64_t t0 = plat_now_ns();
     kernel_stop_threads(reboot_idle);
     extern void nvn_queue_idle(void);
@@ -170,6 +174,7 @@ static void boot(const char *root) {
     plat_cpu_placement();
     kernel_init();
     dispatch_init();
+    { extern void rupees_start(void); rupees_start(); }  // (Cheats > Infinite rupees, `rupees`: runtime/rupees.c)
     { extern void jpeg_debug_init(void); jpeg_debug_init(); }
 
     uint32_t stack_size = 0x100000;
@@ -283,6 +288,19 @@ static int precompile_shaders(const char *root) {
             ok ? "done" : "stopped", p.shaders, p.keys, p.made, p.cached, p.failed, p.seconds, ok ? "" : ": ", ok ? "" : p.why);
     return ok ? 0 : 1;
 }
+
+// --export-pipeline-seed <file>: this install's pipeline list (cache/vk_pipelines.list) as a portable seed that any
+// install's precompilation reads (runtime/nvn/vulkan/precompile.c): a developer's playthrough gives every install its
+// first boot's pre-warm. Needs the Vulkan device (the list is named after it) and the game files.
+static int export_pipeline_seed(const char *root, const char *out) {
+    extern void ui_window_init(void);
+    ui_window_init();
+    char image[1100], why[256] = "";
+    snprintf(image, sizeof image, "%s/romfs", root);
+    bool ok = shader_precompile_export_seed(image, out, why, sizeof why);
+    fprintf(stderr, "[precompile] pipeline seed %s: %s%s\n", ok ? "written" : "NOT written", out, ok ? "" : why);
+    return ok ? 0 : 1;
+}
 #endif
 
 // --dump-romfs <file>: writes the RomFS image the game reads (runtime/romfs_image.h) to a file, to compare it with
@@ -328,12 +346,13 @@ int main(int argc, char **argv) {
     // every log starts with which Savage Wind made it: the version and the source it was built from (Makefile SW_SOURCE)
     extern const char *rt_version(void);  // (runtime/ui/launcher.mm)
     fprintf(stderr, "[savagewind] Savage Wind %s (%s)\n", rt_version(), SW_SOURCE);
+    launch_flags_boot(argc, argv);  // the saved launch options (runtime/launch_flags.h): in the environment before anything reads it
     control_init();
     const char *root = "extracted";  // (in the data root)
     bool skip_launcher = getenv("SAVAGEWIND_NO_LAUNCHER") || getenv("SAVAGEWIND_INPUT");  // tests boot straight in
     bool config = false;
     static char arg_root[1024];
-    const char *dump = NULL;
+    const char *dump = NULL, *seed_out = NULL;
     bool scan = false, precompile = false;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--play")) skip_launcher = true;
@@ -341,6 +360,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--dump-romfs") && i + 1 < argc) dump = argv[++i];
         else if (!strcmp(argv[i], "--scan-shaders")) scan = true;
         else if (!strcmp(argv[i], "--precompile-shaders")) precompile = true;
+        else if (!strcmp(argv[i], "--export-pipeline-seed") && i + 1 < argc) seed_out = argv[++i];
         else if (argv[i][0] != '-' && !realpath(argv[i], arg_root)) root = argv[i];  // (relative to where we started)
         else if (argv[i][0] != '-') root = arg_root;
     }
@@ -348,12 +368,20 @@ int main(int argc, char **argv) {
     if (launcher_config_key_held()) config = true;  // (the Mac's "Savage Wind Configuration": Option held)
 #endif
     rt_paths_init();  // the data root becomes the working directory (runtime/paths.h)
+    // (after it: savagewind.ini is in the data root; before it the file wasn't found where that isn't where we started)
+    settings_load();
+    static const char *const sparse_heap_modes[SPARSE_HEAP_COUNT] = {"auto", "on", "off"};
+    int sparse_heap = g_settings.sparse_heap;
+    if (sparse_heap < 0 || sparse_heap >= SPARSE_HEAP_COUNT) sparse_heap = SPARSE_HEAP_AUTO;
+    LOG("[settings] sparse_heap=%s\n", sparse_heap_modes[sparse_heap]);
     if (dump) return dump_romfs(root, dump);
     if (scan) return scan_shaders(root);
 #ifndef __APPLE__
     if (precompile) return precompile_shaders(root);
+    if (seed_out) return export_pipeline_seed(root, seed_out);
 #else
     (void)precompile;
+    (void)seed_out;
 #endif
     // A plain start goes straight into the game once the game files are set up and the game code built from them
     // matches this build; the start screen only when there is something to set up, or when asked for.
@@ -364,15 +392,33 @@ int main(int argc, char **argv) {
     if (test_mode || getenv("SAVAGEWIND_LAUNCHER_SHOT") || getenv("SAVAGEWIND_LAUNCHER_EXTRACT") ||
         getenv("SAVAGEWIND_LAUNCHER_SETUP") || getenv("SAVAGEWIND_LAUNCHER_DELETE"))
         mode = test_mode && !strcmp(test_mode, "setup") ? LAUNCHER_SETUP : LAUNCHER_CONFIG;
+#ifdef _WIN32
+    if (mode == LAUNCHER_NONE) {
+        // Select the GPU before the game's SetHeapSize chooses eager or lazy backing. (Hidden: shown with the boot
+        // picture's first frame, boot_splash_start, not as an empty black window while the game code loads.)
+        extern void ui_window_init_hidden(void);
+        ui_window_init_hidden();
+    }
+#endif
     for (;;) {
-        if (mode != LAUNCHER_NONE) launcher_run(root, mode);
+        if (mode != LAUNCHER_NONE) {
+            launcher_run(root, mode);
+            launch_flags_play(root);  // changed launch options: restart straight into the game with them
+        }
         // The game holds the lock on its save folder while it runs, so the Saves tab of another Savage Wind refuses to
         // swap or copy saves under it. Not getting it (somebody else has it, or no lock file can be made) never stops
         // the game; it is let go before the start screen of a reboot, which is this same process.
+        { extern void save_backup_at_start(void); save_backup_at_start(); }  // (Saves > Back up at each start; before the lock)
         ScLock *save_lock = NULL;
-        const char *save_env = getenv("SAVAGEWIND_SAVE_DIR");
-        if (sc_lock_take(save_env && *save_env ? save_env : "save", &save_lock) == SC_LOCK_BUSY)
+        sp_session_begin();  // the save profile chosen on the start screen (runtime/services/save_profiles.h)
+        if (sc_lock_take(sp_session_save_dir(), &save_lock) == SC_LOCK_BUSY)
             fprintf(stderr, "[saves] another Savage Wind is running with this save folder; saving from both can overwrite saves\n");
+#ifndef __APPLE__
+        // the start screen's picture, moving, until the game's title screen is up (vulkan/device.c; a window made
+        // already: Windows, or back from the start screen)
+        extern void boot_splash_start(void);
+        boot_splash_start();
+#endif
         boot(root);
         int kind = ui_run();  // window and input on the main thread; returns when a reboot is requested
         teardown();

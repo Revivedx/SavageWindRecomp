@@ -10,7 +10,9 @@
 #undef RT_ON_RESET
 #define RT_ON_RESET(fn) static void fn(void)
 #include "../runtime/hle/input.c"
+uint64_t quick_drop_action_filter_buttons(uint64_t b) { return b; }
 #include "test_pointer_disabled.h"
+int bind_pad_family(int type, int vendor, int product, const char *name, bool first) { (void)type, (void)vendor, (void)product, (void)name, (void)first; return 0; }
 
 Settings g_settings;
 int16_t g_bind_key[BIND_KEY_COUNT], g_bind_pad[BIND_KEY_COUNT];
@@ -39,11 +41,24 @@ int bind_slot_from_name(const char *name) { (void)name; unexpected_helper(); }
 bool bind_capture_event(const SDL_Event *e) { (void)e; unexpected_helper(); }
 void bind_capture_begin(int dev, int slot) { (void)dev; (void)slot; unexpected_helper(); }
 void bind_reset(int dev) { (void)dev; unexpected_helper(); }
+// (per-action bindings: none here, the Switch layer answers)
+uint64_t act_scan_keys(uint64_t b, int (*held)(int)) { (void)b; (void)held; return 0; }
+uint64_t act_scan_pad(uint64_t b, uint32_t host) { (void)b; (void)host; return 0; }
+void act_publish(uint64_t keys, uint64_t pads) { (void)keys; (void)pads; }
+void act_poll(bool live) { (void)live; }
 void motion_script(float p, float r, float ps, float ys) { (void)p; (void)r; (void)ps; (void)ys; unexpected_helper(); }
 // (the control endpoint, the virtual gyro and the DSU poll: off here)
 bool control_enabled(void) { return false; }
 bool control_fly_toggle(void) { unexpected_helper(); }
 void control_fly_wheel(float notches) { (void)notches; unexpected_helper(); }
+// (the free camera, hle/freecam.c: off here)
+bool freecam_active(void) { return false; }
+void freecam_toggle(void) { abort(); }
+void freecam_key(int scancode, bool down) { (void)scancode; (void)down; abort(); }
+void freecam_mouse(float dx, float dy) { (void)dx; (void)dy; abort(); }
+void freecam_pad(float lx, float ly, float rx, float ry, float up, float down, bool fast, bool slow) {
+    (void)lx; (void)ly; (void)rx; (void)ry; (void)up; (void)down; (void)fast; (void)slow;
+}
 void control_input_frame(uint64_t frame) { (void)frame; }
 void control_input_apply(uint64_t *b, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) { (void)b; (void)lx; (void)ly; (void)rx; (void)ry; }
 bool pc_gyro_keyboard_active(void) { return false; }
@@ -70,7 +85,7 @@ static void pump(void) {
         if (!input_user_blocked(&e)) input_handle_event(&e);
 }
 
-static void sample(uint64_t buttons, bool tilted) {
+static void sample_raw(uint64_t buttons, bool tilted, uint64_t raw) {
     uint64_t state[5] = {0};
     uint32_t id = 0;
     Cpu c = {0};
@@ -82,12 +97,14 @@ static void sample(uint64_t buttons, bool tilted) {
         fprintf(stderr, "buttons: expected %#llx, got %#llx\n",
                 (unsigned long long)(buttons | directions), (unsigned long long)state[1]);
     assert(state[1] == (buttons | directions));
-    assert(input_buttons_now() == buttons);
+    assert(input_buttons_now() == raw);
     int32_t *sticks = (int32_t *)((uint8_t *)state + 16);
     if (tilted) assert(sticks[0] > 16000 && sticks[1] > 16000 && sticks[2] < -16000 && sticks[3] < -16000);
     else assert(!sticks[0] && !sticks[1] && !sticks[2] && !sticks[3]);
     assert(*(uint32_t *)((uint8_t *)state + 32) == 1);  // still connected while unfocused
 }
+
+static void sample(uint64_t buttons, bool tilted) { sample_raw(buttons, tilted, buttons); }
 
 static void controls(SDL_Joystick *joy, bool held) {
     assert(SDL_SetJoystickVirtualButton(joy, SDL_GAMEPAD_BUTTON_EAST, held));
@@ -162,6 +179,22 @@ int main(void) {
     // Scripted input remains usable for unattended tests while the window is unfocused.
     script_buttons = 1ull << BTN_B;
     sample(1ull << BTN_B, false);
+    // Sorting consumes X for the guest, while edge detection still sees the
+    // held physical button. Other inputs and the next press remain usable.
+    uint64_t x = 1ull << BTN_X, b = 1ull << BTN_B;
+    script_buttons = x | b;
+    input_consume_buttons(x);
+    for (int i = 0; i < 5; i++) sample_raw(b, false, x | b);
+    script_buttons = b;
+    sample(b, false);
+    script_buttons = x;
+    sample(x, false);
+    input_consume_buttons(x);
+    input_reset();
+    sample(x, false);
+    input_consume_buttons(x);
+    input_reboot_reset();
+    sample(x, false);
     script_buttons = 0;
     host_test = true;
     test_pad = 1u << SDL_GAMEPAD_BUTTON_EAST;
@@ -194,3 +227,5 @@ int main(void) {
     SDL_Quit();
     puts("input focus checks passed");
 }
+
+void photo_pad(uint32_t buttons) { (void)buttons; }

@@ -20,7 +20,7 @@ Paths come from the environment or from tools/ghidra/gq.local.json (git-ignored)
   GHIDRA_INSTALL_DIR   extracted Ghidra release (with the Switch loader extension installed)
   JAVA_HOME            JDK 21+
   SW_GHIDRA_PROJECT    directory holding <name>.gpr (default: ../ghidra next to the repository)
-  SW_GHIDRA_NAME       project name (default botw_1.8.2)
+  SW_GHIDRA_NAME       project name (default botw_1.9.0, the supported version; botw_1.8.2 is kept)
   SW_GHIDRA_PROGRAM    program inside the project (default main)
 """
 import json
@@ -59,7 +59,7 @@ def main():
     if not ghidra:
         sys.exit('set GHIDRA_INSTALL_DIR (or put it in tools/ghidra/gq.local.json)')
     project = setting('SW_GHIDRA_PROJECT', os.path.join(os.path.dirname(REPO), 'ghidra'))
-    name = setting('SW_GHIDRA_NAME', 'botw_1.8.2')
+    name = setting('SW_GHIDRA_NAME', 'botw_1.9.0')
     program = setting('SW_GHIDRA_PROGRAM', 'main')
     env = dict(os.environ)
     if setting('JAVA_HOME'):

@@ -26,11 +26,16 @@
 #include "../settings.h"
 #include "output_scale.h"
 
+#ifndef __APPLE__
+extern bool vk_dlss_available(void);
+#endif
+
 #define MAX_TEX 16384.0
 #define SCENE_LINES 900.0  // the height of the game's 3D scene targets (docked)
 
 #ifndef __APPLE__
 bool fsr3_available(void);  // (vulkan/fsr3.h: built in)
+bool fsr4_available(void);  // (vulkan/fsr_api.h: AMD's DLLs, on an AMD Radeon)
 #endif
 // FSR 3 upscaling is held back until its cost on the thread that records the frame for Vulkan comes down (the draw
 // translation work in progress): today that thread limits 1080p and 1440p, and FSR 3's motion vectors make every mode
@@ -45,13 +50,29 @@ bool upscaler_available(int u) {
 #ifdef __APPLE__
     return u == UPSCALE_OFF || u == UPSCALE_METALFX;
 #else
-    return u == UPSCALE_OFF || u == UPSCALE_FSR1 || (u == UPSCALE_FSR3 && fsr3_available() && fsr3_upscaler_enabled());
+    return u == UPSCALE_OFF || u == UPSCALE_FSR1 || (u == UPSCALE_FSR3 && fsr3_available() && fsr3_upscaler_enabled())
+        || (u == UPSCALE_FSR4 && fsr4_available() && fsr3_upscaler_enabled())  // (FSR 4: the same hold-back as FSR 3)
+        || (u == UPSCALE_DLSS && vk_dlss_available());
 #endif
 }
 
-bool rt_fsr3(void) { return g_settings.upscaler == UPSCALE_FSR3 && upscaler_available(UPSCALE_FSR3); }
+// FSR 4 is on this PC (an AMD Radeon, AMD's DLLs found), whether or not it is held back (the menu says which)
+bool fsr4_offered(void) {
+#ifdef __APPLE__
+    return false;
+#else
+    return fsr4_available();
+#endif
+}
 
-bool rt_temporal(void) { return rt_antialias() == AA_TAA || rt_fsr3(); }
+bool rt_fsr4(void) { return g_settings.upscaler == UPSCALE_FSR4 && upscaler_available(UPSCALE_FSR4); }
+// FSR 4 takes the same inputs and does the same jobs (anti-aliasing, sharpening) as FSR 3: everything that asks for
+// FSR 3 asks for either; vulkan/exec.c fsr3_scene picks the one to run
+bool rt_fsr3(void) { return (g_settings.upscaler == UPSCALE_FSR3 && upscaler_available(UPSCALE_FSR3)) || rt_fsr4(); }
+
+bool rt_dlss(void) { return g_settings.upscaler == UPSCALE_DLSS && upscaler_available(UPSCALE_DLSS); }
+
+bool rt_temporal(void) { return rt_antialias() == AA_TAA || rt_fsr3() || rt_dlss(); }
 
 double upscale_mode_factor(int q) {
     static const double f[UPQ_COUNT] = {1.3, 1.5, 1.7, 2.0, 3.0};
@@ -99,7 +120,13 @@ void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
 #else
     double out_div = 1.0, scene_div = upscale_factor();
 #endif
-    double h = forced > 0 ? forced : (reshape ? dh / 1080.0 : fit) / out_div;
+    // Video > Render scale: above 100% everything renders bigger than the window and is scaled down to it
+    // (supersampling: the cleanest anti-aliasing, at the GPU's cost); below it smaller, scaled up (faster, blurrier).
+    // MAX_TEX below still caps it.
+    static const double ss_f[RSCALE_COUNT] = {0.5, 0.75, 1.0, 1.25, 1.5, 2.0};
+    int rsi = g_settings.render_scale;
+    double ss = rsi >= 0 && rsi < RSCALE_COUNT ? ss_f[rsi] : 1.0;
+    double h = forced > 0 ? forced : (reshape ? dh / 1080.0 : fit) / out_div * ss;
     h = fmax(h, 0.1);  // (a tiny window)
     double sx = h * shape, sy = h;
     double cap = fmin(MAX_TEX / (1920.0 * sx), MAX_TEX / (1080.0 * sy));
@@ -120,6 +147,15 @@ void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
     }
     o->vx = (dw - o->vw) / 2; o->vy = (dh - o->vh) / 2;
     o->crop[0] = o->crop[1] = 0, o->crop[2] = o->crop[3] = 1;
+    // The map's frame stays 16:9, but its scrollable background can draw beyond the frame on taller windows
+    // (#303). Present only that centered 16:9 region, without resizing its targets or changing cursor coordinates.
+    if (reshape && shape < 1 && framepace_map_ui()) {
+        double map_h = o->vh * shape;
+        o->vy += (o->vh - map_h) / 2;
+        o->vh = map_h;
+        o->crop[1] = (1 - shape) / 2;
+        o->crop[3] = shape;
+    }
     // Pause pages keep their 16:9 layout centered while the wider or taller image remains visible around them.
     g_view_shape = (float)o->shape;
     // Video > Field of view: in play only (cutscenes and talks keep the game's framing), eased over about 1/4 s so
@@ -290,7 +326,7 @@ bool rt_jitter_on(void) {
     return env >= 0 ? env : rt_temporal();
 }
 
-// The jitter sequence's length: 8, or FSR 3's for its upscale (fsr3_jitter_phases, set by vulkan/exec.c)
+// The jitter sequence's length: 8, or the temporal upscaler's (FSR 3's fsr3_jitter_phases, DLSS's; set by vulkan/exec.c)
 static uint32_t jitter_phases = 8;
 void rt_jitter_set_phases(uint32_t n) { __atomic_store_n(&jitter_phases, n ? n : 8, __ATOMIC_RELAXED); }
 
@@ -353,11 +389,12 @@ void output_scale_screen(double sw, double sh, int iw, int ih, OutScale *o) {
     o->vw *= k; o->vh *= k;
 }
 
-// Console: the game's own size (BOTW: 896 x 896 per cascade); High 2048, Ultra 4096, Extreme 8192. Test override:
+// Console: the game's own size (BOTW: 896 x 896 per cascade); High 2048, Ultra 4096, Extreme 8192; Potato 448, half the
+// game's (softer edges, a quarter of the pixels to draw: for weak GPUs). Test override:
 // SAVAGEWIND_SHADOW_AT=<frame>:<console|high|ultra|extreme|width>,... from that presented frame on (same-view A/B in one
 // run).
 unsigned shadow_map_size(unsigned long long frame) {
-    static const unsigned size[SHADOW_COUNT] = {0, 2048, 4096, 8192};
+    static const unsigned size[SHADOW_COUNT] = {0, 2048, 4096, 8192, 448};
     static int n = -1;
     static unsigned long long at[8];
     static unsigned w[8];
@@ -367,7 +404,7 @@ unsigned shadow_map_size(unsigned long long frame) {
             char name[16] = "";
             if (sscanf(e, "%llu:%15[^,]", &at[n], name) != 2) break;
             w[n++] = !strcmp(name, "console") ? 0 : !strcmp(name, "high") ? 2048 : !strcmp(name, "ultra") ? 4096
-                   : !strcmp(name, "extreme") ? 8192 : (unsigned)atoi(name);
+                   : !strcmp(name, "extreme") ? 8192 : !strcmp(name, "potato") ? 448 : (unsigned)atoi(name);
             e = strchr(e, ',');
             if (e) e++;
         }

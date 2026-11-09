@@ -55,7 +55,28 @@ BLADE_LATERAL = ('bd4207e0 bd420be1 1e298821 1f0d0402 1f2d0400 1e202048 1e20cc40
 TRAVERSE = ('b9400028 2f00e400 36600008/fff8001f d65f03c0 a9bf7bfd 910003fd 12000042 12000083 94000000/fc000000 '
             '90000008/9f00001f 91000108/ffc003ff f9400108 b4000008/ff00001f bd431101 52a85908 1e202008 1e270102 1e22cc00 '
             '1e210800 a8c17bfd 14000000/fc000000 1e2e1001')
+# The game's input queries: isHold(pad, action) / isTrig(pad, action). Both load the action's pad mask from a table of 41
+# (cmp w1, #0x29) and test it against the pad object's held word (+0x11c) or pressed word (+0x10)
+PAD_QUERY = ('a9be7bfd a9014ff4 910003fd 7100a43f 90000008/9f00001f 91000108/ffc003ff 1a9f3029 aa0003f3 b8695914 '
+             '7100229f 7a421a84 54000001/ff00001f 2a1f03e0 94000000/fc000000 71000a9f 52800048 52800109 1a880128 '
+             '7200001f 1a941114')
+OPT_TWO_SITES = ('opt_two_redraw', 'opt_two_select', 'opt_two_state', 'opt_two_decide', 'opt_two_after', 'opt_two_row_state', 'opt_two_update_control', 'opt_two_initial_control', 'opt_two_left', 'opt_two_right', 'opt_two_text', 'opt_two_help', 'opt_two_pane_calc')
+
 SITES = [
+    # Experimental dual binding cells. Every pattern must match; no KNOWN fallback.
+    Site('opt_two_redraw', 'code', 'd10103ff a9017bfd a90257f6 a9034ff4 910043fd 90000009/9f00001f 91000129/ffc003ff b9405008', 0),
+    Site('opt_two_select', 'code', 'b976b008 7100051f 5400000b/ff00001f a9be7bfd a9014ff4 910003fd 9000000b/9f00001f 9100016b/ffc003ff', 0),
+    Site('opt_two_state', 'code', 'b976b008 7100051f 5400000b/ff00001f 9000000b/9f00001f 9100016b/ffc003ff f95b5c09 b940016a 5280060c f940056b f940012d b400000d/ff00001f b94051ae 6b0e015f 1a9f81ce 9b2c2dce b94011ce 710009df 54000000/ff00001f 710005df 54000000/ff00001f 3500000e/ff00001f 910061ad 14000000/fc000000 9100a1ad 14000000/fc000000 910081ad f94001ad eb0101bf 54000000/ff00001f 91002129 f1000508 54000001/ff00001f 14000000/fc000000 aa1f03ed 14000000/fc000000 d65f03c0 f9400120 17ffff20', 0),
+    Site('opt_two_decide', 'code', 'b976b008 7100051f 5400000b/ff00001f 9000000b/9f00001f 9100016b/ffc003ff f95b5c09 b940016a 5280060c f940056b f940012d b400000d/ff00001f b94051ae 6b0e015f 1a9f81ce 9b2c2dce b94011ce 710009df 54000000/ff00001f 710005df 54000000/ff00001f 3500000e/ff00001f 910061ad 14000000/fc000000 9100a1ad 14000000/fc000000 910081ad f94001ad eb0101bf 54000000/ff00001f 91002129 f1000508 54000001/ff00001f 14000000/fc000000 aa1f03ed 14000000/fc000000 d65f03c0 f9400120 14000001', 0),
+    Site('opt_two_after', 'code', 'b976b008 7100051f 5400000b/ff00001f 90000009/9f00001f 91000129/ffc003ff f95b5c0a b940012b 5280060c', 0),
+    Site('opt_two_row_state', 'code', '90000008/9f00001f 91000108/ffc003ff b9405009 b940010a 6b09015f f9400508 5280060a 1a9f8129 9b2a2128', 0),
+    Site('opt_two_update_control', 'code', 'f9400129 eb09011f 54000000/ff00001f b976c268 71000d1f 54000001/ff00001f f9401e68 3940e108', 0),
+    Site('opt_two_initial_control', 'code', 'f9400161 b4000001/ff00001f aa1303e0 94000000/fc000000 aa0003e1 aa1303e0 94000000/fc000000 b9405288', 0),
+    Site('opt_two_left', 'code', 'b936c268 f95b6668 f940068b b9405109 6b09015f 5280060a 1a9f8129 9b2a2d29 b9401129 34000009/ff00001f 7100053f 54000001/ff00001f b9405909', 0),
+    Site('opt_two_right', 'code', 'b936c268 f95b6668 f940068b b9405109 6b09015f 5280060a 1a9f8129 9b2a2d29 b9401129 34000009/ff00001f 7100053f 54000001/ff00001f 294b250a', 0),
+    Site('opt_two_text', 'code', 'b4000000/ff00001f d10583ff a9137bfd a91457fc a9154ff4 9104c3fd 90000009/9f00001f 910063e8', 0),
+    Site('opt_two_help', 'code', 'd100c3ff a9017bfd f90013f3 910043fd aa0003f3 94000000/fc000000 90000009/9f00001f 91000129/ffc003ff', 0),
+    Site('opt_two_pane_calc', 'code', 'd10243ff fd0023e8 f9002ff9 a904fbfd a9065ff8 a90757f6 a9084ff4 910123fd 39416008', 0),
     # The Options screen (tools/patches.py; runtime/ui/game_options.mm)
     Site('opt_create_rows', 'code', 'd10303ff a9067bfd a9076ffc a90867fa a9095ff8 a90a57f6 a90b4ff4 910183fd '
          '90000008/9f00001f b9400118/ffc003ff', 0),
@@ -140,6 +161,10 @@ SITES = [
     Site('surf_contact', 'code', '3941d2a8 36080008/fff8001f bd4066a0 1e202008 5400000d/ff00001f bd403261 1e202028 5400000d/ff00001f', 0),
     Site('surf_boost_remove', 'code', '1e203820 2f00e401 aa1403e1 1e216800 bd003260 0f016680 f94006a0 94000000/fc000000', 0),
     Site('surf_jump_request', 'code', '36000000/fff8001f 52a82608 b9006668 b9008288 52800028 3900a288 2d488680 52800141', 0),
+    # a stale actor in the target manager (tools/patches.py _stale_actor_helper, _stale_actor_target; #391, #393): the
+    # helper that asks an actor for its link, and the camera target's inline copy of it
+    Site('stale_actor_helper', 'code', 'b4000000/ff00001f f942b808 f9404500 14000000/fc000000 d65f03c0', 0),
+    Site('stale_actor_target', 'code', 'f942ba68 f9404500 94000000/fc000000 12000008 390006e8 37000000/fff8001f 394002e8 35000008/ff00001f', 0),
     # the physics step's solver microsteps (tools/patches.py _solver_steps): the delta frame times 6
     Site('phys_solver_steps', 'code', '1e231002 1e3c1004 f9401a68 1e2c1009 1e220822 f9400108 1e202048 f9400514', 4),
     # a keyframed body's angular velocity toward its target (tools/patches.py _kf_angle): the call that takes the angle
@@ -155,6 +180,9 @@ SITES = [
     Site('quick_menu_capture_alpha', 'code', 'f9400268/ffc003ff bd405100 1e202008 54000000/ff00001f '
          'bd402100 1e2e1001 1e212000 54000001/ff00001f 90000001/9f00001f 91000021/ffc003ff '
          'aa1303e0 94000000/fc000000 52801fe8 39016408', 7),
+    # the wait for the ground (tools/patches.py _tp_gate): is the map around Link not loaded yet? (the world pauses for it)
+    Site('tp_gate', 'code', 'd10283ff fd002be8 f90037f9 a905fbfd a9075ff8 a90857f6 a9094ff4 910163fd '
+         '90000016/9f00001f', 0),
     Site('pause_state', 'ref', '90000013/9f00001f b9400268/ffc003ff 35000008/ff00001f 90000008/9f00001f '
          'b9400108/ffc003ff 35000008/ff00001f b9400268/ffc003ff 34000008/ff00001f', 1),
     Site('event_mgr', 'ref', '9000000d/9f00001f 910001ad/ffc003ff f94001a0 aa1703e1 94000000/fc000000 aa1703e0 '
@@ -170,6 +198,8 @@ SITES = [
     # stick input, which every camera action reads, and the square that the chase-like cameras apply to its vertical
     # part
     Site('cam_stick', 'code', 'd100c3ff fd000be8 f90017f3 a901fbfd 910063fd aa0003f3 f900001f 52800060', 0),
+    # (the end of the camera's stick input, with the stick's value written: tools/patches.py _cam_stick_end)
+    Site('cam_stick_end', 'code', 'f9409408 910023e0 f90007e8 94000000/fc000000 360000c0 fd400be8 f94017f3', 5),
     Site('cam_pitch_chase', 'code', '1e208803 1e202008 bd41ce80 1e23cc2b bd41d281 1e212000 54000001/ff00001f '
          '52800039', 0),
     Site('cam_pitch_surf', 'code', '1e208803 1e202008 bd430260 1e23cc2d bd430661 1e212000 54000001/ff00001f '
@@ -194,6 +224,13 @@ SITES = [
     Site('pc_cursor_activate', 'code', 'a9bd7bfd f9000bf5 a9024ff4 910003fd f9402415 aa0103f3 aa0003f4 f9002401', 0),
     Site('pc_pane_bounds', 'code', 'bd407020 2d4a0821 1e200824 bd408423 1e208825 1e230841 1e238842 1e2c1003', 0),
     # Map focus helpers: retain marker targeting without controller-style recentering on hover.
+    Site('beast_focus_axes', 'code', 'a9bd7bfd f9000bf5 a9024ff4 910003fd 91404408 2a0103f3 aa0003f4 91231115', 0),
+    Site('beast_focus_linear', 'code', 'a9bd7bfd a90157f6 a9024ff4 910003fd 91404408 2a0103f3 aa0003f4 911f2116', 0),
+    Site('beast_confirm_axes', 'code', 'a9ba7bfd a9016ffc a90267fa a9035ff8 a90457f6 a9054ff4 910003fd 52831888', 0),
+    Site('beast_confirm_linear', 'code', 'fc1b0fe8 a900fbfd f9000ff9 a9025ff8 a90357f6 a9044ff4 910023fd 90000018/9f00001f 91000318/ffc003ff', 0),
+    Site('beast_clamp_pitch', 'code', 'd101c3ff a9057bfd f90033f3 910143fd 52800409 39012fff 910023e8 b9002be9', 0),
+    Site('beast_wrap_yaw', 'code', 'b9762808 7100051f 54000000/ff00001f 35000008/ff00001f bd767400 90000008/9f00001f 1e202008 bd4aa101', 0),
+    Site('beast_world', 'got', '90000009/9f00001f 52898708 72a000c8 f9400129/ffc003ff aa0103f4 f9400129 aa0003f3 b8686928', 3),
     Site('pc_map_focus', 'code', 'a9be7bfd f9000bf3 910003fd bd786800 aa0003f3 910063a1 bd786c01 91214000', 0),
     Site('pc_map_focus_target', 'code', 'd100c3ff a9017bfd a9024ff4 910043fd aa0103f3 aa0003f4 97ffffdc aa1403e0', 0),
     Site('pc_map_focus_now', 'code', 'd100c3ff a9017bfd a9024ff4 910043fd aa0103f3 aa0003f4 97ffffb3 aa1403e0', 0),
@@ -225,6 +262,91 @@ SITES = [
          'b4000008/ff00001f 39406108 37280008/fff8001f 39402008 36000008/fff8001f d10143ff', 0),
     # a shrine apparatus fetching its input (tools/patches.py _gyro_scene_actor; runtime/pc_gyro_scene.c)
     Site('gyro_scene_actor', 'code', '2d59b28f 2d5ab689 94000000/fc000000 b5000000/ff00001f 9101d280 9101a281', 2),
+    # per-action bindings (tools/patches.py _act_query; runtime/hle/bindings.c): the two queries and the mask table
+    Site('act_hold', 'code', PAD_QUERY + ' b9411e68', 0),
+    Site('act_trig', 'code', PAD_QUERY + ' b9401268', 0),
+    Site('act_masks', 'ref', PAD_QUERY + ' b9401268', 5),
+    # the store of an equipped weapon's, bow's or shield's durability, x100 (tools/patches.py _no_wear; from #296: the
+    # setter 1.8.2 0x7000c809e8 finds the equipped item of a type w22 in the pouch and stores the new value w20)
+    Site('no_wear_store', 'code', 'b9002174 5288fb08 72a00088 38686aa8 35000008/ff00001f 2a1403e0 2a1f03e2 '
+         '94000000/fc000000', 0),
+    # the weapon actor's own durability, x100 (tools/patches.py _no_wear_hit): a hit takes its cost w9 off the value w8
+    Site('no_wear_hit', 'code', '4b090108 0aa87d08 1e220101 b9000268 1e212000 1a9f07e0 14000000/fc000000 f9400288', 0),
+    # where the weapon's update calls that (no_wear_hit's function, a virtual method that every damage goes through):
+    # the instruction after the call, the return address that tells a weapon's wear from damage to Link or an enemy
+    Site('no_wear_ret', 'code', 'f9400288 2a0003f5 aa1403e0 f9415d08 d63f0100 b5000000/ff00001f 52800036 '
+         '14000000/fc000000', 0),
+    # Link's damage handling storing his new life, in quarter hearts (tools/patches.py _link_life): at its end, and on
+    # the path that takes one quarter off
+    Site('link_life_store', 'code', 'b90002b9 f9400300 94000000/fc000000 6b00033f 5400000d/ff00001f f9400300 b9400ff5 '
+         '94000000/fc000000', 0),
+    Site('link_life_tick', 'code', 'b90002a8 1e212000 1a9f07e0 14000000/fc000000 2a1f03fa 39715288 36080008/fff8001f '
+         'bd42e660', 0),
+    # the stamina setter's store, PlayerInfo +0xa4 (tools/patches.py _stamina)
+    Site('stamina_store', 'code', '1e204008 94000000/fc000000 bd00a668 f9400ff3 a940fbfd fc4207e8 d65f03c0', 2),
+    # the pouch taking arrows off for the player's bow (tools/patches.py _remove_arrows; Accessibility > Infinite arrows)
+    Site('pouch_remove_arrows', 'code', 'd101c3ff a9017bfd a9026ffc a90367fa a9045ff8 a90557f6 a9064ff4 910043fd '
+         '90000008/9f00001f aa0003f3 f9400108/ffc003ff aa0103e0', 0),
+    # sead::LookAtCamera::doUpdateMatrix (tools/patches.py _lookat_update): its first load of the eye (+0x38); eye,
+    # at (+0x44) and up (+0x50) make the view matrix written to x1 (free camera, runtime/hle/freecam.c)
+    Site('lookat_update', 'code', '2d470801 2d480c00 1e232020 2d491404 1e240440 1e250400 54000000/ff00001f 1e233823', 0),
+    # Native quick-selector sorting (runtime/quick_inventory_sort.c), optional as a complete group.
+    Site('quick_sort_enter', 'code', 'fc1d0fe8 a900fbfd f9000ff5 a9024ff4 910023fd b978e014 aa0003f3 7100069f', 0),
+    Site('quick_sort_menu', 'code', 'a9be7bfd a9014ff4 910003fd 52871b08 aa0003f3 8b080014 f95bd400 b4000000/ff00001f', 0),
+    Site('pouch_page_count', 'code', '2a0103e9 7100c83f 5288460a 72a0008a 9a9f3129 8b090c09 f86a692c b9407809', 0),
+    Site('pouch_page_item', 'code', '7100c43f 5400000d/ff00001f aa1f03e0 d65f03c0 a9bd7bfd f9000bf5 a9024ff4 910003fd 2a0203f3 '
+         '2a0103f5 aa0003f4 94000000/fc000000 2a0003e8 2a1503e9 7100cabf aa1f03e0 9a9f3129 6b13011f '
+         '5400000d/ff00001f 8b090e88 52884609 72a00089 f869690b', 0),
+    Site('pouch_item_type', 'code', 'd101c3ff a9037bfd f90023f7 a90557f6 a9064ff4 9100c3fd 90000016/9f00001f 90000008/9f00001f', 0),
+    Site('quick_sort_modal', 'code', '90000008/9f00001f 91000108/ffc003ff f9400108 b9402909 f9401908 71002d3f 52800b09 9a9f8129 '
+         'f8696900 b4000000/ff00001f 14000000/fc000000 d65f03c0', 0),
+    Site('pouch_sort', 'code', 'd10103ff a9017bfd a90257f6 a9034ff4 910043fd 9100a013 aa0003f4 2a0203f5', 0),
+    Site('quick_sort_refill', 'code', 'a9be7bfd a9014ff4 910003fd aa0003f3 71000c3f 54000008/ff00001f 2a0103e8 90000009/9f00001f', 0),
+    Site('quick_sort_mapping', 'code', 'a9be7bfd a9014ff4 910003fd b9773814 aa0003f3 7100069f 54000000/ff00001f 35000014/ff00001f', 0),
+    Site('quick_sort_cursor', 'code', 'a9bd7bfd f9000bf5 a9024ff4 910003fd 2a0203f3 2a0103f4 2a0203e1 2a1f03e2', 0),
+    Site('quick_sort_labels', 'code', 'd10483ff a90e7bfd f9007bfc a91057f6 a9114ff4 910383fd aa0003f3 d10043a0', 0),
+    Site('pouch_lock', 'call', '94000000/fc000000 f9401be9 f9400fa0 14000000/fc000000 aa1403e0 aa0903f4 94000000/fc000000 '
+         'aa1403e9', 0),
+    Site('pouch_unlock', 'call', '94000000/fc000000 aa1403e9 14000000/fc000000 f9000fa0 aa0803e0 52800601 52800082 d63f0120', 0),
+    Site('quick_sort_event', 'call', '94000000/fc000000 37000000/fff8001f 2a1f03e0 94000000/fc000000 36000000/fff8001f 2a1f03e0 '
+         '2a1f03e1 94000000/fc000000 aa1303e0 aa1403e1', 0),
+    Site('quick_sort_player_busy', 'call', '94000000/fc000000 2a0003f4 d10183a0 94000000/fc000000 90000015/9f00001f 90000008/9f00001f '
+         '91000108/ffc003ff 14000000/fc000000', 0),
+    # Native quick-selector drop and asynchronous equipped-item completion.
+    Site('quick_drop_tick', 'code', 'd10183ff a9027bfd a9035ff8 a90457f6 a9054ff4 910083fd 91419008 aa0003f3', 0),
+    Site('quick_drop_actor_call', 'code', 'd63f0100 aa1503e0 94000000/fc000000 a9424ff4 52800020 f9400bf5 a8c37bfd d65f03c0', 0),
+    Site('player_drop_forbidden', 'code', 'a9be7bfd f9000bf3 910003fd aa0003f3 94000000/fc000000 36000000/fff8001f 2a1f03e0 '
+         '14000000/fc000000', 0),
+    Site('actor_info_lookup', 'code', 'd10103ff a9017bfd a90257f6 a9034ff4 910043fd aa0003f6 aa0203e0 2a0303f5', 0),
+    Site('actor_info_has_tag', 'code', 'd10203ff a9047bfd a9055ff8 a90657f6 a9074ff4 910103fd aa0103f4 f9400421', 0),
+    Site('pouch_discard', 'code', 'd10183ff a9027bfd a9035ff8 a90457f6 a9054ff4 910083fd 9100a013 aa0003f4', 0),
+    Site('player_equipment', 'code', 'a9be7bfd f9000bf3 910003fd f9400008 2a0103f3 f9418908 d63f0100 2a1303e1 94000000/fc000000', 0),
+    Site('pouch_default_name', 'code', '90000009/9f00001f 90000008/9f00001f 91000108/ffc003ff f9400129/ffc003ff 71001c3f 8b215108 '
+         '7a423824 9a891100', 0),
+    Site('player_schedule_equip', 'code', 'd100c3ff a9017bfd a9024ff4 910043fd 12800003 910023e4 f90007ff aa0003f3', 0),
+    Site('pouch_equipped_snapshot', 'code', 'a9bd7bfd f9000bf5 a9024ff4 910003fd 91411008 9100a013 aa0003f4 911f8115', 0),
+    Site('actor_index_assign', 'code', 'd10503ff a9127bfd a9134ffc 910483fd 39403008 aa0103f3 34000008/ff00001f f9400008', 0),
+    Site('actor_index_resolve', 'code', 'd10143ff a9017bfd a9025ff8 a90357f6 a9044ff4 910043fd b9400808 3100051f', 0),
+    Site('actor_index_release', 'code', '39403008 35000008/ff00001f 12800008 b9000808 d65f03c0 f9400008 3900301f b4000008/ff00001f', 0),
+    Site('actor_link_release', 'code', 'a9be7bfd f9000bf3 910003fd 39400008 aa0003f3 34000008/ff00001f f9400660 b4000000/ff00001f', 0),
+    Site('actor_link_alive', 'code', 'b9400809 3100053f 54000000/ff00001f f9400008 b940410a 6b09015f 54000001/ff00001f 39403009', 0),
+    Site('pouch_cleanup', 'code', 'a9bb7bfd a90167fa a9025ff8 a90357f6 a9044ff4 910003fd 9100a013 aa0003f4', 0),
+    Site('player_actor', 'call', '94000000/fc000000 b4000000/ff00001f 91316015 aa0003f4 aa1503e0 94000000/fc000000 b94c9a88 '
+         'aa1503e0 321b0108 b90c9a88 94000000/fc000000 aa1303e0', 0),
+    Site('quick_drop_trash_prohibited', 'call', '94000000/fc000000 36000000/fff8001f 52800037 14000000/fc000000 1e229000 d63f0100 d2800ba9 '
+         '5286db88', 0),
+    Site('quick_drop_actor_method', 'code', 'f942cc08 b4000008/ff00001f 79404d09 32000129 79004d09 14000000/fc000000 f942cc08 '
+         'b4000008/ff00001f', 0),
+    Site('actor_info', 'ref', '90000008/9f00001f 91000108/ffc003ff f9400117 b4000017/ff00001f f94006a8 3940011b '
+         '3400001b/ff00001f f94002a8', 1),
+    # Add items (tools/patches.py _item_tick; runtime/items.c): the entry of Link's damage handling (every frame in
+    # Adding items (tools/patches.py _item_tick; runtime/items.c): the entry of Link's damage handling (every frame in
+    # play: the game thread's place for the item get), the pause menu data's item get, and where the pause menu data's
+    # address is (its load in the pickup code)
+    Site('item_tick', 'code', 'd101c3ff fd000be8 a9027bfd a90367fa a9045ff8 a90557f6 a9064ff4 910083fd f9400c14', 0),
+    Site('pouch_item_get', 'code', 'd10243ff a9037bfd a9046ffc a90567fa a9065ff8 a90757f6 a9084ff4 9100c3fd f90003e3', 0),
+    Site('pouch_mgr', 'got', '90000017/9f00001f aa0003f5 f94002f7/ffc003ff 910003e0 f94002f6 94000000/fc000000 2a0003e2 '
+         'aa1603e0', 2),
     Site('main_data', 'data', '', 0),
     Site('main_end', 'end', '', 0),
 ]
@@ -235,22 +357,44 @@ SITES = [
 # Without them the mouse turns the camera through the right stick, as before (runtime/hle/input.c); without the
 # second group it turns it without the game's camera inversion options.
 OPTIONAL_GROUPS = [
+    ('quick_drop_tick', 'quick_drop_actor_call', 'player_drop_forbidden', 'actor_info_lookup',
+     'actor_info_has_tag', 'pouch_discard', 'player_equipment', 'pouch_default_name',
+     'player_schedule_equip', 'pouch_equipped_snapshot', 'actor_index_assign', 'actor_index_resolve',
+     'actor_index_release', 'actor_link_release', 'actor_link_alive', 'pouch_cleanup', 'player_actor',
+     'quick_drop_trash_prohibited', 'quick_drop_actor_method', 'actor_info'),
+    ('quick_sort_enter', 'quick_sort_menu', 'pouch_page_count', 'pouch_page_item', 'pouch_item_type',
+     'quick_sort_modal', 'pouch_sort', 'quick_sort_refill', 'quick_sort_mapping', 'quick_sort_cursor',
+     'quick_sort_labels', 'pouch_lock', 'pouch_unlock', 'quick_sort_event', 'quick_sort_player_busy'),
+    OPT_TWO_SITES,
+    ('lookat_update',),  # (the free camera: without it Home does nothing)
     ('gyro_scene_actor',),
     ('surf_contact', 'surf_boost_remove', 'surf_jump_request'),
+    ('stale_actor_helper', 'stale_actor_target'),
     ('quick_menu_capture_alpha',),
     ('kf_angle',),
     ('yaz0_stream', 'yaz0_stream_ret'),
     ('pc_map_focus', 'pc_map_focus_target', 'pc_map_focus_now'),
+    ('beast_focus_axes', 'beast_focus_linear', 'beast_confirm_axes', 'beast_confirm_linear',
+     'beast_clamp_pitch', 'beast_wrap_yaw', 'beast_world'),
     ('pc_button_group',),
     ('pc_cursor_manager', 'pc_cursor_activate', 'pc_pane_bounds'),
     ('cam_stick', 'cam_pitch_chase', 'cam_pitch_surf', 'cam_pitch_wakeboard', 'cam_pitch_aim', 'cam_pitch_item'),
     ('cam_reverse_x', 'cam_reverse_y'),
+    ('cam_stick_end',),  # (Controls > Controller camera speed: without it the setting does nothing)
     ('traverse_scale', 'traverse_scale_default'),
     ('grass_range', 'grass_fade_blades', 'grass_fade_quads'),
     ('grass_blade_slots', 'grass_blade_cap_a', 'grass_blade_cap_b', 'grass_blade_cap_c', 'grass_blade_cap_c_max',
      'grass_blade_lateral_near',
      'grass_blade_lateral_far'),
     ('tree_ranges',),
+    ('act_hold', 'act_trig', 'act_masks'),
+    ('pouch_remove_arrows',),
+    ('no_wear_store',),
+    ('no_wear_hit', 'no_wear_ret'),
+    ('link_life_store', 'link_life_tick'),
+    ('stamina_store',),
+    ('tp_gate',),  # (a far teleport of the control endpoint: without it a long jump freezes the world)
+    ('item_tick', 'pouch_item_get', 'pouch_mgr'),
 ]
 OPTIONAL = {n for g in OPTIONAL_GROUPS for n in g}
 
@@ -315,6 +459,55 @@ KNOWN = {
         'main_end': 0x7001d37000,
     },
     '1.9.0': {
+        'quick_drop_tick': 0x7000e68168,
+        'quick_drop_actor_call': 0x7001223f50,
+        'player_drop_forbidden': 0x7000cc0334,
+        'actor_info_lookup': 0x700108dc0c,
+        'actor_info_has_tag': 0x700108e7a0,
+        'pouch_discard': 0x7000d9784c,
+        'player_equipment': 0x7000570128,
+        'pouch_default_name': 0x7000d940c4,
+        'player_schedule_equip': 0x7000cbe480,
+        'pouch_equipped_snapshot': 0x7000d9f4a8,
+        'actor_index_assign': 0x7001517e60,
+        'actor_index_resolve': 0x7001517abc,
+        'actor_index_release': 0x7001517f8c,
+        'actor_link_release': 0x7001126464,
+        'actor_link_alive': 0x7001517e0c,
+        'pouch_cleanup': 0x7000d97f68,
+        'player_actor': 0x7000cc6fd0,
+        'quick_drop_trash_prohibited': 0x7000d388b0,
+        'quick_drop_actor_method': 0x70007acaa0,
+        'actor_info': 0x7001e39450,
+        'quick_sort_enter': 0x7000e283fc,
+        'quick_sort_menu': 0x7000e28744,
+        'pouch_page_count': 0x7000d970a8,
+        'pouch_page_item': 0x7000d992ac,
+        'pouch_item_type': 0x7000d91414,
+        'quick_sort_modal': 0x7000e7e750,
+        'pouch_sort': 0x7000d980a0,
+        'quick_sort_refill': 0x7000e27c2c,
+        'quick_sort_mapping': 0x7000e28070,
+        'quick_sort_cursor': 0x7000d665a4,
+        'quick_sort_labels': 0x7000e278c0,
+        'pouch_lock': 0x7000eaff08,
+        'pouch_unlock': 0x7000eaff18,
+        'quick_sort_event': 0x7000d1499c,
+        'quick_sort_player_busy': 0x7000d35b80,
+        'opt_two_redraw': 0x7000e2eed8,
+        'opt_two_select': 0x7000e3047c,
+        'opt_two_state': 0x7000e305d0,
+        'opt_two_decide': 0x7000e30668,
+        'opt_two_after': 0x7000e30a90,
+        'opt_two_row_state': 0x7000e302e4,
+        'opt_two_update_control': 0x7000e2f7c8,
+        'opt_two_initial_control': 0x7000e3019c,
+        'opt_two_left': 0x7000e2fa50,
+        'opt_two_right': 0x7000e2fae4,
+        'opt_two_text': 0x7000e30ee0,
+        'opt_two_help': 0x7000e30550,
+        'opt_two_pane_calc': 0x70000276a0,
+        'lookat_update': 0x7000eb2d5c,
         'yaz0_stream': 0x700131d674,
         'yaz0_stream_ret': 0x700131d7e8,
         'opt_create_rows': 0x7000e2f0a8,
@@ -335,6 +528,13 @@ KNOWN = {
         'screen_open': 0x70013ed220,
         'screen_close': 0x70013ed264,
         'screen_mgr': 0x7001e374b8,
+        'beast_focus_axes': 0x7000df31bc,
+        'beast_focus_linear': 0x7000df3438,
+        'beast_confirm_axes': 0x7000df326c,
+        'beast_confirm_linear': 0x7000df3710,
+        'beast_clamp_pitch': 0x7000df38f4,
+        'beast_wrap_yaw': 0x7000df3988,
+        'beast_world': 0x7001e328d8,
         'pause_options_update': 0x7000dd0384,
         'opt_screen_rows': 0x36b0,
         'dialog_texts': 0x7000e57af8,
@@ -354,6 +554,8 @@ KNOWN = {
         'surf_contact': 0x70011e9e74,
         'surf_boost_remove': 0x70011e9e94,
         'surf_jump_request': 0x70011ea3d4,
+        'stale_actor_helper': 0x700120bc40,
+        'stale_actor_target': 0x7000dea400,
         'phys_solver_steps': 0x700156f930,
         'kf_angle': 0x70012d57fc,
         'snd_frame_floor': 0x7001551004,
@@ -367,11 +569,13 @@ KNOWN = {
         'frustum_tb1': 0x7000eb4f80,
         'persp_unproject_x': 0x7000eb4b58,
         'pause_state': 0x7001e1611c,
+        'tp_gate': 0x70010b7a40,
         'event_mgr': 0x7001e3a638,
         'controller_step': 0x7001dad0e0,
         'player_info': 0x7001e13ed0,
         'world_mgr': 0x7001e57580,
         'cam_stick': 0x7000d57fe0,
+        'cam_stick_end': 0x7000d5801c,
         'cam_pitch_chase': 0x7000bf5334,
         'cam_pitch_surf': 0x7000c1a52c,
         'cam_pitch_wakeboard': 0x7000c22104,
@@ -392,6 +596,19 @@ KNOWN = {
         'grass_blade_lateral_near': 0x70013a8f0c,
         'grass_blade_lateral_far': 0x70013a8f20,
         'tree_ranges': 0x70013c94ac,
+        'act_hold': 0x7000d16f0c,
+        'act_trig': 0x7000d16f74,
+        'act_masks': 0x70016d89b4,
+        'pouch_remove_arrows': 0x7000d93814,
+        'no_wear_store': 0x7000d93d50,
+        'no_wear_hit': 0x7000b9542c,
+        'no_wear_ret': 0x70007b09f4,
+        'link_life_store': 0x7000cc4e70,
+        'link_life_tick': 0x7000cc4da4,
+        'stamina_store': 0x7000cc7430,
+        'item_tick': 0x7000cc4c3c,
+        'pouch_item_get': 0x7000d921bc,
+        'pouch_mgr': 0x7001e18570,
         'main_data': 0x7001b7a000,
         'main_end': 0x7001e98000,
     },
@@ -634,6 +851,13 @@ def resolve(main, known=None, log=None):
             found, hits = main.locate(s)
         except SiteError as e:
             problems.append(f'{s.name}: {e}')
+            continue
+        # This experiment changes native object routing. A stale KNOWN address
+        # must never turn it on after a failed signature check.
+        if s.name in OPT_TWO_SITES and (found is None or
+                                      (known and s.name in known and found != known[s.name])):
+            if log:
+                log(f'game_sites: {s.name}: spike signature did not match')
             continue
         k = (known or {}).get(s.name)
         if found is not None and k is not None and found != k:

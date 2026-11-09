@@ -39,6 +39,12 @@ bool plat_reset_guest(uint64_t lo, uint64_t hi) {
 
 void plat_commit(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
 
+bool plat_committed_range(uint64_t addr, uint64_t end, uint64_t *a, uint64_t *e) {  // (the whole window is backed)
+    if (addr >= end) return false;
+    *a = addr, *e = end;
+    return true;
+}
+
 void plat_decommit(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
 
 int plat_protect(uint64_t addr, uint64_t size, int prot) {
@@ -56,6 +62,10 @@ void plat_sleep_until_ns(uint64_t t) {
     mach_wait_until(t * tb.denom / tb.numer);
 }
 
+void plat_wait_until_ns(uint64_t t) { plat_sleep_until_ns(t); }  // (mach_wait_until doesn't spin)
+
+int plat_cpu_count(void) { int n = (int)sysconf(_SC_NPROCESSORS_ONLN); return n > 0 ? n : 1; }
+
 void plat_cpu_placement(void) {}  // (one logical processor per core: measured on Windows only)
 
 // Real-time (time-constraint) thread: exempt from the timer coalescing macOS applies to
@@ -72,6 +82,8 @@ void plat_thread_realtime(uint64_t period_ns) {
     thread_policy_set(pthread_mach_thread_np(pthread_self()), THREAD_TIME_CONSTRAINT_POLICY, (thread_policy_t)&pol,
                       THREAD_TIME_CONSTRAINT_POLICY_COUNT);
 }
+
+const char *plat_log_path(void) { return ""; }  // (the log goes to stderr)
 
 bool plat_exe_path(char *buf, size_t size) {
     uint32_t len = (uint32_t)size;
@@ -167,3 +179,5 @@ static int rm_entry(const char *path, const struct stat *sb, int flag, struct FT
     return remove(path);
 }
 bool plat_remove_tree(const char *dir) { return nftw(dir, rm_entry, 16, FTW_DEPTH | FTW_PHYS) == 0; }
+
+bool plat_guest_sparse_heap_enabled(void) { return false; }

@@ -30,6 +30,9 @@ float shader_precompile_progress(const ShaderPrecompile *p);  // 0..1 over the w
 // translator (run again after an update). shaders, date (may be NULL): how many, when (YYYY-MM-DD).
 int shader_precompile_status(int *shaders, char *date, int n);
 bool shader_precompile_available(void);  // (false on macOS: Metal compiles its shaders itself)
+// --export-pipeline-seed <file>: this install's pipeline list as a seed any install's precompilation can read
+// (precompile.c, vk_pipelines.seed). The Vulkan device must be up. false: why says what went wrong.
+bool shader_precompile_export_seed(const char *romfs, const char *out, char *why, size_t nwhy);
 
 #ifdef __cplusplus
 }

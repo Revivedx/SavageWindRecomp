@@ -11,8 +11,8 @@ Use an absolute path to a writable folder. The destination drive must be availab
    `savagewind.exe` on Windows, or `~/.local/share/savagewind` on Linux (`$XDG_DATA_HOME/savagewind` if
    `XDG_DATA_HOME` is set to an absolute path). Source builds started in a folder containing `extracted/` use that
    starting folder instead. An existing `SAVAGEWIND_DATA_ROOT` takes precedence over these defaults.
-3. Copy your data into an empty destination folder, keeping the same structure: `extracted/`, `save/`, `cache/`,
-   `fonts/` and `savagewind.ini`, where present, along with any custom files such as `splash.png`.
+3. Copy your data into an empty destination folder, keeping the same structure: `extracted/`, `save/`, `save-profiles/`, `save_profile.txt`, `cache/`,
+   `fonts/`, `savagewind.ini` and `launch-flags.txt` (the start screen's launch options), where present, along with any custom files such as `splash.png`.
    The destination should contain `extracted/` and `save/` directly, not another enclosing copy of the old folder.
    Copy the whole `save/` folder, including `save_0` and its contents.
 4. Start Savage Wind with the variable set, using one of the examples below. Replace the example paths with your

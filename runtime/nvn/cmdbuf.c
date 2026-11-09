@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "ksync.h"
 #include "nvn.h"
 
 #define JUMP_RESERVE (sizeof(CmdRec) + 8)
@@ -50,7 +51,7 @@ static uint64_t g_free_bytes;
 #define FREE_BUDGET (64ull << 20)  // dead blocks past this go back to the C heap
 static HBlock *g_grave;  // dead blocks, oldest first, until three frames have passed
 static int g_ngrave, g_capgrave;
-static pthread_mutex_t g_shadow_lock = PTHREAD_MUTEX_INITIALIZER;
+static KMutex g_shadow_lock = KMUTEX_INIT;
 uint64_t renderer_present_count(void);
 
 static void push_block(HBlock **v, int *n, int *cap, HBlock b) {
@@ -126,7 +127,7 @@ static int live_index(uint64_t lo) {  // (lock held) the first live shadow not w
 // shadows its first bytes go over die (shadow_claim: the others once written over). What `old` stands for shrinks
 // to the part used first.
 static Shadow *shadow_switch(Shadow *old, uint64_t used, bool recording, uint64_t lo, uint64_t hi) {
-    pthread_mutex_lock(&g_shadow_lock);
+    kmutex_lock(&g_shadow_lock);
     if (old && !old->dead && old->lo < old->hi && old->lo + used < old->hi) old->hi = old->lo + used;
     Shadow *sh = NULL;
     if (lo < hi) {
@@ -155,7 +156,7 @@ static Shadow *shadow_switch(Shadow *old, uint64_t used, bool recording, uint64_
     }
     sh->users++;
     if (old) shadow_unuse(old);
-    pthread_mutex_unlock(&g_shadow_lock);
+    kmutex_unlock(&g_shadow_lock);
     return sh;
 }
 
@@ -164,7 +165,7 @@ static void shadow_claim(Shadow *sh, uint64_t end) {
     if (end > sh->win) end = sh->win;  // (recording goes on past the window when the game adds no more: accounting only)
     if (end <= sh->hi || sh->dead) return;
     if (end <= sh->free_to) { sh->hi = end; return; }
-    pthread_mutex_lock(&g_shadow_lock);
+    kmutex_lock(&g_shadow_lock);
     if (!sh->dead) {
         int i = live_index(sh->lo);
         while (i < g_nlive && g_live[i] != sh) i++;
@@ -178,30 +179,30 @@ static void shadow_claim(Shadow *sh, uint64_t end) {
             sh->free_to = i + 1 < g_nlive && g_live[i + 1]->lo < sh->win ? g_live[i + 1]->lo : sh->win;
         }
     }
-    pthread_mutex_unlock(&g_shadow_lock);
+    kmutex_unlock(&g_shadow_lock);
 }
 
 static void shadow_leave(Shadow *sh, uint64_t used) {  // (a command buffer is finalized)
-    pthread_mutex_lock(&g_shadow_lock);
+    kmutex_lock(&g_shadow_lock);
     if (!sh->dead && sh->lo < sh->hi && sh->lo + used < sh->hi) sh->hi = sh->lo + used;
     shadow_unuse(sh);
-    pthread_mutex_unlock(&g_shadow_lock);
+    kmutex_unlock(&g_shadow_lock);
 }
 
 // A memory pool is finalized: the lists recorded in its memory [lo, hi) are dead.
 void cmdbuf_pool_gone(uint64_t lo, uint64_t hi) {
-    pthread_mutex_lock(&g_shadow_lock);
+    kmutex_lock(&g_shadow_lock);
     int a = live_index(lo), end = a;
     while (end < g_nlive && g_live[end]->lo < hi) end++;
     for (int i = a; i < end; i++) shadow_kill(g_live[i]);
     memmove(g_live + a, g_live + end, (g_nlive - end) * sizeof *g_live);
     g_nlive -= end - a;
-    pthread_mutex_unlock(&g_shadow_lock);
+    kmutex_unlock(&g_shadow_lock);
 }
 
 // Block i of a shadow, at least `want` bytes (blocks past the one in use hold dead records).
 static HBlock shadow_block(Shadow *sh, int i, uint64_t want) {
-    pthread_mutex_lock(&g_shadow_lock);
+    kmutex_lock(&g_shadow_lock);
     if (i < sh->nblocks && sh->blocks[i].size < want) {
         block_release(sh->blocks[i]);
         sh->blocks[i] = block_get(want);
@@ -215,12 +216,12 @@ static HBlock shadow_block(Shadow *sh, int i, uint64_t want) {
         sh->blocks[sh->nblocks++] = nb;
     }
     HBlock b = sh->blocks[i];
-    pthread_mutex_unlock(&g_shadow_lock);
+    kmutex_unlock(&g_shadow_lock);
     return b;
 }
 
 RT_ON_RESET(cmdbuf_shadow_reset) {  // (reboot: every list is dead; command buffers were guest objects)
-    pthread_mutex_lock(&g_shadow_lock);
+    kmutex_lock(&g_shadow_lock);
     for (int i = 0; i < g_nlive; i++) {
         for (int k = 0; k < g_live[i]->nblocks; k++) free(g_live[i]->blocks[k].mem);
         free(g_live[i]->blocks);
@@ -229,7 +230,7 @@ RT_ON_RESET(cmdbuf_shadow_reset) {  // (reboot: every list is dead; command buff
     g_nlive = 0;
     for (int i = 0; i < g_ngrave; i++) free(g_grave[i].mem);
     g_ngrave = 0;
-    pthread_mutex_unlock(&g_shadow_lock);
+    kmutex_unlock(&g_shadow_lock);
 }
 
 static NvnCmdBuf *cb_of(uint64_t guest) { return HOST(NvnCmdBuf, guest); }

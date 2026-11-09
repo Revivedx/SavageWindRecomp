@@ -14,10 +14,14 @@ bool framepace_on(void);
 bool framepace_in_event(void);
 // The start screen or one of its menus is up (a 16:9 layout over pictures of its own)
 bool framepace_title_ui(void);
+// The "downloadable content" notice the game shows over the start screen (only B closes it)
+bool framepace_dlc_ui(void);
 // The loading screen is up (a 16:9 layout: its tip, the logo)
 bool framepace_loading_ui(void);
 // The pause menu's pages or the map are up (16:9 layouts that cover the whole picture)
 bool framepace_menu_ui(void);
+// The map is active, rather than the inventory (both use pause state 2).
+bool framepace_map_ui(void);
 // The game is paused (the pause menu, the map) or the start screen's menu is up
 bool framepace_paused(void);
 // present_pace: a frame was presented at t (plat_now_ns), on its pace's grid or not.

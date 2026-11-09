@@ -28,7 +28,9 @@
 //   packets             workers) before the packet that names them; destroyed by T only once the submission that could
 //                       use them is done on the GPU - again after R recorded and submitted it
 //   stats               RecStats: T's fields plain, R's and the waits' _Atomic relaxed adds; read by T
+//   profiling           the profiler's markers (runtime/prof.h): the recorder thread's batches and submits, T's waits on it
 #include "record.h"
+#include "../../prof.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -52,6 +54,7 @@ static uint64_t wpos, published;  // (T) written end, the end last published
 static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t cv_work = PTHREAD_COND_INITIALIZER, cv_done = PTHREAD_COND_INITIALIZER;
 static _Atomic int asleep;
+static _Atomic int done_waiters;  // threads inside a cv_done wait (WAIT_DONE): R broadcasts only when there are any
 static _Atomic uint64_t submitted;
 static int on = -1;  // 1: the thread records, 0: calls at once, -1: not started
 static bool prof, prof_enq;  // SAVAGEWIND_VK_PROF; the time queuing each packet only when it isn't 2 (two clock reads a packet)
@@ -73,6 +76,25 @@ static void timed_wait(pthread_cond_t *cv, uint64_t ns) {  // (mu held)
     pthread_cond_timedwait(cv, &mu, &ts);
 }
 
+// A wait on cv_done (mu held): re-checks `cond` after announcing itself, so a broadcast R skips for want of waiters
+// can't be one this waiter needed (R stores tail / submitted, then reads done_waiters, both seq_cst)
+#define WAIT_DONE(cond, ns)                                                         \
+    for (;;) {                                                                      \
+        atomic_fetch_add_explicit(&done_waiters, 1, memory_order_seq_cst);          \
+        if (!(cond)) { atomic_fetch_sub_explicit(&done_waiters, 1, memory_order_seq_cst); break; } \
+        timed_wait(&cv_done, (ns));                                                 \
+        atomic_fetch_sub_explicit(&done_waiters, 1, memory_order_seq_cst);          \
+    }
+
+// R: wake whoever waits for a submission, a drain or ring room (nothing to do, and no syscall, when nobody waits)
+static void notify_done(void) {
+    atomic_thread_fence(memory_order_seq_cst);
+    if (!atomic_load_explicit(&done_waiters, memory_order_seq_cst)) return;
+    pthread_mutex_lock(&mu);
+    pthread_cond_broadcast(&cv_done);
+    pthread_mutex_unlock(&mu);
+}
+
 // T: what it wrote so far is the recorder's to run
 static void publish(void) {
     if (published == wpos) return;
@@ -85,17 +107,20 @@ static void publish(void) {
     }
 }
 
+static void slow_wait(const char *what, uint64_t ns);
 // T: room for `need` bytes at wpos (the recorder frees room as it records; a full ring means it is behind by its
 // whole size, 16 MB of packets, so the wait is rare)
 static void wait_room(uint64_t need) {
     if (wpos + need - atomic_load_explicit(&tail, memory_order_acquire) <= ring_cap) return;
     publish();
+    SW_ZONE("recorder ring full");
     uint64_t t0 = NOW();
     pthread_mutex_lock(&mu);
-    while (wpos + need - atomic_load_explicit(&tail, memory_order_acquire) > ring_cap) timed_wait(&cv_done, 1000000);
+    WAIT_DONE(wpos + need - atomic_load_explicit(&tail, memory_order_acquire) > ring_cap, 1000000);
     pthread_mutex_unlock(&mu);
     st_t.full_waits++;
     st_t.full_ns += NOW() - t0;
+    slow_wait("room in the ring", NOW() - t0);
 }
 
 // T: a packet for fn with `args` bytes of arguments (+ `extra` bytes of arrays after them, each caller aligns its
@@ -120,22 +145,50 @@ static void *push(PktFn fn, size_t args, size_t extra) {
     wpos += need;
     st_t.packets++;
     st_t.bytes += need;
+    SW_TALLY("vk packets");
     return h + 1;
 }
+static uint64_t publish_every = PUBLISH_EVERY;  // (rec_init: 64 KB where R doesn't spin)
 static void commit(void) {
-    if (wpos - published >= PUBLISH_EVERY) publish();
+    if (wpos - published >= publish_every) publish();
 }
 // (the arrays of a packet: after its arguments, 16-aligned)
 #define AL16(n) (((n) + 15) & ~(size_t)15)
 static inline void *after(const void *args, size_t args_size) { return (uint8_t *)args + AL16(args_size); }
 
 // ---- the thread
+// R spins this long for the next packets before it sleeps: T hands it a few KB every 50-100 us while it translates
+// a list, and each of those finds R asleep otherwise, a wake-up syscall (~6 us on T, ~25 us before R runs). On CPUs
+// with fewer than 6 logical processors R sleeps at once, as before. SAVAGEWIND_VK_RECORDER_SPIN=<us> (0: never sleeps
+// late; default 60).
+static uint64_t spin_ns;
+#if defined(__x86_64__) || defined(__i386__)
+#define RELAX() __builtin_ia32_pause()
+#elif defined(__aarch64__)
+#define RELAX() __asm__ volatile("yield")
+#else
+#define RELAX() ((void)0)
+#endif
+static uint64_t spin_for_work(uint64_t t) {  // the published end once it moves past t, else t
+    uint64_t t0 = NOW(), h;
+    for (unsigned i = 1;; i++) {
+        if ((h = atomic_load_explicit(&head, memory_order_acquire)) != t) return h;
+        RELAX();
+        if (!(i & 31) && NOW() - t0 > spin_ns) return t;
+    }
+}
+
 static void *run(void *arg) {
     (void)arg;
+    prof_thread_name("vk-record");
+    extern void control_prof_thread(const char *name);  // runtime/control_prof.c (`threads`)
+    control_prof_thread("recorder");
     uint64_t t = 0;
     for (;;) {
         uint64_t h = atomic_load_explicit(&head, memory_order_acquire);
-        if (h == t) {
+        if (h == t && spin_ns && (h = spin_for_work(t)) != t) {
+            // work came while spinning: no sleep, no wake-up syscall on T's side
+        } else if (h == t) {
             pthread_mutex_lock(&mu);
             atomic_store_explicit(&asleep, 1, memory_order_seq_cst);
             while ((h = atomic_load_explicit(&head, memory_order_seq_cst)) == t) pthread_cond_wait(&cv_work, &mu);
@@ -144,6 +197,7 @@ static void *run(void *arg) {
             ADD(r_wakeups, 1);
         }
         uint64_t t0 = prof ? NOW() : 0;
+        SW_ZONE("record packets");
         while (t != h) {
             const PktHdr *p = (const PktHdr *)(ring + (t & (ring_cap - 1)));
             if (p->fn) p->fn(p + 1);
@@ -151,9 +205,7 @@ static void *run(void *arg) {
             atomic_store_explicit(&tail, t, memory_order_release);
         }
         if (prof) ADD(r_busy_ns, NOW() - t0);
-        pthread_mutex_lock(&mu);  // caught up: drains and waiters
-        pthread_cond_broadcast(&cv_done);
-        pthread_mutex_unlock(&mu);
+        notify_done();  // caught up: drains and waiters
     }
     return NULL;
 }
@@ -162,6 +214,19 @@ void rec_init(void) {
     if (on >= 0) return;
     prof = getenv("SAVAGEWIND_VK_PROF") != NULL;
     prof_enq = prof && atoi(getenv("SAVAGEWIND_VK_PROF")) != 2;
+    {
+        const char *sp = getenv("SAVAGEWIND_VK_RECORDER_SPIN");
+        long us = sp ? atol(sp) : 60;
+        if (!sp && plat_cpu_count() < 6) us = 0;
+        spin_ns = us > 0 ? (uint64_t)us * 1000 : 0;
+    }
+    // Where R sleeps at once (no spin: fewer than 6 logical processors), each publish of 4 KB woke it, a syscall on T
+    // (6.7% of T's busy time, 4 cores, Rito): 64 KB there (RTX 3060 limited to 4 cores at 720p: Rito 102 -> 106 fps,
+    // castle 149 -> 153; 2 cores / 4 threads: Rito 76 -> 81, castle 105 -> 110). Submissions and waits still publish
+    // at once. With the spin, the same either way. SAVAGEWIND_VK_PUBLISH_KB=<KB> sets it.
+    if (!spin_ns) publish_every = 64u << 10;
+    if (getenv("SAVAGEWIND_VK_PUBLISH_KB") && atoi(getenv("SAVAGEWIND_VK_PUBLISH_KB")) > 0)
+        publish_every = (uint64_t)atoi(getenv("SAVAGEWIND_VK_PUBLISH_KB")) << 10;
     const char *e = getenv("SAVAGEWIND_VK_RECORDER");
     int want = !e || atoi(e) != 0;
     // ARM's Mali drivers: LAS Recomp lost the GPU a few seconds into its title screen with the recorder thread on
@@ -179,8 +244,16 @@ void rec_init(void) {
         pthread_attr_init(&attr);
         pthread_attr_setstacksize(&attr, 1 << 20);
         ring_cap = cap;  // (before the thread exists)
-        if (!ring || pthread_create(&th, &attr, run, NULL) != 0) {
-            LOG("[vk] recorder thread: could not start (%s): Vulkan calls on the queue thread\n", ring ? "thread" : "memory");
+        int rc = ring ? pthread_create(&th, &attr, run, NULL) : 0;
+        if (rc) {
+            // glibc takes the static TLS of every thread out of its stack and fails with EINVAL when a requested
+            // size leaves no room for it; the default stack (8 MB on Linux) does
+            LOG("[vk] recorder thread: a 1 MB stack failed (%s), trying the default stack\n", strerror(rc));
+            rc = pthread_create(&th, NULL, run, NULL);
+        }
+        if (!ring || rc) {
+            LOG("[vk] recorder thread: could not start (%s, error %d): Vulkan calls on the queue thread\n",
+                ring ? strerror(rc) : "out of memory", rc);
             free(ring);
             ring = NULL;
             ring_cap = 0;
@@ -206,9 +279,10 @@ uint64_t rec_submitted(void) { return atomic_load_explicit(&submitted, memory_or
 
 void rec_wait_submitted(uint64_t seq) {
     if (on <= 0 || rec_submitted() >= seq) return;
+    SW_ZONE("wait for recorder submit");
     uint64_t t0 = NOW();
     pthread_mutex_lock(&mu);
-    while (rec_submitted() < seq) timed_wait(&cv_done, 2000000);
+    WAIT_DONE(rec_submitted() < seq, 2000000);
     pthread_mutex_unlock(&mu);
     uint64_t dt = NOW() - t0;
     ADD(a_seq_waits, 1);
@@ -221,9 +295,10 @@ void rec_drain(void) {
     publish();
     uint64_t upto = wpos;
     if (atomic_load_explicit(&tail, memory_order_acquire) >= upto) return;
+    SW_ZONE("recorder drain");
     uint64_t t0 = NOW();
     pthread_mutex_lock(&mu);
-    while (atomic_load_explicit(&tail, memory_order_acquire) < upto) timed_wait(&cv_done, 2000000);
+    WAIT_DONE(atomic_load_explicit(&tail, memory_order_acquire) < upto, 2000000);
     pthread_mutex_unlock(&mu);
     uint64_t dt = NOW() - t0;
     st_t.drains++;
@@ -243,7 +318,8 @@ void rec_stats_take(RecStats *o) {
 }
 
 // (T) time spent queuing: around every rec_* that queues, when profiling in detail
-#define ENQ_T0() uint64_t enq_t0_ = prof_enq ? NOW() : 0
+// (and, in the profiler's capture (runtime/prof.h), added up under one name)
+#define ENQ_T0() SW_ACC("vk enqueue"); uint64_t enq_t0_ = prof_enq ? NOW() : 0
 #define ENQ_END() do { if (prof_enq) st_t.enqueue_ns += NOW() - enq_t0_; } while (0)
 
 // ================================================================== descriptor writes
@@ -309,7 +385,7 @@ void rec_EndCommandBuffer(VkCommandBuffer cb) {
 
 typedef struct {
     VkCommandBufferSubmitInfo cbs[2];
-    VkSemaphoreSubmitInfo wait, sig[2];
+    VkSemaphoreSubmitInfo wait[2], sig[2];
     uint32_t ncb, nwait, nsig;
     uint64_t seq;
 } SubmitArgs;
@@ -317,7 +393,8 @@ static void submit_run(const void *p) {
     const SubmitArgs *a = p;
     VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .commandBufferInfoCount = a->ncb, .pCommandBufferInfos = a->cbs,
                         .signalSemaphoreInfoCount = a->nsig, .pSignalSemaphoreInfos = a->sig,
-                        .waitSemaphoreInfoCount = a->nwait, .pWaitSemaphoreInfos = &a->wait};
+                        .waitSemaphoreInfoCount = a->nwait, .pWaitSemaphoreInfos = a->wait};
+    SW_ZONE("vkQueueSubmit2");
     uint64_t t0 = NOW();
     VkResult r = vkQueueSubmit2(g_vk.queue, 1, &si, VK_NULL_HANDLE);
     uint64_t dt = NOW() - t0;
@@ -329,22 +406,31 @@ static void submit_run(const void *p) {
     if (r == VK_ERROR_DEVICE_LOST) { extern void vk_devlost_dump(void); vk_devlost_dump(); }
     VK_CHECK(r);
     atomic_store_explicit(&submitted, a->seq, memory_order_release);
-    if (on > 0) {
-        pthread_mutex_lock(&mu);
-        pthread_cond_broadcast(&cv_done);
-        pthread_mutex_unlock(&mu);
-    }
+    if (on > 0) notify_done();
 }
 void rec_QueueSubmit2(const VkSubmitInfo2 *si, uint64_t seq) {
     SubmitArgs a = {.ncb = si->commandBufferInfoCount, .nwait = si->waitSemaphoreInfoCount, .nsig = si->signalSemaphoreInfoCount, .seq = seq};
-    if (a.ncb > 2 || a.nwait > 1 || a.nsig > 2 || si->pNext) FATAL("[vk] recorder: a submission it can't carry\n");
+    if (a.ncb > 2 || a.nwait > 2 || a.nsig > 2 || si->pNext) FATAL("[vk] recorder: a submission it can't carry\n");
     for (uint32_t i = 0; i < a.ncb; i++) a.cbs[i] = si->pCommandBufferInfos[i];
-    if (a.nwait) a.wait = si->pWaitSemaphoreInfos[0];
+    for (uint32_t i = 0; i < a.nwait; i++) a.wait[i] = si->pWaitSemaphoreInfos[i];
     for (uint32_t i = 0; i < a.nsig; i++) a.sig[i] = si->pSignalSemaphoreInfos[i];
     if (on <= 0) { submit_run(&a); return; }
     ENQ_T0();
     *(SubmitArgs *)push(submit_run, sizeof a, 0) = a;
     publish();  // (whoever waits for the submission must not wait for the next batch)
+    ENQ_END();
+}
+
+// fn(arg) made by the recorder in its turn, in order with the commands; published at once, as its caller may count on
+// what fn does (device.c's presents)
+typedef struct { void (*fn)(void *); void *arg; } CustomArgs;
+static void custom_run(const void *p) { const CustomArgs *a = p; a->fn(a->arg); }
+void rec_custom(void (*fn)(void *), void *arg) {
+    CustomArgs a = {fn, arg};
+    if (on <= 0) { custom_run(&a); return; }
+    ENQ_T0();
+    *(CustomArgs *)push(custom_run, sizeof a, 0) = a;
+    publish();
     ENQ_END();
 }
 
@@ -705,6 +791,37 @@ void rec_CmdPipelineBarrier2(VkCommandBuffer cb, const VkDependencyInfo *di) {
 // ---- rendering: the info, its colour attachments, then the depth and stencil ones. Chained: only a colour
 // attachment's VkAttachmentFeedbackLoopInfoEXT (exec.c begin_pass, VK_KHR_unified_image_layouts), carried as a mask
 CMD_ARGS(CmdBeginRendering, VkRenderingInfo ri; VkRenderingAttachmentInfo depth, stencil; uint8_t has_depth, has_stencil; uint16_t fbl;)  // then colour[]
+// The rendering info being handed to vkCmdBeginRendering, for a crash inside the driver: Intel's Windows driver for
+// UHD 620 / HD 630 read 0x298 there in 0.4.1, in the first minute of play (#332), and the log didn't say which pass.
+static const VkRenderingInfo *volatile begin_cur;
+void vk_view_describe(VkImageView v, char *s, size_t n);  // textures.c
+static void begin_note_attachment(const char *what, const VkRenderingAttachmentInfo *at) {
+    char d[160];
+    vk_view_describe(at->imageView, d, sizeof d);
+    fprintf(stderr, "  %s: view %p %s, layout %d, load %d store %d%s\n", what, (void *)at->imageView, d, (int)at->imageLayout,
+            (int)at->loadOp, (int)at->storeOp, at->pNext ? ", feedback loop" : "");
+}
+static void begin_note(void) {
+    const VkRenderingInfo *ri = begin_cur;
+    if (!ri) return;
+    fprintf(stderr, "in vkCmdBeginRendering: area %dx%d at %d,%d, %u layers, %u color attachments%s%s\n",
+            (int)ri->renderArea.extent.width, (int)ri->renderArea.extent.height, ri->renderArea.offset.x, ri->renderArea.offset.y,
+            ri->layerCount, ri->colorAttachmentCount, ri->pDepthAttachment ? ", depth" : "", ri->pStencilAttachment ? ", stencil" : "");
+    char what[16];
+    for (uint32_t i = 0; i < ri->colorAttachmentCount && i < 16; i++) {
+        snprintf(what, sizeof what, "color %u", i);
+        begin_note_attachment(what, &ri->pColorAttachments[i]);
+    }
+    if (ri->pDepthAttachment) begin_note_attachment("depth", ri->pDepthAttachment);
+    if (ri->pStencilAttachment) begin_note_attachment("stencil", ri->pStencilAttachment);
+}
+static void begin_rendering(VkCommandBuffer cb, const VkRenderingInfo *ri) {
+    rt_crash_note = begin_note;
+    begin_cur = ri;
+    vkCmdBeginRendering(cb, ri);
+    begin_cur = NULL;
+}
+
 static void CmdBeginRendering_run(const void *p) {
     const CmdBeginRenderingArgs *a = p;
     VkRenderingInfo ri = a->ri;
@@ -727,10 +844,10 @@ static void CmdBeginRendering_run(const void *p) {
     }
     ri.pDepthAttachment = a->has_depth ? &a->depth : NULL;
     ri.pStencilAttachment = a->has_stencil ? &a->stencil : NULL;
-    vkCmdBeginRendering(a->cb, &ri);
+    begin_rendering(a->cb, &ri);
 }
 void rec_CmdBeginRendering(VkCommandBuffer cb, const VkRenderingInfo *ri) {
-    if (on <= 0) { vkCmdBeginRendering(cb, ri); return; }
+    if (on <= 0) { begin_rendering(cb, ri); return; }
     if (ri->pNext) FATAL("[vk] recorder: a chained rendering info\n");
     if (ri->colorAttachmentCount > 16) FATAL("[vk] recorder: %u colour attachments\n", ri->colorAttachmentCount);
     uint16_t fbl = 0;

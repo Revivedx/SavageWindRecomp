@@ -19,6 +19,38 @@ def _word(gen, a):
     return struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
 
 
+def _quick_sort_enter(gen, a):
+    # Menu::enter: sample held X before the selector initializes its list.
+    assert _word(gen, a) == 0xfc1d0fe8, hex(_word(gen, a))  # str d8, [sp, #-0x30]!
+    return ('{ extern void rt_quick_inventory_sort_begin(Cpu *); rt_quick_inventory_sort_begin(c); '
+            'extern void rt_quick_drop_begin(Cpu *); rt_quick_drop_begin(c); '
+            'uint64_t ea = c->sp - 0x30; ST64(ea, (uint64_t)c->v[8]); c->sp = ea; }')
+
+
+def _quick_sort_menu(gen, a):
+    # Menu::execute: sort before native selection/close handling. An entry
+    # patch also covers generated direct calls without routing them to dispatch.
+    assert _word(gen, a) == 0xa9be7bfd, hex(_word(gen, a))  # stp x29, x30, [sp, #-0x20]!
+    return ('{ extern void rt_quick_drop_menu(Cpu *); rt_quick_drop_menu(c); '
+            'extern void rt_quick_inventory_sort_menu(Cpu *); rt_quick_inventory_sort_menu(c); '
+            'uint64_t ea = c->sp - 0x20; ST64(ea, c->x[29]); ST64(ea + 8, c->x[30]); c->sp = ea; }')
+
+
+def _quick_drop_tick(gen, a):
+    assert _word(gen, a) == _sub_sp(0x60), hex(_word(gen, a))
+    return ('{ extern void quick_drop_action_tick(Cpu *); quick_drop_action_tick(c); c->sp -= 0x60; }')
+
+
+def _quick_drop_actor_call(gen, a):
+    assert _word(gen, a) == 0xd63f0100, hex(_word(gen, a))  # blr x8
+    return ('{ extern uint64_t rt_quick_drop_actor_begin(uint64_t, uint64_t); '
+            'extern void rt_quick_drop_actor_end(uint64_t, uint64_t, uint64_t); '
+            'uint64_t actor = c->x[0], method = c->x[8]; '
+            'uint64_t token = rt_quick_drop_actor_begin(actor, method); '
+            f'c->pc = method; c->x[30] = {a + 4:#x}ull; rt_dispatch(c); '
+            'rt_quick_drop_actor_end(token, actor, c->x[0]); }')
+
+
 def _fn(gen, site):  # the generated function at a site's address
     return f'f_{gen.sites[site]:x}'
 
@@ -130,6 +162,45 @@ def _opt_tick(gen, a):
             f'  /* {a:#x}: sub sp, sp, #0x40 (Options: update) */')
 
 
+# Dual native binding cells: only emitted when the entire strict optional group matched.
+def _opt_two_redraw(gen, a):
+    assert _word(gen, a) == _sub_sp(0x40)
+    return ('{ extern int rt_opt_two_redraw(uint64_t); if (rt_opt_two_redraw(c->x[0])) return; c->sp -= 0x40; }')
+
+
+def _opt_two_callback(which):
+    def patch(gen, a):
+        assert _word(gen, a) == 0xb976b008  # ldr w8, [x0, #0x36b0]
+        return ('{ extern int rt_opt_two_callback(uint64_t, uint64_t, int); '
+                f'if (rt_opt_two_callback(c->x[0], c->x[1], {which})) return; '
+                'c->x[8] = LD32(c->x[0] + 0x36b0); }')
+    return patch
+
+
+def _opt_two_row_state(gen, a):
+    assert _word(gen, a) & 0x9f00001f == 0x90000008
+    page = adrp_page(_word(gen, a), a)
+    return ('{ extern int rt_opt_two_row_state(uint64_t); '
+            f'if (rt_opt_two_row_state(c->x[0])) return; c->x[8] = {page:#x}ull; }}')
+
+
+def _opt_two_control(initial):
+    def patch(gen, a):
+        assert _word(gen, a) == (0xf9400161 if initial else 0xf9400129)
+        # x11 / x9 is the original field address; the row stays x20 on initial focus.
+        expr = 'c->x[20]' if initial else 'c->x[9] - 0x28'
+        reg, field = (1, 11) if initial else (9, 9)
+        return ('{ extern uint64_t rt_opt_two_control(uint64_t); '
+                f'uint64_t b = rt_opt_two_control({expr}); c->x[{reg}] = b ? b : LD64(c->x[{field}]); }}')
+    return patch
+
+
+def _opt_two_horizontal(gen, a):
+    assert _word(gen, a) == 0xb936c268  # str w8, [x19, #0x36c0]
+    return ('{ extern void rt_opt_two_horizontal(uint64_t, unsigned); '
+            'ST32(c->x[19] + 0x36c0, c->x[8]); rt_opt_two_horizontal(c->x[19], (unsigned)c->x[8]); }')
+
+
 def _opt_back(gen, a):
     # B on the screen: it closes (after the save); on one of Savage Wind's pages it opens again on the first page
     assert _word(gen, a) >> 26 == 0x25, hex(_word(gen, a))  # bl screen_back
@@ -236,7 +307,8 @@ def _arrow_gravity(gen, a):
 
 
 # Experimental shield-surf takeoff grace (#305), runtime/hle/framepace.c. Preserve the original FP subtraction
-# through fp_op_s when the grace is inactive, including the game's FP exception/rounding behavior.
+# through rt_fsub_s (runtime/cpu.h: fp_op_s on x86-64, a native FSUB on AArch64) when the grace is inactive,
+# including the game's FP exception/rounding behavior.
 def _surf_contact(gen, a):
     assert _word(gen, a) == 0x3941d2a8  # ldrb w8, [x21, #0x74]
     return ('{ extern void rt_surf_contact(uint64_t, unsigned); '
@@ -247,7 +319,42 @@ def _surf_boost_remove(gen, a):
     assert _word(gen, a) == 0x1e203820  # fsub s0, s1, s0
     return ('{ extern int rt_surf_takeoff_pending(uint64_t); '
             'if (rt_surf_takeoff_pending(c->x[21])) c->v[0] = (uint32_t)c->v[1]; '
-            'else fp_op_s(c, FOP_SUB, 0, 1, 0); }')
+            'else rt_fsub_s(c, 0, 1, 0); }')
+
+
+# A stale actor (#391, #393): the game's target manager (the Sheikah Slate's magnesis and camera targets) keeps a pointer
+# to an actor that is already gone. The helper that asks an actor for its link (1.9.0 0x700120bc40: actor + 0x570, then
+# + 0x88) got a freed pointer (#391: a garbage value, a crash in the next load) and one inline copy of it
+# (1.9.0 0x7000dea400, the camera target) got an actor whose + 0x570 is null (#393: accessing 0x88). Both now treat
+# such an actor as none: the helper answers 0, the inline copy leaves its function by the path of "no target".
+def _stale_actor_helper(gen, a):
+    w = _word(gen, a)
+    assert w & 0xff00001f == 0xb4000000, hex(w)  # cbz x0, <ret>
+    target = a + sext((w >> 5) & 0x7ffff, 19) * 4
+    return ('{ extern void rt_stale_actor(void); '
+            'if (!c->x[0]) goto L_%x; '
+            'if (c->x[0] - 0x7000000000ull >= 0x320000000ull || !LD64(c->x[0] + 0x570)) { rt_stale_actor(); c->x[0] = 0; goto L_%x; } }'
+            % (target, target))
+
+
+def _stale_actor_target(gen, a):
+    assert _word(gen, a) == 0xf942ba68, hex(_word(gen, a))  # ldr x8, [x19, #0x570]
+    # the epilogue of "no target": the function's own early exit (cbz x0 / cbnz x19 above this site)
+    exit_at = _stale_target_exit(gen, a)
+    return ('{ extern void rt_stale_actor(void); '
+            'if (c->x[19] - 0x7000000000ull >= 0x320000000ull || !LD64(c->x[19] + 0x570)) { rt_stale_actor(); goto L_%x; } '
+            'c->x[8] = LD64(c->x[19] + 0x570); }' % exit_at)
+
+
+def _stale_target_exit(gen, a):
+    # walk back to the cbnz x19 that jumps to this code: its fall-through (the next word) is the epilogue's first word
+    b = a
+    while b > a - 0x80:
+        b -= 4
+        w = _word(gen, b)
+        if w & 0xff00001f == 0xb5000013:  # cbnz x19, <this code>
+            return b + 4
+    raise AssertionError('stale target: no cbnz x19 above %#x' % a)
 
 
 def _surf_jump_request(gen, a):
@@ -413,11 +520,19 @@ def _cam_stick(gen, a):
             f'  /* {a:#x}: sub sp, sp, #0x30 (camera stick input) */')
 
 
+# Its way out, for every path through it: x19 is where the stick's value went. The game keeps that within the stick's
+# circle, so Controls > Controller camera speed scales it here (runtime/hle/input.c rt_cam_stick_end), past full tilt.
+def _cam_stick_end(gen, a):
+    assert _word(gen, a) == 0xfd400be8, hex(_word(gen, a))  # ldr d8, [sp, #0x10]
+    return ('{ extern void rt_cam_stick_end(uint64_t); rt_cam_stick_end(c->x[19]); c->v[8] = LD64(c->sp + 0x10); }'
+            f'  /* {a:#x}: ldr d8, [sp, #0x10] (camera stick input: its end) */')
+
+
 def _cam_pitch(gen, a):
     # fmul s1, s0, s0 just above, fnmul s3, s0, s0 here: the vertical part kept its sign squared, s1 or s3 by s0's sign
     assert _word(gen, a) == 0x1e208803 and _word(gen, a - 4) == 0x1e200801, hex(_word(gen, a))
     return ('{ extern int rt_cam_pitch(float *); union { uint32_t u; float f; } y = { .u = (uint32_t)c->v[0] }; '
-            'if (rt_cam_pitch(&y.f)) c->v[1] = y.u; else y.f = -(y.f * y.f); c->v[3] = y.u; }'
+            'if (rt_cam_pitch(&y.f)) c->v[1] = y.u; else { y.f = y.f * y.f; c->v[1] = y.u; y.f = -y.f; } c->v[3] = y.u; }'
             f'  /* {a:#x}: fnmul s3, s0, s0 (camera: the vertical stick part squared) */')
 
 
@@ -599,6 +714,99 @@ def _tree_ranges(gen, a):
             f'  /* {a:#x}: adrp x8, {page:#x} (distant trees: their ranges) */')
 
 
+# Accessibility > Infinite arrows (runtime/assists.c rt_infinite_arrows). The pause menu data's arrow removal (1.9.0
+# 0x7000d93814; x0 the pause menu data, x1 the arrow's name, w2 how many) returns at once when the actor info doesn't
+# tag the item 0x19f6c13a (an arrow), else takes the count off the pouch's arrows of that name (each item's count at
+# +0x20; a stack that runs out goes to 0 and the rest comes off the next) and writes the counts to the game data
+# (PorchItem_Value1). Two places reach it, both for a bow the player holds: the bow's shot (1.9.0 0x700092ddb4) and a
+# weapon function that takes one arrow (its tail call at 0x70007fe9f8, after the weapon's vtable +0x4e8 says the
+# player holds it). With the option on it returns before taking any; the shot itself still needs an arrow in the pouch.
+
+def _remove_arrows(gen, a):
+    assert _word(gen, a) == _sub_sp(0x70), hex(_word(gen, a))
+    return ('{ extern int rt_infinite_arrows(void); if (rt_infinite_arrows()) return; c->sp -= 0x70; }'
+            f'  /* {a:#x}: sub sp, sp, #0x70 (remove arrows: none with Infinite arrows) */')
+
+
+# Accessibility > Unbreakable weapons (runtime/assists.c rt_keep_wear, rt_no_wear; from #296). The pouch's setter for
+# an equipped item's value (type w22: 0 weapon, 1 bow, 2 arrows, 3 shield; new value w20; the item x11, value at
+# +0x20) is where a hit's wear lands, in hundredths (1700 = 17). The runtime keeps the old value when the new one is
+# lower.
+
+def _no_wear(gen, a):
+    assert _word(gen, a) == 0xb9002174, hex(_word(gen, a))  # str w20, [x11, #0x20]
+    return ('{ extern int rt_keep_wear(uint32_t, int32_t, int32_t); '
+            'if (!rt_keep_wear((uint32_t)c->x[22], (int32_t)c->x[20], (int32_t)LD32(c->x[11] + 0x20))) '
+            'ST32(c->x[11] + 0x20, c->x[20]); }'
+            f'  /* {a:#x}: str w20, [x11, #0x20] (equipped item value: no wear) */')
+
+
+# Every life goes through one method (1.9.0 0x7000b952b8, 1.8.2 0x7000a81da8; x1 the life, a copy the caller stores):
+# every frame, for everything that has one, it takes the cost of the frame's hits (w9) off the life (w8) with
+# `sub w8, w8, w9`. The saved return address, at sp + 0x28, tells whose life it is: a weapon's durability, in
+# hundredths, when the call comes from the weapon's update (no_wear_ret, from #296: Unbreakable weapons, the actor's
+# own copy, which is what breaks); Link's hearts when it comes from his damage handling (the call just before
+# link_life_store; his losses are left to _link_life); anything else's otherwise (One-hit kill, the damage dealt).
+# runtime/assists.c rt_life_cost. Without Link's sites every call that isn't a weapon's counts as his.
+
+def _no_wear_hit(gen, a):
+    assert _word(gen, a) == 0x4b090108, hex(_word(gen, a))  # sub w8, w8, w9
+    wret = gen.sites['no_wear_ret']
+    if 'link_life_store' in gen.sites:
+        s = gen.sites['link_life_store']
+        bl = _word(gen, s - 0x20)  # (Link's call of this method: bl, then 6 instructions to the store)
+        assert bl >> 26 == 0x25 and 0 <= a - (s - 0x20 + sext(bl & 0x3FFFFFF, 26) * 4) < 0x400, hex(bl)
+        whose = f'r == {wret:#x}ull ? 1 : r == {s - 0x1c:#x}ull ? 2 : 0'
+    else:
+        whose = f'r == {wret:#x}ull ? 1 : 2'
+    return ('{ extern uint32_t rt_life_cost(uint32_t, int32_t, int); uint64_t r = LD64(c->sp + 0x28); '
+            f'c->x[8] = (uint32_t)((uint32_t)c->x[8] - rt_life_cost((uint32_t)c->x[9], (int32_t)c->x[8], {whose})); }}'
+            f'  /* {a:#x}: sub w8, w8, w9 (a life\'s hit: Accessibility) */')
+
+
+# Link's damage handling (1.9.0 0x7000cc4c3c; x21 his life, in quarter hearts) works on a copy of it (w25, also at
+# sp + 0xc): the frame's hits through the method above, a few cases of its own (one quarter, four, the death path,
+# which may leave one quarter), and stores the copy at its end (link_life_store, `str w25, [x21]`); another path takes
+# one quarter off and stores it at once (link_life_tick, `str w8, [x21]`). God mode keeps the old life, Damage taken
+# scales the loss (runtime/assists.c rt_link_life); the copy gets the same value, so what follows sees it.
+
+def _link_life(gen, a):
+    w = _word(gen, a)
+    if w == 0xb90002b9:  # str w25, [x21]
+        return ('{ extern int32_t rt_link_life(int32_t, int32_t); '
+                'int32_t v = rt_link_life((int32_t)LD32(c->x[21]), (int32_t)c->x[25]); '
+                'c->x[25] = (uint32_t)v; ST32(c->sp + 0xc, (uint32_t)v); ST32(c->x[21], (uint32_t)v); }'
+                f'  /* {a:#x}: str w25, [x21] (Link\'s life: Accessibility) */')
+    assert w == 0xb90002a8, hex(w)  # str w8, [x21]
+    return ('{ extern int32_t rt_link_life(int32_t, int32_t); '
+            'c->x[8] = (uint32_t)rt_link_life((int32_t)LD32(c->x[21]), (int32_t)c->x[8]); ST32(c->x[21], c->x[8]); }'
+            f'  /* {a:#x}: str w8, [x21] (Link\'s life: Accessibility) */')
+
+
+# Accessibility > Infinite stamina (runtime/assists.c rt_stamina): the stamina setter (1.9.0 0x7000cc7410; x0
+# PlayerInfo, s0 the new stamina, 1000 a wheel) stores it at +0xa4; with the option on a lower value isn't stored.
+
+def _stamina(gen, a):
+    assert _word(gen, a) == 0xbd00a668, hex(_word(gen, a))  # str s8, [x19, #0xa4]
+    return ('{ extern uint32_t rt_stamina(uint32_t, uint32_t); '
+            'ST32(c->x[19] + 0xa4, rt_stamina(LD32(c->x[19] + 0xa4), (uint32_t)c->v[8])); }'
+            f'  /* {a:#x}: str s8, [x19, #0xa4] (stamina: Accessibility) */')
+# Adding items (runtime/items.c rt_item_tick): at the entry of Link's damage handling (every frame in play, on the game
+# thread, as picking an item up is) the runtime calls the pause menu data's item get for what was asked for. The item
+# get takes the item's name as a sead::SafeString; its vtable is the one the item get itself loads (`adrp x26` /
+# `ldr x26, [x26, #off]` at +0x24 / +0x30, then +0x10).
+
+def _item_tick(gen, a):
+    assert _word(gen, a) == _sub_sp(0x70), hex(_word(gen, a))
+    get = gen.sites['pouch_item_get']
+    adrp, ldr = _word(gen, get + 0x24), _word(gen, get + 0x30)
+    assert adrp & 0x9f00001f == 0x9000001a and ldr & 0xffc003ff == 0xf940035a, (hex(adrp), hex(ldr))  # x26
+    got = adrp_page(adrp, get + 0x24) + ((ldr >> 10) & 0xfff) * 8
+    return ('{ extern void rt_item_tick(Cpu *, uint64_t, uint64_t, uint64_t); '
+            f'rt_item_tick(c, {get:#x}ull, {gen.sites["pouch_mgr"]:#x}ull, LD64({got:#x}ull) + 0x10); c->sp -= 0x70; }}'
+            f'  /* {a:#x}: sub sp, sp, #0x70 (Link\'s damage handling: adding items) */')
+
+
 # tools/game_sites.py site -> its patch
 # BOTW's streaming Yaz0 decoder (1.9.0 0x700131d674; x0 its state, x1/w2 the input chunk): in native code
 # (runtime/hle/yaz0.c rt_yaz0, which declines the first call of a stream, the one that reads its header). Its return
@@ -626,7 +834,54 @@ def _gyro_scene_actor(gen, a):
             f'  /* {a:#x}: bl (shrine apparatus input) */')
 
 
+# Per-action bindings (runtime/hle/bindings.c, docs/ACTIONS.md). The game reads its pad object through two functions,
+# isHold(pad, action) and isTrig(pad, action): each looks the action's pad mask up in a table of 41 (act_masks) and tests
+# it against the pad object's held (+0x11c) or pressed (+0x10) word. An action the player gave a binding of its own is
+# answered by the runtime from the host key / button instead (rt_act_query); every other answer stays the game's.
+def _act_query(kind):
+    def patch(gen, a):
+        assert _word(gen, a) == 0xa9be7bfd, hex(_word(gen, a))  # stp x29, x30, [sp, #-0x20]!
+        return ('{ extern int rt_act_query(int, uint64_t, uint64_t, uint64_t, uint64_t); '
+                f'int r = rt_act_query({kind}, c->x[0], c->x[1], c->x[30], {gen.sites["act_masks"]:#x}ull); '
+                'if (r >= 0) { c->x[0] = (uint64_t)r; return; } '
+                'uint64_t ea = c->sp - 0x20; ST64(ea, c->x[29]); ST64(ea + 8, c->x[30]); c->sp = ea; }'
+                f'  /* {a:#x}: stp x29, x30, [sp, #-0x20]! ({"pressed" if kind else "held"} query of an action) */')
+    return patch
+
+
+# The free camera (runtime/hle/freecam.c rt_lookat): sead::LookAtCamera::doUpdateMatrix (1.9.0 0x7000eb2d5c) builds
+# a camera's view from its eye (+0x38), at (+0x44) and up (+0x50); the runtime sees each camera there first and may
+# put its own eye and at in place before they are read.
+
+def _lookat_update(gen, a):
+    assert _word(gen, a) == 0x2d470801, hex(_word(gen, a))  # ldp s1, s2, [x0, #0x38]
+    return ('{ extern void rt_lookat(uint64_t); rt_lookat(c->x[0]); c->v[1] = LD32(c->x[0] + 0x38); '
+            'c->v[2] = LD32(c->x[0] + 0x3c); }'
+            f'  /* {a:#x}: ldp s1, s2, [x0, #0x38] (LookAtCamera view: eye x, y) */')
+
+
+# The wait for the ground. Every game update asks (at 1.9.0 FUN_71010b7a40, called from the code that raises pause reason
+# 9, bit 9 of the flags at pause_state + 0 / 0x7001e1611c) whether the map sections around Link (his position +-200 on
+# x and z) are still loading. While they are, reason 9 pauses the world, and the world's own update is what loads
+# them, so after a jump of a few hundred units it waits for itself and the world is frozen for good. The control
+# endpoint's teleport (runtime/control_tp.c) asks for the question to be answered "ready" for a while: the world keeps
+# running (and loads) while the runtime holds Link in the air, and the real answer is reported back so the hold ends
+# when the ground is there. The patch runs the game's own function and only changes what its caller sees.
+def _tp_gate(gen, a):
+    assert _word(gen, a) == _sub_sp(0xa0), hex(_word(gen, a))
+    fn = _fn(gen, 'tp_gate')
+    return ('{ extern int rt_tp_gate_begin(void); extern void rt_tp_gate_end(uint64_t); '
+            f'if (rt_tp_gate_begin()) {{ {fn}(c); rt_tp_gate_end(c->x[0]); c->x[0] = 0; return; }} '
+            'c->sp -= 0xa0; }'
+            f'  /* {a:#x}: sub sp, sp, #0xa0 (is the ground around Link still loading?) */')
+
+
 PATCHES = {
+    'quick_drop_tick': _quick_drop_tick,
+    'quick_drop_actor_call': _quick_drop_actor_call,
+    'quick_sort_enter': _quick_sort_enter,
+    'quick_sort_menu': _quick_sort_menu,
+    'lookat_update': _lookat_update,
     'pc_map_focus': _pc_map_focus(False),
     'pc_map_focus_target': _pc_map_focus(True),
     'pc_map_focus_now': _pc_map_focus(True),
@@ -634,6 +889,16 @@ PATCHES = {
     'pc_cursor_manager': _pc_cursor_manager,
     'gyro_scene_actor': _gyro_scene_actor,
     'pause_options_update': _pause_option_state,
+    'opt_two_redraw': _opt_two_redraw,
+    'opt_two_select': _opt_two_callback(0),
+    'opt_two_state': _opt_two_callback(1),
+    'opt_two_decide': _opt_two_callback(2),
+    'opt_two_after': _opt_two_callback(3),
+    'opt_two_row_state': _opt_two_row_state,
+    'opt_two_update_control': _opt_two_control(False),
+    'opt_two_initial_control': _opt_two_control(True),
+    'opt_two_left': _opt_two_horizontal,
+    'opt_two_right': _opt_two_horizontal,
     'opt_create_rows': _opt_rows,
     'opt_row_init_flag_type': _opt_flag_type,
     'opt_read': _opt_read,
@@ -658,6 +923,8 @@ PATCHES = {
     'surf_contact': _surf_contact,
     'surf_boost_remove': _surf_boost_remove,
     'surf_jump_request': _surf_jump_request,
+    'stale_actor_helper': _stale_actor_helper,
+    'stale_actor_target': _stale_actor_target,
     'phys_solver_steps': _solver_steps,
     'kf_angle': _kf_angle,
     'snd_frame_floor': _snd_frame_floor,
@@ -670,7 +937,9 @@ PATCHES = {
     'frustum_lr1': _frustum_load(0x2d550c02, (2, 3), 'lr'),
     'frustum_tb0': _frustum_load(0x2d540800, (0, 2), 'tb'),
     'frustum_tb1': _frustum_load(0x2d540c02, (2, 3), 'tb'),
+    'tp_gate': _tp_gate,
     'cam_stick': _cam_stick,
+    'cam_stick_end': _cam_stick_end,
     'cam_pitch_chase': _cam_pitch,
     'cam_pitch_surf': _cam_pitch,
     'cam_pitch_wakeboard': _cam_pitch,
@@ -691,6 +960,15 @@ PATCHES = {
     'grass_blade_lateral_near': _grass_blade_lateral,
     'grass_blade_lateral_far': _grass_blade_lateral,
     'tree_ranges': _tree_ranges,
+    'act_hold': _act_query(0),
+    'act_trig': _act_query(1),
+    'pouch_remove_arrows': _remove_arrows,
+    'no_wear_store': _no_wear,
+    'no_wear_hit': _no_wear_hit,
+    'link_life_store': _link_life,
+    'link_life_tick': _link_life,
+    'stamina_store': _stamina,
+    'item_tick': _item_tick,
 }
 
 

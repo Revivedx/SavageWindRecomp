@@ -36,6 +36,7 @@ static int convert_cmd(int argc, char **argv) {
         else if (!strcmp(argv[i], "--bootup") && i + 1 < argc) bootup = argv[++i];
         else if (!strcmp(argv[i], "--dst") && i + 1 < argc) dst = argv[++i];
         else if (!strcmp(argv[i], "--allow-switch")) flags |= SC_ALLOW_SWITCH;
+        else if (!strcmp(argv[i], "--to") && i + 1 < argc && !strcmp(argv[++i], "wiiu")) flags |= SC_TO_WIIU;
     }
     if (!src || !bootup || !dst) {
         fprintf(stderr, "usage: test_save_convert convert --src <folder> --bootup <Bootup.pack> --dst <new folder>\n");
@@ -325,7 +326,7 @@ static void selftest(const char *base) {
     CHECK(sc_find_profile(nosave, prof, sizeof prof) == SC_NO_SAVE);
 
     // An expired search has its own result, including when the chosen folder has no save.
-    CHECK(find_profile_root(nosave, prof, sizeof prof, time(NULL) - PROFILE_SECONDS - 1, NULL) == SC_SEARCH_LIMIT);
+    CHECK(find_profile_root(nosave, prof, sizeof prof, false, time(NULL) - PROFILE_SECONDS - 1, NULL) == SC_SEARCH_LIMIT);
     Search over = {0};
     over.t0 = time(NULL), over.visits = PROFILE_VISITS + 1;
     find_profile(nosave, 0, &over);
@@ -470,6 +471,34 @@ static void selftest(const char *base) {
         char nowhere[1100];
         snprintf(nowhere, sizeof nowhere, "%s/no-such-folder/save", root5);
         CHECK(sc_lock_take(nowhere, &second) == SC_LOCK_UNAVAILABLE && !second);
+    }
+
+    // 11. export: delivers files to destination and preserves colliding files with .bak suffix
+    {
+        char root6[1100], stage6[1100], dst6[1100];
+        scratch(base, root6, sizeof root6);
+        snprintf(stage6, sizeof stage6, "%s/stage", root6);
+        snprintf(dst6, sizeof dst6, "%s/cemu_profile", root6);
+        put(dst6, "0/game_data.sav", "CEMU_OLD");
+        put(dst6, "1/game_data.sav", "CEMU_SLOT1");
+        put(stage6, "0/game_data.sav", "CEMU_NEW");
+        ScStage *st6 = calloc(1, sizeof *st6);
+        snprintf(st6->dir, sizeof st6->dir, "%s", stage6);
+        memset(&r, 0, sizeof r);
+        CHECK(sc_stage_export(st6, dst6, &r) == SC_OK);
+        CHECK(is_text(dst6, "0/game_data.sav", "CEMU_NEW"));
+        CHECK(is_text(dst6, "1/game_data.sav", "CEMU_SLOT1"));
+        CHECK(!has(stage6, ""));
+        char d0[PATH_CAP];
+        snprintf(d0, sizeof d0, "%s/0", dst6);
+        int nd0;
+        char **vd0 = names_list(d0, &nd0);
+        bool found_bak = false;
+        for (int i = 0; vd0 && i < nd0; i++)
+            if (strstr(vd0[i], "game_data.sav.bak-")) found_bak = true;
+        if (vd0) names_free(vd0, nd0);
+        CHECK(found_bak);
+        sc_report_free(&r);
     }
     printf(failures ? "SELFTEST FAIL (%d)\n" : "SELFTEST PASS\n", failures);
 }

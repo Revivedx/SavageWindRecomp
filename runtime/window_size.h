@@ -4,7 +4,7 @@
 #include <stdbool.h>
 
 typedef struct { int w, h; } WinSize;
-enum { WINSIZE_MAX = 32 };
+enum { WINSIZE_MAX = 48 };
 
 // The sizes offered: the desktop's own size first, then the others grouped by shape (16:9, 21:9, 16:10, 4:3 / 5:4,
 // then any other the desktop has): those of the list that fit on the window's display. Fullscreen also offers bigger

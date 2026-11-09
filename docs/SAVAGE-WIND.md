@@ -609,6 +609,56 @@ Pendiente:
        solo con traducciones y SPIR-V precompilados, eran 12,7 s de compilaciones y 51 frames de más de 40 ms. Lo que
        queda: los enlaces y el precalentamiento al cargar el mundo (~500 en los primeros 2 s) y algún enlace suelto
        de 30-70 ms.
+     - Pipelines sin tirones (2026-11-01, rama `pipelines-a5`; medidas en `issue-logs/alpha5/pipelines.md`). Dos
+       causas distintas de los tirones por pipelines que quedaban:
+       - En el PC del usuario, `vk_precompiled.bin` se rechazaba entero ("made by another shader translator build or
+         device setup"): el id del traductor llevaba pegados dos interruptores que el backend fija según el
+         dispositivo (`-gs`: memoria global en dos bindings; `-gn`: las lecturas del HUD por copias, que pasó a estar
+         activo por defecto en `exec.c` después de la precompilación), así que un cambio de política en `exec.c`, de
+         driver o de GPU tiraba las 21.440 librerías, borraba la carpeta de traducciones y cada shader nuevo volvía a
+         costar una compilación entera (~30 ms; en la partida de prueba, 412 en 2 s y frames de 307 ms). Ahora el id
+         (`maxwell_translator_id`) es solo el hash de `translate.c` y `shader.h` (`TRANSLATOR_ID`), y lo que una
+         traducción lee además del binario y la clave (`maxwell_translation_variant`: los dos interruptores y la
+         ventana del heap) se guarda en cada fichero de `cache/xlate/` (formato `SWX3`, en una carpeta nueva; la
+         anterior se borra). Solo afecta a los shaders que leen memoria global (`ShaderInfo.uses_gmem`): uno de esos
+         hecho bajo otra variante se traduce otra vez y el fichero se sustituye; el resto, la lista de pipelines y las
+         cachés de pipelines (que el driver indexa por contenido) siguen valiendo. `cache/precompiled.txt` guarda la
+         versión completa (`vk_shader_version_full`), así que Configuración ofrece "Volver a hacer" tras un cambio de
+         variante, y esa pasada solo rehace los shaders de memoria global. Los ids salen de una cabecera generada por
+         el Makefile (`build/inc/shader_ids.h`, reescrita solo cuando cambia un hash; `-include` en `translate.o` y
+         `spirv.o`), y los mensajes de rechazo distinguen "another shader translator build" de "another device
+         setup". `warm_module` aplica el mismo arreglo del blur de distancia que `stage_build`: antes esas librerías
+         precompiladas nunca coincidían con el módulo del juego.
+       - En la Steam Deck, una instalación recién hecha enlazaba 270-706 pipelines en los primeros 45 s (hasta 236 en
+         un frame de 109 ms) con las 21.440 librerías precompiladas: la lista de pipelines estaba vacía, porque la
+         precompilación hace librerías y los pipelines finales (programa + estado fijo del draw) solo se conocen
+         jugando. Ahora hay una semilla (`vk_pipelines.seed`, `precompile.c`): la lista de una partida de un
+         desarrollador en forma portable (hash del binario de cada shader, su clave y el estado fijo; nada del juego),
+         que `savagewind --export-pipeline-seed <fichero>` escribe desde la lista de una instalación y la
+         precompilación lee del data root o de junto al ejecutable: sus claves se añaden a las traducciones y al
+         final sus registros a `vk_pipelines.list`, de modo que el primer arranque precalienta como el segundo.
+         Exportar una lista de una build anterior al cambio de id: `SAVAGEWIND_SEED_LIST_ID=<id viejo con -gs/-gn>`
+         y `SAVAGEWIND_PSO_ANY_VERSION=1` (una sola vez, sobre una copia de la lista). Se envía con el juego desde el
+         2026-11-02: `runtime/nvn/vulkan/vk_pipelines.seed` (la partida al 100% del usuario, 3.993 pipelines, 102 KB:
+         hashes y estado de render, nada del juego), copiado junto al ejecutable en el zip de Windows (`make dist`) y
+         en el AppImage (`tools/linux/package.sh`); una build de fuentes lo encuentra en el checkout. Como la lista
+         se lee al crear la ventana, antes de la precompilación de la pantalla de inicio, la precompilación vuelve a
+         leerla y arranca el precalentamiento cuando la semilla ha entrado (`vk_pso_rewarm`): si no, el primer
+         arranque tras la instalación enlazaba todo en el draw y solo el siguiente precalentaba.
+       - "Shaders asíncronos" pasa a estar activado por defecto (`settings_version` 4: los ficheros de la versión 3
+         con 0 toman el nuevo valor, porque el menú escribía todas las claves). Qué se salta y qué no
+         (`draw_` en `exec.c`): un draw cuyo pipeline aún se construye se salta cuando sus targets se dibujaron en el
+         frame anterior (vuelve al siguiente), y espera si el target no se dibujó el frame anterior (`one_shot_target`:
+         la captura de la pantalla de guardado, el fondo del menú de pausa), si es un array, 3D o cubo que no sigue
+         la escala de salida (`draw_must_happen`: las teselas del terreno) y, nuevo, en todos los dispatches de
+         cómputo (lo que escriben puede leerse para siempre; son 72 shaders). Con las librerías de las dos etapas ya
+         hechas (precompiladas o de un draw anterior), el enlace se hace en el propio draw (`link_now`, sin saltarse
+         nada) hasta `SAVAGEWIND_PIPE_LINK_MS` ms por frame presentado (3 por defecto; 0: todo a los hilos) y el
+         resto va a los hilos; una librería por compilar (5-50 ms) siempre va a un hilo. La línea de estadísticas
+         añade `links now N`. La idea del salto seguro por "target dibujado el frame anterior" y el enlace en el draw
+         vienen de TotK Recomp (`TOTK_PIPE_SKIP`, `docs/architecture.md`, MIT: `third_party/totk-pc-recomp/LICENSE`),
+         escrito aquí a nuestra manera. Desactivarlo (Opciones > Shaders asíncronos, o `SAVAGEWIND_SYNC_SHADERS=1`)
+         vuelve al comportamiento de antes: cada draw espera a su shader.
      Medición: `SAVAGEWIND_VK_PROF=1 SAVAGEWIND_HITCH_MS=1` registra cada frame con su desglose (traducción, esperas a
      la GPU, compilaciones, presentación, pausa del ritmo); `SAVAGEWIND_MAX_INTERVAL=2` impide que el juego pase a 20
      FPS, así su paso por frame es fijo y un recorrido con guion sigue siempre el mismo camino (comparaciones A/B);
@@ -691,7 +741,7 @@ Pendiente:
        dirección mantenida y algunas pulsaciones largas.
      Lo que hace Savage Wind (`runtime/hle/framepace.c`, dos parches en `tools/patches.py`):
      - `present_pace` espera el turno de cada presentación en una rejilla fija de 1/frecuencia (un frame tardío por
-       menos de un periodo no la mueve; uno más largo la reinicia). Sin límite: 300 FPS como mucho (con pasos más
+       menos de un periodo no la mueve; uno más largo la reinicia). Sin límite: 360 FPS como mucho (con pasos más
        cortos los relojes float del juego pierden precisión). La espera del bucle (0x7000d811fc) se salta.
      - Dentro de `updateInterval`, después de que el juego pone su razón y antes de los multiplicadores y los deltas,
        `rt_vfr_update` pone la duración real: razón = segundos x 30 (0,5 a 60 FPS, 0,25 a 120). Cuando las
@@ -732,6 +782,25 @@ Pendiente:
        0,56 m a ~90 FPS. Prueba (corridas ocultas en Kakariko, `SAVAGEWIND_TEST_WARP=1834.4,221.9,959.0`, coger el
        cuco con A y saltar con X, altura de Link en PlayerInfo +0x8c): 0,634 m a 30, 0,640 a 60, 0,639 a ~85-120;
        el salto normal sigue en 0,68.
+     - Bruma (Vídeo > Opciones avanzadas > Bruma, `haze` en el ini, `services/fs.c` `haze_patch`): la neblina del exterior de BOTW es su
+       dispersión atmosférica, por clima en `Pack/TitleBG.pack` `WorldMgr/normal.bwinfo` (AAMP, 20 climas en el objeto
+       raíz): `CalcMie` y `CalcRayleigh` (lo blanco y lo azul del aire: más bajos, más claro; a 0,6x el cielo se oscurece
+       y vira a turquesa) y `CalcSfParamNear` (0 o negativo: la bruma de cerca, la mínima en 0). El ajuste k (0-100 %)
+       da 0,7 + 0,3 k veces los dos primeros y k veces el tercero, como un parche de lectura sobre los bytes del archivo
+       (mismo tamaño; AAMP comparte los valores iguales entre parámetros: cada uno se cambia una vez). El juego lo lee
+       al arrancar: el cambio vale desde el siguiente inicio. 100 % no toca nada. Los objetos Fog de los perfiles de
+       entorno (`Env/env.sgenvb`, `fog_world` etc.) se probaron antes: a 0 no cambian nada visible. Comparado desde la
+       torre de Hebra a mediodía con cielo despejado (bruma 50 %: montañas lejanas con su color, cielo azul).
+     - Preset gráfico y Opciones avanzadas (Alpha 5, `settings.c` `k_gpreset`, `vulkan/exec.c`): el preset fija a la vez
+       distancia de dibujado, resolución de sombras, bloom, profundidad de campo y resolución dinámica. Potato: distancia
+       Potato, sombras 448, sin bloom ni desenfoque lejano, resolución dinámica; Original: como la consola; High: distancia
+       "High" (`medium` en el ini), sombras 2048; Savage: distancia "Savage" (`high` en el ini), sombras 4096. Lo que no
+       coincide con ninguno se muestra como Personalizado. Bloom off (`bloom = 0`): los draws del bloom
+       (`bloom_scale.h` `bloom_native_target`) limpian su imagen a negro en vez de dibujar; profundidad de campo off
+       (`depth_of_field = 0`): se salta el desenfoque lejano (fs f7731492223eb16a). Resolución dinámica
+       (`dynamic_resolution = 1`): los ReportCounter llevan su tiempo real y el juego baja su 3D de 1600x900 hacia
+       1280x720 cuando el fotograma tarda (como `SAVAGEWIND_VK_COUNTER=live`). Densidad de pasto: pendiente, no se
+       encontró aún el draw de las hojas de pasto.
      - Giro de los cuerpos que mueve el juego (#209): las piezas "keyframed" (el suelo de una Bestia Divina al
        inclinarse, ascensores, puertas) reciben cada fotograma un objetivo (FUN_710130d19c, una matriz 3x4) y cada paso
        de física la velocidad que las lleva a él (1.9.0 0x70012d5598): la angular sale del ángulo del giro que falta,
@@ -856,6 +925,11 @@ Pendiente:
        a compilar. Sin instrucciones FMA `simd.h` usa su propio fma (`simd_softfma.h`, que sigue al MXCSR como
        ellas; `tools/test_softfma.c` lo compara bit a bit): el de glibc se equivoca con FTZ / DAZ o redondeos
        dirigidos. `SAVAGEWIND_COMPAT_CPU=1` elige el compatible en cualquier CPU (para comparar los dos).
+       Ese fma exacto le cuesta ~10% de fps al compatible (4 núcleos, 720p: Kakariko 134 frente a 154). Por eso
+       "Cálculo rápido" (Video > Opciones avanzadas, `fast_fma`, solo en esas CPUs, activado por defecto) lo cambia
+       por x*y + z con dos redondeos (`simd_fma_unfused`, que el runtime pone en la librería por `GameLibTables`
+       una vez por frame, `gamelib_sync`): 151 fps, a ~2% del v3. El último bit de algunos resultados puede salir
+       distinto del de la consola. `SAVAGEWIND_FAST_FMA=0/1` manda sobre el ajuste; el log dice cuál está activo.
      - Unos ~10 dispatches por frame escriben en la memoria del juego con STG (sus storage buffers, 7-8 por dispatch,
        pequeños, en el heap importado), el primero ~100 draws dentro del frame. Para no copiar en la CPU memoria a
        medio escribir, el resto de la lista iba a la GPU de una vez al final: la GPU esperaba a que se tradujera todo
@@ -1302,7 +1376,7 @@ Pendiente:
      textos (`ui_merge_fallback_font`), y cada contexto rehace sus fuentes al cambiar el idioma.
      `tools/i18n_check.py` lista los textos que le faltan a cada tabla (`--missing <idioma>` los imprime como
      líneas `T(...)`); `SAVAGEWIND_MENU_LANG=<código>` (p. ej. `ja`) fuerza el idioma de los menús para probar.
-     Las doce tablas están completas (es, fr, de, it, nl, ru, pt, ja, ko, zh-Hans, zh-Hant, th). ImGui 1.91.9 solo
+     Las trece tablas están completas (es, fr, de, it, nl, ru, pt, ja, ko, zh-Hans, zh-Hant, th, he). ImGui 1.91.9 solo
      corta líneas en espacios: `third_party/imgui/imgui_draw.cpp` (`ImFont::CalcWordWrapPositionA`) lleva un
      parche local que también corta entre caracteres CJK, respetando la puntuación. El tailandés no separa
      palabras con espacios: sus textos llevan espacios entre frases, que es donde se cortan las líneas. Su fuente
@@ -1310,6 +1384,15 @@ Pendiente:
      del sistema (Leelawadee UI, Tahoma). ImGui no posiciona marcas combinantes con GPOS: las vocales y tonos de
      Noto Sans Thai tienen avance 0 y caen sobre la letra anterior, que se lee bien en los tamaños del menú.
      Dentro del juego, las páginas de Opciones se dibujan con la fuente tailandesa del propio juego.
+     El hebreo (`he`) no es un idioma de texto del juego: solo `SAVAGEWIND_MENU_LANG=he` lo elige. Se escribe de
+     derecha a izquierda: sus textos están en orden lógico (el de lectura) y cada línea se dibuja en orden visual,
+     con un subconjunto del algoritmo bidireccional de Unicode (`ui_visual_order` / `visual_line` en `i18n.mm`:
+     los tramos latinos y los números conservan su orden, el resto se invierte y los paréntesis se reflejan).
+     ImGui lo hace con otro parche local (`GImTextReorderLine`, `ImFont::RenderText`): corta las líneas sobre el
+     texto lógico, las reordena y alinea a la derecha las de un párrafo en el ancho de la más larga; la
+     disposición de los menús no se refleja. Las páginas de Opciones del juego reciben cada línea ya reordenada
+     (`put_text`) y necesitan una fuente del juego con hebreo. Fuente: Noto Sans Hebrew Medium (OFL,
+     `third_party/fonts/NotoSansHebrew`), y si falta, la del sistema (Segoe UI, Arial).
    - Ajustes dentro del juego (2026-10-18): la pantalla Ajustes del propio juego (pausa > Sistema > Ajustes, u
      Opciones en el menú del título) lleva las páginas de Savage Wind y sustituye al overlay en el juego (F1, Esc y el
      botón Home ya no lo abren; `SAVAGEWIND_OVERLAY=1` lo devuelve; Esc suelta el cursor). La primera página es una
@@ -1407,7 +1490,7 @@ Pendiente:
        imágenes y tarda minutos). `SAVAGEWIND_HIDDEN=1` corre sin ventana visible.
      - `SAVAGEWIND_SHADER_DUMP=1`: el código Maxwell de los shaders que no traducen, en `build/shaders/`.
      - `SAVAGEWIND_DEBUG_PASS_FROM=<n>`, `SAVAGEWIND_DEBUG_PASS_TO=<n>` y `SAVAGEWIND_DEBUG_MAIN_ONLY=1` (con el
-       frame de depuración, F9): guarda solo esos pases y solo el primer target de cada uno. Con
+       frame de depuración, F9 en modo desarrollador, `SAVAGEWIND_DEV=1`): guarda solo esos pases y solo el primer target de cada uno. Con
        `SAVAGEWIND_DEBUG_FRAMES=<n>`, n frames seguidos (`build/pass_<frame>_NNN.png`).
      - F12: guarda una imagen del juego de cada dos en `build/frames/rec_N.png` hasta el siguiente F12, para ver
        parpadeos de un frame (el juego va más lento mientras graba).
@@ -1488,6 +1571,51 @@ Pendiente:
 Se conserva todo lo genérico: el lifter AArch64 → C, el kernel HLE, IPC y servicios, el HLE de NVN
 con el backend Vulkan, el traductor de shaders Maxwell, ASTC, audio, la UI de ajustes y la
 compilación local con `zig cc`.
+
+## Heap invitado y memoria sparse de GPU
+
+En Windows, el juego pide un heap invitado de 3120 MiB. No se debe reducir a un límite estimado de VRAM: el código
+generado es código de CPU traducido, no un inventario estático de los recursos ni de las direcciones que leerán o
+escribirán los shaders. Limitar las páginas visibles a 1 GiB podría dejar lecturas sin datos o perder escrituras.
+
+La opción `sparse_heap` de `savagewind.ini` acepta `auto`, `on` y `off`. `auto` (por defecto) lo activa en una GPU
+integrada Intel y lo desactiva en las demás; el cambio se aplica al reiniciar. `SAVAGEWIND_VK_SPARSE_HEAP=1` fuerza
+la activación y cualquier otro valor explícito la desactiva. En GPUs compatibles, conserva el espacio de direcciones
+completo del heap y crea un buffer Vulkan sparse virtual de hasta 3328 MiB. Las páginas confirmadas del heap se
+exponen por ventanas de 1 MiB (alineación sparse de 64 KiB), mediante importación de la memoria host ya existente y
+enlaces sparse; no se copian las páginas a un pool de VRAM separado. En una Intel UHD, la memoria de GPU es memoria
+del sistema compartida. El tamaño virtual del buffer y los bytes enlazados no significan que exista esa cantidad de
+VRAM dedicada ni que el contador de memoria compartida de Windows aumente en la misma cantidad.
+
+En un inicio directo del juego en Windows, Vulkan inicializa la ventana y selecciona la GPU antes del arranque del
+juego. Así `auto` ya conoce el adaptador cuando `SetHeapSize` decide entre confirmar el heap de inmediato o dejar que
+sus páginas se confirmen al usarse; sin esa selección temprana, el modo `auto` podía elegir el camino eager antes de
+saber que la GPU era Intel integrada. Desde la pantalla de inicio, la ventana y Vulkan ya se inicializan antes de
+iniciar el juego.
+
+Las ventanas enlazadas quedan enlazadas hasta limpiar el backend: no hay política de desalojo ni recarga de páginas
+en este mecanismo. Solo se omite la validación de rango del sistema operativo cuando la tabla confirma que todas las
+ventanas del rango están enlazadas; los rangos no confirmados siguen el camino de compromiso y validación normal.
+Esta ruta evita repetir consultas caras de memoria sin cambiar el tamaño del heap ni asumir que cualquier rango es
+seguro.
+
+La prioridad Vulkan de memoria es independiente del heap sparse y está desactivada por defecto. Para probar la
+política de prioridad del driver en imágenes y en el heap denso importado, iniciar con
+`SAVAGEWIND_VK_MEMORY_PRIORITY=1`. Sin el flag, las imágenes usan el asignador normal de VMA y no se solicita
+prioridad para la memoria importada. `VK_EXT_memory_budget` permanece habilitada cuando existe: da información de
+presupuesto a VMA y se consulta para diagnosticar fallos de asignación; no habilita la política de prioridad.
+
+### Diagnóstico de rendimiento
+
+En las pruebas con BOTW 1.8.2 en una Intel UHD, la configuración aceptó el heap de 3120 MiB y llegó a gameplay.
+Con FSR 1 Ultra Performance la escena se renderizaba a 640x360 y se ampliaba a 1280x720. El log sin perfil de GPU
+se estabilizó aproximadamente en 22-25 FPS (con intervalos iniciales de 30 FPS). En esos intervalos de unos dos
+segundos, las estadísticas llegaron a alrededor de 130 000-150 000 draws, 650-750 MiB de cargas contabilizadas y
+900-1040 ms de esperas a la GPU. Son totales del intervalo, no valores por frame; las cargas contabilizadas tampoco
+son una medida directa del ancho de banda físico de la memoria. Cuando el juego ya estaba en la escena estable, las
+operaciones de importación y enlace sparse eran escasas o nulas aunque el FPS seguía bajo. Esto descarta el enlace
+sparse repetido como explicación suficiente del bajo rendimiento, pero no identifica por sí solo el cuello de
+botella entre trabajo de GPU, sincronización y trabajo del juego.
 
 ## Módulos en memoria
 

@@ -79,30 +79,51 @@ static void fail(const char *msg) {
 static bool g_dev;  // the data root is the starting folder because it has extracted/ (a source checkout)
 bool rt_dev_mode(void) { return g_dev; }
 
-void rt_paths_init(void) {
-    if (!getcwd(g_start, sizeof g_start)) g_start[0] = 0;
-    if (plat_exe_path(g_exe_dir, sizeof g_exe_dir)) {
-        char *s = strrchr(g_exe_dir, '/'), *b = strrchr(g_exe_dir, '\\');
-        if (b > s) s = b;
-        if (s) *s = 0;
-    }
-    char root[1024];
+// The data root as rules 1-3 of paths.h choose it, from the starting folder and the executable's folder.
+static void choose_root(char *root, size_t n, bool *dev, const char *start, const char *exe_dir) {
     const char *env = getenv("SAVAGEWIND_DATA_ROOT");
-    if (env && *env) snprintf(root, sizeof root, "%s", env);
-    else if (is_dir("extracted")) snprintf(root, sizeof root, "%s", g_start), g_dev = true;  // dev / portable: as before
-    else {
+    if (dev) *dev = false;
+    if (env && *env) snprintf(root, n, "%s", env);
+    else if (is_dir("extracted")) {  // dev / portable: as before
+        snprintf(root, n, "%s", start);
+        if (dev) *dev = true;
+    } else {
 #ifdef _WIN32
-        snprintf(root, sizeof root, "%s", g_exe_dir);
+        snprintf(root, n, "%s", exe_dir);
 #elif defined(__linux__)
         // (the AppImage is read-only): $XDG_DATA_HOME/savagewind, ~/.local/share/savagewind by default
         const char *xdg = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
-        if (xdg && *xdg == '/') snprintf(root, sizeof root, "%s/savagewind", xdg);
-        else snprintf(root, sizeof root, "%s/.local/share/savagewind", home && *home ? home : "/tmp");
+        (void)exe_dir;
+        if (xdg && *xdg == '/') snprintf(root, n, "%s/savagewind", xdg);
+        else snprintf(root, n, "%s/.local/share/savagewind", home && *home ? home : "/tmp");
 #else
         const char *home = getenv("HOME");
-        snprintf(root, sizeof root, "%s/Library/Application Support/" RT_BUNDLE_ID, home && *home ? home : "/tmp");
+        (void)exe_dir;
+        snprintf(root, n, "%s/Library/Application Support/" RT_BUNDLE_ID, home && *home ? home : "/tmp");
 #endif
     }
+}
+
+static void exe_folder(char *out, size_t n) {
+    if (!plat_exe_path(out, n)) return;
+    char *s = strrchr(out, '/'), *b = strrchr(out, '\\');
+    if (b > s) s = b;
+    if (s) *s = 0;
+}
+
+bool rt_peek_data_root(char *out, size_t n) {
+    char start[1024], exe[1024] = "";
+    if (!getcwd(start, sizeof start)) return false;
+    exe_folder(exe, sizeof exe);
+    choose_root(out, n, NULL, start, exe);
+    return out[0] != 0;
+}
+
+void rt_paths_init(void) {
+    if (!getcwd(g_start, sizeof g_start)) g_start[0] = 0;
+    exe_folder(g_exe_dir, sizeof g_exe_dir);
+    char root[1024];
+    choose_root(root, sizeof root, &g_dev, g_start, g_exe_dir);
     mkdirs(root);
     char msg[1400];
     if (!is_dir(root) || !writable(root) || chdir(root) != 0) {

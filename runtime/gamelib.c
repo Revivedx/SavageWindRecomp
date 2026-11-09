@@ -14,6 +14,7 @@
 #include "game_sites.h"
 #include "paths.h"
 #include "rt.h"
+#include "settings.h"
 
 static const GameLibTables *g_tables;
 static char g_error[256];
@@ -74,21 +75,29 @@ const char *gamelib_cpu_problem(void) {
 GameSites g_site;
 const char *g_game_version = "";
 
-// g_site from the library's sites: every one runtime/game_sites.h names has to be there (the library and this build
-// come from the same tools/game_sites.py, or their GAMELIB_IDs would differ).
+// Required sites must be present. Optional feature groups can be absent on an
+// older game build; clear their helpers instead of preventing the game loading.
 static bool take_sites(const GameLibTables *t) {
     static const struct {
         const char *name;
         size_t off;
+        bool optional;
     } want[] = {
-#define GAME_SITE_ENTRY(n) {#n, offsetof(GameSites, n)},
+#define GAME_SITE_ENTRY(n) {#n, offsetof(GameSites, n), false},
         GAME_SITES(GAME_SITE_ENTRY)
+#undef GAME_SITE_ENTRY
+#define GAME_SITE_ENTRY(n) {#n, offsetof(GameSites, n), true},
+        GAME_SITES_OPTIONAL(GAME_SITE_ENTRY)
 #undef GAME_SITE_ENTRY
     };
     for (size_t i = 0; i < sizeof want / sizeof want[0]; i++) {
         uint32_t k = 0;
         while (k < *t->nsites && strcmp(t->sites[k].name, want[i].name)) k++;
         if (k == *t->nsites) {
+            if (want[i].optional) {
+                *(uint64_t *)((char *)&g_site + want[i].off) = 0;
+                continue;
+            }
             snprintf(g_error, sizeof g_error, "the game code has no address for %s", want[i].name);
             return false;
         }
@@ -210,3 +219,22 @@ bool gamelib_load(const char *game_dir, char *why, size_t why_size) {
 }
 
 const GameLibTables *gamelib_tables(void) { return g_tables; }
+
+#ifndef _WIN32
+__attribute__((visibility("hidden")))
+#endif
+int simd_fma_unfused;  // (the runtime's own copy, for its code built without FMA instructions)
+
+void gamelib_sync(void) {
+    static int env = -2, cur = -1;
+    if (env == -2) {  // SAVAGEWIND_FAST_FMA=0/1: in place of the setting
+        const char *e = getenv("SAVAGEWIND_FAST_FMA");
+        env = e && *e ? strcmp(e, "0") != 0 : -1;
+    }
+    int want = gamelib_compat() && (env >= 0 ? env : g_settings.fast_fma);
+    if (!g_tables || want == cur) return;
+    cur = want;
+    if (g_tables->fma_unfused) *g_tables->fma_unfused = want;
+    simd_fma_unfused = want;
+    if (gamelib_compat()) LOG("[gamelib] fma: %s\n", want ? "fast (two roundings)" : "exact (as the console)");
+}

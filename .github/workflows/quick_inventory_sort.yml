@@ -1,0 +1,39 @@
+# Sorting tests use synthetic guest memory; no game files or runtime assets.
+name: Quick inventory sorting
+
+on:
+  pull_request:
+    branches: [test, main]
+    paths:
+      - 'runtime/quick_inventory_sort.*'
+      - 'runtime/game_sites.h'
+      - 'runtime/gamelib.c'
+      - 'runtime/cpu.h'
+      - 'tools/test_quick_inventory_sort*'
+      - 'tools/test_gamelib_sites.c'
+      - 'tools/game_sites.py'
+      - 'tools/patches.py'
+      - 'tools/gen.py'
+      - 'Makefile'
+      - '.github/workflows/quick_inventory_sort.yml'
+  push:
+    branches: [test, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quick-sort-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quick-sort:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - run: make test-quick-inventory-sort
+      - uses: astral-sh/setup-uv@v10.3.3
+      - run: uv run --no-project --with lz4 --with capstone --with unicorn python tools/test_game_sites.py
+      - run: uv run --no-project --with lz4 --with capstone --with unicorn python tools/test_quick_inventory_sort_codegen.py
