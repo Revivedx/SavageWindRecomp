@@ -738,6 +738,48 @@ int rt_hud_action_refresh(uint64_t screen, uint32_t pending, uint32_t shown) {
     return changed && pending == shown && pending != UINT32_MAX;
 }
 
+// SousaGuide's numbered entries are separate from DoCommand's contextual diamond.
+static int hud_guide_action(uint32_t guide) {
+    switch (guide) {
+    case 0: return 26;  // Speed up horse
+    case 2: return 27;  // Soothe horse
+    case 3: return 13;  // Target / center
+    case 4: case 5: return 37;  // Throw distance
+    case 6: case 15: case 22: case 31: case 32: return 14;  // Cancel
+    case 7: case 9: case 14: return 2;  // Jump / swim dash
+    case 8: case 13: return 0;  // Descend / run in the contextual guide
+    case 24: return 34;  // Detonate remote bomb
+    case 25: return 36;  // Zora Helm spin attack
+    case 26: return 38;  // Master Cycle accelerate
+    case 27: return 39;  // Master Cycle brake
+    case 28: return 40;  // Master Cycle jump
+    case 29: case 30: return 28;  // Put down / throw held object
+    default: return -1;
+    }
+}
+
+uint32_t rt_hud_action_guide_button(uint32_t guide, uint32_t button) {
+    if (strcmp(g_game_version, "1.9.0")) return button;
+    int action = hud_guide_action(guide);
+    if (act_is_default(action)) return button;
+    int mode = g_settings.button_icons;
+    bool keyboard = mode == ICONS_KEYBOARD || (mode == ICONS_AUTO && input_last_device() == DEVICE_KEYBOARD);
+    int host = keyboard ? g_act_key[action] : g_act_pad[action];
+    if (host < 0 || (keyboard && !host)) return button;
+    const int16_t *bindings = keyboard ? g_bind_key : g_bind_pad;
+    // Fixed button IDs in the native guide renderer. It can also draw the four individual d-pad directions.
+    static const uint8_t icons[BIND_PAD_COUNT] = {
+        [BIND_A] = 0x06, [BIND_B] = 0x07, [BIND_X] = 0x08, [BIND_Y] = 0x09,
+        [BIND_LSTICK] = 0x18, [BIND_RSTICK] = 0x05,
+        [BIND_L] = 0x19, [BIND_R] = 0x01, [BIND_ZL] = 0x1a, [BIND_ZR] = 0x00,
+        [BIND_PLUS] = 0x0a, [BIND_MINUS] = 0x0b,
+        [BIND_LEFT] = 0x0f, [BIND_UP] = 0x0e, [BIND_RIGHT] = 0x0c, [BIND_DOWN] = 0x0d,
+    };
+    for (int slot = 0; slot < BIND_PAD_COUNT; slot++)
+        if (bindings[slot] == host) return icons[slot];
+    return button;
+}
+
 // Font overlays may lack the HUD's dedicated glyphs. Lay out the stock, binding-aware glyphs at boot in that case.
 static void hud_physical_positions(int pos[4]) {
     unsigned used = 0;

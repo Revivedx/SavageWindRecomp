@@ -867,6 +867,12 @@ def _hud_action_update(gen, a):
             'uint64_t ea = c->sp - 0x30; ST64(ea, c->x[29]); ST64(ea + 8, c->x[30]); c->sp = ea; }')
 
 
+def _hud_action_guide(gen, a):
+    assert _word(gen, a) == 0xb9012be8
+    return ('{ extern uint32_t rt_hud_action_guide_button(uint32_t, uint32_t); '
+            'ST32(c->sp + 0x128, rt_hud_action_guide_button(LD32(c->sp + 8), (uint32_t)c->x[8])); }')
+
+
 # The free camera (runtime/hle/freecam.c rt_lookat): sead::LookAtCamera::doUpdateMatrix (1.9.0 0x7000eb2d5c) builds
 # a camera's view from its eye (+0x38), at (+0x44) and up (+0x50); the runtime sees each camera there first and may
 # put its own eye and at in place before they are read.
@@ -982,6 +988,7 @@ PATCHES = {
     'act_trig': _act_query(1),
     'hud_action_button': _hud_action_button,
     'hud_action_update': _hud_action_update,
+    'hud_action_guide': _hud_action_guide,
     'pouch_remove_arrows': _remove_arrows,
     'no_wear_store': _no_wear,
     'no_wear_hit': _no_wear_hit,

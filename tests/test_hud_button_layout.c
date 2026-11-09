@@ -186,6 +186,42 @@ static void test_contextual_binding(void) {
 
     act_set(BIND_DEV_PAD, 2, SDL_GAMEPAD_BUTTON_EAST);
     assert(rt_hud_action_button(16) == BIND_A);  // Climb
+    act_set(BIND_DEV_PAD, 11, SDL_GAMEPAD_BUTTON_WEST);  // Dodge
+    assert(rt_hud_action_guide_button(7, 0x1d) == 0x06);  // Climbing uses Jump, East.
+    assert(rt_hud_action_guide_button(9, 0x1d) == 0x06);  // Swimming faster also uses Jump.
+    assert(rt_hud_action_guide_button(14, 0x1d) == 0x06);  // Surf jump follows Jump as well.
+    act_set(BIND_DEV_PAD, 2, SDL_GAMEPAD_BUTTON_SOUTH);
+    assert(rt_hud_action_guide_button(7, 0x1d) == 0x07);
+    act_set(BIND_DEV_PAD, 2, ACT_FOLLOW);
+    assert(rt_hud_action_guide_button(7, 0x1d) == 0x1d);
+
+    const int guide_actions[][2] = {
+        {0, 26}, {2, 27}, {3, 13}, {6, 14}, {15, 14}, {24, 34}, {25, 36}, {26, 38}, {27, 39}, {28, 40},
+        {4, 37}, {5, 37}, {8, 0}, {13, 0}, {22, 14}, {29, 28}, {30, 28}, {31, 14}, {32, 14},
+    };
+    for (size_t i = 0; i < sizeof guide_actions / sizeof *guide_actions; i++) {
+        int guide = guide_actions[i][0], action = guide_actions[i][1];
+        act_set(BIND_DEV_PAD, action, SDL_GAMEPAD_BUTTON_DPAD_UP);
+        assert(rt_hud_action_guide_button(guide, 0x1d) == 0x0e);
+        act_set(BIND_DEV_PAD, action, ACT_FOLLOW);
+    }
+    act_set(BIND_DEV_PAD, 0, SDL_GAMEPAD_BUTTON_WEST);
+    act_set(BIND_DEV_PAD, 14, SDL_GAMEPAD_BUTTON_EAST);
+    assert(rt_hud_action_guide_button(6, 0x1c) == 0x06);
+    assert(rt_hud_action_guide_button(8, 0x1c) == 0x09);  // Descend follows Interact.
+    assert(rt_hud_action_guide_button(23, 0x1b) == 0x1b);  // Move keeps the native motion glyph.
+    act_set(BIND_DEV_PAD, 33, SDL_GAMEPAD_BUTTON_EAST);
+    act_set(BIND_DEV_PAD, 34, SDL_GAMEPAD_BUTTON_SOUTH);
+    assert(rt_hud_action_guide_button(24, 0x19) == 0x07);  // Detonate follows Activate rune, not Aim rune.
+    act_set(BIND_DEV_PAD, 2, PADB_RTRIGGER);
+    assert(rt_hud_action_guide_button(9, 0x1d) == 0x00);
+    g_settings.button_icons = ICONS_KEYBOARD;
+    act_set(BIND_DEV_KEY, 2, SDL_SCANCODE_F8);
+    assert(rt_hud_action_guide_button(9, 0x1d) == 0x1d);  // No raw glyph for this key.
+    g_bind_key[BIND_LEFT] = SDL_SCANCODE_F8;
+    assert(rt_hud_action_guide_button(9, 0x1d) == 0x0f);
+    bind_reset(BIND_DEV_KEY);
+    g_settings.button_icons = ICONS_XBOX;
     act_set(BIND_DEV_PAD, 0, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER);
     assert(rt_hud_action_button(2) == 4);
     act_set(BIND_DEV_PAD, 0, SDL_GAMEPAD_BUTTON_DPAD_UP);
