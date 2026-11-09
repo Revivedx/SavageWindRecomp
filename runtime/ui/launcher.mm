@@ -102,7 +102,7 @@ static void save_png(id<MTLTexture> tex, const char *path) {
 #endif
 
 // The version this build is (also names the release files; Makefile / tools/bundle_macos.sh / make_dmg.sh read it).
-#define SAVAGEWIND_VERSION "0.4.1-alpha.4"
+#define SAVAGEWIND_VERSION "0.5.0-alpha.5"
 extern "C" const char *rt_version(void) { return SAVAGEWIND_VERSION; }  // (the title screen's version line: fs.c)
 
 // ------------------------------------------------------------------ game files
@@ -1139,13 +1139,13 @@ static void prelaunch_tab(float sc) {
         static std::string made;
         if (ImGui::Button(tr("Make a problem report"))) {
             made = problem_report_make();  // (runtime/problem_report.c)
-            if (!made.empty()) reveal_folder(made);
+            if (!made.empty()) reveal_folder(rt_data_root());  // (the folder that holds the zip)
         }
         ImGui::PushTextWrapPos(0);
         if (made.empty())
-            ImGui::TextDisabled("%s", tr("A folder to attach to a bug report: the log of the last two runs, your settings and "
+            ImGui::TextDisabled("%s", tr("A zip file to attach to a bug report: the log of the last two runs, your settings and "
                                          "a short system summary. No game files and no saves."));
-        else ImGui::Text(tr("Made the folder %s. Attach its files to your report."), made.c_str());
+        else ImGui::Text(tr("Made %s in the data folder. Attach this file to your report."), made.c_str());
         ImGui::PopTextWrapPos();
     }
     ImGui::Spacing();

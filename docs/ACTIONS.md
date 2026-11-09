@@ -64,7 +64,7 @@ actions are rows of their own, bound to the same raw slots with the same default
 Left stick click (Crouch, a menu use) and D-pad down (Call horse, Throw distance) have no function of their own beyond
 the actions, so they are not listed; they keep their slots and defaults. Two greyed rows, Esc and F2, are fixed
 and cannot be rebound: Esc is Plus in play and B in menus, F2 frees the mouse cursor. F1 opens the Savage Wind overlay
-(controller: Back + Start or Home / Guide) only when the game is started with `SAVAGEWIND_OVERLAY=1`; that overlay's
+(controller: Back + Start or Home / Guide), unless the game is started with `SAVAGEWIND_OVERLAY=0`; that overlay's
 own page lists it greyed too.
 
 ## The actions

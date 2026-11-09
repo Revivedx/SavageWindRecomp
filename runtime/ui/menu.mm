@@ -187,9 +187,9 @@ extern "C" bool menu_input_captured(void) {
 }
 
 // Esc opens the game's pause screen or backs out of a menu. F2 frees the mouse cursor; a click in the
-// window holds it again (runtime/hle/input.c).
+// window holds it again (runtime/hle/input.c). F1 opens the overlay; SAVAGEWIND_OVERLAY=0 turns it off.
 static bool overlay_enabled(void) {
-    static const bool on = getenv("SAVAGEWIND_OVERLAY") && *getenv("SAVAGEWIND_OVERLAY") != '0';
+    static const bool on = !getenv("SAVAGEWIND_OVERLAY") || *getenv("SAVAGEWIND_OVERLAY") != '0';
     return on;
 }
 static std::atomic<bool> g_cursor_free{false};
@@ -281,7 +281,7 @@ bool menu_handle_event(const SDL_Event *e) {
         }
         if (!e->key.repeat && (e->key.scancode == SDL_SCANCODE_F1 ||
                                (!pc_cursor_enabled() && e->key.scancode == SDL_SCANCODE_ESCAPE && !g_open.load()))) {
-            if (!overlay_enabled()) {
+            if (!overlay_enabled() || e->key.scancode == SDL_SCANCODE_ESCAPE) {  // (Esc keeps freeing the cursor)
                 if (e->key.scancode == (pc_cursor_enabled() ? SDL_SCANCODE_F2 : SDL_SCANCODE_ESCAPE) && !typing) g_cursor_free = !g_cursor_free.load();
                 return true;
             }

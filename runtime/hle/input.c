@@ -512,7 +512,7 @@ void input_mouse_update(SDL_Window *w) {
     LOG("[input] mouse %s\n", want ? "held in the window (camera)" : "free");
 }
 
-volatile int g_debug_frame_request;  // F9: dump the next frame's passes (build/pass_*.png) + draw log
+volatile int g_debug_frame_request;  // F9, developer mode only: dump the next frame's passes (build/pass_*.png) + draw log
 volatile int g_record_frames;        // F12: (debugging) save every other game image to build/frames/ until F12 again
 volatile int g_skip_fs_off;          // F8: (debugging) draw the shaders SAVAGEWIND_SKIP_FSHASH names, until F8 again
 
@@ -659,7 +659,8 @@ void input_handle_event(const SDL_Event *e) {
             extern void photo_take(void);
             photo_take();
         }
-        if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_F9 && !e->key.repeat) g_debug_frame_request = 1;
+        if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_F9 && !e->key.repeat && control_enabled())
+            g_debug_frame_request = 1;
         if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_F6 && !e->key.repeat && profiler_key_available())
             prof_toggle();  // start, stop, or acknowledge a full buffer (runtime/prof.h; report: tools/swprof.py)
         if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_F12 && !e->key.repeat)
