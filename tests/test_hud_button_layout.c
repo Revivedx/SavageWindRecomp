@@ -25,6 +25,7 @@ const TextLanguage g_text_languages[] = {{"Auto", NULL, NULL}};
 const VoiceLanguage g_voice_languages[] = {{"Auto", NULL}};
 const int g_ntext_languages = 1, g_nvoice_languages = 1;
 GameSites g_site;
+const char *g_game_version = "1.9.0";
 uint64_t g_program_id;
 const char *g_romfs_dir;
 bool rt_resource(const char *name, const char *dev_rel, char *out, size_t n) {
@@ -122,11 +123,14 @@ static size_t build_synthetic_padocommand(uint8_t *b, int which) {
     for (int i = 0; i < 4; i++)
         if (i != which) o = append_dim_txt(b, o, tnames[i], letters[i], dim_xy[i][0], dim_xy[i][1]);
     static const float act_xy[4][2] = {{26.0f, 0.0f}, {0.0f, -26.0f}, {0.0f, 26.0f}, {-26.0f, 0.0f}};
+    o = append_pane(b, o, "pan1", "N_Capture_00", act_xy[which][0] + (which == 3 ? -60.0f : 60.0f), act_xy[which][1], 0.0f, 1.0f);
     o = append_pane(b, o, "pan1", "N_BtnA_00", act_xy[which][0], act_xy[which][1], 0.0f, 1.0f);
+    o = append_sec(b, o, "pas1", (const uint8_t *)"", 0);
+    o = append_pane(b, o, "pic1", "P_CaptureUse_02", which == 3 ? -60.0f : 60.0f, 0.0f, 0.0f, 1.0f);
     o = append_pane(b, o, "wnd1", "W_Base_00", which == 3 ? 33.0f : -33.0f, 0.0f, 0.0f, which == 3 ? -1.0f : 1.0f);
     o = append_pane(b, o, "txt1", "T_Guide_01", which == 3 ? -23.0f : 21.0f, 0.0f, 0.0f, 1.0f);
+    o = append_sec(b, o, "pae1", (const uint8_t *)"", 0);
     o = append_pane(b, o, "pic1", "P_CaptureUse", which == 3 ? -60.0f : 60.0f, 0.0f, 0.0f, 1.0f);
-    o = append_pane(b, o, "pan1", "N_Capture_00", act_xy[which][0] + (which == 3 ? -60.0f : 60.0f), act_xy[which][1], 0.0f, 1.0f);
     o = append_pane(b, o, "txt1", "T_Guide_00", which == 3 ? 37.0f : -39.0f, 0.0f, 0.0f, 1.0f);
     o = append_pane(b, o, "pic1", "Nt_KeyTexA_01", which == 3 ? 60.0f : -60.0f, 0.0f, 0.0f, 1.0f);
     o = append_pane(b, o, "pic1", "P_CaptureUse_01", act_xy[which][0] + (which == 3 ? -60.0f : 60.0f), act_xy[which][1], 0.0f, 1.0f);
@@ -152,64 +156,84 @@ static const uint8_t *find_pane(const uint8_t *b, size_t n, const char *name) {
 
 static bool nearf(float a, float b) { return fabsf(a - b) < 1e-4f; }
 
+static void test_contextual_binding(void) {
+    int pos[4];
+    g_settings.button_icons = ICONS_XBOX;
+    hud_faces_ready = true;
+    hud_physical_positions(pos);
+    for (int i = 0; i < 4; i++) hud_face_slots[pos[i]] = i;
+
+    // Interact can share South with Cancel without moving the other buttons.
+    assert(rt_hud_action_button(1) == BIND_A);  // Factory Interact is Xbox B (East).
+    act_set(BIND_DEV_PAD, 0, SDL_GAMEPAD_BUTTON_SOUTH);
+    assert(rt_hud_action_button(1) == BIND_B);  // Pick up
+    assert(rt_hud_action_button(2) == BIND_B);  // Descend
+    glyphs_fixed_hud(true);
+    g_bind_pad[BIND_A] = SDL_GAMEPAD_BUTTON_SOUTH;
+    g_bind_pad[BIND_B] = SDL_GAMEPAD_BUTTON_EAST;
+    assert(rt_hud_action_button(1) == BIND_B);  // A raw-menu swap does not move the HUD's South pane.
+    g_bind_pad[BIND_A] = SDL_GAMEPAD_BUTTON_EAST;
+    g_bind_pad[BIND_B] = SDL_GAMEPAD_BUTTON_SOUTH;
+    glyphs_fixed_hud(false);
+    act_set(BIND_DEV_PAD, 0, SDL_GAMEPAD_BUTTON_EAST);
+    assert(rt_hud_action_button(1) == BIND_A);  // Back to Xbox B, without moving the diamond.
+    act_set(BIND_DEV_PAD, 0, SDL_GAMEPAD_BUTTON_SOUTH);
+    assert(!rt_hud_action_refresh(1, 2, 2));
+    act_set(BIND_DEV_PAD, 0, SDL_GAMEPAD_BUTTON_WEST);
+    assert(rt_hud_action_button(2) == BIND_Y);
+    assert(rt_hud_action_refresh(1, 2, 2));
+    assert(!rt_hud_action_refresh(1, 2, 2));
+
+    act_set(BIND_DEV_PAD, 2, SDL_GAMEPAD_BUTTON_EAST);
+    assert(rt_hud_action_button(16) == BIND_A);  // Climb
+    act_set(BIND_DEV_PAD, 0, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER);
+    assert(rt_hud_action_button(2) == 4);
+    act_set(BIND_DEV_PAD, 0, SDL_GAMEPAD_BUTTON_DPAD_UP);
+    assert(rt_hud_action_button(2) == -1);
+
+    hud_faces_ready = false;
+    hud_display.screen = 0;
+    g_settings.button_icons = ICONS_AUTO;
+    bind_reset(BIND_DEV_PAD);
+}
+
 int main(void) {
     bind_reset(BIND_DEV_PAD);
     bind_reset(BIND_DEV_KEY);
+    test_contextual_binding();
 
     int pos[4];
-    g_settings.button_layout = BUTTON_LAYOUT_AUTO;
-    glyphs_hud_positions(pos);
+    hud_physical_positions(pos);
     assert(pos[0] == 0 && pos[1] == 1 && pos[2] == 2 && pos[3] == 3);
 
-    // Automatic follows g_bind_pad swaps (e.g. PS5 Cross / Circle swapped)
     g_bind_pad[BIND_A] = SDL_GAMEPAD_BUTTON_SOUTH;
     g_bind_pad[BIND_B] = SDL_GAMEPAD_BUTTON_EAST;
-    glyphs_hud_positions(pos);
+    hud_physical_positions(pos);
     assert(pos[0] == 1 && pos[1] == 0 && pos[2] == 2 && pos[3] == 3);
 
-    // Automatic also follows per-action swaps when g_bind_pad is at default
-    bind_reset(BIND_DEV_PAD);
-    g_act_pad[0] = SDL_GAMEPAD_BUTTON_SOUTH;   // Interact
-    g_act_pad[14] = SDL_GAMEPAD_BUTTON_EAST;   // Cancel
-    glyphs_hud_positions(pos);
-    assert(pos[0] == 1 && pos[1] == 0 && pos[2] == 2 && pos[3] == 3);
-    bind_reset(BIND_DEV_PAD);
-
-    // Explicit presets
-    g_settings.button_layout = BUTTON_LAYOUT_SWAP_AB;
-    glyphs_hud_positions(pos);
-    assert(pos[0] == 1 && pos[1] == 0 && pos[2] == 2 && pos[3] == 3);
-
-    g_settings.button_layout = BUTTON_LAYOUT_XBOX;
-    glyphs_hud_positions(pos);
-    assert(pos[0] == 1 && pos[1] == 0 && pos[2] == 3 && pos[3] == 2);
-
-    g_settings.button_layout = BUTTON_LAYOUT_SWAP_XY;
-    glyphs_hud_positions(pos);
-    assert(pos[0] == 0 && pos[1] == 1 && pos[2] == 3 && pos[3] == 2);
-
-    g_settings.button_layout = BUTTON_LAYOUT_GAMECUBE;
-    glyphs_hud_positions(pos);
-    assert(pos[0] == 1 && pos[1] == 3 && pos[2] == 0 && pos[3] == 2);
-
-    // Patch synthetic PaDoCommandA/B/X/Y_00 under GameCube layout (A=South, B=West, X=East, Y=North)
+    // Exercise the artwork at every vertex, including a move across the diamond.
+    const int permutation[4] = {1, 3, 0, 2};
+    memcpy(pos, permutation, sizeof pos);
     int panes = 0;
     for (int w = 0; w < 4; w++) {
         uint8_t src[2048], dst[2112];
         size_t sn = build_synthetic_padocommand(src, w);
-        size_t dn = hud_letters_flyt(src, sn, dst, w, pos, &panes);
+        size_t dn = hud_letters_flyt(src, sn, dst, w, pos, true, &panes);
         assert(dn > sn);
         const uint8_t *btn = find_pane(dst, dn, "N_BtnA_00");
         const uint8_t *base = find_pane(dst, dn, "P_Base_00");
         const uint8_t *wbase = find_pane(dst, dn, "W_Base_00");
-        assert(btn && base && wbase);
-        float bx, by, rz, sx, wx, wsx;
+        const uint8_t *shadow = find_pane(dst, dn, "P_CaptureUse_02");
+        assert(btn && base && wbase && shadow);
+        float bx, by, rz, sx, wx, wsx, shadow_x, shadow_y;
         memcpy(&bx, btn + 44, 4);
         memcpy(&by, btn + 48, 4);
         memcpy(&rz, base + 64, 4);
         memcpy(&sx, base + 68, 4);
         memcpy(&wx, wbase + 44, 4);
         memcpy(&wsx, wbase + 68, 4);
+        memcpy(&shadow_x, shadow + 44, 4);
+        memcpy(&shadow_y, shadow + 48, 4);
         int act = pos[w];
         static const float exp_act[4][2] = {{26.0f, 0.0f}, {0.0f, -26.0f}, {0.0f, 26.0f}, {-26.0f, 0.0f}};
         assert(nearf(bx, exp_act[act][0]) && nearf(by, exp_act[act][1]));
@@ -217,21 +241,10 @@ int main(void) {
         assert(nearf(sx, act == 2 ? -1.0f : 1.0f));
         assert(nearf(wx, act == 3 ? 33.0f : -33.0f));
         assert(nearf(wsx, act == 3 ? -1.0f : 1.0f));
+        assert(nearf(shadow_x, act == 3 ? -60.0f : 60.0f));
+        assert(nearf(shadow_y, act == 0 ? 4.0f : 0.0f));
     }
     assert(panes == 12);
-
-    // Settings load/save round-trip for button_layout
-    const char *tmp = "build/test_hud_button_layout.ini";
-    setenv("SAVAGEWIND_SETTINGS", tmp, 1);
-    g_settings.button_layout = BUTTON_LAYOUT_GAMECUBE;
-    settings_save();
-    FILE *fp = fopen(tmp, "r");
-    assert(fp != NULL);
-    char buf[4096] = {0};
-    fread(buf, 1, sizeof buf - 1, fp);
-    fclose(fp);
-    unlink(tmp);
-    assert(strstr(buf, "button_layout = gamecube") != NULL);
 
     puts("PASS: HUD button layout positions and FLYT patching");
     return 0;
