@@ -5768,13 +5768,22 @@ static void gw_check(const uint32_t cbufs[6], bool vertices, uint64_t iaddr, uin
 // every place tried, with ~1 fetch a list across a chunk's edge.
 // Off on integrated GPUs (the import is already their memory), outside Windows, and with SAVAGEWIND_VK_HEAP_COPY=0
 // (=1: one buffer whatever the room, =2: chunks whatever the room). SAVAGEWIND_VK_HEAP_COPY_BUDGET_MB=<n>: plan for a
-// card of n MB of video memory (the shape, and the chunks' plan: a smaller card simulated). _CHUNK_MB=<n>: the chunk
-// size (a power of 2, 4-1024). SAVAGEWIND_VK_HEAP_COPY_LOG=<lists>: what was copied, every that many lists.
+// card of n MB of video memory (the shape, the chunks' plan and size: a smaller card simulated). _CHUNK_MB=<n>: the
+// chunk size (a power of 2, 4-1024). SAVAGEWIND_VK_HEAP_COPY_LOG=<lists>: what was copied, every that many lists.
 // (Approach from Demetter's fork, savagewind-native-28oct; reimplemented; chunks ours.)
 #define HC_PAGE 4096ull
 #define HC_SPANS_MAX 256
 #define HC_MAXCH 1024
 #define HC_CHUNK_MB 32
+// Where the plan less HC_RESERVE_MB is lower, the plan is the point textures.c starts letting images go
+// (VRAM_TRIM_TARGET of the budget) less one VMA block (vram_block_size): the copy takes what the textures leave and
+// keeps a block's room for the game's own growth under that point. An MX350 (1669 MB budget, blocks of 61 MB): 1157 MB
+// was about what the game's own blocks hold once loaded - after a load peak (a shrine entered from the open world) they
+// stayed over it, every chunk went and none fitted again, the geometry read in place (scene pass 2.7 -> 12 ms, 57 -> 33
+// fps) - and the plan is 1358 MB now. Budgets over ~1.7 GB with 256 MB blocks keep the reserve's plan.
+// Cards of VRAM_SMALL_HEAP or less: chunks of HC_CHUNK_SMALL_MB. BOTW's geometry is scattered over the heap: in 32 MB
+// chunks it took 17-20 of them (~600 MB), in 8 MB chunks 33-44 (~260-350 MB).
+#define HC_CHUNK_SMALL_MB 8
 #define HC_RESERVE_MB 512
 #define HC_LOOK 120
 enum { HC_NONE, HC_WANT, HC_MAKING, HC_MADE, HC_LIVE, HC_DYING, HC_OVER };  // a chunk's state
@@ -5816,7 +5825,10 @@ static uint64_t hc_limit(uint64_t *usage) {
     uint64_t budget;
     vram_device_local(usage, &budget, NULL);
     uint64_t plan = (budget < hc_vram / 10 * 9 ? budget : hc_vram / 10 * 9), reserve = (uint64_t)HC_RESERVE_MB << 20;
-    return plan > reserve ? plan - reserve : 0;
+    uint64_t lim = plan > reserve ? plan - reserve : 0, block = vram_block_size();
+    uint64_t trim = (uint64_t)((double)budget * VRAM_TRIM_TARGET), at_trim = trim > block ? trim - block : 0;
+    if (at_trim > plan) at_trim = plan;
+    return lim > at_trim ? lim : at_trim;  // (see HC_CHUNK_SMALL_MB)
 }
 
 static bool hc_on(void) {
@@ -5834,8 +5846,9 @@ static bool hc_on(void) {
     hc_state = force == 0 || gmem_mapped || !ww ? 0 : force == 1 ? 1 : force == 2 ? 2 : !discrete ? 0
              : hc_vram >= heap + (4ull << 30) ? 1 : 2;
     const char *cm = getenv("SAVAGEWIND_VK_HEAP_COPY_CHUNK_MB");
-    unsigned mb = cm ? (unsigned)atoi(cm) : HC_CHUNK_MB;
-    if (mb < 4 || mb > 1024 || (mb & (mb - 1))) mb = HC_CHUNK_MB;
+    unsigned def = hc_vram <= VRAM_SMALL_HEAP ? HC_CHUNK_SMALL_MB : HC_CHUNK_MB;
+    unsigned mb = cm ? (unsigned)atoi(cm) : def;
+    if (mb < 4 || mb > 1024 || (mb & (mb - 1))) mb = def;
     hc_shift = 20 + (unsigned)__builtin_ctz(mb);
     uint64_t usage, lim = hc_limit(&usage);
     LOG("[vk] heap copy in video memory: %s (%s GPU, %llu MB of video memory%s, heap %llu MB, write watch %s)\n",
