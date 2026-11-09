@@ -174,14 +174,19 @@ void vram_allocator_setup(VmaAllocatorCreateInfo *ai, VmaVulkanFunctions *fn, bo
     if (memory_budget) ai->flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
     // VMA makes blocks of heap / 8 in heaps of 1 GB or less and of 256 MB above. A heap of VRAM_SMALL_HEAP or less (an
     // MX350: 1964 MB, 1669 MB budget) then grows in steps of 15% of its budget, the room left in its blocks counted as
-    // use: in play it went over the budget twice, and blocks of 1454-1665 MB held 834-1090 MB. Blocks of heap / 32 there
-    // (61 MB): in the same tour of the map, no step over the budget.
+    // use: in play it went over the budget twice, and blocks of 1454-1665 MB held 834-1090 MB. Blocks of the power of 2
+    // nearest heap / 32 there (64 MB): in the same tour of the map, no step over the budget. (A power of 2, as are VMA's
+    // halves of it for a heap's first blocks: vram_allocate tells VMA's blocks by that.)
     uint64_t heap = 0;
     for (uint32_t i = 0; i < hr_mp.memoryHeapCount; i++)
         if ((hr_mp.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) && hr_mp.memoryHeaps[i].size > heap)
             heap = hr_mp.memoryHeaps[i].size;
     vr_block = heap <= (1024ull << 20) ? heap / 8 : 256ull << 20;
-    if (heap > (1024ull << 20) && heap <= VRAM_SMALL_HEAP) ai->preferredLargeHeapBlockSize = vr_block = (heap / 32) & ~((1ull << 20) - 1);
+    if (heap > (1024ull << 20) && heap <= VRAM_SMALL_HEAP) {
+        uint64_t want = heap / 32, p = 1ull << 20;
+        while (p * 2 <= want) p *= 2;
+        ai->preferredLargeHeapBlockSize = vr_block = want - p > p * 2 - want ? p * 2 : p;
+    }
 }
 
 uint64_t vram_block_size(void) { return vr_block; }

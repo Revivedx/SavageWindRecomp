@@ -5777,10 +5777,10 @@ static void gw_check(const uint32_t cbufs[6], bool vertices, uint64_t iaddr, uin
 #define HC_CHUNK_MB 32
 // Where the plan less HC_RESERVE_MB is lower, the plan is the point textures.c starts letting images go
 // (VRAM_TRIM_TARGET of the budget) less one VMA block (vram_block_size): the copy takes what the textures leave and
-// keeps a block's room for the game's own growth under that point. An MX350 (1669 MB budget, blocks of 61 MB): 1157 MB
+// keeps a block's room for the game's own growth under that point. An MX350 (1669 MB budget, blocks of 64 MB): 1157 MB
 // was about what the game's own blocks hold once loaded - after a load peak (a shrine entered from the open world) they
 // stayed over it, every chunk went and none fitted again, the geometry read in place (scene pass 2.7 -> 12 ms, 57 -> 33
-// fps) - and the plan is 1358 MB now. Budgets over ~1.7 GB with 256 MB blocks keep the reserve's plan.
+// fps) - and the plan is 1355 MB now. Budgets over ~1.7 GB with 256 MB blocks keep the reserve's plan.
 // Cards of VRAM_SMALL_HEAP or less: chunks of HC_CHUNK_SMALL_MB. BOTW's geometry is scattered over the heap: in 32 MB
 // chunks it took 17-20 of them (~600 MB), in 8 MB chunks 33-44 (~260-350 MB).
 #define HC_CHUNK_SMALL_MB 8
