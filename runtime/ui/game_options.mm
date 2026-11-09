@@ -40,6 +40,7 @@ extern "C" {
 #include "../settings.h"
 #include "../gamelib.h"
 #include "../color_grade.h"
+#include "../dlss_fetch.h"
 #include "../pc_cursor.h"
 #include "../window_size.h"
 void guest_call(Cpu *, uint64_t);
@@ -282,7 +283,7 @@ const char *ups_label(const Item &, int x) {
         available = tr("DLSS");
         return available.c_str();
     }
-    return soon("DLSS", "(NVIDIA RTX only)");
+    return soon("DLSS", dlss_fetch_missing() ? "(download it in Savage Wind Configuration)" : "(NVIDIA RTX only)");
 }
 
 const char *fps_label(const Item &, int x) {

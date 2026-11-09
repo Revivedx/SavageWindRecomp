@@ -245,7 +245,7 @@ Estimates of where each part stands. "Tested in game" is how much of the game ha
 | 🔧 | **Tested in game** | ![90%](docs/media/progress/90.svg) | The whole game can be finished: the Shrine of Resurrection, the Great Plateau, the four Divine Beasts and the main story to Dark Beast Ganon, completed by players ([#335](https://github.com/Revivedx/SavageWindRecomp/issues/335), [#380](https://github.com/Revivedx/SavageWindRecomp/issues/380), [#419](https://github.com/Revivedx/SavageWindRecomp/issues/419), [#436](https://github.com/Revivedx/SavageWindRecomp/issues/436)), and a walk through every region on a 100% save file. Cutscene bugs are known: lower the frame rate to 30 fps for that scene and open an issue with your save. Some places still crash, and some mechanics break above 30 fps ([#425](https://github.com/Revivedx/SavageWindRecomp/issues/425)): [report what breaks](https://github.com/Revivedx/SavageWindRecomp/issues/new/choose) |
 | 🔧 | **Linux** | ![90%](docs/media/progress/90.svg) | Builds and runs on x86-64 (from LAS Recomp); a steady 144 fps on an RTX 3070 Ti with a Ryzen 5 7600X, and no Linux-only issues so far |
 | 🔧 | **AMD FSR 3 + frame generation** | ![80%](docs/media/progress/80.svg) | Video > Upscaler: AMD FSR 3, and FSR 4 on Windows, opt-in ([#308](https://github.com/Revivedx/SavageWindRecomp/issues/308)). Video > Frame generation (AMD FSR 3): a frame made between each two the game draws, about twice the frames on screen, with the HUD kept sharp. Enemies and animals can still leave a faint smear. Works on Windows; Linux and the Steam Deck aren't tried yet |
-| 🔧 | **NVIDIA DLSS (RTX)** | ![50%](docs/media/progress/50.svg) | The code is in ([#111](https://github.com/Revivedx/SavageWindRecomp/issues/111)), but it needs NVIDIA's SDK at build time, so the option stays greyed out in these builds |
+| 🔧 | **NVIDIA DLSS (RTX)** | ![70%](docs/media/progress/70.svg) | Video > Upscaler: DLSS Super Resolution ([#111](https://github.com/Revivedx/SavageWindRecomp/issues/111)) on NVIDIA RTX graphics cards, Windows. Nothing of NVIDIA's is shipped or built in: the setup downloads NVIDIA's DLSS library from NVIDIA's own repository |
 | 🔧 | **Colour grading and HDR** | ![80%](docs/media/progress/80.svg) | Options > Colour: presets, exposure, contrast, saturation, temperature, tint and LUTs (three CC0 ones included; your own .cube files and ReShade .png strips go in the `luts` folder), on the 3D image only: the HUD keeps its colours. HDR10 output on HDR displays. Next: finer HDR controls |
 | 🔧 | **Draw distance and detail** | ![80%](docs/media/progress/80.svg) | Draw distance and shadows from Potato, below the console, to far beyond it, with presets and a render scale of 50% to 200%. Planned: a fixed level of detail (the most detailed models at any distance) |
 | 🔧 | **Free camera and photo mode** | ![80%](docs/media/progress/80.svg) | Home or both stick clicks: a free camera with the HUD hidden. F8 filters, [ ] the hour of the day, F7 a picture ([#318](https://github.com/Revivedx/SavageWindRecomp/issues/318), [#554](https://github.com/Revivedx/SavageWindRecomp/issues/554)). Planned: camera paths through keyframes for videos |
@@ -312,12 +312,12 @@ More detail in [docs/BUILD-windows.md](docs/BUILD-windows.md).
      minute) and `make -j` again (builds it into `build/swgame.dll`; the first build takes 15-20 minutes).
 3. Run: `build/savagewind.exe extracted --play`, from a shell with `C:\msys64\ucrt64\bin` on PATH.
 
-DLSS is optional on Windows. It builds from NVIDIA's SDK, [NVIDIA/DLSS](https://github.com/NVIDIA/DLSS), cloned beside
-this repository (`../DLSS`, the default) or anywhere else with `make DLSS_SDK=/path/to/DLSS -j`. Check out one of its
-release tags (tested: `v310.9.16`) and keep that tag's own `nvngx_dlss.dll`: the headers and the static library the
-game is linked with must be the same SDK version as the DLL it loads, so don't swap in a DLL from elsewhere. The
-release build copies `nvngx_dlss.dll` and the NVIDIA license when that SDK path is available. If the SDK or runtime
-DLL is absent, the game still builds and DLSS stays unavailable in Video > Upscaler.
+NVIDIA DLSS (Windows) needs nothing at build time: no NVIDIA SDK code is compiled in or linked. At run time
+`runtime/nvn/vulkan/dlss.c` reaches the NVIDIA driver's own NGX, and NGX loads NVIDIA's `nvngx_dlss.dll` from the folder
+of `savagewind.exe`. Savage Wind doesn't ship it: on PCs with an NVIDIA driver the setup downloads it there from
+[NVIDIA/DLSS](https://github.com/NVIDIA/DLSS) (release `v310.9.16`, size and SHA-256 checked; `runtime/dlss_fetch.c`),
+and the game files page of Savage Wind Configuration downloads it later. Without it DLSS stays greyed out in Video >
+Upscaler.
 
 ### Linux
 
@@ -356,7 +356,8 @@ switches - are in [docs/SAVAGE-WIND.md](docs/SAVAGE-WIND.md).
   [Switch Loader](https://github.com/Adubbz/Ghidra-Switch-Loader) - used for reverse engineering (not bundled).
 - Libraries: [SDL 3](https://libsdl.org) (zlib), [FFmpeg](https://ffmpeg.org) (LGPL),
   [Dear ImGui](https://github.com/ocornut/imgui) (MIT),
-  [NVIDIA DLSS SDK](https://github.com/NVIDIA/DLSS) (NVIDIA's own license; optional, Windows; `make dist` adds its `LICENSE.txt`),
+  [NVIDIA DLSS](https://github.com/NVIDIA/DLSS) (NVIDIA's own license; neither shipped nor linked: on Windows PCs with an
+  NVIDIA driver the setup downloads NVIDIA's DLL and `LICENSE.txt`),
   [Vulkan Memory Allocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator) (MIT),
   [SMAA](https://github.com/iryoku/smaa) (MIT), [AMD FidelityFX Super Resolution 1](https://github.com/GPUOpen-Effects/FidelityFX-FSR)
   (MIT), [AMD FidelityFX CAS](https://github.com/GPUOpen-Effects/FidelityFX-CAS) (MIT),
