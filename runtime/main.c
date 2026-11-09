@@ -21,6 +21,7 @@
 #include "kernel.h"
 #include "control.h"
 #include "launch_flags_boot.h"
+#include "updater.h"
 
 const char *g_romfs_dir;
 uint64_t g_program_id;
@@ -348,6 +349,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "[savagewind] Savage Wind %s (%s)\n", rt_version(), SW_SOURCE);
     launch_flags_boot(argc, argv);  // the saved launch options (runtime/launch_flags.h): in the environment before anything reads it
     control_init();
+    updater_init();
     const char *root = "extracted";  // (in the data root)
     bool skip_launcher = getenv("SAVAGEWIND_NO_LAUNCHER") || getenv("SAVAGEWIND_INPUT");  // tests boot straight in
     bool config = false;

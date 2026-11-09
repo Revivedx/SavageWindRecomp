@@ -154,16 +154,7 @@ static int candidates(const char *game_dir, char out[3][1100]) {
     return n;
 }
 
-bool gamelib_present(const char *game_dir) {
-    if (g_tables) return true;
-    char c[3][1100];
-    int n = candidates(game_dir, c);
-    for (int i = 0; i < n; i++)
-        if (exists(c[i]) && id_matches(c[i])) return true;
-    return false;
-}
-
-static const GameLibTables *open_lib(const char *path) {
+static const GameLibTables *open_lib(const char *path, bool allow_id_mismatch) {
 #ifdef _WIN32
     HMODULE h = LoadLibraryA(path);
     if (!h) { snprintf(g_error, sizeof g_error, "can't load %s (error %lu)", path, GetLastError()); return NULL; }
@@ -175,11 +166,54 @@ static const GameLibTables *open_lib(const char *path) {
 #endif
     if (!entry) { snprintf(g_error, sizeof g_error, "%s: not game code", path); return NULL; }
     const GameLibTables *t = entry();
-    if (!t || t->abi != GAMELIB_ABI || !t->id || strcmp(t->id, gamelib_id())) {
+    if (!t || t->abi != GAMELIB_ABI) {
         snprintf(g_error, sizeof g_error, "%s was built for another version", path);
         return NULL;  // (left loaded: nothing of it runs)
     }
+    if (!t->id || strcmp(t->id, gamelib_id())) {
+        if (!allow_id_mismatch) {
+            snprintf(g_error, sizeof g_error, "%s was built for another version", path);
+            return NULL;
+        }
+        LOG("[gamelib] note: using game code built for version ID %s (current runtime expects %s)\n",
+            t->id ? t->id : "?", gamelib_id());
+    }
     return t;
+}
+
+bool gamelib_abi_compatible(const char *game_dir) {
+    char c[3][1100];
+    int n = candidates(game_dir, c);
+    for (int i = 0; i < n; i++) {
+        if (!exists(c[i])) continue;
+        const GameLibTables *t = open_lib(c[i], true);
+        if (t && take_sites(t)) return true;
+    }
+    return false;
+}
+
+bool gamelib_exact_id(const char *game_dir) {
+    char c[3][1100];
+    int n = candidates(game_dir, c);
+    for (int i = 0; i < n; i++) {
+        if (exists(c[i]) && id_matches(c[i])) return true;
+    }
+    return false;
+}
+
+bool gamelib_present(const char *game_dir) {
+    if (g_tables) return true;
+    char c[3][1100];
+    int n = candidates(game_dir, c);
+    const char *e = getenv("SAVAGEWIND_REUSE_GAMELIB");
+    bool disallow_reuse = e && strcmp(e, "0") == 0;
+    for (int i = 0; i < n; i++) {
+        if (exists(c[i])) {
+            if (id_matches(c[i])) return true;
+            if (!disallow_reuse && gamelib_abi_compatible(game_dir)) return true;
+        }
+    }
+    return false;
 }
 
 bool gamelib_load(const char *game_dir, char *why, size_t why_size) {
@@ -190,17 +224,21 @@ bool gamelib_load(const char *game_dir, char *why, size_t why_size) {
         char c[3][1100];
         int n = candidates(game_dir, c);
         const char *env = getenv("SAVAGEWIND_GAME_LIB");
+        const char *reuse_env = getenv("SAVAGEWIND_REUSE_GAMELIB");
+        bool allow_reuse = !reuse_env || strcmp(reuse_env, "0") != 0;
         for (int i = 0; i < n && !g_tables; i++) {
             if (!exists(c[i])) continue;
             bool given = i == 0 && env && *env;  // SAVAGEWIND_GAME_LIB: loaded as given, the library's own id decides
-            if (!given && !id_matches(c[i])) {
+            bool matches = id_matches(c[i]);
+            if (!given && !matches && !allow_reuse) {
                 snprintf(g_error, sizeof g_error, "%s was built for another version", c[i]);
                 continue;
             }
-            g_tables = open_lib(c[i]);
+            g_tables = open_lib(c[i], given || allow_reuse);
             if (g_tables && !take_sites(g_tables)) g_tables = NULL;
             if (g_tables) {
-                LOG("[gamelib] %s (game version %s, %u sites)\n", c[i], g_game_version, *g_tables->nsites);
+                LOG("[gamelib] %s (game version %s, %u sites)%s\n", c[i], g_game_version, *g_tables->nsites,
+                    matches ? "" : " [reused from previous build]");
 #ifdef GAMELIB_ID_COMPAT
                 LOG("[gamelib] target: %s\n", gamelib_compat() ? "compatible (" GAMELIB_ARCH_COMPAT
                                                                   ", no FMA instructions: slower)"

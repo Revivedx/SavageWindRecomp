@@ -72,6 +72,8 @@ const GameLibTables *gamelib_tables(void);
 void gamelib_sync(void);
 // True when a library usable with this build is in one of those places (without loading it).
 bool gamelib_present(const char *game_dir);
+// True when the library matches the exact build ID of the current runtime.
+bool gamelib_exact_id(const char *game_dir);
 
 // The game code's target on this CPU (#9). x86-64 builds the game code for x86-64-v3 (AVX2, FMA, BMI2: the Makefile's
 // GENARCH) where the CPU has those, else for the compatible target (GENARCH_COMPAT: x86-64-v2, no FMA instructions -
@@ -84,6 +86,8 @@ const char *gamelib_id(void);  // the id a library for this CPU has (GAMELIB_ID 
 const char *gamelib_cpu_problem(void);
 // True when game_dir holds a library built for the other target (a game folder moved from a PC of the other kind)
 bool gamelib_other_cpu(const char *game_dir);
+// True when game_dir holds an existing game library with matching ABI (reusable without full recompilation).
+bool gamelib_abi_compatible(const char *game_dir);
 
 #ifdef __cplusplus
 }
