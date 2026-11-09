@@ -14,6 +14,7 @@ Settings g_settings;
 static int device = DEVICE_PAD, family;
 int input_last_device(void) { return device; }
 int input_pad_family(void) { return family; }
+bool settings_steam_deck(void) { return false; }
 bool pc_cursor_preview_active(void) { return false; }
 bool pc_cursor_sensor_active(void) { return false; }
 bool rt_resource(const char *name, const char *dev_rel, char *out, size_t cap) {
