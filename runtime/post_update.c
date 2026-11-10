@@ -1,7 +1,7 @@
 // What the game does around SW Update (runtime/post_update.h).
 #include "post_update.h"
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
 #include <dirent.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -9,10 +9,21 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include "update_appimage.h"
+#endif
 
-#include "nvn/vulkan/shaders.h"
+void vk_cache_path(char *out, size_t n, const char *name);  // (runtime/nvn/vulkan/shaders.h)
+#ifdef _WIN32
+#define MAKE_DIR(p) mkdir(p)
+#else
+#define MAKE_DIR(p) mkdir(p, 0755)
+#endif
 #include "paths.h"
+
+extern const char *rt_version(void);  // (runtime/ui/launcher.mm)
 
 static bool file_there(const char *p) {
     struct stat st;
@@ -49,7 +60,9 @@ static void remove_tree(const char *dir) {
             struct stat st;
             if (stat(p, &st) == 0 && S_ISDIR(st.st_mode)) remove_tree(p);
             else {
+#ifdef _WIN32
                 SetFileAttributesA(p, FILE_ATTRIBUTE_NORMAL);
+#endif
                 remove(p);
             }
         }
@@ -58,6 +71,7 @@ static void remove_tree(const char *dir) {
     rmdir(dir);
 }
 
+#ifdef _WIN32
 // update/journal.txt (runtime/platform/windows_update.c) there and not ending in "C": the swap didn't finish
 static bool journal_cut_off(const wchar_t *journal) {
     FILE *f = _wfopen(journal, L"rb");
@@ -101,9 +115,17 @@ bool post_update_recover_if_cut(void) {
     return true;
 }
 
+#else
+bool post_update_recover_if_cut(void) { return false; }  // (the AppImage is replaced in one step)
+#endif
+
 bool post_update_shipped(void) {
+#ifdef _WIN32
     char p[1100];
     return rt_resource("sw-manifest.txt", NULL, p, sizeof p);
+#else
+    return appimage_path() != NULL;
+#endif
 }
 
 bool post_update_pending(const char *version) {
@@ -113,6 +135,7 @@ bool post_update_pending(const char *version) {
     return !read_line(p, last, sizeof last) || strcmp(last, version) != 0;
 }
 
+#ifdef _WIN32
 // What is in a folder of the driver's, for the log: which folders a driver really uses here varies between versions
 static void log_folder_names(const char *dir) {
     DIR *d = opendir(dir);
@@ -182,6 +205,8 @@ static void clear_amd_vulkan_cache(void) {
     fprintf(stderr, "[update] AMD Vulkan cache: %d files removed, %d left\n", removed, kept);
 }
 
+#endif
+
 void post_update_reset_shaders(const char *version) {
     if (!post_update_pending(version)) return;
     char p[1100], done[80] = "";
@@ -195,19 +220,22 @@ void post_update_reset_shaders(const char *version) {
     for (size_t i = 0; i < sizeof dirs / sizeof *dirs; i++) {
         cache_file(q, sizeof q, dirs[i]);
         remove_tree(q);
-        mkdir(q, 0755);
+        MAKE_DIR(q);
     }
     for (size_t i = 0; i < sizeof files / sizeof *files; i++) {
         cache_file(q, sizeof q, files[i]);
         remove(q);
     }
     cache_file(q, sizeof q, "");
-    mkdir(q, 0755);
+    MAKE_DIR(q);
+#ifdef _WIN32
     clear_amd_vulkan_cache();
+#endif
     write_line(p, version);
     fprintf(stderr, "[update] new version %s: shader caches emptied\n", version);
 }
 
+#ifdef _WIN32
 static bool update_dir(char *out, size_t n) {
     char m[1100];
     if (!rt_resource("sw-manifest.txt", NULL, m, sizeof m)) return false;
@@ -218,26 +246,36 @@ static bool update_dir(char *out, size_t n) {
     snprintf(out, n, "%s/update", m);
     return true;
 }
+#endif
 
 void post_update_finish(const char *version) {
     if (!post_update_shipped()) return;
     char p[1100];
     cache_file(p, sizeof p, "");
-    mkdir(p, 0755);
+    MAKE_DIR(p);
     cache_file(p, sizeof p, "last-version.txt");
     write_line(p, version);
     cache_file(p, sizeof p, "update-failed.txt");
     remove(p);
+#ifdef _WIN32
     if (update_dir(p, sizeof p)) remove_tree(p);
+#else
+    appimage_remove_old();
+#endif
     fprintf(stderr, "[update] version %s is set up\n", version);
 }
 
 void post_update_tidy(const char *version) {
-    char p[1100], last[80] = "";
-    if (!post_update_shipped() || !update_dir(p, sizeof p) || !file_there(p)) return;
-    char q[1100];
+    char q[1100], last[80] = "";
+    if (!post_update_shipped()) return;
     cache_file(q, sizeof q, "last-version.txt");
-    if (read_line(q, last, sizeof last) && !strcmp(last, version)) remove_tree(p);
+    if (!read_line(q, last, sizeof last) || strcmp(last, version)) return;
+#ifdef _WIN32
+    char p[1100];
+    if (update_dir(p, sizeof p) && file_there(p)) remove_tree(p);
+#else
+    appimage_remove_old();
+#endif
 }
 
 void post_update_mark_failed(const char *version) {
@@ -254,10 +292,14 @@ bool post_update_failed_before(const char *version) {
 }
 
 bool post_update_can_rollback(void) {
+#ifdef _WIN32
     char p[1100], q[1200];
     if (!update_dir(p, sizeof p)) return false;
     snprintf(q, sizeof q, "%s/journal.txt", p);
     return file_there(q);
+#else
+    return appimage_has_old();
+#endif
 }
 
 // ------------------------------------------------------------------ asking SW Update
@@ -265,6 +307,7 @@ static pthread_mutex_t g_check_lock = PTHREAD_MUTEX_INITIALIZER;
 static UpdateState g_state = UPDATE_IDLE;
 static char g_version[64], g_message[512];
 
+#ifdef _WIN32
 static bool start_tool(const char *args, HANDLE *out_process, DWORD flags) {
     char exe[1100];
     if (!rt_resource("SW Update.exe", NULL, exe, sizeof exe)) return false;
@@ -323,9 +366,38 @@ static void *check_thread(void *arg) {
     return NULL;
 }
 
+#else  // the AppImage asks by itself, with the system's curl
+static UcRelease g_release;
+static volatile float g_install_progress = -1;
+
+static void *check_thread(void *arg) {
+    (void)arg;
+    char work[1100];
+    cache_file(work, sizeof work, "");
+    MAKE_DIR(work);
+    UcRelease r;
+    UpdateProblem pb = {{0}};
+    bool available = false, ok = appimage_find_update(work, rt_version(), &r, &available, &pb);
+    pthread_mutex_lock(&g_check_lock);
+    g_state = !ok ? UPDATE_ERROR : available ? UPDATE_AVAILABLE : UPDATE_CURRENT;
+    if (available) {
+        g_release = r;
+        snprintf(g_version, sizeof g_version, "%s", r.version);
+    }
+    if (!ok) snprintf(g_message, sizeof g_message, "%s", pb.title);
+    pthread_mutex_unlock(&g_check_lock);
+    fprintf(stderr, "[update] check: state %d %s %s\n", (int)g_state, g_version, g_message);
+    return NULL;
+}
+#endif
+
 void update_check_start(void) {
+#ifdef _WIN32
     char exe[1100];
     if (!post_update_shipped() || !rt_resource("SW Update.exe", NULL, exe, sizeof exe)) return;
+#else
+    if (!post_update_shipped()) return;
+#endif
     pthread_mutex_lock(&g_check_lock);
     bool go = g_state == UPDATE_IDLE;
     if (go) g_state = UPDATE_CHECKING;
@@ -345,6 +417,11 @@ UpdateState update_check_state(char *version, size_t vn, char *message, size_t m
     return s;
 }
 
+#ifdef _WIN32
+bool update_applies_here(void) { return false; }
+void update_apply_here(char *title, size_t tn, char *what, size_t wn) { (void)title, (void)tn, (void)what, (void)wn; }
+float update_apply_progress(void) { return -1; }
+
 bool update_apply_start(void) {
     char a[64];
     snprintf(a, sizeof a, "--apply --wait-pid %lu", GetCurrentProcessId());
@@ -356,8 +433,37 @@ bool update_rollback_start(void) {
     snprintf(a, sizeof a, "--rollback --wait-pid %lu", GetCurrentProcessId());
     return start_tool(a, NULL, 0);
 }
+#else
+bool update_applies_here(void) { return true; }
+float update_apply_progress(void) { return g_install_progress; }
 
-#else  // not Windows
+void update_apply_here(char *title, size_t tn, char *what, size_t wn) {
+    char work[1100];
+    cache_file(work, sizeof work, "");
+    MAKE_DIR(work);
+    UcRelease r;
+    pthread_mutex_lock(&g_check_lock);
+    r = g_release;
+    pthread_mutex_unlock(&g_check_lock);
+    UpdateProblem pb = {{0}};
+    g_install_progress = 0;
+    if (appimage_install(work, &r, &g_install_progress, &pb)) appimage_relaunch(&pb);  // (returns only if it couldn't)
+    g_install_progress = -1;
+    snprintf(title, tn, "%s", pb.title);
+    snprintf(what, wn, "%s", pb.what);
+}
+
+bool update_apply_start(void) { return false; }
+
+bool update_rollback_start(void) {
+    UpdateProblem pb = {{0}};
+    if (appimage_go_back(&pb)) appimage_relaunch(&pb);
+    fprintf(stderr, "[update] going back: %s\n", pb.title);
+    return false;
+}
+#endif
+
+#else  // neither
 
 bool post_update_recover_if_cut(void) { return false; }
 bool post_update_shipped(void) { return false; }
@@ -376,5 +482,8 @@ UpdateState update_check_state(char *version, size_t vn, char *message, size_t m
 }
 bool update_apply_start(void) { return false; }
 bool update_rollback_start(void) { return false; }
+bool update_applies_here(void) { return false; }
+void update_apply_here(char *title, size_t tn, char *what, size_t wn) { (void)title, (void)tn, (void)what, (void)wn; }
+float update_apply_progress(void) { return -1; }
 
 #endif

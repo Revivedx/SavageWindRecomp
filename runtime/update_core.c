@@ -151,8 +151,8 @@ static void j_string_or_skip(J *j, char *out, size_t n) {
     else j_skip(j);
 }
 
-// One entry of "assets": the windows zip and its signature go into r
-static void read_asset(J *j, UcRelease *r) {
+// One entry of "assets": this platform's file and its signature go into r
+static void read_asset(J *j, UcRelease *r, const char *suffix) {
     char name[256] = "", url[1024] = "", digest[80] = "";
     uint64_t size = 0;
     j_ws(j);
@@ -179,17 +179,19 @@ static void read_asset(J *j, UcRelease *r) {
         if (*j->p == '}') { j->p++; break; }
         j->bad = true;
     }
-    if (ends_with(name, "-windows.zip")) {
+    char sig_suffix[64];
+    snprintf(sig_suffix, sizeof sig_suffix, "%s.sig", suffix);
+    if (ends_with(name, suffix)) {
         snprintf(r->zip_name, sizeof r->zip_name, "%s", name);
         snprintf(r->zip_url, sizeof r->zip_url, "%s", url);
         r->zip_size = size;
         r->digest[0] = 0;
         if (!strncmp(digest, "sha256:", 7) && strlen(digest) == 71) snprintf(r->digest, sizeof r->digest, "%s", digest + 7);
-    } else if (ends_with(name, "-windows.zip.sig"))
+    } else if (ends_with(name, sig_suffix))
         snprintf(r->sig_url, sizeof r->sig_url, "%s", url);
 }
 
-static void read_release(J *j, UcRelease *r, bool *draft) {
+static void read_release(J *j, UcRelease *r, bool *draft, const char *suffix) {
     memset(r, 0, sizeof *r);
     *draft = false;
     j_ws(j);
@@ -215,7 +217,7 @@ static void read_release(J *j, UcRelease *r, bool *draft) {
             if (*j->p == ']') j->p++;
             else
                 while (!j->bad) {
-                    read_asset(j, r);
+                    read_asset(j, r, suffix);
                     j_ws(j);
                     if (*j->p == ',') { j->p++; continue; }
                     if (*j->p == ']') { j->p++; break; }
@@ -229,7 +231,7 @@ static void read_release(J *j, UcRelease *r, bool *draft) {
     }
 }
 
-UcPick uc_pick_release(const char *json, const char *current, UcRelease *out, int *skipped_unsigned) {
+UcPick uc_pick_release(const char *json, const char *current, const char *suffix, UcRelease *out, int *skipped_unsigned) {
     J j = {json, false, 0};
     j_ws(&j);
     if (*j.p != '[') return UC_PICK_BAD_JSON;
@@ -242,7 +244,7 @@ UcPick uc_pick_release(const char *json, const char *current, UcRelease *out, in
         for (;;) {
             UcRelease r;
             bool draft;
-            read_release(&j, &r, &draft);
+            read_release(&j, &r, &draft, suffix);
             if (j.bad) return UC_PICK_BAD_JSON;
             if (!draft && uc_version_valid(r.tag) && uc_version_cmp(r.tag, current) > 0) {
                 const char *v = r.tag[0] == 'v' || r.tag[0] == 'V' ? r.tag + 1 : r.tag;

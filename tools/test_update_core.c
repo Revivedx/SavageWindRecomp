@@ -1,5 +1,6 @@
 // make test-update-core: the plain logic of SW Update (runtime/update_core.c), with made-up releases and file lists.
 #include "../runtime/update_core.h"
+#include "../runtime/update_crypto.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -43,7 +44,7 @@ static void pick(void) {
         "[" RELEASE("v0.5.2-alpha.5", "false", ZIP("0.5.2-alpha.5") "," SIG("0.5.2-alpha.5")) ","
             RELEASE("v0.5.1-alpha.5", "false", ZIP("0.5.1-alpha.5") "," SIG("0.5.1-alpha.5")) ","
             RELEASE("v0.5.0-alpha.5", "false", ZIP("0.5.0-alpha.5")) "]";
-    CHECK(uc_pick_release(newest_first, "0.5.0-alpha.5", &r, &unsig) == UC_PICK_UPDATE);
+    CHECK(uc_pick_release(newest_first, "0.5.0-alpha.5", "-windows.zip", &r, &unsig) == UC_PICK_UPDATE);
     CHECK(!strcmp(r.version, "0.5.2-alpha.5"));
     CHECK(!strcmp(r.tag, "v0.5.2-alpha.5"));
     CHECK(!strcmp(r.zip_name, "SavageWind-0.5.2-alpha.5-windows.zip"));
@@ -52,13 +53,13 @@ static void pick(void) {
     CHECK(!strcmp(r.digest, H64));
     CHECK(r.zip_size == 1000);
     CHECK(unsig == 0);
-    CHECK(uc_pick_release(newest_first, "0.5.2-alpha.5", &r, NULL) == UC_PICK_CURRENT);
-    CHECK(uc_pick_release(newest_first, "9.0.0", &r, NULL) == UC_PICK_CURRENT);
+    CHECK(uc_pick_release(newest_first, "0.5.2-alpha.5", "-windows.zip", &r, NULL) == UC_PICK_CURRENT);
+    CHECK(uc_pick_release(newest_first, "9.0.0", "-windows.zip", &r, NULL) == UC_PICK_CURRENT);
 
     static const char oldest_first[] =
         "[" RELEASE("v0.5.1-alpha.5", "false", ZIP("0.5.1-alpha.5") "," SIG("0.5.1-alpha.5")) ","
             RELEASE("v0.6.0-alpha.6", "false", ZIP("0.6.0-alpha.6") "," SIG("0.6.0-alpha.6")) "]";
-    CHECK(uc_pick_release(oldest_first, "0.5.0-alpha.5", &r, NULL) == UC_PICK_UPDATE);
+    CHECK(uc_pick_release(oldest_first, "0.5.0-alpha.5", "-windows.zip", &r, NULL) == UC_PICK_UPDATE);
     CHECK(!strcmp(r.version, "0.6.0-alpha.6"));
 
     static const char passed_over[] =
@@ -67,19 +68,19 @@ static void pick(void) {
             RELEASE("v0.8.0-alpha.8", "false", ASSET("Savage_Wind-0.8.0-alpha.8-x86_64.AppImage", "https://example.test/a", 5)) ","
             RELEASE("v0.7.0-alpha.7", "false", ZIP("0.7.0-alpha.7")) ","
             RELEASE("v0.5.1-alpha.5", "false", ZIP("0.5.1-alpha.5") "," SIG("0.5.1-alpha.5")) "]";
-    CHECK(uc_pick_release(passed_over, "0.5.0-alpha.5", &r, &unsig) == UC_PICK_UPDATE);
+    CHECK(uc_pick_release(passed_over, "0.5.0-alpha.5", "-windows.zip", &r, &unsig) == UC_PICK_UPDATE);
     CHECK(!strcmp(r.version, "0.5.1-alpha.5"));
     CHECK(unsig == 1);
 
-    CHECK(uc_pick_release("[]", "0.5.0-alpha.5", &r, NULL) == UC_PICK_CURRENT);
-    CHECK(uc_pick_release("", "0.5.0-alpha.5", &r, NULL) == UC_PICK_BAD_JSON);
-    CHECK(uc_pick_release("<html>Rate limited</html>", "0.5.0-alpha.5", &r, NULL) == UC_PICK_BAD_JSON);
-    CHECK(uc_pick_release("{\"message\":\"Not Found\"}", "0.5.0-alpha.5", &r, NULL) == UC_PICK_BAD_JSON);
-    CHECK(uc_pick_release("[{\"tag_name\":\"v1.0.0\"", "0.5.0-alpha.5", &r, NULL) == UC_PICK_BAD_JSON);
-    CHECK(uc_pick_release("[{\"tag_name\":\"v1.0.0\",}]", "0.5.0-alpha.5", &r, NULL) == UC_PICK_BAD_JSON);
+    CHECK(uc_pick_release("[]", "0.5.0-alpha.5", "-windows.zip", &r, NULL) == UC_PICK_CURRENT);
+    CHECK(uc_pick_release("", "0.5.0-alpha.5", "-windows.zip", &r, NULL) == UC_PICK_BAD_JSON);
+    CHECK(uc_pick_release("<html>Rate limited</html>", "0.5.0-alpha.5", "-windows.zip", &r, NULL) == UC_PICK_BAD_JSON);
+    CHECK(uc_pick_release("{\"message\":\"Not Found\"}", "0.5.0-alpha.5", "-windows.zip", &r, NULL) == UC_PICK_BAD_JSON);
+    CHECK(uc_pick_release("[{\"tag_name\":\"v1.0.0\"", "0.5.0-alpha.5", "-windows.zip", &r, NULL) == UC_PICK_BAD_JSON);
+    CHECK(uc_pick_release("[{\"tag_name\":\"v1.0.0\",}]", "0.5.0-alpha.5", "-windows.zip", &r, NULL) == UC_PICK_BAD_JSON);
     static char deep[4096];
     memset(deep, '[', sizeof deep - 1);
-    CHECK(uc_pick_release(deep, "0.5.0-alpha.5", &r, NULL) == UC_PICK_BAD_JSON);
+    CHECK(uc_pick_release(deep, "0.5.0-alpha.5", "-windows.zip", &r, NULL) == UC_PICK_BAD_JSON);
 }
 
 static void paths(void) {
@@ -151,8 +152,66 @@ static void manifests(void) {
     }
 }
 
+// A signature made with openssl (tools/sign_update.py) over "savage wind test vector"
+#define TV_PUB "a5c179244b1d44abe6005b0157ad01948b76ac78f462cdced1c3187ea51dbd349a791b854a6451c83de7953786eed112b439eea9a4ea9d08ee377223427ddcb8"
+#define TV_SIG "60a93460ab42565d2c131c39a7adc90496444140547c4f20a4762ae6d5f04018f6e26e87201d17a9b5d1f03da0d57c2662f655643234162d6f2b48cf542259d0"
+#define TV_HASH "d0be736eda79f98fa648fa79ac66b75f9273008f10d91ca17df977480165502e"
+
+static void crypto(void) {
+    uint8_t h[32], want[32], sig[64], pub[64], t[64];
+    UcSha256 c;
+    uc_sha256_init(&c);
+    uc_sha256_update(&c, "abc", 3);
+    uc_sha256_final(&c, h);
+    uc_hex_decode("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", want, 32);
+    CHECK(!memcmp(h, want, 32));
+    uc_sha256_init(&c);
+    uc_sha256_update(&c, "savage wind test vector", 23);
+    uc_sha256_final(&c, h);
+    uc_hex_decode(TV_HASH, want, 32);
+    CHECK(!memcmp(h, want, 32));
+
+    CHECK(uc_hex_decode(TV_SIG, sig, 64) && uc_hex_decode(TV_PUB, pub, 64));
+    CHECK(uc_p256_verify(want, sig, pub));
+    uint8_t bad[32];
+    memcpy(bad, want, 32);
+    bad[5] ^= 1;
+    CHECK(!uc_p256_verify(bad, sig, pub));
+    memcpy(t, sig, 64);
+    t[3] ^= 1;
+    CHECK(!uc_p256_verify(want, t, pub));
+    memcpy(t, sig, 64);
+    t[60] ^= 1;
+    CHECK(!uc_p256_verify(want, t, pub));
+    memcpy(t, pub, 64);
+    t[10] ^= 1;  // (not on the curve)
+    CHECK(!uc_p256_verify(want, sig, t));
+    memset(t, 0, 64);
+    CHECK(!uc_p256_verify(want, t, pub));  // r = s = 0
+    memset(t, 0xFF, 64);
+    CHECK(!uc_p256_verify(want, t, pub));  // r, s above the order
+}
+
+static void appimage_assets(void) {
+    UcRelease r;
+    static const char list[] =
+        "[" RELEASE("v0.5.2-alpha.5", "false",
+            ASSET("Savage_Wind-0.5.2-alpha.5-x86_64.AppImage", "https://example.test/x", 7) ","
+            ASSET("Savage_Wind-0.5.2-alpha.5-x86_64.AppImage.sig", "https://example.test/x.sig", 1) ","
+            ASSET("Savage_Wind-0.5.2-alpha.5-aarch64.AppImage", "https://example.test/a", 9) ","
+            ASSET("Savage_Wind-0.5.2-alpha.5-aarch64.AppImage.sig", "https://example.test/a.sig", 1) ","
+            ZIP("0.5.2-alpha.5")) "]";
+    CHECK(uc_pick_release(list, "0.5.1-alpha.5", "-x86_64.AppImage", &r, NULL) == UC_PICK_UPDATE);
+    CHECK(!strcmp(r.zip_url, "https://example.test/x") && !strcmp(r.sig_url, "https://example.test/x.sig") && r.zip_size == 7);
+    CHECK(uc_pick_release(list, "0.5.1-alpha.5", "-aarch64.AppImage", &r, NULL) == UC_PICK_UPDATE);
+    CHECK(!strcmp(r.zip_url, "https://example.test/a") && !strcmp(r.sig_url, "https://example.test/a.sig") && r.zip_size == 9);
+    CHECK(uc_pick_release(list, "0.5.1-alpha.5", "-windows.zip", &r, NULL) == UC_PICK_CURRENT);  // (no signature for the zip)
+}
+
 int main(void) {
     versions();
+    crypto();
+    appimage_assets();
     pick();
     paths();
     manifests();

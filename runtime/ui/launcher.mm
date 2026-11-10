@@ -538,6 +538,20 @@ static std::string precompile_line(void) {
 
 static std::atomic<bool> g_stay_on_setup{false}, g_dlc_checking{false};
 
+// Linux: the update runs in this program (runtime/post_update.h). It comes back only if it failed.
+static void *update_thread(void *) {
+    char title[200] = "", what[900] = "";
+    update_apply_here(title, sizeof title, what, sizeof what);
+    for (char *c = what; *c; c++)
+        if (*c == '%') *c = ' ';  // (shown as text: trv fills % in)
+    set_job(title, true, what);
+    g_stay_on_setup = true;
+    pthread_mutex_lock(&g_lock);
+    g_busy = false;
+    pthread_mutex_unlock(&g_lock);
+    return NULL;
+}
+
 static bool stay_on_setup_finished(void) {  // (a check, shader precompilation or failed setup: the game files page stays)
     bool stay = g_stay_on_setup.exchange(false);
 #ifndef __APPLE__
@@ -1671,8 +1685,18 @@ extern "C" void launcher_run(const char *root, int mode) {
                     ImGui::SetCursorPosX(x0);
                     if (menu_item("UPDATE", !busy) || (!busy && getenv("SAVAGEWIND_LAUNCHER_AUTOUPDATE"))) {  // (test: at once)
                         settings_save();
-                        if (update_apply_start()) exit(0);
-                        update_error = tr("SW Update could not be started. An antivirus may have removed it.");
+                        if (update_applies_here()) {
+                            page = SETUP;
+                            set_job("");
+                            g_file_size.set_suspended(true);
+                            pthread_mutex_lock(&g_lock);
+                            g_busy = true;
+                            pthread_mutex_unlock(&g_lock);
+                            pthread_t ut;
+                            pthread_create(&ut, NULL, update_thread, NULL);
+                            pthread_detach(ut);
+                        } else if (update_apply_start()) exit(0);
+                        else update_error = tr("SW Update could not be started. An antivirus may have removed it.");
                     }
                 }
                 ImGui::SetCursorPosX(x0);
@@ -2043,6 +2067,11 @@ extern "C" void launcher_run(const char *root, int mode) {
                     const char *const notes[] = {tr("This only needs to be done once and may take a while."),
                                                  tr("Esc or B stops it: what is done is kept.")};
                     int nnotes = dlc_check ? 0 : recompiling ? 1 : 0;
+                    if (update_apply_progress() >= 0) {
+                        f = update_apply_progress();
+                        title = tr("Updating Savage Wind");
+                        nnotes = 0;
+                    }
 #ifndef __APPLE__
                     bool shaders = g_precompiling;
                     if (shaders) {

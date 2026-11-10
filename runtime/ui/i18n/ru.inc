@@ -991,3 +991,4 @@ T("Go back to the previous version", "Вернуться к предыдущей
 T("Puts back the version you had before this update. Your saves and game files are kept.", "Возвращает версию, которая была до этого обновления. Сохранения и файлы игры остаются.")
 T("Version %s is available.", "Доступна версия %s.")
 T("Couldn't check for updates:", "Не удалось проверить обновления:")
+T("Updating Savage Wind", "Обновление Savage Wind")

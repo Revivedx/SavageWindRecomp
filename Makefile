@@ -838,14 +838,18 @@ $(B)/test_launch_flags: tools/test_launch_flags.c runtime/launch_flags.c runtime
 
 test-update-core: $(B)/test_update_core
 	$(B)/test_update_core
-$(B)/test_update_core: tools/test_update_core.c runtime/update_core.c runtime/update_core.h
+$(B)/test_update_core: tools/test_update_core.c runtime/update_core.c runtime/update_core.h runtime/update_crypto.c runtime/update_crypto.h
 	@mkdir -p $(dir $@)
 	$(CC) -O1 -Wall -c tools/test_update_core.c -o $@-t.o
 	$(CC) -O1 -Wall -c runtime/update_core.c -o $@-c.o
-	$(CC) -o $@ $@-t.o $@-c.o
+	$(CC) -O1 -Wall -c runtime/update_crypto.c -o $@-x.o
+	$(CC) -o $@ $@-t.o $@-c.o $@-x.o
 # (Windows) every way an update can go wrong, against a local server: tools/test_sw_update.py
 test-sw-update:
 	python3 tools/test_sw_update.py
+# (Linux) the same for an AppImage replacing itself: tools/test_update_appimage.py
+test-update-appimage:
+	python3 tools/test_update_appimage.py
 
 test-launch-flags: $(B)/test_launch_flags
 	$(B)/test_launch_flags

@@ -611,7 +611,7 @@ static Result find_release(void) {
     char *json = http_small(url, 8u << 20, &n, "asking for the releases");
     if (!json) return R_PROBLEM;
     int unsig = 0;
-    UcPick pick = uc_pick_release(json, g_current, &g_rel, &unsig);
+    UcPick pick = uc_pick_release(json, g_current, "-windows.zip", &g_rel, &unsig);
     free(json);
     if (pick == UC_PICK_BAD_JSON) {
         tech("%zu bytes that aren't a list of releases", n);

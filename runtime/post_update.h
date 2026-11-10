@@ -1,5 +1,5 @@
-// What the game does around SW Update (runtime/platform/windows_update.c; Windows releases only: everywhere else, and
-// in a source build, nothing here does anything).
+// What the game does around an update: on Windows SW Update (runtime/platform/windows_update.c) installs it, in a Linux
+// AppImage the game itself does (runtime/update_appimage.c). In a source build nothing here does anything.
 //
 // After an update, the first start of the new version: the shader caches are emptied before Vulkan opens them, the
 // game code is built if this version needs it, every shader is precompiled again, and only then is the update
@@ -33,6 +33,11 @@ UpdateState update_check_state(char *version, size_t version_size, char *message
 // Starts SW Update to install it / to go back; true: this program must quit now so its files can be replaced.
 bool update_apply_start(void);
 bool update_rollback_start(void);
+// Linux: the update runs inside this program, on a thread of the caller's. update_apply_here returns only if it failed,
+// saying why; when it works the new version replaces this process. update_apply_progress: 0..1, -1 when not running.
+bool update_applies_here(void);
+void update_apply_here(char *title, size_t title_size, char *what, size_t what_size);
+float update_apply_progress(void);
 
 #ifdef __cplusplus
 }

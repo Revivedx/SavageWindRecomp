@@ -991,3 +991,4 @@ T("Go back to the previous version", "กลับไปเวอร์ชัน
 T("Puts back the version you had before this update. Your saves and game files are kept.", "คืนค่าเวอร์ชันที่คุณใช้ก่อนการอัปเดตนี้ เซฟและไฟล์เกมของคุณจะยังอยู่")
 T("Version %s is available.", "เวอร์ชัน %s พร้อมใช้งาน")
 T("Couldn't check for updates:", "ไม่สามารถตรวจหาอัปเดตได้:")
+T("Updating Savage Wind", "กำลังอัปเดต Savage Wind")

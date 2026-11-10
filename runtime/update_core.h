@@ -29,10 +29,10 @@ typedef enum {
     UC_PICK_BAD_JSON,    // not the list of releases GitHub sends
 } UcPick;
 
-// json: GET /repos/<owner>/<repo>/releases (a JSON array, newest first or not). Drafts, tags that aren't versions and
-// releases without both "-windows.zip" and "-windows.zip.sig" assets are passed over; *skipped_unsigned counts newer
-// releases passed over for lack of a signature (may be NULL).
-UcPick uc_pick_release(const char *json, const char *current, UcRelease *out, int *skipped_unsigned);
+// json: GET /repos/<owner>/<repo>/releases (a JSON array, newest first or not). suffix: the end of this platform's
+// asset ("-windows.zip", "-x86_64.AppImage"...). Drafts, tags that aren't versions and releases without both that asset
+// and its ".sig" are passed over; *skipped_unsigned counts newer releases passed over for lack of a signature (may be NULL).
+UcPick uc_pick_release(const char *json, const char *current, const char *suffix, UcRelease *out, int *skipped_unsigned);
 
 typedef struct {
     char sha256[65];

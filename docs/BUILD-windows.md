@@ -62,7 +62,7 @@ next to its zip. After `make dist`, sign the zip and upload the `.sig` with it:
 
     tools/sign_update.py build/dist/SavageWind-<version>-windows.zip <private key .pem>
 
-The private key is never in this repository; its public half is `runtime/platform/sw_update_key.h`. `make test-update-core`
+Sign the AppImages the same way, or Linux players won't be offered the release. The private key is never in this repository; its public half is `runtime/platform/sw_update_key.h`. `make test-update-core`
 and `make test-sw-update` cover the updater: the second one goes through every failure it knows against a local server.
 
 ## Differences from macOS
