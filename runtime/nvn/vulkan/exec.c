@@ -1407,12 +1407,19 @@ static float hud_scale_now(void) {
         // (not the quick menus, pause state 4: the game keeps the HUD up around them)
         static uint64_t quick_ns;
         uint64_t ns = plat_now_ns();
-        if (g_settings.hud_size != 100 && framepace_quick_ui()) quick_ns = ns;
+        if (hud_quick_tracked(g_settings.hud_size, g_settings.hud_edges) && framepace_quick_ui()) quick_ns = ns;
         hud_quick = quick_ns && ns - quick_ns < HUD_QUICK_HOLD_NS;
         s = g_settings.hud_size == 100 || framepace_menu_ui() || framepace_title_ui() || framepace_loading_ui() ||
             framepace_in_event() ? 1 : (float)g_settings.hud_size / 100;
     }
     return s;
+}
+// Video > HUD at edges this frame, on a window of this shape (hud_edge_mode). Also brings hud_quick up to this frame.
+static int hud_edges_now(float shape) {
+    extern bool framepace_menu_ui(void), framepace_title_ui(void), framepace_loading_ui(void), framepace_in_event(void);
+    hud_scale_now();
+    return hud_edge_mode(g_settings.hud_edges, shape, framepace_menu_ui(), framepace_title_ui(), framepace_loading_ui(),
+                       framepace_in_event());
 }
 static float vp_sx = 1, vp_sy = 1, vp_ox = 0, vp_oy = 0;
 static float tex_sc[2][64][2];
@@ -2379,9 +2386,12 @@ static VkRect2D scissor_rect(void) {
         if (y > 0 || y + sh < gh - 0.5) {
             double c = gh / 2, y0 = c + (y - c) * shape, y1 = c + (y + sh - c) * shape;
             y = (int)floor(y0); sh = (int)ceil(y1) - y;
-            if (g_settings.hud_edges) {
+            int edge_mode = hud_edges_now(shape);
+            if (edge_mode) {
                 double sdy = hud_edge_scissor_dy((y0 + y1) / 2.0, gh, shape);
-                if (sdy != 0 && !(hud_quick && fabsf((float)((y0 + y1) / gh - 1.0)) < 0.6f))
+                double gw = pass_sx > 0 ? w / pass_sx : w;  // (a quick menu's bar, an event: as for the panes)
+                if (sdy != 0 && hud_edge_moves(edge_mode, (float)(1 - (y0 + y1) / gh), (float)shape) &&
+                    !(hud_quick && hud_quick_bar_px(x + sw / 2.0, (y0 + y1) / 2.0, gw, gh, shape)))
                     y += (int)round(sdy);
             }
         }
@@ -4650,8 +4660,8 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
     if (!tb || tb->rs_group != RS_OUT) return false;
     float hud_s = hud_scale_now();
     if (shape == 1 && hud_s == 1) return false;
-    bool hud_edge_active = g_settings.hud_edges && shape < 1 && !framepace_menu_ui() &&
-                           !framepace_title_ui() && !framepace_loading_ui();
+    int edge_mode = hud_edges_now(shape);
+    bool hud_edge_active = edge_mode != 0;
     float edge_x = 1 / fmaxf(shape, 1), edge_y = fminf(shape, 1);  // (where the 16:9 HUD ends on this window)
     const float *g = (const float *)(uintptr_t)addr;
     // ui2d text combines the projection and each label's position into this smaller, Y-flipped matrix.
@@ -4682,7 +4692,8 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         float tx = buf[3] / buf[15], ty = buf[7] / buf[15];
         if (hud_s != 1 && !(hud_quick && hud_quick_keeps(tx, ty, edge_x, edge_y)))
             hud_scale_matrix(buf, hud_s, hud_anchor(tx, edge_x), hud_anchor(ty, edge_y));
-        if (hud_edge_active && !(hud_quick && hud_quick_keeps(tx, ty, edge_x, edge_y))) {
+        if (hud_edge_active && hud_edge_moves(edge_mode, ty, edge_y) &&
+            !(hud_quick && hud_quick_bar(tx, ty, edge_x, edge_y))) {
             float ay = hud_anchor(ty, edge_y);
             float dy = hud_edge_dy(ay, edge_y, shape);
             if (dy != 0) hud_edge_matrix(buf, dy);
@@ -4765,12 +4776,14 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
             x0 = fminf(x0, nx), x1 = fmaxf(x1, nx), y0 = fminf(y0, ny), y1 = fmaxf(y1, ny);
         }
         if (x1 - x0 >= 1.8f * edge_x || y1 - y0 >= 1.8f * edge_y) hud_scale = false;
-        if (hud_quick && hud_quick_keeps((x0 + x1) / 2, (y0 + y1) / 2, edge_x, edge_y)) hud_scale = false;
-        if (hud_scale) {
-            hud_ax = hud_anchor((x0 + x1) / 2, edge_x);
-            hud_ay = hud_anchor((y0 + y1) / 2, edge_y);
-            hud_scale = hud_s != 1;
-            if (hud_edge_active) edge_dy = hud_edge_dy(hud_ay, edge_y, shape);
+        float cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+        if (hud_scale) {  // (a quick menu's bar: HUD size keeps its middle at the game's size, HUD at edges the bar)
+            hud_ax = hud_anchor(cx, edge_x);
+            hud_ay = hud_anchor(cy, edge_y);
+            if (hud_edge_active && hud_edge_moves(edge_mode, cy, edge_y) &&
+                !(hud_quick && hud_quick_bar(cx, cy, edge_x, edge_y)))
+                edge_dy = hud_edge_dy(hud_ay, edge_y, shape);
+            hud_scale = hud_s != 1 && !(hud_quick && hud_quick_keeps(cx, cy, edge_x, edge_y));
         }
     }
     if (m00 == g[0] && m11 == g[5] && !hud_scale && edge_dy == 0) return false;
