@@ -15,6 +15,8 @@ bool glyphs_apply_layout(uint32_t format, uint32_t w, uint32_t h, uint8_t *lin, 
 
 // Changes whenever the icons to draw change (device, bindings, setting): sheets uploaded under another one go up again.
 uint32_t glyphs_generation(void);
+// The same without the menu pointer's state: what the overlay's fonts are made for (their icons are the face buttons).
+uint32_t glyphs_font_generation(void);
 
 // The diamond vertex (0: East, 1: South, 2: North, 3: West) for each Switch face button (A, B, X, Y) on the HUD.
 void glyphs_hud_positions(int pos[4]);
