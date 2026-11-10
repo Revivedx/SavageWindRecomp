@@ -6095,7 +6095,8 @@ static bool guest_fetch(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSiz
     return true;
 }
 
-static int g_cs_n;  // (compute program table below)
+static struct CsEnt { uint64_t addr; void *cp; } *g_cs_tab;  // (compute program table: compute_program)
+static uint32_t g_cs_cap, g_cs_n;
 
 // In-place reboot (device.c backend_reset; GPU idle): drop what is keyed by guest addresses - programs by code
 // address (the old Prog / Pipe objects are leaked, so pipeline keys holding their pointers can't collide), compute
@@ -6113,6 +6114,7 @@ void vk_exec_reset(void) {
     memset(prog_memo, 0, sizeof prog_memo);
     memset(&pipe_memo, 0, sizeof pipe_memo);
     key_gen++;
+    if (g_cs_tab) memset(g_cs_tab, 0, g_cs_cap * sizeof *g_cs_tab);
     g_cs_n = 0;
     gcopy_gen++;
     hc_free();  // (before the import goes: the copy mirrors it)
@@ -6767,16 +6769,36 @@ static void build_compute(void *arg) {
     atomic_store(&cp->p.state, atomic_load(&c->state) == 2 ? 1 : 2);
 }
 
-static struct CsEnt { uint64_t addr; CsProg *cp; } g_cs_tab[256];  // compute programs by code address
+// Compute programs by code address, in a table that grows. It had 256 places: the game's shaders come back at other
+// addresses as it loads them, and after about two hours of play (#639) the table was full. From then on a program not in
+// it was made again at every dispatch, and the dispatch waited for it: 120 fps down to 70.
+#define CS_TAB 1024
+static struct CsEnt *cs_slot(uint64_t addr) {
+    uint32_t i = (uint32_t)((addr * 0x9E3779B97F4A7C15ull) >> 32) & (g_cs_cap - 1);
+    while (g_cs_tab[i].addr && g_cs_tab[i].addr != addr) i = (i + 1) & (g_cs_cap - 1);
+    return &g_cs_tab[i];
+}
+static void cs_grow(void) {
+    struct CsEnt *old = g_cs_tab;
+    uint32_t n = g_cs_cap;
+    g_cs_cap = n ? n * 2 : CS_TAB;
+    g_cs_tab = calloc(g_cs_cap, sizeof *g_cs_tab);
+    for (uint32_t i = 0; i < n; i++) if (old[i].addr) *cs_slot(old[i].addr) = old[i];
+    free(old);
+    if (n) LOG("[vk] compute program table: %u programs, %u -> %u slots\n", g_cs_n, n, g_cs_cap);
+}
 
 static CsProg *compute_program(NvnProgram *np) {
     NvnShaderStage *ss = &np->stages[5];
     if (!ss->code_addr) return NULL;
-    struct CsEnt *tab = g_cs_tab;
-    int n = g_cs_n;
-    for (int i = 0; i < n; i++) if (tab[i].addr == ss->code_addr) return tab[i].cp;
+    if (!g_cs_cap) cs_grow();
+    struct CsEnt *e = cs_slot(ss->code_addr);
+    if (e->addr) return e->cp;
+    if ((g_cs_n + 1) * 2 > g_cs_cap) { cs_grow(); e = cs_slot(ss->code_addr); }
     CsProg *cp = calloc(1, sizeof *cp);
-    if (n < 256) { tab[n].addr = ss->code_addr; tab[n].cp = cp; g_cs_n = n + 1; }
+    e->addr = ss->code_addr;
+    e->cp = cp;
+    g_cs_n++;
     maxwell_gmem_base = HEAP_BASE;
     maxwell_gmem_size = HEAP_MAX;
     ShaderKey k = {0};
