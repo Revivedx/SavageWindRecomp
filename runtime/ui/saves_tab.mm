@@ -61,7 +61,7 @@ enum ProfileOp { PO_SWITCH, PO_CREATE, PO_COPY, PO_RENAME, PO_DELETE };
 std::string g_game_root;                // <root>/romfs/Pack/Bootup.pack has the flag tables
 std::atomic<int> g_phase{IDLE};         // written by the worker, read here (release / acquire: the fields below follow it)
 pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
-std::string g_picked_import, g_picked_export;  // the folders the dialogs gave (SDL calls back on any thread)
+std::string g_picked_import, g_picked_export, g_picked_save_dir;  // the folders the dialogs gave (SDL calls back on any thread)
 pthread_t g_worker;
 bool g_joinable;                       // only the UI / exit thread starts and joins workers
 std::atomic<bool> g_cancel{false};
@@ -378,6 +378,15 @@ void SDLCALL folder_picked_export(void *, const char *const *files, int) {
     if (files && files[0]) {
         pthread_mutex_lock(&g_lock);
         g_picked_export = files[0];
+        pthread_mutex_unlock(&g_lock);
+    }
+    g_dialog = false;
+}
+
+void SDLCALL folder_picked_save_dir(void *, const char *const *files, int) {
+    if (files && files[0]) {
+        pthread_mutex_lock(&g_lock);
+        g_picked_save_dir = files[0];
         pthread_mutex_unlock(&g_lock);
     }
     g_dialog = false;
@@ -798,15 +807,22 @@ void saves_tab_draw(void) {
     int phase = g_phase.load(std::memory_order_acquire);
     if (phase != WORKING && phase != LOADING && g_slots_ready) take_slots();
     if (phase == DONE && !g_seen_done) g_seen_done = true;
-    std::string picked_import, picked_export;
+    std::string picked_import, picked_export, picked_save_dir;
     pthread_mutex_lock(&g_lock);
     picked_import.swap(g_picked_import);
     picked_export.swap(g_picked_export);
+    picked_save_dir.swap(g_picked_save_dir);
     pthread_mutex_unlock(&g_lock);
     if (!picked_import.empty() && (phase == IDLE || phase == DONE) && !g_recovery.imported[0])
         start(JOB_CONVERT, picked_import), phase = WORKING;
     if (!picked_export.empty() && (phase == IDLE || phase == DONE) && !g_recovery.imported[0])
         start(JOB_EXPORT_STAGE, save_dir(), picked_export), phase = WORKING;
+    if (!picked_save_dir.empty() && (phase == IDLE || phase == DONE) && !g_recovery.imported[0]) {
+        snprintf(g_settings.save_dir, sizeof g_settings.save_dir, "%s", picked_save_dir.c_str());
+        settings_save();
+        start(JOB_LIST);
+        phase = LOADING;
+    }
     load_one_thumb();
 
     bool working = phase == WORKING || phase == CONFIRM || phase == LOADING;
@@ -841,12 +857,28 @@ void saves_tab_draw(void) {
                    "A copy of the save folder each time the game starts, if anything in it changed. The last 5 are kept "
                    "in save-backups; the ones you make yourself are never removed."))
         settings_save();
+    opt_section("Folder");
     if (working) opt_disable_next();
     if (opt_action("Open save folder", "", "Opens the folder with your saves in your file manager.") && !working) {
         if (recovery) reveal_folder(g_recovery.imported);
         else {
             SDL_CreateDirectory(save_dir().c_str());  // (no save yet: the folder is made so there is something to open)
             reveal_folder(save_dir());
+        }
+    }
+    if (busy || sp_override_active()) opt_disable_next();
+    if (opt_action("Change save folder...", shown_path(save_dir()).c_str(),
+                   "Choose a custom folder on another drive or SSD to store your saves. Existing saves in that folder "
+                   "are loaded automatically.") && !busy && !sp_override_active() && !g_dialog.exchange(true))
+        SDL_ShowOpenFolderDialog(folder_picked_save_dir, NULL, ui_window(), NULL, false);
+    if (g_settings.save_dir[0] && !sp_override_active()) {
+        if (busy) opt_disable_next();
+        if (opt_action("Reset save folder to default", "",
+                       "Revert to using the default save folder inside the game folder.") && !busy) {
+            g_settings.save_dir[0] = 0;
+            settings_save();
+            start(JOB_LIST);
+            phase = LOADING;
         }
     }
     if (recovery) {

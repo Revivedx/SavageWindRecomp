@@ -1003,3 +1003,10 @@ T("A screenshot", "スクリーンショット")
 T("Latest save", "最新のセーブ")
 T("Loading picture", "読み込み中の画像")
 T("Shows that picture while the game loads. Turned off, the window stays black until the game's title screen: loading takes just as long.", "ゲームの読み込み中にその画像を表示します。オフにすると、タイトル画面まで画面は黒いままです。読み込み時間は変わりません。")
+
+T("Folder", "")
+T("Change save folder...", "")
+T("Choose a custom folder on another drive or SSD to store your saves. Existing saves in that folder are loaded automatically.", "")
+T("Reset save folder to default", "")
+T("Revert to using the default save folder inside the game folder.", "")
+

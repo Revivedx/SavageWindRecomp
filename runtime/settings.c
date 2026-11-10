@@ -330,6 +330,7 @@ void settings_load(void) {
         else if (!strcmp(key, "weapon_wear")) g_settings.weapon_wear = atoi(val);  // (percent)
         else if (!strcmp(key, "infinite_arrows")) g_settings.infinite_arrows = atoi(val) != 0;
         else if (!strcmp(key, "save_backups")) g_settings.save_backups = atoi(val) != 0;
+        else if (!strcmp(key, "save_dir")) snprintf(g_settings.save_dir, sizeof g_settings.save_dir, "%s", strcmp(val, "default") ? val : "");
         else if (!strcmp(key, "stick_camera_speed")) g_settings.stick_cam_on = atoi(val) != 0;
         else if (!strcmp(key, "stick_camera_x")) g_settings.stick_cam_x = atoi(val);  // (percent)
         else if (!strcmp(key, "stick_camera_y")) g_settings.stick_cam_y = atoi(val);  // (percent)
@@ -577,6 +578,7 @@ void settings_save(void) {
     fprintf(f, "text_language = %s\n", tl > 0 && tl < g_ntext_languages ? g_text_languages[tl].folder : "auto");
     fprintf(f, "voice_language = %s\n", vl > 0 && vl < g_nvoice_languages ? g_voice_languages[vl].folder : "text");
     fprintf(f, "save_backups = %d\n", g_settings.save_backups);
+    if (g_settings.save_dir[0]) fprintf(f, "save_dir = %s\n", g_settings.save_dir);
     fprintf(f, "stick_camera_speed = %d\n", g_settings.stick_cam_on);
     fprintf(f, "stick_camera_x = %d\n", g_settings.stick_cam_x);
     fprintf(f, "stick_camera_y = %d\n", g_settings.stick_cam_y);

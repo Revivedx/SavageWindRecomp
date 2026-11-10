@@ -1003,3 +1003,10 @@ T("A screenshot", "Uma captura")
 T("Latest save", "Último save")
 T("Loading picture", "Imagem de carregamento")
 T("Shows that picture while the game loads. Turned off, the window stays black until the game's title screen: loading takes just as long.", "Mostra essa imagem enquanto o jogo carrega. Desativada, a janela fica preta até a tela de título: o carregamento leva o mesmo tempo.")
+
+T("Folder", "")
+T("Change save folder...", "")
+T("Choose a custom folder on another drive or SSD to store your saves. Existing saves in that folder are loaded automatically.", "")
+T("Reset save folder to default", "")
+T("Revert to using the default save folder inside the game folder.", "")
+
