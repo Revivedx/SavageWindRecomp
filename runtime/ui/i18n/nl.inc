@@ -31,6 +31,8 @@ T("Game files unreadable (exefs/main is not an NSO)", "Spelbestanden onleesbaar 
 T("Game data missing", "Spelgegevens ontbreken")
 T("Game code not built yet", "Spelcode nog niet gecompileerd")
 T("No game files found in that folder", "Geen spelbestanden gevonden in die map")
+T("That folder is inside Savage Wind's game files", "Die map staat in de spelbestanden van Savage Wind")
+T("Setting up again replaces those files. Move the folder you extracted the game to out of there, or choose another copy.", "Opnieuw instellen vervangt die bestanden. Verplaats de map met het uitgepakte spel naar een andere plek of kies een andere kopie.")
 T("Those files can't be used", "Die bestanden zijn niet bruikbaar")
 T("Setup didn't finish", "Instellen is niet voltooid")
 T("The game's main module can't be read", "De hoofdmodule van het spel is niet leesbaar")

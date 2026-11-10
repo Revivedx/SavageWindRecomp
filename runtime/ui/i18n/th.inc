@@ -216,6 +216,8 @@ T("Its files add up to %llu MB; with the update applied they are %llu MB.", "ไ
 T("Game files unreadable (exefs/main is not an NSO)", "อ่านไฟล์เกมไม่ได้ (exefs/main ไม่ใช่ NSO)")
 T("Game data missing", "ข้อมูลเกมหายไป")
 T("No game files found in that folder", "ไม่พบไฟล์เกมในโฟลเดอร์นั้น")
+T("That folder is inside Savage Wind's game files", "โฟลเดอร์นั้นอยู่ภายในไฟล์เกมของ Savage Wind")
+T("Setting up again replaces those files. Move the folder you extracted the game to out of there, or choose another copy.", "การตั้งค่าใหม่จะแทนที่ไฟล์เหล่านั้น ย้ายโฟลเดอร์ที่แตกไฟล์เกมไว้ไปที่อื่น หรือเลือกสำเนาอื่น")
 T("Those files can't be used", "ใช้ไฟล์เหล่านั้นไม่ได้")
 T("Setup didn't finish", "การตั้งค่าไม่เสร็จสิ้น")
 T("The game's main module can't be read", "อ่านโมดูลหลักของเกมไม่ได้")

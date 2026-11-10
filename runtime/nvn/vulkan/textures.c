@@ -889,7 +889,7 @@ static void zombies_expire(void) {  // (gpu lock held)
 // SAVAGEWIND_VRAM_BUDGET_MB=<n>: a smaller budget (vram.c), to try it on a big card.
 #define VT_EVERY 30
 #define VT_MIN_AGE 240
-#define VT_TARGET 0.85
+#define VT_TARGET VRAM_TRIM_TARGET
 #define VT_MAX_BYTES (128ull << 20)
 static uint64_t vt_evicted, vt_evicted_bytes, vt_back;
 

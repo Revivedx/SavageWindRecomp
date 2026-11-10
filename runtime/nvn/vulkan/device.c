@@ -231,6 +231,12 @@ static void pick_device(void) {
 #ifdef __linux__
     if (g_vk.props.vendorID == 0x1002) lean_default = false;
 #endif
+#ifdef _WIN32
+    // Intel's last Windows drivers for its older integrated GPUs (API 1.3.215: UHD 620, UHD 10th gen) read 0x298 in
+    // vkCmdBeginRendering at a 192x192 R16 terrain target (#596, #622). Off there as a likely cause, not a confirmed one.
+    if (g_vk.props.vendorID == 0x8086 && lean_default && g_vk.props.apiVersion <= VK_MAKE_API_VERSION(0, 1, 3, 215))
+        lean_default = false;
+#endif
     g_vk.lean_usage = lean && *lean ? atoi(lean) != 0 : lean_default;
     LOG("[vk] view format lists %s\n", g_vk.lean_usage ? "on" : "off");
     perfmon_set_gpu_hint(g_vk.props.deviceName);

@@ -31,6 +31,8 @@ T("Game files unreadable (exefs/main is not an NSO)", "無法讀取遊戲檔案�
 T("Game data missing", "缺少遊戲資料")
 T("Game code not built yet", "遊戲程式碼尚未編譯")
 T("No game files found in that folder", "該資料夾中找不到遊戲檔案")
+T("That folder is inside Savage Wind's game files", "該資料夾位於 Savage Wind 的遊戲檔案內")
+T("Setting up again replaces those files. Move the folder you extracted the game to out of there, or choose another copy.", "重新設定會取代這些檔案。請將解壓縮遊戲的資料夾移到其他位置，或選擇另一份副本。")
 T("Those files can't be used", "這些檔案無法使用")
 T("Setup didn't finish", "設定未完成")
 T("The game's main module can't be read", "無法讀取遊戲主模組")

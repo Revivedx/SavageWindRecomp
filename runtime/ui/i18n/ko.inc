@@ -31,6 +31,8 @@ T("Game files unreadable (exefs/main is not an NSO)", "게임 파일을 읽을 �
 T("Game data missing", "게임 데이터 없음")
 T("Game code not built yet", "게임 코드가 아직 빌드되지 않음")
 T("No game files found in that folder", "그 폴더에 게임 파일이 없습니다")
+T("That folder is inside Savage Wind's game files", "그 폴더는 Savage Wind의 게임 파일 안에 있습니다")
+T("Setting up again replaces those files. Move the folder you extracted the game to out of there, or choose another copy.", "다시 설정하면 그 파일들이 교체됩니다. 게임을 추출한 폴더를 다른 곳으로 옮기거나 다른 사본을 선택하세요.")
 T("Those files can't be used", "그 파일은 사용할 수 없습니다")
 T("Setup didn't finish", "설정을 마치지 못했습니다")
 T("The game's main module can't be read", "게임의 메인 모듈을 읽을 수 없습니다")

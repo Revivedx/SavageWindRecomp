@@ -680,6 +680,14 @@ static bool setup_dlc(std::vector<std::string> dlc) {
     return true;
 }
 
+// path is folder or something inside it?
+static bool path_inside(const std::string &path, const std::string &folder) {
+    char a[4096], b[4096];
+    if (!realpath(path.c_str(), a) || !realpath(folder.c_str(), b)) return false;
+    size_t n = strlen(b);
+    return !strncmp(a, b, n) && (a[n] == '/' || a[n] == '\\' || !a[n]);
+}
+
 static void *extract_thread(void *) {
     std::string src;
     pthread_mutex_lock(&g_lock);
@@ -731,13 +739,28 @@ static void *extract_thread(void *) {
         }
     }
     {
-        // (the picked folder can't be Savage Wind's own copy: setting up again deletes that first)
-        char a[4096], b[4096];
+        // (the picked folder can't be inside Savage Wind's own copy: setting up again deletes that first)
         mkdir(g_root.c_str(), 0755);
-        if (realpath(exefs.c_str(), a) && realpath(g_root.c_str(), b) && !strncmp(a, b, strlen(b)) &&
-            (a[strlen(b)] == '/' || a[strlen(b)] == '\\' || !a[strlen(b)])) {
-            set_failure(FAIL_NOT_FOUND);
-            goto done;
+        if (path_inside(exefs, g_root) || path_inside(romfs, g_root)) {
+            // Choosing the copy itself (a portable folder whose extracted/ is the player's own, #590): nothing to copy,
+            // only the game code to build, as Set up does with no folder chosen.
+            if (!path_inside(exefs, g_root + "/exefs") || !path_inside(romfs, g_root + "/romfs") ||
+                !check_copied_files(g_root).empty()) {
+                set_job("That folder is inside Savage Wind's game files", true,
+                        "Setting up again replaces those files. Move the folder you extracted the game to out of there, "
+                        "or choose another copy.");
+                goto done;
+            }
+            bool dlc_in_place = false;  // (setup_dlc deletes the aoc folders first: never from themselves)
+            for (auto &d : dlc) dlc_in_place |= path_inside(d, g_root);
+            g_copy_skipped = true;
+            if (!dlc.empty() && !dlc_in_place) {
+                g_total = dlc_bytes(dlc);
+                set_job("Setting up the downloadable content...");
+                if (!setup_dlc(dlc)) { set_failure(FAIL_COPY); goto done; }
+            }
+            if (!build_game_code()) goto done;
+            goto check;
         }
         rt_remove_game_files(g_root.c_str());  // (an earlier or interrupted setup's; removes the folder too)
         mkdir(g_root.c_str(), 0755);
@@ -1179,7 +1202,7 @@ static int g_fonts_lang = -1;
 static void launcher_fonts(void) {
     ImGuiIO &io = ImGui::GetIO();
     io.Fonts->Clear();
-    g_fonts_lang = ui_lang_generation();
+    g_fonts_lang = ui_lang_generation() * 10007 + ui_dynamic_generation();
     g_font_small = g_font_menu = g_font_title = NULL;
     // Fira Sans (OFL, shipped: third_party/fonts/FiraSans) - a clean humanist sans, like the game's own menu text:
     // SemiBold for the title and the menu, Medium for the rest. It has Cyrillic too (Russian menus).
@@ -1214,7 +1237,7 @@ static void launcher_fonts(void) {
 
 extern "C" void vk_imgui_fonts_changed(void);  // (runtime/nvn/vulkan/imgui_glue.cpp)
 static void launcher_fonts_follow_language(void) {
-    if (g_fonts_lang == ui_lang_generation()) return;
+    if (g_fonts_lang == ui_lang_generation() * 10007 + ui_dynamic_generation()) return;
     launcher_fonts();
 #ifdef __APPLE__
     ImGui_ImplMetal_DestroyFontsTexture();  // (NewFrame makes it again)

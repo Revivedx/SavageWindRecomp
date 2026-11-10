@@ -37,11 +37,9 @@ body:
     attributes:
       label: Game version
       description: >-
-        The update your game files have. 1.9.0, the latest, is the supported version. 1.8.2 still runs, but a bug
-        that only happens on 1.8.2 isn't fixed: please check it on 1.9.0 too.
+        The update your game files have. 1.9.0, the latest, is the only supported version.
       options:
         - "1.9.0"
-        - "1.8.2 (not supported)"
     validations:
       required: true
   - type: input

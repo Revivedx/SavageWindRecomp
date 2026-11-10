@@ -31,6 +31,8 @@ T("Game files unreadable (exefs/main is not an NSO)", "ゲームファイルを�
 T("Game data missing", "ゲームデータがありません")
 T("Game code not built yet", "ゲームコードがまだビルドされていません")
 T("No game files found in that folder", "そのフォルダにゲームファイルが見つかりません")
+T("That folder is inside Savage Wind's game files", "そのフォルダーは Savage Wind のゲームファイルの中にあります")
+T("Setting up again replaces those files. Move the folder you extracted the game to out of there, or choose another copy.", "再セットアップするとそれらのファイルは置き換えられます。展開したゲームのフォルダーを別の場所に移動するか、別のコピーを選んでください。")
 T("Those files can't be used", "そのファイルは使用できません")
 T("Setup didn't finish", "セットアップが完了しませんでした")
 T("The game's main module can't be read", "ゲームのメインモジュールを読み込めません")

@@ -31,6 +31,8 @@ T("Game files unreadable (exefs/main is not an NSO)", "Файлы игры не 
 T("Game data missing", "Нет данных игры")
 T("Game code not built yet", "Код игры ещё не скомпилирован")
 T("No game files found in that folder", "В этой папке нет файлов игры")
+T("That folder is inside Savage Wind's game files", "Эта папка находится внутри файлов игры Savage Wind")
+T("Setting up again replaces those files. Move the folder you extracted the game to out of there, or choose another copy.", "Повторная настройка заменяет эти файлы. Переместите папку с извлечённой игрой в другое место или выберите другую копию.")
 T("Those files can't be used", "Эти файлы нельзя использовать")
 T("Setup didn't finish", "Настройка не завершена")
 T("The game's main module can't be read", "Не удаётся прочитать главный модуль игры")
