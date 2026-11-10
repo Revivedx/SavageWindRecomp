@@ -37,6 +37,42 @@ static inline void hud_scale_span(double *pos, double *len, double c, double edg
     *len *= s;
 }
 
+// HUD at edges: where the middle of the HUD ends and its top part begins, as a share of the 16:9 band's height above
+// the middle. Under it: the quick menus' bar (its pieces reach about 0.41) and a chest's item box (0.38). Over it: the
+// area name (about 0.53) and the hearts.
+#define HUD_EDGE_TOP 0.46f
+
+// HUD at edges keeps only the quick menus' bar itself in place while one is up (the item frames, their brackets and
+// page dots), not all that hud_quick_keeps keeps for HUD size. The area name over it stays at the window's edge like
+// the rest of the HUD, instead of dropping onto the bar while a quick menu is up.
+static inline bool hud_quick_bar(float x, float y, float edge_x, float edge_y) {
+    return hud_quick_keeps(x, y, edge_x, edge_y) && y < HUD_EDGE_TOP * edge_y;
+}
+
+// The same for a scissor at cx, cy in pixels (y down) on a gw x gh target, on a taller window (edge_x 1). It tested only
+// y before, so on 4:3 the minimap's mask stayed while the minimap went to the edge, cutting it in half.
+static inline bool hud_quick_bar_px(double cx, double cy, double gw, double gh, double shape) {
+    return gw > 0 && gh > 0 && hud_quick_bar((float)(cx / gw * 2 - 1), (float)(1 - cy / gh * 2), 1, (float)shape);
+}
+
+// HUD at edges this frame: 0 off, 1 the HUD in play, 2 an event. Off in menus, the title and a load, like HUD size. In
+// an event (a talk, a chest's "You got" box) only the top part moves (hud_edge_moves): a box's top edge went to the
+// window's edge while the box and its text stayed in the 16:9 band (#599), and the area name, still fading out when an
+// event starts, stays at the edge instead of dropping into the band.
+static inline int hud_edge_mode(bool setting, float shape, bool menu, bool title, bool loading, bool event) {
+    if (!setting || shape >= 1 || menu || title || loading) return 0;
+    return event ? 2 : 1;
+}
+
+// Whether a pane centred at y goes to the edge in that mode
+static inline bool hud_edge_moves(int mode, float y, float edge_y) {
+    return mode == 1 || (mode == 2 && y > HUD_EDGE_TOP * edge_y);
+}
+
+// Whether a quick menu's bar is tracked (hud_quick): with HUD size or HUD at edges. Only HUD size did, so with HUD at
+// edges alone the top pieces of the quick-select frames went to the window's top edge without the rest (#696).
+static inline bool hud_quick_tracked(int hud_size, bool hud_edges) { return hud_size != 100 || hud_edges; }
+
 // On windows taller than 16:9 (shape < 1), outer vertical anchors move from the 16:9 edge (shape) to the window edge (1)
 static inline float hud_edge_dy(float ay, float edge_y, float shape) {
     if (shape >= 1 || edge_y <= 0) return 0;
