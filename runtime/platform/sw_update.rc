@@ -1,0 +1,3 @@
+// SW Update.exe: the icon, and a manifest saying it needs no administrator rights and uses the current Windows controls.
+1 ICON "icon.ico"
+1 24 "sw_update.manifest"

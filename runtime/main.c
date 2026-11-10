@@ -7,6 +7,7 @@
 
 #include "gamelib.h"
 #include "paths.h"
+#include "post_update.h"
 #include "nvn/maxwell/shader.h"
 #include "nvn/shader_archive.h"
 #ifndef __APPLE__
@@ -337,6 +338,10 @@ bool launcher_game_ready(const char *root);
 bool launcher_config_key_held(void);  // (macOS: Option held while the app opens)
 
 int main(int argc, char **argv) {
+    // SW Update asks this of a version it has just installed: getting here means every DLL loaded
+    for (int i = 1; i < argc; i++)
+        if (!strcmp(argv[i], "--update-health")) return POST_UPDATE_HEALTH_EXIT;
+    if (post_update_recover_if_cut()) return 0;  // (a new copy of this program is running now, with its files put back)
     plat_init();
 #ifdef _WIN32
     setvbuf(stderr, NULL, _IONBF, 0);  // the Windows CRT treats _IOLBF as full buffering
@@ -386,6 +391,14 @@ int main(int argc, char **argv) {
     // A plain start goes straight into the game once the game files are set up and the game code built from them
     // matches this build; the start screen only when there is something to set up, or when asked for.
     int mode = config ? LAUNCHER_CONFIG : skip_launcher || launcher_game_ready(root) ? LAUNCHER_NONE : LAUNCHER_SETUP;
+    // A release (runtime/post_update.h): the first start of a new version finishes setting it up first (the shader caches
+    // go now, before Vulkan opens them), and a plain start opens Savage Wind Configuration, where updates are offered.
+    if (!skip_launcher && !getenv("SAVAGEWIND_HIDDEN")) {
+        bool new_version = post_update_pending(rt_version());
+        if (new_version) post_update_reset_shaders(rt_version());
+        else post_update_tidy(rt_version());
+        if (new_version || (mode == LAUNCHER_NONE && g_settings.start_in_config && post_update_shipped())) mode = LAUNCHER_CONFIG;
+    }
     // (tests of the start screen - screenshots, setup and delete runs - show it: the configuration screen, or
     // SAVAGEWIND_LAUNCHER_MODE=setup / config)
     const char *test_mode = getenv("SAVAGEWIND_LAUNCHER_MODE");

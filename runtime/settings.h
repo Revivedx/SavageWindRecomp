@@ -124,6 +124,8 @@ typedef struct {
     bool async_shaders;  // draw on while new shaders compile (no stutter; what needs them is skipped meanwhile; on by
                          // default since settings_version 4; off: every draw waits for its shaders, as before)
     bool precompile_shaders;  // setting the game files up also precompiles every shader (runtime/nvn/precompile.h)
+    bool start_in_config;     // Windows releases: a plain start opens Savage Wind Configuration first
+    bool check_updates;       // Savage Wind Configuration asks SW Update if there is a new version
     int shadow_res;      // SHADOW_*: shadow maps at the console's size, bigger, or (Potato) smaller
     int sharper_menus;   // the menus' one-channel textures enlarged this many times (2 or 4; 0: off), runtime/nvn/text_upscale.c
     int sharper_text;    // the game's font sheets enlarged this many times (2 or 4; 0: off), runtime/nvn/text_upscale.c

@@ -18,6 +18,7 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <pthread.h>
+#include <filesystem>
 #include <string>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -53,6 +54,7 @@ extern "C" {
 #include "dlc_check.h"
 #include "romfs_build.h"
 #include "problem_report.h"
+#include "post_update.h"
 #include "settings.h"
 #include "color_grade.h"
 #include "pc_cursor.h"
@@ -306,6 +308,7 @@ static bool g_busy, g_job_failed;
 static bool g_confirm_delete;       // game-files page: "Delete the game files?" shown
 
 static void set_job(const std::string &s, bool failed = false, const std::string &hint = "") {
+    if (failed) fprintf(stderr, "[launcher] FAILED: %s | %s\n", s.c_str(), hint.c_str());
     pthread_mutex_lock(&g_lock);
     g_job = s;
     g_job_failed = failed;
@@ -428,16 +431,58 @@ static float extract_progress(void) {
     return f < 0 ? 0 : f > 0.99f ? 0.99f : f;
 }
 
+// Why the game code didn't build, from what the builder and the compiler said (runtime/gamebuild.c): what the player
+// can do about it, with the reason itself under it for a bug report.
+static bool said(const std::string &low, std::initializer_list<const char *> words) {
+    for (const char *w : words)
+        if (low.find(w) != std::string::npos) return true;
+    return false;
+}
+static void set_build_failure(const char *why) {
+    std::string low = why, detail = why;
+    for (auto &c : low) c = (char)tolower((unsigned char)c);
+    for (auto &c : detail) if (c == '%' || (unsigned char)c < 0x20) c = ' ';  // (shown as text: trv fills % in)
+    const char *head = "The game code didn't build";
+    const char *hint;
+    if (said(low, {"no space", "disk full", "nospaceleft", "not enough space", "enospc", "file system is full"}))
+        head = "The disk is full", hint = "Building the game code ran out of disk space. Free at least 5 GB on this disk and choose Set up game files.";
+    else if (said(low, {"out of memory", "outofmemory", "cannot allocate", "bad_alloc", "not enough memory", "memoryerror"}))
+        head = "This PC ran out of memory", hint = "Building the game code needs a lot of RAM. Close your browser and other programs and choose Set up game files.";
+    else if (said(low, {"missing from this copy", "didn't start"}))
+        head = "A part of Savage Wind is missing", hint = "The compiler or the code generator (the zig and swgen folders) is missing or was blocked. An antivirus is the usual cause: add this folder as an exclusion, then get the release again.";
+    else if (said(low, {"access is denied", "accessdenied", "permission denied", "being used by another"}))
+        head = "A file was blocked", hint = "Windows or an antivirus blocked a file while building. Add this folder as an exclusion in your antivirus and choose Set up game files.";
+    else if (said(low, {"code modules can't be loaded"}))
+        head = "The game files can't be read", hint = "exefs/ in your copy of the game looks damaged. Extract the game again (version %s) and choose that folder.";
+    else
+        hint = "Something unexpected stopped the build. Choose Set up game files to try again. If it happens again, report it with savagewind.log.";
+    set_job(head, true, trv(hint) + "\n\n" + tr("Details:") + " " + detail);
+}
+
+// Building the game code takes room for the generated code, the objects and the compiler's caches
+static bool room_for_build(void) {
+    static const unsigned long long NEED = 5ull << 30;  // (measured: 1.5 GB at the peak, shaders included)
+    std::error_code ec;
+    std::filesystem::space_info si = std::filesystem::space(rt_data_root(), ec);
+    if (const char *t = getenv("SAVAGEWIND_TEST_FREE_GB")) si.available = strtoull(t, NULL, 10) << 30;
+    if (ec || si.available >= NEED) return true;
+    char hint[400];
+    snprintf(hint, sizeof hint, tr("Building the game code needs about %.0f GB free on this disk and there are %.1f GB. Free some space and choose Set up game files."),
+             NEED / 1073741824.0, si.available / 1073741824.0);
+    set_job("Not enough free disk space", true, hint);
+    return false;
+}
+
 // Builds the game code from the copied files (a few minutes); false = failed (the job line says so)
 static bool build_game_code(void) {
     int cores = SDL_GetNumLogicalCPUCores(), ram_gb = SDL_GetSystemRAM() / 1024;
     GameBuildOpts o = {build_progress, cores < ram_gb - 2 ? cores : ram_gb - 2 > 1 ? ram_gb - 2 : 1};
-    char why[256] = "";
+    char why[800] = "";
     g_build_frac = 0;
     bool ok = gamebuild_run(g_root.c_str(), &o, why, sizeof why);
     if (!ok) {
         fprintf(stderr, "[launcher] game code: %s\n", why);
-        set_failure(FAIL_BUILD);
+        set_build_failure(why);
     }
     return ok;
 }
@@ -698,9 +743,19 @@ static void *extract_thread(void *) {
     std::vector<std::string> dlc;
     bool unusable = false;  // (game packages rather than its files)
     bool dlc_only = false;  // (the shaders precompiled are the game's: nothing new to precompile)
+    bool new_version = post_update_pending(SAVAGEWIND_VERSION);  // (runtime/post_update.h: a release's first start)
     if (src.empty() && check_copied_files(g_root).empty()) {  // copied already (an update needs new game code)
         g_copy_skipped = true;
-        if (!build_game_code()) goto done;
+        if (new_version) {  // what a wrong copy of the game would only show as a crash later (the RomFS of another version)
+            std::string id;
+            const GameVersion *v = nso_build_id(g_root + "/exefs/main", &id) ? main_version(id) : NULL;
+            set_job("Checking the game files...");
+            std::string found = v ? check_romfs(g_root + "/romfs", *v) : "";
+            if (!found.empty()) { set_romfs_failure(*v, found); goto done; }
+        }
+        if (!new_version || !gamelib_present(g_root.c_str())) {  // (the same game code as the last version: nothing to build)
+            if (!room_for_build() || !build_game_code()) goto done;
+        } else fprintf(stderr, "[launcher] update: the game code is already right for this version\n");
         goto check;
     }
     set_job("Looking for the game files...");
@@ -782,8 +837,10 @@ check:
     {
         std::string why = check_game_files(g_root);
 #ifndef __APPLE__
-        if (why.empty() && !dlc_only && g_settings.precompile_shaders && shader_precompile_available()) run_precompile();
+        if (why.empty() && !dlc_only && (g_settings.precompile_shaders || new_version) && shader_precompile_available())
+            run_precompile();  // (a new version: always, the caches were emptied at its start)
 #endif
+        if (why.empty()) post_update_finish(SAVAGEWIND_VERSION);
         RtDlcCheck dc = rt_dlc_check(g_root.c_str());
         pthread_mutex_lock(&g_lock);
         g_dlc = dc;
@@ -801,7 +858,10 @@ check:
     }
 done:
     pthread_mutex_lock(&g_lock);
-    if (g_job_failed) g_stay_on_setup = true;
+    if (g_job_failed) {
+        g_stay_on_setup = true;
+        if (new_version) post_update_mark_failed(SAVAGEWIND_VERSION);
+    }
     g_busy = false;
     pthread_mutex_unlock(&g_lock);
     return NULL;
@@ -1389,9 +1449,23 @@ extern "C" void launcher_run(const char *root, int mode) {
     refresh_dlc();
     Page page = status.empty() && !g_setup_only ? MAIN : SETUP;
     set_job("");  // (an earlier visit's result)
-    explain_status(status);
+    // A new version, or game code that doesn't match this one: no button to find, it sets itself up. It doesn't start
+    // again by itself after failing: the page says why, and Set up game files retries.
+    bool auto_setup = post_update_shipped() && !getenv("SAVAGEWIND_LAUNCHER_SHOT") && check_copied_files(g_root).empty() &&
+                      (post_update_pending(SAVAGEWIND_VERSION) || !status.empty()) && !post_update_failed_before(SAVAGEWIND_VERSION);
+    if (!auto_setup) explain_status(status);
     bool play = false;
     bool tip_then_play = false;  // (setup mode: the game files just got ready; the first-start note, then the game)
+    if (auto_setup) {
+        fprintf(stderr, "[launcher] setting up this version by itself (%s)\n", status.empty() ? "new version" : status.c_str());
+        page = SETUP;
+        g_src.clear();
+        g_busy = true;
+        pthread_t t;
+        pthread_create(&t, NULL, extract_thread, NULL);
+        pthread_detach(t);
+    }
+    if (g_settings.check_updates && !getenv("SAVAGEWIND_NO_UPDATE_CHECK")) update_check_start();
     // SAVAGEWIND_LAUNCHER_SHOT=<frame>[:<page>] (test): save build/launcher.png at that frame and exit; page: settings[:<tab>] / askdelete / setup
     long shot_at = getenv("SAVAGEWIND_LAUNCHER_SHOT") ? atol(getenv("SAVAGEWIND_LAUNCHER_SHOT")) : 0, frame = 0;
     if (shot_at) {
@@ -1560,6 +1634,9 @@ extern "C" void launcher_run(const char *root, int mode) {
             static bool typed_before;
             bool typing = typed_before || ui_text_busy();
 
+            char update_version[64], update_msg[512];
+            UpdateState update_st = update_check_state(update_version, sizeof update_version, update_msg, sizeof update_msg);
+            static std::string update_error;  // (starting SW Update failed)
             if (page == MAIN) {
                 {  // the four items close together, the block anchored where QUIT always was (the gap to the status
                    // line stays)
@@ -1568,7 +1645,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                     ImGui::PopFont();
                     auto pitch = [&](float gap) { return h + 6 + gap * h + (gap >= 0 ? 2 : 1) * sp; };
                     g_menu_gap = -0.18f;
-                    ImGui::SetCursorPosY(285 * s + 3 * pitch(0.35f) - 3 * pitch(g_menu_gap));
+                    ImGui::SetCursorPosY(285 * s + 3 * pitch(0.35f) - 3 * pitch(g_menu_gap) - (update_st == UPDATE_AVAILABLE ? pitch(g_menu_gap) : 0));
                 }
                 ImGui::SetCursorPosX(x0);
                 static bool focused_once;
@@ -1589,6 +1666,14 @@ extern "C" void launcher_run(const char *root, int mode) {
                 if (pressed) {
                     if (!g_settings.menu_tip_seen) ImGui::OpenPopup("##menutip");
                     else play = true;
+                }
+                if (update_st == UPDATE_AVAILABLE) {  // one click: SW Update takes over and this window goes away
+                    ImGui::SetCursorPosX(x0);
+                    if (menu_item("UPDATE", !busy) || (!busy && getenv("SAVAGEWIND_LAUNCHER_AUTOUPDATE"))) {  // (test: at once)
+                        settings_save();
+                        if (update_apply_start()) exit(0);
+                        update_error = tr("SW Update could not be started. An antivirus may have removed it.");
+                    }
                 }
                 ImGui::SetCursorPosX(x0);
                 if (g_refocus == SETTINGS) ImGui::SetKeyboardFocusHere(), g_refocus = MAIN;  // (back from Settings: it
@@ -1704,6 +1789,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                 bool failed = g_job_failed;
                 pthread_mutex_unlock(&g_lock);
                 bool ready = status.empty() && !busy;  // (set up: the window offers to delete them, or set them up again)
+                bool shipped_release = post_update_shipped();
                 // chosen: "Selected" with a green check (long paths ran over the label); the path is in the
                 // explanation, and choosing again opens the picker again
                 std::string src_v = tr(src.empty() ? "Choose..." : "Selected");
@@ -1877,6 +1963,16 @@ extern "C" void launcher_run(const char *root, int mode) {
                         }
                     }
 #endif
+                    if (shipped_release) {  // (runtime/post_update.h)
+                        if (opt_toggle("Check for updates", &g_settings.check_updates, true,
+                                       "When Savage Wind Configuration opens, asks GitHub if there is a new version and "
+                                       "offers it. Nothing is installed until you press Update."))
+                            settings_save();
+                        if (opt_toggle("Open this screen first", &g_settings.start_in_config, true,
+                                       "Starting Savage Wind opens this screen, where updates are offered. Turned off, "
+                                       "savagewind.exe goes straight into the game."))
+                            settings_save();
+                    }
                     if (busy || (src.empty() && !check_copied_files(g_root).empty())) opt_disable_next();
                     if (opt_action("Set up game files", busy ? tr("Working...") : "", ready ? again_d.c_str() : ex_d.c_str(),
                                    true)) {
@@ -1888,6 +1984,13 @@ extern "C" void launcher_run(const char *root, int mode) {
                         pthread_t t;
                         pthread_create(&t, NULL, extract_thread, NULL);
                         pthread_detach(t);
+                    }
+                }
+                if (failed && !busy && post_update_can_rollback()) {  // (the previous version's files are still there)
+                    if (opt_action("Go back to the previous version", "", tr("Puts back the version you had before this update. "
+                                   "Your saves and game files are kept."), true)) {
+                        settings_save();
+                        if (update_rollback_start()) exit(0);
                     }
                 }
                 if (!job_line.empty()) {  // the current step / result
@@ -2036,6 +2139,13 @@ extern "C" void launcher_run(const char *root, int mode) {
                 ImGui::TextColored(ImVec4(1, 0.72f, 0.4f, 1), "!  %s", trv(busy ? "Setting up the game files..." : status).c_str());
                 ImGui::SetCursorPosX(x0);
                 ImGui::TextDisabled("%s", tr("Set up the game files to play."));
+            }
+            if (update_st == UPDATE_AVAILABLE) {
+                ImGui::SetCursorPosX(x0);
+                ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), tr("Version %s is available."), update_version);
+            } else if (update_st == UPDATE_ERROR || !update_error.empty()) {
+                ImGui::SetCursorPosX(x0);
+                ImGui::TextDisabled("%s %s", tr("Couldn't check for updates:"), update_error.empty() ? update_msg : update_error.c_str());
             }
             if (const char *f = getenv("SAVAGEWIND_LAUNCHER_FONT")) {  // (test) which typeface this window shows
                 const char *b = strrchr(f, '/');
