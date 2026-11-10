@@ -1,6 +1,9 @@
 // Discord Rich Presence, through the local pipe of the Discord app (Windows; elsewhere nothing happens). Its own thread
 // does all the talking: with Discord closed the game loses nothing, and it connects whenever Discord opens.
-// SAVAGEWIND_DISCORD=0: off. SAVAGEWIND_DISCORD_APP_ID: another Discord application. SAVAGEWIND_DISCORD_LANG: en, es, USen, EUde...
+// Off by default: the switch is Options > Gameplay (savagewind.ini discord_rpc), and SAVAGEWIND_DISCORD=0|1 forces it
+// either way. The Discord application comes from the environment's SAVAGEWIND_DISCORD_APP_ID (digits): without one the
+// feature does nothing, as a build ships no application of its own until the project has one.
+// SAVAGEWIND_DISCORD_LANG: en, es, USen, EUde...
 #pragma once
 #include <stdbool.h>
 #include <stddef.h>

@@ -32,7 +32,7 @@ int main(void) {
     assert(discord_frame(f, 9, 1, "{}") < 0);
 
     // The id: digits only
-    assert(discord_app_id_valid("1566877612024791185"));
+    assert(discord_app_id_valid("1234567890123456789"));
     assert(!discord_app_id_valid(""));
     assert(!discord_app_id_valid("12ab"));
 

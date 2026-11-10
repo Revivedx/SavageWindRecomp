@@ -5,8 +5,6 @@
 #include <stdio.h>
 #include <string.h>
 
-#define DISCORD_APP_ID "1566877612024791185"
-
 bool discord_app_id_valid(const char *id) {
     if (!*id) return false;
     for (; *id; id++)
@@ -55,6 +53,7 @@ int discord_frame(uint8_t *out, size_t size, uint32_t op, const char *json) {
 #include <time.h>
 
 #include "rt.h"
+#include "settings.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -65,7 +64,9 @@ int discord_frame(uint8_t *out, size_t size, uint32_t op, const char *json) {
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static char want_details[128], want_state[128];
 static unsigned want_serial;
-static char app_id[32];
+static bool want_on;
+static char app_id[32];  // the environment's SAVAGEWIND_DISCORD_APP_ID ("" none: the feature stays off; a build
+                         // ships no application of its own until the project has one)
 
 static HANDLE pipe_open(void) {
     for (int i = 0; i < 10; i++) {
@@ -142,57 +143,82 @@ static void *discord_thread(void *arg) {
     (void)arg;
     uint64_t start = (uint64_t)time(NULL);
     bool told_waiting = false;
+    HANDLE h = NULL;
+    unsigned sent = 0;
     for (;;) {
-        HANDLE h = pipe_open();
-        if (!h || !handshake(h)) {
-            if (h) CloseHandle(h);
-            if (!told_waiting) LOG("[discord] not connected, trying every %d s\n", RETRY_MS / 1000);
-            told_waiting = true;
-            Sleep(RETRY_MS);
+        pthread_mutex_lock(&lock);
+        bool on = want_on;
+        pthread_mutex_unlock(&lock);
+        if (!on) {  // the switch went off: Discord clears the status when the pipe closes
+            if (h) CloseHandle(h), h = NULL, LOG("[discord] off\n");
+            Sleep(500);
             continue;
         }
-        LOG("[discord] connected\n");
-        told_waiting = false;
-        unsigned sent = 0;
-        for (;;) {
-            char details[128], state[128];
-            pthread_mutex_lock(&lock);
-            unsigned serial = want_serial;
-            memcpy(details, want_details, sizeof details);
-            memcpy(state, want_state, sizeof state);
-            pthread_mutex_unlock(&lock);
-            DWORD ready;
-            if (!PeekNamedPipe(h, NULL, 0, NULL, &ready, NULL)) break;
-            if (serial != sent) {
-                if (!send_activity(h, start, details, state)) break;
-                LOG("[discord] %s | %s\n", details, state);
-                sent = serial;
+        if (!h) {
+            h = pipe_open();
+            if (!h || !handshake(h)) {
+                if (h) CloseHandle(h), h = NULL;
+                if (!told_waiting) LOG("[discord] not connected, trying every %d s\n", RETRY_MS / 1000);
+                told_waiting = true;
+                Sleep(RETRY_MS);
+                continue;
             }
-            Sleep(1000);
+            LOG("[discord] connected\n");
+            told_waiting = false;
+            sent = 0;  // (a new connection tells Discord the text as it is)
         }
-        CloseHandle(h);
-        LOG("[discord] connection lost\n");
+        char details[128], state[128];
+        pthread_mutex_lock(&lock);
+        unsigned serial = want_serial;
+        memcpy(details, want_details, sizeof details);
+        memcpy(state, want_state, sizeof state);
+        on = want_on;
+        pthread_mutex_unlock(&lock);
+        if (!on) continue;  // (the head of the loop closes the pipe)
+        DWORD ready;
+        if (!PeekNamedPipe(h, NULL, 0, NULL, &ready, NULL)) {
+            CloseHandle(h), h = NULL;
+            LOG("[discord] connection lost\n");
+            Sleep(1000);
+            continue;
+        }
+        if (serial != sent) {
+            if (!send_activity(h, start, details, state)) {
+                CloseHandle(h), h = NULL;
+                LOG("[discord] connection lost\n");
+                Sleep(1000);
+                continue;
+            }
+            LOG("[discord] %s | %s\n", details, state);
+            sent = serial;
+        }
+        Sleep(1000);
     }
     return NULL;
 }
 
 void discord_rpc_set(const char *details, const char *state) {
-    static int on = -1;
-    if (on < 0) {
-        const char *off = getenv("SAVAGEWIND_DISCORD"), *id = getenv("SAVAGEWIND_DISCORD_APP_ID");
-        snprintf(app_id, sizeof app_id, "%s", id && *id ? id : DISCORD_APP_ID);
-        on = !(off && atoi(off) == 0);
-        if (on && !discord_app_id_valid(app_id)) {
+    static bool up;  // the thread exists and an application id is set (else nothing runs, whatever the switch says)
+    if (!up) {
+        const char *id = getenv("SAVAGEWIND_DISCORD_APP_ID");
+        if (id && *id) snprintf(app_id, sizeof app_id, "%s", id);
+        if (!app_id[0]) LOG("[discord] off: no Discord application (SAVAGEWIND_DISCORD_APP_ID)\n");
+        else if (!discord_app_id_valid(app_id)) {
             LOG("[discord] off: the application id is not valid\n");
-            on = 0;
+            app_id[0] = 0;
+        } else {
+            pthread_t t;
+            if (!pthread_create(&t, NULL, discord_thread, NULL)) pthread_detach(t);
+            else app_id[0] = 0;
         }
-        pthread_t t;
-        if (on && pthread_create(&t, NULL, discord_thread, NULL)) on = 0;
-        if (on) pthread_detach(t);
+        up = app_id[0] != 0;
     }
-    if (!on) return;
+    // On by the switch (Options > Gameplay), unless the environment forces it either way (SAVAGEWIND_DISCORD=0|1)
+    const char *env = getenv("SAVAGEWIND_DISCORD");
+    bool on = env && *env ? atoi(env) != 0 : g_settings.discord_rpc;
     pthread_mutex_lock(&lock);
-    if (strcmp(want_details, details) || strcmp(want_state, state)) {
+    want_on = on;
+    if (on && (strcmp(want_details, details) || strcmp(want_state, state))) {
         snprintf(want_details, sizeof want_details, "%s", details);
         snprintf(want_state, sizeof want_state, "%s", state);
         want_serial++;
