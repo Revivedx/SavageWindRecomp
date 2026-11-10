@@ -540,10 +540,10 @@ static int resolve_kind(void) {
 }
 
 // cursor: with the state of the menus' mouse pointer, which changes some keyboard icons while a menu is open.
-static uint32_t generation(bool cursor) {
+static uint32_t generation(bool cursor, int context_button) {
     int k = resolve_kind();
     uint32_t h = 2166136261u ^ (uint32_t)k ^ (glyphs_hud_faces_fixed() ? 0x100u : 0);
-    h = (h ^ (uint16_t)atomic_load(&hud_context_button)) * 16777619u;
+    if (cursor) h = (h ^ (uint16_t)context_button) * 16777619u;
     if (k == ICONS_KEYBOARD) {
         if (cursor) {
             h = (h ^ pc_cursor_preview_active()) * 16777619u;
@@ -557,8 +557,8 @@ static uint32_t generation(bool cursor) {
     return h | 1;
 }
 
-uint32_t glyphs_generation(void) { return generation(true); }
-uint32_t glyphs_font_generation(void) { return generation(false); }
+uint32_t glyphs_generation(void) { return generation(true, glyphs_context_button_current()); }
+uint32_t glyphs_font_generation(void) { return generation(false, -1); }
 void glyphs_context_button(int host_button) {
     atomic_store(&hud_context_button, host_button);
 }
@@ -659,8 +659,7 @@ static bool draw_fixed_face(Canvas *c, Box b, int face, int kind, int *copy) {
     return true;
 }
 
-static bool draw_context_button(Canvas *c, Box b, int kind, int *copy) {
-    int host = atomic_load(&hud_context_button);
+static bool draw_context_button(Canvas *c, Box b, int kind, int host, int *copy) {
     if (host < 0) return false;
     if (kind == ICONS_NINTENDO) {
         *copy = nintendo_code(host);
@@ -718,7 +717,8 @@ bool glyphs_apply(uint64_t addr, uint64_t pool_lo, uint64_t pool_hi, uint32_t fo
                             (unsigned long long)addr, (unsigned long long)hash);
         return false;
     }
-    uint32_t gen = glyphs_generation();
+    int context_button = glyphs_context_button_current();
+    uint32_t gen = generation(true, context_button);
     bool dump = getenv("SAVAGEWIND_GLYPH_DUMP") != NULL;
     if (!dump && sheet_cached(gen, lin)) return true;
     int kind = resolve_kind();
@@ -753,7 +753,8 @@ bool glyphs_apply(uint64_t addr, uint64_t pool_lo, uint64_t pool_hi, uint32_t fo
         memset(&cv, 0, sizeof cv);
         int copy = 0;
         bool drawn = face ? draw_fixed_face(&cv, b, code - HUD_FACE_CODE, kind, &copy)
-                     : context ? draw_context_button(&cv, b, kind, &copy) : draw_glyph(&cv, b, code, kind, &copy);
+                     : context ? draw_context_button(&cv, b, kind, context_button, &copy)
+                     : draw_glyph(&cv, b, code, kind, &copy);
         if (copy && index_of(copy) != 0xffff) {  // the game's glyph from another cell
             int sx0, sy0;
             cell_origin(f, index_of(copy), &sx0, &sy0);
