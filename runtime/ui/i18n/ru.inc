@@ -984,6 +984,7 @@ T("Not enough free disk space", "Недостаточно свободного �
 T("UPDATE", "ОБНОВИТЬ")
 T("SW Update could not be started. An antivirus may have removed it.", "Не удалось запустить SW Update. Возможно, его удалил антивирус.")
 T("Check for updates", "Проверять обновления")
+T("Updates come from the launcher that installed Savage Wind (named on the right). After it updates Savage Wind, the next start sets the new version up by itself.", "Обновления приходят из лаунчера, который установил Savage Wind (он указан справа). После того как он обновит Savage Wind, следующий запуск сам подготовит новую версию.")
 T("When Savage Wind Configuration opens, asks GitHub if there is a new version and offers it. Nothing is installed until you press Update.", "При открытии Savage Wind Configuration спрашивает у GitHub, есть ли новая версия, и предлагает её. Ничего не устанавливается, пока вы не нажмёте «Обновить».")
 T("Open this screen first", "Открывать сначала этот экран")
 T("Starting Savage Wind opens this screen, where updates are offered. Turned off, savagewind.exe goes straight into the game.", "При запуске Savage Wind открывается этот экран, где предлагаются обновления. Если выключено, savagewind.exe сразу запускает игру.")

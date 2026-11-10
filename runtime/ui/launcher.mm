@@ -1988,9 +1988,13 @@ extern "C" void launcher_run(const char *root, int mode) {
                     }
 #endif
                     if (shipped_release) {  // (runtime/post_update.h)
-                        if (opt_toggle("Check for updates", &g_settings.check_updates, true,
-                                       "When Savage Wind Configuration opens, asks GitHub if there is a new version and "
-                                       "offers it. Nothing is installed until you press Update."))
+                        if (const char *by = update_launcher())  // (installed by a launcher, which updates it: a row that
+                            opt_action("Check for updates", by,  //  only says so - pressing it does nothing)
+                                       "Updates come from the launcher that installed Savage Wind (named on the right). "
+                                       "After it updates Savage Wind, the next start sets the new version up by itself.");
+                        else if (opt_toggle("Check for updates", &g_settings.check_updates, true,
+                                            "When Savage Wind Configuration opens, asks GitHub if there is a new version and "
+                                            "offers it. Nothing is installed until you press Update."))
                             settings_save();
                         if (opt_toggle("Open this screen first", &g_settings.start_in_config, true,
                                        "Starting Savage Wind opens this screen, where updates are offered. Turned off, "

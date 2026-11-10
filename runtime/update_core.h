@@ -61,6 +61,17 @@ const char *uc_strip_top(const char *zip_path);
 // hex (2n digits, either case) to n bytes. false: anything else.
 bool uc_hex_decode(const char *hex, uint8_t *out, size_t n);
 
+// The launcher that installed this release and updates it from GitHub itself, or NULL: SW Update then stays out of
+// its way (two updaters on one folder fight over its files). dir: the release's folder (the exe's, the AppImage's);
+// up: the one above it ("" when there is none - a launcher may keep the zip's top folder); has(dir, name): whether
+// that file is there; recomplauncher: $RECOMPLAUNCHER. Either path separator.
+const char *uc_launcher_installed(const char *dir, const char *up, bool (*has)(const char *dir, const char *name),
+                                  const char *recomplauncher);
+
+// Whether the program at exe (a real path) is inside the folder appdir (a real path): an AppImage's own program runs
+// from its runtime's mount ($APPDIR). Another AppImage's $APPIMAGE / $APPDIR, inherited, fail it.
+bool uc_path_inside(const char *exe, const char *appdir);
+
 #ifdef __cplusplus
 }
 #endif

@@ -984,6 +984,7 @@ T("Not enough free disk space", "พื้นที่ว่างในดิ�
 T("UPDATE", "อัปเดต")
 T("SW Update could not be started. An antivirus may have removed it.", "ไม่สามารถเริ่ม SW Update ได้ โปรแกรมป้องกันไวรัสอาจลบออกไปแล้ว")
 T("Check for updates", "ตรวจหาอัปเดต")
+T("Updates come from the launcher that installed Savage Wind (named on the right). After it updates Savage Wind, the next start sets the new version up by itself.", "การอัปเดตมาจากตัวเปิดเกมที่ติดตั้ง Savage Wind (แสดงทางขวา) หลังจากที่มันอัปเดต Savage Wind แล้ว การเปิดครั้งถัดไปจะเตรียมเวอร์ชันใหม่เอง")
 T("When Savage Wind Configuration opens, asks GitHub if there is a new version and offers it. Nothing is installed until you press Update.", "เมื่อเปิดการกำหนดค่า Savage Wind จะตรวจสอบกับ GitHub ว่ามีเวอร์ชันใหม่หรือไม่และแจ้งให้ทราบ จะไม่มีการติดตั้งใดๆ จนกว่าคุณจะกดอัปเดต")
 T("Open this screen first", "เปิดหน้าจอนี้ก่อน")
 T("Starting Savage Wind opens this screen, where updates are offered. Turned off, savagewind.exe goes straight into the game.", "การเริ่ม Savage Wind จะเปิดหน้าจอนี้ ซึ่งแจ้งเรื่องอัปเดต หากปิดไว้ savagewind.exe จะเข้าเกมโดยตรง")
