@@ -113,10 +113,9 @@ static void gyro_startup_overrides(void) {
 }
 void settings_fps_for_display(float hz) {
     if (!g_settings.fps_display || hz < 20) return;
-    static const int fps[] = FPS_CHOICES;
-    int best = 30;
-    for (unsigned i = 0; i < sizeof fps / sizeof fps[0]; i++)
-        if (fps[i] && fps[i] <= hz + 1 && fps[i] > best) best = fps[i];
+    // The display's own rate, not the nearest one of the menu's list: a 210 Hz monitor stayed at 165, a 72 Hz one at 60 (#661).
+    int best = (int)(hz + 0.5f);
+    if (best > 360) best = 360;  // (framepace.c FPS_CEILING)
     if (g_settings.fps_limit != best) LOG("[settings] frame rate %d (Match display: %.0f Hz)\n", best, hz);
     g_settings.fps_limit = best;
 }
