@@ -276,15 +276,37 @@ static void deck_report(void) {
     DsuPacket d;
     uint32_t num;
     assert(deck_imu_decode(p, 64, &d, &num) && num == 77);
-    const double G = 9.80665, rad = 2000.0 / 32768 * PI / 180;
-    double sa[3] = {acc[0] / 32768.0 * 2 * G, acc[2] / 32768.0 * 2 * G, -acc[1] / 32768.0 * 2 * G};
-    double sg[3] = {gyro[0] * rad, gyro[2] * rad, -gyro[1] * rad};
-    double ea[3] = {-sa[0] / G, sa[2] / G, -sa[1] / G}, eg[3] = {sg[0], -sg[2], sg[1]};
-    for (int i = 0; i < 3; i++) assert(fabs(d.acc[i] - ea[i]) < 1e-9 && fabs(d.gyro[i] - eg[i]) < 1e-9);
+    const double rad = 2000.0 / 32768 * PI / 180;
+    double a1 = acc[1] / 16384.0, a2 = acc[2] / 16384.0;
+    double len = sqrt(a1 * a1 + a2 * a2);
+    double want_yaw = (gyro[1] * a1 + gyro[2] * a2) / len * rad;
+    double want_roll = (gyro[2] * a1 - gyro[1] * a2) / len * rad;
+    assert(fabs(d.acc[0] - (-acc[0] / 16384.0)) < 1e-9);
+    assert(fabs(d.acc[1] - (-acc[1] / 16384.0)) < 1e-9);
+    assert(fabs(d.acc[2] - (-acc[2] / 16384.0)) < 1e-9);
+    assert(fabs(d.gyro[0] - gyro[0] * rad) < 1e-9);
+    assert(fabs(d.gyro[1] - want_roll) < 1e-9);
+    assert(fabs(d.gyro[2] - want_yaw) < 1e-9);
     assert(d.acc[2] < -0.95);  // flat: gravity down the Switch's Z
+    // Upright handheld posture: turning in the room (Y-axis gyro) maps directly to horizontal aiming (yaw).
+    short acc_upright[3] = {0, 16384, 0}, gyro_yaw[3] = {0, 1000, 0};
+    for (int i = 0; i < 3; i++) {
+        p[24 + 2*i] = acc_upright[i] & 0xff, p[25 + 2*i] = (uint16_t)acc_upright[i] >> 8;
+        p[30 + 2*i] = gyro_yaw[i] & 0xff, p[31 + 2*i] = (uint16_t)gyro_yaw[i] >> 8;
+    }
+    assert(deck_imu_decode(p, 64, &d, &num));
+    assert(fabs(d.gyro[2] - 1000 * rad) < 1e-6 && fabs(d.gyro[1]) < 1e-6);
+    // 45-degree reclined handheld posture: equal components on Y and Z yield full 1000 deg/s horizontal aim.
+    short acc_45[3] = {0, 11585, 11585}, gyro_45[3] = {0, 707, 707};
+    for (int i = 0; i < 3; i++) {
+        p[24 + 2*i] = acc_45[i] & 0xff, p[25 + 2*i] = (uint16_t)acc_45[i] >> 8;
+        p[30 + 2*i] = gyro_45[i] & 0xff, p[31 + 2*i] = (uint16_t)gyro_45[i] >> 8;
+    }
+    assert(deck_imu_decode(p, 64, &d, &num));
+    assert(fabs(d.gyro[2] - 1000 * rad) < 1e-2 && fabs(d.gyro[1]) < 1e-2);
     p[2] = 1; assert(!deck_imu_decode(p, 64, &d, &num));  // another report type
     p[2] = 9; assert(!deck_imu_decode(p, 35, &d, &num));
     memset(p + 24, 0, 6); assert(!deck_imu_decode(p, 64, &d, &num));  // no motion in it
-    puts("Steam Deck state report: axes and scale as SDL's driver passed");
+    puts("Steam Deck state report: axes and gravity projection passed");
 }
 int main(void) { parsing(); freshness(); network(); selection(); overhead(); fps_independence(); deck_report(); puts("DSU tests passed"); }

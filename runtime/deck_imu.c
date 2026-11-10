@@ -3,6 +3,7 @@
 // of its hidraw node, 250 times a second, motion included; Steam keeps reading it too. Report layout and scale cross-
 // checked with SDL's HIDAPI Steam Deck driver (zlib) and kmicki/SteamDeckGyroDSU (MIT); an independent implementation.
 #include "deck_imu.h"
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #ifdef __linux__
@@ -24,11 +25,19 @@ bool deck_imu_decode(const uint8_t *p, size_t n, DsuPacket *out, uint32_t *num) 
     double a[3], w[3];
     for (int i = 0; i < 3; i++) a[i] = le16s(p + 24 + 2 * i) / 16384.0, w[i] = le16s(p + 30 + 2 * i);
     if (a[0] * a[0] + a[1] * a[1] + a[2] * a[2] < 0.01) return false;  // (no motion in the report)
-    // SDL's axes are (x, z, -y), then motion_sensor_event's SDL -> Switch mapping: gravity (-x, -y, -z), turn (x, y, z).
+    // SDL's axes are (x, z, -y), then motion_sensor_event's SDL -> Switch mapping: gravity (-x, -y, -z).
     // Flat on a table the Deck reads +1 G on z: (0, 0, -1), as at rest elsewhere.
+    // On the Steam Deck handheld, horizontal aim (yaw around gravity) blends the Deck's screen-upright
+    // yaw (Y) and flat yaw (Z) according to the device's tilt against gravity.
     const double rad = 2000.0 / 32768 * 3.14159265358979323846 / 180;
+    double len = sqrt(a[1] * a[1] + a[2] * a[2]);
+    double yaw = len > 0.1 ? (w[1] * a[1] + w[2] * a[2]) / len : (w[1] + w[2]);
+    double roll = len > 0.1 ? (w[2] * a[1] - w[1] * a[2]) / len : w[2];
     DsuPacket v = {.type = 0x100002, .connected = true};
-    for (int i = 0; i < 3; i++) v.acc[i] = -a[i], v.gyro[i] = w[i] * rad;
+    v.acc[0] = -a[0], v.acc[1] = -a[1], v.acc[2] = -a[2];
+    v.gyro[0] = w[0] * rad;
+    v.gyro[1] = roll * rad;
+    v.gyro[2] = yaw * rad;
     *out = v;
     *num = le32(p + 4);
     return true;
