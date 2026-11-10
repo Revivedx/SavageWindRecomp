@@ -57,7 +57,8 @@ typedef NgxResult (*PFN_DestroyParams)(NgxParam *);
 typedef NgxResult (*PFN_Create)(VkCommandBuffer, int feature, NgxParam *, NgxHandle **);
 typedef NgxResult (*PFN_Evaluate)(VkCommandBuffer, const NgxHandle *, const NgxParam *, void *callback);
 typedef NgxResult (*PFN_Release)(NgxHandle *);
-typedef NgxResult (*PFN_Shutdown)(VkDevice);
+// (the core's Shutdown1 writes a count through its second argument without a check: the SDK's library passes one)
+typedef NgxResult (*PFN_Shutdown)(VkDevice, unsigned *);
 
 static struct {
     HMODULE core;
@@ -258,7 +259,8 @@ static void release_feature(void);
 void vk_dlss_shutdown(void) {
     if (!g_initialized) return;
     release_feature();
-    if (g_ngx_up && N.shutdown) N.shutdown(g_vk.dev);
+    unsigned left = 0;
+    if (g_ngx_up && N.shutdown) N.shutdown(g_vk.dev, &left);
     g_ngx_up = g_available = false;
     g_capability_params = NULL;
     g_initialized = false;
