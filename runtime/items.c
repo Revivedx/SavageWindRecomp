@@ -234,6 +234,8 @@ static void list_read(void) {
         if (!actor || !profile || !has_tag(&b, a, can_get) || has_tag(&b, a, important) || has_tag(&b, a, cooked) ||
             has_tag(&b, a, rupee))
             continue;
+        // The One-Hit Obliterator belongs to one quest: outside it, Link can't put it away and it drains his hearts (#652)
+        if (!strcmp(actor, "Weapon_Sword_502")) continue;
         int cat = -1;
         for (size_t p = 0; p < sizeof profiles / sizeof *profiles; p++)
             if (!strcmp(profile, profiles[p].profile)) cat = profiles[p].cat;
