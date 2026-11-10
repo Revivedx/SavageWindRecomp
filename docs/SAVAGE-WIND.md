@@ -1763,12 +1763,12 @@ La 1.9.0 (2026-10-22, rama `game-1.9.0`; archivos del usuario en `extracted-1.9.
 ## FSR 3 upscaling: held back for now
 
 AMD FSR 3.1 upscaling (PRs #194 and #195: per-object motion vectors, the five quality modes plus Ultra Performance) is
-built in, but Video > Upscaler doesn't offer it yet (`fsr3_upscaler_enabled` in `runtime/nvn/output_scale.c`). On an
+built in and Video > Upscaler offers it (`fsr3_upscaler_enabled` in `runtime/nvn/output_scale.c`). On an
 RTX 3060 the thread that records each frame for Vulkan limits 1080p and 1440p, and the motion vectors and FSR 3 add
 about 1.1 ms there, so every FSR 3 mode ran slower than native at those sizes; only at 4K did Balanced and up gain.
-It comes back once the draw translation on that thread runs in parallel (worked on apart, branch `heap-vram`).
-Until then `SAVAGEWIND_FSR3=1` offers it for tests, and a settings file with `upscaler = fsr3` loads as AMD FSR 1 with
-the same quality mode. TAA (Video > Anti-aliasing) and frame generation stay available.
+Since 2026-11-09 it is offered anyway, at that cost (1440p Quality on an RTX 3060: 106 fps, 133 native and FSR 1);
+`SAVAGEWIND_FSR3=0` hides it, and a settings file with `upscaler = fsr3` then loads as AMD FSR 1 with the same quality
+mode. TAA (Video > Anti-aliasing) and frame generation stay available.
 
 ## Frame generation (AMD FSR 3)
 

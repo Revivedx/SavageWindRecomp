@@ -37,12 +37,12 @@ extern bool vk_dlss_available(void);
 bool fsr3_available(void);  // (vulkan/fsr3.h: built in)
 bool fsr4_available(void);  // (vulkan/fsr_api.h: AMD's DLLs, on an AMD Radeon)
 #endif
-// FSR 3 upscaling is held back until its cost on the thread that records the frame for Vulkan comes down (the draw
-// translation work in progress): today that thread limits 1080p and 1440p, and FSR 3's motion vectors make every mode
-// slower than native there. SAVAGEWIND_FSR3=1 offers it anyway (tests); TAA and frame generation stay as they are.
+// FSR 3 and FSR 4 upscaling are offered. They were held back from 2026-10-28 because their motion vectors cost the thread
+// that records the frame for Vulkan about 1.1 ms: where that thread is the limit they can run slower than native.
+// SAVAGEWIND_FSR3=0 takes them away again.
 bool fsr3_upscaler_enabled(void) {
     static int on = -1;
-    if (on < 0) on = getenv("SAVAGEWIND_FSR3") && atoi(getenv("SAVAGEWIND_FSR3")) != 0;
+    if (on < 0) on = !getenv("SAVAGEWIND_FSR3") || atoi(getenv("SAVAGEWIND_FSR3")) != 0;
     return on;
 }
 
