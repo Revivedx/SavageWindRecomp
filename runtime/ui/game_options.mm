@@ -170,6 +170,7 @@ const char *const k_wear_times[] = {"0x", "0.5x", "1x", "1.5x", "2x", "2.5x", "3
 const char *const k_shadow[] = {"Console (896)", "High (2048)", "Ultra (4096)", "Savage (8192)", "Potato (448)"};  // (SHADOW_*)
 const int k_shadow_order[] = {SHADOW_POTATO, SHADOW_CONSOLE, SHADOW_HIGH, SHADOW_ULTRA, SHADOW_EXTREME};
 const char *const k_text[] = {"Off", "2x", "4x"};  // (sharper_text / 2)
+const char *const k_text_speed[TEXT_SPEED_COUNT] = {"Normal", "Fast", "Instant"};
 const char *const k_icons[] = {"Automatic", "Keyboard", "Xbox", "PlayStation", "Nintendo", "Steam Deck"};  // (ICONS_*)
 const char *const k_button_layout[BUTTON_LAYOUT_COUNT] = {
     "Automatic", "Nintendo", "Swap A / B", "Xbox", "Swap X / Y", "GameCube"
@@ -443,6 +444,12 @@ void build_items(void) {
     v.push_back(toggle(P_GAMEPLAY, "Start at Continue", "Goes past the title screen into your latest save by itself. Any button stops it. From the next start.",
                        [](const Item &) { return (int)g_settings.auto_continue; },
                        [](const Item &, int x) { g_settings.auto_continue = x; }, 0));
+    v.push_back(choice(P_GAMEPLAY, "Dialogue text speed",
+                       "How fast dialogue text appears during conversations.",
+                       [](const Item &) { return N(k_text_speed); },
+                       [](const Item &, int x) { return tr(k_text_speed[x]); },
+                       [](const Item &) { return g_settings.text_speed; },
+                       [](const Item &, int x) { g_settings.text_speed = x; }, TEXT_SPEED_NORMAL));
     v.push_back(choice(P_GAMEPLAY, "HUD size", "How big the hearts, stamina, minimap and the rest of the HUD are. Each part stays in its corner.",
                        [](const Item &) { return N(k_hud_size); },
                        [](const Item &, int x) {

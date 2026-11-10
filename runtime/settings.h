@@ -76,6 +76,8 @@ enum { AUDIO_OUT_STEREO = 0, AUDIO_OUT_SURROUND_51 = 1, AUDIO_OUT_HEADPHONES_3D 
 // The start screen's background, when there is no splash.jpg / .png of the player's in the data folder
 enum { START_PICTURE_ART, START_PICTURE_SCREENSHOT, START_PICTURE_SAVE, START_PICTURE_COUNT };
 
+// Gameplay > Dialogue text speed (runtime/pc_cursor.c): speed at which dialogue text appears during conversations
+enum { TEXT_SPEED_NORMAL = 0, TEXT_SPEED_FAST = 1, TEXT_SPEED_INSTANT = 2, TEXT_SPEED_COUNT = 3 };
 typedef struct {
     bool fullscreen;
     int fullscreen_mode;     // FSMODE_*
@@ -177,6 +179,7 @@ typedef struct {
     int voice_language;  // index in g_voice_languages, 0: the text language's voices
     bool save_backups;   // Saves > Back up at each start: a copy of the save folder as the game starts (runtime/save_backup.c)
     bool auto_continue;  // Gameplay > Start at Continue: past the start screen into the latest save (hle/input.c)
+    int text_speed;      // TEXT_SPEED_*: dialogue text appearance speed (Normal, Fast, Instant)
     bool menu_tip_seen;  // the start screen's one-time "how to open the menu" note was shown (first PLAY ever)
 } Settings;
 

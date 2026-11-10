@@ -102,6 +102,8 @@ static const char *const k_button_layout[BUTTON_LAYOUT_COUNT] = {"auto", "ninten
 
 static const char *const k_quality[UPQ_COUNT] = {"ultra_quality", "quality", "balanced", "performance", "ultra_performance"};
 
+static const char *const k_text_speed[TEXT_SPEED_COUNT] = {"normal", "fast", "instant"};
+
 // Debug overrides seed this boot's options; the Controls switches can still change them at once.
 static void pc_controls_env(void) {
     const char *cursor = getenv("SAVAGEWIND_PC_CURSOR");
@@ -345,6 +347,10 @@ void settings_load(void) {
         else if (!strcmp(key, "stick_camera_x")) g_settings.stick_cam_x = atoi(val);  // (percent)
         else if (!strcmp(key, "stick_camera_y")) g_settings.stick_cam_y = atoi(val);  // (percent)
         else if (!strcmp(key, "start_at_continue")) g_settings.auto_continue = atoi(val) != 0;
+        else if (!strcmp(key, "text_speed")) {
+            for (int i = 0; i < TEXT_SPEED_COUNT; i++)
+                if (!strcmp(val, k_text_speed[i])) g_settings.text_speed = i;
+        }
         else if (!strcmp(key, "infinite_stamina")) g_settings.infinite_stamina = atoi(val) != 0;
         else if (!strcmp(key, "infinite_rupees")) g_settings.infinite_rupees = atoi(val) != 0;
         else if (!strcmp(key, "weather")) {
@@ -595,6 +601,8 @@ void settings_save(void) {
     fprintf(f, "stick_camera_x = %d\n", g_settings.stick_cam_x);
     fprintf(f, "stick_camera_y = %d\n", g_settings.stick_cam_y);
     fprintf(f, "start_at_continue = %d\n", g_settings.auto_continue);
+    int ts = g_settings.text_speed;
+    fprintf(f, "text_speed = %s\n", k_text_speed[ts >= 0 && ts < TEXT_SPEED_COUNT ? ts : TEXT_SPEED_NORMAL]);
     fprintf(f, "menu_tip_seen = %d\n", g_settings.menu_tip_seen);
     bind_settings_save(f);
     fclose(f);

@@ -1008,3 +1008,7 @@ T("Type or paste the folder path below instead.", "Digite ou cole o caminho da p
 T("Folder path", "Caminho da pasta")
 T("Type or paste path...", "Digite ou cole o caminho...")
 T("Enter the path to your extracted game files folder directly if the system folder picker does not open.", "Insira diretamente o caminho da pasta com os arquivos extraídos do jogo caso o seletor do sistema não abra.")
+T("Normal", "Normal")
+T("Instant", "Instantâneo")
+T("Dialogue text speed", "Velocidade do texto dos diálogos")
+T("How fast dialogue text appears during conversations.", "A rapidez com que o texto dos diálogos aparece durante as conversas.")

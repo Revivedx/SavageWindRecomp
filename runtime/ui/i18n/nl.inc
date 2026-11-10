@@ -1008,3 +1008,7 @@ T("Type or paste the folder path below instead.", "Typ of plak in plaats daarvan
 T("Folder path", "Mappad")
 T("Type or paste path...", "Typ of plak pad...")
 T("Enter the path to your extracted game files folder directly if the system folder picker does not open.", "Voer rechtstreeks het pad naar uw map met uitgepakte gamebestanden in als de systeemmapkiezer niet opent.")
+T("Normal", "Normaal")
+T("Instant", "Meteen")
+T("Dialogue text speed", "Tekstsnelheid van dialogen")
+T("How fast dialogue text appears during conversations.", "Hoe snel dialoogtekst verschijnt tijdens gesprekken.")
