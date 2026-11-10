@@ -51,6 +51,18 @@ copy `extracted` into it ([#590](https://github.com/Revivedx/SavageWindRecomp/is
 Your game files are not version 1.9.0. Update your copy on your console and extract it again. We can't help you get a
 newer copy, and asking for one in an issue gets the comment removed.
 
+### Setup says "It has N files; with the update applied it has 41062"
+
+Your extracted RomFS is incomplete: a complete 1.9.0 RomFS, with the update applied over the base game, has 41,062
+files. Setup refuses fewer, because the game crashes as soon as it reads a missing file. Extract your copy again. How you
+extract it is up to you, and we can't help with that part ([why](#how-do-i-get-the-game-files)).
+
+### The loading screen never ends after boarding a Divine Beast
+
+Your DLC is merged into `romfs`. Set the game up again with the DLC in its own folders, as
+[Game files](game-files.md#the-dlc) shows: with it merged, the loading screen after boarding a Divine Beast never ends.
+Keeping the DLC separate fixes it, and your saves stay.
+
 ### Setup stops at 5%, 10% or "The game code didn't build"
 
 That step runs a compiler over your files, so it needs free space and a working toolchain. Check that:
@@ -293,7 +305,7 @@ a new one. The full list is on the [issue tracker](https://github.com/Revivedx/S
 | Mechanics and scripted scenes that break above 30 fps | Lower the frame rate to 30 for that moment | [#425](https://github.com/Revivedx/SavageWindRecomp/issues/425) |
 | Game Over text stays half revealed, mainly between 70 and 120 fps | Try limiting to 60 fps | [#482](https://github.com/Revivedx/SavageWindRecomp/issues/482), [#507](https://github.com/Revivedx/SavageWindRecomp/issues/507) |
 | Can't dismount the horse (seen at 120 fps; not reproduced yet, a save on the horse would help) | Lower the frame rate | [#625](https://github.com/Revivedx/SavageWindRecomp/issues/625) |
-| Infinite loading screen | Attach your save and log to the issue | [#663](https://github.com/Revivedx/SavageWindRecomp/issues/663) |
+| Infinite loading screen after boarding a Divine Beast | Set the game up with the DLC in its own folders, not merged into `romfs` ([how](game-files.md#the-dlc)) | [#663](https://github.com/Revivedx/SavageWindRecomp/issues/663) |
 
 ### Graphics
 
