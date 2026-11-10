@@ -14,10 +14,10 @@
 game.
 
 <p align="center">
-  <a href="https://i.imgur.com/BaTJyr9.jpg"><img src="https://i.imgur.com/BaTJyr9l.jpg" alt="Screenshot of Savage Wind" width="24%"></a>
-  <a href="https://i.imgur.com/USibLkg.jpg"><img src="https://i.imgur.com/USibLkgl.jpg" alt="Screenshot of Savage Wind" width="24%"></a>
-  <a href="https://i.imgur.com/z6dHHLP.jpg"><img src="https://i.imgur.com/z6dHHLPl.jpg" alt="Screenshot of Savage Wind" width="24%"></a>
-  <a href="https://i.imgur.com/p12wEHG.jpg"><img src="https://i.imgur.com/p12wEHGl.jpg" alt="Screenshot of Savage Wind" width="24%"></a>
+  <img src="https://i.imgur.com/BaTJyr9.jpg" alt="Screenshot of Savage Wind" width="24%">
+  <img src="https://i.imgur.com/USibLkg.jpg" alt="Screenshot of Savage Wind" width="24%">
+  <img src="https://i.imgur.com/z6dHHLP.jpg" alt="Screenshot of Savage Wind" width="24%">
+  <img src="https://i.imgur.com/p12wEHG.jpg" alt="Screenshot of Savage Wind" width="24%">
 </p>
 <p align="center"><sub>Screenshots taken in Savage Wind. The game is © Nintendo; you need your own copy to run it.</sub></p>
 
