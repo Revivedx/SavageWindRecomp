@@ -4072,6 +4072,8 @@ static bool draw_writes_color(Prog *pr, int i) {
 
 // #385: repeated G-buffer slots can alias one image, but only the first slot writes it.
 // Selecting the last (masked-off) alias incorrectly takes the read-only path and skips feedback barriers.
+// On by default since 0.5.1 (#614 ROG Ally, #684 Steam Machine): SAVAGEWIND_VK_FEEDBACK_ALIAS_FIX=0 brings back the
+// last slot.
 static int feedback_color_slot(Prog *pr, NvnTexture *t) {
     int last = -1, writable = -1;
     for (int k = 0; k < st.rt.ncolor; k++) {
@@ -4080,8 +4082,7 @@ static int feedback_color_slot(Prog *pr, NvnTexture *t) {
         if (draw_writes_color(pr, k)) writable = k;
     }
     static int fix = -1;
-    if (fix < 0) fix = getenv("SAVAGEWIND_VK_FEEDBACK_ALIAS_FIX") &&
-                       atoi(getenv("SAVAGEWIND_VK_FEEDBACK_ALIAS_FIX")) != 0;
+    if (fix < 0) fix = !getenv("SAVAGEWIND_VK_FEEDBACK_ALIAS_FIX") || atoi(getenv("SAVAGEWIND_VK_FEEDBACK_ALIAS_FIX")) != 0;
     if (fix && writable >= 0) {
         static int nlog;
         if (last != writable && nlog++ < 8)
