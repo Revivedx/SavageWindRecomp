@@ -26,9 +26,10 @@ with the game's mechanics can often only be followed from the save. Saves are fo
 
 ## Moderation
 
-Savage Wind has no Discord or other community channels: GitHub is the only place for it. It's one person's project
-with the help of contributors, and every contribution is reviewed and tested by the maintainer before it goes into
-`test`.
+Savage Wind has no public Discord or other community channels: bugs, requests and code all go through GitHub. If you
+want to contribute and coordinate with the rest of the contributors, you can contact the maintainer on Discord
+(`@ReviveDx`) or through [revi.contact](https://revi.contact). It's one person's project with the help of
+contributors, and every contribution is reviewed and tested by the maintainer before it goes into `test`.
 
 Issues, pull requests and comments that share, link to or ask for copies of the game, keys, firmware or dumping and
 decryption tools are removed. An account that does it again is blocked.
@@ -45,8 +46,8 @@ that is blocked.
 - **`main`** only moves for a release. Once `test` has been tested well, it goes into `main` through a pull request
   and the release is published from it.
 - **Base your work on `test` and open pull requests against `test`.** `main` is an older state, so work based on it
-  often repeats what `test` already has. Before you start, look at `test`: its README status table and roadmap say
-  what is done, in progress and planned.
+  often repeats what `test` already has. Before you start, look at `test`: its [Status](docs/STATUS.md) page says what
+  is done, in progress and planned.
 
 ## Reporting bugs
 
@@ -54,15 +55,14 @@ Open a GitHub issue with:
 
 - your platform (Windows / Linux), hardware (CPU, GPU) and window size
 - the Savage Wind version: a release (e.g. 0.2.0-alpha.2), or the `test` commit you built
-- the game version (the `main` build id that `python tools/sw_probe.py` prints; 1.9.0 is the one supported. 1.8.2 still runs, but a
-  bug seen on it is only fixed if it also happens on 1.9.0)
+- the game version (the `main` build id that `python tools/sw_probe.py` prints; 1.9.0 is the only one supported)
 - what you did, what happened, and what you expected
 - a screenshot or short clip if it's visual
 - for crashes: the log the app prints to the terminal (run it from a terminal to capture it)
 
 ## Building
 
-See the README's "Building from source", [docs/BUILD-windows.md](docs/BUILD-windows.md) for Windows and
+See [docs/BUILD-windows.md](docs/BUILD-windows.md) for Windows and
 [docs/linux.md](docs/linux.md) for Linux. In short: put your own 1.9.0 files in `extracted/`, `make gen` once to
 recompile the game code from them, then `make -j`.
 
