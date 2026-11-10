@@ -1370,6 +1370,14 @@ static void upload_levels(NvnTexture *t, TexBackend *b, uint32_t level_mask) {
             uint32_t out_row = expand ? l.wb * 4 : row;
             VkSpan s = vk_transient((uint64_t)out_row * l.hb * l.d, 16);
             uint8_t *lin = expand ? malloc(sz) : s.ptr;
+            // The checks below read every texel, and s.ptr is memory for the GPU, very slow to read: the first menu opened
+            // spent 284 ms in hw_illust_which and 55 ms in glyphs_apply on it. Those textures go through normal memory.
+            uint8_t *mapped = NULL;
+            if (lv == 0 && layer == 0 && !expand &&
+                (t->format == 0x01 || t->format == 0x0D || (t->format == 0x49 && t->width == 256 && t->height == 1024))) {
+                uint8_t *m = malloc(sz);
+                if (m) mapped = lin, lin = m;
+            }
             const uint8_t *src = (const uint8_t *)(uintptr_t)t->addr + layer * layer_size + l.offset;
             if (linear) {
                 for (uint32_t y = 0; y < l.hb; y++) memcpy(lin + (uint64_t)y * row, src + (uint64_t)y * (t->stride ? t->stride : row), row);
@@ -1389,6 +1397,11 @@ static void upload_levels(NvnTexture *t, TexBackend *b, uint32_t level_mask) {
                     if (dev >= 0) hw_illust_draw(dev, which, l.w, l.h, lin, row);
                     LOG("[glyphs] Controls page drawing %d: device %d\n", which, dev);
                 }
+            }
+            if (mapped) {
+                memcpy(mapped, lin, sz);
+                free(lin);
+                lin = mapped;
             }
             if (t->target == 2 && lv == 0 && getenv("SAVAGEWIND_DUMP_TEX3D")) {  // (debugging) 3D texels as uploaded
                 char path[128];
