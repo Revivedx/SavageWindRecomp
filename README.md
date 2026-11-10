@@ -110,7 +110,8 @@ Every action can be rebound in the game's Options. All the keys: [Controls](docs
 
 ## Found a bug?
 
-Use the latest release and game version 1.9.0, search the [existing issues](https://github.com/Revivedx/SavageWindRecomp/issues?q=is%3Aissue),
+Read the [FAQ](docs/FAQ.md) first: issues about something it already covers are closed right away. Use the latest
+release and game version 1.9.0, search the [existing issues](https://github.com/Revivedx/SavageWindRecomp/issues?q=is%3Aissue),
 and [open one](https://github.com/Revivedx/SavageWindRecomp/issues/new/choose) with your `savagewind.log`. On a crash
 or a cutscene bug, attach your zipped `save` folder too. Reports without these are closed after 7 days.
 

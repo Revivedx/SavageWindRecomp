@@ -49,6 +49,23 @@ that is blocked.
   often repeats what `test` already has. Before you start, look at `test`: its [Status](docs/STATUS.md) page says what
   is done, in progress and planned.
 
+## Read the FAQ before opening an issue
+
+The [FAQ](docs/FAQ.md) answers the common questions and lists the known issues. An issue about something it already
+covers is closed right away, with a comment that says why and links the entry:
+
+- **A question the FAQ answers**, or a problem it gives a solution or workaround for.
+- **A new report of a known issue:** closed as a duplicate and pointed to the issue that tracks it. Add what you know
+  there. The tracking issues themselves stay open.
+- **Performance or graphics on an older or integrated GPU:** goes on
+  [#589](https://github.com/Revivedx/SavageWindRecomp/issues/589).
+- **Something that breaks at high frame rates:** goes on
+  [#425](https://github.com/Revivedx/SavageWindRecomp/issues/425).
+- **A request the FAQ has already answered**, such as other platforms, other versions of the game or multiplayer.
+
+If you tried what the FAQ says and the problem is still there on the latest release, say so in your report and attach
+`savagewind.log`, and it stays open. If yours was closed and that is the case, comment with the log and it is reopened.
+
 ## Reporting bugs
 
 Open a GitHub issue with:

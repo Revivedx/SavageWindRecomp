@@ -5,6 +5,10 @@
 This page goes from the practical to the personal: first how to get the game running and what is known to be broken,
 then how the recompilation works, and last why the project is the way it is.
 
+> [!IMPORTANT]
+> **Issues about something covered here are closed right away**, with a comment saying why. If you tried what this page
+> says and the problem is still there on the latest release, say so and attach `savagewind.log`.
+
 **[Getting it running](#getting-it-running)** ·
 **[Crashes](#crashes)** ·
 **[Graphics](#graphics)** ·
@@ -363,6 +367,11 @@ Where each kind of report goes:
 | Anything else | [A new issue](https://github.com/Revivedx/SavageWindRecomp/issues/new/choose) |
 | Code, a patch or a fix | [A pull request against `test`](../CONTRIBUTING.md), not an issue |
 
+Before opening one, read this page. An issue about something it already covers, including a new report of a
+[known issue](#known-issues), is closed right away with the reason and a link to the answer. If what it says didn't help
+on the latest release, say so in your report and attach the log, and it stays open. A closed one is reopened if you
+comment with that.
+
 Reports missing the log get a `needs-info` label and are closed after 7 days without it. Never attach or link game
 files, keys or firmware.
 
@@ -598,8 +607,9 @@ has come against what it set out to do, not a promise.
 
 ### Why do you close issues so fast?
 
-Because one person reads all of them. Duplicates point to one place, reports without a log can't be acted on, and every
-closed issue can be reopened by commenting with new information.
+Because one person reads all of them. Anything this page already answers is closed at once with the reason, duplicates
+point to one place, reports without a log can't be acted on, and every closed issue can be reopened by commenting with
+new information.
 
 ---
 

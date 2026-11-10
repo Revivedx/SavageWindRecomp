@@ -1,7 +1,10 @@
 blank_issues_enabled: false
 contact_links:
+  - name: FAQ and known issues
+    url: https://github.com/Revivedx/SavageWindRecomp/blob/main/docs/FAQ.md
+    about: "Read this first: issues about something it already covers are closed right away."
   - name: Before you report a bug
-    url: https://github.com/Revivedx/SavageWindRecomp#before-you-report-a-bug
+    url: https://github.com/Revivedx/SavageWindRecomp/blob/main/docs/FAQ.md#reporting-a-problem
     about: The supported versions, where savagewind.log is, and what every report needs.
   - name: Latest release and known issues
     url: https://github.com/Revivedx/SavageWindRecomp/releases/latest
