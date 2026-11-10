@@ -4844,6 +4844,15 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
     if ((si->cbuf_dynamic & (1u << k)) && r.size) size = r.size > 0x10000 ? 0x10000 : r.size;
     if (size > r.size && r.size) size = r.size;
     if (size < 16) size = 16;
+    // An address outside the game's memory ended the game in the copy below after two hours of play (#640: 0x5000000000
+    // on the render thread). Read as an unbound buffer, and logged: where the address comes from is still unknown.
+    if (r.addr < GUEST_LO || r.addr >= GUEST_HI || size > GUEST_HI - r.addr) {
+        static int nbad;
+        if (nbad++ < 16)
+            LOG("[vk] constant buffer %d of stage %d at %llx (%llu bytes) is outside the game's memory: read as zeros\n", k,
+                stage, (unsigned long long)r.addr, (unsigned long long)size);
+        return ubo_span(vk_transient_copy(zeros, size, 256), size);
+    }
     VkDescriptorBufferInfo direct;
     if (stage == 1 && k == 3 && fxaa_off && fxaa_patch(r.addr, size, &direct)) return direct;  // (see fxaa_patch)
     if (gw_ubo_direct(r.addr, size, &direct)) return direct;  // (written by a storing shader: read in place, see gw_note)
