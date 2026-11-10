@@ -1698,8 +1698,9 @@ static void readback_schedule(VkCommandBuffer cb, NvnTexture *t, const NvnTextur
         // so the game reads this frame's pixels. The 1x1 ones (light and exposure values) are waited for too: read a
         // frame late in their first reads after a start or a load, the water could stay milky white until the next
         // load (#362, #332). It took a GPU slower than the game (Vega 7 every time; an RTX 3060 at 4K, 21 fps, 11 runs
-        // in 14), and none in 13 with these waits. Only their first 300 reads after a loading screen: waiting for them
-        // in every frame cost the overlap's gain at 4K (21 -> 16 fps), waiting for the first ones costs nothing.
+        // in 14), and none in 11 with the first 30 reads waited for. Only those, after a loading screen: waiting for them
+        // in every frame cost the overlap's gain at 4K (21 -> 16 fps), and the 300 first reads it used to wait for cost a
+        // GPU at its limit several seconds of low frame rate after every load (#639).
         // SAVAGEWIND_VK_WAIT_TINY_READBACKS=<n>: n reads (0: as before, -1: always).
         extern uint64_t vk_frame_counter(void);
         extern bool framepace_loading_ui(void);
@@ -1715,7 +1716,7 @@ static void readback_schedule(VkCommandBuffer cb, NvnTexture *t, const NvnTextur
         last[k].frame = fr;
         last[k].n++;
         static int tiny_wait = -1;
-        if (tiny_wait < 0) tiny_wait = getenv("SAVAGEWIND_VK_WAIT_TINY_READBACKS") ? atoi(getenv("SAVAGEWIND_VK_WAIT_TINY_READBACKS")) : 300;
+        if (tiny_wait < 0) tiny_wait = getenv("SAVAGEWIND_VK_WAIT_TINY_READBACKS") ? atoi(getenv("SAVAGEWIND_VK_WAIT_TINY_READBACKS")) : 30;
         if (!streaming || (w * h <= 16 && (tiny_wait < 0 || last[k].n <= (uint64_t)tiny_wait))) {
             pthread_mutex_lock(&seq_lock);
             if (r->seq > oneshot_seq) oneshot_seq = r->seq;
