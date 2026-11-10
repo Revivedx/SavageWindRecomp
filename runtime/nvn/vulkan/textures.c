@@ -407,6 +407,19 @@ VkFormat vk_view_format(TexBackend *b, VkFormat want) {
     return b->format;
 }
 
+// A HUD button drawing (glyphs_apply_layout)? Sharper menus must leave those alone, or they keep the Switch's icons (#613).
+// They are recognised deswizzled, so the check can't be made on the texels as stored.
+static bool hud_button_texture(NvnTexture *t) {
+    if (t->format != 0x01 || t->width > 100 || t->height > 100) return false;
+    LevelLayout l = tegra_level(&t->layout, 0);
+    uint8_t *lin = malloc((uint64_t)l.wb * l.hb);
+    if (!lin) return false;
+    tegra_deswizzle((const uint8_t *)(uintptr_t)t->addr, lin, l.wb, l.hb, l.d, 1, l.block_height_log2, l.block_depth_log2);
+    bool icon = glyphs_is_layout_icon(l.w, l.h, lin, l.wb);
+    free(lin);
+    return icon;
+}
+
 static void create_image(NvnTexture *t, TexBackend *b) {
     VkFmt mf = fmt_of(t->format);
     b->scalable = b->rs_group != RS_NONE;
@@ -484,7 +497,7 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     if (!b->text_scale && g_settings.sharper_menus && !b->gpu_bc4 && (t->format == 0x49 || t->format == 0x01) && t->pool &&
         t->layout.levels == 1 && t->width >= 16 && t->height >= 16 && t->addr >= t->pool->storage &&
         t->addr + sheet_bytes <= t->pool->storage + t->pool->size &&
-        menu_tex_known((const uint8_t *)(uintptr_t)t->addr, sheet_bytes)) {
+        menu_tex_known((const uint8_t *)(uintptr_t)t->addr, sheet_bytes) && !hud_button_texture(t)) {
         b->text_scale = (uint8_t)g_settings.sharper_menus;
         b->menu_tex = true;
         static int nlog;
