@@ -954,6 +954,11 @@ static void tab_display(void) {
                "The game's own FXAA, which smooths edges as the 3D image is drawn into the final picture, as on the "
                "console. Off: a sharper image with more jagged edges; use it to replace FXAA with SMAA or TAA above, "
                "or to keep the image crisp at a high resolution.");
+    {
+        static const char *const mvec_names[] = {"Hybrid (fast)", "Objects (full)", "Camera only"};
+        opt_choice("Motion vectors", &g_settings.mvec_mode, mvec_names, 3, MVEC_MODE_HYBRID,
+                   "Method for motion vectors used by upscalers (FSR 3/4) and TAA.");
+    }
 #endif
 #ifndef __APPLE__
     {   // Anisotropic filtering and sharpening (Vulkan: vulkan/textures.c sampler_aniso, vulkan/exec.c scene_post)
@@ -1116,6 +1121,11 @@ static void tab_about(void) {
         if (opt_slider("Motion camera sensitivity", &gcs, 10, 500, 5, 100, "%g%%",
                        "How fast turning the controller turns the camera."))
             g_settings.motion_camera_sens = gcs / 100.0f;
+    }
+    {
+        static const char *const md_names[MOTION_DEV_COUNT] = {"Automatic", "Controller", "Mouse"};
+        opt_choice("Motion device", &g_settings.motion_device, md_names, MOTION_DEV_COUNT, MOTION_DEV_AUTO,
+                   "Which device provides motion controls for aiming and puzzles.", false);
     }
     controls_bindings_draw(ImGui::GetFontSize() / 34);
     ImGui::Spacing();

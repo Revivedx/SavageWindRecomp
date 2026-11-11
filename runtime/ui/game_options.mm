@@ -159,6 +159,7 @@ constexpr int k_haze[] = HAZE_CHOICES;  // percent (Video > Haze)
 const char *const k_shadow[] = {"Console (896)", "High (2048)", "Ultra (4096)", "Extreme (8192)"};  // (SHADOW_*)
 const char *const k_text[] = {"Off", "2x", "4x"};  // (sharper_text / 2)
 const char *const k_icons[] = {"Automatic", "Keyboard", "Xbox", "PlayStation", "Nintendo"};  // (ICONS_*)
+const char *const k_motion_dev[MOTION_DEV_COUNT] = {"Automatic", "Controller", "Mouse"};
 constexpr int k_fps[] = FPS_CHOICES;  // frame rate (0: Off, no limit)
 const char *const k_vsync[VSYNC_COUNT] = {"On", "Fast", "Adaptive", "Off"};  // (settings.h VSYNC_*)
 const char *const k_hdr[HDR_COUNT] = {"Automatic", "On", "Off"};               // (settings.h HDR_*)
@@ -517,6 +518,12 @@ void build_items(void) {
                        },
                        [](const Item &) { return g_settings.sharpening; },
                        [](const Item &, int x) { g_settings.sharpening = x; }, 0));
+    static const char *k_mvec_choices[] = {"Hybrid (fast)", "Objects (full)", "Camera only"};
+    v.push_back(choice(P_VIDEO, "Motion vectors", "Method for motion vectors used by upscalers (FSR 3/4) and TAA.",
+                       [](const Item &) { return 3; },
+                       [](const Item &, int x) { return tr(k_mvec_choices[x]); },
+                       [](const Item &) { return g_settings.mvec_mode; },
+                       [](const Item &, int x) { g_settings.mvec_mode = x; }, MVEC_MODE_HYBRID));
     // AMD FSR 3 frame generation (vulkan/framegen.cpp)
     v.push_back(toggle(P_VIDEO, "Frame generation (AMD FSR 3)", "Twice the frames on screen. Adds a little delay.",
                        [](const Item &) { return (int)g_settings.frame_gen; },
@@ -535,6 +542,10 @@ void build_items(void) {
                        [](const Item &) { return N(k_text); }, [](const Item &, int x) { return tr(k_text[x]); },
                        [](const Item &) { return g_settings.sharper_text / 2; },
                        [](const Item &, int x) { g_settings.sharper_text = x * 2; }, 0));
+    v.push_back(toggle(P_GAMEPLAY, "Transparent control guides",
+                       "Removes the dark background plate behind control guides and prompts, leaving only buttons and text. Applies after a restart.",
+                       [](const Item &) { return (int)g_settings.transparent_guides; },
+                       [](const Item &, int x) { g_settings.transparent_guides = x; }, 0));
 
 #ifndef __APPLE__
     // Colour (runtime/color_grade.h; vulkan/exec.c scene_post): the 3D image only, the HUD keeps its colours. The preset
@@ -704,6 +715,11 @@ void build_items(void) {
                        [](const Item &, int x) { return tr(k_gyro_cam[x]); },
                        [](const Item &) { return g_settings.motion_camera; },
                        [](const Item &, int x) { g_settings.motion_camera = x; }, GYRO_CAM_OFF));
+    v.push_back(choice(P_CONTROLS, "Motion device", "Which device provides motion controls for aiming and puzzles.",
+                       [](const Item &) { return (int)MOTION_DEV_COUNT; },
+                       [](const Item &, int x) { return tr(k_motion_dev[x]); },
+                       [](const Item &) { return g_settings.motion_device; },
+                       [](const Item &, int x) { g_settings.motion_device = x; }, MOTION_DEV_AUTO));
     v.push_back(choice(P_CONTROLS, "Motion camera sensitivity", "How fast turning the controller turns the camera.",
                        [](const Item &) { return N(k_motion_cam_sens); },
                        [](const Item &, int x) {
