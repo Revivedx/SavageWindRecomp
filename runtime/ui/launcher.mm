@@ -1464,8 +1464,12 @@ extern "C" void launcher_run(const char *root, int mode) {
     Page page = status.empty() && !g_setup_only ? MAIN : SETUP;
     set_job("");  // (an earlier visit's result)
     // A new version, or game code that doesn't match this one: no button to find, it sets itself up. It doesn't start
-    // again by itself after failing: the page says why, and Set up game files retries.
-    bool auto_setup = post_update_shipped() && !getenv("SAVAGEWIND_LAUNCHER_SHOT") && check_copied_files(g_root).empty() &&
+    // again by itself after failing: the page says why, and Set up game files retries. Not with a test hook that sets up
+    // on its own (two builds at once in the same folder failed each other: a compiler's dependency file read half
+    // written).
+    bool test_setup =
+        getenv("SAVAGEWIND_LAUNCHER_EXTRACT") || getenv("SAVAGEWIND_SETUP_FROM") || getenv("SAVAGEWIND_LAUNCHER_SETUP");
+    bool auto_setup = post_update_shipped() && !getenv("SAVAGEWIND_LAUNCHER_SHOT") && !test_setup && check_copied_files(g_root).empty() &&
                       (post_update_pending(SAVAGEWIND_VERSION) || !status.empty()) && !post_update_failed_before(SAVAGEWIND_VERSION);
     if (!auto_setup) explain_status(status);
     bool play = false;
