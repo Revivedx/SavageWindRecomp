@@ -67,7 +67,8 @@ Savage Wind has a small achievement system that never touches the game: it reads
   saves and the downloadable content show (`title_ach_button` in `runtime/ui/game_options.mm`); pressed, it reads as
   Options for that press, with the Achievements page due.
 - **Overlay** (`runtime/ui/achievements_ui.mm`): a toast that fades in at the top centre on each unlock, in the game's own
-  look (its item-get box and buttons: translucent black, a thin pale frame, corner marks, the picture on a gold glow). Its
+  look (its item-get box and buttons: a thin pale frame, corner marks), on a dark blue column of light with made-up glyphs
+  falling down it and a soft glow where it lands (as a Sheikah Tower pours its map; drawn, nothing of the game's). Its
   text is in the game's font, `Normal_00` from the player's own `Font/Font_EU.sbfarc` (read at run time, nothing shipped;
   `game_fonts_add` in `runtime/ui/quick_hint_font.mm`), the name slanted as the game's titles; a language whose letters
   that font lacks falls back to the overlay's fonts. Also an "Achievements" tab in the start screen's Settings. `SAVAGEWIND_ACH_DEMO=<seconds>[:<id>,<id>...]`: then the toasts of

@@ -75,6 +75,62 @@ void pull_new(double now) {
     else if (any) ach_sound_play();
 }
 float ease_out(float t) { t = 1 - t; return 1 - t * t * t; }
+ImU32 col(float r, float g, float b, float a) { return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a)); }
+
+uint32_t hash32(uint32_t x) {
+    x ^= x >> 16, x *= 0x7feb352du, x ^= x >> 15, x *= 0x846ca68bu, x ^= x >> 16;
+    return x;
+}
+
+// One made-up glyph (blocky strokes picked by h, never the game's letters) in the box at x, y, w by h
+void glyph(ImDrawList *dl, float x, float y, float w, float gh, uint32_t h, ImU32 c, float th) {
+    float mx = x + w * 0.5f, my = y + gh * 0.5f;
+    int strokes = 0;
+    for (int tries = 0; strokes < 2 && tries < 2; tries++, h = hash32(h)) {
+        if (h & 1) dl->AddLine(ImVec2(x, y), ImVec2(x + w, y), c, th), strokes++;
+        if (h & 2) dl->AddLine(ImVec2(x, y + gh), ImVec2(x + w, y + gh), c, th), strokes++;
+        if (h & 4) dl->AddLine(ImVec2(x, y), ImVec2(x, y + gh), c, th), strokes++;
+        if (h & 8) dl->AddLine(ImVec2(x + w, y), ImVec2(x + w, y + gh), c, th), strokes++;
+        if (h & 16) dl->AddLine(ImVec2(x, my), ImVec2(x + w, my), c, th), strokes++;
+        if (h & 32) dl->AddLine(ImVec2(mx, y), ImVec2(mx, (h & 64) ? my : y + gh), c, th), strokes++;
+        if (h & 128) dl->AddRectFilled(ImVec2(mx - th, my - th), ImVec2(mx + th, my + th), c), strokes++;
+    }
+}
+
+// The panel's background: a blue column of light with made-up glyphs streaming down it in columns, brighter where it
+// lands at the bottom (as a Sheikah Tower pours its information onto the Slate's pedestal; drawn here, nothing of the
+// game's). p0-p1: the panel, age: seconds since the toast came, a: its fade.
+void glyph_rain(ImDrawList *dl, ImVec2 p0, ImVec2 p1, float age, float a, float scale) {
+    float h = p1.y - p0.y;
+    dl->PushClipRect(p0, p1, true);
+    dl->AddRectFilledMultiColor(p0, p1, col(0.01f, 0.03f, 0.08f, 0.80f * a), col(0.01f, 0.03f, 0.08f, 0.80f * a),
+                                col(0.03f, 0.10f, 0.24f, 0.82f * a), col(0.03f, 0.10f, 0.24f, 0.82f * a));
+    const float colw = 15 * scale, gw = 8 * scale, gh = 10 * scale, step = 14 * scale, th = std::max(1.0f, 1.4f * scale);
+    int ncols = (int)((p1.x - p0.x) / colw) + 1, rows = (int)(h / step) + 2;
+    for (int ci = 0; ci < ncols; ci++) {
+        uint32_t ch = hash32((uint32_t)ci * 2654435761u + 17);
+        float speed = (16 + (ch % 26)) * scale, depth = 0.45f + (float)((ch >> 8) % 55) / 100;  // (some nearer, brighter)
+        float scroll = age * speed + (float)(ch % 97) * step;
+        int first = (int)floorf(scroll / step);
+        float shift = scroll - first * step;
+        float x = p0.x + 6 * scale + ci * colw;
+        for (int j = -1; j < rows; j++) {
+            int m = first - j;  // (the glyph's place in its column's endless run: they move down)
+            uint32_t run = hash32(ch ^ (uint32_t)(m >= 0 ? m / 5 : (m - 4) / 5) * 0x9e3779b9u);
+            if (run % 3 == 0) continue;  // (gaps between the runs)
+            float y = p0.y + j * step + shift - step;
+            float edge = std::min(1.0f, std::min((y - p0.y + gh) / (h * 0.25f), 1.0f));  // (fading in at the top)
+            uint32_t gh32 = hash32(ch + (uint32_t)m * 0x85ebca6bu);
+            float flick = 0.85f + 0.15f * sinf(age * 6 + (float)(gh32 % 628) / 100);
+            glyph(dl, x, y, gw, gh, gh32, col(0.55f, 0.82f, 0.95f, 0.20f * depth * edge * flick * a), th);
+        }
+    }
+    // where it lands: a brighter band and a bright line along the bottom
+    dl->AddRectFilledMultiColor(ImVec2(p0.x, p1.y - h * 0.35f), p1, col(0.3f, 0.75f, 1, 0), col(0.3f, 0.75f, 1, 0),
+                                col(0.3f, 0.7f, 1, 0.10f * a), col(0.3f, 0.7f, 1, 0.10f * a));
+    dl->AddLine(ImVec2(p0.x, p1.y - 1.5f * scale), ImVec2(p1.x, p1.y - 1.5f * scale), col(0.7f, 0.92f, 1, 0.30f * a), 1.5f * scale);
+    dl->PopClipRect();
+}
 
 // Text slanted as the game's titles are (about 12 degrees: each vertex moved right by its height over the baseline)
 void slanted_text(ImDrawList *dl, ImFont *f, float size, ImVec2 at, ImU32 c, const char *s) {
@@ -83,7 +139,6 @@ void slanted_text(ImDrawList *dl, ImFont *f, float size, ImVec2 at, ImU32 c, con
     float base = at.y + size * 0.8f;
     for (int i = first; i < dl->VtxBuffer.Size; i++) dl->VtxBuffer[i].pos.x += (base - dl->VtxBuffer[i].pos.y) * 0.21f;
 }
-ImU32 col(float r, float g, float b, float a) { return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a)); }
 
 }  // namespace
 
@@ -158,6 +213,7 @@ void ach_ui_toasts(float display_w, float display_h, float scale) {
         dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), col(0, 0, 0, 0.72f * a), r);
         dl->AddRectFilledMultiColor(ImVec2(x0, y0), ImVec2(x1, y0 + h * 0.5f), col(1, 1, 1, 0.035f * a),
                                     col(1, 1, 1, 0.035f * a), col(1, 1, 1, 0), col(1, 1, 1, 0));
+        glyph_rain(dl, ImVec2(x0, y0), ImVec2(x1, y1), (float)age, a, scale);
         dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), col(0.86f, 0.85f, 0.78f, 0.55f * a), r, 0, th);
         float in4 = 4 * scale;
         dl->AddRect(ImVec2(x0 + in4, y0 + in4), ImVec2(x1 - in4, y1 - in4), col(0.86f, 0.85f, 0.78f, 0.16f * a), 0, 0, th);
@@ -171,11 +227,11 @@ void ach_ui_toasts(float display_w, float display_h, float scale) {
             dl->AddLine(p, ImVec2(p.x, p.y + dy), mark, mt);
         }
 
-        // the picture on the left, on a soft gold glow (as the game shows the item it hands over)
+        // the picture on the left, on a soft glow
         float cx = x0 + pad + icon * 0.5f, cy = y0 + h * 0.5f, ir = icon * 0.5f;
         float pulse = 0.5f + 0.5f * sinf((float)age * 2.4f);
         for (int i = 6; i >= 1; i--)
-            dl->AddCircleFilled(ImVec2(cx, cy), ir * (0.35f + 0.13f * i), col(1.0f, 0.86f, 0.45f, (0.045f + 0.012f * pulse) * a), 40);
+            dl->AddCircleFilled(ImVec2(cx, cy), ir * (0.35f + 0.13f * i), col(0.62f, 0.90f, 1.0f, (0.05f + 0.015f * pulse) * a), 40);
         if (pic) {
             float pr = ir * 0.86f;
             dl->AddImage(pic, ImVec2(cx - pr, cy - pr), ImVec2(cx + pr, cy + pr), ImVec2(0, 0), ImVec2(1, 1), col(1, 1, 1, a));
