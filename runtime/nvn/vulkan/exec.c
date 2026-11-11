@@ -7739,9 +7739,13 @@ static bool link_now(Pipe *pp) {
     return true;
 }
 
+// The first 2 ms are spent spinning: most of these builds take microseconds (a program whose modules are already built,
+// a pipeline link), and a sleep costs at least a millisecond each. #707: after three hours of play, ~40 such waits a
+// frame on draws into array textures held the game at 12 fps, with nothing compiled.
 static void wait_built(_Atomic int *state) {  // (0 building: until built or failed, 5 s at most)
     if (atomic_load(state) != 0 || sync_shaders()) return;
     uint64_t t0 = SDL_GetTicksNS();
+    while (atomic_load(state) == 0 && SDL_GetTicksNS() - t0 < 2000000ull) SDL_CPUPauseInstruction();
     while (atomic_load(state) == 0 && SDL_GetTicksNS() - t0 < 5000000000ull) SDL_Delay(1);
     stat_build_waits++;
     perfcount_add(PC_BUILD_WAITS, 1);
