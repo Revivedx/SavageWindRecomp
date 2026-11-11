@@ -186,6 +186,18 @@ void ach_ui_toasts(float display_w, float display_h, float scale) {
     const float base = ImGui::GetFontSize();
     const float s_head = base * 0.62f, s_name = base * 1.12f, s_desc = base * 0.70f;
     float y = 64 * scale;  // (resting top of the first panel: below the screen's edge, as the game's own boxes)
+    // the panels on screen are all as wide as the widest one: their pictures and texts line up in a column
+    float all_w = 480 * scale;
+    for (size_t k = 0; k < shown.size(); k++) {
+        AchInfo in;
+        ach_info(shown[k].index, &in);
+        if (!in.def) continue;
+        const char *head = tr("Achievement Obtained"), *name = tr(in.def->name), *desc = tr(in.def->desc);
+        float tw = std::max(pick(g_game_body, bf, head)->CalcTextSizeA(s_head, FLT_MAX, 0, head).x,
+                            std::max(pick(g_game_title, tf, name)->CalcTextSizeA(s_name, FLT_MAX, 0, name).x,
+                                     pick(g_game_body, bf, desc)->CalcTextSizeA(s_desc, FLT_MAX, 0, desc).x));
+        all_w = std::max(all_w, (16 + 76 + 18) * scale + tw + 16 * 1.6f * scale);
+    }
     for (size_t k = 0; k < shown.size(); k++) {
         AchInfo in;
         ach_info(shown[k].index, &in);
@@ -197,7 +209,7 @@ void ach_ui_toasts(float display_w, float display_h, float scale) {
         ImTextureID pic = ach_icon(in.def->id);  // (the player's picture for it, if there is one)
         float pad = 16 * scale, icon = 76 * scale, gap = 18 * scale;
         float text_w = std::max(sh.x, std::max(sn.x, sd.x));
-        float w = std::max(pad + icon + gap + text_w + pad * 1.6f, 480 * scale);
+        float w = std::max(pad + icon + gap + text_w + pad * 1.6f, all_w);
         float h = std::max(pad + sh.y + 2 * scale + sn.y + 4 * scale + sd.y + pad, icon + 2 * pad);
 
         // in: a fade, coming down a little; out: a fade
@@ -228,7 +240,9 @@ void ach_ui_toasts(float display_w, float display_h, float scale) {
         }
 
         // the picture on the left, on a soft glow
-        float cx = x0 + pad + icon * 0.5f, cy = y0 + h * 0.5f, ir = icon * 0.5f;
+        // (the picture on the left, the text on its right, centred on it from top to bottom)
+        float text_h = sh.y + 2 * scale + sn.y + 4 * scale + sd.y, gx = x0 + pad;
+        float cx = gx + icon * 0.5f, cy = y0 + h * 0.5f, ir = icon * 0.5f;
         float pulse = 0.5f + 0.5f * sinf((float)age * 2.4f);
         for (int i = 6; i >= 1; i--)
             dl->AddCircleFilled(ImVec2(cx, cy), ir * (0.35f + 0.13f * i), col(0.62f, 0.90f, 1.0f, (0.05f + 0.015f * pulse) * a), 40);
@@ -243,7 +257,7 @@ void ach_ui_toasts(float display_w, float display_h, float scale) {
         }
 
         // the text: a small header, the name large in the game's slanted title face, the description in its body text
-        float tx = x0 + pad + icon + gap, ty = y0 + pad;
+        float tx = gx + icon + gap, ty = y0 + floorf((h - text_h) * 0.5f);
         dl->AddText(hf, s_head, ImVec2(tx, ty), col(0.93f, 0.85f, 0.55f, a), head);
         float ny = ty + sh.y + 2 * scale;
         slanted_text(dl, nf, s_name, ImVec2(tx + 1.5f * scale, ny + 1.5f * scale), col(0, 0, 0, 0.8f * a), name);  // (shadow)
