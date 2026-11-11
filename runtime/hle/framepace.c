@@ -355,6 +355,86 @@ float rt_kf_angle(uint64_t q) {
     return 2.0f * atan2f(sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]), w);
 }
 
+// Havok's deactivation at the console's pace (tools/patches.py _phys_tick, _phys_motion_tick; #398). Havok judges
+// whether a body has come to rest once per physics step, and the game takes one step a frame:
+//   - a body's island goes to sleep after 6 checks in a row (every 4 steps; every 16 for the far one) within 2 cm (8 cm)
+//     of where it was: 24 steps, 0.8 s at 30 fps and 0.07 s at 360 (hkpMotion +0xd counts them, the world's +0x3ef
+//     paces the checks' flags);
+//   - in its last step the solver slows a body under its deactivation class's speed by a multiplier (0.97 to 0.94) and
+//     stops it under the class's sleep speed (hkpWorld + 0x314, 0x20 a class: +8 the multiplier, +0xc the sleep speed
+//     as a fraction of the class's speed, 1.9.0 0x7000148834). From rest a body gains gravity x the step in a step: at
+//     360 fps a twelfth of a console frame's, under the sleep speed, so it was stopped again every step.
+// In Ree Dahee Shrine the ball lands rolling up the long ramp and stops for a moment before rolling back: above ~120 fps
+// it fell asleep there, and never moved again (at 60 fps, as on the console, it rolls back down to its switch).
+// The runtime counts console frames for each physics world (the frame's length, slow motion left out, as the arrows do)
+// and lets only the steps that complete one count a check: every step at 30 fps (the console's and the game's code), one
+// step in 2 at 60, one in 12 at 360. The solver's slowing and stopping go on in every step, scaled to its length r in
+// console frames (at most 1): the multiplier to the power r and the sleep speed x r, since what a step adds to a body's
+// speed is in proportion to its length; a body is slowed as much a second as on the console and stopped when it would be
+// there, and the steps between two console frames still damp what's held between pushes (a floor switch Link stands on).
+// SAVAGEWIND_PHYS_TICK=0: every step and the game's values (as before).
+#define PHYS_WORLDS 8
+#define PHYS_SOLVER_INFO 0x2b0  // hkpWorld: its hkpSolverInfo (what the bodies' check is handed)
+#define PHYS_CLASSES 0x314      // hkpWorld: the solver's 6 deactivation classes, 0x20 bytes each
+typedef struct {
+    uint64_t world;    // (0: free)
+    float frames;      // console frames since the last step that completed one
+    int tick;          // this step completes one
+    float game[6][2];  // the game's multiplier and sleep speed for each class
+    float put[6][2];   // what was put there for the last step
+    float put_r;       // the step length they were scaled for
+} PhysWorld;
+static PhysWorld g_phys[PHYS_WORLDS];
+static int g_phys_tick = -1;
+
+RT_ON_RESET(phys_tick_reset) { memset(g_phys, 0, sizeof g_phys); }
+
+static PhysWorld *phys_world(uint64_t world, bool add) {
+    for (int i = 0; i < PHYS_WORLDS; i++) {
+        uint64_t w = __atomic_load_n(&g_phys[i].world, __ATOMIC_ACQUIRE);
+        if (w == world) return &g_phys[i];
+        uint64_t none = 0;
+        if (!w && add && __atomic_compare_exchange_n(&g_phys[i].world, &none, world, false, __ATOMIC_ACQ_REL,
+                                                     __ATOMIC_ACQUIRE)) {
+            LOG("[phys] world %#llx: deactivation at the console's pace\n", (unsigned long long)world);
+            return &g_phys[i];
+        }
+        if (!w && !add) return NULL;
+        if (!w && none == world) return &g_phys[i];  // (another thread added it)
+    }
+    return NULL;
+}
+
+// A world's step (its deactivation counter's update): whether it completes a console frame (the counter and the
+// checks go on), with the solver's slowing and stopping scaled to the step
+int rt_phys_tick(uint64_t world) {
+    if (g_phys_tick < 0) g_phys_tick = env_int("SAVAGEWIND_PHYS_TICK", 1) != 0;
+    if (!g_phys_tick) return 1;
+    PhysWorld *p = phys_world(world, true);
+    if (!p) return 1;
+    float r = g_frame_ratio;
+    if (!(r > 0) || r > 1) r = 1;  // (a frame of 1/30 s or longer: the game's values, as on the console)
+    p->frames += r;
+    int tick = p->frames >= 0.999f;
+    if (tick) p->frames = fmaxf(p->frames - 1, 0);
+    p->tick = tick;
+    for (int i = 0; i < 6; i++) {
+        float *m = (float *)(uintptr_t)(world + PHYS_CLASSES + 0x20 * i + 8);
+        if (m[0] != p->put[i][0] || m[1] != p->put[i][1]) p->game[i][0] = m[0], p->game[i][1] = m[1], p->put_r = 0;
+        if (r == p->put_r) continue;  // (already scaled for this length)
+        m[0] = p->put[i][0] = r == 1 ? p->game[i][0] : powf(p->game[i][0], r);
+        m[1] = p->put[i][1] = p->game[i][1] * r;
+    }
+    p->put_r = r;
+    return tick;
+}
+
+// A body's deactivation check (handed the world's solver info): whether its world's step completes a console frame
+int rt_phys_ticked(uint64_t solver_info) {
+    PhysWorld *p = g_phys_tick > 0 ? phys_world(solver_info - PHYS_SOLVER_INFO, false) : NULL;
+    return !p || p->tick;
+}
+
 // The sound system's frame (tools/patches.py _snd_frame_floor, #145): the game gives it the delta frame, at least 0.5
 // (a 60 fps frame), and every sound timer and fade steps by it: above 60 fps the sound's clock ran ahead of the game's
 // (x1.6 at ~95 fps, x2 at 120), and the field battle music started each segment while the last one still played. The
