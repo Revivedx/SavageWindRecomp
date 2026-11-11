@@ -21,6 +21,8 @@ static bool test_menu_ui=true;
 bool framepace_menu_ui(void){return test_menu_ui;}
 bool framepace_title_ui(void){return false;}
 float output_map_extra_y(void){return 0;}
+static float test_shape=1;
+float output_view_shape(void){return test_shape;}
 static float pause_extra;
 float output_pause_extra_y(void){return pause_extra;}
 float output_ui_extra_y(void){return 0;}
@@ -121,6 +123,11 @@ void guest_call(Cpu *cpu,uint64_t address){
 }
 
 int main(void) {
+    g_settings.hud_edges=true;test_shape=.9f;
+    assert(fabsf(dialogue_extra_y()-40)<.001f);
+    test_shape=1;assert(dialogue_extra_y()==0);
+    test_shape=1.3f;assert(dialogue_extra_y()==0);
+    test_shape=.9f;g_settings.hud_edges=false;assert(dialogue_extra_y()==0);test_shape=1;
     void *memory;
 #ifdef _WIN32
     memory=VirtualAlloc((void*)GUEST_LO,65536,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE);

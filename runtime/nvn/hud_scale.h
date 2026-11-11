@@ -154,3 +154,27 @@ static inline double hud_edge_scissor_dy(double y_center, double gh, double shap
     double dir = my > 1.0f / 3.0f ? 1.0 : my < -1.0f / 3.0f ? -1.0 : 0.0;
     return dir * (gh / 2.0) * (1.0 - shape);
 }
+
+// Executing scopes may nest through cached command lists. Overflow preserves the outer owner.
+typedef struct { unsigned kind, depth, overflow, parent[16]; } HudScope;
+static inline void hud_scope_enter(HudScope *s, unsigned kind) {
+    if (s->depth == 16 || s->overflow) { s->overflow++; return; }
+    s->parent[s->depth++] = s->kind; s->kind = kind;
+}
+static inline void hud_scope_leave(HudScope *s) {
+    if (s->overflow) { s->overflow--; return; }
+    s->kind = s->depth ? s->parent[--s->depth] : 0;
+}
+
+
+// A window's local background capture samples the final image in console UV coordinates.
+// Reshape that source rectangle and move its center with the window, leaving the local mask alone.
+static inline bool hud_capture_crop(float *g, float shape, float dy) {
+    if (!(shape > 0 && shape < 1 && isfinite(g[22]) && isfinite(g[23]) &&
+          isfinite(g[24]) && g[24] > 0 && isfinite(g[25]) && g[25] > 0 && isfinite(g[26]))) return false;
+    g[25] *= shape;
+    float shift = -dy / (2 * g[25]);
+    g[22] += sinf(g[26]) * shift;
+    g[23] += cosf(g[26]) * shift;
+    return true;
+}

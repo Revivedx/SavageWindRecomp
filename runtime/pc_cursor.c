@@ -1620,6 +1620,15 @@ static bool shop_pointer(Cpu *c) {
     return false;
 }
 
+static float dialogue_extra_y(void) {
+#ifdef __APPLE__
+    return 0;
+#else
+    float shape=output_view_shape();
+    return g_settings.hud_edges&&shape>0&&shape<1?360*(1/shape-1):0;
+#endif
+}
+
 static bool quantity_pointer(Cpu *c,uint64_t screens,unsigned count) {
     if(!dialogue_active)return false;
     for(unsigned i=0;i<count&&i<256;i++) {
@@ -1636,7 +1645,7 @@ static bool quantity_pointer(Cpu *c,uint64_t screens,unsigned count) {
         uint64_t root=LD64(pane+0x18);unsigned budget=80;
         uint64_t left=pane_named(root,"Pa_ArrowL_00",0,&budget);budget=80;
         uint64_t right=pane_named(root,"Pa_ArrowR_00",0,&budget);
-        bool row=fabsf(point[1]-cy)<=22;
+        bool row=fabsf(point[1]-(cy-dialogue_extra_y()))<=22;
         bool dec=ptr(left)&&row&&fabsf(point[0]-*(float*)(left+0x7c))<=18;
         bool inc=ptr(right)&&row&&fabsf(point[0]-*(float*)(right+0x7c))<=18;
         bool number=row&&fabsf(point[0]-cx)<=28,over=dec||inc||number;
@@ -1762,6 +1771,7 @@ void rt_pc_cursor_manager(Cpu *c, uint64_t activate, uint64_t bounds) {
                     box[1]+=dy;box[3]+=dy;
                     if(dialogue_active&&LD64(screen)==0x7001d4ed48ull) {
                         // Choice arrows use left-origin X, center-origin Y.
+                        float shift=dialogue_extra_y();box[1]-=shift;box[3]-=shift;
                         box[0]-=640;box[2]-=640;box[2]=fminf(625,box[0]+255);
                     }
                     // The native "clip" callback clears the active cursor for

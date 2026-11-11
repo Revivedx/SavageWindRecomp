@@ -19,6 +19,21 @@ def _word(gen, a):
     return struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
 
 
+def _ui_layout_draw(gen, a):
+    # A tail thunk is shared by MainScreen, AppMap, context prompts and dialogue layouts.
+    # Do not recurse through the thunk: bracket the independently verified native body.
+    w = _word(gen, a)
+    assert w & 0xfc000000 == 0x14000000, hex(w)
+    target = a + sext(w & 0x03ffffff, 26) * 4
+    assert target == gen.sites['ui_layout_native'], hex(target)
+    gates = (0x39440008, 0x7100011f, 0x39440809, 0x3943f80a,
+             0x3943fc0b, 0x7a401920, 0x7a400944, 0x7a421964)
+    assert tuple(_word(gen, target + i * 4) for i in range(len(gates))) == gates
+    fn = _fn(gen, 'ui_layout_native')
+    return (f'{{ extern void {fn}(Cpu *); extern void rt_ui_layout_draw(Cpu *, void (*)(Cpu *)); '
+            f'rt_ui_layout_draw(c, {fn}); return; }}')
+
+
 def _quick_sort_enter(gen, a):
     # Menu::enter: sample held X before the selector initializes its list.
     assert _word(gen, a) == 0xfc1d0fe8, hex(_word(gen, a))  # str d8, [sp, #-0x30]!
@@ -877,6 +892,7 @@ def _tp_gate(gen, a):
 
 
 PATCHES = {
+    'ui_layout_draw': _ui_layout_draw,
     'quick_drop_tick': _quick_drop_tick,
     'quick_drop_actor_call': _quick_drop_actor_call,
     'quick_sort_enter': _quick_sort_enter,

@@ -12,6 +12,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "../../ui_layout.h"
 #ifdef _WIN32
 #define NOUSER
 #include <windows.h>
@@ -1393,37 +1394,50 @@ void renderer_save_texture_tex(TexBackend *b, const char *path);
 static float pass_sx = 1, pass_sy = 1;
 static bool pass_out;  // the pass draws into the game's final image (RS_OUT: the HUD and menus draw there)
 static bool hud_clip;  // the draw in progress is a 16:9 layout's pane wholly off a 16:9 screen: not drawn (hud_patch)
-// Gameplay > HUD size this frame, 1: none. Only the HUD in play: not in menus, the title, a load or an event (a talk's text).
-#define HUD_QUICK_HOLD_NS 500000000ull  // (a quick menu's bar fades out after the pause state ends)
-static bool hud_event_dialogue;  // an event's MessageDialog may still be fading out
-static bool hud_quick;  // a quick menu's bar may be on screen: it keeps the game's size (hud_quick_keeps)
-static float hud_scale_now(void) {
-    extern bool framepace_menu_ui(void), framepace_title_ui(void), framepace_loading_ui(void), framepace_in_event(void);
-    extern bool framepace_quick_ui(void);
-    static uint64_t frame = ~0ull;
-    static float s = 1;
+// Snapshot shared state once per presented frame. Ownership is recorded alongside the actual UI draw.
+extern bool framepace_quick_ui(void);
+static HudScope hud_scope;
+static bool hud_event_dialogue;
+static uint64_t hud_frame = UINT64_MAX, hud_quick_ns;
+static bool hud_event, hud_menu, hud_title, hud_loading;
+static bool hud_quick;
+#define HUD_QUICK_HOLD_NS 500000000ull
+static void hud_frame_update(void) {
     uint64_t now = renderer_present_count();
-    if (now != frame) {
-        frame = now;
-        // (not the quick menus, pause state 4: the game keeps the HUD up around them)
-        static uint64_t quick_ns;
-        uint64_t ns = plat_now_ns();
-        if (hud_quick_tracked(g_settings.hud_size, g_settings.hud_edges) && framepace_quick_ui()) quick_ns = ns;
-        hud_quick = quick_ns && ns - quick_ns < HUD_QUICK_HOLD_NS;
-        bool event = framepace_in_event();
-        // Incidental speech in play uses the same screen. Only hold a dialogue that drew during an event.
-        hud_event_dialogue = hud_dialogue_holds(hud_event_dialogue, event, framepace_dialogue_ui());
-        s = g_settings.hud_size == 100 || framepace_menu_ui() || framepace_title_ui() || framepace_loading_ui() ||
-            event || hud_event_dialogue ? 1 : (float)g_settings.hud_size / 100;
-    }
-    return s;
+    if (now == hud_frame) return;
+    hud_frame = now;
+    hud_event = framepace_in_event();
+    hud_event_dialogue = hud_dialogue_holds(hud_event_dialogue, hud_event, framepace_dialogue_ui());
+    hud_menu = framepace_menu_ui(); hud_title = framepace_title_ui(); hud_loading = framepace_loading_ui();
+    uint64_t ns = plat_now_ns();
+    if (hud_quick_tracked(g_settings.hud_size, g_settings.hud_edges) && framepace_quick_ui()) hud_quick_ns = ns;
+    hud_quick = hud_quick_ns && ns - hud_quick_ns < HUD_QUICK_HOLD_NS;
 }
-// Video > HUD at edges this frame, on a window of this shape (hud_edge_mode). Also brings hud_quick up to this frame.
+static bool hud_owned(void) {
+    return hud_scope.kind == UI_LAYOUT_HUD || hud_scope.kind == UI_LAYOUT_CONTEXT;
+}
+static bool hud_native_layout(void) {
+    return hud_scope.kind == UI_LAYOUT_DIALOGUE || hud_scope.kind == UI_LAYOUT_MENU || hud_scope.kind == UI_LAYOUT_TALK;
+}
+static float hud_scale_now(void) {
+    hud_frame_update();
+    if (hud_native_layout()) return 1;
+    return hud_owned() || !(hud_event || hud_event_dialogue || hud_menu || hud_title || hud_loading) ?
+           (float)g_settings.hud_size / 100 : 1;
+}
 static int hud_edges_now(float shape) {
-    extern bool framepace_menu_ui(void), framepace_title_ui(void), framepace_loading_ui(void), framepace_in_event(void);
-    hud_scale_now();
-    return hud_edge_mode(g_settings.hud_edges, shape, framepace_menu_ui(), framepace_title_ui(), framepace_loading_ui(),
-                       framepace_in_event() || hud_event_dialogue);
+    hud_frame_update();
+    if (hud_native_layout()) return 0;
+    return hud_edge_mode(g_settings.hud_edges, shape, !hud_owned() && hud_menu, !hud_owned() && hud_title,
+                         !hud_owned() && hud_loading, !hud_owned() && (hud_event || hud_event_dialogue));
+}
+// Dock a conversation as one layout, including choices and its close animation.
+static float hud_layout_dy(float shape) {
+    if (!g_settings.hud_edges || shape >= 1) return 0;
+    return hud_scope.kind == UI_LAYOUT_TALK ? shape - 1 : 0;
+}
+static bool hud_context_native(float shape, float x, float y, float ex, float ey) {
+    return hud_scope.kind != UI_LAYOUT_CONTEXT && hud_context_keeps(g_settings.hud_edges && shape < 1, x, y, ex, ey);
 }
 static float vp_sx = 1, vp_sy = 1, vp_ox = 0, vp_oy = 0;
 static float tex_sc[2][64][2];
@@ -2393,11 +2407,12 @@ static VkRect2D scissor_rect(void) {
             y = (int)floor(y0); sh = (int)ceil(y1) - y;
             if (output_pause_extra_y() > 0)
                 y -= (int)round(hud_pause_edge_dy((float)(1 - (y0 + y1) / gh), shape) * gh / 2);
+            y -= (int)round(hud_layout_dy(shape) * gh / 2);
             int edge_mode = hud_edges_now(shape);
             if (edge_mode) {
                 double sdy = hud_edge_scissor_dy((y0 + y1) / 2.0, gh, shape);
                 double gw = pass_sx > 0 ? w / pass_sx : w;  // (a quick menu's bar, an event: as for the panes)
-                if (!hud_context_keeps(g_settings.hud_edges && shape < 1, (float)((x + sw / 2.0) / gw * 2 - 1),
+                if (!hud_context_native(shape, (float)((x + sw / 2.0) / gw * 2 - 1),
                                        (float)(1 - (y0 + y1) / gh), 1, shape) && sdy != 0 && hud_edge_moves(edge_mode, (float)(1 - (y0 + y1) / gh), (float)shape) &&
                     !(hud_quick && hud_quick_bar_px(x + sw / 2.0, (y0 + y1) / 2.0, gw, gh, shape)))
                     y += (int)round(sdy);
@@ -2408,7 +2423,7 @@ static VkRect2D scissor_rect(void) {
     if (hud_s != 1) {  // (the minimap's mask goes with the minimap: a scissor over about the whole image is left alone)
         double gw = w / pass_sx, gh = h / pass_sy;
         float mx = (float)((x + sw / 2.0) / gw * 2 - 1), my = (float)((y + sh / 2.0) / gh * 2 - 1);
-        if (!hud_context_keeps(g_settings.hud_edges && shape < 1, mx, -my, 1 / fmaxf(shape, 1), fminf(shape, 1)) &&
+        if (!hud_context_native(shape, mx, -my, 1 / fmaxf(shape, 1), fminf(shape, 1)) &&
             sw < gw * 0.9 && sh < gh * 0.9 && !(hud_quick && fabsf(mx) < 0.72f && fabsf(my) < 0.6f)) {
             double px = x, py = y, pw = sw, ph = sh;
             hud_scale_span(&px, &pw, gw / 2, gw / 2 / fmax(shape, 1), hud_s);
@@ -4684,6 +4699,26 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
     bool tall_map = output_tall_map(shape);
     if (tall_map && map_capture_patch(g, size, shape, out)) return true;
     TexBackend *tb = (TexBackend *)st.rt.color[0]->backend;
+    // MessageDialog captures the background before drawing each window. Its crop uses a separate
+    // source rectangle; translating the pane alone makes the captured location title/choice text repeat.
+    if ((!tb || tb->rs_group != RS_OUT) && hud_scope.kind == UI_LAYOUT_TALK &&
+        g_settings.hud_edges && shape > 0 && shape < 1 && size >= 27 * 4 &&
+        g_cur_fs_hash == UINT64_C(0x90b79e85a3d120e3) && st.program &&
+        hmix(1469598103934665603ull, (const void *)(uintptr_t)(st.program->stages[0].code_addr + 0x30), 0x200) ==
+        UINT64_C(0x33067840cc99b18a)) {
+        ShaderTexture texture = {.handle_offset = 0x20};
+        NvnTexture *src = shader_texture_object(1, &texture);
+        TexBackend *source = src ? (TexBackend *)src->backend : NULL;
+        if (source && source->rs_group == RS_OUT) {
+            static float crop[0x10000 / 4];
+            uint64_t n = size > sizeof crop ? sizeof crop : size;
+            memcpy(crop, g, n);
+            if (hud_capture_crop(crop, shape, hud_layout_dy(shape))) {
+                *out = ubo_span(vk_transient_copy(crop, n, 256), n);
+                return true;
+            }
+        }
+    }
     if (!tb || tb->rs_group != RS_OUT) return false;
     float hud_s = hud_scale_now();
     if (shape == 1 && hud_s == 1) return false;
@@ -4706,7 +4741,7 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         memcpy(text_matrix, g, sizeof text_matrix);
         for (int k = 0; k < 4; k++) text_matrix[k] /= shape;
         float tx = text_matrix[3] / text_matrix[15], ty = text_matrix[7] / text_matrix[15];
-        if (hud_s != 1 && !hud_context_keeps(g_settings.hud_edges && shape < 1, tx, ty, edge_x, edge_y) &&
+        if (hud_s != 1 && !hud_context_native(shape, tx, ty, edge_x, edge_y) &&
             !(hud_quick && hud_quick_keeps(tx, ty, edge_x, edge_y)))
             hud_scale_matrix(text_matrix, hud_s, hud_anchor(tx, edge_x), hud_anchor(ty, edge_y));
         *out = ubo_span(vk_transient_copy(text_matrix, sizeof text_matrix, 256), sizeof text_matrix);
@@ -4722,13 +4757,14 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         buf[0] *= combined_scale[0], buf[3] *= combined_scale[0];
         buf[5] *= combined_scale[1], buf[7] *= combined_scale[1];
         float tx = buf[3] / buf[15], ty = buf[7] / buf[15];
-        if (hud_s != 1 && !hud_context_keeps(g_settings.hud_edges && shape < 1, tx, ty, edge_x, edge_y) &&
+        if (hud_s != 1 && !hud_context_native(shape, tx, ty, edge_x, edge_y) &&
             !(hud_quick && hud_quick_keeps(tx, ty, edge_x, edge_y)))
             hud_scale_matrix(buf, hud_s, hud_anchor(tx, edge_x), hud_anchor(ty, edge_y));
         if (pause_edges) hud_edge_matrix(buf, hud_pause_edge_dy(ty, shape));
+        hud_edge_matrix(buf, hud_layout_dy(shape));
         if (map_chrome && fabsf(ty) > shape * (200.0f / 360))
             hud_edge_matrix(buf, copysignf(1 - shape, ty));
-        if (hud_edge_active && !hud_context_keeps(g_settings.hud_edges && shape < 1, tx, ty, edge_x, edge_y) && hud_edge_moves(edge_mode, ty, edge_y) &&
+        if (hud_edge_active && !hud_context_native(shape, tx, ty, edge_x, edge_y) && hud_edge_moves(edge_mode, ty, edge_y) &&
             !(hud_quick && hud_quick_bar(tx, ty, edge_x, edge_y))) {
             float ay = hud_anchor(ty, edge_y);
             float dy = hud_edge_dy(ay, edge_y, shape);
@@ -4834,7 +4870,7 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
     // Gameplay > HUD size: a pane of a 40-degree layer, and not one over about the whole screen (a fade, a picture)
     float hud_ax = 0, hud_ay = 0;
     bool hud_scale = false;
-    float edge_dy = 0;
+    float edge_dy = hud_layout_dy(shape);
     if ((hud_s != 1 || hud_edge_active) && size >= 28 * 4 && fabsf((tall ? m11 / shape : m11) - 2.74748f) < 0.001f) {
         const float *mv = g + 16, *rc = g + 33 * 4;
         bool has_rect = size >= 34 * 16 && rc[0] > 0 && rc[1] > 0;
@@ -4848,7 +4884,7 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
             x0 = fminf(x0, nx), x1 = fmaxf(x1, nx), y0 = fminf(y0, ny), y1 = fmaxf(y1, ny);
         }
         if (x1 - x0 >= 1.8f * edge_x || y1 - y0 >= 1.8f * edge_y) hud_scale = false;
-        if (hud_context_keeps(g_settings.hud_edges && shape < 1, (x0 + x1) / 2, (y0 + y1) / 2, edge_x, edge_y)) hud_scale = false;
+        if (hud_context_native(shape, (x0 + x1) / 2, (y0 + y1) / 2, edge_x, edge_y)) hud_scale = false;
         float cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
         if (hud_scale) {  // (a quick menu's bar: HUD size keeps its middle at the game's size, HUD at edges the bar)
             hud_ax = hud_anchor(cx, edge_x);
@@ -6353,6 +6389,8 @@ static uint32_t g_cs_cap, g_cs_n;
 // programs, shared copies - and the heap import: its pages are replaced (re-imported on first use).
 void vk_exec_reset(void) {
     hud_event_dialogue = false;
+    hud_scope = (HudScope){0};
+    hud_frame = UINT64_MAX; hud_quick_ns = 0; hud_quick = false;
     map_background_target = NULL;
     map_background_frame = map_background_main_frame = UINT64_MAX;
     map_chrome_frame = UINT64_MAX;
@@ -10778,6 +10816,10 @@ static void exec_list(uint64_t handle, int depth) {
                 (unsigned long long)r->x[2], (unsigned long long)r->x[3], (unsigned long long)r->x[4]);
         if (lst_on) { lst_op(depth, r); lst_depth = depth; }
         switch (r->op) {  // (key_gen: what the program and pipeline keys read)
+        case CMD_UI_SCOPE:
+            if (r->x[0]) hud_scope_enter(&hud_scope, (unsigned)r->x[0]);
+            else hud_scope_leave(&hud_scope);
+            break;
         case CMD_BIND_PROGRAM: case CMD_BIND_BLEND: case CMD_BIND_CHANNEL_MASK: case CMD_BIND_COLOR: case CMD_BIND_MULTISAMPLE:
         case CMD_BIND_POLYGON: case CMD_BIND_VERTEX_ATTRIB: case CMD_BIND_VERTEX_STREAM: case CMD_SET_RENDER_TARGETS:
         case CMD_SET_DEPTH_CLAMP:
