@@ -52,12 +52,16 @@ Settings g_settings = {
     .hud_size = 100,
     .color_lut_strength = 100,
     .haze = 100,
+    .motion_device = MOTION_DEV_AUTO,
+    .transparent_guides = false,
+    .mvec_mode = MVEC_MODE_HYBRID,
 };
 
 static const char *const k_vsync[VSYNC_COUNT] = {"on", "fast", "adaptive", "off"};  // (VSYNC_*: the ini's words)
 static const char *const k_hdr[HDR_COUNT] = {"auto", "on", "off"};             // (HDR_*)
 static const char *const k_sparse_heap[SPARSE_HEAP_COUNT] = {"auto", "on", "off"};
 static const char *const k_fsmode[FSMODE_COUNT] = {"auto", "borderless", "exclusive"};  // (FSMODE_*)
+static const char *const k_mvec_mode[MVEC_MODE_COUNT] = {"hybrid", "objects", "camera"};
 
 // settings_version 2 (2026-10-19): the upscaler's mode, the window size and the 300% mouse default. Older files: their
 // "resolution" (the internal resolution, removed) gives the upscaler's mode, and a mouse sensitivity at the old
@@ -79,6 +83,7 @@ static const char *const k_icons[ICONS_COUNT] = {"auto", "keyboard", "xbox", "pl
 
 static const char *const k_quality[UPQ_COUNT] = {"native", "ultra_quality", "quality", "balanced", "performance", "ultra_performance"};
 static const char *const k_gyro_cam[GYRO_CAM_COUNT] = {"off", "explore", "hold", "always"};
+static const char *const k_motion_dev[MOTION_DEV_COUNT] = {"auto", "controller", "mouse"};
 
 // Debug overrides seed this boot's options; the Controls switches can still change them at once.
 static void pc_controls_env(void) {
@@ -189,6 +194,10 @@ void settings_load(void) {
                 if (!strcmp(val, k_gyro_cam[i])) g_settings.motion_camera = i;
         }
         else if (!strcmp(key, "motion_camera_sensitivity")) g_settings.motion_camera_sens = (float)atof(val);
+        else if (!strcmp(key, "motion_device")) {
+            for (int i = 0; i < MOTION_DEV_COUNT; i++)
+                if (!strcmp(val, k_motion_dev[i])) g_settings.motion_device = i;
+        }
         else if (!strcmp(key, "button_icons")) {
             for (int i = 0; i < ICONS_COUNT; i++)
                 if (!strcmp(val, k_icons[i])) g_settings.button_icons = i;
@@ -234,6 +243,12 @@ void settings_load(void) {
         else if (!strcmp(key, "colour_lut_strength")) g_settings.color_lut_strength = atoi(val);  // (percent)
         else if (!strcmp(key, "sharper_text"))  // (off / 2x / 4x)
             g_settings.sharper_text = !strcmp(val, "4x") ? 4 : !strcmp(val, "2x") ? 2 : 0;
+        else if (!strcmp(key, "transparent_guides")) g_settings.transparent_guides = atoi(val) != 0;
+        else if (!strcmp(key, "motion_vectors")) {
+            g_settings.mvec_mode = !strcmp(val, "objects") ? MVEC_MODE_OBJECTS
+                                 : !strcmp(val, "camera") ? MVEC_MODE_CAMERA
+                                 : MVEC_MODE_HYBRID;
+        }
         else if (!strcmp(key, "shadow_resolution"))  // (console / high / ultra / extreme)
             g_settings.shadow_res = !strcmp(val, "extreme") ? SHADOW_EXTREME : !strcmp(val, "ultra") ? SHADOW_ULTRA
                                   : !strcmp(val, "high") ? SHADOW_HIGH : SHADOW_CONSOLE;
@@ -363,6 +378,8 @@ void settings_save(void) {
     int mc = g_settings.motion_camera;
     fprintf(f, "motion_camera = %s\n", k_gyro_cam[mc >= 0 && mc < GYRO_CAM_COUNT ? mc : GYRO_CAM_OFF]);
     fprintf(f, "motion_camera_sensitivity = %.2f\n", g_settings.motion_camera_sens);
+    int md = g_settings.motion_device;
+    fprintf(f, "motion_device = %s\n", k_motion_dev[md >= 0 && md < MOTION_DEV_COUNT ? md : MOTION_DEV_AUTO]);
     fprintf(f, "button_icons = %s\n", k_icons[g_settings.button_icons >= 0 && g_settings.button_icons < ICONS_COUNT ?
                                                 g_settings.button_icons : ICONS_AUTO]);
     fprintf(f, "async_shaders = %d\n", g_settings.async_shaders);
@@ -371,6 +388,9 @@ void settings_save(void) {
     int sr = g_settings.shadow_res;
     fprintf(f, "shadow_resolution = %s\n", shadow[sr >= 0 && sr < SHADOW_COUNT ? sr : SHADOW_CONSOLE]);
     fprintf(f, "sharper_text = %s\n", g_settings.sharper_text == 4 ? "4x" : g_settings.sharper_text == 2 ? "2x" : "off");
+    fprintf(f, "transparent_guides = %d\n", g_settings.transparent_guides);
+    int mm = g_settings.mvec_mode;
+    fprintf(f, "motion_vectors = %s\n", k_mvec_mode[mm >= 0 && mm < MVEC_MODE_COUNT ? mm : MVEC_MODE_HYBRID]);
     fprintf(f, "wide_view = %d\n", g_settings.wide_view);
     fprintf(f, "hdr = %s\n", k_hdr[g_settings.hdr >= 0 && g_settings.hdr < HDR_COUNT ? g_settings.hdr : HDR_AUTO]);
     fprintf(f, "sparse_heap = %s\n", k_sparse_heap[g_settings.sparse_heap >= 0 && g_settings.sparse_heap < SPARSE_HEAP_COUNT ?

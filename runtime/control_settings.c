@@ -48,6 +48,8 @@ static const Setting settings[] = {
     I(color_lut_strength, 0, 100, NULL), B(color_lut_set), B(no_weapon_wear), B(infinite_arrows),
     B(infinite_stamina), B(god_mode), B(one_hit_kill), I(damage_taken, 25, 400, NULL), I(damage_dealt, 25, 400, NULL),
     I(text_language, 0, 0, NULL), I(voice_language, 0, 0, NULL), B(menu_tip_seen),
+    I(motion_device, 0, MOTION_DEV_COUNT - 1, "auto|controller|mouse"), B(transparent_guides),
+    I(mvec_mode, 0, MVEC_MODE_COUNT - 1, "hybrid|objects|camera"),
 };
 #undef B
 #undef I

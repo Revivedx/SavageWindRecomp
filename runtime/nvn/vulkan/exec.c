@@ -671,6 +671,7 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
     chunk_hold = false;
     ring_retire();
     vk_collect_dead();
+    vk_textures_frame_maintenance();
 }
 
 void renderer_submit(void) {

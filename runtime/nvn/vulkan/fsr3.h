@@ -35,7 +35,6 @@ typedef struct {
 } Fsr3Dispatch;
 
 bool fsr3_available(void);
-bool fsr4_available(void);
 const char *fsr_active_provider(void);
 // Records FSR 3.1.6 / FSR 4 into d->cb (the context is made, and made again, for the sizes and mode given)
 bool fsr3_dispatch(const Fsr3Dispatch *d);

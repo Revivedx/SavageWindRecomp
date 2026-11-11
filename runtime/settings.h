@@ -57,6 +57,7 @@ enum { FSMODE_AUTO = 0, FSMODE_BORDERLESS = 1, FSMODE_EXCLUSIVE = 2, FSMODE_COUN
 // Exploration turns the camera with the controller when not aiming or in shrines; Hold button turns the camera while
 // BIND_GYRO_CAM is held; Always turns the camera except during shrine apparatus puzzles.
 enum { GYRO_CAM_OFF = 0, GYRO_CAM_EXPLORE = 1, GYRO_CAM_HOLD = 2, GYRO_CAM_ALWAYS = 3, GYRO_CAM_COUNT };
+enum { MOTION_DEV_AUTO = 0, MOTION_DEV_CONTROLLER = 1, MOTION_DEV_MOUSE = 2, MOTION_DEV_COUNT = 3 };
 typedef struct {
     bool fullscreen;
     int fullscreen_mode;     // FSMODE_*
@@ -128,7 +129,12 @@ typedef struct {
     int text_language;   // index in g_text_languages (runtime/language.h), 0: the host's
     int voice_language;  // index in g_voice_languages, 0: the text language's voices
     bool menu_tip_seen;  // the start screen's one-time "how to open the menu" note was shown (first PLAY ever)
+    int motion_device;   // MOTION_DEV_*: motion controls source (Auto, Controller, Mouse)
+    bool transparent_guides; // remove dark background plate behind control guides and prompts
+    int mvec_mode;       // MVEC_MODE_*: motion vectors (hybrid [fast], objects [full], camera)
 } Settings;
+
+enum { MVEC_MODE_HYBRID, MVEC_MODE_OBJECTS, MVEC_MODE_CAMERA, MVEC_MODE_COUNT };
 
 #define STICK_DEADZONE_DEFAULT 0.10f  // (the Switch's own input service has one: the game expects 0 at rest)
 #define HAZE_CHOICES {0, 25, 50, 75, 100}  // (percent of the game's haze)

@@ -174,10 +174,10 @@ static bool make_context(const Fsr3Dispatch *d, int major) {
     fsr_api_destroy();
     ffxCreateContextDescUpscale cd = {};
     cd.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
-    // (LDR input, low-resolution and jitter-free motion vectors, standard depth, as fsr3.cpp. FSR 4 is told the
-    // colours are perceptual, sRGB-like: the scene is the game's finished, graded image; SAVAGEWIND_FSR4_LINEAR=1 does
-    // not. SAVAGEWIND_FSR3_DEBUG=1: the DLL's checks of the inputs in the log; SAVAGEWIND_FSR3_VIEW=1: its debug view)
-    cd.flags = env_on("SAVAGEWIND_FSR3_DEBUG") ? FFX_UPSCALE_ENABLE_DEBUG_CHECKING : 0;
+    // (linear HDR scene input + internal auto-exposure, low-resolution and jitter-free motion vectors, standard depth,
+    // as fsr3.cpp; SAVAGEWIND_FSR3_DEBUG=1: the DLL's checks of the inputs in the log; SAVAGEWIND_FSR3_VIEW=1: debug view)
+    cd.flags = FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE | FFX_UPSCALE_ENABLE_AUTO_EXPOSURE |
+               (env_on("SAVAGEWIND_FSR3_DEBUG") ? FFX_UPSCALE_ENABLE_DEBUG_CHECKING : 0);
     if (debug_view()) cd.flags |= FFX_UPSCALE_ENABLE_DEBUG_VISUALIZATION;
     if (major == 4 && !linear_colour()) cd.flags |= FFX_UPSCALE_ENABLE_NON_LINEAR_COLORSPACE;
     cd.maxRenderSize = {d->color.width, d->color.height};

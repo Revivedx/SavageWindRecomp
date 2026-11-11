@@ -180,6 +180,7 @@ void vk_image_init_layout(VkCommandBuffer cb, VkImage img, VkImageAspectFlags as
 void vk_defer_image(VkImage img, VmaAllocation mem);
 void vk_defer_view(VkImageView v);
 void vk_views_forget(TexBackend *b);  // drop (deferred) the cached views of an image being replaced
+void vk_textures_frame_maintenance(void);  // periodic sweep of dead, zombie and idle textures and VRAM trim
 void vk_make_scalable_like(NvnTexture *t, NvnTexture *like);  // a pass's attachments share one scale
 bool vk_native_post_target(NvnTexture *t);  // before its first write; contents may be discarded
 uint8_t vk_texture_scale_group(NvnTexture *t);
