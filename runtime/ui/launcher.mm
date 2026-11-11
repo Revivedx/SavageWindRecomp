@@ -1975,6 +1975,14 @@ extern "C" void launcher_run(const char *root, int mode) {
 #ifndef __APPLE__
                     if (shader_precompile_available()) {
                         if (busy) opt_disable_next();
+                        {   // the background (ui/splash.mm), from the next start
+                            static const char *const pics[START_PICTURE_COUNT] = {"Savage Wind", "A screenshot", "Latest save"};
+                            if (opt_choice("Background", &g_settings.start_picture, pics, START_PICTURE_COUNT,
+                                           START_PICTURE_SCREENSHOT, "The picture behind this screen and while the game loads. A splash.jpg or splash.png of yours in the data folder always comes first."))
+                                settings_save();
+                            if (opt_toggle("Loading picture", &g_settings.boot_picture, true, "Shows that picture while the game loads. Turned off, the window stays black until the game's title screen: loading takes just as long."))
+                                settings_save();
+                        }
                         if (opt_toggle("Precompile all shaders", &g_settings.precompile_shaders, true,
                                        "After the setup, translates and compiles every shader of the game, so that none "
                                        "stutters the first time it is drawn, also in places never visited. A few more "

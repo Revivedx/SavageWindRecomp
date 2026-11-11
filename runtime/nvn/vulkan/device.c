@@ -2338,7 +2338,7 @@ static void ui_window_show(void) {
 // (runtime/main.c, before each boot; the main thread) the picture up, and the window shown with it
 void boot_splash_start(void) {
     if (!window) return;  // (made later, in ui_run: Linux and macOS)
-    if (!getenv("SAVAGEWIND_HIDDEN") && !getenv("SAVAGEWIND_NO_BOOT_SPLASH")) {
+    if (!getenv("SAVAGEWIND_HIDDEN") && !getenv("SAVAGEWIND_NO_BOOT_SPLASH") && g_settings.boot_picture) {
         gpu_lock();
         boot_splash_open();
         boot_hold = true, boot_alpha = 1, boot_hold_since = SDL_GetTicksNS();
