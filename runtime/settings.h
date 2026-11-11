@@ -45,8 +45,11 @@ enum { PERF_OFF = 0, PERF_FPS = 1, PERF_FULL = 2 };
 // same at every rate. The console runs the game at 30.
 #define FPS_DEFAULT 60
 #define FPS_CHOICES {0, 30, 60, 90, 120, 144, 165, 240, 360}
-// PC handhelds (settings_handheld): 40 for a screen at 40 or 80 Hz, 45 at 90 Hz; no Off, no Match display
+// PC handhelds (settings_handheld): 40 for a screen at 40 or 80 Hz, 45 at 90 Hz; no Off, no Match display. Their
+// faster screens add their own rates (#712: 90 on a Steam Deck OLED, 120 on a ROG Ally, 144 on a Legion Go): those of
+// FPS_CHOICES_HANDHELD_FAST up to the screen's refresh rate, all of them while it isn't known yet.
 #define FPS_CHOICES_HANDHELD {30, 40, 45, 60}
+#define FPS_CHOICES_HANDHELD_FAST {90, 120, 144}
 #define FPS_CHOICES_MAX 9
 int fps_choices(const int **list);  // this machine's frame rates (FPS_CHOICES, or FPS_CHOICES_HANDHELD): their count
 // VSync (Video > VSync; runtime/nvn/vulkan/device.c picks the present mode): On waits for the display (FIFO; with
