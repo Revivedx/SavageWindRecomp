@@ -190,7 +190,7 @@ static bool camera_compute(Slot *s, MvecCamera *c) {
 
 // The finished frame's camera (when the next frame begins)
 static void camera_finish(Slot *s) {
-    if (camera_compute(s, &s->cam)) mstat.cameras++;
+    if (!s->cam.valid && camera_compute(s, &s->cam)) mstat.cameras++;
     ncamc = 0;
 }
 
@@ -221,6 +221,34 @@ bool mvec_enabled(void) {
     extern volatile int g_fg_want;  // (vulkan/exec.c: frame generation interpolates with them too)
     if (f != at) at = f, on = rt_temporal() || (g_fg_want && mvec_for_framegen());
     return on;
+}
+
+bool mvec_objects_enabled(void) {
+    static int env = -2;
+    if (env == -2) env = getenv("SAVAGEWIND_MVEC") ? atoi(getenv("SAVAGEWIND_MVEC")) != 0 : -1;
+    if (env >= 0) return env != 0;
+    return mvec_enabled() && g_settings.mvec_mode == MVEC_MODE_OBJECTS;
+}
+
+static void frame_begin(uint64_t frame);
+
+void mvec_feed_camera(const float *cam_block) {
+    if (!mvec_enabled() || !cam_block) return;
+    uint64_t frame = renderer_present_count();
+    if (cur < 0 || frame != cur_frame) frame_begin(frame);
+    if (cur < 0) return;
+    Slot *s = &slots[cur];
+    if (s->cam.valid) return;
+    memcpy(s->cam.view, cam_block, 12 * 4);
+    memcpy(s->cam.proj, cam_block + 7 * 4, 16 * 4);
+    float v4[16];
+    memcpy(v4, s->cam.view, 12 * 4);
+    v4[12] = v4[13] = v4[14] = 0, v4[15] = 1;
+    mat4_mul(s->cam.proj, v4, s->cam.vp);
+    if (camera_plausible(&s->cam) && mat4_inverse(s->cam.vp, s->cam.inv_vp)) {
+        s->cam.valid = true;
+        mstat.cameras++;
+    }
 }
 
 static uint64_t mix(uint64_t h, uint64_t v) {
@@ -314,12 +342,15 @@ static void frame_begin(uint64_t frame) {
     cur = (int)(frame % MVEC_SLOTS);
     cur_frame = frame;
     Slot *s = &slots[cur];
-    vk_wait_seq(s->seq);  // (MVEC_SLOTS frames ago: long done in practice)
-    if (!s->buf || s->grow > s->cap) slot_alloc(s, s->grow > HIST_START ? s->grow : HIST_START);
+    if (mvec_objects_enabled()) {
+        vk_wait_seq(s->seq);  // (MVEC_SLOTS frames ago: long done in practice)
+        if (!s->buf || s->grow > s->cap) slot_alloc(s, s->grow > HIST_START ? s->grow : HIST_START);
+    }
     s->used = 0;
     s->nrec = 0;
     s->full = false;
     s->frame = frame;
+    s->cam.valid = false;
     prev = last >= 0 && slots[last].frame + 1 == frame ? last : -1;
     if (++epoch == 0) {  // (wrapped: entries 2^32 frames old would look current)
         memset(dedupe, 0, sizeof dedupe), memset(prev_index, 0, sizeof prev_index), memset(ord_index, 0, sizeof ord_index);
@@ -514,7 +545,7 @@ static uint32_t copy_in(uint64_t addr, uint64_t size, uint64_t gen, bool share, 
 }
 
 int mvec_record(const MvecDrawIn *d) {
-    if (!mvec_enabled()) return -1;
+    if (!mvec_objects_enabled()) return -1;
     if (d->frame != cur_frame) frame_begin(d->frame);
     Slot *s = &slots[cur];
     mstat.draws++;
@@ -672,7 +703,8 @@ float mvec_view_enabled(void) {
 bool mvec_reprojection(float m[16], float jitter[2]) {
     if (cur < 0 || prev < 0 || !slots[prev].cam.valid) return false;
     MvecCamera now;
-    if (!camera_compute(&slots[cur], &now)) return false;
+    if (slots[cur].cam.valid) now = slots[cur].cam;
+    else if (!camera_compute(&slots[cur], &now)) return false;
     // prev proj * (prev view * inverse of this view) * inverse of this proj, in double: the views hold the camera's
     // world position (thousands of meters), and the product of float matrices with an inverse lost the far plane's
     // precision: the sky's and the distance's camera vectors were wrong by ~1 pixel, in step with the jitter (a sway
@@ -704,8 +736,10 @@ bool mvec_reprojection(float m[16], float jitter[2]) {
 }
 
 bool mvec_camera_now(float jitter[2], float *near_, float *far_, float *fov_y) {
+    if (cur < 0) return false;
     MvecCamera now;
-    if (cur < 0 || !camera_compute(&slots[cur], &now)) return false;
+    if (slots[cur].cam.valid) now = slots[cur].cam;
+    else if (!camera_compute(&slots[cur], &now)) return false;
     jitter[0] = -now.proj[2], jitter[1] = -now.proj[6];
     // (OpenGL-style rows: [2][2] = -(f + n) / (f - n), [2][3] = -2fn / (f - n), [1][1] = 1 / tan(fovy / 2))
     float a = now.proj[10], b = now.proj[11];
