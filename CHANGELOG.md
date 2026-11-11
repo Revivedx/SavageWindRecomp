@@ -6,6 +6,54 @@ What changed in each Savage Wind release. The `test` branch holds what the next 
 
 Nothing yet.
 
+## 0.5.1 (0.5.1-alpha.5) - 2026-11-11
+
+**One-click updates.** From this version on, Savage Wind updates itself: Savage Wind Configuration says when a new
+version is out, and its Update entry downloads it, checks its signature, installs it over the same folder (or replaces
+the AppImage under the same name), builds the game code again only if the new version needs it, and precompiles the
+shaders again. If anything goes wrong, the previous version is put back.
+
+**Updating to 0.5.1:** this time only, by hand: extract the zip over your Alpha 5 folder (Windows) or use the new
+AppImage (Linux). Your game files, saves and settings stay, and the rest happens by itself the first time you open it.
+
+### New
+
+- **Updates in one click** on Windows and in the Linux AppImages, x86_64 and aarch64, with detailed messages when
+  something stands in the way (no internet, a full disk, the game still open, an antivirus holding a file, a RomFS of
+  another version...). Releases are signed, and nothing unsigned is ever installed. On AMD on Windows the driver's own
+  Vulkan shader cache is emptied once per update too.
+- **Savage Wind Configuration opens first** when you start Savage Wind, where updates are offered. Game Files > Open
+  this screen first turns that off.
+- **Add to Steam** (Game Files): adds "Savage Wind", which goes straight into the game, and "Savage Wind Configuration"
+  to your Steam library, on Windows and Linux (from Desktop Mode on a Steam Deck).
+- **Background** (Game Files): the start screen and the loading picture show one of your own screenshots by default,
+  or the picture of your latest save, or Savage Wind's art. **Loading picture** can be turned off.
+- 1600x900 in the window and fullscreen sizes ([#587](https://github.com/Revivedx/SavageWindRecomp/issues/587)).
+
+### Fixes
+
+- **Long sessions:** the frame rate no longer falls after two or three hours of play: the table of compute programs
+  grows ([#639](https://github.com/Revivedx/SavageWindRecomp/issues/639)), and draws waiting for their programs no longer sleep a millisecond each ([#707](https://github.com/Revivedx/SavageWindRecomp/issues/707)).
+- **Crashes and device lost:** a constant buffer outside the game's memory after two hours ([#640](https://github.com/Revivedx/SavageWindRecomp/issues/640)), a shader whose loop never
+  ended, and FSR 1 with zero or NaN weights ([#628](https://github.com/Revivedx/SavageWindRecomp/issues/628)).
+- **RADV:** wall corruption on the ROG Ally and ground shimmer on the Steam Machine ([#385](https://github.com/Revivedx/SavageWindRecomp/issues/385), [#614](https://github.com/Revivedx/SavageWindRecomp/issues/614), [#684](https://github.com/Revivedx/SavageWindRecomp/issues/684)).
+- **After loading screens:** several seconds of low frame rate on GPUs at their limit ([#639](https://github.com/Revivedx/SavageWindRecomp/issues/639)).
+- **Menus:** the first menu opened no longer takes a third of a second, opening menus with keyboard icons no longer
+  stutters, and Sharper menus keep the HUD's prompts for the device in use ([#613](https://github.com/Revivedx/SavageWindRecomp/issues/613)).
+- **Frame rate:** Match display uses the monitor's real refresh rate ([#589](https://github.com/Revivedx/SavageWindRecomp/issues/589), [#661](https://github.com/Revivedx/SavageWindRecomp/issues/661)).
+- **HUD at edges** on 16:10 and 4:3: quick-select frames and talk boxes stay whole ([#696](https://github.com/Revivedx/SavageWindRecomp/issues/696)).
+- **Fonts:** item and amiibo glyphs in the fallback font ([#611](https://github.com/Revivedx/SavageWindRecomp/issues/611), [#626](https://github.com/Revivedx/SavageWindRecomp/issues/626)).
+- **2 GB graphics cards:** the heap copy stays under the texture trim point.
+- **Setup:** choosing Savage Wind's own copy of the game no longer says "No game files found" ([#590](https://github.com/Revivedx/SavageWindRecomp/issues/590)).
+- **Intel's older integrated GPUs on Windows:** a likely cause of a driver crash is off ([#596](https://github.com/Revivedx/SavageWindRecomp/issues/596), [#622](https://github.com/Revivedx/SavageWindRecomp/issues/622)).
+- **Cheats:** the One-Hit Obliterator can no longer be added: it left saves stuck ([#652](https://github.com/Revivedx/SavageWindRecomp/issues/652)).
+- **aarch64:** the grass blade patch builds on ARM ([#612](https://github.com/Revivedx/SavageWindRecomp/issues/612)).
+
+### Changed
+
+- **Game version 1.8.2 is no longer supported:** setup refuses it and asks for 1.9.0.
+- FSR 3 and FSR 4 stay held back until their motion vectors are redesigned.
+
 ## Alpha 5 (0.5.0-alpha.5) - 2026-11-08
 
 **The Potato Edition.** Alpha 5 brings the game to weaker PCs with options below the console's settings, runs faster

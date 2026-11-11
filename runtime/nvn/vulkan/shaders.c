@@ -1214,7 +1214,10 @@ static const char *builtin_src(const char *name, int *stage) {
                "  tapf(ac, aw, vec2(1.0, 0.0) - pp, dir, len2, lob, clp, gC);\n"
                "  tapf(ac, aw, vec2(1.0, 2.0) - pp, dir, len2, lob, clp, oC);\n"
                "  tapf(ac, aw, vec2(0.0, 2.0) - pp, dir, len2, lob, clp, nC);\n"
-               "  o = vec4(min(mx, max(mn, ac / aw)), alpha);\n"
+               "  vec3 bilerp = mix(mix(fC, gC, pp.x), mix(jC, kC, pp.x), pp.y);\n"
+               "  vec3 c = aw > 1.0 / 32768.0 ? ac / aw : bilerp;\n"
+               "  if (isnan(c.r) || isnan(c.g) || isnan(c.b) || isinf(c.r) || isinf(c.g) || isinf(c.b)) c = bilerp;\n"
+               "  o = vec4(clamp(c, mn, mx), alpha);\n"
                "}\n";
     }
     // FSR 1 RCAS: contrast-adaptive sharpening of the EASU output (same size). a.x = sharpness (exp2(-stops)),
@@ -1244,6 +1247,8 @@ static const char *builtin_src(const char *name, int *stage) {
                "  vec3 lobeRGB = max(-hitMin, hitMax);\n"
                "  float lobe = max(-(0.25 - 1.0 / 16.0), min(max(lobeRGB.r, max(lobeRGB.g, lobeRGB.b)), 0.0)) * pc.a.x * nz;\n"
                "  vec3 r = (lobe * (b + d + f + h) + e) / (4.0 * lobe + 1.0);\n"
+               "  if (isnan(r.r) || isnan(r.g) || isnan(r.b) || isinf(r.r) || isinf(r.g) || isinf(r.b)) r = e;\n"
+               "  r = clamp(r, vec3(0.0), vec3(1.0));\n"
                "  o = vec4(pc.b.z > 0.5 ? r * r : r, texelFetch(t, ip, 0).a);\n"
                "}\n";
     }

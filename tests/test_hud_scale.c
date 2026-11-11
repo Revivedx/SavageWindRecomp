@@ -86,5 +86,33 @@ int main(void) {
     assert(NEAR(hud_edge_scissor_dy(180, 1080, 0.8), -108.0));
     assert(NEAR(hud_edge_scissor_dy(540, 1080, 0.8), 0.0));
 
+    // HUD at edges: off in a menu, the title and a load; in an event only its top part moves (#599)
+    assert(hud_edge_mode(true, 0.9f, false, false, false, false) == 1);
+    assert(hud_edge_mode(true, 0.9f, false, false, false, true) == 2);
+    assert(!hud_edge_mode(false, 0.9f, false, false, false, false));
+    assert(!hud_edge_mode(true, 1, false, false, false, false));
+    assert(!hud_edge_mode(true, 0.9f, true, false, false, false));
+    assert(!hud_edge_mode(true, 0.9f, false, true, false, false));
+    assert(!hud_edge_mode(true, 0.9f, false, false, true, false));
+    assert(hud_edge_moves(1, -0.8f, 0.9f) && hud_edge_moves(1, 0.3f, 0.9f) && !hud_edge_moves(0, 0.8f, 0.9f));
+    // in an event: the area name (0.53 of the band) and the hearts go to the edge; a chest's item box (its top piece at
+    // 0.36) and a talk box (low down) stay in the band
+    assert(hud_edge_moves(2, 0.53f * 0.9f, 0.9f) && hud_edge_moves(2, 0.85f * 0.75f, 0.75f));
+    assert(!hud_edge_moves(2, 0.36f * 0.9f, 0.9f) && !hud_edge_moves(2, -0.65f * 0.9f, 0.9f));
+
+    // The quick menus' bar is kept in place with HUD at edges alone too, at HUD size 100 (#696)
+    assert(hud_quick_tracked(100, true) && hud_quick_tracked(80, false) && !hud_quick_tracked(100, false));
+    // and the quick-select frames at 16:10 (shape 0.9): their top pieces (y about 0.33) are inside the kept bar
+    assert(hud_quick_keeps(0, 0.33f, 1, 0.9f) && hud_quick_keeps(0.4f, 0.4f, 1, 0.9f));
+
+    // HUD at edges keeps only the bar (pieces up to ~0.41 of the band), not the area name over it (~0.53), at any shape
+    assert(hud_quick_bar(0, 0.37f * 0.9f, 1, 0.9f) && hud_quick_bar(-0.4f, 0.40f * 0.75f, 1, 0.75f));
+    assert(!hud_quick_bar(0, 0.53f * 0.9f, 1, 0.9f) && !hud_quick_bar(0, 0.53f * 0.75f, 1, 0.75f));
+    assert(hud_quick_keeps(0, 0.53f * 0.9f, 1, 0.9f));  // (HUD size still keeps the name at the game's size)
+    // The same for scissors, in pixels: at 1024x768 (shape 0.75) the bar's are kept, the minimap's mask is not
+    assert(hud_quick_bar_px(512, 280, 1024, 768, 0.75) && hud_quick_bar_px(330, 300, 1024, 768, 0.75));
+    assert(!hud_quick_bar_px(919, 622, 1024, 768, 0.75) && !hud_quick_bar_px(100, 60, 1024, 768, 0.75));
+    assert(!hud_quick_bar_px(512, 230, 1024, 768, 0.75) && !hud_quick_bar_px(512, 384, 0, 768, 0.75));
+
     puts("PASS: hud_scale");
 }

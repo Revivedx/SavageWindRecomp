@@ -1766,7 +1766,10 @@ AMD FSR 3.1 upscaling (PRs #194 and #195: per-object motion vectors, the five qu
 built in, but Video > Upscaler doesn't offer it yet (`fsr3_upscaler_enabled` in `runtime/nvn/output_scale.c`). On an
 RTX 3060 the thread that records each frame for Vulkan limits 1080p and 1440p, and the motion vectors and FSR 3 add
 about 1.1 ms there, so every FSR 3 mode ran slower than native at those sizes; only at 4K did Balanced and up gain.
-It comes back once the draw translation on that thread runs in parallel (worked on apart, branch `heap-vram`).
+It comes back with the redesign of the motion vectors planned for Alpha 6: recording them on the render thread costs
+1.2 ms a frame for 2969 draws, spread out (constant buffers 0.35, matching 0.24, frame start 0.16, program 0.15, per-draw
+setup 0.13, push 0.10), with no single defect. FSR itself costs next to nothing there (2026-11-09, 1440p Quality: 130 fps
+native, 104 with FSR 3, 130 with FSR 3 and `SAVAGEWIND_MVEC=0`). That work has to leave the render thread.
 Until then `SAVAGEWIND_FSR3=1` offers it for tests, and a settings file with `upscaler = fsr3` loads as AMD FSR 1 with
 the same quality mode. TAA (Video > Anti-aliasing) and frame generation stay available.
 

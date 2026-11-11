@@ -22,6 +22,20 @@ int main(void) {
     DWORD n = GetModuleFileNameW(NULL, exe, sizeof exe / sizeof *exe);
     wchar_t *slash = n && n < sizeof exe / sizeof *exe ? wcsrchr(exe, L'\\') : NULL;
     if (!slash) return 1;
+    // An update cut off halfway (a power cut, runtime/platform/windows_update.c): put the files back before anything loads them
+    wcscpy(slash + 1, L"update\\journal.txt");
+    if (GetFileAttributesW(exe) != INVALID_FILE_ATTRIBUTES) {
+        wcscpy(slash + 1, L"SW Update.exe");
+        wchar_t recover[4200];
+        swprintf(recover, sizeof recover / sizeof *recover, L"\"%ls\" --recover", exe);
+        STARTUPINFOW rsi = {sizeof rsi};
+        PROCESS_INFORMATION rpi;
+        if (CreateProcessW(exe, recover, NULL, NULL, FALSE, 0, NULL, NULL, &rsi, &rpi)) {
+            WaitForSingleObject(rpi.hProcess, INFINITE);
+            CloseHandle(rpi.hThread);
+            CloseHandle(rpi.hProcess);
+        }
+    }
     wcscpy(slash + 1, L"savagewind.exe");
     const wchar_t *rest = args_after_name(GetCommandLineW());
     size_t cap = wcslen(exe) + wcslen(rest) + 32;

@@ -1166,7 +1166,7 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
 
 #define OPM(val, mask) ((w & (uint64_t)(mask)) == (uint64_t)(val))
     if (OPM(0xe300000000000000ull, 0xfff0000000000000ull)) {  // EXIT
-        sp(&c->body, c->structured ? "    exited = true;\n" : c->branchy ? "    exit_now = true; break;\n" : "    break;\n");
+        sp(&c->body, c->structured ? "    exited = true;\n" : c->branchy ? "    pc = 0u; continue;\n" : "    break;\n");
     } else if (OPM(0xe330000000000000ull, 0xfff0000000000000ull)) {  // KIL
         c->info->uses_discard = true;
         if (getenv("SAVAGEWIND_NO_DISCARD")) {
@@ -2203,11 +2203,14 @@ static void glsl_body(Ctx *c, Str *s, const char *body, bool any_branch, bool db
         sp(s, "  bool exited = false; uint loops = 0u;\n");
         sp(s, "%s", body);
     } else if (any_branch) {
+        // EXIT is pc 0 (no instruction's address), which the loop's own condition ends on. It was a flag and two breaks
+        // (out of the switch, then the loop), and NVIDIA's compiler (MX350, 582.53) left some invocations of one
+        // shader cycling there: the fs 97c7bfb2b67abefb of shrine interiors ran to the 100000 guard, the GPU took
+        // seconds and Windows reset it (#332: device lost in shrines, Divine Beasts).
         sp(s, "  uint pc = 8u; uint ssy[16]; uint ssy_n = 0u; uint pbk[16]; uint pbk_n = 0u; uint pcnt[16]; uint pcnt_n = 0u;\n");
-        sp(s, "  bool exit_now = false;\n");
-        sp(s, "  for (uint guard = 0u; guard < 100000u; guard++) {\n  switch (pc) {\n");
+        sp(s, "  for (uint guard = 0u; guard < 100000u && pc != 0u; guard++) {\n  switch (pc) {\n");
         sp(s, "%s", body);
-        sp(s, "    exit_now = true; break;\n  default: exit_now = true; break;\n  }\n  if (exit_now) break;\n  }\n");
+        sp(s, "    pc = 0u; continue;\n  default: pc = 0u; continue;\n  }\n  }\n");
     } else {
         sp(s, "  do {\n%s  } while (false);\n", body);
     }
@@ -3210,10 +3213,9 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
     if (dbg) sp(&s, maxwell_dbg_pc == 0xffffffffu ? "  float dbgv = 1.0f;\n" : "  float dbgv = -1.0f;\n");
     if (any_branch) {
         sp(&s, "  uint pc = 8u; uint ssy[16]; uint ssy_n = 0; uint pbk[16]; uint pbk_n = 0; uint pcnt[16]; uint pcnt_n = 0;\n");
-        sp(&s, "  bool exit_now = false;\n");
-        sp(&s, "  for (uint guard = 0; guard < 100000u; guard++) {\n  switch (pc) {\n");
+        sp(&s, "  for (uint guard = 0; guard < 100000u && pc != 0u; guard++) {\n  switch (pc) {\n");  // (EXIT: pc 0, as GLSL)
         sp(&s, "%s", c->body.buf ? c->body.buf : "");
-        sp(&s, "    exit_now = true; break;\n  default: exit_now = true; break;\n  }\n  if (exit_now) break;\n  }\n");
+        sp(&s, "    pc = 0u; continue;\n  default: pc = 0u; continue;\n  }\n  }\n");
     } else {
         sp(&s, "  do {\n%s  } while (false);\n", c->body.buf ? c->body.buf : "");
     }
