@@ -109,6 +109,15 @@ int main(void) {
     add(&kb2, "#8a94e07a", 450);
     AchSave ks2 = as(&kb2);
     CHECK(ach_eval(&g_ach_defs[idx("korok_450")], &ks2, &kc, &kt) && !ach_eval(&g_ach_defs[idx("korok_900")], &ks2, &kc, &kt));
+    CHECK(ach_crc32("HiddenKorok_Number") == 0x8a94e07au);  // (the counter's name: the hash found on real saves)
+    // the shrines: the main game's 120 (Clear_Dungeon000..119); the DLC's (120..136) don't count
+    Buf sb = new_save();
+    for (int i = 1; i <= 136; i++) { char n[40]; snprintf(n, sizeof n, "Clear_Dungeon%03d", i); add(&sb, n, 1); }
+    AchSave ss = as(&sb);
+    CHECK(!ach_eval(&g_ach_defs[idx("shrine_120")], &ss, &kc, &kt) && kc == 119 && kt == 120);
+    add(&sb, "Clear_Dungeon000", 1);
+    ss = as(&sb);
+    CHECK(ach_eval(&g_ach_defs[idx("shrine_120")], &ss, &kc, &kt) && kc == 120 && kt == 120);
 
     // the long-list kinds: counting dishes, adding up kills
     {
@@ -456,7 +465,7 @@ int main(void) {
         ach_state_load("achievements.txt");
     }
 
-    // Master Mode: a save is one when its caption (caption.sav next to it) has AoC_HardMode_Enabled, in any slot.
+    // Master Mode: a save is one in slot 6 or 7, or when its caption (caption.sav next to it) has AoC_HardMode_Enabled.
     // Calamity Ganon beaten while playing in it unlocks "master_mode" for every save, a new normal game's too,
     // announced once and kept after a restart. A Master Mode save loaded with it already beaten doesn't count, nor
     // does beating it in normal mode.
@@ -520,6 +529,115 @@ int main(void) {
         ach_state_load("achievements.txt");
         ach_game_loaded(SLOT_H1);
         CHECK(is_unlocked("master_mode") && ach_unlocked_total() == 1);
+        // the slot doesn't make it Master Mode, its caption does (real Master Mode saves were in slots 1, 6 and 7)
+#define SLOT_H7 "hsave/save_3/7/game_data.sav"
+        unlink("achievements.txt");
+        ach_state_load("achievements.txt");
+        MKDIR("hsave/save_3/7");
+        write_file("hsave/save_3/7/caption.sav", &normal);
+        ach_game_loaded(SLOT_H7);
+        CHECK(ach_wants_reread(SLOT_H7) && ach_update(SLOT_H7, &ns2, 7010) == 0);
+        ach_set_active(SLOT_H7);
+        ach_update(SLOT_H7, &bs, 7011);
+        CHECK(is_unlocked("ganon") && !is_unlocked("master_mode"));
+        write_file("hsave/save_3/7/caption.sav", &hard);
+        // live, from the game's memory, before any save: Ganon beaten in a normal game gives nothing; in a Master Mode
+        // one it unlocks as it happens. (Loads are quiet for a while by the clock: these looks come after that.)
+        {
+            unlink("achievements.txt");
+            ach_state_load("achievements.txt");
+            while (ach_toast_take(&t)) {}
+            Buf zero = new_save();
+            add(&zero, "Defeated_Enemy_GanonBeast_Num", 0);
+            AchSave zs = as(&zero);
+            time_t T = time(NULL) + 100;
+            ach_game_loaded(SLOT_H0);
+            ach_live_update(&zs, T), ach_live_update(&zs, T + 20);
+            ach_live_update(&bs, T + 21);
+            CHECK(is_unlocked("ganon") && !is_unlocked("master_mode"));
+            while (ach_toast_take(&t)) {}
+            ach_game_loaded(SLOT_H7);
+            ach_live_update(&zs, T + 30), ach_live_update(&zs, T + 50);
+            CHECK(!is_unlocked("master_mode"));
+            ach_live_update(&bs, T + 51);
+            found = false;
+            while (ach_toast_take(&t)) found |= t == idx("master_mode");
+            CHECK(found && is_unlocked("master_mode"));
+            // a save after it doesn't announce it again
+            ach_set_active(SLOT_H7);
+            ach_update(SLOT_H7, &bs, T + 60);
+            found = false;
+            while (ach_toast_take(&t)) found |= t == idx("master_mode");
+            CHECK(!found && is_unlocked("master_mode"));
+            free(zero.d);
+        }
+        // Ganon's end: his count goes up in the same look as the game resets other flags (a flag going back makes the
+        // look quiet). Once they settle - or when the game then loads the save it wrote - both Ganon achievements are
+        // news. A death (flags back, then as they were) announces nothing.
+        {
+            Buf pre = new_save(), end = new_save();
+            add(&pre, "IsGet_PlayerStole2", 1), add(&pre, "MaxHartValue", 80), add(&pre, "Defeated_Enemy_GanonBeast_Num", 0);
+            add(&end, "IsGet_PlayerStole2", 1), add(&end, "MaxHartValue", 12), add(&end, "Defeated_Enemy_GanonBeast_Num", 1);
+            AchSave ps = as(&pre), es = as(&end);
+            for (int reload = 0; reload < 2; reload++) {
+                unlink("achievements.txt");
+                ach_state_load("achievements.txt");
+                while (ach_toast_take(&t)) {}
+                time_t T = time(NULL) + 200;
+                ach_game_loaded(SLOT_H2);
+                ach_live_update(&ps, T), ach_live_update(&ps, T + 20);  // (the first look, settled)
+                CHECK(ach_toast_pending() == 0);
+                ach_live_update(&es, T + 21);                            // Ganon falls, hearts go back: quiet
+                ach_live_update(&es, T + 25);
+                CHECK(ach_toast_pending() == 0 && !is_unlocked("ganon"));
+                if (reload) ach_game_loaded(SLOT_H2);                    // the game loads the save it wrote
+                else ach_live_update(&es, T + 40);                       // settled
+                bool g = false, m = false;
+                while (ach_toast_take(&t)) g |= t == idx("ganon"), m |= t == idx("master_mode");
+                CHECK(g && m && is_unlocked("ganon") && is_unlocked("master_mode"));
+            }
+            // what happened in the game: Ganon's count reached memory inside a quiet (a load's), the game wrote the save
+            // (read at once, as played) and loaded it back at once: both are announced, once
+            unlink("achievements.txt");
+            ach_state_load("achievements.txt");
+            while (ach_toast_take(&t)) {}
+            {
+                time_t T = time(NULL) + 250;
+                Buf b0 = new_save(), b1 = new_save();
+                add(&b0, "MaxHartValue", 80), add(&b0, "Defeated_Enemy_GanonBeast_Num", 0);
+                add(&b1, "MaxHartValue", 12), add(&b1, "Defeated_Enemy_GanonBeast_Num", 1);
+                AchSave s0 = as(&b0), s1 = as(&b1);
+                ach_game_loaded(SLOT_H2);
+                CHECK(ach_wants_reread(SLOT_H2) && ach_update(SLOT_H2, &s0, T) == 0);
+                ach_live_update(&s0, T), ach_live_update(&s0, T + 20);
+                ach_live_update(&s1, T + 21);                    // the count, with hearts going back: quiet
+                CHECK(ach_toast_pending() == 0);
+                ach_set_active(SLOT_H2);
+                ach_update_played(SLOT_H2, &s1, T + 22, T + 22);  // the game wrote it
+                bool g = false, m = false;
+                while (ach_toast_take(&t)) g |= t == idx("ganon"), m |= t == idx("master_mode");
+                CHECK(g && m);
+                ach_game_loaded(SLOT_H2);                        // ... and loads it back: not again
+                CHECK(ach_toast_pending() == 0);
+                CHECK(ach_wants_reread(SLOT_H2) && ach_update(SLOT_H2, &s1, T + 23) == 0 && ach_toast_pending() == 0);
+                ach_live_update(&s1, T + 40);
+                CHECK(ach_toast_pending() == 0 && is_unlocked("ganon") && is_unlocked("master_mode"));
+                free(b0.d), free(b1.d);
+            }
+            // a death: hearts back, then as they were; nothing new
+            unlink("achievements.txt");
+            ach_state_load("achievements.txt");
+            while (ach_toast_take(&t)) {}
+            time_t T = time(NULL) + 300;
+            ach_game_loaded(SLOT_H0);
+            ach_live_update(&ps, T), ach_live_update(&ps, T + 20);
+            Buf dead = new_save();
+            add(&dead, "IsGet_PlayerStole2", 1), add(&dead, "MaxHartValue", 12), add(&dead, "Defeated_Enemy_GanonBeast_Num", 0);
+            AchSave ds = as(&dead);
+            ach_live_update(&ds, T + 21), ach_live_update(&ps, T + 23), ach_live_update(&ps, T + 40);
+            CHECK(ach_toast_pending() == 0 && !is_unlocked("master_mode"));
+            free(pre.d), free(end.d), free(dead.d);
+        }
         free(hard.d), free(normal.d), free(beat.d), free(ng2.d);
     }
 

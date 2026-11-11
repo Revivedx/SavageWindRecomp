@@ -11,7 +11,11 @@ void ach_ui_toasts(float display_w, float display_h, float scale);
 #ifdef __cplusplus
 // The toasts' fonts (C++ only: ImFont): the achievement's name, the header and description (NULL: the frame's font)
 struct ImFont;
+struct ImFontAtlas;
 void ach_ui_fonts(struct ImFont *title, struct ImFont *body);
+// The game's own fonts for the toasts, from the player's romfs (runtime/ui/quick_hint_font.h): added to the atlas here,
+// their pixels by game_fonts_fill once the atlas is complete. false: no romfs yet (try again once there is one).
+bool ach_ui_game_fonts(struct ImFontAtlas *atlas);
 #endif
 // A toast is on screen or waiting: the overlay has to keep drawing even with the menu closed.
 bool ach_ui_active(void);

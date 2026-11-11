@@ -1707,7 +1707,19 @@ static Service *open_aoc_storage(int index) {
 
 // ------------------------------------------------------------------ host-directory filesystem
 typedef struct { char root[1024]; } HostFs;
-typedef struct { int fd; char path[1100]; uint8_t *patched; uint64_t patched_size; } HostFile;
+typedef struct { int fd; char path[1100]; uint8_t *patched; uint64_t patched_size; bool save_written; } HostFile;
+
+// The game wrote a file of a save (game_data.sav, or caption.sav next to it: Master Mode's mark): the achievements
+// read the save now, as played - before the game may load it back (after Ganon's end it does at once)
+static void save_written(const char *path) {
+    size_t n = strlen(path);
+    if (n >= 13 && !strcmp(path + n - 13, "game_data.sav")) ach_game_wrote(path);
+    else if (n >= 11 && !strcmp(path + n - 11, "caption.sav") && n < 1100) {
+        char g[1100];
+        snprintf(g, sizeof g, "%.*sgame_data.sav", (int)(n - 11), path);
+        if (!access(g, F_OK)) ach_game_wrote(g);
+    }
+}
 // (test only) runtime/services/test_warp.c: game_data.sav read with some values rewritten (SAVAGEWIND_TEST_WARP...)
 bool test_warp_active(void);
 void test_warp_patch(uint8_t *data, uint64_t size);
@@ -1759,6 +1771,7 @@ static void file_close(Service *s) {
     if (!f) return;
     s->state = NULL;
     if (f->fd >= 0) close(f->fd);
+    if (f->save_written) save_written(f->path);
     free(f->patched);
     free(f);
 }
@@ -1935,6 +1948,7 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
         while ((r = rename(p, p2)) && fs_retry(&tries, "rename", p)) {}
         if (r) resp->result = errno_result();
         else if (strlen(p2) >= 13 && !strcmp(p2 + strlen(p2) - 13, "game_data.sav")) ach_set_active(p2);  // (saved via a temp file)
+        if (!r) save_written(p2);
         break;
     case 7: {  // GetEntryType
         struct stat sb;
@@ -1952,6 +1966,8 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
         f->fd = fd;
         strlcpy(f->path, p, sizeof f->path);
         size_t pl = strlen(p);
+        f->save_written = (mode & 2) && ((pl >= 13 && !strcmp(p + pl - 13, "game_data.sav")) ||
+                                         (pl >= 11 && !strcmp(p + pl - 11, "caption.sav")));
         if (pl >= 13 && !strcmp(p + pl - 13, "game_data.sav")) {  // the playthrough being played (achievements)
             ach_set_active(p);
             if (!(mode & 2)) ach_game_loaded(p);  // (opened to read: loaded; to write, it's being saved over)

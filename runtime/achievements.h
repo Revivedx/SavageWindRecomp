@@ -28,7 +28,7 @@ typedef enum {
     ACH_ANY,    // one of the groups in `list` complete: each is a comma-separated list of names, all >= 1 (an armor set's
                 // three pieces); progress is the most of one group
     ACH_META,   // every other achievement unlocked: not from the save, from what the playthrough has (ach_update)
-    ACH_MASTER, // as ACH_FLAG, in a Master Mode save (the profile's slots 6 and 7; normal mode uses 0 to 5): once met,
+    ACH_MASTER, // as ACH_FLAG, in a Master Mode save (AoC_HardMode_Enabled in its caption.sav, any slot): once met,
                 // it is unlocked for every save, a new game's too (kept apart: "@<tab>*" in achievements.txt)
 } AchKind;
 
@@ -93,7 +93,7 @@ bool ach_wants_reread(const char *save_path);
 // so achievements unlock the moment they are met instead of at the next save. Each one met now that wasn't at the
 // previous call unlocks for the save being played, with its notice. A load or a new game changes the flags all at
 // once: for LIVE_SETTLE_S seconds after one (ach_game_loaded, or a flag going back) and after the first call, the
-// calls take the flags as they are without notices. Horse names (ACH_STR) and Master Mode (ACH_MASTER) stay with the saves. Returns the notices.
+// calls take the flags as they are without notices. Horse names (ACH_STR) stay with the saves; Master Mode (ACH_MASTER) counts here when its flag goes up while playing in Master Mode. Returns the notices.
 int ach_live_update(const AchSave *s, time_t now);
 void ach_live_start(void);  // achievements_live.c: the thread that reads them (ach_start starts it)
 void ach_live_stop(void);
@@ -103,6 +103,11 @@ void ach_live_stop(void);
 int ach_update(const char *save_path, const AchSave *s, time_t now);
 // The same, given when the save was written (its file time: the save shown before the game opens one is the newest)
 int ach_update_at(const char *save_path, const AchSave *s, time_t now, time_t written);
+// ... a save the game has just written (runtime/services/fs.c, as it closes or renames it): played, whatever happens
+// next (after Ganon's end the game loads it back at once, which would make the watcher's look a quiet one)
+int ach_update_played(const char *save_path, const AchSave *s, time_t now, time_t written);
+// Reads that save and calls ach_update_played (runtime/achievements_watch.c)
+void ach_game_wrote(const char *save_path);
 
 typedef struct {
     const AchDef *def;

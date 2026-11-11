@@ -106,6 +106,19 @@ static void on_file(const char *path, const struct stat *st) {
     free(data);
 }
 
+void ach_game_wrote(const char *path) {
+    uint8_t *data;
+    size_t n;
+    if (!read_all(path, &data, &n)) return;
+    AchSave s = {data, n};
+    struct stat st;
+    if (ach_save_ok(&s)) {
+        int fresh = ach_update_played(path, &s, time(NULL), stat(path, &st) ? 0 : st.st_mtime);
+        if (fresh) LOG("[achievements] %d new from %s (written by the game)\n", fresh, path);
+    }
+    free(data);
+}
+
 // A save file that has vanished was deleted: its achievements go with it.
 static void after_scan(void) {
     for (int i = 0; i < n_files; i++) {

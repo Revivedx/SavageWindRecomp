@@ -3,7 +3,7 @@
 // Confirmed against this repo: IsGet_PlayerStole2 (the paraglider, runtime/services/test_warp.c) and MaxHartValue (4
 // per heart: 120 = 30 hearts, docs/SAVAGE-WIND.md). The other names come from how BOTW names its save flags and
 // still need checking against a real save: `tools/ach_tool verify <game_data.sav>` lists each one found / not found.
-// The Korok seed counter's name isn't known: "#8a94e07a" is its crc32, found with `ach_tool counter` on saves with 2, 3 and 4 seeds.
+// The Korok seed counter is HiddenKorok_Number (crc32 8a94e07a, found with `ach_tool counter` on saves with 2, 3 and 4 seeds).
 // The table is in order of difficulty, easiest first (a rough guess of the effort in a normal playthrough): it is also the order
 // of the lists in the menus. The ids are what is saved, so moving a line never loses anything.
 // An achievement whose flag isn't in the save simply never unlocks (nothing breaks). A flag whose name isn't known can be
@@ -23,8 +23,8 @@ const AchDef g_ach_defs[] = {
     {"leave_shrine", "Awakening", "Leave the Shrine of Resurrection.", ACH_FLAG, "IsPlayed_Demo103_0", 0, 0, 1},
     // (Defeated_<actor>_Num counts the kills of each enemy)
     {"first_enemy", "What's That?", "Defeat your first enemy.", ACH_SUM, "", 0, 0, 1, L_defeated, ACH_N(L_defeated)},
-    {"shrine_1", "First Trial", "Complete a shrine.", ACH_COUNT, "Clear_Dungeon%03d", 0, 120, 1},
-    {"shrine_4", "Four Trials", "Complete 4 shrines.", ACH_COUNT, "Clear_Dungeon%03d", 0, 120, 4},
+    {"shrine_1", "First Trial", "Complete a shrine.", ACH_COUNT, "Clear_Dungeon%03d", 0, 119, 1},
+    {"shrine_4", "Four Trials", "Complete 4 shrines.", ACH_COUNT, "Clear_Dungeon%03d", 0, 119, 4},
     {"paraglider", "Take Flight", "Get the Paraglider.", ACH_FLAG, "IsGet_PlayerStole2", 0, 0, 1},
     // Beedle's first talk (Npc_TripMaster: Beedle, "Terry" in Spanish)
     {"beedle", "My Best Friend", "Talk to Beedle.", ACH_FLAG, "Npc_TripMaster_00_Talk", 0, 0, 1},
@@ -39,7 +39,7 @@ const AchDef g_ach_defs[] = {
     {"perfect_guard", "Not Today, Thanks", "Parry an attack with your shield.", ACH_FLAG, "GuideSPlus_GurdJust", 0, 0, 1},
     // Shield surfing: GuideSPlus_Surfing, set with Guide_Surfing the first time (seen with SAVAGEWIND_LOG_FLAGS)
     {"shield_surf", "Just Like the Beach", "Surf down a slope on your shield.", ACH_FLAG, "GuideSPlus_Surfing", 0, 0, 1},
-    {"korok_1", "Is That Its Poop?", "Find your first Korok seed.", ACH_FLAG, "#8a94e07a", 0, 0, 1},
+    {"korok_1", "Is That Its Poop?", "Find your first Korok seed.", ACH_FLAG, "HiddenKorok_Number", 0, 0, 1},
     // Horse names: the save keeps 6 names of 64 characters (16 entries each) under crc32 0x7b74e117 (zeldamods.org, Save Files).
     // A slot has a name once a horse is registered at a stable. `ach_tool horses <save>` prints the slots.
     {"horse_registered", "A Little Horse", "Register a horse at a stable.", ACH_STR, "#7b74e117", 16, 0, 1},
@@ -53,11 +53,11 @@ const AchDef g_ach_defs[] = {
     {"guardians_10", "Guardian Hunter", "Destroy 10 Guardians.", ACH_SUM, "", 0, 0, 10, L_guardians, ACH_N(L_guardians)},
 
     // ---- the first stretch of the adventure ----
-    {"shrine_25", "Shrine Wanderer", "Complete 25 shrines.", ACH_COUNT, "Clear_Dungeon%03d", 0, 120, 25},
+    {"shrine_25", "Shrine Wanderer", "Complete 25 shrines.", ACH_COUNT, "Clear_Dungeon%03d", 0, 119, 25},
     // The 15 Sheikah Towers are what reveals the map (MapTower_01..15, 1 once activated).
     {"map_towers", "Cartographer", "Reveal the whole map: activate all 15 Sheikah Towers.", ACH_COUNT, "MapTower_%02d", 1, 15, 15},
-    // The Korok seed counter's name isn't known: "#8a94e07a" is its crc32 (see the top of the file).
-    {"korok_100", "Seed Gatherer", "Find 100 Korok seeds.", ACH_FLAG, "#8a94e07a", 0, 0, 100},
+    // The Korok seed counter: HiddenKorok_Number (see the top of the file).
+    {"korok_100", "Seed Gatherer", "Find 100 Korok seeds.", ACH_FLAG, "HiddenKorok_Number", 0, 0, 100},
     {"beast_ruta", "Waters Calmed", "Free Divine Beast Vah Ruta.", ACH_FLAG, "Clear_RemainsWater", 0, 0, 1},
     {"beast_rudania", "Fire Quelled", "Free Divine Beast Vah Rudania.", ACH_FLAG, "Clear_RemainsFire", 0, 0, 1},
     {"beast_naboris", "Storm Stilled", "Free Divine Beast Vah Naboris.", ACH_FLAG, "Clear_RemainsElectric", 0, 0, 1},
@@ -91,7 +91,7 @@ const AchDef g_ach_defs[] = {
     // Dark Beast Ganon is Calamity Ganon's last form: beating it ends the game.
     {"ganon", "End of the Calamity", "Defeat Calamity Ganon.", ACH_FLAG, "Defeated_Enemy_GanonBeast_Num", 0, 0, 1},
     {"hearts_20", "Stronger Heart", "Reach 20 hearts.", ACH_FLAG, "MaxHartValue", 0, 4, 20},
-    {"shrine_60", "Shrine Veteran", "Complete 60 shrines.", ACH_COUNT, "Clear_Dungeon%03d", 0, 120, 60},
+    {"shrine_60", "Shrine Veteran", "Complete 60 shrines.", ACH_COUNT, "Clear_Dungeon%03d", 0, 119, 60},
     // "Stranded on Eventide" (QL_NakedIsland): the island's trial finished
     {"eventide", "The Lost Island", "Complete Eventide Island.", ACH_FLAG, "NakedIsland_Finish", 0, 0, 1},
     {"stables", "Horse Lover", "Visit every stable.", ACH_SET, "", 0, 0, 0, L_stables, ACH_N(L_stables)},
@@ -127,16 +127,16 @@ const AchDef g_ach_defs[] = {
     // ---- the completionist ones ----
     {"great_fairy", "Thank You, Great Fairy!", "Fully upgrade an armor set.", ACH_ANY, "", 0, 0, 0, L_great_fairy,
      ACH_N(L_great_fairy)},
-    {"korok_450", "Seed Hoarder", "Find 450 Korok seeds.", ACH_FLAG, "#8a94e07a", 0, 0, 450},
+    {"korok_450", "Seed Hoarder", "Find 450 Korok seeds.", ACH_FLAG, "HiddenKorok_Number", 0, 0, 450},
     {"hearts_30", "Heart of a Hero", "Reach 30 hearts.", ACH_FLAG, "MaxHartValue", 0, 4, 30},
     {"cook_100", "Master Chef", "Cook 100 different recipes.", ACH_SET, "", 0, 0, 100, L_cook, ACH_N(L_cook)},
     {"dark_armor", "The Dark Side", "Get Dark Link's armor.", ACH_ALL,
      "IsGet_Armor_160_Head,IsGet_Armor_160_Upper,IsGet_Armor_160_Lower", 0, 0, 3},
     {"dex_food", "Flavor Hunter", "Complete the Compendium's food ingredients.", ACH_SET, "", 0, 0, 0, L_dex_food, ACH_N(L_dex_food)},
-    {"shrine_120", "Shrine Master", "Complete all 120 shrines.", ACH_COUNT, "Clear_Dungeon%03d", 0, 120, 120},
+    {"shrine_120", "Shrine Master", "Complete all 120 shrines.", ACH_COUNT, "Clear_Dungeon%03d", 0, 119, 120},
     {"dex_creatures", "Photographer of the Realm", "Fill the Compendium's creatures.", ACH_SET, "", 0, 0, 0, L_dex_creatures,
      ACH_N(L_dex_creatures)},
-    {"korok_900", "Seed Legend", "Find all 900 Korok seeds.", ACH_FLAG, "#8a94e07a", 0, 0, 900},
+    {"korok_900", "Seed Legend", "Find all 900 Korok seeds.", ACH_FLAG, "HiddenKorok_Number", 0, 0, 900},
     // Calamity Ganon beaten in a Master Mode save: kept for every save, a new normal game's too
     {"master_mode", "Master Hylian", "Beat the game in Master Mode.", ACH_MASTER, "Defeated_Enemy_GanonBeast_Num", 0, 0, 1},
 

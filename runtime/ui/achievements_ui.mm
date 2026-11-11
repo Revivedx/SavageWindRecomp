@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <deque>
+#include <vector>
 #include <string>
 
 #include "i18n.h"
@@ -17,14 +18,32 @@
 #include "../achievements.h"
 #include "achievements_ui.h"
 #include "ach_icon.h"
+#include "quick_hint_font.h"
+extern "C" {
+#include "../rt.h"  // (g_romfs_dir)
+}
 
 namespace {
-// A panel slides down from the top edge of the screen (centered), holds, and slides back up the same way.
-const double TOAST_SECONDS = 5.5, SLIDE_IN = 0.45, SLIDE_OUT = 0.45, SHINE_AT = 0.35, SHINE_LEN = 0.9;
+// A panel in the game's own look (its item-get box and its buttons) fades in near the top of the screen (centered),
+// holds, and fades out.
+const double TOAST_SECONDS = 5.5, FADE_IN = 0.30, FADE_OUT = 0.40;
 struct Toast { int index; double start; };
 std::deque<Toast> shown;  // render thread only
 const ImVec4 GOLD(0.93f, 0.76f, 0.33f, 1), GREY(0.62f, 0.62f, 0.60f, 1);
 ImFont *g_title_font, *g_body_font;  // (ach_ui_fonts)
+ImFont *g_game_title, *g_game_body;  // (ach_ui_game_fonts: the game's own, when the romfs has them)
+
+// The game's font when it has every character of s (a language whose letters it lacks: the overlay's font)
+ImFont *pick(ImFont *game, ImFont *other, const char *s) {
+    if (!game) return other;
+    for (unsigned c; *s;) {
+        int n = ImTextCharFromUtf8(&c, s, nullptr);
+        if (!n) break;
+        s += n;
+        if (c >= 32 && !game->FindGlyphNoFallback((ImWchar)c)) return other;
+    }
+    return game;
+}
 
 void pull_new(double now) {
     int i;
@@ -56,134 +75,125 @@ void pull_new(double now) {
     else if (any) ach_sound_play();
 }
 float ease_out(float t) { t = 1 - t; return 1 - t * t * t; }
-float ease_in(float t) { return t * t * t; }
+
+// Text slanted as the game's titles are (about 12 degrees: each vertex moved right by its height over the baseline)
+void slanted_text(ImDrawList *dl, ImFont *f, float size, ImVec2 at, ImU32 c, const char *s) {
+    int first = dl->VtxBuffer.Size;
+    dl->AddText(f, size, at, c, s);
+    float base = at.y + size * 0.8f;
+    for (int i = first; i < dl->VtxBuffer.Size; i++) dl->VtxBuffer[i].pos.x += (base - dl->VtxBuffer[i].pos.y) * 0.21f;
+}
 ImU32 col(float r, float g, float b, float a) { return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a)); }
 
-// The header in capitals (ASCII and the Latin-1 letters: "Logro obtenido" -> "LOGRO OBTENIDO"), its letters spread
-std::string upper(const char *s) {
-    std::string u(s);
-    for (size_t k = 0; k < u.size(); k++) {
-        unsigned char c = u[k];
-        if (c >= 'a' && c <= 'z') u[k] = (char)(c - 32);
-        else if (c == 0xc3 && k + 1 < u.size() && (unsigned char)u[k + 1] >= 0xa0 && (unsigned char)u[k + 1] != 0xb7 &&
-                 (unsigned char)u[k + 1] <= 0xbe) u[k + 1] = (char)((unsigned char)u[k + 1] - 0x20), k++;
-    }
-    return u;
-}
-float spaced_width(ImFont *f, float size, const char *s, float sp) {
-    float w = 0;
-    int n = 0;
-    for (const char *p = s; *p; n++) {
-        unsigned c;
-        const char *q = p;
-        p += ImTextCharFromUtf8(&c, p, NULL);
-        w += f->CalcTextSizeA(size, FLT_MAX, 0, q, p).x;
-    }
-    return n ? w + sp * (n - 1) : 0;
-}
-void spaced_text(ImDrawList *dl, ImFont *f, float size, ImVec2 at, ImU32 c, const char *s, float sp) {
-    for (const char *p = s; *p;) {
-        unsigned ch;
-        const char *q = p;
-        p += ImTextCharFromUtf8(&ch, p, NULL);
-        dl->AddText(f, size, at, c, q, p);
-        at.x += f->CalcTextSizeA(size, FLT_MAX, 0, q, p).x + sp;
-    }
-}
 }  // namespace
 
 void ach_ui_fonts(ImFont *title, ImFont *body) { g_title_font = title, g_body_font = body; }
 
-bool ach_ui_active(void) { return !shown.empty() || ach_toast_pending() > 0; }
+bool ach_ui_game_fonts(ImFontAtlas *atlas) {
+    g_game_title = g_game_body = nullptr;
+    if (!g_romfs_dir) return false;
+    // the characters the toasts write: ASCII, the Latin-1 letters, and whatever the texts in this language add
+    std::vector<unsigned> chars;
+    for (unsigned c = 32; c < 127; c++) chars.push_back(c);
+    for (unsigned c = 0xa1; c <= 0xff; c++) chars.push_back(c);
+    auto add = [&](const char *s) {
+        for (unsigned c; s && *s;) {
+            int n = ImTextCharFromUtf8(&c, s, nullptr);
+            if (!n) break;
+            s += n;
+            if (c >= 0x100 && c <= 0xffff && std::find(chars.begin(), chars.end(), c) == chars.end()) chars.push_back(c);
+        }
+    };
+    add(tr("Achievement Obtained"));
+    for (int i = 0; i < g_ach_count; i++) add(tr(g_ach_defs[i].name)), add(tr(g_ach_defs[i].desc));
+    // Normal_00: the game's text; its titles (item names, the option rows) are the same font, slanted (slanted_text)
+    static const char *const fonts[] = {"Normal_00.bffnt"};
+    ImFont *got[1];
+    game_fonts_add(atlas, fonts, 1, chars.data(), (int)chars.size(), got);
+    g_game_title = g_game_body = got[0];
+    return true;
+}
+
+bool ach_ui_active(void) {
+    static int demo = -1;  // (SAVAGEWIND_ACH_DEMO: its toasts have to be drawn too, before they are taken; 10 minutes)
+    static time_t demo_until;
+    if (demo < 0) demo = getenv("SAVAGEWIND_ACH_DEMO") != NULL, demo_until = time(NULL) + 600;
+    return !shown.empty() || ach_toast_pending() > 0 || (demo && time(NULL) < demo_until);
+}
 
 void ach_ui_toasts(float display_w, float display_h, float scale) {
     (void)display_h;
-    const float SIZE = 0.92f;  // (the whole panel: its measures and its text)
-    scale *= SIZE;
     double now = ImGui::GetTime();
     while (!shown.empty() && now - shown.front().start > TOAST_SECONDS) shown.pop_front();
     pull_new(now);
     ImDrawList *dl = ImGui::GetForegroundDrawList();
     ImFont *font = ImGui::GetFont(), *tf = g_title_font ? g_title_font : font, *bf = g_body_font ? g_body_font : font;
-    const float base = ImGui::GetFontSize() * SIZE;
-    const float s_head = base * 0.60f, s_name = base * 1.30f, s_desc = base * 0.74f, spread = 2.4f * scale;
-    float y = 16 * scale;  // (resting top of the first panel)
+    const float base = ImGui::GetFontSize();
+    const float s_head = base * 0.62f, s_name = base * 1.12f, s_desc = base * 0.70f;
+    float y = 64 * scale;  // (resting top of the first panel: below the screen's edge, as the game's own boxes)
     for (size_t k = 0; k < shown.size(); k++) {
         AchInfo in;
         ach_info(shown[k].index, &in);
         if (!in.def) continue;
-        std::string head = upper(tr("Achievement Obtained"));
-        const char *name = tr(in.def->name), *desc = tr(in.def->desc);
-        float hw = spaced_width(bf, s_head, head.c_str(), spread), hh = bf->CalcTextSizeA(s_head, FLT_MAX, 0, "A").y;
-        ImVec2 sn = tf->CalcTextSizeA(s_name, FLT_MAX, 0, name), sd = bf->CalcTextSizeA(s_desc, FLT_MAX, 0, desc);
+        const char *head = tr("Achievement Obtained"), *name = tr(in.def->name), *desc = tr(in.def->desc);
+        ImFont *hf = pick(g_game_body, bf, head), *nf = pick(g_game_title, tf, name), *df = pick(g_game_body, bf, desc);
+        ImVec2 sh = hf->CalcTextSizeA(s_head, FLT_MAX, 0, head), sn = nf->CalcTextSizeA(s_name, FLT_MAX, 0, name),
+               sd = df->CalcTextSizeA(s_desc, FLT_MAX, 0, desc);
         ImTextureID pic = ach_icon(in.def->id);  // (the player's picture for it, if there is one)
-        float pad = 20 * scale, icon = 66 * scale, gap = 20 * scale, rounding = 10 * scale, bar = 3 * scale;
-        float text_w = std::max(hw, std::max(sn.x, sd.x));
-        float w = std::max(pad + icon + gap + text_w + pad * 1.5f, 440 * scale);
-        float h = std::max(pad + hh + 5 * scale + sn.y + 2 * scale + sd.y + pad + bar, icon + 2 * pad + bar);
+        float pad = 16 * scale, icon = 76 * scale, gap = 18 * scale;
+        float text_w = std::max(sh.x, std::max(sn.x, sd.x));
+        float w = std::max(pad + icon + gap + text_w + pad * 1.6f, 480 * scale);
+        float h = std::max(pad + sh.y + 2 * scale + sn.y + 4 * scale + sd.y + pad, icon + 2 * pad);
 
-        // the slide: down into place when it appears, the same movement backwards when it leaves; it fades with it
+        // in: a fade, coming down a little; out: a fade
         double age = now - shown[k].start, left = TOAST_SECONDS - age;
-        float slide = age < SLIDE_IN ? ease_out((float)(age / SLIDE_IN)) : left < SLIDE_OUT ? ease_out((float)(left / SLIDE_OUT)) : 1.0f;
-        float a = std::min(1.0f, slide * 1.4f);
-        float rest = y;                                    // where this panel stops
-        float y0 = rest - (h + rest) * (1.0f - slide);     // above the screen at first (slide 0), then at `rest`
-        float x0 = (display_w - w) * 0.5f, x1 = x0 + w, y1 = y0 + h;
+        float a = age < FADE_IN ? ease_out((float)(age / FADE_IN)) : left < FADE_OUT ? (float)(left / FADE_OUT) : 1.0f;
+        a = std::clamp(a, 0.0f, 1.0f);
+        float drop = age < FADE_IN ? (1 - ease_out((float)(age / FADE_IN))) * 10 * scale : 0;
+        float x0 = floorf((display_w - w) * 0.5f), x1 = x0 + w, y0 = floorf(y - drop), y1 = y0 + h;
 
-        // a soft shadow under it
-        for (int i = 1; i <= 6; i++) {
-            float e = i * 2.5f * scale;
-            dl->AddRectFilled(ImVec2(x0 - e, y0 - e + 4 * scale), ImVec2(x1 + e, y1 + e + 4 * scale), col(0, 0, 0, 0.07f * a), rounding + e);
+        // the panel: translucent black with square corners, a thin pale frame and a fainter one just inside it (the
+        // game's buttons), and short bright marks on its corners (its item box)
+        float th = std::max(1.0f, 1.2f * scale), r = 2 * scale;
+        dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), col(0, 0, 0, 0.72f * a), r);
+        dl->AddRectFilledMultiColor(ImVec2(x0, y0), ImVec2(x1, y0 + h * 0.5f), col(1, 1, 1, 0.035f * a),
+                                    col(1, 1, 1, 0.035f * a), col(1, 1, 1, 0), col(1, 1, 1, 0));
+        dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), col(0.86f, 0.85f, 0.78f, 0.55f * a), r, 0, th);
+        float in4 = 4 * scale;
+        dl->AddRect(ImVec2(x0 + in4, y0 + in4), ImVec2(x1 - in4, y1 - in4), col(0.86f, 0.85f, 0.78f, 0.16f * a), 0, 0, th);
+        ImU32 mark = col(0.97f, 0.96f, 0.90f, 0.85f * a);
+        float m = 9 * scale, mt = std::max(1.0f, 1.6f * scale);
+        const ImVec2 corner[4] = {{x0, y0}, {x1, y0}, {x0, y1}, {x1, y1}};
+        for (int c = 0; c < 4; c++) {
+            float dx = c & 1 ? -m : m, dy = c & 2 ? -m : m;
+            ImVec2 p = corner[c];
+            dl->AddLine(p, ImVec2(p.x + dx, p.y), mark, mt);
+            dl->AddLine(p, ImVec2(p.x, p.y + dy), mark, mt);
         }
-        // the panel: deep teal-black, lighter at the top, a gold edge on the left, a thin gold outline and an inner line
-        ImU32 gold = col(0.95f, 0.78f, 0.36f, a);
-        float th = std::max(1.0f, 1.3f * scale);
-        dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), col(0.03f, 0.06f, 0.07f, 0.94f * a), rounding);
-        dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y0 + h * 0.5f), col(0.30f, 0.55f, 0.58f, 0.09f * a), rounding, ImDrawFlags_RoundCornersTop);
-        dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x0 + 5 * scale, y1), gold, rounding, ImDrawFlags_RoundCornersLeft);
-        dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), col(0.95f, 0.78f, 0.36f, 0.65f * a), rounding, 0, th);
-        float in4 = 5 * scale;
-        dl->AddRect(ImVec2(x0 + in4 + 3 * scale, y0 + in4), ImVec2(x1 - in4, y1 - in4), col(0.95f, 0.78f, 0.36f, 0.14f * a), rounding * 0.6f, 0, th);
 
-        // the emblem: a glowing gold ring, the player's picture in it or a triangle of three triangles
-        float cx = x0 + pad + 6 * scale + icon * 0.5f, cy = y0 + (h - bar) * 0.5f, r = icon * 0.5f;
-        float pulse = 0.5f + 0.5f * sinf((float)age * 3.0f);
-        for (int i = 1; i <= 5; i++) dl->AddCircleFilled(ImVec2(cx, cy), r + i * 2.6f * scale, col(0.95f, 0.78f, 0.36f, (0.035f + 0.02f * pulse) * a), 48);
-        dl->AddCircleFilled(ImVec2(cx, cy), r, col(0.05f, 0.09f, 0.10f, a), 48);
+        // the picture on the left, on a soft gold glow (as the game shows the item it hands over)
+        float cx = x0 + pad + icon * 0.5f, cy = y0 + h * 0.5f, ir = icon * 0.5f;
+        float pulse = 0.5f + 0.5f * sinf((float)age * 2.4f);
+        for (int i = 6; i >= 1; i--)
+            dl->AddCircleFilled(ImVec2(cx, cy), ir * (0.35f + 0.13f * i), col(1.0f, 0.86f, 0.45f, (0.045f + 0.012f * pulse) * a), 40);
         if (pic) {
-            float ir = r - 4 * scale;
-            dl->AddImageRounded(pic, ImVec2(cx - ir, cy - ir), ImVec2(cx + ir, cy + ir), ImVec2(0, 0), ImVec2(1, 1), col(1, 1, 1, a), ir);
-        } else {
-            float t = r * 0.42f, hgt = t * 0.866f;  // (each small triangle: side t)
-            auto tri = [&](float bx, float by) {  // (bx, by: its bottom left corner)
-                dl->AddTriangleFilled(ImVec2(bx, by), ImVec2(bx + t, by), ImVec2(bx + t * 0.5f, by - hgt), gold);
-            };
-            float bx = cx - t, by = cy + hgt;
+            float pr = ir * 0.86f;
+            dl->AddImage(pic, ImVec2(cx - pr, cy - pr), ImVec2(cx + pr, cy + pr), ImVec2(0, 0), ImVec2(1, 1), col(1, 1, 1, a));
+        } else {  // (no picture: three triangles in gold)
+            ImU32 gold = col(0.98f, 0.84f, 0.45f, a);
+            float t = ir * 0.62f, hgt = t * 0.866f, bx = cx - t, by = cy + hgt;
+            auto tri = [&](float x, float y2) { dl->AddTriangleFilled(ImVec2(x, y2), ImVec2(x + t, y2), ImVec2(x + t * 0.5f, y2 - hgt), gold); };
             tri(bx, by), tri(bx + t, by), tri(bx + t * 0.5f, by - hgt);
         }
-        dl->AddCircle(ImVec2(cx, cy), r, gold, 48, 2 * th);
 
-        // the text: the header in spread gold capitals, the name in the serif, the description below
-        float tx = cx + r + gap, ty = y0 + pad;
-        spaced_text(dl, bf, s_head, ImVec2(tx, ty), gold, head.c_str(), spread);
-        float ny = ty + hh + 5 * scale;
-        dl->AddText(tf, s_name, ImVec2(tx + 2 * scale, ny + 2 * scale), col(0, 0, 0, 0.7f * a), name);  // (shadow)
-        dl->AddText(tf, s_name, ImVec2(tx, ny), col(1, 0.98f, 0.93f, a), name);
-        dl->AddText(bf, s_desc, ImVec2(tx, ny + sn.y + 2 * scale), col(0.74f, 0.79f, 0.77f, a), desc);
-
-        // a light that sweeps across it once it is in, and the time it has left as a gold line along the bottom
-        dl->PushClipRect(ImVec2(x0, y0), ImVec2(x1, y1), true);
-        float sp = (float)((age - SHINE_AT) / SHINE_LEN);
-        if (sp > 0 && sp < 1) {
-            float sx = x0 - h + (w + 2 * h) * ease_out(sp), bw = 46 * scale;
-            dl->AddQuadFilled(ImVec2(sx, y0), ImVec2(sx + bw, y0), ImVec2(sx + bw - h * 0.6f, y1), ImVec2(sx - h * 0.6f, y1),
-                              col(1, 0.95f, 0.8f, 0.10f * a * sinf(sp * 3.14159f)));
-        }
-        float life = std::clamp((float)(left / TOAST_SECONDS), 0.0f, 1.0f);
-        dl->AddRectFilled(ImVec2(x0 + rounding, y1 - bar - 2 * scale), ImVec2(x0 + rounding + (w - 2 * rounding) * life, y1 - 2 * scale),
-                          col(0.95f, 0.78f, 0.36f, 0.55f * a), bar);
-        dl->PopClipRect();
-        y = rest + h + 12 * scale;  // (the next one rests below this one, whatever this one is doing)
+        // the text: a small header, the name large in the game's slanted title face, the description in its body text
+        float tx = x0 + pad + icon + gap, ty = y0 + pad;
+        dl->AddText(hf, s_head, ImVec2(tx, ty), col(0.93f, 0.85f, 0.55f, a), head);
+        float ny = ty + sh.y + 2 * scale;
+        slanted_text(dl, nf, s_name, ImVec2(tx + 1.5f * scale, ny + 1.5f * scale), col(0, 0, 0, 0.8f * a), name);  // (shadow)
+        slanted_text(dl, nf, s_name, ImVec2(tx, ny), col(1, 1, 1, a), name);
+        dl->AddText(df, s_desc, ImVec2(tx, ny + sn.y + 4 * scale), col(0.90f, 0.90f, 0.86f, a), desc);
+        y = y0 + drop + h + 10 * scale;  // (the next one rests below this one)
     }
 }
 

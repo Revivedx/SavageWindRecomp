@@ -420,6 +420,7 @@ static bool g_inited;
 static ImGuiContext *g_ctx;  // ours: the start screen (back to it after a reboot) has its own context
 static ImFont *g_hint_font, *g_hint_buttons;
 static bool g_hint_font_attempted;
+static bool g_ach_game_fonts;  // the achievement toasts asked for the game's fonts (there was a romfs)
 static uint32_t g_hint_generation;
 static ImFont *g_font, *g_font_big;
 static ImFont *g_font_mono;  // the console (columns line up); NULL: the normal font
@@ -527,9 +528,11 @@ static void load_fonts(void) {
     if (!g_font_big) g_font_big = g_font;
     if (!g_menu_font || !g_menu_font_big) g_menu_font = g_font, g_menu_font_big = g_font_big;
     ach_ui_fonts(toast_title ? toast_title : g_menu_font_big, g_menu_font);
+    g_ach_game_fonts = ach_ui_game_fonts(io.Fonts);  // (their pixels: game_fonts_fill below, once the atlas is built)
     g_hint_font = g_hint_buttons = nullptr;
     g_hint_font_attempted = g_romfs_dir && (g_settings.quick_sort || g_settings.quick_drop);
     if (g_hint_font_attempted) quick_hint_fonts_load(io.Fonts, &g_hint_font, &g_hint_buttons);
+    game_fonts_fill(io.Fonts);
     g_hint_generation = icons_generation;
 }
 
@@ -538,7 +541,8 @@ extern "C" void vk_imgui_fonts_changed(void);  // (runtime/nvn/vulkan/imgui_glue
 static void fonts_follow_language(void) {
     bool need_hint_fonts = (g_settings.quick_sort || g_settings.quick_drop) && g_romfs_dir && !g_hint_font_attempted;
     bool icons_changed = (g_settings.quick_sort || g_settings.quick_drop) && g_hint_generation != glyphs_generation();
-    if (g_fonts_lang == ui_lang_generation() && !need_hint_fonts && !icons_changed) return;
+    bool need_ach_fonts = g_romfs_dir && !g_ach_game_fonts;  // (the achievement toasts' game fonts: the romfs is there now)
+    if (g_fonts_lang == ui_lang_generation() && !need_hint_fonts && !icons_changed && !need_ach_fonts) return;
     load_fonts();
 #ifdef __APPLE__
     ImGui_ImplMetal_DestroyFontsTexture();  // (NewFrame makes it again)

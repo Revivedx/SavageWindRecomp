@@ -32,13 +32,20 @@ Savage Wind has a small achievement system that never touches the game: it reads
   What becomes met while playing unlocks for the save being played, with its notice, and the save written after it
   doesn't announce it again; the progress shown (12 / 80 ...) follows the flags too. (Dishes count by kind: a dish's
   effect - spicy, hearty - doesn't make it another one; the game marks IsGet_Item_Cook_* per kind.) A load or a new game changes the flags all at once, so for 10 s after one (the game
-  opening a save to read, or a flag going back) and after the first look, they are taken without notices. Horse names
-  and Master Hylian stay with the saves. `SAVAGEWIND_NO_LIVE_ACH=1`: only the saves.
+  opening a save to read, or a flag going back) and after the first look, they are taken without notices. A quiet that
+  came from flags going back with no load (Ganon's end raises his count in the same moment the game resets other flags;
+  a death; a new game) still announces, once they settle or the game loads a save, what is met then and wasn't before. Horse names
+  stay with the saves. `SAVAGEWIND_NO_LIVE_ACH=1`: only the saves.
 - **Kept for every save** (`ACH_MASTER`): Master Hylian, Calamity Ganon beaten while playing in Master Mode. A save is
   a Master Mode one when its caption (`caption.sav` next to it, what the load list shows: the save's format) has
-  `AoC_HardMode_Enabled` set; either mode can be in any slot. It counts when the game writes such a save with Ganon's
-  defeat count higher than in the save being played (beaten, or beaten once more): a Master Mode save loaded with Ganon
-  already beaten doesn't, until he is beaten in it again. Then it is unlocked once and for good: every save
+  `AoC_HardMode_Enabled` set (seen on real Master Mode saves in slots 1, 6 and 7: either mode can be in any slot).
+  A save the game writes is read at once, as played (`runtime/services/fs.c` tells as it closes or renames it, and again
+  when it writes `caption.sav`): after Ganon's end the game loads it back right away, which would otherwise make that a
+  quiet load. It counts as it happens, when Ganon's defeat count goes up in the game's memory (not in the quiet seconds after a
+  load) while the save the game opened last is a Master Mode one or the game's flags have `AoC_HardMode_Enabled`; and
+  when the game writes a Master Mode save with that count higher than in the save being played (beaten, or beaten once
+  more; with no save loaded before, a new game, higher than 0). A Master Mode save loaded with Ganon already beaten
+  doesn't count, until he is beaten in it again. Then it is unlocked once and for good: every save
   shows it, a new normal game's too, and it is announced that once. It is kept in its own record (`@ <tab> *` in
   `achievements.txt`).
 - **What is kept** (`achievements.txt` in the data root, next to `savagewind.ini`): a `@ <tab> save file <tab> file time`
@@ -59,9 +66,11 @@ Savage Wind has a small achievement system that never touches the game: it reads
   (the cursor's order), puts it where Options is and Options and the buttons after it 40 lower, whichever buttons the
   saves and the downloadable content show (`title_ach_button` in `runtime/ui/game_options.mm`); pressed, it reads as
   Options for that press, with the Achievements page due.
-- **Overlay** (`runtime/ui/achievements_ui.mm`): a toast that slides down at the top centre on each unlock (the name in a
-  book serif - Palatino, Georgia or DejaVu Serif, whichever the system has - the rest in Fira Sans), and an
-  "Achievements" tab in the start screen's Settings. `SAVAGEWIND_ACH_DEMO=<seconds>[:<id>,<id>...]`: then the toasts of
+- **Overlay** (`runtime/ui/achievements_ui.mm`): a toast that fades in at the top centre on each unlock, in the game's own
+  look (its item-get box and buttons: translucent black, a thin pale frame, corner marks, the picture on a gold glow). Its
+  text is in the game's font, `Normal_00` from the player's own `Font/Font_EU.sbfarc` (read at run time, nothing shipped;
+  `game_fonts_add` in `runtime/ui/quick_hint_font.mm`), the name slanted as the game's titles; a language whose letters
+  that font lacks falls back to the overlay's fonts. Also an "Achievements" tab in the start screen's Settings. `SAVAGEWIND_ACH_DEMO=<seconds>[:<id>,<id>...]`: then the toasts of
   those achievements (the first one's without ids), to see them.
 - **Sound** (`runtime/achievements_sound.c`, `achievements_bars.c`): the notice comes with the game's own hidden Korok
   "Yahaha!" (`NV_Korogu_Man_Young_Normal00_HiddenKorok_Appear00` in `Voice/Common/NV_Korogu_Man_Young_Normal00.bars`),
@@ -94,8 +103,9 @@ Savage Wind has a small achievement system that never touches the game: it reads
    `build/ach_tool get <save> <name|#hash>` reads one.
 4. Texts go through `tr()` like the rest of the menu; Spanish is in `runtime/ui/i18n/es.inc`, the other languages show English.
 
-The three Korok achievements read the seed counter by its hash, `#8a94e07a` (name unknown; found with `ach_tool counter` on
-real saves holding 2, 3 and 4 seeds).
+The three Korok achievements read the seed counter, `HiddenKorok_Number` (crc32 `8a94e07a`; found with `ach_tool counter` on
+real saves holding 2, 3 and 4 seeds). The shrine achievements count `Clear_Dungeon000`..`119`, the main game's 120: `120`..`135`
+are the Champions' Ballad's shrines and `136` the Final Trial.
 
 Only `IsGet_PlayerStole2` and `MaxHartValue` are confirmed from this repo's own notes; the rest of the table needs a
 `verify` pass against a real save (the entries added last, below, were never checked).
