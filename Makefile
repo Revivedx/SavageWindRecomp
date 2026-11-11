@@ -440,6 +440,7 @@ dist:
 	    build/fsr-dlls/AMD-FidelityFX-DLL-LICENSE.txt "$(DIST)/"; fi  # (AMD FSR 4: tools/fetch_fsr_dlls.py; AMD's licence allows binary redistribution with this notice)
 	mkdir "$(DIST)/colour-luts" && cp third_party/luts/*.cube third_party/luts/README.md "$(DIST)/colour-luts/"  # (CC0: Video > Colour)
 	cp README.md LICENSE "$(DIST)/"  # (licenses and source links of the bundled components: README "License")
+	cp recomplauncher.json "$(DIST)/"  # (RecompLauncher reads it from the release to set the game up: next to the exe)
 	if [ -f "$(DLSS_SDK)/lib/Windows_x86_64/rel/nvngx_dlss.dll" ]; then \
 		cp "$(DLSS_SDK)/lib/Windows_x86_64/rel/nvngx_dlss.dll" "$(DIST)/"; \
 		cp "$(DLSS_SDK)/LICENSE.txt" "$(DIST)/NVIDIA-DLSS-LICENSE.txt"; \
