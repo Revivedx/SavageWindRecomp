@@ -29,16 +29,128 @@ void vk_imgui_texture_free(uint64_t tex);
 }
 
 // ------------------------------------------------------------------ the player's picture
+// splash.jpg / .png of the player's first; else, as Settings say (START_PICTURE_*), one of their own screenshots
+// (screenshots/ in the data folder: the photo mode's and the d-pad's, full size), or the picture of their latest save
+// (the game's own, 256x144: soft, filling the window). Picked once per run, so the start screen and the boot picture
+// after it show the same one. Nothing there: Savage Wind's art.
+#include <dirent.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <string>
+#include "settings.h"
+extern "C" const char *sp_session_save_dir(void);  // (services/save_profiles.h)
+
+static bool picture_ext(const char *n) {
+    const char *e = strrchr(n, '.');
+    return e && (!strcasecmp(e, ".png") || !strcasecmp(e, ".jpg") || !strcasecmp(e, ".jpeg"));
+}
+
+static std::string random_screenshot(void) {
+    std::vector<std::string> all;
+    if (DIR *d = opendir("screenshots")) {  // (the data folder is the working directory, runtime/paths.h)
+        while (struct dirent *e = readdir(d))
+            if (e->d_name[0] != '.' && picture_ext(e->d_name)) all.push_back(std::string("screenshots/") + e->d_name);
+        closedir(d);
+    }
+    if (all.empty()) return "";
+    srand((unsigned)time(NULL));
+    return all[(size_t)rand() % all.size()];
+}
+
+static void newest_caption(const std::string &dir, int depth, std::string &best, time_t &best_t) {
+    DIR *d = depth < 4 ? opendir(dir.c_str()) : NULL;
+    if (!d) return;
+    while (struct dirent *e = readdir(d)) {
+        if (e->d_name[0] == '.') continue;
+        std::string p = dir + "/" + e->d_name;
+        struct stat st;
+        if (stat(p.c_str(), &st)) continue;
+        if (S_ISDIR(st.st_mode)) newest_caption(p, depth + 1, best, best_t);
+        else if (!strcasecmp(e->d_name, "caption.jpg") && st.st_mtime > best_t) best = p, best_t = st.st_mtime;
+    }
+    closedir(d);
+}
+
+static bool pick_picture(char *out, size_t n) {
+    static std::string picked;
+    static bool done;
+    if (!done) {
+        done = true;
+        char own[1100];
+        if (rt_user_splash(own, sizeof own)) picked = own;
+        else if (g_settings.start_picture == START_PICTURE_SCREENSHOT) picked = random_screenshot();
+        else if (g_settings.start_picture == START_PICTURE_SAVE) {
+            const char *sd = sp_session_save_dir();
+            time_t t = 0;
+            newest_caption(sd && *sd ? sd : "save", 0, picked, t);
+        }
+    }
+    if (picked.empty()) return false;
+    snprintf(out, n, "%s", picked.c_str());
+    return true;
+}
 static ImTextureID g_tex;
 static int g_tex_w, g_tex_h;
 #ifdef __APPLE__
 static id<MTLTexture> g_mtl_tex;  // (ImGui only holds the pointer)
 #endif
 
+// A small picture 4x bigger, bilinear, then a box blur three times over (close to a gaussian): the save's 256x144 picture
+// fills the window soft instead of in blocks. NULL: no memory (the picture is shown as it is).
+static unsigned char *soften(const unsigned char *px, int *pw, int *ph) {
+    int w = *pw, h = *ph, W = w * 4, H = h * 4;
+    std::vector<float> a((size_t)W * H * 3), b(a.size());
+    for (int y = 0; y < H; y++)
+        for (int x = 0; x < W; x++) {
+            float fx = (x + 0.5f) / 4 - 0.5f, fy = (y + 0.5f) / 4 - 0.5f;
+            int x0 = fx < 0 ? 0 : (int)fx, y0 = fy < 0 ? 0 : (int)fy;
+            int x1 = x0 + 1 < w ? x0 + 1 : x0, y1 = y0 + 1 < h ? y0 + 1 : y0;
+            float tx = fx - x0 < 0 ? 0 : fx - x0, ty = fy - y0 < 0 ? 0 : fy - y0;
+            for (int c = 0; c < 3; c++) {
+                float p00 = px[(y0 * w + x0) * 4 + c], p10 = px[(y0 * w + x1) * 4 + c];
+                float p01 = px[(y1 * w + x0) * 4 + c], p11 = px[(y1 * w + x1) * 4 + c];
+                a[((size_t)y * W + x) * 3 + c] = (p00 * (1 - tx) + p10 * tx) * (1 - ty) + (p01 * (1 - tx) + p11 * tx) * ty;
+            }
+        }
+    const int r = 6;
+    for (int pass = 0; pass < 3; pass++) {
+        for (int y = 0; y < H; y++)  // across
+            for (int c = 0; c < 3; c++) {
+                float sum = 0;
+                for (int k = -r; k <= r; k++) sum += a[((size_t)y * W + std::min(std::max(k, 0), W - 1)) * 3 + c];
+                for (int x = 0; x < W; x++) {
+                    b[((size_t)y * W + x) * 3 + c] = sum / (2 * r + 1);
+                    int out = std::max(x - r, 0), in = std::min(x + r + 1, W - 1);
+                    sum += a[((size_t)y * W + in) * 3 + c] - a[((size_t)y * W + out) * 3 + c];
+                }
+            }
+        for (int x = 0; x < W; x++)  // down
+            for (int c = 0; c < 3; c++) {
+                float sum = 0;
+                for (int k = -r; k <= r; k++) sum += b[((size_t)std::min(std::max(k, 0), H - 1) * W + x) * 3 + c];
+                for (int y = 0; y < H; y++) {
+                    a[((size_t)y * W + x) * 3 + c] = sum / (2 * r + 1);
+                    int out = std::max(y - r, 0), in = std::min(y + r + 1, H - 1);
+                    sum += b[((size_t)in * W + x) * 3 + c] - b[((size_t)out * W + x) * 3 + c];
+                }
+            }
+    }
+    unsigned char *o = (unsigned char *)malloc((size_t)W * H * 4);
+    if (!o) return NULL;
+    for (size_t i = 0; i < (size_t)W * H; i++) {
+        for (int c = 0; c < 3; c++) o[i * 4 + c] = (unsigned char)std::min(std::max(a[i * 3 + c] + 0.5f, 0.0f), 255.0f);
+        o[i * 4 + 3] = 255;
+    }
+    *pw = W, *ph = H;
+    return o;
+}
+
 void splash_load(void) {
     splash_unload();
     char path[1100];
-    if (!rt_user_splash(path, sizeof path)) return;
+    if (!pick_picture(path, sizeof path)) return;
     int w, h;
     if (!rt_image_info(path, &w, &h) || w <= 0 || h <= 0 || w > 8192 || h > 8192) {
         fprintf(stderr, "[splash] %s: not a JPEG / PNG up to 8192x8192, using the default art\n", path);
@@ -48,6 +160,11 @@ void splash_load(void) {
     if (!px) {
         fprintf(stderr, "[splash] %s: %s, using the default art\n", path, rt_image_error());
         return;
+    }
+    unsigned char *soft = w < 640 ? soften(px, &w, &h) : NULL;
+    if (soft) {
+        rt_image_free(px);
+        px = soft;
     }
 #ifdef __APPLE__
     id<MTLDevice> dev = (__bridge id<MTLDevice>)ui_metal_device();
@@ -61,7 +178,8 @@ void splash_load(void) {
 #else
     g_tex = (ImTextureID)vk_imgui_texture_rgba(px, w, h);
 #endif
-    rt_image_free(px);
+    if (soft) free(px);
+    else rt_image_free(px);
     if (g_tex) g_tex_w = w, g_tex_h = h;
     fprintf(stderr, "[splash] %s (%dx%d)%s\n", path, w, h, g_tex ? "" : ": no texture, using the default art");
 }

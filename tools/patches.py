@@ -732,7 +732,7 @@ def _grass_blade_lateral(gen, a):
     assert w in (0x1e262000, 0x1e272000), hex(w)  # fcmp s0, s6 / fcmp s0, s7
     n = (w >> 16) & 31
     return ('{ extern float rt_grass_blade_lateral(int, float, float, float, float, uint32_t, uint32_t); '
-            f'c->nzcv = cmp_s(c, VSF32(0), rt_grass_blade_lateral({n - 6}, VSF32({n}), VSF32(9), VSF32(13), VSF32(21), '
+            f'c->nzcv = rt_fcmp_s(c, rt_vf32(c, 0), rt_grass_blade_lateral({n - 6}, rt_vf32(c, {n}), rt_vf32(c, 9), rt_vf32(c, 13), rt_vf32(c, 21), '
             'LD32(c->sp + 0x204), LD32(c->sp + 0x208))); }'
             f'  /* {a:#x}: fcmp s0, s{n} (grass blades: a cell inside the region\'s width) */')
 

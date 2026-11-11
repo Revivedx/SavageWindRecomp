@@ -55,6 +55,16 @@ checks). No installer: game files, saves and settings are kept next to the exe, 
 the folder must be writable (the app says so and quits if it isn't, e.g. under Program Files). A source checkout
 with `extracted/` in the starting folder keeps using that folder instead.
 
+`SW Update.exe` (`runtime/platform/windows_update.c`) installs a newer release over the folder from Savage Wind
+Configuration. It replaces only the files named in the zip's `sw-manifest.txt`, which `make dist` writes, so game files,
+saves, settings and anything else a player keeps there are never touched. A release is only offered if a signature is
+next to its zip. After `make dist`, sign the zip and upload the `.sig` with it:
+
+    tools/sign_update.py build/dist/SavageWind-<version>-windows.zip <private key .pem>
+
+Sign the AppImages the same way, or Linux players won't be offered the release. The private key is never in this repository; its public half is `runtime/platform/sw_update_key.h`. `make test-update-core`
+and `make test-sw-update` cover the updater: the second one goes through every failure it knows against a local server.
+
 ## Differences from macOS
 - Guest window 0x70_0000_0000..0x73_2000_0000 is reserved with VirtualAlloc and committed per region
   (kernel regions, modules, HLE heap); stray first touches are committed by a vectored exception handler.

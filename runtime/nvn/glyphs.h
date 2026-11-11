@@ -12,9 +12,13 @@ bool glyphs_apply(uint64_t addr, uint64_t pool_lo, uint64_t pool_hi, uint32_t fo
 // The same for the HUD's button textures (R8 masks, w x h texels, rows `row` bytes apart in lin): true when the texture
 // is one of them.
 bool glyphs_apply_layout(uint32_t format, uint32_t w, uint32_t h, uint8_t *lin, uint32_t row);
+// One of those textures (R8 texels, deswizzled)?
+bool glyphs_is_layout_icon(uint32_t w, uint32_t h, const uint8_t *lin, uint32_t row);
 
 // Changes whenever the icons to draw change (device, bindings, setting): sheets uploaded under another one go up again.
 uint32_t glyphs_generation(void);
+// The same without the menu pointer's state: what the overlay's fonts are made for (their icons are the face buttons).
+uint32_t glyphs_font_generation(void);
 
 // The diamond vertex (0: East, 1: South, 2: North, 3: West) for each Switch face button (A, B, X, Y) on the HUD.
 void glyphs_hud_positions(int pos[4]);
