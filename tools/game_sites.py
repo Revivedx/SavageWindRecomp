@@ -128,6 +128,22 @@ SITES = [
          '91000129/ffc003ff 1000000a/9f00001f 3868692b', 0),
     Site('title_msg_file', 'ref', 'f9000549 90000009/9f00001f 91000129/ffc003ff 9000000a/9f00001f '
          'f900015f/ffc003ff a9002d28 a8c17bfd d65f03c0', 2),
+    # the pause menu's System page: its button handler (buttons 0x4d..0x53; the seventh, 0x53, is Achievements)
+    Site('pause_button', 'code', 'b9404428 51013508 7100191f 54000009/ff00001f d65f03c0 d10183ff a9037bfd f90023f5', 0),
+    # ... and where its setup reads whether to add a seventh button (0x53, the Nintendo Switch 2 Edition upgrade, made
+    # at run time as Pa_Btn_06 in the gap the layout leaves): offered (+0x280) and not owned (+0x281). It is
+    # Achievements.
+    Site('pause_upgrade_offer', 'code', '394a0268 34000008/ff00001f 394a0668 34000008/ff00001f 910703ff a9434ff4 a94257f6 '
+         'a9415ffc', 0),
+    Site('pause_upgrade_owned', 'code', '394a0268 34000008/ff00001f 394a0668 34000008/ff00001f 910703ff a9434ff4 a94257f6 '
+         'a9415ffc', 2),
+    # ... and where that setup gives the button its text, "Nintendo Switch 2 Edition" (a string in the code, not a message):
+    # `mov x1, sp` before the call that sets it ({char16_t *, u32 length} at sp)
+    Site('pause_upgrade_text', 'code', '910003e1 aa1303e0 aa1f03e2 94000000/fc000000 14000000/fc000000 f94002c8 aa0003f7 '
+         'aa1603e0', 0),
+    # ... and the message files' search by label (x0 = file, x1 = label, x8 = {char16_t *, u32 length}), which the
+    # layouts' texts go through: that button's text
+    Site('msg_find', 'code', 'a9bd7bfd a90157f6 a9024ff4 910003fd aa0003f4 f9400400 aa0803f3 94000000/fc000000', 0),
     Site('title_version_format', 'ref', '90000001/9f00001f 91000021/ffc003ff d103c3a0 94000000/fc000000 '
          'f9400294/ffffffdf b940da88 35000008/ff00001f 90000001/9f00001f', 1),
     # BOTW's streaming Yaz0 decoder: its entry and its return (tools/patches.py; runtime/hle/yaz0.c)
@@ -354,7 +370,8 @@ SITES = [
 # KNOWN table, the whole group is left out (with its patches) instead of refusing the version. The mouse camera's
 # sites go together: the stick input without the linear vertical part would square the mouse's (unclamped) motion.
 # Without them the mouse turns the camera through the right stick, as before (runtime/hle/input.c); without the
-# second group it turns it without the game's camera inversion options.
+# second group it turns it without the game's camera inversion options. Without the pause System page's sites it
+# has no Achievements button (Achievements are still in Options).
 OPTIONAL_GROUPS = [
     ('quick_drop_tick', 'quick_drop_actor_call', 'player_drop_forbidden', 'actor_info_lookup',
      'actor_info_has_tag', 'pouch_discard', 'player_equipment', 'pouch_default_name',
@@ -379,6 +396,7 @@ OPTIONAL_GROUPS = [
     ('pc_cursor_manager', 'pc_cursor_activate', 'pc_pane_bounds'),
     ('cam_stick', 'cam_pitch_chase', 'cam_pitch_surf', 'cam_pitch_wakeboard', 'cam_pitch_aim', 'cam_pitch_item'),
     ('cam_reverse_x', 'cam_reverse_y'),
+    ('pause_button', 'msg_find', 'pause_upgrade_offer', 'pause_upgrade_owned', 'pause_upgrade_text'),
     ('cam_stick_end',),  # (Controls > Controller camera speed: without it the setting does nothing)
     ('traverse_scale', 'traverse_scale_default'),
     ('grass_range', 'grass_fade_blades', 'grass_fade_quads'),
@@ -482,6 +500,11 @@ KNOWN = {
         'dialog_answer': 0x7001dac9a8,
         'title_update': 0x7000e5f070,
         'title_button': 0x7000e5f9b0,
+        'pause_button': 0x7000dcfbe8,
+        'pause_upgrade_offer': 0x7000dcecb8,
+        'pause_upgrade_owned': 0x7000dcecc0,
+        'pause_upgrade_text': 0x7000dcf02c,
+        'msg_find': 0x7000f6a04c,
         'title_options_state': 0x3654,
         'title_msg_file': 0x7001e31f50,
         'title_version_format': 0x70015cd092,

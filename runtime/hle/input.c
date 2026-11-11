@@ -1034,6 +1034,8 @@ static void fill_state(Cpu *c) {
     uint64_t b = menu ? script_buttons : key_buttons | pad_buttons | escape_buttons | bow | script_buttons;
     if (!menu) b |= auto_continue_buttons(b);  // (not while the overlay has the controls)
     b=pc_cursor_buttons(b);
+    extern bool game_options_hold_a(void);  // runtime/ui/game_options.mm: the Achievements page is up
+    if (game_options_hold_a()) b &= ~(1ull << BTN_A);
     {   // injected Plus: held for ~10 presented frames (the game polls several times per frame)
         extern uint64_t renderer_present_count(void);
         static uint64_t until;

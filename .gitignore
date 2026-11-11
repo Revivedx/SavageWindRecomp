@@ -19,6 +19,11 @@ save/
 /save.lock
 /savagewind.ini
 /launch-flags.txt
+# the player's achievements: what each playthrough earned, and their own pictures and sound (docs/ACHIEVEMENTS.md)
+/achievements.txt
+/achievements/
+/achievement.wav
+/sounds/
 # tools and Python environments (machine-specific)
 tools/venv/
 venv/

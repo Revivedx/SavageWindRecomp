@@ -49,6 +49,7 @@ void input_pc_escape(bool down);
 void controls_bindings_draw(float scale);  // controls_ui.mm
 #include "../input_bind.h"
 #include "../perfmon.h"
+#include "achievements_ui.h"  // (the Achievements page and the unlock toasts)
 #include "../paths.h"
 #include "../pc_cursor.h"
 #include "../imageload.h"
@@ -419,6 +420,7 @@ static bool g_inited;
 static ImGuiContext *g_ctx;  // ours: the start screen (back to it after a reboot) has its own context
 static ImFont *g_hint_font, *g_hint_buttons;
 static bool g_hint_font_attempted;
+static bool g_ach_game_fonts;  // the achievement toasts asked for the game's fonts (there was a romfs)
 static uint32_t g_hint_generation;
 static ImFont *g_font, *g_font_big;
 static ImFont *g_font_mono;  // the console (columns line up); NULL: the normal font
@@ -511,12 +513,26 @@ static void load_fonts(void) {
         g_menu_font = add(med, 29, cfg);
         g_menu_font_big = add(semi, 53.5f, cfg);
     }
+    // the achievement toasts' title: a book serif in bold (Palatino, Georgia, DejaVu Serif), else Fira's SemiBold
+    ImFont *toast_title = NULL;
+    const char *serif[] = {"C:/Windows/Fonts/palab.ttf", "C:/Windows/Fonts/georgiab.ttf",
+                           "/System/Library/Fonts/Supplemental/Palatino.ttc",
+                           "/System/Library/Fonts/Supplemental/Georgia Bold.ttf",
+                           "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf", "/usr/share/fonts/TTF/DejaVuSerif-Bold.ttf"};
+    for (const char *p : serif) {
+        if (FILE *f = fopen(p, "rb")) fclose(f);
+        else continue;
+        if ((toast_title = add(p, 56, cfg))) break;
+    }
     if (!g_font) g_font = io.Fonts->AddFontDefault();
     if (!g_font_big) g_font_big = g_font;
     if (!g_menu_font || !g_menu_font_big) g_menu_font = g_font, g_menu_font_big = g_font_big;
+    ach_ui_fonts(toast_title ? toast_title : g_menu_font_big, g_menu_font);
+    g_ach_game_fonts = ach_ui_game_fonts(io.Fonts);  // (their pixels: game_fonts_fill below, once the atlas is built)
     g_hint_font = g_hint_buttons = nullptr;
     g_hint_font_attempted = g_romfs_dir && (g_settings.quick_sort || g_settings.quick_drop);
     if (g_hint_font_attempted) quick_hint_fonts_load(io.Fonts, &g_hint_font, &g_hint_buttons);
+    game_fonts_fill(io.Fonts);
     g_hint_generation = icons_generation;
 }
 
@@ -525,8 +541,9 @@ extern "C" void vk_imgui_fonts_changed(void);  // (runtime/nvn/vulkan/imgui_glue
 static void fonts_follow_language(void) {
     bool need_hint_fonts = (g_settings.quick_sort || g_settings.quick_drop) && g_romfs_dir && !g_hint_font_attempted;
     bool icons_changed = (g_settings.quick_sort || g_settings.quick_drop) && g_hint_generation != glyphs_font_generation();
+    bool need_ach_fonts = g_romfs_dir && !g_ach_game_fonts;  // (the achievement toasts' game fonts: the romfs is there now)
     int current_fonts_gen = ui_lang_generation() * 10007 + ui_dynamic_generation();
-    if (g_fonts_lang == current_fonts_gen && !need_hint_fonts && !icons_changed) return;
+    if (g_fonts_lang == current_fonts_gen && !need_hint_fonts && !icons_changed && !need_ach_fonts) return;
     load_fonts();
 #ifdef __APPLE__
     ImGui_ImplMetal_DestroyFontsTexture();  // (NewFrame makes it again)
@@ -1730,12 +1747,14 @@ extern "C" int menu_keyboard_run(const char *initial, int max_len, char *out, in
 static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     // (id: the page; -1 = Prelaunch)
     struct Tab { const char *name; int id; bool on; };
-    Tab tabs[11];
+    Tab tabs[12];
     int ntabs = 0;
     if (prelaunch) tabs[ntabs++] = {"Prelaunch", -1, true};
     // (ids 5-7 were Link's Awakening tabs; the ids stay: test hooks)
-    static const char *names[] = {"Video", "Audio", "Language", "Saves", "amiibo", "", "", "", "Controls", "Quit", "Cheats"};
-    static const int order[] = {8, 0, 1, 2, 4, 3, 10, 9};  // Controls, Video, Audio, Language, amiibo, Saves, Cheats, Quit
+    static const char *names[] = {"Video", "Audio", "Language", "Saves", "amiibo", "", "", "", "Controls", "Quit", "Cheats",
+                                  "Achievements"};
+    // Controls, Video, Audio, Language, amiibo, Saves, Achievements, Cheats, Quit
+    static const int order[] = {8, 0, 1, 2, 4, 3, 11, 10, 9};
     for (int i : order) {  // (Quit: in game only - the start screen has its own QUIT; Saves: on the start screen only,
         if (i == 9 && prelaunch) continue;  //  the game must not be running while its saves change)
         if (i == 3 && !prelaunch) continue;
@@ -1831,6 +1850,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
                 case 2: tab_language(in_game); break;
                 case 3: saves_tab_draw(); break;
                 case 4: tab_amiibo(); break;
+                case 11: ach_ui_tab(); break;
                 case 8: tab_about(); break;
                 case 9: tab_quit(scale, in_game); break;
                 case 10: tab_cheats(); break;
@@ -1982,7 +2002,8 @@ static bool menu_draws(bool *pointer_hover = NULL, float *pointer_box = NULL, bo
     if (pointer_hover) *pointer_hover = hover;
     if (gyro_show) *gyro_show = gyro_on;
     return g_open.load() || g_kbd.load() == 1 || g_sizes.load() || console_is_open() || gyro_on || hover ||
-           g_settings.perf_overlay != PERF_OFF || act_log_enabled() || quick_inventory_sort_hint() || quick_drop_hint_state();
+           g_settings.perf_overlay != PERF_OFF || act_log_enabled() || quick_inventory_sort_hint() || quick_drop_hint_state() ||
+           ach_ui_active();
 }
 
 bool menu_render_needed(void) { return menu_draws(); }
@@ -2065,6 +2086,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     }
 
     if (g_settings.perf_overlay != PERF_OFF) perf_overlay_draw(io, scale);
+    ach_ui_toasts(io.DisplaySize.x, io.DisplaySize.y, scale);
     if (act_log_enabled()) act_overlay_draw(io, scale);
     if (!open && !kbd && !sizes && !con && (quick_inventory_sort_hint() || quick_drop_hint_state())) quick_inventory_hint_draw(io);
     if (!open && !kbd && !sizes && !con) photo_overlay_draw(io, scale);

@@ -14,6 +14,7 @@
 #include <unistd.h>
 #include <zlib.h>
 
+#include "../achievements.h"
 #include "../game_sites.h"
 #include "../hle.h"
 #include "../ipc.h"
@@ -65,6 +66,7 @@ typedef struct {
     int ngrown;
     uint8_t *rstb_blob;      // the patched ResourceSizeTable served from memory (rstb_patch)
     uint8_t *hud_pack;       // Pack/Bootup.pack with the HUD letters patched (hud_letters_patch)
+    uint8_t *title_pack;     // Pack/Title.pack with the title menu's Achievements button (title_button_patch)
     uint8_t *voice_banks;    // the text language's voice banks with the chosen voices' lengths (bars_hybrid)
 } RomImage;
 #define AOC_MAX 8
@@ -83,7 +85,7 @@ RT_ON_RESET(fs_reset) {
         }
         for (int i = 0; i < m->npatches; i++) free(m->patches[i].data);  // (ov_meta and the extended table are among these)
         for (int i = 0; i < m->rom_nfiles; i++) free(m->rom_files[i].path);
-        free(m->ov), free(m->rom_files), free(m->grown), free(m->rstb_blob), free(m->hud_pack), free(m->voice_banks);
+        free(m->ov), free(m->rom_files), free(m->grown), free(m->rstb_blob), free(m->hud_pack), free(m->title_pack), free(m->voice_banks);
         romfs_image_close(m->img);
         *m = (RomImage){0};
     }
@@ -786,6 +788,47 @@ static size_t hud_letters_flyt(const uint8_t *b, size_t n, uint8_t *out, int whi
     return w;
 }
 
+// The pack at rom_files[k] (pack, pn bytes) served from memory with its archive node (data at pdoff + ps .. pe, `an`
+// bytes unpacked) replaced by arc2 (nn bytes, packed again here): what follows moves by a multiple of 0x2000. The
+// archive's ResourceSizeTable entry (rstb_name) grows with it. *keep holds the pack; returns the packed size.
+static size_t serve_pack(int k, const uint8_t *pack, size_t pn, int node, uint32_t pdoff, uint32_t ps, uint32_t pe,
+                         uint8_t *arc2, size_t nn, uint8_t **keep, const char *rstb_name, size_t an,
+                         const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
+    size_t zn = 0;
+    uint32_t total = (uint32_t)nn;
+    memcpy(arc2 + 8, &total, 4);
+    uint8_t *z2 = yaz0_pack(arc2, nn, pack + pdoff + ps, &zn);
+    uint64_t old = pe - ps, delta = zn > old ? (zn - old + 0x1FFF) & ~0x1FFFull : 0;
+    size_t qn = pn + delta;
+    free(*keep);
+    uint8_t *q = *keep = calloc(1, qn);
+    memcpy(q, pack, pdoff + ps);
+    memcpy(q + pdoff + ps, z2, zn);
+    memcpy(q + pdoff + pe + delta, pack + pdoff + pe, pn - pdoff - pe);
+    uint32_t cnt = pack[0x1A] | pack[0x1B] << 8, ne = (uint32_t)(ps + zn), q32 = (uint32_t)qn;
+    for (uint32_t i = 0; i < cnt; i++) {
+        uint32_t s, e;
+        memcpy(&s, q + 0x20 + i * 16 + 8, 4);
+        memcpy(&e, q + 0x20 + i * 16 + 12, 4);
+        if (i == (uint32_t)node) { memcpy(q + 0x20 + i * 16 + 12, &ne, 4); continue; }
+        if (s >= pe) s += (uint32_t)delta, e += (uint32_t)delta;
+        memcpy(q + 0x20 + i * 16 + 8, &s, 4);
+        memcpy(q + 0x20 + i * 16 + 12, &e, 4);
+    }
+    memcpy(q + 8, &q32, 4);
+    free(z2);
+    meta_copy(fmeta, foff, fsz);
+    uint64_t rel = R->ov_end - R->rom_data_off, size = qn;
+    memcpy(R->ov_meta + R->rom_files[k].meta + 8, &rel, 8);
+    memcpy(R->ov_meta + R->rom_files[k].meta + 0x10, &size, 8);
+    if (R->ov_n == R->ov_cap) { R->ov_cap = R->ov_cap ? R->ov_cap * 2 : 256; R->ov = realloc(R->ov, sizeof *R->ov * R->ov_cap); }
+    R->ov[R->ov_n++] = (Overlay){R->ov_end, size, NULL, -1, q};
+    R->ov_end = (R->ov_end + size + 0xF) & ~0xFull;
+    R->grown = realloc(R->grown, sizeof *R->grown * (R->ngrown + 1));
+    R->grown[R->ngrown++] = (GrownFile){rstb_name, nn - an};
+    return zn;
+}
+
 // Gameplay > Sharper menus: every BNTX in an archive, its one-channel textures of one level added to the list
 // (runtime/nvn/text_upscale.c). BRTI: the header's 0x16 mip count, 0x1c format, 0x24 width and height, 0x70 where the
 // table of its levels' data is, from the BNTX's start.
@@ -893,8 +936,8 @@ static void hud_letters_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz)
         return;
     }
     uint64_t t0 = plat_now_ns();
-    size_t pn = R->rom_files[k].size, zn = 0, an = 0, nn = 0;
-    uint8_t *pack = malloc(pn), *arc = NULL, *arc2 = NULL, *z2 = NULL;
+    size_t pn = R->rom_files[k].size, an = 0, nn = 0;
+    uint8_t *pack = malloc(pn), *arc = NULL, *arc2 = NULL;
     uint32_t pdoff, ps, pe, adoff, as, ae;
     int node = -1, panes = 0;
     if (romfs_image_pread(R->img, pack, pn, R->rom_files[k].off) == (ssize_t)pn)
@@ -939,40 +982,127 @@ static void hud_letters_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz)
         free(pack), free(arc), free(arc2);
         return;
     }
-    uint32_t total = (uint32_t)nn;
-    memcpy(arc2 + 8, &total, 4);
-    z2 = yaz0_pack(arc2, nn, pack + pdoff + ps, &zn);
-    // the pack: the new archive where the old one was, what follows moved by delta (a multiple of 0x2000)
-    uint64_t old = pe - ps, delta = zn > old ? (zn - old + 0x1FFF) & ~0x1FFFull : 0;
-    size_t qn = pn + delta;
-    free(R->hud_pack);
-    R->hud_pack = calloc(1, qn);
-    memcpy(R->hud_pack, pack, pdoff + ps);
-    memcpy(R->hud_pack + pdoff + ps, z2, zn);
-    memcpy(R->hud_pack + pdoff + pe + delta, pack + pdoff + pe, pn - pdoff - pe);
-    uint32_t cnt = pack[0x1A] | pack[0x1B] << 8, ne = (uint32_t)(ps + zn), q32 = (uint32_t)qn;
-    for (uint32_t i = 0; i < cnt; i++) {
-        uint32_t s, e;
-        memcpy(&s, R->hud_pack + 0x20 + i * 16 + 8, 4);
-        memcpy(&e, R->hud_pack + 0x20 + i * 16 + 12, 4);
-        if (i == (uint32_t)node) { memcpy(R->hud_pack + 0x20 + i * 16 + 12, &ne, 4); continue; }
-        if (s >= pe) s += (uint32_t)delta, e += (uint32_t)delta;
-        memcpy(R->hud_pack + 0x20 + i * 16 + 8, &s, 4);
-        memcpy(R->hud_pack + 0x20 + i * 16 + 12, &e, 4);
+    size_t zn = serve_pack(k, pack, pn, node, pdoff, ps, pe, arc2, nn, &R->hud_pack, "Layout/Common.blarc", an, fmeta,
+                           foff, fsz);
+    uint64_t old = pe - ps;
+    free(pack), free(arc), free(arc2);
+    LOG("[fs] HUD letters: %d button letters use the icon font (archive %zu -> %zu bytes, %.0f ms)\n", panes,
+        (size_t)old, zn, (plat_now_ns() - t0) / 1e6);
+}
+
+// ------------------------------------------------------------------ the title menu's Achievements button
+// The title menu (Layout/Title.sblarc in Pack/Title.pack, blyt/Title_00.bflyt) has seven button parts, Pa_SaveFile_00..05
+// and Pa_SaveFileHardMode_00, all in use with the downloadable content. An eighth, Pa_SaveFile_06 - a copy of
+// Pa_SaveFile_05, 40 down - reads Achievements in the menu language (its text boxes hold it: the game sets the texts
+// of the seven it knows only). The game makes its button like the others' (runtime/ui/game_options.mm puts it above
+// Options and has it open the Achievements page). SAVAGEWIND_NO_TITLE_ACH=1: the game's menu.
+#define TITLE_ACH_PART "Pa_SaveFile_06"
+
+// src: the layout; out: room for n + the part. Returns the new size, or 0 if the layout isn't as expected.
+static size_t title_ach_flyt(const uint8_t *b, size_t n, uint8_t *out, const uint16_t *text, int tn) {
+    if (n < 0x14 || memcmp(b, "FLYT", 4) || b[4] != 0xFF || b[5] != 0xFE) return 0;
+    size_t hs = b[6] | b[7] << 8, o = hs, w = hs;
+    if (hs > n) return 0;
+    memcpy(out, b, hs);
+    int added = 0;
+    while (o + 8 <= n) {
+        uint32_t sz;
+        memcpy(&sz, b + o + 4, 4);
+        if (sz < 8 || o + sz > n) return 0;
+        memcpy(out + w, b + o, sz);
+        w += sz;
+        if (!memcmp(b + o, "prt1", 4) && sz >= 0x2c0 && !strncmp((const char *)b + o + 0xC, "Pa_SaveFile_05", 24)) {
+            uint8_t *c = out + w;
+            memcpy(c, b + o, sz);
+            memset(c + 0xC, 0, 24);
+            memcpy(c + 0xC, TITLE_ACH_PART, sizeof TITLE_ACH_PART - 1);
+            float y;
+            memcpy(&y, c + 0x30, 4);
+            y -= 40;
+            memcpy(c + 0x30, &y, 4);
+            // its text boxes (property overrides: txt1 sections in the part, each with its text at [+0x64], a buffer
+            // of [+0x54] bytes, [+0x56] in use)
+            for (uint32_t t = 0x60; t + 0x68 <= sz; t++) {
+                if (memcmp(c + t, "txt1", 4)) continue;
+                uint32_t tsz, toff;
+                memcpy(&tsz, c + t + 4, 4);
+                memcpy(&toff, c + t + 0x64, 4);
+                uint16_t cap = c[t + 0x54] | c[t + 0x55] << 8;
+                if (t + tsz > sz || toff + cap > tsz || cap < 4) return 0;
+                int m = tn < cap / 2 - 1 ? tn : cap / 2 - 1;
+                memset(c + t + toff, 0, cap);
+                memcpy(c + t + toff, text, (size_t)m * 2);
+                uint16_t used = (uint16_t)((m + 1) * 2);
+                memcpy(c + t + 0x56, &used, 2);
+                added++;
+                t += tsz - 1;
+            }
+            w += sz;
+        }
+        o += sz;
     }
-    memcpy(R->hud_pack + 8, &q32, 4);
-    free(pack), free(arc), free(arc2), free(z2);
-    meta_copy(fmeta, foff, fsz);
-    uint64_t rel = R->ov_end - R->rom_data_off, size = qn;
-    memcpy(R->ov_meta + R->rom_files[k].meta + 8, &rel, 8);
-    memcpy(R->ov_meta + R->rom_files[k].meta + 0x10, &size, 8);
-    if (R->ov_n == R->ov_cap) { R->ov_cap = R->ov_cap ? R->ov_cap * 2 : 256; R->ov = realloc(R->ov, sizeof *R->ov * R->ov_cap); }
-    R->ov[R->ov_n++] = (Overlay){R->ov_end, size, NULL, -1, R->hud_pack};
-    R->ov_end = (R->ov_end + size + 0xF) & ~0xFull;
-    R->grown = realloc(R->grown, sizeof *R->grown * (R->ngrown + 1));
-    R->grown[R->ngrown++] = (GrownFile){"Layout/Common.blarc", nn - an};
-    LOG("[fs] HUD letters: %d button letters use the icon font (archive %zu -> %zu bytes, pack +%llu KB, %.0f ms)\n",
-        panes, (size_t)old, zn, (unsigned long long)(delta >> 10), (plat_now_ns() - t0) / 1e6);
+    if (added != 3) return 0;
+    uint32_t total = (uint32_t)w;
+    memcpy(out + 0xC, &total, 4);
+    uint16_t secs = (uint16_t)((out[0x10] | out[0x11] << 8) + 1);
+    memcpy(out + 0x10, &secs, 2);
+    return w;
+}
+
+// UTF-8 -> UTF-16 (the Basic Multilingual Plane), at most max units
+static int utf16_of(const char *s, uint16_t *out, int max) {
+    int n = 0;
+    for (const unsigned char *p = (const unsigned char *)s; *p && n < max;) {
+        uint32_t c = *p++;
+        int more = c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : 0;
+        if (more) c &= more == 2 ? 0x0F : 0x1F;
+        for (; more && (*p & 0xC0) == 0x80; more--) c = c << 6 | (*p++ & 0x3F);
+        out[n++] = (uint16_t)c;
+    }
+    return n;
+}
+
+static void title_button_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
+    static const char pack_path[] = "Pack/Title.pack";
+    if (getenv("SAVAGEWIND_NO_TITLE_ACH") || R != &images[0]) return;
+    int k = 0;
+    while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, pack_path)) k++;
+    char host[1200];
+    if (k == R->rom_nfiles || overlay_file(pack_path, host, sizeof host)) return;
+    extern const char *rt_tr(const char *en);  // (runtime/ui/game_options.mm)
+    uint16_t text[16];
+    int tn = utf16_of(rt_tr("Achievements"), text, 16);
+    size_t pn = R->rom_files[k].size, an = 0, nn = 0;
+    uint8_t *pack = malloc(pn), *arc = NULL, *arc2 = NULL;
+    uint32_t pdoff, ps, pe, adoff, as, ae;
+    int node = -1, li = -1;
+    if (romfs_image_pread(R->img, pack, pn, R->rom_files[k].off) == (ssize_t)pn)
+        node = sarc_find(pack, pn, "Layout/Title.sblarc", &pdoff, &ps, &pe);
+    if (node >= 0) arc = yaz0_unpack(pack + pdoff + ps, pe - ps, &an);
+    if (arc) li = sarc_find(arc, an, "blyt/Title_00.bflyt", &adoff, &as, &ae);
+    const char *why = node < 0 ? "no Layout/Title.sblarc" : !arc ? "archive not readable" : li < 0 ? "no Title_00" : NULL;
+    if (!why) {
+        arc2 = malloc(an + 0x80 + (ae - as) + 0x1000);
+        memcpy(arc2, arc, an);
+        nn = (an + 0x7F) & ~(size_t)0x7F;
+        memset(arc2 + an, 0, nn - an);
+        size_t ln = title_ach_flyt(arc + adoff + as, ae - as, arc2 + nn, text, tn);
+        if (!ln) why = "layout not as expected";
+        else {
+            uint32_t s = (uint32_t)(nn - adoff), e = (uint32_t)(nn - adoff + ln);
+            memcpy(arc2 + 0x20 + li * 16 + 8, &s, 4);
+            memcpy(arc2 + 0x20 + li * 16 + 12, &e, 4);
+            nn += ln;
+        }
+    }
+    if (why) {
+        LOG("[fs] title menu: %s, no Achievements button\n", why);
+        free(pack), free(arc), free(arc2);
+        return;
+    }
+    serve_pack(k, pack, pn, node, pdoff, ps, pe, arc2, nn, &R->title_pack, "Layout/Title.blarc", an, fmeta, foff, fsz);
+    LOG("[fs] title menu: Achievements button added (%s)\n", TITLE_ACH_PART);
+    free(pack), free(arc), free(arc2);
 }
 
 // (Savage Wind+) Video > Haze: the air's haze. BOTW's outdoor haze is its atmospheric scattering, set per climate in
@@ -1347,6 +1477,7 @@ static void rom_index(void) {
         break;
     }
     hud_letters_patch(fmeta, foff, fsz);
+    title_button_patch(fmeta, foff, fsz);
     text_sheets_scan();
     menu_tex_scan();
     if (R == &images[0] && !atomic_load_explicit(&inventory_clip_layout_valid, memory_order_acquire))
@@ -1576,7 +1707,19 @@ static Service *open_aoc_storage(int index) {
 
 // ------------------------------------------------------------------ host-directory filesystem
 typedef struct { char root[1024]; } HostFs;
-typedef struct { int fd; char path[1100]; uint8_t *patched; uint64_t patched_size; } HostFile;
+typedef struct { int fd; char path[1100]; uint8_t *patched; uint64_t patched_size; bool save_written; } HostFile;
+
+// The game wrote a file of a save (game_data.sav, or caption.sav next to it: Master Mode's mark): the achievements
+// read the save now, as played - before the game may load it back (after Ganon's end it does at once)
+static void save_written(const char *path) {
+    size_t n = strlen(path);
+    if (n >= 13 && !strcmp(path + n - 13, "game_data.sav")) ach_game_wrote(path);
+    else if (n >= 11 && !strcmp(path + n - 11, "caption.sav") && n < 1100) {
+        char g[1100];
+        snprintf(g, sizeof g, "%.*sgame_data.sav", (int)(n - 11), path);
+        if (!access(g, F_OK)) ach_game_wrote(g);
+    }
+}
 // (test only) runtime/services/test_warp.c: game_data.sav read with some values rewritten (SAVAGEWIND_TEST_WARP...)
 bool test_warp_active(void);
 void test_warp_patch(uint8_t *data, uint64_t size);
@@ -1628,6 +1771,7 @@ static void file_close(Service *s) {
     if (!f) return;
     s->state = NULL;
     if (f->fd >= 0) close(f->fd);
+    if (f->save_written) save_written(f->path);
     free(f->patched);
     free(f);
 }
@@ -1767,6 +1911,14 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
     HostFs *fs = s->state;
     char p[2048], p2[2048];
     host_path(fs, in_path(req, 0), p, sizeof p);
+    static int log_saves = -1;  // SAVAGEWIND_LOG_SAVES=1: what the game creates, deletes and renames in its save folder
+    if (log_saves < 0) log_saves = getenv("SAVAGEWIND_LOG_SAVES") && strcmp(getenv("SAVAGEWIND_LOG_SAVES"), "0");
+    if (log_saves && (req->cmd <= 6 || req->cmd == 13)) {
+        static const char *const what[] = {"create", "delete", "mkdir", "rmdir", "rmdir -r", "rename", "rename dir"};
+        if (req->cmd == 5 || req->cmd == 6) host_path(fs, in_path(req, 1), p2, sizeof p2);
+        LOG("[fs] save: %s %s%s%s\n", req->cmd == 13 ? "clean dir" : what[req->cmd], p,
+            req->cmd == 5 || req->cmd == 6 ? " -> " : "", req->cmd == 5 || req->cmd == 6 ? p2 : "");
+    }
     int tries = 0, r;
     switch (req->cmd) {
     case 0: {  // CreateFile(option, size)
@@ -1795,6 +1947,8 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
         host_path(fs, in_path(req, 1), p2, sizeof p2);
         while ((r = rename(p, p2)) && fs_retry(&tries, "rename", p)) {}
         if (r) resp->result = errno_result();
+        else if (strlen(p2) >= 13 && !strcmp(p2 + strlen(p2) - 13, "game_data.sav")) ach_set_active(p2);  // (saved via a temp file)
+        if (!r) save_written(p2);
         break;
     case 7: {  // GetEntryType
         struct stat sb;
@@ -1812,6 +1966,13 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
         f->fd = fd;
         strlcpy(f->path, p, sizeof f->path);
         size_t pl = strlen(p);
+        f->save_written = (mode & 2) && ((pl >= 13 && !strcmp(p + pl - 13, "game_data.sav")) ||
+                                         (pl >= 11 && !strcmp(p + pl - 11, "caption.sav")));
+        if (pl >= 13 && !strcmp(p + pl - 13, "game_data.sav")) {  // the playthrough being played (achievements)
+            ach_set_active(p);
+            if (!(mode & 2)) ach_game_loaded(p);  // (opened to read: loaded; to write, it's being saved over)
+            if (log_saves) LOG("[fs] save: open %s %s\n", mode & 2 ? "write" : "read", p);
+        }
         if (pl >= 13 && !strcmp(p + pl - 13, "game_data.sav") && test_warp_active()) {
             struct stat sb;
             if (!fstat(fd, &sb) && sb.st_size > 0 && (f->patched = malloc((size_t)sb.st_size)) &&
