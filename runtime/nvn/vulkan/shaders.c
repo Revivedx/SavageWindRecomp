@@ -1296,7 +1296,7 @@ static const char *builtin_src(const char *name, int *stage) {
         return "#version 450\n"
                "layout(set = 0, binding = 0) uniform sampler2D t0;\n"
                "layout(set = 0, binding = 1) uniform sampler2D t1;\n"
-               "layout(push_constant) uniform P { layout(row_major) mat4 m; vec4 a; vec4 b; } pc;\n"
+               "layout(push_constant) uniform P { layout(row_major) mat4 m; vec4 a; vec4 b; vec4 box; vec4 lk; } pc;\n"
                "layout(location = 0) out vec4 o;\n"
                "void main() {\n"
                "  ivec2 p = ivec2(gl_FragCoord.xy);\n"
@@ -1304,9 +1304,15 @@ static const char *builtin_src(const char *name, int *stage) {
                "  vec2 jit = vec2(pc.b.x, pc.b.y * pc.a.x);\n"
                "  if (v.a > 0.5 && pc.a.z == 0.0) { o = vec4(v.xy - jit, v.zw); return; }\n"
                "  if (v.a < 0.5 && pc.a.z == 2.0) { o = vec4(0.0); return; }\n"
-               "  vec2 fb = gl_FragCoord.xy / vec2(textureSize(t0, 0)) * 2.0 - 1.0;\n"
-               "  vec2 clip = vec2(fb.x, -fb.y);\n"
                "  float d = texelFetch(t1, p, 0).r;\n"
+               "  vec2 uv = gl_FragCoord.xy / vec2(textureSize(t1, 0));\n"
+               "  bool inbox = all(greaterThanEqual(uv, pc.box.xy)) && all(lessThanEqual(uv, pc.box.zw));\n"
+               "  if (inbox && d >= pc.lk.x && d <= pc.lk.y) {\n"
+               "    o = vec4(pc.lk.zw, 0.7, 0.5);\n"
+               "    return;\n"
+               "  }\n"
+               "  vec2 fb = uv * 2.0 - 1.0;\n"
+               "  vec2 clip = vec2(fb.x, -fb.y);\n"
                "  vec4 q = pc.m * vec4(clip.x, clip.y * pc.a.x, pc.a.y != 0.0 ? d * 2.0 - 1.0 : d, 1.0);\n"
                "  vec2 prev = vec2(q.x, q.y * pc.a.x) / q.w;\n"
                "  o = pc.a.z == 2.0 ? vec4(clip - prev - v.xy, 0.0, 1.0) : vec4(clip - prev - jit, v.z, 0.5);\n"
@@ -1324,7 +1330,10 @@ static const char *builtin_src(const char *name, int *stage) {
                                 "layout(set = 0, binding = 0) uniform sampler2D t0;\n"
                                 "layout(location = 0) out vec4 o;\n"
                                 "layout(push_constant) uniform P { vec4 a; vec4 b; } pc;\n"
-                                "void main() { o = vec4(clamp(texelFetch(t0, ivec2(gl_FragCoord.xy), 0).z * pc.a.x, 0.0, 1.0)); }\n";
+                                "void main() {\n"
+                                "  float r = clamp(texelFetch(t0, ivec2(gl_FragCoord.xy), 0).z * pc.a.x, 0.0, 1.0);\n"
+                                "  o = vec4(r, r, r, 1.0);\n"
+                                "}\n";
     }
     if (!strncmp(name, "taa_", 4)) {
         static const char *const names[] = {"taa_prepare.comp", "taa_shade_src.comp", "taa_shade_down.comp", "taa_shade.comp",

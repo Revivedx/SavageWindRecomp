@@ -2263,7 +2263,7 @@ static void begin_pass(void) {
         return;
     }
     pass_mvec = -1;
-    if (mvec_enabled() && has_d && pass_ncolor < 8 && pass_samples == 1) {  // (mvec.c) the motion target, appended
+    if (mvec_objects_enabled() && has_d && pass_ncolor < 8 && pass_samples == 1) {  // (mvec.c) the motion target, appended
         TexBackend *mt = mvec_pass_target(st.rt.depth, minw, minh);
         if (mt) {
             pass_barrier_note(mt);  // (the motion target is drawn into too)
@@ -2278,6 +2278,8 @@ static void begin_pass(void) {
             pass_color[pass_ncolor] = mt->format;
             pass_mvec = (int)pass_ncolor++;
         }
+    } else if (has_d && st.rt.depth && vk_texture_scale_group(st.rt.depth) == RS_SCENE) {
+        mvec_depth = st.rt.depth;
     }
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {minw, minh}}, .layerCount = 1,
                           .colorAttachmentCount = pass_ncolor, .pColorAttachments = ca,
@@ -9286,9 +9288,16 @@ static void scene_post(Prog *pr, CmdRec *r) {
         bool up = (fsr || fsr3) && (ow > b->width + 1 || oh > b->height + 1);
         if (t != taa_t) taa = NULL;
         // At 1.0x (Native AA / TAA) a -1.0 mip bias undersamples high-frequency ground/foliage mips and shimmers;
-        // use -0.35 at native resolution and log2(render/output) - 1.0 when upscaling.
-        scene_mip_bias = (taa || fsr3) && ow && b->width
-                             ? log2f((float)b->width / (float)ow) - (ow > b->width + 1 ? 1.0f : 0.35f) : 0.0f;
+        // use -0.35 at native resolution and log2(render/output) - 0.25 (clamped to -0.85f minimum) when upscaling
+        // to prevent subpixel foliage/grass shimmer in FSR 3/4.
+        if ((taa || fsr3) && ow && b->width) {
+            float base_bias = log2f((float)b->width / (float)ow);
+            float extra = (ow > b->width + 1) ? 0.25f : 0.35f;
+            scene_mip_bias = base_bias - extra;
+            if (scene_mip_bias < -0.85f) scene_mip_bias = -0.85f;
+        } else {
+            scene_mip_bias = 0.0f;
+        }
         static const char *bias_env = (const char *)1;  // (testing) SAVAGEWIND_MIP_BIAS=<levels>: in place of that
         if (bias_env == (const char *)1) bias_env = getenv("SAVAGEWIND_MIP_BIAS");
         if (bias_env && (taa || fsr3)) scene_mip_bias = (float)atof(bias_env);
@@ -9449,13 +9458,18 @@ static VkFormat srgb_of(VkFormat f) {
     return f == VK_FORMAT_R8G8B8A8_UNORM ? VK_FORMAT_R8G8B8A8_SRGB : f == VK_FORMAT_B8G8R8A8_UNORM ? VK_FORMAT_B8G8R8A8_SRGB : f;
 }
 
+void vk_fg_init_format(VkFormat f) {
+    fg.present_format = unorm_of(f);
+}
+
 static void fg_copy_hudless(void) {
     fg.copy_pending = false;
     TexBackend *s = fg.out_rt ? vk_tex(fg.out_rt, true) : NULL;
     if (!s || !s->image || s->aspect != VK_IMAGE_ASPECT_COLOR_BIT || s->layers != 1 || s->samples != 1) return;
     // (as the presented image has it: BOTW draws the HUD into a linear 10-bit image, then copies that sRGB-encoded into
     // the 8-bit one it presents; a blit into an sRGB image encodes the same way, and it is read through a UNORM view)
-    TexBackend *d = fg_image(0, s->width, s->height, srgb_of(fg.present_format ? fg.present_format : VK_FORMAT_R8G8B8A8_UNORM),
+    VkFormat fmt = fg.present_format ? fg.present_format : unorm_of(s->format);
+    TexBackend *d = fg_image(0, s->width, s->height, srgb_of(fmt),
                              VK_IMAGE_USAGE_TRANSFER_DST_BIT);
     vk_end_pass();
     VkCommandBuffer cb = vk_cmd();
@@ -9473,12 +9487,13 @@ static void fg_before_draw(void) {
 }
 
 static void fg_draw(Prog *pr, CmdRec *r) {
-    if (!g_fg_want) return;
+    if (!g_fg_want && !rt_temporal()) return;
     if (st.rt.depth && vk_texture_scale_group(st.rt.depth) == RS_SCENE) {
         Range u = st.ubuf[0][0];
         const float *f = (const float *)(uintptr_t)u.addr;
         if (u.addr && u.size >= FG_CAMERA_FLOATS * 4 && f[40] == 0 && f[41] == 0 && f[42] == -1 && f[43] == 0 &&
             f[57] > 10001 && f[56] > 0) {
+            mvec_feed_camera(f);
             int i = 0;
             while (i < fg.ncand && (fg.cand[i].depth != st.rt.depth || fg.cand[i].cb != u.addr)) i++;
             if (i == fg.ncand && i < 4) {
@@ -9541,6 +9556,7 @@ static bool fg_project(const double *vp, const float *p, float ysign, bool gl_de
 // t (b: its image), or NULL (not wanted, or this frame lacks what it needs: the next one starts over).
 TexBackend *vk_fg_generate(NvnTexture *t, TexBackend *b) {
     // (the game composites the scene into an image of its own and copies that into the presented one: the same size)
+    if (!fg.present_format && b) fg.present_format = unorm_of(b->format);
     TexBackend *ob = fg.out_rt ? vk_tex(fg.out_rt, true) : NULL;
     bool same = ob && ob->width == b->width && ob->height == b->height && fg.present_format == unorm_of(b->format);
     fg.present_format = unorm_of(b->format);
@@ -9720,7 +9736,7 @@ static NvnTexture *taa_tex;
 static bool mvec_scene_view(Prog *pr, CmdRec *r, NvnTexture **taa_t, TexBackend **taa) {
     if (g_cur_fs_hash == 0xd4fa32dabc35066cull) return false;
     NvnTexture *rt = st.rt.ncolor ? st.rt.color[0] : NULL;
-    if (!mvec_target_img || !rt || r->x[2] > 6 || !pr->fi->ntex || vk_texture_scale_group(rt) != RS_OUT) return false;
+    if ((mvec_objects_enabled() && !mvec_target_img) || !rt || r->x[2] > 6 || !pr->fi->ntex || vk_texture_scale_group(rt) != RS_OUT) return false;
     const float *vp = st.viewport[0];
     if (vp[2] < rt->width * 0.5f || vp[3] < rt->height * 0.5f) return false;
     for (int i = 0; i < pr->fi->ntex && i < 64; i++) {
@@ -9734,22 +9750,68 @@ static bool mvec_scene_view(Prog *pr, CmdRec *r, NvnTexture **taa_t, TexBackend 
         uint64_t frame = renderer_present_count();
         float m[16];
         TexBackend *db = mvec_depth ? vk_tex(mvec_depth, false) : NULL;
+        if (!db || !db->image) {
+            for (int k = 0; k < fg.ncand; k++) {
+                TexBackend *d = vk_tex(fg.cand[k].depth, true);
+                if (d && d->image && d->width == b->width && d->height == b->height) { db = d; break; }
+            }
+        }
         float jit[2];
-        if (mvec_filled != frame && db && db->image && db->width == mvec_target_img->width &&
-            db->height == mvec_target_img->height && mvec_reprojection(m, jit)) {
+        uint32_t tw = mvec_target_img ? mvec_target_img->width : b->width;
+        uint32_t th = mvec_target_img ? mvec_target_img->height : b->height;
+        if (mvec_filled != frame && db && db->image && db->width == tw &&
+            db->height == th && mvec_reprojection(m, jit)) {
             mvec_filled = frame;
             vk_end_pass();
             VkCommandBuffer cb = vk_cmd();
             static const VkComponentMapping id = {0};
             VkImageView dv = vk_image_view(db, VK_IMAGE_VIEW_TYPE_2D, db->format, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_DEPTH_BIT);
-            mvec_vectors_img = post_image(10, mvec_target_img->width, mvec_target_img->height, mvec_target_img->format);
-            float pc[24] = {0};
+            mvec_vectors_img = post_image(10, tw, th, VK_FORMAT_R16G16B16A16_SFLOAT);
+            float pc[32] = {0};
             memcpy(pc, m, sizeof m);
             pc[16] = nvn_window_origin() == 0 ? -1.0f : 1.0f;
             pc[17] = nvn_depth_mode() == 0 ? 1.0f : 0.0f;
-            pc[18] = (float)mvec_camera_only();
+            pc[18] = mvec_objects_enabled() ? (float)mvec_camera_only() : 1.0f;
             pc[20] = jit[0], pc[21] = jit[1];
-            VkImageView in[3] = {post_view(mvec_target_img), dv};
+            pc[24] = pc[25] = 2.0f; pc[26] = pc[27] = -1.0f; // empty box default
+            int best = -1;
+            for (int k = 0; k < fg.ncand; k++) {
+                if (best < 0 || fg.cand[k].draws > fg.cand[best].draws) best = k;
+            }
+            if (g_settings.mvec_mode == MVEC_MODE_HYBRID && !mvec_camera_only() && best >= 0 && fg.cand[best].has_link && fg.have_prev_link) {
+                const float *m_cam = fg.cand[best].m;
+                double vp_cam[16];
+                for (int k = 0; k < 16; k++) vp_cam[k] = m_cam[12 + k];
+                float ysign = renderer_origin_lower_left() ? 1.0f : -1.0f;
+                bool gl_depth = nvn_depth_mode() == 0;
+                const float *lk = fg.cand[best].link;
+                float lo[2] = {1e9f, 1e9f}, hi[2] = {-1e9f, -1e9f}, dlo = 1e9f, dhi = -1e9f, uv[2], d;
+                bool ok_box = true;
+                for (int k = 0; k < 8 && ok_box; k++) {
+                    float p[3] = {lk[0] + (k & 1 ? 0.7f : -0.7f), lk[1] + (k & 2 ? 1.9f : 0.1f), lk[2] + (k & 4 ? 0.7f : -0.7f)};
+                    ok_box = fg_project(vp_cam, p, ysign, gl_depth, uv, &d);
+                    for (int a = 0; a < 2; a++) lo[a] = fminf(lo[a], uv[a]), hi[a] = fmaxf(hi[a], uv[a]);
+                    dlo = fminf(dlo, d), dhi = fmaxf(dhi, d);
+                }
+                float c_now[3] = {lk[0], lk[1] + 0.9f, lk[2]}, c_prev[3] = {fg.prev_link[0], fg.prev_link[1] + 0.9f, fg.prev_link[2]};
+                float uv_now[2], uv_prev[2], dd;
+                if (ok_box && fg_project(vp_cam, c_now, ysign, gl_depth, uv_now, &dd) &&
+                    fg_project(fg.prev_vp, c_prev, ysign, gl_depth, uv_prev, &dd)) {
+                    pc[24] = lo[0], pc[25] = lo[1], pc[26] = hi[0], pc[27] = hi[1];
+                    pc[28] = dlo, pc[29] = dhi;
+                    pc[30] = -2.0f * (uv_prev[0] - uv_now[0]);
+                    pc[31] = 2.0f * (uv_prev[1] - uv_now[1]);
+                }
+            }
+            if (best >= 0) {
+                const float *m_cam = fg.cand[best].m;
+                for (int k = 0; k < 16; k++) fg.prev_vp[k] = (double)m_cam[12 + k];
+                fg.have_prev_link = fg.cand[best].has_link;
+                if (fg.have_prev_link) memcpy(fg.prev_link, fg.cand[best].link, sizeof fg.prev_link);
+            }
+            TexBackend *target = (mvec_objects_enabled() && mvec_target_img) ? mvec_target_img
+                                                                             : post_image(8, tw, th, VK_FORMAT_R16G16B16A16_SFLOAT);
+            VkImageView in[3] = {post_view(target), dv};
             post_pass_pc(cb, "mvec_fill.frag", in, 2, mvec_vectors_img, pc, sizeof pc, false);
             vk_full_barrier(cb);
             taa_img = rt_antialias() == AA_TAA && !rt_fsr3() ? mvec_taa(cb, b, frame) : NULL;  // (FSR 3 does its own)
@@ -9757,14 +9819,14 @@ static bool mvec_scene_view(Prog *pr, CmdRec *r, NvnTexture **taa_t, TexBackend 
         }
         if (mvec_filled == frame && taa_img && taa_tex == t) *taa = taa_img, *taa_t = t;  // (a second composite: the same)
         if (!mvec_view_enabled()) return false;
-        TexBackend *vec = mvec_filled == frame && mvec_vectors_img ? mvec_vectors_img : mvec_target_img;
+        TexBackend *vec = mvec_filled == frame && mvec_vectors_img ? mvec_vectors_img : (mvec_target_img ? mvec_target_img : mvec_vectors_img);
         vk_end_pass();
         VkCommandBuffer cb = vk_cmd();
         static const VkComponentMapping id = {0};
         VkImageView src = vk_image_view(b, VK_IMAGE_VIEW_TYPE_2D, b->format, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_COLOR_BIT);
         TexBackend *o = post_image(9, b->width, b->height, b->format);
-        float pc[8] = {mvec_view_enabled(), 0, 0, 0, (float)vec->width, (float)vec->height, (float)b->width, (float)b->height};
-        VkImageView in[3] = {src, post_view(vec)};
+        float pc[8] = {mvec_view_enabled(), 0, 0, 0, vec ? (float)vec->width : 0.0f, vec ? (float)vec->height : 0.0f, (float)b->width, (float)b->height};
+        VkImageView in[3] = {src, vec ? post_view(vec) : src};
         post_pass(cb, "mvec_view.frag", in, 2, o, pc, false);
         vk_full_barrier(cb);
         scene_up.t = t;
