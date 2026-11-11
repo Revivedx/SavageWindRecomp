@@ -53,6 +53,10 @@ Settings g_settings = {
     .fps_limit = FPS_DEFAULT,
     .precompile_shaders = true,
     .dlss_download = true,
+    .start_in_config = true,
+    .start_picture = START_PICTURE_SCREENSHOT,
+    .boot_picture = true,
+    .check_updates = true,
     .async_shaders = true,
     .vsync = VSYNC_DEFAULT,
     .gpu = -1,
@@ -114,10 +118,9 @@ static void gyro_startup_overrides(void) {
 }
 void settings_fps_for_display(float hz) {
     if (!g_settings.fps_display || hz < 20) return;
-    static const int fps[] = FPS_CHOICES;
-    int best = 30;
-    for (unsigned i = 0; i < sizeof fps / sizeof fps[0]; i++)
-        if (fps[i] && fps[i] <= hz + 1 && fps[i] > best) best = fps[i];
+    // The display's own rate, not the nearest one of the menu's list: a 210 Hz monitor stayed at 165, a 72 Hz one at 60 (#661).
+    int best = (int)(hz + 0.5f);
+    if (best > 360) best = 360;  // (framepace.c FPS_CEILING)
     if (g_settings.fps_limit != best) LOG("[settings] frame rate %d (Match display: %.0f Hz)\n", best, hz);
     g_settings.fps_limit = best;
 }
@@ -304,6 +307,12 @@ void settings_load(void) {
         else if (!strcmp(key, "async_shaders")) g_settings.async_shaders = atoi(val) != 0;
         else if (!strcmp(key, "precompile_shaders")) g_settings.precompile_shaders = atoi(val) != 0;
         else if (!strcmp(key, "dlss_download")) g_settings.dlss_download = atoi(val) != 0;
+        else if (!strcmp(key, "start_in_config")) g_settings.start_in_config = atoi(val) != 0;
+        else if (!strcmp(key, "start_picture")) {
+            int v = atoi(val);
+            g_settings.start_picture = v >= 0 && v < START_PICTURE_COUNT ? v : START_PICTURE_SCREENSHOT;
+        } else if (!strcmp(key, "boot_picture")) g_settings.boot_picture = atoi(val) != 0;
+        else if (!strcmp(key, "check_updates")) g_settings.check_updates = atoi(val) != 0;
         else if (!strcmp(key, "wide_view")) g_settings.wide_view = atoi(val) != 0;
         else if (!strcmp(key, "hud_edges")) g_settings.hud_edges = atoi(val) != 0;
         else if (!strcmp(key, "hdr")) {
@@ -532,6 +541,10 @@ void settings_save(void) {
     fprintf(f, "async_shaders = %d\n", g_settings.async_shaders);
     fprintf(f, "dlss_download = %d\n", g_settings.dlss_download);
     fprintf(f, "precompile_shaders = %d\n", g_settings.precompile_shaders);
+    fprintf(f, "start_in_config = %d\n", g_settings.start_in_config);
+    fprintf(f, "start_picture = %d\n", g_settings.start_picture);
+    fprintf(f, "boot_picture = %d\n", g_settings.boot_picture);
+    fprintf(f, "check_updates = %d\n", g_settings.check_updates);
     static const char *const shadow[SHADOW_COUNT] = {"console", "high", "ultra", "extreme", "potato"};
     int sr = g_settings.shadow_res;
     fprintf(f, "shadow_resolution = %s\n", shadow[sr >= 0 && sr < SHADOW_COUNT ? sr : SHADOW_CONSOLE]);

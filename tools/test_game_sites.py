@@ -172,7 +172,8 @@ def main():
         gs.SITES = saved
 
     # ---- versions
-    check(gs.supported_version('de0b6ac4efc1dda7f80f6d7598ec7a7d' + '0' * 32).name == '1.8.2', '1.8.2 by build id')
+    check(gs.supported_version('cd57b23fa4bbad65' + '0' * 48).name == '1.9.0', '1.9.0 by build id')
+    check(gs.supported_version('de0b6ac4efc1dda7f80f6d7598ec7a7d' + '0' * 32) is None, '1.8.2 is no longer known')
     check(gs.supported_version('ff' * 32) is None, 'an unknown build')
     try:
         gs.for_module(b.nso, BASE)

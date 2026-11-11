@@ -21,6 +21,7 @@
 #include "platform.h"
 #include "rt.h"
 #include "settings.h"
+#include "ui/i18n.h"
 
 #ifdef _WIN32
 #define SEP "\\"
@@ -196,6 +197,10 @@ static void list_read(void) {
     keys_read(dir);
     scan(dir, "", 0);
     qsort(g_figs, (size_t)g_nfigs, sizeof *g_figs, by_series_name);
+    for (int i = 0; i < g_nfigs; i++) {
+        ui_register_glyphs(g_figs[i].name);
+        ui_register_glyphs(g_figs[i].series);
+    }
     LOG("[amiibo] %d figures in %s\n", g_nfigs, dir);
 }
 
