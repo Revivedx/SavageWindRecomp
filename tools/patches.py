@@ -392,6 +392,28 @@ def _kf_angle(gen, a):
             f'c->v[0] = r.u; }}  /* {a:#x}: bl {target:#x} (keyframed body: angle of the turn left) */')
 
 
+# Havok's deactivation clock (runtime/hle/framepace.c rt_deact_tick): a body goes to sleep when it has barely moved
+# for a while, and the integrate loop of the physics step measures that in steps: each step bumps the body's counter
+# (1.9.0 0x700011f960), every 4th step the body is checked against its position and angle at the last check (the
+# short window) and every 16th against the check 16 steps ago (the long one), moving less than the deactivation
+# class's distance counts the check as inactive, and 6 inactive checks in a row let its island sleep. The thresholds
+# are distances, the windows steps: at 120 fps the window is a quarter of the time and a body must move four times
+# as fast to stay awake, so slow things (a ball starting down a ramp, a door or a hammer being pushed, a lever
+# under Magnesis) fell asleep mid-motion. The runtime says which steps are counted: one in every console frame's
+# worth of time. A step that is not counted skips the body's check (0x700011f968, the and that picks the 4th step).
+
+def _deact_count(gen, a):
+    assert _word(gen, a) == 0x11000508, hex(_word(gen, a))  # add w8, w8, #1
+    return ('{ extern int rt_deact_tick(void); c->x[8] = (uint32_t)((uint32_t)c->x[8] + (rt_deact_tick() ? 1 : 0)); }'
+            f'  /* {a:#x}: add w8, w8, #1 (a body\'s step counter, only on counted steps) */')
+
+
+def _deact_gate(gen, a):
+    assert _word(gen, a) == 0x12000509, hex(_word(gen, a))  # and w9, w8, #3
+    return ('{ extern int rt_deact_tick(void); c->x[9] = rt_deact_tick() ? ((uint32_t)c->x[8] & 3) : 1; }'
+            f'  /* {a:#x}: and w9, w8, #3 (the sleep test runs every 4th counted step) */')
+
+
 # The sound system's frame (runtime/hle/framepace.c rt_snd_frame_floor, #145): once a frame the game hands its sound
 # system the delta frame, at least 0.5 (1.9.0 0x7001551004; 1.8.2 0x710143ce64 in the Ghidra project): in console
 # frames, with the frame rate (30) it makes the seconds every sound timer and fade steps by. The floor is a 60 fps
@@ -927,6 +949,8 @@ PATCHES = {
     'stale_actor_target': _stale_actor_target,
     'phys_solver_steps': _solver_steps,
     'kf_angle': _kf_angle,
+    'deact_count': _deact_count,
+    'deact_gate': _deact_gate,
     'snd_frame_floor': _snd_frame_floor,
     'persp_matrix': _persp_matrix,
     'persp_matrix_offset': _persp_matrix_offset,

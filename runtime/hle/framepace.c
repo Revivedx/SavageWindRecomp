@@ -366,6 +366,33 @@ float rt_snd_frame_floor(void) {
     return keep && framepace_on() ? 0.5f * g_frame_ratio : 0.5f;
 }
 
+// Havok's deactivation clock (tools/patches.py _deact_count): the physics step counts a body's steps for its sleep test,
+// meant as console frames. g_deact_tick says whether this game frame's step counts: one frame in every console
+// frame's worth of time (ratio 0.25 at 120 fps: every 4th), every frame at 30 fps and below. Set once a frame by
+// rt_vfr_update (deact_clock) so every body of a step sees the same answer.
+static volatile int g_deact_tick = 1;
+
+int rt_deact_tick(void) { return g_deact_tick; }
+
+static void deact_clock(float ratio) {
+    static int keep = -1;
+    static float owed;  // console frames passed since the last counted step
+    if (keep < 0) keep = env_int("SAVAGEWIND_DEACT_CLOCK", 1) != 0;
+    if (!keep || !(ratio > 0) || ratio >= 1) {
+        owed = 0;
+        g_deact_tick = 1;
+        return;
+    }
+    owed += ratio;
+    if (owed >= 0.999f) {
+        owed -= 1;
+        if (owed > 1) owed = 1;
+        g_deact_tick = 1;
+    } else {
+        g_deact_tick = 0;
+    }
+}
+
 static uint64_t game_frames;  // rt_vfr_update calls: the game's frames (framepace_game_frame)
 uint64_t framepace_game_frame(void) { return __atomic_load_n(&game_frames, __ATOMIC_RELAXED); }
 // Experimental #305: the surf controller can still report contact on the update after takeoff at 120 fps.
@@ -454,6 +481,7 @@ void rt_vfr_update(uint64_t vfr) {
     extern void input_cam_frame(float ratio);  // runtime/hle/input.c: the mouse's motion in the frame, for the cameras
     if (!framepace_on()) {
         g_frame_ratio = VF(float, vfr, VFR_RATIO);
+        deact_clock(g_frame_ratio);
         input_cam_frame(VF(float, vfr, VFR_RATIO));
         return;
     }
@@ -516,6 +544,7 @@ void rt_vfr_update(uint64_t vfr) {
     VF(float, vfr, VFR_RATIO) = ratio;
     VF(float, vfr, VFR_NEW_RATIO) = ratio;
     if (!paused) g_frame_ratio = ratio;
+    if (!paused) deact_clock(ratio);
     VF(uint32_t, vfr, VFR_INTERVAL) = iv;
     VF(uint8_t, vfr, VFR_CHANGED) = last_iv && iv != last_iv;
     last_iv = iv;
