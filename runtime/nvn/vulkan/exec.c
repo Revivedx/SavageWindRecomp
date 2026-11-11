@@ -9661,10 +9661,12 @@ TexBackend *vk_fg_generate(NvnTexture *t, TexBackend *b) {
             // the FSR 3 upscaler (fsr3_scene).
             bool objv = mvec_filled == renderer_present_count() && mvec_vectors_img && mvec_vectors_img->width == db->width &&
                         mvec_vectors_img->height == db->height;
-            if (!mvec_for_framegen()) objv = false;  // (the default: they break up foliage, mvec.c mvec_for_framegen)
-            if (objv) mv = mvec_vectors_img;
-            gp_mark(cb, "frame generation: motion vectors");
-            if (!objv) post_pass_pc(cb, "fg_mv.frag", &dv, 1, mv, pc, sizeof pc, false);
+            if (objv) {
+                mv = mvec_vectors_img;
+            } else {
+                gp_mark(cb, "frame generation: motion vectors");
+                post_pass_pc(cb, "fg_mv.frag", &dv, 1, mv, pc, sizeof pc, false);
+            }
             TexBackend *hl = fg_image(0, b->width, b->height, srgb_of(unorm_of(b->format)), VK_IMAGE_USAGE_TRANSFER_DST_BIT);
             {   // (testing) SAVAGEWIND_FG_INPUTS_AT=<n>: the n-th generated frame's HUD-less image and motion vectors
                 static long at = -1;
@@ -9966,7 +9968,64 @@ static TexBackend *mvec_taa(VkCommandBuffer cb, TexBackend *b, uint64_t frame) {
 static TexBackend *fsr3_scene(VkCommandBuffer cb, TexBackend *b, uint32_t ow, uint32_t oh) {
     uint64_t frame = renderer_present_count();
     TexBackend *v = mvec_vectors_img, *db = mvec_depth ? vk_tex(mvec_depth, false) : NULL;
+    if (!db || !db->image) {
+        for (int k = 0; k < fg.ncand; k++) {
+            TexBackend *d = vk_tex(fg.cand[k].depth, true);
+            if (d && d->image && d->width == b->width && d->height == b->height) { db = d; break; }
+        }
+    }
     float jit[2], nr, fr, fov;
+    if (mvec_filled != frame && db && db->image && db->width == b->width && db->height == b->height) {
+        float m[16];
+        if (mvec_reprojection(m, jit)) {
+            mvec_filled = frame;
+            static const VkComponentMapping id = {0};
+            VkImageView dv = vk_image_view(db, VK_IMAGE_VIEW_TYPE_2D, db->format, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_DEPTH_BIT);
+            mvec_vectors_img = post_image(10, b->width, b->height, VK_FORMAT_R16G16B16A16_SFLOAT);
+            float pc[32] = {0};
+            memcpy(pc, m, sizeof m);
+            pc[16] = nvn_window_origin() == 0 ? -1.0f : 1.0f;
+            pc[17] = nvn_depth_mode() == 0 ? 1.0f : 0.0f;
+            pc[18] = mvec_objects_enabled() ? (float)mvec_camera_only() : 1.0f;
+            pc[20] = jit[0], pc[21] = jit[1];
+            pc[24] = pc[25] = 2.0f; pc[26] = pc[27] = -1.0f;
+            int best = -1;
+            for (int k = 0; k < fg.ncand; k++) {
+                if (best < 0 || fg.cand[k].draws > fg.cand[best].draws) best = k;
+            }
+            if (g_settings.mvec_mode == MVEC_MODE_HYBRID && !mvec_camera_only() && best >= 0 && fg.cand[best].has_link && fg.have_prev_link) {
+                const float *m_cam = fg.cand[best].m;
+                double vp_cam[16];
+                for (int k = 0; k < 16; k++) vp_cam[k] = m_cam[12 + k];
+                float ysign = renderer_origin_lower_left() ? 1.0f : -1.0f;
+                bool gl_depth = nvn_depth_mode() == 0;
+                const float *lk = fg.cand[best].link;
+                float lo[2] = {1e9f, 1e9f}, hi[2] = {-1e9f, -1e9f}, dlo = 1e9f, dhi = -1e9f, uv[2], d;
+                bool ok_box = true;
+                for (int k = 0; k < 8 && ok_box; k++) {
+                    float p[3] = {lk[0] + (k & 1 ? 0.7f : -0.7f), lk[1] + (k & 2 ? 1.9f : 0.1f), lk[2] + (k & 4 ? 0.7f : -0.7f)};
+                    ok_box = fg_project(vp_cam, p, ysign, gl_depth, uv, &d);
+                    for (int a = 0; a < 2; a++) lo[a] = fminf(lo[a], uv[a]), hi[a] = fmaxf(hi[a], uv[a]);
+                    dlo = fminf(dlo, d), dhi = fmaxf(dhi, d);
+                }
+                float c_now[3] = {lk[0], lk[1] + 0.9f, lk[2]}, c_prev[3] = {fg.prev_link[0], fg.prev_link[1] + 0.9f, fg.prev_link[2]};
+                float uv_now[2], uv_prev[2], dd;
+                if (ok_box && fg_project(vp_cam, c_now, ysign, gl_depth, uv_now, &dd) &&
+                    fg_project(fg.prev_vp, c_prev, ysign, gl_depth, uv_prev, &dd)) {
+                    pc[24] = lo[0], pc[25] = lo[1], pc[26] = hi[0], pc[27] = hi[1];
+                    pc[28] = dlo, pc[29] = dhi;
+                    pc[30] = -2.0f * (uv_prev[0] - uv_now[0]);
+                    pc[31] = 2.0f * (uv_prev[1] - uv_now[1]);
+                }
+            }
+            TexBackend *target = (mvec_objects_enabled() && mvec_target_img) ? mvec_target_img
+                                                                             : post_image(8, b->width, b->height, VK_FORMAT_R16G16B16A16_SFLOAT);
+            VkImageView in[3] = {post_view(target), dv};
+            post_pass_pc(cb, "mvec_fill.frag", in, 2, mvec_vectors_img, pc, sizeof pc, false);
+            vk_full_barrier(cb);
+            v = mvec_vectors_img;
+        }
+    }
     const char *why = mvec_filled != frame ? "no vectors this frame" : !v || v->width != b->width || v->height != b->height ? "vectors' size"
                     : !db || !db->image || db->width != b->width || db->height != b->height ? "depth's size"
                     : ow < b->width || oh < b->height ? "output smaller" : !mvec_camera_now(jit, &nr, &fr, &fov) ? "no camera" : NULL;
