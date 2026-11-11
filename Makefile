@@ -850,6 +850,14 @@ test-sw-update:
 # (Linux) the same for an AppImage replacing itself: tools/test_update_appimage.py
 test-update-appimage:
 	python3 tools/test_update_appimage.py
+# Steam's shortcuts.vdf read and written (runtime/steam_shortcuts.c); real files (copies) can be given: STEAM_VDF="a b"
+test-steam-shortcuts: $(B)/test_steam_shortcuts
+	$(B)/test_steam_shortcuts $(STEAM_VDF)
+$(B)/test_steam_shortcuts: tools/test_steam_shortcuts.c runtime/steam_shortcuts.c runtime/steam_shortcuts.h
+	@mkdir -p $(dir $@)
+	$(CC) -O1 -Wall -c tools/test_steam_shortcuts.c -o $@-t.o
+	$(CC) -O1 -Wall -DSTEAM_VDF_ONLY -c runtime/steam_shortcuts.c -o $@-s.o
+	$(CC) -o $@ $@-t.o $@-s.o
 
 test-launch-flags: $(B)/test_launch_flags
 	$(B)/test_launch_flags

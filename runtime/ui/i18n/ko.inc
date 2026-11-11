@@ -992,3 +992,7 @@ T("Puts back the version you had before this update. Your saves and game files a
 T("Version %s is available.", "버전 %s을(를) 사용할 수 있습니다.")
 T("Couldn't check for updates:", "업데이트를 확인할 수 없습니다:")
 T("Updating Savage Wind", "Savage Wind 업데이트 중")
+T("Add to Steam", "Steam에 추가")
+T("Adds two entries to your Steam library: Savage Wind, which goes straight into the game, and Savage Wind Configuration. Steam closes for a moment and opens again. Do it again if you move this folder.", "Steam 라이브러리에 항목 두 개를 추가합니다: 게임으로 바로 들어가는 Savage Wind와 Savage Wind Configuration입니다. Steam이 잠시 닫혔다가 다시 열립니다. 이 폴더를 옮기면 다시 실행하세요.")
+T("Added to Steam: Savage Wind (straight into the game) and Savage Wind Configuration.", "Steam에 추가했습니다: Savage Wind(게임으로 바로 시작)와 Savage Wind Configuration.")
+T("Couldn't add Savage Wind to Steam", "Savage Wind를 Steam에 추가하지 못했습니다")

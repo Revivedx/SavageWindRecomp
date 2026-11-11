@@ -55,6 +55,7 @@ extern "C" {
 #include "romfs_build.h"
 #include "problem_report.h"
 #include "post_update.h"
+#include "steam_shortcuts.h"
 #include "settings.h"
 #include "color_grade.h"
 #include "pc_cursor.h"
@@ -539,6 +540,19 @@ static std::string precompile_line(void) {
 static std::atomic<bool> g_stay_on_setup{false}, g_dlc_checking{false};
 
 // Linux: the update runs in this program (runtime/post_update.h). It comes back only if it failed.
+// Add to Steam (runtime/steam_shortcuts.h): waits for Steam to close, so on a thread of its own
+static std::atomic<bool> g_steam_busy{false};
+static void *steam_thread(void *) {
+    char why[700] = "";
+    bool ok = steam_add_savage_wind(why, sizeof why);
+    for (char *c = why; *c; c++)
+        if (*c == '%') *c = ' ';  // (shown as text: trv fills % in)
+    if (ok) set_job(tr("Added to Steam: Savage Wind (straight into the game) and Savage Wind Configuration."));
+    else set_job(tr("Couldn't add Savage Wind to Steam"), true, why);
+    g_steam_busy = false;
+    return NULL;
+}
+
 static void *update_thread(void *) {
     char title[200] = "", what[900] = "";
     update_apply_here(title, sizeof title, what, sizeof what);
@@ -2000,6 +2014,17 @@ extern "C" void launcher_run(const char *root, int mode) {
                                        "Starting Savage Wind opens this screen, where updates are offered. Turned off, "
                                        "savagewind.exe goes straight into the game."))
                             settings_save();
+                    }
+                    if (steam_supported()) {
+                        bool sb = g_steam_busy;
+                        if (sb || busy) opt_disable_next();
+                        if (opt_action("Add to Steam", sb ? tr("Working...") : "", tr("Adds two entries to your Steam library: Savage Wind, which goes straight into the game, and Savage Wind Configuration. Steam closes for a moment and opens again. Do it again if you move this folder."), true)) {
+                            g_steam_busy = true;
+                            set_job(tr("Add to Steam") + std::string("..."));
+                            pthread_t st;
+                            pthread_create(&st, NULL, steam_thread, NULL);
+                            pthread_detach(st);
+                        }
                     }
                     if (busy || (src.empty() && !check_copied_files(g_root).empty())) opt_disable_next();
                     if (opt_action("Set up game files", busy ? tr("Working...") : "", ready ? again_d.c_str() : ex_d.c_str(),

@@ -991,3 +991,7 @@ T("Puts back the version you had before this update. Your saves and game files a
 T("Version %s is available.", "La versión %s está disponible.")
 T("Couldn't check for updates:", "No se pudo buscar actualizaciones:")
 T("Updating Savage Wind", "Actualizando Savage Wind")
+T("Add to Steam", "Añadir a Steam")
+T("Adds two entries to your Steam library: Savage Wind, which goes straight into the game, and Savage Wind Configuration. Steam closes for a moment and opens again. Do it again if you move this folder.", "Añade dos entradas a tu biblioteca de Steam: Savage Wind, que entra directamente al juego, y Savage Wind Configuration. Steam se cierra un momento y vuelve a abrirse. Hazlo de nuevo si mueves esta carpeta.")
+T("Added to Steam: Savage Wind (straight into the game) and Savage Wind Configuration.", "Añadido a Steam: Savage Wind (directo al juego) y Savage Wind Configuration.")
+T("Couldn't add Savage Wind to Steam", "No se pudo añadir Savage Wind a Steam")

@@ -8,6 +8,7 @@
 #include "gamelib.h"
 #include "paths.h"
 #include "post_update.h"
+#include "steam_shortcuts.h"
 #include "nvn/maxwell/shader.h"
 #include "nvn/shader_archive.h"
 #ifndef __APPLE__
@@ -355,15 +356,17 @@ int main(int argc, char **argv) {
     control_init();
     const char *root = "extracted";  // (in the data root)
     bool skip_launcher = getenv("SAVAGEWIND_NO_LAUNCHER") || getenv("SAVAGEWIND_INPUT");  // tests boot straight in
-    bool config = false;
+    bool config = false, game_first = false;
     static char arg_root[1024];
     const char *dump = NULL, *seed_out = NULL;
-    bool scan = false, precompile = false;
+    bool scan = false, precompile = false, add_steam = false;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--play")) skip_launcher = true;
         else if (!strcmp(argv[i], "--config")) config = true;
+        else if (!strcmp(argv[i], "--game")) game_first = true;  // (the Steam entry: into the game when it's ready)
         else if (!strcmp(argv[i], "--dump-romfs") && i + 1 < argc) dump = argv[++i];
         else if (!strcmp(argv[i], "--scan-shaders")) scan = true;
+        else if (!strcmp(argv[i], "--add-to-steam")) add_steam = true;
         else if (!strcmp(argv[i], "--precompile-shaders")) precompile = true;
         else if (!strcmp(argv[i], "--export-pipeline-seed") && i + 1 < argc) seed_out = argv[++i];
         else if (argv[i][0] != '-' && !realpath(argv[i], arg_root)) root = argv[i];  // (relative to where we started)
@@ -381,6 +384,13 @@ int main(int argc, char **argv) {
     LOG("[settings] sparse_heap=%s\n", sparse_heap_modes[sparse_heap]);
     if (dump) return dump_romfs(root, dump);
     if (scan) return scan_shaders(root);
+    if (add_steam) {  // what Configuration's Add to Steam does, from a terminal (runtime/steam_shortcuts.h)
+        char msg[800];
+        bool ok = steam_add_savage_wind(msg, sizeof msg);
+        fprintf(stderr, "[steam] %s\n", msg);
+        printf("%s\n", msg);
+        return ok ? 0 : 1;
+    }
 #ifndef __APPLE__
     if (precompile) return precompile_shaders(root);
     if (seed_out) return export_pipeline_seed(root, seed_out);
@@ -397,7 +407,8 @@ int main(int argc, char **argv) {
         bool new_version = post_update_pending(rt_version());
         if (new_version) post_update_reset_shaders(rt_version());
         else post_update_tidy(rt_version());
-        if (new_version || (mode == LAUNCHER_NONE && g_settings.start_in_config && post_update_shipped())) mode = LAUNCHER_CONFIG;
+        if (new_version || (mode == LAUNCHER_NONE && g_settings.start_in_config && !game_first && post_update_shipped()))
+            mode = LAUNCHER_CONFIG;
     }
     // (tests of the start screen - screenshots, setup and delete runs - show it: the configuration screen, or
     // SAVAGEWIND_LAUNCHER_MODE=setup / config)

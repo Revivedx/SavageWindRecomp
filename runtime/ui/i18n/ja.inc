@@ -992,3 +992,7 @@ T("Puts back the version you had before this update. Your saves and game files a
 T("Version %s is available.", "バージョン%sが利用可能です。")
 T("Couldn't check for updates:", "アップデートを確認できませんでした:")
 T("Updating Savage Wind", "Savage Windをアップデート中")
+T("Add to Steam", "Steamに追加")
+T("Adds two entries to your Steam library: Savage Wind, which goes straight into the game, and Savage Wind Configuration. Steam closes for a moment and opens again. Do it again if you move this folder.", "Steamライブラリーに2つの項目を追加します:ゲームを直接起動するSavage Windと、Savage Wind Configurationです。Steamは一度閉じて再び開きます。このフォルダーを移動したときはもう一度実行してください。")
+T("Added to Steam: Savage Wind (straight into the game) and Savage Wind Configuration.", "Steamに追加しました:Savage Wind(ゲームを直接起動)とSavage Wind Configuration。")
+T("Couldn't add Savage Wind to Steam", "Savage WindをSteamに追加できませんでした")

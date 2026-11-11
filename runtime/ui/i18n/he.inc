@@ -991,3 +991,7 @@ T("Puts back the version you had before this update. Your saves and game files a
 T("Version %s is available.", "גרסה %s זמינה.")
 T("Couldn't check for updates:", "לא ניתן לבדוק עדכונים:")
 T("Updating Savage Wind", "מעדכן את Savage Wind")
+T("Add to Steam", "הוספה ל-Steam")
+T("Adds two entries to your Steam library: Savage Wind, which goes straight into the game, and Savage Wind Configuration. Steam closes for a moment and opens again. Do it again if you move this folder.", "מוסיף שני פריטים לספריית Steam שלכם: Savage Wind, שנכנס ישירות למשחק, ו-Savage Wind Configuration. ‏Steam ייסגר לרגע וייפתח שוב. עשו זאת שוב אם תעבירו את התיקייה הזו.")
+T("Added to Steam: Savage Wind (straight into the game) and Savage Wind Configuration.", "נוסף ל-Steam: ‏Savage Wind (ישר למשחק) ו-Savage Wind Configuration.")
+T("Couldn't add Savage Wind to Steam", "לא ניתן להוסיף את Savage Wind ל-Steam")

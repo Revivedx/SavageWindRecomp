@@ -992,3 +992,7 @@ T("Puts back the version you had before this update. Your saves and game files a
 T("Version %s is available.", "เวอร์ชัน %s พร้อมใช้งาน")
 T("Couldn't check for updates:", "ไม่สามารถตรวจหาอัปเดตได้:")
 T("Updating Savage Wind", "กำลังอัปเดต Savage Wind")
+T("Add to Steam", "เพิ่มลงใน Steam")
+T("Adds two entries to your Steam library: Savage Wind, which goes straight into the game, and Savage Wind Configuration. Steam closes for a moment and opens again. Do it again if you move this folder.", "เพิ่มสองรายการลงในคลัง Steam ของคุณ: Savage Wind ซึ่งเข้าเกมโดยตรง และ Savage Wind Configuration โดย Steam จะปิดชั่วครู่แล้วเปิดใหม่ ทำอีกครั้งหากคุณย้ายโฟลเดอร์นี้")
+T("Added to Steam: Savage Wind (straight into the game) and Savage Wind Configuration.", "เพิ่มลงใน Steam แล้ว: Savage Wind (เข้าเกมโดยตรง) และ Savage Wind Configuration")
+T("Couldn't add Savage Wind to Steam", "ไม่สามารถเพิ่ม Savage Wind ลงใน Steam ได้")

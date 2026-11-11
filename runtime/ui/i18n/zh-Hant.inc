@@ -992,3 +992,7 @@ T("Puts back the version you had before this update. Your saves and game files a
 T("Version %s is available.", "版本 %s 可供使用。")
 T("Couldn't check for updates:", "無法檢查更新:")
 T("Updating Savage Wind", "正在更新 Savage Wind")
+T("Add to Steam", "加入 Steam")
+T("Adds two entries to your Steam library: Savage Wind, which goes straight into the game, and Savage Wind Configuration. Steam closes for a moment and opens again. Do it again if you move this folder.", "在你的 Steam 收藏庫中加入兩個項目:直接進入遊戲的 Savage Wind,以及 Savage Wind Configuration。Steam 會短暫關閉後重新開啟。如果移動了此資料夾,請再執行一次。")
+T("Added to Steam: Savage Wind (straight into the game) and Savage Wind Configuration.", "已加入 Steam:Savage Wind(直接進入遊戲)和 Savage Wind Configuration。")
+T("Couldn't add Savage Wind to Steam", "無法將 Savage Wind 加入 Steam")
