@@ -71,6 +71,9 @@ enum { TEX_LOD_DEFAULT = 0, TEX_LOD_SHARP = 1, TEX_LOD_SHARPER = 2, TEX_LOD_COUN
 // to 2; Surround 5.1 sends all 6 channels to the audio device; 3D Headphones mixes the 6 channels to stereo with
 // binaural head-shadow and ear-delay cues for headphones.
 enum { AUDIO_OUT_STEREO = 0, AUDIO_OUT_SURROUND_51 = 1, AUDIO_OUT_HEADPHONES_3D = 2, AUDIO_OUT_COUNT };
+// The start screen's background, when there is no splash.jpg / .png of the player's in the data folder
+enum { START_PICTURE_ART, START_PICTURE_SCREENSHOT, START_PICTURE_SAVE, START_PICTURE_COUNT };
+
 typedef struct {
     bool fullscreen;
     int fullscreen_mode;     // FSMODE_*
@@ -126,6 +129,10 @@ typedef struct {
                          // default since settings_version 4; off: every draw waits for its shaders, as before)
     bool precompile_shaders;  // setting the game files up also precompiles every shader (runtime/nvn/precompile.h)
     bool dlss_download;       // ... and downloads NVIDIA's DLSS library on PCs with an NVIDIA driver (dlss_fetch.h)
+    bool start_in_config;     // Windows releases: a plain start opens Savage Wind Configuration first
+    int start_picture;        // the start screen's background (ui/splash.mm): START_PICTURE_*
+    bool boot_picture;        // that picture while the game loads (vulkan/device.c boot_splash_start); off: black
+    bool check_updates;       // Savage Wind Configuration asks SW Update if there is a new version
     int shadow_res;      // SHADOW_*: shadow maps at the console's size, bigger, or (Potato) smaller
     int sharper_menus;   // the menus' one-channel textures enlarged this many times (2 or 4; 0: off), runtime/nvn/text_upscale.c
     int sharper_text;    // the game's font sheets enlarged this many times (2 or 4; 0: off), runtime/nvn/text_upscale.c

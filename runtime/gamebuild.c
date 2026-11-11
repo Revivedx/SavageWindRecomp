@@ -534,8 +534,8 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
             char last[300];
             log_tail(log, last, sizeof last);
             LOG("[gamebuild] module layout failed: %s\n", last);
-            snprintf(why, why_size, "%s",
-                     p ? "the game files' code modules can't be loaded" : "the game code builder didn't start");
+            snprintf(why, why_size, "%s: %s",
+                     p ? "the game files' code modules can't be loaded" : "the game code builder didn't start", last);
             ok = false;
         }
         for (int i = 0; i < ngen; i++) total += weight[i];
@@ -595,7 +595,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
                         log_tail(g->log, last, sizeof last);
                         LOG("[gamebuild] generator (%s) failed: %s\n", g->name, last);
                         log_gen_tail(g->log, r);
-                        snprintf(why, why_size, "the game code couldn't be prepared");
+                        snprintf(why, why_size, "the game code couldn't be prepared: %s", last);
                         ok = false;
                     }
                 }
@@ -641,7 +641,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
                 log_tail(u->log, last, sizeof last);
                 LOG("[gamebuild] compiling %s failed: %s\n", u->src, last);
                 log_gen_tail(u->log, r);  // (the compiler's errors: its last line is only "1 error generated", #123)
-                snprintf(why, why_size, "the game code didn't compile");
+                snprintf(why, why_size, "the game code didn't compile: %s", last);
                 ok = false;
             }
             if (r == 0 && run[k].unit > 0 && gc_seed) gc_store(u);
@@ -718,7 +718,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
             char last[300];
             log_tail(log, last, sizeof last);
             LOG("[gamebuild] linking failed: %s\n", last);
-            snprintf(why, why_size, "the game code didn't link");
+            snprintf(why, why_size, "the game code didn't link: %s", last);
             ok = false;
         }
     }

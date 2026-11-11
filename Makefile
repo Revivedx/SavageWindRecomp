@@ -344,6 +344,20 @@ $(B)/rt/platform/windows_config.o: runtime/platform/windows_config.c
 $(B)/savagewind-config.exe: $(B)/rt/platform/windows_config.o $(B)/rt/platform/windows_rc.o
 	$(CC) -o $@ $^ -fuse-ld=lld -Wl,--subsystem,windows
 
+# "SW Update.exe" in the release (runtime/platform/windows_update.c): static, it replaces every DLL next to it
+SW_UPDATE_LIBS := -static -fuse-ld=lld -municode -Wl,--subsystem,windows -lwinhttp -lbcrypt -lcomctl32 -lshell32 -luser32 -lgdi32
+$(B)/rt/platform/sw_update_rc.o: runtime/platform/sw_update.rc runtime/platform/sw_update.manifest docs/icon/icon.ico
+	@mkdir -p $(dir $@)
+	$(WINDRES) -I docs/icon -I runtime/platform -O coff $< -o $@
+$(B)/rt/platform/windows_update.o: runtime/platform/windows_update.c runtime/update_core.h runtime/platform/sw_update_key.h
+	@mkdir -p $(dir $@)
+	$(CC) -O2 -Wall -Ithird_party/stb -c $< -o $@
+$(B)/rt/platform/sw_update_core.o: runtime/update_core.c runtime/update_core.h
+	@mkdir -p $(dir $@)
+	$(CC) -O2 -Wall -c $< -o $@
+$(B)/sw-update.exe: $(B)/rt/platform/windows_update.o $(B)/rt/platform/sw_update_core.o $(B)/rt/platform/sw_update_rc.o
+	$(CC) -o $@ $^ $(SW_UPDATE_LIBS)
+
 VERSION  := $(shell sed -n 's/^\#define SAVAGEWIND_VERSION "\(.*\)"/\1/p' runtime/ui/launcher.mm)
 
 # macOS: build/Savage Wind.app, runs on macOS $(APP_MIN)+: the game rebuilt for that in build/mac15 against build/deps
@@ -381,11 +395,12 @@ dist:
 	@! find tools -maxdepth 1 -name '*.py' -newer build/helper/swgen/swgen.exe | grep -q . || \
 	    { echo "make gen-helper first: tools/*.py changed since build/helper/swgen was frozen"; exit 1; }
 	@[ -x build/zig/zig.exe ] || { echo "tools/fetch_zig.sh first (the compiler)"; exit 1; }
-	$(MAKE) B=$(WIN_B) DEPS=$(CURDIR)/build/deps-win RELEASE=1 $(WIN_B)/savagewind.exe $(WIN_B)/savagewind-config.exe
+	$(MAKE) B=$(WIN_B) DEPS=$(CURDIR)/build/deps-win RELEASE=1 $(WIN_B)/savagewind.exe $(WIN_B)/savagewind-config.exe $(WIN_B)/sw-update.exe
 	! nm $(WIN_B)/savagewind.exe | grep ' f_70' >/dev/null  # (no game code inside)
 	rm -rf build/dist && mkdir -p "$(DIST)/gamelib-src"
 	cp $(WIN_B)/savagewind.exe $(WIN_B)/savagewind.dll.a "$(DIST)/"
 	cp $(WIN_B)/savagewind-config.exe "$(DIST)/Savage Wind Configuration.exe"
+	cp $(WIN_B)/sw-update.exe "$(DIST)/SW Update.exe"
 	tools/zig_slim.sh $(strip $(filter-out -Iruntime,$(GENFLAGS))) \
 	    $(if $(GENFLAGS_COMPAT),-- $(strip $(filter-out -Iruntime,$(GENFLAGS_COMPAT))))  # (zig, its runtime built ahead of time)
 	cp -R build/helper/swgen "$(DIST)/"
@@ -409,6 +424,7 @@ dist:
 	    xargs -I{} cp -u {} "$(DIST)/"
 	! ls "$(DIST)" | grep -iE 'x264|x265|xvid|postproc'  # (no GPL codec libraries in the release)
 	! ls "$(DIST)" | grep -i splash  # (no start screen picture: the player's own, never shipped)
+	python3 tools/make_update_manifest.py "$(DIST)" "$(VERSION)"  # (what SW Update checks and replaces: this list, nothing else)
 	cd build/dist && if command -v zip >/dev/null; then zip -qr "SavageWind-$(VERSION)-windows.zip" "Savage Wind"; \
 	    else /c/Windows/System32/tar.exe -a -cf "SavageWind-$(VERSION)-windows.zip" "Savage Wind"; fi
 	@echo "build/dist/SavageWind-$(VERSION)-windows.zip"
@@ -553,6 +569,15 @@ test-output-scale: $(B)/test_output_scale
 	$(B)/test_output_scale
 
 .PHONY: test-output-scale
+
+$(B)/test_window_size: tests/test_window_size.c runtime/window_size.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tests/test_window_size.c runtime/window_size.c -lSDL3 -lpthread -lm
+
+test-window-size: $(B)/test_window_size
+	$(B)/test_window_size
+
+.PHONY: test-window-size
 
 $(B)/test_vibration: tools/test_vibration.c runtime/hle/vibration.c runtime/vibration.h runtime/settings.h runtime/services/hid_set.c
 	@mkdir -p $(B)
@@ -786,6 +811,29 @@ test-audio-mix: $(B)/test_audio_mix
 $(B)/test_launch_flags: tools/test_launch_flags.c runtime/launch_flags.c runtime/launch_flags_table.c runtime/launch_flags.h
 	@mkdir -p $(B)
 	$(CC) -O1 -g -Wall -Wextra $(OSFLAGS) -Iruntime -o $@ tools/test_launch_flags.c runtime/launch_flags.c runtime/launch_flags_table.c
+
+test-update-core: $(B)/test_update_core
+	$(B)/test_update_core
+$(B)/test_update_core: tools/test_update_core.c runtime/update_core.c runtime/update_core.h runtime/update_crypto.c runtime/update_crypto.h
+	@mkdir -p $(dir $@)
+	$(CC) -O1 -Wall -c tools/test_update_core.c -o $@-t.o
+	$(CC) -O1 -Wall -c runtime/update_core.c -o $@-c.o
+	$(CC) -O1 -Wall -c runtime/update_crypto.c -o $@-x.o
+	$(CC) -o $@ $@-t.o $@-c.o $@-x.o
+# (Windows) every way an update can go wrong, against a local server: tools/test_sw_update.py
+test-sw-update:
+	python3 tools/test_sw_update.py
+# (Linux) the same for an AppImage replacing itself: tools/test_update_appimage.py
+test-update-appimage:
+	python3 tools/test_update_appimage.py
+# Steam's shortcuts.vdf read and written (runtime/steam_shortcuts.c); real files (copies) can be given: STEAM_VDF="a b"
+test-steam-shortcuts: $(B)/test_steam_shortcuts
+	$(B)/test_steam_shortcuts $(STEAM_VDF)
+$(B)/test_steam_shortcuts: tools/test_steam_shortcuts.c runtime/steam_shortcuts.c runtime/steam_shortcuts.h
+	@mkdir -p $(dir $@)
+	$(CC) -O1 -Wall -c tools/test_steam_shortcuts.c -o $@-t.o
+	$(CC) -O1 -Wall -DSTEAM_VDF_ONLY -c runtime/steam_shortcuts.c -o $@-s.o
+	$(CC) -o $@ $@-t.o $@-s.o
 
 test-launch-flags: $(B)/test_launch_flags
 	$(B)/test_launch_flags

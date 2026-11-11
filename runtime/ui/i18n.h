@@ -3,6 +3,8 @@
 // English text is the key, the tables are runtime/ui/i18n/<lang>.inc (tools/i18n_check.py lists what each lacks).
 // Format strings translate the same way and keep their conversions in order.
 #pragma once
+
+#ifdef __cplusplus
 #include <string>
 
 struct ImFontAtlas;
@@ -24,3 +26,14 @@ std::string ui_visual_order(const char *s);
 // language's texts use that Latin-1 fonts lack (Cyrillic, kana and kanji, hangul, hanzi, Thai, Hebrew). Returns false
 // if none needed.
 bool ui_merge_fallback_font(ImFontAtlas *atlas, float size, const ImFontConfig *base);
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+// Dynamic glyphs: text drawn by menus at runtime (item names, amiibo figures) that doesn't come from static menu tables.
+void ui_register_glyphs(const char *text);
+int ui_dynamic_generation(void);
+#ifdef __cplusplus
+}
+#endif
