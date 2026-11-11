@@ -65,6 +65,7 @@ typedef struct {
     int ngrown;
     uint8_t *rstb_blob;      // the patched ResourceSizeTable served from memory (rstb_patch)
     uint8_t *hud_pack;       // Pack/Bootup.pack with the HUD letters patched (hud_letters_patch)
+    size_t hud_pack_size;
     uint8_t *voice_banks;    // the text language's voice banks with the chosen voices' lengths (bars_hybrid)
 } RomImage;
 #define AOC_MAX 8
@@ -947,6 +948,7 @@ static void hud_letters_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz)
     size_t qn = pn + delta;
     free(R->hud_pack);
     R->hud_pack = calloc(1, qn);
+    R->hud_pack_size = qn;
     memcpy(R->hud_pack, pack, pdoff + ps);
     memcpy(R->hud_pack + pdoff + ps, z2, zn);
     memcpy(R->hud_pack + pdoff + pe + delta, pack + pdoff + pe, pn - pdoff - pe);
@@ -1066,62 +1068,68 @@ static void haze_patch(void) {
     LOG("[fs] haze %d %%: %d climate values (scattering x%.2f, near haze x%.2f)\n", pct, changed, sc, kk);
 }
 
+static bool shrine_sensor_patch_range(uint64_t at, size_t n, int vol) {
+    if (R->npatches >= 16 || n == 0 || n >= (32u << 20)) return false;
+    uint8_t *d = malloc(n);
+    if (!d || romfs_image_pread(R->img, d, n, at) != (ssize_t)n) { free(d); return false; }
+    if (!shrine_sensor_patch_bars(d, n, vol)) { free(d); return false; }
+    R->patches[R->npatches++] = (Patch){at, n, d};
+    return true;
+}
+
 static void shrine_sensor_patch(void) {
-    if (R != &images[0] || R->npatches >= 16) return;
+    int vol = g_settings.shrine_sensor_volume;
+    if (R != &images[0] || vol >= 100) return;
     static const char pack_path[] = "Pack/Bootup.pack", name[] = "Sound/Resource/M_UI.bars";
+    int patched = 0;
+    char host[1200];
+
+    // Pack/Bootup.pack: if hud_letters_patch moved it into R->hud_pack (in R->ov[]), romfs_read serves
+    // R->hud_pack directly and never checks R->patches[], so patch inside R->hud_pack in place when present.
     int k = 0;
     while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, pack_path)) k++;
-    char host[1200];
-    if (k == R->rom_nfiles || overlay_file(pack_path, host, sizeof host)) return;
-    uint8_t head[0x20];
-    if (romfs_image_pread(R->img, head, 0x20, R->rom_files[k].off) != 0x20 || memcmp(head, "SARC", 4)) return;
-    uint32_t doff;
-    memcpy(&doff, head + 0xC, 4);
-    if (doff > (16u << 20) || doff > R->rom_files[k].size) return;
-    uint8_t *tab = malloc(doff);
-    uint32_t ds = 0, de = 0;
-    bool found = false;
-    if (tab && romfs_image_pread(R->img, tab, doff, R->rom_files[k].off) == (ssize_t)doff) {
-        uint32_t cnt = tab[0x1A] | tab[0x1B] << 8;
-        size_t names = 0x20 + (size_t)cnt * 16 + 8;
-        for (uint32_t i = 0; i < cnt && names <= doff && !found; i++) {
-            uint32_t attr;
-            memcpy(&attr, tab + 0x20 + i * 16 + 4, 4);
-            size_t at = names + (size_t)(attr & 0xFFFFFF) * 4;
-            if (!(attr >> 24) || at + sizeof name > doff || memcmp(tab + at, name, sizeof name)) continue;
-            memcpy(&ds, tab + 0x20 + i * 16 + 8, 4), memcpy(&de, tab + 0x20 + i * 16 + 12, 4);
-            found = de > ds && de - ds < (32u << 20);
-        }
-    }
-    free(tab);
-    if (!found) {
-        k = 0;
-        while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, name)) k++;
-        if (k == R->rom_nfiles) return;
-        size_t n = R->rom_files[k].size;
-        uint64_t at = R->rom_files[k].off;
-        uint8_t *d = malloc(n);
-        if (!d || romfs_image_pread(R->img, d, n, at) != (ssize_t)n) { free(d); return; }
-        if (!shrine_sensor_patch_bars(d, n, g_settings.shrine_sensor_volume)) { free(d); return; }
-        if (g_settings.shrine_sensor_volume < 100) {
-            R->patches[R->npatches++] = (Patch){at, n, d};
+    if (k < R->rom_nfiles && !overlay_file(pack_path, host, sizeof host)) {
+        uint32_t doff = 0, ds = 0, de = 0;
+        if (R->hud_pack && R->hud_pack_size) {
+            if (sarc_find(R->hud_pack, R->hud_pack_size, name, &doff, &ds, &de) >= 0 &&
+                de > ds && (size_t)doff + de <= R->hud_pack_size &&
+                shrine_sensor_patch_bars(R->hud_pack + doff + ds, de - ds, vol)) {
+                patched++;
+            }
         } else {
-            free(d);
+            uint8_t head[0x20];
+            if (romfs_image_pread(R->img, head, 0x20, R->rom_files[k].off) == 0x20 && !memcmp(head, "SARC", 4)) {
+                memcpy(&doff, head + 0xC, 4);
+                if (doff <= (16u << 20) && doff <= R->rom_files[k].size) {
+                    uint8_t *tab = malloc(doff);
+                    if (tab && romfs_image_pread(R->img, tab, doff, R->rom_files[k].off) == (ssize_t)doff) {
+                        uint32_t cnt = tab[0x1A] | tab[0x1B] << 8;
+                        size_t names = 0x20 + (size_t)cnt * 16 + 8;
+                        bool found = false;
+                        for (uint32_t i = 0; i < cnt && names <= doff && !found; i++) {
+                            uint32_t attr;
+                            memcpy(&attr, tab + 0x20 + i * 16 + 4, 4);
+                            size_t at = names + (size_t)(attr & 0xFFFFFF) * 4;
+                            if (!(attr >> 24) || at + sizeof name > doff || memcmp(tab + at, name, sizeof name)) continue;
+                            memcpy(&ds, tab + 0x20 + i * 16 + 8, 4), memcpy(&de, tab + 0x20 + i * 16 + 12, 4);
+                            found = de > ds && de - ds < (32u << 20);
+                        }
+                        if (found && shrine_sensor_patch_range(R->rom_files[k].off + doff + ds, de - ds, vol)) patched++;
+                    }
+                    free(tab);
+                }
+            }
         }
-        LOG("[fs] shrine sensor: volume %d%%\n", g_settings.shrine_sensor_volume);
-        return;
     }
-    size_t n = de - ds;
-    uint64_t at = R->rom_files[k].off + doff + ds;
-    uint8_t *d = malloc(n);
-    if (!d || romfs_image_pread(R->img, d, n, at) != (ssize_t)n) { free(d); return; }
-    if (!shrine_sensor_patch_bars(d, n, g_settings.shrine_sensor_volume)) { free(d); return; }
-    if (g_settings.shrine_sensor_volume < 100) {
-        R->patches[R->npatches++] = (Patch){at, n, d};
-    } else {
-        free(d);
+
+    // Loose Sound/Resource/M_UI.bars in RomFS: BOTW also ships a loose copy alongside Pack/Bootup.pack.
+    k = 0;
+    while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, name)) k++;
+    if (k < R->rom_nfiles && !overlay_file(name, host, sizeof host)) {
+        if (shrine_sensor_patch_range(R->rom_files[k].off, R->rom_files[k].size, vol)) patched++;
     }
-    LOG("[fs] shrine sensor: volume %d%%\n", g_settings.shrine_sensor_volume);
+
+    if (patched) LOG("[fs] shrine sensor: volume %d%% (%d %s)\n", vol, patched, patched == 1 ? "copy" : "copies");
 }
 
 // An RSTB entry: names first (paths whose crc32 collides), then the crc32 table (sorted). NULL when it has none.
