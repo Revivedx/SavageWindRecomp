@@ -782,6 +782,10 @@ void build_items(void) {
     v.push_back(toggle(P_CONTROLS, "D-pad as left stick", "The d-pad also moves like the left stick.",
                        [](const Item &) { return (int)g_settings.dpad_move; },
                        [](const Item &, int x) { g_settings.dpad_move = x; }, 0));
+    v.push_back(toggle(P_CONTROLS, "Menus wrap around",
+                       "In the game's menus, pressing past the last item goes to the first, and back.",
+                       [](const Item &) { return (int)g_settings.menu_wrap; },
+                       [](const Item &, int x) { g_settings.menu_wrap = x; }, 0));
     for (int s = 0; s < 2; s++)  // (runtime/hle/input.c dead_zone)
         v.push_back(choice(P_CONTROLS, s ? "Right stick dead zone" : "Left stick dead zone",
                            "How far the stick must move before it counts. Raise it if the stick drifts.",

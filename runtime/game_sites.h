@@ -34,6 +34,7 @@
 
 // Optional helpers are zero when their complete feature group was not found.
 #define GAME_SITES_OPTIONAL(X) \
+    X(ui_control_layer)       /* a UI screen's input layer (runtime/menu_wrap.c) */ \
     X(pouch_lock)             /* native recursive inventory mutex */ \
     X(pouch_unlock)           \
     X(pouch_page_count)       /* entries on an inventory page */ \
