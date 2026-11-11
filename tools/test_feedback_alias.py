@@ -28,7 +28,7 @@ static int draw_writes_color(Prog *pr, int i) {
 checks = r"""
 int main(void) {
     const char *e = getenv("SAVAGEWIND_VK_FEEDBACK_ALIAS_FIX");
-    int enabled = e && atoi(e);
+    int enabled = !e || atoi(e);  // (on by default since 0.5.1: =0 turns it off)
     NvnTexture a = {1}, alias = {1}, b = {2}, alias_b = {2}, unique = {3}, missing = {99};
     st.rt.ncolor = 6;
     st.rt.color[1] = &a; st.rt.color[2] = &alias;
