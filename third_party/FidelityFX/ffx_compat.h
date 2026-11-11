@@ -9,6 +9,7 @@
 #include <cstring>
 #include <cwchar>
 #include <locale>
+#include <mutex>
 #include <new>
 #include <string>
 #endif

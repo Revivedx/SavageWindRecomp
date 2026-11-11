@@ -218,6 +218,7 @@ void renderer_get_scale(float *sx, float *sy) { *sx = g_rs_x; *sy = g_rs_y; }
 void renderer_set_scale(float sx, float sy) { g_rs_x = sx; g_rs_y = sy; }
 void renderer_get_scene_scale(float *sx, float *sy) { *sx = g_rs_x; *sy = g_rs_y; }  // (one scale for every target here)
 bool renderer_gpu_rtx(void) { return false; }  // (Video > Upscaler: DLSS needs an NVIDIA RTX GPU)
+const char *vk_hdr_icc_description(void) { return "HDR output is not available in the Metal backend."; }
 
 static bool tex_scalable(const NvnTexture *t) {
     if (getenv("SAVAGEWIND_NO_SCALE")) return false;

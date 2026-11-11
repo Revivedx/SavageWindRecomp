@@ -138,6 +138,30 @@ typedef struct {
     bool hud_edges;      // on windows taller than 16:9 with wide_view, anchor HUD to the window edges
     int hdr;             // HDR_* (runtime/nvn/vulkan/device.c hdr_*)
     int hdr_white;       // nits of SDR white in HDR (0: what Windows gives SDR content on that monitor)
+    int hdr_peak_nits;   // peak: scene roll-off and final cap for every element (0: not set yet; first start reads ICC)
+    int hdr_game_nits;   // the 3D scene's white (0: 203)
+    int hdr_ui_nits;     // the HUD and menu white (0: hdr_game_nits; default 203)
+    int hdr_hue;         // highlight hue/purity transfer, percent (0: off, 70: RenoDX BOTW default)
+    int hdr_blowout;     // SDR blowout: the transfer's purity strength, percent (65: RenoDX BOTW default)
+    int hdr_sdr_blend;   // extended-curve pivot, percent of scene white (18: RenoDX BOTW default)
+    int hdr_vanilla_saturation;  // the game's own saturation grade, percent (100: the game's look)
+    int hdr_bloom;       // HDR bloom strength, percent (100: the game's bloom, 0: none)
+    int hdr_clamp;       // 0: BT.709, 1: BT.2020 (the negative clamp after the grade)
+    int hdr_tonemapper;  // 0: Vanilla (the game's own tonemap), 1: RenoDX PsychoV (the BOTW mod's "RenoDRT")
+    int hdr_exposure;    // PsychoV exposure, percent (100: neutral)
+    int hdr_highlights;  // PsychoV highlights, 0..100 (50: neutral)
+    int hdr_shadows;     // PsychoV shadows, 0..100 (50: neutral)
+    int hdr_contrast;    // PsychoV contrast, 0..100 (50: neutral)
+    int hdr_saturation;  // PsychoV saturation, 0..100 (50: neutral)
+    int hdr_highlight_saturation;  // PsychoV highlight saturation, 0..100 (50: neutral)
+    int hdr_flare;       // PsychoV flare/glare compensation, 0..100 (0: neutral)
+    int hdr_gamma;       // the mod's ToneMapGammaCorrection: 0 none, 1 2.2, 2 BT.1886 (2.4)
+    // Video > HDR preset 1..3 (the whole HDR look, as the mod's presets are): tonemapper, exposure, highlights,
+    // shadows, contrast, saturation, highlight saturation, flare, hue, blowout, SDR blend, vanilla saturation,
+    // bloom, clamp, peak, game, UI, gamma.
+    int hdr_look[3][18];
+    int hdr_preset;      // 0 Preset Off, 1..3 the selected slot; 4 is only returned by hdr_look_current (Custom, not stored)
+    int hdr_clip_nits;   // legacy, ignored: the final cap is always hdr_peak_nits
     int sparse_heap;     // SPARSE_HEAP_*: guest heap backing (Windows Vulkan; applied on next start)
     int fov;             // field of view in play, percent of the game's own (FOV_CHOICES)
     bool handheld_setup; // a PC handheld's own settings were taken once (settings_load)
@@ -227,6 +251,10 @@ extern Settings g_settings;
 
 void settings_load(void);
 void settings_save(void);
+int hdr_look_current(void);   // 0 Off, 1..3 the selected slot while its values still match, or 4 (Custom)
+void hdr_look_apply(int slot);  // 0 Off, 1..3 a saved slot, into the HDR settings
+void hdr_look_store(int slot);  // the HDR settings into slot 1..3
+void hdr_look_init_peak(void);  // fill a default slot's unset peak/game/UI from the current display setup
 // Frame rate > Match display: fps_limit becomes the highest offered rate the display (hz) can show, at least 30 (a
 // 280 Hz display: 240; a 60 Hz one: 60). Nothing with another rate chosen or hz unknown (runtime/window_size.c).
 void settings_fps_for_display(float hz);

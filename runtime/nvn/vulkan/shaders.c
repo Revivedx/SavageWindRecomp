@@ -1377,7 +1377,7 @@ static const char *builtin_src(const char *name, int *stage) {
                "  float peak = -1.0 / mix(8.0, 5.0, clamp(pc.a.x, 0.0, 1.0));\n"
                "  float w = amp.g * peak;\n"
                "  vec3 r = (b * w + d * w + f * w + h * w + e) / (1.0 + 4.0 * w);\n"
-               "  o = vec4(clamp(r, 0.0, 1.0), e4.a);\n"
+               "  o = vec4(max(r, 0.0), e4.a);\n"
                "}\n";
     }
     // Colour grading of the 3D scene (Video > Colour; exec.c scene_post, runtime/color_grade.h). The scene holds
@@ -1399,6 +1399,7 @@ static const char *builtin_src(const char *name, int *stage) {
     "  vec3 c = s.rgb * pc.g.rgb;\n"                                                                            \
     "  float y = dot(c, vec3(0.2126, 0.7152, 0.0722));\n"                                                       \
     "  c = max(mix(vec3(y), c, pc.a.x), 0.0);\n"                                                                \
+    "  vec3 hdr = max(c - vec3(1.0), vec3(0.0));\n"                                                             \
     "  vec3 x = enc(min(c, 1.0));\n"                                                                            \
     "  vec3 lo = 0.5 * pow(2.0 * x, vec3(pc.g.w)), hi = 1.0 - 0.5 * pow(max(2.0 - 2.0 * x, 0.0), vec3(pc.g.w));\n" \
     "  x = mix(lo, hi, step(0.5, x));\n"                                                                        \
@@ -1407,7 +1408,7 @@ static const char *builtin_src(const char *name, int *stage) {
     "  vec3 l = texture(t1, u * ((pc.a.z - 1.0) / pc.a.z) + 0.5 / pc.a.z).rgb;\n"                               \
     "  x = mix(x, clamp(l, 0.0, 1.0), pc.a.y);\n"                                                               \
     "#endif\n"                                                                                                  \
-    "  o = vec4(dec(x), s.a);\n"                                                                                \
+    "  o = vec4(dec(x) + hdr, s.a);\n"                                                                          \
     "}\n"
         if (name[5] == '_')
             return "#version 450\n#define LUT 1\nlayout(set = 0, binding = 1) uniform sampler3D t1;\n" GRADE_BODY;

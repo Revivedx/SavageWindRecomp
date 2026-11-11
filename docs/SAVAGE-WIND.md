@@ -1920,11 +1920,13 @@ and its intensity (0-100%). ini: `colour_exposure` (EV), `colour_contrast`, `col
 LUT folders and files), `exec.c` `scene_post` / `grade_lut` / `grade_wanted`, `shaders.c` `grade.frag`.
 
 **Where.** One fullscreen pass on the 3D scene at the scene -> final image composite (`scene_composite`), at the
-scene's own size and in its format (A2B10G10R10, linear light), before FSR 1's EASU / RCAS and CAS; the composite then
-samples the result (`scene_up`). The game draws its HUD after the composite, so the HUD keeps its colours (checked:
-the hearts' pixels are identical with every preset and LUT). Frame generation's HUD-less copy and its final image
-come after it, so real and generated frames are graded alike; HDR10's output pass (device.c `hdr_write`) converts the
-graded SDR image. With every setting neutral (or `SAVAGEWIND_SCENE_GRADE=0`) the pass doesn't run.
+scene's own size and in its format (A2B10G10R10, or RGBA16F with HDR, linear light), before FSR 1's EASU / RCAS and
+CAS; the composite then samples the result (`scene_up`). The game draws its HUD after the composite, so the HUD keeps
+its colours (checked: the hearts' pixels are identical with every preset and LUT). Frame generation's HUD-less copy
+and its final image come after it, so real and generated frames are graded alike. With HDR, the 3D scene's tonemap is
+the extended curve and the present reads the float picture instead of the clipped 8-bit copy (`docs/hdr.md`); the
+grade shader preserves values above 1.0, so the extended highlights survive it. With every setting neutral (or
+`SAVAGEWIND_SCENE_GRADE=0`) the pass doesn't run.
 
 **The pass.** In linear light: exposure x white balance as RGB gains (temperature moves red against blue by 0.3 x t,
 tint green by 0.2 x t, then normalised to the same Rec. 709 luma), saturation around luma. Then sRGB-encoded, as the

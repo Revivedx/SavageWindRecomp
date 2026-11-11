@@ -61,6 +61,31 @@ Settings g_settings = {
     .gpu = -1,
     .wide_view = true,
     .hud_edges = false,
+    .hdr_peak_nits = 0,  // (not set yet: the first start reads the ICC peak, else 1000; then it is a normal setting)
+    .hdr_game_nits = 203,  // (HGIG reference white)
+    .hdr_ui_nits = 203,    // (the HUD/menu; HGIG reference white by default)
+    .hdr_hue = 70,         // (RenoDX BOTW's default highlight hue/purity transfer)
+    .hdr_blowout = 65,     // (RenoDX BOTW's default SDR highlight desaturation/purity)
+    .hdr_sdr_blend = 18,   // (RenoDX BOTW's default extended-curve pivot, percent)
+    .hdr_vanilla_saturation = 100,  // (the game's own saturation grade)
+    .hdr_bloom = 100,      // (the game's own bloom)
+    .hdr_clamp = 0,        // (BT.709, as the game's own grade)
+    .hdr_tonemapper = 1,   // (RenoDX PsychoV, the BOTW mod's default and its "RenoDRT" label)
+    .hdr_exposure = 100,   // (the mod's ColorGradeExposure default)
+    .hdr_highlights = 50,  // (the mod's ColorGradeHighlights default)
+    .hdr_shadows = 50,     // (the mod's ColorGradeShadows default)
+    .hdr_contrast = 50,    // (the mod's ColorGradeContrast default)
+    .hdr_saturation = 50,  // (the mod's ColorGradeSaturation default)
+    .hdr_highlight_saturation = 50,  // (the mod's ColorGradeHighlightSaturation default)
+    .hdr_flare = 0,        // (the mod's ColorGradeFlare default)
+    .hdr_gamma = 0,        // (the mod's ToneMapGammaCorrection default)
+    .hdr_look = {          // (Video > HDR preset 1..3; all three start as the mod's defaults)
+        {1, 100, 50, 50, 50, 50, 50, 0, 70, 65, 18, 100, 100, 0, 0, 0, 0, 0},
+        {1, 100, 50, 50, 50, 50, 50, 0, 70, 65, 18, 100, 100, 0, 0, 0, 0, 0},
+        {1, 100, 50, 50, 50, 50, 50, 0, 70, 65, 18, 100, 100, 0, 0, 0, 0, 0},
+    },
+    .hdr_preset = 1,       // (Preset 1: the mod's defaults)
+    .hdr_clip_nits = 0,    // (legacy: the final cap is hdr_peak_nits)
     .fov = 100,
     .hud_size = 100,
     .color_lut_strength = 100,
@@ -171,6 +196,123 @@ static void handheld_first_setup(void) {
     LOG("[settings] PC handheld: its own settings, the first time\n");
 }
 
+// Video > HDR preset: the whole HDR look, as the mod's presets are. The display peak, game and UI whites are
+// included, so a preset restores the display setup too; a default slot stores 0 for them (keep the current setup)
+// until hdr_look_init_peak fills them after the ICC read. Slots are clamped so a hand-edited INI cannot break the
+// shader.
+static void hdr_look_get(int *v) {
+    v[0] = g_settings.hdr_tonemapper == 0 ? 0 : 1;
+    v[1] = g_settings.hdr_exposure;
+    v[2] = g_settings.hdr_highlights;
+    v[3] = g_settings.hdr_shadows;
+    v[4] = g_settings.hdr_contrast;
+    v[5] = g_settings.hdr_saturation;
+    v[6] = g_settings.hdr_highlight_saturation;
+    v[7] = g_settings.hdr_flare;
+    v[8] = g_settings.hdr_hue;
+    v[9] = g_settings.hdr_blowout;
+    v[10] = g_settings.hdr_sdr_blend;
+    v[11] = g_settings.hdr_vanilla_saturation;
+    v[12] = g_settings.hdr_bloom;
+    v[13] = g_settings.hdr_clamp == 1 ? 1 : 0;
+    v[14] = g_settings.hdr_peak_nits;
+    v[15] = g_settings.hdr_game_nits;
+    v[16] = g_settings.hdr_ui_nits;
+    v[17] = g_settings.hdr_gamma;
+}
+
+static int hdr_look_clamp(int i, int x) {
+    switch (i) {
+    case 0: return x ? 1 : 0;
+    case 1: return x >= 50 && x <= 200 ? x : 100;
+    case 7: return x >= 0 && x <= 100 ? x : 0;
+    case 8: return x >= 0 && x <= 100 ? x : 70;
+    case 9: return x >= 0 && x <= 100 ? x : 65;
+    case 10: return x >= 0 && x <= 60 ? x : 18;
+    case 11: return x >= 0 && x <= 100 ? x : 100;
+    case 12: return x >= 0 && x <= 100 ? x : 100;
+    case 13: return x ? 1 : 0;
+    case 14: return x == 0 || (x >= 80 && x <= 10000) ? x : 0;
+    case 15: return x == 0 || (x >= 80 && x <= 1000) ? x : 0;
+    case 16: return x == 0 || (x >= 80 && x <= 1000) ? x : 0;
+    case 17: return x >= 0 && x <= 2 ? x : 0;
+    default: return x >= 0 && x <= 100 ? x : 50;
+    }
+}
+
+// The mod's OnPresetOff: ToneMapType 0, peak/game/UI 203, the grading neutral, hue 100, blowout 0, bloom 100.
+// -1 means "leave as it is": the mod's OnPresetOff does not set SDR blend, vanilla saturation or the clamp.
+static const int k_hdr_off[18] = {0, 100, 50, 50, 50, 50, 50, 0, 100, 0, -1, -1, 100, -1, 203, 203, 203, 0};
+
+static bool hdr_look_matches(const int *a) {
+    int cur[18];
+    hdr_look_get(cur);
+    for (int i = 0; i < 18; i++) {
+        if (a[i] < 0 && (i == 10 || i == 11 || i == 13)) continue;  // (Preset Off leaves these as they are)
+        int v = hdr_look_clamp(i, a[i]);
+        if (v == 0 && (i == 14 || i == 15 || i == 16)) continue;  // (a default slot: keep the current display setup)
+        if (v != cur[i]) return false;
+    }
+    return true;
+}
+
+int hdr_look_current(void) {
+    int slot = g_settings.hdr_preset;
+    if (slot == 0) return hdr_look_matches(k_hdr_off) ? 0 : 4;
+    if (slot >= 1 && slot <= 3 && hdr_look_matches(g_settings.hdr_look[slot - 1])) return slot;
+    return 4;  // (a stored slot with different values is Custom, even if another slot happens to match)
+}
+
+void hdr_look_apply(int slot) {
+    if (slot < 0 || slot > 3) return;
+    const int *v = slot == 0 ? k_hdr_off : g_settings.hdr_look[slot - 1];
+    g_settings.hdr_tonemapper = hdr_look_clamp(0, v[0]);
+    g_settings.hdr_exposure = hdr_look_clamp(1, v[1]);
+    g_settings.hdr_highlights = hdr_look_clamp(2, v[2]);
+    g_settings.hdr_shadows = hdr_look_clamp(3, v[3]);
+    g_settings.hdr_contrast = hdr_look_clamp(4, v[4]);
+    g_settings.hdr_saturation = hdr_look_clamp(5, v[5]);
+    g_settings.hdr_highlight_saturation = hdr_look_clamp(6, v[6]);
+    g_settings.hdr_flare = hdr_look_clamp(7, v[7]);
+    g_settings.hdr_hue = hdr_look_clamp(8, v[8]);
+    g_settings.hdr_blowout = hdr_look_clamp(9, v[9]);
+    if (v[10] >= 0) g_settings.hdr_sdr_blend = hdr_look_clamp(10, v[10]);
+    if (v[11] >= 0) g_settings.hdr_vanilla_saturation = hdr_look_clamp(11, v[11]);
+    g_settings.hdr_bloom = hdr_look_clamp(12, v[12]);
+    if (v[13] >= 0) g_settings.hdr_clamp = hdr_look_clamp(13, v[13]);
+    int pv = hdr_look_clamp(14, v[14]);
+    int gv = hdr_look_clamp(15, v[15]);
+    int uv = hdr_look_clamp(16, v[16]);
+    if (pv != 0) g_settings.hdr_peak_nits = pv;
+    if (gv != 0) g_settings.hdr_game_nits = gv;
+    if (uv != 0) g_settings.hdr_ui_nits = uv;
+    g_settings.hdr_gamma = hdr_look_clamp(17, v[17]);
+    g_settings.hdr_preset = slot;
+}
+
+void hdr_look_store(int slot) {
+    if (slot < 1 || slot > 3) return;
+    int *v = g_settings.hdr_look[slot - 1];
+    hdr_look_get(v);
+    // A platform without the ICC read (Linux) may still have the peak at 0 ("unset"): store what the present uses,
+    // so the preset restores the same display setup instead of the wildcard.
+    if (v[14] < 80) v[14] = 1000;
+    if (v[15] < 80) v[15] = 203;
+    if (v[16] < 80) v[16] = v[15];
+    g_settings.hdr_preset = slot;
+}
+
+void hdr_look_init_peak(void) {
+    for (int i = 0; i < 3; i++) {
+        if (g_settings.hdr_look[i][14] == 0 && g_settings.hdr_peak_nits > 0)
+            g_settings.hdr_look[i][14] = g_settings.hdr_peak_nits;
+        if (g_settings.hdr_look[i][15] == 0 && g_settings.hdr_game_nits > 0)
+            g_settings.hdr_look[i][15] = g_settings.hdr_game_nits;
+        if (g_settings.hdr_look[i][16] == 0 && g_settings.hdr_ui_nits > 0)
+            g_settings.hdr_look[i][16] = g_settings.hdr_ui_nits;
+    }
+}
+
 void settings_load(void) {
     static bool loaded;
     if (loaded) return;
@@ -180,6 +322,7 @@ void settings_load(void) {
         handheld_first_setup();
         gyro_startup_overrides();
         pc_controls_env();
+        hdr_look_init_peak();
         return;
     }
     char line[256];
@@ -319,6 +462,94 @@ void settings_load(void) {
             int n = atoi(val);
             g_settings.hdr_white = n >= 80 && n <= 1000 ? n : 0;
         }
+        else if (!strcmp(key, "hdr_peak_nits")) {  // (0: not set yet; the first start reads the ICC peak)
+            int n = atoi(val);
+            g_settings.hdr_peak_nits = n == 0 || (n >= 80 && n <= 10000) ? n : 0;
+        }
+        else if (!strcmp(key, "hdr_game_nits")) {
+            int n = atoi(val);
+            g_settings.hdr_game_nits = n >= 80 && n <= 1000 ? n : 203;
+        }
+        else if (!strcmp(key, "hdr_ui_nits")) {
+            int n = atoi(val);
+            g_settings.hdr_ui_nits = n >= 80 && n <= 1000 ? n : 0;
+        }
+        else if (!strcmp(key, "hdr_hue")) {  // (highlight hue/purity transfer, percent)
+            int n = atoi(val);
+            g_settings.hdr_hue = n >= 0 && n <= 100 ? n : 70;
+        }
+        else if (!strcmp(key, "hdr_blowout")) {  // (SDR highlight desaturation/purity, percent)
+            int n = atoi(val);
+            g_settings.hdr_blowout = n >= 0 && n <= 100 ? n : 65;
+        }
+        else if (!strcmp(key, "hdr_sdr_blend")) {  // (extended-curve pivot, percent)
+            int n = atoi(val);
+            g_settings.hdr_sdr_blend = n >= 0 && n <= 60 ? n : 18;
+        }
+        else if (!strcmp(key, "hdr_vanilla_saturation")) {  // (the game's saturation grade, percent)
+            int n = atoi(val);
+            g_settings.hdr_vanilla_saturation = n >= 0 && n <= 100 ? n : 100;
+        }
+        else if (!strcmp(key, "hdr_bloom")) {  // (HDR bloom strength, percent)
+            int n = atoi(val);
+            g_settings.hdr_bloom = n >= 0 && n <= 100 ? n : 100;
+        }
+        else if (!strcmp(key, "hdr_clamp")) {  // (0: BT.709, 1: BT.2020)
+            int n = atoi(val);
+            g_settings.hdr_clamp = n == 1 ? 1 : 0;
+        }
+        else if (!strcmp(key, "hdr_tonemapper")) {  // (0: Vanilla, 1: RenoDX PsychoV)
+            int n = atoi(val);
+            g_settings.hdr_tonemapper = n == 0 ? 0 : 1;
+        }
+        else if (!strcmp(key, "hdr_exposure")) {  // (percent)
+            int n = atoi(val);
+            g_settings.hdr_exposure = n >= 50 && n <= 200 ? n : 100;
+        }
+        else if (!strcmp(key, "hdr_highlights")) {  // (0..100)
+            int n = atoi(val);
+            g_settings.hdr_highlights = n >= 0 && n <= 100 ? n : 50;
+        }
+        else if (!strcmp(key, "hdr_shadows")) {
+            int n = atoi(val);
+            g_settings.hdr_shadows = n >= 0 && n <= 100 ? n : 50;
+        }
+        else if (!strcmp(key, "hdr_contrast")) {
+            int n = atoi(val);
+            g_settings.hdr_contrast = n >= 0 && n <= 100 ? n : 50;
+        }
+        else if (!strcmp(key, "hdr_saturation")) {
+            int n = atoi(val);
+            g_settings.hdr_saturation = n >= 0 && n <= 100 ? n : 50;
+        }
+        else if (!strcmp(key, "hdr_highlight_saturation")) {
+            int n = atoi(val);
+            g_settings.hdr_highlight_saturation = n >= 0 && n <= 100 ? n : 50;
+        }
+        else if (!strcmp(key, "hdr_flare")) {
+            int n = atoi(val);
+            g_settings.hdr_flare = n >= 0 && n <= 100 ? n : 0;
+        }
+        else if (!strcmp(key, "hdr_gamma")) {  // (0: none, 1: sRGB, 2: gamma 2.4)
+            int n = atoi(val);
+            g_settings.hdr_gamma = n >= 0 && n <= 2 ? n : 0;
+        }
+        else if (!strcmp(key, "hdr_preset")) {  // (1..3; 0: Custom)
+            int n = atoi(val);
+            g_settings.hdr_preset = n >= 1 && n <= 3 ? n : 0;
+        }
+        else if (!strncmp(key, "hdr_look", 8) && key[8] >= '1' && key[8] <= '3' && key[9] == 0) {
+            int v[18] = {0};
+            int n = sscanf(val, "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d",
+                           &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7], &v[8],
+                           &v[9], &v[10], &v[11], &v[12], &v[13], &v[14], &v[15], &v[16], &v[17]);
+            // (14 values: the pre-gamma/custom-peak format; the rest stay 0 = keep the current display setup)
+            if (n == 18 || n == 14) memcpy(g_settings.hdr_look[key[8] - '1'], v, sizeof v);
+        }
+        else if (!strcmp(key, "hdr_clip_nits")) {  // (legacy: ignored; the final cap is hdr_peak_nits)
+            int n = atoi(val);
+            g_settings.hdr_clip_nits = n == 0 || (n >= 80 && n <= 10000) ? n : 0;
+        }
         else if (!strcmp(key, "field_of_view")) g_settings.fov = atoi(val);  // (percent)
         else if (!strcmp(key, "hud_size")) g_settings.hud_size = atoi(val);  // (percent)
         else if (!strcmp(key, "handheld_setup")) g_settings.handheld_setup = atoi(val) != 0;
@@ -448,6 +679,7 @@ void settings_load(void) {
             g_settings.stick_deadzone[i] = STICK_DEADZONE_DEFAULT;
     pc_controls_env();
     gyro_startup_overrides();
+    hdr_look_init_peak();
     LOG("[settings] loaded %s\n", SETTINGS_FILE);
 }
 
@@ -545,6 +777,31 @@ void settings_save(void) {
     fprintf(f, "sparse_heap = %s\n", k_sparse_heap[g_settings.sparse_heap >= 0 && g_settings.sparse_heap < SPARSE_HEAP_COUNT ?
                                                        g_settings.sparse_heap : SPARSE_HEAP_AUTO]);
     if (g_settings.hdr_white) fprintf(f, "hdr_paper_white = %d\n", g_settings.hdr_white);
+    if (g_settings.hdr_peak_nits) fprintf(f, "hdr_peak_nits = %d\n", g_settings.hdr_peak_nits);
+    if (g_settings.hdr_game_nits) fprintf(f, "hdr_game_nits = %d\n", g_settings.hdr_game_nits);
+    fprintf(f, "hdr_ui_nits = %d\n", g_settings.hdr_ui_nits);  // (0: the scene's white, a state worth keeping)
+    fprintf(f, "hdr_hue = %d\n", g_settings.hdr_hue);
+    fprintf(f, "hdr_blowout = %d\n", g_settings.hdr_blowout);
+    fprintf(f, "hdr_sdr_blend = %d\n", g_settings.hdr_sdr_blend);
+    fprintf(f, "hdr_vanilla_saturation = %d\n", g_settings.hdr_vanilla_saturation);
+    fprintf(f, "hdr_bloom = %d\n", g_settings.hdr_bloom);
+    fprintf(f, "hdr_clamp = %d\n", g_settings.hdr_clamp);
+    fprintf(f, "hdr_tonemapper = %d\n", g_settings.hdr_tonemapper);
+    fprintf(f, "hdr_exposure = %d\n", g_settings.hdr_exposure);
+    fprintf(f, "hdr_highlights = %d\n", g_settings.hdr_highlights);
+    fprintf(f, "hdr_shadows = %d\n", g_settings.hdr_shadows);
+    fprintf(f, "hdr_contrast = %d\n", g_settings.hdr_contrast);
+    fprintf(f, "hdr_saturation = %d\n", g_settings.hdr_saturation);
+    fprintf(f, "hdr_highlight_saturation = %d\n", g_settings.hdr_highlight_saturation);
+    fprintf(f, "hdr_flare = %d\n", g_settings.hdr_flare);
+    fprintf(f, "hdr_gamma = %d\n", g_settings.hdr_gamma);
+    fprintf(f, "hdr_preset = %d\n", g_settings.hdr_preset);
+    for (int i = 0; i < 3; i++) {
+        const int *v = g_settings.hdr_look[i];
+        fprintf(f, "hdr_look%d = %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d\n", i + 1,
+                v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], v[12], v[13],
+                v[14], v[15], v[16], v[17]);
+    }
     fprintf(f, "field_of_view = %d\n", g_settings.fov);
     fprintf(f, "hud_size = %d\n", g_settings.hud_size);
     if (g_settings.handheld_setup) fprintf(f, "handheld_setup = 1\n");

@@ -46,8 +46,16 @@ static const Setting settings[] = {
     B(async_shaders), B(precompile_shaders), B(quick_sort), B(quick_drop),
     I(shadow_res, 0, SHADOW_COUNT - 1, "console|high|ultra|extreme|potato"), B(wide_view), B(hud_edges),
     I(hdr, 0, HDR_COUNT - 1, "auto|on|off"), I(hdr_white, 0, 1000, NULL),
+    I(hdr_peak_nits, 0, 10000, NULL), I(hdr_game_nits, 0, 1000, NULL), I(hdr_hue, 0, 100, NULL),
+    I(hdr_blowout, 0, 100, NULL), I(hdr_sdr_blend, 0, 60, NULL), I(hdr_vanilla_saturation, 0, 100, NULL),
+    I(hdr_bloom, 0, 100, NULL), I(hdr_clamp, 0, 1, "bt709|bt2020"),
+    I(hdr_tonemapper, 0, 1, "vanilla|renodx"), I(hdr_exposure, 50, 200, NULL),
+    I(hdr_highlights, 0, 100, NULL), I(hdr_shadows, 0, 100, NULL), I(hdr_contrast, 0, 100, NULL),
+    I(hdr_saturation, 0, 100, NULL), I(hdr_highlight_saturation, 0, 100, NULL), I(hdr_flare, 0, 100, NULL),
+    I(hdr_gamma, 0, 2, "none|2.2|bt1886"),
+    I(hdr_ui_nits, 0, 1000, NULL),
     I(fov, 50, 200, NULL), I(hud_size, 50, 150, NULL), B(bloom), B(depth_of_field),
-    B(dynamic_res), B(fast_fma),I(color_exposure, -20, 20, NULL), I(color_contrast, -50, 50, NULL),
+    B(dynamic_res), B(fast_fma), I(color_exposure, -20, 20, NULL), I(color_contrast, -50, 50, NULL),
     I(color_saturation, -100, 100, NULL), I(color_temperature, -100, 100, NULL),
     I(color_tint, -100, 100, NULL),
     {"color_lut", g_settings.color_lut, TEXT, 0, 0, NULL},
@@ -140,6 +148,16 @@ static void cmd_set(int argc, char **argv, ControlReply *r) {
         control_field_str(r, "applied", "live");
         return;
     }
+    if (!strcmp(argv[1], "hdr_preset")) {  // (0 Off, 1..3 a saved slot: apply the whole look)
+        int v = atoi(argv[2]);
+        if (v < 0 || v > 3) { control_fail(r, "hdr_preset must be 0 (Off) or 1..3"); return; }
+        hdr_look_apply(v);
+        char buf[32];
+        snprintf(buf, sizeof buf, "%d", v);
+        control_field_str(r, "hdr_preset", buf);
+        control_field_str(r, "applied", "live");
+        return;
+    }
     const Setting *s = find(argv[1]);
     if (!s) { control_fail(r, "Unknown setting: %s", argv[1]); return; }
     // These need paired window dimensions, file discovery, or are bookkeeping rather than menu options.
@@ -203,6 +221,13 @@ static void cmd_set(int argc, char **argv, ControlReply *r) {
     if (is(s, "hdr_white") && v != 0 && v < 80) {
         control_fail(r, "hdr_white must be 0 (automatic) or 80 to 1000 nits"); return;
     }
+    if (is(s, "hdr_peak_nits") && v != 0 && v < 80) {
+        control_fail(r, "hdr_peak_nits must be 0 (not set yet: read the ICC peak on the next start) or 80 to %g nits",
+                     s->max); return;
+    }
+    if ((is(s, "hdr_game_nits") || is(s, "hdr_ui_nits")) && v != 0 && v < 80) {
+        control_fail(r, "%s must be 0 (the default) or 80 to %g nits", s->key, s->max); return;
+    }
     if (is(s, "upscaler") && !upscaler_available(v)) {
         control_fail(r, "Upscaler unavailable"); return;
     }
@@ -217,6 +242,7 @@ static void cmd_set(int argc, char **argv, ControlReply *r) {
     if (s->kind == BOOL) *(bool *)s->value = value != 0;
     else if (s->kind == FLOAT) *(float *)s->value = (float)value;
     else *(int *)s->value = v;
+    if (is(s, "hdr_peak_nits") || is(s, "hdr_game_nits") || is(s, "hdr_ui_nits")) hdr_look_init_peak();
     if (is(s, "fullscreen")) menu_request_window_apply();
     // Do not call settings_save(): file I/O on the presenting thread would block. A menu save may persist these.
     emit(s, r);

@@ -82,6 +82,7 @@ typedef struct {
                             // constants of the history offsets (vulkan/mvec.c, MVEC_PUSH)
     bool mvec_mask;         // a reactive mask variant (ShaderKey mvec_rt with 0x80): writes the motion target's .z only
     bool mvec_still;        // a still variant (ShaderKey mvec_rt with 0x40): writes zero to the motion target
+    bool hdr;               // the HDR tonemap variant: its pipeline layout has the live HDR parameters as push constants
     bool uses_gmem;         // global memory access: bind the guest heap at GMEM_BUFFER_INDEX
     bool writes_gmem;       // ... and stores to it (STG)
     bool uses_tint;         // fragment: reads the per-draw tint (buffer 19, float4[2]) applied to color target 0

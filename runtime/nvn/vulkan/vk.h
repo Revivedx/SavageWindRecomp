@@ -58,6 +58,7 @@ typedef struct {
     bool turnip;               // the driver is Mesa's Turnip (Qualcomm Adreno; exec.c ubo_dynamic_mark_stage)
     bool amd_proprietary;      // the driver is AMD's own (Windows; textures.c's cube-compatible rule, #59)
     bool present_wait;         // VK_KHR_present_id + present_wait on (SAVAGEWIND_LOG_PRESENT: when frames are shown)
+    bool hdr_metadata;         // VK_EXT_hdr_metadata: the HDR10 swapchain carries the peak/game nits
     bool fp16;                 // shaderFloat16 + 16-bit storage on (the FSR 3 upscaler's 16-bit shaders: fsr3.cpp)
     // window
     VkSurfaceKHR surface;
@@ -117,6 +118,7 @@ typedef struct TexBackend {
     uint64_t data_hash, sample_hash, checked_frame, full_frame;
     bool scalable, presented;
     bool native_post;           // shader-identified bloom target: never inherit a scene scale
+    bool hdr_upgraded;           // the game's linear 10-bit final image, made RGBA16F for HDR (hdr.c)
     uint8_t rs_group;            // RS_*: which output scale its allocation follows (textures.c)
     uint32_t guest_w;            // (RS_SHADOW: the guest width its scale is worked out from)
     uint64_t touched_frame, frame_cleared;
@@ -169,6 +171,27 @@ VkComponentMapping vk_sample_swizzle(NvnTexture *t, const NvnTextureView *v);  /
 VkImageView vk_image_view(TexBackend *b, VkImageViewType type, VkFormat fmt, uint32_t lv0, uint32_t nlv, uint32_t ly0,
                           uint32_t nly, VkComponentMapping sw, VkImageAspectFlags aspect);
 VkFormat vk_view_format(TexBackend *b, VkFormat want);  // want, or the image's own format where want is not listed
+
+// ---- HDR (runtime/nvn/vulkan/hdr.c)
+// The game's final image is linear 10-bit (A2B10G10R10) with the HUD drawn into it, then copied sRGB-encoded into the
+// 8-bit image the game presents. With Video > HDR on (or Automatic while the display is in HDR), that 10-bit image is
+// made RGBA16F so the tonemap can keep highlights above white; hdr.c records the float image the present copy reads,
+// and device.c presents that instead of the clipped 8-bit copy.
+bool vk_hdr_targets_wanted(void);   // HDR not Off: the game's linear 10-bit final image is made RGBA16F
+bool vk_hdr_game_enabled(void);     // the swapchain is HDR10
+void vk_hdr_nits(float *peak, float *game, float *ui);
+// The live HDR tonemap parameters (hdr.c): 5 vec4s, the push constant block of the HDR tonemap program.
+// game/UI, peak/game, SDR pivot, hue | blowout, vanilla saturation, bloom, clamp | tone mapper, exposure,
+// highlights, shadows | contrast, saturation, purity_highlights, flare | gamma, 0, 0, 0
+typedef struct { float v[20]; } VkHdrParams;
+void vk_hdr_params(VkHdrParams *p);
+const char *vk_hdr_icc_description(void);  // the startup ICC profile/peak, for the HDR settings description
+char *vk_hdr_tonemap_source(const char *orig, int scene_texture, int glow_texture);  // NULL when not ours to replace
+void vk_hdr_record(VkImage win, VkImage src, VkFormat fmt, uint32_t w, uint32_t h);  // src 0: forget win
+bool vk_hdr_source(VkImage win, VkImage *src, VkFormat *fmt, uint32_t *w, uint32_t *h);
+void vk_hdr_image_gone(VkImage img);
+VkFormat vk_frame_format(void);     // the format the frame is being drawn into (HDR: RGBA16F)
+bool vk_frame_hdr(void);            // ... and it is an RGBA16F HDR game image
 void vk_texture_drop_format_list(NvnTexture *t);        // (textures.c) a feedback loop target: no format list
 VkImageView vk_dummy_view(int textype);
 void vk_block_flush(VkCommandBuffer cb, TexBackend *b);  // (outside a pass) b->block's texels into b's blocks

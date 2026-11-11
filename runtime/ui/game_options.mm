@@ -49,6 +49,7 @@ void menu_request_window_apply(void);       // menu.mm (fullscreen / window size
 void menu_size_list_open(void);             // menu.mm (Window size's list, over the screen)
 bool menu_size_list_up(void);
 bool renderer_gpu_rtx(void);                // vulkan/device.c, metal.m
+const char *vk_hdr_icc_description(void);   // runtime/nvn/vulkan/device.c
 }
 
 namespace {
@@ -94,7 +95,7 @@ enum { KIND_TOGGLE = 0, KIND_CHOICE = 1, KIND_BUTTON = 2 };
 
 enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_COLOUR, P_AUDIO, P_CONTROLS, P_BINDS, P_LANGUAGE, P_ACCESS, P_VIDEO_ADV, P_COUNT };
 // A_FIXED: a greyed row for an input that can never be rebound (Item.arg: 0 Esc, 1 F2); A_BIND: Item.arg is a binding slot (an input, or BIND_ACTION + an action); the next key, mouse button or controller button binds it
-enum Action { A_NONE, A_PAGE, A_BIND, A_BINDS_HEADER, A_RESET_BINDS, A_RESTART, A_QUIT, A_SIZE_LIST, A_FIXED, A_REPORT };
+enum Action { A_NONE, A_PAGE, A_BIND, A_BINDS_HEADER, A_RESET_BINDS, A_RESTART, A_QUIT, A_SIZE_LIST, A_FIXED, A_REPORT, A_SAVE_HDR_LOOK };
 static char g_report_dir[64];  // Problem report: the zip made this run (its row's description names it)
 
 struct Item {
@@ -482,11 +483,273 @@ void build_items(void) {
                        [](const Item &) { return g_settings.vsync; },
                        [](const Item &, int x) { g_settings.vsync = x; }, VSYNC_DEFAULT));
     // HDR (settings.h HDR_*: runtime/nvn/vulkan/device.c hdr_wanted)
-    v.push_back(choice(P_VIDEO, "HDR", "Automatic: in HDR while Windows HDR is on, as bright as in SDR. Off: always SDR.",
+    v.push_back(choice(P_VIDEO, "HDR",
+                       "Automatic: HDR while your display is in HDR; the scene keeps detail brighter than white. On: "
+                       "always HDR. Off: always standard (SDR). HDR setting changes apply immediately; switching HDR "
+                       "itself takes effect after a restart.",
                        [](const Item &) { return (int)HDR_COUNT; },
                        [](const Item &, int x) { return tr(k_hdr[x]); },
                        [](const Item &) { return g_settings.hdr; },
                        [](const Item &, int x) { g_settings.hdr = x; }, HDR_AUTO));
+    size_t hdr_first = v.size();  // (the HDR settings below: greyed while HDR is Off, like Upscaler mode)
+    std::vector<size_t> psy_rows;  // (the rows only the RenoDX PsychoV tone mapper uses)
+    v.push_back(choice(P_VIDEO, "HDR tone mapper",
+                       "RenoDX: keeps colour and detail in very bright areas instead of letting them clip to white. "
+                       "Vanilla: the game's original tonemap, where anything above white is clipped.",
+                       [](const Item &) { return 2; },
+                       [](const Item &, int x) { return x ? tr("RenoDX (PsychoV)") : tr("Vanilla"); },
+                       [](const Item &) { return g_settings.hdr_tonemapper == 0 ? 0 : 1; },
+                       [](const Item &, int x) { g_settings.hdr_tonemapper = x ? 1 : 0; }, 1));
+    static std::string hdr_peak_desc;
+    hdr_peak_desc = "The brightest your display can show. The scene, flashes, particles, HUD and menus are capped "
+                    "to it. ";
+    hdr_peak_desc += vk_hdr_icc_description();
+    hdr_peak_desc += " Moves in 10-nit steps.";
+    v.push_back(choice(P_VIDEO, "HDR peak brightness", hdr_peak_desc.c_str(),
+                       [](const Item &) { return 993; },  // 80..10000, step 10
+                       [](const Item &, int x) {
+                           static char buf[32];
+                           snprintf(buf, sizeof buf, "%d nits", 80 + x * 10);
+                           return (const char *)buf;
+                       },
+                       [](const Item &) {
+                           int v = g_settings.hdr_peak_nits;
+                           if (v < 80) v = 1000;
+                           if (v > 10000) v = 10000;
+                           return (v - 80) / 10;
+                       },
+                       [](const Item &, int x) { g_settings.hdr_peak_nits = 80 + x * 10; hdr_look_init_peak(); }, 92));
+    v.push_back(choice(P_VIDEO, "HDR game brightness",
+                       "How bright the 3D scene's normal white is. 203 nits is the standard HDR white; higher makes "
+                       "the scene brighter against the HUD, up to the peak.",
+                       [](const Item &) { return 921; },
+                       [](const Item &, int x) {
+                           static char buf[32];
+                           snprintf(buf, sizeof buf, "%d nits", x + 80);
+                           return (const char *)buf;
+                       },
+                       [](const Item &) {
+                           int v = g_settings.hdr_game_nits;
+                           return (v >= 80 ? v : 203) - 80;
+                       },
+                       [](const Item &, int x) { g_settings.hdr_game_nits = x + 80; }, 123));
+    v.push_back(choice(P_VIDEO, "HDR UI brightness",
+                       "How bright the HUD and this menu's white is. 203 nits is the standard HDR white; capped by the peak.",
+                       [](const Item &) { return 921; },
+                       [](const Item &, int x) {
+                           static char buf[32];
+                           snprintf(buf, sizeof buf, "%d nits", x + 80);
+                           return (const char *)buf;
+                       },
+                       [](const Item &) {
+                           int v = g_settings.hdr_ui_nits;
+                           if (v < 80) v = g_settings.hdr_game_nits >= 80 ? g_settings.hdr_game_nits : 203;
+                           return v - 80;
+                       },
+                       [](const Item &, int x) { g_settings.hdr_ui_nits = x + 80; }, 123));
+    v.push_back(choice(P_VIDEO, "HDR exposure",
+                       "Overall brightness of the 3D scene. 100% is the game's own brightness.",
+                       [](const Item &) { return 31; },  // 50..200, step 5
+                       [](const Item &, int x) {
+                           static char buf[32];
+                           snprintf(buf, sizeof buf, "%d %%", 50 + x * 5);
+                           return (const char *)buf;
+                       },
+                       [](const Item &) {
+                           int v = g_settings.hdr_exposure;
+                           if (v < 50) v = 100;
+                           if (v > 200) v = 200;
+                           return (v - 50) / 5;
+                       },
+                       [](const Item &, int x) { g_settings.hdr_exposure = 50 + x * 5; }, 10));
+    psy_rows.push_back(v.size() - 1);
+    v.push_back(choice(P_VIDEO, "HDR highlights",
+                       "How much bright areas stand out. 50% is neutral; higher brightens highlights, lower tones "
+                       "them down.",
+                       [](const Item &) { return 101; },
+                       [](const Item &, int x) {
+                           static char buf[32];
+                           snprintf(buf, sizeof buf, "%d %%", x);
+                           return (const char *)buf;
+                       },
+                       [](const Item &) { return g_settings.hdr_highlights >= 0 && g_settings.hdr_highlights <= 100 ? g_settings.hdr_highlights : 50; },
+                       [](const Item &, int x) { g_settings.hdr_highlights = x; }, 50));
+    psy_rows.push_back(v.size() - 1);
+    v.push_back(choice(P_VIDEO, "HDR shadows",
+                       "How much dark areas stand out. 50% is neutral; higher lifts shadows (more detail), lower "
+                       "deepens them.",
+                       [](const Item &) { return 101; },
+                       [](const Item &, int x) {
+                           static char buf[32];
+                           snprintf(buf, sizeof buf, "%d %%", x);
+                           return (const char *)buf;
+                       },
+                       [](const Item &) { return g_settings.hdr_shadows >= 0 && g_settings.hdr_shadows <= 100 ? g_settings.hdr_shadows : 50; },
+                       [](const Item &, int x) { g_settings.hdr_shadows = x; }, 50));
+    psy_rows.push_back(v.size() - 1);
+    v.push_back(choice(P_VIDEO, "HDR contrast",
+                       "Contrast around the middle brightness. 50% is neutral; higher is punchier, lower is flatter.",
+                       [](const Item &) { return 101; },
+                       [](const Item &, int x) {
+                           static char buf[32];
+                           snprintf(buf, sizeof buf, "%d %%", x);
+                           return (const char *)buf;
+                       },
+                       [](const Item &) { return g_settings.hdr_contrast >= 0 && g_settings.hdr_contrast <= 100 ? g_settings.hdr_contrast : 50; },
+                       [](const Item &, int x) { g_settings.hdr_contrast = x; }, 50));
+    psy_rows.push_back(v.size() - 1);
+    v.push_back(choice(P_VIDEO, "HDR saturation",
+                       "Colour strength. 50% is neutral; 0% is black and white, 100% is twice as colourful.",
+                       [](const Item &) { return 101; },
+                       [](const Item &, int x) {
+                           static char buf[32];
+                           snprintf(buf, sizeof buf, "%d %%", x);
+                           return (const char *)buf;
+                       },
+                       [](const Item &) { return g_settings.hdr_saturation >= 0 && g_settings.hdr_saturation <= 100 ? g_settings.hdr_saturation : 50; },
+                       [](const Item &, int x) { g_settings.hdr_saturation = x; }, 50));
+    psy_rows.push_back(v.size() - 1);
+    v.push_back(choice(P_VIDEO, "HDR highlight saturation",
+                       "How much colour very bright areas keep. Below 50% fades them toward white, above 50% keeps "
+                       "more colour; 50% is neutral.",
+                       [](const Item &) { return 101; },
+                       [](const Item &, int x) {
+                           static char buf[32];
+                           snprintf(buf, sizeof buf, "%d %%", x);
+                           return (const char *)buf;
+                       },
+                       [](const Item &) { return g_settings.hdr_highlight_saturation >= 0 && g_settings.hdr_highlight_saturation <= 100 ? g_settings.hdr_highlight_saturation : 50; },
+                       [](const Item &, int x) { g_settings.hdr_highlight_saturation = x; }, 50));
+    psy_rows.push_back(v.size() - 1);
+    v.push_back(choice(P_VIDEO, "HDR flare",
+                       "Compensates for glare in very bright scenes. 0% is off.",
+                       [](const Item &) { return 101; },
+                       [](const Item &, int x) {
+                           static char buf[32];
+                           snprintf(buf, sizeof buf, "%d %%", x);
+                           return (const char *)buf;
+                       },
+                       [](const Item &) { return g_settings.hdr_flare >= 0 && g_settings.hdr_flare <= 100 ? g_settings.hdr_flare : 0; },
+                       [](const Item &, int x) { g_settings.hdr_flare = x; }, 0));
+    psy_rows.push_back(v.size() - 1);
+    v.push_back(choice(P_VIDEO, "HDR gamma correction",
+                       "Fits the highlight fade to the display gamma. None: normal HDR output (default). 2.2: "
+                       "standard PC gamma. BT.1886: the 2.4 gamma used by many TVs. It changes how highlights fade "
+                       "near the top, not the peak brightness.",
+                       [](const Item &) { return 3; },
+                       [](const Item &, int x) {
+                           static const char *const names[] = {"None", "2.2", "BT.1886"};
+                           return tr(names[x]);
+                       },
+                       [](const Item &) { return g_settings.hdr_gamma >= 0 && g_settings.hdr_gamma <= 2 ? g_settings.hdr_gamma : 0; },
+                       [](const Item &, int x) { g_settings.hdr_gamma = x; }, 0));
+    psy_rows.push_back(v.size() - 1);
+    v.push_back(choice(P_VIDEO, "HDR highlight hue correction",
+                       "How much very bright colours (fire, sparks, magic) fade toward the game's original "
+                       "yellow-white instead of staying deep red. 0% keeps them fully saturated; 70% is the "
+                       "recommended default.",
+                       [](const Item &) { return 21; },
+                       [](const Item &, int x) {
+                           static char buf[32];
+                           snprintf(buf, sizeof buf, "%d %%", x * 5);
+                           return (const char *)buf;
+                       },
+                       [](const Item &) {
+                           int v = g_settings.hdr_hue;
+                           return (v >= 0 && v <= 100 ? v : 70) / 5;
+                       },
+                       [](const Item &, int x) { g_settings.hdr_hue = x * 5; }, 14));
+    psy_rows.push_back(v.size() - 1);
+    v.push_back(choice(P_VIDEO, "HDR highlight blowout",
+                       "How much very bright colours fade to white, as they do in the game's original picture. 65% "
+                       "is the recommended default; higher fades more, lower keeps more colour.",
+                       [](const Item &) { return 101; },
+                       [](const Item &, int x) {
+                           static char buf[32];
+                           snprintf(buf, sizeof buf, "%d %%", x);
+                           return (const char *)buf;
+                       },
+                       [](const Item &) {
+                           int v = g_settings.hdr_blowout;
+                           return v >= 0 && v <= 100 ? v : 65;
+                       },
+                       [](const Item &, int x) { g_settings.hdr_blowout = x; }, 65));
+    psy_rows.push_back(v.size() - 1);
+    v.push_back(choice(P_VIDEO, "HDR SDR blend",
+                       "How early bright tones leave the game's original brightness curve and start extending "
+                       "toward the HDR peak. 18% is the recommended default; higher keeps the original look longer, "
+                       "lower adds more HDR range.",
+                       [](const Item &) { return 61; },
+                       [](const Item &, int x) {
+                           static char buf[32];
+                           snprintf(buf, sizeof buf, "%d %%", x);
+                           return (const char *)buf;
+                       },
+                       [](const Item &) {
+                           int v = g_settings.hdr_sdr_blend;
+                           return v >= 0 && v <= 60 ? v : 18;
+                       },
+                       [](const Item &, int x) { g_settings.hdr_sdr_blend = x; }, 18));
+    psy_rows.push_back(v.size() - 1);
+    v.push_back(choice(P_VIDEO, "HDR vanilla saturation",
+                       "How much of the game's original colour saturation is applied. 100% is the game's own look.",
+                       [](const Item &) { return 101; },
+                       [](const Item &, int x) {
+                           static char buf[32];
+                           snprintf(buf, sizeof buf, "%d %%", x);
+                           return (const char *)buf;
+                       },
+                       [](const Item &) {
+                           int v = g_settings.hdr_vanilla_saturation;
+                           return v >= 0 && v <= 100 ? v : 100;
+                       },
+                       [](const Item &, int x) { g_settings.hdr_vanilla_saturation = x; }, 100));
+    v.push_back(choice(P_VIDEO, "HDR bloom strength",
+                       "How much glow around bright objects is kept. 100% is the game's own bloom; 0% removes it.",
+                       [](const Item &) { return 101; },
+                       [](const Item &, int x) {
+                           static char buf[32];
+                           snprintf(buf, sizeof buf, "%d %%", x);
+                           return (const char *)buf;
+                       },
+                       [](const Item &) {
+                           int v = g_settings.hdr_bloom;
+                           return v >= 0 && v <= 100 ? v : 100;
+                       },
+                       [](const Item &, int x) { g_settings.hdr_bloom = x; }, 100));
+    v.push_back(choice(P_VIDEO, "HDR gamut clamp",
+                       "The colour range the final picture is fitted into. BT.709 is the game's original TV range "
+                       "(default); BT.2020 is the wider HDR range, which can keep more vivid colours.",
+                       [](const Item &) { return 2; },
+                       [](const Item &, int x) { return x ? "BT.2020" : "BT.709"; },
+                       [](const Item &) { return g_settings.hdr_clamp == 1 ? 1 : 0; },
+                       [](const Item &, int x) { g_settings.hdr_clamp = x ? 1 : 0; }, 0));
+    psy_rows.push_back(v.size() - 1);
+    size_t preset_row = v.size();
+    v.push_back(choice(P_VIDEO, "HDR preset",
+                       "Preset Off returns to a plain HDR picture: the game's original tonemap, standard 203-nit "
+                       "brightness and neutral colour settings. Preset 1-3 store your own full HDR setup, including "
+                       "every setting and brightness. Save writes the current settings into the last selected preset. "
+                       "Changes apply immediately.",
+                       [](const Item &) { return 5; },
+                       [](const Item &, int x) {
+                           static const char *const names[] = {"Preset Off", "Preset 1", "Preset 2", "Preset 3", "Custom"};
+                           return tr(names[x]);
+                       },
+                       [](const Item &) { return hdr_look_current(); },
+                       [](const Item &, int x) { hdr_look_apply(x); }, 1));
+    v.push_back(button(P_VIDEO, "Save HDR preset",
+                       "Save the current HDR settings into the last selected preset (Preset 1 if none is selected).",
+                       "Save", A_SAVE_HDR_LOOK, 0));
+    v.back().value_off = [](const Item &, int) { return g_settings.hdr == HDR_OFF; };
+    for (size_t i = hdr_first; i < v.size(); i++)  // (the HDR settings: greyed and not stored while HDR is Off)
+        v[i].value_off = [](const Item &, int) { return g_settings.hdr == HDR_OFF; };
+    for (size_t i : psy_rows)  // (the RenoDX-only rows: also greyed when the tone mapper is Vanilla)
+        v[i].value_off = [](const Item &, int) { return g_settings.hdr == HDR_OFF || g_settings.hdr_tonemapper == 0; };
+    v[preset_row].value_off = [](const Item &, int x) {  // (Custom is only shown; HDR Off greys all of them)
+        return g_settings.hdr == HDR_OFF || x == 4;
+    };
+
     v.push_back(choice(P_VIDEO, "Performance overlay", "Frame rate and system load in a corner. Also F10.",
                        [](const Item &) { return N(k_perf); }, [](const Item &, int x) { return tr(k_perf[x]); },
                        [](const Item &) { return g_settings.perf_overlay; },
@@ -1770,7 +2033,10 @@ extern "C" int rt_opt_msg(uint32_t id, uint64_t out) {
                               key ? slot_key_text(it->arg) : slot_pad_text(it->arg);
         }
     }
-    else if (part == MSG_BUTTON) s = it->button ? tr(it->button) : it->label ? it->label(*it, -1) : "";
+    else if (part == MSG_BUTTON) {
+        s = it->button ? tr(it->button) : it->label ? it->label(*it, -1) : "";
+        grey = it->kind == KIND_BUTTON && it->value_off && it->value_off(*it, 0);  // (a button that can't be used)
+    }
     else if (part >= MSG_VALUE && it->kind == KIND_CHOICE && (int)(part - MSG_VALUE) < game_count(*it)) {
         int v = game_value(*it, (int)(part - MSG_VALUE));
         s = it->label(*it, v);
@@ -1784,6 +2050,7 @@ extern "C" int rt_opt_msg(uint32_t id, uint64_t out) {
 extern "C" int rt_opt_decide(uint64_t row) {
     const Item *it = item_of_row(row);
     if (!it || it->kind != KIND_BUTTON) return 0;
+    if (it->value_off && it->value_off(*it, 0)) return 2;  // (a button that can't be used: HDR off, Save preset)
     int d, s, ms;
     switch (it->action) {
     case A_SIZE_LIST:
@@ -1820,6 +2087,14 @@ extern "C" int rt_opt_decide(uint64_t row) {
             rt_request_reboot(1);
         }
         return 2;
+    case A_SAVE_HDR_LOOK: {
+        if (g_settings.hdr == HDR_OFF) return 2;  // (the HDR group is greyed while HDR is Off)
+        int s = g_settings.hdr_preset >= 1 && g_settings.hdr_preset <= 3 ? g_settings.hdr_preset : 1;
+        hdr_look_store(s);
+        settings_save();
+        mark_all_rows(rd64(row));
+        return 2;
+    }
     case A_QUIT:
         return 3;
     case A_REPORT: {  // (runtime/problem_report.c) made in the data folder; no file manager over the game

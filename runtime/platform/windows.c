@@ -1,5 +1,7 @@
 // Windows host layer (runtime/platform.h).
 #include <windows.h>
+#include <wingdi.h>
+#include <wchar.h>
 #include <pthread.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -683,6 +685,149 @@ int plat_proc_wait(PlatProc p, bool block) {
     GetExitCodeProcess(h, &code);
     CloseHandle(h);
     return code > 255 ? 255 : (int)code;  // (a crash's NTSTATUS, e.g. 0xC0000409, is not "still running" (-1))
+}
+
+// ---- HDR display peak from the Windows HDR calibration ICC profile
+// The app's profile has an MHC2 private tag: signature, reserved, regamma LUT size, min luminance, max luminance (both
+// ICC s15Fixed16, in cd/m2), then offsets and the LUT data. max_luminance is the display's small-area peak; the standard
+// lumi tag is the maximum full-frame luminance. We use the peak, as the game's highlight peak.
+static uint32_t icc_be32(const uint8_t *p) {
+    return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
+}
+
+static int icc_file_peak(const wchar_t *path) {
+    HANDLE h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    LARGE_INTEGER sz;
+    uint8_t *d = NULL;
+    DWORD got = 0;
+    if (!GetFileSizeEx(h, &sz) || sz.QuadPart < 132 || sz.QuadPart > (1 << 20)) goto done;
+    d = malloc((size_t)sz.QuadPart);
+    if (!d || !ReadFile(h, d, (DWORD)sz.QuadPart, &got, NULL) || (LONGLONG)got != sz.QuadPart ||
+        memcmp(d + 36, "acsp", 4))
+        goto done;
+    uint32_t n = icc_be32(d + 128);
+    if (n > 256 || 132 + (size_t)n * 12 > (size_t)sz.QuadPart) goto done;
+    for (uint32_t i = 0; i < n; i++) {
+        const uint8_t *tag = d + 132 + i * 12;
+        uint32_t off = icc_be32(tag + 4), len = icc_be32(tag + 8);
+        if (off > (uint32_t)sz.QuadPart || len > (uint32_t)sz.QuadPart - off) continue;
+        if (!memcmp(tag, "MHC2", 4) && len >= 20) {
+            int32_t v = (int32_t)icc_be32(d + off + 16);  // max_luminance, s15Fixed16
+            double nits = (double)v / 65536.0;
+            if (nits >= 80.0 && nits <= 10000.0) {
+                int peak = (int)(nits + 0.5);
+                free(d);
+                CloseHandle(h);
+                return peak;
+            }
+        }
+    }
+done:
+    free(d);
+    CloseHandle(h);
+    return 0;
+}
+
+// The active HDR profile is in the display class's per-user ICM profile associations (ICMProfileAC), one group per
+// monitor. The group's last profile is the HDR one (e.g. {SDR.icc, HDR Calibrated Profile.icc}). Pick the group for
+// the game window's monitor; the desktop's GetICMProfile often returns only the SDR sRGB profile.
+typedef struct {
+    wchar_t sub[64];
+} IccGroup;
+
+static int icc_group_cmp(const void *a, const void *b) {
+    return wcscmp(((const IccGroup *)a)->sub, ((const IccGroup *)b)->sub);
+}
+
+static int icc_registry_peak_for_display(int display, wchar_t *name, size_t name_cap) {
+    HKEY hk;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER,
+                      L"Software\\Microsoft\\Windows NT\\CurrentVersion\\ICM\\ProfileAssociations\\Display\\"
+                      L"{4d36e96e-e325-11ce-bfc1-08002be10318}", 0, KEY_READ, &hk) != ERROR_SUCCESS)
+        return 0;
+    wchar_t dir[1024];
+    UINT dn = GetWindowsDirectoryW(dir, 1000);
+    const wchar_t *icc_dir = L"\\System32\\spool\\drivers\\color\\";
+    if (dn && dn + wcslen(icc_dir) < 1024) wcscat(dir, icc_dir);
+    else wcscpy(dir, L"C:\\Windows\\System32\\spool\\drivers\\color\\");
+    IccGroup groups[32];
+    int ng = 0;
+    for (DWORD i = 0; ng < 32; i++) {
+        wchar_t sub[256];
+        DWORD sn = 256;
+        if (RegEnumKeyExW(hk, i, sub, &sn, NULL, NULL, NULL, NULL) != ERROR_SUCCESS) break;
+        HKEY k;
+        if (RegOpenKeyExW(hk, sub, 0, KEY_READ, &k) != ERROR_SUCCESS) continue;
+        DWORD type = 0, cb = 0;
+        if (RegQueryValueExW(k, L"ICMProfileAC", NULL, &type, NULL, &cb) == ERROR_SUCCESS && cb > 0 &&
+            (type == REG_MULTI_SZ || type == REG_SZ))
+            swprintf(groups[ng++].sub, 64, L"%s", sub);
+        RegCloseKey(k);
+    }
+    if (!ng) { RegCloseKey(hk); return 0; }
+    qsort(groups, ng, sizeof groups[0], icc_group_cmp);
+    int gi = display > 0 ? display - 1 : 0;  // DISPLAY1 -> first monitor group, etc.
+    if (gi < 0 || gi >= ng) gi = 0;  // (unknown display: best effort on the first group)
+    HKEY k;
+    if (RegOpenKeyExW(hk, groups[gi].sub, 0, KEY_READ, &k) != ERROR_SUCCESS) {
+        RegCloseKey(hk);
+        return 0;
+    }
+    int peak = 0;
+    DWORD type = 0, cb = 0;
+    if (RegQueryValueExW(k, L"ICMProfileAC", NULL, &type, NULL, &cb) == ERROR_SUCCESS && cb > 0) {
+        wchar_t *list = malloc(cb + sizeof(wchar_t));
+        if (list && RegQueryValueExW(k, L"ICMProfileAC", NULL, &type, (BYTE *)list, &cb) == ERROR_SUCCESS) {
+            list[cb / sizeof(wchar_t)] = 0;
+            for (wchar_t *s = list; *s; s += wcslen(s) + 1) {
+                wchar_t path[1024];
+                if (wcschr(s, L'\\')) swprintf(path, 1024, L"%s", s);
+                else swprintf(path, 1024, L"%s%s", dir, s);
+                int p = icc_file_peak(path);
+                if (p > 0) {  // the last valid profile is the HDR calibration
+                    peak = p;
+                    swprintf(name, name_cap, L"%s", s);
+                }
+            }
+        }
+        free(list);
+    }
+    RegCloseKey(k);
+    RegCloseKey(hk);
+    return peak;
+}
+
+int plat_hdr_peak_nits(void *hwnd_, char *profile, size_t profile_size) {
+    HWND hwnd = (HWND)hwnd_;
+    HMONITOR mon = hwnd ? MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+                        : MonitorFromPoint((POINT){0, 0}, MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFOEXW mi;
+    mi.cbSize = sizeof mi;
+    int display = 0;
+    if (mon && GetMonitorInfoW(mon, (MONITORINFO *)&mi))
+        swscanf(mi.szDevice, L"\\\\.\\DISPLAY%d", &display);
+    wchar_t name[512] = L"";
+    int peak = icc_registry_peak_for_display(display, name, 512);
+    if (!peak) {  // (the display's SDR profile may still carry an MHC2 tag)
+        HDC hdc = GetDC(hwnd);
+        wchar_t path[1024];
+        DWORD n = 1024;
+        if (hdc && GetICMProfileW(hdc, &n, path)) {
+            peak = icc_file_peak(path);
+            if (peak) {
+                const wchar_t *slash = wcsrchr(path, L'\\');
+                swprintf(name, 512, L"%s", slash ? slash + 1 : path);
+            }
+        }
+        if (hdc) ReleaseDC(hwnd, hdc);
+    }
+    if (profile && profile_size) {
+        profile[0] = 0;
+        if (peak) WideCharToMultiByte(CP_UTF8, 0, name, -1, profile, (int)profile_size, NULL, NULL);
+    }
+    return peak;
 }
 
 bool plat_remove_tree(const char *dir) {
