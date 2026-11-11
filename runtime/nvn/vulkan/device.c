@@ -23,6 +23,7 @@
 #include "../../window_size.h"
 #include "mvec.h"
 #include "vk.h"
+#include "shaders.h"
 #include "vram.h"
 #include "record.h"
 #include "fsr_api.h"
@@ -626,6 +627,16 @@ static void create_device(void) {
 #endif
     g_vk.turnip = drv.driverID == VK_DRIVER_ID_MESA_TURNIP;
     g_vk.amd_proprietary = drv.driverID == VK_DRIVER_ID_AMD_PROPRIETARY;
+    {   // AMD's own shader compiler (its driver without "LLPC" in driverInfo: RDNA 2 and older on Windows) draws the sky
+        // wrong from unoptimized SPIR-V (#359): its fragment shaders go through spirv-opt (spirv.c).
+        // SAVAGEWIND_VK_OPT_FS=0 / 1 forces it off or on.
+        const char *e = getenv("SAVAGEWIND_VK_OPT_FS");
+        bool sc = g_vk.amd_proprietary && !strstr(drv.driverInfo, "LLPC");
+        bool on = e && *e ? atoi(e) != 0 : sc;
+        vk_spirv_optimize_fragments(on);
+        if (on || sc)
+            LOG("[vk] fragment shaders optimized (spirv-opt): %s\n", on ? sc ? "on, AMD's own shader compiler" : "on" : "off");
+    }
     {   // (for bug reports: the driver's version, and whether ASTC textures reach the GPU as they are or decoded)
         VkFormatProperties ap;
         vkGetPhysicalDeviceFormatProperties(g_vk.phys, VK_FORMAT_ASTC_4x4_UNORM_BLOCK, &ap);
