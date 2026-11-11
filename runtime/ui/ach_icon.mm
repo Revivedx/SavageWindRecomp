@@ -149,7 +149,7 @@ ImTextureID load(const char *id) {
     char path[1200];
     int w, h;
     for (const char *e : ext) {
-        snprintf(path, sizeof path, "%s/achievements/%s.%s", rt_data_root(), id, e);
+        snprintf(path, sizeof path, "%s/achievements/%s.%s", rt_data_root(), id, e);  // (a path) i18n-skip
         if (rt_image_info(path, &w, &h)) return load_file(path, w, h);
     }
     // else the game's
@@ -157,10 +157,10 @@ ImTextureID load(const char *id) {
         const AchGameIcon &g = g_ach_game_icons[k];
         if (strcmp(g.id, id)) continue;
         if (g.icon[0] == '@') {
-            snprintf(path, sizeof path, "%s/extracted/romfs/UI/PictureBook/%s.jpg", rt_data_root(), g.icon + 1);
+            snprintf(path, sizeof path, "%s/extracted/romfs/UI/PictureBook/%s.jpg", rt_data_root(), g.icon + 1);  // (a path) i18n-skip
             return rt_image_info(path, &w, &h) ? load_file(path, w, h) : 0;
         }
-        snprintf(path, sizeof path, "%s/extracted/romfs/UI/StockItem/%s.sbitemico", rt_data_root(), g.icon);
+        snprintf(path, sizeof path, "%s/extracted/romfs/UI/StockItem/%s.sbitemico", rt_data_root(), g.icon);  // (a path) i18n-skip
         return load_stock_icon(path);
     }
     return 0;
