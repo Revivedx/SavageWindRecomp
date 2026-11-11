@@ -31,7 +31,13 @@ int main(void) {
     near(o.shape, 1); near(o.vh, 720); near(o.vy, 40);
     title = true;
     output_scale(1280, 800, true, &o);
-    near(o.shape, 1); near(o.vh, 720);
+#ifdef __APPLE__
+    near(o.shape, 1); near(o.vh, 720); near(o.vy, 40);
+#else
+    near(o.shape, .9); near(o.vh, 800); near(o.vy, 0);
+#endif
+    output_scale(2560, 1080, true, &o);
+    near(o.shape, 1); near(o.vw, 1920); near(o.vx, 320);
     title = false; loading = true;
     output_scale(1280, 800, true, &o);
     near(o.shape, .9); near(o.vh, 800); near(o.vy, 0);

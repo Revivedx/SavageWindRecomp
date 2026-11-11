@@ -111,10 +111,14 @@ void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
     if (wide_test < 0) wide_test = getenv("SAVAGEWIND_WIDE_TEST") ? atof(getenv("SAVAGEWIND_WIDE_TEST")) : 0;
     double shape = wide_test > 0 ? wide_test : (dw / dh) / (16.0 / 9.0);
     // A wider window (21:9, 32:9) sees more to the sides, a taller one (16:10, 4:3: shape < 1) more above and below
-    // (#125); the HUD keeps its 16:9 layout in the middle either way. The title has no world behind its 16:9 art.
-    // Fit wide loading screens to keep their tips and logos aligned (#98). On taller windows keep the game's shape
+    // (#125); the HUD keeps its 16:9 layout in the middle either way. Taller title screens fill the window too.
+    // Fit wider title/loading layouts to keep their artwork and text aligned (#98). Taller views keep their shape
     // through the loading overlay so the world doesn't change aspect while fading out or back in.
-    bool reshape = reshape_allowed && fabs(shape - 1.0) > 0.005 && !framepace_title_ui() &&
+    bool title_fit = framepace_title_ui();
+#ifndef __APPLE__
+    title_fit = title_fit && shape >= 1;  // Vulkan cover-crops the artwork on taller title screens.
+#endif
+    bool reshape = reshape_allowed && fabs(shape - 1.0) > 0.005 && !title_fit &&
                    (shape < 1 || !framepace_loading_ui());
     if (!reshape) shape = 1.0;
     // render height in units of the Switch's 1080 lines: the window's (Metal: divided by the upscaler's factor)

@@ -2395,7 +2395,8 @@ static VkRect2D scissor_rect(void) {
             if (edge_mode) {
                 double sdy = hud_edge_scissor_dy((y0 + y1) / 2.0, gh, shape);
                 double gw = pass_sx > 0 ? w / pass_sx : w;  // (a quick menu's bar, an event: as for the panes)
-                if (sdy != 0 && hud_edge_moves(edge_mode, (float)(1 - (y0 + y1) / gh), (float)shape) &&
+                if (!hud_context_keeps(g_settings.hud_edges && shape < 1, (float)((x + sw / 2.0) / gw * 2 - 1),
+                                       (float)(1 - (y0 + y1) / gh), 1, shape) && sdy != 0 && hud_edge_moves(edge_mode, (float)(1 - (y0 + y1) / gh), (float)shape) &&
                     !(hud_quick && hud_quick_bar_px(x + sw / 2.0, (y0 + y1) / 2.0, gw, gh, shape)))
                     y += (int)round(sdy);
             }
@@ -2405,7 +2406,8 @@ static VkRect2D scissor_rect(void) {
     if (hud_s != 1) {  // (the minimap's mask goes with the minimap: a scissor over about the whole image is left alone)
         double gw = w / pass_sx, gh = h / pass_sy;
         float mx = (float)((x + sw / 2.0) / gw * 2 - 1), my = (float)((y + sh / 2.0) / gh * 2 - 1);
-        if (sw < gw * 0.9 && sh < gh * 0.9 && !(hud_quick && fabsf(mx) < 0.72f && fabsf(my) < 0.6f)) {
+        if (!hud_context_keeps(g_settings.hud_edges && shape < 1, mx, -my, 1 / fmaxf(shape, 1), fminf(shape, 1)) &&
+            sw < gw * 0.9 && sh < gh * 0.9 && !(hud_quick && fabsf(mx) < 0.72f && fabsf(my) < 0.6f)) {
             double px = x, py = y, pw = sw, ph = sh;
             hud_scale_span(&px, &pw, gw / 2, gw / 2 / fmax(shape, 1), hud_s);
             hud_scale_span(&py, &ph, gh / 2, gh / 2 * fmin(shape, 1), hud_s);
@@ -4701,7 +4703,8 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         memcpy(text_matrix, g, sizeof text_matrix);
         for (int k = 0; k < 4; k++) text_matrix[k] /= shape;
         float tx = text_matrix[3] / text_matrix[15], ty = text_matrix[7] / text_matrix[15];
-        if (hud_s != 1 && !(hud_quick && hud_quick_keeps(tx, ty, edge_x, edge_y)))
+        if (hud_s != 1 && !hud_context_keeps(g_settings.hud_edges && shape < 1, tx, ty, edge_x, edge_y) &&
+            !(hud_quick && hud_quick_keeps(tx, ty, edge_x, edge_y)))
             hud_scale_matrix(text_matrix, hud_s, hud_anchor(tx, edge_x), hud_anchor(ty, edge_y));
         *out = ubo_span(vk_transient_copy(text_matrix, sizeof text_matrix, 256), sizeof text_matrix);
         return true;
@@ -4716,11 +4719,12 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         buf[0] *= combined_scale[0], buf[3] *= combined_scale[0];
         buf[5] *= combined_scale[1], buf[7] *= combined_scale[1];
         float tx = buf[3] / buf[15], ty = buf[7] / buf[15];
-        if (hud_s != 1 && !(hud_quick && hud_quick_keeps(tx, ty, edge_x, edge_y)))
+        if (hud_s != 1 && !hud_context_keeps(g_settings.hud_edges && shape < 1, tx, ty, edge_x, edge_y) &&
+            !(hud_quick && hud_quick_keeps(tx, ty, edge_x, edge_y)))
             hud_scale_matrix(buf, hud_s, hud_anchor(tx, edge_x), hud_anchor(ty, edge_y));
         if (map_chrome && fabsf(ty) > shape * (200.0f / 360))
             hud_edge_matrix(buf, copysignf(1 - shape, ty));
-        if (hud_edge_active && hud_edge_moves(edge_mode, ty, edge_y) &&
+        if (hud_edge_active && !hud_context_keeps(g_settings.hud_edges && shape < 1, tx, ty, edge_x, edge_y) && hud_edge_moves(edge_mode, ty, edge_y) &&
             !(hud_quick && hud_quick_bar(tx, ty, edge_x, edge_y))) {
             float ay = hud_anchor(ty, edge_y);
             float dy = hud_edge_dy(ay, edge_y, shape);
@@ -4766,6 +4770,11 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
          fabsf(g[112] - 1.0f / 352) < 1e-6f && fabsf(g[113] - 1.0f / 162) < 1e-6f)))
         m11 *= (720 / shape - 112) / 608;
 
+    // BootUp's centered artwork covers a taller title view at uniform scale. Logos and menu panes keep their size.
+    if (tall && framepace_title_ui() && g_cur_fs_hash == UINT64_C(0xd4fa32dabc35066c) &&
+        size >= 34 * 16 && !g[19] && !g[23] &&
+        g[132] == 1280 && g[133] == 720 && g[134] == -640 && g[135] == 360)
+        m00 /= shape, m11 /= shape;
     // a 40-degree HUD layer's pane over the whole 16:9 width (a taller window: height) -> the 16:9 matrix
     float m11_flat = tall ? m11 / shape : m11, edge = tall ? shape : 1 / shape;
     if (size >= 34 * 16 && fabsf(m11_flat - 2.74748f) < 0.001f) {
@@ -4818,6 +4827,7 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
             x0 = fminf(x0, nx), x1 = fmaxf(x1, nx), y0 = fminf(y0, ny), y1 = fmaxf(y1, ny);
         }
         if (x1 - x0 >= 1.8f * edge_x || y1 - y0 >= 1.8f * edge_y) hud_scale = false;
+        if (hud_context_keeps(g_settings.hud_edges && shape < 1, (x0 + x1) / 2, (y0 + y1) / 2, edge_x, edge_y)) hud_scale = false;
         float cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
         if (hud_scale) {  // (a quick menu's bar: HUD size keeps its middle at the game's size, HUD at edges the bar)
             hud_ax = hud_anchor(cx, edge_x);

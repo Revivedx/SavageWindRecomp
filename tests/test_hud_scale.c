@@ -12,6 +12,23 @@ static void project(const float *v, float m00, float m11, float x, float y, floa
 }
 
 int main(void) {
+    // Native action-button cluster, its label and shadow all retain the conversation coordinate band.
+    for (int i = 0; i < 3; i++) {
+        float edge = (float[]){1, .9f, .75f}[i];
+        assert(hud_context_keeps(true, 80.0f / 640, -220.0f / 360 * edge, 1, edge));
+        assert(hud_context_keeps(true, 190.0f / 640, -216.0f / 360 * edge, 1, edge));
+        assert(hud_context_keeps(true, -85.0f / 640, -220.0f / 360 * edge, 1, edge));
+        assert(hud_context_keeps(true, 140.0f / 640, -246.0f / 360 * edge, 1, edge));
+        assert(!hud_context_keeps(true, 335.5f / 640, -290.0f / 360 * edge, 1, edge));
+        assert(!hud_context_keeps(true, 392.0f / 640, -222.0f / 360 * edge, 1, edge));
+        assert(!hud_context_keeps(true, 392.0f / 640, -262.0f / 360 * edge, 1, edge));
+        assert(!hud_context_keeps(true, .8f, -.7f * edge, 1, edge));  // clock/minimap
+        assert(!hud_context_keeps(true, -.7f, -.7f * edge, 1, edge)); // location name
+        assert(!hud_context_keeps(true, .2f, .2f, 1, edge));         // quick selector
+    }
+
+    assert(!hud_context_keeps(false, 80.0f / 640, -220.0f / 360, 1, 1));
+
     // Synthetic Y-flipped glyph matrix with an already-tall aspect of 1.6 at 1280x800.
     float text[16] = {1.5f, 0, 0, 190, 0, -2.4f, 0, -550,
                       0, 0, -1, 998, 0, 0, -1, 1000};

@@ -15,6 +15,12 @@ static inline bool hud_quick_keeps(float x, float y, float edge_x, float edge_y)
     return x > -0.72f * edge_x && x < 0.72f * edge_x && y > -0.4f * edge_y && y < 0.85f * edge_y;
 }
 
+// DoCommand's action cluster stays in the same native band as conversation prompts through event entry/exit.
+static inline bool hud_context_keeps(bool enabled, float x, float y, float edge_x, float edge_y) {
+    return enabled && x > -0.2f * edge_x && x < 0.45f * edge_x &&
+           y > -(300.0f / 360) * edge_y && y < -(160.0f / 360) * edge_y;
+}
+
 // A pane's view rows (3 x 4, row 2 its depth: projected x = m00 x / -z, y = m11 y / -z)
 static inline void hud_scale_view(float *v, float s, float m00, float m11, float ax, float ay) {
     for (int k = 0; k < 4; k++) {
