@@ -101,7 +101,7 @@ double upscale_factor(void) {
 
 // The window's shape over 16:9 while the game's views are widened to fill it, else 1; the field of view's factor in
 // use (rt_persp)
-static volatile float g_view_shape = 1, g_fov = 1;
+static volatile float g_view_shape = 1, g_fov = 1, g_map_extra_y;
 static uint32_t g_world_proj[4];  // tan(fovy / 2), aspect, near, far of the world camera's last matrix (rt_persp), float bits
 
 void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
@@ -149,9 +149,10 @@ void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
     }
     o->vx = (dw - o->vw) / 2; o->vy = (dh - o->vh) / 2;
     o->crop[0] = o->crop[1] = 0, o->crop[2] = o->crop[3] = 1;
-    // The map's frame stays 16:9, but its scrollable background can draw beyond the frame on taller windows
-    // (#303). Present only that centered 16:9 region, without resizing its targets or changing cursor coordinates.
-    if (reshape && shape < 1 && framepace_map_ui()) {
+    bool tall_map = output_tall_map((float)shape);
+    g_map_extra_y = tall_map ? (float)(360 * (1 / shape - 1)) : 0;
+    // Renderers and aspect ratios without the taller map layout keep the centered 16:9 frame (#303).
+    if (reshape && shape < 1 && !tall_map && framepace_map_ui()) {
         double map_h = o->vh * shape;
         o->vy += (o->vh - map_h) / 2;
         o->vh = map_h;
@@ -180,6 +181,18 @@ void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
 }
 
 float output_view_shape(void) { return g_view_shape; }
+float output_map_extra_y(void) { return g_map_extra_y; }
+
+// The taller world-map layout is implemented by Vulkan. Very narrow windows keep the console frame.
+bool output_tall_map(float shape) {
+#ifdef __APPLE__
+    return false;
+#else
+    static int off = -1;
+    if (off < 0) off = getenv("SAVAGEWIND_NO_HUD_FIX") != NULL;
+    return !off && shape >= 0.75f && shape < 1 && framepace_map_ui();
+#endif
+}
 
 // The game's perspective views, as each one's matrix is built (tools/patches.py _persp_matrix: sead's
 // PerspectiveProjection; tan_fovy = tan(fovy / 2) at +0xac, aspect at +0xb0, as float bits; near at +0x98). Every 16:9

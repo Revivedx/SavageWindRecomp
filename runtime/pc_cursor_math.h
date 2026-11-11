@@ -16,12 +16,15 @@ static inline float pc_map_clamp_center(float value,float lower,float upper) {
 }
 // SDL window size and mouse position use the same logical coordinate system, including on a high-DPI display.
 // BOTW's menu layouts use 1280x720. The presented pause/title image is fitted to the window, with bars if needed.
-static inline bool pc_cursor_to_layout(float width,float height,float x,float y,float out[2]) {
+static inline float pc_cursor_layout_scale(float width,float height,float extra_y) {
+    return fminf(width/1280.0f,height/(720.0f+2*extra_y));
+}
+static inline bool pc_cursor_to_layout(float width,float height,float x,float y,float extra_y,float out[2]) {
     if(width<=0||height<=0)return false;
-    float scale=fminf(width/1280.0f,height/720.0f);
+    float scale=pc_cursor_layout_scale(width,height,extra_y);
     out[0]=(x-width*.5f)/scale;
     out[1]=(height*.5f-y)/scale;
-    return fabsf(out[0])<=640&&fabsf(out[1])<=360;
+    return fabsf(out[0])<=640&&fabsf(out[1])<=360+extra_y;
 }
 // The map matrix translation is already zoomed. Invert translation BEFORE dividing by scale.
 static inline void pc_cursor_map_world(const float point[2],const float translation[2],float zoom,float out[2]) {
@@ -36,10 +39,10 @@ static inline void pc_map_anchor_center(const float point[2],const float world[2
 
 // Navigation direction, not drag direction: looking right moves the map image left.
 // Edge zones belong to the map canvas, below the top tabs and above the footer.
-static inline void pc_map_navigation(const float point[2],float x,float y,bool edges,float dt,float zoom,float out[2]) {
-    if(edges&&fabsf(point[0])<=640&&fabsf(point[1])<=285&&x==0&&y==0) {
+static inline void pc_map_navigation(const float point[2],float x,float y,bool edges,float dt,float zoom,float extra_y,float out[2]) {
+    if(edges&&fabsf(point[0])<=640&&fabsf(point[1])<=285+extra_y&&x==0&&y==0) {
         float ex=fmaxf(0,fminf(1,(fabsf(point[0])-600)/32));
-        float ey=fmaxf(0,fminf(1,(fabsf(point[1])-250)/30));
+        float ey=fmaxf(0,fminf(1,(fabsf(point[1])-250-extra_y)/30));
         x=copysignf(ex*ex,point[0]);y=copysignf(ey*ey,point[1]);
     }
     float n=hypotf(x,y);if(n>1){x/=n;y/=n;}

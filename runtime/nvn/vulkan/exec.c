@@ -1436,6 +1436,7 @@ static TexBackend *post_image(int i, uint32_t w, uint32_t h, VkFormat f);
 static TexBackend *map_background;
 static NvnTexture *map_background_target;
 static uint64_t map_background_frame = UINT64_MAX, map_background_main_frame = UINT64_MAX;
+static uint64_t map_chrome_frame = UINT64_MAX;
 static void map_background_before_cursor(void);
 
 static VkImageView post_view(TexBackend *d);
@@ -4650,12 +4651,30 @@ static bool hud_frame_end(const float *g, const float *mv, const float *rc, floa
     return end;
 }
 
+// AppMap draws its terrain into a fixed 1500x720 layout capture (at 1.5x). Let the
+// same texture contain more rows of terrain, then undo that scale on the display quad.
+static bool map_capture_patch(const float *g, uint64_t size, float shape, VkDescriptorBufferInfo *out) {
+    const NvnTexture *rt = st.rt.color[0];
+    if (rt->width != 2250 || rt->height != 1080 || rt->format != 0x3d ||
+        fabsf(g[0] - 2.0f / 1500) > 1e-6f || fabsf(g[5] - 2.0f / 720) > 1e-6f || g[15] != 1)
+        return false;
+    static float buf[0x10000 / 4];
+    uint64_t n = size > sizeof buf ? sizeof buf : size;
+    memcpy(buf, g, n);
+    for (int k = 4; k < 8; k++) buf[k] *= shape;
+    *out = ubo_span(vk_transient_copy(buf, n, 256), n);
+    return true;
+}
+
 static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out) {
     static int off = -1;
     if (off < 0) off = getenv("SAVAGEWIND_NO_HUD_FIX") != NULL;
     extern float output_view_shape(void);
     float shape = off ? 1 : output_view_shape();
     if (size < 64 || !st.rt.ncolor || !st.rt.color[0]) return false;
+    const float *g = (const float *)(uintptr_t)addr;
+    bool tall_map = output_tall_map(shape);
+    if (tall_map && map_capture_patch(g, size, shape, out)) return true;
     TexBackend *tb = (TexBackend *)st.rt.color[0]->backend;
     if (!tb || tb->rs_group != RS_OUT) return false;
     float hud_s = hud_scale_now();
@@ -4663,7 +4682,11 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
     int edge_mode = hud_edges_now(shape);
     bool hud_edge_active = edge_mode != 0;
     float edge_x = 1 / fmaxf(shape, 1), edge_y = fminf(shape, 1);  // (where the 16:9 HUD ends on this window)
-    const float *g = (const float *)(uintptr_t)addr;
+    // AppHome's first map-frame fog strip follows the world labels and marker panes.
+    if (tall_map && g_cur_fs_hash == UINT64_C(0x3911f651724ed296) &&
+        size >= 28 * 4 && g[14] == -1 && g[15] == 0 && fabsf(g[23]) == 304)
+        map_chrome_frame = renderer_present_count();
+    bool map_chrome = tall_map && map_chrome_frame == renderer_present_count();
     // ui2d text combines the projection and each label's position into this smaller, Y-flipped matrix.
     // A cached 16:9 projection can survive a live resize; scale the whole X row so glyph widths and
     // positions follow the widened HUD together.
@@ -4692,6 +4715,8 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         float tx = buf[3] / buf[15], ty = buf[7] / buf[15];
         if (hud_s != 1 && !(hud_quick && hud_quick_keeps(tx, ty, edge_x, edge_y)))
             hud_scale_matrix(buf, hud_s, hud_anchor(tx, edge_x), hud_anchor(ty, edge_y));
+        if (map_chrome && fabsf(ty) > shape * (200.0f / 360))
+            hud_edge_matrix(buf, copysignf(1 - shape, ty));
         if (hud_edge_active && hud_edge_moves(edge_mode, ty, edge_y) &&
             !(hud_quick && hud_quick_bar(tx, ty, edge_x, edge_y))) {
             float ay = hud_anchor(ty, edge_y);
@@ -4705,14 +4730,16 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
     // place in the stamp atlas), then a 2D transform straight to clip space, the sprite's place on the 16:9 screen (rows
     // x: scale 0 0 offset, y: 0 scale 0 offset, 0 0 0 -1). Unchanged they spread over the whole wider window while the
     // map and its icons keep the 16:9 layout, so the stamps slid ~shape x faster than the map when it scrolled. On a
-    // wider window they narrow like the rest; taller map views are cropped to 16:9 at presentation (output_scale.c).
+    // wider window they narrow like the rest. Taller windows compress their Y scale and translation together,
+    // matching the map's projection in both the full-height layout and the centered 16:9 fallback.
     // (The same shader's whole-screen quads, scale 2, are left as they are.)
-    if (shape > 1 && size >= 64 && framepace_map_ui() && g[4] > 0 && g[4] < 1 && !g[5] && !g[6] && !g[8] && g[9] > 0 &&
+    if (shape != 1 && size >= 64 && framepace_map_ui() && g[4] > 0 && g[4] < 1 && !g[5] && !g[6] && !g[8] && g[9] > 0 &&
         g[9] < 1 && !g[10] && !g[12] && !g[13] && !g[14] && g[15] == -1) {
         static float buf[0x10000 / 4];
         uint64_t n = size > sizeof buf ? sizeof buf : size;
         memcpy(buf, g, n);
-        buf[4] /= shape, buf[7] /= shape;
+        if (shape > 1) buf[4] /= shape, buf[7] /= shape;
+        else buf[9] *= shape, buf[11] *= shape;
         *out = ubo_span(vk_transient_copy(buf, n, 256), n);
         return true;
     }
@@ -4725,6 +4752,17 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
     if (!is_flat && !is_wide) return false;
     float m00 = is_flat && !tall ? g[0] / shape : g[0];  // the widened matrix's
     float m11 = is_flat && tall ? g[5] * shape : g[5];
+    if (tall_map && g_cur_fs_hash == UINT64_C(0xc94630386244616e)) {
+        m11 /= shape;  // AppMap's terrain capture display quad
+        map_chrome_frame = UINT64_MAX;
+    }
+    // The frame's refraction and the map shadow both end at the inner edges of the bezel.
+    if (tall_map && (g_cur_fs_hash == UINT64_C(0xe91b1fb6e1eb920b) ||
+        (g_cur_fs_hash == UINT64_C(0xd4fa32dabc35066c) && size >= 114 * 4 &&
+         !g[19] && !g[23] && g[108] == 1500 && g[109] == 608 &&
+         fabsf(g[112] - 1.0f / 352) < 1e-6f && fabsf(g[113] - 1.0f / 162) < 1e-6f)))
+        m11 *= (720 / shape - 112) / 608;
+
     // a 40-degree HUD layer's pane over the whole 16:9 width (a taller window: height) -> the 16:9 matrix
     float m11_flat = tall ? m11 / shape : m11, edge = tall ? shape : 1 / shape;
     if (size >= 34 * 16 && fabsf(m11_flat - 2.74748f) < 0.001f) {
@@ -4756,7 +4794,8 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
                 if (tall) m11 /= shape;
                 else m00 *= shape;
             }
-            if (lo < 1e8f && (hi <= -edge || lo >= edge)) hud_clip = true;  // (wholly off a 16:9 screen)
+            float clip_edge = tall_map ? 1 : edge;
+            if (lo < 1e8f && (hi <= -clip_edge || lo >= clip_edge)) hud_clip = true;  // (wholly off the view)
         }
     }
     // Gameplay > HUD size: a pane of a 40-degree layer, and not one over about the whole screen (a fade, a picture)
@@ -4786,6 +4825,9 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
             hud_scale = hud_s != 1 && !(hud_quick && hud_quick_keeps(cx, cy, edge_x, edge_y));
         }
     }
+    if (tall_map && size >= 28 * 4 && ((map_chrome && fabsf(g[23]) > 200) ||
+        (g_cur_fs_hash == UINT64_C(0xd4fa32dabc35066c) && !g[19] && fabsf(g[23]) == 360)))
+        edge_dy = copysignf(1 - shape, g[23]);  // frame chrome and AppMap's black edge strips
     if (m00 == g[0] && m11 == g[5] && !hud_scale && edge_dy == 0) return false;
     static float buf[0x10000 / 4];
     uint64_t n = size > sizeof buf ? sizeof buf : size;
@@ -6272,6 +6314,7 @@ static uint32_t g_cs_cap, g_cs_n;
 void vk_exec_reset(void) {
     map_background_target = NULL;
     map_background_frame = map_background_main_frame = UINT64_MAX;
+    map_chrome_frame = UINT64_MAX;
     oq_counting = false;
     oq_nrun = oq_nreports = 0;  // (pending reports pointed at the old boot's memory)
     ngw = 0;
@@ -9210,10 +9253,12 @@ static void map_background_before_cursor(void) {
     if (!map_background) return;
     VkCommandBuffer cb = vk_cmd();
     vk_full_barrier(cb);
+    float shape = output_view_shape();
+    float edge = (56.0f / 720) * (output_tall_map(shape) ? shape : 1);
     VkImageBlit region = {
         .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-        .srcOffsets = {{0, (int32_t)(src->height * 56 / 720), 0},
-                       {(int32_t)src->width, (int32_t)(src->height * 664 / 720), 1}},
+        .srcOffsets = {{0, (int32_t)(src->height * edge), 0},
+                       {(int32_t)src->width, (int32_t)(src->height * (1 - edge)), 1}},
         .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
         .dstOffsets = {{0, 0, 0}, {1920, 912, 1}}
     };

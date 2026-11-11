@@ -43,3 +43,8 @@ unsigned shadow_map_size(unsigned long long frame);
 typedef struct { float tan_half_fovy, aspect, near_, far_; unsigned long long serial; } WorldProj;
 void output_world_proj_set(float t, float a, float n, float f);
 bool output_world_proj(WorldProj *p);
+
+float output_view_shape(void);
+bool output_tall_map(float shape);
+// Extra layout space above and below the visible world map, in native 1280x720 units.
+float output_map_extra_y(void);
