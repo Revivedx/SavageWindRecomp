@@ -12,6 +12,20 @@ static void project(const float *v, float m00, float m11, float x, float y, floa
 }
 
 int main(void) {
+    // The event clears before the final MessageDialog stops drawing.
+    bool held = hud_dialogue_holds(false, true, true);
+    assert(held);
+    held = hud_dialogue_holds(held, false, true);
+    assert(held);
+    assert(hud_edge_mode(true, .9f, false, false, false, held) == 2);
+    assert(hud_edge_moves(2, .8f, .9f));
+    assert(!hud_edge_moves(2, -.8f, .9f));
+    held = hud_dialogue_holds(held, false, false);
+    assert(!held);
+    assert(hud_edge_mode(true, .9f, false, false, false, held) == 1);
+    assert(!hud_dialogue_holds(false, false, true));  // incidental speech never drew during an event
+    assert(!hud_dialogue_holds(true, true, false));  // dialogue closed while another event is still running
+
     // The zones: the middle third of the screen stays on the centre, the others go to their edge
     assert(hud_anchor(-0.9f, 1) == -1 && hud_anchor(0.9f, 1) == 1 && hud_anchor(0.1f, 1) == 0);
     assert(hud_anchor(-0.3f, 1) == 0 && hud_anchor(-0.34f, 1) == -1);

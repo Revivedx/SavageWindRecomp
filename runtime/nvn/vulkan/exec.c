@@ -1395,6 +1395,7 @@ static bool pass_out;  // the pass draws into the game's final image (RS_OUT: th
 static bool hud_clip;  // the draw in progress is a 16:9 layout's pane wholly off a 16:9 screen: not drawn (hud_patch)
 // Gameplay > HUD size this frame, 1: none. Only the HUD in play: not in menus, the title, a load or an event (a talk's text).
 #define HUD_QUICK_HOLD_NS 500000000ull  // (a quick menu's bar fades out after the pause state ends)
+static bool hud_event_dialogue;  // an event's MessageDialog may still be fading out
 static bool hud_quick;  // a quick menu's bar may be on screen: it keeps the game's size (hud_quick_keeps)
 static float hud_scale_now(void) {
     extern bool framepace_menu_ui(void), framepace_title_ui(void), framepace_loading_ui(void), framepace_in_event(void);
@@ -1409,8 +1410,11 @@ static float hud_scale_now(void) {
         uint64_t ns = plat_now_ns();
         if (hud_quick_tracked(g_settings.hud_size, g_settings.hud_edges) && framepace_quick_ui()) quick_ns = ns;
         hud_quick = quick_ns && ns - quick_ns < HUD_QUICK_HOLD_NS;
+        bool event = framepace_in_event();
+        // Incidental speech in play uses the same screen. Only hold a dialogue that drew during an event.
+        hud_event_dialogue = hud_dialogue_holds(hud_event_dialogue, event, framepace_dialogue_ui());
         s = g_settings.hud_size == 100 || framepace_menu_ui() || framepace_title_ui() || framepace_loading_ui() ||
-            framepace_in_event() ? 1 : (float)g_settings.hud_size / 100;
+            event || hud_event_dialogue ? 1 : (float)g_settings.hud_size / 100;
     }
     return s;
 }
@@ -1419,7 +1423,7 @@ static int hud_edges_now(float shape) {
     extern bool framepace_menu_ui(void), framepace_title_ui(void), framepace_loading_ui(void), framepace_in_event(void);
     hud_scale_now();
     return hud_edge_mode(g_settings.hud_edges, shape, framepace_menu_ui(), framepace_title_ui(), framepace_loading_ui(),
-                       framepace_in_event());
+                       framepace_in_event() || hud_event_dialogue);
 }
 static float vp_sx = 1, vp_sy = 1, vp_ox = 0, vp_oy = 0;
 static float tex_sc[2][64][2];
@@ -6312,6 +6316,7 @@ static uint32_t g_cs_cap, g_cs_n;
 // address (the old Prog / Pipe objects are leaked, so pipeline keys holding their pointers can't collide), compute
 // programs, shared copies - and the heap import: its pages are replaced (re-imported on first use).
 void vk_exec_reset(void) {
+    hud_event_dialogue = false;
     map_background_target = NULL;
     map_background_frame = map_background_main_frame = UINT64_MAX;
     map_chrome_frame = UINT64_MAX;

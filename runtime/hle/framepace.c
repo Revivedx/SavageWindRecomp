@@ -144,12 +144,25 @@ static bool event_at_30(void) {
     return hold;
 }
 
-// The game's UI screen `id` exists (the screen manager's array; ids as runtime/ui/game_options.mm uses them)
-static bool screen_up(uint32_t id) {
+// The game's UI screen `id` (the screen manager's array; ids as runtime/ui/game_options.mm uses them)
+static uint64_t screen_at(uint32_t id) {
     uint64_t mgr = *(uint64_t *)(uintptr_t)g_site.screen_mgr;
-    if (!mgr || VF(uint32_t, mgr, 0x28) <= id) return false;
+    if (!mgr || VF(uint32_t, mgr, 0x28) <= id) return 0;
     uint64_t arr = VF(uint64_t, mgr, 0x30);
-    return arr && *(uint64_t *)(uintptr_t)(arr + 8 * id);
+    return arr ? VF(uint64_t, arr, 8 * id) : 0;
+}
+
+static bool screen_up(uint32_t id) { return screen_at(id) != 0; }
+
+// MessageDialog can keep drawing its close animation after the event manager clears its active event.
+// Use the native layout draw conditions, which include the closing state (+0xfe == 3).
+static bool screen_draws(uint64_t screen) {
+    return screen && VF(uint8_t, screen, 0x100) && !VF(uint8_t, screen, 0x102) &&
+           VF(uint8_t, screen, 0xfe) && VF(uint8_t, screen, 0xff) != 2;
+}
+
+bool framepace_dialogue_ui(void) {
+    return screen_draws(screen_at(0x11)) || screen_draws(screen_at(0x4a)) || screen_draws(screen_at(0x4c));
 }
 
 // (screens: 1 the start screen, 0x38 its load and confirmation menus; 0x38 can also be used over a paused game)

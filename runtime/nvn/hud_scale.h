@@ -55,6 +55,11 @@ static inline bool hud_quick_bar_px(double cx, double cy, double gw, double gh, 
     return gw > 0 && gh > 0 && hud_quick_bar((float)(cx / gw * 2 - 1), (float)(1 - cy / gh * 2), 1, (float)shape);
 }
 
+// A talk's layout can outlive its event while it fades. Incidental speech in play must not acquire this hold.
+static inline bool hud_dialogue_holds(bool held, bool event, bool draws) {
+    return draws && (event || held);
+}
+
 // HUD at edges this frame: 0 off, 1 the HUD in play, 2 an event. Off in menus, the title and a load, like HUD size. In
 // an event (a talk, a chest's "You got" box) only the top part moves (hud_edge_moves): a box's top edge went to the
 // window's edge while the box and its text stayed in the 16:9 band (#599), and the area name, still fading out when an
