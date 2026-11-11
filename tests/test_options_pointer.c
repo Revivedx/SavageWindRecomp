@@ -21,6 +21,9 @@ static bool test_menu_ui=true;
 bool framepace_menu_ui(void){return test_menu_ui;}
 bool framepace_title_ui(void){return false;}
 float output_map_extra_y(void){return 0;}
+static float pause_extra;
+float output_pause_extra_y(void){return pause_extra;}
+float output_ui_extra_y(void){return 0;}
 bool input_cam_live(void){return false;}
 uint64_t framepace_script_frame(uint64_t value){return value;}
 void input_pc_escape(bool down){(void)down;abort();}
@@ -336,15 +339,19 @@ int main(void) {
         *(float*)(p+0x70)=*(float*)(p+0x84)=1;*(float*)(p+0x7c)=i?150:-150;*(float*)(p+0x8c)=287;
     }
     ST64(sa+8*0x2f,header);point[1]=287;
-    for(unsigned current=0;current<3;current++)for(unsigned side=0;side<2;side++) {
-        ST32(screen+0x3a48,current);ST32(screen+0x3a4c,current);
-        point[0]=side?150:-150;click_pending=true;
-        bool possible=!(current==1&&side==1)&&!(current==2&&side==0);
-        unsigned before=page_changes;
-        assert(pause_headers(&cpu,screen,sa,0x45)==possible);
-        assert(page_changes==before+possible&&click_pending==!possible);
-        if(possible)assert(LD32(screen+0x3a4c)==(current==0?(side?1:2):0));
+    for(unsigned tall=0;tall<2;tall++) {
+        pause_extra=tall?40:0;point[1]=287+pause_extra;
+        for(unsigned current=0;current<3;current++)for(unsigned side=0;side<2;side++) {
+            ST32(screen+0x3a48,current);ST32(screen+0x3a4c,current);
+            point[0]=side?150:-150;click_pending=true;
+            bool possible=!(current==1&&side==1)&&!(current==2&&side==0);
+            unsigned before=page_changes;
+            assert(pause_headers(&cpu,screen,sa,0x45)==possible);
+            assert(page_changes==before+possible&&click_pending==!possible);
+            if(possible)assert(LD32(screen+0x3a4c)==(current==0?(side?1:2):0));
+        }
     }
+    pause_extra=0;
     ST64(sa+8*0x37,header);click_pending=true;
     assert(!pause_headers(&cpu,screen,sa,0x45)&&click_pending);
     // Responses on the other cursor channel must still block text advance.

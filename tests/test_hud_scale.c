@@ -12,6 +12,24 @@ static void project(const float *v, float m00, float m11, float x, float y, floa
 }
 
 int main(void) {
+    // Pause chrome uses the native outer bands, leaving description borders and inventory rows alone.
+    assert(hud_pause_anchor(308, 360) == 1 && hud_pause_anchor(-318, 360) == -1);
+    assert(hud_pause_anchor(224, 360) == 0 && hud_pause_anchor(-253, 360) == 0);
+    assert(NEAR(hud_pause_edge_dy(.77f, .9f), .1f));
+    assert(NEAR(hud_pause_edge_dy(-.8f, .9f), -.1f));
+    assert(hud_pause_edge_dy(.9f, 1) == 0 && hud_pause_edge_dy(-.9f, 1.5f) == 0);
+    float margin[4] = {100, 100, 100, 100};
+    float top[4] = {3900, 100, -2000, 400}, bottom[4] = {3900, 100, -1900, -300};
+    float right[4] = {100, 700, 1900, 400}, left[4] = {100, 700, -2000, 300};
+    assert(hud_pause_frame_part(margin, 4000, 800, top) == 1);
+    assert(hud_pause_frame_part(margin, 4000, 800, bottom) == -1);
+    assert(hud_pause_frame_part(margin, 4000, 800, right) == 2);
+    assert(hud_pause_frame_part(margin, 4000, 800, left) == 2);
+    top[2] += 10;  // arbitrary rectangles and unrelated window margins are rejected
+    assert(hud_pause_frame_part(margin, 4000, 800, top) == 0);
+    top[2] -= 10; margin[0] = margin[1] = margin[2] = margin[3] = 8;
+    assert(hud_pause_frame_part(margin, 4000, 800, top) == 0);
+
     // Native action-button cluster, its label and shadow all retain the conversation coordinate band.
     for (int i = 0; i < 3; i++) {
         float edge = (float[]){1, .9f, .75f}[i];

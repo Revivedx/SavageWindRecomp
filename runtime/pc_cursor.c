@@ -10,6 +10,7 @@
 #include "framepace.h"
 #include "hle.h"
 #include "nvn/output_scale.h"
+#include "nvn/hud_scale.h"
 #include "settings.h"
 
 static _Atomic bool active, focused = true;
@@ -276,7 +277,7 @@ static void sample_pointer(void) {
 
 static void window_position(float x,float y) {
     if(window_width<=0||window_height<=0)return;
-    float p[2];position_inside=pc_cursor_to_layout(window_width,window_height,x,y,output_map_extra_y(),p);
+    float p[2];position_inside=pc_cursor_to_layout(window_width,window_height,x,y,output_ui_extra_y(),p);
     uint32_t xy[2];memcpy(xy,p,8);position=(uint64_t)xy[0]|(uint64_t)xy[1]<<32;
 }
 
@@ -300,7 +301,7 @@ void pc_cursor_window(SDL_Window *w) {
     if (width <= 0 || height <= 0) return;
     // eui HitTest uses layout space, centered, Y up. Full pause screens use a fitted 16:9 view.
     float p[2];
-    position_inside=pc_cursor_to_layout(width,height,x,y,extra_y,p);
+    position_inside=pc_cursor_to_layout(width,height,x,y,output_ui_extra_y(),p);
     uint32_t xy[2]; memcpy(xy, p, sizeof xy);
     position = (uint64_t)xy[0] | (uint64_t)xy[1] << 32;
 }
@@ -1420,7 +1421,8 @@ static bool pause_headers(Cpu *c,uint64_t screen,uint64_t screens,unsigned count
     for(unsigned side=0;side<2;side++) {
         float half=current==0?(side?40.f:70.f):46.f;
         float center=side?150.f:-150.f;
-        float box[4]={center-half,272,center+half,327};
+        float dy=output_pause_extra_y();
+        float box[4]={center-half,272+dy,center+half,327+dy};
         // Both animated text copies share one fixed hit area with the key
         // hint above them. Never let hover geometry follow their animation.
         if(point[0]<box[0]||point[0]>box[2]||point[1]<box[1]||point[1]>box[3])continue;
@@ -1474,7 +1476,9 @@ static bool pause_guides(Cpu *c,uint64_t screen,uint64_t screens,unsigned count)
         budget=8;uint64_t label=pane_named(group,"T_Guide_00",0,&budget);
         if(i==0){rotate_info=info;rotate_group=group;}
         if(!pane_shown(slot)||!pane_shown(group))continue;
-        if(guide_hit(c,info,i,slots[i],icon,label,0,0))return true;
+        float box[4],dy=0;
+        if(options_box(icon,box))dy=hud_pause_anchor((box[1]+box[3])*.5f,360)*output_pause_extra_y();
+        if(guide_hit(c,info,i,slots[i],icon,label,0,dy))return true;
     }
     return false;
 }
@@ -1754,6 +1758,8 @@ void rt_pc_cursor_manager(Cpu *c, uint64_t activate, uint64_t bounds) {
                 if(ptr(pane)) {
                     float box[4];
                     call(c,bounds,(uintptr_t)box,pane,0);
+                    float dy=hud_pause_anchor((box[1]+box[3])*.5f,360)*output_pause_extra_y();
+                    box[1]+=dy;box[3]+=dy;
                     if(dialogue_active&&LD64(screen)==0x7001d4ed48ull) {
                         // Choice arrows use left-origin X, center-origin Y.
                         box[0]-=640;box[2]-=640;box[2]=fminf(625,box[0]+255);

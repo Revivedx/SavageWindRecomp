@@ -15,6 +15,35 @@ static inline bool hud_quick_keeps(float x, float y, float edge_x, float edge_y)
     return x > -0.72f * edge_x && x < 0.72f * edge_x && y > -0.4f * edge_y && y < 0.85f * edge_y;
 }
 
+// PauseMenuInfo's header/footer occupy the outer bands; the inventory and description stay centered.
+static inline float hud_pause_anchor(float y, float edge_y) {
+    if (edge_y <= 0 || !isfinite(y)) return 0;
+    return y > (250.0f / 360) * edge_y ? 1 : y < -(280.0f / 360) * edge_y ? -1 : 0;
+}
+
+static inline float hud_pause_edge_dy(float y, float shape) {
+    return shape > 0 && shape < 1 ? hud_pause_anchor(y, shape) * (1 - shape) : 0;
+}
+
+// ui2d's four window pieces share parent bounds and border margins. Recognize their relationships,
+// so only a screen-wide pause frame expands; an item description or a modal window keeps its geometry.
+// 1/-1: horizontal top/bottom strip; 2: vertical end, which must grow with both strips.
+static inline int hud_pause_frame_part(const float *margin, float w, float h, const float *rc) {
+    float rw = rc[0], rh = rc[1], x = rc[2], y = rc[3];
+    if (!isfinite(w) || !isfinite(h) || w <= 0 || h <= 0 || rw <= 0 || rh <= 0 || rw >= w || rh >= h)
+        return 0;
+    float tol = 1e-5f * fmaxf(w, h);
+    bool horizontal = fabsf(w - rw - rh) < tol, vertical = fabsf(h - rh - rw) < tol;
+    bool border = false;
+    for (int i = 0; i < 4; i++) border |= isfinite(margin[i]) && fabsf(margin[i] - (horizontal ? rh : rw)) < tol;
+    if (!border) return 0;
+    if (horizontal && fabsf(x + w / 2) < tol && fabsf(y - h / 2) < tol) return 1;
+    if (horizontal && fabsf(x + w / 2 - rh) < tol && fabsf(y + h / 2 - rh) < tol) return -1;
+    if (vertical && ((fabsf(x - w / 2 + rw) < tol && fabsf(y - h / 2) < tol) ||
+                     (fabsf(x + w / 2) < tol && fabsf(y - h / 2 + rw) < tol))) return 2;
+    return 0;
+}
+
 // DoCommand's action cluster stays in the same native band as conversation prompts through event entry/exit.
 static inline bool hud_context_keeps(bool enabled, float x, float y, float edge_x, float edge_y) {
     return enabled && x > -0.2f * edge_x && x < 0.45f * edge_x &&

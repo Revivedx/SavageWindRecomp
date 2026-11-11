@@ -48,3 +48,7 @@ float output_view_shape(void);
 bool output_tall_map(float shape);
 // Extra layout space above and below the visible world map, in native 1280x720 units.
 float output_map_extra_y(void);
+
+// Extra pause header/footer space, and the full visible pointer canvas (map or pause).
+float output_pause_extra_y(void);
+float output_ui_extra_y(void);

@@ -2056,7 +2056,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     ImGui::NewFrame();
 
     if(pointer_hover&&!open&&!kbd&&!sizes) {
-        float s=fminf(io.DisplaySize.x/1280.f,io.DisplaySize.y/(720.f+2*output_map_extra_y()));
+        float s=fminf(io.DisplaySize.x/1280.f,io.DisplaySize.y/(720.f+2*output_ui_extra_y()));
         ImVec2 a(io.DisplaySize.x*.5f+pointer_box[0]*s,io.DisplaySize.y*.5f-pointer_box[3]*s);
         ImVec2 b(io.DisplaySize.x*.5f+pointer_box[2]*s,io.DisplaySize.y*.5f-pointer_box[1]*s);
         bool pressed=pc_cursor_hover_pressed();

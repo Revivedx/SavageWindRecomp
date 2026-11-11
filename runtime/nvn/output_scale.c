@@ -188,6 +188,20 @@ void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
 float output_view_shape(void) { return g_view_shape; }
 float output_map_extra_y(void) { return g_map_extra_y; }
 
+float output_pause_extra_y(void) {
+#ifdef __APPLE__
+    return 0;
+#else
+    static int off = -1;
+    if (off < 0) off = getenv("SAVAGEWIND_NO_HUD_FIX") != NULL;
+    float shape = g_view_shape;
+    return !off && g_settings.hud_edges && shape >= 0.75f && shape < 1 &&
+           framepace_menu_ui() && !framepace_map_ui() ? 360 * (1 / shape - 1) : 0;
+#endif
+}
+
+float output_ui_extra_y(void) { return fmaxf(g_map_extra_y, output_pause_extra_y()); }
+
 // The taller world-map layout is implemented by Vulkan. Very narrow windows keep the console frame.
 bool output_tall_map(float shape) {
 #ifdef __APPLE__

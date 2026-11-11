@@ -2391,6 +2391,8 @@ static VkRect2D scissor_rect(void) {
         if (y > 0 || y + sh < gh - 0.5) {
             double c = gh / 2, y0 = c + (y - c) * shape, y1 = c + (y + sh - c) * shape;
             y = (int)floor(y0); sh = (int)ceil(y1) - y;
+            if (output_pause_extra_y() > 0)
+                y -= (int)round(hud_pause_edge_dy((float)(1 - (y0 + y1) / gh), shape) * gh / 2);
             int edge_mode = hud_edges_now(shape);
             if (edge_mode) {
                 double sdy = hud_edge_scissor_dy((y0 + y1) / 2.0, gh, shape);
@@ -4687,6 +4689,7 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
     if (shape == 1 && hud_s == 1) return false;
     int edge_mode = hud_edges_now(shape);
     bool hud_edge_active = edge_mode != 0;
+    bool pause_edges = output_pause_extra_y() > 0;
     float edge_x = 1 / fmaxf(shape, 1), edge_y = fminf(shape, 1);  // (where the 16:9 HUD ends on this window)
     // AppHome's first map-frame fog strip follows the world labels and marker panes.
     if (tall_map && g_cur_fs_hash == UINT64_C(0x3911f651724ed296) &&
@@ -4722,6 +4725,7 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         if (hud_s != 1 && !hud_context_keeps(g_settings.hud_edges && shape < 1, tx, ty, edge_x, edge_y) &&
             !(hud_quick && hud_quick_keeps(tx, ty, edge_x, edge_y)))
             hud_scale_matrix(buf, hud_s, hud_anchor(tx, edge_x), hud_anchor(ty, edge_y));
+        if (pause_edges) hud_edge_matrix(buf, hud_pause_edge_dy(ty, shape));
         if (map_chrome && fabsf(ty) > shape * (200.0f / 360))
             hud_edge_matrix(buf, copysignf(1 - shape, ty));
         if (hud_edge_active && !hud_context_keeps(g_settings.hud_edges && shape < 1, tx, ty, edge_x, edge_y) && hud_edge_moves(edge_mode, ty, edge_y) &&
@@ -4810,6 +4814,23 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
             if (lo < 1e8f && (hi <= -clip_edge || lo >= clip_edge)) hud_clip = true;  // (wholly off the view)
         }
     }
+    // Pause chrome moves to the taller view's edges. Its window ends grow between the relocated strips.
+    float pause_dy = 0, pause_stretch = 1, pause_center = 0;
+    if (pause_edges && size >= 34 * 16 && fabsf(m11 / shape - 2.74748f) < 0.001f) {
+        const float *mv = g + 16, *rc = g + 132;
+        if (!mv[1] && !mv[4] && !mv[8] && !mv[9] && mv[11] < 0 && rc[0] > 0 && rc[1] > 0) {
+            float y0 = m11 * (mv[5] * rc[3] + mv[7]) / -mv[11];
+            float y1 = m11 * (mv[5] * (rc[3] - rc[1]) + mv[7]) / -mv[11];
+            float center = (y0 + y1) / 2;
+            int part = fabsf(m00 * mv[0] * g[108] / mv[11]) >= 2 ?
+                       hud_pause_frame_part(g + 104, g[108], g[109], rc) : 0;
+            if (part == 2 && fabsf(y1 - y0) > 0.01f) {
+                pause_stretch += 2 * (1 - shape) / fabsf(y1 - y0);
+                pause_center = center;
+            } else if (part) pause_dy = part * (1 - shape);
+            else pause_dy = hud_pause_edge_dy(center, shape);
+        }
+    }
     // Gameplay > HUD size: a pane of a 40-degree layer, and not one over about the whole screen (a fade, a picture)
     float hud_ax = 0, hud_ay = 0;
     bool hud_scale = false;
@@ -4841,13 +4862,19 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
     if (tall_map && size >= 28 * 4 && ((map_chrome && fabsf(g[23]) > 200) ||
         (g_cur_fs_hash == UINT64_C(0xd4fa32dabc35066c) && !g[19] && fabsf(g[23]) == 360)))
         edge_dy = copysignf(1 - shape, g[23]);  // frame chrome and AppMap's black edge strips
-    if (m00 == g[0] && m11 == g[5] && !hud_scale && edge_dy == 0) return false;
+    if (m00 == g[0] && m11 == g[5] && !hud_scale && edge_dy == 0 && pause_dy == 0 && pause_stretch == 1) return false;
     static float buf[0x10000 / 4];
     uint64_t n = size > sizeof buf ? sizeof buf : size;
     memcpy(buf, g, n);
     buf[0] = m00, buf[5] = m11;
     if (hud_scale) hud_scale_view(buf + 16, hud_s, m00, m11, hud_ax, hud_ay);
     if (edge_dy != 0) hud_edge_view(buf + 16, m11, edge_dy);
+    if (pause_stretch != 1) {
+        float *v = buf + 16;
+        for (int k = 0; k < 4; k++)
+            v[4 + k] = pause_stretch * v[4 + k] - (1 - pause_stretch) * pause_center / m11 * v[8 + k];
+    }
+    if (pause_dy != 0) hud_edge_view(buf + 16, m11, pause_dy);
     *out = ubo_span(vk_transient_copy(buf, n, 256), n);
     return true;
 }
