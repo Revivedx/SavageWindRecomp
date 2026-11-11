@@ -69,13 +69,13 @@ bool plat_guest_sparse_heap_enabled(void) {
     return sparse_heap_configured && sparse_heap_enabled;
 }
 
-void plat_guest_sparse_heap_configure(bool intel_integrated_gpu) {
+void plat_guest_sparse_heap_configure(bool auto_on) {
     const char *override = getenv("SAVAGEWIND_VK_SPARSE_HEAP");
     if (override)
         sparse_heap_enabled = !strcmp(override, "1");
     else
         sparse_heap_enabled = g_settings.sparse_heap == SPARSE_HEAP_ON ||
-                              (g_settings.sparse_heap == SPARSE_HEAP_AUTO && intel_integrated_gpu);
+                              (g_settings.sparse_heap == SPARSE_HEAP_AUTO && auto_on);
     sparse_heap_configured = true;
 }
 

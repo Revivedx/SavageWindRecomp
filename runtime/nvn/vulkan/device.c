@@ -196,8 +196,24 @@ static void pick_device(void) {
     vkGetPhysicalDeviceProperties(g_vk.phys, &g_vk.props);
     g_vk.is_mali = g_vk.props.vendorID == 0x13B5;  // (Arm)
 #ifdef _WIN32
-    plat_guest_sparse_heap_configure(g_vk.props.vendorID == 0x8086 &&
-                                     g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU);
+    {   // sparse_heap = auto: only an Intel integrated GPU whose shared memory can't hold the whole guest heap
+        // (3120 MB) and the game's textures. It was on for every Intel integrated GPU, and those with memory to spare crashed in
+        // the game code a few minutes in (#596 UHD 620 with 16 GB, #619 Iris Xe, #695 Arc 130T with 8972 MB), fixed
+        // there by sparse_heap = off; the sparse heap was made for the ones that run out of shared memory (#197).
+        VkPhysicalDeviceMemoryProperties mp;
+        vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
+        uint64_t local = 0;
+        for (uint32_t i = 0; i < mp.memoryHeapCount; i++)
+            if ((mp.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) && mp.memoryHeaps[i].size > local)
+                local = mp.memoryHeaps[i].size;
+        bool intel_igpu =
+            g_vk.props.vendorID == 0x8086 && g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+        bool small = local < (6ull << 30);
+        if (intel_igpu)
+            LOG("[vk] sparse heap auto: shared memory %llu MB, %s\n", (unsigned long long)(local >> 20),
+                small ? "under 6144 MB: the sparse heap" : "6144 MB or more: the whole heap imported");
+        plat_guest_sparse_heap_configure(intel_igpu && small);
+    }
 #endif
     { extern void vk_translator_setup(void); vk_translator_setup(); }
     uint32_t nq = 0;
