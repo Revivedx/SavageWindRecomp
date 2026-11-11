@@ -4,6 +4,7 @@
 // screen a point p goes to anchor + (p - anchor) x s.
 #pragma once
 #include <stdbool.h>
+#include <math.h>
 
 // The anchor of a pane centred at c, on a screen from -edge to edge
 static inline float hud_anchor(float c, float edge) { return c < -edge / 3 ? -edge : c > edge / 3 ? edge : 0; }
@@ -20,6 +21,19 @@ static inline void hud_scale_view(float *v, float s, float m00, float m11, float
         v[k] = s * v[k] - (1 - s) * ax / m00 * v[8 + k];
         v[4 + k] = s * v[4 + k] - (1 - s) * ay / m11 * v[8 + k];
     }
+}
+
+// Combined HUD matrices need the flat console projection corrected once. ui2d glyphs (128 bytes, Y flipped)
+// already use the taller projection, including nonuniform scale during a location title's appearance.
+static inline bool hud_combined_shape(const float *m, unsigned long long size, float shape, float scale[2]) {
+    if (!(m[0] > 0 && m[5] != 0 && m[14] == -1 && m[15] > 0 &&
+          !m[1] && !m[2] && !m[4] && !m[6] && !m[8] && !m[9] && !m[12] && !m[13] && (m[3] || m[7])))
+        return false;
+    bool flat = fabsf(fabsf(m[5]) / m[0] - 16.0f / 9.0f) < 0.002f;
+    if (!flat && !(shape < 1 && size == 128 && m[5] < 0)) return false;
+    scale[0] = flat && shape > 1 ? 1 / shape : 1;
+    scale[1] = flat && shape < 1 ? shape : 1;
+    return true;
 }
 
 // A matrix with the view already in it (4 x 4 rows, row 3 its w: text, the clock)

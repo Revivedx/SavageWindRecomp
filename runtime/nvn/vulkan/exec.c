@@ -4706,16 +4706,15 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         *out = ubo_span(vk_transient_copy(text_matrix, sizeof text_matrix, 256), sizeof text_matrix);
         return true;
     }
-    // A layer whose matrix comes with its view already in it (projection x view, a translation in column 3; the HUD's
-    // clock and some texts): 16:9 (|m11| / m00), it gets its first row / shape (a taller window: its second x shape),
-    // so it stays in the 16:9 layout with the rest of the HUD instead of moving outwards with the wider view.
-    if (g[0] > 0 && g[5] != 0 && g[14] == -1 && !g[1] && !g[2] && !g[4] && !g[6] && !g[8] && !g[9] && !g[12] && !g[13] &&
-        (g[3] || g[7]) && g[15] > 0 && fabsf(fabsf(g[5]) / g[0] - 16.0f / 9.0f) < 0.002f) {
+    // Combined projection/view matrices also include ui2d glyphs that already use the taller view.
+    // Keep their projection and apply the same HUD placement as their captured shadow or button plate.
+    float combined_scale[2];
+    if (hud_combined_shape(g, size, shape, combined_scale)) {
         static float buf[0x10000 / 4];
         uint64_t n = size > sizeof buf ? sizeof buf : size;
         memcpy(buf, g, n);
-        if (shape > 1) buf[0] /= shape, buf[3] /= shape;
-        else buf[5] *= shape, buf[7] *= shape;
+        buf[0] *= combined_scale[0], buf[3] *= combined_scale[0];
+        buf[5] *= combined_scale[1], buf[7] *= combined_scale[1];
         float tx = buf[3] / buf[15], ty = buf[7] / buf[15];
         if (hud_s != 1 && !(hud_quick && hud_quick_keeps(tx, ty, edge_x, edge_y)))
             hud_scale_matrix(buf, hud_s, hud_anchor(tx, edge_x), hud_anchor(ty, edge_y));

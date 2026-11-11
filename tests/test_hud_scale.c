@@ -12,6 +12,29 @@ static void project(const float *v, float m00, float m11, float x, float y, floa
 }
 
 int main(void) {
+    // Synthetic Y-flipped glyph matrix with an already-tall aspect of 1.6 at 1280x800.
+    float text[16] = {1.5f, 0, 0, 190, 0, -2.4f, 0, -550,
+                      0, 0, -1, 998, 0, 0, -1, 1000};
+    float correction[2];
+    assert(hud_combined_shape(text, 128, .9f, correction));
+    assert(correction[0] == 1 && correction[1] == 1);
+    float glyph_y = text[7] / text[15];
+    hud_edge_matrix(text, -.1f);
+    assert(NEAR((text[7] / text[15] - glyph_y) * 400, -40));
+    // The title's appearance scales X/Y differently. It still needs the same placement as its shadow.
+    text[6] = 0;  // restore the unshifted native input before classifying another draw
+    text[0] = 1.4f; text[5] = -2.34f;
+    assert(hud_combined_shape(text, 128, .9f, correction));
+    assert(correction[0] == 1 && correction[1] == 1);
+    assert(!hud_combined_shape(text, 560, .9f, correction));
+    text[5] = -text[0] * (16.0f / 9.0f);  // cached console projection after resizing
+    assert(hud_combined_shape(text, 128, .9f, correction));
+    assert(correction[0] == 1 && correction[1] == .9f);
+    assert(hud_combined_shape(text, 128, 1.5f, correction));
+    assert(NEAR(correction[0], 1 / 1.5f) && correction[1] == 1);
+    text[15] = -1;  // screen-space stamp sprites use a different transform
+    assert(!hud_combined_shape(text, 128, .9f, correction));
+
     // The event clears before the final MessageDialog stops drawing.
     bool held = hud_dialogue_holds(false, true, true);
     assert(held);
