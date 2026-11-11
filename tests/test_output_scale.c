@@ -34,7 +34,12 @@ int main(void) {
     near(o.shape, 1); near(o.vh, 720);
     title = false; loading = true;
     output_scale(1280, 800, true, &o);
+    near(o.shape, .9); near(o.vh, 800); near(o.vy, 0);
+    near(1920 * o.sx, 1280); near(1080 * o.sy, 800);
+    output_scale(1280, 800, false, &o);
     near(o.shape, 1); near(o.vh, 720);
+    output_scale(2560, 1080, true, &o);
+    near(o.shape, 1); near(o.vw, 1920); near(o.vx, 320);
     loading = false;
     output_scale(1920, 1200, true, &o);
     near(o.shape, .9); near(o.vh, 1200);

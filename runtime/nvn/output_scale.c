@@ -111,10 +111,11 @@ void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
     if (wide_test < 0) wide_test = getenv("SAVAGEWIND_WIDE_TEST") ? atof(getenv("SAVAGEWIND_WIDE_TEST")) : 0;
     double shape = wide_test > 0 ? wide_test : (dw / dh) / (16.0 / 9.0);
     // A wider window (21:9, 32:9) sees more to the sides, a taller one (16:10, 4:3: shape < 1) more above and below
-    // (#125); the HUD keeps its 16:9 layout in the middle either way. The start screen and its menus, a 16:9 layout
-    // over 16:9 pictures with no world to show more of, keep the 16:9 picture with bars, and so does the loading screen
-    // (#98: widened, its tip went to the window's edges and its logo stayed in the 16:9 middle).
-    bool reshape = reshape_allowed && fabs(shape - 1.0) > 0.005 && !framepace_title_ui() && !framepace_loading_ui();
+    // (#125); the HUD keeps its 16:9 layout in the middle either way. The title has no world behind its 16:9 art.
+    // Fit wide loading screens to keep their tips and logos aligned (#98). On taller windows keep the game's shape
+    // through the loading overlay so the world doesn't change aspect while fading out or back in.
+    bool reshape = reshape_allowed && fabs(shape - 1.0) > 0.005 && !framepace_title_ui() &&
+                   (shape < 1 || !framepace_loading_ui());
     if (!reshape) shape = 1.0;
     // render height in units of the Switch's 1080 lines: the window's (Metal: divided by the upscaler's factor)
 #ifdef __APPLE__
