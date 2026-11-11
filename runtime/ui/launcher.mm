@@ -1426,6 +1426,41 @@ extern "C" void boot_splash_close(void) {
 }
 #endif
 
+// (runtime/main.c) --prepare --game <folder>: what Set up game files does on the start screen, without a window, for a
+// launcher that brings the player's copy. One "progress <0-1> <step>" line each time the step or the bar moves (the
+// shader pipelines need a window and are left out: they compile when first drawn). 0: the game files are ready.
+extern "C" int launcher_prepare(const char *root, const char *src) {
+    g_root = root;
+    g_src = src;
+    g_busy = true;
+    if (post_update_pending(SAVAGEWIND_VERSION)) post_update_reset_shaders(SAVAGEWIND_VERSION);  // (as a plain start does)
+    pthread_t t;
+    pthread_create(&t, NULL, extract_thread, NULL);
+    std::string last_step;
+    int last_percent = -1;
+    for (;;) {
+        pthread_mutex_lock(&g_lock);
+        bool busy = g_busy;
+        std::string job = g_job;
+        pthread_mutex_unlock(&g_lock);
+        std::string step = trv(job);
+        int percent = (int)(extract_progress() * 100);
+        if (!job.empty() && (step != last_step || percent != last_percent)) {
+            printf("progress %.2f %s\n", percent / 100.0, step.c_str());
+            fflush(stdout);
+        }
+        last_step = step;
+        last_percent = percent;
+        if (!busy) break;
+        SDL_Delay(500);
+    }
+    pthread_join(t, NULL);
+    pthread_mutex_lock(&g_lock);
+    bool failed = g_job_failed;
+    pthread_mutex_unlock(&g_lock);
+    return failed || !check_game_files(g_root).empty() ? 1 : 0;
+}
+
 // mode (runtime/main.c): 0 setup - the game files page alone, the game starts once they're ready; 1 configuration.
 // Returns when the game is to start; QUIT (and closing the setup page) exits.
 static bool g_setup_only;

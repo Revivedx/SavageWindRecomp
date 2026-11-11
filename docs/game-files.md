@@ -61,3 +61,16 @@ The two packs came out months apart in 2017, both part of the Expansion Pass. In
 3.0), the first DLC holds the data of both packs, *The Champions' Ballad* included, and the second only tells the
 game that you have the second pack. So setting up only one of them never breaks your game: it runs as without DLC.
 To unlock the DLC content, set up both, from your own console and your own Expansion Pass.
+
+## Setting up without a window
+
+A launcher that already has your game folder (RecompLauncher passes the one you picked) can run the same setup with no
+window:
+
+```
+savagewind --prepare --game <folder with exefs and romfs>
+```
+
+It copies the game files and builds the game code, printing `progress <0 to 1> <step>` lines, and exits with 0 when
+they are ready. The shader pipelines need a window, so they are left out and compile the first time they are drawn.
+`--game` on its own is unchanged: it is the Steam entry that goes straight into the game.
