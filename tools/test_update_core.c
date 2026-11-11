@@ -208,8 +208,60 @@ static void appimage_assets(void) {
     CHECK(uc_pick_release(list, "0.5.1-alpha.5", "-windows.zip", &r, NULL) == UC_PICK_CURRENT);  // (no signature for the zip)
 }
 
+// The files a made-up folder has: "dir|name" entries
+static const char *g_files[8];
+static bool has_file(const char *dir, const char *name) {
+    char k[600];
+    snprintf(k, sizeof k, "%s|%s", dir, name);
+    for (int i = 0; g_files[i]; i++)
+        if (!strcmp(g_files[i], k)) return true;
+    return false;
+}
+#define FILES(...) do { const char *f_[] = {__VA_ARGS__, NULL}; memcpy(g_files, f_, sizeof f_); } while (0)
+#define INSTALLED(dir, up, rl) uc_launcher_installed(dir, up, has_file, rl)
+#define IS(x, want) CHECK((x) && !strcmp((x), want))
+
+static void launchers(void) {
+    const char *d = "D:\\Games\\Savage Wind", *u = "D:\\Games";
+    FILES("x|y");
+    CHECK(!INSTALLED(d, u, NULL));  // a plain folder: SW Update's
+    CHECK(!INSTALLED(d, u, ""));
+    CHECK(!INSTALLED(d, u, "0"));
+    IS(INSTALLED(d, u, "1"), "RecompLauncher");
+    FILES("D:\\Games\\Savage Wind|.quiver-version");
+    IS(INSTALLED(d, u, NULL), "Quiver Launcher");
+    FILES("D:\\Games|.quiver-version");  // (the zip's top folder kept)
+    IS(INSTALLED(d, u, NULL), "Quiver Launcher");
+    CHECK(!INSTALLED(d, "", NULL));  // (no folder above: nothing looked for there)
+    FILES("D:\\Games\\Savage Wind|version.txt");
+    IS(INSTALLED(d, u, NULL), "GitHub Launcher");
+    FILES("D:\\Games|version.txt");  // a lone version.txt above: anyone's
+    CHECK(!INSTALLED(d, u, NULL));
+    FILES("D:\\Games|version.txt", "D:\\Games|LastPlayed.txt");
+    IS(INSTALLED(d, u, NULL), "GitHub Launcher");
+    FILES("D:\\Games|version.txt", "D:\\Games|selected_executable.txt");
+    IS(INSTALLED(d, u, NULL), "GitHub Launcher");
+    FILES("x|y");
+    IS(INSTALLED("C:\\Recomp Library\\Savage Wind", "C:\\Recomp Library", NULL), "RecompLauncher");
+    IS(INSTALLED("/home/p/Games/Recomp Library/savage-wind", "/home/p/Games/Recomp Library", NULL), "RecompLauncher");
+    IS(INSTALLED("C:\\RECOMP LIBRARY", "C:", NULL), "RecompLauncher");
+    CHECK(!INSTALLED("C:\\My Recomp Library Backup\\Savage Wind", "C:\\My Recomp Library Backup", NULL));
+    CHECK(!INSTALLED("/home/p/Games/Savage Wind", "/home/p/Games", NULL));
+}
+
+static void inside(void) {
+    CHECK(uc_path_inside("/tmp/.mount_SavageAbc/usr/bin/savagewind", "/tmp/.mount_SavageAbc"));
+    CHECK(uc_path_inside("/tmp/.mount_SavageAbc/usr/bin/savagewind", "/tmp/.mount_SavageAbc/"));
+    CHECK(!uc_path_inside("/tmp/.mount_SavageAbcd/usr/bin/savagewind", "/tmp/.mount_SavageAbc"));  // (a longer name)
+    CHECK(!uc_path_inside("/home/p/src/SavageWindRecomp/build/savagewind", "/tmp/.mount_QuiverX"));  // inherited
+    CHECK(!uc_path_inside("/tmp/.mount_SavageAbc", "/tmp/.mount_SavageAbc"));
+    CHECK(!uc_path_inside("/usr/bin/savagewind", ""));
+}
+
 int main(void) {
     versions();
+    launchers();
+    inside();
     crypto();
     appimage_assets();
     pick();

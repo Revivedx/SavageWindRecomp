@@ -983,6 +983,7 @@ T("Not enough free disk space", "אין מספיק מקום פנוי בדיסק"
 T("UPDATE", "עדכון")
 T("SW Update could not be started. An antivirus may have removed it.", "לא ניתן להפעיל את SW Update. ייתכן שאנטי-וירוס הסיר אותו.")
 T("Check for updates", "בדיקת עדכונים")
+T("Updates come from the launcher that installed Savage Wind (named on the right). After it updates Savage Wind, the next start sets the new version up by itself.", "העדכונים מגיעים מהמשגר שהתקין את Savage Wind (מופיע מימין). אחרי שהוא מעדכן את Savage Wind, ההפעלה הבאה מכינה את הגרסה החדשה מעצמה.")
 T("When Savage Wind Configuration opens, asks GitHub if there is a new version and offers it. Nothing is installed until you press Update.", "כשתצורת Savage Wind נפתחת, בודק ב-GitHub אם יש גרסה חדשה ומציע אותה. שום דבר לא מותקן עד שלוחצים על עדכון.")
 T("Open this screen first", "פתיחת המסך הזה קודם")
 T("Starting Savage Wind opens this screen, where updates are offered. Turned off, savagewind.exe goes straight into the game.", "הפעלת Savage Wind פותחת את המסך הזה, שבו מוצעים עדכונים. כשהאפשרות כבויה, savagewind.exe נכנס ישירות למשחק.")

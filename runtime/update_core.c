@@ -312,6 +312,36 @@ bool uc_hex_decode(const char *hex, uint8_t *out, size_t n) {
     return true;
 }
 
+// ------------------------------------------------------------------ launchers
+// The launchers that install recomps from their GitHub releases and update them, and the sign each leaves (read from
+// their sources, 2026-11):
+//   Quiver Launcher (tgeorgiadis/quiver-launcher)   .quiver-version in the game's folder (install.rs VERSION_FILE)
+//   GitHub Launcher (SirDiabo/N64RecompLauncher)    version.txt in the game's folder, with LastPlayed.txt or
+//                                                   selected_executable.txt; Quiver's older versions wrote it too
+//   RecompLauncher (elripalda/RecompLauncher)      RECOMPLAUNCHER=1 in every game it starts; its library is
+//                                                   "Recomp Library" (C:\Recomp Library, ~/Games/Recomp Library)
+// The folder above counts too, for a launcher that kept the zip's "Savage Wind/" - but a lone version.txt there doesn't:
+// that is too common a name.
+const char *uc_launcher_installed(const char *dir, const char *up, bool (*has)(const char *dir, const char *name),
+                                  const char *recomplauncher) {
+    if (recomplauncher && *recomplauncher && strcmp(recomplauncher, "0")) return "RecompLauncher";
+    bool above = up && *up;
+    if (has(dir, ".quiver-version") || (above && has(up, ".quiver-version"))) return "Quiver Launcher";
+    if (has(dir, "version.txt") ||
+        (above && has(up, "version.txt") && (has(up, "LastPlayed.txt") || has(up, "selected_executable.txt"))))
+        return "GitHub Launcher";
+    char low[1100];
+    snprintf(low, sizeof low, "/%s/", dir);
+    for (char *c = low; *c; c++) *c = *c == '\\' ? '/' : (char)tolower((unsigned char)*c);
+    return strstr(low, "/recomp library/") ? "RecompLauncher" : NULL;
+}
+
+bool uc_path_inside(const char *exe, const char *appdir) {
+    size_t n = strlen(appdir);
+    while (n > 1 && appdir[n - 1] == '/') n--;  // ("/tmp/.mount_x/" and "/tmp/.mount_x" are the same folder)
+    return n && !strncmp(exe, appdir, n) && exe[n] == '/';
+}
+
 void uc_manifest_free(UcManifest *m) {
     for (int i = 0; i < m->count; i++) free(m->files[i].path);
     free(m->files);

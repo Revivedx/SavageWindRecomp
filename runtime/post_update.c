@@ -22,6 +22,8 @@ void vk_cache_path(char *out, size_t n, const char *name);  // (runtime/nvn/vulk
 #define MAKE_DIR(p) mkdir(p, 0755)
 #endif
 #include "paths.h"
+#include "update_core.h"
+bool plat_exe_path(char *buf, size_t size);  // (runtime/platform.h: not included, its mkdir would take MAKE_DIR's place)
 
 extern const char *rt_version(void);  // (runtime/ui/launcher.mm)
 
@@ -391,7 +393,46 @@ static void *check_thread(void *arg) {
 }
 #endif
 
+// ------------------------------------------------------------------ installed by a launcher
+static const char *g_launcher;
+
+static bool launcher_file(const char *dir, const char *name) {
+    char p[1300];
+    snprintf(p, sizeof p, "%s/%s", dir, name);
+    return file_there(p);
+}
+
+static void launcher_find(void) {
+    // the release's folder: the exe's (Windows), the AppImage's (Linux), and the one above it
+    char dir[1100] = "", up[1100];
+#ifdef _WIN32
+    if (!plat_exe_path(dir, sizeof dir)) dir[0] = 0;
+#else
+    const char *img = appimage_path();
+    snprintf(dir, sizeof dir, "%s", img ? img : "");
+#endif
+    char *cut = strrchr(dir, '/'), *cut2 = strrchr(dir, '\\');
+    if (cut2 > cut) cut = cut2;
+    if (cut) *cut = 0;
+    if (!dir[0]) return;
+    snprintf(up, sizeof up, "%s", dir);
+    cut = strrchr(up, '/'), cut2 = strrchr(up, '\\');
+    if (cut2 > cut) cut = cut2;
+    if (cut && cut > up && cut[-1] != ':') *cut = 0;  // (none above a drive's or the disk's top)
+    else up[0] = 0;
+    g_launcher = uc_launcher_installed(dir, up, launcher_file, getenv("RECOMPLAUNCHER"));
+    if (g_launcher) fprintf(stderr, "[update] installed by %s, which updates it: no update checks of its own\n", g_launcher);
+}
+
+const char *update_launcher(void) {
+    if (!post_update_shipped()) return NULL;
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+    pthread_once(&once, launcher_find);
+    return g_launcher;
+}
+
 void update_check_start(void) {
+    if (update_launcher()) return;  // (the launcher that installed it updates it)
 #ifdef _WIN32
     char exe[1100];
     if (!post_update_shipped() || !rt_resource("SW Update.exe", NULL, exe, sizeof exe)) return;
@@ -474,6 +515,7 @@ void post_update_tidy(const char *version) { (void)version; }
 void post_update_mark_failed(const char *version) { (void)version; }
 bool post_update_failed_before(const char *version) { (void)version; return false; }
 bool post_update_can_rollback(void) { return false; }
+const char *update_launcher(void) { return NULL; }
 void update_check_start(void) {}
 UpdateState update_check_state(char *version, size_t vn, char *message, size_t mn) {
     if (vn) version[0] = 0;
