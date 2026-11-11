@@ -830,6 +830,15 @@ test-audio-mix: $(B)/test_audio_mix
 	$(B)/test_audio_mix
 
 .PHONY: test-audio-mix
+
+$(B)/test_movie_stop: tests/test_movie_stop.c runtime/hle/movie.c runtime/hle.h runtime/kernel.h runtime/settings.h
+	@mkdir -p $(B)
+	$(CC) -O1 -Wall -Wno-unused-function $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< $(if $(DEPS),-L$(DEPS)/lib) -lavformat -lavcodec -lavutil -lswscale -lpthread -lm
+
+test-movie-stop: $(B)/test_movie_stop
+	$(B)/test_movie_stop
+
+.PHONY: test-movie-stop
 # Launch options (docs/launch-options.md): the checks, the file, the environment and the suggestions (no game files), and
 # the generated table of the flags the code reads (tools/gen_launch_flags.py --check fails when it is stale)
 $(B)/test_launch_flags: tools/test_launch_flags.c runtime/launch_flags.c runtime/launch_flags_table.c runtime/launch_flags.h
