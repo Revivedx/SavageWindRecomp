@@ -38,13 +38,15 @@ fi
 
 if [ ! -f "$P/lib/libavcodec.dylib" ]; then
     unpack ffmpeg-9.0.2.tar.xz ffmpeg
-    (cd "$S/ffmpeg" && ./configure --prefix="$P" --cc=clang --arch=arm64 --enable-shared --disable-static \
+    # (a neutral prefix, installed through DESTDIR: FFmpeg keeps its configure line in the libraries
+    # (avcodec_configuration), and --prefix="$P" put the builder's home folder into the shipped .app)
+    (cd "$S/ffmpeg" && ./configure --prefix=/opt/savagewind-deps --cc=clang --arch=arm64 --enable-shared --disable-static \
         --extra-cflags="-mmacosx-version-min=$MIN" --extra-ldflags="-mmacosx-version-min=$MIN" \
         --disable-autodetect --disable-programs --disable-doc --disable-network --disable-avdevice --disable-avfilter \
         --disable-swresample --disable-everything \
         --enable-protocol=file --enable-demuxer=matroska,mov \
         --enable-decoder=vp9,vp8,vorbis,opus,h264,aac --enable-parser=vp9,vp8,vorbis,opus,h264,aac \
-        --install-name-dir='@rpath' && make -j"$JOBS" && make install)
+        --install-name-dir='@rpath' && make -j"$JOBS" && rm -rf "$S/ffmpeg-root" && make install DESTDIR="$S/ffmpeg-root" && cp -R "$S/ffmpeg-root/opt/savagewind-deps/." "$P/")
 fi
 
 # The Vulkan build (RENDERER, default vulkan; MoltenVK): the Vulkan loader and shaderc (with the glslang / SPIRV-Tools / SPIRV-Headers it builds
