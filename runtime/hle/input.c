@@ -722,6 +722,7 @@ void input_handle_event(const SDL_Event *e) {
             SDL_Gamepad *gone = pads[i];
             pads[i] = pads[--npads];
             if (gone == pad) pad_use(npads ? pads[0] : NULL);  // (the one in use: another connected one, if any)
+            vibration_pad_closed(gone);
             SDL_CloseGamepad(gone);
             break;
         }

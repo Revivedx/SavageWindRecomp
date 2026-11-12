@@ -29,6 +29,7 @@ void motion_pad_opened(SDL_Gamepad *p) { (void)p; }
 void motion_pad_closed(void) {}
 void motion_sensor_event(const SDL_Event *e) { (void)e; sensor_events++; }
 void vibration_update(SDL_Gamepad *p, bool focused) { (void)p; vibrating = focused; }
+void vibration_pad_closed(SDL_Gamepad *p) { (void)p; }
 uint64_t renderer_present_count(void) { return 0; }
 uint64_t plat_now_ns(void) { return 0; }
 void plat_accessibility_shortcuts(bool allow) { (void)allow; }
