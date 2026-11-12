@@ -1023,9 +1023,10 @@ static VkSpan copy_dedupe(int slot, const void *data, uint64_t size, uint64_t al
 // the range it wrote: each copy keeps the update count it was made at and which written ranges it covers. (Copies used
 // to be shared within one GPU piece of ~300 draws and every UpdateUniformBuffer dropped them all: ~3000 copies, ~15 MB,
 // a frame in the open world.)
-#define GCOPY_TAB 4096
+#define GCOPY_TAB 8192
 #define UUB_MAX 64
-static struct { uint64_t addr, size, gen, serial, mask; int chunk; VkSpan span; } gcopy[GCOPY_TAB];
+static struct { uint64_t addr, size, gen, serial, mask; int chunk; VkSpan span; } gcopy[GCOPY_TAB][2];
+static uint8_t gcopy_lru[GCOPY_TAB];
 static uint64_t gcopy_gen = 1;
 static struct { uint64_t lo, hi, serial; } uubt[UUB_MAX];  // ranges UpdateUniformBuffer wrote, with the last update's count
 static int nuub;
@@ -1052,16 +1053,19 @@ static void uub_note(uint64_t lo, uint64_t hi) {
 static VkSpan guest_copy(uint64_t addr, uint64_t size) {
     uint64_t h = (addr * 0x9E3779B97F4A7C15ull) ^ (size * 0xC2B2AE3D27D4EB4Full);
     uint32_t slot = (uint32_t)(h ^ (h >> 32)) & (GCOPY_TAB - 1);
-    __typeof__(gcopy[0]) *e = &gcopy[slot];
     uint64_t gen = __atomic_load_n(&gcopy_gen, __ATOMIC_RELAXED);
-    if (e->gen == gen && e->addr == addr && e->size == size) {
-        bool stale = false;
-        for (uint64_t m = e->mask; m && !stale; m &= m - 1) stale = uubt[__builtin_ctzll(m)].serial > e->serial;
-        if (!stale) {
-            uint64_t pending = vk_pending_seq();
-            if (chunks[e->chunk].seq < pending) chunks[e->chunk].seq = pending;
-            stat_gcopy_hit++;
-            return e->span;
+    for (int w = 0; w < 2; w++) {
+        __typeof__(gcopy[0][0]) *e = &gcopy[slot][w];
+        if (e->gen == gen && e->addr == addr && e->size == size) {
+            bool stale = false;
+            for (uint64_t m = e->mask; m && !stale; m &= m - 1) stale = uubt[__builtin_ctzll(m)].serial > e->serial;
+            if (!stale) {
+                uint64_t pending = vk_pending_seq();
+                if (chunks[e->chunk].seq < pending) chunks[e->chunk].seq = pending;
+                gcopy_lru[slot] = (uint8_t)(w ^ 1);
+                stat_gcopy_hit++;
+                return e->span;
+            }
         }
     }
     stat_gcopy_miss++;
@@ -1070,6 +1074,9 @@ static VkSpan guest_copy(uint64_t addr, uint64_t size) {
     uint64_t mask = 0;
     for (int i = 0; i < nuub; i++)
         if (addr < uubt[i].hi && uubt[i].lo < addr + size) mask |= 1ull << i;
+    int w = gcopy_lru[slot];
+    gcopy_lru[slot] = (uint8_t)(w ^ 1);
+    __typeof__(gcopy[0][0]) *e = &gcopy[slot][w];
     e->addr = addr; e->size = size; e->gen = gen; e->serial = uub_serial; e->mask = mask; e->chunk = active; e->span = s;
     return s;
 }
@@ -4847,7 +4854,10 @@ static bool fxaa_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out
 static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32_t gx, uint32_t gy, uint32_t gz) {
     static const uint8_t zeros[0x10000];
     if (k == 0) {
-        uint32_t drv[0x800 / 4] = {0};
+        uint64_t size = si->cbuf_size[0] > 0x800 ? 0x800 : (si->cbuf_size[0] ? si->cbuf_size[0] : 256);
+        if (size < 0x500 && stage == 5) size = 0x500;
+        uint32_t drv[0x800 / 4];
+        memset(drv, 0, size);
         if (stage == 5) {
             drv[0x200 / 4] = gx; drv[0x204 / 4] = gy; drv[0x208 / 4] = gz;
             for (int i = 0; i < 16; i++) {
@@ -4858,15 +4868,15 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
             }
         } else {
             uint32_t base = 0x110 + 0x100 * (stage == 1 ? 4 : 0);
-            for (int i = 0; i < 16; i++) {
-                uint32_t *e = &drv[(base + 16 * i) / 4];
-                e[0] = (uint32_t)st.sbuf[stage][i].addr;
-                e[1] = (uint32_t)(st.sbuf[stage][i].addr >> 32);
-                e[2] = (uint32_t)st.sbuf[stage][i].size;
+            if (base < size) {
+                for (int i = 0; i < 16 && base + 16 * i + 12 <= size; i++) {
+                    uint32_t *e = &drv[(base + 16 * i) / 4];
+                    e[0] = (uint32_t)st.sbuf[stage][i].addr;
+                    e[1] = (uint32_t)(st.sbuf[stage][i].addr >> 32);
+                    e[2] = (uint32_t)st.sbuf[stage][i].size;
+                }
             }
         }
-        uint64_t size = si->cbuf_size[0] > sizeof drv ? sizeof drv : (si->cbuf_size[0] ? si->cbuf_size[0] : 256);
-        if (size < 0x500 && stage == 5) size = 0x500;
         return ubo_span(copy_dedupe(stage == 5 ? DEDUPE_DRV_C : stage == 1 ? DEDUPE_DRV_F : DEDUPE_DRV_V, drv, size, 256), size);
     }
     if (k == 1) {  // compiler constants stored after the shader code
@@ -6777,9 +6787,125 @@ static VkDescriptorBufferInfo gsnap_info(int stage) {
 // pre_ii: texture descriptors already resolved by the caller (draw: fragment textures, needed earlier for the
 // viewport decision), or NULL.
 // dyn / ndyn: the offsets of its dynamic uniform buffers, by binding (ubo_dynamic_mark), appended.
+// Per-stage descriptor-set fast cache: skips cbuf_info, guest_copy, copy_dedupe and set_finish hashing when a
+// graphics stage's bound uniforms, textures and per-draw constants match a set already built in this submission.
+#define STAGE_SET_TAB 4096
+#define STAGE_SET_MAX_TEX 16
+#define STAGE_SET_MAX_UBUF 12
+typedef struct {
+    uint64_t seq, hash, gcopy_gen, uub_serial, uub_mask;
+    VkDescriptorSetLayout layout;
+    ShaderInfo *si;
+    VkDescriptorSet set;
+    uint64_t code_addr;
+    uint32_t const_off, const_size;
+    uint32_t ubuf_mask;
+    uint8_t ntex, nubuf, has_rscale, has_tint, nd;
+    uint32_t dyn_off[8];
+    Range ubuf[STAGE_SET_MAX_UBUF];
+    float rscale_row0[4];
+    float tex_sc[STAGE_SET_MAX_TEX][2];
+    float tint[8];
+    VkDescriptorImageInfo ii[STAGE_SET_MAX_TEX];
+} StageSetEnt;
+static StageSetEnt *stage_setc;
+
 static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t set, int stage, ShaderInfo *si, const float *rscale_row0,
                                  const float tint[8], uint32_t gx, uint32_t gy, uint32_t gz, const VkDescriptorImageInfo *pre_ii,
                                  uint32_t *dyn, int *ndyn) {
+    static int no_sc = -1;
+    if (no_sc < 0) no_sc = getenv("SAVAGEWIND_VK_NO_SET_CACHE") != NULL;
+    uint32_t ubuf_mask = (si->cbuf_mask >> 3) & ((1u << 18) - 1);
+    int nubuf = __builtin_popcount(ubuf_mask);
+    bool can_cache = !no_sc && (stage == 0 || stage == 1) && !si->cbuf_dynamic && !si->uses_gmem && !si->writes_gmem &&
+                     !si->mvec && (stage == 1 ? pre_ii != NULL : si->ntex == 0) && si->ntex <= STAGE_SET_MAX_TEX &&
+                     nubuf <= STAGE_SET_MAX_UBUF && sdw_fix.s <= 1 && up_fix.sx <= 0 && !fxaa_off;
+    if (can_cache && stage == 0 && (si->cbuf_mask & (1u << 3)) && st.rt.ncolor && st.rt.color[0] &&
+        st.rt.color[0]->backend && ((TexBackend *)st.rt.color[0]->backend)->rs_group == RS_OUT)
+        can_cache = false;
+    if (can_cache && (si->cbuf_mask & 1) && si->cbuf_size[0] > (stage == 1 ? 0x510u : 0x110u)) {
+        for (int i = 0; i < 16; i++)
+            if (st.sbuf[stage][i].addr || st.sbuf[stage][i].size) { can_cache = false; break; }
+    }
+    StageSetEnt *sc_ent = NULL;
+    uint64_t sc_h = 0;
+    uint64_t sc_ggen = 0;
+    Range cur_ubuf[STAGE_SET_MAX_UBUF];
+    float cur_rs0[4] = {1, 1, 0, 0};
+    if (can_cache) {
+        uint64_t seq = vk_pending_seq() + (setc_gen << 40);
+        sc_ggen = __atomic_load_n(&gcopy_gen, __ATOMIC_RELAXED);
+        sc_h = (uint64_t)(uintptr_t)layout ^ ((uint64_t)(uintptr_t)si * 0x9E3779B97F4A7C15ull);
+        if (si->cbuf_mask & 2) {
+            NvnShaderStage *ss = &st.program->stages[stage];
+            sc_h = (sc_h ^ ss->code_addr) * 0x9E3779B97F4A7C15ull;
+            sc_h = (sc_h ^ (((uint64_t)ss->const_offset << 32) | ss->const_size)) * 0xC2B2AE3D27D4EB4Full;
+        }
+        int ui = 0;
+        for (uint32_t m = ubuf_mask; m; m &= m - 1) {
+            int idx = __builtin_ctz(m);
+            Range r = st.ubuf[stage][idx];
+            cur_ubuf[ui++] = r;
+            sc_h = (sc_h ^ r.addr) * 0x9E3779B97F4A7C15ull;
+            sc_h = (sc_h ^ r.size) * 0xC2B2AE3D27D4EB4Full;
+        }
+        if (si->uses_rscale) {
+            if (rscale_row0) memcpy(cur_rs0, rscale_row0, 16);
+            uint64_t a, b;
+            memcpy(&a, &cur_rs0[0], 8); memcpy(&b, &cur_rs0[2], 8);
+            sc_h = (sc_h ^ a) * 0x9E3779B97F4A7C15ull;
+            sc_h = (sc_h ^ b) * 0xC2B2AE3D27D4EB4Full;
+            for (int t = 0; t < si->ntex; t++) {
+                uint64_t ts;
+                memcpy(&ts, tex_sc[stage][t], 8);
+                sc_h = (sc_h ^ ts) * 0x9E3779B97F4A7C15ull;
+            }
+        }
+        if (si->uses_tint && tint) {
+            for (int k = 0; k < 4; k++) {
+                uint64_t tv;
+                memcpy(&tv, &tint[k * 2], 8);
+                sc_h = (sc_h ^ tv) * 0xC2B2AE3D27D4EB4Full;
+            }
+        }
+        for (int t = 0; t < si->ntex; t++) {
+            uint64_t v0 = (uint64_t)(uintptr_t)pre_ii[t].sampler;
+            uint64_t v1 = (uint64_t)(uintptr_t)pre_ii[t].imageView;
+            sc_h = (sc_h ^ v0) * 0x9E3779B97F4A7C15ull;
+            sc_h = (sc_h ^ v1 ^ pre_ii[t].imageLayout) * 0xC2B2AE3D27D4EB4Full;
+        }
+        sc_h ^= sc_h >> 32;
+        if (!stage_setc) stage_setc = calloc(STAGE_SET_TAB, sizeof *stage_setc);
+        sc_ent = &stage_setc[(sc_h ^ (sc_h >> 31)) & (STAGE_SET_TAB - 1)];
+        if (sc_ent->seq == seq && sc_ent->hash == sc_h && sc_ent->gcopy_gen == sc_ggen &&
+            sc_ent->layout == layout && sc_ent->si == si &&
+            sc_ent->ubuf_mask == ubuf_mask && sc_ent->ntex == (uint8_t)si->ntex &&
+            sc_ent->has_rscale == (uint8_t)si->uses_rscale && sc_ent->has_tint == (uint8_t)(si->uses_tint && tint) &&
+            (!(si->cbuf_mask & 2) || (sc_ent->code_addr == st.program->stages[stage].code_addr &&
+                                      sc_ent->const_off == st.program->stages[stage].const_offset &&
+                                      sc_ent->const_size == st.program->stages[stage].const_size)) &&
+            (!nubuf || !memcmp(sc_ent->ubuf, cur_ubuf, (size_t)nubuf * sizeof(Range))) &&
+            (!si->uses_rscale || (!memcmp(sc_ent->rscale_row0, cur_rs0, 16) &&
+                                  (!si->ntex || !memcmp(sc_ent->tex_sc, tex_sc[stage], (size_t)si->ntex * 8)))) &&
+            (!(si->uses_tint && tint) || !memcmp(sc_ent->tint, tint, 32))) {
+            bool uub_stale = false;
+            for (uint64_t m = sc_ent->uub_mask; m && !uub_stale; m &= m - 1)
+                uub_stale = uubt[__builtin_ctzll(m)].serial > sc_ent->uub_serial;
+            bool tex_ok = !uub_stale;
+            for (int t = 0; t < si->ntex && tex_ok; t++) {
+                if (sc_ent->ii[t].sampler != pre_ii[t].sampler || sc_ent->ii[t].imageView != pre_ii[t].imageView ||
+                    sc_ent->ii[t].imageLayout != pre_ii[t].imageLayout) {
+                    tex_ok = false;
+                }
+            }
+            if (tex_ok) {
+                stat_sets++;
+                stat_sets_reused++;
+                for (int i = 0; i < sc_ent->nd && dyn; i++) dyn[(*ndyn)++] = sc_ent->dyn_off[i];
+                return sc_ent->set;
+            }
+        }
+    }
 #ifdef _WIN32
     if (si->uses_gmem) (void)gmem_info();
     if (gmem_sparse && si->writes_gmem && stage >= 0 && stage < 6) {
@@ -6878,7 +7004,45 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
         n++;
     }
     for (int i = 0; i < nd && dyn; i++) dyn[(*ndyn)++] = dv[i].off;
-    return set_finish(layout, w, n);
+    VkDescriptorSet ds = set_finish(layout, w, n);
+    if (sc_ent && nd <= 8) {
+        uint64_t sc_uub_mask = 0;
+        for (int ui = 0; ui < nubuf; ui++) {
+            uint64_t a = cur_ubuf[ui].addr, sz = cur_ubuf[ui].size ? cur_ubuf[ui].size : 256;
+            if (!a) continue;
+            for (int i = 0; i < nuub; i++)
+                if (a < uubt[i].hi && uubt[i].lo < a + sz) sc_uub_mask |= 1ull << i;
+        }
+        sc_ent->seq = vk_pending_seq() + (setc_gen << 40);
+        sc_ent->hash = sc_h;
+        sc_ent->gcopy_gen = __atomic_load_n(&gcopy_gen, __ATOMIC_RELAXED);
+        sc_ent->uub_serial = uub_serial;
+        sc_ent->uub_mask = sc_uub_mask;
+        sc_ent->layout = layout;
+        sc_ent->si = si;
+        sc_ent->set = ds;
+        sc_ent->ubuf_mask = ubuf_mask;
+        sc_ent->ntex = (uint8_t)si->ntex;
+        sc_ent->nubuf = (uint8_t)nubuf;
+        sc_ent->has_rscale = (uint8_t)si->uses_rscale;
+        sc_ent->has_tint = (uint8_t)(si->uses_tint && tint);
+        sc_ent->nd = (uint8_t)nd;
+        for (int i = 0; i < nd; i++) sc_ent->dyn_off[i] = dv[i].off;
+        if (si->cbuf_mask & 2) {
+            NvnShaderStage *ss = &st.program->stages[stage];
+            sc_ent->code_addr = ss->code_addr;
+            sc_ent->const_off = ss->const_offset;
+            sc_ent->const_size = ss->const_size;
+        }
+        if (nubuf) memcpy(sc_ent->ubuf, cur_ubuf, (size_t)nubuf * sizeof(Range));
+        if (si->uses_rscale) {
+            memcpy(sc_ent->rscale_row0, cur_rs0, 16);
+            if (si->ntex) memcpy(sc_ent->tex_sc, tex_sc[stage], (size_t)si->ntex * 8);
+        }
+        if (si->uses_tint && tint) memcpy(sc_ent->tint, tint, 32);
+        if (si->ntex) memcpy(sc_ent->ii, pre_ii, (size_t)si->ntex * sizeof(pre_ii[0]));
+    }
+    return ds;
 }
 
 // ================================================================== compute
