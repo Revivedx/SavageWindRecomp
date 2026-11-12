@@ -7,6 +7,7 @@
 
 #include "../hle.h"
 #include "../input_bind.h"
+#include "../game_sites.h"
 #include "../settings.h"
 
 _Static_assert(PADB_LTRIGGER == SDL_GAMEPAD_BUTTON_COUNT, "trigger pseudo-buttons follow SDL's buttons");
@@ -566,7 +567,67 @@ static void act_log_poll(void) {
     }
 }
 
+// ---- the HUD's A prompt (Talk, Pick up, Open, Climb down...) comes first
+// An action moved onto the same button as Interact (Jump on A, say) would also fire whenever that button answers the
+// prompt: picking something up while swimming dashed, talking jumped. While the prompt is on screen, those actions are
+// "not pressed": the button does what the prompt says, as on the Switch where they are different buttons. The actions
+// the game itself puts on Switch A (Interact, Activate rune, ...) keep answering. The prompt: DoCommand_00's N_A_00,
+// shown while the A prompt is up (its N_InOut_00 fades the whole HUD group out).
+static uint64_t pane_child(uint64_t pane, const char *name, unsigned depth, unsigned *budget) {
+    if (pane < GUEST_LO || pane >= GUEST_HI - 0x100 || depth > 16 || !*budget) return 0;
+    --*budget;
+    if (!strncmp((const char *)(uintptr_t)(pane + 0xb8), name, 24)) return pane;
+    uint64_t head = pane + 0x20, link = LD64(head + 8);  // (children: links 8 bytes into the child)
+    for (int k = 0; link >= GUEST_LO && link < GUEST_HI && link != head && k < 64 && *budget; k++, link = LD64(link + 8)) {
+        uint64_t found = pane_child(link - 8, name, depth + 1, budget);
+        if (found) return found;
+    }
+    return 0;
+}
+static bool named(uint64_t obj, unsigned off, const char *name) {
+    uint64_t p = obj >= GUEST_LO && obj < GUEST_HI - 0x100 ? LD64(obj + off) : 0;
+    return p >= GUEST_LO && p < GUEST_HI - 64 && !strcmp((const char *)(uintptr_t)p, name);
+}
+static bool interact_prompt_up(void) {
+    static uint64_t screen, group, hud;  // DoCommand_00, its N_A_00 and N_InOut_00 (found again when the HUD is rebuilt)
+    if (!g_site.screen_mgr) return false;
+    if (!named(screen, 0xd0, "DoCommand_00") || !group || !hud ||
+        strncmp((const char *)(uintptr_t)(group + 0xb8), "N_A_00", 8) ||
+        strncmp((const char *)(uintptr_t)(hud + 0xb8), "N_InOut_00", 12)) {
+        screen = group = hud = 0;
+        uint64_t mgr = LD64(g_site.screen_mgr), arr = mgr ? LD64(mgr + 0x30) : 0;
+        unsigned count = mgr ? LD32(mgr + 0x28) : 0;
+        for (unsigned i = 0; arr && i < count && i < 256 && !screen; i++)
+            if (named(LD64(arr + 8 * i), 0xd0, "DoCommand_00")) screen = LD64(arr + 8 * i);
+        uint64_t layout = screen ? LD64(screen + 0x30) : 0, root = layout >= GUEST_LO ? LD64(layout + 0x18) : 0;
+        unsigned budget = 64;
+        hud = pane_child(root, "N_InOut_00", 0, &budget);
+        budget = 64;
+        group = pane_child(hud, "N_A_00", 0, &budget);
+        if (!group) { screen = group = hud = 0; return false; }
+    }
+    return (LD8(group + 0x58) & 1) && (LD8(hud + 0x58) & 1) && LD8(hud + 0x5a) >= 0x80;  // (visible; global alpha)
+}
+
+// When the prompt was last seen (each controller poll): answering it takes it away within the same frame, before the
+// game asks about Jump, so the press that picked something up still counts as the prompt's for a moment
+#define PROMPT_GRACE_MS 250
+static _Atomic uint64_t a_prompt_ms;
+
+// id would answer through Interact's button although the game puts it on another Switch button
+static bool shares_interact(int id) {
+    if (id <= 0 || id >= ACT_COUNT || mask_button(k_masks_190[id]) == mask_button(k_masks_190[0])) return false;
+    int p = g_act_pad[id], k = g_act_key[id];
+    return (p >= 0 && p == g_act_pad[0]) || (k > 0 && k == g_act_key[0]);
+}
+static bool any_shares_interact(void) {
+    for (int id = 1; id < ACT_COUNT; id++)
+        if (a_custom >> id & 1 && shares_interact(id)) return true;
+    return false;
+}
+
 // ---- the controller poll and the game's queries
+#define EDGE_KEEP_MS 100  // (several of the game's updates at any frame rate it runs at)
 static _Atomic uint64_t a_prev;
 static _Atomic bool a_served;  // a pressed query was answered since the last poll
 
@@ -577,13 +638,20 @@ void act_poll(bool live) {
     if (live && !was_live) prev = cur;  // held through a menu closing: not a new press
     uint64_t edge = cur & ~prev;
     // A poll nobody read (no pressed query since the last one) keeps its edge for the next, so a press is never lost
-    // however often the game polls compared with how often it updates its pad
-    a_trig = ((a_served ? 0 : a_trig) | edge) & custom;
+    // however often the game polls compared with how often it updates its pad - but only for EDGE_KEEP_MS: while a
+    // message is up ("You got ..." after a new item) the game asks about no player action, and the press that closed
+    // it, kept until the player was asked again, jumped as soon as the message was gone
+    static uint64_t edge_ms;
+    uint64_t now = SDL_GetTicks(), kept = a_served ? 0 : a_trig;
+    if (kept && now - edge_ms > EDGE_KEEP_MS) kept = 0;
+    if (edge) edge_ms = now;
+    a_trig = (kept | edge) & custom;
     a_served = false;
     a_hold = cur;
     a_prev = cur;
     a_live = live;
     was_live = live;
+    if (live && any_shares_interact() && interact_prompt_up()) a_prompt_ms = now;
     if (act_log_on()) act_log_poll();
 }
 
@@ -599,6 +667,8 @@ int rt_act_query(int kind, uint64_t pad, uint64_t id, uint64_t lr, uint64_t mask
     } else {
         r = (int)(a_hold >> id & 1);
     }
+    if (r && shares_interact((int)id) && SDL_GetTicks() - a_prompt_ms < PROMPT_GRACE_MS)
+        r = 0;  // (the prompt's button answers the prompt)
     if (r && act_log_on()) l_true[kind] |= 1ull << id;
     return r;
 }
