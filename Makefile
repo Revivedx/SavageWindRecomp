@@ -406,12 +406,14 @@ VERSION  := $(shell sed -n 's/^\#define SAVAGEWIND_VERSION "\(.*\)"/\1/p' runtim
 # (`make deps`: SDL3, LGPL FFmpeg, Python, from pinned sources), the generator helper when built
 # (`make gen-helper` after `make deps`), packaged by tools/bundle_macos.sh. No game files or fonts.
 APP_MIN  := 15.0
-APP_B    := build/mac15
+# (Vulkan: the loader + shaderc in build/deps too, and the bundle adds MoltenVK; RENDERER=metal: build/mac15-metal)
+APP_B    := build/mac15$(if $(filter metal,$(RENDERER)),-metal)
 deps:
-	MACOS_MIN=$(APP_MIN) tools/build_deps_macos.sh
+	RENDERER=$(RENDERER) MACOS_MIN=$(APP_MIN) tools/build_deps_macos.sh
 app:
 	@[ -f build/deps/lib/libSDL3.0.dylib ] || { echo "make deps first"; exit 1; }
-	$(MAKE) B=$(APP_B) MACOS_MIN=$(APP_MIN) DEPS=$(CURDIR)/build/deps $(APP_B)/savagewind
+	@[ "$(RENDERER)" != vulkan ] || [ -f build/deps/lib/libvulkan.1.dylib ] || { echo "make deps first (it builds the Vulkan loader too)"; exit 1; }
+	$(MAKE) RENDERER=$(RENDERER) B=$(APP_B) MACOS_MIN=$(APP_MIN) DEPS=build/deps $(APP_B)/savagewind  # (relative: a checkout under a path with spaces, common on a Mac)
 	MACOS_MIN=$(APP_MIN) tools/bundle_macos.sh $(APP_B)/savagewind
 
 # macOS release disk image (the .app + an Applications shortcut to drag it onto): build/dist/Savage Wind-<v>-macOS.dmg
