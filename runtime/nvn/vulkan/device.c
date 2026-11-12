@@ -1463,6 +1463,11 @@ static VkPresentModeKHR present_mode(char *have, size_t cap) {
     const VkPresentModeKHR one_shot[2] = {forced, NONE};  // the env override is a single mode, FIFO behind it
     int v = g_settings.vsync;
     const VkPresentModeKHR *ladder = (env && *env) ? one_shot : pref[v >= 0 && v < VSYNC_COUNT ? v : VSYNC_DEFAULT];
+    // MoltenVK (macOS) has FIFO and IMMEDIATE only: Fast fell to IMMEDIATE, no sync at all - frames shown off the
+    // display's beat (judder, the default setting). There Fast is FIFO with the fewest images instead (swapchain_make):
+    // in sync, and as little queued behind it as the surface allows.
+    static const VkPresentModeKHR mvk_fast[3] = {VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_FIFO_KHR, NONE};
+    if (!(env && *env) && g_vk.moltenvk && v == VSYNC_FAST) ladder = mvk_fast;
     for (int j = 0; ladder[j] != NONE; j++)
         for (uint32_t i = 0; i < n; i++)
             if (m[i] == ladder[j]) return ladder[j];
@@ -1496,6 +1501,13 @@ static bool hdr_wanted(float *white) {
     SDL_PropertiesID p = SDL_GetWindowProperties(window);
     bool on = SDL_GetBooleanProperty(p, SDL_PROP_WINDOW_HDR_ENABLED_BOOLEAN, false);
     float w = SDL_GetFloatProperty(p, SDL_PROP_WINDOW_SDR_WHITE_LEVEL_FLOAT, 0) * 80;  // (scRGB: 1.0 is 80 nits)
+#ifdef __APPLE__
+    // macOS: SDL calls a window HDR whenever its display has EDR headroom, which SDR panels have too below full
+    // brightness (a MacBook Air: "HDR10 output" on an SDR screen, every frame converted to PQ for nothing). So Auto is
+    // SDR there; Video > HDR On turns it on (XDR displays). Its white level of 1.0 is "unknown", as on Wayland below.
+    if (g_settings.hdr == HDR_AUTO) on = false;
+    if (w <= 80) w = 0;
+#endif
     if (g_settings.hdr == HDR_ON) on = true;
     if (g_settings.hdr == HDR_OFF) on = false;
 #ifdef __linux__
@@ -1638,6 +1650,10 @@ static void create_swapchain(void) {
     VkSwapchainKHR old = g_vk.swapchain;
     char modes[128];
     VkPresentModeKHR mode = present_mode(modes, sizeof modes);
+    // (MoltenVK, Fast as FIFO: the surface's fewest images - less input delay - unless frame generation queues a pair)
+    if (g_vk.moltenvk && mode == VK_PRESENT_MODE_FIFO_KHR && g_settings.vsync == VSYNC_FAST && !g_settings.frame_gen &&
+        !getenv("SAVAGEWIND_VK_PRESENT"))
+        count = caps.minImageCount;
     VkSwapchainCreateInfoKHR ci = {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, .surface = g_vk.surface, .minImageCount = count,
         .imageFormat = sf.format, .imageColorSpace = sf.colorSpace, .imageExtent = ext, .imageArrayLayers = 1,
