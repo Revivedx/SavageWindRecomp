@@ -2282,7 +2282,10 @@ static void begin_pass(void) {
         static int dedup = -1;
         if (dedup < 0) dedup = getenv("SAVAGEWIND_VK_DEDUP_ATTACHMENTS") &&
                               atoi(getenv("SAVAGEWIND_VK_DEDUP_ATTACHMENTS")) != 0;
-        if (g_vk.is_mali || dedup) {  // BOTW binds targets 1 / 3 again as 2 / 4, never writing the duplicates.
+        // (MoltenVK too: Apple's GPUs are tilers like Mali. Each attachment has its own tile memory and both store at
+        // the end of every 32x32 tile in no set order, so the G-buffer took the unwritten duplicate's contents in random
+        // tiles - square blocks of wrong lighting over the scene.)
+        if (g_vk.is_mali || g_vk.moltenvk || dedup) {  // BOTW binds targets 1 / 3 again as 2 / 4, never writing the duplicates.
             // Twice is undefined in Vulkan; an unwritten slot can store loaded contents over the drawn one.
             // Keep only the first view. Its pipeline format is retained; the duplicate stays UNDEFINED.
             int dup = -1;
@@ -3443,8 +3446,25 @@ static VkStencilOp stencil_op(uint8_t o) {
 // The format a colour target is drawn in: its view's when the view sets one (BOTW draws its NPC speech bubbles into a
 // BC4 texture through an RGBA16 UINT view of its blocks: the shader has to write integers)
 static uint32_t rt_format(int i) {
-    if (!g_vk.is_mali) return st.rt.color[i]->format;  // (other GPUs: as before)
+    // Mali and Metal (MoltenVK) need the output type of the attachment as bound: a float target viewed as UINT is
+    // written as uvec4 (Metal refuses the pipeline otherwise: "output of type float4 is not compatible with a
+    // MTLPixelFormatRGBA16Uint color attachment"). Other GPUs: as before.
+    if (!g_vk.is_mali && !g_vk.moltenvk) return st.rt.color[i]->format;
     return st.rt.has_cview[i] && (st.rt.cview[i].setmask & 4) && st.rt.cview[i].format ? st.rt.cview[i].format : st.rt.color[i]->format;
+}
+// Integer colour formats (no blending on them: build_pipeline)
+static bool vk_format_is_int(VkFormat f) {
+    switch (f) {
+    case VK_FORMAT_R8_UINT: case VK_FORMAT_R8_SINT: case VK_FORMAT_R8G8_UINT: case VK_FORMAT_R8G8_SINT:
+    case VK_FORMAT_R8G8B8_UINT: case VK_FORMAT_R8G8B8_SINT: case VK_FORMAT_R8G8B8A8_UINT: case VK_FORMAT_R8G8B8A8_SINT:
+    case VK_FORMAT_B8G8R8A8_UINT: case VK_FORMAT_B8G8R8A8_SINT: case VK_FORMAT_A2B10G10R10_UINT_PACK32:
+    case VK_FORMAT_A2R10G10B10_UINT_PACK32: case VK_FORMAT_R16_UINT: case VK_FORMAT_R16_SINT: case VK_FORMAT_R16G16_UINT:
+    case VK_FORMAT_R16G16_SINT: case VK_FORMAT_R16G16B16_UINT: case VK_FORMAT_R16G16B16_SINT:
+    case VK_FORMAT_R16G16B16A16_UINT: case VK_FORMAT_R16G16B16A16_SINT: case VK_FORMAT_R32_UINT: case VK_FORMAT_R32_SINT:
+    case VK_FORMAT_R32G32_UINT: case VK_FORMAT_R32G32_SINT: case VK_FORMAT_R32G32B32_UINT: case VK_FORMAT_R32G32B32_SINT:
+    case VK_FORMAT_R32G32B32A32_UINT: case VK_FORMAT_R32G32B32A32_SINT: return true;
+    default: return false;
+    }
 }
 static int rt_kind(uint32_t f) {
     int k;
@@ -3564,6 +3584,32 @@ static const VkSpecializationInfo *vk_gather_spec(void) {
     return &si;
 }
 
+// MoltenVK converts a shader module's SPIR-V to MSL with one converter per module, unguarded: two pipeline workers
+// building pipelines of the same module at once corrupted it (a crash in SPIRV-Cross's
+// CompilerMSL::replace_illegal_entry_point_names, mid-game). Builds of the same module take turns there, by a lock per
+// module (striped; both stages' locks in a fixed order); other modules still build in parallel. Elsewhere: no locks.
+#define MVK_MODULE_LOCKS 64
+static pthread_mutex_t mvk_module_locks[MVK_MODULE_LOCKS];
+static pthread_once_t mvk_module_locks_once = PTHREAD_ONCE_INIT;
+static void mvk_module_locks_init(void) {
+    for (int i = 0; i < MVK_MODULE_LOCKS; i++) pthread_mutex_init(&mvk_module_locks[i], NULL);
+}
+static int mvk_module_stripe(VkShaderModule m) {
+    uint64_t h = (uint64_t)(uintptr_t)m * 0x9E3779B97F4A7C15ull;
+    return (int)(h >> 58);  // (64 stripes)
+}
+// Locks the stripes of modules a and b (either may be VK_NULL_HANDLE); returns a mask for mvk_modules_unlock
+static uint64_t mvk_modules_lock(VkShaderModule a, VkShaderModule b) {
+    if (!g_vk.moltenvk) return 0;
+    pthread_once(&mvk_module_locks_once, mvk_module_locks_init);
+    uint64_t mask = (a ? 1ull << mvk_module_stripe(a) : 0) | (b ? 1ull << mvk_module_stripe(b) : 0);
+    for (int i = 0; i < MVK_MODULE_LOCKS; i++) if (mask >> i & 1) pthread_mutex_lock(&mvk_module_locks[i]);
+    return mask;
+}
+static void mvk_modules_unlock(uint64_t mask) {
+    for (int i = MVK_MODULE_LOCKS - 1; i >= 0; i--) if (mask >> i & 1) pthread_mutex_unlock(&mvk_module_locks[i]);
+}
+
 static VkResult create_pipeline_in(const PipeState *k, VkShaderModule vsm, VkShaderModule fsm, VkPipelineLayout layout,
                                    VkPipelineCache cache, VkPipeline *out);
 static VkResult create_pipeline(const PipeState *k, VkShaderModule vsm, VkShaderModule fsm, VkPipelineLayout layout, VkPipeline *out) {
@@ -3607,7 +3653,9 @@ static VkResult create_pipeline_in(const PipeState *k, VkShaderModule vsm, VkSha
     VkPipelineColorBlendAttachmentState cba[8] = {0};
     for (uint32_t i = 0; i < k->ncolor; i++) {
         cba[i].colorWriteMask = k->write_mask[i];
-        if ((k->blend_on >> i) & 1) {
+        // (integer targets can't blend: the spec forbids it and other drivers ignore it; MoltenVK warns and Metal's
+        // result is undefined)
+        if (((k->blend_on >> i) & 1) && !(g_vk.moltenvk && vk_format_is_int(k->color[i]))) {
             const uint8_t *b = k->blend[i];
             cba[i].blendEnable = VK_TRUE;
             cba[i].srcColorBlendFactor = blend_factor(b[1]);
@@ -3641,7 +3689,9 @@ static VkResult create_pipeline_in(const PipeState *k, VkShaderModule vsm, VkSha
                                        .pColorBlendState = &cb, .pDynamicState = &dy, .layout = layout,
                                        .flags = k->feedback ? VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT : 0};
     *out = VK_NULL_HANDLE;
+    uint64_t mlk = mvk_modules_lock(vsm, fsm);
     VkResult r = vkCreateGraphicsPipelines(g_vk.dev, cache, 1, &pi, NULL, out);
+    mvk_modules_unlock(mlk);
     if (r != VK_SUCCESS) {
         static int n;
         if (n++ < 10) LOG("[vk] pipeline creation failed: %d\n", r);
@@ -3848,7 +3898,7 @@ static VkPipeline gpl_state_lib(const PipeState *s, bool output) {
         VkPipelineColorBlendAttachmentState cba[8] = {0};
         for (uint32_t i = 0; i < k.ncolor && i < 8; i++) {
             cba[i].colorWriteMask = k.write_mask[i];
-            if ((k.blend_on >> i) & 1) {
+            if (((k.blend_on >> i) & 1) && !(g_vk.moltenvk && vk_format_is_int(k.color[i]))) {  // (MoltenVK: integer targets can't blend)
                 const uint8_t *b = k.blend[i];
                 cba[i].blendEnable = VK_TRUE;
                 cba[i].srcColorBlendFactor = blend_factor(b[1]);
@@ -7346,7 +7396,9 @@ static void cs_make(CsBuild *c) {
                                                     .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main",
                                                     .pSpecializationInfo = &spec},
                                           .layout = c->layout};
+        uint64_t mlk = mvk_modules_lock(m, VK_NULL_HANDLE);
         r = m ? vkCreateComputePipelines(g_vk.dev, g_vk.pcache, 1, &ci, NULL, &c->pipe) : VK_ERROR_INVALID_SHADER_NV;
+        mvk_modules_unlock(mlk);
         if (r == VK_SUCCESS) cache_feedback(&fb);
         else LOG("[compute] pipeline failed: %d\n", r);
     }
@@ -7675,6 +7727,8 @@ static void pso_warm_one(const PsoRec *r) {
 static void *pso_worker(void *arg) {
     (void)arg;
     prof_thread_name("pso-worker");
+    extern void vk_pipeline_cache_wait(void);
+    vk_pipeline_cache_wait();  // (MoltenVK: the pipeline cache loading on a thread of its own, device.c)
     // (debugging) SAVAGEWIND_PSO_SLOW_MS=<n>: each pipeline takes n ms longer, to see the wait and its bar (device.c
     // then saves the first bar frame as build/pso_wait.png)
     int slow = getenv("SAVAGEWIND_PSO_SLOW_MS") ? atoi(getenv("SAVAGEWIND_PSO_SLOW_MS")) : 0;
@@ -7784,7 +7838,9 @@ bool vk_pso_warm_compute(const ShaderInfo *si, const uint32_t local[3]) {
                                                 .pSpecializationInfo = &spec},
                                       .layout = l};
     VkPipeline p;
+    uint64_t mlk = mvk_modules_lock(m, VK_NULL_HANDLE);
     bool ok = vkCreateComputePipelines(g_vk.dev, g_vk.pcache, 1, &ci, NULL, &p) == VK_SUCCESS;
+    mvk_modules_unlock(mlk);
     extern void vk_pipeline_cache_note(bool hit);
     if (ok) vk_pipeline_cache_note(false);
     if (ok) vkDestroyPipeline(g_vk.dev, p, NULL);
@@ -8480,7 +8536,7 @@ static void draw_(CmdRec *r, bool indexed) {
                 mvk.flip_y = mfk.flip_y = origin == 0;
                 mvk.depth_minus_one = dmode == 0;
                 for (int i = 0; i < st.nattrib; i++) mvk.attr_kind[i] = (uint8_t)attr_kind(st.attrib[i] & 0xFF);
-                for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) mfk.rt_kind[i] = (uint8_t)rt_kind(st.rt.color[i]->format);
+                for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) mfk.rt_kind[i] = (uint8_t)rt_kind(rt_format(i));  // (the bound view's, as fkey's)
                 mvk.mvec = 1;
                 mfk.mvec_rt = (uint8_t)(pass_mvec + 1);
                 mp = get_program(st.program, &mvk, &mfk);
@@ -8513,7 +8569,7 @@ static void draw_(CmdRec *r, bool indexed) {
             mvk.flip_y = mfk.flip_y = origin == 0;
             mvk.depth_minus_one = dmode == 0;
             for (int i = 0; i < st.nattrib; i++) mvk.attr_kind[i] = (uint8_t)attr_kind(st.attrib[i] & 0xFF);
-            for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) mfk.rt_kind[i] = (uint8_t)rt_kind(st.rt.color[i]->format);
+            for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) mfk.rt_kind[i] = (uint8_t)rt_kind(rt_format(i));  // (the bound view's, as fkey's)
             mfk.mvec_rt = (uint8_t)(0x80 | (pass_mvec + 1));
             mp = get_program(st.program, &mvk, &mfk);
             if (mp && atomic_load(&mp->state) != 1) mp = NULL;  // (built for the next frames)
