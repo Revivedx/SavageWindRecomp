@@ -19,6 +19,11 @@ void output_scale_screen(double sw, double sh, int iw, int ih, OutScale *o);
 // = window / factor per axis), and the factor in use (1: Off)
 bool upscaler_available(int u);
 bool fsr4_offered(void);  // AMD FSR 4 usable on this PC (an AMD Radeon and AMD's DLLs; held back or not)
+bool frame_gen_available(int fg);  // FG_*: Video > Frame generation's choices this GPU can run
+// Video > Frame generation multiplier: whether frame generation fg (FG_*) makes mult - 1 frames for each drawn here,
+// and the multiplier in use with it (the setting, or the most it makes below that)
+bool frame_gen_mult_available(int fg, int mult);
+int frame_gen_mult(int fg);
 bool fsr3_upscaler_enabled(void);  // FSR 3 upscaling offered (held back for now; SAVAGEWIND_FSR3=1)
 // The world camera's projection as last made (rt_persp, game thread): tan(fovy / 2), aspect, near, far; zeros before
 void rt_world_projection(float out[4]);

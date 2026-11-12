@@ -31,7 +31,8 @@ static const Setting settings[] = {
     I(antialias, 0, AA_TAA, "off|smaa|taa"), B(game_fxaa), B(wet_fix),
     I(render_scale, 0, RSCALE_COUNT - 1, "50|75|100|125|150|200"),
     I(anisotropy, 0, 4, "game|2x|4x|8x|16x"), I(tex_lod_bias, 0, TEX_LOD_COUNT - 1, "default|sharp|sharper"), I(sharpening, 0, 10, NULL),
-    B(frame_gen), F(volume, 0, 2), I(audio_output, 0, AUDIO_OUT_COUNT - 1, "stereo|surround_51|headphones_3d"),
+    I(frame_gen, 0, FG_COUNT - 1, "off|fsr3|dlss"), I(frame_gen_mult, FG_MULT_MIN, FG_MULT_MAX, NULL),
+    F(volume, 0, 2), I(audio_output, 0, AUDIO_OUT_COUNT - 1, "stereo|surround_51|headphones_3d"),
     B(reverb), B(movie_audio), B(mute_unfocused),
     I(shrine_sensor_volume, 0, 100, NULL),
     I(perf_overlay, 0, PERF_FULL, "off|fps|full"), I(fps_limit, 0, 360, NULL), B(fps_display),
@@ -43,7 +44,7 @@ static const Setting settings[] = {
     F(motion_sens, .1, 10), I(motion_invert, 0, 3, "off|up_down|left_right|both"),
     I(button_icons, 0, ICONS_COUNT - 1, "auto|keyboard|xbox|playstation|nintendo|steamdeck"),
     I(button_layout, 0, BUTTON_LAYOUT_COUNT - 1, "auto|nintendo|swap_ab|xbox|swap_xy|gamecube"),
-    B(async_shaders), B(precompile_shaders), B(quick_sort), B(quick_drop),
+    B(async_shaders), B(precompile_shaders), B(dlss_download), B(quick_sort), B(quick_drop),
     I(shadow_res, 0, SHADOW_COUNT - 1, "console|high|ultra|extreme|potato"), B(wide_view), B(hud_edges),
     I(hdr, 0, HDR_COUNT - 1, "auto|on|off"), I(hdr_white, 0, 1000, NULL),
     I(fov, 50, 200, NULL), I(hud_size, 50, 150, NULL), B(bloom), B(depth_of_field),
@@ -153,7 +154,7 @@ static void cmd_set(int argc, char **argv, ControlReply *r) {
         control_fail(r, "%s is read-only", s->key); return;
     }
 #ifdef __APPLE__
-    if (is(s, "anisotropy") || is(s, "sharpening") || is(s, "frame_gen") || is(s, "game_fxaa") ||
+    if (is(s, "anisotropy") || is(s, "sharpening") || is(s, "frame_gen") || is(s, "frame_gen_mult") || is(s, "game_fxaa") ||
         !strncmp(s->key, "color_", 6) || is(s, "hdr") || is(s, "hdr_white") || is(s, "vsync")) {
         control_fail(r, "%s is not supported by this backend", s->key); return;
     }

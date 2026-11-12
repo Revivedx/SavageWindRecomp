@@ -32,6 +32,10 @@ void rec_wait_submitted(uint64_t seq);  // until the driver has submission seq (
 // Everything queued so far is recorded and submitted (the translating thread): before vkDeviceWaitIdle, before
 // recording into a command buffer directly (the menu's ImGui, frame generation), before using the queue outside it.
 void rec_drain(void);
+// The queue (externally synchronized): the recorder's submissions, device.c's presents on the game's queue (the calling
+// thread's, and the present thread's for frame generation) and ImGui's font upload take it.
+void rec_queue_lock(void);
+void rec_queue_unlock(void);
 
 // ---- profiling (SAVAGEWIND_VK_PROF): counts since the last take
 typedef struct {

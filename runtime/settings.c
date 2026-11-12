@@ -52,6 +52,7 @@ Settings g_settings = {
     .stick_deadzone = {STICK_DEADZONE_DEFAULT, STICK_DEADZONE_DEFAULT},
     .fps_limit = FPS_DEFAULT,
     .precompile_shaders = true,
+    .dlss_download = true,
     .start_in_config = true,
     .start_picture = START_PICTURE_SCREENSHOT,
     .boot_picture = true,
@@ -273,7 +274,13 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "game_fxaa")) g_settings.game_fxaa = atoi(val) != 0;
         else if (!strcmp(key, "wet_fix")) g_settings.wet_fix = atoi(val) != 0;
-        else if (!strcmp(key, "frame_generation")) g_settings.frame_gen = atoi(val) != 0;
+        else if (!strcmp(key, "frame_generation"))  // (0 off, 1 AMD FSR 3, 2 NVIDIA DLSS; or their names)
+            g_settings.frame_gen = !strcmp(val, "dlss") || atoi(val) == FG_DLSS ? FG_DLSS
+                                 : !strcmp(val, "fsr3") || atoi(val) == FG_FSR3 ? FG_FSR3 : FG_OFF;
+        else if (!strcmp(key, "frame_generation_multiplier")) {  // (2, 3 or 4)
+            int x = atoi(val);
+            g_settings.frame_gen_mult = x < FG_MULT_MIN ? FG_MULT_MIN : x > FG_MULT_MAX ? FG_MULT_MAX : x;
+        }
         else if (!strcmp(key, "sharpening")) {  // (percent, in steps of 10)
             int p = atoi(val);
             g_settings.sharpening = p < 0 ? 0 : p > 100 ? 10 : (p + 5) / 10;
@@ -310,6 +317,7 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "async_shaders")) g_settings.async_shaders = atoi(val) != 0;
         else if (!strcmp(key, "precompile_shaders")) g_settings.precompile_shaders = atoi(val) != 0;
+        else if (!strcmp(key, "dlss_download")) g_settings.dlss_download = atoi(val) != 0;
         else if (!strcmp(key, "start_in_config")) g_settings.start_in_config = atoi(val) != 0;
         else if (!strcmp(key, "start_picture")) {
             int v = atoi(val);
@@ -514,7 +522,9 @@ void settings_save(void) {
     int lb = g_settings.tex_lod_bias;
     fprintf(f, "texture_lod_bias = %s\n", k_tex_lod_bias[lb >= 0 && lb < TEX_LOD_COUNT ? lb : TEX_LOD_DEFAULT]);
     fprintf(f, "sharpening = %d\n", g_settings.sharpening * 10);
-    fprintf(f, "frame_generation = %d\n", g_settings.frame_gen ? 1 : 0);
+    // (a number: builds that knew only FSR 3 read any non-zero value as it)
+    fprintf(f, "frame_generation = %d\n", g_settings.frame_gen >= 0 && g_settings.frame_gen < FG_COUNT ? g_settings.frame_gen : FG_OFF);
+    fprintf(f, "frame_generation_multiplier = %d\n", g_settings.frame_gen_mult >= FG_MULT_MIN ? g_settings.frame_gen_mult : FG_MULT_MIN);
     fprintf(f, "rumble = %d\n", g_settings.rumble);
     fprintf(f, "rumble_strength = %d\n", g_settings.rumble_strength);
     fprintf(f, "freecam_sticks = %d\n", g_settings.freecam_sticks);
@@ -540,6 +550,7 @@ void settings_save(void) {
             k_button_layout[g_settings.button_layout >= 0 && g_settings.button_layout < BUTTON_LAYOUT_COUNT ?
                                 g_settings.button_layout : BUTTON_LAYOUT_AUTO]);
     fprintf(f, "async_shaders = %d\n", g_settings.async_shaders);
+    fprintf(f, "dlss_download = %d\n", g_settings.dlss_download);
     fprintf(f, "precompile_shaders = %d\n", g_settings.precompile_shaders);
     fprintf(f, "start_in_config = %d\n", g_settings.start_in_config);
     fprintf(f, "start_picture = %d\n", g_settings.start_picture);

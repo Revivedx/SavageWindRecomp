@@ -3,9 +3,10 @@
 #include <stdbool.h>
 
 // Upscalers (Video > Upscaler; runtime/nvn/output_scale.c): Off renders at the window's size; the others render
-// smaller by their quality mode's factor and scale up to the window. DLSS is listed as coming later.
+// smaller by their quality mode's factor and scale up to the window. DLSS needs NVIDIA's DLLs, which the setup downloads.
 enum { UPSCALE_OFF = 0, UPSCALE_METALFX = 1 /* macOS */, UPSCALE_FSR1 = 2 /* AMD FSR 1, Vulkan */,
-       UPSCALE_FSR3 = 3 /* AMD FSR 3.1, Vulkan where built in (vulkan/fsr3.h) */, UPSCALE_DLSS = 4 /* NVIDIA DLSS: not yet */,
+       UPSCALE_FSR3 = 3 /* AMD FSR 3.1, Vulkan where built in (vulkan/fsr3.h) */,
+       UPSCALE_DLSS = 4 /* NVIDIA DLSS: Windows, NVIDIA RTX and NVIDIA's DLLs (vulkan/dlss.c) */,
        UPSCALE_FSR4 = 5 /* AMD FSR 4, Vulkan on Windows with AMD's DLLs and an AMD Radeon (vulkan/fsr_api.h) */,
        UPSCALE_COUNT };
 #ifdef __APPLE__
@@ -62,6 +63,13 @@ enum { VSYNC_ON = 0, VSYNC_FAST = 1, VSYNC_ADAPTIVE = 2, VSYNC_OFF = 3, VSYNC_CO
 // takes it), Off never (an SDR picture, which Windows shows dim and dull while its HDR is on)
 enum { HDR_AUTO = 0, HDR_ON = 1, HDR_OFF = 2, HDR_COUNT };
 enum { SPARSE_HEAP_AUTO = 0, SPARSE_HEAP_ON = 1, SPARSE_HEAP_OFF = 2, SPARSE_HEAP_COUNT };
+// Video > Frame generation: a frame made between each two the game draws, by AMD FSR 3 (vulkan/framegen.cpp) or
+// NVIDIA DLSS Frame Generation (vulkan/dlss.c: RTX 40 and later, Windows)
+enum { FG_OFF = 0, FG_FSR3 = 1, FG_DLSS = 2, FG_COUNT };
+// Video > Frame generation multiplier: the frames on screen for each the game draws (DLSS: 2x, 3x, 4x where the GPU
+// makes that many; FSR 3: 2x)
+#define FG_MULT_MIN 2
+#define FG_MULT_MAX 4
 // Video > Fullscreen mode (runtime/window_size.c winsize_apply): Automatic is borderless at the desktop's size and the
 // display's own mode at any other size it has; Borderless never changes the display's mode (another size is scaled to
 // the screen); Exclusive always uses a display mode (the desktop's size too, at its highest refresh rate)
@@ -93,7 +101,8 @@ typedef struct {
     int anisotropy;      // texture filtering: 0 the game's own, 1..4 = 2x, 4x, 8x, 16x (vulkan/textures.c)
     int tex_lod_bias;    // TEX_LOD_*: texture LOD bias, 0 = default (0.0), 1 = sharp (-0.5), 2 = sharper (-1.0)
     int sharpening;      // AMD CAS sharpening of the 3D image, 0 (off) .. 10 (100%) (vulkan/exec.c scene_post)
-    bool frame_gen;      // AMD FSR 3 frame generation: a frame made between each two the game draws (vulkan/framegen.cpp)
+    int frame_gen;       // FG_*: frame generation, a frame made between each two the game draws
+    int frame_gen_mult;  // FG_MULT_MIN..FG_MULT_MAX: frames on screen for each drawn (DLSS's multi frame generation)
     float volume;        // master volume, 1 = 100%
     int audio_output;    // AUDIO_OUT_*: Stereo, Surround 5.1, or 3D Headphones
     bool reverb;         // room reverb effect
@@ -130,6 +139,7 @@ typedef struct {
     bool async_shaders;  // draw on while new shaders compile (no stutter; what needs them is skipped meanwhile; on by
                          // default since settings_version 4; off: every draw waits for its shaders, as before)
     bool precompile_shaders;  // setting the game files up also precompiles every shader (runtime/nvn/precompile.h)
+    bool dlss_download;       // ... and downloads NVIDIA's DLSS libraries on PCs with an NVIDIA driver (dlss_fetch.h)
     bool start_in_config;     // Windows releases: a plain start opens Savage Wind Configuration first
     int start_picture;        // the start screen's background (ui/splash.mm): START_PICTURE_*
     bool boot_picture;        // that picture while the game loads (vulkan/device.c boot_splash_start); off: black

@@ -5233,7 +5233,9 @@ static bool gmem_sparse_refresh(uint64_t size) {
             .pBufferBinds = &buffer_bind,
             .signalSemaphoreCount = 1,
             .pSignalSemaphores = &gmem_sparse_timeline};
+        rec_queue_lock();  // (frame generation's presents use the queue from the present thread: device.c)
         VkResult r = vkQueueBindSparse(g_vk.queue, 1, &bind_info, VK_NULL_HANDLE);
+        rec_queue_unlock();
         if (r != VK_SUCCESS) {
             LOG("[vk] sparse guest heap batch binding failed (%d)\n", r);
             goto fail;
@@ -9861,10 +9863,10 @@ static struct {
     uint64_t frame_id, last_ns;
 } fg;
 
-// Its own images (with storage use, which post_image's lack): 0 the HUD-less copy, 1 motion vectors, 2 the
-// interpolated frame
+// Its own images (with storage use, which post_image's lack): 0 the HUD-less copy, 1 motion vectors, 2..4 the
+// interpolated frames (DLSS's multi frame generation: up to 3)
 static TexBackend *fg_image(int i, uint32_t w, uint32_t h, VkFormat f, VkImageUsageFlags usage) {
-    static TexBackend img[3];
+    static TexBackend img[5];
     TexBackend *d = &img[i];
     if (d->image && (d->width != w || d->height != h || d->format != f)) {
         vk_views_forget(d);
@@ -9996,6 +9998,16 @@ static int cam_best(uint32_t w, uint32_t h) {
     return best;
 }
 
+// The depth image's rows: uv.y = (ndc.y * ysign + 1) / 2
+static float fg_ysign(void) {
+    static float ysign;
+    if (!ysign) {
+        const char *e = getenv("SAVAGEWIND_FG_YSIGN");  // (testing: the image rows' direction)
+        ysign = e ? (float)atof(e) : renderer_origin_lower_left() ? 1.0f : -1.0f;
+    }
+    return ysign;
+}
+
 // The camera's motion vectors (fg_mv.frag) into mv (RG16F at db's size), for frame generation and DLSS (dlss_scene):
 // each pixel of db, the world camera's depth, back to a point in the world with this frame's view-projection (m: a
 // camera candidate's floats) and that point through prev_vp, the previous frame's (this one's at a cut): its uv then
@@ -10014,11 +10026,7 @@ static bool cam_motion(VkCommandBuffer cb, const float *m, const double *prev_vp
         }
     static const VkComponentMapping id = {0};
     VkImageView dv = vk_image_view(db, VK_IMAGE_VIEW_TYPE_2D, db->format, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_DEPTH_BIT);
-    static float ysign;
-    if (!ysign) {
-        const char *e = getenv("SAVAGEWIND_FG_YSIGN");  // (testing: the image rows' direction)
-        ysign = e ? (float)atof(e) : renderer_origin_lower_left() ? 1.0f : -1.0f;
-    }
+    float ysign = fg_ysign();
     float pc[28] = {0};
     for (int r = 0; r < 4; r++)
         for (int c = 0; c < 4; c++) pc[c * 4 + r] = (float)mm[r * 4 + c];  // (GLSL: column-major)
@@ -10060,18 +10068,32 @@ static bool cam_motion(VkCommandBuffer cb, const float *m, const double *prev_vp
     return true;
 }
 
-// At the game's present (device.c), outside the window image's rendering: the frame between the previous one and
-// t (b: its image), or NULL (not wanted, or this frame lacks what it needs: the next one starts over).
-TexBackend *vk_fg_generate(NvnTexture *t, TexBackend *b) {
+// At the game's present (device.c), outside the window image's rendering: the frames between the previous one and
+// t (b: its image) into gens[], in order; how many (DLSS: Video > Frame generation multiplier - 1, FSR 3: 1), or 0
+// (not wanted, or this frame lacks what it needs: the next one starts over).
+int vk_fg_generate(NvnTexture *t, TexBackend *b, TexBackend **gens) {
     // (the game composites the scene into an image of its own and copies that into the presented one: the same size)
     TexBackend *ob = fg.out_rt ? vk_tex(fg.out_rt, true) : NULL;
     bool same = ob && ob->width == b->width && ob->height == b->height && fg.present_format == unorm_of(b->format);
     fg.present_format = unorm_of(b->format);
     if (fg.copy_pending) fg_copy_hudless();  // (nothing drawn after the composite)
+    {   // (the backend changed: the other one's contexts and images freed. DLSS's feature holds ~0.5 GB at 4K)
+        static int last;
+        int now_b = g_fg_want ? g_fg_want : last;  // (not over the menus: kept for when play goes on)
+        if (g_settings.frame_gen == FG_OFF && !getenv("SAVAGEWIND_FG")) now_b = FG_OFF;
+        if (now_b != last && (last == FG_FSR3 || (last == FG_DLSS && vk_dlssg_live()))) {
+            vk_fg_wait_idle();
+            if (last == FG_FSR3) fg_destroy();
+            else vk_dlssg_release();
+            LOG("[fg] %s frame generation freed\n", last == FG_FSR3 ? "AMD FSR 3" : "NVIDIA DLSS");
+        }
+        last = now_b;
+    }
     uint64_t now = SDL_GetTicksNS();
     float frame_ms = fg.last_ns ? (float)((now - fg.last_ns) / 1e6) : 16.7f;
     fg.last_ns = now;
-    TexBackend *out = NULL, *scene = fg.scene && same ? vk_tex(fg.scene, true) : NULL;
+    int ngen = 0;
+    TexBackend *scene = fg.scene && same ? vk_tex(fg.scene, true) : NULL;
     int best = scene ? cam_best(scene->width, scene->height) : -1;
     bool ok = g_fg_want && fg.hudless_ok && best >= 0 && b->image && b->layers == 1 && b->samples == 1;
     {   // why not, now and then (a frame in play without what generation needs)
@@ -10111,7 +10133,7 @@ TexBackend *vk_fg_generate(NvnTexture *t, TexBackend *b) {
         // Their .xy are clip-space NDC differences (y up, the image's y down), FSR's uv offset over the render size
         // (-x / 2, y / 2), as for the FSR 3 upscaler (fsr3_scene).
         bool objv = mvec_filled == renderer_present_count() && mvec_vectors_img && mvec_vectors_img->width == db->width &&
-                    mvec_vectors_img->height == db->height;
+                    mvec_vectors_img->height == db->height && g_fg_want != FG_DLSS;  // (DLSS: the camera's)
         if (!mvec_for_framegen()) objv = false;  // (the default: they break up foliage, mvec.c mvec_for_framegen)
         if (objv) mv = mvec_vectors_img, ok = true;
         else ok = cam_motion(cb, m, fg.prev_vp, link ? fg.cand[best].link : NULL, fg.prev_link, db, mv);
@@ -10128,7 +10150,12 @@ TexBackend *vk_fg_generate(NvnTexture *t, TexBackend *b) {
                     cb = vk_cmd();
                 }
             }
-            TexBackend *o = fg_image(2, b->width, b->height, unorm_of(b->format), VK_IMAGE_USAGE_STORAGE_BIT);
+            bool dlss = g_fg_want == FG_DLSS;
+            int n = dlss ? frame_gen_mult(FG_DLSS) - 1 : 1;
+            TexBackend *outs[3];
+            for (int k = 0; k < n; k++)
+                outs[k] = fg_image(2 + k, b->width, b->height, unorm_of(b->format), VK_IMAGE_USAGE_STORAGE_BIT);
+            TexBackend *o = outs[0];
             FgConfig cfg = {b->width, b->height, db->width, db->height, unorm_of(b->format), unorm_of(hl->format), false};
             static int dbg = -1;
             if (dbg < 0) dbg = getenv("SAVAGEWIND_FG_DEBUG_VIEW") != NULL;
@@ -10149,16 +10176,31 @@ TexBackend *vk_fg_generate(NvnTexture *t, TexBackend *b) {
             memcpy(f.cam_right, right, sizeof right), memcpy(f.cam_fwd, fwd, sizeof fwd);
             if (!g_fg_vk.dev) g_fg_vk = (FgVk){g_vk.phys, g_vk.dev, vk_fg_wait_idle};
             vk_full_barrier(cb);
-            gp_mark(cb, "frame generation: FSR 3 optical flow + interpolation");
+            gp_mark(cb, dlss ? "frame generation: DLSS" : "frame generation: FSR 3 optical flow + interpolation");
             static int test = -1;  // (measuring) SAVAGEWIND_FG_TEST=2: no interpolation (the HUD-less copy shown instead)
             if (test < 0) test = getenv("SAVAGEWIND_FG_TEST") ? atoi(getenv("SAVAGEWIND_FG_TEST")) : 0;
-            if (test != 2) rec_drain();  // (FidelityFX records into cb itself: what was queued before goes first)
-            ok = test == 2 ? true : fg_dispatch(cb, &cfg, &f);
-            if (test == 2) o = hl;
+            if (test != 2) rec_drain();  // (FidelityFX and NGX record into cb themselves: what was queued before goes first)
+            if (test == 2) ok = true;
+            else if (dlss) {  // NVIDIA DLSS Frame Generation (dlss.c): the same inputs, and the camera's matrices
+                DlssgFrame d = {.color = b, .hudless = hl, .view_format = unorm_of(b->format), .depth = db, .motion = mv,
+                                .out = {outs[0], outs[n > 1 ? 1 : 0], outs[n > 2 ? 2 : 0]}, .count = n,
+                                .ysign = fg_ysign(), .gl_depth = nvn_depth_mode() == 0, .near_ = f.near_, .far_ = f.far_, .fovy = f.fovy,
+                                .reset = reset};
+                memcpy(d.vp, vp, sizeof vp), memcpy(d.prev_vp, fg.prev_vp, sizeof d.prev_vp);
+                for (int i = 0; i < 16; i++) d.proj[i] = m[28 + i];
+                memcpy(d.cam_pos, pos, sizeof pos), memcpy(d.cam_up, up, sizeof up);
+                memcpy(d.cam_right, right, sizeof right), memcpy(d.cam_fwd, fwd, sizeof fwd);
+                ok = vk_dlssg_dispatch(cb, &d);
+            } else
+                ok = fg_dispatch(cb, &cfg, &f);
+            if (test == 2) outs[0] = hl, n = 1;
             vk_full_barrier(cb);
             gp_mark(cb, "frame generation: done");
             vk_dyn_forget();
-            if (ok) out = o;
+            if (ok) {
+                ngen = n;
+                for (int k = 0; k < n; k++) gens[k] = outs[k];
+            }
             static int logged;
             if (!logged++)
                 LOG("[fg] first frame: depth %ux%u format %d, final image %ux%u format %d, near %g far %g fovy %.1f\n",
@@ -10173,10 +10215,10 @@ TexBackend *vk_fg_generate(NvnTexture *t, TexBackend *b) {
     fg.ncand = 0;
     fg.hudless_ok = fg.copy_pending = false;
     fg.out_rt = fg.scene = NULL;
-    return out;
+    return ngen;
 }
 
-// ================================================================== DLSS (Video > Upscaler; dlss.cpp)
+// ================================================================== DLSS (Video > Upscaler; dlss.c)
 // NVIDIA DLSS Super Resolution at the scene -> final image composite (scene_post): the 3D scene, at its internal
 // resolution (RS_SCENE), to its size in the final image before the HUD is drawn over it. Besides the colour it takes
 // the world camera's depth and the camera's motion vectors, the ones frame generation makes (fg_draw finds the camera,
