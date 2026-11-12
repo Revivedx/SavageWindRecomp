@@ -176,9 +176,10 @@ gives the driver a fresh cache.
 
 ### The sky is black, dark or wrong on my AMD card
 
-Fixed in 0.5.2. It came from AMD's own shader compiler, which AMD's Windows driver uses on RX 6000 cards and older
-(Vega included); newer cards and Linux drew the sky right. Update to 0.5.2, and if the sky is still wrong there, add
-your card, driver and log on [#359](https://github.com/Revivedx/SavageWindRecomp/issues/359).
+Still being looked at. It happens on AMD's Windows driver with RX 6000 cards and older (Vega included), not on newer
+cards or on Linux, and it can change from one start to the next. The 0.5.2 change for it did not fix it. Please follow
+the steps on [#359](https://github.com/Revivedx/SavageWindRecomp/issues/359) and add your card, driver, screenshots and
+logs there.
 
 ### The water is white, milky or transparent
 
@@ -311,10 +312,9 @@ a new one. The full list is on the [issue tracker](https://github.com/Revivedx/S
 
 | Problem | Seen on | Issue |
 |---|---|---|
-| Black, dark or wrong sky (fixed in 0.5.2: tell us if it still happens) | AMD on Windows, RX 6000 and older | [#359](https://github.com/Revivedx/SavageWindRecomp/issues/359), [#665](https://github.com/Revivedx/SavageWindRecomp/issues/665) |
+| Black, dark or wrong sky, can change between starts | AMD on Windows, RX 6000 and older | [#359](https://github.com/Revivedx/SavageWindRecomp/issues/359), [#665](https://github.com/Revivedx/SavageWindRecomp/issues/665) |
 | Fog glitches in the intro | Under investigation | [#630](https://github.com/Revivedx/SavageWindRecomp/issues/630) |
 | Transparent water | Under investigation | [#649](https://github.com/Revivedx/SavageWindRecomp/issues/649) |
-| Rain or torch particles stretched across the screen for a frame (radial flashes, shards); please try `SAVAGEWIND_GPU_OVERLAP=0` and tell us | NVIDIA and AMD | [#620](https://github.com/Revivedx/SavageWindRecomp/issues/620), [#629](https://github.com/Revivedx/SavageWindRecomp/issues/629), [#683](https://github.com/Revivedx/SavageWindRecomp/issues/683), [#717](https://github.com/Revivedx/SavageWindRecomp/issues/717) |
 | Graphical bugs | ROG Ally Z1E on SteamOS | [#614](https://github.com/Revivedx/SavageWindRecomp/issues/614) |
 | Corrupted footprints in sand | Under investigation | [#634](https://github.com/Revivedx/SavageWindRecomp/issues/634) |
 | Corrupted picture | Under investigation | [#632](https://github.com/Revivedx/SavageWindRecomp/issues/632) |

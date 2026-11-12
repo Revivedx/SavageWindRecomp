@@ -6,6 +6,25 @@ What changed in each Savage Wind release. The `test` branch holds what the next 
 
 Nothing yet.
 
+## 0.5.3 (0.5.3-alpha.5) - 2026-11-12
+
+A quick fix update. **Updating:** Savage Wind Configuration offers it in one click (from 0.5.1 on). Your game files,
+saves and settings stay.
+
+### Fixes
+
+- **Setup stuck at 99%** while precompiling shaders, on AMD cards with Windows after updating to 0.5.2 (21502 of 21503
+  pipelines), where Esc could not stop it either ([#359](https://github.com/Revivedx/SavageWindRecomp/issues/359)): a
+  shader compile the graphics driver never finishes no longer holds setup up. After 3 minutes without progress, or
+  when you press Esc, setup goes on without it, and `savagewind.log` names the shader.
+- **Rain and torch particles** stretched across the screen for a frame
+  ([#620](https://github.com/Revivedx/SavageWindRecomp/issues/620),
+  [#629](https://github.com/Revivedx/SavageWindRecomp/issues/629),
+  [#683](https://github.com/Revivedx/SavageWindRecomp/issues/683),
+  [#717](https://github.com/Revivedx/SavageWindRecomp/issues/717)): the vertex data the game rewrites every frame is
+  now copied before the graphics card reads it. If you set `SAVAGEWIND_GPU_OVERLAP=0` for this, remove it: it costs a
+  lot of frame rate (150 -> 95 fps in heavy rain on an RTX 3060), and the fix costs about 1%.
+
 ## 0.5.2 (0.5.2-alpha.5) - 2026-11-12
 
 A bug-fix update. **Updating:** Savage Wind Configuration offers it in one click (from 0.5.1 on). This update changes
