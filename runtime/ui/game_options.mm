@@ -171,9 +171,6 @@ const char *const k_shadow[] = {"Console (896)", "High (2048)", "Ultra (4096)", 
 const int k_shadow_order[] = {SHADOW_POTATO, SHADOW_CONSOLE, SHADOW_HIGH, SHADOW_ULTRA, SHADOW_EXTREME};
 const char *const k_text[] = {"Off", "2x", "4x"};  // (sharper_text / 2)
 const char *const k_icons[] = {"Automatic", "Keyboard", "Xbox", "PlayStation", "Nintendo", "Steam Deck"};  // (ICONS_*)
-const char *const k_button_layout[BUTTON_LAYOUT_COUNT] = {
-    "Automatic", "Nintendo", "Swap A / B", "Xbox", "Swap X / Y", "GameCube"
-};  // (BUTTON_LAYOUT_*)
 static int fps_at(int x) { const int *l; fps_choices(&l); return l[x]; }  // frame rate (0: Off, no limit)
 static int fps_count() { const int *l; return fps_choices(&l); }
 static int fps_default_index() {
@@ -876,12 +873,6 @@ void build_items(void) {
                        [](const Item &, int x) { return tr(k_icons[x]); },
                        [](const Item &) { return g_settings.button_icons; },
                        [](const Item &, int x) { g_settings.button_icons = x; }, ICONS_AUTO));
-    v.push_back(choice(P_CONTROLS, "HUD button layout",
-                       "Where the four face buttons sit on the HUD diamond, from the next start. Automatic: follows your bindings.",
-                       [](const Item &) { return N(k_button_layout); },
-                       [](const Item &, int x) { return tr(k_button_layout[x]); },
-                       [](const Item &) { return g_settings.button_layout; },
-                       [](const Item &, int x) { g_settings.button_layout = x; }, BUTTON_LAYOUT_AUTO));
 
     // Key bindings: one row per action (key | controller button), then the inputs no action covers. A waits for the
     // next press: a key or mouse button binds the keyboard side, a controller button the controller side

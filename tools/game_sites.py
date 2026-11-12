@@ -265,6 +265,12 @@ SITES = [
     Site('act_hold', 'code', PAD_QUERY + ' b9411e68', 0),
     Site('act_trig', 'code', PAD_QUERY + ' b9401268', 0),
     Site('act_masks', 'ref', PAD_QUERY + ' b9401268', 5),
+    # DoCommand's contextual prompt selector, update and text/layout setup (verified on 1.9.0).
+    Site('hud_action_button', 'code', 'a9be7bfd f9000bf3 910003fd 7100c01f 90000008/9f00001f 91000108/ffc003ff 1a9f3009 5280030a', 0),
+    Site('hud_action_update', 'code', 'a9bd7bfd f9000bf5 a9024ff4 910003fd b9767014 3100069f 54000000/ff00001f b9767808', 0),
+    Site('hud_action_show', 'code', '3100043f 54000001/ff00001f d65f03c0 d10183ff a9027bfd a9035ff8 a90457f6 a9054ff4', 0),
+    # SousaGuide stores the native button ID before adding a control hint to its list (1.9.0).
+    Site('hud_action_guide', 'code', 'b9400268 910023e1 b9012be8 5286c608 8b080280 94000000/fc000000', 2),
     # the store of an equipped weapon's, bow's or shield's durability, x100 (tools/patches.py _no_wear; from #296: the
     # setter 1.8.2 0x7000c809e8 finds the equipped item of a type w22 in the pouch and stores the new value w20)
     Site('no_wear_store', 'code', 'b9002174 5288fb08 72a00088 38686aa8 35000008/ff00001f 2a1403e0 2a1f03e2 '
@@ -387,6 +393,8 @@ OPTIONAL_GROUPS = [
      'grass_blade_lateral_far'),
     ('tree_ranges',),
     ('act_hold', 'act_trig', 'act_masks'),
+    ('hud_action_button', 'hud_action_update', 'hud_action_show'),
+    ('hud_action_guide',),
     ('pouch_remove_arrows',),
     ('no_wear_store',),
     ('no_wear_hit', 'no_wear_ret'),

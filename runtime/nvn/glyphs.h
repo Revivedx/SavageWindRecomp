@@ -15,13 +15,18 @@ bool glyphs_apply_layout(uint32_t format, uint32_t w, uint32_t h, uint8_t *lin, 
 // One of those textures (R8 texels, deswizzled)?
 bool glyphs_is_layout_icon(uint32_t w, uint32_t h, const uint8_t *lin, uint32_t row);
 
+// The rombo's face icons use their own characters and cells in External_00.bffnt.
+enum { HUD_FACE_CODE = 0xE068, HUD_FACE_INDEX = 51, HUD_FACE_COUNT = 4, HUD_CONTEXT_CODE = 0xE06C };
+extern const int glyphs_face_buttons[HUD_FACE_COUNT];  // East, South, North, West
+void glyphs_fixed_hud(bool enabled);
+bool glyphs_hud_faces_fixed(void);
+void glyphs_context_button(int host_button);
+int glyphs_context_button_current(void);
+
 // Changes whenever the icons to draw change (device, bindings, setting): sheets uploaded under another one go up again.
 uint32_t glyphs_generation(void);
 // The same without the menu pointer's state: what the overlay's fonts are made for (their icons are the face buttons).
 uint32_t glyphs_font_generation(void);
-
-// The diamond vertex (0: East, 1: South, 2: North, 3: West) for each Switch face button (A, B, X, Y) on the HUD.
-void glyphs_hud_positions(int pos[4]);
 
 // The device the Controls page and the tips draw instead of the Switch (runtime/nvn/hw_illust.c HW_DEVICE_*), -1 for
 // the Switch: Button icons' device, or on Automatic the controller connected. Decided when the game files are opened

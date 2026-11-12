@@ -19,6 +19,7 @@
 #include <math.h>
 #include <pthread.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -45,6 +46,19 @@
 // its own, so it is recognised by its contents (the same in every region and language).
 typedef struct { uint32_t cols, rows, sheet_w, sheet_h; } SheetFont;
 static const SheetFont k_sheet = {5, 20, 256, 1024};
+static _Atomic bool fixed_hud;
+static _Atomic int hud_context_button = -1;
+const int glyphs_face_buttons[HUD_FACE_COUNT] = {
+    SDL_GAMEPAD_BUTTON_EAST, SDL_GAMEPAD_BUTTON_SOUTH, SDL_GAMEPAD_BUTTON_NORTH, SDL_GAMEPAD_BUTTON_WEST,
+};
+
+void glyphs_fixed_hud(bool enabled) {
+    atomic_store(&fixed_hud, enabled);
+}
+
+bool glyphs_hud_faces_fixed(void) {
+    return atomic_load(&fixed_hud);
+}
 #define SHEET_BYTES 0x20000ull
 #define SHEET_HASH 0x726127a3b63fbd95ull  // FNV-1a of those bytes (External_00.bffnt from 0x2000, 1.8.2)
 
@@ -53,6 +67,9 @@ static uint16_t index_of(int code) {
     if (code >= 0xE040 && code <= 0xE04C) return (uint16_t)(code - 0xE040);
     if (code >= 0xE050 && code <= 0xE05B) return (uint16_t)(13 + code - 0xE050);
     if (code >= 0xE05D && code <= 0xE067) return (uint16_t)(25 + code - 0xE05D);
+    if (code >= HUD_FACE_CODE && code < HUD_FACE_CODE + HUD_FACE_COUNT)
+        return (uint16_t)(HUD_FACE_INDEX + code - HUD_FACE_CODE);
+    if (code == HUD_CONTEXT_CODE) return HUD_FACE_INDEX + HUD_FACE_COUNT;
     if (code >= 0xE083 && code <= 0xE091) return (uint16_t)(36 + code - 0xE083);
     return 0xffff;
 }
@@ -522,58 +539,11 @@ static int resolve_kind(void) {
     return f == 1 ? ICONS_XBOX : f == 2 ? ICONS_PLAYSTATION : f == 3 ? ICONS_STEAMDECK : ICONS_NINTENDO;
 }
 
-static int face_vertex(int host) {
-    switch (host) {
-    case SDL_GAMEPAD_BUTTON_EAST: return 0;
-    case SDL_GAMEPAD_BUTTON_SOUTH: return 1;
-    case SDL_GAMEPAD_BUTTON_NORTH: return 2;
-    case SDL_GAMEPAD_BUTTON_WEST: return 3;
-    default: return -1;
-    }
-}
-
-void glyphs_hud_positions(int pos[4]) {
-    static const int k_presets[BUTTON_LAYOUT_COUNT][4] = {
-        {0, 1, 2, 3},  // BUTTON_LAYOUT_AUTO (fallback: Nintendo)
-        {0, 1, 2, 3},  // BUTTON_LAYOUT_NINTENDO: East A, South B, North X, West Y
-        {1, 0, 2, 3},  // BUTTON_LAYOUT_SWAP_AB:  South A, East B, North X, West Y
-        {1, 0, 3, 2},  // BUTTON_LAYOUT_XBOX:     South A, East B, West X, North Y
-        {0, 1, 3, 2},  // BUTTON_LAYOUT_SWAP_XY:  East A, South B, West X, North Y
-        {1, 3, 0, 2},  // BUTTON_LAYOUT_GAMECUBE: South A, West B, East X, North Y
-    };
-    int layout = g_settings.button_layout;
-    if (layout > BUTTON_LAYOUT_AUTO && layout < BUTTON_LAYOUT_COUNT) {
-        memcpy(pos, k_presets[layout], 4 * sizeof(int));
-        return;
-    }
-    int p[4], mask = 0;
-    for (int i = 0; i < 4; i++) {
-        p[i] = face_vertex(g_bind_pad[BIND_A + i]);
-        if (p[i] >= 0) mask |= 1 << p[i];
-    }
-    if (mask == 0xF && (p[0] != 0 || p[1] != 1 || p[2] != 2 || p[3] != 3)) {
-        memcpy(pos, p, sizeof p);
-        return;
-    }
-    static const int k_acts[4] = {0, 14, 2, 3};  // Interact (A), Cancel (B), Jump (X), Attack (Y)
-    mask = 0;
-    for (int i = 0; i < 4; i++) {
-        int h = g_act_pad[k_acts[i]];
-        if (h == ACT_FOLLOW) h = g_bind_pad[BIND_A + i];
-        p[i] = face_vertex(h);
-        if (p[i] >= 0) mask |= 1 << p[i];
-    }
-    if (mask == 0xF) {
-        memcpy(pos, p, sizeof p);
-        return;
-    }
-    memcpy(pos, k_presets[0], 4 * sizeof(int));
-}
-
 // cursor: with the state of the menus' mouse pointer, which changes some keyboard icons while a menu is open.
-static uint32_t generation(bool cursor) {
+static uint32_t generation(bool cursor, int context_button) {
     int k = resolve_kind();
-    uint32_t h = 2166136261u ^ (uint32_t)k;
+    uint32_t h = 2166136261u ^ (uint32_t)k ^ (glyphs_hud_faces_fixed() ? 0x100u : 0);
+    if (cursor) h = (h ^ (uint16_t)context_button) * 16777619u;
     if (k == ICONS_KEYBOARD) {
         if (cursor) {
             h = (h ^ pc_cursor_preview_active()) * 16777619u;
@@ -587,8 +557,15 @@ static uint32_t generation(bool cursor) {
     return h | 1;
 }
 
-uint32_t glyphs_generation(void) { return generation(true); }
-uint32_t glyphs_font_generation(void) { return generation(false); }
+uint32_t glyphs_generation(void) { return generation(true, glyphs_context_button_current()); }
+uint32_t glyphs_font_generation(void) { return generation(false, -1); }
+void glyphs_context_button(int host_button) {
+    atomic_store(&hud_context_button, host_button);
+}
+
+int glyphs_context_button_current(void) {
+    return atomic_load(&hud_context_button);
+}
 
 static int glyphs_console_wanted(void) {
     switch (g_settings.button_icons) {
@@ -671,6 +648,28 @@ static bool draw_glyph(Canvas *c, Box b, int code, int kind, int *copy) {
     }
 }
 
+static bool draw_fixed_face(Canvas *c, Box b, int face, int kind, int *copy) {
+    if (kind == ICONS_KEYBOARD) return draw_glyph(c, b, 0xE040 + face, kind, copy);
+    if (kind == ICONS_NINTENDO) {
+        *copy = 0xE040 + face;
+        return false;
+    }
+    int family = kind == ICONS_PLAYSTATION ? 2 : kind == ICONS_STEAMDECK ? 3 : 1;
+    pad_button(c, b, glyphs_face_buttons[face], family);
+    return true;
+}
+
+static bool draw_context_button(Canvas *c, Box b, int kind, int host, int *copy) {
+    if (host < 0) return false;
+    if (kind == ICONS_NINTENDO) {
+        *copy = nintendo_code(host);
+        return *copy != 0;
+    }
+    int family = kind == ICONS_PLAYSTATION ? 2 : kind == ICONS_STEAMDECK ? 3 : 1;
+    pad_button(c, b, host, family);
+    return true;
+}
+
 // Where glyph index i's cell is in the uploaded sheet: its top-left pixel and whether rows run bottom-up
 static void cell_origin(const SheetFont *f, uint32_t i, int *x0, int *y0) {
     *x0 = (int)(i % f->cols) * (CELL + 1);
@@ -718,10 +717,12 @@ bool glyphs_apply(uint64_t addr, uint64_t pool_lo, uint64_t pool_hi, uint32_t fo
                             (unsigned long long)addr, (unsigned long long)hash);
         return false;
     }
-    uint32_t gen = glyphs_generation();
+    int context_button = glyphs_context_button_current();
+    uint32_t gen = generation(true, context_button);
     bool dump = getenv("SAVAGEWIND_GLYPH_DUMP") != NULL;
     if (!dump && sheet_cached(gen, lin)) return true;
     int kind = resolve_kind();
+    bool fixed = glyphs_hud_faces_fixed();
     uint8_t *orig = malloc((uint64_t)w * h), *img = malloc((uint64_t)w * h);
     bc4_decode(lin, wb, hb, orig);
     memcpy(img, orig, (uint64_t)w * h);
@@ -729,14 +730,18 @@ bool glyphs_apply(uint64_t addr, uint64_t pool_lo, uint64_t pool_hi, uint32_t fo
     for (int code = 0xE040; code < 0xE0A0; code++) {
         uint32_t gi = index_of(code);
         if (gi == 0xffff) continue;
-        int x0, y0;
+        bool face = code >= HUD_FACE_CODE && code < HUD_FACE_CODE + HUD_FACE_COUNT;
+        bool context = code == HUD_CONTEXT_CODE;
+        if ((face || context) && !fixed) continue;
+        int x0, y0, box_x, box_y;
         cell_origin(f, gi, &x0, &y0);
         if (x0 + CELL > (int)w || y0 + CELL > (int)h) continue;
+        cell_origin(f, face ? code - HUD_FACE_CODE : context ? 0 : gi, &box_x, &box_y);
         // the original glyph's box (its lit pixels)
         int bx0 = CELL, by0 = CELL, bx1 = -1, by1 = -1;
         for (int y = 0; y < CELL; y++)
             for (int x = 0; x < CELL; x++)
-                if (orig[(uint64_t)sheet_y(f, y0, y) * w + x0 + x] > 96) {
+                if (orig[(uint64_t)sheet_y(f, box_y, y) * w + box_x + x] > 96) {
                     if (x < bx0) bx0 = x;
                     if (x > bx1) bx1 = x;
                     if (y < by0) by0 = y;
@@ -747,7 +752,9 @@ bool glyphs_apply(uint64_t addr, uint64_t pool_lo, uint64_t pool_hi, uint32_t fo
         static Canvas cv;
         memset(&cv, 0, sizeof cv);
         int copy = 0;
-        bool drawn = draw_glyph(&cv, b, code, kind, &copy);
+        bool drawn = face ? draw_fixed_face(&cv, b, code - HUD_FACE_CODE, kind, &copy)
+                     : context ? draw_context_button(&cv, b, kind, context_button, &copy)
+                     : draw_glyph(&cv, b, code, kind, &copy);
         if (copy && index_of(copy) != 0xffff) {  // the game's glyph from another cell
             int sx0, sy0;
             cell_origin(f, index_of(copy), &sx0, &sy0);
@@ -844,7 +851,15 @@ bool glyphs_apply_layout(uint32_t format, uint32_t w, uint32_t h, uint8_t *lin, 
     static Canvas cv;
     memset(&cv, 0, sizeof cv);
     int kind = resolve_kind(), copy = 0;
-    bool drawn = draw_glyph(&cv, b, li->code, kind, &copy);  // (Nintendo: the game's own, even with other bindings)
+    bool fixed = glyphs_hud_faces_fixed() && li->code >= 0xE040 && li->code <= 0xE043;
+    bool drawn = fixed ? (kind != ICONS_NINTENDO && draw_fixed_face(&cv, b, li->code - 0xE040, kind, &copy))
+                       : draw_glyph(&cv, b, li->code, kind, &copy);
+    if (!drawn && copy >= 0xE040 && copy <= 0xE043 && li->code >= 0xE040 && li->code <= 0xE043) {
+        // A standalone texture cannot copy a neighboring cell when a Nintendo face button is remapped.
+        char label[] = {"ABXY"[copy - 0xE040], 0};
+        round_label(&cv, b, label);
+        drawn = true;
+    }
     if (drawn)
         for (int y = 0; y < (int)h; y++)
             for (int x = 0; x < (int)w; x++) {  // (bilinear from the canvas)

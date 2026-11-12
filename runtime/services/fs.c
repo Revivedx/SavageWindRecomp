@@ -13,9 +13,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <zlib.h>
+#include <SDL3/SDL_gamepad.h>
 
 #include "../game_sites.h"
 #include "../hle.h"
+#include "../input_bind.h"
 #include "../ipc.h"
 #include "../language.h"
 #include "../platform.h"
@@ -46,6 +48,7 @@ typedef struct { uint64_t off, size; uint8_t *data; } Patch;
 typedef struct { uint64_t off, size; char *path; uint32_t meta; } RomFile;
 // Redirected voice files that got bigger than the game's own (voice_redirect), for rstb_patch
 typedef struct { const char *path; uint64_t grow; } GrownFile;
+enum { HUD_FONT_ARCHIVES = 7 };
 // A RomFS image the game reads and what Savage Wind changes in it: the game's own (base + update, extracted/romfs)
 // and each add-on content's (extracted/aoc<index>). Both get the same changes (voices, overlay folder,
 // ResourceSizeTable, HUD letters); the functions below work on R, the image being indexed.
@@ -65,6 +68,8 @@ typedef struct {
     int ngrown;
     uint8_t *rstb_blob;      // the patched ResourceSizeTable served from memory (rstb_patch)
     uint8_t *hud_pack;       // Pack/Bootup.pack with the HUD letters patched (hud_letters_patch)
+    uint8_t *hud_fonts[HUD_FONT_ARCHIVES];
+    char hud_font_paths[HUD_FONT_ARCHIVES][32];
     uint8_t *voice_banks;    // the text language's voice banks with the chosen voices' lengths (bars_hybrid)
 } RomImage;
 #define AOC_MAX 8
@@ -72,6 +77,10 @@ static RomImage images[1 + AOC_MAX];  // [0] the game's, [index] add-on content
 static RomImage *R = &images[0];
 static FsInventoryClipLayout inventory_clip_layout;
 static _Atomic bool inventory_clip_layout_valid;
+static int hud_face_slots[HUD_FACE_COUNT];  // physical vertex -> logical pane in the legacy layout
+static _Atomic bool hud_faces_ready;
+typedef struct { uint64_t screen; uint32_t prompt; int button; } HudDisplay;
+static HudDisplay hud_display;
 
 // Reboot: the next boot builds its own index / overlay when the game opens the RomFS again.
 RT_ON_RESET(fs_reset) {
@@ -84,11 +93,16 @@ RT_ON_RESET(fs_reset) {
         for (int i = 0; i < m->npatches; i++) free(m->patches[i].data);  // (ov_meta and the extended table are among these)
         for (int i = 0; i < m->rom_nfiles; i++) free(m->rom_files[i].path);
         free(m->ov), free(m->rom_files), free(m->grown), free(m->rstb_blob), free(m->hud_pack), free(m->voice_banks);
+        for (int i = 0; i < HUD_FONT_ARCHIVES; i++) free(m->hud_fonts[i]);
         romfs_image_close(m->img);
         *m = (RomImage){0};
     }
     R = &images[0];
     atomic_store_explicit(&inventory_clip_layout_valid, false, memory_order_release);
+    hud_faces_ready = false;
+    glyphs_fixed_hud(false);
+    glyphs_context_button(-1);
+    hud_display = (HudDisplay){0};
     g_save_dir = "save";
 }
 
@@ -672,17 +686,168 @@ static void inventory_layout_from_overlay(const char *host) {
 
 #define HUD_ICON_SCALE 1.5f
 
-// One layout (FLYT, little-endian, a single font), patched into out (room for n + 64 bytes); returns its size or 0
-static size_t hud_letters_flyt(const uint8_t *b, size_t n, uint8_t *out, int which, const int pos[4], int *panes) {
+// Action IDs in the game's input table.
+enum HudAction {
+    HUD_ACTION_UNKNOWN = -1,
+    HUD_ACTION_INTERACT = 0,
+    HUD_ACTION_JUMP = 2,
+    HUD_ACTION_ATTACK = 3,
+    HUD_ACTION_GUARD = 13,
+    HUD_ACTION_CANCEL = 14,
+    HUD_ACTION_PARAGLIDER = 19,
+    HUD_ACTION_HORSE_SPEED = 26,
+    HUD_ACTION_HORSE_SOOTHE = 27,
+    HUD_ACTION_THROW_WEAPON = 28,
+    HUD_ACTION_ACTIVATE_RUNE = 34,
+    HUD_ACTION_WATER_SPIN = 36,
+    HUD_ACTION_THROW_DISTANCE = 37,
+    HUD_ACTION_CYCLE_ACCELERATE = 38,
+    HUD_ACTION_CYCLE_BRAKE = 39,
+    HUD_ACTION_CYCLE_JUMP = 40,
+};
+
+// Indices in 1.9.0's DoCommand prompt table. The separate command table maps 0x42 to Descend (2),
+// 0x0e to Pull (26), 0x3c to Swim Upward (33), and 0x53 to the contextual Dash guide (35).
+// Prompts without a known action keep their native selection.
+static int hud_prompt_action(uint32_t prompt) {
+    switch (prompt) {
+    case 0: return HUD_ACTION_PARAGLIDER;  // Glide
+    case 1: case 2: case 3: case 4: case 5: case 6: case 7: case 8: case 9: case 10: case 11:
+    case 13: case 14: case 15: case 17: case 18: case 20: case 21: case 22: case 23: case 24: case 25:
+    case 26: case 27: case 33: case 34: case 35: case 36: case 37: case 38: case 39: case 40:
+    case 41: case 42: case 44: case 45: case 47:
+        return HUD_ACTION_INTERACT;  // Contextual interactions accepted by the game's isTrig(Interact) paths
+    case 12: return HUD_ACTION_HORSE_SOOTHE;  // Soothe the horse
+    case 16: return HUD_ACTION_JUMP;  // Climb: the observed Jump prompt. The same command also confirms in a dodge path.
+    case 19: case 32: case 43:
+        return HUD_ACTION_ATTACK;  // Flurry Rush / Sneakstrike / Hit
+    case 28: case 29: case 30: case 31: case 46:
+        return HUD_ACTION_ACTIVATE_RUNE;  // Stop Time / Activate / Freeze / Shatter / Summon
+    default: return HUD_ACTION_UNKNOWN;
+    }
+}
+
+int rt_hud_action_button(uint32_t prompt) {
+    if (!hud_faces_ready || strcmp(g_game_version, "1.9.0")) return -1;
+    int mode = g_settings.button_icons;
+    if (mode == ICONS_KEYBOARD || (mode == ICONS_AUTO && input_last_device() == DEVICE_KEYBOARD)) {
+        glyphs_context_button(-1);
+        return -1;
+    }
+    int action = hud_prompt_action(prompt);
+    int host;
+    if (act_is_default(action)) {
+        // Keep the game's own Jump button option for its factory-default actions.
+        if (action == HUD_ACTION_JUMP || action == HUD_ACTION_PARAGLIDER) return -1;
+        int raw = act_switch_button(action);
+        if (raw < 0) return -1;
+        host = g_bind_pad[raw];
+    } else {
+        host = g_act_pad[action];
+    }
+    for (int i = 0; i < HUD_FACE_COUNT; i++) {
+        if (host != glyphs_face_buttons[i]) continue;
+        glyphs_context_button(-1);
+        if (glyphs_hud_faces_fixed()) return i;
+        int slot = hud_face_slots[i];
+        return g_bind_pad[BIND_A + slot] == host ? slot : -1;
+    }
+    if (!glyphs_hud_faces_fixed() || host < 0) {
+        glyphs_context_button(-1);
+        return -1;
+    }
+    glyphs_context_button(host);
+    return 4;  // the standalone layout, without the face-button diamond
+}
+
+int rt_hud_action_refresh(uint64_t screen, uint32_t pending, uint32_t shown) {
+    int button = rt_hud_action_button(pending);
+    int selected = button == 4 ? glyphs_context_button_current() : button;
+    selected = button == 4 ? selected + 0x100 : selected;
+    bool changed = hud_display.screen == screen && hud_display.prompt == pending && hud_display.button != selected;
+    hud_display = (HudDisplay){screen, pending, selected};
+    return changed && pending == shown && pending != UINT32_MAX;
+}
+
+// SousaGuide's numbered entries are separate from DoCommand's contextual diamond.
+static int hud_guide_action(uint32_t guide) {
+    switch (guide) {
+    case 0: return HUD_ACTION_HORSE_SPEED;  // Speed up horse
+    case 2: return HUD_ACTION_HORSE_SOOTHE;  // Soothe horse
+    case 3: return HUD_ACTION_GUARD;  // Target / center
+    case 4: case 5: return HUD_ACTION_THROW_DISTANCE;  // Throw distance
+    case 6: case 15: case 22: case 31: case 32: return HUD_ACTION_CANCEL;  // Cancel
+    case 7: case 9: case 14: return HUD_ACTION_JUMP;  // Jump / swim dash
+    case 8: case 13: return HUD_ACTION_INTERACT;  // Descend / run in the contextual guide
+    case 24: return HUD_ACTION_ACTIVATE_RUNE;  // Detonate remote bomb
+    case 25: return HUD_ACTION_WATER_SPIN;  // Zora Helm spin attack
+    case 26: return HUD_ACTION_CYCLE_ACCELERATE;  // Master Cycle accelerate
+    case 27: return HUD_ACTION_CYCLE_BRAKE;  // Master Cycle brake
+    case 28: return HUD_ACTION_CYCLE_JUMP;  // Master Cycle jump
+    case 29: case 30: return HUD_ACTION_THROW_WEAPON;  // Put down / throw held object
+    default: return HUD_ACTION_UNKNOWN;
+    }
+}
+
+uint32_t rt_hud_action_guide_button(uint32_t guide, uint32_t button) {
+    if (strcmp(g_game_version, "1.9.0")) return button;
+    int action = hud_guide_action(guide);
+    if (act_is_default(action)) return button;
+    int mode = g_settings.button_icons;
+    bool keyboard = mode == ICONS_KEYBOARD || (mode == ICONS_AUTO && input_last_device() == DEVICE_KEYBOARD);
+    int host = keyboard ? g_act_key[action] : g_act_pad[action];
+    if (host < 0 || (keyboard && !host)) return button;
+    const int16_t *bindings = keyboard ? g_bind_key : g_bind_pad;
+    // Fixed button IDs in the native guide renderer. It can also draw the four individual d-pad directions.
+    static const uint8_t icons[BIND_PAD_COUNT] = {
+        [BIND_A] = 0x06, [BIND_B] = 0x07, [BIND_X] = 0x08, [BIND_Y] = 0x09,
+        [BIND_LSTICK] = 0x18, [BIND_RSTICK] = 0x05,
+        [BIND_L] = 0x19, [BIND_R] = 0x01, [BIND_ZL] = 0x1a, [BIND_ZR] = 0x00,
+        [BIND_PLUS] = 0x0a, [BIND_MINUS] = 0x0b,
+        [BIND_LEFT] = 0x0f, [BIND_UP] = 0x0e, [BIND_RIGHT] = 0x0c, [BIND_DOWN] = 0x0d,
+    };
+    for (int slot = 0; slot < BIND_PAD_COUNT; slot++)
+        if (bindings[slot] == host) return icons[slot];
+    return button;
+}
+
+// Font overlays may lack the HUD's dedicated glyphs. Lay out the stock, binding-aware glyphs at boot in that case.
+static void hud_physical_positions(int pos[4]) {
+    unsigned used = 0;
+    for (int i = 0; i < 4; i++) {
+        pos[i] = -1;
+        for (int j = 0; j < 4; j++) {
+            if (g_bind_pad[BIND_A + i] != glyphs_face_buttons[j] || (used & (1u << j))) continue;
+            pos[i] = j;
+            used |= 1u << j;
+            break;
+        }
+    }
+    for (int i = 0; i < 4; i++) {
+        if (pos[i] >= 0) continue;
+        int j = i;
+        while (used & (1u << j)) j = (j + 1) % 4;
+        pos[i] = j;
+        used |= 1u << j;
+    }
+}
+
+// One layout (FLYT, little-endian, a single font), patched into out (room for n + 256 bytes); returns its size or 0
+static size_t hud_letters_flyt(const uint8_t *b, size_t n, uint8_t *out, int which, const int pos[4],
+                               bool fixed, const uint8_t *context_template, size_t context_template_size,
+                               int *panes) {
     static const char icon_font[] = "External_00.bffnt";
+    static const char faces[] = "ABXY";
     static const float k_act_xy[4][2] = {{26.0f, 0.0f}, {0.0f, -26.0f}, {0.0f, 26.0f}, {-26.0f, 0.0f}};
     static const float k_dim_xy[4][2] = {{26.2f, 0.8f}, {1.0f, -26.0f}, {0.8f, 26.0f}, {-25.5f, -0.2f}};
     if (n < 0x14 || memcmp(b, "FLYT", 4) || b[4] != 0xFF || b[5] != 0xFE) return 0;
     size_t hs = b[6] | b[7] << 8, o = hs, w = hs;
-    if (hs > n) return 0;
+    if (hs < 0x14 || hs > n) return 0;
     memcpy(out, b, hs);
-    bool fonts = false, seen_capture = false;
-    bool reorder = pos && (pos[0] != 0 || pos[1] != 1 || pos[2] != 2 || pos[3] != 3);
+    if (fixed && which == 4 && (!context_template || context_template_size < 0xAC)) return 0;
+    bool fonts = false, seen_capture = false, button_parent = false;
+    int depth = 0, button_depth = -1;
+    bool reorder = which != 4 && pos && (pos[0] != 0 || pos[1] != 1 || pos[2] != 2 || pos[3] != 3);
     int act = reorder && which >= 0 && which < 4 ? pos[which] : which;
     bool west = act == 3;
     while (o + 8 <= n) {
@@ -691,12 +856,16 @@ static size_t hud_letters_flyt(const uint8_t *b, size_t n, uint8_t *out, int whi
         if (sz < 8 || o + sz > n) return 0;
         uint8_t *sec = out + w;
         if (!memcmp(b + o, "fnl1", 4)) {
+            if (sz < 16) return 0;
             uint32_t first;
             memcpy(&first, b + o + 12, 4);
-            if ((b[o + 8] | b[o + 9] << 8) != 1 || 12 + first >= sz) return 0;
+            if ((b[o + 8] | b[o + 9] << 8) != 1 || first >= sz - 12) return 0;
             const char *name0 = (const char *)b + o + 12 + first;
-            size_t l0 = strnlen(name0, sz - 12 - first) + 1, l1 = sizeof icon_font;
+            size_t room = sz - 12 - first, l0 = strnlen(name0, room), l1 = sizeof icon_font;
+            if (l0 == room) return 0;
+            l0++;
             uint32_t total = (uint32_t)((12 + 8 + l0 + l1 + 3) & ~3u), off0 = 8, off1 = (uint32_t)(8 + l0);
+            if (total > n + 256 - w) return 0;
             memset(sec, 0, total);
             memcpy(sec, "fnl1", 4);
             memcpy(sec + 4, &total, 4);
@@ -710,21 +879,57 @@ static size_t hud_letters_flyt(const uint8_t *b, size_t n, uint8_t *out, int whi
             fonts = true;
             continue;
         }
-        memcpy(sec, b + o, sz);
-        if (reorder && !memcmp(sec, "txl1", 4)) {
-            for (uint32_t j = 12; j + 18 <= sz; j++)
-                if (!memcmp(sec + j, "Nt_KeyBtnSubBase", 16))
-                    sec[j + 16] = (act == 0 || act == 3) ? 'A' : 'B';
+        if (sz > n + 256 - w) return 0;
+        if (fixed && which == 4 && !memcmp(b + o, "pic1", 4) &&
+            (!memcmp(b + o + 12, "Nt_KeyTexL_00", 13) || !memcmp(b + o + 12, "Nt_KeyTexL_01", 13))) {
+            if (context_template_size > n + 256 - w) return 0;
+            uint32_t text_offset;
+            memcpy(sec, context_template, context_template_size);
+            memcpy(sec, b + o, 84);
+            memcpy(sec, "txt1", 4);
+            uint32_t text_size = (uint32_t)context_template_size;
+            memcpy(sec + 4, &text_size, 4);
+            memcpy(sec + 0x5A, "\x01\0", 2);
+            memcpy(&text_offset, sec + 0x64, 4);
+            if (!text_offset || text_offset > context_template_size - 4) return 0;
+            // Use the same single-character text-pane structure as the face-button prompts. The L guide pane
+            // contains a localized "LGuide" string and its text metadata; repurposing that pane made the game
+            // render repeated characters for this icon.
+            memset(sec + text_offset, 0, context_template_size - text_offset);
+            uint16_t code = HUD_CONTEXT_CODE, terminator = 0;
+            memcpy(sec + text_offset, &code, sizeof code);
+            memcpy(sec + text_offset + sizeof code, &terminator, sizeof terminator);
+            float size[2] = {40.5f, 40.5f};
+            memcpy(sec + 0x70, size, sizeof size);
+            w += context_template_size;
+            o += sz;
+            (*panes)++;
+            continue;
         }
-        if (!memcmp(sec, "txt1", 4) && sz >= 0x68) {
+        memcpy(sec, b + o, sz);
+        if (!memcmp(sec, "pas1", 4)) {
+            if (button_parent) button_depth = depth + 1;
+            depth++;
+        } else if (!memcmp(sec, "pae1", 4)) {
+            if (depth == button_depth) button_depth = -1;
+            depth--;
+        }
+        button_parent = false;
+        if (reorder && !memcmp(sec, "txl1", 4)) {
+            static const char base[] = "Nt_KeyBtnSubBase";
+            for (uint32_t j = 12; j + sizeof base <= sz; j++)
+                if (!memcmp(sec + j, base, sizeof base - 1))
+                    sec[j + sizeof base - 1] = (act == 0 || act == 3) ? 'A' : 'B';
+        }
+        if (!memcmp(sec, "txt1", 4) && sz >= 0x78) {
             uint32_t toff;
             memcpy(&toff, sec + 0x64, 4);
-            if (toff && toff + 4 <= sz && !sec[toff + 1] && !sec[toff + 2] && !sec[toff + 3]) {
-                const char *k = strchr("ABXY", sec[toff]);
+            if (toff && toff <= sz - 4 && !sec[toff + 1] && !sec[toff + 2] && !sec[toff + 3]) {
+                const char *k = strchr(faces, sec[toff]);
                 if (k && *k) {
-                    int btn = (int)(k - "ABXY");
+                    int btn = (int)(k - faces);
                     sec[0x5A] = 1, sec[0x5B] = 0;  // (the font: the second)
-                    uint16_t c = (uint16_t)(0xE040 + btn);
+                    uint16_t c = (uint16_t)((fixed ? HUD_FACE_CODE : 0xE040) + btn);
                     memcpy(sec + toff, &c, 2);
                     float fs[2];  // the font size: an icon fills less of its cell than a letter
                     memcpy(fs, sec + 0x70, 8);
@@ -748,6 +953,7 @@ static size_t hud_letters_flyt(const uint8_t *b, size_t n, uint8_t *out, int whi
                 memcpy(sec + 68, &sx, 4);
             } else if (!strncmp(name, "N_Btn", 5)) {
                 memcpy(sec + 44, k_act_xy[act], 8);
+                button_parent = true;
             } else if (!strncmp(name, "W_Base", 6)) {
                 float wx = west ? 33.0f : -33.0f, wsx = west ? -1.0f : 1.0f;
                 memcpy(sec + 44, &wx, 4);
@@ -770,9 +976,11 @@ static size_t hud_letters_flyt(const uint8_t *b, size_t n, uint8_t *out, int whi
                 memcpy(sec + 44, cx, 8);
                 seen_capture = true;
             } else if (!strncmp(name, "P_CaptureUse", 12)) {
+                // The visible shadow already inherits the button pane's translation.
+                bool local = button_depth >= 0;
                 float px[2] = {
-                    (seen_capture ? k_act_xy[act][0] : 0.0f) + (west ? -60.0f : 60.0f),
-                    seen_capture ? k_act_xy[act][1] : 0.0f,
+                    (!local && seen_capture ? k_act_xy[act][0] : 0.0f) + (west ? -60.0f : 60.0f),
+                    local ? (act == 0 ? 4.0f : 0.0f) : (seen_capture ? k_act_xy[act][1] : 0.0f),
                 };
                 memcpy(sec + 44, px, 8);
             }
@@ -780,10 +988,30 @@ static size_t hud_letters_flyt(const uint8_t *b, size_t n, uint8_t *out, int whi
         w += sz;
         o += sz;
     }
-    if (!fonts || w > n + 64) return 0;
+    if (!fonts || w > n + 256) return 0;
     uint32_t total = (uint32_t)w;
     memcpy(out + 0xC, &total, 4);
     return w;
+}
+
+// The L layout's guide text is localized prose, not a glyph text pane. Reuse the game's single-button text-pane
+// structure from the A prompt so the standalone contextual glyph has the same metadata as the face glyphs.
+static bool hud_context_text_template(const uint8_t *b, size_t n, uint8_t *out, size_t cap, size_t *out_size) {
+    if (n < 0x14 || memcmp(b, "FLYT", 4) || b[4] != 0xFF || b[5] != 0xFE) return false;
+    size_t hs = b[6] | b[7] << 8;
+    if (hs < 0x14 || hs > n) return false;
+    for (size_t o = hs; o + 8 <= n;) {
+        uint32_t sz;
+        memcpy(&sz, b + o + 4, sizeof sz);
+        if (sz < 8 || o + sz > n) return false;
+        if (!memcmp(b + o, "txt1", 4) && sz <= cap && sz >= 0xAC && !memcmp(b + o + 12, "T_B_00", 7)) {
+            memcpy(out, b + o, sz);
+            *out_size = sz;
+            return true;
+        }
+        o += sz;
+    }
+    return false;
 }
 
 // Gameplay > Sharper menus: every BNTX in an archive, its one-channel textures of one level added to the list
@@ -880,10 +1108,81 @@ static void text_sheets_scan(void) {
     LOG("[fs] sharper text: %d font sheets found\n", text_sheet_count());
 }
 
+enum { HUD_FONT_EXTRA = (HUD_FACE_COUNT + 1) * 3 };  // three CWDH bytes per glyph
+
+// Give the HUD unused character codes and sheet cells. The stock face glyphs still follow raw bindings.
+static bool hud_extend_font(uint8_t *font, uint32_t size) {
+    enum { WIDTHS = 0x22068, MAP = 0x22114, FINF_CMAP = 0x30 };
+    static const uint8_t map_header[] = {0x40, 0xe0, 0, 0, 0x91, 0xe0, 0, 0, 1, 0, 0, 0};
+    if (size != 0x221d0 || memcmp(font, "FFNT\xff\xfe", 6) || memcmp(font + WIDTHS, "CWDH", 4) ||
+        memcmp(font + MAP, "CMAP", 4) || memcmp(font + MAP + 8, map_header, sizeof map_header) ||
+        font[WIDTHS + 10] != HUD_FACE_INDEX - 1) return false;
+    const size_t entries = MAP + 24 + (HUD_FACE_CODE - 0xE040) * 2;
+    for (size_t i = 0; i < (HUD_FACE_COUNT + 1) * sizeof(uint16_t); i++)
+        if (font[entries + i] != 0xff) return false;
+    memmove(font + MAP + HUD_FONT_EXTRA, font + MAP, size - MAP);
+    memcpy(font + WIDTHS + 16 + HUD_FACE_INDEX * 3, font + WIDTHS + 16, HUD_FONT_EXTRA);
+    memset(font + MAP + HUD_FONT_EXTRA - 3, 0, 3);
+    uint32_t file_size = size + HUD_FONT_EXTRA, widths_size = MAP - WIDTHS + HUD_FONT_EXTRA;
+    uint32_t map_data = MAP + HUD_FONT_EXTRA + 8;
+    memcpy(font + 12, &file_size, 4);
+    memcpy(font + WIDTHS + 4, &widths_size, 4);
+    font[WIDTHS + 10] = HUD_FACE_INDEX + HUD_FACE_COUNT;
+    memcpy(font + FINF_CMAP, &map_data, 4);
+    for (uint16_t i = 0; i < HUD_FACE_COUNT; i++) {
+        uint16_t cell = HUD_FACE_INDEX + i;
+        memcpy(font + entries + HUD_FONT_EXTRA + i * sizeof cell, &cell, sizeof cell);
+    }
+    uint16_t context_cell = HUD_FACE_INDEX + HUD_FACE_COUNT;
+    memcpy(font + entries + HUD_FONT_EXTRA + HUD_FACE_COUNT * sizeof context_cell, &context_cell, sizeof context_cell);
+    return true;
+}
+
+static uint8_t *hud_font_archive(const RomFile *file, size_t *out_n) {
+    size_t an = 0, zn = file->size;
+    uint8_t *z = malloc(zn), *out = NULL;
+    if (!z) return NULL;
+    uint8_t *arc = romfs_image_pread(R->img, z, zn, file->off) == (ssize_t)zn ? yaz0_unpack(z, zn, &an) : NULL;
+    uint32_t data, start, end;
+    int node = arc ? sarc_find(arc, an, "External_00.bffnt", &data, &start, &end) : -1;
+    if (node >= 0 && (uint64_t)data + end == an && an <= UINT32_MAX - HUD_FONT_EXTRA) {
+        // The external font is the last resource, so its growth leaves all archive offsets aligned.
+        uint32_t total = (uint32_t)an + HUD_FONT_EXTRA, e = end + HUD_FONT_EXTRA;
+        uint8_t *patched = realloc(arc, total);
+        if (patched) {
+            arc = patched;
+            if (hud_extend_font(arc + data + start, end - start)) {
+                memcpy(arc + 8, &total, 4);
+                memcpy(arc + 0x20 + node * 16 + 12, &e, 4);
+                out = yaz0_pack(arc, total, z, out_n);
+            }
+        }
+    }
+    free(arc), free(z);
+    return out;
+}
+
+typedef struct { const RomFile *file; uint8_t *data; size_t size; } HudFontPatch;
+
+static void rstb_name(const char *path, char *out, size_t cap);
+
+static void hud_overlay_file(const RomFile *file, const uint8_t *data, uint64_t size) {
+    uint64_t rel = R->ov_end - R->rom_data_off;
+    memcpy(R->ov_meta + file->meta + 8, &rel, 8);
+    memcpy(R->ov_meta + file->meta + 0x10, &size, 8);
+    if (R->ov_n == R->ov_cap) {
+        R->ov_cap = R->ov_cap ? R->ov_cap * 2 : 256;
+        R->ov = realloc(R->ov, sizeof *R->ov * R->ov_cap);
+    }
+    R->ov[R->ov_n++] = (Overlay){R->ov_end, size, NULL, -1, data};
+    R->ov_end = (R->ov_end + size + 0xF) & ~0xFull;
+}
+
 static void hud_letters_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
     static const char pack_path[] = "Pack/Bootup.pack";
     static const char *const layouts[] = {"blyt/PaDoCommandA_00.bflyt", "blyt/PaDoCommandB_00.bflyt",
-                                          "blyt/PaDoCommandX_00.bflyt", "blyt/PaDoCommandY_00.bflyt"};
+                                          "blyt/PaDoCommandX_00.bflyt", "blyt/PaDoCommandY_00.bflyt",
+                                          "blyt/PaDoCommandL_00.bflyt"};
     int k = 0;
     while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, pack_path)) k++;
     char host[1200];
@@ -903,19 +1202,46 @@ static void hud_letters_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz)
     if (R == &images[0] && arc) inventory_layout_from_common(arc, an);
     if (getenv("SAVAGEWIND_NO_HUD_LETTERS")) { free(pack), free(arc); return; }
     const char *why = node < 0 ? "no Layout/Common.sblarc" : !arc ? "archive not readable" : NULL;
-    int pos[4];
-    glyphs_hud_positions(pos);
+    HudFontPatch fonts[HUD_FONT_ARCHIVES];
+    int nfonts = 0;
+    bool fixed = !why && R == &images[0];
+    for (int i = 0; fixed && i < R->rom_nfiles; i++) {
+        const char *path = R->rom_files[i].path;
+        if (strncmp(path, "Font/Font_", 10) || !strstr(path, ".sbfarc")) continue;
+        if (nfonts == HUD_FONT_ARCHIVES || overlay_file(path, host, sizeof host)) { fixed = false; break; }
+        HudFontPatch font = {.file = &R->rom_files[i]};
+        font.data = hud_font_archive(font.file, &font.size);
+        if (!font.data) { fixed = false; break; }
+        fonts[nfonts++] = font;
+    }
+    fixed = fixed && nfonts > 0;
+    int pos[4] = {0, 1, 2, 3};
+    if (!fixed) hud_physical_positions(pos);
+    uint8_t context_template[256];
+    size_t context_template_size = 0;
     if (!why) {
-        arc2 = malloc(an + 4 * (0x80 + 0x2000));
+        if (fixed) {
+            uint32_t template_off, template_start, template_end;
+            int template_layout = sarc_find(arc, an, layouts[0], &template_off, &template_start, &template_end);
+            if (template_layout < 0 ||
+                !hud_context_text_template(arc + template_off + template_start, template_end - template_start,
+                                          context_template, sizeof context_template, &context_template_size))
+                why = "single-button text template not found";
+        }
+    }
+    if (!why) {
+        arc2 = malloc(an + 5 * (0x100 + 0x2000));
         memcpy(arc2, arc, an);
         nn = an;
-        for (int i = 0; i < 4 && !why; i++) {
+        for (int i = 0; i < 5 && !why; i++) {
             int li = sarc_find(arc, an, layouts[i], &adoff, &as, &ae);
-            if (li < 0 || ae - as > 0x2000 - 64) { why = "layout not found"; break; }
+            if (li < 0 || ae - as > 0x2000 - 256) { why = "layout not found"; break; }
             size_t at = (nn + 0x7F) & ~(size_t)0x7F;
             memset(arc2 + nn, 0, at - nn);
             nn = at;
-            size_t ln = hud_letters_flyt(arc + adoff + as, ae - as, arc2 + nn, i, pos, &panes);
+            size_t ln = hud_letters_flyt(arc + adoff + as, ae - as, arc2 + nn, i, pos, fixed,
+                                         i == 4 ? context_template : NULL, i == 4 ? context_template_size : 0,
+                                         &panes);
             if (!ln) { why = "layout not as expected"; break; }
             uint32_t s = (uint32_t)(nn - adoff), e = (uint32_t)(nn - adoff + ln);
             memcpy(arc2 + 0x20 + li * 16 + 8, &s, 4);
@@ -923,7 +1249,7 @@ static void hud_letters_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz)
             nn += ln;
         }
     }
-    if (!why && panes != 12) why = "letters not as expected";
+    if (!why && panes != (fixed ? 14 : 12)) why = "letters not as expected";
     if (arc && !why) {  // the Controls page's lines and the tips' marks to the device's buttons (runtime/nvn/hw_illust.c)
         static const char *const lay[] = {"blyt/PaAllControllerTipsNN_00.bflyt", "blyt/PaMessageTipsDrcImageNN_00.bflyt"};
         int dev = glyphs_console();
@@ -937,6 +1263,7 @@ static void hud_letters_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz)
     if (why) {
         LOG("[fs] HUD letters: %s, the game's letters stay\n", why);
         free(pack), free(arc), free(arc2);
+        for (int i = 0; i < nfonts; i++) free(fonts[i].data);
         return;
     }
     uint32_t total = (uint32_t)nn;
@@ -963,14 +1290,25 @@ static void hud_letters_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz)
     memcpy(R->hud_pack + 8, &q32, 4);
     free(pack), free(arc), free(arc2), free(z2);
     meta_copy(fmeta, foff, fsz);
-    uint64_t rel = R->ov_end - R->rom_data_off, size = qn;
-    memcpy(R->ov_meta + R->rom_files[k].meta + 8, &rel, 8);
-    memcpy(R->ov_meta + R->rom_files[k].meta + 0x10, &size, 8);
-    if (R->ov_n == R->ov_cap) { R->ov_cap = R->ov_cap ? R->ov_cap * 2 : 256; R->ov = realloc(R->ov, sizeof *R->ov * R->ov_cap); }
-    R->ov[R->ov_n++] = (Overlay){R->ov_end, size, NULL, -1, R->hud_pack};
-    R->ov_end = (R->ov_end + size + 0xF) & ~0xFull;
+    hud_overlay_file(&R->rom_files[k], R->hud_pack, qn);
     R->grown = realloc(R->grown, sizeof *R->grown * (R->ngrown + 1));
     R->grown[R->ngrown++] = (GrownFile){"Layout/Common.blarc", nn - an};
+    for (int i = 0; i < nfonts; i++) {
+        const HudFontPatch *font = &fonts[i];
+        if (!fixed) { free(font->data); continue; }
+        R->hud_fonts[i] = font->data;
+        hud_overlay_file(font->file, font->data, font->size);
+        R->grown = realloc(R->grown, sizeof *R->grown * (R->ngrown + 1));
+        rstb_name(font->file->path, R->hud_font_paths[i], sizeof R->hud_font_paths[i]);
+        size_t packed_growth = font->size > font->file->size ? font->size - font->file->size : 0;
+        R->grown[R->ngrown++] = (GrownFile){R->hud_font_paths[i], packed_growth + HUD_FONT_EXTRA};
+    }
+    if (R == &images[0]) {
+        for (int i = 0; i < 4; i++) hud_face_slots[pos[i]] = i;
+        glyphs_fixed_hud(fixed);
+        LOG("[fs] HUD fixed face glyphs: %d font archives\n", fixed ? nfonts : 0);
+        hud_faces_ready = true;
+    }
     LOG("[fs] HUD letters: %d button letters use the icon font (archive %zu -> %zu bytes, pack +%llu KB, %.0f ms)\n",
         panes, (size_t)old, zn, (unsigned long long)(delta >> 10), (plat_now_ns() - t0) / 1e6);
 }
