@@ -181,6 +181,10 @@ SITES = [
          '34000009/ff00001f aa1f03e8', 0),
     # a keyframed body's angular velocity toward its target (tools/patches.py _kf_angle): the call that takes the angle
     # of the turn left (hkQuaternion::getAngle, 2 acos(|w|))
+    # a player demo move's arrival test (tools/patches.py _demo_move_arrive): the distance left against the body's speed
+    # in console frames, fcmp s8, s9
+    Site('demo_move_arrive', 'code', 'bd60bd09 94000000/fc000000 f9400668 5282fe09 38696908 34000008/ff00001f 1e292100 '
+         '54000004/ff00001f 90000008/9f00001f bd404261 bd425102 1e222821 1e282020 54000005/ff00001f 1e292921 1e200820', 6),
     Site('kf_angle', 'code', '0e612800 0e0e3c08 0e040d00 0f3f5400 0ea0a800 6e180400 4e221c00 6e211c00 3c9983a0 '
          '94000000/fc000000 3cd883a6 1e2008c0', 9),
     # the sound system's frame (tools/patches.py _snd_frame_floor): the delta frame, at least 0.5, its timers' step
@@ -384,6 +388,7 @@ OPTIONAL_GROUPS = [
     ('stale_actor_helper', 'stale_actor_target'),
     ('quick_menu_capture_alpha',),
     ('kf_angle',),
+    ('demo_move_arrive',),
     ('phys_tick', 'phys_tick_mt', 'phys_motion_tick', 'phys_motion_tick_c'),
     ('yaz0_stream', 'yaz0_stream_ret'),
     ('pc_map_focus', 'pc_map_focus_target', 'pc_map_focus_now'),
@@ -511,6 +516,7 @@ KNOWN = {
         'stale_actor_helper': 0x700120bc40,
         'stale_actor_target': 0x7000dea400,
         'phys_solver_steps': 0x700156f930,
+        'demo_move_arrive': 0x7000c711dc,
         'kf_angle': 0x70012d57fc,
         'phys_tick': 0x70000f5e20,
         'phys_tick_mt': 0x700012644c,

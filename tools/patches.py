@@ -385,6 +385,20 @@ def _solver_steps(gen, a):
 # still for a few steps and then caught up at once (0.08 x sqrt(1, 2, 3, 4) rad/s for a steady 0.05), and Link on it
 # hopped. The runtime gives 2 atan2(|xyz|, |w|), the same angle without the rounding.
 
+# A player demo move's arrival (runtime/hle/framepace.c rt_demo_move_arrive, #364): the move that walks Link along a rail
+# or to a point in a cutscene (1.9.0 0x7000c70a58, shared by PlayerRailMove and PlayerDestinationMove) ends when the
+# distance left (s8) is under the body's speed (s9, in metres per console frame) - one console frame of walking. Its other
+# end test already scales by the step (2 x speed x delta frame, s0). Leaving the Shrine of Resurrection, PlayerRailMove's
+# point runs about 0.15 m ahead of Link along the rail; above ~100 fps a frame's step is short enough for Link to come
+# within 0.185 m of an intermediate point, and the walk ended there for good. The speed is scaled to the step.
+
+def _demo_move_arrive(gen, a):
+    assert _word(gen, a) == 0x1e292100, hex(_word(gen, a))  # fcmp s8, s9
+    return ('{ extern float rt_demo_move_arrive(float, float); '
+            'c->nzcv = rt_fcmp_s(c, rt_vf32(c, 8), rt_demo_move_arrive(rt_vf32(c, 9), rt_vf32(c, 0))); }'
+            f'  /* {a:#x}: fcmp s8, s9 (player demo move: arrived within a frame of walking) */')
+
+
 def _kf_angle(gen, a):
     assert _word(gen, a) >> 26 == 0x25, hex(_word(gen, a))  # bl (getAngle)
     target = sext(_word(gen, a) & 0x3ffffff, 26) * 4 + a
@@ -969,6 +983,7 @@ PATCHES = {
     'stale_actor_target': _stale_actor_target,
     'phys_solver_steps': _solver_steps,
     'kf_angle': _kf_angle,
+    'demo_move_arrive': _demo_move_arrive,
     'phys_tick': _phys_tick,
     'phys_tick_mt': _phys_tick,
     'phys_motion_tick': _phys_motion_tick,

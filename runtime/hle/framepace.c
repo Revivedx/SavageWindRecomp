@@ -435,6 +435,20 @@ int rt_phys_ticked(uint64_t solver_info) {
     return !p || p->tick;
 }
 
+// A player demo move's arrival (tools/patches.py _demo_move_arrive, #364): the move that walks Link in a cutscene ends
+// when the distance left is under the body's speed, given in metres per console frame: one console frame of walking.
+// Leaving the Shrine of Resurrection, the rail move's point runs about 0.15 m ahead of Link; above ~100 fps a frame's step
+// is short enough for Link to come within 0.185 m of an intermediate point (0.169 at 120 fps, measured), and the walk
+// ended halfway, Link standing still for the rest of the scene. The game's other end test (2 x speed x delta frame)
+// already follows the step; this one now does too: one frame of walking at the frame's length, at most a console frame's,
+// so 30 fps (and slower) keeps the game's test. SAVAGEWIND_DEMO_ARRIVE=0: the game's own.
+float rt_demo_move_arrive(float speed, float delta_frame) {
+    static int on = -1;
+    if (on < 0) on = env_int("SAVAGEWIND_DEMO_ARRIVE", 1) != 0;
+    if (!on || !(delta_frame > 0) || delta_frame >= 1) return speed;
+    return speed * delta_frame;
+}
+
 // The sound system's frame (tools/patches.py _snd_frame_floor, #145): the game gives it the delta frame, at least 0.5
 // (a 60 fps frame), and every sound timer and fade steps by it: above 60 fps the sound's clock ran ahead of the game's
 // (x1.6 at ~95 fps, x2 at 120), and the field battle music started each segment while the last one still played. The
