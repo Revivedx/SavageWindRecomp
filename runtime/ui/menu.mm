@@ -522,6 +522,7 @@ static void load_fonts(void) {
 
 // Before a frame: another menu language may need other glyphs - the fonts and their texture are made again
 extern "C" void vk_imgui_fonts_changed(void);  // (runtime/nvn/vulkan/imgui_glue.cpp)
+extern "C" const char *vk_hdr_icc_description(void);  // (runtime/nvn/vulkan/device.c)
 static void fonts_follow_language(void) {
     bool need_hint_fonts = (g_settings.quick_sort || g_settings.quick_drop) && g_romfs_dir && !g_hint_font_attempted;
     bool icons_changed = (g_settings.quick_sort || g_settings.quick_drop) && g_hint_generation != glyphs_font_generation();
@@ -898,10 +899,158 @@ static void tab_display(void) {
     {   // HDR (settings.h HDR_*: runtime/nvn/vulkan/device.c hdr_wanted)
         static const char *const names[HDR_COUNT] = {"Automatic", "On", "Off"};
         opt_choice("HDR", &g_settings.hdr, names, HDR_COUNT, HDR_AUTO,
-                   "Automatic: while Windows HDR is on for this display, the picture is sent in HDR, so it looks as bright "
-                   "and colourful as in SDR (in SDR, Windows shows it dim and dull then). On: always in HDR, where the "
-                   "display takes it. Off: always SDR. White follows Windows' SDR content brightness (Settings > System > "
-                   "Display > HDR).", false);
+                   "Automatic: HDR while your display is in HDR; the scene keeps detail brighter than white. On: "
+                   "always HDR. Off: always standard (SDR). HDR setting changes apply immediately; switching HDR "
+                   "itself takes effect after a restart.",
+                   false);
+        const bool hdr_off = g_settings.hdr == HDR_OFF;
+        auto hdr_sub = [hdr_off]() { if (hdr_off) opt_disable_next(); };
+        static bool hdr_advanced_open;  // (collapsed by default: the HDR look controls are not in the way)
+        opt_indent(1);
+        static const char *const tm_names[] = {"Vanilla", "RenoDX (PsychoV)"};
+        hdr_sub();
+        int tm = g_settings.hdr_tonemapper == 0 ? 0 : 1;
+        if (opt_choice("HDR tone mapper", &tm, tm_names, 2, 1,
+                       "RenoDX: keeps colour and detail in very bright areas instead of letting them clip to white. "
+                       "Vanilla: the game's original tonemap, where anything above white is clipped.", false))
+            g_settings.hdr_tonemapper = tm;
+        const bool psy_off = hdr_off || g_settings.hdr_tonemapper == 0;
+        auto psy_sub = [psy_off]() { if (psy_off) opt_disable_next(); };
+        std::string peak_desc = "The brightest your display can show. The scene, flashes, particles, HUD and menus "
+                                "are capped to it. ";
+        peak_desc += vk_hdr_icc_description();
+        peak_desc += " Moves in 10-nit steps.";
+        hdr_sub();
+        float p = g_settings.hdr_peak_nits ? (float)g_settings.hdr_peak_nits : 1000.0f;
+        if (opt_slider("HDR peak brightness", &p, 80, 10000, 10, 1000, "%g nits", peak_desc.c_str())) {
+            g_settings.hdr_peak_nits = (int)lroundf(p);
+            hdr_look_init_peak();  // (a default preset slot keeps the newly known peak)
+        }
+        hdr_sub();
+        float g = g_settings.hdr_game_nits ? (float)g_settings.hdr_game_nits : 203.0f;
+        if (opt_slider("HDR game brightness", &g, 80, 1000, 1, 203, "%g nits",
+                       "How bright the 3D scene's normal white is. 203 nits is the standard HDR white; higher makes "
+                       "the scene brighter against the HUD, up to the peak."))
+            g_settings.hdr_game_nits = (int)lroundf(g);
+        hdr_sub();
+        float u = g_settings.hdr_ui_nits ? (float)g_settings.hdr_ui_nits
+                                         : g_settings.hdr_game_nits ? (float)g_settings.hdr_game_nits : 203.0f;
+        if (opt_slider("HDR UI brightness", &u, 80, 1000, 1, 203, "%g nits",
+                       "How bright the HUD and this menu's white is. 203 nits is the standard HDR white; capped by the peak."))
+            g_settings.hdr_ui_nits = (int)lroundf(u);
+        if (opt_button(hdr_advanced_open ? "Advanced (hide)" : "Advanced (show)",
+                       "Show or hide the detailed HDR colour and preset controls. The tone mapper and brightness "
+                       "settings above stay visible."))
+            hdr_advanced_open = !hdr_advanced_open;
+        if (hdr_advanced_open) {
+            opt_indent(1);
+            psy_sub();
+            float exposure = (float)g_settings.hdr_exposure;
+            if (opt_slider("HDR exposure", &exposure, 50, 200, 5, 100, "%g %%",
+                           "Overall brightness of the 3D scene. 100% is the game's own brightness."))
+                g_settings.hdr_exposure = (int)lroundf(exposure);
+            psy_sub();
+            float highlights = (float)g_settings.hdr_highlights;
+            if (opt_slider("HDR highlights", &highlights, 0, 100, 1, 50, "%g %%",
+                           "How much bright areas stand out. 50% is neutral; higher brightens highlights, lower "
+                           "tones them down."))
+                g_settings.hdr_highlights = (int)lroundf(highlights);
+            psy_sub();
+            float shadows = (float)g_settings.hdr_shadows;
+            if (opt_slider("HDR shadows", &shadows, 0, 100, 1, 50, "%g %%",
+                           "How much dark areas stand out. 50% is neutral; higher lifts shadows (more detail), lower "
+                           "deepens them."))
+                g_settings.hdr_shadows = (int)lroundf(shadows);
+            psy_sub();
+            float contrast = (float)g_settings.hdr_contrast;
+            if (opt_slider("HDR contrast", &contrast, 0, 100, 1, 50, "%g %%",
+                           "Contrast around the middle brightness. 50% is neutral; higher is punchier, lower is flatter."))
+                g_settings.hdr_contrast = (int)lroundf(contrast);
+            psy_sub();
+            float saturation = (float)g_settings.hdr_saturation;
+            if (opt_slider("HDR saturation", &saturation, 0, 100, 1, 50, "%g %%",
+                           "Colour strength. 50% is neutral; 0% is black and white, 100% is twice as colourful."))
+                g_settings.hdr_saturation = (int)lroundf(saturation);
+            psy_sub();
+            float highlight_saturation = (float)g_settings.hdr_highlight_saturation;
+            if (opt_slider("HDR highlight saturation", &highlight_saturation, 0, 100, 1, 50, "%g %%",
+                           "How much colour very bright areas keep. Below 50% fades them toward white, above 50% "
+                           "keeps more colour; 50% is neutral."))
+                g_settings.hdr_highlight_saturation = (int)lroundf(highlight_saturation);
+            psy_sub();
+            float flare = (float)g_settings.hdr_flare;
+            if (opt_slider("HDR flare", &flare, 0, 100, 1, 0, "%g %%",
+                           "Compensates for glare in very bright scenes. 0% is off."))
+                g_settings.hdr_flare = (int)lroundf(flare);
+            psy_sub();
+            static const char *const gamma_names[] = {"None", "2.2", "BT.1886"};
+            int gamma = g_settings.hdr_gamma;
+            if (opt_choice("HDR gamma correction", &gamma, gamma_names, 3, 0,
+                           "Fits the highlight fade to the display gamma. None: normal HDR output (default). 2.2: "
+                           "standard PC gamma. BT.1886: the 2.4 gamma used by many TVs. It changes how highlights "
+                           "fade near the top, not the peak brightness.",
+                           false))
+                g_settings.hdr_gamma = gamma;
+            psy_sub();
+            float hue = (float)g_settings.hdr_hue;
+            if (opt_slider("HDR highlight hue correction", &hue, 0, 100, 5, 70, "%g %%",
+                           "How much very bright colours (fire, sparks, magic) fade toward the game's original "
+                           "yellow-white instead of staying deep red. 0% keeps them fully saturated; 70% is the "
+                           "recommended default."))
+                g_settings.hdr_hue = (int)lroundf(hue);
+            psy_sub();
+            float blowout = (float)g_settings.hdr_blowout;
+            if (opt_slider("HDR highlight blowout", &blowout, 0, 100, 1, 65, "%g %%",
+                           "How much very bright colours fade to white, as they do in the game's original picture. "
+                           "65% is the recommended default; higher fades more, lower keeps more colour."))
+                g_settings.hdr_blowout = (int)lroundf(blowout);
+            psy_sub();
+            float sdr_blend = (float)g_settings.hdr_sdr_blend;
+            if (opt_slider("HDR SDR blend", &sdr_blend, 0, 60, 1, 18, "%g %%",
+                           "How early bright tones leave the game's original brightness curve and start extending "
+                           "toward the HDR peak. 18% is the recommended default; higher keeps the original look "
+                           "longer, lower adds more HDR range."))
+                g_settings.hdr_sdr_blend = (int)lroundf(sdr_blend);
+            hdr_sub();
+            float vanilla_sat = (float)g_settings.hdr_vanilla_saturation;
+            if (opt_slider("HDR vanilla saturation", &vanilla_sat, 0, 100, 1, 100, "%g %%",
+                           "How much of the game's original colour saturation is applied. 100% is the game's own look."))
+                g_settings.hdr_vanilla_saturation = (int)lroundf(vanilla_sat);
+            hdr_sub();
+            float bloom = (float)g_settings.hdr_bloom;
+            if (opt_slider("HDR bloom strength", &bloom, 0, 100, 1, 100, "%g %%",
+                           "How much glow around bright objects is kept. 100% is the game's own bloom; 0% removes it."))
+                g_settings.hdr_bloom = (int)lroundf(bloom);
+            psy_sub();
+            static const char *const clamp_names[] = {"BT.709", "BT.2020"};
+            int clamp = g_settings.hdr_clamp == 1 ? 1 : 0;
+            if (opt_choice("HDR gamut clamp", &clamp, clamp_names, 2, 0,
+                           "The colour range the final picture is fitted into. BT.709 is the game's original TV "
+                           "range (default); BT.2020 is the wider HDR range, which can keep more vivid colours.",
+                           false))
+                g_settings.hdr_clamp = clamp;
+            hdr_sub();
+            static const char *const look_names[] = {"Preset Off", "Preset 1", "Preset 2", "Preset 3", "Custom"};
+            static const bool look_avail[] = {true, true, true, true, false};  // (Custom is only shown)
+            static int look_shown = -1;  // (the row keeps its shown value across frames, like Colour preset)
+            int look = hdr_look_current();
+            if (opt_choice_avail("HDR preset", &look, &look_shown, look_names, look_avail, 5, 1,
+                                 "Preset Off returns to a plain HDR picture: the game's original tonemap, standard "
+                                 "203-nit brightness and neutral colour settings. Preset 1-3 store your own full "
+                                 "HDR setup, including every setting and brightness. Save writes the current settings "
+                                 "into the last selected preset. Changes apply immediately.")) {
+                hdr_look_apply(look);
+                settings_save();
+            }
+            hdr_sub();
+            if (opt_button("Save HDR preset",
+                           "Save the current HDR settings into the last selected preset (Preset 1 if none is selected).")) {
+                hdr_look_store(g_settings.hdr_preset >= 1 && g_settings.hdr_preset <= 3 ? g_settings.hdr_preset : 1);
+                settings_save();
+            }
+            opt_indent(-1);
+        }
+        opt_indent(-1);
     }
     static const char *const perf_names[] = {"Off", "FPS", "Full"};
     opt_choice("Performance overlay", &g_settings.perf_overlay, perf_names, 3, PERF_OFF,

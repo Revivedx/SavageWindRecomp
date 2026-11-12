@@ -401,7 +401,9 @@ static VkFormat srgb_twin(VkFormat f) {
 }
 
 VkFormat vk_view_format(TexBackend *b, VkFormat want) {
-    if (!b || !b->nview_fmt || want == b->format) return want;
+    if (!b) return want;
+    if (b->hdr_upgraded) return b->format;  // (RGBA16F: no 10-bit view of it is format-compatible)
+    if (!b->nview_fmt || want == b->format) return want;
     for (int i = 0; i < b->nview_fmt; i++) if (b->view_fmt[i] == want) return want;
     static int nlog;
     if (nlog++ < 10) LOG("[vk] view format %d of an image of format %d not in its list: its own instead\n", want, b->format);
@@ -582,6 +584,22 @@ static void create_image(NvnTexture *t, TexBackend *b) {
         }
     }
     bool depthfmt = renderer_format_is_depth(t->format);
+    // HDR (hdr.c): the game's final image is linear 10-bit (A2B10G10R10) with the HUD already drawn into it. Made
+    // RGBA16F, the extended tonemap's highlights survive the HUD and the game's sRGB copy into the 8-bit present image.
+    bool hdr_up = false;
+    // The 3D scene's own tonemap target is at RS_SCENE (1600x900 docked), not the final image: make it RGBA16F too, so
+    // the extended curve's highlights reach the game's upscale/FXAA pass and the HUD. (Smaller 10-bit scene targets
+    // are effects/copies and stay as they are.)
+    bool hdr_scene = b->rs_group == RS_SCENE && t->width >= 1600 && t->height >= 900;
+    if (!depthfmt && (b->rs_group == RS_OUT || hdr_scene) && vf == VK_FORMAT_A2B10G10R10_UNORM_PACK32 &&
+        vk_hdr_targets_wanted()) {
+        VkFormat hf = VK_FORMAT_R16G16B16A16_SFLOAT;
+        if (format_supports(hf, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT |
+                                    VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) {
+            vf = hf;
+            hdr_up = true;
+        }
+    }
     VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     if (depthfmt) usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
     else if (format_supports(vf, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
@@ -667,6 +685,7 @@ static void create_image(NvnTexture *t, TexBackend *b) {
         ai = image_allocation_info(&ci);
         r = vmaCreateImage(g_vk.vma, &ci, &ai, &b->image, &b->mem, NULL);
         depthfmt = false;
+        hdr_up = false;
     }
     if (r != VK_SUCCESS) {
         if (sparse && image_out_of_memory(r)) log_memory_budget("after allocation retry failed");
@@ -679,6 +698,7 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     b->serial = __atomic_add_fetch(&serials, 1, __ATOMIC_RELAXED);
     b->format = vf;
     texmem_note(t, b, depthfmt);
+    b->hdr_upgraded = hdr_up;
     b->width = tw; b->height = th; b->depth = depth; b->layers = layers; b->levels = levels; b->samples = samples;
     b->aspect = depthfmt ? aspect_of(t->format) : VK_IMAGE_ASPECT_COLOR_BIT;
     b->base_type = type == VK_IMAGE_TYPE_1D ? (layers > 1 ? VK_IMAGE_VIEW_TYPE_1D_ARRAY : VK_IMAGE_VIEW_TYPE_1D)
@@ -775,6 +795,7 @@ static void destroy_image(TexBackend *b) {
     b->block = NULL;
     views_forget(b);
     texmem_forget(b);
+    if (b->image) vk_hdr_image_gone(b->image);  // (a present record may still name it)
     if (b->image || b->mem) defer((Dead){.img = b->image, .mem = b->mem});  // (never the same allocation twice)
     b->image = VK_NULL_HANDLE;
     b->mem = VK_NULL_HANDLE;
@@ -1789,6 +1810,7 @@ static void evict_idle_images(void) {
         keyed_remove(b);
         idle_remove(b);
         images_remove(b);
+        if (b->image) vk_hdr_image_gone(b->image);  // (a present record may still name it)
         if (b->image) vmaDestroyImage(g_vk.vma, b->image, b->mem);
         free(b->pending_rgba);
         free(b);

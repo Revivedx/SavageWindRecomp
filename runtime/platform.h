@@ -96,6 +96,12 @@ bool plat_remove_tree(const char *dir);      // rm -rf
 #define PLAT_VENV_PYTHON "venv/bin/python"
 #endif
 
+#ifdef _WIN32
+// The display's peak luminance from the active Windows HDR calibration ICC profile (MHC2 tag, nits), 0 if unknown.
+// hwnd: the game window (SDL_PROP_WINDOW_WIN32_HWND_POINTER), may be NULL. profile: the applied ICC file name.
+int plat_hdr_peak_nits(void *hwnd, char *profile, size_t profile_size);
+#endif
+
 // ---- diagnostics
 // Name of the host function containing pc (guest functions are f_<addr>), NULL if unknown.
 const char *plat_symbol(uint64_t pc, uint64_t *offset);
