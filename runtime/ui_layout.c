@@ -31,7 +31,7 @@ static _Thread_local unsigned pane_draw_depth;
 RT_ON_RESET(ui_layout_reset) { pane_draw_depth = 0; }
 
 bool rt_ui_layout_pane_draw(Cpu *c, void (*native)(Cpu *)) {
-#ifdef __APPLE__
+#ifdef SW_METAL
     return false;
 #else
     uint64_t pane = c->x[0];
@@ -62,7 +62,7 @@ bool rt_ui_layout_pane_draw(Cpu *c, void (*native)(Cpu *)) {
 }
 
 uint64_t ui_layout_begin(Cpu *c) {
-#ifdef __APPLE__
+#ifdef SW_METAL
     return 0;
 #else
     if ((!g_settings.hud_edges && g_settings.hud_size == 100) || !g_site.screen_mgr || strcmp(g_game_version, "1.9.0")) return 0;
