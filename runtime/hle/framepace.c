@@ -174,6 +174,50 @@ bool framepace_map_ui(void) {
     return map && VF(uint8_t, map, 0xfe) == 2;  // same active map screen as pc_cursor.c
 }
 bool framepace_quick_ui(void) { return *(uint32_t *)(uintptr_t)PAUSE_STATE == 4; }
+// A shop's panes, where they are (#599): ShopInfo_00 over a counter, ShopBtnList5_00 / ShopBtnList20_00 and ShopBG_00
+// at a merchant, ShopHorse_00 at a stable, and the list's selection box (BoxCursorTV) while one is up. The game makes
+// these screens when a shop's panel opens and drops them when it closes; each is in the screen manager [screen_mgr]
+// (+0x28 count, +0x30 screens) with its name at +0xd0 (the game's own string, in its module) and its layout at +0x30,
+// whose root pane is at +0x18. A pane (nn::ui2d::Pane): +0x20 its children's list head, linked 8 bytes into each child
+// (+0x28 the first link, +8 in a link the next), +0x58 bit 0 visible, +0x70 its global matrix (3x4, rows of 4 floats:
+// x, y in layout units at +0x7c, +0x8c), +0xb8 its name. Writes up to max (x, y) pairs and returns how many.
+static int shop_walk(uint64_t pane, int depth, float *xy, int n, int max, int *budget) {
+    uint64_t top = HEAP_BASE + kernel_heap_size();
+    if (pane < HEAP_BASE || pane + 0xd0 > top || depth > 12 || --*budget < 0 || n >= max) return n;
+    if (!(VF(uint8_t, pane, 0x58) & 1)) return n;  // (hidden, with all under it)
+    xy[2 * n] = VF(float, pane, 0x7c), xy[2 * n + 1] = VF(float, pane, 0x8c);
+    n++;
+    uint64_t head = pane + 0x20, link = VF(uint64_t, pane, 0x28);
+    for (int k = 0; k < 256 && link != head && link >= HEAP_BASE && link + 16 <= top && *budget > 0; k++) {
+        n = shop_walk(link - 8, depth + 1, xy, n, max, budget);
+        link = VF(uint64_t, link, 8);
+    }
+    return n;
+}
+
+int framepace_shop_panes(float *xy, int max) {
+    uint64_t mgr = *(uint64_t *)(uintptr_t)g_site.screen_mgr, top = HEAP_BASE + kernel_heap_size();
+    if (!mgr) return 0;
+    uint32_t count = VF(uint32_t, mgr, 0x28);
+    uint64_t arr = VF(uint64_t, mgr, 0x30);
+    if (!arr || arr < HEAP_BASE || arr + 8ull * count > top) return 0;
+    // (the list's selection box is BoxCursorTV, a screen of its own the menus share: taken while a shop is up)
+    int n = 0, budget = 2048;
+    uint64_t cursor = 0;
+    bool shop = false;
+    for (uint32_t i = 0; i < count && i < 256; i++) {
+        uint64_t sc = VF(uint64_t, arr, 8 * i);
+        if (sc < HEAP_BASE || sc + 0x100 > top) continue;
+        uint64_t name = VF(uint64_t, sc, 0xd0), layout = VF(uint64_t, sc, 0x30);
+        if (name < GUEST_LO || name >= GUEST_HI - 16 || layout < HEAP_BASE || layout + 0x20 > top) continue;
+        if (!strcmp((const char *)(uintptr_t)name, "BoxCursorTV")) cursor = layout;
+        if (memcmp((const char *)(uintptr_t)name, "Shop", 4)) continue;
+        shop = true;
+        n = shop_walk(VF(uint64_t, layout, 0x18), 0, xy, n, max, &budget);
+    }
+    if (shop && cursor) n = shop_walk(VF(uint64_t, cursor, 0x18), 0, xy, n, max, &budget);
+    return n;
+}
 bool framepace_paused(void) { return in_menu(); }
 
 int framepace_target(void) {
@@ -353,6 +397,100 @@ float rt_kf_angle(uint64_t q) {
     float w = fabsf(v[3]);
     if (!g_kf_angle) return w >= 1.0f ? 0.0f : 2.0f * acosf(w);
     return 2.0f * atan2f(sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]), w);
+}
+
+// Havok's deactivation at the console's pace (tools/patches.py _phys_tick, _phys_motion_tick; #398). Havok judges
+// whether a body has come to rest once per physics step, and the game takes one step a frame:
+//   - a body's island goes to sleep after 6 checks in a row (every 4 steps; every 16 for the far one) within 2 cm (8 cm)
+//     of where it was: 24 steps, 0.8 s at 30 fps and 0.07 s at 360 (hkpMotion +0xd counts them, the world's +0x3ef
+//     paces the checks' flags);
+//   - in its last step the solver slows a body under its deactivation class's speed by a multiplier (0.97 to 0.94) and
+//     stops it under the class's sleep speed (hkpWorld + 0x314, 0x20 a class: +8 the multiplier, +0xc the sleep speed
+//     as a fraction of the class's speed, 1.9.0 0x7000148834). From rest a body gains gravity x the step in a step: at
+//     360 fps a twelfth of a console frame's, under the sleep speed, so it was stopped again every step.
+// In Ree Dahee Shrine the ball lands rolling up the long ramp and stops for a moment before rolling back: above ~120 fps
+// it fell asleep there, and never moved again (at 60 fps, as on the console, it rolls back down to its switch).
+// The runtime counts console frames for each physics world (the frame's length, slow motion left out, as the arrows do)
+// and lets only the steps that complete one count a check: every step at 30 fps (the console's and the game's code), one
+// step in 2 at 60, one in 12 at 360. The solver's slowing and stopping go on in every step, scaled to its length r in
+// console frames (at most 1): the multiplier to the power r and the sleep speed x r, since what a step adds to a body's
+// speed is in proportion to its length; a body is slowed as much a second as on the console and stopped when it would be
+// there, and the steps between two console frames still damp what's held between pushes (a floor switch Link stands on).
+// SAVAGEWIND_PHYS_TICK=0: every step and the game's values (as before).
+#define PHYS_WORLDS 8
+#define PHYS_SOLVER_INFO 0x2b0  // hkpWorld: its hkpSolverInfo (what the bodies' check is handed)
+#define PHYS_CLASSES 0x314      // hkpWorld: the solver's 6 deactivation classes, 0x20 bytes each
+typedef struct {
+    uint64_t world;    // (0: free)
+    float frames;      // console frames since the last step that completed one
+    int tick;          // this step completes one
+    float game[6][2];  // the game's multiplier and sleep speed for each class
+    float put[6][2];   // what was put there for the last step
+    float put_r;       // the step length they were scaled for
+} PhysWorld;
+static PhysWorld g_phys[PHYS_WORLDS];
+static int g_phys_tick = -1;
+
+RT_ON_RESET(phys_tick_reset) { memset(g_phys, 0, sizeof g_phys); }
+
+static PhysWorld *phys_world(uint64_t world, bool add) {
+    for (int i = 0; i < PHYS_WORLDS; i++) {
+        uint64_t w = __atomic_load_n(&g_phys[i].world, __ATOMIC_ACQUIRE);
+        if (w == world) return &g_phys[i];
+        uint64_t none = 0;
+        if (!w && add && __atomic_compare_exchange_n(&g_phys[i].world, &none, world, false, __ATOMIC_ACQ_REL,
+                                                     __ATOMIC_ACQUIRE)) {
+            LOG("[phys] world %#llx: deactivation at the console's pace\n", (unsigned long long)world);
+            return &g_phys[i];
+        }
+        if (!w && !add) return NULL;
+        if (!w && none == world) return &g_phys[i];  // (another thread added it)
+    }
+    return NULL;
+}
+
+// A world's step (its deactivation counter's update): whether it completes a console frame (the counter and the
+// checks go on), with the solver's slowing and stopping scaled to the step
+int rt_phys_tick(uint64_t world) {
+    if (g_phys_tick < 0) g_phys_tick = env_int("SAVAGEWIND_PHYS_TICK", 1) != 0;
+    if (!g_phys_tick) return 1;
+    PhysWorld *p = phys_world(world, true);
+    if (!p) return 1;
+    float r = g_frame_ratio;
+    if (!(r > 0) || r > 1) r = 1;  // (a frame of 1/30 s or longer: the game's values, as on the console)
+    p->frames += r;
+    int tick = p->frames >= 0.999f;
+    if (tick) p->frames = fmaxf(p->frames - 1, 0);
+    p->tick = tick;
+    for (int i = 0; i < 6; i++) {
+        float *m = (float *)(uintptr_t)(world + PHYS_CLASSES + 0x20 * i + 8);
+        if (m[0] != p->put[i][0] || m[1] != p->put[i][1]) p->game[i][0] = m[0], p->game[i][1] = m[1], p->put_r = 0;
+        if (r == p->put_r) continue;  // (already scaled for this length)
+        m[0] = p->put[i][0] = r == 1 ? p->game[i][0] : powf(p->game[i][0], r);
+        m[1] = p->put[i][1] = p->game[i][1] * r;
+    }
+    p->put_r = r;
+    return tick;
+}
+
+// A body's deactivation check (handed the world's solver info): whether its world's step completes a console frame
+int rt_phys_ticked(uint64_t solver_info) {
+    PhysWorld *p = g_phys_tick > 0 ? phys_world(solver_info - PHYS_SOLVER_INFO, false) : NULL;
+    return !p || p->tick;
+}
+
+// A player demo move's arrival (tools/patches.py _demo_move_arrive, #364): the move that walks Link in a cutscene ends
+// when the distance left is under the body's speed, given in metres per console frame: one console frame of walking.
+// Leaving the Shrine of Resurrection, the rail move's point runs about 0.15 m ahead of Link; above ~100 fps a frame's step
+// is short enough for Link to come within 0.185 m of an intermediate point (0.169 at 120 fps, measured), and the walk
+// ended halfway, Link standing still for the rest of the scene. The game's other end test (2 x speed x delta frame)
+// already follows the step; this one now does too: one frame of walking at the frame's length, at most a console frame's,
+// so 30 fps (and slower) keeps the game's test. SAVAGEWIND_DEMO_ARRIVE=0: the game's own.
+float rt_demo_move_arrive(float speed, float delta_frame) {
+    static int on = -1;
+    if (on < 0) on = env_int("SAVAGEWIND_DEMO_ARRIVE", 1) != 0;
+    if (!on || !(delta_frame > 0) || delta_frame >= 1) return speed;
+    return speed * delta_frame;
 }
 
 // The sound system's frame (tools/patches.py _snd_frame_floor, #145): the game gives it the delta frame, at least 0.5

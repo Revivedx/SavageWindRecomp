@@ -4,10 +4,12 @@
 #define _GNU_SOURCE  // (execvpe)
 #endif
 #include "update_appimage.h"
+#include "platform.h"
 #include "platform/sw_update_key.h"
 #include "update_crypto.h"
 
 #include <errno.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -47,9 +49,27 @@ static bool fail(UpdateProblem *p, const char *code, const char *title, const ch
     return false;
 }
 
+// $APPIMAGE only when this program is the one inside it: the runtime sets $APPDIR to its mount, which this program then
+// runs from. An AppImage launcher passes its own $APPIMAGE / $APPDIR on to the games it starts (Quiver Launcher before
+// 3.3.3), and a source build started from such a terminal inherits them: "updating" would replace that other program.
+static char g_self_image[1100];
+
+static void appimage_find(void) {
+    const char *a = getenv("APPIMAGE"), *d = getenv("APPDIR");
+    if (!a || !*a) return;
+    char exe[1100], appdir[1100], real[1100];
+    if (!d || !realpath(d, appdir) || !plat_exe_path(exe, sizeof exe) || !uc_path_inside(exe, appdir)) {
+        fprintf(stderr, "[update] APPIMAGE=%s is another program's: this one is not an AppImage release\n", a);
+        return;
+    }
+    // (the file itself: started through a symbolic link, the update replaces what it points to, not the link)
+    snprintf(g_self_image, sizeof g_self_image, "%s", realpath(a, real) ? real : a);
+}
+
 const char *appimage_path(void) {
-    const char *a = getenv("APPIMAGE");
-    return a && *a ? a : NULL;
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+    pthread_once(&once, appimage_find);
+    return g_self_image[0] ? g_self_image : NULL;
 }
 
 // The environment for another program. What the AppImage runtime set describes this mount, not the next program's.

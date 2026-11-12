@@ -20,6 +20,8 @@ bool framepace_dlc_ui(void);
 bool framepace_loading_ui(void);
 // The pause menu's pages or the map are up (16:9 layouts that cover the whole picture)
 bool framepace_menu_ui(void);
+// A shop's panes, where they are: up to max (x, y) pairs in layout units; how many
+int framepace_shop_panes(float *xy, int max);
 // The map is active, rather than the inventory (both use pause state 2).
 bool framepace_map_ui(void);
 // The game is paused (the pause menu, the map) or the start screen's menu is up

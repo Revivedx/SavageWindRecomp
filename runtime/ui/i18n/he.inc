@@ -377,7 +377,7 @@ T("The size of the maps the sun's shadows are drawn from. Console: the game's ow
 T("Sound", "צליל")
 T("The game's volume. 100% is the game's own level; above it, louder.", "עוצמת השמע של המשחק. 100% היא העוצמה המקורית של המשחק; מעל זה, חזק יותר.")
 T("Shrine sensor volume", "עוצמת שמע של חיישן המקדשים")
-T("Volume of the Sheikah Slate sensor beeps. 0% silences the sensor. From the next start.", "עוצמת השמע של צפצופי חיישן לוח השייקה. 0% משתיק את החיישן. מההפעלה הבאה.")
+T("Volume of the Sheikah Slate sensor beeps. 0% silences the sensor.", "עוצמת השמע של צפצופי חיישן לוח השייקה. 0% משתיק את החיישן.")
 T("The game's echo in caves, dungeons and big rooms.", "ההד של המשחק במערות, במבוכים ובחדרים גדולים.")
 T("Sound in the game's movies (the opening and the ending). Applies the next time a movie starts.", "השמע בסרטונים של המשחק (הפתיחה והסיום). נכנס לתוקף בפעם הבאה שסרטון מתחיל.")
 T("\n\nApplies the next time the game starts: Restart now below, or Quit > Start screen, then Play.", "\n\nנכנס לתוקף בהפעלה הבאה של המשחק: הפעלה מחדש עכשיו (למטה), או יציאה > מסך ההתחלה ואז שחקו.")

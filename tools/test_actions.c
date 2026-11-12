@@ -7,7 +7,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "game_sites.h"
 #include "input_bind.h"
+
+GameSites g_site;  // (no game: the HUD prompt check finds no screens)
 
 static uint64_t now;
 Uint64 SDL_GetTicks(void) { return now; }
@@ -77,6 +80,18 @@ static void a_press_is_not_lost_when_nobody_asked(void) {
     act_poll(true);
     assert(trig(JUMP) == 1);  // still delivered once
     act_poll(true);
+    assert(trig(JUMP) == 0);
+}
+
+// ...but not kept for long: while a message is up the game asks about no player action, and the press that closed it
+// must not jump once the player is asked again
+static void a_press_nobody_asked_about_expires(void) {
+    key_down[SDL_SCANCODE_G] = 1;
+    host(0, 0, 0);
+    act_poll(true);
+    key_down[SDL_SCANCODE_G] = 0;
+    host(0, 0, 0);
+    for (int i = 0; i < 10; i++) now += 50, act_poll(true);  // 500 ms of polls nobody read
     assert(trig(JUMP) == 0);
 }
 
@@ -515,6 +530,7 @@ int main(void) {
     the_switch_button_comes_from_the_game_table();
     a_bound_action_follows_its_key();
     a_press_is_not_lost_when_nobody_asked();
+    a_press_nobody_asked_about_expires();
     menus_use_the_switch_layer();
     two_actions_share_a_key();
     the_default_side_keeps_its_factory_binding();

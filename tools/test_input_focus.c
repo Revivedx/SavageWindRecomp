@@ -31,6 +31,7 @@ void motion_sensor_event(const SDL_Event *e) { (void)e; sensor_events++; }
 void vibration_update(SDL_Gamepad *p, bool focused) { (void)p; vibrating = focused; }
 uint64_t renderer_present_count(void) { return 0; }
 uint64_t plat_now_ns(void) { return 0; }
+void plat_accessibility_shortcuts(bool allow) { (void)allow; }
 
 // PE linkers also keep exported helpers from input.c. These paths are outside this harness.
 static _Noreturn void unexpected_helper(void) { fputs("unexpected runtime helper\n", stderr); abort(); }

@@ -65,6 +65,7 @@ typedef struct {
     int ngrown;
     uint8_t *rstb_blob;      // the patched ResourceSizeTable served from memory (rstb_patch)
     uint8_t *hud_pack;       // Pack/Bootup.pack with the HUD letters patched (hud_letters_patch)
+    size_t hud_pack_size;
     uint8_t *voice_banks;    // the text language's voice banks with the chosen voices' lengths (bars_hybrid)
 } RomImage;
 #define AOC_MAX 8
@@ -947,6 +948,7 @@ static void hud_letters_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz)
     size_t qn = pn + delta;
     free(R->hud_pack);
     R->hud_pack = calloc(1, qn);
+    R->hud_pack_size = qn;
     memcpy(R->hud_pack, pack, pdoff + ps);
     memcpy(R->hud_pack + pdoff + ps, z2, zn);
     memcpy(R->hud_pack + pdoff + pe + delta, pack + pdoff + pe, pn - pdoff - pe);
@@ -1066,62 +1068,80 @@ static void haze_patch(void) {
     LOG("[fs] haze %d %%: %d climate values (scattering x%.2f, near haze x%.2f)\n", pct, changed, sc, kk);
 }
 
-static void shrine_sensor_patch(void) {
-    if (R != &images[0] || R->npatches >= 16) return;
-    static const char pack_path[] = "Pack/Bootup.pack", name[] = "Sound/Resource/M_UI.bars";
-    int k = 0;
-    while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, pack_path)) k++;
-    char host[1200];
-    if (k == R->rom_nfiles || overlay_file(pack_path, host, sizeof host)) return;
-    uint8_t head[0x20];
-    if (romfs_image_pread(R->img, head, 0x20, R->rom_files[k].off) != 0x20 || memcmp(head, "SARC", 4)) return;
-    uint32_t doff;
-    memcpy(&doff, head + 0xC, 4);
-    if (doff > (16u << 20) || doff > R->rom_files[k].size) return;
-    uint8_t *tab = malloc(doff);
-    uint32_t ds = 0, de = 0;
-    bool found = false;
-    if (tab && romfs_image_pread(R->img, tab, doff, R->rom_files[k].off) == (ssize_t)doff) {
-        uint32_t cnt = tab[0x1A] | tab[0x1B] << 8;
-        size_t names = 0x20 + (size_t)cnt * 16 + 8;
-        for (uint32_t i = 0; i < cnt && names <= doff && !found; i++) {
-            uint32_t attr;
-            memcpy(&attr, tab + 0x20 + i * 16 + 4, 4);
-            size_t at = names + (size_t)(attr & 0xFFFFFF) * 4;
-            if (!(attr >> 24) || at + sizeof name > doff || memcmp(tab + at, name, sizeof name)) continue;
-            memcpy(&ds, tab + 0x20 + i * 16 + 8, 4), memcpy(&de, tab + 0x20 + i * 16 + 12, 4);
-            found = de > ds && de - ds < (32u << 20);
-        }
-    }
-    free(tab);
-    if (!found) {
-        k = 0;
-        while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, name)) k++;
-        if (k == R->rom_nfiles) return;
-        size_t n = R->rom_files[k].size;
-        uint64_t at = R->rom_files[k].off;
-        uint8_t *d = malloc(n);
-        if (!d || romfs_image_pread(R->img, d, n, at) != (ssize_t)n) { free(d); return; }
-        if (!shrine_sensor_patch_bars(d, n, g_settings.shrine_sensor_volume)) { free(d); return; }
-        if (g_settings.shrine_sensor_volume < 100) {
-            R->patches[R->npatches++] = (Patch){at, n, d};
-        } else {
-            free(d);
-        }
-        LOG("[fs] shrine sensor: volume %d%%\n", g_settings.shrine_sensor_volume);
-        return;
-    }
-    size_t n = de - ds;
-    uint64_t at = R->rom_files[k].off + doff + ds;
+// The shrine sensor's volume is applied live in the mixer (runtime/shrine_sensor.c, runtime/services/audio.c): here
+// its sound's ADPCM coefficients are noted from both copies of M_UI.bars (in Pack/Bootup.pack and the loose file),
+// as the game reads them (a mod's overlay first), so the mixer can tell its voices apart.
+static int shrine_sensor_note_range(uint64_t at, size_t n) {
+    if (n == 0 || n >= (32u << 20)) return 0;
     uint8_t *d = malloc(n);
-    if (!d || romfs_image_pread(R->img, d, n, at) != (ssize_t)n) { free(d); return; }
-    if (!shrine_sensor_patch_bars(d, n, g_settings.shrine_sensor_volume)) { free(d); return; }
-    if (g_settings.shrine_sensor_volume < 100) {
-        R->patches[R->npatches++] = (Patch){at, n, d};
-    } else {
+    int found = d && romfs_image_pread(R->img, d, n, at) == (ssize_t)n ? shrine_sensor_note_bars(d, n) : 0;
+    free(d);
+    return found;
+}
+
+static int shrine_sensor_note_host(const char *host) {
+    FILE *f = fopen(host, "rb");
+    if (!f) return 0;
+    int found = 0;
+    if (!fseek(f, 0, SEEK_END)) {
+        long n = ftell(f);
+        uint8_t *d = n > 0 && n < (32l << 20) ? malloc((size_t)n) : NULL;
+        if (d && !fseek(f, 0, SEEK_SET) && fread(d, 1, (size_t)n, f) == (size_t)n) found = shrine_sensor_note_bars(d, (size_t)n);
         free(d);
     }
-    LOG("[fs] shrine sensor: volume %d%%\n", g_settings.shrine_sensor_volume);
+    fclose(f);
+    return found;
+}
+
+static void shrine_sensor_note(void) {
+    if (R != &images[0]) return;
+    static const char pack_path[] = "Pack/Bootup.pack", name[] = "Sound/Resource/M_UI.bars";
+    int found = 0;
+    char host[1200];
+
+    // In Pack/Bootup.pack: the HUD letters' copy in memory (R->hud_pack) when there is one, else the RomFS's
+    if (R->hud_pack && R->hud_pack_size) {
+        uint32_t doff = 0, ds = 0, de = 0;
+        if (sarc_find(R->hud_pack, R->hud_pack_size, name, &doff, &ds, &de) >= 0 && de > ds &&
+            (size_t)doff + de <= R->hud_pack_size)
+            found += shrine_sensor_note_bars(R->hud_pack + doff + ds, de - ds);
+    } else {
+        int k = 0;
+        while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, pack_path)) k++;
+        uint8_t head[0x20];
+        uint32_t doff = 0, ds = 0, de = 0;
+        if (k < R->rom_nfiles && !overlay_file(pack_path, host, sizeof host) &&
+            romfs_image_pread(R->img, head, 0x20, R->rom_files[k].off) == 0x20 && !memcmp(head, "SARC", 4)) {
+            memcpy(&doff, head + 0xC, 4);
+            uint8_t *tab = doff <= (16u << 20) && doff <= R->rom_files[k].size ? malloc(doff) : NULL;
+            if (tab && romfs_image_pread(R->img, tab, doff, R->rom_files[k].off) == (ssize_t)doff) {
+                uint32_t cnt = tab[0x1A] | tab[0x1B] << 8;
+                size_t names = 0x20 + (size_t)cnt * 16 + 8;
+                for (uint32_t i = 0; i < cnt && names <= doff; i++) {
+                    uint32_t attr;
+                    memcpy(&attr, tab + 0x20 + i * 16 + 4, 4);
+                    size_t at = names + (size_t)(attr & 0xFFFFFF) * 4;
+                    if (!(attr >> 24) || at + sizeof name > doff || memcmp(tab + at, name, sizeof name)) continue;
+                    memcpy(&ds, tab + 0x20 + i * 16 + 8, 4), memcpy(&de, tab + 0x20 + i * 16 + 12, 4);
+                    if (de > ds) found += shrine_sensor_note_range(R->rom_files[k].off + doff + ds, de - ds);
+                    break;
+                }
+            }
+            free(tab);
+        }
+    }
+
+    // The loose Sound/Resource/M_UI.bars (a mod's own copy when it has one)
+    if (overlay_file(name, host, sizeof host)) found += shrine_sensor_note_host(host);
+    else {
+        int k = 0;
+        while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, name)) k++;
+        if (k < R->rom_nfiles) found += shrine_sensor_note_range(R->rom_files[k].off, R->rom_files[k].size);
+    }
+
+    if (found) LOG("[fs] shrine sensor: %d channel%s known, volume %d%% (live)\n", found, found == 1 ? "" : "s",
+                   g_settings.shrine_sensor_volume);
+    else LOG("[fs] shrine sensor: its sound was not found, the volume setting does nothing\n");
 }
 
 // An RSTB entry: names first (paths whose crc32 collides), then the crc32 table (sorted). NULL when it has none.
@@ -1353,7 +1373,7 @@ static void rom_index(void) {
         LOG("[fs] Inventory clip layout unavailable; using the game's clipping\n");
     rstb_patch(fmeta, foff, fsz);
     haze_patch();
-    shrine_sensor_patch();
+    shrine_sensor_note();
     if (R->ov_n) LOG("[fs] overlay: %d romfs files replaced\n", R->ov_n);
     if (R->ov_meta) { R->patches[R->npatches++] = (Patch){R->ov_meta_off, R->ov_meta_size, R->ov_meta}; }
     add_new_files(h, dmeta, dsz, fsz);

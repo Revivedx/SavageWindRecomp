@@ -56,6 +56,8 @@ void vk_cache_path(char *out, size_t n, const char *name);
 const char *vk_shader_version(void);
 const char *vk_shader_version_full(void);
 const char *vk_spirv_id(void);
+// Fragment shaders through spirv-opt (device.c turns it on for AMD's own shader compiler; vk_glsl_to_spirv)
+void vk_spirv_optimize_fragments(bool on);
 VkShaderModule vk_module(const uint32_t *spv, size_t nwords);
 // Descriptor bindings declared by a SPIR-V module.
 int vk_reflect(const uint32_t *spv, size_t nwords, VkBindingInfo *out, int max);

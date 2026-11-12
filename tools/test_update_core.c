@@ -208,8 +208,18 @@ static void appimage_assets(void) {
     CHECK(uc_pick_release(list, "0.5.1-alpha.5", "-windows.zip", &r, NULL) == UC_PICK_CURRENT);  // (no signature for the zip)
 }
 
+static void inside(void) {
+    CHECK(uc_path_inside("/tmp/.mount_SavageAbc/usr/bin/savagewind", "/tmp/.mount_SavageAbc"));
+    CHECK(uc_path_inside("/tmp/.mount_SavageAbc/usr/bin/savagewind", "/tmp/.mount_SavageAbc/"));
+    CHECK(!uc_path_inside("/tmp/.mount_SavageAbcd/usr/bin/savagewind", "/tmp/.mount_SavageAbc"));  // (a longer name)
+    CHECK(!uc_path_inside("/home/p/src/SavageWindRecomp/build/savagewind", "/tmp/.mount_QuiverX"));  // inherited
+    CHECK(!uc_path_inside("/tmp/.mount_SavageAbc", "/tmp/.mount_SavageAbc"));
+    CHECK(!uc_path_inside("/usr/bin/savagewind", ""));
+}
+
 int main(void) {
     versions();
+    inside();
     crypto();
     appimage_assets();
     pick();

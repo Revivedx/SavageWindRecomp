@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include "../hle.h"
+#include "../platform.h"
 #include "../control.h"
 #include "../nvn/nvn.h"
 #include "../nvn/renderer.h"
@@ -465,6 +466,7 @@ extern bool menu_cursor_free(void);     // runtime/ui/menu.mm: F2 (Esc without P
 static void window_focus(bool focused) {
     if (focused == win_focused) return;
     win_focused = focused;
+    plat_accessibility_shortcuts(!focused);  // (Shift five times: Windows' Sticky Keys prompt, while the game has the focus)
     input_reset();
     mouse_dx_milli = mouse_dy_milli = cam_dx_milli = cam_dy_milli = 0;
     recompute_pad();  // release cached controls on loss; sample current controls on return

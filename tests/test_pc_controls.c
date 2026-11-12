@@ -59,6 +59,8 @@ SDL_WindowFlags SDL_GetWindowFlags(SDL_Window *w) {
     (void)w;return win_focused?SDL_WINDOW_INPUT_FOCUS:0;
 }
 uint64_t plat_now_ns(void) { return now; }
+void plat_accessibility_shortcuts(bool allow) { (void)allow; }
+GameSites g_site;  // (no game: runtime/hle/bindings.c finds no HUD prompt)
 bool SDL_SetWindowRelativeMouseMode(SDL_Window *w, bool on) {
     (void)w; relative = on; relative_changes++; return true;
 }

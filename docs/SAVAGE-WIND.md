@@ -813,6 +813,30 @@ Pendiente:
        Link quieto sobre Medoh inclinándose a 120 FPS: velocidad angular del suelo constante (pasos parados del 49 % al
        3 %, solo al arrancar o parar el giro); variación de la velocidad vertical de Link de 0,9-1,6 m/s a 0,07-0,13
        (a 30 FPS, 0,04-0,05).
+     - Desactivación de Havok (#398): Havok decide que un cuerpo se ha parado contando pasos de física, y el juego da
+       uno por fotograma. (1) Cada cuerpo (hkpMotion +0xd) mira cada 4 pasos si sigue a menos de 2 cm de donde estaba
+       (cada 16, a menos de 8 cm); con 6 seguidas su isla se duerme (1.9.0 0x700011f95c sin restricciones,
+       0x70001207cc con ellas; el contador del mundo +0x3ef, 0x70000f5e20 y 0x700012644c, alterna los avisos de las
+       comprobaciones): 24 pasos son 0,8 s a 30 FPS y 0,07 s a 360. (2) En su último paso el solver frena a un cuerpo
+       más lento que los umbrales de su clase de desactivación (x 0,968 / 0,953 / 0,94 / 0,936) y lo para por debajo de
+       su velocidad de sueño (hkpWorld +0x314, 0x20 por clase: +8 el multiplicador, +0xc la velocidad de sueño; 1.9.0
+       0x7000148834). Desde el reposo un cuerpo gana gravedad x paso en un paso: a 360 FPS la doceava parte que en un
+       fotograma de la consola, por debajo de la velocidad de sueño, y se paraba otra vez en cada paso. En Ree Dahee la
+       bola cae en la rampa larga subiendo, se para un instante y vuelve a bajar hacia su interruptor: a 260-360 FPS se
+       dormía en ese instante (velocidad 0, isla inactiva, contadores 7/3) y no se movía más; a 60 bajaba (sondas de la
+       bola cada 0,1-0,4 s con el endpoint de control, `mem read` del hkpWorld [[[[0x7001e96888]+0x30]]+8]). Los
+       parches `phys_tick`, `phys_tick_mt`, `phys_motion_tick` y `phys_motion_tick_c` (`rt_phys_tick`,
+       `rt_phys_ticked`) cuentan fotogramas de la consola por mundo (la razón del fotograma, sin la cámara lenta) y
+       solo el paso que completa uno cuenta las comprobaciones: todos a 30 FPS (lo del juego), uno de cada 2 a 60, uno
+       de cada 12 a 360. El solver frena y para en todos los pasos, a escala de su duración r en fotogramas de la
+       consola (1 como mucho): el multiplicador elevado a r y la velocidad de sueño x r, porque lo que un paso suma a
+       la velocidad de un cuerpo es proporcional a su duración: frena lo mismo por segundo que en la consola y se para
+       cuando allí se pararía, y los pasos entre dos fotogramas siguen amortiguando lo que está entre dos empujes.
+       `SAVAGEWIND_PHYS_TICK=0` deja el juego como estaba. Probado con la partida del jugador en Ree Dahee: la bola
+       baja hasta su interruptor sin límite (~180-360 FPS), a 120, 60 y 30 (a 30, los valores y el ritmo del juego
+       sin cambios). Aparte, sin relación con esto: a 120 FPS y sin límite el interruptor de suelo con Link encima
+       tiembla ~1 cm (el botón, un cuerpo dinámico entre el impulso de su IA, el límite de su guía y el peso de Link;
+       medido 9-12 mm de pico a pico con `SAVAGEWIND_PHYS_TICK=0` también); a 60 y 30 no.
      - Vsync: Vídeo > Sincronización vertical (ver "VSync y VRR" abajo). Por defecto Rápida (MAILBOX), sin tearing;
        cada refresco muestra la imagen más nueva. Una frecuencia que divide la del monitor (60 en 60/120/240 Hz) es
        la más fluida; una que no (60 o 90 en 144 Hz) alterna 2 y 3 refrescos por imagen; por encima de la del
@@ -1578,8 +1602,10 @@ En Windows, el juego pide un heap invitado de 3120 MiB. No se debe reducir a un 
 generado es código de CPU traducido, no un inventario estático de los recursos ni de las direcciones que leerán o
 escribirán los shaders. Limitar las páginas visibles a 1 GiB podría dejar lecturas sin datos o perder escrituras.
 
-La opción `sparse_heap` de `savagewind.ini` acepta `auto`, `on` y `off`. `auto` (por defecto) lo activa en una GPU
-integrada Intel y lo desactiva en las demás; el cambio se aplica al reiniciar. `SAVAGEWIND_VK_SPARSE_HEAP=1` fuerza
+La opción `sparse_heap` de `savagewind.ini` acepta `auto`, `on` y `off`. `auto` (por defecto) lo activa solo en una GPU
+integrada Intel cuya memoria compartida no llega a 6144 MiB (no cabe el heap entero más las texturas), y lo
+desactiva en las demás (#596, #619 y #695: las Intel con memoria de sobra fallaban en el código del juego con el
+heap sparse); el cambio se aplica al reiniciar. `SAVAGEWIND_VK_SPARSE_HEAP=1` fuerza
 la activación y cualquier otro valor explícito la desactiva. En GPUs compatibles, conserva el espacio de direcciones
 completo del heap y crea un buffer Vulkan sparse virtual de hasta 3328 MiB. Las páginas confirmadas del heap se
 exponen por ventanas de 1 MiB (alineación sparse de 64 KiB), mediante importación de la memoria host ya existente y

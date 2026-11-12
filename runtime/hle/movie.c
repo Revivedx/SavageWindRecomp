@@ -9,6 +9,7 @@
 //   11 SendInputBufferForDecode(int, int off, int size, int64 time, uint32 flags),
 //   12 AcquireOutputBufferIndex(int*, int64*, uint32*, int*), 13 GetOutputBuffer(int, Buffer*),
 //   15 ReleaseOutputBufferIndex(int), 18 GetOutputBufferFormat(int, MediaData*).
+#include <errno.h>
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/time.h>
@@ -17,6 +18,7 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "../hle.h"
@@ -450,6 +452,7 @@ typedef struct {
     int fps;       // a video's frame rate (its file's)
     int64_t clock_ns, clock_us;  // pacing: when the frame of time clock_us was handed out (0: not yet)
     pthread_mutex_t lock;
+    pthread_cond_t pace_cv;
 } Decoder;
 
 // Input / output buffers live in the HLE heap, which only a reboot frees: buffers of destroyed decoders are kept
@@ -586,6 +589,7 @@ static void dec_stop(Cpu *c) {
     if (d->playing) d->playing = false, __atomic_sub_fetch(&g_movie_playing, 1, __ATOMIC_RELAXED);
     if (!d->stopped) {
         d->stopped = true;
+        pthread_cond_broadcast(&d->pace_cv);
         LOG("[movie] decoder %s stopped\n", d->video ? "video" : "audio");
         uint64_t saved[8];
         memcpy(saved, c->x, sizeof saved);
@@ -612,6 +616,7 @@ static void dec_acquire_input(Cpu *c) {
     n_acq_in++;
     movie_stats();
     pthread_mutex_lock(&d->lock);
+    if (d->stopped) { pthread_mutex_unlock(&d->lock); c->x[0] = 1; return; }
     int out_free = 0;
     for (int i = 0; i < NOUT; i++) if (!d->out_busy[i]) out_free++;
     if (out_free < 2 || d->npending) { pthread_mutex_unlock(&d->lock); c->x[0] = 1; return; }  // backpressure
@@ -704,6 +709,7 @@ static void dec_send_input(Cpu *c) {
     int64_t time = (int64_t)c->x[4];
     uint32_t flags = (uint32_t)c->x[5];
     pthread_mutex_lock(&d->lock);
+    if (d->stopped) { pthread_mutex_unlock(&d->lock); c->x[0] = 1; return; }
     if (size > 0 && idx >= 0 && idx < NIN) {
         av_packet_unref(d->pkt);
         d->pkt->data = d->in_mem[idx] + off;
@@ -740,7 +746,7 @@ static void dec_acquire_output(Cpu *c) {
     Decoder *d = self_state(c);
     n_acq_out++;
     pthread_mutex_lock(&d->lock);
-    if (!d->nready) { pthread_mutex_unlock(&d->lock); c->x[0] = 1; return; }
+    if (d->stopped || !d->nready) { pthread_mutex_unlock(&d->lock); c->x[0] = 1; return; }
     OutReady r = d->ready[0];
     if (d->video && !(r.flags & MOVIE_EOS) && movie_paced()) {
         // A picture is handed out once its time has come on a clock started at the first one: the game's player
@@ -753,12 +759,24 @@ static void dec_acquire_output(Cpu *c) {
         int64_t due = d->clock_ns + (r.time - d->clock_us) * 1000;
         if (now < due) {
             int64_t wait = due - now < 100000000 ? due - now : 100000000;  // (100 ms at most: a bad timestamp)
+            int64_t deadline = now + wait;
             pthread_mutex_unlock(&d->lock);
             kernel_host_work_begin();
-            av_usleep((unsigned)(wait / 1000));
+            pthread_mutex_lock(&d->lock);
+            while (!d->stopped && d->nready) {
+                int64_t rem = deadline - av_gettime_relative() * 1000;
+                if (rem <= 0) break;
+                struct timespec ts;
+                clock_gettime(CLOCK_REALTIME, &ts);
+                int64_t nsec = ts.tv_nsec + rem;
+                ts.tv_sec += nsec / 1000000000LL;
+                ts.tv_nsec = nsec % 1000000000LL;
+                if (pthread_cond_timedwait(&d->pace_cv, &d->lock, &ts) == ETIMEDOUT) break;
+            }
+            pthread_mutex_unlock(&d->lock);
             kernel_host_work_end();
             pthread_mutex_lock(&d->lock);
-            if (!d->nready) { pthread_mutex_unlock(&d->lock); c->x[0] = 1; return; }  // (stopped meanwhile)
+            if (d->stopped || !d->nready) { pthread_mutex_unlock(&d->lock); c->x[0] = 1; return; }  // (stopped meanwhile)
             r = d->ready[0];
         } else if (now - due > 100000000) d->clock_ns = now, d->clock_us = r.time;
     }
@@ -842,7 +860,7 @@ static void dec_release_output(Cpu *c) {
     int i = (int)c->x[1];
     pthread_mutex_lock(&d->lock);
     if (i >= 0 && i < NOUT) d->out_busy[i] = false;
-    bool produced = flush_pending(d);
+    bool produced = !d->stopped && flush_pending(d);
     pthread_mutex_unlock(&d->lock);
     if (produced) dec_signal(c, d, 1);
     c->x[0] = 0;
@@ -904,6 +922,7 @@ HLE_FUNC("_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11Dec
     Decoder *d = calloc(1, sizeof *d);
     movie_track(1, d, true);
     pthread_mutex_init(&d->lock, NULL);
+    pthread_cond_init(&d->pace_cv, NULL);
     self[0] = vt;
     self[1] = (uint64_t)(uintptr_t)d;
 }
