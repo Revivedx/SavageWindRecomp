@@ -570,7 +570,7 @@ test-hud-button-layout: $(B)/test_hud_button_layout
 
 .PHONY: test-hud-button-layout
 
-$(B)/test_options_pointer: tests/test_options_pointer.c runtime/pc_cursor.c runtime/pc_cursor.h runtime/pc_cursor_math.h
+$(B)/test_options_pointer: tests/test_options_pointer.c runtime/pc_cursor.c runtime/pc_cursor.h runtime/pc_cursor_math.h runtime/nvn/hud_scale.h
 	@mkdir -p $(dir $@)
 	$(CC) -O2 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -isystem third_party -o $@ $< -fuse-ld=lld -Wl,--gc-sections $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) -lSDL3 -lm
 
@@ -926,3 +926,11 @@ test-quick-drop: test-quick-drop-native $(B)/test_quick_drop_input
 
 .PHONY: test-quick-drop test-quick-drop-native
 endif
+
+$(B)/test_ui_layout: tests/test_ui_layout.c runtime/ui_layout.c runtime/ui_layout.h runtime/nvn/cmdbuf.c runtime/nvn/nvn.h runtime/nvn/hud_scale.h
+	@mkdir -p $(dir $@)
+	$(CC) -O1 -ffunction-sections -fdata-sections $(DEPINC) -Iruntime -o $@ $< -fuse-ld=lld -Wl,--gc-sections -lpthread -lm
+
+test-ui-layout: $(B)/test_ui_layout
+	$(B)/test_ui_layout
+.PHONY: test-ui-layout

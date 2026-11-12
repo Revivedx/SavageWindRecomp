@@ -785,7 +785,7 @@ Pendiente:
      - Bruma (Vídeo > Opciones avanzadas > Bruma, `haze` en el ini, `services/fs.c` `haze_patch`): la neblina del exterior de BOTW es su
        dispersión atmosférica, por clima en `Pack/TitleBG.pack` `WorldMgr/normal.bwinfo` (AAMP, 20 climas en el objeto
        raíz): `CalcMie` y `CalcRayleigh` (lo blanco y lo azul del aire: más bajos, más claro; a 0,6x el cielo se oscurece
-       y vira a turquesa) y `CalcSfParamNear` (0 o negativo: la bruma de cerca, la mínima en 0). El ajuste k (0-100 %)
+       y vira a turquesa) y `CalcSfParamNear` (0 o negativo: la bruma de cerca, la mínima en 0). El ajuste k (75-100 %)
        da 0,7 + 0,3 k veces los dos primeros y k veces el tercero, como un parche de lectura sobre los bytes del archivo
        (mismo tamaño; AAMP comparte los valores iguales entre parámetros: cada uno se cambia una vez). El juego lo lee
        al arrancar: el cambio vale desde el siguiente inicio. 100 % no toca nada. Los objetos Fog de los perfiles de

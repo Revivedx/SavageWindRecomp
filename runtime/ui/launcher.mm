@@ -896,8 +896,23 @@ done:
 }
 
 // ------------------------------------------------------------------ folder dialog (SDL calls back on any thread)
+static std::string trim_folder_path(const char *s) {
+    std::string p = s ? s : "";
+    while (!p.empty() && (p.front() == ' ' || p.front() == '\t' || p.front() == '\r' || p.front() == '\n')) p.erase(p.begin());
+    while (!p.empty() && (p.back() == ' ' || p.back() == '\t' || p.back() == '\r' || p.back() == '\n')) p.pop_back();
+    if (p.size() >= 2 && ((p.front() == '"' && p.back() == '"') || (p.front() == '\'' && p.back() == '\'')))
+        p = p.substr(1, p.size() - 2);
+    return p;
+}
+
 static void SDLCALL picked(void *, const char *const *files, int) {
-    if (!files || !files[0]) return;
+    if (!files) {
+        const char *err = SDL_GetError();
+        if (err && err[0]) fprintf(stderr, "[launcher] folder dialog error: %s\n", err);
+        set_job("Folder picker failed to open", true, "Type or paste the folder path below instead.");
+        return;
+    }
+    if (!files[0]) return;
     pthread_mutex_lock(&g_lock);
     g_src = files[0];
     pthread_mutex_unlock(&g_lock);
@@ -1968,6 +1983,24 @@ extern "C" void launcher_run(const char *root, int mode) {
                     if (opt_action("Game files folder", src_v.c_str(), src_d.c_str(), true))
                         SDL_ShowOpenFolderDialog(picked, NULL, win, NULL, false);
                     if (!src.empty()) check_left_of_value(src_v);
+                    if (busy) opt_disable_next();
+                    {
+                        static char path_buf[1024];
+                        static std::string last_synced_src;
+                        if (src != last_synced_src) {
+                            snprintf(path_buf, sizeof path_buf, "%s", src.c_str());
+                            last_synced_src = src;
+                        }
+                        if (opt_text("Folder path", path_buf, sizeof path_buf, "Type or paste path...",
+                                     "Enter the path to your extracted game files folder directly if the system folder picker does not open.")) {
+                            std::string p = trim_folder_path(path_buf);
+                            pthread_mutex_lock(&g_lock);
+                            g_src = p;
+                            pthread_mutex_unlock(&g_lock);
+                            last_synced_src = p;
+                            snprintf(path_buf, sizeof path_buf, "%s", p.c_str());
+                        }
+                    }
                     if (!ready) {
                         first_row();
                         opt_section("Set up");

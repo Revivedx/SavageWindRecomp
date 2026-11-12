@@ -14,6 +14,7 @@
 #include "../hle.h"
 #include "../platform.h"
 #include "../control.h"
+#include "../game_sites.h"
 #include "../nvn/nvn.h"
 #include "../nvn/renderer.h"
 #include "../settings.h"
@@ -361,9 +362,30 @@ void input_cam_frame(float ratio) {
     cam_mouse = true;
 }
 
+// Riding is detected through the camera: CameraHorse reads the right stick through rt_cam_stick, from a call site
+// (its lr) that no other camera uses. While it was read in the last quarter second Link is riding.
+#define CAM_CALLER_NS 250000000ull
+static _Atomic uint64_t horse_cam_ns;  // CameraHorse's last read (game thread)
+
+static uint64_t horse_cam_lr(void) {
+    return g_site.horse_cam_lr;
+}
+
+static void cam_caller(uint64_t lr, uint64_t now) {
+    uint64_t site = horse_cam_lr();
+    if (site && lr == site) horse_cam_ns = now;
+}
+
+static bool horse_riding(void) {
+    if (!horse_cam_lr()) return false;
+    uint64_t t = horse_cam_ns;
+    return t && plat_now_ns() - t < CAM_CALLER_NS;
+}
+
 // tools/patches.py _cam_stick: the camera's stick input (two floats at out) when the mouse gives it; 0: the stick's
 int rt_cam_stick(uint64_t out, uint64_t lr) {
     cam_read_ns = plat_now_ns();
+    cam_caller(lr, cam_read_ns);
     bool mouse = cam_mouse && cam_native_on();
     if (cam_log_left()) {
         const float *p = (const float *)(uintptr_t)out;  // (CameraChase's main update: radius, pitch, yaw after it)
@@ -722,6 +744,7 @@ void input_handle_event(const SDL_Event *e) {
             SDL_Gamepad *gone = pads[i];
             pads[i] = pads[--npads];
             if (gone == pad) pad_use(npads ? pads[0] : NULL);  // (the one in use: another connected one, if any)
+            vibration_pad_closed(gone);
             SDL_CloseGamepad(gone);
             break;
         }
@@ -1029,6 +1052,7 @@ static void fill_state(Cpu *c) {
         LOG("[input] watching controller object %llx\n", (unsigned long long)(c->x[1] - 8));
     }
     bool menu = (!win_focused && !host_test) || menu_input_captured();  // host controls belong to the focused game window
+
     // Customized actions use host bindings during play. Factory-default actions and all queries in menus, with
     // the window unfocused or the overlay up, use the Switch layer, so no binding can lock the player out.
     act_poll(!menu && !framepace_title_ui() && !framepace_menu_ui());
@@ -1046,7 +1070,10 @@ static void fill_state(Cpu *c) {
     bool sticks = !menu && !dualstick_on();
     int32_t plx = sticks ? pad_lx : 0, ply = sticks ? pad_ly : 0, prx = sticks ? pad_rx : 0, pry = sticks ? pad_ry : 0;
     bool map_keys=pc_cursor_map_navigation();
-    int32_t lx = clamp_axis((menu ? 0 : (map_keys?0:key_lx) + plx) + script_lx), ly = clamp_axis((menu ? 0 : (map_keys?0:key_ly) + ply) + script_ly);
+    int32_t klx = menu || map_keys ? 0 : key_lx, kly = menu || map_keys ? 0 : key_ly;
+    if (horse_riding() && klx && kly > 0) kly = 0;
+    int32_t lx = clamp_axis(klx + plx + script_lx);
+    int32_t ly = clamp_axis(kly + ply + script_ly);
     // Gate at each poll: an arrow or Enter held when a menu closes must never move the player or press A.
     // Event activity also includes cutscenes and fanfares, so it cannot identify dialogue choices safely.
     if (!menu && (framepace_title_ui() || framepace_menu_ui())) {

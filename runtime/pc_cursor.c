@@ -9,6 +9,8 @@
 #include "game_sites.h"
 #include "framepace.h"
 #include "hle.h"
+#include "nvn/output_scale.h"
+#include "nvn/hud_scale.h"
 #include "settings.h"
 
 static _Atomic bool active, focused = true;
@@ -275,7 +277,7 @@ static void sample_pointer(void) {
 
 static void window_position(float x,float y) {
     if(window_width<=0||window_height<=0)return;
-    float p[2];position_inside=pc_cursor_to_layout(window_width,window_height,x,y,p);
+    float p[2];position_inside=pc_cursor_to_layout(window_width,window_height,x,y,output_ui_extra_y(),p);
     uint32_t xy[2];memcpy(xy,p,8);position=(uint64_t)xy[0]|(uint64_t)xy[1]<<32;
 }
 
@@ -286,9 +288,12 @@ void pc_cursor_window(SDL_Window *w) {
     float x, y;
     SDL_GetWindowSize(w, &width, &height);
     window_width=width;window_height=height;
+    float extra_y=output_map_extra_y();
     if(pc_cursor_map_navigation()&&focused) {
-        float scale=fminf(width/1280.f,height/720.f);
-        SDL_Rect rect={(int)(width*.5f-632*scale),(int)(height*.5f-280*scale),(int)(1264*scale),(int)(560*scale)};
+        float scale=pc_cursor_layout_scale(width,height,extra_y);
+        // In the taller map let the pointer reach the relocated footer as well as the canvas.
+        float half_y=extra_y>0?360+extra_y:280;
+        SDL_Rect rect={(int)(width*.5f-632*scale),(int)(height*.5f-half_y*scale),(int)(1264*scale),(int)(2*half_y*scale)};
         const SDL_Rect *old=SDL_GetWindowMouseRect(w);
         if(!old||memcmp(old,&rect,sizeof rect))SDL_SetWindowMouseRect(w,&rect);
     } else if(SDL_GetWindowMouseRect(w))SDL_SetWindowMouseRect(w,NULL);
@@ -296,7 +301,7 @@ void pc_cursor_window(SDL_Window *w) {
     if (width <= 0 || height <= 0) return;
     // eui HitTest uses layout space, centered, Y up. Full pause screens use a fitted 16:9 view.
     float p[2];
-    position_inside=pc_cursor_to_layout(width,height,x,y,p);
+    position_inside=pc_cursor_to_layout(width,height,x,y,output_ui_extra_y(),p);
     uint32_t xy[2]; memcpy(xy, p, sizeof xy);
     position = (uint64_t)xy[0] | (uint64_t)xy[1] << 32;
 }
@@ -1004,7 +1009,8 @@ static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
         *(float*)(d+0x870+4*axis)=center*zoom;
         if(map_view_valid)map_view_center[axis]=pc_map_clamp_center(map_view_center[axis],lo,hi);
     }
-    bool area=fabsf(point[0])<=633&&fabsf(point[1])<=285;
+    float extra_y=output_map_extra_y();
+    bool area=fabsf(point[0])<=633&&fabsf(point[1])<=285+extra_y;
     int scroll=atomic_exchange(&wheel,0);
     map_canvas_active=true;
     bool zooming=scroll||map_zoom_anchored||fabsf(zoom-*(float*)(d+0x888))>.001f;
@@ -1080,7 +1086,8 @@ static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
         }
         memcpy(map_last,point,sizeof point);
     }
-    float cursor[2]={fmaxf(-632,fminf(632,point[0])),fmaxf(-280,fminf(280,point[1]))},best_snap=1e9f;
+    float half_y=280+extra_y;
+    float cursor[2]={fmaxf(-632,fminf(632,point[0])),fmaxf(-half_y,fminf(half_y,point[1]))},best_snap=1e9f;
     uint64_t snapped=0;
     // Native map markers need not be registered in the screen's AnimButton list.
     // A target changed from the point we sent last frame is the game's marker
@@ -1103,7 +1110,7 @@ static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
             float w=box[2]-box[0],h=box[3]-box[1];
             float x=(box[0]+box[2])*.5f,y=(box[1]+box[3])*.5f;
             float distance=hypotf(point[0]-x,point[1]-y),radius=button==map_snap_button?14:10;
-            if(w>=10&&w<=80&&h>=10&&h<=80&&fabsf(x)<600&&fabsf(y)<285&&distance<radius&&distance<best_snap) {
+            if(w>=10&&w<=80&&h>=10&&h<=80&&fabsf(x)<600&&fabsf(y)<285+extra_y&&distance<radius&&distance<best_snap) {
                 best_snap=distance;snapped=button;cursor[0]=x;cursor[1]=y;
             }
         }
@@ -1114,7 +1121,7 @@ static bool native_special(Cpu *c,uint64_t screens,uint64_t bounds) {
     if(native_snap&&!map_native_snapped&&getenv("SAVAGEWIND_PC_CURSOR_LOG"))LOG("[pc-map-snap-native] frame %llu point %.1f %.1f cursor %.1f %.1f distance %.1f\n",f,point[0],point[1],cursor[0],cursor[1],best_snap);
     map_native_snapped=native_snap;
     float keys[2],pan[2];extern void input_pc_map_axes(float out[2]);input_pc_map_axes(keys);
-    pc_map_navigation(point,keys[0],keys[1],!frame_held&&!snapped&&!native_snap&&(pointer_test()||position_inside),nav_dt,zoom,pan);
+    pc_map_navigation(point,keys[0],keys[1],!frame_held&&!snapped&&!native_snap&&(pointer_test()||position_inside),nav_dt,zoom,extra_y,pan);
     if(!frame_held&&(pan[0]||pan[1])) {
         map_zoom_anchored=false;
         *(float*)(d+0x880)=pc_map_clamp_center(*(float*)(d+0x880)+pan[0],*(float*)(d+0x8d0),*(float*)(d+0x8d8));
@@ -1414,7 +1421,8 @@ static bool pause_headers(Cpu *c,uint64_t screen,uint64_t screens,unsigned count
     for(unsigned side=0;side<2;side++) {
         float half=current==0?(side?40.f:70.f):46.f;
         float center=side?150.f:-150.f;
-        float box[4]={center-half,272,center+half,327};
+        float dy=output_pause_extra_y();
+        float box[4]={center-half,272+dy,center+half,327+dy};
         // Both animated text copies share one fixed hit area with the key
         // hint above them. Never let hover geometry follow their animation.
         if(point[0]<box[0]||point[0]>box[2]||point[1]<box[1]||point[1]>box[3])continue;
@@ -1451,7 +1459,7 @@ static int guide_button(uint16_t glyph) {
 static bool pane_shown(uint64_t pane) {
     return ptr(pane)&&(LD8(pane+0x58)&1)&&LD8(pane+0x5a)>=0x80;  // visible, global alpha at least half
 }
-static bool guide_hit(Cpu *c,uint64_t info,unsigned i,const char *slot,uint64_t icon,uint64_t label,uint64_t area);
+static bool guide_hit(Cpu *c,uint64_t info,unsigned i,const char *slot,uint64_t icon,uint64_t label,uint64_t area,float dy);
 static bool pause_guides(Cpu *c,uint64_t screen,uint64_t screens,unsigned count) {
     if(!ptr(screen)||LD64(screen)!=0x7001cf9ad8ull||LD8(screen+0xfe)!=2||count<=0x2f)return false;
     for(unsigned i=0x30;i<=0x3a&&i<count;i++) {
@@ -1468,7 +1476,9 @@ static bool pause_guides(Cpu *c,uint64_t screen,uint64_t screens,unsigned count)
         budget=8;uint64_t label=pane_named(group,"T_Guide_00",0,&budget);
         if(i==0){rotate_info=info;rotate_group=group;}
         if(!pane_shown(slot)||!pane_shown(group))continue;
-        if(guide_hit(c,info,i,slots[i],icon,label,0))return true;
+        float box[4],dy=0;
+        if(options_box(icon,box))dy=hud_pause_anchor((box[1]+box[3])*.5f,360)*output_pause_extra_y();
+        if(guide_hit(c,info,i,slots[i],icon,label,0,dy))return true;
     }
     return false;
 }
@@ -1487,12 +1497,12 @@ static bool map_guides(Cpu *c,uint64_t screens) {
         budget=8;uint64_t capture=pane_named(slot,"N_CaptureText_00",0,&budget);
         budget=8;uint64_t icon=pane_named(capture,"T_Icon_00",0,&budget);
         if(!pane_shown(slot)||!pane_shown(group)||!pane_shown(picture))continue;
-        if(guide_hit(c,home,i,slots[i],icon,0,picture))return true;
+        if(guide_hit(c,home,i,slots[i],icon,0,picture,-output_map_extra_y()))return true;
     }
     return false;
 }
 // One prompt: its glyph names the button; the box is the glyph with its label, or the picture that shows both.
-static bool guide_hit(Cpu *c,uint64_t info,unsigned i,const char *slot,uint64_t icon,uint64_t label,uint64_t area) {
+static bool guide_hit(Cpu *c,uint64_t info,unsigned i,const char *slot,uint64_t icon,uint64_t label,uint64_t area,float dy) {
     if(!pane_shown(icon))return false;
     uint64_t glyphs=LD64(icon+0xe0);
     int button=ptr(glyphs)?guide_button(LD16(glyphs)):-1;
@@ -1502,7 +1512,7 @@ static bool guide_hit(Cpu *c,uint64_t info,unsigned i,const char *slot,uint64_t 
         box[0]=fminf(box[0],text[0]);box[1]=fminf(box[1],text[1]);
         box[2]=fmaxf(box[2],text[2]);box[3]=fmaxf(box[3],text[3]);
     }
-    box[1]-=4;box[3]+=4;
+    box[1]+=dy-4;box[3]+=dy+4;
     if(point[0]<box[0]||point[0]>box[2]||point[1]<box[1]||point[1]>box[3])return false;
     set_hover_rect(box);
     pointer_hover_sound(c,info,info+0x400+i);
@@ -1610,6 +1620,15 @@ static bool shop_pointer(Cpu *c) {
     return false;
 }
 
+static float dialogue_extra_y(void) {
+#ifdef __APPLE__
+    return 0;
+#else
+    float shape=output_view_shape();
+    return g_settings.hud_edges&&shape>0&&shape<1?360*(1/shape-1):0;
+#endif
+}
+
 static bool quantity_pointer(Cpu *c,uint64_t screens,unsigned count) {
     if(!dialogue_active)return false;
     for(unsigned i=0;i<count&&i<256;i++) {
@@ -1626,7 +1645,7 @@ static bool quantity_pointer(Cpu *c,uint64_t screens,unsigned count) {
         uint64_t root=LD64(pane+0x18);unsigned budget=80;
         uint64_t left=pane_named(root,"Pa_ArrowL_00",0,&budget);budget=80;
         uint64_t right=pane_named(root,"Pa_ArrowR_00",0,&budget);
-        bool row=fabsf(point[1]-cy)<=22;
+        bool row=fabsf(point[1]-(cy-dialogue_extra_y()))<=22;
         bool dec=ptr(left)&&row&&fabsf(point[0]-*(float*)(left+0x7c))<=18;
         bool inc=ptr(right)&&row&&fabsf(point[0]-*(float*)(right+0x7c))<=18;
         bool number=row&&fabsf(point[0]-cx)<=28,over=dec||inc||number;
@@ -1748,8 +1767,11 @@ void rt_pc_cursor_manager(Cpu *c, uint64_t activate, uint64_t bounds) {
                 if(ptr(pane)) {
                     float box[4];
                     call(c,bounds,(uintptr_t)box,pane,0);
+                    float dy=hud_pause_anchor((box[1]+box[3])*.5f,360)*output_pause_extra_y();
+                    box[1]+=dy;box[3]+=dy;
                     if(dialogue_active&&LD64(screen)==0x7001d4ed48ull) {
                         // Choice arrows use left-origin X, center-origin Y.
+                        float shift=dialogue_extra_y();box[1]-=shift;box[3]-=shift;
                         box[0]-=640;box[2]-=640;box[2]=fminf(625,box[0]+255);
                     }
                     // The native "clip" callback clears the active cursor for

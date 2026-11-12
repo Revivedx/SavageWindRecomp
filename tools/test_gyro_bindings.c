@@ -22,6 +22,7 @@ void plat_accessibility_shortcuts(bool allow) { (void)allow; }
 GameSites g_site;  // (no game: runtime/hle/bindings.c finds no HUD prompt)
 Cpu *kernel_current_cpu(void){abort();}
 void vibration_update(SDL_Gamepad *p,bool f){(void)p;(void)f;abort();}
+void vibration_pad_closed(SDL_Gamepad *p){(void)p;}
 bool menu_cursor_free(void){return false;}
 void motion_pad_opened(SDL_Gamepad*p){(void)p;abort();}
 void motion_pad_closed(void){abort();}

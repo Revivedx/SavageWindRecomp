@@ -12,6 +12,78 @@ static void project(const float *v, float m00, float m11, float x, float y, floa
 }
 
 int main(void) {
+    // Pause chrome uses the native outer bands, leaving description borders and inventory rows alone.
+    assert(hud_pause_anchor(308, 360) == 1 && hud_pause_anchor(-318, 360) == -1);
+    assert(hud_pause_anchor(224, 360) == 0 && hud_pause_anchor(-253, 360) == 0);
+    assert(NEAR(hud_pause_edge_dy(.77f, .9f), .1f));
+    assert(NEAR(hud_pause_edge_dy(-.8f, .9f), -.1f));
+    assert(hud_pause_edge_dy(.9f, 1) == 0 && hud_pause_edge_dy(-.9f, 1.5f) == 0);
+    float margin[4] = {100, 100, 100, 100};
+    float top[4] = {3900, 100, -2000, 400}, bottom[4] = {3900, 100, -1900, -300};
+    float right[4] = {100, 700, 1900, 400}, left[4] = {100, 700, -2000, 300};
+    assert(hud_pause_frame_part(margin, 4000, 800, top) == 1);
+    assert(hud_pause_frame_part(margin, 4000, 800, bottom) == -1);
+    assert(hud_pause_frame_part(margin, 4000, 800, right) == 2);
+    assert(hud_pause_frame_part(margin, 4000, 800, left) == 2);
+    top[2] += 10;  // arbitrary rectangles and unrelated window margins are rejected
+    assert(hud_pause_frame_part(margin, 4000, 800, top) == 0);
+    top[2] -= 10; margin[0] = margin[1] = margin[2] = margin[3] = 8;
+    assert(hud_pause_frame_part(margin, 4000, 800, top) == 0);
+
+    // Native action-button cluster, its label and shadow all retain the conversation coordinate band.
+    for (int i = 0; i < 3; i++) {
+        float edge = (float[]){1, .9f, .75f}[i];
+        assert(hud_context_keeps(true, 80.0f / 640, -220.0f / 360 * edge, 1, edge));
+        assert(hud_context_keeps(true, 190.0f / 640, -216.0f / 360 * edge, 1, edge));
+        assert(hud_context_keeps(true, -85.0f / 640, -220.0f / 360 * edge, 1, edge));
+        assert(hud_context_keeps(true, 140.0f / 640, -246.0f / 360 * edge, 1, edge));
+        assert(!hud_context_keeps(true, 335.5f / 640, -290.0f / 360 * edge, 1, edge));
+        assert(!hud_context_keeps(true, 392.0f / 640, -222.0f / 360 * edge, 1, edge));
+        assert(!hud_context_keeps(true, 392.0f / 640, -262.0f / 360 * edge, 1, edge));
+        assert(!hud_context_keeps(true, .8f, -.7f * edge, 1, edge));  // clock/minimap
+        assert(!hud_context_keeps(true, -.7f, -.7f * edge, 1, edge)); // location name
+        assert(!hud_context_keeps(true, .2f, .2f, 1, edge));         // quick selector
+    }
+
+    assert(!hud_context_keeps(false, 80.0f / 640, -220.0f / 360, 1, 1));
+
+    // Synthetic Y-flipped glyph matrix with an already-tall aspect of 1.6 at 1280x800.
+    float text[16] = {1.5f, 0, 0, 190, 0, -2.4f, 0, -550,
+                      0, 0, -1, 998, 0, 0, -1, 1000};
+    float correction[2];
+    assert(hud_combined_shape(text, 128, .9f, correction));
+    assert(correction[0] == 1 && correction[1] == 1);
+    float glyph_y = text[7] / text[15];
+    hud_edge_matrix(text, -.1f);
+    assert(NEAR((text[7] / text[15] - glyph_y) * 400, -40));
+    // The title's appearance scales X/Y differently. It still needs the same placement as its shadow.
+    text[6] = 0;  // restore the unshifted native input before classifying another draw
+    text[0] = 1.4f; text[5] = -2.34f;
+    assert(hud_combined_shape(text, 128, .9f, correction));
+    assert(correction[0] == 1 && correction[1] == 1);
+    assert(!hud_combined_shape(text, 560, .9f, correction));
+    text[5] = -text[0] * (16.0f / 9.0f);  // cached console projection after resizing
+    assert(hud_combined_shape(text, 128, .9f, correction));
+    assert(correction[0] == 1 && correction[1] == .9f);
+    assert(hud_combined_shape(text, 128, 1.5f, correction));
+    assert(NEAR(correction[0], 1 / 1.5f) && correction[1] == 1);
+    text[15] = -1;  // screen-space stamp sprites use a different transform
+    assert(!hud_combined_shape(text, 128, .9f, correction));
+
+    // The event clears before the final MessageDialog stops drawing.
+    bool held = hud_dialogue_holds(false, true, true);
+    assert(held);
+    held = hud_dialogue_holds(held, false, true);
+    assert(held);
+    assert(hud_edge_mode(true, .9f, false, false, false, held) == 2);
+    assert(hud_edge_moves(2, .8f, .9f));
+    assert(!hud_edge_moves(2, -.8f, .9f));
+    held = hud_dialogue_holds(held, false, false);
+    assert(!held);
+    assert(hud_edge_mode(true, .9f, false, false, false, held) == 1);
+    assert(!hud_dialogue_holds(false, false, true));  // incidental speech never drew during an event
+    assert(!hud_dialogue_holds(true, true, false));  // dialogue closed while another event is still running
+
     // The zones: the middle third of the screen stays on the centre, the others go to their edge
     assert(hud_anchor(-0.9f, 1) == -1 && hud_anchor(0.9f, 1) == 1 && hud_anchor(0.1f, 1) == 0);
     assert(hud_anchor(-0.3f, 1) == 0 && hud_anchor(-0.34f, 1) == -1);
