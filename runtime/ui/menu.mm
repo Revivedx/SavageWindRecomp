@@ -1116,7 +1116,7 @@ static void tab_audio(void) {
         g_settings.volume = pct / 100.0f;
     float sensor_pct = (float)g_settings.shrine_sensor_volume;
     if (opt_slider("Shrine sensor volume", &sensor_pct, 0, 100, 10, 100, "%g%%",
-                   "Volume of the Sheikah Slate sensor beeps. 0% silences the sensor. From the next start.")) {
+                   "Volume of the Sheikah Slate sensor beeps. 0% silences the sensor.")) {
         g_settings.shrine_sensor_volume = (int)lroundf(sensor_pct);
     }
     static const char *const audio_out[AUDIO_OUT_COUNT] = {"Stereo", "Surround 5.1", "3D Headphones"};

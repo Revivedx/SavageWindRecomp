@@ -151,11 +151,22 @@ void settings_aa_row_set(int row) {
 }
 
 int fps_choices(const int **list) {
-    static const int pc[] = FPS_CHOICES, hh[] = FPS_CHOICES_HANDHELD;
+    static const int pc[] = FPS_CHOICES, hh[] = FPS_CHOICES_HANDHELD, fast[] = FPS_CHOICES_HANDHELD_FAST;
+    static int h_list[FPS_CHOICES_MAX];
     _Static_assert(sizeof pc / sizeof pc[0] <= FPS_CHOICES_MAX, "");
-    bool h = settings_handheld();
-    *list = h ? hh : pc;
-    return h ? (int)(sizeof hh / sizeof hh[0]) : (int)(sizeof pc / sizeof pc[0]);
+    _Static_assert(sizeof hh / sizeof hh[0] + sizeof fast / sizeof fast[0] <= FPS_CHOICES_MAX, "");
+    if (!settings_handheld()) {
+        *list = pc;
+        return (int)(sizeof pc / sizeof pc[0]);
+    }
+    extern float winsize_refresh_rate(void);
+    float hz = winsize_refresh_rate();
+    int n = 0;
+    for (size_t i = 0; i < sizeof hh / sizeof hh[0]; i++) h_list[n++] = hh[i];
+    for (size_t i = 0; i < sizeof fast / sizeof fast[0]; i++)
+        if (hz <= 0 || fast[i] <= hz + 0.5f) h_list[n++] = fast[i];
+    *list = h_list;
+    return n;
 }
 
 // The first start on a handheld, also with settings from before this: the handheld's preset, full screen at its size

@@ -14,6 +14,7 @@
 #include "../input_bind.h"
 #include "../ipc.h"
 #include "../prof.h"
+#include "../shrine_sensor.h"
 
 // ------------------------------------------------------------------ audren: a CPU mixer modelled on
 // Ryujinx's AudioRenderer (VoiceState / DataSourceHelper / StateUpdater, copies in notes/ryujinx_audio).
@@ -50,6 +51,7 @@ typedef struct {
 typedef struct {
     uint8_t in_use, is_new, play_state;  // play_state: 0 started, 1 stopped, 2 stopping, 3 paused
     uint8_t fmt, chans, drop;
+    uint8_t sensor;  // the Sheikah sensor's sound (runtime/shrine_sensor.c): scaled by its volume setting, live
     uint32_t rate, wb_count, flush;
     float pitch, volume, prev_volume;
     int32_t mix_id;
@@ -555,8 +557,9 @@ static void render_frame(Renderer *r, float *out, int mode) {
             static int solo = -2;
             if (solo == -2) solo = getenv("SAVAGEWIND_AUDIO_SOLO") ? atoi(getenv("SAVAGEWIND_AUDIO_SOLO")) : -1;
             if (solo >= 0 && (int)vi != solo) continue;
+            float sg = v->sensor ? shrine_sensor_gain(g_settings.shrine_sensor_volume) : 1.0f;
             for (uint32_t b = 0; b < dst->bufs && b < MIXBUF_MAX; b++) {
-                float g0 = v->prev_volume * cr->prev[b], g1 = v->volume * cr->mix[b];
+                float g0 = v->prev_volume * cr->prev[b] * sg, g1 = v->volume * cr->mix[b] * sg;
                 if (g0 == 0 && g1 == 0) continue;
                 float *o = dst->buf + b * N, dg = (g1 - g0) / N;
                 for (uint32_t i = 0; i < N; i++) o[i] += smp[i] * (g0 + dg * i);
@@ -732,6 +735,7 @@ static void update_voice(Renderer *r, Voice *v, const uint8_t *p, uint8_t *out) 
     memcpy(&v->volume, p + 32, 4);
     memcpy(&v->wb_count, p + 60, 4);
     memcpy(&v->ds_addr, p + 72, 8);
+    v->sensor = v->fmt == 6 && in_guest(v->ds_addr, 32) && shrine_sensor_voice((const int16_t *)(uintptr_t)v->ds_addr);
     memcpy(&v->mix_id, p + 88, 4);
     memcpy(&v->splitter_id, p + 92, 4);
     memcpy(v->chan_ids, p + 320, 24);
@@ -1222,9 +1226,48 @@ static void sdk_take_sink(SdkRen *r, uint64_t list) {
     }
 }
 
+// The shrine sensor's volume (runtime/shrine_sensor.c), live: before a command list runs, each ADPCM data source
+// command whose coefficients are the sensor's gets its samples brought to the setting's volume where they lie.
+// AdpcmDataSourceCommand (id 6, 0x108 bytes): two wave buffers at +0x38 and +0x68 (each 0x30: +0x00 the samples'
+// address, +0x08 the ADPCM context, +0x10 the samples' size, then start, end, loop start, loop end), +0x100 the
+// voice's ADPCM parameter (the 16 coefficients, then the start context). The byte after the id is not an enabled
+// flag here (it takes any value), so it is not looked at.
+#define SDK_ADPCM_SOURCE 6
+#define SDK_ADPCM_SOURCE_SIZE 0x108
+static void sdk_sensor_volume(uint64_t list) {
+    if (!in_guest(list, 0x20)) return;
+    int vol = g_settings.shrine_sensor_volume;
+    uint32_t count = *(const uint32_t *)(uintptr_t)(list + 4);
+    uint64_t cmd = list + 0x20;
+    for (uint32_t i = 0; i < count && in_guest(cmd, 0x10); i++) {
+        const uint8_t *p = (const uint8_t *)(uintptr_t)cmd;
+        int16_t size = *(const int16_t *)(p + 6);
+        if (size <= 0 || !in_guest(cmd, (uint64_t)size)) break;
+        uint64_t coefs;
+        memcpy(&coefs, p + 0x100, 8);
+        if (p[5] == SDK_ADPCM_SOURCE && size == SDK_ADPCM_SOURCE_SIZE && in_guest(coefs, 32) &&
+            shrine_sensor_voice((const int16_t *)(uintptr_t)coefs)) {
+            for (int w = 0; w < 2; w++) {
+                uint64_t samples;
+                uint32_t bytes;
+                memcpy(&samples, p + 0x38 + w * 0x30, 8);
+                memcpy(&bytes, p + 0x38 + w * 0x30 + 0x10, 4);
+                if (!samples || !in_guest(samples, bytes)) continue;
+                if (shrine_sensor_render((const int16_t *)(uintptr_t)coefs, (uint8_t *)(uintptr_t)samples, bytes, vol)) {
+                    static int logged;
+                    if (logged++ < 8)
+                        LOG("[audren-sdk] shrine sensor samples at %llx: volume %d%%\n", (unsigned long long)samples, vol);
+                }
+            }
+        }
+        cmd += (uint64_t)size;
+    }
+}
+
 // Hook on nn::audio::dsp::CommandListProcessor::Process (x0: the processor, whose +0x00 is its command list).
 static void sdk_process(Cpu *c) {
     uint64_t list = *(const uint64_t *)(uintptr_t)c->x[0], lr = c->x[30];
+    sdk_sensor_volume(list);
     g_sdk_process(c);
     c->x[30] = lr;
     sdk_take_sink(&g_sdkren, list);

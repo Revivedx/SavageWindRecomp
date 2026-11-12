@@ -1425,6 +1425,7 @@ static float hud_scale_now(void) {
     return hud_owned() || !(hud_event || hud_event_dialogue || hud_menu || hud_title || hud_loading) ?
            (float)g_settings.hud_size / 100 : 1;
 }
+// HUD edge placement follows the recorded layout owner.
 static int hud_edges_now(float shape) {
     hud_frame_update();
     if (hud_native_layout()) return 0;
@@ -1438,6 +1439,30 @@ static float hud_layout_dy(float shape) {
 }
 static bool hud_context_native(float shape, float x, float y, float ex, float ey) {
     return hud_scope.kind != UI_LAYOUT_CONTEXT && hud_context_keeps(g_settings.hud_edges && shape < 1, x, y, ex, ey);
+}
+
+// HUD at edges leaves a shop's panel where it is: its list, the item's panel and their frames are one 16:9 layout that
+// spans the middle, so its top part went to the window's edge without the rest (#599), while the hearts and the rupees
+// around it go to the edges as ever. A pane drawn with a shop pane's position (layout units, the translation of the
+// draw's model-view matrix) stays. The game's panes are read once a frame and the last SHOP_FRAMES reads are kept: the
+// game is a frame or two ahead of the frame drawn, so while the panel slides in its panes were already elsewhere and
+// the first moment of it came out split.
+#define SHOP_PANES_MAX 512
+#define SHOP_FRAMES 4
+static bool hud_shop_pane(float x, float y) {
+    extern int framepace_shop_panes(float *xy, int max);
+    static uint64_t frame = ~0ull;
+    static float xy[SHOP_FRAMES][2 * SHOP_PANES_MAX];
+    static int n[SHOP_FRAMES], at;
+    uint64_t now = renderer_present_count();
+    if (now != frame) {
+        frame = now, at = (at + 1) % SHOP_FRAMES;
+        n[at] = g_settings.hud_edges ? framepace_shop_panes(xy[at], SHOP_PANES_MAX) : 0;
+    }
+    for (int f = 0; f < SHOP_FRAMES; f++)
+        for (int i = 0; i < n[f]; i++)
+            if (fabsf(xy[f][2 * i] - x) < 0.01f && fabsf(xy[f][2 * i + 1] - y) < 0.01f) return true;
+    return false;
 }
 static float vp_sx = 1, vp_sy = 1, vp_ox = 0, vp_oy = 0;
 static float tex_sc[2][64][2];
@@ -4894,7 +4919,7 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
             hud_ax = hud_anchor(cx, edge_x);
             hud_ay = hud_anchor(cy, edge_y);
             if (hud_edge_active && hud_edge_moves(edge_mode, cy, edge_y) &&
-                !(hud_quick && hud_quick_bar(cx, cy, edge_x, edge_y)))
+                !(hud_quick && hud_quick_bar(cx, cy, edge_x, edge_y)) && !hud_shop_pane(mv[3], mv[7]))
                 edge_dy = hud_edge_dy(hud_ay, edge_y, shape);
             hud_scale = hud_s != 1 && !(hud_quick && hud_quick_keeps(cx, cy, edge_x, edge_y));
         }

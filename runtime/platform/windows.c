@@ -69,13 +69,13 @@ bool plat_guest_sparse_heap_enabled(void) {
     return sparse_heap_configured && sparse_heap_enabled;
 }
 
-void plat_guest_sparse_heap_configure(bool intel_integrated_gpu) {
+void plat_guest_sparse_heap_configure(bool auto_on) {
     const char *override = getenv("SAVAGEWIND_VK_SPARSE_HEAP");
     if (override)
         sparse_heap_enabled = !strcmp(override, "1");
     else
         sparse_heap_enabled = g_settings.sparse_heap == SPARSE_HEAP_ON ||
-                              (g_settings.sparse_heap == SPARSE_HEAP_AUTO && intel_integrated_gpu);
+                              (g_settings.sparse_heap == SPARSE_HEAP_AUTO && auto_on);
     sparse_heap_configured = true;
 }
 
@@ -364,6 +364,7 @@ static void require_cpu(void) {
 
 // Fatal error (rt_fatal_trace): the last FATAL / exception line of the log in a message box, when there is no console.
 void plat_fatal_notice(void) {
+    plat_accessibility_shortcuts(true);  // (the shortcuts as they were: the process ends)
     if (!g_log_path[0]) return;
     fflush(stderr);
     char text[1024] = "Savage Wind stopped because of an error.";
@@ -696,5 +697,48 @@ bool plat_remove_tree(const char *dir) {
     return SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted;
 }
 
+// Windows' accessibility shortcuts while the game has the focus: pressing Shift five times (Sticky Keys), holding the
+// right Shift for eight seconds (Filter Keys) or Num Lock for five (Toggle Keys) took the player out to their prompt,
+// and Shift is sprint and back. As Microsoft advises for games ("Disabling Shortcut Keys in Games"): the shortcut is
+// turned off while the window has the focus, only where the feature itself is off (a player who uses it keeps it),
+// and the settings as they were come back when the focus goes and when the game ends. Not written to the user's
+// profile (no SPIF_UPDATEINIFILE), so a crash leaves them until the next sign-in at worst.
+static STICKYKEYS sk_was = {sizeof(STICKYKEYS)};
+static TOGGLEKEYS tk_was = {sizeof(TOGGLEKEYS)};
+static FILTERKEYS fk_was = {sizeof(FILTERKEYS)};
+static bool shortcuts_read, shortcuts_off;
+static void shortcuts_restore(void) { plat_accessibility_shortcuts(true); }
+
+void plat_accessibility_shortcuts(bool allow) {
+    if (!shortcuts_read) {
+        if (!SystemParametersInfoW(SPI_GETSTICKYKEYS, sizeof sk_was, &sk_was, 0) ||
+            !SystemParametersInfoW(SPI_GETTOGGLEKEYS, sizeof tk_was, &tk_was, 0) ||
+            !SystemParametersInfoW(SPI_GETFILTERKEYS, sizeof fk_was, &fk_was, 0))
+            return;
+        shortcuts_read = true;
+        atexit(shortcuts_restore);  // (a plain exit; plat_terminate and plat_fatal_notice put them back themselves)
+    }
+    if (!allow && !shortcuts_off) {
+        STICKYKEYS sk = sk_was;
+        TOGGLEKEYS tk = tk_was;
+        FILTERKEYS fk = fk_was;
+        if (!(sk.dwFlags & SKF_STICKYKEYSON)) sk.dwFlags &= ~(DWORD)(SKF_HOTKEYACTIVE | SKF_CONFIRMHOTKEY);
+        if (!(tk.dwFlags & TKF_TOGGLEKEYSON)) tk.dwFlags &= ~(DWORD)(TKF_HOTKEYACTIVE | TKF_CONFIRMHOTKEY);
+        if (!(fk.dwFlags & FKF_FILTERKEYSON)) fk.dwFlags &= ~(DWORD)(FKF_HOTKEYACTIVE | FKF_CONFIRMHOTKEY);
+        SystemParametersInfoW(SPI_SETSTICKYKEYS, sizeof sk, &sk, 0);
+        SystemParametersInfoW(SPI_SETTOGGLEKEYS, sizeof tk, &tk, 0);
+        SystemParametersInfoW(SPI_SETFILTERKEYS, sizeof fk, &fk, 0);
+        shortcuts_off = true;
+    } else if (allow && shortcuts_off) {
+        SystemParametersInfoW(SPI_SETSTICKYKEYS, sizeof sk_was, &sk_was, 0);
+        SystemParametersInfoW(SPI_SETTOGGLEKEYS, sizeof tk_was, &tk_was, 0);
+        SystemParametersInfoW(SPI_SETFILTERKEYS, sizeof fk_was, &fk_was, 0);
+        shortcuts_off = false;
+    }
+}
+
 // End the process at once, skipping DLL teardown (from an atexit handler, after flushing). Exit status 0.
-void plat_terminate(void) { TerminateProcess(GetCurrentProcess(), 0); }
+void plat_terminate(void) {
+    plat_accessibility_shortcuts(true);  // (the atexit handlers after this one don't run)
+    TerminateProcess(GetCurrentProcess(), 0);
+}

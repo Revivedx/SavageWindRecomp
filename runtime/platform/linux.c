@@ -390,3 +390,5 @@ bool plat_remove_tree(const char *dir) { return nftw(dir, rm_entry, 16, FTW_DEPT
 void plat_terminate(void) { _exit(0); }
 
 bool plat_guest_sparse_heap_enabled(void) { return false; }
+
+void plat_accessibility_shortcuts(bool allow) { (void)allow; }  // (Windows only)

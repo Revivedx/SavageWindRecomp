@@ -33,7 +33,7 @@ bool plat_reset_guest(uint64_t lo, uint64_t hi);
 bool plat_guest_sparse_heap_enabled(void);
 #ifdef _WIN32
 uint64_t plat_guest_commit_generation(void);
-void plat_guest_sparse_heap_configure(bool intel_integrated_gpu);
+void plat_guest_sparse_heap_configure(bool auto_on);  // (auto_on: what sparse_heap = auto picks for this GPU)
 void plat_guest_sparse_heap_range(uint64_t base, uint64_t size);
 uint64_t plat_guest_sparse_heap_committed_word(uint64_t word);
 bool plat_guest_commit_sparse_range(uint64_t addr, uint64_t size);
@@ -77,6 +77,9 @@ const char *plat_log_path(void);  // the log file this run writes ("": stderr go
 void plat_exec(char *const argv[]);  // replace the process (NULL = same command line); returns only on failure
 #if defined(_WIN32) || defined(__linux__)
 void plat_terminate(void);  // end the process now, skipping DLL teardown (exit status 0)
+// Windows: false turns off the accessibility shortcuts (Shift five times: Sticky Keys) where their feature is off,
+// true puts them back as they were (the game's window has the focus or not). Elsewhere nothing.
+void plat_accessibility_shortcuts(bool allow);
 #endif
 
 // Child processes (game code generator and compiler, game-file setup). stdout + stderr go to log_path (NULL = /dev/null).

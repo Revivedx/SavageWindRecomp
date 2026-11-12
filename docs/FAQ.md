@@ -88,8 +88,8 @@ it doesn't need your original copy again.
 ### How do I update?
 
 From 0.5.1 on, Savage Wind updates itself in one click from Savage Wind Configuration, on Windows and in the Linux
-AppImages. If you are on 0.5.0 or older, install 0.5.1 by hand once, by extracting the zip over the old folder or by
-using the new AppImage. Your game files, saves and settings stay.
+AppImages. If you are on 0.5.0 or older, install the latest version by hand once, by extracting the zip over the old folder
+or by using the new AppImage. Your game files, saves and settings stay.
 
 The first start of a new version empties the shader caches and precompiles them again, and it rebuilds the game code
 only if that version needs it.
@@ -176,9 +176,9 @@ gives the driver a fresh cache.
 
 ### The sky is black, dark or wrong on my AMD card
 
-This is an open bug. So far it is seen on Windows with AMD's own driver, mostly on RX 6000 cards, and the same cards
-draw it correctly on Linux. We don't have the cause yet, and there is a test you can run on
-[#359](https://github.com/Revivedx/SavageWindRecomp/issues/359).
+Fixed in 0.5.2. It came from AMD's own shader compiler, which AMD's Windows driver uses on RX 6000 cards and older
+(Vega included); newer cards and Linux drew the sky right. Update to 0.5.2, and if the sky is still wrong there, add
+your card, driver and log on [#359](https://github.com/Revivedx/SavageWindRecomp/issues/359).
 
 ### The water is white, milky or transparent
 
@@ -311,12 +311,11 @@ a new one. The full list is on the [issue tracker](https://github.com/Revivedx/S
 
 | Problem | Seen on | Issue |
 |---|---|---|
-| Black, dark or wrong sky | AMD on Windows, mostly RX 6000 | [#359](https://github.com/Revivedx/SavageWindRecomp/issues/359), [#665](https://github.com/Revivedx/SavageWindRecomp/issues/665) |
+| Black, dark or wrong sky (fixed in 0.5.2: tell us if it still happens) | AMD on Windows, RX 6000 and older | [#359](https://github.com/Revivedx/SavageWindRecomp/issues/359), [#665](https://github.com/Revivedx/SavageWindRecomp/issues/665) |
 | Fog glitches in the intro | Under investigation | [#630](https://github.com/Revivedx/SavageWindRecomp/issues/630) |
 | Transparent water | Under investigation | [#649](https://github.com/Revivedx/SavageWindRecomp/issues/649) |
-| White radial flashes and broken geometry | RX 9070 XT | [#620](https://github.com/Revivedx/SavageWindRecomp/issues/620) |
+| Rain or torch particles stretched across the screen for a frame (radial flashes, shards); please try `SAVAGEWIND_GPU_OVERLAP=0` and tell us | NVIDIA and AMD | [#620](https://github.com/Revivedx/SavageWindRecomp/issues/620), [#629](https://github.com/Revivedx/SavageWindRecomp/issues/629), [#683](https://github.com/Revivedx/SavageWindRecomp/issues/683), [#717](https://github.com/Revivedx/SavageWindRecomp/issues/717) |
 | Graphical bugs | ROG Ally Z1E on SteamOS | [#614](https://github.com/Revivedx/SavageWindRecomp/issues/614) |
-| Textures flicker near a torch | Under investigation | [#629](https://github.com/Revivedx/SavageWindRecomp/issues/629) |
 | Corrupted footprints in sand | Under investigation | [#634](https://github.com/Revivedx/SavageWindRecomp/issues/634) |
 | Corrupted picture | Under investigation | [#632](https://github.com/Revivedx/SavageWindRecomp/issues/632) |
 | Flicker on distant surfaces with fast camera (not reproduced yet) | Under investigation | [#105](https://github.com/Revivedx/SavageWindRecomp/issues/105) |
@@ -347,7 +346,7 @@ a new one. The full list is on the [issue tracker](https://github.com/Revivedx/S
 | Map controls with mouse and keyboard | None yet | [#440](https://github.com/Revivedx/SavageWindRecomp/issues/440) |
 | Button prompts and layout on DualSense | None yet | [#604](https://github.com/Revivedx/SavageWindRecomp/issues/604) |
 | Gyro axes wrong on some handhelds over DSU | Being looked at | [#136](https://github.com/Revivedx/SavageWindRecomp/issues/136) |
-| UI elements out of bounds at 4:3 | Use a wider window | [#599](https://github.com/Revivedx/SavageWindRecomp/issues/599) |
+| HUD shakes or goes out of bounds at 20:9 (2340x1080) | Needs more information; a 16:9 window meanwhile | [#728](https://github.com/Revivedx/SavageWindRecomp/issues/728) |
 | Gaps in Thai subtitles | Set Voices to "Same as text" | [#516](https://github.com/Revivedx/SavageWindRecomp/issues/516) |
 
 ### Setup

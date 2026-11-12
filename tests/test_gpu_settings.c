@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include "../runtime/settings.c"
 #include "../runtime/hle/bindings.c"
+GameSites g_site;  // (no game: bindings.c finds no HUD prompt)
 
 const TextLanguage g_text_languages[] = {{"Auto", NULL, NULL}};
 const VoiceLanguage g_voice_languages[] = {{"Auto", NULL}};

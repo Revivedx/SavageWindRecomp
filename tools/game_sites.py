@@ -166,8 +166,25 @@ SITES = [
     Site('stale_actor_target', 'code', 'f942ba68 f9404500 94000000/fc000000 12000008 390006e8 37000000/fff8001f 394002e8 35000008/ff00001f', 0),
     # the physics step's solver microsteps (tools/patches.py _solver_steps): the delta frame times 6
     Site('phys_solver_steps', 'code', '1e231002 1e3c1004 f9401a68 1e2c1009 1e220822 f9400108 1e202048 f9400514', 4),
+    # Havok's deactivation at the console's pace (tools/patches.py _phys_tick, _phys_motion_tick): the world step's
+    # deactivation counter (+0x3ef; the single-threaded and the multithreaded simulation) and each body's (hkpMotion +0xd;
+    # the integration of islands without constraints and with them)
+    Site('phys_tick', 'code', '394fbd0a 11000549 1100154a 390fbd09 1200094a 3500000a/ff00001f 394fb50a 5200014a '
+         '390fb50a 1200092a 3500000a/ff00001f 394fb50a 521f014a 390fb50a 12000d29 35000009/ff00001f 394fb909 320003ea '
+         '4b090149 390fb909 390fbd1f d503201f', 0),
+    Site('phys_tick_mt', 'code', '394fbd0a 11000549 1100154a 390fbd09 1200094a 3500000a/ff00001f 394fb50a 5200014a '
+         '390fb50a 1200092a 3500000a/ff00001f 394fb50a 521f014a 390fb50a 12000d29 35000009/ff00001f 394fb909 320003ea '
+         '4b090149 390fb909 390fbd1f f9400a60', 0),
+    Site('phys_motion_tick', 'code', '39403688 11000508 39003688 12000509 35000009/ff00001f 12000d09 '
+         '34000009/ff00001f aa1f03e8', 0),
+    Site('phys_motion_tick_c', 'code', '39403748 11000508 39003748 12000509 35000009/ff00001f 12000d09 '
+         '34000009/ff00001f aa1f03e8', 0),
     # a keyframed body's angular velocity toward its target (tools/patches.py _kf_angle): the call that takes the angle
     # of the turn left (hkQuaternion::getAngle, 2 acos(|w|))
+    # a player demo move's arrival test (tools/patches.py _demo_move_arrive): the distance left against the body's speed
+    # in console frames, fcmp s8, s9
+    Site('demo_move_arrive', 'code', 'bd60bd09 94000000/fc000000 f9400668 5282fe09 38696908 34000008/ff00001f 1e292100 '
+         '54000004/ff00001f 90000008/9f00001f bd404261 bd425102 1e222821 1e282020 54000005/ff00001f 1e292921 1e200820', 6),
     Site('kf_angle', 'code', '0e612800 0e0e3c08 0e040d00 0f3f5400 0ea0a800 6e180400 4e221c00 6e211c00 3c9983a0 '
          '94000000/fc000000 3cd883a6 1e2008c0', 9),
     # the sound system's frame (tools/patches.py _snd_frame_floor): the delta frame, at least 0.5, its timers' step
@@ -376,6 +393,8 @@ OPTIONAL_GROUPS = [
     ('stale_actor_helper', 'stale_actor_target'),
     ('quick_menu_capture_alpha',),
     ('kf_angle',),
+    ('demo_move_arrive',),
+    ('phys_tick', 'phys_tick_mt', 'phys_motion_tick', 'phys_motion_tick_c'),
     ('yaz0_stream', 'yaz0_stream_ret'),
     ('pc_map_focus', 'pc_map_focus_target', 'pc_map_focus_now'),
     ('beast_focus_axes', 'beast_focus_linear', 'beast_confirm_axes', 'beast_confirm_linear',
@@ -505,7 +524,12 @@ KNOWN = {
         'stale_actor_helper': 0x700120bc40,
         'stale_actor_target': 0x7000dea400,
         'phys_solver_steps': 0x700156f930,
+        'demo_move_arrive': 0x7000c711dc,
         'kf_angle': 0x70012d57fc,
+        'phys_tick': 0x70000f5e20,
+        'phys_tick_mt': 0x700012644c,
+        'phys_motion_tick': 0x700011f95c,
+        'phys_motion_tick_c': 0x70001207cc,
         'snd_frame_floor': 0x7001551004,
         'persp_matrix': 0x7000eb4a50,
         'persp_matrix_offset': 0x7000eb4a58,
