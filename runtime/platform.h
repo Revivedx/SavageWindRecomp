@@ -77,6 +77,9 @@ const char *plat_log_path(void);  // the log file this run writes ("": stderr go
 void plat_exec(char *const argv[]);  // replace the process (NULL = same command line); returns only on failure
 #if defined(_WIN32) || defined(__linux__)
 void plat_terminate(void);  // end the process now, skipping DLL teardown (exit status 0)
+// Windows: false turns off the accessibility shortcuts (Shift five times: Sticky Keys) where their feature is off,
+// true puts them back as they were (the game's window has the focus or not). Elsewhere nothing.
+void plat_accessibility_shortcuts(bool allow);
 #endif
 
 // Child processes (game code generator and compiler, game-file setup). stdout + stderr go to log_path (NULL = /dev/null).
