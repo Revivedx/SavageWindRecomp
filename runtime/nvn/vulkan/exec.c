@@ -22,6 +22,7 @@
 #include "../../platform.h"
 #include "shaders.h"
 #include "vk.h"
+#include "exec/internal.h"
 #include "bloom_scale.h"
 #include "vram.h"
 #include "fsr3.h"
@@ -103,37 +104,15 @@ static uint64_t cum_draws;  // draws so far (vk_pso_wait_needed)
 // Command buffer state draw_ recorded last, so a draw records only what differs (one draw set ~20 pieces of state;
 // the open world has ~5000 draws a frame). dyn_epoch changes with each command buffer begun and wherever other code
 // binds a graphics pipeline or sets this state (vk_dyn_forget). SAVAGEWIND_VK_NO_DYN_CACHE=1: everything every draw.
-static uint64_t dyn_epoch = 1;
-static int no_dyn_cache = -1;
-static struct {
-    uint64_t epoch;
-    VkPipeline pipe;
-    VkPipelineLayout layout;
-    VkDescriptorSet sets[2];
-    uint32_t ndyn, dyn[32];  // dynamic uniform-buffer offsets bound with them
-    uint32_t dt, dw, dop, sten, cull, front, topo, restart, bias_on;
-    uint32_t sten_face[2][8];  // fail, pass, depth fail, compare, compare mask, write mask, reference
-    float blend[4], bias[3], line_w;
-    VkViewport vp;
-    VkRect2D sc;
-    VkBuffer ibuf;
-    VkDeviceSize ioff;
-    uint32_t itype;
-    VkBuffer vbuf[17];
-    VkDeviceSize voff[17];
-} dc;
+uint64_t dyn_epoch = 1;
+int no_dyn_cache = -1;
+ExecDrawCache dc;
 void vk_dyn_forget(void) { dyn_epoch++; }
 // Bumped by every command that changes what goes into the program and pipeline keys (exec_list) and by passes
 // (begin_pass): while it stays, a draw takes the last draw's program and pipeline without building and comparing the
 // keys (~1.4 KB a draw). SAVAGEWIND_VK_NO_KEY_GEN=1: keys every draw.
-static uint64_t key_gen = 1;
-static uint64_t setc_gen;  // bumped to drop the shared descriptor sets (set_finish) of the submission in progress
-static void dyn_check(void) {  // (after vk_cmd) a new command buffer or foreign state: nothing known
-    if (dc.epoch == dyn_epoch) return;
-    memset(&dc, 0xFF, sizeof dc);  // matches no value (floats: NaN)
-    dc.epoch = dyn_epoch;
-}
-#define DYN_SAME(field, val) (dc.field == (val) ? true : (dc.field = (val), false))
+uint64_t key_gen = 1;
+uint64_t setc_gen;  // bumped to drop the shared descriptor sets (set_finish) of the submission in progress
 static _Atomic int stat_compiles;  // programs and pipelines built where first needed
 static _Atomic int stat_warm;      // ... found built: by the pre-warm (pso_init) or for other programs with the same stages
 static void pso_init(void);
@@ -1167,45 +1146,7 @@ static void run_job(void (*fn)(void *), void *arg) {
 }
 
 // ================================================================== state
-typedef struct {
-    NvnTexture *color[8];
-    NvnTextureView cview[8];
-    uint8_t has_cview[8];
-    int ncolor;
-    NvnTexture *depth;
-    NvnTextureView dview;
-    uint8_t has_dview;
-} RtState;
-
-typedef struct { uint64_t addr, size; } Range;
-
-static struct {
-    RtState rt;
-    bool rt_dirty;
-    NvnProgram *program;
-    uint8_t blend[8][8];
-    uint32_t channel_mask;
-    uint8_t color_state[4], ds[8], ms[0x18], poly[4];
-    float poly_offset[3];
-    float line_width;
-    uint32_t attrib[16];
-    int nattrib;
-    uint32_t stream[16][2];
-    int nstream;
-    Range vbuf[16], ubuf[6][18], sbuf[6][16];
-    uint64_t tex[6][32], img[6][8];
-    NvnDescPool *tpool, *spool;
-    float viewport[16][4];
-    int32_t scissor[16][4];
-    float depth_range[16][2];
-    float blend_color[4];
-    uint32_t stencil_ref[2], stencil_mask[2], stencil_vmask[2];
-    bool prim_restart;
-    uint32_t restart_index;
-    bool depth_clamp;
-    bool rasterizer_discard;  // nvnCommandBufferSetRasterizerDiscard: draw() skips draws (no transform feedback here)
-    uint64_t copy_row_stride, copy_image_stride;
-} st;
+ExecState st;
 
 uint32_t nvn_window_origin(void);
 uint32_t nvn_depth_mode(void);
