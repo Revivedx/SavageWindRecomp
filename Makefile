@@ -79,7 +79,7 @@ VULKAN   := $(or $(DEPS),/opt/homebrew)
 EXE      := $(B)/savagewind
 DEPINC   := -I$(SDL)/include -I$(FFMPEG)/include
 LDFLAGS  := -L$(SDL)/lib -lSDL3 -Wl,-rpath,$(SDL)/lib -L$(FFMPEG)/lib -lavformat -lavcodec -lavutil -lswscale -Wl,-rpath,$(FFMPEG)/lib -lz \
-            -framework CoreFoundation -framework Foundation -framework QuartzCore -framework AppKit -framework ImageIO -framework CoreGraphics -framework UniformTypeIdentifiers
+            -framework CoreFoundation -framework Foundation -framework QuartzCore -framework AppKit -framework ImageIO -framework CoreGraphics -framework UniformTypeIdentifiers -framework IOKit
 ifeq ($(RENDERER),metal)
 DEPINC   += -DSW_METAL=1
 LDFLAGS  += -framework Metal -framework MetalFX
