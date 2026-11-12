@@ -6,6 +6,44 @@ What changed in each Savage Wind release. The `test` branch holds what the next 
 
 Nothing yet.
 
+## 0.5.2 (0.5.2-alpha.5) - 2026-11-12
+
+A bug-fix update. **Updating:** Savage Wind Configuration offers it in one click (from 0.5.1 on). This update changes
+the game code, so it is built again once after updating, which takes a few minutes; your game files, saves and settings
+stay.
+
+### Fixes
+
+- **High frame rates:** leaving the Shrine of Resurrection, Link no longer stops short of the cliff above about
+  100 fps ([#364](https://github.com/Revivedx/SavageWindRecomp/issues/364)), and physics objects no longer fall asleep
+  mid-move above 60 fps, such as the ball in Ree Dahee Shrine
+  ([#398](https://github.com/Revivedx/SavageWindRecomp/issues/398), by leohsm).
+- **Crash** when the video of the Ganon cutscene was skipped
+  ([#702](https://github.com/Revivedx/SavageWindRecomp/issues/702), by jfpaardoo).
+- **Sky on AMD with Windows:** black, dark or wrong sky on cards that use AMD's own shader compiler (RX 6000 and
+  older, Vega) ([#359](https://github.com/Revivedx/SavageWindRecomp/issues/359),
+  [#665](https://github.com/Revivedx/SavageWindRecomp/issues/665)).
+- **Shrine sensor volume** now works, and applies as soon as the slider moves
+  ([#449](https://github.com/Revivedx/SavageWindRecomp/issues/449), with jfpaardoo).
+- **Controls:** with Jump (or another action) on Interact's button, picking things up, talking or closing a new item's
+  message no longer jumps or swim-dashes (by SeveX).
+- **HUD:** no seam down the middle of partial hearts above 1080p (by thebigredder).
+- **HUD at edges** on 4:3 and 16:10: shop panels, merchants' lists and their selection box stay whole
+  ([#599](https://github.com/Revivedx/SavageWindRecomp/issues/599)).
+- **Windows:** pressing Shift five times no longer opens the Sticky Keys prompt while you play (nor the Filter Keys and
+  Toggle Keys shortcuts); they work as usual outside the game, and players who use these features keep them.
+- **Intel integrated graphics:** the sparse heap is automatic only where shared memory is short, which avoids crashes
+  a few minutes in on GPUs with memory to spare ([#596](https://github.com/Revivedx/SavageWindRecomp/issues/596),
+  [#619](https://github.com/Revivedx/SavageWindRecomp/issues/619),
+  [#695](https://github.com/Revivedx/SavageWindRecomp/issues/695)).
+- **Linux AppImage:** an update could take another program's AppImage for Savage Wind's when started from a launcher
+  that passes its own `$APPIMAGE` on (by devall96).
+
+### Changed
+
+- **Handheld PCs** with a faster screen are offered 90, 120 and 144 fps up to its refresh rate, besides 30, 40, 45 and
+  60 ([#712](https://github.com/Revivedx/SavageWindRecomp/issues/712)).
+
 ## 0.5.1 (0.5.1-alpha.5) - 2026-11-11
 
 **One-click updates.** From this version on, Savage Wind updates itself: Savage Wind Configuration says when a new
