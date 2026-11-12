@@ -288,6 +288,14 @@ static int precompile_shaders(const char *root) {
     pthread_join(t, NULL);
     fprintf(stderr, "\n[precompile] %s: %d shaders, %d translations (%d made, %d cached, %d failed) in %.1f s%s%s\n",
             ok ? "done" : "stopped", p.shaders, p.keys, p.made, p.cached, p.failed, p.seconds, ok ? "" : ": ", ok ? "" : p.why);
+    if (!getenv("SAVAGEWIND_PRECOMPILE_NO_PIPELINES")) {  // the seeded pipelines' pre-warm it started: built and kept
+        extern bool vk_pso_prewarm_running(void);
+        extern void vk_pipeline_cache_save(void);
+        double w0 = plat_now_ns() / 1e9;
+        while (vk_pso_prewarm_running()) SDL_Delay(100);
+        vk_pipeline_cache_save();
+        fprintf(stderr, "[precompile] pipelines pre-warmed and saved (%.1f s)\n", plat_now_ns() / 1e9 - w0);
+    }
     return ok ? 0 : 1;
 }
 
