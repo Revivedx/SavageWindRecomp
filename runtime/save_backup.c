@@ -56,10 +56,14 @@ void save_backup_at_start(void) {
     static bool done;  // (once a run: a reboot starts the game again in the same process)
     if (done || !g_settings.save_backups || getenv("SAVAGEWIND_SAVE_DIR")) return;
     done = true;
+    const char *save = g_settings.save_dir[0] ? g_settings.save_dir : SAVE_DIR;
     SDL_Time t = 0, last = 0;
-    SDL_EnumerateDirectory(SAVE_DIR, newest, &t);
+    SDL_EnumerateDirectory(save, newest, &t);
     if (!t) return;  // (no saves yet)
-    FILE *f = fopen(AUTO_LAST, "r");
+    char backup_dir[1024], auto_last[1024];
+    sc_backup_path(save, backup_dir, sizeof backup_dir);
+    snprintf(auto_last, sizeof auto_last, "%s/auto-last.txt", backup_dir);
+    FILE *f = fopen(auto_last, "r");
     if (f) {
         long long v = 0;
         if (fscanf(f, "%lld", &v) == 1) last = v;
@@ -69,29 +73,29 @@ void save_backup_at_start(void) {
         LOG("[saves] no backup at start: nothing changed since the last one\n");
         return;
     }
-    char when[32] = "0", to[256];
+    char when[32] = "0", to[1024];
     time_t now = time(NULL);
     struct tm *tm = localtime(&now);
     if (tm) strftime(when, sizeof when, "%Y%m%d-%H%M%S", tm);
-    snprintf(to, sizeof to, BACKUP_DIR "/" AUTO_PREFIX "%s", when);
+    snprintf(to, sizeof to, "%s/" AUTO_PREFIX "%s", backup_dir, when);
     static ScReport r;
-    if (sc_backup(SAVE_DIR, to, &r) != SC_OK) {
+    if (sc_backup(save, to, &r) != SC_OK) {
         LOG("[saves] backup at start failed (code %d)\n", (int)r.code);
         return;
     }
-    f = fopen(AUTO_LAST, "w");
+    f = fopen(auto_last, "w");
     if (f) {
         fprintf(f, "%lld\n", (long long)t);
         fclose(f);
     }
     static List l;
     l.n = 0;
-    SDL_EnumerateDirectory(BACKUP_DIR, list_auto, &l);
+    SDL_EnumerateDirectory(backup_dir, list_auto, &l);
     qsort(l.names, l.n, sizeof l.names[0], by_name);
     for (int i = 0; i + AUTO_BACKUPS < l.n; i++) {
-        snprintf(to, sizeof to, BACKUP_DIR "/%s", l.names[i]);
+        snprintf(to, sizeof to, "%s/%s", backup_dir, l.names[i]);
         SDL_EnumerateDirectory(to, remove_tree, NULL);
         SDL_RemovePath(to);
     }
-    LOG("[saves] backed up at start to " BACKUP_DIR "/" AUTO_PREFIX "%s\n", when);
+    LOG("[saves] backed up at start to %s/" AUTO_PREFIX "%s\n", backup_dir, when);
 }

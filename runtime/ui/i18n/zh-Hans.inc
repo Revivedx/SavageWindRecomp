@@ -1003,3 +1003,10 @@ T("A screenshot", "一张截图")
 T("Latest save", "最新存档")
 T("Loading picture", "加载图片")
 T("Shows that picture while the game loads. Turned off, the window stays black until the game's title screen: loading takes just as long.", "游戏加载时显示该图片。关闭后,在游戏标题画面出现前窗口保持黑屏:加载时间不变。")
+
+T("Folder", "")
+T("Change save folder...", "")
+T("Choose a custom folder on another drive or SSD to store your saves. Existing saves in that folder are loaded automatically.", "")
+T("Reset save folder to default", "")
+T("Revert to using the default save folder inside the game folder.", "")
+

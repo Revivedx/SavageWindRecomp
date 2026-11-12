@@ -1003,3 +1003,10 @@ T("A screenshot", "스크린샷")
 T("Latest save", "최근 세이브")
 T("Loading picture", "로딩 이미지")
 T("Shows that picture while the game loads. Turned off, the window stays black until the game's title screen: loading takes just as long.", "게임을 불러오는 동안 그 이미지를 보여 줍니다. 끄면 타이틀 화면까지 창이 검은색으로 유지됩니다. 로딩 시간은 같습니다.")
+
+T("Folder", "")
+T("Change save folder...", "")
+T("Choose a custom folder on another drive or SSD to store your saves. Existing saves in that folder are loaded automatically.", "")
+T("Reset save folder to default", "")
+T("Revert to using the default save folder inside the game folder.", "")
+
