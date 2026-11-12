@@ -17,7 +17,7 @@ code = patches._ui_layout_draw(g, thunk)
 assert f'rt_ui_layout_draw(c, f_{native:x}); return;' in code
 assert 'c->sp' not in code and 'c->x[' not in code
 assert patches.table(g.sites)[thunk] is patches._ui_layout_draw
-assert ('ui_layout_draw', 'ui_layout_native') in game_sites.OPTIONAL_GROUPS
+assert ('ui_layout_draw', 'ui_layout_native', 'ui_layout_pane') in game_sites.OPTIONAL_GROUPS
 for at, wrong in [(thunk, branch | 0x80000000), (thunk, branch + 1),
                   *[(native + 4*i, word ^ 1) for i, word in enumerate(gates)]]:
     saved = struct.unpack_from('<I', image, at - base)[0]
@@ -30,3 +30,19 @@ for at, wrong in [(thunk, branch | 0x80000000), (thunk, branch + 1),
         raise AssertionError(f'accepted a changed instruction at {at:#x}')
     struct.pack_into('<I', image, at - base, saved)
 print('PASS: UI tail thunk dispatch, unchanged guest ABI and rejection of stale branch/gate instructions')
+
+pane = base + 0xc0
+struct.pack_into('<I', image, pane-base, 0x39416008)
+g.sites['ui_layout_pane'] = pane
+code = patches._ui_layout_pane(g, pane)
+assert f'if (rt_ui_layout_pane_draw(c, f_{pane:x})) return;' in code
+assert 'c->x[8] = LD8(c->x[0] + 0x58);' in code
+assert patches.table(g.sites)[pane] is patches._ui_layout_pane
+struct.pack_into('<I', image, pane-base, 0x39416009)
+try:
+    patches._ui_layout_pane(g, pane)
+except AssertionError:
+    pass
+else:
+    raise AssertionError('accepted a changed pane entry instruction')
+print('PASS: independent reentrant pane gate preserves the native entry and rejects stale instructions')

@@ -26,6 +26,11 @@ bool framepace_menu_ui(void) { return pause_menu; }
 static unsigned calls;
 static void native_draw(Cpu *c) { calls++; c->x[5] = 123; }
 
+static void native_pane(Cpu *c) {
+    if (rt_ui_layout_pane_draw(c, native_pane)) return;
+    calls++; c->x[5] = 456;
+}
+
 static unsigned scope_at(uint64_t at) {
     CmdRec *r = (CmdRec *)(uintptr_t)at;
     if (r->op == CMD_JUMP) r = (CmdRec *)(uintptr_t)r->x[0];
@@ -109,9 +114,50 @@ int main(void) {
         rt_ui_layout_draw(&c, native_draw);
         assert(scope_at(at) == (paused ? UI_LAYOUT_MENU : UI_LAYOUT_HUD));
     }
-    ST64(slots+8*0x2a, 0); ST64(slots+8*0x4a, screen);
+    // Native MiniMap endpoints, not the global pause state, choose the presentation.
+    uint64_t animation = base + 0x6000, resource = base + 0x7000;
+    ST64(screen+0x3640, animation); ST64(animation+0x18, resource); ST16(resource+8, 1);
+    float map_frame = 0; memcpy((void *)(uintptr_t)(animation+0x20), &map_frame, 4);
+    pause_menu = false; assert(ui_layout_map_mode(screen) == 1);
+    at = cb->mem + cb->used; rt_ui_layout_draw(&c, native_draw); assert(scope_at(at) == UI_LAYOUT_MENU);
+    map_frame = 1; memcpy((void *)(uintptr_t)(animation+0x20), &map_frame, 4);
+    pause_menu = true; assert(ui_layout_map_mode(screen) == 0);
+    at = cb->mem + cb->used; rt_ui_layout_draw(&c, native_draw); assert(scope_at(at) == UI_LAYOUT_HUD);
+    map_frame = NAN; memcpy((void *)(uintptr_t)(animation+0x20), &map_frame, 4);
+    assert(ui_layout_map_mode(screen) == -1);
+    ST64(animation+0x18, GUEST_HI-4); assert(ui_layout_map_mode(screen) == -1);
+    ST64(screen+0x3640, 0); assert(ui_layout_map_mode(screen) == -1);
+    ST64(slots+8*0x2a, 0);
+    // Quest notifications, item cards and complete quick selectors retain native geometry.
+    const unsigned native_slots[] = {0xb, 0x27, 0x2d};
+    for (unsigned i = 0; i < 3; i++) {
+        ST64(slots+8*native_slots[i], screen); at = cb->mem + cb->used;
+        rt_ui_layout_draw(&c, native_draw); assert(scope_at(at) == UI_LAYOUT_DIALOGUE);
+        ST64(slots+8*native_slots[i], 0);
+    }
+    ST64(slots+8*0x4a, screen);
     at = cb->mem + cb->used; rt_ui_layout_draw(&c, native_draw);
     assert(scope_at(at) == UI_LAYOUT_TALK);
+    // The quest title is a part inside MainScreen, not the separate ChallengeWin screen.
+    uint64_t pane = base + 0x8000, pane_wrapper = base + 0x9000, controller = base + 0xa000;
+    ST64(slots+8*0x25, screen); ST64(screen+0x3cc0, controller);
+    memcpy((void *)(uintptr_t)(pane+0xb8), "Pa_QuestName_00", sizeof "Pa_QuestName_00");
+    ST64(pane+0xf0, controller); ST64(pane_wrapper+0xb0, commands);
+    Cpu part = {0}; part.x[0] = pane; part.x[2] = pane_wrapper;
+    assert(nvn_ui_scope(commands, UI_LAYOUT_HUD));
+    unsigned previous_calls = calls; Cpu expected = part; expected.x[5] = 456;
+    at = cb->mem + cb->used;
+    assert(rt_ui_layout_pane_draw(&part, native_pane));
+    assert(calls == previous_calls+1 && !memcmp(&part, &expected, sizeof part));
+    CmdRec *part_begin = (CmdRec *)(uintptr_t)at;
+    if (part_begin->op == CMD_JUMP) part_begin = (CmdRec *)(uintptr_t)part_begin->x[0];
+    CmdRec *part_end = (CmdRec *)((char *)part_begin+part_begin->size);
+    assert(part_begin->op == CMD_UI_SCOPE && part_begin->x[0] == UI_LAYOUT_DIALOGUE);
+    assert(part_end->op == CMD_UI_SCOPE && part_end->x[0] == UI_LAYOUT_NONE);
+    assert(rt_ui_layout_pane_draw(&part, native_pane) && calls == previous_calls+2);
+    ST64(pane+0xf0, controller+8); assert(!rt_ui_layout_pane_draw(&part, native_pane));
+    ST64(pane+0xf0, controller); part.x[2] = 0; assert(!rt_ui_layout_pane_draw(&part, native_pane));
+    assert(nvn_ui_scope(commands, UI_LAYOUT_NONE));
     // Nested cached lists restore the executing owner, including bounded overflow.
     HudScope scope = {0};
     hud_scope_enter(&scope, UI_LAYOUT_HUD); hud_scope_enter(&scope, UI_LAYOUT_DIALOGUE);

@@ -4696,8 +4696,12 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
     float shape = off ? 1 : output_view_shape();
     if (size < 64 || !st.rt.ncolor || !st.rt.color[0]) return false;
     const float *g = (const float *)(uintptr_t)addr;
-    bool tall_map = output_tall_map(shape);
-    if (tall_map && map_capture_patch(g, size, shape, out)) return true;
+    bool map_layout = shape >= 0.75f && shape < 1;
+    bool tall_map = map_layout && (hud_scope.kind == UI_LAYOUT_MENU ||
+                    (hud_scope.kind == UI_LAYOUT_NONE && output_tall_map(shape)));
+    // The terrain capture is prepared before AppMap switches presentation. Its fixed target
+    // must already contain the taller view on the first visible map frame.
+    if (map_layout && map_capture_patch(g, size, shape, out)) return true;
     TexBackend *tb = (TexBackend *)st.rt.color[0]->backend;
     // MessageDialog captures the background before drawing each window. Its crop uses a separate
     // source rectangle; translating the pane alone makes the captured location title/choice text repeat.

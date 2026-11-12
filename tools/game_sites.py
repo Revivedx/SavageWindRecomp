@@ -349,6 +349,7 @@ SITES = [
     # Generic layout draw thunk and its native eligibility checks (runtime/ui_layout.c).
     Site('ui_layout_draw', 'code', '14000000/fc000000 f9013001 b4000001/ff00001f d10403ff a90a7bfd a90b6ffc a90c67fa a90d5ff8', 0),
     Site('ui_layout_native', 'code', '39440008 7100011f 39440809 3943f80a 3943fc0b 7a401920 7a400944 7a421964', 0),
+    Site('ui_layout_pane', 'code', '39416008 52801029 6a28013f 54000001/ff00001f a9bd7bfd a90157f6 a9024ff4 910003fd', 0),
     Site('main_data', 'data', '', 0),
     Site('main_end', 'end', '', 0),
 ]
@@ -359,7 +360,7 @@ SITES = [
 # Without them the mouse turns the camera through the right stick, as before (runtime/hle/input.c); without the
 # second group it turns it without the game's camera inversion options.
 OPTIONAL_GROUPS = [
-    ('ui_layout_draw', 'ui_layout_native'),
+    ('ui_layout_draw', 'ui_layout_native', 'ui_layout_pane'),
     ('quick_drop_tick', 'quick_drop_actor_call', 'player_drop_forbidden', 'actor_info_lookup',
      'actor_info_has_tag', 'pouch_discard', 'player_equipment', 'pouch_default_name',
      'player_schedule_equip', 'pouch_equipped_snapshot', 'actor_index_assign', 'actor_index_resolve',
@@ -405,6 +406,7 @@ KNOWN = {
     '1.9.0': {
         'ui_layout_draw': 0x70013ee084,
         'ui_layout_native': 0x7000f6f690,
+        'ui_layout_pane': 0x7000027d30,
         'quick_drop_tick': 0x7000e68168,
         'quick_drop_actor_call': 0x7001223f50,
         'player_drop_forbidden': 0x7000cc0334,

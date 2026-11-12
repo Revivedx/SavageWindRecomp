@@ -50,6 +50,7 @@
 #include "../rt.h"
 #include "../settings.h"
 #include "../framepace.h"
+#include "../ui_layout.h"
 #include "../gamelib.h"
 #include "../window_size.h"
 
@@ -178,6 +179,9 @@ bool framepace_loading_ui(void) { return screen_up(0x55); }
 // (pause state 2: the pause menu's pages and the map; 4 is the quick menus over the game)
 bool framepace_menu_ui(void) { return *(uint32_t *)(uintptr_t)PAUSE_STATE == 2; }
 bool framepace_map_ui(void) {
+    uint64_t screen = screen_at(0x2a);
+    int mode = ui_layout_map_mode(screen);
+    if (mode >= 0) return mode && screen_draws(screen);
     if (!framepace_menu_ui()) return false;
     uint64_t mgr = *(uint64_t *)(uintptr_t)g_site.screen_mgr;
     if (!mgr || VF(uint32_t, mgr, 0x28) <= 0x2f) return false;
