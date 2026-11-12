@@ -312,6 +312,12 @@ bool uc_hex_decode(const char *hex, uint8_t *out, size_t n) {
     return true;
 }
 
+bool uc_path_inside(const char *exe, const char *appdir) {
+    size_t n = strlen(appdir);
+    while (n > 1 && appdir[n - 1] == '/') n--;  // ("/tmp/.mount_x/" and "/tmp/.mount_x" are the same folder)
+    return n && !strncmp(exe, appdir, n) && exe[n] == '/';
+}
+
 void uc_manifest_free(UcManifest *m) {
     for (int i = 0; i < m->count; i++) free(m->files[i].path);
     free(m->files);

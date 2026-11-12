@@ -61,6 +61,10 @@ const char *uc_strip_top(const char *zip_path);
 // hex (2n digits, either case) to n bytes. false: anything else.
 bool uc_hex_decode(const char *hex, uint8_t *out, size_t n);
 
+// Whether the program at exe (a real path) is inside the folder appdir (a real path): an AppImage's own program runs
+// from its runtime's mount ($APPDIR). Another AppImage's $APPIMAGE / $APPDIR, inherited, fail it.
+bool uc_path_inside(const char *exe, const char *appdir);
+
 #ifdef __cplusplus
 }
 #endif
