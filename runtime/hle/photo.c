@@ -84,6 +84,11 @@ void photo_reset(bool on) {
     if (!on) hour_reset = 1;
 }
 
+// Request a screenshot to be saved by the presenter on the next frame
+void photo_take(void) {
+    shot();
+}
+
 // (hle/input.c) keys while the free camera is on; true: taken
 bool photo_key(int scancode) {
     switch (scancode) {

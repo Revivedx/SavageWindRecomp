@@ -10,7 +10,9 @@
 #undef RT_ON_RESET
 #define RT_ON_RESET(fn) static void fn(void)
 #include "../runtime/hle/input.c"
+uint64_t quick_drop_action_filter_buttons(uint64_t b) { return b; }
 #include "test_pointer_disabled.h"
+int bind_pad_family(int type, int vendor, int product, const char *name, bool first) { (void)type, (void)vendor, (void)product, (void)name, (void)first; return 0; }
 
 Settings g_settings;
 int16_t g_bind_key[BIND_KEY_COUNT], g_bind_pad[BIND_KEY_COUNT];
@@ -29,6 +31,7 @@ void motion_sensor_event(const SDL_Event *e) { (void)e; sensor_events++; }
 void vibration_update(SDL_Gamepad *p, bool focused) { (void)p; vibrating = focused; }
 uint64_t renderer_present_count(void) { return 0; }
 uint64_t plat_now_ns(void) { return 0; }
+void plat_accessibility_shortcuts(bool allow) { (void)allow; }
 
 // PE linkers also keep exported helpers from input.c. These paths are outside this harness.
 static _Noreturn void unexpected_helper(void) { fputs("unexpected runtime helper\n", stderr); abort(); }
@@ -225,3 +228,5 @@ int main(void) {
     SDL_Quit();
     puts("input focus checks passed");
 }
+
+void photo_pad(uint32_t buttons) { (void)buttons; }

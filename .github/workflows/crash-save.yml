@@ -1,0 +1,35 @@
+# Crash reports: when an issue gets the crash label, asks its author once for the save file. A save shows whether the
+# crash comes from the game's mechanics at that point of the game. Only reads the issue's labels and comments: no code
+# from the issue or the repository runs here.
+name: Ask for the save of a crash
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  issues: write
+
+jobs:
+  ask:
+    if: github.event.label.name == 'crash'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v9
+        with:
+          script: |
+            const MARK = '<!-- savagewind-crash-save -->';
+            const issue = context.payload.issue;
+            const { owner, repo } = context.repo;
+            const number = issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: number });
+            if (comments.some(c => c.body && c.body.includes(MARK))) return;
+            const text = `${MARK}\n@${issue.user.login} thanks for the crash report! To follow it in the game we also need ` +
+                         'your **save file**, so we can tell whether it comes from the game\'s mechanics at that point:\n\n' +
+                         '1. Close the game.\n' +
+                         '2. Find the `save` folder: on Windows it is next to `savagewind.exe`, on Linux and Steam Deck in ' +
+                         '`~/.local/share/savagewind/save/`.\n' +
+                         '3. Compress the whole folder into a zip (GitHub doesn\'t take folders) and drag it into a reply here.\n\n' +
+                         'If you have a save from just before the crash, that one is best. Only your save, please: ' +
+                         'no game files, keys or firmware.';
+            await github.rest.issues.createComment({ owner, repo, issue_number: number, body: text });

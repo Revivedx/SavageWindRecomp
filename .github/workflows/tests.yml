@@ -30,6 +30,7 @@ jobs:
       astc: ${{ steps.filter.outputs.astc }}
       simd: ${{ steps.filter.outputs.simd }}
       translate: ${{ steps.filter.outputs.translate }}
+      feedback_alias: ${{ steps.filter.outputs.feedback_alias }}
     steps:
       - uses: dorny/paths-filter@v4
         id: filter
@@ -54,6 +55,10 @@ jobs:
               - 'tools/lifter.py'
               - 'tools/simd_c.py'
               - 'tools/test_simd*'
+              - '.github/workflows/tests.yml'
+            feedback_alias:
+              - 'runtime/nvn/vulkan/exec.c'
+              - 'tools/test_feedback_alias.py'
               - '.github/workflows/tests.yml'
             translate:
               - 'runtime/nvn/maxwell/**'
@@ -110,7 +115,7 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: .github/workflows/tests.yml
-      - run: uv run --no-project --with unicorn --with capstone python tools/test_simd.py --jobs "$(nproc)"
+      - run: uv run --no-project --with lz4 --with unicorn --with capstone python tools/test_simd.py --jobs "$(nproc)"
 
   # Every GLSL translation of random Maxwell programs compiles (shaderc) and validates (SPIRV-Tools).
   translate:
@@ -122,3 +127,13 @@ jobs:
       - uses: actions/checkout@v7
       - run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends libshaderc-dev spirv-tools
       - run: sh tools/test_translate.sh 20000 "$(nproc)" glsl
+
+  # Writable aliases must not be mistaken for read-only framebuffer inputs.
+  feedback_alias:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.feedback_alias == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - run: python3 tools/test_feedback_alias.py

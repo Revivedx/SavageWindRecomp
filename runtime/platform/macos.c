@@ -39,6 +39,12 @@ bool plat_reset_guest(uint64_t lo, uint64_t hi) {
 
 void plat_commit(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
 
+bool plat_committed_range(uint64_t addr, uint64_t end, uint64_t *a, uint64_t *e) {  // (the whole window is backed)
+    if (addr >= end) return false;
+    *a = addr, *e = end;
+    return true;
+}
+
 void plat_decommit(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
 
 int plat_protect(uint64_t addr, uint64_t size, int prot) {
@@ -175,3 +181,5 @@ static int rm_entry(const char *path, const struct stat *sb, int flag, struct FT
 bool plat_remove_tree(const char *dir) { return nftw(dir, rm_entry, 16, FTW_DEPTH | FTW_PHYS) == 0; }
 
 bool plat_guest_sparse_heap_enabled(void) { return false; }
+
+void plat_accessibility_shortcuts(bool allow) { (void)allow; }  // (Windows only)

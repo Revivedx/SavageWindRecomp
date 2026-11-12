@@ -44,7 +44,6 @@ MAIN_BASE = 0x7000000000  # (tools/layout.py: main is the first module)
 # supported yet is known but refused by the setup until its sites are checked.
 Version = namedtuple('Version', 'name build_id supported')
 VERSIONS = [
-    Version('1.8.2', 'de0b6ac4efc1dda7', True),
     Version('1.9.0', 'cd57b23fa4bbad65', True),  # (2026-02-17: Thai text on Switch 2; SDK 21.4.1)
 ]
 
@@ -167,8 +166,25 @@ SITES = [
     Site('stale_actor_target', 'code', 'f942ba68 f9404500 94000000/fc000000 12000008 390006e8 37000000/fff8001f 394002e8 35000008/ff00001f', 0),
     # the physics step's solver microsteps (tools/patches.py _solver_steps): the delta frame times 6
     Site('phys_solver_steps', 'code', '1e231002 1e3c1004 f9401a68 1e2c1009 1e220822 f9400108 1e202048 f9400514', 4),
+    # Havok's deactivation at the console's pace (tools/patches.py _phys_tick, _phys_motion_tick): the world step's
+    # deactivation counter (+0x3ef; the single-threaded and the multithreaded simulation) and each body's (hkpMotion +0xd;
+    # the integration of islands without constraints and with them)
+    Site('phys_tick', 'code', '394fbd0a 11000549 1100154a 390fbd09 1200094a 3500000a/ff00001f 394fb50a 5200014a '
+         '390fb50a 1200092a 3500000a/ff00001f 394fb50a 521f014a 390fb50a 12000d29 35000009/ff00001f 394fb909 320003ea '
+         '4b090149 390fb909 390fbd1f d503201f', 0),
+    Site('phys_tick_mt', 'code', '394fbd0a 11000549 1100154a 390fbd09 1200094a 3500000a/ff00001f 394fb50a 5200014a '
+         '390fb50a 1200092a 3500000a/ff00001f 394fb50a 521f014a 390fb50a 12000d29 35000009/ff00001f 394fb909 320003ea '
+         '4b090149 390fb909 390fbd1f f9400a60', 0),
+    Site('phys_motion_tick', 'code', '39403688 11000508 39003688 12000509 35000009/ff00001f 12000d09 '
+         '34000009/ff00001f aa1f03e8', 0),
+    Site('phys_motion_tick_c', 'code', '39403748 11000508 39003748 12000509 35000009/ff00001f 12000d09 '
+         '34000009/ff00001f aa1f03e8', 0),
     # a keyframed body's angular velocity toward its target (tools/patches.py _kf_angle): the call that takes the angle
     # of the turn left (hkQuaternion::getAngle, 2 acos(|w|))
+    # a player demo move's arrival test (tools/patches.py _demo_move_arrive): the distance left against the body's speed
+    # in console frames, fcmp s8, s9
+    Site('demo_move_arrive', 'code', 'bd60bd09 94000000/fc000000 f9400668 5282fe09 38696908 34000008/ff00001f 1e292100 '
+         '54000004/ff00001f 90000008/9f00001f bd404261 bd425102 1e222821 1e282020 54000005/ff00001f 1e292921 1e200820', 6),
     Site('kf_angle', 'code', '0e612800 0e0e3c08 0e040d00 0f3f5400 0ea0a800 6e180400 4e221c00 6e211c00 3c9983a0 '
          '94000000/fc000000 3cd883a6 1e2008c0', 9),
     # the sound system's frame (tools/patches.py _snd_frame_floor): the delta frame, at least 0.5, its timers' step
@@ -316,6 +332,41 @@ SITES = [
          '2a1f03e1 94000000/fc000000 aa1303e0 aa1403e1', 0),
     Site('quick_sort_player_busy', 'call', '94000000/fc000000 2a0003f4 d10183a0 94000000/fc000000 90000015/9f00001f 90000008/9f00001f '
          '91000108/ffc003ff 14000000/fc000000', 0),
+    # Native quick-selector drop and asynchronous equipped-item completion.
+    Site('quick_drop_tick', 'code', 'd10183ff a9027bfd a9035ff8 a90457f6 a9054ff4 910083fd 91419008 aa0003f3', 0),
+    Site('quick_drop_actor_call', 'code', 'd63f0100 aa1503e0 94000000/fc000000 a9424ff4 52800020 f9400bf5 a8c37bfd d65f03c0', 0),
+    Site('player_drop_forbidden', 'code', 'a9be7bfd f9000bf3 910003fd aa0003f3 94000000/fc000000 36000000/fff8001f 2a1f03e0 '
+         '14000000/fc000000', 0),
+    Site('actor_info_lookup', 'code', 'd10103ff a9017bfd a90257f6 a9034ff4 910043fd aa0003f6 aa0203e0 2a0303f5', 0),
+    Site('actor_info_has_tag', 'code', 'd10203ff a9047bfd a9055ff8 a90657f6 a9074ff4 910103fd aa0103f4 f9400421', 0),
+    Site('pouch_discard', 'code', 'd10183ff a9027bfd a9035ff8 a90457f6 a9054ff4 910083fd 9100a013 aa0003f4', 0),
+    Site('player_equipment', 'code', 'a9be7bfd f9000bf3 910003fd f9400008 2a0103f3 f9418908 d63f0100 2a1303e1 94000000/fc000000', 0),
+    Site('pouch_default_name', 'code', '90000009/9f00001f 90000008/9f00001f 91000108/ffc003ff f9400129/ffc003ff 71001c3f 8b215108 '
+         '7a423824 9a891100', 0),
+    Site('player_schedule_equip', 'code', 'd100c3ff a9017bfd a9024ff4 910043fd 12800003 910023e4 f90007ff aa0003f3', 0),
+    Site('pouch_equipped_snapshot', 'code', 'a9bd7bfd f9000bf5 a9024ff4 910003fd 91411008 9100a013 aa0003f4 911f8115', 0),
+    Site('actor_index_assign', 'code', 'd10503ff a9127bfd a9134ffc 910483fd 39403008 aa0103f3 34000008/ff00001f f9400008', 0),
+    Site('actor_index_resolve', 'code', 'd10143ff a9017bfd a9025ff8 a90357f6 a9044ff4 910043fd b9400808 3100051f', 0),
+    Site('actor_index_release', 'code', '39403008 35000008/ff00001f 12800008 b9000808 d65f03c0 f9400008 3900301f b4000008/ff00001f', 0),
+    Site('actor_link_release', 'code', 'a9be7bfd f9000bf3 910003fd 39400008 aa0003f3 34000008/ff00001f f9400660 b4000000/ff00001f', 0),
+    Site('actor_link_alive', 'code', 'b9400809 3100053f 54000000/ff00001f f9400008 b940410a 6b09015f 54000001/ff00001f 39403009', 0),
+    Site('pouch_cleanup', 'code', 'a9bb7bfd a90167fa a9025ff8 a90357f6 a9044ff4 910003fd 9100a013 aa0003f4', 0),
+    Site('player_actor', 'call', '94000000/fc000000 b4000000/ff00001f 91316015 aa0003f4 aa1503e0 94000000/fc000000 b94c9a88 '
+         'aa1503e0 321b0108 b90c9a88 94000000/fc000000 aa1303e0', 0),
+    Site('quick_drop_trash_prohibited', 'call', '94000000/fc000000 36000000/fff8001f 52800037 14000000/fc000000 1e229000 d63f0100 d2800ba9 '
+         '5286db88', 0),
+    Site('quick_drop_actor_method', 'code', 'f942cc08 b4000008/ff00001f 79404d09 32000129 79004d09 14000000/fc000000 f942cc08 '
+         'b4000008/ff00001f', 0),
+    Site('actor_info', 'ref', '90000008/9f00001f 91000108/ffc003ff f9400117 b4000017/ff00001f f94006a8 3940011b '
+         '3400001b/ff00001f f94002a8', 1),
+    # Add items (tools/patches.py _item_tick; runtime/items.c): the entry of Link's damage handling (every frame in
+    # Adding items (tools/patches.py _item_tick; runtime/items.c): the entry of Link's damage handling (every frame in
+    # play: the game thread's place for the item get), the pause menu data's item get, and where the pause menu data's
+    # address is (its load in the pickup code)
+    Site('item_tick', 'code', 'd101c3ff fd000be8 a9027bfd a90367fa a9045ff8 a90557f6 a9064ff4 910083fd f9400c14', 0),
+    Site('pouch_item_get', 'code', 'd10243ff a9037bfd a9046ffc a90567fa a9065ff8 a90757f6 a9084ff4 9100c3fd f90003e3', 0),
+    Site('pouch_mgr', 'got', '90000017/9f00001f aa0003f5 f94002f7/ffc003ff 910003e0 f94002f6 94000000/fc000000 2a0003e2 '
+         'aa1603e0', 2),
     Site('main_data', 'data', '', 0),
     Site('main_end', 'end', '', 0),
 ]
@@ -326,6 +377,11 @@ SITES = [
 # Without them the mouse turns the camera through the right stick, as before (runtime/hle/input.c); without the
 # second group it turns it without the game's camera inversion options.
 OPTIONAL_GROUPS = [
+    ('quick_drop_tick', 'quick_drop_actor_call', 'player_drop_forbidden', 'actor_info_lookup',
+     'actor_info_has_tag', 'pouch_discard', 'player_equipment', 'pouch_default_name',
+     'player_schedule_equip', 'pouch_equipped_snapshot', 'actor_index_assign', 'actor_index_resolve',
+     'actor_index_release', 'actor_link_release', 'actor_link_alive', 'pouch_cleanup', 'player_actor',
+     'quick_drop_trash_prohibited', 'quick_drop_actor_method', 'actor_info'),
     ('quick_sort_enter', 'quick_sort_menu', 'pouch_page_count', 'pouch_page_item', 'pouch_item_type',
      'quick_sort_modal', 'pouch_sort', 'quick_sort_refill', 'quick_sort_mapping', 'quick_sort_cursor',
      'quick_sort_labels', 'pouch_lock', 'pouch_unlock', 'quick_sort_event', 'quick_sort_player_busy'),
@@ -336,6 +392,8 @@ OPTIONAL_GROUPS = [
     ('stale_actor_helper', 'stale_actor_target'),
     ('quick_menu_capture_alpha',),
     ('kf_angle',),
+    ('demo_move_arrive',),
+    ('phys_tick', 'phys_tick_mt', 'phys_motion_tick', 'phys_motion_tick_c'),
     ('yaz0_stream', 'yaz0_stream_ret'),
     ('pc_map_focus', 'pc_map_focus_target', 'pc_map_focus_now'),
     ('beast_focus_axes', 'beast_focus_linear', 'beast_confirm_axes', 'beast_confirm_linear',
@@ -359,70 +417,32 @@ OPTIONAL_GROUPS = [
     ('stamina_store',),
     ('impulse_flush',),  # (without it a hit between bodies can be lost above 60 fps)
     ('tp_gate',),  # (a far teleport of the control endpoint: without it a long jump freezes the world)
+    ('item_tick', 'pouch_item_get', 'pouch_mgr'),
 ]
 OPTIONAL = {n for g in OPTIONAL_GROUPS for n in g}
 
 KNOWN = {
-    '1.8.2': {
-        'opt_create_rows': 0x7000d1bd78,
-        'opt_row_init_flag_type': 0x7000d1c208,
-        'gdt_flag_type': 0x7001023038,
-        'opt_row_redraw': 0x7000d1bba8,
-        'opt_read': 0x7000d1cab4,
-        'opt_store': 0x7000d1bb14,
-        'opt_table': 0x7001cccd98,
-        'opt_reset': 0x7000d1dde8,
-        'opt_msg_call': 0x7000d1dc40,
-        'msg_lookup': 0x7000d71210,
-        'opt_decide': 0x7000d1d3d0,
-        'opt_update': 0x7000d1c234,
-        'opt_back_call': 0x7000d1c504,
-        'screen_back': 0x70012d8928,
-        'screen_open_request': 0x7000d6fd90,
-        'screen_open': 0x70012d90e0,
-        'screen_close': 0x70012d9124,
-        'screen_mgr': 0x7001cd5c38,
-        'pause_options_update': 0x7000cbd0b4,
-        'opt_screen_rows': 0x3698,
-        'dialog_texts': 0x7000d44748,
-        'dialog_back': 0x7000d46364,
-        'dialog_answer': 0x7001c4b308,
-        'title_update': 0x7000d4bca0,
-        'title_button': 0x7000d4c5e0,
-        'title_options_state': 0x363c,
-        'title_msg_file': 0x7001cd06d8,
-        'title_version_format': 0x70014b854e,
-        'frame_wait': 0x7000d811fc,
-        'frame_loop_interval_ret': 0x7001012a34,
-        'vfr_ratio': 0x70014092f4,
-        'gui_speed': 0x700116d0e8,
-        'arrow_fall_gravity': 0x70004db204,
-        'phys_solver_steps': 0x700145b790,
-        'snd_frame_floor': 0x700143ce64,
-        'persp_matrix': 0x7000da1400,
-        'persp_matrix_offset': 0x7000da1408,
-        'persp_unproject_y': 0x7000da14d8,
-        'proj_update': 0x7000da0e24,
-        'frustum_lr0': 0x7000da18d4,
-        'frustum_lr1': 0x7000da18fc,
-        'frustum_tb0': 0x7000da1910,
-        'frustum_tb1': 0x7000da1930,
-        'persp_unproject_x': 0x7000da1508,
-        'pause_state': 0x7001cb48a4,
-        'event_mgr': 0x7001cd8db8,
-        'controller_step': 0x7001c4ba40,
-        'player_info': 0x7001cb2658,
-        'world_mgr': 0x7001cf5d00,
-        'traverse_scale': 0x7000f908e4,
-        'traverse_scale_default': 0x7000f90904,
-        'grass_range': 0x70012999d0,
-        'grass_fade_blades': 0x70012946f0,
-        'grass_fade_quads': 0x70012a6b7c,
-        'tree_ranges': 0x70012b55cc,
-        'main_data': 0x7001a1f000,
-        'main_end': 0x7001d37000,
-    },
     '1.9.0': {
+        'quick_drop_tick': 0x7000e68168,
+        'quick_drop_actor_call': 0x7001223f50,
+        'player_drop_forbidden': 0x7000cc0334,
+        'actor_info_lookup': 0x700108dc0c,
+        'actor_info_has_tag': 0x700108e7a0,
+        'pouch_discard': 0x7000d9784c,
+        'player_equipment': 0x7000570128,
+        'pouch_default_name': 0x7000d940c4,
+        'player_schedule_equip': 0x7000cbe480,
+        'pouch_equipped_snapshot': 0x7000d9f4a8,
+        'actor_index_assign': 0x7001517e60,
+        'actor_index_resolve': 0x7001517abc,
+        'actor_index_release': 0x7001517f8c,
+        'actor_link_release': 0x7001126464,
+        'actor_link_alive': 0x7001517e0c,
+        'pouch_cleanup': 0x7000d97f68,
+        'player_actor': 0x7000cc6fd0,
+        'quick_drop_trash_prohibited': 0x7000d388b0,
+        'quick_drop_actor_method': 0x70007acaa0,
+        'actor_info': 0x7001e39450,
         'quick_sort_enter': 0x7000e283fc,
         'quick_sort_menu': 0x7000e28744,
         'pouch_page_count': 0x7000d970a8,
@@ -501,7 +521,12 @@ KNOWN = {
         'stale_actor_helper': 0x700120bc40,
         'stale_actor_target': 0x7000dea400,
         'phys_solver_steps': 0x700156f930,
+        'demo_move_arrive': 0x7000c711dc,
         'kf_angle': 0x70012d57fc,
+        'phys_tick': 0x70000f5e20,
+        'phys_tick_mt': 0x700012644c,
+        'phys_motion_tick': 0x700011f95c,
+        'phys_motion_tick_c': 0x70001207cc,
         'snd_frame_floor': 0x7001551004,
         'persp_matrix': 0x7000eb4a50,
         'persp_matrix_offset': 0x7000eb4a58,
@@ -551,6 +576,9 @@ KNOWN = {
         'link_life_store': 0x7000cc4e70,
         'link_life_tick': 0x7000cc4da4,
         'stamina_store': 0x7000cc7430,
+        'item_tick': 0x7000cc4c3c,
+        'pouch_item_get': 0x7000d921bc,
+        'pouch_mgr': 0x7001e18570,
         'main_data': 0x7001b7a000,
         'main_end': 0x7001e98000,
     },

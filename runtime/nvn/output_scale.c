@@ -26,6 +26,10 @@
 #include "../settings.h"
 #include "output_scale.h"
 
+#ifndef __APPLE__
+extern bool vk_dlss_available(void);
+#endif
+
 #define MAX_TEX 16384.0
 #define SCENE_LINES 900.0  // the height of the game's 3D scene targets (docked)
 
@@ -33,9 +37,11 @@
 bool fsr3_available(void);  // (vulkan/fsr3.h: built in)
 bool fsr4_available(void);  // (vulkan/fsr_api.h: AMD's DLLs, on an AMD Radeon)
 #endif
-// FSR 3 upscaling is held back until its cost on the thread that records the frame for Vulkan comes down (the draw
-// translation work in progress): today that thread limits 1080p and 1440p, and FSR 3's motion vectors make every mode
-// slower than native there. SAVAGEWIND_FSR3=1 offers it anyway (tests); TAA and frame generation stay as they are.
+// FSR 3 and FSR 4 upscaling are held back until the motion vectors are redesigned (Alpha 6). FSR itself costs the CPU
+// next to nothing; recording the vectors on the render thread costs 1.2 ms a frame, spread over many small steps, with
+// no single defect to fix (2026-11-09, RTX 3060, 1440p Quality: 130 fps native, 104 with FSR 3, 130 with FSR 3 and no
+// vectors), so FSR runs slower than native where that thread is the limit. That work has to leave the render thread.
+// SAVAGEWIND_FSR3=1 offers it anyway (tests); TAA and frame generation stay as they are.
 bool fsr3_upscaler_enabled(void) {
     static int on = -1;
     if (on < 0) on = getenv("SAVAGEWIND_FSR3") && atoi(getenv("SAVAGEWIND_FSR3")) != 0;
@@ -47,7 +53,8 @@ bool upscaler_available(int u) {
     return u == UPSCALE_OFF || u == UPSCALE_METALFX;
 #else
     return u == UPSCALE_OFF || u == UPSCALE_FSR1 || (u == UPSCALE_FSR3 && fsr3_available() && fsr3_upscaler_enabled())
-        || (u == UPSCALE_FSR4 && fsr4_available() && fsr3_upscaler_enabled());  // (FSR 4: the same hold-back as FSR 3)
+        || (u == UPSCALE_FSR4 && fsr4_available() && fsr3_upscaler_enabled())  // (FSR 4: the same hold-back as FSR 3)
+        || (u == UPSCALE_DLSS && vk_dlss_available());
 #endif
 }
 
@@ -65,7 +72,9 @@ bool rt_fsr4(void) { return g_settings.upscaler == UPSCALE_FSR4 && upscaler_avai
 // FSR 3 asks for either; vulkan/exec.c fsr3_scene picks the one to run
 bool rt_fsr3(void) { return (g_settings.upscaler == UPSCALE_FSR3 && upscaler_available(UPSCALE_FSR3)) || rt_fsr4(); }
 
-bool rt_temporal(void) { return rt_antialias() == AA_TAA || rt_fsr3(); }
+bool rt_dlss(void) { return g_settings.upscaler == UPSCALE_DLSS && upscaler_available(UPSCALE_DLSS); }
+
+bool rt_temporal(void) { return rt_antialias() == AA_TAA || rt_fsr3() || rt_dlss(); }
 
 double upscale_mode_factor(int q) {
     static const double f[UPQ_COUNT] = {1.3, 1.5, 1.7, 2.0, 3.0};
@@ -319,7 +328,7 @@ bool rt_jitter_on(void) {
     return env >= 0 ? env : rt_temporal();
 }
 
-// The jitter sequence's length: 8, or FSR 3's for its upscale (fsr3_jitter_phases, set by vulkan/exec.c)
+// The jitter sequence's length: 8, or the temporal upscaler's (FSR 3's fsr3_jitter_phases, DLSS's; set by vulkan/exec.c)
 static uint32_t jitter_phases = 8;
 void rt_jitter_set_phases(uint32_t n) { __atomic_store_n(&jitter_phases, n ? n : 8, __ATOMIC_RELAXED); }
 

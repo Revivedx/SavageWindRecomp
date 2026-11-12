@@ -16,5 +16,5 @@ sanitize=
 if [ "${SANITIZE:-0}" = 1 ]; then sanitize='-fsanitize=address,undefined -fno-omit-frame-pointer'; fi
 ${CC:-clang} -O1 -g -Wall -Wextra -Wno-unused-function -Wno-unused-parameter -Wno-format \
     -ffunction-sections -fdata-sections $sanitize $includes -Iruntime \
-    tools/test_dsu.c runtime/dsu.c -Wl,--gc-sections $libs -lpthread -lz -lm -o "$B/test_dsu"
+    tools/test_dsu.c runtime/dsu.c runtime/deck_imu.c -Wl,--gc-sections $libs -lpthread -lz -lm -o "$B/test_dsu"
 "$B/test_dsu"

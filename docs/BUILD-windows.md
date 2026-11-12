@@ -19,6 +19,13 @@ From an MSYS2 UCRT64 shell, or Git Bash with MSYS2 first on PATH:
     make gen        # once: recompile the game from extracted/exefs (your own game files; see the start screen)
     make -j         # -> build/savagewind.exe and the game code library build/swgame.dll
 
+DLSS is optional and uses NVIDIA's SDK, not part of this repository: `git clone https://github.com/NVIDIA/DLSS` beside
+it, check out a release tag (tested: `v310.9.16`), and the default works as-is; otherwise pass its location
+explicitly: `make DLSS_SDK=/path/to/DLSS -j`. The runtime DLL is not copied into the source tree. `make dist` includes
+`nvngx_dlss.dll` and the SDK license when the SDK path contains the Windows x86_64 redistributable. Keep the DLL and
+the SDK at the same version - the tag the headers and `nvsdk_ngx_s.lib` come from - rather than a newer or older
+`nvngx_dlss.dll` from elsewhere.
+
 Without `generated/` only the app is built: the start screen builds the game code itself when you set up the game
 files (as for players), given the generator and the compiler (`make gen-helper`, `tools/fetch_zig.sh`).
 `make runtime-objs` compiles the runtime only (quick check).
@@ -47,6 +54,16 @@ zip: a start screen picture (`splash.jpg` / `splash.png` is the player's own, re
 checks). No installer: game files, saves and settings are kept next to the exe, so
 the folder must be writable (the app says so and quits if it isn't, e.g. under Program Files). A source checkout
 with `extracted/` in the starting folder keeps using that folder instead.
+
+`SW Update.exe` (`runtime/platform/windows_update.c`) installs a newer release over the folder from Savage Wind
+Configuration. It replaces only the files named in the zip's `sw-manifest.txt`, which `make dist` writes, so game files,
+saves, settings and anything else a player keeps there are never touched. A release is only offered if a signature is
+next to its zip. After `make dist`, sign the zip and upload the `.sig` with it:
+
+    tools/sign_update.py build/dist/SavageWind-<version>-windows.zip <private key .pem>
+
+Sign the AppImages the same way, or Linux players won't be offered the release. The private key is never in this repository; its public half is `runtime/platform/sw_update_key.h`. `make test-update-core`
+and `make test-sw-update` cover the updater: the second one goes through every failure it knows against a local server.
 
 ## Differences from macOS
 - Guest window 0x70_0000_0000..0x73_2000_0000 is reserved with VirtualAlloc and committed per region

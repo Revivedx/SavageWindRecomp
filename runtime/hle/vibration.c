@@ -86,8 +86,9 @@ void vibration_update(SDL_Gamepad *pad, bool focused) {
     }
     if (!pad) return;
     pthread_mutex_lock(&lock);
-    uint16_t low = focused && permitted && g_settings.rumble ? (uint16_t)lroundf(fmaxf(values[0].low_amplitude, values[1].low_amplitude) * 65535) : 0;
-    uint16_t high = focused && permitted && g_settings.rumble ? (uint16_t)lroundf(fmaxf(values[0].high_amplitude, values[1].high_amplitude) * 65535) : 0;
+    float scale = (float)g_settings.rumble_strength / 100.0f;
+    uint16_t low = focused && permitted && g_settings.rumble ? (uint16_t)lroundf(fmaxf(values[0].low_amplitude, values[1].low_amplitude) * scale * 65535) : 0;
+    uint16_t high = focused && permitted && g_settings.rumble ? (uint16_t)lroundf(fmaxf(values[0].high_amplitude, values[1].high_amplitude) * scale * 65535) : 0;
     pthread_mutex_unlock(&lock);
     uint64_t now = SDL_GetTicks();
     // A short lease stops the motors if the event loop stalls; refresh unchanged effects while it is alive.

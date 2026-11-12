@@ -9,6 +9,7 @@
 #include "hle.h"
 #include "input_bind.h"
 #include "language.h"
+#include "handheld.h"
 
 bool fsr3_upscaler_enabled(void);  // (nvn/output_scale.c: FSR 3 upscaling held back for now)
 
@@ -26,7 +27,9 @@ Settings g_settings = {
     .reverb = true,
     .movie_audio = true,
     .mute_unfocused = false,
+    .shrine_sensor_volume = 100,
     .rumble = true,
+    .rumble_strength = RUMBLE_STRENGTH_DEFAULT,
     .freecam_sticks = true,
     .damage_taken = 100,
     .damage_dealt = 100,
@@ -49,10 +52,15 @@ Settings g_settings = {
     .stick_deadzone = {STICK_DEADZONE_DEFAULT, STICK_DEADZONE_DEFAULT},
     .fps_limit = FPS_DEFAULT,
     .precompile_shaders = true,
+    .start_in_config = true,
+    .start_picture = START_PICTURE_SCREENSHOT,
+    .boot_picture = true,
+    .check_updates = true,
     .async_shaders = true,
     .vsync = VSYNC_DEFAULT,
     .gpu = -1,
     .wide_view = true,
+    .hud_edges = false,
     .fov = 100,
     .hud_size = 100,
     .color_lut_strength = 100,
@@ -65,7 +73,9 @@ Settings g_settings = {
 static const char *const k_vsync[VSYNC_COUNT] = {"on", "fast", "adaptive", "off"};  // (VSYNC_*: the ini's words)
 static const char *const k_hdr[HDR_COUNT] = {"auto", "on", "off"};             // (HDR_*)
 static const char *const k_sparse_heap[SPARSE_HEAP_COUNT] = {"auto", "on", "off"};
+static const char *const k_tex_lod_bias[TEX_LOD_COUNT] = {"default", "sharp", "sharper"};
 static const char *const k_fsmode[FSMODE_COUNT] = {"auto", "borderless", "exclusive"};  // (FSMODE_*)
+static const char *const k_audio_out[AUDIO_OUT_COUNT] = {"stereo", "surround_51", "headphones_3d"};  // (AUDIO_OUT_*)
 
 // settings_version 2 (2026-10-19): the upscaler's mode, the window size and the 300% mouse default. Older files: their
 // "resolution" (the internal resolution, removed) gives the upscaler's mode, and a mouse sensitivity at the old
@@ -83,7 +93,12 @@ static const char *const k_fsmode[FSMODE_COUNT] = {"auto", "borderless", "exclus
 
 static const char *const k_drawdist[DRAWDIST_COUNT] = {"original", "medium", "high", "potato"};  // (DRAWDIST_*)
 
-static const char *const k_icons[ICONS_COUNT] = {"auto", "keyboard", "xbox", "playstation", "nintendo"};
+const char *const g_weather_keys[WEATHER_COUNT] = {"game", "no_rain", "no_storms", "clear", "cloudy", "rain",
+                                                   "heavy_rain", "snow", "heavy_snow", "thunderstorm", "thunder_rain",
+                                                   "sun_shower"};  // (weather; settings.h)
+static const char *const k_icons[ICONS_COUNT] = {"auto", "keyboard", "xbox", "playstation", "nintendo", "steamdeck"};
+
+static const char *const k_button_layout[BUTTON_LAYOUT_COUNT] = {"auto", "nintendo", "swap_ab", "xbox", "swap_xy", "gamecube"};
 
 static const char *const k_quality[UPQ_COUNT] = {"ultra_quality", "quality", "balanced", "performance", "ultra_performance"};
 
@@ -102,12 +117,69 @@ static void gyro_startup_overrides(void) {
 }
 void settings_fps_for_display(float hz) {
     if (!g_settings.fps_display || hz < 20) return;
-    static const int fps[] = FPS_CHOICES;
-    int best = 30;
-    for (unsigned i = 0; i < sizeof fps / sizeof fps[0]; i++)
-        if (fps[i] && fps[i] <= hz + 1 && fps[i] > best) best = fps[i];
+    // The display's own rate, not the nearest one of the menu's list: a 210 Hz monitor stayed at 165, a 72 Hz one at 60 (#661).
+    int best = (int)(hz + 0.5f);
+    if (best > 360) best = 360;  // (framepace.c FPS_CEILING)
     if (g_settings.fps_limit != best) LOG("[settings] frame rate %d (Match display: %.0f Hz)\n", best, hz);
     g_settings.fps_limit = best;
+}
+
+static const Handheld *handheld(void) {
+    static Handheld h;
+    static bool done;
+    if (!done) {
+        h = handheld_detect(), done = true;
+        if (h.on) LOG("[settings] PC handheld%s, screen %d x %d\n", h.deck ? " (Steam Deck)" : "", h.w, h.h);
+    }
+    return &h;
+}
+bool settings_handheld(void) { return handheld()->on; }
+bool settings_steam_deck(void) { return handheld()->deck; }
+bool settings_handheld_size(int *w, int *h) {
+    if (handheld()->w <= 0) return false;
+    *w = handheld()->w, *h = handheld()->h;
+    return true;
+}
+
+int settings_aa_row(void) {
+    return g_settings.antialias == AA_TAA ? AA_ROW_TAA : g_settings.antialias == AA_SMAA ? AA_ROW_SMAA
+         : g_settings.game_fxaa ? AA_ROW_FXAA : AA_ROW_OFF;
+}
+void settings_aa_row_set(int row) {
+    g_settings.antialias = row == AA_ROW_TAA ? AA_TAA : row == AA_ROW_SMAA ? AA_SMAA : AA_OFF;
+    g_settings.game_fxaa = row == AA_ROW_FXAA;
+}
+
+int fps_choices(const int **list) {
+    static const int pc[] = FPS_CHOICES, hh[] = FPS_CHOICES_HANDHELD, fast[] = FPS_CHOICES_HANDHELD_FAST;
+    static int h_list[FPS_CHOICES_MAX];
+    _Static_assert(sizeof pc / sizeof pc[0] <= FPS_CHOICES_MAX, "");
+    _Static_assert(sizeof hh / sizeof hh[0] + sizeof fast / sizeof fast[0] <= FPS_CHOICES_MAX, "");
+    if (!settings_handheld()) {
+        *list = pc;
+        return (int)(sizeof pc / sizeof pc[0]);
+    }
+    extern float winsize_refresh_rate(void);
+    float hz = winsize_refresh_rate();
+    int n = 0;
+    for (size_t i = 0; i < sizeof hh / sizeof hh[0]; i++) h_list[n++] = hh[i];
+    for (size_t i = 0; i < sizeof fast / sizeof fast[0]; i++)
+        if (hz <= 0 || fast[i] <= hz + 0.5f) h_list[n++] = fast[i];
+    *list = h_list;
+    return n;
+}
+
+// The first start on a handheld, also with settings from before this: the handheld's preset, full screen at its size
+static void handheld_first_setup(void) {
+    if (!settings_handheld() || g_settings.handheld_setup) return;
+    g_settings.handheld_setup = true;
+    graphics_preset_apply(GPRESET_HANDHELD);
+    g_settings.fullscreen = true;
+    g_settings.window_w = g_settings.window_h = 0;
+    g_settings.fps_limit = FPS_DEFAULT, g_settings.fps_display = false;
+    g_settings.fov = 80, g_settings.hud_edges = true;
+    g_settings.sharper_menus = g_settings.sharper_text = 2;  // (small screen: the letters and menus stay crisp)
+    LOG("[settings] PC handheld: its own settings, the first time\n");
 }
 
 void settings_load(void) {
@@ -116,6 +188,7 @@ void settings_load(void) {
     loaded = true;
     FILE *f = fopen(SETTINGS_FILE, "r");
     if (!f) {
+        handheld_first_setup();
         gyro_startup_overrides();
         pc_controls_env();
         return;
@@ -146,9 +219,15 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "gpu")) g_settings.gpu = gpu_index_parse(val);
         else if (!strcmp(key, "volume")) g_settings.volume = (float)atof(val);
+        else if (!strcmp(key, "audio_output")) {
+            for (int i = 0; i < AUDIO_OUT_COUNT; i++)
+                if (!strcmp(val, k_audio_out[i])) g_settings.audio_output = i;
+        }
         else if (!strcmp(key, "reverb")) g_settings.reverb = atoi(val) != 0;
         else if (!strcmp(key, "movie_audio")) g_settings.movie_audio = atoi(val) != 0;
         else if (!strcmp(key, "mute_unfocused")) g_settings.mute_unfocused = atoi(val) != 0;
+        else if (!strcmp(key, "shrine_sensor_volume")) g_settings.shrine_sensor_volume = atoi(val);
+        else if (!strcmp(key, "amiibo_reader")) snprintf(g_settings.amiibo_reader, sizeof g_settings.amiibo_reader, "%s", strcmp(val, "none") ? val : "");
         else if (!strcmp(key, "show_fps")) g_settings.perf_overlay = atoi(val) ? PERF_FPS : PERF_OFF;  // (older files)
         else if (!strcmp(key, "perf_overlay")) g_settings.perf_overlay = !strcmp(val, "full") ? PERF_FULL : !strcmp(val, "fps") ? PERF_FPS : PERF_OFF;
         else if (!strcmp(key, "frame_rate")) {  // (fps / off / display)
@@ -161,9 +240,10 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "settings_version")) version = atoi(val);
         else if (!strcmp(key, "resolution")) snprintf(old_res, sizeof old_res, "%s", val);  // (version 1)
-        else if (!strcmp(key, "upscaler"))  // (metalfx / fsr1: this OS's spatial upscaler; fsr3, fsr4: Vulkan, held
-            // back for now: FSR 1 with the same quality mode, nvn/output_scale.c fsr3_upscaler_enabled; dlss: not yet)
-            g_settings.upscaler = !strcmp(val, "fsr1") || !strcmp(val, "metalfx") ? UPSCALE_SPATIAL
+        else if (!strcmp(key, "upscaler"))  // (metalfx / fsr1: this OS's spatial upscaler; dlss: NGX; fsr3, fsr4: Vulkan,
+            // held back for now: FSR 1 with the same quality mode, nvn/output_scale.c fsr3_upscaler_enabled)
+            g_settings.upscaler = !strcmp(val, "dlss") ? UPSCALE_DLSS
+                                : !strcmp(val, "fsr1") || !strcmp(val, "metalfx") ? UPSCALE_SPATIAL
                                 : !strcmp(val, "fsr3") ? (fsr3_upscaler_enabled() ? UPSCALE_FSR3_OR_SPATIAL : UPSCALE_SPATIAL)
                                 : !strcmp(val, "fsr4") ? (fsr3_upscaler_enabled() ? UPSCALE_FSR4_OR_SPATIAL : UPSCALE_SPATIAL)
                                                        : UPSCALE_OFF;
@@ -187,6 +267,10 @@ void settings_load(void) {
             int a = atoi(val);
             g_settings.anisotropy = a >= 16 ? 4 : a >= 8 ? 3 : a >= 4 ? 2 : a >= 2 ? 1 : 0;
         }
+        else if (!strcmp(key, "texture_lod_bias")) {
+            for (int i = 0; i < TEX_LOD_COUNT; i++)
+                if (!strcmp(val, k_tex_lod_bias[i])) g_settings.tex_lod_bias = i;
+        }
         else if (!strcmp(key, "game_fxaa")) g_settings.game_fxaa = atoi(val) != 0;
         else if (!strcmp(key, "wet_fix")) g_settings.wet_fix = atoi(val) != 0;
         else if (!strcmp(key, "frame_generation")) g_settings.frame_gen = atoi(val) != 0;
@@ -195,7 +279,9 @@ void settings_load(void) {
             g_settings.sharpening = p < 0 ? 0 : p > 100 ? 10 : (p + 5) / 10;
         }
         else if (!strcmp(key, "rumble")) g_settings.rumble = atoi(val) != 0;
+        else if (!strcmp(key, "rumble_strength")) g_settings.rumble_strength = atoi(val);
         else if (!strcmp(key, "freecam_sticks")) g_settings.freecam_sticks = atoi(val) != 0;
+        else if (!strcmp(key, "quick_drop")) g_settings.quick_drop = atoi(val) != 0;
         else if (!strcmp(key, "quick_sort")) g_settings.quick_sort = atoi(val) != 0;
         else if (!strcmp(key, "dpad_move")) g_settings.dpad_move = atoi(val) != 0;
         else if (!strcmp(key, "left_stick_deadzone")) g_settings.stick_deadzone[0] = (float)atof(val) / 100;  // (percent)
@@ -218,9 +304,20 @@ void settings_load(void) {
             for (int i = 0; i < ICONS_COUNT; i++)
                 if (!strcmp(val, k_icons[i])) g_settings.button_icons = i;
         }
+        else if (!strcmp(key, "button_layout")) {
+            for (int i = 0; i < BUTTON_LAYOUT_COUNT; i++)
+                if (!strcmp(val, k_button_layout[i])) g_settings.button_layout = i;
+        }
         else if (!strcmp(key, "async_shaders")) g_settings.async_shaders = atoi(val) != 0;
         else if (!strcmp(key, "precompile_shaders")) g_settings.precompile_shaders = atoi(val) != 0;
+        else if (!strcmp(key, "start_in_config")) g_settings.start_in_config = atoi(val) != 0;
+        else if (!strcmp(key, "start_picture")) {
+            int v = atoi(val);
+            g_settings.start_picture = v >= 0 && v < START_PICTURE_COUNT ? v : START_PICTURE_SCREENSHOT;
+        } else if (!strcmp(key, "boot_picture")) g_settings.boot_picture = atoi(val) != 0;
+        else if (!strcmp(key, "check_updates")) g_settings.check_updates = atoi(val) != 0;
         else if (!strcmp(key, "wide_view")) g_settings.wide_view = atoi(val) != 0;
+        else if (!strcmp(key, "hud_edges")) g_settings.hud_edges = atoi(val) != 0;
         else if (!strcmp(key, "hdr")) {
             for (int i = 0; i < HDR_COUNT; i++)
                 if (!strcmp(val, k_hdr[i])) g_settings.hdr = i;
@@ -235,6 +332,7 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "field_of_view")) g_settings.fov = atoi(val);  // (percent)
         else if (!strcmp(key, "hud_size")) g_settings.hud_size = atoi(val);  // (percent)
+        else if (!strcmp(key, "handheld_setup")) g_settings.handheld_setup = atoi(val) != 0;
         else if (!strcmp(key, "draw_distance")) {
             for (int i = 0; i < DRAWDIST_COUNT; i++)
                 if (!strcmp(val, k_drawdist[i])) g_settings.draw_distance = i;
@@ -248,6 +346,12 @@ void settings_load(void) {
         else if (!strcmp(key, "stick_camera_y")) g_settings.stick_cam_y = atoi(val);  // (percent)
         else if (!strcmp(key, "start_at_continue")) g_settings.auto_continue = atoi(val) != 0;
         else if (!strcmp(key, "infinite_stamina")) g_settings.infinite_stamina = atoi(val) != 0;
+        else if (!strcmp(key, "infinite_rupees")) g_settings.infinite_rupees = atoi(val) != 0;
+        else if (!strcmp(key, "weather")) {
+            g_settings.weather = 0;
+            for (int i = 0; i < WEATHER_COUNT; i++)
+                if (!strcmp(val, g_weather_keys[i])) g_settings.weather = i;
+        }
         else if (!strcmp(key, "god_mode")) g_settings.god_mode = atoi(val) != 0;
         else if (!strcmp(key, "one_hit_kill")) g_settings.one_hit_kill = atoi(val) != 0;
         else if (!strcmp(key, "damage_taken")) g_settings.damage_taken = atoi(val);  // (percent)
@@ -315,12 +419,20 @@ void settings_load(void) {
     if (!tip_key) g_settings.menu_tip_seen = true;  // (a settings file from before the note: not a first launch)
     if (g_settings.volume < 0) g_settings.volume = 0;
     if (g_settings.volume > 2) g_settings.volume = 2;
+    if (g_settings.shrine_sensor_volume < 0) g_settings.shrine_sensor_volume = 0;
+    if (g_settings.shrine_sensor_volume > 100) g_settings.shrine_sensor_volume = 100;
+    if (g_settings.antialias != AA_OFF) g_settings.game_fxaa = false;  // (one anti-aliasing at a time: settings_aa_row)
+    handheld_first_setup();
+    if (settings_handheld()) {  // (neither is offered on one)
+        g_settings.fps_display = false;
+        if (g_settings.fps_limit <= 0) g_settings.fps_limit = FPS_DEFAULT;
+    }
     if (g_settings.fps_limit < 0) g_settings.fps_limit = 0;
     if (g_settings.fps_limit > 0) {  // (a frame rate not offered: the nearest one that is)
-        static const int fps[] = FPS_CHOICES;
-        int best = FPS_DEFAULT;
-        for (unsigned i = 1; i < sizeof fps / sizeof fps[0]; i++)
-            if (abs(fps[i] - g_settings.fps_limit) < abs(best - g_settings.fps_limit)) best = fps[i];
+        const int *fps;
+        int nfps = fps_choices(&fps), best = FPS_DEFAULT;
+        for (int i = 0; i < nfps; i++)
+            if (fps[i] && abs(fps[i] - g_settings.fps_limit) < abs(best - g_settings.fps_limit)) best = fps[i];
         g_settings.fps_limit = best;
     }
     { extern float winsize_refresh_rate(void); settings_fps_for_display(winsize_refresh_rate()); }  // (a reboot: known)
@@ -338,6 +450,7 @@ void settings_load(void) {
     g_settings.color_lut_strength = CLAMP(g_settings.color_lut_strength, 0, 100);
     g_settings.stick_cam_x = CLAMP(g_settings.stick_cam_x, STICK_CAM_MIN, STICK_CAM_MAX);
     g_settings.stick_cam_y = CLAMP(g_settings.stick_cam_y, STICK_CAM_MIN, STICK_CAM_MAX);
+    g_settings.rumble_strength = CLAMP(g_settings.rumble_strength, RUMBLE_STRENGTH_MIN, RUMBLE_STRENGTH_MAX);
     g_settings.weapon_wear = CLAMP(g_settings.weapon_wear, WEAPON_WEAR_MIN, WEAPON_WEAR_MAX);
     if (g_settings.no_weapon_wear) g_settings.weapon_wear = 0;  // (Unbreakable weapons is Weapon wear's Fairy, 0x)
 #undef CLAMP
@@ -375,9 +488,13 @@ void settings_save(void) {
     int vs = g_settings.vsync >= 0 && g_settings.vsync < VSYNC_COUNT ? g_settings.vsync : VSYNC_DEFAULT;
     fprintf(f, "vsync = %s\n", k_vsync[vs]);
     fprintf(f, "volume = %.2f\n", g_settings.volume);
+    int ao = g_settings.audio_output >= 0 && g_settings.audio_output < AUDIO_OUT_COUNT ? g_settings.audio_output : AUDIO_OUT_STEREO;
+    fprintf(f, "audio_output = %s\n", k_audio_out[ao]);
     fprintf(f, "reverb = %d\n", g_settings.reverb);
     fprintf(f, "movie_audio = %d\n", g_settings.movie_audio);
     fprintf(f, "mute_unfocused = %d\n", g_settings.mute_unfocused);
+    fprintf(f, "shrine_sensor_volume = %d\n", g_settings.shrine_sensor_volume);
+    fprintf(f, "amiibo_reader = %s\n", g_settings.amiibo_reader[0] ? g_settings.amiibo_reader : "none");
     fprintf(f, "perf_overlay = %s\n", g_settings.perf_overlay == PERF_FULL ? "full" : g_settings.perf_overlay == PERF_FPS ? "fps" : "off");
     static const char *const ups[UPSCALE_COUNT] = {"off", "metalfx", "fsr1", "fsr3", "dlss", "fsr4"};
     int u = g_settings.upscaler, uq = g_settings.upscale_quality;
@@ -394,10 +511,14 @@ void settings_save(void) {
     int an = g_settings.anisotropy;
     if (an >= 1 && an <= 4) fprintf(f, "anisotropy = %dx\n", 1 << an);
     else fprintf(f, "anisotropy = game\n");
+    int lb = g_settings.tex_lod_bias;
+    fprintf(f, "texture_lod_bias = %s\n", k_tex_lod_bias[lb >= 0 && lb < TEX_LOD_COUNT ? lb : TEX_LOD_DEFAULT]);
     fprintf(f, "sharpening = %d\n", g_settings.sharpening * 10);
     fprintf(f, "frame_generation = %d\n", g_settings.frame_gen ? 1 : 0);
     fprintf(f, "rumble = %d\n", g_settings.rumble);
+    fprintf(f, "rumble_strength = %d\n", g_settings.rumble_strength);
     fprintf(f, "freecam_sticks = %d\n", g_settings.freecam_sticks);
+    fprintf(f, "quick_drop = %d\n", g_settings.quick_drop);
     fprintf(f, "quick_sort = %d\n", g_settings.quick_sort);
     fprintf(f, "dpad_move = %d\n", g_settings.dpad_move);
     fprintf(f, "left_stick_deadzone = %.0f\n", g_settings.stick_deadzone[0] * 100);
@@ -415,26 +536,38 @@ void settings_save(void) {
     fprintf(f, "motion_invert = %s\n", inv[g_settings.motion_invert & 3]);
     fprintf(f, "button_icons = %s\n", k_icons[g_settings.button_icons >= 0 && g_settings.button_icons < ICONS_COUNT ?
                                                 g_settings.button_icons : ICONS_AUTO]);
+    fprintf(f, "button_layout = %s\n",
+            k_button_layout[g_settings.button_layout >= 0 && g_settings.button_layout < BUTTON_LAYOUT_COUNT ?
+                                g_settings.button_layout : BUTTON_LAYOUT_AUTO]);
     fprintf(f, "async_shaders = %d\n", g_settings.async_shaders);
     fprintf(f, "precompile_shaders = %d\n", g_settings.precompile_shaders);
+    fprintf(f, "start_in_config = %d\n", g_settings.start_in_config);
+    fprintf(f, "start_picture = %d\n", g_settings.start_picture);
+    fprintf(f, "boot_picture = %d\n", g_settings.boot_picture);
+    fprintf(f, "check_updates = %d\n", g_settings.check_updates);
     static const char *const shadow[SHADOW_COUNT] = {"console", "high", "ultra", "extreme", "potato"};
     int sr = g_settings.shadow_res;
     fprintf(f, "shadow_resolution = %s\n", shadow[sr >= 0 && sr < SHADOW_COUNT ? sr : SHADOW_CONSOLE]);
     fprintf(f, "sharper_menus = %s\n", g_settings.sharper_menus == 4 ? "4x" : g_settings.sharper_menus == 2 ? "2x" : "off");
     fprintf(f, "sharper_text = %s\n", g_settings.sharper_text == 4 ? "4x" : g_settings.sharper_text == 2 ? "2x" : "off");
     fprintf(f, "wide_view = %d\n", g_settings.wide_view);
+    fprintf(f, "hud_edges = %d\n", g_settings.hud_edges);
     fprintf(f, "hdr = %s\n", k_hdr[g_settings.hdr >= 0 && g_settings.hdr < HDR_COUNT ? g_settings.hdr : HDR_AUTO]);
     fprintf(f, "sparse_heap = %s\n", k_sparse_heap[g_settings.sparse_heap >= 0 && g_settings.sparse_heap < SPARSE_HEAP_COUNT ?
                                                        g_settings.sparse_heap : SPARSE_HEAP_AUTO]);
     if (g_settings.hdr_white) fprintf(f, "hdr_paper_white = %d\n", g_settings.hdr_white);
     fprintf(f, "field_of_view = %d\n", g_settings.fov);
     fprintf(f, "hud_size = %d\n", g_settings.hud_size);
+    if (g_settings.handheld_setup) fprintf(f, "handheld_setup = 1\n");
     int dd = g_settings.draw_distance;
     fprintf(f, "draw_distance = %s\n", k_drawdist[dd >= 0 && dd < DRAWDIST_COUNT ? dd : DRAWDIST_ORIGINAL]);
     fprintf(f, "no_weapon_wear = %d\n", g_settings.no_weapon_wear);
     fprintf(f, "weapon_wear = %d\n", g_settings.weapon_wear);
     fprintf(f, "infinite_arrows = %d\n", g_settings.infinite_arrows);
     fprintf(f, "infinite_stamina = %d\n", g_settings.infinite_stamina);
+    fprintf(f, "infinite_rupees = %d\n", g_settings.infinite_rupees);
+    int wx = g_settings.weather;
+    fprintf(f, "weather = %s\n", g_weather_keys[wx >= 0 && wx < WEATHER_COUNT ? wx : 0]);
     fprintf(f, "god_mode = %d\n", g_settings.god_mode);
     fprintf(f, "one_hit_kill = %d\n", g_settings.one_hit_kill);
     fprintf(f, "damage_taken = %d\n", g_settings.damage_taken);
@@ -478,11 +611,14 @@ static const struct {
     {DRAWDIST_ORIGINAL, SHADOW_CONSOLE, true, true, true, 1 /* 2x */, AA_OFF, true, UPSCALE_DEFAULT, UPQ_QUALITY, true, RSCALE_100},
     {DRAWDIST_MEDIUM, SHADOW_HIGH, true, true, false, 3 /* 8x */, AA_SMAA, false, UPSCALE_DEFAULT, UPQ_QUALITY, false, RSCALE_125},
     {DRAWDIST_HIGH, SHADOW_EXTREME, true, true, false, 4 /* 16x */, AA_TAA_OR_SMAA, false, UPSCALE_DEFAULT, UPQ_QUALITY, false, RSCALE_150},
+    {DRAWDIST_ORIGINAL, SHADOW_CONSOLE, true, true, true, 1 /* 2x */, AA_OFF, true, UPSCALE_SPATIAL, UPQ_ULTRA, true, RSCALE_100},
 };
-const char *const g_gpreset_names[GPRESET_COUNT] = {"Potato", "Original", "High", "Savage"};
+const char *const g_gpreset_names[GPRESET_COUNT] = {"Potato", "Original", "High", "Savage", "PC Handheld"};
+
+int graphics_preset_count(void) { return settings_handheld() ? GPRESET_COUNT : GPRESET_HANDHELD; }
 
 int graphics_preset_current(void) {
-    for (int i = 0; i < GPRESET_COUNT; i++)
+    for (int i = 0; i < graphics_preset_count(); i++)
         if (g_settings.draw_distance == k_gpreset[i].draw_distance && g_settings.shadow_res == k_gpreset[i].shadow_res &&
             g_settings.bloom == k_gpreset[i].bloom && g_settings.depth_of_field == k_gpreset[i].depth_of_field &&
             g_settings.dynamic_res == k_gpreset[i].dynamic_res && g_settings.anisotropy == k_gpreset[i].anisotropy &&
@@ -508,4 +644,5 @@ void graphics_preset_apply(int preset) {
     if (g_settings.upscaler != UPSCALE_OFF) g_settings.upscale_quality = k_gpreset[preset].upscale_quality;
     g_settings.async_shaders = k_gpreset[preset].async_shaders;
     g_settings.render_scale = k_gpreset[preset].render_scale;
+    if (preset == GPRESET_HANDHELD) g_settings.sharpening = 7, g_settings.tex_lod_bias = TEX_LOD_SHARP;  // (the upscaled image's softness)
 }

@@ -95,7 +95,7 @@ enum { KIND_TOGGLE = 0, KIND_CHOICE = 1, KIND_BUTTON = 2 };
 enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_COLOUR, P_AUDIO, P_CONTROLS, P_BINDS, P_LANGUAGE, P_ACCESS, P_VIDEO_ADV, P_COUNT };
 // A_FIXED: a greyed row for an input that can never be rebound (Item.arg: 0 Esc, 1 F2); A_BIND: Item.arg is a binding slot (an input, or BIND_ACTION + an action); the next key, mouse button or controller button binds it
 enum Action { A_NONE, A_PAGE, A_BIND, A_BINDS_HEADER, A_RESET_BINDS, A_RESTART, A_QUIT, A_SIZE_LIST, A_FIXED, A_REPORT };
-static char g_report_dir[64];  // Problem report: the folder made this run (its row's description names it)
+static char g_report_dir[64];  // Problem report: the zip made this run (its row's description names it)
 
 struct Item {
     int page;
@@ -154,9 +154,10 @@ const char *const k_modes[] = {"Ultra Quality", "Quality", "Balanced", "Performa
 #ifdef __APPLE__
 const char *const k_aa[] = {"Off", "SMAA"};
 #else
-const char *const k_aa[] = {"Off", "SMAA", "TAA"};  // (settings.h AA_*)
+const char *const k_aa[] = {"Off", "FXAA", "SMAA", "TAA"};  // (settings.h AA_ROW_*)
 #endif
 const char *const k_aniso[] = {"Off", "2x", "4x", "8x", "16x"};  // (settings anisotropy 0..4)
+const char *const k_tex_lod[] = {"Default", "Sharp", "Sharper"};  // (settings tex_lod_bias 0..2)
 // (shown with Potato first, the nearest: k_drawdist_order maps a row index to settings.h DRAWDIST_*)
 const char *const k_drawdist[] = {"Original", "High", "Savage", "Potato"};  // (settings.h DRAWDIST_*; the ini: medium, high)
 const int k_drawdist_order[] = {DRAWDIST_POTATO, DRAWDIST_ORIGINAL, DRAWDIST_MEDIUM, DRAWDIST_HIGH};
@@ -169,13 +170,20 @@ const char *const k_wear_times[] = {"0x", "0.5x", "1x", "1.5x", "2x", "2.5x", "3
 const char *const k_shadow[] = {"Console (896)", "High (2048)", "Ultra (4096)", "Savage (8192)", "Potato (448)"};  // (SHADOW_*)
 const int k_shadow_order[] = {SHADOW_POTATO, SHADOW_CONSOLE, SHADOW_HIGH, SHADOW_ULTRA, SHADOW_EXTREME};
 const char *const k_text[] = {"Off", "2x", "4x"};  // (sharper_text / 2)
-const char *const k_icons[] = {"Automatic", "Keyboard", "Xbox", "PlayStation", "Nintendo"};  // (ICONS_*)
-constexpr int k_fps[] = FPS_CHOICES;  // frame rate (0: Off, no limit)
+const char *const k_icons[] = {"Automatic", "Keyboard", "Xbox", "PlayStation", "Nintendo", "Steam Deck"};  // (ICONS_*)
+const char *const k_button_layout[BUTTON_LAYOUT_COUNT] = {
+    "Automatic", "Nintendo", "Swap A / B", "Xbox", "Swap X / Y", "GameCube"
+};  // (BUTTON_LAYOUT_*)
+static int fps_at(int x) { const int *l; fps_choices(&l); return l[x]; }  // frame rate (0: Off, no limit)
+static int fps_count() { const int *l; return fps_choices(&l); }
+static int fps_default_index() {
+    for (int i = 0; i < fps_count(); i++)
+        if (fps_at(i) == FPS_DEFAULT) return i;
+    return 0;
+}
 const char *const k_vsync[VSYNC_COUNT] = {"On", "Fast", "Adaptive", "Off"};  // (settings.h VSYNC_*)
 const char *const k_hdr[HDR_COUNT] = {"Automatic", "On", "Off"};               // (settings.h HDR_*)
 const char *const k_fsmode[FSMODE_COUNT] = {"Automatic", "Borderless", "Exclusive"};  // (settings.h FSMODE_*)
-constexpr int FPS_DEFAULT_INDEX = 2;
-static_assert(k_fps[FPS_DEFAULT_INDEX] == FPS_DEFAULT);
 constexpr int k_sens[] = {10, 25, 50, 75, 100, 125, 150, 200, 250, 300, 400, 500, 600, 800, 1000};  // mouse sensitivity, %
 constexpr int SENS_DEFAULT = 9;  // (300%: MOUSE_SENS_DEFAULT)
 static_assert(k_sens[SENS_DEFAULT] == 300);
@@ -197,6 +205,9 @@ static_assert(k_hud_size[HUD_SIZE_DEFAULT_INDEX] == 100);
 constexpr int k_deadzone[] = {0, 3, 5, 8, 10, 12, 15, 20, 25, 30, 40};  // stick dead zone, % of full tilt
 constexpr int DEADZONE_DEFAULT = 4;
 static_assert(k_deadzone[DEADZONE_DEFAULT] == (int)(STICK_DEADZONE_DEFAULT * 100 + 0.5f));
+constexpr int k_rumble_strength[] = {10, 20, 30, 40, 50, 60, 70, 80, 90, 100};  // vibration strength %
+constexpr int RUMBLE_STRENGTH_DEFAULT_INDEX = 9;
+static_assert(k_rumble_strength[RUMBLE_STRENGTH_DEFAULT_INDEX] == 100);
 const char *const k_invert[] = {"Off", "Up and down", "Left and right", "Both"};  // (MOTION_INVERT_* bits)
 #define N(a) (int)(sizeof(a) / sizeof((a)[0]))
 int g_nluts = 1;  // Colour > LUT's values (color_lut_list: None, the shipped ones, the player's), listed per opening
@@ -266,14 +277,19 @@ const char *ups_label(const Item &, int x) {
     if (u == UPSCALE_FSR3) return upscaler_available(u) ? tr("AMD FSR 3") : soon("FSR 3");
     if (u == UPSCALE_FSR4)
         return upscaler_available(u) ? tr("AMD FSR 4") : soon("FSR 4", fsr4_offered() ? "(coming soon)" : "(AMD Radeon only)");
-    return soon("DLSS", renderer_gpu_rtx() ? "(coming soon)" : "(NVIDIA RTX only)");
+    if (upscaler_available(UPSCALE_DLSS)) {
+        static std::string available;
+        available = tr("DLSS");
+        return available.c_str();
+    }
+    return soon("DLSS", "(NVIDIA RTX only)");
 }
 
 const char *fps_label(const Item &, int x) {
     static char buf[32];
-    if (x == N(k_fps)) return tr("Match display");  // (settings fps_display)
-    if (!k_fps[x]) return tr("Off");
-    snprintf(buf, sizeof buf, tr("%d FPS"), k_fps[x]);
+    if (x == fps_count()) return tr("Match display");  // (settings fps_display)
+    if (!fps_at(x)) return tr("Off");
+    snprintf(buf, sizeof buf, tr("%d FPS"), fps_at(x));
     return buf;
 }
 
@@ -327,13 +343,13 @@ void build_items(void) {
     v.push_back(button(P_MAIN, "Language", "Language of the texts and of the voices.", "Open", A_PAGE, P_LANGUAGE));
     v.push_back(button(P_MAIN, "Accessibility", "Assists that make the game easier.", "Open", A_PAGE, P_ACCESS));
     v.push_back(button(P_MAIN, "Problem report",
-                       "A folder to attach to a bug report: the log of the last two runs, your settings and a short "
+                       "A zip file to attach to a bug report: the log of the last two runs, your settings and a short "
                        "system summary. No game files and no saves.",
                        "Make", A_REPORT, 0));
     v.back().desc_fn = [](const Item &it) {
         static char buf[256];
         if (!g_report_dir[0]) return it.desc;
-        snprintf(buf, sizeof buf, tr("Made the folder %s. Attach its files to your report."), g_report_dir);
+        snprintf(buf, sizeof buf, tr("Made %s in the data folder. Attach this file to your report."), g_report_dir);
         return (const char *)buf;
     };
     v.push_back(button(P_MAIN, "Quit game", "To the desktop, or back to the Savage Wind start screen.", "Quit",
@@ -343,14 +359,14 @@ void build_items(void) {
     // Graphics preset (settings.c k_gpreset): sets rows of the Advanced page; "Custom"
     // (settings matching no preset) is shown, never picked
     Item gp = choice(P_VIDEO, "Graphics preset", "Potato: for weak PCs. Original: as on the console. High and Savage: further and sharper.",
-                     [](const Item &) { return GPRESET_COUNT + 1; },
-                     [](const Item &, int x) { return tr(x < GPRESET_COUNT ? g_gpreset_names[x] : "Custom"); },
+                     [](const Item &) { return graphics_preset_count() + 1; },
+                     [](const Item &, int x) { return tr(x < graphics_preset_count() ? g_gpreset_names[x] : "Custom"); },
                      [](const Item &) {
                          int p = graphics_preset_current();
-                         return p < 0 ? (int)GPRESET_COUNT : p;
+                         return p < 0 ? graphics_preset_count() : p;
                      },
                      [](const Item &, int x) { graphics_preset_apply(x); }, GPRESET_ORIGINAL);
-    gp.value_off = [](const Item &, int x) { return x >= GPRESET_COUNT; };
+    gp.value_off = [](const Item &, int x) { return x >= graphics_preset_count(); };
     v.push_back(gp);
     v.push_back(button(P_VIDEO, "Advanced options", "Draw distance, upscaler, anti-aliasing, shadows, bloom and more.", "Open", A_PAGE, P_VIDEO_ADV));
     v.push_back(toggle(P_VIDEO, "Fullscreen", "Fills the screen. Also F11 or Alt+Enter.",
@@ -412,6 +428,9 @@ void build_items(void) {
     v.push_back(toggle(P_VIDEO, "Fill wide screens", "Shows more of the world on screens that aren't 16:9 (wider or taller), instead of bars.",
                        [](const Item &) { return (int)g_settings.wide_view; },
                        [](const Item &, int x) { g_settings.wide_view = x; }, 1));
+    v.push_back(toggle(P_VIDEO, "HUD at edges", "On windows taller than 16:9 with Fill wide screens, anchors the top and bottom HUD to the window edges.",
+                       [](const Item &) { return (int)g_settings.hud_edges; },
+                       [](const Item &, int x) { g_settings.hud_edges = x; }, 0));
     v.push_back(choice(P_VIDEO, "Field of view", "How much the camera shows in play. Cutscenes keep their own.",
                        [](const Item &) { return N(k_fov); },
                        [](const Item &, int x) {
@@ -434,19 +453,19 @@ void build_items(void) {
                        [](const Item &) { return nearest(k_hud_size, N(k_hud_size), (float)g_settings.hud_size); },
                        [](const Item &, int x) { g_settings.hud_size = k_hud_size[x]; }, HUD_SIZE_DEFAULT_INDEX));
     Item fps = choice(P_VIDEO, "Frame rate", "",
-                      [](const Item &) { return N(k_fps) + 1; }, fps_label,
+                      [](const Item &) { return fps_count() + (settings_handheld() ? 0 : 1); }, fps_label,
                       [](const Item &) {
-                          if (g_settings.fps_display) return N(k_fps);
-                          for (int i = 0; i < N(k_fps); i++)
-                              if (k_fps[i] == g_settings.fps_limit) return i;
-                          return FPS_DEFAULT_INDEX;
+                          if (g_settings.fps_display) return fps_count();
+                          for (int i = 0; i < fps_count(); i++)
+                              if (fps_at(i) == g_settings.fps_limit) return i;
+                          return fps_default_index();
                       },
                       [](const Item &, int x) {
-                          g_settings.fps_display = x == N(k_fps);
+                          g_settings.fps_display = x == fps_count();
                           if (g_settings.fps_display) settings_fps_for_display(winsize_refresh_rate());
-                          else g_settings.fps_limit = k_fps[x];
+                          else g_settings.fps_limit = fps_at(x);
                       },
-                      FPS_DEFAULT_INDEX);
+                      fps_default_index());
     fps.desc_fn = [](const Item &) {  // (one line)
         static char buf[256];
         int hz = (int)lroundf(winsize_refresh_rate());
@@ -485,8 +504,13 @@ void build_items(void) {
                        [](const Item &, int x) { g_settings.draw_distance = k_drawdist_order[x]; }, 1));
     v.push_back(choice(P_VIDEO_ADV, "Anti-aliasing", "Smooths jagged edges. Best at a lower resolution.",
                        [](const Item &) { return N(k_aa); }, [](const Item &, int x) { return tr(k_aa[x]); },
+#ifdef __APPLE__
                        [](const Item &) { return g_settings.antialias; },
                        [](const Item &, int x) { g_settings.antialias = x; }, AA_OFF));
+#else
+                       [](const Item &) { return settings_aa_row(); },
+                       [](const Item &, int x) { settings_aa_row_set(x); }, AA_ROW_FXAA));
+#endif
     v.push_back(choice(P_VIDEO_ADV, "Upscaler", "Off: full resolution. AMD FSR 1: renders smaller, then upscales.",
                        [](const Item &) { return N(k_ups_value); }, ups_label,
                        [](const Item &) {
@@ -536,9 +560,6 @@ void build_items(void) {
                        [](const Item &, int x) { g_settings.render_scale = x; }, RSCALE_100));
 #ifndef __APPLE__
     // the game's own FXAA (vulkan/exec.c fxaa_patch)
-    v.push_back(toggle(P_VIDEO_ADV, "Game's FXAA", "The game's own edge smoothing. Off: sharper, more jagged edges.",
-                       [](const Item &) { return (int)g_settings.game_fxaa; },
-                       [](const Item &, int x) { g_settings.game_fxaa = x; }, 1));
     // the wet lighting passes' sun glare (maxwell/translate.c maxwell_wet_lighting): their translations, made at the start
     v.push_back(toggle(P_VIDEO_ADV, "Wet grass fix", "Tames the white glare on grass and roofs in rain with the sun out. From the next start.",
                        [](const Item &) { return (int)g_settings.wet_fix; },
@@ -549,6 +570,11 @@ void build_items(void) {
                        [](const Item &, int x) { return x ? k_aniso[x] : tr("Off"); },
                        [](const Item &) { return g_settings.anisotropy; },
                        [](const Item &, int x) { g_settings.anisotropy = x; }, 1));
+    v.push_back(choice(P_VIDEO_ADV, "Texture sharpness", "Sharpens textures by biasing mipmap levels. Sharp (-0.5), Sharper (-1.0).",
+                       [](const Item &) { return N(k_tex_lod); },
+                       [](const Item &, int x) { return tr(k_tex_lod[x]); },
+                       [](const Item &) { return g_settings.tex_lod_bias; },
+                       [](const Item &, int x) { g_settings.tex_lod_bias = x; }, 0));
     v.push_back(choice(P_VIDEO_ADV, "Sharpening (AMD CAS)", "Sharpens the 3D image, not the HUD. Most useful with FSR 1.",
                        [](const Item &) { return 11; },
                        [](const Item &, int x) {
@@ -685,6 +711,11 @@ void build_items(void) {
                        [](const Item &) { return (int)g_settings.quick_sort; },
                        [](const Item &, int x) { g_settings.quick_sort = x; }, 0));
 
+    v.push_back(toggle(P_GAMEPLAY, "Quick inventory dropping",
+                       "Drop weapons, bows and shields from the quick selector. Requires game version 1.9.0.",
+                       [](const Item &) { return (int)g_settings.quick_drop; },
+                       [](const Item &, int x) { g_settings.quick_drop = x; }, 0));
+
     // Audio
     v.push_back(choice(P_AUDIO, "Volume", "The game's volume. 100% is its own level.",
                        [](const Item &) { return 21; },
@@ -695,6 +726,26 @@ void build_items(void) {
                        },
                        [](const Item &) { return (int)lroundf(g_settings.volume * 10); },
                        [](const Item &, int x) { g_settings.volume = x / 10.0f; }, 10));
+    v.push_back(choice(P_AUDIO, "Shrine sensor volume",
+                       "Volume of the Sheikah Slate sensor beeps. 0% silences the sensor.",
+                       [](const Item &) { return 11; },
+                       [](const Item &, int x) {
+                           static std::string s;
+                           s = x ? pct(x * 10) : std::string(tr("Off"));
+                           return s.c_str();
+                       },
+                       [](const Item &) { return (int)lroundf(g_settings.shrine_sensor_volume / 10.0f); },
+                       [](const Item &, int x) {
+                           g_settings.shrine_sensor_volume = x * 10;
+                       }, 10));
+    v.push_back(choice(P_AUDIO, "Audio output", "Stereo, 5.1 surround speakers, or 3D spatial sound for headphones. Surround 5.1 is untested on real 5.1 speakers.",
+                       [](const Item &) { return (int)AUDIO_OUT_COUNT; },
+                       [](const Item &, int x) {
+                           static const char *const o[AUDIO_OUT_COUNT] = {"Stereo", "Surround 5.1", "3D Headphones"};
+                           return tr(o[x]);
+                       },
+                       [](const Item &) { return g_settings.audio_output; },
+                       [](const Item &, int x) { g_settings.audio_output = x; }, AUDIO_OUT_STEREO));
     v.push_back(toggle(P_AUDIO, "Room reverb", "Echo in caves, shrines and big rooms.",
                        [](const Item &) { return (int)g_settings.reverb; },
                        [](const Item &, int x) { g_settings.reverb = x; }, 1));
@@ -710,6 +761,18 @@ void build_items(void) {
     v.push_back(toggle(P_CONTROLS, "Controller rumble", "Vibrate the controller during play.",
                        [](const Item &) { return (int)g_settings.rumble; },
                        [](const Item &, int x) { g_settings.rumble = x; }, 1));
+    Item it_rumble = choice(P_CONTROLS, "Rumble strength", "100% is the game's own.",
+                            [](const Item &) { return N(k_rumble_strength); },
+                            [](const Item &, int x) {
+                                static std::string str;
+                                str = pct(k_rumble_strength[x]);
+                                return str.c_str();
+                            },
+                            [](const Item &) { return nearest(k_rumble_strength, N(k_rumble_strength), (float)g_settings.rumble_strength); },
+                            [](const Item &, int x) { g_settings.rumble_strength = k_rumble_strength[x]; },
+                            RUMBLE_STRENGTH_DEFAULT_INDEX);
+    it_rumble.value_off = [](const Item &, int) { return !g_settings.rumble; };
+    v.push_back(it_rumble);
     v.push_back(toggle(P_CONTROLS, "Free camera with both sticks",
                        "Clicking both sticks together turns the free camera on and off. Home on the keyboard always does. "
                        "While it's on: F8 or d-pad up changes the filter, [ and ] or d-pad left and right the hour, F7 or "
@@ -813,6 +876,12 @@ void build_items(void) {
                        [](const Item &, int x) { return tr(k_icons[x]); },
                        [](const Item &) { return g_settings.button_icons; },
                        [](const Item &, int x) { g_settings.button_icons = x; }, ICONS_AUTO));
+    v.push_back(choice(P_CONTROLS, "HUD button layout",
+                       "Where the four face buttons sit on the HUD diamond, from the next start. Automatic: follows your bindings.",
+                       [](const Item &) { return N(k_button_layout); },
+                       [](const Item &, int x) { return tr(k_button_layout[x]); },
+                       [](const Item &) { return g_settings.button_layout; },
+                       [](const Item &, int x) { g_settings.button_layout = x; }, BUTTON_LAYOUT_AUTO));
 
     // Key bindings: one row per action (key | controller button), then the inputs no action covers. A waits for the
     // next press: a key or mouse button binds the keyboard side, a controller button the controller side
@@ -940,11 +1009,12 @@ bool install(void) {
         g_entries.push_back(e);
     }
     for (auto &o : g_order) o.clear();
-    // the game's rows: camera and motion aiming ones on Controls; amiibo, the voice language (Language has the voices)
-    // and the VR goggles mode (no use on a PC screen) left out; the rest on Gameplay
+    // the game's rows: camera and motion aiming ones on Controls; the voice language (Language has the voices) and the
+    // VR goggles mode (no use on a PC screen) left out; the rest on Gameplay, amiibo too (the virtual reader: the
+    // figure is chosen in Savage Wind's amiibo tab, runtime/amiibo.h)
     for (uint32_t r = 0; r < rows; r++) {
         uint32_t e = ((const uint32_t *)(uintptr_t)order)[r];
-        if (e == GAME_AMIIBO || e == GAME_VOICE_BUTTON || e == GAME_VOICE_LEVEL || e == GAME_VR) continue;
+        if (e == GAME_VOICE_BUTTON || e == GAME_VOICE_LEVEL || e == GAME_VR) continue;
         bool camera = e == GAME_CAMERA_Y || e == GAME_CAMERA_X || e == GAME_GYRO || e == GAME_CAMERA_SENSITIVITY;
         g_order[camera ? P_CONTROLS : P_GAMEPLAY].push_back(e);
     }
@@ -1911,7 +1981,7 @@ extern "C" uint64_t rt_opt_screen(void) { return options_screen(); }
 // (lower). Its buttons write their answer to dialog_answer (1.8.2 0x7001c4b308; upper 0x5b: 0, lower 0x5a: 1;
 // FUN_7100d46598) and leave the dialog up; B closes it without an answer (rt_quit_dialog_back).
 
-// The title menu's amiibo settings button (Savage Wind has no amiibo support) is Quit
+// The title menu's amiibo settings button is Quit (the figure is chosen in the overlay's amiibo tab)
 extern "C" int rt_title_event(uint32_t id) { return id == TITLE_AMIIBO_BUTTON; }
 
 // LayoutMsg/Title_00 lookups: "0003" (the amiibo settings button) reads Quit

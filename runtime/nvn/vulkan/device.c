@@ -23,11 +23,13 @@
 #include "../../window_size.h"
 #include "mvec.h"
 #include "vk.h"
+#include "shaders.h"
 #include "vram.h"
 #include "record.h"
 #include "fsr_api.h"
 #include "../output_scale.h"
 #include "../renderer.h"
+#include "dlss.h"
 
 #ifdef _WIN32  // (kernel32; windows.h itself clashes with names used here)
 __declspec(dllimport) int __stdcall MoveFileExA(const char *from, const char *to, unsigned long flags);
@@ -88,6 +90,14 @@ static void create_instance(void) {
             if (!strcmp(ie[i].extensionName, VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME)) g_cs_ext = true;
         if (g_cs_ext) ext[n_ext++] = VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME;
         free(ie);
+    }
+    const char **ngx_ext = NULL;
+    unsigned n_ngx_ext = 0;
+    vk_dlss_required_instance_extensions(&ngx_ext, &n_ngx_ext);
+    for (unsigned i = 0; i < n_ngx_ext && n_ext < sizeof(ext) / sizeof(ext[0]); i++) {
+        bool duplicate = false;
+        for (uint32_t j = 0; j < n_ext; j++) duplicate |= !strcmp(ext[j], ngx_ext[i]);
+        if (!duplicate) ext[n_ext++] = ngx_ext[i];
     }
     bool validate = getenv("SAVAGEWIND_VK_VALIDATION") != NULL;
     // (debugging) SAVAGEWIND_VK_ADDR_REPORT=<lo>-<hi> (hex GPU addresses): every bind and unbind of GPU memory in that
@@ -187,8 +197,24 @@ static void pick_device(void) {
     vkGetPhysicalDeviceProperties(g_vk.phys, &g_vk.props);
     g_vk.is_mali = g_vk.props.vendorID == 0x13B5;  // (Arm)
 #ifdef _WIN32
-    plat_guest_sparse_heap_configure(g_vk.props.vendorID == 0x8086 &&
-                                     g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU);
+    {   // sparse_heap = auto: only an Intel integrated GPU whose shared memory can't hold the whole guest heap
+        // (3120 MB) and the game's textures. It was on for every Intel integrated GPU, and those with memory to spare crashed in
+        // the game code a few minutes in (#596 UHD 620 with 16 GB, #619 Iris Xe, #695 Arc 130T with 8972 MB), fixed
+        // there by sparse_heap = off; the sparse heap was made for the ones that run out of shared memory (#197).
+        VkPhysicalDeviceMemoryProperties mp;
+        vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
+        uint64_t local = 0;
+        for (uint32_t i = 0; i < mp.memoryHeapCount; i++)
+            if ((mp.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) && mp.memoryHeaps[i].size > local)
+                local = mp.memoryHeaps[i].size;
+        bool intel_igpu =
+            g_vk.props.vendorID == 0x8086 && g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+        bool small = local < (6ull << 30);
+        if (intel_igpu)
+            LOG("[vk] sparse heap auto: shared memory %llu MB, %s\n", (unsigned long long)(local >> 20),
+                small ? "under 6144 MB: the sparse heap" : "6144 MB or more: the whole heap imported");
+        plat_guest_sparse_heap_configure(intel_igpu && small);
+    }
 #endif
     { extern void vk_translator_setup(void); vk_translator_setup(); }
     uint32_t nq = 0;
@@ -221,6 +247,12 @@ static void pick_device(void) {
     bool lean_default = g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
 #ifdef __linux__
     if (g_vk.props.vendorID == 0x1002) lean_default = false;
+#endif
+#ifdef _WIN32
+    // Intel's last Windows drivers for its older integrated GPUs (API 1.3.215: UHD 620, UHD 10th gen) read 0x298 in
+    // vkCmdBeginRendering at a 192x192 R16 terrain target (#596, #622). Off there as a likely cause, not a confirmed one.
+    if (g_vk.props.vendorID == 0x8086 && lean_default && g_vk.props.apiVersion <= VK_MAKE_API_VERSION(0, 1, 3, 215))
+        lean_default = false;
 #endif
     g_vk.lean_usage = lean && *lean ? atoi(lean) != 0 : lean_default;
     LOG("[vk] view format lists %s\n", g_vk.lean_usage ? "on" : "off");
@@ -488,7 +520,7 @@ static void create_device(void) {
                 memory.memoryTypes[i].heapIndex, memory.memoryTypes[i].propertyFlags);
         }
     }
-    const char *ext[32];
+    const char *ext[64];
     uint32_t n_ext = 0;
     ext[n_ext++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
 
@@ -538,6 +570,13 @@ static void create_device(void) {
         !plat_guest_sparse_heap_enabled() ? "off" :
         g_vk.pageable_device_local_memory ? "on" : "not supported");
 #endif
+    const char **ngx_ext = NULL;
+    unsigned n_ngx_ext = 0;
+    vk_dlss_required_device_extensions(&ngx_ext, &n_ngx_ext);
+    for (unsigned i = 0; i < n_ngx_ext && n_ext < sizeof(ext) / sizeof(ext[0]); i++) {
+        if (has_ext(ep, ne, ngx_ext[i])) ext[n_ext++] = ngx_ext[i];
+        else LOG("[dlss] required device extension unavailable: %s\n", ngx_ext[i]);
+    }
     bool addr_report = g_addr_report_hi && has_ext(ep, ne, VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME);
     if (addr_report) ext[n_ext++] = VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME;
     if (g_addr_report_hi) LOG("[vk] address binding report %s\n", addr_report ? "on" : "not supported");
@@ -588,6 +627,16 @@ static void create_device(void) {
 #endif
     g_vk.turnip = drv.driverID == VK_DRIVER_ID_MESA_TURNIP;
     g_vk.amd_proprietary = drv.driverID == VK_DRIVER_ID_AMD_PROPRIETARY;
+    {   // AMD's own shader compiler (its driver without "LLPC" in driverInfo: RDNA 2 and older on Windows) draws the sky
+        // wrong from unoptimized SPIR-V (#359): its fragment shaders go through spirv-opt (spirv.c).
+        // SAVAGEWIND_VK_OPT_FS=0 / 1 forces it off or on.
+        const char *e = getenv("SAVAGEWIND_VK_OPT_FS");
+        bool sc = g_vk.amd_proprietary && !strstr(drv.driverInfo, "LLPC");
+        bool on = e && *e ? atoi(e) != 0 : sc;
+        vk_spirv_optimize_fragments(on);
+        if (on || sc)
+            LOG("[vk] fragment shaders optimized (spirv-opt): %s\n", on ? sc ? "on, AMD's own shader compiler" : "on" : "off");
+    }
     {   // (for bug reports: the driver's version, and whether ASTC textures reach the GPU as they are or decoded)
         VkFormatProperties ap;
         vkGetPhysicalDeviceFormatProperties(g_vk.phys, VK_FORMAT_ASTC_4x4_UNORM_BLOCK, &ap);
@@ -961,6 +1010,15 @@ static void create_device(void) {
     bool two_q = g_vk.qfam_count >= 2 && pt_env && strcmp(pt_env, "0") != 0;
     VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_vk.qfam,
                                   .queueCount = two_q ? 2 : 1, .pQueuePriorities = prio};
+    {   // (each once: NGX's list, above, may name one the device enables for itself below)
+        uint32_t k = 0;
+        for (uint32_t i = 0; i < n_ext; i++) {
+            bool dup = false;
+            for (uint32_t j = 0; j < k; j++) dup |= !strcmp(ext[j], ext[i]);
+            if (!dup) ext[k++] = ext[i];
+        }
+        n_ext = k;
+    }
     VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f, .queueCreateInfoCount = 1,
                              .pQueueCreateInfos = &qi, .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext};
     VK_CHECK(vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.dev));
@@ -1005,6 +1063,12 @@ static void create_device(void) {
     VK_CHECK(vkCreateCommandPool(g_vk.dev, &pi, NULL, &g_vk.pool));
 
     pipeline_cache_load();
+    // NGX on the device just made. Optional: without the SDK's DLL or an RTX driver the renderer runs as before, and
+    // a settings file asking for DLSS gets FSR 1
+    if (!vk_dlss_init() && g_settings.upscaler == UPSCALE_DLSS) {
+        g_settings.upscaler = UPSCALE_FSR1;
+        LOG("[dlss] unavailable: FSR 1 instead\n");
+    }
     pthread_t saver;
     pthread_create(&saver, NULL, pc_saver, NULL);
 }
@@ -2301,7 +2365,7 @@ static void ui_window_show(void) {
 // (runtime/main.c, before each boot; the main thread) the picture up, and the window shown with it
 void boot_splash_start(void) {
     if (!window) return;  // (made later, in ui_run: Linux and macOS)
-    if (!getenv("SAVAGEWIND_HIDDEN") && !getenv("SAVAGEWIND_NO_BOOT_SPLASH")) {
+    if (!getenv("SAVAGEWIND_HIDDEN") && !getenv("SAVAGEWIND_NO_BOOT_SPLASH") && g_settings.boot_picture) {
         gpu_lock();
         boot_splash_open();
         boot_hold = true, boot_alpha = 1, boot_hold_since = SDL_GetTicksNS();
@@ -2528,6 +2592,8 @@ presented:
     reboot_test_frame(total_frames);
     extern void test_warp_frame(uint64_t frame);  // runtime/services/test_warp.c (SAVAGEWIND_TEST_TIME)
     test_warp_frame(total_frames);
+    extern void weather_frame(void);  // runtime/weather.c (Cheats > Weather, `weather`)
+    weather_frame();
     extern void control_frame(uint64_t frame);  // runtime/control.c (SAVAGEWIND_CONTROL)
     control_frame(total_frames);
     static long shot_every = -1;
@@ -2729,6 +2795,7 @@ static void quick_exit_handler(void) {
         vk_present_idle();
         rec_drain();
         vkDeviceWaitIdle(g_vk.dev);
+        vk_dlss_shutdown();
         if (trace) LOG("[vk] exit: saving the pipeline cache\n");
         vk_pipeline_cache_save();
         extern void vk_pso_flush(void);

@@ -3,14 +3,17 @@
 // once (the start screen and the overlay rebuild their fonts when the new language needs other glyphs).
 #include "i18n.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include <deque>
 #include <mutex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "imgui.h"
@@ -89,6 +92,89 @@ const char *menu_lang_for(const char *code) {
     return "en";
 }
 
+// A language pack: lang/<menu language>.txt in the data folder (docs/menu-language-packs.md), its lines over the built-in
+// table, so players can fix or finish a translation without a new build. Each language's pack is read once and kept
+// for the whole run: tr() hands out pointers into it.
+
+// A text's printf conversions in order ("%d", "%.1f", "%s"; "%%" is a percent sign, not one), each ended by a '|'.
+// A pack line whose translation lists other ones than its English text would make snprintf(tr(...)) read the wrong
+// arguments, or crash.
+static std::string printf_specs(const std::string &s) {
+    std::string out;
+    for (size_t i = 0; i < s.size(); i++) {
+        if (s[i] != '%') continue;
+        if (i + 1 < s.size() && s[i + 1] == '%') {
+            i++;
+            continue;
+        }
+        size_t j = i + 1;
+        while (j < s.size() && strchr("-+ #0", s[j])) j++;                          // flags
+        while (j < s.size() && (isdigit((unsigned char)s[j]) || s[j] == '*')) j++;  // width
+        if (j < s.size() && s[j] == '.')
+            for (j++; j < s.size() && (isdigit((unsigned char)s[j]) || s[j] == '*'); j++) {}  // precision
+        while (j < s.size() && strchr("hlLqjzt", s[j])) j++;                                 // length i18n-skip
+        out.append(s, i, j - i + (j < s.size()));  // (with the conversion letter)
+        out += '|';
+        i = j;
+    }
+    return out;
+}
+
+static void read_pack(const char *ui) {
+    static std::unordered_map<std::string, std::deque<std::string>> packs;  // (deque: its strings never move)
+    auto at = packs.find(ui);
+    if (at == packs.end()) {
+        std::deque<std::string> &text = packs[ui];
+        char path[64];
+        snprintf(path, sizeof path, "lang/%s.txt", ui);
+        FILE *f = fopen(path, "rb");
+        if (!f) return;
+        std::string line;
+        int c, lines = 0, bad = 0, badfmt = 0;
+        auto unescape = [](const std::string &s) {
+            std::string o;
+            for (size_t i = 0; i < s.size(); i++) {
+                if (s[i] == '\\' && i + 1 < s.size() && (s[i + 1] == 'n' || s[i + 1] == 't' || s[i + 1] == '\\')) {
+                    o += s[i + 1] == 'n' ? '\n' : s[i + 1] == 't' ? '\t' : '\\';
+                    i++;
+                } else o += s[i];
+            }
+            return o;
+        };
+        do {
+            c = fgetc(f);
+            if (c != '\n' && c != EOF) { line += (char)c; continue; }
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (lines == 0 && line.size() >= 3 && (unsigned char)line[0] == 0xEF && (unsigned char)line[1] == 0xBB &&
+                (unsigned char)line[2] == 0xBF)
+                line.erase(0, 3);  // (a UTF-8 mark at the start)
+            size_t tab = line.find('\t');
+            if (!line.empty() && line[0] != '#') {
+                if (tab == std::string::npos || tab == 0) bad++;
+                else {
+                    std::string en = unescape(line.substr(0, tab)), translated = unescape(line.substr(tab + 1));
+                    if (printf_specs(en) != printf_specs(translated)) {
+                        fprintf(stderr, "[i18n] %s:%d: skipped, its %% formats differ from the English text's: %s\n",
+                                path, lines + 1, en.c_str());
+                        badfmt++;
+                    } else {
+                        text.push_back(std::move(en));
+                        text.push_back(std::move(translated));
+                    }
+                }
+            }
+            lines++;
+            line.clear();
+        } while (c != EOF);
+        fclose(f);
+        fprintf(stderr, "[i18n] %s: %zu texts%s", path, text.size() / 2, bad ? " (lines without a tab skipped)" : "");
+        if (badfmt) fprintf(stderr, " (%d with other %% formats than the English text skipped)", badfmt);
+        fputc('\n', stderr);
+        at = packs.find(ui);
+    }
+    for (size_t i = 0; i + 1 < at->second.size(); i += 2) by_text[at->second[i]] = at->second[i + 1].c_str();
+}
+
 bool rtl_lang(const char *ui) { return !strcmp(ui, "he"); }
 void visual_line(const char *b, const char *e, char *out);  // (right to left, below)
 
@@ -96,7 +182,7 @@ void refresh(void) {  // (lock held)
     // SAVAGEWIND_MENU_LANG=<LanguageCode> (testing): the menus in that language, whatever the settings say
     static const char *forced = getenv("SAVAGEWIND_MENU_LANG");
     const char *ui = menu_lang_for(forced && *forced ? forced : language_text_code());
-    if (ui == cur_ui) return;
+    if (ui == cur_ui && generation) return;  // (the first time English too: its pack, if any)
     cur_ui = ui;
     generation++;
     GImTextReorderLine = rtl_lang(ui) ? visual_line : nullptr;  // (ImGui draws right-to-left lines with it)
@@ -104,6 +190,7 @@ void refresh(void) {  // (lock held)
     for (const Table &t : tables)
         if (!strcmp(t.lang, ui))
             for (const Entry *e = t.entries; e->en; e++) by_text[e->en] = e->tr;
+    read_pack(ui);
 }
 }  // namespace
 
@@ -145,6 +232,35 @@ static void encode(std::string &s, unsigned c) {
     else
         s += (char)(0xF0 | c >> 18), s += (char)(0x80 | (c >> 12 & 0x3F)), s += (char)(0x80 | (c >> 6 & 0x3F)),
             s += (char)(0x80 | (c & 0x3F));
+}
+
+// ------------------------------------------------------------------ dynamic glyphs
+static std::mutex dyn_lock;
+static std::unordered_set<uint32_t> seen_glyphs;
+static std::string dynamic_glyphs;
+static int dynamic_gen = 0;
+
+extern "C" void ui_register_glyphs(const char *text) {
+    if (!text || !*text) return;
+    std::lock_guard<std::mutex> g(dyn_lock);
+    bool added = false;
+    const unsigned char *p = (const unsigned char *)text;
+    while (*p) {
+        const unsigned char *start = p;
+        unsigned c = decode(p);
+        if (c >= 0x80) {
+            if (seen_glyphs.insert(c).second) {
+                dynamic_glyphs.append((const char *)start, (size_t)(p - start));
+                added = true;
+            }
+        }
+    }
+    if (added) dynamic_gen++;
+}
+
+extern "C" int ui_dynamic_generation(void) {
+    std::lock_guard<std::mutex> g(dyn_lock);
+    return dynamic_gen;
 }
 
 static unsigned upper(unsigned c) {
@@ -379,40 +495,14 @@ static int ttc_face(const char *path, const char *lang) {
     return !strcmp(lang, "ko") ? 1 : !strcmp(lang, "zh-Hans") ? 2 : !strcmp(lang, "zh-Hant") ? 3 : 0;
 }
 
-bool ui_merge_fallback_font(ImFontAtlas *atlas, float size, const ImFontConfig *base) {
-    const char *lang = ui_lang();
-    const char *const *fonts = !strcmp(lang, "ru") ? cyrillic_fonts : !strcmp(lang, "ja") ? ja_fonts
-                             : !strcmp(lang, "ko") ? ko_fonts : !strcmp(lang, "zh-Hans") ? zh_hans_fonts
-                             : !strcmp(lang, "zh-Hant") ? zh_hant_fonts : !strcmp(lang, "th") ? th_fonts
-                             : !strcmp(lang, "he") ? he_fonts : nullptr;
+static bool add_single_fallback(ImFontAtlas *atlas, float size, const ImFontConfig *base,
+                                const char *const *fonts, const char *lang,
+                                const ImVector<ImWchar> &ranges, const char *shipped_path = nullptr) {
     if (!fonts) return false;
-    static char shipped[1100];
-    shipped[0] = 0;
-    if (fonts == th_fonts && !rt_resource("NotoSansThai-Medium.ttf", "third_party/fonts/NotoSansThai/NotoSansThai-Medium.ttf",
-                                          shipped, sizeof shipped))
-        shipped[0] = 0;
-    if (fonts == he_fonts &&
-        !rt_resource("NotoSansHebrew-Medium.ttf", "third_party/fonts/NotoSansHebrew/NotoSansHebrew-Medium.ttf", shipped,
-                     sizeof shipped))
-        shipped[0] = 0;
-    // only the glyphs the language's texts use (a CJK font's full range would not fit an atlas texture), in both cases:
-    // option labels are drawn upper-cased (tr_upper), with capitals the texts themselves may never use
-    static ImVector<ImWchar> ranges;
-    static int ranges_gen = -1;
-    if (ranges_gen != ui_lang_generation()) {
-        ranges_gen = ui_lang_generation();
-        ImFontGlyphRangesBuilder b;
-        {
-            std::lock_guard<std::mutex> g(lock);
-            for (auto &kv : by_text) b.AddText(kv.second), b.AddText(tr_upper(kv.second).c_str());
-        }
-        b.AddText("0123456789%()/:.,-+ ");
-        ranges.clear();
-        b.BuildRanges(&ranges);
-    }
     for (int i = -1; i < 0 || fonts[i]; i++) {
-        const char *path = i < 0 ? shipped : fonts[i];  // (-1: a shipped font)
-        FILE *f = *path ? fopen(path, "rb") : nullptr;
+        const char *path = (i < 0 && shipped_path) ? shipped_path : (i >= 0 ? fonts[i] : nullptr);
+        if (!path || !*path) continue;
+        FILE *f = fopen(path, "rb");
         if (!f) continue;
         fclose(f);
         ImFontConfig cfg = base ? *base : ImFontConfig();
@@ -423,4 +513,95 @@ bool ui_merge_fallback_font(ImFontAtlas *atlas, float size, const ImFontConfig *
         return true;
     }
     return false;
+}
+
+bool ui_merge_fallback_font(ImFontAtlas *atlas, float size, const ImFontConfig *base) {
+    const char *lang = ui_lang();
+    const char *game_lang = menu_lang_for(language_text_code());
+
+    bool has_cjk = false, has_kana = false, has_hangul = false;
+    {
+        std::lock_guard<std::mutex> g(dyn_lock);
+        for (uint32_t c : seen_glyphs) {
+            if ((c >= 0x2E80 && c <= 0x9FFF) || (c >= 0xF900 && c <= 0xFAFF)) has_cjk = true;
+            if (c >= 0x3040 && c <= 0x30FF) { has_cjk = true; has_kana = true; }
+            if (c >= 0xAC00 && c <= 0xD7AF) { has_cjk = true; has_hangul = true; }
+        }
+    }
+
+    bool is_cjk = !strcmp(lang, "ja") || !strcmp(lang, "ko") ||
+                  !strcmp(lang, "zh-Hans") || !strcmp(lang, "zh-Hant") ||
+                  !strcmp(game_lang, "ja") || !strcmp(game_lang, "ko") ||
+                  !strcmp(game_lang, "zh-Hans") || !strcmp(game_lang, "zh-Hant") ||
+                  has_cjk;
+
+    bool is_ru = !strcmp(lang, "ru") || !strcmp(game_lang, "ru");
+    bool is_th = !strcmp(lang, "th") || !strcmp(game_lang, "th");
+    bool is_he = !strcmp(lang, "he") || !strcmp(game_lang, "he");
+
+    if (!is_cjk && !is_ru && !is_th && !is_he) return false;
+
+    // only the glyphs the language's texts use (a CJK font's full range would not fit an atlas texture), in both cases:
+    // option labels are drawn upper-cased (tr_upper), with capitals the texts themselves may never use
+    static ImVector<ImWchar> ranges;
+    static int ranges_gen = -1;
+    int cur_gen = ui_lang_generation() * 10007 + ui_dynamic_generation();
+    if (ranges_gen != cur_gen) {
+        ranges_gen = cur_gen;
+        ImFontGlyphRangesBuilder b;
+        {
+            std::lock_guard<std::mutex> g(lock);
+            for (auto &kv : by_text) b.AddText(kv.second), b.AddText(tr_upper(kv.second).c_str());
+        }
+        {
+            std::lock_guard<std::mutex> g(dyn_lock);
+            if (!dynamic_glyphs.empty()) b.AddText(dynamic_glyphs.c_str());
+        }
+        b.AddText("0123456789%()/:.,-+ ");
+        ranges.clear();
+        b.BuildRanges(&ranges);
+    }
+
+    bool merged = false;
+
+    if (is_cjk) {
+        const char *cjk_lang = (!strcmp(lang, "ja") || !strcmp(lang, "ko") ||
+                                !strcmp(lang, "zh-Hans") || !strcmp(lang, "zh-Hant")) ? lang :
+                               (!strcmp(game_lang, "ja") || !strcmp(game_lang, "ko") ||
+                                !strcmp(game_lang, "zh-Hans") || !strcmp(game_lang, "zh-Hant")) ? game_lang :
+                               has_hangul ? "ko" : has_kana ? "ja" : "zh-Hans";
+
+        const char *const *fonts = !strcmp(cjk_lang, "ja") ? ja_fonts
+                                 : !strcmp(cjk_lang, "ko") ? ko_fonts
+                                 : !strcmp(cjk_lang, "zh-Hant") ? zh_hant_fonts
+                                 : zh_hans_fonts;
+
+        merged |= add_single_fallback(atlas, size, base, fonts, cjk_lang, ranges);
+    }
+
+    if (is_ru) {
+        merged |= add_single_fallback(atlas, size, base, cyrillic_fonts, "ru", ranges);
+    }
+
+    if (is_th) {
+        static char shipped[1100];
+        if (!shipped[0]) {
+            if (!rt_resource("NotoSansThai-Medium.ttf", "third_party/fonts/NotoSansThai/NotoSansThai-Medium.ttf",
+                             shipped, sizeof shipped))
+                shipped[0] = 0;
+        }
+        merged |= add_single_fallback(atlas, size, base, th_fonts, "th", ranges, shipped[0] ? shipped : nullptr);
+    }
+
+    if (is_he) {
+        static char shipped[1100];
+        if (!shipped[0]) {
+            if (!rt_resource("NotoSansHebrew-Medium.ttf", "third_party/fonts/NotoSansHebrew/NotoSansHebrew-Medium.ttf",
+                             shipped, sizeof shipped))
+                shipped[0] = 0;
+        }
+        merged |= add_single_fallback(atlas, size, base, he_fonts, "he", ranges, shipped[0] ? shipped : nullptr);
+    }
+
+    return merged;
 }

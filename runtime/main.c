@@ -7,6 +7,8 @@
 
 #include "gamelib.h"
 #include "paths.h"
+#include "post_update.h"
+#include "steam_shortcuts.h"
 #include "nvn/maxwell/shader.h"
 #include "nvn/shader_archive.h"
 #ifndef __APPLE__
@@ -15,10 +17,12 @@
 #endif
 #include "romfs_image.h"
 #include "services/save_convert.h"
+#include "services/save_profiles.h"
 #include "settings.h"
 #include "hle.h"
 #include "kernel.h"
 #include "control.h"
+#include "launch_flags_boot.h"
 
 const char *g_romfs_dir;
 uint64_t g_program_id;
@@ -172,6 +176,7 @@ static void boot(const char *root) {
     plat_cpu_placement();
     kernel_init();
     dispatch_init();
+    { extern void rupees_start(void); rupees_start(); }  // (Cheats > Infinite rupees, `rupees`: runtime/rupees.c)
     { extern void jpeg_debug_init(void); jpeg_debug_init(); }
 
     uint32_t stack_size = 0x100000;
@@ -334,6 +339,10 @@ bool launcher_game_ready(const char *root);
 bool launcher_config_key_held(void);  // (macOS: Option held while the app opens)
 
 int main(int argc, char **argv) {
+    // SW Update asks this of a version it has just installed: getting here means every DLL loaded
+    for (int i = 1; i < argc; i++)
+        if (!strcmp(argv[i], "--update-health")) return POST_UPDATE_HEALTH_EXIT;
+    if (post_update_recover_if_cut()) return 0;  // (a new copy of this program is running now, with its files put back)
     plat_init();
 #ifdef _WIN32
     setvbuf(stderr, NULL, _IONBF, 0);  // the Windows CRT treats _IOLBF as full buffering
@@ -343,23 +352,21 @@ int main(int argc, char **argv) {
     // every log starts with which Savage Wind made it: the version and the source it was built from (Makefile SW_SOURCE)
     extern const char *rt_version(void);  // (runtime/ui/launcher.mm)
     fprintf(stderr, "[savagewind] Savage Wind %s (%s)\n", rt_version(), SW_SOURCE);
+    launch_flags_boot(argc, argv);  // the saved launch options (runtime/launch_flags.h): in the environment before anything reads it
     control_init();
-    settings_load();
-    static const char *const sparse_heap_modes[SPARSE_HEAP_COUNT] = {"auto", "on", "off"};
-    int sparse_heap = g_settings.sparse_heap;
-    if (sparse_heap < 0 || sparse_heap >= SPARSE_HEAP_COUNT) sparse_heap = SPARSE_HEAP_AUTO;
-    LOG("[settings] sparse_heap=%s\n", sparse_heap_modes[sparse_heap]);
     const char *root = "extracted";  // (in the data root)
     bool skip_launcher = getenv("SAVAGEWIND_NO_LAUNCHER") || getenv("SAVAGEWIND_INPUT");  // tests boot straight in
-    bool config = false;
+    bool config = false, game_first = false;
     static char arg_root[1024];
     const char *dump = NULL, *seed_out = NULL;
-    bool scan = false, precompile = false;
+    bool scan = false, precompile = false, add_steam = false;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--play")) skip_launcher = true;
         else if (!strcmp(argv[i], "--config")) config = true;
+        else if (!strcmp(argv[i], "--game")) game_first = true;  // (the Steam entry: into the game when it's ready)
         else if (!strcmp(argv[i], "--dump-romfs") && i + 1 < argc) dump = argv[++i];
         else if (!strcmp(argv[i], "--scan-shaders")) scan = true;
+        else if (!strcmp(argv[i], "--add-to-steam")) add_steam = true;
         else if (!strcmp(argv[i], "--precompile-shaders")) precompile = true;
         else if (!strcmp(argv[i], "--export-pipeline-seed") && i + 1 < argc) seed_out = argv[++i];
         else if (argv[i][0] != '-' && !realpath(argv[i], arg_root)) root = argv[i];  // (relative to where we started)
@@ -369,8 +376,21 @@ int main(int argc, char **argv) {
     if (launcher_config_key_held()) config = true;  // (the Mac's "Savage Wind Configuration": Option held)
 #endif
     rt_paths_init();  // the data root becomes the working directory (runtime/paths.h)
+    // (after it: savagewind.ini is in the data root; before it the file wasn't found where that isn't where we started)
+    settings_load();
+    static const char *const sparse_heap_modes[SPARSE_HEAP_COUNT] = {"auto", "on", "off"};
+    int sparse_heap = g_settings.sparse_heap;
+    if (sparse_heap < 0 || sparse_heap >= SPARSE_HEAP_COUNT) sparse_heap = SPARSE_HEAP_AUTO;
+    LOG("[settings] sparse_heap=%s\n", sparse_heap_modes[sparse_heap]);
     if (dump) return dump_romfs(root, dump);
     if (scan) return scan_shaders(root);
+    if (add_steam) {  // what Configuration's Add to Steam does, from a terminal (runtime/steam_shortcuts.h)
+        char msg[800];
+        bool ok = steam_add_savage_wind(msg, sizeof msg);
+        fprintf(stderr, "[steam] %s\n", msg);
+        printf("%s\n", msg);
+        return ok ? 0 : 1;
+    }
 #ifndef __APPLE__
     if (precompile) return precompile_shaders(root);
     if (seed_out) return export_pipeline_seed(root, seed_out);
@@ -381,6 +401,15 @@ int main(int argc, char **argv) {
     // A plain start goes straight into the game once the game files are set up and the game code built from them
     // matches this build; the start screen only when there is something to set up, or when asked for.
     int mode = config ? LAUNCHER_CONFIG : skip_launcher || launcher_game_ready(root) ? LAUNCHER_NONE : LAUNCHER_SETUP;
+    // A release (runtime/post_update.h): the first start of a new version finishes setting it up first (the shader caches
+    // go now, before Vulkan opens them), and a plain start opens Savage Wind Configuration, where updates are offered.
+    if (!skip_launcher && !getenv("SAVAGEWIND_HIDDEN")) {
+        bool new_version = post_update_pending(rt_version());
+        if (new_version) post_update_reset_shaders(rt_version());
+        else post_update_tidy(rt_version());
+        if (new_version || (mode == LAUNCHER_NONE && g_settings.start_in_config && !game_first && post_update_shipped()))
+            mode = LAUNCHER_CONFIG;
+    }
     // (tests of the start screen - screenshots, setup and delete runs - show it: the configuration screen, or
     // SAVAGEWIND_LAUNCHER_MODE=setup / config)
     const char *test_mode = getenv("SAVAGEWIND_LAUNCHER_MODE");
@@ -396,14 +425,17 @@ int main(int argc, char **argv) {
     }
 #endif
     for (;;) {
-        if (mode != LAUNCHER_NONE) launcher_run(root, mode);
+        if (mode != LAUNCHER_NONE) {
+            launcher_run(root, mode);
+            launch_flags_play(root);  // changed launch options: restart straight into the game with them
+        }
         // The game holds the lock on its save folder while it runs, so the Saves tab of another Savage Wind refuses to
         // swap or copy saves under it. Not getting it (somebody else has it, or no lock file can be made) never stops
         // the game; it is let go before the start screen of a reboot, which is this same process.
         { extern void save_backup_at_start(void); save_backup_at_start(); }  // (Saves > Back up at each start; before the lock)
         ScLock *save_lock = NULL;
-        const char *save_env = getenv("SAVAGEWIND_SAVE_DIR");
-        if (sc_lock_take(save_env && *save_env ? save_env : "save", &save_lock) == SC_LOCK_BUSY)
+        sp_session_begin();  // the save profile chosen on the start screen (runtime/services/save_profiles.h)
+        if (sc_lock_take(sp_session_save_dir(), &save_lock) == SC_LOCK_BUSY)
             fprintf(stderr, "[saves] another Savage Wind is running with this save folder; saving from both can overwrite saves\n");
 #ifndef __APPLE__
         // the start screen's picture, moving, until the game's title screen is up (vulkan/device.c; a window made

@@ -5,6 +5,11 @@ body:
   - type: markdown
     attributes:
       value: |
+        **Read the [FAQ](https://github.com/Revivedx/SavageWindRecomp/blob/main/docs/FAQ.md) first.** Requests it has already answered, such as other platforms, other versions of
+        the game or multiplayer, are closed right away with the reason.
+  - type: markdown
+    attributes:
+      value: |
         Please check the [roadmap in the README](https://github.com/Revivedx/SavageWindRecomp#status) and the
         [existing issues](https://github.com/Revivedx/SavageWindRecomp/issues?q=is%3Aissue) first: many ideas are
         already planned or in progress. Requests for game files, keys, firmware or how to get them are closed.

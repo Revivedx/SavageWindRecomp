@@ -10,6 +10,8 @@
 //               pick     only pick the folder (a refusal shows as the result)
 //               backup   the Back up saves button
 //               locked-import, locked-backup   the same, with another "game" holding the save folder's lock
+//               profiles create, copy, switch, refuse, delete through the profile jobs and the delete question (the
+//                        working directory is the data root; --save is not used as an override then)
 // Output: lines "KEY value" for the script to read (KIND is the Kind enum, CODE an ScCode); exit status 1 when the tab
 // itself misbehaved.
 #ifdef _WIN32
@@ -155,6 +157,39 @@ static int run(const std::string &scenario, const std::string &src) {
     }
     check(g_slots.empty() || shown == 0 || g_picture_drawn, "a slot's picture is drawn when its row is hovered");
     g_io->AddMousePosEvent(-1000, -1000);
+    if (scenario == "profiles") {
+        auto job = [&](ProfileOp op, const char *a, const char *b) {
+            start(JOB_PROFILE, a, b, op);
+            bool ok = until(is_done);
+            frames(5);  // (the result and the new list are taken)
+            return ok;
+        };
+        check(!sp_override_active(), "no save folder override: profiles are on");
+        check(g_profiles.size() == 1 && g_profiles[0].is_default && g_profiles[0].active, "only the Default profile at first");
+        snprintf(g_pname, sizeof g_pname, "Full 100");
+        check(job(PO_CREATE, "", g_pname) && g_kind == PROFILE_DONE && g_profiles.size() == 2 && g_sel == "Full 100", "create selects the new profile");
+        snprintf(g_pname, sizeof g_pname, "full 100");
+        check(job(PO_COPY, "Default", g_pname) && g_kind == PROFILE_FAILED && g_pcode == SP_EXISTS, "a duplicate name in other case is refused");
+        snprintf(g_pname, sizeof g_pname, "../x");
+        check(job(PO_CREATE, "", g_pname) && g_kind == PROFILE_FAILED && g_pcode == SP_NAME_CHARS, "a path in the name is refused");
+        snprintf(g_pname, sizeof g_pname, "Mine");
+        check(job(PO_COPY, "Default", g_pname) && g_kind == PROFILE_DONE && g_sel == "Mine", "copy of Default");
+        check(job(PO_SWITCH, "Mine", "") && g_kind == PROFILE_DONE, "switch");
+        check(save_dir() == "save-profiles/Mine/save", "the tab now works on the profile's folder");
+        check(g_slots.size() == 2, "the slot list is the profile's");
+        check(job(PO_DELETE, "Mine", "") && g_kind == PROFILE_FAILED && g_pcode == SP_IS_ACTIVE, "the profile in use is not deleted");
+        // the delete question: Escape keeps the profile, no popup is left open (ImGui asserts on an unbalanced one)
+        g_sel = "Full 100";
+        g_delete_open = true, g_delete_name = "Full 100", g_delete_slots = 0;
+        frames(5);
+        check(ImGui::FindWindowByName("##profdel") != NULL, "the delete question is a window of its own");
+        key(ImGuiKey_Escape);
+        frames(3);
+        check(!g_delete_open && find_profile("Full 100"), "Escape keeps the profile");
+        check(job(PO_DELETE, "Full 100", "") && g_kind == PROFILE_DONE && g_profiles.size() == 2 && !find_profile("Full 100"), "delete");
+        check(job(PO_SWITCH, "Default", "") && g_kind == PROFILE_DONE && save_dir() == "save", "back to Default");
+        return bad;
+    }
     if (scenario == "recovery") {
         check(g_recovery.imported[0] && g_recovery.backup[0], "the recovery message names both folders");
         check(!saves_tab_busy(), "recovery has no running worker");
@@ -257,9 +292,10 @@ int main(int argc, char **argv) {
         return 2;
     }
 #ifdef _WIN32
-    _putenv_s("SAVAGEWIND_SAVE_DIR", save.c_str());
+    _putenv_s("SAVAGEWIND_SAVE_DIR", scenario == "profiles" ? "" : save.c_str());
 #else
-    setenv("SAVAGEWIND_SAVE_DIR", save.c_str(), 1);
+    if (scenario == "profiles") unsetenv("SAVAGEWIND_SAVE_DIR");  // (profiles are what is tested)
+    else setenv("SAVAGEWIND_SAVE_DIR", save.c_str(), 1);
 #endif
     saves_tab_set_game_files(game.c_str());
     ImGui::CreateContext();
