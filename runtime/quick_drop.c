@@ -7,6 +7,8 @@
 #include "game_sites.h"
 #include "hle.h"
 #include "quick_drop_action.h"
+#include "quick_replace.h"
+#include "settings.h"
 
 extern uint64_t input_buttons_now(void);
 extern void input_consume_buttons(uint64_t);
@@ -22,11 +24,12 @@ static uint64_t hint_now_ms(void) {
     return (uint64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000;
 }
 
-// 0 hidden, 1/2 drop unavailable/available, 3 back only.
+// 0 hidden, 1/2 drop unavailable/available, 3 back only,
+// 4/5 replacement unavailable/available, 6/7 replacement with its native card.
 // Expiry also handles reset/load
 // transitions that bypass the normal Menu callback.
 int quick_drop_hint_state(void) {
-    if (!quick_drop_action_enabled()) return 0;
+    if (!quick_drop_action_enabled() && !g_settings.quick_replace) return 0;
     uint64_t hint = atomic_load(&drop_hint);
     if (!hint || hint_now_ms() - (hint >> 3) > 150) return 0;
     return hint & 7;
@@ -35,7 +38,7 @@ int quick_drop_hint_state(void) {
 static void update_drop_hint(Cpu *c) {
     uint64_t screen = c->x[0];
     atomic_store(&drop_hint, 0);
-    if (!quick_drop_action_enabled() || !guest_range(screen, 0x38e5) ||
+    if ((!quick_drop_action_enabled() && !quick_replace_active()) || !guest_range(screen, 0x38e5) ||
         LD8(screen + 0x38e4) == 2) return;
     int category = (int32_t)LD32(screen + 0x3738);
     if (category < 0 || category > 4) return;
@@ -60,6 +63,7 @@ static void update_drop_hint(Cpu *c) {
         }
     }
     probe_call(c, g_site.pouch_unlock, mgr + 0x28, 0, 0);
+    if (quick_replace_active()) state += quick_replace_bottom_layout() ? 5 : 3;
     atomic_store(&drop_hint, (hint_now_ms() << 3) | state);
 }
 
@@ -183,6 +187,7 @@ static void quick_drop_menu(Cpu *c) {
 
 
 void rt_quick_drop_menu(Cpu *c) {
+    if (quick_replace_menu(c)) { update_drop_hint(c); return; }
     if (!quick_drop_enabled()) {
         menu_screen = menu_buttons = 0;
         atomic_store(&drop_hint, 0);

@@ -1003,3 +1003,7 @@ T("A screenshot", "스크린샷")
 T("Latest save", "최근 세이브")
 T("Loading picture", "로딩 이미지")
 T("Shows that picture while the game loads. Turned off, the window stays black until the game's title screen: loading takes just as long.", "게임을 불러오는 동안 그 이미지를 보여 줍니다. 끄면 타이틀 화면까지 창이 검은색으로 유지됩니다. 로딩 시간은 같습니다.")
+
+T("Replace", "교체")
+T("Quick inventory replacement", "빠른 인벤토리 장비 교체")
+T("Choose equipment to drop when its inventory is full, then receive the new item. Requires game version 1.9.0.", "인벤토리가 가득 차면 버릴 장비를 선택한 뒤 새 아이템을 받습니다. 게임 버전 1.9.0이 필요합니다.")

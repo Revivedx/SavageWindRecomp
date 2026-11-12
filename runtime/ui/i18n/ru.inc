@@ -1003,3 +1003,7 @@ T("A screenshot", "Скриншот")
 T("Latest save", "Последнее сохранение")
 T("Loading picture", "Картинка загрузки")
 T("Shows that picture while the game loads. Turned off, the window stays black until the game's title screen: loading takes just as long.", "Показывает эту картинку, пока загружается игра. Если выключено, окно остаётся чёрным до титульного экрана: загрузка длится столько же.")
+
+T("Replace", "Заменить")
+T("Quick inventory replacement", "Быстрая замена снаряжения")
+T("Choose equipment to drop when its inventory is full, then receive the new item. Requires game version 1.9.0.", "При полном инвентаре выберите снаряжение для выбрасывания, затем получите новый предмет. Требуется версия игры 1.9.0.")

@@ -1003,3 +1003,7 @@ T("A screenshot", "一张截图")
 T("Latest save", "最新存档")
 T("Loading picture", "加载图片")
 T("Shows that picture while the game loads. Turned off, the window stays black until the game's title screen: loading takes just as long.", "游戏加载时显示该图片。关闭后,在游戏标题画面出现前窗口保持黑屏:加载时间不变。")
+
+T("Replace", "替换")
+T("Quick inventory replacement", "快捷背包装备替换")
+T("Choose equipment to drop when its inventory is full, then receive the new item. Requires game version 1.9.0.", "背包已满时，选择要丢弃的装备，然后获得新物品。需要游戏版本1.9.0。")

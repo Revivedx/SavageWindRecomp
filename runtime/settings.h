@@ -109,6 +109,7 @@ typedef struct {
     int rumble_strength; // vibration intensity percent: 10..100 (default 100)
     bool freecam_sticks; // both stick clicks together turn the free camera on and off (hle/input.c)
     int gpu;             // Vulkan adapter index from the startup log; -1: automatic (restart required)
+    bool quick_replace;   // native full-inventory replacement (1.9.0)
     bool quick_drop;      // native dropping from the quick equipment selector
     bool quick_sort;      // native sorting in the quick equipment selector
     bool dpad_move;      // the d-pad (and arrow keys) also act as the left stick while it is at rest

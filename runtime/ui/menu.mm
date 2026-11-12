@@ -37,6 +37,7 @@ extern "C" {
 #include "../gamelib.h"
 #include "../quick_inventory_sort.h"
 #include "../quick_drop.h"
+#include "../ui/quick_inventory_layout.h"
 #include "../nvn/glyphs.h"
 #include "../color_grade.h"
 #include "../window_size.h"
@@ -515,7 +516,7 @@ static void load_fonts(void) {
     if (!g_font_big) g_font_big = g_font;
     if (!g_menu_font || !g_menu_font_big) g_menu_font = g_font, g_menu_font_big = g_font_big;
     g_hint_font = g_hint_buttons = nullptr;
-    g_hint_font_attempted = g_romfs_dir && (g_settings.quick_sort || g_settings.quick_drop);
+    g_hint_font_attempted = g_romfs_dir && (g_settings.quick_sort || g_settings.quick_drop || g_settings.quick_replace);
     if (g_hint_font_attempted) quick_hint_fonts_load(io.Fonts, &g_hint_font, &g_hint_buttons);
     g_hint_generation = icons_generation;
 }
@@ -523,8 +524,8 @@ static void load_fonts(void) {
 // Before a frame: another menu language may need other glyphs - the fonts and their texture are made again
 extern "C" void vk_imgui_fonts_changed(void);  // (runtime/nvn/vulkan/imgui_glue.cpp)
 static void fonts_follow_language(void) {
-    bool need_hint_fonts = (g_settings.quick_sort || g_settings.quick_drop) && g_romfs_dir && !g_hint_font_attempted;
-    bool icons_changed = (g_settings.quick_sort || g_settings.quick_drop) && g_hint_generation != glyphs_font_generation();
+    bool need_hint_fonts = (g_settings.quick_sort || g_settings.quick_drop || g_settings.quick_replace) && g_romfs_dir && !g_hint_font_attempted;
+    bool icons_changed = (g_settings.quick_sort || g_settings.quick_drop || g_settings.quick_replace) && g_hint_generation != glyphs_font_generation();
     int current_fonts_gen = ui_lang_generation() * 10007 + ui_dynamic_generation();
     if (g_fonts_lang == current_fonts_gen && !need_hint_fonts && !icons_changed) return;
     load_fonts();
@@ -1918,9 +1919,11 @@ static void quick_inventory_hint_draw(const ImGuiIO &io) {
     int family = kind == ICONS_XBOX ? 1 : kind == ICONS_PLAYSTATION ? 2 : 0;
     float canvas = fminf(io.DisplaySize.x / 1280.f, io.DisplaySize.y / 720.f);
     float scale = canvas / 1.5f, fs = 32 * scale, radius = 15 * scale, gap = 10 * scale;
-    float y = io.DisplaySize.y * .5f + 23 * canvas;
+    int drop = quick_drop_hint_state();
+    float y = quick_inventory_layout(io.DisplaySize.x, io.DisplaySize.y, drop >= 6).controls_y;
     struct Prompt { const char *label, *icon; int binding; bool enabled; } prompts[3];
-    int count = 0, drop = quick_drop_hint_state();
+    int count = 0;
+    if (drop >= 4) prompts[count++] = {tr("Replace"), "\xee\x81\x80", BIND_A, drop == 5 || drop == 7};
     if (drop == 1 || drop == 2) prompts[count++] = {tr("Drop"), "\xee\x81\x83", BIND_Y, drop == 2};
     if (quick_inventory_sort_hint()) prompts[count++] = {tr("Sort"), "\xee\x81\x82", BIND_X, true};
     if (drop) prompts[count++] = {tr("Back"), "\xee\x81\x81", BIND_B, true};

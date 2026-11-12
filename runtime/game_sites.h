@@ -64,7 +64,36 @@
     X(player_actor) \
     X(quick_drop_trash_prohibited) \
     X(quick_drop_actor_method) \
-    X(actor_info)
+    X(actor_info) \
+    X(actor_link_assign) \
+    X(actor_link_copy) \
+    X(pouch_can_receive) \
+    X(replace_ai_child_matches) \
+    X(replace_anim_advance) \
+    X(replace_card_close) \
+    X(replace_card_manager_slot) \
+    X(replace_card_prepare) \
+    X(replace_chest_closed_wait_name) \
+    X(replace_component_update) \
+    X(replace_draw_info_reset) \
+    X(replace_fill_call) \
+    X(replace_game_picture_vtable) \
+    X(replace_interaction_manager_slot) \
+    X(replace_interaction_target) \
+    X(replace_item_popup) \
+    X(replace_layout_calculate) \
+    X(replace_pickup_call_a) \
+    X(replace_pickup_call_b) \
+    X(replace_pickup_call_c) \
+    X(replace_pickup_status) \
+    X(replace_picture_vtable_base) \
+    X(replace_popup) \
+    X(replace_pouch_manager_slot) \
+    X(replace_safe_string_vtable_slot) \
+    X(replace_string_assign) \
+    X(replace_toast_start) \
+    X(replace_toast_vtable) \
+    X(replace_weapon_modifier)
 
 typedef struct {
 #define GAME_SITE_FIELD(n) uint64_t n;

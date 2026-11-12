@@ -1003,3 +1003,7 @@ T("A screenshot", "スクリーンショット")
 T("Latest save", "最新のセーブ")
 T("Loading picture", "読み込み中の画像")
 T("Shows that picture while the game loads. Turned off, the window stays black until the game's title screen: loading takes just as long.", "ゲームの読み込み中にその画像を表示します。オフにすると、タイトル画面まで画面は黒いままです。読み込み時間は変わりません。")
+
+T("Replace", "入れ替える")
+T("Quick inventory replacement", "クイックポーチで装備を入れ替え")
+T("Choose equipment to drop when its inventory is full, then receive the new item. Requires game version 1.9.0.", "ポーチがいっぱいのときに捨てる装備を選び、新しいアイテムを入手します。ゲームバージョン1.9.0が必要です。")

@@ -716,6 +716,11 @@ void build_items(void) {
                        [](const Item &) { return (int)g_settings.quick_drop; },
                        [](const Item &, int x) { g_settings.quick_drop = x; }, 0));
 
+    v.push_back(toggle(P_GAMEPLAY, "Quick inventory replacement",
+                       "Choose equipment to drop when its inventory is full, then receive the new item. Requires game version 1.9.0.",
+                       [](const Item &) { return (int)g_settings.quick_replace; },
+                       [](const Item &, int x) { g_settings.quick_replace = x; }, 0));
+
     // Audio
     v.push_back(choice(P_AUDIO, "Volume", "The game's volume. 100% is its own level.",
                        [](const Item &) { return 21; },
