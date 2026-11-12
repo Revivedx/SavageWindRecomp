@@ -106,7 +106,7 @@ typedef struct NvnSync {
 } NvnSync;
 
 // ---- command recording (runtime/nvn/cmdbuf.c: records in host memory, accounted to guest command memory)
-typedef struct {
+typedef struct NvnCmdBuf {
     uint64_t gmem, gsize, gused;  // the guest command memory chunk, and the GPU bytes the game is told are used
     struct Shadow *shadow;        // host storage for what is recorded while that chunk is current
     int block;                    // the shadow's block in use
@@ -117,6 +117,7 @@ typedef struct {
     uint64_t callback, callback_data;
     bool recording;
     uint64_t guest;  // the guest NVNcommandBuffer*
+    struct NvnCmdBuf *registry_next;
 } NvnCmdBuf;
 void cmdbuf_pool_gone(uint64_t lo, uint64_t hi);  // a memory pool is finalized: lists recorded in it die
 
@@ -144,7 +145,7 @@ enum {
     CMD_COPY_TEXTURE_TO_TEXTURE, CMD_DOWNSAMPLE, CMD_UPDATE_UNIFORM_BUFFER, CMD_FENCE_SYNC, CMD_WAIT_SYNC,
     CMD_BARRIER, CMD_SIGNAL_EVENT, CMD_WAIT_EVENT, CMD_REPORT_COUNTER, CMD_DISCARD_COLOR,
     CMD_DISCARD_DEPTH_STENCIL, CMD_SET_COPY_STRIDES, CMD_DRAW_TEXTURE, CMD_RESOLVE_DEPTH, CMD_BIND_TEXTURES_DEFERRED,
-    CMD_SET_DEPTH_CLAMP, CMD_RESET_COUNTER, CMD_SET_RASTERIZER_DISCARD,
+    CMD_SET_DEPTH_CLAMP, CMD_RESET_COUNTER, CMD_SET_RASTERIZER_DISCARD, CMD_UI_SCOPE,
     CMD_COUNT
 };
 
@@ -158,3 +159,6 @@ void backend_texture_destroyed(NvnTexture *tex);
 void backend_pool_written(uint64_t addr, uint64_t size);
 void backend_debug_copies_at(uint64_t addr);  // (debugging) log the recent texture-to-buffer copies that wrote addr
 void nvn_debug_textures_at(uint64_t addr);    // (objects.c, debugging) log the textures whose storage holds addr
+
+// A host-only balanced UI scope. kind0 pops the executing scope; no guest command-memory cost.
+bool nvn_ui_scope(uint64_t commands, unsigned kind);

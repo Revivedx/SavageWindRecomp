@@ -325,6 +325,10 @@ void plat_thread_realtime(uint64_t period_ns) {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
 }
 
+void plat_thread_elevate(void) {
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+}
+
 // ---- process
 // Release builds are GUI-subsystem executables (no console window): stdout / stderr go to savagewind.log next to the
 // exe, and a fatal error shows a message box (plat_fatal_notice) instead of vanishing. Processes started by this one
@@ -434,9 +438,11 @@ void plat_init(void) {
 // never share a core with another busy thread of the game. With fewer cores than the game's busy threads (main, two job
 // workers, render, recorder, audio, file loading) they queue for one instead: by default with SMT and 4 or more
 // physical cores (plat_one_per_core_default). SAVAGEWIND_ONE_PER_CORE=1: always, 0: never. Called when the game
-// starts, so what the start screen runs (the game code build) keeps every logical processor. Under Wine / Proton the
-// Linux kernel schedules the threads, and there the Steam Deck measured one processor per core as a loss
-// (platform.h): the default keeps every logical processor, as the Linux build does.
+// starts, so what the start screen runs (the game code build) keeps every logical processor. On hybrid architectures
+// (Intel 12th+ Gen, Core Ultra, heterogeneous P/E cores) keeping all logical processors avoids starving P-core SMT
+// execution slots and forcing critical threads onto low-clock E-cores. Under Wine / Proton the Linux kernel schedules
+// the threads, and there the Steam Deck measured one processor per core as a loss (platform.h): the default keeps
+// every logical processor, as the Linux build does.
 void plat_cpu_placement(void) {
     DWORD_PTR all, sys, one = 0;
     if (!GetProcessAffinityMask(GetCurrentProcess(), &all, &sys)) return;
@@ -446,18 +452,28 @@ void plat_cpu_placement(void) {
     DWORD len = 0;
     GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &len);
     char *buf = len ? malloc(len) : NULL;
+    BYTE min_eff = 255, max_eff = 0;
     if (buf && GetLogicalProcessorInformationEx(RelationProcessorCore, (void *)buf, &len))
         for (DWORD o = 0; o < len;) {
             SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *e = (void *)(buf + o);
             DWORD_PTR m = e->Processor.GroupMask[0].Group == 0 ? e->Processor.GroupMask[0].Mask & all : 0;
-            if (m) cores++, one |= m & -m;  // (the core's first logical processor)
+            if (m) {
+                cores++;
+                one |= m & -m;  // (the core's first logical processor)
+                BYTE eff = e->Processor.EfficiencyClass;
+                if (eff < min_eff) min_eff = eff;
+                if (eff > max_eff) max_eff = eff;
+            }
             o += e->Size;
         }
     free(buf);
+    bool hybrid = (cores > 0 && min_eff != max_eff);
     const char *x = getenv("SAVAGEWIND_ONE_PER_CORE");
-    bool on = one && (x ? atoi(x) != 0 : !wine && plat_one_per_core_default(cores, logical));
-    fprintf(stderr, "[cpu] %d cores, %d logical processors: %s%s\n", cores, logical,
-            on ? "one logical processor per core" : "all logical processors", wine && !x ? " (Wine)" : "");
+    bool on = one && (x ? atoi(x) != 0 : !wine && !hybrid && plat_one_per_core_default(cores, logical));
+    fprintf(stderr, "[cpu] %d cores%s, %d logical processors: %s%s\n", cores,
+            hybrid ? " (hybrid P/E)" : "", logical,
+            on ? "one logical processor per core" : "all logical processors",
+            wine && !x ? " (Wine)" : hybrid && !x ? " (hybrid architecture)" : "");
     if (on) SetProcessAffinityMask(GetCurrentProcess(), one);
 }
 

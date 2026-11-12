@@ -31,6 +31,7 @@ bool menu_input_captured(void) { return captured; }
 bool prof_toggle(void) { return false; }
 bool menu_cursor_free(void) { return freed; }
 void vibration_update(SDL_Gamepad *p, bool focused) { (void)p; (void)focused; }
+void vibration_pad_closed(SDL_Gamepad *p) { (void)p; }
 void motion_tilt_held(bool held) { motion_tilt = held; }
 bool pc_gyro_keyboard_active(void) { return gyro_active; }
 void motion_keyboard(int p,int r,int y,bool reset) { gyro_pitch=p;gyro_roll=r;gyro_yaw=y;gyro_reset=reset; }

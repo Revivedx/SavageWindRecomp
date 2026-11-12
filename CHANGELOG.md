@@ -4,7 +4,24 @@ What changed in each Savage Wind release. The `test` branch holds what the next 
 
 ## Next (on the `test` branch)
 
-Nothing yet.
+### Fixes
+
+- **Water** drawn transparent where a new image was read before its clear finished
+  ([#649](https://github.com/Revivedx/SavageWindRecomp/issues/649), by jfpaardoo).
+- **Bluetooth controllers** (DualSense on Windows): vibration no longer stalls input; it runs on a thread of its own
+  ([#730](https://github.com/Revivedx/SavageWindRecomp/issues/730), by jfpaardoo).
+- **Game files folder** on Linux without a working file dialog: the error is shown and the path can be typed in
+  ([#724](https://github.com/Revivedx/SavageWindRecomp/issues/724), by jfpaardoo).
+- **Stutter** while pipelines were linked ([#591](https://github.com/Revivedx/SavageWindRecomp/issues/591), by jfpaardoo).
+- **Hybrid CPUs** (Intel 12th gen and later): every logical processor is kept, and the game's critical threads run at a
+  higher priority ([#639](https://github.com/Revivedx/SavageWindRecomp/issues/639), by jfpaardoo).
+- **Refresh rate:** the monitor's real refresh rate is detected, and higher-Hz display modes are picked
+  ([#623](https://github.com/Revivedx/SavageWindRecomp/issues/623), by jfpaardoo).
+- **Video > Haze** keeps to 75 % or more: lower values turned the picture teal (by devall96).
+- **Taller windows** (16:10 and others) with Fill wide screens: the HUD, dialogue, pause menu, title screen and world map
+  keep their layout (by sabeliam).
+- **Keyboard on horseback:** W with A or D steers without speeding forward
+  ([#290](https://github.com/Revivedx/SavageWindRecomp/issues/290), by rvsting).
 
 ## 0.5.3 (0.5.3-alpha.5) - 2026-11-12
 

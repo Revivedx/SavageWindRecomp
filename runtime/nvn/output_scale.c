@@ -101,7 +101,7 @@ double upscale_factor(void) {
 
 // The window's shape over 16:9 while the game's views are widened to fill it, else 1; the field of view's factor in
 // use (rt_persp)
-static volatile float g_view_shape = 1, g_fov = 1;
+static volatile float g_view_shape = 1, g_fov = 1, g_map_extra_y;
 static uint32_t g_world_proj[4];  // tan(fovy / 2), aspect, near, far of the world camera's last matrix (rt_persp), float bits
 
 void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
@@ -111,10 +111,15 @@ void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
     if (wide_test < 0) wide_test = getenv("SAVAGEWIND_WIDE_TEST") ? atof(getenv("SAVAGEWIND_WIDE_TEST")) : 0;
     double shape = wide_test > 0 ? wide_test : (dw / dh) / (16.0 / 9.0);
     // A wider window (21:9, 32:9) sees more to the sides, a taller one (16:10, 4:3: shape < 1) more above and below
-    // (#125); the HUD keeps its 16:9 layout in the middle either way. The start screen and its menus, a 16:9 layout
-    // over 16:9 pictures with no world to show more of, keep the 16:9 picture with bars, and so does the loading screen
-    // (#98: widened, its tip went to the window's edges and its logo stayed in the 16:9 middle).
-    bool reshape = reshape_allowed && fabs(shape - 1.0) > 0.005 && !framepace_title_ui() && !framepace_loading_ui();
+    // (#125); the HUD keeps its 16:9 layout in the middle either way. Taller title screens fill the window too.
+    // Fit wider title/loading layouts to keep their artwork and text aligned (#98). Taller views keep their shape
+    // through the loading overlay so the world doesn't change aspect while fading out or back in.
+    bool title_fit = framepace_title_ui();
+#ifndef __APPLE__
+    title_fit = title_fit && shape >= 1;  // Vulkan cover-crops the artwork on taller title screens.
+#endif
+    bool reshape = reshape_allowed && fabs(shape - 1.0) > 0.005 && !title_fit &&
+                   (shape < 1 || !framepace_loading_ui());
     if (!reshape) shape = 1.0;
     // render height in units of the Switch's 1080 lines: the window's (Metal: divided by the upscaler's factor)
 #ifdef __APPLE__
@@ -149,9 +154,10 @@ void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
     }
     o->vx = (dw - o->vw) / 2; o->vy = (dh - o->vh) / 2;
     o->crop[0] = o->crop[1] = 0, o->crop[2] = o->crop[3] = 1;
-    // The map's frame stays 16:9, but its scrollable background can draw beyond the frame on taller windows
-    // (#303). Present only that centered 16:9 region, without resizing its targets or changing cursor coordinates.
-    if (reshape && shape < 1 && framepace_map_ui()) {
+    bool tall_map = output_tall_map((float)shape);
+    g_map_extra_y = tall_map ? (float)(360 * (1 / shape - 1)) : 0;
+    // Renderers and aspect ratios without the taller map layout keep the centered 16:9 frame (#303).
+    if (reshape && shape < 1 && !tall_map && framepace_map_ui()) {
         double map_h = o->vh * shape;
         o->vy += (o->vh - map_h) / 2;
         o->vh = map_h;
@@ -180,6 +186,32 @@ void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
 }
 
 float output_view_shape(void) { return g_view_shape; }
+float output_map_extra_y(void) { return g_map_extra_y; }
+
+float output_pause_extra_y(void) {
+#ifdef __APPLE__
+    return 0;
+#else
+    static int off = -1;
+    if (off < 0) off = getenv("SAVAGEWIND_NO_HUD_FIX") != NULL;
+    float shape = g_view_shape;
+    return !off && g_settings.hud_edges && shape >= 0.75f && shape < 1 &&
+           framepace_menu_ui() && !framepace_map_ui() ? 360 * (1 / shape - 1) : 0;
+#endif
+}
+
+float output_ui_extra_y(void) { return fmaxf(g_map_extra_y, output_pause_extra_y()); }
+
+// The taller world-map layout is implemented by Vulkan. Very narrow windows keep the console frame.
+bool output_tall_map(float shape) {
+#ifdef __APPLE__
+    return false;
+#else
+    static int off = -1;
+    if (off < 0) off = getenv("SAVAGEWIND_NO_HUD_FIX") != NULL;
+    return !off && shape >= 0.75f && shape < 1 && framepace_map_ui();
+#endif
+}
 
 // The game's perspective views, as each one's matrix is built (tools/patches.py _persp_matrix: sead's
 // PerspectiveProjection; tan_fovy = tan(fovy / 2) at +0xac, aspect at +0xb0, as float bits; near at +0x98). Every 16:9

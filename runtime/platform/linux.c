@@ -134,6 +134,8 @@ void plat_thread_realtime(uint64_t period_ns) {
     setpriority(PRIO_PROCESS, (id_t)gettid(), -10);  // (per thread on Linux; fails quietly without CAP_SYS_NICE)
 }
 
+void plat_thread_elevate(void) {}
+
 // ---- process
 // stdout / stderr go to savagewind.log in the data folder (runtime/paths.h; rt_paths_init runs later, so the same rule
 // is applied here). Processes started by this one (the start screen re-executing itself for the game) append to the

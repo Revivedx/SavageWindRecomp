@@ -4,7 +4,8 @@
 #include <stdio.h>
 #include "../runtime/nvn/output_scale.c"
 Settings g_settings = {.wide_view = true, .fov = 100, .render_scale = RSCALE_100};
-static bool title, loading, map;
+static bool title, loading, map, pause;
+bool framepace_menu_ui(void) { return pause; }
 bool framepace_map_ui(void) { return map; }
 bool framepace_title_ui(void) { return title; }
 bool framepace_loading_ui(void) { return loading; }
@@ -27,32 +28,66 @@ int main(void) {
     near(o.vx, 0); near(o.vy, 0);
     near(1920 * o.sx, 1280); near(1080 * o.sy, 800);
 
+    pause = true;
+    g_settings.hud_edges = true;
+#ifndef __APPLE__
+    assert(fabsf(output_pause_extra_y() - 40) < .001f);
+    assert(fabsf(output_ui_extra_y() - 40) < .001f);
+    g_settings.hud_edges = false;
+    near(output_pause_extra_y(), 0);
+    g_settings.hud_edges = true;
+    map = true;
+    near(output_pause_extra_y(), 0);
+    map = false;
+#endif
+    pause = false;
+    near(output_pause_extra_y(), 0);
     output_scale(1280, 800, false, &o);
     near(o.shape, 1); near(o.vh, 720); near(o.vy, 40);
     title = true;
     output_scale(1280, 800, true, &o);
-    near(o.shape, 1); near(o.vh, 720);
+#ifdef __APPLE__
+    near(o.shape, 1); near(o.vh, 720); near(o.vy, 40);
+#else
+    near(o.shape, .9); near(o.vh, 800); near(o.vy, 0);
+#endif
+    output_scale(2560, 1080, true, &o);
+    near(o.shape, 1); near(o.vw, 1920); near(o.vx, 320);
     title = false; loading = true;
     output_scale(1280, 800, true, &o);
+    near(o.shape, .9); near(o.vh, 800); near(o.vy, 0);
+    near(1920 * o.sx, 1280); near(1080 * o.sy, 800);
+    output_scale(1280, 800, false, &o);
     near(o.shape, 1); near(o.vh, 720);
+    output_scale(2560, 1080, true, &o);
+    near(o.shape, 1); near(o.vw, 1920); near(o.vx, 320);
     loading = false;
     output_scale(1920, 1200, true, &o);
     near(o.shape, .9); near(o.vh, 1200);
 
-    // Clip the map's overscan without changing its targets, projection or pointer mapping.
+    // A full-height map reveals more terrain within the original pixel scale.
     map = true;
     output_scale(1280, 800, true, &o);
-    near(o.shape, .9); near(o.vw, 1280); near(o.vh, 720); near(o.vy, 40);
-    near(o.crop[1], .05); near(o.crop[3], .9);
-    near(1920 * o.sx, 1280); near(1080 * o.sy, 800);
-    // One source pixel still maps to one window pixel: cropping must not stretch the map.
-    near(1080 * o.sy * o.crop[3], o.vh);
+#ifdef __APPLE__
+    near(o.shape, .9); near(o.vh, 720); near(o.vy, 40);
+    near(output_map_extra_y(), 0);
     output_scale(1024, 768, true, &o);
-    near(o.vh, 576); near(o.vy, 96); near(o.crop[3], .75);
-    near(1080 * o.sy * o.crop[3], o.vh);
+    near(o.vh, 576); near(o.vy, 96); near(output_map_extra_y(), 0);
+#else
+    near(o.shape, .9); near(o.vw, 1280); near(o.vh, 800); near(o.vy, 0);
+    near(o.crop[1], 0); near(o.crop[3], 1);
+    near(output_map_extra_y(), 40);
+    near(1920 * o.sx, 1280); near(1080 * o.sy, 800);
+    output_scale(1024, 768, true, &o);
+    near(o.vh, 768); near(o.vy, 0); near(o.crop[3], 1);
+    near(output_map_extra_y(), 120);
+#endif
+    output_scale(1280, 1024, true, &o);
+    near(o.vh, 720); near(o.vy, 152);
+    near(output_map_extra_y(), 0);
 
     output_scale(1280, 800, false, &o);
-    near(o.vh, 720); near(o.crop[3], 1);
+    near(o.vh, 720); near(o.crop[3], 1); near(output_map_extra_y(), 0);
     output_scale(1920, 1080, true, &o);
     near(o.vh, 1080); near(o.crop[3], 1);
     output_scale(2560, 1080, true, &o);
@@ -60,5 +95,5 @@ int main(void) {
     map = false;
     output_scale(1280, 800, true, &o);
     near(o.vh, 800); near(o.crop[3], 1);
-    puts("PASS: map overscan clipped at 16:10 and 4:3; gameplay, disabled fill, title, loading, 16:9 and ultrawide unchanged");
+    puts("PASS: taller map viewport, 16:9 fallback, disabled fill, title, loading and ultrawide");
 }
