@@ -371,7 +371,7 @@ T("The size of the maps the sun's shadows are drawn from. Console: the game's ow
 T("Sound", "เสียง")
 T("The game's volume. 100% is the game's own level; above it, louder.", "ระดับเสียงของเกม 100% คือระดับเดิมของเกม สูงกว่านั้นจะดังขึ้น")
 T("Shrine sensor volume", "ระดับเสียงเซนเซอร์ชีกาห์")
-T("Volume of the Sheikah Slate sensor beeps. 0% silences the sensor. From the next start.", "ระดับเสียงบี๊บของเซนเซอร์แผ่นหินชีกาห์ 0% จะปิดเสียงเซนเซอร์ มีผลเมื่อเริ่มเกมครั้งถัดไป")
+T("Volume of the Sheikah Slate sensor beeps. 0% silences the sensor.", "ระดับเสียงบี๊บของเซนเซอร์แผ่นหินชีกาห์ 0% จะปิดเสียงเซนเซอร์")
 T("The game's echo in caves, dungeons and big rooms.", "เสียงสะท้อนของเกมในถ้ำ ดันเจี้ยน และห้องใหญ่")
 T("Sound in the game's movies (the opening and the ending). Applies the next time a movie starts.", "เสียงในภาพยนตร์ของเกม (ฉากเปิดและฉากจบ) มีผลเมื่อภาพยนตร์เริ่มเล่นครั้งถัดไป")
 T("\n\nApplies the next time the game starts: Restart now below, or Quit > Start screen, then Play.", "\n\nมีผลเมื่อเกมเริ่มครั้งถัดไป: เริ่มใหม่ตอนนี้ด้านล่าง หรือ ออก > หน้าจอเริ่มต้น แล้วเล่น")

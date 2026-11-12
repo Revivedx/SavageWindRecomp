@@ -218,6 +218,41 @@ int main(void) {
     int orig_pk = peak_pcm16(pcm, NSAMP);
     assert(orig_pk > 1000);
 
+    // Live volume: the sensor's coefficients are noted (both channels share them here: one signature), other
+    // coefficients are not the sensor's, and the gain follows the setting
+    static const int16_t other[16] = {1, 2, 3};
+    assert(!shrine_sensor_voice(test_coefs));
+    assert(shrine_sensor_note_bars(bars, len) == 2);
+    assert(shrine_sensor_voice(test_coefs) && !shrine_sensor_voice(other));
+    assert(shrine_sensor_note_bars(junk, sizeof junk) == 0);
+    assert(shrine_sensor_gain(100) == 1.0f && shrine_sensor_gain(0) == 0.0f);
+    assert(fabsf(shrine_sensor_gain(50) - 0.35355f) < 1e-4f);
+    printf("  [pass] live volume: sensor voices told apart by their ADPCM coefficients\n");
+
+    // Live volume in the game's memory: the sensor's samples are rewritten at each change, back to the original at
+    // 100 %, and nothing else is written over
+    {
+        enum { NB = (NSAMP + 13) / 14 * 8 };
+        uint8_t mem[NB], other_mem[NB];
+        memcpy(mem, s0, NB);
+        assert(!shrine_sensor_render(test_coefs, mem, NB, 100));  // (as shipped already)
+        assert(shrine_sensor_render(test_coefs, mem, NB, 50));
+        int16_t live[NSAMP];
+        decode_adpcm(mem, NSAMP, test_coefs, 0, 0, live);
+        int lpk = peak_pcm16(live, NSAMP);
+        assert(lpk < orig_pk * 0.45 && lpk > orig_pk * 0.25);
+        assert(!shrine_sensor_render(test_coefs, mem, NB, 50));  // (no change: not written again)
+        assert(shrine_sensor_render(test_coefs, mem, NB, 0));
+        for (int b = 0; b < NB; b++) assert(mem[b] == 0);
+        assert(shrine_sensor_render(test_coefs, mem, NB, 100));
+        assert(!memcmp(mem, s0, NB));
+        memset(other_mem, 0x5a, NB);  // (someone else's samples now)
+        assert(!shrine_sensor_render(test_coefs, other_mem, NB, 30));
+        for (int b = 0; b < NB; b++) assert(other_mem[b] == 0x5a);
+        assert(!shrine_sensor_render(test_coefs, mem, NB - 1, 30));  // (too small)
+        printf("  [pass] live volume: samples rewritten in place at each change, back to the original at 100%%\n");
+    }
+
     // 100%: untouched
     assert(shrine_sensor_patch_bars(bars, len, 100));
     assert(memcmp(bars, orig_bars, len) == 0);
