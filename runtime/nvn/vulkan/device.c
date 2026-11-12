@@ -79,6 +79,12 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_cb(VkDebugUtilsMessageSeverityFlagBi
 
 // SAVAGEWIND_VK_VALIDATION=1: Khronos validation layer (MSYS2 package vulkan-validation-layers)
 static void create_instance(void) {
+#ifdef __APPLE__
+    // MoltenVK: let Metal compile shaders with all its threads (macOS 13.3+). Every new pipeline is a whole Metal
+    // compile there (no graphics pipeline libraries), its draws skipped until it's done: first-seen materials showed up
+    // late. (Read when the driver loads, just below; an MVK_CONFIG_* set by the player wins.)
+    setenv("MVK_CONFIG_SHOULD_MAXIMIZE_CONCURRENT_COMPILATION", "1", 0);
+#endif
     Uint32 n_sdl = 0;
     const char *const *sdl_ext = SDL_Vulkan_GetInstanceExtensions(&n_sdl);
     const char *ext[28];
@@ -1226,11 +1232,50 @@ static void pc_log(const char *what, const char *path, size_t sz, const char *wh
     else LOG("[vk] %s: starts empty (%s: %s)\n", what, path, why);
 }
 
+// MoltenVK makes the Metal library of every shader in the data it is given at once: minutes for a grown cache when
+// macOS's own shader cache does not have them (after a macOS update, or a cache from another Mac), the window not up
+// yet. There the cache is loaded on a thread of its own: until it is in, pipelines are made without one (the window,
+// the start screen; not saved), and the pre-warm waits for it (vk_pipeline_cache_wait).
+static _Atomic bool pc_loading;
+
+static void *pc_load_thread(void *arg) {
+    (void)arg;
+    prof_thread_name("pcache-load");
+    char path[512];
+    size_t sz;
+    const char *why = "no file yet";
+    uint64_t t0 = SDL_GetTicksNS();
+    VkPipelineCache c = pc_open("vk_pipelines.bin", true, false, path, sizeof path, &sz, &why);
+    __atomic_store_n(&g_vk.pcache, c, __ATOMIC_RELEASE);
+    atomic_store(&pc_loading, false);
+    pc_log("pipeline cache", path, sz, why);
+    LOG("[vk] pipeline cache loaded in %.0f ms (on its own thread)\n", (SDL_GetTicksNS() - t0) / 1e6);
+    return NULL;
+}
+
+// exec.c's pre-warm, before its first pipeline; vk_pipeline_cache_save
+void vk_pipeline_cache_wait(void) {
+    while (atomic_load(&pc_loading)) SDL_Delay(5);
+}
+
 static void pipeline_cache_load(void) {
     pc_off = getenv("SAVAGEWIND_VK_NO_PIPELINE_CACHE") != NULL;
     char path[512];
     size_t sz;
     const char *why = pc_off ? "off (SAVAGEWIND_VK_NO_PIPELINE_CACHE)" : "no file yet";
+    vk_cache_path(path, sizeof path, "vk_pipelines.bin");
+    FILE *probe = g_vk.moltenvk && !g_vk.gpl && !pc_off ? fopen(path, "rb") : NULL;
+    if (probe) {
+        fclose(probe);
+        pthread_t t;
+        atomic_store(&pc_loading, true);
+        if (pthread_create(&t, NULL, pc_load_thread, NULL) == 0) {
+            pthread_detach(t);
+            pc_saved_at = SDL_GetTicks();
+            return;
+        }
+        atomic_store(&pc_loading, false);
+    }
     g_vk.pcache = pc_open("vk_pipelines.bin", !pc_off, false, path, sizeof path, &sz, &why);
     pc_log("pipeline cache", path, sz, why);
     if (g_vk.gpl && !pc_off) {
@@ -1320,6 +1365,7 @@ static bool pc_write(VkPipelineCache c, const char *name, size_t *size) {
 }
 
 void vk_pipeline_cache_save(void) {
+    vk_pipeline_cache_wait();  // (at exit: not the device torn down under the load)
     if (pc_off || !g_vk.pcache) return;
     pthread_mutex_lock(&pc_save_lock);
     int news = atomic_exchange(&pc_new, 0);
@@ -2430,6 +2476,10 @@ static void hdr_game_write(VkCommandBuffer cb, uint32_t i, bool menu) {
 uint64_t g_present_split[6];  // (VK_PROF) acquire, end pass, draw + menu, submit, present, slot wait
 typedef struct { uint32_t image; VkSemaphore acquired; bool ok; bool hdr_game, menu; } Frame;
 static Frame cur_frame;
+// macOS gives a window it has covered completely (another app in front of a fullscreen one, another Space) no more
+// drawables: MoltenVK's first submission drawing into the next one waited its full second for it, a 1 s freeze each
+// time the game was switched away from. Nothing is drawn to the window while it is covered (as when minimised).
+static _Atomic bool window_occluded;  // (set in window_event_log)
 
 // The image the frame is drawn into: the game's float picture for an HDR frame, else the 8-bit window image (game
 // frames without a float source: menus, movies, the start screen; it is also where the overlay menu is drawn).
@@ -2454,7 +2504,13 @@ static bool frame_begin(const float clear[4], bool hdr_game) {
     int w, h;
     SDL_GetWindowSizeInPixels(window, &w, &h);
     // minimised (Windows keeps the window's size then, but its surface is 0 x 0: every acquire was out of date)
-    if (!w || !h || (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED)) return false;
+    bool covered = atomic_load(&window_occluded);
+    static bool was_covered;
+    if (covered != was_covered) {
+        was_covered = covered;
+        LOG("[window] %s (frame %llu)\n", covered ? "covered: not drawn to" : "drawn to again", (unsigned long long)renderer_present_count());
+    }
+    if (!w || !h || (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED) || covered) return false;
     uint64_t tp = SDL_GetTicksNS();
     { SW_ZONE("present/wait_room"); present_wait_room(); }
     g_present_split[4] += SDL_GetTicksNS() - tp;
@@ -3410,6 +3466,12 @@ void backend_clear_window(void) {
 // "[window]" lines for what the window went through (focus, minimised, restored, hidden behind another): an exclusive
 // fullscreen window that loses the focus is minimised and gives its display mode back (#224)
 static void window_event_log(const SDL_Event *e) {
+#ifdef __APPLE__
+    if (e->type == SDL_EVENT_WINDOW_OCCLUDED) atomic_store(&window_occluded, true);
+    else if (e->type == SDL_EVENT_WINDOW_EXPOSED || e->type == SDL_EVENT_WINDOW_SHOWN || e->type == SDL_EVENT_WINDOW_RESTORED ||
+             e->type == SDL_EVENT_WINDOW_FOCUS_GAINED)
+        atomic_store(&window_occluded, false);
+#endif
     const char *what = NULL;
     switch (e->type) {
     case SDL_EVENT_WINDOW_FOCUS_GAINED: what = "focus gained"; break;
