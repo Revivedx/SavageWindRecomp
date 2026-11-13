@@ -397,7 +397,12 @@ there are deleted.
 Hits (protocol 12, HIT): an actor's life is the s32 at +0x848 (its General Life to start with; seen going down as it
 is hit). The others set each puppet's life to the host's enemy's every frame (at least 1: his dies in his game); what
 it lost since goes to the host's game (HIT: its id, the life it took) through his server, and his game takes it off
-his enemy's life (at 0 the enemy's own AI has it die, drops and all; it doesn't flinch).
+his enemy's life (at 0 the enemy's own AI has it die, drops and all; it doesn't flinch). The puppets have no chemical
+(ActorLink ChemicalUser Dummy): a fire both games have, the camp's, burns the enemy in its owner's game already, and
+a puppet burning in it too sent that again as a player's hits (`SAVAGEWIND_ONLINE_FIRE_TEST=<s>`: a lit FireWood under
+the first puppet that many seconds after it is made, in this game only; before, its owner's enemy died of it, with
+nobody near). So a fire, ice or shock arrow on a puppet takes only the arrow's damage: its element doesn't reach the
+owner's enemy yet.
 
 Their attacks on the others: a player's own life is the same s32 (player +0x848, quarter hearts). When one of the
 host's enemies starts an AS with Attack or Kick in its name, a third of a second later (STRIKE_FRAMES) the local

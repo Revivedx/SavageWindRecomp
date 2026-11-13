@@ -52,7 +52,8 @@ STORY_FLAGS = ('IsGet_PortableUnit', 'PortableUnit_PowerOn', 'OP_DRC', 'Open_Fir
 KNOCK = 'OnlineKnock'
 SHOCK0 = 'OnlineShock'
 PLAYER_ELINK = 'Player_GameRom'  # (GameROMPlayer's ElinkUser)
-VERSION = 24  # (runtime/main.c ONLINE_MOD_VERSION: armour actors, traverseDist, the paraglider, the enemies' traverseDist)
+VERSION = 25  # (runtime/main.c ONLINE_MOD_VERSION: armour actors, traverseDist, the paraglider, the enemies' traverseDist,
+# their chemical)
 TRAVERSE = 1000.0  # (the online actors' traverseDist)
 GEAR_KINDS = ('Weapon_Sword_', 'Weapon_Lsword_', 'Weapon_Spear_', 'Weapon_Shield_', 'Weapon_Bow_', 'Weapon_Sheath_',
               'Weapon_Lsheath_', 'Weapon_SpearSheath_', 'Weapon_Quiver_')
@@ -476,7 +477,10 @@ def main():
             if f.name.startswith('Actor/AIProgram/'):
                 files[f.name] = bytes(f.data)
                 lt2.params['AIProgramUser'] = oead.aamp.Parameter(f.name.split('/')[-1].rsplit('.', 1)[0])
-        for key, value in (('ASUser', online), ('AIScheduleUser', 'Dummy'), ('DropTableUser', 'Dummy')):
+        # (no chemical: a fire both games have, the camp's, burns the enemy in its owner's game already; its copies
+        # burning there too sent that again as the players' hits)
+        for key, value in (('ASUser', online), ('AIScheduleUser', 'Dummy'), ('DropTableUser', 'Dummy'),
+                           ('ChemicalUser', 'Dummy')):
             lt2.params[key] = oead.aamp.Parameter(value)
         # its physics, by its own name: no character controller (it would keep it where it stands: the runtime puts
         # it where the host's is), its attack bodies on a layer that hits nothing (the runtime has its attacks land);

@@ -1897,6 +1897,32 @@ static void enemies_show(Cpu *c, uint64_t player, OnlineEnemy *e, int n, bool fr
         delete_piece(c, &g_puppet[j].p), delete_piece(c, &g_puppet[j].w), delete_piece(c, &g_puppet[j].sh);
         g_puppet[j].id = 0;
     }
+    {   // (test: SAVAGEWIND_ONLINE_FIRE_TEST=<s>: that many seconds after the first copy here, a lit campfire, FireWood,
+        // under it, made in this game only: what the copy loses in it is no player's, and its owner's enemy isn't in it)
+        static const char *ft;
+        static uint64_t t0;
+        static Piece fire;
+        static bool placed;
+        static int at = -1;
+        if (!ft) ft = getenv("SAVAGEWIND_ONLINE_FIRE_TEST") ? getenv("SAVAGEWIND_ONLINE_FIRE_TEST") : "";
+        if (*ft && !placed) {
+            if (at < 0)
+                for (int j = 0; j < PUPPETS && at < 0; j++)
+                    if (g_puppet[j].id && !g_puppet[j].dying && g_puppet[j].p.actor) at = j, t0 = plat_now_ns();
+            if (at >= 0 && plat_now_ns() - t0 >= (uint64_t)(atof(ft) * 1e9)) {
+                piece_update(c, 0, &fire, "FireWood", "fire test");
+                uint64_t a = g_puppet[at].p.actor;
+                if (fire.actor && a && alive(a, g_puppet[at].p.w)) {
+                    const float *m = (const float *)(uintptr_t)(a + 0x398);
+                    float fm[12] = {1, 0, 0, m[3], 0, 1, 0, m[7], 0, 0, 1, m[11]};
+                    call(c, FN_SET_MTX, fire.actor, (uint64_t)(uintptr_t)fm, 0, 0, 0, 0);
+                    placed = true;
+                    LOG("[online] fire test: FireWood under the copy of %u at %.1f %.1f %.1f\n", g_puppet[at].id, m[3],
+                        m[7], m[11]);
+                }
+            }
+        }
+    }
     // those no one has (killed, gone from the host's world), or we have for real now, go
     for (int j = 0; fresh && j < PUPPETS; j++) {
         if (!g_puppet[j].id) continue;
