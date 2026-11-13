@@ -130,6 +130,7 @@ typedef struct TexBackend {
     int64_t mem_bytes, mem_src;  // its memory; ASTC decoded to RGBA8: the guest ASTC size
     bool bc4_cpu;                // BC4 decoded to R8 on upload (SAVAGEWIND_VK_BC4_CPU=1: Mali text / sprites test)
     uint8_t text_scale;          // a font sheet enlarged by this much on upload (runtime/nvn/text_upscale.c); 0: not one
+    bool heart_half;             // the HUD's half heart, HEART_SCALE times wider on upload (textures.c)
     uint32_t glyph_gen;          // a button glyph sheet (runtime/nvn/glyphs.c): the icons it was uploaded with
     // textures.c: one image per memory and shape, shared by every texture made there
     uint64_t key_addr;           // 0: not shared
