@@ -1375,7 +1375,9 @@ typedef struct {
     bool died; float last_pos[3];  // (loot: died here, where it was)
     uint64_t held[2]; Watch held_w[2];  // (loot: its weapon and shield while it lived: they fall when it dies)
 } Own;  // (state: OWN_*)
-enum { OWN_NONE, OWN_MAKING, OWN_HAVE };
+// (OWN_GONE: gone here, died or removed, and told to the host's game, whose list still has it as ours until that
+// comes: neither made again nor shown as his until his list no longer has it ours)
+enum { OWN_NONE, OWN_MAKING, OWN_HAVE, OWN_GONE };
 #define OWNS 64
 static Own g_own[OWNS];
 static struct { uint64_t actor; Watch w; } g_own_left[OWNS];
@@ -1433,6 +1435,7 @@ static void own_drop(Cpu *c, Own *o) {
 // ours, made when it came to us: as it was (where, its life); false while it is being made
 static bool own_ready(Cpu *c, Own *o, const OnlineEnemy *e) {
     if (o->state == OWN_HAVE) return true;
+    if (o->state == OWN_GONE) return false;
     if (!o->made.pending && !o->made.actor && !o->made.name[0]) {  // (asked for with the weapon it holds)
         memset(&o->params, 0, sizeof o->params);
         if (e->weapon[0]) inst_params_string(&o->params, "EquipItem1", e->weapon);
@@ -1750,7 +1753,11 @@ static void enemies_client(Cpu *c, uint64_t player, int me) {
                 memset(&st[ns], 0, sizeof st[ns]);
                 st[ns].id = o->gid;
                 if (alive(o->actor, o->w)) enemy_state(c, o->actor, &st[ns]);
-                else st[ns].life = -1, memset(o, 0, sizeof *o);
+                else {  // (kept as gone: his list has it ours a while longer, and it isn't to be made again)
+                    uint32_t gid = o->gid;
+                    st[ns].life = -1, memset(o, 0, sizeof *o);
+                    o->gid = gid, o->state = OWN_GONE;
+                }
                 ns++;
             }
             if (ns) online_send_estates(st, ns);
@@ -1786,7 +1793,8 @@ static void enemies_show(Cpu *c, uint64_t player, OnlineEnemy *e, int n, bool fr
             if (!done) marked[nm++ % 64] = e[k].id, mark_dead(c, e[k].name, e[k].hash);
         }
         Own *ours = own_find(e[k].id);
-        if (e[k].owner == me && ours && ours->state == OWN_HAVE) continue;  // (ours for real: not shown too)
+        if (e[k].owner == me && ours && (ours->state == OWN_HAVE || ours->state == OWN_GONE))
+            continue;  // (ours for real, or gone here: not shown too)
         int s2 = -1, free_s = -1;
         for (int j = 0; j < PUPPETS; j++) {
             if (g_puppet[j].id == e[k].id) s2 = j;
@@ -1895,7 +1903,8 @@ static void enemies_show(Cpu *c, uint64_t player, OnlineEnemy *e, int n, bool fr
         bool there = false;
         for (int k = 0; k < n && !there; k++) {
             Own *ours = own_find(e[k].id);
-            there = e[k].id == g_puppet[j].id && !(e[k].owner == me && ours && ours->state == OWN_HAVE);
+            there = e[k].id == g_puppet[j].id &&
+                    !(e[k].owner == me && ours && (ours->state == OWN_HAVE || ours->state == OWN_GONE));
         }
         if (!there && !g_puppet[j].dying)
             delete_piece(c, &g_puppet[j].p), delete_piece(c, &g_puppet[j].w), delete_piece(c, &g_puppet[j].sh), g_puppet[j].id = 0;
