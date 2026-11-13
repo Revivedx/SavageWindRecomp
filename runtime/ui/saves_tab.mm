@@ -8,6 +8,9 @@
 // small files and the game's flag tables: well under a second on an SSD, but reading Bootup.pack can take a few on a
 // slow disk, so it is not done on the UI thread.
 //
+// Save profiles (runtime/services/save_profiles.h) are the first section: the profile in use is the save folder everything
+// below works on. Their operations (switch, create, copy, rename, delete) run on the same worker, one at a time.
+//
 // Dates come from the file times of caption.sav (when the game wrote the slot): the save has no date of its own that
 // is known without the game's data. The play time is caption.sav's PlayTime flag when it has one, else not shown.
 #ifdef __APPLE__
@@ -36,6 +39,8 @@
 extern "C" {
 #include "../paths.h"
 #include "../services/save_convert.h"
+#include "../services/save_profiles.h"
+#include "../settings.h"
 SDL_Window *ui_window(void);
 #ifdef __APPLE__
 void *ui_metal_device(void);
@@ -49,13 +54,14 @@ void reveal_folder(const std::string &dir);  // launcher.mm: Explorer / Finder /
 namespace {
 
 enum Phase { IDLE, WORKING, CONFIRM, DONE, LOADING };  // of the worker; DONE: the result stays shown until the next job
-enum Kind { NONE, IMPORTED, IMPORT_FAILED, BACKED_UP, BACKUP_FAILED, CANCELLED };
-enum Job { JOB_CONVERT, JOB_INSTALL, JOB_BACKUP, JOB_LIST };
+enum Kind { NONE, IMPORTED, IMPORT_FAILED, BACKED_UP, BACKUP_FAILED, CANCELLED, EXPORTED, EXPORT_FAILED, PROFILE_DONE, PROFILE_FAILED };  // (new kinds at the end: tools/test_saves_tab.cpp prints the numbers)
+enum Job { JOB_CONVERT, JOB_INSTALL, JOB_BACKUP, JOB_LIST, JOB_EXPORT_STAGE, JOB_EXPORT_INSTALL, JOB_PROFILE };
+enum ProfileOp { PO_SWITCH, PO_CREATE, PO_COPY, PO_RENAME, PO_DELETE };
 
 std::string g_game_root;                // <root>/romfs/Pack/Bootup.pack has the flag tables
 std::atomic<int> g_phase{IDLE};         // written by the worker, read here (release / acquire: the fields below follow it)
 pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
-std::string g_picked;                   // the folder the dialog gave (SDL calls back on any thread)
+std::string g_picked_import, g_picked_export;  // the folders the dialogs gave (SDL calls back on any thread)
 pthread_t g_worker;
 bool g_joinable;                       // only the UI / exit thread starts and joins workers
 std::atomic<bool> g_cancel{false};
@@ -66,7 +72,8 @@ Kind g_kind = NONE;
 int g_code;                             // ScCode of a failure
 std::string g_detail;                   // its variable part (a path or a reason)
 std::string g_backup;                   // the backup folder made (or to be made)
-ScReport g_rep;                         // an import: the slots and the flag counts
+std::string g_export_dst;               // the destination folder for export
+ScReport g_rep;                         // an import/export: the slots and the flag counts
 ScStage *g_stage;                       // converted, waiting for the player's yes
 std::string g_stage_dir;
 bool g_had_saves;                       // the save folder is there: the import backs it up
@@ -83,11 +90,26 @@ ScRecovery g_recovery;                  // worker writes it with the slot list
 ScCode g_cleanup_code = SC_OK;
 std::string g_cleanup_detail;
 std::vector<Thumb> g_thumbs;
+// the profiles
+std::vector<SpProfile> g_profiles;
+std::vector<SpProfile> g_loaded_profiles;  // worker writes; the UI takes them with the slots
+std::string g_sel;                       // the profile the actions below the list work on (empty: the one in use)
+std::string g_loaded_sel;                // worker: the profile to select after its job
+bool g_loaded_sel_set;
+char g_pname[SP_NAME_MAX + 1];           // the name field
+ProfileOp g_pop;                         // the last profile job
+SpCode g_pcode;
+std::string g_pname_done, g_pdetail;     // its names (what it was done to) and the system's reason
+uint64_t g_pbytes;
+bool g_delete_open, g_delete_popup_shown;  // the delete confirmation
+std::string g_delete_name;
+int g_delete_slots;
 int g_last_frame = -100;                // the frame the tab was last drawn in: a gap means it was left and is back
 
 std::string save_dir() {
-    const char *e = getenv("SAVAGEWIND_SAVE_DIR");  // (tests: the same folder the game would use)
-    std::string d = e && *e ? e : "save";
+    char buf[1100];
+    sp_active_save_dir(NULL, buf, sizeof buf);  // (the same folder the game would use: SAVAGEWIND_SAVE_DIR, else the profile in use)
+    std::string d = buf;
     while (d.size() > 1 && (d.back() == '/' || d.back() == '\\')) d.pop_back();
     return d;
 }
@@ -156,6 +178,10 @@ void read_slots() {  // (worker only: no UI or texture calls)
     g_loaded_slots.clear();
     if (n) g_loaded_slots.assign(v, v + n);
     free(v);
+    SpProfile *pv = NULL;
+    int pn = sp_list(NULL, &pv);
+    g_loaded_profiles.assign(pv, pv + pn);
+    free(pv);
     g_slots_ready = true;
 }
 
@@ -164,11 +190,17 @@ void take_slots() {
     g_slots.swap(g_loaded_slots);
     g_loaded_slots.clear();
     g_thumbs.assign(g_slots.size(), Thumb());
+    g_profiles.swap(g_loaded_profiles);
+    g_loaded_profiles.clear();
+    if (g_loaded_sel_set) g_sel = g_loaded_sel, g_loaded_sel_set = false;
+    bool sel_ok = false;
+    for (const SpProfile &p : g_profiles) sel_ok |= g_sel == p.name;
+    if (!sel_ok) g_sel.clear();
     g_slots_ready = false;
 }
 
 // ------------------------------------------------------------------ the worker
-struct Work { int what; std::string src; };
+struct Work { int what; std::string src, dst; ProfileOp op; };
 
 bool cancel_work(void *) { return g_cancel.load(std::memory_order_relaxed); }
 
@@ -179,6 +211,25 @@ void *worker(void *p) {
     if (w->what == JOB_LIST) {
         read_slots();
         g_phase.store(g_list_return_phase, std::memory_order_release);
+    } else if (w->what == JOB_PROFILE) {
+        const char *a = w->src.c_str(), *b = w->dst.c_str();
+        sp_cleanup(NULL);  // (what an interrupted copy or delete left)
+        SpCode c = SP_OK;
+        uint64_t bytes = 0;
+        std::string select;  // what is selected afterwards
+        switch (w->op) {
+        case PO_SWITCH: c = sp_set_active(NULL, a), select = a; break;
+        case PO_CREATE: c = sp_create(NULL, b), select = b; break;
+        case PO_COPY: c = sp_copy(NULL, a, b, &bytes), select = c == SP_OK ? b : a; break;
+        case PO_RENAME: c = sp_rename(NULL, a, b), select = c == SP_OK ? b : a; break;
+        case PO_DELETE: c = sp_delete(NULL, a); break;
+        }
+        g_pop = w->op, g_pcode = c, g_pdetail = c == SP_OK ? "" : sp_detail(), g_pbytes = bytes;
+        g_pname_done = w->op == PO_CREATE || w->op == PO_COPY || w->op == PO_RENAME ? w->dst : w->src;
+        g_kind = c == SP_OK ? PROFILE_DONE : PROFILE_FAILED;
+        g_loaded_sel = select, g_loaded_sel_set = true;
+        read_slots();
+        g_phase.store(DONE, std::memory_order_release);
     } else if (w->what == JOB_CONVERT) {
         ScFormat *fmt = NULL;
         ScStage *st = NULL;
@@ -226,6 +277,45 @@ void *worker(void *p) {
         sc_report_free(&r);
         if (c == SC_OK || c == SC_MOVED) read_slots();
         g_phase.store(DONE, std::memory_order_release);
+    } else if (w->what == JOB_EXPORT_STAGE) {
+        ScFormat *fmt = NULL;
+        ScStage *st = NULL;
+        char stage[1100];
+        sc_stage_export_path(save.c_str(), stage, sizeof stage);
+        ScLock *probe = NULL;
+        bool in_use = sc_lock_take(save.c_str(), &probe) == SC_LOCK_BUSY;
+        sc_lock_drop(probe);
+        if (in_use) {
+            r.code = SC_IN_USE;
+        } else if (cancel_work(NULL)) {
+            r.code = SC_CANCELLED;
+        } else if (sc_format_load((g_game_root + "/romfs/Pack/Bootup.pack").c_str(), &fmt, &r) == SC_OK) {
+            ScCancel cancel = {cancel_work, NULL};
+            sc_convert_cancel(w->src.c_str(), stage, fmt, SC_TO_WIIU, &cancel, &st, &r);
+            sc_format_free(fmt);
+        }
+        g_code = r.code, g_detail = r.detail;
+        g_rep = r;
+        if (r.code == SC_OK) {
+            g_stage = st, g_stage_dir = stage, g_export_dst = w->dst;
+            g_phase.store(CONFIRM, std::memory_order_release);
+        } else {
+            g_kind = r.code == SC_CANCELLED ? CANCELLED : EXPORT_FAILED;
+            g_phase.store(DONE, std::memory_order_release);
+        }
+    } else if (w->what == JOB_EXPORT_INSTALL) {
+        ScCode c = sc_stage_export(g_stage, w->dst.c_str(), &r);
+        g_code = c, g_detail = r.detail, g_warnings = r.warnings;
+        if (c == SC_OK) {
+            g_stage = NULL;
+            g_kind = EXPORTED;
+        } else {
+            sc_stage_discard(g_stage);
+            g_stage = NULL;
+            g_kind = EXPORT_FAILED;
+        }
+        sc_report_free(&r);
+        g_phase.store(DONE, std::memory_order_release);
     } else {
         char backup[1100];
         sc_backup_path(save.c_str(), backup, sizeof backup);
@@ -250,34 +340,44 @@ void drop_stage_at_exit() {
     if (g_stage) sc_stage_discard(g_stage), g_stage = NULL;
 }
 
-void start(int what, const std::string &src = "") {
+void start(int what, const std::string &src = "", const std::string &dst = "", ProfileOp op = PO_SWITCH) {
     static bool registered;
     if (!registered) registered = true, atexit(drop_stage_at_exit);
     join_worker();  // (the last job has published its result and can now be reaped)
     g_cancel.store(false, std::memory_order_relaxed);
     if (what == JOB_LIST) g_list_return_phase = g_phase.load();
-    if (what != JOB_INSTALL && what != JOB_LIST) {
+    if (what != JOB_INSTALL && what != JOB_EXPORT_INSTALL && what != JOB_LIST) {
         sc_report_free(&g_rep);
-        g_kind = NONE, g_code = 0, g_detail.clear(), g_backup.clear(), g_warnings = 0, g_files = 0;
+        g_kind = NONE, g_code = 0, g_detail.clear(), g_backup.clear(), g_export_dst.clear(), g_warnings = 0, g_files = 0;
     }
     g_seen_done = false;
     g_phase.store(what == JOB_LIST ? LOADING : WORKING, std::memory_order_release);
-    Work *w = new Work{what, src};
+    Work *w = new Work{what, src, dst, op};
     int err = pthread_create(&g_worker, NULL, worker, w);
     if (!err) g_joinable = true;
     else {
         delete w;
         if (g_stage) sc_stage_discard(g_stage), g_stage = NULL;
         g_code = SC_IO, g_detail = strerror(err);
-        g_kind = what == JOB_BACKUP ? BACKUP_FAILED : IMPORT_FAILED;
+        g_kind = what == JOB_BACKUP ? BACKUP_FAILED : what == JOB_PROFILE ? PROFILE_FAILED : (what == JOB_EXPORT_STAGE || what == JOB_EXPORT_INSTALL) ? EXPORT_FAILED : IMPORT_FAILED;
+        g_pop = op, g_pcode = SP_IO, g_pdetail = strerror(err), g_pname_done = dst.empty() ? src : dst;
         g_phase.store(DONE, std::memory_order_release);
     }
 }
 
-void SDLCALL folder_picked(void *, const char *const *files, int) {
+void SDLCALL folder_picked_import(void *, const char *const *files, int) {
     if (files && files[0]) {
         pthread_mutex_lock(&g_lock);
-        g_picked = files[0];
+        g_picked_import = files[0];
+        pthread_mutex_unlock(&g_lock);
+    }
+    g_dialog = false;
+}
+
+void SDLCALL folder_picked_export(void *, const char *const *files, int) {
+    if (files && files[0]) {
+        pthread_mutex_lock(&g_lock);
+        g_picked_export = files[0];
         pthread_mutex_unlock(&g_lock);
     }
     g_dialog = false;
@@ -331,11 +431,12 @@ std::string slot_list(const ScReport &r) {
 }
 
 // What went wrong: a headline and what to do about it (translated here, when it is shown)
-void failure_text(int code, bool backup, std::string *head, std::string *hint) {
+void failure_text(int code, Kind kind, std::string *head, std::string *hint) {
     *hint = "";
     switch (code) {
     case SC_NO_SAVE:
-        if (backup) { *head = tr("There are no saves to back up yet"); break; }
+        if (kind == BACKUP_FAILED) { *head = tr("There are no saves to back up yet"); break; }
+        if (kind == EXPORT_FAILED) { *head = tr("There are no saves to export yet"); break; }
         *head = tr("No Breath of the Wild save found in that folder");
         *hint = tr("Choose the Cemu profile folder (.../user/80000001) or a folder above it.");
         break;
@@ -345,6 +446,10 @@ void failure_text(int code, bool backup, std::string *head, std::string *hint) {
     case SC_SWITCH_SAVE:
         *head = tr("That is a Switch save already");
         *hint = tr("Savage Wind uses those as they are: copy its files into the save folder instead.");
+        break;
+    case SC_WIIU_SAVE:
+        *head = tr("That is a Wii U save already");
+        *hint = tr("Only Switch saves can be exported to Wii U format.");
         break;
     case SC_BAD_SAVE: *head = tr("A save file is damaged or incomplete"); break;
     case SC_NO_BOOTUP:
@@ -370,6 +475,42 @@ void failure_text(int code, bool backup, std::string *head, std::string *hint) {
     default:
         *head = tr("Files could not be read or written");
         *hint = tr("Close anything that is using the save folder and try again.");
+    }
+}
+
+// A profile job that did not work: a headline and what to do about it
+void profile_failure_text(int code, std::string *head, std::string *hint) {
+    *hint = "";
+    switch (code) {
+    case SP_NAME_EMPTY: *head = tr("Type a name first"); break;
+    case SP_NAME_LONG: *head = fmt("That name is too long (at most %d characters)", (int)SP_NAME_MAX); break;
+    case SP_NAME_CHARS:
+        *head = tr("That name has characters that can't be used");
+        *hint = tr("Use letters, digits, spaces and - _ . ( ) only.");
+        break;
+    case SP_NAME_RESERVED: *head = tr("That name can't be used"); break;
+    case SP_EXISTS: *head = tr("A profile with that name already exists"); break;
+    case SP_NOT_FOUND: *head = tr("That profile is not there anymore"); break;
+    case SP_IS_DEFAULT: *head = tr("The Default profile can't be renamed or deleted"); break;
+    case SP_IS_ACTIVE:
+        *head = tr("The profile in use can't be renamed or deleted");
+        *hint = tr("Switch to another profile first.");
+        break;
+    case SP_IN_USE:
+        *head = tr("Savage Wind is running in a game with that profile");
+        *hint = tr("Close the game first, then try again.");
+        break;
+    case SP_NO_SPACE:
+        *head = tr("Not enough free disk space for the copy");
+        *hint = tr("Free some space and try again.");
+        break;
+    case SP_LINKED:
+        *head = tr("That profile folder is a link");
+        *hint = tr("Savage Wind doesn't delete linked folders. Remove it yourself if you want it gone.");
+        break;
+    default:
+        *head = tr("Files could not be read or written");
+        *hint = tr("Close anything that is using the save folders and try again.");
     }
 }
 
@@ -401,28 +542,94 @@ void draw_result(int phase) {
         if (g_warnings)
             ImGui::TextColored(bad, "%s", fmt("%d files of the old save folder could not be copied over; they are in the backup.",
                                               g_warnings).c_str());
+    } else if (g_kind == EXPORTED) {
+        ImGui::TextColored(gold, "%s", tr("Export finished"));
+        ImGui::TextWrapped("%s", fmt("Slots exported: %s", slot_list(g_rep).c_str()).c_str());
+        ImGui::TextDisabled("%s", fmt("To: %s", shown_path(g_export_dst).c_str()).c_str());
+        ImGui::TextWrapped("%s", fmt("Flags: %u kept, %u set to defaults (not in the old save), %u dropped (not in this game "
+                                     "version).", g_rep.kept, g_rep.defaulted, g_rep.dropped).c_str());
+        for (int i = 0; i < g_rep.nslots; i++) {
+            unsigned def = 0, drop = 0;
+            for (int k = 0; k < g_rep.nfiles; k++) {
+                const ScFlagFile &f = g_rep.files[k];
+                size_t n = strlen(g_rep.slots[i]);
+                if (!strncmp(f.file, g_rep.slots[i], n) && f.file[n] == '/') def += f.defaulted, drop += f.dropped;
+            }
+            ImGui::TextDisabled("%s", fmt("Slot %s: %u defaulted, %u dropped", g_rep.slots[i], def, drop).c_str());
+        }
+        ImGui::TextWrapped("%s", fmt("Hero's Path: %d files. Album: %d pictures. Compendium: %d pictures.", g_rep.n_tracker,
+                                     g_rep.n_album, g_rep.n_pict).c_str());
+        if (g_warnings)
+            ImGui::TextColored(bad, "%s", fmt("%d files could not be copied over.", g_warnings).c_str());
     } else if (g_kind == BACKED_UP) {
         ImGui::TextColored(gold, "%s", tr("Backup finished"));
         ImGui::TextWrapped("%s", fmt("%d files copied to %s", g_files, shown_path(g_backup).c_str()).c_str());
-    } else if (g_kind == CANCELLED) {
-        ImGui::TextColored(gold, "%s", tr("Import cancelled"));
-        ImGui::TextWrapped("%s", tr("Nothing was changed."));
-    } else if (g_kind == IMPORT_FAILED || g_kind == BACKUP_FAILED) {
+    } else if (g_kind == PROFILE_DONE) {
+        const char *n = g_pname_done.c_str();
+        ImGui::TextColored(gold, "%s", g_pop == PO_SWITCH   ? fmt("Now using profile %s", n).c_str()
+                                       : g_pop == PO_CREATE ? fmt("Profile %s created", n).c_str()
+                                       : g_pop == PO_COPY   ? fmt("Profile copied to %s", n).c_str()
+                                       : g_pop == PO_RENAME ? fmt("Profile renamed to %s", n).c_str()
+                                                            : fmt("Profile %s deleted", n).c_str());
+        if (g_pop == PO_SWITCH) ImGui::TextWrapped("%s", tr("The game uses this profile's saves the next time you play."));
+    } else if (g_kind == PROFILE_FAILED) {
         std::string head, hint;
-        failure_text(g_code, g_kind == BACKUP_FAILED, &head, &hint);
+        profile_failure_text(g_pcode, &head, &hint);
         ImGui::TextColored(bad, "%s", head.c_str());
         if (!hint.empty()) ImGui::TextWrapped("%s", hint.c_str());
-        if (!g_detail.empty() && g_code != SC_NO_SAVE && g_code != SC_SWITCH_SAVE)
+        if (!g_pdetail.empty() && (g_pcode == SP_IO || g_pcode == SP_NO_SPACE)) ImGui::TextDisabled("%s", g_pdetail.c_str());
+        ImGui::TextWrapped("%s", tr("Your profiles were not changed."));
+    } else if (g_kind == CANCELLED) {
+        ImGui::TextColored(gold, "%s", g_export_dst.empty() ? tr("Import cancelled") : tr("Export cancelled"));
+        ImGui::TextWrapped("%s", tr("Nothing was changed."));
+    } else if (g_kind == IMPORT_FAILED || g_kind == EXPORT_FAILED || g_kind == BACKUP_FAILED) {
+        std::string head, hint;
+        failure_text(g_code, g_kind, &head, &hint);
+        ImGui::TextColored(bad, "%s", head.c_str());
+        if (!hint.empty()) ImGui::TextWrapped("%s", hint.c_str());
+        if (!g_detail.empty() && g_code != SC_NO_SAVE && g_code != SC_SWITCH_SAVE && g_code != SC_WIIU_SAVE)
             ImGui::TextDisabled("%s", (g_code == SC_MOVED ? shown_path(g_detail) : g_detail).c_str());  // (that one is the backup folder)
         if (g_code != SC_MOVED) ImGui::TextWrapped("%s", tr("Nothing was changed."));
     }
     ImGui::PopTextWrapPos();
 }
 
-// "Import this save?": what comes in, and where the old saves go first
+// "Import this save?" / "Export this save?": what comes in, and where the old saves go first
 void draw_confirm(int phase) {
-    if (phase == CONFIRM && !g_popup_shown) ImGui::OpenPopup("##importok"), g_popup_shown = true;
+    if (phase == CONFIRM && !g_popup_shown) {
+        ImGui::OpenPopup(g_export_dst.empty() ? "##importok" : "##exportok");
+        g_popup_shown = true;
+    }
     if (phase != CONFIRM) g_popup_shown = false;
+    if (!g_export_dst.empty()) {
+        if (!ImGui::BeginPopupModal("##exportok", NULL, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar)) return;
+        ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", tr("Export this save?"));
+        ImGui::PushTextWrapPos(fminf(ImGui::GetFontSize() * 34, ImGui::GetIO().DisplaySize.x * 0.7f));
+        ImGui::TextWrapped("%s", fmt("Slots: %s", slot_list(g_rep).c_str()).c_str());
+        ImGui::TextDisabled("%s", fmt("To: %s", shown_path(g_export_dst).c_str()).c_str());
+        ImGui::Spacing();
+        ImGui::TextWrapped("%s", tr("Your Savage Wind saves will stay as they are. Existing files in the destination are preserved with a dated .bak suffix."));
+        ImGui::PopTextWrapPos();
+        ImGui::Spacing();
+        bool yes = ImGui::Button(tr("Export"), ImVec2(ImGui::GetFontSize() * 9, 0));
+        ImGui::SetItemDefaultFocus();
+        ImGui::SameLine();
+        bool no = ImGui::Button(tr("Cancel"), ImVec2(ImGui::GetFontSize() * 9, 0)) ||
+                  ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+        if (yes) {
+            ImGui::CloseCurrentPopup();
+            start(JOB_EXPORT_INSTALL, "", g_export_dst);
+        } else if (no) {
+            ImGui::CloseCurrentPopup();
+            sc_stage_discard(g_stage);
+            g_stage = NULL;
+            g_kind = CANCELLED;
+            g_seen_done = true;
+            g_phase.store(DONE, std::memory_order_release);
+        }
+        ImGui::EndPopup();
+        return;
+    }
     if (!ImGui::BeginPopupModal("##importok", NULL, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar)) return;
     ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", tr("Import this save?"));
     ImGui::PushTextWrapPos(fminf(ImGui::GetFontSize() * 34, ImGui::GetIO().DisplaySize.x * 0.7f));  // (a small window too)
@@ -456,7 +663,106 @@ void draw_confirm(int phase) {
     ImGui::EndPopup();
 }
 
+// "Delete profile X?": the one place a profile's saves are removed for good
+void draw_delete_confirm(int phase) {
+    if (g_delete_open && !g_delete_popup_shown) ImGui::OpenPopup("##profdel"), g_delete_popup_shown = true;
+    if (!g_delete_open) g_delete_popup_shown = false;
+    if (!ImGui::BeginPopupModal("##profdel", NULL, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar)) return;
+    ImGui::TextColored(ImVec4(1, 0.5f, 0.4f, 1), "%s", fmt("Delete profile %s?", g_delete_name.c_str()).c_str());
+    ImGui::PushTextWrapPos(fminf(ImGui::GetFontSize() * 34, ImGui::GetIO().DisplaySize.x * 0.7f));
+    ImGui::TextWrapped("%s", fmt("Its %d slots and everything else saved in it are deleted for good. Your other profiles are not touched.",
+                                 g_delete_slots).c_str());
+    ImGui::PopTextWrapPos();
+    ImGui::Spacing();
+    bool yes = ImGui::Button(tr("Delete"), ImVec2(ImGui::GetFontSize() * 9, 0));
+    ImGui::SameLine();
+    ImGui::SetItemDefaultFocus();  // (Cancel is the default: a stray A press keeps the profile)
+    bool no = ImGui::Button(tr("Cancel"), ImVec2(ImGui::GetFontSize() * 9, 0)) ||
+              ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+    if (yes && (phase == IDLE || phase == DONE)) {
+        ImGui::CloseCurrentPopup();
+        g_delete_open = false;
+        start(JOB_PROFILE, g_delete_name, "", PO_DELETE);
+    } else if (no) {
+        ImGui::CloseCurrentPopup();
+        g_delete_open = false;
+    }
+    ImGui::EndPopup();
+}
+
+const SpProfile *find_profile(const std::string &name) {
+    for (const SpProfile &p : g_profiles)
+        if (p.name == name) return &p;
+    return NULL;
+}
+
+// The Profiles section: the list (the selected one has the filled ring), then what can be done with the selected one
+void draw_profiles(bool busy) {
+    opt_section("Profiles");
+    if (sp_override_active()) {
+        opt_disable_next();
+        opt_action("Profiles are off", "",
+                   "The SAVAGEWIND_SAVE_DIR setting chooses the save folder for this run, so profiles are not used. "
+                   "Remove that setting to use profiles.");
+        return;
+    }
+    const SpProfile *used = NULL;
+    for (const SpProfile &p : g_profiles)
+        if (p.active) used = &p;
+    if (g_sel.empty() && used) g_sel = used->name;
+    for (const SpProfile &p : g_profiles) {
+        std::string label = p.is_default ? tr("Default") : p.name;
+        if (p.active) label = fmt("%s (in use)", label.c_str());
+        std::string desc = fmt("Slots: %d", p.slots);
+        if (p.saved) desc += "\n" + fmt("Last saved %s", fmt_time(p.saved).c_str());
+        if (p.is_default) desc += "\n" + std::string(tr("The saves Savage Wind has always used. This profile can't be renamed or deleted."));
+        if (busy) opt_disable_next();
+        if (opt_radio(label.c_str(), g_sel == p.name, desc.c_str()) && !busy) g_sel = p.name;
+    }
+    if (g_profiles.empty()) return;
+    const SpProfile *sel = find_profile(g_sel);
+    if (!sel) return;
+    bool in_use = sel->active, locked = sel->is_default || sel->active;
+
+    opt_section("Selected profile");
+    if (busy || in_use) opt_disable_next();
+    if (opt_action("Use this profile", "",
+                   "The game starts with this profile's saves from now on. Close the game before you switch: a game that "
+                   "is running keeps the profile it started with. Your other profiles are not touched.") && !busy && !in_use)
+        start(JOB_PROFILE, sel->name, "", PO_SWITCH);
+    if (busy) opt_disable_next();
+    opt_text("Name for a new profile", g_pname, sizeof g_pname, tr("Type a name"),
+             "The name for Create, Copy and Rename below: letters, digits, spaces and - _ . ( ), up to 32 characters.");
+    if (busy) opt_disable_next();
+    if (opt_action("Create empty profile", "", "Makes a new profile with no saves, named as typed above. The game starts a new "
+                                                "adventure in it.") && !busy)
+        start(JOB_PROFILE, "", g_pname, PO_CREATE);
+    if (busy) opt_disable_next();
+    if (opt_action("Copy this profile", "", "Makes a complete copy of the selected profile under the name typed above, "
+                                            "with all its slots. Both profiles stay separate afterwards.") && !busy)
+        start(JOB_PROFILE, sel->name, g_pname, PO_COPY);
+    if (busy || locked) opt_disable_next();
+    if (opt_action("Rename this profile", "", "Gives the selected profile the name typed above. Not for the Default "
+                                              "profile or the one in use.") && !busy && !locked)
+        start(JOB_PROFILE, sel->name, g_pname, PO_RENAME);
+    if (busy || locked) opt_disable_next();
+    if (opt_action("Delete this profile...", "", "Deletes the selected profile and its saves for good, after asking. Not for "
+                                                "the Default profile or the one in use.") && !busy && !locked) {
+        g_delete_open = true, g_delete_name = sel->name, g_delete_slots = sel->slots;
+    }
+    if (opt_action("Open this profile's folder", "", "Opens the selected profile's save folder in your file manager.") && !busy) {
+        char dir[1100];
+        if (sp_save_dir(NULL, sel->name, dir, sizeof dir)) {
+            SDL_CreateDirectory(dir);
+            reveal_folder(dir);
+        }
+    }
+}
+
 }  // namespace
+
+unsigned long long ui_texture_rgba(const unsigned char *px, int w, int h) { return texture_rgba(px, w, h); }
+void ui_texture_free(unsigned long long tex) { texture_free(tex); }
 
 void saves_tab_set_game_files(const char *root) { g_game_root = root; }
 
@@ -474,6 +780,7 @@ void saves_tab_unload(void) {
     g_phase.store(IDLE);
     sc_report_free(&g_rep);
     g_kind = NONE;
+    g_export_dst.clear();
     g_last_frame = -100;
 }
 
@@ -483,24 +790,30 @@ void saves_tab_draw(void) {
         int p = g_phase.load(std::memory_order_acquire);
         if (p == IDLE || p == DONE) start(JOB_LIST);
         pthread_mutex_lock(&g_lock);
-        g_picked.clear();  // (a folder chosen while the tab was away: not started by surprise)
+        g_picked_import.clear();
+        g_picked_export.clear();  // (a folder chosen while the tab was away: not started by surprise)
         pthread_mutex_unlock(&g_lock);
     }
     g_last_frame = frame;
     int phase = g_phase.load(std::memory_order_acquire);
     if (phase != WORKING && phase != LOADING && g_slots_ready) take_slots();
     if (phase == DONE && !g_seen_done) g_seen_done = true;
-    std::string picked;
+    std::string picked_import, picked_export;
     pthread_mutex_lock(&g_lock);
-    picked.swap(g_picked);
+    picked_import.swap(g_picked_import);
+    picked_export.swap(g_picked_export);
     pthread_mutex_unlock(&g_lock);
-    if (!picked.empty() && (phase == IDLE || phase == DONE) && !g_recovery.imported[0]) start(JOB_CONVERT, picked), phase = WORKING;
+    if (!picked_import.empty() && (phase == IDLE || phase == DONE) && !g_recovery.imported[0])
+        start(JOB_CONVERT, picked_import), phase = WORKING;
+    if (!picked_export.empty() && (phase == IDLE || phase == DONE) && !g_recovery.imported[0])
+        start(JOB_EXPORT_STAGE, save_dir(), picked_export), phase = WORKING;
     load_one_thumb();
 
     bool working = phase == WORKING || phase == CONFIRM || phase == LOADING;
     bool recovery = !working && g_recovery.imported[0];
     bool busy = working || recovery;
     opt_begin("##saves", ImGui::GetFontSize() / 34);
+    draw_profiles(busy);
     opt_section("Import");
     if (busy) opt_disable_next();
     if (opt_action("Import from Wii U / Cemu...", "",
@@ -508,13 +821,26 @@ void saves_tab_draw(void) {
                    "(.../user/80000001) or any folder above it. The Hero's Path, the album and the compendium pictures "
                    "come along. Nothing changes until you confirm, and your current saves are backed up first.") && !busy &&
         !g_dialog.exchange(true))
-        SDL_ShowOpenFolderDialog(folder_picked, NULL, ui_window(), NULL, false);
+        SDL_ShowOpenFolderDialog(folder_picked_import, NULL, ui_window(), NULL, false);
+    opt_section("Export");
+    if (busy || g_slots.empty()) opt_disable_next();
+    if (opt_action("Export to Wii U / Cemu...", "",
+                   "Exports your current saves to Wii U / Cemu format. Choose the destination folder (such as a Cemu "
+                   "profile folder, e.g. .../user/80000001). The Hero's Path, the album and the compendium pictures "
+                   "are converted. Existing files in the destination are preserved with a dated .bak suffix.") && !busy &&
+        !g_slots.empty() && !g_dialog.exchange(true))
+        SDL_ShowOpenFolderDialog(folder_picked_export, NULL, ui_window(), NULL, false);
     opt_section("Backup");
     if (busy) opt_disable_next();
     if (opt_action("Back up saves", "",
                    "Copies the whole save folder to a new dated folder in save-backups, next to it. Your saves stay "
                    "where they are.") && !busy)
         start(JOB_BACKUP), phase = WORKING, working = busy = true;
+    if (busy) opt_disable_next();
+    if (opt_toggle("Back up at each start", &g_settings.save_backups, false,
+                   "A copy of the save folder each time the game starts, if anything in it changed. The last 5 are kept "
+                   "in save-backups; the ones you make yourself are never removed."))
+        settings_save();
     if (working) opt_disable_next();
     if (opt_action("Open save folder", "", "Opens the folder with your saves in your file manager.") && !working) {
         if (recovery) reveal_folder(g_recovery.imported);
@@ -565,4 +891,5 @@ void saves_tab_draw(void) {
     }
     opt_end();
     draw_confirm(phase);
+    draw_delete_confirm(phase);
 }

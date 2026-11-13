@@ -24,6 +24,7 @@
 #include "../settings.h"
 #include "archive.h"
 #include "fs_layout.h"
+#include "save_profiles.h"
 #include "../perfcount.h"
 #include "../platform.h"
 
@@ -1586,7 +1587,7 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
 
 static Service *open_host_fs(const char *sub) {
     HostFs *fs = calloc(1, sizeof *fs);
-    if (getenv("SAVAGEWIND_SAVE_DIR")) g_save_dir = getenv("SAVAGEWIND_SAVE_DIR");  // test runs use a scratch copy
+    g_save_dir = sp_session_save_dir();  // SAVAGEWIND_SAVE_DIR (test runs use a scratch copy), else the active save profile
     snprintf(fs->root, sizeof fs->root, "%s/%s", g_save_dir, sub);
     char cmd[1200];
     snprintf(cmd, sizeof cmd, "%s", fs->root);

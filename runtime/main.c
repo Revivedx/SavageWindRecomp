@@ -15,6 +15,7 @@
 #endif
 #include "romfs_image.h"
 #include "services/save_convert.h"
+#include "services/save_profiles.h"
 #include "settings.h"
 #include "hle.h"
 #include "kernel.h"
@@ -398,9 +399,10 @@ int main(int argc, char **argv) {
         // The game holds the lock on its save folder while it runs, so the Saves tab of another Savage Wind refuses to
         // swap or copy saves under it. Not getting it (somebody else has it, or no lock file can be made) never stops
         // the game; it is let go before the start screen of a reboot, which is this same process.
+        { extern void save_backup_at_start(void); save_backup_at_start(); }  // (Saves > Back up at each start; before the lock)
         ScLock *save_lock = NULL;
-        const char *save_env = getenv("SAVAGEWIND_SAVE_DIR");
-        if (sc_lock_take(save_env && *save_env ? save_env : "save", &save_lock) == SC_LOCK_BUSY)
+        sp_session_begin();  // the save profile chosen on the start screen (runtime/services/save_profiles.h)
+        if (sc_lock_take(sp_session_save_dir(), &save_lock) == SC_LOCK_BUSY)
             fprintf(stderr, "[saves] another Savage Wind is running with this save folder; saving from both can overwrite saves\n");
         boot(root);
         int kind = ui_run();  // window and input on the main thread; returns when a reboot is requested
