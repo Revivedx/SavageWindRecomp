@@ -199,8 +199,8 @@ static_assert(k_damage[DAMAGE_DEFAULT] == 100);
 constexpr int k_fov[] = FOV_CHOICES;  // field of view, % of the game's own
 constexpr int FOV_DEFAULT_INDEX = 3;
 static_assert(k_fov[FOV_DEFAULT_INDEX] == 100);
-constexpr int k_hud_size[] = HUD_SIZE_CHOICES;  // the HUD's size, % of the game's own
-constexpr int HUD_SIZE_DEFAULT_INDEX = 10;
+constexpr int k_hud_size[] = HUD_SIZE_CHOICES;  // the HUD's size, % of the game's own (0: hidden)
+constexpr int HUD_SIZE_DEFAULT_INDEX = 11;
 static_assert(k_hud_size[HUD_SIZE_DEFAULT_INDEX] == 100);
 constexpr int k_deadzone[] = {0, 3, 5, 8, 10, 12, 15, 20, 25, 30, 40};  // stick dead zone, % of full tilt
 constexpr int DEADZONE_DEFAULT = 4;
@@ -447,7 +447,7 @@ void build_items(void) {
                        [](const Item &) { return N(k_hud_size); },
                        [](const Item &, int x) {
                            static std::string str;
-                           str = pct(k_hud_size[x]);
+                           str = k_hud_size[x] == 0 ? tr("Off") : pct(k_hud_size[x]);
                            return str.c_str();
                        },
                        [](const Item &) { return nearest(k_hud_size, N(k_hud_size), (float)g_settings.hud_size); },
