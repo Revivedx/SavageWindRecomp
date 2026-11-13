@@ -113,6 +113,7 @@ void act_reset(void);                         // every action back to the defaul
 // Host state in, from runtime/hle/input.c. Main thread, on every key / button event:
 uint64_t act_scan_keys(uint64_t key_buttons, int (*held)(int scancode));    // actions the keyboard side holds
 uint64_t act_scan_pad(uint64_t pad_buttons, uint32_t host_buttons);         // ... the controller side holds
+uint64_t act_gameplay_buttons(uint64_t raw, int (*held)(int scancode), uint32_t host_buttons); // gameplay A/B/X/Y from action bindings
 void act_publish(uint64_t keys, uint64_t pads);                             // (bit per action)
 // The controller poll (game thread, once per GetNpadStates): freezes the held / pressed sets the game's queries see.
 // live = false in the game's menus, with the window unfocused or the overlay up: the Switch layer answers then.
