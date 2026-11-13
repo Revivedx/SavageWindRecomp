@@ -36,6 +36,7 @@
 #include "framegen.h"
 #include "../../game_sites.h"
 #include "../../framepace.h"
+#include "../../hle.h"
 #include "../../services/fs_layout.h"
 #include "../../perfcount.h"
 #include "../hud_scale.h"
@@ -1417,12 +1418,52 @@ static float hud_scale_now(void) {
         // (not the quick menus, pause state 4: the game keeps the HUD up around them)
         static uint64_t quick_ns;
         uint64_t ns = plat_now_ns();
-        if (g_settings.hud_size != 100 && framepace_quick_ui()) quick_ns = ns;
+        if (hud_quick_tracked(g_settings.hud_size, g_settings.hud_at_edges) && framepace_quick_ui()) quick_ns = ns;
         hud_quick = quick_ns && ns - quick_ns < HUD_QUICK_HOLD_NS;
         s = g_settings.hud_size == 100 || framepace_menu_ui() || framepace_title_ui() || framepace_loading_ui() ||
             framepace_in_event() ? 1 : (float)g_settings.hud_size / 100;
     }
     return s;
+}
+
+// Video > HUD at edges this frame, on a window of this shape (hud_edge_mode). Also brings hud_quick up to this frame.
+static int hud_edges_now(float shape) {
+    extern bool framepace_menu_ui(void), framepace_title_ui(void), framepace_loading_ui(void), framepace_in_event(void);
+    hud_scale_now();
+    return hud_edge_mode(g_settings.hud_at_edges, shape, framepace_menu_ui(), framepace_title_ui(), framepace_loading_ui(),
+                         framepace_in_event());
+}
+
+// HUD at edges leaves a shop's panel where it is: its list, the item's panel and their frames are one 16:9 layout that
+// spans the middle, so its top part went to the window's edge without the rest (#599), while the hearts and the rupees
+// around it go to the edges as ever. A pane drawn with a shop pane's position (layout units, the translation of the
+// draw's model-view matrix) stays. The game's panes are read once a frame and the last SHOP_FRAMES reads are kept: the
+// game is a frame or two ahead of the frame drawn, so while the panel slides in its panes were already elsewhere and
+// the first moment of it came out split.
+#define SHOP_PANES_MAX 512
+#define SHOP_FRAMES 4
+static uint64_t shop_frame = ~0ull;
+static float shop_xy[SHOP_FRAMES][2 * SHOP_PANES_MAX];
+static int shop_n[SHOP_FRAMES], shop_at;
+
+static bool hud_shop_pane(float x, float y) {
+    extern int framepace_shop_panes(float *xy, int max);
+    uint64_t now = renderer_present_count();
+    if (now != shop_frame) {
+        shop_frame = now, shop_at = (shop_at + 1) % SHOP_FRAMES;
+        shop_n[shop_at] = g_settings.hud_at_edges ? framepace_shop_panes(shop_xy[shop_at], SHOP_PANES_MAX) : 0;
+    }
+    for (int f = 0; f < SHOP_FRAMES; f++)
+        for (int i = 0; i < shop_n[f]; i++)
+            if (fabsf(shop_xy[f][2 * i] - x) < 0.01f && fabsf(shop_xy[f][2 * i + 1] - y) < 0.01f) return true;
+    return false;
+}
+
+RT_ON_RESET(hud_shop_reset) {
+    shop_frame = ~0ull;
+    memset(shop_xy, 0, sizeof(shop_xy));
+    memset(shop_n, 0, sizeof(shop_n));
+    shop_at = 0;
 }
 static float vp_sx = 1, vp_sy = 1, vp_ox = 0, vp_oy = 0;
 static float tex_sc[2][64][2];
@@ -2372,6 +2413,14 @@ static VkRect2D scissor_rect(void) {
         if (y > 0 || y + sh < gh - 0.5) {
             double c = gh / 2, y0 = c + (y - c) * shape, y1 = c + (y + sh - c) * shape;
             y = (int)floor(y0); sh = (int)ceil(y1) - y;
+            int edge_mode = hud_edges_now(shape);
+            if (edge_mode) {
+                double sdy = hud_edge_scissor_dy((y0 + y1) / 2.0, gh, shape);
+                double gw = pass_sx > 0 ? w / pass_sx : w;  // (a quick menu's bar, an event: as for the panes)
+                if (sdy != 0 && hud_edge_moves(edge_mode, (float)(1 - (y0 + y1) / gh), (float)shape) &&
+                    !(hud_quick && hud_quick_bar_px(x + sw / 2.0, (y0 + y1) / 2.0, gw, gh, shape)))
+                    y += (int)round(sdy);
+            }
         }
     }
     float hud_s = pass_out && sw < 16384 && sh < 16384 && pass_sx > 0 && pass_sy > 0 ? hud_scale_now() : 1;
@@ -4640,6 +4689,8 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
     if (!tb || tb->rs_group != RS_OUT) return false;
     float hud_s = hud_scale_now();
     if (shape == 1 && hud_s == 1) return false;
+    int edge_mode = hud_edges_now(shape);
+    bool hud_edge_active = edge_mode != 0;
     float edge_x = 1 / fmaxf(shape, 1), edge_y = fminf(shape, 1);  // (where the 16:9 HUD ends on this window)
     const float *g = (const float *)(uintptr_t)addr;
     // ui2d text combines the projection and each label's position into this smaller, Y-flipped matrix.
@@ -4670,6 +4721,12 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         float tx = buf[3] / buf[15], ty = buf[7] / buf[15];
         if (hud_s != 1 && !(hud_quick && hud_quick_keeps(tx, ty, edge_x, edge_y)))
             hud_scale_matrix(buf, hud_s, hud_anchor(tx, edge_x), hud_anchor(ty, edge_y));
+        if (hud_edge_active && hud_edge_moves(edge_mode, ty, edge_y) &&
+            !(hud_quick && hud_quick_bar(tx, ty, edge_x, edge_y))) {
+            float ay = hud_anchor(ty, edge_y);
+            float dy = hud_edge_dy(ay, edge_y, shape);
+            if (dy != 0) hud_edge_matrix(buf, dy);
+        }
         *out = ubo_span(vk_transient_copy(buf, n, 256), n);
         return true;
     }
@@ -4719,7 +4776,8 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
     // Gameplay > HUD size: a pane of a 40-degree layer, and not one over about the whole screen (a fade, a picture)
     float hud_ax = 0, hud_ay = 0;
     bool hud_scale = false;
-    if (hud_s != 1 && size >= 28 * 4 && fabsf((tall ? m11 / shape : m11) - 2.74748f) < 0.001f) {
+    float edge_dy = 0;
+    if ((hud_s != 1 || hud_edge_active) && size >= 28 * 4 && fabsf((tall ? m11 / shape : m11) - 2.74748f) < 0.001f) {
         const float *mv = g + 16, *rc = g + 33 * 4;
         bool has_rect = size >= 34 * 16 && rc[0] > 0 && rc[1] > 0;
         float x0 = 1e9f, x1 = -1e9f, y0 = 1e9f, y1 = -1e9f;
@@ -4732,15 +4790,23 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
             x0 = fminf(x0, nx), x1 = fmaxf(x1, nx), y0 = fminf(y0, ny), y1 = fmaxf(y1, ny);
         }
         if (x1 - x0 >= 1.8f * edge_x || y1 - y0 >= 1.8f * edge_y) hud_scale = false;
-        if (hud_quick && hud_quick_keeps((x0 + x1) / 2, (y0 + y1) / 2, edge_x, edge_y)) hud_scale = false;
-        hud_ax = hud_anchor((x0 + x1) / 2, edge_x), hud_ay = hud_anchor((y0 + y1) / 2, edge_y);
+        float cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+        if (hud_scale) {
+            hud_ax = hud_anchor(cx, edge_x);
+            hud_ay = hud_anchor(cy, edge_y);
+            if (hud_edge_active && hud_edge_moves(edge_mode, cy, edge_y) &&
+                !(hud_quick && hud_quick_bar(cx, cy, edge_x, edge_y)) && !hud_shop_pane(mv[3], mv[7]))
+                edge_dy = hud_edge_dy(hud_ay, edge_y, shape);
+            hud_scale = hud_s != 1 && !(hud_quick && hud_quick_keeps(cx, cy, edge_x, edge_y));
+        }
     }
-    if (m00 == g[0] && m11 == g[5] && !hud_scale) return false;
+    if (m00 == g[0] && m11 == g[5] && !hud_scale && edge_dy == 0) return false;
     static float buf[0x10000 / 4];
     uint64_t n = size > sizeof buf ? sizeof buf : size;
     memcpy(buf, g, n);
     buf[0] = m00, buf[5] = m11;
     if (hud_scale) hud_scale_view(buf + 16, hud_s, m00, m11, hud_ax, hud_ay);
+    if (edge_dy != 0) hud_edge_view(buf + 16, m11, edge_dy);
     *out = ubo_span(vk_transient_copy(buf, n, 256), n);
     return true;
 }

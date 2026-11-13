@@ -172,6 +172,50 @@ bool framepace_map_ui(void) {
     return map && VF(uint8_t, map, 0xfe) == 2;  // same active map screen as pc_cursor.c
 }
 bool framepace_quick_ui(void) { return *(uint32_t *)(uintptr_t)PAUSE_STATE == 4; }
+// A shop's panes, where they are (#599): ShopInfo_00 over a counter, ShopBtnList5_00 / ShopBtnList20_00 and ShopBG_00
+// at a merchant, ShopHorse_00 at a stable, and the list's selection box (BoxCursorTV) while one is up. The game makes
+// these screens when a shop's panel opens and drops them when it closes; each is in the screen manager [screen_mgr]
+// (+0x28 count, +0x30 screens) with its name at +0xd0 (the game's own string, in its module) and its layout at +0x30,
+// whose root pane is at +0x18. A pane (nn::ui2d::Pane): +0x20 its children's list head, linked 8 bytes into each child
+// (+0x28 the first link, +8 in a link the next), +0x58 bit 0 visible, +0x70 its global matrix (3x4, rows of 4 floats:
+// x, y in layout units at +0x7c, +0x8c), +0xb8 its name. Writes up to max (x, y) pairs and returns how many.
+static int shop_walk(uint64_t pane, int depth, float *xy, int n, int max, int *budget) {
+    uint64_t top = HEAP_BASE + kernel_heap_size();
+    if (pane < HEAP_BASE || pane + 0xd0 > top || depth > 12 || --*budget < 0 || n >= max) return n;
+    if (!(VF(uint8_t, pane, 0x58) & 1)) return n;  // (hidden, with all under it)
+    xy[2 * n] = VF(float, pane, 0x7c), xy[2 * n + 1] = VF(float, pane, 0x8c);
+    n++;
+    uint64_t head = pane + 0x20, link = VF(uint64_t, pane, 0x28);
+    for (int k = 0; k < 256 && link != head && link >= HEAP_BASE && link + 16 <= top && *budget > 0; k++) {
+        n = shop_walk(link - 8, depth + 1, xy, n, max, budget);
+        link = VF(uint64_t, link, 8);
+    }
+    return n;
+}
+
+int framepace_shop_panes(float *xy, int max) {
+    uint64_t mgr = *(uint64_t *)(uintptr_t)g_site.screen_mgr, top = HEAP_BASE + kernel_heap_size();
+    if (!mgr) return 0;
+    uint32_t count = VF(uint32_t, mgr, 0x28);
+    uint64_t arr = VF(uint64_t, mgr, 0x30);
+    if (!arr || arr < HEAP_BASE || arr + 8ull * count > top) return 0;
+    // (the list's selection box is BoxCursorTV, a screen of its own the menus share: taken while a shop is up)
+    int n = 0, budget = 2048;
+    uint64_t cursor = 0;
+    bool shop = false;
+    for (uint32_t i = 0; i < count && i < 256; i++) {
+        uint64_t sc = VF(uint64_t, arr, 8 * i);
+        if (sc < HEAP_BASE || sc + 0x100 > top) continue;
+        uint64_t name = VF(uint64_t, sc, 0xd0), layout = VF(uint64_t, sc, 0x30);
+        if (name < GUEST_LO || name >= GUEST_HI - 16 || layout < HEAP_BASE || layout + 0x20 > top) continue;
+        if (!strcmp((const char *)(uintptr_t)name, "BoxCursorTV")) cursor = layout;
+        if (memcmp((const char *)(uintptr_t)name, "Shop", 4)) continue;
+        shop = true;
+        n = shop_walk(VF(uint64_t, layout, 0x18), 0, xy, n, max, &budget);
+    }
+    if (shop && cursor) n = shop_walk(VF(uint64_t, cursor, 0x18), 0, xy, n, max, &budget);
+    return n;
+}
 bool framepace_paused(void) { return in_menu(); }
 
 int framepace_target(void) {
