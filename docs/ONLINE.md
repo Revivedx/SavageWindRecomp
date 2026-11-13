@@ -282,6 +282,12 @@ quests'.
 
 Tested with two games in the sanctum: both made Calamity Ganon and played its cutscenes; the host's game's blows
 (`SAVAGEWIND_ONLINE_BOSS_HIT` / `_KILL`, test hooks) took the other's Ganon down with them, into its second half.
+Only the map's bosses, those with a HashId, are tracked: a Blight's drones (`Enemy_SiteBoss_*_ChildDev`) have none,
+and nearer than the Blight they took both of the two places, so its damage wasn't shared while they flew (and the
+test hooks hit a drone). To get there from any save: `SAVAGEWIND_TEST_WARP=-254,195,-1040` (the sanctum's floor),
+then `swctl teleport -254 297 -1058` into the Area at its top that starts HyruleCastle<BossRoom0> (again if it says
+the position failed to verify). With no Divine Beast freed the castle's Blights come first: the host's game's
+Windblight halved to 0 took the other's to 0 with it, and both went on to Waterblight (2026-11-13).
 
 ### Quests
 

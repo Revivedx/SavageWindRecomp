@@ -2753,7 +2753,10 @@ static void boss_sample(Cpu *c, uint64_t player, OnlinePose *pose) {
         for (int k = 0; k < na; k++) {
             char n[48];
             actor_name_of(g_actors[k], n);
-            if (!is_boss(n)) continue;
+            // (only the map's bosses, with a HashId, the one their damage is shared by: a Blight's drones,
+            // Enemy_SiteBoss_*_ChildDev, have none, and nearer than it they took both places, so the Blight's own damage
+            // wasn't shared while they flew)
+            if (!is_boss(n) || !*(uint32_t *)(uintptr_t)(g_actors[k] + ACTOR_HASH_ID)) continue;
             const float *m = (const float *)(uintptr_t)(g_actors[k] + 0x398);
             float d = (m[3] - pm[3]) * (m[3] - pm[3]) + (m[7] - pm[7]) * (m[7] - pm[7]) + (m[11] - pm[11]) * (m[11] - pm[11]);
             int slot = d < best[0] ? 0 : d < best[1] ? 1 : -1;
