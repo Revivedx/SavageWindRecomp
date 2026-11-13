@@ -1361,8 +1361,16 @@ const char *renderer_stats(void) {
     return stats_text;
 }
 
+static uint64_t vbuf_gen = 1;
+static uint64_t ubuf_gen[6] = {1, 1, 1, 1, 1, 1};
+static uint64_t rt_gen = 1, tex_gen[6] = {1, 1, 1, 1, 1, 1};
+
 static void st_defaults(void) {
     memset(&st, 0, sizeof st);
+    vbuf_gen++;
+    for (int i = 0; i < 6; i++) ubuf_gen[i]++;
+    rt_gen++;
+    for (int i = 0; i < 6; i++) tex_gen[i]++;
     for (int i = 0; i < 16; i++) {
         st.viewport[i][2] = 1280; st.viewport[i][3] = 720;
         st.scissor[i][2] = 16384; st.scissor[i][3] = 16384;
@@ -3960,12 +3968,15 @@ static const char *snap_reason = "?";
 // A snapshot of texture object t, or of its image through another object (BOTW reaches some targets through more than
 // one), is stale once t is written. SAVAGEWIND_VK_SNAP_BY_OBJECT=1: by object only, as before.
 static uint64_t snap_wpass[8];  // (the pass the latest write into the slot's target was in, since its snapshot; 0: none)
+static uint8_t snap_mask;
 static uint64_t snap_pass_now(void);
 static void snapshots_invalidate(NvnTexture *t) {
+    if (!snap_mask) return;
     static int by_obj = -1;
     if (by_obj < 0) by_obj = getenv("SAVAGEWIND_VK_SNAP_BY_OBJECT") ? atoi(getenv("SAVAGEWIND_VK_SNAP_BY_OBJECT")) != 0 : !g_vk.is_mali;
     TexBackend *be = t && !by_obj ? (TexBackend *)t->backend : NULL;
-    for (int i = 0; i < 8; i++) {
+    for (uint32_t m = snap_mask; m; m &= m - 1) {
+        int i = __builtin_ctz(m);
         if (!(!t || snap_tex[i] == t || (be && snap_be[i] == be))) continue;
         if (t) snap_wpass[i] = snap_pass_now();
         if (snap_ok[i]) { snap_ok[i] = false; snap_why[i] = snap_reason; }
@@ -4194,6 +4205,10 @@ static void resolve_feedback(Prog *pr) {
     static int off = -1;
     if (off < 0) off = getenv("SAVAGEWIND_NO_FEEDBACK") != NULL;
     if (off) return;
+    static struct { const ShaderInfo *vi, *fi; const void *tpool; uint64_t rt_gen, tgen0, tgen1; } rf_clean;
+    if (rf_clean.vi == pr->vi && rf_clean.fi == pr->fi && rf_clean.tpool == st.tpool &&
+        rf_clean.rt_gen == rt_gen && rf_clean.tgen0 == tex_gen[0] && rf_clean.tgen1 == tex_gen[1])
+        return;
     ShaderInfo *infos[2] = {pr->vi, pr->fi};
     for (int sg = 0; sg < 2; sg++)
         for (int i = 0; i < infos[sg]->ntex; i++) {
@@ -4525,6 +4540,7 @@ static void resolve_feedback(Prog *pr) {
             feedback_any_type[nfeedback] = false;
             feedback_view[nfeedback++] = vk_image_view(dst, VK_IMAGE_VIEW_TYPE_2D, src->format, 0, 1, 0, 1, id, sa);
             if (si < 0) { static int rr; si = rr++ & 7; snap_tex[si] = t; }
+            snap_mask |= (uint8_t)(1u << si);
             snap_ok[si] = true;
             snap_cleared[si] = false;
             snap_wpass[si] = 0;
@@ -4533,6 +4549,10 @@ static void resolve_feedback(Prog *pr) {
             snap_pass[si] = pass_serial + 1;  // (the pass that begins next, after this one ends)
             st.rt_dirty = true;
         }
+    if (!nfeedback && !draw_feedback)
+        rf_clean = (__typeof__(rf_clean)){pr->vi, pr->fi, st.tpool, rt_gen, tex_gen[0], tex_gen[1]};
+    else
+        rf_clean.vi = NULL;
 }
 
 // ================================================================== resource binding
@@ -5913,16 +5933,34 @@ static bool gw_ubo_copied(int stage, uint32_t cbuf_mask) {  // a constant buffer
 // cbufs[stage]: the constant buffers each stage reads (ShaderInfo.cbuf_mask; 0: none).
 static void gw_check(const uint32_t cbufs[6], bool vertices, uint64_t iaddr, uint64_t isize) {
     if (!ngw) return;
+    static uint64_t chk_vbuf_gen, chk_vbuf_gw, chk_ubuf_gen[6], chk_ubuf_gw[6], chk_ubuf_gc[6];
+    static uint32_t chk_cbuf_mask[6];
+    uint64_t gc = __atomic_load_n(&gcopy_gen, __ATOMIC_RELAXED);
     bool wait = false;
-    for (int s = 0; s < 6 && !wait; s++)
-        if (cbufs[s]) wait = gw_ubo_copied(s, cbufs[s]);
+    for (int s = 0; s < 6 && !wait; s++) {
+        uint32_t m = cbufs[s];
+        if (!m) continue;
+        if (chk_ubuf_gen[s] == ubuf_gen[s] && chk_ubuf_gw[s] == gw_gen && chk_ubuf_gc[s] == gc && (chk_cbuf_mask[s] & m) == m)
+            continue;
+        wait = gw_ubo_copied(s, m);
+        if (!wait) {
+            if (chk_ubuf_gen[s] != ubuf_gen[s] || chk_ubuf_gw[s] != gw_gen || chk_ubuf_gc[s] != gc) {
+                chk_ubuf_gen[s] = ubuf_gen[s]; chk_ubuf_gw[s] = gw_gen; chk_ubuf_gc[s] = gc; chk_cbuf_mask[s] = m;
+            } else {
+                chk_cbuf_mask[s] |= m;
+            }
+        }
+    }
     VkBuffer b;
     VkDeviceSize off;
     // (the overlap first: it is rarely there, and guest_direct is the dearer of the two)
-    for (int i = 0; i < 16 && vertices && !wait; i++) {
-        Range v = st.vbuf[i];
-        uint64_t n = v.size ? v.size : 256;
-        if (v.addr && gw_overlaps(v.addr, v.addr + n)) wait = !guest_direct(v.addr, n, &b, &off);
+    if (vertices && !wait && (chk_vbuf_gen != vbuf_gen || chk_vbuf_gw != gw_gen)) {
+        for (int i = 0; i < 16 && !wait; i++) {
+            Range v = st.vbuf[i];
+            uint64_t n = v.size ? v.size : 256;
+            if (v.addr && gw_overlaps(v.addr, v.addr + n)) wait = !guest_direct(v.addr, n, &b, &off);
+        }
+        if (!wait) { chk_vbuf_gen = vbuf_gen; chk_vbuf_gw = gw_gen; }
     }
     if (iaddr && !wait && gw_overlaps(iaddr, iaddr + isize)) wait = !guest_direct(iaddr, isize, &b, &off);
     if (!wait) return;
@@ -8762,8 +8800,8 @@ have_pipe:
     }
 
     // ---- vertex streams: the range this draw can read, copied once per submission
-    for (int s = 0; s < 17; s++) {
-        if (!(pipe_memo.k.s.used_streams & (1u << s))) continue;
+    for (uint32_t sm = pipe_memo.k.s.used_streams & ((1u << 17) - 1); sm; sm &= sm - 1) {
+        int s = __builtin_ctz(sm);
         VkSpan sp;
         if (s == ZERO_BINDING) {
             static const float zero[4] = {0, 0, 0, 1};
@@ -10935,6 +10973,7 @@ void vk_list_stats_frame(void) {  // (device.c, each present)
 
 static void exec_list(uint64_t handle, int depth) {
     uint64_t p = handle;
+    if (depth == 0) { tex_gen[0]++; tex_gen[1]++; }
     if (lst_on < 0) lst_on = getenv("SAVAGEWIND_VK_LIST_STATS") != NULL;
     if (lst_on) lst_begin(depth);
     for (int guard = 0; guard < 10000000; guard++) {
@@ -10994,10 +11033,12 @@ static void exec_list(uint64_t handle, int depth) {
             break;
         case CMD_BIND_VERTEX_BUFFERS:
             for (uint64_t i = 0; i < r->x[1] && r->x[0] + i < 16; i++) memcpy(&st.vbuf[r->x[0] + i], (uint8_t *)x + i * 16, 16);
+            vbuf_gen++;
             break;
         case CMD_BIND_UNIFORM_BUFFERS:
             for (uint64_t i = 0; i < r->x[2] && r->x[1] + i < 18 && r->x[0] < 6; i++)
                 memcpy(&st.ubuf[r->x[0]][r->x[1] + i], (uint8_t *)x + i * 16, 16);
+            if (r->x[0] < 6) ubuf_gen[r->x[0]]++;
             if (g_debug_frame && getenv("SAVAGEWIND_LOG_BINDS")) {
                 LOG("[bind] ubuf stage %llu slots %llu+%llu:", (unsigned long long)r->x[0], (unsigned long long)r->x[1],
                     (unsigned long long)r->x[2]);
@@ -11015,6 +11056,7 @@ static void exec_list(uint64_t handle, int depth) {
         case CMD_BIND_TEXTURES:
             for (uint64_t i = 0; i < r->x[2] && r->x[1] + i < 32 && r->x[0] < 6; i++)
                 memcpy(&st.tex[r->x[0]][r->x[1] + i], (uint8_t *)x + i * 8, 8);
+            if (r->x[0] < 6) tex_gen[r->x[0]]++;
             if (g_debug_frame && getenv("SAVAGEWIND_LOG_BINDS")) {
                 LOG("[bind] stage %llu slots %llu+%llu:", (unsigned long long)r->x[0], (unsigned long long)r->x[1],
                     (unsigned long long)r->x[2]);
@@ -11033,12 +11075,13 @@ static void exec_list(uint64_t handle, int depth) {
             if (r->x[3] >= GUEST_LO && r->x[3] + r->x[2] * 8 <= GUEST_HI)
                 for (uint64_t i = 0; i < r->x[2] && r->x[1] + i < 32 && r->x[0] < 6; i++)
                     memcpy(&st.tex[r->x[0]][r->x[1] + i], (const uint8_t *)(uintptr_t)r->x[3] + i * 8, 8);
+            if (r->x[0] < 6) tex_gen[r->x[0]]++;
             break;
         case CMD_BIND_IMAGES:
             for (uint64_t i = 0; i < r->x[2] && r->x[1] + i < 8 && r->x[0] < 6; i++)
                 memcpy(&st.img[r->x[0]][r->x[1] + i], (uint8_t *)x + i * 8, 8);
             break;
-        case CMD_SET_TEXTURE_POOL: st.tpool = (NvnDescPool *)(uintptr_t)r->x[0]; break;
+        case CMD_SET_TEXTURE_POOL: st.tpool = (NvnDescPool *)(uintptr_t)r->x[0]; tex_gen[0]++; tex_gen[1]++; break;
         case CMD_SET_SAMPLER_POOL: st.spool = (NvnDescPool *)(uintptr_t)r->x[0]; break;
         case CMD_SET_RENDER_TARGETS: {
             const struct { uint64_t tex[8]; NvnTextureView views[8]; uint8_t has_view[8]; uint64_t depth;
@@ -11056,7 +11099,7 @@ static void exec_list(uint64_t handle, int depth) {
             st.rt.has_dview = rt->has_dview;
             static int always = -1;
             if (always < 0) always = getenv("SAVAGEWIND_VK_PASS_RESTART") != NULL;
-            if (always || memcmp(&prev, &st.rt, sizeof prev)) st.rt_dirty = true;
+            if (always || memcmp(&prev, &st.rt, sizeof prev)) { st.rt_dirty = true; rt_gen++; }
             if (nfbrun && memcmp(&prev, &st.rt, sizeof prev)) fbdump_flush();
             if (logfb > 0 && !fbskip && memcmp(&prev, &st.rt, sizeof prev))
                 LOG("[feedback] targets %d (%ux%u fmt %#x) depth %d after %u draws\n", st.rt.ncolor, st.rt.ncolor && st.rt.color[0] ? st.rt.color[0]->width : 0,
