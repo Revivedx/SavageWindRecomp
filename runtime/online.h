@@ -166,8 +166,11 @@ typedef struct {
 #pragma pack(pop)
 void online_set_local_enemies(const float centre[3], const OnlineEnemy *e, int n);  // (the host's frame loop)
 // a hit on one of the host's enemies here (the others: its id, the life it took), for his game; his game takes them
-void online_send_hit(uint32_t id, int32_t damage);
-int online_take_hits(uint32_t *id, int32_t *damage, int max);
+// (element: ONLINE_ELEM_*, the element arrow of the local player's that made it: its owner's game gives the enemy the
+// element's state, burning, frozen or shocked, which a puppet, without a chemical, doesn't take itself)
+enum { ONLINE_ELEM_NONE, ONLINE_ELEM_FIRE, ONLINE_ELEM_ICE, ONLINE_ELEM_ELECTRIC, ONLINE_ELEM_COUNT };
+void online_send_hit(uint32_t id, int32_t damage, uint8_t element);
+int online_take_hits(uint32_t *id, int32_t *damage, uint8_t *element, int max);
 // the enemies this game has for real for the others (ESTATE), to the host's; his game takes them, each with the
 // slot it came from
 // What enemies dropped (loot), everyone's: the host's game keeps the list (each one by an id of its own, the game it

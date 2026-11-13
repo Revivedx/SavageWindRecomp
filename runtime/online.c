@@ -37,7 +37,7 @@ typedef int sock_t;
 #include "rt.h"
 
 #define MAGIC 0x4c4f5753u  // "SWOL"
-#define PROTOCOL 23
+#define PROTOCOL 24  // (24: HIT carries the element of the shot that made it, ONLINE_ELEM_*)
 static volatile float g_local_hour = -1;  // (the local game's hour, from the frame loop: online_set_local_hour)
 #define SEND_HZ 20
 #define INTERP_NS 100000000ull  // the others are drawn this far behind what was last heard (smooth between updates)
@@ -248,8 +248,8 @@ static bool srv_message(Server *sv, int i, uint8_t type, const uint8_t *p, int l
     case M_ENEMIES:  // (from the host's own game)
         if (len >= 13) srv_broadcast(sv, i, M_ENEMIES, p, len, NULL, 0);
         break;
-    case M_HIT:  // (to the enemy's owner's game: the others drop it)
-        if (len >= 8) srv_broadcast(sv, i, M_HIT, p, 8, NULL, 0);
+    case M_HIT:  // (to the enemy's owner's game: the others drop it; id, damage, element)
+        if (len >= 9) srv_broadcast(sv, i, M_HIT, p, 9, NULL, 0);
         break;
     case M_ESTATE:  // (an owner's enemies, to the host's game, with where they come from)
         if (len >= 1) srv_broadcast(sv, i, M_ESTATE, &id, 1, p, len);
@@ -429,7 +429,7 @@ static struct {
     int nout;
     uint16_t ping;
     struct { uint64_t t; float centre[3]; int n; OnlineEnemy e[ONLINE_ENEMIES]; } en[2];  // ENEMIES: the last two
-    struct { uint32_t id; int32_t damage; } hit_out[32], hit_in[64];  // (HIT: to send / come, for the frame loop)
+    struct { uint32_t id; int32_t damage; uint8_t element; } hit_out[32], hit_in[64];  // (HIT: to send / come)
     int nhit_out, nhit_in;
     OnlineEnemy est_out[ONLINE_ENEMIES], est_in[64];  // (ESTATE: ours to send, the owners' come: the host's game)
     uint8_t est_from[64];
@@ -567,9 +567,11 @@ void online_set_local_enemies(const float centre[3], const OnlineEnemy *e, int n
     pthread_mutex_unlock(&g_pose_lock);
 }
 
-void online_send_hit(uint32_t id, int32_t damage) {
+void online_send_hit(uint32_t id, int32_t damage, uint8_t element) {
     pthread_mutex_lock(&g.lock);
-    if (g.nhit_out < 32) g.hit_out[g.nhit_out].id = id, g.hit_out[g.nhit_out].damage = damage, g.nhit_out++;
+    if (g.nhit_out < 32)
+        g.hit_out[g.nhit_out].id = id, g.hit_out[g.nhit_out].damage = damage, g.hit_out[g.nhit_out].element = element,
+        g.nhit_out++;
     pthread_mutex_unlock(&g.lock);
 }
 
@@ -685,10 +687,10 @@ int online_take_estates(OnlineEnemy *e, uint8_t *from, int max) {
     return n;
 }
 
-int online_take_hits(uint32_t *id, int32_t *damage, int max) {
+int online_take_hits(uint32_t *id, int32_t *damage, uint8_t *element, int max) {
     pthread_mutex_lock(&g.lock);
     int n = g.nhit_in < max ? g.nhit_in : max;
-    for (int k = 0; k < n; k++) id[k] = g.hit_in[k].id, damage[k] = g.hit_in[k].damage;
+    for (int k = 0; k < n; k++) id[k] = g.hit_in[k].id, damage[k] = g.hit_in[k].damage, element[k] = g.hit_in[k].element;
     g.nhit_in = 0;
     pthread_mutex_unlock(&g.lock);
     return n;
@@ -1007,9 +1009,10 @@ static bool cl_message(uint8_t type, const uint8_t *p, int len) {
         }
         break;
     case M_HIT:
-        if (len >= 8 && g.nhit_in < 64) {
+        if (len >= 9 && g.nhit_in < 64) {
             memcpy(&g.hit_in[g.nhit_in].id, p, 4);
             memcpy(&g.hit_in[g.nhit_in].damage, p + 4, 4);
+            g.hit_in[g.nhit_in].element = p[8] < ONLINE_ELEM_COUNT ? p[8] : ONLINE_ELEM_NONE;
             g.nhit_in++;
         }
         break;
@@ -1109,13 +1112,14 @@ static void *cl_thread(void *arg) {
         }
         if (g.state != ONLINE_CONNECTED) continue;
         {   // the hits on the host's enemies here
-            uint8_t hb[32][8];
+            uint8_t hb[32][9];  // (id, damage, element)
             pthread_mutex_lock(&g.lock);
             int nh = g.nhit_out;
-            for (int k = 0; k < nh; k++) memcpy(hb[k], &g.hit_out[k].id, 4), memcpy(hb[k] + 4, &g.hit_out[k].damage, 4);
+            for (int k = 0; k < nh; k++)
+                memcpy(hb[k], &g.hit_out[k].id, 4), memcpy(hb[k] + 4, &g.hit_out[k].damage, 4), hb[k][8] = g.hit_out[k].element;
             g.nhit_out = 0;
             pthread_mutex_unlock(&g.lock);
-            for (int k = 0; k < nh && alive; k++) alive = send_msg(s, M_HIT, hb[k], 8, NULL, 0);
+            for (int k = 0; k < nh && alive; k++) alive = send_msg(s, M_HIT, hb[k], 9, NULL, 0);
         }
         {   // the weapons picked up here
             uint8_t pb[8][52];

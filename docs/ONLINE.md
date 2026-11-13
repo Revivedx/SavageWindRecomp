@@ -427,8 +427,16 @@ his enemy's life (at 0 the enemy's own AI has it die, drops and all; it doesn't 
 (ActorLink ChemicalUser Dummy): a fire both games have, the camp's, burns the enemy in its owner's game already, and
 a puppet burning in it too sent that again as a player's hits (`SAVAGEWIND_ONLINE_FIRE_TEST=<s>`: a lit FireWood under
 the first puppet that many seconds after it is made, in this game only; before, its owner's enemy died of it, with
-nobody near). So a fire, ice or shock arrow on a puppet takes only the arrow's damage: its element doesn't reach the
-owner's enemy yet.
+nobody near). A player's element arrow on a puppet sends its element with the hit instead (protocol 24, HIT's
+element, ONLINE_ELEM_*): his game keeps where its own fire, ice and shock arrows were in the last half second, and a
+puppet hit within 2.5 m of one was hit by that element. The owner's game makes a source of the element a metre over
+its enemy, deleted 4 s later: fire `FireRodLv1Fire` (burning, no damage of its own), electric `ThunderRodLv1Thunder`
+(shocked, none of its own), ice `ExpandIceField` (frozen; its own 10 damage is taken back for its first second, the
+arrow's damage being the hit's). Found with `SAVAGEWIND_ONLINE_ELEMENT_TEST=<actor>[|<actor>...],<s>` on the
+Great Plateau's Bokoblins: `ExpandFireField` burns too but with its own damage, `ExpandElectricField` killed one of 13
+life, the rods' ice froze nothing, and the arrows (FireArrow, IceArrow, ElectricArrow) made in place do nothing without
+a bow's shot. `SAVAGEWIND_ONLINE_ELEM_HIT_TEST=<s>` sends a hit of 1 with fire, ice and electric to three puppets: in
+the host's game each was set burning, frozen and shocked, and each was left at 12 of 13 life.
 
 Their attacks on the others: a player's own life is the same s32 (player +0x848, quarter hearts). When one of the
 host's enemies starts an AS with Attack or Kick in its name, a third of a second later (STRIKE_FRAMES) the local

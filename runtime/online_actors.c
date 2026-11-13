@@ -743,6 +743,28 @@ void rt_online_arrow(uint64_t action) {
     g_arrow_ring[k & (ARROW_RING - 1)] = a;
 }
 
+// The local Link's element arrows lately: where each was last seen (in flight, or where it went: it hit there), so a
+// puppet hit near one is known to be hit by that element (ONLINE_ELEM_*: the puppet, without a chemical, isn't set
+// burning, frozen or shocked itself; its owner's game is told so)
+#define ELEM_SEEN 8
+static struct { uint8_t elem; float pos[3]; uint64_t t; } g_elem_seen[ELEM_SEEN];  // (one per shot slot)
+
+static uint8_t elem_of_kind(int kind) {
+    return kind == ONLINE_K_FIRE_ARROW ? ONLINE_ELEM_FIRE : kind == ONLINE_K_ICE_ARROW ? ONLINE_ELEM_ICE
+         : kind == ONLINE_K_ELECTRIC_ARROW ? ONLINE_ELEM_ELECTRIC : ONLINE_ELEM_NONE;
+}
+
+// the element of one of the local Link's arrows seen within r of p in the last half second, else ONLINE_ELEM_NONE
+static uint8_t elem_near(const float p[3], float r) {
+    uint64_t now = plat_now_ns();
+    for (int k = 0; k < ELEM_SEEN; k++) {
+        if (!g_elem_seen[k].elem || now - g_elem_seen[k].t > 500000000ull) continue;
+        float dx = g_elem_seen[k].pos[0] - p[0], dy = g_elem_seen[k].pos[1] - p[1], dz = g_elem_seen[k].pos[2] - p[2];
+        if (dx * dx + dy * dy + dz * dz < r * r) return g_elem_seen[k].elem;
+    }
+    return ONLINE_ELEM_NONE;
+}
+
 // What the local Link threw or shot: his rune's bombs (rt_online_bomb), his arrows in flight (rt_online_arrow), each
 // followed from then until it goes (held, thrown, flying, stuck: as it is in the world), a bomb that goes having gone
 // off (the Remote Bomb's bombs go when they do)
@@ -803,6 +825,10 @@ static void sample_shots(Cpu *c, uint64_t player, OnlineShots *out) {
         bool gone = !alive(tr[k].a, tr[k].w);
         // a bomb goes off as it starts its AS "Explode" (it goes some frames later)
         if (!gone) memcpy(tr[k].m, (const float *)(uintptr_t)(tr[k].a + 0x398), sizeof tr[k].m);
+        if (k < ELEM_SEEN && elem_of_kind(tr[k].kind)) {  // (an element arrow: where it is, or went, as of now)
+            g_elem_seen[k].elem = elem_of_kind(tr[k].kind), g_elem_seen[k].t = plat_now_ns();
+            g_elem_seen[k].pos[0] = tr[k].m[3], g_elem_seen[k].pos[1] = tr[k].m[7], g_elem_seen[k].pos[2] = tr[k].m[11];
+        }
         // (gone without it: put away, cancelled - no explosion)
         if (IS_BOMB(tr[k].kind) && !tr[k].boomed && !gone && !strcmp(playing(c, tr[k].a, 0, 0), "Explode")) {
             memmove(&booms[1], &booms[0], sizeof booms[0] * (ONLINE_BOOMS - 1));
@@ -1467,17 +1493,71 @@ static bool own_ready(Cpu *c, Own *o, const OnlineEnemy *e) {
 }
 
 // the others' hits on ours: their life goes down by it (at 0 its own AI has it die)
-static void own_hits(void) {
+// An element's state on one of ours, as another player's element arrow on its puppet there would have set it: a source
+// of it made a metre over the enemy, deleted 4 s later (tested on the Great Plateau's Bokoblins, 2026-11-13,
+// SAVAGEWIND_ONLINE_ELEMENT_TEST): fire FireRodLv1Fire (burning, no damage of its own), electric ThunderRodLv1Thunder
+// (shocked, none of its own; ExpandElectricField killed a 13-life Bokoblin), ice ExpandIceField (frozen, but 10 damage
+// of its own: taken back for its first second, the arrow's damage being the hit's; neither rod's ice froze). The
+// arrows themselves made in place do nothing (they need a bow's shot)
+#define ELEM_SOURCES 4
+static struct { Piece p; uint32_t gid; int32_t keep; uint64_t made, until; uint8_t elem; } g_esrc[ELEM_SOURCES];
+static const char *const k_elem_source[ONLINE_ELEM_COUNT] = {NULL, "FireRodLv1Fire", "ExpandIceField",
+                                                             "ThunderRodLv1Thunder"};
+
+static void elem_start(uint32_t gid, uint8_t elem, int32_t keep) {
+    if (elem == ONLINE_ELEM_NONE || elem >= ONLINE_ELEM_COUNT) return;
+    for (int k = 0; k < ELEM_SOURCES; k++)
+        if (!g_esrc[k].gid) {
+            memset(&g_esrc[k], 0, sizeof g_esrc[k]);
+            g_esrc[k].gid = gid, g_esrc[k].elem = elem, g_esrc[k].keep = keep;
+            g_esrc[k].until = plat_now_ns() + 4000000000ull;
+            return;
+        }
+}
+
+static void elem_update(Cpu *c) {
+    uint64_t now = plat_now_ns();
+    for (int k = 0; k < ELEM_SOURCES; k++) {
+        if (!g_esrc[k].gid) continue;
+        Own *o = own_find(g_esrc[k].gid);
+        bool there = o && o->state == OWN_HAVE && alive(o->actor, o->w);
+        if (!there || now > g_esrc[k].until) {
+            delete_piece(c, &g_esrc[k].p);
+            memset(&g_esrc[k], 0, sizeof g_esrc[k]);
+            continue;
+        }
+        if (!g_esrc[k].made) {
+            piece_update(c, 0, &g_esrc[k].p, k_elem_source[g_esrc[k].elem], "element");
+            if (!g_esrc[k].p.actor) continue;
+            const float *m = (const float *)(uintptr_t)(o->actor + 0x398);
+            float sm[12] = {1, 0, 0, m[3], 0, 1, 0, m[7] + 1.0f, 0, 0, 1, m[11]};
+            call(c, FN_SET_MTX, g_esrc[k].p.actor, (uint64_t)(uintptr_t)sm, 0, 0, 0, 0);
+            g_esrc[k].made = now;
+            LOG("[online] %s on our %u\n", k_elem_source[g_esrc[k].elem], g_esrc[k].gid);
+            continue;
+        }
+        int32_t *life = (int32_t *)(uintptr_t)(o->actor + ENEMY_LIFE);
+        if (g_esrc[k].elem == ONLINE_ELEM_ICE && now - g_esrc[k].made < 1000000000ull && *life > 0 && *life < g_esrc[k].keep)
+            *life = g_esrc[k].keep;  // (the field's own damage taken back)
+    }
+}
+
+static void own_hits(Cpu *c) {
     uint32_t hid[64];
     int32_t hd[64];
-    int nh = online_take_hits(hid, hd, 64);
+    uint8_t he[64];
+    int nh = online_take_hits(hid, hd, he, 64);
     for (int h = 0; h < nh; h++) {
         Own *o = own_find(hid[h]);
         if (!o || o->state != OWN_HAVE || !alive(o->actor, o->w)) continue;
         int32_t *life = (int32_t *)(uintptr_t)(o->actor + ENEMY_LIFE);
-        LOG("[online] a hit on our %u: %d of its %d\n", hid[h], hd[h], *life);
+        LOG("[online] a hit on our %u: %d of its %d%s\n", hid[h], hd[h], *life,
+            he[h] == ONLINE_ELEM_FIRE ? " (fire)" : he[h] == ONLINE_ELEM_ICE ? " (ice)"
+            : he[h] == ONLINE_ELEM_ELECTRIC ? " (electric)" : "");
         *life = *life > hd[h] ? *life - hd[h] : 0;
+        if (*life > 0) elem_start(hid[h], he[h], *life);
     }
+    elem_update(c);
 }
 
 // the host's game: every enemy of everyone's, its state and its owner (slot)
@@ -1537,7 +1617,7 @@ static bool can_own(const OnlinePlayer *p, int i, int me) {
 }
 
 static void enemies_host(Cpu *c, uint64_t player, const float link[3], const OnlinePlayer *pl, int me) {
-    own_hits();
+    own_hits(c);
     // the owners' states of theirs
     static OnlineEnemy st[64];
     uint8_t from[64];
@@ -1576,6 +1656,53 @@ static void enemies_host(Cpu *c, uint64_t player, const float link[3], const Onl
             for (int k = 0; k < OWNS; k++)
                 if (g_own[k].state == OWN_HAVE && alive(g_own[k].actor, g_own[k].w))
                     *(int32_t *)(uintptr_t)(g_own[k].actor + ENEMY_LIFE) = 0, LOG("[online] kill test: %u\n", g_own[k].gid);
+    }
+    {   // (test: SAVAGEWIND_ONLINE_ELEMENT_TEST=<actor>[|<actor>...],<s>: that many seconds in, each actor (an element's
+        // source: a rod's bullet, a field, an arrow) made at another enemy we have for real, 8 s apart, its life and AS
+        // logged for 6 s: which of them sets an enemy burning, frozen or shocked, for a player's element arrow on a
+        // puppet in another game)
+        static uint64_t t0, until, next;
+        static Piece src;
+        static int who = -1, last_life, turn, used[OWNS];
+        static char name[40], last_as[40];
+        const char *et = getenv("SAVAGEWIND_ONLINE_ELEMENT_TEST");
+        if (et && !t0) t0 = plat_now_ns();
+        const char *comma = et ? strchr(et, ',') : NULL;
+        if (et && who < 0 && name[0] != '-' && plat_now_ns() - t0 >= (uint64_t)((comma ? atof(comma + 1) : 120) * 1e9) &&
+            plat_now_ns() >= next) {
+            const char *s = et;  // (the turn-th name of the list)
+            for (int k = 0; k < turn && s; k++) s = strchr(s, '|'), s = s ? s + 1 : NULL;
+            if (!s || (comma && s > comma)) name[0] = '-';
+            else {
+                const char *e = s;
+                while (*e && *e != '|' && *e != ',') e++;
+                snprintf(name, sizeof name, "%.*s", (int)(e - s), s);
+                for (int k = 0; k < OWNS && who < 0; k++)
+                    if (g_own[k].state == OWN_HAVE && !used[k] && alive(g_own[k].actor, g_own[k].w)) who = k, used[k] = 1;
+            }
+        }
+        if (until && plat_now_ns() >= until) {  // (this one done: the next in 8 s)
+            delete_piece(c, &src);
+            who = -1, until = 0, turn++, next = plat_now_ns() + 2000000000ull;
+        }
+        if (who >= 0 && !until) {
+            piece_update(c, 0, &src, name, "element test");
+            if (src.actor && alive(g_own[who].actor, g_own[who].w)) {
+                const float *m = (const float *)(uintptr_t)(g_own[who].actor + 0x398);
+                float sm[12] = {1, 0, 0, m[3], 0, 1, 0, m[7] + 1.0f, 0, 0, 1, m[11]};
+                call(c, FN_SET_MTX, src.actor, (uint64_t)(uintptr_t)sm, 0, 0, 0, 0);
+                until = plat_now_ns() + 6000000000ull;
+                last_life = *(int32_t *)(uintptr_t)(g_own[who].actor + ENEMY_LIFE);
+                LOG("[online] element test: %s at our %u (life %d)\n", name, g_own[who].gid, last_life);
+            }
+        }
+        if (until && plat_now_ns() < until && alive(g_own[who].actor, g_own[who].w)) {
+            int life = *(int32_t *)(uintptr_t)(g_own[who].actor + ENEMY_LIFE);
+            const char *as = playing(c, g_own[who].actor, 0, 0);
+            if (life != last_life || strcmp(as, last_as))
+                LOG("[online] element test: %u life %d, AS %s\n", g_own[who].gid, life, as);
+            last_life = life, snprintf(last_as, sizeof last_as, "%s", as);
+        }
     }
     // ours: their state; gone (died, or the game removed them): gone for everyone
     for (int k = 0; k < OWNS; k++) {
@@ -1782,7 +1909,7 @@ static void enemies_client(Cpu *c, uint64_t player, int me) {
     int n = online_enemies(centre, e, &age);
     if (n < 0) return;  // (no host's enemies ever: his game is older, or none came)
     bool fresh = age < 1000000000ull;
-    own_hits();
+    own_hits(c);
     if (fresh) {
         // ours: made when they come to us; no longer ours (or no longer anyone's): gone here
         for (int k = 0; k < n; k++)
@@ -1923,8 +2050,13 @@ static void enemies_show(Cpu *c, uint64_t player, OnlineEnemy *e, int n, bool fr
         // hit here: what it lost since it was set goes to his game; its life is his (never 0 here: his dies there)
         int32_t *life = (int32_t *)(uintptr_t)(p->actor + ENEMY_LIFE);
         if (e[k].life > 0 && g_puppet[s2].life > 0 && *life < g_puppet[s2].life) {  // (dead in his game: no more)
-            online_send_hit(e[k].id, g_puppet[s2].life - *life);
-            LOG("[online] we hit the host's %s %u: %d\n", e[k].name, e[k].id, g_puppet[s2].life - *life);
+            const float *pm = (const float *)(uintptr_t)(p->actor + 0x398);
+            float at[3] = {pm[3], pm[7], pm[11]};
+            uint8_t elem = elem_near(at, 2.5f);  // (one of our element arrows there: its element goes with it)
+            online_send_hit(e[k].id, g_puppet[s2].life - *life, elem);
+            LOG("[online] we hit the host's %s %u: %d%s\n", e[k].name, e[k].id, g_puppet[s2].life - *life,
+                elem == ONLINE_ELEM_FIRE ? " (fire)" : elem == ONLINE_ELEM_ICE ? " (ice)"
+                : elem == ONLINE_ELEM_ELECTRIC ? " (electric)" : "");
         }
         *life = g_puppet[s2].life = e[k].life > 1 ? e[k].life : 1;
         // (again each frame until it plays: a just made actor can't yet; given up after a second)
@@ -1951,6 +2083,39 @@ static void enemies_show(Cpu *c, uint64_t player, OnlineEnemy *e, int n, bool fr
         if (d > 0) continue;
         delete_piece(c, &g_puppet[j].p), delete_piece(c, &g_puppet[j].w), delete_piece(c, &g_puppet[j].sh);
         g_puppet[j].id = 0;
+    }
+    {   // (test: SAVAGEWIND_ONLINE_ELEM_HIT_TEST=<s>: that many seconds after the first copy here, a hit of 1 with fire,
+        // then ice, then electric, each on another copy 8 s apart, as our element arrows on them would send: its owner's
+        // game gives the enemy the element's state)
+        static const char *ht;
+        static uint64_t t0;
+        static int turn;
+        static uint32_t done_ids[ONLINE_ELEM_COUNT];
+        if (!ht) ht = getenv("SAVAGEWIND_ONLINE_ELEM_HIT_TEST") ? getenv("SAVAGEWIND_ONLINE_ELEM_HIT_TEST") : "";
+        if (*ht && !t0)
+            for (int j = 0; j < PUPPETS && !t0; j++)
+                if (g_puppet[j].id && g_puppet[j].p.actor) t0 = plat_now_ns();
+        static bool logged[ONLINE_ELEM_COUNT];
+        for (int q = 0; *ht && t0 && q < turn; q++)  // (4 s after each: its life in the host's list, once)
+            if (!logged[q] && plat_now_ns() - t0 >= (uint64_t)((atof(ht) + 8.0 * q + 4.0) * 1e9))
+                for (int k = 0; k < n; k++)
+                    if (e[k].id == done_ids[q]) {
+                        LOG("[online] element hit test: %u now at %d life (element %d)\n", e[k].id, e[k].life, q + 1);
+                        logged[q] = true;
+                        break;
+                    }
+        if (*ht && t0 && turn < ONLINE_ELEM_COUNT - 1 &&
+            plat_now_ns() - t0 >= (uint64_t)((atof(ht) + 8.0 * turn) * 1e9))
+            for (int k = 0; k < n; k++) {
+                bool used = false;
+                for (int q = 0; q < turn; q++) used |= done_ids[q] == e[k].id;
+                if (used || e[k].owner == me || e[k].life <= 1) continue;
+                uint8_t elem = (uint8_t)(ONLINE_ELEM_FIRE + turn);
+                online_send_hit(e[k].id, 1, elem);
+                LOG("[online] element hit test: %u, element %d\n", e[k].id, elem);
+                done_ids[turn++] = e[k].id;
+                break;
+            }
     }
     {   // (test: SAVAGEWIND_ONLINE_FIRE_TEST=<s>: that many seconds after the first copy here, a lit campfire, FireWood,
         // under it, made in this game only: what the copy loses in it is no player's, and its owner's enemy isn't in it)
