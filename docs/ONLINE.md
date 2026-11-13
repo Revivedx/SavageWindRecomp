@@ -16,7 +16,9 @@ Savage Wind: the same kind of session (a host, up to 8 players), its own protoco
 - `SAVAGEWIND_ONLINE=host` or `SAVAGEWIND_ONLINE=<address>` creates or joins a session at start (shortcuts, tests).
 - The settings are in `online.ini` in the data folder.
 
-Each player plays their own game (their save, their world: enemies, chests and quests are not shared); the others are
+Each player plays their own game (their save, their world; shared with the others: the host's enemies and what they
+drop, the quests' progress, the time of day, weapons picked up; not shared: chests opened, but a camp's opens when
+its enemies are dead everywhere); the others are
 in it as Links: each other player is a Link in the world where he is, posed as his Link is in his game (his skeleton,
 bone by bone: walking, climbing, every swing of a sword, a shield's guard, drawing a bow, throwing...), in the armour he wears
 and with the weapon, shield, bow, sheath and quiver he carries, in his hands or on his back as in his game, with his
