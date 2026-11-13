@@ -1008,3 +1008,4 @@ T("Type or paste the folder path below instead.", "Geben Sie stattdessen unten d
 T("Folder path", "Ordnerpfad")
 T("Type or paste path...", "Pfad eingeben oder einfügen...")
 T("Enter the path to your extracted game files folder directly if the system folder picker does not open.", "Geben Sie den Pfad zu Ihrem Ordner mit den entpackten Spieldateien direkt ein, falls sich die System-Ordnerauswahl nicht öffnet.")
+T("Stopped. Set up again to finish.", "Angehalten. Richte es erneut ein, um es abzuschließen.")

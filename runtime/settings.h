@@ -231,6 +231,8 @@ extern Settings g_settings;
 
 void settings_load(void);
 void settings_save(void);
+bool settings_save_to(const char *path);  // (savagewind settings: the values as they would be saved, elsewhere)
+void settings_reload(void);                // reads savagewind.ini again (savagewind settings set)
 // Frame rate > Match display: fps_limit becomes the highest offered rate the display (hz) can show, at least 30 (a
 // 280 Hz display: 240; a 60 Hz one: 60). Nothing with another rate chosen or hz unknown (runtime/window_size.c).
 void settings_fps_for_display(float hz);

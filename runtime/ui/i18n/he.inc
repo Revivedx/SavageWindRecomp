@@ -1007,3 +1007,4 @@ T("Type or paste the folder path below instead.", "הקלידו או הדביק�
 T("Folder path", "נתיב התיקייה")
 T("Type or paste path...", "הקלידו או הדביקו נתיב...")
 T("Enter the path to your extracted game files folder directly if the system folder picker does not open.", "הזינו ישירות את הנתיב לתיקיית קובצי המשחק המחולצים אם בורר התיקיות של המערכת אינו נפתח.")
+T("Stopped. Set up again to finish.", "נעצר. הגדר שוב כדי לסיים.")

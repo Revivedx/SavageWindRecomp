@@ -180,8 +180,9 @@ static void log_to_file(void) {
         rename(g_log_path, prev);
     }
     const char *e = getenv("SAVAGEWIND_LOG_ECHO_FD");
-    int echo = e && isatty(atoi(e)) ? atoi(e) : -1;
-    if (echo < 0 && isatty(STDERR_FILENO) && (echo = dup(STDERR_FILENO)) >= 0) {  // (no close-on-exec: kept by the game)
+    bool quiet = getenv("SAVAGEWIND_LOG_QUIET") != NULL;  // (savagewind <command>: its own output only, runtime/cli.h)
+    int echo = !quiet && e && isatty(atoi(e)) ? atoi(e) : -1;
+    if (echo < 0 && !quiet && isatty(STDERR_FILENO) && (echo = dup(STDERR_FILENO)) >= 0) {  // (no close-on-exec: kept by the game)
         char fd[16];
         snprintf(fd, sizeof fd, "%d", echo);
         setenv("SAVAGEWIND_LOG_ECHO_FD", fd, 1);

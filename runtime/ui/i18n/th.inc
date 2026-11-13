@@ -1008,3 +1008,4 @@ T("Type or paste the folder path below instead.", "พิมพ์หรือ�
 T("Folder path", "เส้นทางโฟลเดอร์")
 T("Type or paste path...", "พิมพ์หรือวางเส้นทาง...")
 T("Enter the path to your extracted game files folder directly if the system folder picker does not open.", "ป้อนเส้นทางไปยังโฟลเดอร์ไฟล์เกมที่แตกไว้โดยตรงหากหน้าต่างเลือกโฟลเดอร์ของระบบไม่เปิดขึ้น")
+T("Stopped. Set up again to finish.", "หยุดแล้ว ตั้งค่าอีกครั้งเพื่อให้เสร็จ")

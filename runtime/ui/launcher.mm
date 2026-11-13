@@ -52,6 +52,7 @@ extern "C" {
 #include "gamelib.h"
 #include "game_versions.h"
 #include "dlc_check.h"
+#include "cli.h"
 #include "romfs_build.h"
 #include "problem_report.h"
 #include "post_update.h"
@@ -893,6 +894,173 @@ done:
     g_busy = false;
     pthread_mutex_unlock(&g_lock);
     return NULL;
+}
+
+// ------------------------------------------------------------------ command line (runtime/cli.h: savagewind <command>)
+// What the start screen does, without a window, for scripts and other launchers. json: one JSON object per line on
+// stdout (progress, then the result); otherwise lines on stdout in the menu language. The exit status says whether it
+// worked.
+static void cli_str(const std::string &s) { cli_json_str(cli_out, s.c_str()); }
+
+// The setup's stage now: copy (with bytes), build (the game code) or shaders
+static const char *setup_stage(void) {
+#ifndef __APPLE__
+    if (g_precompiling) return "shaders";
+#endif
+    return g_build_frac >= 0 ? "build" : "copy";
+}
+
+// savagewind setup [<folder>]: sets the game files up from that folder (no folder: builds the game code again from
+// the copy already set up), as Set up game files does. 0: the game files are ready; 130: stopped (Ctrl+C). Stopping
+// leaves an unfinished copy that status reports and the next setup replaces; quitting ends the compilers (gamebuild.c).
+extern "C" int launcher_setup_cli(const char *root, const char *src, bool json) {
+    g_root = root;
+    saves_tab_set_game_files(root);
+    g_src = src ? src : "";
+    g_busy = true;
+    cli_catch_stop();
+    pthread_t t;
+    pthread_create(&t, NULL, extract_thread, NULL);
+    std::string last_job;
+    int last_pct = -1;
+    const char *last_stage = "";
+    for (bool busy = true; busy;) {
+        if (cli_stop_requested()) {
+#ifndef __APPLE__
+            atomic_store(&g_pc.cancel, true);
+#endif
+            const char *stopped = tr("Stopped. Set up again to finish.");
+            if (json) fprintf(cli_out, "{\"event\":\"done\",\"ok\":false,\"stopped\":true,\"message\":\"Stopped\",\"hint\":\"\"}\n");
+            else fprintf(cli_out, "%s\n", stopped);
+            fflush(cli_out);
+            exit(130);
+        }
+        pthread_mutex_lock(&g_lock);
+        busy = g_busy;
+        std::string job = g_job;
+        pthread_mutex_unlock(&g_lock);
+        int pct = (int)(extract_progress() * 100);
+        const char *stage = setup_stage();
+        if (busy && (job != last_job || pct != last_pct || stage != last_stage)) {
+            if (json) {
+                fprintf(cli_out, "{\"event\":\"progress\",\"stage\":\"%s\",\"percent\":%d", stage, pct);
+                if (!strcmp(stage, "copy")) fprintf(cli_out, ",\"done\":%llu,\"total\":%llu", (unsigned long long)g_done, (unsigned long long)g_total);
+                fprintf(cli_out, ",\"step\":");
+                cli_str(job);
+                fprintf(cli_out, ",\"text\":");
+                cli_str(tr(job.c_str()));
+                fprintf(cli_out, "}\n");
+            } else if (job != last_job) fprintf(cli_out, "%s\n", tr(job.c_str()));
+            fflush(cli_out);
+            last_job = job, last_pct = pct, last_stage = stage;
+        }
+        if (busy) SDL_Delay(250);
+    }
+    pthread_join(t, NULL);
+    std::string why = check_game_files(g_root);
+    bool ok = why.empty() && !g_job_failed;
+    if (json) {
+        fprintf(cli_out, "{\"event\":\"done\",\"ok\":%s,\"message\":", ok ? "true" : "false");
+        cli_str(g_job);
+        fprintf(cli_out, ",\"hint\":");
+        cli_str(g_job_hint);
+        fprintf(cli_out, ",\"text\":");
+        cli_str(tr(g_job.c_str()));
+        fprintf(cli_out, "}\n");
+    } else {
+        fprintf(cli_out, "%s\n", tr(g_job.c_str()));
+        if (!g_job_hint.empty()) fprintf(cli_out, "%s\n", tr(g_job_hint.c_str()));
+    }
+    fflush(cli_out);
+    return ok ? 0 : 1;
+}
+
+// savagewind verify: every check there is, in full - the files and their version, every RomFS file and byte, the
+// movies, the game code and the DLC read through. 0: all fine.
+extern "C" int launcher_verify_cli(const char *root, bool json) {
+    g_root = root;
+    std::string files = check_copied_files(g_root), id, romfs, version;
+    const GameVersion *v = nso_build_id(g_root + "/exefs/main", &id) ? main_version(id) : NULL;
+    if (v) version = v->name;
+    if (files.empty() && v) romfs = check_romfs(g_root + "/romfs", *v);
+    bool movies = files.empty() && movies_complete(g_root + "/romfs");
+    bool code = gamelib_present(root);
+    RtDlcCheck dc = rt_dlc_verify(root);
+    std::string dlc_head, dlc_hint;
+    bool dlc_ok = dc.state == RT_DLC_NONE || dc.state == RT_DLC_READY;
+    if (!dlc_ok) dlc_problem_text(dc, &dlc_head, &dlc_hint);
+    bool ok = files.empty() && v && romfs.empty() && movies && code && dlc_ok;
+    if (json) {
+        fprintf(cli_out, "{\"ok\":%s,\"version\":", ok ? "true" : "false");
+        cli_str(version);
+        fprintf(cli_out, ",\"files\":");
+        cli_str(files);
+        fprintf(cli_out, ",\"romfs\":");
+        cli_str(romfs);
+        fprintf(cli_out, ",\"movies\":%s,\"game_code\":%s,\"dlc\":\"%s\",\"dlc_problem\":", movies ? "true" : "false",
+                code ? "true" : "false", rt_dlc_state_name(dc.state));
+        cli_str(dlc_head);
+        fprintf(cli_out, "}\n");
+    } else {
+        // (terminal text: English, as the log; one fprintf a row)
+        std::string game = files.empty() ? version : tr(files.c_str());
+        std::string dlc = dlc_ok ? rt_dlc_state_name(dc.state) : dlc_head + (dlc_hint.empty() ? "" : " - " + dlc_hint);
+        fprintf(cli_out, "%-12s %s: %s\n", "Game files", files.empty() ? "ok" : "PROBLEM", game.c_str());
+        if (files.empty()) {
+            fprintf(cli_out, "%-12s %s%s%s\n", "RomFS", romfs.empty() ? "ok" : "PROBLEM", romfs.empty() ? "" : ": ", romfs.c_str());
+            fprintf(cli_out, "%-12s %s\n", "Movies", movies ? "ok" : "PROBLEM: some are missing");
+        }
+        fprintf(cli_out, "%-12s %s\n", "Game code", code ? "ok" : "PROBLEM: not built for this version (savagewind setup)");
+        fprintf(cli_out, "%-12s %s: %s\n", "DLC", dlc_ok ? "ok" : "PROBLEM", dlc.c_str());
+    }
+    fflush(cli_out);
+    return ok ? 0 : 1;
+}
+
+// savagewind status: whether the game files are set up and the game code built, their version and the DLC.
+// 0: ready to play.
+extern "C" int launcher_status_cli(const char *root, bool json) {
+    g_root = root;
+    std::string why = check_game_files(g_root), id, version;
+    if (nso_build_id(g_root + "/exefs/main", &id))
+        if (const GameVersion *v = main_version(id)) version = v->name;
+    RtDlcCheck dlc = rt_dlc_check(root);
+    const char *dlc_state = rt_dlc_state_name(dlc.state);
+    if (json) {
+        fprintf(cli_out, "{\"ready\":%s,\"problem\":", why.empty() ? "true" : "false");
+        cli_str(why);
+        fprintf(cli_out, ",\"game_files\":");
+        cli_str(root);
+        fprintf(cli_out, ",\"version\":");
+        cli_str(version);
+        fprintf(cli_out, ",\"main_build_id\":");
+        cli_str(id);
+        fprintf(cli_out, ",\"dlc\":");
+        cli_str(dlc_state);
+        fprintf(cli_out, ",\"savage_wind\":");
+        cli_str(rt_version());
+        fprintf(cli_out, "}\n");
+    } else {
+        fprintf(cli_out, "Savage Wind %s\n", rt_version());
+        fprintf(cli_out, "Game files:  %s\n", root);
+        fprintf(cli_out, "Version:     %s\n", version.empty() ? "-" : version.c_str());
+        fprintf(cli_out, "DLC:         %s\n", dlc_state);
+        fprintf(cli_out, "Ready:       %s\n", why.empty() ? "yes" : why.c_str());
+    }
+    return why.empty() ? 0 : 1;
+}
+
+// savagewind delete --yes: what Delete game files does (the copy and the game code built from it; never the saves).
+extern "C" int launcher_delete_cli(const char *root) {
+    struct stat st;
+    if (stat(root, &st) != 0) {
+        fprintf(cli_out, "No game files to delete.\n");
+        return 0;
+    }
+    double gb = rt_game_files_size(root) / 1e9;
+    bool ok = rt_remove_game_files(root);
+    fprintf(cli_out, ok ? "Deleted the game files (%.1f GB).\n" : "The game files couldn't be deleted (%.1f GB).\n", gb);
+    return ok ? 0 : 1;
 }
 
 // ------------------------------------------------------------------ folder dialog (SDL calls back on any thread)

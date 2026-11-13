@@ -4,6 +4,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 
 #include "gamelib.h"
 #include "paths.h"
@@ -22,6 +27,7 @@
 #include "hle.h"
 #include "kernel.h"
 #include "control.h"
+#include "cli.h"
 #include "launch_flags_boot.h"
 
 const char *g_romfs_dir;
@@ -337,12 +343,28 @@ enum { LAUNCHER_SETUP, LAUNCHER_CONFIG, LAUNCHER_NONE };
 void launcher_run(const char *root, int mode);
 bool launcher_game_ready(const char *root);
 bool launcher_config_key_held(void);  // (macOS: Option held while the app opens)
-
 int main(int argc, char **argv) {
     // SW Update asks this of a version it has just installed: getting here means every DLL loaded
     for (int i = 1; i < argc; i++)
         if (!strcmp(argv[i], "--update-health")) return POST_UPDATE_HEALTH_EXIT;
     if (post_update_recover_if_cut()) return 0;  // (a new copy of this program is running now, with its files put back)
+    const char *cmd = argc > 1 ? cli_command(argv[1]) : NULL;  // savagewind <command> (runtime/cli.h)
+    if (cmd && !strcmp(cmd, "help")) return cli_help(argc > 2 ? argv[2] : NULL);
+    if (cmd && !strcmp(cmd, "completion")) return cli_completion(argc > 2 ? argv[2] : NULL);
+    if (cmd && !strcmp(cmd, "version")) {
+        extern const char *rt_version(void);
+        printf("Savage Wind %s (%s)\n", rt_version(), SW_SOURCE);
+        return 0;
+    }
+    cli_out = stdout;
+    bool quiet = cmd && strcmp(cmd, "run") && strcmp(cmd, "config") && !(argc > 2 && cli_has(argc - 2, argv + 2, "--verbose"));
+    if (cmd) {
+        cli_keep_stdout();
+        // A command adds to the log instead of starting a new one (the game's last log stays), and in a terminal its
+        // own output isn't mixed with the log's lines (--verbose shows them)
+        if (strcmp(cmd, "run")) setenv("SAVAGEWIND_LOG_APPEND", "1", 1);
+        if (quiet) setenv("SAVAGEWIND_LOG_QUIET", "1", 1);
+    }
     plat_init();
 #ifdef _WIN32
     setvbuf(stderr, NULL, _IONBF, 0);  // the Windows CRT treats _IOLBF as full buffering
@@ -352,7 +374,7 @@ int main(int argc, char **argv) {
     // every log starts with which Savage Wind made it: the version and the source it was built from (Makefile SW_SOURCE)
     extern const char *rt_version(void);  // (runtime/ui/launcher.mm)
     fprintf(stderr, "[savagewind] Savage Wind %s (%s)\n", rt_version(), SW_SOURCE);
-    launch_flags_boot(argc, argv);  // the saved launch options (runtime/launch_flags.h): in the environment before anything reads it
+    if (cli_applies_launch_options(cmd)) launch_flags_boot(argc, argv);  // the saved launch options (runtime/launch_flags.h): in the environment before anything reads it
     control_init();
     const char *root = "extracted";  // (in the data root)
     bool skip_launcher = getenv("SAVAGEWIND_NO_LAUNCHER") || getenv("SAVAGEWIND_INPUT");  // tests boot straight in
@@ -360,8 +382,18 @@ int main(int argc, char **argv) {
     static char arg_root[1024];
     const char *dump = NULL, *seed_out = NULL;
     bool scan = false, precompile = false, add_steam = false;
-    for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "--play")) skip_launcher = true;
+    static char cmd_src[1024];  // (setup's folder: made absolute now, rt_paths_init changes the working directory)
+    const char *profile = NULL;
+    bool json = false, yes = false;
+    for (int i = cmd ? 2 : 1; i < argc && !(cmd && cli_owns_args(cmd)); i++) {
+        if (!strcmp(argv[i], "--json")) json = true;
+        else if (!strcmp(argv[i], "--yes")) yes = true;
+        else if (!strcmp(argv[i], "--verbose")) {}
+        else if (!strcmp(argv[i], "--profile") && i + 1 < argc) profile = argv[++i];
+        else if (cmd && !strcmp(cmd, "setup") && argv[i][0] != '-' && !cmd_src[0]) {
+            if (!realpath(argv[i], cmd_src)) { fprintf(cli_out, "savagewind setup: %s doesn't exist\n", argv[i]); return 2; }
+        }
+        else if (!strcmp(argv[i], "--play")) skip_launcher = true;
         else if (!strcmp(argv[i], "--config")) config = true;
         else if (!strcmp(argv[i], "--game")) game_first = true;  // (the Steam entry: into the game when it's ready)
         else if (!strcmp(argv[i], "--dump-romfs") && i + 1 < argc) dump = argv[++i];
@@ -382,6 +414,32 @@ int main(int argc, char **argv) {
     int sparse_heap = g_settings.sparse_heap;
     if (sparse_heap < 0 || sparse_heap >= SPARSE_HEAP_COUNT) sparse_heap = SPARSE_HEAP_AUTO;
     LOG("[settings] sparse_heap=%s\n", sparse_heap_modes[sparse_heap]);
+    if (cmd) {
+        if (cli_owns_args(cmd)) return cli_run(cmd, argc - 2, argv + 2);
+        if (!strcmp(cmd, "setup")) return launcher_setup_cli(root, cmd_src[0] ? cmd_src : NULL, json);
+        if (!strcmp(cmd, "status")) return launcher_status_cli(root, json);
+        if (!strcmp(cmd, "verify")) return launcher_verify_cli(root, json);
+        if (!strcmp(cmd, "delete")) {
+            if (!yes) { fprintf(cli_out, "savagewind delete: add --yes to delete the game files\n"); return 2; }
+            return launcher_delete_cli(root);
+        }
+        if (!strcmp(cmd, "run")) {
+            if (!launcher_game_ready(root)) {
+                launcher_status_cli(root, false);
+                fprintf(cli_out, "savagewind run: the game files aren't ready (savagewind setup <folder>)\n");
+                fflush(cli_out);
+                return 1;
+            }
+            if (profile) {
+                SpCode c = sp_set_active(NULL, profile);
+                if (c != SP_OK) { fprintf(cli_out, "savagewind run: can't use the save profile %s (code %d)\n", profile, (int)c); return 1; }
+            }
+            skip_launcher = true;
+        }
+        if (!strcmp(cmd, "config")) config = true;
+        if (!strcmp(cmd, "precompile-shaders")) precompile = true;
+        if (!strcmp(cmd, "add-to-steam")) add_steam = true;
+    }
     if (dump) return dump_romfs(root, dump);
     if (scan) return scan_shaders(root);
     if (add_steam) {  // what Configuration's Add to Steam does, from a terminal (runtime/steam_shortcuts.h)

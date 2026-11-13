@@ -1008,3 +1008,4 @@ T("Type or paste the folder path below instead.", "대신 아래에 폴더 경�
 T("Folder path", "폴더 경로")
 T("Type or paste path...", "경로 입력 또는 붙여넣기...")
 T("Enter the path to your extracted game files folder directly if the system folder picker does not open.", "시스템 폴더 선택기가 열리지 않으면 추출된 게임 파일 폴더의 경로를 직접 입력하세요.")
+T("Stopped. Set up again to finish.", "중지했습니다. 완료하려면 다시 설정하세요.")

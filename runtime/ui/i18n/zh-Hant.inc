@@ -1008,3 +1008,4 @@ T("Type or paste the folder path below instead.", "請改在下方輸入或貼�
 T("Folder path", "資料夾路徑")
 T("Type or paste path...", "輸入或貼上路徑...")
 T("Enter the path to your extracted game files folder directly if the system folder picker does not open.", "如果系統資料夾選擇器無法開啟，請直接輸入已擷取遊戲檔案所在資料夾的路徑。")
+T("Stopped. Set up again to finish.", "已停止。請重新設定以完成。")
