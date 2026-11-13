@@ -691,7 +691,7 @@ test-dlc-check: $(B)/test_dlc_check
 .PHONY: test-game-file-size test-file-size-cache test-dlc-check
 
 # the command layer of the control endpoint (who may run what, the queue, the text)
-$(B)/test_control: tools/test_control.c runtime/control.c runtime/control.h
+$(B)/test_control: tools/test_control.c runtime/control.c runtime/control.h runtime/control_settings.c
 	@mkdir -p $(B)
 	$(CC) -O1 -g -Wall $(OSFLAGS) -Iruntime -o $@ tools/test_control.c runtime/control.c -lpthread -lm \
 	    $(if $(filter windows,$(PLATFORM)),-lws2_32)

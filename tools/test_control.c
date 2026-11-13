@@ -7,6 +7,20 @@
 #include <string.h>
 
 #include "../runtime/control.h"
+#include "../runtime/settings.h"
+#include "../runtime/language.h"
+
+Settings g_settings;
+void menu_request_window_apply(void) {}
+bool upscaler_available(int u) { (void)u; return true; }
+bool upscale_modes_available(void) { return true; }
+const TextLanguage g_text_languages[] = {{"Auto", NULL, NULL}};
+const VoiceLanguage g_voice_languages[] = {{"Auto", NULL}};
+const int g_ntext_languages = 1, g_nvoice_languages = 1;
+int language_text_count(void) { return 1; }
+int language_text_index(void) { return 0; }
+
+#include "../runtime/control_settings.c"
 
 // ---- stubs for what control.c takes from the rest of the runtime
 uint64_t plat_now_ns(void) { return 1; }
@@ -174,6 +188,17 @@ int main(int argc, char **argv) {
         char huge[2000];
         memset(huge, 'a', sizeof huge - 1); huge[sizeof huge - 1] = 0;
         CHECK(!control_console_submit(huge));
+    }
+
+    // ---- control settings (get/set upscaler)
+    control_settings_init();
+    if (dev) {
+        expect("set upscaler fsr4", false, "upscaler: fsr4\napplied: live");
+        CHECK(g_settings.upscaler == UPSCALE_FSR4);
+        expect("get upscaler", false, "upscaler: fsr4");
+    } else {
+        g_settings.upscaler = UPSCALE_FSR4;
+        expect("get upscaler", false, "upscaler: fsr4");
     }
 
     printf("%s: %d checks, %d failed\n", dev ? "dev" : "player", checks, failures);

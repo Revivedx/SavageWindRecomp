@@ -26,7 +26,7 @@ typedef struct {
 #define F(k, lo, hi) {#k, &g_settings.k, FLOAT, lo, hi, NULL}
 static const Setting settings[] = {
     B(fullscreen), I(window_w, 0, 16384, NULL), I(window_h, 0, 16384, NULL),
-    I(upscaler, 0, UPSCALE_COUNT - 1, "off|metalfx|fsr1|fsr3|dlss"),
+    I(upscaler, 0, UPSCALE_COUNT - 1, "off|metalfx|fsr1|fsr3|dlss|fsr4"),
     I(upscale_quality, 0, UPQ_COUNT - 1, "ultra_quality|quality|balanced|performance|ultra_performance"),
     I(antialias, 0, AA_TAA, "off|smaa|taa"), B(game_fxaa), B(wet_fix),
     I(render_scale, 0, RSCALE_COUNT - 1, "50|75|100|125|150|200"),
