@@ -1803,6 +1803,24 @@ La 1.9.0 (2026-10-22, rama `game-1.9.0`; archivos del usuario en `extracted-1.9.
   La preparación acepta la carpeta 1.9.0 (versión "1.9.0", 39008+ ficheros) y rechaza `exefs` 1.9.0 con `romfs`
   1.8.2 y al revés.
 
+## NVIDIA DLSS (Video > Upscaler)
+
+Video > Upscaler: DLSS (`upscaler = dlss`; greyed where it can't run) renders the 3D scene smaller by the mode's factor
+and NVIDIA's DLSS Super Resolution builds the full-resolution image from it, with the world camera's depth, motion
+vectors, jitter and texture LOD bias (`runtime/nvn/vulkan/exec.c` `dlss_scene`). Windows, NVIDIA RTX graphics cards.
+Elsewhere, or when NGX can't make the feature, a settings file asking for it gets FSR 1.
+
+**No SDK.** Nothing of NVIDIA's SDK is compiled in, linked or shipped. `runtime/nvn/vulkan/dlss.c` finds the NVIDIA
+driver's NGX core (`_nvngx.dll`, through `HKLM\SOFTWARE\NVIDIA Corporation\Global\NGXCore`), takes its Vulkan entry
+points with `GetProcAddress`, and declares the few NGX types, values and parameter names it uses from the SDK's
+documented interface. NGX's parameter object is a C++ class reached through its vtable (MSVC's layout: each group of
+overloads in reverse order); a set-then-get round trip checks the layout first, and DLSS stays off if it fails. NGX is
+loaded only when NVIDIA's `nvngx_dlss.dll` is next to `savagewind.exe`. The setup page's Download NVIDIA DLSS (on PCs
+with an NVIDIA driver; `dlss_download = 1`, the default) and the game files page download it, with NVIDIA's
+`LICENSE.txt` as `NVIDIA-DLSS-LICENSE.txt`, from NVIDIA/DLSS on GitHub at release `v310.9.16` (`runtime/dlss_fetch.c`:
+WinHTTP; size and SHA-256 checked, written as `.part` and renamed only when both match). While it is missing on a PC
+with an NVIDIA driver, the menus' greyed DLSS points at Savage Wind Configuration.
+
 ## FSR 3 upscaling: held back for now
 
 AMD FSR 3.1 upscaling (PRs #194 and #195: per-object motion vectors, the five quality modes plus Ultra Performance) is

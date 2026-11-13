@@ -39,6 +39,7 @@ extern "C" {
 #include "../quick_drop.h"
 #include "../nvn/glyphs.h"
 #include "../color_grade.h"
+#include "../dlss_fetch.h"
 #include "../window_size.h"
 extern "C" {
 #include "../language.h"
@@ -919,7 +920,8 @@ static void tab_display(void) {
                                ? std::string(tr("AMD FSR 4"))
                                : std::string(tr("FSR 4")) + " " + tr(fsr4_offered() ? "(coming soon)" : "(AMD Radeon only)");
         std::string dlss = upscaler_available(UPSCALE_DLSS) ? std::string(tr("DLSS")) :
-                           std::string(tr("DLSS")) + " " + tr("(NVIDIA RTX only)");
+                           std::string(tr("DLSS")) + " " +
+                               tr(dlss_fetch_missing() ? "(download it in Savage Wind Configuration)" : "(NVIDIA RTX only)");
 #ifdef __APPLE__
         const char *ups[] = {"Off", "MetalFX"};
         static const int ups_value[] = {UPSCALE_OFF, UPSCALE_METALFX};
@@ -937,12 +939,14 @@ static void tab_display(void) {
               (upscaler_available(UPSCALE_FSR3)
                    ? tr("AMD FSR 3: it renders smaller and builds the full-resolution image from the frames before, "
                         "following the game's motion: sharper and steadier than FSR 1, and anti-aliased (Anti-aliasing "
-                        "has no effect with it). Sharpening sets its own sharpening. NVIDIA DLSS (NVIDIA RTX graphics "
-                        "cards) is coming in a later version.")
-                   : tr("AMD FSR 3 and NVIDIA DLSS (NVIDIA RTX graphics cards) are coming in a later version."));
+                        "has no effect with it). Sharpening sets its own sharpening.")
+                   : tr("AMD FSR 3 is coming in a later version."));
         if (upscaler_available(UPSCALE_FSR4))  // (its own paragraph: the ones above keep their translations)
             uds += std::string("\n\n") + tr("AMD FSR 4: like FSR 3, but AMD's machine learning rebuilds the image. For AMD Radeon "
                                               "graphics cards on Windows. Sharpening sets its own sharpening.");
+        uds += std::string("\n\n") + tr("NVIDIA DLSS: like FSR 3, but NVIDIA's machine learning rebuilds the image. For NVIDIA "
+                                          "RTX graphics cards on Windows, with NVIDIA's DLSS library, which Savage Wind "
+                                          "Configuration downloads.");
         const char *ud = uds.c_str();
 #endif
         enum { NU = sizeof ups_value / sizeof ups_value[0] };

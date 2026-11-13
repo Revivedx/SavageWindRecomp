@@ -52,6 +52,7 @@ Settings g_settings = {
     .stick_deadzone = {STICK_DEADZONE_DEFAULT, STICK_DEADZONE_DEFAULT},
     .fps_limit = FPS_DEFAULT,
     .precompile_shaders = true,
+    .dlss_download = true,
     .start_in_config = true,
     .start_picture = START_PICTURE_SCREENSHOT,
     .boot_picture = true,
@@ -310,6 +311,7 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "async_shaders")) g_settings.async_shaders = atoi(val) != 0;
         else if (!strcmp(key, "precompile_shaders")) g_settings.precompile_shaders = atoi(val) != 0;
+        else if (!strcmp(key, "dlss_download")) g_settings.dlss_download = atoi(val) != 0;
         else if (!strcmp(key, "start_in_config")) g_settings.start_in_config = atoi(val) != 0;
         else if (!strcmp(key, "start_picture")) {
             int v = atoi(val);
@@ -543,6 +545,7 @@ void settings_save(void) {
             k_button_layout[g_settings.button_layout >= 0 && g_settings.button_layout < BUTTON_LAYOUT_COUNT ?
                                 g_settings.button_layout : BUTTON_LAYOUT_AUTO]);
     fprintf(f, "async_shaders = %d\n", g_settings.async_shaders);
+    fprintf(f, "dlss_download = %d\n", g_settings.dlss_download);
     fprintf(f, "precompile_shaders = %d\n", g_settings.precompile_shaders);
     fprintf(f, "start_in_config = %d\n", g_settings.start_in_config);
     fprintf(f, "start_picture = %d\n", g_settings.start_picture);
