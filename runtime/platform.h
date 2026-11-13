@@ -51,6 +51,7 @@ uint64_t plat_now_ns(void);                // monotonic
 void plat_sleep_until_ns(uint64_t t);      // precise wait for plat_now_ns() >= t
 void plat_wait_until_ns(uint64_t t);       // wait for plat_now_ns() >= t without spinning (the OS timer's precision)
 void plat_thread_realtime(uint64_t period_ns);  // periodic timing thread (vsync): don't coalesce its timers
+void plat_thread_elevate(void);            // latency-critical thread (game main, render, recorder): favor P-cores on hybrid architectures
 int plat_cpu_count(void);       // logical processors this process may run on (its affinity, after plat_cpu_placement)
 void plat_cpu_placement(void);  // (game start) one logical processor per core where plat_one_per_core_default says
 // Whether the game runs on one logical processor per core when SAVAGEWIND_ONE_PER_CORE doesn't say (cores: physical
