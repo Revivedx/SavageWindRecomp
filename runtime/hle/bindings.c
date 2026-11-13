@@ -169,6 +169,21 @@ void bind_reset_slot(int slot) {
     if (bind_pad_slot(slot)) g_bind_pad[slot] = k_def_pad[slot];
 }
 
+// The controller's confirm and back buttons swapped: the Switch's A and B, and every action on either of the two host
+// buttons they are on, take each other's (Nintendo's A on the right becomes the bottom one, the Xbox convention).
+// Nothing else changes, and swapping again undoes it.
+void bind_swap_ab(void) {
+    int a = g_bind_pad[BIND_A], b = g_bind_pad[BIND_B];
+    if (a < 0 || b < 0 || a == b) return;
+    g_bind_pad[BIND_A] = (int16_t)b, g_bind_pad[BIND_B] = (int16_t)a;
+    for (int id = 0; id < ACT_COUNT; id++) {
+        if (g_act_pad[id] == a) act_set(BIND_DEV_PAD, id, b);
+        else if (g_act_pad[id] == b) act_set(BIND_DEV_PAD, id, a);
+    }
+    LOG("[input] controller: confirm and back swapped (A on %s, B on %s)\n", k_pad_ini[b], k_pad_ini[a]);
+    result(6, BIND_DEV_PAD, -1, -1);
+}
+
 bool bind_is_default(int dev) {
     for (int id = 0; id < ACT_COUNT; id++)
         if (!bind_is_default_slot(dev, BIND_ACTION + id)) return false;
