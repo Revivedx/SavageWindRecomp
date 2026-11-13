@@ -53,6 +53,8 @@ static uint64_t stat_uub, stat_uub_same, stat_gcopy_hit, stat_gcopy_miss, stat_g
 static uint64_t stat_ubo_direct, stat_chain_barriers;  // constant buffers bound in place (ubo_direct)
 static void ubo_check_done(bool report);
 static void vdyn_check(uint64_t seq);
+static void race_probe_check(uint64_t seq);
+static void race_probe_submit(uint64_t seq);
 static void vdyn_reset(void);
 static void ubo_check_submit(uint64_t seq);
 static uint64_t stat_feedback_live;  // depth attachments sampled as they are (read-only feedback, no copy)
@@ -669,6 +671,7 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
         SW_ACC("submit");
         dl_note("submit %llu", (unsigned long long)submit_seq + 1);
         ubo_check_submit(submit_seq + 1);
+        race_probe_submit(submit_seq + 1);
         rec_QueueSubmit2(&si, submit_seq + 1);  // (the recorder: in order with the commands)
         PROF_ADD(prof_submit);
     }
@@ -805,6 +808,24 @@ static bool oneshot_queries(void) {
     return on;
 }
 
+// (GPU overlap) A fence the game is told is done before the GPU is: its submission is at least in the driver's hands.
+// The overlap counts on the GPU working on that frame while the game writes its next frame's data, double-buffered, into
+// the memory the frame before it used. Since Alpha 5 plain presents are made by the recorder thread (device.c
+// present_on_recorder): an external frame limiter (RivaTuner, Radeon Chill) that sleeps inside vkQueuePresentKHR held
+// the recorder there, and the frame the game was told was done had not even been submitted when the game wrote into
+// what it reads. Rain and torch particles (vertex data both the CPU and storing shaders write, read in place, which
+// vdyn can't copy) came out stretched across the screen for a frame (#620, #629, #683, #717, #776; reproduced with
+// SAVAGEWIND_DEBUG_PRESENT_LIMIT=60 on an RTX 3060, and gone with the recorder off or presents on a thread of their own).
+// Measured with SAVAGEWIND_VK_RACE_PROBE=1 in Lanayru's heavy rain: ~20% of that vertex data was written by the CPU
+// between its translation and its submission with the limiter, ~0% without. Waiting here for the submission costs
+// nothing without such a limiter (the recorder is done with it by then), and with one, the game waits in its own frame
+// fence, as it did with presents on the translating thread. SAVAGEWIND_VK_OVERLAP_HANDOVER=0: not waited for.
+static void deferred_handed_over(uint64_t seq) {
+    static int on = -1;
+    if (on < 0) on = !getenv("SAVAGEWIND_VK_OVERLAP_HANDOVER") || atoi(getenv("SAVAGEWIND_VK_OVERLAP_HANDOVER"));
+    if (on && rec_on() && seq > rec_submitted()) rec_wait_submitted(seq);
+}
+
 void renderer_wait_seq(uint64_t seq) {
     if (!seq) return;
     pthread_mutex_lock(&seq_lock);
@@ -820,6 +841,7 @@ void renderer_wait_seq(uint64_t seq) {
         uint64_t prev = deferred_seq, need = full ? seq : oneshot_seq > prev ? oneshot_seq : prev;
         deferred_seq = need >= seq ? 0 : seq;
         pthread_mutex_unlock(&seq_lock);
+        if (need < seq) deferred_handed_over(seq);
         static int nlog;
         if (nlog < 20) {
             nlog++;
@@ -828,12 +850,14 @@ void renderer_wait_seq(uint64_t seq) {
         }
         vk_wait_seq(need);
         vdyn_check(need);
+        race_probe_check(need);
         return;
     }
     if (gpu_overlap()) {
         if (vk_completed_seq() >= seq) {
             if (seq >= deferred_seq) deferred_seq = 0;  // (in order: the older one is done too)
             pthread_mutex_unlock(&seq_lock);
+            race_probe_check(seq);
             readbacks_apply();
             return;
         }
@@ -841,6 +865,7 @@ void renderer_wait_seq(uint64_t seq) {
         if (seq > prev) {  // a newer fence: the deferred one is waited for now, this one at the next call
             deferred_seq = seq;
             pthread_mutex_unlock(&seq_lock);
+            deferred_handed_over(seq);
             if (!prev) return;
             seq = prev;
         } else {  // the deferred fence again, or an older one: a real wait on it
@@ -849,11 +874,13 @@ void renderer_wait_seq(uint64_t seq) {
         }
         vk_wait_seq(seq);
         vdyn_check(seq);
+        race_probe_check(seq);
         return;
     }
     pthread_mutex_unlock(&seq_lock);
     vk_wait_seq(seq);
     vdyn_check(seq);
+    race_probe_check(seq);
 }
 
 // A call per set costs the driver a lock, a free-list walk and a handle write (~0.25 ms a frame at ~3000 new sets). Sets
@@ -6496,6 +6523,95 @@ static void vdyn_check(uint64_t seq) {
     pthread_mutex_unlock(&vdyn_lock);
 }
 
+// (testing) SAVAGEWIND_VK_RACE_PROBE=1: what the GPU reads of guest memory in place (or through the heap copy, which
+// the GPU fills when it gets to the list) changing between translation and the real wait on its submission, by kind
+// and size, whatever vdyn does: one fetch in 8 of every size up to 256 KB hashed when recorded and again after the
+// wait. A "[race]" line every 600 checks: samples, changes, and the biggest changed fetches.
+enum { RP_VTX_S, RP_VTX_L, RP_IDX_S, RP_IDX_L, RP_GW_VTX, RP_GW_IDX, RP_KINDS };
+static const char *const rp_kind_name[RP_KINDS] = {"vertex<=4K", "vertex>4K", "index<=4K", "index>4K", "gpu-written vertex",
+                                                   "gpu-written index"};
+#define RP_N 16384
+#define RP_MAX (256u << 10)
+static int rp_on = -1;
+static struct { uint64_t addr, size, hash, seq; int kind; } rp_chk[RP_N];
+static _Atomic uint64_t rp_sub_cpu[RP_KINDS];  // (of those: the CPU wrote the pages since translation - write watch)
+static _Atomic uint64_t rp_w, rp_r, rp_s;  // (written by the render thread; read after the wait / in the recorder's turn)
+static uint64_t rp_tick, rp_samples[RP_KINDS], rp_changed[RP_KINDS], rp_checks;
+static _Atomic uint64_t rp_sub_samples[RP_KINDS], rp_sub_changed[RP_KINDS];  // (changed before the GPU had the submission)
+static uint64_t rp_big_addr, rp_big_size;
+static pthread_mutex_t rp_lock = PTHREAD_MUTEX_INITIALIZER;
+static void race_probe_note(uint64_t addr, uint64_t size, bool index) {
+    if (rp_on < 0) {
+        rp_on = getenv("SAVAGEWIND_VK_RACE_PROBE") && atoi(getenv("SAVAGEWIND_VK_RACE_PROBE"));
+        if (rp_on) LOG("[race] probe on: in-place vertex / index fetches hashed at translation and after their wait\n");
+    }
+    if (!rp_on || !size || size > RP_MAX || addr < HEAP_BASE || addr + size > HEAP_BASE + HEAP_MAX || (++rp_tick & 7)) return;
+    bool gw = gw_overlaps(addr, addr + size);  // (GPU-written: may change by the GPU's own writes too)
+    uint64_t w = atomic_load_explicit(&rp_w, memory_order_relaxed), r = atomic_load_explicit(&rp_r, memory_order_acquire),
+             rs = atomic_load_explicit(&rp_s, memory_order_acquire);
+    if (w - (r < rs ? r : rs) >= RP_N) return;
+    __typeof__(rp_chk[0]) *c = &rp_chk[w % RP_N];
+    c->addr = addr, c->size = size, c->seq = vk_pending_seq();
+    c->kind = gw ? (index ? RP_GW_IDX : RP_GW_VTX) : (index ? RP_IDX_S : RP_VTX_S) + (size > VDYN_SAMPLE_MAX);
+    if (gw) {  // (the CPU's writes from here on, apart from the GPU's: write watch, reset now; the GPU's don't count there)
+        uint64_t pages[64];
+        plat_written_pages(addr & ~0xFFFull, ((addr + size + 0xFFF) & ~0xFFFull) - (addr & ~0xFFFull), pages, 64);
+    }
+    c->hash = hash_words(0x9E3779B97F4A7C15ull, (const void *)(uintptr_t)addr, size & ~3ull);
+    atomic_store_explicit(&rp_w, w + 1, memory_order_release);
+}
+static void race_probe_check(uint64_t seq) {
+    if (rp_on <= 0 || pthread_mutex_trylock(&rp_lock)) return;
+    uint64_t r = atomic_load_explicit(&rp_r, memory_order_relaxed), w = atomic_load_explicit(&rp_w, memory_order_acquire);
+    for (; r < w && rp_chk[r % RP_N].seq <= seq; r++) {
+        __typeof__(rp_chk[0]) *c = &rp_chk[r % RP_N];
+        rp_samples[c->kind]++;
+        if (hash_words(0x9E3779B97F4A7C15ull, (const void *)(uintptr_t)c->addr, c->size & ~3ull) == c->hash) continue;
+        rp_changed[c->kind]++;
+        if (c->size > rp_big_size) rp_big_size = c->size, rp_big_addr = c->addr;
+    }
+    atomic_store_explicit(&rp_r, r, memory_order_release);
+    if (++rp_checks % 600 == 0) {
+        char line[512];
+        int n = 0;
+        for (int k = 0; k < RP_KINDS; k++)
+            n += snprintf(line + n, sizeof line - n, " %s %llu/%llu", rp_kind_name[k], (unsigned long long)rp_changed[k],
+                          (unsigned long long)rp_samples[k]);
+        LOG("[race] changed while read (of sampled):%s; biggest %llu bytes at %llx\n", line, (unsigned long long)rp_big_size,
+            (unsigned long long)rp_big_addr);
+        n = 0;
+        for (int k = 0; k < RP_KINDS; k++)
+            n += snprintf(line + n, sizeof line - n, " %s %llu/%llu (CPU %llu)", rp_kind_name[k],
+                          (unsigned long long)atomic_exchange(&rp_sub_changed[k], 0), (unsigned long long)atomic_exchange(&rp_sub_samples[k], 0),
+                          (unsigned long long)atomic_exchange(&rp_sub_cpu[k], 0));
+        LOG("[race] changed before the GPU had the submission:%s\n", line);
+        memset(rp_samples, 0, sizeof rp_samples);
+        memset(rp_changed, 0, sizeof rp_changed);
+        rp_big_size = rp_big_addr = 0;
+    }
+    pthread_mutex_unlock(&rp_lock);
+}
+
+// (recorder's turn, right before submission seq goes to the driver) the samples recorded into it, hashed again: a change
+// here was made after translation and before the GPU could read it
+static void race_probe_submit_run(void *arg) {
+    uint64_t seq = (uint64_t)(uintptr_t)arg;
+    uint64_t s = atomic_load_explicit(&rp_s, memory_order_relaxed), w = atomic_load_explicit(&rp_w, memory_order_acquire);
+    for (; s < w && rp_chk[s % RP_N].seq <= seq; s++) {
+        __typeof__(rp_chk[0]) *c = &rp_chk[s % RP_N];
+        atomic_fetch_add_explicit(&rp_sub_samples[c->kind], 1, memory_order_relaxed);
+        if (hash_words(0x9E3779B97F4A7C15ull, (const void *)(uintptr_t)c->addr, c->size & ~3ull) != c->hash) {
+            atomic_fetch_add_explicit(&rp_sub_changed[c->kind], 1, memory_order_relaxed);
+            if (plat_any_written(c->addr, c->size) == 1) atomic_fetch_add_explicit(&rp_sub_cpu[c->kind], 1, memory_order_relaxed);
+        }
+    }
+    atomic_store_explicit(&rp_s, s, memory_order_release);
+}
+static void race_probe_submit(uint64_t seq) {
+    if (rp_on > 0) rec_custom(race_probe_submit_run, (void *)(uintptr_t)seq);
+    else if (rp_on == 0) atomic_store_explicit(&rp_s, atomic_load_explicit(&rp_w, memory_order_relaxed), memory_order_relaxed);
+}
+
 static void vdyn_reset(void) {  // (vk_exec_reset, the GPU idle: another boot, other buffers)
     pthread_mutex_lock(&vdyn_lock);
     for (size_t i = 0; i < sizeof vdyn; i++) atomic_store_explicit(&vdyn[i], 0, memory_order_relaxed);
@@ -8762,6 +8878,7 @@ have_pipe:
             icount = count;
             if (iaddr % isz == 0 && guest_fetch(iaddr, (uint64_t)count * isz, &ib.buf, &ib.off)) {
                 if (profd) prof_index_direct++;
+                race_probe_note(iaddr, (uint64_t)count * isz, true);
                 scan_src = src; scan_isz = isz; scan_restart = restart;  // max_index only if a stream gets copied
             } else {
                 if (profd) prof_index_copy++;
@@ -8812,6 +8929,7 @@ have_pipe:
             VkDeviceSize doff;
             if (v.addr && v.size && guest_fetch(v.addr, v.size, &dbuf, &doff)) {
                 if (profd) prof_vertex_direct++;
+                race_probe_note(v.addr, v.size, false);
                 if (dc.vbuf[s] != dbuf || dc.voff[s] != doff) {
                     rec_CmdBindVertexBuffers(cb, (uint32_t)s, 1, &dbuf, &doff);
                     dc.vbuf[s] = dbuf; dc.voff[s] = doff;
@@ -8892,6 +9010,7 @@ have_pipe:
 }
 
 static void debug_save_channels(TexBackend *b, const char *path);
+static void debug_save_3d(TexBackend *b, const char *path);
 
 static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
     LOG("[draw] %s inst %llu mode %llu count %llu prog vs=%llx fs=%llx | vs cb %#x fs cb %#x | rt %d", indexed ? "e" : "a",
@@ -9032,6 +9151,12 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
                 snprintf(path, sizeof path, "build/dtex_%016llx_%d.%s", (unsigned long long)g_cur_fs_hash, i,
                          b->aspect & VK_IMAGE_ASPECT_DEPTH_BIT ? "pgm" : "png");
                 vk_end_pass();
+                if (b->base_type == VK_IMAGE_VIEW_TYPE_3D) {
+                    snprintf(path, sizeof path, "build/gpu3d_%llu_%ux%ux%u_f%x.raw", (unsigned long long)t->debug_id, b->width,
+                             b->height, b->depth, t->format);
+                    debug_save_3d(b, path);
+                    continue;
+                }
                 if (b->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) debug_save_depth(b, path);
                 else debug_save_channels(b, path);
                 LOG("[draw]   tex%d saved as %s\n", i, path);
@@ -9114,6 +9239,14 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
                         LOG("%s%.6g", k % 16 == 0 ? "\n[draw]     " : k % 4 ? " " : " | ", f[k]);
                     LOG("\n");
                 }
+            for (int sg = 0; sg < 2; sg++) {  // the compiler constants (c1) of either stage, exact
+                const NvnShaderStage *ss = &st.program->stages[sg];
+                if (!ss->code_addr || !ss->const_size) continue;
+                const uint32_t *u = (const uint32_t *)(uintptr_t)(ss->code_addr + ss->const_offset);
+                LOG("[draw]   %ccb1 size %u:", sg ? 'f' : 'v', ss->const_size);
+                for (uint32_t k = 0; k < 256 && k * 4 < ss->const_size; k++) LOG(" %08x", u[k]);
+                LOG("\n");
+            }
         }
     }
 }
@@ -10855,6 +10988,28 @@ static void save_view_png(TexBackend *b, VkImageView src, const char *path) {
     vk_save_png(path, out.ptr, w, h);
     vkDestroyImageView(g_vk.dev, tv, NULL);
     vmaDestroyImage(g_vk.vma, img, mem);
+}
+
+// (debugging) A 3D image's level 0 as the GPU holds it, raw texels (x, then y, then z), for comparing with what was
+// uploaded (SAVAGEWIND_DUMP_TEX3D). debug_save_channels can't show 3D images.
+static void debug_save_3d(TexBackend *b, const char *path) {
+    uint32_t bpp = b->format == VK_FORMAT_R16G16B16A16_SFLOAT ? 8 : b->format == VK_FORMAT_R32G32B32A32_SFLOAT ? 16
+                 : b->format == VK_FORMAT_R8_UNORM ? 1 : b->format == VK_FORMAT_R16_SFLOAT || b->format == VK_FORMAT_R8G8_UNORM ? 2 : 4;
+    uint64_t size = (uint64_t)b->width * b->height * b->depth * bpp;
+    vk_end_pass();
+    VkCommandBuffer cb = vk_cmd();
+    vk_full_barrier(cb);
+    VkSpan out = vk_readback(size);
+    VkBufferImageCopy c = {.bufferOffset = out.off, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                           .imageExtent = {b->width, b->height, b->depth}};
+    rec_CmdCopyImageToBuffer(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, out.buf, 1, &c);
+    vk_full_barrier(cb);
+    renderer_flush();
+    vk_readback_sync();
+    FILE *f = fopen(path, "wb");
+    if (f) fwrite(out.ptr, 1, size, f), fclose(f);
+    LOG("[vk] 3D image %ux%ux%u vk format %d (%u bytes a texel) read back from the GPU: %s\n", b->width, b->height, b->depth,
+        b->format, bpp, f ? path : "(not saved)");
 }
 
 // ================================================================== executor (renderer.m exec_list)

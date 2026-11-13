@@ -498,16 +498,31 @@ int rt_phys_ticked(uint64_t solver_info) {
 
 // A player demo move's arrival (tools/patches.py _demo_move_arrive, #364): the move that walks Link in a cutscene ends
 // when the distance left is under the body's speed, given in metres per console frame: one console frame of walking.
-// Leaving the Shrine of Resurrection, the rail move's point runs about 0.15 m ahead of Link; above ~100 fps a frame's step
-// is short enough for Link to come within 0.185 m of an intermediate point (0.169 at 120 fps, measured), and the walk
-// ended halfway, Link standing still for the rest of the scene. The game's other end test (2 x speed x delta frame)
-// already follows the step; this one now does too: one frame of walking at the frame's length, at most a console frame's,
-// so 30 fps (and slower) keeps the game's test. SAVAGEWIND_DEMO_ARRIVE=0: the game's own.
+// Leaving the Shrine of Resurrection above ~100 fps, Link came within 0.185 m of the rail's point at its first node
+// (0.169 at 120 fps, measured; rt_rail_point_radius has why the point was that close), and the walk ended halfway, Link
+// standing still for the rest of the scene. The game's other end test (2 x speed x delta frame) already follows the step;
+// this one now does too: one frame of walking at the frame's length, at most a console frame's, so 30 fps (and slower)
+// keeps the game's test. SAVAGEWIND_DEMO_ARRIVE=0: the game's own.
 float rt_demo_move_arrive(float speed, float delta_frame) {
     static int on = -1;
     if (on < 0) on = env_int("SAVAGEWIND_DEMO_ARRIVE", 1) != 0;
     if (!on || !(delta_frame > 0) || delta_frame >= 1) return speed;
     return speed * delta_frame;
+}
+
+// A player rail move's point (tools/patches.py _rail_point_radius, #364). Link walks to a point on the rail
+// (PlayerRailMove, 1.9.0 0x7000c89cec), and the point moves on by half a radius whenever Link is within the radius of it.
+// The radius is the delta frame the player stored that frame, in metres: 1 at 30 fps, 0.17 at 180. At a rail node the
+// point starts along the next segment from rest and speeds up in the rail's own time, so the smaller the radius, the
+// closer Link came to it before it got away: 0.72 x the radius at 60 fps, 0.49 at 100, and at 180 (the game's step held
+// at 180 fps) 0.03 m, under the move's own end test (the distance growing again within two frames of walking), and the
+// walk out of the Shrine of Resurrection ended at the rail's first node, Link standing still for the rest of the scene.
+// The radius is at least the console's 1 m, so the point waits at the distance it does at 30 fps; slower than 30 fps
+// keeps the game's larger one. SAVAGEWIND_RAIL_RADIUS=0: the game's own.
+float rt_rail_point_radius(float radius) {
+    static int on = -1;
+    if (on < 0) on = env_int("SAVAGEWIND_RAIL_RADIUS", 1) != 0;
+    return on && radius < 1.0f ? 1.0f : radius;
 }
 
 // The sound system's frame (tools/patches.py _snd_frame_floor, #145): the game gives it the delta frame, at least 0.5
@@ -651,6 +666,16 @@ void rt_vfr_update(uint64_t vfr) {
         if (step > 0.05) step = 0.05;
         last_step = step;
         ratio = (float)(step * 30);
+    }
+    {   // (testing) SAVAGEWIND_DEBUG_FIXED_STEP=<fps>: the game's step is always that frame rate's, whatever the real
+        // one: its logic runs as at that rate (slower or faster than real time), for frame-rate bugs a PC can't reach
+        static double fixed = -1;
+        if (fixed < 0) {
+            const char *e = getenv("SAVAGEWIND_DEBUG_FIXED_STEP");
+            fixed = e && atof(e) > 0 ? atof(e) : 0;
+            if (fixed > 0) LOG("[framepace] the game's step fixed at %.1f fps (testing)\n", fixed);
+        }
+        if (fixed > 0 && !paused) ratio = (float)(30.0 / fixed);
     }
     bool held = VF(uint8_t, vfr, VFR_OVERRIDE) && ratio > 1;  // (stage loading: the game asks for single steps)
     if (held) ratio = 1;

@@ -920,7 +920,9 @@ Pendiente:
      `SAVAGEWIND_LOG_OPTIONS=1` registra cada valor que se guarda desde la pantalla de opciones, con la hora;
      `SAVAGEWIND_LOG_SCREENS=1` el estado de pausa y las pantallas de interfaz que existen;
      `SAVAGEWIND_DUMP_DATA_AT=<frames>` vuelca `.data` y `.bss` de main a `build/data_<frame>.bin` (para comparar
-     estados del juego).
+     estados del juego); `SAVAGEWIND_DEBUG_FIXED_STEP=<fps>` da al juego siempre el paso de esa frecuencia, sea cual
+     sea la real: su lógica corre como a esos FPS, más lenta o más rápida que el tiempo real (así se reprodujo a 180 FPS
+     en este PC, que no llega a ellos en esa escena, la salida del Santuario de la Vida de #364).
    - 60 FPS estables en el mundo abierto (2026-10-20). Dónde se iba el frame (perfilador de muestreo y
      `SAVAGEWIND_TIMELINE`): el hilo principal (0x101) graba ~30 de las ~62 listas del frame y hace el cálculo; dos
      hilos de trabajo graban el resto; el hilo de render (sead, 0x7000d81100) entrega UNA lista por frame
@@ -976,7 +978,16 @@ Pendiente:
        es completa. Medido con 2+2 pasadas alternas (Kakariko, establo y Hateno, sin límite de FPS, 1280x720): 40,1 →
        54,0, 47,8 → 63,6 y 51,5 → 59,0 fps; la GPU ocupada del 74-83 % al 98-99 %. Sin saltos de brillo en 60 capturas
        seguidas de día, de noche, con lluvia y dentro de Vah Ruta, y la foto de la cámara correcta.
-       `SAVAGEWIND_GPU_OVERLAP=0` lo quita.
+       `SAVAGEWIND_GPU_OVERLAP=0` lo quita. Eso cuenta con que el frame aplazado ya está en manos del driver: desde
+       Alpha 5 presenta el hilo grabador, y un limitador de FPS externo (RivaTuner, Radeon Chill), que duerme dentro de
+       `vkQueuePresentKHR`, lo dejaba ahí con ese frame sin entregar mientras el juego escribía el siguiente encima.
+       Las partículas de lluvia y antorchas (vértices que escriben la CPU y los shaders, leídos en su sitio) salían
+       estiradas un frame (#620, #629, #683, #717, #776). Ahora aplazar un fence espera a que su envío llegue al driver
+       (`deferred_handed_over`): con el limitador imitado en la lluvia fuerte de Lanayru, lo que la CPU reescribía antes
+       del envío pasa de ~20 % de las muestras a 0 y no se ven partículas estiradas; sin limitador cuesta ~1 % (123,0
+       frente a 124,4 fps, 4+4 pasadas alternas, RTX 3060). `SAVAGEWIND_VK_OVERLAP_HANDOVER=0` lo quita;
+       `SAVAGEWIND_DEBUG_PRESENT_LIMIT=<fps>` imita un limitador así y `SAVAGEWIND_VK_RACE_PROBE=1` mide la memoria que
+       el juego lee en su sitio y cambia entre la traducción y el envío o la espera (líneas `[race]`).
      Además:
      - Copias de constant buffers: se comparten en toda la lista (antes, solo dentro de cada trozo de ~300 draws que
        va a la GPU) y `UpdateUniformBuffer` (~450 por frame en el mundo, sobre solo ~40 rangos pequeños) invalida solo
@@ -1548,6 +1559,12 @@ Pendiente:
        `SAVAGEWIND_DEBUG_TEXDUMP_LEVEL=<n>` el nivel (estirado al tamaño del 0) y `SAVAGEWIND_DEBUG_TEXDUMP_DRAW=<n>` el
        draw (numerado como en `[pick]`; cambia entre corridas) en vez del primero; `SAVAGEWIND_DEBUG_TEXDUMP_NTH=<n>`, el
        n-ésimo draw de ese shader en el frame (el cielo de BOTW: 1 es el del cubemap, 2 el de la vista).
+       Las texturas 3D se leen de la GPU tal cual (`build/gpu3d_<id>_<w>x<h>x<d>_f<formato>.raw`, texels en bruto: x,
+       luego y, luego z) y se comparan con lo subido (`SAVAGEWIND_DUMP_TEX3D=1`: `build/tex3d_*.raw`). El log también
+       trae las constantes del compilador (`vcb1` / `fcb1`, en hex). Así se encontró el cielo gris o negro de AMD en
+       Windows (#359): la tabla del cielo (256x32x16 RGBA16F, fs 3fe42f9951190955) subía bien, pero el driver de AMD
+       guardaba parte del borrado a cero que la precedía (40 % de la tabla mal); las imágenes 3D ya no se borran al
+       crearse (`SAVAGEWIND_VK_CLEAR_3D=1`: se borran como antes).
      - `SAVAGEWIND_LOG_FS_CB=<fs hash>:<k>:<primer float>:<cuántos>`: en cada frame, esos floats del uniform buffer `c[k]`
        del fragment shader (el `fcb<k>` del frame de depuración) en su primer draw; sigue un parámetro a lo largo de un
        recorrido con guion (así apareció la paleta de 60 s). En el frame de depuración, el log `[draw]` termina con

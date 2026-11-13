@@ -421,6 +421,19 @@ def _demo_move_arrive(gen, a):
             f'  /* {a:#x}: fcmp s8, s9 (player demo move: arrived within a frame of walking) */')
 
 
+# A player rail move's point (runtime/hle/framepace.c rt_rail_point_radius, #364): PlayerRailMove's update (1.9.0
+# 0x7000c89cec) moves the point Link walks to along the rail by half a radius whenever Link is within the radius of it,
+# and the radius is the delta frame the player stored that frame (+0x20f0), in metres. Above 30 fps the point waited for
+# Link at a rail node until he was within a fraction of a metre (0.17 at 180 fps), and the move's arrival tests ended the
+# walk there. The radius is at least 1, the console's.
+
+def _rail_point_radius(gen, a):
+    assert _word(gen, a) == 0xbd60f100, hex(_word(gen, a))  # ldr s0, [x8, #0x20f0]
+    return ('{ extern float rt_rail_point_radius(float); union { uint32_t u; float f; } r = { .u = (uint32_t)LD32(c->x[8] + 0x20f0) }; '
+            'r.f = rt_rail_point_radius(r.f); c->v[0] = r.u; }'
+            f'  /* {a:#x}: ldr s0, [x8, #0x20f0] (player rail move: the radius its point moves on within) */')
+
+
 def _kf_angle(gen, a):
     assert _word(gen, a) >> 26 == 0x25, hex(_word(gen, a))  # bl (getAngle)
     target = sext(_word(gen, a) & 0x3ffffff, 26) * 4 + a
@@ -1008,6 +1021,7 @@ PATCHES = {
     'phys_solver_steps': _solver_steps,
     'kf_angle': _kf_angle,
     'demo_move_arrive': _demo_move_arrive,
+    'rail_point_radius': _rail_point_radius,
     'phys_tick': _phys_tick,
     'phys_tick_mt': _phys_tick,
     'phys_motion_tick': _phys_motion_tick,
