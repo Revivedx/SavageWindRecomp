@@ -173,7 +173,7 @@ void vk_texture_drop_format_list(NvnTexture *t);        // (textures.c) a feedba
 VkImageView vk_dummy_view(int textype);
 void vk_block_flush(VkCommandBuffer cb, TexBackend *b);  // (outside a pass) b->block's texels into b's blocks
 VkSampler vk_sampler(NvnSamplerDesc *d, bool aniso_ok, float bias);  // (aniso_ok: Video > Anisotropic filtering may
-                                                                     //  apply; bias: added to the LOD bias)
+                                                                     //  apply; bias: added to the LOD bias + tex_lod_bias)
 VkSampler vk_default_sampler(bool linear);
 VkSampler vk_text_sampler(void);
 void vk_image_init_layout(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect);

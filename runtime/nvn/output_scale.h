@@ -37,6 +37,13 @@ double upscale_factor(void);
 // Video > Shadow resolution: the width the game's shadow maps are made at from presented frame `frame` on (0: their
 // own size; vulkan/textures.c RS_SHADOW)
 unsigned shadow_map_size(unsigned long long frame);
+
+// Video > Render scale: percentage and scale factor for RSCALE_* (50% .. 200%)
+int render_scale_pct(int rsi);
+double render_scale_factor(int rsi);
+// Internal 3D scene render resolution for a given window drawable size (dw x dh),
+// accounting for render_scale and upscaler factor.
+void rt_render_size(double dw, double dh, uint32_t *out_w, uint32_t *out_h);
 // The world camera's projection as last built (rt_persp: tan(fovy / 2) and aspect as drawn, near, far), for frame
 // generation's motion vectors (vulkan/framegen.c). false before the first one.
 typedef struct { float tan_half_fovy, aspect, near_, far_; unsigned long long serial; } WorldProj;

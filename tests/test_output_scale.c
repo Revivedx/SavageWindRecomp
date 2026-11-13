@@ -3,7 +3,7 @@
 #include <math.h>
 #include <stdio.h>
 #include "../runtime/nvn/output_scale.c"
-Settings g_settings = {.wide_view = true, .fov = 100};
+Settings g_settings = {.wide_view = true, .fov = 100, .render_scale = RSCALE_100};
 static bool title, loading, map;
 bool framepace_map_ui(void) { return map; }
 bool framepace_title_ui(void) { return title; }
@@ -87,5 +87,44 @@ int main(void) {
     fsr3_avail = false;
     g_settings.upscaler = UPSCALE_OFF;
     g_settings.upscale_quality = UPQ_QUALITY;
+
+    // Render scale (50% .. 200%) scaling 3D dimensions
+    g_settings.render_scale = RSCALE_50;
+    output_scale(1920, 1080, true, &o);
+    near(1080 * o.sy, 540); near(900 * o.scene_sy, 540);
+
+    g_settings.render_scale = RSCALE_100;
+    output_scale(1920, 1080, true, &o);
+    near(1080 * o.sy, 1080); near(900 * o.scene_sy, 1080);
+
+    g_settings.render_scale = RSCALE_150;
+    output_scale(1920, 1080, true, &o);
+    near(1080 * o.sy, 1620); near(900 * o.scene_sy, 1620);
+
+    g_settings.render_scale = RSCALE_200;
+    output_scale(1920, 1080, true, &o);
+    near(1080 * o.sy, 2160); near(900 * o.scene_sy, 2160);
+    g_settings.render_scale = RSCALE_100;
+
+    // SHADOW_POTATO returns 448
+    g_settings.shadow_res = SHADOW_POTATO;
+    assert(shadow_map_size(0) == 448);
+    g_settings.shadow_res = SHADOW_CONSOLE;
+    assert(shadow_map_size(0) == 0);
+
+    // UPSCALE_FSR3 + UPQ_NATIVE
+    fsr3_avail = true;
+    g_settings.upscaler = UPSCALE_FSR3;
+    g_settings.upscale_quality = UPQ_NATIVE;
+    assert(rt_fsr3());
+    near(upscale_factor(), 1.0);
+    output_scale(1920, 1080, true, &o);
+    near(1080 * o.sy, 1080); near(900 * o.scene_sy, 1080);
+    uint32_t rw = 0, rh = 0;
+    rt_render_size(1920, 1080, &rw, &rh);
+    assert(rw == 1920 && rh == 1080);
+    fsr3_avail = false;
+    g_settings.upscaler = UPSCALE_OFF;
+
     puts("PASS: map overscan clipped at 16:10 and 4:3; Native AA, FSR 4/FSR 3 availability and FSR 1 fallback verified");
 }
