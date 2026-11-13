@@ -44,6 +44,7 @@ build SAVAGEWIND_CC | | The compiler that builds the game code.
 
 play SAVAGEWIND_FSR3 | 1 | Offers AMD FSR 3 upscaling in the Video menu (builds that include it).
 play SAVAGEWIND_VK_NO_FEEDBACK_LOOP | 1 | Draws with copies instead of feedback loops. Fixes a wrong picture on some graphics cards, slower on others.
+play SAVAGEWIND_VK_NO_CLEAR_FOLD | 1 | Every clear stays a separate clear command instead of the pass's load op.
 play SAVAGEWIND_VK_FEEDBACK_LOOP | 1 | Turns feedback loops on where they are held back for your graphics card.
 play SAVAGEWIND_VK_GPL | 1 | Turns pipeline libraries on where they are held back for your graphics driver.
 play SAVAGEWIND_VK_NO_GPL | 1 | Turns pipeline libraries off.

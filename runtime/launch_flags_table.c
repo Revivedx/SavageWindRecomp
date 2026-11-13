@@ -420,6 +420,7 @@ const LfInfo LF_TABLE[] = {
     {"SAVAGEWIND_VK_M5", LF_KIND_SWITCH, LF_GROUP_PLAY, "1", "Turns on a Vulkan feature that the older-graphics-card mode leaves off."},
     {"SAVAGEWIND_VK_MAX_SAMPLERS", LF_KIND_NUMBER, LF_GROUP_OTHER, "", ""},
     {"SAVAGEWIND_VK_MEMORY_PRIORITY", LF_KIND_TEXT, LF_GROUP_OTHER, "", ""},
+    {"SAVAGEWIND_VK_NO_CLEAR_FOLD", LF_KIND_SWITCH, LF_GROUP_PLAY, "1", "Every clear stays a separate clear command instead of the pass's load op."},
     {"SAVAGEWIND_VK_NO_DYN_CACHE", LF_KIND_SWITCH, LF_GROUP_OTHER, "", ""},
     {"SAVAGEWIND_VK_NO_FEEDBACK_LOOP", LF_KIND_SWITCH, LF_GROUP_PLAY, "1", "Draws with copies instead of feedback loops. Fixes a wrong picture on some graphics cards, slower on others."},
     {"SAVAGEWIND_VK_NO_GMEM", LF_KIND_SWITCH, LF_GROUP_PLAY, "1", "Turns off the single memory mapping of the game's heap."},
@@ -486,4 +487,4 @@ const LfInfo LF_TABLE[] = {
     {"SAVAGEWIND_XLATE_VERIFY", LF_KIND_TEXT, LF_GROUP_DEV, "", ""},
     {"SAVAGEWIND_YAZ0", LF_KIND_NUMBER, LF_GROUP_OTHER, "", ""},
 };
-const int LF_TABLE_N = 482;
+const int LF_TABLE_N = 483;

@@ -1144,6 +1144,16 @@ Pendiente:
      `test` (36a02bc, con #108), 3+3 pasadas alternas sin límite de FPS a 1280x720 en una Radeon 660M: GPU por frame
      −1,9 % en Kakariko, −1,1 % en el establo del río y −1,9 % en la puerta de la Ciudad Gerudo; FPS +1,3 % en
      Kakariko (los otros dos, +1,1 y +0,8 %, dentro del ruido).
+   - Clears como load op del pase (2026-11-13): un clear del juego que es el primer comando de un pase y cubre todo el
+     render area se graba como `loadOp = CLEAR` del attachment (color, depth o stencil) en vez de `LOAD` seguido de
+     `vkCmdClearAttachments`: el target ya no se lee solo para sobrescribirlo (`clear` ofrece el valor y `begin_pass`
+     lo toma, en `exec.c`). Un clear que llega tras un draw, con máscara parcial o con scissor menor que el render area
+     queda como antes. En el recorrido de la Meseta de los Albores, a 1280x720: 28,6 clears por frame (el contador
+     `clears folded` de la línea `[vk]` de estadísticas) y ~9,7 M de píxeles de attachment sin leer por frame (~8 % de
+     las lecturas; ~39 MB por frame a 4 B/píxel, estimado con un contador aparte). En una Radeon Renoir (RADV, Mesa
+     26.2.6) los FPS no cambian: 44,09 ± 1,01 con y 43,61 ± 2,36 sin, cinco corridas alternas de cada uno; una corrida
+     de cada brazo tuvo un tirón de 100-190 ms ajeno al cambio. En esa GPU el límite está en otro sitio.
+     `SAVAGEWIND_VK_NO_CLEAR_FOLD=1` vuelve a los `vkCmdClearAttachments`.
    - Fallos gráficos que quedaban en la Alpha 2 (2026-10-22):
      - Consulta de oclusión del sol: `ReportCounter` con `SAMPLES_PASSED` (tipo 1) devolvía siempre 0 muestras y
        `ResetCounter` no hacía nada. BOTW dibuja una vez por frame el disco del sol con prueba de profundidad y sin

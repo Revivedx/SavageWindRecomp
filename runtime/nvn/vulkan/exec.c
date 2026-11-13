@@ -57,12 +57,22 @@ static void vdyn_reset(void);
 static void ubo_check_submit(uint64_t seq);
 static uint64_t stat_feedback_live;  // depth attachments sampled as they are (read-only feedback, no copy)
 static uint64_t stat_feedback_loops, stat_feedback_barriers;  // draws sampling a target they write, in a feedback loop
+static uint64_t stat_clear_folds;  // clears that became their pass's load op (clear_fold_on)
 static bool pass_ds_written;         // a draw of the current pass wrote depth or stencil
 static uint8_t pass_color_written;   // the color targets (bits) a draw of the current pass wrote
 static uint8_t pass_color_unsynced;  // the color targets drawn or cleared since the pass began or its last feedback barrier
 static uint8_t pass_feedback;        // the color targets (bits) the current pass began with a feedback loop enabled
 static TexBackend *pass_fbl[8];      // (g_vk.feedback_layout) its targets moved to ATTACHMENT_FEEDBACK_LOOP_OPTIMAL
 static int pass_nfbl;
+// A clear that is the first command of its pass and covers the whole render area is recorded as the attachment's load op
+// (CLEAR) instead of a LOAD followed by vkCmdClearAttachments: the target is not read just to be overwritten.
+// clear() offers it (want, the value) and begin_pass() takes what it can (c, d, s: the aspects it folded).
+static struct { bool want, c, d, s; int idx; float val[4]; float dval; uint32_t sval; } clear_fold;
+static bool clear_fold_on(void) {  // SAVAGEWIND_VK_NO_CLEAR_FOLD=1: every clear is a vkCmdClearAttachments, as before
+    static int v = -1;
+    if (v < 0) { v = getenv("SAVAGEWIND_VK_NO_CLEAR_FOLD") == NULL; LOG("[vk] clears folded into the load op: %s\n", v ? "on" : "off"); }
+    return v;
+}
 static TexBackend *pass_block[8];    // its targets drawn through a view of a compressed image's blocks (vk_block_flush)
 static int pass_nblock;
 static bool draw_feedback;           // the current draw samples a target it writes (its pipeline allows the loop)
@@ -1295,6 +1305,9 @@ const char *renderer_stats(void) {
         n = strlen(stats_text);
         if (stat_links_now) snprintf(stats_text + n, sizeof stats_text - n, ", links now %llu", (unsigned long long)stat_links_now);
         stat_links_now = 0;
+        n = strlen(stats_text);
+        if (stat_clear_folds) snprintf(stats_text + n, sizeof stats_text - n, ", clears folded %llu", (unsigned long long)stat_clear_folds);
+        stat_clear_folds = 0;
         stat_uub = stat_uub_same = stat_gcopy_hit = stat_gcopy_miss = stat_gcopy_bytes = stat_ubo_direct = stat_chain_barriers = 0;
         ubo_check_done(true);
         stat_gw_waits = stat_gw_holds = 0;
@@ -2090,6 +2103,7 @@ static void vk_end_pass_at(int line) {
 
 static uint32_t level_extent(uint32_t v, uint32_t lv) { v >>= lv; return v ? v : 1; }
 
+static VkRect2D scissor_rect(void);
 static void begin_pass(void) {
     after_dispatch = false;  // (dispatch_compute: a pass in between)
     if (in_pass && !st.rt_dirty) return;
@@ -2375,6 +2389,23 @@ static void begin_pass(void) {
         stat_passes++;
         return;
     }
+    bool fold_c = false, fold_d = false, fold_s = false;
+    if (clear_fold.want) {
+        VkRect2D rc = scissor_rect();
+        if (rc.offset.x <= 0 && rc.offset.y <= 0 && rc.extent.width >= minw && rc.extent.height >= minh) {
+            int ci = clear_fold.idx;
+            fold_c = ci >= 0 && ci < (int)pass_ncolor && ca[ci].imageView && ca[ci].loadOp == VK_ATTACHMENT_LOAD_OP_LOAD;
+            fold_d = clear_fold.d && has_d && da.loadOp == VK_ATTACHMENT_LOAD_OP_LOAD;
+            fold_s = clear_fold.s && has_s && sa.loadOp == VK_ATTACHMENT_LOAD_OP_LOAD;
+            if (fold_c) {
+                ca[ci].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+                memcpy(ca[ci].clearValue.color.float32, clear_fold.val, 16);
+            }
+            if (fold_d) { da.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; da.clearValue.depthStencil.depth = clear_fold.dval; }
+            if (fold_s) { sa.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; sa.clearValue.depthStencil.stencil = clear_fold.sval; }
+        }
+    }
+    clear_fold.c = fold_c; clear_fold.d = fold_d; clear_fold.s = fold_s;
     pass_mvec = -1;
     if (mvec_enabled() && has_d && pass_ncolor < 8 && pass_samples == 1) {  // (mvec.c) the motion target, appended
         TexBackend *mt = mvec_pass_target(st.rt.depth, minw, minh);
@@ -2642,7 +2673,16 @@ static void clear(int index, int kind, const void *color, uint32_t mask, bool de
         }
         if (!in_pass || st.rt_dirty) det_no_next = true;
     }
+    clear_fold.c = clear_fold.d = clear_fold.s = false;
+    // (only a clear that begins a pass can fold: after a draw, the clear must keep its place among the commands)
+    clear_fold.want = clear_fold_on() && (!in_pass || st.rt_dirty) && (index < 0 || (mask & 0xF) == 0xF) &&
+                      (!stencil || (smask & 0xFF) == 0xFF) && index < 8;
+    if (clear_fold.want) {
+        clear_fold.idx = index; clear_fold.d = depth; clear_fold.s = stencil; clear_fold.dval = dval; clear_fold.sval = sval;
+        if (index >= 0) memcpy(clear_fold.val, color, 16);
+    }
     begin_pass();
+    clear_fold.want = false;
     if (index >= 0 && index < 8) det_written |= (uint8_t)(1u << index);
     if (pass_void) return;
     VkCommandBuffer cb = vk_cmd();
@@ -2656,11 +2696,17 @@ static void clear(int index, int kind, const void *color, uint32_t mask, bool de
         uint32_t n = 0;
         if (index >= 0) {
             pass_color_unsynced |= (uint8_t)(1u << index);
-            a[n] = (VkClearAttachment){.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .colorAttachment = (uint32_t)index};
-            memcpy(a[n].clearValue.color.float32, color, 16);
-            n++;
+            if (clear_fold.c) {
+                stat_clear_folds++;
+            } else {
+                a[n] = (VkClearAttachment){.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .colorAttachment = (uint32_t)index};
+                memcpy(a[n].clearValue.color.float32, color, 16);
+                n++;
+            }
         }
         VkImageAspectFlags dsa = (depth && pass_depth ? VK_IMAGE_ASPECT_DEPTH_BIT : 0) | (stencil && pass_stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
+        if (clear_fold.d) dsa &= ~(VkImageAspectFlags)VK_IMAGE_ASPECT_DEPTH_BIT, stat_clear_folds++;
+        if (clear_fold.s) dsa &= ~(VkImageAspectFlags)VK_IMAGE_ASPECT_STENCIL_BIT, stat_clear_folds++;
         if (dsa) a[n++] = (VkClearAttachment){.aspectMask = dsa, .clearValue.depthStencil = {dval, sval}};
         VkClearRect cr = {rect, 0, 1};
         if (n) rec_CmdClearAttachments(cb, n, a, 1, &cr);
