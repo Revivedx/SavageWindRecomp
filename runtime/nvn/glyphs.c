@@ -17,6 +17,7 @@
 //
 // SAVAGEWIND_GLYPH_DUMP=1 saves each sheet as uploaded, the original beside it (build/glyph_sheet_<n>.pgm, bottom-up).
 #include <math.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,6 +25,7 @@
 #include <SDL3/SDL.h>
 
 #include "glyphs.h"
+#include "../hle.h"
 #include "../input_bind.h"
 #include "../paths.h"
 #include "../rt.h"
@@ -517,11 +519,64 @@ static int resolve_kind(void) {
     return f == 1 ? ICONS_XBOX : f == 2 ? ICONS_PLAYSTATION : ICONS_NINTENDO;
 }
 
-uint32_t glyphs_generation(void) {
+static int face_vertex(int host) {
+    switch (host) {
+    case SDL_GAMEPAD_BUTTON_EAST: return 0;
+    case SDL_GAMEPAD_BUTTON_SOUTH: return 1;
+    case SDL_GAMEPAD_BUTTON_NORTH: return 2;
+    case SDL_GAMEPAD_BUTTON_WEST: return 3;
+    default: return -1;
+    }
+}
+
+void glyphs_hud_positions(int pos[4]) {
+    static const int k_presets[BUTTON_LAYOUT_COUNT][4] = {
+        {0, 1, 2, 3},  // BUTTON_LAYOUT_AUTO (fallback: Nintendo)
+        {0, 1, 2, 3},  // BUTTON_LAYOUT_NINTENDO: East A, South B, North X, West Y
+        {1, 0, 2, 3},  // BUTTON_LAYOUT_SWAP_AB:  South A, East B, North X, West Y
+        {1, 0, 3, 2},  // BUTTON_LAYOUT_XBOX:     South A, East B, West X, North Y
+        {0, 1, 3, 2},  // BUTTON_LAYOUT_SWAP_XY:  East A, South B, West X, North Y
+        {1, 3, 0, 2},  // BUTTON_LAYOUT_GAMECUBE: South A, West B, East X, North Y
+    };
+    int layout = g_settings.button_layout;
+    if (layout > BUTTON_LAYOUT_AUTO && layout < BUTTON_LAYOUT_COUNT) {
+        memcpy(pos, k_presets[layout], 4 * sizeof(int));
+        return;
+    }
+    int p[4], mask = 0;
+    for (int i = 0; i < 4; i++) {
+        p[i] = face_vertex(g_bind_pad[BIND_A + i]);
+        if (p[i] >= 0) mask |= 1 << p[i];
+    }
+    if (mask == 0xF && (p[0] != 0 || p[1] != 1 || p[2] != 2 || p[3] != 3)) {
+        memcpy(pos, p, sizeof p);
+        return;
+    }
+    static const int k_acts[4] = {0, 14, 2, 3};  // Interact (A), Cancel (B), Jump (X), Attack (Y)
+    mask = 0;
+    for (int i = 0; i < 4; i++) {
+        int h = g_act_pad[k_acts[i]];
+        if (h == ACT_FOLLOW) h = g_bind_pad[BIND_A + i];
+        p[i] = face_vertex(h);
+        if (p[i] >= 0) mask |= 1 << p[i];
+    }
+    if (mask == 0xF) {
+        memcpy(pos, p, sizeof p);
+        return;
+    }
+    memcpy(pos, k_presets[0], 4 * sizeof(int));
+}
+
+// cursor: with the state of the menus' mouse pointer, which changes some keyboard icons while a menu is open.
+static uint32_t generation(bool cursor) {
     int k = resolve_kind();
     uint32_t h = 2166136261u ^ (uint32_t)k;
     if (k == ICONS_KEYBOARD) {
-        h = (h ^ pc_cursor_preview_active()) * 16777619u;
+        if (cursor) {
+            h = (h ^ pc_cursor_preview_active()) * 16777619u;
+            extern bool pc_cursor_sensor_active(void) __attribute__((weak));
+            if (pc_cursor_sensor_active) h = (h ^ pc_cursor_sensor_active()) * 16777619u;
+        }
         for (int i = 0; i < BIND_KEY_COUNT; i++) h = (h ^ (uint16_t)g_bind_key[i]) * 16777619u;
         h = (h ^ g_settings.mouse_camera) * 16777619u;
     } else {
@@ -529,6 +584,9 @@ uint32_t glyphs_generation(void) {
     }
     return h | 1;
 }
+
+uint32_t glyphs_generation(void) { return generation(true); }
+uint32_t glyphs_font_generation(void) { return generation(false); }
 
 static const char *const k_kind_names[ICONS_COUNT] = {"auto", "keyboard", "Xbox", "PlayStation", "Nintendo"};
 
@@ -592,6 +650,41 @@ static void cell_origin(const SheetFont *f, uint32_t i, int *x0, int *y0) {
 }
 static int sheet_y(const SheetFont *f, int y0, int y) { return (int)f->sheet_h - 1 - (y0 + y); }  // (stored bottom-up)
 
+// The sheet as already redrawn, one per generation. Opening or closing a menu with the keyboard changes the generation
+// (the pointer's state above) and each redraw took 50-60 ms of a frame (#591). The sheet's contents are checked first
+// and the icons depend only on the generation, so a sheet of the same generation is the same.
+#define SHEET_CACHE 8
+static struct { uint32_t gen; uint8_t *bc4; } g_sheet_cache[SHEET_CACHE];
+static int g_sheet_next;
+static pthread_mutex_t g_sheet_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static bool sheet_cached(uint32_t gen, uint8_t *lin) {
+    bool found = false;
+    pthread_mutex_lock(&g_sheet_lock);
+    for (int i = 0; i < SHEET_CACHE && !found; i++)
+        if (g_sheet_cache[i].bc4 && g_sheet_cache[i].gen == gen) memcpy(lin, g_sheet_cache[i].bc4, SHEET_BYTES), found = true;
+    pthread_mutex_unlock(&g_sheet_lock);
+    return found;
+}
+
+static void sheet_cache_add(uint32_t gen, const uint8_t *lin) {
+    pthread_mutex_lock(&g_sheet_lock);
+    if (!g_sheet_cache[g_sheet_next].bc4) g_sheet_cache[g_sheet_next].bc4 = malloc(SHEET_BYTES);
+    if (g_sheet_cache[g_sheet_next].bc4) {
+        memcpy(g_sheet_cache[g_sheet_next].bc4, lin, SHEET_BYTES);
+        g_sheet_cache[g_sheet_next].gen = gen;
+        g_sheet_next = (g_sheet_next + 1) % SHEET_CACHE;
+    }
+    pthread_mutex_unlock(&g_sheet_lock);
+}
+
+RT_ON_RESET(glyphs_cache_reset) {
+    pthread_mutex_lock(&g_sheet_lock);
+    for (int i = 0; i < SHEET_CACHE; i++) g_sheet_cache[i].gen = 0;
+    g_sheet_next = 0;
+    pthread_mutex_unlock(&g_sheet_lock);
+}
+
 bool glyphs_apply(uint64_t addr, uint64_t pool_lo, uint64_t pool_hi, uint32_t format, uint32_t w, uint32_t h,
                   uint8_t *lin, uint32_t wb, uint32_t hb) {
     const SheetFont *f = &k_sheet;
@@ -604,6 +697,9 @@ bool glyphs_apply(uint64_t addr, uint64_t pool_lo, uint64_t pool_hi, uint32_t fo
                             (unsigned long long)addr, (unsigned long long)hash);
         return false;
     }
+    uint32_t gen = glyphs_generation();
+    bool dump = getenv("SAVAGEWIND_GLYPH_DUMP") != NULL;
+    if (!dump && sheet_cached(gen, lin)) return true;
     int kind = resolve_kind();
     uint8_t *orig = malloc((uint64_t)w * h), *img = malloc((uint64_t)w * h);
     bc4_decode(lin, wb, hb, orig);
@@ -645,11 +741,12 @@ bool glyphs_apply(uint64_t addr, uint64_t pool_lo, uint64_t pool_hi, uint32_t fo
         }
     }
     if (changed) bc4_encode(img, wb, hb, lin);
+    sheet_cache_add(gen, lin);
     static int nlog;
     if (nlog++ < 16)
         LOG("[glyphs] button glyph sheet %llx: %s icons, %d glyphs redrawn\n", (unsigned long long)addr,
             k_kind_names[kind], changed);
-    if (getenv("SAVAGEWIND_GLYPH_DUMP")) {
+    if (dump) {
         static int n;
         char path[128];
         snprintf(path, sizeof path, "build/glyph_sheet_%d.pgm", ++n);

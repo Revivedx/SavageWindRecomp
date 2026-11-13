@@ -5,7 +5,7 @@
 #include "../runtime/hle/vibration.c"
 #include "../runtime/services/hid_set.c"
 
-Settings g_settings = {.rumble = true};
+Settings g_settings = {.rumble = true, .rumble_strength = 100};
 
 static uint64_t now;
 static unsigned calls;
@@ -107,6 +107,14 @@ int main(void) {
     update_sync(pad, true);
     assert(motor_low == 0 && motor_high == 0);  // no stale effect after re-enabling
     command(201, packet, sizeof packet);
+    update_sync(pad, true);
+    assert(motor_low == 16384 && motor_high == 32768);
+
+    // Rumble strength scales the motor output proportionally.
+    g_settings.rumble_strength = 50;
+    update_sync(pad, true);
+    assert(motor_low == 8192 && motor_high == 16384);
+    g_settings.rumble_strength = 100;
     update_sync(pad, true);
     assert(motor_low == 16384 && motor_high == 32768);
 

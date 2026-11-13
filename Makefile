@@ -545,6 +545,24 @@ test-vibration: $(B)/test_vibration
 
 .PHONY: test-vibration
 
+$(B)/test_hud_button_layout: tests/test_hud_button_layout.c runtime/nvn/glyphs.c runtime/settings.c runtime/hle/bindings.c
+	@mkdir -p $(dir $@)
+	$(CC) -O1 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< runtime/nvn/glyphs.c runtime/settings.c runtime/hle/bindings.c -fuse-ld=lld -Wl,--gc-sections $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) -lSDL3 -lz -lm
+
+test-hud-button-layout: $(B)/test_hud_button_layout
+	$(B)/test_hud_button_layout
+
+.PHONY: test-hud-button-layout
+
+$(B)/test_window_size: tests/test_window_size.c runtime/window_size.c runtime/settings.c runtime/hle/bindings.c $(RT_HDRS)
+	@mkdir -p $(dir $@)
+	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tests/test_window_size.c runtime/window_size.c runtime/settings.c runtime/hle/bindings.c -fuse-ld=lld -Wl,--gc-sections -lSDL3 -lpthread -lm
+
+test-window-size: $(B)/test_window_size
+	$(B)/test_window_size
+
+.PHONY: test-window-size
+
 $(B)/test_prof: tools/test_prof.c runtime/prof.c runtime/prof_sampler.c runtime/prof.h runtime/rt.h
 	@mkdir -p $(B)
 	$(CC) -O2 -std=gnu11 -Wall -Wextra -Werror $(OSFLAGS) -Iruntime -o $@ tools/test_prof.c runtime/prof.c runtime/prof_sampler.c -lpthread

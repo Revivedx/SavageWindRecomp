@@ -2628,6 +2628,15 @@ presented:
             if (*next == ',') next++;
         }
     }
+    {   // A picture asked for (runtime/hle/photo.c, PrintScreen during play; test scripts' `shot`): this game image
+        extern char g_window_shot_request[256];
+        if (g_window_shot_request[0]) {
+            extern void photo_saved(const char *path);  // (hle/photo.c: its own pictures get a notice)
+            renderer_save_texture_tex(b, g_window_shot_request);
+            photo_saved(g_window_shot_request);
+            g_window_shot_request[0] = 0;
+        }
+    }
     {   // F12 (runtime/hle/input.c): every other game image -> build/frames/rec_N.png until F12 again (catches flicker
         // too short to see; the saves slow the game down meanwhile)
         extern volatile int g_record_frames;

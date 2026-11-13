@@ -100,6 +100,7 @@ typedef struct {
     int fps_limit;       // frame rate, frames per second (FPS_CHOICES; 0: no limit)
     int vsync;           // VSYNC_*
     bool rumble;         // controller vibration
+    int rumble_strength; // vibration intensity percent: 10..100 (default 100)
     bool freecam_sticks; // both stick clicks together turn the free camera on and off (hle/input.c)
     int gpu;             // Vulkan adapter index from the startup log; -1: automatic (restart required)
     bool dpad_move;      // the d-pad (and arrow keys) also act as the left stick while it is at rest
@@ -109,6 +110,12 @@ typedef struct {
     float mouse_sens;    // mouse camera speed, 1 = 100% (default MOUSE_SENS_DEFAULT)
     float mouse_sens_y;  // vertical mouse camera speed, a fraction of mouse_sens (1: the same as horizontal)
     bool mouse_invert_y; // mouse up looks down
+    bool stick_cam_on;   // Controls > Controller camera speed: stick_cam_x and _y apply (off: the game's own speed)
+    int stick_cam_x, stick_cam_y;  // the right stick's camera speed, left and right / up and down, percent of the game's
+    bool pc_bow;         // Mouse bow aiming: right button held aims the bow, a left click fires (runtime/pc_bow.h)
+    int button_layout;   // BUTTON_LAYOUT_*: where A, B, X and Y sit on the HUD's four-button diamond (Automatic: bindings)
+    bool auto_continue;  // Gameplay > Start at Continue: past the start screen into the latest save (hle/input.c)
+    bool fps_display;    // Frame rate > Match display: follow the display's refresh rate (window_size.c)
     bool pc_gyro;        // keyboard gyro only during shrine apparatus interaction
     bool gyro_scene;     // left-drag rotation during a shrine apparatus interaction
     float motion_sens;   // motion controls: how far turning the controller turns the aim, 1 = 100%
@@ -163,6 +170,24 @@ typedef struct {
 
 enum { MVEC_MODE_HYBRID, MVEC_MODE_OBJECTS, MVEC_MODE_CAMERA, MVEC_MODE_COUNT };
 
+#define RUMBLE_STRENGTH_MIN 10
+#define RUMBLE_STRENGTH_MAX 100
+#define RUMBLE_STRENGTH_DEFAULT 100
+
+#define STICK_CAM_MIN 25
+#define STICK_CAM_MAX 400
+#define STICK_CAM_DEFAULT 100
+
+enum {
+    BUTTON_LAYOUT_AUTO,
+    BUTTON_LAYOUT_NINTENDO,
+    BUTTON_LAYOUT_SWAP_AB,
+    BUTTON_LAYOUT_XBOX,
+    BUTTON_LAYOUT_SWAP_XY,
+    BUTTON_LAYOUT_GAMECUBE,
+    BUTTON_LAYOUT_COUNT
+};
+
 #define STICK_DEADZONE_DEFAULT 0.10f  // (the Switch's own input service has one: the game expects 0 at rest)
 #define HAZE_CHOICES {75, 90, 100}  // (percent of the game's haze: below 75 the whole picture turns teal)
 #define HAZE_MIN 75
@@ -188,5 +213,6 @@ enum { ICONS_AUTO, ICONS_KEYBOARD, ICONS_XBOX, ICONS_PLAYSTATION, ICONS_NINTENDO
 
 extern Settings g_settings;
 
+void settings_fps_for_display(float hz);
 void settings_load(void);
 void settings_save(void);

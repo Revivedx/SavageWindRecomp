@@ -163,6 +163,9 @@ const int k_shadow_order[] = {SHADOW_POTATO, SHADOW_CONSOLE, SHADOW_HIGH, SHADOW
 const char *const k_rscale[] = {"50%", "75%", "100%", "125%", "150%", "200%"};
 const char *const k_text[] = {"Off", "2x", "4x"};  // (sharper_text / 2)
 const char *const k_icons[] = {"Automatic", "Keyboard", "Xbox", "PlayStation", "Nintendo"};  // (ICONS_*)
+const char *const k_button_layout[BUTTON_LAYOUT_COUNT] = {
+    "Automatic", "Nintendo", "Swap A / B", "Xbox", "Swap X / Y", "GameCube"
+};  // (BUTTON_LAYOUT_*)
 const char *const k_motion_dev[MOTION_DEV_COUNT] = {"Automatic", "Controller", "Mouse"};
 constexpr int k_fps[] = FPS_CHOICES;  // frame rate (0: Off, no limit)
 const char *const k_vsync[VSYNC_COUNT] = {"On", "Fast", "Adaptive", "Off"};  // (settings.h VSYNC_*)
@@ -191,6 +194,9 @@ static_assert(k_hud_size[HUD_SIZE_DEFAULT_INDEX] == 100);
 constexpr int k_deadzone[] = {0, 3, 5, 8, 10, 12, 15, 20, 25, 30, 40};  // stick dead zone, % of full tilt
 constexpr int DEADZONE_DEFAULT = 4;
 static_assert(k_deadzone[DEADZONE_DEFAULT] == (int)(STICK_DEADZONE_DEFAULT * 100 + 0.5f));
+constexpr int k_rumble_strength[] = {10, 20, 30, 40, 50, 60, 70, 80, 90, 100};  // vibration strength %
+constexpr int RUMBLE_STRENGTH_DEFAULT_INDEX = 9;
+static_assert(k_rumble_strength[RUMBLE_STRENGTH_DEFAULT_INDEX] == 100);
 const char *const k_invert[] = {"Off", "Up and down", "Left and right", "Both"};  // (MOTION_INVERT_* bits)
 const char *const k_gyro_cam[GYRO_CAM_COUNT] = {"Off", "Exploration", "Hold button", "Always"};
 constexpr int k_motion_cam_sens[] = {25, 33, 50, 75, 100, 125, 150, 200, 250, 300, 400, 500};
@@ -268,6 +274,7 @@ const char *ups_label(const Item &, int x) {
 }
 
 const char *fps_label(const Item &, int x) {
+    if (x == N(k_fps)) return tr("Match display");
     static char buf[32];
     if (!k_fps[x]) return tr("Off");
     snprintf(buf, sizeof buf, tr("%d FPS"), k_fps[x]);
@@ -430,13 +437,18 @@ void build_items(void) {
                        },
                        [](const Item &, int x) { g_settings.draw_distance = k_drawdist_order[x]; }, 1));
     Item fps = choice(P_VIDEO, "Frame rate", "",
-                      [](const Item &) { return N(k_fps); }, fps_label,
+                      [](const Item &) { return N(k_fps) + 1; }, fps_label,
                       [](const Item &) {
+                          if (g_settings.fps_display) return N(k_fps);
                           for (int i = 0; i < N(k_fps); i++)
                               if (k_fps[i] == g_settings.fps_limit) return i;
                           return FPS_DEFAULT_INDEX;
                       },
-                      [](const Item &, int x) { g_settings.fps_limit = k_fps[x]; }, FPS_DEFAULT_INDEX);
+                      [](const Item &, int x) {
+                          g_settings.fps_display = x == N(k_fps);
+                          if (g_settings.fps_display) settings_fps_for_display(winsize_refresh_rate());
+                          else g_settings.fps_limit = k_fps[x];
+                      }, FPS_DEFAULT_INDEX);
     fps.desc_fn = [](const Item &) {  // (one line)
         static char buf[256];
         int hz = (int)lroundf(winsize_refresh_rate());
@@ -593,6 +605,9 @@ void build_items(void) {
                        "Removes the dark background plate behind control guides and prompts, leaving only buttons and text. Applies after a restart.",
                        [](const Item &) { return (int)g_settings.transparent_guides; },
                        [](const Item &, int x) { g_settings.transparent_guides = x; }, 0));
+    v.push_back(toggle(P_GAMEPLAY, "Start at Continue", "Goes past the title screen into your latest save by itself. Any button stops it. From the next start.",
+                       [](const Item &) { return (int)g_settings.auto_continue; },
+                       [](const Item &, int x) { g_settings.auto_continue = x; }, 0));
 
 #ifndef __APPLE__
     // Colour (runtime/color_grade.h; vulkan/exec.c scene_post): the 3D image only, the HUD keeps its colours. The preset
@@ -696,6 +711,18 @@ void build_items(void) {
     v.push_back(toggle(P_CONTROLS, "Controller rumble", "Vibrate the controller during play.",
                        [](const Item &) { return (int)g_settings.rumble; },
                        [](const Item &, int x) { g_settings.rumble = x; }, 1));
+    Item it_rumble = choice(P_CONTROLS, "Rumble strength", "100% is the game's own.",
+                            [](const Item &) { return N(k_rumble_strength); },
+                            [](const Item &, int x) {
+                                static std::string str;
+                                str = pct(k_rumble_strength[x]);
+                                return str.c_str();
+                            },
+                            [](const Item &) { return nearest(k_rumble_strength, N(k_rumble_strength), (float)g_settings.rumble_strength); },
+                            [](const Item &, int x) { g_settings.rumble_strength = k_rumble_strength[x]; },
+                            RUMBLE_STRENGTH_DEFAULT_INDEX);
+    it_rumble.value_off = [](const Item &, int) { return !g_settings.rumble; };
+    v.push_back(it_rumble);
     v.push_back(toggle(P_CONTROLS, "Free camera with both sticks",
                        "Clicking both sticks together turns the free camera on and off. Home on the keyboard always does.",
                        [](const Item &) { return (int)g_settings.freecam_sticks; },
@@ -717,6 +744,25 @@ void build_items(void) {
                            s ? [](const Item &, int x) { g_settings.stick_deadzone[1] = k_deadzone[x] / 100.0f; }
                              : [](const Item &, int x) { g_settings.stick_deadzone[0] = k_deadzone[x] / 100.0f; },
                            DEADZONE_DEFAULT));
+    v.push_back(toggle(P_CONTROLS, "Controller camera speed",
+                       "The right stick turns the camera faster than the game allows, at the two speeds below.",
+                       [](const Item &) { return (int)g_settings.stick_cam_on; },
+                       [](const Item &, int x) { g_settings.stick_cam_on = x; }, 0));
+    for (int vert = 0; vert < 2; vert++) {  // (runtime/hle/input.c rt_cam_stick_end)
+        Item it = choice(P_CONTROLS, vert ? "Up and down speed" : "Left and right speed", "100% is the game's own speed.",
+                         [](const Item &) { return (STICK_CAM_MAX - STICK_CAM_MIN) / 25 + 1; },
+                         [](const Item &, int x) {
+                             static std::string s;
+                             s = pct(STICK_CAM_MIN + 25 * x);
+                             return s.c_str();
+                         },
+                         nullptr, nullptr, (STICK_CAM_DEFAULT - STICK_CAM_MIN) / 25);
+        it.arg = vert;
+        it.get = [](const Item &i) { return ((i.arg ? g_settings.stick_cam_y : g_settings.stick_cam_x) - STICK_CAM_MIN) / 25; };
+        it.set = [](const Item &i, int x) { (i.arg ? g_settings.stick_cam_y : g_settings.stick_cam_x) = STICK_CAM_MIN + 25 * x; };
+        it.value_off = [](const Item &, int) { return !g_settings.stick_cam_on; };
+        v.push_back(it);
+    }
     v.push_back(toggle(P_CONTROLS, "PC mouse pointer", "Point and click in menus and map. Esc pauses/goes back; F2 frees the cursor.",
                        [](const Item &) { return (int)g_settings.pc_cursor; },
                        [](const Item &, int x) { g_settings.pc_cursor = x; }, 1));
@@ -745,6 +791,9 @@ void build_items(void) {
     v.push_back(toggle(P_CONTROLS, "Invert mouse Y", "Only the mouse. The camera Y-axis option inverts both.",
                        [](const Item &) { return (int)g_settings.mouse_invert_y; },
                        [](const Item &, int x) { g_settings.mouse_invert_y = x; }, 0));
+    v.push_back(toggle(P_CONTROLS, "Mouse bow aiming", "Hold right mouse to aim a bow, left click to fire. Right mouse no longer raises the shield.",
+                       [](const Item &) { return (int)g_settings.pc_bow; },
+                       [](const Item &, int x) { g_settings.pc_bow = x; }, 0));
     v.push_back(toggle(P_CONTROLS, "Shrine keyboard gyro",
                        "Only while controlling a shrine apparatus. Remap under Key bindings. Outside it, camera keys keep working.",
                        [](const Item &) { return (int)g_settings.pc_gyro; },
@@ -797,6 +846,12 @@ void build_items(void) {
                        [](const Item &, int x) { return tr(k_icons[x]); },
                        [](const Item &) { return g_settings.button_icons; },
                        [](const Item &, int x) { g_settings.button_icons = x; }, ICONS_AUTO));
+    v.push_back(choice(P_CONTROLS, "HUD button layout",
+                       "Where the four face buttons sit on the HUD diamond, from the next start. Automatic: follows your bindings.",
+                       [](const Item &) { return N(k_button_layout); },
+                       [](const Item &, int x) { return tr(k_button_layout[x]); },
+                       [](const Item &) { return g_settings.button_layout; },
+                       [](const Item &, int x) { g_settings.button_layout = x; }, BUTTON_LAYOUT_AUTO));
 
     // Key bindings: one row per action (key | controller button), then the inputs no action covers. A waits for the
     // next press: a key or mouse button binds the keyboard side, a controller button the controller side

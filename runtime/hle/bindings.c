@@ -238,10 +238,11 @@ bool bind_capture_event(const SDL_Event *e) {
     case SDL_EVENT_KEY_DOWN:
         if (e->key.repeat) return true;
         if (e->key.scancode == SDL_SCANCODE_ESCAPE) { bind_capture_cancel(); return true; }
-        // F1 (menu), F9 (frame dump), F11 (fullscreen), F12 and the key left of 1 (the console) stay the overlay's; a
-        // controller capture ignores keys
+        // F1 (menu), F9 (frame dump), F11 (fullscreen), F12 and the key left of 1 (the console), and PrintScreen
+        // (screenshot) stay the overlay's; a controller capture ignores keys
         if (!kd || e->key.scancode == SDL_SCANCODE_F1 || e->key.scancode == SDL_SCANCODE_F9 ||
             e->key.scancode == SDL_SCANCODE_F11 || e->key.scancode == SDL_SCANCODE_F12 ||
+            e->key.scancode == SDL_SCANCODE_PRINTSCREEN ||
             e->key.scancode == SDL_SCANCODE_GRAVE || e->key.scancode >= SDL_SCANCODE_COUNT) return true;
         cap_dev = -1;
         assign(BIND_DEV_KEY, cap_slot, e->key.scancode);

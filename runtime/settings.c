@@ -28,6 +28,9 @@ Settings g_settings = {
     .movie_audio = true,
     .mute_unfocused = false,
     .rumble = true,
+    .rumble_strength = RUMBLE_STRENGTH_DEFAULT,
+    .stick_cam_x = STICK_CAM_DEFAULT,
+    .stick_cam_y = STICK_CAM_DEFAULT,
     .freecam_sticks = true,
     .damage_taken = 100,
     .damage_dealt = 100,
@@ -75,6 +78,15 @@ static const char *const k_sparse_heap[SPARSE_HEAP_COUNT] = {"auto", "on", "off"
 static const char *const k_fsmode[FSMODE_COUNT] = {"auto", "borderless", "exclusive"};  // (FSMODE_*)
 static const char *const k_audio_out[AUDIO_OUT_COUNT] = {"stereo", "surround_51", "headphones_3d"};  // (AUDIO_OUT_*)
 static const char *const k_mvec_mode[MVEC_MODE_COUNT] = {"hybrid", "objects", "camera"};
+static const char *const k_button_layout[BUTTON_LAYOUT_COUNT] = {"auto", "nintendo", "swap_ab", "xbox", "swap_xy", "gamecube"};
+
+void settings_fps_for_display(float hz) {
+    if (!g_settings.fps_display || hz < 20) return;
+    int best = (int)(hz + 0.5f);
+    if (best > 360) best = 360;  // (framepace.c FPS_CEILING)
+    if (g_settings.fps_limit != best) LOG("[settings] frame rate %d (Match display: %.0f Hz)\n", best, hz);
+    g_settings.fps_limit = best;
+}
 
 // settings_version 2 (2026-10-19): the upscaler's mode, the window size and the 300% mouse default. Older files: their
 // "resolution" (the internal resolution, removed) gives the upscaler's mode, and a mouse sensitivity at the old
@@ -217,7 +229,10 @@ void settings_load(void) {
         else if (!strcmp(key, "mute_unfocused")) g_settings.mute_unfocused = atoi(val) != 0;
         else if (!strcmp(key, "show_fps")) g_settings.perf_overlay = atoi(val) ? PERF_FPS : PERF_OFF;  // (older files)
         else if (!strcmp(key, "perf_overlay")) g_settings.perf_overlay = !strcmp(val, "full") ? PERF_FULL : !strcmp(val, "fps") ? PERF_FPS : PERF_OFF;
-        else if (!strcmp(key, "frame_rate")) g_settings.fps_limit = !strcmp(val, "off") ? 0 : atoi(val);  // (fps / off)
+        else if (!strcmp(key, "frame_rate")) {
+            g_settings.fps_display = !strcmp(val, "display");
+            if (!g_settings.fps_display) g_settings.fps_limit = !strcmp(val, "off") ? 0 : atoi(val);
+        }
         else if (!strcmp(key, "vsync")) {
             for (int i = 0; i < VSYNC_COUNT; i++)
                 if (!strcmp(val, k_vsync[i])) g_settings.vsync = i;
@@ -262,6 +277,16 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "rumble")) g_settings.rumble = atoi(val) != 0;
         else if (!strcmp(key, "freecam_sticks")) g_settings.freecam_sticks = atoi(val) != 0;
+        else if (!strcmp(key, "rumble_strength")) g_settings.rumble_strength = atoi(val);
+        else if (!strcmp(key, "button_layout")) {
+            for (int i = 0; i < BUTTON_LAYOUT_COUNT; i++)
+                if (!strcmp(val, k_button_layout[i])) g_settings.button_layout = i;
+        }
+        else if (!strcmp(key, "stick_camera_speed")) g_settings.stick_cam_on = atoi(val) != 0;
+        else if (!strcmp(key, "stick_camera_x")) g_settings.stick_cam_x = atoi(val);
+        else if (!strcmp(key, "stick_camera_y")) g_settings.stick_cam_y = atoi(val);
+        else if (!strcmp(key, "mouse_bow")) g_settings.pc_bow = atoi(val) != 0;
+        else if (!strcmp(key, "start_at_continue")) g_settings.auto_continue = atoi(val) != 0;
         else if (!strcmp(key, "dpad_move")) g_settings.dpad_move = atoi(val) != 0;
         else if (!strcmp(key, "left_stick_deadzone")) g_settings.stick_deadzone[0] = (float)atof(val) / 100;  // (percent)
         else if (!strcmp(key, "right_stick_deadzone")) g_settings.stick_deadzone[1] = (float)atof(val) / 100;
@@ -418,7 +443,14 @@ void settings_load(void) {
     g_settings.color_temperature = CLAMP(g_settings.color_temperature, -100, 100);
     g_settings.color_tint = CLAMP(g_settings.color_tint, -100, 100);
     g_settings.color_lut_strength = CLAMP(g_settings.color_lut_strength, 0, 100);
+    g_settings.rumble_strength = CLAMP(g_settings.rumble_strength, RUMBLE_STRENGTH_MIN, RUMBLE_STRENGTH_MAX);
+    g_settings.stick_cam_x = CLAMP(g_settings.stick_cam_x, STICK_CAM_MIN, STICK_CAM_MAX);
+    g_settings.stick_cam_y = CLAMP(g_settings.stick_cam_y, STICK_CAM_MIN, STICK_CAM_MAX);
 #undef CLAMP
+    if (g_settings.fps_display) {
+        extern float winsize_refresh_rate(void) __attribute__((weak));
+        if (winsize_refresh_rate) settings_fps_for_display(winsize_refresh_rate());
+    }
     for (int i = 0; i < 2; i++)
         if (!(g_settings.stick_deadzone[i] >= 0 && g_settings.stick_deadzone[i] <= 0.5f))
             g_settings.stick_deadzone[i] = STICK_DEADZONE_DEFAULT;
@@ -444,7 +476,9 @@ void settings_save(void) {
         fprintf(f, "window_size = %dx%d\n", g_settings.window_w, g_settings.window_h);
     else
         fprintf(f, "window_size = default\n");
-    if (g_settings.fps_limit > 0)
+    if (g_settings.fps_display)
+        fprintf(f, "frame_rate = display\n");
+    else if (g_settings.fps_limit > 0)
         fprintf(f, "frame_rate = %d\n", g_settings.fps_limit);
     else
         fprintf(f, "frame_rate = off\n");
@@ -476,6 +510,15 @@ void settings_save(void) {
     fprintf(f, "sharpening = %d\n", g_settings.sharpening * 10);
     fprintf(f, "frame_generation = %d\n", g_settings.frame_gen ? 1 : 0);
     fprintf(f, "rumble = %d\n", g_settings.rumble);
+    fprintf(f, "rumble_strength = %d\n", g_settings.rumble_strength);
+    fprintf(f, "button_layout = %s\n",
+            k_button_layout[g_settings.button_layout >= 0 && g_settings.button_layout < BUTTON_LAYOUT_COUNT ?
+                                g_settings.button_layout : BUTTON_LAYOUT_AUTO]);
+    fprintf(f, "stick_camera_speed = %d\n", g_settings.stick_cam_on);
+    fprintf(f, "stick_camera_x = %d\n", g_settings.stick_cam_x);
+    fprintf(f, "stick_camera_y = %d\n", g_settings.stick_cam_y);
+    fprintf(f, "mouse_bow = %d\n", g_settings.pc_bow);
+    fprintf(f, "start_at_continue = %d\n", g_settings.auto_continue);
     fprintf(f, "freecam_sticks = %d\n", g_settings.freecam_sticks);
     fprintf(f, "dpad_move = %d\n", g_settings.dpad_move);
     fprintf(f, "left_stick_deadzone = %.0f\n", g_settings.stick_deadzone[0] * 100);
