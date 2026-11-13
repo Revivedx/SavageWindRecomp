@@ -682,6 +682,18 @@ static void tab_display(void) {
     float scale = ImGui::GetFontSize() / 34;
     opt_begin("##video", scale);
     opt_section("Display");
+    {   // Graphics preset (settings.c k_gpreset): Custom (matching no preset) is shown, never picked
+        const int np = graphics_preset_count();
+        const char *names[GPRESET_COUNT + 1];
+        for (int i = 0; i < np; i++) names[i] = g_gpreset_names[i];
+        names[np] = "Custom";
+        int p = graphics_preset_current(), cur = p < 0 ? np : p;
+        if (opt_choice("Graphics preset", &cur, names, np + 1, GPRESET_ORIGINAL,
+                       "Sets the draw distance, shadows, upscaler, anti-aliasing, texture filtering and the Advanced "
+                       "options at once. Potato: for weak PCs (nearer, smaller shadows, FSR 1, no bloom or depth of "
+                       "field). Original: as on the console. High and Savage: further and sharper, for faster PCs.", false))
+            graphics_preset_apply(cur);
+    }
     bool fs = g_settings.fullscreen;
     if (opt_toggle("Fullscreen", &fs, false, "Fills the screen. Also: F11, Alt+Enter or Cmd+Ctrl+F.")) {
         g_settings.fullscreen = fs;
@@ -758,6 +770,12 @@ static void tab_display(void) {
                        "16:9."))
             g_settings.wide_view = wv;
     }
+    {   // HUD at edges
+        bool he = g_settings.hud_at_edges;
+        if (opt_toggle("HUD at edges", &he, false,
+                       "On windows taller than 16:9 with Fill wide screens, anchors the top and bottom HUD to the window edges."))
+            g_settings.hud_at_edges = he;
+    }
     {   // Field of view (runtime/nvn/output_scale.c rt_persp)
         static const int fov[] = FOV_CHOICES;
         enum { NV = sizeof fov / sizeof fov[0] };
@@ -794,12 +812,17 @@ static void tab_display(void) {
             g_settings.hud_size = sizes[cur];
     }
     {   // Draw distance (runtime/draw_distance.c)
-        static const char *const names[DRAWDIST_COUNT] = {"Original", "Medium", "High"};  // (DRAWDIST_*)
-        int cur = g_settings.draw_distance;
-        if (opt_choice("Draw distance", &cur, names, DRAWDIST_COUNT, DRAWDIST_ORIGINAL,
-                       "How far out grass, trees, rocks, buildings and enemies appear. Higher costs more CPU and GPU time.",
+        // (Potato first, the nearest: order maps a row to DRAWDIST_*)
+        static const char *const names[DRAWDIST_COUNT] = {"Potato", "Original", "High", "Savage"};  // (ini: medium, high)
+        static const int order[DRAWDIST_COUNT] = {DRAWDIST_POTATO, DRAWDIST_ORIGINAL, DRAWDIST_MEDIUM, DRAWDIST_HIGH};
+        int cur = 1;
+        for (int i = 0; i < DRAWDIST_COUNT; i++)
+            if (order[i] == g_settings.draw_distance) cur = i;
+        if (opt_choice("Draw distance", &cur, names, DRAWDIST_COUNT, 1,
+                       "How far out grass, trees, rocks, buildings and enemies appear. Higher costs more CPU and GPU time. "
+                       "Potato: nearer than on the console, for weak PCs.",
                        true))
-            g_settings.draw_distance = cur;
+            g_settings.draw_distance = order[cur];
     }
     {   // Frame rate (runtime/hle/framepace.c)
         static const int fps[] = FPS_CHOICES;
@@ -941,58 +964,54 @@ static void tab_display(void) {
                "blends only along them, so textures stay sharp. Most useful with an upscaler.");
 #else
     {   // (the TAA sentence on its own: the first one keeps its translations)
-        static const char *aa[] = {"Off", "SMAA", "TAA"};  // (settings.h AA_*)
+        static const char *aa[] = {"Off", "FXAA", "SMAA", "TAA"};  // (settings.h AA_ROW_*)
         static std::string d;
-        d = std::string(tr("Smooths jagged edges of the game image before it is scaled to the window. SMAA: finds the "
+        d = std::string(tr("FXAA: the game's own, as on the console: cheap, a little soft.")) + " " + std::string(tr("Smooths jagged edges of the game image before it is scaled to the window. SMAA: finds the "
                            "edges and blends only along them, so textures stay sharp. Most useful with an upscaler.")) +
             " " + tr("TAA: blends each frame with the ones before it, following the game's motion, so edges stay "
                      "smooth and stop shimmering; slightly softer, use it with Sharpening.");
-        opt_choice("Anti-aliasing", &g_settings.antialias, aa, 3, AA_OFF, d.c_str());
+        int row = settings_aa_row();
+        if (opt_choice("Anti-aliasing", &row, aa, AA_ROW_COUNT, AA_ROW_FXAA, d.c_str())) settings_aa_row_set(row);
     }
-    // the game's own FXAA (vulkan/exec.c fxaa_patch)
-    opt_toggle("Game's FXAA", &g_settings.game_fxaa, true,
-               "The game's own FXAA, which smooths edges as the 3D image is drawn into the final picture, as on the "
-               "console. Off: a sharper image with more jagged edges; use it to replace FXAA with SMAA or TAA above, "
-               "or to keep the image crisp at a high resolution.");
     {
         static const char *const mvec_names[] = {"Hybrid (fast)", "Objects (full)", "Camera only"};
         opt_choice("Motion vectors", &g_settings.mvec_mode, mvec_names, 3, MVEC_MODE_HYBRID,
                    "Method for motion vectors used by upscalers (FSR 3/4) and TAA.");
     }
+    // AMD FSR 3 frame generation (vulkan/framegen.cpp; the frame rate counts the presented frames: framepace.c)
+    opt_toggle("Frame generation (AMD FSR 3)", &g_settings.frame_gen, false,
+               "AMD FSR 3 makes a frame between each two the game draws: about twice the frames on screen. The "
+               "frame rate above counts them all, so the game itself draws half of it (60 with 120) and the "
+               "controls answer as at that rate, a little later. In play only: the menus and the map show the "
+               "game's own frames. Fast moves can leave faint smears around Link and what moves on its own.");
 #endif
-#ifndef __APPLE__
-    {   // Anisotropic filtering and sharpening (Vulkan: vulkan/textures.c sampler_aniso, vulkan/exec.c scene_post)
-        static const char *const aniso[] = {"Off", "2x", "4x", "8x", "16x"};
-        opt_choice("Anisotropic filtering", &g_settings.anisotropy, aniso, 5, 0,
-                   "Keeps the textures of ground, paths and walls sharp where you look along them into the distance. "
-                   "Off: the game's own filtering, as on the console. 16x is the sharpest and costs very little on a PC "
-                   "graphics card.", false);
-        static const char *const sharp[] = {"Off", "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%", "100%"};
-        opt_choice("Sharpening (AMD CAS)", &g_settings.sharpening, sharp, 11, 0,
-                   "AMD FidelityFX CAS sharpens the 3D image after the upscaler (or at the window's resolution with the "
-                   "upscaler off), before the HUD is drawn over it: edges get crisper without halos. Most useful with "
-                   "AMD FSR 1.", false);
-        // AMD FSR 3 frame generation (vulkan/framegen.cpp; the frame rate counts the presented frames: framepace.c)
-        opt_toggle("Frame generation (AMD FSR 3)", &g_settings.frame_gen, false,
-                   "AMD FSR 3 makes a frame between each two the game draws: about twice the frames on screen. The "
-                   "frame rate above counts them all, so the game itself draws half of it (60 with 120) and the "
-                   "controls answer as at that rate, a little later. In play only: the menus and the map show the "
-                   "game's own frames. Fast moves can leave faint smears around Link and what moves on its own.");
+    {   // supersampling (nvn/output_scale.c): applies at once
+        static const char *const rscale[] = {"50%", "75%", "100%", "125%", "150%", "200%"};
+        opt_choice("Render scale", &g_settings.render_scale, rscale, RSCALE_COUNT, RSCALE_100,
+                   "Below 100% the game renders at a lower resolution than the window and is scaled up to it: faster, "
+                   "but blurrier (50% is a quarter of the pixels, for weak graphics cards). Above 100% it renders at a "
+                   "higher resolution and is scaled down to it, the cleanest way to smooth edges and shimmer. 200% is "
+                   "4x the pixels: for fast graphics cards.", false);
     }
-#endif
+    // shadow resolution (its own block)
+    // (Potato first, the smallest: order maps a row to SHADOW_*)
+    static const char *shadow[] = {"Potato (448)", "Console (896)", "High (2048)", "Ultra (4096)", "Savage (8192)"};
+    static const int shadow_order[SHADOW_COUNT] = {SHADOW_POTATO, SHADOW_CONSOLE, SHADOW_HIGH, SHADOW_ULTRA, SHADOW_EXTREME};
+    int shadow_row = 1;
+    for (int i = 0; i < SHADOW_COUNT; i++)
+        if (shadow_order[i] == g_settings.shadow_res) shadow_row = i;
+    opt_choice("Shadow resolution", &shadow_row, shadow, SHADOW_COUNT, 1,
+               "The size of the maps the sun's shadows are drawn from. Console: the game's own, 896 x 896. High (2048), "
+               "Ultra (4096) and Savage (8192) give sharper shadow edges (Link, trees, buildings) for more GPU time "
+               "and video memory (Ultra: about 100 MB, Savage: about 400 MB). Savage is very heavy where there is a lot "
+               "of foliage: in a forest it can cut the frame rate to a third, even on a fast GPU. Ultra or lower suits "
+               "most GPUs. Potato (448): softer edges, for weak GPUs.");
+    g_settings.shadow_res = shadow_order[shadow_row];
     opt_toggle("Asynchronous shaders", &g_settings.async_shaders, true,
                "On (default): the game never waits for a new shader to compile: what needs one still compiling is "
                "left out until it is ready, usually one frame (an effect pops in a frame late). Pictures the game "
                "draws only once (the save file's screenshot, the pause menu's background, terrain tiles) still wait "
                "for theirs. Off: every draw waits for its shader, a short stutter the first time an effect appears.");
-    // shadow resolution (its own block)
-    static const char *shadow[] = {"Console (896)", "High (2048)", "Ultra (4096)", "Extreme (8192)"};
-    opt_choice("Shadow resolution", &g_settings.shadow_res, shadow, SHADOW_COUNT, SHADOW_CONSOLE,
-               "The size of the maps the sun's shadows are drawn from. Console: the game's own, 896 x 896. High (2048), "
-               "Ultra (4096) and Extreme (8192) give sharper shadow edges (Link, trees, buildings) for more GPU time "
-               "and video memory (Ultra: about 100 MB, Extreme: about 400 MB). Extreme is very heavy where there is a lot "
-               "of foliage: in a forest it can cut the frame rate to a third, even on a fast GPU. Ultra or lower suits "
-               "most GPUs.");
     {   // the game's font sheets enlarged (runtime/nvn/text_upscale.c): read when the game starts
         static const char *text[] = {"Off", "2x", "4x"};
         int cur = g_settings.sharper_text / 2;
@@ -1002,6 +1021,52 @@ static void tab_display(void) {
                        "original art: the shapes are kept, but they aren't exactly as drawn. 4x takes a moment longer to "
                        "start and uses more video memory.", false))
             g_settings.sharper_text = cur * 2;
+    }
+    // Advanced (vulkan/exec.c: bloom's and the distance blur's draws; CMD_REPORT_COUNTER: dynamic resolution)
+    opt_section("Advanced");
+    opt_toggle("Bloom", &g_settings.bloom, true, "The glow around bright light: the sun, fire, glowing eyes. Off: a "
+               "little faster, a flatter image.");
+    opt_toggle("Depth of field", &g_settings.depth_of_field, true, "The game blurs the far distance a little. Off: sharp "
+               "out to the horizon, a little faster.");
+    opt_toggle("Dynamic resolution", &g_settings.dynamic_res, true, "As on the console: the game lowers its 3D "
+               "resolution (down to 1280x720 before upscaling) while frames take long, and raises it again after. "
+               "Off: always the full resolution. On with the Potato preset.");
+#ifndef __APPLE__
+    {   // Anisotropic filtering and sharpening (Vulkan: vulkan/textures.c sampler_aniso, vulkan/exec.c scene_post)
+        static const char *const aniso[] = {"Off", "2x", "4x", "8x", "16x"};
+        opt_choice("Anisotropic filtering", &g_settings.anisotropy, aniso, 5, 1,
+                   "Keeps the textures of ground, paths and walls sharp where you look along them into the distance. "
+                   "Off: the game's own filtering, as on the console. 16x is the sharpest and costs very little on a PC "
+                   "graphics card.", false);
+        static const char *const tex_lod[] = {"Default", "Sharp", "Sharper"};
+        opt_choice("Texture sharpness", &g_settings.tex_lod_bias, tex_lod, 3, 0,
+                   "Pulls forward mipmap levels on 3D textures for increased clarity on surfaces and distant objects. "
+                   "Sharp uses a -0.5 bias; Sharper uses -1.0.", false);
+        static const char *const sharp[] = {"Off", "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%", "100%"};
+        opt_choice("Sharpening (AMD CAS)", &g_settings.sharpening, sharp, 11, 0,
+                   "AMD FidelityFX CAS sharpens the 3D image after the upscaler (or at the window's resolution with the "
+                   "upscaler off), before the HUD is drawn over it: edges get crisper without halos. Most useful with "
+                   "AMD FSR 1.", false);
+    }
+    // the wet lighting passes' sun glare (maxwell/translate.c maxwell_wet_lighting)
+    opt_toggle("Wet grass fix", &g_settings.wet_fix, false,
+               "In rain with the sun out, the game's wet lighting blows grass and roofs out to white. On: most of that "
+               "glare goes, and the grass keeps its colour and a soft sheen. Applies from the next start.");
+#endif
+    {   // the air's haze (services/fs.c haze_patch): the game reads it at the start
+        static const int haze[] = HAZE_CHOICES;
+        enum { NH = sizeof haze / sizeof haze[0] };
+        static char buf[NH][16];
+        const char *names[NH];
+        int cur = NH - 1;
+        for (int i = 0; i < NH; i++) {
+            snprintf(buf[i], sizeof buf[i], "%d%%", haze[i]);
+            names[i] = buf[i];
+            if (haze[i] == g_settings.haze) cur = i;
+        }
+        if (opt_choice("Haze", &cur, names, NH, NH - 1, "How hazy the air is. Lower: clearer distances. It takes effect "
+                       "the next time you start the game.", false))
+            g_settings.haze = haze[cur];
     }
 #ifndef __APPLE__
     tab_colour();
@@ -1207,7 +1272,7 @@ static void perf_overlay_draw(ImGuiIO &io, float scale) {
     }
     // (FSR 3 / FSR 4 anti-aliases the scene itself: the setting does nothing then)
     int aa = rt_antialias();
-    line += std::string(" | ") + tr("Anti-aliasing") + ": " + (rt_fsr4() ? tr("FSR 4") : rt_fsr3() ? tr("FSR 3") : aa == AA_TAA ? tr("TAA") : aa == AA_SMAA ? tr("SMAA") : tr("Off"));
+    line += std::string(" | ") + tr("Anti-aliasing") + ": " + (rt_fsr4() ? tr("FSR 4") : rt_fsr3() ? tr("FSR 3") : aa == AA_TAA ? tr("TAA") : aa == AA_SMAA ? tr("SMAA") : g_settings.game_fxaa ? "FXAA" : tr("Off"));
     ImGui::TextDisabled("%s", line.c_str());
     line.clear();
 #ifndef __APPLE__

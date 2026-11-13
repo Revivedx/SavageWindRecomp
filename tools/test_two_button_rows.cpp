@@ -15,7 +15,15 @@ static unsigned focused_kind, focus_count, help_count;
 static uint64_t focused_row;
 const char *tr(const char *s) { return s; }
 std::string ui_visual_order(const char *s) { return s; }  // (i18n.mm: right-to-left reordering, not under test)
+static int test_preset_applied = -1;
+static int test_aa_row_applied = -1;
 extern "C" {
+int graphics_preset_current(void) { return GPRESET_ORIGINAL; }
+void graphics_preset_apply(int p) { test_preset_applied = p; }
+int settings_aa_row(void) { return AA_ROW_FXAA; }
+void settings_aa_row_set(int r) { test_aa_row_applied = r; }
+int graphics_preset_count(void) { return GPRESET_COUNT; }
+const char *const g_gpreset_names[GPRESET_COUNT] = {"Potato", "Original", "High", "Savage"};
 // Reached by live Options code (window size rows), never called by this routing test.
 void menu_request_window_apply(void) { abort(); }
 void winsize_name(WinSize, const char *, char *, int) { abort(); }
@@ -225,5 +233,105 @@ int main() {
     wr32(screen + 0x36c0, 0); rt_opt_decide(ordinary);
     assert(bind_capture_active(&dev, &slot, &ms) && dev == BIND_DEV_ANY);
     bind_capture_cancel();
+
+    // Verify Graphics preset and AA row contract stubs
+    assert(graphics_preset_count() == 4);
+    assert(!strcmp(g_gpreset_names[GPRESET_POTATO], "Potato"));
+    assert(!strcmp(g_gpreset_names[GPRESET_SAVAGE], "Savage"));
+
+    // Verify Video & Advanced section items
+    g_items.clear();
+    build_items();
+
+    const Item *preset_item = nullptr;
+    const Item *adv_button = nullptr;
+    const Item *hud_edges_item = nullptr;
+    const Item *drawdist_item = nullptr;
+    const Item *rscale_item = nullptr;
+    const Item *shadow_item = nullptr;
+    const Item *aa_item = nullptr;
+    const Item *mvec_item = nullptr;
+    const Item *fgen_item = nullptr;
+
+    const Item *bloom_item = nullptr;
+    const Item *dof_item = nullptr;
+    const Item *dynres_item = nullptr;
+    const Item *aniso_item = nullptr;
+    const Item *texlod_item = nullptr;
+    const Item *wetfix_item = nullptr;
+    const Item *haze_item = nullptr;
+    const Item *guides_item = nullptr;
+
+    for (const auto &it : g_items) {
+        if (it.page == P_VIDEO) {
+            if (!strcmp(it.title, "Graphics preset")) preset_item = &it;
+            else if (!strcmp(it.title, "Advanced options")) adv_button = &it;
+            else if (!strcmp(it.title, "HUD at edges")) hud_edges_item = &it;
+            else if (!strcmp(it.title, "Draw distance")) drawdist_item = &it;
+            else if (!strcmp(it.title, "Render scale")) rscale_item = &it;
+            else if (!strcmp(it.title, "Shadow resolution")) shadow_item = &it;
+            else if (!strcmp(it.title, "Anti-aliasing")) aa_item = &it;
+            else if (!strcmp(it.title, "Motion vectors")) mvec_item = &it;
+            else if (!strcmp(it.title, "Frame generation (AMD FSR 3)")) fgen_item = &it;
+        } else if (it.page == P_VIDEO_ADV) {
+            if (!strcmp(it.title, "Bloom")) bloom_item = &it;
+            else if (!strcmp(it.title, "Depth of field")) dof_item = &it;
+            else if (!strcmp(it.title, "Dynamic resolution")) dynres_item = &it;
+            else if (!strcmp(it.title, "Anisotropic filtering")) aniso_item = &it;
+            else if (!strcmp(it.title, "Texture sharpness")) texlod_item = &it;
+            else if (!strcmp(it.title, "Wet grass fix")) wetfix_item = &it;
+            else if (!strcmp(it.title, "Haze")) haze_item = &it;
+        } else if (it.page == P_GAMEPLAY) {
+            if (!strcmp(it.title, "Transparent control guides")) guides_item = &it;
+        }
+    }
+
+    assert(preset_item != nullptr);
+    assert(adv_button != nullptr);
+    assert(hud_edges_item != nullptr);
+    assert(drawdist_item != nullptr);
+    assert(rscale_item != nullptr);
+    assert(shadow_item != nullptr);
+    assert(aa_item != nullptr);
+    assert(mvec_item != nullptr);
+    assert(fgen_item != nullptr);
+
+    assert(bloom_item != nullptr);
+    assert(dof_item != nullptr);
+    assert(dynres_item != nullptr);
+    assert(aniso_item != nullptr);
+    assert(texlod_item != nullptr);
+    assert(wetfix_item != nullptr);
+    assert(haze_item != nullptr);
+    assert(guides_item != nullptr);
+
+    // Test preset getter and setter
+    assert(preset_item->get(*preset_item) == GPRESET_ORIGINAL);
+    preset_item->set(*preset_item, GPRESET_SAVAGE);
+    assert(test_preset_applied == GPRESET_SAVAGE);
+
+    // Test AA getter and setter
+    assert(aa_item->get(*aa_item) == AA_ROW_FXAA);
+    aa_item->set(*aa_item, AA_ROW_SMAA);
+    assert(test_aa_row_applied == AA_ROW_SMAA);
+
+    // Test Advanced toggles
+    bloom_item->set(*bloom_item, 0);
+    assert(g_settings.bloom == false);
+    dof_item->set(*dof_item, 0);
+    assert(g_settings.depth_of_field == false);
+    dynres_item->set(*dynres_item, 0);
+    assert(g_settings.dynamic_res == false);
+    aniso_item->set(*aniso_item, 3);
+    assert(g_settings.anisotropy == 3);
+    texlod_item->set(*texlod_item, TEX_LOD_SHARPER);
+    assert(g_settings.tex_lod_bias == TEX_LOD_SHARPER);
+    wetfix_item->set(*wetfix_item, 1);
+    assert(g_settings.wet_fix == true);
+    hud_edges_item->set(*hud_edges_item, 1);
+    assert(g_settings.hud_at_edges == true);
+    rscale_item->set(*rscale_item, RSCALE_150);
+    assert(g_settings.render_scale == RSCALE_150);
+
     puts("PASS: real Options hooks and capture engine, separate devices, navigation, mouse, CPU preservation, fallback");
 }
