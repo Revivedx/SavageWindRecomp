@@ -716,6 +716,12 @@ void build_items(void) {
                        [](const Item &) { return (int)g_settings.quick_drop; },
                        [](const Item &, int x) { g_settings.quick_drop = x; }, 0));
 
+    v.push_back(toggle(P_GAMEPLAY, "Discord Rich Presence",
+                       "Your Discord status shows where you are in the game, in the game's language. It talks to the "
+                       "Discord app on this computer only, and nothing runs while it is off.",
+                       [](const Item &) { return (int)g_settings.discord_rpc; },
+                       [](const Item &, int x) { g_settings.discord_rpc = x; }, 0));
+
     // Audio
     v.push_back(choice(P_AUDIO, "Volume", "The game's volume. 100% is its own level.",
                        [](const Item &) { return 21; },

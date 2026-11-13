@@ -283,6 +283,7 @@ void settings_load(void) {
         else if (!strcmp(key, "freecam_sticks")) g_settings.freecam_sticks = atoi(val) != 0;
         else if (!strcmp(key, "quick_drop")) g_settings.quick_drop = atoi(val) != 0;
         else if (!strcmp(key, "quick_sort")) g_settings.quick_sort = atoi(val) != 0;
+        else if (!strcmp(key, "discord_rpc")) g_settings.discord_rpc = atoi(val) != 0;
         else if (!strcmp(key, "dpad_move")) g_settings.dpad_move = atoi(val) != 0;
         else if (!strcmp(key, "left_stick_deadzone")) g_settings.stick_deadzone[0] = (float)atof(val) / 100;  // (percent)
         else if (!strcmp(key, "right_stick_deadzone")) g_settings.stick_deadzone[1] = (float)atof(val) / 100;
@@ -523,6 +524,7 @@ void settings_save(void) {
     fprintf(f, "freecam_sticks = %d\n", g_settings.freecam_sticks);
     fprintf(f, "quick_drop = %d\n", g_settings.quick_drop);
     fprintf(f, "quick_sort = %d\n", g_settings.quick_sort);
+    fprintf(f, "discord_rpc = %d\n", g_settings.discord_rpc);
     fprintf(f, "dpad_move = %d\n", g_settings.dpad_move);
     fprintf(f, "left_stick_deadzone = %.0f\n", g_settings.stick_deadzone[0] * 100);
     fprintf(f, "right_stick_deadzone = %.0f\n", g_settings.stick_deadzone[1] * 100);

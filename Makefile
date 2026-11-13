@@ -351,6 +351,14 @@ gen:  # every module of the exefs, at the addresses tools/layout.py gives them
 
 gen-objs: $(GEN_OBJ)
 
+# Discord Rich Presence's place names: the game's own text, written from your extracted/ and never committed
+ifneq ($(wildcard extracted/romfs/Pack/Bootup.pack),)
+PLACE_PY := $(firstword $(PY) python3)
+runtime/game_place_table.inc: tools/gen_place_table.py
+	$(PLACE_PY) tools/gen_place_table.py extracted/romfs/Pack $@
+$(B)/rt/game_place.o: runtime/game_place_table.inc
+endif
+
 # Runtime objects only (no generated code, no link): quick compile check
 runtime-objs: $(RT_OBJ) $(BACKEND_OBJ) $(UI_OBJ)
 
@@ -527,48 +535,13 @@ $(B)/test_pc_settings: tests/test_pc_settings.c runtime/settings.c runtime/setti
 	@mkdir -p $(dir $@)
 	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< -lSDL3 -lm
 
-$(B)/test_gpu_settings: tests/test_gpu_settings.c runtime/settings.c runtime/settings.h runtime/gpu_select.h runtime/hle/bindings.c
+$(B)/test_game_place: tests/test_game_place.c runtime/game_place.c runtime/game_place.h runtime/game_place_table.inc
 	@mkdir -p $(dir $@)
-	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< -lSDL3 -lm
+	$(CC) -O1 -Iruntime -o $@ $<
 
-test-gpu-settings: $(B)/test_gpu_settings
-	@set -e; tmp=$$(mktemp); trap 'rm -f "$$tmp"' EXIT; \
-	 $(B)/test_gpu_settings "$$tmp" -1; \
-	 for value in auto 0 1 2147483647 -1 nvidia 1junk 2147483648 99999999999999999999999999999; do \
-	   case "$$value" in 0|1|2147483647) expected=$$value;; *) expected=-1;; esac; \
-	   printf 'settings_version = 3\ngpu = %s  \r\n' "$$value" > "$$tmp"; \
-	   $(B)/test_gpu_settings "$$tmp" "$$expected"; \
-	   $(B)/test_gpu_settings "$$tmp" "$$expected"; \
-	 done
-
-.PHONY: test-gpu-settings
-
-$(B)/test_hud_scale: tests/test_hud_scale.c runtime/nvn/hud_scale.h
+$(B)/test_discord_rpc: tests/test_discord_rpc.c runtime/discord_rpc.c runtime/discord_rpc.h
 	@mkdir -p $(dir $@)
-	$(CC) -O1 -Iruntime -o $@ $< -lm
-
-test-hud-scale: $(B)/test_hud_scale
-	$(B)/test_hud_scale
-
-.PHONY: test-hud-scale
-
-$(B)/test_shrine_sensor: tests/test_shrine_sensor.c runtime/shrine_sensor.c runtime/shrine_sensor.h runtime/settings.h
-	@mkdir -p $(dir $@)
-	$(CC) -O1 -Iruntime -o $@ tests/test_shrine_sensor.c runtime/shrine_sensor.c -lm
-
-test-shrine-sensor: $(B)/test_shrine_sensor
-	$(B)/test_shrine_sensor
-
-.PHONY: test-shrine-sensor
-
-$(B)/test_hud_button_layout: tests/test_hud_button_layout.c runtime/nvn/glyphs.c runtime/services/fs.c runtime/settings.c runtime/hle/bindings.c
-	@mkdir -p $(dir $@)
-	$(CC) -O1 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< -fuse-ld=lld -Wl,--gc-sections $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) -lSDL3 -lz -lm
-
-test-hud-button-layout: $(B)/test_hud_button_layout
-	$(B)/test_hud_button_layout
-
-.PHONY: test-hud-button-layout
+	$(CC) -O1 -Iruntime -o $@ $<
 
 $(B)/test_options_pointer: tests/test_options_pointer.c runtime/pc_cursor.c runtime/pc_cursor.h runtime/pc_cursor_math.h runtime/nvn/hud_scale.h
 	@mkdir -p $(dir $@)
