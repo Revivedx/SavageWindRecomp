@@ -1,0 +1,171 @@
+{
+  "$schema": "https://recomplauncher.com/schema/recomplauncher.json",
+  "format": 1,
+  "name": "Savage Wind",
+  "repo": "Revivedx/SavageWindRecomp",
+  "game": {
+    "kind": "folder",
+    "label": "Your own extracted copy of The Legend of Zelda: Breath of the Wild, version 1.9.0: the folder with exefs and romfs (and the DLC folders aoc1 and aoc2, if you have them).",
+    "check": { "file": "exefs/main" }
+  },
+  "start": {
+    "program": ["savagewind.exe", "Savage_Wind-x86_64.AppImage"],
+    "args": ["--game"]
+  },
+  "prepare": {
+    "program": ["savagewind.exe", "Savage_Wind-x86_64.AppImage"],
+    "args": ["--prepare", "--game", "{game}"],
+    "label": "Copying your game files and building the game code",
+    "timeout": 7200
+  },
+  "config": [
+    {
+      "id": "main",
+      "format": "ini",
+      "file": [
+        { "path": "{install}/savagewind.ini", "if": "{install}/savagewind.exe" },
+        { "path": "{local}/savagewind/savagewind.ini" }
+      ]
+    }
+  ],
+  "saves": [
+    "{install}/save",
+    "{install}/save-profiles",
+    "{install}/save_profile.txt",
+    "{local}/savagewind/save",
+    "{local}/savagewind/save-profiles",
+    "{local}/savagewind/save_profile.txt"
+  ],
+  "folders": {
+    "saves": [
+      { "path": "{install}/save", "if": "{install}/savagewind.exe" },
+      { "path": "{local}/savagewind/save" }
+    ],
+    "logs": [
+      { "path": "{install}", "if": "{install}/savagewind.exe" },
+      { "path": "{local}/savagewind" }
+    ]
+  },
+  "settings": [
+    {
+      "id": "window", "label": "Window",
+      "help": "Windowed, or fullscreen. Borderless never switches your display's mode. Exclusive gives the game the display to itself.",
+      "choices": [
+        { "label": "Windowed", "set": { "fullscreen": "0" } },
+        { "label": "Fullscreen", "set": { "fullscreen": "1", "fullscreen_mode": "auto" } },
+        { "label": "Borderless", "set": { "fullscreen": "1", "fullscreen_mode": "borderless" } },
+        { "label": "Exclusive", "set": { "fullscreen": "1", "fullscreen_mode": "exclusive" } }
+      ],
+      "defaults": { "fullscreen": "0", "fullscreen_mode": "auto" }
+    },
+    {
+      "id": "frame_rate", "label": "Frame rate",
+      "help": "The game was made for 30. Some mechanics and cutscenes break above 30; if one freezes, play that scene at 30.",
+      "choices": [
+        { "label": "30", "set": { "frame_rate": "30" } },
+        { "label": "60", "set": { "frame_rate": "60" } },
+        { "label": "90", "set": { "frame_rate": "90" } },
+        { "label": "120", "set": { "frame_rate": "120" } },
+        { "label": "144", "set": { "frame_rate": "144" } },
+        { "label": "165", "set": { "frame_rate": "165" } },
+        { "label": "240", "set": { "frame_rate": "240" } },
+        { "label": "360", "set": { "frame_rate": "360" } },
+        { "label": "Match display", "set": { "frame_rate": "display" } },
+        { "label": "Unlimited", "set": { "frame_rate": "off" } }
+      ],
+      "defaults": { "frame_rate": "60" }
+    },
+    {
+      "id": "vsync", "label": "V-Sync",
+      "help": "Fast shows the newest frame at each refresh, with no tearing. On waits for the display. Adaptive lets a late frame show at once. Off shows every frame at once and may tear.",
+      "choices": [
+        { "label": "Fast", "set": { "vsync": "fast" } },
+        { "label": "On", "set": { "vsync": "on" } },
+        { "label": "Adaptive", "set": { "vsync": "adaptive" } },
+        { "label": "Off", "set": { "vsync": "off" } }
+      ],
+      "defaults": { "vsync": "fast" }
+    },
+    {
+      "id": "render_scale", "label": "Render scale",
+      "help": "How big the 3D picture is drawn, as a share of the window. Above 100% is sharper and slower; below is faster and softer.",
+      "choices": [
+        { "label": "50%", "set": { "render_scale": "50" } },
+        { "label": "75%", "set": { "render_scale": "75" } },
+        { "label": "100%", "set": { "render_scale": "100" } },
+        { "label": "125%", "set": { "render_scale": "125" } },
+        { "label": "150%", "set": { "render_scale": "150" } },
+        { "label": "200%", "set": { "render_scale": "200" } }
+      ],
+      "defaults": { "render_scale": "100" }
+    },
+    {
+      "id": "upscaler", "label": "Upscaling",
+      "help": "AMD FSR 1 draws the 3D picture smaller and scales it up, for more speed on a weaker card. Its quality is in the game's Video options.",
+      "choices": [
+        { "label": "Off", "set": { "upscaler": "off" } },
+        { "label": "AMD FSR 1", "set": { "upscaler": "fsr1" } }
+      ],
+      "defaults": { "upscaler": "off" }
+    },
+    {
+      "id": "antialias", "label": "Anti-aliasing",
+      "help": "Smooths jagged edges. SMAA is the sharper one; TAA is smoother and a little softer.",
+      "choices": [
+        { "label": "Off", "set": { "antialias": "off" } },
+        { "label": "SMAA", "set": { "antialias": "smaa" } },
+        { "label": "TAA", "set": { "antialias": "taa" } }
+      ],
+      "defaults": { "antialias": "off" }
+    },
+    {
+      "id": "anisotropy", "label": "Texture filtering",
+      "help": "Keeps the ground and walls sharp at shallow angles. Costs little on most cards.",
+      "choices": [
+        { "label": "Game's own", "set": { "anisotropy": "game" } },
+        { "label": "2x", "set": { "anisotropy": "2x" } },
+        { "label": "4x", "set": { "anisotropy": "4x" } },
+        { "label": "8x", "set": { "anisotropy": "8x" } },
+        { "label": "16x", "set": { "anisotropy": "16x" } }
+      ],
+      "defaults": { "anisotropy": "2x" }
+    },
+    {
+      "id": "hdr", "label": "HDR",
+      "help": "Auto shows HDR while Windows HDR is on for the monitor. On always asks for it. Off keeps the picture SDR.",
+      "choices": [
+        { "label": "Auto", "set": { "hdr": "auto" } },
+        { "label": "On", "set": { "hdr": "on" } },
+        { "label": "Off", "set": { "hdr": "off" } }
+      ],
+      "defaults": { "hdr": "auto" }
+    },
+    {
+      "id": "button_icons", "label": "Button prompts",
+      "help": "The buttons shown in the game's prompts. Auto follows the device you are playing with.",
+      "choices": [
+        { "label": "Auto", "set": { "button_icons": "auto" } },
+        { "label": "Keyboard", "set": { "button_icons": "keyboard" } },
+        { "label": "Xbox", "set": { "button_icons": "xbox" } },
+        { "label": "PlayStation", "set": { "button_icons": "playstation" } },
+        { "label": "Nintendo", "set": { "button_icons": "nintendo" } },
+        { "label": "Steam Deck", "set": { "button_icons": "steamdeck" } }
+      ],
+      "defaults": { "button_icons": "auto" }
+    },
+    {
+      "id": "perf_overlay", "label": "Show FPS",
+      "help": "The frame rate in a corner of the game, or the full performance overlay.",
+      "choices": [
+        { "label": "Off", "set": { "perf_overlay": "off" } },
+        { "label": "FPS", "set": { "perf_overlay": "fps" } },
+        { "label": "Full", "set": { "perf_overlay": "full" } }
+      ],
+      "defaults": { "perf_overlay": "off" }
+    }
+  ],
+  "actions": [
+    { "id": "saves", "label": "Saves", "help": "Your save slots and save profiles.", "open": "saves" },
+    { "id": "logs", "label": "Logs", "help": "savagewind.log, which goes with a bug report.", "open": "logs" }
+  ]
+}
