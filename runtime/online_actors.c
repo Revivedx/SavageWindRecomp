@@ -1523,14 +1523,14 @@ static void mark_dead(Cpu *c, const char *name, uint32_t hash) {
     LOG("[online] %s %u: no dead flag\n", name, hash);
 }
 
-// whether another player's game may have enemies for real: in the world (not loading), his Link there and not dead
-// (dead, his game stops at its game over, and what it has stops with it; trying again, his world goes)
 // an enemy's matrix (its position at 3, 7, 11) to a point
 static float dist3(const float m[12], const float q[3]) {
     float dx = m[3] - q[0], dy = m[7] - q[1], dz = m[11] - q[2];
     return sqrtf(dx * dx + dy * dy + dz * dz);
 }
 
+// whether another player's game may have enemies for real: in the world (not loading), his Link there and not dead
+// (dead, his game stops at its game over, and what it has stops with it; trying again, his world goes)
 static bool can_own(const OnlinePlayer *p, int i, int me) {
     return p->used && i != me && !(p->flags & ONLINE_F_LOADING) && p->pose.valid && strncmp(p->pose.as[0], "Dead", 4) &&
            same_map(p);
