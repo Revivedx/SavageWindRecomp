@@ -382,9 +382,15 @@ Owners (protocol 13): each of the host's enemies is had for real by one game, it
 10 s: each change makes it anew in one game and deletes it in another, so players fighting it together keep it with
 one of them). Never to a player more than 80 m from it (`OWN_SAFE`), unless its owner left: a game removes an enemy
 it makes too far from its camera, short of its traverseDist (a Bokoblin made 136 m off went at once), and the one
-deleted for it in the other game was gone with it, for everyone. One its owner's game lost alive, too far from the
-host's Link to be his again, leaves the list without being marked dead; an owned one gone with life left isn't a
-death for its loot either. The host's game keeps
+deleted for it in the other game was gone with it, for everyone. One no player is near enough to have (its owner's
+game lost it alive, far from the camera, or its owner left) is no one's (`OWNER_NONE`): kept as it was, shown so,
+and the next player within 80 m of it has it; it leaves the list only when no player is within 150 m. Dropped at
+once, it was gone for everyone (the map's one in the host's game was deleted when it went to another), and its camp
+could never be cleared. The map's own ones the host's game removes or kills leave the list as before. An owned one
+gone with life left isn't a death for its loot. The host's game sets the dead flag of one that dies there itself,
+by the map HashId the list keeps: the game sets it only for the map's own, and a camp whose enemy was made again
+wasn't cleared in the host's game (its chest shut, Demo040_0 not played) while it was in the others'.
+`SAVAGEWIND_ONLINE_KILL_TEST=<s>` counts seconds now (it counted calls, whose rate varies). The host's game keeps
 the list (its own enemies found near a player, their ids everyone's) and decides; each entry of ENEMIES says its
 owner's slot. The owner's game runs it (its AI sees him, chases him, hits him as any enemy) and sends its state to the
 host's game (ESTATE: id, name, matrix, AS, life, weapon; life -1: gone there, died), which sends it on; the others show

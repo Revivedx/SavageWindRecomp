@@ -1331,6 +1331,10 @@ static uint64_t enemy_weapon(uint64_t a) {
 // short of its traverseDist (100 m when it has none): a Bokoblin made 136 m off, of 150, went at once, a Golem 90 m
 // off, of 100, stayed; Great Plateau test 2026-11-13)
 #define OWN_SAFE 80.0f
+// (no one's: alive, but no player near enough to have it; kept as it was, its life and where it stood, shown so, until
+// one comes within OWN_SAFE, whose game makes it; dropped when no player is within ENEMY_NEAR of it. The map's one in
+// the host's game was deleted when it went to another: dropped at once, it was gone for everyone)
+#define OWNER_NONE 0xff
 
 // what an enemy holds (its weapon at +0xb98, its shield at +0xbb0: linked as the player links his), for the others:
 // in the space of the hand bone it is in (each game shows its enemy playing its own AS: the weapon goes in its own
@@ -1377,6 +1381,8 @@ static void enemy_state(Cpu *c, uint64_t a, OnlineEnemy *e) {
 typedef struct {
     uint32_t gid; int state; uint64_t actor; Watch w; Piece made; InstParams params;
     bool died; float last_pos[3];  // (loot: died here, where it was)
+    bool marked;  // (the host's game: its dead flag set, as the game sets it only for the map's own, not one made again)
+    bool remade;  // (made by us from the list, not the map's own)
     uint64_t held[2]; Watch held_w[2];  // (loot: its weapon and shield while it lived: they fall when it dies)
 } Own;  // (state: OWN_*)
 // (OWN_GONE: gone here, died or removed, and told to the host's game, whose list still has it as ours until that
@@ -1452,7 +1458,7 @@ static bool own_ready(Cpu *c, Own *o, const OnlineEnemy *e) {
     }
     piece_update(c, 0, &o->made, e->name, "own");
     if (!o->made.actor) return false;
-    o->actor = o->made.actor, o->w = o->made.w, o->state = OWN_HAVE;
+    o->actor = o->made.actor, o->w = o->made.w, o->state = OWN_HAVE, o->remade = true;
     memset(&o->made, 0, sizeof o->made);
     call(c, FN_SET_MTX, o->actor, (uint64_t)(uintptr_t)e->m, 0, 0, 0, 0);
     if (e->life > 0) *(int32_t *)(uintptr_t)(o->actor + ENEMY_LIFE) = e->life;
@@ -1545,9 +1551,9 @@ static void enemies_host(Cpu *c, uint64_t player, const float link[3], const Onl
                     mark_dead(c, g_reg[r].e.name, g_reg[r].e.hash);
                     g_reg[r].used = false;
                 } else if (dist3(g_reg[r].e.m, link) > OWN_SAFE) {  // (alive, but too far for ours: made here it would
-                    // go at once; out of the list, and not marked dead)
-                    LOG("[online] %s %u: alive, too far to be ours again\n", g_reg[r].e.name, st[k].id);
-                    g_reg[r].used = false;
+                    // go at once; no one's, until a player comes near it)
+                    LOG("[online] %s %u: alive, no one's until a player is near it\n", g_reg[r].e.name, st[k].id);
+                    g_reg[r].e.owner = OWNER_NONE, g_reg[r].hold = 0, g_reg[r].nearer = 0;
                 } else {  // (alive, gone with his world: he died and tries again, or loads elsewhere): ours again
                     LOG("[online] %s %u: alive, ours again\n", g_reg[r].e.name, st[k].id);
                     g_reg[r].e.owner = (uint8_t)me, g_reg[r].hold = 100, g_reg[r].nearer = 0;
@@ -1562,9 +1568,11 @@ static void enemies_host(Cpu *c, uint64_t player, const float link[3], const Onl
             break;
         }
     {   // (test: SAVAGEWIND_ONLINE_KILL_TEST=<s>: ours die that many seconds in, all at once)
-        static int t;
+        static uint64_t t0;
+        static bool done;
         const char *kt = getenv("SAVAGEWIND_ONLINE_KILL_TEST");
-        if (kt && ++t == atoi(kt) * 10)
+        if (kt && !t0) t0 = plat_now_ns();  // (seconds from the first time here: it was counted in calls, whose rate varies)
+        if (kt && !done && plat_now_ns() - t0 >= (uint64_t)(atof(kt) * 1e9) && (done = true))
             for (int k = 0; k < OWNS; k++)
                 if (g_own[k].state == OWN_HAVE && alive(g_own[k].actor, g_own[k].w))
                     *(int32_t *)(uintptr_t)(g_own[k].actor + ENEMY_LIFE) = 0, LOG("[online] kill test: %u\n", g_own[k].gid);
@@ -1576,11 +1584,19 @@ static void enemies_host(Cpu *c, uint64_t player, const float link[3], const Onl
         int r = 0;
         while (r < REG && !(g_reg[r].used && g_reg[r].e.id == o->gid)) r++;
         if (!alive(o->actor, o->w)) {
-            if (r < REG) g_reg[r].used = false;
+            // (one made here, gone alive: the game removed it, far from the camera; the map's own was deleted when it
+            // went to another, so it is kept, no one's, not dropped. The map's own, removed or dead: off the list)
+            if (r < REG && o->remade && g_reg[r].e.life > 0) {
+                LOG("[online] %s %u: alive, no one's until a player is near it\n", g_reg[r].e.name, o->gid);
+                g_reg[r].e.owner = OWNER_NONE, g_reg[r].hold = 0, g_reg[r].nearer = 0;
+            } else if (r < REG) g_reg[r].used = false;
             memset(o, 0, sizeof *o);
             continue;
         }
         if (r < REG) enemy_state(c, o->actor, &g_reg[r].e), g_reg[r].e.owner = (uint8_t)me;
+        // (died here: its dead flag, by the map's HashId the list keeps; one made again, after it was another's, has
+        // none of its own, and without it the camp it belongs to wasn't cleared in this game, its chest shut)
+        if (r < REG && g_reg[r].e.life <= 0 && !o->marked) mark_dead(c, g_reg[r].e.name, g_reg[r].e.hash), o->marked = true;
     }
     // ours in the world, newly near a player: everyone's from now on (ours to start with)
     int na = all_actors(*(uint64_t *)(uintptr_t)(player + 0x68), g_actors, MAX_ACTORS);
@@ -1627,6 +1643,18 @@ static void enemies_host(Cpu *c, uint64_t player, const float link[3], const Onl
             if (slot == e->owner) cur = d;
         }
         if (e->owner == me && g_local_dead && best < 1e6f) cur = 1e30f;  // (we died: another has it now)
+        if (e->owner == OWNER_NONE) {  // (no one's: the nearest one's once he is near enough; no one near: off the list)
+            if (best3 <= OWN_SAFE && !(nearest == me && g_local_dead)) {
+                LOG("[online] %s %u: slot %d's now (was no one's)\n", e->name, e->id, nearest);
+                if (nearest == me) own_add(e->id);
+                e->owner = (uint8_t)nearest;
+                g_reg[r].hold = 100, g_reg[r].nearer = 0;
+            } else if (best3 > ENEMY_NEAR) {
+                LOG("[online] %s %u: no one's and no player near it: off the list\n", e->name, e->id);
+                g_reg[r].used = false;
+            }
+            continue;
+        }
         if (g_reg[r].hold > 0) g_reg[r].hold--;
         bool gone_owner = cur >= 1e30f;  // (he left, or is loading)
         // (each change makes it anew in one game and deletes it in another: only when its owner is far from it (40 m),
@@ -1635,8 +1663,19 @@ static void enemies_host(Cpu *c, uint64_t player, const float link[3], const Onl
         g_reg[r].nearer = nearest != e->owner && best + 15 < cur ? g_reg[r].nearer + 1 : 0;
         bool far = cur > 40 || g_reg[r].nearer > 50;
         if (nearest == e->owner || (!gone_owner && (g_reg[r].hold > 0 || !far))) continue;
-        // (nor to one too far from it: his game would remove it as it is made, and it would be gone for everyone)
-        if (!gone_owner && best3 > OWN_SAFE) continue;
+        // (nor to one too far from it: his game would remove it as it is made, and it would be gone for everyone; its
+        // owner gone, it is no one's meanwhile)
+        if (best3 > OWN_SAFE) {
+            if (gone_owner) {
+                LOG("[online] %s %u: no one's (was %d's) until a player is near it\n", e->name, e->id, e->owner);
+                if (e->owner == me) {
+                    Own *o = own_find(e->id);
+                    if (o) own_drop(c, o);
+                }
+                e->owner = OWNER_NONE, g_reg[r].hold = 0, g_reg[r].nearer = 0;
+            }
+            continue;
+        }
         LOG("[online] %s %u: slot %d's now (was %d's)\n", e->name, e->id, nearest, e->owner);
         if (e->owner == me) {  // (ours no more: it goes here, its state stays for the next one)
             Own *o = own_find(e->id);
