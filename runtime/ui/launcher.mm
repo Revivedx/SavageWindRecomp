@@ -50,6 +50,7 @@ extern "C" {
 #include "paths.h"
 #include "gamebuild.h"
 #include "gamelib.h"
+#include "updater.h"
 #include "game_versions.h"
 #include "dlc_check.h"
 #include "romfs_build.h"
@@ -2208,10 +2209,19 @@ extern "C" void launcher_run(const char *root, int mode) {
             };
             if (status.empty()) {
                 draw_ready_mark();
-                ImGui::TextColored(ImVec4(0.45f, 0.95f, 0.55f, 1), "%s", tr("Game files ready."));
+                bool exact = gamelib_exact_id(g_root.c_str());
+                if (exact) {
+                    ImGui::TextColored(ImVec4(0.45f, 0.95f, 0.55f, 1), "%s", tr("Game files ready."));
+                } else {
+                    ImGui::TextColored(ImVec4(0.45f, 0.95f, 0.55f, 1), "%s", tr("Game files ready (previous game build)."));
+                }
                 ImGui::SetCursorPosX(x0);
                 if (main_id.empty() && !nso_build_id(g_root + "/exefs/main", &main_id)) main_id = "?";
                 ImGui::TextColored(ImVec4(0.66f, 0.76f, 0.98f, 1), tr("main build id %s"), main_id.c_str());
+                if (!exact) {
+                    ImGui::SetCursorPosX(x0);
+                    ImGui::TextDisabled("%s", tr("Rebuild in Game Files anytime to update to latest patches."));
+                }
 #ifndef __APPLE__
                 {   // the precompiled shaders were made by another translator or driver: the first play stutters until
                     // they are made again (Game Files > Precompile shaders says so too, but only there). Asked once.
@@ -2263,6 +2273,25 @@ extern "C" void launcher_run(const char *root, int mode) {
                 ImVec2 p(right - vsz.x, y);
                 for (float d : {2.5f, 1.5f, 0.8f}) dl->AddText(font, vs, ImVec2(p.x + d * s, p.y + d * s), IM_COL32(4, 8, 30, 150), ver);
                 dl->AddText(font, vs, p, IM_COL32(255, 255, 255, 255), ver);
+
+                if (updater_has_update()) {
+                    char up_txt[128];
+                    snprintf(up_txt, sizeof up_txt, tr("Update available: %s"), updater_latest_version());
+                    ImVec2 up_sz = font->CalcTextSizeA(fs, FLT_MAX, 0, up_txt);
+                    float up_y = y - up_sz.y - 14 * s;
+                    ImGui::SetCursorScreenPos(ImVec2(right - up_sz.x - 16 * s, up_y));
+                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f, 0.50f, 0.25f, 0.85f));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.18f, 0.65f, 0.32f, 0.95f));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.10f, 0.40f, 0.20f, 1.0f));
+                    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4 * s);
+                    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10 * s, 4 * s));
+                    if (ImGui::Button(up_txt)) {
+                        const char *url = updater_release_url();
+                        if (url && url[0]) SDL_OpenURL(url);
+                    }
+                    ImGui::PopStyleVar(2);
+                    ImGui::PopStyleColor(3);
+                }
             }
             ImGui::PopFont();
             }
