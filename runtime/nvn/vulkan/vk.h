@@ -70,6 +70,9 @@ typedef struct {
     VkImageView sc_views[8];
 } VkG;
 extern VkG g_vk;
+// g_vk.queue from more than one thread: the recorder's submissions (record.c), frame generation's presents (device.c
+// present_thread) and the sparse binds (exec.c)
+extern pthread_mutex_t g_vk_queue_lock;
 
 // ---- submissions (exec.c)
 // Work is recorded into the current command buffer; uploads go into a separate one that runs first.

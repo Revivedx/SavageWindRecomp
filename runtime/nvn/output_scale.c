@@ -93,10 +93,28 @@ bool upscale_modes_available(void) {
     return on;
 }
 
+// Ultra Performance renders a third of the window's size on each side. A temporal upscaler (FSR 3 / 4, DLSS) is made to
+// bring that to 2160 lines or more; at 1440 the scene is 853 x 480 and the whole image comes out blurred, for hardly
+// more frames than Performance where the CPU is the limit. So it is offered from a 4K window on, and below that a
+// stored Ultra Performance runs as Performance (the setting is kept: it comes back on a 4K window). FSR 1 keeps it at
+// any size. SAVAGEWIND_UPSCALE_ANY=1: offered at any size, as before.
+static volatile int g_out_lines;  // the window's height (output_scale; 0: not known yet)
+bool upscale_mode_offered(int q) {
+    static int any = -1;
+    if (any < 0) any = getenv("SAVAGEWIND_UPSCALE_ANY") && atoi(getenv("SAVAGEWIND_UPSCALE_ANY")) != 0;
+    if (q != UPQ_ULTRA_PERFORMANCE || any || !(rt_fsr3() || rt_dlss())) return true;
+    return !g_out_lines || g_out_lines >= 2160;
+}
+
+int upscale_quality_now(void) {
+    int q = g_settings.upscale_quality;
+    return upscale_mode_offered(q) ? q : UPQ_PERFORMANCE;
+}
+
 double upscale_factor(void) {
     int u = g_settings.upscaler;
     return u != UPSCALE_OFF && upscaler_available(u) && upscale_modes_available()
-               ? upscale_mode_factor(g_settings.upscale_quality) : 1.0;
+               ? upscale_mode_factor(upscale_quality_now()) : 1.0;
 }
 
 // The window's shape over 16:9 while the game's views are widened to fill it, else 1; the field of view's factor in
@@ -105,6 +123,7 @@ static volatile float g_view_shape = 1, g_fov = 1, g_map_extra_y;
 static uint32_t g_world_proj[4];  // tan(fovy / 2), aspect, near, far of the world camera's last matrix (rt_persp), float bits
 
 void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
+    g_out_lines = (int)dh;
     double fit = fmin(dw / 1920.0, dh / 1080.0);
     static double forced = -1, wide_test = -1;
     if (forced < 0) forced = getenv("SAVAGEWIND_SCALE") ? atof(getenv("SAVAGEWIND_SCALE")) : 0;
@@ -451,5 +470,17 @@ unsigned shadow_map_size(unsigned long long frame) {
     unsigned r = g_settings.shadow_res >= 0 && g_settings.shadow_res < SHADOW_COUNT ? size[g_settings.shadow_res] : 0;
     for (int i = 0; i < n; i++)
         if (frame >= at[i]) r = w[i];
-    return r > 8192 ? 8192 : r;
+    if (r > 8192) r = 8192;
+    // With a temporal upscaler (FSR 3 / 4, DLSS) the scene is drawn smaller by the quality mode's factor, and the
+    // cascades above the console's size follow it: as many shadow texels per drawn pixel as without the upscaler
+    // (Extreme at Quality: 5440 instead of 8192). The cascades cost the same at any scene resolution otherwise, and
+    // where they are most of the frame the upscaler gained nothing. Never under the console's own 896.
+    // SAVAGEWIND_SHADOW_FOLLOW=0: the setting's size, as before.
+    static int follow = -1;
+    if (follow < 0) follow = !getenv("SAVAGEWIND_SHADOW_FOLLOW") || atoi(getenv("SAVAGEWIND_SHADOW_FOLLOW")) != 0;
+    if (follow && r > 896 && (rt_fsr3() || rt_dlss())) {
+        r = (unsigned)(r / upscale_factor() / 64.0 + 0.5) * 64;
+        if (r < 896) r = 896;
+    }
+    return r;
 }

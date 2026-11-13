@@ -45,12 +45,13 @@ typedef struct {
     bool flip_y;            // lower-left window origin
     uint8_t mvec;           // vertex (GLSL): also the previous frame's position, from the motion history (vulkan/mvec.c):
                             // the body run first with its constant buffers read from the history buffer, both clip
-                            // positions to mv_cur / mv_prev (locations 30, 31)
+                            // positions to mv_cur / mv_prev (locations 30, 31); only when the push constants' mflag
+                            // says the draw moved (else mv_prev is zero, and so is the vector)
     uint8_t mvec_rt;        // fragment (GLSL): 1 + the color location the motion vector goes to (0: none), from mv_cur /
                             // mv_prev: the NDC distance from the previous position; with 0x80: the reactive mask instead
                             // (.z: how much this blended effect covers the pixel, its alpha; no vector); with 0x40: zero
-                            // (a draw whose inputs did not change: the camera's motion, vulkan/mvec.c mvec_still) (in the
-                            // padding: the key's size and layout are unchanged)
+                            // (the camera's motion: what a scene draw writes until its motion program is built,
+                            // exec.c draw_) (in the padding: the key's size and layout are unchanged)
     uint32_t vs_out_mask;   // fragment: varyings the vertex shader provides
     uint8_t glsl;           // emit Vulkan GLSL (see the contract above) instead of MSL
     uint8_t point_size;     // vertex, GLSL: the draw is a point list; a shader that writes no point size writes 1.0
@@ -71,7 +72,7 @@ typedef struct {
     uint32_t cbuf_mask;     // hardware constant buffers read
     uint32_t cbuf_size[18];
     uint32_t cbuf_dynamic;  // cbufs indexed with a register of unknown value: bind the whole buffer
-    uint64_t cbuf_rows[18][4];  // the vec4s of each cbuf read at constant offsets (the first 256; vulkan/mvec.c mvec_still)
+    uint64_t cbuf_rows[18][4];  // the vec4s of each cbuf read at constant offsets (the first 256; vulkan/mvec.c cb_hash)
     uint32_t cbuf_rows_all;     // cbufs read at an index, or past vec4 255: any of their vec4s may be read
     int ntex;
     ShaderTexture tex[64];

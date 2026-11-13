@@ -1805,6 +1805,7 @@ static void recreate_swapchain(void) {
 // one frame at a time otherwise, as before); a swapchain change and teardown wait for them all.
 // Only with SAVAGEWIND_VK_PRESENT_THREAD=1 now (create_device: one queue by default, #36, #293); otherwise presents on
 // the calling thread.
+pthread_mutex_t g_vk_queue_lock = PTHREAD_MUTEX_INITIALIZER;  // (vk.h)
 static pthread_mutex_t pres_m = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t pres_cv = PTHREAD_COND_INITIALIZER;
 static pthread_mutex_t sc_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -1863,7 +1864,9 @@ static void *present_thread(void *arg) {
                                .swapchainCount = 1, .pSwapchains = &q.sc, .pImageIndices = &q.img};
         pthread_mutex_lock(&sc_lock);
         uint64_t tq = SDL_GetTicksNS();
+        pthread_mutex_lock(&g_vk_queue_lock);  // (one queue: the recorder submits on it meanwhile)
         VkResult r = queue_present(g_vk.present_queue, &pi);
+        pthread_mutex_unlock(&g_vk_queue_lock);
         tq = SDL_GetTicksNS() - tq;
         pthread_mutex_unlock(&sc_lock);
         if (tq > 200000000ull) {  // (#224: a present the driver held on to)
@@ -1887,6 +1890,25 @@ static bool present_threaded(void) {
         on = g_vk.present_queue != g_vk.queue && !(e && !strcmp(e, "0"));
         if (on) { pthread_t t; pthread_create(&t, NULL, present_thread, NULL); }
         LOG("[vk] presents on %s\n", on ? "a thread of their own (second queue)" : "the calling thread");
+    }
+    return on;
+}
+
+// Frame generation's pair with one queue (the default): each of the two is presented once the GPU has drawn it, the
+// game's frame half an interval after the generated one (present_wait_turn). The translating thread did those waits
+// itself: it stood still for the GPU's whole frame and then for half the interval it had just made longer, so the game
+// drew at a quarter of its rate with the GPU half idle (RTX 3060, 1440p, no frame limit, Great Plateau: 101 fps
+// without frame generation, 47 presented with it). The present thread makes them instead, on the same queue
+// (g_vk_queue_lock), and the translating thread goes on to the next frame; present_wait_room still holds it at two
+// pairs ahead. Plain presents stay with the recorder, except while the thread still has some to make (their order).
+// SAVAGEWIND_VK_FG_PACER=0: on the calling thread, as before.
+static bool fg_pacer(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("SAVAGEWIND_VK_FG_PACER");
+        on = !(e && !strcmp(e, "0"));
+        if (on) { pthread_t t; pthread_create(&t, NULL, present_thread, NULL); }
+        LOG("[vk] frame generation's presents made by %s\n", on ? "the present thread, on the game's queue" : "the calling thread");
     }
     return on;
 }
@@ -1967,7 +1989,9 @@ static void rec_present_run(void *arg) {
     VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &q->sem,
                            .swapchainCount = 1, .pSwapchains = &q->sc, .pImageIndices = &q->img};
     pthread_mutex_lock(&sc_lock);
+    pthread_mutex_lock(&g_vk_queue_lock);
     VkResult r = queue_present(g_vk.queue, &pi);
+    pthread_mutex_unlock(&g_vk_queue_lock);
     pthread_mutex_unlock(&sc_lock);
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) atomic_store(&rec_present_stale, 1);
 }
@@ -1984,18 +2008,27 @@ static bool present_on_recorder(void) {
 // Present window image img once sem is signalled (kind, seq: frame generation's pair and the frame's submission, see
 // present_wait_turn). Returns false when the swapchain must be made again.
 static bool present_image(uint32_t img, VkSemaphore sem, int kind, uint64_t seq) {
-    if (!present_threaded() && kind == PRES_PLAIN && present_on_recorder()) {
+    bool threaded = present_threaded();
+    if (!threaded) {
+        pthread_mutex_lock(&pres_m);
+        bool queued = presq_n != 0;
+        pthread_mutex_unlock(&pres_m);
+        threaded = (kind != PRES_PLAIN || queued) && fg_pacer();
+    }
+    if (!threaded && kind == PRES_PLAIN && present_on_recorder()) {
         __typeof__(recp[0]) *q = &recp[recp_n++ % RECP_N];
         *q = (__typeof__(recp[0])){g_vk.swapchain, sem, img};
         rec_custom(rec_present_run, q);
         return !atomic_exchange(&rec_present_stale, 0);
     }
-    if (!present_threaded()) {
+    if (!threaded) {
         VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &sem,
                                .swapchainCount = 1, .pSwapchains = &g_vk.swapchain, .pImageIndices = &img};
         rec_wait_submitted(seq);  // (as present_thread)
         present_wait_turn(kind, seq);
+        pthread_mutex_lock(&g_vk_queue_lock);
         VkResult r = queue_present(g_vk.queue, &pi);
+        pthread_mutex_unlock(&g_vk_queue_lock);
         return !(r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR);
     }
     pthread_mutex_lock(&pres_m);

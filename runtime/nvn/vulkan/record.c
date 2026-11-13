@@ -30,6 +30,7 @@
 //   stats               RecStats: T's fields plain, R's and the waits' _Atomic relaxed adds; read by T
 //   profiling           the profiler's markers (runtime/prof.h): the recorder thread's batches and submits, T's waits on it
 #include "record.h"
+#include "mvec.h"
 #include "../../prof.h"
 
 #include <pthread.h>
@@ -63,6 +64,8 @@ static _Atomic uint64_t r_busy_ns, r_wakeups, r_submit_ns;
 static _Atomic uint64_t a_seq_waits, a_seq_wait_ns;  // (waits from any thread)
 
 bool rec_on(void) { return on > 0; }
+static __thread bool is_recorder;
+bool rec_on_recorder(void) { return is_recorder; }
 
 #define NOW() plat_now_ns()
 #define ADD(v, x) atomic_fetch_add_explicit(&(v), (x), memory_order_relaxed)
@@ -180,6 +183,7 @@ static uint64_t spin_for_work(uint64_t t) {  // the published end once it moves 
 
 static void *run(void *arg) {
     (void)arg;
+    is_recorder = true;
     prof_thread_name("vk-record");
     plat_thread_elevate();
     extern void control_prof_thread(const char *name);  // runtime/control_prof.c (`threads`)
@@ -397,7 +401,9 @@ static void submit_run(const void *p) {
                         .waitSemaphoreInfoCount = a->nwait, .pWaitSemaphoreInfos = a->wait};
     SW_ZONE("vkQueueSubmit2");
     uint64_t t0 = NOW();
+    pthread_mutex_lock(&g_vk_queue_lock);
     VkResult r = vkQueueSubmit2(g_vk.queue, 1, &si, VK_NULL_HANDLE);
+    pthread_mutex_unlock(&g_vk_queue_lock);
     uint64_t dt = NOW() - t0;
     if (prof) ADD(r_submit_ns, dt);
     if (dt > 50000000) {  // (a driver stall: a slow wait on the recorder shows where it was)
@@ -618,6 +624,22 @@ void rec_CmdPushConstants(VkCommandBuffer cb, VkPipelineLayout layout, VkShaderS
     CmdPushConstantsArgs *a = push(CmdPushConstants_run, sizeof *a, size);
     *a = (CmdPushConstantsArgs){cb, layout, stages, off, size};
     memcpy(after(a, sizeof *a), data, size);
+    commit();
+    ENQ_END();
+}
+
+CMD_ARGS(CmdPushConstantsMvec, VkPipelineLayout layout; uint32_t seq;)
+static void push_mvec(VkCommandBuffer cb, VkPipelineLayout layout, uint32_t seq) {
+    uint32_t pc[MVEC_PUSH / 4];
+    mvec_resolve(seq, pc);
+    vkCmdPushConstants(cb, layout, VK_SHADER_STAGE_VERTEX_BIT, 0, MVEC_PUSH, pc);
+}
+static void CmdPushConstantsMvec_run(const void *p) { const CmdPushConstantsMvecArgs *a = p; push_mvec(a->cb, a->layout, a->seq); }
+void rec_CmdPushConstantsMvec(VkCommandBuffer cb, VkPipelineLayout layout, uint32_t seq) {
+    if (on <= 0) { push_mvec(cb, layout, seq); return; }
+    ENQ_T0();
+    CmdPushConstantsMvecArgs *a = push(CmdPushConstantsMvec_run, sizeof *a, 0);
+    *a = (CmdPushConstantsMvecArgs){cb, layout, seq};
     commit();
     ENQ_END();
 }
