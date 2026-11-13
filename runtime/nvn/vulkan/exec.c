@@ -130,6 +130,7 @@ void vk_dyn_forget(void) { dyn_epoch++; }
 // (begin_pass): while it stays, a draw takes the last draw's program and pipeline without building and comparing the
 // keys (~1.4 KB a draw). SAVAGEWIND_VK_NO_KEY_GEN=1: keys every draw.
 static uint64_t key_gen = 1;
+static uint64_t pipe_state_gen = 1;  // like key_gen without CMD_BIND_PROGRAM (Prog *pr is part of the pipe_fast key)
 static uint64_t setc_gen;  // bumped to drop the shared descriptor sets (set_finish) of the submission in progress
 static void dyn_check(void) {  // (after vk_cmd) a new command buffer or foreign state: nothing known
     if (dc.epoch == dyn_epoch) return;
@@ -2372,6 +2373,7 @@ static void begin_pass(void) {
     if (pass_void) {
         in_pass = true;
         key_gen++;
+        pipe_state_gen++;
         stat_passes++;
         return;
     }
@@ -2398,6 +2400,7 @@ static void begin_pass(void) {
     rec_CmdBeginRendering(cb, &ri);
     in_pass = true;
     key_gen++;  // (the pass's formats are in the pipeline key)
+    pipe_state_gen++;
     vp_sx = pass_sx; vp_sy = pass_sy; vp_ox = 0; vp_oy = 0;
     stat_passes++;
 }
@@ -3464,6 +3467,8 @@ static void pipe_tab_grow(void) {
     pipe_cap = cap;
 }
 static struct { PipeKey k; Pipe *pp; } pipe_memo;  // (see prog_memo)
+#define PIPE_FAST_N 64
+static struct { uint64_t gen; Prog *pr; uint8_t cls, fb; Pipe *pp; } pipe_fast[PIPE_FAST_N];
 
 // 8 bytes a step (PipeKey is ~700 bytes, hashed per draw); in-memory tables only - hmix values are compared with
 // stored constants (fragment-shader hashes) and must not change.
@@ -6538,7 +6543,9 @@ void vk_exec_reset(void) {
     prog_n = pipe_n = 0;
     memset(prog_memo, 0, sizeof prog_memo);
     memset(&pipe_memo, 0, sizeof pipe_memo);
+    memset(pipe_fast, 0, sizeof pipe_fast);
     key_gen++;
+    pipe_state_gen++;
     if (g_cs_tab) memset(g_cs_tab, 0, g_cs_cap * sizeof *g_cs_tab);
     g_cs_n = 0;
     gcopy_gen++;
@@ -8338,13 +8345,14 @@ static void draw_(CmdRec *r, bool indexed) {
     ProfZone pz1 = PZ_NOW();
     PZ_SPAN("exec/draw/pre", pz0, pz1);
     // ---- pipeline
-    static struct { uint64_t gen; Prog *pr; uint8_t cls, fb; } km;
+    uint32_t fslot = (uint32_t)((((uintptr_t)pr >> 4) * 0x9e3779b1u) ^ cls ^ ((uint32_t)draw_feedback << 4)) &
+                     (PIPE_FAST_N - 1);
     Pipe *pp;
-    if (!no_key_gen && pipe_memo.pp && km.gen == key_gen && km.pr == pr && km.cls == cls && km.fb == draw_feedback) {
-        pp = pipe_memo.pp;
+    if (!no_key_gen && pipe_fast[fslot].pp && pipe_fast[fslot].gen == pipe_state_gen &&
+        pipe_fast[fslot].pr == pr && pipe_fast[fslot].cls == cls && pipe_fast[fslot].fb == draw_feedback) {
+        pp = pipe_fast[fslot].pp;
         goto have_pipe;
     }
-    km.gen = key_gen; km.pr = pr; km.cls = cls; km.fb = draw_feedback;
     PipeKey k;
     memset(&k, 0, sizeof k);
     k.prog = pr;
@@ -8357,8 +8365,10 @@ static void draw_(CmdRec *r, bool indexed) {
     k.s.samples = pass_samples;
     k.s.feedback = draw_feedback;
     k.s.depth_clamp = st.depth_clamp && g_vk.depth_clamp;
-    for (int i = 0; i < 32; i++) {
-        if (!(pr->vi->attr_mask & (1u << i))) continue;
+    uint32_t am = pr->vi->attr_mask;
+    while (am) {
+        int i = __builtin_ctz(am);
+        am &= am - 1;
         k.s.attr_mask |= 1u << i;
         uint32_t a = i < st.nattrib ? st.attrib[i] : 0x2E;
         uint32_t fmt = a & 0xFF, stream = (a >> 8) & 0x1F, off = a >> 13;
@@ -8373,8 +8383,10 @@ static void draw_(CmdRec *r, bool indexed) {
         k.s.attr_bind[i] = stream;
         k.s.used_streams |= 1u << stream;
     }
-    for (int s = 0; s < 16; s++) {
-        if (!(k.s.used_streams & (1u << s))) continue;
+    uint32_t sm = k.s.used_streams & 0xFFFFu;
+    while (sm) {
+        int s = __builtin_ctz(sm);
+        sm &= sm - 1;
         k.s.stride[s] = s < st.nstream ? st.stream[s][0] : 0;
         k.s.divisor[s] = s < st.nstream && k.s.stride[s] ? st.stream[s][1] : 0;
         if (k.s.divisor[s] > 1 && !g_vk.divisor) k.s.divisor[s] = 1;
@@ -8425,6 +8437,13 @@ static void draw_(CmdRec *r, bool indexed) {
         }
         pipe_memo.k = k;
         pipe_memo.pp = pp;
+    }
+    if (!no_key_gen) {
+        pipe_fast[fslot].gen = pipe_state_gen;
+        pipe_fast[fslot].pr = pr;
+        pipe_fast[fslot].cls = cls;
+        pipe_fast[fslot].fb = draw_feedback;
+        pipe_fast[fslot].pp = pp;
     }
 have_pipe:
     if (atomic_load(&pp->state) == 0 && (one_shot_target() || draw_must_happen())) wait_built(&pp->state);
@@ -8763,7 +8782,7 @@ have_pipe:
 
     // ---- vertex streams: the range this draw can read, copied once per submission
     for (int s = 0; s < 17; s++) {
-        if (!(pipe_memo.k.s.used_streams & (1u << s))) continue;
+        if (!(pp->k.s.used_streams & (1u << s))) continue;
         VkSpan sp;
         if (s == ZERO_BINDING) {
             static const float zero[4] = {0, 0, 0, 1};
@@ -8787,9 +8806,9 @@ have_pipe:
                 if (base_vertex > 0) max_index += (uint32_t)base_vertex;
                 scan_src = NULL;
             }
-            uint64_t stride = pipe_memo.k.s.stride[s], need;
+            uint64_t stride = pp->k.s.stride[s], need;
             if (!stride) need = 256;
-            else if (pipe_memo.k.s.divisor[s]) need = ((uint64_t)base_inst + inst + pipe_memo.k.s.divisor[s] - 1) / pipe_memo.k.s.divisor[s] * stride + 256;
+            else if (pp->k.s.divisor[s]) need = ((uint64_t)base_inst + inst + pp->k.s.divisor[s] - 1) / pp->k.s.divisor[s] * stride + 256;
             else need = (uint64_t)max_index * stride + 256;
             if (v.size && need > v.size) need = v.size;
             if (!v.addr) { static const uint8_t zero[256]; sp = vk_transient_copy(zero, 256, 16); }
@@ -8934,14 +8953,6 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
         LOG("[draw]   shape%d: target %u depth %u levels %u -> layers %u%s\n", i, t->target, t->depth, t->levels, b ? b->layers : 0,
             b && b->base_type == VK_IMAGE_VIEW_TYPE_2D_ARRAY ? " (array)" : "");
         {   // its sampler and swizzle (view swizzle if the pool entry overrides it)
-            const NvnTexEntry *e = shader_texture_entry(1, &pr->fi->tex[i]);
-            if (e && e->has_view)
-                LOG("[draw]   view%d: set %#x levels %u+%u layers %u+%u format %#x target %u\n", i, e->view.setmask, e->view.base_level,
-                    e->view.num_levels, e->view.min_layer, e->view.num_layers, e->view.format, e->view.target);
-            int slot = ((int)pr->fi->tex[i].handle_offset - 0x20) / 8;
-            uint64_t h = (slot >= 0 && slot < 32) ? st.tex[1][slot] : 0;
-            uint32_t tsc = (uint32_t)(h >> 20) & 0xFFF;
-            const NvnSamplerDesc *sd = h && st.spool && tsc < (uint32_t)st.spool->count ? &((NvnSamplerDesc *)st.spool->entries)[tsc] : NULL;
             const uint8_t *sw = e && e->has_view && (e->view.setmask & 8) ? e->view.swizzle : t->swizzle;
             LOG("[draw]   smp%d: type %d swz %u%u%u%u%s h %llx tsc %u", i, pr->fi->tex[i].type, sw[0], sw[1], sw[2], sw[3],
                 e && e->has_view ? " (view)" : "", (unsigned long long)h, tsc);
@@ -10955,10 +10966,14 @@ static void exec_list(uint64_t handle, int depth) {
             if (r->x[0]) hud_scope_enter(&hud_scope, (unsigned)r->x[0]);
             else hud_scope_leave(&hud_scope);
             break;
-        case CMD_BIND_PROGRAM: case CMD_BIND_BLEND: case CMD_BIND_CHANNEL_MASK: case CMD_BIND_COLOR: case CMD_BIND_MULTISAMPLE:
+        case CMD_BIND_PROGRAM:
+            key_gen++;
+            break;
+        case CMD_BIND_BLEND: case CMD_BIND_CHANNEL_MASK: case CMD_BIND_COLOR: case CMD_BIND_MULTISAMPLE:
         case CMD_BIND_POLYGON: case CMD_BIND_VERTEX_ATTRIB: case CMD_BIND_VERTEX_STREAM: case CMD_SET_RENDER_TARGETS:
         case CMD_SET_DEPTH_CLAMP:
             key_gen++;
+            pipe_state_gen++;
             break;
         default: break;
         }
