@@ -69,6 +69,10 @@ enum { GYRO_CAM_OFF = 0, GYRO_CAM_EXPLORE = 1, GYRO_CAM_HOLD = 2, GYRO_CAM_ALWAY
 enum { MOTION_DEV_AUTO = 0, MOTION_DEV_CONTROLLER = 1, MOTION_DEV_MOUSE = 2, MOTION_DEV_COUNT = 3 };
 // The start screen's background, when there is no splash.jpg / .png of the player's in the data folder
 enum { START_PICTURE_ART, START_PICTURE_SCREENSHOT, START_PICTURE_SAVE, START_PICTURE_COUNT };
+// Audio > Audio output (runtime/services/audio.c): Stereo mixes the game's 6 channels (FL, FR, FC, LFE, BL, BR) down
+// to 2; Surround 5.1 sends all 6 channels to the audio device; 3D Headphones mixes the 6 channels to stereo with
+// binaural head-shadow and ear-delay cues for headphones.
+enum { AUDIO_OUT_STEREO = 0, AUDIO_OUT_SURROUND_51 = 1, AUDIO_OUT_HEADPHONES_3D = 2, AUDIO_OUT_COUNT };
 typedef struct {
     bool fullscreen;
     int fullscreen_mode;     // FSMODE_*
@@ -88,8 +92,10 @@ typedef struct {
     int sharpening;      // AMD CAS sharpening of the 3D image, 0 (off) .. 10 (100%) (vulkan/exec.c scene_post)
     bool frame_gen;      // AMD FSR 3 frame generation: a frame made between each two the game draws (vulkan/framegen.cpp)
     float volume;        // master volume, 1 = 100%
+    int audio_output;    // AUDIO_OUT_*: Stereo, Surround 5.1, or 3D Headphones
     bool reverb;         // room reverb effect
     bool movie_audio;
+    bool mute_unfocused; // mute audio while the window is in the background or minimized
     int perf_overlay;    // PERF_*: the performance overlay (F10 cycles it)
     int fps_limit;       // frame rate, frames per second (FPS_CHOICES; 0: no limit)
     int vsync;           // VSYNC_*

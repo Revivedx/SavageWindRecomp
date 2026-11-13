@@ -45,6 +45,7 @@ static inline bool bind_pad_same_context(int a, int b) { return bind_key_same_co
 enum { DEVICE_KEYBOARD, DEVICE_PAD };
 int input_last_device(void);
 int input_pad_family(void);  // the open controller: 0 Nintendo / other / none, 1 Xbox, 2 PlayStation
+bool input_window_focused(void);
 
 // Controller binding values: an SDL_GamepadButton, or the analog triggers as buttons
 enum { PADB_LTRIGGER = 26 /* SDL_GAMEPAD_BUTTON_COUNT */, PADB_RTRIGGER, PADB_HOST_COUNT };

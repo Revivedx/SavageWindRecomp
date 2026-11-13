@@ -746,6 +746,15 @@ test-bloom-scale: $(B)/test_bloom_scale
 
 .PHONY: test-bloom-scale
 
+$(B)/test_audio_mix: tests/test_audio_mix.c runtime/audio_mix.h runtime/settings.h
+	@mkdir -p $(B)
+	$(CC) -O1 -Wall -Wextra -Werror -o $@ $< -lm
+
+test-audio-mix: $(B)/test_audio_mix
+	$(B)/test_audio_mix
+
+.PHONY: test-audio-mix
+
 # Steam's shortcuts.vdf read and written (runtime/steam_shortcuts.c); real files (copies) can be given: STEAM_VDF="a b"
 test-steam-shortcuts: $(B)/test_steam_shortcuts
 	$(B)/test_steam_shortcuts $(STEAM_VDF)

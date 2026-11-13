@@ -23,8 +23,10 @@ const char *settings_file(void) {
 Settings g_settings = {
     .fullscreen = false,
     .volume = 1.0f,
+    .audio_output = AUDIO_OUT_STEREO,
     .reverb = true,
     .movie_audio = true,
+    .mute_unfocused = false,
     .rumble = true,
     .freecam_sticks = true,
     .damage_taken = 100,
@@ -71,6 +73,7 @@ static const char *const k_vsync[VSYNC_COUNT] = {"on", "fast", "adaptive", "off"
 static const char *const k_hdr[HDR_COUNT] = {"auto", "on", "off"};             // (HDR_*)
 static const char *const k_sparse_heap[SPARSE_HEAP_COUNT] = {"auto", "on", "off"};
 static const char *const k_fsmode[FSMODE_COUNT] = {"auto", "borderless", "exclusive"};  // (FSMODE_*)
+static const char *const k_audio_out[AUDIO_OUT_COUNT] = {"stereo", "surround_51", "headphones_3d"};  // (AUDIO_OUT_*)
 static const char *const k_mvec_mode[MVEC_MODE_COUNT] = {"hybrid", "objects", "camera"};
 
 // settings_version 2 (2026-10-19): the upscaler's mode, the window size and the 300% mouse default. Older files: their
@@ -205,8 +208,13 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "gpu")) g_settings.gpu = gpu_index_parse(val);
         else if (!strcmp(key, "volume")) g_settings.volume = (float)atof(val);
+        else if (!strcmp(key, "audio_output")) {
+            for (int i = 0; i < AUDIO_OUT_COUNT; i++)
+                if (!strcmp(val, k_audio_out[i])) g_settings.audio_output = i;
+        }
         else if (!strcmp(key, "reverb")) g_settings.reverb = atoi(val) != 0;
         else if (!strcmp(key, "movie_audio")) g_settings.movie_audio = atoi(val) != 0;
+        else if (!strcmp(key, "mute_unfocused")) g_settings.mute_unfocused = atoi(val) != 0;
         else if (!strcmp(key, "show_fps")) g_settings.perf_overlay = atoi(val) ? PERF_FPS : PERF_OFF;  // (older files)
         else if (!strcmp(key, "perf_overlay")) g_settings.perf_overlay = !strcmp(val, "full") ? PERF_FULL : !strcmp(val, "fps") ? PERF_FPS : PERF_OFF;
         else if (!strcmp(key, "frame_rate")) g_settings.fps_limit = !strcmp(val, "off") ? 0 : atoi(val);  // (fps / off)
@@ -443,8 +451,10 @@ void settings_save(void) {
     int vs = g_settings.vsync >= 0 && g_settings.vsync < VSYNC_COUNT ? g_settings.vsync : VSYNC_DEFAULT;
     fprintf(f, "vsync = %s\n", k_vsync[vs]);
     fprintf(f, "volume = %.2f\n", g_settings.volume);
+    fprintf(f, "audio_output = %s\n", k_audio_out[g_settings.audio_output]);
     fprintf(f, "reverb = %d\n", g_settings.reverb);
     fprintf(f, "movie_audio = %d\n", g_settings.movie_audio);
+    fprintf(f, "mute_unfocused = %d\n", g_settings.mute_unfocused);
     fprintf(f, "perf_overlay = %s\n", g_settings.perf_overlay == PERF_FULL ? "full" : g_settings.perf_overlay == PERF_FPS ? "fps" : "off");
     static const char *const ups[UPSCALE_COUNT] = {"off", "metalfx", "fsr1", "fsr3", "dlss", "fsr4"};
     int u = g_settings.upscaler, uq = g_settings.upscale_quality;

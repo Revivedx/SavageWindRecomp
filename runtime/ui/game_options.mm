@@ -673,12 +673,24 @@ void build_items(void) {
                        },
                        [](const Item &) { return (int)lroundf(g_settings.volume * 10); },
                        [](const Item &, int x) { g_settings.volume = x / 10.0f; }, 10));
+    v.push_back(choice(P_AUDIO, "Audio output", "Stereo, 5.1 surround speakers, or 3D spatial sound for headphones. Surround 5.1 is untested on real 5.1 speakers.",
+                       [](const Item &) { return (int)AUDIO_OUT_COUNT; },
+                       [](const Item &, int x) {
+                           static const char *const o[AUDIO_OUT_COUNT] = {"Stereo", "Surround 5.1", "3D Headphones"};
+                           return tr(o[x]);
+                       },
+                       [](const Item &) { return g_settings.audio_output; },
+                       [](const Item &, int x) { g_settings.audio_output = x; }, AUDIO_OUT_STEREO));
     v.push_back(toggle(P_AUDIO, "Room reverb", "Echo in caves, shrines and big rooms.",
                        [](const Item &) { return (int)g_settings.reverb; },
                        [](const Item &, int x) { g_settings.reverb = x; }, 1));
     v.push_back(toggle(P_AUDIO, "Movie audio", "Sound in the game's movies.",
                        [](const Item &) { return (int)g_settings.movie_audio; },
                        [](const Item &, int x) { g_settings.movie_audio = x; }, 1));
+    v.push_back(toggle(P_AUDIO, "Mute in background",
+                       "Mute audio while the game window is in the background or minimized.",
+                       [](const Item &) { return (int)g_settings.mute_unfocused; },
+                       [](const Item &, int x) { g_settings.mute_unfocused = x; }, 0));
 
     // Controls
     v.push_back(toggle(P_CONTROLS, "Controller rumble", "Vibrate the controller during play.",
