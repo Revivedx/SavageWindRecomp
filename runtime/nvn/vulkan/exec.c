@@ -1078,8 +1078,15 @@ static void uub_note(uint64_t lo, uint64_t hi) {
             uubt[i].serial = uub_serial;
             return;
         }
-    if (nuub < UUB_MAX) uubt[nuub++] = (__typeof__(uubt[0])){lo, hi, uub_serial};
-    guest_copy_flush();  // (a range copies made before don't know; or no room: every update drops everything)
+    if (nuub < UUB_MAX) {
+        uubt[nuub++] = (__typeof__(uubt[0])){lo, hi, uub_serial};
+    } else {
+        int lru = 0;
+        for (int i = 1; i < UUB_MAX; i++)
+            if (uubt[i].serial < uubt[lru].serial) lru = i;
+        uubt[lru] = (__typeof__(uubt[0])){lo, hi, uub_serial};
+    }
+    guest_copy_flush();  // (a range copies made before don't know; LRU slot evicted safely as gcopy_gen advances)
 }
 
 static VkSpan guest_copy(uint64_t addr, uint64_t size) {
