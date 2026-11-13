@@ -215,6 +215,14 @@ static bool time_flags(float *now, uint64_t flags[2]) {
     return true;
 }
 
+// GameDataMgr (ksys::gdt::Manager: +0xbd8 its two TriggerParam buffers, pending-write and current-read), for online
+// play's flags (runtime/online_actors.c); 0 until the world exists
+uint64_t test_warp_gdt_mgr(void) {
+    float *now = time_of_day();
+    uint64_t site = now ? time_data_site((uintptr_t)now - 0xb8) : 0;
+    return site ? read_pointer(site) : 0;
+}
+
 static bool write_time(float *now, float tod) {
     uint64_t flags[2];
     if (!time_flags(now, flags)) return false;

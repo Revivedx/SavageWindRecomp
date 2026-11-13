@@ -38,6 +38,7 @@
 #include "dlss.h"
 #include "../output_scale.h"
 #include "../../game_sites.h"
+#include "../../online.h"
 #include "../../framepace.h"
 #include "../../services/fs_layout.h"
 #include "../../perfcount.h"
@@ -10064,7 +10065,8 @@ static void fg_before_draw(void) {
 }
 
 static void fg_draw(Prog *pr, CmdRec *r) {
-    if (!g_fg_want && !dlss_wanted()) return;  // (DLSS's motion vectors are made from the same camera: dlss_scene)
+    bool camera_only = !g_fg_want;  // (online play needs the camera too: runtime/online.h; DLSS's motion vectors
+    if (camera_only && !dlss_wanted() && !online_wants_camera()) return;  // are made from it too: dlss_scene)
     if (st.rt.depth && vk_texture_scale_group(st.rt.depth) == RS_SCENE) {
         Range u = st.ubuf[0][0];
         const float *f = (const float *)(uintptr_t)u.addr;
@@ -10084,7 +10086,7 @@ static void fg_draw(Prog *pr, CmdRec *r) {
             if (i < 4) fg.cand[i].draws++;
         }
     }
-    if (!g_fg_want) return;
+    if (camera_only) return;
     NvnTexture *t = scene_composite(pr, r);
     if (t) {
         fg.out_rt = st.rt.color[0];
@@ -10217,6 +10219,14 @@ TexBackend *vk_fg_generate(NvnTexture *t, TexBackend *b) {
     uint64_t now = SDL_GetTicksNS();
     float frame_ms = fg.last_ns ? (float)((now - fg.last_ns) / 1e6) : 16.7f;
     fg.last_ns = now;
+    if (online_wants_camera() && fg.ncand) {  // this frame's scene camera for the online overlay (the most drawn with)
+        int c = 0;
+        for (int i = 1; i < fg.ncand; i++)
+            if (fg.cand[i].draws > fg.cand[c].draws) c = i;
+        double v[16];
+        for (int i = 0; i < 16; i++) v[i] = fg.cand[c].m[12 + i];
+        online_camera_set(v, renderer_origin_lower_left() ? 1.0f : -1.0f);
+    }
     TexBackend *out = NULL, *scene = fg.scene && same ? vk_tex(fg.scene, true) : NULL;
     int best = scene ? cam_best(scene->width, scene->height) : -1;
     bool ok = g_fg_want && fg.hudless_ok && best >= 0 && b->image && b->layers == 1 && b->samples == 1;

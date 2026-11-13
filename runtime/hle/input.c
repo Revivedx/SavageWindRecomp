@@ -1096,6 +1096,10 @@ static void fill_state(Cpu *c) {
     control_input_apply(&b, &lx, &ly, &rx, &ry);
     b = unconsumed_buttons(b);
     b = quick_drop_action_filter_buttons(b);
+    {   // online play: another player in a cutscene near this Link (runtime/online_actors.c): A does nothing meanwhile
+        extern volatile int g_online_block_a;
+        if (g_online_block_a) b &= ~(1ull << BTN_A);
+    }
     // stick directions also appear as buttons (bits 16-23)
     if (lx < -16000) b |= 1ull << 16;
     if (ly > 16000) b |= 1ull << 17;

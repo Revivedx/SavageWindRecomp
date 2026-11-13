@@ -90,6 +90,8 @@ static bool in_event(void) {
 }
 
 bool framepace_in_event(void) { return in_event(); }
+static const char *event_name(void);
+const char *framepace_event_name(void) { return event_name(); }
 
 // The active event's name ("Demo014_0"): the event's name string, a char pointer at +0x68 to its buffer at +0x74
 // (found with a probe on the new game's opening, Demo169_0). "" when there is none or it isn't in the heap.

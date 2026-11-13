@@ -346,8 +346,13 @@ $(B)/imgui/imgui_impl_metal.o: $(IMGUI)/backends/imgui_impl_metal.mm
 PY := $(firstword $(wildcard tools/venv/bin/python) $(wildcard tools/venv/Scripts/python.exe))
 
 # GENARGS=--any-version: a game version not supported yet (tools/game_sites.py; docs/SAVAGE-WIND.md)
+# The game files: extracted/, or the folder on the first line of game_dir.txt (as the app reads it, runtime/main.c).
+# GAME_DIR_T is the same seen from tools/ (an absolute path as is, a relative one from the parent).
+GAME_DIR := $(if $(wildcard game_dir.txt),$(shell head -n1 game_dir.txt | tr -d '\r"'),extracted)
+GAME_DIR_T := $(if $(filter /%,$(GAME_DIR))$(findstring :,$(firstword $(GAME_DIR))),,../)$(GAME_DIR)
+
 gen:  # every module of the exefs, at the addresses tools/layout.py gives them
-	cd tools && ../$(PY) gen.py all ../extracted/exefs ../$(GEN) --hle ../runtime/hle/hle_symbols.txt $(GENSIMD) $(GENLOCALS) $(GENARGS)
+	cd tools && ../$(PY) gen.py all "$(GAME_DIR_T)/exefs" ../$(GEN) --hle ../runtime/hle/hle_symbols.txt $(GENSIMD) $(GENLOCALS) $(GENARGS)
 
 gen-objs: $(GEN_OBJ)
 
@@ -412,6 +417,7 @@ deps-windows:
 dist:
 	@[ -f build/deps-win/lib/libavcodec.dll.a ] || { echo "make deps-windows first (LGPL FFmpeg)"; exit 1; }
 	@[ -d build/helper/swgen ] || { echo "make gen-helper first (the game code generator)"; exit 1; }
+	@[ -d build/helper/swonline ] || { echo "make online-helper first (online play's overlay builder)"; exit 1; }
 	@! find tools -maxdepth 1 -name '*.py' -newer build/helper/swgen/swgen.exe | grep -q . || \
 	    { echo "make gen-helper first: tools/*.py changed since build/helper/swgen was frozen"; exit 1; }
 	@[ -x build/zig/zig.exe ] || { echo "tools/fetch_zig.sh first (the compiler)"; exit 1; }
@@ -424,6 +430,7 @@ dist:
 	tools/zig_slim.sh $(strip $(filter-out -Iruntime,$(GENFLAGS))) \
 	    $(if $(GENFLAGS_COMPAT),-- $(strip $(filter-out -Iruntime,$(GENFLAGS_COMPAT))))  # (zig, its runtime built ahead of time)
 	cp -R build/helper/swgen "$(DIST)/"
+	cp -R build/helper/swonline "$(DIST)/"  # (online play's overlay builder: make online-helper)
 	cp -R build/zig-slim "$(DIST)/zig"
 	cp runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/simd_softfma.h runtime/gamelib.h tools/gamelib_entry.c \
 	    runtime/hle/hle_symbols.txt "$(DIST)/gamelib-src/"
@@ -476,6 +483,13 @@ gen-helper: build/gen-venv/.ok
 	$(if $(filter windows,$(PLATFORM)),$(GEN_VPY) tools/pe_no_cfg.py build/helper/swgen/swgen.exe)
 	@du -sh build/helper/swgen
 
+# online play's overlay builder (tools/online_mod.py) frozen the same way: build/helper/swonline/, shipped as swonline/
+# next to the exe (runtime/main.c runs it on the player's game files at the first start). Needs oead in the venv.
+online-helper: build/gen-venv/.ok
+	$(GEN_VPY) -m pip install -q oead==1.3.0
+	$(if $(filter windows,$(PLATFORM)),USERPROFILE="$$(cygpath -w ~ 2>/dev/null || echo $$HOME)") 	$(GEN_VPY) -m PyInstaller --noconfirm --clean --log-level WARN --distpath build/helper --workpath build/pyinstaller 	    tools/swonline.spec
+	@du -sh build/helper/swonline
+
 build/gen-venv/.ok:
 	$(GEN_PY) -m venv build/gen-venv
 	$(GEN_VPY) -m pip install -q capstone==5.0.9 unicorn==2.1.4 lz4==4.4.5 pyinstaller==6.22.3
@@ -490,7 +504,7 @@ appimages:
 	tools/linux/appimage.sh x86_64
 	tools/linux/appimage.sh aarch64
 
-.PHONY: dmg all gen gen-helper gen-objs runtime-objs deps deps-windows app dist appimage appimages
+.PHONY: dmg all gen gen-helper online-helper gen-objs runtime-objs deps deps-windows app dist appimage appimages
 
 build/test_shaders: tools/test_shaders.m runtime/nvn/maxwell/translate.c runtime/nvn/maxwell/shader.h
 	clang -O1 -fobjc-arc -framework Metal -framework Foundation -o $@ tools/test_shaders.m runtime/nvn/maxwell/translate.c

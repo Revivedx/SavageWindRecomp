@@ -94,8 +94,9 @@ enum { KIND_TOGGLE = 0, KIND_CHOICE = 1, KIND_BUTTON = 2 };
 
 enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_COLOUR, P_AUDIO, P_CONTROLS, P_BINDS, P_LANGUAGE, P_ACCESS, P_VIDEO_ADV, P_COUNT };
 // A_FIXED: a greyed row for an input that can never be rebound (Item.arg: 0 Esc, 1 F2); A_BIND: Item.arg is a binding slot (an input, or BIND_ACTION + an action); the next key, mouse button or controller button binds it
-enum Action { A_NONE, A_PAGE, A_BIND, A_BINDS_HEADER, A_RESET_BINDS, A_RESTART, A_QUIT, A_SIZE_LIST, A_FIXED, A_REPORT };
+enum Action { A_NONE, A_PAGE, A_BIND, A_BINDS_HEADER, A_RESET_BINDS, A_RESTART, A_QUIT, A_SIZE_LIST, A_FIXED, A_REPORT, A_ONLINE };
 static char g_report_dir[64];  // Problem report: the zip made this run (its row's description names it)
+extern "C" void menu_open_online(void);  // (menu.mm)
 
 struct Item {
     int page;
@@ -342,6 +343,8 @@ void build_items(void) {
     v.push_back(button(P_MAIN, "Key bindings", "Which key, mouse button or controller button does what.", "Open", A_PAGE, P_BINDS));
     v.push_back(button(P_MAIN, "Language", "Language of the texts and of the voices.", "Open", A_PAGE, P_LANGUAGE));
     v.push_back(button(P_MAIN, "Accessibility", "Assists that make the game easier.", "Open", A_PAGE, P_ACCESS));
+    v.push_back(button(P_MAIN, "Online", "Create an online session or join one, and play with friends.", "Open",
+                       A_ONLINE, 0));
     v.push_back(button(P_MAIN, "Problem report",
                        "A zip file to attach to a bug report: the log of the last two runs, your settings and a short "
                        "system summary. No game files and no saves.",
@@ -1822,6 +1825,9 @@ extern "C" int rt_opt_decide(uint64_t row) {
         return 2;
     case A_QUIT:
         return 3;
+    case A_ONLINE:  // (the in-game menu, on its Online tab: text fields the game's own screen doesn't have)
+        menu_open_online();
+        return 2;
     case A_REPORT: {  // (runtime/problem_report.c) made in the data folder; no file manager over the game
         snprintf(g_report_dir, sizeof g_report_dir, "%s", problem_report_make());
         return 2;
