@@ -1135,9 +1135,25 @@ static void tab_audio(void) {
 // Cheats: what hands the player things or changes the world (the game's own menus keep to options and assists, so
 // these are only here). The same as the developer console commands next to them (rupees: runtime/rupees.c;
 // weather: runtime/weather.c).
+extern "C" bool rupees_set(int32_t count);
+
 static void cheats_options(void) {
     opt_toggle("Infinite rupees", &g_settings.infinite_rupees, false,
                "Keeps your wallet at 9999 rupees, topped up every few seconds.");
+    {
+        static char rupee_buf[16];
+        if (g_settings.infinite_rupees) opt_disable_next();
+        if (opt_text("Set rupees", rupee_buf, sizeof rupee_buf, "",
+                     "Sets your wallet to an exact number of rupees (0 to 999999). Turn off Infinite rupees first.")) {
+            char *end;
+            long n = strtol(rupee_buf, &end, 10);
+            if (rupee_buf[0] && end != rupee_buf && !*end && n >= 0 && n <= 999999 && rupees_set((int32_t)n)) {
+                std::string s = std::to_string(n);
+                memcpy(rupee_buf, s.c_str(), s.size() + 1);
+            } else
+                rupee_buf[0] = 0;
+        }
+    }
     static const char *const weather[WEATHER_COUNT] = {"Automatic", "No rain", "No thunderstorms", "Clear", "Cloudy",
                                                        "Rain", "Heavy rain", "Snow", "Heavy snow", "Thunderstorm",
                                                        "Thunder rain", "Rain in sunshine"};  // (settings.h weather)
