@@ -1965,7 +1965,8 @@ static bool is_loot(const char *n) {
 #define DEATHS 8
 static struct { float pos[3]; int frames; uint32_t before[48]; int nbefore; } g_death[DEATHS];  // (frames: watched)
 #define MINE 32
-static struct { uint32_t lid; uint64_t actor; Watch w; char name[40]; bool sent, listed; uint32_t gid; float pos[3]; } g_mine[MINE];
+// (picked: in this Link's hand now, taken off the list once it is on it)
+static struct { uint32_t lid; uint64_t actor; Watch w; char name[40]; bool sent, listed, picked; uint32_t gid; float pos[3]; } g_mine[MINE];
 #define THEIRS ONLINE_LOOT
 static struct { uint32_t gid; Piece p; bool placed, gone; float pos[3]; } g_theirs[THEIRS];
 static OnlineLoot g_loot_list[ONLINE_LOOT];  // (the host's game: the list)
@@ -2016,6 +2017,22 @@ static bool near_link(const float link[3], const float p[3], float r) {
     return dx * dx + dy * dy + dz * dz < r * r;
 }
 
+// What the local Link carries: his weapon, shield and bow (+0xb98, +0xbb0, +0xbc8) and the weapon's and bow's sheath
+// and quiver (+0x958 of each). A weapon picked up into a free hand is the same actor that lay there, not deleted:
+// a pickup is also one that comes to be in this list
+#define LINK_CARRIED 6
+static void link_carried(uint64_t player, uint64_t out[LINK_CARRIED]) {
+    memset(out, 0, LINK_CARRIED * sizeof *out);
+    for (int k = 0; k < 3; k++) out[k] = linked(player + 0xb98 + 0x18 * k);
+    out[3] = out[0] ? linked(out[0] + 0x958) : 0, out[4] = out[2] ? linked(out[2] + 0x958) : 0;
+}
+
+static bool carries(const uint64_t carried[LINK_CARRIED], uint64_t a) {
+    for (int k = 0; a && k < LINK_CARRIED; k++)
+        if (carried[k] == a) return true;
+    return false;
+}
+
 // the host's game: its list, from what came (the others' adds and takes) and its own
 static void loot_host_take(uint32_t gid) {
     for (int k = 0; k < g_nloot_list; k++)
@@ -2038,6 +2055,8 @@ static void loot_host_add(const OnlineLoot *l) {
 static void loot_update(Cpu *c, uint64_t player, const float link[3], int me, bool host) {
     static int tick;
     if (tick++ % 3) return;
+    uint64_t carried[LINK_CARRIED];
+    link_carried(player, carried);
     // our owned enemies dying: watched for what they drop
     int na = 0;
     bool scanned = false;
@@ -2126,6 +2145,15 @@ static void loot_update(Cpu *c, uint64_t player, const float link[3], int me, bo
             else online_send_loot_add(&l);
             g_mine[k].sent = true;
         }
+        if (there && carries(carried, g_mine[k].actor)) g_mine[k].picked = true;  // (into his free hand: the same actor)
+        if (g_mine[k].picked) {
+            if (!g_mine[k].listed) continue;
+            LOG("[online] loot of ours %s picked up here, into his hand\n", g_mine[k].name);
+            if (host) loot_host_take(g_mine[k].gid);
+            else online_send_loot_take(g_mine[k].gid);
+            g_mine[k].actor = 0;
+            continue;
+        }
         if (!there) {
             // (picked up: a weapon or shield is taken from the others; food, materials: each picks up his own)
             if (g_mine[k].listed && near_link(link, g_mine[k].pos, 4) && !strncmp(g_mine[k].name, "Weapon_", 7)) {
@@ -2147,7 +2175,8 @@ static void loot_update(Cpu *c, uint64_t player, const float link[3], int me, bo
         if (on) g_mine[k].listed = true;
         else if (g_mine[k].listed) {  // (picked up by another)
             LOG("[online] loot of ours %s picked up elsewhere\n", g_mine[k].name);
-            if (alive(g_mine[k].actor, g_mine[k].w)) call(c, FN_DELETE, g_mine[k].actor, 0, 0, 0, 0, 0);
+            if (alive(g_mine[k].actor, g_mine[k].w) && !carries(carried, g_mine[k].actor))  // (never out of his hand)
+                call(c, FN_DELETE, g_mine[k].actor, 0, 0, 0, 0, 0);
             g_mine[k].actor = 0;
         }
     }
@@ -2169,18 +2198,22 @@ static void loot_update(Cpu *c, uint64_t player, const float link[3], int me, bo
         if (g_theirs[t].gone) continue;
         Piece *pc = &g_theirs[t].p;
         bool had = pc->actor != 0;
-        if (had && !alive(pc->actor, pc->w)) {  // (gone here)
-            if (near_link(link, g_theirs[t].pos, 4) && !strncmp(list[j].name, "Weapon_", 7)) {
-                LOG("[online] loot %u (%s) picked up here\n", list[j].gid, list[j].name);
+        bool in_hand = had && alive(pc->actor, pc->w) && carries(carried, pc->actor);  // (into his free hand)
+        if (had && (in_hand || !alive(pc->actor, pc->w))) {  // (gone here, or his now)
+            bool weapon = !strncmp(list[j].name, "Weapon_", 7);
+            if (weapon && (in_hand || near_link(link, g_theirs[t].pos, 4))) {
+                LOG("[online] loot %u (%s) picked up here%s\n", list[j].gid, list[j].name, in_hand ? ", into his hand" : "");
                 if (host) loot_host_take(list[j].gid);
                 else online_send_loot_take(list[j].gid);
-            } else
-                LOG("[online] loot %u (%s) gone here, not picked up (%.1f m from Link)\n", list[j].gid, list[j].name,
+            } else if (near_link(link, g_theirs[t].pos, 4))
+                LOG("[online] loot %u (%s) picked up here (each player picks up his own)\n", list[j].gid, list[j].name);
+            else
+                LOG("[online] loot %u (%s) gone here, %.1f m from Link\n", list[j].gid, list[j].name,
                     sqrtf((g_theirs[t].pos[0] - link[0]) * (g_theirs[t].pos[0] - link[0]) +
                           (g_theirs[t].pos[1] - link[1]) * (g_theirs[t].pos[1] - link[1]) +
                           (g_theirs[t].pos[2] - link[2]) * (g_theirs[t].pos[2] - link[2])));
             g_theirs[t].gone = true;
-            memset(pc, 0, sizeof *pc);
+            memset(pc, 0, sizeof *pc);  // (forgotten, not deleted: in his hand it is his)
             continue;
         }
         if (!had) {
@@ -2214,7 +2247,7 @@ static void loot_update(Cpu *c, uint64_t player, const float link[3], int me, bo
         bool on = false;
         for (int j = 0; j < nl && !on; j++) on = list[j].gid == g_theirs[k].gid;
         if (on) continue;
-        if (g_theirs[k].p.actor && alive(g_theirs[k].p.actor, g_theirs[k].p.w)) {
+        if (g_theirs[k].p.actor && alive(g_theirs[k].p.actor, g_theirs[k].p.w) && !carries(carried, g_theirs[k].p.actor)) {
             LOG("[online] loot %u picked up elsewhere\n", g_theirs[k].gid);
             call(c, FN_DELETE, g_theirs[k].p.actor, 0, 0, 0, 0, 0);
         } else if (g_theirs[k].p.pending) orphan(&g_theirs[k].p);
@@ -2862,6 +2895,16 @@ static void grab_update(Cpu *c, uint64_t player, const OnlinePlayer *pl, int me)
     }
 }
 
+// one of the loot's (ours or the others' made here): the loot list has it, not the ground's PICK (else a pickup of it
+// went twice, and the PICK deleted another of its name within 2 m, a second shield next to it)
+static bool loot_actor(uint64_t a) {
+    for (int k = 0; k < MINE; k++)
+        if (g_mine[k].actor == a) return true;
+    for (int k = 0; k < THEIRS; k++)
+        if (g_theirs[k].p.actor == a) return true;
+    return false;
+}
+
 static void ground_update(Cpu *c, uint64_t player, const float link[3]) {
     static int tick;
     if (tick++ % 6) return;
@@ -2870,12 +2913,14 @@ static void ground_update(Cpu *c, uint64_t player, const float link[3]) {
     float pp[16][3];
     int np = online_take_picks(pn, pp, 16);
     int na = all_actors(*(uint64_t *)(uintptr_t)(player + 0x68), g_actors, MAX_ACTORS);
+    uint64_t carried[LINK_CARRIED];
+    link_carried(player, carried);
     for (int q = 0; q < np; q++)
         for (int k = 0; k < na; k++) {
             char n[48];
             uint64_t a = g_actors[k];
             actor_name_of(a, n);
-            if (strcmp(n, pn[q])) continue;
+            if (strcmp(n, pn[q]) || carries(carried, a) || loot_actor(a)) continue;  // (not his, nor the loot's)
             const float *m = (const float *)(uintptr_t)(a + 0x398);
             float p[3] = {m[3], m[7], m[11]};
             if (!near_link(pp[q], p, 2)) continue;
@@ -2883,10 +2928,19 @@ static void ground_update(Cpu *c, uint64_t player, const float link[3]) {
             call(c, FN_DELETE, a, 0, 0, 0, 0, 0);
             break;
         }
-    // ours, watched: picked up (gone, this Link next to where it lay)
-    uint64_t carried[6] = {0};
-    for (int k = 0; k < 3; k++) carried[k] = linked(player + 0xb98 + 0x18 * k);
-    carried[3] = carried[0] ? linked(carried[0] + 0x958) : 0, carried[4] = carried[2] ? linked(carried[2] + 0x958) : 0;
+    // ours, watched: picked up (gone, this Link next to where it lay; or in his hand now, the same actor)
+    static int wlog;  // (SAVAGEWIND_ONLINE_WEAPONS_LOG=1: every 5 s, the Weapon_* actors within 10 m of Link)
+    if (getenv("SAVAGEWIND_ONLINE_WEAPONS_LOG") && wlog++ % 50 == 0)
+        for (int k = 0; k < na; k++) {
+            char n[48];
+            uint64_t a = g_actors[k];
+            actor_name_of(a, n);
+            const float *m = (const float *)(uintptr_t)(a + 0x398);
+            float p[3] = {m[3], m[7], m[11]};
+            if (strncmp(n, "Weapon_", 7) || !near_link(link, p, 10)) continue;
+            LOG("[online] weapon near Link: %s (actor %llx) at %.2f %.2f %.2f, state %u\n", n, (unsigned long long)a, p[0],
+                p[1], p[2], *(uint8_t *)(uintptr_t)(a + 0x64));
+        }
     // and the enemies we have for real: what they hold, where they are (one of them picks up a weapon lying there, a
     // camp's: the others' games still have it lying where it was, and it would be there twice once it is his loot)
     uint64_t theirs_held[OWNS * 3];
@@ -2911,12 +2965,17 @@ static void ground_update(Cpu *c, uint64_t player, const float link[3]) {
                 g_ground[g].actor = 0;
                 continue;
             }
+            if (carries(carried, g_ground[g].actor)) {  // (picked up into a free hand: the game keeps the same actor)
+                LOG("[online] %s picked up here, into his hand\n", g_ground[g].name);
+                online_send_pick(g_ground[g].name, g_ground[g].pos);
+                g_ground[g].actor = 0;
+                continue;
+            }
             const float *m = (const float *)(uintptr_t)(g_ground[g].actor + 0x398);
             g_ground[g].pos[0] = m[3], g_ground[g].pos[1] = m[7], g_ground[g].pos[2] = m[11];
-            bool held = false, near = near_link(link, g_ground[g].pos, 6);
-            for (int k = 0; k < 6; k++) held |= carried[k] == g_ground[g].actor;
+            bool near = near_link(link, g_ground[g].pos, 6);
             for (int k = 0; k < no && !near; k++) near = near_link(ours_at[k], g_ground[g].pos, 8);
-            if (held || !near) g_ground[g].actor = 0;  // (his now, or far: not watched)
+            if (!near) g_ground[g].actor = 0;  // (far: not watched)
             continue;
         }
         if (near_link(link, g_ground[g].pos, 2.5f)) {
@@ -2935,9 +2994,9 @@ static void ground_update(Cpu *c, uint64_t player, const float link[3]) {
         bool near = near_link(link, p, 4);
         for (int j = 0; j < no && !near; j++) near = near_link(ours_at[j], p, 6);
         if (!near) continue;
-        bool known = false, held = false;
+        if (loot_actor(a)) continue;
+        bool known = false, held = carries(carried, a);
         for (int g = 0; g < GROUND && !known; g++) known = g_ground[g].actor == a;
-        for (int j = 0; j < 6; j++) held |= carried[j] == a;
         for (int j = 0; j < nh; j++) held |= theirs_held[j] == a;
         if (known || held) continue;
         for (int g = 0; g < GROUND; g++)

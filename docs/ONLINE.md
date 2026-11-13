@@ -340,12 +340,17 @@ others, each with the game it came from and its actor's id there; up to 32, the 
 when it changes and every 2 s. Every other game within 150 m makes each one (the item itself, asked for by name)
 where it was, a real item its player can pick up. One gone from a game with that game's Link within 4 m of it was
 picked up: a weapon or shield is taken off the list (LOOT_TAKE), and every game deletes its own of it, the one it
-came from too; food and materials each player picks up his own. The list holds 64 (more stay only where they fell:
-taking one off would have it go everywhere).
+came from too; food and materials each player picks up his own. A weapon picked up into a free hand isn't gone: the
+game keeps the same actor, in Link's hand now (+0xb98, +0xbb0, +0xbc8, their sheaths at +0x958: `link_carried`), so
+one that comes to be there was picked up too; before, those pickups, the most common ones, went unseen and the
+weapon stayed in the other games. No game deletes one this Link carries. The list holds 64 (more stay only where
+they fell: taking one off would have it go everywhere). `SAVAGEWIND_ONLINE_WEAPONS_LOG=1` logs the Weapon_* actors
+within 10 m of Link every 5 s.
 
 Weapons and shields lying in the world (protocol 18): each game watches the Weapon_* actors within 4 m of its Link
-that he doesn't carry; one gone with him within 2.5 m was picked up (PICK: its name, where it was), and the other
-games delete the one of that name within 2 m of it. And those within 6 m of the enemies it has for real: one that
+that he doesn't carry; one gone with him within 2.5 m, or in his hand now, was picked up (PICK: its name, where it
+was), and the other games delete the one of that name within 2 m of it (not one of the loot's: the loot list has
+those, and a PICK of one deleted another loot weapon next to it). And those within 6 m of the enemies it has for real: one that
 comes to be in such an enemy's hand (a camp's weapons lie on the ground until its enemies are alarmed) is a PICK
 too, where it lay. Without it the others' games still had the camp's weapons lying there, and each one came to be
 there twice once it was the dead enemy's loot (the Great Plateau's cliff camp: 3 Bokoblin clubs, 2 shields).
