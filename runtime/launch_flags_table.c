@@ -25,6 +25,7 @@ const LfInfo LF_TABLE[] = {
     {"SAVAGEWIND_CBUF_BASE", LF_KIND_TEXT, LF_GROUP_OTHER, "", ""},
     {"SAVAGEWIND_CC", LF_KIND_TEXT, LF_GROUP_BUILD, "", "The compiler that builds the game code."},
     {"SAVAGEWIND_CHUNK_PASSES", LF_KIND_NUMBER, LF_GROUP_OTHER, "", ""},
+    {"SAVAGEWIND_CLI_OUT_FD", LF_KIND_TEXT, LF_GROUP_INTERNAL, "", "Set by savagewind <command>: where its own output goes after a restart."},
     {"SAVAGEWIND_CLOCK_PROBE", LF_KIND_NUMBER, LF_GROUP_DEV, "", ""},
     {"SAVAGEWIND_CMD_STATS", LF_KIND_SWITCH, LF_GROUP_DEV, "", ""},
     {"SAVAGEWIND_COLOUR_AT", LF_KIND_TEXT, LF_GROUP_DEV, "", ""},
@@ -195,6 +196,7 @@ const LfInfo LF_TABLE[] = {
     {"SAVAGEWIND_LOG_PACKAGED", LF_KIND_TEXT, LF_GROUP_DEV, "", ""},
     {"SAVAGEWIND_LOG_PRESENT", LF_KIND_TEXT, LF_GROUP_DEV, "", ""},
     {"SAVAGEWIND_LOG_PROJ", LF_KIND_SWITCH, LF_GROUP_DEV, "", ""},
+    {"SAVAGEWIND_LOG_QUIET", LF_KIND_TEXT, LF_GROUP_INTERNAL, "", "Set by savagewind <command>: the log is not shown in the terminal."},
     {"SAVAGEWIND_LOG_READBACK", LF_KIND_TEXT, LF_GROUP_DEV, "", ""},
     {"SAVAGEWIND_LOG_RENDER_TEX", LF_KIND_NUMBER, LF_GROUP_DEV, "", ""},
     {"SAVAGEWIND_LOG_RT", LF_KIND_NUMBER, LF_GROUP_DEV, "", ""},
@@ -486,4 +488,4 @@ const LfInfo LF_TABLE[] = {
     {"SAVAGEWIND_XLATE_VERIFY", LF_KIND_TEXT, LF_GROUP_DEV, "", ""},
     {"SAVAGEWIND_YAZ0", LF_KIND_NUMBER, LF_GROUP_OTHER, "", ""},
 };
-const int LF_TABLE_N = 482;
+const int LF_TABLE_N = 484;

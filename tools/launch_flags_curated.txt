@@ -20,6 +20,8 @@ internal SAVAGEWIND_LAUNCH_FLAGS_APPLIED | | Remembers which launch options this
 internal SAVAGEWIND_DATA_ROOT | | Where Savage Wind keeps its files. It is read before launch options can be found.
 internal SAVAGEWIND_LAUNCHER_AUTOUPDATE | | Tests: the start screen starts an offered update at once.
 internal SAVAGEWIND_SETTINGS | | Another settings file. It is read before launch options can be found.
+internal SAVAGEWIND_LOG_QUIET | | Set by savagewind <command>: the log is not shown in the terminal.
+internal SAVAGEWIND_CLI_OUT_FD | | Set by savagewind <command>: where its own output goes after a restart.
 internal SAVAGEWIND_X | | An example name in a code comment.
 
 launcher SAVAGEWIND_NO_LAUNCHER | | Skips the start screen.

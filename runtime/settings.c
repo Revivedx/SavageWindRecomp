@@ -182,10 +182,16 @@ static void handheld_first_setup(void) {
     LOG("[settings] PC handheld: its own settings, the first time\n");
 }
 
+static bool g_loaded;  // (settings_reload: read again)
+
+void settings_reload(void) {
+    g_loaded = false;
+    settings_load();
+}
+
 void settings_load(void) {
-    static bool loaded;
-    if (loaded) return;
-    loaded = true;
+    if (g_loaded) return;
+    g_loaded = true;
     FILE *f = fopen(SETTINGS_FILE, "r");
     if (!f) {
         handheld_first_setup();
@@ -465,9 +471,11 @@ void settings_load(void) {
     LOG("[settings] loaded %s\n", SETTINGS_FILE);
 }
 
-void settings_save(void) {
-    FILE *f = fopen(SETTINGS_FILE, "w");
-    if (!f) { LOG("[settings] cannot write %s\n", SETTINGS_FILE); return; }
+void settings_save(void) { settings_save_to(SETTINGS_FILE); }
+
+bool settings_save_to(const char *path) {
+    FILE *f = fopen(path, "w");
+    if (!f) { LOG("[settings] cannot write %s\n", path); return false; }
     fprintf(f, "# Savage Wind settings (edited from the in-game menu: F1, Esc, or Minus+Plus on a controller)\n");
     fprintf(f, "settings_version = %d\n", SETTINGS_VERSION);
     fprintf(f, "fullscreen = %d\n", g_settings.fullscreen);
@@ -598,6 +606,7 @@ void settings_save(void) {
     fprintf(f, "menu_tip_seen = %d\n", g_settings.menu_tip_seen);
     bind_settings_save(f);
     fclose(f);
+    return true;
 }
 
 // (settings.h GPRESET_*). The upscaler's mode counts only with an upscaler. Original is also the defaults above.

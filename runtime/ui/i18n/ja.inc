@@ -1008,3 +1008,4 @@ T("Type or paste the folder path below instead.", "代わりに下の欄へフ�
 T("Folder path", "フォルダーのパス")
 T("Type or paste path...", "パスを入力または貼り付け...")
 T("Enter the path to your extracted game files folder directly if the system folder picker does not open.", "システムのフォルダー選択が開かない場合は、展開済みのゲームファイルがあるフォルダーのパスを直接入力してください。")
+T("Stopped. Set up again to finish.", "中止しました。完了するにはもう一度セットアップしてください。")

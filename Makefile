@@ -868,6 +868,11 @@ $(B)/test_steam_shortcuts: tools/test_steam_shortcuts.c runtime/steam_shortcuts.
 	$(CC) -O1 -Wall -DSTEAM_VDF_ONLY -c runtime/steam_shortcuts.c -o $@-s.o
 	$(CC) -o $@ $@-t.o $@-s.o
 
+# savagewind <command> (runtime/cli.c): every command against a scratch data root, no game files
+.PHONY: test-cli
+test-cli: all
+	python3 tools/test_cli.py $(EXE)
+
 test-launch-flags: $(B)/test_launch_flags
 	$(B)/test_launch_flags
 	python3 tools/gen_launch_flags.py --check

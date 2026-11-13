@@ -1008,3 +1008,4 @@ T("Type or paste the folder path below instead.", "Typ of plak in plaats daarvan
 T("Folder path", "Mappad")
 T("Type or paste path...", "Typ of plak pad...")
 T("Enter the path to your extracted game files folder directly if the system folder picker does not open.", "Voer rechtstreeks het pad naar uw map met uitgepakte gamebestanden in als de systeemmapkiezer niet opent.")
+T("Stopped. Set up again to finish.", "Gestopt. Stel opnieuw in om af te ronden.")

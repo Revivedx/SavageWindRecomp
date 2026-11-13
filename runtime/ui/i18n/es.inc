@@ -1007,3 +1007,4 @@ T("Type or paste the folder path below instead.", "Escriba o pegue la ruta de la
 T("Folder path", "Ruta de la carpeta")
 T("Type or paste path...", "Escriba o pegue la ruta...")
 T("Enter the path to your extracted game files folder directly if the system folder picker does not open.", "Introduzca directamente la ruta a la carpeta con los archivos extraídos del juego si el selector del sistema no se abre.")
+T("Stopped. Set up again to finish.", "Detenido. Vuelve a configurarlo para terminar.")
