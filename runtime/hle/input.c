@@ -665,6 +665,7 @@ void input_handle_event(const SDL_Event *e) {
     case SDL_EVENT_GAMEPAD_REMOVED:
         if (pad && SDL_GetGamepadID(pad) == e->gdevice.which) {
             vibration_update(pad, false);
+            vibration_pad_closed(pad);
             SDL_CloseGamepad(pad);
             pad = NULL;
             note_family();
