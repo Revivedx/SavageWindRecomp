@@ -436,7 +436,10 @@ arrow's damage being the hit's). Found with `SAVAGEWIND_ONLINE_ELEMENT_TEST=<act
 Great Plateau's Bokoblins: `ExpandFireField` burns too but with its own damage, `ExpandElectricField` killed one of 13
 life, the rods' ice froze nothing, and the arrows (FireArrow, IceArrow, ElectricArrow) made in place do nothing without
 a bow's shot. `SAVAGEWIND_ONLINE_ELEM_HIT_TEST=<s>` sends a hit of 1 with fire, ice and electric to three puppets: in
-the host's game each was set burning, frozen and shocked, and each was left at 12 of 13 life.
+the host's game each was set burning, frozen and shocked, and each was left at 12 of 13 life. And with a real shot:
+the other game's Link, with a bow and fire arrows, shot the host's guard on the Great Plateau's cliff camp tower
+(40 m, at night): his game sent 5 (fire), the host's took 5 of its 13 and set it burning, and its puppet in the
+shooter's game played Burn and BurnEnd.
 
 Their attacks on the others: a player's own life is the same s32 (player +0x848, quarter hearts). When one of the
 host's enemies starts an AS with Attack or Kick in its name, a third of a second later (STRIKE_FRAMES) the local
