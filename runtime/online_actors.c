@@ -2757,6 +2757,7 @@ static void boss_sample(Cpu *c, uint64_t player, OnlinePose *pose) {
             // Enemy_SiteBoss_*_ChildDev, have none, and nearer than it they took both places, so the Blight's own damage
             // wasn't shared while they flew)
             if (!is_boss(n) || !*(uint32_t *)(uintptr_t)(g_actors[k] + ACTOR_HASH_ID)) continue;
+            if (*(int32_t *)(uintptr_t)(g_actors[k] + ENEMY_LIFE) <= 0) continue;  // (beaten: nothing more to share)
             const float *m = (const float *)(uintptr_t)(g_actors[k] + 0x398);
             float d = (m[3] - pm[3]) * (m[3] - pm[3]) + (m[7] - pm[7]) * (m[7] - pm[7]) + (m[11] - pm[11]) * (m[11] - pm[11]);
             int slot = d < best[0] ? 0 : d < best[1] ? 1 : -1;
@@ -2766,6 +2767,13 @@ static void boss_sample(Cpu *c, uint64_t player, OnlinePose *pose) {
             g_boss[slot].a = g_actors[k], g_boss[slot].w = watch(g_actors[k]);
             g_boss[slot].hash = *(uint32_t *)(uintptr_t)(g_actors[k] + ACTOR_HASH_ID);
             snprintf(g_boss[slot].name, sizeof g_boss[slot].name, "%s", n);
+        }
+        // (the tracks of bosses no longer here go: kept, after four bosses (the castle's Blights) the next one, Ganon,
+        // shared the last track with another and its damage was counted from nothing again and again)
+        for (int t = 0; t < BOSS_TRACK; t++) {
+            bool here = false;
+            for (int b = 0; b < ONLINE_BOSSES && !here; b++) here = g_btrack[t].a && g_btrack[t].a == g_boss[b].a;
+            if (!here) memset(&g_btrack[t], 0, sizeof g_btrack[t]);
         }
     }
     {   // (test: SAVAGEWIND_ONLINE_BOSS_HIT=<s>: the nearest boss's life halved that many seconds after it is first here,
@@ -2806,6 +2814,15 @@ static void boss_sample(Cpu *c, uint64_t player, OnlinePose *pose) {
 }
 
 static void boss_update(Cpu *c, const OnlinePlayer *pl, int me) {
+    // (each player's damage as last seen, of the bosses he sends now only: the others' places free, else after four
+    // bosses the next shared the last place with another, seen anew each time, its damage never taken)
+    for (int i = 0; i < ONLINE_MAX; i++)
+        for (int s = 0; s < BOSS_TRACK; s++) {
+            bool sent = false;
+            for (int q = 0; q < ONLINE_BOSSES && !sent && i != me && pl[i].used && pl[i].pose.valid; q++)
+                sent = g_bseen[i][s].hash && pl[i].pose.boss[q].hash == g_bseen[i][s].hash && pl[i].pose.boss[q].name[0];
+            if (!sent) g_bseen[i][s].hash = 0, g_bseen[i][s].seen = 0;
+        }
     for (int k = 0; k < ONLINE_BOSSES; k++) {
         if (!g_boss[k].a || !alive(g_boss[k].a, g_boss[k].w)) continue;
         int32_t *life = (int32_t *)(uintptr_t)(g_boss[k].a + ENEMY_LIFE);
@@ -2816,8 +2833,10 @@ static void boss_update(Cpu *c, const OnlinePlayer *pl, int me) {
                 const char *rn = pl[i].pose.boss[q].name;
                 if (!rn[0] || strcmp(rn, g_boss[k].name) || pl[i].pose.boss[q].hash != g_boss[k].hash) continue;
                 int32_t dmg = pl[i].pose.boss[q].life;
-                int s2 = 0;
-                while (s2 < BOSS_TRACK - 1 && g_bseen[i][s2].hash && g_bseen[i][s2].hash != g_boss[k].hash) s2++;
+                int s2 = 0;  // (its place, else a free one: places of bosses he no longer sends were freed above)
+                while (s2 < BOSS_TRACK && g_bseen[i][s2].hash != g_boss[k].hash) s2++;
+                if (s2 == BOSS_TRACK)
+                    for (s2 = 0; s2 < BOSS_TRACK - 1 && g_bseen[i][s2].hash; s2++) {}
                 if (g_bseen[i][s2].hash != g_boss[k].hash) {  // (first seen: from now on)
                     g_bseen[i][s2].hash = g_boss[k].hash, g_bseen[i][s2].seen = dmg;
                     continue;
