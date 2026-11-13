@@ -73,6 +73,8 @@ typedef struct {
     uint32_t cbuf_dynamic;  // cbufs indexed with a register of unknown value: bind the whole buffer
     uint64_t cbuf_rows[18][4];  // the vec4s of each cbuf read at constant offsets (the first 256; vulkan/mvec.c mvec_still)
     uint32_t cbuf_rows_all;     // cbufs read at an index, or past vec4 255: any of their vec4s may be read
+    uint64_t pos_cbuf_rows[18][4];  // subset of cbuf_rows that can affect vertex position (out.pos / flow)
+    uint32_t pos_cbuf_rows_all;     // subset of cbuf_rows_all that can affect vertex position
     int ntex;
     ShaderTexture tex[64];
     uint32_t attr_mask;     // vertex: input attributes; fragment: input varyings

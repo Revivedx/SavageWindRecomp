@@ -27,17 +27,26 @@
 
 #define MVEC_SLOTS 5
 #define HIST_START (2ull << 20)  // (the Great Plateau uses ~0.3 MB a frame; a fuller frame grows it, losing one frame's motion)
-#define DEDUPE 8192  // copies of one (address, size, generation) shared within a frame
-#define INDEX 32768  // (key, ordinal) -> record of the previous frame; key -> draws so far in the current frame
+#define DEDUPE 4096  // copies of one (address, size, generation) shared within a frame
+#define HCACHE 1024  // alternate per-shader hash slices of a shared constant buffer
+#define CB_L1_SETS 1024  // 2-way set-associative cache (2048 entries) for hot shared (addr, rows, camera) CB hits
+#define ROW_SIG_N 256    // L1 cache for immutable ShaderInfo pos_cbuf_rows signatures within an epoch
+#define LOOSE_H 4096 // hash buckets for prev_match_loose non-instanced records
+#define INDEX 32768  // (key, ordinal) -> record of the previous frame (order mode / stats)
+#define STILL_CB 1024
 
-typedef struct { uint64_t addr, size, gen, hash; const uint64_t *rows; uint32_t off, epoch; } Dedupe;
-typedef struct { uint64_t key; int32_t lo, n; uint32_t epoch; } KeyRange;  // a key's candidates in pkeys (prev_match)
+typedef struct { uint64_t addr, size, gen, hash; const uint64_t *rows; uint32_t off, epoch; uint8_t camera; } CbL1;
+typedef struct { const uint64_t *rows; uint64_t r[4], rsig; uint32_t epoch; uint8_t camera, cam_only; } RowSigEntry;
+typedef struct { uint64_t addr, size, gen, hash, rsig; uint32_t off, epoch; } Dedupe;
+typedef struct { uint64_t addr, size, gen, hash, rows[4]; uint32_t epoch; uint8_t has_rows, camera; } HashCache;
+typedef struct { uint32_t cur_off, prev_off, cur_h, prev_h, epoch; uint8_t ok; } StillCbCache;
+typedef struct { uint64_t key; int32_t lo, n; uint32_t epoch, ord; } KeyRange;  // candidates in pkeys + current-frame ordinal
 typedef struct { uint64_t key; uint32_t ord, epoch; int32_t rec; } Index;  // (an entry of another epoch: empty)
 
 typedef struct {
     VkBuffer buf;
     VmaAllocation mem;
-    uint8_t *ptr;
+    uint8_t *ptr, *stage;  // ptr: host-visible Vulkan buffer; stage: CPU-cached staging copy flushed once per frame
     uint64_t cap, used, grow, seq;  // seq: the last submission that may read it
     uint64_t frame;                 // the frame it holds (~0: none)
     MvecRec *rec;
@@ -49,23 +58,33 @@ typedef struct {
 static Slot slots[MVEC_SLOTS];
 static int cur = -1, prev = -1;  // slots of the frame being recorded and of the one before it
 static uint64_t cur_frame = ~0ull;
+static CbL1 cb_l1[CB_L1_SETS * 2];
+static RowSigEntry row_cache[ROW_SIG_N];
 static Dedupe dedupe[DEDUPE];
-static Index prev_index[INDEX], ord_index[INDEX];
+static HashCache hcache[HCACHE];
+static StillCbCache still_cb[STILL_CB];
+static Index prev_index[INDEX];
 // Bumped each frame: the tables' entries of other frames count as empty (clearing ~1 MB of tables took 0.1-0.2 ms a frame)
-static uint32_t epoch;
-// The previous frame's records sorted by key (pkeys: their keys, pidx: their indices), and which are taken
-static uint64_t *pkeys;
+static uint32_t epoch, loose_epoch;
+static bool loose_ready;
+static int last_rec = -1;
+static const uint64_t *last_cb_rows[MVEC_CB];
+// The previous frame's records grouped by key (pidx: indices in draw order), and which are taken
 static int32_t *pidx;
+static uint32_t *uniq_h, *rec_h;
 static bool *ptaken;
 static int npk, cap_pk;
-// The same by key2 (prev_match_loose), and which records either matching took (by record)
-static uint64_t *pkeys2;
-static int32_t *pidx2;
+static int last_camc;
+static uint64_t cb_align;
+// O(1) bucket chains by key2 (prev_match_loose) for non-instanced previous records, and taken flags
+static int32_t head2[LOOSE_H];
+static uint32_t head2_ep[LOOSE_H];
+static int32_t *next2;
 static bool *rtaken;
 // pkeys' ranges by key: a hash table of at least twice the previous frame's records (the two binary searches a draw took
 // ~0.1 ms a frame)
 static KeyRange *krange;
-static uint32_t krange_mask;
+static uint32_t krange_mask, krange_used;
 
 static struct {  // since the last log line
     uint64_t dist_hist[2][6];  // chosen matches' fingerprint distances: [key with one candidate / several][bucket]
@@ -169,7 +188,7 @@ static bool camera_compute(Slot *s, MvecCamera *c) {
     for (int i = 0; i < ncamc; i++) if (best < 0 || camc[i].n > camc[best].n) best = i;
     if (best < 0 || camc[best].size < 11 * 16) return false;
     float rows[11 * 4];
-    memcpy(rows, s->ptr + camc[best].off, sizeof rows);  // (write-combined memory: one read of 176 bytes)
+    memcpy(rows, s->stage + camc[best].off, sizeof rows);
     memcpy(c->view, rows, 12 * 4);
     memcpy(c->proj, rows + 7 * 4, 16 * 4);
     float v4[16];
@@ -192,6 +211,7 @@ static bool camera_compute(Slot *s, MvecCamera *c) {
 static void camera_finish(Slot *s) {
     if (!s->cam.valid && camera_compute(s, &s->cam)) mstat.cameras++;
     ncamc = 0;
+    last_camc = 0;
 }
 
 
@@ -271,6 +291,8 @@ static void slot_alloc(Slot *s, uint64_t cap) {
     VmaAllocationInfo info;
     VK_CHECK(vmaCreateBuffer(g_vk.vma, &bi, &ai, &s->buf, &s->mem, &info));
     s->ptr = info.pMappedData;
+    free(s->stage);
+    s->stage = malloc(cap);
     s->cap = cap;
 }
 
@@ -305,23 +327,6 @@ static void log_stats(uint64_t frame) {
     memset(&mstat, 0, sizeof mstat);
 }
 
-typedef struct { uint64_t key; int32_t idx; } KeyIdx;
-static KeyIdx *ksort, *ksort2;
-// The previous frame's records' indices sorted by a key (then by draw order), into keys / idx: a radix sort, a byte a
-// pass (stable: a key's records stay in draw order); qsort took ~0.15 ms a frame for each of the two orders
-static void sort_prev_by(const Slot *p, bool second, uint64_t *keys, int32_t *idx) {
-    KeyIdx *a = ksort, *b = ksort2;
-    for (int i = 0; i < npk; i++) a[i] = (KeyIdx){second ? p->rec[i].key2 : p->rec[i].key, i};
-    for (int sh = 0; sh < 64; sh += 8) {
-        uint32_t cnt[257] = {0};
-        for (int i = 0; i < npk; i++) cnt[((a[i].key >> sh) & 0xFF) + 1]++;
-        for (int c = 0; c < 256; c++) cnt[c + 1] += cnt[c];
-        for (int i = 0; i < npk; i++) b[cnt[(a[i].key >> sh) & 0xFF]++] = a[i];
-        KeyIdx *t = a; a = b, b = t;
-    }
-    for (int i = 0; i < npk; i++) keys[i] = a[i].key, idx[i] = a[i].idx;
-}
-
 // SAVAGEWIND_MVEC_MATCH=order: (testing) match by draw order alone
 static bool match_by_order(void) {
     static int on = -1;
@@ -329,11 +334,14 @@ static bool match_by_order(void) {
     return on;
 }
 
-static int32_t prev_match(MvecRec *r);
-
 // A new presented frame: the slot it records into, the previous frame's index
 static void frame_begin(uint64_t frame) {
-    if (cur >= 0) camera_finish(&slots[cur]);
+    last_rec = -1;
+    loose_ready = false;
+    if (cur >= 0) {
+        if (slots[cur].ptr && slots[cur].used) memcpy(slots[cur].ptr, slots[cur].stage, slots[cur].used);
+        camera_finish(&slots[cur]);
+    }
     if (cur >= 0) {
         if (slots[cur].used > mstat.max_used) mstat.max_used = slots[cur].used;
         log_stats(frame);
@@ -345,6 +353,10 @@ static void frame_begin(uint64_t frame) {
     if (mvec_objects_enabled()) {
         vk_wait_seq(s->seq);  // (MVEC_SLOTS frames ago: long done in practice)
         if (!s->buf || s->grow > s->cap) slot_alloc(s, s->grow > HIST_START ? s->grow : HIST_START);
+        if (!cb_align) {
+            cb_align = g_vk.props.limits.minUniformBufferOffsetAlignment;
+            if (cb_align < 16) cb_align = 16;
+        }
     }
     s->used = 0;
     s->nrec = 0;
@@ -353,11 +365,19 @@ static void frame_begin(uint64_t frame) {
     s->cam.valid = false;
     prev = last >= 0 && slots[last].frame + 1 == frame ? last : -1;
     if (++epoch == 0) {  // (wrapped: entries 2^32 frames old would look current)
-        memset(dedupe, 0, sizeof dedupe), memset(prev_index, 0, sizeof prev_index), memset(ord_index, 0, sizeof ord_index);
+        memset(cb_l1, 0, sizeof cb_l1), memset(row_cache, 0, sizeof row_cache), memset(dedupe, 0, sizeof dedupe), memset(hcache, 0, sizeof hcache),
+            memset(still_cb, 0, sizeof still_cb), memset(prev_index, 0, sizeof prev_index);
         if (krange) memset(krange, 0, (krange_mask + 1) * sizeof *krange);
         epoch = 1;
     }
-    if (prev < 0) return;
+    if (prev < 0) {
+        if (!krange) {
+            krange = calloc(4096, sizeof *krange);
+            krange_mask = 4095;
+        }
+        krange_used = 0;
+        return;
+    }
     if (match_by_order() || log_every() > 0)  // (key, ordinal) -> record: draw-order matching and its statistics only
         for (int i = 0; i < slots[prev].nrec; i++) {
             const MvecRec *r = &slots[prev].rec[i];
@@ -365,36 +385,51 @@ static void frame_begin(uint64_t frame) {
             while (prev_index[h].epoch == epoch) h = (h + 1) & (INDEX - 1);
             prev_index[h] = (Index){r->key, r->ord, epoch, i};
         }
-    npk = slots[prev].nrec;  // (by key: each key's candidates together, in draw order)
+    npk = slots[prev].nrec;  // (by key: 2-pass direct bucket scatter into pidx preserving draw order)
     if (npk > cap_pk) {
         cap_pk = npk * 2;
-        pkeys = realloc(pkeys, (size_t)cap_pk * sizeof *pkeys);
         pidx = realloc(pidx, (size_t)cap_pk * sizeof *pidx);
         ptaken = realloc(ptaken, (size_t)cap_pk * sizeof *ptaken);
-        pkeys2 = realloc(pkeys2, (size_t)cap_pk * sizeof *pkeys2);
-        pidx2 = realloc(pidx2, (size_t)cap_pk * sizeof *pidx2);
+        next2 = realloc(next2, (size_t)cap_pk * sizeof *next2);
         rtaken = realloc(rtaken, (size_t)cap_pk * sizeof *rtaken);
-        ksort = realloc(ksort, (size_t)cap_pk * sizeof *ksort);
-        ksort2 = realloc(ksort2, (size_t)cap_pk * sizeof *ksort2);
+        uniq_h = realloc(uniq_h, (size_t)cap_pk * sizeof *uniq_h);
+        rec_h = realloc(rec_h, (size_t)cap_pk * sizeof *rec_h);
     }
-    sort_prev_by(&slots[prev], false, pkeys, pidx);
-    uint32_t want = 1024;
-    while (want < 2u * (uint32_t)npk) want *= 2;
-    if (want > krange_mask + 1) {
+    uint32_t want = 4096;
+    while (want < 4u * (uint32_t)(npk + 512)) want *= 2;
+    if (!krange || want > krange_mask + 1) {
         free(krange);
         krange = calloc(want, sizeof *krange);
         krange_mask = want - 1;
     }
-    for (int i = 0; i < npk;) {
-        int j = i + 1;
-        while (j < npk && pkeys[j] == pkeys[i]) j++;
-        uint32_t h = (uint32_t)(pkeys[i] >> 40) & krange_mask;
-        while (krange[h].epoch == epoch) h = (h + 1) & krange_mask;
-        krange[h] = (KeyRange){pkeys[i], i, j - i, epoch};
-        i = j;
+    krange_used = 0;
+    int nuniq = 0;
+    const MvecRec *prec = slots[prev].rec;
+    for (int i = 0; i < npk; i++) {
+        uint64_t key = prec[i].key;
+        uint32_t h = (uint32_t)(key >> 40) & krange_mask;
+        while (krange[h].epoch == epoch && krange[h].key != key) h = (h + 1) & krange_mask;
+        if (krange[h].epoch != epoch) {
+            krange[h] = (KeyRange){key, 0, 1, epoch, 0};
+            uniq_h[nuniq++] = h;
+            krange_used++;
+        } else {
+            krange[h].n++;
+        }
+        rec_h[i] = h;
+    }
+    int32_t off = 0;
+    for (int u = 0; u < nuniq; u++) {
+        uint32_t h = uniq_h[u];
+        krange[h].lo = off;
+        off += krange[h].n;
+        krange[h].n = 0;
+    }
+    for (int i = 0; i < npk; i++) {
+        uint32_t h = rec_h[i];
+        pidx[krange[h].lo + krange[h].n++] = i;
     }
     memset(ptaken, 0, (size_t)npk * sizeof *ptaken);
-    sort_prev_by(&slots[prev], true, pkeys2, pidx2);
     memset(rtaken, 0, (size_t)npk * sizeof *rtaken);
 }
 
@@ -419,18 +454,49 @@ static float fingerprint_distance(const MvecRec *a, const MvecRec *b) {
 // order and looks MATCH_WINDOW places either way (a key can have hundreds of draws: comparing all of them took ~40 us a
 // draw), and stops at an identical fingerprint (a still object, the most common case).
 #define MATCH_WINDOW 24
-static int32_t prev_match(MvecRec *r) {
-    if (prev < 0 || !npk) return -1;
-    uint32_t h = (uint32_t)(r->key >> 40) & krange_mask;
-    while (krange[h].epoch == epoch && krange[h].key != r->key) h = (h + 1) & krange_mask;
-    if (krange[h].epoch != epoch) return -1;
-    int lo = krange[h].lo, end = lo + krange[h].n;  // (end: the key's last candidate + 1)
+static uint32_t krange_probe(uint64_t key, int32_t *lo, int32_t *end) {
+    if (!krange) { *lo = *end = 0; return 0; }
+    uint32_t h = (uint32_t)(key >> 40) & krange_mask;
+    for (uint32_t step = 0; step <= krange_mask; step++, h = (h + 1) & krange_mask) {
+        if (krange[h].epoch != epoch) {
+            *lo = *end = 0;
+            if (krange_used < (krange_mask + 1) * 3 / 4) {
+                krange[h] = (KeyRange){key, 0, 0, epoch, 1};
+                krange_used++;
+            }
+            return 0;
+        }
+        if (krange[h].key == key) {
+            *lo = krange[h].lo;
+            *end = krange[h].lo + krange[h].n;
+            return krange[h].ord++;
+        }
+    }
+    *lo = *end = 0;
+    return 0;
+}
+
+static int32_t prev_match(MvecRec *r, int lo, int end) {
+    if (prev < 0 || !npk || lo >= end) return -1;
+    static float limit = -1;  // SAVAGEWIND_MVEC_MATCH_LIMIT: the largest fingerprint distance of a match (default 0.2)
+    if (limit < 0) limit = getenv("SAVAGEWIND_MVEC_MATCH_LIMIT") ? (float)atof(getenv("SAVAGEWIND_MVEC_MATCH_LIMIT")) : 0.2f;
     int ncand = end - lo, at = lo + (int)r->ord;
-    if (!ncand) return -1;
     if (at >= end) at = end - 1;
+    if (!ptaken[at] && limit > 0.0f) {
+        int32_t pi = pidx[at];
+        const MvecRec *q = &slots[prev].rec[pi];
+        if (!rtaken[pi] && q->ninst == r->ninst && q->nfeat && r->nfeat == q->nfeat &&
+            !memcmp(r->feat, q->feat, (size_t)r->nfeat * sizeof r->feat[0])) {
+            ptaken[at] = true;
+            rtaken[pi] = true;
+            r->dist = 0;
+            if (log_every() > 0) mstat.dist_hist[ncand > 1][0]++;
+            return pi;
+        }
+    }
     int best = -1;
     float bd = 2;
-    for (int k = 0; k <= 2 * MATCH_WINDOW && bd > 0; k++) {  // (at, at + 1, at - 1, at + 2, ...)
+    for (int k = 0; k <= 2 * MATCH_WINDOW && bd > 1e-6f; k++) {  // (at, at + 1, at - 1, at + 2, ...)
         int i = at + (k & 1 ? (k + 1) / 2 : -(k / 2));
         if (i < lo || i >= end || ptaken[i] || rtaken[pidx[i]]) continue;
         if (slots[prev].rec[pidx[i]].ninst != r->ninst) continue;
@@ -438,17 +504,17 @@ static int32_t prev_match(MvecRec *r) {
         if (d < bd) bd = d, best = i;
     }
     if (best < 0) return -1;
-    static float limit = -1;  // SAVAGEWIND_MVEC_MATCH_LIMIT: the largest fingerprint distance of a match (default 0.2)
-    if (limit < 0) limit = getenv("SAVAGEWIND_MVEC_MATCH_LIMIT") ? (float)atof(getenv("SAVAGEWIND_MVEC_MATCH_LIMIT")) : 0.2f;
     float max_d = r->ninst ? fminf(limit, 0.05f) : limit;
     if (bd >= max_d) { mstat.dist_hist[ncand > 1][5]++; return -1; }  // (a new object: the camera's vector)
     ptaken[best] = true;
     rtaken[pidx[best]] = true;
     r->dist = bd;
-    static const float edges[5] = {1e-4f, 1e-3f, 0.01f, 0.05f, 0.2f};
-    int bucket = 0;
-    while (bucket < 5 && bd >= edges[bucket]) bucket++;
-    mstat.dist_hist[ncand > 1][bucket]++;
+    if (log_every() > 0) {
+        static const float edges[5] = {1e-4f, 1e-3f, 0.01f, 0.05f, 0.2f};
+        int bucket = 0;
+        while (bucket < 5 && bd >= edges[bucket]) bucket++;
+        mstat.dist_hist[ncand > 1][bucket]++;
+    }
     return pidx[best];
 }
 
@@ -459,20 +525,38 @@ static int32_t prev_match(MvecRec *r) {
 // Their vertices hold where they are; the motion is in the constants, which any of them gives the same.
 static int32_t prev_match_loose(MvecRec *r) {
     if (prev < 0 || !npk) return -1;
-    int lo = 0, hi = npk;
-    while (lo < hi) { int m = (lo + hi) / 2; if (pkeys2[m] < r->key2) lo = m + 1; else hi = m; }
+    if (!loose_ready) {
+        loose_ready = true;
+        if (++loose_epoch == 0) {
+            memset(head2_ep, 0, sizeof head2_ep);
+            loose_epoch = 1;
+        }
+        const MvecRec *prec = slots[prev].rec;
+        for (int i = npk - 1; i >= 0; i--) {
+            if (prec[i].ninst) continue;
+            uint32_t h = (uint32_t)(prec[i].key2 >> 40) & (LOOSE_H - 1);
+            next2[i] = (head2_ep[h] == loose_epoch) ? head2[h] : -1;
+            head2[h] = i;
+            head2_ep[h] = loose_epoch;
+        }
+    }
+    uint32_t h = (uint32_t)(r->key2 >> 40) & (LOOSE_H - 1);
+    if (head2_ep[h] != loose_epoch) return -1;
     int best = -1;
     float bd = 0.01f;
-    for (int i = lo, n = 0; i < npk && pkeys2[i] == r->key2 && n < 64 && bd > 0; i++, n++) {
-        if (rtaken[pidx2[i]]) continue;
-        float d = fingerprint_distance(r, &slots[prev].rec[pidx2[i]]);
+    const MvecRec *prec = slots[prev].rec;
+    for (int i = head2[h], n = 0; i >= 0 && n < 64 && bd > 1e-6f; i = next2[i]) {
+        if (prec[i].key2 != r->key2) continue;
+        n++;
+        if (rtaken[i]) continue;
+        float d = fingerprint_distance(r, &prec[i]);
         if (d < bd) bd = d, best = i;
     }
     if (best < 0) return -1;
-    rtaken[pidx2[best]] = true;
+    rtaken[best] = true;
     r->dist = bd;
     mstat.loose++;
-    return pidx2[best];
+    return best;
 }
 
 static int32_t prev_lookup(uint64_t key, uint32_t ord) {
@@ -480,14 +564,6 @@ static int32_t prev_lookup(uint64_t key, uint32_t ord) {
     for (uint32_t h = slot_hash(key, ord);; h = (h + 1) & (INDEX - 1)) {
         if (prev_index[h].epoch != epoch) return -1;
         if (prev_index[h].key == key && prev_index[h].ord == ord) return prev_index[h].rec;
-    }
-}
-
-// The ordinal of this draw among the frame's draws with its key (counts kept in ord_index, ord = count so far)
-static uint32_t next_ordinal(uint64_t key) {
-    for (uint32_t h = slot_hash(key, 0);; h = (h + 1) & (INDEX - 1)) {
-        if (ord_index[h].epoch != epoch) { ord_index[h] = (Index){key, 1, epoch, 0}; return 0; }
-        if (ord_index[h].key == key) return ord_index[h].ord++;
     }
 }
 
@@ -505,30 +581,75 @@ static uint64_t content_hash(const uint8_t *p, uint64_t n) {
 static uint64_t cb_hash(const uint8_t *p, uint64_t size, const uint64_t *rows, bool camera) {
     if (!rows) return camera ? (size > 58 * 4 ? content_hash(p + 58 * 4, size - 58 * 4) : 0) : content_hash(p, size);
     uint64_t h = 0, n = size / 16, a, b;
-    for (uint32_t w = 0; w < 4; w++)
-        for (uint64_t m = rows[w]; m; m &= m - 1) {
+    for (uint32_t w = 0; w < 4 && w * 64 < n; w++) {
+        uint64_t m = (w == 0 && camera) ? (rows[0] & ~((1ULL << 14) - 1)) : rows[w];
+        for (; m; m &= m - 1) {
             uint32_t r = w * 64 + (uint32_t)__builtin_ctzll(m);
             if (r >= n) break;
-            if (camera && r < 14) continue;
             memcpy(&a, p + r * 16, 8), memcpy(&b, p + r * 16 + 8, 8);
             if (camera && r == 14) a = 0;
             h = mix(mix(h, a ^ r), b);
         }
+    }
     return h;
 }
 
-// Copies [addr, addr + size) of guest memory into the current slot (shared with an earlier copy of the same range in
-// the same generation); UINT32_MAX when the slot is full. *hash: cb_hash's.
-static uint32_t copy_in(uint64_t addr, uint64_t size, uint64_t gen, bool share, const uint64_t *rows, bool camera, uint64_t *hash) {
+static uint64_t rows_sig(const uint64_t *rows, bool camera, uint64_t r[4], bool *cam_only) {
+    if (!rows) {
+        r[0] = r[1] = r[2] = r[3] = 0;
+        *cam_only = false;
+        return (uint64_t)camera;
+    }
+    uint32_t idx = (uint32_t)((((uintptr_t)rows ^ (uint64_t)camera) * 0x9e3779b97f4a7c15ull) >> 56) & (ROW_SIG_N - 1);
+    RowSigEntry *rc = &row_cache[idx];
+    if (rc->epoch == epoch && rc->rows == rows && rc->camera == (uint8_t)camera) {
+        memcpy(r, rc->r, 32);
+        *cam_only = rc->cam_only != 0;
+        return rc->rsig;
+    }
+    memcpy(r, rows, 32);
+    *cam_only = camera && r[0] < (1ULL << 14) && !(r[1] | r[2] | r[3]);
+    uint64_t rsig = *cam_only ? 0x10000ull : (mix(mix(r[0], r[1]), mix(r[2], r[3])) ^ 2ull ^ (uint64_t)camera);
+    rc->rows = rows;
+    memcpy(rc->r, r, 32);
+    rc->rsig = rsig;
+    rc->epoch = epoch;
+    rc->camera = (uint8_t)camera;
+    rc->cam_only = (uint8_t)*cam_only;
+    return rsig;
+}
+
+static uint64_t cached_cb_hash(uint64_t addr, uint64_t size, uint64_t gen, const uint64_t *rows, bool camera, uint64_t rsig, const uint64_t r[4]) {
+    uint32_t h = (uint32_t)(mix(mix(addr, size), mix(gen, rsig)) >> 40) & (HCACHE - 1);
+    HashCache *e = &hcache[h];
+    if (e->epoch == epoch && e->addr == addr && e->size == size && e->gen == gen &&
+        e->has_rows == (rows != NULL) && e->camera == (uint8_t)camera &&
+        (!rows || (e->rows[0] == r[0] && e->rows[1] == r[1] && e->rows[2] == r[2] && e->rows[3] == r[3])))
+        return e->hash;
+    uint64_t ch = cb_hash((const uint8_t *)(uintptr_t)addr, size, rows, camera);
+    *e = (HashCache){addr, size, gen, ch, {r[0], r[1], r[2], r[3]}, epoch, rows != NULL, (uint8_t)camera};
+    return ch;
+}
+
+static inline void cb_l1_insert(uint32_t set, uint64_t addr, uint64_t size, uint64_t gen, uint64_t hash, const uint64_t *rows, uint32_t off, uint8_t camera) {
+    CbL1 *w = &cb_l1[set * 2];
+    w[1] = w[0];
+    w[0] = (CbL1){addr, size, gen, hash, rows, off, epoch, camera};
+}
+
+static __attribute__((noinline)) uint32_t copy_in_miss(uint64_t addr, uint64_t size, uint64_t gen, bool share, const uint64_t *rows, bool camera, uint64_t *hash, uint32_t set) {
     Slot *s = &slots[cur];
+    uint64_t r[4], rsig = 0;
+    bool cam_only = false;
+    if (share) rsig = rows_sig(rows, camera, r, &cam_only);
     uint32_t h = (uint32_t)(mix(mix(addr, size), gen) >> 40) & (DEDUPE - 1);
     if (share && dedupe[h].epoch == epoch && dedupe[h].addr == addr && dedupe[h].size == size && dedupe[h].gen == gen) {
         mstat.dedupe_hits++;
-        *hash = dedupe[h].rows == rows ? dedupe[h].hash : cb_hash((const uint8_t *)(uintptr_t)addr, size, rows, camera);
+        *hash = cam_only ? 0 : (dedupe[h].rsig == rsig ? dedupe[h].hash : cached_cb_hash(addr, size, gen, rows, camera, rsig, r));
+        cb_l1_insert(set, addr, size, gen, *hash, rows, dedupe[h].off, (uint8_t)camera);
         return dedupe[h].off;
     }
-    uint64_t align = g_vk.props.limits.minUniformBufferOffsetAlignment;
-    if (align < 16) align = 16;
+    uint64_t align = cb_align ? cb_align : 16;
     uint64_t off = (s->used + align - 1) & ~(align - 1);
     if (off + size > s->cap) {
         s->full = true;
@@ -536,12 +657,34 @@ static uint32_t copy_in(uint64_t addr, uint64_t size, uint64_t gen, bool share, 
         if (want > s->grow) s->grow = want;
         return UINT32_MAX;
     }
-    memcpy(s->ptr + off, (const void *)(uintptr_t)addr, size);
-    *hash = cb_hash((const uint8_t *)(uintptr_t)addr, size, rows, camera);
+    memcpy(s->stage + off, (const void *)(uintptr_t)addr, size);
+    *hash = cam_only ? 0 : cb_hash(s->stage + off, size, rows, camera);
     mstat.copied += size;
     s->used = off + size;
-    if (share) dedupe[h] = (Dedupe){addr, size, gen, *hash, rows, (uint32_t)off, epoch};
+    if (share) {
+        dedupe[h] = (Dedupe){addr, size, gen, *hash, rsig, (uint32_t)off, epoch};
+        cb_l1_insert(set, addr, size, gen, *hash, rows, (uint32_t)off, (uint8_t)camera);
+    }
     return (uint32_t)off;
+}
+
+// Copies [addr, addr + size) of guest memory into the current slot (shared with an earlier copy of the same range in
+// the same generation); UINT32_MAX when the slot is full. *hash: cb_hash's.
+static inline uint32_t copy_in(uint64_t addr, uint64_t size, uint64_t gen, bool share, const uint64_t *rows, bool camera, uint64_t *hash) {
+    uint32_t set = 0;
+    if (share) {
+        set = (uint32_t)((((addr >> 4) ^ (addr >> 15) ^ (uintptr_t)rows ^ (uint64_t)camera) * 0x9e3779b97f4a7c15ull) >> 54) & (CB_L1_SETS - 1);
+        const CbL1 *w = &cb_l1[set * 2];
+        for (int i = 0; i < 2; i++) {
+            if (w[i].epoch == epoch && w[i].addr == addr && w[i].size == size && w[i].gen == gen &&
+                w[i].rows == rows && w[i].camera == (uint8_t)camera) {
+                mstat.dedupe_hits++;
+                *hash = w[i].hash;
+                return w[i].off;
+            }
+        }
+    }
+    return copy_in_miss(addr, size, gen, share, rows, camera, hash, set);
 }
 
 int mvec_record(const MvecDrawIn *d) {
@@ -555,7 +698,11 @@ int mvec_record(const MvecDrawIn *d) {
         s->rec = realloc(s->rec, (size_t)s->cap_rec * sizeof *s->rec);
     }
     MvecRec *r = &s->rec[s->nrec];
-    memset(r, 0, sizeof *r);
+    r->dist = 0;
+    r->nfeat = 0;
+    r->ncb = 0;
+    r->ninst = 0;
+    r->hash = 0;
     uint64_t key = mix(mix(mix(d->vs, d->fs), d->iaddr), ((uint64_t)d->count << 32) | d->first);
     key = mix(key, (uint32_t)d->base_vertex);
     uint64_t key2 = mix(mix(d->vs, d->fs), ~0ull);
@@ -577,6 +724,13 @@ int mvec_record(const MvecDrawIn *d) {
         r->inst_size[r->ninst++] = (uint32_t)size;
         mstat.inst_bytes += size;
     }
+    int32_t lo = 0, end = 0;
+    r->key = key;
+    r->key2 = key2;
+    r->ord = krange_probe(key, &lo, &end);
+    int at = lo + (int)r->ord;
+    if (at >= end) at = end - 1;
+    if (lo < end) __builtin_prefetch(&pidx[at], 0, 1);
     for (int k = 0; k < d->ncb && r->ncb < MVEC_CB; k++) {
         if (!d->cb[k].addr || !d->cb[k].size) continue;
         uint64_t ch;
@@ -584,24 +738,26 @@ int mvec_record(const MvecDrawIn *d) {
         if (off == UINT32_MAX) goto full;
         r->hash = mix(r->hash, mix(d->cb[k].slot, ch));
         if (d->cb[k].slot == 3) {  // (camera block candidates: camera_finish)
-            int i = 0;
-            while (i < ncamc && camc[i].addr != d->cb[k].addr) i++;
-            if (i == ncamc && ncamc < CAMC) camc[ncamc++] = (typeof(camc[0])){d->cb[k].addr, off, (uint32_t)d->cb[k].size, 0};
-            if (i < ncamc) camc[i].n++;
+            if (ncamc && camc[last_camc].addr == d->cb[k].addr) {
+                camc[last_camc].n++;
+            } else {
+                int i = 0;
+                while (i < ncamc && camc[i].addr != d->cb[k].addr) i++;
+                if (i == ncamc && ncamc < CAMC) camc[ncamc++] = (typeof(camc[0])){d->cb[k].addr, off, (uint32_t)d->cb[k].size, 0};
+                if (i < ncamc) camc[i].n++, last_camc = i;
+            }
+        } else if (d->cb[k].size >= 48 && r->nfeat + 12 <= MVEC_FEAT) {
+            memcpy(&r->feat[r->nfeat], s->stage + off, 48);
+            r->nfeat += 12;
         }
+        last_cb_rows[r->ncb] = d->cb[k].rows;
         r->cb_slot[r->ncb] = d->cb[k].slot;
         r->cb_off[r->ncb] = off;
+        r->cb_hash[r->ncb] = (uint32_t)(ch ^ (ch >> 32));
         r->cb_size[r->ncb++] = (uint32_t)d->cb[k].size;
         mstat.cb_bytes += d->cb[k].size;
     }
-    // the fingerprint, from guest memory as it is now; not from the camera block (slot 3), which the scene's draws share:
-    // it tells no draw apart, and as the camera moves no draw's fingerprint was equal to its match's any more, so the
-    // search never stopped early (0.9 ms a frame of matching)
-    for (int k = 0; k < d->ncb && r->nfeat + 12 <= MVEC_FEAT; k++) {
-        if (!d->cb[k].addr || d->cb[k].size < 48 || d->cb[k].slot == 3) continue;
-        memcpy(&r->feat[r->nfeat], (const void *)(uintptr_t)d->cb[k].addr, 48);
-        r->nfeat += 12;
-    }
+    if (lo < end && prev >= 0 && at >= 0) __builtin_prefetch(&slots[prev].rec[pidx[at]], 0, 1);
     if (r->ninst > 0 && r->nfeat + 4 <= MVEC_FEAT) {
         const MvecStream *m = &d->stream[r->inst_stream[0]];
         uint64_t ioff = m->divisor ? (uint64_t)(d->base_inst / m->divisor) * m->stride : 0;
@@ -614,11 +770,8 @@ int mvec_record(const MvecDrawIn *d) {
             r->nfeat += (uint8_t)nf;
         }
     }
-    r->key = key;
-    r->key2 = key2;
-    r->ord = next_ordinal(key);
     bool by_order = match_by_order();
-    r->prev = by_order ? prev_lookup(key, r->ord) : prev_match(r);
+    r->prev = by_order ? prev_lookup(key, r->ord) : prev_match(r, lo, end);
     static int loose = -1;  // SAVAGEWIND_MVEC_LOOSE=0: (testing) no prev_match_loose
     if (loose < 0) loose = !getenv("SAVAGEWIND_MVEC_LOOSE") || atoi(getenv("SAVAGEWIND_MVEC_LOOSE")) != 0;
     if (r->prev < 0 && !by_order && loose && !r->ninst) r->prev = prev_match_loose(r);
@@ -634,14 +787,16 @@ int mvec_record(const MvecDrawIn *d) {
                 if (dx * dx + dy * dy + dz * dz > 1e-4f) { if (m) mstat.moved_fp++; else mstat.moved_order++; }
             }
         }
+        if (r->prev >= 0 && r->prev != po) mstat.not_ordinal++;
     }
-    if (log_every() > 0 && r->prev >= 0 && r->prev != prev_lookup(key, r->ord)) mstat.not_ordinal++;
     if (r->ord) mstat.repeated++;
     if (r->prev >= 0) mstat.matched++;
     else mstat.unmatched++;
     s->seq = vk_pending_seq();
+    last_rec = s->nrec;
     return s->nrec++;
 full:
+    last_rec = -1;
     s->used = used_before;
     mstat.dropped++;
     return -1;
@@ -649,12 +804,58 @@ full:
 
 void mvec_drawn(void) { mstat.motion++; }
 
+// Shared environment UBOs (512..2047 B, not bone palettes and not slot 3 camera) often have a single slowly ticking
+// global row >= 16 (e.g. time/wind accumulator drifting < 0.002/frame) referenced statically in vertex shaders while
+// vertices move < sub-pixel; skip redundant double-VS on such draws while keeping full motion on actor/world matrices,
+// bone palettes (>= 2048 B), instanced streams, and active wind/material rows.
+static bool still_cb_ok(const MvecRec *r, const MvecRec *p, int k) {
+    if (r->cb_slot[k] != p->cb_slot[k] || r->cb_size[k] != p->cb_size[k]) return false;
+    if (r->cb_slot[k] == 3 || r->cb_size[k] < 512 || r->cb_size[k] >= 2048) return false;
+    if (!slots[cur].stage || !slots[prev].stage) return false;
+    uint32_t co = r->cb_off[k], po = p->cb_off[k], ch = r->cb_hash[k], ph = p->cb_hash[k];
+    uint32_t h = (uint32_t)(mix(mix(co, po), mix(ch, ph)) >> 40) & (STILL_CB - 1);
+    StillCbCache *e = &still_cb[h];
+    if (e->epoch == epoch && e->cur_off == co && e->prev_off == po && e->cur_h == ch && e->prev_h == ph)
+        return e->ok != 0;
+    const uint8_t *cb = slots[cur].stage + co;
+    const uint8_t *pb = slots[prev].stage + po;
+    const uint64_t *rows = last_cb_rows[k];
+    uint32_t nrow = r->cb_size[k] / 16;
+    int ndiff = 0;
+    bool ok = true;
+    for (uint32_t w = 0; w < 4 && ok; w++) {
+        uint64_t m = rows ? rows[w] : ~0ull;
+        for (; m; m &= m - 1) {
+            uint32_t row = w * 64 + (uint32_t)__builtin_ctzll(m);
+            if (row >= nrow) break;
+            if (memcmp(cb + row * 16, pb + row * 16, 16) == 0) continue;
+            if (row < 16 || ++ndiff > 1) { ok = false; break; }
+            float cf[4], pf[4];
+            memcpy(cf, cb + row * 16, 16);
+            memcpy(pf, pb + row * 16, 16);
+            for (int j = 0; j < 4; j++) {
+                if (!isfinite(cf[j]) || !isfinite(pf[j]) || fabsf(cf[j] - pf[j]) >= 0.002f) {
+                    ok = false; break;
+                }
+            }
+        }
+    }
+    *e = (StillCbCache){co, po, ch, ph, epoch, (uint8_t)ok};
+    return ok;
+}
+
 bool mvec_still(int rec) {
     static int on = -1;  // SAVAGEWIND_MVEC_STILL=0: (testing) every matched draw with its motion program
     if (on < 0) on = !getenv("SAVAGEWIND_MVEC_STILL") || atoi(getenv("SAVAGEWIND_MVEC_STILL")) != 0;
     if (!on || cur < 0 || prev < 0 || rec < 0 || rec >= slots[cur].nrec) return false;
     const MvecRec *r = &slots[cur].rec[rec];
-    if (r->prev < 0 || slots[prev].rec[r->prev].hash != r->hash) return false;
+    if (r->prev < 0) return false;
+    const MvecRec *p = &slots[prev].rec[r->prev];
+    if (p->hash != r->hash) {
+        if (rec != last_rec || r->ninst || p->ninst || r->ncb != p->ncb) return false;
+        for (int k = 0; k < r->ncb; k++)
+            if (r->cb_hash[k] != p->cb_hash[k] && !still_cb_ok(r, p, k)) return false;
+    }
     mstat.still++;
     return true;
 }
@@ -702,6 +903,7 @@ float mvec_view_enabled(void) {
 
 bool mvec_reprojection(float m[16], float jitter[2]) {
     if (cur < 0 || prev < 0 || !slots[prev].cam.valid) return false;
+    if (slots[cur].frame != slots[prev].frame + 1) return false;
     MvecCamera now;
     if (slots[cur].cam.valid) now = slots[cur].cam;
     else if (!camera_compute(&slots[cur], &now)) return false;
@@ -714,12 +916,20 @@ bool mvec_reprojection(float m[16], float jitter[2]) {
     double vp4[16] = {0}, vc4[16] = {0}, rel[16], pp[16], pcur[16], pinv[16], t[16], md[16];
     for (int i = 0; i < 12; i++) vp4[i] = pc_->view[i], vc4[i] = now.view[i];
     vp4[15] = vc4[15] = 1;
-    double vci[16] = {0};  // (the inverse of a rigid view: transposed rotation, minus it times the translation)
+    double vci[16] = {0}, vpi[16] = {0};  // (the inverse of a rigid view: transposed rotation, minus it times the translation)
     for (int r = 0; r < 3; r++) {
-        for (int c = 0; c < 3; c++) vci[r * 4 + c] = vc4[c * 4 + r];
+        for (int c = 0; c < 3; c++) {
+            vci[r * 4 + c] = vc4[c * 4 + r];
+            vpi[r * 4 + c] = vp4[c * 4 + r];
+        }
         vci[r * 4 + 3] = -(vc4[r] * vc4[3] + vc4[4 + r] * vc4[7] + vc4[8 + r] * vc4[11]);
+        vpi[r * 4 + 3] = -(vp4[r] * vp4[3] + vp4[4 + r] * vp4[7] + vp4[8 + r] * vp4[11]);
     }
-    vci[15] = 1;
+    vci[15] = vpi[15] = 1;
+    double dx = vci[3] - vpi[3], dy = vci[7] - vpi[7], dz = vci[11] - vpi[11];
+    double dp = dx * dx + dy * dy + dz * dz;
+    double dot = vc4[2] * vp4[2] + vc4[6] * vp4[6] + vc4[10] * vp4[10];
+    if (dp > 100.0 || dot < 0.82) return false;  // a cut: camera moved > 10 m or turned > 35 degrees
     for (int i = 0; i < 16; i++) pp[i] = pc_->proj[i], pcur[i] = now.proj[i];
     if (!mat4_inverse_d(pcur, pinv)) return false;
 #define MUL_D(a, b, o) for (int r = 0; r < 4; r++) for (int c = 0; c < 4; c++) \

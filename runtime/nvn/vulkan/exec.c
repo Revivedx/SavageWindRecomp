@@ -2570,20 +2570,22 @@ static void clear(int index, int kind, const void *color, uint32_t mask, bool de
 
 // ================================================================== programs
 #define MAX_BIND 96
-typedef struct {
+typedef struct Prog {
     ShaderInfo *vi, *fi;
     uint64_t code[2], cmax[2];  // translation inputs (copied: translated on the translator thread)
     int8_t ui;                  // vertex shader of the game's layouts (freecam_hud_drop): 0 unknown, 1 yes, -1 no
     ShaderKey vkey, fkey;
+    struct Prog *mvec_var_p[3];  // cached motion variants on the base program: [0]=still, [1]=motion, [2]=mask
+    uint8_t mvec_var_rt[3];
+    bool vs_uses_vid;
+    uint8_t fs_gather;  // (up_fix) the fragment stage's first gathered texture: 0 not looked yet, 1 none, 2 + its slot
+    _Atomic int state;  // 0 building, 1 ready, 2 failed
     VkShaderModule vs, fs;
     VkBindingInfo binds[MAX_BIND];
     int nbinds;
     VkDescriptorSetLayout set_layout[2];
     VkPipelineLayout layout;
     struct StageBuildRef { void *v, *f; } stages;  // (the ProgBuild's StageBuilds: graphics pipeline libraries)
-    bool vs_uses_vid;
-    uint8_t fs_gather;  // (up_fix) the fragment stage's first gathered texture: 0 not looked yet, 1 none, 2 + its slot
-    _Atomic int state;  // 0 building, 1 ready, 2 failed
 } Prog;
 
 // The push constants of a motion vector program (mvec.c MVEC_PUSH: the history offsets of the previous frame's
@@ -7505,6 +7507,32 @@ static void wait_built(_Atomic int *state) {  // (0 building: until built or fai
     perfcount_add(PC_BUILD_WAIT_NS, SDL_GetTicksNS() - t0);
 }
 
+// Return the still/motion/reactive-mask variant of base_pr, caching it directly on base_pr
+// when its ShaderKey matches st.attrib and st.rt without re-hashing through get_program.
+static Prog *get_mvec_program(Prog *base, NvnProgram *np, uint32_t origin, uint32_t dmode, bool pushed, uint8_t mrt, int var_idx) {
+    if (!g_vk.is_mali && !base->vkey.point_size && !base->vkey.mvec && !base->fkey.mvec_rt) {
+        if (base->mvec_var_p[var_idx] && base->mvec_var_rt[var_idx] == mrt)
+            return base->mvec_var_p[var_idx];
+        ShaderKey mvk = base->vkey, mfk = base->fkey;
+        mvk.mvec = pushed;
+        mfk.vs_out_mask = 0;
+        mfk.mvec_rt = mrt;
+        Prog *mp = get_program(np, &mvk, &mfk);
+        base->mvec_var_p[var_idx] = mp;
+        base->mvec_var_rt[var_idx] = mrt;
+        return mp;
+    }
+    ShaderKey mvk = {0}, mfk = {0};
+    mvk.glsl = mfk.glsl = 1;
+    mvk.flip_y = mfk.flip_y = origin == 0;
+    mvk.depth_minus_one = dmode == 0;
+    for (int i = 0; i < st.nattrib; i++) mvk.attr_kind[i] = (uint8_t)attr_kind(st.attrib[i] & 0xFF);
+    for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) mfk.rt_kind[i] = (uint8_t)rt_kind(st.rt.color[i]->format);
+    mvk.mvec = pushed;
+    mfk.mvec_rt = mrt;
+    return get_program(np, &mvk, &mfk);
+}
+
 static void draw_(CmdRec *r, bool indexed) {
     if (profd) prof_tp_ = SDL_GetTicksNS();
     ProfZone pz0 = PZ_NOW();
@@ -7723,12 +7751,12 @@ static void draw_(CmdRec *r, bool indexed) {
     // vertex shader's inputs, for the next frame); matched with one of the previous frame, it is drawn with its motion
     // program: the vertex shader also run on the previous frame's inputs, the fragment shader also writing the distance
     uint32_t mvec_pc[MVEC_PUSH / 4];
-    bool mvec_draw = false;
+    bool mvec_draw = false, mvec_pushed = false;
     // Full-screen triangles and quads that write depth (BOTW fills the scene's depth with several: sky, far plane)
     // keep no vector: drawn after the geometry, their camera-independent positions would cover it with zeros (they get
     // the camera's motion in the fallback).
     bool fullscreen = r->x[2] <= 6 && st.viewport[0][2] >= pass_w * 0.9f / pass_sx && st.viewport[0][3] >= pass_h * 0.9f / pass_sy;
-    if (pass_mvec >= 0 && st.ds[0] && st.ds[1]) {
+    if (pass_mvec >= 0 && st.ds[0] && st.ds[1] && !fullscreen) {
         MvecDrawIn md;  // (its streams and buffers past nstream and ncb are not read: zeroing all of it, ~1 KB a draw, was not free)
         memset(&md, 0, offsetof(MvecDrawIn, stream));
         md.vs_streams = 0, md.ncb = 0;
@@ -7744,37 +7772,45 @@ static void draw_(CmdRec *r, bool indexed) {
             md.first = (uint32_t)r->x[1]; md.base_inst = (uint32_t)r->x[3]; md.inst = (uint32_t)r->x[4] ? (uint32_t)r->x[4] : 1;
         }
         md.nstream = st.nstream;
-        for (int s = 0; s < st.nstream && s < 16; s++)
-            md.stream[s] = (MvecStream){st.vbuf[s].addr, st.vbuf[s].size, st.stream[s][0], st.stream[s][1]};
-        for (int a = 0; a < 16 && a < st.nattrib; a++)
-            if ((pr->vi->attr_mask >> a) & 1) md.vs_streams |= 1u << ((st.attrib[a] >> 8) & 0x1F);
-        for (int k = 3; k < 17 && md.ncb < MVEC_CB; k++) {  // (the game's buffers: cbuf_info's k >= 3)
+        uint32_t am = pr->vi->attr_mask & 0xFFFF;
+        while (am) {
+            int a = __builtin_ctz(am);
+            am &= am - 1;
+            if (a < st.nattrib) md.vs_streams |= 1u << ((st.attrib[a] >> 8) & 0x1F);
+        }
+        for (uint32_t sm_used = md.vs_streams & 0xFFFF; sm_used;) {
+            int s = __builtin_ctz(sm_used);
+            sm_used &= sm_used - 1;
+            if (s < st.nstream)
+                md.stream[s] = (MvecStream){st.vbuf[s].addr, st.vbuf[s].size, st.stream[s][0], st.stream[s][1]};
+        }
+        for (uint32_t cm = (pr->vi->cbuf_mask >> 3) & ((1u << 14) - 1); cm && md.ncb < MVEC_CB;) {
+            int k = 3 + __builtin_ctz(cm);
+            cm &= cm - 1;
             Range u = st.ubuf[0][k - 3];
-            if (!((pr->vi->cbuf_mask >> k) & 1) || !u.addr) continue;
+            if (!u.addr) continue;
             uint64_t size = pr->vi->cbuf_size[k] ? pr->vi->cbuf_size[k] : 256;
             if ((pr->vi->cbuf_dynamic & (1u << k)) && u.size) size = u.size > 0x10000 ? 0x10000 : u.size;
             if (size > u.size && u.size) size = u.size;
-            md.cb[md.ncb].rows = (pr->vi->cbuf_rows_all >> k) & 1 ? NULL : pr->vi->cbuf_rows[k];
+            md.cb[md.ncb].rows = (pr->vi->pos_cbuf_rows_all >> k) & 1 ? NULL : pr->vi->pos_cbuf_rows[k];
             md.cb[md.ncb].slot = (uint8_t)k; md.cb[md.ncb].addr = u.addr; md.cb[md.ncb++].size = size;
         }
         int rec = mvec_record(&md);
         // a draw that stood still (mvec_still) or got no vector of its own writes zero, the camera's motion (mvec_fill),
         // over what a draw behind it wrote
-        bool still = rec >= 0 && !fullscreen && mvec_still(rec);
-        bool pushed = !still && rec >= 0 && !fullscreen && mvec_push(rec, mvec_pc);
-        if (rec >= 0 && !fullscreen) {
-            ShaderKey mvk = {0}, mfk = {0};
-            mvk.glsl = mfk.glsl = 1;
-            mvk.flip_y = mfk.flip_y = origin == 0;
-            mvk.depth_minus_one = dmode == 0;
-            for (int i = 0; i < st.nattrib; i++) mvk.attr_kind[i] = (uint8_t)attr_kind(st.attrib[i] & 0xFF);
-            for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) mfk.rt_kind[i] = (uint8_t)rt_kind(st.rt.color[i]->format);
-            mvk.mvec = pushed;
-            mfk.mvec_rt = (uint8_t)((pushed ? 0 : 0x40) | (pass_mvec + 1));
-            Prog *mp = get_program(st.program, &mvk, &mfk);
-            if (mp && atomic_load(&mp->state) == 1) {  // (else built later)
+        bool still = rec >= 0 && mvec_still(rec);
+        bool pushed = !still && rec >= 0 && mvec_push(rec, mvec_pc);
+        if (rec >= 0) {
+            int var_idx = pushed ? 1 : 0;
+            uint8_t mrt = (uint8_t)((pushed ? 0 : 0x40) | (pass_mvec + 1));
+            Prog *mp = (!g_vk.is_mali && !pr->vkey.point_size && !pr->vkey.mvec && !pr->fkey.mvec_rt &&
+                        pr->mvec_var_p[var_idx] && pr->mvec_var_rt[var_idx] == mrt)
+                           ? pr->mvec_var_p[var_idx]
+                           : get_mvec_program(pr, st.program, origin, dmode, pushed, mrt, var_idx);
+            if (mp && atomic_load_explicit(&mp->state, memory_order_relaxed) == 1) {  // (else built later)
                 pr = mp;
                 mvec_draw = pushed || still;
+                mvec_pushed = pushed;
                 if (pushed) mvec_drawn();
             }
         }
@@ -7788,14 +7824,7 @@ static void draw_(CmdRec *r, bool indexed) {
     static int show_unmatched = -1;
     if (show_unmatched < 0) show_unmatched = getenv("SAVAGEWIND_MVEC_SHOW_UNMATCHED") != NULL;
     if (pass_mvec >= 0 && ((!(st.ds[0] && st.ds[1]) && (st.color_state[0] & 1)) || (show_unmatched && st.ds[0] && st.ds[1] && !mvec_draw)) && !fullscreen) {
-        ShaderKey mvk = {0}, mfk = {0};
-        mvk.glsl = mfk.glsl = 1;
-        mvk.flip_y = mfk.flip_y = origin == 0;
-        mvk.depth_minus_one = dmode == 0;
-        for (int i = 0; i < st.nattrib; i++) mvk.attr_kind[i] = (uint8_t)attr_kind(st.attrib[i] & 0xFF);
-        for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) mfk.rt_kind[i] = (uint8_t)rt_kind(st.rt.color[i]->format);
-        mfk.mvec_rt = (uint8_t)(0x80 | (pass_mvec + 1));
-        Prog *mp = get_program(st.program, &mvk, &mfk);
+        Prog *mp = get_mvec_program(pr, st.program, origin, dmode, false, (uint8_t)(0x80 | (pass_mvec + 1)), 2);
         if (mp && atomic_load(&mp->state) == 1) pr = mp, mvec_masked();  // (else built for the next frames)
     }
     if (st.rt.depth && !depth_read_only()) pass_ds_written = true;
@@ -8150,7 +8179,7 @@ have_pipe:
         dc.ndyn = (uint32_t)ndyn;
         memcpy(dc.dyn, dyn, (size_t)ndyn * 4);
     }
-    if (mvec_draw) rec_CmdPushConstants(cb, pr->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, MVEC_PUSH, mvec_pc);
+    if (mvec_pushed) rec_CmdPushConstants(cb, pr->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, MVEC_PUSH, mvec_pc);
 
     uint64_t prof_t2_ = profd ? SDL_GetTicksNS() : 0;
     ProfZone pz7 = PZ_NOW();
@@ -9735,6 +9764,74 @@ TexBackend *vk_fg_generate(NvnTexture *t, TexBackend *b) {
 static TexBackend *mvec_taa(VkCommandBuffer cb, TexBackend *b, uint64_t frame);
 static TexBackend *taa_img;  // (this frame's TAA output, of the scene taa_tex)
 static NvnTexture *taa_tex;
+
+static double mvec_prev_vp[16];
+static float mvec_prev_link[3];
+static bool mvec_have_prev_link;
+
+static void mvec_generate_vectors(VkCommandBuffer cb, TexBackend *b, TexBackend *db, uint32_t tw, uint32_t th, uint64_t frame) {
+    if (mvec_filled == frame || !db || !db->image || db->width != tw || db->height != th) return;
+    float m[16], jit[2];
+    if (!mvec_reprojection(m, jit)) return;
+    mvec_filled = frame;
+    static const VkComponentMapping id = {0};
+    VkImageView dv = vk_image_view(db, VK_IMAGE_VIEW_TYPE_2D, db->format, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_DEPTH_BIT);
+    mvec_vectors_img = post_image(10, tw, th, VK_FORMAT_R16G16B16A16_SFLOAT);
+    float pc[32] = {0};
+    memcpy(pc, m, sizeof m);
+    pc[16] = nvn_window_origin() == 0 ? -1.0f : 1.0f;
+    pc[17] = nvn_depth_mode() == 0 ? 1.0f : 0.0f;
+    pc[18] = mvec_objects_enabled() ? (float)mvec_camera_only() : 1.0f;
+    pc[20] = jit[0], pc[21] = jit[1];
+    pc[24] = pc[25] = 2.0f; pc[26] = pc[27] = -1.0f; // empty box default
+    int best = -1;
+    for (int k = 0; k < fg.ncand; k++) {
+        if (best < 0 || fg.cand[k].draws > fg.cand[best].draws) best = k;
+    }
+    if (g_settings.mvec_mode == MVEC_MODE_HYBRID && !mvec_camera_only() && best >= 0 && fg.cand[best].has_link && mvec_have_prev_link) {
+        const float *m_cam = fg.cand[best].m;
+        double vp_cam[16];
+        for (int k = 0; k < 16; k++) vp_cam[k] = m_cam[12 + k];
+        float ysign = renderer_origin_lower_left() ? 1.0f : -1.0f;
+        bool gl_depth = nvn_depth_mode() == 0;
+        const float *lk = fg.cand[best].link;
+        float lo[2] = {1e9f, 1e9f}, hi[2] = {-1e9f, -1e9f}, dlo = 1e9f, dhi = -1e9f, uv[2], d;
+        bool ok_box = true;
+        for (int k = 0; k < 8 && ok_box; k++) {
+            float p[3] = {lk[0] + (k & 1 ? 0.7f : -0.7f), lk[1] + (k & 2 ? 1.9f : 0.1f), lk[2] + (k & 4 ? 0.7f : -0.7f)};
+            ok_box = fg_project(vp_cam, p, ysign, gl_depth, uv, &d);
+            for (int a = 0; a < 2; a++) lo[a] = fminf(lo[a], uv[a]), hi[a] = fmaxf(hi[a], uv[a]);
+            dlo = fminf(dlo, d), dhi = fmaxf(dhi, d);
+        }
+        if (ok_box && hi[0] > lo[0] && hi[1] > lo[1] && dhi > dlo && (hi[0] - lo[0] < 0.6f) && (hi[1] - lo[1] < 0.6f)) {
+            float c_now[3] = {lk[0], lk[1] + 0.9f, lk[2]}, c_prev[3] = {mvec_prev_link[0], mvec_prev_link[1] + 0.9f, mvec_prev_link[2]};
+            float uv_now[2], uv_prev[2], dd;
+            float lk_dx = lk[0] - mvec_prev_link[0], lk_dy = lk[1] - mvec_prev_link[1], lk_dz = lk[2] - mvec_prev_link[2];
+            float lk_d2 = lk_dx * lk_dx + lk_dy * lk_dy + lk_dz * lk_dz;
+            if (lk_d2 < 6.25f && fg_project(vp_cam, c_now, ysign, gl_depth, uv_now, &dd) &&
+                fg_project(mvec_prev_vp, c_prev, ysign, gl_depth, uv_prev, &dd)) {
+                pc[24] = lo[0], pc[25] = lo[1], pc[26] = hi[0], pc[27] = hi[1];
+                pc[28] = dlo, pc[29] = dhi;
+                float vx = -2.0f * (uv_prev[0] - uv_now[0]);
+                float vy = 2.0f * (uv_prev[1] - uv_now[1]);
+                pc[30] = fmaxf(-0.15f, fminf(0.15f, vx));
+                pc[31] = fmaxf(-0.15f, fminf(0.15f, vy));
+            }
+        }
+    }
+    if (best >= 0) {
+        const float *m_cam = fg.cand[best].m;
+        for (int k = 0; k < 16; k++) mvec_prev_vp[k] = (double)m_cam[12 + k];
+        mvec_have_prev_link = fg.cand[best].has_link;
+        if (mvec_have_prev_link) memcpy(mvec_prev_link, fg.cand[best].link, sizeof mvec_prev_link);
+    }
+    TexBackend *target = (mvec_objects_enabled() && mvec_target_img) ? mvec_target_img
+                                                                     : post_image(8, tw, th, VK_FORMAT_R16G16B16A16_SFLOAT);
+    VkImageView in[3] = {post_view(target), dv};
+    post_pass_pc(cb, "mvec_fill.frag", in, 2, mvec_vectors_img, pc, sizeof pc, false);
+    vk_full_barrier(cb);
+}
+
 static bool mvec_scene_view(Prog *pr, CmdRec *r, NvnTexture **taa_t, TexBackend **taa) {
     if (g_cur_fs_hash == 0xd4fa32dabc35066cull) return false;
     NvnTexture *rt = st.rt.ncolor ? st.rt.color[0] : NULL;
@@ -9750,7 +9847,6 @@ static bool mvec_scene_view(Prog *pr, CmdRec *r, NvnTexture **taa_t, TexBackend 
         vkGetPhysicalDeviceFormatProperties(g_vk.phys, b->format, &fp);
         if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) continue;
         uint64_t frame = renderer_present_count();
-        float m[16];
         TexBackend *db = mvec_depth ? vk_tex(mvec_depth, false) : NULL;
         if (!db || !db->image) {
             for (int k = 0; k < fg.ncand; k++) {
@@ -9758,64 +9854,12 @@ static bool mvec_scene_view(Prog *pr, CmdRec *r, NvnTexture **taa_t, TexBackend 
                 if (d && d->image && d->width == b->width && d->height == b->height) { db = d; break; }
             }
         }
-        float jit[2];
         uint32_t tw = mvec_target_img ? mvec_target_img->width : b->width;
         uint32_t th = mvec_target_img ? mvec_target_img->height : b->height;
-        if (mvec_filled != frame && db && db->image && db->width == tw &&
-            db->height == th && mvec_reprojection(m, jit)) {
-            mvec_filled = frame;
+        if (mvec_filled != frame && db && db->image && db->width == tw && db->height == th) {
             vk_end_pass();
             VkCommandBuffer cb = vk_cmd();
-            static const VkComponentMapping id = {0};
-            VkImageView dv = vk_image_view(db, VK_IMAGE_VIEW_TYPE_2D, db->format, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_DEPTH_BIT);
-            mvec_vectors_img = post_image(10, tw, th, VK_FORMAT_R16G16B16A16_SFLOAT);
-            float pc[32] = {0};
-            memcpy(pc, m, sizeof m);
-            pc[16] = nvn_window_origin() == 0 ? -1.0f : 1.0f;
-            pc[17] = nvn_depth_mode() == 0 ? 1.0f : 0.0f;
-            pc[18] = mvec_objects_enabled() ? (float)mvec_camera_only() : 1.0f;
-            pc[20] = jit[0], pc[21] = jit[1];
-            pc[24] = pc[25] = 2.0f; pc[26] = pc[27] = -1.0f; // empty box default
-            int best = -1;
-            for (int k = 0; k < fg.ncand; k++) {
-                if (best < 0 || fg.cand[k].draws > fg.cand[best].draws) best = k;
-            }
-            if (g_settings.mvec_mode == MVEC_MODE_HYBRID && !mvec_camera_only() && best >= 0 && fg.cand[best].has_link && fg.have_prev_link) {
-                const float *m_cam = fg.cand[best].m;
-                double vp_cam[16];
-                for (int k = 0; k < 16; k++) vp_cam[k] = m_cam[12 + k];
-                float ysign = renderer_origin_lower_left() ? 1.0f : -1.0f;
-                bool gl_depth = nvn_depth_mode() == 0;
-                const float *lk = fg.cand[best].link;
-                float lo[2] = {1e9f, 1e9f}, hi[2] = {-1e9f, -1e9f}, dlo = 1e9f, dhi = -1e9f, uv[2], d;
-                bool ok_box = true;
-                for (int k = 0; k < 8 && ok_box; k++) {
-                    float p[3] = {lk[0] + (k & 1 ? 0.7f : -0.7f), lk[1] + (k & 2 ? 1.9f : 0.1f), lk[2] + (k & 4 ? 0.7f : -0.7f)};
-                    ok_box = fg_project(vp_cam, p, ysign, gl_depth, uv, &d);
-                    for (int a = 0; a < 2; a++) lo[a] = fminf(lo[a], uv[a]), hi[a] = fmaxf(hi[a], uv[a]);
-                    dlo = fminf(dlo, d), dhi = fmaxf(dhi, d);
-                }
-                float c_now[3] = {lk[0], lk[1] + 0.9f, lk[2]}, c_prev[3] = {fg.prev_link[0], fg.prev_link[1] + 0.9f, fg.prev_link[2]};
-                float uv_now[2], uv_prev[2], dd;
-                if (ok_box && fg_project(vp_cam, c_now, ysign, gl_depth, uv_now, &dd) &&
-                    fg_project(fg.prev_vp, c_prev, ysign, gl_depth, uv_prev, &dd)) {
-                    pc[24] = lo[0], pc[25] = lo[1], pc[26] = hi[0], pc[27] = hi[1];
-                    pc[28] = dlo, pc[29] = dhi;
-                    pc[30] = -2.0f * (uv_prev[0] - uv_now[0]);
-                    pc[31] = 2.0f * (uv_prev[1] - uv_now[1]);
-                }
-            }
-            if (best >= 0) {
-                const float *m_cam = fg.cand[best].m;
-                for (int k = 0; k < 16; k++) fg.prev_vp[k] = (double)m_cam[12 + k];
-                fg.have_prev_link = fg.cand[best].has_link;
-                if (fg.have_prev_link) memcpy(fg.prev_link, fg.cand[best].link, sizeof fg.prev_link);
-            }
-            TexBackend *target = (mvec_objects_enabled() && mvec_target_img) ? mvec_target_img
-                                                                             : post_image(8, tw, th, VK_FORMAT_R16G16B16A16_SFLOAT);
-            VkImageView in[3] = {post_view(target), dv};
-            post_pass_pc(cb, "mvec_fill.frag", in, 2, mvec_vectors_img, pc, sizeof pc, false);
-            vk_full_barrier(cb);
+            mvec_generate_vectors(cb, b, db, tw, th, frame);
             taa_img = rt_antialias() == AA_TAA && !rt_fsr3() ? mvec_taa(cb, b, frame) : NULL;  // (FSR 3 does its own)
             taa_tex = t;
         }
@@ -9976,55 +10020,8 @@ static TexBackend *fsr3_scene(VkCommandBuffer cb, TexBackend *b, uint32_t ow, ui
     }
     float jit[2], nr, fr, fov;
     if (mvec_filled != frame && db && db->image && db->width == b->width && db->height == b->height) {
-        float m[16];
-        if (mvec_reprojection(m, jit)) {
-            mvec_filled = frame;
-            static const VkComponentMapping id = {0};
-            VkImageView dv = vk_image_view(db, VK_IMAGE_VIEW_TYPE_2D, db->format, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_DEPTH_BIT);
-            mvec_vectors_img = post_image(10, b->width, b->height, VK_FORMAT_R16G16B16A16_SFLOAT);
-            float pc[32] = {0};
-            memcpy(pc, m, sizeof m);
-            pc[16] = nvn_window_origin() == 0 ? -1.0f : 1.0f;
-            pc[17] = nvn_depth_mode() == 0 ? 1.0f : 0.0f;
-            pc[18] = mvec_objects_enabled() ? (float)mvec_camera_only() : 1.0f;
-            pc[20] = jit[0], pc[21] = jit[1];
-            pc[24] = pc[25] = 2.0f; pc[26] = pc[27] = -1.0f;
-            int best = -1;
-            for (int k = 0; k < fg.ncand; k++) {
-                if (best < 0 || fg.cand[k].draws > fg.cand[best].draws) best = k;
-            }
-            if (g_settings.mvec_mode == MVEC_MODE_HYBRID && !mvec_camera_only() && best >= 0 && fg.cand[best].has_link && fg.have_prev_link) {
-                const float *m_cam = fg.cand[best].m;
-                double vp_cam[16];
-                for (int k = 0; k < 16; k++) vp_cam[k] = m_cam[12 + k];
-                float ysign = renderer_origin_lower_left() ? 1.0f : -1.0f;
-                bool gl_depth = nvn_depth_mode() == 0;
-                const float *lk = fg.cand[best].link;
-                float lo[2] = {1e9f, 1e9f}, hi[2] = {-1e9f, -1e9f}, dlo = 1e9f, dhi = -1e9f, uv[2], d;
-                bool ok_box = true;
-                for (int k = 0; k < 8 && ok_box; k++) {
-                    float p[3] = {lk[0] + (k & 1 ? 0.7f : -0.7f), lk[1] + (k & 2 ? 1.9f : 0.1f), lk[2] + (k & 4 ? 0.7f : -0.7f)};
-                    ok_box = fg_project(vp_cam, p, ysign, gl_depth, uv, &d);
-                    for (int a = 0; a < 2; a++) lo[a] = fminf(lo[a], uv[a]), hi[a] = fmaxf(hi[a], uv[a]);
-                    dlo = fminf(dlo, d), dhi = fmaxf(dhi, d);
-                }
-                float c_now[3] = {lk[0], lk[1] + 0.9f, lk[2]}, c_prev[3] = {fg.prev_link[0], fg.prev_link[1] + 0.9f, fg.prev_link[2]};
-                float uv_now[2], uv_prev[2], dd;
-                if (ok_box && fg_project(vp_cam, c_now, ysign, gl_depth, uv_now, &dd) &&
-                    fg_project(fg.prev_vp, c_prev, ysign, gl_depth, uv_prev, &dd)) {
-                    pc[24] = lo[0], pc[25] = lo[1], pc[26] = hi[0], pc[27] = hi[1];
-                    pc[28] = dlo, pc[29] = dhi;
-                    pc[30] = -2.0f * (uv_prev[0] - uv_now[0]);
-                    pc[31] = 2.0f * (uv_prev[1] - uv_now[1]);
-                }
-            }
-            TexBackend *target = (mvec_objects_enabled() && mvec_target_img) ? mvec_target_img
-                                                                             : post_image(8, b->width, b->height, VK_FORMAT_R16G16B16A16_SFLOAT);
-            VkImageView in[3] = {post_view(target), dv};
-            post_pass_pc(cb, "mvec_fill.frag", in, 2, mvec_vectors_img, pc, sizeof pc, false);
-            vk_full_barrier(cb);
-            v = mvec_vectors_img;
-        }
+        mvec_generate_vectors(cb, b, db, b->width, b->height, frame);
+        v = mvec_vectors_img;
     }
     const char *why = mvec_filled != frame ? "no vectors this frame" : !v || v->width != b->width || v->height != b->height ? "vectors' size"
                     : !db || !db->image || db->width != b->width || db->height != b->height ? "depth's size"
@@ -10052,6 +10049,12 @@ static TexBackend *fsr3_scene(VkCommandBuffer cb, TexBackend *b, uint32_t ow, ui
     float flip = nvn_window_origin() == 0 ? -1.0f : 1.0f;  // (the game's NDC y to clip y: mvec_fill.frag's a.x)
     static uint64_t last = ~0ull, last_ns;
     uint64_t ns = SDL_GetTicksNS();
+    static bool was_menu;
+    extern bool framepace_menu_ui(void), framepace_title_ui(void), framepace_loading_ui(void), framepace_paused(void);
+    extern bool menu_is_open(void);
+    bool in_menu = framepace_menu_ui() || framepace_title_ui() || framepace_loading_ui() || framepace_paused() || menu_is_open();
+    bool menu_unpause = was_menu && !in_menu;
+    was_menu = in_menu;
     Fsr3Dispatch d = {
         .dev = g_vk.dev, .phys = g_vk.phys, .cb = cb,
         .mode = g_settings.upscaler,
@@ -10063,7 +10066,7 @@ static TexBackend *fsr3_scene(VkCommandBuffer cb, TexBackend *b, uint32_t ow, ui
         .dt_ms = last_ns && ns > last_ns ? (float)((ns - last_ns) / 1e6) : 16.7f,
         .near_ = nr, .far_ = fr, .fov_y = fov,
         .sharpness = g_settings.sharpening / 10.0f,
-        .reset = last == ~0ull || last + 1 != frame,
+        .reset = last == ~0ull || last + 1 != frame || menu_unpause,
     };
     last_ns = ns;
     // Upscaler FSR 4, or SAVAGEWIND_FSR3_API=1: AMD's DLLs (fsr_api.h); else the built-in FSR 3.1 (fsr3.h)

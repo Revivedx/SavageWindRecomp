@@ -2212,11 +2212,360 @@ static void glsl_body(Ctx *c, Str *s, const char *body, bool any_branch, bool db
     }
 }
 
+// Conservative backward slice of c->body before glsl_rewrite: marks only the constant buffer rows that can flow
+// into vertex position (out.pos) or into flow control wrapping position writes (out.vN lighting/fog reads stay out).
+static bool compute_pos_cbuf_rows_run(const char *src, ShaderInfo *info);
+
+static void compute_pos_cbuf_rows(const char *src, ShaderInfo *info) {
+    memset(info->pos_cbuf_rows, 0, sizeof info->pos_cbuf_rows);
+    info->pos_cbuf_rows_all = 0;
+    bool ok = src && *src && compute_pos_cbuf_rows_run(src, info);
+    if (!ok) {
+        memcpy(info->pos_cbuf_rows, info->cbuf_rows, sizeof info->pos_cbuf_rows);
+        info->pos_cbuf_rows_all = info->cbuf_rows_all;
+    }
+}
+
+typedef enum { PS_STMT, PS_OPEN, PS_CLOSE } PosKind;
+typedef struct {
+    PosKind kind;
+    const char *s, *e;     // statement body (or header text before '{' for PS_OPEN)
+    const char *cs, *ce;   // condition slice (if / while / do-while)
+    int match;             // matching PS_CLOSE / PS_OPEN
+    int else_if;           // for PS_OPEN of `} else {`, index of its `if` PS_OPEN
+} PosItem;
+
+static const char *ps_skip_ws_comments(const char *p, const char *end) {
+    while (p < end) {
+        if ((unsigned char)*p <= ' ') { p++; continue; }
+        if (p + 1 < end && p[0] == '/' && p[1] == '*') {
+            p += 2;
+            while (p + 1 < end && !(p[0] == '*' && p[1] == '/')) p++;
+            if (p + 1 < end) p += 2;
+            continue;
+        }
+        break;
+    }
+    return p;
+}
+
+static bool ps_is_kw(const char *id, int n) {
+    static const char *const kws[] = {
+        "uint", "uint64_t", "ulong", "int", "int64_t", "bool", "float", "vec2", "vec3", "vec4",
+        "uvec2", "uvec3", "uvec4", "ivec2", "ivec3", "ivec4", "true", "false", "in", "out",
+        "if", "else", "do", "while", "for", "switch", "case", "default", "break", "continue",
+        "as_type", "half2", "saturate", "fmin", "fmax", "min", "max", "clamp", "abs", "mix",
+        "sqrt", "rsqrt", "sin", "cos", "exp2", "log2", "floor", "ceil", "trunc", "round",
+        "fma", "clz", "mul24", "hadd2", "hmul2", "hfmax2", "hfmin2", "hx", "hpack", "tid", "ctaid",
+        "front_facing", "point_coord", "tex", "txd", "txl", "txb", "txq", "ldg", "stg", "shfl",
+        "discard", "discard_fragment"
+    };
+    for (size_t i = 0; i < sizeof kws / sizeof kws[0]; i++)
+        if ((int)strlen(kws[i]) == n && !memcmp(id, kws[i], (size_t)n)) return true;
+    return false;
+}
+
+typedef struct {
+    bool reg[256];
+    bool pred[7];
+    bool cc;
+    bool lmem;
+    bool flow;
+    bool changed;
+    struct { char name[32]; int depth; } loc[128];
+    int nloc;
+    bool overflow;
+    ShaderInfo *info;
+} PosSlice;
+
+static int ps_parse_uint(const char *p, const char *end, int *out) {
+    if (p >= end || *p < '0' || *p > '9') return 0;
+    int v = 0, len = 0;
+    while (p + len < end && p[len] >= '0' && p[len] <= '9') {
+        if (v < 1000000) v = v * 10 + (p[len] - '0');
+        len++;
+    }
+    *out = v;
+    return len;
+}
+
+static void ps_add_loc(PosSlice *st, const char *id, int n, int depth) {
+    if (n >= 32) { st->overflow = true; return; }
+    for (int i = 0; i < st->nloc; i++)
+        if (st->loc[i].depth == depth && (int)strlen(st->loc[i].name) == n && !memcmp(st->loc[i].name, id, (size_t)n))
+            return;
+    if (st->nloc >= 128) { st->overflow = true; return; }
+    memcpy(st->loc[st->nloc].name, id, (size_t)n);
+    st->loc[st->nloc].name[n] = 0;
+    st->loc[st->nloc].depth = depth;
+    st->nloc++;
+}
+
+static bool ps_pop_loc(PosSlice *st, const char *id, int n, int depth, bool erase) {
+    for (int i = 0; i < st->nloc; i++) {
+        if (st->loc[i].depth == depth && (int)strlen(st->loc[i].name) == n && !memcmp(st->loc[i].name, id, (size_t)n)) {
+            if (erase) st->loc[i] = st->loc[--st->nloc];
+            return true;
+        }
+    }
+    return false;
+}
+
+static void ps_taint_expr(PosSlice *st, const char *s, const char *e, int depth) {
+    const char *p = s;
+    while (p < e && !st->overflow) {
+        if (p + 1 < e && p[0] == '/' && p[1] == '*') {
+            p += 2;
+            while (p + 1 < e && !(p[0] == '*' && p[1] == '/')) p++;
+            if (p + 1 < e) p += 2;
+            continue;
+        }
+        if (!id_start(*p)) { p++; continue; }
+        const char *q = p + 1;
+        while (q < e && id_char(*q)) q++;
+        int n = (int)(q - p);
+        bool after_dot = p > s && p[-1] == '.';
+        if (!after_dot) {
+            if (n >= 2 && p[0] == 'r' && p[1] >= '0' && p[1] <= '9') {
+                int rv = 0;
+                if (ps_parse_uint(p + 1, q, &rv) == n - 1 && rv < 256) {
+                    if (!st->reg[rv]) st->reg[rv] = true, st->changed = true;
+                    p = q; continue;
+                }
+            } else if (n == 2 && p[0] == 'p' && p[1] >= '0' && p[1] <= '6') {
+                int pv = p[1] - '0';
+                if (!st->pred[pv]) st->pred[pv] = true, st->changed = true;
+                p = q; continue;
+            } else if ((n == 2 && !memcmp(p, "cc", 2)) || (n == 3 && (!memcmp(p, "ccz", 3) || !memcmp(p, "ccs", 3)))) {
+                if (!st->cc) st->cc = true, st->changed = true;
+                p = q; continue;
+            } else if (n == 4 && !memcmp(p, "lmem", 4)) {
+                if (!st->lmem) st->lmem = true, st->changed = true;
+                p = q; continue;
+            } else if (n == 3 && !memcmp(p, "cbr", 3)) {
+                const char *a = ps_skip_ws_comments(q, e);
+                if (a < e && *a == '(') {
+                    a = ps_skip_ws_comments(a + 1, e);
+                    int cb = -1;
+                    if (a + 2 < e && a[0] == 'c' && a[1] == 'b' && ps_parse_uint(a + 2, e, &cb) > 0 && cb >= 0 && cb < 18)
+                        st->info->pos_cbuf_rows_all |= 1u << cb;
+                }
+                p = q; continue;
+            } else if (n >= 3 && p[0] == 'c' && p[1] == 'b') {
+                int cb = -1;
+                if (ps_parse_uint(p + 2, q, &cb) == n - 2 && cb >= 0 && cb < 18) {
+                    const char *b = ps_skip_ws_comments(q, e);
+                    int row = -1;
+                    if (b < e && *b == '[') {
+                        const char *r0 = ps_skip_ws_comments(b + 1, e);
+                        int rl = ps_parse_uint(r0, e, &row);
+                        const char *r1 = ps_skip_ws_comments(r0 + rl, e);
+                        if (rl > 0 && r1 < e && *r1 == ']' && row >= 0 && row < 256)
+                            st->info->pos_cbuf_rows[cb][row >> 6] |= 1ull << (row & 63);
+                        else
+                            st->info->pos_cbuf_rows_all |= 1u << cb;
+                    } else {
+                        st->info->pos_cbuf_rows_all |= 1u << cb;
+                    }
+                    p = q; continue;
+                }
+            } else if (!ps_is_kw(p, n)) {
+                const char *nx = ps_skip_ws_comments(q, e);
+                if (nx >= e || (*nx != '(' && *nx != '>')) ps_add_loc(st, p, n, depth);
+            }
+        }
+        p = q;
+    }
+}
+
+static bool compute_pos_cbuf_rows_run(const char *src, ShaderInfo *info) {
+    size_t cap = 256, nitems = 0;
+    PosItem *items = malloc(cap * sizeof *items);
+    int stk[64], last_if[64];
+    for (int i = 0; i < 64; i++) last_if[i] = -1;
+    int sp_top = 0;
+    const char *p = src, *seg = src;
+    int par = 0;
+    bool ok = true;
+    bool has_loop = false;
+    while (*p && ok) {
+        if (p[0] == '/' && p[1] == '*') {
+            p += 2;
+            while (p[0] && !(p[0] == '*' && p[1] == '/')) p++;
+            if (p[0]) p += 2;
+            continue;
+        }
+        if (*p == '(') { par++; p++; continue; }
+        if (*p == ')') { if (par > 0) par--; p++; continue; }
+        if (par > 0) { p++; continue; }
+        if (*p == '{' || *p == '}' || *p == ';') {
+            if (nitems == cap) { cap *= 2; items = realloc(items, cap * sizeof *items); }
+            const char *s = ps_skip_ws_comments(seg, p), *e = p;
+            while (e > s && (unsigned char)e[-1] <= ' ') e--;
+            if (*p == '{') {
+                if (sp_top >= 64) { ok = false; break; }
+                PosItem it = {PS_OPEN, s, e, NULL, NULL, -1, -1};
+                if ((e - s >= 2 && !memcmp(s, "if", 2) && ((unsigned char)s[2] <= ' ' || s[2] == '(')) ||
+                    (e - s >= 5 && !memcmp(s, "while", 5) && ((unsigned char)s[5] <= ' ' || s[5] == '('))) {
+                    const char *lp = memchr(s, '(', (size_t)(e - s));
+                    if (lp && e > lp && e[-1] == ')') it.cs = lp + 1, it.ce = e - 1;
+                    last_if[sp_top] = (int)nitems;
+                } else if (e - s == 4 && !memcmp(s, "else", 4)) {
+                    it.else_if = last_if[sp_top];
+                }
+                stk[sp_top++] = (int)nitems;
+                items[nitems++] = it;
+            } else if (*p == '}') {
+                if (sp_top <= 0) { ok = false; break; }
+                if (s < e) {
+                    if (nitems + 1 >= cap) { cap *= 2; items = realloc(items, cap * sizeof *items); }
+                    items[nitems++] = (PosItem){PS_STMT, s, e, NULL, NULL, -1, -1};
+                }
+                int oi = stk[--sp_top];
+                items[oi].match = (int)nitems;
+                items[nitems++] = (PosItem){PS_CLOSE, NULL, NULL, NULL, NULL, oi, -1};
+            } else {  // ';'
+                if (s < e) {
+                    // do { ... } while ((cond) ...); attaches condition to preceding PS_OPEN
+                    if (e - s >= 5 && !memcmp(s, "while", 5) && ((unsigned char)s[5] <= ' ' || s[5] == '(') &&
+                        nitems > 0 && items[nitems - 1].kind == PS_CLOSE) {
+                        const char *lp = memchr(s, '(', (size_t)(e - s));
+                        int oi = items[nitems - 1].match;
+                        if (lp && e > lp && e[-1] == ')' && oi >= 0) {
+                            items[oi].cs = lp + 1, items[oi].ce = e - 1;
+                            has_loop = true;
+                        }
+                    } else {
+                        items[nitems++] = (PosItem){PS_STMT, s, e, NULL, NULL, -1, -1};
+                    }
+                }
+            }
+            seg = p + 1;
+        }
+        p++;
+    }
+    if (sp_top != 0) ok = false;
+    if (!ok) { free(items); return false; }
+
+    PosSlice st = {.flow = true, .info = info};
+    bool blk_t[64], blk_cond[64];
+    for (int pass = 0; pass < 260; pass++) {
+        st.changed = false;
+        st.nloc = 0;
+        memset(blk_t, 0, sizeof blk_t);
+        memset(blk_cond, 0, sizeof blk_cond);
+        int depth = 0, cond_depth = 0;
+        for (int i = (int)nitems - 1; i >= 0 && !st.overflow; i--) {
+            const PosItem *it = &items[i];
+            if (it->kind == PS_CLOSE) {
+                depth++;
+                if (depth >= 64) { st.overflow = true; break; }
+                blk_t[depth] = false;
+                const PosItem *op = it->match >= 0 ? &items[it->match] : NULL;
+                blk_cond[depth] = op && (op->cs || op->else_if >= 0);
+                if (blk_cond[depth]) cond_depth++;
+                continue;
+            }
+            if (it->kind == PS_OPEN) {
+                if (blk_t[depth]) {
+                    if (it->cs) ps_taint_expr(&st, it->cs, it->ce, depth - 1);
+                    if (it->else_if >= 0 && items[it->else_if].cs)
+                        ps_taint_expr(&st, items[it->else_if].cs, items[it->else_if].ce, depth - 1);
+                    blk_t[depth - 1] = true;
+                }
+                if (blk_cond[depth] && cond_depth > 0) cond_depth--;
+                for (int l = st.nloc - 1; l >= 0; l--)
+                    if (st.loc[l].depth == depth) st.loc[l] = st.loc[--st.nloc];
+                depth--;
+                continue;
+            }
+            const char *s = it->s, *e = it->e;
+            // strip leading `case ...:` / `default:` label before statement
+            bool has_case = false;
+            for (;;) {
+                s = ps_skip_ws_comments(s, e);
+                if ((e - s >= 5 && !memcmp(s, "case", 4) && (unsigned char)s[4] <= ' ') ||
+                    (e - s >= 7 && !memcmp(s, "default", 7) && (s[7] == ':' || (unsigned char)s[7] <= ' '))) {
+                    const char *col = memchr(s, ':', (size_t)(e - s));
+                    if (col) { has_case = true; s = col + 1; continue; }
+                }
+                break;
+            }
+            if (s >= e) continue;
+            // break / continue guard position execution in loops/switch
+            if ((e - s == 5 && !memcmp(s, "break", 5)) || (e - s == 8 && !memcmp(s, "continue", 8))) {
+                if (st.flow) blk_t[depth] = true;
+                continue;
+            }
+            // locate top-level '=' (ignore ==, !=, <=, >=)
+            const char *eq = NULL;
+            for (const char *q = s; q < e; q++) {
+                if (*q == '=' && (q + 1 >= e || q[1] != '=') &&
+                    (q == s || (q[-1] != '!' && q[-1] != '<' && q[-1] != '>' && q[-1] != '='))) {
+                    eq = q; break;
+                }
+            }
+            if (!eq) {
+                if (strstr(s, "discard")) { /* fragment only */ }
+                continue;
+            }
+            const char *rhs = eq + 1;
+            const char *le = eq;
+            while (le > s && (unsigned char)le[-1] <= ' ') le--;
+            // check target before optional `[idx]`
+            const char *br = memchr(s, '[', (size_t)(le - s));
+            const char *t_end = br ? br : le;
+            while (t_end > s && (unsigned char)t_end[-1] <= ' ') t_end--;
+            const char *t_start = t_end;
+            while (t_start > s && (id_char(t_start[-1]) || t_start[-1] == '.')) t_start--;
+            int tn = (int)(t_end - t_start);
+            bool is_decl = t_start > s;  // e.g. `uint s = ...` or `bool cmp = ...`
+            bool can_kill = !has_loop && cond_depth == 0 && !has_case;
+            if (has_case) has_loop = true;
+            bool t = false;
+            if (tn >= 7 && !memcmp(t_start, "out.pos", 7)) {
+                t = true;
+            } else if (tn >= 4 && !memcmp(t_start, "out.", 4)) {
+                t = false;
+            } else if (tn >= 2 && t_start[0] == 'r' && t_start[1] >= '0' && t_start[1] <= '9') {
+                int rv = 0;
+                if (ps_parse_uint(t_start + 1, t_end, &rv) == tn - 1 && rv < 256) {
+                    t = st.reg[rv];
+                    if (can_kill && !br) st.reg[rv] = false;
+                }
+            } else if (tn == 2 && t_start[0] == 'p' && t_start[1] >= '0' && t_start[1] <= '6') {
+                int pv = t_start[1] - '0';
+                t = st.pred[pv];
+                if (can_kill) st.pred[pv] = false;
+            } else if ((tn == 2 && !memcmp(t_start, "cc", 2)) || (tn == 3 && (!memcmp(t_start, "ccz", 3) || !memcmp(t_start, "ccs", 3)))) {
+                t = st.cc;
+                if (can_kill && tn == 2) st.cc = false;
+            } else if (tn == 4 && !memcmp(t_start, "lmem", 4)) {
+                t = st.lmem;
+            } else if ((tn == 6 && !memcmp(t_start, "exited", 6)) || (tn == 8 && !memcmp(t_start, "exit_now", 8)) ||
+                       (tn == 2 && !memcmp(t_start, "pc", 2)) || (tn >= 3 && (!memcmp(t_start, "ssy", 3) || !memcmp(t_start, "pbk", 3) || !memcmp(t_start, "pcnt", 4)))) {
+                t = st.flow;
+            } else if (tn > 0) {
+                t = ps_pop_loc(&st, t_start, tn, depth, is_decl);
+            }
+            if (t) {
+                blk_t[depth] = true;
+                if (br && br < le) ps_taint_expr(&st, br, le, depth);
+                ps_taint_expr(&st, rhs, e, depth);
+            }
+        }
+        if (st.overflow || !has_loop || !st.changed) break;
+    }
+    free(items);
+    return !st.overflow;
+}
+
 // Declarations + entry point around the (rewritten) body; mirrors the MSL assembly in maxwell_translate.
 static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     ShaderInfo *info = c->info;
     const ShaderKey *key = c->key;
     int stage = c->stage;
+    if (stage == STAGE_VERTEX && !dbg) compute_pos_cbuf_rows(c->body.buf ? c->body.buf : "", info);
     Str body = {0}, pbody = {0};
     glsl_rewrite(c, &body, c->body.buf ? c->body.buf : "");
     // motion vectors (key->mvec, key->mvec_rt): see shader.h

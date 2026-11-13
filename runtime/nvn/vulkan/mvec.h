@@ -39,17 +39,17 @@ typedef struct {
 typedef struct {
     uint64_t key;
     uint64_t key2;  // the key without the index buffer and range (mvec.c prev_match_loose)
+    uint64_t hash;  // of its inputs: the constants its vertex shader reads (but the camera block's matrices) and instanced streams
     uint32_t ord;   // among this frame's draws with the same key, in draw order
     int32_t prev;   // the matching record of the previous frame, -1: none
     float dist;     // its fingerprint's distance from that record's (mvec.c fingerprint_distance)
     uint8_t nfeat;
-    float feat[MVEC_FEAT];  // the fingerprint: what tells apart draws of one key (the object's own constants)
     uint8_t ncb, ninst;
+    float feat[MVEC_FEAT];  // the fingerprint: what tells apart draws of one key (the object's own constants)
     uint8_t cb_slot[MVEC_CB];
-    uint32_t cb_off[MVEC_CB], cb_size[MVEC_CB];
+    uint32_t cb_off[MVEC_CB], cb_size[MVEC_CB], cb_hash[MVEC_CB];
     uint8_t inst_stream[MVEC_INST];
     uint32_t inst_off[MVEC_INST], inst_size[MVEC_INST];
-    uint64_t hash;  // of its inputs: the constants its vertex shader reads (but the camera block's matrices) and instanced streams
 } MvecRec;
 
 bool mvec_enabled(void);  // Video > Anti-aliasing TAA, or SAVAGEWIND_MVEC=1
