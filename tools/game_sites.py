@@ -185,6 +185,9 @@ SITES = [
     # in console frames, fcmp s8, s9
     Site('demo_move_arrive', 'code', 'bd60bd09 94000000/fc000000 f9400668 5282fe09 38696908 34000008/ff00001f 1e292100 '
          '54000004/ff00001f 90000008/9f00001f bd404261 bd425102 1e222821 1e282020 54000005/ff00001f 1e292921 1e200820', 6),
+    # the radius within which a player rail move's point goes on along the rail (tools/patches.py _rail_point_radius):
+    # its load from the player, ldr s0, [x8, #0x20f0]
+    Site('rail_point_radius', 'code', 'bd60f100 1e202020 54000005/ff00001f 1e2c1001 f9403668 aa1403e0 aa1f03e1 aa1f03e2', 0),
     Site('kf_angle', 'code', '0e612800 0e0e3c08 0e040d00 0f3f5400 0ea0a800 6e180400 4e221c00 6e211c00 3c9983a0 '
          '94000000/fc000000 3cd883a6 1e2008c0', 9),
     # the sound system's frame (tools/patches.py _snd_frame_floor): the delta frame, at least 0.5, its timers' step
@@ -396,6 +399,7 @@ OPTIONAL_GROUPS = [
     ('quick_menu_capture_alpha',),
     ('kf_angle',),
     ('demo_move_arrive',),
+    ('rail_point_radius',),
     ('phys_tick', 'phys_tick_mt', 'phys_motion_tick', 'phys_motion_tick_c'),
     ('yaz0_stream', 'yaz0_stream_ret'),
     ('pc_map_focus', 'pc_map_focus_target', 'pc_map_focus_now'),
@@ -528,6 +532,7 @@ KNOWN = {
         'stale_actor_target': 0x7000dea400,
         'phys_solver_steps': 0x700156f930,
         'demo_move_arrive': 0x7000c711dc,
+        'rail_point_radius': 0x7000c89d4c,
         'kf_angle': 0x70012d57fc,
         'phys_tick': 0x70000f5e20,
         'phys_tick_mt': 0x700012644c,

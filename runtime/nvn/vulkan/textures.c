@@ -691,6 +691,17 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     // first contents into the 1x1 colours the CPU reads back (exec.c readbacks_apply): a NaN there stayed for good and
     // washed the picture out (white, or neon green and yellow), about every other time at 2560 x 1440.
     bool float_rt = (usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) && format_is_float(vf);
+    // Not 3D images: BOTW's sky table (256x32x16 RGBA16F, the atmosphere's scattering) is one, filled from the CPU right
+    // after this clear. AMD's Windows driver (RX 6600, 26.6.2) kept part of the clear through that copy: read back from
+    // the GPU, 40% of the table was wrong (whole rows empty), the sky came out grey or black everywhere, from Alpha 4 on
+    // (#359, #665); not cleared, the table read back whole and the sky was right. On NVIDIA it reads back whole either
+    // way. 3D targets the game draws into start as they did before Alpha 4. SAVAGEWIND_VK_CLEAR_3D=1: cleared too.
+    static int clear_3d = -1;
+    if (clear_3d < 0) {
+        clear_3d = getenv("SAVAGEWIND_VK_CLEAR_3D") ? atoi(getenv("SAVAGEWIND_VK_CLEAR_3D")) != 0 : 0;
+        if (clear_3d) LOG("[vk] new 3D images cleared too (SAVAGEWIND_VK_CLEAR_3D)\n");
+    }
+    if (type == VK_IMAGE_TYPE_3D && !clear_3d) float_rt = false;
     if ((b->scalable || float_rt) && !depthfmt) {  // (scalable: made again at a new scale, no stale memory in what frames keep)
         VkCommandBuffer cb = vk_upload_cmd();
         VkClearColorValue zero = {{0}};

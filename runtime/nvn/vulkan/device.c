@@ -1726,8 +1726,26 @@ static void *pt_waiter(void *arg) {
     }
 }
 
+// (testing) SAVAGEWIND_DEBUG_PRESENT_LIMIT=<fps>: each present held until 1/fps after the last one, inside the present
+// call, as an external frame limiter does (RivaTuner hooks vkQueuePresentKHR, Radeon Chill holds it in the driver):
+// the thread that presents waits there, not the game
+static void external_limiter(void) {
+    static double iv = -1;
+    static uint64_t next;
+    if (iv < 0) {
+        const char *e = getenv("SAVAGEWIND_DEBUG_PRESENT_LIMIT");
+        iv = e && atof(e) > 0 ? 1e9 / atof(e) : 0;
+        if (iv > 0) LOG("[vk] presents held to %.1f fps inside the present (an external limiter, testing)\n", 1e9 / iv);
+    }
+    if (iv <= 0) return;
+    uint64_t now = SDL_GetTicksNS();
+    if (next > now) SDL_DelayPrecise(next - now), now = next;
+    next = next && now - next < (uint64_t)iv ? next + (uint64_t)iv : now + (uint64_t)iv;
+}
+
 // vkQueuePresentKHR, timed and given a present id for the waiter when SAVAGEWIND_LOG_PRESENT asks
 static VkResult queue_present(VkQueue q, const VkPresentInfoKHR *info) {
+    external_limiter();
     if (pt_every < 0) {
         const char *e = getenv("SAVAGEWIND_LOG_PRESENT");
         pt_every = e ? atoi(e) : 0;
