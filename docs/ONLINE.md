@@ -345,7 +345,10 @@ taking one off would have it go everywhere).
 
 Weapons and shields lying in the world (protocol 18): each game watches the Weapon_* actors within 4 m of its Link
 that he doesn't carry; one gone with him within 2.5 m was picked up (PICK: its name, where it was), and the other
-games delete the one of that name within 2 m of it.
+games delete the one of that name within 2 m of it. And those within 6 m of the enemies it has for real: one that
+comes to be in such an enemy's hand (a camp's weapons lie on the ground until its enemies are alarmed) is a PICK
+too, where it lay. Without it the others' games still had the camp's weapons lying there, and each one came to be
+there twice once it was the dead enemy's loot (the Great Plateau's cliff camp: 3 Bokoblin clubs, 2 shields).
 
 ### Enemies
 
