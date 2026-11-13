@@ -37,14 +37,15 @@ extern bool vk_dlss_available(void);
 bool fsr3_available(void);  // (vulkan/fsr3.h: built in)
 bool fsr4_available(void);  // (vulkan/fsr_api.h: AMD's DLLs, on an AMD Radeon)
 #endif
-// FSR 3 and FSR 4 upscaling are held back until the motion vectors are redesigned (Alpha 6). FSR itself costs the CPU
-// next to nothing; recording the vectors on the render thread costs 1.2 ms a frame, spread over many small steps, with
-// no single defect to fix (2026-11-09, RTX 3060, 1440p Quality: 130 fps native, 104 with FSR 3, 130 with FSR 3 and no
-// vectors), so FSR runs slower than native where that thread is the limit. That work has to leave the render thread.
-// SAVAGEWIND_FSR3=1 offers it anyway (tests); TAA and frame generation stay as they are.
+// FSR 3 and FSR 4 upscaling were held back from 0.5.0 until the motion vectors left the render thread (recording them
+// there cost 1.2 ms a frame: RTX 3060, 1440p Quality, 130 fps native, 104 with FSR 3). Offered again since they are
+// worked out on a thread of their own (vulkan/mvec.c) and the shadow cascades follow the upscaler's factor
+// (shadow_map_size): same PC, Savage preset, 1440p, FSR 3 Quality over native at the Great Plateau 106 / 102,
+// Kakariko 106 / 88, Korok Forest 67 / 40. SAVAGEWIND_FSR3=0 hides them again (a settings file with fsr3 or fsr4 then
+// loads as FSR 1 with the same mode).
 bool fsr3_upscaler_enabled(void) {
     static int on = -1;
-    if (on < 0) on = getenv("SAVAGEWIND_FSR3") && atoi(getenv("SAVAGEWIND_FSR3")) != 0;
+    if (on < 0) on = !getenv("SAVAGEWIND_FSR3") || atoi(getenv("SAVAGEWIND_FSR3")) != 0;
     return on;
 }
 
@@ -53,7 +54,7 @@ bool upscaler_available(int u) {
     return u == UPSCALE_OFF || u == UPSCALE_METALFX;
 #else
     return u == UPSCALE_OFF || u == UPSCALE_FSR1 || (u == UPSCALE_FSR3 && fsr3_available() && fsr3_upscaler_enabled())
-        || (u == UPSCALE_FSR4 && fsr4_available() && fsr3_upscaler_enabled())  // (FSR 4: the same hold-back as FSR 3)
+        || (u == UPSCALE_FSR4 && fsr4_available() && fsr3_upscaler_enabled())  // (FSR 4: the same switch as FSR 3)
         || (u == UPSCALE_DLSS && vk_dlss_available());
 #endif
 }

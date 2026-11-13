@@ -1813,8 +1813,10 @@ It comes back with the redesign of the motion vectors planned for Alpha 6: recor
 1.2 ms a frame for 2969 draws, spread out (constant buffers 0.35, matching 0.24, frame start 0.16, program 0.15, per-draw
 setup 0.13, push 0.10), with no single defect. FSR itself costs next to nothing there (2026-11-09, 1440p Quality: 130 fps
 native, 104 with FSR 3, 130 with FSR 3 and `SAVAGEWIND_MVEC=0`). That work has to leave the render thread.
-Until then `SAVAGEWIND_FSR3=1` offers it for tests, and a settings file with `upscaler = fsr3` loads as AMD FSR 1 with
-the same quality mode. TAA (Video > Anti-aliasing) and frame generation stay available.
+Offered again since 2026-11-13: the vectors are worked out on a thread of their own (`runtime/nvn/vulkan/mvec.c`) and
+the shadow cascades follow the upscaler's factor (same PC, Savage preset, 1440p, FSR 3 Quality over native: Great
+Plateau 106 / 102, Kakariko 106 / 88, Korok Forest 67 / 40). `SAVAGEWIND_FSR3=0` hides FSR 3 and FSR 4 again; a
+settings file with `upscaler = fsr3` then loads as AMD FSR 1 with the same quality mode.
 
 ## Frame generation (AMD FSR 3)
 

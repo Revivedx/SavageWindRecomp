@@ -114,7 +114,7 @@ const LfInfo LF_TABLE[] = {
     {"SAVAGEWIND_FRAME_CLEAR", LF_KIND_SWITCH, LF_GROUP_OTHER, "", ""},
     {"SAVAGEWIND_FRAME_LOG", LF_KIND_NUMBER, LF_GROUP_DEV, "", ""},
     {"SAVAGEWIND_FREECAM_TEST", LF_KIND_NUMBER, LF_GROUP_DEV, "", ""},
-    {"SAVAGEWIND_FSR3", LF_KIND_NUMBER, LF_GROUP_PLAY, "1", "Offers AMD FSR 3 upscaling in the Video menu (builds that include it)."},
+    {"SAVAGEWIND_FSR3", LF_KIND_NUMBER, LF_GROUP_PLAY, "0", "Hides AMD FSR 3 and FSR 4 upscaling in the Video menu (0: they load as AMD FSR 1)."},
     {"SAVAGEWIND_FSR3_API", LF_KIND_NUMBER, LF_GROUP_OTHER, "", ""},
     {"SAVAGEWIND_FSR3_DEBUG", LF_KIND_TEXT, LF_GROUP_DEV, "", ""},
     {"SAVAGEWIND_FSR3_REACTIVE", LF_KIND_NUMBER, LF_GROUP_OTHER, "", ""},
