@@ -34,6 +34,7 @@ Settings g_settings = {
     .game_fxaa = true,
     .wet_fix = false,
     .render_scale = RSCALE_100,
+    .anisotropy = 1,
     .tex_lod_bias = TEX_LOD_DEFAULT,
     .mouse_camera = true,
     .pc_cursor = true,
@@ -138,8 +139,10 @@ void graphics_preset_apply(int preset) {
     g_settings.anisotropy = k_gpreset[preset].anisotropy;
     g_settings.antialias = k_gpreset[preset].antialias;
     g_settings.game_fxaa = k_gpreset[preset].game_fxaa;
-    g_settings.upscaler = k_gpreset[preset].upscaler;
-    if (g_settings.upscaler != UPSCALE_OFF) g_settings.upscale_quality = k_gpreset[preset].upscale_quality;
+    if (preset == GPRESET_POTATO || (g_settings.upscaler != UPSCALE_FSR3 && g_settings.upscaler != UPSCALE_FSR4)) {
+        g_settings.upscaler = k_gpreset[preset].upscaler;
+        if (g_settings.upscaler != UPSCALE_OFF) g_settings.upscale_quality = k_gpreset[preset].upscale_quality;
+    }
     g_settings.async_shaders = k_gpreset[preset].async_shaders;
     g_settings.render_scale = k_gpreset[preset].render_scale;
 }

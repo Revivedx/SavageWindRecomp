@@ -22,9 +22,13 @@ int main(int argc, char **argv) {
     const int expected[] = {-1, 0, 1, INT_MAX, -1, -1, -1, -1, -1, -1, -1};
     for (unsigned i = 0; i < sizeof values / sizeof *values; i++)
         assert(gpu_index_parse(values[i]) == expected[i]);
+    assert(graphics_preset_current() == GPRESET_ORIGINAL);
     settings_load();
     assert(g_settings.gpu == atoi(argv[2]));
     settings_save();
+
+    // Default settings match GPRESET_ORIGINAL
+    assert(graphics_preset_current() == GPRESET_ORIGINAL);
 
     // Unified AA row tests
     settings_aa_row_set(AA_ROW_FXAA);
@@ -37,10 +41,11 @@ int main(int argc, char **argv) {
     assert(g_settings.antialias == AA_SMAA);
     assert(settings_aa_row() == AA_ROW_SMAA);
 
-    // Graphics preset tests with fork field preservation
+    // Graphics preset tests with fork field preservation (including FSR3/FSR4 preservation)
     g_settings.mvec_mode = MVEC_MODE_HYBRID;
     g_settings.upscale_quality = UPQ_NATIVE;
     g_settings.transparent_guides = true;
+    g_settings.upscaler = UPSCALE_FSR3;
     graphics_preset_apply(GPRESET_HIGH);
     assert(g_settings.draw_distance == DRAWDIST_MEDIUM);
     assert(g_settings.shadow_res == SHADOW_HIGH);
@@ -49,8 +54,20 @@ int main(int argc, char **argv) {
     assert(g_settings.bloom == true);
     assert(g_settings.depth_of_field == true);
     assert(g_settings.mvec_mode == MVEC_MODE_HYBRID);
+    assert(g_settings.upscaler == UPSCALE_FSR3);
     assert(g_settings.upscale_quality == UPQ_NATIVE);
     assert(g_settings.transparent_guides == true);
+
+    g_settings.upscaler = UPSCALE_FSR4;
+    g_settings.upscale_quality = UPQ_ULTRA;
+    graphics_preset_apply(GPRESET_SAVAGE);
+    assert(g_settings.upscaler == UPSCALE_FSR4);
+    assert(g_settings.upscale_quality == UPQ_ULTRA);
+
+    // Potato preset applies upscaler cleanly
+    graphics_preset_apply(GPRESET_POTATO);
+    assert(g_settings.upscaler == UPSCALE_SPATIAL);
+    assert(g_settings.upscale_quality == UPQ_QUALITY);
 
     // Potato draw distance factor
     g_settings.draw_distance = DRAWDIST_POTATO;
