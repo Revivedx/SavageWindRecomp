@@ -95,5 +95,13 @@ int main(void) {
     map = false;
     output_scale(1280, 800, true, &o);
     near(o.vh, 800); near(o.crop[3], 1);
+
+    // Near-16:9 integer resolutions (1366x768) snap 1:1 instead of rendering 1365px wide (#770).
+    for (int wide = 0; wide <= 1; wide++) {
+        output_scale(1366, 768, wide != 0, &o);
+        near(1920 * o.sx, 1366); near(1080 * o.sy, 768);
+        near(1600 * o.scene_sx, 1366); near(900 * o.scene_sy, 768);
+        near(o.vw, 1366); near(o.vh, 768); near(o.vx, 0); near(o.vy, 0);
+    }
     puts("PASS: taller map viewport, 16:9 fallback, disabled fill, title, loading and ultrawide");
 }
