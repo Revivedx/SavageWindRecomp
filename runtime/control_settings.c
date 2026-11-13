@@ -28,8 +28,9 @@ static const Setting settings[] = {
     B(fullscreen), I(window_w, 0, 16384, NULL), I(window_h, 0, 16384, NULL),
     I(upscaler, 0, UPSCALE_COUNT - 1, "off|metalfx|fsr1|fsr3|dlss"),
     I(upscale_quality, 0, UPQ_COUNT - 1, "ultra_quality|quality|balanced|performance|ultra_performance"),
-    I(antialias, 0, AA_TAA, "off|smaa|taa"), B(game_fxaa),
-    I(anisotropy, 0, 4, "game|2x|4x|8x|16x"), I(sharpening, 0, 10, NULL),
+    I(antialias, 0, AA_TAA, "off|smaa|taa"), B(game_fxaa), B(wet_fix),
+    I(render_scale, 0, RSCALE_COUNT - 1, "50|75|100|125|150|200"),
+    I(anisotropy, 0, 4, "game|2x|4x|8x|16x"), I(tex_lod_bias, 0, TEX_LOD_COUNT - 1, "default|sharp|sharper"), I(sharpening, 0, 10, NULL),
     B(frame_gen), F(volume, 0, 2), B(reverb), B(movie_audio),
     I(perf_overlay, 0, PERF_FULL, "off|fps|full"), I(fps_limit, 0, 360, NULL),
     I(vsync, 0, VSYNC_COUNT - 1, "on|fast|adaptive|off"), B(dpad_move), B(freecam_sticks),
@@ -39,9 +40,10 @@ static const Setting settings[] = {
     F(motion_sens, .1, 10), I(motion_invert, 0, 3, "off|up_down|left_right|both"),
     I(button_icons, 0, ICONS_COUNT - 1, "auto|keyboard|xbox|playstation|nintendo"),
     B(async_shaders), B(precompile_shaders),
-    I(shadow_res, 0, SHADOW_COUNT - 1, "console|high|ultra|extreme"), B(wide_view),
+    I(shadow_res, 0, SHADOW_COUNT - 1, "console|high|ultra|extreme|potato"), B(wide_view), B(hud_at_edges),
     I(hdr, 0, HDR_COUNT - 1, "auto|on|off"), I(hdr_white, 0, 1000, NULL),
-    I(fov, 50, 200, NULL), I(hud_size, 50, 150, NULL), I(color_exposure, -20, 20, NULL), I(color_contrast, -50, 50, NULL),
+    I(fov, 50, 200, NULL), I(hud_size, 50, 150, NULL), B(bloom), B(depth_of_field), B(dynamic_res),
+    I(color_exposure, -20, 20, NULL), I(color_contrast, -50, 50, NULL),
     I(color_saturation, -100, 100, NULL), I(color_temperature, -100, 100, NULL),
     I(color_tint, -100, 100, NULL),
     {"color_lut", g_settings.color_lut, TEXT, 0, 0, NULL},
@@ -59,6 +61,8 @@ static const Setting *find(const char *key) {
     if (!strcmp(key, "fps")) key = "fps_limit";
     if (!strcmp(key, "left_stick_deadzone")) key = "stick_deadzone[0]";
     if (!strcmp(key, "right_stick_deadzone")) key = "stick_deadzone[1]";
+    if (!strcmp(key, "hud_edges")) key = "hud_at_edges";
+    if (!strcmp(key, "dynamic_resolution")) key = "dynamic_res";
     for (size_t i = 0; i < sizeof settings / sizeof *settings; i++)
         if (!strcmp(key, settings[i].key)) return &settings[i];
     return NULL;

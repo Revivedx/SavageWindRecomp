@@ -15,7 +15,7 @@ bool fsr3_upscaler_enabled(void);  // (nvn/output_scale.c: FSR 3 upscaling held 
 #define SETTINGS_FILE settings_file()
 
 // SAVAGEWIND_SETTINGS=<path>: another settings file (test runs never touch the player's savagewind.ini)
-static const char *settings_file(void) {
+const char *settings_file(void) {
     const char *e = getenv("SAVAGEWIND_SETTINGS");
     return e && *e ? e : "savagewind.ini";
 }
@@ -32,6 +32,9 @@ Settings g_settings = {
     .upscaler = UPSCALE_DEFAULT,  // (Off: the window's resolution; MetalFX on macOS)
     .upscale_quality = UPQ_QUALITY,
     .game_fxaa = true,
+    .wet_fix = false,
+    .render_scale = RSCALE_100,
+    .tex_lod_bias = TEX_LOD_DEFAULT,
     .mouse_camera = true,
     .pc_cursor = true,
     .mouse_sens = MOUSE_SENS_DEFAULT,
@@ -48,10 +51,14 @@ Settings g_settings = {
     .vsync = VSYNC_DEFAULT,
     .gpu = -1,
     .wide_view = true,
+    .hud_at_edges = false,
     .fov = 100,
     .hud_size = 100,
     .color_lut_strength = 100,
     .haze = 100,
+    .bloom = true,
+    .depth_of_field = true,
+    .dynamic_res = true,
     .motion_device = MOTION_DEV_AUTO,
     .transparent_guides = false,
     .mvec_mode = MVEC_MODE_HYBRID,
@@ -77,7 +84,65 @@ static const char *const k_mvec_mode[MVEC_MODE_COUNT] = {"hybrid", "objects", "c
 // it; one who left it off was on the default, since the menu wrote every key).
 #define SETTINGS_VERSION 4
 
-static const char *const k_drawdist[DRAWDIST_COUNT] = {"original", "medium", "high"};  // (DRAWDIST_*)
+static const char *const k_drawdist[DRAWDIST_COUNT] = {"original", "medium", "high", "potato"};  // (DRAWDIST_*)
+static const char *const k_tex_lod_bias[TEX_LOD_COUNT] = {"default", "sharp", "sharper"};
+static const char *const k_shadow[SHADOW_COUNT] = {"console", "high", "ultra", "extreme", "potato"};
+
+int settings_aa_row(void) {
+    return g_settings.antialias == AA_TAA ? AA_ROW_TAA : g_settings.antialias == AA_SMAA ? AA_ROW_SMAA
+         : g_settings.game_fxaa ? AA_ROW_FXAA : AA_ROW_OFF;
+}
+void settings_aa_row_set(int row) {
+    g_settings.antialias = row == AA_ROW_TAA ? AA_TAA : row == AA_ROW_SMAA ? AA_SMAA : AA_OFF;
+    g_settings.game_fxaa = row == AA_ROW_FXAA;
+}
+
+static const struct {
+    int draw_distance, shadow_res;
+    bool bloom, depth_of_field, dynamic_res;
+    int anisotropy, antialias;
+    bool game_fxaa;
+    int upscaler, upscale_quality;
+    bool async_shaders;
+    int render_scale;
+} k_gpreset[GPRESET_COUNT] = {
+    {DRAWDIST_POTATO, SHADOW_POTATO, false, false, true, 0, AA_OFF, true, UPSCALE_SPATIAL, UPQ_QUALITY, true, RSCALE_50},
+    {DRAWDIST_ORIGINAL, SHADOW_CONSOLE, true, true, true, 1 /* 2x */, AA_OFF, true, UPSCALE_DEFAULT, UPQ_QUALITY, true, RSCALE_100},
+    {DRAWDIST_MEDIUM, SHADOW_HIGH, true, true, false, 3 /* 8x */, AA_SMAA, false, UPSCALE_DEFAULT, UPQ_QUALITY, false, RSCALE_125},
+    {DRAWDIST_HIGH, SHADOW_EXTREME, true, true, false, 4 /* 16x */, AA_TAA_OR_SMAA, false, UPSCALE_DEFAULT, UPQ_QUALITY, false, RSCALE_150},
+};
+const char *const g_gpreset_names[GPRESET_COUNT] = {"Potato", "Original", "High", "Savage"};
+
+int graphics_preset_count(void) { return GPRESET_COUNT; }
+
+int graphics_preset_current(void) {
+    for (int i = 0; i < graphics_preset_count(); i++)
+        if (g_settings.draw_distance == k_gpreset[i].draw_distance && g_settings.shadow_res == k_gpreset[i].shadow_res &&
+            g_settings.bloom == k_gpreset[i].bloom && g_settings.depth_of_field == k_gpreset[i].depth_of_field &&
+            g_settings.dynamic_res == k_gpreset[i].dynamic_res && g_settings.anisotropy == k_gpreset[i].anisotropy &&
+            g_settings.antialias == k_gpreset[i].antialias && g_settings.game_fxaa == k_gpreset[i].game_fxaa &&
+            g_settings.upscaler == k_gpreset[i].upscaler &&
+            (g_settings.upscaler == UPSCALE_OFF || g_settings.upscale_quality == k_gpreset[i].upscale_quality) &&
+            g_settings.async_shaders == k_gpreset[i].async_shaders && g_settings.render_scale == k_gpreset[i].render_scale)
+            return i;
+    return -1;
+}
+
+void graphics_preset_apply(int preset) {
+    if (preset < 0 || preset >= GPRESET_COUNT) return;
+    g_settings.draw_distance = k_gpreset[preset].draw_distance;
+    g_settings.shadow_res = k_gpreset[preset].shadow_res;
+    g_settings.bloom = k_gpreset[preset].bloom;
+    g_settings.depth_of_field = k_gpreset[preset].depth_of_field;
+    g_settings.dynamic_res = k_gpreset[preset].dynamic_res;
+    g_settings.anisotropy = k_gpreset[preset].anisotropy;
+    g_settings.antialias = k_gpreset[preset].antialias;
+    g_settings.game_fxaa = k_gpreset[preset].game_fxaa;
+    g_settings.upscaler = k_gpreset[preset].upscaler;
+    if (g_settings.upscaler != UPSCALE_OFF) g_settings.upscale_quality = k_gpreset[preset].upscale_quality;
+    g_settings.async_shaders = k_gpreset[preset].async_shaders;
+    g_settings.render_scale = k_gpreset[preset].render_scale;
+}
 
 static const char *const k_icons[ICONS_COUNT] = {"auto", "keyboard", "xbox", "playstation", "nintendo"};
 
@@ -98,10 +163,11 @@ static void gyro_startup_overrides(void) {
     v = getenv("SAVAGEWIND_GYRO_SCENE");
     if (v && *v) g_settings.gyro_scene = atoi(v) != 0;
 }
+static bool s_settings_loaded;
+
 void settings_load(void) {
-    static bool loaded;
-    if (loaded) return;
-    loaded = true;
+    if (s_settings_loaded) return;
+    s_settings_loaded = true;
     FILE *f = fopen(SETTINGS_FILE, "r");
     if (!f) {
         gyro_startup_overrides();
@@ -161,11 +227,21 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "antialias"))  // ("fxaa": SMAA now; "taa": Vulkan only)
             g_settings.antialias = !strcmp(val, "off") ? AA_OFF : !strcmp(val, "taa") ? AA_TAA_OR_SMAA : AA_SMAA;
+        else if (!strcmp(key, "render_scale")) {  // (percent: 50, 75, 100, 125, 150, 200)
+            int p = atoi(val);
+            g_settings.render_scale = p >= 200 ? RSCALE_200 : p >= 150 ? RSCALE_150 : p >= 125 ? RSCALE_125
+                                    : p >= 100 ? RSCALE_100 : p >= 75 ? RSCALE_75 : RSCALE_50;
+        }
         else if (!strcmp(key, "anisotropy")) {  // (game, 2x .. 16x)
             int a = atoi(val);
             g_settings.anisotropy = a >= 16 ? 4 : a >= 8 ? 3 : a >= 4 ? 2 : a >= 2 ? 1 : 0;
         }
+        else if (!strcmp(key, "texture_lod_bias")) {
+            for (int i = 0; i < TEX_LOD_COUNT; i++)
+                if (!strcmp(val, k_tex_lod_bias[i])) g_settings.tex_lod_bias = i;
+        }
         else if (!strcmp(key, "game_fxaa")) g_settings.game_fxaa = atoi(val) != 0;
+        else if (!strcmp(key, "wet_fix")) g_settings.wet_fix = atoi(val) != 0;
         else if (!strcmp(key, "frame_generation")) g_settings.frame_gen = atoi(val) != 0;
         else if (!strcmp(key, "sharpening")) {  // (percent, in steps of 10)
             int p = atoi(val);
@@ -205,6 +281,7 @@ void settings_load(void) {
         else if (!strcmp(key, "async_shaders")) g_settings.async_shaders = atoi(val) != 0;
         else if (!strcmp(key, "precompile_shaders")) g_settings.precompile_shaders = atoi(val) != 0;
         else if (!strcmp(key, "wide_view")) g_settings.wide_view = atoi(val) != 0;
+        else if (!strcmp(key, "hud_at_edges") || !strcmp(key, "hud_edges")) g_settings.hud_at_edges = atoi(val) != 0;
         else if (!strcmp(key, "hdr")) {
             for (int i = 0; i < HDR_COUNT; i++)
                 if (!strcmp(val, k_hdr[i])) g_settings.hdr = i;
@@ -230,7 +307,13 @@ void settings_load(void) {
         else if (!strcmp(key, "one_hit_kill")) g_settings.one_hit_kill = atoi(val) != 0;
         else if (!strcmp(key, "damage_taken")) g_settings.damage_taken = atoi(val);  // (percent)
         else if (!strcmp(key, "damage_dealt")) g_settings.damage_dealt = atoi(val);
-        else if (!strcmp(key, "haze")) { int v = atoi(val); g_settings.haze = v < 0 ? 0 : v > 100 ? 100 : v; }  // (percent)
+        else if (!strcmp(key, "haze")) {  // (percent; an older ini's 0-50 reads as 75: HAZE_MIN)
+            int v = atoi(val);
+            g_settings.haze = v < HAZE_MIN ? HAZE_MIN : v > 100 ? 100 : v;
+        }
+        else if (!strcmp(key, "bloom")) g_settings.bloom = atoi(val) != 0;
+        else if (!strcmp(key, "depth_of_field")) g_settings.depth_of_field = atoi(val) != 0;
+        else if (!strcmp(key, "dynamic_resolution") || !strcmp(key, "dynamic_res")) g_settings.dynamic_res = atoi(val) != 0;
         else if (!strcmp(key, "colour_exposure")) g_settings.color_exposure = (int)lroundf((float)atof(val) * 10);  // (EV)
         else if (!strcmp(key, "colour_contrast")) g_settings.color_contrast = atoi(val);  // (percent)
         else if (!strcmp(key, "colour_saturation")) g_settings.color_saturation = atoi(val);
@@ -249,9 +332,10 @@ void settings_load(void) {
                                  : !strcmp(val, "camera") ? MVEC_MODE_CAMERA
                                  : MVEC_MODE_HYBRID;
         }
-        else if (!strcmp(key, "shadow_resolution"))  // (console / high / ultra / extreme)
-            g_settings.shadow_res = !strcmp(val, "extreme") ? SHADOW_EXTREME : !strcmp(val, "ultra") ? SHADOW_ULTRA
-                                  : !strcmp(val, "high") ? SHADOW_HIGH : SHADOW_CONSOLE;
+        else if (!strcmp(key, "shadow_resolution"))  // (console / high / ultra / extreme / potato)
+            g_settings.shadow_res = !strcmp(val, "potato") ? SHADOW_POTATO : !strcmp(val, "extreme") ? SHADOW_EXTREME
+                                  : !strcmp(val, "ultra") ? SHADOW_ULTRA : !strcmp(val, "high") ? SHADOW_HIGH
+                                  : SHADOW_CONSOLE;
         else if (!strcmp(key, "text_language")) {  // (a region language: USen, EUes, ...; auto)
             g_settings.text_language = 0;
             for (int i = 1; i < g_ntext_languages; i++)
@@ -289,6 +373,9 @@ void settings_load(void) {
         g_settings.async_shaders = true;
         LOG("[settings] %s: version %d async_shaders 0 -> 1 (the new default)\n", SETTINGS_FILE, version);
     }
+    if (g_settings.antialias != AA_OFF) g_settings.game_fxaa = false;  // (one anti-aliasing at a time: settings_aa_row)
+    if (g_settings.haze < HAZE_MIN) g_settings.haze = HAZE_MIN;
+    if (g_settings.haze > 100) g_settings.haze = 100;
     if (!tip_key) g_settings.menu_tip_seen = true;  // (a settings file from before the note: not a first launch)
     if (g_settings.volume < 0) g_settings.volume = 0;
     if (g_settings.volume > 2) g_settings.volume = 2;
@@ -353,11 +440,19 @@ void settings_save(void) {
     int u = g_settings.upscaler, uq = g_settings.upscale_quality;
     fprintf(f, "upscaler = %s\n", u >= 0 && u < UPSCALE_COUNT ? ups[u] : "off");
     fprintf(f, "upscaler_quality = %s\n", k_quality[uq >= 0 && uq < UPQ_COUNT ? uq : UPQ_QUALITY]);
+    {
+        static const int rs[RSCALE_COUNT] = {50, 75, 100, 125, 150, 200};
+        int r = g_settings.render_scale;
+        fprintf(f, "render_scale = %d\n", rs[r >= 0 && r < RSCALE_COUNT ? r : RSCALE_100]);
+    }
     fprintf(f, "antialias = %s\n", g_settings.antialias == AA_TAA ? "taa" : g_settings.antialias == AA_SMAA ? "smaa" : "off");
     fprintf(f, "game_fxaa = %d\n", g_settings.game_fxaa ? 1 : 0);
+    fprintf(f, "wet_fix = %d\n", g_settings.wet_fix ? 1 : 0);
     int an = g_settings.anisotropy;
     if (an >= 1 && an <= 4) fprintf(f, "anisotropy = %dx\n", 1 << an);
     else fprintf(f, "anisotropy = game\n");
+    int lb = g_settings.tex_lod_bias;
+    fprintf(f, "texture_lod_bias = %s\n", k_tex_lod_bias[lb >= 0 && lb < TEX_LOD_COUNT ? lb : TEX_LOD_DEFAULT]);
     fprintf(f, "sharpening = %d\n", g_settings.sharpening * 10);
     fprintf(f, "frame_generation = %d\n", g_settings.frame_gen ? 1 : 0);
     fprintf(f, "rumble = %d\n", g_settings.rumble);
@@ -384,14 +479,14 @@ void settings_save(void) {
                                                 g_settings.button_icons : ICONS_AUTO]);
     fprintf(f, "async_shaders = %d\n", g_settings.async_shaders);
     fprintf(f, "precompile_shaders = %d\n", g_settings.precompile_shaders);
-    static const char *const shadow[SHADOW_COUNT] = {"console", "high", "ultra", "extreme"};
     int sr = g_settings.shadow_res;
-    fprintf(f, "shadow_resolution = %s\n", shadow[sr >= 0 && sr < SHADOW_COUNT ? sr : SHADOW_CONSOLE]);
+    fprintf(f, "shadow_resolution = %s\n", k_shadow[sr >= 0 && sr < SHADOW_COUNT ? sr : SHADOW_CONSOLE]);
     fprintf(f, "sharper_text = %s\n", g_settings.sharper_text == 4 ? "4x" : g_settings.sharper_text == 2 ? "2x" : "off");
     fprintf(f, "transparent_guides = %d\n", g_settings.transparent_guides);
     int mm = g_settings.mvec_mode;
     fprintf(f, "motion_vectors = %s\n", k_mvec_mode[mm >= 0 && mm < MVEC_MODE_COUNT ? mm : MVEC_MODE_HYBRID]);
     fprintf(f, "wide_view = %d\n", g_settings.wide_view);
+    fprintf(f, "hud_at_edges = %d\n", g_settings.hud_at_edges ? 1 : 0);
     fprintf(f, "hdr = %s\n", k_hdr[g_settings.hdr >= 0 && g_settings.hdr < HDR_COUNT ? g_settings.hdr : HDR_AUTO]);
     fprintf(f, "sparse_heap = %s\n", k_sparse_heap[g_settings.sparse_heap >= 0 && g_settings.sparse_heap < SPARSE_HEAP_COUNT ?
                                                        g_settings.sparse_heap : SPARSE_HEAP_AUTO]);
@@ -407,7 +502,10 @@ void settings_save(void) {
     fprintf(f, "one_hit_kill = %d\n", g_settings.one_hit_kill);
     fprintf(f, "damage_taken = %d\n", g_settings.damage_taken);
     fprintf(f, "damage_dealt = %d\n", g_settings.damage_dealt);
-    fprintf(f, "haze = %d\n", g_settings.haze);
+    fprintf(f, "haze = %d\n", g_settings.haze < HAZE_MIN ? HAZE_MIN : g_settings.haze > 100 ? 100 : g_settings.haze);
+    fprintf(f, "bloom = %d\n", g_settings.bloom ? 1 : 0);
+    fprintf(f, "depth_of_field = %d\n", g_settings.depth_of_field ? 1 : 0);
+    fprintf(f, "dynamic_resolution = %d\n", g_settings.dynamic_res ? 1 : 0);
     fprintf(f, "colour_exposure = %.1f\n", g_settings.color_exposure / 10.0);
     fprintf(f, "colour_contrast = %d\n", g_settings.color_contrast);
     fprintf(f, "colour_saturation = %d\n", g_settings.color_saturation);

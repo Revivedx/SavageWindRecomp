@@ -26,6 +26,12 @@ enum { UPQ_NATIVE = 0, UPQ_ULTRA = 1, UPQ_QUALITY = 2, UPQ_BALANCED = 3, UPQ_PER
 // TAA (Vulkan): the game's own motion vectors (vulkan/mvec.c) and a jittered camera (output_scale.c rt_jitter_on)
 // blend each frame with the ones before it (vulkan/exec.c mvec_taa)
 enum { AA_OFF = 0, AA_SMAA = 1, AA_TAA = 2 };
+// Video > Anti-aliasing's row: the game's own FXAA (game_fxaa) is one of its choices, never on with SMAA or TAA
+enum { AA_ROW_OFF, AA_ROW_FXAA, AA_ROW_SMAA, AA_ROW_TAA, AA_ROW_COUNT };
+int settings_aa_row(void);
+void settings_aa_row_set(int row);
+// Video > Render scale: 50%, 75%, 100% (the window's size), 125%, 150%, 200%
+enum { RSCALE_50 = 0, RSCALE_75 = 1, RSCALE_100 = 2, RSCALE_125 = 3, RSCALE_150 = 4, RSCALE_200 = 5, RSCALE_COUNT };
 #ifdef __APPLE__
 #define AA_TAA_OR_SMAA AA_SMAA
 #else
@@ -33,7 +39,10 @@ enum { AA_OFF = 0, AA_SMAA = 1, AA_TAA = 2 };
 #endif
 // Shadow resolution (Video > Shadow resolution; runtime/nvn/output_scale.c shadow_map_size): the sun's shadow maps at
 // the console's size (BOTW: 896 x 896) or made bigger, for sharper shadows at some GPU time.
-enum { SHADOW_CONSOLE = 0, SHADOW_HIGH = 1 /* 2048 */, SHADOW_ULTRA = 2 /* 4096 */, SHADOW_EXTREME = 3 /* 8192 */, SHADOW_COUNT };
+enum { SHADOW_CONSOLE = 0, SHADOW_HIGH = 1 /* 2048 */, SHADOW_ULTRA = 2 /* 4096 */, SHADOW_EXTREME = 3 /* 8192 */,
+       SHADOW_POTATO = 4 /* 448 */, SHADOW_COUNT };
+// Video > Texture sharpness: default (0), sharp (-0.5 LOD bias), sharper (-1.0 LOD bias)
+enum { TEX_LOD_DEFAULT = 0, TEX_LOD_SHARP = 1, TEX_LOD_SHARPER = 2, TEX_LOD_COUNT };
 enum { PERF_OFF = 0, PERF_FPS = 1, PERF_FULL = 2 };
 // Frame rate (Video > Frame rate; runtime/hle/framepace.c): frames per second, 0 = no limit. The game's clock is the
 // same at every rate. The console runs the game at 30.
@@ -70,7 +79,10 @@ typedef struct {
     int upscale_quality; // UPQ_*: the upscaler's mode (how much smaller it renders)
     int antialias;       // AA_*: anti-aliasing of the game image before it is scaled to the window
     bool game_fxaa;      // the game's own FXAA, in its scene -> final image composite (vulkan/exec.c fxaa_patch)
+    bool wet_fix;        // wet surfaces in the sun (vulkan/exec.c / maxwell/translate.c)
+    int render_scale;    // RSCALE_*: internal render resolution scale
     int anisotropy;      // texture filtering: 0 the game's own, 1..4 = 2x, 4x, 8x, 16x (vulkan/textures.c)
+    int tex_lod_bias;    // TEX_LOD_*: texture mipmap LOD bias
     int sharpening;      // AMD CAS sharpening of the 3D image, 0 (off) .. 10 (100%) (vulkan/exec.c scene_post)
     bool frame_gen;      // AMD FSR 3 frame generation: a frame made between each two the game draws (vulkan/framegen.cpp)
     float volume;        // master volume, 1 = 100%
@@ -102,6 +114,7 @@ typedef struct {
     int shadow_res;      // SHADOW_*: shadow maps at the console's size or bigger
     int sharper_text;    // the game's font sheets enlarged this many times (2 or 4; 0: off), runtime/nvn/text_upscale.c
     bool wide_view;      // a window that isn't 16:9 shows more of the world instead of bars (runtime/nvn/output_scale.c)
+    bool hud_at_edges;   // on windows taller/wider than 16:9 with wide_view, anchor HUD to the window edges
     int hdr;             // HDR_* (runtime/nvn/vulkan/device.c hdr_*)
     int hdr_white;       // nits of SDR white in HDR (0: what Windows gives SDR content on that monitor)
     int sparse_heap;     // SPARSE_HEAP_*: guest heap backing (Windows Vulkan; applied on next start)
@@ -109,6 +122,9 @@ typedef struct {
     int hud_size;        // the HUD's size in play, percent of the game's own (HUD_SIZE_CHOICES, runtime/nvn/hud_scale.h)
     int draw_distance;   // DRAWDIST_*: how far placed actors are kept (runtime/draw_distance.c)
     int haze;            // the air's haze, percent of the game's (services/fs.c haze_patch; from the next start)
+    bool bloom;          // bloom effect
+    bool depth_of_field; // depth of field blur
+    bool dynamic_res;    // dynamic resolution scaling
     // Video > Colour (runtime/color_grade.h): 0 everywhere and no LUT = the game's own colours (nothing runs)
     int color_exposure;      // tenths of an EV, -20..20
     int color_contrast;      // percent, -50..50
@@ -137,9 +153,20 @@ typedef struct {
 enum { MVEC_MODE_HYBRID, MVEC_MODE_OBJECTS, MVEC_MODE_CAMERA, MVEC_MODE_COUNT };
 
 #define STICK_DEADZONE_DEFAULT 0.10f  // (the Switch's own input service has one: the game expects 0 at rest)
-#define HAZE_CHOICES {0, 25, 50, 75, 100}  // (percent of the game's haze)
-enum { DRAWDIST_ORIGINAL, DRAWDIST_MEDIUM, DRAWDIST_HIGH, DRAWDIST_COUNT };  // (Original: the game's own distances)
+#define HAZE_CHOICES {75, 90, 100}  // (percent of the game's haze: below 75 the whole picture turns teal)
+#define HAZE_MIN 75
+enum { DRAWDIST_ORIGINAL, DRAWDIST_MEDIUM, DRAWDIST_HIGH, DRAWDIST_POTATO, DRAWDIST_COUNT };  // (Original: the game's own
+                                                                                  // distances; Potato: nearer)
 float draw_distance_factor(void);  // the setting's factor on the game's distances (1: Original)
+// Video > Graphics preset: the Advanced options' draw distance, shadows, bloom, depth of field, dynamic resolution,
+// anisotropic filtering, anti-aliasing, the game's FXAA, upscaler, asynchronous shaders and render scale at once
+// (settings.c k_gpreset). Potato: for weak PCs; Original: as on the console (the defaults); High; Savage.
+enum { GPRESET_POTATO, GPRESET_ORIGINAL, GPRESET_HIGH, GPRESET_SAVAGE, GPRESET_COUNT };
+extern const char *const g_gpreset_names[GPRESET_COUNT];
+int graphics_preset_current(void);  // the preset the settings match, or -1 (Custom)
+void graphics_preset_apply(int preset);
+int graphics_preset_count(void);    // the presets offered on this machine
+const char *settings_file(void);    // savagewind.ini, or SAVAGEWIND_SETTINGS
 #define DAMAGE_CHOICES {25, 50, 75, 100, 150, 200, 300, 400}  // (Accessibility's damage multipliers, percent)
 #define FOV_CHOICES {70, 80, 90, 100, 110, 120, 130, 140, 150}  // (percent; 100: the game's own)
 #define HUD_SIZE_CHOICES {50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120, 125, 130, 135, 140, 145, 150}  // (percent; 100: the game's own)
