@@ -348,7 +348,8 @@ void bind_settings_save(FILE *f) {
 // command for the existing UI, never a stored binding. Only actions differing from their defaults use host answers.
 int16_t g_act_key[ACT_COUNT], g_act_pad[ACT_COUNT];
 static bool a_schema;  // schema 2 or newer: legacy raw-button migration has already happened
-static _Atomic uint64_t a_custom;  // at least one device differs from its factory action default
+static _Atomic uint64_t a_custom;  // at least one device differs from its factory action default (or live mask swapped)
+static _Atomic uint64_t a_mask_diff;  // k_masks[id] != k_masks_190[id] at the last act_refresh()
 static uint64_t a_explicit_key, a_explicit_pad;  // ini/action edits take precedence over legacy raw-button lines
 
 static const uint32_t *k_masks;  // the game's table: one pad mask (sead::Controller bit) per action
@@ -416,9 +417,13 @@ bool act_is_default(int id) {
 }
 
 static void act_refresh(void) {
-    uint64_t custom = 0;
-    for (int id = 0; id < ACT_COUNT; id++)
-        if (!act_is_default(id)) custom |= 1ull << id;
+    uint64_t custom = 0, diff = 0;
+    for (int id = 0; id < ACT_COUNT; id++) {
+        bool swapped = k_masks && k_masks[id] != k_masks_190[id];
+        if (swapped) diff |= 1ull << id;
+        if (!act_is_default(id) || swapped) custom |= 1ull << id;
+    }
+    a_mask_diff = diff;
     a_custom = custom;
 }
 
@@ -481,6 +486,10 @@ uint64_t act_scan_pad(uint64_t pad_buttons, uint32_t host_buttons) {
     for (int id = 0; id < ACT_COUNT; id++) {
         if (!(custom >> id & 1)) continue;
         int k = g_act_pad[id];
+        if (k_masks && k_masks[id] != k_masks_190[id] && k == act_default(BIND_DEV_PAD, id)) {
+            int b = mask_button(k_masks[id]);
+            if (b >= 0) k = k_def_pad[b];
+        }
         out |= (uint64_t)(k >= 0 && k < PADB_HOST_COUNT && (host_buttons >> k & 1)) << id;
     }
     return out;
@@ -682,6 +691,8 @@ void act_poll(bool live) {
 
 int rt_act_query(int kind, uint64_t pad, uint64_t id, uint64_t lr, uint64_t masks) {
     if (!k_masks && masks) { k_masks = (const uint32_t *)(uintptr_t)masks; act_refresh(); }
+    if (id < ACT_COUNT && k_masks && (k_masks[id] != k_masks_190[id]) != ((a_mask_diff >> id & 1) != 0))
+        act_refresh();
     bool custom = id < ACT_COUNT && (a_custom >> id & 1);
     if (act_log_on()) act_log_query(kind, pad, (unsigned)id, lr, custom && a_live);
     if (id >= ACT_COUNT || !a_live || !custom) return -1;
