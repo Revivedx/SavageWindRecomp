@@ -407,9 +407,11 @@ dmg: app
 # Needs: Windows 10+ x64, a Vulkan 1.3 driver, an SSE4.2 CPU (GENARCH_COMPAT x86-64-v2; checked at startup).
 DIST     := build/dist/Savage Wind
 WIN_B    := build/win-release
-# The release runtime is profile-guided (tools/pgo/runtime.profdata, about +7-10% fps at 1080p TAA on a 5700X3D + 3080 Ti).
-# DIST_PGO= (empty) builds it plain, e.g. with a clang other than the one that wrote the profile.
+# The release runtime is profile-guided with ThinLTO (tools/pgo/runtime.profdata: +19..33% fps at 1080p/1440p TAA on a
+# 5700X3D + 3080 Ti, see tools/pgo/README.md). DIST_PGO= and DIST_LTO= (empty) build it plain, e.g. with a clang other
+# than the one that wrote the profile.
 DIST_PGO ?= use
+DIST_LTO ?= thin
 deps-windows:
 	tools/build_deps_windows.sh
 dist:
@@ -418,7 +420,7 @@ dist:
 	@! find tools -maxdepth 1 -name '*.py' -newer build/helper/swgen/swgen.exe | grep -q . || \
 	    { echo "make gen-helper first: tools/*.py changed since build/helper/swgen was frozen"; exit 1; }
 	@[ -x build/zig/zig.exe ] || { echo "tools/fetch_zig.sh first (the compiler)"; exit 1; }
-	$(MAKE) B=$(WIN_B) DEPS=$(CURDIR)/build/deps-win RELEASE=1 PGO=$(DIST_PGO) $(WIN_B)/savagewind.exe $(WIN_B)/savagewind-config.exe $(WIN_B)/sw-update.exe
+	$(MAKE) B=$(WIN_B) DEPS=$(CURDIR)/build/deps-win RELEASE=1 PGO=$(DIST_PGO) LTO=$(DIST_LTO) $(WIN_B)/savagewind.exe $(WIN_B)/savagewind-config.exe $(WIN_B)/sw-update.exe
 	! nm $(WIN_B)/savagewind.exe | grep ' f_70' >/dev/null  # (no game code inside)
 	rm -rf build/dist && mkdir -p "$(DIST)/gamelib-src"
 	cp $(WIN_B)/savagewind.exe $(WIN_B)/savagewind.dll.a "$(DIST)/"
