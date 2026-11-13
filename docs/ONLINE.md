@@ -372,7 +372,11 @@ there stay gone, until it comes again.
 Owners (protocol 13): each of the host's enemies is had for real by one game, its owner's, the player nearest it
 (another one only when the owner is 40 m from it or more, or another has been 15 m nearer for 5 s, and not again for
 10 s: each change makes it anew in one game and deletes it in another, so players fighting it together keep it with
-one of them). The host's game keeps
+one of them). Never to a player more than 80 m from it (`OWN_SAFE`), unless its owner left: a game removes an enemy
+it makes too far from its camera, short of its traverseDist (a Bokoblin made 136 m off went at once), and the one
+deleted for it in the other game was gone with it, for everyone. One its owner's game lost alive, too far from the
+host's Link to be his again, leaves the list without being marked dead; an owned one gone with life left isn't a
+death for its loot either. The host's game keeps
 the list (its own enemies found near a player, their ids everyone's) and decides; each entry of ENEMIES says its
 owner's slot. The owner's game runs it (its AI sees him, chases him, hits him as any enemy) and sends its state to the
 host's game (ESTATE: id, name, matrix, AS, life, weapon; life -1: gone there, died), which sends it on; the others show

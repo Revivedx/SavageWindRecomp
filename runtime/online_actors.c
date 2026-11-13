@@ -1327,6 +1327,10 @@ static uint64_t enemy_weapon(uint64_t a) {
 #define ENEMY_LIFE 0x848   // (an actor's life, s32: its General Life to start with; seen going down as it is hit)
 #define ENEMY_NEAR 150.0f   // (the host sends his enemies this near a player)
 #define ENEMY_AREA 170.0f   // (the others' own ones this near his Link go)
+// (an enemy is made in a game only this near its Link: a game removes an enemy it makes too far from its camera,
+// short of its traverseDist (100 m when it has none): a Bokoblin made 136 m off, of 150, went at once, a Golem 90 m
+// off, of 100, stayed; Great Plateau test 2026-11-13)
+#define OWN_SAFE 80.0f
 
 // what an enemy holds (its weapon at +0xb98, its shield at +0xbb0: linked as the player links his), for the others:
 // in the space of the hand bone it is in (each game shows its enemy playing its own AS: the weapon goes in its own
@@ -1515,6 +1519,12 @@ static void mark_dead(Cpu *c, const char *name, uint32_t hash) {
 
 // whether another player's game may have enemies for real: in the world (not loading), his Link there and not dead
 // (dead, his game stops at its game over, and what it has stops with it; trying again, his world goes)
+// an enemy's matrix (its position at 3, 7, 11) to a point
+static float dist3(const float m[12], const float q[3]) {
+    float dx = m[3] - q[0], dy = m[7] - q[1], dz = m[11] - q[2];
+    return sqrtf(dx * dx + dy * dy + dz * dz);
+}
+
 static bool can_own(const OnlinePlayer *p, int i, int me) {
     return p->used && i != me && !(p->flags & ONLINE_F_LOADING) && p->pose.valid && strncmp(p->pose.as[0], "Dead", 4) &&
            same_map(p);
@@ -1533,6 +1543,10 @@ static void enemies_host(Cpu *c, uint64_t player, const float link[3], const Onl
                 LOG("[online] %s %u gone in slot %d's game\n", g_reg[r].e.name, st[k].id, from[k]);
                 if (g_reg[r].e.life <= 0) {  // (it had died there)
                     mark_dead(c, g_reg[r].e.name, g_reg[r].e.hash);
+                    g_reg[r].used = false;
+                } else if (dist3(g_reg[r].e.m, link) > OWN_SAFE) {  // (alive, but too far for ours: made here it would
+                    // go at once; out of the list, and not marked dead)
+                    LOG("[online] %s %u: alive, too far to be ours again\n", g_reg[r].e.name, st[k].id);
                     g_reg[r].used = false;
                 } else {  // (alive, gone with his world: he died and tries again, or loads elsewhere): ours again
                     LOG("[online] %s %u: alive, ours again\n", g_reg[r].e.name, st[k].id);
@@ -1601,7 +1615,7 @@ static void enemies_host(Cpu *c, uint64_t player, const float link[3], const Onl
     for (int r = 0; r < REG; r++) {
         if (!g_reg[r].used) continue;
         OnlineEnemy *e = &g_reg[r].e;
-        float best = 1e30f, cur = 1e30f;
+        float best = 1e30f, cur = 1e30f, best3 = 1e30f;
         int nearest = me;
         for (int i = -1; i < ONLINE_MAX; i++) {
             int slot = i < 0 ? me : i;
@@ -1609,7 +1623,7 @@ static void enemies_host(Cpu *c, uint64_t player, const float link[3], const Onl
             if (i >= 0 && !can_own(&pl[i], i, me)) continue;
             float dx = e->m[3] - q[0], dz = e->m[11] - q[2], d = sqrtf(dx * dx + dz * dz);
             if (i < 0 && g_local_dead) d += 1e6f;  // (we're dead: the others' first)
-            if (d < best) best = d, nearest = slot;
+            if (d < best) best = d, nearest = slot, best3 = dist3(e->m, q);
             if (slot == e->owner) cur = d;
         }
         if (e->owner == me && g_local_dead && best < 1e6f) cur = 1e30f;  // (we died: another has it now)
@@ -1621,6 +1635,8 @@ static void enemies_host(Cpu *c, uint64_t player, const float link[3], const Onl
         g_reg[r].nearer = nearest != e->owner && best + 15 < cur ? g_reg[r].nearer + 1 : 0;
         bool far = cur > 40 || g_reg[r].nearer > 50;
         if (nearest == e->owner || (!gone_owner && (g_reg[r].hold > 0 || !far))) continue;
+        // (nor to one too far from it: his game would remove it as it is made, and it would be gone for everyone)
+        if (!gone_owner && best3 > OWN_SAFE) continue;
         LOG("[online] %s %u: slot %d's now (was %d's)\n", e->name, e->id, nearest, e->owner);
         if (e->owner == me) {  // (ours no more: it goes here, its state stays for the next one)
             Own *o = own_find(e->id);
@@ -2040,7 +2056,8 @@ static void loot_update(Cpu *c, uint64_t player, const float link[3], int me, bo
             actor_name_of(g2, n);
             if (!strncmp(n, "Weapon_", 7) && g2 != o->held[h]) o->held[h] = g2, o->held_w[h] = watch(g2);
         }
-        if (o->died || (there && life > 0)) continue;
+        // (died: seen with no life left, its body there for seconds; gone without that, the game removed it alive)
+        if (o->died || !there || life > 0) continue;
         o->died = true;
         if (!scanned) na = all_actors(*(uint64_t *)(uintptr_t)(player + 0x68), g_actors, MAX_ACTORS), scanned = true;
         loot_death(o->last_pos, na);
