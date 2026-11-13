@@ -361,7 +361,8 @@ static void voice_redirect(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
         if (!strncmp(R->rom_files[i].path, pre, pl)) chosen[nc++] = &R->rom_files[i];
     if (!nc) { LOG("[fs] voices: the RomFS has no %s folder, the game's own voices play\n", pre); free(chosen); return; }
     qsort(chosen, nc, sizeof *chosen, by_name_after);
-    int n = 0, nh = 0;
+    int n = 0, nh = 0, nov = 0;
+    uint64_t *ov_at = calloc(nc, sizeof *ov_at);  // (where a chosen file's overlay copy is appended; 0: not yet)
     struct Hybrid { int file; uint8_t *data; } *hy = malloc(sizeof *hy * R->rom_nfiles);
     for (int i = 0; i < R->rom_nfiles; i++) {
         const char *p = R->rom_files[i].path;
@@ -369,24 +370,46 @@ static void voice_redirect(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
         if (!strchr(p + 6, '/')) continue;
         RomFile *key = &R->rom_files[i], **hit = bsearch(&key, chosen, nc, sizeof *chosen, by_name_after);
         if (!hit) continue;
-        size_t pn = strlen(p), on = R->rom_files[i].size, vn = (*hit)->size;
+        // A chosen-folder file the overlay folder replaces (a voice mod) is the one that plays: its host file
+        char host[1200];
+        struct stat sb;
+        bool ov = overlay_file((*hit)->path, host, sizeof host) && !stat(host, &sb);
+        nov += ov;
+        size_t pn = strlen(p), on = R->rom_files[i].size, vn = ov ? (size_t)sb.st_size : (*hit)->size;
         if (pn > 5 && !strcmp(p + pn - 5, ".bars") && on < (1u << 20) && vn < (1u << 20)) {
             uint8_t *own = malloc(on ? on : 1), *vb = malloc(vn ? vn : 1);
-            bool ok = romfs_image_pread(R->img, own, on, R->rom_files[i].off) == (ssize_t)on &&
-                      romfs_image_pread(R->img, vb, vn, (*hit)->off) == (ssize_t)vn && bars_hybrid(own, on, vb, vn);
+            bool got = false;
+            if (ov) {
+                FILE *f = fopen(host, "rb");
+                got = f && fread(vb, 1, vn, f) == vn;
+                if (f) fclose(f);
+            } else got = romfs_image_pread(R->img, vb, vn, (*hit)->off) == (ssize_t)vn;
+            bool ok = romfs_image_pread(R->img, own, on, R->rom_files[i].off) == (ssize_t)on && got &&
+                      bars_hybrid(own, on, vb, vn);
             free(vb);
             if (ok) { hy[nh++] = (struct Hybrid){i, own}; n++; continue; }
             free(own);
         }
         uint8_t *meta = meta_copy(fmeta, foff, fsz);
-        memcpy(meta + R->rom_files[i].meta + 8, fmeta + (*hit)->meta + 8, 16);  // (data offset, size)
-        if ((*hit)->size > R->rom_files[i].size) {
+        if (ov) {  // (the host file appended past the end of the image, as the overlay below does)
+            uint64_t *at = &ov_at[hit - chosen], size = vn;  // (one appended copy for every language that plays it)
+            if (!*at) {
+                if (R->ov_n == R->ov_cap) { R->ov_cap = R->ov_cap ? R->ov_cap * 2 : 256; R->ov = realloc(R->ov, sizeof *R->ov * R->ov_cap); }
+                R->ov[R->ov_n++] = (Overlay){R->ov_end, size, strdup(host), -1, NULL};
+                *at = R->ov_end;
+                R->ov_end = (R->ov_end + size + 0xF) & ~0xFull;
+            }
+            uint64_t rel = *at - R->rom_data_off;
+            memcpy(meta + R->rom_files[i].meta + 8, &rel, 8);
+            memcpy(meta + R->rom_files[i].meta + 0x10, &size, 8);
+        } else memcpy(meta + R->rom_files[i].meta + 8, fmeta + (*hit)->meta + 8, 16);  // (data offset, size)
+        if (vn > R->rom_files[i].size) {
             R->grown = realloc(R->grown, sizeof *R->grown * (R->ngrown + 1));
-            R->grown[R->ngrown++] = (GrownFile){p, (*hit)->size - R->rom_files[i].size};
+            R->grown[R->ngrown++] = (GrownFile){p, vn - R->rom_files[i].size};
         }
         n++;
     }
-    free(chosen);
+    free(chosen), free(ov_at);
     if (nh) {  // the banks, one after another past the end of the image
         uint8_t *meta = meta_copy(fmeta, foff, fsz);
         uint64_t total = 0;
@@ -405,7 +428,8 @@ static void voice_redirect(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
         R->ov_end = (R->ov_end + total + 0xF) & ~0xFull;
     }
     free(hy);
-    LOG("[fs] voices: %d files play %s's voices (%d banks keep the text's subtitle markers)\n", n, vf, nh);
+    LOG("[fs] voices: %d files play %s's voices (%d banks keep the text's subtitle markers, %d from the overlay folder)\n",
+        n, vf, nh, nov);
 }
 
 // The game sets aside memory for a resource by its path's entry in System/Resource/ResourceSizeTable (the RSTB: the
