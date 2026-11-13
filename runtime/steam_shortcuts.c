@@ -242,8 +242,11 @@ bool steam_vdf_upsert(const uint8_t *in, size_t n, const SteamEntry *e, int coun
 #else
 #include <signal.h>
 #include <sys/wait.h>
-#include "update_appimage.h"
 extern char **environ;
+static const char *appimage_path(void) {
+    const char *a = getenv("APPIMAGE");
+    return a && *a ? a : NULL;
+}
 #endif
 #include "paths.h"
 
