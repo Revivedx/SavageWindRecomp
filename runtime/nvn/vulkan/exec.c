@@ -1094,6 +1094,20 @@ static void *worker(void *a) {
     return NULL;
 }
 
+static bool job_run_one(void) {
+    pthread_mutex_lock(&jobs_lock);
+    Job *j = jobs_head;
+    if (j) {
+        jobs_head = j->next;
+        if (!jobs_head) jobs_tail = NULL;
+    }
+    pthread_mutex_unlock(&jobs_lock);
+    if (!j) return false;
+    j->fn(j->arg);
+    free(j);
+    return true;
+}
+
 // Shaders and pipelines compile where they are first needed, the draw waiting for them (a short stutter the first time
 // an effect appears), unless the "Asynchronous shaders" setting is on: then they compile on other threads and draws
 // that need them are skipped meanwhile. That loses what the game draws only once: the save file's screenshot (a
@@ -3014,8 +3028,28 @@ static bool program_ready_now(Prog *p) {
     return true;
 }
 
-#define PROG_TAB 4096
-static struct { uint64_t key; Prog *prog; } prog_tab[PROG_TAB];
+// Programs and pipelines (pipe_tab below) are open-addressing tables grown, rehashed, at half load: a fixed table
+// filled up after about three hours of play (every slot holding another key), and the probe loop never ended.
+#define PROG_TAB 4096  // (the first size)
+typedef struct { uint64_t key; Prog *prog; } ProgSlot;
+static ProgSlot *prog_tab;
+static uint32_t prog_cap, prog_n;
+static uint32_t prog_slot_of(uint64_t h, uint32_t cap) { return (uint32_t)(h ^ (h >> 31)) & (cap - 1); }
+static void prog_tab_grow(void) {
+    uint32_t cap = prog_cap ? prog_cap * 2 : PROG_TAB;
+    ProgSlot *nt = calloc(cap, sizeof *nt);
+    if (!nt) { LOG("FATAL: program table: out of memory (%u slots)\n", cap); abort(); }
+    for (uint32_t i = 0; i < prog_cap; i++) {
+        if (!prog_tab[i].key) continue;
+        uint32_t s = prog_slot_of(prog_tab[i].key, cap);
+        while (nt[s].key) s = (s + 1) & (cap - 1);
+        nt[s] = prog_tab[i];
+    }
+    if (prog_cap) LOG("[vk] program table: %u programs, %u -> %u slots\n", prog_n, prog_cap, cap);
+    free(prog_tab);
+    prog_tab = nt;
+    prog_cap = cap;
+}
 
 // The last program and pipeline draw_ looked up (consecutive draws mostly repeat them; cleared by vk_exec_reset). Two
 // programs: the game's, and their motion vector variants (a draw of a motion pass looks up both; one memo for both
@@ -3049,12 +3083,19 @@ static Prog *get_program_(NvnProgram *np, ShaderKey *vkey, ShaderKey *fkey) {
     for (int i = 0; i < 8; i++) { h ^= fkey->rt_kind[i]; h *= 0x100000001B3ull; }
     h ^= fkey->mvec_rt; h *= 0x100000001B3ull;  // (a motion vector program's output: the pass's motion target slot)
     if (!h) h = 1;
-    uint32_t slot = (uint32_t)(h ^ (h >> 31)) & (PROG_TAB - 1);
-    while (prog_tab[slot].key && prog_tab[slot].key != h) slot = (slot + 1) & (PROG_TAB - 1);
+    if (!prog_tab) prog_tab_grow();
+    uint32_t slot = prog_slot_of(h, prog_cap);
+    while (prog_tab[slot].key && prog_tab[slot].key != h) slot = (slot + 1) & (prog_cap - 1);
     if (prog_tab[slot].key) return prog_tab[slot].prog;
+    if ((prog_n + 1) * 2 > prog_cap) {  // (an insertion: grow first, then find the slot again in the new table)
+        prog_tab_grow();
+        slot = prog_slot_of(h, prog_cap);
+        while (prog_tab[slot].key) slot = (slot + 1) & (prog_cap - 1);
+    }
     Prog *p = calloc(1, sizeof *p);
     prog_tab[slot].key = h;
     prog_tab[slot].prog = p;
+    prog_n++;
     for (int i = 0; i < 2; i++) {
         p->code[i] = np->stages[i].code_addr;
         p->cmax[i] = np->stages[i].const_offset ? np->stages[i].const_offset : 0x10000;
@@ -3312,8 +3353,26 @@ typedef struct {
 typedef struct { Prog *prog; PipeState s; } PipeKey;
 
 typedef struct { PipeKey k; uint64_t hash; VkPipeline pipe; _Atomic int state; } Pipe;  // state: 0 building, 1 ready, 2 failed
-#define PIPE_TAB 8192
-static struct { uint64_t key; Pipe *pipe; } pipe_tab[PIPE_TAB];
+#define PIPE_TAB 8192  // (the first size; grown at half load like prog_tab)
+typedef struct { uint64_t key; Pipe *pipe; } PipeSlot;
+static PipeSlot *pipe_tab;
+static uint32_t pipe_cap, pipe_n;
+static uint32_t pipe_slot_of(uint64_t h, uint32_t cap) { return (uint32_t)(h ^ (h >> 29)) & (cap - 1); }
+static void pipe_tab_grow(void) {
+    uint32_t cap = pipe_cap ? pipe_cap * 2 : PIPE_TAB;
+    PipeSlot *nt = calloc(cap, sizeof *nt);
+    if (!nt) { LOG("FATAL: pipeline table: out of memory (%u slots)\n", cap); abort(); }
+    for (uint32_t i = 0; i < pipe_cap; i++) {
+        if (!pipe_tab[i].key) continue;
+        uint32_t s = pipe_slot_of(pipe_tab[i].key, cap);
+        while (nt[s].key) s = (s + 1) & (cap - 1);
+        nt[s] = pipe_tab[i];
+    }
+    if (pipe_cap) LOG("[vk] pipeline table: %u pipelines, %u -> %u slots\n", pipe_n, pipe_cap, cap);
+    free(pipe_tab);
+    pipe_tab = nt;
+    pipe_cap = cap;
+}
 static struct { PipeKey k; Pipe *pp; } pipe_memo;  // (see prog_memo)
 
 // 8 bytes a step (PipeKey is ~700 bytes, hashed per draw); in-memory tables only - hmix values are compared with
@@ -3999,6 +4058,28 @@ static bool draw_writes_color(Prog *pr, int i) {
     return ((pr->fi->out_mask >> (i * 4)) & 0xF) && ((st.channel_mask >> (i * 4)) & 0xF);
 }
 
+// #385: repeated G-buffer slots can alias one image, but only the first slot writes it.
+// Selecting the last (masked-off) alias incorrectly takes the read-only path and skips feedback barriers.
+// On by default since 0.5.1 (#614 ROG Ally, #684 Steam Machine): SAVAGEWIND_VK_FEEDBACK_ALIAS_FIX=0 brings back the
+// last slot.
+static int feedback_color_slot(Prog *pr, NvnTexture *t) {
+    int last = -1, writable = -1;
+    for (int k = 0; k < st.rt.ncolor; k++) {
+        if (!same_image(st.rt.color[k], t)) continue;
+        last = k;
+        if (draw_writes_color(pr, k)) writable = k;
+    }
+    static int fix = -1;
+    if (fix < 0) fix = !getenv("SAVAGEWIND_VK_FEEDBACK_ALIAS_FIX") || atoi(getenv("SAVAGEWIND_VK_FEEDBACK_ALIAS_FIX")) != 0;
+    if (fix && writable >= 0) {
+        static int nlog;
+        if (last != writable && nlog++ < 8)
+            LOG("[feedback-alias] slot %d aliases writable slot %d: feedback path selected\n", last, writable);
+        return writable;
+    }
+    return last;
+}
+
 // The draw writes neither depth nor stencil: its depth attachment is only read.
 static bool depth_read_only(void) {
     if (st.ds[0] && st.ds[1]) return false;
@@ -4075,8 +4156,7 @@ static void resolve_feedback(Prog *pr) {
             // by an earlier pass, which ended with a barrier.
             if (!nolive && !is_depth) {
                 const NvnTexEntry *e = shader_texture_entry(sg, &infos[sg]->tex[i]);
-                int ci = -1;
-                for (int k = 0; k < st.rt.ncolor; k++) if (same_image(st.rt.color[k], t)) ci = k;
+                int ci = feedback_color_slot(pr, t);
                 const NvnTextureView *cv = ci >= 0 && st.rt.has_cview[ci] ? &st.rt.cview[ci] : NULL;
                 uint32_t nl = t->levels ? t->levels : 1, tl = cv && (cv->setmask & 1) ? cv->base_level : 0;
                 bool sv = e && e->has_view && (e->view.setmask & 1);
@@ -4156,8 +4236,7 @@ static void resolve_feedback(Prog *pr) {
             static int nofbl = -1;
             if (nofbl < 0) nofbl = getenv("SAVAGEWIND_VK_FEEDBACK_COPY") != NULL;  // (debugging) copies, as before
             if (!nofbl && sg == 1 && !is_depth && src->feedback_ok) {
-                int ci = -1;
-                for (int k = 0; k < st.rt.ncolor; k++) if (same_image(st.rt.color[k], t)) ci = k;
+                int ci = feedback_color_slot(pr, t);
                 if (ci >= 0) {
                     if (!src->feedback_seen && src->nview_fmt) {  // (outside a pass: no DCC for it from now on)
                         vk_end_pass();
@@ -4324,8 +4403,7 @@ static void resolve_feedback(Prog *pr) {
             else if (logfb > 0) {
                 logfb--;
                 const NvnTexEntry *e = shader_texture_entry(sg, &infos[sg]->tex[i]);
-                int ci = -1;
-                for (int k = 0; k < st.rt.ncolor; k++) if (same_image(st.rt.color[k], t)) ci = k;
+                int ci = feedback_color_slot(pr, t);
                 const NvnTextureView *cv = ci >= 0 && st.rt.has_cview[ci] ? &st.rt.cview[ci] : NULL;
                 LOG("[feedback] fs %016llx @%llx %s %ux%u fmt %#x levels %u | target view mask %#x level %u layer %u+%u | sampled view %d mask %#x "
                     "level %u+%u layer %u+%u | stage %d t%d target %d of %d out %#x mask %#x blend %d draws since %u\n", (unsigned long long)g_cur_fs_hash, (unsigned long long)st.program->stages[1].code_addr, is_depth ? "depth" : "color", src->width, src->height, t->format,
@@ -6197,8 +6275,9 @@ void vk_exec_reset(void) {
     guest_copy_flush();
     gw_lo = ~0ull;
     gw_hi = 0;
-    memset(prog_tab, 0, sizeof prog_tab);
-    memset(pipe_tab, 0, sizeof pipe_tab);
+    if (prog_tab) memset(prog_tab, 0, prog_cap * sizeof *prog_tab);  // (the grown capacity is kept for the next boot)
+    if (pipe_tab) memset(pipe_tab, 0, pipe_cap * sizeof *pipe_tab);
+    prog_n = pipe_n = 0;
     memset(prog_memo, 0, sizeof prog_memo);
     memset(&pipe_memo, 0, sizeof pipe_memo);
     key_gen++;
@@ -7610,7 +7689,7 @@ static bool one_shot_target(void) {
 // stalls on them - where a first boot linked 236 pipelines in one 109 ms frame. A stage library still to compile
 // (5-50 ms) always goes to a worker. SAVAGEWIND_PIPE_LINK_MS=0: every build on a worker, as before.
 static void build_pipeline(void *arg);
-static bool link_now(Pipe *pp) {
+static bool link_now(Pipe *pp, bool must_happen) {
     static int64_t budget = -1;
     if (budget < 0) budget = (getenv("SAVAGEWIND_PIPE_LINK_MS") ? atoi(getenv("SAVAGEWIND_PIPE_LINK_MS")) : 3) * 1000000ll;
     const Prog *pr = pp->k.prog;
@@ -7622,7 +7701,7 @@ static bool link_now(Pipe *pp) {
     static uint64_t frame, spent;
     uint64_t now = renderer_present_count();
     if (now != frame) { frame = now; spent = 0; }
-    if (spent >= (uint64_t)budget) return false;
+    if (!must_happen && spent >= (uint64_t)budget) return false;
     uint64_t t0 = SDL_GetTicksNS();
     build_pipeline(pp);
     spent += SDL_GetTicksNS() - t0;
@@ -7636,8 +7715,11 @@ static bool link_now(Pipe *pp) {
 static void wait_built(_Atomic int *state) {  // (0 building: until built or failed, 5 s at most)
     if (atomic_load(state) != 0 || sync_shaders()) return;
     uint64_t t0 = SDL_GetTicksNS();
-    while (atomic_load(state) == 0 && SDL_GetTicksNS() - t0 < 2000000ull) SDL_CPUPauseInstruction();
-    while (atomic_load(state) == 0 && SDL_GetTicksNS() - t0 < 5000000000ull) SDL_Delay(1);
+    while (atomic_load(state) == 0 && SDL_GetTicksNS() - t0 < 5000000000ull) {
+        if (job_run_one()) continue;
+        if (SDL_GetTicksNS() - t0 < 2000000ull) { SDL_CPUPauseInstruction(); continue; }
+        SDL_Delay(1);
+    }
     stat_build_waits++;
     perfcount_add(PC_BUILD_WAITS, 1);
     perfcount_add(PC_BUILD_WAIT_NS, SDL_GetTicksNS() - t0);
@@ -8048,17 +8130,25 @@ static void draw_(CmdRec *r, bool indexed) {
     if (!pp || memcmp(&pipe_memo.k, &k, sizeof k)) {
         uint64_t ph = hash_words(0xcbf29ce484222325ull, &k, sizeof k);
         if (!ph) ph = 1;
-        uint32_t pslot = (uint32_t)(ph ^ (ph >> 29)) & (PIPE_TAB - 1);
-        while (pipe_tab[pslot].key && pipe_tab[pslot].key != ph) pslot = (pslot + 1) & (PIPE_TAB - 1);
+        if (!pipe_tab) pipe_tab_grow();
+        uint32_t pslot = pipe_slot_of(ph, pipe_cap);
+        while (pipe_tab[pslot].key && pipe_tab[pslot].key != ph) pslot = (pslot + 1) & (pipe_cap - 1);
         pp = pipe_tab[pslot].pipe;
         if (!pp) {
+            if ((pipe_n + 1) * 2 > pipe_cap) {  // (an insertion: grow first, then find the slot again)
+                pipe_tab_grow();
+                pslot = pipe_slot_of(ph, pipe_cap);
+                while (pipe_tab[pslot].key) pslot = (pslot + 1) & (pipe_cap - 1);
+            }
             pp = calloc(1, sizeof *pp);
             pp->k = k;
             pipe_tab[pslot].key = ph;
             pipe_tab[pslot].pipe = pp;
+            pipe_n++;
+            bool must = one_shot_target() || draw_must_happen();
             VkPipeline ready = sync_shaders() ? VK_NULL_HANDLE : warm_ready(pr->vi, pr->fi, &k.s);
             if (ready) { pp->pipe = ready; atomic_store(&pp->state, 1); atomic_fetch_add(&stat_warm, 1); }
-            else if (sync_shaders() || !link_now(pp)) run_job(build_pipeline, pp);  // (asynchronous: a link alone is done here)
+            else if (sync_shaders() || !link_now(pp, must)) run_job(build_pipeline, pp);  // (asynchronous: a link alone is done here)
         }
         pipe_memo.k = k;
         pipe_memo.pp = pp;
