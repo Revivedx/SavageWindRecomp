@@ -47,6 +47,8 @@ static uint64_t stat_gw_waits, stat_gw_holds;  // draws / dispatches that waited
 static uint64_t stat_uub, stat_uub_same, stat_gcopy_hit, stat_gcopy_miss, stat_gcopy_bytes;  // UpdateUniformBuffer; guest_copy cache
 static uint64_t stat_ubo_direct;  // constant buffers bound in place (ubo_direct)
 static void ubo_check_done(bool report);
+static void vdyn_check(uint64_t seq);
+static void vdyn_reset(void);
 static void ubo_check_submit(uint64_t seq);
 static uint64_t stat_feedback_live;  // depth attachments sampled as they are (read-only feedback, no copy)
 static uint64_t stat_feedback_loops, stat_feedback_barriers;  // draws sampling a target they write, in a feedback loop
@@ -815,6 +817,7 @@ void renderer_wait_seq(uint64_t seq) {
                 (unsigned long long)oneshot_seq, (unsigned long long)need, (unsigned long long)seq);
         }
         vk_wait_seq(need);
+        vdyn_check(need);
         return;
     }
     if (gpu_overlap()) {
@@ -835,10 +838,12 @@ void renderer_wait_seq(uint64_t seq) {
             pthread_mutex_unlock(&seq_lock);
         }
         vk_wait_seq(seq);
+        vdyn_check(seq);
         return;
     }
     pthread_mutex_unlock(&seq_lock);
     vk_wait_seq(seq);
+    vdyn_check(seq);
 }
 
 // A call per set costs the driver a lock, a free-list walk and a handle write (~0.25 ms a frame at ~3000 new sets). Sets
@@ -6051,11 +6056,93 @@ static void hc_list_begin(void) {
     }
 }
 
+// (GPU overlap) Vertex and index data the CPU rewrites every frame, copied at translation (#620, #629, #683, #717).
+// The overlap tells the game a frame is done one frame early (renderer_wait_seq), and BOTW writes some of its vertex
+// data into a ring it reuses after that wait: rain and torch particles, read in place, came out stretched across the
+// screen for a frame where the GPU was a frame behind (RTX 5060 at 160 fps, the Deck with frame generation). Copying
+// every small fetch cost 151 -> 136 fps in heavy rain (RTX 3060, 1080p); turning the overlap off, 150 -> 95. The data
+// that raced, in the Lanayru rain, was 129 B - 2 KB fetches all within 2 MB of the heap; the rest of the in-place
+// fetches the CPU writes did not change while read. So the regions are learned: some small fetches are hashed when
+// recorded and again right after the real wait on their submission; a change (the CPU wrote it while the GPU could
+// still read it) marks its region, and from then on every fetch in a marked region is copied. Never GPU data (gw).
+// The samples go to the waiting thread through a ring the render thread never waits on (one in 4 under a lock cost
+// 4% of the frame rate). In the rain the ring was learned in its first second, and nothing the CPU wrote changed while
+// read after that; 150.9 -> 149.5 fps (4 runs each, interleaved).
+// SAVAGEWIND_VK_VDYN=0: off; =2: every fetch up to 4 KB copied (no learning, the cost above).
+#define VDYN_N 4096
+#define VDYN_SAMPLE_MAX 4096
+#define VDYN_SHIFT 20  // (a region: 1 MB; 64 KB ones took 10 marks to cover the ring instead of 2)
+#define VDYN_SMASK 31  // (one small fetch in 32 sampled)
+static int vdyn_mode = -1;
+static _Atomic uint8_t vdyn[HEAP_MAX >> VDYN_SHIFT];  // (a region: 1 once seen rewritten while read)
+static struct { uint64_t addr, size, hash, seq; } vdyn_chk[VDYN_N];
+static _Atomic uint64_t vdyn_w, vdyn_r;  // (written by the render thread / read by a waiting thread)
+static uint64_t vdyn_tick;
+static _Atomic int vdyn_marked;
+static pthread_mutex_t vdyn_lock = PTHREAD_MUTEX_INITIALIZER;  // (the readers)
+
+static int vdyn_on(void) {
+    if (vdyn_mode < 0) {
+        const char *e = getenv("SAVAGEWIND_VK_VDYN");
+        vdyn_mode = !gpu_overlap() ? 0 : e ? atoi(e) : 1;
+        LOG("[vk] vertex data the CPU rewrites while it is read: %s\n",
+            vdyn_mode == 2 ? "every fetch up to 4 KB copied" : vdyn_mode ? "its regions learned and copied" : "read in place");
+    }
+    return vdyn_mode;
+}
+
+static bool vdyn_hit(uint64_t addr, uint64_t size) {
+    if (!atomic_load_explicit(&vdyn_marked, memory_order_relaxed) || addr < HEAP_BASE || addr + size > HEAP_BASE + HEAP_MAX) return false;
+    for (uint64_t r = (addr - HEAP_BASE) >> VDYN_SHIFT, e = (addr + size - 1 - HEAP_BASE) >> VDYN_SHIFT; r <= e; r++)
+        if (atomic_load_explicit(&vdyn[r], memory_order_relaxed)) return true;
+    return false;
+}
+
+// (render thread) a fetch read in place: copied instead (false) if its region was marked; some small ones sampled
+static bool vdyn_fetch(uint64_t addr, uint64_t size) {
+    if (!size || !vdyn_on() || gw_overlaps(addr, addr + size)) return true;
+    if (vdyn_mode == 2 && size <= VDYN_SAMPLE_MAX) return false;
+    if (vdyn_hit(addr, size)) return false;
+    if (size > VDYN_SAMPLE_MAX || addr < HEAP_BASE || addr + size > HEAP_BASE + HEAP_MAX || (++vdyn_tick & VDYN_SMASK)) return true;
+    uint64_t w = atomic_load_explicit(&vdyn_w, memory_order_relaxed);
+    if (w - atomic_load_explicit(&vdyn_r, memory_order_acquire) >= VDYN_N) return true;  // (full: no sample)
+    __typeof__(vdyn_chk[0]) *c = &vdyn_chk[w % VDYN_N];
+    c->addr = addr, c->size = size, c->seq = vk_pending_seq();
+    c->hash = hash_words(0x9E3779B97F4A7C15ull, (const void *)(uintptr_t)addr, size & ~3ull);
+    atomic_store_explicit(&vdyn_w, w + 1, memory_order_release);
+    return true;
+}
+
+// (renderer_wait_seq, right after a real wait on submission seq) the samples recorded up to it, hashed again
+static void vdyn_check(uint64_t seq) {
+    if (vdyn_mode != 1 || pthread_mutex_trylock(&vdyn_lock)) return;
+    uint64_t r = atomic_load_explicit(&vdyn_r, memory_order_relaxed), w = atomic_load_explicit(&vdyn_w, memory_order_acquire);
+    for (; r < w && vdyn_chk[r % VDYN_N].seq <= seq; r++) {
+        __typeof__(vdyn_chk[0]) *c = &vdyn_chk[r % VDYN_N];
+        if (hash_words(0x9E3779B97F4A7C15ull, (const void *)(uintptr_t)c->addr, c->size & ~3ull) == c->hash) continue;
+        if (atomic_exchange_explicit(&vdyn[(c->addr - HEAP_BASE) >> VDYN_SHIFT], 1, memory_order_relaxed)) continue;
+        int n = atomic_fetch_add_explicit(&vdyn_marked, 1, memory_order_relaxed);
+        if (n < 32) LOG("[vk] vertex data rewritten while read at %llx (%llu bytes): the %u KB around it copied from now on\n",
+                        (unsigned long long)c->addr, (unsigned long long)c->size, 1u << (VDYN_SHIFT - 10));
+    }
+    atomic_store_explicit(&vdyn_r, r, memory_order_release);
+    pthread_mutex_unlock(&vdyn_lock);
+}
+
+static void vdyn_reset(void) {  // (vk_exec_reset, the GPU idle: another boot, other buffers)
+    pthread_mutex_lock(&vdyn_lock);
+    for (size_t i = 0; i < sizeof vdyn; i++) atomic_store_explicit(&vdyn[i], 0, memory_order_relaxed);
+    atomic_store(&vdyn_marked, 0);
+    atomic_store(&vdyn_r, atomic_load(&vdyn_w));
+    pthread_mutex_unlock(&vdyn_lock);
+}
+
 // A vertex or index fetch: from the copy if it holds [addr, addr + size) as it is now - within one live chunk - else
 // in place from the import (guest_direct), its pages then geometry for the next list's copy (and its chunk wanted).
 // While a storing shader whose stores aren't known holds the list (chunk_hold), in place.
 static bool guest_fetch(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSize *off) {
     if (gsnap_verts() && size && size <= gsnap_verts_max() && !gw_overlaps(addr, addr + size)) return false;  // (copied)
+    if (!vdyn_fetch(addr, size)) return false;  // (copied)
     if (!guest_direct(addr, size, buf, off)) return false;
     if (!hc_nch) return true;
     if (chunk_hold || !size || addr + size > HEAP_BASE + hc_size || gw_overlaps(addr, addr + size)) {
@@ -6102,6 +6189,7 @@ static uint32_t g_cs_cap, g_cs_n;
 // address (the old Prog / Pipe objects are leaked, so pipeline keys holding their pointers can't collide), compute
 // programs, shared copies - and the heap import: its pages are replaced (re-imported on first use).
 void vk_exec_reset(void) {
+    vdyn_reset();
     oq_counting = false;
     oq_nrun = oq_nreports = 0;  // (pending reports pointed at the old boot's memory)
     ngw = 0;
