@@ -965,7 +965,7 @@ static void tab_display(void) {
         for (int i = 0; i < UPQ_COUNT; i++) {
             mode_names[i] = modes_ok ? tr(modes[i]) : std::string(tr(modes[i])) + " " + tr("(coming soon)");
             mn[i] = mode_names[i].c_str();
-            mavail[i] = modes_ok;
+            mavail[i] = modes_ok && upscale_mode_offered(i);
         }
         float sx, sy;  // the 3D scene's size (BOTW docked: 1600 x 900 times its scale)
         renderer_get_scene_scale(&sx, &sy);
@@ -1560,7 +1560,7 @@ static void perf_overlay_draw(ImGuiIO &io, float scale) {
         case UPSCALE_FSR4: line += tr("FSR 4"); break;
         default: line += tr("Off");
     }
-    int q = g_settings.upscale_quality;
+    int q = upscale_quality_now();
     if (up != UPSCALE_OFF && upscale_factor() > 1.0) {
         char f[16];
         snprintf(f, sizeof f, "%.1f", upscale_factor());

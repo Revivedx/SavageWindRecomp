@@ -2338,7 +2338,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         if (mvec) {  // the history: the previous frame's copies of the game's constant buffers (mvec.c), at pb[cb - 3]
             sp(&s, "layout(std430, set = 0, binding = 63) readonly buffer MvHist { uvec4 ph[]; };\n");
             // (std430: uint arrays 4 bytes apart, as mvec.c packs them; a push constant block is std140 by default)
-            sp(&s, "layout(push_constant, std430) uniform MvPush { uint pb[14]; uint pbn[14]; };\n");
+            sp(&s, "layout(push_constant, std430) uniform MvPush { uint mflag; uint pb[14]; uint pbn[14]; };\n");
             sp(&s, "#define pcbr(n, off) ph[pb[n] + min((off) >> 4, pbn[n] - 1u)][((off) >> 2) & 3u]\n");
             sp(&s, "layout(location = 30) out vec4 mv_cur;\nlayout(location = 31) out vec4 mv_prev;\n");
         }
@@ -2376,7 +2376,9 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         }
     }
     if (mvec) {  // the previous frame's position first, in a block of its own (its registers start at 0 as well)
-        sp(&s, "  vec4 ppos = vec4(0, 0, 0, 1); vec4 pvd = vec4(0); float pps = 0.0f;\n  {\n");
+        // (only when the draw moved, mflag: whether it did is known after the draw is translated, vulkan/mvec.c, so one
+        // program serves both, and a still draw's vertices are not shaded twice)
+        sp(&s, "  vec4 ppos = vec4(0, 0, 0, 1); vec4 pvd = vec4(0); float pps = 0.0f;\n  if (mflag != 0u) {\n");
         glsl_body(c, &s, pbody.buf ? pbody.buf : "", any_branch, false);
         sp(&s, "  }\n");
     }
@@ -2389,7 +2391,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         if (mvec) {
             if (key->flip_y) sp(&s, "  ppos.y = -ppos.y;\n");
             if (key->depth_minus_one) sp(&s, "  ppos.z = (ppos.z + ppos.w) * 0.5f;\n");
-            sp(&s, "  mv_cur = gl_Position; mv_prev = ppos;\n");
+            sp(&s, "  mv_cur = gl_Position; mv_prev = mflag != 0u ? ppos : vec4(0.0f);\n");
         }
     } else if (stage == STAGE_FRAGMENT) {
         int r = 0;
@@ -2433,7 +2435,8 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         } else if (mvec_still) {
             sp(&s, "  mv_out = vec4(0.0f);\n");
         } else if (mvec_rt >= 0) {  // NDC from the previous frame's position to this one's (both after the y flip)
-            sp(&s, "  mv_out = vec4(mv_cur.xy / mv_cur.w - mv_prev.xy / mv_prev.w, 0.0f, 1.0f);\n");
+            // (mv_prev all zero: a draw that stood still or has no match, mflag 0: zero, the camera's motion, mvec_fill)
+            sp(&s, "  mv_out = mv_prev.w == 0.0f ? vec4(0.0f) : vec4(mv_cur.xy / mv_cur.w - mv_prev.xy / mv_prev.w, 0.0f, 1.0f);\n");
         }
     }
     sp(&s, "}\n");

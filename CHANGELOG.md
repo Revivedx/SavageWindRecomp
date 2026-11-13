@@ -4,6 +4,28 @@ What changed in each Savage Wind release. The `test` branch holds what the next 
 
 ## Next (on the `test` branch)
 
+### Performance
+
+- **FSR 3, FSR 4 and TAA cost the CPU much less:** their motion vectors are worked out on a thread of their own
+  instead of the thread that translates the game's drawing, every scene draw uses one motion program, and FSR 3 is
+  dispatched by the recorder thread. RTX 3060 and a Ryzen 5 5600X, Great Plateau, uncapped, 1440p, where the CPU is
+  the limit: FSR 3 Quality went from 101 to 119 fps (native 130). CPUs with fewer than 6 logical processors keep
+  the work on the translating thread.
+- **TAA is a single pass:** about 0.5 ms of GPU time at 1440p instead of 2.5 ms (same PC: 104 to 122 fps at 1440p;
+  with the Savage preset, 150% render scale, 54 to 71 fps, SMAA 77). The image is a little softer in motion than
+  before; `SAVAGEWIND_TAA=full` brings the old seven passes back.
+- **Frame generation with no frame limit** no longer lowers the frame rate: its two presents per game frame are
+  paced on a thread of their own instead of holding the thread that translates the game's drawing. Same PC, Savage
+  preset at 100% render scale, 1440p, presented frames per second without frame generation / with it before / with it
+  now: Great Plateau 102 / 47 / 125, Kakariko 88 / 48 / 116, Korok Forest 40 / 29 / 66.
+- **Shadow resolution follows FSR 3, FSR 4 and DLSS:** with one of them on, shadow maps above the console's size are
+  made smaller by the upscaler mode's factor (Savage at Quality: 5440 instead of 8192), the same shadow detail per
+  rendered pixel. Where shadows were most of the frame the upscaler gained nothing (Korok Forest, FSR 3 Quality:
+  41 to 67 fps, native 40). `SAVAGEWIND_SHADOW_FOLLOW=0` keeps the setting's size.
+- **Ultra Performance with FSR 3, FSR 4 or DLSS needs a 4K window:** below that it rendered a third of the window on
+  each side (853 x 480 at 1440p) and the whole image came out blurred. It is greyed there, and a stored Ultra
+  Performance runs as Performance. FSR 1 keeps it at any size.
+
 ### Fixes
 
 - **Water** drawn transparent where a new image was read before its clear finished

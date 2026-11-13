@@ -11,28 +11,35 @@
 #define MVEC_INST 4   // instanced streams copied per draw
 #define MVEC_FEAT 48  // a draw's fingerprint: the first 12 floats of each of its first 4 constant buffers
 // A motion program's inputs (maxwell/translate.c, ShaderKey mvec): the previous frame's history buffer at this binding
-// of the vertex set, and push constants: uint pb[14] (where each constant buffer slot 3..16 starts, in 16-byte units)
-// then uint pbn[14] (its size, in 16-byte units)
+// of the vertex set, and push constants: uint mflag (1: the draw moved, its vertex shader also runs on the previous
+// frame's inputs; 0: it stood still or has no match, the camera's motion is its vector), uint pb[14] (where each
+// constant buffer slot 3..16 starts, in 16-byte units) then uint pbn[14] (its size, in 16-byte units)
 #define MVEC_HISTORY_BINDING 63
-#define MVEC_PUSH 112
+#define MVEC_PUSH 116
 
-typedef struct { uint64_t addr, size; uint32_t stride, divisor; } MvecStream;
-
-// A scene draw as draw_ sees it (exec.c): what identifies it and where its vertex shader's inputs are in guest memory
+// A scene draw as draw_ sees it (exec.c): what identifies it and where its vertex shader's inputs are in guest memory.
+// Packed: the translating thread writes one for every scene draw and the motion vector thread reads it, so every cache
+// line of it crosses from one core to the other (a draw is 2 lines in the ring, mvec.c; at 900 bytes a draw with the
+// two threads' counters in one line it cost the translating thread ~0.2 us a draw, 0.5 ms a frame).
+typedef struct { uint64_t addr; uint32_t size; uint8_t slot, pad[3]; } MvecCb;                // a constant buffer the vertex shader reads
+typedef struct { uint64_t addr, size; uint32_t stride, divisor, index, pad; } MvecInst;      // an instanced stream it reads
 typedef struct {
-    uint64_t frame;  // presented frames so far (renderer_present_count)
-    uint64_t gen;    // guest copy generation (exec.c gcopy_gen): equal ranges of one generation hold equal bytes
-    uint64_t vs, fs;  // shader code addresses
-    uint64_t iaddr;   // index buffer (0: not indexed)
-    uint32_t count, first, inst, base_inst;
+    uint8_t kind;    // (mvec.c: 0 a draw, 1 a new frame: inst, base_inst = its slot and the previous frame's)
+    uint8_t ncb, ninst, pad;
     int32_t base_vertex;
-    int nstream;
-    MvecStream stream[16];
-    uint32_t vs_streams;  // streams the vertex shader's attributes read
-    int ncb;
-    // rows: the vec4s the vertex shader reads of it (ShaderInfo cbuf_rows; NULL: any)
-    struct { uint8_t slot; uint64_t addr, size; const uint64_t *rows; } cb[MVEC_CB];
-} MvecDrawIn;
+    uint64_t gen;    // guest copy generation (exec.c gcopy_gen): equal ranges of one generation hold equal bytes
+    uint64_t pkey;   // mvec_mix(vertex shader code address, fragment shader code address)
+    uint64_t skey;   // the non-instanced streams the vertex shader reads: their addresses, mvec_mix'ed in stream order
+    uint64_t iaddr;  // index buffer (0: not indexed)
+    const void *vi;  // the vertex shader's ShaderInfo: the vec4s it reads of each buffer (cbuf_rows)
+    uint32_t count, first, inst, base_inst;
+} MvecHead;
+typedef struct { MvecHead h; MvecCb cb[16]; MvecInst in[MVEC_INST]; } MvecDrawIn;  // (cb: MVEC_CB used)
+_Static_assert(sizeof(MvecHead) == 64 && sizeof(MvecCb) == 16 && sizeof(MvecInst) == 32, "mvec ring cells");
+static inline uint64_t mvec_mix(uint64_t h, uint64_t v) {
+    h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+    return h * 0xff51afd7ed558ccdull;
+}
 
 // One recorded draw: its identity, its match in the previous frame and its copied inputs (offsets in its frame's
 // history buffer, mvec_records)
@@ -54,9 +61,20 @@ typedef struct {
 
 bool mvec_enabled(void);  // Video > Anti-aliasing TAA, or SAVAGEWIND_MVEC=1
 bool mvec_for_framegen(void);  // frame generation takes them: SAVAGEWIND_FG_OBJECT_VECTORS=1 (default: the camera's)
-// Records a scene draw of the current frame: its index among the frame's records, -1 when not recorded (off, or the
-// history buffer is full: grown for the next frame).
-int mvec_record(const MvecDrawIn *d);
+// A scene draw of the current frame, recorded in two steps by the thread that translates the game's command lists:
+// mvec_draw_begin gives the place to describe it in (NULL: off), mvec_draw_commit hands it on and returns its number.
+// The work itself - copying the vertex shader's inputs into the history, matching the draw with one of the previous
+// frame, telling whether it moved - is done by a thread of its own (mvec.c), while the translating thread goes on:
+// it cost that thread ~1.2 ms a frame, and where it is the limit FSR 3 and TAA ran slower than native. The draw's
+// push constants (MVEC_PUSH bytes) are therefore not known when it is translated: mvec_resolve gives them, waiting
+// for the work if need be, to the thread that records the command (record.c rec_CmdPushConstantsMvec).
+MvecDrawIn *mvec_draw_begin(uint64_t frame);
+uint32_t mvec_draw_commit(void);
+void mvec_resolve(uint32_t seq, uint32_t pc[MVEC_PUSH / 4]);
+// Every draw handed on so far is done (the translating thread): before guest memory the draws may read changes
+// (mvec_guest_write: only when a draw not done yet reads [lo, hi)), at the end of a command list.
+void mvec_sync(void);
+void mvec_guest_write(uint64_t lo, uint64_t hi);
 // A frame's camera, from its scene camera block (the constant buffer at slot 3 that most scene draws share; the scene
 // shaders make clip = proj * view * position): the view (rows 0-2, a rigid 3x4) and the projection (rows 7-10, an
 // OpenGL-style 4x4, its near plane moving with the camera's distance), row-major as the shaders read them; vp = proj *
@@ -76,17 +94,7 @@ bool mvec_camera_now(float jitter[2], float *near_, float *far_, float *fov_y);
 // object vector, the camera vector minus it (zero on still geometry when both are right)
 int mvec_camera_only(void);
 
-// The current and the previous frame's records and history buffers (NULL / 0 when there is no previous frame)
-const MvecRec *mvec_records(bool previous, int *n, VkBuffer *history);
-// The push constants of the current frame's record `rec` (mvec_record's index): its match's constant buffer copies in
-// the previous frame's history. false: no match, or the match lacks a buffer this draw reads (no motion program).
-bool mvec_push(int rec, uint32_t pc[MVEC_PUSH / 4]);
-// Whether the current frame's record `rec` read the same inputs as its match (its hash): it stood still, and the
-// camera's motion is its vector (exec.c draws it with the still variant, ShaderKey mvec_rt 0x40, not its motion
-// program: most of the world stands still, and the motion programs, their vertex shaders run twice, cost ~5% fps)
-bool mvec_still(int rec);
-void mvec_drawn(void);
-void mvec_masked(void);  // a blended effect was drawn with its reactive mask program (statistics)  // a recorded draw was drawn with its motion program (statistics)
+void mvec_masked(void);  // a blended effect was drawn with its reactive mask program (statistics)
 // The previous frame's history buffer, for MVEC_HISTORY_BINDING (any valid buffer before there is one)
 VkDescriptorBufferInfo mvec_history_info(void);
 // SAVAGEWIND_MVEC_VIEW=<pixels>: the vectors drawn over the scene (exec.c mvec_scene_view), full colour at that length

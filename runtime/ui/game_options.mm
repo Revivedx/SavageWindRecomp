@@ -540,7 +540,9 @@ void build_items(void) {
                            if (g_settings.upscaler != UPSCALE_OFF) g_settings.upscale_quality = x;
                        },
                        UPQ_QUALITY);
-    mode.value_off = [](const Item &, int) { return !upscale_modes_available() || g_settings.upscaler == UPSCALE_OFF; };
+    mode.value_off = [](const Item &, int x) {
+        return !upscale_modes_available() || g_settings.upscaler == UPSCALE_OFF || !upscale_mode_offered(x);
+    };
     mode.reset = [](const Item &) { g_settings.upscale_quality = UPQ_QUALITY; };  // (also while Off)
     mode.desc_fn = [](const Item &) {
         // (one line: the game's description pane is one English line wide)
