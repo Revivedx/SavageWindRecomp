@@ -89,6 +89,10 @@ static bool take_sites(const GameLibTables *t) {
         uint32_t k = 0;
         while (k < *t->nsites && strcmp(t->sites[k].name, want[i].name)) k++;
         if (k == *t->nsites) {
+            if (!strncmp(want[i].name, "opt_two_", 8)) {
+                *(uint64_t *)((char *)&g_site + want[i].off) = 0;
+                continue;
+            }
             snprintf(g_error, sizeof g_error, "the game code has no address for %s", want[i].name);
             return false;
         }

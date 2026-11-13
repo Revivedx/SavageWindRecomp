@@ -180,6 +180,7 @@ static void select_motion(int source) {
 #endif
 
 bool motion_has_sensors(void) {
+    if (g_settings.motion_device == MOTION_DEV_MOUSE) return false;
     pthread_mutex_lock(&g_lock);
     bool sensors = g.sensors;
     pthread_mutex_unlock(&g_lock);
@@ -187,6 +188,11 @@ bool motion_has_sensors(void) {
 }
 
 bool motion_cam_consume(double *yaw_deg, double *pitch_deg) {
+    if (g_settings.motion_device == MOTION_DEV_MOUSE) {
+        *yaw_deg = 0;
+        *pitch_deg = 0;
+        return false;
+    }
     pthread_mutex_lock(&g_lock);
     bool ok = g.sensors && g.started && (g.cam_yaw_deg != 0 || g.cam_pitch_deg != 0);
     *yaw_deg = ok ? g.cam_yaw_deg : 0;
@@ -626,7 +632,8 @@ static int source(double dt, Mat m) {
     if (s.sc_pitch < -PITCH_MAX) s.sc_pitch = -PITCH_MAX;
     bool virt = g.keyboard.active || g.tilt_held || g.tilt_pitch || g.tilt_roll || g.tilt_yaw || g.sc_pitch || g.sc_roll ||
                 s.sc_yaw || s.sc_pitch;
-    if (g.sensors && g.started && !virt) {
+    bool allow_sensors = g.sensors && g.started && g_settings.motion_device != MOTION_DEV_MOUSE;
+    if (allow_sensors && (!virt || g_settings.motion_device == MOTION_DEV_CONTROLLER)) {
         quat_mat(g.q, m);
 #ifdef __linux__
         return (int)backend.epoch + 1;

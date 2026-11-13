@@ -702,6 +702,15 @@ static size_t hud_letters_flyt(const uint8_t *b, size_t n, uint8_t *out, int *pa
             continue;
         }
         memcpy(sec, b + o, sz);
+        if (g_settings.transparent_guides && sz >= 0x24 &&
+            (!memcmp(sec, "pic1", 4) || !memcmp(sec, "wnd1", 4))) {
+            const char *pname = (const char *)sec + 12;
+            if (!strncmp(pname, "W_Base", 6) || !strncmp(pname, "P_Base", 6) ||
+                !strncmp(pname, "P_Capture", 9) || !strncmp(pname, "P_Bg", 4) ||
+                !strncmp(pname, "P_Black", 7) || !strncmp(pname, "W_Bg", 4)) {
+                sec[0x0A] = 0;
+            }
+        }
         if (!memcmp(sec, "txt1", 4) && sz >= 0x68) {
             uint32_t toff;
             memcpy(&toff, sec + 0x64, 4);

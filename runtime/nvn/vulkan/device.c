@@ -953,11 +953,13 @@ static void create_device(void) {
     // wrong with others' code on it: NVIDIA's GPUs before Turing faulted writing to GPU address 0 within the first
     // frames (#36: GTX 1050 / 1050 Ti / 1050 Mobile, Quadro P1000), and OBS's Game Capture, which copies the image
     // inside its vkQueuePresentKHR on that queue without waiting for the game's, showed black or broken frames (#293).
-    // Since driver calls went to a thread of their own (record.c) presenting there costs nothing: RTX 3060, visible,
-    // fullscreen and windowed, at 120 fps with VSync and unlimited, the same or 1-3 fps more than with the second
-    // queue. SAVAGEWIND_VK_PRESENT_THREAD=1: two queues and the present thread, as before (testing).
+    // On AMD, Intel, and modern NVIDIA (RTX series: Turing+), two queues and the decoupled present thread are safe
+    // and essential for Frame Generation to pace frames without stalling the main render thread.
+    // SAVAGEWIND_VK_PRESENT_THREAD=0 forces one queue; =1 forces two queues.
     const char *pt_env = getenv("SAVAGEWIND_VK_PRESENT_THREAD");
-    bool two_q = g_vk.qfam_count >= 2 && pt_env && strcmp(pt_env, "0") != 0;
+    bool is_nvidia_pre_turing = g_vk.props.vendorID == 0x10DE && strstr(g_vk.props.deviceName, "RTX") == NULL;
+    bool default_two_q = !is_nvidia_pre_turing;
+    bool two_q = g_vk.qfam_count >= 2 && (pt_env ? strcmp(pt_env, "0") != 0 : default_two_q);
     VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_vk.qfam,
                                   .queueCount = two_q ? 2 : 1, .pQueuePriorities = prio};
     VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f, .queueCreateInfoCount = 1,
@@ -1534,6 +1536,8 @@ static void create_swapchain(void) {
     hdr_release();
     if (old) vkDestroySwapchainKHR(g_vk.dev, old, NULL);
     g_vk.sc_format = draw.format;
+    extern void vk_fg_init_format(VkFormat f);
+    vk_fg_init_format(draw.format);
     g_vk.sc_extent = ext;
     g_vk.sc_mode = wanted_present_mode();  // (what was asked: a change of Video > VSync makes it again)
     g_vk.sc_count = 8;
@@ -1817,6 +1821,7 @@ void vk_present_idle(void) {
 // Before the next window image is drawn: no plain present waiting (one frame at a time, as before), at most two of
 // frame generation's (the previous pair's game frame, this pair's generated one)
 static void present_wait_room(void) {
+    if (!present_threaded()) return;
     pthread_mutex_lock(&pres_m);
     for (;;) {
         bool plain = false;
@@ -1875,7 +1880,6 @@ static bool present_image(uint32_t img, VkSemaphore sem, int kind, uint64_t seq)
         VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &sem,
                                .swapchainCount = 1, .pSwapchains = &g_vk.swapchain, .pImageIndices = &img};
         rec_wait_submitted(seq);  // (as present_thread)
-        present_wait_turn(kind, seq);
         VkResult r = queue_present(g_vk.queue, &pi);
         return !(r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR);
     }
@@ -2231,7 +2235,9 @@ static void present_locked(NvnTexture *t) {
         if (test < 0) test = getenv("SAVAGEWIND_FG_TEST") ? atoi(getenv("SAVAGEWIND_FG_TEST")) : 0;
         if (test == 1) gen = NULL;
     }
-    g_fg_active = gen != NULL;
+    static uint64_t last_gen_ns;
+    if (gen != NULL) last_gen_ns = SDL_GetTicksNS();
+    g_fg_active = gen != NULL || (last_gen_ns && SDL_GetTicksNS() - last_gen_ns < 100000000ull && fg_wanted());
     static const float black[4] = {0, 0, 0, 1};
     bool have;
     { SW_ZONE("present/frame_begin"); have = vk_frame_begin(black); }

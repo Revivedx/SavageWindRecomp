@@ -329,8 +329,8 @@ void input_cam_frame(float ratio) {
     uint64_t aim_t = aim_cam_ns;
     bool aiming = aim_t && plat_now_ns() - aim_t < 100000000ull;
     bool allow_gyro = native && mc_mode != GYRO_CAM_OFF && win_focused && !pc_menu_active && !menu_input_captured() &&
-                      !pc_gyro_keyboard_active() && (mc_mode == GYRO_CAM_ALWAYS || !aiming) &&
-                      (mc_mode != GYRO_CAM_HOLD || pad_gyro_cam_held);
+                      !pc_gyro_keyboard_active() && g_settings.motion_device != MOTION_DEV_MOUSE &&
+                      (mc_mode == GYRO_CAM_ALWAYS || !aiming) && (mc_mode != GYRO_CAM_HOLD || pad_gyro_cam_held);
     double gyaw = 0, gpitch = 0;
     bool has_gyro = false;
     if (allow_gyro) has_gyro = motion_cam_consume(&gyaw, &gpitch);
