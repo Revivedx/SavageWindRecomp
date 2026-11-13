@@ -67,6 +67,8 @@ enum { FSMODE_AUTO = 0, FSMODE_BORDERLESS = 1, FSMODE_EXCLUSIVE = 2, FSMODE_COUN
 // BIND_GYRO_CAM is held; Always turns the camera except during shrine apparatus puzzles.
 enum { GYRO_CAM_OFF = 0, GYRO_CAM_EXPLORE = 1, GYRO_CAM_HOLD = 2, GYRO_CAM_ALWAYS = 3, GYRO_CAM_COUNT };
 enum { MOTION_DEV_AUTO = 0, MOTION_DEV_CONTROLLER = 1, MOTION_DEV_MOUSE = 2, MOTION_DEV_COUNT = 3 };
+// The start screen's background, when there is no splash.jpg / .png of the player's in the data folder
+enum { START_PICTURE_ART, START_PICTURE_SCREENSHOT, START_PICTURE_SAVE, START_PICTURE_COUNT };
 typedef struct {
     bool fullscreen;
     int fullscreen_mode;     // FSMODE_*
@@ -111,6 +113,8 @@ typedef struct {
     bool async_shaders;  // draw on while new shaders compile (no stutter; what needs them is skipped meanwhile; on by
                          // default since settings_version 4; off: every draw waits for its shaders, as before)
     bool precompile_shaders;  // setting the game files up also precompiles every shader (runtime/nvn/precompile.h)
+    int start_picture;        // the start screen's background (ui/splash.mm): START_PICTURE_*
+    bool boot_picture;        // that picture while the game loads (vulkan/device.c boot_splash_start); off: black
     int shadow_res;      // SHADOW_*: shadow maps at the console's size or bigger
     int sharper_text;    // the game's font sheets enlarged this many times (2 or 4; 0: off), runtime/nvn/text_upscale.c
     bool wide_view;      // a window that isn't 16:9 shows more of the world instead of bars (runtime/nvn/output_scale.c)

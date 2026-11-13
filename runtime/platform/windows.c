@@ -472,6 +472,8 @@ int plat_cpu_count(void) {
     return (int)si.dwNumberOfProcessors;
 }
 
+const char *plat_log_path(void) { return g_log_path; }
+
 bool plat_exe_path(char *buf, size_t size) {
     DWORD n = GetModuleFileNameA(NULL, buf, (DWORD)size);
     return n > 0 && n < size;

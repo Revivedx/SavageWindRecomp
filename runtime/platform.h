@@ -71,6 +71,7 @@ static inline bool plat_one_per_core_default(int cores, int logical) {
 // ---- process
 void plat_init(void);                                // first thing in main()
 bool plat_exe_path(char *buf, size_t size);
+const char *plat_log_path(void);  // the log file this run writes ("": stderr goes to a console, pipe or file)
 void plat_exec(char *const argv[]);  // replace the process (NULL = same command line); returns only on failure
 #if defined(_WIN32) || defined(__linux__)
 void plat_terminate(void);  // end the process now, skipping DLL teardown (exit status 0)

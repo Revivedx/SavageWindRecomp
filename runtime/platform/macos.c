@@ -79,6 +79,8 @@ void plat_thread_realtime(uint64_t period_ns) {
 
 void plat_thread_elevate(void) {}
 
+const char *plat_log_path(void) { return ""; }  // (the log goes to stderr)
+
 bool plat_exe_path(char *buf, size_t size) {
     uint32_t len = (uint32_t)size;
     return _NSGetExecutablePath(buf, &len) == 0;
