@@ -11,7 +11,7 @@
 #include "language.h"
 #include "handheld.h"
 
-bool fsr3_upscaler_enabled(void);  // (nvn/output_scale.c: FSR 3 upscaling held back for now)
+bool fsr3_upscaler_enabled(void);  // (nvn/output_scale.c: SAVAGEWIND_FSR3=0 hides FSR 3 / 4)
 
 #define SETTINGS_FILE settings_file()
 
@@ -241,7 +241,7 @@ void settings_load(void) {
         else if (!strcmp(key, "settings_version")) version = atoi(val);
         else if (!strcmp(key, "resolution")) snprintf(old_res, sizeof old_res, "%s", val);  // (version 1)
         else if (!strcmp(key, "upscaler"))  // (metalfx / fsr1: this OS's spatial upscaler; dlss: NGX; fsr3, fsr4: Vulkan,
-            // held back for now: FSR 1 with the same quality mode, nvn/output_scale.c fsr3_upscaler_enabled)
+            // hidden with SAVAGEWIND_FSR3=0: FSR 1 with the same quality mode, nvn/output_scale.c fsr3_upscaler_enabled)
             g_settings.upscaler = !strcmp(val, "dlss") ? UPSCALE_DLSS
                                 : !strcmp(val, "fsr1") || !strcmp(val, "metalfx") ? UPSCALE_SPATIAL
                                 : !strcmp(val, "fsr3") ? (fsr3_upscaler_enabled() ? UPSCALE_FSR3_OR_SPATIAL : UPSCALE_SPATIAL)

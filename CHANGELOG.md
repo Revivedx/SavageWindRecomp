@@ -6,6 +6,10 @@ What changed in each Savage Wind release. The `test` branch holds what the next 
 
 ### Performance
 
+- **AMD FSR 3 and FSR 4 upscaling are back** in Video > Upscaler. They were held back in Alpha 5 because they ran
+  slower than native where the CPU was the limit; with the changes below they gain. RTX 3060 and a Ryzen 5 5600X,
+  1440p, Savage preset at 100% render scale, FSR 3 Quality over native: Great Plateau 106 / 102 fps, Kakariko
+  106 / 88, Korok Forest 67 / 40. `SAVAGEWIND_FSR3=0` hides them.
 - **FSR 3, FSR 4 and TAA cost the CPU much less:** their motion vectors are worked out on a thread of their own
   instead of the thread that translates the game's drawing, every scene draw uses one motion program, and FSR 3 is
   dispatched by the recorder thread. RTX 3060 and a Ryzen 5 5600X, Great Plateau, uncapped, 1440p, where the CPU is
