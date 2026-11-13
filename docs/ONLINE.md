@@ -226,6 +226,197 @@ come with (moved between two snapshots). A bomb gone off: the actor that showed 
 be drawn, nor its effects), its materials hidden, at that place, plays its AS "Explode" (Bomb_Explode: the
 explosion's effects and sound), without the Explode actor that hurts.
 
+### Magnesis
+
+What a player holds with the Magnesis rune goes with his state (protocol 19, STATE's `grab`: the actor's name, where
+it was when he caught it, its matrix now; nothing held: no name). His game reads it from the rune's object
+(0x7001e15f18: its +0x318 the magnetic part of the actor held, as 0x7000b993e8 checks; on while its +0x10 bit 0; the
+actor at its +8). The others' games take the actor of that name nearest that place (within 4 m; looked for again each
+second while it isn't found), and each frame while he holds it:
+
+- its rigid body (the actor's +0x190) gets the velocities that take it to his matrix in a step (0x70012d4e18, as the
+  game does for keyframed motion): it moves there with its physics, pushes what it meets, and falls from where he lets
+  it go (setting the actor's matrix alone, 0x700152261c, is undone by its body);
+- it glows as held: its +0x710 bit 2 (0x700152a08c, as the rune does at 0x7000b98c40) and its materials'
+  `uk_special_effect_B` at 1 (0x700124d220: s0 the value, x1 the model); both back to 0 when he lets go, as the rune
+  does (0x7000b98de0);
+- the rune's "MagneCatchMoving" sparkles where it is, played on the actor the rune plays them on
+  (`**0x7001d66ab8 + 0x30`, ReactionHit; 0x7001395354, the position at the effect's +0xbc with +0x98 / +0x9a bit 8).
+
+`tools/online_bot.c` BOT_GRAB=<actor>,x,y,z holds that actor 10 s of every 20, going round a circle over it.
+
+### Stasis and Cryonis
+
+Stasis (protocol 22, STATE's `stop`, as `grab`): an actor near the player drawn as stopped (its +0x710 bit 3, as the
+rune sets it; bit 4 while he aims; a model and a body, not a tag, and none shown for another) goes to the others, whose
+same object is held where it is in his game (its body, 0x70012d4e18, each frame) and drawn as stopped: +0x710 bit 3 and
+its materials' `uk_special_effect_B` at 1 (its glow; `uk_special_effect_A`, 0x700124ca7c per model unit, is the red
+pulse before it goes, 0 meanwhile). Its chains (`BitaLocked_Start`) aren't an effect of the object's own ELink.
+
+Cryonis (STATE's `ice`: up to 3 pillars, their matrices): the Obj_IceMakerBlock actors near the player. The others
+show each with OnlineIce (tools/online_mod.py: the pillar's model, AS "Appear_Linear", effects, sounds and physics, one
+can stand on it; without its AI: the game's own pillar made by anyone but the rune deletes itself at once), gone when
+his goes.
+
+### Players on other maps
+
+Each STATE carries the map its player is on (protocol 22, `map`: the game's own, 0x7001208304 its type and
+0x70012082f8 its name, e.g. `MainField/`, `CDungeon/Dungeon000`, `MainFieldDungeon/RemainsWind`). A player on another
+map (a shrine, a Divine Beast) has no Link in the others' world and has none of its enemies (`can_own`, and the host's
+enemies near him aren't made everyone's).
+
+### Bosses (Ganon)
+
+Calamity Ganon, Dark Beast Ganon and the Blights (`is_boss`) aren't the host's shared enemies: each game keeps its own,
+fought through the game's own events and phases (the sanctum's EventTag HyruleCastle<BossRoom0>, Demo142_0, the
+champions' lasers, Demo717_0 for the second half, ...). Their damage is everyone's (protocol 23, STATE's `boss`): each
+game sends, for the bosses near its Link (their map HashId, actor +0x640), the damage its own player has done so far
+(what the life at actor +0x848 lost, but for what the others' damage took); what another player's grows by is taken
+from that boss in every game on the same map. Every player's blows add up, the phases follow in each game, and a new
+phase's life (or a boss made again) takes nothing back. GameClear and the castle's Blights' flags are shared with the
+quests'.
+
+Tested with two games in the sanctum: both made Calamity Ganon and played its cutscenes; the host's game's blows
+(`SAVAGEWIND_ONLINE_BOSS_HIT` / `_KILL`, test hooks) took the other's Ganon down with them, into its second half.
+
+### Quests
+
+The quests' progress is everyone's (protocol 17): online_mod/quests.txt lists the quests' flags (Quest/QuestProduct.
+sbquestpack: the 20 Type Main ones first, then the 60 Sub, the shrine quests, and the 90 Mini, the side quests; each
+step's NextFlag, and the bool flags their steps depend on, Clear_Remains* and the like; 666, all bool flags; up to
+1024). Every 2 s each game sends a bit per flag it has (QUEST, 128 bytes) to the host's game, which ORs
+them with its own and sends the union (QUESTS); each game sets the ones it lacks, as an event's Demo_FlagON does (EventFlagONAction, 0x7001187758: the handle from
+0x7001143950(the pending buffer, the name's crc32) with the manager's +0xc28 in its top byte, then 0x7000730148(the
+manager, 1, handle)), which tells the rest of the game (a value written in memory alone is seen by nothing: the
+slate's HUD didn't show). A bool flag's value in memory:
+GameDataMgr (`test_warp_gdt_mgr`: the singleton TimeMgr::calc loads) +0xbd8, its pending-write buffer: +8 a count
+(42031 in 1.9.0) and +0x10 an array of proxies, 0x18 each (+8 the flag's definition, its name's crc32 at +0xc; +0x10
+the value), sorted by that hash, found by a binary search. What a flag does in the world beyond the quest (a Divine
+Beast calmed, a door open) may only show after a load. With them go the Great Plateau's start (STORY_FLAGS in
+tools/online_mod.py): the Sheikah Slate's pedestal (Demo700_0: IsGet_PortableUnit, PortableUnit_PowerOn, OP_DRC,
+Open_FirstDoor) and its first door (Demo701_0: Open_Door), their cutscenes seen (IsPlayed_Demo700_0 / 701_0); the slate's flags are set on
+the others once the one who took it is through its cutscene (IsPlayed_Demo700_0, set at its end, has come): no
+cutscene of theirs, the slate and its HUD at once, the slate itself into their pouch (Obj_DRStone_Get, with the pouch's
+own can-get 0x700120af80 and get 0x700120af98, as EventIncreasePorchItemAction does: the flag alone shows it only after
+a reload), then the game's own voice line and tutorial (Demo318_0). (Its
+pedestal's event can be started on them instead, as an EventTag starts its own (0x70011662e0: metadata from
+0x7001112508, named with 0x7001112794(meta, flow, entry, ""), 0x700110d590(the event manager, request: +0 a
+matrix, +0x30 0x101, +0x38 the metadata, +0x48 the actor), freed with 0x70011128b4): SAVAGEWIND_ONLINE_SLATE_EVENT=1;
+SAVAGEWIND_ONLINE_SLATE_TEST=<s> starts it that many seconds in.) And
+the towers (Demo004_0, a tower's map downloaded: MapTower_01..15, MapTower_DemoFirst, MapTower_07_Demo; the first
+one rising, IsPlayed_Demo164_0 / 166_0); and the slate's runes and upgrades (IsGet_Obj_RemoteBomb / Cube / Lv2,
+Magnetglove, StopTimer / Lv2, IceMaker, Camera, PictureBook, SheikSensor / Lv2, SheikPadLv2, Motorcycle; Hateno's
+power-up, Demo032_0).
+
+Sheikah pedestals (protocol 18): a game in the slate's pedestal event or a tower's (`framepace_event_name`: Obj_DRStone_A_01, Demo700_0,
+Demo701_0, Demo004_0, Demo164_0; not a chest, a talk or any other) says so in its state (effects ONLINE_E_DEMO).
+While another player within 30 m is at one (and this game is in no event), this game's A is held back (`g_online_block_a`, runtime/hle/input.c), so its player can't start the same thing
+meanwhile (BOT_DEMO=1: the test bot is in one 20 s of every 40; SAVAGEWIND_ONLINE_DEMO_LOG=1 logs the check).
+
+Also shared (protocol 20+, 4096 flags): the runes and the slate's upgrades (the flag, and the item through the pouch,
+0x700120af98: the flag alone leaves the slate's runes as they were); every Korok found (MainField_Npc_HiddenKorok*:
+the seed through the pouch; with that Korok within 60 m, its HashId at actor +0x640, its own cutscene instead,
+Demo017_0<HiddenKorok_Ground / _Air> started on it with 0x700110d500 as 0x70008f682c does, which gives the seed and
+sets the flag; retried while another event plays); the shrines activated, entered and cleared (Clear_Dungeon*: a
+Spirit Orb, Obj_DungeonClearSeal); the Divine Beasts (Clear_Remains*, IsGet_Obj_HeroSoul_*: the champion's ability
+through the pouch; Get_HeartUtuwa_*: a heart container through 0x7001211520, as EventIncreasePorchItemAction does: the
+pouch alone doesn't raise the hearts). A flag's word has other bits: only bit 0 is its value.
+
+Enemies dead everywhere: the host sends each enemy's map HashId (`OnlineEnemy.hash`); one that died in any game gets
+its dead flag (`<map>_<actor>_<HashId>`) set in every game: the game doesn't make it again until a Blood Moon, and a
+camp's chest (its SyncLink group) opens. A dead player's game has no enemies (`can_own`: they go to another player at
+once, not frozen at his game over); one gone from its owner's game still alive (he tries again, his world reloads) is
+the host's again instead of gone for everyone.
+
+### Loot
+
+What enemies drop is everyone's (protocol 15). When an enemy a game has for real dies there (life 0, or gone), that
+game watches where it died for 10 s: the items that come within 6 m (Item_*, Weapon_*, PutRupee*, those not there
+when it died) and the weapon and shield it held are its loot (those kept while it lives: as it dies it drops
+them, and they are unlinked by then). The host's game keeps the list (LOOT_ADD from the
+others, each with the game it came from and its actor's id there; up to 32, the oldest goes), and sends it (LOOTS)
+when it changes and every 2 s. Every other game within 150 m makes each one (the item itself, asked for by name)
+where it was, a real item its player can pick up. One gone from a game with that game's Link within 4 m of it was
+picked up: a weapon or shield is taken off the list (LOOT_TAKE), and every game deletes its own of it, the one it
+came from too; food and materials each player picks up his own. The list holds 64 (more stay only where they fell:
+taking one off would have it go everywhere).
+
+Weapons and shields lying in the world (protocol 18): each game watches the Weapon_* actors within 4 m of its Link
+that he doesn't carry; one gone with him within 2.5 m was picked up (PICK: its name, where it was), and the other
+games delete the one of that name within 2 m of it.
+
+### Enemies
+
+The host's enemies are everyone's (protocol 11+, ENEMIES, 10 times a second from the host's game, through his server
+to the others). Every actor the game has is reached through its proc units: 0x58 bytes each, all in one list (+0x10
+/ +0x18 the previous / next one's +0x10, the list's head no unit; +0x40 the actor's id, +0x48 the actor), from any
+actor's (+0x68). The host sends up to 32 `Enemy_*` within 150 m of any player, the nearest: each one's id, name,
+matrix, the AS it plays (slot 0) and the weapon it holds (a link at enemy +0xb98, found once by looking through one)
+with its matrix. The others delete their own enemies within 170 m of the host's Link (each frame: those the game makes
+there go as they come) and show his with `OnlineEnemy_<name without Enemy_>` actors (tools/online_mod.py,
+`enemies.txt`): the enemy's own pack and ActorInfo entry (its profile, physics, damage params and life: they are hit as
+it is), with the AI that only stands, no AI schedule, no drops, and its AS each as one clip. Its physics is its own copy
+with no character controller (with one it stays where it stands, whatever matrix it is given, and its weapon, which
+follows the host's, floats away from it) and its attack bodies on SensorNoHit (its attacks land through the runtime);
+the bodies it is hit on are kept. (Its actor link written
+again is bigger than the enemy's: its RSTB size is the enemy's plus twice the growth, else the Tags parse runs out of
+the resource's memory and the game crashes. `SAVAGEWIND_ONLINE_ENEMY_TEST=1` makes each one in turn next to Link.) An enemy's AS choose
+their clip by asking its AI (its weapon, its state: TypeIndex 98, 47, ...), which a puppet has none of, so each one is
+made `OE_<its file>`: its element tree followed from the first through each choice's "default" (or first) child to the
+first clip (TypeIndex 67), in an AS list of the puppet's own that keeps the enemy's animations (AddReses). His weapon
+is an OnlineGear actor. When his feed stops (he left, the connection went), they stay as they were, and the own ones
+there stay gone, until it comes again.
+
+Owners (protocol 13): each of the host's enemies is had for real by one game, its owner's, the player nearest it
+(another one only when the owner is 40 m from it or more, or another has been 15 m nearer for 5 s, and not again for
+10 s: each change makes it anew in one game and deletes it in another, so players fighting it together keep it with
+one of them). The host's game keeps
+the list (its own enemies found near a player, their ids everyone's) and decides; each entry of ENEMIES says its
+owner's slot. The owner's game runs it (its AI sees him, chases him, hits him as any enemy) and sends its state to the
+host's game (ESTATE: id, name, matrix, AS, life, weapon; life -1: gone there, died), which sends it on; the others show
+it. A game that comes to own one makes it as it was (where it was, its life) with its weapon (an InstParamPack, as
+0x7000b1711c makes one: EquipItem1 the weapon's name; the pack's vtable the GOT's 0x7001d664b0 + 0x10, then s16 count,
+s16 bytes used, entries of key char *, type 5, the string); the one that no longer owns it deletes it with what it
+holds (its weapon, shield and bow at +0xb98 / +0xbb0 / +0xbc8 as the player's: else they stay on the ground, one more
+each time it changes hands). Hits go to the owner's game. A copy whose enemy died in its owner's game (life 0: its
+body there a ragdoll, its root going anywhere) stays where it was, plays its own Die, drops its weapon and shield, and a second later vanishes as the game's dying
+enemies do (its XLink keyword "Disappear": 0x700159f00c(actor, "Disappear", 2, 0x20 bytes of 0), as 0x70015302c0
+does it), hidden then deleted (`SAVAGEWIND_ONLINE_KILL_TEST=<s>` on the host's game has its own enemies die that many
+seconds in). What an enemy holds (its weapon, linked at +0xb98, its shield at +0xbb0) goes in the space of the hand
+bone it is in (Weapon_R / Weapon_L, within 0.6 m), else where it is in the world: a copy plays its own AS, so its hands
+are elsewhere than the owner's enemy's, and each piece goes in its own hand. It is held at the enemy's size for it
+(online_mod/wscale.txt: the gparam's WeaponScaleSmallSword / LargeSword / Spear / Bow / Shield, a Moblin's or a Lynel's
+bigger than in Link's hands; the weapon's own matrix has none of it, and a scale put in the matrix isn't drawn: its
+model's root bone is scaled, 0x7000f95fa8 with the scale). A copy made anew (the game removed one, or it came back)
+takes no hit for the life it starts with. A new owner makes
+its enemy with both (EquipItem1, EquipItem2). Protocol 14. After a long jump taken for a load, the owned ones still
+there are deleted.
+
+Hits (protocol 12, HIT): an actor's life is the s32 at +0x848 (its General Life to start with; seen going down as it
+is hit). The others set each puppet's life to the host's enemy's every frame (at least 1: his dies in his game); what
+it lost since goes to the host's game (HIT: its id, the life it took) through his server, and his game takes it off
+his enemy's life (at 0 the enemy's own AI has it die, drops and all; it doesn't flinch).
+
+Their attacks on the others: a player's own life is the same s32 (player +0x848, quarter hearts). When one of the
+host's enemies starts an AS with Attack or Kick in its name, a third of a second later (STRIKE_FRAMES) the local
+Link is hit if he is within its reach (2.2 m, 3.5 m for the big ones, more with a weapon, a spear or a big sword
+most) in front of it and not guarding (an AS of his with Guard): his life goes down by its weapon's attack power, its
+own when it holds none (online_mod/power.txt: the enemies' Attack Power, the weapons' ActorInfo attackPower). At 0 the
+game has him die as from anything else (Mipha's Grace included). A heavy blow (a kick, a Large or Jump attack, any
+of a big enemy's) shakes him: `OnlineShock` (the enemies' shock wave, EnemyShockWave, its ELink, SLink and XLink Dummy:
+nothing seen) a metre from him on the enemy's side; he flinches (DamageS), no life taken. Knocking him down takes a
+blast: `OnlineKnock` (a Remote Bomb's, ELink / SLink / XLink Dummy, BombExplode's UseDefaultEffect false) does it
+(DamageL / SlippingDownLand / DamageLStand), but its attack is an explosion's: the game shows the explosion on him and
+takes a quarter heart whatever its params (SAVAGEWIND_ONLINE_KNOCK=OnlineKnock to use it;
+SAVAGEWIND_ONLINE_KNOCK_TEST=<s> makes one next to the local Link every that many seconds). The bosses' shock waves
+(SiteBossSpearShockWave, GanonShockWave, PriestBossShockWave) only make him flinch too. No defence from his armour yet.
+`SAVAGEWIND_ONLINE_ENEMY_AS_LOG=1` logs the host's enemies' AS as they come, `SAVAGEWIND_ONLINE_LIFE_LOG=1` the local
+Link's life.
+
+The time of day is the host's (protocol 10): his game's frame loop publishes its hour (`test_warp_hour`), his
+server sends it to everyone every 2 s (TIME), and the others set theirs to it (`test_warp_set_hour`) when it is off
+by more than 3 game minutes (both clocks run at the same speed in between).
+
 Players going: a player who sends no state for 3 s isn't shown (his actors to his pool, `STALE_NS`), and the server
 drops a client it hears nothing from for 10 s (a game that hung, a network gone without closing the connection) and
 tells the others he left. A game out of the session (it left, or lost the connection) deletes the others' actors at
@@ -245,6 +436,11 @@ his upper body plays BowReload / BowCharge.
 - A dye's colour (the armour's `ArmorDyeColor` param when it is made, as `0x70011759a4` passes it).
 - The beam is not seen working yet: in the test runs (full hearts, the Master Sword) the game fired none, with or
   without online play, so `beam_move` and OnlineBeam are untested.
+- Magnesis' blue beam from the slate to what it holds (not a named effect of the player's, ReactionHit's or
+  Item_Magnetglove's ELink: 0x7001395354 / 0x7001100bd0 find none of MagneHand, MagneConnect, Item_Magne(_Main,
+  _Tail); the Item_Magnetglove actor's ELink plays it from its AI's state), Stasis' chains.
+- A Divine Beast seen moving by the others while one is inside: each world's beast is as its own flags are (the
+  quests' flags are shared), its AI isn't followed.
 - Mipha's Grace, Revali's Gale, Urbosa's Fury (the same way as Daruk's: "Kago_Heal", "Kago_Wind", "Kago_Lightning"),
   a thrown weapon's flight, other effects (a sword's trail, a spin attack's light).
 - The world shared: enemies, items, time of day, quests (Milk Bar's quest and enemy sync); damage between players.

@@ -400,7 +400,7 @@ int main(int argc, char **argv) {
     {   // online play's actors (tools/online_mod.py): its folder in the data root is the RomFS overlay, unless one is
         // set; made from the game files the first time (a source checkout: Python with oead, tools/setup_windows.ps1; a
         // release: the frozen helper, swonline/ next to the exe), and again over one older than the runtime's (without
-        // its version's file: v5)
+        // its version's file: v19)
         struct stat sb;
         const char *ov = getenv("SAVAGEWIND_ROMFS_OVERLAY");
 #ifdef _WIN32
@@ -412,7 +412,7 @@ int main(int argc, char **argv) {
         char helper[1100];
         bool frozen = rt_resource("swonline/swonline", NULL, helper, sizeof helper);
 #endif
-        if ((!ov || !*ov) && stat("online_mod/v5", &sb) != 0) {  // (tools/online_mod.py VERSION)
+        if ((!ov || !*ov) && stat("online_mod/v23", &sb) != 0) {  // (tools/online_mod.py VERSION)
             char cmd[2400];
             cmd[0] = 0;
             if (stat("tools/online_mod.py", &sb) == 0 && stat(py, &sb) == 0)

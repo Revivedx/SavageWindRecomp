@@ -48,6 +48,14 @@ typedef struct {
 } OnlineShots;
 #pragma pack(pop)
 
+// What a player holds with the Magnesis rune: that actor's name ("": nothing), where it was when he caught it (the
+// same object in the others' worlds is the one of that name nearest there), and where it is now
+#define ONLINE_GRAB_NAME 40
+#define ONLINE_BOSSES 2
+#pragma pack(push, 1)
+typedef struct { char name[ONLINE_GRAB_NAME]; float from[3]; float m[12]; } OnlineGrab;
+#pragma pack(pop)
+
 typedef struct {
     char as[ONLINE_AS_CHANNELS][ONLINE_AS_MAX];  // "" none
     uint8_t gear_bone[ONLINE_GEAR];              // 0: not shown; else the bone + 1 (online_actors.c k_bones)
@@ -56,10 +64,19 @@ typedef struct {
     uint8_t valid;
     OnlineShots shots;
     uint8_t effects;                             // ONLINE_E_*: what shows on him
+    OnlineGrab grab;                             // what he holds with the Magnesis rune
+    OnlineGrab stop;                             // what he stopped with the Stasis rune (as grab)
+    uint8_t ice_n;                               // his Cryonis pillars (up to 3): where each one is
+    float ice[3][12];
+    struct { uint32_t hash; char name[28]; int32_t life; } boss[ONLINE_BOSSES];  // the bosses near him (Ganon, the
+                                                 // Blights): each one's map HashId (0 none), its life ("" none)
+    char map[32];                                // the map he is on ("<type>/<name>": MainField/, CDungeon/Dungeon000,
+                                                 // MainFieldDungeon/RemainsWind, ...; "" unknown)
 } OnlinePose;
 // OnlinePose.effects: Daruk's Protection's shield taking a hit (KAGO), its ring while he guards with its charges left
 // (KAGO_COUNT: 1 to 3, in effects >> KAGO_COUNT_SHIFT)
-enum { ONLINE_E_KAGO = 1, ONLINE_E_KAGO_COUNT_SHIFT = 1, ONLINE_E_KAGO_COUNT = 3 << 1 };
+enum { ONLINE_E_KAGO = 1, ONLINE_E_KAGO_COUNT_SHIFT = 1, ONLINE_E_KAGO_COUNT = 3 << 1,
+       ONLINE_E_DEMO = 0x80 };  // (DEMO: he is at a Sheikah pedestal: the slate's, a tower's)
 
 typedef struct {
     bool used;
@@ -132,6 +149,54 @@ void online_set_local_equip(const char armor[3][48], const char gear[ONLINE_GEAR
 #define ONLINE_BOW_BONES 32   // of them, at most, the bow's
 void online_set_local_skeleton(int n, int nbow, const float (*q)[4], const float (*t)[3]);
 bool online_skeleton(int slot, int *n, int *nbow, float (*q)[4], float (*t)[3]);
+// the host's hour of the day (0..24), once each time it comes; false: none new (the host's own game never has one)
+bool online_host_hour(float *hour);
+
+// The host's enemies (runtime/online_actors.c): those near any player in his game, each by its id there, as it is
+// (its actor's name, its matrix, the AS it plays); the others show them instead of their own around his Link
+#define ONLINE_ENEMIES 32
+#pragma pack(push, 1)
+typedef struct {
+    uint32_t id; char name[40]; float m[12]; char as[32]; char weapon[40]; float wm[12]; int32_t life;
+    char shield[40]; float sm[12];  // (its shield, as its weapon)
+    uint8_t wbone, sbone;  // (where wm / sm are: 0 the world; 1 its Weapon_R bone's space, 2 its Weapon_L's)
+    uint8_t owner;  // (the slot of the player whose game has it for real: the others show it; -1 life: gone there)
+    uint32_t hash;  // (its map object's HashId, 0 none: once it died, its dead flag in every game)
+} OnlineEnemy;  // (weapon: what he holds, "" none)
+#pragma pack(pop)
+void online_set_local_enemies(const float centre[3], const OnlineEnemy *e, int n);  // (the host's frame loop)
+// a hit on one of the host's enemies here (the others: its id, the life it took), for his game; his game takes them
+void online_send_hit(uint32_t id, int32_t damage);
+int online_take_hits(uint32_t *id, int32_t *damage, int max);
+// the enemies this game has for real for the others (ESTATE), to the host's; his game takes them, each with the
+// slot it came from
+// What enemies dropped (loot), everyone's: the host's game keeps the list (each one by an id of its own, the game it
+// came from and its id there), the others make each one where it is; one picked up anywhere goes for everyone
+#define ONLINE_LOOT 64
+#pragma pack(push, 1)
+typedef struct { uint32_t gid, lid; uint8_t origin; char name[40]; float pos[3]; } OnlineLoot;
+#pragma pack(pop)
+void online_send_loot_add(const OnlineLoot *l);           // (a game not the host's: a drop of its, for the list)
+int online_take_loot_adds(OnlineLoot *out, int max);       // (the host's: those come, origin set)
+void online_send_loot_take(uint32_t gid);                  // (a game not the host's: it was picked up there)
+int online_take_loot_takes(uint32_t *gid, int max);        // (the host's: those come)
+void online_set_loots(const OnlineLoot *l, int n);         // (the host's: the list, for the others)
+int online_loots(OnlineLoot *out);                         // (the others: the list as it came last; -1 none yet)
+// The quests' progress (main, shrine and side quests), everyone's: a bit per flag of online_mod/quests.txt; each game sends its own, the host's
+// game keeps the union (what any of them did) and sends it, and each sets what it lacks
+#define ONLINE_QUEST_BYTES 512  // (4096 flags)
+void online_send_quests(const uint8_t m[ONLINE_QUEST_BYTES]);   // (a game not the host's)
+bool online_take_quests(uint8_t m[ONLINE_QUEST_BYTES]);         // (the host's game: the others', ORed in)
+void online_set_quests(const uint8_t m[ONLINE_QUEST_BYTES]);    // (the host's game: the union, for the others)
+bool online_quests(uint8_t m[ONLINE_QUEST_BYTES]);              // (the others: the union as it came last)
+// A weapon or shield picked up off the ground (its name, where it was): it goes in the others' games too
+void online_send_pick(const char *name, const float pos[3]);
+int online_take_picks(char (*name)[40], float (*pos)[3], int max);
+void online_send_estates(const OnlineEnemy *e, int n);
+int online_take_estates(OnlineEnemy *e, uint8_t *from, int max);
+// the host's, as they were 0.1 s ago (between his last two); false: none ever came. *age_ns: how long since the last
+int online_enemies(float centre[3], OnlineEnemy *out, uint64_t *age_ns);
+void online_set_local_hour(float hour);  // (the frame loop: the local game's hour, -1 none)
 
 // A dedicated server (main.c --server): runs until the process ends
 int online_server_main(int port, const char *password);

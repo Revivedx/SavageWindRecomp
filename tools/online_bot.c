@@ -39,6 +39,12 @@ typedef struct {
     float gear_rel[6][12];
     uint8_t shots[1 + 8 * 51 + 4 * 15];  // (OnlineShots: none)
     uint8_t effects;
+    struct { char name[40]; float from[3], m[12]; } grab;  // (OnlineGrab: what it holds with the Magnesis rune)
+    struct { char name[40]; float from[3], m[12]; } stop;  // (and what it stopped with Stasis: none)
+    uint8_t ice_n;  // (its Cryonis pillars: none)
+    float ice[3][12];
+    char map[32];  // (the map it is on: "" unknown, as on everyone's)
+    struct { uint32_t hash; char name[28]; int32_t life; } boss[2];  // (the bosses near it: none)
 } WireState;
 typedef struct { uint32_t magic; uint16_t version; char name[24], pass[24]; } WireHello;
 #pragma pack(pop)
@@ -64,7 +70,7 @@ int main(int argc, char **argv) {
     if (getaddrinfo(host, port, &hints, &res)) { fprintf(stderr, "bot: can't resolve %s\n", host); return 1; }
     sock_t s = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (connect(s, res->ai_addr, (int)res->ai_addrlen)) { fprintf(stderr, "bot: can't connect to %s:%s\n", host, port); return 1; }
-    WireHello h = {.magic = 0x4c4f5753u, .version = 9};
+    WireHello h = {.magic = 0x4c4f5753u, .version = 23};
     snprintf(h.name, sizeof h.name, "%s", name);
     msg(s, M_HELLO, &h, sizeof h);
     float centre[3] = {0, 0, 0};
@@ -159,6 +165,29 @@ int main(int argc, char **argv) {
             if (boom_seq && t - boom_t < 2) {
                 uint8_t *b0 = ws.shots + 1 + 8 * 51;
                 memcpy(b0, &boom_seq, 2), b0[2] = 0, memcpy(b0 + 3, boom_at, 12);
+            }
+            // BOT_ICE=x,y,z: a Cryonis pillar of its there 10 s of every 20
+            ws.ice_n = 0;
+            if (getenv("BOT_ICE") && t > 12 && fmod(t, 20) < 10) {
+                float f[3];
+                if (sscanf(getenv("BOT_ICE"), "%f,%f,%f", &f[0], &f[1], &f[2]) == 3) {
+                    float m[12] = {1, 0, 0, f[0], 0, 1, 0, f[1], 0, 0, 1, f[2]};
+                    ws.ice_n = 1, memcpy(ws.ice[0], m, sizeof m);
+                }
+            }
+            // BOT_DEMO=1: in a cutscene (the others' A held back near it) 20 s of every 40
+            if (getenv("BOT_DEMO") && fmod(t, 40) >= 20) ws.effects = 0x80;
+            // BOT_GRAB=<actor>,x,y,z: holds that actor (the one of that name nearest x y z) with the Magnesis rune 10 s
+            // of every 20: lifted 3 m over where it was, going round a 2 m circle
+            memset(&ws.grab, 0, sizeof ws.grab);
+            if (getenv("BOT_GRAB") && t > 12 && fmod(t, 20) < 10) {
+                char gn[40] = {0};
+                float f[3] = {0};
+                if (sscanf(getenv("BOT_GRAB"), "%39[^,],%f,%f,%f", gn, &f[0], &f[1], &f[2]) == 4) {
+                    float a = (float)fmod(t, 20) * 1.2f, up = fminf((float)fmod(t, 20), 1.5f) * 2;
+                    float m[12] = {cosf(a), 0, sinf(a), f[0] + 2 * sinf(a), 0, 1, 0, f[1] + up, -sinf(a), 0, cosf(a), f[2] + 2 * cosf(a) - 2};
+                    memcpy(ws.grab.name, gn, sizeof gn), memcpy(ws.grab.from, f, 12), memcpy(ws.grab.m, m, 48);
+                }
             }
             msg(s, M_STATE, &ws, sizeof ws);
             if (have && !said) {

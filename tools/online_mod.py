@@ -35,16 +35,31 @@ BASE_AI = 'Dm_Animal_Heron_A'
 BASE_AS = 'GameROMPlayer'
 GEAR_PREFIX = 'OnlineGear_'
 ARMOR_PREFIX = 'OnlineArmor_'
+ENEMY_PREFIX = 'OnlineEnemy_'  # (+ the enemy's name without its Enemy_)
 GLOWS = ('Weapon_Sword_070', 'PlayerBeam')  # (gear with its own effects: the Master Sword, its beam)
 BEAM = 'OnlineBeam'
+STORY_FLAGS = ('IsGet_PortableUnit', 'PortableUnit_PowerOn', 'OP_DRC', 'Open_FirstDoor', 'Open_Door',
+               'IsPlayed_Demo700_0', 'IsPlayed_Demo701_0',  # (Demo700_0: the slate's pedestal; Demo701_0: its first door)
+               'IsPlayed_Demo164_0', 'IsPlayed_Demo166_0', 'MapTower_DemoFirst', 'MapTower_07_Demo') + tuple(
+               'MapTower_%02d' % k for k in range(1, 16)) + (  # (Demo004_0: a tower's map downloaded; Demo164_0: the first rising)
+               # the slate's runes and upgrades: Remote Bombs, Magnesis, Stasis, Cryonis (Demo003_0), Hateno's upgrades
+               # (Demo032_0), the camera, the sensor, the Hyrule Compendium, the Master Cycle
+               'IsGet_Obj_RemoteBomb', 'IsGet_Obj_RemoteBombCube', 'IsGet_Obj_RemoteBombLv2', 'IsGet_Obj_RemoteBombCube2',
+               'IsGet_Obj_Magnetglove', 'IsGet_Obj_StopTimer', 'IsGet_Obj_StopTimerLv2', 'IsGet_Obj_IceMaker',
+               'IsGet_Obj_Camera', 'IsGet_Obj_PictureBook', 'IsGet_Obj_SheikSensor', 'IsStart_Obj_SheikSensor',
+               'IsGet_Obj_SheikSensorLv2', 'IsGet_Obj_SheikPadLv2', 'Hateno_SheikPad_PowerUp_Finish', 'IsPlayed_Demo032_0',
+               'IsGet_Obj_Motorcycle')
+KNOCK = 'OnlineKnock'
+SHOCK0 = 'OnlineShock'
 PLAYER_ELINK = 'Player_GameRom'  # (GameROMPlayer's ElinkUser)
-VERSION = 5  # (runtime/main.c ONLINE_MOD_VERSION: armour actors, traverseDist, the paraglider)
+VERSION = 23  # (runtime/main.c ONLINE_MOD_VERSION: armour actors, traverseDist, the paraglider)
 TRAVERSE = 1000.0  # (the online actors' traverseDist)
 GEAR_KINDS = ('Weapon_Sword_', 'Weapon_Lsword_', 'Weapon_Spear_', 'Weapon_Shield_', 'Weapon_Bow_', 'Weapon_Sheath_',
               'Weapon_Lsheath_', 'Weapon_SpearSheath_', 'Weapon_Quiver_')
 # the Remote Bomb rune's bombs (resident in TitleBG), as the others see them thrown and going off
 BOMBS = ['RemoteBomb', 'RemoteBombCube', 'RemoteBomb2', 'RemoteBombCube2']
 BOMB_PREFIX = 'OnlineProj_'
+ICE = 'OnlineIce'  # (a Cryonis pillar of another player's)
 # and as they go off for the others: the bomb's own actor (its AI goes off on the Remote Bomb rune's message, with its
 # blast, effects and sound), without what hurts: its AtkExplode body on a layer that hits nothing (removed, the
 # explosion stops short of its blast); no TgtBody (nothing aims at it)
@@ -329,6 +344,186 @@ def main():
         gear['PlayerBeam'] = BEAM
         model_of[BEAM] = 'PlayerBeam'
 
+    def flat_as(data):
+        """an enemy's AS as one clip: its element tree followed from the first, through each choice's "default" (or
+        its first) child, to the first clip (TypeIndex 67); the choices ask the enemy's AI (its weapon, its state), which
+        a puppet has none of. None: no clip"""
+        io = pio(data)
+        els = io.lists['Elements'].lists
+        k = 0
+        for _ in range(32):
+            e = els.get('Element%d' % k)
+            if e is None:
+                return None
+            par = e.objects['Parameters']
+            if int(par.params['TypeIndex'].v) == 67 and 'FileName' in par.params:
+                out_el = oead.aamp.ParameterList()
+                out_el.objects['Parameters'] = par
+                out_els = oead.aamp.ParameterList()
+                out_els.lists['Element0'] = out_el
+                bas = oead.aamp.ParameterIO()
+                bas.type = 'xml'
+                if 'CommonParams' in io.objects:
+                    bas.objects['CommonParams'] = io.objects['CommonParams']
+                bas.lists['Elements'] = out_els
+                return bas.to_binary()
+            ch = e.objects.get('Children')
+            if ch is None or not len(ch.params):
+                return None
+            kids = [int(v.v) for v in ch.params.values()]
+            pick = kids[0]
+            ext = e.lists.get('Extend')
+            sa = ext.lists.get('StringArray') if ext is not None else None
+            if sa is not None:
+                vals = [str(v.v) for o in sa.objects.values() for v in o.params.values()]
+                if 'default' in vals and vals.index('default') < len(kids):
+                    pick = kids[vals.index('default')]
+            k = pick
+        return None
+
+    def puppet_as(pack, asl_file, online):
+        """an enemy puppet's AS list (named as the puppet; the enemy's animations kept) and AS: each of the enemy's AS
+        as one clip (flat_as), OE_<its file>"""
+        asl2 = pio(asl_file.data)
+        files = {}
+        defs = oead.aamp.ParameterList()
+        for o in asl2.lists['ASDefines'].objects.values():
+            fn = str(o.params['Filename'].v)
+            f = pack.get_file('Actor/AS/%s.bas' % fn)
+            flat = flat_as(f.data) if f else None
+            if flat is None:
+                continue
+            o2 = oead.aamp.ParameterObject()
+            o2.params['Name'] = o.params['Name']
+            o2.params['Filename'] = oead.aamp.Parameter(oead.FixedSafeString64('OE_' + fn))
+            defs.objects['ASDefine_%d' % len(defs.objects)] = o2
+            files['Actor/AS/OE_%s.bas' % fn] = flat
+            sizes['Actor/AS/OE_%s.bas' % fn] = rstb.get('Actor/AS/Player_Wait.bas')
+        if not files:
+            return None
+        asl2.lists['ASDefines'] = defs
+        files['Actor/ASList/%s.baslist' % online] = asl2.to_binary()
+        sizes['Actor/ASList/%s.baslist' % online] = max(rstb.get('Actor/ASList/%s' % asl_file.name.split('/')[-1]) or 0, 0x10000)
+        return files
+
+    enemy_info = {}  # online actor -> the enemy whose ActorInfo entry it has (its profile and all)
+    # OnlineShock: the enemies' shock wave (EnemyShockWave: a Moblin's slam's) with no effects, for the others' Links a
+    # heavy blow of the host's enemies knocks down (a bomb's blast would set his own hit-by-a-bomb glow off)
+    # (the bosses' shock waves (SiteBossSpearShockWave, GanonShockWave, PriestBossShockWave) don't knock down either:
+    # a blast does, the Remote Bomb's (OnlineKnock), with its explosion seen and a quarter heart taken whatever its params)
+    for src, SHOCK in [] if no_gear else [('EnemyShockWave', SHOCK0)]:
+        sw = actor_pack(romfs, title_bg, src)
+        swf = {f.name: bytes(f.data) for f in sw.get_files()}
+        swl = pio(swf.pop('Actor/ActorLink/%s.bxml' % src))
+        for key in ('ElinkUser', 'SlinkUser', 'XlinkUser'):
+            swl.objects['LinkTarget'].params[key] = oead.aamp.Parameter('Dummy')
+        # (an attack of its own that knocks down and hurts no one: the Attack of the enemies' strongest blows, Power 0)
+        mb = actor_pack(romfs, title_bg, 'Enemy_Moriblin_Junior')
+        mgp = pio(next(f for f in mb.get_files() if f.name.startswith('Actor/GeneralParamList/')).data)
+        sgp = oead.aamp.ParameterIO()
+        sgp.type = 'xml'
+        att = mgp.objects['Attack']
+        for k2 in ('Power', 'PowerForPlayer'):
+            if k2 in att.params:
+                att.params[k2] = oead.aamp.Parameter(oead.S32(0))
+        for k2 in ('Impulse', 'ImpulseLarge'):
+            if k2 in att.params:
+                att.params[k2] = oead.aamp.Parameter(oead.S32(9999))
+        sgp.objects['Attack'] = att
+        swf['Actor/GeneralParamList/%s.bgparamlist' % SHOCK] = sgp.to_binary()
+        sizes['Actor/GeneralParamList/%s.bgparamlist' % SHOCK] = 0x2000
+        swl.objects['LinkTarget'].params['GParamUser'] = oead.aamp.Parameter(SHOCK)
+        swf['Actor/ActorLink/%s.bxml' % SHOCK] = swl.to_binary()
+        sizes['Actor/ActorLink/%s.bxml' % SHOCK] = (rstb.get('Actor/ActorLink/%s.bxml' % src) or 0x1000) + 0x400
+        w = oead.SarcWriter(oead.Endianness.Little)
+        for p2, d in swf.items():
+            w.files[p2] = d
+        pack = w.write()[1]
+        sizes['Actor/Pack/%s.bactorpack' % SHOCK] = int(len(pack) * 1.5) + 0x1000
+        loose[SHOCK] = oead.yaz0.compress(pack)
+        enemy_info[SHOCK] = src
+
+    # the host's enemies as the others see them: one actor per enemy (Enemy_*), its model, AS list and AS alone (no
+    # AI, physics, attack or drops); the runtime puts it where the host's is and plays the AS it plays
+    enemies = {}  # the game's enemy -> its online actor
+    weapon_scale = {}  # an enemy -> the scales it holds its weapons at (small sword, large sword, spear, bow, shield)
+    power = {}    # an enemy's (its body's) or a weapon's attack power, for the others' Links its attacks hit
+    for piece in ([] if no_gear else sorted(n[:-len('.sbactorpack')] for n in os.listdir(os.path.join(romfs, 'Actor', 'Pack'))
+                                            if n.startswith('Enemy_'))):
+        a = actor_pack(romfs, title_bg, piece)
+        al = [f for f in a.get_files() if f.name.startswith('Actor/ActorLink/')]
+        if not al:
+            continue
+        lt = pio(al[0].data).objects['LinkTarget']
+        user, as_user = str(lt.params['ModelUser'].v), str(lt.params['ASUser'].v)
+        ml = a.get_file('Actor/ModelList/%s.bmodellist' % user)
+        asl = a.get_file('Actor/ASList/%s.baslist' % as_user)
+        if not ml or not asl or as_user == 'Dummy':
+            continue
+        online = ENEMY_PREFIX + piece[len('Enemy_'):]
+        enemy_as = puppet_as(a, asl, online)
+        if not enemy_as:
+            continue
+        # the enemy's own pack (its profile, physics, damage params and life: it is hit as the enemy is), its actor
+        # link's: the AI one that only stands, no AI schedule, no drops, the AS above
+        files = {f.name: bytes(f.data) for f in a.get_files()
+                 if not f.name.startswith(('Actor/AS/', 'Actor/ASList/', 'Actor/AIProgram/', 'Actor/AISchedule/',
+                                           'Actor/DropTable/', 'Actor/ActorLink/'))}
+        files.update(enemy_as)
+        link2 = pio(al[0].data)
+        lt2 = link2.objects['LinkTarget']
+        for f in idle.get_files():
+            if f.name.startswith('Actor/AIProgram/'):
+                files[f.name] = bytes(f.data)
+                lt2.params['AIProgramUser'] = oead.aamp.Parameter(f.name.split('/')[-1].rsplit('.', 1)[0])
+        for key, value in (('ASUser', online), ('AIScheduleUser', 'Dummy'), ('DropTableUser', 'Dummy')):
+            lt2.params[key] = oead.aamp.Parameter(value)
+        # its physics, by its own name: no character controller (it would keep it where it stands: the runtime puts
+        # it where the host's is), its attack bodies on a layer that hits nothing (the runtime has its attacks land);
+        # the bodies it is hit on kept
+        pu = str(lt2.params['PhysicsUser'].v)
+        pf = files.pop('Actor/Physics/%s.bphysics' % pu, None)
+        if pf is not None:
+            phys = pio(pf)
+
+            def calm(l):
+                for o in l.objects.values():
+                    if 'use_character_controller' in o.params:
+                        o.params['use_character_controller'] = oead.aamp.Parameter(False)
+                    if 'layer' in o.params and str(o.params['layer'].v) == 'SensorAttackEnemy':
+                        o.params['layer'] = oead.aamp.Parameter(oead.FixedSafeString32('SensorNoHit'))
+                for sub in l.lists.values():
+                    calm(sub)
+            calm(phys)
+            files['Actor/Physics/%s.bphysics' % online] = phys.to_binary()
+            sizes['Actor/Physics/%s.bphysics' % online] = (rstb.get('Actor/Physics/%s.bphysics' % pu) or 0x4000) + 0x1000
+            lt2.params['PhysicsUser'] = oead.aamp.Parameter(online)
+        files['Actor/ActorLink/%s.bxml' % online] = link2.to_binary()
+        # (written again it is bigger than the enemy's: the RSTB size the game loads it into must hold it)
+        grown = len(files['Actor/ActorLink/%s.bxml' % online]) - len(al[0].data)
+        sizes['Actor/ActorLink/%s.bxml' % online] = (rstb.get(al[0].name) or 0x1000) + max(grown, 0) * 2 + 0x400
+        w = oead.SarcWriter(oead.Endianness.Little)
+        for p2, d in files.items():
+            w.files[p2] = d
+        pack = w.write()[1]
+        sizes['Actor/Pack/%s.bactorpack' % online] = int(len(pack) * 1.5) + 0x1000
+        loose[online] = oead.yaz0.compress(pack)
+        enemy_info[online] = piece
+        enemies[piece] = online
+        gp = [f for f in a.get_files() if f.name.startswith('Actor/GeneralParamList/')]
+        gpio = pio(gp[0].data) if gp else None
+        att = gpio.objects.get('Attack') if gpio is not None else None
+        if att is not None and 'Power' in att.params:
+            power[piece] = int(att.params['Power'].v)
+        # (the scale it holds its weapons at, per kind: a Moblin's are bigger than they are in Link's hands)
+        ws = []
+        for o in (gpio.objects.values() if gpio is not None else []):
+            if 'WeaponScaleSmallSword' in o.params:
+                ws = [float(o.params[k].v) for k in ('WeaponScaleSmallSword', 'WeaponScaleLargeSword', 'WeaponScaleSpear',
+                                                      'WeaponScaleBow', 'WeaponScaleShield')]
+        if ws and any(abs(x - 1) > 0.01 for x in ws):
+            weapon_scale[piece] = ws
+
     # the Remote Bomb's bombs as they look and go off (their model, AS list and AS, effects and sounds: the AS
     # "Explode" sets off their explosion's), without what makes them hurt (their AI, physics, the Explode actor)
     for piece in [] if no_gear else BOMBS:
@@ -345,10 +540,29 @@ def main():
         gear[piece] = online
         model_of[online] = piece
 
+    # OnlineIce: a Cryonis pillar as the others see it (its model, AS "Appear_Linear" as it rises, its effects, sounds
+    # and physics: one can stand on it), without its AI (the game's own goes at once when the rune didn't make it)
+    if not no_gear:
+        a = actor_pack(romfs, title_bg, 'Obj_IceMakerBlock')
+        lt = pio(next(f for f in a.get_files() if f.name.startswith('Actor/ActorLink/')).data).objects['LinkTarget']
+        users = {k: str(lt.params[k].v) for k in ('ASUser', 'ElinkUser', 'SlinkUser', 'XlinkUser') if k in lt.params}
+        ice_as = {f.name: bytes(f.data) for f in a.get_files() if f.name.startswith(('Actor/AS/', 'Actor/ASList/'))}
+        for f in ice_as:
+            sizes[f] = rstb.get(f)
+        pu = str(lt.params['PhysicsUser'].v)
+        pf = a.get_file('Actor/Physics/%s.bphysics' % pu)
+        loose[ICE] = build(ICE, bytes(a.get_file('Actor/ModelList/Obj_IceMakerBlock.bmodellist').data), as_files=ice_as,
+                           physics=(bytes(pf.data), rstb.get('Actor/Physics/%s.bphysics' % pu)), users=users)
+        model_of[ICE] = 'Obj_IceMakerBlock'
+
     booms = {}  # online actor -> its pack (not resident)
-    for piece in [] if no_gear else BOMBS:
+    boom_of = {}  # online actor -> the bomb it is made from
+    # (and OnlineKnock: a Remote Bomb's explosion with no effects, sounds or damage, its push alone: the host's enemies'
+    # heavy blows knock the others' Links down with it)
+    for piece, online, quiet in [] if no_gear else [(b, BOOM_PREFIX + b, False) for b in BOMBS] + [('RemoteBomb', KNOCK, True)]:
         a = actor_pack(romfs, title_bg, piece)
         files = {f.name: bytes(f.data) for f in a.get_files()}
+        boom_of[online] = piece
         lt_name = next(n for n in files if n.startswith('Actor/ActorLink/'))
         link = pio(files[lt_name])
         lt = link.objects['LinkTarget']
@@ -373,7 +587,9 @@ def main():
         ps.lists['RigidBodySet'] = new_sets
         head = next(o for o in ps.objects.values() if 'use_rigid_body_set_num' in o.params)
         head.params['use_rigid_body_set_num'] = oead.aamp.Parameter(oead.S32(len(keep)))
-        online = BOOM_PREFIX + piece
+        if quiet:  # (nothing of its explosion seen or heard: its effects, sounds and XLink none)
+            for key in ('ElinkUser', 'SlinkUser', 'XlinkUser'):
+                lt.params[key] = oead.aamp.Parameter('Dummy')
         # its attack without damage, its push and shock wave kept (it knocks the player down, as the bomb's): its own
         # GeneralParamList and AI program, by its own names (the bomb's are loaded already: the game would take those)
         gpu = str(lt.params['GParamUser'].v)
@@ -391,6 +607,8 @@ def main():
             for o in l.objects.values():
                 if 'ShockPower' in o.params and '--boom-no-shock' in sys.argv:
                     o.params['ShockPower'] = oead.aamp.Parameter(0.0)
+                if quiet and 'UseDefaultEffect' in o.params:  # (BombExplode's own fireball and dome: none)
+                    o.params['UseDefaultEffect'] = oead.aamp.Parameter(False)
             for sub in l.lists.values():
                 harmless(sub)
         harmless(ai)
@@ -403,7 +621,7 @@ def main():
         sizes['Actor/Physics/%s.bphysics' % online] = rstb.get('Actor/Physics/%s.bphysics' % pu)
         del files[lt_name]
         files['Actor/ActorLink/%s.bxml' % online] = link.to_binary()
-        sizes['Actor/ActorLink/%s.bxml' % online] = rstb.get(lt_name)
+        sizes['Actor/ActorLink/%s.bxml' % online] = (rstb.get(lt_name) or 0x1000) + 0x400
         w = oead.SarcWriter(oead.Endianness.Little)
         for p2, d in files.items():
             w.files[p2] = d
@@ -458,12 +676,16 @@ def main():
 
     add_info(NAME, BASE_LOOK)
     next(a for a in actors if a['name'] == NAME)['elink'] = PLAYER_ELINK
-    for online in booms:  # (the bomb's own entry, its profile and all)
-        piece = online[len(BOOM_PREFIX):]
+    for online in list(booms) + list(enemy_info):  # (the bomb's / enemy's own entry, its profile and all)
+        piece = enemy_info.get(online) or boom_of[online]
         entry = oead.byml.Hash()
         for k2, v in by_name[piece].items():
             entry[k2] = v
         entry['name'] = online
+        if online == KNOCK or online.startswith(SHOCK0):  # (its effects, sounds and XLink none)
+            entry['elink'] = 'Dummy'
+            entry['slink'] = 'Dummy'
+            entry['xlink'] = 'Dummy'
         h = crc(online)
         keys = [int(x) & 0xffffffff for x in hashes]
         if h not in keys:
@@ -512,6 +734,56 @@ def main():
     open(os.path.join(out, 'online_mod.txt'), 'w').write('Savage Wind online play: OnlinePlayer (tools/online_mod.py)\n')
     # the game's actor=its online actor, one a line (runtime/online_actors.c gear_actor)
     open(os.path.join(out, 'gear.txt'), 'w').write(''.join('%s=%s\n' % kv for kv in sorted(gear.items())))
+    # the attack powers (enemy or weapon=power): the enemies' Attack Power, the weapons' ActorInfo attackPower
+    for a2 in actors:
+        n2 = str(a2['name'])
+        if n2.startswith('Weapon_') and 'attackPower' in a2:
+            power[n2] = int(a2['attackPower'])
+    open(os.path.join(out, 'power.txt'), 'w').write(''.join('%s=%d' % kv + chr(10) for kv in sorted(power.items())))
+    # the enemies' weapon scales (enemy=small sword,large sword,spear,bow,shield), those not all 1
+    open(os.path.join(out, 'wscale.txt'), 'w').write(''.join(
+        '%s=%s' % (k, ','.join('%.4f' % x for x in v)) + chr(10) for k, v in sorted(weapon_scale.items())))
+    # the quests' flags, main ones first, then the shrine quests (Sub) and the side quests (Mini) (one a line: their
+    # steps' NextFlag and the bool flags their steps depend on), shared by the players (runtime/online_actors.c)
+    qp = oead.byml.from_binary(oead.yaz0.decompress(title_bg.get_file('Quest/QuestProduct.sbquestpack').data))
+    qflags = []
+    for qx in sorted(qp, key=lambda q2: ['Main', 'Sub', 'Mini'].index(str(q2.get('Type', 'Mini')))
+                     if str(q2.get('Type', '')) in ('Main', 'Sub', 'Mini') else 3):
+        if str(qx.get('Type', '')) not in ('Main', 'Sub', 'Mini'):
+            continue
+        for st in qx.get('Steps', []):
+            f2 = str(st.get('NextFlag', ''))
+            if f2 and f2 not in qflags:
+                qflags.append(f2)
+        for dep in qx.get('StepDependencyFlags', []):
+            f2 = str(dep.get('DependencyFlag', ''))
+            if f2 and str(dep.get('DependencyFlagType', '')) == 'bool' and f2 not in qflags:
+                qflags.append(f2)
+    # (and the Great Plateau's start, its Sheikah Slate: the slate itself, powered on, the doors its events open,
+    # their cutscenes seen)
+    for f2 in STORY_FLAGS:
+        if f2 not in qflags:
+            qflags.append(f2)
+    # (the Koroks found, the shrines activated, entered and cleared: each game's map marks them, and the one who didn't
+    # gets the seed and the Spirit Orb too, runtime/online_actors.c)
+    bootup = oead.Sarc(open(os.path.join(romfs, 'Pack', 'Bootup.pack'), 'rb').read())
+    gdt = oead.Sarc(oead.yaz0.decompress(bytes(bootup.get_file('GameData/gamedata.ssarc').data)))
+    bool_flags = set()
+    for gf in gdt.get_files():
+        if gf.name.split('/')[-1].startswith('bool_data'):
+            for e in oead.byml.from_binary(bytes(gf.data)).get('bool_data', []):
+                bool_flags.add(str(e['DataName']))
+    for f2 in sorted(bool_flags):
+        if (f2.startswith('MainField_Npc_HiddenKorok') or re.match(r'(Clear|Open|Enter)_Dungeon\d+$', f2) or
+                re.match(r'(GameClear|IsHyruleCastlePGanon(Wind|Water|Fire|Electric)Dead|Die_PGanon(Wind|Water|Fire|Electric))$',
+                         f2) or
+                re.match(r'(Get_HeartUtuwa_(Wind|Water|Fire|Electric)|IsGet_Obj_HeroSoul_(Rito|Zora|Goron|Gerudo)|'
+                         r'IsGet_App_(Wind|Water|Fire|Electric)Relic|(Wind|Water|Fire|Electric)_Relic_\w+|Clear_Remains\w+)$',
+                         f2)) and f2 not in qflags:
+            qflags.append(f2)
+    open(os.path.join(out, 'quests.txt'), 'w').write(''.join(f2 + chr(10) for f2 in qflags[:4096]))
+    # the enemies' online actors (enemy=actor)
+    open(os.path.join(out, 'enemies.txt'), 'w').write(''.join('%s=%s\n' % kv for kv in sorted(enemies.items())))
     # the armour pieces' online actors (piece=actor), and each one's bone map (actor=unit|unit, each "i,i,...")
     open(os.path.join(out, 'armor.txt'), 'w').write(''.join('%s=%s\n' % kv for kv in sorted(armor.items())))
     open(os.path.join(out, 'bones.txt'), 'w').write(''.join(

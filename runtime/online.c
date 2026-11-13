@@ -37,14 +37,17 @@ typedef int sock_t;
 #include "rt.h"
 
 #define MAGIC 0x4c4f5753u  // "SWOL"
-#define PROTOCOL 9
+#define PROTOCOL 23
+static volatile float g_local_hour = -1;  // (the local game's hour, from the frame loop: online_set_local_hour)
 #define SEND_HZ 20
 #define INTERP_NS 100000000ull  // the others are drawn this far behind what was last heard (smooth between updates)
 #define TIMEOUT_NS 10000000000ull  // nothing heard for this long: the connection is gone
 #define STALE_NS 3000000000ull     // no state from a player for this long: he isn't shown (his game stopped, or his
                                    // connection is going); the server drops a client after TIMEOUT_NS
 
-enum { M_HELLO = 1, M_WELCOME, M_REJECT, M_STATE, M_JOIN, M_LEAVE, M_CHAT, M_PING, M_PONG, M_EQUIP, M_SKEL };
+enum { M_HELLO = 1, M_WELCOME, M_REJECT, M_STATE, M_JOIN, M_LEAVE, M_CHAT, M_PING, M_PONG, M_EQUIP, M_SKEL, M_TIME, M_ENEMIES, M_HIT, M_ESTATE, M_LOOT_ADD, M_LOOT_TAKE, M_LOOTS, M_QUEST, M_QUESTS, M_PICK };
+#define ENEMIES_EVERY_NS 100000000ull  // the host's enemies (ENEMIES: centre, count, OnlineEnemy each) this often
+#define TIME_EVERY_NS 2000000000ull  // the host's hour of the day (TIME: a float, 0..24) to everyone this often
 // SKEL: u8 Link's bone count, u8 his bow's, then each bone's rotation (smallest three of its quaternion: 2 bits which
 // is dropped, 3 x 15 bits; 6 bytes) and translation (3 x s16, 1/8192 m); 20 times a second
 #define SKEL_BONE_BYTES 12
@@ -62,6 +65,12 @@ typedef struct {
     float gear_rel[ONLINE_GEAR][12];
     OnlineShots shots;
     uint8_t effects;  // OnlinePose.effects
+    OnlineGrab grab;  // OnlinePose.grab
+    OnlineGrab stop;  // OnlinePose.stop
+    uint8_t ice_n;    // OnlinePose.ice
+    float ice[3][12];
+    char map[32];     // OnlinePose.map
+    struct { uint32_t hash; char name[28]; int32_t life; } boss[ONLINE_BOSSES];  // OnlinePose.boss
 } WireState;
 typedef struct { uint32_t magic; uint16_t version; char name[ONLINE_NAME_MAX], pass[ONLINE_NAME_MAX]; } WireHello;
 typedef struct { char armor[3][48], gear[ONLINE_GEAR][48]; } WireEquip;  // EQUIP: what a player wears (head,
@@ -109,7 +118,7 @@ static bool send_all(sock_t s, const void *p, int n) {
 }
 
 static bool send_msg(sock_t s, uint8_t type, const void *a, int na, const void *b, int nb) {
-    uint8_t buf[3 + 2048];
+    uint8_t buf[3 + 16384];
     int len = 1 + na + nb;
     if (len + 2 > (int)sizeof buf) return false;
     buf[0] = (uint8_t)len, buf[1] = (uint8_t)(len >> 8), buf[2] = type;
@@ -236,6 +245,25 @@ static bool srv_message(Server *sv, int i, uint8_t type, const uint8_t *p, int l
     case M_SKEL:
         if (len >= 2 && len <= SKEL_BYTES) srv_broadcast(sv, i, M_SKEL, &id, 1, p, len);
         break;
+    case M_ENEMIES:  // (from the host's own game)
+        if (len >= 13) srv_broadcast(sv, i, M_ENEMIES, p, len, NULL, 0);
+        break;
+    case M_HIT:  // (to the enemy's owner's game: the others drop it)
+        if (len >= 8) srv_broadcast(sv, i, M_HIT, p, 8, NULL, 0);
+        break;
+    case M_ESTATE:  // (an owner's enemies, to the host's game, with where they come from)
+        if (len >= 1) srv_broadcast(sv, i, M_ESTATE, &id, 1, p, len);
+        break;
+    case M_LOOT_ADD:  // (a drop, to the host's game, with where it comes from)
+    case M_LOOT_TAKE:
+        if (len >= 4) srv_broadcast(sv, i, type, &id, 1, p, len);
+        break;
+    case M_LOOTS:  // (the host's game's list, to the others)
+    case M_QUESTS:  // (the host's game's union, to the others)
+    case M_QUEST:   // (a game's own, to the host's game)
+    case M_PICK:    // (a weapon picked up, to everyone)
+        srv_broadcast(sv, i, type, p, len, NULL, 0);
+        break;
     case M_CHAT: {
         char text[ONLINE_CHAT_MAX];
         int n = len < ONLINE_CHAT_MAX - 1 ? len : ONLINE_CHAT_MAX - 1;
@@ -311,6 +339,12 @@ static void srv_loop(Server *sv) {
             }
         }
         uint64_t now = plat_now_ns();
+        static uint64_t next_time;
+        if (now >= next_time) {  // (the host's own game is the one this server runs in: its hour for everyone)
+            next_time = now + TIME_EVERY_NS;
+            float hour = g_local_hour;
+            if (hour >= 0) srv_broadcast(sv, -1, M_TIME, &hour, 4, NULL, 0);
+        }
         for (int i = 0; i < ONLINE_MAX; i++) {
             SClient *c = &sv->c[i];
             if (!c->used) continue;
@@ -394,6 +428,23 @@ static struct {
     char outbox[4][ONLINE_CHAT_MAX];  // chat lines to send (the network thread sends them)
     int nout;
     uint16_t ping;
+    struct { uint64_t t; float centre[3]; int n; OnlineEnemy e[ONLINE_ENEMIES]; } en[2];  // ENEMIES: the last two
+    struct { uint32_t id; int32_t damage; } hit_out[32], hit_in[64];  // (HIT: to send / come, for the frame loop)
+    int nhit_out, nhit_in;
+    OnlineEnemy est_out[ONLINE_ENEMIES], est_in[64];  // (ESTATE: ours to send, the owners' come: the host's game)
+    uint8_t est_from[64];
+    int nest_out, nest_in;
+    bool est_new;
+    OnlineLoot la_out[16], la_in[32], loots[ONLINE_LOOT];  // (loot: adds to send, adds come, the list)
+    uint32_t lt_out[16], lt_in[32];                         // (loot taken: to send, come)
+    int nla_out, nla_in, nlt_out, nlt_in, nloots;
+    bool loots_new;
+    uint8_t quest_out[ONLINE_QUEST_BYTES], quest_in[ONLINE_QUEST_BYTES], quests[ONLINE_QUEST_BYTES];
+    bool quest_out_new, quest_in_new, quests_have, quests_new;
+    struct { char name[40]; float pos[3]; } pick_out[8], pick_in[16];  // (PICK: to send, come)
+    int npick_out, npick_in;
+    float host_hour;  // (TIME: the host's hour; host_hour_t when it came, 0 once taken)
+    uint64_t host_hour_t;
     // the camera (vulkan/exec.c)
     double vp[16];
     float ysign;
@@ -502,6 +553,186 @@ void online_set_local_skeleton(int n, int nbow, const float (*q)[4], const float
     pthread_mutex_unlock(&g.lock);
 }
 
+static pthread_mutex_t g_pose_lock;  // (below)
+
+// The host's enemies: his frame loop's (sent by his network thread), the others' as they come
+static struct { uint64_t t; float centre[3]; int n; OnlineEnemy e[ONLINE_ENEMIES]; } g_local_en;
+
+void online_set_local_enemies(const float centre[3], const OnlineEnemy *e, int n) {
+    pthread_mutex_lock(&g_pose_lock);
+    memcpy(g_local_en.centre, centre, 12);
+    g_local_en.n = n > ONLINE_ENEMIES ? ONLINE_ENEMIES : n;
+    memcpy(g_local_en.e, e, g_local_en.n * sizeof *e);
+    g_local_en.t = plat_now_ns();
+    pthread_mutex_unlock(&g_pose_lock);
+}
+
+void online_send_hit(uint32_t id, int32_t damage) {
+    pthread_mutex_lock(&g.lock);
+    if (g.nhit_out < 32) g.hit_out[g.nhit_out].id = id, g.hit_out[g.nhit_out].damage = damage, g.nhit_out++;
+    pthread_mutex_unlock(&g.lock);
+}
+
+void online_send_loot_add(const OnlineLoot *l) {
+    pthread_mutex_lock(&g.lock);
+    if (g.nla_out < 16) g.la_out[g.nla_out++] = *l;
+    pthread_mutex_unlock(&g.lock);
+}
+
+int online_take_loot_adds(OnlineLoot *out, int max) {
+    pthread_mutex_lock(&g.lock);
+    int n = g.nla_in < max ? g.nla_in : max;
+    memcpy(out, g.la_in, n * sizeof *out);
+    g.nla_in = 0;
+    pthread_mutex_unlock(&g.lock);
+    return n;
+}
+
+void online_send_loot_take(uint32_t gid) {
+    pthread_mutex_lock(&g.lock);
+    if (g.nlt_out < 16) g.lt_out[g.nlt_out++] = gid;
+    pthread_mutex_unlock(&g.lock);
+}
+
+int online_take_loot_takes(uint32_t *gid, int max) {
+    pthread_mutex_lock(&g.lock);
+    int n = g.nlt_in < max ? g.nlt_in : max;
+    memcpy(gid, g.lt_in, n * 4);
+    g.nlt_in = 0;
+    pthread_mutex_unlock(&g.lock);
+    return n;
+}
+
+void online_set_loots(const OnlineLoot *l, int n) {
+    pthread_mutex_lock(&g.lock);
+    if (n > ONLINE_LOOT) n = ONLINE_LOOT;
+    if (n != g.nloots || memcmp(l, g.loots, n * sizeof *l)) g.loots_new = true;
+    memcpy(g.loots, l, n * sizeof *l);
+    g.nloots = n;
+    pthread_mutex_unlock(&g.lock);
+}
+
+int online_loots(OnlineLoot *out) {
+    pthread_mutex_lock(&g.lock);
+    int n = g.nloots;
+    memcpy(out, g.loots, n * sizeof *out);
+    pthread_mutex_unlock(&g.lock);
+    return n;
+}
+
+void online_send_quests(const uint8_t m[ONLINE_QUEST_BYTES]) {
+    pthread_mutex_lock(&g.lock);
+    memcpy(g.quest_out, m, ONLINE_QUEST_BYTES), g.quest_out_new = true;
+    pthread_mutex_unlock(&g.lock);
+}
+
+bool online_take_quests(uint8_t m[ONLINE_QUEST_BYTES]) {
+    pthread_mutex_lock(&g.lock);
+    bool n = g.quest_in_new;
+    memcpy(m, g.quest_in, ONLINE_QUEST_BYTES), g.quest_in_new = false;
+    pthread_mutex_unlock(&g.lock);
+    return n;
+}
+
+void online_set_quests(const uint8_t m[ONLINE_QUEST_BYTES]) {
+    pthread_mutex_lock(&g.lock);
+    memcpy(g.quests, m, ONLINE_QUEST_BYTES), g.quests_new = true;
+    pthread_mutex_unlock(&g.lock);
+}
+
+bool online_quests(uint8_t m[ONLINE_QUEST_BYTES]) {
+    pthread_mutex_lock(&g.lock);
+    bool h = g.quests_have;
+    memcpy(m, g.quests, ONLINE_QUEST_BYTES);
+    pthread_mutex_unlock(&g.lock);
+    return h;
+}
+
+void online_send_pick(const char *name, const float pos[3]) {
+    pthread_mutex_lock(&g.lock);
+    if (g.npick_out < 8) {
+        snprintf(g.pick_out[g.npick_out].name, 40, "%s", name);
+        memcpy(g.pick_out[g.npick_out].pos, pos, 12);
+        g.npick_out++;
+    }
+    pthread_mutex_unlock(&g.lock);
+}
+
+int online_take_picks(char (*name)[40], float (*pos)[3], int max) {
+    pthread_mutex_lock(&g.lock);
+    int n = g.npick_in < max ? g.npick_in : max;
+    for (int k = 0; k < n; k++) memcpy(name[k], g.pick_in[k].name, 40), memcpy(pos[k], g.pick_in[k].pos, 12);
+    g.npick_in = 0;
+    pthread_mutex_unlock(&g.lock);
+    return n;
+}
+
+void online_send_estates(const OnlineEnemy *e, int n) {
+    pthread_mutex_lock(&g.lock);
+    g.nest_out = n > ONLINE_ENEMIES ? ONLINE_ENEMIES : n;
+    memcpy(g.est_out, e, g.nest_out * sizeof *e);
+    g.est_new = true;
+    pthread_mutex_unlock(&g.lock);
+}
+
+int online_take_estates(OnlineEnemy *e, uint8_t *from, int max) {
+    pthread_mutex_lock(&g.lock);
+    int n = g.nest_in < max ? g.nest_in : max;
+    memcpy(e, g.est_in, n * sizeof *e);
+    memcpy(from, g.est_from, n);
+    g.nest_in = 0;
+    pthread_mutex_unlock(&g.lock);
+    return n;
+}
+
+int online_take_hits(uint32_t *id, int32_t *damage, int max) {
+    pthread_mutex_lock(&g.lock);
+    int n = g.nhit_in < max ? g.nhit_in : max;
+    for (int k = 0; k < n; k++) id[k] = g.hit_in[k].id, damage[k] = g.hit_in[k].damage;
+    g.nhit_in = 0;
+    pthread_mutex_unlock(&g.lock);
+    return n;
+}
+
+int online_enemies(float centre[3], OnlineEnemy *out, uint64_t *age_ns) {
+    pthread_mutex_lock(&g.lock);
+    int n = g.en[1].t ? g.en[1].n : -1;
+    if (n >= 0) {
+        uint64_t now = plat_now_ns(), t = now - 100000000ull;
+        *age_ns = now - g.en[1].t;
+        memcpy(centre, g.en[1].centre, 12);
+        memcpy(out, g.en[1].e, n * sizeof *out);
+        // (between the last two: where each one in both was 0.1 s ago)
+        float f = g.en[0].t && g.en[1].t > g.en[0].t ? (float)(t - g.en[0].t) / (float)(g.en[1].t - g.en[0].t) : 1;
+        if (f < 0) f = 0;
+        if (f > 1) f = 1;
+        for (int k = 0; k < n && g.en[0].t; k++)
+            for (int j = 0; j < g.en[0].n; j++)
+                if (g.en[0].e[j].id == out[k].id) {
+                    for (int q = 0; q < 12; q++) out[k].m[q] = g.en[0].e[j].m[q] + (g.en[1].e[k].m[q] - g.en[0].e[j].m[q]) * f;
+                    if (!strcmp(g.en[0].e[j].weapon, out[k].weapon) && g.en[0].e[j].wbone == out[k].wbone)
+                        for (int q = 0; q < 12; q++) out[k].wm[q] = g.en[0].e[j].wm[q] + (g.en[1].e[k].wm[q] - g.en[0].e[j].wm[q]) * f;
+                    if (!strcmp(g.en[0].e[j].shield, out[k].shield) && g.en[0].e[j].sbone == out[k].sbone)
+                        for (int q = 0; q < 12; q++) out[k].sm[q] = g.en[0].e[j].sm[q] + (g.en[1].e[k].sm[q] - g.en[0].e[j].sm[q]) * f;
+                    break;
+                }
+    }
+    pthread_mutex_unlock(&g.lock);
+    return n;
+}
+
+void online_set_local_hour(float hour) { g_local_hour = hour; }
+
+// The host's hour of the day, once each time it comes (false: none new; the host itself never has one)
+bool online_host_hour(float *hour) {
+    pthread_mutex_lock(&g.lock);
+    bool fresh = g.host_hour_t && plat_now_ns() - g.host_hour_t < 5000000000ull;
+    if (fresh) *hour = g.host_hour;
+    g.host_hour_t = 0;
+    pthread_mutex_unlock(&g.lock);
+    return fresh;
+}
+
 bool online_skeleton(int slot, int *n, int *nbow, float (*q)[4], float (*t)[3]) {
     if (slot < 0 || slot >= ONLINE_MAX) return false;
     uint64_t now = plat_now_ns(), at = now - INTERP_NS;
@@ -579,6 +810,12 @@ static bool sample_local(WireState *w) {
         memcpy(w->gear_rel, g_pose.gear_rel, sizeof w->gear_rel);
         w->shots = g_pose.shots;
         w->effects = g_pose.effects;
+        w->grab = g_pose.grab;
+        w->stop = g_pose.stop;
+        w->ice_n = g_pose.ice_n;
+        memcpy(w->map, g_pose.map, sizeof w->map);
+        memcpy(w->boss, g_pose.boss, sizeof w->boss);
+        memcpy(w->ice, g_pose.ice, sizeof w->ice);
         w->yaw = g_pose.yaw;
     }
     pthread_mutex_unlock(&g_pose_lock);
@@ -619,6 +856,16 @@ static void remote_snap(int id, const WireState *w) {  // (lock held)
     if (s->pose.shots.n > ONLINE_SHOTS) s->pose.shots.n = ONLINE_SHOTS;
     s->pose.yaw = w->yaw;
     s->pose.effects = w->effects;
+    s->pose.grab = w->grab;
+    s->pose.grab.name[ONLINE_GRAB_NAME - 1] = 0;
+    s->pose.stop = w->stop;
+    s->pose.ice_n = w->ice_n > 3 ? 3 : w->ice_n;
+    memcpy(s->pose.map, w->map, sizeof s->pose.map);
+    memcpy(s->pose.boss, w->boss, sizeof s->pose.boss);
+    for (int k = 0; k < ONLINE_BOSSES; k++) s->pose.boss[k].name[27] = 0;
+    s->pose.map[sizeof s->pose.map - 1] = 0;
+    memcpy(s->pose.ice, w->ice, sizeof s->pose.ice);
+    s->pose.stop.name[ONLINE_GRAB_NAME - 1] = 0;
     s->pose.valid = w->as[0][0] != 0;
     r->head = (r->head + 1) % SNAPS;
     if (r->ns < SNAPS) r->ns++;
@@ -699,6 +946,77 @@ static bool cl_message(uint8_t type, const uint8_t *p, int len) {
             text[n] = 0;
             snprintf(g.chat[g.nchat++], sizeof g.chat[0], "%s: %s", g.r[p[0]].used ? g.r[p[0]].name : "?", text);
             g.chat_t = plat_now_ns();
+        }
+        break;
+    case M_ENEMIES:
+        if (len >= 13 && !g.hosting) {
+            int n = p[12];
+            if (n > ONLINE_ENEMIES || len < 13 + n * (int)sizeof(OnlineEnemy)) break;
+            g.en[0] = g.en[1];
+            g.en[1].t = plat_now_ns();
+            memcpy(g.en[1].centre, p, 12);
+            g.en[1].n = n;
+            memcpy(g.en[1].e, p + 13, n * sizeof(OnlineEnemy));
+            for (int k = 0; k < n; k++)
+                g.en[1].e[k].name[39] = g.en[1].e[k].as[31] = g.en[1].e[k].weapon[39] = g.en[1].e[k].shield[39] = 0;
+        }
+        break;
+    case M_LOOT_ADD:
+        if (len >= 1 + (int)sizeof(OnlineLoot) && g.hosting && g.nla_in < 32) {
+            memcpy(&g.la_in[g.nla_in], p + 1, sizeof(OnlineLoot));
+            g.la_in[g.nla_in].origin = p[0], g.la_in[g.nla_in].name[39] = 0;
+            g.nla_in++;
+        }
+        break;
+    case M_LOOT_TAKE:
+        if (len >= 5 && g.hosting && g.nlt_in < 32) memcpy(&g.lt_in[g.nlt_in++], p + 1, 4);
+        break;
+    case M_QUEST:
+        if (len >= ONLINE_QUEST_BYTES && g.hosting) {
+            for (int k = 0; k < ONLINE_QUEST_BYTES; k++) g.quest_in[k] |= p[k];
+            g.quest_in_new = true;
+        }
+        break;
+    case M_QUESTS:
+        if (len >= ONLINE_QUEST_BYTES && !g.hosting) memcpy(g.quests, p, ONLINE_QUEST_BYTES), g.quests_have = true;
+        break;
+    case M_PICK:
+        if (len >= 52 && g.npick_in < 16) {
+            memcpy(g.pick_in[g.npick_in].name, p, 40), g.pick_in[g.npick_in].name[39] = 0;
+            memcpy(g.pick_in[g.npick_in].pos, p + 40, 12);
+            g.npick_in++;
+        }
+        break;
+    case M_LOOTS:
+        if (len >= 1 && !g.hosting) {
+            int n = p[0];
+            if (n > ONLINE_LOOT || len < 1 + n * (int)sizeof(OnlineLoot)) break;
+            memcpy(g.loots, p + 1, n * sizeof(OnlineLoot));
+            for (int k = 0; k < n; k++) g.loots[k].name[39] = 0;
+            g.nloots = n;
+        }
+        break;
+    case M_ESTATE:
+        if (len >= 2 && g.hosting) {
+            int n = p[1];
+            for (int k = 0; k < n && 2 + (k + 1) * (int)sizeof(OnlineEnemy) <= len && g.nest_in < 64; k++) {
+                memcpy(&g.est_in[g.nest_in], p + 2 + k * sizeof(OnlineEnemy), sizeof(OnlineEnemy));
+                g.est_in[g.nest_in].name[39] = g.est_in[g.nest_in].as[31] = g.est_in[g.nest_in].weapon[39] = 0;
+                g.est_from[g.nest_in++] = p[0];
+            }
+        }
+        break;
+    case M_HIT:
+        if (len >= 8 && g.nhit_in < 64) {
+            memcpy(&g.hit_in[g.nhit_in].id, p, 4);
+            memcpy(&g.hit_in[g.nhit_in].damage, p + 4, 4);
+            g.nhit_in++;
+        }
+        break;
+    case M_TIME:
+        if (len >= 4 && !g.hosting) {
+            memcpy(&g.host_hour, p, 4);
+            g.host_hour_t = plat_now_ns();
         }
         break;
     case M_PONG:
@@ -790,6 +1108,81 @@ static void *cl_thread(void *arg) {
             break;
         }
         if (g.state != ONLINE_CONNECTED) continue;
+        {   // the hits on the host's enemies here
+            uint8_t hb[32][8];
+            pthread_mutex_lock(&g.lock);
+            int nh = g.nhit_out;
+            for (int k = 0; k < nh; k++) memcpy(hb[k], &g.hit_out[k].id, 4), memcpy(hb[k] + 4, &g.hit_out[k].damage, 4);
+            g.nhit_out = 0;
+            pthread_mutex_unlock(&g.lock);
+            for (int k = 0; k < nh && alive; k++) alive = send_msg(s, M_HIT, hb[k], 8, NULL, 0);
+        }
+        {   // the weapons picked up here
+            uint8_t pb[8][52];
+            pthread_mutex_lock(&g.lock);
+            int np = g.npick_out;
+            for (int k = 0; k < np; k++) memcpy(pb[k], g.pick_out[k].name, 40), memcpy(pb[k] + 40, g.pick_out[k].pos, 12);
+            g.npick_out = 0;
+            pthread_mutex_unlock(&g.lock);
+            for (int k = 0; k < np && alive; k++) alive = send_msg(s, M_PICK, pb[k], 52, NULL, 0);
+        }
+        {   // the main quests: ours for the host's game; the host's union for the others
+            uint8_t qo[ONLINE_QUEST_BYTES];
+            int what = 0;
+            pthread_mutex_lock(&g.lock);
+            if (!g.hosting && g.quest_out_new) memcpy(qo, g.quest_out, sizeof qo), g.quest_out_new = false, what = 1;
+            else if (g.hosting && g.quests_new) memcpy(qo, g.quests, sizeof qo), g.quests_new = false, what = 2;
+            pthread_mutex_unlock(&g.lock);
+            if (what && alive) alive = send_msg(s, what == 1 ? M_QUEST : M_QUESTS, qo, sizeof qo, NULL, 0);
+        }
+        {   // loot: ours for the host's game; the host's list for the others (when it changed, and every 2 s)
+            static uint8_t lb[1 + ONLINE_LOOT * sizeof(OnlineLoot)];
+            static uint64_t next_loots;
+            OnlineLoot la[16];
+            uint32_t lt[16];
+            int nla, nlt, nl = -1;
+            pthread_mutex_lock(&g.lock);
+            nla = g.nla_out, nlt = g.nlt_out;
+            memcpy(la, g.la_out, nla * sizeof *la), memcpy(lt, g.lt_out, nlt * 4);
+            g.nla_out = g.nlt_out = 0;
+            if (g.hosting && (g.loots_new || now >= next_loots)) {
+                nl = g.nloots, lb[0] = (uint8_t)nl;
+                memcpy(lb + 1, g.loots, nl * sizeof(OnlineLoot));
+                g.loots_new = false, next_loots = now + 2000000000ull;
+            }
+            pthread_mutex_unlock(&g.lock);
+            for (int k = 0; k < nla && alive; k++) alive = send_msg(s, M_LOOT_ADD, &la[k], sizeof la[k], NULL, 0);
+            for (int k = 0; k < nlt && alive; k++) alive = send_msg(s, M_LOOT_TAKE, &lt[k], 4, NULL, 0);
+            if (nl >= 0 && alive) alive = send_msg(s, M_LOOTS, lb, 1 + nl * (int)sizeof(OnlineLoot), NULL, 0);
+        }
+        {   // the enemies we have for real, for the host's game
+            static uint8_t sb[2 + ONLINE_ENEMIES * sizeof(OnlineEnemy)];
+            int ne = -1;
+            pthread_mutex_lock(&g.lock);
+            if (g.est_new) {
+                ne = g.nest_out;
+                sb[0] = 0, sb[1] = (uint8_t)ne;
+                memcpy(sb + 2, g.est_out, ne * sizeof(OnlineEnemy));
+                g.est_new = false;
+            }
+            pthread_mutex_unlock(&g.lock);
+            if (ne > 0 && !g.hosting) alive = alive && send_msg(s, M_ESTATE, sb + 1, 1 + ne * (int)sizeof(OnlineEnemy), NULL, 0);
+        }
+        static uint64_t next_enemies;
+        if (g.hosting && now >= next_enemies) {  // (the host: his enemies, while his frame loop gives them)
+            next_enemies = now + ENEMIES_EVERY_NS;
+            static uint8_t eb[13 + ONLINE_ENEMIES * sizeof(OnlineEnemy)];
+            int n = -1;
+            pthread_mutex_lock(&g_pose_lock);
+            if (g_local_en.t && now - g_local_en.t < 1000000000ull) {
+                n = g_local_en.n;
+                memcpy(eb, g_local_en.centre, 12);
+                eb[12] = (uint8_t)n;
+                memcpy(eb + 13, g_local_en.e, n * sizeof(OnlineEnemy));
+            }
+            pthread_mutex_unlock(&g_pose_lock);
+            if (n >= 0 && !send_msg(s, M_ENEMIES, eb, 13 + n * (int)sizeof(OnlineEnemy), NULL, 0)) alive = false;
+        }
         if (now >= next_send) {
             next_send = now + 1000000000ull / SEND_HZ;
             WireState w = {0};
@@ -1042,6 +1435,8 @@ void online_settings_load(void) {
 static void name_from_env(void) {
     const char *n = getenv("SAVAGEWIND_ONLINE_NAME");
     if (n && *n) copy_name(g_online.name, n);
+    const char *p = getenv("SAVAGEWIND_ONLINE_PORT");  // (and its port: test copies beside others playing)
+    if (p && atoi(p) > 0 && atoi(p) < 65536) g_online.port = atoi(p);
 }
 
 void online_settings_save(void) {
