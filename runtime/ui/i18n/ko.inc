@@ -909,6 +909,8 @@ T("Drop weapons, bows and shields from the quick selector. Requires game version
 T("Drop", "버리기")
 T("Back", "뒤로")
 T("Virtual reader", "가상 리더")
+T("Random tag UUID", "랜덤 태그 UUID")
+T("Generates a new tag serial number on every scan: bypasses the once-per-day limit so an amiibo can be used again and again.", "스캔할 때마다 새로운 태그 일련번호를 생성하여 1일 1회 제한을 우회하고 동일한 amiibo를 무제한으로 사용할 수 있습니다.")
 T("The figure the game's reader finds when it looks for an amiibo (the amiibo rune). None: it finds no figure. The figures are the dumps (.bin) in the folder %s.", "게임의 리더가 amiibo를 찾을 때(amiibo 룬) 찾는 피규어. 없음: 피규어를 찾지 못합니다. 피규어는 %s 폴더의 덤프(.bin) 파일입니다.")
 T("No figure dumps yet. Put the dumps (.bin) in the folder %s, then choose one here.", "아직 피규어 덤프가 없습니다. 덤프(.bin)를 %s 폴더에 넣은 다음 여기서 하나를 고르세요.")
 T("Without the keys (key_retail.bin in the folder %s), figures give no game data: no nickname, no hearts.", "키(%s 폴더의 key_retail.bin)가 없으면 피규어는 게임 데이터를 주지 않습니다: 닉네임도 하트도 없습니다.")

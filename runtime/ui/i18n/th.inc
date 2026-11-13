@@ -909,6 +909,8 @@ T("Drop weapons, bows and shields from the quick selector. Requires game version
 T("Drop", "ทิ้ง")
 T("Back", "กลับ")
 T("Virtual reader", "เครื่องอ่านเสมือน")
+T("Random tag UUID", "สุ่มแท็ก UUID")
+T("Generates a new tag serial number on every scan: bypasses the once-per-day limit so an amiibo can be used again and again.", "สร้างหมายเลขซีเรียลของแท็กใหม่ทุกครั้งที่สแกน: ข้ามขีดจำกัดวันละครั้ง เพื่อให้สามารถใช้ amiibo เดิมซ้ำได้ไม่จำกัด")
 T("The figure the game's reader finds when it looks for an amiibo (the amiibo rune). None: it finds no figure. The figures are the dumps (.bin) in the folder %s.", "ฟิกเกอร์ที่เครื่องอ่านของเกมจะพบเมื่อกำลังค้นหา amiibo (รูน amiibo) ไม่เลือก: จะไม่พบฟิกเกอร์ใด ฟิกเกอร์คือไฟล์ดัมพ์ (.bin) ในโฟลเดอร์ %s")
 T("No figure dumps yet. Put the dumps (.bin) in the folder %s, then choose one here.", "ยังไม่มีดัมพ์ของฟิกเกอร์ ใส่ไฟล์ดัมพ์ (.bin) ในโฟลเดอร์ %s แล้วเลือกหนึ่งไฟล์ที่นี่")
 T("Without the keys (key_retail.bin in the folder %s), figures give no game data: no nickname, no hearts.", "ถ้าไม่มีกุญแจ (key_retail.bin ในโฟลเดอร์ %s) ฟิกเกอร์จะไม่มีข้อมูลเกม: ไม่มีชื่อเล่นและไม่มีหัวใจ")

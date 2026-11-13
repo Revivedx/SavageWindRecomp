@@ -17,6 +17,7 @@
 #include "../amiibo.h"
 #include "../hle.h"
 #include "../ipc.h"
+#include "../settings.h"
 
 enum { DEV_INITIALIZED, DEV_SEARCHING, DEV_FOUND, DEV_REMOVED, DEV_MOUNTED, DEV_UNAVAILABLE, DEV_FINALIZED };
 enum { E_DEVICE_NOT_FOUND = 64, E_WRONG_STATE = 73, E_TAG_REMOVED = 97, E_NOT_SET_UP = 120, E_AREA_NOT_INITIALIZED = 128,
@@ -26,6 +27,7 @@ enum { E_DEVICE_NOT_FOUND = 64, E_WRONG_STATE = 73, E_TAG_REMOVED = 97, E_NOT_SE
 
 static _Atomic int g_state = DEV_INITIALIZED;  // the reader's
 static _Atomic int g_fig = -1;                 // the figure on it (amiibo_at), -1 none
+static uint8_t g_uid[7];
 static bool g_initialized;
 static KEvent *g_activate, *g_deactivate;
 static uint32_t g_activate_h, g_deactivate_h, g_avail_h;
@@ -39,6 +41,7 @@ static bool g_data_ok;     // ... read with the amiibo keys
 
 RT_ON_RESET(nfp_reset) {
     g_state = DEV_INITIALIZED, g_fig = -1, g_initialized = false;
+    memset(g_uid, 0, sizeof g_uid);
     g_activate = g_deactivate = NULL, g_activate_h = g_deactivate_h = g_avail_h = 0;
     g_area_size = -1, g_area_open = g_area_dirty = false, g_data_ok = false;
 }
@@ -87,6 +90,17 @@ static void nfp_user(Service *s, IpcReq *req, IpcResp *resp) {
         int i = amiibo_on_reader();
         g_fig = i, g_state = i >= 0 ? DEV_FOUND : DEV_SEARCHING;
         if (i >= 0) {
+            if (g_settings.amiibo_random_uuid) {
+                static uint32_t seed;
+                if (!seed) seed = (uint32_t)time(NULL) ^ 0x9e3779b9;
+                for (int k = 0; k < 7; k++) {
+                    seed = seed * 1664525u + 1013904223u;
+                    g_uid[k] = (uint8_t)(seed >> 16);
+                }
+                g_uid[0] = 0x04;  // NXP manufacturer prefix for NTAG215
+            } else {
+                memcpy(g_uid, amiibo_at(i)->uid, 7);
+            }
             LOG("[nfp] %s on the reader\n", amiibo_at(i)->name);
             fire(g_activate);
         } else {
@@ -152,7 +166,8 @@ static void nfp_user(Service *s, IpcReq *req, IpcResp *resp) {
         int st = g_state;
         if (st != DEV_FOUND && st != DEV_MOUNTED) { resp->result = NFP_ERROR(st == DEV_REMOVED ? E_TAG_REMOVED : E_WRONG_STATE); break; }
         uint8_t t[0x58] = {0};
-        memcpy(t, amiibo_at(g_fig)->uid, 7);
+        if (g_fig >= 0 && g_uid[0] == 0) memcpy(g_uid, amiibo_at(g_fig)->uid, 7);
+        memcpy(t, g_uid, 7);
         t[0x0a] = 7, t[0x20] = 1, t[0x24] = 2;
         write_out(req, t, sizeof t);
         break;

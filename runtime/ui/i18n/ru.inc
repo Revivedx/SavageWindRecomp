@@ -909,6 +909,8 @@ T("Drop weapons, bows and shields from the quick selector. Requires game version
 T("Drop", "Выбросить")
 T("Back", "Назад")
 T("Virtual reader", "Виртуальный считыватель")
+T("Random tag UUID", "Случайный UUID метки")
+T("Generates a new tag serial number on every scan: bypasses the once-per-day limit so an amiibo can be used again and again.", "Создает новый серийный номер метки при каждом сканировании: обходит ограничение «раз в день», позволяя использовать amiibo повторно.")
 T("The figure the game's reader finds when it looks for an amiibo (the amiibo rune). None: it finds no figure. The figures are the dumps (.bin) in the folder %s.", "Фигурка, которую находит считыватель игры, когда ищет amiibo (руна amiibo). «Нет»: фигурка не найдена. Фигурки — это дампы (.bin) в папке %s.")
 T("No figure dumps yet. Put the dumps (.bin) in the folder %s, then choose one here.", "Дампов фигурок пока нет. Поместите дампы (.bin) в папку %s, затем выберите один здесь.")
 T("Without the keys (key_retail.bin in the folder %s), figures give no game data: no nickname, no hearts.", "Без ключей (key_retail.bin в папке %s) фигурки не дают игровых данных: ни имени, ни сердец.")
