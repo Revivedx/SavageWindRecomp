@@ -2078,7 +2078,8 @@ static void loot_update(Cpu *c, uint64_t player, const float link[3], int me, bo
             char n[48];
             uint64_t a = g_actors[k];
             actor_name_of(a, n);
-            if (!is_loot(n)) continue;
+            // (one being deleted, state 3, is still in the list: taken again it went and came every few frames)
+            if (!is_loot(n) || *(uint8_t *)(uintptr_t)(a + 0x64) == 3) continue;
             uint32_t id = *(uint32_t *)(uintptr_t)(a + 0x60);
             const float *m = (const float *)(uintptr_t)(a + 0x398);
             float p[3] = {m[3], m[7], m[11]};
