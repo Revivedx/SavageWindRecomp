@@ -14,8 +14,10 @@
 // targets, the heap copy, images over half a block) are not helped. Under pressure - the heap's usage plus a block
 // over HR_PRESSURE of its budget (VK_EXT_memory_budget where the driver has it: what the OS grants this process;
 // else VMA's estimate, 80% of the heap) - no spare is made and the anchor is given back.
-// Off by default (on an RTX 3060 a block takes 0.1-0.6 ms, so there was nothing to gain, and the spare holds video
-// memory): SAVAGEWIND_VRAM_HEADROOM=1 turns the helper on. SAVAGEWIND_VRAM_LOG=1: every vkAllocateMemory over 1 ms and
+// Automatic (Alpha 5): on an RTX 3060 a block takes 0.1-0.6 ms, nothing to gain, and the spare holds video memory, so
+// the helper starts only once a block made on a game thread took 2 ms or more (SAVAGEWIND_VRAM_AUTO_MS) (slow drivers, integrated GPUs:
+// TotK Recomp measured 8-19 ms, valentderah/totk-pc-recomp vk_headroom.c, MIT). SAVAGEWIND_VRAM_HEADROOM=1: on from
+// the start; 0: never. SAVAGEWIND_VRAM_LOG=1: every vkAllocateMemory over 1 ms and
 // a count every 30 s. Every block made is logged, with the thread that waited for it.
 #include <SDL3/SDL_timer.h>
 #include <pthread.h>
@@ -28,9 +30,14 @@
 #include "../../perfcount.h"
 
 #define HR_PERIOD_MS 250
-#define HR_PRESSURE 0.90
+// (the point textures.c starts letting images go: 0.90 kept spare blocks above it - an MX350's 1669 MB budget, 7 blocks
+// of 256 MB within 4 s, ~550 MB of them empty - and their use pushed the heap copy out and textures with it)
+#define HR_PRESSURE VRAM_TRIM_TARGET
+static uint64_t hr_auto_ns = 2000000;  // (tests: SAVAGEWIND_VRAM_AUTO_MS)
 
-static bool hr_on, hr_log, budget_ext;
+static bool hr_on, hr_log, budget_ext, hr_auto;
+static _Atomic bool hr_auto_started;
+static _Thread_local bool hr_is_helper;  // (set by hr_main itself: on_helper is right from its first allocation)
 static pthread_t hr_thread;
 static _Atomic bool hr_thread_up;
 static pthread_mutex_t hr_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -40,11 +47,13 @@ static _Atomic uint64_t hr_block[VK_MAX_MEMORY_TYPES];  // largest block seen pe
 static VmaAllocation hr_anchor[VK_MAX_MEMORY_TYPES];   // (helper) half a block holding the newest spare block
 static uint32_t hr_drops;                              // (helper) anchors given back under pressure
 static VkPhysicalDeviceMemoryProperties hr_mp;
+static uint64_t vr_block;  // (vram_block_size)
 _Atomic uint64_t g_vram_alloc_ns;  // vkAllocateMemory time on the game's threads (exec.c's hitch lines)
 static _Atomic uint32_t st_game_blocks, st_helper_blocks, st_dedicated;
 static _Atomic uint64_t st_game_ns, st_helper_ns, st_dedicated_ns;
 
-static bool on_helper(void) { return atomic_load(&hr_thread_up) && pthread_equal(pthread_self(), hr_thread); }
+static bool on_helper(void) { return hr_is_helper; }
+static void *hr_main(void *arg);
 
 static bool dedicated_info(const VkMemoryAllocateInfo *ai) {
     for (const VkBaseInStructure *p = ai->pNext; p; p = p->pNext)
@@ -72,7 +81,19 @@ static VKAPI_ATTR VkResult VKAPI_CALL vram_allocate(VkDevice dev, const VkMemory
         LOG("[vram] t=%.2f new block: %llu MB of memory type %u (heap %u) in %.1f ms on %s\n", t0 / 1e9,
             (unsigned long long)(size >> 20), type, hr_mp.memoryTypes[type].heapIndex, dt / 1e6,
             helper ? "the helper (ahead of need)" : "a game thread");
-        if (!helper && hr_on) {
+        bool start = false;
+        if (!helper && hr_auto && dt >= hr_auto_ns && !atomic_exchange(&hr_auto_started, true)) {
+            LOG("[vram] a block took %.1f ms on a game thread: blocks are made ahead of need from now on\n", dt / 1e6);
+            hr_on = true;
+            start = true;
+        }
+        if (start) {
+            pthread_mutex_lock(&hr_lock);
+            hr_wake = true;
+            pthread_mutex_unlock(&hr_lock);
+            if (pthread_create(&hr_thread, NULL, hr_main, NULL) == 0) atomic_store(&hr_thread_up, true);
+            else hr_on = false;
+        } else if (!helper && hr_on) {
             pthread_mutex_lock(&hr_lock);
             hr_wake = true;
             pthread_cond_signal(&hr_cond);
@@ -86,6 +107,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL vram_allocate(VkDevice dev, const VkMemory
 
 static void *hr_main(void *arg) {
     (void)arg;
+    hr_is_helper = true;
     uint64_t last_stats = SDL_GetTicksNS();
     for (;;) {
         pthread_mutex_lock(&hr_lock);
@@ -150,17 +172,36 @@ void vram_allocator_setup(VmaAllocatorCreateInfo *ai, VmaVulkanFunctions *fn, bo
     fn->vkAllocateMemory = vram_allocate;
     ai->pVulkanFunctions = fn;
     if (memory_budget) ai->flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
+    // VMA makes blocks of heap / 8 in heaps of 1 GB or less and of 256 MB above. A heap of VRAM_SMALL_HEAP or less (an
+    // MX350: 1964 MB, 1669 MB budget) then grows in steps of 15% of its budget, the room left in its blocks counted as
+    // use: in play it went over the budget twice, and blocks of 1454-1665 MB held 834-1090 MB. Blocks of the power of 2
+    // nearest heap / 32 there (64 MB): in the same tour of the map, no step over the budget. (A power of 2, as are VMA's
+    // halves of it for a heap's first blocks: vram_allocate tells VMA's blocks by that.)
+    uint64_t heap = 0;
+    for (uint32_t i = 0; i < hr_mp.memoryHeapCount; i++)
+        if ((hr_mp.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) && hr_mp.memoryHeaps[i].size > heap)
+            heap = hr_mp.memoryHeaps[i].size;
+    vr_block = heap <= (1024ull << 20) ? heap / 8 : 256ull << 20;
+    if (heap > (1024ull << 20) && heap <= VRAM_SMALL_HEAP) {
+        uint64_t want = heap / 32, p = 1ull << 20;
+        while (p * 2 <= want) p *= 2;
+        ai->preferredLargeHeapBlockSize = vr_block = want - p > p * 2 - want ? p * 2 : p;
+    }
 }
+
+uint64_t vram_block_size(void) { return vr_block; }
 
 void vram_start(void) {
     const char *e = getenv("SAVAGEWIND_VRAM_HEADROOM");
     hr_log = getenv("SAVAGEWIND_VRAM_LOG") && atoi(getenv("SAVAGEWIND_VRAM_LOG"));
-    hr_on = e && atoi(e) != 0;  // (off by default: no gain measured where blocks are quick, and it holds video memory)
+    hr_on = e && atoi(e) != 0;
+    hr_auto = !e;  // (unset: started by the first slow block, vram_allocate)
+    if (getenv("SAVAGEWIND_VRAM_AUTO_MS")) hr_auto_ns = (uint64_t)(atof(getenv("SAVAGEWIND_VRAM_AUTO_MS")) * 1e6);
     uint64_t usage, budget, size;
     vram_device_local(&usage, &budget, &size);
-    LOG("[vram] blocks ahead of need: %s; video memory %llu MB, budget %llu MB (%s), in use %llu MB\n",
-        hr_on ? "on" : "off (SAVAGEWIND_VRAM_HEADROOM=1: on)", (unsigned long long)(size >> 20), (unsigned long long)(budget >> 20),
-        budget_ext ? "VK_EXT_memory_budget" : "VMA's estimate", (unsigned long long)(usage >> 20));
+    LOG("[vram] blocks ahead of need: %s; video memory %llu MB, budget %llu MB (%s), in use %llu MB, blocks of %llu MB\n",
+        hr_on ? "on" : hr_auto ? "automatic (from the first block over 2 ms)" : "off", (unsigned long long)(size >> 20), (unsigned long long)(budget >> 20),
+        budget_ext ? "VK_EXT_memory_budget" : "VMA's estimate", (unsigned long long)(usage >> 20), (unsigned long long)(vr_block >> 20));
     if (!hr_on && !hr_log) return;  // (with the log: the helper only counts)
     if (pthread_create(&hr_thread, NULL, hr_main, NULL) == 0) atomic_store(&hr_thread_up, true);
     else hr_on = false;
@@ -176,9 +217,24 @@ uint32_t vram_device_local(uint64_t *usage, uint64_t *budget, uint64_t *size) {
     VmaBudget bud[VK_MAX_MEMORY_HEAPS];
     vmaGetHeapBudgets(g_vk.vma, bud);
     if (usage) *usage = bud[best].usage;
-    if (budget) *budget = bud[best].budget;
+    if (budget) *budget = vram_budget_cap(bud[best].budget);
     if (size) *size = sz;
     return best;
+}
+
+// SAVAGEWIND_VRAM_BUDGET_MB=<n>: a budget no bigger than n MB (to try a small card's limits on a big one)
+uint64_t vram_budget_cap(uint64_t budget) {
+    static int64_t cap = -1;
+    if (cap < 0) cap = getenv("SAVAGEWIND_VRAM_BUDGET_MB") ? (int64_t)atoll(getenv("SAVAGEWIND_VRAM_BUDGET_MB")) << 20 : 0;
+    return cap && (uint64_t)cap < budget ? (uint64_t)cap : budget;
+}
+
+// The largest device-local heap: the bytes VMA's allocations take in it (its blocks' free room left out), its budget
+void vram_device_local_allocated(uint64_t *allocated, uint64_t *budget) {
+    uint32_t best = vram_device_local(NULL, budget, NULL);
+    VmaBudget bud[VK_MAX_MEMORY_HEAPS];
+    vmaGetHeapBudgets(g_vk.vma, bud);
+    *allocated = bud[best].statistics.allocationBytes;
 }
 
 bool vram_budget_ext(void) { return budget_ext; }

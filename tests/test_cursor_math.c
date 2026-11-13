@@ -5,15 +5,23 @@ int main(void) {
     int sizes[][2]={{1280,720},{1920,1080},{2560,1440},{3840,2160},{2560,1080},{1280,1024},{1920,1200}};
     for(unsigned i=0;i<sizeof sizes/sizeof sizes[0];i++) {
         float w=sizes[i][0],h=sizes[i][1],k=fminf(w/1280,h/720),p[2];
-        assert(pc_cursor_to_layout(w,h,w*.5f+550*k,h*.5f+80*k,p));
+        assert(pc_cursor_to_layout(w,h,w*.5f+550*k,h*.5f+80*k,0,p));
         assert(fabsf(p[0]-550)<.001f&&fabsf(p[1]+80)<.001f);
-        assert(pc_cursor_to_layout(w,h,w*.5f-280*k,h*.5f-97*k,p));
+        assert(pc_cursor_to_layout(w,h,w*.5f-280*k,h*.5f-97*k,0,p));
         assert(fabsf(p[0]+280)<.001f&&fabsf(p[1]-97)<.001f);
         printf("%dx%d: title and inventory coordinates PASS\n",sizes[i][0],sizes[i][1]);
     }
-    float p[2];assert(!pc_cursor_to_layout(2560,1080,0,540,p));
-    assert(!pc_cursor_to_layout(1280,1024,640,0,p));
-    assert(!pc_cursor_to_layout(0,0,0,0,p));
+    float p[2];assert(!pc_cursor_to_layout(2560,1080,0,540,0,p));
+    assert(!pc_cursor_to_layout(1280,1024,640,0,0,p));
+    assert(!pc_cursor_to_layout(0,0,0,0,0,p));
+    assert(pc_cursor_to_layout(1280,800,640,24,40,p));
+    assert(fabsf(p[1]-376)<.001f);
+    assert(pc_cursor_to_layout(1280,800,640,760,40,p));
+    assert(fabsf(p[1]+360)<.001f);
+    assert(pc_cursor_to_layout(1280,800,640,100,120,p)); // a virtual 4:3 map in a 16:10 window
+    assert(fabsf(p[1]-360)<.001f);
+    assert(!pc_cursor_to_layout(1280,800,100,400,120,p));
+
     puts("PASS: aspect ratios, bars and zero-size windows");
     float zooms[]={.07f,.14f,.28f,1.f};
     for(unsigned z=0;z<4;z++)for(int frame=0;frame<300;frame++) {
@@ -29,19 +37,24 @@ int main(void) {
     }
     puts("PASS: 1200 moving pointer/pan samples at 4 map zoom levels");
     float middle[2]={0,0},corner[2]={632,280},header[2]={0,330},outside[2]={700,0},delta[2];
-    pc_map_navigation(middle,0,0,true,.02f,1,delta);assert(delta[0]==0&&delta[1]==0);
-    pc_map_navigation(header,0,0,true,.02f,1,delta);assert(delta[0]==0&&delta[1]==0);
-    pc_map_navigation(outside,0,0,true,.02f,1,delta);assert(delta[0]==0&&delta[1]==0);
-    pc_map_navigation(corner,0,0,false,.02f,1,delta);assert(delta[0]==0&&delta[1]==0);
+    pc_map_navigation(middle,0,0,true,.02f,1,0,delta);assert(delta[0]==0&&delta[1]==0);
+    pc_map_navigation(header,0,0,true,.02f,1,0,delta);assert(delta[0]==0&&delta[1]==0);
+    pc_map_navigation(outside,0,0,true,.02f,1,0,delta);assert(delta[0]==0&&delta[1]==0);
+    pc_map_navigation(corner,0,0,false,.02f,1,0,delta);assert(delta[0]==0&&delta[1]==0);
     for(int fps=30;fps<=120;fps*=2)for(unsigned z=0;z<4;z++) {
         float total=0;
-        for(int f=0;f<fps;f++){pc_map_navigation(middle,1,0,false,1.f/fps,zooms[z],delta);total+=delta[0]*zooms[z];}
+        for(int f=0;f<fps;f++){pc_map_navigation(middle,1,0,false,1.f/fps,zooms[z],0,delta);total+=delta[0]*zooms[z];}
         assert(fabsf(total+360)<.002f);
-        pc_map_navigation(corner,0,0,true,1.f/fps,zooms[z],delta);
+        pc_map_navigation(corner,0,0,true,1.f/fps,zooms[z],0,delta);
         assert(delta[0]<0&&delta[1]<0);
         assert(fabsf(hypotf(delta[0],delta[1])*zooms[z]-360.f/fps)<.002f);
     }
-    pc_map_navigation(middle,1,0,false,10,1,delta);assert(fabsf(delta[0]+18)<.001f);
+    pc_map_navigation(middle,1,0,false,10,1,0,delta);assert(fabsf(delta[0]+18)<.001f);
+    float expanded_edge[2]={0,320},expanded_header[2]={0,370};
+    pc_map_navigation(expanded_edge,0,0,true,.02f,1,40,delta);
+    assert(delta[0]==0&&fabsf(delta[1]+7.2f)<.001f);
+    pc_map_navigation(expanded_header,0,0,true,.02f,1,40,delta);
+    assert(delta[0]==0&&delta[1]==0);
     puts("PASS: map navigation speed at 30/60/120 FPS and 4 zooms; normalized corners, header/outside exclusion, drag/modal suppression and stall limit");
     // The native lower-screen edge is FLT_MAX, not a usable world extent.
     // Mouse dragging, edge scrolling and WASD must stop at the zoom-dependent
@@ -62,4 +75,21 @@ int main(void) {
     assert(pc_map_clamp_center(-2000,-FLT_MAX,1500)==-1500);
     assert(pc_map_clamp_center(INFINITY,-2000,FLT_MAX)==0);
     puts("PASS: pan limits at every zoom, unbounded native sentinel, all directions and escaped-view recovery");
+    // A wheel zoom anchored on the pointer: the world point under it stays under it at every zoom step, for any pointer
+    // position and starting view, in and out.
+    for(int from=0;from<4;from++)for(int to=0;to<4;to++)for(int frame=0;frame<100;frame++) {
+        float point[2]={-620+frame*12.5f,-270+frame*5.5f};
+        float center[2]={-3115.94f+frame*40,6108.09f-frame*30};
+        float translation[2]={center[0]*zooms[from],center[1]*zooms[from]},world[2];
+        pc_cursor_map_world(point,translation,zooms[from],world);
+        for(int step=0;step<=10;step++) {
+            float zoom=zooms[from]+(zooms[to]-zooms[from])*step/10.f,c[2],under[2];
+            pc_map_anchor_center(point,world,zoom,c);
+            float t[2]={c[0]*zoom,c[1]*zoom};
+            pc_cursor_map_world(point,t,zoom,under);
+            assert(fabsf(under[0]-world[0])<.01f&&fabsf(under[1]-world[1])<.01f);
+            assert(fabsf(world[0]*zoom+t[0]-point[0])<.01f&&fabsf(world[1]*zoom+t[1]-point[1])<.01f);
+        }
+    }
+    puts("PASS: wheel zoom keeps the world point under the pointer, 1600 pointer/view/zoom-step combinations");
 }

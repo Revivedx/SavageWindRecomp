@@ -315,11 +315,11 @@ def tree(path):
     return out
 
 
-def run_python(src, bootup, dst):
+def run_python(src, bootup, dst, to_endian='<'):
     """-> (files {rel: bytes} or None, stats {file: tuple}, counts {name: n}, error text)"""
     try:
         fmt = py.Format(bootup)
-        report, results = py.convert_profile(src, dst, fmt, '<', None, 'convert', False)
+        report, results = py.convert_profile(src, dst, fmt, to_endian, None, 'convert', False)
     except (SystemExit, Exception) as ex:  # noqa: BLE001 (the Python tool raises ValueError, SystemExit, ...)
         return None, {}, {}, 'python: %s: %s' % (type(ex).__name__, ex)
     stats, counts, slot = {}, {}, None
@@ -352,7 +352,7 @@ def run_c(exe, src, bootup, dst, extra=()):
             stats[t[1]] = (int(t[2], 16), int(t[3], 16)) + tuple(int(x) for x in t[4:8])
         elif t[:1] == ['COUNTS']:
             counts = dict(x.split('=') for x in t[1:])
-    files = tree(os.path.join(dst, 'save_0'))
+    files = tree(dst if '--to' in extra else os.path.join(dst, 'save_0'))
     return files, stats, {k: int(v) for k, v in counts.items()}, None, 0
 
 
@@ -413,6 +413,30 @@ class Runner:
             problems.append('nothing was converted')
         self.result(name, problems, '%d files, Python %.2f s, C %.2f s' % (len(cf), t1 - t0, t2 - t1))
 
+    def both_to_wiiu(self, name, src, bootup, tag=None):
+        tag = tag or re.sub(r'\W', '_', name)
+        pdst, cdst = os.path.join(self.tmp, tag + '_py'), os.path.join(self.tmp, tag + '_c')
+        t0 = time.time()
+        pf, ps, pc, perr = run_python(src, bootup, pdst, to_endian='>')
+        t1 = time.time()
+        cf, cs, cc, cerr, code = run_c(self.exe, src, bootup, cdst, extra=('--to', 'wiiu'))
+        t2 = time.time()
+        problems = []
+        if pf is None or cf is None:
+            problems.append('Python and C disagree on whether it converts: %s | %s' % (perr or 'ok', cerr or 'ok'))
+            return self.result(name, problems)
+        problems += compare(pf, cf)
+        if ps != cs:
+            for k in sorted(set(ps) | set(cs)):
+                if ps.get(k) != cs.get(k):
+                    problems.append('report of %s: Python %s, C %s' % (k, ps.get(k), cs.get(k)))
+        for k in ('album', 'pict_book'):
+            if pc.get(k, 0) != cc.get('album' if k == 'album' else 'pict', 0):
+                problems.append('%s count: Python %s, C %s' % (k, pc.get(k, 0), cc.get('album' if k == 'album' else 'pict', 0)))
+        if not pf:
+            problems.append('nothing was converted')
+        self.result(name, problems, '%d files, Python %.2f s, C %.2f s' % (len(cf), t1 - t0, t2 - t1))
+
     def refused(self, name, src, bootup, code, c_extra=(), python_too=True, tag=None):
         """C has to refuse with `code` (and leave no output); Python has to refuse as well."""
         tag = tag or re.sub(r'\W', '_', name)
@@ -433,7 +457,7 @@ class Runner:
 
 
 # the codes of ScCode (save_convert.h)
-NO_SAVE, SWITCH_SAVE, BAD_SAVE, NO_BOOTUP, BAD_BOOTUP, IO = 1, 2, 3, 4, 5, 6
+NO_SAVE, SWITCH_SAVE, BAD_SAVE, NO_BOOTUP, BAD_BOOTUP, IO, WIIU_SAVE = 1, 2, 3, 4, 5, 6, 12
 
 
 def build_exe(tmp, cc=None):
@@ -504,6 +528,8 @@ def synthetic(r):
     r.refused('a Switch save is refused and nothing is written', sw, boot, SWITCH_SAVE, python_too=False)
     r.both('a Switch save with the test flag: same as Python, Hero\'s Path unchanged', sw, boot, c_extra=('--allow-switch',),
            tag='switch_allowed')
+    r.both_to_wiiu('export to Wii U: Switch save -> big-endian, same as Python byte for byte', sw, boot)
+    r.refused('export to Wii U with a Wii U save is refused', prof, boot, WIIU_SAVE, c_extra=('--to', 'wiiu'), python_too=False)
 
     # refusals: nothing may be left behind
     empty = os.path.join(tmp, 'empty')
@@ -609,7 +635,8 @@ def build_ui(tmp):
              (cxx, cxxflags, os.path.join(HERE, 'test_saves_tab.cpp'))]
     cflags = ['-std=gnu11', '-O1', '-D_FILE_OFFSET_BITS=64', '-I' + rt, '-I' + st]
     jobs += [(cc, cflags, os.path.join(rt, 'imageload.c')), (cc, cflags + ['-DSC_TEST'], os.path.join(rt, 'services', 'save_convert.c')),
-             (cc, cflags, os.path.join(rt, 'services', 'archive.c'))]
+             (cc, cflags, os.path.join(rt, 'services', 'archive.c')),
+             (cc, cflags, os.path.join(rt, 'services', 'save_profiles.c'))]
     procs, objs = [], []
     for i, (c, flags, src) in enumerate(jobs):
         o = os.path.join(d, '%d.o' % i)
@@ -804,6 +831,25 @@ def ui_cases(r):
     rc, o, log = ui_run(exe, 'backup', save, game, cwd=data)
     r.result('Saves tab: Back up saves with no saves says so and makes nothing',
              [] if (rc == 0 and o.get('KIND') == '4' and o.get('CODE') == '1' and not os.path.exists(os.path.join(data, 'save-backups'))) else [log[-300:]])
+
+
+    # save profiles: create / copy / switch / refuse / delete through the tab's jobs; the player's own save folder is never touched
+    data, save, before = fresh('profiles')
+    rc, o, log = ui_run(exe, 'profiles', save, game, cwd=data)
+    problems = []
+    if rc != 0 or o.get('DONE') is None:
+        problems.append('the harness failed (exit %d): %s' % (rc, log[-600:]))
+    else:
+        if tree(save) != before:
+            problems.append('the Default save folder changed')
+        left = sorted(os.listdir(os.path.join(data, 'save-profiles')))
+        if left != ['Mine']:
+            problems.append('profiles left: %s' % left)
+        elif tree(os.path.join(data, 'save-profiles', 'Mine', 'save')) != before:
+            problems.append('the copy is not the Default save folder')
+        if open(os.path.join(data, 'save_profile.txt')).read().strip() != 'Default':
+            problems.append('active profile: %s' % open(os.path.join(data, 'save_profile.txt')).read())
+    r.result('Saves tab: profiles (create, copy, switch, refusals, delete) leave the Default saves alone', problems)
 
 
 def real(r, src, bootup, allow_switch):

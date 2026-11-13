@@ -2,6 +2,7 @@
 #pragma once
 #include <setjmp.h>
 
+#include "ksync.h"
 #include "rt.h"
 
 #define STACK_BASE 0x7200000000ull
@@ -33,7 +34,7 @@ struct KThread {
     uint32_t wait_tag, wait_result;
     KThread *wnext;
     KThread *snext;        // in WaitSynchronization (g_syncwaiters)
-    pthread_cond_t cond;   // each thread sleeps on its own condition; wakers signal it directly
+    KCond cond;   // each thread sleeps on its own condition; wakers signal it directly
     // in-place reboot (kernel_stop_threads): thread_main's setjmp point, where the thread unwinds to and ends
     jmp_buf unwind;
     bool started, finished;
@@ -58,8 +59,9 @@ typedef struct {
     uint64_t addr, size;
 } KTransferMem;
 
-extern pthread_mutex_t g_klock;
-void klock(void);  // pthread_mutex_lock(&g_klock), with a short spin first (kernel.c)
+extern KMutex g_klock;
+#define kunlock() kmutex_unlock(&g_klock)
+void klock(void);  // kmutex_lock(&g_klock) (kernel.c)
 extern KThread *g_waitlist;
 
 KObject *handle_get(uint32_t h);
@@ -75,7 +77,7 @@ void kernel_sleep_until_ns(uint64_t t);  // host code on a guest thread waits un
 // for the GPU), between these two: its core is let go meanwhile, as the console's GPU works beside the CPU cores
 void kernel_host_work_begin(void);
 void kernel_host_work_end(void);
-// (profiling, runtime/sampler.c) the host threads of the guest threads running now: up to max, with their handles
+// (profiling, runtime/prof_sampler.c) the host threads of the guest threads running now: up to max, with their handles
 // and entry points; returns how many
 int kernel_running_threads(pthread_t *host, uint32_t *handle, uint64_t *entry, int max);
 void kernel_sample_host_thread(void);  // (profiling) the calling host thread is sampled too (handle 0xf000 + n)

@@ -263,4 +263,28 @@ static void fps_independence(void) {
     }
     puts("Identical 250 Hz motion at 20/30/60/120/200/250/1000 FPS and stalls: identical final orientation passed");
 }
-int main(void) { parsing(); freshness(); network(); selection(); overhead(); fps_independence(); puts("DSU tests passed"); }
+// The Steam Deck's state report (runtime/deck_imu.c) against SDL's HIDAPI Steam Deck axes and motion_sensor_event's
+// SDL -> Switch mapping, written out independently here.
+static void deck_report(void) {
+    const short acc[3] = {-1126, 1366, 16586}, gyro[3] = {1638, -820, 300};  // (as read from a Deck lying flat, then turned)
+    uint8_t p[64] = {1, 0, 9, 64};
+    u32(p + 4, 77);
+    for (int i = 0; i < 3; i++) {
+        p[24 + 2*i] = acc[i] & 0xff, p[25 + 2*i] = (uint16_t)acc[i] >> 8;
+        p[30 + 2*i] = gyro[i] & 0xff, p[31 + 2*i] = (uint16_t)gyro[i] >> 8;
+    }
+    DsuPacket d;
+    uint32_t num;
+    assert(deck_imu_decode(p, 64, &d, &num) && num == 77);
+    const double G = 9.80665, rad = 2000.0 / 32768 * PI / 180;
+    double sa[3] = {acc[0] / 32768.0 * 2 * G, acc[2] / 32768.0 * 2 * G, -acc[1] / 32768.0 * 2 * G};
+    double sg[3] = {gyro[0] * rad, gyro[2] * rad, -gyro[1] * rad};
+    double ea[3] = {-sa[0] / G, sa[2] / G, -sa[1] / G}, eg[3] = {sg[0], -sg[2], sg[1]};
+    for (int i = 0; i < 3; i++) assert(fabs(d.acc[i] - ea[i]) < 1e-9 && fabs(d.gyro[i] - eg[i]) < 1e-9);
+    assert(d.acc[2] < -0.95);  // flat: gravity down the Switch's Z
+    p[2] = 1; assert(!deck_imu_decode(p, 64, &d, &num));  // another report type
+    p[2] = 9; assert(!deck_imu_decode(p, 35, &d, &num));
+    memset(p + 24, 0, 6); assert(!deck_imu_decode(p, 64, &d, &num));  // no motion in it
+    puts("Steam Deck state report: axes and scale as SDL's driver passed");
+}
+int main(void) { parsing(); freshness(); network(); selection(); overhead(); fps_independence(); deck_report(); puts("DSU tests passed"); }

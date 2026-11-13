@@ -897,9 +897,9 @@ static bool profile_is_big_endian(const char *p) {
     return be;
 }
 
-// What the search found: the first Wii U profile, else the first profile of any kind (so that a Switch save can be
-// told apart from no save, and a folder holding both Savage Wind's own saves and a Cemu profile finds the latter)
-typedef struct { int visits; time_t t0; const ScCancel *cancel; bool have_be, have_any; char be[PATH_CAP], any[PATH_CAP]; } Search;
+// What the search found: the first Wii U (or Switch) profile, else the first profile of any kind (so that a Switch save can be
+// told apart from no save, and a folder holding both Savage Wind's own saves and a Cemu profile finds the desired one)
+typedef struct { int visits; time_t t0; const ScCancel *cancel; bool prefer_le, have_be, have_le, have_any; char be[PATH_CAP], le[PATH_CAP], any[PATH_CAP]; } Search;
 
 static bool search_over(Search *s) {  // (out of folders or of time: stop looking)
     if (cancel_requested(s->cancel) || s->visits > PROFILE_VISITS) return true;
@@ -908,17 +908,22 @@ static bool search_over(Search *s) {  // (out of folders or of time: stop lookin
 }
 
 static void find_profile(const char *dir, int depth, Search *s) {
-    if (s->have_be || search_over(s) || ++s->visits > PROFILE_VISITS) return;
+    bool found_target = s->prefer_le ? s->have_le : s->have_be;
+    if (found_target || search_over(s) || ++s->visits > PROFILE_VISITS) return;
     if ((s->visits & 63) == 0 && search_over(s)) return;
     if (looks_like_profile(dir)) {
-        if (profile_is_big_endian(dir)) s->have_be = snprintf(s->be, sizeof s->be, "%s", dir) < (int)sizeof s->be;
-        else if (!s->have_any) s->have_any = snprintf(s->any, sizeof s->any, "%s", dir) < (int)sizeof s->any;
+        if (profile_is_big_endian(dir)) {
+            if (!s->have_be) s->have_be = snprintf(s->be, sizeof s->be, "%s", dir) < (int)sizeof s->be;
+        } else {
+            if (!s->have_le) s->have_le = snprintf(s->le, sizeof s->le, "%s", dir) < (int)sizeof s->le;
+        }
+        if (!s->have_any) s->have_any = snprintf(s->any, sizeof s->any, "%s", dir) < (int)sizeof s->any;
         return;
     }
     if (depth >= PROFILE_DEPTH) return;
     int n;
     char **v = names_list(dir, &n);
-    for (int i = 0; v && i < n && !s->have_be && !search_over(s); i++) {
+    for (int i = 0; v && i < n && !(s->prefer_le ? s->have_le : s->have_be) && !search_over(s); i++) {
         char sub[PATH_CAP];
         if (!strcmp(v[i], ".git") || !strcmp(v[i], "node_modules")) continue;  // (never a save; often huge)
         if ((i & 63) == 63 && search_over(s)) break;
@@ -928,19 +933,22 @@ static void find_profile(const char *dir, int depth, Search *s) {
 }
 
 // The start time is passed separately so the tests can exercise an expired search without waiting.
-static ScCode find_profile_root(const char *dir, char *root, size_t cap, time_t started, const ScCancel *cancel) {
+static ScCode find_profile_root(const char *dir, char *root, size_t cap, bool prefer_le, time_t started, const ScCancel *cancel) {
     Search s = {0};
+    s.prefer_le = prefer_le;
     s.t0 = started, s.cancel = cancel;
     find_profile(dir, 0, &s);
     if (cancel_requested(cancel)) return SC_CANCELLED;
-    if (!s.have_be && search_over(&s)) return SC_SEARCH_LIMIT;
-    const char *found = s.have_be ? s.be : s.have_any ? s.any : NULL;
+    bool found_target = prefer_le ? s.have_le : s.have_be;
+    if (!found_target && search_over(&s)) return SC_SEARCH_LIMIT;
+    const char *found = prefer_le ? (s.have_le ? s.le : s.have_be ? s.be : NULL)
+                                  : (s.have_be ? s.be : s.have_le ? s.le : NULL);
     if (found) snprintf(root, cap, "%s", found);
     return found ? SC_OK : SC_NO_SAVE;
 }
 
 ScCode sc_find_profile(const char *dir, char *root, size_t cap) {
-    return find_profile_root(dir, root, cap, time(NULL), NULL);
+    return find_profile_root(dir, root, cap, false, time(NULL), NULL);
 }
 
 // ------------------------------------------------------------------ converting a profile
@@ -1057,10 +1065,11 @@ ScCode sc_convert_cancel(const char *src, const char *stage_dir, const ScFormat 
     *stage = NULL;
     r->code = SC_OK;
     if (cancelled(cancel, r)) return r->code;
-    const bool to_le = true;  // the Switch (Savage Wind); the Python tool's --to wiiu is not offered here
+    bool to_wiiu = (flags & SC_TO_WIIU) != 0;
+    const bool to_le = !to_wiiu;
     const FmtFile *gd = fmt_file(fmt, "game_data.sav"), *cap = fmt_file(fmt, "caption.sav"), *opt = fmt_file(fmt, "option.sav");
     if (!gd) { fail(r, SC_BAD_BOOTUP, "the game has no game_data.sav format"); return r->code; }
-    ScCode found = find_profile_root(src, r->root, sizeof r->root, time(NULL), cancel);
+    ScCode found = find_profile_root(src, r->root, sizeof r->root, to_wiiu, time(NULL), cancel);
     if (found != SC_OK) {
         fail(r, found, "%s", src);
         return r->code;
@@ -1069,8 +1078,12 @@ ScCode sc_convert_cancel(const char *src, const char *stage_dir, const ScFormat 
     ScStage *st = calloc(1, sizeof *st);
     snprintf(st->dir, sizeof st->dir, "%s", stage_dir);
     char dst[PATH_CAP];
-    if (!make_dirs(stage_dir, &st->made, r) || !path_join(dst, sizeof dst, stage_dir, "save_0") ||
-        !make_dirs(dst, &st->made, r))
+    if (to_wiiu) {
+        snprintf(dst, sizeof dst, "%s", stage_dir);
+    } else {
+        if (!path_join(dst, sizeof dst, stage_dir, "save_0")) goto fail;
+    }
+    if (!make_dirs(dst, &st->made, r))
         goto fail;
     int ns;
     char **slots = names_list(r->root, &ns);
@@ -1087,10 +1100,18 @@ ScCode sc_convert_cancel(const char *src, const char *stage_dir, const ScFormat 
         if (!convert_one(gp, to, rel, fmt, gd, to_le, first ? &src_le : NULL, cancel, &st->made, r)) { names_free(slots, ns); goto fail; }
         if (first) {
             src_known = true;
-            if (src_le && !(flags & SC_ALLOW_SWITCH)) {
-                fail(r, SC_SWITCH_SAVE, "%s", r->root);
-                names_free(slots, ns);
-                goto fail;
+            if (to_wiiu) {
+                if (!src_le) {
+                    fail(r, SC_WIIU_SAVE, "%s", r->root);
+                    names_free(slots, ns);
+                    goto fail;
+                }
+            } else {
+                if (src_le && !(flags & SC_ALLOW_SWITCH)) {
+                    fail(r, SC_SWITCH_SAVE, "%s", r->root);
+                    names_free(slots, ns);
+                    goto fail;
+                }
             }
         }
         char **v = realloc(r->slots, sizeof *r->slots * (r->nslots + 1));
@@ -1245,6 +1266,13 @@ void sc_stage_path(const char *save_dir, char *out, size_t cap) {
     unique_path(out, cap, prefix);
 }
 
+void sc_stage_export_path(const char *save_dir, char *out, size_t cap) {
+    char base[PATH_CAP], prefix[PATH_CAP + 32];
+    strip_slash(base, sizeof base, save_dir);
+    snprintf(prefix, sizeof prefix, "%s-export-", base);
+    unique_path(out, cap, prefix);
+}
+
 static ScCode backup_locked(const char *save_dir, const char *backup_dir, ScReport *r) {
     MadeList made = {0};
     r->code = SC_OK;
@@ -1389,7 +1417,7 @@ static bool same_path(const char *a, const char *b) {
 ScCode sc_cleanup_stages(const char *save_dir, const char *keep_dir, ScRecovery *recovery, ScReport *r) {
     memset(recovery, 0, sizeof *recovery);
     r->code = SC_OK;
-    char base[PATH_CAP], parent[PATH_CAP], prefix[PATH_CAP], keep[PATH_CAP];
+    char base[PATH_CAP], parent[PATH_CAP], prefix[PATH_CAP], exp_prefix[PATH_CAP], keep[PATH_CAP];
     strip_slash(base, sizeof base, save_dir);
 #ifdef _WIN32
     for (char *p = base; *p; p++) if (*p == '\\') *p = '/';
@@ -1398,7 +1426,8 @@ ScCode sc_cleanup_stages(const char *save_dir, const char *keep_dir, ScRecovery 
     char *slash = strrchr(parent, '/');
     const char *name = strrchr(base, '/');
     name = name ? name + 1 : base;
-    if (snprintf(prefix, sizeof prefix, "%s-import-", name) >= (int)sizeof prefix) {
+    if (snprintf(prefix, sizeof prefix, "%s-import-", name) >= (int)sizeof prefix ||
+        snprintf(exp_prefix, sizeof exp_prefix, "%s-export-", name) >= (int)sizeof exp_prefix) {
         fail(r, SC_IO, "%s: path too long", base);
         return r->code;
     }
@@ -1418,14 +1447,18 @@ ScCode sc_cleanup_stages(const char *save_dir, const char *keep_dir, ScRecovery 
     const char *newest = NULL;
     for (int i = 0; i < n; i++) {
         char p[PATH_CAP];
-        if (!dated_name(v[i], prefix)) continue;
+        bool is_imp = dated_name(v[i], prefix);
+        bool is_exp = dated_name(v[i], exp_prefix);
+        if (!is_imp && !is_exp) continue;
         if (!path_join(p, sizeof p, parent, v[i])) { fail(r, SC_IO, "%s: path too long", parent); break; }
         if (!is_dir(p) || path_is_link(p)) continue;
         if (missing) {
-            const char *date = v[i] + strlen(prefix);
-            if (!newest || newer_dated(date, newest)) {
-                newest = date;
-                snprintf(recovery->imported, sizeof recovery->imported, "%s", p);
+            if (is_imp) {
+                const char *date = v[i] + strlen(prefix);
+                if (!newest || newer_dated(date, newest)) {
+                    newest = date;
+                    snprintf(recovery->imported, sizeof recovery->imported, "%s", p);
+                }
             }
         } else if (!same_path(p, keep)) {
             if (!remove_stale(p, 0, r)) break;
@@ -1452,6 +1485,71 @@ ScCode sc_cleanup_stages(const char *save_dir, const char *keep_dir, ScRecovery 
     }
     names_free(v, n);
     return r->code;
+}
+
+// ------------------------------------------------------------------ exporting
+static bool export_tree(const char *from, const char *to, int depth, const char *ts, ScReport *r) {
+    if (depth > 16) { fail(r, SC_IO, "%s: folders nested too deep", from); return false; }
+    if (!make_dirs(to, NULL, r)) return false;
+    int n;
+    char **names = names_list(from, &n);
+    if (!names) { fail(r, SC_IO, "%s: %s", from, strerror(errno)); return false; }
+    bool ok = true;
+    for (int i = 0; i < n && ok; i++) {
+        char a[PATH_CAP], b[PATH_CAP];
+        if (!path_join(a, sizeof a, from, names[i]) || !path_join(b, sizeof b, to, names[i])) {
+            fail(r, SC_IO, "%s/%s: path too long", from, names[i]);
+            ok = false;
+        } else if (is_dir(a)) {
+            ok = export_tree(a, b, depth + 1, ts, r);
+        } else if (is_file(a)) {
+            if (exists(b)) {
+                char bak[PATH_CAP];
+                snprintf(bak, sizeof bak, "%s.bak-%s", b, ts);
+                for (int k = 2; exists(bak) && k < 1000; k++)
+                    snprintf(bak, sizeof bak, "%s.bak-%s-%d", b, ts, k);
+                if (rename(b, bak) != 0) {
+                    fail(r, SC_IO, "%s: %s", b, strerror(errno));
+                    ok = false;
+                    break;
+                }
+            }
+            if (rename(a, b) != 0) {
+                ok = copy_file(a, b, NULL, r);
+                if (ok) {
+                    keep_time(a, b);
+                    remove(a);
+                }
+            } else {
+                r->n_written++;
+            }
+        }
+    }
+    names_free(names, n);
+    return ok;
+}
+
+ScCode sc_stage_export(ScStage *st, const char *dst_dir, ScReport *r) {
+    r->code = SC_OK;
+    if (!st) return SC_OK;
+    char ts[32];
+    stamp(ts, sizeof ts);
+    if (!export_tree(st->dir, dst_dir, 0, ts, r)) {
+        return r->code;
+    }
+    remove_stale(st->dir, 0, r);
+    made_clear(&st->made);
+    free(st);
+    return SC_OK;
+}
+
+ScCode sc_export(const char *src_dir, const char *dst_dir, const ScFormat *fmt, const ScCancel *cancel, ScReport *r) {
+    char stage[PATH_CAP];
+    sc_stage_export_path(src_dir, stage, sizeof stage);
+    ScStage *st = NULL;
+    ScCode c = sc_convert_cancel(src_dir, stage, fmt, SC_TO_WIIU, cancel, &st, r);
+    if (c != SC_OK) return c;
+    return sc_stage_export(st, dst_dir, r);
 }
 
 // ------------------------------------------------------------------ slots

@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <shellapi.h>
 #include <timeapi.h>
@@ -11,6 +12,14 @@
 
 #include "../gamelib.h"
 #include "../platform.h"
+#include "../settings.h"
+
+// Hybrid laptops: the dedicated GPU. NVIDIA's Optimus driver can hide its GPU from a program it runs on the
+// integrated one (an RTX 3050 laptop ran on its Intel GPU whatever the Windows and NVIDIA settings said, #415); AMD's
+// switchable graphics read the second export. The executable's own exports, read when it starts. The GPU setting
+// (SAVAGEWIND_GPU, Options) still picks another one.
+__declspec(dllexport) DWORD NvOptimusEnablement = 1;
+__declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
 
 // ---- guest address space
 // The window is reserved up front and committed per region (plat_commit from the loader / kernel). Anything
@@ -19,13 +28,76 @@
 // does not fault: such buffers must be inside committed regions.
 static uint64_t g_lo, g_hi;
 #define COMMIT_CHUNK 0x10000ull
+#define SPARSE_HEAP_MAX_PAGES (4ull * 1024 * 1024 * 1024 / COMMIT_CHUNK)
+#define SPARSE_HEAP_BITMAP_WORDS ((SPARSE_HEAP_MAX_PAGES + 63) / 64)
+static atomic_uint_fast64_t guest_commit_gen;
+static uint64_t sparse_heap_base, sparse_heap_size;
+static atomic_uint_fast64_t sparse_heap_pages[SPARSE_HEAP_BITMAP_WORDS];
+static bool sparse_heap_enabled;
+static bool sparse_heap_configured;
 
-static bool lazy_commit(uint64_t a) {
+static void sparse_heap_note_commit(uint64_t addr, uint64_t size) {
+    if (!size || addr >= sparse_heap_base + sparse_heap_size ||
+        (addr < sparse_heap_base && size <= sparse_heap_base - addr)) return;
+    uint64_t end = addr + size;
+    if (end < addr || end > sparse_heap_base + sparse_heap_size) end = sparse_heap_base + sparse_heap_size;
+    uint64_t first = (addr < sparse_heap_base ? 0 : addr - sparse_heap_base) / COMMIT_CHUNK;
+    uint64_t last = (end - sparse_heap_base + COMMIT_CHUNK - 1) / COMMIT_CHUNK;
+    for (uint64_t page = first; page < last && page < SPARSE_HEAP_MAX_PAGES; page++)
+        atomic_fetch_or_explicit(&sparse_heap_pages[page / 64], 1ull << (page % 64), memory_order_relaxed);
+}
+
+static void sparse_heap_clear_pages(void) {
+    for (size_t i = 0; i < SPARSE_HEAP_BITMAP_WORDS; i++)
+        atomic_store_explicit(&sparse_heap_pages[i], 0, memory_order_relaxed);
+}
+
+static bool guest_page_allows_access(DWORD protect, ULONG_PTR access) {
+    if (protect & PAGE_GUARD) return false;
+    protect &= 0xFF;
+    if (access == 1)
+        return protect == PAGE_READWRITE || protect == PAGE_WRITECOPY ||
+               protect == PAGE_EXECUTE_READWRITE || protect == PAGE_EXECUTE_WRITECOPY;
+    if (access == 8)
+        return protect == PAGE_EXECUTE || protect == PAGE_EXECUTE_READ ||
+               protect == PAGE_EXECUTE_READWRITE || protect == PAGE_EXECUTE_WRITECOPY;
+    return protect == PAGE_READONLY || protect == PAGE_READWRITE || protect == PAGE_WRITECOPY ||
+           protect == PAGE_EXECUTE_READ || protect == PAGE_EXECUTE_READWRITE || protect == PAGE_EXECUTE_WRITECOPY;
+}
+
+bool plat_guest_sparse_heap_enabled(void) {
+    return sparse_heap_configured && sparse_heap_enabled;
+}
+
+void plat_guest_sparse_heap_configure(bool auto_on) {
+    const char *override = getenv("SAVAGEWIND_VK_SPARSE_HEAP");
+    if (override)
+        sparse_heap_enabled = !strcmp(override, "1");
+    else
+        sparse_heap_enabled = g_settings.sparse_heap == SPARSE_HEAP_ON ||
+                              (g_settings.sparse_heap == SPARSE_HEAP_AUTO && auto_on);
+    sparse_heap_configured = true;
+}
+
+static bool lazy_commit(uint64_t a, ULONG_PTR access) {
     if (a < g_lo || a >= g_hi) return false;
     MEMORY_BASIC_INFORMATION mi;
-    if (!VirtualQuery((void *)(uintptr_t)a, &mi, sizeof mi) || mi.State != MEM_RESERVE) return false;
-    uint64_t base = a & ~(COMMIT_CHUNK - 1);
-    return VirtualAlloc((void *)(uintptr_t)base, COMMIT_CHUNK, MEM_COMMIT, PAGE_READWRITE) != NULL;
+    bool handled = false;
+    if (VirtualQuery((void *)(uintptr_t)a, &mi, sizeof mi)) {
+        if (mi.State == MEM_RESERVE) {
+            uint64_t base = a & ~(COMMIT_CHUNK - 1);
+            if (VirtualAlloc((void *)(uintptr_t)base, COMMIT_CHUNK, MEM_COMMIT, PAGE_READWRITE)) {
+                atomic_fetch_add_explicit(&guest_commit_gen, 1, memory_order_relaxed);
+                sparse_heap_note_commit(base, COMMIT_CHUNK);
+                handled = true;
+            } else if (VirtualQuery((void *)(uintptr_t)a, &mi, sizeof mi) && mi.State == MEM_COMMIT) {
+                handled = guest_page_allows_access(mi.Protect, access);
+            }
+        } else if (mi.State == MEM_COMMIT) {
+            handled = guest_page_allows_access(mi.Protect, access);
+        }
+    }
+    return handled;
 }
 
 static bool g_report_crashes;
@@ -53,7 +125,7 @@ static LONG CALLBACK vectored_handler(EXCEPTION_POINTERS *ep) {
     }
     if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || er->NumberParameters < 2) return EXCEPTION_CONTINUE_SEARCH;
     uint64_t fa = er->ExceptionInformation[1];
-    if (lazy_commit(fa)) return EXCEPTION_CONTINUE_EXECUTION;
+    if (lazy_commit(fa, er->ExceptionInformation[0])) return EXCEPTION_CONTINUE_EXECUTION;
     g_fault_is_write = er->ExceptionInformation[0] == 1;
     if (g_report_crashes && rt_fault_watch(fa, ep->ContextRecord->Rip)) {
         extern uint64_t rt_watch_step_page(uint64_t fa);  // runtime/dispatch.c: the page to close again, or 0
@@ -107,7 +179,13 @@ int plat_any_written(uint64_t addr, uint64_t size) {
 
 // Decommit everything: the range stays reserved, and pages come back zeroed when committed again (lazily).
 bool plat_reset_guest(uint64_t lo, uint64_t hi) {
-    return VirtualFree((void *)(uintptr_t)lo, hi - lo, MEM_DECOMMIT) != 0;
+    bool ok = VirtualFree((void *)(uintptr_t)lo, hi - lo, MEM_DECOMMIT) != 0;
+    if (ok) {
+        atomic_fetch_add_explicit(&guest_commit_gen, 1, memory_order_relaxed);
+        if (lo < sparse_heap_base + sparse_heap_size && hi > sparse_heap_base)
+            sparse_heap_clear_pages();
+    }
+    return ok;
 }
 
 void plat_commit(uint64_t addr, uint64_t size) {
@@ -116,6 +194,62 @@ void plat_commit(uint64_t addr, uint64_t size) {
     if (!VirtualAlloc((void *)(uintptr_t)a, e - a, MEM_COMMIT, PAGE_READWRITE))
         fprintf(stderr, "[plat] commit %llx+%llx failed (%lu)\n", (unsigned long long)addr,
                 (unsigned long long)size, GetLastError());
+    else {
+        atomic_fetch_add_explicit(&guest_commit_gen, 1, memory_order_relaxed);
+        sparse_heap_note_commit(a, e - a);
+    }
+}
+
+uint64_t plat_guest_commit_generation(void) {
+    return atomic_load_explicit(&guest_commit_gen, memory_order_relaxed);
+}
+
+void plat_guest_sparse_heap_range(uint64_t base, uint64_t size) {
+    sparse_heap_base = base;
+    sparse_heap_size = size;
+    sparse_heap_clear_pages();
+}
+
+uint64_t plat_guest_sparse_heap_committed_word(uint64_t word) {
+    if (word >= SPARSE_HEAP_BITMAP_WORDS) return 0;
+    return atomic_load_explicit(&sparse_heap_pages[word], memory_order_relaxed);
+}
+
+bool plat_guest_commit_sparse_range(uint64_t addr, uint64_t size) {
+    if (!size || addr < g_lo || addr >= g_hi || size > g_hi - addr) return false;
+    uint64_t begin = addr & ~(COMMIT_CHUNK - 1);
+    uint64_t end = (addr + size + COMMIT_CHUNK - 1) & ~(COMMIT_CHUNK - 1);
+    if (end > g_hi) end = g_hi;
+    bool needs_commit = false;
+    for (uint64_t at = begin; at < end;) {
+        MEMORY_BASIC_INFORMATION mi;
+        if (!VirtualQuery((void *)(uintptr_t)at, &mi, sizeof mi) || !mi.RegionSize) return false;
+        if (mi.State != MEM_COMMIT) needs_commit = true;
+        uint64_t next = (uint64_t)(uintptr_t)mi.BaseAddress + mi.RegionSize;
+        at = next < end ? next : end;
+    }
+    if (!needs_commit) return true;
+    if (!VirtualAlloc((void *)(uintptr_t)begin, end - begin, MEM_COMMIT, PAGE_READWRITE)) {
+        fprintf(stderr, "[plat] sparse guest commit %llx+%llx failed (%lu)\n",
+                (unsigned long long)addr, (unsigned long long)size, GetLastError());
+        return false;
+    }
+    atomic_fetch_add_explicit(&guest_commit_gen, 1, memory_order_relaxed);
+    sparse_heap_note_commit(begin, end - begin);
+    return true;
+}
+
+bool plat_committed_range(uint64_t addr, uint64_t end, uint64_t *a, uint64_t *e) {
+    MEMORY_BASIC_INFORMATION mi;
+    while (addr < end && VirtualQuery((void *)(uintptr_t)addr, &mi, sizeof mi)) {
+        uint64_t re = (uint64_t)(uintptr_t)mi.BaseAddress + mi.RegionSize;
+        if (mi.State == MEM_COMMIT && !(mi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) {
+            *a = addr, *e = re < end ? re : end;
+            return true;
+        }
+        addr = re;
+    }
+    return false;
 }
 
 void plat_decommit(uint64_t addr, uint64_t size) {
@@ -191,6 +325,10 @@ void plat_thread_realtime(uint64_t period_ns) {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
 }
 
+void plat_thread_elevate(void) {
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+}
+
 // ---- process
 // Release builds are GUI-subsystem executables (no console window): stdout / stderr go to savagewind.log next to the
 // exe, and a fatal error shows a message box (plat_fatal_notice) instead of vanishing. Processes started by this one
@@ -230,6 +368,7 @@ static void require_cpu(void) {
 
 // Fatal error (rt_fatal_trace): the last FATAL / exception line of the log in a message box, when there is no console.
 void plat_fatal_notice(void) {
+    plat_accessibility_shortcuts(true);  // (the shortcuts as they were: the process ends)
     if (!g_log_path[0]) return;
     fflush(stderr);
     char text[1024] = "Savage Wind stopped because of an error.";
@@ -299,9 +438,11 @@ void plat_init(void) {
 // never share a core with another busy thread of the game. With fewer cores than the game's busy threads (main, two job
 // workers, render, recorder, audio, file loading) they queue for one instead: by default with SMT and 4 or more
 // physical cores (plat_one_per_core_default). SAVAGEWIND_ONE_PER_CORE=1: always, 0: never. Called when the game
-// starts, so what the start screen runs (the game code build) keeps every logical processor. Under Wine / Proton the
-// Linux kernel schedules the threads, and there the Steam Deck measured one processor per core as a loss
-// (platform.h): the default keeps every logical processor, as the Linux build does.
+// starts, so what the start screen runs (the game code build) keeps every logical processor. On hybrid architectures
+// (Intel 12th+ Gen, Core Ultra, heterogeneous P/E cores) keeping all logical processors avoids starving P-core SMT
+// execution slots and forcing critical threads onto low-clock E-cores. Under Wine / Proton the Linux kernel schedules
+// the threads, and there the Steam Deck measured one processor per core as a loss (platform.h): the default keeps
+// every logical processor, as the Linux build does.
 void plat_cpu_placement(void) {
     DWORD_PTR all, sys, one = 0;
     if (!GetProcessAffinityMask(GetCurrentProcess(), &all, &sys)) return;
@@ -311,18 +452,28 @@ void plat_cpu_placement(void) {
     DWORD len = 0;
     GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &len);
     char *buf = len ? malloc(len) : NULL;
+    BYTE min_eff = 255, max_eff = 0;
     if (buf && GetLogicalProcessorInformationEx(RelationProcessorCore, (void *)buf, &len))
         for (DWORD o = 0; o < len;) {
             SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *e = (void *)(buf + o);
             DWORD_PTR m = e->Processor.GroupMask[0].Group == 0 ? e->Processor.GroupMask[0].Mask & all : 0;
-            if (m) cores++, one |= m & -m;  // (the core's first logical processor)
+            if (m) {
+                cores++;
+                one |= m & -m;  // (the core's first logical processor)
+                BYTE eff = e->Processor.EfficiencyClass;
+                if (eff < min_eff) min_eff = eff;
+                if (eff > max_eff) max_eff = eff;
+            }
             o += e->Size;
         }
     free(buf);
+    bool hybrid = (cores > 0 && min_eff != max_eff);
     const char *x = getenv("SAVAGEWIND_ONE_PER_CORE");
-    bool on = one && (x ? atoi(x) != 0 : !wine && plat_one_per_core_default(cores, logical));
-    fprintf(stderr, "[cpu] %d cores, %d logical processors: %s%s\n", cores, logical,
-            on ? "one logical processor per core" : "all logical processors", wine && !x ? " (Wine)" : "");
+    bool on = one && (x ? atoi(x) != 0 : !wine && !hybrid && plat_one_per_core_default(cores, logical));
+    fprintf(stderr, "[cpu] %d cores%s, %d logical processors: %s%s\n", cores,
+            hybrid ? " (hybrid P/E)" : "", logical,
+            on ? "one logical processor per core" : "all logical processors",
+            wine && !x ? " (Wine)" : hybrid && !x ? " (hybrid architecture)" : "");
     if (on) SetProcessAffinityMask(GetCurrentProcess(), one);
 }
 
@@ -333,6 +484,8 @@ int plat_cpu_count(void) {
     GetSystemInfo(&si);
     return (int)si.dwNumberOfProcessors;
 }
+
+const char *plat_log_path(void) { return g_log_path; }
 
 bool plat_exe_path(char *buf, size_t size) {
     DWORD n = GetModuleFileNameA(NULL, buf, (DWORD)size);
@@ -417,6 +570,19 @@ void plat_print_backtrace(void) {
 static LONG WINAPI unhandled_filter(EXCEPTION_POINTERS *ep) {
     EXCEPTION_RECORD *er = ep->ExceptionRecord;
     uint64_t fa = er->NumberParameters >= 2 ? er->ExceptionInformation[1] : 0;
+    if (er->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && er->NumberParameters >= 2) {
+        MEMORY_BASIC_INFORMATION mi = {0};
+        const char *access = er->ExceptionInformation[0] == 0 ? "read" :
+                             er->ExceptionInformation[0] == 1 ? "write" :
+                             er->ExceptionInformation[0] == 8 ? "execute" : "unknown";
+        if (VirtualQuery((void *)(uintptr_t)fa, &mi, sizeof mi))
+            fprintf(stderr, "[plat] access violation: %s at %#llx, allocation %#llx+%#llx, state %#lx, protection %#lx\n",
+                    access, (unsigned long long)fa, (unsigned long long)(uintptr_t)mi.AllocationBase,
+                    (unsigned long long)mi.RegionSize, (unsigned long)mi.State, (unsigned long)mi.Protect);
+        else
+            fprintf(stderr, "[plat] access violation: %s at %#llx, VirtualQuery failed (%lu)\n",
+                    access, (unsigned long long)fa, GetLastError());
+    }
     char what[48];
     snprintf(what, sizeof what, "exception %08lx", er->ExceptionCode);
     // x64 has no link register: report the return address on top of the stack (valid at function entry).
@@ -547,5 +713,48 @@ bool plat_remove_tree(const char *dir) {
     return SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted;
 }
 
+// Windows' accessibility shortcuts while the game has the focus: pressing Shift five times (Sticky Keys), holding the
+// right Shift for eight seconds (Filter Keys) or Num Lock for five (Toggle Keys) took the player out to their prompt,
+// and Shift is sprint and back. As Microsoft advises for games ("Disabling Shortcut Keys in Games"): the shortcut is
+// turned off while the window has the focus, only where the feature itself is off (a player who uses it keeps it),
+// and the settings as they were come back when the focus goes and when the game ends. Not written to the user's
+// profile (no SPIF_UPDATEINIFILE), so a crash leaves them until the next sign-in at worst.
+static STICKYKEYS sk_was = {sizeof(STICKYKEYS)};
+static TOGGLEKEYS tk_was = {sizeof(TOGGLEKEYS)};
+static FILTERKEYS fk_was = {sizeof(FILTERKEYS)};
+static bool shortcuts_read, shortcuts_off;
+static void shortcuts_restore(void) { plat_accessibility_shortcuts(true); }
+
+void plat_accessibility_shortcuts(bool allow) {
+    if (!shortcuts_read) {
+        if (!SystemParametersInfoW(SPI_GETSTICKYKEYS, sizeof sk_was, &sk_was, 0) ||
+            !SystemParametersInfoW(SPI_GETTOGGLEKEYS, sizeof tk_was, &tk_was, 0) ||
+            !SystemParametersInfoW(SPI_GETFILTERKEYS, sizeof fk_was, &fk_was, 0))
+            return;
+        shortcuts_read = true;
+        atexit(shortcuts_restore);  // (a plain exit; plat_terminate and plat_fatal_notice put them back themselves)
+    }
+    if (!allow && !shortcuts_off) {
+        STICKYKEYS sk = sk_was;
+        TOGGLEKEYS tk = tk_was;
+        FILTERKEYS fk = fk_was;
+        if (!(sk.dwFlags & SKF_STICKYKEYSON)) sk.dwFlags &= ~(DWORD)(SKF_HOTKEYACTIVE | SKF_CONFIRMHOTKEY);
+        if (!(tk.dwFlags & TKF_TOGGLEKEYSON)) tk.dwFlags &= ~(DWORD)(TKF_HOTKEYACTIVE | TKF_CONFIRMHOTKEY);
+        if (!(fk.dwFlags & FKF_FILTERKEYSON)) fk.dwFlags &= ~(DWORD)(FKF_HOTKEYACTIVE | FKF_CONFIRMHOTKEY);
+        SystemParametersInfoW(SPI_SETSTICKYKEYS, sizeof sk, &sk, 0);
+        SystemParametersInfoW(SPI_SETTOGGLEKEYS, sizeof tk, &tk, 0);
+        SystemParametersInfoW(SPI_SETFILTERKEYS, sizeof fk, &fk, 0);
+        shortcuts_off = true;
+    } else if (allow && shortcuts_off) {
+        SystemParametersInfoW(SPI_SETSTICKYKEYS, sizeof sk_was, &sk_was, 0);
+        SystemParametersInfoW(SPI_SETTOGGLEKEYS, sizeof tk_was, &tk_was, 0);
+        SystemParametersInfoW(SPI_SETFILTERKEYS, sizeof fk_was, &fk_was, 0);
+        shortcuts_off = false;
+    }
+}
+
 // End the process at once, skipping DLL teardown (from an atexit handler, after flushing). Exit status 0.
-void plat_terminate(void) { TerminateProcess(GetCurrentProcess(), 0); }
+void plat_terminate(void) {
+    plat_accessibility_shortcuts(true);  // (the atexit handlers after this one don't run)
+    TerminateProcess(GetCurrentProcess(), 0);
+}

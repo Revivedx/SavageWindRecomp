@@ -1,5 +1,6 @@
 #include <sys/mman.h>
 #include "paths.h"
+#include "prof.h"
 #include "settings.h"
 #include "ui/menu.h"
 // Metal renderer for the NVN layer: window, textures, command execution, presentation.
@@ -1049,6 +1050,7 @@ void backend_present(NvnTexture *t) {
     }
     frames++;
     total_frames++;
+    prof_frame(total_frames);  // (the profiler: a new frame starts here, for every thread's events)
     g_frame_counter++;
     extern void input_frame(uint64_t frame);
     input_frame(total_frames);
@@ -1061,6 +1063,8 @@ void backend_present(NvnTexture *t) {
     reboot_test_frame(total_frames);
     extern void test_warp_frame(uint64_t frame);  // runtime/services/test_warp.c (SAVAGEWIND_TEST_TIME)
     test_warp_frame(total_frames);
+    extern void weather_frame(void);  // runtime/weather.c (Cheats > Weather, `weather`)
+    weather_frame();
     extern void control_frame(uint64_t frame);  // runtime/control.c (SAVAGEWIND_CONTROL)
     control_frame(total_frames);
     static long shot_every = -1;

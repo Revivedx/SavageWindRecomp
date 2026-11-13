@@ -13,10 +13,12 @@ generated-*/
 /splash.png
 # build output, caches, saves and settings
 build/
+/profile/
 /cache/
 save/
 /save.lock
 /savagewind.ini
+/launch-flags.txt
 # tools and Python environments (machine-specific)
 tools/venv/
 venv/
@@ -36,6 +38,7 @@ tools/ghidra/gq.local.json
 
 # Internal work-branch log, local only
 docs/RAMAS.md
+.clangd
 # the player's own colour LUTs (runtime/color_grade.h): in the data root, which is the checkout in a source build
 /luts/
 game_dir.txt
@@ -43,4 +46,7 @@ game_dir.txt
 /online.ini
 /online_mod*/
 /run.log
+# the player's amiibo dumps and keys, and the figures' game data (runtime/amiibo.h): in the data root too
+/amiibo/
+/amiibo_data/
 /vk_pipelines.seed

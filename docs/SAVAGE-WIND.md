@@ -782,15 +782,25 @@ Pendiente:
        0,56 m a ~90 FPS. Prueba (corridas ocultas en Kakariko, `SAVAGEWIND_TEST_WARP=1834.4,221.9,959.0`, coger el
        cuco con A y saltar con X, altura de Link en PlayerInfo +0x8c): 0,634 m a 30, 0,640 a 60, 0,639 a ~85-120;
        el salto normal sigue en 0,68.
-     - Bruma (Vídeo > Bruma, `haze` en el ini, `services/fs.c` `haze_patch`): la neblina del exterior de BOTW es su
+     - Bruma (Vídeo > Opciones avanzadas > Bruma, `haze` en el ini, `services/fs.c` `haze_patch`): la neblina del exterior de BOTW es su
        dispersión atmosférica, por clima en `Pack/TitleBG.pack` `WorldMgr/normal.bwinfo` (AAMP, 20 climas en el objeto
        raíz): `CalcMie` y `CalcRayleigh` (lo blanco y lo azul del aire: más bajos, más claro; a 0,6x el cielo se oscurece
-       y vira a turquesa) y `CalcSfParamNear` (0 o negativo: la bruma de cerca, la mínima en 0). El ajuste k (0-100 %)
+       y vira a turquesa) y `CalcSfParamNear` (0 o negativo: la bruma de cerca, la mínima en 0). El ajuste k (75-100 %)
        da 0,7 + 0,3 k veces los dos primeros y k veces el tercero, como un parche de lectura sobre los bytes del archivo
        (mismo tamaño; AAMP comparte los valores iguales entre parámetros: cada uno se cambia una vez). El juego lo lee
        al arrancar: el cambio vale desde el siguiente inicio. 100 % no toca nada. Los objetos Fog de los perfiles de
        entorno (`Env/env.sgenvb`, `fog_world` etc.) se probaron antes: a 0 no cambian nada visible. Comparado desde la
        torre de Hebra a mediodía con cielo despejado (bruma 50 %: montañas lejanas con su color, cielo azul).
+     - Preset gráfico y Opciones avanzadas (Alpha 5, `settings.c` `k_gpreset`, `vulkan/exec.c`): el preset fija a la vez
+       distancia de dibujado, resolución de sombras, bloom, profundidad de campo y resolución dinámica. Potato: distancia
+       Potato, sombras 448, sin bloom ni desenfoque lejano, resolución dinámica; Original: como la consola; High: distancia
+       "High" (`medium` en el ini), sombras 2048; Savage: distancia "Savage" (`high` en el ini), sombras 4096. Lo que no
+       coincide con ninguno se muestra como Personalizado. Bloom off (`bloom = 0`): los draws del bloom
+       (`bloom_scale.h` `bloom_native_target`) limpian su imagen a negro en vez de dibujar; profundidad de campo off
+       (`depth_of_field = 0`): se salta el desenfoque lejano (fs f7731492223eb16a). Resolución dinámica
+       (`dynamic_resolution = 1`): los ReportCounter llevan su tiempo real y el juego baja su 3D de 1600x900 hacia
+       1280x720 cuando el fotograma tarda (como `SAVAGEWIND_VK_COUNTER=live`). Densidad de pasto: pendiente, no se
+       encontró aún el draw de las hojas de pasto.
      - Giro de los cuerpos que mueve el juego (#209): las piezas "keyframed" (el suelo de una Bestia Divina al
        inclinarse, ascensores, puertas) reciben cada fotograma un objetivo (FUN_710130d19c, una matriz 3x4) y cada paso
        de física la velocidad que las lleva a él (1.9.0 0x70012d5598): la angular sale del ángulo del giro que falta,
@@ -803,6 +813,30 @@ Pendiente:
        Link quieto sobre Medoh inclinándose a 120 FPS: velocidad angular del suelo constante (pasos parados del 49 % al
        3 %, solo al arrancar o parar el giro); variación de la velocidad vertical de Link de 0,9-1,6 m/s a 0,07-0,13
        (a 30 FPS, 0,04-0,05).
+     - Desactivación de Havok (#398): Havok decide que un cuerpo se ha parado contando pasos de física, y el juego da
+       uno por fotograma. (1) Cada cuerpo (hkpMotion +0xd) mira cada 4 pasos si sigue a menos de 2 cm de donde estaba
+       (cada 16, a menos de 8 cm); con 6 seguidas su isla se duerme (1.9.0 0x700011f95c sin restricciones,
+       0x70001207cc con ellas; el contador del mundo +0x3ef, 0x70000f5e20 y 0x700012644c, alterna los avisos de las
+       comprobaciones): 24 pasos son 0,8 s a 30 FPS y 0,07 s a 360. (2) En su último paso el solver frena a un cuerpo
+       más lento que los umbrales de su clase de desactivación (x 0,968 / 0,953 / 0,94 / 0,936) y lo para por debajo de
+       su velocidad de sueño (hkpWorld +0x314, 0x20 por clase: +8 el multiplicador, +0xc la velocidad de sueño; 1.9.0
+       0x7000148834). Desde el reposo un cuerpo gana gravedad x paso en un paso: a 360 FPS la doceava parte que en un
+       fotograma de la consola, por debajo de la velocidad de sueño, y se paraba otra vez en cada paso. En Ree Dahee la
+       bola cae en la rampa larga subiendo, se para un instante y vuelve a bajar hacia su interruptor: a 260-360 FPS se
+       dormía en ese instante (velocidad 0, isla inactiva, contadores 7/3) y no se movía más; a 60 bajaba (sondas de la
+       bola cada 0,1-0,4 s con el endpoint de control, `mem read` del hkpWorld [[[[0x7001e96888]+0x30]]+8]). Los
+       parches `phys_tick`, `phys_tick_mt`, `phys_motion_tick` y `phys_motion_tick_c` (`rt_phys_tick`,
+       `rt_phys_ticked`) cuentan fotogramas de la consola por mundo (la razón del fotograma, sin la cámara lenta) y
+       solo el paso que completa uno cuenta las comprobaciones: todos a 30 FPS (lo del juego), uno de cada 2 a 60, uno
+       de cada 12 a 360. El solver frena y para en todos los pasos, a escala de su duración r en fotogramas de la
+       consola (1 como mucho): el multiplicador elevado a r y la velocidad de sueño x r, porque lo que un paso suma a
+       la velocidad de un cuerpo es proporcional a su duración: frena lo mismo por segundo que en la consola y se para
+       cuando allí se pararía, y los pasos entre dos fotogramas siguen amortiguando lo que está entre dos empujes.
+       `SAVAGEWIND_PHYS_TICK=0` deja el juego como estaba. Probado con la partida del jugador en Ree Dahee: la bola
+       baja hasta su interruptor sin límite (~180-360 FPS), a 120, 60 y 30 (a 30, los valores y el ritmo del juego
+       sin cambios). Aparte, sin relación con esto: a 120 FPS y sin límite el interruptor de suelo con Link encima
+       tiembla ~1 cm (el botón, un cuerpo dinámico entre el impulso de su IA, el límite de su guía y el peso de Link;
+       medido 9-12 mm de pico a pico con `SAVAGEWIND_PHYS_TICK=0` también); a 60 y 30 no.
      - Vsync: Vídeo > Sincronización vertical (ver "VSync y VRR" abajo). Por defecto Rápida (MAILBOX), sin tearing;
        cada refresco muestra la imagen más nueva. Una frecuencia que divide la del monitor (60 en 60/120/240 Hz) es
        la más fluida; una que no (60 o 90 en 144 Hz) alterna 2 y 3 refrescos por imagen; por encima de la del
@@ -915,6 +949,11 @@ Pendiente:
        a compilar. Sin instrucciones FMA `simd.h` usa su propio fma (`simd_softfma.h`, que sigue al MXCSR como
        ellas; `tools/test_softfma.c` lo compara bit a bit): el de glibc se equivoca con FTZ / DAZ o redondeos
        dirigidos. `SAVAGEWIND_COMPAT_CPU=1` elige el compatible en cualquier CPU (para comparar los dos).
+       Ese fma exacto le cuesta ~10% de fps al compatible (4 núcleos, 720p: Kakariko 134 frente a 154). Por eso
+       "Cálculo rápido" (Video > Opciones avanzadas, `fast_fma`, solo en esas CPUs, activado por defecto) lo cambia
+       por x*y + z con dos redondeos (`simd_fma_unfused`, que el runtime pone en la librería por `GameLibTables`
+       una vez por frame, `gamelib_sync`): 151 fps, a ~2% del v3. El último bit de algunos resultados puede salir
+       distinto del de la consola. `SAVAGEWIND_FAST_FMA=0/1` manda sobre el ajuste; el log dice cuál está activo.
      - Unos ~10 dispatches por frame escriben en la memoria del juego con STG (sus storage buffers, 7-8 por dispatch,
        pequeños, en el heap importado), el primero ~100 draws dentro del frame. Para no copiar en la CPU memoria a
        medio escribir, el resto de la lista iba a la GPU de una vez al final: la GPU esperaba a que se tradujera todo
@@ -1361,7 +1400,7 @@ Pendiente:
      textos (`ui_merge_fallback_font`), y cada contexto rehace sus fuentes al cambiar el idioma.
      `tools/i18n_check.py` lista los textos que le faltan a cada tabla (`--missing <idioma>` los imprime como
      líneas `T(...)`); `SAVAGEWIND_MENU_LANG=<código>` (p. ej. `ja`) fuerza el idioma de los menús para probar.
-     Las doce tablas están completas (es, fr, de, it, nl, ru, pt, ja, ko, zh-Hans, zh-Hant, th). ImGui 1.91.9 solo
+     Las trece tablas están completas (es, fr, de, it, nl, ru, pt, ja, ko, zh-Hans, zh-Hant, th, he). ImGui 1.91.9 solo
      corta líneas en espacios: `third_party/imgui/imgui_draw.cpp` (`ImFont::CalcWordWrapPositionA`) lleva un
      parche local que también corta entre caracteres CJK, respetando la puntuación. El tailandés no separa
      palabras con espacios: sus textos llevan espacios entre frases, que es donde se cortan las líneas. Su fuente
@@ -1369,6 +1408,15 @@ Pendiente:
      del sistema (Leelawadee UI, Tahoma). ImGui no posiciona marcas combinantes con GPOS: las vocales y tonos de
      Noto Sans Thai tienen avance 0 y caen sobre la letra anterior, que se lee bien en los tamaños del menú.
      Dentro del juego, las páginas de Opciones se dibujan con la fuente tailandesa del propio juego.
+     El hebreo (`he`) no es un idioma de texto del juego: solo `SAVAGEWIND_MENU_LANG=he` lo elige. Se escribe de
+     derecha a izquierda: sus textos están en orden lógico (el de lectura) y cada línea se dibuja en orden visual,
+     con un subconjunto del algoritmo bidireccional de Unicode (`ui_visual_order` / `visual_line` en `i18n.mm`:
+     los tramos latinos y los números conservan su orden, el resto se invierte y los paréntesis se reflejan).
+     ImGui lo hace con otro parche local (`GImTextReorderLine`, `ImFont::RenderText`): corta las líneas sobre el
+     texto lógico, las reordena y alinea a la derecha las de un párrafo en el ancho de la más larga; la
+     disposición de los menús no se refleja. Las páginas de Opciones del juego reciben cada línea ya reordenada
+     (`put_text`) y necesitan una fuente del juego con hebreo. Fuente: Noto Sans Hebrew Medium (OFL,
+     `third_party/fonts/NotoSansHebrew`), y si falta, la del sistema (Segoe UI, Arial).
    - Ajustes dentro del juego (2026-10-18): la pantalla Ajustes del propio juego (pausa > Sistema > Ajustes, u
      Opciones en el menú del título) lleva las páginas de Savage Wind y sustituye al overlay en el juego (F1, Esc y el
      botón Home ya no lo abren; `SAVAGEWIND_OVERLAY=1` lo devuelve; Esc suelta el cursor). La primera página es una
@@ -1466,7 +1514,7 @@ Pendiente:
        imágenes y tarda minutos). `SAVAGEWIND_HIDDEN=1` corre sin ventana visible.
      - `SAVAGEWIND_SHADER_DUMP=1`: el código Maxwell de los shaders que no traducen, en `build/shaders/`.
      - `SAVAGEWIND_DEBUG_PASS_FROM=<n>`, `SAVAGEWIND_DEBUG_PASS_TO=<n>` y `SAVAGEWIND_DEBUG_MAIN_ONLY=1` (con el
-       frame de depuración, F9): guarda solo esos pases y solo el primer target de cada uno. Con
+       frame de depuración, F9 en modo desarrollador, `SAVAGEWIND_DEV=1`): guarda solo esos pases y solo el primer target de cada uno. Con
        `SAVAGEWIND_DEBUG_FRAMES=<n>`, n frames seguidos (`build/pass_<frame>_NNN.png`).
      - F12: guarda una imagen del juego de cada dos en `build/frames/rec_N.png` hasta el siguiente F12, para ver
        parpadeos de un frame (el juego va más lento mientras graba).
@@ -1547,6 +1595,53 @@ Pendiente:
 Se conserva todo lo genérico: el lifter AArch64 → C, el kernel HLE, IPC y servicios, el HLE de NVN
 con el backend Vulkan, el traductor de shaders Maxwell, ASTC, audio, la UI de ajustes y la
 compilación local con `zig cc`.
+
+## Heap invitado y memoria sparse de GPU
+
+En Windows, el juego pide un heap invitado de 3120 MiB. No se debe reducir a un límite estimado de VRAM: el código
+generado es código de CPU traducido, no un inventario estático de los recursos ni de las direcciones que leerán o
+escribirán los shaders. Limitar las páginas visibles a 1 GiB podría dejar lecturas sin datos o perder escrituras.
+
+La opción `sparse_heap` de `savagewind.ini` acepta `auto`, `on` y `off`. `auto` (por defecto) lo activa solo en una GPU
+integrada Intel cuya memoria compartida no llega a 6144 MiB (no cabe el heap entero más las texturas), y lo
+desactiva en las demás (#596, #619 y #695: las Intel con memoria de sobra fallaban en el código del juego con el
+heap sparse); el cambio se aplica al reiniciar. `SAVAGEWIND_VK_SPARSE_HEAP=1` fuerza
+la activación y cualquier otro valor explícito la desactiva. En GPUs compatibles, conserva el espacio de direcciones
+completo del heap y crea un buffer Vulkan sparse virtual de hasta 3328 MiB. Las páginas confirmadas del heap se
+exponen por ventanas de 1 MiB (alineación sparse de 64 KiB), mediante importación de la memoria host ya existente y
+enlaces sparse; no se copian las páginas a un pool de VRAM separado. En una Intel UHD, la memoria de GPU es memoria
+del sistema compartida. El tamaño virtual del buffer y los bytes enlazados no significan que exista esa cantidad de
+VRAM dedicada ni que el contador de memoria compartida de Windows aumente en la misma cantidad.
+
+En un inicio directo del juego en Windows, Vulkan inicializa la ventana y selecciona la GPU antes del arranque del
+juego. Así `auto` ya conoce el adaptador cuando `SetHeapSize` decide entre confirmar el heap de inmediato o dejar que
+sus páginas se confirmen al usarse; sin esa selección temprana, el modo `auto` podía elegir el camino eager antes de
+saber que la GPU era Intel integrada. Desde la pantalla de inicio, la ventana y Vulkan ya se inicializan antes de
+iniciar el juego.
+
+Las ventanas enlazadas quedan enlazadas hasta limpiar el backend: no hay política de desalojo ni recarga de páginas
+en este mecanismo. Solo se omite la validación de rango del sistema operativo cuando la tabla confirma que todas las
+ventanas del rango están enlazadas; los rangos no confirmados siguen el camino de compromiso y validación normal.
+Esta ruta evita repetir consultas caras de memoria sin cambiar el tamaño del heap ni asumir que cualquier rango es
+seguro.
+
+La prioridad Vulkan de memoria es independiente del heap sparse y está desactivada por defecto. Para probar la
+política de prioridad del driver en imágenes y en el heap denso importado, iniciar con
+`SAVAGEWIND_VK_MEMORY_PRIORITY=1`. Sin el flag, las imágenes usan el asignador normal de VMA y no se solicita
+prioridad para la memoria importada. `VK_EXT_memory_budget` permanece habilitada cuando existe: da información de
+presupuesto a VMA y se consulta para diagnosticar fallos de asignación; no habilita la política de prioridad.
+
+### Diagnóstico de rendimiento
+
+En las pruebas con BOTW 1.8.2 en una Intel UHD, la configuración aceptó el heap de 3120 MiB y llegó a gameplay.
+Con FSR 1 Ultra Performance la escena se renderizaba a 640x360 y se ampliaba a 1280x720. El log sin perfil de GPU
+se estabilizó aproximadamente en 22-25 FPS (con intervalos iniciales de 30 FPS). En esos intervalos de unos dos
+segundos, las estadísticas llegaron a alrededor de 130 000-150 000 draws, 650-750 MiB de cargas contabilizadas y
+900-1040 ms de esperas a la GPU. Son totales del intervalo, no valores por frame; las cargas contabilizadas tampoco
+son una medida directa del ancho de banda físico de la memoria. Cuando el juego ya estaba en la escena estable, las
+operaciones de importación y enlace sparse eran escasas o nulas aunque el FPS seguía bajo. Esto descarta el enlace
+sparse repetido como explicación suficiente del bajo rendimiento, pero no identifica por sí solo el cuello de
+botella entre trabajo de GPU, sincronización y trabajo del juego.
 
 ## Módulos en memoria
 
@@ -1697,7 +1792,10 @@ AMD FSR 3.1 upscaling (PRs #194 and #195: per-object motion vectors, the five qu
 built in, but Video > Upscaler doesn't offer it yet (`fsr3_upscaler_enabled` in `runtime/nvn/output_scale.c`). On an
 RTX 3060 the thread that records each frame for Vulkan limits 1080p and 1440p, and the motion vectors and FSR 3 add
 about 1.1 ms there, so every FSR 3 mode ran slower than native at those sizes; only at 4K did Balanced and up gain.
-It comes back once the draw translation on that thread runs in parallel (worked on apart, branch `heap-vram`).
+It comes back with the redesign of the motion vectors planned for Alpha 6: recording them on the render thread costs
+1.2 ms a frame for 2969 draws, spread out (constant buffers 0.35, matching 0.24, frame start 0.16, program 0.15, per-draw
+setup 0.13, push 0.10), with no single defect. FSR itself costs next to nothing there (2026-11-09, 1440p Quality: 130 fps
+native, 104 with FSR 3, 130 with FSR 3 and `SAVAGEWIND_MVEC=0`). That work has to leave the render thread.
 Until then `SAVAGEWIND_FSR3=1` offers it for tests, and a settings file with `upscaler = fsr3` loads as AMD FSR 1 with
 the same quality mode. TAA (Video > Anti-aliasing) and frame generation stay available.
 

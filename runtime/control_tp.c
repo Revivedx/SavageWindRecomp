@@ -10,7 +10,16 @@
 //   3. the target is written to it and checked.
 // That address is reused (re-checked before each use, found again when the game moved it). Better still, path_addr() reaches
 // it straight from PlayerInfo (a pointer chain found with mem path), so even the first teleport needs no search.
+//
+// Far jumps (a few hundred units and more): the game pauses the world (pause reason 9) every update in which the map
+// sections around Link are not loaded, and loading them is done by the world's own update, so after such a jump the
+// world waited for itself for good (clock stopped, "No world loaded" from camera). The jump is the same single write,
+// but the game's question "is the ground around Link still loading?" is answered "no" while the runtime holds Link at
+// the target (tools/patches.py _tp_gate calls rt_tp_gate_begin / rt_tp_gate_end around the game's own function). The
+// world keeps running and loads the map; the game's real answer is counted, and once the ground has been ready for
+// several updates in a row the hold ends and Link falls onto it as after a short teleport.
 #include <math.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,8 +38,8 @@ uint64_t renderer_present_count(void);  // presented frames (the backend)
 #define WAIT_FRAMES 3
 #define WAIT_NS 120000000ull  // (the game updates slower than it presents; give it a whole update to overwrite copies)
 
-enum { IDLE, SCAN, PROBE, TEST, VERIFY, DONE, FAILED };
-static const char *state_names[] = {"idle", "scanning", "probing", "testing", "verifying", "done", "failed"};
+enum { IDLE, SCAN, PROBE, TEST, VERIFY, HOLD, DONE, FAILED };
+static const char *state_names[] = {"idle", "scanning", "probing", "testing", "verifying", "settling", "done", "failed"};
 static int state = IDLE;
 static float target[3], ttol = 2.0f;      // ttol: how close counts as "at the target" (smaller for a short hop)
 static uint64_t cache;                    // the real position's address (0: not found yet)
@@ -40,6 +49,41 @@ static size_t ncand, tried;
 static float p0x;                         // pos.x when a round wrote its nudges
 static uint64_t wrote_frame, wrote_ns;
 static char why[200];
+
+// ---- the hold for a far jump
+#define HOLD_DIST 300.0f                    // a jump this far (x and z) or more needs the hold (600 was fine without it, 800 froze)
+#define HOLD_READY_UPDATES 12               // the game's own answer "ground ready" this many updates in a row ends the hold
+#define HOLD_MIN_NS 1500000000ull
+#define HOLD_TIMEOUT_NS 120000000000ull
+static _Atomic int hold_on;                 // the game's ground question is answered "ready" (and Link is kept at the target)
+static _Atomic int ready_run;               // updates in a row in which the game itself said the ground is ready
+static _Atomic uint64_t hold_updates;       // updates seen while holding
+static bool want_hold;                      // this teleport is a far one
+static uint64_t hold_t0;
+static _Atomic uint64_t hold_cell;                  // where the hold writes Link's position (the teleport's address)
+static __thread int in_gate;
+
+// Called by the game's ground question (tools/patches.py _tp_gate) on the game's thread.
+int rt_tp_gate_begin(void) {
+    if (!atomic_load_explicit(&hold_on, memory_order_relaxed) || in_gate) return 0;
+    in_gate = 1;
+    return 1;
+}
+static void hold_write(void) {  // keep Link at the target, and the fall (damage is the drop from the highest point) from building up
+    uint64_t cell = atomic_load(&hold_cell);
+    if (!cell) return;
+    control_mem_poke(cell, target, sizeof target);
+    double y = target[1];
+    control_cell_set(&control_cell_player_fall_top, &y);
+    control_cell_set(&control_cell_player_fall_top2, &y);
+}
+void rt_tp_gate_end(uint64_t x0) {  // x0: the game's answer, bit 0 set = the ground is still loading
+    in_gate = 0;
+    atomic_fetch_add(&hold_updates, 1);
+    if (x0 & 1) atomic_store(&ready_run, 0); else atomic_fetch_add(&ready_run, 1);
+    hold_write();
+}
+static void hold_stop(void) { atomic_store(&hold_on, 0); want_hold = false; atomic_store(&hold_cell, 0); }
 
 static float *pinfo_pos(void) {
     uint64_t pinfo = g_site.player_info ? *(uint64_t *)(uintptr_t)g_site.player_info : 0;
@@ -57,7 +101,18 @@ static struct { bool have, use_yaw, use_pitch; double yaw, pitch; } then_look;
 void control_tp_then_look(bool use_yaw, double yaw, bool use_pitch, double pitch) {
     then_look.have = true; then_look.use_yaw = use_yaw; then_look.yaw = yaw; then_look.use_pitch = use_pitch; then_look.pitch = pitch;
 }
+// After an arrival Link drops the last bit onto the ground; a target that is higher than the ground (a place's data is only
+// as good as its height) must not hurt him, so for a few seconds the fall height follows him down instead of staying at the top.
+#define LAND_NS 4000000000ull
+static uint64_t land_until;
+static void land_follow(const float *pp) {
+    double y = pp[1];
+    control_cell_set(&control_cell_player_fall_top, &y);
+    control_cell_set(&control_cell_player_fall_top2, &y);
+}
 static void finish(int st, const char *msg) {
+    if (st == DONE) land_until = plat_now_ns() + LAND_NS;
+    if (st == FAILED || st == DONE) hold_stop();
     state = st;
     snprintf(why, sizeof why, "%s", msg);
     if (st == DONE && then_look.have) control_look_start(then_look.use_yaw, then_look.yaw, then_look.use_pitch, then_look.pitch, 30);
@@ -97,6 +152,10 @@ static void start_round(uint64_t frame, bool first) {
 
 void control_tp_frame(uint64_t frame) {
     const float *pp = pinfo_pos();
+    if (land_until) {
+        if (pp && plat_now_ns() < land_until && state != HOLD) land_follow(pp);
+        else if (state != HOLD) land_until = 0;
+    }
     if (state == SCAN) {
         size_t n = 0;
         int st = control_mem_find_vec3_poll(cand, MAX_CAND, &n);
@@ -107,6 +166,18 @@ void control_tp_frame(uint64_t frame) {
         for (size_t i = 0; i < n; i++) if ((uintptr_t)cand[i] != (uintptr_t)pp) cand[keep++] = cand[i];  // (the game's own copy)
         ncand = keep;
         start_round(frame, true);
+        return;
+    }
+    if (state == HOLD) {
+        if (!pp) { finish(FAILED, "World unloaded"); return; }
+        hold_write();
+        uint64_t now = plat_now_ns();
+        if (atomic_load(&ready_run) >= HOLD_READY_UPDATES && now - hold_t0 >= HOLD_MIN_NS) { finish(DONE, "Arrived"); return; }
+        if (now - hold_t0 >= HOLD_TIMEOUT_NS) {
+            char m[200];
+            snprintf(m, sizeof m, "The ground around the target did not load in %d s (%llu updates, ground ready %d in a row)", (int)(HOLD_TIMEOUT_NS / 1000000000ull), (unsigned long long)atomic_load(&hold_updates), atomic_load(&ready_run));
+            finish(FAILED, m);
+        }
         return;
     }
     if (state != PROBE && state != TEST && state != VERIFY) return;
@@ -130,6 +201,7 @@ void control_tp_frame(uint64_t frame) {
     }
     if (near_pos(pp, target, ttol)) {
         if (state == TEST) cache = cand[0];
+        if (want_hold) { atomic_store(&hold_cell, cache); hold_t0 = plat_now_ns(); state = HOLD; why[0] = 0; return; }
         finish(DONE, "Arrived");
         return;
     }
@@ -156,6 +228,7 @@ static void status_fields(ControlReply *r) {
     if (why[0]) control_field_str(r, "message", why);
     if (cache) { char s[32]; snprintf(s, sizeof s, "0x%llx", (unsigned long long)cache); control_field_str(r, "address", s); }
     if (state == PROBE || state == TEST) { control_field_int(r, "candidates", (int64_t)ncand); control_field_int(r, "rounds", (int64_t)tried); }
+    if (state == HOLD) { control_field_int(r, "updates", (int64_t)atomic_load(&hold_updates)); control_field_int(r, "ground_ready_run", atomic_load(&ready_run)); }
     const float *pp = pinfo_pos();
     if (pp) { control_field_num(r, "x", pp[0]); control_field_num(r, "y", pp[1]); control_field_num(r, "z", pp[2]); }
 }
@@ -164,7 +237,7 @@ static void status_fields(ControlReply *r) {
 static void cmd_teleport(int argc, char **argv, ControlReply *r) {
     uint64_t frame = renderer_present_count();
     if (argc == 2 && !strcmp(argv[1], "status")) { status_fields(r); return; }
-    if (argc == 2 && !strcmp(argv[1], "forget")) { cache = 0; state = IDLE; why[0] = 0; control_field_str(r, "state", "idle"); return; }
+    if (argc == 2 && !strcmp(argv[1], "forget")) { cache = 0; hold_stop(); state = IDLE; why[0] = 0; control_field_str(r, "state", "idle"); return; }
     float t[3];
     if (argc != 4 || !number(argv[1], &t[0]) || !number(argv[2], &t[1]) || !number(argv[3], &t[2])) {
         control_fail(r, "Usage: teleport <x> <y> <z> | status | forget");
@@ -181,15 +254,23 @@ static void cmd_teleport(int argc, char **argv, ControlReply *r) {
         ttol = fmaxf(0.01f, fminf(2.0f, 0.25f * d));  // (a copy that did not move is d away; the real one is at the target)
     }
     why[0] = 0; tried = 0;
+    {
+        float d = hypotf(t[0] - pp[0], t[2] - pp[2]);
+        want_hold = d >= HOLD_DIST || fabsf(t[1] - pp[1]) >= 4.0f * HOLD_DIST;
+        if (want_hold) { atomic_store(&ready_run, 0); atomic_store(&hold_updates, 0); atomic_store(&hold_on, 1); }  // (before the write: the next update must not see the far position first)
+    }
     float at[3];
     uint64_t pa = path_addr();
     if (pa) cache = pa;  // (the direct route: no search)
     if (cache && control_mem_peek(cache, at, sizeof at) && near_pos(at, pp, 1.0f)) {
         memcpy(orig[0], at, sizeof at);
-        if (control_mem_poke(cache, target, sizeof target)) { stamp(frame); state = VERIFY; status_fields(r); return; }
+        if (control_mem_poke(cache, target, sizeof target)) {
+            if (want_hold) atomic_store(&hold_cell, cache);
+            stamp(frame); state = VERIFY; status_fields(r); return;
+        }
     }
     cache = 0;
-    if (!control_mem_find_vec3_start(pp, 0.001f)) { control_fail(r, "Position search busy"); return; }
+    if (!control_mem_find_vec3_start(pp, 0.001f)) { hold_stop(); control_fail(r, "Position search busy"); return; }
     state = SCAN;
     status_fields(r);
 }

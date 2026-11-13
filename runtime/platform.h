@@ -24,8 +24,20 @@ void plat_commit(uint64_t addr, uint64_t size);
 // Give the backing of [addr, addr+size) inside the guest window back to the OS (the guest unmapped it): the pages
 // read as zero if anything touches them again (Windows: committed again on the first access). The window stays claimed.
 void plat_decommit(uint64_t addr, uint64_t size);
+// The first run of committed memory at or after addr and before end: *a .. *e (false: none). For reading the game's
+// memory from a thread of ours without committing what the game never touched (runtime/rupees.c).
+bool plat_committed_range(uint64_t addr, uint64_t end, uint64_t *a, uint64_t *e);
 // In-place reboot: every page of [lo, hi) back to zero (and unbacked), the window still claimed.
 bool plat_reset_guest(uint64_t lo, uint64_t hi);
+// Vulkan sparse guest-heap backing: report committed 64 KiB pages in a reserved guest range.
+bool plat_guest_sparse_heap_enabled(void);
+#ifdef _WIN32
+uint64_t plat_guest_commit_generation(void);
+void plat_guest_sparse_heap_configure(bool auto_on);  // (auto_on: what sparse_heap = auto picks for this GPU)
+void plat_guest_sparse_heap_range(uint64_t base, uint64_t size);
+uint64_t plat_guest_sparse_heap_committed_word(uint64_t word);
+bool plat_guest_commit_sparse_range(uint64_t addr, uint64_t size);
+#endif
 enum { PLAT_PROT_NONE = 0, PLAT_PROT_READ = 1, PLAT_PROT_RW = 3 };
 int plat_protect(uint64_t addr, uint64_t size, int prot);  // 0 on success
 #define PLAT_PAGE 0x4000ull  // largest page size we deal with (macOS 16K; multiple of Windows' 4K)
@@ -42,6 +54,7 @@ uint64_t plat_now_ns(void);                // monotonic
 void plat_sleep_until_ns(uint64_t t);      // precise wait for plat_now_ns() >= t
 void plat_wait_until_ns(uint64_t t);       // wait for plat_now_ns() >= t without spinning (the OS timer's precision)
 void plat_thread_realtime(uint64_t period_ns);  // periodic timing thread (vsync): don't coalesce its timers
+void plat_thread_elevate(void);            // latency-critical thread (game main, render, recorder): favor P-cores on hybrid architectures
 int plat_cpu_count(void);       // logical processors this process may run on (its affinity, after plat_cpu_placement)
 void plat_cpu_placement(void);  // (game start) one logical processor per core where plat_one_per_core_default says
 // Whether the game runs on one logical processor per core when SAVAGEWIND_ONE_PER_CORE doesn't say (cores: physical
@@ -61,9 +74,13 @@ static inline bool plat_one_per_core_default(int cores, int logical) {
 // ---- process
 void plat_init(void);                                // first thing in main()
 bool plat_exe_path(char *buf, size_t size);
+const char *plat_log_path(void);  // the log file this run writes ("": stderr goes to a console, pipe or file)
 void plat_exec(char *const argv[]);  // replace the process (NULL = same command line); returns only on failure
 #if defined(_WIN32) || defined(__linux__)
 void plat_terminate(void);  // end the process now, skipping DLL teardown (exit status 0)
+// Windows: false turns off the accessibility shortcuts (Shift five times: Sticky Keys) where their feature is off,
+// true puts them back as they were (the game's window has the focus or not). Elsewhere nothing.
+void plat_accessibility_shortcuts(bool allow);
 #endif
 
 // Child processes (game code generator and compiler, game-file setup). stdout + stderr go to log_path (NULL = /dev/null).

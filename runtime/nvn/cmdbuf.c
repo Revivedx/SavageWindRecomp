@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "ksync.h"
 #include "nvn.h"
 
 #define JUMP_RESERVE (sizeof(CmdRec) + 8)
@@ -50,7 +51,8 @@ static uint64_t g_free_bytes;
 #define FREE_BUDGET (64ull << 20)  // dead blocks past this go back to the C heap
 static HBlock *g_grave;  // dead blocks, oldest first, until three frames have passed
 static int g_ngrave, g_capgrave;
-static pthread_mutex_t g_shadow_lock = PTHREAD_MUTEX_INITIALIZER;
+static KMutex g_shadow_lock = KMUTEX_INIT;
+static NvnCmdBuf *g_command_buffers;
 uint64_t renderer_present_count(void);
 
 static void push_block(HBlock **v, int *n, int *cap, HBlock b) {
@@ -126,7 +128,7 @@ static int live_index(uint64_t lo) {  // (lock held) the first live shadow not w
 // shadows its first bytes go over die (shadow_claim: the others once written over). What `old` stands for shrinks
 // to the part used first.
 static Shadow *shadow_switch(Shadow *old, uint64_t used, bool recording, uint64_t lo, uint64_t hi) {
-    pthread_mutex_lock(&g_shadow_lock);
+    kmutex_lock(&g_shadow_lock);
     if (old && !old->dead && old->lo < old->hi && old->lo + used < old->hi) old->hi = old->lo + used;
     Shadow *sh = NULL;
     if (lo < hi) {
@@ -155,7 +157,7 @@ static Shadow *shadow_switch(Shadow *old, uint64_t used, bool recording, uint64_
     }
     sh->users++;
     if (old) shadow_unuse(old);
-    pthread_mutex_unlock(&g_shadow_lock);
+    kmutex_unlock(&g_shadow_lock);
     return sh;
 }
 
@@ -164,7 +166,7 @@ static void shadow_claim(Shadow *sh, uint64_t end) {
     if (end > sh->win) end = sh->win;  // (recording goes on past the window when the game adds no more: accounting only)
     if (end <= sh->hi || sh->dead) return;
     if (end <= sh->free_to) { sh->hi = end; return; }
-    pthread_mutex_lock(&g_shadow_lock);
+    kmutex_lock(&g_shadow_lock);
     if (!sh->dead) {
         int i = live_index(sh->lo);
         while (i < g_nlive && g_live[i] != sh) i++;
@@ -178,30 +180,30 @@ static void shadow_claim(Shadow *sh, uint64_t end) {
             sh->free_to = i + 1 < g_nlive && g_live[i + 1]->lo < sh->win ? g_live[i + 1]->lo : sh->win;
         }
     }
-    pthread_mutex_unlock(&g_shadow_lock);
+    kmutex_unlock(&g_shadow_lock);
 }
 
 static void shadow_leave(Shadow *sh, uint64_t used) {  // (a command buffer is finalized)
-    pthread_mutex_lock(&g_shadow_lock);
+    kmutex_lock(&g_shadow_lock);
     if (!sh->dead && sh->lo < sh->hi && sh->lo + used < sh->hi) sh->hi = sh->lo + used;
     shadow_unuse(sh);
-    pthread_mutex_unlock(&g_shadow_lock);
+    kmutex_unlock(&g_shadow_lock);
 }
 
 // A memory pool is finalized: the lists recorded in its memory [lo, hi) are dead.
 void cmdbuf_pool_gone(uint64_t lo, uint64_t hi) {
-    pthread_mutex_lock(&g_shadow_lock);
+    kmutex_lock(&g_shadow_lock);
     int a = live_index(lo), end = a;
     while (end < g_nlive && g_live[end]->lo < hi) end++;
     for (int i = a; i < end; i++) shadow_kill(g_live[i]);
     memmove(g_live + a, g_live + end, (g_nlive - end) * sizeof *g_live);
     g_nlive -= end - a;
-    pthread_mutex_unlock(&g_shadow_lock);
+    kmutex_unlock(&g_shadow_lock);
 }
 
 // Block i of a shadow, at least `want` bytes (blocks past the one in use hold dead records).
 static HBlock shadow_block(Shadow *sh, int i, uint64_t want) {
-    pthread_mutex_lock(&g_shadow_lock);
+    kmutex_lock(&g_shadow_lock);
     if (i < sh->nblocks && sh->blocks[i].size < want) {
         block_release(sh->blocks[i]);
         sh->blocks[i] = block_get(want);
@@ -215,12 +217,17 @@ static HBlock shadow_block(Shadow *sh, int i, uint64_t want) {
         sh->blocks[sh->nblocks++] = nb;
     }
     HBlock b = sh->blocks[i];
-    pthread_mutex_unlock(&g_shadow_lock);
+    kmutex_unlock(&g_shadow_lock);
     return b;
 }
 
 RT_ON_RESET(cmdbuf_shadow_reset) {  // (reboot: every list is dead; command buffers were guest objects)
-    pthread_mutex_lock(&g_shadow_lock);
+    kmutex_lock(&g_shadow_lock);
+    while (g_command_buffers) {
+        NvnCmdBuf *cb = g_command_buffers;
+        g_command_buffers = cb->registry_next;
+        free(cb);
+    }
     for (int i = 0; i < g_nlive; i++) {
         for (int k = 0; k < g_live[i]->nblocks; k++) free(g_live[i]->blocks[k].mem);
         free(g_live[i]->blocks);
@@ -229,7 +236,7 @@ RT_ON_RESET(cmdbuf_shadow_reset) {  // (reboot: every list is dead; command buff
     g_nlive = 0;
     for (int i = 0; i < g_ngrave; i++) free(g_grave[i].mem);
     g_ngrave = 0;
-    pthread_mutex_unlock(&g_shadow_lock);
+    kmutex_unlock(&g_shadow_lock);
 }
 
 static NvnCmdBuf *cb_of(uint64_t guest) { return HOST(NvnCmdBuf, guest); }
@@ -237,11 +244,19 @@ static NvnCmdBuf *cb_of(uint64_t guest) { return HOST(NvnCmdBuf, guest); }
 NVN(nvnCommandBufferInitialize) {
     NvnCmdBuf *cb = calloc(1, sizeof *cb);
     cb->guest = A(0);
+    kmutex_lock(&g_shadow_lock);
+    cb->registry_next = g_command_buffers; g_command_buffers = cb;
+    kmutex_unlock(&g_shadow_lock);
     SET_HOST(A(0), cb);
     RET(1);
 }
 NVN(nvnCommandBufferFinalize) {
     NvnCmdBuf *cb = cb_of(A(0));
+    kmutex_lock(&g_shadow_lock);
+    NvnCmdBuf **link = &g_command_buffers;
+    while (*link && *link != cb) link = &(*link)->registry_next;
+    if (*link) *link = cb->registry_next;
+    kmutex_unlock(&g_shadow_lock);
     if (cb && cb->shadow) shadow_leave(cb->shadow, cb->gused);
     free(cb);
     SET_HOST(A(0), 0);
@@ -305,11 +320,21 @@ NVN(nvnCommandBufferSetMemoryCallbackData) { cb_of(A(0))->callback_data = A(1); 
 NVN(nvnCommandBufferGetMemoryCallbackData) { RET(cb_of(A(0))->callback_data); }
 NVN(nvnCommandBufferSetCommandMemoryCallbackEnabled) { (void)c; }
 
+// Append a host record without touching guest command-memory accounting.
+static CmdRec *host_rec(NvnCmdBuf *cb, uint32_t op, uint32_t extra) {
+    uint32_t size = (uint32_t)((sizeof(CmdRec) + extra + 7) & ~7u);
+    if (cb->used + size + JUMP_RESERVE > cb->size) {
+        uint64_t want = size + JUMP_RESERVE;
+        use_block(cb, cb->block + 1, want > cb->size * 2 ? want : cb->size * 2);
+    }
+    CmdRec *r = raw_rec(cb->mem + cb->used, op, size);
+    cb->used += size;
+    return r;
+}
 // Reserve a record costing `cost` guest bytes. May call back into the guest for more memory, so callers snapshot
 // their arguments first. When the game adds no more (BOTW gives some command buffers a callback that is a bare
 // ret), recording goes on past the guest chunk: only the accounting is over, the records have room.
 static CmdRec *rec_cost(Cpu *c, NvnCmdBuf *cb, uint32_t op, uint32_t extra, uint32_t cost) {
-    uint32_t size = (uint32_t)((sizeof(CmdRec) + extra + 7) & ~7u);
     for (int tries = 0; !cb->shadow || cb->gused + cost > cb->gsize; tries++) {
         if (!cb->callback || tries == 2) {
             if (!cb->shadow) use_guest_chunk(cb, 0, 0);  // never given memory: the records still need a home
@@ -326,14 +351,21 @@ static CmdRec *rec_cost(Cpu *c, NvnCmdBuf *cb, uint32_t op, uint32_t extra, uint
     }
     cb->gused += cost;
     shadow_claim(cb->shadow, cb->gmem + cb->gused);
-    if (cb->used + size + JUMP_RESERVE > cb->size) {
-        uint64_t want = size + JUMP_RESERVE;
-        use_block(cb, cb->block + 1, want > cb->size * 2 ? want : cb->size * 2);
-    }
-    CmdRec *r = raw_rec(cb->mem + cb->used, op, size);
-    cb->used += size;
-    return r;
+    return host_rec(cb, op, extra);
 }
+bool nvn_ui_scope(uint64_t commands, unsigned kind) {
+    // The native screen can be called before its context is ready. Never dereference a candidate host pointer.
+    kmutex_lock(&g_shadow_lock);
+    NvnCmdBuf *cb = g_command_buffers;
+    while (cb && cb->guest != commands) cb = cb->registry_next;
+    kmutex_unlock(&g_shadow_lock);
+    if (!cb || !cb->recording || !cb->shadow || !cb->mem) return false;
+    // A host marker never allocates guest memory or invokes a guest out-of-memory callback.
+    CmdRec *r = host_rec(cb, CMD_UI_SCOPE, 0);
+    r->x[0] = kind;
+    return true;
+}
+
 static CmdRec *rec(Cpu *c, NvnCmdBuf *cb, uint32_t op, uint32_t extra) {
     return rec_cost(c, cb, op, extra, cmd_cost(op, extra));
 }

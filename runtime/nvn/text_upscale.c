@@ -47,6 +47,34 @@ void text_sheet_add(const uint8_t *sheet, size_t bytes) {
 
 int text_sheet_count(void) { return nsheets; }
 
+// Gameplay > Sharper menus: the menus' one-channel textures (BC4, R8), told apart the same way: fs.c hashes the ones in
+// the game's layout archives. There are about 600, so an open-addressed table rather than a list.
+#define MENU_TEX_BITS 12
+static uint64_t menu_tex[1 << MENU_TEX_BITS];
+static int nmenu;
+
+void menu_tex_add(const uint8_t *texels, size_t bytes) {
+    if (nmenu >= (1 << MENU_TEX_BITS) / 2) return;
+    uint64_t h = sheet_hash(texels, bytes) | 1;  // (| 1: 0 marks an empty slot)
+    for (uint32_t i = (uint32_t)h >> 3;; i++) {
+        uint64_t *e = &menu_tex[i & ((1 << MENU_TEX_BITS) - 1)];
+        if (*e == h) return;
+        if (!*e) { *e = h; nmenu++; return; }
+    }
+}
+
+int menu_tex_count(void) { return nmenu; }
+
+bool menu_tex_known(const uint8_t *texels, size_t bytes) {
+    if (!nmenu) return false;
+    uint64_t h = sheet_hash(texels, bytes) | 1;
+    for (uint32_t i = (uint32_t)h >> 3;; i++) {
+        uint64_t e = menu_tex[i & ((1 << MENU_TEX_BITS) - 1)];
+        if (e == h) return true;
+        if (!e) return false;
+    }
+}
+
 bool text_sheet_known(const uint8_t *texels, size_t bytes) {
     if (!nsheets) return false;
     uint64_t h = sheet_hash(texels, bytes);

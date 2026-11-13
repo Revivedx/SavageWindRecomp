@@ -117,6 +117,21 @@ GENFLAGS += -D_FILE_OFFSET_BITS=64 $(GENARCH)
 LDFLAGS  := -fuse-ld=lld -Wl,--stack,268435456 $(if $(DEPS),-L$(DEPS)/lib) -lSDL3 -lavformat -lavcodec -lavutil -lswscale \
             -lvulkan-1 -lwinmm -lole32 -lshell32 -lcomdlg32 -luuid -lshaderc_shared -lpdh -lws2_32 -l:libz.a \
             $(if $(RELEASE),-Wl$(comma)--subsystem$(comma)windows)  # release: no console window (log -> savagewind.log)
+# NVIDIA DLSS is an optional external SDK. Keep proprietary files out of this
+# repository; source builds can point at the sibling checkout with DLSS_SDK=../DLSS.
+DLSS_SDK ?= ../DLSS
+DLSS_DLL := $(DLSS_SDK)/lib/Windows_x86_64/rel/nvngx_dlss.dll
+DLSS_IMPORT := $(B)/nvngx_dlss.a
+DLSS_LIB := $(DLSS_SDK)/lib/Windows_x86_64/x64/nvsdk_ngx_s.lib
+ifneq ($(wildcard $(DLSS_DLL)),)
+DEPINC += -I$(DLSS_SDK)/include -DDLSS_SDK_PRESENT=1
+LDFLAGS += $(DLSS_IMPORT) $(DLSS_LIB)
+# The SDK wrapper is built with MSVC's CRT directives. Use the MinGW CRT and
+# provide the small ABI shim in runtime/nvn/vulkan/dlss_compat.c.
+LDFLAGS += -Wl,/NODEFAULTLIB:libcmt.lib -Wl,/NODEFAULTLIB:libcpmt.lib -Wl,/NODEFAULTLIB:OLDNAMES.lib
+else
+DEPINC += -DDLSS_SDK_PRESENT=0
+endif
 BACKEND_SRC := $(wildcard runtime/nvn/vulkan/*.c) $(wildcard runtime/nvn/vulkan/*.cpp)
 BACKEND_OBJ := $(patsubst runtime/%.cpp,$(B)/rt/%.o,$(patsubst runtime/%.c,$(B)/rt/%.o,$(BACKEND_SRC)))
 BACKEND_OBJ += $(B)/rt/platform/windows_rc.o  # the .exe's icon (Explorer, taskbar)
@@ -181,6 +196,41 @@ RT_OBJ   := $(patsubst runtime/%.c,$(B)/rt/%.o,$(RT_SRC))
 RTFLAGS  := -O2 -g -fno-strict-aliasing -Wall -Wno-unused-function -Iruntime -Iruntime/nvn -isystem third_party -isystem third_party/stb $(DEPINC) $(OSFLAGS)
 CXXFLAGS := -O2 -g -std=c++17 -I$(IMGUI) -I$(IMGUI)/backends -Iruntime -Iruntime/nvn -isystem third_party -Ithird_party/stb $(DEPINC)
 
+# Optional runtime-only optimization. The generated game library keeps GENFLAGS and its build ID.
+# Use a separate B for each mode; the stamp also rebuilds runtime objects when flags or profiles change.
+# Profile-guided build of the runtime (not the game library). tools/pgo/runtime.profdata is a ready profile, so
+#   make PGO=use B=build-pgo            optimized build, no training needed
+# is all most people need. To make a new profile (a profile only fits the clang that wrote it, and goes stale as
+# the runtime changes; see tools/pgo/README.md), each step with its own B:
+#   make PGO=gen B=build-gen            instrumented savagewind.exe
+#   run it (a scripted walk ending with SAVAGEWIND_EXIT_AT=<frame>, or by hand) with LLVM_PROFILE_FILE=<dir>/rt-%p.profraw
+#   llvm-profdata merge -o tools/pgo/runtime.profdata <dir>/*.profraw
+PGO ?=
+LTO ?=
+PGO_PROFILE ?= tools/pgo/runtime.profdata
+ifneq ($(filter-out gen use,$(PGO)),)
+$(error PGO must be empty, gen, or use)
+endif
+ifneq ($(filter-out thin,$(LTO)),)
+$(error LTO must be empty or thin)
+endif
+RUNTIME_OPTFLAGS := $(if $(LTO),-flto=thin)
+RUNTIME_LINKFLAGS := $(if $(LTO),-flto=thin)
+ifeq ($(PGO),gen)
+RUNTIME_OPTFLAGS += -fprofile-instr-generate -fprofile-update=atomic -mllvm -enable-value-profiling=false -DSW_PGO_GENERATE=1
+RUNTIME_LINKFLAGS += -fprofile-instr-generate
+endif
+ifeq ($(PGO),use)
+ifeq ($(wildcard $(PGO_PROFILE)),)
+$(error PGO=use needs PGO_PROFILE pointing to a merged runtime profile)
+endif
+RUNTIME_OPTFLAGS += -fprofile-instr-use=$(PGO_PROFILE)
+endif
+LDFLAGS += $(RUNTIME_LINKFLAGS)
+RUNTIME_CONFIG := $(strip $(RUNTIME_OPTFLAGS))
+$(shell mkdir -p $(B) && [ -f $(B)/runtime_config ] && [ "$$(cat $(B)/runtime_config 2>/dev/null)" = '$(RUNTIME_CONFIG)' ] || echo '$(RUNTIME_CONFIG)' > $(B)/runtime_config)
+$(RT_OBJ) $(filter $(B)/rt/%,$(BACKEND_OBJ)) $(UI_OBJ): $(B)/runtime_config $(if $(filter use,$(PGO)),$(PGO_PROFILE))
+
 .DEFAULT_GOAL := all
 
 # AMD FidelityFX SDK 1.1.4 (third_party/FidelityFX, MIT): FSR 3 frame interpolation and optical flow
@@ -228,12 +278,16 @@ $(B)/rt/gamebuild.o: RTFLAGS += -DGAMELIB_CFLAGS='"$(strip $(filter-out -Iruntim
                                 $(if $(GENFLAGS_COMPAT),-DGAMELIB_CFLAGS_COMPAT='"$(strip $(filter-out -Iruntime,$(GENFLAGS_COMPAT)))"') \
                                 -DGAMELIB_ZIGFLAGS='"$(GENFLAGS_ZIG)"' -DGAMELIB_SHARED='"$(GAMELIB_SHARED)"' -DGAMELIB_GENARGS='"$(GENLOCALS)"'
 
+# The profiler's Windows sampler guards its stack walks with SEH (__try).
+$(B)/rt/prof_sampler.o: RTFLAGS += -fms-extensions
 # Windows guarded memory scans use SEH.
 $(B)/rt/memscan_os.o: RTFLAGS += -fms-extensions
 
+$(B)/rt/control_places.o: runtime/control_places_data.inc  # (the generated table of shrines, Koroks ...)
+
 $(B)/rt/%.o: runtime/%.c $(RT_HDRS)
 	@mkdir -p $(dir $@)
-	$(CC) $(RTFLAGS) -c $< -o $@
+	$(CC) $(RTFLAGS) $(RUNTIME_OPTFLAGS) -c $< -o $@
 
 # SMAA (third_party/smaa, MIT): the reference shader as a C string for runtime/nvn/smaa_data.c (both backends build
 # their passes from it); the non-ASCII bytes in its comments become '?', and its CRLF line ends plain LF (a CR left in
@@ -246,16 +300,16 @@ $(B)/rt/nvn/smaa_data.o: RTFLAGS += -I$(B)/inc -Ithird_party/smaa/Textures
 
 $(B)/rt/%.o: runtime/%.cpp $(RT_HDRS)
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $(OSFLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(RUNTIME_OPTFLAGS) $(OSFLAGS) -c $< -o $@
 
 $(B)/rt/%.o: runtime/%.m $(RT_HDRS)
 	@mkdir -p $(dir $@)
-	$(CC) $(RTFLAGS) -fobjc-arc -c $< -o $@
+	$(CC) $(RTFLAGS) $(RUNTIME_OPTFLAGS) -fobjc-arc -c $< -o $@
 
 # linked to a temp file, then renamed over: a copy of the game still running keeps its (old) file - relinking in
 # place gets running copies killed by macOS (code signature of the changed pages). The temp file keeps the real name
 # (in a folder of its own): on Windows the import library records the name the game code library loads it by.
-$(EXE): $(RT_OBJ) $(BACKEND_OBJ) $(UI_OBJ) $(IMGUI_OBJ)
+$(EXE): $(RT_OBJ) $(BACKEND_OBJ) $(UI_OBJ) $(IMGUI_OBJ) $(if $(wildcard $(DLSS_DLL)),$(DLSS_IMPORT) $(DLSS_LIB))
 	@mkdir -p $(dir $@)link
 	$(CXX) -o $(dir $@)link/$(notdir $@) $^ $(LDFLAGS)
 	mv -f $(dir $@)link/$(notdir $@) $@
@@ -269,7 +323,12 @@ $(GAMELIB): $(GEN_OBJ) | $(EXE)
 $(B)/rt/ui/i18n.o: $(wildcard runtime/ui/i18n/*.inc) runtime/ui/i18n.h
 $(B)/rt/ui/%.o: runtime/ui/%.mm $(RT_HDRS)
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $(UIFLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(RUNTIME_OPTFLAGS) $(UIFLAGS) -c $< -o $@
+
+ifneq ($(wildcard $(DLSS_DLL)),)
+$(DLSS_IMPORT): $(DLSS_DLL) tools/make_dlss_import.py
+	python tools/make_dlss_import.py $< $@
+endif
 
 $(B)/imgui/%.o: $(IMGUI)/%.cpp
 	@mkdir -p $(dir $@)
@@ -310,6 +369,20 @@ $(B)/rt/platform/windows_config.o: runtime/platform/windows_config.c
 $(B)/savagewind-config.exe: $(B)/rt/platform/windows_config.o $(B)/rt/platform/windows_rc.o
 	$(CC) -o $@ $^ -fuse-ld=lld -Wl,--subsystem,windows
 
+# "SW Update.exe" in the release (runtime/platform/windows_update.c): static, it replaces every DLL next to it
+SW_UPDATE_LIBS := -static -fuse-ld=lld -municode -Wl,--subsystem,windows -lwinhttp -lbcrypt -lcomctl32 -lshell32 -luser32 -lgdi32
+$(B)/rt/platform/sw_update_rc.o: runtime/platform/sw_update.rc runtime/platform/sw_update.manifest docs/icon/icon.ico
+	@mkdir -p $(dir $@)
+	$(WINDRES) -I docs/icon -I runtime/platform -O coff $< -o $@
+$(B)/rt/platform/windows_update.o: runtime/platform/windows_update.c runtime/update_core.h runtime/platform/sw_update_key.h
+	@mkdir -p $(dir $@)
+	$(CC) -O2 -Wall -Ithird_party/stb -c $< -o $@
+$(B)/rt/platform/sw_update_core.o: runtime/update_core.c runtime/update_core.h
+	@mkdir -p $(dir $@)
+	$(CC) -O2 -Wall -c $< -o $@
+$(B)/sw-update.exe: $(B)/rt/platform/windows_update.o $(B)/rt/platform/sw_update_core.o $(B)/rt/platform/sw_update_rc.o
+	$(CC) -o $@ $^ $(SW_UPDATE_LIBS)
+
 VERSION  := $(shell sed -n 's/^\#define SAVAGEWIND_VERSION "\(.*\)"/\1/p' runtime/ui/launcher.mm)
 
 # macOS: build/Savage Wind.app, runs on macOS $(APP_MIN)+: the game rebuilt for that in build/mac15 against build/deps
@@ -348,11 +421,12 @@ dist:
 	@! find tools -maxdepth 1 -name '*.py' -newer build/helper/swgen/swgen.exe | grep -q . || \
 	    { echo "make gen-helper first: tools/*.py changed since build/helper/swgen was frozen"; exit 1; }
 	@[ -x build/zig/zig.exe ] || { echo "tools/fetch_zig.sh first (the compiler)"; exit 1; }
-	$(MAKE) B=$(WIN_B) DEPS=$(CURDIR)/build/deps-win RELEASE=1 $(WIN_B)/savagewind.exe $(WIN_B)/savagewind-config.exe
+	$(MAKE) B=$(WIN_B) DEPS=$(CURDIR)/build/deps-win RELEASE=1 $(WIN_B)/savagewind.exe $(WIN_B)/savagewind-config.exe $(WIN_B)/sw-update.exe
 	! nm $(WIN_B)/savagewind.exe | grep ' f_70' >/dev/null  # (no game code inside)
 	rm -rf build/dist && mkdir -p "$(DIST)/gamelib-src"
 	cp $(WIN_B)/savagewind.exe $(WIN_B)/savagewind.dll.a "$(DIST)/"
 	cp $(WIN_B)/savagewind-config.exe "$(DIST)/Savage Wind Configuration.exe"
+	cp $(WIN_B)/sw-update.exe "$(DIST)/SW Update.exe"
 	tools/zig_slim.sh $(strip $(filter-out -Iruntime,$(GENFLAGS))) \
 	    $(if $(GENFLAGS_COMPAT),-- $(strip $(filter-out -Iruntime,$(GENFLAGS_COMPAT))))  # (zig, its runtime built ahead of time)
 	cp -R build/helper/swgen "$(DIST)/"
@@ -366,13 +440,22 @@ dist:
 	cp third_party/fonts/FiraSans/OFL.txt "$(DIST)/FiraSans-OFL.txt"
 	cp third_party/fonts/NotoSansThai/NotoSansThai-Medium.ttf "$(DIST)/"  # (Thai menus, OFL)
 	cp third_party/fonts/NotoSansThai/OFL.txt "$(DIST)/NotoSansThai-OFL.txt"
+	cp third_party/fonts/NotoSansHebrew/NotoSansHebrew-Medium.ttf "$(DIST)/"  # (Hebrew menus, OFL)
+	cp third_party/fonts/NotoSansHebrew/OFL.txt "$(DIST)/NotoSansHebrew-OFL.txt"
 	cp third_party/FidelityFX/LICENSE.txt "$(DIST)/FidelityFX-LICENSE.txt"  # (AMD FidelityFX SDK, MIT: README "License")
+	if [ -f build/fsr-dlls/amd_fidelityfx_loader_vk.dll ]; then cp build/fsr-dlls/amd_fidelityfx_*_vk.dll \
+	    build/fsr-dlls/AMD-FidelityFX-DLL-LICENSE.txt "$(DIST)/"; fi  # (AMD FSR 4: tools/fetch_fsr_dlls.py; AMD's licence allows binary redistribution with this notice)
 	mkdir "$(DIST)/colour-luts" && cp third_party/luts/*.cube third_party/luts/README.md "$(DIST)/colour-luts/"  # (CC0: Video > Colour)
 	cp README.md LICENSE "$(DIST)/"  # (licenses and source links of the bundled components: README "License")
+	if [ -f "$(DLSS_SDK)/lib/Windows_x86_64/rel/nvngx_dlss.dll" ]; then \
+		cp "$(DLSS_SDK)/lib/Windows_x86_64/rel/nvngx_dlss.dll" "$(DIST)/"; \
+		cp "$(DLSS_SDK)/LICENSE.txt" "$(DIST)/NVIDIA-DLSS-LICENSE.txt"; \
+	fi
 	PATH="$(CURDIR)/build/deps-win/bin:$$PATH" ldd $(WIN_B)/savagewind.exe | awk '(/ucrt64/ || /deps-win/) && !/vulkan-1/ {print $$3}' | sort -u | \
 	    xargs -I{} cp -u {} "$(DIST)/"
 	! ls "$(DIST)" | grep -iE 'x264|x265|xvid|postproc'  # (no GPL codec libraries in the release)
 	! ls "$(DIST)" | grep -i splash  # (no start screen picture: the player's own, never shipped)
+	python3 tools/make_update_manifest.py "$(DIST)" "$(VERSION)"  # (what SW Update checks and replaces: this list, nothing else)
 	cd build/dist && if command -v zip >/dev/null; then zip -qr "SavageWind-$(VERSION)-windows.zip" "Savage Wind"; \
 	    else /c/Windows/System32/tar.exe -a -cf "SavageWind-$(VERSION)-windows.zip" "Savage Wind"; fi
 	@echo "build/dist/SavageWind-$(VERSION)-windows.zip"
@@ -438,6 +521,18 @@ test-bind-capture: $(B)/test_bind_capture
 
 .PHONY: test-bind-capture
 
+# Per-action bindings (docs/ACTIONS.md): the answers to the game's hold / pressed queries, menus, shared keys, capture and
+# savagewind.ini, then the patch the hook is written with (no game files)
+$(B)/test_actions: tools/test_actions.c runtime/hle/bindings.c runtime/input_bind.h
+	@mkdir -p $(B)
+	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_actions.c runtime/hle/bindings.c -lSDL3
+
+test-actions: $(B)/test_actions
+	$(B)/test_actions
+	python3 tools/test_act_site.py
+
+.PHONY: test-actions
+
 $(B)/test_pc_controls: tests/test_pc_controls.c runtime/hle/input.c runtime/hle/bindings.c runtime/settings.h
 	@mkdir -p $(dir $@)
 	$(CC) -O2 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -isystem third_party -o $@ $< -fuse-ld=lld -Wl,--gc-sections $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) -lSDL3 -lm
@@ -466,7 +561,30 @@ $(B)/test_hud_scale: tests/test_hud_scale.c runtime/nvn/hud_scale.h
 	@mkdir -p $(dir $@)
 	$(CC) -O1 -Iruntime -o $@ $< -lm
 
-$(B)/test_options_pointer: tests/test_options_pointer.c runtime/pc_cursor.c runtime/pc_cursor.h runtime/pc_cursor_math.h
+test-hud-scale: $(B)/test_hud_scale
+	$(B)/test_hud_scale
+
+.PHONY: test-hud-scale
+
+$(B)/test_shrine_sensor: tests/test_shrine_sensor.c runtime/shrine_sensor.c runtime/shrine_sensor.h runtime/settings.h
+	@mkdir -p $(dir $@)
+	$(CC) -O1 -Iruntime -o $@ tests/test_shrine_sensor.c runtime/shrine_sensor.c -lm
+
+test-shrine-sensor: $(B)/test_shrine_sensor
+	$(B)/test_shrine_sensor
+
+.PHONY: test-shrine-sensor
+
+$(B)/test_hud_button_layout: tests/test_hud_button_layout.c runtime/nvn/glyphs.c runtime/services/fs.c runtime/settings.c runtime/hle/bindings.c
+	@mkdir -p $(dir $@)
+	$(CC) -O1 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< -fuse-ld=lld -Wl,--gc-sections $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) -lSDL3 -lz -lm
+
+test-hud-button-layout: $(B)/test_hud_button_layout
+	$(B)/test_hud_button_layout
+
+.PHONY: test-hud-button-layout
+
+$(B)/test_options_pointer: tests/test_options_pointer.c runtime/pc_cursor.c runtime/pc_cursor.h runtime/pc_cursor_math.h runtime/nvn/hud_scale.h
 	@mkdir -p $(dir $@)
 	$(CC) -O2 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -isystem third_party -o $@ $< -fuse-ld=lld -Wl,--gc-sections $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) -lSDL3 -lm
 
@@ -475,9 +593,9 @@ test-pc-controls: $(B)/test_pc_controls $(B)/test_pc_settings $(B)/test_options_
 	$(B)/test_options_pointer
 	@set -e; tmp=$$(mktemp); trap 'rm -f "$$tmp"' EXIT; \
 	 printf 'settings_version = 3\npc_cursor = 1\n' > "$$tmp"; \
-	 $(B)/test_pc_settings "$$tmp" 1 1; \
-	 $(B)/test_pc_settings "$$tmp" 0 0; \
-	 SAVAGEWIND_PC_CURSOR=0 $(B)/test_pc_settings "$$tmp" 0 1
+	 $(B)/test_pc_settings "$$tmp" 1 1 0 0; \
+	 $(B)/test_pc_settings "$$tmp" 0 0 1 1; \
+	 SAVAGEWIND_PC_CURSOR=0 $(B)/test_pc_settings "$$tmp" 0 1 2 2
 
 .PHONY: test-pc-controls
 
@@ -490,6 +608,15 @@ test-output-scale: $(B)/test_output_scale
 
 .PHONY: test-output-scale
 
+$(B)/test_window_size: tests/test_window_size.c runtime/window_size.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tests/test_window_size.c runtime/window_size.c -lSDL3 -lpthread -lm
+
+test-window-size: $(B)/test_window_size
+	$(B)/test_window_size
+
+.PHONY: test-window-size
+
 $(B)/test_vibration: tools/test_vibration.c runtime/hle/vibration.c runtime/vibration.h runtime/settings.h runtime/services/hid_set.c
 	@mkdir -p $(B)
 	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_vibration.c -lpthread -lm
@@ -498,6 +625,22 @@ test-vibration: $(B)/test_vibration
 	$(B)/test_vibration
 
 .PHONY: test-vibration
+
+$(B)/test_prof: tools/test_prof.c runtime/prof.c runtime/prof_sampler.c runtime/prof.h runtime/rt.h
+	@mkdir -p $(B)
+	$(CC) -O2 -std=gnu11 -Wall -Wextra -Werror $(OSFLAGS) -Iruntime -o $@ tools/test_prof.c runtime/prof.c runtime/prof_sampler.c -lpthread
+
+# (POSIX only: mkdtemp, nanosleep)
+$(B)/test_prof_lifecycle: tools/test_prof_lifecycle.c runtime/prof.c runtime/prof_sampler.c runtime/prof.h runtime/rt.h
+	@mkdir -p $(B)
+	$(CC) -O2 -std=gnu11 -Wall -Wextra -Werror $(OSFLAGS) -Iruntime -o $@ tools/test_prof_lifecycle.c runtime/prof.c runtime/prof_sampler.c -lpthread
+
+test-prof: $(B)/test_prof $(B)/test_prof_lifecycle
+	$(B)/test_prof
+	python3 -m unittest tools.test_swprof
+	SWPROF_TEST_BIN=$(B)/test_prof_lifecycle python3 -m unittest tools.test_prof_lifecycle
+
+.PHONY: test-prof
 
 # The input test includes input.c; discard its unused HLE functions and their runtime dependencies.
 $(B)/test_input_focus: tools/test_input_focus.c tools/test_pointer_disabled.h runtime/hle/input.c $(RT_HDRS)
@@ -575,6 +718,17 @@ test-save-convert: $(B)/test_save_convert
 
 .PHONY: test-save-convert
 
+# Save profiles (runtime/services/save_profiles.c): names, create / copy / rename / delete, the active profile and the
+# legacy `save` folder, on tiny fake folders in a temporary directory (no game files, no real saves)
+$(B)/test_save_profiles: tools/test_save_profiles.c runtime/services/save_profiles.c runtime/services/save_profiles.h runtime/services/save_convert.c runtime/services/save_convert.h runtime/services/archive.c runtime/services/archive.h
+	@mkdir -p $(B)
+	$(CC) -O1 -Wall -std=gnu11 -D_FILE_OFFSET_BITS=64 -Iruntime -o $@ tools/test_save_profiles.c runtime/services/save_profiles.c runtime/services/save_convert.c runtime/services/archive.c
+
+test-save-profiles: $(B)/test_save_profiles
+	$(B)/test_save_profiles
+
+.PHONY: test-save-profiles
+
 $(B)/test_game_file_size: tools/test_game_file_size.c runtime/game_file_size.c runtime/game_file_size.h runtime/game_files.h
 	@mkdir -p $(B)
 	$(CC) -O1 -Wall $(OSFLAGS) -Iruntime -o $@ tools/test_game_file_size.c runtime/game_file_size.c
@@ -589,7 +743,14 @@ $(B)/test_file_size_cache: tools/test_file_size_cache.cpp runtime/ui/file_size_c
 test-file-size-cache: $(B)/test_file_size_cache
 	$(B)/test_file_size_cache
 
-.PHONY: test-game-file-size test-file-size-cache
+$(B)/test_dlc_check: tools/test_dlc_check.c runtime/dlc_check.c runtime/dlc_check.h runtime/romfs_build.c runtime/romfs_build.h
+	@mkdir -p $(B)
+	$(CC) -O1 -std=gnu11 -Wall -Wextra -Werror $(OSFLAGS) -Iruntime -o $@ tools/test_dlc_check.c runtime/dlc_check.c runtime/romfs_build.c
+
+test-dlc-check: $(B)/test_dlc_check
+	$(B)/test_dlc_check
+
+.PHONY: test-game-file-size test-file-size-cache test-dlc-check
 
 # the command layer of the control endpoint (who may run what, the queue, the text)
 $(B)/test_control: tools/test_control.c runtime/control.c runtime/control.h
@@ -602,6 +763,16 @@ test-control: $(B)/test_control
 	env -u SAVAGEWIND_CONTROL SAVAGEWIND_DEV=1 $(B)/test_control dev
 
 .PHONY: test-control
+
+# the named places behind goto (shrine 5, korok H23, stable wetland ...)
+$(B)/test_places: tools/test_places.c runtime/control_places.c runtime/control_places.h runtime/control_places_data.inc
+	@mkdir -p $(B)
+	$(CC) -O1 -g -Wall $(OSFLAGS) -Iruntime -o $@ tools/test_places.c runtime/control_places.c
+
+test-places: $(B)/test_places
+	$(B)/test_places
+
+.PHONY: test-places
 
 # the in-game console's lines, history and completion
 $(B)/test_console_core: tools/test_console_core.c runtime/console_core.c runtime/console_core.h
@@ -622,3 +793,158 @@ test-hour: $(B)/test_hour
 	env SAVAGEWIND_TEST_TIME=18 $(B)/test_hour env
 
 .PHONY: test-hour
+
+# The BC5 view format (NVN 0x4C, SAVAGEWIND_BC5_UNORM): vk_format is the only function the section GC keeps from
+# textures.c, so no Vulkan device is needed. Run twice so both initial environment states cache the right format.
+ifneq ($(PLATFORM),macos)
+$(B)/test_textures_format: tests/test_textures_format.c runtime/nvn/vulkan/textures.c $(RT_HDRS)
+	@mkdir -p $(dir $@)
+	$(CC) -O2 -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -Iruntime/nvn -isystem third_party -isystem third_party/stb \
+	    -o $@ tests/test_textures_format.c runtime/nvn/vulkan/textures.c -fuse-ld=lld -Wl,--gc-sections \
+	    $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) -lpthread -lm
+
+test-textures: $(B)/test_textures_format
+	env -u SAVAGEWIND_BC5_UNORM $(B)/test_textures_format
+	env SAVAGEWIND_BC5_UNORM=1 $(B)/test_textures_format
+
+bench-textures: $(B)/test_textures_format
+	$(B)/test_textures_format --bench
+
+.PHONY: test-textures bench-textures
+endif
+
+# Real Options routing + binding capture, using synthetic guest rows rather than game assets.
+$(B)/two_button_bindings.o: runtime/hle/bindings.c runtime/input_bind.h
+	@mkdir -p $(B)
+	$(CC) -O1 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -c $< -o $@
+
+$(B)/test_two_button_rows: tools/test_two_button_rows.cpp runtime/ui/game_options.mm runtime/ui/binding_row_layout.h $(B)/two_button_bindings.o
+	$(CXX) -std=c++17 -O1 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -Ithird_party -o $@ $< $(B)/two_button_bindings.o -fuse-ld=lld -Wl,--gc-sections $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) -lSDL3 -lm
+
+test-two-button-rows: $(B)/test_two_button_rows
+	$(B)/test_two_button_rows
+	python3 tools/test_two_button_sites.py
+
+.PHONY: test-two-button-rows
+# Guard shader-specific bloom scaling against unrelated scene, depth and UI targets.
+$(B)/test_bloom_scale: tests/test_bloom_scale.c runtime/nvn/vulkan/bloom_scale.h
+	@mkdir -p $(B)
+	$(CC) -O1 -Wall -Wextra -Werror -o $@ $<
+
+test-bloom-scale: $(B)/test_bloom_scale
+	$(B)/test_bloom_scale
+
+.PHONY: test-bloom-scale
+
+$(B)/test_audio_mix: tests/test_audio_mix.c runtime/audio_mix.h runtime/settings.h
+	@mkdir -p $(B)
+	$(CC) -O1 -Wall -Wextra -Werror -o $@ $< -lm
+
+test-audio-mix: $(B)/test_audio_mix
+	$(B)/test_audio_mix
+
+.PHONY: test-audio-mix
+
+$(B)/test_movie_stop: tests/test_movie_stop.c runtime/hle/movie.c runtime/hle.h runtime/kernel.h runtime/settings.h
+	@mkdir -p $(B)
+	$(CC) -O1 -Wall -Wno-unused-function $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< $(if $(DEPS),-L$(DEPS)/lib) -lavformat -lavcodec -lavutil -lswscale -lpthread -lm
+
+test-movie-stop: $(B)/test_movie_stop
+	$(B)/test_movie_stop
+
+.PHONY: test-movie-stop
+# Launch options (docs/launch-options.md): the checks, the file, the environment and the suggestions (no game files), and
+# the generated table of the flags the code reads (tools/gen_launch_flags.py --check fails when it is stale)
+$(B)/test_launch_flags: tools/test_launch_flags.c runtime/launch_flags.c runtime/launch_flags_table.c runtime/launch_flags.h
+	@mkdir -p $(B)
+	$(CC) -O1 -g -Wall -Wextra $(OSFLAGS) -Iruntime -o $@ tools/test_launch_flags.c runtime/launch_flags.c runtime/launch_flags_table.c
+
+test-update-core: $(B)/test_update_core
+	$(B)/test_update_core
+$(B)/test_update_core: tools/test_update_core.c runtime/update_core.c runtime/update_core.h runtime/update_crypto.c runtime/update_crypto.h
+	@mkdir -p $(dir $@)
+	$(CC) -O1 -Wall -c tools/test_update_core.c -o $@-t.o
+	$(CC) -O1 -Wall -c runtime/update_core.c -o $@-c.o
+	$(CC) -O1 -Wall -c runtime/update_crypto.c -o $@-x.o
+	$(CC) -o $@ $@-t.o $@-c.o $@-x.o
+# (Windows) every way an update can go wrong, against a local server: tools/test_sw_update.py
+test-sw-update:
+	python3 tools/test_sw_update.py
+# (Linux) the same for an AppImage replacing itself: tools/test_update_appimage.py
+test-update-appimage:
+	python3 tools/test_update_appimage.py
+# Steam's shortcuts.vdf read and written (runtime/steam_shortcuts.c); real files (copies) can be given: STEAM_VDF="a b"
+test-steam-shortcuts: $(B)/test_steam_shortcuts
+	$(B)/test_steam_shortcuts $(STEAM_VDF)
+$(B)/test_steam_shortcuts: tools/test_steam_shortcuts.c runtime/steam_shortcuts.c runtime/steam_shortcuts.h
+	@mkdir -p $(dir $@)
+	$(CC) -O1 -Wall -c tools/test_steam_shortcuts.c -o $@-t.o
+	$(CC) -O1 -Wall -DSTEAM_VDF_ONLY -c runtime/steam_shortcuts.c -o $@-s.o
+	$(CC) -o $@ $@-t.o $@-s.o
+
+test-launch-flags: $(B)/test_launch_flags
+	$(B)/test_launch_flags
+	python3 tools/gen_launch_flags.py --check
+
+.PHONY: test-launch-flags
+
+# Native quick-selector sorting: synthetic Linux guest memory, no game files.
+ifeq ($(PLATFORM),linux)
+$(B)/test_quick_inventory_sort: tools/test_quick_inventory_sort.c runtime/quick_inventory_sort.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -std=gnu11 -O1 -g $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $<
+
+$(B)/test_gamelib_sites: tools/test_gamelib_sites.c runtime/gamelib.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -std=gnu11 -O1 -g -ffunction-sections -fdata-sections $(OSFLAGS) -Iruntime -o $@ $< -Wl,--gc-sections -ldl
+
+test-quick-inventory-sort: $(B)/test_quick_inventory_sort $(B)/test_gamelib_sites
+	$(B)/test_quick_inventory_sort
+	$(B)/test_gamelib_sites
+
+.PHONY: test-quick-inventory-sort
+
+$(B)/test_quick_hint_font: tools/test_quick_hint_font.cpp runtime/ui/quick_hint_font.mm runtime/ui/quick_hint_font.h \
+                         $(B)/imgui/imgui.o $(B)/imgui/imgui_draw.o $(B)/imgui/imgui_tables.o $(B)/imgui/imgui_widgets.o \
+                         $(B)/rt/services/archive.o $(B)/rt/nvn/tegra.o $(B)/rt/nvn/glyphs.o $(B)/rt/hle/bindings.o
+	@mkdir -p $(B)
+	$(CXX) $(CXXFLAGS) -o $@ $< $(filter %.o,$^) $(TEST_LD) -lSDL3 -lm
+
+# The player supplies RomFS locally; no fonts or game fixtures are distributed.
+test-quick-inventory-font: $(B)/test_quick_hint_font
+	@test -n "$(ROMFS)" || { echo 'Set ROMFS to your own extracted game RomFS directory.'; exit 2; }
+	$(B)/test_quick_hint_font "$(ROMFS)"
+
+.PHONY: test-quick-inventory-font
+endif
+
+ifeq ($(PLATFORM),linux)
+$(B)/test_quick_drop_action: tools/test_quick_drop_action.c runtime/quick_drop_action.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -std=gnu11 -O1 -g $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $<
+
+$(B)/test_quick_drop_input: tools/test_quick_drop_input.c runtime/quick_drop_action.c runtime/hle/input.c tools/test_freecam_disabled.h $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -std=gnu11 -O1 -g -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< $(TEST_LD) -lm
+
+$(B)/test_quick_drop_menu: tools/test_quick_drop_menu.c runtime/quick_drop.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -std=gnu11 -O1 -g $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $<
+
+test-quick-drop-native: $(B)/test_quick_drop_action $(B)/test_quick_drop_menu
+	$(B)/test_quick_drop_action
+	$(B)/test_quick_drop_menu
+
+test-quick-drop: test-quick-drop-native $(B)/test_quick_drop_input
+	$(B)/test_quick_drop_input
+
+.PHONY: test-quick-drop test-quick-drop-native
+endif
+
+$(B)/test_ui_layout: tests/test_ui_layout.c runtime/ui_layout.c runtime/ui_layout.h runtime/nvn/cmdbuf.c runtime/nvn/nvn.h runtime/nvn/hud_scale.h
+	@mkdir -p $(dir $@)
+	$(CC) -O1 -ffunction-sections -fdata-sections $(DEPINC) -Iruntime -o $@ $< -fuse-ld=lld -Wl,--gc-sections -lpthread -lm
+
+test-ui-layout: $(B)/test_ui_layout
+	$(B)/test_ui_layout
+.PHONY: test-ui-layout

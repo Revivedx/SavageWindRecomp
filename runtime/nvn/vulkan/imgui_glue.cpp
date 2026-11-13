@@ -21,7 +21,7 @@ extern "C" bool vk_imgui_backend_init(void) {
     ii.Device = g_vk.dev;
     ii.QueueFamily = g_vk.qfam;
     ii.Queue = g_vk.queue;
-    ii.DescriptorPoolSize = 64;
+    ii.DescriptorPoolSize = 512;  // (one per overlay picture: the Cheats tab alone keeps 64 item icons)
     ii.MinImageCount = 2;
     // vertex buffers rotate per image: cover frames in flight (twice: frame generation draws the menu on both frames)
     ii.ImageCount = 2 * (g_vk.sc_count > 3 ? g_vk.sc_count : 3) + 1;
@@ -81,6 +81,7 @@ extern "C" uint64_t vk_imgui_texture_rgba(const void *rgba, int w, int h) {
     rg.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     rg.imageExtent = {(uint32_t)w, (uint32_t)h, 1};
     rec_CmdCopyBufferToImage(cb, s.buf, img, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+    rec_drain();  // (made while the menu draws, on this thread: ImGui records into the frame's buffer next, from the same pool)
     VkImageViewCreateInfo vi = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     vi.image = img;
     vi.viewType = VK_IMAGE_VIEW_TYPE_2D;

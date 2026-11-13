@@ -9,6 +9,7 @@
 static uint64_t now;
 Uint64 SDL_GetTicks(void) { return now; }
 int input_pad_family(void) { return 1; }
+bool settings_steam_deck(void) { return false; }
 
 // Model the held state on the other side of the same event routing as the window loop. No window or controller.
 static bool held;
@@ -85,14 +86,13 @@ int main(void) {
     assert(bind_capture_event(&e));
     assert(g_bind_pad[BIND_A] == PADB_LTRIGGER);
     ended(2);  // ZL already uses the left trigger
-    // Optional gyro bindings may overlap normal keys without mutating the
-    // camera defaults; duplicates within the gyro context still swap.
+    // Optional gyro bindings may overlap normal keys and each other without mutating existing bindings.
     bind_reset(BIND_DEV_KEY);
     int camera_up=g_bind_key[BIND_RS_UP];
     bind_capture_begin(BIND_DEV_KEY,BIND_GYRO_DOWN);
     e=(SDL_Event){0};e.type=SDL_EVENT_KEY_DOWN;e.key.scancode=SDL_SCANCODE_I;
     assert(bind_capture_event(&e));assert(g_bind_key[BIND_GYRO_DOWN]==SDL_SCANCODE_I);
-    assert(g_bind_key[BIND_GYRO_UP]==SDL_SCANCODE_K&&g_bind_key[BIND_RS_UP]==camera_up);
+    assert(g_bind_key[BIND_GYRO_UP]==SDL_SCANCODE_I&&g_bind_key[BIND_RS_UP]==camera_up);
     bind_capture_begin(BIND_DEV_KEY,BIND_GYRO_CENTER);
     e.key.scancode=SDL_SCANCODE_H;assert(bind_capture_event(&e));
     assert(g_bind_key[BIND_GYRO_CENTER]==SDL_SCANCODE_H&&g_bind_key[BIND_RS_UP]==camera_up);

@@ -85,7 +85,7 @@ def image(fn_at, data, got, callee, got_value, filler=0x40):
 def main():
     # ---- the lists agree
     h = open(os.path.join(ROOT, 'runtime', 'game_versions.h'), encoding='utf-8').read()
-    hv = re.findall(r'X\("([^"]*)", "([0-9a-f]*)", ([01]), \d+\)', h)  # (the RomFS file count is the setup's alone)
+    hv = re.findall(r'X\("([^"]*)", "([0-9a-f]*)", ([01]), \d+, \d+(?:ull)?\)', h)  # (the RomFS counts: the setup's alone)
     check(hv == [(v.name, v.build_id, str(int(v.supported))) for v in gs.VERSIONS],
           f'runtime/game_versions.h {hv} == game_sites.VERSIONS')
     names = {s.name for s in gs.SITES}
@@ -99,6 +99,9 @@ def main():
             check(names - gs.OPTIONAL <= listed <= names, f'{v.name}: KNOWN lists every site (optional ones may be left '
                   f'out): {names - gs.OPTIONAL - listed or listed - names}')
     check(gs.OPTIONAL <= names, f'optional sites are in SITES: {gs.OPTIONAL - names}')
+    header = open(os.path.join(ROOT, 'runtime', 'game_sites.h'), encoding='utf-8').read()
+    optional_runtime = set(re.findall(r'X\((\w+)\)', header.split('#define GAME_SITES_OPTIONAL(X)')[1].split('typedef struct')[0]))
+    check(optional_runtime <= gs.OPTIONAL, 'optional runtime helpers belong to optional pattern groups')
     check(all(gs.compile_pattern(p) for s in gs.SITES if s.pattern
               for p in ([q for q, _ in s.pattern] if isinstance(s.pattern, list) else [s.pattern])),
           'every pattern compiles')
@@ -169,7 +172,8 @@ def main():
         gs.SITES = saved
 
     # ---- versions
-    check(gs.supported_version('de0b6ac4efc1dda7f80f6d7598ec7a7d' + '0' * 32).name == '1.8.2', '1.8.2 by build id')
+    check(gs.supported_version('cd57b23fa4bbad65' + '0' * 48).name == '1.9.0', '1.9.0 by build id')
+    check(gs.supported_version('de0b6ac4efc1dda7f80f6d7598ec7a7d' + '0' * 32) is None, '1.8.2 is no longer known')
     check(gs.supported_version('ff' * 32) is None, 'an unknown build')
     try:
         gs.for_module(b.nso, BASE)

@@ -62,7 +62,10 @@ static const struct { const char *archive; int attr, kind; } kinds[] = {
 typedef struct { int shader; ShaderKey key; bool mvec; } Job;  // (mvec: a motion vector variant made here)
 typedef struct { int vs, fs, cs; } Pair;  // (jobs: the predicted key's; vs or fs alone: that shader's libraries)
 
-typedef struct {
+// (pipe_watch) a pipelines thread: the pair it compiles (-1: none), since when, and whether it has returned
+typedef struct { struct Work *w; _Atomic int pair; _Atomic uint64_t since; _Atomic bool out; } PipeTh;
+
+typedef struct Work {
     ShaderPrecompile *p;
     SaSet *set;
     Job *jobs;
@@ -77,6 +80,7 @@ typedef struct {
     int64_t used_mb, budget_mb;
     pthread_mutex_t lock;
     pthread_cond_t cond;
+    PipeTh th[32];
 } Work;
 
 static void *worker(void *arg) {
@@ -143,9 +147,12 @@ static int by_need_desc(const void *a, const void *b) {
 }
 
 static void *pipe_worker(void *arg) {
-    Work *w = arg;
+    PipeTh *t = arg;
+    Work *w = t->w;
     int64_t mb;
     for (int i; (i = pipe_take(w, &mb)) >= 0;) {
+        atomic_store(&t->since, SDL_GetTicksNS());
+        atomic_store(&t->pair, i);
         const Pair *pr = &w->pairs[i];
         bool ok = false;
         if (pr->cs >= 0) {
@@ -173,10 +180,67 @@ static void *pipe_worker(void *arg) {
 #ifdef __GLIBC__
         if (mb >= 128) malloc_trim(0);
 #endif
+        atomic_store(&t->pair, -1);
         pipe_give_back(w, mb);
         atomic_fetch_add(&w->p->done, 1);
     }
+    atomic_store(&t->out, true);
     return NULL;
+}
+
+// The pipelines threads, waited for. A driver can take a compile and never give it back: on AMD's Windows driver, with
+// its own shader compiler, after fragment shaders went through spirv-opt (0.5.2, the sky fix), setup stopped at
+// 21502 of 21503 for good (#359), and Esc could not stop it either - it waited for that thread. So when no compile has
+// finished for PIPE_STALL_S seconds, or setup is stopped, the compiles still running are logged (their shaders) and
+// left to the driver: their threads are detached and the work they can still touch (w) is kept, never freed. Returns
+// whether any was left. SAVAGEWIND_PRECOMPILE_STALL_S=<seconds> (180).
+#define PIPE_STALL_S 180
+static bool pipe_watch(Work *w, pthread_t *th, int nt) {
+    static int stall_s = -1;
+    if (stall_s < 0) { const char *e = getenv("SAVAGEWIND_PRECOMPILE_STALL_S"); stall_s = e && atoi(e) > 0 ? atoi(e) : PIPE_STALL_S; }
+    int last = atomic_load(&w->p->done);
+    uint64_t last_t = SDL_GetTicksNS();
+    for (;;) {
+        int out = 0;
+        for (int i = 0; i < nt; i++) out += atomic_load(&w->th[i].out);
+        if (out == nt) break;
+        SDL_Delay(100);
+        uint64_t now = SDL_GetTicksNS();
+        int d = atomic_load(&w->p->done);
+        if (d != last) last = d, last_t = now;
+        bool cancel = atomic_load(&w->p->cancel);
+        if (!cancel && now - last_t < (uint64_t)stall_s * 1000000000ull) continue;
+        pthread_mutex_lock(&w->lock);  // (nothing more taken: a thread that comes back leaves)
+        w->next_big = 1, w->next_small = 0;
+        pthread_cond_broadcast(&w->cond);
+        pthread_mutex_unlock(&w->lock);
+        for (int k = 0; k < (cancel ? 100 : 20); k++) {  // (2 s for the ones between compiles; stopped, 10 s to finish theirs)
+            out = 0;
+            for (int i = 0; i < nt; i++) out += atomic_load(&w->th[i].out);
+            if (out == nt) break;
+            SDL_Delay(100);
+        }
+        bool left = false;
+        for (int i = 0; i < nt; i++) {
+            if (atomic_load(&w->th[i].out)) { pthread_join(th[i], NULL); continue; }
+            int pi = atomic_load(&w->th[i].pair);
+            uint64_t hv = 0, hf = 0, hc = 0;
+            if (pi >= 0) {
+                const Pair *pr = &w->pairs[pi];
+                if (pr->vs >= 0) hv = w->set->shaders[w->jobs[pr->vs].shader].hash;
+                if (pr->fs >= 0) hf = w->set->shaders[w->jobs[pr->fs].shader].hash;
+                if (pr->cs >= 0) hc = w->set->shaders[w->jobs[pr->cs].shader].hash;
+            }
+            LOG("[precompile] a pipeline compile the driver has not given back for %.0f s, left to it (%s): vertex %016llx "
+                "fragment %016llx compute %016llx\n", (now - atomic_load(&w->th[i].since)) / 1e9, cancel ? "setup stopped" : "stalled",
+                (unsigned long long)hv, (unsigned long long)hf, (unsigned long long)hc);
+            pthread_detach(th[i]);
+            left = true;
+        }
+        return left;
+    }
+    for (int i = 0; i < nt; i++) pthread_join(th[i], NULL);
+    return false;
 }
 
 static int pair_cmp(const void *a, const void *b) { return memcmp(a, b, sizeof(Pair)); }
@@ -631,28 +695,35 @@ bool shader_precompile_run(ShaderPrecompile *p, const char *romfs) {
         int nu = 0;
         for (int i = 0; i < np; i++)
             if (!nu || memcmp(&pairs[i], &pairs[nu - 1], sizeof *pairs)) pairs[nu++] = pairs[i];
-        w.pairs = pairs;
-        w.npairs = nu;
-        w.need_mb = malloc(sizeof *w.need_mb * (size_t)(nu ? nu : 1));
-        w.order = malloc(sizeof *w.order * (size_t)(nu ? nu : 1));
-        for (int i = 0; i < nu; i++) w.need_mb[i] = pair_need_mb(&w, &pairs[i]), w.order[i] = i;
-        sort_need = w.need_mb;
-        qsort(w.order, (size_t)nu, sizeof *w.order, by_need_desc);
-        w.next_big = 0;
-        w.next_small = nu - 1;
-        w.used_mb = 0;
+        Work *pw = malloc(sizeof *pw);  // (on the heap: pipe_watch may leave threads that still touch it)
+        memcpy(pw, &w, sizeof w);
+        pw->pairs = pairs;
+        pw->npairs = nu;
+        pw->need_mb = malloc(sizeof *pw->need_mb * (size_t)(nu ? nu : 1));
+        pw->order = malloc(sizeof *pw->order * (size_t)(nu ? nu : 1));
+        for (int i = 0; i < nu; i++) pw->need_mb[i] = pair_need_mb(pw, &pairs[i]), pw->order[i] = i;
+        sort_need = pw->need_mb;
+        qsort(pw->order, (size_t)nu, sizeof *pw->order, by_need_desc);
+        pw->next_big = 0;
+        pw->next_small = nu - 1;
+        pw->used_mb = 0;
         const char *mem = getenv("SAVAGEWIND_PRECOMPILE_MEM_MB");
-        w.budget_mb = mem && atoll(mem) > 0 ? atoll(mem) : (int64_t)SDL_GetSystemRAM() / 4;
-        pthread_mutex_init(&w.lock, NULL);
-        pthread_cond_init(&w.cond, NULL);
-        atomic_store(&w.next, 0);
+        pw->budget_mb = mem && atoll(mem) > 0 ? atoll(mem) : (int64_t)SDL_GetSystemRAM() / 4;
+        pthread_mutex_init(&pw->lock, NULL);
+        pthread_cond_init(&pw->cond, NULL);
+        atomic_store(&pw->next, 0);
         atomic_store(&p->done, 0);
         atomic_store(&p->total, nu);
         atomic_store(&p->state, SP_PIPELINES);
         uint64_t tp = SDL_GetTicksNS();
-        for (int i = 0; i < nt; i++) pthread_create(&th[i], NULL, pipe_worker, &w);
-        for (int i = 0; i < nt; i++) pthread_join(th[i], NULL);
-        p->pipelines = atomic_load(&w.built);
+        for (int i = 0; i < nt; i++) {
+            pw->th[i].w = pw;
+            atomic_store(&pw->th[i].pair, -1);
+            atomic_store(&pw->th[i].out, false);
+            pthread_create(&th[i], NULL, pipe_worker, &pw->th[i]);
+        }
+        bool left = pipe_watch(pw, th, nt);
+        p->pipelines = atomic_load(&pw->built);
         extern void vk_pipeline_cache_save(void);
         vk_pipeline_cache_save();
         if (g_vk.gpl) vk_precompiled_cache_save();
@@ -664,12 +735,15 @@ bool shader_precompile_run(ShaderPrecompile *p, const char *romfs) {
                 added, nseed - added);
             if (added) vk_pso_rewarm();  // (so that the boot right after this setup pre-warms them, not only the next start)
         }
-        free(pairs);
         free(first);
-        free(w.order);
-        free(w.need_mb);
-        pthread_mutex_destroy(&w.lock);
-        pthread_cond_destroy(&w.cond);
+        if (!left) {
+            free(pairs);
+            free(pw->order);
+            free(pw->need_mb);
+            pthread_mutex_destroy(&pw->lock);
+            pthread_cond_destroy(&pw->cond);
+            free(pw);
+        }
     }
     free(seed);
     p->shaders = set.nshaders;
