@@ -185,7 +185,9 @@ a `Para*` AS (`ParaEquipOn`, `ParashawlGlide`, ...; not `ParaEquipOff`), on the 
 
 The online actors have `traverseDist` 1000 in their ActorInfo: without it the game deleted the gear farther than
 about 50 m and the remote Link farther than about 80 to 140 m from the camera, and they were made again and again
-(a piece left standing where it was deleted). Requests still under way when everything is forgotten (a load, a
+(a piece left standing where it was deleted). The `OnlineEnemy_*` actors too: with their enemy's own (150 m for
+most) the game deleted those of the host's enemies farther than that from the camera, which the host sends from 150 m
+of any player, and they were made again and again (about twice a second each, Great Plateau test 2026-11-13). Requests still under way when everything is forgotten (a load, a
 shrine) are kept (`g_orphan`) and what they make is deleted when it comes, so no stray piece stays in the world.
 
 The Master Sword's online actor has the sword's own ELink, SLink and XLink (`GLOWS` in tools/online_mod.py).

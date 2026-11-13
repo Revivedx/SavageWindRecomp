@@ -52,7 +52,7 @@ STORY_FLAGS = ('IsGet_PortableUnit', 'PortableUnit_PowerOn', 'OP_DRC', 'Open_Fir
 KNOCK = 'OnlineKnock'
 SHOCK0 = 'OnlineShock'
 PLAYER_ELINK = 'Player_GameRom'  # (GameROMPlayer's ElinkUser)
-VERSION = 23  # (runtime/main.c ONLINE_MOD_VERSION: armour actors, traverseDist, the paraglider)
+VERSION = 24  # (runtime/main.c ONLINE_MOD_VERSION: armour actors, traverseDist, the paraglider, the enemies' traverseDist)
 TRAVERSE = 1000.0  # (the online actors' traverseDist)
 GEAR_KINDS = ('Weapon_Sword_', 'Weapon_Lsword_', 'Weapon_Spear_', 'Weapon_Shield_', 'Weapon_Bow_', 'Weapon_Sheath_',
               'Weapon_Lsheath_', 'Weapon_SpearSheath_', 'Weapon_Quiver_')
@@ -682,6 +682,8 @@ def main():
         for k2, v in by_name[piece].items():
             entry[k2] = v
         entry['name'] = online
+        if online in enemy_info:  # (the enemy's own, 150 m for most, is shorter than the host sends them from any player)
+            entry['traverseDist'] = oead.F32(TRAVERSE)
         if online == KNOCK or online.startswith(SHOCK0):  # (its effects, sounds and XLink none)
             entry['elink'] = 'Dummy'
             entry['slink'] = 'Dummy'
