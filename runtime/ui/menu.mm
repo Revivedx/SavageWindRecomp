@@ -823,8 +823,11 @@ static void tab_display(void) {
         const char *names[NV];
         int cur = 0, def = 0;
         for (int i = 0; i < NV; i++) {
-            snprintf(names_buf[i], sizeof names_buf[i], "%d%%", sizes[i]);
-            names[i] = names_buf[i];
+            if (sizes[i] == 0) names[i] = tr("Off");
+            else {
+                snprintf(names_buf[i], sizeof names_buf[i], "%d%%", sizes[i]);
+                names[i] = names_buf[i];
+            }
             if (sizes[i] == 100) def = i;
         }
         cur = def;

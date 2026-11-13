@@ -125,6 +125,15 @@ int main(void) {
     project(big, m00, m11, 0, 0, &a0, &b0);
     assert(NEAR(a0, -1 + (x0 + 1) * 1.5f) && NEAR(b0, 1 + (y0 - 1) * 1.5f));
 
+    // Hidden HUD (0%): collapses spans, view and combined matrices to the corner/center anchor (#780)
+    p = 1700, n = 200;
+    hud_scale_span(&p, &n, 960, 960, 0.0f);
+    assert(NEAR(n, 0) && NEAR(p, 1920));
+    float zero[12] = {1, 0, 0, -600, 0, 1, 0, 300, 0, 0, 1, -1000};
+    hud_scale_view(zero, 0.0f, m00, m11, -1, 1);
+    project(zero, m00, m11, 0, 0, &a0, &b0);
+    assert(NEAR(a0, -1) && NEAR(b0, 1));
+
     // A quick menu's bar keeps its size; the hearts, the minimap and the clock don't
     assert(hud_quick_keeps(0, 0.27f, 1, 1) && hud_quick_keeps(-0.5f, 0.3f, 1, 1) && hud_quick_keeps(0.64f, 0.63f, 1, 1));
     assert(!hud_quick_keeps(-0.85f, 0.85f, 1, 1) && !hud_quick_keeps(0.8f, -0.75f, 1, 1) && !hud_quick_keeps(0.5f, -0.8f, 1, 1));
