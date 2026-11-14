@@ -441,6 +441,22 @@ def _kf_angle(gen, a):
             f'c->v[0] = r.u; }}  /* {a:#x}: bl {target:#x} (keyframed body: angle of the turn left) */')
 
 
+# The physics step's impulse entries (runtime/hle/framepace.c rt_impulse_flush_due): the game notes a pair of bodies
+# when Havok reports their collision (ContactMgr::addImpulseEntry, with their speeds) and fills the note in at the
+# pair's first contact point (setImpulseEntryContactInfo, only if a note exists); a note that got no contact point
+# is thrown away by processImpulseEntries, called once right after every Havok step (1.9.0 0x700156f36c), and the
+# filled in ones become the hits that make a door, a crate or a breakable react. Above 60 fps the contact point comes
+# more steps after the collision, so the note is gone and the hit is lost. The runtime runs it every Nth step.
+
+def _impulse_flush(gen, a):
+    w = _word(gen, a)
+    assert w >> 26 == 0x25, hex(w)  # bl ContactMgr::processImpulseEntries
+    t = a + sext(w & 0x3FFFFFF, 26) * 4
+    return (f'{{ extern int rt_impulse_flush_due(void); extern void f_{t:x}(Cpu *); '
+            f'if (rt_impulse_flush_due()) {{ c->x[30] = {a + 4:#x}ull; f_{t:x}(c); }} }}'
+            f'  /* {a:#x}: bl {t:#x} (ContactMgr::processImpulseEntries) */')
+
+
 # Havok's deactivation at the console's pace (runtime/hle/framepace.c rt_phys_tick, #398): Havok counts its deactivation
 # checks in physics steps, and the game takes one step a frame. A body that stays within 2 cm of where it was for 24
 # steps (8 cm for 96) puts its island to sleep: 0.8 s at 30 fps, 0.07 s at 360. Ree Dahee Shrine's ball lands rolling
@@ -1020,6 +1036,7 @@ PATCHES = {
     'stale_actor_target': _stale_actor_target,
     'phys_solver_steps': _solver_steps,
     'kf_angle': _kf_angle,
+    'impulse_flush': _impulse_flush,
     'demo_move_arrive': _demo_move_arrive,
     'rail_point_radius': _rail_point_radius,
     'phys_tick': _phys_tick,

@@ -404,6 +404,23 @@ float rt_solver_steps(float delta_frame, float per_frame) {
     return delta_frame >= 0.4f ? per_frame / sqrtf(delta_frame) : 1.0f;
 }
 
+// The game's impulse entries (tools/patches.py _impulse_flush): it throws away the notes of collisions that have no
+// contact point yet after every physics step, which is a frame at the rate the game steps; a hit that needs a second
+// step to get its contact point is lost above 60 fps. Called once per step: 1 when the entries are to be processed. At
+// 60 fps or less every step (the game's own); above it every Nth step, so a note lives as long as at 60 fps (N = 2 at
+// 120, 4 at 240; the hits that did get a contact point react at most N-1 steps later). SAVAGEWIND_IMPULSE_KEEP=0: the
+// game's way.
+int rt_impulse_flush_due(void) {
+    static int keep = -1, count;
+    if (keep < 0) keep = env_int("SAVAGEWIND_IMPULSE_KEEP", 1) != 0;
+    float r = g_frame_ratio;
+    int period = keep && r > 0 && r < 0.5f ? (int)(0.5f / r + 0.5f) : 1;
+    if (period > 8) period = 8;
+    if (++count < period) return 0;
+    count = 0;
+    return 1;
+}
+
 // Keyframed bodies' turn (tools/patches.py _kf_angle, #209): the angle of a keyframed body's turn toward its target,
 // 2 atan2(|xyz|, |w|) of the turn's quaternion at q (x, y, z, w) instead of the game's 2 acos(|w|), which reads turns
 // under about a milliradian (a Divine Beast's floor over one 120 fps frame) as none. SAVAGEWIND_KF_ANGLE=0: the game's.

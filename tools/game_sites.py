@@ -202,6 +202,10 @@ SITES = [
     # the wait for the ground (tools/patches.py _tp_gate): is the map around Link not loaded yet? (the world pauses for it)
     Site('tp_gate', 'code', 'd10283ff fd002be8 f90037f9 a905fbfd a9075ff8 a90857f6 a9094ff4 910163fd '
          '90000016/9f00001f', 0),
+    # the physics step's impulse entries (tools/patches.py _impulse_flush): the call of ContactMgr::processImpulseEntries
+    # right after the Havok step (the ldr x0, [x19, #0x148] before it loads the ContactMgr)
+    Site('impulse_flush', 'code', 'f9401a68 bd406660 f9400100 94000000/fc000000 39418268 35000008/ff00001f '
+         'f940a660 94000000/fc000000 39418268 14000000/fc000000', 7),
     Site('pause_state', 'ref', '90000013/9f00001f b9400268/ffc003ff 35000008/ff00001f 90000008/9f00001f '
          'b9400108/ffc003ff 35000008/ff00001f b9400268/ffc003ff 34000008/ff00001f', 1),
     Site('event_mgr', 'ref', '9000000d/9f00001f 910001ad/ffc003ff f94001a0 aa1703e1 94000000/fc000000 aa1703e0 '
@@ -422,6 +426,7 @@ OPTIONAL_GROUPS = [
     ('no_wear_hit', 'no_wear_ret'),
     ('link_life_store', 'link_life_tick'),
     ('stamina_store',),
+    ('impulse_flush',),  # (without it a hit between bodies can be lost above 60 fps)
     ('tp_gate',),  # (a far teleport of the control endpoint: without it a long jump freezes the world)
     ('item_tick', 'pouch_item_get', 'pouch_mgr'),
     ('horse_cam_lr',),
@@ -550,6 +555,7 @@ KNOWN = {
         'persp_unproject_x': 0x7000eb4b58,
         'pause_state': 0x7001e1611c,
         'tp_gate': 0x70010b7a40,
+        'impulse_flush': 0x700156f36c,
         'event_mgr': 0x7001e3a638,
         'controller_step': 0x7001dad0e0,
         'player_info': 0x7001e13ed0,
