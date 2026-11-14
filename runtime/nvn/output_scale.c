@@ -121,6 +121,7 @@ double upscale_factor(void) {
 // The window's shape over 16:9 while the game's views are widened to fill it, else 1; the field of view's factor in
 // use (rt_persp)
 static volatile float g_view_shape = 1, g_fov = 1, g_map_extra_y;
+static volatile float g_window_shape = 1;  // the window's shape over 16:9, widened or not (output_window_shape)
 static uint32_t g_world_proj[4];  // tan(fovy / 2), aspect, near, far of the world camera's last matrix (rt_persp), float bits
 
 void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
@@ -130,11 +131,17 @@ void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
     if (forced < 0) forced = getenv("SAVAGEWIND_SCALE") ? atof(getenv("SAVAGEWIND_SCALE")) : 0;
     if (wide_test < 0) wide_test = getenv("SAVAGEWIND_WIDE_TEST") ? atof(getenv("SAVAGEWIND_WIDE_TEST")) : 0;
     double shape = wide_test > 0 ? wide_test : (dw / dh) / (16.0 / 9.0);
+    g_window_shape = (float)shape;
     // A wider window (21:9, 32:9) sees more to the sides, a taller one (16:10, 4:3: shape < 1) more above and below
     // (#125); the HUD keeps its 16:9 layout in the middle either way. Taller title screens fill the window too.
     // Fit wider title/loading layouts to keep their artwork and text aligned (#98). Taller views keep their shape
     // through the loading overlay so the world doesn't change aspect while fading out or back in.
-    bool title_fit = framepace_title_ui();
+    // The frames before the start screen first comes up count as it too (#805): the game makes its layout projection
+    // there, once, and widened then (rt_persp) it kept the window's aspect on the 16:9 start screen, whose artwork came
+    // out 1/shape as wide (a strip in the middle on 32:9).
+    static bool title_seen;
+    if (framepace_title_ui()) title_seen = true;
+    bool title_fit = framepace_title_ui() || !title_seen;
 #ifndef __APPLE__
     title_fit = title_fit && shape >= 1;  // Vulkan cover-crops the artwork on taller title screens.
 #endif
@@ -211,6 +218,7 @@ void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
 }
 
 float output_view_shape(void) { return g_view_shape; }
+float output_window_shape(void) { return g_window_shape; }
 float output_map_extra_y(void) { return g_map_extra_y; }
 
 float output_pause_extra_y(void) {

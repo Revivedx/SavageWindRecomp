@@ -4821,6 +4821,20 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         }
     }
     if (!tb || tb->rs_group != RS_OUT) return false;
+    // The loading screen on a wider window shows at 16:9 (output_scale, #98), but the status icons it draws over its
+    // tip (hearts, stamina, rupees, the figures) use a layout projection the game made in play, widened to the window
+    // (rt_persp): they came out squeezed toward the middle, 1/shape as wide (#805). Back to 16:9 here.
+    if (shape == 1 && size >= 64 && g[0] > 0 && g[5] != 0 && framepace_loading_ui()) {  // (text: m11 < 0)
+        float ws = output_window_shape();
+        if (ws > 1.005f && fabsf(fabsf(g[5]) / g[0] - 16.0f / 9.0f * ws) < 0.002f * ws) {
+            static float lbuf[0x10000 / 4];
+            uint64_t n = size > sizeof lbuf ? sizeof lbuf : size;
+            memcpy(lbuf, g, n);
+            for (int k = 0; k < 4; k++) lbuf[k] *= ws;  // (clip x: the whole row, a text pane's position too)
+            *out = ubo_span(vk_transient_copy(lbuf, n, 256), n);
+            return true;
+        }
+    }
     float hud_s = hud_scale_now();
     if (shape == 1 && hud_s == 1) return false;
     int edge_mode = hud_edges_now(shape);
