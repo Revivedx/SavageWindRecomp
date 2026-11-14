@@ -391,8 +391,9 @@ is an OnlineGear actor. When his feed stops (he left, the connection went), they
 there stay gone, until it comes again.
 
 Owners (protocol 13): each of the host's enemies is had for real by one game, its owner's, the player nearest it
-(another one only when the owner is 40 m from it or more, or another has been 15 m nearer for 5 s, and not again for
-10 s: each change makes it anew in one game and deletes it in another, so players fighting it together keep it with
+(another one only when the owner is 40 m from it or more and the other 10 m nearer, or another has been 15 m nearer
+for 5 s, and not again for 10 s; with the owner far and no one clearly nearer, two players both about 40 m from a
+guard had it go back and forth every few seconds; each change is logged with why and both distances: each change makes it anew in one game and deletes it in another, so players fighting it together keep it with
 one of them). Never to a player more than 80 m from it (`OWN_SAFE`), unless its owner left: a game removes an enemy
 it makes too far from its camera, short of its traverseDist (a Bokoblin made 136 m off went at once), and the one
 deleted for it in the other game was gone with it, for everyone. One no player is near enough to have (its owner's

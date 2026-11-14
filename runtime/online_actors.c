@@ -1777,6 +1777,16 @@ static void enemies_host(Cpu *c, uint64_t player, const float link[3], const Onl
         enemy_state(c, a, &g_reg[free_r].e);
         g_reg[free_r].e.owner = (uint8_t)me;
     }
+    // (each player's can-own changes, with why: a flicker here hands his enemies back and forth)
+    static int8_t could[ONLINE_MAX];
+    for (int i = 0; i < ONLINE_MAX; i++) {
+        if (i == me) continue;
+        int8_t now = (int8_t)(can_own(&pl[i], i, me) ? 1 : 0);
+        if (now != could[i] && pl[i].used)
+            LOG("[online] slot %d %s enemies (loading %d, pose %d, as %.12s, same map %d)\n", i, now ? "can own" : "can't own",
+                !!(pl[i].flags & ONLINE_F_LOADING), pl[i].pose.valid, pl[i].pose.as[0], same_map(&pl[i]));
+        could[i] = now;
+    }
     // owners: the player nearest each one (another only when he is clearly nearer, and not again for 3 s)
     for (int r = 0; r < REG; r++) {
         if (!g_reg[r].used) continue;
@@ -1811,7 +1821,9 @@ static void enemies_host(Cpu *c, uint64_t player, const float link[3], const Onl
         // or another has been 15 m nearer for 5 s, and not again for 10 s; players fighting it together keep it where
         // it is)
         g_reg[r].nearer = nearest != e->owner && best + 15 < cur ? g_reg[r].nearer + 1 : 0;
-        bool far = cur > 40 || g_reg[r].nearer > 50;
+        // (its owner far, it goes only to one clearly nearer: with both players about 40 m from it, it went back and
+        // forth between them every few seconds - "owner at 42 m, new one at 42 m")
+        bool far = (cur > 40 && best + 10 < cur) || g_reg[r].nearer > 50;
         if (nearest == e->owner || (!gone_owner && (g_reg[r].hold > 0 || !far))) continue;
         // (nor to one too far from it: his game would remove it as it is made, and it would be gone for everyone; its
         // owner gone, it is no one's meanwhile)
@@ -1826,7 +1838,8 @@ static void enemies_host(Cpu *c, uint64_t player, const float link[3], const Onl
             }
             continue;
         }
-        LOG("[online] %s %u: slot %d's now (was %d's)\n", e->name, e->id, nearest, e->owner);
+        LOG("[online] %s %u: slot %d's now (was %d's; %s, owner at %.0f m, new one at %.0f m)\n", e->name, e->id, nearest,
+            e->owner, gone_owner ? "owner gone" : g_reg[r].nearer > 50 ? "new one nearer" : "owner far", cur, best);
         if (e->owner == me) {  // (ours no more: it goes here, its state stays for the next one)
             Own *o = own_find(e->id);
             if (o) own_drop(c, o);
