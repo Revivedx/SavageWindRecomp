@@ -23,6 +23,7 @@
 #include "../../window_size.h"
 #include "mvec.h"
 #include "vk.h"
+#include "shaders.h"
 #include "vram.h"
 #include "record.h"
 #include "fsr_api.h"
@@ -196,8 +197,24 @@ static void pick_device(void) {
     vkGetPhysicalDeviceProperties(g_vk.phys, &g_vk.props);
     g_vk.is_mali = g_vk.props.vendorID == 0x13B5;  // (Arm)
 #ifdef _WIN32
-    plat_guest_sparse_heap_configure(g_vk.props.vendorID == 0x8086 &&
-                                     g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU);
+    {   // sparse_heap = auto: only an Intel integrated GPU whose shared memory can't hold the whole guest heap
+        // (3120 MB) and the game's textures. It was on for every Intel integrated GPU, and those with memory to spare crashed in
+        // the game code a few minutes in (#596 UHD 620 with 16 GB, #619 Iris Xe, #695 Arc 130T with 8972 MB), fixed
+        // there by sparse_heap = off; the sparse heap was made for the ones that run out of shared memory (#197).
+        VkPhysicalDeviceMemoryProperties mp;
+        vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
+        uint64_t local = 0;
+        for (uint32_t i = 0; i < mp.memoryHeapCount; i++)
+            if ((mp.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) && mp.memoryHeaps[i].size > local)
+                local = mp.memoryHeaps[i].size;
+        bool intel_igpu =
+            g_vk.props.vendorID == 0x8086 && g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+        bool small = local < (6ull << 30);
+        if (intel_igpu)
+            LOG("[vk] sparse heap auto: shared memory %llu MB, %s\n", (unsigned long long)(local >> 20),
+                small ? "under 6144 MB: the sparse heap" : "6144 MB or more: the whole heap imported");
+        plat_guest_sparse_heap_configure(intel_igpu && small);
+    }
 #endif
     { extern void vk_translator_setup(void); vk_translator_setup(); }
     uint32_t nq = 0;
@@ -230,6 +247,12 @@ static void pick_device(void) {
     bool lean_default = g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
 #ifdef __linux__
     if (g_vk.props.vendorID == 0x1002) lean_default = false;
+#endif
+#ifdef _WIN32
+    // Intel's last Windows drivers for its older integrated GPUs (API 1.3.215: UHD 620, UHD 10th gen) read 0x298 in
+    // vkCmdBeginRendering at a 192x192 R16 terrain target (#596, #622). Off there as a likely cause, not a confirmed one.
+    if (g_vk.props.vendorID == 0x8086 && lean_default && g_vk.props.apiVersion <= VK_MAKE_API_VERSION(0, 1, 3, 215))
+        lean_default = false;
 #endif
     g_vk.lean_usage = lean && *lean ? atoi(lean) != 0 : lean_default;
     LOG("[vk] view format lists %s\n", g_vk.lean_usage ? "on" : "off");
@@ -604,6 +627,16 @@ static void create_device(void) {
 #endif
     g_vk.turnip = drv.driverID == VK_DRIVER_ID_MESA_TURNIP;
     g_vk.amd_proprietary = drv.driverID == VK_DRIVER_ID_AMD_PROPRIETARY;
+    {   // AMD's own shader compiler (its driver without "LLPC" in driverInfo: RDNA 2 and older on Windows) draws the sky
+        // wrong from unoptimized SPIR-V (#359): its fragment shaders go through spirv-opt (spirv.c).
+        // SAVAGEWIND_VK_OPT_FS=0 / 1 forces it off or on.
+        const char *e = getenv("SAVAGEWIND_VK_OPT_FS");
+        bool sc = g_vk.amd_proprietary && !strstr(drv.driverInfo, "LLPC");
+        bool on = e && *e ? atoi(e) != 0 : sc;
+        vk_spirv_optimize_fragments(on);
+        if (on || sc)
+            LOG("[vk] fragment shaders optimized (spirv-opt): %s\n", on ? sc ? "on, AMD's own shader compiler" : "on" : "off");
+    }
     {   // (for bug reports: the driver's version, and whether ASTC textures reach the GPU as they are or decoded)
         VkFormatProperties ap;
         vkGetPhysicalDeviceFormatProperties(g_vk.phys, VK_FORMAT_ASTC_4x4_UNORM_BLOCK, &ap);
@@ -1693,8 +1726,26 @@ static void *pt_waiter(void *arg) {
     }
 }
 
+// (testing) SAVAGEWIND_DEBUG_PRESENT_LIMIT=<fps>: each present held until 1/fps after the last one, inside the present
+// call, as an external frame limiter does (RivaTuner hooks vkQueuePresentKHR, Radeon Chill holds it in the driver):
+// the thread that presents waits there, not the game
+static void external_limiter(void) {
+    static double iv = -1;
+    static uint64_t next;
+    if (iv < 0) {
+        const char *e = getenv("SAVAGEWIND_DEBUG_PRESENT_LIMIT");
+        iv = e && atof(e) > 0 ? 1e9 / atof(e) : 0;
+        if (iv > 0) LOG("[vk] presents held to %.1f fps inside the present (an external limiter, testing)\n", 1e9 / iv);
+    }
+    if (iv <= 0) return;
+    uint64_t now = SDL_GetTicksNS();
+    if (next > now) SDL_DelayPrecise(next - now), now = next;
+    next = next && now - next < (uint64_t)iv ? next + (uint64_t)iv : now + (uint64_t)iv;
+}
+
 // vkQueuePresentKHR, timed and given a present id for the waiter when SAVAGEWIND_LOG_PRESENT asks
 static VkResult queue_present(VkQueue q, const VkPresentInfoKHR *info) {
+    external_limiter();
     if (pt_every < 0) {
         const char *e = getenv("SAVAGEWIND_LOG_PRESENT");
         pt_every = e ? atoi(e) : 0;
@@ -1754,6 +1805,7 @@ static void recreate_swapchain(void) {
 // one frame at a time otherwise, as before); a swapchain change and teardown wait for them all.
 // Only with SAVAGEWIND_VK_PRESENT_THREAD=1 now (create_device: one queue by default, #36, #293); otherwise presents on
 // the calling thread.
+pthread_mutex_t g_vk_queue_lock = PTHREAD_MUTEX_INITIALIZER;  // (vk.h)
 static pthread_mutex_t pres_m = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t pres_cv = PTHREAD_COND_INITIALIZER;
 static pthread_mutex_t sc_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -1812,7 +1864,9 @@ static void *present_thread(void *arg) {
                                .swapchainCount = 1, .pSwapchains = &q.sc, .pImageIndices = &q.img};
         pthread_mutex_lock(&sc_lock);
         uint64_t tq = SDL_GetTicksNS();
+        pthread_mutex_lock(&g_vk_queue_lock);  // (one queue: the recorder submits on it meanwhile)
         VkResult r = queue_present(g_vk.present_queue, &pi);
+        pthread_mutex_unlock(&g_vk_queue_lock);
         tq = SDL_GetTicksNS() - tq;
         pthread_mutex_unlock(&sc_lock);
         if (tq > 200000000ull) {  // (#224: a present the driver held on to)
@@ -1836,6 +1890,25 @@ static bool present_threaded(void) {
         on = g_vk.present_queue != g_vk.queue && !(e && !strcmp(e, "0"));
         if (on) { pthread_t t; pthread_create(&t, NULL, present_thread, NULL); }
         LOG("[vk] presents on %s\n", on ? "a thread of their own (second queue)" : "the calling thread");
+    }
+    return on;
+}
+
+// Frame generation's pair with one queue (the default): each of the two is presented once the GPU has drawn it, the
+// game's frame half an interval after the generated one (present_wait_turn). The translating thread did those waits
+// itself: it stood still for the GPU's whole frame and then for half the interval it had just made longer, so the game
+// drew at a quarter of its rate with the GPU half idle (RTX 3060, 1440p, no frame limit, Great Plateau: 101 fps
+// without frame generation, 47 presented with it). The present thread makes them instead, on the same queue
+// (g_vk_queue_lock), and the translating thread goes on to the next frame; present_wait_room still holds it at two
+// pairs ahead. Plain presents stay with the recorder, except while the thread still has some to make (their order).
+// SAVAGEWIND_VK_FG_PACER=0: on the calling thread, as before.
+static bool fg_pacer(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("SAVAGEWIND_VK_FG_PACER");
+        on = !(e && !strcmp(e, "0"));
+        if (on) { pthread_t t; pthread_create(&t, NULL, present_thread, NULL); }
+        LOG("[vk] frame generation's presents made by %s\n", on ? "the present thread, on the game's queue" : "the calling thread");
     }
     return on;
 }
@@ -1916,7 +1989,9 @@ static void rec_present_run(void *arg) {
     VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &q->sem,
                            .swapchainCount = 1, .pSwapchains = &q->sc, .pImageIndices = &q->img};
     pthread_mutex_lock(&sc_lock);
+    pthread_mutex_lock(&g_vk_queue_lock);
     VkResult r = queue_present(g_vk.queue, &pi);
+    pthread_mutex_unlock(&g_vk_queue_lock);
     pthread_mutex_unlock(&sc_lock);
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) atomic_store(&rec_present_stale, 1);
 }
@@ -1933,18 +2008,27 @@ static bool present_on_recorder(void) {
 // Present window image img once sem is signalled (kind, seq: frame generation's pair and the frame's submission, see
 // present_wait_turn). Returns false when the swapchain must be made again.
 static bool present_image(uint32_t img, VkSemaphore sem, int kind, uint64_t seq) {
-    if (!present_threaded() && kind == PRES_PLAIN && present_on_recorder()) {
+    bool threaded = present_threaded();
+    if (!threaded) {
+        pthread_mutex_lock(&pres_m);
+        bool queued = presq_n != 0;
+        pthread_mutex_unlock(&pres_m);
+        threaded = (kind != PRES_PLAIN || queued) && fg_pacer();
+    }
+    if (!threaded && kind == PRES_PLAIN && present_on_recorder()) {
         __typeof__(recp[0]) *q = &recp[recp_n++ % RECP_N];
         *q = (__typeof__(recp[0])){g_vk.swapchain, sem, img};
         rec_custom(rec_present_run, q);
         return !atomic_exchange(&rec_present_stale, 0);
     }
-    if (!present_threaded()) {
+    if (!threaded) {
         VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &sem,
                                .swapchainCount = 1, .pSwapchains = &g_vk.swapchain, .pImageIndices = &img};
         rec_wait_submitted(seq);  // (as present_thread)
         present_wait_turn(kind, seq);
+        pthread_mutex_lock(&g_vk_queue_lock);
         VkResult r = queue_present(g_vk.queue, &pi);
+        pthread_mutex_unlock(&g_vk_queue_lock);
         return !(r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR);
     }
     pthread_mutex_lock(&pres_m);
@@ -2332,7 +2416,7 @@ static void ui_window_show(void) {
 // (runtime/main.c, before each boot; the main thread) the picture up, and the window shown with it
 void boot_splash_start(void) {
     if (!window) return;  // (made later, in ui_run: Linux and macOS)
-    if (!getenv("SAVAGEWIND_HIDDEN") && !getenv("SAVAGEWIND_NO_BOOT_SPLASH")) {
+    if (!getenv("SAVAGEWIND_HIDDEN") && !getenv("SAVAGEWIND_NO_BOOT_SPLASH") && g_settings.boot_picture) {
         gpu_lock();
         boot_splash_open();
         boot_hold = true, boot_alpha = 1, boot_hold_since = SDL_GetTicksNS();

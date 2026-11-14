@@ -7,6 +7,7 @@
 
 #include "hle.h"
 #include "kernel.h"
+#include "platform.h"
 #include "prof.h"
 
 // ------------------------------------------------------------------ results
@@ -394,6 +395,7 @@ void rt_unwind_point(void) {
 static void *thread_main(void *arg) {
     KThread *t = arg;
     t_cur = t;
+    if (t->id == 1) plat_thread_elevate();
     {
         char pn[32];
         snprintf(pn, sizeof pn, "guest-%x", t->handle);

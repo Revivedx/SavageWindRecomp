@@ -17,8 +17,12 @@ void motion_tilt_held(bool h){(void)h;}
 bool pc_gyro_keyboard_active(void){return apparatus;}
 void pc_gyro_scene_tick(void){}
 uint64_t plat_now_ns(void){return 1000000000;}
+void plat_accessibility_shortcuts(bool allow) { (void)allow; }
+#include "game_sites.h"
+GameSites g_site;  // (no game: runtime/hle/bindings.c finds no HUD prompt)
 Cpu *kernel_current_cpu(void){abort();}
 void vibration_update(SDL_Gamepad *p,bool f){(void)p;(void)f;abort();}
+void vibration_pad_closed(SDL_Gamepad *p){(void)p;}
 bool menu_cursor_free(void){return false;}
 void motion_pad_opened(SDL_Gamepad*p){(void)p;abort();}
 void motion_pad_closed(void){abort();}

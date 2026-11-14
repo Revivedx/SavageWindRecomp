@@ -11,5 +11,4 @@
 #pragma once
 
 #define GAME_VERSIONS(X)                                      \
-    X("1.8.2", "de0b6ac4efc1dda7", 1, 41056, 0)               \
     X("1.9.0", "cd57b23fa4bbad65", 1, 41062, 15129626830ull)

@@ -83,6 +83,8 @@ void plat_thread_realtime(uint64_t period_ns) {
                       THREAD_TIME_CONSTRAINT_POLICY_COUNT);
 }
 
+void plat_thread_elevate(void) {}
+
 const char *plat_log_path(void) { return ""; }  // (the log goes to stderr)
 
 bool plat_exe_path(char *buf, size_t size) {
@@ -181,3 +183,5 @@ static int rm_entry(const char *path, const struct stat *sb, int flag, struct FT
 bool plat_remove_tree(const char *dir) { return nftw(dir, rm_entry, 16, FTW_DEPTH | FTW_PHYS) == 0; }
 
 bool plat_guest_sparse_heap_enabled(void) { return false; }
+
+void plat_accessibility_shortcuts(bool allow) { (void)allow; }  // (Windows only)

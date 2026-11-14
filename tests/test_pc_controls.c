@@ -31,6 +31,7 @@ bool menu_input_captured(void) { return captured; }
 bool prof_toggle(void) { return false; }
 bool menu_cursor_free(void) { return freed; }
 void vibration_update(SDL_Gamepad *p, bool focused) { (void)p; (void)focused; }
+void vibration_pad_closed(SDL_Gamepad *p) { (void)p; }
 void motion_tilt_held(bool held) { motion_tilt = held; }
 bool pc_gyro_keyboard_active(void) { return gyro_active; }
 void motion_keyboard(int p,int r,int y,bool reset) { gyro_pitch=p;gyro_roll=r;gyro_yaw=y;gyro_reset=reset; }
@@ -59,6 +60,8 @@ SDL_WindowFlags SDL_GetWindowFlags(SDL_Window *w) {
     (void)w;return win_focused?SDL_WINDOW_INPUT_FOCUS:0;
 }
 uint64_t plat_now_ns(void) { return now; }
+void plat_accessibility_shortcuts(bool allow) { (void)allow; }
+GameSites g_site;  // (no game: runtime/hle/bindings.c finds no HUD prompt)
 bool SDL_SetWindowRelativeMouseMode(SDL_Window *w, bool on) {
     (void)w; relative = on; relative_changes++; return true;
 }
@@ -122,6 +125,25 @@ int main(void) {
     e.type=SDL_EVENT_MOUSE_BUTTON_DOWN;e.button.button=SDL_BUTTON_LEFT;
     input_handle_event(&e);assert(input_buttons_now()&(1ull<<BTN_Y));
     e.type=SDL_EVENT_MOUSE_BUTTON_UP;input_handle_event(&e);
+
+    // Rebinding "Menu: sort / sensor" to a key must not hijack Attack in play (#608)
+    int16_t saved_bind_y = g_bind_key[BIND_Y];
+    g_bind_key[BIND_Y] = SDL_SCANCODE_Y;
+    e.type=SDL_EVENT_KEY_DOWN;e.key.scancode=SDL_SCANCODE_Y;
+    input_handle_event(&e);
+    assert(!(input_buttons_now()&(1ull<<BTN_Y)));  // Y key does NOT attack in gameplay
+    e.type=SDL_EVENT_MOUSE_BUTTON_DOWN;e.button.button=SDL_BUTTON_LEFT;
+    input_handle_event(&e);
+    assert(input_buttons_now()&(1ull<<BTN_Y));     // mouse left still attacks
+    e.type=SDL_EVENT_MOUSE_BUTTON_UP;input_handle_event(&e);
+    e.type=SDL_EVENT_KEY_UP;e.key.scancode=SDL_SCANCODE_Y;input_handle_event(&e);
+    g_bind_key[BIND_Y] = saved_bind_y;
+
+    // Scripted/console A/B/X/Y buttons must still reach the game in play
+    script_buttons = (1ull << BTN_A) | (1ull << BTN_B) | (1ull << BTN_X) | (1ull << BTN_Y);
+    assert((input_buttons_now() & script_buttons) == script_buttons);
+    script_buttons = 0;
+
     puts("PASS: F bow, right-mouse shield/lock-on and left-mouse attack use ordinary bindings");
 
     // Controller Walk scales both left-stick axes and returns to full speed on release (never cumulative).

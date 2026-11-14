@@ -4,7 +4,155 @@ What changed in each Savage Wind release. The `test` branch holds what the next 
 
 ## Next (on the `test` branch)
 
-Nothing yet.
+### Performance
+
+- **AMD FSR 3 and FSR 4 upscaling are back** in Video > Upscaler. They were held back in Alpha 5 because they ran
+  slower than native where the CPU was the limit; with the changes below they gain. RTX 3060 and a Ryzen 5 5600X,
+  1440p, Savage preset at 100% render scale, FSR 3 Quality over native: Great Plateau 106 / 102 fps, Kakariko
+  106 / 88, Korok Forest 67 / 40. `SAVAGEWIND_FSR3=0` hides them.
+- **FSR 3, FSR 4 and TAA cost the CPU much less:** their motion vectors are worked out on a thread of their own
+  instead of the thread that translates the game's drawing, every scene draw uses one motion program, and FSR 3 is
+  dispatched by the recorder thread. RTX 3060 and a Ryzen 5 5600X, Great Plateau, uncapped, 1440p, where the CPU is
+  the limit: FSR 3 Quality went from 101 to 119 fps (native 130). CPUs with fewer than 6 logical processors keep
+  the work on the translating thread.
+- **TAA is a single pass:** about 0.5 ms of GPU time at 1440p instead of 2.5 ms (same PC: 104 to 122 fps at 1440p;
+  with the Savage preset, 150% render scale, 54 to 71 fps, SMAA 77). The image is a little softer in motion than
+  before; `SAVAGEWIND_TAA=full` brings the old seven passes back.
+- **Frame generation with no frame limit** no longer lowers the frame rate: its two presents per game frame are
+  paced on a thread of their own instead of holding the thread that translates the game's drawing. Same PC, Savage
+  preset at 100% render scale, 1440p, presented frames per second without frame generation / with it before / with it
+  now: Great Plateau 102 / 47 / 125, Kakariko 88 / 48 / 116, Korok Forest 40 / 29 / 66.
+- **Shadow resolution follows FSR 3, FSR 4 and DLSS:** with one of them on, shadow maps above the console's size are
+  made smaller by the upscaler mode's factor (Savage at Quality: 5440 instead of 8192), the same shadow detail per
+  rendered pixel. Where shadows were most of the frame the upscaler gained nothing (Korok Forest, FSR 3 Quality:
+  41 to 67 fps, native 40). `SAVAGEWIND_SHADOW_FOLLOW=0` keeps the setting's size.
+- **Ultra Performance with FSR 3, FSR 4 or DLSS needs a 4K window:** below that it rendered a third of the window on
+  each side (853 x 480 at 1440p) and the whole image came out blurred. It is greyed there, and a stored Ultra
+  Performance runs as Performance. FSR 1 keeps it at any size.
+
+### Fixes
+
+- **Water** drawn transparent where a new image was read before its clear finished
+  ([#649](https://github.com/Revivedx/SavageWindRecomp/issues/649), by jfpaardoo).
+- **Bluetooth controllers** (DualSense on Windows): vibration no longer stalls input; it runs on a thread of its own
+  ([#730](https://github.com/Revivedx/SavageWindRecomp/issues/730), by jfpaardoo).
+- **Game files folder** on Linux without a working file dialog: the error is shown and the path can be typed in
+  ([#724](https://github.com/Revivedx/SavageWindRecomp/issues/724), by jfpaardoo).
+- **Stutter** while pipelines were linked ([#591](https://github.com/Revivedx/SavageWindRecomp/issues/591), by jfpaardoo).
+- **Hybrid CPUs** (Intel 12th gen and later): every logical processor is kept, and the game's critical threads run at a
+  higher priority ([#639](https://github.com/Revivedx/SavageWindRecomp/issues/639), by jfpaardoo).
+- **Refresh rate:** the monitor's real refresh rate is detected, and higher-Hz display modes are picked
+  ([#623](https://github.com/Revivedx/SavageWindRecomp/issues/623), by jfpaardoo).
+- **Video > Haze** keeps to 75 % or more: lower values turned the picture teal (by devall96).
+- **Taller windows** (16:10 and others) with Fill wide screens: the HUD, dialogue, pause menu, title screen and world map
+  keep their layout (by sabeliam).
+- **Keyboard on horseback:** W with A or D steers without speeding forward
+  ([#290](https://github.com/Revivedx/SavageWindRecomp/issues/290), by rvsting).
+
+## 0.5.3 (0.5.3-alpha.5) - 2026-11-12
+
+A quick fix update. **Updating:** Savage Wind Configuration offers it in one click (from 0.5.1 on). Your game files,
+saves and settings stay.
+
+### Fixes
+
+- **Setup stuck at 99%** while precompiling shaders, on AMD cards with Windows after updating to 0.5.2 (21502 of 21503
+  pipelines), where Esc could not stop it either ([#359](https://github.com/Revivedx/SavageWindRecomp/issues/359)): a
+  shader compile the graphics driver never finishes no longer holds setup up. After 3 minutes without progress, or
+  when you press Esc, setup goes on without it, and `savagewind.log` names the shader.
+- **Rain and torch particles** stretched across the screen for a frame
+  ([#620](https://github.com/Revivedx/SavageWindRecomp/issues/620),
+  [#629](https://github.com/Revivedx/SavageWindRecomp/issues/629),
+  [#683](https://github.com/Revivedx/SavageWindRecomp/issues/683),
+  [#717](https://github.com/Revivedx/SavageWindRecomp/issues/717)): the vertex data the game rewrites every frame is
+  now copied before the graphics card reads it. If you set `SAVAGEWIND_GPU_OVERLAP=0` for this, remove it: it costs a
+  lot of frame rate (150 -> 95 fps in heavy rain on an RTX 3060), and the fix costs about 1%.
+
+## 0.5.2 (0.5.2-alpha.5) - 2026-11-12
+
+A bug-fix update. **Updating:** Savage Wind Configuration offers it in one click (from 0.5.1 on). This update changes
+the game code, so it is built again once after updating, which takes a few minutes; your game files, saves and settings
+stay.
+
+### Fixes
+
+- **High frame rates:** leaving the Shrine of Resurrection, Link no longer stops short of the cliff above about
+  100 fps ([#364](https://github.com/Revivedx/SavageWindRecomp/issues/364)), and physics objects no longer fall asleep
+  mid-move above 60 fps, such as the ball in Ree Dahee Shrine
+  ([#398](https://github.com/Revivedx/SavageWindRecomp/issues/398), by leohsm).
+- **Crash** when the video of the Ganon cutscene was skipped
+  ([#702](https://github.com/Revivedx/SavageWindRecomp/issues/702), by jfpaardoo).
+- **Sky on AMD with Windows:** black, dark or wrong sky on cards that use AMD's own shader compiler (RX 6000 and
+  older, Vega) ([#359](https://github.com/Revivedx/SavageWindRecomp/issues/359),
+  [#665](https://github.com/Revivedx/SavageWindRecomp/issues/665)).
+- **Shrine sensor volume** now works, and applies as soon as the slider moves
+  ([#449](https://github.com/Revivedx/SavageWindRecomp/issues/449), with jfpaardoo).
+- **Controls:** with Jump (or another action) on Interact's button, picking things up, talking or closing a new item's
+  message no longer jumps or swim-dashes (by SeveX).
+- **HUD:** no seam down the middle of partial hearts above 1080p (by thebigredder).
+- **HUD at edges** on 4:3 and 16:10: shop panels, merchants' lists and their selection box stay whole
+  ([#599](https://github.com/Revivedx/SavageWindRecomp/issues/599)).
+- **Windows:** pressing Shift five times no longer opens the Sticky Keys prompt while you play (nor the Filter Keys and
+  Toggle Keys shortcuts); they work as usual outside the game, and players who use these features keep them.
+- **Intel integrated graphics:** the sparse heap is automatic only where shared memory is short, which avoids crashes
+  a few minutes in on GPUs with memory to spare ([#596](https://github.com/Revivedx/SavageWindRecomp/issues/596),
+  [#619](https://github.com/Revivedx/SavageWindRecomp/issues/619),
+  [#695](https://github.com/Revivedx/SavageWindRecomp/issues/695)).
+- **Linux AppImage:** an update could take another program's AppImage for Savage Wind's when started from a launcher
+  that passes its own `$APPIMAGE` on (by devall96).
+
+### Changed
+
+- **Handheld PCs** with a faster screen are offered 90, 120 and 144 fps up to its refresh rate, besides 30, 40, 45 and
+  60 ([#712](https://github.com/Revivedx/SavageWindRecomp/issues/712)).
+
+## 0.5.1 (0.5.1-alpha.5) - 2026-11-11
+
+**One-click updates.** From this version on, Savage Wind updates itself: Savage Wind Configuration says when a new
+version is out, and its Update entry downloads it, checks its signature, installs it over the same folder (or replaces
+the AppImage under the same name), builds the game code again only if the new version needs it, and precompiles the
+shaders again. If anything goes wrong, the previous version is put back.
+
+**Updating to 0.5.1:** this time only, by hand: extract the zip over your Alpha 5 folder (Windows) or use the new
+AppImage (Linux). Your game files, saves and settings stay, and the rest happens by itself the first time you open it.
+
+### New
+
+- **Updates in one click** on Windows and in the Linux AppImages, x86_64 and aarch64, with detailed messages when
+  something stands in the way (no internet, a full disk, the game still open, an antivirus holding a file, a RomFS of
+  another version...). Releases are signed, and nothing unsigned is ever installed. On AMD on Windows the driver's own
+  Vulkan shader cache is emptied once per update too.
+- **Savage Wind Configuration opens first** when you start Savage Wind, where updates are offered. Game Files > Open
+  this screen first turns that off.
+- **Add to Steam** (Game Files): adds "Savage Wind", which goes straight into the game, and "Savage Wind Configuration"
+  to your Steam library, on Windows and Linux (from Desktop Mode on a Steam Deck).
+- **Background** (Game Files): the start screen and the loading picture show one of your own screenshots by default,
+  or the picture of your latest save, or Savage Wind's art. **Loading picture** can be turned off.
+- 1600x900 in the window and fullscreen sizes ([#587](https://github.com/Revivedx/SavageWindRecomp/issues/587)).
+
+### Fixes
+
+- **Long sessions:** the frame rate no longer falls after two or three hours of play: the table of compute programs
+  grows ([#639](https://github.com/Revivedx/SavageWindRecomp/issues/639)), and draws waiting for their programs no longer sleep a millisecond each ([#707](https://github.com/Revivedx/SavageWindRecomp/issues/707)).
+- **Crashes and device lost:** a constant buffer outside the game's memory after two hours ([#640](https://github.com/Revivedx/SavageWindRecomp/issues/640)), a shader whose loop never
+  ended, and FSR 1 with zero or NaN weights ([#628](https://github.com/Revivedx/SavageWindRecomp/issues/628)).
+- **RADV:** wall corruption on the ROG Ally and ground shimmer on the Steam Machine ([#385](https://github.com/Revivedx/SavageWindRecomp/issues/385), [#614](https://github.com/Revivedx/SavageWindRecomp/issues/614), [#684](https://github.com/Revivedx/SavageWindRecomp/issues/684)).
+- **After loading screens:** several seconds of low frame rate on GPUs at their limit ([#639](https://github.com/Revivedx/SavageWindRecomp/issues/639)).
+- **Menus:** the first menu opened no longer takes a third of a second, opening menus with keyboard icons no longer
+  stutters, and Sharper menus keep the HUD's prompts for the device in use ([#613](https://github.com/Revivedx/SavageWindRecomp/issues/613)).
+- **Frame rate:** Match display uses the monitor's real refresh rate ([#589](https://github.com/Revivedx/SavageWindRecomp/issues/589), [#661](https://github.com/Revivedx/SavageWindRecomp/issues/661)).
+- **HUD at edges** on 16:10 and 4:3: quick-select frames and talk boxes stay whole ([#696](https://github.com/Revivedx/SavageWindRecomp/issues/696)).
+- **Fonts:** item and amiibo glyphs in the fallback font ([#611](https://github.com/Revivedx/SavageWindRecomp/issues/611), [#626](https://github.com/Revivedx/SavageWindRecomp/issues/626)).
+- **2 GB graphics cards:** the heap copy stays under the texture trim point.
+- **Setup:** choosing Savage Wind's own copy of the game no longer says "No game files found" ([#590](https://github.com/Revivedx/SavageWindRecomp/issues/590)).
+- **Intel's older integrated GPUs on Windows:** a likely cause of a driver crash is off ([#596](https://github.com/Revivedx/SavageWindRecomp/issues/596), [#622](https://github.com/Revivedx/SavageWindRecomp/issues/622)).
+- **Cheats:** the One-Hit Obliterator can no longer be added: it left saves stuck ([#652](https://github.com/Revivedx/SavageWindRecomp/issues/652)).
+- **aarch64:** the grass blade patch builds on ARM ([#612](https://github.com/Revivedx/SavageWindRecomp/issues/612)).
+
+### Changed
+
+- **Game version 1.8.2 is no longer supported:** setup refuses it and asks for 1.9.0.
+- FSR 3 and FSR 4 stay held back until their motion vectors are redesigned.
 
 ## Alpha 5 (0.5.0-alpha.5) - 2026-11-08
 

@@ -33,6 +33,13 @@ Steam with Steam Input on, the game sees Steam's virtual Xbox controller.
 If the AppImage won't start with a FUSE error, install your distribution's `fuse3` package (the AppImage runtime
 needs `fusermount3`), or run it as `./Savage_Wind-....AppImage --appimage-extract-and-run`.
 
+### Updating
+
+Savage Wind Configuration offers a new release when there is one. Its Update entry downloads the AppImage for this
+machine (x86_64 or aarch64) with the system's `curl`, checks its signature and replaces the running file under the same
+name, so shortcuts and Steam entries keep working. The previous file stays next to it as `<name>.old` until the new
+version has finished setting up. The AppImage's folder must be writable.
+
 ### Steam Deck motion in Gaming Mode (DSU)
 
 Keep Steam Input enabled for buttons and sticks. On Linux the game automatically prefers fresh native SDL gyro

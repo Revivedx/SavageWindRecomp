@@ -28,6 +28,7 @@
 #include "nvn/tegra.h"
 #include "rt.h"
 #include "services/archive.h"
+#include "ui/i18n.h"
 
 uint8_t *fs_game_file(const char *path, size_t *out_n);  // runtime/services/fs.c
 
@@ -233,6 +234,8 @@ static void list_read(void) {
         if (!actor || !profile || !has_tag(&b, a, can_get) || has_tag(&b, a, important) || has_tag(&b, a, cooked) ||
             has_tag(&b, a, rupee))
             continue;
+        // The One-Hit Obliterator belongs to one quest: outside it, Link can't put it away and it drains his hearts (#652)
+        if (!strcmp(actor, "Weapon_Sword_502")) continue;
         int cat = -1;
         for (size_t p = 0; p < sizeof profiles / sizeof *profiles; p++)
             if (!strcmp(profile, profiles[p].profile)) cat = profiles[p].cat;
@@ -257,6 +260,7 @@ static void list_read(void) {
     for (int i = 0; i < g_nitems; i++)
         if (!w || g_items[w - 1].cat != g_items[i].cat || strcmp(g_items[w - 1].name, g_items[i].name)) g_items[w++] = g_items[i];
     g_nitems = w;
+    for (int i = 0; i < g_nitems; i++) ui_register_glyphs(g_items[i].name);
     LOG("[items] %d items can be added\n", g_nitems);
     free(d);
 }

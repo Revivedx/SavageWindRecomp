@@ -12,3 +12,5 @@ void vibration_permit(bool permitted);
 bool vibration_permitted(void);
 void vibration_clear(void);
 void vibration_update(SDL_Gamepad *pad, bool focused);
+void vibration_pad_closed(SDL_Gamepad *pad);
+void vibration_flush(void);

@@ -359,6 +359,7 @@ void vk_collect_dead(void) {
 }
 
 static uint64_t storage_size(const NvnTexture *t);
+static bool storage_readable(NvnTexture *t, uint64_t total);
 
 // (control `memstats`) texture memory by kind: what an image holds of its memory, until it is destroyed
 static void texmem_note(const NvnTexture *t, TexBackend *b, bool depthfmt) {
@@ -405,6 +406,72 @@ VkFormat vk_view_format(TexBackend *b, VkFormat want) {
     static int nlog;
     if (nlog++ < 10) LOG("[vk] view format %d of an image of format %d not in its list: its own instead\n", want, b->format);
     return b->format;
+}
+
+// A HUD button drawing (glyphs_apply_layout)? Sharper menus must leave those alone, or they keep the Switch's icons (#613).
+// They are recognised deswizzled, so the check can't be made on the texels as stored.
+static bool hud_button_texture(NvnTexture *t) {
+    if (t->format != 0x01 || t->width > 100 || t->height > 100) return false;
+    LevelLayout l = tegra_level(&t->layout, 0);
+    uint8_t *lin = malloc((uint64_t)l.wb * l.hb);
+    if (!lin) return false;
+    tegra_deswizzle((const uint8_t *)(uintptr_t)t->addr, lin, l.wb, l.hb, l.d, 1, l.block_height_log2, l.block_depth_log2);
+    bool icon = glyphs_is_layout_icon(l.w, l.h, lin, l.wb);
+    free(lin);
+    return icon;
+}
+
+// The HUD's partial hearts are two copies of a half heart (Nt_HeartNew_01: R8G8 48x48, alpha in G), the right one
+// mirrored, cut hard between columns 23 and 24. Drawn larger than 1:1, the linear filter blends that edge with the
+// transparent column next to it, so both halves fade out at the centre and a seam shows. The layout's masks clip each
+// half at the centre, except while the heart's healing preview turns them: then only the texture's own edge parts the
+// two halves, and the empty part is two see-through halves, which must neither overlap nor leave a gap. So the image
+// is HEART_SCALE times wider (the seam runs down it; heights stay), the heart filtered as before but cut sharply at
+// the centre, the column past the cut repeating the last one: the filter's edge there is 1/HEART_SCALE of a texel.
+#define HEART_SCALE 64
+static bool heart_half_known(uint32_t w, uint32_t h, const uint8_t *lin, uint32_t row) {
+    if (w != 48 || h != 48) return false;
+    uint64_t hash = 0xcbf29ce484222325ull;
+    for (uint32_t y = 0; y < h; y++)
+        for (uint32_t x = 0; x < w * 2; x++) hash = (hash ^ lin[(uint64_t)y * row + x]) * 0x100000001b3ull;
+    return hash == 0x1f80ff910561d6e6ull;
+}
+
+// Where the image could not be made larger (create_image): column 24 repeats column 23, enough while the masks clip.
+static void heart_half_pad(uint8_t *lin, uint32_t row) {
+    for (uint32_t y = 0; y < 48; y++) memcpy(lin + (uint64_t)y * row + 24 * 2, lin + (uint64_t)y * row + 23 * 2, 2);
+}
+
+// lin: the 48x48 texels; big: 48 * HEART_SCALE x 48 texels. Each half is filtered on its own (clamped to its columns).
+static void heart_half_enlarge(const uint8_t *lin, uint32_t row, uint8_t *big) {
+    const uint32_t n = 48 * HEART_SCALE;
+    for (uint32_t x = 0; x < n; x++) {
+        uint32_t sx = x == n / 2 ? x - 1 : x;  // (the column past the cut: the last one's texels)
+        int lo = sx < n / 2 ? 0 : 24, hi = lo + 23;
+        float fx = (sx + 0.5f) / HEART_SCALE - 0.5f;
+        int x0 = (int)floorf(fx);
+        float wx = fx - x0;
+        int xa = x0 < lo ? lo : x0 > hi ? hi : x0, xb = x0 + 1 < lo ? lo : x0 + 1 > hi ? hi : x0 + 1;
+        for (uint32_t y = 0; y < 48; y++)
+            for (int c = 0; c < 2; c++) {
+                float va = lin[(uint64_t)y * row + xa * 2 + c], vb = lin[(uint64_t)y * row + xb * 2 + c];
+                big[((uint64_t)y * n + x) * 2 + c] = (uint8_t)(va + (vb - va) * wx + 0.5f);
+            }
+    }
+}
+
+// At create_image: the texture is that half heart (its texels are in place by then)
+static bool heart_half_texture(NvnTexture *t) {
+    if (t->format != 0x0D || t->width != 48 || t->height != 48 || t->layout.levels != 1 || t->target != 1 ||
+        nvn_texture_flags_pitch(t->flags) || !storage_readable(t, storage_size(t)))
+        return false;
+    LevelLayout l = tegra_level(&t->layout, 0);
+    uint8_t *lin = malloc((uint64_t)l.wb * l.hb * 2);
+    if (!lin) return false;
+    tegra_deswizzle((const uint8_t *)(uintptr_t)t->addr, lin, l.wb, l.hb, l.d, 2, l.block_height_log2, l.block_depth_log2);
+    bool known = heart_half_known(l.w, l.h, lin, l.wb * 2);
+    free(lin);
+    return known;
 }
 
 static void create_image(NvnTexture *t, TexBackend *b) {
@@ -484,7 +551,7 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     if (!b->text_scale && g_settings.sharper_menus && !b->gpu_bc4 && (t->format == 0x49 || t->format == 0x01) && t->pool &&
         t->layout.levels == 1 && t->width >= 16 && t->height >= 16 && t->addr >= t->pool->storage &&
         t->addr + sheet_bytes <= t->pool->storage + t->pool->size &&
-        menu_tex_known((const uint8_t *)(uintptr_t)t->addr, sheet_bytes)) {
+        menu_tex_known((const uint8_t *)(uintptr_t)t->addr, sheet_bytes) && !hud_button_texture(t)) {
         b->text_scale = (uint8_t)g_settings.sharper_menus;
         b->menu_tex = true;
         static int nlog;
@@ -494,6 +561,11 @@ static void create_image(NvnTexture *t, TexBackend *b) {
         tw *= b->text_scale;
         th *= b->text_scale;
         levels = b->text_scale == 4 ? 3 : 2;
+    }
+    b->heart_half = !b->text_scale && !b->scalable && heart_half_texture(t);
+    if (b->heart_half) {
+        LOG("[vk] half heart: %ux wider, cut sharply at the centre\n", HEART_SCALE);
+        tw = 48 * HEART_SCALE;
     }
     if (!b->bc4_cpu && !format_supports(vf, need)) {
         bool astc = vf >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && vf <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK;
@@ -619,11 +691,23 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     // first contents into the 1x1 colours the CPU reads back (exec.c readbacks_apply): a NaN there stayed for good and
     // washed the picture out (white, or neon green and yellow), about every other time at 2560 x 1440.
     bool float_rt = (usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) && format_is_float(vf);
+    // Not 3D images: BOTW's sky table (256x32x16 RGBA16F, the atmosphere's scattering) is one, filled from the CPU right
+    // after this clear. AMD's Windows driver (RX 6600, 26.6.2) kept part of the clear through that copy: read back from
+    // the GPU, 40% of the table was wrong (whole rows empty), the sky came out grey or black everywhere, from Alpha 4 on
+    // (#359, #665); not cleared, the table read back whole and the sky was right. On NVIDIA it reads back whole either
+    // way. 3D targets the game draws into start as they did before Alpha 4. SAVAGEWIND_VK_CLEAR_3D=1: cleared too.
+    static int clear_3d = -1;
+    if (clear_3d < 0) {
+        clear_3d = getenv("SAVAGEWIND_VK_CLEAR_3D") ? atoi(getenv("SAVAGEWIND_VK_CLEAR_3D")) != 0 : 0;
+        if (clear_3d) LOG("[vk] new 3D images cleared too (SAVAGEWIND_VK_CLEAR_3D)\n");
+    }
+    if (type == VK_IMAGE_TYPE_3D && !clear_3d) float_rt = false;
     if ((b->scalable || float_rt) && !depthfmt) {  // (scalable: made again at a new scale, no stale memory in what frames keep)
         VkCommandBuffer cb = vk_upload_cmd();
         VkClearColorValue zero = {{0}};
         VkImageSubresourceRange rg = {VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
         rec_CmdClearColorImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &rg);
+        vk_full_barrier(cb);
     }
     {   // (debugging) SAVAGEWIND_DEBUG_NEW_FILL=1: every new colour image starts magenta (texels nothing wrote yet)
         static int fill = -1;
@@ -889,7 +973,7 @@ static void zombies_expire(void) {  // (gpu lock held)
 // SAVAGEWIND_VRAM_BUDGET_MB=<n>: a smaller budget (vram.c), to try it on a big card.
 #define VT_EVERY 30
 #define VT_MIN_AGE 240
-#define VT_TARGET 0.85
+#define VT_TARGET VRAM_TRIM_TARGET
 #define VT_MAX_BYTES (128ull << 20)
 static uint64_t vt_evicted, vt_evicted_bytes, vt_back;
 
@@ -1287,6 +1371,22 @@ static void upload_text_sheet(VkCommandBuffer cb, NvnTexture *t, TexBackend *b, 
     }
 }
 
+// The half heart (heart_half_enlarge): deswizzled, widened, one level
+static void upload_heart_half(VkCommandBuffer cb, NvnTexture *t, TexBackend *b, const LevelLayout *l, const uint8_t *src,
+                              uint32_t layer) {
+    const uint32_t n = 48 * HEART_SCALE;
+    uint8_t *lin = malloc((uint64_t)l->wb * l->hb * 2);
+    if (!lin) return;
+    tegra_deswizzle(src, lin, l->wb, l->hb, 1, 2, l->block_height_log2, l->block_depth_log2);
+    VkSpan out = vk_transient((uint64_t)n * 48 * 2, 16);
+    if (heart_half_known(l->w, l->h, lin, l->wb * 2)) heart_half_enlarge(lin, l->wb * 2, out.ptr);
+    else memset(out.ptr, 0, (uint64_t)n * 48 * 2);  // (the game wrote something else there)
+    free(lin);
+    VkBufferImageCopy rg = {.bufferOffset = out.off, .bufferRowLength = n, .bufferImageHeight = 48,
+                            .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1}, .imageExtent = {n, 48, 1}};
+    rec_CmdCopyBufferToImage(cb, out.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+}
+
 // Guest memory -> image for the levels in level_mask (bit per level), every layer or slice.
 static void upload_levels(NvnTexture *t, TexBackend *b, uint32_t level_mask) {
     const FormatInfo *fi = t->layout.fmt;
@@ -1303,6 +1403,10 @@ static void upload_levels(NvnTexture *t, TexBackend *b, uint32_t level_mask) {
         for (uint32_t lv = 0; lv < levels; lv++) {
             if (!((level_mask >> lv) & 1)) continue;
             LevelLayout l = tegra_level(&t->layout, lv);
+            if (b->heart_half) {
+                upload_heart_half(cb, t, b, &l, (const uint8_t *)(uintptr_t)t->addr + layer * layer_size + l.offset, layer);
+                continue;
+            }
             if (b->text_scale) {
                 upload_text_sheet(cb, t, b, &l, (const uint8_t *)(uintptr_t)t->addr + layer * layer_size + l.offset, linear, layer);
                 continue;
@@ -1370,6 +1474,14 @@ static void upload_levels(NvnTexture *t, TexBackend *b, uint32_t level_mask) {
             uint32_t out_row = expand ? l.wb * 4 : row;
             VkSpan s = vk_transient((uint64_t)out_row * l.hb * l.d, 16);
             uint8_t *lin = expand ? malloc(sz) : s.ptr;
+            // The checks below read every texel, and s.ptr is memory for the GPU, very slow to read: the first menu opened
+            // spent 284 ms in hw_illust_which and 55 ms in glyphs_apply on it. Those textures go through normal memory.
+            uint8_t *mapped = NULL;
+            if (lv == 0 && layer == 0 && !expand &&
+                (t->format == 0x01 || t->format == 0x0D || (t->format == 0x49 && t->width == 256 && t->height == 1024))) {
+                uint8_t *m = malloc(sz);
+                if (m) mapped = lin, lin = m;
+            }
             const uint8_t *src = (const uint8_t *)(uintptr_t)t->addr + layer * layer_size + l.offset;
             if (linear) {
                 for (uint32_t y = 0; y < l.hb; y++) memcpy(lin + (uint64_t)y * row, src + (uint64_t)y * (t->stride ? t->stride : row), row);
@@ -1384,11 +1496,17 @@ static void upload_levels(NvnTexture *t, TexBackend *b, uint32_t level_mask) {
                 glyphs_apply_layout(t->format, l.w, l.h, lin, row))
                 b->glyph_gen = glyphs_generation();
             if (lv == 0 && layer == 0 && t->format == 0x0D && !linear) {  // (the Controls page's and tips' drawings)
+                if (heart_half_known(l.w, l.h, lin, row)) heart_half_pad(lin, row);  // (and the hearts' halves)
                 int which = hw_illust_which(l.w, l.h, lin, row), dev = glyphs_console();
                 if (which >= 0) {
                     if (dev >= 0) hw_illust_draw(dev, which, l.w, l.h, lin, row);
                     LOG("[glyphs] Controls page drawing %d: device %d\n", which, dev);
                 }
+            }
+            if (mapped) {
+                memcpy(mapped, lin, sz);
+                free(lin);
+                lin = mapped;
             }
             if (t->target == 2 && lv == 0 && getenv("SAVAGEWIND_DUMP_TEX3D")) {  // (debugging) 3D texels as uploaded
                 char path[128];

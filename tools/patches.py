@@ -19,6 +19,28 @@ def _word(gen, a):
     return struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
 
 
+def _ui_layout_draw(gen, a):
+    # A tail thunk is shared by MainScreen, AppMap, context prompts and dialogue layouts.
+    # Do not recurse through the thunk: bracket the independently verified native body.
+    w = _word(gen, a)
+    assert w & 0xfc000000 == 0x14000000, hex(w)
+    target = a + sext(w & 0x03ffffff, 26) * 4
+    assert target == gen.sites['ui_layout_native'], hex(target)
+    gates = (0x39440008, 0x7100011f, 0x39440809, 0x3943f80a,
+             0x3943fc0b, 0x7a401920, 0x7a400944, 0x7a421964)
+    assert tuple(_word(gen, target + i * 4) for i in range(len(gates))) == gates
+    fn = _fn(gen, 'ui_layout_native')
+    return (f'{{ extern void {fn}(Cpu *); extern void rt_ui_layout_draw(Cpu *, void (*)(Cpu *)); '
+            f'rt_ui_layout_draw(c, {fn}); return; }}')
+
+
+def _ui_layout_pane(gen, a):
+    assert _word(gen, a) == 0x39416008, hex(_word(gen, a))
+    fn = _fn(gen, 'ui_layout_pane')
+    return (f'{{ extern void {fn}(Cpu *); extern _Bool rt_ui_layout_pane_draw(Cpu *, void (*)(Cpu *)); '
+            f'if (rt_ui_layout_pane_draw(c, {fn})) return; c->x[8] = LD8(c->x[0] + 0x58); }}')
+
+
 def _quick_sort_enter(gen, a):
     # Menu::enter: sample held X before the selector initializes its list.
     assert _word(gen, a) == 0xfc1d0fe8, hex(_word(gen, a))  # str d8, [sp, #-0x30]!
@@ -385,11 +407,80 @@ def _solver_steps(gen, a):
 # still for a few steps and then caught up at once (0.08 x sqrt(1, 2, 3, 4) rad/s for a steady 0.05), and Link on it
 # hopped. The runtime gives 2 atan2(|xyz|, |w|), the same angle without the rounding.
 
+# A player demo move's arrival (runtime/hle/framepace.c rt_demo_move_arrive, #364): the move that walks Link along a rail
+# or to a point in a cutscene (1.9.0 0x7000c70a58, shared by PlayerRailMove and PlayerDestinationMove) ends when the
+# distance left (s8) is under the body's speed (s9, in metres per console frame) - one console frame of walking. Its other
+# end test already scales by the step (2 x speed x delta frame, s0). Leaving the Shrine of Resurrection, PlayerRailMove's
+# point runs about 0.15 m ahead of Link along the rail; above ~100 fps a frame's step is short enough for Link to come
+# within 0.185 m of an intermediate point, and the walk ended there for good. The speed is scaled to the step.
+
+def _demo_move_arrive(gen, a):
+    assert _word(gen, a) == 0x1e292100, hex(_word(gen, a))  # fcmp s8, s9
+    return ('{ extern float rt_demo_move_arrive(float, float); '
+            'c->nzcv = rt_fcmp_s(c, rt_vf32(c, 8), rt_demo_move_arrive(rt_vf32(c, 9), rt_vf32(c, 0))); }'
+            f'  /* {a:#x}: fcmp s8, s9 (player demo move: arrived within a frame of walking) */')
+
+
+# A player rail move's point (runtime/hle/framepace.c rt_rail_point_radius, #364): PlayerRailMove's update (1.9.0
+# 0x7000c89cec) moves the point Link walks to along the rail by half a radius whenever Link is within the radius of it,
+# and the radius is the delta frame the player stored that frame (+0x20f0), in metres. Above 30 fps the point waited for
+# Link at a rail node until he was within a fraction of a metre (0.17 at 180 fps), and the move's arrival tests ended the
+# walk there. The radius is at least 1, the console's.
+
+def _rail_point_radius(gen, a):
+    assert _word(gen, a) == 0xbd60f100, hex(_word(gen, a))  # ldr s0, [x8, #0x20f0]
+    return ('{ extern float rt_rail_point_radius(float); union { uint32_t u; float f; } r = { .u = (uint32_t)LD32(c->x[8] + 0x20f0) }; '
+            'r.f = rt_rail_point_radius(r.f); c->v[0] = r.u; }'
+            f'  /* {a:#x}: ldr s0, [x8, #0x20f0] (player rail move: the radius its point moves on within) */')
+
+
 def _kf_angle(gen, a):
     assert _word(gen, a) >> 26 == 0x25, hex(_word(gen, a))  # bl (getAngle)
     target = sext(_word(gen, a) & 0x3ffffff, 26) * 4 + a
     return ('{ extern float rt_kf_angle(uint64_t); union { float f; uint32_t u; } r = { rt_kf_angle(c->x[0]) }; '
             f'c->v[0] = r.u; }}  /* {a:#x}: bl {target:#x} (keyframed body: angle of the turn left) */')
+
+
+# Havok's deactivation at the console's pace (runtime/hle/framepace.c rt_phys_tick, #398): Havok counts its deactivation
+# checks in physics steps, and the game takes one step a frame. A body that stays within 2 cm of where it was for 24
+# steps (8 cm for 96) puts its island to sleep: 0.8 s at 30 fps, 0.07 s at 360. Ree Dahee Shrine's ball lands rolling
+# up the long ramp and stops for a moment before it rolls back down; above ~120 fps it fell asleep there for good.
+# The world step's counter (1.9.0 0x70000f5e20, x8 = the hkpWorld; the multithreaded simulation's copy 0x700012644c,
+# the same code) and each body's, in the integration of islands without constraints (0x700011f95c, x20 = its hkpMotion,
+# the world's hkpSolverInfo at [x29 - 0x78]) and with them (0x70001207cc, x26, at [sp + 0x38]) only count the steps
+# that complete a console frame; the others go past the counter's update as the game's steps between two checks do (the
+# cbnz after it). rt_phys_tick also scales the solver's slow-body damping and stop to the step's length.
+
+def _cbnz_target(gen, a):
+    w = _word(gen, a)
+    assert w & 0xff00001f == 0x35000009, hex(w)  # cbnz w9, <target>
+    return a + sext((w >> 5) & 0x7ffff, 19) * 4
+
+
+def _phys_tick(gen, a):
+    assert _word(gen, a) == 0x394fbd0a, hex(_word(gen, a))  # ldrb w10, [x8, #0x3ef]
+    skip = _cbnz_target(gen, a + 0x3c)  # (past the update: the counter wraps every 16 steps)
+    return ('{ extern int rt_phys_tick(uint64_t); '
+            f'if (!rt_phys_tick(c->x[8])) goto L_{skip:x}; c->x[10] = LD8(c->x[8] + 0x3ef); }}'
+            f'  /* {a:#x}: ldrb w10, [x8, #0x3ef] (world step: deactivation counter) */')
+
+
+def _phys_motion_tick(gen, a):
+    w = _word(gen, a)
+    assert w & 0xfffffc1f == 0x39403408, hex(w)  # ldrb w8, [x<motion>, #0xd]
+    motion = (w >> 5) & 31
+    # the function's own load of the solver info for the check (ldur / ldr x13, [x<base>, #<offset>])
+    info = _word(gen, a + 0xc0)
+    if info & 0xffe00c1f == 0xf840000d:  # ldur x13, [xn, #simm9]
+        base, off = (info >> 5) & 31, sext((info >> 12) & 0x1ff, 9)
+    else:
+        assert info & 0xffc0001f == 0xf940000d, hex(info)  # ldr x13, [xn, #imm12 x 8]
+        base, off = (info >> 5) & 31, ((info >> 10) & 0xfff) * 8
+    reg = 'c->sp' if base == 31 else f'c->x[{base}]'
+    skip = _cbnz_target(gen, a + 0x10)  # (no check in this step)
+    return ('{ extern int rt_phys_ticked(uint64_t); '
+            f'if (!rt_phys_ticked(LD64({reg} + ({off}ll)))) goto L_{skip:x}; c->x[8] = LD8(c->x[{motion}] + 0xd); }}'
+            f'  /* {a:#x}: ldrb w8, [x{motion}, #0xd] (body: deactivation check counter) */')
 
 
 # The sound system's frame (runtime/hle/framepace.c rt_snd_frame_floor, #145): once a frame the game hands its sound
@@ -693,7 +784,7 @@ def _grass_blade_lateral(gen, a):
     assert w in (0x1e262000, 0x1e272000), hex(w)  # fcmp s0, s6 / fcmp s0, s7
     n = (w >> 16) & 31
     return ('{ extern float rt_grass_blade_lateral(int, float, float, float, float, uint32_t, uint32_t); '
-            f'c->nzcv = cmp_s(c, VSF32(0), rt_grass_blade_lateral({n - 6}, VSF32({n}), VSF32(9), VSF32(13), VSF32(21), '
+            f'c->nzcv = rt_fcmp_s(c, rt_vf32(c, 0), rt_grass_blade_lateral({n - 6}, rt_vf32(c, {n}), rt_vf32(c, 9), rt_vf32(c, 13), rt_vf32(c, 21), '
             'LD32(c->sp + 0x204), LD32(c->sp + 0x208))); }'
             f'  /* {a:#x}: fcmp s0, s{n} (grass blades: a cell inside the region\'s width) */')
 
@@ -877,6 +968,8 @@ def _tp_gate(gen, a):
 
 
 PATCHES = {
+    'ui_layout_draw': _ui_layout_draw,
+    'ui_layout_pane': _ui_layout_pane,
     'quick_drop_tick': _quick_drop_tick,
     'quick_drop_actor_call': _quick_drop_actor_call,
     'quick_sort_enter': _quick_sort_enter,
@@ -927,6 +1020,12 @@ PATCHES = {
     'stale_actor_target': _stale_actor_target,
     'phys_solver_steps': _solver_steps,
     'kf_angle': _kf_angle,
+    'demo_move_arrive': _demo_move_arrive,
+    'rail_point_radius': _rail_point_radius,
+    'phys_tick': _phys_tick,
+    'phys_tick_mt': _phys_tick,
+    'phys_motion_tick': _phys_motion_tick,
+    'phys_motion_tick_c': _phys_motion_tick,
     'snd_frame_floor': _snd_frame_floor,
     'persp_matrix': _persp_matrix,
     'persp_matrix_offset': _persp_matrix_offset,

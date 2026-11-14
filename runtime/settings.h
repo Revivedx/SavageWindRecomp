@@ -45,8 +45,11 @@ enum { PERF_OFF = 0, PERF_FPS = 1, PERF_FULL = 2 };
 // same at every rate. The console runs the game at 30.
 #define FPS_DEFAULT 60
 #define FPS_CHOICES {0, 30, 60, 90, 120, 144, 165, 240, 360}
-// PC handhelds (settings_handheld): 40 for a screen at 40 or 80 Hz, 45 at 90 Hz; no Off, no Match display
+// PC handhelds (settings_handheld): 40 for a screen at 40 or 80 Hz, 45 at 90 Hz; no Off, no Match display. Their
+// faster screens add their own rates (#712: 90 on a Steam Deck OLED, 120 on a ROG Ally, 144 on a Legion Go): those of
+// FPS_CHOICES_HANDHELD_FAST up to the screen's refresh rate, all of them while it isn't known yet.
 #define FPS_CHOICES_HANDHELD {30, 40, 45, 60}
+#define FPS_CHOICES_HANDHELD_FAST {90, 120, 144}
 #define FPS_CHOICES_MAX 9
 int fps_choices(const int **list);  // this machine's frame rates (FPS_CHOICES, or FPS_CHOICES_HANDHELD): their count
 // VSync (Video > VSync; runtime/nvn/vulkan/device.c picks the present mode): On waits for the display (FIFO; with
@@ -70,6 +73,9 @@ enum { TEX_LOD_DEFAULT = 0, TEX_LOD_SHARP = 1, TEX_LOD_SHARPER = 2, TEX_LOD_COUN
 // to 2; Surround 5.1 sends all 6 channels to the audio device; 3D Headphones mixes the 6 channels to stereo with
 // binaural head-shadow and ear-delay cues for headphones.
 enum { AUDIO_OUT_STEREO = 0, AUDIO_OUT_SURROUND_51 = 1, AUDIO_OUT_HEADPHONES_3D = 2, AUDIO_OUT_COUNT };
+// The start screen's background, when there is no splash.jpg / .png of the player's in the data folder
+enum { START_PICTURE_ART, START_PICTURE_SCREENSHOT, START_PICTURE_SAVE, START_PICTURE_COUNT };
+
 typedef struct {
     bool fullscreen;
     int fullscreen_mode;     // FSMODE_*
@@ -124,6 +130,10 @@ typedef struct {
     bool async_shaders;  // draw on while new shaders compile (no stutter; what needs them is skipped meanwhile; on by
                          // default since settings_version 4; off: every draw waits for its shaders, as before)
     bool precompile_shaders;  // setting the game files up also precompiles every shader (runtime/nvn/precompile.h)
+    bool start_in_config;     // Windows releases: a plain start opens Savage Wind Configuration first
+    int start_picture;        // the start screen's background (ui/splash.mm): START_PICTURE_*
+    bool boot_picture;        // that picture while the game loads (vulkan/device.c boot_splash_start); off: black
+    bool check_updates;       // Savage Wind Configuration asks SW Update if there is a new version
     int shadow_res;      // SHADOW_*: shadow maps at the console's size, bigger, or (Potato) smaller
     int sharper_menus;   // the menus' one-channel textures enlarged this many times (2 or 4; 0: off), runtime/nvn/text_upscale.c
     int sharper_text;    // the game's font sheets enlarged this many times (2 or 4; 0: off), runtime/nvn/text_upscale.c
@@ -177,7 +187,8 @@ typedef struct {
 #define STICK_CAM_MAX 600
 #define STICK_CAM_DEFAULT 200
 #define STICK_DEADZONE_DEFAULT 0.10f  // (the Switch's own input service has one: the game expects 0 at rest)
-#define HAZE_CHOICES {0, 25, 50, 75, 100}  // (percent of the game's haze)
+#define HAZE_CHOICES {75, 90, 100}  // (percent of the game's haze: below 75 the whole picture turns teal)
+#define HAZE_MIN 75
 enum { DRAWDIST_ORIGINAL, DRAWDIST_MEDIUM, DRAWDIST_HIGH, DRAWDIST_POTATO, DRAWDIST_COUNT };  // (Original: the game's own
                                                                                   // distances; Potato: nearer)
 float draw_distance_factor(void);  // the setting's factor on the game's distances (1: Original)

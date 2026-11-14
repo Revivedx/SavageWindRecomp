@@ -11,7 +11,7 @@
 #include "language.h"
 #include "handheld.h"
 
-bool fsr3_upscaler_enabled(void);  // (nvn/output_scale.c: FSR 3 upscaling held back for now)
+bool fsr3_upscaler_enabled(void);  // (nvn/output_scale.c: SAVAGEWIND_FSR3=0 hides FSR 3 / 4)
 
 #define SETTINGS_FILE settings_file()
 
@@ -52,6 +52,10 @@ Settings g_settings = {
     .stick_deadzone = {STICK_DEADZONE_DEFAULT, STICK_DEADZONE_DEFAULT},
     .fps_limit = FPS_DEFAULT,
     .precompile_shaders = true,
+    .start_in_config = true,
+    .start_picture = START_PICTURE_SCREENSHOT,
+    .boot_picture = true,
+    .check_updates = true,
     .async_shaders = true,
     .vsync = VSYNC_DEFAULT,
     .gpu = -1,
@@ -113,10 +117,9 @@ static void gyro_startup_overrides(void) {
 }
 void settings_fps_for_display(float hz) {
     if (!g_settings.fps_display || hz < 20) return;
-    static const int fps[] = FPS_CHOICES;
-    int best = 30;
-    for (unsigned i = 0; i < sizeof fps / sizeof fps[0]; i++)
-        if (fps[i] && fps[i] <= hz + 1 && fps[i] > best) best = fps[i];
+    // The display's own rate, not the nearest one of the menu's list: a 210 Hz monitor stayed at 165, a 72 Hz one at 60 (#661).
+    int best = (int)(hz + 0.5f);
+    if (best > 360) best = 360;  // (framepace.c FPS_CEILING)
     if (g_settings.fps_limit != best) LOG("[settings] frame rate %d (Match display: %.0f Hz)\n", best, hz);
     g_settings.fps_limit = best;
 }
@@ -148,11 +151,22 @@ void settings_aa_row_set(int row) {
 }
 
 int fps_choices(const int **list) {
-    static const int pc[] = FPS_CHOICES, hh[] = FPS_CHOICES_HANDHELD;
+    static const int pc[] = FPS_CHOICES, hh[] = FPS_CHOICES_HANDHELD, fast[] = FPS_CHOICES_HANDHELD_FAST;
+    static int h_list[FPS_CHOICES_MAX];
     _Static_assert(sizeof pc / sizeof pc[0] <= FPS_CHOICES_MAX, "");
-    bool h = settings_handheld();
-    *list = h ? hh : pc;
-    return h ? (int)(sizeof hh / sizeof hh[0]) : (int)(sizeof pc / sizeof pc[0]);
+    _Static_assert(sizeof hh / sizeof hh[0] + sizeof fast / sizeof fast[0] <= FPS_CHOICES_MAX, "");
+    if (!settings_handheld()) {
+        *list = pc;
+        return (int)(sizeof pc / sizeof pc[0]);
+    }
+    extern float winsize_refresh_rate(void);
+    float hz = winsize_refresh_rate();
+    int n = 0;
+    for (size_t i = 0; i < sizeof hh / sizeof hh[0]; i++) h_list[n++] = hh[i];
+    for (size_t i = 0; i < sizeof fast / sizeof fast[0]; i++)
+        if (hz <= 0 || fast[i] <= hz + 0.5f) h_list[n++] = fast[i];
+    *list = h_list;
+    return n;
 }
 
 // The first start on a handheld, also with settings from before this: the handheld's preset, full screen at its size
@@ -227,7 +241,7 @@ void settings_load(void) {
         else if (!strcmp(key, "settings_version")) version = atoi(val);
         else if (!strcmp(key, "resolution")) snprintf(old_res, sizeof old_res, "%s", val);  // (version 1)
         else if (!strcmp(key, "upscaler"))  // (metalfx / fsr1: this OS's spatial upscaler; dlss: NGX; fsr3, fsr4: Vulkan,
-            // held back for now: FSR 1 with the same quality mode, nvn/output_scale.c fsr3_upscaler_enabled)
+            // hidden with SAVAGEWIND_FSR3=0: FSR 1 with the same quality mode, nvn/output_scale.c fsr3_upscaler_enabled)
             g_settings.upscaler = !strcmp(val, "dlss") ? UPSCALE_DLSS
                                 : !strcmp(val, "fsr1") || !strcmp(val, "metalfx") ? UPSCALE_SPATIAL
                                 : !strcmp(val, "fsr3") ? (fsr3_upscaler_enabled() ? UPSCALE_FSR3_OR_SPATIAL : UPSCALE_SPATIAL)
@@ -296,6 +310,12 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "async_shaders")) g_settings.async_shaders = atoi(val) != 0;
         else if (!strcmp(key, "precompile_shaders")) g_settings.precompile_shaders = atoi(val) != 0;
+        else if (!strcmp(key, "start_in_config")) g_settings.start_in_config = atoi(val) != 0;
+        else if (!strcmp(key, "start_picture")) {
+            int v = atoi(val);
+            g_settings.start_picture = v >= 0 && v < START_PICTURE_COUNT ? v : START_PICTURE_SCREENSHOT;
+        } else if (!strcmp(key, "boot_picture")) g_settings.boot_picture = atoi(val) != 0;
+        else if (!strcmp(key, "check_updates")) g_settings.check_updates = atoi(val) != 0;
         else if (!strcmp(key, "wide_view")) g_settings.wide_view = atoi(val) != 0;
         else if (!strcmp(key, "hud_edges")) g_settings.hud_edges = atoi(val) != 0;
         else if (!strcmp(key, "hdr")) {
@@ -336,7 +356,10 @@ void settings_load(void) {
         else if (!strcmp(key, "one_hit_kill")) g_settings.one_hit_kill = atoi(val) != 0;
         else if (!strcmp(key, "damage_taken")) g_settings.damage_taken = atoi(val);  // (percent)
         else if (!strcmp(key, "damage_dealt")) g_settings.damage_dealt = atoi(val);
-        else if (!strcmp(key, "haze")) { int v = atoi(val); g_settings.haze = v < 0 ? 0 : v > 100 ? 100 : v; }  // (percent)
+        else if (!strcmp(key, "haze")) {  // (percent; an older ini's 0-50 reads as 75: HAZE_MIN)
+            int v = atoi(val);
+            g_settings.haze = v < HAZE_MIN ? HAZE_MIN : v > 100 ? 100 : v;
+        }
         else if (!strcmp(key, "bloom")) g_settings.bloom = atoi(val) != 0;
         else if (!strcmp(key, "depth_of_field")) g_settings.depth_of_field = atoi(val) != 0;
         else if (!strcmp(key, "dynamic_resolution")) g_settings.dynamic_res = atoi(val) != 0;
@@ -521,6 +544,10 @@ void settings_save(void) {
                                 g_settings.button_layout : BUTTON_LAYOUT_AUTO]);
     fprintf(f, "async_shaders = %d\n", g_settings.async_shaders);
     fprintf(f, "precompile_shaders = %d\n", g_settings.precompile_shaders);
+    fprintf(f, "start_in_config = %d\n", g_settings.start_in_config);
+    fprintf(f, "start_picture = %d\n", g_settings.start_picture);
+    fprintf(f, "boot_picture = %d\n", g_settings.boot_picture);
+    fprintf(f, "check_updates = %d\n", g_settings.check_updates);
     static const char *const shadow[SHADOW_COUNT] = {"console", "high", "ultra", "extreme", "potato"};
     int sr = g_settings.shadow_res;
     fprintf(f, "shadow_resolution = %s\n", shadow[sr >= 0 && sr < SHADOW_COUNT ? sr : SHADOW_CONSOLE]);

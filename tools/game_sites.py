@@ -44,7 +44,6 @@ MAIN_BASE = 0x7000000000  # (tools/layout.py: main is the first module)
 # supported yet is known but refused by the setup until its sites are checked.
 Version = namedtuple('Version', 'name build_id supported')
 VERSIONS = [
-    Version('1.8.2', 'de0b6ac4efc1dda7', True),
     Version('1.9.0', 'cd57b23fa4bbad65', True),  # (2026-02-17: Thai text on Switch 2; SDK 21.4.1)
 ]
 
@@ -167,8 +166,28 @@ SITES = [
     Site('stale_actor_target', 'code', 'f942ba68 f9404500 94000000/fc000000 12000008 390006e8 37000000/fff8001f 394002e8 35000008/ff00001f', 0),
     # the physics step's solver microsteps (tools/patches.py _solver_steps): the delta frame times 6
     Site('phys_solver_steps', 'code', '1e231002 1e3c1004 f9401a68 1e2c1009 1e220822 f9400108 1e202048 f9400514', 4),
+    # Havok's deactivation at the console's pace (tools/patches.py _phys_tick, _phys_motion_tick): the world step's
+    # deactivation counter (+0x3ef; the single-threaded and the multithreaded simulation) and each body's (hkpMotion +0xd;
+    # the integration of islands without constraints and with them)
+    Site('phys_tick', 'code', '394fbd0a 11000549 1100154a 390fbd09 1200094a 3500000a/ff00001f 394fb50a 5200014a '
+         '390fb50a 1200092a 3500000a/ff00001f 394fb50a 521f014a 390fb50a 12000d29 35000009/ff00001f 394fb909 320003ea '
+         '4b090149 390fb909 390fbd1f d503201f', 0),
+    Site('phys_tick_mt', 'code', '394fbd0a 11000549 1100154a 390fbd09 1200094a 3500000a/ff00001f 394fb50a 5200014a '
+         '390fb50a 1200092a 3500000a/ff00001f 394fb50a 521f014a 390fb50a 12000d29 35000009/ff00001f 394fb909 320003ea '
+         '4b090149 390fb909 390fbd1f f9400a60', 0),
+    Site('phys_motion_tick', 'code', '39403688 11000508 39003688 12000509 35000009/ff00001f 12000d09 '
+         '34000009/ff00001f aa1f03e8', 0),
+    Site('phys_motion_tick_c', 'code', '39403748 11000508 39003748 12000509 35000009/ff00001f 12000d09 '
+         '34000009/ff00001f aa1f03e8', 0),
     # a keyframed body's angular velocity toward its target (tools/patches.py _kf_angle): the call that takes the angle
     # of the turn left (hkQuaternion::getAngle, 2 acos(|w|))
+    # a player demo move's arrival test (tools/patches.py _demo_move_arrive): the distance left against the body's speed
+    # in console frames, fcmp s8, s9
+    Site('demo_move_arrive', 'code', 'bd60bd09 94000000/fc000000 f9400668 5282fe09 38696908 34000008/ff00001f 1e292100 '
+         '54000004/ff00001f 90000008/9f00001f bd404261 bd425102 1e222821 1e282020 54000005/ff00001f 1e292921 1e200820', 6),
+    # the radius within which a player rail move's point goes on along the rail (tools/patches.py _rail_point_radius):
+    # its load from the player, ldr s0, [x8, #0x20f0]
+    Site('rail_point_radius', 'code', 'bd60f100 1e202020 54000005/ff00001f 1e2c1001 f9403668 aa1403e0 aa1f03e1 aa1f03e2', 0),
     Site('kf_angle', 'code', '0e612800 0e0e3c08 0e040d00 0f3f5400 0ea0a800 6e180400 4e221c00 6e211c00 3c9983a0 '
          '94000000/fc000000 3cd883a6 1e2008c0', 9),
     # the sound system's frame (tools/patches.py _snd_frame_floor): the delta frame, at least 0.5, its timers' step
@@ -200,6 +219,8 @@ SITES = [
     Site('cam_stick', 'code', 'd100c3ff fd000be8 f90017f3 a901fbfd 910063fd aa0003f3 f900001f 52800060', 0),
     # (the end of the camera's stick input, with the stick's value written: tools/patches.py _cam_stick_end)
     Site('cam_stick_end', 'code', 'f9409408 910023e0 f90007e8 94000000/fc000000 360000c0 fd400be8 f94017f3', 5),
+    # CameraHorse's return address after calling the camera stick input (rt_cam_stick's lr, runtime/hle/input.c)
+    Site('horse_cam_lr', 'code', 'bd401ba0 1e202008 39416a68 54000001/ff00001f bd401fa0 1e202008 54000001/ff00001f 37180008/fff8001f', 0),
     Site('cam_pitch_chase', 'code', '1e208803 1e202008 bd41ce80 1e23cc2b bd41d281 1e212000 54000001/ff00001f '
          '52800039', 0),
     Site('cam_pitch_surf', 'code', '1e208803 1e202008 bd430260 1e23cc2d bd430661 1e212000 54000001/ff00001f '
@@ -347,6 +368,10 @@ SITES = [
     Site('pouch_item_get', 'code', 'd10243ff a9037bfd a9046ffc a90567fa a9065ff8 a90757f6 a9084ff4 9100c3fd f90003e3', 0),
     Site('pouch_mgr', 'got', '90000017/9f00001f aa0003f5 f94002f7/ffc003ff 910003e0 f94002f6 94000000/fc000000 2a0003e2 '
          'aa1603e0', 2),
+    # Generic layout draw thunk and its native eligibility checks (runtime/ui_layout.c).
+    Site('ui_layout_draw', 'code', '14000000/fc000000 f9013001 b4000001/ff00001f d10403ff a90a7bfd a90b6ffc a90c67fa a90d5ff8', 0),
+    Site('ui_layout_native', 'code', '39440008 7100011f 39440809 3943f80a 3943fc0b 7a401920 7a400944 7a421964', 0),
+    Site('ui_layout_pane', 'code', '39416008 52801029 6a28013f 54000001/ff00001f a9bd7bfd a90157f6 a9024ff4 910003fd', 0),
     Site('main_data', 'data', '', 0),
     Site('main_end', 'end', '', 0),
 ]
@@ -357,6 +382,7 @@ SITES = [
 # Without them the mouse turns the camera through the right stick, as before (runtime/hle/input.c); without the
 # second group it turns it without the game's camera inversion options.
 OPTIONAL_GROUPS = [
+    ('ui_layout_draw', 'ui_layout_native', 'ui_layout_pane'),
     ('quick_drop_tick', 'quick_drop_actor_call', 'player_drop_forbidden', 'actor_info_lookup',
      'actor_info_has_tag', 'pouch_discard', 'player_equipment', 'pouch_default_name',
      'player_schedule_equip', 'pouch_equipped_snapshot', 'actor_index_assign', 'actor_index_resolve',
@@ -372,6 +398,9 @@ OPTIONAL_GROUPS = [
     ('stale_actor_helper', 'stale_actor_target'),
     ('quick_menu_capture_alpha',),
     ('kf_angle',),
+    ('demo_move_arrive',),
+    ('rail_point_radius',),
+    ('phys_tick', 'phys_tick_mt', 'phys_motion_tick', 'phys_motion_tick_c'),
     ('yaz0_stream', 'yaz0_stream_ret'),
     ('pc_map_focus', 'pc_map_focus_target', 'pc_map_focus_now'),
     ('beast_focus_axes', 'beast_focus_linear', 'beast_confirm_axes', 'beast_confirm_linear',
@@ -395,70 +424,15 @@ OPTIONAL_GROUPS = [
     ('stamina_store',),
     ('tp_gate',),  # (a far teleport of the control endpoint: without it a long jump freezes the world)
     ('item_tick', 'pouch_item_get', 'pouch_mgr'),
+    ('horse_cam_lr',),
 ]
 OPTIONAL = {n for g in OPTIONAL_GROUPS for n in g}
 
 KNOWN = {
-    '1.8.2': {
-        'opt_create_rows': 0x7000d1bd78,
-        'opt_row_init_flag_type': 0x7000d1c208,
-        'gdt_flag_type': 0x7001023038,
-        'opt_row_redraw': 0x7000d1bba8,
-        'opt_read': 0x7000d1cab4,
-        'opt_store': 0x7000d1bb14,
-        'opt_table': 0x7001cccd98,
-        'opt_reset': 0x7000d1dde8,
-        'opt_msg_call': 0x7000d1dc40,
-        'msg_lookup': 0x7000d71210,
-        'opt_decide': 0x7000d1d3d0,
-        'opt_update': 0x7000d1c234,
-        'opt_back_call': 0x7000d1c504,
-        'screen_back': 0x70012d8928,
-        'screen_open_request': 0x7000d6fd90,
-        'screen_open': 0x70012d90e0,
-        'screen_close': 0x70012d9124,
-        'screen_mgr': 0x7001cd5c38,
-        'pause_options_update': 0x7000cbd0b4,
-        'opt_screen_rows': 0x3698,
-        'dialog_texts': 0x7000d44748,
-        'dialog_back': 0x7000d46364,
-        'dialog_answer': 0x7001c4b308,
-        'title_update': 0x7000d4bca0,
-        'title_button': 0x7000d4c5e0,
-        'title_options_state': 0x363c,
-        'title_msg_file': 0x7001cd06d8,
-        'title_version_format': 0x70014b854e,
-        'frame_wait': 0x7000d811fc,
-        'frame_loop_interval_ret': 0x7001012a34,
-        'vfr_ratio': 0x70014092f4,
-        'gui_speed': 0x700116d0e8,
-        'arrow_fall_gravity': 0x70004db204,
-        'phys_solver_steps': 0x700145b790,
-        'snd_frame_floor': 0x700143ce64,
-        'persp_matrix': 0x7000da1400,
-        'persp_matrix_offset': 0x7000da1408,
-        'persp_unproject_y': 0x7000da14d8,
-        'proj_update': 0x7000da0e24,
-        'frustum_lr0': 0x7000da18d4,
-        'frustum_lr1': 0x7000da18fc,
-        'frustum_tb0': 0x7000da1910,
-        'frustum_tb1': 0x7000da1930,
-        'persp_unproject_x': 0x7000da1508,
-        'pause_state': 0x7001cb48a4,
-        'event_mgr': 0x7001cd8db8,
-        'controller_step': 0x7001c4ba40,
-        'player_info': 0x7001cb2658,
-        'world_mgr': 0x7001cf5d00,
-        'traverse_scale': 0x7000f908e4,
-        'traverse_scale_default': 0x7000f90904,
-        'grass_range': 0x70012999d0,
-        'grass_fade_blades': 0x70012946f0,
-        'grass_fade_quads': 0x70012a6b7c,
-        'tree_ranges': 0x70012b55cc,
-        'main_data': 0x7001a1f000,
-        'main_end': 0x7001d37000,
-    },
     '1.9.0': {
+        'ui_layout_draw': 0x70013ee084,
+        'ui_layout_native': 0x7000f6f690,
+        'ui_layout_pane': 0x7000027d30,
         'quick_drop_tick': 0x7000e68168,
         'quick_drop_actor_call': 0x7001223f50,
         'player_drop_forbidden': 0x7000cc0334,
@@ -557,7 +531,13 @@ KNOWN = {
         'stale_actor_helper': 0x700120bc40,
         'stale_actor_target': 0x7000dea400,
         'phys_solver_steps': 0x700156f930,
+        'demo_move_arrive': 0x7000c711dc,
+        'rail_point_radius': 0x7000c89d4c,
         'kf_angle': 0x70012d57fc,
+        'phys_tick': 0x70000f5e20,
+        'phys_tick_mt': 0x700012644c,
+        'phys_motion_tick': 0x700011f95c,
+        'phys_motion_tick_c': 0x70001207cc,
         'snd_frame_floor': 0x7001551004,
         'persp_matrix': 0x7000eb4a50,
         'persp_matrix_offset': 0x7000eb4a58,
@@ -576,6 +556,7 @@ KNOWN = {
         'world_mgr': 0x7001e57580,
         'cam_stick': 0x7000d57fe0,
         'cam_stick_end': 0x7000d5801c,
+        'horse_cam_lr': 0x7000c29000,
         'cam_pitch_chase': 0x7000bf5334,
         'cam_pitch_surf': 0x7000c1a52c,
         'cam_pitch_wakeboard': 0x7000c22104,

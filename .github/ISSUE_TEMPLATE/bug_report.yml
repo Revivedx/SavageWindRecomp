@@ -12,11 +12,16 @@ body:
 
         Reports without `savagewind.log`, from an older release or from game version 1.8.2 get a `needs-info`
         label, and are closed after 7 days if nothing changes (you can reopen them any time).
+
+        **Read the [FAQ](https://github.com/Revivedx/SavageWindRecomp/blob/main/docs/FAQ.md) first.** Issues about something it already covers, including its known issues, are
+        closed right away with the reason.
   - type: checkboxes
     id: checks
     attributes:
       label: Before you start
       options:
+        - label: I read the [FAQ](https://github.com/Revivedx/SavageWindRecomp/blob/main/docs/FAQ.md) and its known issues. This isn't covered there, or I tried what it says and it didn't help.
+          required: true
         - label: I'm on the [latest release](https://github.com/Revivedx/SavageWindRecomp/releases), and the bug still happens there.
           required: true
         - label: I searched the [existing issues](https://github.com/Revivedx/SavageWindRecomp/issues?q=is%3Aissue) and this one isn't reported yet.
@@ -37,11 +42,9 @@ body:
     attributes:
       label: Game version
       description: >-
-        The update your game files have. 1.9.0, the latest, is the supported version. 1.8.2 still runs, but a bug
-        that only happens on 1.8.2 isn't fixed: please check it on 1.9.0 too.
+        The update your game files have. 1.9.0, the latest, is the only supported version.
       options:
         - "1.9.0"
-        - "1.8.2 (not supported)"
     validations:
       required: true
   - type: input

@@ -19,7 +19,7 @@ void output_scale_screen(double sw, double sh, int iw, int ih, OutScale *o);
 // = window / factor per axis), and the factor in use (1: Off)
 bool upscaler_available(int u);
 bool fsr4_offered(void);  // AMD FSR 4 usable on this PC (an AMD Radeon and AMD's DLLs; held back or not)
-bool fsr3_upscaler_enabled(void);  // FSR 3 upscaling offered (held back for now; SAVAGEWIND_FSR3=1)
+bool fsr3_upscaler_enabled(void);  // FSR 3 / 4 upscaling offered (SAVAGEWIND_FSR3=0: hidden)
 // The world camera's projection as last made (rt_persp, game thread): tan(fovy / 2), aspect, near, far; zeros before
 void rt_world_projection(float out[4]);
 // The scene's render size in pixels (vulkan/exec.c: its motion target), for the jitter's sub-pixel offsets
@@ -35,6 +35,8 @@ void rt_jitter_set_phases(uint32_t n);  // (FSR 3: the jitter sequence's length,
 bool upscale_modes_available(void);  // (rendering below the window's size: needs render-target scaling)
 double upscale_mode_factor(int q);
 double upscale_factor(void);
+bool upscale_mode_offered(int q);   // mode q can be chosen now (Ultra Performance with FSR 3 / 4 or DLSS: a 4K window)
+int upscale_quality_now(void);      // the mode in use: the setting, or Performance where it is not offered
 // Video > Shadow resolution: the width the game's shadow maps are made at from presented frame `frame` on (0: their
 // own size; vulkan/textures.c RS_SHADOW)
 unsigned shadow_map_size(unsigned long long frame);
@@ -43,3 +45,14 @@ unsigned shadow_map_size(unsigned long long frame);
 typedef struct { float tan_half_fovy, aspect, near_, far_; unsigned long long serial; } WorldProj;
 void output_world_proj_set(float t, float a, float n, float f);
 bool output_world_proj(WorldProj *p);
+
+float output_view_shape(void);
+// The window's shape over 16:9 whether or not the view is widened to it (the loading screen keeps 16:9)
+float output_window_shape(void);
+bool output_tall_map(float shape);
+// Extra layout space above and below the visible world map, in native 1280x720 units.
+float output_map_extra_y(void);
+
+// Extra pause header/footer space, and the full visible pointer canvas (map or pause).
+float output_pause_extra_y(void);
+float output_ui_extra_y(void);

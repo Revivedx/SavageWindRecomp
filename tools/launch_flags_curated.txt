@@ -18,6 +18,7 @@
 internal SAVAGEWIND_REEXEC | | Counter for the automatic restart that finds free memory for the game.
 internal SAVAGEWIND_LAUNCH_FLAGS_APPLIED | | Remembers which launch options this run started with.
 internal SAVAGEWIND_DATA_ROOT | | Where Savage Wind keeps its files. It is read before launch options can be found.
+internal SAVAGEWIND_LAUNCHER_AUTOUPDATE | | Tests: the start screen starts an offered update at once.
 internal SAVAGEWIND_SETTINGS | | Another settings file. It is read before launch options can be found.
 internal SAVAGEWIND_X | | An example name in a code comment.
 
@@ -41,7 +42,7 @@ launcher SAVAGEWIND_LAUNCHER_SHOT | | Test hook of the start screen.
 build SAVAGEWIND_GEN | | The program that builds the game code.
 build SAVAGEWIND_CC | | The compiler that builds the game code.
 
-play SAVAGEWIND_FSR3 | 1 | Offers AMD FSR 3 upscaling in the Video menu (builds that include it).
+play SAVAGEWIND_FSR3 | 0 | Hides AMD FSR 3 and FSR 4 upscaling in the Video menu (0: they load as AMD FSR 1).
 play SAVAGEWIND_VK_NO_FEEDBACK_LOOP | 1 | Draws with copies instead of feedback loops. Fixes a wrong picture on some graphics cards, slower on others.
 play SAVAGEWIND_VK_FEEDBACK_LOOP | 1 | Turns feedback loops on where they are held back for your graphics card.
 play SAVAGEWIND_VK_GPL | 1 | Turns pipeline libraries on where they are held back for your graphics driver.

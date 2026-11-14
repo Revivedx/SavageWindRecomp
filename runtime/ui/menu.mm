@@ -471,11 +471,11 @@ static void style_init(void) {
 // menu language changes (fonts_follow_language).
 static int g_fonts_lang = -1;
 static void load_fonts(void) {
-    uint32_t icons_generation = glyphs_generation();
+    uint32_t icons_generation = glyphs_font_generation();
     ImGuiIO &io = ImGui::GetIO();
     io.Fonts->Clear();
     g_font = g_font_big = g_menu_font = g_menu_font_big = g_font_mono = NULL;
-    g_fonts_lang = ui_lang_generation();
+    g_fonts_lang = ui_lang_generation() * 10007 + ui_dynamic_generation();
     ImFontConfig cfg;
     cfg.OversampleH = 2;
     auto add = [&](const char *path, float size, ImFontConfig c) {
@@ -524,8 +524,9 @@ static void load_fonts(void) {
 extern "C" void vk_imgui_fonts_changed(void);  // (runtime/nvn/vulkan/imgui_glue.cpp)
 static void fonts_follow_language(void) {
     bool need_hint_fonts = (g_settings.quick_sort || g_settings.quick_drop) && g_romfs_dir && !g_hint_font_attempted;
-    bool icons_changed = (g_settings.quick_sort || g_settings.quick_drop) && g_hint_generation != glyphs_generation();
-    if (g_fonts_lang == ui_lang_generation() && !need_hint_fonts && !icons_changed) return;
+    bool icons_changed = (g_settings.quick_sort || g_settings.quick_drop) && g_hint_generation != glyphs_font_generation();
+    int current_fonts_gen = ui_lang_generation() * 10007 + ui_dynamic_generation();
+    if (g_fonts_lang == current_fonts_gen && !need_hint_fonts && !icons_changed) return;
     load_fonts();
 #ifdef __APPLE__
     ImGui_ImplMetal_DestroyFontsTexture();  // (NewFrame makes it again)
@@ -964,7 +965,7 @@ static void tab_display(void) {
         for (int i = 0; i < UPQ_COUNT; i++) {
             mode_names[i] = modes_ok ? tr(modes[i]) : std::string(tr(modes[i])) + " " + tr("(coming soon)");
             mn[i] = mode_names[i].c_str();
-            mavail[i] = modes_ok;
+            mavail[i] = modes_ok && upscale_mode_offered(i);
         }
         float sx, sy;  // the 3D scene's size (BOTW docked: 1600 x 900 times its scale)
         renderer_get_scene_scale(&sx, &sy);
@@ -1115,7 +1116,7 @@ static void tab_audio(void) {
         g_settings.volume = pct / 100.0f;
     float sensor_pct = (float)g_settings.shrine_sensor_volume;
     if (opt_slider("Shrine sensor volume", &sensor_pct, 0, 100, 10, 100, "%g%%",
-                   "Volume of the Sheikah Slate sensor beeps. 0% silences the sensor. From the next start.")) {
+                   "Volume of the Sheikah Slate sensor beeps. 0% silences the sensor.")) {
         g_settings.shrine_sensor_volume = (int)lroundf(sensor_pct);
     }
     static const char *const audio_out[AUDIO_OUT_COUNT] = {"Stereo", "Surround 5.1", "3D Headphones"};
@@ -1559,7 +1560,7 @@ static void perf_overlay_draw(ImGuiIO &io, float scale) {
         case UPSCALE_FSR4: line += tr("FSR 4"); break;
         default: line += tr("Off");
     }
-    int q = g_settings.upscale_quality;
+    int q = upscale_quality_now();
     if (up != UPSCALE_OFF && upscale_factor() > 1.0) {
         char f[16];
         snprintf(f, sizeof f, "%.1f", upscale_factor());
@@ -2055,7 +2056,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     ImGui::NewFrame();
 
     if(pointer_hover&&!open&&!kbd&&!sizes) {
-        float s=fminf(io.DisplaySize.x/1280.f,io.DisplaySize.y/720.f);
+        float s=fminf(io.DisplaySize.x/1280.f,io.DisplaySize.y/(720.f+2*output_ui_extra_y()));
         ImVec2 a(io.DisplaySize.x*.5f+pointer_box[0]*s,io.DisplaySize.y*.5f-pointer_box[3]*s);
         ImVec2 b(io.DisplaySize.x*.5f+pointer_box[2]*s,io.DisplaySize.y*.5f-pointer_box[1]*s);
         bool pressed=pc_cursor_hover_pressed();

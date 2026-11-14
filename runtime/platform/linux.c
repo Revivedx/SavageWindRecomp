@@ -134,6 +134,8 @@ void plat_thread_realtime(uint64_t period_ns) {
     setpriority(PRIO_PROCESS, (id_t)gettid(), -10);  // (per thread on Linux; fails quietly without CAP_SYS_NICE)
 }
 
+void plat_thread_elevate(void) {}
+
 // ---- process
 // stdout / stderr go to savagewind.log in the data folder (runtime/paths.h; rt_paths_init runs later, so the same rule
 // is applied here). Processes started by this one (the start screen re-executing itself for the game) append to the
@@ -390,3 +392,5 @@ bool plat_remove_tree(const char *dir) { return nftw(dir, rm_entry, 16, FTW_DEPT
 void plat_terminate(void) { _exit(0); }
 
 bool plat_guest_sparse_heap_enabled(void) { return false; }
+
+void plat_accessibility_shortcuts(bool allow) { (void)allow; }  // (Windows only)

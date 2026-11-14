@@ -70,6 +70,9 @@ typedef struct {
     VkImageView sc_views[8];
 } VkG;
 extern VkG g_vk;
+// g_vk.queue from more than one thread: the recorder's submissions (record.c), frame generation's presents (device.c
+// present_thread) and the sparse binds (exec.c)
+extern pthread_mutex_t g_vk_queue_lock;
 
 // ---- submissions (exec.c)
 // Work is recorded into the current command buffer; uploads go into a separate one that runs first.
@@ -131,6 +134,7 @@ typedef struct TexBackend {
     bool bc4_cpu;                // BC4 decoded to R8 on upload (SAVAGEWIND_VK_BC4_CPU=1: Mali text / sprites test)
     bool menu_tex;               // text_scale on one of the menus' textures, not a font sheet: the game's sampler stays
     uint8_t text_scale;          // a font sheet enlarged by this much on upload (runtime/nvn/text_upscale.c); 0: not one
+    bool heart_half;             // the HUD's half heart, HEART_SCALE times wider on upload (textures.c)
     uint32_t glyph_gen;          // a button glyph sheet (runtime/nvn/glyphs.c): the icons it was uploaded with
     // textures.c: one image per memory and shape, shared by every texture made there
     uint64_t key_addr;           // 0: not shared

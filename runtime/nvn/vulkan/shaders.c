@@ -941,6 +941,93 @@ static const char taa_instability[] =
         "  imageStore(hist_i, p, h);\n"
         "  imageStore(instab_i, p, vec4(instab));\n"
         "}\n";
+// The light TAA (exec.c mvec_taa, the default; SAVAGEWIND_TAA=full: the seven passes above): one pass. The vector of
+// the nearest surface among the pixel and its 4 diagonal neighbours (edges move with what is in front); the history
+// there (Catmull-Rom, 5 bilinear taps), clipped in YCoCg to the 3x3's mean +- 1.5 standard deviations (0.9 with
+// motion) and its extremes; the new sample a Lanczos 2 of the 3x3 at their jittered distances, deringed to the 3x3.
+// The history's .a counts the frames accumulated (/ 16): the blend is 1 / count down to 0.08 on a still pixel (0.3
+// in fast motion), more where the reactive mask (the vectors' .z: blended effects) is set (a plain blend: weighting
+// the samples by 1 / (1 + luma) darkened the scene, whose values are not display-range). No disocclusion or shading-change detection, no thin-feature locks: the
+// clipping alone drops stale history. The seven passes cost the GPU ~2.5 ms at 1440p (RTX 3060), this one ~0.5.
+static const char taa_lite[] =
+        "layout(set = 0, binding = 0) uniform sampler2D color_t;\n"
+        "layout(set = 0, binding = 1) uniform sampler2D vec_t;\n"
+        "layout(set = 0, binding = 2) uniform sampler2D depth_t;\n"
+        "layout(set = 0, binding = 3) uniform sampler2D hist_t;\n"
+        "layout(set = 0, binding = 8, rgba16f) uniform writeonly image2D hist_i;\n"
+        "layout(set = 0, binding = 9, rgba16f) uniform writeonly image2D out_i;\n"
+        "float lanczos2_sq(float x2) {\n"
+        "  x2 = min(x2, 4.0);\n"
+        "  float a = 0.4 * x2 - 1.0, b = 0.25 * x2 - 1.0;\n"
+        "  return (25.0 / 16.0 * a * a - 9.0 / 16.0) * (b * b);\n"
+        "}\n"
+        "vec4 history(vec2 uv) {\n"
+        "  vec2 sp = uv * pc.size.xy, tc = floor(sp - 0.5) + 0.5, f = sp - tc;\n"
+        "  vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));\n"
+        "  vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);\n"
+        "  vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));\n"
+        "  vec2 w3 = f * f * (-0.5 + 0.5 * f);\n"
+        "  vec2 w12 = w1 + w2;\n"
+        "  vec2 t0 = (tc - 1.0) * pc.size.zw, t3 = (tc + 2.0) * pc.size.zw, t12 = (tc + w2 / w12) * pc.size.zw;\n"
+        "  float a = w12.x * w0.y, b = w0.x * w12.y, c = w12.x * w12.y, d = w3.x * w12.y, e = w12.x * w3.y;\n"
+        "  vec4 s = textureLod(hist_t, vec2(t12.x, t0.y), 0.0) * a + textureLod(hist_t, vec2(t0.x, t12.y), 0.0) * b +\n"
+        "           textureLod(hist_t, t12, 0.0) * c + textureLod(hist_t, vec2(t3.x, t12.y), 0.0) * d +\n"
+        "           textureLod(hist_t, vec2(t12.x, t3.y), 0.0) * e;\n"
+        "  return s / (a + b + c + d + e);\n"
+        "}\n"
+        "void main() {\n"
+        "  ivec2 p = pixel();\n"
+        "  if (!onscreen(p)) return;\n"
+        "  vec2 uv = (vec2(p) + 0.5) * pc.size.zw, J = pc.jit.xy;\n"
+        "  float dn = texelFetch(depth_t, p, 0).r;\n"
+        "  ivec2 pn = p;\n"
+        "  for (int i = 0; i < 4; i++) {\n"
+        "    ivec2 q = clampp(p + ivec2((i & 1) * 2 - 1, (i >> 1) * 2 - 1));\n"
+        "    float d = texelFetch(depth_t, q, 0).r;\n"
+        "    if (d < dn) { dn = d; pn = q; }\n"
+        "  }\n"
+        "  vec4 v = texelFetch(vec_t, pn, 0);\n"
+        "  bool has = v.a >= 0.25;\n"
+        "  vec2 mv = has ? vec2(-0.5 * v.x, 0.5 * v.y) : vec2(0.0);\n"
+        "  vec2 ruv = uv + mv;\n"
+        "  bool fresh = pc.st.x < 0.5 || !has || !inside(ruv);\n"
+        "  vec4 c4 = texelFetch(color_t, p, 0);\n"
+        "  vec3 up = vec3(0.0), mu = vec3(0.0), m2 = vec3(0.0), lo = vec3(65504.0), hi = vec3(-65504.0);\n"
+        "  float uw = 0.0, n = 0.0;\n"
+        "  for (int y = -1; y <= 1; y++)\n"
+        "    for (int x = -1; x <= 1; x++) {\n"
+        "      ivec2 q = p + ivec2(x, y);\n"
+        "      if (!onscreen(q)) continue;\n"
+        "      vec3 s = ycocg(max(texelFetch(color_t, q, 0).rgb, vec3(0.0)));\n"
+        "      vec2 o = vec2(x, y) - J;\n"
+        "      float w = lanczos2_sq(dot(o, o));\n"
+        "      up += s * w; uw += w;\n"
+        "      mu += s; m2 += s * s; n += 1.0;\n"
+        "      lo = min(lo, s); hi = max(hi, s);\n"
+        "    }\n"
+        "  mu /= n;\n"
+        "  vec3 sigma = sqrt(max(m2 / n - mu * mu, vec3(0.0)));\n"
+        "  up = uw > FP16_MIN ? clamp(up / uw, lo, hi) : ycocg(max(c4.rgb, vec3(0.0)));\n"
+        "  vec3 res = up;\n"
+        "  float cnt = 1.0;\n"
+        "  if (!fresh) {\n"
+        "    vec4 h = history(ruv);\n"
+        "    vec3 hc = ycocg(max(h.rgb, vec3(0.0)));\n"
+        "    float prevn = clamp(h.a, 0.0, 1.0) * 16.0, vel = v4k(mv), react = clamp(v.z, 0.0, 1.0);\n"
+        "    float g = mix(1.5, 0.9, clamp(vel / 8.0, 0.0, 1.0));\n"
+        "    vec3 bmin = max(mu - g * sigma, lo), bmax = min(mu + g * sigma, hi);\n"
+        "    vec3 ctr = 0.5 * (bmin + bmax), ext = 0.5 * (bmax - bmin) + 1e-5, dl = hc - ctr, u3 = abs(dl / ext);\n"
+        "    float mx = max(u3.x, max(u3.y, u3.z));\n"
+        "    if (mx > 1.0) hc = ctr + dl / mx;\n"
+        "    float alpha = max(1.0 / (prevn + 1.0), mix(0.08, 0.3, clamp(vel / 16.0, 0.0, 1.0)));\n"
+        "    alpha = max(alpha, 0.5 * react);\n"
+        "    res = mix(hc, up, alpha);\n"
+        "    cnt = min(prevn + 1.0, 16.0);\n"
+        "  }\n"
+        "  vec3 o = max(rgb(res), vec3(0.0));\n"
+        "  imageStore(hist_i, p, vec4(o, cnt / 16.0));\n"
+        "  imageStore(out_i, p, vec4(o, c4.a));\n"
+        "}\n";
 static const char taa_resolve[] =
         "layout(set = 0, binding = 0) uniform sampler2D color_t;\n"
         "layout(set = 0, binding = 1) uniform sampler2D dil_t;\n"
@@ -1214,7 +1301,10 @@ static const char *builtin_src(const char *name, int *stage) {
                "  tapf(ac, aw, vec2(1.0, 0.0) - pp, dir, len2, lob, clp, gC);\n"
                "  tapf(ac, aw, vec2(1.0, 2.0) - pp, dir, len2, lob, clp, oC);\n"
                "  tapf(ac, aw, vec2(0.0, 2.0) - pp, dir, len2, lob, clp, nC);\n"
-               "  o = vec4(min(mx, max(mn, ac / aw)), alpha);\n"
+               "  vec3 bilerp = mix(mix(fC, gC, pp.x), mix(jC, kC, pp.x), pp.y);\n"
+               "  vec3 c = aw > 1.0 / 32768.0 ? ac / aw : bilerp;\n"
+               "  if (isnan(c.r) || isnan(c.g) || isnan(c.b) || isinf(c.r) || isinf(c.g) || isinf(c.b)) c = bilerp;\n"
+               "  o = vec4(clamp(c, mn, mx), alpha);\n"
                "}\n";
     }
     // FSR 1 RCAS: contrast-adaptive sharpening of the EASU output (same size). a.x = sharpness (exp2(-stops)),
@@ -1244,6 +1334,8 @@ static const char *builtin_src(const char *name, int *stage) {
                "  vec3 lobeRGB = max(-hitMin, hitMax);\n"
                "  float lobe = max(-(0.25 - 1.0 / 16.0), min(max(lobeRGB.r, max(lobeRGB.g, lobeRGB.b)), 0.0)) * pc.a.x * nz;\n"
                "  vec3 r = (lobe * (b + d + f + h) + e) / (4.0 * lobe + 1.0);\n"
+               "  if (isnan(r.r) || isnan(r.g) || isnan(r.b) || isinf(r.r) || isinf(r.g) || isinf(r.b)) r = e;\n"
+               "  r = clamp(r, vec3(0.0), vec3(1.0));\n"
                "  o = vec4(pc.b.z > 0.5 ? r * r : r, texelFetch(t, ip, 0).a);\n"
                "}\n";
     }
@@ -1327,11 +1419,11 @@ static const char *builtin_src(const char *name, int *stage) {
     }
     if (!strncmp(name, "taa_", 4)) {
         static const char *const names[] = {"taa_prepare.comp", "taa_shade_src.comp", "taa_shade_down.comp", "taa_shade.comp",
-                                            "taa_reactivity.comp", "taa_instability.comp", "taa_resolve.comp"};
+                                            "taa_reactivity.comp", "taa_instability.comp", "taa_resolve.comp", "taa_lite.comp"};
         static const char *const bodies[] = {taa_prepare, taa_shade_src, taa_shade_down, taa_shade, taa_reactivity,
-                                             taa_instability, taa_resolve};
-        static char *src[7];
-        for (int i = 0; i < 7; i++) {
+                                             taa_instability, taa_resolve, taa_lite};
+        static char *src[8];
+        for (int i = 0; i < 8; i++) {
             if (strcmp(name, names[i])) continue;
             if (!src[i]) {
                 size_t a = strlen(taa_common), b = strlen(bodies[i]);

@@ -540,7 +540,9 @@ void build_items(void) {
                            if (g_settings.upscaler != UPSCALE_OFF) g_settings.upscale_quality = x;
                        },
                        UPQ_QUALITY);
-    mode.value_off = [](const Item &, int) { return !upscale_modes_available() || g_settings.upscaler == UPSCALE_OFF; };
+    mode.value_off = [](const Item &, int x) {
+        return !upscale_modes_available() || g_settings.upscaler == UPSCALE_OFF || !upscale_mode_offered(x);
+    };
     mode.reset = [](const Item &) { g_settings.upscale_quality = UPQ_QUALITY; };  // (also while Off)
     mode.desc_fn = [](const Item &) {
         // (one line: the game's description pane is one English line wide)
@@ -727,7 +729,7 @@ void build_items(void) {
                        [](const Item &) { return (int)lroundf(g_settings.volume * 10); },
                        [](const Item &, int x) { g_settings.volume = x / 10.0f; }, 10));
     v.push_back(choice(P_AUDIO, "Shrine sensor volume",
-                       "Volume of the Sheikah Slate sensor beeps. 0% silences the sensor. From the next start.",
+                       "Volume of the Sheikah Slate sensor beeps. 0% silences the sensor.",
                        [](const Item &) { return 11; },
                        [](const Item &, int x) {
                            static std::string s;

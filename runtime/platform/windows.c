@@ -69,13 +69,13 @@ bool plat_guest_sparse_heap_enabled(void) {
     return sparse_heap_configured && sparse_heap_enabled;
 }
 
-void plat_guest_sparse_heap_configure(bool intel_integrated_gpu) {
+void plat_guest_sparse_heap_configure(bool auto_on) {
     const char *override = getenv("SAVAGEWIND_VK_SPARSE_HEAP");
     if (override)
         sparse_heap_enabled = !strcmp(override, "1");
     else
         sparse_heap_enabled = g_settings.sparse_heap == SPARSE_HEAP_ON ||
-                              (g_settings.sparse_heap == SPARSE_HEAP_AUTO && intel_integrated_gpu);
+                              (g_settings.sparse_heap == SPARSE_HEAP_AUTO && auto_on);
     sparse_heap_configured = true;
 }
 
@@ -325,6 +325,10 @@ void plat_thread_realtime(uint64_t period_ns) {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
 }
 
+void plat_thread_elevate(void) {
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+}
+
 // ---- process
 // Release builds are GUI-subsystem executables (no console window): stdout / stderr go to savagewind.log next to the
 // exe, and a fatal error shows a message box (plat_fatal_notice) instead of vanishing. Processes started by this one
@@ -364,6 +368,7 @@ static void require_cpu(void) {
 
 // Fatal error (rt_fatal_trace): the last FATAL / exception line of the log in a message box, when there is no console.
 void plat_fatal_notice(void) {
+    plat_accessibility_shortcuts(true);  // (the shortcuts as they were: the process ends)
     if (!g_log_path[0]) return;
     fflush(stderr);
     char text[1024] = "Savage Wind stopped because of an error.";
@@ -433,9 +438,11 @@ void plat_init(void) {
 // never share a core with another busy thread of the game. With fewer cores than the game's busy threads (main, two job
 // workers, render, recorder, audio, file loading) they queue for one instead: by default with SMT and 4 or more
 // physical cores (plat_one_per_core_default). SAVAGEWIND_ONE_PER_CORE=1: always, 0: never. Called when the game
-// starts, so what the start screen runs (the game code build) keeps every logical processor. Under Wine / Proton the
-// Linux kernel schedules the threads, and there the Steam Deck measured one processor per core as a loss
-// (platform.h): the default keeps every logical processor, as the Linux build does.
+// starts, so what the start screen runs (the game code build) keeps every logical processor. On hybrid architectures
+// (Intel 12th+ Gen, Core Ultra, heterogeneous P/E cores) keeping all logical processors avoids starving P-core SMT
+// execution slots and forcing critical threads onto low-clock E-cores. Under Wine / Proton the Linux kernel schedules
+// the threads, and there the Steam Deck measured one processor per core as a loss (platform.h): the default keeps
+// every logical processor, as the Linux build does.
 void plat_cpu_placement(void) {
     DWORD_PTR all, sys, one = 0;
     if (!GetProcessAffinityMask(GetCurrentProcess(), &all, &sys)) return;
@@ -445,18 +452,28 @@ void plat_cpu_placement(void) {
     DWORD len = 0;
     GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &len);
     char *buf = len ? malloc(len) : NULL;
+    BYTE min_eff = 255, max_eff = 0;
     if (buf && GetLogicalProcessorInformationEx(RelationProcessorCore, (void *)buf, &len))
         for (DWORD o = 0; o < len;) {
             SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *e = (void *)(buf + o);
             DWORD_PTR m = e->Processor.GroupMask[0].Group == 0 ? e->Processor.GroupMask[0].Mask & all : 0;
-            if (m) cores++, one |= m & -m;  // (the core's first logical processor)
+            if (m) {
+                cores++;
+                one |= m & -m;  // (the core's first logical processor)
+                BYTE eff = e->Processor.EfficiencyClass;
+                if (eff < min_eff) min_eff = eff;
+                if (eff > max_eff) max_eff = eff;
+            }
             o += e->Size;
         }
     free(buf);
+    bool hybrid = (cores > 0 && min_eff != max_eff);
     const char *x = getenv("SAVAGEWIND_ONE_PER_CORE");
-    bool on = one && (x ? atoi(x) != 0 : !wine && plat_one_per_core_default(cores, logical));
-    fprintf(stderr, "[cpu] %d cores, %d logical processors: %s%s\n", cores, logical,
-            on ? "one logical processor per core" : "all logical processors", wine && !x ? " (Wine)" : "");
+    bool on = one && (x ? atoi(x) != 0 : !wine && !hybrid && plat_one_per_core_default(cores, logical));
+    fprintf(stderr, "[cpu] %d cores%s, %d logical processors: %s%s\n", cores,
+            hybrid ? " (hybrid P/E)" : "", logical,
+            on ? "one logical processor per core" : "all logical processors",
+            wine && !x ? " (Wine)" : hybrid && !x ? " (hybrid architecture)" : "");
     if (on) SetProcessAffinityMask(GetCurrentProcess(), one);
 }
 
@@ -696,5 +713,48 @@ bool plat_remove_tree(const char *dir) {
     return SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted;
 }
 
+// Windows' accessibility shortcuts while the game has the focus: pressing Shift five times (Sticky Keys), holding the
+// right Shift for eight seconds (Filter Keys) or Num Lock for five (Toggle Keys) took the player out to their prompt,
+// and Shift is sprint and back. As Microsoft advises for games ("Disabling Shortcut Keys in Games"): the shortcut is
+// turned off while the window has the focus, only where the feature itself is off (a player who uses it keeps it),
+// and the settings as they were come back when the focus goes and when the game ends. Not written to the user's
+// profile (no SPIF_UPDATEINIFILE), so a crash leaves them until the next sign-in at worst.
+static STICKYKEYS sk_was = {sizeof(STICKYKEYS)};
+static TOGGLEKEYS tk_was = {sizeof(TOGGLEKEYS)};
+static FILTERKEYS fk_was = {sizeof(FILTERKEYS)};
+static bool shortcuts_read, shortcuts_off;
+static void shortcuts_restore(void) { plat_accessibility_shortcuts(true); }
+
+void plat_accessibility_shortcuts(bool allow) {
+    if (!shortcuts_read) {
+        if (!SystemParametersInfoW(SPI_GETSTICKYKEYS, sizeof sk_was, &sk_was, 0) ||
+            !SystemParametersInfoW(SPI_GETTOGGLEKEYS, sizeof tk_was, &tk_was, 0) ||
+            !SystemParametersInfoW(SPI_GETFILTERKEYS, sizeof fk_was, &fk_was, 0))
+            return;
+        shortcuts_read = true;
+        atexit(shortcuts_restore);  // (a plain exit; plat_terminate and plat_fatal_notice put them back themselves)
+    }
+    if (!allow && !shortcuts_off) {
+        STICKYKEYS sk = sk_was;
+        TOGGLEKEYS tk = tk_was;
+        FILTERKEYS fk = fk_was;
+        if (!(sk.dwFlags & SKF_STICKYKEYSON)) sk.dwFlags &= ~(DWORD)(SKF_HOTKEYACTIVE | SKF_CONFIRMHOTKEY);
+        if (!(tk.dwFlags & TKF_TOGGLEKEYSON)) tk.dwFlags &= ~(DWORD)(TKF_HOTKEYACTIVE | TKF_CONFIRMHOTKEY);
+        if (!(fk.dwFlags & FKF_FILTERKEYSON)) fk.dwFlags &= ~(DWORD)(FKF_HOTKEYACTIVE | FKF_CONFIRMHOTKEY);
+        SystemParametersInfoW(SPI_SETSTICKYKEYS, sizeof sk, &sk, 0);
+        SystemParametersInfoW(SPI_SETTOGGLEKEYS, sizeof tk, &tk, 0);
+        SystemParametersInfoW(SPI_SETFILTERKEYS, sizeof fk, &fk, 0);
+        shortcuts_off = true;
+    } else if (allow && shortcuts_off) {
+        SystemParametersInfoW(SPI_SETSTICKYKEYS, sizeof sk_was, &sk_was, 0);
+        SystemParametersInfoW(SPI_SETTOGGLEKEYS, sizeof tk_was, &tk_was, 0);
+        SystemParametersInfoW(SPI_SETFILTERKEYS, sizeof fk_was, &fk_was, 0);
+        shortcuts_off = false;
+    }
+}
+
 // End the process at once, skipping DLL teardown (from an atexit handler, after flushing). Exit status 0.
-void plat_terminate(void) { TerminateProcess(GetCurrentProcess(), 0); }
+void plat_terminate(void) {
+    plat_accessibility_shortcuts(true);  // (the atexit handlers after this one don't run)
+    TerminateProcess(GetCurrentProcess(), 0);
+}

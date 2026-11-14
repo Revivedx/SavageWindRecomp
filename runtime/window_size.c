@@ -25,7 +25,7 @@
 #include "settings.h"
 
 static const WinSize k_sizes[] = {
-    {640, 360}, {960, 540}, {1280, 720}, {1920, 1080}, {2560, 1440}, {3840, 2160},  // 16:9
+    {640, 360}, {960, 540}, {1280, 720}, {1600, 900}, {1920, 1080}, {2560, 1440}, {3840, 2160},  // 16:9
     {5120, 2880}, {7680, 4320},
     {1280, 540}, {1708, 720}, {1920, 810}, {2134, 900}, {2560, 1080}, {3440, 1440}, {3840, 1600}, // 21:9
     {1280, 800}, {1680, 1050}, {1920, 1200}, {2560, 1600},                               // 16:10
@@ -272,6 +272,19 @@ static SDL_DisplayID target_display(void) {
 
 unsigned winsize_start_display(void) { return (unsigned)target_display(); }
 
+// The display's mode of that size with the highest refresh rate (NULL: none)
+static bool find_mode(SDL_DisplayID d, WinSize s, SDL_DisplayMode *out) {
+    int count = 0;
+    SDL_DisplayMode **ms = SDL_GetFullscreenDisplayModes(d, &count);
+    bool found = false;
+    for (int i = 0; ms && i < count; i++) {
+        WinSize m = {(int)lroundf(ms[i]->w * ms[i]->pixel_density), (int)lroundf(ms[i]->h * ms[i]->pixel_density)};
+        if (same(m, s) && (!found || ms[i]->refresh_rate > out->refresh_rate)) *out = *ms[i], found = true;
+    }
+    SDL_free(ms);
+    return found;
+}
+
 // Read display d (its desktop size, modes, refresh rate) when it isn't the one read last (0: the primary)
 static void refresh_display(SDL_DisplayID d) {
     if (!d) d = SDL_GetPrimaryDisplay();
@@ -281,6 +294,13 @@ static void refresh_display(SDL_DisplayID d) {
     WinSize desk = {(int)lroundf(dm->w * density), (int)lroundf(dm->h * density)};
     const SDL_DisplayMode *cur = SDL_GetCurrentDisplayMode(d);  // (exclusive fullscreen: the mode in use)
     float hz = cur && cur->refresh_rate > 0 ? cur->refresh_rate : dm->refresh_rate;
+    SDL_DisplayMode max_mode;
+    if (find_mode(d, desk, &max_mode) && max_mode.refresh_rate > hz) {
+        // If the monitor supports a higher refresh rate for its desktop resolution
+        // (e.g. Windows 11 Dynamic Refresh Rate / power savings reporting 60 Hz while the panel is 165 Hz),
+        // adopt the true panel refresh rate unless locked in exclusive fullscreen at another rate.
+        if (!cur || cur == dm) hz = max_mode.refresh_rate;
+    }
     settings_fps_for_display(hz);  // (Frame rate > Match display)
     pthread_mutex_lock(&g_m);
     g_hz = hz;
@@ -313,19 +333,6 @@ void winsize_refresh(void *win) {
     read_displays();
     // (no window yet: the display it will be made on)
     refresh_display(win ? SDL_GetDisplayForWindow((SDL_Window *)win) : target_display());
-}
-
-// The display's mode of that size with the highest refresh rate (NULL: none)
-static bool find_mode(SDL_DisplayID d, WinSize s, SDL_DisplayMode *out) {
-    int count = 0;
-    SDL_DisplayMode **ms = SDL_GetFullscreenDisplayModes(d, &count);
-    bool found = false;
-    for (int i = 0; ms && i < count; i++) {
-        WinSize m = {(int)lroundf(ms[i]->w * ms[i]->pixel_density), (int)lroundf(ms[i]->h * ms[i]->pixel_density)};
-        if (same(m, s) && (!found || ms[i]->refresh_rate > out->refresh_rate)) *out = *ms[i], found = true;
-    }
-    SDL_free(ms);
-    return found;
 }
 
 void winsize_apply(void *win) {
@@ -368,13 +375,24 @@ void winsize_apply(void *win) {
         // (Exclusive), or for none (Borderless: another size is the image scaled to the screen)
         int fm = g_settings.fullscreen_mode;
         SDL_DisplayMode mode;
-        bool want_mode = fm == FSMODE_EXCLUSIVE || (fm != FSMODE_BORDERLESS && !same(s, desk));
-        bool exclusive = want_mode && find_mode(d, s, &mode);
+        bool has_mode = find_mode(d, s, &mode);
+        const SDL_DisplayMode *dm = d ? SDL_GetDesktopDisplayMode(d) : NULL;
+        bool higher_hz = has_mode && dm && (mode.refresh_rate > dm->refresh_rate + 1.0f);
+        bool want_mode = fm == FSMODE_EXCLUSIVE || (fm != FSMODE_BORDERLESS && (!same(s, desk) || higher_hz));
+        bool exclusive = want_mode && has_mode;
         if (!same(s, desk) && !exclusive) virt = s;
         SDL_SetWindowFullscreenMode(w, exclusive ? &mode : NULL);  // (NULL: borderless, the desktop's size)
         SDL_SetWindowFullscreen(w, true);
-        if (exclusive) LOG("[window] fullscreen %dx%d (display mode, %.2f Hz)\n", s.w, s.h, mode.refresh_rate);
-        else LOG("[window] fullscreen %dx%d (%s)\n", s.w, s.h, virt.w ? "borderless, image scaled to the screen" : "borderless");
+        if (exclusive) {
+            float mode_hz = mode.refresh_rate > 0 ? mode.refresh_rate : winsize_refresh_rate();
+            pthread_mutex_lock(&g_m);
+            g_hz = mode_hz;
+            pthread_mutex_unlock(&g_m);
+            settings_fps_for_display(mode_hz);
+            LOG("[window] fullscreen %dx%d (display mode, %.2f Hz)\n", s.w, s.h, mode.refresh_rate);
+        } else {
+            LOG("[window] fullscreen %dx%d (%s)\n", s.w, s.h, virt.w ? "borderless, image scaled to the screen" : "borderless");
+        }
     } else {
         SDL_SetWindowFullscreen(w, false);
         if (!keep_size) {

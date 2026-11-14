@@ -16,14 +16,33 @@
 // remaining draws get no motion) and the slot is grown before its next use.
 // On with Video > Anti-aliasing TAA (mvec_enabled; SAVAGEWIND_MVEC=1 / 0 whatever the setting).
 // SAVAGEWIND_MVEC_LOG=<frames>: statistics every that many frames (default: none).
+//
+// Threads. The thread that translates the game's command lists (T, exec.c draw_) only describes each scene draw
+// (mvec_draw_begin / mvec_draw_commit: 64-byte cells of a ring, two for most draws) and goes on; a thread of its own (W, w_run) does the work:
+// the copies, the hashes, the matching, and the draw's push constants, which the recorder thread (record.c) asks for
+// when it records the draw (mvec_resolve: by then W is usually done; it waits otherwise). Done on T, all of it cost
+// ~1.2 ms a frame of the thread that limits the frame rate (RTX 3060, 1440p: native 130 fps, FSR 3 Quality 104, TAA
+// 106). What each thread owns:
+//   T   cur, prev, cur_frame; a slot's buffer, capacity, growth and seq; the cameras; the ring's written end (tq)
+//   W   w_cur, w_prev; a slot's records and used bytes; the tables (dedupe, indices, sorted keys), camc, mstat
+// T reads or resets W's state only after mvec_sync (W has done everything handed on and is idle): at a new frame, for
+// the cameras at the composite. W reads guest memory after T handed the draw on, so T also syncs before it changes
+// memory a pending draw reads (mvec_guest_write, exec.c guest_copy_flush) and at the end of each command list.
+// SAVAGEWIND_MVEC_THREAD=0 (or fewer than 6 logical processors): no thread, the work is done at the commit.
 #include <math.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "../../platform.h"
+#include "../../prof.h"
 #include "../../rt.h"
 #include "../../settings.h"
+#include "../maxwell/shader.h"
 #include "../output_scale.h"
 #include "mvec.h"
+#include "record.h"
 
 #define MVEC_SLOTS 5
 #define HIST_START (2ull << 20)  // (the Great Plateau uses ~0.3 MB a frame; a fuller frame grows it, losing one frame's motion)
@@ -47,7 +66,8 @@ typedef struct {
 } Slot;
 
 static Slot slots[MVEC_SLOTS];
-static int cur = -1, prev = -1;  // slots of the frame being recorded and of the one before it
+static int cur = -1, prev = -1;  // (T) slots of the frame being recorded and of the one before it
+static int w_cur = -1, w_prev = -1;  // (W) the same, of the frame whose draws it is doing
 static uint64_t cur_frame = ~0ull;
 static Dedupe dedupe[DEDUPE];
 static Index prev_index[INDEX], ord_index[INDEX];
@@ -223,10 +243,7 @@ bool mvec_enabled(void) {
     return on;
 }
 
-static uint64_t mix(uint64_t h, uint64_t v) {
-    h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
-    return h * 0xff51afd7ed558ccdull;
-}
+static uint64_t mix(uint64_t h, uint64_t v) { return mvec_mix(h, v); }
 
 static uint32_t slot_hash(uint64_t key, uint32_t ord) { return (uint32_t)(mix(key, ord) >> 32) & (INDEX - 1); }
 
@@ -303,8 +320,178 @@ static bool match_by_order(void) {
 
 static int32_t prev_match(MvecRec *r);
 
-// A new presented frame: the slot it records into, the previous frame's index
+// ---- the ring of draws (T writes, W reads) and of their results (W writes, the recorder reads)
+// The ring is 64-byte cells: a draw is its head, then its constant buffers four to a cell, then its instanced streams
+// two to a cell; a new frame is a head alone. Each thread's counters sit in a cache line of their own, and T looks at
+// W's only when its own copy says the ring is full or a draw is pending: with q_head and q_done in one line, and a
+// field of the slot written by T for every draw next to the ones W writes, the line went from core to core twice a draw.
+#define MQ 8192    // cells T may be ahead of W (a draw: 2-3)
+#define RES 16384  // results kept: draws T may be ahead of the recorder (mvec_draw_commit drains it before that)
+#if defined(__x86_64__) || defined(__i386__)
+#define RELAX() __builtin_ia32_pause()
+#elif defined(__aarch64__)
+#define RELAX() __asm__ volatile("yield")
+#else
+#define RELAX() ((void)0)
+#endif
+typedef union { MvecHead h; MvecCb cb[4]; MvecInst in[2]; } Cell;
+static Cell *mq;
+static uint32_t (*res)[MVEC_PUSH / 4];
+static _Alignas(64) struct { _Atomic uint32_t v; char pad[60]; } q_head;  // cells published by T
+static _Alignas(64) struct { _Atomic uint32_t cells, draws; char pad[56]; } q_done;  // done by W
+static _Alignas(64) struct { _Atomic uint32_t v; char pad[60]; } r_seen;  // the last draw the recorder resolved
+static _Alignas(64) struct {  // T's own
+    uint32_t w;      // cells handed on so far
+    uint32_t dw;     // draws handed on so far: the next one's number
+    uint32_t done;   // q_done.cells when T last looked
+    uint64_t seq;    // the submission the frame's slots were last marked with (mvec_draw_commit)
+    MvecDrawIn in;   // the draw being described (mvec_draw_begin)
+    char pad[64];
+} tq;
+static uint32_t w_dseq;  // (W) draws done so far
+static int threaded = -1;  // 1: W does the work, 0: T at the commit
+static pthread_mutex_t q_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t q_cv = PTHREAD_COND_INITIALIZER;
+static _Atomic int q_asleep;
+// W spins this long for the next draw before it sleeps (T hands one on every ~2 us in a scene pass, and a sleeping W
+// costs T a wake-up syscall)
+static uint64_t q_spin_ns = 200000;
+
+static uint32_t cells_of(const MvecHead *h) { return 1u + (h->ncb + 3u) / 4 + (h->ninst + 1u) / 2; }
+
+static void w_frame(const MvecHead *h);
+static void w_draw(const MvecDrawIn *d, uint32_t *pc);
+// W: the entry at cell c; how many cells it is
+static uint32_t w_process(uint32_t c) {
+    const MvecHead *h = &mq[c & (MQ - 1)].h;
+    if (h->kind) { w_frame(h); return 1; }
+    MvecDrawIn d;
+    d.h = *h;
+    uint32_t n = 1;
+    for (uint32_t k = 0; k < d.h.ncb; k += 4, n++) memcpy(&d.cb[k], &mq[(c + n) & (MQ - 1)], sizeof(Cell));
+    for (uint32_t k = 0; k < d.h.ninst; k += 2, n++) memcpy(&d.in[k], &mq[(c + n) & (MQ - 1)], sizeof(Cell));
+    w_draw(&d, res[w_dseq & (RES - 1)]);
+    w_dseq++;
+    return n;
+}
+
+static void *w_run(void *arg) {
+    (void)arg;
+    prof_thread_name("mvec");
+    uint32_t t = 0;
+    for (;;) {
+        uint32_t h = atomic_load_explicit(&q_head.v, memory_order_acquire);
+        if (h == t) {
+            uint64_t t0 = plat_now_ns();
+            for (unsigned i = 1; h == t; i++) {
+                RELAX();
+                h = atomic_load_explicit(&q_head.v, memory_order_acquire);
+                if (!(i & 63) && plat_now_ns() - t0 > q_spin_ns) break;
+            }
+        }
+        if (h == t) {
+            pthread_mutex_lock(&q_mu);
+            atomic_store_explicit(&q_asleep, 1, memory_order_seq_cst);
+            while ((h = atomic_load_explicit(&q_head.v, memory_order_seq_cst)) == t) pthread_cond_wait(&q_cv, &q_mu);
+            atomic_store_explicit(&q_asleep, 0, memory_order_relaxed);
+            pthread_mutex_unlock(&q_mu);
+        }
+        while (t != h) {
+            t += w_process(t);
+            atomic_store_explicit(&q_done.draws, w_dseq, memory_order_release);
+            atomic_store_explicit(&q_done.cells, t, memory_order_release);
+        }
+    }
+    return NULL;
+}
+
+static void q_init(void) {
+    mq = calloc(MQ, sizeof *mq);
+    res = calloc(RES, sizeof *res);
+    if (!mq || !res) FATAL("[mvec] out of memory\n");
+    if (getenv("SAVAGEWIND_MVEC_SPIN")) q_spin_ns = (uint64_t)atol(getenv("SAVAGEWIND_MVEC_SPIN")) * 1000;
+    const char *e = getenv("SAVAGEWIND_MVEC_THREAD");
+    threaded = 0;
+    if (e ? atoi(e) != 0 : plat_cpu_count() >= 6) {
+        pthread_t th;
+        int rc = pthread_create(&th, NULL, w_run, NULL);
+        if (rc) LOG("[mvec] thread: could not start (error %d): the work stays on the queue thread\n", rc);
+        else pthread_detach(th), threaded = 1;
+    }
+    LOG("[mvec] motion vectors: %s\n", threaded ? "on a thread of their own" : "on the queue thread");
+}
+
+// T: hands tq.in on (its head, and the buffers and streams it counts)
+static void q_put(void) {
+    if (threaded < 0) q_init();
+    const MvecDrawIn *d = &tq.in;
+    uint32_t n = cells_of(&d->h);
+    while (tq.w + n - tq.done > MQ) {  // (W is behind by the whole ring: a short wait)
+        tq.done = atomic_load_explicit(&q_done.cells, memory_order_acquire);
+        if (tq.w + n - tq.done > MQ) RELAX();
+    }
+    uint32_t c = tq.w;
+    mq[c++ & (MQ - 1)].h = d->h;
+    for (uint32_t k = 0; k < d->h.ncb; k += 4) memcpy(&mq[c++ & (MQ - 1)], &d->cb[k], sizeof(Cell));
+    for (uint32_t k = 0; k < d->h.ninst; k += 2) memcpy(&mq[c++ & (MQ - 1)], &d->in[k], sizeof(Cell));
+    if (!threaded) {
+        tq.w += w_process(tq.w);
+        tq.done = tq.w;
+        atomic_store_explicit(&q_done.draws, w_dseq, memory_order_release);
+        atomic_store_explicit(&q_done.cells, tq.w, memory_order_release);
+        return;
+    }
+    tq.w = c;
+    atomic_store_explicit(&q_head.v, c, memory_order_seq_cst);
+    if (atomic_load_explicit(&q_asleep, memory_order_seq_cst)) {
+        pthread_mutex_lock(&q_mu);
+        pthread_cond_signal(&q_cv);
+        pthread_mutex_unlock(&q_mu);
+    }
+}
+
+void mvec_sync(void) {
+    if (threaded <= 0 || tq.done == tq.w) return;
+    if ((tq.done = atomic_load_explicit(&q_done.cells, memory_order_acquire)) == tq.w) return;
+    SW_ZONE("mvec sync");
+    while (atomic_load_explicit(&q_done.cells, memory_order_acquire) != tq.w) RELAX();
+    tq.done = tq.w;
+}
+
+void mvec_guest_write(uint64_t lo, uint64_t hi) {
+    if (threaded <= 0 || tq.done == tq.w) return;
+    tq.done = atomic_load_explicit(&q_done.cells, memory_order_acquire);
+    for (uint32_t i = tq.done; i != tq.w;) {
+        const MvecHead *h = &mq[i & (MQ - 1)].h;
+        uint32_t c = i + 1;
+        i += cells_of(h);
+        if (h->kind) continue;
+        bool hit = false;
+        for (uint32_t k = 0; k < h->ncb && !hit; k++) {
+            const MvecCb *b = &mq[(c + k / 4) & (MQ - 1)].cb[k & 3];
+            hit = b->addr < hi && lo < b->addr + b->size;
+        }
+        c += (h->ncb + 3u) / 4;
+        for (uint32_t k = 0; k < h->ninst && !hit; k++) {
+            const MvecInst *m = &mq[(c + k / 2) & (MQ - 1)].in[k & 1];
+            hit = m->addr < hi && lo < m->addr + (m->size ? m->size : 8ull << 20);
+        }
+        if (hit) { mvec_sync(); return; }
+    }
+}
+
+void mvec_resolve(uint32_t seq, uint32_t pc[MVEC_PUSH / 4]) {
+    if ((int32_t)(atomic_load_explicit(&q_done.draws, memory_order_acquire) - seq) <= 0) {
+        SW_ZONE("mvec resolve wait");
+        while ((int32_t)(atomic_load_explicit(&q_done.draws, memory_order_acquire) - seq) <= 0) RELAX();
+    }
+    memcpy(pc, res[seq & (RES - 1)], MVEC_PUSH);
+    atomic_store_explicit(&r_seen.v, seq, memory_order_relaxed);
+}
+
+// T: a new presented frame: the slot it records into (W idle: its state of the last frame is read and reset here)
 static void frame_begin(uint64_t frame) {
+    mvec_sync();
     if (cur >= 0) camera_finish(&slots[cur]);
     if (cur >= 0) {
         if (slots[cur].used > mstat.max_used) mstat.max_used = slots[cur].used;
@@ -321,20 +508,28 @@ static void frame_begin(uint64_t frame) {
     s->full = false;
     s->frame = frame;
     prev = last >= 0 && slots[last].frame + 1 == frame ? last : -1;
+    tq.seq = ~0ull;
+    tq.in.h = (MvecHead){.kind = 1, .inst = (uint32_t)cur, .base_inst = (uint32_t)prev};
+    q_put();
+}
+
+// W: the new frame's index of the previous frame's records
+static void w_frame(const MvecHead *h) {
+    w_cur = (int)h->inst, w_prev = (int)h->base_inst;
     if (++epoch == 0) {  // (wrapped: entries 2^32 frames old would look current)
         memset(dedupe, 0, sizeof dedupe), memset(prev_index, 0, sizeof prev_index), memset(ord_index, 0, sizeof ord_index);
         if (krange) memset(krange, 0, (krange_mask + 1) * sizeof *krange);
         epoch = 1;
     }
-    if (prev < 0) return;
+    if (w_prev < 0) return;
     if (match_by_order() || log_every() > 0)  // (key, ordinal) -> record: draw-order matching and its statistics only
-        for (int i = 0; i < slots[prev].nrec; i++) {
-            const MvecRec *r = &slots[prev].rec[i];
+        for (int i = 0; i < slots[w_prev].nrec; i++) {
+            const MvecRec *r = &slots[w_prev].rec[i];
             uint32_t h = slot_hash(r->key, r->ord);
             while (prev_index[h].epoch == epoch) h = (h + 1) & (INDEX - 1);
             prev_index[h] = (Index){r->key, r->ord, epoch, i};
         }
-    npk = slots[prev].nrec;  // (by key: each key's candidates together, in draw order)
+    npk = slots[w_prev].nrec;  // (by key: each key's candidates together, in draw order)
     if (npk > cap_pk) {
         cap_pk = npk * 2;
         pkeys = realloc(pkeys, (size_t)cap_pk * sizeof *pkeys);
@@ -346,7 +541,7 @@ static void frame_begin(uint64_t frame) {
         ksort = realloc(ksort, (size_t)cap_pk * sizeof *ksort);
         ksort2 = realloc(ksort2, (size_t)cap_pk * sizeof *ksort2);
     }
-    sort_prev_by(&slots[prev], false, pkeys, pidx);
+    sort_prev_by(&slots[w_prev], false, pkeys, pidx);
     uint32_t want = 1024;
     while (want < 2u * (uint32_t)npk) want *= 2;
     if (want > krange_mask + 1) {
@@ -363,7 +558,7 @@ static void frame_begin(uint64_t frame) {
         i = j;
     }
     memset(ptaken, 0, (size_t)npk * sizeof *ptaken);
-    sort_prev_by(&slots[prev], true, pkeys2, pidx2);
+    sort_prev_by(&slots[w_prev], true, pkeys2, pidx2);
     memset(rtaken, 0, (size_t)npk * sizeof *rtaken);
 }
 
@@ -389,7 +584,7 @@ static float fingerprint_distance(const MvecRec *a, const MvecRec *b) {
 // draw), and stops at an identical fingerprint (a still object, the most common case).
 #define MATCH_WINDOW 24
 static int32_t prev_match(MvecRec *r) {
-    if (prev < 0 || !npk) return -1;
+    if (w_prev < 0 || !npk) return -1;
     uint32_t h = (uint32_t)(r->key >> 40) & krange_mask;
     while (krange[h].epoch == epoch && krange[h].key != r->key) h = (h + 1) & krange_mask;
     if (krange[h].epoch != epoch) return -1;
@@ -402,8 +597,8 @@ static int32_t prev_match(MvecRec *r) {
     for (int k = 0; k <= 2 * MATCH_WINDOW && bd > 0; k++) {  // (at, at + 1, at - 1, at + 2, ...)
         int i = at + (k & 1 ? (k + 1) / 2 : -(k / 2));
         if (i < lo || i >= end || ptaken[i] || rtaken[pidx[i]]) continue;
-        if (slots[prev].rec[pidx[i]].ninst != r->ninst) continue;
-        float d = fingerprint_distance(r, &slots[prev].rec[pidx[i]]);
+        if (slots[w_prev].rec[pidx[i]].ninst != r->ninst) continue;
+        float d = fingerprint_distance(r, &slots[w_prev].rec[pidx[i]]);
         if (d < bd) bd = d, best = i;
     }
     if (best < 0) return -1;
@@ -427,14 +622,14 @@ static int32_t prev_match(MvecRec *r) {
 // camera's motion alone, not their swaying (temporal anti-aliasing smeared them, a shimmer on every distant tree).
 // Their vertices hold where they are; the motion is in the constants, which any of them gives the same.
 static int32_t prev_match_loose(MvecRec *r) {
-    if (prev < 0 || !npk) return -1;
+    if (w_prev < 0 || !npk) return -1;
     int lo = 0, hi = npk;
     while (lo < hi) { int m = (lo + hi) / 2; if (pkeys2[m] < r->key2) lo = m + 1; else hi = m; }
     int best = -1;
     float bd = 0.01f;
     for (int i = lo, n = 0; i < npk && pkeys2[i] == r->key2 && n < 64 && bd > 0; i++, n++) {
         if (rtaken[pidx2[i]]) continue;
-        float d = fingerprint_distance(r, &slots[prev].rec[pidx2[i]]);
+        float d = fingerprint_distance(r, &slots[w_prev].rec[pidx2[i]]);
         if (d < bd) bd = d, best = i;
     }
     if (best < 0) return -1;
@@ -445,7 +640,7 @@ static int32_t prev_match_loose(MvecRec *r) {
 }
 
 static int32_t prev_lookup(uint64_t key, uint32_t ord) {
-    if (prev < 0) return -1;
+    if (w_prev < 0) return -1;
     for (uint32_t h = slot_hash(key, ord);; h = (h + 1) & (INDEX - 1)) {
         if (prev_index[h].epoch != epoch) return -1;
         if (prev_index[h].key == key && prev_index[h].ord == ord) return prev_index[h].rec;
@@ -460,7 +655,7 @@ static uint32_t next_ordinal(uint64_t key) {
     }
 }
 
-// A hash of n bytes (mvec_still: equal inputs)
+// A hash of n bytes (w_draw: equal inputs, a draw that stood still)
 static uint64_t content_hash(const uint8_t *p, uint64_t n) {
     uint64_t h = n * 0x9e3779b97f4a7c15ull, v;
     for (; n >= 8; p += 8, n -= 8) memcpy(&v, p, 8), h = (h ^ v) * 0xff51afd7ed558ccdull, h ^= h >> 32;
@@ -489,7 +684,7 @@ static uint64_t cb_hash(const uint8_t *p, uint64_t size, const uint64_t *rows, b
 // Copies [addr, addr + size) of guest memory into the current slot (shared with an earlier copy of the same range in
 // the same generation); UINT32_MAX when the slot is full. *hash: cb_hash's.
 static uint32_t copy_in(uint64_t addr, uint64_t size, uint64_t gen, bool share, const uint64_t *rows, bool camera, uint64_t *hash) {
-    Slot *s = &slots[cur];
+    Slot *s = &slots[w_cur];
     uint32_t h = (uint32_t)(mix(mix(addr, size), gen) >> 40) & (DEDUPE - 1);
     if (share && dedupe[h].epoch == epoch && dedupe[h].addr == addr && dedupe[h].size == size && dedupe[h].gen == gen) {
         mstat.dedupe_hits++;
@@ -513,43 +708,74 @@ static uint32_t copy_in(uint64_t addr, uint64_t size, uint64_t gen, bool share, 
     return (uint32_t)off;
 }
 
-int mvec_record(const MvecDrawIn *d) {
-    if (!mvec_enabled()) return -1;
-    if (d->frame != cur_frame) frame_begin(d->frame);
-    Slot *s = &slots[cur];
+MvecDrawIn *mvec_draw_begin(uint64_t frame) {
+    if (!mvec_enabled()) return NULL;
+    if (frame != cur_frame) frame_begin(frame);
+    tq.in.h.kind = 0;
+    return &tq.in;
+}
+
+uint32_t mvec_draw_commit(void) {
+    // (the history of both frames is read by this frame's draws: kept until their submission is done)
+    uint64_t sq = vk_pending_seq();
+    if (sq != tq.seq) {
+        tq.seq = sq;
+        slots[cur].seq = sq;
+        if (prev >= 0) slots[prev].seq = sq;
+    }
+    // the recorder still has to read the results of draws up to RES back: never in practice (it is a few hundred
+    // draws behind), but a result overwritten would be another draw's history offsets (looked at now and then: the
+    // recorder writes that line for every draw)
+    if (!(tq.dw & 255) && tq.dw - atomic_load_explicit(&r_seen.v, memory_order_relaxed) > RES - 512) {
+        rec_drain();
+        atomic_store_explicit(&r_seen.v, tq.dw, memory_order_relaxed);
+    }
+    uint32_t seq = tq.dw++;
+    q_put();
+    return seq;
+}
+
+// W: one draw: its record, its copies, its match, and its push constants (pc: mflag, then the match's constant buffer
+// copies in the previous frame's history; all zero: no vector of its own)
+static void w_draw(const MvecDrawIn *d, uint32_t *pc) {
+    memset(pc, 0, MVEC_PUSH);
+    if (w_cur < 0) return;
+    Slot *s = &slots[w_cur];
     mstat.draws++;
-    if (s->full) { mstat.dropped++; return -1; }
+    if (s->full) { mstat.dropped++; return; }
     if (s->nrec == s->cap_rec) {
         s->cap_rec = s->cap_rec ? s->cap_rec * 2 : 4096;
         s->rec = realloc(s->rec, (size_t)s->cap_rec * sizeof *s->rec);
     }
     MvecRec *r = &s->rec[s->nrec];
     memset(r, 0, sizeof *r);
-    uint64_t key = mix(mix(mix(d->vs, d->fs), d->iaddr), ((uint64_t)d->count << 32) | d->first);
-    key = mix(key, (uint32_t)d->base_vertex);
-    uint64_t key2 = mix(mix(d->vs, d->fs), ~0ull);
+    const ShaderInfo *vi = d->h.vi;
+    uint64_t key = mix(mix(d->h.pkey, d->h.iaddr), ((uint64_t)d->h.count << 32) | d->h.first);
+    key = mix(mix(key, (uint32_t)d->h.base_vertex), d->h.skey);
+    uint64_t key2 = mix(mix(d->h.pkey, ~0ull), d->h.skey);
     uint64_t used_before = s->used;
-    for (int i = 0; i < d->nstream && i < 16; i++) {
-        const MvecStream *m = &d->stream[i];
-        if (!((d->vs_streams >> i) & 1) || !m->addr) continue;
-        if (!m->divisor) { key = mix(key, m->addr), key2 = mix(key2, m->addr); continue; }
-        if (r->ninst == MVEC_INST) continue;
-        uint64_t n = (d->base_inst + d->inst + m->divisor - 1) / m->divisor, size = n * m->stride;
+    const MvecInst *inst0 = NULL;  // (the first instanced stream copied)
+    for (int i = 0; i < d->h.ninst && i < MVEC_INST; i++) {
+        const MvecInst *m = &d->in[i];
+        uint64_t n = (d->h.base_inst + d->h.inst + m->divisor - 1) / m->divisor, size = n * m->stride;
         if (size > m->size && m->size) size = m->size;
         if (!size || size > (8u << 20)) continue;
         uint64_t ch;
-        uint32_t off = copy_in(m->addr, size, d->gen, false, NULL, false, &ch);  // (rewritten in place: never shared across draws)
+        uint32_t off = copy_in(m->addr, size, d->h.gen, false, NULL, false, &ch);  // (rewritten in place: never shared across draws)
         if (off == UINT32_MAX) goto full;
         r->hash = mix(r->hash, ch);
-        r->inst_stream[r->ninst] = (uint8_t)i;
+        if (!inst0) inst0 = m;
+        r->inst_stream[r->ninst] = (uint8_t)m->index;
         r->inst_off[r->ninst] = off;
         r->inst_size[r->ninst++] = (uint32_t)size;
         mstat.inst_bytes += size;
     }
-    for (int k = 0; k < d->ncb && r->ncb < MVEC_CB; k++) {
+    for (int k = 0; k < d->h.ncb && r->ncb < MVEC_CB; k++) {
         if (!d->cb[k].addr || !d->cb[k].size) continue;
         uint64_t ch;
-        uint32_t off = copy_in(d->cb[k].addr, d->cb[k].size, d->gen, true, d->cb[k].rows, d->cb[k].slot == 3, &ch);
+        int sl = d->cb[k].slot;  // (the vec4s the vertex shader reads of it; NULL: any)
+        const uint64_t *rows = (vi->cbuf_rows_all >> sl) & 1 ? NULL : vi->cbuf_rows[sl];
+        uint32_t off = copy_in(d->cb[k].addr, d->cb[k].size, d->h.gen, true, rows, sl == 3, &ch);
         if (off == UINT32_MAX) goto full;
         r->hash = mix(r->hash, mix(d->cb[k].slot, ch));
         if (d->cb[k].slot == 3) {  // (camera block candidates: camera_finish)
@@ -566,14 +792,14 @@ int mvec_record(const MvecDrawIn *d) {
     // the fingerprint, from guest memory as it is now; not from the camera block (slot 3), which the scene's draws share:
     // it tells no draw apart, and as the camera moves no draw's fingerprint was equal to its match's any more, so the
     // search never stopped early (0.9 ms a frame of matching)
-    for (int k = 0; k < d->ncb && r->nfeat + 12 <= MVEC_FEAT; k++) {
+    for (int k = 0; k < d->h.ncb && r->nfeat + 12 <= MVEC_FEAT; k++) {
         if (!d->cb[k].addr || d->cb[k].size < 48 || d->cb[k].slot == 3) continue;
         memcpy(&r->feat[r->nfeat], (const void *)(uintptr_t)d->cb[k].addr, 48);
         r->nfeat += 12;
     }
     if (r->ninst > 0 && r->nfeat + 4 <= MVEC_FEAT) {
-        const MvecStream *m = &d->stream[r->inst_stream[0]];
-        uint64_t ioff = m->divisor ? (uint64_t)(d->base_inst / m->divisor) * m->stride : 0;
+        const MvecInst *m = inst0;
+        uint64_t ioff = m->divisor ? (uint64_t)(d->h.base_inst / m->divisor) * m->stride : 0;
         if (m->addr && ioff + 16 <= r->inst_size[0]) {
             uint64_t avail = r->inst_size[0] - ioff;
             int nf = (int)(avail / 4);
@@ -597,7 +823,7 @@ int mvec_record(const MvecDrawIn *d) {
             mstat.moved_checked++;
             const float *t = &r->feat[0];
             for (int m = 0; m < 2; m++) {
-                const MvecRec *q = &slots[prev].rec[m ? pf : po];
+                const MvecRec *q = &slots[w_prev].rec[m ? pf : po];
                 if (q->nfeat < 12) continue;
                 float dx = t[3] - q->feat[3], dy = t[7] - q->feat[7], dz = t[11] - q->feat[11];
                 if (dx * dx + dy * dy + dz * dz > 1e-4f) { if (m) mstat.moved_fp++; else mstat.moved_order++; }
@@ -608,44 +834,31 @@ int mvec_record(const MvecDrawIn *d) {
     if (r->ord) mstat.repeated++;
     if (r->prev >= 0) mstat.matched++;
     else mstat.unmatched++;
-    s->seq = vk_pending_seq();
-    return s->nrec++;
-full:
-    s->used = used_before;
-    mstat.dropped++;
-    return -1;
-}
-
-void mvec_drawn(void) { mstat.motion++; }
-
-bool mvec_still(int rec) {
-    static int on = -1;  // SAVAGEWIND_MVEC_STILL=0: (testing) every matched draw with its motion program
-    if (on < 0) on = !getenv("SAVAGEWIND_MVEC_STILL") || atoi(getenv("SAVAGEWIND_MVEC_STILL")) != 0;
-    if (!on || cur < 0 || prev < 0 || rec < 0 || rec >= slots[cur].nrec) return false;
-    const MvecRec *r = &slots[cur].rec[rec];
-    if (r->prev < 0 || slots[prev].rec[r->prev].hash != r->hash) return false;
-    mstat.still++;
-    return true;
-}
-void mvec_masked(void) { mstat.masked++; }
-
-bool mvec_push(int rec, uint32_t pc[MVEC_PUSH / 4]) {
-    if (cur < 0 || prev < 0 || rec < 0 || rec >= slots[cur].nrec) return false;
-    const MvecRec *r = &slots[cur].rec[rec];
-    if (r->prev < 0) return false;
-    const MvecRec *p = &slots[prev].rec[r->prev];
-    memset(pc, 0, MVEC_PUSH);
+    s->nrec++;
+    if (r->prev < 0) return;
+    const MvecRec *p = &slots[w_prev].rec[r->prev];
+    // its inputs are its match's (the hash): it stood still, and the camera's motion is its vector (most of the world
+    // stands still, and a vertex shader run twice costs the GPU: ~5% fps when every matched draw did)
+    static int still = -1;  // SAVAGEWIND_MVEC_STILL=0: (testing) every matched draw runs its vertex shader twice
+    if (still < 0) still = !getenv("SAVAGEWIND_MVEC_STILL") || atoi(getenv("SAVAGEWIND_MVEC_STILL")) != 0;
+    if (still && p->hash == r->hash) { mstat.still++; return; }
     for (int k = 0; k < r->ncb; k++) {
         int j = -1;
         for (int m = 0; m < p->ncb; m++) if (p->cb_slot[m] == r->cb_slot[k]) j = m;
-        if (j < 0) return false;
-        int s = r->cb_slot[k] - 3;
-        pc[s] = p->cb_off[j] / 16;
-        pc[14 + s] = (p->cb_size[j] + 15) / 16;
+        if (j < 0) { memset(pc, 0, MVEC_PUSH); return; }  // (the match lacks a buffer this draw reads)
+        int sl = r->cb_slot[k] - 3;
+        pc[1 + sl] = p->cb_off[j] / 16;
+        pc[15 + sl] = (p->cb_size[j] + 15) / 16;
     }
-    slots[prev].seq = vk_pending_seq();  // (read by this frame's draws too: kept until they are done)
-    return true;
+    pc[0] = 1;
+    mstat.motion++;
+    return;
+full:
+    s->used = used_before;
+    mstat.dropped++;
 }
+
+void mvec_masked(void) { mstat.masked++; }
 
 VkDescriptorBufferInfo mvec_history_info(void) {
     int i = prev >= 0 ? prev : cur;
@@ -671,6 +884,7 @@ float mvec_view_enabled(void) {
 
 bool mvec_reprojection(float m[16], float jitter[2]) {
     if (cur < 0 || prev < 0 || !slots[prev].cam.valid) return false;
+    mvec_sync();  // (the frame's camera block copies: W's)
     MvecCamera now;
     if (!camera_compute(&slots[cur], &now)) return false;
     // prev proj * (prev view * inverse of this view) * inverse of this proj, in double: the views hold the camera's
@@ -705,7 +919,9 @@ bool mvec_reprojection(float m[16], float jitter[2]) {
 
 bool mvec_camera_now(float jitter[2], float *near_, float *far_, float *fov_y) {
     MvecCamera now;
-    if (cur < 0 || !camera_compute(&slots[cur], &now)) return false;
+    if (cur < 0) return false;
+    mvec_sync();
+    if (!camera_compute(&slots[cur], &now)) return false;
     jitter[0] = -now.proj[2], jitter[1] = -now.proj[6];
     // (OpenGL-style rows: [2][2] = -(f + n) / (f - n), [2][3] = -2fn / (f - n), [1][1] = 1 / tan(fovy / 2))
     float a = now.proj[10], b = now.proj[11];
@@ -717,12 +933,4 @@ const MvecCamera *mvec_camera(bool previous) {
     int i = previous ? prev : -1;  // (the frame being recorded has no camera yet: the previous one and the one before)
     if (!previous && prev >= 0) i = (prev + MVEC_SLOTS - 1) % MVEC_SLOTS;
     return i >= 0 && slots[i].cam.valid ? &slots[i].cam : NULL;
-}
-
-const MvecRec *mvec_records(bool previous, int *n, VkBuffer *history) {
-    int i = previous ? prev : cur;
-    if (i < 0) { *n = 0; *history = VK_NULL_HANDLE; return NULL; }
-    *n = slots[i].nrec;
-    *history = slots[i].buf;
-    return slots[i].rec;
 }
