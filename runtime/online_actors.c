@@ -3343,6 +3343,36 @@ static void cmd_flag(int argc, char **argv, ControlReply *r) {
     __atomic_store_n(&g_flagq.state, 0, __ATOMIC_RELEASE);
 }
 
+// `event <flow> [entry]` (control, developer mode): an event started on Link, as an EventTag starts its own
+// (start_event), on the frame loop; for tests that need a story step without playing up to it
+static struct { volatile int state; char flow[64], entry[64]; int ok; } g_eventq;
+
+static void event_query(Cpu *c, uint64_t pinfo) {
+    if (__atomic_load_n(&g_eventq.state, __ATOMIC_ACQUIRE) != 1) return;
+    uint64_t player = pinfo ? *(uint64_t *)(uintptr_t)(pinfo + 0x60) : 0;
+    g_eventq.ok = VALID(player) && start_event(c, player, g_eventq.flow, g_eventq.entry);
+    __atomic_store_n(&g_eventq.state, 2, __ATOMIC_RELEASE);
+}
+
+static void cmd_event(int argc, char **argv, ControlReply *r) {
+    if (argc < 2 || argc > 3) { control_fail(r, "Usage: event <flow> [entry]"); return; }
+    if (__atomic_load_n(&g_eventq.state, __ATOMIC_ACQUIRE) == 1) { control_fail(r, "An event start is under way"); return; }
+    snprintf(g_eventq.flow, sizeof g_eventq.flow, "%s", argv[1]);
+    snprintf(g_eventq.entry, sizeof g_eventq.entry, "%s", argc == 3 ? argv[2] : argv[1]);
+    __atomic_store_n(&g_eventq.state, 1, __ATOMIC_RELEASE);
+    uint64_t until = plat_now_ns() + 2000000000ull;
+    while (__atomic_load_n(&g_eventq.state, __ATOMIC_ACQUIRE) != 2 && plat_now_ns() < until)
+        plat_wait_until_ns(plat_now_ns() + 5000000ull);
+    if (__atomic_load_n(&g_eventq.state, __ATOMIC_ACQUIRE) != 2) {
+        __atomic_store_n(&g_eventq.state, 0, __ATOMIC_RELEASE);
+        control_fail(r, "No answer from the game (no world, or online play off)");
+        return;
+    }
+    control_text(r, "%s<%s>: %s", g_eventq.flow, g_eventq.entry, g_eventq.ok ? "started" : "not started");
+    control_field_int(r, "started", g_eventq.ok);
+    __atomic_store_n(&g_eventq.state, 0, __ATOMIC_RELEASE);
+}
+
 static void find_actors(uint64_t pinfo) {
     flag_query();
     if (__atomic_load_n(&g_find.state, __ATOMIC_ACQUIRE) != 1) return;
@@ -3403,6 +3433,7 @@ void online_actors_control_init(void) {
          cmd_actors, CONTROL_PLAYER},
         {"flag", "<bool flag name>", "A game data bool flag's value and word, as the game has it now", cmd_flag,
          CONTROL_PLAYER},
+        {"event", "<flow> [entry]", "Start an event on Link (entry: the flow's name if left out)", cmd_event, 0},
     };
     control_register(cmds, (int)(sizeof cmds / sizeof *cmds));
 }
@@ -3410,6 +3441,7 @@ void online_actors_control_init(void) {
 void rt_online_frame(Cpu *c) {
     uint64_t pinfo = g_site.player_info ? *(uint64_t *)(uintptr_t)g_site.player_info : 0;
     find_actors(pinfo);
+    event_query(c, pinfo);
     if (!online_actors_on()) return;
     int me = online_local_id();
     float link[3] = {0, 0, 0};
