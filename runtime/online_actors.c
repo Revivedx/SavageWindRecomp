@@ -2822,6 +2822,10 @@ static void quests_update(Cpu *c, uint64_t player, bool host) {
         if (!set_bool_flag(c, hash[k])) *v |= 1;  // (the game's setter; else in memory)
         if (!strcmp(names[k], "IsGet_PortableUnit")) give_item(c, "Obj_DRStone_Get", 1);  // (the slate in his key items)
         if (slate_rune(names[k])) give_item(c, names[k] + 6, 1);  // (a rune: the slate's runes as the game gives it)
+        // (the Great Plateau done: the king's paraglider, which he gives at that step. Without it a player who wasn't
+        // there had the quest finished and no way down from the plateau. Its IsGet_PlayerStole2 flag is no sign: the
+        // game has it set long before, in both games, the paraglider or not)
+        if (!strcmp(names[k], "FindDungeon_Finish")) give_item(c, "PlayerStole2", 1);
         if (korok && !played) give_item(c, "Obj_KorokNuts", 1);  // (a Korok found far from here)
         if (!strncmp(names[k], "Clear_Dungeon", 13)) give_item(c, "Obj_DungeonClearSeal", 1);  // (a shrine: its orb)
         // (a Divine Beast: its champion's ability, as the game gives it after the beast; its heart container)
