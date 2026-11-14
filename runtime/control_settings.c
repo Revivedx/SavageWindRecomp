@@ -33,7 +33,7 @@ static const Setting settings[] = {
     I(anisotropy, 0, 4, "game|2x|4x|8x|16x"), I(tex_lod_bias, 0, TEX_LOD_COUNT - 1, "default|sharp|sharper"), I(sharpening, 0, 10, NULL),
     B(frame_gen), F(volume, 0, 2), I(audio_output, 0, AUDIO_OUT_COUNT - 1, "stereo|surround_51|headphones_3d"),
     B(reverb), B(movie_audio), B(mute_unfocused),
-    I(shrine_sensor_volume, 0, 100, NULL),
+    I(shrine_sensor_volume, 0, 100, NULL), B(amiibo_random_uid),
     I(perf_overlay, 0, PERF_FULL, "off|fps|full"), I(fps_limit, 0, 360, NULL), B(fps_display),
     I(vsync, 0, VSYNC_COUNT - 1, "on|fast|adaptive|off"), B(dpad_move), B(freecam_sticks),
     B(rumble), I(rumble_strength, RUMBLE_STRENGTH_MIN, RUMBLE_STRENGTH_MAX, NULL),
