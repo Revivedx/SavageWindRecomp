@@ -103,5 +103,19 @@ int main(void) {
         near(1600 * o.scene_sx, 1366); near(900 * o.scene_sy, 768);
         near(o.vw, 1366); near(o.vh, 768); near(o.vx, 0); near(o.vy, 0);
     }
+
+#ifndef __APPLE__
+    // Render scale only scales the 3D scene; UI/HUD targets stay at output resolution (#746).
+    g_settings.render_scale = RSCALE_75;
+    output_scale(1920, 1080, true, &o);
+    near(1920 * o.sx, 1920); near(1080 * o.sy, 1080);
+    near(1600 * o.scene_sx, 1440); near(900 * o.scene_sy, 810);
+
+    g_settings.render_scale = RSCALE_200;
+    output_scale(1920, 1080, true, &o);
+    near(1920 * o.sx, 1920); near(1080 * o.sy, 1080);
+    near(1600 * o.scene_sx, 3840); near(900 * o.scene_sy, 2160);
+    g_settings.render_scale = RSCALE_100;
+#endif
     puts("PASS: taller map viewport, 16:9 fallback, disabled fill, title, loading and ultrawide");
 }
