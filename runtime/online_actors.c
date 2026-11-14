@@ -57,6 +57,18 @@ bool framepace_paused(void);
 
 #define ARMOR 3  // head, upper body, lower body
 #define VALID(p) ((p) >= 0x7000000000ull && (p) < 0x7400000000ull)
+// in the game's own image (code, vtables), not the heap (0x72...)
+#define IN_IMAGE(p) ((p) >= 0x7000000000ull && (p) < 0x7004000000ull)
+
+// whether an actor is a physical object: its body (+0x190) is a real physics object, whose vtable is in the game's
+// image. Other kinds of actor (a LinkTagAnd, any tag) have other fields there: a heap pointer to a heap pointer, and
+// at +0x710 whatever their class keeps (Stasis's "stopped" bit 8 was set on one: it was taken for a stopped object,
+// and the other game, applying Stasis to it, crashed)
+static bool has_body(uint64_t a) {
+    if (!VALID(a)) return false;
+    uint64_t body = *(uint64_t *)(uintptr_t)(a + 0x190);
+    return VALID(body) && IN_IMAGE(*(uint64_t *)(uintptr_t)body);
+}
 
 // a piece made by FN_REQUEST: asked for, then made once the game has loaded its resources
 // An actor watched as the game's BaseProcLink does (0x7101517e60 sets one, 0x7101517e0c checks it): the actor's
@@ -1105,8 +1117,8 @@ static void sample_pose(Cpu *c, uint64_t pinfo) {
             const float *pm = (const float *)(uintptr_t)(player + 0x398);
             for (int k = 0; k < na && !stopped; k++) {
                 uint64_t a = g_actors[k];
-                if (a == player || !(*(uint32_t *)(uintptr_t)(a + 0x710) & 8) || !VALID(*(uint64_t *)(uintptr_t)(a + 0x4e0)) ||
-                    !VALID(*(uint64_t *)(uintptr_t)(a + 0x190))) continue;  // (a model and a body: no tag)
+                if (a == player || !has_body(a) || !(*(uint32_t *)(uintptr_t)(a + 0x710) & 8) ||
+                    !VALID(*(uint64_t *)(uintptr_t)(a + 0x4e0))) continue;  // (a physical object with a model: no tag)
                 bool theirs = false;  // (one another player stopped, shown here: not ours)
                 for (int i = 0; i < ONLINE_MAX && !theirs; i++) theirs = g_act[i].stop == a;
                 if (theirs) continue;
@@ -2871,7 +2883,7 @@ static void stop_update(Cpu *c, uint64_t player, const OnlinePlayer *pl, int me)
             for (int k = 0; k < na; k++) {
                 char n[48];
                 actor_name_of(g_actors[k], n);
-                if (strcmp(n, g->name)) continue;
+                if (strcmp(n, g->name) || !has_body(g_actors[k])) continue;  // (never a tag: what he sends isn't trusted)
                 const float *m = (const float *)(uintptr_t)(g_actors[k] + 0x398);
                 float d = (m[3] - g->from[0]) * (m[3] - g->from[0]) + (m[7] - g->from[1]) * (m[7] - g->from[1]) +
                           (m[11] - g->from[2]) * (m[11] - g->from[2]);
@@ -3097,7 +3109,7 @@ static void grab_update(Cpu *c, uint64_t player, const OnlinePlayer *pl, int me)
             for (int k = 0; k < na; k++) {
                 char n[48];
                 actor_name_of(g_actors[k], n);
-                if (strcmp(n, g->name)) continue;
+                if (strcmp(n, g->name) || !has_body(g_actors[k])) continue;  // (never a tag: what he sends isn't trusted)
                 const float *m = (const float *)(uintptr_t)(g_actors[k] + 0x398);
                 float d = (m[3] - g->from[0]) * (m[3] - g->from[0]) + (m[7] - g->from[1]) * (m[7] - g->from[1]) +
                           (m[11] - g->from[2]) * (m[11] - g->from[2]);
@@ -3286,7 +3298,7 @@ static struct {
     volatile int state;  // 0 idle, 1 asked, 2 answered
     char text[48];
     int n;
-    struct { char name[48]; float pos[3], dist; } hit[FIND_MAX];
+    struct { char name[48]; float pos[3], dist; uint64_t actor; } hit[FIND_MAX];
 } g_find;
 
 static void find_actors(uint64_t pinfo) {
@@ -3305,6 +3317,7 @@ static void find_actors(uint64_t pinfo) {
             snprintf(g_find.hit[g_find.n].name, sizeof g_find.hit[0].name, "%s", name);
             g_find.hit[g_find.n].pos[0] = m[3], g_find.hit[g_find.n].pos[1] = m[7], g_find.hit[g_find.n].pos[2] = m[11];
             g_find.hit[g_find.n].dist = sqrtf(dx * dx + dy * dy + dz * dz);
+            g_find.hit[g_find.n].actor = g_actors[k];
             g_find.n++;
         }
     }
@@ -3325,15 +3338,15 @@ static void cmd_actors(int argc, char **argv, ControlReply *r) {
         return;
     }
     // (the lines for the console, which prints them; the same in one field for scripts)
-    char list[FIND_MAX * 96] = "";
+    char list[FIND_MAX * 112] = "";
     size_t at = 0;
     for (int k = 0; k < g_find.n; k++) {
-        control_text(r, "%s at %.1f %.1f %.1f (%.0f m)", g_find.hit[k].name, g_find.hit[k].pos[0], g_find.hit[k].pos[1],
-                     g_find.hit[k].pos[2], g_find.hit[k].dist);
+        control_text(r, "%s at %.1f %.1f %.1f (%.0f m) actor %llx", g_find.hit[k].name, g_find.hit[k].pos[0],
+                     g_find.hit[k].pos[1], g_find.hit[k].pos[2], g_find.hit[k].dist, (unsigned long long)g_find.hit[k].actor);
         if (at < sizeof list)
-            at += (size_t)snprintf(list + at, sizeof list - at, "%s%s %.1f %.1f %.1f %.0fm", k ? "; " : "",
+            at += (size_t)snprintf(list + at, sizeof list - at, "%s%s %.1f %.1f %.1f %.0fm %llx", k ? "; " : "",
                                    g_find.hit[k].name, g_find.hit[k].pos[0], g_find.hit[k].pos[1], g_find.hit[k].pos[2],
-                                   g_find.hit[k].dist);
+                                   g_find.hit[k].dist, (unsigned long long)g_find.hit[k].actor);
     }
     control_field_str(r, "actors", list);
     control_text(r, "%d actor%s%s", g_find.n, g_find.n == 1 ? "" : "s", g_find.n == FIND_MAX ? " (first ones only)" : "");
