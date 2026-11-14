@@ -1008,3 +1008,7 @@ T("Type or paste the folder path below instead.", "请改在下方输入或粘�
 T("Folder path", "文件夹路径")
 T("Type or paste path...", "输入或粘贴路径...")
 T("Enter the path to your extracted game files folder directly if the system folder picker does not open.", "如果系统文件夹选择器无法打开，请直接输入已提取游戏文件所在文件夹的路径。")
+T("Normal", "正常")
+T("Instant", "即时")
+T("Dialogue text speed", "对话文本速度")
+T("How fast dialogue text appears during conversations.", "对话过程中文本出现的快慢。")

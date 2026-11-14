@@ -1008,3 +1008,7 @@ T("Type or paste the folder path below instead.", "대신 아래에 폴더 경�
 T("Folder path", "폴더 경로")
 T("Type or paste path...", "경로 입력 또는 붙여넣기...")
 T("Enter the path to your extracted game files folder directly if the system folder picker does not open.", "시스템 폴더 선택기가 열리지 않으면 추출된 게임 파일 폴더의 경로를 직접 입력하세요.")
+T("Normal", "보통")
+T("Instant", "즉시")
+T("Dialogue text speed", "대화 텍스트 속도")
+T("How fast dialogue text appears during conversations.", "대화 중 텍스트가 표시되는 속도입니다.")

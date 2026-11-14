@@ -1008,3 +1008,7 @@ T("Type or paste the folder path below instead.", "Введите или вст�
 T("Folder path", "Путь к папке")
 T("Type or paste path...", "Введите или вставьте путь...")
 T("Enter the path to your extracted game files folder directly if the system folder picker does not open.", "Укажите путь к папке с распакованными файлами игры напрямую, если системный выбор папки не открывается.")
+T("Normal", "Обычная")
+T("Instant", "Мгновенно")
+T("Dialogue text speed", "Скорость текста диалогов")
+T("How fast dialogue text appears during conversations.", "Скорость появления текста во время диалогов.")
