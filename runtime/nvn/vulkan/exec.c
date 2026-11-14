@@ -7873,6 +7873,10 @@ static void pso_init(void) {
     pso_start();
 }
 
+// A pre-warm still building (main.c's --precompile-shaders waits for it: exiting under its workers tore the device
+// down beneath them, a crash on MoltenVK)
+bool vk_pso_prewarm_running(void) { return atomic_load(&pso_running); }
+
 // precompile.c, once the pipeline seed's records have joined the list in this process: the start screen's
 // precompilation runs after vk_exec_init read the list (at the window's creation), so the pre-warm of this start never
 // saw them, and the first boot after the setup would link every seeded pipeline where first drawn, as if there were

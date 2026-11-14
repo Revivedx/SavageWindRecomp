@@ -138,12 +138,12 @@ const char *const k_perf[] = {"Off", "FPS", "Full"};
 // Upscaler: Off (the game's image scaled plainly), this OS's spatial upscaler, and the temporal ones still to come. A
 // value that can't be picked yet (Item.value_off) is shown greyed and never stored: g_shown keeps the row on it until
 // the page opens again. So are the upscaler's modes until the game renders below the window's size (output_scale.c).
-#ifdef __APPLE__
+#ifdef SW_METAL
 const int k_ups_value[] = {UPSCALE_OFF, UPSCALE_METALFX};
 #else
 const int k_ups_value[] = {UPSCALE_OFF, UPSCALE_FSR1, UPSCALE_FSR3, UPSCALE_FSR4, UPSCALE_DLSS};
 #endif
-#ifdef __APPLE__
+#ifdef SW_METAL
 const int UPS_DEFAULT = 1;  // (UPSCALE_DEFAULT: MetalFX)
 #else
 const int UPS_DEFAULT = 0;  // (UPSCALE_DEFAULT: Off, the window's resolution)
@@ -151,7 +151,7 @@ const int UPS_DEFAULT = 0;  // (UPSCALE_DEFAULT: Off, the window's resolution)
 std::vector<int> g_shown;   // per item: the value shown instead of get(), one that can't be picked yet (-1: none)
 const char16_t GREY = 3;    // (the game's message colour for greyed values)
 const char *const k_modes[] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance"};
-#ifdef __APPLE__
+#ifdef SW_METAL
 const char *const k_aa[] = {"Off", "SMAA"};
 #else
 const char *const k_aa[] = {"Off", "FXAA", "SMAA", "TAA"};  // (settings.h AA_ROW_*)
@@ -334,7 +334,7 @@ void build_items(void) {
     // first page: the sections (the game's own options are on Gameplay and Controls)
     v.push_back(button(P_MAIN, "Gameplay", "Mini-map, HUD, jump button and more.", "Open", A_PAGE, P_GAMEPLAY));
     v.push_back(button(P_MAIN, "Video", "Screen, resolution and image quality.", "Open", A_PAGE, P_VIDEO));
-#ifndef __APPLE__
+#ifndef SW_METAL
     v.push_back(button(P_MAIN, "Colour", "Presets, exposure, contrast, saturation and LUTs.", "Open", A_PAGE, P_COLOUR));
 #endif
     v.push_back(button(P_MAIN, "Audio", "Volume and sound effects.", "Open", A_PAGE, P_AUDIO));
@@ -504,7 +504,7 @@ void build_items(void) {
                        [](const Item &, int x) { g_settings.draw_distance = k_drawdist_order[x]; }, 1));
     v.push_back(choice(P_VIDEO_ADV, "Anti-aliasing", "Smooths jagged edges. Best at a lower resolution.",
                        [](const Item &) { return N(k_aa); }, [](const Item &, int x) { return tr(k_aa[x]); },
-#ifdef __APPLE__
+#ifdef SW_METAL
                        [](const Item &) { return g_settings.antialias; },
                        [](const Item &, int x) { g_settings.antialias = x; }, AA_OFF));
 #else
@@ -560,7 +560,7 @@ void build_items(void) {
                        },
                        [](const Item &) { return g_settings.render_scale; },
                        [](const Item &, int x) { g_settings.render_scale = x; }, RSCALE_100));
-#ifndef __APPLE__
+#ifndef SW_METAL
     // the game's own FXAA (vulkan/exec.c fxaa_patch)
     // the wet lighting passes' sun glare (maxwell/translate.c maxwell_wet_lighting): their translations, made at the start
     v.push_back(toggle(P_VIDEO_ADV, "Wet grass fix", "Tames the white glare on grass and roofs in rain with the sun out. From the next start.",
@@ -638,7 +638,7 @@ void build_items(void) {
                        [](const Item &) { return g_settings.sharper_menus / 2; },
                        [](const Item &, int x) { g_settings.sharper_menus = x * 2; }, 0));
 
-#ifndef __APPLE__
+#ifndef SW_METAL
     // Colour (runtime/color_grade.h; vulkan/exec.c scene_post): the 3D image only, the HUD keeps its colours. The preset
     // sets the sliders below it; "Custom" (sliders matching no preset) is shown, never picked.
     Item preset = choice(P_COLOUR, "Colour preset", "Ready-made looks. Natural: the game's own colours.",

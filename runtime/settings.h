@@ -8,7 +8,7 @@ enum { UPSCALE_OFF = 0, UPSCALE_METALFX = 1 /* macOS */, UPSCALE_FSR1 = 2 /* AMD
        UPSCALE_FSR3 = 3 /* AMD FSR 3.1, Vulkan where built in (vulkan/fsr3.h) */, UPSCALE_DLSS = 4 /* NVIDIA DLSS: not yet */,
        UPSCALE_FSR4 = 5 /* AMD FSR 4, Vulkan on Windows with AMD's DLLs and an AMD Radeon (vulkan/fsr_api.h) */,
        UPSCALE_COUNT };
-#ifdef __APPLE__
+#ifdef SW_METAL
 #define UPSCALE_SPATIAL UPSCALE_METALFX  // each OS's spatial upscaler
 #define UPSCALE_FSR3_OR_SPATIAL UPSCALE_METALFX  // (a settings file from another OS)
 #define UPSCALE_FSR4_OR_SPATIAL UPSCALE_METALFX
@@ -31,7 +31,7 @@ int settings_aa_row(void);
 void settings_aa_row_set(int row);
 // Video > Render scale: 50%, 75%, 100% (the window's size), 125%, 150%, 200%
 enum { RSCALE_50 = 0, RSCALE_75 = 1, RSCALE_100 = 2, RSCALE_125 = 3, RSCALE_150 = 4, RSCALE_200 = 5, RSCALE_COUNT };
-#ifdef __APPLE__
+#ifdef SW_METAL
 #define AA_TAA_OR_SMAA AA_SMAA
 #else
 #define AA_TAA_OR_SMAA AA_TAA

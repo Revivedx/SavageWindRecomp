@@ -45,6 +45,7 @@ uint64_t g_addr_report_lo, g_addr_report_hi;  // (SAVAGEWIND_VK_ADDR_REPORT)
 uint64_t renderer_present_count(void);
 static bool g_m5;     // maintenance5 enabled (the pipeline cache's header: pc_header)
 static bool g_cs_ext;  // VK_EXT_swapchain_colorspace: HDR10 swapchains can be made (the HDR section below)
+static bool g_portability;  // VK_KHR_portability_enumeration: the instance lists portability drivers (MoltenVK)
 
 // ================================================================== instance / device
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_cb(VkDebugUtilsMessageSeverityFlagBitsEXT sev, VkDebugUtilsMessageTypeFlagsEXT type,
@@ -86,9 +87,17 @@ static void create_instance(void) {
         vkEnumerateInstanceExtensionProperties(NULL, &nie, NULL);
         VkExtensionProperties *ie = calloc(nie ? nie : 1, sizeof *ie);
         vkEnumerateInstanceExtensionProperties(NULL, &nie, ie);
-        for (uint32_t i = 0; i < nie && !g_cs_ext; i++)
+        bool portability = false;  // (MoltenVK: a portability driver, listed only when the instance asks for those)
+        for (uint32_t i = 0; i < nie; i++) {
             if (!strcmp(ie[i].extensionName, VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME)) g_cs_ext = true;
+            if (!strcmp(ie[i].extensionName, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)) portability = true;
+        }
         if (g_cs_ext) ext[n_ext++] = VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME;
+#ifdef __APPLE__  // (elsewhere the loader lists it too, and it would bring in layered drivers - Mesa's Dozen on Windows)
+        if (portability) ext[n_ext++] = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME, g_portability = true;
+#else
+        (void)portability;
+#endif
         free(ie);
     }
     const char **ngx_ext = NULL;
@@ -120,6 +129,7 @@ static void create_instance(void) {
                              .apiVersion = VK_API_VERSION_1_3};
     LOG("[vk] application version %u.%u.%u (Savage Wind %s)\n", vmaj, vmin, vpatch * 100 + vpre, rt_version());
     VkInstanceCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app,
+                               .flags = g_portability ? VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR : 0,
                                .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext,
                                .enabledLayerCount = validate ? 1 : 0, .ppEnabledLayerNames = layers};
     VkResult r = vkCreateInstance(&ci, NULL, &g_vk.inst);
@@ -523,6 +533,8 @@ static void create_device(void) {
     const char *ext[64];
     uint32_t n_ext = 0;
     ext[n_ext++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+    // (a portability driver - MoltenVK - must be asked for it when it lists it; its name is in vulkan_beta.h)
+    if (has_ext(ep, ne, "VK_KHR_portability_subset")) ext[n_ext++] = "VK_KHR_portability_subset";
 
     const char *memory_priority_env = getenv("SAVAGEWIND_VK_MEMORY_PRIORITY");
     bool request_memory_priority = memory_priority_env && !strcmp(memory_priority_env, "1");
@@ -627,6 +639,7 @@ static void create_device(void) {
 #endif
     g_vk.turnip = drv.driverID == VK_DRIVER_ID_MESA_TURNIP;
     g_vk.amd_proprietary = drv.driverID == VK_DRIVER_ID_AMD_PROPRIETARY;
+    g_vk.moltenvk = drv.driverID == VK_DRIVER_ID_MOLTENVK;
     {   // AMD's own shader compiler (its driver without "LLPC" in driverInfo: RDNA 2 and older on Windows) draws the sky
         // wrong from unoptimized SPIR-V (#359): its fragment shaders go through spirv-opt (spirv.c).
         // SAVAGEWIND_VK_OPT_FS=0 / 1 forces it off or on.
