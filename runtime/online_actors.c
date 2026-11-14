@@ -64,10 +64,12 @@ bool framepace_paused(void);
 // image. Other kinds of actor (a LinkTagAnd, any tag) have other fields there: a heap pointer to a heap pointer, and
 // at +0x710 whatever their class keeps (Stasis's "stopped" bit 8 was set on one: it was taken for a stopped object,
 // and the other game, applying Stasis to it, crashed)
+// (it reads through +0x190: only a pointer-like value, aligned as an object is, is followed - what another class keeps
+// there could otherwise point at an unmapped page; callers check their cheap fields first, so few actors get here)
 static bool has_body(uint64_t a) {
     if (!VALID(a)) return false;
     uint64_t body = *(uint64_t *)(uintptr_t)(a + 0x190);
-    return VALID(body) && IN_IMAGE(*(uint64_t *)(uintptr_t)body);
+    return VALID(body) && !(body & 7) && IN_IMAGE(*(uint64_t *)(uintptr_t)body);
 }
 
 // a piece made by FN_REQUEST: asked for, then made once the game has loaded its resources
@@ -1123,8 +1125,9 @@ static void sample_pose(Cpu *c, uint64_t pinfo) {
             const float *pm = (const float *)(uintptr_t)(player + 0x398);
             for (int k = 0; k < na && !stopped; k++) {
                 uint64_t a = g_actors[k];
-                if (a == player || !has_body(a) || !(*(uint32_t *)(uintptr_t)(a + 0x710) & 8) ||
-                    !VALID(*(uint64_t *)(uintptr_t)(a + 0x4e0))) continue;  // (a physical object with a model: no tag)
+                if (a == player || !(*(uint32_t *)(uintptr_t)(a + 0x710) & 8) ||
+                    !VALID(*(uint64_t *)(uintptr_t)(a + 0x4e0)) || !has_body(a))
+                    continue;  // (a physical object with a model: no tag; the cheap checks first)
                 bool theirs = false;  // (one another player stopped, shown here: not ours)
                 for (int i = 0; i < ONLINE_MAX && !theirs; i++) theirs = g_act[i].stop == a;
                 if (theirs) continue;
