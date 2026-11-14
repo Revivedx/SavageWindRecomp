@@ -10422,6 +10422,13 @@ static bool cam_motion(VkCommandBuffer cb, const float *m, const double *prev_vp
     return true;
 }
 
+typedef struct { VkCommandBuffer cb; FgConfig cfg; FgFrame f; } FgJob;
+static _Atomic int fg_failed;
+static void fg_run(void *arg) {
+    FgJob *j = arg;
+    if (!fg_dispatch(j->cb, &j->cfg, &j->f)) atomic_store(&fg_failed, 1);
+}
+
 // At the game's present (device.c), outside the window image's rendering: the frame between the previous one and
 // t (b: its image), or NULL (not wanted, or this frame lacks what it needs: the next one starts over).
 TexBackend *vk_fg_generate(NvnTexture *t, TexBackend *b) {
@@ -10514,9 +10521,21 @@ TexBackend *vk_fg_generate(NvnTexture *t, TexBackend *b) {
             gp_mark(cb, "frame generation: FSR 3 optical flow + interpolation");
             static int test = -1;  // (measuring) SAVAGEWIND_FG_TEST=2: no interpolation (the HUD-less copy shown instead)
             if (test < 0) test = getenv("SAVAGEWIND_FG_TEST") ? atoi(getenv("SAVAGEWIND_FG_TEST")) : 0;
-            if (test != 2) rec_drain();  // (FidelityFX records into cb itself: what was queued before goes first)
-            ok = test == 2 ? true : fg_dispatch(cb, &cfg, &f);
-            if (test == 2) o = hl;
+            if (test == 2) {
+                o = hl;
+                ok = true;
+            } else if (atomic_load(&fg_failed)) {
+                ok = false;
+            } else {
+                // FidelityFX records into cb itself, and may wait for the device: the recorder thread makes the call,
+                // in its turn (fg_run; with the recorder off, here and now), as fsr3_scene does.
+                static FgJob jobs[8];
+                static unsigned nj;
+                FgJob *j = &jobs[nj++ & 7];
+                *j = (FgJob){cb, cfg, f};
+                rec_custom(fg_run, j);
+                ok = true;
+            }
             vk_full_barrier(cb);
             gp_mark(cb, "frame generation: done");
             vk_dyn_forget();
