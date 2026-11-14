@@ -486,6 +486,8 @@ class Lifter:
         rt = bits(w, 0, 5)
         if bits(w, 27, 3) == 0b011 and bits(w, 24, 2) == 0:  # literal -> LDR (imm, offset 0) via scratch
             opc = bits(w, 30, 2)
+            if opc == 3:  # (unallocated: what the C lowering reports too)
+                raise Unsupported('ldr simd literal opc3')
             size, o = {0: (2, 1), 1: (3, 1), 2: (0, 3)}[opc]
             addr = pc + sext(bits(w, 5, 19), 19) * 4
             new = (size << 30) | 0x3D000000 | (o << 22) | (31 << 5) | rt
@@ -635,6 +637,11 @@ class Lifter:
         if self.sc:
             return Insn('op', self.sc.dp(w, pc))
         rd, rn, rm, ra = bits(w, 0, 5), bits(w, 5, 5), bits(w, 16, 5), bits(w, 10, 5)
+        # (by element, vector and scalar, 16-bit lanes - bit 23 clear: integer size 01, FP16 - Rm is v0-v15 in bits
+        # 16-19 and bit 20 is the index's low bit (M). Read as 5 bits, an odd .h[i] named v(Rm+16): the register the
+        # instruction reads was never loaded from c->v, and e.g. mla v0.8h, v1.8h, v2.h[3] read whatever v2 held)
+        if ((w & 0x9F000400) == 0x0F000000 or (w & 0xDF000400) == 0x5F000000) and not bits(w, 23, 1):
+            rm = bits(w, 16, 4)
         vregs = {rd, rn, rm, ra}
         gprs = []
         flags = False

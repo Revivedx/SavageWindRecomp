@@ -13,7 +13,7 @@
 //
 // Dates come from the file times of caption.sav (when the game wrote the slot): the save has no date of its own that
 // is known without the game's data. The play time is caption.sav's PlayTime flag when it has one, else not shown.
-#ifdef __APPLE__
+#ifdef SW_METAL
 #import <Metal/Metal.h>
 #endif
 #include <SDL3/SDL.h>
@@ -42,7 +42,7 @@ extern "C" {
 #include "../services/save_profiles.h"
 #include "../settings.h"
 SDL_Window *ui_window(void);
-#ifdef __APPLE__
+#ifdef SW_METAL
 void *ui_metal_device(void);
 #else
 uint64_t vk_imgui_texture_rgba(const void *rgba, int w, int h);  // runtime/nvn/vulkan/imgui_glue.cpp
@@ -115,12 +115,12 @@ std::string save_dir() {
 }
 
 // ------------------------------------------------------------------ pictures
-#ifdef __APPLE__
+#ifdef SW_METAL
 std::vector<id<MTLTexture>> g_mtl;  // (ImGui only holds the pointer)
 #endif
 
 uint64_t texture_rgba(const unsigned char *px, int w, int h) {
-#ifdef __APPLE__
+#ifdef SW_METAL
     id<MTLDevice> dev = (__bridge id<MTLDevice>)ui_metal_device();
     MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
                                                                                    width:w height:h mipmapped:NO];
@@ -135,7 +135,7 @@ uint64_t texture_rgba(const unsigned char *px, int w, int h) {
 }
 
 void texture_free(uint64_t tex) {
-#ifdef __APPLE__
+#ifdef SW_METAL
     for (size_t i = 0; i < g_mtl.size(); i++)
         if ((uint64_t)(intptr_t)(__bridge void *)g_mtl[i] == tex) { g_mtl.erase(g_mtl.begin() + i); break; }
 #else

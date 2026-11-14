@@ -30,7 +30,7 @@ int main(void) {
 
     pause = true;
     g_settings.hud_edges = true;
-#ifndef __APPLE__
+#ifndef SW_METAL
     assert(fabsf(output_pause_extra_y() - 40) < .001f);
     assert(fabsf(output_ui_extra_y() - 40) < .001f);
     g_settings.hud_edges = false;
@@ -46,7 +46,7 @@ int main(void) {
     near(o.shape, 1); near(o.vh, 720); near(o.vy, 40);
     title = true;
     output_scale(1280, 800, true, &o);
-#ifdef __APPLE__
+#ifdef SW_METAL
     near(o.shape, 1); near(o.vh, 720); near(o.vy, 40);
 #else
     near(o.shape, .9); near(o.vh, 800); near(o.vy, 0);
@@ -68,7 +68,7 @@ int main(void) {
     // A full-height map reveals more terrain within the original pixel scale.
     map = true;
     output_scale(1280, 800, true, &o);
-#ifdef __APPLE__
+#ifdef SW_METAL
     near(o.shape, .9); near(o.vh, 720); near(o.vy, 40);
     near(output_map_extra_y(), 0);
     output_scale(1024, 768, true, &o);
