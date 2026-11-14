@@ -1322,8 +1322,8 @@ static const char *builtin_src(const char *name, int *stage) {
                "  o = pc.a.z == 2.0 ? vec4(mv, 0.0, 1.0) : vec4(mv, react, 0.5);\n"
                "}\n";
     }
-    // FSR 3's inputs (exec.c fsr3_scene), at the render size: the scene depth as R32F (t0, a depth view), and the
-    // reactive mask from the motion vectors' .z (t0) as R8
+    // FSR 3/4's inputs (exec.c fsr3_scene), at the render size: the scene depth as R32F (t0, a depth view), and the
+    // reactive mask from the motion vectors' .z (t0) combined with jitter-tolerant temporal color change (t1 current, t2 prev) as R8
     if (!strcmp(name, "fsr3_depth.frag") || !strcmp(name, "fsr3_reactive.frag")) {
         *stage = STAGE_FRAGMENT;
         return name[5] == 'd' ? "#version 450\n"
@@ -1332,10 +1332,39 @@ static const char *builtin_src(const char *name, int *stage) {
                                 "void main() { o = vec4(texelFetch(t0, ivec2(gl_FragCoord.xy), 0).r); }\n"
                               : "#version 450\n"
                                 "layout(set = 0, binding = 0) uniform sampler2D t0;\n"
+                                "layout(set = 0, binding = 1) uniform sampler2D t1;\n"
+                                "layout(set = 0, binding = 2) uniform sampler2D t2;\n"
                                 "layout(location = 0) out vec4 o;\n"
                                 "layout(push_constant) uniform P { vec4 a; vec4 b; } pc;\n"
                                 "void main() {\n"
-                                "  float r = clamp(texelFetch(t0, ivec2(gl_FragCoord.xy), 0).z * pc.a.x, 0.0, 1.0);\n"
+                                "  ivec2 p = ivec2(gl_FragCoord.xy);\n"
+                                "  ivec2 ts = textureSize(t0, 0);\n"
+                                "  vec4 v = texelFetch(t0, p, 0);\n"
+                                "  float r = v.z;\n"
+                                "  if (pc.a.y > 0.5) {\n"
+                                "    vec2 uv = (vec2(p) + 0.5) / vec2(ts);\n"
+                                "    vec2 prev_uv = uv + vec2(-0.5 * v.x, 0.5 * v.y);\n"
+                                "    if (all(greaterThanEqual(prev_uv, vec2(0.0))) && all(lessThanEqual(prev_uv, vec2(1.0)))) {\n"
+                                "      vec3 c_center = texelFetch(t1, p, 0).rgb;\n"
+                                "      vec3 c_min = c_center;\n"
+                                "      vec3 c_max = c_center;\n"
+                                "      for (int dy = -1; dy <= 1; dy++) {\n"
+                                "        for (int dx = -1; dx <= 1; dx++) {\n"
+                                "          if (dx == 0 && dy == 0) continue;\n"
+                                "          ivec2 q = clamp(p + ivec2(dx, dy), ivec2(0), ts - 1);\n"
+                                "          vec3 c = texelFetch(t1, q, 0).rgb;\n"
+                                "          c_min = min(c_min, c);\n"
+                                "          c_max = max(c_max, c);\n"
+                                "        }\n"
+                                "      }\n"
+                                "      vec3 c_prev = textureLod(t2, prev_uv, 0.0).rgb;\n"
+                                "      vec3 diff = abs(c_prev - clamp(c_prev, c_min, c_max));\n"
+                                "      float denom = max(max(dot(c_prev, vec3(0.299, 0.587, 0.114)), dot(c_center, vec3(0.299, 0.587, 0.114))), 0.08);\n"
+                                "      float auto_react = smoothstep(0.08, 0.45, max(diff.r, max(diff.g, diff.b)) / denom) * 0.75;\n"
+                                "      r = max(r, auto_react);\n"
+                                "    }\n"
+                                "  }\n"
+                                "  r = clamp(r * pc.a.x, 0.0, 1.0);\n"
                                 "  o = vec4(r, r, r, 1.0);\n"
                                 "}\n";
     }

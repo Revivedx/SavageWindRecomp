@@ -12,9 +12,10 @@ static bool fsr3_avail;
 bool framepace_in_event(void) { return false; }
 bool fsr3_available(void) { return fsr3_avail; }
 bool fsr4_available(void) { return fsr3_avail; }
+static uint64_t shown_frame;
 uint64_t plat_now_ns(void) { return 1000000000; }
 uint64_t renderer_present_count(void) { return 0; }
-uint64_t framepace_shown_frame(void) { return 0; }
+uint64_t framepace_shown_frame(void) { return shown_frame; }
 static void near(double actual, double expected) {
     assert(fabs(actual - expected) < 1e-6);
 }
@@ -123,8 +124,35 @@ int main(void) {
     uint32_t rw = 0, rh = 0;
     rt_render_size(1920, 1080, &rw, &rh);
     assert(rw == 1920 && rh == 1080);
+
+    // Hybrid (fast) mode with FSR 4 Quality seeds jitter_size in output_scale and applies sub-pixel jitter
+    rt_jitter_set_size(0, 0);
+    g_settings.mvec_mode = MVEC_MODE_HYBRID;
+    g_settings.upscaler = UPSCALE_FSR4;
+    g_settings.upscale_quality = UPQ_QUALITY;
+    output_scale(1920, 1080, true, &o);
+    assert(__atomic_load_n(&jitter_size[0], __ATOMIC_RELAXED) == 1280);
+    assert(__atomic_load_n(&jitter_size[1], __ATOMIC_RELAXED) == 720);
+    uint8_t proj[0x100] = {0};
+    float aspect = 16.0f / 9.0f, nf[2] = {0.1f, 25000.0f};
+    memcpy(proj + 0xb0, &aspect, 4);
+    memcpy(proj + 0x98, nf, 8);
+    shown_frame = 0;
+    uint32_t ox0 = 0, oy0 = 0;
+    rt_persp_offset((uint64_t)(uintptr_t)proj, &ox0, &oy0);
+    float fx0 = 0, fy0 = 0;
+    memcpy(&fx0, &ox0, 4); memcpy(&fy0, &oy0, 4);
+    assert(fabsf(fy0 - (-1.0f / 6.0f) / 720.0f) < 1e-7f);
+    shown_frame = 1;
+    uint32_t ox1 = 0, oy1 = 0;
+    rt_persp_offset((uint64_t)(uintptr_t)proj, &ox1, &oy1);
+    float fx1 = 0, fy1 = 0;
+    memcpy(&fx1, &ox1, 4); memcpy(&fy1, &oy1, 4);
+    assert(fabsf(fx1 - (-0.25f) / 1280.0f) < 1e-7f);
+    assert(fabsf(fy1 - (2.0f / 3.0f - 0.5f) / 720.0f) < 1e-7f);
+
     fsr3_avail = false;
     g_settings.upscaler = UPSCALE_OFF;
 
-    puts("PASS: map overscan clipped at 16:10 and 4:3; Native AA, FSR 4/FSR 3 availability and FSR 1 fallback verified");
+    puts("PASS: map overscan clipped at 16:10 and 4:3; Native AA, FSR 4/FSR 3 availability, Hybrid jitter seeding and FSR 1 fallback verified");
 }

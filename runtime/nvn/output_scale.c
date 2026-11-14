@@ -111,6 +111,12 @@ void rt_render_size(double dw, double dh, uint32_t *out_w, uint32_t *out_h) {
 // use (rt_persp)
 static volatile float g_view_shape = 1, g_fov = 1;
 static uint32_t g_world_proj[4];  // tan(fovy / 2), aspect, near, far of the world camera's last matrix (rt_persp), float bits
+static uint32_t jitter_size[2];
+
+void rt_jitter_set_size(uint32_t w, uint32_t h) {
+    __atomic_store_n(&jitter_size[0], w, __ATOMIC_RELAXED);
+    __atomic_store_n(&jitter_size[1], h, __ATOMIC_RELAXED);
+}
 
 void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
     double fit = fmin(dw / 1920.0, dh / 1080.0);
@@ -183,6 +189,8 @@ void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
     last = now;
     float ease = dt >= 0.25 ? 1.0f : (float)(dt / 0.25);
     g_fov = fabsf(want - g_fov) < 0.001f ? want : g_fov + (want - g_fov) * ease;
+    if (!__atomic_load_n(&jitter_size[0], __ATOMIC_RELAXED) && o->scene_sx > 0 && o->scene_sy > 0)
+        rt_jitter_set_size((uint32_t)lround(1600.0 * o->scene_sx), (uint32_t)lround(900.0 * o->scene_sy));
 }
 
 float output_view_shape(void) { return g_view_shape; }
@@ -322,12 +330,6 @@ void rt_frustum(uint64_t proj, float *f) {
 // same, and the paused game's two updates a frame one phase), [-0.5, 0.5] pixels of the scene's render size
 // (rt_jitter_set_size). It lands in the projection of the frame's
 // camera block, where vulkan/mvec.c reads it back and takes it out of the motion vectors.
-static uint32_t jitter_size[2];
-void rt_jitter_set_size(uint32_t w, uint32_t h) {
-    __atomic_store_n(&jitter_size[0], w, __ATOMIC_RELAXED);
-    __atomic_store_n(&jitter_size[1], h, __ATOMIC_RELAXED);
-}
-
 bool rt_jitter_on(void) {
     static int env = -2;
     if (env == -2) env = getenv("SAVAGEWIND_JITTER") ? atoi(getenv("SAVAGEWIND_JITTER")) != 0 : -1;

@@ -1474,19 +1474,20 @@ static uint32_t tex_wh[2][64][2];
 // ================================================================== render passes
 static VkFormat pass_color[8], pass_depth, pass_stencil;
 static uint32_t pass_ncolor, pass_samples = 1, pass_w, pass_h;
-// (mvec.c) the motion target's slot in the current pass (-1: none), the frame it was last cleared in
+// (mvec.c) the motion target's slot in the current pass (-1: none), whether the pass is the main scene, and last clear
 static int pass_mvec = -1;
+static bool pass_scene;
 static uint64_t mvec_cleared = ~0ull;
 static TexBackend *post_image(int i, uint32_t w, uint32_t h, VkFormat f);
 static VkImageView post_view(TexBackend *d);
-// The motion target for a pass writing `depth` (minw x minh: the pass's size): the internal-resolution scene depth's
-// size (the largest RS_SCENE depth of the last frame, or of this one when larger: the scene shrinks when the upscaler
-// is turned on; its halves and levels get none), NULL for other passes
+// Whether a pass writing `depth` (minw x minh: the pass's size) is the internal-resolution scene pass: the largest
+// RS_SCENE depth of the last frame, or of this one when larger (the scene shrinks when the upscaler is turned on;
+// its halves and mip levels return false). Also keeps jitter_size synchronized to that scene size.
 static TexBackend *mvec_target_img;
 static NvnTexture *mvec_depth;  // the scene depth the motion target was last drawn with (mvec_fill)
-static TexBackend *mvec_pass_target(NvnTexture *depth, uint32_t minw, uint32_t minh) {
-    if (vk_texture_scale_group(depth) != RS_SCENE || (st.rt.has_dview && (st.rt.dview.setmask & 1) && st.rt.dview.base_level))
-        return NULL;
+static bool scene_pass_size(NvnTexture *depth, uint32_t minw, uint32_t minh) {
+    if (!depth || vk_texture_scale_group(depth) != RS_SCENE || (st.rt.has_dview && (st.rt.dview.setmask & 1) && st.rt.dview.base_level))
+        return false;
     static uint32_t mw, mh, fw, fh;  // (fw x fh: the largest this frame)
     static uint64_t at = ~0ull;
     uint64_t frame = renderer_present_count();
@@ -1496,10 +1497,9 @@ static TexBackend *mvec_pass_target(NvnTexture *depth, uint32_t minw, uint32_t m
     }
     if ((uint64_t)minw * minh > (uint64_t)fw * fh) fw = minw, fh = minh;
     if ((uint64_t)minw * minh > (uint64_t)mw * mh) mw = minw, mh = minh;
-    if (minw != mw || minh != mh) return NULL;
-    mvec_target_img = post_image(8, mw, mh, VK_FORMAT_R16G16B16A16_SFLOAT);
+    if (minw != mw || minh != mh) return false;
     rt_jitter_set_size(mw, mh);
-    return mvec_target_img;
+    return true;
 }
 // (debugging) SAVAGEWIND_TRACE_TEX (textures.c): texture write histories
 bool vk_trace_tex(NvnTexture *t);
@@ -2332,6 +2332,8 @@ static void begin_pass(void) {
     // dereference in the first seconds of the game (#132). SAVAGEWIND_VK_EMPTY_PASS=1: begun anyway, as before.
     static int empty_pass = -1;
     if (empty_pass < 0) empty_pass = getenv("SAVAGEWIND_VK_EMPTY_PASS") != NULL;
+    pass_mvec = -1;
+    pass_scene = false;
     pass_void = !w && !empty_pass;
     if (pass_void) {
         in_pass = true;
@@ -2339,10 +2341,11 @@ static void begin_pass(void) {
         stat_passes++;
         return;
     }
-    pass_mvec = -1;
-    if (mvec_objects_enabled() && has_d && pass_ncolor < 8 && pass_samples == 1) {  // (mvec.c) the motion target, appended
-        TexBackend *mt = mvec_pass_target(st.rt.depth, minw, minh);
-        if (mt) {
+    pass_scene = has_d && pass_samples == 1 && st.rt.depth && scene_pass_size(st.rt.depth, minw, minh);
+    if (pass_scene) {
+        mvec_depth = st.rt.depth;
+        if (mvec_objects_enabled() && pass_ncolor < 8) {  // (mvec.c) the motion target, appended
+            TexBackend *mt = mvec_target_img = post_image(8, minw, minh, VK_FORMAT_R16G16B16A16_SFLOAT);
             pass_barrier_note(mt);  // (the motion target is drawn into too)
             uint64_t frame = renderer_present_count();
             ca[pass_ncolor] = (VkRenderingAttachmentInfo){.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
@@ -2351,12 +2354,9 @@ static void begin_pass(void) {
                                                                                           : VK_ATTACHMENT_LOAD_OP_CLEAR,
                                                           .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
             mvec_cleared = frame;
-            mvec_depth = st.rt.depth;
             pass_color[pass_ncolor] = mt->format;
             pass_mvec = (int)pass_ncolor++;
         }
-    } else if (has_d && st.rt.depth && vk_texture_scale_group(st.rt.depth) == RS_SCENE) {
-        mvec_depth = st.rt.depth;
     }
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {minw, minh}}, .layerCount = 1,
                           .colorAttachmentCount = pass_ncolor, .pColorAttachments = ca,
@@ -6428,7 +6428,7 @@ static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo
         VkDescriptorImageInfo ii;
     } m[2048];
     uint8_t blend = st.color_state[0] & 1;
-    float bias = stage == 1 && pass_mvec >= 0 && rt_jitter_on() ? scene_mip_bias : 0;  // (the material bias, if it is one)
+    float bias = stage == 1 && pass_scene && scene_mip_bias != 0.0f ? scene_mip_bias : 0;  // (the material bias, if it is one)
     uint64_t frame = vk_frame_counter();
     uint32_t k = (uint32_t)((h * 0x9E3779B97F4A7C15ull ^ (uint64_t)st_->type << 3 ^ (uint64_t)stage << 7 ^ blend) >> 53) & 2047;
     __typeof__(m[0]) *e = &m[k];
@@ -6514,7 +6514,7 @@ static void texture_info_(int stage, ShaderInfo *si, int i, VkDescriptorImageInf
             }
         }
     }
-    float bias = material && stage == 1 && pass_mvec >= 0 && rt_jitter_on() ? scene_mip_bias : 0;
+    float bias = material && stage == 1 && pass_scene && scene_mip_bias != 0.0f ? scene_mip_bias : 0;
     if (h && st.spool && tsc < (uint32_t)st.spool->count)
         smp = vk_sampler(&((NvnSamplerDesc *)st.spool->entries)[tsc], aniso_ok, bias);
     if (text_sheet) smp = vk_text_sampler();
@@ -9241,8 +9241,8 @@ static VkPipeline post_pipeline(const char *fs, VkFormat fmt) {
 
 // Post image `i` at w x h in format f (kept until the size or format changes). 0, 1: SMAA edges / weights, 2: SMAA
 // output, 3, 4: FSR EASU / RCAS of the presented image; 5, 6: FSR EASU / RCAS of the 3D scene, 7: its CAS
-// sharpening (scene_post), 32: its colour grading.
-enum { POST_IMAGES = 33 };  // (mvec: 8 the object vectors, 9 the debug view, 10 the motion vectors, 11 / 12 TAA's
+// sharpening (scene_post), 32: its colour grading, 33: FSR 3/4 previous-frame pre-upscale color.
+enum { POST_IMAGES = 34 };  // (mvec: 8 the object vectors, 9 the debug view, 10 the motion vectors, 11 / 12 TAA's
                             //  history; FSR 3: 13 its output, 14 the depth, 15 the reactive mask; 16-31 TAA: mvec_taa)
 static TexBackend *post_image_ex(int i, uint32_t w, uint32_t h, VkFormat f, VkImageUsageFlags extra);
 static TexBackend *post_image(int i, uint32_t w, uint32_t h, VkFormat f) { return post_image_ex(i, w, h, f, 0); }
@@ -9611,7 +9611,7 @@ static void scene_post(Prog *pr, CmdRec *r) {
     }
     bool fsr3 = fsr_on && rt_fsr3() && mvec_enabled();  // (FSR 3: its own sharpening, RCAS, in place of CAS)
     if (!fsr3) rt_jitter_set_phases(8);
-    if (!fsr && !cas && !taa && !fsr3 && !grade) return;
+    if (!fsr && !cas && !taa && !fsr3 && !grade) { scene_mip_bias = 0.0f; return; }
     NvnTexture *t = scene_composite(pr, r), *rt = st.rt.ncolor ? st.rt.color[0] : NULL;
     if (!t) return;
     const float *vp = st.viewport[0];
@@ -9629,20 +9629,20 @@ static void scene_post(Prog *pr, CmdRec *r) {
         // (else at its size in the window already; FSR 3/4: FSR 1 for a frame it can't do, its first)
         bool up = (fsr || fsr3) && (ow > b->width + 1 || oh > b->height + 1);
         if (t != taa_t) taa = NULL;
-        // At 1.0x (Native AA / TAA) a -1.0 mip bias undersamples high-frequency ground/foliage mips and shimmers;
-        // use -0.35 at native resolution and log2(render/output) - 0.25 (clamped to -0.85f minimum) when upscaling
-        // to prevent subpixel foliage/grass shimmer in FSR 3/4.
+        // Scale negative mip bias from the render-to-output ratio so textures keep output-resolution detail across
+        // FSR 3/4, TAA, and spatial FSR 1 without over-sharpening Native AA (1.0x).
         if ((taa || fsr3) && ow && b->width) {
             float base_bias = log2f((float)b->width / (float)ow);
-            float extra = (ow > b->width + 1) ? 0.25f : 0.35f;
-            scene_mip_bias = base_bias - extra;
-            if (scene_mip_bias < -0.85f) scene_mip_bias = -0.85f;
+            scene_mip_bias = base_bias - 0.35f;
+            if (scene_mip_bias < -1.5f) scene_mip_bias = -1.5f;
+        } else if (up && ow && b->width) {
+            scene_mip_bias = 0.5f * log2f((float)b->width / (float)ow);
         } else {
             scene_mip_bias = 0.0f;
         }
         static const char *bias_env = (const char *)1;  // (testing) SAVAGEWIND_MIP_BIAS=<levels>: in place of that
         if (bias_env == (const char *)1) bias_env = getenv("SAVAGEWIND_MIP_BIAS");
-        if (bias_env && (taa || fsr3)) scene_mip_bias = (float)atof(bias_env);
+        if (bias_env && (taa || fsr3 || up)) scene_mip_bias = (float)atof(bias_env);
         if (!up && !cas && !taa && !fsr3 && !grade) return;
         VkFormatProperties fp;
         vkGetPhysicalDeviceFormatProperties(g_vk.phys, b->format, &fp);
@@ -10161,14 +10161,14 @@ static bool mvec_scene_view(Prog *pr, CmdRec *r, NvnTexture **taa_t, TexBackend 
         if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) continue;
         uint64_t frame = renderer_present_count();
         TexBackend *db = mvec_depth ? vk_tex(mvec_depth, false) : NULL;
-        if (!db || !db->image) {
+        if (!db || !db->image || db->width != b->width || db->height != b->height) {
             for (int k = 0; k < fg.ncand; k++) {
                 TexBackend *d = vk_tex(fg.cand[k].depth, true);
                 if (d && d->image && d->width == b->width && d->height == b->height) { db = d; break; }
             }
         }
-        uint32_t tw = mvec_target_img ? mvec_target_img->width : b->width;
-        uint32_t th = mvec_target_img ? mvec_target_img->height : b->height;
+        uint32_t tw = (mvec_objects_enabled() && mvec_target_img) ? mvec_target_img->width : b->width;
+        uint32_t th = (mvec_objects_enabled() && mvec_target_img) ? mvec_target_img->height : b->height;
         if (mvec_filled != frame && db && db->image && db->width == tw && db->height == th) {
             vk_end_pass();
             VkCommandBuffer cb = vk_cmd();
@@ -10178,7 +10178,7 @@ static bool mvec_scene_view(Prog *pr, CmdRec *r, NvnTexture **taa_t, TexBackend 
         }
         if (mvec_filled == frame && taa_img && taa_tex == t) *taa = taa_img, *taa_t = t;  // (a second composite: the same)
         if (!mvec_view_enabled()) return false;
-        TexBackend *vec = mvec_filled == frame && mvec_vectors_img ? mvec_vectors_img : (mvec_target_img ? mvec_target_img : mvec_vectors_img);
+        TexBackend *vec = mvec_filled == frame && mvec_vectors_img ? mvec_vectors_img : ((mvec_objects_enabled() && mvec_target_img) ? mvec_target_img : mvec_vectors_img);
         vk_end_pass();
         VkCommandBuffer cb = vk_cmd();
         static const VkComponentMapping id = {0};
@@ -10211,6 +10211,12 @@ static bool mvec_scene_view(Prog *pr, CmdRec *r, NvnTexture **taa_t, TexBackend 
 static TexBackend *mvec_taa(VkCommandBuffer cb, TexBackend *b, uint64_t frame) {
     TexBackend *db = mvec_depth ? vk_tex(mvec_depth, false) : NULL;
     uint32_t w = b->width, h = b->height;
+    if (!db || !db->image || db->width != w || db->height != h) {
+        for (int k = 0; k < fg.ncand; k++) {
+            TexBackend *d = vk_tex(fg.cand[k].depth, true);
+            if (d && d->image && d->width == w && d->height == h) { db = d; break; }
+        }
+    }
     if (!mvec_vectors_img || mvec_vectors_img->width != w || mvec_vectors_img->height != h || !db || !db->image ||
         db->width != w || db->height != h)
         return NULL;
@@ -10318,14 +10324,35 @@ static TexBackend *mvec_taa(VkCommandBuffer cb, TexBackend *b, uint64_t frame) {
 
 // AMD FSR 3.1 (Video > Upscaler FSR 3; fsr3.h) or FSR 4 (Upscaler FSR 4; fsr_api.h): the scene b (render size, jittered: output_scale.c rt_persp_offset with
 // FSR's sequence, rt_jitter_set_phases) to ow x oh (post image 13), from this frame's motion vectors (just filled), the
-// scene depth (as R32F, post image 14) and the reactive mask (the vectors' .z as R8, post image 15). The vectors are
-// clip-space NDC differences (y up, the image's y down: mvec_fill.frag), FSR wants the UV offset to where the pixel was:
-// (-x / 2, y / 2), its motion vector scale over the render size. Its jitter is in render pixels, y down. NULL when an
-// input is missing (no camera yet, sizes that differ) or FSR failed: the scene goes on without it.
+// scene depth (as R32F, post image 14) and the reactive mask (the vectors' .z combined with temporal auto-reactivity
+// against post image 33 as R8, post image 15). The vectors are clip-space NDC differences (y up, the image's y down:
+// mvec_fill.frag), FSR wants the UV offset to where the pixel was: (-x / 2, y / 2), its motion vector scale over the
+// render size. Its jitter is in render pixels, y down. NULL when an input is missing (no camera yet, sizes that differ)
+// or FSR failed: the scene goes on without it.
+static uint64_t fsr3_last = ~0ull, fsr3_last_ns;
+static uint32_t fsr3_prev_w, fsr3_prev_h;
+static VkFormat fsr3_prev_fmt;
+static int fsr3_last_api = -1;
+static bool fsr3_was_menu;
+
+RT_ON_RESET(fsr3_state_reset) {
+    fsr3_last = ~0ull;
+    fsr3_last_ns = 0;
+    fsr3_prev_w = fsr3_prev_h = 0;
+    fsr3_prev_fmt = VK_FORMAT_UNDEFINED;
+    fsr3_last_api = -1;
+    fsr3_was_menu = false;
+    mvec_target_img = NULL;
+    mvec_depth = NULL;
+    pass_scene = false;
+    pass_mvec = -1;
+    scene_mip_bias = 0.0f;
+}
+
 static TexBackend *fsr3_scene(VkCommandBuffer cb, TexBackend *b, uint32_t ow, uint32_t oh) {
     uint64_t frame = renderer_present_count();
     TexBackend *v = mvec_vectors_img, *db = mvec_depth ? vk_tex(mvec_depth, false) : NULL;
-    if (!db || !db->image) {
+    if (!db || !db->image || db->width != b->width || db->height != b->height) {
         for (int k = 0; k < fg.ncand; k++) {
             TexBackend *d = vk_tex(fg.cand[k].depth, true);
             if (d && d->image && d->width == b->width && d->height == b->height) { db = d; break; }
@@ -10348,26 +10375,32 @@ static TexBackend *fsr3_scene(VkCommandBuffer cb, TexBackend *b, uint32_t ow, ui
     static const VkComponentMapping id = {0};
     TexBackend *dep = post_image(14, w, h, VK_FORMAT_R32_SFLOAT), *rea = post_image(15, w, h, VK_FORMAT_R8_UNORM);
     TexBackend *out = post_image_ex(13, ow, oh, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT);
+    TexBackend *pcol = post_image_ex(33, w, h, b->format, VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    uint64_t ns = SDL_GetTicksNS();
+    extern bool framepace_menu_ui(void), framepace_title_ui(void), framepace_loading_ui(void), framepace_paused(void);
+    extern bool menu_is_open(void);
+    bool in_menu = framepace_menu_ui() || framepace_title_ui() || framepace_loading_ui() || framepace_paused() || menu_is_open();
+    bool menu_unpause = fsr3_was_menu && !in_menu;
+    fsr3_was_menu = in_menu;
+    // Upscaler FSR 4, or SAVAGEWIND_FSR3_API=1: AMD's DLLs (fsr_api.h); else the built-in FSR 3.1 (fsr3.h)
+    int api = rt_fsr4() ? 4 : fsr3_api_wanted() ? 3 : 0;
+    if (api && !fsr_api_usable(api)) api = 0;  // (it failed before: the built-in one from here on)
+    bool reset = fsr3_last == ~0ull || fsr3_last + 1 != frame || menu_unpause || api != fsr3_last_api;
+    fsr3_last_api = api;
+    bool has_prev = !reset && fsr3_prev_w == w && fsr3_prev_h == h && fsr3_prev_fmt == b->format;
     float pc[8] = {0};
     VkImageView di[3] = {vk_image_view(db, VK_IMAGE_VIEW_TYPE_2D, db->format, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_DEPTH_BIT)};
     gp_mark(cb, "FSR 3 depth copy");
     post_pass(cb, "fsr3_depth.frag", di, 1, dep, pc, false);
-    VkImageView ri[3] = {post_view(v)};
     static int reactive = -1;  // SAVAGEWIND_FSR3_REACTIVE=0: (testing) no reactive mask (all zero)
     if (reactive < 0) reactive = !getenv("SAVAGEWIND_FSR3_REACTIVE") || atoi(getenv("SAVAGEWIND_FSR3_REACTIVE")) != 0;
-    float rpc[8] = {reactive ? 1.0f : 0.0f};
+    VkImageView b_view = vk_image_view(b, VK_IMAGE_VIEW_TYPE_2D, b->format, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_COLOR_BIT);
+    VkImageView ri[3] = {post_view(v), b_view, post_view(pcol)};
+    float rpc[8] = {reactive ? 1.0f : 0.0f, (reactive && has_prev) ? 1.0f : 0.0f};
     gp_mark(cb, "FSR 3 reactive mask");
-    post_pass(cb, "fsr3_reactive.frag", ri, 1, rea, rpc, false);
+    post_pass(cb, "fsr3_reactive.frag", ri, 3, rea, rpc, false);
     vk_full_barrier(cb);
     float flip = nvn_window_origin() == 0 ? -1.0f : 1.0f;  // (the game's NDC y to clip y: mvec_fill.frag's a.x)
-    static uint64_t last = ~0ull, last_ns;
-    uint64_t ns = SDL_GetTicksNS();
-    static bool was_menu;
-    extern bool framepace_menu_ui(void), framepace_title_ui(void), framepace_loading_ui(void), framepace_paused(void);
-    extern bool menu_is_open(void);
-    bool in_menu = framepace_menu_ui() || framepace_title_ui() || framepace_loading_ui() || framepace_paused() || menu_is_open();
-    bool menu_unpause = was_menu && !in_menu;
-    was_menu = in_menu;
     Fsr3Dispatch d = {
         .dev = g_vk.dev, .phys = g_vk.phys, .cb = cb,
         .mode = g_settings.upscaler,
@@ -10376,29 +10409,36 @@ static TexBackend *fsr3_scene(VkCommandBuffer cb, TexBackend *b, uint32_t ow, ui
         .output = {out->image, out->format, ow, oh},
         .jitter = {jit[0] * (float)w * 0.5f, -jit[1] * flip * (float)h * 0.5f},
         .motion_scale = {-0.5f * (float)w, 0.5f * (float)h},
-        .dt_ms = last_ns && ns > last_ns ? (float)((ns - last_ns) / 1e6) : 16.7f,
+        .dt_ms = fsr3_last_ns && ns > fsr3_last_ns ? (float)((ns - fsr3_last_ns) / 1e6) : 16.7f,
         .near_ = nr, .far_ = fr, .fov_y = fov,
         .sharpness = g_settings.sharpening / 10.0f,
-        .reset = last == ~0ull || last + 1 != frame || menu_unpause,
+        .reset = reset,
     };
-    last_ns = ns;
-    // Upscaler FSR 4, or SAVAGEWIND_FSR3_API=1: AMD's DLLs (fsr_api.h); else the built-in FSR 3.1 (fsr3.h)
-    int api = rt_fsr4() ? 4 : fsr3_api_wanted() ? 3 : 0;
-    if (api && !fsr_api_usable(api)) api = 0;  // (it failed before: the built-in one from here on)
-    static int last_api = -1;  // (another upscaler: its own history, from none)
-    if (api != last_api) d.reset = true;
-    last_api = api;
+    fsr3_last_ns = ns;
     gp_mark(cb, api == 4 ? "FSR 4 upscaler" : "FSR 3 upscaler");
     rec_drain();  // (FidelityFX records into cb itself, and may wait for the device: what was queued before goes first)
     // (AMD's failing, logged there: the built-in FSR 3.1 in its place, from this frame on, without the history of the
     // other upscaler)
     bool amd_ok = api && fsr_api_dispatch(&d, api);
-    if (api && !amd_ok) d.reset = true, api = 0, last_api = 0;
+    if (api && !amd_ok) d.reset = true, api = 0, fsr3_last_api = 0;
     if (!amd_ok && !(fsr3_available() && fsr3_dispatch(&d))) return NULL;
     gp_mark(cb, api == 4 ? "after FSR 4" : "after FSR 3");
-    last = frame;
     vk_dyn_forget();  // (FSR's own pipelines and sets were bound)
     vk_full_barrier(cb);
+    if (reactive) {
+        VkImageCopy copy = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                            .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                            .extent = {w, h, 1}};
+        rec_CmdCopyImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, pcol->image, VK_IMAGE_LAYOUT_GENERAL, 1, &copy);
+        vk_full_barrier(cb);
+        fsr3_prev_w = w;
+        fsr3_prev_h = h;
+        fsr3_prev_fmt = b->format;
+    } else {
+        fsr3_prev_w = fsr3_prev_h = 0;
+        fsr3_prev_fmt = VK_FORMAT_UNDEFINED;
+    }
+    fsr3_last = frame;
     rt_jitter_set_phases((uint32_t)fsr3_jitter_phases(w, ow));
     return out;
 }
