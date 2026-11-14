@@ -768,7 +768,7 @@ static uint8_t elem_near(const float p[3], float r) {
 // What the local Link threw or shot: his rune's bombs (rt_online_bomb), his arrows in flight (rt_online_arrow), each
 // followed from then until it goes (held, thrown, flying, stuck: as it is in the world), a bomb that goes having gone
 // off (the Remote Bomb's bombs go when they do)
-static void sample_shots(Cpu *c, uint64_t player, OnlineShots *out) {
+static void sample_shots(Cpu *c, uint64_t player, const char (*as)[ONLINE_AS_MAX], OnlineShots *out) {
     static struct { uint64_t a; Watch w; uint16_t id; uint8_t kind; bool boomed; float m[12]; } tr[ONLINE_SHOTS];
     static uint16_t next_id = 1, boom_seq;
     static struct { uint16_t seq; uint8_t kind; float pos[3]; int frames; } booms[ONLINE_BOOMS];
@@ -793,9 +793,22 @@ static void sample_shots(Cpu *c, uint64_t player, OnlineShots *out) {
                 break;
             }
     }
-    // arrows in flight his own: those first seen near him (an enemy's are far); his beams (only his: anywhere)
+    // arrows in flight his own: those first seen near him while he is using his bow (any of his AS channels in a
+    // Player_Bow* or *Bow* state - BowCharge, BowShoot, BowReload, SquatBow*, HorseBow*, BowBoard* - now or in the
+    // last second); his beams (only his: anywhere). An arrow that fails either when first seen is never his: kept as
+    // such (by its actor and its id), else the ring, which notes each arrow again on each update, took an enemy's
+    // arrow as his once it came near him (it was sent as his shot, and a fire arrow of an enemy's landing by him gave
+    // his next hit on a puppet its element). Distance alone wasn't enough: an archer within 4 m (on a tower right
+    // above him) had all its arrows sent as his.
     static uint64_t seen[ARROW_RING];
+    static struct { uint64_t a; uint32_t id; } not_his[64];
+    static int not_his_next;
+    static uint64_t bow_t;
     const float *me = (const float *)(uintptr_t)(player + 0x398);
+    uint64_t now_ns = plat_now_ns();
+    for (int ch = 0; ch < ONLINE_AS_CHANNELS; ch++)
+        if (strstr(as[ch], "Bow")) bow_t = now_ns;
+    bool bowing = bow_t && now_ns - bow_t < 1000000000ull;
     for (int r = 0; r < ARROW_RING; r++) {
         uint64_t a = g_arrow_ring[r];
         if (!a || a == seen[r]) continue;
@@ -803,6 +816,10 @@ static void sample_shots(Cpu *c, uint64_t player, OnlineShots *out) {
         bool known2 = false;
         for (int k = 0; k < ONLINE_SHOTS; k++) known2 |= tr[k].a == a;
         if (known2) continue;
+        uint32_t aid = *(uint32_t *)(uintptr_t)(a + 0x60);
+        bool rejected = false;
+        for (int k = 0; k < 64 && !rejected; k++) rejected = not_his[k].a == a && not_his[k].id == aid;
+        if (rejected) continue;
         char an[48];
         actor_name_of(a, an);
         int ak = -1;
@@ -810,7 +827,13 @@ static void sample_shots(Cpu *c, uint64_t player, OnlineShots *out) {
             if (!strcmp(an, k_shot_names[k])) ak = k;
         const float *am = (const float *)(uintptr_t)(a + 0x398);
         float dx = am[3] - me[3], dy = am[7] - me[7], dz = am[11] - me[11];
-        if (ak < 0 || (ak != ONLINE_K_BEAM && dx * dx + dy * dy + dz * dz > 4 * 4)) continue;
+        if (ak >= 0 && ak != ONLINE_K_BEAM && (!bowing || dx * dx + dy * dy + dz * dz > 4 * 4)) {
+            if (!bowing && dx * dx + dy * dy + dz * dz <= 4 * 4)
+                LOG("[online] %s near us, not ours (we aren't using a bow)\n", an);
+            not_his[not_his_next].a = a, not_his[not_his_next].id = aid, not_his_next = (not_his_next + 1) % 64;
+            continue;
+        }
+        if (ak < 0) continue;
         if (ak == ONLINE_K_BEAM) LOG("[online] his beam %llx\n", (unsigned long long)a);
         for (int k = 0; k < ONLINE_SHOTS; k++)
             if (!tr[k].a) {
@@ -1124,7 +1147,7 @@ static void sample_pose(Cpu *c, uint64_t pinfo) {
     local_map(c, pose.map);
     boss_sample(c, player, &pose);
     g_local_dead = !strncmp(pose.as[0], "Dead", 4);
-    sample_shots(c, player, &pose.shots);
+    sample_shots(c, player, pose.as, &pose.shots);
     online_set_local_pose(&pose);
     if (getenv("SAVAGEWIND_ONLINE_POSE_LOG")) {
         static OnlinePose last;

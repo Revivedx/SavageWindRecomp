@@ -219,7 +219,12 @@ they are made, through two patches (tools/patches.py; sites in tools/game_sites.
   it went off when it starts its AS "Explode" (it goes some frames later), or when it is gone without it.
 - `arrow_move`: each update of an arrow's flight action (0x70005ee5dc; x0 the action, its actor at +8; the straight
   part and the fall) notes the arrow (`rt_online_arrow`, in a ring: the actors update on several threads); the frame
-  loop takes those first seen within 4 m of the local Link (his, not an enemy's) and follows them.
+  loop takes those first seen within 4 m of the local Link while he uses his bow (one of his AS channels in a
+  `*Bow*` state: BowCharge, BowShoot, BowReload, SquatBow*, HorseBow*, BowBoard*, now or in the last second) and
+  follows them. An arrow failing either when first seen is remembered as not his (its actor and id), since the ring
+  notes every arrow again on each update. Without both checks an enemy's arrows were sent as his shots (and an
+  enemy's fire arrow landing by him gave his next hit on a puppet its element): 16 in one test with no check, 7 and 4
+  with the distance alone (an archer on a tower right above him is within 4 m).
 
 (The player links at +0xea8 what he holds or could pick up: a bomb in his hands, an arrow on the ground before him;
 not his arrows in flight, and a bomb only while it is in front of him.)
