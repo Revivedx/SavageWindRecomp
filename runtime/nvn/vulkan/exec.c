@@ -1450,6 +1450,7 @@ void renderer_save_texture_tex(TexBackend *b, const char *path);
 static float pass_sx = 1, pass_sy = 1;
 static bool pass_out;  // the pass draws into the game's final image (RS_OUT: the HUD and menus draw there)
 static bool hud_clip;  // the draw in progress is a 16:9 layout's pane wholly off a 16:9 screen: not drawn (hud_patch)
+static bool hud_cut;   // a pause menu pane across a 16:9 screen's side: cut there, as the console's screen does (hud_patch)
 // Snapshot shared state once per presented frame. Ownership is recorded alongside the actual UI draw.
 extern bool framepace_quick_ui(void);
 static HudScope hud_scope;
@@ -2523,6 +2524,14 @@ static VkRect2D scissor_rect(void) {
         x = (int)x0; y = (int)y0; sw = (int)(x1 - x0); sh = (int)(y1 - y0);
     }
     if (hud_clip && pass_out) sw = sh = 0;  // (a pane wholly off a 16:9 screen: see hud_patch)
+    if (hud_cut && pass_out && shape > 1) {  // (a pause menu pane across a 16:9 screen's side: see hud_patch)
+        double c = w / 2.0, half = w / 2.0 / shape;
+        int bx0 = (int)floor(c - half), bx1 = (int)ceil(c + half);
+        int x1 = x + sw;
+        if (x < bx0) x = bx0;
+        if (x1 > bx1) x1 = bx1;
+        sw = x1 > x ? x1 - x : 0;
+    }
     if (x < 0) { sw += x; x = 0; }
     if (y < 0) { sh += y; y = 0; }
     if (w > (int)pass_w) w = (int)pass_w;
@@ -4821,6 +4830,12 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         }
     }
     if (!tb || tb->rs_group != RS_OUT) return false;
+    // A pause menu's panes are laid out to be cut by the console's 16:9 screen: a frame running on past its side, the
+    // next page's panels and labels waiting there, a frame's ends while the menu opens (the game then takes the
+    // picture it blurs for the menu's background, and they stayed in it). On a wider window they are cut at the 16:9
+    // screen's sides too (hud_cut, scissor_rect), but not the panes stretched over the whole window (the blurred
+    // picture of the game, a fade).
+    bool menu_cut = shape > 1 && !off && framepace_menu_ui() && !framepace_map_ui();
     // The loading screen on a wider window shows at 16:9 (output_scale, #98), but the status icons it draws over its
     // tip (hearts, stamina, rupees, the figures) use a layout projection the game made in play, widened to the window
     // (rt_persp): they came out squeezed toward the middle, 1/shape as wide (#805). Back to 16:9 here.
@@ -4855,6 +4870,7 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         float text_matrix[32];
         memcpy(text_matrix, g, sizeof text_matrix);
         for (int k = 0; k < 4; k++) text_matrix[k] /= shape;
+        hud_cut = menu_cut;
         float tx = text_matrix[3] / text_matrix[15], ty = text_matrix[7] / text_matrix[15];
         if (hud_s != 1 && !hud_context_native(shape, tx, ty, edge_x, edge_y) &&
             !(hud_quick && hud_quick_keeps(tx, ty, edge_x, edge_y)))
@@ -4866,6 +4882,7 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
     // Keep their projection and apply the same HUD placement as their captured shadow or button plate.
     float combined_scale[2];
     if (hud_combined_shape(g, size, shape, combined_scale)) {
+        hud_cut = menu_cut;
         static float buf[0x10000 / 4];
         uint64_t n = size > sizeof buf ? sizeof buf : size;
         memcpy(buf, g, n);
@@ -4906,9 +4923,13 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         return true;
     }
     if (!(g[0] > 0 && g[5] > 0 && g[14] == -1 && !g[1] && !g[2] && !g[3] && !g[4] && !g[6] && !g[7] && !g[8] && !g[9] &&
-          !g[12] && !g[13] && !g[15]))
+          !g[12] && !g[13] && !g[15])) {
+        // (ui2d text whose projection and position are combined and already wide: the next page's labels)
+        if (size == 128 && g[0] > 0 && g[5] < 0 && g[14] == -1 && g[15] > 0) hud_cut = menu_cut;
         return false;
+    }
     bool tall = shape < 1;  // (a taller window: the view widened vertically, m11 x shape)
+    hud_cut = menu_cut;
     float ratio = g[5] / g[0], flat = 16.0f / 9.0f, wide = flat * shape;
     bool is_flat = fabsf(ratio - flat) < 0.002f, is_wide = fabsf(ratio - wide) < 0.002f * fmaxf(shape, 1.0f);
     if (!is_flat && !is_wide) return false;
@@ -4955,12 +4976,15 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
             bool frame_end = !tall && hud_frame_end(g, mv, rc, m00, shape);
             // Taller map views are cropped to their 16:9 frame at presentation (output_scale.c).
             // Stretching a scrollable pane here separates its pan/zoom from the icons over it.
+            bool stretched = false;
             if (lo < 1e8f && (tall ? lo <= -edge + 0.01f && hi >= edge - 0.01f && lo >= -over && hi <= over
                                     : (hi - lo >= 2 / shape - 0.02f && hi - lo <= 2 * over) || frame_end) &&
                 !(tall && framepace_map_ui())) {
                 if (tall) m11 /= shape;
                 else m00 *= shape;
+                stretched = true;
             }
+            if (stretched && !frame_end) hud_cut = false;  // (a frame's ends: cut, see above)
             float clip_edge = tall_map ? 1 : edge;
             if (lo < 1e8f && (hi <= -clip_edge || lo >= clip_edge)) hud_clip = true;  // (wholly off the view)
         }
@@ -8735,7 +8759,7 @@ have_pipe:
     PZ_SPAN("exec/draw/dyn", pz2, pz3);
     uint32_t dyn[64];
     int ndyn = 0;
-    hud_clip = false;  // (hud_patch, while the vertex stage's constant buffers are bound)
+    hud_clip = hud_cut = false;  // (hud_patch, while the vertex stage's constant buffers are bound)
     VkDescriptorSet vset = stage_set(pr, pr->set_layout[0], 0, 0, pr->vi, NULL, NULL, 0, 0, 0, NULL, dyn, &ndyn);
     PROFD_ADD(prof_sets);
     ProfZone pz4 = PZ_NOW();
