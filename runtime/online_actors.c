@@ -3305,7 +3305,40 @@ static struct {
     struct { char name[48]; float pos[3], dist; uint64_t actor; } hit[FIND_MAX];
 } g_find;
 
+// `flag <name>` (control): a bool game data flag's word as the game has it now (bit 0 its value), read on the frame
+// loop like `actors`
+static struct { volatile int state; char name[64]; int found; uint32_t word; } g_flagq;
+
+static void flag_query(void) {
+    if (__atomic_load_n(&g_flagq.state, __ATOMIC_ACQUIRE) != 1) return;
+    uint32_t *v = bool_flag(crc32_str(g_flagq.name));
+    g_flagq.found = v != NULL, g_flagq.word = v ? *v : 0;
+    __atomic_store_n(&g_flagq.state, 2, __ATOMIC_RELEASE);
+}
+
+static void cmd_flag(int argc, char **argv, ControlReply *r) {
+    if (argc != 2) { control_fail(r, "Usage: flag <bool flag name>"); return; }
+    if (__atomic_load_n(&g_flagq.state, __ATOMIC_ACQUIRE) == 1) { control_fail(r, "A read is under way"); return; }
+    snprintf(g_flagq.name, sizeof g_flagq.name, "%s", argv[1]);
+    __atomic_store_n(&g_flagq.state, 1, __ATOMIC_RELEASE);
+    uint64_t until = plat_now_ns() + 2000000000ull;
+    while (__atomic_load_n(&g_flagq.state, __ATOMIC_ACQUIRE) != 2 && plat_now_ns() < until)
+        plat_wait_until_ns(plat_now_ns() + 5000000ull);
+    if (__atomic_load_n(&g_flagq.state, __ATOMIC_ACQUIRE) != 2) {
+        __atomic_store_n(&g_flagq.state, 0, __ATOMIC_RELEASE);
+        control_fail(r, "No answer from the game (no world, or online play off)");
+        return;
+    }
+    if (!g_flagq.found) control_text(r, "%s: no such bool flag", g_flagq.name);
+    else control_text(r, "%s = %u (word %#x)", g_flagq.name, g_flagq.word & 1, g_flagq.word);
+    control_field_int(r, "found", g_flagq.found);
+    control_field_int(r, "value", (int)(g_flagq.word & 1));
+    control_field_int(r, "word", (int)g_flagq.word);
+    __atomic_store_n(&g_flagq.state, 0, __ATOMIC_RELEASE);
+}
+
 static void find_actors(uint64_t pinfo) {
+    flag_query();
     if (__atomic_load_n(&g_find.state, __ATOMIC_ACQUIRE) != 1) return;
     g_find.n = 0;
     uint64_t player = pinfo ? *(uint64_t *)(uintptr_t)(pinfo + 0x60) : 0;
@@ -3362,6 +3395,8 @@ void online_actors_control_init(void) {
     static const ControlCmd cmds[] = {
         {"actors", "<part of an actor name>", "The live actors with this in their name: where, how far from Link",
          cmd_actors, CONTROL_PLAYER},
+        {"flag", "<bool flag name>", "A game data bool flag's value and word, as the game has it now", cmd_flag,
+         CONTROL_PLAYER},
     };
     control_register(cmds, (int)(sizeof cmds / sizeof *cmds));
 }
