@@ -19,14 +19,14 @@ int main(int argc, char **argv) {
     assert(g_settings.gyro_scene == (atoi(argv[3]) != 0));
     if(argc>4){
         assert(g_bind_key[BIND_GYRO_UP]==SDL_SCANCODE_H);
-        assert(g_settings.motion_camera==GYRO_CAM_EXPLORE);
+        assert(g_settings.motion_camera==GYRO_CAM_AIMING);
         assert(g_settings.motion_camera_sens>1.49f&&g_settings.motion_camera_sens<1.51f);
         assert(g_bind_pad[BIND_GYRO_CAM]==SDL_GAMEPAD_BUTTON_LEFT_STICK);
     }
     // UI changes must remain possible even when startup debug overrides were supplied.
     g_settings.pc_gyro = !g_settings.pc_gyro;
     g_settings.gyro_scene = !g_settings.gyro_scene;
-    g_settings.motion_camera = GYRO_CAM_EXPLORE;
+    g_settings.motion_camera = GYRO_CAM_AIMING;
     g_settings.motion_camera_sens = 1.5f;
     g_bind_key[BIND_GYRO_UP]=SDL_SCANCODE_H;
     g_bind_pad[BIND_GYRO_CAM]=SDL_GAMEPAD_BUTTON_LEFT_STICK;

@@ -605,10 +605,20 @@ $(B)/test_gyro_settings: tools/test_gyro_settings.c runtime/settings.c runtime/h
 	$(CC) -O1 -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_gyro_settings.c \
 	    $(TEST_LD) -lSDL3 -lm
 
-$(B)/test_motion_keyboard: tools/test_motion_keyboard.c runtime/hle/motion.c $(RT_HDRS)
+$(B)/test_motion_keyboard: tools/test_motion_keyboard.c runtime/hle/motion.c runtime/dsu.c $(RT_HDRS)
 	@mkdir -p $(B)
 	$(CC) -O1 -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_motion_keyboard.c \
-	    $(TEST_LD) -lSDL3 -lm
+	    runtime/dsu.c $(TEST_LD) -lSDL3 $(if $(filter windows,$(PLATFORM)),-lws2_32) -lz -lm
+
+$(B)/test_dsu: tools/test_dsu.c runtime/hle/motion.c runtime/dsu.c runtime/dsu.h $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -O1 -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_dsu.c \
+	    runtime/dsu.c $(TEST_LD) -lSDL3 $(if $(filter windows,$(PLATFORM)),-lws2_32) -lz -lm
+
+test-dsu: $(B)/test_dsu
+	$(B)/test_dsu
+
+.PHONY: test-dsu
 
 $(B)/test_gyro_activation: tools/test_gyro_activation.c runtime/pc_gyro_scene.c $(RT_HDRS)
 	@mkdir -p $(B)

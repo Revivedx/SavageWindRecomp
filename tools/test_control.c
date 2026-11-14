@@ -190,15 +190,25 @@ int main(int argc, char **argv) {
         CHECK(!control_console_submit(huge));
     }
 
-    // ---- control settings (get/set upscaler)
+    // ---- control settings (get/set upscaler, upscale_quality, motion_camera)
     control_settings_init();
     if (dev) {
         expect("set upscaler fsr4", false, "upscaler: fsr4\napplied: live");
         CHECK(g_settings.upscaler == UPSCALE_FSR4);
         expect("get upscaler", false, "upscaler: fsr4");
+        expect("set upscale_quality native", false, "upscale_quality: native\napplied: live");
+        CHECK(g_settings.upscale_quality == UPQ_NATIVE);
+        expect("get upscale_quality", false, "upscale_quality: native");
+        expect("set motion_camera aiming", false, "motion_camera: aiming\napplied: live");
+        CHECK(g_settings.motion_camera == GYRO_CAM_AIMING);
+        expect("get motion_camera", false, "motion_camera: aiming");
     } else {
         g_settings.upscaler = UPSCALE_FSR4;
         expect("get upscaler", false, "upscaler: fsr4");
+        g_settings.upscale_quality = UPQ_NATIVE;
+        expect("get upscale_quality", false, "upscale_quality: native");
+        g_settings.motion_camera = GYRO_CAM_AIMING;
+        expect("get motion_camera", false, "motion_camera: aiming");
     }
 
     printf("%s: %d checks, %d failed\n", dev ? "dev" : "player", checks, failures);

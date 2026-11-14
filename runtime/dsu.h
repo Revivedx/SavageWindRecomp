@@ -1,4 +1,4 @@
-// Small Linux Cemuhook client. No SDL, threads, DNS or blocking I/O.
+// Small Cemuhook client (Linux & Windows). No SDL, threads, DNS or blocking I/O.
 #pragma once
 #include <stdbool.h>
 #include <stddef.h>

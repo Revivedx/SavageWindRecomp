@@ -2,6 +2,7 @@
 // Axis cross-check: kmicki/SteamDeckGyroDSU (MIT), cemuhookadapter.cpp / sdhidframe.h,
 // and SDL's HIDAPI Steam Deck driver (zlib). This is an independent implementation.
 #include "dsu.h"
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,6 +12,12 @@
 #include <errno.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#elif defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #endif
 
 static uint16_t le16(const uint8_t *p) { return p[0] | (uint16_t)p[1] << 8; }
@@ -79,6 +86,8 @@ bool dsu_decode(const uint8_t *p, size_t n, DsuPacket *out) {
             }
             // DSU -> SDL: acceleration = (-X,-Y,-Z)*gravity; gyro = (pitch,-yaw,-roll)*pi/180.
             // Then the same SDL -> Switch mapping as motion_sensor_event. Flat DSU: (0,-1,0).
+            if (a[0] == 0.0 && a[1] == 0.0 && a[2] == 0.0 && (w[0] != 0.0 || w[1] != 0.0 || w[2] != 0.0))
+                a[1] = -1.0;  // gyro-only DSU source: synthesize flat DSU gravity -> Switch (0, 0, -1)
             const double rad = 3.14159265358979323846 / 180;
             v.acc[0] = a[0], v.acc[1] = -a[2], v.acc[2] = a[1];
             v.gyro[0] = w[0] * rad, v.gyro[1] = w[2] * rad, v.gyro[2] = -w[1] * rad;
@@ -119,7 +128,15 @@ bool dsu_accept(DsuClient *c, const DsuPacket *p, uint64_t now) {
 
 bool dsu_init(DsuClient *c, const char *endpoint, uint32_t client) {
     *c = (DsuClient){.fd = -1, .slot = -1, .client = client, .port = 26760};
-#ifdef __linux__
+#if defined(__linux__) || defined(_WIN32)
+#ifdef _WIN32
+    static bool wsa_init;
+    if (!wsa_init) {
+        WSADATA wsa;
+        if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return false;
+        wsa_init = true;
+    }
+#endif
     char host[64] = "127.0.0.1";
     if (endpoint) {
         const char *colon = strchr(endpoint, ':');
@@ -146,31 +163,52 @@ bad:
 void dsu_close(DsuClient *c) {
 #ifdef __linux__
     if (c->fd >= 0) close(c->fd);
+#elif defined(_WIN32)
+    if (c->fd >= 0) closesocket((SOCKET)c->fd);
 #endif
     c->fd = -1;
     forget(c);
 }
 
-#ifdef __linux__
+#if defined(__linux__) || defined(_WIN32)
 static void request(DsuClient *c, uint32_t type) {
     uint8_t p[28];
     size_t n = dsu_request(p, c->client, type, c->slot);
     // Transient errors (including ICMP port unreachable) are retried at the next heartbeat.
+#ifdef __linux__
     (void)send(c->fd, p, n, MSG_DONTWAIT);
+#elif defined(_WIN32)
+    (void)send((SOCKET)c->fd, (const char *)p, (int)n, 0);
+#endif
 }
 #endif
 
 void dsu_poll(DsuClient *c, uint64_t now, DsuSampleFn sample, void *user) {
-#ifdef __linux__
+#if defined(__linux__) || defined(_WIN32)
     if (!c->enabled) return;
     dsu_expire(c, now);
     if (!c->retry || now >= c->retry) {
         c->retry = now + DSU_RETRY_NS;
         if (c->fd < 0) {
+#ifdef __linux__
             c->fd = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
             if (c->fd < 0) return;
+#elif defined(_WIN32)
+            SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+            if (s == INVALID_SOCKET || s > (SOCKET)INT_MAX) {
+                if (s != INVALID_SOCKET) closesocket(s);
+                return;
+            }
+            u_long nb = 1;
+            if (ioctlsocket(s, FIONBIO, &nb) != 0) { closesocket(s); return; }
+            c->fd = (int)s;
+#endif
             struct sockaddr_in addr = {.sin_family = AF_INET, .sin_port = htons(c->port), .sin_addr.s_addr = c->address};
+#ifdef __linux__
             if (connect(c->fd, (struct sockaddr *)&addr, sizeof addr)) { dsu_close(c); return; }
+#elif defined(_WIN32)
+            if (connect((SOCKET)c->fd, (struct sockaddr *)&addr, sizeof addr)) { dsu_close(c); return; }
+#endif
         }
         request(c, 0x100000);
         request(c, 0x100001);
@@ -179,11 +217,20 @@ void dsu_poll(DsuClient *c, uint64_t now, DsuSampleFn sample, void *user) {
     // Bounded work even if a server floods the socket. Process each queued motion sample for fusion.
     for (int i = 0; i < 128 && c->fd >= 0; i++) {
         uint8_t data[2048];
+#ifdef __linux__
         ssize_t n = recv(c->fd, data, sizeof data, MSG_DONTWAIT | MSG_TRUNC);
         if (n < 0) {
             if (errno != EAGAIN && errno != EWOULDBLOCK && errno != ECONNREFUSED && errno != EINTR) dsu_close(c);
             break;
         }
+#elif defined(_WIN32)
+        int n = recv((SOCKET)c->fd, (char *)data, sizeof data, 0);
+        if (n < 0) {
+            int err = WSAGetLastError();
+            if (err != WSAEWOULDBLOCK && err != WSAECONNRESET && err != WSAECONNREFUSED && err != WSAEINTR) dsu_close(c);
+            break;
+        }
+#endif
         DsuPacket p;
         if ((size_t)n > sizeof data || !dsu_decode(data, n, &p)) {
             if (!c->invalid_log || now >= c->invalid_log) {
@@ -195,7 +242,7 @@ void dsu_poll(DsuClient *c, uint64_t now, DsuSampleFn sample, void *user) {
         if (p.type == 0x100001) {
             if (c->slot >= 0 && p.server != c->server) { forget(c); c->retry = 0; }
             if (p.slot == c->slot && (p.state != 2 || memcmp(c->mac, p.mac, 6))) { forget(c); c->retry = 0; }
-            if (c->slot < 0 && p.state == 2 && p.model == 2) {
+            if (c->slot < 0 && p.state == 2 && (p.model == 1 || p.model == 2)) {
                 c->slot = p.slot, c->server = p.server;
                 memcpy(c->mac, p.mac, 6);
                 c->generation++;

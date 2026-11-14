@@ -1,5 +1,5 @@
 // Motion controls (runtime/hle/motion.c): the game's six-axis sensor (gyroscope + accelerometer) from the controller's
-// own sensors through SDL3, a Linux DSU fallback, or the mouse while the tilt key (bindings: BIND_TILT) is held.
+// own sensors through SDL3, a Linux/Windows DSU fallback, or the mouse while the tilt key (bindings: BIND_TILT) is held.
 #pragma once
 #include <stdbool.h>
 
@@ -30,7 +30,10 @@ void motion_virtual_end(void);
 // TURN_RIGHT): a held tilt in degrees and turning speeds in degrees per second, this frame
 void motion_script(float pitch_deg, float roll_deg, float pitch_speed, float yaw_speed);
 
-bool motion_has_sensors(void);  // usable motion source (Linux: fresh SDL sensor pair or DSU)
+bool motion_has_sensors(void);  // usable motion source (fresh SDL sensor pair/gyro or DSU)
+// Inform motion.c whether the game is in a motion context (bow/rune/scope aiming or shrine apparatus). While gated
+// off (walking freely), physical sensors do not drive SixAxisSensorStates.
+void motion_set_context_active(bool active);
 // Controller motion camera (Controls > Motion camera, runtime/hle/input.c): world-up yaw and local pitch degrees
 // accumulated at sensor rate since the previous camera frame; motion_cam_clear drops unread deltas when inactive.
 bool motion_cam_consume(double *yaw_deg, double *pitch_deg);

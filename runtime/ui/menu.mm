@@ -1209,11 +1209,11 @@ static void tab_about(void) {
             g_settings.stick_cam_y = (int)cy;
     }
     {
-        static const char *const gc_names[GYRO_CAM_COUNT] = {"Off", "Exploration", "Hold button", "Always"};
+        static const char *const gc_names[GYRO_CAM_COUNT] = {"Off", "Aiming only", "Hold button", "Always"};
         opt_choice("Motion camera", &g_settings.motion_camera, gc_names, GYRO_CAM_COUNT, GYRO_CAM_OFF,
                    "Turn the camera by tilting and turning a controller with motion sensors, alongside the right stick. "
-                   "Exploration: pauses automatically while aiming a bow or rune or in a shrine apparatus. Hold button: "
-                   "active while Motion camera (hold) is held. Always: active while aiming too.", false);
+                   "Aiming only: active while aiming a bow, rune, or scope (pauses while walking and in shrine puzzles). Hold button: "
+                   "active while Motion camera (hold) is held. Always: active while walking and aiming.", false);
         float gcs = roundf(g_settings.motion_camera_sens * 100);
         if (g_settings.motion_camera == GYRO_CAM_OFF) opt_disable_next();
         if (opt_slider("Motion camera sensitivity", &gcs, 10, 500, 5, 100, "%g%%",

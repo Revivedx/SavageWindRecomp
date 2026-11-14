@@ -350,13 +350,18 @@ void input_cam_frame(float ratio) {
     int mc_mode = g_settings.motion_camera;
     uint64_t aim_t = aim_cam_ns;
     bool aiming = aim_t && plat_now_ns() - aim_t < 100000000ull;
-    bool allow_gyro = native && mc_mode != GYRO_CAM_OFF && win_focused && !pc_menu_active && !menu_input_captured() &&
-                      !pc_gyro_keyboard_active() && g_settings.motion_device != MOTION_DEV_MOUSE &&
-                      (mc_mode == GYRO_CAM_ALWAYS || !aiming) && (mc_mode != GYRO_CAM_HOLD || pad_gyro_cam_held);
+    bool mode_active = (mc_mode == GYRO_CAM_AIMING && aiming) ||
+                       (mc_mode == GYRO_CAM_HOLD && pad_gyro_cam_held) ||
+                       (mc_mode == GYRO_CAM_ALWAYS);
+    bool allow_gyro = native && mode_active && win_focused && !pc_menu_active && !menu_input_captured() &&
+                      !pc_gyro_keyboard_active() && g_settings.motion_device != MOTION_DEV_MOUSE;
     double gyaw = 0, gpitch = 0;
     bool has_gyro = false;
     if (allow_gyro) has_gyro = motion_cam_consume(&gyaw, &gpitch);
     else motion_cam_clear();
+    bool sixaxis_context = win_focused && !pc_menu_active && !menu_input_captured() &&
+                           (pc_gyro_keyboard_active() || (aiming && !allow_gyro));
+    motion_set_context_active(sixaxis_context);
 
     if (!has_mouse && !has_gyro) {
         cam_mouse = false;

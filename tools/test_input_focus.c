@@ -64,6 +64,7 @@ void control_input_apply(uint64_t *b, int32_t *lx, int32_t *ly, int32_t *rx, int
 bool pc_gyro_keyboard_active(void) { return false; }
 void pc_gyro_scene_tick(void) {}
 bool motion_has_sensors(void) { return false; }
+void motion_set_context_active(bool active) { (void)active; }
 bool motion_cam_consume(double *yaw, double *pitch) { (void)yaw; (void)pitch; return false; }
 void motion_cam_clear(void) {}
 void motion_keyboard(int p, int r, int y, bool c) { (void)p; (void)r; (void)y; (void)c; }

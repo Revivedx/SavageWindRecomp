@@ -167,7 +167,7 @@ void graphics_preset_apply(int preset) {
 static const char *const k_icons[ICONS_COUNT] = {"auto", "keyboard", "xbox", "playstation", "nintendo"};
 
 static const char *const k_quality[UPQ_COUNT] = {"native", "ultra_quality", "quality", "balanced", "performance", "ultra_performance"};
-static const char *const k_gyro_cam[GYRO_CAM_COUNT] = {"off", "explore", "hold", "always"};
+static const char *const k_gyro_cam[GYRO_CAM_COUNT] = {"off", "aiming", "hold", "always"};
 static const char *const k_motion_dev[MOTION_DEV_COUNT] = {"auto", "controller", "mouse"};
 
 // Debug overrides seed this boot's options; the Controls switches can still change them at once.
@@ -304,6 +304,7 @@ void settings_load(void) {
                                        !strcmp(val, "left_right") ? MOTION_INVERT_LR : 0;
         }
         else if (!strcmp(key, "motion_camera")) {
+            if (!strcmp(val, "explore")) g_settings.motion_camera = GYRO_CAM_AIMING;
             for (int i = 0; i < GYRO_CAM_COUNT; i++)
                 if (!strcmp(val, k_gyro_cam[i])) g_settings.motion_camera = i;
         }

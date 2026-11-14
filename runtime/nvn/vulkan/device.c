@@ -2728,8 +2728,26 @@ void ui_window_init(void) {
     if (window) return;
     atexit(quick_exit_handler);
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "1");
+    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS4, "1");
+    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS5, "1");
+    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_SWITCH, "1");
+#ifdef SDL_HINT_JOYSTICK_HIDAPI_SWITCH2
+    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_SWITCH2, "1");
+#endif
+#ifdef SDL_HINT_JOYSTICK_HIDAPI_8BITDO
+    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_8BITDO, "1");
+#endif
+#ifdef SDL_HINT_JOYSTICK_HIDAPI_FLYDIGI
+    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_FLYDIGI, "1");
+#endif
+#ifdef SDL_HINT_JOYSTICK_HIDAPI_SINPUT
+    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_SINPUT, "1");
+#endif
+    SDL_SetHint(SDL_HINT_JOYSTICK_ENHANCED_REPORTS, "1");
     settings_load();
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) FATAL("SDL_Init: %s\n", SDL_GetError());
+    (void)SDL_InitSubSystem(SDL_INIT_SENSOR);
     // Video > Window size (runtime/window_size.c: pixels; SDL's window size is pixels / the display's pixel density)
     winsize_refresh(NULL);
     WinSize ws = winsize_effective(false);

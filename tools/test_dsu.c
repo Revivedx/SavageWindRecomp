@@ -1,10 +1,19 @@
-// Focused Linux tests; include motion.c to exercise the real fusion and source switching without game assets.
+// Focused DSU and motion tests; include motion.c to exercise the real fusion and source switching without game assets.
 #include <assert.h>
-#include <arpa/inet.h>
 #include <stdio.h>
+#include <zlib.h>
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#define close_sock closesocket
+#define set_env(k, v) _putenv_s((k), (v))
+#else
+#include <arpa/inet.h>
 #include <sys/socket.h>
 #include <unistd.h>
-#include <zlib.h>
+#define close_sock close
+#define set_env(k, v) setenv((k), (v), 1)
+#endif
 #include "../runtime/hle/motion.c"
 
 Settings g_settings;
@@ -30,6 +39,9 @@ static void packet(uint8_t p[100], uint32_t type, uint32_t seq, uint64_t ts) {
     f32(p + 80, -1); // flat DSU gravity
     checksum(p, p[6] + 16);
 }
+#ifdef near
+#undef near
+#endif
 static void near(double a, double b) { assert(fabs(a-b) < 1e-6); }
 
 static void parsing(void) {
@@ -65,6 +77,14 @@ static void parsing(void) {
         if (type==0x100001) assert(req[20]==4 && req[27]==3);
         if (type==0x100002) assert(req[20]==1 && req[21]==2);
     }
+    // Gyro-only DSU packet (zero accelerometer, non-zero gyro) synthesizes flat gravity (0, 0, -1).
+    packet(p, 0x100002, 8, 123500);
+    f32(p+76, 0); f32(p+80, 0); f32(p+84, 0);
+    f32(p+88, 90); f32(p+92, 0); f32(p+96, 0);
+    checksum(p, 100);
+    assert(dsu_decode(p, 100, &d));
+    near(d.acc[0], 0); near(d.acc[1], 0); near(d.acc[2], -1);
+    near(d.gyro[0], PI/2); near(d.gyro[1], 0); near(d.gyro[2], 0);
 }
 
 static void freshness(void) {
@@ -85,7 +105,16 @@ static void freshness(void) {
 static int sample_count;
 static void count_sample(const DsuPacket *p, uint32_t gen, void *u) { (void)p; (void)gen; (void)u; sample_count++; }
 static void network(void) {
+#ifdef _WIN32
+    WSADATA wsa;
+    assert(WSAStartup(MAKEWORD(2, 2), &wsa) == 0);
+    SOCKET fd = socket(AF_INET, SOCK_DGRAM, 0);
+    assert(fd != INVALID_SOCKET);
+    u_long nb = 1;
+    assert(ioctlsocket(fd, FIONBIO, &nb) == 0);
+#else
     int fd=socket(AF_INET,SOCK_DGRAM|SOCK_NONBLOCK,0); assert(fd>=0);
+#endif
     struct sockaddr_in addr={.sin_family=AF_INET,.sin_addr.s_addr=htonl(INADDR_LOOPBACK)};
     assert(!bind(fd,(struct sockaddr *)&addr,sizeof addr));
     socklen_t len=sizeof addr; assert(!getsockname(fd,(struct sockaddr *)&addr,&len));
@@ -93,33 +122,39 @@ static void network(void) {
     DsuClient c; assert(dsu_init(&c,endpoint,123));
     dsu_poll(&c,clock_ns,count_sample,NULL);
     uint8_t p[100], r[128]; struct sockaddr_in client; len=sizeof client;
-    assert(recvfrom(fd,r,sizeof r,0,(struct sockaddr *)&client,&len)==20); assert(r[16]==0);
-    assert(recv(fd,r,sizeof r,0)==28); assert(r[16]==1);
-    packet(p,0x100001,0,0); assert(sendto(fd,p,32,0,(struct sockaddr *)&client,len)==32);
+    assert(recvfrom(fd,(char *)r,sizeof r,0,(struct sockaddr *)&client,&len)==20); assert(r[16]==0);
+    assert(recv(fd,(char *)r,sizeof r,0)==28); assert(r[16]==1);
+    packet(p,0x100001,0,0); assert(sendto(fd,(const char *)p,32,0,(struct sockaddr *)&client,len)==32);
     dsu_poll(&c,clock_ns+1,count_sample,NULL); assert(c.slot==0);
-    assert(recv(fd,r,sizeof r,0)==28); assert(r[16]==2 && r[20]==1 && r[21]==0);
-    packet(p,0x100002,10,1000); assert(sendto(fd,p,100,0,(struct sockaddr *)&client,len)==100);
+    assert(recv(fd,(char *)r,sizeof r,0)==28); assert(r[16]==2 && r[20]==1 && r[21]==0);
+    packet(p,0x100002,10,1000); assert(sendto(fd,(const char *)p,100,0,(struct sockaddr *)&client,len)==100);
     dsu_poll(&c,clock_ns+2,count_sample,NULL); assert(c.fresh && sample_count==1);
     // Restart with new server ID; discovery resets the counter/timestamp epoch.
     packet(p,0x100001,0,0); u32(p+12,99); checksum(p,32);
-    sendto(fd,p,32,0,(struct sockaddr *)&client,len); dsu_poll(&c,clock_ns+3,count_sample,NULL);
+    sendto(fd,(const char *)p,32,0,(struct sockaddr *)&client,len); dsu_poll(&c,clock_ns+3,count_sample,NULL);
     assert(c.server==99 && !c.fresh);
     packet(p,0x100002,1,1); u32(p+12,99); checksum(p,100);
-    sendto(fd,p,100,0,(struct sockaddr *)&client,len); dsu_poll(&c,clock_ns+4,count_sample,NULL);
+    sendto(fd,(const char *)p,100,0,(struct sockaddr *)&client,len); dsu_poll(&c,clock_ns+4,count_sample,NULL);
     assert(c.fresh && sample_count==2);
     dsu_poll(&c,clock_ns+DSU_TIMEOUT_NS+5,count_sample,NULL); assert(!c.fresh && c.slot==-1);
     // Same-ID restart / late server availability recovers via periodic discovery.
     packet(p,0x100001,0,0); u32(p+12,99); checksum(p,32);
-    sendto(fd,p,32,0,(struct sockaddr *)&client,len); dsu_poll(&c,clock_ns+DSU_RETRY_NS,count_sample,NULL);
+    sendto(fd,(const char *)p,32,0,(struct sockaddr *)&client,len); dsu_poll(&c,clock_ns+DSU_RETRY_NS,count_sample,NULL);
     packet(p,0x100002,0,0); u32(p+12,99); checksum(p,100);
-    sendto(fd,p,100,0,(struct sockaddr *)&client,len); dsu_poll(&c,clock_ns+DSU_RETRY_NS+1,count_sample,NULL);
+    sendto(fd,(const char *)p,100,0,(struct sockaddr *)&client,len); dsu_poll(&c,clock_ns+DSU_RETRY_NS+1,count_sample,NULL);
     assert(c.fresh && sample_count==3);
-    dsu_close(&c); close(fd);
+    // Controller info model == 1 (partial / gyro-only) is also accepted during discovery.
+    uint64_t t_exp = clock_ns + DSU_RETRY_NS + DSU_TIMEOUT_NS + 2;
+    dsu_poll(&c, t_exp, count_sample, NULL); assert(!c.fresh && c.slot==-1);
+    packet(p,0x100001,0,0); p[22]=1; u32(p+12,99); checksum(p,32);
+    assert(sendto(fd,(const char *)p,32,0,(struct sockaddr *)&client,len)==32);
+    dsu_poll(&c, t_exp + 1, count_sample, NULL); assert(c.slot==0);
+    dsu_close(&c); close_sock(fd);
     assert(!dsu_init(&c,"localhost:26760",1)); assert(!dsu_init(&c,"127.0.0.1:0",1));
 }
 
 static void selection(void) {
-    setenv("SAVAGEWIND_DSU","off",1);
+    set_env("SAVAGEWIND_DSU","off");
     backend.enabled=true;
     SDL_Event e={0}; e.gsensor.sensor=SDL_SENSOR_ACCEL; e.gsensor.sensor_timestamp=100;
     e.gsensor.data[1]=SDL_STANDARD_GRAVITY;
@@ -161,6 +196,24 @@ static void selection(void) {
     for(int i=0;i<3;i++) near(s.ring[s.head].gyro[i],0);
     motion_pad_closed();
     assert(!backend.enabled);
+    // Gyro-only SDL sensor starts cleanly without an accelerometer and keeps flat gravity, and context gating
+    // stops physical SixAxis output when inactive (e.g. walking freely) and re-enables it when active.
+    motion_reboot_reset();
+    backend.enabled = true;
+    backend.gyro_only = true;
+    memset(&e, 0, sizeof e);
+    e.gsensor.sensor = SDL_SENSOR_GYRO;
+    e.gsensor.sensor_timestamp = 300;
+    e.gsensor.data[0] = 0.5f;
+    motion_sensor_event(&e);
+    assert(backend.source == 1 && g.sensors && g.started);
+    near(g.acc[2], -1);
+    Mat gm;
+    motion_set_context_active(false);
+    assert(source(0.01, gm) == 0);
+    motion_set_context_active(true);
+    assert(source(0.01, gm) > 0);
+    motion_reboot_reset();
 }
 // Exercise the game-facing path from initially overhead and vertical poses, including
 // crossing both poles. At unit sensitivity the output must preserve the physical

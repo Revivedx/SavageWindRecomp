@@ -198,7 +198,7 @@ constexpr int k_rumble_strength[] = {10, 20, 30, 40, 50, 60, 70, 80, 90, 100};  
 constexpr int RUMBLE_STRENGTH_DEFAULT_INDEX = 9;
 static_assert(k_rumble_strength[RUMBLE_STRENGTH_DEFAULT_INDEX] == 100);
 const char *const k_invert[] = {"Off", "Up and down", "Left and right", "Both"};  // (MOTION_INVERT_* bits)
-const char *const k_gyro_cam[GYRO_CAM_COUNT] = {"Off", "Exploration", "Hold button", "Always"};
+const char *const k_gyro_cam[GYRO_CAM_COUNT] = {"Off", "Aiming only", "Hold button", "Always"};
 constexpr int k_motion_cam_sens[] = {25, 33, 50, 75, 100, 125, 150, 200, 250, 300, 400, 500};
 constexpr int MOTION_CAM_SENS_DEFAULT = 4;
 static_assert(k_motion_cam_sens[MOTION_CAM_SENS_DEFAULT] == 100);
@@ -818,7 +818,7 @@ void build_items(void) {
                        [](const Item &, int x) { return tr(k_invert[x]); },
                        [](const Item &) { return g_settings.motion_invert & 3; },
                        [](const Item &, int x) { g_settings.motion_invert = x; }, 0));
-    v.push_back(choice(P_CONTROLS, "Motion camera", "Turn the camera by moving the controller. Exploration pauses when aiming.",
+    v.push_back(choice(P_CONTROLS, "Motion camera", "Turn the camera by moving the controller. Aiming only runs while aiming a bow, rune, or scope.",
                        [](const Item &) { return (int)GYRO_CAM_COUNT; },
                        [](const Item &, int x) { return tr(k_gyro_cam[x]); },
                        [](const Item &) { return g_settings.motion_camera; },

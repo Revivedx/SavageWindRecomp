@@ -27,7 +27,7 @@ typedef struct {
 static const Setting settings[] = {
     B(fullscreen), I(window_w, 0, 16384, NULL), I(window_h, 0, 16384, NULL),
     I(upscaler, 0, UPSCALE_COUNT - 1, "off|metalfx|fsr1|fsr3|dlss|fsr4"),
-    I(upscale_quality, 0, UPQ_COUNT - 1, "ultra_quality|quality|balanced|performance|ultra_performance"),
+    I(upscale_quality, 0, UPQ_COUNT - 1, "native|ultra_quality|quality|balanced|performance|ultra_performance"),
     I(antialias, 0, AA_TAA, "off|smaa|taa"), B(game_fxaa), B(wet_fix),
     I(render_scale, 0, RSCALE_COUNT - 1, "50|75|100|125|150|200"),
     I(anisotropy, 0, 4, "game|2x|4x|8x|16x"), I(tex_lod_bias, 0, TEX_LOD_COUNT - 1, "default|sharp|sharper"), I(sharpening, 0, 10, NULL),
@@ -55,7 +55,10 @@ static const Setting settings[] = {
     I(text_language, 0, 0, NULL), I(voice_language, 0, 0, NULL), B(save_backups),
     B(stick_cam_on), I(stick_cam_x, STICK_CAM_MIN, STICK_CAM_MAX, NULL), I(stick_cam_y, STICK_CAM_MIN, STICK_CAM_MAX, NULL),
     B(auto_continue), B(menu_tip_seen),
-    I(motion_device, 0, MOTION_DEV_COUNT - 1, "auto|controller|mouse"), B(transparent_guides),
+    I(motion_device, 0, MOTION_DEV_COUNT - 1, "auto|controller|mouse"),
+    I(motion_camera, 0, GYRO_CAM_COUNT - 1, "off|aiming|hold|always"),
+    F(motion_camera_sens, .1, 10),
+    B(transparent_guides),
     I(mvec_mode, 0, MVEC_MODE_COUNT - 1, "hybrid|objects|camera"),
 };
 #undef B

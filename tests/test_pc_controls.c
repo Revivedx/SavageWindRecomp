@@ -16,7 +16,7 @@ static bool pointer_ui, map_pointer, captured, freed, visible = true, relative, 
 static bool gyro_active, game_menu, title_menu, motion_tilt, gyro_reset;
 static int gyro_pitch, gyro_roll, gyro_yaw;
 static float tilt_mouse_x, tilt_mouse_y, tilt_mouse_yaw;
-static bool sensor_pad = true;
+static bool sensor_pad;
 static double gyro_yaw_deg, gyro_pitch_deg;
 static bool gyro_cleared;
 static int relative_changes, visibility_changes;
@@ -33,6 +33,8 @@ bool prof_toggle(void) { return false; }
 bool menu_cursor_free(void) { return freed; }
 void vibration_update(SDL_Gamepad *p, bool focused) { (void)p; (void)focused; }
 void motion_tilt_held(bool held) { motion_tilt = held; }
+static bool sixaxis_context = true;
+void motion_set_context_active(bool active) { sixaxis_context = active; }
 bool pc_gyro_keyboard_active(void) { return gyro_active; }
 void pc_gyro_scene_tick(void) {}
 void motion_keyboard(int p,int r,int y,bool reset) { gyro_pitch=p;gyro_roll=r;gyro_yaw=y;gyro_reset=reset; }
@@ -229,34 +231,42 @@ int main(void) {
     rotate_drag=false;now+=16000000;mouse_stick(&sx,&sy);assert(sx==0&&sy==0);
     puts("PASS: pointer menus keep middle click bound; Rotate-mode drag turns Link through the right stick");
 
-    // Controller motion camera modes (Off / Exploration / Hold button / Always) and simultaneous right-stick mixing.
-    pointer_ui=false;win_focused=true;g_settings.motion_camera_sens=1.0f;
+    // Controller motion camera modes (Off / Aiming only / Hold button / Always), SixAxis context gating, and simultaneous right-stick mixing.
+    pointer_ui=false;win_focused=true;gyro_active=false;g_settings.motion_camera_sens=1.0f;
     float cv[5]={0};
     g_settings.motion_camera=GYRO_CAM_OFF;gyro_yaw_deg=2.0;gyro_pitch_deg=1.0;gyro_cleared=false;
-    input_cam_frame(0.5f);assert(gyro_cleared&&!rt_cam_stick((uintptr_t)cv,0));
-
-    g_settings.motion_camera=GYRO_CAM_EXPLORE;gyro_yaw_deg=2.0;gyro_pitch_deg=1.0;
-    input_cam_frame(0.5f);assert(rt_cam_stick((uintptr_t)cv,0)==1&&cv[0]>0&&cv[1]>0);
-    float py=cv[1];assert(rt_cam_pitch(&py)==1&&fabsf(py-cv[1]*CAM_PITCH_LINEAR)<1e-5f);
-    // Exploration mode yields during shrine apparatus puzzles and bow/rune aiming (no double-rotation).
-    apparatus_ui=true;gyro_yaw_deg=2.0;input_cam_frame(0.5f);assert(!rt_cam_stick((uintptr_t)cv,0));
-    apparatus_ui=false;
+    input_cam_frame(0.5f);assert(gyro_cleared&&!rt_cam_stick((uintptr_t)cv,0)&&!sixaxis_context);
+    gyro_active=true;input_cam_frame(0.5f);assert(sixaxis_context);gyro_active=false;
     (void)rt_cam_pitch_scale(0x3f800000u,0x3f333333u);  // CameraAiming read
-    gyro_yaw_deg=2.0;input_cam_frame(0.5f);assert(!rt_cam_stick((uintptr_t)cv,0));
-    // Always mode keeps turning even while CameraAiming is active (when in-game motion aiming is off).
-    g_settings.motion_camera=GYRO_CAM_ALWAYS;gyro_yaw_deg=2.0;
-    input_cam_frame(0.5f);assert(rt_cam_stick((uintptr_t)cv,0)==1&&cv[0]>0);
+    input_cam_frame(0.5f);assert(!rt_cam_stick((uintptr_t)cv,0)&&sixaxis_context);
     now+=200000000;  // expire aiming window
+    input_cam_frame(0.5f);assert(!sixaxis_context);
+
+    // Aiming only: inactive while walking freely, active while aiming a bow/rune/scope (and yields to SixAxis in shrine apparatus).
+    g_settings.motion_camera=GYRO_CAM_AIMING;gyro_yaw_deg=2.0;gyro_pitch_deg=1.0;
+    input_cam_frame(0.5f);assert(!rt_cam_stick((uintptr_t)cv,0)&&!sixaxis_context);
+    (void)rt_cam_pitch_scale(0x3f800000u,0x3f333333u);  // CameraAiming read
+    gyro_yaw_deg=2.0;gyro_pitch_deg=1.0;
+    input_cam_frame(0.5f);assert(rt_cam_stick((uintptr_t)cv,0)==1&&cv[0]>0&&cv[1]>0&&!sixaxis_context);
+    float py=cv[1];assert(rt_cam_pitch(&py)==1&&fabsf(py-cv[1]*CAM_PITCH_LINEAR)<1e-5f);
+    // Shrine apparatus puzzles pause motion-camera turning and enable guest SixAxis input.
+    gyro_active=true;gyro_yaw_deg=2.0;input_cam_frame(0.5f);assert(!rt_cam_stick((uintptr_t)cv,0)&&sixaxis_context);
+    gyro_active=false;
+    // Always mode keeps turning while aiming and while walking freely.
+    g_settings.motion_camera=GYRO_CAM_ALWAYS;gyro_yaw_deg=2.0;
+    input_cam_frame(0.5f);assert(rt_cam_stick((uintptr_t)cv,0)==1&&cv[0]>0&&!sixaxis_context);
+    now+=200000000;  // expire aiming window
+    gyro_yaw_deg=2.0;input_cam_frame(0.5f);assert(rt_cam_stick((uintptr_t)cv,0)==1&&cv[0]>0&&!sixaxis_context);
 
     // Hold-button mode turns only while BIND_GYRO_CAM is held, and coexists simultaneously with right stick deflection.
     g_settings.motion_camera=GYRO_CAM_HOLD;pad_gyro_cam_held=false;
-    gyro_yaw_deg=2.0;input_cam_frame(0.5f);assert(!rt_cam_stick((uintptr_t)cv,0));
+    gyro_yaw_deg=2.0;input_cam_frame(0.5f);assert(!rt_cam_stick((uintptr_t)cv,0)&&!sixaxis_context);
     pad_gyro_cam_held=true;gyro_yaw_deg=2.0;gyro_pitch_deg=1.0;
-    input_cam_frame(0.5f);assert(rt_cam_stick((uintptr_t)cv,0)==1);
+    input_cam_frame(0.5f);assert(rt_cam_stick((uintptr_t)cv,0)==1&&!sixaxis_context);
     float gyro_only_x=cv[0];
     pad_rx=16384;pad_ry=16384;gyro_yaw_deg=2.0;gyro_pitch_deg=1.0;
     input_cam_frame(0.5f);assert(rt_cam_stick((uintptr_t)cv,0)==1&&cv[0]>gyro_only_x);
     py=cv[1];assert(rt_cam_pitch(&py)==1&&!cam_only_lin);
     pad_rx=pad_ry=0;pad_gyro_cam_held=false;
-    puts("PASS: controller motion camera modes, aiming/shrine suppression, and simultaneous right-stick + gyro mixing");
+    puts("PASS: controller motion camera modes, aiming/shrine gating, and simultaneous right-stick + gyro mixing");
 }

@@ -41,7 +41,7 @@
 #include "../settings.h"
 #include "../pc_gyro.h"
 #include "../pc_gyro_scene.h"
-#ifdef __linux__
+#if defined(__linux__) || defined(_WIN32)
 #include "../dsu.h"
 #endif
 
@@ -131,6 +131,7 @@ static struct {
     bool recenter;                     // the recenter key: take the nearest level pose, drop the turns still to come
     double sc_pitch, sc_roll, sc_pitch_speed, sc_yaw_speed;  // scripted (radians, radians per second)
     double cam_yaw_deg, cam_pitch_deg; // controller motion camera deltas accumulated at sensor rate (degrees)
+    bool context_gated, context_active;  // pause physical six-axis output outside aiming / shrine contexts
 } g = {.q = {1, 0, 0, 0}, .aim_q = {1, 0, 0, 0}, .acc = {0, 0, -1}};
 
 // The sensor stream's health, for the log (under g_lock)
@@ -144,9 +145,9 @@ static struct {
     int notes;                   // (the log: one-off lines so far, capped)
 } hs;
 
-#ifdef __linux__
+#if defined(__linux__) || defined(_WIN32)
 static struct {
-    bool enabled;
+    bool enabled, gyro_only;
     uint64_t acc_time, gyro_time, acc_ts, gyro_ts;
     float acc[3];
     int source;  // 0 none, 1 SDL, 2 DSU
@@ -155,8 +156,8 @@ static struct {
 } backend;
 
 static bool native_fresh(uint64_t now) {
-    return backend.enabled && backend.acc_time && backend.gyro_time &&
-           now - backend.acc_time < DSU_TIMEOUT_NS && now - backend.gyro_time < DSU_TIMEOUT_NS;
+    if (!backend.enabled || !backend.gyro_time || now - backend.gyro_time >= DSU_TIMEOUT_NS) return false;
+    return backend.gyro_only || (backend.acc_time && now - backend.acc_time < DSU_TIMEOUT_NS);
 }
 
 // Called under g_lock. Never carry bias, gravity, timestamps or integration across devices.
@@ -209,13 +210,19 @@ void motion_cam_clear(void) {
 }
 
 void motion_pad_opened(SDL_Gamepad *pad) {
-    bool gyro = SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO), accel = SDL_GamepadHasSensor(pad, SDL_SENSOR_ACCEL);
-    bool on = gyro && accel && SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_GYRO, true) &&
-              SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_ACCEL, true);
+    bool gyro = SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO) && SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_GYRO, true);
+    bool accel = SDL_GamepadHasSensor(pad, SDL_SENSOR_ACCEL) && SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_ACCEL, true);
+    bool on = gyro;
     pthread_mutex_lock(&g_lock);
-#ifdef __linux__
+#if defined(__linux__) || defined(_WIN32)
     backend.enabled = on;
+    backend.gyro_only = gyro && !accel;
     backend.acc_time = backend.gyro_time = backend.acc_ts = backend.gyro_ts = 0;
+    if (backend.gyro_only) {
+        backend.acc[0] = 0;
+        backend.acc[1] = SDL_STANDARD_GRAVITY;
+        backend.acc[2] = 0;
+    }
     select_motion(0);
     g.sensors = false;
 #else
@@ -231,19 +238,24 @@ void motion_pad_opened(SDL_Gamepad *pad) {
     float rate = on ? SDL_GetGamepadSensorDataRate(pad, SDL_SENSOR_GYRO) : 0;
     hs.period = rate > 1 ? 1.0 / rate : 0, hs.host_ns = 0, hs.bad_run = 0;
     pthread_mutex_unlock(&g_lock);
+    Uint16 vid = SDL_GetGamepadVendor(pad), pid = SDL_GetGamepadProduct(pad);
     if (on)
-        LOG("[motion] %s: gyroscope and accelerometer on (%.0f / %.0f Hz)\n", SDL_GetGamepadName(pad),
-            SDL_GetGamepadSensorDataRate(pad, SDL_SENSOR_GYRO), SDL_GetGamepadSensorDataRate(pad, SDL_SENSOR_ACCEL));
+        LOG("[motion] %s (VID %04x PID %04x): %s on (%.0f / %.0f Hz)\n", SDL_GetGamepadName(pad), vid, pid,
+            accel ? "gyroscope and accelerometer" : "gyroscope only",
+            SDL_GetGamepadSensorDataRate(pad, SDL_SENSOR_GYRO),
+            accel ? SDL_GetGamepadSensorDataRate(pad, SDL_SENSOR_ACCEL) : 0.0f);
     else
-        LOG("[motion] %s has no motion sensors%s: the tilt key and the mouse tilt it\n", SDL_GetGamepadName(pad),
-            gyro || accel ? " SDL can use" : "");
+        LOG("[motion] %s (VID %04x PID %04x) has no motion sensors exposed to SDL: switch controller to DS4/Switch "
+            "mode or use a DSU server (127.0.0.1:26760), or use the tilt key/mouse\n",
+            SDL_GetGamepadName(pad), vid, pid);
 }
 
 void motion_pad_closed(void) {
     pthread_mutex_lock(&g_lock);
     g.cam_yaw_deg = g.cam_pitch_deg = 0;
-#ifdef __linux__
+#if defined(__linux__) || defined(_WIN32)
     backend.enabled = false;
+    backend.gyro_only = false;
     backend.acc_time = backend.gyro_time = 0;
     if (backend.source == 1) select_motion(0);
 #else
@@ -302,7 +314,11 @@ static void fuse_gyro(const double raw[3], double dt) {
         g.cam_yaw_deg += -wz_world * k_deg * (g_settings.motion_invert & MOTION_INVERT_LR ? -1.0 : 1.0);
         g.cam_pitch_deg += w[0] * k_deg * (g_settings.motion_invert & MOTION_INVERT_UD ? -1.0 : 1.0);
     }
-    if (an > 0.75 && an < 1.25) {  // (shaken or swung hard: the accelerometer isn't gravity, no pull)
+    bool have_real_accel = true;
+#if defined(__linux__) || defined(_WIN32)
+    have_real_accel = !backend.gyro_only;
+#endif
+    if (have_real_accel && an > 0.75 && an < 1.25) {  // (shaken or swung hard: the accelerometer isn't gravity, no pull)
         double v[3] = {-m[2][0], -m[2][1], -m[2][2]};  // gravity in the controller's axes, as the orientation has it
         double a[3] = {g.acc[0] / an, g.acc[1] / an, g.acc[2] / an};
         w[0] += KP * (a[1] * v[2] - a[2] * v[1]);
@@ -354,7 +370,7 @@ void motion_sensor_event(const SDL_Event *e) {
     if (!isfinite(d[0]) || !isfinite(d[1]) || !isfinite(d[2])) return;
     uint64_t ts = e->gsensor.sensor_timestamp ? e->gsensor.sensor_timestamp : e->gsensor.timestamp;
     pthread_mutex_lock(&g_lock);
-#ifdef __linux__
+#if defined(__linux__) || defined(_WIN32)
     if (!backend.enabled) { pthread_mutex_unlock(&g_lock); return; }
     uint64_t now = plat_now_ns();
     // Use event time for freshness: the native path below also supports a stalled device clock.
@@ -365,6 +381,7 @@ void motion_sensor_event(const SDL_Event *e) {
             pthread_mutex_unlock(&g_lock); return;
         }
         backend.acc_time = now, backend.acc_ts = fresh_ts;
+        backend.gyro_only = false;
         memcpy(backend.acc, d, sizeof backend.acc);
     } else {
         if (backend.gyro_time && fresh_ts == backend.gyro_ts) { pthread_mutex_unlock(&g_lock); return; }
@@ -429,7 +446,7 @@ void motion_sensor_event(const SDL_Event *e) {
     pthread_mutex_unlock(&g_lock);
 }
 
-#ifdef __linux__
+#if defined(__linux__) || defined(_WIN32)
 static void dsu_sample(const DsuPacket *p, uint32_t generation, void *user) {
     (void)user;
     if (native_fresh(plat_now_ns())) return;
@@ -443,7 +460,7 @@ static void dsu_sample(const DsuPacket *p, uint32_t generation, void *user) {
 #endif
 
 void motion_poll(void) {
-#ifdef __linux__
+#if defined(__linux__) || defined(_WIN32)
     static bool initialized, enabled, force;
     if (!initialized) {
         initialized = true;
@@ -534,6 +551,15 @@ RT_ON_RESET(motion_reboot_reset) {
     g.tilt_held = false;
     g.tilt_pitch = g.tilt_roll = g.tilt_yaw = 0;
     g.recenter = false;
+    g.context_gated = false;
+    g.context_active = false;
+    pthread_mutex_unlock(&g_lock);
+}
+
+void motion_set_context_active(bool active) {
+    pthread_mutex_lock(&g_lock);
+    g.context_gated = true;
+    g.context_active = active;
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -632,10 +658,11 @@ static int source(double dt, Mat m) {
     if (s.sc_pitch < -PITCH_MAX) s.sc_pitch = -PITCH_MAX;
     bool virt = g.keyboard.active || g.tilt_held || g.tilt_pitch || g.tilt_roll || g.tilt_yaw || g.sc_pitch || g.sc_roll ||
                 s.sc_yaw || s.sc_pitch;
-    bool allow_sensors = g.sensors && g.started && g_settings.motion_device != MOTION_DEV_MOUSE;
+    bool context_ok = !g.context_gated || g.context_active;
+    bool allow_sensors = g.sensors && g.started && g_settings.motion_device != MOTION_DEV_MOUSE && context_ok;
     if (allow_sensors && (!virt || g_settings.motion_device == MOTION_DEV_CONTROLLER)) {
         quat_mat(g.q, m);
-#ifdef __linux__
+#if defined(__linux__) || defined(_WIN32)
         return (int)backend.epoch + 1;
 #else
         return 1;
@@ -741,7 +768,9 @@ static void update(uint64_t now) {
     s.t += n * SAMPLE_NS;
     Mat src;
     int kind = source(dt, src);
-    if (kind != s.src && hs.notes < 64) {  // (what the motion comes from now, and why)
+    bool gated_out = g.context_gated && !g.context_active && !g.tilt_held && !g.tilt_pitch && !g.tilt_roll &&
+                     !g.sc_pitch && !g.sc_roll && !s.sc_yaw && !s.sc_pitch;
+    if (kind != s.src && !gated_out && hs.notes < 64) {  // (what the motion comes from now, and why)
         hs.notes++;
         LOG("[motion] the game's motion now comes from %s\n",
             kind                                                ? "the controller's sensors"

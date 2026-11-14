@@ -63,9 +63,10 @@ enum { SPARSE_HEAP_AUTO = 0, SPARSE_HEAP_ON = 1, SPARSE_HEAP_OFF = 2, SPARSE_HEA
 // the screen); Exclusive always uses a display mode (the desktop's size too, at its highest refresh rate)
 enum { FSMODE_AUTO = 0, FSMODE_BORDERLESS = 1, FSMODE_EXCLUSIVE = 2, FSMODE_COUNT };
 // Controls > Motion camera (runtime/hle/input.c): Off uses gyro only where the game asks for it (bow, runes, shrines);
-// Exploration turns the camera with the controller when not aiming or in shrines; Hold button turns the camera while
+// Aiming only turns the camera with the controller only while aiming; Hold button turns the camera while
 // BIND_GYRO_CAM is held; Always turns the camera except during shrine apparatus puzzles.
-enum { GYRO_CAM_OFF = 0, GYRO_CAM_EXPLORE = 1, GYRO_CAM_HOLD = 2, GYRO_CAM_ALWAYS = 3, GYRO_CAM_COUNT };
+enum { GYRO_CAM_OFF = 0, GYRO_CAM_AIMING = 1, GYRO_CAM_HOLD = 2, GYRO_CAM_ALWAYS = 3, GYRO_CAM_COUNT };
+#define GYRO_CAM_EXPLORE GYRO_CAM_AIMING
 enum { MOTION_DEV_AUTO = 0, MOTION_DEV_CONTROLLER = 1, MOTION_DEV_MOUSE = 2, MOTION_DEV_COUNT = 3 };
 // The start screen's background, when there is no splash.jpg / .png of the player's in the data folder
 enum { START_PICTURE_ART, START_PICTURE_SCREENSHOT, START_PICTURE_SAVE, START_PICTURE_COUNT };

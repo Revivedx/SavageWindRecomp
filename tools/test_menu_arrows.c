@@ -15,6 +15,7 @@ bool menu_input_captured(void) { return captured; }
 bool framepace_title_ui(void) { return title; }
 bool framepace_menu_ui(void) { return paused; }
 void motion_tilt_held(bool held) { (void)held; }
+void motion_set_context_active(bool active) { (void)active; }
 uint64_t renderer_present_count(void) { return 0; }
 uint64_t plat_now_ns(void) { return 0; }
 
