@@ -1041,6 +1041,11 @@ static void sample_pose(Cpu *c, uint64_t pinfo) {
         last_bone[k] = pose.gear_bone[k];
     }
     pose.valid = pose.as[0][0] != 0;
+    {
+        static int was = -1;
+        if (was != (int)pose.valid) LOG("[online] our pose %s (AS slots %d)\n", pose.valid ? "valid" : "invalid: no AS", slots);
+        was = (int)pose.valid;
+    }
     {   // at a Sheikah pedestal: the Sheikah Slate's (Demo700_0, its first door Demo701_0) or a tower's (Demo004_0: the map
         // downloaded; Demo164_0: the first tower rising): the others near can't start it meanwhile (not a chest, a talk...)
         extern bool framepace_in_event(void);
@@ -3381,6 +3386,11 @@ void rt_online_frame(Cpu *c) {
     for (int i = 0; i < ONLINE_MAX; i++) g_online_actor[i] = world && running(g_act[i].link);
     if (!world) return;
     if (!framepace_paused()) sample_pose(c, pinfo), sample_skeleton(c, pinfo);
+    {   // (why our pose isn't sent, logged as it changes: the others treat a player without one as on their map)
+        static int why = -1;
+        int now = framepace_paused() ? 1 : 0;
+        if (now != why) LOG("[online] our pose: %s\n", now ? "not sampled (paused)" : "sampled"), why = now;
+    }
     {   // the time of day: the host's for everyone (his game sends it; the others follow when theirs is off by more than
         // 3 game minutes, a few seconds: the two clocks run at the same speed)
         float mine = test_warp_hour(NULL), host;
