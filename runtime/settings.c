@@ -63,6 +63,7 @@ Settings g_settings = {
     .hud_edges = false,
     .fov = 100,
     .hud_size = 100,
+    .menu_speed = 100,
     .color_lut_strength = 100,
     .haze = 100,
     .bloom = true,
@@ -332,6 +333,7 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "field_of_view")) g_settings.fov = atoi(val);  // (percent)
         else if (!strcmp(key, "hud_size")) g_settings.hud_size = atoi(val);  // (percent)
+        else if (!strcmp(key, "menu_speed")) g_settings.menu_speed = atoi(val);  // (percent)
         else if (!strcmp(key, "handheld_setup")) g_settings.handheld_setup = atoi(val) != 0;
         else if (!strcmp(key, "draw_distance")) {
             for (int i = 0; i < DRAWDIST_COUNT; i++)
@@ -444,6 +446,7 @@ void settings_load(void) {
     if (!(g_settings.motion_sens >= 0.1f && g_settings.motion_sens <= 10.0f)) g_settings.motion_sens = 1.0f;
     if (g_settings.fov < 50 || g_settings.fov > 200) g_settings.fov = 100;
     if (g_settings.hud_size < 50 || g_settings.hud_size > 150) g_settings.hud_size = 100;
+    if (g_settings.menu_speed < 70 || g_settings.menu_speed > 300) g_settings.menu_speed = 100;
 #define CLAMP(v, lo, hi) ((v) < (lo) ? (lo) : (v) > (hi) ? (hi) : (v))
     g_settings.color_exposure = CLAMP(g_settings.color_exposure, -20, 20);
     g_settings.color_contrast = CLAMP(g_settings.color_contrast, -50, 50);
@@ -561,6 +564,7 @@ void settings_save(void) {
     if (g_settings.hdr_white) fprintf(f, "hdr_paper_white = %d\n", g_settings.hdr_white);
     fprintf(f, "field_of_view = %d\n", g_settings.fov);
     fprintf(f, "hud_size = %d\n", g_settings.hud_size);
+    fprintf(f, "menu_speed = %d\n", g_settings.menu_speed);
     if (g_settings.handheld_setup) fprintf(f, "handheld_setup = 1\n");
     int dd = g_settings.draw_distance;
     fprintf(f, "draw_distance = %s\n", k_drawdist[dd >= 0 && dd < DRAWDIST_COUNT ? dd : DRAWDIST_ORIGINAL]);

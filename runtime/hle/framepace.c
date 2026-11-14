@@ -332,6 +332,13 @@ static void load_watch(uint64_t t) {
     }
 }
 
+static float menu_speed_mult(void) {
+    if (!in_menu()) return 1.0f;
+    int speed = g_settings.menu_speed;
+    if (speed < 70 || speed > 300) return 1.0f;
+    return speed / 100.0f;
+}
+
 void framepace_presented(uint64_t t, bool on_grid) {
     load_watch(t);
     if (!framepace_on()) return;
@@ -347,7 +354,7 @@ void framepace_presented(uint64_t t, bool on_grid) {
     g_grid_streak = on_grid ? g_grid_streak + 1 : 0;
     static int fixed = -1;
     if (fixed < 0) fixed = env_int("SAVAGEWIND_NO_CONTROLLER_STEP", 0);
-    if (!fixed) *(float *)(uintptr_t)CONTROLLER_STEP = g_step;
+    if (!fixed) *(float *)(uintptr_t)CONTROLLER_STEP = g_step * menu_speed_mult();
 }
 
 // The menus' speed: every frame the game sets a GUI speed to its integer interval x 0.5: 1 at 30 fps, 0.5 at 60, and
@@ -357,7 +364,8 @@ void framepace_presented(uint64_t t, bool on_grid) {
 float rt_gui_speed(float game) {
     static int off = -1;
     if (off < 0) off = env_int("SAVAGEWIND_NO_GUI_SPEED", 0);
-    return off || !framepace_on() ? game : g_step;
+    float base = off || !framepace_on() ? game : g_step;
+    return base * menu_speed_mult();
 }
 
 // ------------------------------------------------------------------ the game's clock (ksys::VFR)
