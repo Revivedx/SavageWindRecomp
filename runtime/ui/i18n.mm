@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <atomic>
 #include <deque>
 #include <mutex>
 #include <string>
@@ -21,6 +22,8 @@ extern "C" {
 #include "../language.h"
 #include "../paths.h"
 }
+
+static bool has_turkish_chars(const char *s);
 
 namespace {
 struct Entry { const char *en, *tr; };
@@ -82,6 +85,7 @@ const Lang langs[] = {{"es", "es"}, {"fr", "fr"}, {"de", "de"}, {"it", "it"}, {"
 std::mutex lock;
 const char *cur_ui = "en";
 int generation;
+std::atomic<bool> turkish{false};
 // the current language's table (keys: views of the table's own literals). By text, not by pointer: menus also pass
 // texts they formatted into a buffer of their own.
 std::unordered_map<std::string_view, const char *> by_text;
@@ -191,6 +195,16 @@ void refresh(void) {  // (lock held)
         if (!strcmp(t.lang, ui))
             for (const Entry *e = t.entries; e->en; e++) by_text[e->en] = e->tr;
     read_pack(ui);
+    bool tr_mode = !strcmp(ui, "tr");
+    if (!tr_mode) {
+        for (const auto &kv : by_text) {
+            if (has_turkish_chars(kv.second)) {
+                tr_mode = true;
+                break;
+            }
+        }
+    }
+    turkish.store(tr_mode, std::memory_order_relaxed);
 }
 }  // namespace
 
@@ -223,6 +237,15 @@ static unsigned decode(const unsigned char *&p) {
     c &= 0x3F >> n;
     for (int i = 0; i < n && (*p & 0xC0) == 0x80; i++) c = c << 6 | (*p++ & 0x3F);
     return c;
+}
+
+static bool has_turkish_chars(const char *s) {
+    if (!s) return false;
+    for (const unsigned char *p = (const unsigned char *)s; *p;) {
+        unsigned c = decode(p);
+        if (c == 0x11E || c == 0x11F || c == 0x130 || c == 0x131 || c == 0x15E || c == 0x15F) return true;
+    }
+    return false;
 }
 
 static void encode(std::string &s, unsigned c) {
@@ -263,7 +286,11 @@ extern "C" int ui_dynamic_generation(void) {
     return dynamic_gen;
 }
 
-static unsigned upper(unsigned c) {
+static unsigned upper(unsigned c, bool tr_mode) {
+    if (tr_mode) {
+        if (c == 'i') return 0x130;  // Turkish i -> İ
+        if (c == 0x131) return 'I';  // Turkish ı -> I
+    }
     if (c >= 'a' && c <= 'z') return c - 32;
     if ((c >= 0xE0 && c <= 0xFE && c != 0xF7)) return c - 0x20;      // Latin-1 (à-þ)
     if (c >= 0x100 && c <= 0x17F && c != 0x131 && c != 0x138) {      // Latin Extended-A: pairs
@@ -278,7 +305,8 @@ static unsigned upper(unsigned c) {
 
 std::string tr_upper(const char *s) {
     std::string out;
-    for (const unsigned char *p = (const unsigned char *)s; *p;) encode(out, upper(decode(p)));
+    bool tr_mode = turkish.load(std::memory_order_relaxed);
+    for (const unsigned char *p = (const unsigned char *)s; *p;) encode(out, upper(decode(p), tr_mode));
     return out;
 }
 

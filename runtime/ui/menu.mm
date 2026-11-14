@@ -478,8 +478,9 @@ static void load_fonts(void) {
     g_fonts_lang = ui_lang_generation() * 10007 + ui_dynamic_generation();
     ImFontConfig cfg;
     cfg.OversampleH = 2;
+    static const ImWchar latin_ext[] = {0x20, 0xFF, 0x0100, 0x017F, 0};
     auto add = [&](const char *path, float size, ImFontConfig c) {
-        ImFont *f = io.Fonts->AddFontFromFileTTF(path, size, &c);
+        ImFont *f = io.Fonts->AddFontFromFileTTF(path, size, &c, latin_ext);
         if (f) ui_merge_fallback_font(io.Fonts, size, &cfg);
         return f;
     };
