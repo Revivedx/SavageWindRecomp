@@ -145,6 +145,7 @@ typedef struct {
     int start_picture;        // the start screen's background (ui/splash.mm): START_PICTURE_*
     bool boot_picture;        // that picture while the game loads (vulkan/device.c boot_splash_start); off: black
     bool check_updates;       // Savage Wind Configuration asks SW Update if there is a new version
+    bool slate_companion;     // the read-only companion socket for Slate Companion (control_companion_start); off by default
     int shadow_res;      // SHADOW_*: shadow maps at the console's size, bigger, or (Potato) smaller
     int sharper_menus;   // the menus' one-channel textures enlarged this many times (2 or 4; 0: off), runtime/nvn/text_upscale.c
     int sharper_text;    // the game's font sheets enlarged this many times (2 or 4; 0: off), runtime/nvn/text_upscale.c

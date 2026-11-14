@@ -1035,6 +1035,8 @@ T("Updates come from the launcher that installed Savage Wind (named on the right
 T("When Savage Wind Configuration opens, asks GitHub if there is a new version and offers it. Nothing is installed until you press Update.", "打开 Savage Wind Configuration 时向 GitHub 查询是否有新版本并提示。按下“更新”之前不会安装任何内容。")
 T("Open this screen first", "首先打开此界面")
 T("Starting Savage Wind opens this screen, where updates are offered. Turned off, savagewind.exe goes straight into the game.", "启动 Savage Wind 时打开此界面,并在此提示更新。关闭后,savagewind.exe 将直接进入游戏。")
+T("Slate Companion", "")
+T("Lets Slate Companion, a companion app for Breath of the Wild with a live map, guides and checklists, show where Link is while you play. It can only read the game, never change it, and only apps on this computer can connect. Turning it off takes effect the next time Savage Wind starts.", "让 Slate Companion(一款带实时地图、攻略和清单的 Breath of the Wild 辅助应用)在你游玩时显示 Link 的位置。它只能读取游戏，绝不会更改游戏，并且只有这台电脑上的应用可以连接。关闭后将在下次启动 Savage Wind 时生效。")
 T("Go back to the previous version", "返回上一版本")
 T("Puts back the version you had before this update. Your saves and game files are kept.", "恢复此次更新之前的版本。你的存档和游戏文件会保留。")
 T("Version %s is available.", "版本 %s 可用。")

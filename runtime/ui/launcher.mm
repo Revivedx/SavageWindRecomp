@@ -58,6 +58,7 @@ extern "C" {
 #include "post_update.h"
 #include "steam_shortcuts.h"
 #include "settings.h"
+#include "control.h"
 #include "color_grade.h"
 #include "pc_cursor.h"
 #include "input_bind.h"
@@ -2135,6 +2136,16 @@ extern "C" void launcher_run(const char *root, int mode) {
                         }
                     }
 #endif
+                    // Slate Companion (a separate fan-made app): the read-only companion socket (runtime/control.h).
+                    // On opens it at once; off takes effect at the next start.
+                    if (opt_toggle("Slate Companion", &g_settings.slate_companion, false,
+                                   "Lets Slate Companion, a companion app for Breath of the Wild with a live map, guides and "
+                                   "checklists, show where Link is while you play. It can only read the game, never change it, "
+                                   "and only apps on this computer can connect. Turning it off takes effect the next time "
+                                   "Savage Wind starts.")) {
+                        if (g_settings.slate_companion) control_companion_start(CONTROL_COMPANION_PORT);
+                        settings_save();
+                    }
                     if (shipped_release) {  // (runtime/post_update.h)
                         if (const char *by = update_launcher())  // (installed by a launcher, which updates it: a row that
                             opt_action("Check for updates", by,  //  only says so - pressing it does nothing)

@@ -69,3 +69,4 @@ play SAVAGEWIND_DSU | off | Motion controls from a DSU server (Linux and Windows
 play SAVAGEWIND_DSU_ENDPOINT | 127.0.0.1:26760 | Address of the DSU server for motion controls (Linux and Windows).
 play SAVAGEWIND_GPU | auto | Which graphics card to use: a number, part of its name, or auto.
 play SAVAGEWIND_MENU_LANG | en | The language of the menus, by code.
+play SAVAGEWIND_COMPANION | 7777 | Opens the read only connection for Slate Companion on this port (the start screen switch uses 7777).

@@ -477,6 +477,7 @@ void settings_load(void) {
             g_settings.start_picture = v >= 0 && v < START_PICTURE_COUNT ? v : START_PICTURE_SCREENSHOT;
         } else if (!strcmp(key, "boot_picture")) g_settings.boot_picture = atoi(val) != 0;
         else if (!strcmp(key, "check_updates")) g_settings.check_updates = atoi(val) != 0;
+        else if (!strcmp(key, "slate_companion")) g_settings.slate_companion = atoi(val) != 0;
         else if (!strcmp(key, "wide_view")) g_settings.wide_view = atoi(val) != 0;
         else if (!strcmp(key, "hud_edges")) g_settings.hud_edges = atoi(val) != 0;
         else if (!strcmp(key, "hdr")) {
@@ -817,6 +818,7 @@ void settings_save(void) {
     fprintf(f, "start_picture = %d\n", g_settings.start_picture);
     fprintf(f, "boot_picture = %d\n", g_settings.boot_picture);
     fprintf(f, "check_updates = %d\n", g_settings.check_updates);
+    fprintf(f, "slate_companion = %d\n", g_settings.slate_companion);
     static const char *const shadow[SHADOW_COUNT] = {"console", "high", "ultra", "extreme", "potato"};
     int sr = g_settings.shadow_res;
     fprintf(f, "shadow_resolution = %s\n", shadow[sr >= 0 && sr < SHADOW_COUNT ? sr : SHADOW_CONSOLE]);

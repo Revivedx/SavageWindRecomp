@@ -15,6 +15,9 @@ typedef struct ControlReply ControlReply;  // what a command answers with (opaqu
 typedef void (*ControlFn)(int argc, char **argv, ControlReply *r);
 
 #define CONTROL_PLAYER 1u  // ControlCmd.flags: reads state or copies text, cannot break anything: any player may run it
+#define CONTROL_READ 2u    // ControlCmd.flags: only reads state (writes no memory or files, never ends the game): the
+                           // companion socket (Slate Companion switch or SAVAGEWIND_COMPANION=<port>, for map and tracker
+                           // apps) runs these and nothing else
 
 typedef struct {
     const char *name;  // "time", "shot", ...; subcommands are plain arguments: "set hour 12" is name "set"
@@ -40,8 +43,12 @@ void control_copy(ControlReply *r, const char *text);
 bool control_reply_failed(const ControlReply *r);  // has control_fail been called (a command that runs another one)
 void control_fail(ControlReply *r, const char *fmt, ...) __attribute__((format(printf, 2, 3)));  // {"ok":false,"error":...}
 
-// Start the server if SAVAGEWIND_CONTROL is set (does nothing otherwise). Called once at startup.
+// Start the server if SAVAGEWIND_CONTROL (or SAVAGEWIND_COMPANION) is set (does nothing otherwise). Called once at startup.
 void control_init(void);
+// Open the read-only companion socket on 127.0.0.1:port now (the start screen's Slate Companion switch). False when a
+// socket is already up or the port can't be used. Closing it again takes a restart.
+#define CONTROL_COMPANION_PORT 7777u
+bool control_companion_start(unsigned port);
 // Once per presented frame: run the queued commands. Cheap when nothing is queued.
 void control_frame(uint64_t frame);
 
@@ -57,7 +64,7 @@ void control_place_frame(void);
 // A NULL lx requests buttons only. Otherwise all four axis pointers must be valid.
 void control_input_frame(uint64_t frame);
 bool control_enabled(void);      // developer mode (SAVAGEWIND_CONTROL=<port> or SAVAGEWIND_DEV=1): the commands that are not player safe
-bool control_endpoint_on(void);  // is the socket server listening (SAVAGEWIND_CONTROL)?
+bool control_endpoint_on(void);  // is the socket server listening (SAVAGEWIND_CONTROL or SAVAGEWIND_COMPANION)?
 void control_fly_wheel(float notches);  // mouse wheel while flying: faster / slower
 bool control_fly_toggle(void);   // fly mode on/off (the hotkey, bound as bind_key_fly); false when it could not turn on
 void control_input_apply(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);

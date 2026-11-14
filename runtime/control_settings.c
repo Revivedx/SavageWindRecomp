@@ -253,7 +253,7 @@ static void cmd_set(int argc, char **argv, ControlReply *r) {
 }
 void control_settings_init(void) {
     static const ControlCmd get[] = {
-        {"get", "[key]", "List the settings or show one", cmd_get, CONTROL_PLAYER},
+        {"get", "[key]", "List the settings or show one", cmd_get, CONTROL_PLAYER | CONTROL_READ},
     };
     static const ControlCmd set[] = {
         {"set", "<key> <value>", "Change a setting", cmd_set, 0},

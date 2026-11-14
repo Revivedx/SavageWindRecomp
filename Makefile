@@ -708,6 +708,7 @@ $(B)/test_control: tools/test_control.c runtime/control.c runtime/control.h
 test-control: $(B)/test_control
 	env -u SAVAGEWIND_CONTROL -u SAVAGEWIND_DEV $(B)/test_control
 	env -u SAVAGEWIND_CONTROL SAVAGEWIND_DEV=1 $(B)/test_control dev
+	env -u SAVAGEWIND_CONTROL -u SAVAGEWIND_DEV SAVAGEWIND_COMPANION=47977 $(B)/test_control companion
 
 .PHONY: test-control
 

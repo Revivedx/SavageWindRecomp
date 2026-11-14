@@ -384,6 +384,8 @@ int main(int argc, char **argv) {
     rt_paths_init();  // the data root becomes the working directory (runtime/paths.h)
     // (after it: savagewind.ini is in the data root; before it the file wasn't found where that isn't where we started)
     settings_load();
+    // Savage Wind Configuration's Slate Companion switch: the read-only companion socket (runtime/control.h)
+    if (g_settings.slate_companion) control_companion_start(CONTROL_COMPANION_PORT);
     static const char *const sparse_heap_modes[SPARSE_HEAP_COUNT] = {"auto", "on", "off"};
     int sparse_heap = g_settings.sparse_heap;
     if (sparse_heap < 0 || sparse_heap >= SPARSE_HEAP_COUNT) sparse_heap = SPARSE_HEAP_AUTO;

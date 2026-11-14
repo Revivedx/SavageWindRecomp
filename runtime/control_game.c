@@ -468,10 +468,10 @@ void control_items_init(void);     // runtime/items.c
 
 void control_game_init(void) {
     static const ControlCmd player[] = {
-        {"state", "", "Frame number, uptime, fps and hour", cmd_state, CONTROL_PLAYER},
-        {"pos", "", "Show the position and copy it as a line for goto or an issue", cmd_pos, CONTROL_PLAYER},
-        {"camera", "", "Show the camera position and direction", cmd_camera, CONTROL_PLAYER},
-        {"version", "", "Show the game version and system", cmd_version, CONTROL_PLAYER},
+        {"state", "", "Frame number, uptime, fps and hour", cmd_state, CONTROL_PLAYER | CONTROL_READ},
+        {"pos", "", "Show the position and copy it as a line for goto or an issue", cmd_pos, CONTROL_PLAYER | CONTROL_READ},
+        {"camera", "", "Show the camera position and direction", cmd_camera, CONTROL_PLAYER | CONTROL_READ},
+        {"version", "", "Show the game version and system", cmd_version, CONTROL_PLAYER | CONTROL_READ},
         {"report", "", "Build an issue report and copy it", cmd_report, CONTROL_PLAYER},
     };
     control_register(player, (int)(sizeof player / sizeof *player));
