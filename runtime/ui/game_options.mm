@@ -977,6 +977,9 @@ void build_items(void) {
     v.push_back(toggle(P_ACCESS, "Infinite stamina", "The stamina wheel never runs out.",
                        [](const Item &) { return (int)g_settings.infinite_stamina; },
                        [](const Item &, int x) { g_settings.infinite_stamina = x; }, 0));
+    v.push_back(toggle(P_ACCESS, "Unlimited amiibo usage", "Scan the same amiibo as many times as you like in one day.",
+                       [](const Item &) { return (int)g_settings.unlimited_amiibo; },
+                       [](const Item &, int x) { g_settings.unlimited_amiibo = x; }, 0));
 
 }
 

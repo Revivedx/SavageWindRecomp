@@ -819,6 +819,26 @@ def _remove_arrows(gen, a):
             f'  /* {a:#x}: sub sp, sp, #0x70 (remove arrows: none with Infinite arrows) */')
 
 
+# Accessibility > Unlimited amiibo usage (runtime/assists.c rt_unlimited_amiibo). The amiibo rune turns a figure away
+# when today's date is the save's AmiiboLastTouchDate and the hash of its serial number is in AmiiboTouchHistory. With
+# the option on the date check (1.9.0 0x7000b0b33c, x0 true: a new day) always says a new day, so each scan takes the
+# game's own new-day path, and the history check (0x7000b0a4b4, x0 true: scanned already) says no. Serial numbers stay
+# the figure's own: the Horse_*AmiiboUidHash flags tie Epona to one, so she isn't given twice.
+
+def _amiibo_new_day(gen, a):
+    assert _word(gen, a) == _sub_sp(0x60), hex(_word(gen, a))
+    return ('{ extern int rt_unlimited_amiibo(void); if (rt_unlimited_amiibo()) { c->x[0] = 1; return; } c->sp -= 0x60; }'
+            f'  /* {a:#x}: sub sp, sp, #0x60 (amiibo: a new day with Unlimited amiibo usage) */')
+
+
+def _amiibo_touched(gen, a):
+    w = _word(gen, a)
+    assert w & 0x9f00001f == 0x90000008, hex(w)  # adrp x8, <page>
+    page = adrp_page(w, a)
+    return (f'{{ extern int rt_unlimited_amiibo(void); if (rt_unlimited_amiibo()) {{ c->x[0] = 0; return; }} c->x[8] = {page:#x}ull; }}'
+            f'  /* {a:#x}: adrp x8, {page:#x} (amiibo: never scanned already with Unlimited amiibo usage) */')
+
+
 # Accessibility > Unbreakable weapons (runtime/assists.c rt_keep_wear, rt_no_wear; from #296). The pouch's setter for
 # an equipped item's value (type w22: 0 weapon, 1 bow, 2 arrows, 3 shield; new value w20; the item x11, value at
 # +0x20) is where a hit's wear lands, in hundredths (1700 = 17). The runtime keeps the old value when the new one is
@@ -1062,6 +1082,8 @@ PATCHES = {
     'act_hold': _act_query(0),
     'act_trig': _act_query(1),
     'pouch_remove_arrows': _remove_arrows,
+    'amiibo_new_day': _amiibo_new_day,
+    'amiibo_touched': _amiibo_touched,
     'no_wear_store': _no_wear,
     'no_wear_hit': _no_wear_hit,
     'link_life_store': _link_life,

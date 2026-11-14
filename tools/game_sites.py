@@ -308,6 +308,11 @@ SITES = [
     # the pouch taking arrows off for the player's bow (tools/patches.py _remove_arrows; Accessibility > Infinite arrows)
     Site('pouch_remove_arrows', 'code', 'd101c3ff a9017bfd a9026ffc a90367fa a9045ff8 a90557f6 a9064ff4 910043fd '
          '90000008/9f00001f aa0003f3 f9400108/ffc003ff aa0103e0', 0),
+    # the amiibo once-a-day limit (tools/patches.py _amiibo_new_day; Accessibility > Unlimited amiibo usage)
+    Site('amiibo_new_day', 'code', 'd10183ff a9047bfd a9054ff4 910103fd d10063a0 94000000/fc000000 910083e0 f90013ff '
+         '94000000/fc000000 90000001/9f00001f 91000021/ffc003ff', 0),
+    Site('amiibo_touched', 'code', '90000008/9f00001f aa0103e0 f9400108/ffc003ff f9400108 b40000a8 395f6108 34000068 '
+         '2a1f03e0 d65f03c0', 0),
     # sead::LookAtCamera::doUpdateMatrix (tools/patches.py _lookat_update): its first load of the eye (+0x38); eye,
     # at (+0x44) and up (+0x50) make the view matrix written to x1 (free camera, runtime/hle/freecam.c)
     Site('lookat_update', 'code', '2d470801 2d480c00 1e232020 2d491404 1e240440 1e250400 54000000/ff00001f 1e233823', 0),
@@ -418,6 +423,7 @@ OPTIONAL_GROUPS = [
     ('tree_ranges',),
     ('act_hold', 'act_trig', 'act_masks'),
     ('pouch_remove_arrows',),
+    ('amiibo_new_day', 'amiibo_touched'),
     ('no_wear_store',),
     ('no_wear_hit', 'no_wear_ret'),
     ('link_life_store', 'link_life_tick'),
@@ -581,6 +587,8 @@ KNOWN = {
         'act_trig': 0x7000d16f74,
         'act_masks': 0x70016d89b4,
         'pouch_remove_arrows': 0x7000d93814,
+        'amiibo_new_day': 0x7000b0b33c,
+        'amiibo_touched': 0x7000b0a4b4,
         'no_wear_store': 0x7000d93d50,
         'no_wear_hit': 0x7000b9542c,
         'no_wear_ret': 0x70007b09f4,
