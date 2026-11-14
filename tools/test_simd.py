@@ -28,7 +28,7 @@ import unicorn as uc
 from unicorn import arm64_const as A
 
 from gen import single_with_locals
-from lifter import Lifter, Unsupported
+from lifter import Lifter, Unsupported, emit_asm_batch
 
 print = functools.partial(print, flush=True)
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -268,17 +268,27 @@ def make_case(r, w):
     return fpcr, x, sp, nzcv, v
 
 
-def compile_tests(work, bodies, jobs, cflags):
+def host_unpredictable(w):
+    """--simd asm runs each instruction on the host CPU: encodings the architecture leaves CONSTRAINED UNPREDICTABLE,
+    which Unicorn executes but an AArch64 CPU may refuse (Apple's: SIGILL) and no compiler emits, are not tested there.
+    SIMD loads of a register pair into the same register (LDP / LDNP with Rt == Rt2)."""
+    if (w >> 27) & 7 == 0b101 and (w >> 26) & 1 and (w >> 22) & 1:  # load/store pair, SIMD&FP, load
+        return (w & 31) == ((w >> 10) & 31)
+    return False
+
+
+def compile_tests(work, bodies, jobs, cflags, simd='c'):
     cc = os.environ.get('CC', 'clang')
     flags = ['-O1'] + cflags.split() + ['-fno-strict-aliasing', '-Wno-unused-label', '-I',
-             os.path.join(ROOT, 'runtime')]
+             os.path.join(ROOT, 'runtime')] + (['-DSIMD_ASM=1'] if simd == 'asm' else [])
     n = max(1, min(jobs, len(bodies) // 200 + 1))
     per = (len(bodies) + n - 1) // n
     srcs, procs = [], []
     for j in range(n):
         path = os.path.join(work, f'tests_{j}.c')
         with open(path, 'w') as f:
-            f.write('#include "cpu.h"\n')
+            # (as gen.py: simd.h with --simd c, which cpu.h leaves out on AArch64; the asm lowering needs none)
+            f.write('#include "cpu.h"\n' + ('#include "simd.h"\n' if simd == 'c' else ''))
             for k in range(j * per, min(len(bodies), (j + 1) * per)):
                 f.write(f'void t{k}(Cpu *c) {{ {bodies[k]} }}\n')
         srcs.append(path)
@@ -311,12 +321,17 @@ def main():
     ap.add_argument('--filter', help='only encodings with (w & MASK) == VAL, as VAL/MASK in hex')
     ap.add_argument('--show', type=int, default=40)
     ap.add_argument('--locals', action='store_true', help='registers and flags in C locals (gen.py --locals)')
+    ap.add_argument('--simd', choices=('c', 'asm'), default='c',
+                    help='the lowering under test: portable C (default), or AArch64 inline asm (gen.py\'s default on '
+                         'AArch64 hosts; runs only there)')
     ap.add_argument('--cflags', default='-march=x86-64-v3' if platform.machine().lower() in ('amd64', 'x86_64') else '',
                     help='extra compiler flags for the lifted tests')
     args = ap.parse_args()
     r = random.Random(args.seed)
     t0 = time.time()
-    lifter = Lifter(0, 'c')
+    if args.simd == 'asm' and platform.machine().lower() not in ('arm64', 'aarch64'):
+        sys.exit('--simd asm runs the guest instructions natively: an AArch64 host only')
+    lifter = Lifter(0, args.simd)
     emu = Emu()
     cands = candidates(r)
     if args.filter:
@@ -351,7 +366,7 @@ def main():
                 print(f'    {w:08x} {dis(w)}')
 
     # stratified sample of valid encodings: one per opcode signature first
-    valid = [w for w, (lok, uok) in val.items() if lok and uok]
+    valid = [w for w, (lok, uok) in val.items() if lok and uok and not (args.simd == 'asm' and host_unpredictable(w))]
     r.shuffle(valid)
     seen, pick = set(), []
     for w in valid:
@@ -375,11 +390,12 @@ def main():
     bodies = []
     for i, w in enumerate(pick):
         ins = lifter.lift(w, CODE + 4 * i)
-        bodies.append(single_with_locals(ins.code) if args.locals else ins.code)
+        code_i = emit_asm_batch([ins.asm]) if ins.kind == 'asm' else ins.code  # (--simd asm: as gen.py renders it)
+        bodies.append(single_with_locals(code_i) if args.locals else code_i)
     work = os.path.join(ROOT, 'build', 'test_simd' + ('_locals' if args.locals else ''))
     os.makedirs(work, exist_ok=True)
     t1 = time.time()
-    exe = compile_tests(work, bodies, args.jobs, args.cflags)
+    exe = compile_tests(work, bodies, args.jobs, args.cflags, args.simd)
     print(f'compiled {len(bodies)} tests ({time.time() - t1:.0f}s)')
 
     mu = emu.mu
