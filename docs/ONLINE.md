@@ -205,6 +205,13 @@ handle (the effect, its id; alive while the effect's +0x20 is that id): "Kago_Sh
 (x8 the handle out, x0 the actor, x1 the effect's name) and end them with `0x700056d010`(handle). For that the
 OnlinePlayer has the player's ElinkUser, `Player_GameRom`.
 
+Revali's Gale the same way (`effects` ONLINE_E_GALE): its charge's handle is at player +0x23c0 (found by diffing the
+player's memory before and while charging, 1.9.0), and the others keep "Kago_Wind" on his Link while it is alive. The
+handle at +0x2380, new each time the Gale is let go, is the updraft's sound ("Kago_WindRiseUp" is only in SLink2, not
+ELink2), so it isn't sent; his rise and the paraglider he opens come with his position and gear. Tested with two
+games (the client given the Gale with `setflag IsGet_Obj_HeroSoul_Rito` on the host, through the shared flag):
+"Client: Kago_Wind" on the host as he charged. An older game ignores the bit.
+
 The Master Sword's beam is a `PlayerBeam` actor (a Bullet; the sword's `MagicName`), which the player doesn't link
 and which the game doesn't make through 0x7001535900 / 0x7001535b10 (those only preload it). Its AI action,
 `PlayerBeamMove` (crc 0xc38e3702 in the action factories: 0x7000b6d698, vtable 0x7001c1df30), has a method the AI
@@ -512,6 +519,6 @@ his upper body plays BowReload / BowCharge.
   _Tail); the Item_Magnetglove actor's ELink plays it from its AI's state), Stasis' chains.
 - A Divine Beast seen moving by the others while one is inside: each world's beast is as its own flags are (the
   quests' flags are shared), its AI isn't followed.
-- Mipha's Grace, Revali's Gale, Urbosa's Fury (the same way as Daruk's: "Kago_Heal", "Kago_Wind", "Kago_Lightning"),
-  other effects (a sword's trail, a spin attack's light).
+- Mipha's Grace, Urbosa's Fury (the same way as Daruk's and Revali's: "Kago_Heal", "Kago_Lightning" /
+  "Kago_UrubozaRange"; their handles in the player still to find, as Revali's were), other effects (a sword's trail, a spin attack's light).
 - The world shared: enemies, items, time of day, quests (Milk Bar's quest and enemy sync); damage between players.

@@ -78,6 +78,7 @@ typedef struct {
 // OnlinePose.effects: Daruk's Protection's shield taking a hit (KAGO), its ring while he guards with its charges left
 // (KAGO_COUNT: 1 to 3, in effects >> KAGO_COUNT_SHIFT)
 enum { ONLINE_E_KAGO = 1, ONLINE_E_KAGO_COUNT_SHIFT = 1, ONLINE_E_KAGO_COUNT = 3 << 1,
+       ONLINE_E_GALE = 0x08,        // Revali's Gale charging ("Kago_Wind" on him)
        ONLINE_E_DEMO = 0x80 };  // (DEMO: he is at a Sheikah pedestal: the slate's, a tower's)
 
 typedef struct {

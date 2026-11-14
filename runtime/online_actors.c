@@ -121,6 +121,7 @@ static struct {
     uint16_t shot_id[ONLINE_SHOTS];  // (its id; 0: unused, out of sight)
     Piece nock;                    // the arrow on his bow's string while he draws it (it's no actor in his game)
     struct { uint64_t p; uint32_t id, pad; } kago[2];  // Daruk's Protection on his Link: its effects' handles
+    struct { uint64_t p; uint32_t id, pad; } gale;  // Revali's Gale on his Link: its charge's effect handle
     int kago_n;                    // (the ring's charges it was made for)
     uint64_t grab;                 // what he holds with the Magnesis rune, here (0: none)
     Watch grab_w;
@@ -1122,6 +1123,13 @@ static void sample_pose(Cpu *c, uint64_t pinfo) {
             if (k == 0) pose.effects |= ONLINE_E_KAGO;
             else if (n >= 1 && n <= 3) pose.effects |= (uint8_t)(n << ONLINE_E_KAGO_COUNT_SHIFT);
         }
+    }
+    {   // Revali's Gale: its charge's effect handle at player +0x23c0, alive while he holds to charge (found by diffing
+        // the player before and during a Gale, 1.9.0; Daruk's handle layout: alive while the effect's +0x20 is the id
+        // after it). Its updraft's handle at +0x2380 is a sound's ("Kago_WindRiseUp" is only in SLink2), not sent
+        uint64_t h = *(uint64_t *)(uintptr_t)(player + 0x23c0);
+        if (VALID(h) && *(uint32_t *)(uintptr_t)(h + 0x20) == *(uint32_t *)(uintptr_t)(player + 0x23c8))
+            pose.effects |= ONLINE_E_GALE;
     }
     {   // the Magnesis rune: what he holds (1.9.0: the rune's object at 0x7001e15f18, its +0x318 the magnetic part of
         // the actor held, 0x7000b993e8 checks it so; that part on while its +0x10 bit 0; its actor at +8)
@@ -3353,18 +3361,23 @@ static struct {
 
 // `flag <name>` (control): a bool game data flag's word as the game has it now (bit 0 its value), read on the frame
 // loop like `actors`
-static struct { volatile int state; char name[64]; int found; uint32_t word; } g_flagq;
+// `setflag <name>` (developer mode): the same, set first, as the game's own setter does (else in memory); the others'
+// games take it like any flag this player gets (their quests' ones, with what comes with them)
+static struct { volatile int state; char name[64]; int found, set; uint32_t word; } g_flagq;
 
-static void flag_query(void) {
+static void flag_query(Cpu *c) {
     if (__atomic_load_n(&g_flagq.state, __ATOMIC_ACQUIRE) != 1) return;
-    uint32_t *v = bool_flag(crc32_str(g_flagq.name));
+    uint32_t h = crc32_str(g_flagq.name);
+    uint32_t *v = bool_flag(h);
+    if (v && g_flagq.set && !(*v & 1) && !set_bool_flag(c, h)) *v |= 1;
     g_flagq.found = v != NULL, g_flagq.word = v ? *v : 0;
     __atomic_store_n(&g_flagq.state, 2, __ATOMIC_RELEASE);
 }
 
-static void cmd_flag(int argc, char **argv, ControlReply *r) {
-    if (argc != 2) { control_fail(r, "Usage: flag <bool flag name>"); return; }
+static void flag_cmd(int argc, char **argv, ControlReply *r, bool set) {
+    if (argc != 2) { control_fail(r, set ? "Usage: setflag <bool flag name>" : "Usage: flag <bool flag name>"); return; }
     if (__atomic_load_n(&g_flagq.state, __ATOMIC_ACQUIRE) == 1) { control_fail(r, "A read is under way"); return; }
+    g_flagq.set = set;
     snprintf(g_flagq.name, sizeof g_flagq.name, "%s", argv[1]);
     __atomic_store_n(&g_flagq.state, 1, __ATOMIC_RELEASE);
     uint64_t until = plat_now_ns() + 2000000000ull;
@@ -3382,6 +3395,8 @@ static void cmd_flag(int argc, char **argv, ControlReply *r) {
     control_field_int(r, "word", (int)g_flagq.word);
     __atomic_store_n(&g_flagq.state, 0, __ATOMIC_RELEASE);
 }
+static void cmd_flag(int argc, char **argv, ControlReply *r) { flag_cmd(argc, argv, r, false); }
+static void cmd_setflag(int argc, char **argv, ControlReply *r) { flag_cmd(argc, argv, r, true); }
 
 // `event <flow> [entry]` (control, developer mode): an event started on Link, as an EventTag starts its own
 // (start_event), on the frame loop; for tests that need a story step without playing up to it
@@ -3414,7 +3429,6 @@ static void cmd_event(int argc, char **argv, ControlReply *r) {
 }
 
 static void find_actors(uint64_t pinfo) {
-    flag_query();
     if (__atomic_load_n(&g_find.state, __ATOMIC_ACQUIRE) != 1) return;
     g_find.n = 0;
     uint64_t player = pinfo ? *(uint64_t *)(uintptr_t)(pinfo + 0x60) : 0;
@@ -3474,6 +3488,7 @@ void online_actors_control_init(void) {
         {"flag", "<bool flag name>", "A game data bool flag's value and word, as the game has it now", cmd_flag,
          CONTROL_PLAYER},
         {"event", "<flow> [entry]", "Start an event on Link (entry: the flow's name if left out)", cmd_event, 0},
+        {"setflag", "<bool flag name>", "Set a game data bool flag (as the game's setter does), then show it", cmd_setflag, 0},
     };
     control_register(cmds, (int)(sizeof cmds / sizeof *cmds));
 }
@@ -3481,6 +3496,7 @@ void online_actors_control_init(void) {
 void rt_online_frame(Cpu *c) {
     uint64_t pinfo = g_site.player_info ? *(uint64_t *)(uintptr_t)g_site.player_info : 0;
     find_actors(pinfo);
+    flag_query(c);
     event_query(c, pinfo);
     if (!online_actors_on()) return;
     int me = online_local_id();
@@ -3759,6 +3775,18 @@ void rt_online_frame(Cpu *c) {
                 else snprintf(name, sizeof name, "Kago_ShieldCount_0%d", n), g_act[i].kago_n = n;
                 call_sret(c, FN_EFFECT_EMIT, (uint64_t)(uintptr_t)&g_act[i].kago[k], g_act[i].link, (uint64_t)(uintptr_t)name);
                 LOG("[online] %s: %s (%llx)\n", pl[i].name, name, (unsigned long long)g_act[i].kago[k].p);
+            }
+        }
+        {   // Revali's Gale: its charge on his Link while he charges it ("Kago_Wind", the player's own effect, as Daruk's)
+            int e = pl[i].pose.valid ? pl[i].pose.effects : 0;
+            uint64_t gp = g_act[i].gale.p;
+            bool on = VALID(gp) && *(uint32_t *)(uintptr_t)(gp + 0x20) == g_act[i].gale.id;
+            if (on && !(e & ONLINE_E_GALE)) {
+                call(c, FN_EFFECT_KILL, (uint64_t)(uintptr_t)&g_act[i].gale, 0, 0, 0, 0, 0);
+                memset(&g_act[i].gale, 0, sizeof g_act[i].gale);
+            } else if (!on && (e & ONLINE_E_GALE)) {
+                call_sret(c, FN_EFFECT_EMIT, (uint64_t)(uintptr_t)&g_act[i].gale, g_act[i].link, (uint64_t)(uintptr_t)"Kago_Wind");
+                LOG("[online] %s: Kago_Wind (%llx)\n", pl[i].name, (unsigned long long)g_act[i].gale.p);
             }
         }
         // his gear, on his Link's bones as in his game (not there: under the world, out of sight)
