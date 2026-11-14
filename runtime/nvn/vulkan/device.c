@@ -2331,7 +2331,7 @@ static char fg_real_shot[256];  // (SAVAGEWIND_FG_SHOT_AT: the game's frame afte
 
 void vk_fg_wait_idle(void) {
     vk_present_idle();
-    rec_drain();
+    if (!rec_on_recorder()) rec_drain();
     vkDeviceWaitIdle(g_vk.dev);
 }
 
