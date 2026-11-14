@@ -220,6 +220,7 @@ static void list_read(void) {
         {"WeaponSmallSword", ITEMCAT_WEAPON}, {"WeaponLargeSword", ITEMCAT_WEAPON}, {"WeaponSpear", ITEMCAT_WEAPON},
         {"WeaponBow", ITEMCAT_BOW}, {"WeaponShield", ITEMCAT_SHIELD}, {"Bullet", ITEMCAT_ARROW},
         {"ArmorHead", ITEMCAT_ARMOR}, {"ArmorUpper", ITEMCAT_ARMOR}, {"ArmorLower", ITEMCAT_ARMOR}, {"Item", ITEMCAT_MATERIAL},
+        {"Prey", ITEMCAT_MATERIAL}, {"Insect", ITEMCAT_MATERIAL},  // critters & fairies (Animal_Insect_*), gated by CanGetPouch above
     };
     uint32_t can_get = tag("CanGetPouch"), important = tag("Important"), cooked = tag("CookResult"), rupee = tag("Rupee"),
              arrow = tag("Arrow");
