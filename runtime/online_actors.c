@@ -816,11 +816,13 @@ static void sample_shots(Cpu *c, uint64_t player, const char (*as)[ONLINE_AS_MAX
     static uint64_t seen[ARROW_RING];
     static struct { uint64_t a; uint32_t id; } not_his[64];
     static int not_his_next;
-    static uint64_t bow_t;
+    static uint64_t bow_t, shoot_t;
     const float *me = (const float *)(uintptr_t)(player + 0x398);
     uint64_t now_ns = plat_now_ns();
-    for (int ch = 0; ch < ONLINE_AS_CHANNELS; ch++)
+    for (int ch = 0; ch < ONLINE_AS_CHANNELS; ch++) {
         if (strstr(as[ch], "Bow")) bow_t = now_ns;
+        if (strstr(as[ch], "BowShoot")) shoot_t = now_ns;
+    }
     bool bowing = bow_t && now_ns - bow_t < 1000000000ull;
     for (int r = 0; r < ARROW_RING; r++) {
         uint64_t a = g_arrow_ring[r];
@@ -840,6 +842,10 @@ static void sample_shots(Cpu *c, uint64_t player, const char (*as)[ONLINE_AS_MAX
             if (!strcmp(an, k_shot_names[k])) ak = k;
         const float *am = (const float *)(uintptr_t)(a + 0x398);
         float dx = am[3] - me[3], dy = am[7] - me[7], dz = am[11] - me[11];
+        if (ak >= 0 && getenv("SAVAGEWIND_ONLINE_SHOT_LOG"))
+            LOG("[online] arrow %s first seen %.1f m from us, %s, BowShoot %lld ms ago\n", an,
+                sqrtf(dx * dx + dy * dy + dz * dz), bowing ? "bowing" : "not bowing",
+                shoot_t ? (long long)((now_ns - shoot_t) / 1000000) : -1LL);
         if (ak >= 0 && ak != ONLINE_K_BEAM && (!bowing || dx * dx + dy * dy + dz * dz > 4 * 4)) {
             if (!bowing && dx * dx + dy * dy + dz * dz <= 4 * 4)
                 LOG("[online] %s near us, not ours (we aren't using a bow)\n", an);
