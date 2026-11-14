@@ -68,7 +68,7 @@ bool bind_is_default(int dev);
 bool bind_is_default_slot(int dev, int slot);
 
 // "Click a binding, then press": begun from the UI; the next press (any thread's SDL event) is taken. Escape cancels,
-// as does BIND_CAPTURE_MS without a press. On a conflict the two inputs swap.
+// as does BIND_CAPTURE_MS without a press. Any input may share its key or button with another: nothing swaps.
 #define BIND_CAPTURE_MS 5000
 void bind_capture_begin(int dev, int slot);
 void bind_capture_cancel(void);
@@ -76,7 +76,7 @@ void bind_capture_cancel(void);
 bool bind_capture_active(int *dev, int *slot, int *ms_left);
 // Main thread, before anything else sees the event: true = consumed by a capture
 bool bind_capture_event(const SDL_Event *e);
-// Last change for the UI: 0 none, 1 set, 2 swapped (with *other), 3 cancelled, 4 timed out, 5 reset; *serial bumps
+// Last change for the UI: 0 none, 1 set, 2 (unused: nothing swaps any more), 3 cancelled, 4 timed out, 5 reset; *serial bumps
 int bind_last_result(int *dev, int *slot, int *other, int *serial);
 
 // savagewind.ini: bind_pad_<input> / bind_key_<input> (only the ones that differ from the defaults are written)
@@ -92,8 +92,9 @@ int bind_pad_from_name(const char *name);
 // Switch button (a table in the game: several actions share a button). Every action owns an explicit host key and
 // controller binding, initially copied from that button's factory defaults for 1.9.0. An action differing on either
 // device reads both host bindings directly. A factory-default action leaves the game to answer from its Switch layer,
-// preserving JumpButtonChange and raw Switch injection. Before act_schema = 2, legacy ini raw-button rebinds migrate
-// for action/device pairs without an act_* line. Menus also use the Switch layer. input.c publishes host state.
+// preserving JumpButtonChange and raw Switch injection; in play that layer's bits come from the default actions, not from
+// the menu rows (act_play_keys). Before act_schema = 2, legacy ini raw-button rebinds migrate for action/device pairs
+// without an act_* line. Menus use the Switch layer, driven by the menu rows. input.c publishes host state.
 #define ACT_COUNT 41
 enum { ACT_FOLLOW = -1, ACT_NONE = -2 };
 extern int16_t g_act_key[ACT_COUNT];  // SDL_Scancode / BIND_MOUSE + button, or ACT_NONE
@@ -110,10 +111,17 @@ int act_switch_button(int id);                // the Switch input (BIND_*) in th
 void act_masks(const uint32_t *table);        // the game's table of one mask per action (its address, from the patch)
 void act_reset(void);                         // every action back to the default
 
+// In play the game's A / B / X / Y / L / R / ZL / ZR / stick-press bits come from the actions (the default binding of every
+// action still on its factory binding), never from the menu rows; the menus keep using the menu rows. act_play_active()
+// is false until the game has asked about an action (and on game versions without the hook): then the rows drive everything.
+bool act_play_active(void);
+uint64_t act_raw_slots(void);                                  // the BIND_* bits above (1 << slot)
+uint64_t act_play_keys(int (*held)(int scancode));             // those bits, keyboard side
+uint64_t act_play_pads(uint32_t host_buttons);                 // ... controller side
+
 // Host state in, from runtime/hle/input.c. Main thread, on every key / button event:
 uint64_t act_scan_keys(uint64_t key_buttons, int (*held)(int scancode));    // actions the keyboard side holds
 uint64_t act_scan_pad(uint64_t pad_buttons, uint32_t host_buttons);         // ... the controller side holds
-uint64_t act_gameplay_buttons(uint64_t raw, int (*held)(int scancode), uint32_t host_buttons); // gameplay A/B/X/Y from action bindings
 void act_publish(uint64_t keys, uint64_t pads);                             // (bit per action)
 // The controller poll (game thread, once per GetNpadStates): freezes the held / pressed sets the game's queries see.
 // live = false in the game's menus, with the window unfocused or the overlay up: the Switch layer answers then.

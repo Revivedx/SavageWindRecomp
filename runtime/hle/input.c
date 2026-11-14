@@ -37,6 +37,7 @@ enum {
 _Static_assert(BTN_DOWN == BIND_DOWN && BTN_ZL == BIND_ZL, "bindings follow the button bits");
 
 static _Atomic uint64_t key_buttons, pad_buttons;
+static _Atomic uint64_t key_play, pad_play;  // the same in play: the action-driven bits replace the menu rows' (act_play_keys)
 // A contextual action consumes a held button until release, while observers
 // still read the raw snapshot to detect the next physical press.
 static _Atomic uint64_t consumed_buttons;
@@ -159,6 +160,7 @@ static void recompute_keyboard(void) {
     for (int i = 0; i < BIND_PAD_COUNT; i++)
         if (game_key(g_bind_key[i])) b |= 1ull << i;
     key_buttons = b;
+    key_play = (b & ~act_raw_slots()) | act_play_keys(game_key);
     act_publish(act_scan_keys(b, game_key), ~0ull);  // actions read their own host keys
     int tilt = game_key(g_bind_key[BIND_WALK]) ? 13107 : 32767;  // walk: 40% (BOTW walks below about half)
     key_lx = (game_key(g_bind_key[BIND_LS_RIGHT]) - game_key(g_bind_key[BIND_LS_LEFT])) * tilt;
@@ -187,6 +189,7 @@ static void dead_zone(_Atomic int32_t *x, _Atomic int32_t *y, int32_t rx, int32_
 static void recompute_pad(void) {
     if (!win_focused && !host_test) {
         pad_buttons = 0;
+        pad_play = 0;
         host_buttons = 0;
         recompute_motion();
         act_publish(~0ull, 0);
@@ -226,6 +229,7 @@ static void recompute_pad(void) {
                 photo_pad(host);  // (hle/photo.c: the d-pad's filter, hour and picture)
             }
             pad_buttons = 0;
+            pad_play = 0;
             host_buttons = 0;  // (the bindings see nothing either: the free camera has the controller)
             recompute_motion();
             act_publish(~0ull, 0);
@@ -241,6 +245,7 @@ static void recompute_pad(void) {
     for (int i = 0; i < BIND_PAD_COUNT; i++)
         if (g_bind_pad[i] >= 0 && g_bind_pad[i] < PADB_HOST_COUNT && (host >> g_bind_pad[i] & 1)) b |= 1ull << i;
     pad_buttons = b;
+    pad_play = (b & ~act_raw_slots()) | act_play_pads(host);
     act_publish(~0ull, act_scan_pad(b, host));  // actions read their own host buttons
     // Fly mode (test builds): the press of its controller button toggles it. Not while the menu or a rebind has the pad
     // (the held state is still tracked, so letting go of a button that was just bound does not toggle).
@@ -1025,10 +1030,9 @@ void input_frame(uint64_t frame) {
 // Buttons held right now (keyboard, gamepad, test script), independent of whether the game polls (movies).
 uint64_t input_buttons_now(void) {
     bool muted = (!win_focused && !host_test) || menu_input_captured();
-    uint64_t raw = muted ? 0 : key_buttons | pad_buttons;
-    if (!muted && !framepace_title_ui() && !framepace_menu_ui() && !pc_cursor_active())
-        raw = act_gameplay_buttons(raw, game_key, host_buttons);
-    uint64_t b = raw | (muted ? 0 : escape_buttons) | script_buttons;
+    bool play = !muted && !framepace_title_ui() && !framepace_menu_ui() && !pc_cursor_active() && act_play_active();
+    uint64_t user = play ? key_play | pad_play : key_buttons | pad_buttons;
+    uint64_t b = (muted ? 0 : user | escape_buttons) | script_buttons;
     control_input_apply(&b, NULL, NULL, NULL, NULL);
     return b;
 }
@@ -1058,11 +1062,12 @@ static void fill_state(Cpu *c) {
 
     // Customized actions use host bindings during play. Factory-default actions and all queries in menus, with
     // the window unfocused or the overlay up, use the Switch layer, so no binding can lock the player out.
-    act_poll(!menu && !framepace_title_ui() && !framepace_menu_ui());
+    bool play = !menu && !framepace_title_ui() && !framepace_menu_ui();
+    act_poll(play);
     uint64_t bow = pc_bow_sample();
-    bool in_menu = menu || framepace_title_ui() || framepace_menu_ui();
-    uint64_t raw = menu ? 0 : (in_menu ? (key_buttons | pad_buttons) : act_gameplay_buttons(key_buttons | pad_buttons, game_key, host_buttons));
-    uint64_t b = raw | (menu ? 0 : escape_buttons | bow) | script_buttons;
+    // In play the game's buttons come from the actions, not from the menu rows (act_play_keys); menus read the rows
+    uint64_t user = play && act_play_active() ? key_play | pad_play : key_buttons | pad_buttons;
+    uint64_t b = menu ? script_buttons : user | escape_buttons | bow | script_buttons;
     if (!menu) b |= auto_continue_buttons(b);  // (not while the overlay has the controls)
     b=pc_cursor_buttons(b);
     {   // injected Plus: held for ~10 presented frames (the game polls several times per frame)

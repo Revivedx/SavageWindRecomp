@@ -3,7 +3,7 @@
 // controller button and a key of its own: two actions can share one, and an action keeps the button of its Switch
 // input until it is given a binding. Below it the inputs no action covers (sticks, camera, motion, menus), and, folded,
 // the Switch buttons the actions follow. Select a binding, then press the new button / key (Esc or 5 s without a
-// press cancels; a Switch input's button already in use swaps over). Drawn in whichever ImGui context is current.
+// press cancels; a button already in use is shared). Drawn in whichever ImGui context is current.
 #include <SDL3/SDL.h>
 #include <stdio.h>
 
@@ -163,7 +163,7 @@ extern "C" void controls_bindings_draw(float scale) {
     ImGui::TextUnformatted(line);
     ImGui::PushTextWrapPos(0);
     ImGui::TextDisabled("%s", tr("Select a binding, then press the new button or key. Esc (or 5 seconds) cancels. A button "
-                                 "that's already in use swaps with the old one."));
+                                 "that's already in use can be shared."));
     ImGui::PopTextWrapPos();
 
     int cd, cs, ms;
@@ -177,19 +177,15 @@ extern "C" void controls_bindings_draw(float scale) {
     if (serial != seen_serial) {
         seen_serial = serial;
         const char *now = rslot < 0 ? "" : slot_binding(rdev, rslot, fam);
-        char name[64] = "", other[64] = "";
+        char name[64] = "";
         if (rslot >= 0) slot_name(rslot, name, sizeof name);
-        if (rother >= 0) slot_name(rother, other, sizeof other);
         if (kind == 5)
             snprintf(msg, sizeof msg, "%s", tr(rdev == BIND_DEV_PAD ? "Controller bindings reset to the defaults."
                                                                      : "Keyboard bindings reset to the defaults."));
         else if (kind == 1) snprintf(msg, sizeof msg, tr("%s is now %s."), name, now);
-        else if (kind == 2)
-            snprintf(msg, sizeof msg, tr("%s is now %s; %s moved to %s (swapped)."), name, now, other,
-                     slot_binding(rdev, rother, fam));
         else if (kind == 3) snprintf(msg, sizeof msg, tr("Cancelled: %s unchanged."), name);
         else if (kind == 4) snprintf(msg, sizeof msg, tr("Nothing pressed: %s unchanged."), name);
-        if (kind == 1 || kind == 2 || kind == 5) settings_save();
+        if (kind == 1 || kind == 5) settings_save();
     }
     if (msg[0]) ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", msg);
 

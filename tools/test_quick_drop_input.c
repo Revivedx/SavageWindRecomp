@@ -11,6 +11,10 @@
 
 Settings g_settings;
 void act_poll(bool live) { (void)live; }
+bool act_play_active(void) { return false; }
+uint64_t act_raw_slots(void) { return 0; }
+uint64_t act_play_keys(int (*held)(int)) { (void)held; return 0; }
+uint64_t act_play_pads(uint32_t host) { (void)host; return 0; }
 uint64_t g_watch_lo, g_watch_hi;
 static uint64_t test_frame = 100, pointer_injection, control_injection;
 static bool game_menu = true;

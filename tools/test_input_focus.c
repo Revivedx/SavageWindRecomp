@@ -48,9 +48,12 @@ void bind_reset(int dev) { (void)dev; unexpected_helper(); }
 // (per-action bindings: none here, the Switch layer answers)
 uint64_t act_scan_keys(uint64_t b, int (*held)(int)) { (void)b; (void)held; return 0; }
 uint64_t act_scan_pad(uint64_t b, uint32_t host) { (void)b; (void)host; return 0; }
-uint64_t act_gameplay_buttons(uint64_t raw, int (*held)(int), uint32_t host) { (void)held; (void)host; return raw; }
 void act_publish(uint64_t keys, uint64_t pads) { (void)keys; (void)pads; }
 void act_poll(bool live) { (void)live; }
+bool act_play_active(void) { return false; }
+uint64_t act_raw_slots(void) { return 0; }
+uint64_t act_play_keys(int (*held)(int)) { (void)held; return 0; }
+uint64_t act_play_pads(uint32_t host) { (void)host; return 0; }
 void motion_script(float p, float r, float ps, float ys) { (void)p; (void)r; (void)ps; (void)ys; unexpected_helper(); }
 // (the control endpoint, the virtual gyro and the DSU poll: off here)
 bool control_enabled(void) { return false; }
