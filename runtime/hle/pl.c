@@ -15,10 +15,11 @@
 #include "../hle.h"
 
 typedef struct { uint64_t addr, size; } Font;
-// [0] Standard (Latin, kana, cyrillic and the rest), [1] NintendoExt when a dump provides it, [2] CJK (hanzi and
-// hangul) when a font with them was found. The game asks for its text in one of the SharedFontTypes below and does
-// not fall back itself: a Chinese or Korean type given the Standard (Japanese) font shows Japanese or blank glyphs.
-static Font fonts[3];
+// [0] Standard (Latin, kana, cyrillic and the rest), [1] NintendoExt when a dump provides it, [2] Chinese (hanzi),
+// [3] Korean (hangul) - each when a font with them was found. The game asks for its text in one of the
+// SharedFontTypes below and does not fall back itself: a Chinese or Korean type given the Standard (Japanese) font
+// shows Japanese or blank glyphs, and a Chinese font has no hangul (Windows' Microsoft YaHei is one).
+static Font fonts[4];
 
 static uint32_t be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
 static void put32(uint8_t *p, uint32_t v) { p[0] = v >> 24; p[1] = v >> 16; p[2] = v >> 8; p[3] = v; }
@@ -129,27 +130,43 @@ static void load_fonts(void) {
     if (!fonts[0].addr) FATAL("no usable system font substitute\n");
     if (!load_one("fonts/nintendo_ext_003.bfttf", &fonts[1])) load_one("fonts/nintendo_ext_003.ttf", &fonts[1]);
 
-    // CJK (ChineseSimple/Ext, ChineseTraditional, Korean): the Standard font above is a Japanese gothic or Arial and
-    // has no hanzi or hangul. Only TrueType outlines (glyf): the game's font engine crashes on CFF, and Noto Sans CJK
-    // (.otf / most .ttc) is CFF, so it is not listed here. SAVAGEWIND_CJK_FONT first, then a TrueType CJK font some
-    // systems already have. Not found: those types keep the Standard font, as before.
-    const char *cjk[] = {cjk_env,
-                         // TrueType CJK fonts: safe for the game's engine
-                         "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-                         "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",
-                         "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-                         "/usr/share/fonts/wqy-zenhei/wqy-zenhei.ttc",
-                         "C:/Windows/Fonts/msyh.ttc", "C:/Windows/Fonts/simsun.ttc",  // (TrueType, unlike Noto CJK)
-                         "/System/Library/Fonts/PingFang.ttc"};
-    for (size_t i = 0; i < sizeof cjk / sizeof *cjk && !fonts[2].addr; i++)
-        if (cjk[i]) load_one(cjk[i], &fonts[2]);
+    // Chinese (ChineseSimple/Ext, ChineseTraditional) and Korean: the Standard font above is a Japanese gothic or
+    // Arial and has no hanzi or hangul. Only TrueType outlines (glyf): the game's font engine crashes on CFF, and
+    // Noto Sans CJK (.otf / most .ttc) is CFF, so it is not listed here. SAVAGEWIND_CJK_FONT first (one font for
+    // both, as WenQuanYi has hanzi and hangul), then a TrueType font a system already has. Not found: those types
+    // keep the Standard font, as before.
+    const char *cjk_zh[] = {cjk_env,
+                            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",  // hanzi + hangul
+                            "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",
+                            "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+                            "/usr/share/fonts/wqy-zenhei/wqy-zenhei.ttc",
+                            "C:/Windows/Fonts/msyh.ttc", "C:/Windows/Fonts/simsun.ttc",  // (TrueType, unlike Noto CJK)
+                            "/System/Library/Fonts/PingFang.ttc"};
+    for (size_t i = 0; i < sizeof cjk_zh / sizeof *cjk_zh && !fonts[2].addr; i++)
+        if (cjk_zh[i]) load_one(cjk_zh[i], &fonts[2]);
+
+    // Korean needs hangul, which Microsoft YaHei has not: a font of its own, after the env override and a CJK font
+    // that has both (WenQuanYi). Malgun Gothic is the Korean font of every Windows since Vista.
+    const char *cjk_ko[] = {cjk_env,
+                            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+                            "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",
+                            "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+                            "/usr/share/fonts/wqy-zenhei/wqy-zenhei.ttc",
+                            "C:/Windows/Fonts/malgun.ttf",
+                            "/System/Library/Fonts/AppleSDGothicNeo.ttc"};
+    for (size_t i = 0; i < sizeof cjk_ko / sizeof *cjk_ko && !fonts[3].addr; i++)
+        if (cjk_ko[i]) load_one(cjk_ko[i], &fonts[3]);
 }
 
 // SharedFontType: 0 Standard, 1 ChineseSimple, 2 ChineseSimpleExt, 3 ChineseTraditional, 4 Korean, 5 NintendoExt
 static const Font *font_for(uint64_t type) {
     load_fonts();
     if (type == 5) return fonts[1].addr ? &fonts[1] : &fonts[0];
-    if (type >= 1 && type <= 4 && fonts[2].addr) return &fonts[2];  // hanzi/hangul: the CJK font when there is one
+    if (type >= 1 && type <= 3 && fonts[2].addr) return &fonts[2];  // Chinese: hanzi
+    if (type == 4) {
+        if (fonts[3].addr) return &fonts[3];  // Korean: hangul
+        if (fonts[2].addr) return &fonts[2];  // (a CJK font with hangul in it, e.g. WenQuanYi)
+    }
     return &fonts[0];
 }
 

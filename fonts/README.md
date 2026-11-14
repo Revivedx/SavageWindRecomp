@@ -20,8 +20,10 @@ through separate shared fonts (*ChineseSimple*, *ChineseSimpleExt*, *ChineseTrad
 fills them from a CJK font when it finds one:
 
 1. `SAVAGEWIND_CJK_FONT=<file>` (any of .ttf / .ttc face 0 / .bfttf), or
-2. a CJK font installed on the system (Windows: Microsoft YaHei / SimSun; macOS: PingFang; Linux: WenQuanYi Micro Hei
-   or Zen Hei), in which case nothing has to be set.
+2. a CJK font installed on the system, in which case nothing has to be set. Chinese: Microsoft YaHei / SimSun
+   (Windows), PingFang (macOS), WenQuanYi Micro Hei / Zen Hei (Linux). Korean: Malgun Gothic (Windows),
+   Apple SD Gothic Neo (macOS), WenQuanYi (Linux). Microsoft YaHei has no hangul, so Korean is looked up apart from
+   Chinese.
 
 The game's own font engine only reads TrueType (`glyf`) outlines: it crashes on CFF fonts, which Noto Sans CJK
 (`.otf` / most `.ttc`) are. Use a TrueType CJK font (WenQuanYi, SimSun, Microsoft YaHei, PingFang are TrueType).
