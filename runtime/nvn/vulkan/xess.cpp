@@ -204,9 +204,10 @@ static bool init_for(const Fsr3Dispatch *d) {
     ip.outputResolution = {d->output.width, d->output.height};
     // (the quality setting only names a scale ratio XeSS's docs suggest; the render size we hand Execute is what
     // actually runs. LDR: the scene is the game's finished, graded image. Low-res vectors + depth: XeSS dilates
-    // them itself. Not inverted depth: R32F [0, 1], 1 far, as copied)
+    // them itself. Not inverted depth: R32F [0, 1], 1 far, as copied. The responsive mask on: the reactive mask
+    // FSR 3 gets is handed over too (mvec's .z, shaders.c fsr3_reactive.frag).)
     ip.qualitySetting = XESS_QUALITY_SETTING_ULTRA_QUALITY_PLUS;
-    ip.initFlags = XESS_INIT_FLAG_LDR_INPUT_COLOR;
+    ip.initFlags = XESS_INIT_FLAG_LDR_INPUT_COLOR | XESS_INIT_FLAG_RESPONSIVE_PIXEL_MASK;
     xess_result_t r = f_init(ctx, &ip);
     if (r != XESS_RESULT_SUCCESS) {
         static int logged;
