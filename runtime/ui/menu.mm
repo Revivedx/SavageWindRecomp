@@ -834,6 +834,24 @@ static void tab_display(void) {
                        "How big the hearts, stamina, minimap and the rest of the HUD are. Each part stays in its corner.", false))
             g_settings.hud_size = sizes[cur];
     }
+    {   // Menu cursor speed
+        static const int speeds[] = MENU_SPEED_CHOICES;
+        enum { NV = sizeof speeds / sizeof speeds[0] };
+        static char names_buf[NV][16];
+        const char *names[NV];
+        int cur = 0, def = 0;
+        for (int i = 0; i < NV; i++) {
+            snprintf(names_buf[i], sizeof names_buf[i], "%d%%", speeds[i]);
+            names[i] = names_buf[i];
+            if (speeds[i] == 100) def = i;
+        }
+        cur = def;
+        for (int i = 0; i < NV; i++)
+            if (speeds[i] == g_settings.menu_speed) cur = i;
+        if (opt_choice("Menu cursor speed", &cur, names, NV, def,
+                       "How fast the cursor and transitions move in menus, inventory, and the map.", false))
+            g_settings.menu_speed = speeds[cur];
+    }
     {   // Draw distance (runtime/draw_distance.c)
         // (Potato first, the nearest: order maps a row to DRAWDIST_*)
         static const char *const names[DRAWDIST_COUNT] = {"Potato", "Original", "High", "Savage"};  // (ini: medium, high)

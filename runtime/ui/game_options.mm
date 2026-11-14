@@ -202,6 +202,9 @@ static_assert(k_fov[FOV_DEFAULT_INDEX] == 100);
 constexpr int k_hud_size[] = HUD_SIZE_CHOICES;  // the HUD's size, % of the game's own
 constexpr int HUD_SIZE_DEFAULT_INDEX = 10;
 static_assert(k_hud_size[HUD_SIZE_DEFAULT_INDEX] == 100);
+constexpr int k_menu_speed[] = MENU_SPEED_CHOICES;  // menu cursor/UI speed, % of the game's own
+constexpr int MENU_SPEED_DEFAULT_INDEX = 3;
+static_assert(k_menu_speed[MENU_SPEED_DEFAULT_INDEX] == 100);
 constexpr int k_deadzone[] = {0, 3, 5, 8, 10, 12, 15, 20, 25, 30, 40};  // stick dead zone, % of full tilt
 constexpr int DEADZONE_DEFAULT = 4;
 static_assert(k_deadzone[DEADZONE_DEFAULT] == (int)(STICK_DEADZONE_DEFAULT * 100 + 0.5f));
@@ -452,6 +455,15 @@ void build_items(void) {
                        },
                        [](const Item &) { return nearest(k_hud_size, N(k_hud_size), (float)g_settings.hud_size); },
                        [](const Item &, int x) { g_settings.hud_size = k_hud_size[x]; }, HUD_SIZE_DEFAULT_INDEX));
+    v.push_back(choice(P_GAMEPLAY, "Menu cursor speed", "How fast the cursor and transitions move in menus, inventory, and the map.",
+                       [](const Item &) { return N(k_menu_speed); },
+                       [](const Item &, int x) {
+                           static std::string str;
+                           str = pct(k_menu_speed[x]);
+                           return str.c_str();
+                       },
+                       [](const Item &) { return nearest(k_menu_speed, N(k_menu_speed), (float)g_settings.menu_speed); },
+                       [](const Item &, int x) { g_settings.menu_speed = k_menu_speed[x]; }, MENU_SPEED_DEFAULT_INDEX));
     Item fps = choice(P_VIDEO, "Frame rate", "",
                       [](const Item &) { return fps_count() + (settings_handheld() ? 0 : 1); }, fps_label,
                       [](const Item &) {

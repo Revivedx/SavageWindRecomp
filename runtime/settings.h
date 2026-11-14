@@ -145,6 +145,7 @@ typedef struct {
     int fov;             // field of view in play, percent of the game's own (FOV_CHOICES)
     bool handheld_setup; // a PC handheld's own settings were taken once (settings_load)
     int hud_size;        // the HUD's size in play, percent of the game's own (HUD_SIZE_CHOICES, runtime/nvn/hud_scale.h)
+    int menu_speed;      // menu cursor and UI animation speed, percent (MENU_SPEED_CHOICES, runtime/hle/framepace.c)
     int draw_distance;   // DRAWDIST_*: how far placed actors are kept (runtime/draw_distance.c)
     int haze;            // the air's haze, percent of the game's (services/fs.c haze_patch; from the next start)
     bool bloom;          // the glow around bright light (off: its draws clear their images: vulkan/exec.c)
@@ -213,6 +214,7 @@ extern const char *const g_weather_keys[WEATHER_COUNT];  // (the ini and `weathe
 #define DAMAGE_CHOICES {25, 50, 75, 100, 150, 200, 300, 400}  // (Accessibility's damage multipliers, percent)
 #define FOV_CHOICES {70, 80, 90, 100, 110, 120, 130, 140, 150}  // (percent; 100: the game's own)
 #define HUD_SIZE_CHOICES {50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120, 125, 130, 135, 140, 145, 150}  // (percent; 100: the game's own)
+#define MENU_SPEED_CHOICES {70, 80, 90, 100, 125, 150, 175, 200, 250, 300}  // (percent; 100: the game's own)
 #define MOUSE_SENS_DEFAULT 3.0f  // (300% of the first default, 1; user, 2026-10-19)
 #define MOUSE_SENS_Y_CHOICES {50, 60, 70, 80, 90, 100, 110, 125, 150, 175, 200}  // (percent of the horizontal)
 enum { MOTION_INVERT_UD = 1, MOTION_INVERT_LR = 2 };
