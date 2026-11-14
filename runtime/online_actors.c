@@ -1024,6 +1024,30 @@ static void sample_pose(Cpu *c, uint64_t pinfo) {
     uint64_t armor[ARMOR], gear[ONLINE_GEAR];
     equipment(player, armor, gear);
     if (strncmp(pose.as[0], "Para", 4) || !strcmp(pose.as[0], "ParaEquipOff")) gear[5] = 0;  // (his paraglider: open)
+    {   // his weapon thrown: it leaves his equipment as it leaves his hand, so it is kept as his while it flies and 2 s
+        // after it comes to rest (then it lies in his world only, an item the others can't take: not shown to them)
+        static uint64_t held, thrown;
+        static Watch hw, tw;
+        static float last[3];
+        static uint64_t still_since;
+        uint64_t now = plat_now_ns();
+        if (gear[0]) held = gear[0], hw = watch(gear[0]), thrown = 0;
+        else if (held && alive(held, hw)) {  // (just let go of: from here, followed)
+            const float *m = (const float *)(uintptr_t)(held + 0x398);
+            thrown = held, tw = hw, held = 0, still_since = 0;
+            last[0] = m[3], last[1] = m[7], last[2] = m[11];
+            if (getenv("SAVAGEWIND_ONLINE_GEAR_LOG")) LOG("[online] our weapon left our hand: followed while it flies\n");
+        } else held = 0;
+        if (!gear[0] && thrown && alive(thrown, tw)) {
+            const float *m = (const float *)(uintptr_t)(thrown + 0x398);
+            float dx = m[3] - last[0], dy = m[7] - last[1], dz = m[11] - last[2];
+            last[0] = m[3], last[1] = m[7], last[2] = m[11];
+            if (dx * dx + dy * dy + dz * dz > 0.01f * 0.01f) still_since = 0;
+            else if (!still_since) still_since = now;
+            if (still_since && now - still_since > 2000000000ull) thrown = 0;
+            else gear[0] = thrown;
+        } else if (!gear[0]) thrown = 0;
+    }
     {   // what he wears and carries, for the others (the default pieces are Link's own body: "")
         char an[ARMOR][48] = {{0}}, gn[ONLINE_GEAR][48] = {{0}};
         for (int k = 0; k < ARMOR; k++) {
@@ -1059,6 +1083,19 @@ static void sample_pose(Cpu *c, uint64_t pinfo) {
         if (kept >= 0 && kept < reach * reach && kept < best * 4) pose.gear_bone[k] = last_bone[k];
         if (pose.gear_bone[k]) memcpy(pose.gear_rel[k], rel_of[pose.gear_bone[k] - 1], sizeof pose.gear_rel[k]);
         last_bone[k] = pose.gear_bone[k];
+        // (on no bone but still his and near him - a weapon he threw, in flight or where it fell: its matrix in the
+        // world, ONLINE_GEAR_WORLD. Not the paraglider: closed, it isn't sent at all)
+        if (!pose.gear_bone[k] && k != 5) {
+            float dx = w[3] - pm[3], dy = w[7] - pm[7], dz = w[11] - pm[11];
+            if (dx * dx + dy * dy + dz * dz < 60 * 60) {
+                pose.gear_bone[k] = ONLINE_GEAR_WORLD;
+                memcpy(pose.gear_rel[k], w, sizeof pose.gear_rel[k]);
+                static uint8_t logged[ONLINE_GEAR];
+                if (!logged[k] && getenv("SAVAGEWIND_ONLINE_GEAR_LOG"))
+                    LOG("[online] our gear %d off every bone, %.1f m from us: sent where it is\n", k,
+                        sqrtf(dx * dx + dy * dy + dz * dz)), logged[k] = 1;
+            }
+        }
     }
     pose.valid = pose.as[0][0] != 0;
     {
@@ -3737,6 +3774,10 @@ void rt_online_frame(Cpu *c) {
             if (b >= 0 && b < BONES) {
                 if (!(have >> b & 1) && bone_mtx(c, g_act[i].link, k_bones[b], bm[b])) have |= 1 << b;
                 if (have >> b & 1) mtx_mul(bm[b], pl[i].pose.gear_rel[k], gm);
+            } else if (pl[i].pose.valid && pl[i].pose.gear_bone[k] == ONLINE_GEAR_WORLD) {
+                bool finite = true;  // (where it is in his world: thrown, in flight or fallen)
+                for (int q = 0; q < 12; q++) finite &= isfinite(pl[i].pose.gear_rel[k][q]);
+                if (finite) memcpy(gm, pl[i].pose.gear_rel[k], sizeof gm);
             }
             call(c, FN_SET_MTX, p->actor, (uint64_t)(uintptr_t)gm, 0, 0, 0, 0);
             static int n;

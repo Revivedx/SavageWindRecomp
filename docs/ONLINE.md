@@ -178,8 +178,12 @@ in his right hand pointing at his left.
 Each piece (weapon, shield, bow, sheath, quiver) is an OnlineGear actor, asked for when the player carries it; each
 frame its matrix is the bone's matrix on the remote Link times the piece's matrix in that bone's space as his game
 has it (STATE's pose: a bone is kept while the piece stays near it, so two bones as near don't flicker). A piece on
-no bone (thrown, dropped) goes under the world, out of sight (farther than 0.6 m from every bone; a shield 1.5 m, so
-the one he surfs on, under his feet, stays).
+no bone (farther than 0.6 m from every bone; a shield 1.5 m, so the one he surfs on, under his feet, stays) but within
+60 m of him is sent where it is in the world (`gear_bone` ONLINE_GEAR_WORLD, `gear_rel` its world matrix; an older
+game reads it as no bone and hides it, as before). A thrown weapon leaves his equipment as it leaves his hand, so
+his game keeps it as his weapon while it flies and until it has lain still for 2 s; then it is an item in his world
+only, which the others couldn't take, and goes out of their sight. Tested: a traveller's sword thrown 18 m was placed
+along its flight in the other game and came to rest where it lay in the thrower's (-974.1 231.6 1875.4 in both).
 
 The paraglider is a sixth piece (protocol 8): the player links his `PlayerStole2` (or `_Vagrant`) actor, at player
 +0x2c28 in 1.9.0 (found once by looking through the player for a link to it); it is sent only while his body plays
@@ -509,5 +513,5 @@ his upper body plays BowReload / BowCharge.
 - A Divine Beast seen moving by the others while one is inside: each world's beast is as its own flags are (the
   quests' flags are shared), its AI isn't followed.
 - Mipha's Grace, Revali's Gale, Urbosa's Fury (the same way as Daruk's: "Kago_Heal", "Kago_Wind", "Kago_Lightning"),
-  a thrown weapon's flight, other effects (a sword's trail, a spin attack's light).
+  other effects (a sword's trail, a spin attack's light).
 - The world shared: enemies, items, time of day, quests (Milk Bar's quest and enemy sync); damage between players.

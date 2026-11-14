@@ -33,6 +33,7 @@ enum { ONLINE_A_WAIT, ONLINE_A_WALK, ONLINE_A_RUN, ONLINE_A_DASH, ONLINE_A_JUMP,
 #define ONLINE_AS_CHANNELS 4
 #define ONLINE_AS_MAX 32
 #define ONLINE_GEAR 6  // weapon, shield, bow, sheath, quiver, paraglider (while open)
+#define ONLINE_GEAR_WORLD 0xff  // OnlinePose.gear_bone: on no bone, gear_rel is its world matrix (older games: hidden)
 // What a player has thrown or shot, from his game: the bombs and arrows he holds or that fly (each as it is in the
 // world, by an id of his), and the bombs that went off lately (each by a number that only grows, sent for a while)
 #define ONLINE_SHOTS 8
@@ -58,7 +59,8 @@ typedef struct { char name[ONLINE_GRAB_NAME]; float from[3]; float m[12]; } Onli
 
 typedef struct {
     char as[ONLINE_AS_CHANNELS][ONLINE_AS_MAX];  // "" none
-    uint8_t gear_bone[ONLINE_GEAR];              // 0: not shown; else the bone + 1 (online_actors.c k_bones)
+    uint8_t gear_bone[ONLINE_GEAR];              // 0: not shown; ONLINE_GEAR_WORLD: gear_rel is its matrix in the
+                                                 // world (thrown, dropped); else the bone + 1 (online_actors.c k_bones)
     float gear_rel[ONLINE_GEAR][12];             // the piece's matrix in that bone's space (Matrix34f, row-major)
     float yaw;                                   // heading, radians (0: +z), as his Link faces
     uint8_t valid;
