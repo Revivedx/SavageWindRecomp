@@ -929,6 +929,19 @@ def _gyro_scene_actor(gen, a):
 # isHold(pad, action) and isTrig(pad, action): each looks the action's pad mask up in a table of 41 (act_masks) and tests
 # it against the pad object's held (+0x11c) or pressed (+0x10) word. An action the player gave a binding of its own is
 # answered by the runtime from the host key / button instead (rt_act_query); every other answer stays the game's.
+# Controls > Menus wrap around (runtime/menu_wrap.c): the UI focus search (1.9.0 0x7000f58404, called when the focused
+# button has no neighbour link that way) ends with `mov x0, x20`, its result: the nearest focusable button roughly the
+# way pressed, or none at the end of a list. With x19 the control and w22 the direction, the runtime may answer with the
+# button farthest the other way instead.
+def _menu_wrap(gen, a):
+    assert _word(gen, a) == 0xaa1403e0, hex(_word(gen, a))  # mov x0, x20
+    return ('{ extern uint64_t rt_menu_wrap(Cpu *, uint64_t, uint64_t, uint32_t); '
+            # (the guest sp is still in sp_ here: the runtime calls the game's functions on it)
+            'uint64_t sp_saved = c->sp; c->sp = sp_; '
+            'c->x[0] = rt_menu_wrap(c, c->x[20], c->x[19], (uint32_t)c->x[22]); c->sp = sp_saved; }'
+            f'  /* {a:#x}: mov x0, x20 (UI focus search result: menus wrap around) */')
+
+
 def _act_query(kind):
     def patch(gen, a):
         assert _word(gen, a) == 0xa9be7bfd, hex(_word(gen, a))  # stp x29, x30, [sp, #-0x20]!
@@ -1059,6 +1072,7 @@ PATCHES = {
     'grass_blade_lateral_near': _grass_blade_lateral,
     'grass_blade_lateral_far': _grass_blade_lateral,
     'tree_ranges': _tree_ranges,
+    'menu_wrap': _menu_wrap,
     'act_hold': _act_query(0),
     'act_trig': _act_query(1),
     'pouch_remove_arrows': _remove_arrows,
