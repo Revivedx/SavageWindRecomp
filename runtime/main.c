@@ -11,7 +11,7 @@
 #include "steam_shortcuts.h"
 #include "nvn/maxwell/shader.h"
 #include "nvn/shader_archive.h"
-#ifndef __APPLE__
+#ifndef SW_METAL
 #include "nvn/precompile.h"
 #include "nvn/vulkan/shaders.h"  // (the shader key log: --scan-shaders)
 #endif
@@ -223,7 +223,7 @@ static int scan_shaders(const char *root) {
             "%d fragment, %d compute\n", (unsigned long long)set.files, (unsigned long long)(set.bytes >> 20),
             (plat_now_ns() - t0) / 1e9, set.nsources, set.nprograms, prog[2], set.nshaders, n[STAGE_VERTEX], n[STAGE_FRAGMENT],
             n[STAGE_COMPUTE]);
-#ifndef __APPLE__
+#ifndef SW_METAL
     {   // the shader key log of earlier sessions (SAVAGEWIND_CACHE_DIR): which of the shaders the game drew are in the
         // archives found, and the vertex attribute kinds they were drawn with, by archive and attribute
         VkKeyLogEntry *e;
@@ -263,7 +263,7 @@ static int scan_shaders(const char *root) {
     return 0;
 }
 
-#ifndef __APPLE__
+#ifndef SW_METAL
 // --precompile-shaders: the shader precompilation without the start screen (runtime/nvn/precompile.h). The pipelines
 // need the Vulkan device: a window is made for it (SAVAGEWIND_PRECOMPILE_NO_PIPELINES=1: translations and SPIR-V
 // only, no window).
@@ -391,7 +391,7 @@ int main(int argc, char **argv) {
         printf("%s\n", msg);
         return ok ? 0 : 1;
     }
-#ifndef __APPLE__
+#ifndef SW_METAL
     if (precompile) return precompile_shaders(root);
     if (seed_out) return export_pipeline_seed(root, seed_out);
 #else
@@ -437,7 +437,7 @@ int main(int argc, char **argv) {
         sp_session_begin();  // the save profile chosen on the start screen (runtime/services/save_profiles.h)
         if (sc_lock_take(sp_session_save_dir(), &save_lock) == SC_LOCK_BUSY)
             fprintf(stderr, "[saves] another Savage Wind is running with this save folder; saving from both can overwrite saves\n");
-#ifndef __APPLE__
+#ifndef SW_METAL
         // the start screen's picture, moving, until the game's title screen is up (vulkan/device.c; a window made
         // already: Windows, or back from the start screen)
         extern void boot_splash_start(void);

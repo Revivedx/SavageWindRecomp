@@ -407,7 +407,7 @@ void settings_load(void) {
             SETTINGS_FILE, old_res[0] ? old_res : "-", g_settings.upscaler, g_settings.upscale_quality,
             g_settings.mouse_sens);
     }
-#ifndef __APPLE__
+#ifndef SW_METAL
     if (version < 3 && g_settings.upscaler == UPSCALE_FSR1) {
         bool lower = version < 2 && (!strcmp(old_res, "75%") || !strcmp(old_res, "67%") || !strcmp(old_res, "50%") ||
                                      !strcmp(old_res, "25%"));
