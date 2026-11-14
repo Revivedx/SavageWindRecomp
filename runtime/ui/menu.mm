@@ -633,8 +633,10 @@ extern "C" void renderer_get_scale(float *sx, float *sy);
 extern "C" void renderer_get_scene_scale(float *sx, float *sy);
 extern "C" bool renderer_gpu_rtx(void);  // (vulkan/device.c, metal.m)
 extern "C" volatile int g_fg_active;     // (hle/framepace.c: the last presented frame was generated)
-// Video > Upscaler mode's names, by UPQ_*
+// Video > Upscaler mode's names, by UPQ_*, and their order on screen (largest render size first)
 static const char *const k_upscale_modes[UPQ_COUNT] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance", "Native"};
+static const int k_upscale_mode_order[UPQ_COUNT] = {
+    UPQ_NATIVE, UPQ_ULTRA, UPQ_QUALITY, UPQ_BALANCED, UPQ_PERFORMANCE, UPQ_ULTRA_PERFORMANCE};
 extern "C" {
 #include "../nvn/output_scale.h"
 }
@@ -957,29 +959,33 @@ static void tab_display(void) {
         for (int i = 0; i < NU; i++) if (ups_value[i] == UPSCALE_DEFAULT) udef = i;
         if (opt_choice_avail("Upscaler", &ui, &shown, ups, avail, NU, udef, ud)) g_settings.upscaler = ups_value[ui];
         // its mode (AMD's scale factors), one step in; greyed when the upscaler is off
-        const char *const *modes = k_upscale_modes;
         bool modes_ok = upscale_modes_available();
         std::string mode_names[UPQ_COUNT];
         const char *mn[UPQ_COUNT];
         bool mavail[UPQ_COUNT];
+        int mi = 2, mdef = 2;  // UPQ_QUALITY's position in k_upscale_mode_order
         for (int i = 0; i < UPQ_COUNT; i++) {
-            mode_names[i] = modes_ok ? tr(modes[i]) : std::string(tr(modes[i])) + " " + tr("(coming soon)");
+            int q = k_upscale_mode_order[i];
+            mode_names[i] = modes_ok ? tr(k_upscale_modes[q])
+                                     : std::string(tr(k_upscale_modes[q])) + " " + tr("(coming soon)");
             mn[i] = mode_names[i].c_str();
-            mavail[i] = modes_ok && upscale_mode_offered(i);
+            mavail[i] = modes_ok && upscale_mode_offered(q);
+            if (q == g_settings.upscale_quality) mi = i;
+            if (q == UPQ_QUALITY) mdef = i;
         }
         float sx, sy;  // the 3D scene's size (BOTW docked: 1600 x 900 times its scale)
         renderer_get_scene_scale(&sx, &sy);
         char rendering[100];
         snprintf(rendering, sizeof rendering, tr("Rendering at %.0f x %.0f."), 1600.0 * sx, 900.0 * sy);
         std::string md = std::string(tr("How much smaller the game renders before the upscaler brings it to the window, "
-                                        "on each side: Ultra Quality 1.3x, Quality 1.5x, Balanced 1.7x, Performance "
-                                        "2x, Ultra Performance 3x. Smaller is faster and softer.")) +
+                                        "on each side: Native 1x (FSR 3/4), Ultra Quality 1.3x, Quality 1.5x, Balanced "
+                                        "1.7x, Performance 2x, Ultra Performance 3x. Smaller is faster and softer.")) +
                          "\n\n" + (modes_ok ? rendering : tr("Coming in a later version."));
         opt_indent(1);
         if (g_settings.upscaler == UPSCALE_OFF) opt_disable_next();
         static int mshown = -1;
-        opt_choice_avail("Upscaler mode", &g_settings.upscale_quality, &mshown, mn, mavail, UPQ_COUNT, UPQ_QUALITY,
-                         md.c_str());
+        if (opt_choice_avail("Upscaler mode", &mi, &mshown, mn, mavail, UPQ_COUNT, mdef, md.c_str()))
+            g_settings.upscale_quality = k_upscale_mode_order[mi];
         opt_indent(-1);
     }
 #ifdef __APPLE__

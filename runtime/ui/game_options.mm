@@ -150,7 +150,12 @@ const int UPS_DEFAULT = 0;  // (UPSCALE_DEFAULT: Off, the window's resolution)
 #endif
 std::vector<int> g_shown;   // per item: the value shown instead of get(), one that can't be picked yet (-1: none)
 const char16_t GREY = 3;    // (the game's message colour for greyed values)
+// (shown with Native first, largest to smallest: k_modes_order maps a row index to settings.h UPQ_*)
 const char *const k_modes[] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance", "Native"};
+const int k_modes_order[] = {UPQ_NATIVE, UPQ_ULTRA, UPQ_QUALITY, UPQ_BALANCED, UPQ_PERFORMANCE, UPQ_ULTRA_PERFORMANCE};
+int upscale_mode_base(void) {
+    return (g_settings.upscaler == UPSCALE_FSR3 || g_settings.upscaler == UPSCALE_FSR4) ? 0 : 1;
+}
 #ifdef __APPLE__
 const char *const k_aa[] = {"Off", "SMAA"};
 #else
@@ -530,29 +535,31 @@ void build_items(void) {
     // before stays stored and comes back with an upscaler.
     Item mode = choice(P_VIDEO_ADV, "Upscaler mode", "",
                        [](const Item &) {
-                           return g_settings.upscaler == UPSCALE_OFF ? 1
-                                  : (g_settings.upscaler == UPSCALE_FSR3 || g_settings.upscaler == UPSCALE_FSR4)
-                                      ? N(k_modes)
-                                      : N(k_modes) - 1;
+                           return g_settings.upscaler == UPSCALE_OFF ? 1 : N(k_modes_order) - upscale_mode_base();
                        },
                        [](const Item &, int x) {
-                           return g_settings.upscaler == UPSCALE_OFF ? tr("Off")
-                                  : upscale_modes_available()        ? tr(k_modes[x])
-                                                                     : soon(k_modes[x]);
+                           if (g_settings.upscaler == UPSCALE_OFF) return tr("Off");
+                           const char *name = k_modes[k_modes_order[x + upscale_mode_base()]];
+                           return upscale_modes_available() ? tr(name) : soon(name);
                        },
                        [](const Item &) {
                            if (g_settings.upscaler == UPSCALE_OFF) return 0;
-                           if (g_settings.upscale_quality == UPQ_NATIVE &&
-                               g_settings.upscaler != UPSCALE_FSR3 && g_settings.upscaler != UPSCALE_FSR4)
-                               return (int)UPQ_QUALITY;
-                           return g_settings.upscale_quality;
+                           int base = upscale_mode_base();
+                           int q = (g_settings.upscale_quality == UPQ_NATIVE && base)
+                                       ? (int)UPQ_QUALITY
+                                       : g_settings.upscale_quality;
+                           for (int i = base; i < N(k_modes_order); i++)
+                               if (k_modes_order[i] == q) return i - base;
+                           return 0;
                        },
                        [](const Item &, int x) {
-                           if (g_settings.upscaler != UPSCALE_OFF) g_settings.upscale_quality = x;
+                           if (g_settings.upscaler != UPSCALE_OFF)
+                               g_settings.upscale_quality = k_modes_order[x + upscale_mode_base()];
                        },
-                       UPQ_QUALITY);
+                       2);
     mode.value_off = [](const Item &, int x) {
-        return !upscale_modes_available() || g_settings.upscaler == UPSCALE_OFF || !upscale_mode_offered(x);
+        return !upscale_modes_available() || g_settings.upscaler == UPSCALE_OFF ||
+               !upscale_mode_offered(k_modes_order[x + upscale_mode_base()]);
     };
     mode.reset = [](const Item &) { g_settings.upscale_quality = UPQ_QUALITY; };  // (also while Off)
     mode.desc_fn = [](const Item &) {

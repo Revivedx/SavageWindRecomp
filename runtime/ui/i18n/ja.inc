@@ -167,7 +167,7 @@ T("Ultra Quality is the sharpest, Ultra Performance the fastest.", "ウルトラ
 T("Only with an upscaler: choose one above first.", "アップスケーラー使用時のみ：まず上で選んでください。")
 T("Renders smaller, then upscales. Coming in a later version.", "小さく描画してから拡大します。今後のバージョンで対応予定。")
 T("Coming in a later version.", "今後のバージョンで対応予定です。")
-T("How much smaller the game renders before the upscaler brings it to the window, on each side: Ultra Quality 1.3x, Quality 1.5x, Balanced 1.7x, Performance 2x, Ultra Performance 3x. Smaller is faster and softer.", "アップスケーラーがウィンドウに拡大する前に、ゲームが各辺どれだけ小さく描画するかです：ウルトラクオリティ1.3倍、クオリティ1.5倍、バランス1.7倍、パフォーマンス2倍、ウルトラパフォーマンス3倍。小さいほど高速で、映像は柔らかくなります。")
+T("How much smaller the game renders before the upscaler brings it to the window, on each side: Native 1x (FSR 3/4), Ultra Quality 1.3x, Quality 1.5x, Balanced 1.7x, Performance 2x, Ultra Performance 3x. Smaller is faster and softer.", "アップスケーラーがウィンドウに拡大する前に、ゲームが各辺どれだけ小さく描画するかです：ネイティブ1倍（FSR 3/4）、ウルトラクオリティ1.3倍、クオリティ1.5倍、バランス1.7倍、パフォーマンス2倍、ウルトラパフォーマンス3倍。小さいほど高速で、映像は柔らかくなります。")
 T("Rendering at %.0f x %.0f.", "%.0f x %.0fで描画中。")
 T("Smooths jagged edges of the game image before it is scaled to the window. SMAA: finds the edges and blends only along them, so textures stay sharp. Most useful with an upscaler.", "ウィンドウに拡大する前に、ゲーム映像のギザギザした輪郭を滑らかにします。SMAA：輪郭を見つけてそれに沿ってだけなじませるので、テクスチャはシャープなままです。アップスケーラーと組み合わせると特に効果的です。")
 T("SMAA", "")

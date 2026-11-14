@@ -167,7 +167,7 @@ T("Ultra Quality is the sharpest, Ultra Performance the fastest.", "Ultrakwalite
 T("Only with an upscaler: choose one above first.", "Alleen met opschaling: kies die eerst hierboven.")
 T("Renders smaller, then upscales. Coming in a later version.", "Rendert kleiner, dan opschalen. Komt in een latere versie.")
 T("Coming in a later version.", "Komt in een latere versie.")
-T("How much smaller the game renders before the upscaler brings it to the window, on each side: Ultra Quality 1.3x, Quality 1.5x, Balanced 1.7x, Performance 2x, Ultra Performance 3x. Smaller is faster and softer.", "Hoeveel kleiner het spel rendert voordat de opschaling het naar het venster brengt, per zijde: Ultrakwaliteit 1,3x, Kwaliteit 1,5x, Gebalanceerd 1,7x, Prestaties 2x, Ultraprestaties 3x. Kleiner is sneller en zachter.")
+T("How much smaller the game renders before the upscaler brings it to the window, on each side: Native 1x (FSR 3/4), Ultra Quality 1.3x, Quality 1.5x, Balanced 1.7x, Performance 2x, Ultra Performance 3x. Smaller is faster and softer.", "Hoeveel kleiner het spel rendert voordat de opschaling het naar het venster brengt, per zijde: Natief 1x (FSR 3/4), Ultrakwaliteit 1,3x, Kwaliteit 1,5x, Gebalanceerd 1,7x, Prestaties 2x, Ultraprestaties 3x. Kleiner is sneller en zachter.")
 T("Rendering at %.0f x %.0f.", "Rendert op %.0f x %.0f.")
 T("Smooths jagged edges of the game image before it is scaled to the window. SMAA: finds the edges and blends only along them, so textures stay sharp. Most useful with an upscaler.", "Maakt kartelige randen in het spelbeeld glad voordat het naar het venster wordt geschaald. SMAA: zoekt de randen en vervaagt alleen daarlangs, zodat texturen scherp blijven. Vooral nuttig met opschaling.")
 T("SMAA", "")
