@@ -463,16 +463,33 @@ static const char *const cyrillic_fonts[] = {"C:/Windows/Fonts/segoeui.ttf", "/u
 static const char *const ja_fonts[] = {"C:/Windows/Fonts/YuGothM.ttc", "C:/Windows/Fonts/meiryo.ttc", "C:/Windows/Fonts/msgothic.ttc",
                                        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
                                        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+                                       "/usr/share/fonts/noto/NotoSansCJK-Regular.ttc",
+                                       "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+                                       "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
                                        "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc", "/System/Library/Fonts/Hiragino Sans GB.ttc", nullptr};
 static const char *const ko_fonts[] = {"C:/Windows/Fonts/malgun.ttf", "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
                                        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+                                       "/usr/share/fonts/noto/NotoSansCJK-Regular.ttc",
+                                       "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+                                       "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
                                        "/System/Library/Fonts/AppleSDGothicNeo.ttc", nullptr};
 static const char *const zh_hans_fonts[] = {"C:/Windows/Fonts/msyh.ttc", "C:/Windows/Fonts/simsun.ttc",
                                             "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-                                            "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", "/System/Library/Fonts/PingFang.ttc", nullptr};
+                                            "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+                                            "/usr/share/fonts/noto/NotoSansCJK-Regular.ttc",
+                                            "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+                                            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+                                            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+                                            "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",
+                                            "/System/Library/Fonts/PingFang.ttc", nullptr};
 static const char *const zh_hant_fonts[] = {"C:/Windows/Fonts/msjh.ttc", "C:/Windows/Fonts/mingliu.ttc",
                                             "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-                                            "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", "/System/Library/Fonts/PingFang.ttc", nullptr};
+                                            "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+                                            "/usr/share/fonts/noto/NotoSansCJK-Regular.ttc",
+                                            "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+                                            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+                                            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+                                            "/System/Library/Fonts/PingFang.ttc", nullptr};
 
 // Thai: Noto Sans Thai, shipped (third_party/fonts/NotoSansThai, OFL: neither Fira Sans nor the CJK fonts have Thai), then
 // the system's
@@ -571,12 +588,33 @@ bool ui_merge_fallback_font(ImFontAtlas *atlas, float size, const ImFontConfig *
                                 !strcmp(game_lang, "zh-Hans") || !strcmp(game_lang, "zh-Hant")) ? game_lang :
                                has_hangul ? "ko" : has_kana ? "ja" : "zh-Hans";
 
-        const char *const *fonts = !strcmp(cjk_lang, "ja") ? ja_fonts
-                                 : !strcmp(cjk_lang, "ko") ? ko_fonts
-                                 : !strcmp(cjk_lang, "zh-Hant") ? zh_hant_fonts
-                                 : zh_hans_fonts;
+        // 1. SAVAGEWIND_CJK_FONT=<file>: a CJK font the player points at (Linux sandboxes such as Flatpak, where none of
+        //    the system paths below exist). One file for every CJK language: a .ttc's face is picked by ttc_face().
+        const char *env = getenv("SAVAGEWIND_CJK_FONT");
+        if (env && *env) {
+            FILE *f = fopen(env, "rb");
+            if (f) fclose(f), merged |= add_single_fallback(atlas, size, base, nullptr, cjk_lang, ranges, env);
+        }
 
-        merged |= add_single_fallback(atlas, size, base, fonts, cjk_lang, ranges);
+        // 2. A font the player dropped into the data folder's fonts/ (relative: rt_paths_init makes the data root the
+        //    working directory). Names the common distro files use, so a plain copy works.
+        if (!merged) {
+            static const char *const data_fonts[] = {
+                "fonts/NotoSansCJK-Regular.ttc", "fonts/NotoSansSC-Regular.otf", "fonts/NotoSansCJKsc-Regular.otf",
+                "fonts/wqy-microhei.ttc", "fonts/wqy-zenhei.ttc", "fonts/SourceHanSansSC-Regular.otf",
+                "fonts/DroidSansFallbackFull.ttf", "fonts/msyh.ttc", "fonts/simsun.ttc", nullptr};
+            for (int i = 0; data_fonts[i] && !merged; i++)
+                merged |= add_single_fallback(atlas, size, base, nullptr, cjk_lang, ranges, data_fonts[i]);
+        }
+
+        // 3. The system's own CJK fonts.
+        if (!merged) {
+            const char *const *fonts = !strcmp(cjk_lang, "ja") ? ja_fonts
+                                     : !strcmp(cjk_lang, "ko") ? ko_fonts
+                                     : !strcmp(cjk_lang, "zh-Hant") ? zh_hant_fonts
+                                     : zh_hans_fonts;
+            merged |= add_single_fallback(atlas, size, base, fonts, cjk_lang, ranges);
+        }
     }
 
     if (is_ru) {

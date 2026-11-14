@@ -48,6 +48,11 @@ What changed in each Savage Wind release. The `test` branch holds what the next 
   keep their layout (by sabeliam).
 - **Keyboard on horseback:** W with A or D steers without speeding forward
   ([#290](https://github.com/Revivedx/SavageWindRecomp/issues/290), by rvsting).
+- **Chinese and Korean text** showed Japanese glyphs, blank boxes or `?`: the game's Chinese and Korean shared fonts
+  were filled with the Japanese Standard font, which has no hanzi or hangul. They now load a CJK font —
+  `SAVAGEWIND_CJK_FONT`, or a TrueType one installed on the system (Microsoft YaHei / SimSun for Chinese, Malgun
+  Gothic for Korean, PingFang, WenQuanYi…) — and the menus' CJK fallback also accepts `SAVAGEWIND_CJK_FONT`, a font
+  in the data folder's `fonts/`, and more system paths (`fonts/README.md`).
 
 ## 0.5.3 (0.5.3-alpha.5) - 2026-11-12
 
