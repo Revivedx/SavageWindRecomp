@@ -337,6 +337,12 @@ Spirit Orb, Obj_DungeonClearSeal); the Divine Beasts (Clear_Remains*, IsGet_Obj_
 through the pouch; Get_HeartUtuwa_*: a heart container through 0x7001211520, as EventIncreasePorchItemAction does: the
 pouch alone doesn't raise the hearts). A flag's word has other bits: only bit 0 is its value.
 
+Tested 2026-11-14 with two games on the Great Plateau, the client doing everything and the host only receiving:
+the tower (MapTower_07, MapTower_07_Demo, MapTower_DemoFirst, IsPlayed_Demo164_0), the Old Man's talk on it
+(FindDungeon_Activated), the Mah Ounu shrine (CDungeon/Dungeon038) activated (Open_Dungeon038: in the host's world
+the shrine stood open and lit), entered (Enter_Dungeon038), its rune (IsGet_Obj_Magnetglove, Magnesis in the host's
+slate) and its clear (Clear_Dungeon038; the Spirit Orb was in the host's pouch, x1).
+
 Enemies dead everywhere: the host sends each enemy's map HashId (`OnlineEnemy.hash`); one that died in any game gets
 its dead flag (`<map>_<actor>_<HashId>`) set in every game: the game doesn't make it again until a Blood Moon, and a
 camp's chest (its SyncLink group) opens. A dead player's game has no enemies (`can_own`: they go to another player at
