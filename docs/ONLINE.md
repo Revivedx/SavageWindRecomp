@@ -507,6 +507,38 @@ making them again during it crashed the game. The arrow on
 a drawn bow's string is no actor in his game: the others put a NormalArrow from his right hand toward his left while
 his upper body plays BowReload / BowCharge.
 
+### Testing with two games on one PC
+
+Two headless games, each with its own save folder: `SAVAGEWIND_SAVE_DIR=<folder>` (a copy of a save, never one in
+use), `SAVAGEWIND_HIDDEN=1`, `SAVAGEWIND_AUDIO_GAIN=0`, a free port for the session (`SAVAGEWIND_ONLINE_PORT`, not the
+one a real session uses), `SAVAGEWIND_ONLINE=host` for one and `=127.0.0.1` for the other, `SAVAGEWIND_ONLINE_NAME`,
+and a control port each (`SAVAGEWIND_CONTROL=7777` / `7778`, docs/CONTROL.md). Two games hold about 9.5 GB of RAM.
+A game can relaunch itself once at start (a child savagewind.exe): a script that watches the game by its PID should
+look for that child.
+
+Driving them (tools/swctl.py --port <p> ...): `teleport` / `goto <place>` (one map only: a shrine's or a Divine
+Beast's needs walking in), `look`, `press` / `hold` / `release` / `stick` for input, `set god_mode true`, `time`,
+`give`; and for online play `actors <text>` (live actors: where, how far, their address), `flag` / `setflag` (read
+a game data flag; set one, which the other game then takes like any flag this player gets: `setflag
+IsGet_Obj_HeroSoul_Rito` on one game gave the other Revali's Gale) and `event <flow> [entry]` (an event on Link; one
+out of its context can hang). Positions to stand at come from the map data: an object's front is P + d*(sin r,
+cos r) for its rotation r, facing atan2(-sin r, -cos r) (a pedestal 1 m, a guidance stone 1.9 m, a shrine's monk
+about 4 m: his "examine" shows from 3.6 m, on his stairs).
+
+Logs for it: `SAVAGEWIND_ONLINE_ENEMY_AS_LOG`, `_SHOT_LOG` (each arrow where it was first seen, whether its player
+was using his bow), `_GEAR_LOG` (where each piece is put, a thrown weapon followed), `_POSE_LOG` (the local Link's
+AS as they change), `_LIFE_LOG`. Always on: each handover of an enemy with why and both distances, each player's
+"can own enemies" with why, "our pose" when it stops being sampled.
+
+Recipes that found the bugs above:
+- Shots: the host alone under the cliff camp's tower at night (-1203 198 1641, its archers shoot at him), the other
+  ~55 m away; count "Host's shot" on the other game (0 expected), then the other under the tower too (0 "Client's
+  shot" while he doesn't shoot), then three of his own shots (as many sent as his shot log says he made).
+- A shrine: pedestal, elevator, guidance stone, monk, each step waiting until the other game logs the flag set by the
+  other player; the Great Plateau's shrines need its tower first (Demo004_0 at its ground pedestal).
+- An ability's effects: diff the player's memory (+0x2000..0x2800) before and while it is used; a handle that
+  appears is the effect's (Daruk's layout), and its name must be in ELink2 (a name only in SLink2 is a sound).
+
 ### Not done yet
 
 - Less to send: only the bones that moved, or fewer times a second (a session of 8 sends each player's skeleton to 7).
