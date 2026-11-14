@@ -344,8 +344,8 @@ the shrine stood open and lit), entered (Enter_Dungeon038), its rune (IsGet_Obj_
 slate) and its clear (Clear_Dungeon038; the Spirit Orb was in the host's pouch, x1). Koroks, both ways a game
 learns of one: the host 160 m from it got the seed through the pouch (MainField_Npc_HiddenKorokGround_20346760);
 15 m from the next, its own Demo017_0 played on that Korok ("its Korok is here, its cutscene"). Each game then had
-2 Korok seeds, none twice. All four plateau shrines (Dungeon038, 041, 009, 065) went the same way with
-tools-side script sw-shrine.sh: each rune (Magnesis, Remote Bombs, Stasis, Cryonis) and Spirit Orb in the host's
+2 Korok seeds, none twice. All four plateau shrines (Dungeon038, 041, 009, 065) went the same way, driven
+through the control port (teleport to each pedestal, guidance stone and monk from the map data): each rune (Magnesis, Remote Bombs, Stasis, Cryonis) and Spirit Orb in the host's
 pouch. A Goddess Statue's trade is each player's own (the orbs are shared, the heart or stamina each one picks).
 
 The paraglider: with FindDungeon_Finish from another player (the plateau done, the king's gift) a game puts
