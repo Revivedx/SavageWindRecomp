@@ -100,7 +100,7 @@ static const char *const k_icons[ICONS_COUNT] = {"auto", "keyboard", "xbox", "pl
 
 static const char *const k_button_layout[BUTTON_LAYOUT_COUNT] = {"auto", "nintendo", "swap_ab", "xbox", "swap_xy", "gamecube"};
 
-static const char *const k_quality[UPQ_COUNT] = {"ultra_quality", "quality", "balanced", "performance", "ultra_performance"};
+static const char *const k_quality[UPQ_COUNT] = {"ultra_quality", "quality", "balanced", "performance", "ultra_performance", "native"};
 
 // Debug overrides seed this boot's options; the Controls switches can still change them at once.
 static void pc_controls_env(void) {

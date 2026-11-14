@@ -78,8 +78,8 @@ bool rt_dlss(void) { return g_settings.upscaler == UPSCALE_DLSS && upscaler_avai
 bool rt_temporal(void) { return rt_antialias() == AA_TAA || rt_fsr3() || rt_dlss(); }
 
 double upscale_mode_factor(int q) {
-    static const double f[UPQ_COUNT] = {1.3, 1.5, 1.7, 2.0, 3.0};
-    return q == UPQ_COUNT ? 1.0 : q >= 0 && q < UPQ_COUNT ? f[q] : 1.5;  // (UPQ_COUNT: SAVAGEWIND_UPSCALE_AT fsr3-native)
+    static const double f[UPQ_COUNT] = {1.3, 1.5, 1.7, 2.0, 3.0, 1.0};
+    return q >= 0 && q < UPQ_COUNT ? f[q] : 1.5;
 }
 
 // Rendering below the window's size: the 3D scene's render targets at their own scale (vulkan/textures.c). Metal has
@@ -101,6 +101,7 @@ bool upscale_modes_available(void) {
 // any size. SAVAGEWIND_UPSCALE_ANY=1: offered at any size, as before.
 static volatile int g_out_lines;  // the window's height (output_scale; 0: not known yet)
 bool upscale_mode_offered(int q) {
+    if (q == UPQ_NATIVE) return g_settings.upscaler == UPSCALE_FSR3 || g_settings.upscaler == UPSCALE_FSR4;
     static int any = -1;
     if (any < 0) any = getenv("SAVAGEWIND_UPSCALE_ANY") && atoi(getenv("SAVAGEWIND_UPSCALE_ANY")) != 0;
     if (q != UPQ_ULTRA_PERFORMANCE || any || !(rt_fsr3() || rt_dlss())) return true;
@@ -109,7 +110,7 @@ bool upscale_mode_offered(int q) {
 
 int upscale_quality_now(void) {
     int q = g_settings.upscale_quality;
-    return upscale_mode_offered(q) ? q : UPQ_PERFORMANCE;
+    return upscale_mode_offered(q) ? q : (q == UPQ_NATIVE ? UPQ_QUALITY : UPQ_PERFORMANCE);
 }
 
 double upscale_factor(void) {
