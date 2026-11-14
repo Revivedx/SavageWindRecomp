@@ -45,6 +45,7 @@ uint64_t g_addr_report_lo, g_addr_report_hi;  // (SAVAGEWIND_VK_ADDR_REPORT)
 uint64_t renderer_present_count(void);
 static bool g_m5;     // maintenance5 enabled (the pipeline cache's header: pc_header)
 static bool g_cs_ext;  // VK_EXT_swapchain_colorspace: HDR10 swapchains can be made (the HDR section below)
+static bool g_portability;  // VK_KHR_portability_enumeration: the instance lists portability drivers (MoltenVK)
 
 // ================================================================== instance / device
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_cb(VkDebugUtilsMessageSeverityFlagBitsEXT sev, VkDebugUtilsMessageTypeFlagsEXT type,
@@ -76,6 +77,12 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_cb(VkDebugUtilsMessageSeverityFlagBi
 
 // SAVAGEWIND_VK_VALIDATION=1: Khronos validation layer (MSYS2 package vulkan-validation-layers)
 static void create_instance(void) {
+#ifdef __APPLE__
+    // MoltenVK: let Metal compile shaders with all its threads (macOS 13.3+). Every new pipeline is a whole Metal
+    // compile there (no graphics pipeline libraries), its draws skipped until it's done: first-seen materials showed up
+    // late. (Read when the driver loads, just below; an MVK_CONFIG_* set by the player wins.)
+    setenv("MVK_CONFIG_SHOULD_MAXIMIZE_CONCURRENT_COMPILATION", "1", 0);
+#endif
     Uint32 n_sdl = 0;
     const char *const *sdl_ext = SDL_Vulkan_GetInstanceExtensions(&n_sdl);
     const char *ext[28];
@@ -86,9 +93,17 @@ static void create_instance(void) {
         vkEnumerateInstanceExtensionProperties(NULL, &nie, NULL);
         VkExtensionProperties *ie = calloc(nie ? nie : 1, sizeof *ie);
         vkEnumerateInstanceExtensionProperties(NULL, &nie, ie);
-        for (uint32_t i = 0; i < nie && !g_cs_ext; i++)
+        bool portability = false;  // (MoltenVK: a portability driver, listed only when the instance asks for those)
+        for (uint32_t i = 0; i < nie; i++) {
             if (!strcmp(ie[i].extensionName, VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME)) g_cs_ext = true;
+            if (!strcmp(ie[i].extensionName, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)) portability = true;
+        }
         if (g_cs_ext) ext[n_ext++] = VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME;
+#ifdef __APPLE__  // (elsewhere the loader lists it too, and it would bring in layered drivers - Mesa's Dozen on Windows)
+        if (portability) ext[n_ext++] = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME, g_portability = true;
+#else
+        (void)portability;
+#endif
         free(ie);
     }
     const char **ngx_ext = NULL;
@@ -120,6 +135,7 @@ static void create_instance(void) {
                              .apiVersion = VK_API_VERSION_1_3};
     LOG("[vk] application version %u.%u.%u (Savage Wind %s)\n", vmaj, vmin, vpatch * 100 + vpre, rt_version());
     VkInstanceCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app,
+                               .flags = g_portability ? VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR : 0,
                                .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext,
                                .enabledLayerCount = validate ? 1 : 0, .ppEnabledLayerNames = layers};
     VkResult r = vkCreateInstance(&ci, NULL, &g_vk.inst);
@@ -523,6 +539,8 @@ static void create_device(void) {
     const char *ext[64];
     uint32_t n_ext = 0;
     ext[n_ext++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+    // (a portability driver - MoltenVK - must be asked for it when it lists it; its name is in vulkan_beta.h)
+    if (has_ext(ep, ne, "VK_KHR_portability_subset")) ext[n_ext++] = "VK_KHR_portability_subset";
 
     const char *memory_priority_env = getenv("SAVAGEWIND_VK_MEMORY_PRIORITY");
     bool request_memory_priority = memory_priority_env && !strcmp(memory_priority_env, "1");
@@ -627,6 +645,7 @@ static void create_device(void) {
 #endif
     g_vk.turnip = drv.driverID == VK_DRIVER_ID_MESA_TURNIP;
     g_vk.amd_proprietary = drv.driverID == VK_DRIVER_ID_AMD_PROPRIETARY;
+    g_vk.moltenvk = drv.driverID == VK_DRIVER_ID_MOLTENVK;
     {   // AMD's own shader compiler (its driver without "LLPC" in driverInfo: RDNA 2 and older on Windows) draws the sky
         // wrong from unoptimized SPIR-V (#359): its fragment shaders go through spirv-opt (spirv.c).
         // SAVAGEWIND_VK_OPT_FS=0 / 1 forces it off or on.
@@ -1209,11 +1228,50 @@ static void pc_log(const char *what, const char *path, size_t sz, const char *wh
     else LOG("[vk] %s: starts empty (%s: %s)\n", what, path, why);
 }
 
+// MoltenVK makes the Metal library of every shader in the data it is given at once: minutes for a grown cache when
+// macOS's own shader cache does not have them (after a macOS update, or a cache from another Mac), the window not up
+// yet. There the cache is loaded on a thread of its own: until it is in, pipelines are made without one (the window,
+// the start screen; not saved), and the pre-warm waits for it (vk_pipeline_cache_wait).
+static _Atomic bool pc_loading;
+
+static void *pc_load_thread(void *arg) {
+    (void)arg;
+    prof_thread_name("pcache-load");
+    char path[512];
+    size_t sz;
+    const char *why = "no file yet";
+    uint64_t t0 = SDL_GetTicksNS();
+    VkPipelineCache c = pc_open("vk_pipelines.bin", true, false, path, sizeof path, &sz, &why);
+    __atomic_store_n(&g_vk.pcache, c, __ATOMIC_RELEASE);
+    atomic_store(&pc_loading, false);
+    pc_log("pipeline cache", path, sz, why);
+    LOG("[vk] pipeline cache loaded in %.0f ms (on its own thread)\n", (SDL_GetTicksNS() - t0) / 1e6);
+    return NULL;
+}
+
+// exec.c's pre-warm, before its first pipeline; vk_pipeline_cache_save
+void vk_pipeline_cache_wait(void) {
+    while (atomic_load(&pc_loading)) SDL_Delay(5);
+}
+
 static void pipeline_cache_load(void) {
     pc_off = getenv("SAVAGEWIND_VK_NO_PIPELINE_CACHE") != NULL;
     char path[512];
     size_t sz;
     const char *why = pc_off ? "off (SAVAGEWIND_VK_NO_PIPELINE_CACHE)" : "no file yet";
+    vk_cache_path(path, sizeof path, "vk_pipelines.bin");
+    FILE *probe = g_vk.moltenvk && !g_vk.gpl && !pc_off ? fopen(path, "rb") : NULL;
+    if (probe) {
+        fclose(probe);
+        pthread_t t;
+        atomic_store(&pc_loading, true);
+        if (pthread_create(&t, NULL, pc_load_thread, NULL) == 0) {
+            pthread_detach(t);
+            pc_saved_at = SDL_GetTicks();
+            return;
+        }
+        atomic_store(&pc_loading, false);
+    }
     g_vk.pcache = pc_open("vk_pipelines.bin", !pc_off, false, path, sizeof path, &sz, &why);
     pc_log("pipeline cache", path, sz, why);
     if (g_vk.gpl && !pc_off) {
@@ -1303,6 +1361,7 @@ static bool pc_write(VkPipelineCache c, const char *name, size_t *size) {
 }
 
 void vk_pipeline_cache_save(void) {
+    vk_pipeline_cache_wait();  // (at exit: not the device torn down under the load)
     if (pc_off || !g_vk.pcache) return;
     pthread_mutex_lock(&pc_save_lock);
     int news = atomic_exchange(&pc_new, 0);
@@ -1404,6 +1463,11 @@ static VkPresentModeKHR present_mode(char *have, size_t cap) {
     const VkPresentModeKHR one_shot[2] = {forced, NONE};  // the env override is a single mode, FIFO behind it
     int v = g_settings.vsync;
     const VkPresentModeKHR *ladder = (env && *env) ? one_shot : pref[v >= 0 && v < VSYNC_COUNT ? v : VSYNC_DEFAULT];
+    // MoltenVK (macOS) has FIFO and IMMEDIATE only: Fast fell to IMMEDIATE, no sync at all - frames shown off the
+    // display's beat (judder, the default setting). There Fast is FIFO with the fewest images instead (swapchain_make):
+    // in sync, and as little queued behind it as the surface allows.
+    static const VkPresentModeKHR mvk_fast[3] = {VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_FIFO_KHR, NONE};
+    if (!(env && *env) && g_vk.moltenvk && v == VSYNC_FAST) ladder = mvk_fast;
     for (int j = 0; ladder[j] != NONE; j++)
         for (uint32_t i = 0; i < n; i++)
             if (m[i] == ladder[j]) return ladder[j];
@@ -1437,6 +1501,13 @@ static bool hdr_wanted(float *white) {
     SDL_PropertiesID p = SDL_GetWindowProperties(window);
     bool on = SDL_GetBooleanProperty(p, SDL_PROP_WINDOW_HDR_ENABLED_BOOLEAN, false);
     float w = SDL_GetFloatProperty(p, SDL_PROP_WINDOW_SDR_WHITE_LEVEL_FLOAT, 0) * 80;  // (scRGB: 1.0 is 80 nits)
+#ifdef __APPLE__
+    // macOS: SDL calls a window HDR whenever its display has EDR headroom, which SDR panels have too below full
+    // brightness (a MacBook Air: "HDR10 output" on an SDR screen, every frame converted to PQ for nothing). So Auto is
+    // SDR there; Video > HDR On turns it on (XDR displays). Its white level of 1.0 is "unknown", as on Wayland below.
+    if (g_settings.hdr == HDR_AUTO) on = false;
+    if (w <= 80) w = 0;
+#endif
     if (g_settings.hdr == HDR_ON) on = true;
     if (g_settings.hdr == HDR_OFF) on = false;
 #ifdef __linux__
@@ -1579,6 +1650,10 @@ static void create_swapchain(void) {
     VkSwapchainKHR old = g_vk.swapchain;
     char modes[128];
     VkPresentModeKHR mode = present_mode(modes, sizeof modes);
+    // (MoltenVK, Fast as FIFO: the surface's fewest images - less input delay - unless frame generation queues a pair)
+    if (g_vk.moltenvk && mode == VK_PRESENT_MODE_FIFO_KHR && g_settings.vsync == VSYNC_FAST && !g_settings.frame_gen &&
+        !getenv("SAVAGEWIND_VK_PRESENT"))
+        count = caps.minImageCount;
     VkSwapchainCreateInfoKHR ci = {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, .surface = g_vk.surface, .minImageCount = count,
         .imageFormat = sf.format, .imageColorSpace = sf.colorSpace, .imageExtent = ext, .imageArrayLayers = 1,
