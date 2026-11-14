@@ -2,7 +2,7 @@
 //
 // Threads: SDL events arrive on the main thread and are queued; the menu is laid out and drawn on the
 // render thread inside backend_present, after the game image, into the same drawable.
-#ifdef __APPLE__
+#ifdef SW_METAL
 #import <Metal/Metal.h>
 #endif
 #include <SDL3/SDL.h>
@@ -22,7 +22,7 @@
 #include "imgui_internal.h"  // (NavCursorVisible)
 #include "osk.h"
 #include "console.h"
-#ifdef __APPLE__
+#ifdef SW_METAL
 #include "imgui_impl_metal.h"
 #else
 #include "imgui_impl_vulkan.h"
@@ -52,7 +52,7 @@ void controls_bindings_draw(float scale);  // controls_ui.mm
 #include "../paths.h"
 #include "../pc_cursor.h"
 #include "../imageload.h"
-#ifndef __APPLE__
+#ifndef SW_METAL
 extern "C" uint64_t vk_imgui_texture_rgba(const void *rgba, int w, int h);  // runtime/nvn/vulkan/imgui_glue.cpp
 extern "C" void vk_imgui_texture_free(uint64_t id);
 #endif
@@ -528,14 +528,14 @@ static void fonts_follow_language(void) {
     int current_fonts_gen = ui_lang_generation() * 10007 + ui_dynamic_generation();
     if (g_fonts_lang == current_fonts_gen && !need_hint_fonts && !icons_changed) return;
     load_fonts();
-#ifdef __APPLE__
+#ifdef SW_METAL
     ImGui_ImplMetal_DestroyFontsTexture();  // (NewFrame makes it again)
 #else
     vk_imgui_fonts_changed();
 #endif
 }
 
-#ifdef __APPLE__
+#ifdef SW_METAL
 static void init(id<MTLDevice> dev) {
 #else
 static void init(void) {
@@ -549,7 +549,7 @@ static void init(void) {
     io.IniFilename = NULL;
     load_fonts();
     style_init();
-#ifdef __APPLE__
+#ifdef SW_METAL
     ImGui_ImplMetal_Init(dev);
 #else
     vk_imgui_backend_init();
@@ -639,7 +639,7 @@ extern "C" {
 #include "../nvn/output_scale.h"
 }
 
-#ifndef __APPLE__
+#ifndef SW_METAL
 // Colour (runtime/color_grade.h; vulkan/exec.c scene_post), the Video tab's last section: a preset sets the sliders,
 // which then show "Custom" when they match none
 static void tab_colour(void) {
@@ -920,7 +920,7 @@ static void tab_display(void) {
                                : std::string(tr("FSR 4")) + " " + tr(fsr4_offered() ? "(coming soon)" : "(AMD Radeon only)");
         std::string dlss = upscaler_available(UPSCALE_DLSS) ? std::string(tr("DLSS")) :
                            std::string(tr("DLSS")) + " " + tr("(NVIDIA RTX only)");
-#ifdef __APPLE__
+#ifdef SW_METAL
         const char *ups[] = {"Off", "MetalFX"};
         static const int ups_value[] = {UPSCALE_OFF, UPSCALE_METALFX};
         const char *ud = "How the game's image (1920 x 1080) is scaled up to a bigger window. Off: plain (bilinear) "
@@ -982,7 +982,7 @@ static void tab_display(void) {
                          md.c_str());
         opt_indent(-1);
     }
-#ifdef __APPLE__
+#ifdef SW_METAL
     static const char *aa[] = {"Off", "SMAA"};
     opt_choice("Anti-aliasing", &g_settings.antialias, aa, 2, AA_OFF,
                "Smooths jagged edges of the game image before it is scaled to the window. SMAA: finds the edges and "
@@ -1011,7 +1011,7 @@ static void tab_display(void) {
                    "higher resolution and is scaled down to it, the cleanest way to smooth edges and shimmer. 200% is "
                    "4x the pixels: for fast graphics cards.", false);
     }
-#ifndef __APPLE__
+#ifndef SW_METAL
     {   // Anisotropic filtering and sharpening (Vulkan: vulkan/textures.c sampler_aniso, vulkan/exec.c scene_post)
         static const char *const aniso[] = {"Off", "2x", "4x", "8x", "16x"};
         opt_choice("Anisotropic filtering", &g_settings.anisotropy, aniso, 5, 1,
@@ -1101,7 +1101,7 @@ static void tab_display(void) {
                        "the next time you start the game.", false))
             g_settings.haze = haze[cur];
     }
-#ifndef __APPLE__
+#ifndef SW_METAL
     tab_colour();
 #endif
     opt_end();
@@ -1475,7 +1475,7 @@ static void photo_overlay_draw(ImGuiIO &io, float scale) {
     if (seq != seen) {
         seen = seq;
         shown_at = now;
-#ifndef __APPLE__
+#ifndef SW_METAL
         if (tex) vk_imgui_texture_free(tex), tex = 0;
         int w, h;
         unsigned char *px = rt_image_rgba(path, &w, &h);
@@ -1495,7 +1495,7 @@ static void photo_overlay_draw(ImGuiIO &io, float scale) {
     if (!shown_at) return;
     double age = now - shown_at;
     if (age > 3.0) {
-#ifndef __APPLE__
+#ifndef SW_METAL
         if (tex) vk_imgui_texture_free(tex), tex = 0;
 #endif
         shown_at = 0;
@@ -1571,7 +1571,7 @@ static void perf_overlay_draw(ImGuiIO &io, float scale) {
     line += std::string(" | ") + tr("Anti-aliasing") + ": " + (rt_fsr4() ? tr("FSR 4") : rt_fsr3() ? tr("FSR 3") : aa == AA_TAA ? tr("TAA") : aa == AA_SMAA ? tr("SMAA") : g_settings.game_fxaa ? "FXAA" : tr("Off"));
     ImGui::TextDisabled("%s", line.c_str());
     line.clear();
-#ifndef __APPLE__
+#ifndef SW_METAL
     {   // the scene's size and the final image's (the HUD and menus render at that one)
         float rx, ry, ox, oy;
         renderer_get_scene_scale(&rx, &ry);
@@ -1902,7 +1902,7 @@ static void act_overlay_draw(ImGuiIO &io, float scale) {
     ImGui::End();
 }
 
-#ifndef __APPLE__
+#ifndef SW_METAL
 extern "C" void rec_drain(void);  // (runtime/nvn/vulkan/record.c)
 #endif
 
@@ -1987,7 +1987,7 @@ static bool menu_draws(bool *pointer_hover = NULL, float *pointer_box = NULL, bo
 
 bool menu_render_needed(void) { return menu_draws(); }
 
-#ifdef __APPLE__
+#ifdef SW_METAL
 void menu_render(id<MTLDevice> dev, id<MTLCommandBuffer> cb, id<MTLTexture> target) {
     const double tw = target.width, th = target.height;
 #else
@@ -2007,13 +2007,13 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         if (g_inited) { pthread_mutex_lock(&q_lock); q_events.clear(); pthread_mutex_unlock(&q_lock); }
         return;
     }
-#ifndef __APPLE__
+#ifndef SW_METAL
     // ImGui records into the frame's command buffer from this thread, which is the recorder's until it has caught up.
     // The caller drains when menu_render_needed said so, but the pointer's hover box can appear (and the console and
     // the gyro drag can open) between that call and this one: draining again here is cheap when nothing is queued.
     rec_drain();
 #endif
-#ifdef __APPLE__
+#ifdef SW_METAL
     if (!g_inited) init(dev);
 #else
     if (!g_inited) init();
@@ -2032,7 +2032,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     if (scale < 0.45f) scale = 0.45f;
     io.FontGlobalScale = scale;
 
-#ifdef __APPLE__
+#ifdef SW_METAL
     MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
     rp.colorAttachments[0].texture = target;
     rp.colorAttachments[0].loadAction = MTLLoadActionLoad;
@@ -2048,7 +2048,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         style_scale = scale;
     }
     fonts_follow_language();
-#ifdef __APPLE__
+#ifdef SW_METAL
     ImGui_ImplMetal_NewFrame(rp);
 #else
     ImGui_ImplVulkan_NewFrame();
@@ -2120,7 +2120,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     if (con) console_draw(io, scale, g_font_mono ? g_font_mono : g_font);
     ImGui::Render();
     g_text_busy = open && ui_text_busy();
-#ifdef __APPLE__
+#ifdef SW_METAL
     id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rp];
     ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), cb, enc);
     [enc endEncoding];
