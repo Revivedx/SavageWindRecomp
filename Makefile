@@ -1,5 +1,5 @@
 # Savage Wind build
-# macOS: Homebrew clang/SDL3/FFmpeg, Metal renderer.
+# macOS: Homebrew clang/SDL3/FFmpeg + Vulkan renderer on MoltenVK (see docs/macos.md).
 # Windows: MSYS2 UCRT64 shell (see docs/BUILD-windows.md), clang + Vulkan renderer.
 # Linux: clang + Vulkan renderer, x86-64 or aarch64 (see docs/linux.md).
 UNAME := $(shell uname -s)
@@ -30,6 +30,15 @@ endif
 # B: build dir. MACOS_MIN: oldest macOS to run on (default: this one). DEPS: prefix with SDL3 / FFmpeg instead of
 # Homebrew's (make deps). `make app` sets all three (build/mac15, 15.0, build/deps); plain `make` uses none.
 B         ?= build
+ifeq ($(PLATFORM),macos)
+RENDERER  ?= vulkan
+ifneq ($(filter-out metal vulkan,$(RENDERER)),)
+$(error RENDERER must be vulkan or metal)
+endif
+ifeq ($(RENDERER),metal)
+B         := $(if $(filter build,$(B)),build/metal,$(B))
+endif
+endif
 MACOS_MIN ?=
 DEPS      ?=
 MINFLAG  := $(if $(MACOS_MIN),-mmacosx-version-min=$(MACOS_MIN))
@@ -62,15 +71,28 @@ IMGUI_OBJ := $(B)/imgui/imgui.o $(B)/imgui/imgui_draw.o $(B)/imgui/imgui_tables.
              $(B)/imgui/imgui_impl_sdl3.o
 
 ifeq ($(PLATFORM),macos)
+# RENDERER: vulkan (the default: runtime/nvn/vulkan, the Windows / Linux renderer, on MoltenVK - brew install molten-vk
+# vulkan-loader vulkan-headers shaderc) or metal (runtime/nvn/*.m from LAS Recomp, unmaintained; its own B, build/metal).
 SDL      := $(or $(DEPS),/opt/homebrew/opt/sdl3)
 FFMPEG   := $(or $(DEPS),/opt/homebrew/opt/ffmpeg)
+VULKAN   := $(or $(DEPS),/opt/homebrew)
 EXE      := $(B)/savagewind
 DEPINC   := -I$(SDL)/include -I$(FFMPEG)/include
-LDFLAGS  := -L$(SDL)/lib -lSDL3 -Wl,-rpath,$(SDL)/lib -L$(FFMPEG)/lib -lavformat -lavcodec -lavutil -lswscale -Wl,-rpath,$(FFMPEG)/lib \
-            -framework CoreFoundation -framework Foundation -framework Metal -framework MetalFX -framework QuartzCore -framework AppKit -framework ImageIO -framework CoreGraphics -framework UniformTypeIdentifiers
+LDFLAGS  := -L$(SDL)/lib -lSDL3 -Wl,-rpath,$(SDL)/lib -L$(FFMPEG)/lib -lavformat -lavcodec -lavutil -lswscale -Wl,-rpath,$(FFMPEG)/lib -lz \
+            -framework CoreFoundation -framework Foundation -framework QuartzCore -framework AppKit -framework ImageIO -framework CoreGraphics -framework UniformTypeIdentifiers -framework IOKit
+ifeq ($(RENDERER),metal)
+DEPINC   += -DSW_METAL=1
+LDFLAGS  += -framework Metal -framework MetalFX
 BACKEND_SRC := $(wildcard runtime/nvn/*.m)
 BACKEND_OBJ := $(patsubst runtime/%.m,$(B)/rt/%.o,$(BACKEND_SRC))
 IMGUI_OBJ += $(B)/imgui/imgui_impl_metal.o
+else
+DEPINC   += -I$(VULKAN)/include
+LDFLAGS  += -L$(VULKAN)/lib -lvulkan -lshaderc_shared -Wl,-rpath,$(VULKAN)/lib
+BACKEND_SRC := $(wildcard runtime/nvn/vulkan/*.c) $(wildcard runtime/nvn/vulkan/*.cpp)
+BACKEND_OBJ := $(patsubst runtime/%.cpp,$(B)/rt/%.o,$(patsubst runtime/%.c,$(B)/rt/%.o,$(BACKEND_SRC)))
+IMGUI_OBJ += $(B)/imgui/imgui_impl_vulkan.o
+endif
 UIFLAGS  := -fobjc-arc
 GAMELIB  := $(B)/swgame.dylib
 GAMELIB_LDFLAGS := -dynamiclib -undefined dynamic_lookup  # (the runtime functions it calls: the app's own)
@@ -227,7 +249,7 @@ endif
 RUNTIME_OPTFLAGS += -fprofile-instr-use=$(PGO_PROFILE)
 endif
 LDFLAGS += $(RUNTIME_LINKFLAGS)
-RUNTIME_CONFIG := $(strip $(RUNTIME_OPTFLAGS))
+RUNTIME_CONFIG := $(strip $(RUNTIME_OPTFLAGS) $(if $(filter macos,$(PLATFORM)),renderer=$(RENDERER)))  # (macOS: SW_METAL or not)
 $(shell mkdir -p $(B) && [ -f $(B)/runtime_config ] && [ "$$(cat $(B)/runtime_config 2>/dev/null)" = '$(RUNTIME_CONFIG)' ] || echo '$(RUNTIME_CONFIG)' > $(B)/runtime_config)
 $(RT_OBJ) $(filter $(B)/rt/%,$(BACKEND_OBJ)) $(UI_OBJ): $(B)/runtime_config $(if $(filter use,$(PGO)),$(PGO_PROFILE))
 
@@ -244,7 +266,7 @@ FFX_SRC  := $(FFX)/sdk/src/components/frameinterpolation/ffx_frameinterpolation.
             $(wildcard $(FFX)/sdk/src/shared/*.cpp)
 FFX_OBJ  := $(patsubst $(FFX)/sdk/src/%.cpp,$(B)/ffx/%.o,$(FFX_SRC))
 FFX_INC  := -I$(FFX)/sdk/include -I$(FFX)/sdk/src/components -I$(FFX)/sdk/src/shared -I$(FFX)/sdk/src/backends/shared
-ifneq ($(PLATFORM),macos)
+ifneq ($(PLATFORM)$(RENDERER),macosmetal)
 BACKEND_OBJ += $(FFX_OBJ)
 $(B)/rt/nvn/vulkan/fsr3.o: CXXFLAGS := -DSW_FSR3=1 -include $(FFX)/ffx_compat.h $(FFX_INC) $(CXXFLAGS)
 endif

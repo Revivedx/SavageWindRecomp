@@ -19,10 +19,10 @@ bool menu_is_open(void);
 // Main thread: apply window requests (fullscreen) made from the menu.
 void menu_apply_window_requests(void *sdl_window);
 
-#if defined(__APPLE__) && defined(__OBJC__)
+#if defined(SW_METAL) && defined(__OBJC__)
 // Render thread: draw the overlay into the drawable after the game image (no-op while closed).
 void menu_render(id<MTLDevice> dev, id<MTLCommandBuffer> cb, id<MTLTexture> target);
-#elif !defined(__APPLE__)
+#elif !defined(SW_METAL)
 // Render thread, inside the window image's rendering (Vulkan command buffer cmd).
 void menu_render(void *cmd, uint32_t target_w, uint32_t target_h);
 bool menu_render_needed(void);  // menu_render would draw something (it records into cmd itself: the recorder drains first)

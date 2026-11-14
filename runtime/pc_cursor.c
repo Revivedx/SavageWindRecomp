@@ -1621,7 +1621,7 @@ static bool shop_pointer(Cpu *c) {
 }
 
 static float dialogue_extra_y(void) {
-#ifdef __APPLE__
+#ifdef SW_METAL
     return 0;
 #else
     float shape=output_view_shape();
