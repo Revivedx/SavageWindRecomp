@@ -28,6 +28,7 @@
 #include "fsr3.h"
 #include "fsr_api.h"
 #include "mvec.h"
+#include "xess.h"
 #include "../output_scale.h"
 #include "record.h"
 #include "../renderer.h"
@@ -10048,7 +10049,7 @@ static void cpost_pass(VkCommandBuffer cb, const char *cs, const VkImageView *sr
 // size in the window (its crop is drawn into the viewport).
 static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, double oh_d) {
     VkImageView v = raw_view(b);
-    bool smaa = rt_antialias() == AA_SMAA && !rt_fsr3();  // (FSR 3 anti-aliases the scene itself)
+    bool smaa = rt_antialias() == AA_SMAA && !rt_fsr3() && !rt_xess();  // (FSR 3, XeSS anti-alias the scene themselves)
     uint32_t ow = (uint32_t)lround(ow_d), oh = (uint32_t)lround(oh_d);
     if (ow > 16384) ow = 16384;
     if (oh > 16384) oh = 16384;
@@ -10350,9 +10351,10 @@ static void scene_post(Prog *pr, CmdRec *r) {
         grade_frame = renderer_present_count();
         grade = grade_wanted(&lut, gpc);
     }
-    bool fsr3 = fsr_on && rt_fsr3() && mvec_enabled();  // (FSR 3: its own sharpening, RCAS, in place of CAS)
-    if (!fsr3 && !dlss) rt_jitter_set_phases(8);  // (theirs: set by fsr3_scene, dlss_scene)
-    if (!dlss && !fsr && !cas && !taa && !fsr3 && !grade) return;
+    bool fsr3 = fsr_on && rt_fsr3() && mvec_enabled();  // (FSR 3 / 4: their own sharpening, RCAS, in place of CAS)
+    bool xess = fsr_on && rt_xess() && mvec_enabled();  // (XeSS: the same inputs, its own anti-aliasing)
+    if (!fsr3 && !xess && !dlss) rt_jitter_set_phases(8);  // (theirs: set by fsr3_scene, dlss_scene)
+    if (!dlss && !fsr && !cas && !taa && !fsr3 && !xess && !grade) return;
     NvnTexture *t = scene_composite(pr, r), *rt = st.rt.ncolor ? st.rt.color[0] : NULL;
     if (!t) return;
     const float *vp = st.viewport[0];
@@ -10365,14 +10367,14 @@ static void scene_post(Prog *pr, CmdRec *r) {
         TexBackend *b = vk_tex(t, false);
         // (else at its size in the window already; FSR 3: FSR 1 for a frame it can't do, its first)
         bool smaller = ow > b->width + 1 || oh > b->height + 1;
-        bool up = (fsr || fsr3) && smaller;
+        bool up = (fsr || fsr3 || xess) && smaller;
         dlss = dlss && smaller;  // (an upscaler only: at the window's size the game's own composite stays; no DLAA yet)
         if (t != taa_t || dlss) taa = NULL;
-        scene_mip_bias = (taa || fsr3 || dlss) && ow && b->width ? log2f((float)b->width / (float)ow) - 1.0f : 0.0f;
+        scene_mip_bias = (taa || fsr3 || xess || dlss) && ow && b->width ? log2f((float)b->width / (float)ow) - 1.0f : 0.0f;
         static const char *bias_env = (const char *)1;  // (testing) SAVAGEWIND_MIP_BIAS=<levels>: in place of that
         if (bias_env == (const char *)1) bias_env = getenv("SAVAGEWIND_MIP_BIAS");
-        if (bias_env && (taa || fsr3 || dlss)) scene_mip_bias = (float)atof(bias_env);
-        if (!up && !dlss && !cas && !taa && !fsr3 && !grade) return;
+        if (bias_env && (taa || fsr3 || xess || dlss)) scene_mip_bias = (float)atof(bias_env);
+        if (!up && !dlss && !cas && !taa && !fsr3 && !xess && !grade) return;
         VkFormatProperties fp;
         vkGetPhysicalDeviceFormatProperties(g_vk.phys, b->format, &fp);
         if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) return;
@@ -10390,13 +10392,13 @@ static void scene_post(Prog *pr, CmdRec *r) {
             src = post_view(g);
             out = in = g;
         }
-        TexBackend *f3 = fsr3 ? fsr3_scene(cb, in, ow, oh) : NULL;
+        TexBackend *f3 = (fsr3 || xess) ? fsr3_scene(cb, in, ow, oh) : NULL;  // (FSR 3 / 4 / XeSS: fsr3_scene picks)
         if (f3) {
             src = post_view(f3);
             out = f3;
             w = ow; h = oh;
             up = cas = false;
-        } else if (!up && !dlss && !cas && !taa && !grade) {
+        } else if (!up && !dlss && !cas && !taa && !xess && !grade) {
             return;
         }
         if (dlss) {
@@ -10563,7 +10565,8 @@ static void fg_before_draw(void) {
 }
 
 static void fg_draw(Prog *pr, CmdRec *r) {
-    if (!g_fg_want && !dlss_wanted()) return;  // (DLSS's motion vectors are made from the same camera: dlss_scene)
+    if (!g_fg_want && !dlss_wanted() && !rt_xess()) return;  // (DLSS's and XeSS's camera vectors: dlss_scene and
+                                                             //  fsr3_scene's XeSS branch make them the same way)
     if (st.rt.depth && vk_texture_scale_group(st.rt.depth) == RS_SCENE) {
         Range u = st.ubuf[0][0];
         const float *f = (const float *)(uintptr_t)u.addr;
@@ -10870,7 +10873,8 @@ static struct {
 static bool dlss_wanted(void) { return g_settings.upscaler == UPSCALE_DLSS && vk_dlss_available(); }
 
 // color (the scene, graded or not) to ow x oh: DLSS's output (post image 9), or NULL (no depth of the scene's size, or
-// NGX failed: FSR 1 for this frame; FSR 1 from then on when NGX can't make DLSS at all).
+// NGX failed: FSR 1 for this frame; FSR 1 from then on when NGX can't make DLSS at all). XeSS (UPSCALE_XESS) shares
+// this camera-vector path: its xess_scene (below) hands the same images to libxess.dll.
 static TexBackend *dlss_scene(VkCommandBuffer cb, TexBackend *color, uint32_t ow, uint32_t oh) {
     const VkFormat of = VK_FORMAT_R16G16B16A16_SFLOAT;  // (NGX writes a storage image, whatever the scene's format)
     VkFormatProperties fp;
@@ -11026,7 +11030,8 @@ static bool mvec_scene_view(Prog *pr, CmdRec *r, NvnTexture **taa_t, TexBackend 
             VkImageView in[3] = {post_view(mvec_target_img), dv};
             post_pass_pc(cb, "mvec_fill.frag", in, 2, mvec_vectors_img, pc, sizeof pc, false);
             vk_full_barrier(cb);
-            taa_img = rt_antialias() == AA_TAA && !rt_fsr3() && !dlss_wanted() ? mvec_taa(cb, b, frame) : NULL;  // (FSR 3, DLSS: their own)
+            taa_img = rt_antialias() == AA_TAA && !rt_fsr3() && !rt_xess() && !dlss_wanted() ? mvec_taa(cb, b, frame)
+                                                                                             : NULL;  // (FSR 3, XeSS, DLSS: their own)
             taa_tex = t;
         }
         if (mvec_filled == frame && taa_img && taa_tex == t) *taa = taa_img, *taa_t = t;  // (a second composite: the same)
@@ -11253,12 +11258,34 @@ static TexBackend *fsr3_scene(VkCommandBuffer cb, TexBackend *b, uint32_t ow, ui
         .reset = last == ~0ull || last + 1 != frame,
     };
     last_ns = ns;
-    // Upscaler FSR 4, or SAVAGEWIND_FSR3_API=1: AMD's DLLs (fsr_api.h); else the built-in FSR 3.1 (fsr3.h)
-    int api = rt_fsr4() ? 4 : fsr3_api_wanted() ? 3 : 0;
+    // Upscaler FSR 4, or SAVAGEWIND_FSR3_API=1: AMD's DLLs (fsr_api.h); else the built-in FSR 3.1 (fsr3.h).
+    // Intel XeSS (UPSCALE_XESS) runs the same inputs through libxess.dll (vulkan/xess.h) instead.
+    bool xess = g_settings.upscaler == UPSCALE_XESS && xess_usable();
+    int api = !xess && rt_fsr4() ? 4 : !xess && fsr3_api_wanted() ? 3 : 0;
     if (api && !fsr_api_usable(api)) api = 0;  // (it failed before: the built-in one from here on)
     static int last_api = -1;  // (another upscaler: its own history, from none)
     if (api != last_api) d.reset = true;
     last_api = api;
+    bool ok = false;
+    if (xess) {
+        gp_mark(cb, "XeSS upscaler");
+        rec_drain();  // (xessVKInit on a size change wants the device idle; the commands queued go first)
+        vkDeviceWaitIdle(g_vk.dev);
+        ok = xess_dispatch(&d);
+        last = frame;
+        if (ok) {
+            vk_dyn_forget();  // (XeSS's own pipelines and sets were bound)
+            vk_full_barrier(cb);
+            rt_jitter_set_phases(xess_jitter_phases(w, ow));
+        } else if (fsr3_available()) {  // (XeSS failed: the built-in FSR 3.1 for this frame and from here on, as DLSS's
+                                        //  NGX failure falls back; its history starts over)
+            g_settings.upscaler = UPSCALE_FSR3;
+            d.reset = true;
+            gp_mark(cb, "FSR 3 upscaler (XeSS failed)");
+            ok = fsr3_dispatch(&d);
+        }
+        return ok ? out : NULL;
+    }
     gp_mark(cb, api == 4 ? "FSR 4 upscaler" : "FSR 3 upscaler");
     // FidelityFX records into cb itself, and may wait for the device: the recorder thread makes the call, in its turn
     // (fsr3_run; with the recorder off, here and now). Waiting for the recorder and dispatching here cost this thread

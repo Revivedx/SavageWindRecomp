@@ -11,6 +11,10 @@
 #pragma once
 #include "vk.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // ---- start / mode (exec.c vk_exec_init, before any command)
 void rec_init(void);
 bool rec_on(void);  // commands go through the recorder thread
@@ -97,3 +101,7 @@ void rec_CmdResolveImage(VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkIm
                          const VkImageResolve *r);
 void rec_CmdCopyBufferToImage(VkCommandBuffer cb, VkBuffer src, VkImage dst, VkImageLayout dl, uint32_t n, const VkBufferImageCopy *r);
 void rec_CmdCopyImageToBuffer(VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkBuffer dst, uint32_t n, const VkBufferImageCopy *r);
+
+#ifdef __cplusplus
+}  // extern "C"
+#endif

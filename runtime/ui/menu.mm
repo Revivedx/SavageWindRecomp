@@ -939,6 +939,8 @@ static void tab_display(void) {
         std::string dlss = upscaler_available(UPSCALE_DLSS) ? std::string(tr("DLSS")) :
                            std::string(tr("DLSS")) + " " +
                                tr(dlss_fetch_missing() ? "(download it in Savage Wind Configuration)" : "(NVIDIA RTX only)");
+        std::string xess = upscaler_available(UPSCALE_XESS) ? std::string(tr("Intel XeSS")) :
+                           std::string(tr("Intel XeSS")) + " " + tr("(libxess.dll needed)");
 #ifdef __APPLE__
         const char *ups[] = {"Off", "MetalFX"};
         static const int ups_value[] = {UPSCALE_OFF, UPSCALE_METALFX};
@@ -946,8 +948,8 @@ static void tab_display(void) {
                          "scaling. MetalFX: Apple's upscaler, sharper.\n\nRendering below the window's size (the modes "
                          "below) is coming in a later version.";
 #else
-        const char *ups[] = {"Off", "AMD FSR 1", fsr3.c_str(), fsr4.c_str(), dlss.c_str()};
-        static const int ups_value[] = {UPSCALE_OFF, UPSCALE_FSR1, UPSCALE_FSR3, UPSCALE_FSR4, UPSCALE_DLSS};
+        const char *ups[] = {"Off", "AMD FSR 1", fsr3.c_str(), fsr4.c_str(), dlss.c_str(), xess.c_str()};
+        static const int ups_value[] = {UPSCALE_OFF, UPSCALE_FSR1, UPSCALE_FSR3, UPSCALE_FSR4, UPSCALE_DLSS, UPSCALE_XESS};
         // (the FSR 3 paragraph on its own: the first one keeps its translations)
         static std::string uds;
         uds = std::string(tr("Off: the 3D image renders at the window's resolution. AMD FSR 1: it renders smaller (the mode "
@@ -964,6 +966,10 @@ static void tab_display(void) {
         uds += std::string("\n\n") + tr("NVIDIA DLSS: like FSR 3, but NVIDIA's machine learning rebuilds the image. For NVIDIA "
                                           "RTX graphics cards on Windows, with NVIDIA's DLSS library, which Savage Wind "
                                           "Configuration downloads.");
+        if (upscaler_available(UPSCALE_XESS))  // (its own paragraph: the ones above keep their translations)
+            uds += std::string("\n\n") + tr("Intel XeSS: like FSR 3, but Intel's machine learning rebuilds the image. It runs on "
+                                              "every graphics card with DP4a (any recent GPU), with libxess.dll next to the game. "
+                                              "Sharpening has no effect with it.");
         const char *ud = uds.c_str();
 #endif
         enum { NU = sizeof ups_value / sizeof ups_value[0] };
@@ -1768,6 +1774,7 @@ static void perf_overlay_draw(ImGuiIO &io, float scale) {
         case UPSCALE_FSR3: line += tr("FSR 3"); break;
         case UPSCALE_FSR4: line += tr("FSR 4"); break;
         case UPSCALE_DLSS: line += tr("DLSS"); break;
+        case UPSCALE_XESS: line += tr("XeSS"); break;
         default: line += tr("Off");
     }
     int q = upscale_quality_now();
@@ -1778,7 +1785,7 @@ static void perf_overlay_draw(ImGuiIO &io, float scale) {
     }
     // (FSR 3 / 4 and DLSS anti-alias the scene themselves: the setting does nothing then)
     int aa = rt_antialias();
-    line += std::string(" | ") + tr("Anti-aliasing") + ": " + (rt_fsr4() ? tr("FSR 4") : rt_fsr3() ? tr("FSR 3") : rt_dlss() ? tr("DLSS") : aa == AA_TAA ? tr("TAA") : aa == AA_SMAA ? tr("SMAA") : g_settings.game_fxaa ? "FXAA" : tr("Off"));
+    line += std::string(" | ") + tr("Anti-aliasing") + ": " + (rt_fsr4() ? tr("FSR 4") : rt_fsr3() ? tr("FSR 3") : rt_dlss() ? tr("DLSS") : rt_xess() ? tr("XeSS") : aa == AA_TAA ? tr("TAA") : aa == AA_SMAA ? tr("SMAA") : g_settings.game_fxaa ? "FXAA" : tr("Off"));
     ImGui::TextDisabled("%s", line.c_str());
     line.clear();
 #ifndef __APPLE__

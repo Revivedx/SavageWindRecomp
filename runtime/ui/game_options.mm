@@ -144,7 +144,7 @@ const char *const k_perf[] = {"Off", "FPS", "Full"};
 #ifdef __APPLE__
 const int k_ups_value[] = {UPSCALE_OFF, UPSCALE_METALFX};
 #else
-const int k_ups_value[] = {UPSCALE_OFF, UPSCALE_FSR1, UPSCALE_FSR3, UPSCALE_FSR4, UPSCALE_DLSS};
+const int k_ups_value[] = {UPSCALE_OFF, UPSCALE_FSR1, UPSCALE_FSR3, UPSCALE_FSR4, UPSCALE_DLSS, UPSCALE_XESS};
 #endif
 #ifdef __APPLE__
 const int UPS_DEFAULT = 1;  // (UPSCALE_DEFAULT: MetalFX)
@@ -303,6 +303,7 @@ const char *ups_label(const Item &, int x) {
     if (u == UPSCALE_FSR3) return upscaler_available(u) ? tr("AMD FSR 3") : soon("FSR 3");
     if (u == UPSCALE_FSR4)
         return upscaler_available(u) ? tr("AMD FSR 4") : soon("FSR 4", fsr4_offered() ? "(coming soon)" : "(AMD Radeon only)");
+    if (u == UPSCALE_XESS) return upscaler_available(u) ? tr("Intel XeSS") : soon("XeSS", "(libxess.dll needed)");
     if (upscaler_available(UPSCALE_DLSS)) {
         static std::string available;
         available = tr("DLSS");
@@ -828,6 +829,7 @@ void build_items(void) {
     v.back().desc_fn = [](const Item &) {  // (one line)
         return g_settings.upscaler == UPSCALE_FSR4 ? tr("AMD FSR 4: renders smaller, then rebuilds detail with machine learning.")
              : g_settings.upscaler == UPSCALE_FSR3 ? tr("AMD FSR 3: renders smaller, then rebuilds detail from past frames.")
+             : g_settings.upscaler == UPSCALE_XESS ? tr("Intel XeSS: renders smaller, then rebuilds detail with machine learning.")
                                                    : tr("Off: full resolution. AMD FSR 1: renders smaller, then upscales.");
     };
     // With Upscaler Off no mode applies: the row has the one value Off, greyed, so its arrows go nowhere (rt_opt_read

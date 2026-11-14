@@ -29,6 +29,7 @@
 #include "vram.h"
 #include "record.h"
 #include "fsr_api.h"
+#include "xess.h"
 #include "../output_scale.h"
 #include "../renderer.h"
 #include "dlss.h"
@@ -101,6 +102,15 @@ static void create_instance(void) {
         for (uint32_t j = 0; j < n_ext; j++) duplicate |= !strcmp(ext[j], ngx_ext[i]);
         if (!duplicate) ext[n_ext++] = ngx_ext[i];
     }
+    // Intel XeSS's instance extensions, and its lowest Vulkan API version (xess.h; a no-op without libxess.dll)
+    const char *const *xess_iext = NULL;
+    uint32_t n_xess_iext = 0, xess_api = 0;
+    xess_required_instance_extensions(&xess_iext, &n_xess_iext, &xess_api);
+    for (uint32_t i = 0; i < n_xess_iext && n_ext < sizeof(ext) / sizeof(ext[0]); i++) {
+        bool duplicate = false;
+        for (uint32_t j = 0; j < n_ext; j++) duplicate |= !strcmp(ext[j], xess_iext[i]);
+        if (!duplicate) ext[n_ext++] = xess_iext[i];
+    }
     bool validate = getenv("SAVAGEWIND_VK_VALIDATION") != NULL;
     // (debugging) SAVAGEWIND_VK_ADDR_REPORT=<lo>-<hi> (hex GPU addresses): every bind and unbind of GPU memory in that
     // range ("[vkaddr]"), to name what a device fault's address was
@@ -121,6 +131,11 @@ static void create_instance(void) {
                              .applicationVersion = ver, .pEngineName = engine, .engineVersion = ver,
                              .apiVersion = VK_API_VERSION_1_3};
     LOG("[vk] application version %u.%u.%u (Savage Wind %s)\n", vmaj, vmin, vpatch * 100 + vpre, rt_version());
+    if (xess_api > app.apiVersion) {  // (XeSS's lowest Vulkan API version, when libxess.dll is next to the game)
+        app.apiVersion = xess_api;
+        LOG("[vk] XeSS raises the application's Vulkan API version to %u.%u.%u\n", VK_API_VERSION_MAJOR(xess_api),
+            VK_API_VERSION_MINOR(xess_api), VK_API_VERSION_PATCH(xess_api));
+    }
     VkInstanceCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app,
                                .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext,
                                .enabledLayerCount = validate ? 1 : 0, .ppEnabledLayerNames = layers};
@@ -492,6 +507,12 @@ static void create_device(void) {
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
     VkExtensionProperties *ep = calloc(ne, sizeof *ep);
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
+    // Intel XeSS (vulkan/xess.h): its own device extensions (VK_EXT_mutable_descriptor_type, most often) and its
+    // feature chain, asked of the library so its version decides (its features are appended to the device's chain)
+    const char *const *xess_ext = NULL;
+    uint32_t n_xess_ext = 0;
+    void *xess_features = NULL;
+    bool xess_dev_reqs = xess_required_device_extensions(g_vk.inst, g_vk.phys, &xess_ext, &n_xess_ext, &xess_features);
     VkPhysicalDeviceFeatures2 sparse_features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &sparse_features);
     LOG("[vk] sparse buffer capability: sparseBinding %s, sparseResidencyBuffer %s, address space %llu MB\n",
@@ -525,6 +546,9 @@ static void create_device(void) {
     const char *ext[64];
     uint32_t n_ext = 0;
     ext[n_ext++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+    // (XeSS's device extensions: only where the library asked for them, and only those the driver has)
+    for (uint32_t i = 0; xess_dev_reqs && i < n_xess_ext && n_ext < sizeof ext / sizeof ext[0]; i++)
+        if (has_ext(ep, ne, xess_ext[i])) ext[n_ext++] = xess_ext[i];
 
     const char *memory_priority_env = getenv("SAVAGEWIND_VK_MEMORY_PRIORITY");
     bool request_memory_priority = memory_priority_env && !strcmp(memory_priority_env, "1");
@@ -864,6 +888,15 @@ static void create_device(void) {
     VkPhysicalDeviceProvokingVertexFeaturesEXT pv_on = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT,
                                                          .provokingVertexLast = VK_TRUE, .pNext = next_feature};
     if (g_vk.provoking_last) next_feature = &pv_on;
+    // (Intel XeSS's feature chain last: the library patched its own structures onto it; its fields reach the device
+    // whichever end of the chain they hang on, but its pointer is only valid when the library asked for features)
+    if (xess_dev_reqs && xess_features) {
+        // (walk to the end of the library's chain and attach ours, so both are seen: ours is the chain head)
+        void *tail = xess_features;
+        for (VkBaseOutStructure *s = (VkBaseOutStructure *)tail; s->pNext; s = s->pNext) tail = s->pNext;
+        ((VkBaseOutStructure *)tail)->pNext = next_feature;
+        next_feature = xess_features;
+    }
     VkPhysicalDeviceFeatures2 f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = next_feature};
     VkPhysicalDeviceFeatures *b = &f.features, *h = &have.features;
     b->independentBlend = h->independentBlend;
@@ -1028,6 +1061,16 @@ static void create_device(void) {
     VK_CHECK(vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.dev));
     free(ep);  // (read up to here: extended dynamic state and the FSR 4 checks above, #488)
     fsr_api_probe(g_vk.dev, g_vk.phys);  // (logs what AMD's FSR DLLs offer this device; a no-op without them)
+    xess_probe(g_vk.inst, g_vk.dev, g_vk.phys);  // (makes the XeSS context where libxess.dll is next to the game)
+    if (g_settings.upscaler == UPSCALE_FSR4 && !fsr4_available()) {  // (a settings file from a PC with an AMD Radeon)
+        g_settings.upscaler = fsr3_available() && fsr3_upscaler_enabled() ? UPSCALE_FSR3 : UPSCALE_SPATIAL;
+        LOG("[fsr] FSR 4 is not offered on this GPU: upscaler %d instead\n", g_settings.upscaler);
+    }
+    if (g_settings.upscaler == UPSCALE_XESS && !xess_available()) {  // (a settings file from a PC with libxess.dll)
+        g_settings.upscaler = fsr3_available() && fsr3_upscaler_enabled() ? UPSCALE_FSR3 : UPSCALE_SPATIAL;
+        LOG("[xess] XeSS is not offered here (libxess.dll missing, or the GPU or driver can't run it): upscaler %d instead\n",
+            g_settings.upscaler);
+    }
     vkGetDeviceQueue(g_vk.dev, g_vk.qfam, 0, &g_vk.queue);
     g_vk.present_queue = g_vk.queue;
     if (qi.queueCount == 2) vkGetDeviceQueue(g_vk.dev, g_vk.qfam, 1, &g_vk.present_queue);

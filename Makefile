@@ -240,6 +240,10 @@ $(B)/ffx/%.o: $(FFX)/sdk/src/%.cpp $(FFX)/ffx_compat.h
 # sizes, and a context smaller than the SDK's own code writes overran the next one in memory)
 $(B)/rt/nvn/vulkan/framegen.o: CXXFLAGS := -include $(FFX)/ffx_compat.h $(FFX_INC) -I$(FFX)/spirv $(CXXFLAGS)
 $(B)/rt/nvn/vulkan/framegen.o: $(FFX)/spirv/ffx_shaders_vk.h $(FFX)/spirv/ffx_fsr3upscaler_vk.h $(FFX)/ffx_compat.h
+# Intel XeSS (runtime/nvn/vulkan/xess.cpp): its MIT-licensed headers (third_party/xess), loaded at run time
+XESS_INC := -Ithird_party/xess
+$(B)/rt/nvn/vulkan/xess.o: CXXFLAGS := $(XESS_INC) $(CXXFLAGS)
+$(B)/rt/nvn/vulkan/xess.o: third_party/xess/xess.h third_party/xess/xess_vk.h
 
 all: $(EXE) $(CONFIG_EXE) $(if $(strip $(GEN_SRC)),$(GAMELIB))  # (GEN_SRC is a space when there is no generated/)
 

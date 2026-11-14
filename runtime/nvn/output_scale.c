@@ -36,6 +36,8 @@ extern bool vk_dlss_available(void);
 #ifndef __APPLE__
 bool fsr3_available(void);  // (vulkan/fsr3.h: built in)
 bool fsr4_available(void);  // (vulkan/fsr_api.h: AMD's DLLs, on an AMD Radeon)
+bool xess_available(void);  // (vulkan/xess.h: libxess.dll next to the game)
+bool xess_usable(void);     // (the context made, and not failed this run)
 #endif
 // FSR 3 and FSR 4 upscaling were held back from 0.5.0 until the motion vectors left the render thread (recording them
 // there cost 1.2 ms a frame: RTX 3060, 1440p Quality, 130 fps native, 104 with FSR 3). Offered again since they are
@@ -55,7 +57,8 @@ bool upscaler_available(int u) {
 #else
     return u == UPSCALE_OFF || u == UPSCALE_FSR1 || (u == UPSCALE_FSR3 && fsr3_available() && fsr3_upscaler_enabled())
         || (u == UPSCALE_FSR4 && fsr4_available() && fsr3_upscaler_enabled())  // (FSR 4: the same switch as FSR 3)
-        || (u == UPSCALE_DLSS && vk_dlss_available());
+        || (u == UPSCALE_DLSS && vk_dlss_available())
+        || (u == UPSCALE_XESS && xess_available());
 #endif
 }
 
@@ -73,9 +76,13 @@ bool rt_fsr4(void) { return g_settings.upscaler == UPSCALE_FSR4 && upscaler_avai
 // FSR 3 asks for either; vulkan/exec.c fsr3_scene picks the one to run
 bool rt_fsr3(void) { return (g_settings.upscaler == UPSCALE_FSR3 && upscaler_available(UPSCALE_FSR3)) || rt_fsr4(); }
 
+// Intel XeSS (vulkan/xess.h): the same temporal inputs as FSR 3 (mvec's vectors, the depth, a jittered camera). It
+// runs on any GPU with DP4a, with libxess.dll next to the game.
+bool rt_xess(void) { return g_settings.upscaler == UPSCALE_XESS && xess_usable(); }
+
 bool rt_dlss(void) { return g_settings.upscaler == UPSCALE_DLSS && upscaler_available(UPSCALE_DLSS); }
 
-bool rt_temporal(void) { return rt_antialias() == AA_TAA || rt_fsr3() || rt_dlss(); }
+bool rt_temporal(void) { return rt_antialias() == AA_TAA || rt_fsr3() || rt_dlss() || rt_xess(); }
 
 double upscale_mode_factor(int q) {
     static const double f[UPQ_COUNT] = {1.3, 1.5, 1.7, 2.0, 3.0, 1.0};
