@@ -152,7 +152,7 @@ static void cmd_set(int argc, char **argv, ControlReply *r) {
     if (is(s, "color_lut_set") || is(s, "menu_tip_seen")) {
         control_fail(r, "%s is read-only", s->key); return;
     }
-#ifdef __APPLE__
+#ifdef SW_METAL
     if (is(s, "anisotropy") || is(s, "sharpening") || is(s, "frame_gen") || is(s, "game_fxaa") ||
         !strncmp(s->key, "color_", 6) || is(s, "hdr") || is(s, "hdr_white") || is(s, "vsync")) {
         control_fail(r, "%s is not supported by this backend", s->key); return;
@@ -212,7 +212,7 @@ static void cmd_set(int argc, char **argv, ControlReply *r) {
     if (is(s, "upscale_quality") && !upscale_modes_available()) {
         control_fail(r, "Quality modes unavailable"); return;
     }
-#ifdef __APPLE__
+#ifdef SW_METAL
     if (is(s, "antialias") && v == AA_TAA) {
         control_fail(r, "TAA requires the Vulkan backend"); return;
     }
