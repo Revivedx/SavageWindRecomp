@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "control.h"
 #include "game_sites.h"
 #include "online.h"
 #include "rt.h"
@@ -3273,10 +3274,81 @@ static void ground_update(Cpu *c, uint64_t player, const float link[3]) {
 
 volatile int g_online_block_a;  // (runtime/hle/input.c: A held back)
 
+// `actors <text>` (control): the live actors whose name has text in it, with where each is and how far from Link.
+// The control thread asks, the frame loop answers (the actor list is the game's, read on its thread only).
+#define FIND_MAX 40
+static struct {
+    volatile int state;  // 0 idle, 1 asked, 2 answered
+    char text[48];
+    int n;
+    struct { char name[48]; float pos[3], dist; } hit[FIND_MAX];
+} g_find;
+
+static void find_actors(uint64_t pinfo) {
+    if (__atomic_load_n(&g_find.state, __ATOMIC_ACQUIRE) != 1) return;
+    g_find.n = 0;
+    uint64_t player = pinfo ? *(uint64_t *)(uintptr_t)(pinfo + 0x60) : 0;
+    if (VALID(player)) {
+        const float *pm = (const float *)(uintptr_t)(player + 0x398);
+        int na = all_actors(*(uint64_t *)(uintptr_t)(player + 0x68), g_actors, MAX_ACTORS);
+        for (int k = 0; k < na && g_find.n < FIND_MAX; k++) {
+            char name[48];
+            actor_name_of(g_actors[k], name);
+            if (!strstr(name, g_find.text)) continue;
+            const float *m = (const float *)(uintptr_t)(g_actors[k] + 0x398);
+            float dx = m[3] - pm[3], dy = m[7] - pm[7], dz = m[11] - pm[11];
+            snprintf(g_find.hit[g_find.n].name, sizeof g_find.hit[0].name, "%s", name);
+            g_find.hit[g_find.n].pos[0] = m[3], g_find.hit[g_find.n].pos[1] = m[7], g_find.hit[g_find.n].pos[2] = m[11];
+            g_find.hit[g_find.n].dist = sqrtf(dx * dx + dy * dy + dz * dz);
+            g_find.n++;
+        }
+    }
+    __atomic_store_n(&g_find.state, 2, __ATOMIC_RELEASE);
+}
+
+static void cmd_actors(int argc, char **argv, ControlReply *r) {
+    if (argc != 2) { control_fail(r, "Usage: actors <part of an actor name>"); return; }
+    if (__atomic_load_n(&g_find.state, __ATOMIC_ACQUIRE) == 1) { control_fail(r, "A search is under way"); return; }
+    snprintf(g_find.text, sizeof g_find.text, "%s", argv[1]);
+    __atomic_store_n(&g_find.state, 1, __ATOMIC_RELEASE);
+    uint64_t until = plat_now_ns() + 2000000000ull;
+    while (__atomic_load_n(&g_find.state, __ATOMIC_ACQUIRE) != 2 && plat_now_ns() < until)
+        plat_wait_until_ns(plat_now_ns() + 5000000ull);
+    if (__atomic_load_n(&g_find.state, __ATOMIC_ACQUIRE) != 2) {
+        __atomic_store_n(&g_find.state, 0, __ATOMIC_RELEASE);
+        control_fail(r, "No answer from the game (no world, or online play off)");
+        return;
+    }
+    // (the lines for the console, which prints them; the same in one field for scripts)
+    char list[FIND_MAX * 96] = "";
+    size_t at = 0;
+    for (int k = 0; k < g_find.n; k++) {
+        control_text(r, "%s at %.1f %.1f %.1f (%.0f m)", g_find.hit[k].name, g_find.hit[k].pos[0], g_find.hit[k].pos[1],
+                     g_find.hit[k].pos[2], g_find.hit[k].dist);
+        if (at < sizeof list)
+            at += (size_t)snprintf(list + at, sizeof list - at, "%s%s %.1f %.1f %.1f %.0fm", k ? "; " : "",
+                                   g_find.hit[k].name, g_find.hit[k].pos[0], g_find.hit[k].pos[1], g_find.hit[k].pos[2],
+                                   g_find.hit[k].dist);
+    }
+    control_field_str(r, "actors", list);
+    control_text(r, "%d actor%s%s", g_find.n, g_find.n == 1 ? "" : "s", g_find.n == FIND_MAX ? " (first ones only)" : "");
+    control_field_int(r, "count", g_find.n);
+    __atomic_store_n(&g_find.state, 0, __ATOMIC_RELEASE);
+}
+
+void online_actors_control_init(void) {
+    static const ControlCmd cmds[] = {
+        {"actors", "<part of an actor name>", "The live actors with this in their name: where, how far from Link",
+         cmd_actors, CONTROL_PLAYER},
+    };
+    control_register(cmds, (int)(sizeof cmds / sizeof *cmds));
+}
+
 void rt_online_frame(Cpu *c) {
+    uint64_t pinfo = g_site.player_info ? *(uint64_t *)(uintptr_t)g_site.player_info : 0;
+    find_actors(pinfo);
     if (!online_actors_on()) return;
     int me = online_local_id();
-    uint64_t pinfo = g_site.player_info ? *(uint64_t *)(uintptr_t)g_site.player_info : 0;
     float link[3] = {0, 0, 0};
     if (pinfo) memcpy(link, (const void *)(uintptr_t)(pinfo + 0x88), sizeof link);
     bool in_world = pinfo && !framepace_title_ui() && (link[0] != 0 || link[1] != 0 || link[2] != 0);
