@@ -573,9 +573,16 @@ chest's flag set on the host was set on the client.
 The world's items (protocol 28: QUEST / QUESTS of 32768 flags, 4 KB every 2 s): the revival flag of each item lying
 about (`<map>_Item_*`), ore and object broken (`_Obj_*`), weapon lying about, barrel and crate (`_Barrel_*`,
 `_Kibako_*`) is in quests.txt too (21940 flags in all): taken or broken in one game, gone in the others the next time
-they load that place (one in view stays until then). A Blood Moon clears each game's own, and the others' bring them
-back: what was taken comes back only once every game has had its Blood Moon. Tested both ways (an item's flag set on
-the host, an ore's on the client), 60 fps kept.
+they load that place (one in view stays until then). Tested both ways (an item's flag set on the host, an ore's on
+the client), 60 fps kept.
+
+A Blood Moon (protocol 32: QUEST carries whose it is): the host's game keeps each game's flags as they came last (not
+all those ever sent), and the union it sends is of those and its own, so a flag every game has cleared leaves it. A
+game that sees 64 or more of these flags clear at once has had a Blood Moon: those the union still has then (the
+others' from before theirs) aren't set in it again, until the union drops them; one taken after is. So what was
+taken comes back in each game at its own Blood Moon. Tested with `bloodmoon` (developer mode: clears this game's
+world flags, as one does): 70 items set on the host, cleared on the client, stayed clear there while the host still
+had them; cleared on the host too, clear in both; one set again on the host, set again on the client.
 
 The time of day is the host's (protocol 10): his game's frame loop publishes its hour (`test_warp_hour`), his
 server sends it to everyone every 2 s (TIME), and the others set theirs to it (`test_warp_set_hour`) when it is off
@@ -604,7 +611,7 @@ look for that child.
 
 Driving them (tools/swctl.py --port <p> ...): `teleport` / `goto <place>` (one map only: a shrine's or a Divine
 Beast's needs walking in), `look`, `press` / `hold` / `release` / `stick` for input, `set god_mode true`, `time`,
-`give`; and for online play `actors <text>` (live actors: where, how far, their address), `flag` / `setflag` (read
+`give`; and for online play `bloodmoon` (this game's world flags cleared, as a Blood Moon does), `actors <text>` (live actors: where, how far, their address), `flag` / `setflag` (read
 a game data flag; set one, which the other game then takes like any flag this player gets: `setflag
 IsGet_Obj_HeroSoul_Rito` on one game gave the other Revali's Gale) and `event <flow> [entry]` (an event on Link; one
 out of its context can hang). Positions to stand at come from the map data: an object's front is P + d*(sin r,
@@ -636,7 +643,8 @@ Recipes that found the bugs above:
   (made again when it changes; tested: a dye written on the host made the client's piece again). Whether an
   OnlineArmor (a DemoNPC) shows it is still to see; if not, the colour has to go on its materials.
 - The world's objects moved (not taken), players in the same shrine
-  or Divine Beast is fine (the same map: shown), a Blood Moon at the same time.
+  or Divine Beast is fine (the same map: shown), a Blood Moon at the same time (each game has its own; its WM_BloodyMoonTimer
+  is a game data f32 that the game recomputes into TimeMgr +0xc8: a write there doesn't stay).
 - The beam is not seen working yet: in the test runs (full hearts, the Master Sword) the game fired none, with or
   without online play, so `beam_move` and OnlineBeam are untested.
 - Magnesis' blue beam from the slate to what it holds (not a named effect of the player's, ReactionHit's or

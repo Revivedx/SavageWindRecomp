@@ -37,7 +37,7 @@ typedef int sock_t;
 #include "rt.h"
 
 #define MAGIC 0x4c4f5753u  // "SWOL"
-#define PROTOCOL 31  // (31: STATE carries his horse's saddle and reins; 30: the horse he rides; 29: his blows)
+#define PROTOCOL 32  // (32: QUEST carries whose it is; 31: his horse's saddle and reins; 30: the horse he rides)
 static volatile float g_local_hour = -1;  // (the local game's hour, from the frame loop: online_set_local_hour)
 #define SEND_HZ 20
 #define INTERP_NS 100000000ull  // the others are drawn this far behind what was last heard (smooth between updates)
@@ -274,8 +274,10 @@ static bool srv_message(Server *sv, int i, uint8_t type, const uint8_t *p, int l
         if (len >= 4) srv_broadcast(sv, i, type, &id, 1, p, len);
         break;
     case M_LOOTS:  // (the host's game's list, to the others)
+    case M_QUEST:   // (a game's own, to the host's game, with whose it is)
+        srv_broadcast(sv, i, type, &id, 1, p, len);
+        break;
     case M_QUESTS:  // (the host's game's union, to the others)
-    case M_QUEST:   // (a game's own, to the host's game)
     case M_PICK:    // (a weapon picked up, to everyone)
         srv_broadcast(sv, i, type, p, len, NULL, 0);
         break;
@@ -455,6 +457,7 @@ static struct {
     int nla_out, nla_in, nlt_out, nlt_in, nloots;
     bool loots_new;
     uint8_t quest_out[ONLINE_QUEST_BYTES], quest_in[ONLINE_QUEST_BYTES], quests[ONLINE_QUEST_BYTES];
+    uint8_t quest_of[ONLINE_MAX][ONLINE_QUEST_BYTES];  // (the host's game: each game's own as it came last)
     bool quest_out_new, quest_in_new, quests_have, quests_new;
     struct { char name[40]; float pos[3]; } pick_out[8], pick_in[16];  // (PICK: to send, come)
     int npick_out, npick_in;
@@ -646,6 +649,10 @@ void online_send_quests(const uint8_t m[ONLINE_QUEST_BYTES]) {
 bool online_take_quests(uint8_t m[ONLINE_QUEST_BYTES]) {
     pthread_mutex_lock(&g.lock);
     bool n = g.quest_in_new;
+    memset(g.quest_in, 0, ONLINE_QUEST_BYTES);  // (the games here now: each one's last)
+    for (int i = 0; i < ONLINE_MAX; i++)
+        if (g.r[i].used && i != g.id)
+            for (int k = 0; k < ONLINE_QUEST_BYTES; k++) g.quest_in[k] |= g.quest_of[i][k];
     memcpy(m, g.quest_in, ONLINE_QUEST_BYTES), g.quest_in_new = false;
     pthread_mutex_unlock(&g.lock);
     return n;
@@ -1018,9 +1025,9 @@ static bool cl_message(uint8_t type, const uint8_t *p, int len) {
     case M_LOOT_TAKE:
         if (len >= 5 && g.hosting && g.nlt_in < 32) memcpy(&g.lt_in[g.nlt_in++], p + 1, 4);
         break;
-    case M_QUEST:
-        if (len >= ONLINE_QUEST_BYTES && g.hosting) {
-            for (int k = 0; k < ONLINE_QUEST_BYTES; k++) g.quest_in[k] |= p[k];
+    case M_QUEST:  // (each game's own as it is now: the union is of those, so what a Blood Moon cleared everywhere goes)
+        if (len >= 1 + ONLINE_QUEST_BYTES && g.hosting && p[0] < ONLINE_MAX) {
+            memcpy(g.quest_of[p[0]], p + 1, ONLINE_QUEST_BYTES);
             g.quest_in_new = true;
         }
         break;

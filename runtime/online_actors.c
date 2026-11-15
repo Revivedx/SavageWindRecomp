@@ -3151,10 +3151,15 @@ static int korok_event(Cpu *c, uint64_t player, const char *flag) {
     return ok ? 1 : -1;
 }
 
+static volatile int g_fake_blood_moon;  // (`bloodmoon`, developer mode: the world's flags cleared here, as one does)
+
 static void quests_update(Cpu *c, uint64_t player, bool host) {
     static MapLine *m;
     static char names[ONLINE_QUEST_BYTES * 8][48];
     static uint32_t hash[ONLINE_QUEST_BYTES * 8];
+    // (the world's items and chests, the flags a Blood Moon clears: after one here, those the others' union still has
+    // from before it aren't set here again (until the union drops them, every game past its own); those taken after are)
+    static uint8_t revival[ONLINE_QUEST_BYTES], held_off[ONLINE_QUEST_BYTES], had[ONLINE_QUEST_BYTES];
     static int n = -1, tick;
     if (n < 0) {  // (quests.txt: a name a line; map_load wants key=value)
         n = 0;
@@ -3166,6 +3171,9 @@ static void quests_update(Cpu *c, uint64_t player, bool host) {
             line[strcspn(line, "\r\n")] = 0;
             if (!line[0]) continue;
             snprintf(names[n], sizeof names[n], "%s", line);
+            if (strstr(line, "_TBox_") || strstr(line, "_Item_") || strstr(line, "_Obj_") || strstr(line, "_Weapon_") ||
+                strstr(line, "_Barrel_") || strstr(line, "_Kibako_"))
+                revival[n >> 3] |= (uint8_t)(1 << (n & 7));
             hash[n] = crc32_str(line), n++;
         }
         if (f) fclose(f);
@@ -3196,9 +3204,26 @@ static void quests_update(Cpu *c, uint64_t player, bool host) {
         counted = true;
     }
     uint8_t mine[ONLINE_QUEST_BYTES] = {0}, all[ONLINE_QUEST_BYTES];
+    if (__atomic_exchange_n(&g_fake_blood_moon, 0, __ATOMIC_ACQ_REL))
+        for (int k = 0; k < n; k++) {
+            uint32_t *v = revival[k >> 3] >> (k & 7) & 1 ? bool_flag(hash[k]) : NULL;
+            if (v) *v &= ~1u;
+        }
     for (int k = 0; k < n; k++) {
         uint32_t *v = bool_flag(hash[k]);
         if (v && (*v & 1)) mine[k >> 3] |= (uint8_t)(1 << (k & 7));
+    }
+    {   // a Blood Moon here: many of the revival flags this game had are clear at once
+        int cleared = 0;
+        for (int b = 0; b < ONLINE_QUEST_BYTES; b++) cleared += __builtin_popcount(had[b] & ~mine[b] & revival[b]);
+        static bool had_once;
+        if (had_once && cleared >= 64) {
+            uint8_t u[ONLINE_QUEST_BYTES];
+            bool got = host ? (online_take_quests(u), true) : online_quests(u);
+            for (int b = 0; got && b < ONLINE_QUEST_BYTES; b++) held_off[b] |= u[b] & revival[b];
+            LOG("[online] a Blood Moon here: %d of the world's flags cleared; the others' from before aren't set again\n", cleared);
+        }
+        memcpy(had, mine, sizeof had), had_once = true;
     }
     bool have;
     if (host) {
@@ -3227,8 +3252,10 @@ static void quests_update(Cpu *c, uint64_t player, bool host) {
     }
     extern bool framepace_in_event(void);
     bool korok_started = false;
+    for (int b = 0; have && b < ONLINE_QUEST_BYTES; b++) held_off[b] &= all[b];  // (gone from the union: set again later)
     for (int k = 0; have && k < n; k++) {
         if (!(all[k >> 3] >> (k & 7) & 1) || (mine[k >> 3] >> (k & 7) & 1)) continue;
+        if (held_off[k >> 3] >> (k & 7) & 1) continue;  // (from before this game's Blood Moon)
         if (by_event && (!strcmp(names[k], "IsGet_PortableUnit") || !strcmp(names[k], "PortableUnit_PowerOn") ||
                          !strcmp(names[k], "OP_DRC") || !strcmp(names[k], "Open_FirstDoor") ||
                          !strcmp(names[k], "IsPlayed_Demo700_0"))) continue;
@@ -3783,6 +3810,11 @@ static void flag_cmd(int argc, char **argv, ControlReply *r, bool set) {
 }
 static void cmd_flag(int argc, char **argv, ControlReply *r) { flag_cmd(argc, argv, r, false); }
 static void cmd_setflag(int argc, char **argv, ControlReply *r) { flag_cmd(argc, argv, r, true); }
+static void cmd_bloodmoon(int argc, char **argv, ControlReply *r) {
+    (void)argc, (void)argv;
+    __atomic_store_n(&g_fake_blood_moon, 1, __ATOMIC_RELEASE);
+    control_text(r, "The world's shared flags (items, chests) are cleared here on the next check");
+}
 
 // `event <flow> [entry]` (control, developer mode): an event started on Link, as an EventTag starts its own
 // (start_event), on the frame loop; for tests that need a story step without playing up to it
@@ -3875,6 +3907,7 @@ void online_actors_control_init(void) {
          CONTROL_PLAYER},
         {"event", "<flow> [entry]", "Start an event on Link (entry: the flow's name if left out)", cmd_event, 0},
         {"setflag", "<bool flag name>", "Set a game data bool flag (as the game's setter does), then show it", cmd_setflag, 0},
+        {"bloodmoon", "", "Clear the world's shared flags (items, chests) here, as a Blood Moon does", cmd_bloodmoon, 0},
     };
     control_register(cmds, (int)(sizeof cmds / sizeof *cmds));
 }
