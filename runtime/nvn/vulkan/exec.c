@@ -8606,8 +8606,8 @@ static void draw_(CmdRec *r, bool indexed) {
         // the streams the vertex shader's attributes read: per-vertex ones are part of the draw's identity (their
         // addresses), instanced ones are inputs (copied by mvec.c)
         uint32_t vs_streams = 0;
-        for (int a = 0; a < 16 && a < st.nattrib; a++)
-            if ((pr->vi->attr_mask >> a) & 1) vs_streams |= 1u << ((st.attrib[a] >> 8) & 0x1F);
+        for (uint32_t m = pr->vi->attr_mask & 0xFFFF & ((1u << (st.nattrib < 16 ? st.nattrib : 16)) - 1); m; m &= m - 1)
+            vs_streams |= 1u << ((st.attrib[__builtin_ctz(m)] >> 8) & 0x1F);
         for (uint32_t m = vs_streams & 0xFFFF; m; m &= m - 1) {
             int s = __builtin_ctz(m);
             if (s >= st.nstream || !st.vbuf[s].addr) continue;
@@ -8615,9 +8615,10 @@ static void draw_(CmdRec *r, bool indexed) {
             else if (md.h.ninst < MVEC_INST)
                 md.in[md.h.ninst++] = (MvecInst){st.vbuf[s].addr, st.vbuf[s].size, st.stream[s][0], st.stream[s][1], (uint32_t)s, 0};
         }
-        for (int k = 3; k < 17 && md.h.ncb < MVEC_CB; k++) {  // (the game's buffers: cbuf_info's k >= 3)
+        for (uint32_t m = (uint32_t)(pr->vi->cbuf_mask >> 3) & 0x3FFF; m && md.h.ncb < MVEC_CB; m &= m - 1) {  // (the game's buffers: cbuf_info's k >= 3)
+            int k = 3 + __builtin_ctz(m);
             Range u = st.ubuf[0][k - 3];
-            if (!((pr->vi->cbuf_mask >> k) & 1) || !u.addr) continue;
+            if (!u.addr) continue;
             uint64_t size = pr->vi->cbuf_size[k] ? pr->vi->cbuf_size[k] : 256;
             if ((pr->vi->cbuf_dynamic & (1u << k)) && u.size) size = u.size > 0x10000 ? 0x10000 : u.size;
             if (size > u.size && u.size) size = u.size;
@@ -10922,7 +10923,6 @@ static TexBackend *dlss_scene(VkCommandBuffer cb, TexBackend *color, uint32_t ow
     TexBackend *o = post_image_ex(34, ow, oh, of, VK_IMAGE_USAGE_STORAGE_BIT);  // (NGX writes it as a storage image)
     vk_full_barrier(cb);
     gp_mark(cb, "DLSS: %ux%u -> %ux%u", color->width, color->height, ow, oh);
-    rec_drain();  // (NGX records into cb itself: what was queued before goes first)
     uint32_t w = color->width, h = color->height;
     float flip = nvn_window_origin() == 0 ? -1.0f : 1.0f;  // (the game's NDC y to clip y, as fsr3_scene's)
     float sx = objv ? -0.5f * (float)w : (float)mv->width, sy = objv ? 0.5f * (float)h : (float)mv->height;
