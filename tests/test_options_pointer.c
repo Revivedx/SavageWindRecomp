@@ -385,6 +385,24 @@ int main(void) {
     rt_pc_cursor_manager(&cpu,0x7000f57da8,0x7000123404);
     assert(!click_pending&&(pc_cursor_buttons(0)&1));
     now+=60000000;assert(!(pc_cursor_buttons(0)&1));
+    // Text speed options: Fast holds Button B (bit 1) when no response choices are open.
+    g_settings.text_speed = TEXT_SPEED_FAST;
+    ST8(header+0xfe,2); pc_cursor_frame(); assert(dialogue_active);
+    assert(pc_cursor_buttons(0) & 2);
+    // Response buttons suppress Fast button injection so choices are not dismissed.
+    ST64(header+0x90,node+0x40); pc_cursor_frame();
+    assert(!(pc_cursor_buttons(0) & 2));
+    ST64(header+0x90,header+0x88); pc_cursor_frame();
+    // Instant mode pulses confirm (Button A) when dialogue begins.
+    g_settings.text_speed = TEXT_SPEED_INSTANT;
+    pc_cursor_reset();
+    ST8(header+0xfe,2); pc_cursor_frame(); assert(dialogue_active);
+    assert(!(pc_cursor_buttons(0) & 1));
+    now += 120000000;
+    assert(pc_cursor_buttons(0) & 1);
+    now += 60000000;
+    assert(!(pc_cursor_buttons(0) & 1));
+    g_settings.text_speed = TEXT_SPEED_NORMAL;
     ST8(header+0xfe,0);pc_cursor_frame();assert(!dialogue_active);
     // Preview gestures must never inject ZL or directional buttons.
     held=true;pointer_keyboard_input=false;

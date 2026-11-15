@@ -444,19 +444,23 @@ int vk_keylog_read(VkKeyLogEntry **out) {
 }
 
 // The translation's id (its cache/xlate name) and the header its file has
-static uint64_t xlate_id(const uint8_t *code, size_t max_size, int stage, const ShaderKey *key, XlateHeader *hd) {
+static uint64_t xlate_id_as(const char *id, const uint8_t *code, size_t max_size, int stage, const ShaderKey *key,
+                            XlateHeader *hd) {
     memset(hd, 0, sizeof *hd);
     memcpy(hd->magic, XLATE_MAGIC, 4);
     hd->info_size = sizeof(ShaderInfo);
     hd->bin_size = (uint32_t)maxwell_binary_size(code, max_size, stage);
     hd->key = *key;
     hd->stage = stage;
-    const char *id = maxwell_translator_id();
     uint64_t h = hash64(0xcbf29ce484222325ull, id, strlen(id));
     h = hash64(h, hd, sizeof *hd);
     h = hash64(h, code, hd->bin_size);
     if (maxwell_wet_lighting(code, max_size, stage)) h = hash64(h, "wet", 3);  // (Video > Wet grass fix: its own translation)
     return h ? h : 1;
+}
+
+static uint64_t xlate_id(const uint8_t *code, size_t max_size, int stage, const ShaderKey *key, XlateHeader *hd) {
+    return xlate_id_as(maxwell_translator_id(), code, max_size, stage, key, hd);
 }
 
 // The id a translation of this binary with this key has (precompile.c: the pipeline seed names shaders by binary
@@ -466,6 +470,10 @@ uint64_t vk_translate_id_for(const uint8_t *code, size_t max_size, int stage, co
     // (the seed's export only) SAVAGEWIND_SEED_LIST_ID=<translator id>: the ids as a list of a build before the
     // variant change named them (its translator id with the switches in it, the SWX2 file format), so a playthrough's
     // list from such a build can be exported once
+    // SAVAGEWIND_SEED_TRANSLATOR=<translator id>: the ids as another build of the same file format named them (a
+    // player's list from a problem report: --seed-from-report)
+    const char *other = getenv("SAVAGEWIND_SEED_TRANSLATOR");
+    if (other && *other) return xlate_id_as(other, code, max_size, stage, key, &hd);
     const char *old = getenv("SAVAGEWIND_SEED_LIST_ID");
     if (!old || !*old) return xlate_id(code, max_size, stage, key, &hd);
     memset(&hd, 0, sizeof hd);
@@ -1464,7 +1472,7 @@ static const char *builtin_src(const char *name, int *stage) {
                "  float peak = -1.0 / mix(8.0, 5.0, clamp(pc.a.x, 0.0, 1.0));\n"
                "  float w = amp.g * peak;\n"
                "  vec3 r = (b * w + d * w + f * w + h * w + e) / (1.0 + 4.0 * w);\n"
-               "  o = vec4(clamp(r, 0.0, 1.0), e4.a);\n"
+               "  o = vec4(max(r, 0.0), e4.a);\n"
                "}\n";
     }
     // Colour grading of the 3D scene (Video > Colour; exec.c scene_post, runtime/color_grade.h). The scene holds
@@ -1486,6 +1494,7 @@ static const char *builtin_src(const char *name, int *stage) {
     "  vec3 c = s.rgb * pc.g.rgb;\n"                                                                            \
     "  float y = dot(c, vec3(0.2126, 0.7152, 0.0722));\n"                                                       \
     "  c = max(mix(vec3(y), c, pc.a.x), 0.0);\n"                                                                \
+    "  vec3 hdr = max(c - vec3(1.0), vec3(0.0));\n"                                                             \
     "  vec3 x = enc(min(c, 1.0));\n"                                                                            \
     "  vec3 lo = 0.5 * pow(2.0 * x, vec3(pc.g.w)), hi = 1.0 - 0.5 * pow(max(2.0 - 2.0 * x, 0.0), vec3(pc.g.w));\n" \
     "  x = mix(lo, hi, step(0.5, x));\n"                                                                        \
@@ -1494,7 +1503,7 @@ static const char *builtin_src(const char *name, int *stage) {
     "  vec3 l = texture(t1, u * ((pc.a.z - 1.0) / pc.a.z) + 0.5 / pc.a.z).rgb;\n"                               \
     "  x = mix(x, clamp(l, 0.0, 1.0), pc.a.y);\n"                                                               \
     "#endif\n"                                                                                                  \
-    "  o = vec4(dec(x), s.a);\n"                                                                                \
+    "  o = vec4(dec(x) + hdr, s.a);\n"                                                                          \
     "}\n"
         if (name[5] == '_')
             return "#version 450\n#define LUT 1\nlayout(set = 0, binding = 1) uniform sampler3D t1;\n" GRADE_BODY;

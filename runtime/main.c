@@ -336,6 +336,7 @@ static int dump_romfs(const char *root, const char *out_path) {
 enum { LAUNCHER_SETUP, LAUNCHER_CONFIG, LAUNCHER_NONE };
 void launcher_run(const char *root, int mode);
 bool launcher_game_ready(const char *root);
+int launcher_prepare(const char *root, const char *src);  // --prepare --game <folder>: the setup, without a window
 bool launcher_config_key_held(void);  // (macOS: Option held while the app opens)
 
 int main(int argc, char **argv) {
@@ -358,12 +359,17 @@ int main(int argc, char **argv) {
     bool skip_launcher = getenv("SAVAGEWIND_NO_LAUNCHER") || getenv("SAVAGEWIND_INPUT");  // tests boot straight in
     bool config = false, game_first = false;
     static char arg_root[1024];
-    const char *dump = NULL, *seed_out = NULL;
-    bool scan = false, precompile = false, add_steam = false;
+    const char *dump = NULL, *seed_out = NULL, *game_src = NULL;
+    bool scan = false, precompile = false, add_steam = false, prepare = false;
+    // (--game takes a folder only with --prepare: a plain --game stays the Steam entry below)
+    for (int i = 1; i < argc; i++) prepare |= !strcmp(argv[i], "--prepare");
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--play")) skip_launcher = true;
         else if (!strcmp(argv[i], "--config")) config = true;
-        else if (!strcmp(argv[i], "--game")) game_first = true;  // (the Steam entry: into the game when it's ready)
+        else if (!strcmp(argv[i], "--game")) {
+            game_first = true;  // (the Steam entry: into the game when it's ready)
+            if (prepare && i + 1 < argc && argv[i + 1][0] != '-') game_src = argv[++i];
+        }
         else if (!strcmp(argv[i], "--dump-romfs") && i + 1 < argc) dump = argv[++i];
         else if (!strcmp(argv[i], "--scan-shaders")) scan = true;
         else if (!strcmp(argv[i], "--add-to-steam")) add_steam = true;
@@ -390,6 +396,13 @@ int main(int argc, char **argv) {
         fprintf(stderr, "[steam] %s\n", msg);
         printf("%s\n", msg);
         return ok ? 0 : 1;
+    }
+    if (prepare) {  // a launcher brings the player's own copy: the setup of the start screen, with no window
+        if (!game_src) {
+            fprintf(stderr, "[prepare] --prepare needs --game <folder with exefs and romfs>\n");
+            return 1;
+        }
+        return launcher_prepare(root, game_src);
     }
 #ifndef __APPLE__
     if (precompile) return precompile_shaders(root);

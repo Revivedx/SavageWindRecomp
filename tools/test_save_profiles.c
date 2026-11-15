@@ -19,6 +19,9 @@
 #endif
 #include "../runtime/services/save_profiles.h"
 #include "../runtime/services/save_convert.h"
+#include "../runtime/settings.h"
+
+Settings g_settings;  // (save_profiles.c reads save_dir: Options > Saves > Save folder, empty here)
 
 static int checks;
 // A directory link: a symlink here, a junction on Windows (needs no privilege there)

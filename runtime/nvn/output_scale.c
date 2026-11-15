@@ -78,8 +78,8 @@ bool rt_dlss(void) { return g_settings.upscaler == UPSCALE_DLSS && upscaler_avai
 bool rt_temporal(void) { return rt_antialias() == AA_TAA || rt_fsr3() || rt_dlss(); }
 
 double upscale_mode_factor(int q) {
-    static const double f[UPQ_COUNT] = {1.3, 1.5, 1.7, 2.0, 3.0};
-    return q == UPQ_COUNT ? 1.0 : q >= 0 && q < UPQ_COUNT ? f[q] : 1.5;  // (UPQ_COUNT: SAVAGEWIND_UPSCALE_AT fsr3-native)
+    static const double f[UPQ_COUNT] = {1.3, 1.5, 1.7, 2.0, 3.0, 1.0};
+    return q >= 0 && q < UPQ_COUNT ? f[q] : 1.5;
 }
 
 // Rendering below the window's size: the 3D scene's render targets at their own scale (vulkan/textures.c). Metal has
@@ -101,6 +101,7 @@ bool upscale_modes_available(void) {
 // any size. SAVAGEWIND_UPSCALE_ANY=1: offered at any size, as before.
 static volatile int g_out_lines;  // the window's height (output_scale; 0: not known yet)
 bool upscale_mode_offered(int q) {
+    if (q == UPQ_NATIVE) return g_settings.upscaler == UPSCALE_FSR3 || g_settings.upscaler == UPSCALE_FSR4;
     static int any = -1;
     if (any < 0) any = getenv("SAVAGEWIND_UPSCALE_ANY") && atoi(getenv("SAVAGEWIND_UPSCALE_ANY")) != 0;
     if (q != UPQ_ULTRA_PERFORMANCE || any || !(rt_fsr3() || rt_dlss())) return true;
@@ -109,7 +110,7 @@ bool upscale_mode_offered(int q) {
 
 int upscale_quality_now(void) {
     int q = g_settings.upscale_quality;
-    return upscale_mode_offered(q) ? q : UPQ_PERFORMANCE;
+    return upscale_mode_offered(q) ? q : (q == UPQ_NATIVE ? UPQ_QUALITY : UPQ_PERFORMANCE);
 }
 
 double upscale_factor(void) {
@@ -149,31 +150,32 @@ void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
                    (shape < 1 || !framepace_loading_ui());
     if (!reshape) shape = 1.0;
     // render height in units of the Switch's 1080 lines: the window's (Metal: divided by the upscaler's factor)
-#ifdef __APPLE__
-    double out_div = upscale_factor(), scene_div = 1.0;
-#else
-    double out_div = 1.0, scene_div = upscale_factor();
-#endif
     // Video > Render scale: above 100% everything renders bigger than the window and is scaled down to it
     // (supersampling: the cleanest anti-aliasing, at the GPU's cost); below it smaller, scaled up (faster, blurrier).
-    // MAX_TEX below still caps it.
+    // MAX_TEX below still caps it. On Vulkan, only the 3D scene (RS_SCENE) scales with render_scale so the UI/HUD
+    // stays sharp at the output resolution (#746).
     static const double ss_f[RSCALE_COUNT] = {0.5, 0.75, 1.0, 1.25, 1.5, 2.0};
     int rsi = g_settings.render_scale;
     double ss = rsi >= 0 && rsi < RSCALE_COUNT ? ss_f[rsi] : 1.0;
+#ifdef __APPLE__
+    double out_div = upscale_factor(), scene_div = 1.0, ui_ss = ss, scene_ss = 1.0;
+#else
+    double out_div = 1.0, scene_div = upscale_factor(), ui_ss = 1.0, scene_ss = ss;
+#endif
     // Near-16:9 integer resolutions like 1366x768 (768 * 16/9 = 1365.33) would otherwise render 1365px wide and
     // resample at a sub-pixel horizontal offset into the 1366px window (#770); snap <2px rounding to exact 1:1.
     bool near_fit = !reshape && forced <= 0 && wide_test <= 0 &&
                     fabs(dw - 1920.0 * fit) < 2.0 && fabs(dh - 1080.0 * fit) < 2.0;
-    double h = forced > 0 ? forced : (reshape ? dh / 1080.0 : fit) / out_div * ss;
+    double h = forced > 0 ? forced : (reshape ? dh / 1080.0 : fit) / out_div * ui_ss;
     h = fmax(h, 0.1);  // (a tiny window)
-    double sx = near_fit ? fmax((dw / 1920.0) / out_div * ss, 0.1) : h * shape;
-    double sy = near_fit ? fmax((dh / 1080.0) / out_div * ss, 0.1) : h;
+    double sx = near_fit ? fmax((dw / 1920.0) / out_div * ui_ss, 0.1) : h * shape;
+    double sy = near_fit ? fmax((dh / 1080.0) / out_div * ui_ss, 0.1) : h;
     double cap = fmin(MAX_TEX / (1920.0 * sx), MAX_TEX / (1080.0 * sy));
     if (cap < 1.0) { sx *= cap; sy *= cap; }
     o->sx = sx; o->sy = sy; o->shape = shape;
     // the 3D scene (BOTW docked: 1600x900, composited into the 1920x1080 final image) at the final image's
-    // resolution, divided by the upscaler's factor
-    double k = 1080.0 / SCENE_LINES / scene_div;
+    // resolution, scaled by Video > Render scale (on Vulkan) and divided by the upscaler's factor
+    double k = 1080.0 / SCENE_LINES / scene_div * scene_ss;
     o->scene_sx = sx * k; o->scene_sy = sy * k;
     double scap = fmin(MAX_TEX / (1920.0 * o->scene_sx), MAX_TEX / (1080.0 * o->scene_sy));
     if (scap < 1.0) { o->scene_sx *= scap; o->scene_sy *= scap; }

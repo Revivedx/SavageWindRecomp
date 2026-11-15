@@ -20,8 +20,8 @@ enum { UPSCALE_OFF = 0, UPSCALE_METALFX = 1 /* macOS */, UPSCALE_FSR1 = 2 /* AMD
 #define UPSCALE_DEFAULT UPSCALE_OFF      // the 3D image at the window's resolution
 #endif
 // quality modes, AMD's scale factors (per axis): Ultra Quality 1.3, Quality 1.5, Balanced 1.7, Performance 2.0,
-// Ultra Performance 3.0
-enum { UPQ_ULTRA = 0, UPQ_QUALITY = 1, UPQ_BALANCED = 2, UPQ_PERFORMANCE = 3, UPQ_ULTRA_PERFORMANCE = 4, UPQ_COUNT };
+// Ultra Performance 3.0, Native 1.0 (FSR 3 / FSR 4)
+enum { UPQ_ULTRA = 0, UPQ_QUALITY = 1, UPQ_BALANCED = 2, UPQ_PERFORMANCE = 3, UPQ_ULTRA_PERFORMANCE = 4, UPQ_NATIVE = 5, UPQ_COUNT };
 // TAA (Vulkan): the game's own motion vectors (vulkan/mvec.c) and a jittered camera (output_scale.c rt_jitter_on)
 // blend each frame with the ones before it (vulkan/exec.c mvec_taa)
 enum { AA_OFF = 0, AA_SMAA = 1, AA_TAA = 2 };
@@ -76,6 +76,8 @@ enum { AUDIO_OUT_STEREO = 0, AUDIO_OUT_SURROUND_51 = 1, AUDIO_OUT_HEADPHONES_3D 
 // The start screen's background, when there is no splash.jpg / .png of the player's in the data folder
 enum { START_PICTURE_ART, START_PICTURE_SCREENSHOT, START_PICTURE_SAVE, START_PICTURE_COUNT };
 
+// Gameplay > Dialogue text speed (runtime/pc_cursor.c): speed at which dialogue text appears during conversations
+enum { TEXT_SPEED_NORMAL = 0, TEXT_SPEED_FAST = 1, TEXT_SPEED_INSTANT = 2, TEXT_SPEED_COUNT = 3 };
 typedef struct {
     bool fullscreen;
     int fullscreen_mode;     // FSMODE_*
@@ -111,6 +113,9 @@ typedef struct {
     int gpu;             // Vulkan adapter index from the startup log; -1: automatic (restart required)
     bool quick_drop;      // native dropping from the quick equipment selector
     bool quick_sort;      // native sorting in the quick equipment selector
+    bool menu_wrap;      // the game's menus wrap around: past the last button to the first (runtime/menu_wrap.c)
+    bool discord_rpc;     // Options > Gameplay: the player's Discord status shows where they are in the game
+                          // (Windows; talks to the Discord app's local pipe only, never the network; off by default)
     bool dpad_move;      // the d-pad (and arrow keys) also act as the left stick while it is at rest
     bool stick_cam_on;   // Controls > Controller camera speed: stick_cam_x and _y apply (off: the game's own speed)
     int stick_cam_x, stick_cam_y;  // the right stick's camera speed, left and right / up and down, percent of the game's
@@ -141,10 +146,35 @@ typedef struct {
     bool hud_edges;      // on windows taller than 16:9 with wide_view, anchor HUD to the window edges
     int hdr;             // HDR_* (runtime/nvn/vulkan/device.c hdr_*)
     int hdr_white;       // nits of SDR white in HDR (0: what Windows gives SDR content on that monitor)
+    int hdr_peak_nits;   // peak: scene roll-off and final cap for every element (0: not set yet; first start reads ICC)
+    int hdr_game_nits;   // the 3D scene's white (0: 203)
+    int hdr_ui_nits;     // the HUD and menu white (0: hdr_game_nits; default 203)
+    int hdr_hue;         // highlight hue/purity transfer, percent (0: off, 70: RenoDX BOTW default)
+    int hdr_blowout;     // SDR blowout: the transfer's purity strength, percent (65: RenoDX BOTW default)
+    int hdr_sdr_blend;   // extended-curve pivot, percent of scene white (18: RenoDX BOTW default)
+    int hdr_vanilla_saturation;  // the game's own saturation grade, percent (100: the game's look)
+    int hdr_bloom;       // HDR bloom strength, percent (100: the game's bloom, 0: none)
+    int hdr_clamp;       // 0: BT.709, 1: BT.2020 (the negative clamp after the grade)
+    int hdr_tonemapper;  // 0: Vanilla (the game's own tonemap), 1: RenoDX PsychoV (the BOTW mod's "RenoDRT")
+    int hdr_exposure;    // PsychoV exposure, percent (100: neutral)
+    int hdr_highlights;  // PsychoV highlights, 0..100 (50: neutral)
+    int hdr_shadows;     // PsychoV shadows, 0..100 (50: neutral)
+    int hdr_contrast;    // PsychoV contrast, 0..100 (50: neutral)
+    int hdr_saturation;  // PsychoV saturation, 0..100 (50: neutral)
+    int hdr_highlight_saturation;  // PsychoV highlight saturation, 0..100 (50: neutral)
+    int hdr_flare;       // PsychoV flare/glare compensation, 0..100 (0: neutral)
+    int hdr_gamma;       // the mod's ToneMapGammaCorrection: 0 none, 1 2.2, 2 BT.1886 (2.4)
+    // Video > HDR preset 1..3 (the whole HDR look, as the mod's presets are): tonemapper, exposure, highlights,
+    // shadows, contrast, saturation, highlight saturation, flare, hue, blowout, SDR blend, vanilla saturation,
+    // bloom, clamp, peak, game, UI, gamma.
+    int hdr_look[3][18];
+    int hdr_preset;      // 0 Preset Off, 1..3 the selected slot; 4 is only returned by hdr_look_current (Custom, not stored)
+    int hdr_clip_nits;   // legacy, ignored: the final cap is always hdr_peak_nits
     int sparse_heap;     // SPARSE_HEAP_*: guest heap backing (Windows Vulkan; applied on next start)
     int fov;             // field of view in play, percent of the game's own (FOV_CHOICES)
     bool handheld_setup; // a PC handheld's own settings were taken once (settings_load)
     int hud_size;        // the HUD's size in play, percent of the game's own (HUD_SIZE_CHOICES, runtime/nvn/hud_scale.h)
+    int menu_speed;      // menu cursor and UI animation speed, percent (MENU_SPEED_CHOICES, runtime/hle/framepace.c)
     int draw_distance;   // DRAWDIST_*: how far placed actors are kept (runtime/draw_distance.c)
     int haze;            // the air's haze, percent of the game's (services/fs.c haze_patch; from the next start)
     bool bloom;          // the glow around bright light (off: its draws clear their images: vulkan/exec.c)
@@ -176,7 +206,9 @@ typedef struct {
     int text_language;   // index in g_text_languages (runtime/language.h), 0: the host's
     int voice_language;  // index in g_voice_languages, 0: the text language's voices
     bool save_backups;   // Saves > Back up at each start: a copy of the save folder as the game starts (runtime/save_backup.c)
+    char save_dir[512];  // custom save folder path ("": default "save" in data root)
     bool auto_continue;  // Gameplay > Start at Continue: past the start screen into the latest save (hle/input.c)
+    int text_speed;      // TEXT_SPEED_*: dialogue text appearance speed (Normal, Fast, Instant)
     bool menu_tip_seen;  // the start screen's one-time "how to open the menu" note was shown (first PLAY ever)
 } Settings;
 
@@ -212,7 +244,8 @@ const char *settings_file(void);  // savagewind.ini, or SAVAGEWIND_SETTINGS
 extern const char *const g_weather_keys[WEATHER_COUNT];  // (the ini and `weather` names: game, no_rain, ..., sun_shower)
 #define DAMAGE_CHOICES {25, 50, 75, 100, 150, 200, 300, 400}  // (Accessibility's damage multipliers, percent)
 #define FOV_CHOICES {70, 80, 90, 100, 110, 120, 130, 140, 150}  // (percent; 100: the game's own)
-#define HUD_SIZE_CHOICES {50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120, 125, 130, 135, 140, 145, 150}  // (percent; 100: the game's own)
+#define HUD_SIZE_CHOICES {0, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120, 125, 130, 135, 140, 145, 150}  // (percent; 0: hidden, 100: the game's own)
+#define MENU_SPEED_CHOICES {70, 80, 90, 100, 125, 150, 175, 200, 250, 300}  // (percent; 100: the game's own)
 #define MOUSE_SENS_DEFAULT 3.0f  // (300% of the first default, 1; user, 2026-10-19)
 #define MOUSE_SENS_Y_CHOICES {50, 60, 70, 80, 90, 100, 110, 125, 150, 175, 200}  // (percent of the horizontal)
 enum { MOTION_INVERT_UD = 1, MOTION_INVERT_LR = 2 };
@@ -231,6 +264,10 @@ extern Settings g_settings;
 
 void settings_load(void);
 void settings_save(void);
+int hdr_look_current(void);   // 0 Off, 1..3 the selected slot while its values still match, or 4 (Custom)
+void hdr_look_apply(int slot);  // 0 Off, 1..3 a saved slot, into the HDR settings
+void hdr_look_store(int slot);  // the HDR settings into slot 1..3
+void hdr_look_init_peak(void);  // fill a default slot's unset peak/game/UI from the current display setup
 // Frame rate > Match display: fps_limit becomes the highest offered rate the display (hz) can show, at least 30 (a
 // 280 Hz display: 240; a 60 Hz one: 60). Nothing with another rate chosen or hz unknown (runtime/window_size.c).
 void settings_fps_for_display(float hz);
