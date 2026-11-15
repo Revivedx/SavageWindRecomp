@@ -8209,8 +8209,14 @@ static bool link_now(Pipe *pp, bool must_happen) {
     if (!must_happen && spent >= (uint64_t)budget) return false;
     uint64_t t0 = SDL_GetTicksNS();
     build_pipeline(pp);
-    spent += SDL_GetTicksNS() - t0;
+    uint64_t dt = SDL_GetTicksNS() - t0;
+    spent += dt;
     stat_links_now++;
+    // What a link costs here, logged once: the budget is checked before a link, so it holds only while links are
+    // quick (#818: frames of 100-150 ms with 30-90 links on AMD's Windows driver; an RX 6700 XT measured 0.02 ms)
+    static uint64_t n_links, ns_links;
+    if (n_links < 16 && (n_links++, ns_links += dt, n_links == 16))
+        LOG("[pso] linking on the render thread: %.2f ms a pipeline\n", ns_links / 16 / 1e6);
     return true;
 }
 
