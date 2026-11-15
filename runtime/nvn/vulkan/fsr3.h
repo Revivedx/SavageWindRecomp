@@ -31,6 +31,8 @@ typedef struct {
     float near_, far_, fov_y;  // the camera (fov_y: radians)
     float sharpness;        // RCAS, 0..1 (0: off)
     bool reset;             // no usable history (a cut, the first frame)
+    int quality;            // the game's mode, UPQ_* (settings.h): XeSS takes it as its own quality setting (vulkan/xess.h
+                            // xess_quality); FSR 3 and DLSS size themselves from render and output instead
 } Fsr3Dispatch;
 
 bool fsr3_available(void);

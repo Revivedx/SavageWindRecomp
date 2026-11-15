@@ -10401,7 +10401,11 @@ static void scene_post(Prog *pr, CmdRec *r) {
             out = f3;
             w = ow; h = oh;
             up = cas = false;
-        } else if (!up && !dlss && !cas && !taa && !xess && !grade) {
+        } else if (!up && !dlss && !cas && !taa && !grade) {
+            // (xess is not in this test: when it is the mode in use, frs3_scene returning nothing means the frame had
+            // no motion vectors yet - the first one after switching to it - and the game's own composite is drawn
+            // instead. Leaving the function here with no output image set crashed on the next draw that sampled the
+            // scene; the post path goes on and samples `in` as it is.)
             return;
         }
         if (dlss) {
@@ -11269,6 +11273,7 @@ static TexBackend *fsr3_scene(VkCommandBuffer cb, TexBackend *b, uint32_t ow, ui
         .dt_ms = last_ns && ns > last_ns ? (float)((ns - last_ns) / 1e6) : 16.7f,
         .near_ = nr, .far_ = fr, .fov_y = fov,
         .sharpness = g_settings.sharpening / 10.0f,
+        .quality = upscale_quality_now(),  // (XeSS's own setting: vulkan/xess.cpp xess_quality)
         .reset = last == ~0ull || last + 1 != frame,
     };
     last_ns = ns;

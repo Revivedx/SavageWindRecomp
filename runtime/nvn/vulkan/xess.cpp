@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "../../rt.h"
+#include "../../settings.h"  // (UPQ_*: the game's quality mode, handed to XeSS as its own setting)
 #include "vk.h"
 #include "record.h"
 
@@ -159,8 +160,10 @@ bool xess_required_device_extensions(VkInstance inst, VkPhysicalDevice phys, con
     return true;
 }
 
-// The context's state: the output size xessVKInit ran for (0: none yet), and whether it failed this run
+// The context's state: the output size xessVKInit ran for (0: none yet) and the quality mode it ran with, and whether
+// it failed this run
 static uint32_t ctx_ow, ctx_oh;
+static int ctx_quality = -1;
 static bool failed;
 static VkDevice ctx_dev;
 
@@ -197,7 +200,23 @@ bool xess_available(void) { return ctx != NULL; }
 bool xess_usable(void) { return !failed && ctx != NULL; }
 
 bool xess_output_changed(const Fsr3Dispatch *d) {
-    return ctx != NULL && (ctx_ow != d->output.width || ctx_oh != d->output.height);
+    return ctx != NULL &&
+           (ctx_ow != d->output.width || ctx_oh != d->output.height || ctx_quality != d->quality);
+}
+
+// The game's quality mode as XeSS's own setting. XeSS picks its internal counts from the render size it is given,
+// but the setting still names a scale ratio its docs expect and its own tuning reads; the mode the player picked is
+// the one to ask for, so that the menu's factor and XeSS's idea of it agree (they did not, once: the setting was a
+// fixed Ultra Quality whatever the menu said, and Performance ran exactly as fast as Quality).
+static xess_quality_settings_t xess_quality(int game_mode) {
+    switch (game_mode) {
+    case UPQ_ULTRA: return XESS_QUALITY_SETTING_ULTRA_QUALITY;
+    case UPQ_QUALITY: return XESS_QUALITY_SETTING_QUALITY;
+    case UPQ_BALANCED: return XESS_QUALITY_SETTING_BALANCED;
+    case UPQ_PERFORMANCE: return XESS_QUALITY_SETTING_PERFORMANCE;
+    case UPQ_ULTRA_PERFORMANCE: return XESS_QUALITY_SETTING_ULTRA_PERFORMANCE;
+    default: return XESS_QUALITY_SETTING_ULTRA_QUALITY_PLUS;  // (Native: 1x, the sharpest end XeSS has)
+    }
 }
 
 // XeSS has no context-level size: xessVKInit is run for a new output size (and once per run per size after that).
@@ -206,11 +225,10 @@ bool xess_output_changed(const Fsr3Dispatch *d) {
 static bool init_for(const Fsr3Dispatch *d) {
     xess_vk_init_params_t ip = {};
     ip.outputResolution = {d->output.width, d->output.height};
-    // (the quality setting only names a scale ratio XeSS's docs suggest; the render size we hand Execute is what
-    // actually runs. LDR: the scene is the game's finished, graded image. Low-res vectors + depth: XeSS dilates
-    // them itself. Not inverted depth: R32F [0, 1], 1 far, as copied. The responsive mask on: the reactive mask
-    // FSR 3 gets is handed over too (mvec's .z, shaders.c fsr3_reactive.frag).)
-    ip.qualitySetting = XESS_QUALITY_SETTING_ULTRA_QUALITY_PLUS;
+    // (LDR: the scene is the game's finished, graded image. Low-res vectors + depth: XeSS dilates them itself. Not
+    // inverted depth: R32F [0, 1], 1 far, as copied. The responsive mask on: the reactive mask FSR 3 gets is handed
+    // over too (mvec's .z, shaders.c fsr3_reactive.frag).)
+    ip.qualitySetting = xess_quality(d->quality);
     ip.initFlags = XESS_INIT_FLAG_LDR_INPUT_COLOR | XESS_INIT_FLAG_RESPONSIVE_PIXEL_MASK;
     xess_result_t r = f_init(ctx, &ip);
     if (r != XESS_RESULT_SUCCESS) {
@@ -219,8 +237,9 @@ static bool init_for(const Fsr3Dispatch *d) {
             LOG("[xess] init %ux%u: %s (%d)\n", d->output.width, d->output.height, result_name(r), (int)r);
         return false;
     }
-    ctx_ow = d->output.width, ctx_oh = d->output.height;
-    LOG("[xess] initialized %ux%u -> %ux%u\n", d->color.width, d->color.height, ctx_ow, ctx_oh);
+    ctx_ow = d->output.width, ctx_oh = d->output.height, ctx_quality = d->quality;
+    LOG("[xess] initialized %ux%u -> %ux%u (mode %d, setting %d)\n", d->color.width, d->color.height, ctx_ow, ctx_oh,
+        d->quality, (int)ip.qualitySetting);
     return true;
 }
 
@@ -264,7 +283,7 @@ static void drop_frame_views(void) {
 
 bool xess_dispatch(const Fsr3Dispatch *d) {
     if (!ctx || failed) return false;
-    bool resize = ctx_ow != d->output.width || ctx_oh != d->output.height;
+    bool resize = ctx_ow != d->output.width || ctx_oh != d->output.height || ctx_quality != d->quality;
     if (resize && !init_for(d)) {  // (xessVKInit wants the device idle; the caller drains and idles for that frame)
         failed = true;
         return false;
