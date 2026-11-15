@@ -571,6 +571,12 @@ to play there, as the local game's own), his blows' effects and sounds still go.
 the others' games (no handle: not sent). `SAVAGEWIND_ONLINE_RF_LOG=1` logs its effects with its place, the local
 Link's and its values.
 
+Players bump into each other: the puppets have no body, so each game pushes its own Link out of the others' (on
+foot, at the same level: 0.7 m between their centres, 1.7 m of height), all of the overlap at once, written to his real
+position (control_cell_player_pos, what `teleport` writes); none on a horse or in an event.
+`SAVAGEWIND_ONLINE_NO_COLLIDE=1` turns it off. Tested: two Links made at the same spot stood 0.70 m apart; one running
+head-on into the other slid around him (0.89 m at the nearest sample) instead of through.
+
 Damage between players (protocol 29; Settings > Online > Combat, `pvp` in online.ini, off by default, only between two
 players who both have it on; `SAVAGEWIND_ONLINE_PVP` for tests): the puppets have no bodies a blow lands on, so as a
 player's swing starts (his weapon's trail) the nearest other player within its reach in front of him (2.2 m and his

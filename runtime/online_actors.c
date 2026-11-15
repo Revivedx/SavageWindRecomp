@@ -20,6 +20,7 @@
 #include <string.h>
 
 #include "control.h"
+#include "control_cells.h"
 #include "game_sites.h"
 #include "online.h"
 #include "rt.h"
@@ -2410,6 +2411,50 @@ static void strike(Cpu *c, uint64_t player, const OnlineEnemy *e) {
 // as his swing starts (his weapon's trail, fx_update) the nearest other player within its reach in front of him is hit:
 // the blow goes in his state (pvp_*: that player's slot, his weapon's attack power, by its number), and that player's
 // game takes it as the host's enemies' blows (strike): his armour's defence off, a quarter heart at least, he flinches
+// The players bump into each other: the puppets have no body the local Link stands against, so each game pushes its own
+// Link out of the others' (a capsule each: 0.35 m wide, as tall as Link), on foot, where his puppet is shown. The push
+// is written to Link's real position (control_cell_player_pos, what `teleport` writes), all of the overlap at once, so
+// two players walking into each other stop face to face; each game pushes its own, so it is the same both ways.
+// SAVAGEWIND_ONLINE_NO_COLLIDE=1: none
+#define COLLIDE_R 0.7f    // (between their centres)
+#define COLLIDE_H 1.7f    // (heights closer than this: the same level)
+static void players_collide(Cpu *c, uint64_t player, const OnlinePlayer *pl, int me) {
+    static int off = -1;
+    if (off < 0) off = getenv("SAVAGEWIND_ONLINE_NO_COLLIDE") != NULL;
+    extern bool framepace_in_event(void);
+    if (off || !VALID(player) || me < 0 || framepace_in_event()) return;
+    const char *body = playing(c, player, 0, 0);
+    if (strstr(body, "Horse") || strstr(body, "Motorcycle") || !strncmp(body, "Dead", 4)) return;
+    const float *pm = (const float *)(uintptr_t)(player + 0x398);
+    float push[2] = {0, 0};
+    for (int i = 0; i < ONLINE_MAX; i++) {
+        const OnlinePlayer *p = &pl[i];
+        if (!p->used || i == me || (p->flags & ONLINE_F_LOADING) || !p->pose.valid || !same_map(p) ||
+            p->pose.horse[0] || !strncmp(p->pose.as[0], "Dead", 4))
+            continue;
+        float at[3] = {p->pos[0], p->pos[1], p->pos[2]};
+        uint64_t pa = g_act[i].link;  // (where his puppet is shown)
+        if (pa && running(pa)) {
+            const float *am = (const float *)(uintptr_t)(pa + 0x398);
+            at[0] = am[3], at[1] = am[7], at[2] = am[11];
+        }
+        float dx = pm[3] - at[0], dz = pm[11] - at[2], dy = pm[7] - at[1];
+        if (dy > COLLIDE_H || dy < -COLLIDE_H) continue;
+        float d = sqrtf(dx * dx + dz * dz);
+        if (d >= COLLIDE_R) continue;
+        if (d < 0.001f) dx = me < i ? 1.0f : -1.0f, dz = 0, d = 1.0f;  // (right on him: apart, each his own way)
+        float in = COLLIDE_R - d;
+        push[0] += dx / d * in, push[1] += dz / d * in;
+    }
+    float n = sqrtf(push[0] * push[0] + push[1] * push[1]);
+    if (n < 0.001f) return;
+    if (n > 0.5f) push[0] *= 0.5f / n, push[1] *= 0.5f / n;  // (all of it: less, and a runner got past the middle)
+    uint64_t a = control_cell_addr(&control_cell_player_pos);
+    if (!a) return;
+    float *rp = (float *)(uintptr_t)a;
+    rp[0] += push[0], rp[2] += push[1];
+}
+
 static void pvp_update(Cpu *c, uint64_t player, const OnlinePlayer *pl, int me) {
     static uint64_t swing_seen;
     static uint16_t seen[ONLINE_MAX];
@@ -4168,6 +4213,7 @@ void rt_online_frame(Cpu *c) {
             online_players(wp);
             if (!online_is_host()) weather_follow(wp, me, link);
             pvp_update(c, player, wp, me);
+            players_collide(c, player, wp, me);
         }
         if (VALID(player)) ground_update(c, player, link);
         if (VALID(player)) {
