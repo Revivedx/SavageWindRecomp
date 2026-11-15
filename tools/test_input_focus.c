@@ -26,9 +26,14 @@ bool menu_input_captured(void) { return captured; }
 bool menu_cursor_free(void) { return false; }
 void motion_tilt_held(bool held) { (void)held; }
 void motion_mouse(float x, float y) { (void)x; (void)y; }
-void motion_pad_opened(SDL_Gamepad *p) { (void)p; }
-void motion_pad_closed(void) {}
+void motion_pads(SDL_Gamepad *in_use, SDL_Gamepad *const *p, int n) { (void)in_use; (void)p; (void)n; }
+void motion_pad_removed(SDL_Gamepad *p) { (void)p; }
+bool motion_pad_pressed(SDL_JoystickID id, uint64_t ns) { (void)id; (void)ns; return false; }
+bool motion_pads_twins(SDL_JoystickID a, SDL_JoystickID b) { (void)a; (void)b; return false; }
+bool motion_pad_sensor_only(SDL_Gamepad *p) { (void)p; return false; }
+SDL_JoystickID motion_sensor_pad(void) { return pad ? SDL_GetGamepadID(pad) : 0; }  // (the controller in use's)
 void motion_sensor_event(const SDL_Event *e) { (void)e; sensor_events++; }
+void motion_device_sensor_event(const SDL_Event *e) { (void)e; }
 void vibration_update(SDL_Gamepad *p, bool focused) { (void)p; vibrating = focused; }
 void vibration_pad_closed(SDL_Gamepad *p) { (void)p; }
 uint64_t renderer_present_count(void) { return 0; }

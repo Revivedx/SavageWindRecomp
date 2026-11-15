@@ -385,6 +385,17 @@ Pendiente:
      que se hace pasar por DualShock 4 puede dejarlo quieto o hacerlo saltar, y cada lectura se descartaba (0 s o un
      tercio de segundo desde la anterior): el apuntado se quedaba quieto aunque las lecturas siguieran llegando (sospecha en #220). Ahora una
      lectura sin tiempo usable cuenta como un periodo de muestreo (la frecuencia que da SDL).
+     Rehecho para Alpha 6 (2026-11-15, #136): la sensibilidad y la inversión van en los ejes del mundo (izquierda /
+     derecha alrededor de la gravedad, arriba / abajo alrededor de la derecha de la vista: `aim_turn`), no en los del
+     mando, que en vertical (un handheld) dejaban el giro horizontal sin sensibilidad ni inversión; en un santuario
+     el juego recibe la pose física. Un informe repetido (mismo tiempo del sensor y mismos valores: un mando sondeado
+     más rápido que su sensor, #759) se descarta; con el reloj del sensor parado cuenta el tiempo del evento. La fuente
+     ya no es siempre el mando en uso (`motion_pads`): el mismo mando visto dos veces (DS4Windows, DSX, Handheld
+     Companion, Steam Input: sus botones bajan a la vez) sigue con el sensor del real, y los mandos que Steam Input
+     oculta (salvo los de Valve) se abren antes de `SDL_Init` solo por sus sensores. DSU también en Windows (Winsock,
+     `motion_dsu_axes`), el Deck virtual de InputPlumber (28DE:12FE / uhid), y los sensores del propio handheld por
+     la API de sensores de SDL. Opciones: Motion source (con el estado en la descripción), Vertical motion
+     sensitivity, Lean to turn. Pruebas: `tools/test_motion_sensors.c`.
    - Iconos de botones (2026-10-22, `runtime/nvn/glyphs.c`): BOTW dibuja los botones de sus avisos (HUD, menús,
      diálogos) como caracteres de su propia fuente de mapa de bits `External_00.bffnt` (en `Font/Font_*.sbfarc`,
      igual en todas las regiones): 51 glifos en U+E040..E091, celdas de 50x50 (a 51 px) en una hoja BC4 de 256x1024

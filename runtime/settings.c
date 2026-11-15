@@ -45,6 +45,7 @@ Settings g_settings = {
     .mouse_sens = MOUSE_SENS_DEFAULT,
     .mouse_sens_y = 1.0f,
     .motion_sens = 1.0f,
+    .motion_sens_y = 1.0f,
     .pc_gyro = true,
     .gyro_scene = true,
     .stick_cam_x = STICK_CAM_DEFAULT,
@@ -124,6 +125,7 @@ const char *const g_weather_keys[WEATHER_COUNT] = {"game", "no_rain", "no_storms
                                                    "heavy_rain", "snow", "heavy_snow", "thunderstorm", "thunder_rain",
                                                    "sun_shower"};  // (weather; settings.h)
 static const char *const k_icons[ICONS_COUNT] = {"auto", "keyboard", "xbox", "playstation", "nintendo", "steamdeck"};
+const char *const g_motion_source_keys[MOTION_SOURCE_COUNT] = {"auto", "controller", "dsu", "off"};
 
 static const char *const k_button_layout[BUTTON_LAYOUT_COUNT] = {"auto", "nintendo", "swap_ab", "xbox", "swap_xy", "gamecube"};
 
@@ -444,6 +446,13 @@ void settings_load(void) {
         else if (!strcmp(key, "pc_gyro")) g_settings.pc_gyro = atoi(val) != 0;
         else if (!strcmp(key, "gyro_scene")) g_settings.gyro_scene = atoi(val) != 0;
         else if (!strcmp(key, "motion_sensitivity")) g_settings.motion_sens = (float)atof(val);
+        else if (!strcmp(key, "motion_vertical_sensitivity")) g_settings.motion_sens_y = (float)atof(val);
+        else if (!strcmp(key, "motion_lean")) g_settings.motion_lean = atoi(val) != 0;
+        else if (!strcmp(key, "motion_source")) {
+            for (int i = 0; i < MOTION_SOURCE_COUNT; i++)
+                if (!strcmp(val, g_motion_source_keys[i])) g_settings.motion_source = i;
+        }
+        else if (!strcmp(key, "motion_dsu_axes")) snprintf(g_settings.motion_dsu_axes, sizeof g_settings.motion_dsu_axes, "%s", val);
         else if (!strcmp(key, "motion_invert")) {  // (off, up_down, left_right, both)
             g_settings.motion_invert = !strcmp(val, "both") ? MOTION_INVERT_UD | MOTION_INVERT_LR :
                                        !strcmp(val, "up_down") ? MOTION_INVERT_UD :
@@ -686,6 +695,8 @@ void settings_load(void) {
     if (!(g_settings.mouse_sens >= 0.1f && g_settings.mouse_sens <= 10.0f)) g_settings.mouse_sens = MOUSE_SENS_DEFAULT;
     if (!(g_settings.mouse_sens_y >= 0.5f && g_settings.mouse_sens_y <= 2.0f)) g_settings.mouse_sens_y = 1.0f;
     if (!(g_settings.motion_sens >= 0.1f && g_settings.motion_sens <= 10.0f)) g_settings.motion_sens = 1.0f;
+    if (!(g_settings.motion_sens_y >= 0.5f && g_settings.motion_sens_y <= 2.0f)) g_settings.motion_sens_y = 1.0f;
+    if (g_settings.motion_source < 0 || g_settings.motion_source >= MOTION_SOURCE_COUNT) g_settings.motion_source = MOTION_SOURCE_AUTO;
     if (g_settings.fov < 50 || g_settings.fov > 200) g_settings.fov = 100;
     if (g_settings.hud_size != 0 && (g_settings.hud_size < 50 || g_settings.hud_size > 150)) g_settings.hud_size = 100;
     if (g_settings.menu_speed < 70 || g_settings.menu_speed > 300) g_settings.menu_speed = 100;

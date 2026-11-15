@@ -280,8 +280,24 @@ Any controller SDL knows. Button prompts follow the device you use, set in **Con
 
 ### Does gyro work?
 
-Yes, with DualSense, DualShock 4, Switch controllers and the Steam Deck. On a controller without one, hold T and move
-the mouse to tilt in the motion shrines. On Linux, other devices can use a DSU server.
+Yes, with any controller SDL reads a gyro from: DualSense, DualShock 4, Switch Pro and Joy-Con, the Steam Deck, and
+others such as the 8BitDo Ultimate 2 in its Switch or DInput mode. **Options > Controls > Motion source** says where the
+motion comes from right now, or why there is none.
+
+| Your controller | What to do |
+| --- | --- |
+| DualSense, DualShock 4, Switch Pro, Joy-Con | Nothing. With Steam Input on, the game opens the controller behind it for its gyro. |
+| Steam Deck | Nothing, in Gaming mode or Desktop mode. |
+| Steam Controller | Close Steam before starting the game, or set its gyro to act as a mouse in Steam Input. |
+| Xbox and other XInput pads | XInput has no gyro. If yours has one, switch it to its Switch, DS4 or DInput mode. |
+| ROG Ally, Legion Go, MSI Claw and other PC handhelds | Run Handheld Companion (or the handheld's own tool) with its DSU server on, or have it show a DualShock 4 with gyro. A DSU server that answers comes before the sensor SDL lends the handheld's gamepad. |
+| A DSU server (DS4Windows, BetterJoy, SteamDeckGyroDSU...) | Start it; the game finds it at 127.0.0.1:26760 when the controller has no gyro. Motion source: DSU server takes it first. |
+| Streaming (Moonlight, Artemis) | Have the host (Sunshine, Apollo) emulate a DualShock 4 or a DualSense, which carry the gyro. |
+
+Sensitivity, vertical sensitivity, inversion and Lean to turn are in Options > Controls; they change motion aiming,
+not shrine tilting. On a controller without a gyro, the sticks tilt the shrine apparatus, or hold T and move the mouse.
+If the gyro still misbehaves, start the game with `SAVAGEWIND_MOTION_LOG=1` and attach `savagewind.log` to
+[#136](https://github.com/Revivedx/SavageWindRecomp/issues/136).
 
 ### Does it work with mouse aiming?
 
@@ -344,7 +360,7 @@ a new one. The full list is on the [issue tracker](https://github.com/Revivedx/S
 | Attack key follows the Sort / Sensor binding | None yet | [#608](https://github.com/Revivedx/SavageWindRecomp/issues/608) |
 | Map controls with mouse and keyboard | None yet | [#440](https://github.com/Revivedx/SavageWindRecomp/issues/440) |
 | Button prompts and layout on DualSense | None yet | [#604](https://github.com/Revivedx/SavageWindRecomp/issues/604) |
-| Gyro axes wrong on some handhelds over DSU | Being looked at | [#136](https://github.com/Revivedx/SavageWindRecomp/issues/136) |
+| Gyro not found or wrong on some controllers and handhelds | Reworked for Alpha 6, testing: post your controller | [#136](https://github.com/Revivedx/SavageWindRecomp/issues/136) |
 | Gaps in Thai subtitles | Set Voices to "Same as text" | [#516](https://github.com/Revivedx/SavageWindRecomp/issues/516) |
 
 ### Setup
