@@ -97,6 +97,8 @@ typedef struct {
     char horse[24];                              // the horse he rides (its actor, "" none), where it is, its AS
     float horse_m[12];
     char horse_as[32];
+    char tack[2][24];                            // its saddle and reins (their actors, "" none), where they are
+    float tack_m[2][12];
 } OnlinePose;
 // OnlinePose.effects: Daruk's Protection's shield taking a hit (KAGO), its ring while he guards with its charges left
 // (KAGO_COUNT: 1 to 3, in effects >> KAGO_COUNT_SHIFT)

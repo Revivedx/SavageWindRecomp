@@ -432,7 +432,7 @@ int main(int argc, char **argv) {
         char helper[1100];
         bool frozen = rt_resource("swonline/swonline", NULL, helper, sizeof helper);
 #endif
-        if ((!ov || !*ov) && stat("online_mod/v34", &sb) != 0) {  // (tools/online_mod.py VERSION)
+        if ((!ov || !*ov) && stat("online_mod/v35", &sb) != 0) {  // (tools/online_mod.py VERSION)
             char cmd[2400];
             cmd[0] = 0;
             if (stat("tools/online_mod.py", &sb) == 0 && stat(py, &sb) == 0)

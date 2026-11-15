@@ -55,9 +55,9 @@ KNOCK = 'OnlineKnock'
 SHOCK0 = 'OnlineShock'
 PLAYER_ELINK = 'Player_GameRom'  # (GameROMPlayer's ElinkUser)
 PLAYER_SLINK = 'GameROMPlayer'  # (and its SlinkUser: his sounds, played on his Link by the runtime)
-VERSION = 34  # (runtime/main.c ONLINE_MOD_VERSION: armour actors, traverseDist, the paraglider, the enemies' traverseDist,
+VERSION = 35  # (runtime/main.c ONLINE_MOD_VERSION: armour actors, traverseDist, the paraglider, the enemies' traverseDist,
 # their chemical, the round bomb's own explosion, the weapons' ELink, the player's AnimationInfo, the
-# player's and the weapons' SLink, the armour's defence, the chests' flags, the world's, the horses, the Master Cycle)
+# player's and the weapons' SLink, the armour's defence, the chests' flags, the world's, the horses, their saddles and reins, the Master Cycle)
 TRAVERSE = 1000.0  # (the online actors' traverseDist)
 GEAR_KINDS = ('Weapon_Sword_', 'Weapon_Lsword_', 'Weapon_Spear_', 'Weapon_Shield_', 'Weapon_Bow_', 'Weapon_Sheath_',
               'Weapon_Lsheath_', 'Weapon_SpearSheath_', 'Weapon_Quiver_')
@@ -576,6 +576,21 @@ def main():
         if not horse_as:
             continue
         loose[online] = build(online, bytes(ml.data), as_files=horse_as, users={'ASUser': online})
+        gear[piece] = online
+        model_of[online] = piece
+    # (and a horse's saddle and reins, actors of their own on it: their model alone, where his are)
+    for piece in [] if no_gear else sorted(n[:-len('.sbactorpack')] for n in os.listdir(os.path.join(romfs, 'Actor', 'Pack'))
+                                           if re.match(r'GameRomHorse(Saddle|Reins)_\w+\.sbactorpack$', n)):
+        a = actor_pack(romfs, title_bg, piece)
+        al = [f for f in a.get_files() if f.name.startswith('Actor/ActorLink/')]
+        if not al:
+            continue
+        user = str(pio(al[0].data).objects['LinkTarget'].params['ModelUser'].v)
+        ml = a.get_file('Actor/ModelList/%s.bmodellist' % user)
+        if not ml:
+            continue
+        online = HORSE_PREFIX + piece
+        loose[online] = build(online, bytes(ml.data))
         gear[piece] = online
         model_of[online] = piece
 

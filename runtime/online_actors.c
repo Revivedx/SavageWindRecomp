@@ -119,6 +119,7 @@ static struct {
     int link_fails;
     Piece armor[ARMOR], gear[ONLINE_GEAR];
     Piece horse;  // (the horse he rides: OnlineHorse_*, playing his horse's AS)
+    Piece tack[2];  // (its saddle and reins)
     char horse_as[32];
     Piece shot[ONLINE_SHOTS];      // what he holds, threw or shot (bombs, arrows: OnlineShots)
     uint16_t shot_id[ONLINE_SHOTS];  // (its id; 0: unused, out of sight)
@@ -283,6 +284,7 @@ static void forget_all(void) {
         for (int k = 0; k < ARMOR; k++) orphan(&g_act[i].armor[k]);
         for (int k = 0; k < ONLINE_GEAR; k++) orphan(&g_act[i].gear[k]);
         orphan(&g_act[i].horse);
+        orphan(&g_act[i].tack[0]), orphan(&g_act[i].tack[1]);
         for (int k = 0; k < ONLINE_SHOTS; k++) orphan(&g_act[i].shot[k]);
         orphan(&g_act[i].nock);
         for (int k = 0; k < POOL; k++) orphan(&g_pool[i][k]);
@@ -385,6 +387,7 @@ static void drop(Cpu *c, int i, bool left) {
     for (int k = 0; k < ARMOR; k++) pool_piece(c, i, &g_act[i].armor[k]);
     for (int k = 0; k < ONLINE_GEAR; k++) pool_piece(c, i, &g_act[i].gear[k]);
     pool_piece(c, i, &g_act[i].horse);
+    pool_piece(c, i, &g_act[i].tack[0]), pool_piece(c, i, &g_act[i].tack[1]);
     for (int k = 0; k < ONLINE_SHOTS; k++) pool_piece(c, i, &g_act[i].shot[k]);
     pool_piece(c, i, &g_act[i].nock);
     if (left)
@@ -1448,12 +1451,12 @@ static void sample_pose(Cpu *c, uint64_t pinfo) {
     pose.pvp_seq = g_pvp.seq, pose.pvp_target = g_pvp.target, pose.pvp_damage = g_pvp.damage;  // (pvp_update)
     {   // the horse he rides: while his AS is a horse's (Horse*), the player's horse (GameRomHorse*) nearest him, looked
         // for among the actors a few times a second
-        static uint64_t horse;
-        static Watch hw;
+        static uint64_t horse, tack[2];
+        static Watch hw, tw[2];
         static int tick;
         const char *body = playing(c, player, 0, 0);
         bool riding = strstr(body, "Horse") != NULL || strstr(body, "Motorcycle") != NULL;  // (a horse, the Master Cycle)
-        if (!riding) horse = 0;
+        if (!riding) horse = 0, tack[0] = tack[1] = 0;
         else if (!horse || !alive(horse, hw) || tick++ % 20 == 0) {
             const float *pm = (const float *)(uintptr_t)(player + 0x398);
             int na = all_actors(*(uint64_t *)(uintptr_t)(player + 0x68), g_actors, MAX_ACTORS);
@@ -1467,6 +1470,18 @@ static void sample_pose(Cpu *c, uint64_t pinfo) {
                 const float *m = (const float *)(uintptr_t)(g_actors[k] + 0x398);
                 float dx = m[3] - pm[3], dy = m[7] - pm[7], dz = m[11] - pm[11], d = sqrtf(dx * dx + dy * dy + dz * dz);
                 if (d < bd) bd = d, best = g_actors[k];
+            }
+            tack[0] = tack[1] = 0;  // (its saddle and reins: the nearest to it)
+            float td[2] = {1.5f, 1.5f};
+            const float *hm0 = best ? (const float *)(uintptr_t)(best + 0x398) : NULL;
+            for (int k = 0; hm0 && k < na; k++) {
+                char nm[48];
+                actor_name_of(g_actors[k], nm);
+                int which = !strncmp(nm, "GameRomHorseSaddle_", 19) ? 0 : !strncmp(nm, "GameRomHorseReins_", 18) ? 1 : -1;
+                if (which < 0) continue;
+                const float *m = (const float *)(uintptr_t)(g_actors[k] + 0x398);
+                float dx = m[3] - hm0[3], dy = m[7] - hm0[7], dz = m[11] - hm0[11], d = sqrtf(dx * dx + dy * dy + dz * dz);
+                if (d < td[which]) td[which] = d, tack[which] = g_actors[k], tw[which] = watch(g_actors[k]);
             }
             if (best != horse && best) {
                 char nm[48];
@@ -1489,6 +1504,12 @@ static void sample_pose(Cpu *c, uint64_t pinfo) {
             snprintf(pose.horse, sizeof pose.horse, "%s", nm);
             memcpy(pose.horse_m, (const float *)(uintptr_t)(horse + 0x398), sizeof pose.horse_m);
             snprintf(pose.horse_as, sizeof pose.horse_as, "%s", playing(c, horse, 0, 0));
+            for (int k = 0; k < 2; k++)
+                if (tack[k] && alive(tack[k], tw[k])) {
+                    actor_name_of(tack[k], nm);
+                    snprintf(pose.tack[k], sizeof pose.tack[k], "%s", nm);
+                    memcpy(pose.tack_m[k], (const float *)(uintptr_t)(tack[k] + 0x398), sizeof pose.tack_m[k]);
+                }
         }
     }
     for (int k = 0; k < 3; k++) {  // (his armour's dyes: the player's armour code, 0x7000cdc43c, makes each piece with
@@ -4312,6 +4333,14 @@ void rt_online_frame(Cpu *c) {
                     play_as(c, hp->actor, want, 0, 0, -1.0f, true);
                     snprintf(g_act[i].horse_as, sizeof g_act[i].horse_as, "%s", want);
                 }
+            }
+            for (int k = 0; k < 2; k++) {  // (its saddle and reins, where his are)
+                const char *ta = pl[i].pose.valid && pl[i].pose.horse[0] && pl[i].pose.tack[k][0] ? gear_actor(pl[i].pose.tack[k]) : NULL;
+                Piece *tp = &g_act[i].tack[k];
+                piece_update(c, i, tp, ta ? ta : "", pl[i].name);
+                bool finite = true;
+                for (int q = 0; q < 12; q++) finite &= isfinite(pl[i].pose.tack_m[k][q]);
+                if (tp->actor && finite) call(c, FN_SET_MTX, tp->actor, (uint64_t)(uintptr_t)pl[i].pose.tack_m[k], 0, 0, 0, 0);
             }
         }
         // what he holds, threw or shot, where it is (out of sight: those he no longer has)
