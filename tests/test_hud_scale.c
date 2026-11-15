@@ -195,5 +195,35 @@ int main(void) {
     assert(!hud_quick_bar_px(919, 622, 1024, 768, 0.75) && !hud_quick_bar_px(100, 60, 1024, 768, 0.75));
     assert(!hud_quick_bar_px(512, 230, 1024, 768, 0.75) && !hud_quick_bar_px(512, 384, 0, 768, 0.75));
 
+    // HUD at edges on wider windows (shape > 1)
+    assert(hud_edge_mode(true, 1.5f, false, false, false, false) == 1);
+    assert(hud_edge_mode(true, 1.5f, false, false, false, true) == 2);
+    assert(NEAR(hud_edge_dx(0.8f, 0.8f, 1.25f), 0.2f));
+    assert(NEAR(hud_edge_dx(-0.8f, 0.8f, 1.25f), -0.2f));
+    assert(NEAR(hud_edge_dx(0, 0.8f, 1.25f), 0));
+    assert(NEAR(hud_edge_dx(0.8f, 0.8f, 0.8f), 0));
+
+    float v_right[12] = {1, 0, 0, 400, 0, 1, 0, 0, 0, 0, 1, -1000};
+    project(v_right, m00, m11, 0, 0, &x0, &y0);
+    hud_edge_view_x(v_right, m00, 0.2f);
+    project(v_right, m00, m11, 0, 0, &a0, &b0);
+    assert(NEAR(a0, x0 + 0.2f) && NEAR(b0, y0));
+
+    float v_left[12] = {1, 0, 0, -400, 0, 1, 0, 0, 0, 0, 1, -1000};
+    project(v_left, m00, m11, 0, 0, &x0, &y0);
+    hud_edge_view_x(v_left, m00, -0.2f);
+    project(v_left, m00, m11, 0, 0, &a0, &b0);
+    assert(NEAR(a0, x0 - 0.2f) && NEAR(b0, y0));
+
+    float m_right[16] = {0.002f, 0, 0, 0.6f, 0, -0.003f, 0, 0.5f, 0, 0, 0, 0, 0, 0, -1, 1};
+    hud_edge_matrix_x(m_right, 0.2f);
+    assert(NEAR(m_right[3] / m_right[15], 0.8f));
+
+    // Scissor horizontal offset on 1280w display with shape 1.25 (edge_x = 0.8, shift is 640 * 0.2 = 128)
+    assert(NEAR(hud_edge_scissor_dx(1100, 1280, 1.25), 128.0));
+    assert(NEAR(hud_edge_scissor_dx(180, 1280, 1.25), -128.0));
+    assert(NEAR(hud_edge_scissor_dx(640, 1280, 1.25), 0.0));
+    assert(NEAR(hud_edge_scissor_dx(1100, 1280, 0.8), 0.0));
+
     puts("PASS: hud_scale");
 }

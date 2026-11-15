@@ -2512,6 +2512,18 @@ static VkRect2D scissor_rect(void) {
         if (x > 0 || x + sw < gw - 0.5) {
             double c = gw / 2, x0 = c + (x - c) / shape, x1 = c + (x + sw - c) / shape;
             x = (int)floor(x0); sw = (int)ceil(x1) - x;
+            int edge_mode = hud_edges_now(shape);
+            if (edge_mode) {
+                double sdx = hud_edge_scissor_dx((x0 + x1) / 2.0, gw, shape);
+                double gh = pass_sy > 0 ? h / pass_sy : h;
+                float edge_x = 1.0f / (float)shape;
+                float mx = (float)((x0 + x1) / gw - 1.0);
+                float my = (float)(1.0 - (y * 2.0 + sh) / gh);
+                if (!hud_context_native(shape, mx, my, edge_x, 1) && sdx != 0 &&
+                    hud_edge_moves(edge_mode, my, 1.0f) &&
+                    !(hud_quick && hud_quick_bar(mx, my, edge_x, 1.0f)))
+                    x += (int)round(sdx);
+            }
         }
     }
     if (shape < 1 && pass_out && pass_sy > 0 && sh < 16384) {  // (a taller window: the same, vertically)
@@ -4948,6 +4960,11 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         if (hud_s != 1 && !hud_context_native(shape, tx, ty, edge_x, edge_y) &&
             !(hud_quick && hud_quick_keeps(tx, ty, edge_x, edge_y)))
             hud_scale_matrix(text_matrix, hud_s, hud_anchor(tx, edge_x), hud_anchor(ty, edge_y));
+        if (hud_edge_active && shape > 1 && !hud_context_native(shape, tx, ty, edge_x, edge_y) &&
+            hud_edge_moves(edge_mode, ty, edge_y) && !(hud_quick && hud_quick_bar(tx, ty, edge_x, edge_y))) {
+            float dx = hud_edge_dx(hud_anchor(tx, edge_x), edge_x, shape);
+            if (dx != 0) hud_edge_matrix_x(text_matrix, dx);
+        }
         *out = ubo_span(vk_transient_copy(text_matrix, sizeof text_matrix, 256), sizeof text_matrix);
         return true;
     }
@@ -4971,8 +4988,9 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
             hud_edge_matrix(buf, copysignf(1 - shape, ty));
         if (hud_edge_active && !hud_context_native(shape, tx, ty, edge_x, edge_y) && hud_edge_moves(edge_mode, ty, edge_y) &&
             !(hud_quick && hud_quick_bar(tx, ty, edge_x, edge_y))) {
-            float ay = hud_anchor(ty, edge_y);
-            float dy = hud_edge_dy(ay, edge_y, shape);
+            float dx = hud_edge_dx(hud_anchor(tx, edge_x), edge_x, shape);
+            float dy = hud_edge_dy(hud_anchor(ty, edge_y), edge_y, shape);
+            if (dx != 0) hud_edge_matrix_x(buf, dx);
             if (dy != 0) hud_edge_matrix(buf, dy);
         }
         *out = ubo_span(vk_transient_copy(buf, n, 256), n);
@@ -5082,7 +5100,7 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
     // Gameplay > HUD size: a pane of a 40-degree layer, and not one over about the whole screen (a fade, a picture)
     float hud_ax = 0, hud_ay = 0;
     bool hud_scale = false;
-    float edge_dy = hud_layout_dy(shape);
+    float edge_dx = 0, edge_dy = hud_layout_dy(shape);
     if ((hud_s != 1 || hud_edge_active) && size >= 28 * 4 && fabsf((tall ? m11 / shape : m11) - 2.74748f) < 0.001f) {
         const float *mv = g + 16, *rc = g + 33 * 4;
         bool has_rect = size >= 34 * 16 && rc[0] > 0 && rc[1] > 0;
@@ -5102,20 +5120,23 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
             hud_ax = hud_anchor(cx, edge_x);
             hud_ay = hud_anchor(cy, edge_y);
             if (hud_edge_active && hud_edge_moves(edge_mode, cy, edge_y) &&
-                !(hud_quick && hud_quick_bar(cx, cy, edge_x, edge_y)) && !hud_shop_pane(mv[3], mv[7]))
+                !(hud_quick && hud_quick_bar(cx, cy, edge_x, edge_y)) && !hud_shop_pane(mv[3], mv[7])) {
+                edge_dx = hud_edge_dx(hud_ax, edge_x, shape);
                 edge_dy = hud_edge_dy(hud_ay, edge_y, shape);
+            }
             hud_scale = hud_s != 1 && !(hud_quick && hud_quick_keeps(cx, cy, edge_x, edge_y));
         }
     }
     if (tall_map && size >= 28 * 4 && ((map_chrome && fabsf(g[23]) > 200) ||
         (g_cur_fs_hash == UINT64_C(0xd4fa32dabc35066c) && !g[19] && fabsf(g[23]) == 360)))
         edge_dy = copysignf(1 - shape, g[23]);  // frame chrome and AppMap's black edge strips
-    if (m00 == g[0] && m11 == g[5] && !hud_scale && edge_dy == 0 && pause_dy == 0 && pause_stretch == 1) return false;
+    if (m00 == g[0] && m11 == g[5] && !hud_scale && edge_dx == 0 && edge_dy == 0 && pause_dy == 0 && pause_stretch == 1) return false;
     static float buf[0x10000 / 4];
     uint64_t n = size > sizeof buf ? sizeof buf : size;
     memcpy(buf, g, n);
     buf[0] = m00, buf[5] = m11;
     if (hud_scale) hud_scale_view(buf + 16, hud_s, m00, m11, hud_ax, hud_ay);
+    if (edge_dx != 0) hud_edge_view_x(buf + 16, m00, edge_dx);
     if (edge_dy != 0) hud_edge_view(buf + 16, m11, edge_dy);
     if (pause_stretch != 1) {
         float *v = buf + 16;
