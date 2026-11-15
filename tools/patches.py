@@ -349,22 +349,31 @@ def _surf_boost_remove(gen, a):
 # + 0x88) got a freed pointer (#391: a garbage value, a crash in the next load) and one inline copy of it
 # (1.9.0 0x7000dea400, the camera target) got an actor whose + 0x570 is null (#393: accessing 0x88). Both now treat
 # such an actor as none: the helper answers 0, the inline copy leaves its function by the path of "no target".
-def _stale_actor_helper(gen, a):
+def _stale_actor_cbz(gen, a, clear_x0):
     w = _word(gen, a)
     assert w & 0xff00001f == 0xb4000000, hex(w)  # cbz x0, <ret>
     target = a + sext((w >> 5) & 0x7ffff, 19) * 4
-    return ('{ extern void rt_stale_actor(void); '
+    clear = 'c->x[0] = 0; ' if clear_x0 else ''
+    return ('{ extern int rt_actor_link_valid(uint64_t); '
             'if (!c->x[0]) goto L_%x; '
-            'if (c->x[0] - 0x7000000000ull >= 0x320000000ull || !LD64(c->x[0] + 0x570)) { rt_stale_actor(); c->x[0] = 0; goto L_%x; } }'
-            % (target, target))
+            'if (!rt_actor_link_valid(c->x[0])) { %sgoto L_%x; } }'
+            % (target, clear, target))
+
+
+def _stale_actor_helper(gen, a):
+    return _stale_actor_cbz(gen, a, True)
+
+
+def _stale_actor_kind(gen, a):
+    return _stale_actor_cbz(gen, a, False)
 
 
 def _stale_actor_target(gen, a):
     assert _word(gen, a) == 0xf942ba68, hex(_word(gen, a))  # ldr x8, [x19, #0x570]
     # the epilogue of "no target": the function's own early exit (cbz x0 / cbnz x19 above this site)
     exit_at = _stale_target_exit(gen, a)
-    return ('{ extern void rt_stale_actor(void); '
-            'if (c->x[19] - 0x7000000000ull >= 0x320000000ull || !LD64(c->x[19] + 0x570)) { rt_stale_actor(); goto L_%x; } '
+    return ('{ extern int rt_actor_link_valid(uint64_t); '
+            'if (!rt_actor_link_valid(c->x[19])) { goto L_%x; } '
             'c->x[8] = LD64(c->x[19] + 0x570); }' % exit_at)
 
 
@@ -1030,6 +1039,7 @@ PATCHES = {
     'surf_boost_remove': _surf_boost_remove,
     'surf_jump_request': _surf_jump_request,
     'stale_actor_helper': _stale_actor_helper,
+    'stale_actor_kind': _stale_actor_kind,
     'stale_actor_target': _stale_actor_target,
     'phys_solver_steps': _solver_steps,
     'kf_angle': _kf_angle,
