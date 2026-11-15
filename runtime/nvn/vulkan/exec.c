@@ -319,7 +319,10 @@ void vk_full_barrier(VkCommandBuffer cb) {
                            .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT, .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                            .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
     VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
-    rec_CmdPipelineBarrier2(cb, &di);
+    // (the recorder thread records straight into the command buffer: queuing from it would deadlock; FSR 3's
+    // fsr3_run and XeSS's xess_run reach this through the libraries they dispatch)
+    if (rec_on_recorder()) vkCmdPipelineBarrier2(cb, &di);
+    else rec_CmdPipelineBarrier2(cb, &di);
     bar_other = true;  // (what follows may write anything)
     bar_n = 0;
 }
@@ -11207,12 +11210,23 @@ static TexBackend *mvec_taa(VkCommandBuffer cb, TexBackend *b, uint64_t frame) {
 typedef struct { Fsr3Dispatch d; int api; } FsrJob;
 static _Atomic int fsr3_failed;
 // The recorder thread: AMD's DLLs when asked for (their failing, logged there and remembered by fsr_api_usable: the
-// built-in FSR 3.1 in their place, from this frame on, without the history of the other upscaler), else the built-in one
+// built-in FSR 3.1 in their place, from this frame on, without the history of the other upscaler), else the built-in one.
 static void fsr3_run(void *arg) {
     FsrJob *j = arg;
     bool amd_ok = j->api && fsr_api_dispatch(&j->d, j->api);
     if (j->api && !amd_ok) j->d.reset = true;
     if (!amd_ok && !(fsr3_available() && fsr3_dispatch(&j->d))) atomic_store(&fsr3_failed, 1);
+}
+
+// Intel XeSS through the recorder thread too (the same reason FSR 3's is: the library records into the command buffer
+// itself, and waiting for the recorder from the translating thread costs it ~0.18 ms a frame where it is the limit).
+// xess_dispatch opens and closes the layouts of its inputs around the library's own commands; nothing it does may be
+// queued from the recorder thread itself, so it takes that path when recorder.c says so.
+typedef struct { Fsr3Dispatch d; } XessJob;
+static _Atomic int xess_failed;
+static void xess_run(void *arg) {
+    XessJob *j = arg;
+    if (!xess_dispatch(&j->d)) atomic_store(&xess_failed, 1);
 }
 
 static TexBackend *fsr3_scene(VkCommandBuffer cb, TexBackend *b, uint32_t ow, uint32_t oh) {
@@ -11268,23 +11282,36 @@ static TexBackend *fsr3_scene(VkCommandBuffer cb, TexBackend *b, uint32_t ow, ui
     last_api = api;
     bool ok = false;
     if (xess) {
+        // XeSS through the recorder thread, as FSR 3 below (the library records into cb itself). A size change runs
+        // xessVKInit, which wants the device idle: that frame waits here (a resize, not every frame), and the library's
+        // own resources are made before the scene's commands go on.
         gp_mark(cb, "XeSS upscaler");
-        rec_drain();  // (xessVKInit on a size change wants the device idle; the commands queued go first)
-        vkDeviceWaitIdle(g_vk.dev);
-        ok = xess_dispatch(&d);
-        last = frame;
-        if (ok) {
-            vk_dyn_forget();  // (XeSS's own pipelines and sets were bound)
-            vk_full_barrier(cb);
-            rt_jitter_set_phases(xess_jitter_phases(w, ow));
-        } else if (fsr3_available()) {  // (XeSS failed: the built-in FSR 3.1 for this frame and from here on, as DLSS's
-                                        //  NGX failure falls back; its history starts over)
-            g_settings.upscaler = UPSCALE_FSR3;
-            d.reset = true;
-            gp_mark(cb, "FSR 3 upscaler (XeSS failed)");
-            ok = fsr3_dispatch(&d);
+        if (atomic_load(&xess_failed)) {
+            if (fsr3_available()) {  // (XeSS's first failure: the built-in FSR 3.1 from here on, its history starting over)
+                g_settings.upscaler = UPSCALE_FSR3;
+                d.reset = true;
+                gp_mark(cb, "FSR 3 upscaler (XeSS failed)");
+                ok = fsr3_dispatch(&d);
+            }
+            return ok ? out : NULL;
         }
-        return ok ? out : NULL;
+        static XessJob jobs[8];  // (the recorder is never 8 frames behind: a submission a frame waits for it)
+        static unsigned nj;
+        // A new output size runs xessVKInit, which the API asks for with the device idle: that frame alone waits here
+        // (the recorder drained first, so what it has of this frame is recorded). Not every frame: the cost would be
+        // the whole point of the recorder-thread dispatch, lost.
+        if (xess_output_changed(&d)) {
+            rec_drain();
+            vkDeviceWaitIdle(g_vk.dev);
+        }
+        XessJob *j = &jobs[nj++ & 7];
+        j->d = d;
+        rec_custom(xess_run, j);
+        last = frame;
+        vk_dyn_forget();  // (XeSS's own pipelines and sets were bound)
+        vk_full_barrier(cb);
+        rt_jitter_set_phases(xess_jitter_phases(w, ow));
+        return out;  // (whether it worked is known a frame late, as FSR 3's: a failure shows from the next)
     }
     gp_mark(cb, api == 4 ? "FSR 4 upscaler" : "FSR 3 upscaler");
     // FidelityFX records into cb itself, and may wait for the device: the recorder thread makes the call, in its turn

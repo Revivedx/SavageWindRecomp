@@ -196,9 +196,13 @@ bool xess_probe(VkInstance inst, VkDevice dev, VkPhysicalDevice phys) {
 bool xess_available(void) { return ctx != NULL; }
 bool xess_usable(void) { return !failed && ctx != NULL; }
 
-// XeSS has no context-level size: xessVKInit is run for a new output size (and once per run per size after that;
-// re-running it between frames is what the API asks for on a size change, with the device idle: the caller drains
-// and idles around it).
+bool xess_output_changed(const Fsr3Dispatch *d) {
+    return ctx != NULL && (ctx_ow != d->output.width || ctx_oh != d->output.height);
+}
+
+// XeSS has no context-level size: xessVKInit is run for a new output size (and once per run per size after that).
+// The API asks for the device to be idle when it runs again between frames, which xess_dispatch takes care of (it
+// drains the recorder first: see there).
 static bool init_for(const Fsr3Dispatch *d) {
     xess_vk_init_params_t ip = {};
     ip.outputResolution = {d->output.width, d->output.height};
@@ -223,13 +227,18 @@ static bool init_for(const Fsr3Dispatch *d) {
 extern "C" void vk_gpuprof_mark(VkCommandBuffer cb, const char *what);  // (exec.c)
 
 // One XeSS view per image this frame's dispatch touches (the library wants image + view pairs): made here, dropped
-// after (its cache is keyed by handle, and the game's images may be new next frame)
+// after. The translating thread defers its drops to textures.c (vk_defer_view), which that thread owns; the recorder
+// thread (xess_run) cannot queue anything and must not touch that unlocked list, so it destroys the views of the
+// frame before instead - the submission that used them was waited on by the translating thread between the two frames
+// (a submission a frame waits for the recorder), so the GPU is done with them by then.
 struct XessView {
     VkImageView view;
     VkImage image;
 };
 static XessView frame_views[5];
 static int n_frame_views;
+static VkImageView rec_stale[5];  // (the recorder thread's views of the frame before, destroyed by the next dispatch)
+static int n_rec_stale;
 static VkImageView xess_view(VkImage image, VkFormat fmt, uint32_t w, uint32_t h) {
     for (int i = 0; i < n_frame_views; i++)
         if (frame_views[i].image == image) return frame_views[i].view;
@@ -243,13 +252,20 @@ static VkImageView xess_view(VkImage image, VkFormat fmt, uint32_t w, uint32_t h
     return v;
 }
 static void drop_frame_views(void) {
-    for (int i = 0; i < n_frame_views; i++) vk_defer_view(frame_views[i].view);
+    if (rec_on_recorder()) {
+        for (int i = 0; i < n_rec_stale; i++) vkDestroyImageView(ctx_dev, rec_stale[i], NULL);
+        n_rec_stale = 0;
+        for (int i = 0; i < n_frame_views; i++) rec_stale[n_rec_stale++] = frame_views[i].view;
+    } else {
+        for (int i = 0; i < n_frame_views; i++) vk_defer_view(frame_views[i].view);
+    }
     n_frame_views = 0;
 }
 
 bool xess_dispatch(const Fsr3Dispatch *d) {
     if (!ctx || failed) return false;
-    if ((ctx_ow != d->output.width || ctx_oh != d->output.height) && !init_for(d)) {
+    bool resize = ctx_ow != d->output.width || ctx_oh != d->output.height;
+    if (resize && !init_for(d)) {  // (xessVKInit wants the device idle; the caller drains and idles for that frame)
         failed = true;
         return false;
     }
@@ -277,7 +293,10 @@ bool xess_dispatch(const Fsr3Dispatch *d) {
     }
     VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = n_in,
                            .pImageMemoryBarriers = in_bar};
-    rec_CmdPipelineBarrier2(cb, &di);
+    // (the recorder thread records straight into the command buffer: queuing a command from it would deadlock, so the
+    // calls below pick their path by the thread they run on, as record.c's own do)
+    if (rec_on_recorder()) vkCmdPipelineBarrier2(cb, &di);
+    else rec_CmdPipelineBarrier2(cb, &di);
     // (the reactive mask only when the context was made for it: it is part of init_flags; we don't use it, XeSS's
     // reactive handling is its own. depth drives the dilation instead.)
     xess_vk_execute_params_t ep = {};
@@ -309,7 +328,8 @@ bool xess_dispatch(const Fsr3Dispatch *d) {
     if (ctx_ow != d->output.width || ctx_oh != d->output.height)
         f_set_velocity_scale(ctx, -0.5f * (float)d->color.width, 0.5f * (float)d->color.height);
     vk_gpuprof_mark(cb, "XeSS upscale");
-    rec_drain();  // (the library records into cb itself: what was queued before goes first)
+    if (!rec_on_recorder()) rec_drain();  // (the library records into cb itself: what was queued before goes first; on
+                                          //  the recorder thread everything before it is already recorded)
     xess_result_t r = f_execute(ctx, cb, &ep);
     vk_gpuprof_mark(cb, "after XeSS");
     drop_frame_views();
@@ -333,8 +353,10 @@ bool xess_dispatch(const Fsr3Dispatch *d) {
     }
     VkDependencyInfo di2 = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = n_back,
                             .pImageMemoryBarriers = back};
-    rec_CmdPipelineBarrier2(cb, &di2);
-    vk_dyn_forget();  // (XeSS's own pipelines and sets were bound)
+    if (rec_on_recorder()) vkCmdPipelineBarrier2(cb, &di2);
+    else rec_CmdPipelineBarrier2(cb, &di2);
+    if (!rec_on_recorder()) vk_dyn_forget();  // (XeSS's own pipelines and sets were bound; on the recorder thread the
+                                              //  binding state the translating thread keeps is not its to reset)
     return true;
 }
 

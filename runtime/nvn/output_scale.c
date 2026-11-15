@@ -101,17 +101,17 @@ bool upscale_modes_available(void) {
     return on;
 }
 
-// Ultra Performance renders a third of the window's size on each side. A temporal upscaler (FSR 3 / 4, DLSS) is made to
-// bring that to 2160 lines or more; at 1440 the scene is 853 x 480 and the whole image comes out blurred, for hardly
-// more frames than Performance where the CPU is the limit. So it is offered from a 4K window on, and below that a
-// stored Ultra Performance runs as Performance (the setting is kept: it comes back on a 4K window). FSR 1 keeps it at
+// Ultra Performance renders a third of the window's size on each side. A temporal upscaler (FSR 3 / 4, XeSS, DLSS) is
+// made to bring that to 2160 lines or more; at 1440 the scene is 853 x 480 and the whole image comes out blurred, for
+// hardly more frames than Performance where the CPU is the limit. So it is offered from a 4K window on, and below that
+// a stored Ultra Performance runs as Performance (the setting is kept: it comes back on a 4K window). FSR 1 keeps it at
 // any size. SAVAGEWIND_UPSCALE_ANY=1: offered at any size, as before.
 static volatile int g_out_lines;  // the window's height (output_scale; 0: not known yet)
 bool upscale_mode_offered(int q) {
     if (q == UPQ_NATIVE) return g_settings.upscaler == UPSCALE_FSR3 || g_settings.upscaler == UPSCALE_FSR4;
     static int any = -1;
     if (any < 0) any = getenv("SAVAGEWIND_UPSCALE_ANY") && atoi(getenv("SAVAGEWIND_UPSCALE_ANY")) != 0;
-    if (q != UPQ_ULTRA_PERFORMANCE || any || !(rt_fsr3() || rt_dlss())) return true;
+    if (q != UPQ_ULTRA_PERFORMANCE || any || !(rt_fsr3() || rt_xess() || rt_dlss())) return true;
     return !g_out_lines || g_out_lines >= 2160;
 }
 
@@ -489,14 +489,14 @@ unsigned shadow_map_size(unsigned long long frame) {
     for (int i = 0; i < n; i++)
         if (frame >= at[i]) r = w[i];
     if (r > 8192) r = 8192;
-    // With a temporal upscaler (FSR 3 / 4, DLSS) the scene is drawn smaller by the quality mode's factor, and the
-    // cascades above the console's size follow it: as many shadow texels per drawn pixel as without the upscaler
+    // With a temporal upscaler (FSR 3 / 4, XeSS, DLSS) the scene is drawn smaller by the quality mode's factor, and
+    // the cascades above the console's size follow it: as many shadow texels per drawn pixel as without the upscaler
     // (Extreme at Quality: 5440 instead of 8192). The cascades cost the same at any scene resolution otherwise, and
     // where they are most of the frame the upscaler gained nothing. Never under the console's own 896.
     // SAVAGEWIND_SHADOW_FOLLOW=0: the setting's size, as before.
     static int follow = -1;
     if (follow < 0) follow = !getenv("SAVAGEWIND_SHADOW_FOLLOW") || atoi(getenv("SAVAGEWIND_SHADOW_FOLLOW")) != 0;
-    if (follow && r > 896 && (rt_fsr3() || rt_dlss())) {
+    if (follow && r > 896 && (rt_fsr3() || rt_xess() || rt_dlss())) {
         r = (unsigned)(r / upscale_factor() / 64.0 + 0.5) * 64;
         if (r < 896) r = 896;
     }

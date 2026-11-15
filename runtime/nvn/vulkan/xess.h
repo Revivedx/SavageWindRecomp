@@ -28,6 +28,9 @@ bool xess_probe(VkInstance inst, VkDevice dev, VkPhysicalDevice phys);
 bool xess_available(void);
 // False once a dispatch failed this run (the scene goes on without XeSS from there)
 bool xess_usable(void);
+// The output size differs from the one xessVKInit last ran for: the next dispatch re-initializes, which needs the
+// device idle and the recorder drained (exec.c does that for that frame, and only then)
+bool xess_output_changed(const Fsr3Dispatch *d);
 // Records XeSS into d->cb (fsr3.h's Fsr3Dispatch: the scene, depth R32F [0, 1] not inverted, the motion vectors at
 // the render size, the reactive mask R8, the output at the window's size; the images are left in GENERAL). XeSS wants
 // its inputs in SHADER_READ_ONLY_OPTIMAL and the output in GENERAL: the transitions are recorded here, around the
