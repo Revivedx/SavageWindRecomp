@@ -1290,7 +1290,7 @@ static void sample_pose(Cpu *c, uint64_t pinfo) {
     uint64_t armor[ARMOR], gear[ONLINE_GEAR];
     equipment(player, armor, gear);
     if (strncmp(pose.as[0], "Para", 4) || !strcmp(pose.as[0], "ParaEquipOff")) gear[5] = 0;  // (his paraglider: open)
-    {   // his weapon thrown: it leaves his equipment as it leaves his hand, so it is kept as his while it flies and 2 s
+    {   // his weapon thrown: it leaves his equipment as it leaves his hand, so it is kept as his while it flies and 0.3 s
         // after it comes to rest; then it lies in his world, and goes on the loot list (loot_update): the others' games
         // make it where it lies, a real weapon they can pick up (and one picked up goes in every game)
         // (followed even when he draws another before it lands: then it isn't shown flying, only where it lies; once on
@@ -1319,7 +1319,7 @@ static void sample_pose(Cpu *c, uint64_t pinfo) {
             last[0] = m[3], last[1] = m[7], last[2] = m[11];
             if (dx * dx + dy * dy + dz * dz > 0.01f * 0.01f) still_since = 0, listed_at = 0;
             else if (!still_since) still_since = now;
-            if (still_since && now - still_since > 2000000000ull && !listed_at) {
+            if (still_since && now - still_since > 300000000ull && !listed_at) {
                 char tn[48];
                 actor_name_of(thrown, tn);
                 if (!strncmp(tn, "Weapon_", 7)) loot_mine_add(thrown, tn, 0);
@@ -1329,8 +1329,8 @@ static void sample_pose(Cpu *c, uint64_t pinfo) {
             else if (!gear[0]) gear[0] = thrown;
         } else thrown = 0;
     }
-    {   // his shield and bow let go of (dropped for another, from the menu): once they have lain 2 s where they fell
-        // (one swapped from the menu is deleted by then), on the loot list as his thrown weapon
+    {   // his shield and bow let go of (dropped for another, from the menu): half a second after (where they fell
+        // one swapped from the menu is deleted by then), on the loot list as his thrown weapon
         static uint64_t had[2], let_go[2], since[2];
         static Watch hw2[2], lw[2];
         uint64_t now = plat_now_ns();
@@ -1339,7 +1339,7 @@ static void sample_pose(Cpu *c, uint64_t pinfo) {
             if (g2 != had[k] && had[k] && alive(had[k], hw2[k])) let_go[k] = had[k], lw[k] = hw2[k], since[k] = now;
             if (g2) had[k] = g2, hw2[k] = watch(g2);
             else had[k] = 0;
-            if (let_go[k] && now - since[k] > 2000000000ull) {
+            if (let_go[k] && now - since[k] > 500000000ull) {
                 uint64_t carried[LINK_CARRIED];
                 link_carried(player, carried);
                 char tn[48];
