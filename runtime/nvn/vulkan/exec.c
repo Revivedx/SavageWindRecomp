@@ -7622,7 +7622,12 @@ static void pso_load(void) {
             pso_seed = hash_words(0xcbf29ce484222325ull, &want, sizeof want);
         }
         if (!why && (memcmp(h.magic, want.magic, 8) || h.version != want.version || h.rec_size != want.rec_size)) why = "older format";
-        else if (!why && (h.vendor != want.vendor || h.device != want.device)) why = "made on another GPU";
+        else if (!why && getenv("SAVAGEWIND_PSO_FOREIGN")) {  // (--seed-from-report: a player's list, any GPU and build)
+            memcpy(want.shaders, h.shaders, sizeof want.shaders);
+            want.vendor = h.vendor, want.device = h.device;
+            pso_seed = hash_words(0xcbf29ce484222325ull, &want, sizeof want);
+        }
+        if (!why && (h.vendor != want.vendor || h.device != want.device)) why = "made on another GPU";
         else if (!why && memcmp(h.shaders, want.shaders, sizeof h.shaders)) why = "made by another shader translator build";
         if (why) {
             rewrite = true;
