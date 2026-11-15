@@ -1172,6 +1172,27 @@ static const char *builtin_src(const char *name, int *stage) {
                "layout(location = 0) out vec4 o;\n"
                "void main() { o = vec4(texture(t, uv).rgb, 1.0); }\n";
     }
+    // Accessibility > Colour vision (runtime/colour_vision.h; exec.c vk_present_draw): present.frag with the
+    // correction's 3x3 matrix applied in linear light, rows r0..r2 after the vertex shader's 32 bytes. r0.w = 1: the
+    // picture is already linear (HDR's float picture), else it holds sRGB-encoded values (the game's 8-bit image, read
+    // raw), decoded and encoded again around the matrix.
+    if (!strcmp(name, "present_cvd.frag")) {
+        *stage = STAGE_FRAGMENT;
+        return "#version 450\n"
+               "layout(set = 0, binding = 0) uniform sampler2D t;\n"
+               "layout(push_constant) uniform P { layout(offset = 32) vec4 r0; vec4 r1; vec4 r2; } pc;\n"
+               "layout(location = 0) in vec2 uv;\n"
+               "layout(location = 0) out vec4 o;\n"
+               "vec3 enc(vec3 c) { return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c)); }\n"
+               "vec3 dec(vec3 c) { return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c)); }\n"
+               "void main() {\n"
+               "  vec3 c = texture(t, uv).rgb;\n"
+               "  bool lin = pc.r0.w > 0.5;\n"
+               "  vec3 l = lin ? c : dec(clamp(c, 0.0, 1.0));\n"
+               "  vec3 m = max(vec3(dot(pc.r0.xyz, l), dot(pc.r1.xyz, l), dot(pc.r2.xyz, l)), vec3(0.0));\n"
+               "  o = vec4(lin ? m : enc(min(m, vec3(1.0))), 1.0);\n"
+               "}\n";
+    }
     // ---- post passes before the present (Video tab "Anti-aliasing" / "Upscaler"): exec.c vk_present_draw.
     // Each draws a fullscreen triangle into an image the size of its output; push constants: two vec4.
     if (!strcmp(name, "post.vert")) {

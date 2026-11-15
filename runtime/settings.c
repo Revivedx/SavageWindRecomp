@@ -33,6 +33,7 @@ Settings g_settings = {
     .freecam_sticks = true,
     .damage_taken = 100,
     .damage_dealt = 100,
+    .colour_vision_strength = COLOUR_VISION_STRENGTH_DEFAULT,
     .weapon_wear = 100,
     .upscaler = UPSCALE_DEFAULT,  // (Off: the window's resolution; MetalFX on macOS)
     .upscale_quality = UPQ_QUALITY,
@@ -124,6 +125,7 @@ static const char *const k_drawdist[DRAWDIST_COUNT] = {"original", "medium", "hi
 const char *const g_weather_keys[WEATHER_COUNT] = {"game", "no_rain", "no_storms", "clear", "cloudy", "rain",
                                                    "heavy_rain", "snow", "heavy_snow", "thunderstorm", "thunder_rain",
                                                    "sun_shower"};  // (weather; settings.h)
+const char *const g_colour_vision_keys[COLOUR_VISION_COUNT] = {"off", "protanopia", "deuteranopia", "tritanopia"};
 static const char *const k_icons[ICONS_COUNT] = {"auto", "keyboard", "xbox", "playstation", "nintendo", "steamdeck"};
 const char *const g_motion_source_keys[MOTION_SOURCE_COUNT] = {"auto", "controller", "dsu", "off"};
 
@@ -605,6 +607,12 @@ void settings_load(void) {
             for (int i = 0; i < WEATHER_COUNT; i++)
                 if (!strcmp(val, g_weather_keys[i])) g_settings.weather = i;
         }
+        else if (!strcmp(key, "colour_vision")) {
+            g_settings.colour_vision = 0;
+            for (int i = 0; i < COLOUR_VISION_COUNT; i++)
+                if (!strcmp(val, g_colour_vision_keys[i])) g_settings.colour_vision = i;
+        }
+        else if (!strcmp(key, "colour_vision_strength")) g_settings.colour_vision_strength = atoi(val);  // (percent)
         else if (!strcmp(key, "god_mode")) g_settings.god_mode = atoi(val) != 0;
         else if (!strcmp(key, "one_hit_kill")) g_settings.one_hit_kill = atoi(val) != 0;
         else if (!strcmp(key, "damage_taken")) g_settings.damage_taken = atoi(val);  // (percent)
@@ -707,6 +715,7 @@ void settings_load(void) {
     g_settings.color_temperature = CLAMP(g_settings.color_temperature, -100, 100);
     g_settings.color_tint = CLAMP(g_settings.color_tint, -100, 100);
     g_settings.color_lut_strength = CLAMP(g_settings.color_lut_strength, 0, 100);
+    g_settings.colour_vision_strength = CLAMP(g_settings.colour_vision_strength, 10, 100);
     g_settings.stick_cam_x = CLAMP(g_settings.stick_cam_x, STICK_CAM_MIN, STICK_CAM_MAX);
     g_settings.stick_cam_y = CLAMP(g_settings.stick_cam_y, STICK_CAM_MIN, STICK_CAM_MAX);
     g_settings.rumble_strength = CLAMP(g_settings.rumble_strength, RUMBLE_STRENGTH_MIN, RUMBLE_STRENGTH_MAX);
@@ -857,6 +866,9 @@ void settings_save(void) {
     fprintf(f, "infinite_rupees = %d\n", g_settings.infinite_rupees);
     int wx = g_settings.weather;
     fprintf(f, "weather = %s\n", g_weather_keys[wx >= 0 && wx < WEATHER_COUNT ? wx : 0]);
+    int cv = g_settings.colour_vision;
+    fprintf(f, "colour_vision = %s\n", g_colour_vision_keys[cv >= 0 && cv < COLOUR_VISION_COUNT ? cv : 0]);
+    fprintf(f, "colour_vision_strength = %d\n", g_settings.colour_vision_strength);
     fprintf(f, "god_mode = %d\n", g_settings.god_mode);
     fprintf(f, "one_hit_kill = %d\n", g_settings.one_hit_kill);
     fprintf(f, "damage_taken = %d\n", g_settings.damage_taken);

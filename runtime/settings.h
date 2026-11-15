@@ -198,8 +198,11 @@ typedef struct {
     char color_lut[128];     // color_lut_id(): "" none, "sw:<file>" shipped, "<file>" the player's luts/ folder
     int color_lut_strength;  // percent, 0..100
     bool color_lut_set;      // the ini names a LUT (or none): the player chose; the first setup offers COLOR_LUT_RECOMMENDED
+    // Options > Accessibility > Colour vision (runtime/colour_vision.h): a correction of the presented picture
+    int colour_vision;           // COLOUR_VISION_*: 0 off, 1 protanopia, 2 deuteranopia, 3 tritanopia
+    int colour_vision_strength;  // percent, 10..100 (COLOUR_VISION_STRENGTH_DEFAULT)
     // Options > Accessibility (runtime/assists.c): assists, each off by default
-    bool no_weapon_wear;     // weapons, bows and shields lose no durability and never break
+    bool no_weapon_wear;    // weapons, bows and shields lose no durability and never break
     int weapon_wear;         // how fast they wear out otherwise, percent of the game's (WEAPON_WEAR_MIN..MAX)
     bool infinite_arrows;    // shooting a bow takes no arrows from the pouch
     bool infinite_stamina;   // the stamina wheel never goes down
@@ -249,6 +252,9 @@ const char *settings_file(void);  // savagewind.ini, or SAVAGEWIND_SETTINGS
 #define WEATHER_COUNT 12  // (weather: 0 the game's, 1 no rain, 2 no thunderstorms, 3 + the game's weather type, held)
 extern const char *const g_weather_keys[WEATHER_COUNT];  // (the ini and `weather` names: game, no_rain, ..., sun_shower)
 #define DAMAGE_CHOICES {25, 50, 75, 100, 150, 200, 300, 400}  // (Accessibility's damage multipliers, percent)
+#define COLOUR_VISION_COUNT 4  // (Accessibility > Colour vision: off, protanopia, deuteranopia, tritanopia)
+extern const char *const g_colour_vision_keys[COLOUR_VISION_COUNT];  // (the ini's names: off, protanopia, ...)
+#define COLOUR_VISION_STRENGTH_DEFAULT 100  // (percent)
 #define FOV_CHOICES {70, 80, 90, 100, 110, 120, 130, 140, 150}  // (percent; 100: the game's own)
 #define HUD_SIZE_CHOICES {0, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120, 125, 130, 135, 140, 145, 150}  // (percent; 0: hidden, 100: the game's own)
 #define MENU_SPEED_CHOICES {70, 80, 90, 100, 125, 150, 175, 200, 250, 300}  // (percent; 100: the game's own)

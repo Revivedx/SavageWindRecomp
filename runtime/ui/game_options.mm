@@ -172,6 +172,16 @@ const int k_drawdist_order[] = {DRAWDIST_POTATO, DRAWDIST_ORIGINAL, DRAWDIST_MED
 constexpr int k_haze[] = HAZE_CHOICES;
 // Accessibility > Weapon wear: percent of the game's wear, a name and the factor shown beside it
 constexpr int k_wear[] = {0, 50, 100, 150, 200, 250, 300};
+// Accessibility > Colour vision (runtime/colour_vision.h): the type (settings.h COLOUR_VISION_*) and its strength, %
+const char *const k_cvd_name[COLOUR_VISION_COUNT] = {"Off", "Protanopia", "Deuteranopia", "Tritanopia"};
+const char *const k_cvd_desc[COLOUR_VISION_COUNT] = {
+    "For colour blindness: shifts the colours of the whole picture, HUD included, so colours that look alike come apart.",
+    "Protanopia: red looks dark and close to green. The whole picture, HUD included, is corrected.",
+    "Deuteranopia: green and red look alike. The whole picture, HUD included, is corrected.",
+    "Tritanopia: blue and green, and yellow and pink, look alike. The whole picture, HUD included, is corrected.",
+};
+constexpr int k_cvd_strength[] = {10, 20, 30, 40, 50, 60, 70, 80, 90, 100};
+static_assert(k_cvd_strength[9] == COLOUR_VISION_STRENGTH_DEFAULT);
 const char *const k_wear_name[] = {"Fairy", "Peter Pan", "Hylian", "Hero", "Master", "Legend", "Dude, are you ok?"};
 const char *const k_wear_times[] = {"0x", "0.5x", "1x", "1.5x", "2x", "2.5x", "3x"};  // percent (Video > Haze)
 // (shown with Potato first, the smallest: k_shadow_order maps a row index to settings.h SHADOW_*)
@@ -357,7 +367,8 @@ void build_items(void) {
     v.push_back(button(P_MAIN, "Controls", "Camera, motion, d-pad, mouse and button icons.", "Open", A_PAGE, P_CONTROLS));
     v.push_back(button(P_MAIN, "Key bindings", "Which key, mouse button or controller button does what.", "Open", A_PAGE, P_BINDS));
     v.push_back(button(P_MAIN, "Language", "Language of the texts and of the voices.", "Open", A_PAGE, P_LANGUAGE));
-    v.push_back(button(P_MAIN, "Accessibility", "Assists that make the game easier.", "Open", A_PAGE, P_ACCESS));
+    v.push_back(button(P_MAIN, "Accessibility", "Colour vision, and assists that make the game easier.", "Open", A_PAGE,
+                       P_ACCESS));
     v.push_back(button(P_MAIN, "Problem report",
                        "A zip file to attach to a bug report: the log of the last two runs, your settings and a short "
                        "system summary. No game files and no saves.",
@@ -1288,7 +1299,29 @@ void build_items(void) {
     v.push_back(button(P_LANGUAGE, "Restart now",
                        "Starts the game again with these languages. Unsaved progress is lost.", "Restart", A_RESTART, 0));
 
-    // Accessibility (runtime/assists.c): applied at once, while playing
+    // Accessibility > Colour vision first (runtime/colour_vision.h; applied at the present, at once), then the assists
+    // (runtime/assists.c): applied at once, while playing
+    v.push_back(choice(P_ACCESS, "Colour vision", k_cvd_desc[0], [](const Item &) { return COLOUR_VISION_COUNT; },
+                       [](const Item &, int x) { return tr(k_cvd_name[x]); },
+                       [](const Item &) {
+                           int t = g_settings.colour_vision;
+                           return t >= 0 && t < COLOUR_VISION_COUNT ? t : 0;
+                       },
+                       [](const Item &, int x) { g_settings.colour_vision = x; }, 0));
+    v.back().desc_fn = [](const Item &) {
+        int t = g_settings.colour_vision;
+        return tr(k_cvd_desc[t >= 0 && t < COLOUR_VISION_COUNT ? t : 0]);
+    };
+    v.push_back(choice(P_ACCESS, "Correction strength",
+                       "How strongly Colour vision shifts the colours. Lower it if the picture looks too changed.",
+                       [](const Item &) { return N(k_cvd_strength); },
+                       [](const Item &, int x) {
+                           static std::string s;
+                           s = pct(k_cvd_strength[x]);
+                           return s.c_str();
+                       },
+                       [](const Item &) { return nearest(k_cvd_strength, N(k_cvd_strength), g_settings.colour_vision_strength); },
+                       [](const Item &, int x) { g_settings.colour_vision_strength = k_cvd_strength[x]; }, N(k_cvd_strength) - 1));
     v.push_back(toggle(P_ACCESS, "God mode", "Link takes no damage.",
                        [](const Item &) { return (int)g_settings.god_mode; },
                        [](const Item &, int x) { g_settings.god_mode = x; }, 0));
@@ -2079,6 +2112,7 @@ extern "C" int rt_opt_store(uint64_t row) {
         mark_all_rows(rd64(row));
     }
     if (past_end) g_dirty.push_back(row);                // (first: the row shows the value at the other end)
+    else if (it->page == P_ACCESS && it->desc_fn) g_dirty.push_back(row);  // (Colour vision: the text names the type)
     return 1;
 }
 

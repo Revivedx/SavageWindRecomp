@@ -5,11 +5,30 @@ a virtual amiibo reader. None of them is on until you turn it on, and none of th
 
 | What | Where | Needs |
 |---|---|---|
+| [Colour vision](#colour-vision) | The game's Options > Accessibility | Nothing |
 | [Assists](#assists) | The game's Options > Accessibility | Nothing |
 | [Cheats tab](#cheats-tab) | Savage Wind menu (F1) > Cheats | Being in game |
 | [Teleport and console cheats](#teleport-and-console-cheats) | The console (` or F12) | The `DEV` launch option |
 | [amiibo](#amiibo) | Savage Wind menu (F1) > amiibo | Your own figure dumps |
 | [Save profiles](#keep-a-separate-save-for-cheats) | Savage Wind Configuration > Settings > Saves | The game closed |
+
+## Colour vision
+
+For colour-blind players. Open the game's own menu, then **Options > Accessibility**; Colour vision is at the top.
+It shifts the colours of the whole picture, the game's HUD and menus included, so colours that look alike to you come
+apart: a red Chuchu from a green one, the stamina wheel turning red when it runs out. The change shows at once, so you can try each type and strength while the menu is open.
+
+| Option | What it does |
+|---|---|
+| Colour vision | Off, or the kind of colour blindness you have: **Protanopia** (red looks dark and close to green), **Deuteranopia** (green and red look alike, the most common), **Tritanopia** (blue and green, and yellow and pink, look alike). |
+| Correction strength | How strongly the colours are shifted: 10% to 100%. Milder colour blindness often needs less; lower it if the picture looks too changed. |
+
+Notes:
+
+- It works with HDR, the upscalers and frame generation, and adds no extra pass: the frame rate stays the same.
+- The Savage Wind menu (F1) and the photos you take with the camera rune keep their real colours. Screenshots and
+  recordings of the window (Steam, OBS) show the corrected picture.
+- Savage Wind's colour look and the Video > Colour settings still apply; the correction comes after them.
 
 ## Assists
 

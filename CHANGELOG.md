@@ -60,6 +60,14 @@ controller and post there.
 - **The sticks tilt a shrine apparatus with any controller** once pushed past half way (a gyro lying still, a handheld
   on its dock); R3 gives it back to the gyro.
 
+### Accessibility
+
+- **Colour vision for colour-blind players**, the first rows of Options > Accessibility: Protanopia, Deuteranopia or
+  Tritanopia shifts the colours of the whole picture, HUD and menus included, so colours that look alike come apart
+  (a red Chuchu from a green one, the stamina wheel running out). Correction strength goes from 10% to 100%. It
+  works in HDR too, costs no extra pass, and leaves the Savage Wind menu and the camera rune's photos as they are.
+  More in [Cheats and assists](docs/cheats-and-assists.md#colour-vision).
+
 ### Fixes
 
 - **Water** drawn transparent where a new image was read before its clear finished

@@ -83,8 +83,8 @@ the whole folder. More in [Saves](docs/saves.md), including profiles and Wii U /
 
 ## Cheats, assists and amiibo
 
-God mode, infinite stamina, damage and weapon wear settings, items, rupees, weather, teleporting and the virtual
-amiibo reader: how to use them in [Cheats and assists](docs/cheats-and-assists.md).
+Colour vision for colour-blind players, god mode, infinite stamina, damage and weapon wear settings, items, rupees,
+weather, teleporting and the virtual amiibo reader: how to use them in [Cheats and assists](docs/cheats-and-assists.md).
 
 ## Status
 
