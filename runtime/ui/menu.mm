@@ -635,9 +635,10 @@ extern "C" void renderer_get_scale(float *sx, float *sy);
 extern "C" void renderer_get_scene_scale(float *sx, float *sy);
 extern "C" bool renderer_gpu_rtx(void);  // (vulkan/device.c, metal.m)
 extern "C" volatile int g_fg_active;     // (hle/framepace.c: the last presented frame was generated)
-// Video > Upscaler mode's names, by UPQ_*
-static const char *const k_upscale_modes[UPQ_COUNT] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance",
-                                                       "Native", "Dynamic"};
+// Video > Upscaler mode's names, by UPQ_*, and their order on screen (largest render size first)
+static const char *const k_upscale_modes[UPQ_COUNT] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance", "Native"};
+static const int k_upscale_mode_order[UPQ_COUNT] = {
+    UPQ_NATIVE, UPQ_ULTRA, UPQ_QUALITY, UPQ_BALANCED, UPQ_PERFORMANCE, UPQ_ULTRA_PERFORMANCE};
 extern "C" {
 #include "../nvn/output_scale.h"
 }
@@ -973,53 +974,33 @@ static void tab_display(void) {
         for (int i = 0; i < NU; i++) if (ups_value[i] == UPSCALE_DEFAULT) udef = i;
         if (opt_choice_avail("Upscaler", &ui, &shown, ups, avail, NU, udef, ud)) g_settings.upscaler = ups_value[ui];
         // its mode (AMD's scale factors), one step in; greyed when the upscaler is off
-        const char *const *modes = k_upscale_modes;
         bool modes_ok = upscale_modes_available();
         std::string mode_names[UPQ_COUNT];
         const char *mn[UPQ_COUNT];
         bool mavail[UPQ_COUNT];
+        int mi = 2, mdef = 2;  // UPQ_QUALITY's position in k_upscale_mode_order
         for (int i = 0; i < UPQ_COUNT; i++) {
-            mode_names[i] = modes_ok ? tr(modes[i]) : std::string(tr(modes[i])) + " " + tr("(coming soon)");
+            int q = k_upscale_mode_order[i];
+            mode_names[i] = modes_ok ? tr(k_upscale_modes[q])
+                                     : std::string(tr(k_upscale_modes[q])) + " " + tr("(coming soon)");
             mn[i] = mode_names[i].c_str();
-            mavail[i] = modes_ok && upscale_mode_offered(i);
+            mavail[i] = modes_ok && upscale_mode_offered(q);
+            if (q == g_settings.upscale_quality) mi = i;
+            if (q == UPQ_QUALITY) mdef = i;
         }
         float sx, sy;  // the 3D scene's size (BOTW docked: 1600 x 900 times its scale)
         renderer_get_scene_scale(&sx, &sy);
         char rendering[100];
         snprintf(rendering, sizeof rendering, tr("Rendering at %.0f x %.0f."), 1600.0 * sx, 900.0 * sy);
         std::string md = std::string(tr("How much smaller the game renders before the upscaler brings it to the window, "
-                                        "on each side: Ultra Quality 1.3x, Quality 1.5x, Balanced 1.7x, Performance "
-                                        "2x, Ultra Performance 3x. Smaller is faster and softer.")) +
-                         "\n\n" + tr("Native: the scene renders at the window's size and the upscaler only anti-aliases "
-                                     "it, reconstructing along the game's motion - the sharpest and steadiest the "
-                                     "picture gets, at no frame gain. Only the temporal upscalers offer it (AMD FSR 3 "
-                                     "and FSR 4, DLSS): FSR 1 has no history to reconstruct from.") +
-                         "\n\n" + tr("Dynamic: the render size follows the frame rate - smaller while a scene costs too "
-                                     "much, sharper again as soon as it doesn't - so the rate below is held rather than "
-                                     "chased with a fixed factor. Between the two ends above.") +
+                                        "on each side: Native 1x (FSR 3/4), Ultra Quality 1.3x, Quality 1.5x, Balanced "
+                                        "1.7x, Performance 2x, Ultra Performance 3x. Smaller is faster and softer.")) +
                          "\n\n" + (modes_ok ? rendering : tr("Coming in a later version."));
         opt_indent(1);
         if (g_settings.upscaler == UPSCALE_OFF) opt_disable_next();
         static int mshown = -1;
-        opt_choice_avail("Upscaler mode", &g_settings.upscale_quality, &mshown, mn, mavail, UPQ_COUNT, UPQ_QUALITY,
-                         md.c_str());
-        // its target rate (Dynamic only): the frame rate the render size is made to hold
-        if (upscale_quality_now() == UPQ_DYNAMIC) {
-            static const int targets[] = {30, 40, 45, 60, 75, 90, 120, 144, 165, 240};
-            enum { NT = sizeof targets / sizeof targets[0] };
-            static char tbuf[NT][16];
-            const char *tn[NT];
-            for (int i = 0; i < NT; i++) {
-                snprintf(tbuf[i], sizeof tbuf[i], tr("%d FPS"), targets[i]);
-                tn[i] = tbuf[i];
-            }
-            int ti = 0;
-            for (int i = 0; i < NT; i++) if (targets[i] == upscale_dynamic_target()) ti = i;
-            opt_choice("Dynamic target", &ti, tn, NT, 3,  // (60 FPS to begin with)
-                       "The frame rate Dynamic holds: the render size goes smaller to reach it and sharper to keep it. "
-                       "Where you set no frame rate limit, the display's rate does this.");
-            g_settings.dynamic_target = targets[ti];
-        }
+        if (opt_choice_avail("Upscaler mode", &mi, &mshown, mn, mavail, UPQ_COUNT, mdef, md.c_str()))
+            g_settings.upscale_quality = k_upscale_mode_order[mi];
         opt_indent(-1);
     }
 #ifdef __APPLE__
@@ -1280,16 +1261,9 @@ static void tab_display(void) {
                "little faster, a flatter image.");
     opt_toggle("Depth of field", &g_settings.depth_of_field, true, "The game blurs the far distance a little. Off: sharp "
                "out to the horizon, a little faster.");
-    {   // (off and greyed with an upscaler running: its mode sets the render size, and the two would fight over it)
-        if (!dynamic_res_allowed()) opt_disable_next();
-        bool dr = g_settings.dynamic_res;
-        if (opt_toggle("Dynamic resolution", &dr, true, "As on the console: the game lowers its 3D "
-                       "resolution (down to 1280x720 before upscaling) while frames take long, and raises it again "
-                       "after. Off: always the full resolution. On with the Potato preset.\n\nWith an upscaler it is "
-                       "off: the upscaler's mode decides how small the game renders.")) {
-            if (dynamic_res_allowed()) g_settings.dynamic_res = dr;
-        }
-    }
+    opt_toggle("Dynamic resolution", &g_settings.dynamic_res, true, "As on the console: the game lowers its 3D "
+               "resolution (down to 1280x720 before upscaling) while frames take long, and raises it again after. "
+               "Off: always the full resolution. On with the Potato preset.");
     if (gamelib_compat())  // (runtime/gamelib.h: a CPU without FMA instructions; simd.h simd_fma_unfused)
         opt_toggle("Fast math", &g_settings.fast_fma, true, "Your CPU has no FMA instructions, so the game's math runs "
                    "in software. On: about 10% faster; some results round a tiny bit differently from the console, "
@@ -1796,8 +1770,6 @@ static void perf_overlay_draw(ImGuiIO &io, float scale) {
         char f[16];
         snprintf(f, sizeof f, "%.1f", upscale_factor());
         line += std::string(" ") + (q >= 0 && q < UPQ_COUNT ? std::string(tr(k_upscale_modes[q])) + " " : "") + f + "x";
-    } else if (up != UPSCALE_OFF && q == UPQ_NATIVE) {
-        line += std::string(" ") + tr("Native");  // (1x: nothing to show as a factor)
     }
     // (FSR 3 anti-aliases the scene itself: the setting does nothing then)
     int aa = rt_antialias();

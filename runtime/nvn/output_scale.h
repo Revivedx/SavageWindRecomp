@@ -37,19 +37,6 @@ double upscale_mode_factor(int q);
 double upscale_factor(void);
 bool upscale_mode_offered(int q);   // mode q can be chosen now (Ultra Performance with FSR 3 / 4 or DLSS: a 4K window)
 int upscale_quality_now(void);      // the mode in use: the setting, or Performance where it is not offered
-// The temporal upscalers' native anti-aliasing (UPQ_NATIVE): the scene at the window's size, reconstructed along the
-// motion vectors instead of scaled - the upscaler anti-aliases and does not resize (vulkan/exec.c scene_post)
-bool upscale_native_wanted(void);
-// Video > Upscaler mode Dynamic (UPQ_DYNAMIC): the render size follows the frame rate towards upscale_dynamic_target().
-// upscale_dynamic_tick runs once per presented frame with the frames reaching the display per second (perfmon's, frame
-// generation's included); false when Dynamic is not the mode in use. Both are no-ops without a temporal upscaler.
-bool upscale_dynamic_tick(float fps);
-int upscale_dynamic_target(void);   // the frame rate aimed at: the setting, the game's limit, or the display's rate
-double upscale_dynamic_factor(void);  // the factor in use (Ultra Quality 1.3 .. Ultra Performance 3.0)
-void upscale_dynamic_reset(void);     // another window or boot: the factor starts over at Quality
-// Video > Advanced > Dynamic resolution (the game's own: it drops between two sizes from the GPU time it measures)
-// is off while an upscaler runs - the upscaler's mode sets the render size, and the two would fight over it
-bool dynamic_res_allowed(void);
 // Video > Shadow resolution: the width the game's shadow maps are made at from presented frame `frame` on (0: their
 // own size; vulkan/textures.c RS_SHADOW)
 unsigned shadow_map_size(unsigned long long frame);
