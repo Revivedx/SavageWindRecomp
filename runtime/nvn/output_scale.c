@@ -78,8 +78,14 @@ bool rt_dlss(void) { return g_settings.upscaler == UPSCALE_DLSS && upscaler_avai
 bool rt_temporal(void) { return rt_antialias() == AA_TAA || rt_fsr3() || rt_dlss(); }
 
 double upscale_mode_factor(int q) {
-    static const double f[UPQ_COUNT] = {1.3, 1.5, 1.7, 2.0, 3.0};
-    return q == UPQ_COUNT ? 1.0 : q >= 0 && q < UPQ_COUNT ? f[q] : 1.5;  // (UPQ_COUNT: SAVAGEWIND_UPSCALE_AT fsr3-native)
+    static const double f[UPQ_COUNT] = {1.3, 1.5, 1.7, 2.0, 3.0, 1.0};  // (UPQ_NATIVE: the window's own size)
+    return q >= 0 && q < UPQ_COUNT ? f[q] : 1.5;
+}
+
+// The temporal upscalers' native anti-aliasing: the scene at the window's size, neither scaled down nor up (DLAA's
+// idea). Only they have a history to reconstruct from; FSR 1 is a spatial filter, so at 1x it would do nothing at all.
+bool upscale_native_wanted(void) {
+    return upscale_quality_now() == UPQ_NATIVE && (rt_fsr3() || rt_dlss());
 }
 
 // Rendering below the window's size: the 3D scene's render targets at their own scale (vulkan/textures.c). Metal has
@@ -99,23 +105,117 @@ bool upscale_modes_available(void) {
 // more frames than Performance where the CPU is the limit. So it is offered from a 4K window on, and below that a
 // stored Ultra Performance runs as Performance (the setting is kept: it comes back on a 4K window). FSR 1 keeps it at
 // any size. SAVAGEWIND_UPSCALE_ANY=1: offered at any size, as before.
+// Native is the other way round: a temporal upscaler's reconstruction at 1x, which is anti-aliasing and no scaling, so
+// it is offered wherever one of them runs and nowhere else (FSR 1 has nothing to reconstruct from at 1x).
+// Dynamic is theirs too: only they can be handed any render size and compose it back to the window's, so the factor
+// can move between frames (upscale_dynamic_factor).
 static volatile int g_out_lines;  // the window's height (output_scale; 0: not known yet)
 bool upscale_mode_offered(int q) {
     static int any = -1;
     if (any < 0) any = getenv("SAVAGEWIND_UPSCALE_ANY") && atoi(getenv("SAVAGEWIND_UPSCALE_ANY")) != 0;
+    if (q == UPQ_NATIVE || q == UPQ_DYNAMIC) return rt_fsr3() || rt_dlss();
     if (q != UPQ_ULTRA_PERFORMANCE || any || !(rt_fsr3() || rt_dlss())) return true;
     return !g_out_lines || g_out_lines >= 2160;
 }
 
 int upscale_quality_now(void) {
     int q = g_settings.upscale_quality;
-    return upscale_mode_offered(q) ? q : UPQ_PERFORMANCE;
+    if (upscale_mode_offered(q)) return q;
+    // (the mode stored is not offered here: Performance, its nearest in frames; Native is never taken away, it is only
+    //  offered where a temporal upscaler runs, and storing it with none of them is the settings file's business)
+    return q == UPQ_NATIVE ? UPQ_QUALITY : UPQ_PERFORMANCE;
+}
+
+// ---- Dynamic (Video > Upscaler > Dynamic target): the render size follows the frame time
+// Between Ultra Quality (the sharpest) and Ultra Performance (the fastest), the factor moves a step at a time towards
+// the target frame rate and never back inside it: a frame rate that sits at the target is one the picture can be
+// made sharper at, and staying a little under it is what keeps the movement even (a factor that hunts up and down
+// every frame is worse than one a step too fast). Each step is taken after DYNAMIC_HOLD frames, so a scene that
+// takes one long frame - a load, a shader compiled - does not shrink it.
+// The target is dynamic_target; 0 takes the game's own frame rate limit, or the display's rate where the game has
+// none (a 60 Hz monitor with no limit: 60).
+#define DYNAMIC_HOLD 45    // presented frames a step is held before the next one (0.75 s at 60 fps)
+#define DYNAMIC_SHRINK 0.95  // under this share of the target the render size goes one step smaller
+#define DYNAMIC_GROW 1.06    // over this share there is room for one step sharper
+static volatile int dyn_step = -1;  // index into k_dyn_factors (0: Ultra Quality, DYNAMIC_STEPS - 1: Ultra Performance;
+                                    // -1: not started, Quality and the frame rate decide from there)
+static int dyn_hold, dyn_settled;
+static double dyn_factor_now;  // the factor upscale_factor returns (1.0 before the first frame)
+// (0.5 would let the scene go under the console's own 900 lines; the two ends are the modes either side of Dynamic)
+static const double k_dyn_factors[] = {1.3, 1.4, 1.5, 1.6, 1.7, 1.85, 2.0, 2.4, 2.7, 3.0};
+enum { DYNAMIC_STEPS = (int)(sizeof k_dyn_factors / sizeof k_dyn_factors[0]) };
+
+int upscale_dynamic_target(void) {
+    int t = g_settings.dynamic_target;
+    if (t > 0 && t <= DYNAMIC_TARGET_MAX) return t;
+    int lim = g_settings.fps_limit;  // (Video > Frame rate: 0 is no limit)
+    if (lim > 0) return lim;
+    return DYNAMIC_TARGET_DEFAULT;
+}
+
+// The game's own dynamic resolution (Video > Advanced) is the other mechanism: it drops between two sizes of its own
+// from the GPU time the game measures, and the size it picks is the base the upscaler's factor then applies to. The
+// two together would fight over the same thing - which resolution the scene is drawn at - so the upscaler takes it:
+// with one running this answers false, and the setting is shown greyed and off (the value is kept for when the
+// upscaler goes off again).
+bool dynamic_res_allowed(void) {
+    int u = g_settings.upscaler;
+    return u == UPSCALE_OFF || !upscaler_available(u);
+}
+
+// Called once per presented frame with the frames actually reaching the display per second (perfmon's, which counts
+// frame generation's too: what the player sees is what is aimed at). False when Dynamic is not the mode in use.
+//
+// It aims to sit just over the target, not to reach the fastest factor: a rate at or over the target means the picture
+// can be sharper, one under it means it cannot. So the factor goes one step sharper while the rate is clear of the
+// target, and one step smaller while it is under - which stops once the target is met again.
+// The rate taken in is a running average (perfmon's own is the last second only, which swings by tens of frames when a
+// frame is long) and a step needs the average to hold past a wider band than the one the step was taken on, so a
+// factor that landed near the target does not flip back and forth every DYNAMIC_HOLD frames.
+bool upscale_dynamic_tick(float fps) {
+    if (upscale_quality_now() != UPQ_DYNAMIC || !(rt_fsr3() || rt_dlss())) return false;
+    static int last_target;
+    static float smooth;
+    if (dyn_step < 0) dyn_step = DYNAMIC_STEPS / 2;  // (Quality to begin with: the frame rate then decides the rest)
+    int target = upscale_dynamic_target();
+    if (target != last_target) {  // (another target: start where the setting is, no step to catch up on)
+        last_target = target;
+        dyn_hold = 0;
+        dyn_settled = 1;
+        smooth = 0;
+    }
+    dyn_factor_now = k_dyn_factors[dyn_step];
+    if (fps <= 0) return true;  // (no frame rate yet: this frame's size stands)
+    smooth = smooth > 0 ? smooth + (fps - smooth) * 0.10f : fps;  // (a second or so of frames, smoothed)
+    if (++dyn_hold < DYNAMIC_HOLD) return true;
+    dyn_hold = 0;
+    int before = dyn_step;
+    float const ratio = smooth / (float)target;
+    if (ratio < DYNAMIC_SHRINK && dyn_step < DYNAMIC_STEPS - 1)
+        dyn_step++, dyn_settled = 0;  // (under the target: render smaller, until it is met)
+    else if (ratio > DYNAMIC_GROW && dyn_step > 0)
+        dyn_step--, dyn_settled = 0;  // (clear of the target: room to be sharper)
+    else if (!dyn_settled)
+        dyn_settled = 1;
+    if (dyn_step != before && getenv("SAVAGEWIND_LOG_DYNAMIC"))  // (each step: what it settles on)
+        LOG("[dynamic] %.0f fps (avg %.0f) at a target of %d: %.2fx -> %.2fx\n", fps, smooth, target,
+            k_dyn_factors[before], k_dyn_factors[dyn_step]);
+    return true;
+}
+
+double upscale_dynamic_factor(void) { return dyn_factor_now > 0 ? dyn_factor_now : 1.5; }
+void upscale_dynamic_reset(void) {  // (another boot, another window: the factor starts over at Quality)
+    dyn_step = DYNAMIC_STEPS / 2;
+    dyn_hold = dyn_settled = 0;
+    dyn_factor_now = 0;
 }
 
 double upscale_factor(void) {
     int u = g_settings.upscaler;
-    return u != UPSCALE_OFF && upscaler_available(u) && upscale_modes_available()
-               ? upscale_mode_factor(upscale_quality_now()) : 1.0;
+    if (u == UPSCALE_OFF || !upscaler_available(u) || !upscale_modes_available()) return 1.0;
+    int q = upscale_quality_now();
+    if (q == UPQ_DYNAMIC) return upscale_dynamic_factor();
+    return upscale_mode_factor(q);
 }
 
 // The window's shape over 16:9 while the game's views are widened to fill it, else 1; the field of view's factor in
@@ -125,6 +225,12 @@ static volatile float g_window_shape = 1;  // the window's shape over 16:9, wide
 static uint32_t g_world_proj[4];  // tan(fovy / 2), aspect, near, far of the world camera's last matrix (rt_persp), float bits
 
 void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
+    {   // (the window's size changed since the last frame: the dynamic mode starts over, its steps were for the old
+        //  one - a resize or a new monitor would otherwise keep a factor chosen for another size)
+        static double last_w, last_h;
+        if (last_w > 0 && (dw != last_w || dh != last_h)) upscale_dynamic_reset();
+        last_w = dw, last_h = dh;
+    }
     g_out_lines = (int)dh;
     double fit = fmin(dw / 1920.0, dh / 1080.0);
     static double forced = -1, wide_test = -1;
@@ -149,31 +255,32 @@ void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
                    (shape < 1 || !framepace_loading_ui());
     if (!reshape) shape = 1.0;
     // render height in units of the Switch's 1080 lines: the window's (Metal: divided by the upscaler's factor)
-#ifdef __APPLE__
-    double out_div = upscale_factor(), scene_div = 1.0;
-#else
-    double out_div = 1.0, scene_div = upscale_factor();
-#endif
     // Video > Render scale: above 100% everything renders bigger than the window and is scaled down to it
     // (supersampling: the cleanest anti-aliasing, at the GPU's cost); below it smaller, scaled up (faster, blurrier).
-    // MAX_TEX below still caps it.
+    // MAX_TEX below still caps it. On Vulkan, only the 3D scene (RS_SCENE) scales with render_scale so the UI/HUD
+    // stays sharp at the output resolution (#746).
     static const double ss_f[RSCALE_COUNT] = {0.5, 0.75, 1.0, 1.25, 1.5, 2.0};
     int rsi = g_settings.render_scale;
     double ss = rsi >= 0 && rsi < RSCALE_COUNT ? ss_f[rsi] : 1.0;
+#ifdef __APPLE__
+    double out_div = upscale_factor(), scene_div = 1.0, ui_ss = ss, scene_ss = 1.0;
+#else
+    double out_div = 1.0, scene_div = upscale_factor(), ui_ss = 1.0, scene_ss = ss;
+#endif
     // Near-16:9 integer resolutions like 1366x768 (768 * 16/9 = 1365.33) would otherwise render 1365px wide and
     // resample at a sub-pixel horizontal offset into the 1366px window (#770); snap <2px rounding to exact 1:1.
     bool near_fit = !reshape && forced <= 0 && wide_test <= 0 &&
                     fabs(dw - 1920.0 * fit) < 2.0 && fabs(dh - 1080.0 * fit) < 2.0;
-    double h = forced > 0 ? forced : (reshape ? dh / 1080.0 : fit) / out_div * ss;
+    double h = forced > 0 ? forced : (reshape ? dh / 1080.0 : fit) / out_div * ui_ss;
     h = fmax(h, 0.1);  // (a tiny window)
-    double sx = near_fit ? fmax((dw / 1920.0) / out_div * ss, 0.1) : h * shape;
-    double sy = near_fit ? fmax((dh / 1080.0) / out_div * ss, 0.1) : h;
+    double sx = near_fit ? fmax((dw / 1920.0) / out_div * ui_ss, 0.1) : h * shape;
+    double sy = near_fit ? fmax((dh / 1080.0) / out_div * ui_ss, 0.1) : h;
     double cap = fmin(MAX_TEX / (1920.0 * sx), MAX_TEX / (1080.0 * sy));
     if (cap < 1.0) { sx *= cap; sy *= cap; }
     o->sx = sx; o->sy = sy; o->shape = shape;
     // the 3D scene (BOTW docked: 1600x900, composited into the 1920x1080 final image) at the final image's
-    // resolution, divided by the upscaler's factor
-    double k = 1080.0 / SCENE_LINES / scene_div;
+    // resolution, scaled by Video > Render scale (on Vulkan) and divided by the upscaler's factor
+    double k = 1080.0 / SCENE_LINES / scene_div * scene_ss;
     o->scene_sx = sx * k; o->scene_sy = sy * k;
     double scap = fmin(MAX_TEX / (1920.0 * o->scene_sx), MAX_TEX / (1080.0 * o->scene_sy));
     if (scap < 1.0) { o->scene_sx *= scap; o->scene_sy *= scap; }

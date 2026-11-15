@@ -15,6 +15,10 @@
 
 static _Atomic bool active, focused = true;
 static _Atomic bool dialogue_active;
+static _Atomic bool dialogue_choices_exist;
+static _Atomic uint64_t text_instant_pulse_at;
+static _Atomic bool prev_player_confirmed;
+static _Atomic bool prev_dialogue_active;
 static _Atomic bool item_message_active,preview_available;
 static _Atomic uint64_t item_confirm_until;
 static _Atomic uint64_t quantity_until;
@@ -143,7 +147,11 @@ void pc_cursor_frame(void) {
             if(i==0x3f&&LD64(text)==0x7001ced520ull)dlc_screen=text;
             if(i==0x30&&LD64(text)==0x7001cef0a8ull)game_over_screen=text;
             if(i==0x39&&LD64(text)==0x7001cfffe0ull)game_over_modal=text;
-            if(LD64(text)==0x7001d4ed48ull)dialogue=true;
+            if(LD64(text)==0x7001d4ed48ull) {
+                dialogue=true;
+                uint64_t head=text+0x88;
+                dialogue_choices_exist=ptr(head)&&LD64(head+8)!=head;
+            }
             // New-item descriptions use Confirm without registered button nodes.
             if(LD64(text)==0x7001cf5e78ull)item_message=true;
             if(i==0x2e&&LD64(text)==0x7001cf9ad8ull&&g_site.pause_state&&
@@ -179,7 +187,10 @@ void pc_cursor_frame(void) {
         if(!spoken_logged)LOG("[pc-pointer] message box over play: the mouse stays the camera's\n");
         spoken_logged=true;dialogue=false;
     } else if(!dialogue)spoken_logged=false;
-    if(dialogue_active&&!dialogue)confirm_until=0;
+    if(dialogue_active&&!dialogue) {
+        confirm_until=0;
+        dialogue_choices_exist=false;
+    }
     dialogue_active=dialogue;
     item_message_active=item_message&&!game_over_screen;
     if(!item_message_active||!enabled()||!focused)item_confirm_until=0;
@@ -650,6 +661,34 @@ uint64_t pc_cursor_buttons(uint64_t b) {
     if(item_message_active&&pc_cursor_active()&&now<item_confirm_until)b|=1;
     if(now<guide_until)b|=1ull<<guide_bit;
     if(dlc_screen&&now<dlc_back_until)b|=2;
+
+    if(g_settings.text_speed==TEXT_SPEED_FAST) {
+        if(dialogue_active&&!dialogue_choices_exist)b|=2;
+    } else if(g_settings.text_speed==TEXT_SPEED_INSTANT) {
+        if(!dialogue_active||dialogue_choices_exist) {
+            text_instant_pulse_at=0;
+            prev_dialogue_active=false;
+            prev_player_confirmed=false;
+        } else {
+            if(!prev_dialogue_active) {
+                text_instant_pulse_at=now+100000000ull;
+                prev_dialogue_active=true;
+            } else {
+                bool player_pressed=(b&1)&&(now>=confirm_until);
+                if(player_pressed&&!prev_player_confirmed) {
+                    text_instant_pulse_at=now+100000000ull;
+                    prev_player_confirmed=true;
+                } else if(!player_pressed) {
+                    prev_player_confirmed=false;
+                }
+            }
+            if(text_instant_pulse_at&&now>=text_instant_pulse_at) {
+                confirm_until=now+50000000ull;
+                b|=1;
+                text_instant_pulse_at=0;
+            }
+        }
+    }
     return b;
 }
 bool pc_cursor_hover_box(float box[4]) {
@@ -1836,6 +1875,7 @@ void rt_pc_cursor_manager(Cpu *c, uint64_t activate, uint64_t bounds) {
 }
 
 RT_ON_RESET(pc_cursor_reset) {
+    dialogue_choices_exist=false;text_instant_pulse_at=0;prev_player_confirmed=false;prev_dialogue_active=false;
     dlc_screen=dlc_back_until=0;dlc_frame=UINT64_MAX;dlc_drag=0;
     quest_scroll_frame=UINT64_MAX;
     beast_frame=UINT64_MAX;beast_rotating=false;beast_hover=-1;

@@ -244,6 +244,10 @@ SITES = [
     Site('pc_cursor_manager', 'code', 'd10143ff a9017bfd a9025ff8 a90357f6 a9044ff4 910043fd b9000be1 91006008', 0),
     Site('pc_cursor_activate', 'code', 'a9bd7bfd f9000bf5 a9024ff4 910003fd f9402415 aa0103f3 aa0003f4 f9002401', 0),
     Site('pc_pane_bounds', 'code', 'bd407020 2d4a0821 1e200824 bd408423 1e208825 1e230841 1e238842 1e2c1003', 0),
+    # Controls > Menus wrap around (runtime/menu_wrap.c): the UI focus search's result (`mov x0, x20` before its
+    # epilogue; x19 the control, w22 the direction), and the screen's input layer (the search's own first call)
+    Site('menu_wrap', 'code', 'aa1403e0 6d442beb 6d4333ed 6d423bef a94b4ff4 a94a57f6 a9495ff8 a94867fa', 0),
+    Site('ui_control_layer', 'code', 'f9401408 3943f001 f9402508 f9400109 aa0803e0 f9401522 d61f0040', 0),
     # Map focus helpers: retain marker targeting without controller-style recentering on hover.
     Site('beast_focus_axes', 'code', 'a9bd7bfd f9000bf5 a9024ff4 910003fd 91404408 2a0103f3 aa0003f4 91231115', 0),
     Site('beast_focus_linear', 'code', 'a9bd7bfd a90157f6 a9024ff4 910003fd 91404408 2a0103f3 aa0003f4 911f2116', 0),
@@ -407,6 +411,7 @@ OPTIONAL_GROUPS = [
      'beast_clamp_pitch', 'beast_wrap_yaw', 'beast_world'),
     ('pc_button_group',),
     ('pc_cursor_manager', 'pc_cursor_activate', 'pc_pane_bounds'),
+    ('menu_wrap', 'ui_control_layer'),  # (without them the menus stop at their ends, as in the game)
     ('cam_stick', 'cam_pitch_chase', 'cam_pitch_surf', 'cam_pitch_wakeboard', 'cam_pitch_aim', 'cam_pitch_item'),
     ('cam_reverse_x', 'cam_reverse_y'),
     ('cam_stick_end',),  # (Controls > Controller camera speed: without it the setting does nothing)
@@ -463,6 +468,8 @@ KNOWN = {
         'quick_sort_refill': 0x7000e27c2c,
         'quick_sort_mapping': 0x7000e28070,
         'quick_sort_cursor': 0x7000d665a4,
+        'menu_wrap': 0x7000f586b8,
+        'ui_control_layer': 0x7000f6e2c8,
         'quick_sort_labels': 0x7000e278c0,
         'pouch_lock': 0x7000eaff08,
         'pouch_unlock': 0x7000eaff18,

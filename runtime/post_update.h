@@ -28,6 +28,11 @@ bool post_update_can_rollback(void);                 // the previous version's f
 
 typedef enum { UPDATE_IDLE, UPDATE_CHECKING, UPDATE_AVAILABLE, UPDATE_CURRENT, UPDATE_ERROR } UpdateState;
 
+// The launcher that installed this release and updates it (Quiver Launcher, GitHub Launcher, RecompLauncher), or NULL.
+// Then update_check_start does nothing: two updaters on one folder would fight over its files. The first start of a
+// version the launcher put there still sets it up (post_update_pending), as for a zip unpacked by hand.
+const char *update_launcher(void);
+
 void update_check_start(void);  // asks SW Update, in the background (no network code in the game itself)
 UpdateState update_check_state(char *version, size_t version_size, char *message, size_t message_size);
 // Starts SW Update to install it / to go back; true: this program must quit now so its files can be replaced.

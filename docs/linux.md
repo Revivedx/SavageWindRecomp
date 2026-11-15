@@ -186,7 +186,8 @@ files or fonts.
 - The HLE / service / reset tables are ELF sections found through the linker's `__start_` / `__stop_` symbols.
 - Renderer: the Windows Vulkan backend unchanged.
 - Without the user's Switch fonts the game text uses DejaVu Sans (TrueType; the game's font engine can't use CFF
-  fonts such as Noto Sans CJK).
+  fonts such as Noto Sans CJK). For Chinese or Korean text set `SAVAGEWIND_CJK_FONT` to a TrueType CJK font (e.g.
+  `wqy-microhei.ttc`), or install one where the game looks for it; see `fonts/README.md`.
 - Pages: 4K and 16K kernels (Asahi) work; 64K-page kernels (some ARM servers) are not supported.
 
 ## Testing on ARM (aarch64): what to report
