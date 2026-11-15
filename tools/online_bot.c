@@ -55,6 +55,9 @@ typedef struct {
     uint16_t pvp_seq;  // (its blows on the others: none)
     uint8_t pvp_target;
     int16_t pvp_damage;
+    char horse[24];  // (the horse it rides: none)
+    float horse_m[12];
+    char horse_as[32];
 } WireState;
 typedef struct { uint32_t magic; uint16_t version; char name[24], pass[24]; } WireHello;
 #pragma pack(pop)
@@ -80,7 +83,7 @@ int main(int argc, char **argv) {
     if (getaddrinfo(host, port, &hints, &res)) { fprintf(stderr, "bot: can't resolve %s\n", host); return 1; }
     sock_t s = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (connect(s, res->ai_addr, (int)res->ai_addrlen)) { fprintf(stderr, "bot: can't connect to %s:%s\n", host, port); return 1; }
-    WireHello h = {.magic = 0x4c4f5753u, .version = 29};
+    WireHello h = {.magic = 0x4c4f5753u, .version = 30};
     snprintf(h.name, sizeof h.name, "%s", name);
     msg(s, M_HELLO, &h, sizeof h);
     float centre[3] = {0, 0, 0};

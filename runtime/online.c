@@ -37,7 +37,7 @@ typedef int sock_t;
 #include "rt.h"
 
 #define MAGIC 0x4c4f5753u  // "SWOL"
-#define PROTOCOL 29  // (29: STATE carries his blows on the others; 28: QUEST / QUESTS of 32768 flags; 27: dyes)
+#define PROTOCOL 30  // (30: STATE carries the horse he rides; 29: his blows on the others; 28: 32768 flags)
 static volatile float g_local_hour = -1;  // (the local game's hour, from the frame loop: online_set_local_hour)
 #define SEND_HZ 20
 #define INTERP_NS 100000000ull  // the others are drawn this far behind what was last heard (smooth between updates)
@@ -81,6 +81,9 @@ typedef struct {
     uint16_t pvp_seq;                      // OnlinePose.pvp_*
     uint8_t pvp_target;
     int16_t pvp_damage;
+    char horse[24];                        // OnlinePose.horse*
+    float horse_m[12];
+    char horse_as[32];
 } WireState;
 typedef struct { uint32_t magic; uint16_t version; char name[ONLINE_NAME_MAX], pass[ONLINE_NAME_MAX]; } WireHello;
 typedef struct { char armor[3][48], gear[ONLINE_GEAR][48]; } WireEquip;  // EQUIP: what a player wears (head,
@@ -835,6 +838,9 @@ static bool sample_local(WireState *w) {
         w->weather = g_pose.weather;
         memcpy(w->dye, g_pose.dye, sizeof w->dye);
         w->pvp_seq = g_pose.pvp_seq, w->pvp_target = g_pose.pvp_target, w->pvp_damage = g_pose.pvp_damage;
+        memcpy(w->horse, g_pose.horse, sizeof w->horse);
+        memcpy(w->horse_m, g_pose.horse_m, sizeof w->horse_m);
+        memcpy(w->horse_as, g_pose.horse_as, sizeof w->horse_as);
         memcpy(w->ice, g_pose.ice, sizeof w->ice);
         w->yaw = g_pose.yaw;
     }
@@ -893,6 +899,10 @@ static void remote_snap(int id, const WireState *w) {  // (lock held)
     s->pose.weather = w->weather;
     memcpy(s->pose.dye, w->dye, sizeof s->pose.dye);
     s->pose.pvp_seq = w->pvp_seq, s->pose.pvp_target = w->pvp_target, s->pose.pvp_damage = w->pvp_damage;
+    memcpy(s->pose.horse, w->horse, sizeof s->pose.horse);
+    memcpy(s->pose.horse_m, w->horse_m, sizeof s->pose.horse_m);
+    memcpy(s->pose.horse_as, w->horse_as, sizeof s->pose.horse_as);
+    s->pose.horse[sizeof s->pose.horse - 1] = 0, s->pose.horse_as[sizeof s->pose.horse_as - 1] = 0;
     for (int k = 0; k < ONLINE_FX_EVENTS; k++) s->pose.fxev[k].name[20] = 0;
     memcpy(s->pose.ice, w->ice, sizeof s->pose.ice);
     s->pose.stop.name[ONLINE_GRAB_NAME - 1] = 0;

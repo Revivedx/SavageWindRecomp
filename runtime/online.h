@@ -94,6 +94,9 @@ typedef struct {
     uint16_t pvp_seq;                            // his last blow on another player (by its number, 0 none): who it hit
     uint8_t pvp_target;                          // (his slot) and how hard (his weapon's attack power); taken where the
     int16_t pvp_damage;                          // one hit has damage between players on (OnlineSettings.pvp)
+    char horse[24];                              // the horse he rides (its actor, "" none), where it is, its AS
+    float horse_m[12];
+    char horse_as[32];
 } OnlinePose;
 // OnlinePose.effects: Daruk's Protection's shield taking a hit (KAGO), its ring while he guards with its charges left
 // (KAGO_COUNT: 1 to 3, in effects >> KAGO_COUNT_SHIFT)

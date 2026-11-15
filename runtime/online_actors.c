@@ -118,6 +118,8 @@ static struct {
     Watch link_w;
     int link_fails;
     Piece armor[ARMOR], gear[ONLINE_GEAR];
+    Piece horse;  // (the horse he rides: OnlineHorse_*, playing his horse's AS)
+    char horse_as[32];
     Piece shot[ONLINE_SHOTS];      // what he holds, threw or shot (bombs, arrows: OnlineShots)
     uint16_t shot_id[ONLINE_SHOTS];  // (its id; 0: unused, out of sight)
     Piece nock;                    // the arrow on his bow's string while he draws it (it's no actor in his game)
@@ -280,6 +282,7 @@ static void forget_all(void) {
     for (int i = 0; i < ONLINE_MAX; i++) {
         for (int k = 0; k < ARMOR; k++) orphan(&g_act[i].armor[k]);
         for (int k = 0; k < ONLINE_GEAR; k++) orphan(&g_act[i].gear[k]);
+        orphan(&g_act[i].horse);
         for (int k = 0; k < ONLINE_SHOTS; k++) orphan(&g_act[i].shot[k]);
         orphan(&g_act[i].nock);
         for (int k = 0; k < POOL; k++) orphan(&g_pool[i][k]);
@@ -381,6 +384,7 @@ static void pool_update(Cpu *c) {
 static void drop(Cpu *c, int i, bool left) {
     for (int k = 0; k < ARMOR; k++) pool_piece(c, i, &g_act[i].armor[k]);
     for (int k = 0; k < ONLINE_GEAR; k++) pool_piece(c, i, &g_act[i].gear[k]);
+    pool_piece(c, i, &g_act[i].horse);
     for (int k = 0; k < ONLINE_SHOTS; k++) pool_piece(c, i, &g_act[i].shot[k]);
     pool_piece(c, i, &g_act[i].nock);
     if (left)
@@ -802,8 +806,25 @@ static uint16_t g_fxev_seq;
 static char g_fx_trail[ONLINE_FX_MAX];  // his weapon's trail now ("" none), and when it started
 static uint64_t g_fx_trail_t;
 
+#define MAX_ACTORS 8192
+static uint64_t g_actors[MAX_ACTORS];
+static int all_actors(uint64_t from, uint64_t *out, int max);
+static uint64_t volatile g_rf, g_rf_ui;  // (ReactionField, the actor that plays the ground's reactions, and its ELink)
+static struct { uint64_t name; float pos[3]; } volatile g_rf_ring[64];
+static volatile int g_rf_next;
+static int g_rf_taken;
+
 void rt_online_xlink_emit(uint64_t ui, uint64_t loc) {
     if (!VALID(ui)) return;
+    if (ui == g_rf_ui && g_rf_ui && VALID(loc)) {  // (ReactionField's: what and where, its matrix as it plays it)
+        uint64_t t = *(uint64_t *)(uintptr_t)(loc + 8), nm = VALID(t) ? *(uint64_t *)(uintptr_t)t : 0;
+        if (VALID(nm)) {
+            int k = __atomic_fetch_add(&g_rf_next, 1, __ATOMIC_RELAXED) & 63;
+            const float *m = (const float *)(uintptr_t)(g_rf + 0x398);
+            g_rf_ring[k].name = nm, g_rf_ring[k].pos[0] = m[3], g_rf_ring[k].pos[1] = m[7], g_rf_ring[k].pos[2] = m[11];
+        }
+        return;
+    }
     int who = 0;
     while (who < FX_WATCH && g_fx_ui[who] != ui) who++;
     static int all = -1;  // (SAVAGEWIND_ONLINE_FX_ALL=1: every actor's to the log, to find which one plays an effect)
@@ -911,6 +932,25 @@ static uint64_t elink_ui(uint64_t actor) {
 
 // each frame: what to watch; the effects noted since (SAVAGEWIND_ONLINE_FX_LOG=1: to the log); his weapon's trail
 static void fx_update(uint64_t player) {
+    static int rf_tick;
+    if (getenv("SAVAGEWIND_ONLINE_RF_LOG") && VALID(player)) {
+        if (rf_tick++ % 300 == 0) {  // (ReactionField: found among the actors)
+            int na = all_actors(*(uint64_t *)(uintptr_t)(player + 0x68), g_actors, MAX_ACTORS);
+            for (int k = 0; k < na; k++) {
+                char nm[48];
+                actor_name_of(g_actors[k], nm);
+                if (!strcmp(nm, "ReactionField")) { g_rf = g_actors[k], g_rf_ui = elink_ui(g_actors[k]); break; }
+            }
+        }
+        int end = __atomic_load_n(&g_rf_next, __ATOMIC_ACQUIRE);
+        if (end - g_rf_taken > 64) g_rf_taken = end - 64;
+        const float *pm = (const float *)(uintptr_t)(player + 0x398);
+        for (; g_rf_taken < end; g_rf_taken++) {
+            int k = g_rf_taken & 63;
+            LOG("[online] rf %.40s at %.2f %.2f %.2f (Link %.2f %.2f %.2f)\n", (const char *)(uintptr_t)g_rf_ring[k].name,
+                g_rf_ring[k].pos[0], g_rf_ring[k].pos[1], g_rf_ring[k].pos[2], pm[3], pm[7], pm[11]);
+        }
+    }
     g_fx_ui[0] = elink_ui(player);
     for (int k = 0; k < 3; k++) g_fx_ui[1 + k] = VALID(player) ? elink_ui(linked(player + 0xb98 + 0x18 * k)) : 0;
     g_fx_ui[4] = slink_ui(player);
@@ -1184,9 +1224,6 @@ static bool same_map(const OnlinePlayer *p) {
     return !p->pose.map[0] || !g_map[0] || !strcmp(p->pose.map, g_map);
 }
 
-#define MAX_ACTORS 8192
-static uint64_t g_actors[MAX_ACTORS];
-static int all_actors(uint64_t from, uint64_t *out, int max);
 static void boss_sample(Cpu *c, uint64_t player, OnlinePose *pose);
 
 #define FN_BODY_TO 0x70012d4e18ull       // x0 a rigid body, x1 a Matrix34f: its velocities set to reach it in a step
@@ -1409,6 +1446,50 @@ static void sample_pose(Cpu *c, uint64_t pinfo) {
     memcpy(pose.fxev, g_fxev, sizeof pose.fxev);  // (his other effects: fx_update)
     pose.weather = weather_now();  // (the weather where he is: weather_follow)
     pose.pvp_seq = g_pvp.seq, pose.pvp_target = g_pvp.target, pose.pvp_damage = g_pvp.damage;  // (pvp_update)
+    {   // the horse he rides: while his AS is a horse's (Horse*), the player's horse (GameRomHorse*) nearest him, looked
+        // for among the actors a few times a second
+        static uint64_t horse;
+        static Watch hw;
+        static int tick;
+        const char *body = playing(c, player, 0, 0);
+        bool riding = strstr(body, "Horse") != NULL;
+        if (!riding) horse = 0;
+        else if (!horse || !alive(horse, hw) || tick++ % 20 == 0) {
+            const float *pm = (const float *)(uintptr_t)(player + 0x398);
+            int na = all_actors(*(uint64_t *)(uintptr_t)(player + 0x68), g_actors, MAX_ACTORS);
+            float bd = 3.0f;
+            uint64_t best = 0;
+            for (int k = 0; k < na; k++) {
+                char nm[48];
+                actor_name_of(g_actors[k], nm);
+                if (strncmp(nm, "GameRomHorse", 12) || strstr(nm, "Reins") || strstr(nm, "Saddle")) continue;
+                const float *m = (const float *)(uintptr_t)(g_actors[k] + 0x398);
+                float dx = m[3] - pm[3], dy = m[7] - pm[7], dz = m[11] - pm[11], d = sqrtf(dx * dx + dy * dy + dz * dz);
+                if (d < bd) bd = d, best = g_actors[k];
+            }
+            if (best != horse && best) {
+                char nm[48];
+                actor_name_of(best, nm);
+                LOG("[online] riding %s\n", nm);
+            }
+            horse = best, hw = best ? watch(best) : hw;
+        }
+        const char *ht = getenv("SAVAGEWIND_ONLINE_HORSE_TEST");  // (test: that horse beside him, standing)
+        if (ht && *ht && !horse) {
+            const float *pm = (const float *)(uintptr_t)(player + 0x398);
+            float hm[12] = {1, 0, 0, pm[3] + 2.5f, 0, 1, 0, pm[7], 0, 0, 1, pm[11]};
+            snprintf(pose.horse, sizeof pose.horse, "%s", ht);
+            memcpy(pose.horse_m, hm, sizeof hm);
+            snprintf(pose.horse_as, sizeof pose.horse_as, "Wait");
+        }
+        if (horse && alive(horse, hw)) {
+            char nm[48];
+            actor_name_of(horse, nm);
+            snprintf(pose.horse, sizeof pose.horse, "%s", nm);
+            memcpy(pose.horse_m, (const float *)(uintptr_t)(horse + 0x398), sizeof pose.horse_m);
+            snprintf(pose.horse_as, sizeof pose.horse_as, "%s", playing(c, horse, 0, 0));
+        }
+    }
     for (int k = 0; k < 3; k++) {  // (his armour's dyes: the player's armour code, 0x7000cdc43c, makes each piece with
         // its slot's at player +0x1114 / +0x1118 / +0x111c, ArmorDyeColor in its InstParamPack)
         int32_t d = VALID(player) ? *(int32_t *)(uintptr_t)(player + 0x1114 + 4 * k) : -1;
@@ -4216,6 +4297,21 @@ void rt_online_frame(Cpu *c) {
                 LOG("[online] gear %d %s bone %d (%s) at %.2f %.2f %.2f, Link %.2f %.2f %.2f, rel t %.2f %.2f %.2f\n", k,
                     p->name, b, b >= 0 && (have >> b & 1) ? "ok" : "-", gm[3], gm[7], gm[11], pl[i].pos[0], pl[i].pos[1],
                     pl[i].pos[2], pl[i].pose.gear_rel[k][3], pl[i].pose.gear_rel[k][7], pl[i].pose.gear_rel[k][11]);
+        }
+        {   // the horse he rides, where his is, playing the AS his plays
+            const char *ha = pl[i].pose.valid && pl[i].pose.horse[0] ? gear_actor(pl[i].pose.horse) : NULL;
+            Piece *hp = &g_act[i].horse;
+            if (piece_update(c, i, hp, ha ? ha : "", pl[i].name)) g_act[i].horse_as[0] = 0;
+            if (hp->actor) {
+                bool finite = true;
+                for (int q = 0; q < 12; q++) finite &= isfinite(pl[i].pose.horse_m[q]);
+                if (finite) call(c, FN_SET_MTX, hp->actor, (uint64_t)(uintptr_t)pl[i].pose.horse_m, 0, 0, 0, 0);
+                const char *want = pl[i].pose.horse_as;
+                if (want[0] && strcmp(want, g_act[i].horse_as) && running(hp->actor)) {
+                    play_as(c, hp->actor, want, 0, 0, -1.0f, true);
+                    snprintf(g_act[i].horse_as, sizeof g_act[i].horse_as, "%s", want);
+                }
+            }
         }
         // what he holds, threw or shot, where it is (out of sight: those he no longer has)
         const OnlineShots *sh = &pl[i].pose.shots;
