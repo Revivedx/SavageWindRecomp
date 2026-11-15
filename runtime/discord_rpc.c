@@ -65,8 +65,13 @@ static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static char want_details[128], want_state[128];
 static unsigned want_serial;
 static bool want_on;
-static char app_id[32];  // the environment's SAVAGEWIND_DISCORD_APP_ID ("" none: the feature stays off; a build
-                         // ships no application of its own until the project has one)
+// The project's Discord application (a public id, not a secret). Empty keeps the feature
+// off. A build can set it with -DSAVAGEWIND_DISCORD_DEFAULT_APP_ID=\"123...\"; the environment's
+// SAVAGEWIND_DISCORD_APP_ID overrides it.
+#ifndef SAVAGEWIND_DISCORD_DEFAULT_APP_ID
+#define SAVAGEWIND_DISCORD_DEFAULT_APP_ID "1571656894538326026"  // Savage Wind (Discord Developer Portal)
+#endif
+static char app_id[32];  // the id in use ("" none: the feature stays off)
 
 static HANDLE pipe_open(void) {
     for (int i = 0; i < 10; i++) {
@@ -201,8 +206,9 @@ void discord_rpc_set(const char *details, const char *state) {
     static bool up;  // the thread exists and an application id is set (else nothing runs, whatever the switch says)
     if (!up) {
         const char *id = getenv("SAVAGEWIND_DISCORD_APP_ID");
-        if (id && *id) snprintf(app_id, sizeof app_id, "%s", id);
-        if (!app_id[0]) LOG("[discord] off: no Discord application (SAVAGEWIND_DISCORD_APP_ID)\n");
+        if (!id || !*id) id = SAVAGEWIND_DISCORD_DEFAULT_APP_ID;
+        snprintf(app_id, sizeof app_id, "%s", id);
+        if (!app_id[0]) LOG("[discord] off: no Discord application id (built-in default or SAVAGEWIND_DISCORD_APP_ID)\n");
         else if (!discord_app_id_valid(app_id)) {
             LOG("[discord] off: the application id is not valid\n");
             app_id[0] = 0;
