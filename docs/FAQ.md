@@ -281,7 +281,14 @@ Any controller SDL knows. Button prompts follow the device you use, set in **Con
 ### Does gyro work?
 
 Yes, with DualSense, DualShock 4, Switch controllers and the Steam Deck. On a controller without one, hold T and move
-the mouse to tilt in the motion shrines. On Linux, other devices can use a DSU server.
+the mouse to tilt in the motion shrines.
+
+Devices whose motion sensor SDL can't see, such as the ROG Ally or the Legion Go, can use a DSU (Cemuhook) server on
+Linux and Windows. When the controller you play with has no gyroscope, the game looks for one at `127.0.0.1:26760`
+by itself, so start the server and turn the game's motion controls on: nothing else to set. On Windows, Handheld
+Companion has one, and other DSU servers work too. On the Steam Deck, see [Linux](linux.md#steam-deck-motion-in-gaming-mode-dsu).
+`savagewind.log` shows `[dsu] connected: slot 0` when the server is found. The `DSU` launch option (`on`, `off`,
+`auto`) and `DSU_ENDPOINT` (another address and port) change this; see [Launch options](launch-options.md).
 
 ### Does it work with mouse aiming?
 

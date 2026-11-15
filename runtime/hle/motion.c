@@ -9,8 +9,9 @@
 //
 // Where the motion comes from: the controller's gyroscope and accelerometer (SDL3 sensor events: DualShock 4,
 // DualSense, Switch Pro, Joy-Con, Steam Deck...), fused into an orientation on the main thread (the gyroscope turns it,
-// gravity slowly corrects its tilt), with Linux fallbacks through the same fusion: the Steam Deck's own sensors read
-// from its HID node when Steam Input's gamepad has none (runtime/deck_imu.c), then DSU; or, while the tilt key is
+// gravity slowly corrects its tilt), with fallbacks through the same fusion: on Linux the Steam Deck's own sensors
+// read from its HID node when Steam Input's gamepad has none (runtime/deck_imu.c), then, on Linux and Windows, a DSU
+// (Cemuhook) server, for devices whose sensor SDL can't see (the ROG Ally, Legion Go...); or, while the tilt key is
 // held, the mouse rotates a virtual controller. Letting go retains its orientation so the mouse can be repositioned;
 // the recenter key levels it. A scripted run is another source.
 //
@@ -42,10 +43,8 @@
 #include "../settings.h"
 #include "../pc_gyro.h"
 #include "../pc_gyro_scene.h"
-#ifdef __linux__
 #include "../deck_imu.h"
 #include "../dsu.h"
-#endif
 
 #define PI 3.14159265358979323846
 #define SAMPLE_NS 5000000ull  // the Switch's sensor rate, 200 Hz
@@ -145,7 +144,6 @@ static struct {
     int notes;                   // (the log: one-off lines so far, capped)
 } hs;
 
-#ifdef __linux__
 static struct {
     bool enabled;
     uint64_t acc_time, gyro_time, acc_ts, gyro_ts;
@@ -153,6 +151,10 @@ static struct {
     int source;  // 0 none, 1 SDL, 2 DSU, 3 the Steam Deck's HID
     unsigned epoch, dsu_generation;
     bool steam_pad;  // the gamepad is Steam Input's (Valve's vendor ID) and has no sensors
+    // SDL gives the gamepad's sensors no data rate: the device's own sensor through SDL's sensor fusion
+    // (SDL_HINT_GAMECONTROLLER_SENSOR_FUSION, handhelds such as the ROG Ally), which can stall for a third of a second
+    // at a time. A DSU server that answers takes priority over it; a controller's own sensors (with a rate) don't.
+    bool sdl_unrated;
     DsuClient dsu;
     DeckImu deck;
 } backend;
@@ -160,6 +162,11 @@ static struct {
 static bool native_fresh(uint64_t now) {
     return backend.enabled && backend.acc_time && backend.gyro_time &&
            now - backend.acc_time < DSU_TIMEOUT_NS && now - backend.gyro_time < DSU_TIMEOUT_NS;
+}
+
+// Whether SDL's sensors come before DSU now
+static bool native_first(uint64_t now) {
+    return native_fresh(now) && !(backend.sdl_unrated && backend.dsu.fresh);
 }
 
 // Called under g_lock. Never carry bias, gravity, timestamps or integration across devices.
@@ -179,7 +186,6 @@ static void select_motion(int source) {
     g.acc_mean = 1, g.acc_var = g.gyro_sd = 0;
     hs.host_ns = 0, hs.bad_run = 0;
 }
-#endif
 
 bool motion_has_sensors(void) {
     pthread_mutex_lock(&g_lock);
@@ -193,15 +199,12 @@ void motion_pad_opened(SDL_Gamepad *pad) {
     bool on = gyro && accel && SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_GYRO, true) &&
               SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_ACCEL, true);
     pthread_mutex_lock(&g_lock);
-#ifdef __linux__
     backend.enabled = on;
     backend.steam_pad = !on && SDL_GetGamepadVendor(pad) == 0x28de;
+    backend.sdl_unrated = on && !(SDL_GetGamepadSensorDataRate(pad, SDL_SENSOR_GYRO) > 0);
     backend.acc_time = backend.gyro_time = backend.acc_ts = backend.gyro_ts = 0;
     select_motion(0);
     g.sensors = false;
-#else
-    g.sensors = on;
-#endif
     g.started = false, g.gyro_ts = 0;
     memset(g.bias, 0, sizeof g.bias);
     memset(g.mean, 0, sizeof g.mean);
@@ -214,20 +217,19 @@ void motion_pad_opened(SDL_Gamepad *pad) {
     if (on)
         LOG("[motion] %s: gyroscope and accelerometer on (%.0f / %.0f Hz)\n", SDL_GetGamepadName(pad),
             SDL_GetGamepadSensorDataRate(pad, SDL_SENSOR_GYRO), SDL_GetGamepadSensorDataRate(pad, SDL_SENSOR_ACCEL));
-    else
+    if (on && !(SDL_GetGamepadSensorDataRate(pad, SDL_SENSOR_GYRO) > 0))
+        LOG("[motion] (no rate: probably the device's own sensor through SDL's sensor fusion; a DSU server that "
+            "answers is used instead)\n");
+    if (!on)
         LOG("[motion] %s has no motion sensors%s: the tilt key and the mouse tilt it\n", SDL_GetGamepadName(pad),
             gyro || accel ? " SDL can use" : "");
 }
 
 void motion_pad_closed(void) {
     pthread_mutex_lock(&g_lock);
-#ifdef __linux__
-    backend.enabled = backend.steam_pad = false;
+    backend.enabled = backend.steam_pad = backend.sdl_unrated = false;
     backend.acc_time = backend.gyro_time = 0;
     if (backend.source == 1) select_motion(0);
-#else
-    g.sensors = g.started = false;
-#endif
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -324,7 +326,6 @@ void motion_sensor_event(const SDL_Event *e) {
     if (!isfinite(d[0]) || !isfinite(d[1]) || !isfinite(d[2])) return;
     uint64_t ts = e->gsensor.sensor_timestamp ? e->gsensor.sensor_timestamp : e->gsensor.timestamp;
     pthread_mutex_lock(&g_lock);
-#ifdef __linux__
     if (!backend.enabled) { pthread_mutex_unlock(&g_lock); return; }
     uint64_t now = plat_now_ns();
     // Use event time for freshness: the native path below also supports a stalled device clock.
@@ -340,7 +341,7 @@ void motion_sensor_event(const SDL_Event *e) {
         if (backend.gyro_time && fresh_ts == backend.gyro_ts) { pthread_mutex_unlock(&g_lock); return; }
         backend.gyro_time = now, backend.gyro_ts = fresh_ts;
     }
-    if (native_fresh(now)) {
+    if (native_first(now)) {
         bool changed = backend.source != 1;
         select_motion(1);
         if (changed) {
@@ -350,9 +351,6 @@ void motion_sensor_event(const SDL_Event *e) {
         }
     }
     if (backend.source != 1) { pthread_mutex_unlock(&g_lock); return; }
-#else
-    if (!g.sensors) { pthread_mutex_unlock(&g_lock); return; }
-#endif
     if (e->gsensor.sensor == SDL_SENSOR_ACCEL) {
         double acc[3] = {-d[0] / SDL_STANDARD_GRAVITY, d[2] / SDL_STANDARD_GRAVITY, -d[1] / SDL_STANDARD_GRAVITY};
         sensor_accel(acc);
@@ -399,10 +397,9 @@ void motion_sensor_event(const SDL_Event *e) {
     pthread_mutex_unlock(&g_lock);
 }
 
-#ifdef __linux__
 static void dsu_sample(const DsuPacket *p, uint32_t generation, void *user) {
     (void)user;
-    if (native_fresh(plat_now_ns())) return;
+    if (native_first(plat_now_ns())) return;
     if (backend.dsu_generation != generation && backend.source == 2) select_motion(0);
     backend.dsu_generation = generation;
     select_motion(2);
@@ -417,15 +414,15 @@ static void deck_sample(const DsuPacket *p, uint32_t generation, void *user) {
     sensor_accel(p->acc);
     sensor_gyro(p->gyro, p->timestamp * 1000);
 }
-#endif
 
 void motion_poll(void) {
-#ifdef __linux__
     static bool initialized, enabled, force, deck_on;
     if (!initialized) {
         initialized = true;
-        // SAVAGEWIND_DECK_IMU=0: not the Steam Deck's own sensors
+        // SAVAGEWIND_DECK_IMU=0: not the Steam Deck's own sensors (read on Linux only: runtime/deck_imu.c)
+#ifdef __linux__
         deck_on = !getenv("SAVAGEWIND_DECK_IMU") || atoi(getenv("SAVAGEWIND_DECK_IMU"));
+#endif
         deck_imu_init(&backend.deck);
         const char *mode = getenv("SAVAGEWIND_DSU");
         enabled = !mode || strcmp(mode, "off");
@@ -447,11 +444,11 @@ void motion_poll(void) {
     if (deck) deck_imu_poll(&backend.deck, now, deck_sample, NULL);
     else if (backend.deck.fd >= 0) deck_imu_close(&backend.deck);
     if (backend.source == 3 && !backend.deck.fresh) select_motion(0);
-    if (enabled && (force || (!native && !backend.deck.fresh))) dsu_poll(&backend.dsu, now, dsu_sample, NULL);
+    if (enabled && (force || backend.sdl_unrated || (!native && !backend.deck.fresh)))
+        dsu_poll(&backend.dsu, now, dsu_sample, NULL);
     else if (enabled && backend.dsu.fd >= 0) dsu_close(&backend.dsu);
     if (backend.source == 2 && !backend.dsu.fresh) select_motion(0);
     pthread_mutex_unlock(&g_lock);
-#endif
 }
 
 void motion_tilt_held(bool held) {
@@ -619,11 +616,7 @@ static int source(double dt, Mat m) {
                 s.sc_yaw || s.sc_pitch;
     if (g.sensors && g.started && !virt) {
         quat_mat(g.q, m);
-#ifdef __linux__
         return (int)backend.epoch + 1;
-#else
-        return 1;
-#endif
     }
     euler_mat(virtual_yaw(), g.tilt_pitch + g.sc_pitch + s.sc_pitch + g.keyboard.pitch * PI / 180,
               g.tilt_roll + g.sc_roll + g.keyboard.roll * PI / 180, m);

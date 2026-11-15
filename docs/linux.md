@@ -67,7 +67,8 @@ Controls-page motion sensitivity and inversion apply to either sensor source. No
 `SAVAGEWIND_DSU=auto` is the Linux default: contact DSU only when fresh SDL motion is unavailable.
 `SAVAGEWIND_DSU=off` disables DSU completely. `SAVAGEWIND_DSU=on` keeps discovery/subscription active even when SDL
 works, with SDL still taking priority. An optional `SAVAGEWIND_DSU_ENDPOINT=127.0.0.1:26760` accepts a numeric IPv4
-address and port (no DNS lookup on the game thread). Windows and macOS retain their existing SDL motion path.
+address and port (no DNS lookup on the game thread). Windows has the same DSU fallback (see the
+[FAQ](FAQ.md#does-gyro-work)); macOS keeps its SDL motion path.
 
 Look in `~/.local/share/savagewind/savagewind.log` (or terminal output; custom data roots use their own log) for
 `[motion]` and `[dsu]`. SDL availability is logged when opening a controller; `[dsu] connected: slot ...` means
