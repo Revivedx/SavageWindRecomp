@@ -510,6 +510,8 @@ T("How much damage enemies take. 100% is the game's own.", "敌人受到的伤�
 T("Infinite stamina", "无限精力")
 T("The stamina wheel never runs out.", "精力槽永远不会耗尽。")
 T("Infinite rupees", "无限卢比")
+T("Item pickup multiplier", "拾取物品倍率")
+T("Multiplies stackable items you pick up (materials, monster parts, arrows).", "将拾取的可堆叠物品数量乘以倍率（材料、怪物素材、箭矢）。")
 T("Keeps your wallet at 9999 rupees, topped up every few seconds.", "让钱包保持 9999 卢比，每隔几秒补满一次。")
 T("Set rupees", "设置卢比")
 T("Sets your wallet to an exact number of rupees (0 to 999999). Turn off Infinite rupees first.", "将钱包设置为指定的卢比数量（0 到 999999）。请先关闭无限卢比。")

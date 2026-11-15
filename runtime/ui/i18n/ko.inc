@@ -510,6 +510,8 @@ T("How much damage enemies take. 100% is the game's own.", "적이 받는 피해
 T("Infinite stamina", "무한 기력")
 T("The stamina wheel never runs out.", "기력 게이지가 줄지 않습니다.")
 T("Infinite rupees", "무한 루피")
+T("Item pickup multiplier", "아이템 획득 배율")
+T("Multiplies stackable items you pick up (materials, monster parts, arrows).", "줍는 중첩 가능 아이템(재료, 몬스터 소재, 화살)의 획득량을 배수로 늘립니다.")
 T("Keeps your wallet at 9999 rupees, topped up every few seconds.", "지갑을 9999루피로 유지하며 몇 초마다 다시 채웁니다.")
 T("Set rupees", "루피 설정")
 T("Sets your wallet to an exact number of rupees (0 to 999999). Turn off Infinite rupees first.", "지갑의 루피를 정확한 수치(0~999999)로 설정합니다. 먼저 무한 루피를 끄세요.")

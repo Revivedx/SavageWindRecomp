@@ -510,6 +510,8 @@ T("How much damage enemies take. 100% is the game's own.", "Les dégâts que sub
 T("Infinite stamina", "Endurance infinie")
 T("The stamina wheel never runs out.", "La jauge d'endurance ne se vide jamais.")
 T("Infinite rupees", "Rubis infinis")
+T("Item pickup multiplier", "Multiplicateur de ramassage d'objets")
+T("Multiplies stackable items you pick up (materials, monster parts, arrows).", "Multiplie les objets empilables ramassés (matériaux, matériaux de monstres, flèches).")
 T("Keeps your wallet at 9999 rupees, topped up every few seconds.", "Garde ta bourse à 9999 rubis, remplie toutes les quelques secondes.")
 T("Set rupees", "Définir les rubis")
 T("Sets your wallet to an exact number of rupees (0 to 999999). Turn off Infinite rupees first.", "Définit votre bourse à un nombre exact de rubis (0 à 999999). Désactivez d'abord Rubis infinis.")

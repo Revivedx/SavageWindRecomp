@@ -510,6 +510,8 @@ T("How much damage enemies take. 100% is the game's own.", "Wie viel Schaden Geg
 T("Infinite stamina", "Unendlich Ausdauer")
 T("The stamina wheel never runs out.", "Das Ausdauerrad leert sich nie.")
 T("Infinite rupees", "Unendlich Rubine")
+T("Item pickup multiplier", "Multiplikator für aufgesammelte Gegenstände")
+T("Multiplies stackable items you pick up (materials, monster parts, arrows).", "Multipliziert stapelbare Gegenstände beim Aufsammeln (Materialien, Monsterteile, Pfeile).")
 T("Keeps your wallet at 9999 rupees, topped up every few seconds.", "Hält deinen Geldbeutel bei 9999 Rubinen und füllt ihn alle paar Sekunden auf.")
 T("Set rupees", "Rubine festlegen")
 T("Sets your wallet to an exact number of rupees (0 to 999999). Turn off Infinite rupees first.", "Setzt deinen Geldbeutel auf einen genauen Rubinenbetrag (0 bis 999999). Schalte zuerst Unendlich Rubine aus.")

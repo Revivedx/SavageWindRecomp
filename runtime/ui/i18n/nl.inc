@@ -510,6 +510,8 @@ T("How much damage enemies take. 100% is the game's own.", "Hoeveel schade vijan
 T("Infinite stamina", "Oneindig uithoudingsvermogen")
 T("The stamina wheel never runs out.", "De uithoudingsmeter raakt nooit leeg.")
 T("Infinite rupees", "Oneindig roepies")
+T("Item pickup multiplier", "Vermenigvuldiger voor opgepakte items")
+T("Multiplies stackable items you pick up (materials, monster parts, arrows).", "Vermenigvuldigt stapelbare items die je oppakt (materialen, monsteronderdelen, pijlen).")
 T("Keeps your wallet at 9999 rupees, topped up every few seconds.", "Houdt je beurs op 9999 roepies en vult hem om de paar seconden aan.")
 T("Set rupees", "Roepies instellen")
 T("Sets your wallet to an exact number of rupees (0 to 999999). Turn off Infinite rupees first.", "Stelt je beurs in op een exact aantal roepies (0 tot 999999). Schakel eerst Oneindig roepies uit.")

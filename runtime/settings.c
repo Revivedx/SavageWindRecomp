@@ -35,6 +35,7 @@ Settings g_settings = {
     .damage_dealt = 100,
     .colour_vision_strength = COLOUR_VISION_STRENGTH_DEFAULT,
     .weapon_wear = 100,
+    .item_multiplier = 1,
     .upscaler = UPSCALE_DEFAULT,  // (Off: the window's resolution; MetalFX on macOS)
     .upscale_quality = UPQ_QUALITY,
     .game_fxaa = true,
@@ -602,6 +603,7 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "infinite_stamina")) g_settings.infinite_stamina = atoi(val) != 0;
         else if (!strcmp(key, "infinite_rupees")) g_settings.infinite_rupees = atoi(val) != 0;
+        else if (!strcmp(key, "item_multiplier")) g_settings.item_multiplier = atoi(val);
         else if (!strcmp(key, "weather")) {
             g_settings.weather = 0;
             for (int i = 0; i < WEATHER_COUNT; i++)
@@ -721,6 +723,8 @@ void settings_load(void) {
     g_settings.rumble_strength = CLAMP(g_settings.rumble_strength, RUMBLE_STRENGTH_MIN, RUMBLE_STRENGTH_MAX);
     g_settings.weapon_wear = CLAMP(g_settings.weapon_wear, WEAPON_WEAR_MIN, WEAPON_WEAR_MAX);
     if (g_settings.no_weapon_wear) g_settings.weapon_wear = 0;  // (Unbreakable weapons is Weapon wear's Fairy, 0x)
+    if (g_settings.item_multiplier != 2 && g_settings.item_multiplier != 4 && g_settings.item_multiplier != 8)
+        g_settings.item_multiplier = 1;
 #undef CLAMP
     for (int i = 0; i < 2; i++)
         if (!(g_settings.stick_deadzone[i] >= 0 && g_settings.stick_deadzone[i] <= 0.5f))
@@ -864,6 +868,7 @@ void settings_save(void) {
     fprintf(f, "infinite_arrows = %d\n", g_settings.infinite_arrows);
     fprintf(f, "infinite_stamina = %d\n", g_settings.infinite_stamina);
     fprintf(f, "infinite_rupees = %d\n", g_settings.infinite_rupees);
+    fprintf(f, "item_multiplier = %d\n", g_settings.item_multiplier);
     int wx = g_settings.weather;
     fprintf(f, "weather = %s\n", g_weather_keys[wx >= 0 && wx < WEATHER_COUNT ? wx : 0]);
     int cv = g_settings.colour_vision;

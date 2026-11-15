@@ -1345,6 +1345,12 @@ static void cheats_options(void) {
                                                        "Thunder rain", "Rain in sunshine"};  // (settings.h weather)
     opt_dropdown("Weather", &g_settings.weather, weather, WEATHER_COUNT, 0,
                  "Holds the weather you pick, or keeps out rain or thunderstorms. Cutscenes keep theirs.");
+    static const char *const mults[] = {"Off", "2x", "4x", "8x"};
+    static const int mult_vals[] = {1, 2, 4, 8};
+    int mult_idx = g_settings.item_multiplier == 8 ? 3 : g_settings.item_multiplier == 4 ? 2 : g_settings.item_multiplier == 2 ? 1 : 0;
+    opt_dropdown("Item pickup multiplier", &mult_idx, mults, 4, 0,
+                 "Multiplies stackable items you pick up (materials, monster parts, arrows).");
+    g_settings.item_multiplier = mult_vals[mult_idx];
 }
 
 // Case-insensitive: does s contain needle (an empty needle matches)

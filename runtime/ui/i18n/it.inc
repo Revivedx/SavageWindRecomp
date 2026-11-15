@@ -510,6 +510,8 @@ T("How much damage enemies take. 100% is the game's own.", "Quanti danni subisco
 T("Infinite stamina", "Vigore infinito")
 T("The stamina wheel never runs out.", "La ruota del vigore non si esaurisce mai.")
 T("Infinite rupees", "Rupie infinite")
+T("Item pickup multiplier", "Moltiplicatore raccolta oggetti")
+T("Multiplies stackable items you pick up (materials, monster parts, arrows).", "Moltiplica gli oggetti impilabili raccolti (materiali, parti di mostri, frecce).")
 T("Keeps your wallet at 9999 rupees, topped up every few seconds.", "Tiene il borsellino a 9999 rupie, ricaricato ogni pochi secondi.")
 T("Set rupees", "Imposta rupie")
 T("Sets your wallet to an exact number of rupees (0 to 999999). Turn off Infinite rupees first.", "Imposta il borsellino su un numero esatto di rupie (da 0 a 999999). Disattiva prima Rupie infinite.")

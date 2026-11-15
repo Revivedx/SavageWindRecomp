@@ -510,6 +510,8 @@ T("How much damage enemies take. 100% is the game's own.", "Сколько ур�
 T("Infinite stamina", "Бесконечная выносливость")
 T("The stamina wheel never runs out.", "Шкала выносливости никогда не кончается.")
 T("Infinite rupees", "Бесконечные рупии")
+T("Item pickup multiplier", "Множитель подбираемых предметов")
+T("Multiplies stackable items you pick up (materials, monster parts, arrows).", "Умножает количество подбираемых складываемых предметов (материалы, части монстров, стрелы).")
 T("Keeps your wallet at 9999 rupees, topped up every few seconds.", "Держит кошелёк на 9999 рупиях, пополняя его каждые несколько секунд.")
 T("Set rupees", "Задать рупии")
 T("Sets your wallet to an exact number of rupees (0 to 999999). Turn off Infinite rupees first.", "Устанавливает точное количество рупий в кошельке (от 0 до 999999). Сначала отключите Бесконечные рупии.")

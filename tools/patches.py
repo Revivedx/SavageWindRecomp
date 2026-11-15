@@ -896,6 +896,13 @@ def _stamina(gen, a):
 # get takes the item's name as a sead::SafeString; its vtable is the one the item get itself loads (`adrp x26` /
 # `ldr x26, [x26, #off]` at +0x24 / +0x30, then +0x10).
 
+def _pouch_item_get(gen, a):
+    assert _word(gen, a) == _sub_sp(0x90), hex(_word(gen, a))
+    return ('{ extern uint32_t rt_item_get_scale(uint64_t, uint32_t); '
+            'c->x[2] = rt_item_get_scale(c->x[1], (uint32_t)c->x[2]); c->sp -= 0x90; }'
+            f'  /* {a:#x}: sub sp, sp, #0x90 (PauseMenuDataMgr::itemGet: item pickup multiplier) */')
+
+
 def _item_tick(gen, a):
     assert _word(gen, a) == _sub_sp(0x70), hex(_word(gen, a))
     get = gen.sites['pouch_item_get']
@@ -1091,6 +1098,7 @@ PATCHES = {
     'link_life_store': _link_life,
     'link_life_tick': _link_life,
     'stamina_store': _stamina,
+    'pouch_item_get': _pouch_item_get,
     'item_tick': _item_tick,
 }
 

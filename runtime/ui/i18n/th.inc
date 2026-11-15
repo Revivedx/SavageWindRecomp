@@ -217,6 +217,8 @@ T("How much damage enemies take. 100% is the game's own.", "ความเส�
 T("Infinite stamina", "พลังกายไม่จำกัด")
 T("The stamina wheel never runs out.", "วงพลังกายไม่มีวันหมด")
 T("Infinite rupees", "รูปีไม่จำกัด")
+T("Item pickup multiplier", "ตัวคูณจำนวนไอเทมที่เก็บ")
+T("Multiplies stackable items you pick up (materials, monster parts, arrows).", "คูณจำนวนไอเทมที่ซ้อนทับได้เมื่อเก็บ (วัตถุดิบ ชิ้นส่วนมอนสเตอร์ ลูกธนู)")
 T("Keeps your wallet at 9999 rupees, topped up every few seconds.", "เก็บกระเป๋าเงินไว้ที่ 9999 รูปี เติมให้ทุกไม่กี่วินาที")
 T("Set rupees", "กำหนดจำนวนรูปี")
 T("Sets your wallet to an exact number of rupees (0 to 999999). Turn off Infinite rupees first.", "กำหนดจำนวนรูปีในกระเป๋าเงินตามต้องการ (0 ถึง 999999) ปิดรูปีไม่จำกัดก่อน")

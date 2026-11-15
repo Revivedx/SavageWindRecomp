@@ -207,6 +207,7 @@ typedef struct {
     bool infinite_arrows;    // shooting a bow takes no arrows from the pouch
     bool infinite_stamina;   // the stamina wheel never goes down
     bool infinite_rupees;    // the wallet is kept at 9999 rupees (runtime/rupees.c)
+    int item_multiplier;     // 1, 2, 4 or 8: multiply stackable item pickups (runtime/items.c)
     int weather;             // WEATHER_COUNT: the game's, rain or thunderstorms kept out, or one weather held (weather.c)
     bool god_mode;           // Link takes no damage
     bool one_hit_kill;       // whatever else takes damage loses all its life at once

@@ -662,6 +662,8 @@ T("How much damage enemies take. 100% is the game's own.", "כמה נזק אוי
 T("Infinite stamina", "סיבולת אינסופית")
 T("The stamina wheel never runs out.", "גלגל הסיבולת אף פעם לא נגמר.")
 T("Infinite rupees", "רופיז אינסופיים")
+T("Item pickup multiplier", "מכפיל איסוף פריטים")
+T("Multiplies stackable items you pick up (materials, monster parts, arrows).", "מכפיל פריטים נערמים שנאספים (חומרים, חלקי מפלצות, חצים).")
 T("Keeps your wallet at 9999 rupees, topped up every few seconds.", "שומר את הארנק על 9999 רופיז ומשלים אותו כל כמה שניות.")
 T("Set rupees", "קביעת רופיז")
 T("Sets your wallet to an exact number of rupees (0 to 999999). Turn off Infinite rupees first.", "מגדיר את הארנק למספר מדויק של רופיז (0 עד 999999). כבה תחילה רופיז אינסופיים.")

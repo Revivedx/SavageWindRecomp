@@ -510,6 +510,8 @@ T("How much damage enemies take. 100% is the game's own.", "敵が受けるダ�
 T("Infinite stamina", "がんばり無限")
 T("The stamina wheel never runs out.", "がんばりゲージが減りません。")
 T("Infinite rupees", "ルピー無限")
+T("Item pickup multiplier", "アイテム入手倍率")
+T("Multiplies stackable items you pick up (materials, monster parts, arrows).", "拾ったスタック可能なアイテム（素材、魔物素材、矢）の入手数を増やします。")
 T("Keeps your wallet at 9999 rupees, topped up every few seconds.", "財布のルピーを9999に保ち、数秒ごとに補充します。")
 T("Set rupees", "ルピーを設定")
 T("Sets your wallet to an exact number of rupees (0 to 999999). Turn off Infinite rupees first.", "財布のルピーを指定した数（0〜999999）に設定します。先に「ルピー無限」をオフにしてください。")
