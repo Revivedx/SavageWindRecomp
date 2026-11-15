@@ -37,7 +37,7 @@ typedef int sock_t;
 #include "rt.h"
 
 #define MAGIC 0x4c4f5753u  // "SWOL"
-#define PROTOCOL 28  // (28: QUEST / QUESTS of 32768 flags, the world's items; 27: his armour's dyes; 26: his sounds)
+#define PROTOCOL 29  // (29: STATE carries his blows on the others; 28: QUEST / QUESTS of 32768 flags; 27: dyes)
 static volatile float g_local_hour = -1;  // (the local game's hour, from the frame loop: online_set_local_hour)
 #define SEND_HZ 20
 #define INTERP_NS 100000000ull  // the others are drawn this far behind what was last heard (smooth between updates)
@@ -78,6 +78,9 @@ typedef struct {
     uint32_t fx_props[ONLINE_FX_PROPS];    // OnlinePose.fx_props
     uint8_t weather;                       // OnlinePose.weather
     int8_t dye[3];                         // OnlinePose.dye
+    uint16_t pvp_seq;                      // OnlinePose.pvp_*
+    uint8_t pvp_target;
+    int16_t pvp_damage;
 } WireState;
 typedef struct { uint32_t magic; uint16_t version; char name[ONLINE_NAME_MAX], pass[ONLINE_NAME_MAX]; } WireHello;
 typedef struct { char armor[3][48], gear[ONLINE_GEAR][48]; } WireEquip;  // EQUIP: what a player wears (head,
@@ -831,6 +834,7 @@ static bool sample_local(WireState *w) {
         memcpy(w->fx_props, g_pose.fx_props, sizeof w->fx_props);
         w->weather = g_pose.weather;
         memcpy(w->dye, g_pose.dye, sizeof w->dye);
+        w->pvp_seq = g_pose.pvp_seq, w->pvp_target = g_pose.pvp_target, w->pvp_damage = g_pose.pvp_damage;
         memcpy(w->ice, g_pose.ice, sizeof w->ice);
         w->yaw = g_pose.yaw;
     }
@@ -888,6 +892,7 @@ static void remote_snap(int id, const WireState *w) {  // (lock held)
     memcpy(s->pose.fx_props, w->fx_props, sizeof s->pose.fx_props);
     s->pose.weather = w->weather;
     memcpy(s->pose.dye, w->dye, sizeof s->pose.dye);
+    s->pose.pvp_seq = w->pvp_seq, s->pose.pvp_target = w->pvp_target, s->pose.pvp_damage = w->pvp_damage;
     for (int k = 0; k < ONLINE_FX_EVENTS; k++) s->pose.fxev[k].name[20] = 0;
     memcpy(s->pose.ice, w->ice, sizeof s->pose.ice);
     s->pose.stop.name[ONLINE_GRAB_NAME - 1] = 0;
@@ -1453,6 +1458,7 @@ void online_settings_load(void) {
         else if (!strcmp(key, "password")) snprintf(g_online.password, sizeof g_online.password, "%s", val);
         else if (!strcmp(key, "show_names")) g_online.show_names = atoi(val) != 0;
         else if (!strcmp(key, "show_markers")) g_online.show_markers = atoi(val) != 0;
+        else if (!strcmp(key, "pvp")) g_online.pvp = atoi(val) != 0;
     }
     fclose(f);
     name_from_env();
@@ -1464,6 +1470,8 @@ static void name_from_env(void) {
     if (n && *n) copy_name(g_online.name, n);
     const char *p = getenv("SAVAGEWIND_ONLINE_PORT");  // (and its port: test copies beside others playing)
     if (p && atoi(p) > 0 && atoi(p) < 65536) g_online.port = atoi(p);
+    const char *v = getenv("SAVAGEWIND_ONLINE_PVP");  // (and damage between players on or off: tests)
+    if (v && *v) g_online.pvp = atoi(v) != 0;
 }
 
 void online_settings_save(void) {
@@ -1472,7 +1480,8 @@ void online_settings_save(void) {
     FILE *f = fopen("online.ini", "w");
     if (!f) return;
     fprintf(f, "# Savage Wind online settings (Settings > Online in game)\n");
-    fprintf(f, "name = %s\nhost = %s\nport = %d\npassword = %s\nshow_names = %d\nshow_markers = %d\n", g_online.name,
-            g_online.host, g_online.port, g_online.password, g_online.show_names, g_online.show_markers);
+    fprintf(f, "name = %s\nhost = %s\nport = %d\npassword = %s\nshow_names = %d\nshow_markers = %d\npvp = %d\n",
+            g_online.name, g_online.host, g_online.port, g_online.password, g_online.show_names, g_online.show_markers,
+            g_online.pvp);
     fclose(f);
 }

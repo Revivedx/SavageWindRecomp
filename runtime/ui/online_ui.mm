@@ -106,6 +106,10 @@ extern "C" void online_tab_draw(float scale) {
         online_settings_save();
     if (opt_toggle("Show names", &g_online.show_names, true, "Names and distances over the other players."))
         online_settings_save();
+    opt_section("Combat");
+    if (opt_toggle("Damage between players", &g_online.pvp, false,
+                   "Your blows hurt the other players and theirs hurt you. Only between players who both have it on."))
+        online_settings_save();
     opt_end();
 }
 

@@ -91,6 +91,9 @@ typedef struct {
                                                  // them: a charge's level, his weapon's kind...)
     uint8_t weather;                             // the weather where he is (the game's type, 0 clear .. 8; 255 unknown)
     int8_t dye[3];                               // his armour's dye colours (head, upper, lower; -1 none)
+    uint16_t pvp_seq;                            // his last blow on another player (by its number, 0 none): who it hit
+    uint8_t pvp_target;                          // (his slot) and how hard (his weapon's attack power); taken where the
+    int16_t pvp_damage;                          // one hit has damage between players on (OnlineSettings.pvp)
 } OnlinePose;
 // OnlinePose.effects: Daruk's Protection's shield taking a hit (KAGO), its ring while he guards with its charges left
 // (KAGO_COUNT: 1 to 3, in effects >> KAGO_COUNT_SHIFT)
@@ -118,6 +121,7 @@ typedef struct {
     char password[ONLINE_NAME_MAX];  // "" = none
     bool show_names;    // names over the other players
     bool show_markers;  // the others' figures in the world (off: the list only)
+    bool pvp;           // damage between players: this player's blows hurt the others who have it on, theirs him
 } OnlineSettings;
 
 extern OnlineSettings g_online;

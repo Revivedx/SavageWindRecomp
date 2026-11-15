@@ -545,6 +545,7 @@ float test_warp_hour(bool *held);   // runtime/services/test_warp.c
 void test_warp_set_hour(float hour);
 uint64_t test_warp_gdt_mgr(void);   // runtime/services/test_warp.c
 static float g_dist;  // (how far the player being done is)
+static struct { uint16_t seq; uint8_t target; int16_t damage; } g_pvp;  // (his last blow on another player: pvp_update)
 static InstParams *g_piece_params;  // (the params the next piece asked for is made with: an armour piece's dye; 0 none)
 
 // p should be `want` ("" none): a piece that changed goes, and the new one is asked for; true when it was made just now
@@ -1407,6 +1408,7 @@ static void sample_pose(Cpu *c, uint64_t pinfo) {
     snprintf(pose.fx, sizeof pose.fx, "%s", g_fx_trail);  // (his weapon's swing trail: fx_update)
     memcpy(pose.fxev, g_fxev, sizeof pose.fxev);  // (his other effects: fx_update)
     pose.weather = weather_now();  // (the weather where he is: weather_follow)
+    pose.pvp_seq = g_pvp.seq, pose.pvp_target = g_pvp.target, pose.pvp_damage = g_pvp.damage;  // (pvp_update)
     for (int k = 0; k < 3; k++) {  // (his armour's dyes: the player's armour code, 0x7000cdc43c, makes each piece with
         // its slot's at player +0x1114 / +0x1118 / +0x111c, ArmorDyeColor in its InstParamPack)
         int32_t d = VALID(player) ? *(int32_t *)(uintptr_t)(player + 0x1114 + 4 * k) : -1;
@@ -2222,6 +2224,67 @@ static void strike(Cpu *c, uint64_t player, const OnlineEnemy *e) {
         boom_start(c, getenv("SAVAGEWIND_ONLINE_KNOCK") ? getenv("SAVAGEWIND_ONLINE_KNOCK") : "OnlineShock", at);
     }
     LOG("[online] the host's %s hit us: %d (life %d)%s\n", e->name, power, *life, heavy ? ", knocked down" : "");
+}
+
+// Damage between players (OnlineSettings.pvp, both players with it on): the puppets have no bodies a blow lands on, so
+// as his swing starts (his weapon's trail, fx_update) the nearest other player within its reach in front of him is hit:
+// the blow goes in his state (pvp_*: that player's slot, his weapon's attack power, by its number), and that player's
+// game takes it as the host's enemies' blows (strike): his armour's defence off, a quarter heart at least, he flinches
+static void pvp_update(Cpu *c, uint64_t player, const OnlinePlayer *pl, int me) {
+    static uint64_t swing_seen;
+    static uint16_t seen[ONLINE_MAX];
+    static bool init[ONLINE_MAX];
+    if (!VALID(player) || me < 0) return;
+    const float *pm = (const float *)(uintptr_t)(player + 0x398);
+    // his blow
+    if (g_online.pvp && g_fx_trail_t != swing_seen) {
+        swing_seen = g_fx_trail_t;
+        uint64_t armor[ARMOR], gear[ONLINE_GEAR];
+        equipment(player, armor, gear);
+        char wn[48];
+        actor_name_of(gear[0], wn);
+        int power = wn[0] ? attack_power(wn) : 0;
+        float reach = 2.2f + (strstr(wn, "Spear") || strstr(wn, "Lsword") ? 1.5f : 0.8f);
+        float fx = pm[2], fz = pm[10], fl = sqrtf(fx * fx + fz * fz);
+        int best = -1;
+        float bd = reach;
+        for (int i = 0; power > 0 && i < ONLINE_MAX; i++) {
+            if (i == me || !pl[i].used || !pl[i].pose.valid || (pl[i].flags & ONLINE_F_LOADING) || !same_map(&pl[i])) continue;
+            float dx = pl[i].pos[0] - pm[3], dy = pl[i].pos[1] - pm[7], dz = pl[i].pos[2] - pm[11];
+            float d = sqrtf(dx * dx + dz * dz);
+            if (d > bd || dy > 2.0f || dy < -2.0f) continue;
+            if (d > 0.6f && fl > 0 && (dx * fx + dz * fz) / (d * fl) < 0.3f) continue;  // (behind him or to his side)
+            best = i, bd = d;
+        }
+        if (best >= 0) {
+            if (!++g_pvp.seq) g_pvp.seq = 1;
+            g_pvp.target = (uint8_t)best, g_pvp.damage = (int16_t)power;
+            LOG("[online] our blow on %s: %d\n", pl[best].name, power);
+        }
+    }
+    // the others' blows on him
+    int32_t *life = (int32_t *)(uintptr_t)(player + ENEMY_LIFE);
+    for (int i = 0; i < ONLINE_MAX; i++) {
+        if (i == me || !pl[i].used || !pl[i].pose.valid) { init[i] = false; continue; }
+        uint16_t s = pl[i].pose.pvp_seq;
+        if (!init[i]) { seen[i] = s, init[i] = true; continue; }  // (from before he was here)
+        if (s == seen[i]) continue;
+        seen[i] = s;
+        if (!g_online.pvp || pl[i].pose.pvp_target != me || pl[i].pose.pvp_damage <= 0 || *life <= 0) continue;
+        const char *up = playing(c, player, 1, 0), *body = playing(c, player, 0, 0);
+        if (strstr(up, "Guard") || strstr(body, "Guard")) {
+            LOG("[online] %s's blow: blocked\n", pl[i].name);
+            continue;
+        }
+        int def = our_defense(player), dmg = pl[i].pose.pvp_damage > def ? pl[i].pose.pvp_damage - def : 1;
+        *life = *life > dmg ? *life - dmg : 0;
+        float dx = pm[3] - pl[i].pos[0], dz = pm[11] - pl[i].pos[2], d = sqrtf(dx * dx + dz * dz);
+        if (*life > 0 && d > 0.01f) {
+            float at[3] = {pm[3] - dx / d, pm[7] + 0.3f, pm[11] - dz / d};
+            boom_start(c, "OnlineShock", at);  // (he flinches, as from the host's enemies' heavy blows)
+        }
+        LOG("[online] %s hit us: %d after our defence %d (life %d)\n", pl[i].name, dmg, def, *life);
+    }
 }
 
 static void puppets_forget(void) {
@@ -3861,10 +3924,11 @@ void rt_online_frame(Cpu *c) {
             if (++st == atoi(getenv("SAVAGEWIND_ONLINE_SLATE_TEST")) * 30) slate_event(c, player);
         }
         quests_update(c, player, online_is_host());
-        if (VALID(player) && !online_is_host()) {
+        if (VALID(player)) {
             OnlinePlayer wp[ONLINE_MAX];
             online_players(wp);
-            weather_follow(wp, me, link);
+            if (!online_is_host()) weather_follow(wp, me, link);
+            pvp_update(c, player, wp, me);
         }
         if (VALID(player)) ground_update(c, player, link);
         if (VALID(player)) {

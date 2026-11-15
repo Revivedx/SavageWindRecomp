@@ -544,6 +544,14 @@ The armour's defence: a blow of the host's enemies on a player takes his armour'
 online_mod/defense.txt: each one's ActorInfo armorDefenceAddLevel, the defence the game shows: the Hylian Hood 3,
 the Old Shirt 1), a quarter heart at least.
 
+Damage between players (protocol 29; Settings > Online > Combat, `pvp` in online.ini, off by default, only between two
+players who both have it on; `SAVAGEWIND_ONLINE_PVP` for tests): the puppets have no bodies a blow lands on, so as a
+player's swing starts (his weapon's trail) the nearest other player within its reach in front of him (2.2 m and his
+weapon's, as the host's enemies' reach) is hit: the blow goes in his state (`pvp_seq`, `pvp_target`, `pvp_damage`: his
+weapon's attack power, power.txt) and that player's game takes it as the host's enemies' blows: his shield up blocks
+it, his armour's defence comes off, he flinches. Tested: the host's three blows (4) on the client took 2 each (his
+defence 2).
+
 Treasure chests: their flags (`<map>_TBox_<kind>_<HashId>`, 1615, most in revival_bool_data) are in quests.txt with
 the quests': one opened in a game is opened in the others (what it held is the one's who opened it). Tested: a
 chest's flag set on the host was set on the client.
@@ -613,7 +621,7 @@ Recipes that found the bugs above:
   Each player's state carries his three (`dye`, protocol 27) and his puppet's pieces are made with the same param
   (made again when it changes; tested: a dye written on the host made the client's piece again). Whether an
   OnlineArmor (a DemoNPC) shows it is still to see; if not, the colour has to go on its materials.
-- Damage between players (the puppets have no bodies that take hits), riding: a player on a horse or a Master
+- Riding: a player on a horse or a Master
   Cycle isn't shown on it, the world's objects moved (not taken), players in the same shrine
   or Divine Beast is fine (the same map: shown), a Blood Moon at the same time.
 - The beam is not seen working yet: in the test runs (full hearts, the Master Sword) the game fired none, with or
