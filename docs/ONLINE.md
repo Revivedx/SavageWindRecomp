@@ -651,7 +651,9 @@ Recipes that found the bugs above:
   OnlineArmor (a DemoNPC) shows it is still to see; if not, the colour has to go on its materials.
 - The world's objects moved (not taken), players in the same shrine
   or Divine Beast is fine (the same map: shown), a Blood Moon at the same time (each game has its own; its WM_BloodyMoonTimer
-  is a game data f32 that the game recomputes into TimeMgr +0xc8: a write there doesn't stay).
+  is a game data f32 that the game recomputes into TimeMgr +0xc8: a write there doesn't stay). TimeMgr +0xb8 is the
+  time of day and +0xc8 the Blood Moon timer, both in degrees (360 a day, 0.25 a second); the name isn't in the game
+  data buffers at mgr +0xbd8..+0xc38 as gdt_value looks them up. The world's items come back right without it.
 - The beam is not seen working yet: in the test runs (full hearts, the Master Sword) the game fired none, with or
   without online play, so `beam_move` and OnlineBeam are untested.
 - Magnesis' blue beam from the slate to what it holds (not a named effect of the player's, ReactionHit's or
