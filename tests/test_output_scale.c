@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include "../runtime/nvn/output_scale.c"
 Settings g_settings = {.wide_view = true, .fov = 100, .render_scale = RSCALE_100};
+volatile int g_movie_playing;
 static bool title, loading, map, pause;
 bool framepace_menu_ui(void) { return pause; }
 bool framepace_map_ui(void) { return map; }
@@ -117,5 +118,13 @@ int main(void) {
     near(1600 * o.scene_sx, 3840); near(900 * o.scene_sy, 2160);
     g_settings.render_scale = RSCALE_100;
 #endif
-    puts("PASS: taller map viewport, 16:9 fallback, disabled fill, title, loading and ultrawide");
+    // Pre-rendered 16:9 movies keep their aspect ratio instead of stretching or squishing (#838).
+    g_movie_playing = 1;
+    output_scale(2560, 1080, true, &o);
+    near(o.shape, 1); near(o.vw, 1920); near(o.vh, 1080); near(o.vx, 320); near(o.vy, 0);
+    output_scale(1280, 800, true, &o);
+    near(o.shape, 1); near(o.vw, 1280); near(o.vh, 720); near(o.vx, 0); near(o.vy, 40);
+    g_movie_playing = 0;
+
+    puts("PASS: taller map viewport, 16:9 fallback, disabled fill, title, loading, movies and ultrawide");
 }
