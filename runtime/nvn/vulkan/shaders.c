@@ -444,19 +444,23 @@ int vk_keylog_read(VkKeyLogEntry **out) {
 }
 
 // The translation's id (its cache/xlate name) and the header its file has
-static uint64_t xlate_id(const uint8_t *code, size_t max_size, int stage, const ShaderKey *key, XlateHeader *hd) {
+static uint64_t xlate_id_as(const char *id, const uint8_t *code, size_t max_size, int stage, const ShaderKey *key,
+                            XlateHeader *hd) {
     memset(hd, 0, sizeof *hd);
     memcpy(hd->magic, XLATE_MAGIC, 4);
     hd->info_size = sizeof(ShaderInfo);
     hd->bin_size = (uint32_t)maxwell_binary_size(code, max_size, stage);
     hd->key = *key;
     hd->stage = stage;
-    const char *id = maxwell_translator_id();
     uint64_t h = hash64(0xcbf29ce484222325ull, id, strlen(id));
     h = hash64(h, hd, sizeof *hd);
     h = hash64(h, code, hd->bin_size);
     if (maxwell_wet_lighting(code, max_size, stage)) h = hash64(h, "wet", 3);  // (Video > Wet grass fix: its own translation)
     return h ? h : 1;
+}
+
+static uint64_t xlate_id(const uint8_t *code, size_t max_size, int stage, const ShaderKey *key, XlateHeader *hd) {
+    return xlate_id_as(maxwell_translator_id(), code, max_size, stage, key, hd);
 }
 
 // The id a translation of this binary with this key has (precompile.c: the pipeline seed names shaders by binary
@@ -466,6 +470,10 @@ uint64_t vk_translate_id_for(const uint8_t *code, size_t max_size, int stage, co
     // (the seed's export only) SAVAGEWIND_SEED_LIST_ID=<translator id>: the ids as a list of a build before the
     // variant change named them (its translator id with the switches in it, the SWX2 file format), so a playthrough's
     // list from such a build can be exported once
+    // SAVAGEWIND_SEED_TRANSLATOR=<translator id>: the ids as another build of the same file format named them (a
+    // player's list from a problem report: --seed-from-report)
+    const char *other = getenv("SAVAGEWIND_SEED_TRANSLATOR");
+    if (other && *other) return xlate_id_as(other, code, max_size, stage, key, &hd);
     const char *old = getenv("SAVAGEWIND_SEED_LIST_ID");
     if (!old || !*old) return xlate_id(code, max_size, stage, key, &hd);
     memset(&hd, 0, sizeof hd);

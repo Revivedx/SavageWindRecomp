@@ -645,6 +645,13 @@ Pendiente:
          se lee al crear la ventana, antes de la precompilación de la pantalla de inicio, la precompilación vuelve a
          leerla y arranca el precalentamiento cuando la semilla ha entrado (`vk_pso_rewarm`): si no, el primer
          arranque tras la instalación enlazaba todo en el draw y solo el siguiente precalentaba.
+       - 2026-11-14: la semilla pasa a 8.561 pipelines (una vuelta de una hora por torres, pueblos, lugares, establos y
+         santuarios con TAA + FSR 3, SMAA al 75 %, FSR 1 y sombras altas: los ajustes de AA y escalado dan casi todos
+         los nuevos). El zip de Problem report lleva `pipelines/vk_pipelines.list` y `pipelines/vk_shader_keys.list`
+         del jugador, y `tools/merge_seed_report.py <zips>` los convierte en semilla (`--export-pipeline-seed` con
+         `SAVAGEWIND_CACHE_DIR` en una carpeta aparte, `SAVAGEWIND_PSO_FOREIGN=1` para una lista de otra GPU y
+         `SAVAGEWIND_SEED_TRANSLATOR=<id>` para los ids de otra build) y añade a `vk_pipelines.seed` los que falten.
+         Solo entran pipelines cuyos shaders están en los archivos del juego con las claves del registro del jugador.
        - "Shaders asíncronos" pasa a estar activado por defecto (`settings_version` 4: los ficheros de la versión 3
          con 0 toman el nuevo valor, porque el menú escribía todas las claves). Qué se salta y qué no
          (`draw_` en `exec.c`): un draw cuyo pipeline aún se construye se salta cuando sus targets se dibujaron en el

@@ -85,7 +85,8 @@ body:
         ~/.local/share/savagewind/. The game writes a new one each time it starts, so take it right after the bug
         happened, before starting the game again; if you already did, savagewind.prev.log next to it is the run
         before. Options > Problem report (in the game, or the start screen's Prelaunch tab) makes one zip with
-        both logs and your settings: drag that here instead. Screenshots or a short video help too.
+        both logs, your settings and your shader pipeline list (hashes only, so the next versions can prepare those
+        pipelines for everyone): drag that here instead. Screenshots or a short video help too.
       placeholder: Drag savagewind.log or the problem report zip here
     validations:
       required: true
