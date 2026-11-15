@@ -12,6 +12,9 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#if defined(__SSE2__) || defined(__x86_64__) || defined(_M_X64)
+#include <emmintrin.h>
+#endif
 #include "../../ui_layout.h"
 #ifdef _WIN32
 #define NOUSER
@@ -2800,7 +2803,7 @@ typedef struct Prog {
     ShaderKey vkey, fkey;
     VkShaderModule vs, fs;
     VkBindingInfo binds[MAX_BIND];
-    int nbinds;
+    int nbinds, set_off[2], set_end[2];
     VkDescriptorSetLayout set_layout[2];
     VkPipelineLayout layout;
     struct StageBuildRef { void *v, *f; } stages;  // (the ProgBuild's StageBuilds: graphics pipeline libraries)
@@ -3089,6 +3092,26 @@ static const ProgBuild *prog_build(const ShaderInfo *vi, const ShaderInfo *fi, b
     return b;
 }
 
+static void prog_partition_binds(Prog *p) {
+    VkBindingInfo tmp[MAX_BIND];
+    int w = 0;
+    for (int set = 0; set < 2; set++) {
+        p->set_off[set] = w;
+        for (int pass = 0; pass < 2; pass++) {
+            for (int i = 0; i < p->nbinds; i++) {
+                const VkBindingInfo *b = &p->binds[i];
+                if ((int)b->set != set) continue;
+                bool post = b->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER && (b->binding == 18 || b->binding == 19);
+                if ((int)post != pass) continue;
+                tmp[w++] = *b;
+            }
+        }
+        p->set_end[set] = w;
+    }
+    memcpy(p->binds, tmp, sizeof tmp[0] * (size_t)w);
+    p->nbinds = w;
+}
+
 static void compile_program(void *arg) {
     Prog *p = arg;
     uint64_t pt0 = SDL_GetTicksNS();
@@ -3098,6 +3121,7 @@ static void compile_program(void *arg) {
     if (!b) { atomic_store(&p->state, 2); return; }
     p->nbinds = b->nbinds;
     memcpy(p->binds, b->binds, sizeof b->binds[0] * (size_t)b->nbinds);
+    prog_partition_binds(p);
     p->vs = b->vs;
     p->fs = b->fs;
     p->set_layout[0] = b->set_layout[0];
@@ -7012,9 +7036,11 @@ static void texture_info_(int stage, ShaderInfo *si, int i, VkDescriptorImageInf
 // the same material textures and constants): saves the allocation and the update. SAVAGEWIND_VK_NO_SET_CACHE=1: off.
 // Entries are told apart by two independent 64-bit hashes of the contents (no stored key: comparing ~700-byte keys
 // from a 3 MB table cost more than the hashing).
-#define SETC_TAB 4096
+#define SETC_WAYS 2
+#define SETC_BUCKETS 2048
 typedef struct { uint64_t seq, hash, hash2; VkDescriptorSetLayout layout; VkDescriptorSet set; uint32_t n; } SetEnt;
 static SetEnt *setc;
+static uint8_t *setc_lru;
 
 static VkDescriptorSet set_finish(VkDescriptorSetLayout layout, VkWriteDescriptorSet *w, int n) {
     static int off = -1;
@@ -7043,12 +7069,22 @@ static VkDescriptorSet set_finish(VkDescriptorSetLayout layout, VkWriteDescripto
             }
         }
         h ^= h >> 32;
-        if (!setc) setc = calloc(SETC_TAB, sizeof *setc);
-        e = &setc[(h ^ (h >> 31)) & (SETC_TAB - 1)];
-        if (e->seq == seq && e->hash == h && e->hash2 == h2 && e->layout == layout && e->n == (uint32_t)n) {
-            stat_sets_reused++;
-            return e->set;
+        if (!setc) {
+            setc = calloc(SETC_BUCKETS * SETC_WAYS, sizeof *setc);
+            setc_lru = calloc(SETC_BUCKETS, sizeof *setc_lru);
         }
+        uint32_t b = (uint32_t)(h ^ (h >> 31)) & (SETC_BUCKETS - 1);
+        SetEnt *pair = &setc[b * SETC_WAYS];
+        for (int way = 0; way < SETC_WAYS; way++) {
+            SetEnt *c = &pair[way];
+            if (c->seq == seq && c->hash == h && c->hash2 == h2 && c->layout == layout && c->n == (uint32_t)n) {
+                setc_lru[b] = (uint8_t)(way ^ 1);
+                stat_sets_reused++;
+                return c->set;
+            }
+        }
+        e = &pair[setc_lru[b]];
+        setc_lru[b] ^= 1;
     }
     VkDescriptorSet ds = vk_alloc_set(layout);
     for (int i = 0; i < n; i++) w[i].dstSet = ds;
@@ -7337,9 +7373,8 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
     float rs[65][4];
     if (rscale_row0) memcpy(rs[0], rscale_row0, 16);
     else rs[0][0] = rs[0][1] = 1, rs[0][2] = rs[0][3] = 0;
-    for (int i = 0; i < p->nbinds; i++) {
+    for (int i = p->set_off[set]; i < p->set_end[set]; i++) {
         VkBindingInfo *b = &p->binds[i];
-        if (b->set != set) continue;
         w[n] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = VK_NULL_HANDLE, .dstBinding = b->binding,
                                       .descriptorCount = 1, .descriptorType = b->type};
         if (b->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER && b->binding >= 32) {
@@ -7355,6 +7390,16 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
             w[n].pImageInfo = &ii[n];
         } else if (b->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER && b->binding == GMEM_BUFFER_INDEX && maxwell_gmem_bda) {
             bi[n] = gmem_info();
+            w[n].pBufferInfo = &bi[n];
+        } else if (b->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER && (b->binding == 18 || b->binding == 19)) {
+            if (b->binding == 18) {
+                for (int t = 0; t < si->ntex && t < 64; t++)
+                    rs[1 + t][0] = tex_sc[sg][t][0], rs[1 + t][1] = tex_sc[sg][t][1], rs[1 + t][2] = rs[1 + t][3] = 0;
+                bi[n] = ubo_span(copy_dedupe_in(sg ? DEDUPE_RSCALE_F : DEDUPE_RSCALE_V, rs, (uint64_t)rows * 16, sizeof rs, 256), sizeof rs);
+            } else {
+                float zero[8] = {0};
+                bi[n] = ubo_span(copy_dedupe(DEDUPE_TINT, tint ? tint : zero, 32, 256), 32);
+            }
             w[n].pBufferInfo = &bi[n];
         } else if (b->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER && b->binding < 17) {
             bi[n] = cbuf_info(stage, si, (int)b->binding, gx, gy, gz);
@@ -7374,24 +7419,8 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
                                                        : gmem_info();
             w[n].pBufferInfo = &bi[n];
         } else {
-            continue;  // rscale / tint: written below, once the textures (and their scales) are known
+            continue;
         }
-        n++;
-    }
-    for (int i = 0; i < p->nbinds; i++) {
-        VkBindingInfo *b = &p->binds[i];
-        if (b->set != set || b->type != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER || (b->binding != 18 && b->binding != 19)) continue;
-        w[n] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = VK_NULL_HANDLE, .dstBinding = b->binding,
-                                      .descriptorCount = 1, .descriptorType = b->type};
-        if (b->binding == 18) {
-            for (int t = 0; t < si->ntex && t < 64; t++)
-                rs[1 + t][0] = tex_sc[sg][t][0], rs[1 + t][1] = tex_sc[sg][t][1], rs[1 + t][2] = rs[1 + t][3] = 0;
-            bi[n] = ubo_span(copy_dedupe_in(sg ? DEDUPE_RSCALE_F : DEDUPE_RSCALE_V, rs, (uint64_t)rows * 16, sizeof rs, 256), sizeof rs);
-        } else {
-            float zero[8] = {0};
-            bi[n] = ubo_span(copy_dedupe(DEDUPE_TINT, tint ? tint : zero, 32, 256), 32);
-        }
-        w[n].pBufferInfo = &bi[n];
         n++;
     }
     for (int i = 0; i < nd && dyn; i++) dyn[(*ndyn)++] = dv[i].off;
@@ -7485,6 +7514,7 @@ static void build_compute(void *arg) {
     }
     cp->p.nbinds = c->nbinds;
     memcpy(cp->p.binds, c->binds, sizeof c->binds[0] * (size_t)c->nbinds);
+    prog_partition_binds(&cp->p);
     cp->p.set_layout[0] = c->set_layout;
     cp->p.layout = c->layout;
     cp->pipe = c->pipe;
@@ -8345,6 +8375,41 @@ static void wait_built(_Atomic int *state) {  // (0 building: until built or fai
     perfcount_add(PC_BUILD_WAIT_NS, SDL_GetTicksNS() - t0);
 }
 
+static uint32_t scan_max_index(const void *src, uint32_t isz, uint32_t n, uint32_t restart, uint32_t max_index) {
+    if (isz == 2) {
+        const uint16_t *s = src;
+        uint16_t r16 = (uint16_t)restart;
+#if defined(__SSE2__) || defined(__x86_64__) || defined(_M_X64)
+        if (n >= 16) {
+            __m128i sign = _mm_set1_epi16((short)0x8000);
+            __m128i vmax = _mm_xor_si128(_mm_set1_epi16((short)(max_index > 0xFFFFu ? 0xFFFFu : max_index)), sign);
+            __m128i vres = _mm_set1_epi16((short)r16);
+            uint32_t i = 0;
+            for (; i + 8 <= n; i += 8) {
+                __m128i v = _mm_loadu_si128((const __m128i *)(s + i));
+                __m128i keep = _mm_andnot_si128(_mm_cmpeq_epi16(v, vres), v);
+                vmax = _mm_max_epi16(vmax, _mm_xor_si128(keep, sign));
+            }
+            vmax = _mm_xor_si128(vmax, sign);
+            uint16_t tmp[8];
+            _mm_storeu_si128((__m128i *)tmp, vmax);
+            for (int k = 0; k < 8; k++)
+                if (tmp[k] > max_index) max_index = tmp[k];
+            for (; i < n; i++)
+                if (s[i] > max_index && s[i] != r16) max_index = s[i];
+            return max_index;
+        }
+#endif
+        for (uint32_t i = 0; i < n; i++)
+            if (s[i] > max_index && s[i] != r16) max_index = s[i];
+        return max_index;
+    }
+    const uint32_t *s = src;
+    for (uint32_t i = 0; i < n; i++)
+        if (s[i] > max_index && s[i] != restart) max_index = s[i];
+    return max_index;
+}
+
 static void draw_(CmdRec *r, bool indexed) {
     if (profd) prof_tp_ = SDL_GetTicksNS();
     ProfZone pz0 = PZ_NOW();
@@ -9097,8 +9162,7 @@ have_pipe:
             } else {
                 if (profd) prof_index_copy++;
                 ib = vk_transient_copy(src, (uint64_t)count * isz + 4, 4);
-                if (isz == 2) { const uint16_t *s = src; for (uint32_t i = 0; i < count; i++) if (s[i] > max_index && s[i] != (uint16_t)restart) max_index = s[i]; }
-                else { const uint32_t *s = src; for (uint32_t i = 0; i < count; i++) if (s[i] > max_index && s[i] != restart) max_index = s[i]; }
+                max_index = scan_max_index(src, isz, count, restart, max_index);
             }
         } else if (native) {  // 8-bit indices: widen to 16
             if (profd) prof_index_copy++;
@@ -9151,8 +9215,7 @@ have_pipe:
                 continue;
             }
             if (scan_src) {  // copying after all: the index scan bounds the copy
-                if (scan_isz == 2) { const uint16_t *q = scan_src; for (uint32_t i = 0; i < icount; i++) if (q[i] > max_index && q[i] != (uint16_t)scan_restart) max_index = q[i]; }
-                else { const uint32_t *q = scan_src; for (uint32_t i = 0; i < icount; i++) if (q[i] > max_index && q[i] != scan_restart) max_index = q[i]; }
+                max_index = scan_max_index(scan_src, scan_isz, icount, scan_restart, max_index);
                 max_index += 1;
                 if (base_vertex > 0) max_index += (uint32_t)base_vertex;
                 scan_src = NULL;
