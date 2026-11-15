@@ -81,6 +81,11 @@ Saves are in the `save` folder of Savage Wind's data folder: next to `savagewind
 `~/.local/share/savagewind/save/` on Linux and the Steam Deck. To back them up or move them, close the game and copy
 the whole folder. More in [Saves](docs/saves.md), including profiles and Wii U / Cemu import.
 
+## Cheats, assists and amiibo
+
+God mode, infinite stamina, damage and weapon wear settings, items, rupees, weather, teleporting and the virtual
+amiibo reader: how to use them in [Cheats and assists](docs/cheats-and-assists.md).
+
 ## Status
 
 | Area | Share | Progress |
