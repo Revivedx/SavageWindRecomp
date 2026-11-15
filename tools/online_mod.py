@@ -54,9 +54,9 @@ KNOCK = 'OnlineKnock'
 SHOCK0 = 'OnlineShock'
 PLAYER_ELINK = 'Player_GameRom'  # (GameROMPlayer's ElinkUser)
 PLAYER_SLINK = 'GameROMPlayer'  # (and its SlinkUser: his sounds, played on his Link by the runtime)
-VERSION = 31  # (runtime/main.c ONLINE_MOD_VERSION: armour actors, traverseDist, the paraglider, the enemies' traverseDist,
+VERSION = 32  # (runtime/main.c ONLINE_MOD_VERSION: armour actors, traverseDist, the paraglider, the enemies' traverseDist,
 # their chemical, the round bomb's own explosion, the weapons' ELink, the player's AnimationInfo, the
-# player's and the weapons' SLink, the armour's defence, the chests' flags)
+# player's and the weapons' SLink, the armour's defence, the chests' flags, the world's)
 TRAVERSE = 1000.0  # (the online actors' traverseDist)
 GEAR_KINDS = ('Weapon_Sword_', 'Weapon_Lsword_', 'Weapon_Spear_', 'Weapon_Shield_', 'Weapon_Bow_', 'Weapon_Sheath_',
               'Weapon_Lsheath_', 'Weapon_SpearSheath_', 'Weapon_Quiver_')
@@ -821,7 +821,21 @@ def main():
     for f2 in sorted(chest_flags):
         if f2 not in qflags:
             qflags.append(f2)
-    open(os.path.join(out, 'quests.txt'), 'w').write(''.join(f2 + chr(10) for f2 in qflags[:4096]))
+    # (and what of the world was taken or broken: the items lying about, picked up (Item_*), the ores and objects
+    # broken (Obj_*), the weapons lying about, the barrels and crates: each one's revival flag, <map>_<actor>_<HashId>, set
+    # as it goes (a Blood Moon clears them); taken in one game, gone in the others the next time they load it. Not the
+    # enemies (theirs their own way) nor the animals)
+    world_flags = set()
+    for gf in gdt.get_files():
+        if 'revival_bool_data' in gf.name.split('/')[-1]:
+            for e in oead.byml.from_binary(bytes(gf.data)).get('bool_data', []):
+                n3 = str(e['DataName'])
+                if re.match(r'^[A-Za-z0-9]+_(Item|Obj|Weapon|Barrel|Kibako)_', n3):
+                    world_flags.add(n3)
+    for f2 in sorted(world_flags):
+        if f2 not in qflags and len(f2) < 48:
+            qflags.append(f2)
+    open(os.path.join(out, 'quests.txt'), 'w').write(''.join(f2 + chr(10) for f2 in qflags[:32768]))
     # the enemies' online actors (enemy=actor)
     open(os.path.join(out, 'enemies.txt'), 'w').write(''.join('%s=%s\n' % kv for kv in sorted(enemies.items())))
     # the armour pieces' online actors (piece=actor), and each one's bone map (actor=unit|unit, each "i,i,...")

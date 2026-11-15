@@ -207,7 +207,7 @@ void online_set_loots(const OnlineLoot *l, int n);         // (the host's: the l
 int online_loots(OnlineLoot *out);                         // (the others: the list as it came last; -1 none yet)
 // The quests' progress (main, shrine and side quests), everyone's: a bit per flag of online_mod/quests.txt; each game sends its own, the host's
 // game keeps the union (what any of them did) and sends it, and each sets what it lacks
-#define ONLINE_QUEST_BYTES 512  // (4096 flags)
+#define ONLINE_QUEST_BYTES 4096  // (32768 flags)
 void online_send_quests(const uint8_t m[ONLINE_QUEST_BYTES]);   // (a game not the host's)
 bool online_take_quests(uint8_t m[ONLINE_QUEST_BYTES]);         // (the host's game: the others', ORed in)
 void online_set_quests(const uint8_t m[ONLINE_QUEST_BYTES]);    // (the host's game: the union, for the others)

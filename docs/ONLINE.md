@@ -545,8 +545,15 @@ online_mod/defense.txt: each one's ActorInfo armorDefenceAddLevel, the defence t
 the Old Shirt 1), a quarter heart at least.
 
 Treasure chests: their flags (`<map>_TBox_<kind>_<HashId>`, 1615, most in revival_bool_data) are in quests.txt with
-the quests' (3773 in all): one opened in a game is opened in the others (what it held is the one's who opened it).
-Tested: a chest's flag set on the host was set on the client.
+the quests': one opened in a game is opened in the others (what it held is the one's who opened it). Tested: a
+chest's flag set on the host was set on the client.
+
+The world's items (protocol 28: QUEST / QUESTS of 32768 flags, 4 KB every 2 s): the revival flag of each item lying
+about (`<map>_Item_*`), ore and object broken (`_Obj_*`), weapon lying about, barrel and crate (`_Barrel_*`,
+`_Kibako_*`) is in quests.txt too (21940 flags in all): taken or broken in one game, gone in the others the next time
+they load that place (one in view stays until then). A Blood Moon clears each game's own, and the others' bring them
+back: what was taken comes back only once every game has had its Blood Moon. Tested both ways (an item's flag set on
+the host, an ore's on the client), 60 fps kept.
 
 The time of day is the host's (protocol 10): his game's frame loop publishes its hour (`test_warp_hour`), his
 server sends it to everyone every 2 s (TIME), and the others set theirs to it (`test_warp_set_hour`) when it is off
@@ -607,8 +614,8 @@ Recipes that found the bugs above:
   (made again when it changes; tested: a dye written on the host made the client's piece again). Whether an
   OnlineArmor (a DemoNPC) shows it is still to see; if not, the colour has to go on its materials.
 - Damage between players (the puppets have no bodies that take hits), riding: a player on a horse or a Master
-  Cycle isn't shown on it, the world's objects (fruit, ore, rocks broken, things moved), players in the same shrine
-  or Divine Beast seeing each other, a Blood Moon at the same time.
+  Cycle isn't shown on it, the world's objects moved (not taken), players in the same shrine
+  or Divine Beast is fine (the same map: shown), a Blood Moon at the same time.
 - The beam is not seen working yet: in the test runs (full hearts, the Master Sword) the game fired none, with or
   without online play, so `beam_move` and OnlineBeam are untested.
 - Magnesis' blue beam from the slate to what it holds (not a named effect of the player's, ReactionHit's or

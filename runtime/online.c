@@ -37,7 +37,7 @@ typedef int sock_t;
 #include "rt.h"
 
 #define MAGIC 0x4c4f5753u  // "SWOL"
-#define PROTOCOL 27  // (27: STATE carries his armour's dyes; 26: his sounds as events, his weather; 25: his trail)
+#define PROTOCOL 28  // (28: QUEST / QUESTS of 32768 flags, the world's items; 27: his armour's dyes; 26: his sounds)
 static volatile float g_local_hour = -1;  // (the local game's hour, from the frame loop: online_set_local_hour)
 #define SEND_HZ 20
 #define INTERP_NS 100000000ull  // the others are drawn this far behind what was last heard (smooth between updates)
