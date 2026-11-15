@@ -131,6 +131,10 @@ typedef struct {
     bool gyro_scene;     // left-drag rotation during a shrine apparatus interaction
     float motion_sens;   // motion controls: how far turning the controller turns the aim, 1 = 100%
     int motion_invert;   // MOTION_INVERT_* bits: turning the controller up / down, left / right goes the other way
+    float motion_sens_y; // vertical motion aiming, a fraction of motion_sens (1: the same as horizontal)
+    int motion_source;   // MOTION_SOURCE_*: where the motion comes from (Automatic: the controller, then the fallbacks)
+    bool motion_lean;    // leaning the controller left / right (a steering wheel) also turns the aim
+    char motion_dsu_axes[32];  // DSU server axes as the game takes them ("pitch yaw roll"; a name per slot, - flips it)
     int button_icons;    // ICONS_*: the game's button prompts show this device's buttons (Automatic: the one in use)
     int button_layout;   // BUTTON_LAYOUT_*: where A, B, X and Y sit on the HUD's four-button diamond (Automatic: bindings)
     bool async_shaders;  // draw on while new shaders compile (no stutter; what needs them is skipped meanwhile; on by
@@ -251,6 +255,12 @@ extern const char *const g_weather_keys[WEATHER_COUNT];  // (the ini and `weathe
 #define MOUSE_SENS_DEFAULT 3.0f  // (300% of the first default, 1; user, 2026-10-19)
 #define MOUSE_SENS_Y_CHOICES {50, 60, 70, 80, 90, 100, 110, 125, 150, 175, 200}  // (percent of the horizontal)
 enum { MOTION_INVERT_UD = 1, MOTION_INVERT_LR = 2 };
+#define MOTION_SENS_Y_CHOICES {50, 60, 70, 80, 90, 100, 110, 125, 150, 175, 200}  // (percent of the horizontal)
+// Where the motion comes from (runtime/hle/motion.c): Automatic tries the controller in use, the same controller seen
+// twice (Steam Input, DS4Windows), the handheld's own sensors, then a DSU server; Controller only its own sensors; DSU
+// only a DSU server; Off no sensors (the sticks, keys and mouse still tilt a shrine apparatus)
+enum { MOTION_SOURCE_AUTO, MOTION_SOURCE_CONTROLLER, MOTION_SOURCE_DSU, MOTION_SOURCE_OFF, MOTION_SOURCE_COUNT };
+extern const char *const g_motion_source_keys[MOTION_SOURCE_COUNT];  // (the ini's names: auto, controller, dsu, off)
 enum { ICONS_AUTO, ICONS_KEYBOARD, ICONS_XBOX, ICONS_PLAYSTATION, ICONS_NINTENDO, ICONS_STEAMDECK, ICONS_COUNT };
 enum {
     BUTTON_LAYOUT_AUTO,

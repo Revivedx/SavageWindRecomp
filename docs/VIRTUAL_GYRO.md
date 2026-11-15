@@ -11,6 +11,9 @@ the Switch. Without one, Savage Wind turns a virtual controller instead, while t
 - **A controller without a gyroscope** (Xbox and most XInput pads): the right stick turns the platform (X) and tilts
   it front / back (Y), the left stick banks it (X) and tilts it front / back (Y). R3 or L3 levels it again. The sticks
   move neither Link nor the camera meanwhile. The motion sensitivity and inversion options apply.
+- **A controller with a gyroscope**: the gyroscope tilts it as it is held (no sensitivity, inversion or lean). The
+  sticks take over once pushed past half way (a gyroscope lying still, a handheld on its dock); R3 or L3 gives it back
+  to the gyroscope.
 
 Leaving the mechanism levels the virtual controller and drops any turn still to come.
 

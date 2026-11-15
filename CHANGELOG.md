@@ -30,6 +30,36 @@ What changed in each Savage Wind release. The `test` branch holds what the next 
   each side (853 x 480 at 1440p) and the whole image came out blurred. It is greyed there, and a stored Ultra
   Performance runs as Performance. FSR 1 keeps it at any size.
 
+### Gyro
+
+The gyro reports are gathered on [#136](https://github.com/Revivedx/SavageWindRecomp/issues/136); please test your
+controller and post there.
+
+- **Sensitivity and inversion turn the aim, however the controller is held:** they act on left / right about gravity
+  and on up / down, not on the controller's own axes. Held upright (a handheld, the Steam Deck), "Invert left and
+  right" did nothing, "Invert up and down" flipped both, and the sensitivity only changed up and down.
+- **Vertical motion sensitivity** and **Lean to turn** (tilting the controller like a steering wheel also turns the
+  aim) in Options > Controls.
+- **Shrine tilt puzzles** follow the controller as it is held, whatever the sensitivity and inversion.
+- **Controllers polled faster than their sensor** (a DualSense at 1000-8000 Hz, some that pass for one): each repeated
+  report turned the aim again, so it ran off on its own ([#759](https://github.com/Revivedx/SavageWindRecomp/issues/759)).
+- **The same controller seen twice** (DS4Windows, DSX or Handheld Companion beside the real one): the gyro stays on
+  the real controller instead of following whichever of the two was pressed last.
+- **Steam Input:** the controller it hides behind its virtual gamepad (DualSense, DualShock 4, Switch Pro...) is opened
+  for its gyro, so motion works with Steam Input on. Valve's own controllers stay with Steam (the Deck already reads
+  its own sensors); `SAVAGEWIND_STEAM_SENSORS=0` turns this off.
+- **DSU servers on Windows too** (DS4Windows, BetterJoy, Handheld Companion for the ROG Ally, Legion Go and others,
+  SteamControllerDSU): at 127.0.0.1:26760 when the controller has no gyro, nothing to set up. `motion_dsu_axes` in
+  `savagewind.ini` sets right a server that sends its axes in another order or sign ("pitch roll -yaw"). A DSU server
+  that answers also comes before the sensor SDL lends a handheld's gamepad with no data rate, which stalls on the ROG
+  Ally ([#860](https://github.com/Revivedx/SavageWindRecomp/pull/860) by uzuki-P).
+- **PC handhelds' own sensors** when Windows shows them (through SDL), if nothing else gives motion.
+- **Linux handhelds under InputPlumber** (its virtual Steam Deck controller) read like the Deck.
+- **Options > Controls > Motion source:** Automatic, Controller, DSU server or Off; its description says where the
+  motion comes from right now, or why there is none.
+- **The sticks tilt a shrine apparatus with any controller** once pushed past half way (a gyro lying still, a handheld
+  on its dock); R3 gives it back to the gyro.
+
 ### Fixes
 
 - **Water** drawn transparent where a new image was read before its clear finished

@@ -604,10 +604,15 @@ $(B)/test_gyro_settings: tools/test_gyro_settings.c runtime/settings.c runtime/h
 	$(CC) -O1 -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_gyro_settings.c \
 	    $(TEST_LD) -lSDL3 -lm
 
-$(B)/test_motion_keyboard: tools/test_motion_keyboard.c runtime/hle/motion.c $(RT_HDRS)
+$(B)/test_motion_keyboard: tools/test_motion_keyboard.c runtime/hle/motion.c runtime/dsu.c $(RT_HDRS)
 	@mkdir -p $(B)
 	$(CC) -O1 -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_motion_keyboard.c \
-	    $(TEST_LD) -lSDL3 -lm
+	    runtime/dsu.c $(TEST_LD) -lSDL3 -lm $(if $(filter windows,$(PLATFORM)),-lws2_32)
+
+$(B)/test_motion_sensors: tools/test_motion_sensors.c runtime/hle/motion.c runtime/dsu.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -O1 -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_motion_sensors.c \
+	    runtime/dsu.c $(TEST_LD) -lSDL3 -lm $(if $(filter windows,$(PLATFORM)),-lws2_32)
 
 $(B)/test_gyro_activation: tools/test_gyro_activation.c runtime/pc_gyro_scene.c $(RT_HDRS)
 	@mkdir -p $(B)
@@ -619,8 +624,8 @@ $(B)/test_gyro_drag: tools/test_gyro_drag.cpp runtime/ui/gyro_drag.h $(B)/imgui/
 	@mkdir -p $(B)
 	$(CXX) -O1 -std=c++17 $(OSFLAGS) -I$(IMGUI) -Iruntime -o $@ tools/test_gyro_drag.cpp $(filter %.o,$^)
 
-test-gyro: $(B)/test_gyro_bindings $(B)/test_gyro_settings $(B)/test_motion_keyboard $(B)/test_gyro_activation \
-           $(B)/test_gyro_drag test-bind-capture
+test-gyro: $(B)/test_gyro_bindings $(B)/test_gyro_settings $(B)/test_motion_keyboard $(B)/test_motion_sensors \
+           $(B)/test_gyro_activation $(B)/test_gyro_drag test-bind-capture
 	$(B)/test_gyro_bindings
 	@set -e; tmp=$$(mktemp); trap 'rm -f "$$tmp"' EXIT; \
 	 printf 'settings_version = 3\npc_gyro = 0\ngyro_scene = 1\n' > "$$tmp"; \
@@ -628,6 +633,7 @@ test-gyro: $(B)/test_gyro_bindings $(B)/test_gyro_settings $(B)/test_motion_keyb
 	 $(B)/test_gyro_settings "$$tmp" 1 0 saved; \
 	 SAVAGEWIND_PC_GYRO=1 SAVAGEWIND_GYRO_SCENE=0 $(B)/test_gyro_settings "$$tmp" 1 0
 	$(B)/test_motion_keyboard
+	$(B)/test_motion_sensors
 	$(B)/test_gyro_activation
 	$(B)/test_gyro_drag
 	python3 tools/test_gyro_site.py

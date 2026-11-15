@@ -329,10 +329,10 @@ static bool cam_reading(void) {
 // (runtime/pc_cursor.c: a message box while the camera still takes input is speech over play, not a conversation)
 bool input_cam_live(void) { return cam_reading(); }
 
-// A controller without a gyroscope at a shrine apparatus (or with the tilt key held): its sticks turn the virtual
-// controller (runtime/hle/motion.c motion_dualstick), and R3 / L3 recenter it
+// At a shrine apparatus (or with the tilt key held, without a gyroscope): the sticks turn the virtual controller
+// (runtime/hle/motion.c motion_dualstick; with a gyroscope once pushed past half way), and R3 / L3 recenter it
 static bool dualstick_on(void) {
-    return pad && !host_test && (pc_gyro_keyboard_active() || tilt_held) && !motion_has_sensors() &&
+    return pad && !host_test && (pc_gyro_keyboard_active() || (tilt_held && !motion_has_sensors())) &&
            !menu_input_captured() && !framepace_menu_ui() && !framepace_title_ui();
 }
 
@@ -499,7 +499,10 @@ void input_focus_update(SDL_Window *w) {
 bool input_window_focused(void) {
     return win_focused;
 }
+static void pads_motion_refresh(void);
 void input_mouse_update(SDL_Window *w) {
+    static int motion_source = -1;  // (Controls > Motion source changed: which controller's sensors again)
+    if (g_settings.motion_source != motion_source) motion_source = g_settings.motion_source, pads_motion_refresh();
     motion_poll();
     input_focus_update(w);
     static bool gyro_keys;  // (the gyro keys start or stop working without a key event: entering an apparatus)
@@ -558,7 +561,7 @@ bool input_user_blocked(const SDL_Event *e) {
     if (test_event(e)) return false;  // synthetic events are also usable in unattended tests
     if (!win_focused) switch (e->type) {
     case SDL_EVENT_GAMEPAD_AXIS_MOTION: case SDL_EVENT_GAMEPAD_BUTTON_DOWN: case SDL_EVENT_GAMEPAD_BUTTON_UP:
-    case SDL_EVENT_GAMEPAD_SENSOR_UPDATE:
+    case SDL_EVENT_GAMEPAD_SENSOR_UPDATE: case SDL_EVENT_SENSOR_UPDATE:
         return true;  // before menu shortcuts, name entry and binding capture get the event
     default: break;
     }
@@ -574,7 +577,7 @@ bool input_user_blocked(const SDL_Event *e) {
     case SDL_EVENT_MOUSE_MOTION: case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_BUTTON_UP:
     case SDL_EVENT_MOUSE_WHEEL:
     case SDL_EVENT_GAMEPAD_ADDED: case SDL_EVENT_GAMEPAD_AXIS_MOTION: case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
-    case SDL_EVENT_GAMEPAD_BUTTON_UP: case SDL_EVENT_GAMEPAD_SENSOR_UPDATE: case SDL_EVENT_JOYSTICK_ADDED:
+    case SDL_EVENT_GAMEPAD_BUTTON_UP: case SDL_EVENT_GAMEPAD_SENSOR_UPDATE: case SDL_EVENT_SENSOR_UPDATE: case SDL_EVENT_JOYSTICK_ADDED:
     case SDL_EVENT_JOYSTICK_AXIS_MOTION: case SDL_EVENT_JOYSTICK_BUTTON_DOWN: case SDL_EVENT_JOYSTICK_BUTTON_UP:
         return true;
     default:
@@ -614,14 +617,17 @@ int input_pad_family(void) {
 // left a controller connected later unread.)
 static SDL_Gamepad *pads[8];
 static int npads;
+// (a controller Steam Input hides is open for its motion sensors only: runtime/hle/motion.c motion_pad_sensor_only)
 static void pad_use(SDL_Gamepad *p) {
-    if (p == pad) return;
-    if (pad) vibration_update(pad, false), motion_pad_closed();
+    if (p == pad || (p && motion_pad_sensor_only(p))) return;
+    if (pad) vibration_update(pad, false);
     pad = p;
-    if (pad) LOG("[input] gamepad in use: %s\n", SDL_GetGamepadName(pad)), motion_pad_opened(pad);
+    if (pad) LOG("[input] gamepad in use: %s\n", SDL_GetGamepadName(pad));
+    motion_pads(pad, pads, npads);
     note_family();
     recompute_pad();
 }
+static void pads_motion_refresh(void) { motion_pads(pad, pads, npads); }
 static void pad_open(SDL_JoystickID id) {
     for (int i = 0; i < npads; i++)
         if (SDL_GetGamepadID(pads[i]) == id) return;
@@ -630,8 +636,11 @@ static void pad_open(SDL_JoystickID id) {
     if (!p) return;
     pads[npads++] = p;
     if (!first_valve && SDL_GetGamepadVendor(p) == BIND_VALVE_VENDOR) first_valve = id;
-    LOG("[input] gamepad: %s (%04x:%04x)\n", SDL_GetGamepadName(p), SDL_GetGamepadVendor(p), SDL_GetGamepadProduct(p));
-    if (!pad) pad_use(p);
+    bool sensors_only = motion_pad_sensor_only(p);
+    LOG("[input] gamepad: %s (%04x:%04x)%s\n", SDL_GetGamepadName(p), SDL_GetGamepadVendor(p), SDL_GetGamepadProduct(p),
+        sensors_only ? ", behind Steam Input: its motion sensors only" : "");
+    if (!pad && !sensors_only) pad_use(p);
+    else motion_pads(pad, pads, npads);
 }
 
 void input_handle_event(const SDL_Event *e) {
@@ -743,23 +752,37 @@ void input_handle_event(const SDL_Event *e) {
             if (SDL_GetGamepadID(pads[i]) != e->gdevice.which) continue;
             SDL_Gamepad *gone = pads[i];
             pads[i] = pads[--npads];
-            if (gone == pad) pad_use(npads ? pads[0] : NULL);  // (the one in use: another connected one, if any)
+            motion_pad_removed(gone);
+            if (gone == pad) {  // (the one in use: another connected one, if any)
+                SDL_Gamepad *next = NULL;
+                for (int k = 0; k < npads && !next; k++)
+                    if (!motion_pad_sensor_only(pads[k])) next = pads[k];
+                pad_use(next);
+            }
+            motion_pads(pad, pads, npads);
             vibration_pad_closed(gone);
             SDL_CloseGamepad(gone);
             break;
         }
         recompute_pad();
         break;
-    case SDL_EVENT_GAMEPAD_SENSOR_UPDATE:
-        if (win_focused && pad && !host_test && SDL_GetGamepadID(pad) == e->gsensor.which) motion_sensor_event(e);
+    case SDL_EVENT_GAMEPAD_SENSOR_UPDATE:  // (the controller whose sensors the motion takes: not always the one in use)
+        if (win_focused && !host_test && e->gsensor.which == motion_sensor_pad()) motion_sensor_event(e);
+        break;
+    case SDL_EVENT_SENSOR_UPDATE:  // (a PC handheld's own sensors)
+        if (win_focused && !host_test) motion_device_sensor_event(e);
         break;
     case SDL_EVENT_GAMEPAD_AXIS_MOTION: case SDL_EVENT_GAMEPAD_BUTTON_DOWN: case SDL_EVENT_GAMEPAD_BUTTON_UP:
         if (win_focused && pad && !host_test && (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
                                   (e->type == SDL_EVENT_GAMEPAD_AXIS_MOTION && abs(e->gaxis.value) > 16000))) {
             last_device = DEVICE_PAD;
             // (a button pressed on another controller: it becomes the one read. Not its sticks: a pad seen twice, by
-            // Steam or DS4Windows, or a drifting one would take over by itself)
-            if (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && SDL_GetGamepadID(pad) != e->gdevice.which)
+            // Steam or DS4Windows, or a drifting one would take over by itself. Nor a press on the same controller
+            // seen twice - its twin - or on one Steam Input hides: only their sensors are taken)
+            if (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && motion_pad_pressed(e->gbutton.which, e->gbutton.timestamp))
+                motion_pads(pad, pads, npads);
+            if (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && SDL_GetGamepadID(pad) != e->gdevice.which &&
+                !motion_pads_twins(SDL_GetGamepadID(pad), e->gdevice.which))
                 for (int i = 0; i < npads; i++)
                     if (SDL_GetGamepadID(pads[i]) == e->gdevice.which) pad_use(pads[i]);
         }
@@ -1071,8 +1094,9 @@ static void fill_state(Cpu *c) {
         if (g_inject_plus > 0) { until = renderer_present_count() + 10; g_inject_plus = 0; }
         if (renderer_present_count() < until) b |= 1ull << BTN_PLUS;
     }
-    // (the controller's sticks turning a shrine apparatus move neither Link nor the camera meanwhile)
-    bool sticks = !menu && !dualstick_on();
+    // (the sticks of a controller without a gyroscope turning a shrine apparatus move neither Link nor the camera
+    // meanwhile; with one, the game keeps them as on the console)
+    bool sticks = !menu && !(dualstick_on() && !motion_has_sensors());
     int32_t plx = sticks ? pad_lx : 0, ply = sticks ? pad_ly : 0, prx = sticks ? pad_rx : 0, pry = sticks ? pad_ry : 0;
     bool map_keys=pc_cursor_map_navigation();
     int32_t klx = menu || map_keys ? 0 : key_lx, kly = menu || map_keys ? 0 : key_ly;
