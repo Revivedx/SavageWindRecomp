@@ -212,6 +212,42 @@ ELink2), so it isn't sent; his rise and the paraglider he opens come with his po
 games (the client given the Gale with `setflag IsGet_Obj_HeroSoul_Rito` on the host, through the shared flag):
 "Client: Kago_Wind" on the host as he charged. An older game ignores the bit.
 
+The effects a player and what he holds play (protocol 25): every effect and sound any actor plays goes through
+xlink2::UserInstance::emit (1.9.0 0x7000f51054, its "emit(%s)" log line; `xlink_emit` in tools/patches.py): x0 the
+user instance, x1 the locator (+8 its asset call table, +0 of that the asset's key name). An actor's ELink user
+instance is its +0x568 +0x48 (0x7001100bd0 plays an effect by name through it), its SLink's +0x50. The runtime notes
+the emits of the local Link's ELink and of his weapon's, shield's and bow's (`SAVAGEWIND_ONLINE_FX_LOG=1` logs them;
+`SAVAGEWIND_ONLINE_FX_ALL=1` logs every actor's, with its user instance, to find which one plays an effect).
+
+- His other effects (a spin attack's charge, "ChargeLvUp" at each level, and its spin, "Kaitengiri_<level>"; what a
+  heavy weapon's blow plays...) go as events (`fxev`: the last four, each by its number), and the others play each one
+  by its name on his puppet (it has the player's ELink, `Player_GameRom`) or on the weapon in its hand, ended after
+  2 s. Not sent: his trail (below), the Champions' abilities (`Kago_*`, above), the environment's (`MaterialEnv`,
+  `FieldEnvEffect_*`). The player's ELink containers choose what to play by its property values: his ELink user
+  instance's +0x70, 24 words (6, 0x11, a float that changes...), all 0 on a puppet, so nothing played there; they go
+  in his state (`fx_props`) every frame and onto his puppet's. Tested with two games and seen on screen.
+- His weapon's swing trail ("Blur_Default", the weapon's own ELink's, as each swing starts) goes in his state (`fx`)
+  for 0.3 s and is played on the weapon in his puppet's hand (the swung gear, `SWUNG` in tools/online_mod.py, has its
+  weapon's ELink). It is SwordBlur's, drawn by the game's own code from three things a puppet lacks:
+  - its actor's AnimInfo: the trail data (+0x570 +0x148 +0x2c0, 0x700152ff4c; the AnimInfo resource, the class made
+    where ActorParam registers `baniminfo`) has, for each attack animation, its frames with a trail (114, from
+    `GameROMPlayer.baniminfo`). The puppet has the player's (`AnimationInfo` in tools/online_mod.py), and the effect's
+    user data (+0x190, its actor at +8) is set to the puppet instead of the weapon;
+  - the animation its model plays in its slots 0-2 (+0x4e0 the model, +0xd0 +0x48 the slots, 0xa8 each: the
+    animation's index << 16 at +0, its frame's float at +0x20): the emitter callback (0x7001510a90) finds the trail
+    entry by them, and the draw callback (0x7001511150) checks the slot again. A puppet is posed from his skeleton
+    and plays no AS (an AS played on it poses its bones over his skeleton: his head and arms went their own way), so
+    his slots go in his state while the trail plays (`fx_anim`, `fx_frame`) and the four reads of a puppet's slots
+    get his (`blur_anim`, `blur_frame_a`, `blur_frame_b`, `blur_anim_draw` in tools/patches.py).
+  Tested with two games and seen on screen.
+- `SAVAGEWIND_EFF_ERR_LOG=1` logs the effects' error lines ("EFF_ERR[...]", made with
+  sead::FormatFixedSafeString<128> at 0x7000579614 and never shown: `fmt128` in tools/patches.py).
+
+Not his: footprints, grass and water as he walks or swims ("FootEffect", "Footprint", "GrassTrack", "WaterTrack",
+"Splash") are played by `ReactionField`, an actor of the game's that plays the ground's reactions for everyone (its
+user instances at its +0x48 / +0x50), not by the player's ELink. Grass cut by a blade is the grass's own, still to
+look at.
+
 The Master Sword's beam is a `PlayerBeam` actor (a Bullet; the sword's `MagicName`), which the player doesn't link
 and which the game doesn't make through 0x7001535900 / 0x7001535b10 (those only preload it). Its AI action,
 `PlayerBeamMove` (crc 0xc38e3702 in the action factories: 0x7000b6d698, vtable 0x7001c1df30), has a method the AI
@@ -552,5 +588,5 @@ Recipes that found the bugs above:
 - A Divine Beast seen moving by the others while one is inside: each world's beast is as its own flags are (the
   quests' flags are shared), its AI isn't followed.
 - Mipha's Grace, Urbosa's Fury (the same way as Daruk's and Revali's: "Kago_Heal", "Kago_Lightning" /
-  "Kago_UrubozaRange"; their handles in the player still to find, as Revali's were), other effects (a sword's trail, a spin attack's light).
+  "Kago_UrubozaRange"; their handles in the player still to find, as Revali's were); footprints, grass and water (ReactionField's), grass cut.
 - The world shared: enemies, items, time of day, quests (Milk Bar's quest and enemy sync); damage between players.

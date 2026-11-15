@@ -53,6 +53,12 @@ typedef struct {
 // same object in the others' worlds is the one of that name nearest there), and where it is now
 #define ONLINE_GRAB_NAME 40
 #define ONLINE_BOSSES 2
+#define ONLINE_FX_MAX 24  // (OnlinePose.fx: an effect's name)
+#define ONLINE_FX_EVENTS 4  // (OnlinePose.fxev: his last effects)
+#define ONLINE_FX_PROPS 24  // (OnlinePose.fx_props: his Link's ELink property values)
+#pragma pack(push, 1)
+typedef struct { uint16_t seq; uint8_t who; char name[21]; } OnlineFxEvent;  // (who: 0 his Link, 1 his weapon)
+#pragma pack(pop)
 #pragma pack(push, 1)
 typedef struct { char name[ONLINE_GRAB_NAME]; float from[3]; float m[12]; } OnlineGrab;
 #pragma pack(pop)
@@ -74,6 +80,14 @@ typedef struct {
                                                  // Blights): each one's map HashId (0 none), its life ("" none)
     char map[32];                                // the map he is on ("<type>/<name>": MainField/, CDungeon/Dungeon000,
                                                  // MainFieldDungeon/RemainsWind, ...; "" unknown)
+    char fx[ONLINE_FX_MAX];                      // his weapon's swing trail now, its ELink's ("Blur_Default"; "" none)
+    int16_t fx_anim[3];                          // while it is on: his model's animations in its slots 0-2 (each one's
+    float fx_frame[3];                           // index in its table, -1 none) and their frames: the trail SwordBlur
+                                                 // draws is the one of the attack it finds there (runtime/online_actors.c)
+    OnlineFxEvent fxev[ONLINE_FX_EVENTS];        // the last effects his Link and his weapon played (a charge's level,
+                                                 // a spin attack, a heavy blow...), each by its number (0: none)
+    uint32_t fx_props[ONLINE_FX_PROPS];          // his Link's ELink property values (its effects choose what to play by
+                                                 // them: a charge's level, his weapon's kind...)
 } OnlinePose;
 // OnlinePose.effects: Daruk's Protection's shield taking a hit (KAGO), its ring while he guards with its charges left
 // (KAGO_COUNT: 1 to 3, in effects >> KAGO_COUNT_SHIFT)

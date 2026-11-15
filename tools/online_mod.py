@@ -37,6 +37,7 @@ GEAR_PREFIX = 'OnlineGear_'
 ARMOR_PREFIX = 'OnlineArmor_'
 ENEMY_PREFIX = 'OnlineEnemy_'  # (+ the enemy's name without its Enemy_)
 GLOWS = ('Weapon_Sword_070', 'PlayerBeam')  # (gear with its own effects: the Master Sword, its beam)
+SWUNG = ('Weapon_Sword_', 'Weapon_Lsword_', 'Weapon_Spear_')  # (gear swung: its own ELink, for its swing trail)
 BEAM = 'OnlineBeam'
 STORY_FLAGS = ('IsGet_PortableUnit', 'PortableUnit_PowerOn', 'OP_DRC', 'Open_FirstDoor', 'Open_Door',
                'IsPlayed_Demo700_0', 'IsPlayed_Demo701_0',  # (Demo700_0: the slate's pedestal; Demo701_0: its first door)
@@ -52,8 +53,8 @@ STORY_FLAGS = ('IsGet_PortableUnit', 'PortableUnit_PowerOn', 'OP_DRC', 'Open_Fir
 KNOCK = 'OnlineKnock'
 SHOCK0 = 'OnlineShock'
 PLAYER_ELINK = 'Player_GameRom'  # (GameROMPlayer's ElinkUser)
-VERSION = 25  # (runtime/main.c ONLINE_MOD_VERSION: armour actors, traverseDist, the paraglider, the enemies' traverseDist,
-# their chemical)
+VERSION = 28  # (runtime/main.c ONLINE_MOD_VERSION: armour actors, traverseDist, the paraglider, the enemies' traverseDist,
+# their chemical, the round bomb's own explosion, the weapons' ELink, the player's AnimationInfo)
 TRAVERSE = 1000.0  # (the online actors' traverseDist)
 GEAR_KINDS = ('Weapon_Sword_', 'Weapon_Lsword_', 'Weapon_Spear_', 'Weapon_Shield_', 'Weapon_Bow_', 'Weapon_Sheath_',
               'Weapon_Lsheath_', 'Weapon_SpearSheath_', 'Weapon_Quiver_')
@@ -249,6 +250,13 @@ def main():
     for f in player.get_files():
         if f.name.startswith('Actor/AS/'):
             as_files[f.name] = bytes(f.data)
+    # the player's AnimationInfo (GameROMPlayer.baniminfo): its swing trails' data, which the game's sword trail
+    # (SwordBlur) draws from (the AnimInfo resource's +0x2c0, 1.9.0 0x700152ff4c); the runtime plays his weapon's trail
+    # with this Link as its actor
+    anim_info = next((f for f in player.get_files() if f.name.startswith('Actor/AnimationInfo/')), None)
+    if anim_info:
+        as_files[anim_info.name] = bytes(anim_info.data)
+        sizes[anim_info.name] = rstb.get(anim_info.name)
 
     # Link: PauseMenuPlayer's model list, support bones and cloth (its physics without its sensor, a rigid body)
     link_ml = pio(look.get_file('Actor/ModelList/%s.bmodellist' % BASE_LOOK).data)
@@ -263,8 +271,9 @@ def main():
     link_phys = [(f.name, bytes(f.data)) for f in look.get_files() if f.name.startswith('Physics/')]
     resident = {NAME: build(NAME, link_ml.to_binary(), link_phys, as_files,
                             physics=(phys.to_binary(), rstb.get('Actor/Physics/%s.bphysics' % BASE_LOOK)),
-                            users={'ElinkUser': PLAYER_ELINK})}  # (the player's effects: the runtime plays Daruk's
-    # Protection, "Kago_Shield", on it)
+                            users=dict({'ElinkUser': PLAYER_ELINK}, **({'AnimationInfo': anim_info.name.split('/')[-1]
+                                                                          .rsplit('.', 1)[0]} if anim_info else {})))}
+    # (the player's effects: the runtime plays Daruk's Protection, "Kago_Shield", on it; his AnimationInfo)
 
     model_of = {}  # online actor -> the game's actor whose ActorInfo model and bounds it has
     # the armour: one actor per model list of the game's armour pieces (Armor_*, Link's default ones too), its model
@@ -632,7 +641,9 @@ def main():
         pack = w.write()[1]
         sizes['Actor/Pack/%s.bactorpack' % online] = int(len(pack) * 1.5) + 0x1000
         booms[online] = oead.yaz0.compress(pack)
-        gear['Boom_' + piece] = online
+        if not quiet:  # (OnlineKnock is made from the round bomb too: it must not take that bomb's explosion, or the
+            # others see the round bomb go off as a plain blast that knocks them down, not its blue one)
+            gear['Boom_' + piece] = online
 
     tw = oead.SarcWriter.from_sarc(title_bg)
     for n, z in resident.items():
@@ -664,6 +675,8 @@ def main():
             for k2 in ('elink', 'slink', 'xlink'):
                 if k2 in src:
                     entry[k2] = src[k2]
+        elif model_from.startswith(SWUNG) and 'elink' in src:  # (a weapon's effects: its swing trail, played on it by
+            entry['elink'] = src['elink']  # the runtime as its player's game plays it; its sounds stay his game's)
         entry['instSize'] = npc_info['instSize']
         # (as far as the world is around: the game removes an actor farther than this from the camera)
         entry['traverseDist'] = oead.F32(TRAVERSE)

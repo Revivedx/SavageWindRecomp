@@ -37,7 +37,7 @@ typedef int sock_t;
 #include "rt.h"
 
 #define MAGIC 0x4c4f5753u  // "SWOL"
-#define PROTOCOL 24  // (24: HIT carries the element of the shot that made it, ONLINE_ELEM_*)
+#define PROTOCOL 25  // (25: STATE carries his weapon's swing trail, OnlinePose.fx; 24: HIT carries the element of the shot)
 static volatile float g_local_hour = -1;  // (the local game's hour, from the frame loop: online_set_local_hour)
 #define SEND_HZ 20
 #define INTERP_NS 100000000ull  // the others are drawn this far behind what was last heard (smooth between updates)
@@ -71,6 +71,11 @@ typedef struct {
     float ice[3][12];
     char map[32];     // OnlinePose.map
     struct { uint32_t hash; char name[28]; int32_t life; } boss[ONLINE_BOSSES];  // OnlinePose.boss
+    char fx[ONLINE_FX_MAX];  // OnlinePose.fx
+    int16_t fx_anim[3];      // OnlinePose.fx_anim
+    float fx_frame[3];       // OnlinePose.fx_frame
+    OnlineFxEvent fxev[ONLINE_FX_EVENTS];  // OnlinePose.fxev
+    uint32_t fx_props[ONLINE_FX_PROPS];    // OnlinePose.fx_props
 } WireState;
 typedef struct { uint32_t magic; uint16_t version; char name[ONLINE_NAME_MAX], pass[ONLINE_NAME_MAX]; } WireHello;
 typedef struct { char armor[3][48], gear[ONLINE_GEAR][48]; } WireEquip;  // EQUIP: what a player wears (head,
@@ -817,6 +822,11 @@ static bool sample_local(WireState *w) {
         w->ice_n = g_pose.ice_n;
         memcpy(w->map, g_pose.map, sizeof w->map);
         memcpy(w->boss, g_pose.boss, sizeof w->boss);
+        memcpy(w->fx, g_pose.fx, sizeof w->fx);
+        memcpy(w->fx_anim, g_pose.fx_anim, sizeof w->fx_anim);
+        memcpy(w->fx_frame, g_pose.fx_frame, sizeof w->fx_frame);
+        memcpy(w->fxev, g_pose.fxev, sizeof w->fxev);
+        memcpy(w->fx_props, g_pose.fx_props, sizeof w->fx_props);
         memcpy(w->ice, g_pose.ice, sizeof w->ice);
         w->yaw = g_pose.yaw;
     }
@@ -866,6 +876,13 @@ static void remote_snap(int id, const WireState *w) {  // (lock held)
     memcpy(s->pose.boss, w->boss, sizeof s->pose.boss);
     for (int k = 0; k < ONLINE_BOSSES; k++) s->pose.boss[k].name[27] = 0;
     s->pose.map[sizeof s->pose.map - 1] = 0;
+    memcpy(s->pose.fx, w->fx, sizeof s->pose.fx);
+    s->pose.fx[ONLINE_FX_MAX - 1] = 0;
+    memcpy(s->pose.fx_anim, w->fx_anim, sizeof s->pose.fx_anim);
+    memcpy(s->pose.fx_frame, w->fx_frame, sizeof s->pose.fx_frame);
+    memcpy(s->pose.fxev, w->fxev, sizeof s->pose.fxev);
+    memcpy(s->pose.fx_props, w->fx_props, sizeof s->pose.fx_props);
+    for (int k = 0; k < ONLINE_FX_EVENTS; k++) s->pose.fxev[k].name[20] = 0;
     memcpy(s->pose.ice, w->ice, sizeof s->pose.ice);
     s->pose.stop.name[ONLINE_GRAB_NAME - 1] = 0;
     s->pose.valid = w->as[0][0] != 0;

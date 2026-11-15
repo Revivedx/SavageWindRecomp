@@ -171,6 +171,22 @@ SITES = [
     # the AI asks every update (tools/patches.py _beam_move): x0 the action, its actor at +8
     Site('beam_move', 'code', 'aa0003f3 94000000/fc000000 36000000/fff8001f f9400bf3 52800020 a8c27bfd d65f03c0 '
          'f9400660', 0),
+    # every effect and sound an actor plays (xlink2::UserInstance::emit, its "emit(%s)" log line; 0x7000f51054;
+    # tools/patches.py _xlink_emit): its mov x20, x0 (x0 the user instance, x1 the locator)
+    # sead::FormatFixedSafeString<128>'s constructor (0x7000579614; the effects' "EFF_ERR[...]" lines are made with it
+    # and never shown): its mov x8, x0, x1 the format (tools/patches.py _fmt128, SAVAGEWIND_EFF_ERR_LOG)
+    Site('fmt128', 'code', 'aa0003e8 52801009 928005eb a9390fa2 910043aa a93a17a4', 0),
+    # SwordBlur's emitter callback (0x7001510a90): its reads of its actor's animation slots, the animation (ldr w8,
+    # [x8, x9]: x9 the slot x 0xa8) and its frame (ldr s10, [x8]: w9 the slot; ldr s0, [x8]: the slot at x26 +0xc); x19
+    # the actor (tools/patches.py _blur_anim, _blur_frame_a, _blur_frame_b: a puppet's are its player's)
+    Site('blur_anim', 'code', 'b8696908 b81ec3a8 94000000/fc000000', 0),
+    Site('blur_frame_a', 'code', 'bd40010a 94000000/fc000000 f9400808', 0),
+    Site('blur_frame_b', 'code', 'bd400100 bd001340 79802b48', 0),
+    # and its draw callback's (0x7001511150): the animation in the slot it found it in, against the one it drew from
+    # (ldr w8, [x8, x9]: x9 the slot x 0xa8; x20 the actor)
+    Site('blur_anim_draw', 'code', 'b8696908 b9401aa9 6b08013f', 0),
+    Site('xlink_emit', 'code', 'aa0003f4 f9401800 aa0203f5 aa0103f3 94000000/fc000000 3941d008 34000008/ff00001f '
+         '39434288', 0),
     # a stale actor in the target manager (tools/patches.py _stale_actor_helper, _stale_actor_target; #391, #393): the
     # helper that asks an actor for its link, and the camera target's inline copy of it
     Site('stale_actor_helper', 'code', 'b4000000/ff00001f f942b808 f9404500 14000000/fc000000 d65f03c0', 0),
@@ -432,6 +448,9 @@ OPTIONAL_GROUPS = [
     ('arrow_move',),
     ('remote_bomb_made',),
     ('beam_move',),
+    ('xlink_emit',),
+    ('fmt128',),
+    ('blur_anim', 'blur_frame_a', 'blur_frame_b', 'blur_anim_draw'),
     ('tp_gate',),  # (a far teleport of the control endpoint: without it a long jump freezes the world)
     ('item_tick', 'pouch_item_get', 'pouch_mgr'),
     ('horse_cam_lr',),
@@ -541,6 +560,12 @@ KNOWN = {
         'arrow_move': 0x70005ee5e8,
         'remote_bomb_made': 0x7000b3bb5c,
         'beam_move': 0x70007104a4,
+        'xlink_emit': 0x7000f5106c,
+        'fmt128': 0x7000579620,
+        'blur_anim': 0x7001510f0c,
+        'blur_frame_a': 0x7001510fe8,
+        'blur_frame_b': 0x7001511098,
+        'blur_anim_draw': 0x700151164c,
         'stale_actor_helper': 0x700120bc40,
         'stale_actor_target': 0x7000dea400,
         'phys_solver_steps': 0x700156f930,

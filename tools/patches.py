@@ -417,6 +417,59 @@ def _beam_move(gen, a):
             f'  /* {a:#x}: mov x19, x0 (a Master Sword beam flying) */')
 
 
+# Every effect and sound an actor plays (xlink2::UserInstance::emit, 0x7000f51054): online play notes those of the local
+# Link and what he holds (runtime/online_actors.c rt_online_xlink_emit), to play them on his Link in the others' games
+
+def _xlink_emit(gen, a):
+    assert _word(gen, a) == 0xaa0003f4, hex(_word(gen, a))  # mov x20, x0
+    return ('{ extern void rt_online_xlink_emit(uint64_t, uint64_t); rt_online_xlink_emit(c->x[0], c->x[1]); '
+            f'c->x[20] = c->x[0]; }}  /* {a:#x}: mov x20, x0 (an actor effect or sound played) */')
+
+
+
+# The effects' error lines (EFF_ERR[...], made with sead::FormatFixedSafeString<128> and never shown): to the log with
+# SAVAGEWIND_EFF_ERR_LOG=1 (runtime/online_actors.c rt_game_fmt)
+
+def _fmt128(gen, a):
+    assert _word(gen, a) == 0xaa0003e8, hex(_word(gen, a))  # mov x8, x0
+    return ('{ extern void rt_game_fmt(uint64_t, uint64_t, uint64_t); rt_game_fmt(c->x[1], c->x[2], c->x[3]); '
+            f'c->x[8] = c->x[0]; }}  /* {a:#x}: mov x8, x0 (a fixed string formatted) */')
+
+
+
+# SwordBlur's reads of its actor's animation slots (runtime/online_actors.c rt_blur_anim / rt_blur_frame): a puppet of
+# online play plays no AS, its slots empty; its player's, while his trail plays
+
+def _blur_anim(gen, a):
+    assert _word(gen, a) == 0xb8696908, hex(_word(gen, a))  # ldr w8, [x8, x9]
+    return ('{ extern uint32_t rt_blur_anim(uint64_t, uint32_t, uint32_t); '
+            'c->x[8] = rt_blur_anim(c->x[19], (uint32_t)(c->x[9] / 0xa8), LD32(c->x[8] + c->x[9])); }'
+            f'  /* {a:#x}: ldr w8, [x8, x9] (SwordBlur: the animation in a slot) */')
+
+
+def _blur_anim_draw(gen, a):
+    assert _word(gen, a) == 0xb8696908, hex(_word(gen, a))  # ldr w8, [x8, x9]
+    return ('{ extern uint32_t rt_blur_anim(uint64_t, uint32_t, uint32_t); '
+            'c->x[8] = rt_blur_anim(c->x[20], (uint32_t)(c->x[9] / 0xa8), LD32(c->x[8] + c->x[9])); }'
+            f'  /* {a:#x}: ldr w8, [x8, x9] (SwordBlur drawing: the animation in its slot) */')
+
+
+def _blur_frame_a(gen, a):
+    assert _word(gen, a) == 0xbd40010a, hex(_word(gen, a))  # ldr s10, [x8]
+    return ('{ extern float rt_blur_frame(uint64_t, uint32_t, float); '
+            'union { uint32_t u; float f; } v = { .u = LD32(c->x[8]) }; '
+            'v.f = rt_blur_frame(c->x[19], (uint32_t)c->x[9], v.f); c->v[10] = v.u; }'
+            f'  /* {a:#x}: ldr s10, [x8] (SwordBlur: a slot animation frame) */')
+
+
+def _blur_frame_b(gen, a):
+    assert _word(gen, a) == 0xbd400100, hex(_word(gen, a))  # ldr s0, [x8]
+    return ('{ extern float rt_blur_frame(uint64_t, uint32_t, float); '
+            'union { uint32_t u; float f; } v = { .u = LD32(c->x[8]) }; '
+            'v.f = rt_blur_frame(c->x[19], LD32(c->x[26] + 0xc), v.f); c->v[0] = v.u; }'
+            f'  /* {a:#x}: ldr s0, [x8] (SwordBlur: its slot animation frame) */')
+
+
 # The physics step's solver microsteps (runtime/hle/framepace.c rt_solver_steps, #161): before each Havok step the game
 # gives the solver round(delta frame x 6) microsteps (1.9.0 0x700156f930): 6 at 30 fps, 3 at 60, 2 at 120. With fewer
 # the solver gives way more to what is in contact with Link: holding a cucco, its body over his head held his jump
@@ -1036,6 +1089,12 @@ PATCHES = {
     'arrow_move': _arrow_move,
     'remote_bomb_made': _remote_bomb_made,
     'beam_move': _beam_move,
+    'xlink_emit': _xlink_emit,
+    'fmt128': _fmt128,
+    'blur_anim': _blur_anim,
+    'blur_frame_a': _blur_frame_a,
+    'blur_frame_b': _blur_frame_b,
+    'blur_anim_draw': _blur_anim_draw,
     'stale_actor_helper': _stale_actor_helper,
     'stale_actor_target': _stale_actor_target,
     'phys_solver_steps': _solver_steps,

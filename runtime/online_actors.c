@@ -122,6 +122,10 @@ static struct {
     Piece nock;                    // the arrow on his bow's string while he draws it (it's no actor in his game)
     struct { uint64_t p; uint32_t id, pad; } kago[2];  // Daruk's Protection on his Link: its effects' handles
     struct { uint64_t p; uint32_t id, pad; } gale;  // Revali's Gale on his Link: its charge's effect handle
+    struct { uint64_t p; uint32_t id, pad; } trail;  // his weapon's swing trail on it (OnlinePose.fx), its handle
+    char trail_name[ONLINE_FX_MAX];
+    uint16_t fxev_seen;  // (his last effect played here, by its number)
+    struct { uint64_t p; uint32_t id, pad; uint64_t t; } fxev[ONLINE_FX_EVENTS];  // (those playing: their handles)
     int kago_n;                    // (the ring's charges it was made for)
     uint64_t grab;                 // what he holds with the Magnesis rune, here (0: none)
     Watch grab_w;
@@ -759,6 +763,132 @@ void rt_online_arrow(uint64_t action) {
     g_arrow_ring[k & (ARROW_RING - 1)] = a;
 }
 
+// The effects the local Link and what he holds play (tools/patches.py _xlink_emit: xlink2::UserInstance::emit, 1.9.0
+// 0x7000f51054, every effect and sound any actor plays, from its AS, its AI or by name): x0 the user instance, x1 the
+// locator (+8 its asset call table, whose +0 is the asset's key name). An actor's ELink user instance is its +0x568
+// +0x48 (0x7001100bd0 emits through it); the frame loop puts Link's and his weapon's, shield's and bow's in g_fx_ui,
+// and the emits of those are noted in a ring (any thread) for it to take. His weapon's swing trail ("Blur_Default",
+// its own ELink's, as each swing starts) goes to the others in his state (OnlinePose.fx), and they play it on the
+// weapon in his puppet's hand. (Footprints, grass and water as he walks are ReactionField's, an actor of the game's
+// that plays the ground's reactions for everyone: not his.)
+#define FX_WATCH 4  // (Link, his weapon, shield, bow)
+#define FX_RING 64
+#define FX_TRAIL_NS 300000000ull  // (a swing's trail sent this long after it starts: the game's own lasts the swing)
+static uint64_t volatile g_fx_ui[FX_WATCH];
+static struct { uint64_t name; uint8_t who; } volatile g_fx_ring[FX_RING];
+static volatile int g_fx_next;
+static int g_fx_taken;
+// His Link's and his weapon's other effects (a spin attack's charge and its spin, a heavy blow on the ground, ...): each one
+// as it is played goes to the others as an event (OnlinePose.fxev, the last ONLINE_FX_EVENTS by number), and they play
+// it by its name on his puppet or the weapon in its hand (its ELink is the player's / the weapon's), ended after
+// FX_EVENT_NS (one that loops would stay)
+#define FX_EVENT_NS 2000000000ull
+static OnlineFxEvent g_fxev[ONLINE_FX_EVENTS];
+static uint16_t g_fxev_seq;
+static char g_fx_trail[ONLINE_FX_MAX];  // his weapon's trail now ("" none), and when it started
+static uint64_t g_fx_trail_t;
+
+void rt_online_xlink_emit(uint64_t ui, uint64_t loc) {
+    if (!VALID(ui)) return;
+    int who = 0;
+    while (who < FX_WATCH && g_fx_ui[who] != ui) who++;
+    static int all = -1;  // (SAVAGEWIND_ONLINE_FX_ALL=1: every actor's to the log, to find which one plays an effect)
+    if (all < 0) all = getenv("SAVAGEWIND_ONLINE_FX_ALL") != NULL;
+    if ((who == FX_WATCH && !all) || !VALID(loc)) return;
+    uint64_t table = *(uint64_t *)(uintptr_t)(loc + 8);
+    if (!VALID(table)) return;
+    uint64_t name = *(uint64_t *)(uintptr_t)table;
+    if (!VALID(name)) return;
+    if (who == FX_WATCH) {
+        LOG("[online] fx other %llx: %.60s\n", (unsigned long long)ui, (const char *)(uintptr_t)name);
+        return;
+    }
+    int k = __atomic_fetch_add(&g_fx_next, 1, __ATOMIC_RELAXED);
+    g_fx_ring[k & (FX_RING - 1)].name = name;
+    g_fx_ring[k & (FX_RING - 1)].who = (uint8_t)who;
+}
+
+// the effects' error lines (tools/patches.py _fmt128): x1 the format, x2 / x3 its first arguments (SAVAGEWIND_EFF_ERR_LOG=1)
+void rt_game_fmt(uint64_t fmt, uint64_t a, uint64_t b) {
+    static int on = -1;
+    if (on < 0) on = getenv("SAVAGEWIND_EFF_ERR_LOG") != NULL;
+    if (!on || !VALID(fmt)) return;
+    const char *f = (const char *)(uintptr_t)fmt;
+    if (strncmp(f, "EFF_ERR", 7) && strncmp(f, "SwordBlur", 9)) return;
+    static int n;
+    if (++n > 400) return;
+    LOG("[eff] %.100s | %.60s | %.60s\n", f, VALID(a) ? (const char *)(uintptr_t)a : "", VALID(b) ? (const char *)(uintptr_t)b : "");
+}
+
+// A model's skeletal animation slots (actor +0x4e0 its model, +0xd0 its animation control: +0x40 the slots' count, +0x48
+// the slots, 0xa8 each: +0 the animation playing, its index in the model's table (+0x60 / +0x68) << 16, -1 none; +0x20
+// its frame's float). SwordBlur's emitter callback (1.9.0 0x7001510a90) finds the trail it draws by the animation in
+// slots 0-2 and its frame, against its actor's AnimInfo trail entries (+0x570 +0x148 +0x2c0: the player's, which the
+// puppets have too, tools/online_mod.py). A puppet is posed from his skeleton and plays no AS (one played would pose
+// its bones over his skeleton): its slots are empty. His slots go in his state while his trail plays, and SwordBlur's
+// reads of a puppet's slots get his (tools/patches.py _blur_anim, _blur_frame_a / _b, _blur_anim_draw)
+static void anim_slots(uint64_t actor, int16_t idx[3], float frame[3]) {
+    uint64_t m = VALID(actor) ? *(uint64_t *)(uintptr_t)(actor + 0x4e0) : 0;
+    uint64_t ctl = VALID(m) ? *(uint64_t *)(uintptr_t)(m + 0xd0) : 0;
+    if (!VALID(ctl)) return;
+    int n = *(int *)(uintptr_t)(ctl + 0x40);
+    uint64_t arr = *(uint64_t *)(uintptr_t)(ctl + 0x48);
+    for (int k = 0; k < 3 && k < n && VALID(arr); k++) {
+        int32_t id = *(int32_t *)(uintptr_t)(arr + 0xa8 * k);
+        uint64_t fp = *(uint64_t *)(uintptr_t)(arr + 0xa8 * k + 0x20);
+        idx[k] = id == -1 ? -1 : (int16_t)(id >> 16);
+        frame[k] = VALID(fp) ? *(float *)(uintptr_t)fp : 0;
+    }
+}
+
+static struct { uint64_t actor; int16_t anim[3]; float frame[3]; } volatile g_blur[ONLINE_MAX];  // (each puppet's)
+
+uint32_t rt_blur_anim(uint64_t actor, uint32_t slot, uint32_t id) {
+    for (int i = 0; actor && i < ONLINE_MAX; i++)
+        if (g_blur[i].actor == actor) return slot < 3 && g_blur[i].anim[slot] >= 0 ? (uint32_t)g_blur[i].anim[slot] << 16 : id;
+    return id;
+}
+
+float rt_blur_frame(uint64_t actor, uint32_t slot, float frame) {
+    for (int i = 0; actor && i < ONLINE_MAX; i++)
+        if (g_blur[i].actor == actor) return slot < 3 && g_blur[i].anim[slot] >= 0 ? g_blur[i].frame[slot] : frame;
+    return frame;
+}
+
+static uint64_t elink_ui(uint64_t actor) {
+    if (!VALID(actor)) return 0;
+    uint64_t h = *(uint64_t *)(uintptr_t)(actor + 0x568);
+    return VALID(h) ? *(uint64_t *)(uintptr_t)(h + 0x48) : 0;
+}
+
+// each frame: what to watch; the effects noted since (SAVAGEWIND_ONLINE_FX_LOG=1: to the log); his weapon's trail
+static void fx_update(uint64_t player) {
+    g_fx_ui[0] = elink_ui(player);
+    for (int k = 0; k < 3; k++) g_fx_ui[1 + k] = VALID(player) ? elink_ui(linked(player + 0xb98 + 0x18 * k)) : 0;
+    int end = __atomic_load_n(&g_fx_next, __ATOMIC_ACQUIRE);
+    if (end - g_fx_taken > FX_RING) g_fx_taken = end - FX_RING;
+    static const char *const who[FX_WATCH] = {"Link", "weapon", "shield", "bow"};
+    for (; g_fx_taken < end; g_fx_taken++) {
+        uint64_t name = g_fx_ring[g_fx_taken & (FX_RING - 1)].name;
+        int w = g_fx_ring[g_fx_taken & (FX_RING - 1)].who;
+        if (!VALID(name) || w >= FX_WATCH) continue;
+        const char *n = (const char *)(uintptr_t)name;
+        if (getenv("SAVAGEWIND_ONLINE_FX_LOG")) LOG("[online] fx %s: %.60s\n", who[w], n);
+        // (not his trail, nor the Champions' abilities: both their own way; nor the environment's, MaterialEnv,
+        // FieldEnvEffect_*: his place's, not his)
+        if (w <= 1 && strncmp(n, "Blur", 4) && strncmp(n, "Kago_", 5) && strncmp(n, "MaterialEnv", 11) &&
+            strncmp(n, "FieldEnv", 8) && strlen(n) < sizeof g_fxev[0].name) {
+            OnlineFxEvent *e = &g_fxev[g_fxev_seq % ONLINE_FX_EVENTS];
+            if (!++g_fxev_seq) g_fxev_seq = 1;
+            e->seq = g_fxev_seq, e->who = (uint8_t)w;
+            snprintf(e->name, sizeof e->name, "%s", n);
+        }
+        if (w == 1 && !strncmp(n, "Blur", 4) && strlen(n) < ONLINE_FX_MAX)
+            snprintf(g_fx_trail, sizeof g_fx_trail, "%s", n), g_fx_trail_t = plat_now_ns();
+    }
+    if (g_fx_trail[0] && plat_now_ns() - g_fx_trail_t > FX_TRAIL_NS) g_fx_trail[0] = 0;
+}
+
 // The local Link's element arrows lately: where each was last seen (in flight, or where it went: it hit there), so a
 // puppet hit near one is known to be hit by that element (ONLINE_ELEM_*: the puppet, without a chemical, isn't set
 // burning, frozen or shocked itself; its owner's game is told so)
@@ -1220,6 +1350,15 @@ static void sample_pose(Cpu *c, uint64_t pinfo) {
     boss_sample(c, player, &pose);
     g_local_dead = !strncmp(pose.as[0], "Dead", 4);
     sample_shots(c, player, pose.as, &pose.shots);
+    snprintf(pose.fx, sizeof pose.fx, "%s", g_fx_trail);  // (his weapon's swing trail: fx_update)
+    memcpy(pose.fxev, g_fxev, sizeof pose.fxev);  // (his other effects: fx_update)
+    {   // his Link's ELink property values (its user instance +0x70, ONLINE_FX_PROPS words: the player's ELink,
+        // Player_GameRom, has that many; its containers choose what to play by them, a charge's level and the like)
+        uint64_t ui = elink_ui(player), pv = VALID(ui) ? *(uint64_t *)(uintptr_t)(ui + 0x70) : 0;
+        if (VALID(pv)) memcpy(pose.fx_props, (const void *)(uintptr_t)pv, sizeof pose.fx_props);
+    }
+    for (int k = 0; k < 3; k++) pose.fx_anim[k] = -1;
+    if (pose.fx[0]) anim_slots(player, pose.fx_anim, pose.fx_frame);  // (and the attack it is the trail of)
     online_set_local_pose(&pose);
     if (getenv("SAVAGEWIND_ONLINE_POSE_LOG")) {
         static OnlinePose last;
@@ -3554,6 +3693,7 @@ void rt_online_frame(Cpu *c) {
     memcpy(g_pool_at, link, sizeof g_pool_at);
     pool_update(c);
     booms_update(c, *(uint64_t *)(uintptr_t)(pinfo + 0x60));
+    fx_update(*(uint64_t *)(uintptr_t)(pinfo + 0x60));
     orphans_update(c);
     if (g_settle > 0) { g_settle--; return; }
     // dead: game over; nothing made meanwhile, and three seconds more once he is up again. What is still there is kept
@@ -3776,6 +3916,99 @@ void rt_online_frame(Cpu *c) {
                 call_sret(c, FN_EFFECT_EMIT, (uint64_t)(uintptr_t)&g_act[i].kago[k], g_act[i].link, (uint64_t)(uintptr_t)name);
                 LOG("[online] %s: %s (%llx)\n", pl[i].name, name, (unsigned long long)g_act[i].kago[k].p);
             }
+        }
+        {   // his weapon's swing trail ("Blur_Default", the weapon's own ELink's: its OnlineGear has it) on the weapon in
+            // his hand while his game plays it; a new one for each swing
+            uint64_t tp = g_act[i].trail.p;
+            bool on = VALID(tp) && *(uint32_t *)(uintptr_t)(tp + 0x20) == g_act[i].trail.id;
+            const char *want = pl[i].pose.fx;
+            uint64_t w = g_act[i].gear[0].actor;
+            bool held = VALID(w) && pl[i].pose.gear_bone[0] && pl[i].pose.gear_bone[0] != ONLINE_GEAR_WORLD;
+            if (on && (!want[0] || !held || strcmp(want, g_act[i].trail_name))) {
+                call(c, FN_EFFECT_KILL, (uint64_t)(uintptr_t)&g_act[i].trail, 0, 0, 0, 0, 0);
+                memset(&g_act[i].trail, 0, sizeof g_act[i].trail);
+                g_act[i].trail_name[0] = 0;
+                on = false;
+            }
+            if (!on && want[0] && held && strcmp(want, g_act[i].trail_name)) {
+                call_sret(c, FN_EFFECT_EMIT, (uint64_t)(uintptr_t)&g_act[i].trail, w, (uint64_t)(uintptr_t)want);
+                snprintf(g_act[i].trail_name, sizeof g_act[i].trail_name, "%s", want);
+                // the sword trail (SwordBlur) draws from its actor's AnimInfo (+0x570 +0x148, its +0x2c0 the trail data:
+                // 1.9.0 0x700152ff4c), the player's own in his game: the effect's user data (+0x190) has the weapon as
+                // its actor (+8), whose AnimInfo is the empty Dummy; his Link here has the player's (online_mod)
+                uint64_t ep = g_act[i].trail.p, ud = VALID(ep) ? *(uint64_t *)(uintptr_t)(ep + 0x190) : 0;
+                uint64_t lk = g_act[i].link;
+                if (VALID(ud) && VALID(lk) && *(uint64_t *)(uintptr_t)(ud + 8) == w) *(uint64_t *)(uintptr_t)(ud + 8) = lk;
+                if (getenv("SAVAGEWIND_ONLINE_FX_LOG")) {
+                    uint64_t r = VALID(lk) ? *(uint64_t *)(uintptr_t)(lk + 0x570) : 0;
+                    uint64_t ai = VALID(r) ? *(uint64_t *)(uintptr_t)(r + 0x148) : 0;
+                    LOG("[online] %s: %s on his weapon %llx (%llx: user data %llx, its actor %llx; his Link's trail data "
+                        "%llx)\n", pl[i].name, want, (unsigned long long)w, (unsigned long long)ep, (unsigned long long)ud,
+                        (unsigned long long)(VALID(ud) ? *(uint64_t *)(uintptr_t)(ud + 8) : 0),
+                        (unsigned long long)(VALID(ai) ? *(uint64_t *)(uintptr_t)(ai + 0x2c0) : 0));
+                }
+            }
+            if (!want[0]) g_act[i].trail_name[0] = 0;
+            // his Link's ELink property values on his puppet's (the same ELink: its effects play as his do)
+            {
+                uint64_t ui = elink_ui(g_act[i].link), pv = VALID(ui) ? *(uint64_t *)(uintptr_t)(ui + 0x70) : 0;
+                bool any = false;
+                for (int k = 0; k < ONLINE_FX_PROPS; k++) any |= pl[i].pose.fx_props[k] != 0;
+                if (VALID(pv) && any) memcpy((void *)(uintptr_t)pv, pl[i].pose.fx_props, sizeof pl[i].pose.fx_props);
+            }
+            // his other effects, each once by its number, on his puppet or the weapon in its hand; ended after a while
+            uint64_t now = plat_now_ns();
+            for (int q = 0; q < ONLINE_FX_EVENTS; q++) {
+                uint64_t ep = g_act[i].fxev[q].p;
+                if (ep && now - g_act[i].fxev[q].t > FX_EVENT_NS) {
+                    if (VALID(ep) && *(uint32_t *)(uintptr_t)(ep + 0x20) == g_act[i].fxev[q].id)
+                        call(c, FN_EFFECT_KILL, (uint64_t)(uintptr_t)&g_act[i].fxev[q], 0, 0, 0, 0, 0);
+                    memset(&g_act[i].fxev[q], 0, sizeof g_act[i].fxev[q]);
+                }
+            }
+            {   // (the newest: the first time, those before are from before he was here; after a gap, the last few)
+                uint16_t newest = 0;
+                for (int q = 0; q < ONLINE_FX_EVENTS; q++) {
+                    uint16_t s = pl[i].pose.fxev[q].seq;
+                    if (s && (!newest || (uint16_t)(s - newest) < 0x8000u)) newest = s;
+                }
+                if (newest && (!g_act[i].fxev_seen || g_act[i].frames < 60)) g_act[i].fxev_seen = newest;
+                else if (newest && (uint16_t)(newest - g_act[i].fxev_seen) > ONLINE_FX_EVENTS &&
+                         (uint16_t)(newest - g_act[i].fxev_seen) < 0x8000u)
+                    g_act[i].fxev_seen = (uint16_t)(newest - ONLINE_FX_EVENTS);
+            }
+            for (int pass = 0; pass < ONLINE_FX_EVENTS; pass++) {  // (the oldest new one first)
+                const OnlineFxEvent *best = NULL;
+                for (int q = 0; q < ONLINE_FX_EVENTS; q++) {
+                    const OnlineFxEvent *e = &pl[i].pose.fxev[q];
+                    uint16_t d = (uint16_t)(e->seq - g_act[i].fxev_seen);
+                    if (!e->seq || !e->name[0] || !d || d > ONLINE_FX_EVENTS) continue;
+                    if (!best || (uint16_t)(e->seq - best->seq) > 0x8000u) best = e;
+                }
+                if (!best) break;
+                g_act[i].fxev_seen = best->seq;
+                uint64_t on = best->who == 1 ? (held ? w : 0) : g_act[i].link;
+                if (!VALID(on)) continue;
+                int q = 0;
+                while (q < ONLINE_FX_EVENTS - 1 && g_act[i].fxev[q].p) q++;
+                if (g_act[i].fxev[q].p) {
+                    uint64_t ep = g_act[i].fxev[q].p;
+                    if (VALID(ep) && *(uint32_t *)(uintptr_t)(ep + 0x20) == g_act[i].fxev[q].id)
+                        call(c, FN_EFFECT_KILL, (uint64_t)(uintptr_t)&g_act[i].fxev[q], 0, 0, 0, 0, 0);
+                }
+                memset(&g_act[i].fxev[q], 0, sizeof g_act[i].fxev[q]);
+                call_sret(c, FN_EFFECT_EMIT, (uint64_t)(uintptr_t)&g_act[i].fxev[q], on, (uint64_t)(uintptr_t)best->name);
+                g_act[i].fxev[q].t = now;
+                if (getenv("SAVAGEWIND_ONLINE_FX_LOG"))
+                    LOG("[online] %s: %s on his %s (%llx)\n", pl[i].name, best->name, best->who == 1 ? "weapon" : "Link",
+                        (unsigned long long)g_act[i].fxev[q].p);
+            }
+            // the attack it is the trail of, for SwordBlur to find on his puppet (rt_blur_anim / rt_blur_frame)
+            for (int k = 0; k < 3; k++) {
+                g_blur[i].anim[k] = want[0] && held ? pl[i].pose.fx_anim[k] : -1;
+                g_blur[i].frame[k] = pl[i].pose.fx_frame[k];
+            }
+            g_blur[i].actor = g_act[i].link;
         }
         {   // Revali's Gale: its charge on his Link while he charges it ("Kago_Wind", the player's own effect, as Daruk's)
             int e = pl[i].pose.valid ? pl[i].pose.effects : 0;

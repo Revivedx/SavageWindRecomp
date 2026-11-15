@@ -45,6 +45,11 @@ typedef struct {
     float ice[3][12];
     char map[32];  // (the map it is on: "" unknown, as on everyone's)
     struct { uint32_t hash; char name[28]; int32_t life; } boss[2];  // (the bosses near it: none)
+    char fx[24];  // (its weapon's swing trail: none)
+    int16_t fx_anim[3];
+    float fx_frame[3];
+    char fxev[4][24];  // (its last effects: none)
+    uint32_t fx_props[24];  // (its ELink property values: none)
 } WireState;
 typedef struct { uint32_t magic; uint16_t version; char name[24], pass[24]; } WireHello;
 #pragma pack(pop)
@@ -70,7 +75,7 @@ int main(int argc, char **argv) {
     if (getaddrinfo(host, port, &hints, &res)) { fprintf(stderr, "bot: can't resolve %s\n", host); return 1; }
     sock_t s = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (connect(s, res->ai_addr, (int)res->ai_addrlen)) { fprintf(stderr, "bot: can't connect to %s:%s\n", host, port); return 1; }
-    WireHello h = {.magic = 0x4c4f5753u, .version = 24};
+    WireHello h = {.magic = 0x4c4f5753u, .version = 25};
     snprintf(h.name, sizeof h.name, "%s", name);
     msg(s, M_HELLO, &h, sizeof h);
     float centre[3] = {0, 0, 0};
