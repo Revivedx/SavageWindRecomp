@@ -6508,13 +6508,22 @@ static void hc_list_begin(void) {
 // The samples go to the waiting thread through a ring the render thread never waits on (one in 4 under a lock cost
 // 4% of the frame rate). In the rain the ring was learned in its first second, and nothing the CPU wrote changed while
 // read after that; 150.9 -> 149.5 fps (4 runs each, interleaved).
+// A region is marked only once it changed while read in VDYN_HITS different frames, each within a second of the last,
+// and not on a loading screen: a fast travel reuses freed memory for new meshes once, and its load marked ~30 regions in
+// one go; every fetch in them then went through the copy for the rest of the session (upload 200 -> 1200 MB per 2 s,
+// 60 -> 54 fps on a GTX 1070, #815). The ring that races is rewritten every frame, and is still marked in a few frames.
+// In a marked region only fetches up to VDYN_COPY_MAX are copied (the ring's are 129 B - 2 KB), not the meshes around it.
 // SAVAGEWIND_VK_VDYN=0: off; =2: every fetch up to 4 KB copied (no learning, the cost above).
 #define VDYN_N 4096
 #define VDYN_SAMPLE_MAX 4096
 #define VDYN_SHIFT 20  // (a region: 1 MB; 64 KB ones took 10 marks to cover the ring instead of 2)
 #define VDYN_SMASK 31  // (one small fetch in 32 sampled)
+#define VDYN_HITS 3
+#define VDYN_COPY_MAX (64u << 10)
 static int vdyn_mode = -1;
-static _Atomic uint8_t vdyn[HEAP_MAX >> VDYN_SHIFT];  // (a region: 1 once seen rewritten while read)
+static _Atomic uint8_t vdyn[HEAP_MAX >> VDYN_SHIFT];  // (a region: 1 once marked, see above)
+static uint8_t vdyn_hits[HEAP_MAX >> VDYN_SHIFT];       // (vdyn_lock: frames it changed in, in a row)
+static uint64_t vdyn_last[HEAP_MAX >> VDYN_SHIFT];      // (vdyn_lock: the frame of the last change)
 static struct { uint64_t addr, size, hash, seq; } vdyn_chk[VDYN_N];
 static _Atomic uint64_t vdyn_w, vdyn_r;  // (written by the render thread / read by a waiting thread)
 static uint64_t vdyn_tick;
@@ -6542,7 +6551,7 @@ static bool vdyn_hit(uint64_t addr, uint64_t size) {
 static bool vdyn_fetch(uint64_t addr, uint64_t size) {
     if (!size || !vdyn_on() || gw_overlaps(addr, addr + size)) return true;
     if (vdyn_mode == 2 && size <= VDYN_SAMPLE_MAX) return false;
-    if (vdyn_hit(addr, size)) return false;
+    if (size <= VDYN_COPY_MAX && vdyn_hit(addr, size)) return false;
     if (size > VDYN_SAMPLE_MAX || addr < HEAP_BASE || addr + size > HEAP_BASE + HEAP_MAX || (++vdyn_tick & VDYN_SMASK)) return true;
     uint64_t w = atomic_load_explicit(&vdyn_w, memory_order_relaxed);
     if (w - atomic_load_explicit(&vdyn_r, memory_order_acquire) >= VDYN_N) return true;  // (full: no sample)
@@ -6553,6 +6562,7 @@ static bool vdyn_fetch(uint64_t addr, uint64_t size) {
     return true;
 }
 
+extern bool framepace_loading_ui(void);
 // (renderer_wait_seq, right after a real wait on submission seq) the samples recorded up to it, hashed again
 static void vdyn_check(uint64_t seq) {
     if (vdyn_mode != 1 || pthread_mutex_trylock(&vdyn_lock)) return;
@@ -6560,7 +6570,12 @@ static void vdyn_check(uint64_t seq) {
     for (; r < w && vdyn_chk[r % VDYN_N].seq <= seq; r++) {
         __typeof__(vdyn_chk[0]) *c = &vdyn_chk[r % VDYN_N];
         if (hash_words(0x9E3779B97F4A7C15ull, (const void *)(uintptr_t)c->addr, c->size & ~3ull) == c->hash) continue;
-        if (atomic_exchange_explicit(&vdyn[(c->addr - HEAP_BASE) >> VDYN_SHIFT], 1, memory_order_relaxed)) continue;
+        uint64_t reg = (c->addr - HEAP_BASE) >> VDYN_SHIFT, frame = renderer_present_count();
+        if (framepace_loading_ui() || frame == vdyn_last[reg]) continue;
+        vdyn_hits[reg] = frame - vdyn_last[reg] <= 60 && vdyn_hits[reg] < 255 ? vdyn_hits[reg] + 1 : 1;
+        vdyn_last[reg] = frame;
+        if (vdyn_hits[reg] < VDYN_HITS) continue;
+        if (atomic_exchange_explicit(&vdyn[reg], 1, memory_order_relaxed)) continue;
         int n = atomic_fetch_add_explicit(&vdyn_marked, 1, memory_order_relaxed);
         if (n < 32) LOG("[vk] vertex data rewritten while read at %llx (%llu bytes): the %u KB around it copied from now on\n",
                         (unsigned long long)c->addr, (unsigned long long)c->size, 1u << (VDYN_SHIFT - 10));
@@ -6661,6 +6676,8 @@ static void race_probe_submit(uint64_t seq) {
 static void vdyn_reset(void) {  // (vk_exec_reset, the GPU idle: another boot, other buffers)
     pthread_mutex_lock(&vdyn_lock);
     for (size_t i = 0; i < sizeof vdyn; i++) atomic_store_explicit(&vdyn[i], 0, memory_order_relaxed);
+    memset(vdyn_hits, 0, sizeof vdyn_hits);
+    memset(vdyn_last, 0, sizeof vdyn_last);
     atomic_store(&vdyn_marked, 0);
     atomic_store(&vdyn_r, atomic_load(&vdyn_w));
     pthread_mutex_unlock(&vdyn_lock);
