@@ -131,7 +131,8 @@ const char *const g_motion_source_keys[MOTION_SOURCE_COUNT] = {"auto", "controll
 
 static const char *const k_button_layout[BUTTON_LAYOUT_COUNT] = {"auto", "nintendo", "swap_ab", "xbox", "swap_xy", "gamecube"};
 
-static const char *const k_quality[UPQ_COUNT] = {"ultra_quality", "quality", "balanced", "performance", "ultra_performance", "native"};
+static const char *const k_quality[UPQ_COUNT] = {"ultra_quality", "quality", "balanced", "performance", "ultra_performance",
+                                                 "native", "dynamic"};
 
 static const char *const k_text_speed[TEXT_SPEED_COUNT] = {"normal", "fast", "instant"};
 

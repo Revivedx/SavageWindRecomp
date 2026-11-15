@@ -154,10 +154,16 @@ const int UPS_DEFAULT = 0;  // (UPSCALE_DEFAULT: Off, the window's resolution)
 std::vector<int> g_shown;   // per item: the value shown instead of get(), one that can't be picked yet (-1: none)
 const char16_t GREY = 3;    // (the game's message colour for greyed values)
 // (shown with Native first, largest to smallest: k_modes_order maps a row index to settings.h UPQ_*)
-const char *const k_modes[] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance", "Native"};
-const int k_modes_order[] = {UPQ_NATIVE, UPQ_ULTRA, UPQ_QUALITY, UPQ_BALANCED, UPQ_PERFORMANCE, UPQ_ULTRA_PERFORMANCE};
+const char *const k_modes[] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance", "Native", "Dynamic"};
+const int k_modes_order[] = {UPQ_NATIVE, UPQ_ULTRA, UPQ_QUALITY, UPQ_BALANCED, UPQ_PERFORMANCE, UPQ_ULTRA_PERFORMANCE,
+                             UPQ_DYNAMIC};
 int upscale_mode_base(void) {
     return (g_settings.upscaler == UPSCALE_FSR3 || g_settings.upscaler == UPSCALE_FSR4) ? 0 : 1;
+}
+// The Dynamic row is part of Video > Advanced > Dynamic resolution: it is not offered at all while that is off. It
+// sits at the end of k_modes_order, so hiding it is just one fewer entry.
+int upscale_mode_count(void) {
+    return (int)(sizeof k_modes_order / sizeof k_modes_order[0]) - (g_settings.dynamic_res ? 0 : 1);
 }
 #ifdef __APPLE__
 const char *const k_aa[] = {"Off", "SMAA"};
@@ -835,7 +841,7 @@ void build_items(void) {
     // before stays stored and comes back with an upscaler.
     Item mode = choice(P_VIDEO_ADV, "Upscaler mode", "",
                        [](const Item &) {
-                           return g_settings.upscaler == UPSCALE_OFF ? 1 : N(k_modes_order) - upscale_mode_base();
+                           return g_settings.upscaler == UPSCALE_OFF ? 1 : upscale_mode_count() - upscale_mode_base();
                        },
                        [](const Item &, int x) {
                            if (g_settings.upscaler == UPSCALE_OFF) return tr("Off");
@@ -844,11 +850,11 @@ void build_items(void) {
                        },
                        [](const Item &) {
                            if (g_settings.upscaler == UPSCALE_OFF) return 0;
-                           int base = upscale_mode_base();
+                           int base = upscale_mode_base(), end = upscale_mode_count();
                            int q = (g_settings.upscale_quality == UPQ_NATIVE && base)
                                        ? (int)UPQ_QUALITY
                                        : g_settings.upscale_quality;
-                           for (int i = base; i < N(k_modes_order); i++)
+                           for (int i = base; i < end; i++)
                                if (k_modes_order[i] == q) return i - base;
                            return 0;
                        },

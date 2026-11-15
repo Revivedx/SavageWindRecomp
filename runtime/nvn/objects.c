@@ -1233,11 +1233,13 @@ NVN(nvnQueuePresentTexture) {
     present_pace(w->interval);
     if (frame_split()) g_fs_pace = plat_now_ns();
     perfmon_frame();
-    {   // Video > Advanced > Dynamic resolution: the scene's size follows the frame rate (nvn/output_scale.c). A step
-        // smaller that does not raise the frame rate is undone, so a CPU-bound machine keeps its full resolution.
+    {   // Video > Advanced > Dynamic resolution: the scene's size or the upscaler's factor follows the frame rate
+        // (nvn/output_scale.c). With frame generation on, the presented rate (generated frames included) is what it
+        // holds; frame generation itself is left alone unless it has no net gain.
         static PerfStats ps;
         perfmon_snapshot(&ps);
-        dynamic_res_tick(ps.fps);
+        extern volatile int g_fg_active;
+        dynamic_res_tick(ps.fps, ps.fps_generated, g_fg_active != 0);
     }
     TL("present (backend)");
     if (async_exec()) {

@@ -636,10 +636,12 @@ extern "C" void renderer_get_scale(float *sx, float *sy);
 extern "C" void renderer_get_scene_scale(float *sx, float *sy);
 extern "C" bool renderer_gpu_rtx(void);  // (vulkan/device.c, metal.m)
 extern "C" volatile int g_fg_active;     // (hle/framepace.c: the last presented frame was generated)
-// Video > Upscaler mode's names, by UPQ_*, and their order on screen (largest render size first)
-static const char *const k_upscale_modes[UPQ_COUNT] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance", "Native"};
+// Video > Upscaler mode's names, by UPQ_*, and their order on screen (largest render size first). Dynamic is last:
+// it is a row the dynamic-resolution setting adds, so the list is one entry shorter while that setting is off.
+static const char *const k_upscale_modes[UPQ_COUNT] = {"Ultra Quality", "Quality", "Balanced", "Performance",
+                                                       "Ultra Performance", "Native", "Dynamic"};
 static const int k_upscale_mode_order[UPQ_COUNT] = {
-    UPQ_NATIVE, UPQ_ULTRA, UPQ_QUALITY, UPQ_BALANCED, UPQ_PERFORMANCE, UPQ_ULTRA_PERFORMANCE};
+    UPQ_NATIVE, UPQ_ULTRA, UPQ_QUALITY, UPQ_BALANCED, UPQ_PERFORMANCE, UPQ_ULTRA_PERFORMANCE, UPQ_DYNAMIC};
 extern "C" {
 #include "../nvn/output_scale.h"
 }
@@ -977,13 +979,15 @@ static void tab_display(void) {
         int udef = 0;  // (the reset value: UPSCALE_DEFAULT)
         for (int i = 0; i < NU; i++) if (ups_value[i] == UPSCALE_DEFAULT) udef = i;
         if (opt_choice_avail("Upscaler", &ui, &shown, ups, avail, NU, udef, ud)) g_settings.upscaler = ups_value[ui];
-        // its mode (AMD's scale factors), one step in; greyed when the upscaler is off
+        // its mode (AMD's scale factors), one step in; greyed when the upscaler is off. The Dynamic row belongs to
+        // Video > Advanced > Dynamic resolution: while that setting is off the row is not in the list at all.
         bool modes_ok = upscale_modes_available();
+        int nm = g_settings.dynamic_res ? UPQ_COUNT : UPQ_COUNT - 1;
         std::string mode_names[UPQ_COUNT];
         const char *mn[UPQ_COUNT];
         bool mavail[UPQ_COUNT];
         int mi = 2, mdef = 2;  // UPQ_QUALITY's position in k_upscale_mode_order
-        for (int i = 0; i < UPQ_COUNT; i++) {
+        for (int i = 0; i < nm; i++) {
             int q = k_upscale_mode_order[i];
             mode_names[i] = modes_ok ? tr(k_upscale_modes[q])
                                      : std::string(tr(k_upscale_modes[q])) + " " + tr("(coming soon)");
@@ -992,6 +996,7 @@ static void tab_display(void) {
             if (q == g_settings.upscale_quality) mi = i;
             if (q == UPQ_QUALITY) mdef = i;
         }
+        if (mi >= nm) mi = nm - 1;  // (Dynamic was stored but is now hidden: fall back to a visible one)
         float sx, sy;  // the 3D scene's size (BOTW docked: 1600 x 900 times its scale)
         renderer_get_scene_scale(&sx, &sy);
         char rendering[100];
@@ -1003,7 +1008,7 @@ static void tab_display(void) {
         opt_indent(1);
         if (g_settings.upscaler == UPSCALE_OFF) opt_disable_next();
         static int mshown = -1;
-        if (opt_choice_avail("Upscaler mode", &mi, &mshown, mn, mavail, UPQ_COUNT, mdef, md.c_str()))
+        if (opt_choice_avail("Upscaler mode", &mi, &mshown, mn, mavail, nm, mdef, md.c_str()))
             g_settings.upscale_quality = k_upscale_mode_order[mi];
         opt_indent(-1);
     }
@@ -1777,6 +1782,8 @@ static void perf_overlay_draw(ImGuiIO &io, float scale) {
         char f[16];
         snprintf(f, sizeof f, "%.1f", upscale_factor());
         line += std::string(" ") + (q >= 0 && q < UPQ_COUNT ? std::string(tr(k_upscale_modes[q])) + " " : "") + f + "x";
+    } else if (q == UPQ_DYNAMIC) {
+        line += std::string(" ") + tr("Dynamic");
     }
     // (FSR 3 / 4 and DLSS anti-alias the scene themselves: the setting does nothing then)
     int aa = rt_antialias();
@@ -1797,6 +1804,18 @@ static void perf_overlay_draw(ImGuiIO &io, float scale) {
 #endif
     if (g_fg_active) line += std::string(line.empty() ? "" : " | ") + tr("Frame generation on");
     if (!line.empty()) ImGui::TextDisabled("%s", line.c_str());
+    // Dynamic resolution / the upscaler's Dynamic mode: what it is holding, at what factor, and how it is measuring.
+    // All the numbers the player needs to see why the picture is at the size it is, in one place.
+    if (dynamic_res_active()) {
+        char dyn[160];
+        double target = dynamic_res_target();
+        snprintf(dyn, sizeof dyn, tr("Dynamic: %s %.2fx, target %.0f fps, %s"),
+                 dynamic_res_is_upscale() ? tr("upscaler") : tr("scene"), dynamic_factor(), target,
+                 g_fg_active ? tr("presented rate") : tr("real rate"));
+        ImGui::TextDisabled("%s", dyn);
+        if (dynamic_fg_disabled())
+            ImGui::TextDisabled("%s", tr("Frame generation off: no net gain"));
+    }
     // Link's coordinates; no line at all while there is no Link or the game is in a scene (title, loading, movie, event).
     // Axis letters are not translated.
     float pos[3];

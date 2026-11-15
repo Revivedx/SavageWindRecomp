@@ -57,12 +57,18 @@ float output_map_extra_y(void);
 float output_pause_extra_y(void);
 float output_ui_extra_y(void);
 
-// Video > Advanced > Dynamic resolution: the scene's scale follows the frame rate towards dynamic_res_target(), the
-// way the upscaler's modes do (nvn/output_scale.c). A step smaller that does not raise the frame rate is undone and
-// shrinking is switched off for the run - so on a CPU-bound machine it stays at full resolution rather than making
-// the picture softer for nothing. dynamic_res_scale is read by output_scale for the scene's scale; the tick runs once
-// per presented frame with the rate perfmon measured; reset on a new window or boot.
+// Video > Advanced > Dynamic resolution: one setting, two shapes (nvn/output_scale.c). With no upscaler it moves the
+// scene's own scale; with an upscaler running it is that upscaler's "Dynamic" mode and moves its factor. The same
+// frame-rate governor drives both, and a step smaller that does not actually raise the rate is undone (so a CPU-bound
+// machine keeps full resolution instead of softening the picture for nothing). dynamic_res_scale is read by
+// output_scale; the tick runs once per presented frame; reset on a new window or boot.
 double dynamic_res_scale(void);
-void dynamic_res_tick(float fps);
+void dynamic_res_tick(float fps, float fps_generated, bool fg_on);
 double dynamic_res_target(void);
 void dynamic_res_reset(void);
+// For the F10 overlay: whether the dynamic mode is in use, whether it is driving the upscaler (else the scene's own
+// scale), the factor it has settled on, and whether frame generation has been turned off for having no net gain.
+bool dynamic_res_active(void);
+bool dynamic_res_is_upscale(void);
+double dynamic_factor(void);
+bool dynamic_fg_disabled(void);

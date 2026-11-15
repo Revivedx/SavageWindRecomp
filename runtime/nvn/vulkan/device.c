@@ -2747,6 +2747,10 @@ static bool fg_wanted(void) {
     if (forced == -2) forced = getenv("SAVAGEWIND_FG") ? atoi(getenv("SAVAGEWIND_FG")) : -1;
     if (g_hdr) return false;  // (frame generation's copies are 8-bit and would clip the HDR picture)
     if (!(forced >= 0 ? forced : g_settings.frame_gen)) return false;
+    // (Video > Advanced > Dynamic resolution measured no net gain from frame generation on this machine: leave it off
+    // for the rest of the run. The setting is untouched - a reboot gives it a fresh measurement.)
+    extern bool dynamic_fg_disabled(void);
+    if (dynamic_fg_disabled()) return false;
     static int log = -1;
     static uint64_t n;
     if (log < 0) log = getenv("SAVAGEWIND_FG_LOG") != NULL;
