@@ -208,7 +208,8 @@ int online_take_hits(uint32_t *id, int32_t *damage, uint8_t *element, int max);
 // came from and its id there), the others make each one where it is; one picked up anywhere goes for everyone
 #define ONLINE_LOOT 64
 #pragma pack(push, 1)
-typedef struct { uint32_t gid, lid; uint8_t origin; char name[40]; float pos[3]; } OnlineLoot;
+// (rot: how it lies, its matrix's 3x3 part; all 0: upright)
+typedef struct { uint32_t gid, lid; uint8_t origin; char name[40]; float pos[3]; float rot[9]; } OnlineLoot;
 #pragma pack(pop)
 void online_send_loot_add(const OnlineLoot *l);           // (a game not the host's: a drop of its, for the list)
 int online_take_loot_adds(OnlineLoot *out, int max);       // (the host's: those come, origin set)

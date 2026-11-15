@@ -37,7 +37,7 @@ typedef int sock_t;
 #include "rt.h"
 
 #define MAGIC 0x4c4f5753u  // "SWOL"
-#define PROTOCOL 33  // (33: STATE carries his ground's reaction values; 32: QUEST carries whose it is; 31: his tack)
+#define PROTOCOL 34  // (34: a loot's rotation; 33: STATE carries his ground's reaction values; 32: QUEST, whose it is)
 static volatile float g_local_hour = -1;  // (the local game's hour, from the frame loop: online_set_local_hour)
 #define SEND_HZ 20
 #define INTERP_NS 100000000ull  // the others are drawn this far behind what was last heard (smooth between updates)
@@ -274,10 +274,10 @@ static bool srv_message(Server *sv, int i, uint8_t type, const uint8_t *p, int l
     case M_LOOT_TAKE:
         if (len >= 4) srv_broadcast(sv, i, type, &id, 1, p, len);
         break;
-    case M_LOOTS:  // (the host's game's list, to the others)
     case M_QUEST:   // (a game's own, to the host's game, with whose it is)
         srv_broadcast(sv, i, type, &id, 1, p, len);
         break;
+    case M_LOOTS:   // (the host's game's list, to the others)
     case M_QUESTS:  // (the host's game's union, to the others)
     case M_PICK:    // (a weapon picked up, to everyone)
         srv_broadcast(sv, i, type, p, len, NULL, 0);

@@ -811,6 +811,10 @@ static uint64_t g_fx_trail_t;
 
 #define MAX_ACTORS 8192
 static uint64_t g_actors[MAX_ACTORS];
+static void loot_mine_add(uint64_t a, const char *n, int me);  // (loot: what we drop or throw, for everyone)
+#define LINK_CARRIED 6
+static void link_carried(uint64_t player, uint64_t out[LINK_CARRIED]);
+static bool carries(const uint64_t carried[LINK_CARRIED], uint64_t a);
 static int all_actors(uint64_t from, uint64_t *out, int max);
 static uint64_t volatile g_rf, g_rf_ui;  // (ReactionField, the actor that plays the ground's reactions, and its ELink)
 static Watch g_rf_watch;
@@ -1287,28 +1291,65 @@ static void sample_pose(Cpu *c, uint64_t pinfo) {
     equipment(player, armor, gear);
     if (strncmp(pose.as[0], "Para", 4) || !strcmp(pose.as[0], "ParaEquipOff")) gear[5] = 0;  // (his paraglider: open)
     {   // his weapon thrown: it leaves his equipment as it leaves his hand, so it is kept as his while it flies and 2 s
-        // after it comes to rest (then it lies in his world only, an item the others can't take: not shown to them)
-        static uint64_t held, thrown;
+        // after it comes to rest; then it lies in his world, and goes on the loot list (loot_update): the others' games
+        // make it where it lies, a real weapon they can pick up (and one picked up goes in every game)
+        // (followed even when he draws another before it lands: then it isn't shown flying, only where it lies; once on
+        // the list it is still shown 3 s, until the others have made theirs where it is: no gap, no second weapon)
+        static uint64_t held, thrown, listed_at;
         static Watch hw, tw;
         static float last[3];
         static uint64_t still_since;
         uint64_t now = plat_now_ns();
-        if (gear[0]) held = gear[0], hw = watch(gear[0]), thrown = 0;
-        else if (held && alive(held, hw)) {  // (just let go of: from here, followed)
+        uint64_t carried[LINK_CARRIED];
+        link_carried(player, carried);
+        const float *hm = held && alive(held, hw) ? (const float *)(uintptr_t)(held + 0x398) : NULL;
+        bool at_hand = hm && (hm[3] - pm[3]) * (hm[3] - pm[3]) + (hm[7] - pm[7]) * (hm[7] - pm[7]) +
+                                     (hm[11] - pm[11]) * (hm[11] - pm[11]) < 4.0f * 4.0f;  // (not one put away elsewhere)
+        if (held && gear[0] != held && at_hand && !carries(carried, held)) {  // (let go of: followed from here)
             const float *m = (const float *)(uintptr_t)(held + 0x398);
-            thrown = held, tw = hw, held = 0, still_since = 0;
+            thrown = held, tw = hw, still_since = 0, listed_at = 0;
             last[0] = m[3], last[1] = m[7], last[2] = m[11];
             if (getenv("SAVAGEWIND_ONLINE_GEAR_LOG")) LOG("[online] our weapon left our hand: followed while it flies\n");
-        } else held = 0;
-        if (!gear[0] && thrown && alive(thrown, tw)) {
+        }
+        held = gear[0], hw = gear[0] ? watch(gear[0]) : hw;
+        if (thrown && (thrown == gear[0] || carries(carried, thrown))) thrown = 0;  // (his again)
+        if (thrown && alive(thrown, tw)) {
             const float *m = (const float *)(uintptr_t)(thrown + 0x398);
             float dx = m[3] - last[0], dy = m[7] - last[1], dz = m[11] - last[2];
             last[0] = m[3], last[1] = m[7], last[2] = m[11];
-            if (dx * dx + dy * dy + dz * dz > 0.01f * 0.01f) still_since = 0;
+            if (dx * dx + dy * dy + dz * dz > 0.01f * 0.01f) still_since = 0, listed_at = 0;
             else if (!still_since) still_since = now;
-            if (still_since && now - still_since > 2000000000ull) thrown = 0;
-            else gear[0] = thrown;
-        } else if (!gear[0]) thrown = 0;
+            if (still_since && now - still_since > 2000000000ull && !listed_at) {
+                char tn[48];
+                actor_name_of(thrown, tn);
+                if (!strncmp(tn, "Weapon_", 7)) loot_mine_add(thrown, tn, 0);
+                listed_at = now;
+            }
+            if (listed_at && now - listed_at > 3000000000ull) thrown = 0;
+            else if (!gear[0]) gear[0] = thrown;
+        } else thrown = 0;
+    }
+    {   // his shield and bow let go of (dropped for another, from the menu): once they have lain 2 s where they fell
+        // (one swapped from the menu is deleted by then), on the loot list as his thrown weapon
+        static uint64_t had[2], let_go[2], since[2];
+        static Watch hw2[2], lw[2];
+        uint64_t now = plat_now_ns();
+        for (int k = 0; k < 2; k++) {
+            uint64_t g2 = gear[1 + k];
+            if (g2 != had[k] && had[k] && alive(had[k], hw2[k])) let_go[k] = had[k], lw[k] = hw2[k], since[k] = now;
+            if (g2) had[k] = g2, hw2[k] = watch(g2);
+            else had[k] = 0;
+            if (let_go[k] && now - since[k] > 2000000000ull) {
+                uint64_t carried[LINK_CARRIED];
+                link_carried(player, carried);
+                char tn[48];
+                if (alive(let_go[k], lw[k]) && !carries(carried, let_go[k])) {
+                    actor_name_of(let_go[k], tn);
+                    if (!strncmp(tn, "Weapon_", 7)) loot_mine_add(let_go[k], tn, 0);
+                }
+                let_go[k] = 0;
+            }
+        }
     }
     {   // what he wears and carries, for the others (the default pieces are Link's own body: "")
         char an[ARMOR][48] = {{0}}, gn[ONLINE_GEAR][48] = {{0}};
@@ -2703,7 +2744,7 @@ static struct { float pos[3]; int frames; uint32_t before[48]; int nbefore; } g_
 // (picked: in this Link's hand now, taken off the list once it is on it)
 static struct { uint32_t lid; uint64_t actor; Watch w; char name[40]; bool sent, listed, picked; uint32_t gid; float pos[3]; } g_mine[MINE];
 #define THEIRS ONLINE_LOOT
-static struct { uint32_t gid; Piece p; bool placed, gone; float pos[3]; } g_theirs[THEIRS];
+static struct { uint32_t gid; Piece p; bool placed, gone; float pos[3]; int tries; uint64_t retry_t; } g_theirs[THEIRS];
 static OnlineLoot g_loot_list[ONLINE_LOOT];  // (the host's game: the list)
 static int g_nloot_list;
 static uint32_t g_next_gid = 1;
@@ -2755,7 +2796,6 @@ static bool near_link(const float link[3], const float p[3], float r) {
 // What the local Link carries: his weapon, shield and bow (+0xb98, +0xbb0, +0xbc8) and the weapon's and bow's sheath
 // and quiver (+0x958 of each). A weapon picked up into a free hand is the same actor that lay there, not deleted:
 // a pickup is also one that comes to be in this list
-#define LINK_CARRIED 6
 static void link_carried(uint64_t player, uint64_t out[LINK_CARRIED]) {
     memset(out, 0, LINK_CARRIED * sizeof *out);
     for (int k = 0; k < 3; k++) out[k] = linked(player + 0xb98 + 0x18 * k);
@@ -2875,7 +2915,11 @@ static void loot_update(Cpu *c, uint64_t player, const float link[3], int me, bo
             l.lid = g_mine[k].lid, l.origin = (uint8_t)me;
             snprintf(l.name, sizeof l.name, "%s", g_mine[k].name);
             const float *m = (const float *)(uintptr_t)(g_mine[k].actor + 0x398);
-            if (there) l.pos[0] = m[3], l.pos[1] = m[7], l.pos[2] = m[11];
+            if (there) {
+                l.pos[0] = m[3], l.pos[1] = m[7], l.pos[2] = m[11];
+                for (int r = 0; r < 3; r++)
+                    for (int q = 0; q < 3; q++) l.rot[3 * r + q] = m[4 * r + q];
+            }
             if (host) loot_host_add(&l);
             else online_send_loot_add(&l);
             g_mine[k].sent = true;
@@ -2952,10 +2996,12 @@ static void loot_update(Cpu *c, uint64_t player, const float link[3], int me, bo
             continue;
         }
         if (!had) {
-            if (!pc->pending && !pc->name[0]) {
+            if (!pc->pending && !pc->name[0]) {  // (asked for; one the game didn't make is asked for again, 5 times)
+                if (plat_now_ns() < g_theirs[t].retry_t) continue;
                 pc->handle = new_handle();
                 if (request(c, list[j].name, pc->handle)) pc->pending = true, snprintf(pc->name, sizeof pc->name, "%s", list[j].name);
-                else { g_theirs[t].gone = true; continue; }
+                else if (++g_theirs[t].tries >= 5) { g_theirs[t].gone = true; continue; }
+                else { g_theirs[t].retry_t = plat_now_ns() + 1000000000ull; continue; }
             }
             int *unit = (int *)(uintptr_t)pc->handle->unit;
             if (unit && *unit == 2) {
@@ -2963,14 +3009,23 @@ static void loot_update(Cpu *c, uint64_t player, const float link[3], int me, bo
                 pc->actor = call(c, FN_HANDLE_TAKE, (uint64_t)(uintptr_t)pc->handle, 0, 0, 0, 0, 0);
                 if (pc->actor) {
                     pc->w = watch(pc->actor);
+                    // (as it lies in his game: its rotation with it; upright and a little above, without)
                     float m[12] = {1, 0, 0, list[j].pos[0], 0, 1, 0, list[j].pos[1] + 0.2f, 0, 0, 1, list[j].pos[2]};
+                    bool rot = false;
+                    for (int q = 0; q < 9; q++) rot |= list[j].rot[q] != 0 && isfinite(list[j].rot[q]);
+                    for (int r = 0; rot && r < 3; r++) {
+                        for (int q = 0; q < 3; q++) m[4 * r + q] = list[j].rot[3 * r + q];
+                        m[4 * r + 3] = list[j].pos[r] + (r == 1 ? 0.02f : 0);
+                    }
                     call(c, FN_SET_MTX, pc->actor, (uint64_t)(uintptr_t)m, 0, 0, 0, 0);
                     LOG("[online] loot %u (%s) made here at %.2f %.2f %.2f (actor %llx)\n", list[j].gid, list[j].name,
                         list[j].pos[0], list[j].pos[1], list[j].pos[2], (unsigned long long)pc->actor);
                 }
             } else if (unit && (*unit == 3 || *unit == 5)) {
                 call(c, FN_HANDLE_RELEASE, (uint64_t)(uintptr_t)pc->handle, 0, 0, 0, 0, 0);
-                g_theirs[t].gone = true, pc->pending = false;
+                pc->pending = false, pc->name[0] = 0;
+                if (++g_theirs[t].tries >= 5) g_theirs[t].gone = true;
+                else g_theirs[t].retry_t = plat_now_ns() + 1000000000ull;
             }
         } else {  // (where it is now: if it was picked up a moment from now, near it)
             const float *m = (const float *)(uintptr_t)(pc->actor + 0x398);
