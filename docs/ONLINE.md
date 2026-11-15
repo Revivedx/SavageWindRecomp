@@ -181,12 +181,14 @@ has it (STATE's pose: a bone is kept while the piece stays near it, so two bones
 no bone (farther than 0.6 m from every bone; a shield 1.5 m, so the one he surfs on, under his feet, stays) but within
 60 m of him is sent where it is in the world (`gear_bone` ONLINE_GEAR_WORLD, `gear_rel` its world matrix; an older
 game reads it as no bone and hides it, as before). A thrown weapon leaves his equipment as it leaves his hand, so
-his game keeps it as his weapon while it flies and until it has lain still for 0.3 s; then it goes on the loot list
-(Loot, below) with how it lies (protocol 34: a loot's rotation), and is still shown 3 s more, until the others' games
-have made it there, the same weapon where it lies, which they can pick up (one picked up goes in every game, his too).
-One thrown as he draws another is followed too (not shown flying, only where it lies). A shield or bow let go of
-(dropped for another) goes on the list half a second after. Tested: a weapon thrown by the host was made in the
-client's game where it lay (-1055.9 249.3 1800.5 in both), and the client's in the host's. Tested: a traveller's sword thrown 18 m was placed
+his game keeps it as his weapon while it flies and until it has lain still for 3 s. It goes on the loot list (Loot,
+below; protocol 34: a loot's rotation) as it leaves his hand: the others' games make the real weapon at once, and while
+his flies (his piece sent where it is in the world) they move theirs there through its body (FN_BODY_TO, as Magnesis)
+instead of showing his piece, so it can be picked up in the air; one picked up goes in every game, his too. One that
+breaks on a blow is taken off the list wherever it is. One thrown as he draws another is followed too (not shown
+flying: theirs falls from where it left his hand). A shield or bow let go of (dropped for another) goes on the list
+half a second after. Tested: the host's sword thrown 18 m: the client's real one was there at once, 8 m out, then
+18 m, and lay where the host's did (-1056.0 249.3 1800.4 in both), 60 fps. Tested: a traveller's sword thrown 18 m was placed
 along its flight in the other game and came to rest where it lay in the thrower's (-974.1 231.6 1875.4 in both).
 
 The paraglider is a sixth piece (protocol 8): the player links his `PlayerStole2` (or `_Vagrant`) actor, at player
