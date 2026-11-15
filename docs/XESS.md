@@ -1,4 +1,4 @@
-﻿# Intel XeSS on Savage Wind (Windows, Vulkan)
+# Intel XeSS on Savage Wind (Windows, Vulkan)
 
 `Video > Upscaler > Intel XeSS` runs Intel's XeSS-SR through `libxess.dll`, loaded at run time from
 the game's folder (as AMD's FSR DLLs are, `vulkan/fsr_api.cpp`). The library ships nowhere: the
@@ -55,10 +55,15 @@ the game has today (AMD FSR 3, `vulkan/framegen.cpp`) stays.
 - `runtime/ui/i18n/*.inc` - the texts in all menu languages.
 - `Makefile` - `xess.o` build rule (`third_party/xess` on the include path).
 
-## Testing notes (code-level only; no game was started for this)
+## Testing notes
 
-- `make -j8` builds and links `savagewind.exe` with the integration in.
-- `python tools/i18n_check.py`: 0 missing, 0 unused in every language.
-- `git diff --check` clean.
-- Runtime behaviour (a real `libxess.dll` on an Intel Arc B580: quality, fps, the overlay line) is
-  untested so far; the overlay's "Upscaler: XeSS" line and the `[xess]` log lines report what runs.
+- `make -j8` builds and links `savagewind.exe` with the integration in; `python tools/i18n_check.py`:
+  0 missing, 0 unused in every language; `git diff --check` clean.
+- Run on an Intel Arc B580 (driver 101.8864, Vulkan 1.4.348) on Windows, `libxess.dll` 2.0.2 next to the
+  executable, a hidden start with a warp into the Great Plateau: the log's `[xess] libxess.dll 2.0.2
+  loaded`, `[xess] context made` and `[xess] initialized 2954x1662 -> 3840x2160` show it running, the
+  scene goes through it (`[post] scene ... fsr3 -> ...`, the same path FSR 3 takes), and the game holds
+  66-73 fps at a 4K window with the game's dynamic resolution raising the render size. The overlay's
+  "Upscaler: XeSS" line and the `[xess]` log lines report what actually runs.
+- Not tested: a Radeon or GeForce GPU (XeSS's DP4a path), FSR 3 or FSR 4 in the same run, and a window
+  smaller than 4K (where the quality mode's own factor applies instead of the dynamic resolution).
