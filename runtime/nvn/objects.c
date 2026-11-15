@@ -8,7 +8,6 @@
 #include "../platform.h"
 #include "../prof.h"
 #include "../perfmon.h"
-#include "output_scale.h"
 #include "nvn.h"
 
 void renderer_sync(void);
@@ -1233,12 +1232,6 @@ NVN(nvnQueuePresentTexture) {
     present_pace(w->interval);
     if (frame_split()) g_fs_pace = plat_now_ns();
     perfmon_frame();
-    {   // Video > Upscaler mode Dynamic: the render size for the frames after this one follows the frame rate the
-        // last ones reached (perfmon's window, generated frames included: what the player sees is what is aimed at)
-        static PerfStats ps;
-        perfmon_snapshot(&ps);
-        upscale_dynamic_tick(ps.fps);
-    }
     TL("present (backend)");
     if (async_exec()) {
         if (i >= 0 && i < w->num) queue_put(QOP_PRESENT, 0, HOST(NvnTexture, w->textures[i]));

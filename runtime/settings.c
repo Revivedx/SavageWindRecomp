@@ -36,7 +36,6 @@ Settings g_settings = {
     .weapon_wear = 100,
     .upscaler = UPSCALE_DEFAULT,  // (Off: the window's resolution; MetalFX on macOS)
     .upscale_quality = UPQ_QUALITY,
-    .dynamic_target = 0,  // (0: the game's frame rate limit, or the display's rate: upscale_dynamic_target)
     .game_fxaa = true,
     .anisotropy = 1,  // (2x: the Original graphics preset)
     .dynamic_res = true,
@@ -127,8 +126,7 @@ static const char *const k_icons[ICONS_COUNT] = {"auto", "keyboard", "xbox", "pl
 
 static const char *const k_button_layout[BUTTON_LAYOUT_COUNT] = {"auto", "nintendo", "swap_ab", "xbox", "swap_xy", "gamecube"};
 
-static const char *const k_quality[UPQ_COUNT] = {"ultra_quality", "quality", "balanced", "performance", "ultra_performance",
-                                                 "native", "dynamic"};
+static const char *const k_quality[UPQ_COUNT] = {"ultra_quality", "quality", "balanced", "performance", "ultra_performance", "native"};
 
 static const char *const k_text_speed[TEXT_SPEED_COUNT] = {"normal", "fast", "instant"};
 
@@ -398,10 +396,6 @@ void settings_load(void) {
         else if (!strcmp(key, "upscaler_quality")) {
             for (int i = 0; i < UPQ_COUNT; i++)
                 if (!strcmp(val, k_quality[i])) g_settings.upscale_quality = i;
-        }
-        else if (!strcmp(key, "dynamic_target")) {  // (UPQ_DYNAMIC's frame rate, frames per second)
-            int v = atoi(val);
-            if (v >= 20 && v <= DYNAMIC_TARGET_MAX) g_settings.dynamic_target = v;
         }
         else if (!strcmp(key, "window_size")) {  // (WxH in pixels, or default)
             int w = 0, h = 0;
@@ -857,7 +851,6 @@ void settings_save(void) {
     fprintf(f, "bloom = %d\n", g_settings.bloom ? 1 : 0);
     fprintf(f, "depth_of_field = %d\n", g_settings.depth_of_field ? 1 : 0);
     fprintf(f, "dynamic_resolution = %d\n", g_settings.dynamic_res ? 1 : 0);
-    fprintf(f, "dynamic_target = %d\n", g_settings.dynamic_target);
     fprintf(f, "fast_fma = %d\n", g_settings.fast_fma ? 1 : 0);
     fprintf(f, "colour_exposure = %.1f\n", g_settings.color_exposure / 10.0);
     fprintf(f, "colour_contrast = %d\n", g_settings.color_contrast);

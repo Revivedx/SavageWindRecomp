@@ -151,7 +151,12 @@ const int UPS_DEFAULT = 0;  // (UPSCALE_DEFAULT: Off, the window's resolution)
 #endif
 std::vector<int> g_shown;   // per item: the value shown instead of get(), one that can't be picked yet (-1: none)
 const char16_t GREY = 3;    // (the game's message colour for greyed values)
-const char *const k_modes[] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance", "Native", "Dynamic"};
+// (shown with Native first, largest to smallest: k_modes_order maps a row index to settings.h UPQ_*)
+const char *const k_modes[] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance", "Native"};
+const int k_modes_order[] = {UPQ_NATIVE, UPQ_ULTRA, UPQ_QUALITY, UPQ_BALANCED, UPQ_PERFORMANCE, UPQ_ULTRA_PERFORMANCE};
+int upscale_mode_base(void) {
+    return (g_settings.upscaler == UPSCALE_FSR3 || g_settings.upscaler == UPSCALE_FSR4) ? 0 : 1;
+}
 #ifdef __APPLE__
 const char *const k_aa[] = {"Off", "SMAA"};
 #else
@@ -163,8 +168,6 @@ const char *const k_tex_lod[] = {"Default", "Sharp", "Sharper"};  // (settings t
 const char *const k_drawdist[] = {"Original", "High", "Savage", "Potato"};  // (settings.h DRAWDIST_*; the ini: medium, high)
 const int k_drawdist_order[] = {DRAWDIST_POTATO, DRAWDIST_ORIGINAL, DRAWDIST_MEDIUM, DRAWDIST_HIGH};
 constexpr int k_haze[] = HAZE_CHOICES;
-// the frame rates Video > Upscaler mode Dynamic aims at (nvn/output_scale.c upscale_dynamic_target)
-constexpr int k_dynamic_targets[] = {30, 40, 45, 60, 75, 90, 120, 144, 165, 240};
 // Accessibility > Weapon wear: percent of the game's wear, a name and the factor shown beside it
 constexpr int k_wear[] = {0, 50, 100, 150, 200, 250, 300};
 const char *const k_wear_name[] = {"Fairy", "Peter Pan", "Hylian", "Hero", "Master", "Legend", "Dude, are you ok?"};
@@ -814,48 +817,41 @@ void build_items(void) {
     // gives the row its range at each redraw, and a change of the Upscaler row redraws the page); the mode chosen
     // before stays stored and comes back with an upscaler.
     Item mode = choice(P_VIDEO_ADV, "Upscaler mode", "",
-                       [](const Item &) { return g_settings.upscaler == UPSCALE_OFF ? 1 : N(k_modes); },
-                       [](const Item &, int x) {
-                           return g_settings.upscaler == UPSCALE_OFF ? tr("Off")
-                                  : upscale_modes_available()        ? tr(k_modes[x])
-                                                                     : soon(k_modes[x]);
+                       [](const Item &) {
+                           return g_settings.upscaler == UPSCALE_OFF ? 1 : N(k_modes_order) - upscale_mode_base();
                        },
-                       [](const Item &) { return g_settings.upscaler == UPSCALE_OFF ? 0 : g_settings.upscale_quality; },
                        [](const Item &, int x) {
-                           if (g_settings.upscaler != UPSCALE_OFF) g_settings.upscale_quality = x;
+                           if (g_settings.upscaler == UPSCALE_OFF) return tr("Off");
+                           const char *name = k_modes[k_modes_order[x + upscale_mode_base()]];
+                           return upscale_modes_available() ? tr(name) : soon(name);
                        },
-                       UPQ_QUALITY);
+                       [](const Item &) {
+                           if (g_settings.upscaler == UPSCALE_OFF) return 0;
+                           int base = upscale_mode_base();
+                           int q = (g_settings.upscale_quality == UPQ_NATIVE && base)
+                                       ? (int)UPQ_QUALITY
+                                       : g_settings.upscale_quality;
+                           for (int i = base; i < N(k_modes_order); i++)
+                               if (k_modes_order[i] == q) return i - base;
+                           return 0;
+                       },
+                       [](const Item &, int x) {
+                           if (g_settings.upscaler != UPSCALE_OFF)
+                               g_settings.upscale_quality = k_modes_order[x + upscale_mode_base()];
+                       },
+                       2);
     mode.value_off = [](const Item &, int x) {
-        return !upscale_modes_available() || g_settings.upscaler == UPSCALE_OFF || !upscale_mode_offered(x);
+        return !upscale_modes_available() || g_settings.upscaler == UPSCALE_OFF ||
+               !upscale_mode_offered(k_modes_order[x + upscale_mode_base()]);
     };
     mode.reset = [](const Item &) { g_settings.upscale_quality = UPQ_QUALITY; };  // (also while Off)
     mode.desc_fn = [](const Item &) {
         // (one line: the game's description pane is one English line wide)
         return !upscale_modes_available()           ? tr("Renders smaller, then upscales. Coming in a later version.")
                : g_settings.upscaler == UPSCALE_OFF ? tr("Only with an upscaler: choose one above first.")
-               : upscale_quality_now() == UPQ_NATIVE ? tr("Native: no scaling, the upscaler only anti-aliases.")
-               : upscale_quality_now() == UPQ_DYNAMIC ? tr("Dynamic: the render size follows the frame rate.")
-                                                     : tr("Ultra Quality is the sharpest, Ultra Performance the fastest.");
+                                                    : tr("Ultra Quality is the sharpest, Ultra Performance the fastest.");
     };
     v.push_back(mode);
-    // the rate Dynamic holds (nvn/output_scale.c upscale_dynamic_target): offered only while it is the mode in use
-    if (upscale_quality_now() == UPQ_DYNAMIC) {
-        v.push_back(choice(P_VIDEO_ADV, "Dynamic target",
-                           "The frame rate Dynamic holds: smaller while a scene costs too much, sharper when it doesn't.",
-                           [](const Item &) { return (int)N(k_dynamic_targets); },
-                           [](const Item &, int x) {
-                               static char b[16];
-                               snprintf(b, sizeof b, tr("%d FPS"), k_dynamic_targets[x]);
-                               return (const char *)b;
-                           },
-                           [](const Item &) {
-                               int t = upscale_dynamic_target();
-                               for (int i = 0; i < N(k_dynamic_targets); i++)
-                                   if (k_dynamic_targets[i] == t) return i;
-                               return 3;  // (60 FPS: the default)
-                           },
-                           [](const Item &, int x) { g_settings.dynamic_target = k_dynamic_targets[x]; }, 3));
-    }
     // supersampling (nvn/output_scale.c): applies at once
     v.push_back(choice(P_VIDEO_ADV, "Render scale", "Below 100%: faster, blurrier. Above 100%: renders bigger, then shrinks to the window. Smoothest edges.",
                        [](const Item &) { return (int)RSCALE_COUNT; },
@@ -916,18 +912,9 @@ void build_items(void) {
     v.push_back(toggle(P_VIDEO_ADV, "Depth of field", "Blurs the far distance. Off: sharp out to the horizon.",
                        [](const Item &) { return (int)g_settings.depth_of_field; },
                        [](const Item &, int x) { g_settings.depth_of_field = x; }, 1));
-    {   // (off with an upscaler running: its mode sets the render size, and the two would fight over it. The game's
-        // own page has no greyed rows for a toggle, so it reads as Off and does not change while it is not allowed;
-        // the stored value comes back with the upscaler off, as the setting in the F1 menu does)
-        v.push_back(toggle(P_VIDEO_ADV, "Dynamic resolution",
-                           "Lowers the 3D resolution when a frame takes long, as on the console. Off with an upscaler: "
-                           "its mode decides how small the game renders.",
-                           [](const Item &) { return dynamic_res_allowed() && g_settings.dynamic_res ? 1 : 0; },
-                           [](const Item &, int x) {
-                               if (dynamic_res_allowed()) g_settings.dynamic_res = x;
-                           },
-                           1));
-    }
+    v.push_back(toggle(P_VIDEO_ADV, "Dynamic resolution", "Lowers the 3D resolution when a frame takes long, as on the console.",
+                       [](const Item &) { return (int)g_settings.dynamic_res; },
+                       [](const Item &, int x) { g_settings.dynamic_res = x; }, 1));
     if (gamelib_compat())  // (runtime/gamelib.h: a CPU without FMA instructions; simd.h simd_fma_unfused)
         v.push_back(toggle(P_VIDEO_ADV, "Fast math", "Your CPU has no FMA instructions. On: faster, some results round a tiny bit differently from the console.",
                            [](const Item &) { return (int)g_settings.fast_fma; },
