@@ -600,7 +600,10 @@ Recipes that found the bugs above:
 
 - Less to send: only the bones that moved, or fewer times a second (a session of 8 sends each player's skeleton to 7).
 
-- A dye's colour (the armour's `ArmorDyeColor` param when it is made, as `0x70011759a4` passes it).
+- A dye's colour: the player's armour code (0x7000cdc43c) makes each piece with 0x70011759a4(mgr, slot, name, dye,
+  ...), the dye from player +0x1114 (head), +0x1118 (upper), +0x111c (lower), put in the piece's InstParamPack as
+  `ArmorDyeColor` (s32) when the piece has the tag 0x216a3a63 (dyeable). The OnlineArmor actors are DemoNPCs: the
+  param alone likely does nothing on them, the colour would have to go on their materials.
 - Damage between players (the puppets have no bodies that take hits), riding: a player on a horse or a Master
   Cycle isn't shown on it, the world's objects (fruit, ore, rocks broken, things moved), players in the same shrine
   or Divine Beast seeing each other, a Blood Moon at the same time.
