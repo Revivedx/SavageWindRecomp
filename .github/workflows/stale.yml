@@ -1,10 +1,11 @@
-# Closes bug reports that still have the needs-info label (triage.yml) after 7 days without any change.
+# Closes bug reports that still have the needs-info label (triage.yml) after 24 hours without any change. It runs
+# every hour, so a report is closed between 24 and 25 hours after its last change.
 # Nothing else is ever marked or closed: issues without needs-info and pull requests are left alone.
 name: Close reports missing information
 
 on:
   schedule:
-    - cron: "30 4 * * *"
+    - cron: "30 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -17,7 +18,7 @@ jobs:
       - uses: actions/stale@v11
         with:
           only-labels: needs-info
-          days-before-issue-stale: 7
+          days-before-issue-stale: 1
           days-before-issue-close: 0
           days-before-pr-stale: -1
           days-before-pr-close: -1
@@ -25,5 +26,6 @@ jobs:
           stale-issue-message: ""
           close-issue-message: >-
             Closed because the information asked for above (savagewind.log, the latest release or game version 1.9.0)
-            didn't arrive within 7 days. If you still see the bug, reopen this issue or open a new one with it.
+            didn't arrive within 24 hours. If you still see the bug, open a new issue with the bug report form and attach
+            savagewind.log (or the zip from Savage Wind Configuration > Make a problem report).
           close-issue-reason: not_planned
