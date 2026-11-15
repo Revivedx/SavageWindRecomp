@@ -1452,7 +1452,7 @@ static void sample_pose(Cpu *c, uint64_t pinfo) {
         static Watch hw;
         static int tick;
         const char *body = playing(c, player, 0, 0);
-        bool riding = strstr(body, "Horse") != NULL;
+        bool riding = strstr(body, "Horse") != NULL || strstr(body, "Motorcycle") != NULL;  // (a horse, the Master Cycle)
         if (!riding) horse = 0;
         else if (!horse || !alive(horse, hw) || tick++ % 20 == 0) {
             const float *pm = (const float *)(uintptr_t)(player + 0x398);
@@ -1462,7 +1462,8 @@ static void sample_pose(Cpu *c, uint64_t pinfo) {
             for (int k = 0; k < na; k++) {
                 char nm[48];
                 actor_name_of(g_actors[k], nm);
-                if (strncmp(nm, "GameRomHorse", 12) || strstr(nm, "Reins") || strstr(nm, "Saddle")) continue;
+                if ((strncmp(nm, "GameRomHorse", 12) && strcmp(nm, "GameROMMotorcycle")) || strstr(nm, "Reins") ||
+                    strstr(nm, "Saddle")) continue;
                 const float *m = (const float *)(uintptr_t)(g_actors[k] + 0x398);
                 float dx = m[3] - pm[3], dy = m[7] - pm[7], dz = m[11] - pm[11], d = sqrtf(dx * dx + dy * dy + dz * dz);
                 if (d < bd) bd = d, best = g_actors[k];

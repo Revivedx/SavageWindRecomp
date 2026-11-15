@@ -547,9 +547,10 @@ the Old Shirt 1), a quarter heart at least.
 Horses (protocol 30): while a player's AS is a horse's (Horse*), the player's horse nearest him (GameRomHorse*, looked
 for among the actors a few times a second) goes in his state (`horse`, `horse_m`, `horse_as`: its actor, its matrix,
 the AS it plays); the others show it with `OnlineHorse_<its actor>` (tools/online_mod.py: its model and its AS each as
-one clip, as the enemies', no AI nor physics; gear.txt), where his is, playing his AS; his Link rides it posed by his
+one clip, as the enemies', no AI nor physics; gear.txt; the Master Cycle the same, GameROMMotorcycle, while his AS
+is a Motorcycle one), where his is, playing his AS; his Link rides it posed by his
 skeleton. Not its saddle and reins (actors of their own). `SAVAGEWIND_ONLINE_HORSE_TEST=<horse>` (test): that horse
-beside the host. Tested: GameRomHorse01 shown beside the host's Link on the client.
+beside the host. Tested: GameRomHorse01 and the Master Cycle shown beside the host's Link on the client.
 
 ReactionField (footprints, grass, water): its ELink plays them with its own matrix at the origin (0 0 0, each effect
 put in place through its handle after), so who and where aren't known as it plays them; not shared.
@@ -632,7 +633,7 @@ Recipes that found the bugs above:
   Each player's state carries his three (`dye`, protocol 27) and his puppet's pieces are made with the same param
   (made again when it changes; tested: a dye written on the host made the client's piece again). Whether an
   OnlineArmor (a DemoNPC) shows it is still to see; if not, the colour has to go on its materials.
-- A horse's saddle and reins, the Master Cycle; the world's objects moved (not taken), players in the same shrine
+- A horse's saddle and reins; the world's objects moved (not taken), players in the same shrine
   or Divine Beast is fine (the same map: shown), a Blood Moon at the same time.
 - The beam is not seen working yet: in the test runs (full hearts, the Master Sword) the game fired none, with or
   without online play, so `beam_move` and OnlineBeam are untested.
