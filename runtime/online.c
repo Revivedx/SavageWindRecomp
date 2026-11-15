@@ -37,7 +37,7 @@ typedef int sock_t;
 #include "rt.h"
 
 #define MAGIC 0x4c4f5753u  // "SWOL"
-#define PROTOCOL 26  // (26: STATE carries his sounds as events, his weather; 25: his weapon's swing trail, OnlinePose.fx)
+#define PROTOCOL 27  // (27: STATE carries his armour's dyes; 26: his sounds as events, his weather; 25: his trail)
 static volatile float g_local_hour = -1;  // (the local game's hour, from the frame loop: online_set_local_hour)
 #define SEND_HZ 20
 #define INTERP_NS 100000000ull  // the others are drawn this far behind what was last heard (smooth between updates)
@@ -77,6 +77,7 @@ typedef struct {
     OnlineFxEvent fxev[ONLINE_FX_EVENTS];  // OnlinePose.fxev
     uint32_t fx_props[ONLINE_FX_PROPS];    // OnlinePose.fx_props
     uint8_t weather;                       // OnlinePose.weather
+    int8_t dye[3];                         // OnlinePose.dye
 } WireState;
 typedef struct { uint32_t magic; uint16_t version; char name[ONLINE_NAME_MAX], pass[ONLINE_NAME_MAX]; } WireHello;
 typedef struct { char armor[3][48], gear[ONLINE_GEAR][48]; } WireEquip;  // EQUIP: what a player wears (head,
@@ -829,6 +830,7 @@ static bool sample_local(WireState *w) {
         memcpy(w->fxev, g_pose.fxev, sizeof w->fxev);
         memcpy(w->fx_props, g_pose.fx_props, sizeof w->fx_props);
         w->weather = g_pose.weather;
+        memcpy(w->dye, g_pose.dye, sizeof w->dye);
         memcpy(w->ice, g_pose.ice, sizeof w->ice);
         w->yaw = g_pose.yaw;
     }
@@ -885,6 +887,7 @@ static void remote_snap(int id, const WireState *w) {  // (lock held)
     memcpy(s->pose.fxev, w->fxev, sizeof s->pose.fxev);
     memcpy(s->pose.fx_props, w->fx_props, sizeof s->pose.fx_props);
     s->pose.weather = w->weather;
+    memcpy(s->pose.dye, w->dye, sizeof s->pose.dye);
     for (int k = 0; k < ONLINE_FX_EVENTS; k++) s->pose.fxev[k].name[20] = 0;
     memcpy(s->pose.ice, w->ice, sizeof s->pose.ice);
     s->pose.stop.name[ONLINE_GRAB_NAME - 1] = 0;

@@ -125,6 +125,7 @@ static struct {
     struct { uint64_t p; uint32_t id, pad; } gale;  // Revali's Gale on his Link: its charge's effect handle
     struct { uint64_t p; uint32_t id, pad; } trail;  // his weapon's swing trail on it (OnlinePose.fx), its handle
     char trail_name[ONLINE_FX_MAX];
+    int8_t dye[3];  // (the dyes his armour pieces here were made with)
     uint16_t fxev_seen;  // (his last effect played here, by its number)
     struct { uint64_t p; uint32_t id, pad; uint64_t t; } fxev[ONLINE_FX_EVENTS];  // (those playing: their handles)
     int kago_n;                    // (the ring's charges it was made for)
@@ -519,6 +520,16 @@ static bool request_p(Cpu *c, const char *name, Handle *handle, uint64_t params)
 // + 0x10), +0x10 its buffer: s16 how many, s16 bytes used, then 0xc0 bytes of entries, each the key (a char *), its
 // type (5 a string), its value (0x7001126168 adds one)
 typedef struct { uint64_t vt, pad; int16_t n, used; uint8_t data[0xc0]; } InstParams;
+static void inst_params_s32(InstParams *p, const char *key, int32_t value) {  // (type 0, an s32)
+    if (!p->vt) p->vt = *(uint64_t *)(uintptr_t)0x7001d664b0ull + 0x10;
+    if (p->used + 13 > (int)sizeof p->data) return;
+    uint64_t k = (uint64_t)(uintptr_t)key;
+    memcpy(p->data + p->used, &k, 8);
+    p->data[p->used + 8] = 0;
+    memcpy(p->data + p->used + 9, &value, 4);
+    p->used += 13, p->n++;
+}
+
 static void inst_params_string(InstParams *p, const char *key, const char *value) {
     if (!p->vt) p->vt = *(uint64_t *)(uintptr_t)0x7001d664b0ull + 0x10;
     int len = (int)strlen(value) + 1;
@@ -534,6 +545,7 @@ float test_warp_hour(bool *held);   // runtime/services/test_warp.c
 void test_warp_set_hour(float hour);
 uint64_t test_warp_gdt_mgr(void);   // runtime/services/test_warp.c
 static float g_dist;  // (how far the player being done is)
+static InstParams *g_piece_params;  // (the params the next piece asked for is made with: an armour piece's dye; 0 none)
 
 // p should be `want` ("" none): a piece that changed goes, and the new one is asked for; true when it was made just now
 static bool piece_update(Cpu *c, int i, Piece *p, const char *want, const char *who) {
@@ -575,7 +587,7 @@ static bool piece_update(Cpu *c, int i, Piece *p, const char *want, const char *
     }
     if (p->fails < 5) {
         p->handle = new_handle();
-        if (request(c, want, p->handle)) p->pending = true;
+        if (request_p(c, want, p->handle, (uint64_t)(uintptr_t)g_piece_params)) p->pending = true;
         else if (p->fails++, p->wait = 60, p->fails == 1) LOG("[online] can't ask for a %s\n", want);
     }
     return false;
@@ -1395,6 +1407,11 @@ static void sample_pose(Cpu *c, uint64_t pinfo) {
     snprintf(pose.fx, sizeof pose.fx, "%s", g_fx_trail);  // (his weapon's swing trail: fx_update)
     memcpy(pose.fxev, g_fxev, sizeof pose.fxev);  // (his other effects: fx_update)
     pose.weather = weather_now();  // (the weather where he is: weather_follow)
+    for (int k = 0; k < 3; k++) {  // (his armour's dyes: the player's armour code, 0x7000cdc43c, makes each piece with
+        // its slot's at player +0x1114 / +0x1118 / +0x111c, ArmorDyeColor in its InstParamPack)
+        int32_t d = VALID(player) ? *(int32_t *)(uintptr_t)(player + 0x1114 + 4 * k) : -1;
+        pose.dye[k] = d >= 0 && d < 128 ? (int8_t)d : -1;
+    }
     {   // his Link's ELink property values (its user instance +0x70, ONLINE_FX_PROPS words: the player's ELink,
         // Player_GameRom, has that many; its containers choose what to play by them, a charge's level and the like)
         uint64_t ui = elink_ui(player), pv = VALID(ui) ? *(uint64_t *)(uintptr_t)(ui + 0x70) : 0;
@@ -3946,7 +3963,16 @@ void rt_online_frame(Cpu *c) {
             const char *oa = w[0] ? armor_actor(w) : NULL;
             Piece *p = &g_act[i].armor[k];
             bool had = p->actor != 0;
-            if (piece_update(c, i, p, oa ? oa : "", pl[i].name)) {
+            static InstParams dp;  // (his dye on it, as the player's armour code makes his: ArmorDyeColor)
+            memset(&dp, 0, sizeof dp);
+            int8_t dye = pl[i].pose.valid ? pl[i].pose.dye[k] : -1;
+            if (p->actor && dye != g_act[i].dye[k]) delete_piece(c, p);  // (another dye: made again with it)
+            if (pl[i].pose.valid && pl[i].pose.dye[k] >= 0) inst_params_s32(&dp, "ArmorDyeColor", pl[i].pose.dye[k]);
+            g_piece_params = dp.n ? &dp : NULL;
+            bool made = piece_update(c, i, p, oa ? oa : "", pl[i].name);
+            g_piece_params = NULL;
+            if (made) g_act[i].dye[k] = dye;
+            if (made) {
                 model_visible(c, p->actor, true);
                 g_act[i].covered = -1;
             }

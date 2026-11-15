@@ -90,6 +90,7 @@ typedef struct {
     uint32_t fx_props[ONLINE_FX_PROPS];          // his Link's ELink property values (its effects choose what to play by
                                                  // them: a charge's level, his weapon's kind...)
     uint8_t weather;                             // the weather where he is (the game's type, 0 clear .. 8; 255 unknown)
+    int8_t dye[3];                               // his armour's dye colours (head, upper, lower; -1 none)
 } OnlinePose;
 // OnlinePose.effects: Daruk's Protection's shield taking a hit (KAGO), its ring while he guards with its charges left
 // (KAGO_COUNT: 1 to 3, in effects >> KAGO_COUNT_SHIFT)

@@ -51,6 +51,7 @@ typedef struct {
     char fxev[8][24];  // (its last effects: none)
     uint32_t fx_props[24];  // (its ELink property values: none)
     uint8_t weather;  // (the weather where it is: 255 unknown, set below)
+    int8_t dye[3];  // (its armour's dyes: none, set below)
 } WireState;
 typedef struct { uint32_t magic; uint16_t version; char name[24], pass[24]; } WireHello;
 #pragma pack(pop)
@@ -76,7 +77,7 @@ int main(int argc, char **argv) {
     if (getaddrinfo(host, port, &hints, &res)) { fprintf(stderr, "bot: can't resolve %s\n", host); return 1; }
     sock_t s = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (connect(s, res->ai_addr, (int)res->ai_addrlen)) { fprintf(stderr, "bot: can't connect to %s:%s\n", host, port); return 1; }
-    WireHello h = {.magic = 0x4c4f5753u, .version = 26};
+    WireHello h = {.magic = 0x4c4f5753u, .version = 27};
     snprintf(h.name, sizeof h.name, "%s", name);
     msg(s, M_HELLO, &h, sizeof h);
     float centre[3] = {0, 0, 0};
@@ -173,7 +174,7 @@ int main(int argc, char **argv) {
                 memcpy(b0, &boom_seq, 2), b0[2] = 0, memcpy(b0 + 3, boom_at, 12);
             }
             // BOT_ICE=x,y,z: a Cryonis pillar of its there 10 s of every 20
-            ws.ice_n = 0, ws.weather = 255;
+            ws.ice_n = 0, ws.weather = 255, ws.dye[0] = ws.dye[1] = ws.dye[2] = -1;
             if (getenv("BOT_ICE") && t > 12 && fmod(t, 20) < 10) {
                 float f[3];
                 if (sscanf(getenv("BOT_ICE"), "%f,%f,%f", &f[0], &f[1], &f[2]) == 3) {
