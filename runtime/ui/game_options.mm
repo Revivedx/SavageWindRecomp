@@ -911,9 +911,17 @@ void build_items(void) {
                        [](const Item &) { return g_settings.sharpening; },
                        [](const Item &, int x) { g_settings.sharpening = x; }, 0));
     // AMD FSR 3 frame generation (vulkan/framegen.cpp)
-    v.push_back(toggle(P_VIDEO_ADV, "Frame generation (AMD FSR 3)", "Twice the frames on screen. Adds a little delay.",
-                       [](const Item &) { return (int)g_settings.frame_gen; },
-                       [](const Item &, int x) { g_settings.frame_gen = x; }, 0));
+    Item fg = toggle(P_VIDEO_ADV, "Frame generation (AMD FSR 3)", "Twice the frames on screen. Adds a little delay.",
+                     [](const Item &) { return (int)g_settings.frame_gen; },
+                     [](const Item &, int x) { g_settings.frame_gen = x; }, 0);
+    fg.desc_fn = [](const Item &) {
+        if (dynamic_fg_no_gain())
+            return tr("No net gain here: Dynamic resolution would switch this off.");
+        if (dynamic_fg_disabled())
+            return tr("Dynamic resolution switched this off: no net gain.");
+        return tr("Twice the frames on screen. Adds a little delay.");
+    };
+    v.push_back(fg);
 #endif
     v.push_back(toggle(P_VIDEO_ADV, "Asynchronous shaders", "On: no stutter, but some effects appear late.",
                        [](const Item &) { return (int)g_settings.async_shaders; },

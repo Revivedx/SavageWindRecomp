@@ -173,6 +173,7 @@ static int dyn_res_probe_step = -1;        // the step whose gain is being measu
 static bool dyn_res_no_gain;               // a step smaller gained nothing: the CPU is the limit, stay at Native
 static int dyn_res_logged;                 // the "stay at Native" decision is logged once, not every hold
 static bool dyn_fg_disabled;               // frame generation had no net gain: turned off for this run
+static bool dyn_fg_no_gain;                // the same verdict, when the dynamic setting is off (a hint, not an action)
 static float dyn_fg_baseline;              // real fps measured with frame generation off, before it was enabled
 static int dyn_fg_hold;                    // frames frame generation has been on and measured
 static bool dyn_fg_was_on;
@@ -180,6 +181,9 @@ static bool dyn_fg_was_on;
 // Whether frame generation was switched off by the dynamic mode for having no net gain. Never touches the setting:
 // fg_wanted() simply reads this, so the menu still shows what the player chose and a reboot gets a fresh chance.
 bool dynamic_fg_disabled(void) { return dyn_fg_disabled; }
+// The same verdict, for the case where the dynamic setting is off: nothing is switched off, but the frame generation
+// row and the F10 overlay can say that it is costing frames without a net gain (see dynamic_fg_check).
+bool dynamic_fg_no_gain(void) { return dyn_fg_no_gain; }
 
 // Whether the dynamic mode is in use at all, and whether it is the upscaler's factor or the scene's own scale that
 // it moves. Both are read by output_scale and by the F10 overlay (perf_overlay_draw).
@@ -243,15 +247,18 @@ double dynamic_res_scale(void) {
 //
 // Frame generation is not free: on a CPU-bound machine it can lower the real frame rate enough that even doubled
 // presentation loses. Its net gain is judged against the real rate measured while it was off: when it is on, the
-// presented rate (real + generated) has to beat that baseline by DYN_FG_GAIN, otherwise frame generation is switched
-// off for the rest of the run (dynamic_fg_disabled, read by device.c fg_wanted) instead of left costing frames.
-// It never changes g_settings.frame_gen: the setting stays as the player left it, a reboot starts a fresh measurement,
-// and if frame generation was on from the very first frame there is no baseline to compare with - it is left alone
-// rather than guessed at. Turning frame generation off by hand is not a "no gain" verdict: it just clears the baseline.
+// presented rate (real + generated) has to beat that baseline by DYN_FG_GAIN.
+//
+// The verdict is the same whatever the dynamic setting is, but what is done with it is not: with the dynamic setting
+// ON, frame generation is switched off for the rest of the run (dynamic_fg_disabled, read by device.c fg_wanted) -
+// that is part of what the setting is for. With it OFF, nothing is switched off; dynamic_fg_no_gain is just a hint
+// shown next to the frame generation setting and in the F10 overlay. Either way g_settings.frame_gen is untouched:
+// the setting stays as the player left it, a reboot starts a fresh measurement, frame generation that was on from
+// the very first frame has no baseline and is left alone, and turning it off by hand is not a verdict.
 #define DYN_FG_GAIN 1.15       // presented rate has to beat the no-FG rate by at least this to be worth it
 #define DYN_FG_HOLD 90         // presented frames FG is left on before its net gain is judged (1.5 s at 60 fps)
 static void dynamic_fg_check(float fps, float fps_generated, bool fg_on) {
-    if (dyn_fg_disabled) return;
+    if (dyn_fg_disabled || dyn_fg_no_gain) return;  // (the verdict is for the run; a reboot clears it)
     if (!fg_on) {
         if (fps > 0) dyn_fg_baseline = fps;  // (the rate without FG: the reference for the next time it is on)
         dyn_fg_hold = 0;
@@ -265,9 +272,15 @@ static void dynamic_fg_check(float fps, float fps_generated, bool fg_on) {
     dyn_fg_hold = 0;
     float presented = fps + fps_generated;
     if (dyn_fg_baseline > 0 && presented < dyn_fg_baseline * DYN_FG_GAIN) {
-        dyn_fg_disabled = true;
-        LOG("[dynamic] frame generation off: %.0f presented fps against %.0f without it (no net gain)\n", presented,
-            dyn_fg_baseline);
+        if (dynamic_res_active()) {
+            dyn_fg_disabled = true;
+            LOG("[dynamic] frame generation off: %.0f presented fps against %.0f without it (no net gain)\n", presented,
+                dyn_fg_baseline);
+        } else {
+            dyn_fg_no_gain = true;  // (dynamic off: a hint in the menu and the overlay, nothing switched off)
+            LOG("[dynamic] frame generation has no net gain: %.0f presented fps against %.0f without it (hint only)\n",
+                presented, dyn_fg_baseline);
+        }
     } else {
         // (it is paying for itself: keep the comparison fresh, but never above what the game can really draw)
         dyn_fg_baseline = fmaxf(dyn_fg_baseline, fps);

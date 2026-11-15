@@ -71,4 +71,5 @@ void dynamic_res_reset(void);
 bool dynamic_res_active(void);
 bool dynamic_res_is_upscale(void);
 double dynamic_factor(void);
-bool dynamic_fg_disabled(void);
+bool dynamic_fg_disabled(void);  // dynamic on: FG was switched off for no net gain
+bool dynamic_fg_no_gain(void);   // dynamic off: the same verdict, as a hint only (nothing switched off)

@@ -1238,8 +1238,9 @@ NVN(nvnQueuePresentTexture) {
         // holds; frame generation itself is left alone unless it has no net gain.
         static PerfStats ps;
         perfmon_snapshot(&ps);
-        extern volatile int g_fg_active;
-        dynamic_res_tick(ps.fps, ps.fps_generated, g_fg_active != 0);
+        // (fps_generated counts the frames made in the last second: a steadier signal than g_fg_active, which is
+        // just whether the last present was a generated one)
+        dynamic_res_tick(ps.fps, ps.fps_generated, ps.fps_generated > 0);
     }
     TL("present (backend)");
     if (async_exec()) {

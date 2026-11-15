@@ -1058,11 +1058,18 @@ static void tab_display(void) {
                    "upscaler off), before the HUD is drawn over it: edges get crisper without halos. Most useful with "
                    "AMD FSR 1.", false);
         // AMD FSR 3 frame generation (vulkan/framegen.cpp; the frame rate counts the presented frames: framepace.c)
-        opt_toggle("Frame generation (AMD FSR 3)", &g_settings.frame_gen, false,
-                   "AMD FSR 3 makes a frame between each two the game draws: about twice the frames on screen. The "
-                   "frame rate above counts them all, so the game itself draws half of it (60 with 120) and the "
-                   "controls answer as at that rate, a little later. In play only: the menus and the map show the "
-                   "game's own frames. Fast moves can leave faint smears around Link and what moves on its own.");
+        static std::string fg_desc;
+        fg_desc = std::string(tr("AMD FSR 3 makes a frame between each two the game draws: about twice the frames on "
+                                 "screen. The frame rate above counts them all, so the game itself draws half of it "
+                                 "(60 with 120) and the controls answer as at that rate, a little later. In play only: "
+                                 "the menus and the map show the game's own frames. Fast moves can leave faint smears "
+                                 "around Link and what moves on its own."));
+        if (dynamic_fg_no_gain())  // (the dynamic setting is off: this is a hint, nothing is switched off)
+            fg_desc += std::string("\n\n") + tr("It is not adding frames here: turning on Dynamic resolution would "
+                                                "switch it off automatically.");
+        else if (dynamic_fg_disabled())
+            fg_desc += std::string("\n\n") + tr("Dynamic resolution switched it off: it had no net gain.");
+        opt_toggle("Frame generation (AMD FSR 3)", &g_settings.frame_gen, false, fg_desc.c_str());
     }
 #endif
     opt_toggle("Asynchronous shaders", &g_settings.async_shaders, true,
@@ -1813,9 +1820,14 @@ static void perf_overlay_draw(ImGuiIO &io, float scale) {
                  dynamic_res_is_upscale() ? tr("upscaler") : tr("scene"), dynamic_factor(), target,
                  g_fg_active ? tr("presented rate") : tr("real rate"));
         ImGui::TextDisabled("%s", dyn);
-        if (dynamic_fg_disabled())
-            ImGui::TextDisabled("%s", tr("Frame generation off: no net gain"));
     }
+    // The frame generation verdict is the same whether the dynamic setting is on or off: with it on, frame generation
+    // was switched off; with it off, it is only a hint in the settings and here. Either way the player sees why the
+    // presented rate is what it is.
+    if (dynamic_fg_disabled())
+        ImGui::TextDisabled("%s", tr("Frame generation off: no net gain"));
+    else if (dynamic_fg_no_gain())
+        ImGui::TextDisabled("%s", tr("Frame generation: no net gain"));
     // Link's coordinates; no line at all while there is no Link or the game is in a scene (title, loading, movie, event).
     // Axis letters are not translated.
     float pos[3];
