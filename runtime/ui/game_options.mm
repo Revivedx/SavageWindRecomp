@@ -157,7 +157,7 @@ const char16_t GREY = 3;    // (the game's message colour for greyed values)
 const char *const k_modes[] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance", "Native"};
 const int k_modes_order[] = {UPQ_NATIVE, UPQ_ULTRA, UPQ_QUALITY, UPQ_BALANCED, UPQ_PERFORMANCE, UPQ_ULTRA_PERFORMANCE};
 int upscale_mode_base(void) {
-    return (g_settings.upscaler == UPSCALE_FSR3 || g_settings.upscaler == UPSCALE_FSR4) ? 0 : 1;
+    return rt_fsr3() || rt_xess() ? 0 : 1;
 }
 #ifdef __APPLE__
 const char *const k_aa[] = {"Off", "SMAA"};

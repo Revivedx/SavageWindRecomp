@@ -108,7 +108,9 @@ bool upscale_modes_available(void) {
 // any size. SAVAGEWIND_UPSCALE_ANY=1: offered at any size, as before.
 static volatile int g_out_lines;  // the window's height (output_scale; 0: not known yet)
 bool upscale_mode_offered(int q) {
-    if (q == UPQ_NATIVE) return g_settings.upscaler == UPSCALE_FSR3 || g_settings.upscaler == UPSCALE_FSR4;
+    if (q == UPQ_NATIVE) return rt_fsr3() || rt_xess();  // (every temporal upscaler: XeSS reconstructs from the same
+                                                         //  inputs, so its 1x is anti-aliasing too - #820 knew only
+                                                         //  of FSR 3 and FSR 4, which were the ones there then)
     static int any = -1;
     if (any < 0) any = getenv("SAVAGEWIND_UPSCALE_ANY") && atoi(getenv("SAVAGEWIND_UPSCALE_ANY")) != 0;
     if (q != UPQ_ULTRA_PERFORMANCE || any || !(rt_fsr3() || rt_xess() || rt_dlss())) return true;
