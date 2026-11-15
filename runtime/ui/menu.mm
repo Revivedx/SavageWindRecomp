@@ -1265,9 +1265,11 @@ static void tab_display(void) {
                "little faster, a flatter image.");
     opt_toggle("Depth of field", &g_settings.depth_of_field, true, "The game blurs the far distance a little. Off: sharp "
                "out to the horizon, a little faster.");
-    opt_toggle("Dynamic resolution", &g_settings.dynamic_res, true, "As on the console: the game lowers its 3D "
-               "resolution (down to 1280x720 before upscaling) while frames take long, and raises it again after. "
-               "Off: always the full resolution. On with the Potato preset.");
+    opt_toggle("Dynamic resolution", &g_settings.dynamic_res, true, "The 3D scene renders smaller when the frame "
+               "rate falls behind, and sharper again when it can be - the game itself scales it back to the window's "
+               "size, so the HUD and menus stay sharp. It only keeps a smaller size where doing so actually gains "
+               "frames; on a machine whose CPU is the limit it stays at the full resolution. Off: always the full "
+               "resolution. On with the Potato preset.");
     if (gamelib_compat())  // (runtime/gamelib.h: a CPU without FMA instructions; simd.h simd_fma_unfused)
         opt_toggle("Fast math", &g_settings.fast_fma, true, "Your CPU has no FMA instructions, so the game's math runs "
                    "in software. On: about 10% faster; some results round a tiny bit differently from the console, "

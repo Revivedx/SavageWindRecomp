@@ -929,7 +929,9 @@ void build_items(void) {
     v.push_back(toggle(P_VIDEO_ADV, "Depth of field", "Blurs the far distance. Off: sharp out to the horizon.",
                        [](const Item &) { return (int)g_settings.depth_of_field; },
                        [](const Item &, int x) { g_settings.depth_of_field = x; }, 1));
-    v.push_back(toggle(P_VIDEO_ADV, "Dynamic resolution", "Lowers the 3D resolution when a frame takes long, as on the console.",
+    v.push_back(toggle(P_VIDEO_ADV, "Dynamic resolution", "Renders the 3D scene smaller when frames are slow, "
+                       "sharper when they aren't; stays full size where that gains nothing. Has no effect with an "
+                       "upscaler: its mode sets the render size.",
                        [](const Item &) { return (int)g_settings.dynamic_res; },
                        [](const Item &, int x) { g_settings.dynamic_res = x; }, 1));
     if (gamelib_compat())  // (runtime/gamelib.h: a CPU without FMA instructions; simd.h simd_fma_unfused)

@@ -11804,7 +11804,12 @@ static void exec_list(uint64_t handle, int depth) {
             if (frozen < 0) { const char *e = getenv("SAVAGEWIND_VK_COUNTER"); frozen = !e || strcmp(e, "live"); }
             static uint64_t frame_seen = ~0ull, frame_ts;
             extern uint64_t vk_frame_counter(void);
-            bool fixed = frozen && !g_settings.dynamic_res;
+            // The game's own counters used to drive Video > Advanced > Dynamic resolution from its GPU timings, but on
+            // a PC they measure our command translation, not the GPU's work. They stay frozen: that setting is now
+            // driven by the frame rate instead (nvn/output_scale.c dynamic_res_tick), so the game always keeps its
+            // 1600x900 and our own scale decides how small the scene actually draws. SAVAGEWIND_VK_COUNTER=live:
+            // as before, for testing the game's own behaviour.
+            bool fixed = frozen;
             if (fixed && vk_frame_counter() != frame_seen) { frame_seen = vk_frame_counter(); frame_ts = SDL_GetTicksNS(); }
             uint64_t ts = fixed ? frame_ts : SDL_GetTicksNS();
             if (type == 1 && out && oq_on()) {  // SAMPLES_PASSED: written once the queries' submission is done

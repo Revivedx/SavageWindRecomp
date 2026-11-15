@@ -24,6 +24,7 @@
 #include "../hle.h"
 #include "../platform.h"
 #include "../settings.h"
+#include "../window_size.h"  // (winsize_refresh_rate: the display's rate, the dynamic resolution's default target)
 #include "output_scale.h"
 
 #ifndef __APPLE__
@@ -119,6 +120,136 @@ double upscale_factor(void) {
                ? upscale_mode_factor(upscale_quality_now()) : 1.0;
 }
 
+// ---- Video > Advanced > Dynamic resolution, driven by the frame rate instead of the game's own timers
+//
+// The game's own mechanism (exec.c CMD_REPORT_COUNTER) times its GPU work with the console's counters and picks
+// between two fixed sizes from that. On a PC those counters measure our command translation, not the GPU's work, so
+// they are frozen by default and the setting has had nothing to do unless it is unfrozen by hand. It now works the
+// way the upscaler's modes do: the scene is drawn smaller or bigger until the frame rate holds, one step at a time.
+//
+// The hard part is that drawing fewer pixels only helps where the GPU is the limit. On a CPU-bound machine (most of
+// this project's 1080p / 1440p runs) it changes nothing and only makes the picture softer. GPU load readings are
+// unreliable across vendors, so instead of guessing the limiter this measures it: each step's settled frame rate is
+// kept in a small table, and a step smaller is only kept if it actually raised the rate over the step above it. The
+// first step that does not is undone, and the scale goes back to Native and stays there for the rest of the run -
+// the CPU is the limit, so there is nothing to trade. That is what makes this a feature on a GPU-bound machine and
+// a no-op on the machine that withdrew #852, both without a hardware whitelist.
+//
+// A step is judged only after DYN_RES_HOLD frames at that step have gone by, so a load spike, a shader compile or a
+// scene change cannot shrink the picture. SAVAGEWIND_DYNAMIC_LOG=1: every step and what it decided.
+#define DYN_RES_STEPS 8        // 1.0 (Native) down to 3.0x, the upscaler's scale factors
+#define DYN_RES_HOLD 60        // presented frames a step is held before its rate is judged (1 s at 60 fps)
+#define DYN_RES_SHRINK 0.92    // under this share of the target, try one step smaller
+#define DYN_RES_GROW 1.10      // over it, one step sharper
+#define DYN_RES_GAIN 1.05      // a step smaller has to gain at least this share of the rate to be kept
+static const double k_dyn_res_factors[DYN_RES_STEPS] = {1.0, 1.3, 1.5, 1.7, 2.0, 2.4, 2.7, 3.0};
+static volatile int dyn_res_step;         // 0: Native, DYN_RES_STEPS - 1: smallest
+static volatile double dyn_res_now = 1.0;
+static int dyn_res_hold;
+static float dyn_res_rate[DYN_RES_STEPS];  // the settled rate measured at each step (0: not measured)
+static int dyn_res_probe_step = -1;        // the step whose gain is being measured (-1: none)
+static bool dyn_res_no_gain;               // a step smaller gained nothing: the CPU is the limit, stay at Native
+static int dyn_res_logged;                 // the "stay at Native" decision is logged once, not every hold
+
+// The target frame rate: the display's, or the game's own limit when that is lower (a 60 limit on a 160 Hz screen
+// aims at 60, not 160). Uncapped with no display rate: 60, the console's own. The target only decides when to try
+// a smaller step and when there is headroom to go sharper; whether a step is kept is decided by the measured gain,
+// so a target the machine cannot reach does not walk the scale down forever.
+double dynamic_res_target(void) {
+    int lim = g_settings.fps_limit;  // (0: no limit)
+    float hz = winsize_refresh_rate();
+    double target = lim > 0 ? (double)lim : hz > 1 ? (double)hz : 60.0;
+    if (lim > 0 && hz > 1 && (double)hz < target) target = (double)hz;
+    return target;
+}
+
+// The scale the scene is drawn at (1.0: Native, the window's own size; > 1: smaller). Read by output_scale on the
+// thread that lays the frame out. An upscaler running sets the render size itself, so this stays at 1.0 for it.
+double dynamic_res_scale(void) {
+    int u = g_settings.upscaler;
+    bool upscaling = u != UPSCALE_OFF && upscaler_available(u) && upscale_modes_available();
+    // (the setting was turned off and on again, or an upscaler came or went: the rates measured before belong to
+    // another configuration, so start over at Native with a fresh chance to measure the limiter)
+    static bool last_active;
+    bool active = g_settings.dynamic_res && !upscaling;
+    if (!active || !last_active) {
+        if (last_active && !active) dynamic_res_reset();
+        last_active = active;
+    }
+    if (!active) {
+        dyn_res_now = 1.0;
+        dyn_res_step = 0;
+        return 1.0;
+    }
+    // (SAVAGEWIND_DYNAMIC_RES_STEP=<0..7>: hold one step, for testing the sizes and the scene's composite without
+    // waiting for the frame rate to move them)
+    static int forced = -2;
+    if (forced == -2) {
+        const char *e = getenv("SAVAGEWIND_DYNAMIC_RES_STEP");
+        forced = e ? atoi(e) : -1;
+        if (forced >= DYN_RES_STEPS) forced = DYN_RES_STEPS - 1;
+    }
+    if (forced >= 0) dyn_res_step = forced;
+    dyn_res_now = k_dyn_res_factors[dyn_res_step];
+    return dyn_res_now;
+}
+
+// Once per presented frame, from objects.c, with the rate over the last second. A step's rate is only recorded after
+// it has been held for DYN_RES_HOLD frames, so the number compared is a settled one, not a spike.
+void dynamic_res_tick(float fps) {
+    dynamic_res_scale();  // (keep dyn_res_step in sync with the upscaler setting)
+    // (the first seconds are loading, shader compilation and pipeline builds: the frame rate there says nothing
+    // about the scene's cost. Skip them, and everything after a reboot, which resets the counter.)
+    if (framepace_shown_frame() < 180) { dyn_res_hold = 0; return; }
+    if (!g_settings.dynamic_res || fps <= 0) { dyn_res_hold = 0; return; }
+    double target = dynamic_res_target();
+    if (target <= 0) return;
+    if (++dyn_res_hold < DYN_RES_HOLD) return;
+    dyn_res_hold = 0;
+    float ratio = (float)(fps / target);
+    int before = dyn_res_step;
+    const char *why = "";
+    dyn_res_rate[dyn_res_step] = fps;  // (settled rate at the step we have been holding)
+    if (dyn_res_probe_step >= 0) {
+        // (a step smaller was taken DYN_RES_HOLD frames ago: this is its settled rate. Keep it only if it gained
+        // frames over the step it came from - that is the whole test of whether the GPU is the limit here.)
+        int probe = dyn_res_probe_step;
+        dyn_res_probe_step = -1;
+        if (dyn_res_rate[probe] < dyn_res_rate[probe - 1] * DYN_RES_GAIN) {
+            dyn_res_no_gain = true;
+            dyn_res_step = 0;  // (no gain: CPU-bound, back to full resolution and stay there)
+            why = " (no gain: CPU-bound, back to Native)";
+        } else {
+            why = " (kept: it gained frames)";
+        }
+    } else if (dyn_res_no_gain) {
+        if (dyn_res_step != 0) dyn_res_step = 0, why = " (CPU-bound: Native)";
+        // (stay at Native for the rest of the run: drawing smaller cannot help here. No more log lines for it.)
+    } else if (ratio > DYN_RES_GROW && dyn_res_step > 0) {
+        dyn_res_step--;  // (clear of the target: room to be sharper)
+        why = " (headroom)";
+    } else if (dyn_res_step < DYN_RES_STEPS - 1 && ratio < DYN_RES_SHRINK) {
+        dyn_res_probe_step = ++dyn_res_step;  // (well under the target: try one step smaller, judge it next time)
+        why = " (trying smaller)";
+    }
+    if ((dyn_res_step != before || (dyn_res_no_gain && !dyn_res_logged)) && getenv("SAVAGEWIND_DYNAMIC_LOG")) {
+        LOG("[dynamic-res] %.0f fps at a target of %.0f: %.2fx -> %.2fx%s\n", fps, target,
+            k_dyn_res_factors[before], k_dyn_res_factors[dyn_res_step], why);
+        if (dyn_res_no_gain) dyn_res_logged = 1;
+    }
+}
+
+// A new window or boot: the scale starts over at Native, with a fresh chance to measure the limiter
+void dynamic_res_reset(void) {
+    dyn_res_step = 0;
+    dyn_res_hold = 0;
+    dyn_res_now = 1.0;
+    dyn_res_probe_step = -1;
+    dyn_res_no_gain = false;
+    dyn_res_logged = 0;
+    memset((void *)dyn_res_rate, 0, sizeof dyn_res_rate);
+}
+
 // The window's shape over 16:9 while the game's views are widened to fill it, else 1; the field of view's factor in
 // use (rt_persp)
 static volatile float g_view_shape = 1, g_fov = 1, g_map_extra_y;
@@ -126,6 +257,11 @@ static volatile float g_window_shape = 1;  // the window's shape over 16:9, wide
 static uint32_t g_world_proj[4];  // tan(fovy / 2), aspect, near, far of the world camera's last matrix (rt_persp), float bits
 
 void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
+    {   // (the window's size changed: the dynamic resolution's steps were chosen for the old one, start over)
+        static double last_w, last_h;
+        if (last_w > 0 && (dw != last_w || dh != last_h)) dynamic_res_reset();
+        last_w = dw, last_h = dh;
+    }
     g_out_lines = (int)dh;
     double fit = fmin(dw / 1920.0, dh / 1080.0);
     static double forced = -1, wide_test = -1;
@@ -175,7 +311,10 @@ void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
     o->sx = sx; o->sy = sy; o->shape = shape;
     // the 3D scene (BOTW docked: 1600x900, composited into the 1920x1080 final image) at the final image's
     // resolution, scaled by Video > Render scale (on Vulkan) and divided by the upscaler's factor
-    double k = 1080.0 / SCENE_LINES / scene_div * scene_ss;
+    // Video > Advanced > Dynamic resolution moves that scene scale on its own: the game's own scale is divided by
+    // dynamic_res_scale() (> 1 means smaller), so the size the scene is drawn at follows the frame rate the way the
+    // upscaler's modes do. Applied here, on the scene only, so the HUD and the menus stay at the window's resolution.
+    double k = 1080.0 / SCENE_LINES / scene_div * scene_ss / dynamic_res_scale();
     o->scene_sx = sx * k; o->scene_sy = sy * k;
     double scap = fmin(MAX_TEX / (1920.0 * o->scene_sx), MAX_TEX / (1080.0 * o->scene_sy));
     if (scap < 1.0) { o->scene_sx *= scap; o->scene_sy *= scap; }

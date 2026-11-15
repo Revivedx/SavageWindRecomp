@@ -56,3 +56,13 @@ float output_map_extra_y(void);
 // Extra pause header/footer space, and the full visible pointer canvas (map or pause).
 float output_pause_extra_y(void);
 float output_ui_extra_y(void);
+
+// Video > Advanced > Dynamic resolution: the scene's scale follows the frame rate towards dynamic_res_target(), the
+// way the upscaler's modes do (nvn/output_scale.c). A step smaller that does not raise the frame rate is undone and
+// shrinking is switched off for the run - so on a CPU-bound machine it stays at full resolution rather than making
+// the picture softer for nothing. dynamic_res_scale is read by output_scale for the scene's scale; the tick runs once
+// per presented frame with the rate perfmon measured; reset on a new window or boot.
+double dynamic_res_scale(void);
+void dynamic_res_tick(float fps);
+double dynamic_res_target(void);
+void dynamic_res_reset(void);

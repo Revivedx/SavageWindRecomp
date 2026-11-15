@@ -9,6 +9,7 @@
 #include "../prof.h"
 #include "../perfmon.h"
 #include "nvn.h"
+#include "output_scale.h"  // (dynamic_res_tick: Video > Advanced > Dynamic resolution)
 
 void renderer_sync(void);
 
@@ -1232,6 +1233,12 @@ NVN(nvnQueuePresentTexture) {
     present_pace(w->interval);
     if (frame_split()) g_fs_pace = plat_now_ns();
     perfmon_frame();
+    {   // Video > Advanced > Dynamic resolution: the scene's size follows the frame rate (nvn/output_scale.c). A step
+        // smaller that does not raise the frame rate is undone, so a CPU-bound machine keeps its full resolution.
+        static PerfStats ps;
+        perfmon_snapshot(&ps);
+        dynamic_res_tick(ps.fps);
+    }
     TL("present (backend)");
     if (async_exec()) {
         if (i >= 0 && i < w->num) queue_put(QOP_PRESENT, 0, HOST(NvnTexture, w->textures[i]));
