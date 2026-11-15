@@ -704,7 +704,15 @@ void act_poll(bool live) {
     if (act_log_on()) act_log_poll();
 }
 
+// The last time the game asked the Master Cycle Zero's accelerate action (38): it does every frame while Link rides it
+static _Atomic uint64_t cycle_asked_ns;
+bool act_cycle_live(void) {
+    uint64_t t = cycle_asked_ns;
+    return t && SDL_GetTicksNS() - t < 250000000ull;
+}
+
 int rt_act_query(int kind, uint64_t pad, uint64_t id, uint64_t lr, uint64_t masks) {
+    if (id == 38) cycle_asked_ns = SDL_GetTicksNS();
     if (!k_masks && masks) { k_masks = (const uint32_t *)(uintptr_t)masks; act_refresh(); }
     if (id < ACT_COUNT && k_masks && (k_masks[id] != k_masks_190[id]) != ((a_mask_diff >> id & 1) != 0))
         act_refresh();

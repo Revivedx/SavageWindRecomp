@@ -4504,10 +4504,11 @@ static void resolve_feedback(Prog *pr) {
             }
             // (once: reused past draws into the target since - that is its point, a pass break and a copy saved each
             // time, ~450 a frame in the open world: refusing every one took Mali-G610 from 30 to 7 FPS. But not for
-            // targets of the formats in SAVAGEWIND_VK_ONCE_STRICT_FMT (NVN format codes, default 0xa: R32F, the format of
-            // the target below), nor past a clear of the target (snap_cleared): every few seconds BOTW makes ~155
+            // targets of the formats in SAVAGEWIND_VK_ONCE_STRICT_FMT (NVN format codes, default 0xa,0x25: R32F and
+            // RGBA16F), nor past a clear of the target (snap_cleared): every few seconds BOTW makes ~155
             // more draws with a shader that samples its bound 1600x900 R32F target, drawn into since its snapshot - the
-            // frames where the water lost its sky reflection. SAVAGEWIND_VK_ONCE_STRICT=1: not past any write; =0: past
+            // frames where the water lost its sky reflection - and waterfall base refraction samples the RGBA16F
+            // target after earlier passes drew into it (#848). SAVAGEWIND_VK_ONCE_STRICT=1: not past any write; =0: past
             // anything, as before. SAVAGEWIND_DEBUG_ONCE=1: the reuses by what came between and by format, every 2 s.)
             static int strict = -1, odbg = -1, nsf;
             static uint32_t sfmt[8];
@@ -4515,7 +4516,7 @@ static void resolve_feedback(Prog *pr) {
                 const char *e = getenv("SAVAGEWIND_VK_ONCE_STRICT"), *f = getenv("SAVAGEWIND_VK_ONCE_STRICT_FMT");
                 strict = e ? atoi(e) : 2;  // (2: by format and past clears)
                 odbg = getenv("SAVAGEWIND_DEBUG_ONCE") != NULL;
-                if (!f) f = "0xa";
+                if (!f) f = "0xa,0x25";
                 for (const char *q = f; *q && nsf < 8;) {
                     char *end;
                     unsigned long v = strtoul(q, &end, 0);
@@ -10672,10 +10673,16 @@ static bool cam_motion(VkCommandBuffer cb, const float *m, const double *prev_vp
     static int no_link = -1;  // (A/B) SAVAGEWIND_FG_NO_LINK=1: camera motion only
     if (no_link < 0) no_link = getenv("SAVAGEWIND_FG_NO_LINK") != NULL;
     if (!no_link && link) {
+        // Riding (a horse, the Master Cycle Zero): what he rides moves with him, below and around him, and was left to
+        // the camera's vectors (it went back and forth in the generated frames): the box takes it in, 3.2 m across and
+        // down to the ground.
+        extern bool rt_link_mounted(void);
+        bool mounted = rt_link_mounted();
+        float half = mounted ? 1.6f : 0.7f, low = mounted ? -1.9f : 0.1f;
         float lo[2] = {1e9f, 1e9f}, hi[2] = {-1e9f, -1e9f}, dlo = 1e9f, dhi = -1e9f, uv[2], d;
         bool ok_box = true;
         for (int k = 0; k < 8 && ok_box; k++) {
-            float p[3] = {lk[0] + (k & 1 ? 0.7f : -0.7f), lk[1] + (k & 2 ? 1.9f : 0.1f), lk[2] + (k & 4 ? 0.7f : -0.7f)};
+            float p[3] = {lk[0] + (k & 1 ? half : -half), lk[1] + (k & 2 ? 1.9f : low), lk[2] + (k & 4 ? half : -half)};
             ok_box = fg_project(vp, p, ysign, gl_depth, uv, &d);
             for (int a = 0; a < 2; a++) lo[a] = fminf(lo[a], uv[a]), hi[a] = fmaxf(hi[a], uv[a]);
             dlo = fminf(dlo, d), dhi = fmaxf(dhi, d);
@@ -10691,8 +10698,8 @@ static bool cam_motion(VkCommandBuffer cb, const float *m, const double *prev_vp
         static uint64_t k;
         if (lg < 0) lg = getenv("SAVAGEWIND_FG_LOG") != NULL;
         if (lg && k++ % 60 == 0)
-            LOG("[fg] Link at %.2f %.2f %.2f: box uv %.3f..%.3f x %.3f..%.3f, depth %.6f..%.6f, motion %.4f %.4f\n",
-                lk[0], lk[1], lk[2], pc[20], pc[22], pc[21], pc[23], pc[24], pc[25], pc[26], pc[27]);
+            LOG("[fg] Link%s at %.2f %.2f %.2f: box uv %.3f..%.3f x %.3f..%.3f, depth %.6f..%.6f, motion %.4f %.4f\n",
+                mounted ? " (riding)" : "", lk[0], lk[1], lk[2], pc[20], pc[22], pc[21], pc[23], pc[24], pc[25], pc[26], pc[27]);
     }
     post_pass_pc(cb, "fg_mv.frag", &dv, 1, mv, pc, sizeof pc, false);
     return true;

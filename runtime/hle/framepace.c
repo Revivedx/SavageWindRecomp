@@ -607,6 +607,25 @@ void rt_stale_actor(void) {
     if (k <= 5 || (k & (k - 1)) == 0) LOG("[game] a stale actor in the target manager was ignored (%u so far)\n", k);
 }
 
+int rt_actor_link_valid(uint64_t actor) {
+    uint64_t top = HEAP_BASE + kernel_heap_size();
+    if ((actor & 7) || actor < HEAP_BASE || actor + 0x578 > top) {
+        rt_stale_actor();
+        return 0;
+    }
+    uint64_t link = *(const uint64_t *)(uintptr_t)(actor + 0x570);
+    if ((link & 7) || link < HEAP_BASE || link + 0x90 > top) {
+        rt_stale_actor();
+        return 0;
+    }
+    uint64_t param = *(const uint64_t *)(uintptr_t)(link + 0x88);
+    if ((param & 7) || param < HEAP_BASE || param + 0x770 > top) {
+        rt_stale_actor();
+        return 0;
+    }
+    return 1;
+}
+
 // The game's frames that were presented: one step per presented frame, where game frames step twice while paused
 // (output_scale.c's jitter sequence: each presented frame gets the next phase)
 static uint64_t shown_frames;

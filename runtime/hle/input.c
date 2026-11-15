@@ -382,6 +382,13 @@ static bool horse_riding(void) {
     return t && plat_now_ns() - t < CAM_CALLER_NS;
 }
 
+// Link is on a horse or the Master Cycle Zero (vulkan/exec.c: frame generation moves his box with him, and what he rides
+// is in it then). The cycle: the game asks its accelerate action every frame while Link rides it (bindings.c).
+bool rt_link_mounted(void) {
+    extern bool act_cycle_live(void);
+    return horse_riding() || act_cycle_live();
+}
+
 // tools/patches.py _cam_stick: the camera's stick input (two floats at out) when the mouse gives it; 0: the stick's
 int rt_cam_stick(uint64_t out, uint64_t lr) {
     cam_read_ns = plat_now_ns();
