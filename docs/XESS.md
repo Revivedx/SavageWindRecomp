@@ -22,12 +22,22 @@ MIT-licensed API headers (`third_party/xess/xess.h`, `xess_vk.h`).
   reactive mask, and the jittered camera (output_scale.c, Halton over the sequence length XeSS
   recommends, 8 x the upscale ratio squared). TAA and SMAA stand down while it runs, as with
   FSR 3 (it anti-aliases the scene itself).
+- Dispatch runs on the recorder thread, as FSR 3's does (`exec.c xess_run`, a `rec_custom` job, after
+  e0842cd's rework of the upscalers): the library records into the command buffer in the recorder's
+  turn, so the thread that translates the game's command lists does not wait on it. Nothing may be
+  queued from the recorder thread, so the input layout transitions, the full barrier before them and
+  the library's own path call `vkCmd*` directly there (`rec_on_recorder`), and the per-frame image views
+  are destroyed by the next dispatch instead of going to the translating thread's unlocked deferred
+  list. `xessVKInit` is the one call that wants the device idle: it runs on a new output size only
+  (`xess_output_changed`), not per frame.
 - Layout contract: the game's images live in GENERAL; the inputs are transitioned to
   SHADER_READ_ONLY_OPTIMAL around the library's commands and back afterwards, the output stays in
-  GENERAL (its documented requirement). Per-frame image views are made for the library and released
-  deferred once the submission has passed.
+  GENERAL (its documented requirement).
 - Velocity scale is set per size (`xessSetVelocityScale(-0.5 w, +0.5 h)`): the game's vectors are
   clip-space NDC differences, XeSS takes pixels, its y pointing down.
+- Where the shadow maps follow a temporal upscaler's factor and where Ultra Performance is offered
+  (`output_scale.c`), `rt_xess` counts with FSR 3 and DLSS: the cascades keep as many texels per drawn
+  pixel as native, and Ultra Performance waits for a 4K window.
 
 ## Frame generation and low latency (XeFG / XeLL): not possible over Vulkan, shelved
 
@@ -62,8 +72,15 @@ the game has today (AMD FSR 3, `vulkan/framegen.cpp`) stays.
 - Run on an Intel Arc B580 (driver 101.8864, Vulkan 1.4.348) on Windows, `libxess.dll` 2.0.2 next to the
   executable, a hidden start with a warp into the Great Plateau: the log's `[xess] libxess.dll 2.0.2
   loaded`, `[xess] context made` and `[xess] initialized 2954x1662 -> 3840x2160` show it running, the
-  scene goes through it (`[post] scene ... fsr3 -> ...`, the same path FSR 3 takes), and the game holds
-  66-73 fps at a 4K window with the game's dynamic resolution raising the render size. The overlay's
-  "Upscaler: XeSS" line and the `[xess]` log lines report what actually runs.
-- Not tested: a Radeon or GeForce GPU (XeSS's DP4a path), FSR 3 or FSR 4 in the same run, and a window
-  smaller than 4K (where the quality mode's own factor applies instead of the dynamic resolution).
+  scene goes through it (`[post] scene ... graded fsr3 -> ...`, the same path FSR 3 takes), and the game
+  holds 116-123 fps at a 4K window with the game's dynamic resolution raising the render size. The
+  overlay's "Upscaler: XeSS" line and the `[xess]` log lines report what actually runs.
+- The dispatch runs on the recorder thread, as FSR 3's does (`exec.c xess_run`, a `rec_custom` job). The
+  first version of it waited for the device every frame - one `vkDeviceWaitIdle` and a drained recorder -
+  which cost most of the gain: the same view ran at 66-73 fps. The wait is now kept where the API asks
+  for it, a new output size re-running `xessVKInit` (`xess_output_changed`), and nowhere else.
+- One frame when entering the world falls back to FSR 1 while that frame's motion vectors are not made
+  yet: upstream's existing behaviour (`fsr3_scene`'s "no vectors this frame"), not XeSS's.
+- Not tested: a Radeon or GeForce GPU (XeSS's DP4a path), FSR 3 or FSR 4 in the same run, a window
+  smaller than 4K (where the quality mode's own factor applies instead of the dynamic resolution), and a
+  resize that re-runs `xessVKInit` in the middle of a session.
