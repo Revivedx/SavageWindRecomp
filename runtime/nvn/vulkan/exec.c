@@ -4503,10 +4503,11 @@ static void resolve_feedback(Prog *pr) {
             }
             // (once: reused past draws into the target since - that is its point, a pass break and a copy saved each
             // time, ~450 a frame in the open world: refusing every one took Mali-G610 from 30 to 7 FPS. But not for
-            // targets of the formats in SAVAGEWIND_VK_ONCE_STRICT_FMT (NVN format codes, default 0xa: R32F, the format of
-            // the target below), nor past a clear of the target (snap_cleared): every few seconds BOTW makes ~155
+            // targets of the formats in SAVAGEWIND_VK_ONCE_STRICT_FMT (NVN format codes, default 0xa,0x25: R32F and
+            // RGBA16F), nor past a clear of the target (snap_cleared): every few seconds BOTW makes ~155
             // more draws with a shader that samples its bound 1600x900 R32F target, drawn into since its snapshot - the
-            // frames where the water lost its sky reflection. SAVAGEWIND_VK_ONCE_STRICT=1: not past any write; =0: past
+            // frames where the water lost its sky reflection - and waterfall base refraction samples the RGBA16F
+            // target after earlier passes drew into it (#848). SAVAGEWIND_VK_ONCE_STRICT=1: not past any write; =0: past
             // anything, as before. SAVAGEWIND_DEBUG_ONCE=1: the reuses by what came between and by format, every 2 s.)
             static int strict = -1, odbg = -1, nsf;
             static uint32_t sfmt[8];
@@ -4514,7 +4515,7 @@ static void resolve_feedback(Prog *pr) {
                 const char *e = getenv("SAVAGEWIND_VK_ONCE_STRICT"), *f = getenv("SAVAGEWIND_VK_ONCE_STRICT_FMT");
                 strict = e ? atoi(e) : 2;  // (2: by format and past clears)
                 odbg = getenv("SAVAGEWIND_DEBUG_ONCE") != NULL;
-                if (!f) f = "0xa";
+                if (!f) f = "0xa,0x25";
                 for (const char *q = f; *q && nsf < 8;) {
                     char *end;
                     unsigned long v = strtoul(q, &end, 0);
