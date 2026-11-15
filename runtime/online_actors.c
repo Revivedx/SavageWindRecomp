@@ -813,7 +813,9 @@ static uint64_t g_fx_trail_t;
 static uint64_t g_actors[MAX_ACTORS];
 static int all_actors(uint64_t from, uint64_t *out, int max);
 static uint64_t volatile g_rf, g_rf_ui;  // (ReactionField, the actor that plays the ground's reactions, and its ELink)
-static struct { uint64_t name; float pos[3]; } volatile g_rf_ring[64];
+static Watch g_rf_watch;
+static struct { uint64_t name; float pos[3]; uint32_t props[16]; } volatile g_rf_ring[64];
+static uint32_t volatile g_rf_props[16];  // (its ELink property values at its last: what it chose to play by)
 static volatile int g_rf_next;
 static int g_rf_taken;
 
@@ -825,6 +827,9 @@ void rt_online_xlink_emit(uint64_t ui, uint64_t loc) {
             int k = __atomic_fetch_add(&g_rf_next, 1, __ATOMIC_RELAXED) & 63;
             const float *m = (const float *)(uintptr_t)(g_rf + 0x398);
             g_rf_ring[k].name = nm, g_rf_ring[k].pos[0] = m[3], g_rf_ring[k].pos[1] = m[7], g_rf_ring[k].pos[2] = m[11];
+            uint64_t pv = *(uint64_t *)(uintptr_t)(ui + 0x70);  // (its 18 words; 16 of them sent)
+            if (VALID(pv)) memcpy((void *)g_rf_props, (const void *)(uintptr_t)pv, sizeof g_rf_props);
+            memcpy((void *)g_rf_ring[k].props, (const void *)g_rf_props, sizeof g_rf_props);
         }
         return;
     }
@@ -935,23 +940,54 @@ static uint64_t elink_ui(uint64_t actor) {
 
 // each frame: what to watch; the effects noted since (SAVAGEWIND_ONLINE_FX_LOG=1: to the log); his weapon's trail
 static void fx_update(uint64_t player) {
+    // the ground's reactions to his steps (ReactionField plays them: his footprints, the dust, the water, the grass):
+    // sent as his effects (who 4), the others play them on theirs where his puppet is
     static int rf_tick;
-    if (getenv("SAVAGEWIND_ONLINE_RF_LOG") && VALID(player)) {
-        if (rf_tick++ % 300 == 0) {  // (ReactionField: found among the actors)
-            int na = all_actors(*(uint64_t *)(uintptr_t)(player + 0x68), g_actors, MAX_ACTORS);
+    if (VALID(player)) {
+        if (VALID(g_rf) && !alive(g_rf, g_rf_watch)) g_rf = 0, g_rf_ui = 0;  // (a load: made again)
+        if (rf_tick++ % 300 == 0 || !VALID(g_rf)) {  // (ReactionField: found among the actors)
+            int na = rf_tick % 30 == 1 || rf_tick % 300 == 1 ? all_actors(*(uint64_t *)(uintptr_t)(player + 0x68), g_actors, MAX_ACTORS) : 0;
             for (int k = 0; k < na; k++) {
                 char nm[48];
                 actor_name_of(g_actors[k], nm);
-                if (!strcmp(nm, "ReactionField")) { g_rf = g_actors[k], g_rf_ui = elink_ui(g_actors[k]); break; }
+                if (!strcmp(nm, "ReactionField")) {
+                    g_rf = g_actors[k], g_rf_ui = elink_ui(g_actors[k]), g_rf_watch = watch(g_actors[k]);
+                    break;
+                }
             }
         }
         int end = __atomic_load_n(&g_rf_next, __ATOMIC_ACQUIRE);
         if (end - g_rf_taken > 64) g_rf_taken = end - 64;
         const float *pm = (const float *)(uintptr_t)(player + 0x398);
+        static float rf_was[2];  // (where he was the frame before: moving, more than 1 cm a frame)
+        float rdx = pm[3] - rf_was[0], rdz = pm[11] - rf_was[1];
+        bool rf_moving = rdx * rdx + rdz * rdz > 0.01f * 0.01f && rdx * rdx + rdz * rdz < 4.0f;
+        rf_was[0] = pm[3], rf_was[1] = pm[11];
+        static int rf_log = -1;
+        if (rf_log < 0) rf_log = getenv("SAVAGEWIND_ONLINE_RF_LOG") != NULL;
         for (; g_rf_taken < end; g_rf_taken++) {
             int k = g_rf_taken & 63;
-            LOG("[online] rf %.40s at %.2f %.2f %.2f (Link %.2f %.2f %.2f)\n", (const char *)(uintptr_t)g_rf_ring[k].name,
-                g_rf_ring[k].pos[0], g_rf_ring[k].pos[1], g_rf_ring[k].pos[2], pm[3], pm[7], pm[11]);
+            const char *n = (const char *)(uintptr_t)g_rf_ring[k].name;
+            if (rf_log)
+                LOG("[online] rf %.40s at %.2f %.2f %.2f (Link %.2f %.2f %.2f) %x %x %x %x %x %x %x %x %x %x %x %x\n", n,
+                    g_rf_ring[k].pos[0], g_rf_ring[k].pos[1], g_rf_ring[k].pos[2], pm[3], pm[7], pm[11],
+                    g_rf_ring[k].props[0], g_rf_ring[k].props[1], g_rf_ring[k].props[2], g_rf_ring[k].props[3],
+                    g_rf_ring[k].props[4], g_rf_ring[k].props[5], g_rf_ring[k].props[6], g_rf_ring[k].props[7],
+                    g_rf_ring[k].props[8], g_rf_ring[k].props[9], g_rf_ring[k].props[10], g_rf_ring[k].props[11]);
+            // (ReactionField plays the others' too, every actor's steps about: his only while he moves, one of a name a
+            // quarter of a second; not Footprint, which isn't made by its name in the others' games)
+            if (!VALID(g_rf_ring[k].name) || strstr(n, "Dummy") || strstr(n, "Fish") || !strcmp(n, "Footprint") ||
+                strlen(n) >= sizeof g_fxev[0].name || !rf_moving)
+                continue;
+            static char rf_last[24];
+            static uint64_t rf_last_t;
+            uint64_t t = plat_now_ns();
+            if (!strcmp(rf_last, n) && t - rf_last_t < 250000000ull) continue;
+            snprintf(rf_last, sizeof rf_last, "%s", n), rf_last_t = t;
+            OnlineFxEvent *e = &g_fxev[g_fxev_seq % ONLINE_FX_EVENTS];
+            if (!++g_fxev_seq) g_fxev_seq = 1;
+            e->seq = g_fxev_seq, e->who = 4;
+            snprintf(e->name, sizeof e->name, "%s", n);
         }
     }
     g_fx_ui[0] = elink_ui(player);
@@ -1447,6 +1483,7 @@ static void sample_pose(Cpu *c, uint64_t pinfo) {
     sample_shots(c, player, pose.as, &pose.shots);
     snprintf(pose.fx, sizeof pose.fx, "%s", g_fx_trail);  // (his weapon's swing trail: fx_update)
     memcpy(pose.fxev, g_fxev, sizeof pose.fxev);  // (his other effects: fx_update)
+    memcpy(pose.ground_props, (const void *)g_rf_props, sizeof pose.ground_props);  // (fx_update: his ground's)
     pose.weather = weather_now();  // (the weather where he is: weather_follow)
     pose.pvp_seq = g_pvp.seq, pose.pvp_target = g_pvp.target, pose.pvp_damage = g_pvp.damage;  // (pvp_update)
     {   // the horse he rides: while his AS is a horse's (Horse*), the player's horse (GameRomHorse*) nearest him, looked
@@ -4282,6 +4319,37 @@ void rt_online_frame(Cpu *c) {
                 }
                 if (!best) break;
                 g_act[i].fxev_seen = best->seq;
+                if (best->who == 4) {  // (the ground's, on this game's ReactionField where his puppet is, left to end)
+                    uint64_t rf = g_rf;
+                    if (!VALID(rf) || !alive(rf, g_rf_watch) || !VALID(g_act[i].link) || !running(g_act[i].link)) continue;
+                    uint64_t rui = elink_ui(rf), rpv = VALID(rui) ? *(uint64_t *)(uintptr_t)(rui + 0x70) : 0;
+                    if (VALID(rpv)) memcpy((void *)(uintptr_t)rpv, pl[i].pose.ground_props, sizeof pl[i].pose.ground_props);
+                    struct { uint64_t p; uint32_t id, pad; } hh[2], h;
+                    memset(hh, 0, sizeof hh);  // (the game's keyword emit, its ELink alone: w2 0, the handle at +0)
+                    call(c, FN_XLINK_EMIT, rf, (uint64_t)(uintptr_t)best->name, 0, (uint64_t)(uintptr_t)hh, 0, 0);
+                    h = hh[0];
+                    if (!VALID(h.p)) call_sret(c, FN_EFFECT_EMIT, (uint64_t)(uintptr_t)&h, rf, (uint64_t)(uintptr_t)best->name);
+                    if (VALID(h.p) && *(uint32_t *)(uintptr_t)(h.p + 0x20) == h.id) {
+                        // (as the game places them: a footprint by its matrix at +0xc0 (+0x180 bit 3), its scale at
+                        // +0xb4; the rest at a point, +0xa8, with the ground's normal at +0xb4 (+0x180 bit 2))
+                        const float *lm = (const float *)(uintptr_t)(g_act[i].link + 0x398);
+                        if (!strcmp(best->name, "Footprint")) {
+                            float one[3] = {1, 1, 1};
+                            memcpy((void *)(uintptr_t)(h.p + 0xc0), lm, 48);
+                            memcpy((void *)(uintptr_t)(h.p + 0xb4), one, sizeof one);
+                            *(uint32_t *)(uintptr_t)(h.p + 0x180) |= 8;
+                        } else {
+                            float at[6] = {lm[3], lm[7], lm[11], 0, 1, 0};
+                            memcpy((void *)(uintptr_t)(h.p + 0xa8), at, sizeof at);
+                            *(uint32_t *)(uintptr_t)(h.p + 0x180) |= 4;
+                        }
+                    }
+                    if (getenv("SAVAGEWIND_ONLINE_FX_LOG"))
+                        LOG("[online] %s: %s on the ground (%llx; %u %u, %.0f m away)\n", pl[i].name, best->name,
+                            (unsigned long long)h.p, pl[i].pose.ground_props[0], pl[i].pose.ground_props[1],
+                            sqrtf((pl[i].pos[0] - link[0]) * (pl[i].pos[0] - link[0]) + (pl[i].pos[2] - link[2]) * (pl[i].pos[2] - link[2])));
+                    continue;
+                }
                 uint64_t on = best->who & 1 ? (held ? w : 0) : g_act[i].link;
                 if (!VALID(on)) continue;
                 // (a sound: on its SLink, the player's / the weapon's: 0x700159f00c, the game's own keyword emit, w2 1 its

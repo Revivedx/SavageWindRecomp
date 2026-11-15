@@ -253,7 +253,7 @@ the emits of the local Link's ELink and of his weapon's, shield's and bow's (`SA
 
 Not his: footprints, grass and water as he walks or swims ("FootEffect", "Footprint", "GrassTrack", "WaterTrack",
 "Splash") are played by `ReactionField`, an actor of the game's that plays the ground's reactions for everyone (its
-user instances at its +0x48 / +0x50), not by the player's ELink. Grass cut by a blade is the grass's own, still to
+user instances at its +0x48 / +0x50), not by the player's ELink: sent their own way (ReactionField below). Grass cut by a blade is the grass's own, still to
 look at.
 
 The Master Sword's beam is a `PlayerBeam` actor (a Bullet; the sword's `MagicName`), which the player doesn't link
@@ -555,8 +555,15 @@ tested ridden (riding can't be driven from the control port). `SAVAGEWIND_ONLINE
 beside the host. Tested: GameRomHorse01 and the Master Cycle shown beside the host's Link on the client.
 
 ReactionField (footprints, grass, water): its ELink plays them with its own matrix at the origin (0 0 0, each effect
-put in place through its handle after), so who and where aren't known as it plays them; not shared.
-`SAVAGEWIND_ONLINE_RF_LOG=1` logs its effects with its place and the local Link's.
+put in place through its handle after: a point at +0xa8 and the ground's normal at +0xb4 with +0x180 bit 2, or a
+matrix at +0xc0 with bit 3), so who and where aren't known as it plays them. Those it plays while the local Link moves
+(more than 1 cm a frame; one of a name a quarter of a second: it plays every actor's about) go as his effects (who 4,
+protocol 33 with its property values at the last, `ground_props`: the ground's kind and the like, which its containers
+choose by), and the others' games play them on their own ReactionField (the keyword emit, then the name) at his
+puppet, with his values. Tested: standing, none sent; walking, 13 sent in 4 s, 4 of them made (the others had nothing
+to play there, as the local game's own), his blows' effects and sounds still go. Footprint isn't made by its name in
+the others' games (no handle: not sent). `SAVAGEWIND_ONLINE_RF_LOG=1` logs its effects with its place, the local
+Link's and its values.
 
 Damage between players (protocol 29; Settings > Online > Combat, `pvp` in online.ini, off by default, only between two
 players who both have it on; `SAVAGEWIND_ONLINE_PVP` for tests): the puppets have no bodies a blow lands on, so as a
@@ -652,5 +659,6 @@ Recipes that found the bugs above:
   _Tail); the Item_Magnetglove actor's ELink plays it from its AI's state), Stasis' chains.
 - A Divine Beast seen moving by the others while one is inside: each world's beast is as its own flags are (the
   quests' flags are shared), its AI isn't followed.
-- Footprints, grass and water as a player walks (ReactionField's), grass cut by a blade.
+- Footprints left on the ground (Footprint: not made by its name), grass cut by a blade; the water's and grass's
+  reactions are sent with the dust (ReactionField's), not seen yet in water.
 - The world shared: enemies, items, time of day, quests (Milk Bar's quest and enemy sync); damage between players.

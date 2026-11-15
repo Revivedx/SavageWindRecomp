@@ -99,6 +99,8 @@ typedef struct {
     char horse_as[32];
     char tack[2][24];                            // its saddle and reins (their actors, "" none), where they are
     float tack_m[2][12];
+    uint32_t ground_props[16];                   // his ground's (ReactionField's) ELink property values at its last
+                                                 // reaction to him (his fxev who 4: the ground's kind, his speed...)
 } OnlinePose;
 // OnlinePose.effects: Daruk's Protection's shield taking a hit (KAGO), its ring while he guards with its charges left
 // (KAGO_COUNT: 1 to 3, in effects >> KAGO_COUNT_SHIFT)

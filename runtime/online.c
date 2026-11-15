@@ -37,7 +37,7 @@ typedef int sock_t;
 #include "rt.h"
 
 #define MAGIC 0x4c4f5753u  // "SWOL"
-#define PROTOCOL 32  // (32: QUEST carries whose it is; 31: his horse's saddle and reins; 30: the horse he rides)
+#define PROTOCOL 33  // (33: STATE carries his ground's reaction values; 32: QUEST carries whose it is; 31: his tack)
 static volatile float g_local_hour = -1;  // (the local game's hour, from the frame loop: online_set_local_hour)
 #define SEND_HZ 20
 #define INTERP_NS 100000000ull  // the others are drawn this far behind what was last heard (smooth between updates)
@@ -86,6 +86,7 @@ typedef struct {
     char horse_as[32];
     char tack[2][24];                      // OnlinePose.tack*
     float tack_m[2][12];
+    uint32_t ground_props[16];             // OnlinePose.ground_props
 } WireState;
 typedef struct { uint32_t magic; uint16_t version; char name[ONLINE_NAME_MAX], pass[ONLINE_NAME_MAX]; } WireHello;
 typedef struct { char armor[3][48], gear[ONLINE_GEAR][48]; } WireEquip;  // EQUIP: what a player wears (head,
@@ -852,6 +853,7 @@ static bool sample_local(WireState *w) {
         memcpy(w->horse_as, g_pose.horse_as, sizeof w->horse_as);
         memcpy(w->tack, g_pose.tack, sizeof w->tack);
         memcpy(w->tack_m, g_pose.tack_m, sizeof w->tack_m);
+        memcpy(w->ground_props, g_pose.ground_props, sizeof w->ground_props);
         memcpy(w->ice, g_pose.ice, sizeof w->ice);
         w->yaw = g_pose.yaw;
     }
@@ -916,6 +918,7 @@ static void remote_snap(int id, const WireState *w) {  // (lock held)
     s->pose.horse[sizeof s->pose.horse - 1] = 0, s->pose.horse_as[sizeof s->pose.horse_as - 1] = 0;
     memcpy(s->pose.tack, w->tack, sizeof s->pose.tack);
     memcpy(s->pose.tack_m, w->tack_m, sizeof s->pose.tack_m);
+    memcpy(s->pose.ground_props, w->ground_props, sizeof s->pose.ground_props);
     s->pose.tack[0][23] = 0, s->pose.tack[1][23] = 0;
     for (int k = 0; k < ONLINE_FX_EVENTS; k++) s->pose.fxev[k].name[20] = 0;
     memcpy(s->pose.ice, w->ice, sizeof s->pose.ice);
