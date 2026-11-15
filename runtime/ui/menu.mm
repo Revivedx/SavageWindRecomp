@@ -635,7 +635,7 @@ extern "C" bool renderer_gpu_rtx(void);  // (vulkan/device.c, metal.m)
 extern "C" volatile int g_fg_active;     // (hle/framepace.c: the last presented frame was generated)
 // Video > Upscaler mode's names, by UPQ_*
 static const char *const k_upscale_modes[UPQ_COUNT] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance",
-                                                       "Native"};
+                                                       "Native", "Dynamic"};
 extern "C" {
 #include "../nvn/output_scale.h"
 }
@@ -979,12 +979,32 @@ static void tab_display(void) {
                                      "it, reconstructing along the game's motion - the sharpest and steadiest the "
                                      "picture gets, at no frame gain. Only the temporal upscalers offer it (AMD FSR 3 "
                                      "and FSR 4, DLSS): FSR 1 has no history to reconstruct from.") +
+                         "\n\n" + tr("Dynamic: the render size follows the frame rate - smaller while a scene costs too "
+                                     "much, sharper again as soon as it doesn't - so the rate below is held rather than "
+                                     "chased with a fixed factor. Between the two ends above.") +
                          "\n\n" + (modes_ok ? rendering : tr("Coming in a later version."));
         opt_indent(1);
         if (g_settings.upscaler == UPSCALE_OFF) opt_disable_next();
         static int mshown = -1;
         opt_choice_avail("Upscaler mode", &g_settings.upscale_quality, &mshown, mn, mavail, UPQ_COUNT, UPQ_QUALITY,
                          md.c_str());
+        // its target rate (Dynamic only): the frame rate the render size is made to hold
+        if (upscale_quality_now() == UPQ_DYNAMIC) {
+            static const int targets[] = {30, 40, 45, 60, 75, 90, 120, 144, 165, 240};
+            enum { NT = sizeof targets / sizeof targets[0] };
+            static char tbuf[NT][16];
+            const char *tn[NT];
+            for (int i = 0; i < NT; i++) {
+                snprintf(tbuf[i], sizeof tbuf[i], tr("%d FPS"), targets[i]);
+                tn[i] = tbuf[i];
+            }
+            int ti = 0;
+            for (int i = 0; i < NT; i++) if (targets[i] == upscale_dynamic_target()) ti = i;
+            opt_choice("Dynamic target", &ti, tn, NT, 3,  // (60 FPS to begin with)
+                       "The frame rate Dynamic holds: the render size goes smaller to reach it and sharper to keep it. "
+                       "Where you set no frame rate limit, the display's rate does this.");
+            g_settings.dynamic_target = targets[ti];
+        }
         opt_indent(-1);
     }
 #ifdef __APPLE__
@@ -1084,9 +1104,16 @@ static void tab_display(void) {
                "little faster, a flatter image.");
     opt_toggle("Depth of field", &g_settings.depth_of_field, true, "The game blurs the far distance a little. Off: sharp "
                "out to the horizon, a little faster.");
-    opt_toggle("Dynamic resolution", &g_settings.dynamic_res, true, "As on the console: the game lowers its 3D "
-               "resolution (down to 1280x720 before upscaling) while frames take long, and raises it again after. "
-               "Off: always the full resolution. On with the Potato preset.");
+    {   // (off and greyed with an upscaler running: its mode sets the render size, and the two would fight over it)
+        if (!dynamic_res_allowed()) opt_disable_next();
+        bool dr = g_settings.dynamic_res;
+        if (opt_toggle("Dynamic resolution", &dr, true, "As on the console: the game lowers its 3D "
+                       "resolution (down to 1280x720 before upscaling) while frames take long, and raises it again "
+                       "after. Off: always the full resolution. On with the Potato preset.\n\nWith an upscaler it is "
+                       "off: the upscaler's mode decides how small the game renders.")) {
+            if (dynamic_res_allowed()) g_settings.dynamic_res = dr;
+        }
+    }
     if (gamelib_compat())  // (runtime/gamelib.h: a CPU without FMA instructions; simd.h simd_fma_unfused)
         opt_toggle("Fast math", &g_settings.fast_fma, true, "Your CPU has no FMA instructions, so the game's math runs "
                    "in software. On: about 10% faster; some results round a tiny bit differently from the console, "

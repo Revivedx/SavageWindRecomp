@@ -11526,8 +11526,10 @@ static void exec_list(uint64_t handle, int depth) {
             if (frozen < 0) { const char *e = getenv("SAVAGEWIND_VK_COUNTER"); frozen = !e || strcmp(e, "live"); }
             static uint64_t frame_seen = ~0ull, frame_ts;
             extern uint64_t vk_frame_counter(void);
-            bool fixed = frozen && (!g_settings.dynamic_res || upscale_native_wanted());  // (Native: the scene is the
-            //  window's size, so the game must not lower it; that would take the native resolution away)
+            // Video > Advanced > Dynamic resolution (on with the Potato preset), or SAVAGEWIND_VK_COUNTER=live: the
+            // time of each counter (as before): the game lowers its 3D resolution when the frame takes long. With an
+            // upscaler running the game's mechanism is off (dynamic_res_allowed): the upscaler's mode sets the size.
+            bool fixed = frozen && !(g_settings.dynamic_res && dynamic_res_allowed());
             if (fixed && vk_frame_counter() != frame_seen) { frame_seen = vk_frame_counter(); frame_ts = SDL_GetTicksNS(); }
             uint64_t ts = fixed ? frame_ts : SDL_GetTicksNS();
             if (type == 1 && out && oq_on()) {  // SAMPLES_PASSED: written once the queries' submission is done

@@ -25,8 +25,15 @@ enum { UPSCALE_OFF = 0, UPSCALE_METALFX = 1 /* macOS */, UPSCALE_FSR1 = 2 /* AMD
 // reconstruct along the motion vectors and the jitter - sharper than any of them below native, and cleaner than
 // TAA or SMAA on the same pixels. Only the temporal ones offer it (FSR 3, FSR 4, XeSS, DLSS); FSR 1 has no
 // history to work from, so it scales or does nothing.
+// Dynamic is the temporal upscalers' own variable rate: the render size moves between the sharpest and the
+// fastest factor to hold a target frame rate (Video > Upscaler > Dynamic target), where the fixed factors cannot
+// - it is not the game's own dynamic resolution (Video > Advanced), which drops between two sizes of its own.
 enum { UPQ_ULTRA = 0, UPQ_QUALITY = 1, UPQ_BALANCED = 2, UPQ_PERFORMANCE = 3, UPQ_ULTRA_PERFORMANCE = 4,
-       UPQ_NATIVE = 5, UPQ_COUNT };
+       UPQ_NATIVE = 5, UPQ_DYNAMIC = 6, UPQ_COUNT };
+// Video > Upscaler > Dynamic target: the frame rate the dynamic mode aims at (it is the display's rate where it
+// is known and the game's limit matches it, else the game's own limit)
+#define DYNAMIC_TARGET_DEFAULT 60
+#define DYNAMIC_TARGET_MAX 240
 // TAA (Vulkan): the game's own motion vectors (vulkan/mvec.c) and a jittered camera (output_scale.c rt_jitter_on)
 // blend each frame with the ones before it (vulkan/exec.c mvec_taa)
 enum { AA_OFF = 0, AA_SMAA = 1, AA_TAA = 2 };
@@ -91,6 +98,7 @@ typedef struct {
     int window_w, window_h;  // Video > Window size, pixels (0: not chosen; runtime/window_size.c)
     int upscaler;        // UPSCALE_*: Off (render at the window's size), or render smaller and scale up
     int upscale_quality; // UPQ_*: the upscaler's mode (how much smaller it renders)
+    int dynamic_target;  // UPQ_DYNAMIC: the frame rate it aims at, frames per second (DYNAMIC_TARGET_DEFAULT)
     int antialias;       // AA_*: anti-aliasing of the game image before it is scaled to the window
     bool game_fxaa;      // the game's own FXAA, in its scene -> final image composite (vulkan/exec.c fxaa_patch)
     bool wet_fix;        // Video > Wet grass fix: tames the white glare of rain in sunshine (maxwell/translate.c maxwell_wet_lighting)
@@ -155,6 +163,7 @@ typedef struct {
     bool bloom;          // the glow around bright light (off: its draws clear their images: vulkan/exec.c)
     bool depth_of_field; // the distance blur over far pixels (off: its draw is skipped: vulkan/exec.c)
     bool dynamic_res;    // the game lowers its 3D resolution (1600x900 down to 1280x720) when a frame takes long
+                         // (Video > Advanced; off while an upscaler runs: the upscaler's mode sets the render size)
                          // (vulkan/exec.c CMD_REPORT_COUNTER); off: it keeps 1600x900
     bool fast_fma;       // CPUs without FMA instructions (gamelib_compat): the game's fused multiply-adds rounded twice,
                          // faster (simd.h simd_fma_unfused); off: exact, as the console
