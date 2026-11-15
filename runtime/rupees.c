@@ -25,7 +25,8 @@
 #include "settings.h"
 
 #define RUPEE_POLL_MS 5000         // (a scan of the heap is long: no one needs the top-up sooner than this)
-#define RUPEE_MAX 9999             // (the wallet's own limit)
+#define RUPEE_MAX 9999             // (the Infinite rupees top-up target)
+#define RUPEE_SET_MAX 999999       // (the game's own wallet limit)
 #define RUPEE_HASH 0x23149bf8u     // crc32("CurrentRupee")
 #define S32_HASH 0x2906f327u       // crc32("MaxHartValue")
 
@@ -117,10 +118,10 @@ static void poke(void) {
     pthread_mutex_unlock(&lock);
 }
 
-// rupees: show | <0-9999>: set once | lock: keep at 9999 (Infinite rupees) | unlock
+// rupees: show | <0-999999>: set once | lock: keep at 9999 (Infinite rupees) | unlock
 static void cmd_rupees(int argc, char **argv, ControlReply *r) {
     if (!running || !kernel_heap_size()) { control_fail(r, "The game isn't running yet"); return; }
-    if (argc > 2) { control_fail(r, "rupees: use rupees, rupees <0-%d>, rupees lock or rupees unlock", RUPEE_MAX); return; }
+    if (argc > 2) { control_fail(r, "rupees: use rupees, rupees <0-%d>, rupees lock or rupees unlock", RUPEE_SET_MAX); return; }
     if (argc == 2 && (!strcmp(argv[1], "lock") || !strcmp(argv[1], "unlock"))) {
         g_settings.infinite_rupees = argv[1][0] == 'l';
         poke();
@@ -132,8 +133,8 @@ static void cmd_rupees(int argc, char **argv, ControlReply *r) {
     if (argc == 2) {
         char *end;
         long n = strtol(argv[1], &end, 10);
-        if (end == argv[1] || *end || n < 0 || n > RUPEE_MAX) {
-            control_fail(r, "rupees: a count from 0 to %d, lock or unlock", RUPEE_MAX);
+        if (end == argv[1] || *end || n < 0 || n > RUPEE_SET_MAX) {
+            control_fail(r, "rupees: a count from 0 to %d, lock or unlock", RUPEE_SET_MAX);
             return;
         }
         pthread_mutex_lock(&lock);
@@ -156,9 +157,19 @@ static void cmd_rupees(int argc, char **argv, ControlReply *r) {
 // (runtime/control_game.c: developer mode only - it writes the game's memory)
 void rupees_control_init(void) {
     static const ControlCmd cmds[] = {
-        {"rupees", "[<0-9999> | lock | unlock]", "Cheat: show, set or lock the rupee count", cmd_rupees, 0},
+        {"rupees", "[<0-999999> | lock | unlock]", "Cheat: show, set or lock the rupee count", cmd_rupees, 0},
     };
     control_register(cmds, 1);
+}
+
+// Set the rupee wallet once from the UI (false if the game isn't running or count is out of range)
+bool rupees_set(int32_t count) {
+    if (!running || !kernel_heap_size() || count < 0 || count > RUPEE_SET_MAX) return false;
+    pthread_mutex_lock(&lock);
+    want = count;
+    pthread_mutex_unlock(&lock);
+    poke();
+    return true;
 }
 
 // (runtime/main.c boot: each game start)

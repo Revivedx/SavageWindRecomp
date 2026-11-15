@@ -1318,8 +1318,8 @@ static void launcher_fonts(void) {
     const char *fonts[] = {test ? test : "", own.c_str(), "fonts/nintendo_udsgr_std_003.ttf",
                            "/System/Library/Fonts/Avenir Next.ttc", "/System/Library/Fonts/Helvetica.ttc",
                            "C:/Windows/Fonts/segoeui.ttf"};
-    static const ImWchar latin[] = {0x20, 0xFF, 0x2039, 0x203A, 0x2192, 0x2192, 0x2713, 0x2713, 0x25B8, 0x25B8, 0};  // + ‹ › → ✓ ▸
-    static const ImWchar cyrillic[] = {0x20, 0xFF, 0x400, 0x4FF, 0x2039, 0x203A, 0x2192, 0x2192, 0x2713, 0x2713, 0x25B8,
+    static const ImWchar latin[] = {0x20, 0xFF, 0x0100, 0x017F, 0x2039, 0x203A, 0x2192, 0x2192, 0x2713, 0x2713, 0x25B8, 0x25B8, 0};  // + Latin-A, ‹ › → ✓ ▸
+    static const ImWchar cyrillic[] = {0x20, 0xFF, 0x0100, 0x017F, 0x400, 0x4FF, 0x2039, 0x203A, 0x2192, 0x2192, 0x2713, 0x2713, 0x25B8,
                                        0x25B8, 0};
     const ImWchar *ranges = !strcmp(ui_lang(), "ru") ? cyrillic : latin;
     auto add = [&](const char *p, float size, const ImWchar *r) {
@@ -1440,6 +1440,41 @@ extern "C" void boot_splash_close(void) {
     g_boot_ctx = NULL;
 }
 #endif
+
+// (runtime/main.c) --prepare --game <folder>: what Set up game files does on the start screen, without a window, for a
+// launcher that brings the player's copy. One "progress <0-1> <step>" line each time the step or the bar moves (the
+// shader pipelines need a window and are left out: they compile when first drawn). 0: the game files are ready.
+extern "C" int launcher_prepare(const char *root, const char *src) {
+    g_root = root;
+    g_src = src;
+    g_busy = true;
+    if (post_update_pending(SAVAGEWIND_VERSION)) post_update_reset_shaders(SAVAGEWIND_VERSION);  // (as a plain start does)
+    pthread_t t;
+    pthread_create(&t, NULL, extract_thread, NULL);
+    std::string last_step;
+    int last_percent = -1;
+    for (;;) {
+        pthread_mutex_lock(&g_lock);
+        bool busy = g_busy;
+        std::string job = g_job;
+        pthread_mutex_unlock(&g_lock);
+        std::string step = trv(job);
+        int percent = (int)(extract_progress() * 100);
+        if (!job.empty() && (step != last_step || percent != last_percent)) {
+            printf("progress %.2f %s\n", percent / 100.0, step.c_str());
+            fflush(stdout);
+        }
+        last_step = step;
+        last_percent = percent;
+        if (!busy) break;
+        SDL_Delay(500);
+    }
+    pthread_join(t, NULL);
+    pthread_mutex_lock(&g_lock);
+    bool failed = g_job_failed;
+    pthread_mutex_unlock(&g_lock);
+    return failed || !check_game_files(g_root).empty() ? 1 : 0;
+}
 
 // mode (runtime/main.c): 0 setup - the game files page alone, the game starts once they're ready; 1 configuration.
 // Returns when the game is to start; QUIT (and closing the setup page) exits.
@@ -2047,9 +2082,13 @@ extern "C" void launcher_run(const char *root, int mode) {
                     }
 #endif
                     if (shipped_release) {  // (runtime/post_update.h)
-                        if (opt_toggle("Check for updates", &g_settings.check_updates, true,
-                                       "When Savage Wind Configuration opens, asks GitHub if there is a new version and "
-                                       "offers it. Nothing is installed until you press Update."))
+                        if (const char *by = update_launcher())  // (installed by a launcher, which updates it: a row that
+                            opt_action("Check for updates", by,  //  only says so - pressing it does nothing)
+                                       "Updates come from the launcher that installed Savage Wind (named on the right). "
+                                       "After it updates Savage Wind, the next start sets the new version up by itself.");
+                        else if (opt_toggle("Check for updates", &g_settings.check_updates, true,
+                                            "When Savage Wind Configuration opens, asks GitHub if there is a new version and "
+                                            "offers it. Nothing is installed until you press Update."))
                             settings_save();
                         if (opt_toggle("Open this screen first", &g_settings.start_in_config, true,
                                        "Starting Savage Wind opens this screen, where updates are offered. Turned off, "

@@ -63,7 +63,8 @@ const char *bind_pad_label(int host, int fam); // controller button in the pad f
 const char *bind_key_label(int scancode);
 int bind_label_family(void);                   // the connected controller's family (also on the start screen)
 void bind_reset(int dev);
-void bind_reset_slot(int slot);                // one input (or action: BIND_ACTION + id) back to its defaults, both devices
+void bind_swap_ab(void);                       // the controller's A and B (and the actions on them) swapped: undoes itself
+void bind_reset_slot(int slot);              // one input (or action: BIND_ACTION + id) back to its defaults, both devices
 bool bind_is_default(int dev);
 bool bind_is_default_slot(int dev, int slot);
 
@@ -76,7 +77,7 @@ void bind_capture_cancel(void);
 bool bind_capture_active(int *dev, int *slot, int *ms_left);
 // Main thread, before anything else sees the event: true = consumed by a capture
 bool bind_capture_event(const SDL_Event *e);
-// Last change for the UI: 0 none, 1 set, 2 swapped (with *other), 3 cancelled, 4 timed out, 5 reset; *serial bumps
+// Last change for the UI: 0 none, 1 set, 2 swapped (with *other), 3 cancelled, 4 timed out, 5 reset, 6 A / B swapped; *serial bumps
 int bind_last_result(int *dev, int *slot, int *other, int *serial);
 
 // savagewind.ini: bind_pad_<input> / bind_key_<input> (only the ones that differ from the defaults are written)

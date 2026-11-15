@@ -84,7 +84,7 @@ def looks_like_text(s, in_tr=False):
         return True
     if re.fullmatch(r'(?:\\x[0-9a-fA-F]{2})+', s):  # encoded icon glyphs, not words
         return False
-    if re.fullmatch(r'[\w./\\:%-]+\.(ttf|ttc|bfttf|bffnt|sbfarc|pack|bin|txt|ini|png|dll|so|dylib|nso|npdm|mp4|webm)', s):
+    if re.fullmatch(r'[\w./\\:%-]+\.(ttf|ttc|otf|bfttf|bffnt|sbfarc|pack|bin|txt|ini|png|dll|so|dylib|nso|npdm|mp4|webm)', s):
         return False
     if re.fullmatch(r'[a-z0-9_./-]+', s):  # identifiers, ini keys, folder names
         return False

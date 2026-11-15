@@ -220,6 +220,9 @@ static void list_read(void) {
         {"WeaponSmallSword", ITEMCAT_WEAPON}, {"WeaponLargeSword", ITEMCAT_WEAPON}, {"WeaponSpear", ITEMCAT_WEAPON},
         {"WeaponBow", ITEMCAT_BOW}, {"WeaponShield", ITEMCAT_SHIELD}, {"Bullet", ITEMCAT_ARROW},
         {"ArmorHead", ITEMCAT_ARMOR}, {"ArmorUpper", ITEMCAT_ARMOR}, {"ArmorLower", ITEMCAT_ARMOR}, {"Item", ITEMCAT_MATERIAL},
+        // critters and fairies (Animal_Insect_*: bugs, lizards, frogs, fairies) are CapturedActors; CanGetPouch below
+        // leaves out what the pouch can't hold
+        {"CapturedActor", ITEMCAT_MATERIAL},
     };
     uint32_t can_get = tag("CanGetPouch"), important = tag("Important"), cooked = tag("CookResult"), rupee = tag("Rupee"),
              arrow = tag("Arrow");

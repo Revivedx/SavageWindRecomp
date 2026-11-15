@@ -522,12 +522,49 @@ static void names_and_groups(void) {
         for (unsigned i = 0; i < sizeof raw / sizeof *raw; i++) assert(strcmp(bind_input_name(slot), raw[i]));
 }
 
+static void swapped_jump_sprint_masks_keep_keyboard_bindings(void) {
+    act_reset();
+    masks[2] = 0x2;   // BOTW JumpButtonChange: Jump -> B
+    masks[12] = 0x8;  // Sprint -> X
+    assert(act_is_default(2) && act_is_default(12));
+    act_poll(true);
+    assert(hold(2) == 0 && hold(12) == 0);
+    // Keyboard still follows its configured bindings (Space = Jump, Left Shift = Sprint)
+    key_down[SDL_SCANCODE_SPACE] = 1;
+    host(0, 0, 0);
+    act_poll(true);
+    assert(hold(2) == 1 && trig(2) == 1 && hold(12) == 0 && trig(12) == 0);
+    key_down[SDL_SCANCODE_SPACE] = 0;
+    key_down[SDL_SCANCODE_LSHIFT] = 1;
+    host(0, 0, 0);
+    act_poll(true);
+    assert(hold(2) == 0 && trig(2) == 0 && hold(12) == 1 && trig(12) == 1);
+    key_down[SDL_SCANCODE_LSHIFT] = 0;
+    // Uncustomized controller still follows the game's swapped Switch layout (B = Jump, X = Sprint)
+    host(0, 0, 1u << g_bind_pad[BIND_B]);
+    act_poll(true);
+    assert(hold(2) == 1 && trig(2) == 1 && hold(12) == 0 && trig(12) == 0);
+    host(0, 0, 1u << g_bind_pad[BIND_X]);
+    act_poll(true);
+    assert(hold(2) == 0 && trig(2) == 0 && hold(12) == 1 && trig(12) == 1);
+    host(0, 0, 0);
+    // Restoring the 1.9.0 masks returns both to game fallthrough (-1)
+    masks[2] = 0x8;
+    masks[12] = 0x2;
+    act_poll(true);
+    assert(hold(2) == -1 && hold(12) == -1);
+}
+
 int main(void) {
-    for (int i = 0; i < ACT_COUNT; i++) masks[i] = 0x1;
-    masks[JUMP] = 0x8, masks[ATTACK] = 0x10, masks[INTERACT] = 0x1, masks[CANCEL] = 0x2;
+    static const uint32_t k_masks_190[ACT_COUNT] = {
+        0x1, 0x2, 0x8, 0x10, 0x8, 0x1, 0x8, 0x2, 0x8, 0x2, 0x8, 0x8, 0x2, 0x4, 0x2, 0x40, 0x1, 0x80, 0x20, 0x8, 0x2,
+        0x10000, 0x20000, 0x10000, 0x20000, 0x2, 0x1, 0x2000, 0x4000, 0x4, 0x2, 0x4000, 0x4000, 0x2000, 0x1, 0x20000,
+        0x10, 0x20000, 0x1, 0x2, 0x2000};
+    memcpy(masks, k_masks_190, sizeof masks);
     act_masks(masks);
     defaults_are_untouched();
     the_switch_button_comes_from_the_game_table();
+    swapped_jump_sprint_masks_keep_keyboard_bindings();
     a_bound_action_follows_its_key();
     a_press_is_not_lost_when_nobody_asked();
     a_press_nobody_asked_about_expires();
