@@ -10123,9 +10123,13 @@ static void scene_post(Prog *pr, CmdRec *r) {
         TexBackend *b = vk_tex(t, false);
         // (else at its size in the window already; FSR 3: FSR 1 for a frame it can't do, its first)
         bool smaller = ow > b->width + 1 || oh > b->height + 1;
-        bool up = (fsr || fsr3) && smaller;
-        dlss = dlss && smaller;  // (an upscaler only: at the window's size the game's own composite stays; no DLAA yet)
-        if (t != taa_t || dlss) taa = NULL;
+        // Native anti-aliasing (UPQ_NATIVE): the scene is already at the window's size, and the temporal upscaler runs
+        // anyway - at 1x its reconstruction is the anti-aliasing, and the game's own composite would not be. FSR 1 has
+        // no history, so it stays out of it (the mode is not offered with it: upscale_mode_offered).
+        bool native = upscale_native_wanted() && !smaller;
+        bool up = (fsr || fsr3) && (smaller || native);
+        dlss = dlss && (smaller || native);
+        if (t != taa_t || dlss || native) taa = NULL;  // (a temporal upscaler anti-aliases the scene itself)
         scene_mip_bias = (taa || fsr3 || dlss) && ow && b->width ? log2f((float)b->width / (float)ow) - 1.0f : 0.0f;
         static const char *bias_env = (const char *)1;  // (testing) SAVAGEWIND_MIP_BIAS=<levels>: in place of that
         if (bias_env == (const char *)1) bias_env = getenv("SAVAGEWIND_MIP_BIAS");
@@ -11522,7 +11526,8 @@ static void exec_list(uint64_t handle, int depth) {
             if (frozen < 0) { const char *e = getenv("SAVAGEWIND_VK_COUNTER"); frozen = !e || strcmp(e, "live"); }
             static uint64_t frame_seen = ~0ull, frame_ts;
             extern uint64_t vk_frame_counter(void);
-            bool fixed = frozen && !g_settings.dynamic_res;
+            bool fixed = frozen && (!g_settings.dynamic_res || upscale_native_wanted());  // (Native: the scene is the
+            //  window's size, so the game must not lower it; that would take the native resolution away)
             if (fixed && vk_frame_counter() != frame_seen) { frame_seen = vk_frame_counter(); frame_ts = SDL_GetTicksNS(); }
             uint64_t ts = fixed ? frame_ts : SDL_GetTicksNS();
             if (type == 1 && out && oq_on()) {  // SAMPLES_PASSED: written once the queries' submission is done

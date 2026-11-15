@@ -2698,7 +2698,7 @@ presented:
             g_settings.upscaler = UPSCALE_OFF;
             for (int i = 0; i < 5; i++)
                 if (!strncmp(m, names[i], strlen(names[i]))) g_settings.upscaler = tu, g_settings.upscale_quality = i;
-            if ((f3 || f4) && !strncmp(m, "native", 6)) g_settings.upscaler = tu, g_settings.upscale_quality = UPQ_COUNT;
+            if ((f3 || f4) && !strncmp(m, "native", 6)) g_settings.upscaler = tu, g_settings.upscale_quality = UPQ_NATIVE;
             LOG("[test] frame %llu: upscaler %d mode %d\n", (unsigned long long)total_frames, g_settings.upscaler,
                 g_settings.upscale_quality);
             next = strchr(m, ',');

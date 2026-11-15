@@ -634,7 +634,8 @@ extern "C" void renderer_get_scene_scale(float *sx, float *sy);
 extern "C" bool renderer_gpu_rtx(void);  // (vulkan/device.c, metal.m)
 extern "C" volatile int g_fg_active;     // (hle/framepace.c: the last presented frame was generated)
 // Video > Upscaler mode's names, by UPQ_*
-static const char *const k_upscale_modes[UPQ_COUNT] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance"};
+static const char *const k_upscale_modes[UPQ_COUNT] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance",
+                                                       "Native"};
 extern "C" {
 #include "../nvn/output_scale.h"
 }
@@ -974,6 +975,10 @@ static void tab_display(void) {
         std::string md = std::string(tr("How much smaller the game renders before the upscaler brings it to the window, "
                                         "on each side: Ultra Quality 1.3x, Quality 1.5x, Balanced 1.7x, Performance "
                                         "2x, Ultra Performance 3x. Smaller is faster and softer.")) +
+                         "\n\n" + tr("Native: the scene renders at the window's size and the upscaler only anti-aliases "
+                                     "it, reconstructing along the game's motion - the sharpest and steadiest the "
+                                     "picture gets, at no frame gain. Only the temporal upscalers offer it (AMD FSR 3 "
+                                     "and FSR 4, DLSS): FSR 1 has no history to reconstruct from.") +
                          "\n\n" + (modes_ok ? rendering : tr("Coming in a later version."));
         opt_indent(1);
         if (g_settings.upscaler == UPSCALE_OFF) opt_disable_next();
@@ -1565,6 +1570,8 @@ static void perf_overlay_draw(ImGuiIO &io, float scale) {
         char f[16];
         snprintf(f, sizeof f, "%.1f", upscale_factor());
         line += std::string(" ") + (q >= 0 && q < UPQ_COUNT ? std::string(tr(k_upscale_modes[q])) + " " : "") + f + "x";
+    } else if (up != UPSCALE_OFF && q == UPQ_NATIVE) {
+        line += std::string(" ") + tr("Native");  // (1x: nothing to show as a factor)
     }
     // (FSR 3 anti-aliases the scene itself: the setting does nothing then)
     int aa = rt_antialias();

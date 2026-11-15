@@ -37,6 +37,9 @@ double upscale_mode_factor(int q);
 double upscale_factor(void);
 bool upscale_mode_offered(int q);   // mode q can be chosen now (Ultra Performance with FSR 3 / 4 or DLSS: a 4K window)
 int upscale_quality_now(void);      // the mode in use: the setting, or Performance where it is not offered
+// The temporal upscalers' native anti-aliasing (UPQ_NATIVE): the scene at the window's size, reconstructed along the
+// motion vectors instead of scaled - the upscaler anti-aliases and does not resize (vulkan/exec.c scene_post)
+bool upscale_native_wanted(void);
 // Video > Shadow resolution: the width the game's shadow maps are made at from presented frame `frame` on (0: their
 // own size; vulkan/textures.c RS_SHADOW)
 unsigned shadow_map_size(unsigned long long frame);
