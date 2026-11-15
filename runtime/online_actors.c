@@ -23,6 +23,7 @@
 #include "game_sites.h"
 #include "online.h"
 #include "rt.h"
+#include "settings.h"
 
 #define FN_CREATE 0x7001535900ull
 #define ACTOR_HASH_ID 0x640  // (an actor's map object HashId: u32)
@@ -771,7 +772,7 @@ void rt_online_arrow(uint64_t action) {
 // its own ELink's, as each swing starts) goes to the others in his state (OnlinePose.fx), and they play it on the
 // weapon in his puppet's hand. (Footprints, grass and water as he walks are ReactionField's, an actor of the game's
 // that plays the ground's reactions for everyone: not his.)
-#define FX_WATCH 4  // (Link, his weapon, shield, bow)
+#define FX_WATCH 6  // (Link, his weapon, shield, bow: their ELink; Link's and his weapon's SLink, their sounds)
 #define FX_RING 64
 #define FX_TRAIL_NS 300000000ull  // (a swing's trail sent this long after it starts: the game's own lasts the swing)
 static uint64_t volatile g_fx_ui[FX_WATCH];
@@ -855,6 +856,40 @@ float rt_blur_frame(uint64_t actor, uint32_t slot, float frame) {
     return frame;
 }
 
+// The weather: the host's where the others are near him (WEATHER_NEAR: the game's weather is a region's, and each game
+// draws its own; far from him each one keeps his own). ksys::world::Manager's current weather (+0x7d1) is set as
+// runtime/weather.c holds it (its timer +0x794 at 4: taken up), not in a cutscene (+0x7d6: its own) nor while the
+// player holds one himself (Cheats > Weather)
+#define WEATHER_NEAR 500.0f
+static uint8_t weather_now(void) {
+    uint64_t wm = g_site.world_mgr ? *(uint64_t *)(uintptr_t)g_site.world_mgr : 0;
+    if (!VALID(wm) || !*(uint32_t *)(uintptr_t)(wm + 0x5c0)) return 255;
+    uint8_t w = *(volatile uint8_t *)(uintptr_t)(wm + 0x7d1);
+    return w < 9 ? w : 255;
+}
+
+static void weather_follow(const OnlinePlayer *pl, int me, const float at[3]) {
+    if (g_settings.weather > 0) return;
+    uint64_t wm = g_site.world_mgr ? *(uint64_t *)(uintptr_t)g_site.world_mgr : 0;
+    if (!VALID(wm) || !*(uint32_t *)(uintptr_t)(wm + 0x5c0) || *(volatile uint8_t *)(uintptr_t)(wm + 0x7d6)) return;
+    const OnlinePlayer *h = &pl[0];  // (the host: the session's first, slot 0)
+    if (me == 0 || !h->used || !h->pose.valid || h->pose.weather > 8 || (h->flags & ONLINE_F_LOADING)) return;
+    float dx = h->pos[0] - at[0], dy = h->pos[1] - at[1], dz = h->pos[2] - at[2];
+    if (dx * dx + dy * dy + dz * dz > WEATHER_NEAR * WEATHER_NEAR) return;
+    volatile uint8_t *now = (volatile uint8_t *)(uintptr_t)(wm + 0x7d1);
+    if (*now == h->pose.weather) return;
+    static int logged;
+    if (logged++ < 20) LOG("[online] the host's weather: %d (was %d)\n", h->pose.weather, *now);
+    *now = h->pose.weather;
+    *(volatile int32_t *)(uintptr_t)(wm + 0x794) = 4;
+}
+
+static uint64_t slink_ui(uint64_t actor) {  // (an actor's SLink user instance: its +0x568 +0x50)
+    if (!VALID(actor)) return 0;
+    uint64_t h = *(uint64_t *)(uintptr_t)(actor + 0x568);
+    return VALID(h) ? *(uint64_t *)(uintptr_t)(h + 0x50) : 0;
+}
+
 static uint64_t elink_ui(uint64_t actor) {
     if (!VALID(actor)) return 0;
     uint64_t h = *(uint64_t *)(uintptr_t)(actor + 0x568);
@@ -865,9 +900,11 @@ static uint64_t elink_ui(uint64_t actor) {
 static void fx_update(uint64_t player) {
     g_fx_ui[0] = elink_ui(player);
     for (int k = 0; k < 3; k++) g_fx_ui[1 + k] = VALID(player) ? elink_ui(linked(player + 0xb98 + 0x18 * k)) : 0;
+    g_fx_ui[4] = slink_ui(player);
+    g_fx_ui[5] = VALID(player) ? slink_ui(linked(player + 0xb98)) : 0;
     int end = __atomic_load_n(&g_fx_next, __ATOMIC_ACQUIRE);
     if (end - g_fx_taken > FX_RING) g_fx_taken = end - FX_RING;
-    static const char *const who[FX_WATCH] = {"Link", "weapon", "shield", "bow"};
+    static const char *const who[FX_WATCH] = {"Link", "weapon", "shield", "bow", "Link sound", "weapon sound"};
     for (; g_fx_taken < end; g_fx_taken++) {
         uint64_t name = g_fx_ring[g_fx_taken & (FX_RING - 1)].name;
         int w = g_fx_ring[g_fx_taken & (FX_RING - 1)].who;
@@ -876,11 +913,16 @@ static void fx_update(uint64_t player) {
         if (getenv("SAVAGEWIND_ONLINE_FX_LOG")) LOG("[online] fx %s: %.60s\n", who[w], n);
         // (not his trail, nor the Champions' abilities: both their own way; nor the environment's, MaterialEnv,
         // FieldEnvEffect_*: his place's, not his)
-        if (w <= 1 && strncmp(n, "Blur", 4) && strncmp(n, "Kago_", 5) && strncmp(n, "MaterialEnv", 11) &&
+        // (Daruk's and Revali's, Kago_Shield* and Kago_Wind, are sent by their handles in the player; Mipha's Grace
+        // and Urbosa's Fury, Kago_Heal, Kago_Lightning / Kago_UrubozaRange..., go as these)
+        // (his sounds, his Link's SLink and his weapon's, as his effects: who 2 and 3)
+        bool sound = w >= 4;
+        if ((w <= 1 || sound) && strncmp(n, "Blur", 4) && strncmp(n, "Kago_Shield", 11) && strcmp(n, "Kago_Wind") &&
+            strncmp(n, "MaterialEnv", 11) &&
             strncmp(n, "FieldEnv", 8) && strlen(n) < sizeof g_fxev[0].name) {
             OnlineFxEvent *e = &g_fxev[g_fxev_seq % ONLINE_FX_EVENTS];
             if (!++g_fxev_seq) g_fxev_seq = 1;
-            e->seq = g_fxev_seq, e->who = (uint8_t)w;
+            e->seq = g_fxev_seq, e->who = (uint8_t)(sound ? w - 2 : w);
             snprintf(e->name, sizeof e->name, "%s", n);
         }
         if (w == 1 && !strncmp(n, "Blur", 4) && strlen(n) < ONLINE_FX_MAX)
@@ -1352,6 +1394,7 @@ static void sample_pose(Cpu *c, uint64_t pinfo) {
     sample_shots(c, player, pose.as, &pose.shots);
     snprintf(pose.fx, sizeof pose.fx, "%s", g_fx_trail);  // (his weapon's swing trail: fx_update)
     memcpy(pose.fxev, g_fxev, sizeof pose.fxev);  // (his other effects: fx_update)
+    pose.weather = weather_now();  // (the weather where he is: weather_follow)
     {   // his Link's ELink property values (its user instance +0x70, ONLINE_FX_PROPS words: the player's ELink,
         // Player_GameRom, has that many; its containers choose what to play by them, a charge's level and the like)
         uint64_t ui = elink_ui(player), pv = VALID(ui) ? *(uint64_t *)(uintptr_t)(ui + 0x70) : 0;
@@ -2108,6 +2151,25 @@ static int attack_power(const char *name) {
     return v ? atoi(v) : 0;
 }
 
+// the local Link's defence: his armour's (online_mod/defense.txt: each piece's armorDefenceAddLevel, the defence the game
+// shows for it), the pieces he wears
+static int our_defense(uint64_t player) {
+    static MapLine *m;
+    static int n = -1;
+    if (n < 0) n = map_load("defense.txt", &m);
+    uint64_t armor[ARMOR], gear[ONLINE_GEAR];
+    equipment(player, armor, gear);
+    int d = 0;
+    for (int k = 0; k < ARMOR; k++) {
+        char an[48];
+        if (!armor[k]) continue;
+        actor_name_of(armor[k], an);
+        const char *v = an[0] ? map_find(m, n, an) : NULL;
+        if (v) d += atoi(v);
+    }
+    return d;
+}
+
 // The host's enemies hitting the local Link: his enemy starting an attack (an AS of its with Attack or Kick in its name)
 // lands STRIKE_FRAMES later on the local Link when he is within its reach in front of it, his shield not up: his life
 // (player +0x848, quarter hearts) goes down by its weapon's attack power, its own when it has none
@@ -2131,6 +2193,8 @@ static void strike(Cpu *c, uint64_t player, const OnlineEnemy *e) {
     int power = e->weapon[0] ? attack_power(e->weapon) : 0;
     if (!power) power = attack_power(e->name);
     if (power <= 0) return;
+    int def = our_defense(player);
+    power = power > def ? power - def : 1;  // (his armour's defence off it, a quarter heart at least: the game's own way)
     *life = *life > power ? *life - power : 0;
     // a heavy blow (a kick, a big or jumping attack, any of a big one's) shakes him: OnlineShock (an enemy's shock wave,
     // unseen) a metre from him on its side; he flinches (OnlineKnock, a bomb's blast, knocks him down, but its explosion
@@ -3780,6 +3844,11 @@ void rt_online_frame(Cpu *c) {
             if (++st == atoi(getenv("SAVAGEWIND_ONLINE_SLATE_TEST")) * 30) slate_event(c, player);
         }
         quests_update(c, player, online_is_host());
+        if (VALID(player) && !online_is_host()) {
+            OnlinePlayer wp[ONLINE_MAX];
+            online_players(wp);
+            weather_follow(wp, me, link);
+        }
         if (VALID(player)) ground_update(c, player, link);
         if (VALID(player)) {
             OnlinePlayer gp[ONLINE_MAX];
@@ -3987,8 +4056,11 @@ void rt_online_frame(Cpu *c) {
                 }
                 if (!best) break;
                 g_act[i].fxev_seen = best->seq;
-                uint64_t on = best->who == 1 ? (held ? w : 0) : g_act[i].link;
+                uint64_t on = best->who & 1 ? (held ? w : 0) : g_act[i].link;
                 if (!VALID(on)) continue;
+                // (a sound: on its SLink, the player's / the weapon's: 0x700159f00c, the game's own keyword emit, w2 1 its
+                // SLink alone, x3 the two handles: the SLink's at +0x10)
+                if (best->who >= 2 && !VALID(slink_ui(on))) continue;
                 int q = 0;
                 while (q < ONLINE_FX_EVENTS - 1 && g_act[i].fxev[q].p) q++;
                 if (g_act[i].fxev[q].p) {
@@ -3997,11 +4069,19 @@ void rt_online_frame(Cpu *c) {
                         call(c, FN_EFFECT_KILL, (uint64_t)(uintptr_t)&g_act[i].fxev[q], 0, 0, 0, 0, 0);
                 }
                 memset(&g_act[i].fxev[q], 0, sizeof g_act[i].fxev[q]);
-                call_sret(c, FN_EFFECT_EMIT, (uint64_t)(uintptr_t)&g_act[i].fxev[q], on, (uint64_t)(uintptr_t)best->name);
+                if (best->who >= 2) {
+                    struct { uint64_t p; uint32_t id, pad; } hh[2];
+                    memset(hh, 0, sizeof hh);
+                    call(c, FN_XLINK_EMIT, on, (uint64_t)(uintptr_t)best->name, 1, (uint64_t)(uintptr_t)hh, 0, 0);
+                    g_act[i].fxev[q].p = hh[1].p, g_act[i].fxev[q].id = hh[1].id;
+                } else
+                    call_sret(c, FN_EFFECT_EMIT, (uint64_t)(uintptr_t)&g_act[i].fxev[q], on, (uint64_t)(uintptr_t)best->name);
                 g_act[i].fxev[q].t = now;
-                if (getenv("SAVAGEWIND_ONLINE_FX_LOG"))
-                    LOG("[online] %s: %s on his %s (%llx)\n", pl[i].name, best->name, best->who == 1 ? "weapon" : "Link",
+                if (getenv("SAVAGEWIND_ONLINE_FX_LOG")) {
+                    static const char *const kinds[4] = {"Link", "weapon", "Link (sound)", "weapon (sound)"};
+                    LOG("[online] %s: %s on his %s (%llx)\n", pl[i].name, best->name, kinds[best->who & 3],
                         (unsigned long long)g_act[i].fxev[q].p);
+                }
             }
             // the attack it is the trail of, for SwordBlur to find on his puppet (rt_blur_anim / rt_blur_frame)
             for (int k = 0; k < 3; k++) {

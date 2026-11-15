@@ -53,8 +53,10 @@ STORY_FLAGS = ('IsGet_PortableUnit', 'PortableUnit_PowerOn', 'OP_DRC', 'Open_Fir
 KNOCK = 'OnlineKnock'
 SHOCK0 = 'OnlineShock'
 PLAYER_ELINK = 'Player_GameRom'  # (GameROMPlayer's ElinkUser)
-VERSION = 28  # (runtime/main.c ONLINE_MOD_VERSION: armour actors, traverseDist, the paraglider, the enemies' traverseDist,
-# their chemical, the round bomb's own explosion, the weapons' ELink, the player's AnimationInfo)
+PLAYER_SLINK = 'GameROMPlayer'  # (and its SlinkUser: his sounds, played on his Link by the runtime)
+VERSION = 31  # (runtime/main.c ONLINE_MOD_VERSION: armour actors, traverseDist, the paraglider, the enemies' traverseDist,
+# their chemical, the round bomb's own explosion, the weapons' ELink, the player's AnimationInfo, the
+# player's and the weapons' SLink, the armour's defence, the chests' flags)
 TRAVERSE = 1000.0  # (the online actors' traverseDist)
 GEAR_KINDS = ('Weapon_Sword_', 'Weapon_Lsword_', 'Weapon_Spear_', 'Weapon_Shield_', 'Weapon_Bow_', 'Weapon_Sheath_',
               'Weapon_Lsheath_', 'Weapon_SpearSheath_', 'Weapon_Quiver_')
@@ -271,7 +273,7 @@ def main():
     link_phys = [(f.name, bytes(f.data)) for f in look.get_files() if f.name.startswith('Physics/')]
     resident = {NAME: build(NAME, link_ml.to_binary(), link_phys, as_files,
                             physics=(phys.to_binary(), rstb.get('Actor/Physics/%s.bphysics' % BASE_LOOK)),
-                            users=dict({'ElinkUser': PLAYER_ELINK}, **({'AnimationInfo': anim_info.name.split('/')[-1]
+                            users=dict({'ElinkUser': PLAYER_ELINK, 'SlinkUser': PLAYER_SLINK}, **({'AnimationInfo': anim_info.name.split('/')[-1]
                                                                           .rsplit('.', 1)[0]} if anim_info else {})))}
     # (the player's effects: the runtime plays Daruk's Protection, "Kago_Shield", on it; his AnimationInfo)
 
@@ -675,8 +677,10 @@ def main():
             for k2 in ('elink', 'slink', 'xlink'):
                 if k2 in src:
                     entry[k2] = src[k2]
-        elif model_from.startswith(SWUNG) and 'elink' in src:  # (a weapon's effects: its swing trail, played on it by
-            entry['elink'] = src['elink']  # the runtime as its player's game plays it; its sounds stay his game's)
+        elif model_from.startswith(SWUNG) and 'elink' in src:  # (a weapon's effects and sounds: its swing trail, its
+            entry['elink'] = src['elink']  # swing's sound..., played on it by the runtime as its player's game plays them)
+            if 'slink' in src:
+                entry['slink'] = src['slink']
         entry['instSize'] = npc_info['instSize']
         # (as far as the world is around: the game removes an actor farther than this from the camera)
         entry['traverseDist'] = oead.F32(TRAVERSE)
@@ -693,6 +697,7 @@ def main():
 
     add_info(NAME, BASE_LOOK)
     next(a for a in actors if a['name'] == NAME)['elink'] = PLAYER_ELINK
+    next(a for a in actors if a['name'] == NAME)['slink'] = PLAYER_SLINK
     for online in list(booms) + list(enemy_info):  # (the bomb's / enemy's own entry, its profile and all)
         piece = enemy_info.get(online) or boom_of[online]
         entry = oead.byml.Hash()
@@ -759,6 +764,11 @@ def main():
         if n2.startswith('Weapon_') and 'attackPower' in a2:
             power[n2] = int(a2['attackPower'])
     open(os.path.join(out, 'power.txt'), 'w').write(''.join('%s=%d' % kv + chr(10) for kv in sorted(power.items())))
+    # the armour's defence (piece=its ActorInfo armorDefenceAddLevel, the defence the game shows for it): the host's
+    # enemies' blows on a player take that much less (runtime/online_actors.c strike)
+    defense = {str(a2['name']): int(a2['armorDefenceAddLevel']) for a2 in actors
+               if str(a2['name']).startswith('Armor_') and 'armorDefenceAddLevel' in a2}
+    open(os.path.join(out, 'defense.txt'), 'w').write(''.join('%s=%d' % kv + chr(10) for kv in sorted(defense.items())))
     # the enemies' weapon scales (enemy=small sword,large sword,spear,bow,shield), those not all 1
     open(os.path.join(out, 'wscale.txt'), 'w').write(''.join(
         '%s=%s' % (k, ','.join('%.4f' % x for x in v)) + chr(10) for k, v in sorted(weapon_scale.items())))
@@ -799,6 +809,17 @@ def main():
                 re.match(r'(Get_HeartUtuwa_(Wind|Water|Fire|Electric)|IsGet_Obj_HeroSoul_(Rito|Zora|Goron|Gerudo)|'
                          r'IsGet_App_(Wind|Water|Fire|Electric)Relic|(Wind|Water|Fire|Electric)_Relic_\w+|Clear_Remains\w+)$',
                          f2)) and f2 not in qflags:
+            qflags.append(f2)
+    # (and every treasure chest opened: its flag <map>_TBox_<kind>_<HashId>, 1620 of them; opened in one game, it is
+    # opened in the others, what it held is the one's who opened it)
+    chest_flags = set()  # (most are in revival_bool_data, the flags of the actors a Blood Moon brings back)
+    for gf in gdt.get_files():
+        if 'bool_data' in gf.name.split('/')[-1]:
+            for e in oead.byml.from_binary(bytes(gf.data)).get('bool_data', []):
+                if '_TBox_' in str(e['DataName']):
+                    chest_flags.add(str(e['DataName']))
+    for f2 in sorted(chest_flags):
+        if f2 not in qflags:
             qflags.append(f2)
     open(os.path.join(out, 'quests.txt'), 'w').write(''.join(f2 + chr(10) for f2 in qflags[:4096]))
     # the enemies' online actors (enemy=actor)

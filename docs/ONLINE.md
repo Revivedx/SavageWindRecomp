@@ -17,8 +17,8 @@ Savage Wind: the same kind of session (a host, up to 8 players), its own protoco
 - The settings are in `online.ini` in the data folder.
 
 Each player plays their own game (their save, their world; shared with the others: the host's enemies and what they
-drop, the quests' progress, the time of day, weapons picked up; not shared: chests opened, but a camp's opens when
-its enemies are dead everywhere); the others are
+drop, the quests' progress, the treasure chests opened, the time of day and, near the host, his weather, weapons
+picked up); the others are
 in it as Links: each other player is a Link in the world where he is, posed as his Link is in his game (his skeleton,
 bone by bone: walking, climbing, every swing of a sword, a shield's guard, drawing a bow, throwing...), in the armour he wears
 and with the weapon, shield, bow, sheath and quiver he carries, in his hands or on his back as in his game, with his
@@ -240,6 +240,14 @@ the emits of the local Link's ELink and of his weapon's, shield's and bow's (`SA
     his slots go in his state while the trail plays (`fx_anim`, `fx_frame`) and the four reads of a puppet's slots
     get his (`blur_anim`, `blur_frame_a`, `blur_frame_b`, `blur_anim_draw` in tools/patches.py).
   Tested with two games and seen on screen.
+- His sounds the same way (events `who` 2 and 3): his Link's SLink (user instance at +0x568 +0x50: his voice, PV*;
+  his equipment's rustle, EquipNoise_*; a charge's ChargeLv*) and his weapon's (PlayerAttackNormal*,
+  PlayerAttackCharged...), played on his puppet (SlinkUser `GameROMPlayer`, tools/online_mod.py) or its weapon (the
+  swung gear has its weapon's SLink) through 0x700159f00c, the game's own keyword emit (w2 1: the SLink alone; x3 two
+  handles, the SLink's at +0x10). Its generic emit, 0x7000f3fc10, on an SLink user instance crashed the game (a write
+  at 1). Mipha's Grace and Urbosa's Fury go as events too (Kago_Heal, Kago_Lightning...: only Daruk's Kago_Shield* and
+  Revali's Kago_Wind, sent by their handles, are left out). Tested with two games: the host's voice, swings, charge
+  and steps' rustle played on the client's puppet of him, each with a handle.
 - `SAVAGEWIND_EFF_ERR_LOG=1` logs the effects' error lines ("EFF_ERR[...]", made with
   sead::FormatFixedSafeString<128> at 0x7000579614 and never shown: `fmt128` in tools/patches.py).
 
@@ -527,6 +535,19 @@ SAVAGEWIND_ONLINE_KNOCK_TEST=<s> makes one next to the local Link every that man
 `SAVAGEWIND_ONLINE_ENEMY_AS_LOG=1` logs the host's enemies' AS as they come, `SAVAGEWIND_ONLINE_LIFE_LOG=1` the local
 Link's life.
 
+The weather: each player's state has the weather where he is (`weather`, ksys::world::Manager +0x7d1, 255 unknown);
+a game within 500 m of the host takes his (written as runtime/weather.c holds one: +0x7d1, its timer +0x794 at 4),
+not in a cutscene (+0x7d6) nor while the player holds one himself (Cheats > Weather). The game's weather is a
+region's, each game draws its own: far from the host each keeps his. Tested: the host's rain on the client.
+
+The armour's defence: a blow of the host's enemies on a player takes his armour's defence off (the pieces he wears,
+online_mod/defense.txt: each one's ActorInfo armorDefenceAddLevel, the defence the game shows: the Hylian Hood 3,
+the Old Shirt 1), a quarter heart at least.
+
+Treasure chests: their flags (`<map>_TBox_<kind>_<HashId>`, 1615, most in revival_bool_data) are in quests.txt with
+the quests' (3773 in all): one opened in a game is opened in the others (what it held is the one's who opened it).
+Tested: a chest's flag set on the host was set on the client.
+
 The time of day is the host's (protocol 10): his game's frame loop publishes its hour (`test_warp_hour`), his
 server sends it to everyone every 2 s (TIME), and the others set theirs to it (`test_warp_set_hour`) when it is off
 by more than 3 game minutes (both clocks run at the same speed in between).
@@ -580,6 +601,9 @@ Recipes that found the bugs above:
 - Less to send: only the bones that moved, or fewer times a second (a session of 8 sends each player's skeleton to 7).
 
 - A dye's colour (the armour's `ArmorDyeColor` param when it is made, as `0x70011759a4` passes it).
+- Damage between players (the puppets have no bodies that take hits), riding: a player on a horse or a Master
+  Cycle isn't shown on it, the world's objects (fruit, ore, rocks broken, things moved), players in the same shrine
+  or Divine Beast seeing each other, a Blood Moon at the same time.
 - The beam is not seen working yet: in the test runs (full hearts, the Master Sword) the game fired none, with or
   without online play, so `beam_move` and OnlineBeam are untested.
 - Magnesis' blue beam from the slate to what it holds (not a named effect of the player's, ReactionHit's or
@@ -587,6 +611,5 @@ Recipes that found the bugs above:
   _Tail); the Item_Magnetglove actor's ELink plays it from its AI's state), Stasis' chains.
 - A Divine Beast seen moving by the others while one is inside: each world's beast is as its own flags are (the
   quests' flags are shared), its AI isn't followed.
-- Mipha's Grace, Urbosa's Fury (the same way as Daruk's and Revali's: "Kago_Heal", "Kago_Lightning" /
-  "Kago_UrubozaRange"; their handles in the player still to find, as Revali's were); footprints, grass and water (ReactionField's), grass cut.
+- Footprints, grass and water as a player walks (ReactionField's), grass cut by a blade.
 - The world shared: enemies, items, time of day, quests (Milk Bar's quest and enemy sync); damage between players.

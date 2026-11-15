@@ -54,10 +54,11 @@ typedef struct {
 #define ONLINE_GRAB_NAME 40
 #define ONLINE_BOSSES 2
 #define ONLINE_FX_MAX 24  // (OnlinePose.fx: an effect's name)
-#define ONLINE_FX_EVENTS 4  // (OnlinePose.fxev: his last effects)
+#define ONLINE_FX_EVENTS 8  // (OnlinePose.fxev: his last effects and sounds)
 #define ONLINE_FX_PROPS 24  // (OnlinePose.fx_props: his Link's ELink property values)
 #pragma pack(push, 1)
-typedef struct { uint16_t seq; uint8_t who; char name[21]; } OnlineFxEvent;  // (who: 0 his Link, 1 his weapon)
+typedef struct { uint16_t seq; uint8_t who; char name[21]; } OnlineFxEvent;  // (who: 0 his Link, 1 his weapon;
+// 2 his Link's sound, 3 his weapon's)
 #pragma pack(pop)
 #pragma pack(push, 1)
 typedef struct { char name[ONLINE_GRAB_NAME]; float from[3]; float m[12]; } OnlineGrab;
@@ -88,6 +89,7 @@ typedef struct {
                                                  // a spin attack, a heavy blow...), each by its number (0: none)
     uint32_t fx_props[ONLINE_FX_PROPS];          // his Link's ELink property values (its effects choose what to play by
                                                  // them: a charge's level, his weapon's kind...)
+    uint8_t weather;                             // the weather where he is (the game's type, 0 clear .. 8; 255 unknown)
 } OnlinePose;
 // OnlinePose.effects: Daruk's Protection's shield taking a hit (KAGO), its ring while he guards with its charges left
 // (KAGO_COUNT: 1 to 3, in effects >> KAGO_COUNT_SHIFT)
