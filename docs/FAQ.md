@@ -72,8 +72,7 @@ That step runs a compiler over your files, so it needs free space and a working 
 - your antivirus didn't quarantine anything from the Savage Wind folder.
 
 If it still fails, [open an issue](#reporting-a-problem) with `savagewind.log`
-([#618](https://github.com/Revivedx/SavageWindRecomp/issues/618),
-[#669](https://github.com/Revivedx/SavageWindRecomp/issues/669)).
+([#618](https://github.com/Revivedx/SavageWindRecomp/issues/618)).
 
 ### How long does setup take?
 
@@ -346,7 +345,6 @@ a new one. The full list is on the [issue tracker](https://github.com/Revivedx/S
 | Map controls with mouse and keyboard | None yet | [#440](https://github.com/Revivedx/SavageWindRecomp/issues/440) |
 | Button prompts and layout on DualSense | None yet | [#604](https://github.com/Revivedx/SavageWindRecomp/issues/604) |
 | Gyro axes wrong on some handhelds over DSU | Being looked at | [#136](https://github.com/Revivedx/SavageWindRecomp/issues/136) |
-| HUD shakes or goes out of bounds at 20:9 (2340x1080) | Needs more information; a 16:9 window meanwhile | [#728](https://github.com/Revivedx/SavageWindRecomp/issues/728) |
 | Gaps in Thai subtitles | Set Voices to "Same as text" | [#516](https://github.com/Revivedx/SavageWindRecomp/issues/516) |
 
 ### Setup
@@ -354,7 +352,7 @@ a new one. The full list is on the [issue tracker](https://github.com/Revivedx/S
 | Problem | Workaround | Issue |
 |---|---|---|
 | "No game files found" when reusing an install | [See above](#setup-says-no-game-files-found-in-that-folder) | [#590](https://github.com/Revivedx/SavageWindRecomp/issues/590) |
-| Setup stops at the start of the build | [See above](#setup-stops-at-5-10-or-the-game-code-didnt-build) | [#618](https://github.com/Revivedx/SavageWindRecomp/issues/618), [#669](https://github.com/Revivedx/SavageWindRecomp/issues/669) |
+| Setup stops at the start of the build | [See above](#setup-stops-at-5-10-or-the-game-code-didnt-build) | [#618](https://github.com/Revivedx/SavageWindRecomp/issues/618) |
 
 ---
 
@@ -383,7 +381,7 @@ Before opening one, read this page. An issue about something it already covers, 
 on the latest release, say so in your report and attach the log, and it stays open. A closed one is reopened if you
 comment with that.
 
-Reports missing the log get a `needs-info` label and are closed after 7 days without it. Never attach or link game
+Reports missing the log get a `needs-info` label and are closed after 24 hours without it. Never attach or link game
 files, keys or firmware.
 
 ---

@@ -38,7 +38,7 @@ keys ni rutas personales.
 Issues y pull requests (#160, 2026-10-26): GitHub lee los formularios (`.github/ISSUE_TEMPLATE/`) y los workflows
 (`.github/workflows/`) de la rama por defecto, `main`, así que un cambio en ellos solo cuenta cuando llega a `main`.
 `triage.yml` etiqueta `needs-info` los bugs nuevos sin log, de una release vieja o de 1.8.2 (con un comentario que
-dice qué falta), `stale.yml` los cierra a los 7 días sin cambios y `retarget.yml` pasa a `test` las pull requests de
+dice qué falta), `stale.yml` los cierra a las 24 horas sin cambios (corre cada hora) y `retarget.yml` pasa a `test` las pull requests de
 forks abiertas contra `main`. Una etiqueta `triage-ok` deja un issue fuera del triage. **En cada release**: poner la
 versión nueva como "(latest)" en el desplegable "Savage Wind version" de `bug_report.yml` (el triage marca solo la
 opción "An older release").
