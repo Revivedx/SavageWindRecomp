@@ -175,22 +175,23 @@ gives the driver a fresh cache.
 
 ### The sky is black, dark or wrong on my AMD card
 
-Still being looked at. It happens on AMD's Windows driver with RX 6000 cards and older (Vega included), not on newer
-cards or on Linux, and it can change from one start to the next. The 0.5.2 change for it did not fix it. Please follow
-the steps on [#359](https://github.com/Revivedx/SavageWindRecomp/issues/359) and add your card, driver, screenshots and
-logs there.
+Fixed in Alpha 6: 3D textures are now cleared when they're made, which AMD's Windows driver needed (RX 6000 cards
+and older, Vega included). If the sky is still wrong on Alpha 6, add your card, driver, screenshots and log on
+[#359](https://github.com/Revivedx/SavageWindRecomp/issues/359).
 
 ### The water is white, milky or transparent
 
-Milky water after a loading screen was fixed for Alpha 5. Transparent water is still open
+Milky water after a loading screen was fixed for Alpha 5, and transparent water for Alpha 6
 ([#649](https://github.com/Revivedx/SavageWindRecomp/issues/649)). If you see either on the latest version, add your
 GPU, driver and position.
 
-### Where are FSR 3 and FSR 4 upscaling?
+### Which upscaler should I use?
 
-They are held back. They work, but the motion vectors they need cost about 20% of the frame rate on the render thread
-(130 fps native, 104 with FSR 3, on an RTX 3060 at 1440p). This needs a redesign of the motion vectors, planned for
-Alpha 6. FSR 1 upscaling is available, and FSR 3 frame generation too.
+Since Alpha 6, Video > Upscaler offers FSR 1, FSR 3, FSR 4 (AMD Radeon RX 9000) and NVIDIA DLSS (RTX cards; Savage
+Wind Configuration downloads NVIDIA's library). They gain the most where the graphics card is the limit: 4K, the Savage
+preset, Extreme shadows. Where the CPU is the limit (1080p on a fast card), they cost about as much as they save, and
+their anti-aliasing is the reason to use them there. DLSS and FSR 3 look best in Quality or Native mode; Ultra
+Performance is only offered on a 4K window.
 
 ### Does frame generation work everywhere?
 
@@ -327,9 +328,7 @@ a new one. The full list is on the [issue tracker](https://github.com/Revivedx/S
 
 | Problem | Seen on | Issue |
 |---|---|---|
-| Black, dark or wrong sky, can change between starts | AMD on Windows, RX 6000 and older | [#359](https://github.com/Revivedx/SavageWindRecomp/issues/359), [#665](https://github.com/Revivedx/SavageWindRecomp/issues/665) |
 | Fog glitches in the intro | Under investigation | [#630](https://github.com/Revivedx/SavageWindRecomp/issues/630) |
-| Transparent water | Under investigation | [#649](https://github.com/Revivedx/SavageWindRecomp/issues/649) |
 | Graphical bugs | ROG Ally Z1E on SteamOS | [#614](https://github.com/Revivedx/SavageWindRecomp/issues/614) |
 | Corrupted footprints in sand | Under investigation | [#634](https://github.com/Revivedx/SavageWindRecomp/issues/634) |
 | Corrupted picture | Under investigation | [#632](https://github.com/Revivedx/SavageWindRecomp/issues/632) |
