@@ -351,13 +351,14 @@ static void dlss_run(void *arg) {
         release_feature();
         static const int q[] = {NGX_PERF_ULTRAQUALITY, NGX_PERF_MAXQUALITY, NGX_PERF_BALANCED, NGX_PERF_MAXPERF,
                                 NGX_PERF_ULTRAPERF};  // (UPQ_*: Ultra Performance's 3.0 is DLSS's own)
+        static bool uq_rejected;
         unsigned requested = j->quality < 5 ? j->quality : 1;
-        // Some driver/NGX combinations reject Ultra Quality at a particular
-        // render size. Retry the next conservative mode before disabling DLSS.
-        static const unsigned fallback[] = {0, 1, 2, 3};
+        unsigned start = (requested == 0 && uq_rejected) ? 1 : requested;
+        // Some driver/NGX combinations reject Ultra Quality at a particular render size. Remember that
+        // rejection so dynamic-resolution steps go straight to Quality, and step down without duplicate retries.
         bool created = false;
-        for (unsigned attempt = 0; attempt < 4 && !created; attempt++) {
-            unsigned mode = attempt == 0 ? requested : fallback[attempt];
+        unsigned tries = start < 4 ? 4 : 5;
+        for (unsigned mode = start; mode < tries && !created; mode++) {
             if (!ok(N.alloc_params(&g_params), "allocate parameters")) { atomic_store(&g_failed, 1); return; }
             NgxParam *p = g_params;
             p_setu(p, "CreationNodeMask", 1);
@@ -373,8 +374,9 @@ static void dlss_run(void *arg) {
             NgxResult r = N.create(j->cb, NGX_FEATURE_SUPERSAMPLING, p, &g_feature);
             if (NGX_OK(r)) {
                 created = true;
-                if (attempt) LOG("[dlss] quality %u rejected; using fallback mode %u\n", requested, mode);
+                if (mode != requested) LOG("[dlss] quality %u rejected; using fallback mode %u\n", requested, mode);
             } else {
+                if (mode == 0) uq_rejected = true;
                 LOG("[dlss] quality mode %u rejected: %s (%#x)\n", mode, result_name(r), r);
                 release_feature();
             }
