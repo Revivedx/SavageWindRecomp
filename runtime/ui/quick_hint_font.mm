@@ -7,6 +7,7 @@
 #include <stdio.h>
 extern "C" {
 #include "../rt.h"
+#include "../mods.h"
 #include "../services/archive.h"
 #include "../nvn/tegra.h"
 #include "../nvn/glyphs.h"
@@ -125,10 +126,8 @@ void quick_hint_fonts_load(ImFontAtlas *atlas, ImFont **text, ImFont **buttons) 
     *text = *buttons = nullptr;
     if (!g_romfs_dir) return;
     char path[1200];
-    const char *overlay = getenv("SAVAGEWIND_ROMFS_OVERLAY");
     FILE *file = nullptr;
-    if (overlay && *overlay) {
-        snprintf(path, sizeof path, "%s/Font/Font_EU.sbfarc", overlay);
+    if (mods_find_file("", "Font/Font_EU.sbfarc", path, sizeof path, nullptr, 0)) {
         file = fopen(path, "rb");
     }
     if (!file) {

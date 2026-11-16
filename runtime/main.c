@@ -18,6 +18,7 @@
 #include "romfs_image.h"
 #include "services/save_convert.h"
 #include "services/save_profiles.h"
+#include "mods.h"
 #include "settings.h"
 #include "hle.h"
 #include "kernel.h"
@@ -166,6 +167,8 @@ static void boot(const char *root) {
     snprintf(romfs, sizeof romfs, "%s/romfs", root);
     snprintf(npdm_path, sizeof npdm_path, "%s/main.npdm", exefs);
     if (!g_romfs_dir) g_romfs_dir = strdup(romfs);
+
+    mods_session_begin(NULL);
 
     char why[512];
     if (!gamelib_load(root, why, sizeof why)) FATAL("%s\n", why);

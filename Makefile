@@ -676,6 +676,15 @@ test-save-profiles: $(B)/test_save_profiles
 
 .PHONY: test-save-profiles
 
+$(B)/test_mods: tools/test_mods.c runtime/mods.c runtime/mods.h
+	@mkdir -p $(B)
+	$(CC) -O1 -Wall -Wextra -Werror -std=gnu11 -D_FILE_OFFSET_BITS=64 -Iruntime -o $@ tools/test_mods.c runtime/mods.c
+
+test-mods: $(B)/test_mods
+	$(B)/test_mods
+
+.PHONY: test-mods
+
 $(B)/test_game_file_size: tools/test_game_file_size.c runtime/game_file_size.c runtime/game_file_size.h runtime/game_files.h
 	@mkdir -p $(B)
 	$(CC) -O1 -Wall $(OSFLAGS) -Iruntime -o $@ tools/test_game_file_size.c runtime/game_file_size.c
@@ -792,7 +801,7 @@ test-audio-mix: $(B)/test_audio_mix
 
 .PHONY: test-audio-mix
 
-$(B)/test_movie_stop: tests/test_movie_stop.c runtime/hle/movie.c runtime/hle.h runtime/kernel.h runtime/settings.h
+$(B)/test_movie_stop: tests/test_movie_stop.c runtime/hle/movie.c runtime/mods.c runtime/mods.h runtime/hle.h runtime/kernel.h runtime/settings.h
 	@mkdir -p $(B)
 	$(CC) -O1 -Wall -Wno-unused-function $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< $(if $(DEPS),-L$(DEPS)/lib) -lavformat -lavcodec -lavutil -lswscale -lpthread -lm
 
@@ -851,9 +860,9 @@ test-quick-inventory-sort: $(B)/test_quick_inventory_sort $(B)/test_gamelib_site
 
 .PHONY: test-quick-inventory-sort
 
-$(B)/test_quick_hint_font: tools/test_quick_hint_font.cpp runtime/ui/quick_hint_font.mm runtime/ui/quick_hint_font.h \
+$(B)/test_quick_hint_font: tools/test_quick_hint_font.cpp runtime/ui/quick_hint_font.mm runtime/ui/quick_hint_font.h runtime/mods.h \
                          $(B)/imgui/imgui.o $(B)/imgui/imgui_draw.o $(B)/imgui/imgui_tables.o $(B)/imgui/imgui_widgets.o \
-                         $(B)/rt/services/archive.o $(B)/rt/nvn/tegra.o $(B)/rt/nvn/glyphs.o $(B)/rt/hle/bindings.o
+                         $(B)/rt/mods.o $(B)/rt/services/archive.o $(B)/rt/nvn/tegra.o $(B)/rt/nvn/glyphs.o $(B)/rt/hle/bindings.o
 	@mkdir -p $(B)
 	$(CXX) $(CXXFLAGS) -o $@ $< $(filter %.o,$^) $(TEST_LD) -lSDL3 -lm
 

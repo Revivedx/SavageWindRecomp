@@ -44,6 +44,7 @@ void kernel_host_work_end(void) { atomic_fetch_sub(&g_work_depth, 1); }
 uint64_t input_buttons_now(void) { return 0; }
 void rt_fatal_trace(void) { abort(); }
 
+#include "../runtime/mods.c"
 #include "../runtime/hle/movie.c"
 
 void renderer_upload_rgba(NvnTexture *t, const void *rgba, uint32_t w, uint32_t h, uint32_t stride) {

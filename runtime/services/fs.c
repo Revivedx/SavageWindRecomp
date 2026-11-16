@@ -28,6 +28,7 @@
 #include "archive.h"
 #include "fs_layout.h"
 #include "save_profiles.h"
+#include "../mods.h"
 #include "../perfcount.h"
 #include "../platform.h"
 #include "../game_place.h"
@@ -94,21 +95,7 @@ RT_ON_RESET(fs_reset) {
     g_save_dir = "save";
 }
 
-// The RomFS overlay folder (SAVAGEWIND_ROMFS_OVERLAY), or NULL
-static const char *overlay_dir(void) {
-    const char *e = getenv("SAVAGEWIND_ROMFS_OVERLAY");
-    return e && *e ? e : NULL;
-}
-
-// Host path of the overlay's replacement for RomFS file `path` (relative, e.g. "Actor/ActorInfo.product.sbyml"); an
-// add-on content's files are in the folder's aoc/0010/
-static bool overlay_file(const char *path, char *out, size_t cap) {
-    const char *dir = overlay_dir();
-    if (!dir) return false;
-    snprintf(out, cap, "%s/%s%s", dir, R->ov_sub ? R->ov_sub : "", path);
-    struct stat sb;
-    return stat(out, &sb) == 0 && S_ISREG(sb.st_mode);
-}
+// The overlay layer support lives in runtime/mods.c (mods_find_file, mods_active_*)
 
 static int rom_cmp(const void *a, const void *b) {
     const RomFile *x = a, *y = b;
@@ -146,9 +133,11 @@ static int path_cmp(const void *a, const void *b) { return strcmp(*(char *const 
 
 typedef struct { char rel[1024]; char host[1200]; uint64_t size; } NewFile;
 
-static void walk_new(const char *root, const char *rel, char **known, int nknown, NewFile **out, int *n, int *cap) {
+static void walk_new(const char *root, const char *rel, char **known, int nknown,
+                     char **seen, int nseen, NewFile **out, int *n, int *cap) {
     char dirp[1200];
-    snprintf(dirp, sizeof dirp, "%s/%s", root, rel);
+    if (rel[0]) snprintf(dirp, sizeof dirp, "%s/%s", root, rel);
+    else snprintf(dirp, sizeof dirp, "%s", root);
     DIR *d = opendir(dirp);
     if (!d) return;
     struct dirent *e;
@@ -160,9 +149,11 @@ static void walk_new(const char *root, const char *rel, char **known, int nknown
         snprintf(h2, sizeof h2, "%s/%s", root, r2);
         struct stat sb;
         if (stat(h2, &sb)) continue;
-        if (S_ISDIR(sb.st_mode)) { walk_new(root, r2, known, nknown, out, n, cap); continue; }
+        if (S_ISDIR(sb.st_mode)) { walk_new(root, r2, known, nknown, seen, nseen, out, n, cap); continue; }
+        if (!rel[0] && mods_is_ignored_top_file(e->d_name)) continue;
         const char *key = r2;
         if (bsearch(&key, known, nknown, sizeof *known, path_cmp)) continue;  // replaces an existing file
+        if (seen && nseen > 0 && bsearch(&key, seen, nseen, sizeof *seen, path_cmp)) continue;  // higher layer won
         if (*n == *cap) { *cap = *cap ? *cap * 2 : 64; *out = realloc(*out, sizeof **out * *cap); }
         strlcpy((*out)[*n].rel, r2, sizeof (*out)[*n].rel);
         strlcpy((*out)[*n].host, h2, sizeof (*out)[*n].host);
@@ -193,17 +184,62 @@ static int64_t dir_lookup(const uint8_t *dm, uint64_t dsz, const char *path) {
 }
 
 static void add_new_files(const uint64_t *h, const uint8_t *dmeta, uint64_t dsz, uint64_t fsz) {
-    if (!overlay_dir()) return;
-    char root[1100];
-    snprintf(root, sizeof root, "%s/%s", overlay_dir(), R->ov_sub ? R->ov_sub : "");
+    int nlayers = mods_active_count();
+    if (nlayers <= 0) return;
     char **known = malloc(sizeof *known * R->rom_nfiles);
     for (int i = 0; i < R->rom_nfiles; i++) known[i] = R->rom_files[i].path;
     qsort(known, R->rom_nfiles, sizeof *known, path_cmp);
+
+    char sub[256];
+    sub[0] = '\0';
+    if (R->ov_sub && R->ov_sub[0]) {
+        const char *s = R->ov_sub;
+        while (*s == '/' || *s == '\\') s++;
+        strlcpy(sub, s, sizeof sub);
+        size_t sl = strlen(sub);
+        while (sl > 0 && (sub[sl - 1] == '/' || sub[sl - 1] == '\\')) sub[--sl] = '\0';
+    }
+
     NewFile *nf = NULL;
     int n = 0, cap = 0;
-    walk_new(root, "", known, R->rom_nfiles, &nf, &n, &cap);
+    for (int layer = 0; layer < nlayers; layer++) {
+        const char *dir = mods_active_dir(layer);
+        if (!dir || !*dir) continue;
+        char base[1100];
+        strlcpy(base, dir, sizeof base);
+        size_t bl = strlen(base);
+        while (bl > 1 && (base[bl - 1] == '/' || base[bl - 1] == '\\')) base[--bl] = '\0';
+
+        char root[1200];
+        if (sub[0]) snprintf(root, sizeof root, "%s/%s", base, sub);
+        else strlcpy(root, base, sizeof root);
+
+        char **seen = NULL;
+        int nseen = n;
+        if (nseen > 0) {
+            seen = malloc(sizeof *seen * nseen);
+            for (int k = 0; k < nseen; k++) seen[k] = nf[k].rel;
+            qsort(seen, nseen, sizeof *seen, path_cmp);
+        }
+
+        NewFile *layer_nf = NULL;
+        int ln = 0, lcap = 0;
+        walk_new(root, "", known, R->rom_nfiles, seen, nseen, &layer_nf, &ln, &lcap);
+        free(seen);
+
+        if (ln > 0) {
+            if (n + ln > cap) {
+                while (cap < n + ln) cap = cap ? cap * 2 : 64;
+                nf = realloc(nf, sizeof *nf * cap);
+            }
+            memcpy(nf + n, layer_nf, sizeof *nf * ln);
+            n += ln;
+        }
+        free(layer_nf);
+    }
+
     free(known);
-    if (!n) return;
+    if (!n) { free(nf); return; }
     R->rom_files = realloc(R->rom_files, sizeof(RomFile) * (R->rom_nfiles + n));
     uint64_t hoff = h[5], hsz = h[6];
     uint8_t *dcopy = malloc(dsz), *hcopy = malloc(hsz), *head = malloc(0x50);
@@ -272,6 +308,7 @@ static void add_new_files(const uint64_t *h, const uint8_t *dmeta, uint64_t dsz,
     R->patches[R->npatches++] = (Patch){h[3], dsz, dcopy};
     R->patches[R->npatches++] = (Patch){hoff, hsz, hcopy};
     LOG("[fs] overlay: %d new romfs files\n", added);
+    free(nf);
 }
 
 // The copy of the file-meta table that replacements patch (made on first use)
@@ -374,7 +411,7 @@ static void voice_redirect(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
         // A chosen-folder file the overlay folder replaces (a voice mod) is the one that plays: its host file
         char host[1200];
         struct stat sb;
-        bool ov = overlay_file((*hit)->path, host, sizeof host) && !stat(host, &sb);
+        bool ov = mods_find_file(R->ov_sub, (*hit)->path, host, sizeof host, NULL, 0) && !stat(host, &sb);
         nov += ov;
         size_t pn = strlen(p), on = R->rom_files[i].size, vn = ov ? (size_t)sb.st_size : (*hit)->size;
         if (pn > 5 && !strcmp(p + pn - 5, ".bars") && on < (1u << 20) && vn < (1u << 20)) {
@@ -914,7 +951,7 @@ static void hud_letters_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz)
     while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, pack_path)) k++;
     char host[1200];
     if (k == R->rom_nfiles) return;
-    if (overlay_file(pack_path, host, sizeof host)) {
+    if (mods_find_file(R->ov_sub, pack_path, host, sizeof host, NULL, 0)) {
         if (R == &images[0]) inventory_layout_from_overlay(host);
         return;
     }
@@ -1051,7 +1088,7 @@ static void haze_patch(void) {
     int k = 0;
     while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, pack_path)) k++;
     char host[1200];
-    if (k == R->rom_nfiles || overlay_file(pack_path, host, sizeof host)) return;
+    if (k == R->rom_nfiles || mods_find_file(R->ov_sub, pack_path, host, sizeof host, NULL, 0)) return;
     uint8_t head[0x20];
     if (romfs_image_pread(R->img, head, 0x20, R->rom_files[k].off) != 0x20 || memcmp(head, "SARC", 4)) return;
     uint32_t doff;
@@ -1136,7 +1173,7 @@ static void shrine_sensor_note(void) {
         while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, pack_path)) k++;
         uint8_t head[0x20];
         uint32_t doff = 0, ds = 0, de = 0;
-        if (k < R->rom_nfiles && !overlay_file(pack_path, host, sizeof host) &&
+        if (k < R->rom_nfiles && !mods_find_file(R->ov_sub, pack_path, host, sizeof host, NULL, 0) &&
             romfs_image_pread(R->img, head, 0x20, R->rom_files[k].off) == 0x20 && !memcmp(head, "SARC", 4)) {
             memcpy(&doff, head + 0xC, 4);
             uint8_t *tab = doff <= (16u << 20) && doff <= R->rom_files[k].size ? malloc(doff) : NULL;
@@ -1158,7 +1195,7 @@ static void shrine_sensor_note(void) {
     }
 
     // The loose Sound/Resource/M_UI.bars (a mod's own copy when it has one)
-    if (overlay_file(name, host, sizeof host)) found += shrine_sensor_note_host(host);
+    if (mods_find_file(R->ov_sub, name, host, sizeof host, NULL, 0)) found += shrine_sensor_note_host(host);
     else {
         int k = 0;
         while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, name)) k++;
@@ -1197,7 +1234,7 @@ static bool romfs_has_dlc_merged(void) {
     static const char *const marks[] = {"System/AocVersion.txt", "Pack/AocMainField.pack"};
     char host[1200];
     for (int m = 0; m < 2; m++) {
-        if (overlay_file(marks[m], host, sizeof host)) return true;
+        if (mods_find_file(R->ov_sub, marks[m], host, sizeof host, NULL, 0)) return true;
         for (int i = 0; i < R->rom_nfiles; i++)
             if (!strcmp(R->rom_files[i].path, marks[m])) return true;
     }
@@ -1240,7 +1277,7 @@ static void rstb_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
     if (k == R->rom_nfiles) { LOG("[fs] voices: no %s, %d bigger banks left as they are\n", rstb_path, R->ngrown); return; }
     // A mod's table (the overlay folder's) needs the same growth: without it the game can't load what grew here
     struct stat over;
-    bool from_overlay = overlay_file(rstb_path, host, sizeof host) && !stat(host, &over);
+    bool from_overlay = mods_find_file(R->ov_sub, rstb_path, host, sizeof host, NULL, 0) && !stat(host, &over);
     size_t zn = from_overlay ? (size_t)over.st_size : R->rom_files[k].size, n = 0;
     uint8_t *z = malloc(zn), *d = NULL;
     if (from_overlay) {
@@ -1353,7 +1390,7 @@ static void rom_index(void) {
     // (in a copy) to point them at data appended past the end of the image; reads there go to host files.
     for (int i = 0; i < R->rom_nfiles; i++) {
         char host[1200];
-        if (!overlay_file(R->rom_files[i].path, host, sizeof host)) continue;
+        if (!mods_find_file(R->ov_sub, R->rom_files[i].path, host, sizeof host, NULL, 0)) continue;
         struct stat sb;
         if (stat(host, &sb)) continue;
         meta_copy(fmeta, foff, fsz);
@@ -1376,7 +1413,7 @@ static void rom_index(void) {
         if (strcmp(R->rom_files[i].path, "System/Version.txt")) continue;
         char host[1200];
         struct stat sb;
-        if (overlay_file(R->rom_files[i].path, host, sizeof host) && !stat(host, &sb)) break;
+        if (mods_find_file(R->ov_sub, R->rom_files[i].path, host, sizeof host, NULL, 0) && !stat(host, &sb)) break;
         extern const char *rt_version(void);  // (runtime/ui/launcher.mm)
         static char text[64];
         const char *v = rt_version(), *dot = strchr(v, '.');
