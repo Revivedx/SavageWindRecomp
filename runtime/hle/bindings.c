@@ -9,6 +9,7 @@
 #include "../input_bind.h"
 #include "../game_sites.h"
 #include "../settings.h"
+#include "../framepace.h"
 
 _Static_assert(PADB_LTRIGGER == SDL_GAMEPAD_BUTTON_COUNT, "trigger pseudo-buttons follow SDL's buttons");
 
@@ -675,6 +676,13 @@ static bool any_shares_interact(void) {
     return false;
 }
 
+// A conversation's window (MessageDialog, its closing included), not lines spoken over play, whose camera still turns:
+// the press that picks an answer is the prompt's too, and the game asks about Jump again as the window closes
+static bool conversation_up(void) {
+    extern bool input_cam_live(void);  // (runtime/hle/input.c)
+    return framepace_dialogue_ui() && !input_cam_live();
+}
+
 // ---- the controller poll and the game's queries
 #define EDGE_KEEP_MS 100  // (several of the game's updates at any frame rate it runs at)
 static _Atomic uint64_t a_prev;
@@ -700,7 +708,7 @@ void act_poll(bool live) {
     a_prev = cur;
     a_live = live;
     was_live = live;
-    if (live && any_shares_interact() && interact_prompt_up()) a_prompt_ms = now;
+    if (live && any_shares_interact() && (interact_prompt_up() || conversation_up())) a_prompt_ms = now;
     if (act_log_on()) act_log_poll();
 }
 
