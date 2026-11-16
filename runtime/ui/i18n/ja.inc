@@ -908,6 +908,10 @@ T("The game blurs the far distance a little. Off: sharp out to the horizon, a li
 T("Fast math", "高速演算")
 T("Your CPU has no FMA instructions. On: faster, some results round a tiny bit differently from the console.", "お使いのCPUにはFMA命令がありません。オン：高速になりますが、一部の結果がコンソールとごくわずかに異なる丸めになります。")
 T("Your CPU has no FMA instructions, so the game's math runs in software. On: about 10% faster; some results round a tiny bit differently from the console, which doesn't show in play. Off: exact, as on the console.", "お使いのCPUにはFMA命令がないため、ゲームの計算はソフトウェアで行われます。オン：約10%高速になります。一部の結果がコンソールとごくわずかに異なる丸めになりますが、プレイ中にはわかりません。オフ：コンソールと同じ正確な計算です。")
+T("Scene copies", "シーンのコピー")
+T("Exact", "正確")
+T("How often water, rain and glass get a new copy of the picture to refract. Exact: much slower; try it if water looks wrong.", "水、雨、ガラスが屈折させる画像のコピーを作り直す頻度。正確: 大幅に遅くなります。水の表示がおかしいときに試してください。")
+T("Your graphics card can't read the picture it is drawing, so water, waterfalls, rain and glass refract a copy of it. Automatic and Fast: a new copy once a frame for each effect. Exact: a new copy whenever more was drawn in between, much slower (on a Mac at 1080p, 36 instead of 60 frames a second in the open world). Try it if water or a waterfall looks wrong.", "お使いのグラフィックカードは描画中の画像を読み取れないため、水、滝、雨、ガラスはそのコピーを屈折させます。自動と高速: 各エフェクトごとに1フレームに1回新しいコピーを作ります。正確: 間に何かが描画されるたびに新しいコピーを作り、大幅に遅くなります（Mac・1080pのオープンワールドで毎秒60フレームが36フレームに）。水や滝の表示がおかしいときに試してください。")
 T("How hazy the air is. Lower: clearer distances. It takes effect the next time you start the game.", "空気のもやの濃さ。低いほど遠くがはっきり見えます。次回のゲーム起動時から反映されます。")
 
 T("1 of 2", "1 / 2")

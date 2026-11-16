@@ -63,6 +63,10 @@ enum { VSYNC_ON = 0, VSYNC_FAST = 1, VSYNC_ADAPTIVE = 2, VSYNC_OFF = 3, VSYNC_CO
 // takes it), Off never (an SDR picture, which Windows shows dim and dull while its HDR is on)
 enum { HDR_AUTO = 0, HDR_ON = 1, HDR_OFF = 2, HDR_COUNT };
 enum { SPARSE_HEAP_AUTO = 0, SPARSE_HEAP_ON = 1, SPARSE_HEAP_OFF = 2, SPARSE_HEAP_COUNT };
+// Video > Scene copies (vulkan/exec.c resolve_feedback): on graphics cards without Vulkan feedback loops, how often the
+// copy of the 3D image that water, waterfalls, rain and glass refract is made again. Fast: once a frame for each effect
+// that reads it; Exact: after every later pass that drew into it (#848), many more copies; Automatic: Fast.
+enum { SCENE_COPIES_AUTO = 0, SCENE_COPIES_FAST = 1, SCENE_COPIES_EXACT = 2, SCENE_COPIES_COUNT };
 // Video > Fullscreen mode (runtime/window_size.c winsize_apply): Automatic is borderless at the desktop's size and the
 // display's own mode at any other size it has; Borderless never changes the display's mode (another size is scaled to
 // the screen); Exclusive always uses a display mode (the desktop's size too, at its highest refresh rate)
@@ -177,6 +181,7 @@ typedef struct {
     int hdr_preset;      // 0 Preset Off, 1..3 the selected slot; 4 is only returned by hdr_look_current (Custom, not stored)
     int hdr_clip_nits;   // legacy, ignored: the final cap is always hdr_peak_nits
     int sparse_heap;     // SPARSE_HEAP_*: guest heap backing (Windows Vulkan; applied on next start)
+    int scene_copies;    // SCENE_COPIES_*: refraction copies without feedback loops (vulkan/exec.c; at once)
     int fov;             // field of view in play, percent of the game's own (FOV_CHOICES)
     bool handheld_setup; // a PC handheld's own settings were taken once (settings_load)
     int hud_size;        // the HUD's size in play, percent of the game's own (HUD_SIZE_CHOICES, runtime/nvn/hud_scale.h)

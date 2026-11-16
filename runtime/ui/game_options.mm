@@ -52,6 +52,7 @@ void menu_size_list_open(void);             // menu.mm (Window size's list, over
 bool menu_size_list_up(void);
 bool renderer_gpu_rtx(void);                // vulkan/device.c, metal.m
 const char *vk_hdr_icc_description(void);   // runtime/nvn/vulkan/device.c
+bool vk_feedback_once(void);                // runtime/nvn/vulkan/exec.c (Scene copies; Vulkan only)
 }
 
 namespace {
@@ -202,6 +203,7 @@ static int fps_default_index() {
 }
 const char *const k_vsync[VSYNC_COUNT] = {"On", "Fast", "Adaptive", "Off"};  // (settings.h VSYNC_*)
 const char *const k_hdr[HDR_COUNT] = {"Automatic", "On", "Off"};               // (settings.h HDR_*)
+const char *const k_scene_copies[SCENE_COPIES_COUNT] = {"Automatic", "Fast", "Exact"};  // (settings.h SCENE_COPIES_*)
 const char *const k_fsmode[FSMODE_COUNT] = {"Automatic", "Borderless", "Exclusive"};  // (settings.h FSMODE_*)
 constexpr int k_sens[] = {10, 25, 50, 75, 100, 125, 150, 200, 250, 300, 400, 500, 600, 800, 1000};  // mouse sensitivity, %
 constexpr int SENS_DEFAULT = 9;  // (300%: MOUSE_SENS_DEFAULT)
@@ -936,6 +938,14 @@ void build_items(void) {
         v.push_back(toggle(P_VIDEO_ADV, "Fast math", "Your CPU has no FMA instructions. On: faster, some results round a tiny bit differently from the console.",
                            [](const Item &) { return (int)g_settings.fast_fma; },
                            [](const Item &, int x) { g_settings.fast_fma = x; }, 1));
+#ifndef SW_METAL
+    if (vk_feedback_once())  // (vulkan/exec.c resolve_feedback: graphics cards without feedback loops only)
+        v.push_back(choice(P_VIDEO_ADV, "Scene copies", "How often water, rain and glass get a new copy of the picture to refract. Exact: much slower; try it if water looks wrong.",
+                           [](const Item &) { return (int)SCENE_COPIES_COUNT; },
+                           [](const Item &, int x) { return tr(k_scene_copies[x]); },
+                           [](const Item &) { return g_settings.scene_copies >= 0 && g_settings.scene_copies < SCENE_COPIES_COUNT ? g_settings.scene_copies : 0; },
+                           [](const Item &, int x) { g_settings.scene_copies = x; }, SCENE_COPIES_AUTO));
+#endif
     v.push_back(choice(P_VIDEO_ADV, "Haze", "How hazy the air is. Lower: clearer distances. From the next start.",
                        [](const Item &) { return N(k_haze); },
                        [](const Item &, int x) {

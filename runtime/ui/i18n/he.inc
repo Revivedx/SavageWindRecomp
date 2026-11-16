@@ -907,6 +907,10 @@ T("The game blurs the far distance a little. Off: sharp out to the horizon, a li
 T("Fast math", "חישוב מהיר")
 T("Your CPU has no FMA instructions. On: faster, some results round a tiny bit differently from the console.", "למעבד שלך אין פקודות FMA. מופעל: מהיר יותר, חלק מהתוצאות מעוגלות קצת אחרת מאשר בקונסולה.")
 T("Your CPU has no FMA instructions, so the game's math runs in software. On: about 10% faster; some results round a tiny bit differently from the console, which doesn't show in play. Off: exact, as on the console.", "למעבד שלך אין פקודות FMA, ולכן החישובים של המשחק נעשים בתוכנה. מופעל: מהיר בכ-10%; חלק מהתוצאות מעוגלות קצת אחרת מאשר בקונסולה, וזה לא נראה במשחק. כבוי: מדויק, כמו בקונסולה.")
+T("Scene copies", "עותקי סצנה")
+T("Exact", "מדויק")
+T("How often water, rain and glass get a new copy of the picture to refract. Exact: much slower; try it if water looks wrong.", "באיזו תדירות מים, גשם וזכוכית מקבלים עותק חדש של התמונה לשבירת האור. מדויק: הרבה יותר איטי; נסו אותו אם המים נראים לא נכון.")
+T("Your graphics card can't read the picture it is drawing, so water, waterfalls, rain and glass refract a copy of it. Automatic and Fast: a new copy once a frame for each effect. Exact: a new copy whenever more was drawn in between, much slower (on a Mac at 1080p, 36 instead of 60 frames a second in the open world). Try it if water or a waterfall looks wrong.", "כרטיס המסך שלך לא יכול לקרוא את התמונה שהוא מצייר, ולכן מים, מפלים, גשם וזכוכית שוברים את האור דרך עותק שלה. אוטומטי ומהיר: עותק חדש פעם אחת בכל פריים לכל אפקט. מדויק: עותק חדש בכל פעם שצויר עוד משהו בינתיים, הרבה יותר איטי (ב-Mac ב-1080p, ‏36 במקום 60 פריימים לשנייה בעולם הפתוח). נסו אותו אם מים או מפל נראים לא נכון.")
 T("How hazy the air is. Lower: clearer distances. It takes effect the next time you start the game.", "כמה אובך יש באוויר. פחות: מרחקים צלולים יותר. נכנס לתוקף בהפעלה הבאה של המשחק.")
 
 T("1 of 2", "1 מתוך 2")

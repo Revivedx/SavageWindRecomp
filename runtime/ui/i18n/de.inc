@@ -908,6 +908,10 @@ T("The game blurs the far distance a little. Off: sharp out to the horizon, a li
 T("Fast math", "Schnelle Rechnung")
 T("Your CPU has no FMA instructions. On: faster, some results round a tiny bit differently from the console.", "Deine CPU hat keine FMA-Befehle. An: schneller, manche Ergebnisse werden minimal anders gerundet als auf der Konsole.")
 T("Your CPU has no FMA instructions, so the game's math runs in software. On: about 10% faster; some results round a tiny bit differently from the console, which doesn't show in play. Off: exact, as on the console.", "Deine CPU hat keine FMA-Befehle, daher rechnet das Spiel in Software. An: etwa 10 % schneller; manche Ergebnisse werden minimal anders gerundet als auf der Konsole, was beim Spielen nicht auffällt. Aus: exakt wie auf der Konsole.")
+T("Scene copies", "Szenenkopien")
+T("Exact", "Exakt")
+T("How often water, rain and glass get a new copy of the picture to refract. Exact: much slower; try it if water looks wrong.", "Wie oft Wasser, Regen und Glas eine neue Kopie des Bildes zum Brechen bekommen. Exakt: viel langsamer; probiere es, wenn Wasser falsch aussieht.")
+T("Your graphics card can't read the picture it is drawing, so water, waterfalls, rain and glass refract a copy of it. Automatic and Fast: a new copy once a frame for each effect. Exact: a new copy whenever more was drawn in between, much slower (on a Mac at 1080p, 36 instead of 60 frames a second in the open world). Try it if water or a waterfall looks wrong.", "Deine Grafikkarte kann das Bild, das sie gerade zeichnet, nicht lesen, daher brechen Wasser, Wasserfälle, Regen und Glas das Licht an einer Kopie davon. Automatisch und Schnell: eine neue Kopie einmal pro Bild für jeden Effekt. Exakt: eine neue Kopie, sobald dazwischen mehr gezeichnet wurde, viel langsamer (auf einem Mac in 1080p 36 statt 60 Bilder pro Sekunde in der offenen Welt). Probiere es, wenn Wasser oder ein Wasserfall falsch aussieht.")
 T("How hazy the air is. Lower: clearer distances. It takes effect the next time you start the game.", "Wie dunstig die Luft ist. Weniger: klarere Ferne. Wirkt beim nächsten Spielstart.")
 
 T("1 of 2", "1 von 2")

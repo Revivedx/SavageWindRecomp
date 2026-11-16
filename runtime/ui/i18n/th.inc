@@ -908,6 +908,10 @@ T("The game blurs the far distance a little. Off: sharp out to the horizon, a li
 T("Fast math", "คำนวณเร็ว")
 T("Your CPU has no FMA instructions. On: faster, some results round a tiny bit differently from the console.", "CPU ของคุณไม่มีคำสั่ง FMA เปิด: เร็วขึ้น ผลลัพธ์บางส่วนจะถูกปัดเศษต่างจากเครื่องคอนโซลเล็กน้อย")
 T("Your CPU has no FMA instructions, so the game's math runs in software. On: about 10% faster; some results round a tiny bit differently from the console, which doesn't show in play. Off: exact, as on the console.", "CPU ของคุณไม่มีคำสั่ง FMA การคำนวณของเกมจึงทำด้วยซอฟต์แวร์ เปิด: เร็วขึ้นราว 10% ผลลัพธ์บางส่วนจะถูกปัดเศษต่างจากเครื่องคอนโซลเล็กน้อย ซึ่งมองไม่เห็นขณะเล่น ปิด: แม่นยำเหมือนเครื่องคอนโซล")
+T("Scene copies", "สำเนาฉาก")
+T("Exact", "แม่นยำ")
+T("How often water, rain and glass get a new copy of the picture to refract. Exact: much slower; try it if water looks wrong.", "ความถี่ที่น้ำ ฝน และกระจกได้รับสำเนาภาพใหม่สำหรับหักเหแสง แม่นยำ: ช้ากว่ามาก ลองใช้หากน้ำดูผิดปกติ")
+T("Your graphics card can't read the picture it is drawing, so water, waterfalls, rain and glass refract a copy of it. Automatic and Fast: a new copy once a frame for each effect. Exact: a new copy whenever more was drawn in between, much slower (on a Mac at 1080p, 36 instead of 60 frames a second in the open world). Try it if water or a waterfall looks wrong.", "การ์ดจอของคุณอ่านภาพที่กำลังวาดอยู่ไม่ได้ น้ำ น้ำตก ฝน และกระจกจึงหักเหแสงจากสำเนาของภาพนั้น อัตโนมัติและเร็ว: สร้างสำเนาใหม่เฟรมละครั้งสำหรับแต่ละเอฟเฟกต์ แม่นยำ: สร้างสำเนาใหม่ทุกครั้งที่มีการวาดเพิ่มในระหว่างนั้น ช้ากว่ามาก (บน Mac ที่ 1080p เหลือ 36 แทน 60 เฟรมต่อวินาทีในโลกเปิด) ลองใช้หากน้ำหรือน้ำตกดูผิดปกติ")
 T("How hazy the air is. Lower: clearer distances. It takes effect the next time you start the game.", "ปริมาณหมอกควันในอากาศ น้อยลง: ระยะไกลชัดขึ้น มีผลเมื่อเริ่มเกมครั้งถัดไป")
 
 T("1 of 2", "1 จาก 2")

@@ -28,6 +28,7 @@
 #include "imgui_impl_vulkan.h"
 extern "C" bool vk_imgui_backend_init(void);  // runtime/nvn/vulkan/imgui_glue.cpp
 #endif
+extern "C" bool vk_feedback_once(void);  // runtime/nvn/vulkan/exec.c (Video > Scene copies; Vulkan only)
 
 extern "C" {
 #include "../amiibo.h"
@@ -1272,6 +1273,16 @@ static void tab_display(void) {
         opt_toggle("Fast math", &g_settings.fast_fma, true, "Your CPU has no FMA instructions, so the game's math runs "
                    "in software. On: about 10% faster; some results round a tiny bit differently from the console, "
                    "which doesn't show in play. Off: exact, as on the console.");
+#ifndef SW_METAL
+    if (vk_feedback_once()) {  // (vulkan/exec.c resolve_feedback: graphics cards without feedback loops only)
+        static const char *const names[SCENE_COPIES_COUNT] = {"Automatic", "Fast", "Exact"};
+        opt_choice("Scene copies", &g_settings.scene_copies, names, SCENE_COPIES_COUNT, SCENE_COPIES_AUTO,
+                   "Your graphics card can't read the picture it is drawing, so water, waterfalls, rain and glass "
+                   "refract a copy of it. Automatic and Fast: a new copy once a frame for each effect. Exact: a new "
+                   "copy whenever more was drawn in between, much slower (on a Mac at 1080p, 36 instead of 60 frames "
+                   "a second in the open world). Try it if water or a waterfall looks wrong.", false);
+    }
+#endif
     {   // the air's haze (services/fs.c haze_patch): the game reads it at the start
         static const int haze[] = HAZE_CHOICES;
         enum { NH = sizeof haze / sizeof haze[0] };

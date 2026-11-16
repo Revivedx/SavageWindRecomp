@@ -908,6 +908,10 @@ T("The game blurs the far distance a little. Off: sharp out to the horizon, a li
 T("Fast math", "빠른 연산")
 T("Your CPU has no FMA instructions. On: faster, some results round a tiny bit differently from the console.", "CPU에 FMA 명령어가 없습니다. 켜기: 더 빠르지만 일부 결과가 콘솔과 아주 약간 다르게 반올림됩니다.")
 T("Your CPU has no FMA instructions, so the game's math runs in software. On: about 10% faster; some results round a tiny bit differently from the console, which doesn't show in play. Off: exact, as on the console.", "CPU에 FMA 명령어가 없어 게임의 연산을 소프트웨어로 처리합니다. 켜기: 약 10% 더 빠릅니다. 일부 결과가 콘솔과 아주 약간 다르게 반올림되지만 플레이 중에는 드러나지 않습니다. 끄기: 콘솔과 같은 정확한 연산.")
+T("Scene copies", "장면 복사본")
+T("Exact", "정확")
+T("How often water, rain and glass get a new copy of the picture to refract. Exact: much slower; try it if water looks wrong.", "물, 비, 유리가 굴절시킬 화면 복사본을 얼마나 자주 새로 만드는지 정합니다. 정확: 훨씬 느립니다. 물이 이상해 보이면 사용해 보세요.")
+T("Your graphics card can't read the picture it is drawing, so water, waterfalls, rain and glass refract a copy of it. Automatic and Fast: a new copy once a frame for each effect. Exact: a new copy whenever more was drawn in between, much slower (on a Mac at 1080p, 36 instead of 60 frames a second in the open world). Try it if water or a waterfall looks wrong.", "그래픽 카드가 그리고 있는 화면을 읽을 수 없어서 물, 폭포, 비, 유리는 그 복사본을 굴절시킵니다. 자동과 빠름: 효과마다 프레임당 한 번 새 복사본을 만듭니다. 정확: 그 사이에 더 그려질 때마다 새 복사본을 만들어 훨씬 느립니다(Mac 1080p 오픈 월드에서 초당 60프레임 대신 36프레임). 물이나 폭포가 이상하게 보이면 사용해 보세요.")
 T("How hazy the air is. Lower: clearer distances. It takes effect the next time you start the game.", "공기 중 연무의 양입니다. 낮을수록 먼 곳이 선명합니다. 다음에 게임을 시작할 때 적용됩니다.")
 
 T("1 of 2", "1 / 2")

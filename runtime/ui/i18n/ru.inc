@@ -908,6 +908,10 @@ T("The game blurs the far distance a little. Off: sharp out to the horizon, a li
 T("Fast math", "Быстрые вычисления")
 T("Your CPU has no FMA instructions. On: faster, some results round a tiny bit differently from the console.", "У вашего процессора нет инструкций FMA. Вкл.: быстрее, некоторые результаты округляются чуть иначе, чем на консоли.")
 T("Your CPU has no FMA instructions, so the game's math runs in software. On: about 10% faster; some results round a tiny bit differently from the console, which doesn't show in play. Off: exact, as on the console.", "У вашего процессора нет инструкций FMA, поэтому вычисления игры выполняются программно. Вкл.: примерно на 10% быстрее; некоторые результаты округляются чуть иначе, чем на консоли, в игре это незаметно. Выкл.: точно, как на консоли.")
+T("Scene copies", "Копии сцены")
+T("Exact", "Точно")
+T("How often water, rain and glass get a new copy of the picture to refract. Exact: much slower; try it if water looks wrong.", "Как часто вода, дождь и стекло получают новую копию изображения для преломления. Точно: намного медленнее; попробуйте, если вода выглядит неправильно.")
+T("Your graphics card can't read the picture it is drawing, so water, waterfalls, rain and glass refract a copy of it. Automatic and Fast: a new copy once a frame for each effect. Exact: a new copy whenever more was drawn in between, much slower (on a Mac at 1080p, 36 instead of 60 frames a second in the open world). Try it if water or a waterfall looks wrong.", "Ваша видеокарта не может читать изображение, которое она рисует, поэтому вода, водопады, дождь и стекло преломляют его копию. Автоматически и Быстро: новая копия один раз за кадр для каждого эффекта. Точно: новая копия каждый раз, когда между чтениями нарисовано что-то ещё, намного медленнее (на Mac в 1080p 36 вместо 60 кадров в секунду в открытом мире). Попробуйте, если вода или водопад выглядят неправильно.")
 T("How hazy the air is. Lower: clearer distances. It takes effect the next time you start the game.", "Насколько плотна дымка в воздухе. Меньше: даль яснее. Вступает в силу при следующем запуске игры.")
 
 T("1 of 2", "1 из 2")

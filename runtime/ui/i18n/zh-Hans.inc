@@ -908,6 +908,10 @@ T("The game blurs the far distance a little. Off: sharp out to the horizon, a li
 T("Fast math", "快速运算")
 T("Your CPU has no FMA instructions. On: faster, some results round a tiny bit differently from the console.", "你的 CPU 没有 FMA 指令。开启：更快，部分结果的舍入与主机略有不同。")
 T("Your CPU has no FMA instructions, so the game's math runs in software. On: about 10% faster; some results round a tiny bit differently from the console, which doesn't show in play. Off: exact, as on the console.", "你的 CPU 没有 FMA 指令，因此游戏的运算由软件完成。开启：约快 10%；部分结果的舍入与主机略有不同，游玩时看不出来。关闭：精确，与主机一致。")
+T("Scene copies", "场景副本")
+T("Exact", "精确")
+T("How often water, rain and glass get a new copy of the picture to refract. Exact: much slower; try it if water looks wrong.", "水、雨和玻璃用于折射的画面副本多久更新一次。精确：慢得多；如果水面看起来不对，可以试试。")
+T("Your graphics card can't read the picture it is drawing, so water, waterfalls, rain and glass refract a copy of it. Automatic and Fast: a new copy once a frame for each effect. Exact: a new copy whenever more was drawn in between, much slower (on a Mac at 1080p, 36 instead of 60 frames a second in the open world). Try it if water or a waterfall looks wrong.", "你的显卡无法读取正在绘制的画面，因此水、瀑布、雨和玻璃折射的是它的一份副本。自动和快速：每个效果每帧生成一次新副本。精确：只要中间又绘制了内容就生成新副本，慢得多（在 Mac 上 1080p 开放世界中每秒 36 帧而不是 60 帧）。如果水面或瀑布看起来不对，可以试试。")
 T("How hazy the air is. Lower: clearer distances. It takes effect the next time you start the game.", "空气中雾霾的浓度。越低远处越清晰。下次启动游戏时生效。")
 
 T("1 of 2", "1 / 2")

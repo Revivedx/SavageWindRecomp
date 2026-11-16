@@ -102,6 +102,7 @@ Settings g_settings = {
 static const char *const k_vsync[VSYNC_COUNT] = {"on", "fast", "adaptive", "off"};  // (VSYNC_*: the ini's words)
 static const char *const k_hdr[HDR_COUNT] = {"auto", "on", "off"};             // (HDR_*)
 static const char *const k_sparse_heap[SPARSE_HEAP_COUNT] = {"auto", "on", "off"};
+static const char *const k_scene_copies[SCENE_COPIES_COUNT] = {"auto", "fast", "exact"};  // (SCENE_COPIES_*)
 static const char *const k_tex_lod_bias[TEX_LOD_COUNT] = {"default", "sharp", "sharper"};
 static const char *const k_fsmode[FSMODE_COUNT] = {"auto", "borderless", "exclusive"};  // (FSMODE_*)
 static const char *const k_audio_out[AUDIO_OUT_COUNT] = {"stereo", "surround_51", "headphones_3d"};  // (AUDIO_OUT_*)
@@ -487,6 +488,10 @@ void settings_load(void) {
             for (int i = 0; i < SPARSE_HEAP_COUNT; i++)
                 if (!strcmp(val, k_sparse_heap[i])) g_settings.sparse_heap = i;
         }
+        else if (!strcmp(key, "scene_copies")) {
+            for (int i = 0; i < SCENE_COPIES_COUNT; i++)
+                if (!strcmp(val, k_scene_copies[i])) g_settings.scene_copies = i;
+        }
         else if (!strcmp(key, "hdr_paper_white")) {  // (nits; 0: Windows' SDR content brightness)
             int n = atoi(val);
             g_settings.hdr_white = n >= 80 && n <= 1000 ? n : 0;
@@ -827,6 +832,8 @@ void settings_save(void) {
     fprintf(f, "hdr = %s\n", k_hdr[g_settings.hdr >= 0 && g_settings.hdr < HDR_COUNT ? g_settings.hdr : HDR_AUTO]);
     fprintf(f, "sparse_heap = %s\n", k_sparse_heap[g_settings.sparse_heap >= 0 && g_settings.sparse_heap < SPARSE_HEAP_COUNT ?
                                                        g_settings.sparse_heap : SPARSE_HEAP_AUTO]);
+    fprintf(f, "scene_copies = %s\n", k_scene_copies[g_settings.scene_copies >= 0 && g_settings.scene_copies < SCENE_COPIES_COUNT ?
+                                                         g_settings.scene_copies : SCENE_COPIES_AUTO]);
     if (g_settings.hdr_white) fprintf(f, "hdr_paper_white = %d\n", g_settings.hdr_white);
     if (g_settings.hdr_peak_nits) fprintf(f, "hdr_peak_nits = %d\n", g_settings.hdr_peak_nits);
     if (g_settings.hdr_game_nits) fprintf(f, "hdr_game_nits = %d\n", g_settings.hdr_game_nits);

@@ -908,6 +908,10 @@ T("The game blurs the far distance a little. Off: sharp out to the horizon, a li
 T("Fast math", "Snel rekenen")
 T("Your CPU has no FMA instructions. On: faster, some results round a tiny bit differently from the console.", "Je CPU heeft geen FMA-instructies. Aan: sneller, sommige uitkomsten worden een heel klein beetje anders afgerond dan op de console.")
 T("Your CPU has no FMA instructions, so the game's math runs in software. On: about 10% faster; some results round a tiny bit differently from the console, which doesn't show in play. Off: exact, as on the console.", "Je CPU heeft geen FMA-instructies, dus het spel rekent in software. Aan: ongeveer 10% sneller; sommige uitkomsten worden een heel klein beetje anders afgerond dan op de console, wat je tijdens het spelen niet ziet. Uit: exact, zoals op de console.")
+T("Scene copies", "Scènekopieën")
+T("Exact", "Exact")
+T("How often water, rain and glass get a new copy of the picture to refract. Exact: much slower; try it if water looks wrong.", "Hoe vaak water, regen en glas een nieuwe kopie van het beeld krijgen om te breken. Exact: veel trager; probeer het als water er verkeerd uitziet.")
+T("Your graphics card can't read the picture it is drawing, so water, waterfalls, rain and glass refract a copy of it. Automatic and Fast: a new copy once a frame for each effect. Exact: a new copy whenever more was drawn in between, much slower (on a Mac at 1080p, 36 instead of 60 frames a second in the open world). Try it if water or a waterfall looks wrong.", "Je videokaart kan het beeld dat hij tekent niet lezen, dus water, watervallen, regen en glas breken een kopie ervan. Automatisch en Snel: één nieuwe kopie per frame voor elk effect. Exact: een nieuwe kopie zodra er tussendoor meer getekend is, veel trager (op een Mac in 1080p 36 in plaats van 60 frames per seconde in de open wereld). Probeer het als water of een waterval er verkeerd uitziet.")
 T("How hazy the air is. Lower: clearer distances. It takes effect the next time you start the game.", "Hoe nevelig de lucht is. Lager: helderdere verten. Werkt vanaf de volgende keer dat je het spel start.")
 
 T("1 of 2", "1 van 2")

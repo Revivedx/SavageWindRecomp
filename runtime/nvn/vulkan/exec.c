@@ -4106,6 +4106,12 @@ static void snapshots_invalidate_clear(NvnTexture *t) {  // (clear(), defined be
     snapshots_invalidate(t);
 }
 
+// (also Video > Scene copies: the row is shown where this is on)
+bool vk_feedback_once(void) {
+    const char *e = getenv("SAVAGEWIND_VK_FEEDBACK_ONCE");
+    return e ? atoi(e) != 0 : !g_vk.feedback_loop;
+}
+
 typedef struct { NvnTexture *key; TexBackend copy; } Snap;
 static Snap snaps[16];
 static int nsnaps;
@@ -4498,9 +4504,9 @@ static void resolve_feedback(Prog *pr) {
             static int once = -1;
             static uint64_t snap_frame[8], snap_pass[8];
             if (once < 0) {
-                const char *e = getenv("SAVAGEWIND_VK_FEEDBACK_ONCE");
-                once = e ? atoi(e) != 0 : !g_vk.feedback_loop;
-                if (once) LOG("[vk] feedback snapshots: one per target per frame, until written%s\n", e ? "" : " (no feedback loops)");
+                once = vk_feedback_once();
+                if (once) LOG("[vk] feedback snapshots: one per target per frame, until written%s\n",
+                              getenv("SAVAGEWIND_VK_FEEDBACK_ONCE") ? "" : " (no feedback loops)");
             }
             // (once: reused past draws into the target since - that is its point, a pass break and a copy saved each
             // time, ~450 a frame in the open world: refusing every one took Mali-G610 from 30 to 7 FPS. But not for
@@ -4510,8 +4516,14 @@ static void resolve_feedback(Prog *pr) {
             // frames where the water lost its sky reflection - and waterfall base refraction samples the RGBA16F
             // target after earlier passes drew into it (#848). SAVAGEWIND_VK_ONCE_STRICT=1: not past any write; =0: past
             // anything, as before. SAVAGEWIND_DEBUG_ONCE=1: the reuses by what came between and by format, every 2 s.)
-            static int strict = -1, odbg = -1, nsf;
-            static uint32_t sfmt[8];
+            // Video > Scene copies, Fast (Automatic): the formats in SAVAGEWIND_VK_ONCE_FRAME_FMT (default 0x25, RGBA16F)
+            // are new past a later pass's write once a frame for each shader that reads them, not at every such read.
+            // At every one, ~100 copies of the 1920x1080 scene a frame in the open world, most of them for two shaders
+            // that read it ~30 and ~15 times a frame between other passes, and each copy broke the pass: the R32F target
+            // drawn in the same passes went stale past a later pass too, ~45 more copies (M4 / MoltenVK, 1080p: 60 ->
+            // 36 fps). Each shader's first read in a frame - the waterfall base's (#848) - still sees all earlier passes.
+            static int strict = -1, odbg = -1, nsf, nff;
+            static uint32_t sfmt[8], ffmt[8];
             if (once && strict < 0) {  // (all of it only with once on: other GPUs as before)
                 const char *e = getenv("SAVAGEWIND_VK_ONCE_STRICT"), *f = getenv("SAVAGEWIND_VK_ONCE_STRICT_FMT");
                 strict = e ? atoi(e) : 2;  // (2: by format and past clears)
@@ -4526,11 +4538,23 @@ static void resolve_feedback(Prog *pr) {
                 }
                 LOG("[vk] once-a-frame snapshots not reused past a write for %d format(s) (first %#x), strict %d\n", nsf,
                     nsf ? sfmt[0] : 0, strict);
+                const char *g = getenv("SAVAGEWIND_VK_ONCE_FRAME_FMT");
+                if (!g) g = "0x25";
+                for (const char *q = g; *q && nff < 8;) {
+                    char *end;
+                    unsigned long v = strtoul(q, &end, 0);
+                    if (end == q) break;
+                    ffmt[nff++] = (uint32_t)v;
+                    q = *end == ',' ? end + 1 : end;
+                }
             }
             bool fresh = si >= 0 && (snap_ok[si] || self_write);
             bool cleared = si >= 0 && !fresh && snap_cleared[si];
-            bool fmt_strict = false;
-            for (int k = 0; k < nsf; k++) fmt_strict |= t->format == sfmt[k];
+            bool fmt_frame = false, fmt_strict = false;  // (Exact: the frame formats are strict ones, as in #848)
+            if (once && g_settings.scene_copies != SCENE_COPIES_EXACT)
+                for (int k = 0; k < nff; k++) fmt_frame |= t->format == ffmt[k];
+            if (!fmt_frame)
+                for (int k = 0; k < nsf; k++) fmt_strict |= t->format == sfmt[k];
             // (strict formats: still reused past writes in the pass the snapshot was taken for - BOTW draws into its
             // R32F target and reads it back within one pass ~34 times a frame, and a new copy each time cost half the
             // frame rate - but not past a write in a later pass: the copy then predates a whole pass of drawing)
@@ -4540,12 +4564,12 @@ static void resolve_feedback(Prog *pr) {
             // draws of the frames the water lost its sky reflection are one such shader, run every ~10 s: one copy more
             // on those frames. The shaders that read it every frame keep the old copy, as before (a new copy for each
             // of them, every frame, cost frames near water).
-            static struct { uint64_t fs; TexBackend *be; uint64_t frame; } rd[64];
+            static struct { uint64_t fs; TexBackend *be; uint64_t frame, copied; } rd[64];  // (copied: a frame format's)
             static int new_frames = -1;
-            static uint64_t n_refresh;
+            static uint64_t n_refresh, n_frame_copy;
             if (new_frames < 0) { const char *e = getenv("SAVAGEWIND_VK_ONCE_NEW_FRAMES"); new_frames = e && atoi(e) > 0 ? atoi(e) : 60; }
-            bool new_reader = false;
-            if (once && fmt_strict && !fresh && si >= 0 && strict == 2) {
+            bool new_reader = false, frame_copy = false;
+            if (once && (fmt_strict || fmt_frame) && !fresh && si >= 0 && strict == 2) {
                 uint64_t fr = renderer_present_count() + 1;
                 int k = 0, old = 0;
                 while (k < 64 && rd[k].fs && !(rd[k].fs == g_cur_fs_hash && rd[k].be == src)) {
@@ -4553,13 +4577,16 @@ static void resolve_feedback(Prog *pr) {
                     k++;
                 }
                 if (k == 64) k = old;  // (full: the least recently seen goes)
-                if (!rd[k].fs || rd[k].fs != g_cur_fs_hash || rd[k].be != src || rd[k].frame + (uint64_t)new_frames < fr) {
+                bool same = rd[k].fs && rd[k].fs == g_cur_fs_hash && rd[k].be == src;
+                if (fmt_strict && (!same || rd[k].frame + (uint64_t)new_frames < fr)) {
                     new_reader = true;
                     n_refresh++;
                 }
+                if (!same) rd[k].copied = 0;
+                if (fmt_frame && later && rd[k].copied != fr) frame_copy = true, rd[k].copied = fr, n_frame_copy++;
                 rd[k].fs = g_cur_fs_hash ? g_cur_fs_hash : 1, rd[k].be = src, rd[k].frame = fr;
             }
-            bool once_ok = strict == 0 || fresh || (strict == 2 && !cleared && !(fmt_strict && (later || new_reader)));
+            bool once_ok = strict == 0 || fresh || (strict == 2 && !cleared && !(fmt_strict && (later || new_reader)) && !frame_copy);
             if (odbg && !nosnap && once && si >= 0 && existing && snap_frame[si] == renderer_present_count() + 1) {
                 static uint64_t n_fresh, n_draw, n_clear, n_other, n_refused, n_same, n_later, t0;
                 static struct { uint32_t fmt; uint64_t n; } byf[16];
@@ -4582,11 +4609,12 @@ static void resolve_feedback(Prog *pr) {
                     for (int k = 0; k < 16 && byf[k].n && o < 220; k++) o += snprintf(fb + o, sizeof fb - o, " %#x:%llu", byf[k].fmt, (unsigned long long)byf[k].n);
                     fb[o] = 0;
                     LOG("[once] 2 s: reuses %llu up to date, %llu past draws, %llu past clears, %llu past other (%s); refused %llu | strict "
-                        "formats stale: %llu same pass, %llu later pass, %llu new copies for a shader not seen lately | stale by format:%s\n",
+                        "formats stale: %llu same pass, %llu later pass, %llu new copies for a shader not seen lately; %llu once a frame for "
+                        "a shader | stale by format:%s\n",
                         (unsigned long long)n_fresh, (unsigned long long)n_draw, (unsigned long long)n_clear, (unsigned long long)n_other,
                         why_other ? why_other : "-", (unsigned long long)n_refused, (unsigned long long)n_same,
-                        (unsigned long long)n_later, (unsigned long long)n_refresh, fb);
-                    n_refresh = 0;
+                        (unsigned long long)n_later, (unsigned long long)n_refresh, (unsigned long long)n_frame_copy, fb);
+                    n_refresh = n_frame_copy = 0;
                     n_fresh = n_draw = n_clear = n_other = n_refused = n_same = n_later = 0;
                     memset(byf, 0, sizeof byf);
                     t0 = now;
