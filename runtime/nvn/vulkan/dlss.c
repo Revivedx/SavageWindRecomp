@@ -137,27 +137,13 @@ static bool dll_here(void) {
     return have;
 }
 
-static bool core_load(void) {
-    if (N.tried) return N.loaded;
-    N.tried = 1;
-    if (!dll_here()) {
-        LOG("[dlss] NVIDIA's DLSS library is not next to savagewind.exe (the setup downloads it): DLSS off\n");
+static bool try_load_core(const char *path) {
+    HMODULE h = LoadLibraryA(path);
+    if (!h) {
+        LOG("[dlss] cannot load %s (error %lu)\n", path, GetLastError());
         return false;
     }
-    char dir[MAX_PATH] = {0}, path[MAX_PATH + 32];
-    DWORD n = sizeof dir;
-    if (RegGetValueA(HKEY_LOCAL_MACHINE, "SOFTWARE\\NVIDIA Corporation\\Global\\NGXCore", "FullPath", RRF_RT_REG_SZ,
-                     NULL, dir, &n) != ERROR_SUCCESS) {
-        LOG("[dlss] no NVIDIA driver with NGX (registry NGXCore missing): DLSS off\n");
-        return false;
-    }
-    snprintf(path, sizeof path, "%s\\_nvngx.dll", dir);
-    N.core = LoadLibraryA(path);
-    if (!N.core) {
-        LOG("[dlss] cannot load %s (error %lu): DLSS off\n", path, GetLastError());
-        return false;
-    }
-#define FN(f, name) N.f = (void *)GetProcAddress(N.core, name)
+#define FN(f, name) N.f = (void *)GetProcAddress(h, name)
     FN(init, "NVSDK_NGX_VULKAN_Init_Ext2");
     FN(req_ext, "NVSDK_NGX_VULKAN_RequiredExtensions");
     FN(caps, "NVSDK_NGX_VULKAN_GetCapabilityParameters");
@@ -170,7 +156,53 @@ static bool core_load(void) {
 #undef FN
     if (!N.init || !N.req_ext || !N.caps || !N.alloc_params || !N.destroy_params || !N.create || !N.evaluate ||
         !N.release) {
-        LOG("[dlss] the NGX core %s lacks Vulkan entry points: DLSS off\n", path);
+        LOG("[dlss] the NGX core %s lacks Vulkan entry points\n", path);
+        FreeLibrary(h);
+        memset(&N, 0, sizeof N);
+        N.tried = 1;
+        return false;
+    }
+    N.core = h;
+    return true;
+}
+
+static bool find_driverstore_core(const char *skip_path, char *out, size_t nout) {
+    char sysdir[MAX_PATH] = {0}, pattern[MAX_PATH + 64];
+    UINT slen = GetSystemDirectoryA(sysdir, MAX_PATH);
+    if (!slen || slen >= MAX_PATH) return false;
+    snprintf(pattern, sizeof pattern, "%s\\DriverStore\\FileRepository\\nv*", sysdir);
+    WIN32_FIND_DATAA fd;
+    HANDLE ff = FindFirstFileA(pattern, &fd);
+    if (ff == INVALID_HANDLE_VALUE) return false;
+    bool found = false;
+    do {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+        snprintf(out, nout, "%s\\DriverStore\\FileRepository\\%s\\_nvngx.dll", sysdir, fd.cFileName);
+        if (skip_path && !_stricmp(out, skip_path)) continue;
+        if (GetFileAttributesA(out) != INVALID_FILE_ATTRIBUTES && try_load_core(out)) {
+            found = true;
+            break;
+        }
+    } while (FindNextFileA(ff, &fd));
+    FindClose(ff);
+    return found;
+}
+
+static bool core_load(void) {
+    if (N.tried) return N.loaded;
+    N.tried = 1;
+    if (!dll_here()) {
+        LOG("[dlss] NVIDIA's DLSS library is not next to savagewind.exe (the setup downloads it): DLSS off\n");
+        return false;
+    }
+    char dir[MAX_PATH] = {0}, path[MAX_PATH + 32] = {0};
+    DWORD n = sizeof dir;
+    bool have_reg = RegGetValueA(HKEY_LOCAL_MACHINE, "SOFTWARE\\NVIDIA Corporation\\Global\\NGXCore", "FullPath",
+                                 RRF_RT_REG_SZ, NULL, dir, &n) == ERROR_SUCCESS;
+    if (have_reg) snprintf(path, sizeof path, "%s\\_nvngx.dll", dir);
+    else LOG("[dlss] registry NGXCore missing, scanning DriverStore\n");
+    if ((!have_reg || !try_load_core(path)) && !find_driverstore_core(have_reg ? path : NULL, path, sizeof path)) {
+        LOG("[dlss] no usable NGX core found: DLSS off\n");
         return false;
     }
     const char *data = rt_data_root();
