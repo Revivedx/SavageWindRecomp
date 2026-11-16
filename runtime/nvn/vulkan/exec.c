@@ -19,6 +19,7 @@
 #endif
 
 #include "../../kernel.h"
+#include "../../control.h"
 #include "../../prof.h"
 #include "../../platform.h"
 #include "shaders.h"
@@ -2802,6 +2803,8 @@ typedef struct Prog {
     VkShaderModule vs, fs;
     VkBindingInfo binds[MAX_BIND];
     int nbinds;
+    bool reuse_stage[2];
+    uint32_t reuse_mask[2];
     VkDescriptorSetLayout set_layout[2];
     VkPipelineLayout layout;
     struct StageBuildRef { void *v, *f; } stages;  // (the ProgBuild's StageBuilds: graphics pipeline libraries)
@@ -2813,6 +2816,57 @@ typedef struct Prog {
     // each time, they cost the translating thread ~0.2 ms a frame.)
     void *mv[2][8];
 } Prog;
+
+static _Atomic int stage_cpu_options = -1;
+static _Atomic uint64_t stage_reuse_calls, stage_reuse_eligible, stage_reuse_hits;
+static int stage_cpu_opts(void) {
+    int opts = atomic_load_explicit(&stage_cpu_options, memory_order_relaxed);
+    if (opts < 0) {
+        const char *e = getenv("SAVAGEWIND_VK_STAGE_REUSE");
+        opts = e ? atoi(e) : 0;
+        if (opts < 0 || opts > 2) opts = 0;
+        atomic_store_explicit(&stage_cpu_options, opts, memory_order_relaxed);
+    }
+    return opts;
+}
+
+static void stage_cpu_command(int argc, char **argv, ControlReply *r) {
+    if (argc > 2) { control_fail(r, "cpuopts [0-2]"); return; }
+    if (argc == 2) {
+        char *end;
+        long opts = strtol(argv[1], &end, 10);
+        if (!*argv[1] || *end || opts < 0 || opts > 2) { control_fail(r, "cpuopts [0-2]"); return; }
+        atomic_store_explicit(&stage_cpu_options, (int)opts, memory_order_relaxed);
+    }
+    control_field_int(r, "mask", stage_cpu_opts());
+    control_field_int(r, "reuse_calls", atomic_load_explicit(&stage_reuse_calls, memory_order_relaxed));
+    control_field_int(r, "reuse_eligible", atomic_load_explicit(&stage_reuse_eligible, memory_order_relaxed));
+    control_field_int(r, "reuse_hits", atomic_load_explicit(&stage_reuse_hits, memory_order_relaxed));
+}
+
+static void stage_cpu_control_init(void) {
+    static bool registered;
+    if (registered || !control_enabled() || !getenv("SAVAGEWIND_VK_CPU_BENCH")) return;
+    static const ControlCmd cmd[] = {{"cpuopts", "[0-2]", "Fragment preparation experiment", stage_cpu_command, 0}};
+    control_register(cmd, 1);
+    registered = true;
+}
+
+static void stage_reuse_plan(Prog *p) {
+    for (unsigned set = 0; set < 2; set++) {
+        p->reuse_stage[set] = true;
+        p->reuse_mask[set] = 0;
+        for (int i = 0; i < p->nbinds; i++) {
+            const VkBindingInfo *b = &p->binds[i];
+            if (b->set != set) continue;
+            bool buffer = b->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER || b->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+            if (buffer && b->binding < 17) p->reuse_mask[set] |= 1u << b->binding;
+            else if (!(buffer && (b->binding == 18 || b->binding == 19)) &&
+                     !(b->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER && b->binding >= 32)) p->reuse_stage[set] = false;
+        }
+    }
+}
+
 
 // The push constants of a motion vector program (mvec.c MVEC_PUSH: the history offsets of the previous frame's
 // constant buffers), in the layouts of its stages, their libraries and the program
@@ -3099,6 +3153,7 @@ static void compile_program(void *arg) {
     if (!b) { atomic_store(&p->state, 2); return; }
     p->nbinds = b->nbinds;
     memcpy(p->binds, b->binds, sizeof b->binds[0] * (size_t)b->nbinds);
+    stage_reuse_plan(p);
     p->vs = b->vs;
     p->fs = b->fs;
     p->set_layout[0] = b->set_layout[0];
@@ -7400,6 +7455,82 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
     return set_finish(layout, w, n);
 }
 
+// STAGE_REUSE_TEST_BEGIN
+// A fragment material can outlive the vertex program paired with it. Keep only
+// snapshots in the current submission, with the same write and pool generations.
+static VkDescriptorSet stage_set_reuse(Prog *p, VkDescriptorSetLayout layout, uint32_t set, int stage, ShaderInfo *si, const float *rscale_row0,
+                                 const float tint[8], uint32_t gx, uint32_t gy, uint32_t gz, const VkDescriptorImageInfo *pre_ii,
+                                 uint32_t *dyn, int *ndyn) {
+    int opts = stage_cpu_opts();
+    static int off = -1;
+    if (off < 0) off = getenv("SAVAGEWIND_VK_NO_SET_CACHE") != NULL;
+    atomic_fetch_add_explicit(&stage_reuse_calls, 1, memory_order_relaxed);
+    if (!opts || off || stage != 1 || set != 1 || !p->reuse_stage[1] || si->uses_gmem || si->writes_gmem ||
+        si->ntex < 0 || si->ntex > 64 || !pre_ii || !rscale_row0 || !tint || !st.program ||
+        sdw_fix.s > 1 || up_fix.sx > 0 || fxaa_off)
+        return stage_set(p, layout, set, stage, si, rscale_row0, tint, gx, gy, gz, pre_ii, dyn, ndyn);
+    atomic_fetch_add_explicit(&stage_reuse_eligible, 1, memory_order_relaxed);
+    static struct {
+        const Prog *p;
+        const ShaderInfo *si;
+        const NvnProgram *program;
+        VkDescriptorSetLayout layout;
+        uint64_t seq, sets, guest, serial, gpu, code;
+        uint32_t const_offset, const_size, mask;
+        int opts, ntex;
+        Range ubuf[18], sbuf[16];
+        float row[4], tint[8], scales[64][2];
+        VkDescriptorImageInfo images[64];
+        VkDescriptorSet descriptor;
+        uint32_t offsets[32];
+        int n;
+    } entries[16];
+    unsigned slot = opts == 1 ? 0 : (unsigned)(((uintptr_t)si >> 4) ^ ((uintptr_t)si >> 12)) & 15;
+    __typeof__(entries[0]) *last = &entries[slot];
+    uint64_t seq = vk_pending_seq(), guest = __atomic_load_n(&gcopy_gen, __ATOMIC_RELAXED);
+    uint32_t mask = p->reuse_mask[1];
+    NvnShaderStage *ss = &st.program->stages[1];
+    bool same = last->si == si && last->layout == layout && last->seq == seq && last->sets == setc_gen &&
+        last->guest == guest && last->serial == uub_serial && last->gpu == gw_gen && last->opts == opts &&
+        last->mask == mask && last->ntex == si->ntex &&
+        !memcmp(last->row, rscale_row0, sizeof last->row) && !memcmp(last->tint, tint, sizeof last->tint) &&
+        !memcmp(last->images, pre_ii, sizeof *pre_ii * si->ntex) &&
+        !memcmp(last->scales, tex_sc[1], sizeof last->scales[0] * si->ntex);
+    if (same && opts == 1)
+        same = last->p == p && last->program == st.program &&
+            !memcmp(last->ubuf, st.ubuf[1], sizeof last->ubuf) && !memcmp(last->sbuf, st.sbuf[1], sizeof last->sbuf);
+    if (same && opts == 2) {
+        // c0 holds storage-buffer addresses; c1 comes from this code blob.
+        if (mask & 1) same = !memcmp(last->sbuf, st.sbuf[1], sizeof last->sbuf);
+        if (same && (mask & 2)) same = last->code == ss->code_addr && last->const_offset == ss->const_offset && last->const_size == ss->const_size;
+        for (uint32_t m = mask >> 3; same && m; m &= m - 1) {
+            unsigned i = (unsigned)__builtin_ctz(m);
+            same = last->ubuf[i].addr == st.ubuf[1][i].addr && last->ubuf[i].size == st.ubuf[1][i].size;
+        }
+    }
+    if (same) {
+        atomic_fetch_add_explicit(&stage_reuse_hits, 1, memory_order_relaxed);
+        if (dyn && ndyn) { memcpy(dyn + *ndyn, last->offsets, sizeof last->offsets[0] * last->n); *ndyn += last->n; }
+        return last->descriptor;
+    }
+    uint32_t offsets[32];
+    int n = 0;
+    VkDescriptorSet descriptor = stage_set(p, layout, set, stage, si, rscale_row0, tint, gx, gy, gz, pre_ii, offsets, &n);
+    last->p = p; last->si = si; last->program = st.program; last->layout = layout;
+    last->seq = vk_pending_seq(); last->sets = setc_gen;
+    last->guest = __atomic_load_n(&gcopy_gen, __ATOMIC_RELAXED); last->serial = uub_serial; last->gpu = gw_gen; last->opts = opts;
+    last->mask = mask; last->ntex = si->ntex;
+    last->code = ss->code_addr; last->const_offset = ss->const_offset; last->const_size = ss->const_size;
+    memcpy(last->ubuf, st.ubuf[1], sizeof last->ubuf); memcpy(last->sbuf, st.sbuf[1], sizeof last->sbuf);
+    memcpy(last->row, rscale_row0, sizeof last->row); memcpy(last->tint, tint, sizeof last->tint);
+    memcpy(last->images, pre_ii, sizeof *pre_ii * si->ntex);
+    memcpy(last->scales, tex_sc[1], sizeof last->scales[0] * si->ntex);
+    last->descriptor = descriptor; last->n = n; memcpy(last->offsets, offsets, sizeof offsets[0] * n);
+    if (dyn && ndyn) { memcpy(dyn + *ndyn, offsets, sizeof offsets[0] * n); *ndyn += n; }
+    return descriptor;
+}
+// STAGE_REUSE_TEST_END
+
 // ================================================================== compute
 typedef struct { Prog p; ShaderInfo *si; VkPipeline pipe; uint32_t local[3]; } CsProg;
 
@@ -7487,6 +7618,7 @@ static void build_compute(void *arg) {
     }
     cp->p.nbinds = c->nbinds;
     memcpy(cp->p.binds, c->binds, sizeof c->binds[0] * (size_t)c->nbinds);
+    stage_reuse_plan(&cp->p);
     cp->p.set_layout[0] = c->set_layout;
     cp->p.layout = c->layout;
     cp->pipe = c->pipe;
@@ -9041,7 +9173,7 @@ have_pipe:
         int i = g_cur_fs_hash == logged[0] ? -1 : !logged[0] ? 0 : g_cur_fs_hash == logged[1] ? -1 : !logged[1] ? 1 : -1;
         if (i >= 0) LOG("[fxaa] the game's FXAA off (fs hash %016llx)\n", (unsigned long long)(logged[i] = g_cur_fs_hash));
     }
-    VkDescriptorSet fset = stage_set(pr, pr->set_layout[1], 1, 1, pr->fi, rs0, tint, 0, 0, 0, fii, dyn, &ndyn);
+    VkDescriptorSet fset = stage_set_reuse(pr, pr->set_layout[1], 1, 1, pr->fi, rs0, tint, 0, 0, 0, fii, dyn, &ndyn);
     sdw_fix.s = 0, up_fix.sx = 0, fxaa_off = false;
     if (profd) prof_sets += SDL_GetTicksNS() - prof_t1_;
     PZ_SPAN("exec/draw/sets", pz6, PZ_NOW());
@@ -11509,7 +11641,8 @@ static void lst_end(int depth) {
     if (lst[depth].draws) { lsum.ubuf_inh += lst[depth].ubuf_inh; lsum.tex_inh += lst[depth].tex_inh; }
     if (lst[depth].uub) { lsum.uub_lists++; lsum.uub += lst[depth].uub; }
 }
-void vk_list_stats_frame(void) {  // (device.c, each present)
+void vk_list_stats_frame(void) {
+    stage_cpu_control_init();  // (device.c, each present)
     if (lst_on <= 0) return;
     static int n;
     lst_nuub = 0;
