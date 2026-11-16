@@ -20,9 +20,9 @@ From an MSYS2 UCRT64 shell, or Git Bash with MSYS2 first on PATH:
     make -j         # -> build/savagewind.exe and the game code library build/swgame.dll
 
 NVIDIA DLSS needs no SDK at build time: `runtime/nvn/vulkan/dlss.c` loads the NVIDIA driver's NGX at run time, and
-NGX loads `nvngx_dlss.dll` from the folder of `savagewind.exe`. It is neither in this repository nor in `make dist`: the
-setup downloads NVIDIA's own copy (`runtime/dlss_fetch.c`, NVIDIA/DLSS `v310.9.16`, size and SHA-256 checked). For a
-source build, run the setup once, or copy that release's `nvngx_dlss.dll` into `build/`.
+NGX loads `nvngx_dlss.dll` and `nvngx_dlssg.dll` from the folder of `savagewind.exe`. Neither is in this repository or
+in `make dist`: the setup downloads NVIDIA's own copies (`runtime/dlss_fetch.c`, NVIDIA/DLSS `v310.9.16`, size and
+SHA-256 checked). For a source build, run the setup once, or copy the two DLLs of that release into `build/`.
 
 Without `generated/` only the app is built: the start screen builds the game code itself when you set up the game
 files (as for players), given the generator and the compiler (`make gen-helper`, `tools/fetch_zig.sh`).

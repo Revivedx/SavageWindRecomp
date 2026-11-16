@@ -16,6 +16,8 @@ bool fsr4_available(void) { return false; }
 bool vk_dlss_available(void) { return false; }
 bool xess_available(void) { return false; }
 bool xess_usable(void) { return false; }
+bool vk_dlssg_available(void) { return false; }
+int vk_dlssg_max_mult(void) { return 2; }
 uint64_t plat_now_ns(void) { return 1000000000; }
 uint64_t renderer_present_count(void) { return 0; }
 uint64_t framepace_shown_frame(void) { return 0; }

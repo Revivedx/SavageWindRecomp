@@ -914,18 +914,38 @@ void build_items(void) {
                        },
                        [](const Item &) { return g_settings.sharpening; },
                        [](const Item &, int x) { g_settings.sharpening = x; }, 0));
-    // AMD FSR 3 frame generation (vulkan/framegen.cpp)
-    Item fg = toggle(P_VIDEO_ADV, "Frame generation (AMD FSR 3)", "Twice the frames on screen. Adds a little delay.",
-                     [](const Item &) { return (int)g_settings.frame_gen; },
-                     [](const Item &, int x) { g_settings.frame_gen = x; }, 0);
-    fg.desc_fn = [](const Item &) {
+    // Frame generation: AMD FSR 3 (vulkan/framegen.cpp) or NVIDIA DLSS (vulkan/dlss.c, greyed where it can't run)
+    v.push_back(choice(P_VIDEO_ADV, "Frame generation", "Twice the frames on screen. Adds a little delay.",
+                       [](const Item &) { return (int)FG_COUNT; },
+                       [](const Item &, int x) {
+                           static const char *const k_fg[FG_COUNT] = {"Off", "AMD FSR 3", "NVIDIA DLSS"};
+                           return tr(k_fg[x]);
+                       },
+                       [](const Item &) { return g_settings.frame_gen; },
+                       [](const Item &, int x) { g_settings.frame_gen = x; }, FG_OFF));
+    v.back().value_off = [](const Item &, int x) { return !frame_gen_available(x); };
+    v.back().desc_fn = [](const Item &) {
         if (dynamic_fg_no_gain())
             return tr("No net gain here: the upscaler's Dynamic mode would switch this off.");
         if (dynamic_fg_disabled())
             return tr("The upscaler's Dynamic mode switched this off: no net gain.");
         return tr("Twice the frames on screen. Adds a little delay.");
     };
-    v.push_back(fg);
+    // DLSS's multi frame generation (3x, 4x where the GPU makes that many)
+    v.push_back(choice(P_VIDEO_ADV, "Frame generation multiplier", "NVIDIA DLSS: frames on screen for each drawn.",
+                       [](const Item &) { return FG_MULT_MAX - FG_MULT_MIN + 1; },
+                       [](const Item &, int x) {
+                           static const char *const k_mult[] = {"2x", "3x", "4x"};
+                           return tr(k_mult[x]);
+                       },
+                       [](const Item &) {
+                           return (g_settings.frame_gen_mult >= FG_MULT_MIN ? g_settings.frame_gen_mult : FG_MULT_MIN) -
+                                  FG_MULT_MIN;
+                       },
+                       [](const Item &, int x) { g_settings.frame_gen_mult = FG_MULT_MIN + x; }, 0));
+    v.back().value_off = [](const Item &, int x) {
+        return g_settings.frame_gen != FG_DLSS ? x != 0 : !frame_gen_mult_available(FG_DLSS, FG_MULT_MIN + x);
+    };
 #endif
     v.push_back(toggle(P_VIDEO_ADV, "Asynchronous shaders", "On: no stutter, but some effects appear late.",
                        [](const Item &) { return (int)g_settings.async_shaders; },
