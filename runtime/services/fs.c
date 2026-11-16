@@ -1739,7 +1739,17 @@ static void file(Service *s, IpcReq *req, IpcResp *resp) {
         f->patched = NULL;
         break;
     }
-    case 2: fsync(f->fd); break;
+    case 2: {  // Flush
+        // Writes (pwrite) are committed directly to the operating system's file cache.
+        // Synchronous hardware cache flush (_commit / FlushFileBuffers on Windows, fsync on POSIX)
+        // stalls the game thread for 15-50 ms per file during autosaves ("Saving..." stutter).
+        // The OS safely commits dirty pages to disk in the background; synchronous hardware
+        // flush is only performed if SAVAGEWIND_SYNC_SAVE_FLUSH=1 is set.
+        static int sync_flush = -1;
+        if (sync_flush < 0) sync_flush = getenv("SAVAGEWIND_SYNC_SAVE_FLUSH") ? atoi(getenv("SAVAGEWIND_SYNC_SAVE_FLUSH")) : 0;
+        if (sync_flush && fsync(f->fd) < 0) resp->result = errno_result();
+        break;
+    }
     case 3: {
         int tries = 0, r;
         while ((r = ftruncate(f->fd, IN(int64_t, 0))) && fs_retry(&tries, "resize", f->path)) {}
