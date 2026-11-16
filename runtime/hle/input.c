@@ -1063,6 +1063,37 @@ uint64_t input_buttons_now(void) {
     return b;
 }
 
+// Accessibility > Hold-to-toggle for ZL (shield / focus) and ZR (bow aim) in gameplay.
+static bool zl_latched, zr_latched, prev_phys_zl, prev_phys_zr;
+RT_ON_RESET(toggle_buttons_reset) { zl_latched = zr_latched = prev_phys_zl = prev_phys_zr = false; }
+static uint64_t toggle_buttons(uint64_t b, bool in_play) {
+    bool phys_zl = (b & (1ull << BTN_ZL)) != 0;
+    bool phys_zr = (b & (1ull << BTN_ZR)) != 0;
+    if (!in_play) {
+        zl_latched = zr_latched = false;
+        prev_phys_zl = phys_zl;
+        prev_phys_zr = phys_zr;
+        return b;
+    }
+    if (!g_settings.toggle_zl) {
+        zl_latched = false;
+    } else {
+        if (phys_zl && !prev_phys_zl) zl_latched = !zl_latched;
+        if (zl_latched) b |= (1ull << BTN_ZL);
+        else b &= ~(1ull << BTN_ZL);
+    }
+    if (!g_settings.toggle_zr) {
+        zr_latched = false;
+    } else {
+        if (phys_zr && !prev_phys_zr) zr_latched = !zr_latched;
+        if (zr_latched) b |= (1ull << BTN_ZR);
+        else b &= ~(1ull << BTN_ZR);
+    }
+    prev_phys_zl = phys_zl;
+    prev_phys_zr = phys_zr;
+    return b;
+}
+
 static int32_t clamp_axis(int32_t v) { return v > 32767 ? 32767 : v < -32767 ? -32767 : v; }
 
 // NpadFullKeyState / NpadHandheldState / NpadJoy*State share this layout (0x28 bytes):
@@ -1095,6 +1126,7 @@ static void fill_state(Cpu *c) {
     uint64_t b = raw | (menu ? 0 : escape_buttons | bow) | script_buttons;
     if (!menu) b |= auto_continue_buttons(b);  // (not while the overlay has the controls)
     b=pc_cursor_buttons(b);
+    b = toggle_buttons(b, !in_menu && !pc_cursor_active());
     {   // injected Plus: held for ~10 presented frames (the game polls several times per frame)
         extern uint64_t renderer_present_count(void);
         static uint64_t until;

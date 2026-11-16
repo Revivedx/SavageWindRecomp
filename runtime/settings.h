@@ -212,6 +212,9 @@ typedef struct {
     bool one_hit_kill;       // whatever else takes damage loses all its life at once
     int damage_taken;        // percent of the damage Link takes (DAMAGE_CHOICES)
     int damage_dealt;        // percent of the damage everything else takes (DAMAGE_CHOICES)
+    bool toggle_zl;          // press ZL once in play to hold shield / focus; press again to release (hle/input.c)
+    bool toggle_zr;          // press ZR once in play to draw / hold bow; press again to release (hle/input.c)
+    int menu_text_size;      // overlay text scale, percent (80..150, ui/menu.mm)
     int text_language;   // index in g_text_languages (runtime/language.h), 0: the host's
     int voice_language;  // index in g_voice_languages, 0: the text language's voices
     bool save_backups;   // Saves > Back up at each start: a copy of the save folder as the game starts (runtime/save_backup.c)

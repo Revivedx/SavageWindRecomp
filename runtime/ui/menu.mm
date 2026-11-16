@@ -842,6 +842,12 @@ static void tab_display(void) {
                        "How big the hearts, stamina, minimap and the rest of the HUD are. Each part stays in its corner.", false))
             g_settings.hud_size = sizes[cur];
     }
+    {
+        float tsz = (float)g_settings.menu_text_size;
+        if (opt_slider("Overlay text size", &tsz, 80, 150, 5, 100, "%g%%",
+                       "Scale of the text and controls in this F1 overlay."))
+            g_settings.menu_text_size = (int)lroundf(tsz);
+    }
     {   // Menu cursor speed
         static const int speeds[] = MENU_SPEED_CHOICES;
         enum { NV = sizeof speeds / sizeof speeds[0] };
@@ -1630,6 +1636,10 @@ static void tab_about(void) {
                        "100% is the game's own speed."))
             g_settings.stick_cam_y = (int)cy;
     }
+    opt_toggle("Toggle shield / focus (ZL)", &g_settings.toggle_zl, false,
+               "Press ZL once in play to hold your shield or lock on; press ZL again to release.");
+    opt_toggle("Toggle bow aim (ZR)", &g_settings.toggle_zr, false,
+               "Press ZR once in play to draw and hold your bow; press ZR again to shoot.");
     controls_bindings_draw(ImGui::GetFontSize() / 34);
     ImGui::Spacing();
     header("Menu");
@@ -2238,7 +2248,8 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     last = now;
     drain_events(io);
     // fonts are built at 34/56 px for a ~1080 px tall output; scale to the window
-    float scale = (float)(th / 1080.0);
+    int text_pct = g_settings.menu_text_size >= 80 && g_settings.menu_text_size <= 150 ? g_settings.menu_text_size : 100;
+    float scale = (float)(th / 1080.0) * (text_pct / 100.0f);
     if (scale < 0.45f) scale = 0.45f;
     io.FontGlobalScale = scale;
 

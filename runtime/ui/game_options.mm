@@ -1368,6 +1368,26 @@ void build_items(void) {
     v.push_back(toggle(P_ACCESS, "Infinite stamina", "The stamina wheel never runs out.",
                        [](const Item &) { return (int)g_settings.infinite_stamina; },
                        [](const Item &, int x) { g_settings.infinite_stamina = x; }, 0));
+    v.push_back(toggle(P_ACCESS, "Toggle shield / focus (ZL)",
+                       "Press ZL once in play to hold your shield or lock on; press ZL again to release.",
+                       [](const Item &) { return (int)g_settings.toggle_zl; },
+                       [](const Item &, int x) { g_settings.toggle_zl = x; }, 0));
+    v.push_back(toggle(P_ACCESS, "Toggle bow aim (ZR)",
+                       "Press ZR once in play to draw and hold your bow; press ZR again to shoot.",
+                       [](const Item &) { return (int)g_settings.toggle_zr; },
+                       [](const Item &, int x) { g_settings.toggle_zr = x; }, 0));
+    {
+        static const int k_text_sizes[] = {80, 90, 100, 110, 120, 130, 140, 150};
+        v.push_back(choice(P_ACCESS, "Overlay text size", "Scale of the text and controls in this F1 overlay.",
+                           [](const Item &) { return N(k_text_sizes); },
+                           [](const Item &, int x) {
+                               static std::string s;
+                               s = pct(k_text_sizes[x]);
+                               return s.c_str();
+                           },
+                           [](const Item &) { return nearest(k_text_sizes, N(k_text_sizes), (float)g_settings.menu_text_size); },
+                           [](const Item &, int x) { g_settings.menu_text_size = k_text_sizes[x]; }, 2));
+    }
 
 }
 

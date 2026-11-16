@@ -92,6 +92,7 @@ Settings g_settings = {
     .fov = 100,
     .hud_size = 100,
     .menu_speed = 100,
+    .menu_text_size = 100,
     .color_lut_strength = 100,
     .haze = 100,
     .bloom = true,
@@ -617,6 +618,9 @@ void settings_load(void) {
         else if (!strcmp(key, "one_hit_kill")) g_settings.one_hit_kill = atoi(val) != 0;
         else if (!strcmp(key, "damage_taken")) g_settings.damage_taken = atoi(val);  // (percent)
         else if (!strcmp(key, "damage_dealt")) g_settings.damage_dealt = atoi(val);
+        else if (!strcmp(key, "toggle_zl")) g_settings.toggle_zl = atoi(val) != 0;
+        else if (!strcmp(key, "toggle_zr")) g_settings.toggle_zr = atoi(val) != 0;
+        else if (!strcmp(key, "menu_text_size")) g_settings.menu_text_size = atoi(val);
         else if (!strcmp(key, "haze")) {  // (percent; an older ini's 0-50 reads as 75: HAZE_MIN)
             int v = atoi(val);
             g_settings.haze = v < HAZE_MIN ? HAZE_MIN : v > 100 ? 100 : v;
@@ -718,6 +722,7 @@ void settings_load(void) {
     g_settings.colour_vision_strength = CLAMP(g_settings.colour_vision_strength, 10, 100);
     g_settings.stick_cam_x = CLAMP(g_settings.stick_cam_x, STICK_CAM_MIN, STICK_CAM_MAX);
     g_settings.stick_cam_y = CLAMP(g_settings.stick_cam_y, STICK_CAM_MIN, STICK_CAM_MAX);
+    g_settings.menu_text_size = CLAMP(g_settings.menu_text_size, 80, 150);
     g_settings.rumble_strength = CLAMP(g_settings.rumble_strength, RUMBLE_STRENGTH_MIN, RUMBLE_STRENGTH_MAX);
     g_settings.weapon_wear = CLAMP(g_settings.weapon_wear, WEAPON_WEAR_MIN, WEAPON_WEAR_MAX);
     if (g_settings.no_weapon_wear) g_settings.weapon_wear = 0;  // (Unbreakable weapons is Weapon wear's Fairy, 0x)
@@ -873,6 +878,9 @@ void settings_save(void) {
     fprintf(f, "one_hit_kill = %d\n", g_settings.one_hit_kill);
     fprintf(f, "damage_taken = %d\n", g_settings.damage_taken);
     fprintf(f, "damage_dealt = %d\n", g_settings.damage_dealt);
+    fprintf(f, "toggle_zl = %d\n", g_settings.toggle_zl ? 1 : 0);
+    fprintf(f, "toggle_zr = %d\n", g_settings.toggle_zr ? 1 : 0);
+    fprintf(f, "menu_text_size = %d\n", g_settings.menu_text_size);
     fprintf(f, "haze = %d\n", g_settings.haze);
     fprintf(f, "bloom = %d\n", g_settings.bloom ? 1 : 0);
     fprintf(f, "depth_of_field = %d\n", g_settings.depth_of_field ? 1 : 0);
