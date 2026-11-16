@@ -368,9 +368,11 @@ void rec_UpdateDescriptorSets(uint32_t n, const VkWriteDescriptorSet *w) {
 }
 
 // ================================================================== command buffers, submissions
+static void push_mvec_forget(void);
 static void begin_cb_run(const void *p) {
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     VK_CHECK(vkBeginCommandBuffer(*(const VkCommandBuffer *)p, &bi));
+    push_mvec_forget();
 }
 void rec_BeginCommandBuffer(VkCommandBuffer cb) {
     if (on <= 0) { begin_cb_run(&cb); return; }
@@ -616,10 +618,11 @@ void rec_CmdBindDescriptorSets(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPip
 CMD_ARGS(CmdPushConstants, VkPipelineLayout layout; VkShaderStageFlags stages; uint32_t off, size;)  // then the bytes
 static void CmdPushConstants_run(const void *p) {
     const CmdPushConstantsArgs *a = p;
+    push_mvec_forget();
     vkCmdPushConstants(a->cb, a->layout, a->stages, a->off, a->size, after(a, sizeof *a));
 }
 void rec_CmdPushConstants(VkCommandBuffer cb, VkPipelineLayout layout, VkShaderStageFlags stages, uint32_t off, uint32_t size, const void *data) {
-    if (on <= 0) { vkCmdPushConstants(cb, layout, stages, off, size, data); return; }
+    if (on <= 0) { push_mvec_forget(); vkCmdPushConstants(cb, layout, stages, off, size, data); return; }
     ENQ_T0();
     CmdPushConstantsArgs *a = push(CmdPushConstants_run, sizeof *a, size);
     *a = (CmdPushConstantsArgs){cb, layout, stages, off, size};
@@ -629,10 +632,24 @@ void rec_CmdPushConstants(VkCommandBuffer cb, VkPipelineLayout layout, VkShaderS
 }
 
 CMD_ARGS(CmdPushConstantsMvec, VkPipelineLayout layout; uint32_t seq;)
+// Nine scene draws in ten have no motion of their own (mflag 0: the motion program then reads nothing else), and
+// pushing all MVEC_PUSH bytes for each was ~0.17 ms a frame of the recorder (RTX 3060, 1080p). Such a draw pushes only
+// mflag, and none at all when the last push in this render pass was a zero mflag with the same layout. Any other
+// push, a new render pass or another command buffer starts over (push_mvec_forget).
+static VkCommandBuffer mv_cb;
+static VkPipelineLayout mv_layout;
+static void push_mvec_forget(void) { mv_cb = VK_NULL_HANDLE; }
 static void push_mvec(VkCommandBuffer cb, VkPipelineLayout layout, uint32_t seq) {
     uint32_t pc[MVEC_PUSH / 4];
     mvec_resolve(seq, pc);
-    vkCmdPushConstants(cb, layout, VK_SHADER_STAGE_VERTEX_BIT, 0, MVEC_PUSH, pc);
+    if (pc[0]) {
+        vkCmdPushConstants(cb, layout, VK_SHADER_STAGE_VERTEX_BIT, 0, MVEC_PUSH, pc);
+        mv_cb = VK_NULL_HANDLE;
+        return;
+    }
+    if (cb == mv_cb && layout == mv_layout) return;
+    vkCmdPushConstants(cb, layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof pc[0], pc);
+    mv_cb = cb, mv_layout = layout;
 }
 static void CmdPushConstantsMvec_run(const void *p) { const CmdPushConstantsMvecArgs *a = p; push_mvec(a->cb, a->layout, a->seq); }
 void rec_CmdPushConstantsMvec(VkCommandBuffer cb, VkPipelineLayout layout, uint32_t seq) {
@@ -841,6 +858,7 @@ static void begin_note(void) {
 static void begin_rendering(VkCommandBuffer cb, const VkRenderingInfo *ri) {
     rt_crash_note = begin_note;
     begin_cur = ri;
+    push_mvec_forget();
     vkCmdBeginRendering(cb, ri);
     begin_cur = NULL;
 }

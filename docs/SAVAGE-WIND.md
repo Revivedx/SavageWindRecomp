@@ -385,6 +385,17 @@ Pendiente:
      que se hace pasar por DualShock 4 puede dejarlo quieto o hacerlo saltar, y cada lectura se descartaba (0 s o un
      tercio de segundo desde la anterior): el apuntado se quedaba quieto aunque las lecturas siguieran llegando (sospecha en #220). Ahora una
      lectura sin tiempo usable cuenta como un periodo de muestreo (la frecuencia que da SDL).
+     Rehecho para Alpha 6 (2026-11-15, #136): la sensibilidad y la inversión van en los ejes del mundo (izquierda /
+     derecha alrededor de la gravedad, arriba / abajo alrededor de la derecha de la vista: `aim_turn`), no en los del
+     mando, que en vertical (un handheld) dejaban el giro horizontal sin sensibilidad ni inversión; en un santuario
+     el juego recibe la pose física. Un informe repetido (mismo tiempo del sensor y mismos valores: un mando sondeado
+     más rápido que su sensor, #759) se descarta; con el reloj del sensor parado cuenta el tiempo del evento. La fuente
+     ya no es siempre el mando en uso (`motion_pads`): el mismo mando visto dos veces (DS4Windows, DSX, Handheld
+     Companion, Steam Input: sus botones bajan a la vez) sigue con el sensor del real, y los mandos que Steam Input
+     oculta (salvo los de Valve) se abren antes de `SDL_Init` solo por sus sensores. DSU también en Windows (Winsock,
+     `motion_dsu_axes`), el Deck virtual de InputPlumber (28DE:12FE / uhid), y los sensores del propio handheld por
+     la API de sensores de SDL. Opciones: Motion source (con el estado en la descripción), Vertical motion
+     sensitivity, Lean to turn. Pruebas: `tools/test_motion_sensors.c`.
    - Iconos de botones (2026-10-22, `runtime/nvn/glyphs.c`): BOTW dibuja los botones de sus avisos (HUD, menús,
      diálogos) como caracteres de su propia fuente de mapa de bits `External_00.bffnt` (en `Font/Font_*.sbfarc`,
      igual en todas las regiones): 51 glifos en U+E040..E091, celdas de 50x50 (a 51 px) en una hoja BC4 de 256x1024
@@ -1819,6 +1830,24 @@ La 1.9.0 (2026-10-22, rama `game-1.9.0`; archivos del usuario en `extracted-1.9.
   ~300 por segundo (como 1.8.2: 30,02 / 1,00 / 5,7 / 8,2 / 305). Las mismas llamadas sin implementar que con 1.8.2.
   La preparación acepta la carpeta 1.9.0 (versión "1.9.0", 39008+ ficheros) y rechaza `exefs` 1.9.0 con `romfs`
   1.8.2 y al revés.
+
+## NVIDIA DLSS (Video > Upscaler)
+
+Video > Upscaler: DLSS (`upscaler = dlss`; greyed where it can't run) renders the 3D scene smaller by the mode's factor
+and NVIDIA's DLSS Super Resolution builds the full-resolution image from it, with the world camera's depth, motion
+vectors, jitter and texture LOD bias (`runtime/nvn/vulkan/exec.c` `dlss_scene`). Windows, NVIDIA RTX graphics cards.
+Elsewhere, or when NGX can't make the feature, a settings file asking for it gets FSR 1.
+
+**No SDK.** Nothing of NVIDIA's SDK is compiled in, linked or shipped. `runtime/nvn/vulkan/dlss.c` finds the NVIDIA
+driver's NGX core (`_nvngx.dll`, through `HKLM\SOFTWARE\NVIDIA Corporation\Global\NGXCore`), takes its Vulkan entry
+points with `GetProcAddress`, and declares the few NGX types, values and parameter names it uses from the SDK's
+documented interface. NGX's parameter object is a C++ class reached through its vtable (MSVC's layout: each group of
+overloads in reverse order); a set-then-get round trip checks the layout first, and DLSS stays off if it fails. NGX is
+loaded only when NVIDIA's `nvngx_dlss.dll` is next to `savagewind.exe`. The setup page's Download NVIDIA DLSS (on PCs
+with an NVIDIA driver; `dlss_download = 1`, the default) and the game files page download it, with NVIDIA's
+`LICENSE.txt` as `NVIDIA-DLSS-LICENSE.txt`, from NVIDIA/DLSS on GitHub at release `v310.9.16` (`runtime/dlss_fetch.c`:
+WinHTTP; size and SHA-256 checked, written as `.part` and renamed only when both match). While it is missing on a PC
+with an NVIDIA driver, the menus' greyed DLSS points at Savage Wind Configuration.
 
 ## FSR 3 upscaling: held back for now
 

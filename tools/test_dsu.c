@@ -1,16 +1,26 @@
-// Focused Linux tests; include motion.c to exercise the real fusion and source switching without game assets.
+// Focused Linux and Windows tests; include motion.c to exercise the real fusion and source switching without game
+// assets.
 #include <assert.h>
-#include <arpa/inet.h>
 #include <stdio.h>
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#undef near  // (windef.h's 16-bit pointer keywords, in the way of the helper below)
+#undef far
+#else
+#include <arpa/inet.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#endif
 #include <zlib.h>
 #include "../runtime/hle/motion.c"
+#include "../runtime/deck_imu.h"  // (motion.c has it on Linux only; its decoder is tested on every system)
 
 Settings g_settings;
 static uint64_t clock_ns = 1000000000ull;
 uint64_t plat_now_ns(void) { return clock_ns; }
 bool pc_gyro_keyboard_active(void) { return false; }  // (runtime/pc_gyro_scene.c: no shrine apparatus here)
+bool settings_handheld(void) { return false; }  // (runtime/settings.c: a desktop, no handheld sensors)
 
 static void checksum(uint8_t *p, size_t n) {
     memset(p + 8, 0, 4);
@@ -82,10 +92,45 @@ static void freshness(void) {
     d.slot=0; d.mac[0]=1; assert(!dsu_accept(&c,&d,clock_ns));
 }
 
+// The test's own end of the connection, a UDP socket on the loopback: Winsock's or POSIX's (from #860).
+#ifdef _WIN32
+static intptr_t peer_open(void) {
+    WSADATA wsa;
+    assert(!WSAStartup(MAKEWORD(2, 2), &wsa));
+    SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    assert(s != INVALID_SOCKET);
+    DWORD ms = 1000;  // (blocking with a timeout: a reply that never comes fails the test)
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char *)&ms, sizeof ms);
+    return (intptr_t)s;
+}
+static void peer_close(intptr_t fd) { closesocket((SOCKET)fd); }
+static long peer_recv(intptr_t fd, uint8_t *p, size_t n, struct sockaddr_in *from, socklen_t *len) {
+    return recvfrom((SOCKET)fd, (char *)p, (int)n, 0, (struct sockaddr *)from, len);
+}
+static long peer_send(intptr_t fd, const uint8_t *p, size_t n, const struct sockaddr_in *to, socklen_t len) {
+    return sendto((SOCKET)fd, (const char *)p, (int)n, 0, (const struct sockaddr *)to, len);
+}
+static void set_env(const char *name, const char *value) { _putenv_s(name, value); }
+#else
+static intptr_t peer_open(void) {
+    int fd = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0);
+    assert(fd >= 0);
+    return fd;
+}
+static void peer_close(intptr_t fd) { close((int)fd); }
+static long peer_recv(intptr_t fd, uint8_t *p, size_t n, struct sockaddr_in *from, socklen_t *len) {
+    return recvfrom((int)fd, p, n, 0, (struct sockaddr *)from, len);
+}
+static long peer_send(intptr_t fd, const uint8_t *p, size_t n, const struct sockaddr_in *to, socklen_t len) {
+    return sendto((int)fd, p, n, 0, (const struct sockaddr *)to, len);
+}
+static void set_env(const char *name, const char *value) { setenv(name, value, 1); }
+#endif
+
 static int sample_count;
 static void count_sample(const DsuPacket *p, uint32_t gen, void *u) { (void)p; (void)gen; (void)u; sample_count++; }
 static void network(void) {
-    int fd=socket(AF_INET,SOCK_DGRAM|SOCK_NONBLOCK,0); assert(fd>=0);
+    intptr_t fd=peer_open();
     struct sockaddr_in addr={.sin_family=AF_INET,.sin_addr.s_addr=htonl(INADDR_LOOPBACK)};
     assert(!bind(fd,(struct sockaddr *)&addr,sizeof addr));
     socklen_t len=sizeof addr; assert(!getsockname(fd,(struct sockaddr *)&addr,&len));
@@ -93,33 +138,33 @@ static void network(void) {
     DsuClient c; assert(dsu_init(&c,endpoint,123));
     dsu_poll(&c,clock_ns,count_sample,NULL);
     uint8_t p[100], r[128]; struct sockaddr_in client; len=sizeof client;
-    assert(recvfrom(fd,r,sizeof r,0,(struct sockaddr *)&client,&len)==20); assert(r[16]==0);
-    assert(recv(fd,r,sizeof r,0)==28); assert(r[16]==1);
-    packet(p,0x100001,0,0); assert(sendto(fd,p,32,0,(struct sockaddr *)&client,len)==32);
+    assert(peer_recv(fd,r,sizeof r,&client,&len)==20); assert(r[16]==0);
+    assert(peer_recv(fd,r,sizeof r,NULL,NULL)==28); assert(r[16]==1);
+    packet(p,0x100001,0,0); assert(peer_send(fd,p,32,&client,len)==32);
     dsu_poll(&c,clock_ns+1,count_sample,NULL); assert(c.slot==0);
-    assert(recv(fd,r,sizeof r,0)==28); assert(r[16]==2 && r[20]==1 && r[21]==0);
-    packet(p,0x100002,10,1000); assert(sendto(fd,p,100,0,(struct sockaddr *)&client,len)==100);
+    assert(peer_recv(fd,r,sizeof r,NULL,NULL)==28); assert(r[16]==2 && r[20]==1 && r[21]==0);
+    packet(p,0x100002,10,1000); assert(peer_send(fd,p,100,&client,len)==100);
     dsu_poll(&c,clock_ns+2,count_sample,NULL); assert(c.fresh && sample_count==1);
     // Restart with new server ID; discovery resets the counter/timestamp epoch.
     packet(p,0x100001,0,0); u32(p+12,99); checksum(p,32);
-    sendto(fd,p,32,0,(struct sockaddr *)&client,len); dsu_poll(&c,clock_ns+3,count_sample,NULL);
+    peer_send(fd,p,32,&client,len); dsu_poll(&c,clock_ns+3,count_sample,NULL);
     assert(c.server==99 && !c.fresh);
     packet(p,0x100002,1,1); u32(p+12,99); checksum(p,100);
-    sendto(fd,p,100,0,(struct sockaddr *)&client,len); dsu_poll(&c,clock_ns+4,count_sample,NULL);
+    peer_send(fd,p,100,&client,len); dsu_poll(&c,clock_ns+4,count_sample,NULL);
     assert(c.fresh && sample_count==2);
     dsu_poll(&c,clock_ns+DSU_TIMEOUT_NS+5,count_sample,NULL); assert(!c.fresh && c.slot==-1);
     // Same-ID restart / late server availability recovers via periodic discovery.
     packet(p,0x100001,0,0); u32(p+12,99); checksum(p,32);
-    sendto(fd,p,32,0,(struct sockaddr *)&client,len); dsu_poll(&c,clock_ns+DSU_RETRY_NS,count_sample,NULL);
+    peer_send(fd,p,32,&client,len); dsu_poll(&c,clock_ns+DSU_RETRY_NS,count_sample,NULL);
     packet(p,0x100002,0,0); u32(p+12,99); checksum(p,100);
-    sendto(fd,p,100,0,(struct sockaddr *)&client,len); dsu_poll(&c,clock_ns+DSU_RETRY_NS+1,count_sample,NULL);
+    peer_send(fd,p,100,&client,len); dsu_poll(&c,clock_ns+DSU_RETRY_NS+1,count_sample,NULL);
     assert(c.fresh && sample_count==3);
-    dsu_close(&c); close(fd);
+    dsu_close(&c); peer_close(fd);
     assert(!dsu_init(&c,"localhost:26760",1)); assert(!dsu_init(&c,"127.0.0.1:0",1));
 }
 
 static void selection(void) {
-    setenv("SAVAGEWIND_DSU","off",1);
+    set_env("SAVAGEWIND_DSU","off");
     backend.enabled=true;
     SDL_Event e={0}; e.gsensor.sensor=SDL_SENSOR_ACCEL; e.gsensor.sensor_timestamp=100;
     e.gsensor.data[1]=SDL_STANDARD_GRAVITY;
@@ -159,19 +204,49 @@ static void selection(void) {
     update(clock_ns); select_motion(2); g.started=true; g.q=g.aim_q=euler_quat(1,.4,.3);
     update(clock_ns+20000000);
     for(int i=0;i<3;i++) near(s.ring[s.head].gyro[i],0);
-    motion_pad_closed();
-    assert(!backend.enabled);
+    static char fake;  // (a controller being closed: never read again)
+    backend.pad = (SDL_Gamepad *)&fake;
+    motion_pad_removed(backend.pad);
+    assert(!backend.enabled && !backend.pad);
+}
+// SDL's sensor fusion (the device's own sensor, no data rate) gives way to a DSU server that answers; a controller's
+// own sensors (with a rate) don't, and without DSU the fused sensor is still used (from #860).
+static void unrated(void) {
+    backend.enabled=true; backend.unrated=true; backend.dsu.fresh=false;
+    select_motion(SRC_NONE);
+    clock_ns+=4*DSU_TIMEOUT_NS;
+    SDL_Event e={0}; e.gsensor.sensor=SDL_SENSOR_ACCEL; e.gsensor.timestamp=clock_ns; e.gsensor.data[1]=SDL_STANDARD_GRAVITY;
+    motion_sensor_event(&e);
+    e.gsensor.sensor=SDL_SENSOR_GYRO; e.gsensor.data[1]=0; e.gsensor.timestamp=clock_ns+1;
+    motion_sensor_event(&e); assert(backend.source==SRC_PAD);
+    DsuPacket d={.acc={0,0,-1},.timestamp=1000};
+    dsu_sample(&d,7,NULL); assert(backend.source==SRC_PAD);  // no DSU server answering: the fused sensor
+    backend.dsu.fresh=true;
+    dsu_sample(&d,7,NULL); assert(backend.source==SRC_DSU && g.started);
+    e.gsensor.timestamp=clock_ns+2; motion_sensor_event(&e);
+    assert(backend.source==SRC_DSU);  // SDL doesn't take it back while DSU answers
+    assert(native_fresh(clock_ns) && !native_first(clock_ns));  // (motion_poll: DSU before the fresh fused sensor)
+    backend.unrated=false;  // a controller with its own sensors
+    e.gsensor.sensor=SDL_SENSOR_ACCEL; e.gsensor.timestamp=clock_ns+3; e.gsensor.data[1]=SDL_STANDARD_GRAVITY;
+    motion_sensor_event(&e);
+    e.gsensor.sensor=SDL_SENSOR_GYRO; e.gsensor.data[1]=0; e.gsensor.timestamp=clock_ns+4;
+    motion_sensor_event(&e); assert(backend.source==SRC_PAD);
+    backend.dsu.fresh=false;
+    static char fake;
+    backend.unrated=true; backend.pad=(SDL_Gamepad *)&fake;
+    motion_pad_removed(backend.pad); assert(!backend.unrated && backend.source==SRC_NONE);
 }
 // Exercise the game-facing path from initially overhead and vertical poses, including
 // crossing both poles. At unit sensitivity the output must preserve the physical
-// rotation, with no frozen axes or synthetic yaw/roll half-turns.
+// rotation, with no frozen axes or synthetic yaw/roll half-turns. (Sensitivity and
+// inversion act on the world's axes since #136: tools/test_motion_sensors.c.)
 static void overhead(void) {
     const double poses[] = {0, 79, 89.9, 90, 90.1, 120, 179, 180, -90, -120};
     const int ticks[] = {1, 4, 16};
     for (unsigned rate = 0; rate < sizeof ticks / sizeof ticks[0]; rate++)
     for (unsigned p = 0; p < sizeof poses / sizeof poses[0]; p++)
     for (int axis = 0; axis < 3; axis++)
-    for (int inverted = 0; inverted < 2; inverted++) {
+    for (int inverted = 0; inverted < 1; inverted++) {
         motion_reboot_reset();
         g_settings.motion_sens = inverted ? .5 : 1;
         g_settings.motion_invert = inverted ? MOTION_INVERT_UD | MOTION_INVERT_LR : 0;
@@ -287,4 +362,8 @@ static void deck_report(void) {
     memset(p + 24, 0, 6); assert(!deck_imu_decode(p, 64, &d, &num));  // no motion in it
     puts("Steam Deck state report: axes and scale as SDL's driver passed");
 }
-int main(void) { parsing(); freshness(); network(); selection(); overhead(); fps_independence(); deck_report(); puts("DSU tests passed"); }
+int main(void) {
+#ifdef _WIN32
+    _set_error_mode(_OUT_TO_STDERR);  // (a failed assert prints and exits instead of opening a dialog)
+#endif
+    parsing(); freshness(); network(); selection(); unrated(); overhead(); fps_independence(); deck_report(); puts("DSU tests passed"); }

@@ -9,6 +9,7 @@ static uint64_t clock_ns;
 uint64_t plat_now_ns(void) { return clock_ns; }
 static bool in_apparatus = true;  // (runtime/pc_gyro_scene.c: the tilt key's pose is kept there, levels elsewhere)
 bool pc_gyro_keyboard_active(void) { return in_apparatus; }
+bool settings_handheld(void) { return false; }  // (runtime/settings.c: a desktop, no handheld sensors)
 
 
 static void fresh(void) {

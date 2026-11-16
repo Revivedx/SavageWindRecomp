@@ -14,6 +14,7 @@ GameSites g_site;  // (no game: the HUD prompt check finds no screens)
 
 static uint64_t now;
 Uint64 SDL_GetTicks(void) { return now; }
+Uint64 SDL_GetTicksNS(void) { return now * 1000000ull; }
 int input_pad_family(void) { return 0; }
 bool settings_steam_deck(void) { return false; }
 

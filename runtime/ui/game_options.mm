@@ -37,9 +37,11 @@ extern "C" {
 #include "../game_sites.h"
 #include "../nvn/output_scale.h"
 #include "../problem_report.h"
+#include "../motion.h"
 #include "../settings.h"
 #include "../gamelib.h"
 #include "../color_grade.h"
+#include "../dlss_fetch.h"
 #include "../pc_cursor.h"
 #include "../window_size.h"
 void guest_call(Cpu *, uint64_t);
@@ -170,6 +172,16 @@ const int k_drawdist_order[] = {DRAWDIST_POTATO, DRAWDIST_ORIGINAL, DRAWDIST_MED
 constexpr int k_haze[] = HAZE_CHOICES;
 // Accessibility > Weapon wear: percent of the game's wear, a name and the factor shown beside it
 constexpr int k_wear[] = {0, 50, 100, 150, 200, 250, 300};
+// Accessibility > Colour vision (runtime/colour_vision.h): the type (settings.h COLOUR_VISION_*) and its strength, %
+const char *const k_cvd_name[COLOUR_VISION_COUNT] = {"Off", "Protanopia", "Deuteranopia", "Tritanopia"};
+const char *const k_cvd_desc[COLOUR_VISION_COUNT] = {
+    "For colour blindness: shifts the colours of the whole picture, HUD included, so colours that look alike come apart.",
+    "Protanopia: red looks dark and close to green. The whole picture, HUD included, is corrected.",
+    "Deuteranopia: green and red look alike. The whole picture, HUD included, is corrected.",
+    "Tritanopia: blue and green, and yellow and pink, look alike. The whole picture, HUD included, is corrected.",
+};
+constexpr int k_cvd_strength[] = {10, 20, 30, 40, 50, 60, 70, 80, 90, 100};
+static_assert(k_cvd_strength[9] == COLOUR_VISION_STRENGTH_DEFAULT);
 const char *const k_wear_name[] = {"Fairy", "Peter Pan", "Hylian", "Hero", "Master", "Legend", "Dude, are you ok?"};
 const char *const k_wear_times[] = {"0x", "0.5x", "1x", "1.5x", "2x", "2.5x", "3x"};  // percent (Video > Haze)
 // (shown with Potato first, the smallest: k_shadow_order maps a row index to settings.h SHADOW_*)
@@ -219,6 +231,10 @@ constexpr int k_rumble_strength[] = {10, 20, 30, 40, 50, 60, 70, 80, 90, 100};  
 constexpr int RUMBLE_STRENGTH_DEFAULT_INDEX = 9;
 static_assert(k_rumble_strength[RUMBLE_STRENGTH_DEFAULT_INDEX] == 100);
 const char *const k_invert[] = {"Off", "Up and down", "Left and right", "Both"};  // (MOTION_INVERT_* bits)
+constexpr int k_motion_sens_y[] = MOTION_SENS_Y_CHOICES;  // vertical motion aiming, % of the motion sensitivity
+constexpr int MOTION_SENS_Y_DEFAULT = 5;
+static_assert(k_motion_sens_y[MOTION_SENS_Y_DEFAULT] == 100);
+const char *const k_motion_source[MOTION_SOURCE_COUNT] = {"Automatic", "Controller", "DSU server", "Off"};  // (settings.h)
 #define N(a) (int)(sizeof(a) / sizeof((a)[0]))
 int g_nluts = 1;  // Colour > LUT's values (color_lut_list: None, the shipped ones, the player's), listed per opening
 
@@ -292,7 +308,7 @@ const char *ups_label(const Item &, int x) {
         available = tr("DLSS");
         return available.c_str();
     }
-    return soon("DLSS", "(NVIDIA RTX only)");
+    return soon("DLSS", dlss_fetch_missing() ? "(download it in Savage Wind Configuration)" : "(NVIDIA RTX only)");
 }
 
 const char *fps_label(const Item &, int x) {
@@ -351,7 +367,8 @@ void build_items(void) {
     v.push_back(button(P_MAIN, "Controls", "Camera, motion, d-pad, mouse and button icons.", "Open", A_PAGE, P_CONTROLS));
     v.push_back(button(P_MAIN, "Key bindings", "Which key, mouse button or controller button does what.", "Open", A_PAGE, P_BINDS));
     v.push_back(button(P_MAIN, "Language", "Language of the texts and of the voices.", "Open", A_PAGE, P_LANGUAGE));
-    v.push_back(button(P_MAIN, "Accessibility", "Assists that make the game easier.", "Open", A_PAGE, P_ACCESS));
+    v.push_back(button(P_MAIN, "Accessibility", "Colour vision, and assists that make the game easier.", "Open", A_PAGE,
+                       P_ACCESS));
     v.push_back(button(P_MAIN, "Problem report",
                        "A zip file to attach to a bug report: the log of the last two runs, your settings and a short "
                        "system summary. No game files and no saves.",
@@ -1180,11 +1197,50 @@ void build_items(void) {
                        [](const Item &) { return nearest(k_motion_sens, N(k_motion_sens), g_settings.motion_sens * 100); },
                        [](const Item &, int x) { g_settings.motion_sens = k_motion_sens[x] / 100.0f; },
                        MOTION_SENS_DEFAULT));
-    v.push_back(choice(P_CONTROLS, "Invert motion", "Turning the controller moves the other way: aiming and tilting.",
+    v.push_back(choice(P_CONTROLS, "Vertical motion sensitivity",
+                       "Up and down, as a percentage of the motion sensitivity.",
+                       [](const Item &) { return N(k_motion_sens_y); },
+                       [](const Item &, int x) {
+                           static std::string s;
+                           s = pct(k_motion_sens_y[x]);
+                           return s.c_str();
+                       },
+                       [](const Item &) { return nearest(k_motion_sens_y, N(k_motion_sens_y), g_settings.motion_sens_y * 100); },
+                       [](const Item &, int x) { g_settings.motion_sens_y = k_motion_sens_y[x] / 100.0f; },
+                       MOTION_SENS_Y_DEFAULT));
+    v.push_back(choice(P_CONTROLS, "Invert motion", "Turning the controller moves the aim the other way.",
                        [](const Item &) { return N(k_invert); },
                        [](const Item &, int x) { return tr(k_invert[x]); },
                        [](const Item &) { return g_settings.motion_invert & 3; },
                        [](const Item &, int x) { g_settings.motion_invert = x; }, 0));
+    v.push_back(toggle(P_CONTROLS, "Lean to turn",
+                       "Tilting the controller left or right, like a steering wheel, also turns the aim.",
+                       [](const Item &) { return (int)g_settings.motion_lean; },
+                       [](const Item &, int x) { g_settings.motion_lean = x; }, 0));
+    // where the motion comes from (runtime/hle/motion.c), and what it comes from now as its description
+    v.push_back(choice(P_CONTROLS, "Motion source", "Where motion aiming and shrine tilting come from.",
+                       [](const Item &) { return N(k_motion_source); },
+                       [](const Item &, int x) { return tr(k_motion_source[x]); },
+                       [](const Item &) { return g_settings.motion_source; },
+                       [](const Item &, int x) { g_settings.motion_source = x; }, MOTION_SOURCE_AUTO));
+    v.back().desc_fn = [](const Item &) {  // (read when the cursor comes to the row)
+        static char buf[384];
+        MotionStatus st;
+        motion_status(&st);
+        const char *from = st.source == MOTION_FROM_DSU      ? tr("a DSU server")
+                           : st.source == MOTION_FROM_DECK   ? tr("the Steam Deck's controller")
+                           : st.source == MOTION_FROM_DEVICE ? tr("the handheld's own sensors")
+                                                             : st.name;
+        if (st.source != MOTION_FROM_NONE)
+            snprintf(buf, sizeof buf, tr("Now from %s, %d readings a second."), from, (int)lroundf(st.rate));
+        else if (st.off) snprintf(buf, sizeof buf, "%s", tr("Off: shrines tilt with the sticks, the keys or the mouse."));
+        else if (st.steam_pad)
+            snprintf(buf, sizeof buf, "%s", tr("No motion sensors: Steam Input hides them. Turn Steam Input off for this game, or use a DSU server."));
+        else if (st.in_use[0])
+            snprintf(buf, sizeof buf, tr("No motion sensors on %s. A DSU server can give them; shrines tilt with the sticks."), st.in_use);
+        else snprintf(buf, sizeof buf, "%s", tr("No motion sensors. Shrines tilt with the keys or the mouse."));
+        return (const char *)buf;
+    };
     v.push_back(choice(P_CONTROLS, "Button icons",
                        "The buttons the game's prompts show. Automatic: the device you used last.",
                        [](const Item &) { return N(k_icons); },
@@ -1243,7 +1299,29 @@ void build_items(void) {
     v.push_back(button(P_LANGUAGE, "Restart now",
                        "Starts the game again with these languages. Unsaved progress is lost.", "Restart", A_RESTART, 0));
 
-    // Accessibility (runtime/assists.c): applied at once, while playing
+    // Accessibility > Colour vision first (runtime/colour_vision.h; applied at the present, at once), then the assists
+    // (runtime/assists.c): applied at once, while playing
+    v.push_back(choice(P_ACCESS, "Colour vision", k_cvd_desc[0], [](const Item &) { return COLOUR_VISION_COUNT; },
+                       [](const Item &, int x) { return tr(k_cvd_name[x]); },
+                       [](const Item &) {
+                           int t = g_settings.colour_vision;
+                           return t >= 0 && t < COLOUR_VISION_COUNT ? t : 0;
+                       },
+                       [](const Item &, int x) { g_settings.colour_vision = x; }, 0));
+    v.back().desc_fn = [](const Item &) {
+        int t = g_settings.colour_vision;
+        return tr(k_cvd_desc[t >= 0 && t < COLOUR_VISION_COUNT ? t : 0]);
+    };
+    v.push_back(choice(P_ACCESS, "Correction strength",
+                       "How strongly Colour vision shifts the colours. Lower it if the picture looks too changed.",
+                       [](const Item &) { return N(k_cvd_strength); },
+                       [](const Item &, int x) {
+                           static std::string s;
+                           s = pct(k_cvd_strength[x]);
+                           return s.c_str();
+                       },
+                       [](const Item &) { return nearest(k_cvd_strength, N(k_cvd_strength), g_settings.colour_vision_strength); },
+                       [](const Item &, int x) { g_settings.colour_vision_strength = k_cvd_strength[x]; }, N(k_cvd_strength) - 1));
     v.push_back(toggle(P_ACCESS, "God mode", "Link takes no damage.",
                        [](const Item &) { return (int)g_settings.god_mode; },
                        [](const Item &, int x) { g_settings.god_mode = x; }, 0));
@@ -2034,6 +2112,7 @@ extern "C" int rt_opt_store(uint64_t row) {
         mark_all_rows(rd64(row));
     }
     if (past_end) g_dirty.push_back(row);                // (first: the row shows the value at the other end)
+    else if (it->page == P_ACCESS && it->desc_fn) g_dirty.push_back(row);  // (Colour vision: the text names the type)
     return 1;
 }
 

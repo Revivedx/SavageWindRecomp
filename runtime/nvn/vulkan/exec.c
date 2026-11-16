@@ -33,6 +33,7 @@
 #include "../renderer.h"
 #include "../../settings.h"
 #include "../../color_grade.h"
+#include "../../colour_vision.h"
 #include "../output_scale.h"
 #include "framegen.h"
 #include "dlss.h"
@@ -4503,10 +4504,11 @@ static void resolve_feedback(Prog *pr) {
             }
             // (once: reused past draws into the target since - that is its point, a pass break and a copy saved each
             // time, ~450 a frame in the open world: refusing every one took Mali-G610 from 30 to 7 FPS. But not for
-            // targets of the formats in SAVAGEWIND_VK_ONCE_STRICT_FMT (NVN format codes, default 0xa: R32F, the format of
-            // the target below), nor past a clear of the target (snap_cleared): every few seconds BOTW makes ~155
+            // targets of the formats in SAVAGEWIND_VK_ONCE_STRICT_FMT (NVN format codes, default 0xa,0x25: R32F and
+            // RGBA16F), nor past a clear of the target (snap_cleared): every few seconds BOTW makes ~155
             // more draws with a shader that samples its bound 1600x900 R32F target, drawn into since its snapshot - the
-            // frames where the water lost its sky reflection. SAVAGEWIND_VK_ONCE_STRICT=1: not past any write; =0: past
+            // frames where the water lost its sky reflection - and waterfall base refraction samples the RGBA16F
+            // target after earlier passes drew into it (#848). SAVAGEWIND_VK_ONCE_STRICT=1: not past any write; =0: past
             // anything, as before. SAVAGEWIND_DEBUG_ONCE=1: the reuses by what came between and by format, every 2 s.)
             static int strict = -1, odbg = -1, nsf;
             static uint32_t sfmt[8];
@@ -4514,7 +4516,7 @@ static void resolve_feedback(Prog *pr) {
                 const char *e = getenv("SAVAGEWIND_VK_ONCE_STRICT"), *f = getenv("SAVAGEWIND_VK_ONCE_STRICT_FMT");
                 strict = e ? atoi(e) : 2;  // (2: by format and past clears)
                 odbg = getenv("SAVAGEWIND_DEBUG_ONCE") != NULL;
-                if (!f) f = "0xa";
+                if (!f) f = "0xa,0x25";
                 for (const char *q = f; *q && nsf < 8;) {
                     char *end;
                     unsigned long v = strtoul(q, &end, 0);
@@ -8606,8 +8608,8 @@ static void draw_(CmdRec *r, bool indexed) {
         // the streams the vertex shader's attributes read: per-vertex ones are part of the draw's identity (their
         // addresses), instanced ones are inputs (copied by mvec.c)
         uint32_t vs_streams = 0;
-        for (int a = 0; a < 16 && a < st.nattrib; a++)
-            if ((pr->vi->attr_mask >> a) & 1) vs_streams |= 1u << ((st.attrib[a] >> 8) & 0x1F);
+        for (uint32_t m = pr->vi->attr_mask & 0xFFFF & ((1u << (st.nattrib < 16 ? st.nattrib : 16)) - 1); m; m &= m - 1)
+            vs_streams |= 1u << ((st.attrib[__builtin_ctz(m)] >> 8) & 0x1F);
         for (uint32_t m = vs_streams & 0xFFFF; m; m &= m - 1) {
             int s = __builtin_ctz(m);
             if (s >= st.nstream || !st.vbuf[s].addr) continue;
@@ -8615,9 +8617,10 @@ static void draw_(CmdRec *r, bool indexed) {
             else if (md.h.ninst < MVEC_INST)
                 md.in[md.h.ninst++] = (MvecInst){st.vbuf[s].addr, st.vbuf[s].size, st.stream[s][0], st.stream[s][1], (uint32_t)s, 0};
         }
-        for (int k = 3; k < 17 && md.h.ncb < MVEC_CB; k++) {  // (the game's buffers: cbuf_info's k >= 3)
+        for (uint32_t m = (uint32_t)(pr->vi->cbuf_mask >> 3) & 0x3FFF; m && md.h.ncb < MVEC_CB; m &= m - 1) {  // (the game's buffers: cbuf_info's k >= 3)
+            int k = 3 + __builtin_ctz(m);
             Range u = st.ubuf[0][k - 3];
-            if (!((pr->vi->cbuf_mask >> k) & 1) || !u.addr) continue;
+            if (!u.addr) continue;
             uint64_t size = pr->vi->cbuf_size[k] ? pr->vi->cbuf_size[k] : 256;
             if ((pr->vi->cbuf_dynamic & (1u << k)) && u.size) size = u.size > 0x10000 ? 0x10000 : u.size;
             if (size > u.size && u.size) size = u.size;
@@ -9720,23 +9723,24 @@ static void copy_texture(const TexRefRec *src, const TexRefRec *dst, uint64_t fl
 static VkPipelineLayout present_layout;
 static VkDescriptorSetLayout present_set_layout;
 
-static VkPipeline present_pipeline(VkFormat fmt) {
-    static struct { VkFormat f; VkPipeline p; } cache[4];
-    for (int i = 0; i < 4; i++) if (cache[i].p && cache[i].f == fmt) return cache[i].p;
+// cvd: the Colour vision variant (present_cvd.frag: the matrix as fragment push constants at 32..80)
+static VkPipeline present_pipeline_cvd(VkFormat fmt, bool cvd) {
+    static struct { VkFormat f; bool cvd; VkPipeline p; } cache[8];
+    for (int i = 0; i < 8; i++) if (cache[i].p && cache[i].f == fmt && cache[i].cvd == cvd) return cache[i].p;
     if (!present_layout) {
         VkDescriptorSetLayoutBinding b = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL};
         VkDescriptorSetLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &b};
         VK_CHECK(vkCreateDescriptorSetLayout(g_vk.dev, &li, NULL, &present_set_layout));
-        VkPushConstantRange r = {VK_SHADER_STAGE_VERTEX_BIT, 0, 32};
+        VkPushConstantRange r[2] = {{VK_SHADER_STAGE_VERTEX_BIT, 0, 32}, {VK_SHADER_STAGE_FRAGMENT_BIT, 32, 48}};
         VkPipelineLayoutCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1,
-                                         .pSetLayouts = &present_set_layout, .pushConstantRangeCount = 1, .pPushConstantRanges = &r};
+                                         .pSetLayouts = &present_set_layout, .pushConstantRangeCount = 2, .pPushConstantRanges = r};
         VK_CHECK(vkCreatePipelineLayout(g_vk.dev, &ci, NULL, &present_layout));
     }
     VkPipelineShaderStageCreateInfo stages[2] = {
         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT,
          .module = vk_builtin_shader("present.vert"), .pName = "main"},
         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-         .module = vk_builtin_shader("present.frag"), .pName = "main"}};
+         .module = vk_builtin_shader(cvd ? "present_cvd.frag" : "present.frag"), .pName = "main"}};
     VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     VkPipelineInputAssemblyStateCreateInfo ia = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
                                                  .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
@@ -9759,9 +9763,10 @@ static VkPipeline present_pipeline(VkFormat fmt) {
                                        .pColorBlendState = &cb, .pDynamicState = &dy, .layout = present_layout};
     VkPipeline p;
     VK_CHECK(vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, &p));
-    for (int i = 0; i < 4; i++) if (!cache[i].p) { cache[i].f = fmt; cache[i].p = p; break; }
+    for (int i = 0; i < 8; i++) if (!cache[i].p) { cache[i].f = fmt; cache[i].cvd = cvd; cache[i].p = p; break; }
     return p;
 }
+static VkPipeline present_pipeline(VkFormat fmt) { return present_pipeline_cvd(fmt, false); }
 
 // Scanout shows the bytes the game wrote: sRGB images are read through a UNORM view (no decode), like metal.m.
 static VkImageView raw_view(TexBackend *b) {
@@ -10668,10 +10673,16 @@ static bool cam_motion(VkCommandBuffer cb, const float *m, const double *prev_vp
     static int no_link = -1;  // (A/B) SAVAGEWIND_FG_NO_LINK=1: camera motion only
     if (no_link < 0) no_link = getenv("SAVAGEWIND_FG_NO_LINK") != NULL;
     if (!no_link && link) {
+        // Riding (a horse, the Master Cycle Zero): what he rides moves with him, below and around him, and was left to
+        // the camera's vectors (it went back and forth in the generated frames): the box takes it in, 3.2 m across and
+        // down to the ground.
+        extern bool rt_link_mounted(void);
+        bool mounted = rt_link_mounted();
+        float half = mounted ? 1.6f : 0.7f, low = mounted ? -1.9f : 0.1f;
         float lo[2] = {1e9f, 1e9f}, hi[2] = {-1e9f, -1e9f}, dlo = 1e9f, dhi = -1e9f, uv[2], d;
         bool ok_box = true;
         for (int k = 0; k < 8 && ok_box; k++) {
-            float p[3] = {lk[0] + (k & 1 ? 0.7f : -0.7f), lk[1] + (k & 2 ? 1.9f : 0.1f), lk[2] + (k & 4 ? 0.7f : -0.7f)};
+            float p[3] = {lk[0] + (k & 1 ? half : -half), lk[1] + (k & 2 ? 1.9f : low), lk[2] + (k & 4 ? half : -half)};
             ok_box = fg_project(vp, p, ysign, gl_depth, uv, &d);
             for (int a = 0; a < 2; a++) lo[a] = fminf(lo[a], uv[a]), hi[a] = fmaxf(hi[a], uv[a]);
             dlo = fminf(dlo, d), dhi = fmaxf(dhi, d);
@@ -10687,8 +10698,8 @@ static bool cam_motion(VkCommandBuffer cb, const float *m, const double *prev_vp
         static uint64_t k;
         if (lg < 0) lg = getenv("SAVAGEWIND_FG_LOG") != NULL;
         if (lg && k++ % 60 == 0)
-            LOG("[fg] Link at %.2f %.2f %.2f: box uv %.3f..%.3f x %.3f..%.3f, depth %.6f..%.6f, motion %.4f %.4f\n",
-                lk[0], lk[1], lk[2], pc[20], pc[22], pc[21], pc[23], pc[24], pc[25], pc[26], pc[27]);
+            LOG("[fg] Link%s at %.2f %.2f %.2f: box uv %.3f..%.3f x %.3f..%.3f, depth %.6f..%.6f, motion %.4f %.4f\n",
+                mounted ? " (riding)" : "", lk[0], lk[1], lk[2], pc[20], pc[22], pc[21], pc[23], pc[24], pc[25], pc[26], pc[27]);
     }
     post_pass_pc(cb, "fg_mv.frag", &dv, 1, mv, pc, sizeof pc, false);
     return true;
@@ -10922,7 +10933,6 @@ static TexBackend *dlss_scene(VkCommandBuffer cb, TexBackend *color, uint32_t ow
     TexBackend *o = post_image_ex(34, ow, oh, of, VK_IMAGE_USAGE_STORAGE_BIT);  // (NGX writes it as a storage image)
     vk_full_barrier(cb);
     gp_mark(cb, "DLSS: %ux%u -> %ux%u", color->width, color->height, ow, oh);
-    rec_drain();  // (NGX records into cb itself: what was queued before goes first)
     uint32_t w = color->width, h = color->height;
     float flip = nvn_window_origin() == 0 ? -1.0f : 1.0f;  // (the game's NDC y to clip y, as fsr3_scene's)
     float sx = objv ? -0.5f * (float)w : (float)mv->width, sy = objv ? 0.5f * (float)h : (float)mv->height;
@@ -11266,7 +11276,22 @@ static TexBackend *fsr3_scene(VkCommandBuffer cb, TexBackend *b, uint32_t ow, ui
 void vk_present_draw(VkCommandBuffer cb, TexBackend *b, float vx, float vy, float vw, float vh, const float pv[8]) {
     if (!b || !b->image || (b->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT)) return;
     VkImageView src = post_process(cb, b, pv[6] > 0 ? vw / pv[6] : vw, pv[7] > 0 ? vh / pv[7] : vh);
-    VkPipeline p = present_pipeline(vk_frame_format());
+    // Accessibility > Colour vision: the whole picture (HUD included), after the anti-aliasing; off: present.frag.
+    // The game's 8-bit image holds sRGB-encoded values (read raw); HDR's float picture (RGBA16F) is linear.
+    float cm[9], cpc[12];
+    bool cvd = colour_vision_matrix(cm);
+    if (cvd) {
+        bool lin = b->format == VK_FORMAT_R16G16B16A16_SFLOAT || b->format == VK_FORMAT_R32G32B32A32_SFLOAT ||
+                   b->format == VK_FORMAT_B10G11R11_UFLOAT_PACK32;
+        for (int i = 0; i < 3; i++) {
+            cpc[i * 4] = cm[i * 3];
+            cpc[i * 4 + 1] = cm[i * 3 + 1];
+            cpc[i * 4 + 2] = cm[i * 3 + 2];
+            cpc[i * 4 + 3] = 0;
+        }
+        cpc[3] = lin ? 1.0f : 0.0f;
+    }
+    VkPipeline p = present_pipeline_cvd(vk_frame_format(), cvd);
     VkDescriptorSet ds = vk_alloc_set(present_set_layout);
     VkDescriptorImageInfo ii = {vk_default_sampler(true), src, VK_IMAGE_LAYOUT_GENERAL};
     VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 0, .descriptorCount = 1,
@@ -11278,6 +11303,7 @@ void vk_present_draw(VkCommandBuffer cb, TexBackend *b, float vx, float vy, floa
     VkViewport vp = {vx, vy, vw, vh, 0, 1};
     rec_CmdSetViewport(cb, 0, 1, &vp);
     rec_CmdPushConstants(cb, present_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 32, pv);
+    if (cvd) rec_CmdPushConstants(cb, present_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 32, sizeof cpc, cpc);
     rec_CmdDraw(cb, 3, 1, 0, 0);
     VkViewport full = {0, 0, (float)g_vk.sc_extent.width, (float)g_vk.sc_extent.height, 0, 1};
     rec_CmdSetViewport(cb, 0, 1, &full);

@@ -3,9 +3,10 @@
 #include <stdbool.h>
 
 // Upscalers (Video > Upscaler; runtime/nvn/output_scale.c): Off renders at the window's size; the others render
-// smaller by their quality mode's factor and scale up to the window. DLSS is listed as coming later.
+// smaller by their quality mode's factor and scale up to the window. DLSS needs NVIDIA's DLL, which the setup downloads.
 enum { UPSCALE_OFF = 0, UPSCALE_METALFX = 1 /* macOS */, UPSCALE_FSR1 = 2 /* AMD FSR 1, Vulkan */,
-       UPSCALE_FSR3 = 3 /* AMD FSR 3.1, Vulkan where built in (vulkan/fsr3.h) */, UPSCALE_DLSS = 4 /* NVIDIA DLSS: not yet */,
+       UPSCALE_FSR3 = 3 /* AMD FSR 3.1, Vulkan where built in (vulkan/fsr3.h) */,
+       UPSCALE_DLSS = 4 /* NVIDIA DLSS: Windows, NVIDIA RTX and NVIDIA's DLL (vulkan/dlss.c) */,
        UPSCALE_FSR4 = 5 /* AMD FSR 4, Vulkan on Windows with AMD's DLLs and an AMD Radeon (vulkan/fsr_api.h) */,
        UPSCALE_COUNT };
 #ifdef __APPLE__
@@ -130,11 +131,16 @@ typedef struct {
     bool gyro_scene;     // left-drag rotation during a shrine apparatus interaction
     float motion_sens;   // motion controls: how far turning the controller turns the aim, 1 = 100%
     int motion_invert;   // MOTION_INVERT_* bits: turning the controller up / down, left / right goes the other way
+    float motion_sens_y; // vertical motion aiming, a fraction of motion_sens (1: the same as horizontal)
+    int motion_source;   // MOTION_SOURCE_*: where the motion comes from (Automatic: the controller, then the fallbacks)
+    bool motion_lean;    // leaning the controller left / right (a steering wheel) also turns the aim
+    char motion_dsu_axes[32];  // DSU server axes as the game takes them ("pitch yaw roll"; a name per slot, - flips it)
     int button_icons;    // ICONS_*: the game's button prompts show this device's buttons (Automatic: the one in use)
     int button_layout;   // BUTTON_LAYOUT_*: where A, B, X and Y sit on the HUD's four-button diamond (Automatic: bindings)
     bool async_shaders;  // draw on while new shaders compile (no stutter; what needs them is skipped meanwhile; on by
                          // default since settings_version 4; off: every draw waits for its shaders, as before)
     bool precompile_shaders;  // setting the game files up also precompiles every shader (runtime/nvn/precompile.h)
+    bool dlss_download;       // ... and downloads NVIDIA's DLSS library on PCs with an NVIDIA driver (dlss_fetch.h)
     bool start_in_config;     // Windows releases: a plain start opens Savage Wind Configuration first
     int start_picture;        // the start screen's background (ui/splash.mm): START_PICTURE_*
     bool boot_picture;        // that picture while the game loads (vulkan/device.c boot_splash_start); off: black
@@ -192,8 +198,11 @@ typedef struct {
     char color_lut[128];     // color_lut_id(): "" none, "sw:<file>" shipped, "<file>" the player's luts/ folder
     int color_lut_strength;  // percent, 0..100
     bool color_lut_set;      // the ini names a LUT (or none): the player chose; the first setup offers COLOR_LUT_RECOMMENDED
+    // Options > Accessibility > Colour vision (runtime/colour_vision.h): a correction of the presented picture
+    int colour_vision;           // COLOUR_VISION_*: 0 off, 1 protanopia, 2 deuteranopia, 3 tritanopia
+    int colour_vision_strength;  // percent, 10..100 (COLOUR_VISION_STRENGTH_DEFAULT)
     // Options > Accessibility (runtime/assists.c): assists, each off by default
-    bool no_weapon_wear;     // weapons, bows and shields lose no durability and never break
+    bool no_weapon_wear;    // weapons, bows and shields lose no durability and never break
     int weapon_wear;         // how fast they wear out otherwise, percent of the game's (WEAPON_WEAR_MIN..MAX)
     bool infinite_arrows;    // shooting a bow takes no arrows from the pouch
     bool infinite_stamina;   // the stamina wheel never goes down
@@ -243,12 +252,21 @@ const char *settings_file(void);  // savagewind.ini, or SAVAGEWIND_SETTINGS
 #define WEATHER_COUNT 12  // (weather: 0 the game's, 1 no rain, 2 no thunderstorms, 3 + the game's weather type, held)
 extern const char *const g_weather_keys[WEATHER_COUNT];  // (the ini and `weather` names: game, no_rain, ..., sun_shower)
 #define DAMAGE_CHOICES {25, 50, 75, 100, 150, 200, 300, 400}  // (Accessibility's damage multipliers, percent)
+#define COLOUR_VISION_COUNT 4  // (Accessibility > Colour vision: off, protanopia, deuteranopia, tritanopia)
+extern const char *const g_colour_vision_keys[COLOUR_VISION_COUNT];  // (the ini's names: off, protanopia, ...)
+#define COLOUR_VISION_STRENGTH_DEFAULT 100  // (percent)
 #define FOV_CHOICES {70, 80, 90, 100, 110, 120, 130, 140, 150}  // (percent; 100: the game's own)
 #define HUD_SIZE_CHOICES {0, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120, 125, 130, 135, 140, 145, 150}  // (percent; 0: hidden, 100: the game's own)
 #define MENU_SPEED_CHOICES {70, 80, 90, 100, 125, 150, 175, 200, 250, 300}  // (percent; 100: the game's own)
 #define MOUSE_SENS_DEFAULT 3.0f  // (300% of the first default, 1; user, 2026-10-19)
 #define MOUSE_SENS_Y_CHOICES {50, 60, 70, 80, 90, 100, 110, 125, 150, 175, 200}  // (percent of the horizontal)
 enum { MOTION_INVERT_UD = 1, MOTION_INVERT_LR = 2 };
+#define MOTION_SENS_Y_CHOICES {50, 60, 70, 80, 90, 100, 110, 125, 150, 175, 200}  // (percent of the horizontal)
+// Where the motion comes from (runtime/hle/motion.c): Automatic tries the controller in use, the same controller seen
+// twice (Steam Input, DS4Windows), the handheld's own sensors, then a DSU server; Controller only its own sensors; DSU
+// only a DSU server; Off no sensors (the sticks, keys and mouse still tilt a shrine apparatus)
+enum { MOTION_SOURCE_AUTO, MOTION_SOURCE_CONTROLLER, MOTION_SOURCE_DSU, MOTION_SOURCE_OFF, MOTION_SOURCE_COUNT };
+extern const char *const g_motion_source_keys[MOTION_SOURCE_COUNT];  // (the ini's names: auto, controller, dsu, off)
 enum { ICONS_AUTO, ICONS_KEYBOARD, ICONS_XBOX, ICONS_PLAYSTATION, ICONS_NINTENDO, ICONS_STEAMDECK, ICONS_COUNT };
 enum {
     BUTTON_LAYOUT_AUTO,
