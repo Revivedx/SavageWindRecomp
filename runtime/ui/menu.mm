@@ -18,6 +18,7 @@
 #include "imgui.h"
 #include "gyro_drag.h"
 #include "option_rows.h"
+#include "mods_tab.h"
 #include "saves_tab.h"
 #include "imgui_internal.h"  // (NavCursorVisible)
 #include "osk.h"
@@ -1940,12 +1941,12 @@ extern "C" int menu_keyboard_run(const char *initial, int max_len, char *out, in
 static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     // (id: the page; -1 = Prelaunch)
     struct Tab { const char *name; int id; bool on; };
-    Tab tabs[11];
+    Tab tabs[12];
     int ntabs = 0;
     if (prelaunch) tabs[ntabs++] = {"Prelaunch", -1, true};
     // (ids 5-7 were Link's Awakening tabs; the ids stay: test hooks)
-    static const char *names[] = {"Video", "Audio", "Language", "Saves", "amiibo", "", "", "", "Controls", "Quit", "Cheats"};
-    static const int order[] = {8, 0, 1, 2, 4, 3, 10, 9};  // Controls, Video, Audio, Language, amiibo, Saves, Cheats, Quit
+    static const char *names[] = {"Video", "Audio", "Language", "Saves", "amiibo", "", "", "", "Controls", "Quit", "Cheats", "Mods"};
+    static const int order[] = {8, 0, 1, 2, 4, 3, 11, 10, 9};  // Controls, Video, Audio, Language, amiibo, Saves, Mods, Cheats, Quit
     for (int i : order) {  // (Quit: in game only - the start screen has its own QUIT; Saves: on the start screen only,
         if (i == 9 && prelaunch) continue;  //  the game must not be running while its saves change)
         if (i == 3 && !prelaunch) continue;
@@ -2044,6 +2045,16 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
                 case 8: tab_about(); break;
                 case 9: tab_quit(scale, in_game); break;
                 case 10: tab_cheats(); break;
+                case 11: {
+                    bool want_restart = false;
+                    mods_tab_draw(in_game, &want_restart);
+                    if (want_restart) {
+                        settings_save();
+                        rt_request_reboot(1);
+                        set_open(false);
+                    }
+                    break;
+                }
                 }
                 static const char *scroll_test = getenv("SAVAGEWIND_MENU_SCROLL");  // test hook: page scroll, 0..1
                 if (scroll_test) ImGui::SetScrollY(ImGui::GetScrollMaxY() * (float)atof(scroll_test));
