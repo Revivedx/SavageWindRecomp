@@ -7,15 +7,24 @@
 // "no data". The camera's motion aiming (FUN_7100c28eac) uses the newest sample's angular velocity and direction, and
 // the direction against the previous frame's; the tilt puzzles follow the direction against gravity.
 //
-// Where the motion comes from: the controller's gyroscope and accelerometer (SDL3 sensor events: DualShock 4,
-// DualSense, Switch Pro, Joy-Con, Steam Deck...), fused into an orientation on the main thread (the gyroscope turns it,
-// gravity slowly corrects its tilt), with Linux fallbacks through the same fusion: the Steam Deck's own sensors read
-// from its HID node when Steam Input's gamepad has none (runtime/deck_imu.c), then DSU; or, while the tilt key is
-// held, the mouse rotates a virtual controller. Letting go retains its orientation so the mouse can be repositioned;
-// the recenter key levels it. A scripted run is another source.
+// Where the motion comes from (Controls > Motion source; Automatic tries them in this order):
+// - the gyroscope and accelerometer of the controller in use (SDL3 sensor events: DualShock 4, DualSense, Switch Pro,
+//   Joy-Con, 8BitDo and the others SDL reads);
+// - the same controller seen twice, when the one in use has none: Steam Input's virtual gamepad and the controller it
+//   hides from the game (opened for its sensors only, motion_before_sdl_init), or the virtual Xbox pad of DS4Windows,
+//   DSX or Handheld Companion and the real controller (their buttons go down together);
+// - the Steam Deck's own sensors read from its HID node when Steam Input's gamepad has none (Linux, runtime/deck_imu.c);
+// - a DSU (cemuhook) server: DS4Windows, BetterJoy, Handheld Companion, SteamDeckGyroDSU... (runtime/dsu.c);
+// - a PC handheld's own sensors as its system gives them (SDL's sensor API: the Windows sensor framework).
+// They all go through the same fusion on the main thread (the gyroscope turns it, gravity slowly corrects its tilt).
+// Without any, while the tilt key is held, the mouse rotates a virtual controller. Letting go retains its orientation
+// so the mouse can be repositioned; the recenter key levels it. A scripted run is another source.
 //
-// What the game gets: a full orientation, with sensitivity and inversion applied to physical rotation increments
-// (Controls page: g_settings.motion_sens, motion_invert), or to the virtual controller's yaw and pitch.
+// What the game gets: at a shrine apparatus the controller's orientation as it is. Elsewhere (motion aiming) its turns
+// on the world's axes: about gravity (left / right, however the controller is held: flat, tilted, or upright as a
+// handheld) and about the view's right (up / down), each with its sensitivity and inversion (Controls page:
+// g_settings.motion_sens, motion_sens_y, motion_invert); with motion_lean, leaning it like a steering wheel turns too.
+// (They were applied to the controller's own axes: held upright, left / right is its Y, which had neither, #136.)
 // Samples are made at the Switch's 200 Hz for the time that passed; each one's angular velocity is the turn from the previous sample's orientation, its angle the sum
 // of those, its acceleration gravity in the controller's axes plus what the real accelerometer measured beyond
 // gravity. So everything the game reads agrees with the direction.
@@ -24,7 +33,8 @@
 // accelerometer reads gravity's direction in G (flat: 0, 0, -1), the gyroscope turns per second (right-hand rule), the
 // direction is the controller's X, Y and Z axes in a world whose Z is up. SDL's axes for a controller: X right, Y up
 // out of its face, Z toward the player; its accelerometer reads the push against gravity in m/s^2, its gyroscope
-// radians per second.
+// radians per second. SDL's axes for a device's own sensors: X right, Y to the top of its screen, Z out of it (the
+// Switch's, with the screen as the face).
 //
 // SAVAGEWIND_MOTION_LOG=1 logs the orientation the game gets about once a second, with the sensor stream's health
 // (readings per second, readings whose sensor time was unusable, the longest gap) and how often the game read it.
@@ -34,6 +44,8 @@
 #include <math.h>
 #include <pthread.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "../hle.h"
@@ -42,9 +54,9 @@
 #include "../settings.h"
 #include "../pc_gyro.h"
 #include "../pc_gyro_scene.h"
+#include "../dsu.h"
 #ifdef __linux__
 #include "../deck_imu.h"
-#include "../dsu.h"
 #endif
 
 #define PI 3.14159265358979323846
@@ -53,6 +65,7 @@
 #define KP 0.6                // gravity's pull on the tilt, per radian of error per second
 #define TILT_PER_PIXEL (0.2 * PI / 180)
 #define PITCH_MAX (85 * PI / 180)
+#define VALVE_VENDOR 0x28de
 
 typedef struct {
     int64_t delta_time;       // ns since the previous sample
@@ -108,6 +121,10 @@ static double sens(void) {
     float k = g_settings.motion_sens;
     return k >= 0.1f && k <= 10 ? k : 1;
 }
+static double sens_y(void) {  // (vertical aiming, a fraction of sens)
+    float k = g_settings.motion_sens_y;
+    return k >= 0.5f && k <= 2 ? k : 1;
+}
 
 // ---- the source orientation (main thread writes, the game's controller thread reads)
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -115,7 +132,7 @@ static struct {
     bool sensors;           // the controller has a gyroscope and an accelerometer (turned on)
     bool started;           // its orientation was set from gravity (first accelerometer reading)
     Quat q;                 // its physical orientation
-    Quat aim_q;             // sensitivity/inversion integrated at sensor rate, independent of game polling
+    Quat aim_q;             // its turns as motion aiming takes them (sensitivity, inversion, lean: aim_turn)
     double bias[3];         // its gyroscope at rest (rad/s, Switch axes)
     double mean[3], var[3]; // its gyroscope's recent mean and variance (rad/s, (rad/s)^2; ~0.2 s)
     double acc_mean, acc_var;  // its accelerometer's recent strength, mean and variance (G, G^2; ~0.2 s)
@@ -123,6 +140,7 @@ static struct {
     double acc[3];          // last accelerometer reading (G, gravity's direction, Switch axes)
     double lin[3];          // ... beyond gravity
     uint64_t gyro_ts;       // last gyroscope reading's sensor time (ns)
+    float last_gyro[3];     // last gyroscope reading as SDL gave it (a report repeated: the same time and values)
     bool tilt_held;
     // The virtual controller (no sensors needed): continuous angles in radians, so whole turns keep their winding.
     // The tilt key's mouse, the drag at a shrine apparatus and the sticks of a controller without a gyroscope add to
@@ -136,25 +154,48 @@ static struct {
 
 // The sensor stream's health, for the log (under g_lock)
 static struct {
-    uint32_t gyro, accel, fused, stalled, jumped;  // readings since the last log line; unusable sensor times
+    uint32_t gyro, accel, fused, stalled, jumped, repeated;  // readings since the last log line; unusable sensor times
     uint32_t reads;              // GetSixAxisSensorStates calls since the last log line
     uint64_t host_ns;            // when the last gyroscope reading came (SDL's clock, ns)
     uint64_t max_gap;            // the longest time between two of them since the last log line (ns)
     double period;               // the gyroscope's sample period as SDL gives its rate (s; 0: unknown)
     int bad_run;                 // gyroscope readings in a row whose sensor time was unusable
     int notes;                   // (the log: one-off lines so far, capped)
+    uint64_t total, rate_total, rate_ns;  // gyroscope readings fused in all; the count and time at the last rate
+    float rate;                  // ... readings per second, measured (the Controls page's status)
 } hs;
 
-#ifdef __linux__
+// Where the motion comes from now (backend.source)
+enum { SRC_NONE, SRC_PAD, SRC_DSU, SRC_DECK, SRC_DEVICE, SRC_COUNT };
+// Why that controller's sensors (backend.pad_why)
+enum { PAD_NONE, PAD_IN_USE, PAD_TWIN, PAD_STEAM };
+
 static struct {
-    bool enabled;
+    SDL_Gamepad *pad;        // the controller whose sensors are on (NULL: none)
+    SDL_JoystickID pad_id;   // ... its id: its sensor events are the ones taken
+    int pad_why;             // PAD_*
+    char pad_name[96];
+    bool enabled;            // its gyroscope and accelerometer are on
+    // ... with no data rate: the device's own sensor lent to a controller without one by SDL's sensor fusion
+    // (SDL_HINT_GAMECONTROLLER_SENSOR_FUSION; a handheld such as the ROG Ally), which can stall for a third of a second
+    // at a time. A DSU server that answers comes before it; a controller's own sensors (with a rate) don't (from #860).
+    bool unrated;
     uint64_t acc_time, gyro_time, acc_ts, gyro_ts;
     float acc[3];
-    int source;  // 0 none, 1 SDL, 2 DSU, 3 the Steam Deck's HID
+    int source;              // SRC_*
     unsigned epoch, dsu_generation;
-    bool steam_pad;  // the gamepad is Steam Input's (Valve's vendor ID) and has no sensors
+    bool steam_pad;          // the controller in use is Steam Input's (Valve's vendor ID) and has no sensors
+    char in_use[96];         // the controller in use (the status, when it has no sensors)
+    bool dsu_on;             // the DSU client started (SAVAGEWIND_DSU, the endpoint)
     DsuClient dsu;
+#ifdef __linux__
     DeckImu deck;
+#endif
+    SDL_Sensor *dev_acc, *dev_gyro;  // a PC handheld's own sensors (SRC_DEVICE)
+    SDL_SensorID dev_acc_id, dev_gyro_id;
+    bool dev_tried;
+    uint64_t dev_acc_time, dev_gyro_time;
+    float dev_acc_v[3];
 } backend;
 
 static bool native_fresh(uint64_t now) {
@@ -162,24 +203,29 @@ static bool native_fresh(uint64_t now) {
            now - backend.acc_time < DSU_TIMEOUT_NS && now - backend.gyro_time < DSU_TIMEOUT_NS;
 }
 
+// Whether the controller's sensors come before DSU now
+static bool native_first(uint64_t now) {
+    return native_fresh(now) && !(backend.unrated && backend.dsu.fresh);
+}
+
 // Called under g_lock. Never carry bias, gravity, timestamps or integration across devices.
 static void select_motion(int source) {
     if (backend.source == source) return;
-    static const char *const names[] = {"none", "SDL", "DSU", "Steam Deck"};
+    static const char *const names[SRC_COUNT] = {"none", "SDL", "DSU", "Steam Deck", "the handheld's own sensors"};
     LOG("[motion] source: %s -> %s\n", names[backend.source], names[source]);
     backend.source = source;
     backend.epoch++;
-    g.sensors = source != 0, g.started = false, g.gyro_ts = 0;
+    g.sensors = source != SRC_NONE, g.started = false, g.gyro_ts = 0;
     g.q = g.aim_q = (Quat){1, 0, 0, 0};
     memset(g.bias, 0, sizeof g.bias);
     memset(g.mean, 0, sizeof g.mean);
     memset(g.var, 0, sizeof g.var);
     memset(g.lin, 0, sizeof g.lin);
+    memset(g.last_gyro, 0, sizeof g.last_gyro);
     g.acc[0] = g.acc[1] = 0, g.acc[2] = -1;
     g.acc_mean = 1, g.acc_var = g.gyro_sd = 0;
     hs.host_ns = 0, hs.bad_run = 0;
 }
-#endif
 
 bool motion_has_sensors(void) {
     pthread_mutex_lock(&g_lock);
@@ -188,46 +234,224 @@ bool motion_has_sensors(void) {
     return sensors;
 }
 
-void motion_pad_opened(SDL_Gamepad *pad) {
-    bool gyro = SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO), accel = SDL_GamepadHasSensor(pad, SDL_SENSOR_ACCEL);
-    bool on = gyro && accel && SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_GYRO, true) &&
-              SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_ACCEL, true);
-    pthread_mutex_lock(&g_lock);
-#ifdef __linux__
-    backend.enabled = on;
-    backend.steam_pad = !on && SDL_GetGamepadVendor(pad) == 0x28de;
-    backend.acc_time = backend.gyro_time = backend.acc_ts = backend.gyro_ts = 0;
-    select_motion(0);
-    g.sensors = false;
-#else
-    g.sensors = on;
-#endif
-    g.started = false, g.gyro_ts = 0;
-    memset(g.bias, 0, sizeof g.bias);
-    memset(g.mean, 0, sizeof g.mean);
-    memset(g.var, 0, sizeof g.var);
-    g.acc_mean = 1, g.acc_var = 0;
-    memset(g.lin, 0, sizeof g.lin);
-    float rate = on ? SDL_GetGamepadSensorDataRate(pad, SDL_SENSOR_GYRO) : 0;
-    hs.period = rate > 1 ? 1.0 / rate : 0, hs.host_ns = 0, hs.bad_run = 0;
-    pthread_mutex_unlock(&g_lock);
-    if (on)
-        LOG("[motion] %s: gyroscope and accelerometer on (%.0f / %.0f Hz)\n", SDL_GetGamepadName(pad),
-            SDL_GetGamepadSensorDataRate(pad, SDL_SENSOR_GYRO), SDL_GetGamepadSensorDataRate(pad, SDL_SENSOR_ACCEL));
-    else
-        LOG("[motion] %s has no motion sensors%s: the tilt key and the mouse tilt it\n", SDL_GetGamepadName(pad),
-            gyro || accel ? " SDL can use" : "");
+// ---- the controllers Steam Input hides
+// Steam Input hands the game its virtual gamepad, without sensors, and asks SDL (SDL_GAMECONTROLLER_IGNORE_DEVICES) to
+// leave the controllers behind it alone, so the game never saw their gyroscopes (#136, #812). They are opened anyway,
+// for their sensors only: their buttons never reach the game (motion_pad_sensor_only), Steam's virtual pad keeps
+// those. Valve's own stay hidden: SDL's Steam Controller and Deck drivers reset the controller's settings, which Steam
+// is using (the Deck's sensors are read from its HID node instead). SAVAGEWIND_STEAM_SENSORS=0: leave them all hidden.
+static struct { uint16_t vendor, product; } hidden[16];
+static int nhidden;
+
+void motion_before_sdl_init(void) {
+    const char *list = SDL_GetHint(SDL_HINT_GAMECONTROLLER_IGNORE_DEVICES);
+    const char *env = getenv("SAVAGEWIND_STEAM_SENSORS");
+    if (!list || !*list || (env && !atoi(env)) || g_settings.motion_source == MOTION_SOURCE_OFF ||
+        g_settings.motion_source == MOTION_SOURCE_DSU)
+        return;
+    char keep[512] = "";
+    size_t kept = 0;
+    for (const char *p = list; p && *p;) {
+        while (*p == ' ' || *p == ',') p++;
+        char *end;
+        unsigned long vendor = strtoul(p, &end, 0), product = 0;
+        bool ok = end != p && *end == '/';
+        if (ok) {
+            const char *q = end + 1;
+            product = strtoul(q, &end, 0);
+            ok = end != q && (*end == ',' || *end == ' ' || !*end);
+        }
+        if (ok && vendor <= 0xffff && product <= 0xffff) {
+            if (vendor == VALVE_VENDOR) {
+                int n = snprintf(keep + kept, sizeof keep - kept, "%s0x%04lx/0x%04lx", kept ? "," : "", vendor, product);
+                if (n > 0 && (size_t)n < sizeof keep - kept) kept += n;
+            } else if (nhidden < (int)(sizeof hidden / sizeof *hidden)) {
+                hidden[nhidden].vendor = (uint16_t)vendor, hidden[nhidden].product = (uint16_t)product;
+                nhidden++;
+            }
+        }
+        p = strchr(p, ',');
+    }
+    if (!nhidden) return;
+    SDL_SetHintWithPriority(SDL_HINT_GAMECONTROLLER_IGNORE_DEVICES, keep, SDL_HINT_OVERRIDE);
+    LOG("[motion] Steam Input hides %d controller%s from the game: opened for their motion sensors only "
+        "(SAVAGEWIND_STEAM_SENSORS=0: leave them hidden)\n", nhidden, nhidden == 1 ? "" : "s");
 }
 
-void motion_pad_closed(void) {
+bool motion_pad_sensor_only(SDL_Gamepad *p) {
+    if (!p || !nhidden) return false;
+    uint16_t vendor = SDL_GetGamepadVendor(p), product = SDL_GetGamepadProduct(p);
+    for (int i = 0; i < nhidden; i++)
+        if (hidden[i].vendor == vendor && hidden[i].product == product) return true;
+    return false;
+}
+
+// ---- one controller seen twice (main thread)
+// DS4Windows, DSX or Handheld Companion show a virtual Xbox pad beside the real controller, and Steam Input its
+// virtual gamepad beside the one it hides: a button pressed goes down on both within a few milliseconds. Two such
+// presses make them twins: the motion stays on the one with sensors whichever of them is in use (it followed the one
+// pressed last and lost the gyroscope with the virtual pad, a likely cause of "it works once, then stops", #220 #387).
+#define TWIN_NS 50000000ull
+static struct { SDL_JoystickID id; uint64_t ns; } presses[8];
+static struct { SDL_JoystickID a, b; int hits; uint64_t ns; } twins[8];
+
+static int twin_slot(SDL_JoystickID a, SDL_JoystickID b) {
+    for (int i = 0; i < 8; i++)
+        if ((twins[i].a == a && twins[i].b == b) || (twins[i].a == b && twins[i].b == a)) return i;
+    return -1;
+}
+
+bool motion_pads_twins(SDL_JoystickID a, SDL_JoystickID b) {
+    int i = a && b && a != b ? twin_slot(a, b) : -1;
+    return i >= 0 && twins[i].hits >= 2;
+}
+
+bool motion_pad_pressed(SDL_JoystickID id, uint64_t ns) {
+    bool paired = false;
+    int own = -1, oldest = 0;
+    for (int i = 0; i < 8; i++) {
+        if (presses[i].id == id) { own = i; continue; }
+        if (presses[i].ns < presses[oldest].ns) oldest = i;
+        if (!presses[i].id || presses[i].ns + TWIN_NS < ns || ns + TWIN_NS < presses[i].ns) continue;
+        int t = twin_slot(id, presses[i].id);
+        if (t < 0) {
+            t = 0;
+            for (int k = 1; k < 8; k++)
+                if (twins[k].hits < twins[t].hits) t = k;
+            twins[t].a = id, twins[t].b = presses[i].id, twins[t].hits = 0, twins[t].ns = 0;
+        }
+        if (twins[t].ns != presses[i].ns) {  // (one hit per press of the other one)
+            twins[t].ns = presses[i].ns;
+            if (++twins[t].hits == 2) paired = true;
+        }
+    }
+    int slot = own >= 0 ? own : oldest;
+    for (int i = 0; own < 0 && i < 8; i++)
+        if (!presses[i].id) { slot = i; break; }
+    presses[slot].id = id, presses[slot].ns = ns;
+    return paired;
+}
+
+static bool pad_sensors(SDL_Gamepad *p) {
+    return p && SDL_GamepadHasSensor(p, SDL_SENSOR_GYRO) && SDL_GamepadHasSensor(p, SDL_SENSOR_ACCEL);
+}
+
+// The controllers changed (one connected, gone or now in use, or two found to be twins): which one's sensors to take
+void motion_pads(SDL_Gamepad *in_use, SDL_Gamepad *const *pads, int n) {
+    int mode = g_settings.motion_source;
+    SDL_Gamepad *want = NULL;
+    int why = PAD_NONE;
+    if (mode == MOTION_SOURCE_AUTO || mode == MOTION_SOURCE_CONTROLLER) {
+        if (pad_sensors(in_use)) want = in_use, why = PAD_IN_USE;
+        if (!want && in_use && mode == MOTION_SOURCE_AUTO) {
+            SDL_JoystickID id = SDL_GetGamepadID(in_use);
+            SDL_Gamepad *steam = NULL;
+            int nsteam = 0, nvirtual = 0;
+            for (int i = 0; i < n && !want; i++) {
+                if (SDL_GetGamepadVendor(pads[i]) == VALVE_VENDOR && !pad_sensors(pads[i])) nvirtual++;
+                if (pads[i] == in_use || !pad_sensors(pads[i])) continue;
+                if (motion_pads_twins(id, SDL_GetGamepadID(pads[i]))) want = pads[i], why = PAD_TWIN;
+                else if (motion_pad_sensor_only(pads[i])) steam = pads[i], nsteam++;
+            }
+            // Steam Input's only gamepad in use and one controller it hides with sensors: that one, before any press
+            // (with more - the Deck's own controls and a DualSense - the presses tell which is behind which)
+            if (!want && nsteam == 1 && nvirtual == 1 && SDL_GetGamepadVendor(in_use) == VALVE_VENDOR)
+                want = steam, why = PAD_STEAM;
+        }
+    }
+    static SDL_Gamepad *logged = (SDL_Gamepad *)1;  // (the controller in use the last "no motion sensors" line named)
     pthread_mutex_lock(&g_lock);
-#ifdef __linux__
-    backend.enabled = backend.steam_pad = false;
-    backend.acc_time = backend.gyro_time = 0;
-    if (backend.source == 1) select_motion(0);
-#else
-    g.sensors = g.started = false;
-#endif
+    backend.steam_pad = in_use && !pad_sensors(in_use) && SDL_GetGamepadVendor(in_use) == VALVE_VENDOR;
+    snprintf(backend.in_use, sizeof backend.in_use, "%s", in_use && SDL_GetGamepadName(in_use) ? SDL_GetGamepadName(in_use) : "");
+    if (want == backend.pad) {
+        if (want) backend.pad_why = why;
+        pthread_mutex_unlock(&g_lock);
+        return;
+    }
+    SDL_Gamepad *old = backend.pad;
+    for (int i = 0; old && i < n; i++)
+        if (pads[i] == old) {  // (still connected: its sensors off again)
+            SDL_SetGamepadSensorEnabled(old, SDL_SENSOR_GYRO, false);
+            SDL_SetGamepadSensorEnabled(old, SDL_SENSOR_ACCEL, false);
+        }
+    bool on = want && SDL_SetGamepadSensorEnabled(want, SDL_SENSOR_GYRO, true) &&
+              SDL_SetGamepadSensorEnabled(want, SDL_SENSOR_ACCEL, true);
+    float rate = on ? SDL_GetGamepadSensorDataRate(want, SDL_SENSOR_GYRO) : 0;
+    backend.pad = on ? want : NULL;
+    backend.pad_id = on ? SDL_GetGamepadID(want) : 0;
+    backend.pad_why = on ? why : PAD_NONE;
+    backend.enabled = on;
+    backend.unrated = on && !(rate > 0);
+    snprintf(backend.pad_name, sizeof backend.pad_name, "%s", on && SDL_GetGamepadName(want) ? SDL_GetGamepadName(want) : "");
+    backend.acc_time = backend.gyro_time = backend.acc_ts = backend.gyro_ts = 0;
+    if (backend.source == SRC_PAD) select_motion(SRC_NONE);
+    hs.period = rate > 1 ? 1.0 / rate : 0, hs.host_ns = 0, hs.bad_run = 0;
+    pthread_mutex_unlock(&g_lock);
+    if (on) {
+        LOG("[motion] %s: gyroscope and accelerometer on (%.0f / %.0f Hz)%s\n", SDL_GetGamepadName(want), rate,
+            SDL_GetGamepadSensorDataRate(want, SDL_SENSOR_ACCEL),
+            why == PAD_TWIN    ? ", the same controller as the one in use, seen twice"
+            : why == PAD_STEAM ? ", the controller behind Steam Input's gamepad"
+                               : "");
+        if (!(rate > 0))
+            LOG("[motion] (no rate: probably the device's own sensor through SDL's sensor fusion; a DSU server that "
+                "answers comes first)\n");
+        logged = (SDL_Gamepad *)1;
+    } else if (in_use && in_use != logged) {
+        logged = in_use;
+        bool some = SDL_GamepadHasSensor(in_use, SDL_SENSOR_GYRO) || SDL_GamepadHasSensor(in_use, SDL_SENSOR_ACCEL);
+        LOG("[motion] %s has no motion sensors%s: %s\n", SDL_GetGamepadName(in_use),
+            some ? " SDL can use" : "",
+            mode == MOTION_SOURCE_OFF ? "motion source Off"
+            : mode == MOTION_SOURCE_DSU ? "motion source DSU"
+            : SDL_GetGamepadVendor(in_use) == VALVE_VENDOR ? "Steam Input's gamepad; the Deck's own sensors, a "
+                                                             "DSU server, or the tilt key and the mouse tilt it"
+                                                           : "a DSU server, or the tilt key and the mouse tilt it");
+    }
+}
+
+// A controller about to be closed (input.c): never touched again
+void motion_pad_removed(SDL_Gamepad *p) {
+    SDL_JoystickID id = p ? SDL_GetGamepadID(p) : 0;
+    for (int i = 0; id && i < 8; i++) {
+        if (presses[i].id == id) presses[i].id = 0, presses[i].ns = 0;
+        if (twins[i].a == id || twins[i].b == id) memset(&twins[i], 0, sizeof twins[i]);
+    }
+    pthread_mutex_lock(&g_lock);
+    if (p && p == backend.pad) {
+        backend.pad = NULL, backend.pad_id = 0, backend.pad_why = PAD_NONE, backend.enabled = backend.unrated = false;
+        backend.pad_name[0] = 0;
+        backend.acc_time = backend.gyro_time = 0;
+        if (backend.source == SRC_PAD) select_motion(SRC_NONE);
+    }
+    pthread_mutex_unlock(&g_lock);
+}
+
+SDL_JoystickID motion_sensor_pad(void) {
+    pthread_mutex_lock(&g_lock);
+    SDL_JoystickID id = backend.pad_id;
+    pthread_mutex_unlock(&g_lock);
+    return id;
+}
+
+void motion_status(MotionStatus *out) {
+    memset(out, 0, sizeof *out);
+    pthread_mutex_lock(&g_lock);
+    out->off = g_settings.motion_source == MOTION_SOURCE_OFF;
+    out->steam_pad = backend.steam_pad;
+    out->rate = hs.rate;
+    snprintf(out->in_use, sizeof out->in_use, "%s", backend.in_use);
+    switch (g.sensors ? backend.source : SRC_NONE) {
+    case SRC_PAD:
+        out->source = MOTION_FROM_CONTROLLER;
+        out->twin = backend.pad_why == PAD_TWIN || backend.pad_why == PAD_STEAM;
+        snprintf(out->name, sizeof out->name, "%s", backend.pad_name);
+        break;
+    case SRC_DSU: out->source = MOTION_FROM_DSU; break;
+    case SRC_DECK: out->source = MOTION_FROM_DECK; break;
+    case SRC_DEVICE: out->source = MOTION_FROM_DEVICE; break;
+    default: out->source = MOTION_FROM_NONE; break;
+    }
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -235,6 +459,29 @@ static Quat rotation_step(const double w[3], double dt) {
     double n = sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]), h = n * dt / 2;
     double k = n > 1e-12 ? sin(h) / n : dt / 2;
     return (Quat){cos(h), w[0] * k, w[1] * k, w[2] * k};
+}
+
+// The aim's turn, in the world's axes (rad/s), from the controller's turn w in its own axes (m: its orientation):
+// about gravity (left / right) and about the view's right (up / down), each with its sensitivity and inversion. The
+// view's forward is the level part of the controller's Y (held flat) minus its Z (held upright, the face toward the
+// player): forward either way, and in between. Leaning about it is the controller's roll, kept as it is, or with
+// motion_lean a turn left / right too (right side down: right).
+static void aim_turn(const double w[3], Mat m, double out[3]) {
+    double ww[3];
+    for (int i = 0; i < 3; i++) ww[i] = m[i][0] * w[0] + m[i][1] * w[1] + m[i][2] * w[2];
+    double kx = sens() * (g_settings.motion_invert & MOTION_INVERT_LR ? -1 : 1);
+    double ky = sens() * sens_y() * (g_settings.motion_invert & MOTION_INVERT_UD ? -1 : 1);
+    double f[2] = {m[0][1] - m[0][2], m[1][1] - m[1][2]}, fn = sqrt(f[0] * f[0] + f[1] * f[1]);
+    if (fn < 1e-6) {  // (no level forward: an odd pose; the rest as up / down)
+        out[0] = ww[0] * ky, out[1] = ww[1] * ky, out[2] = ww[2] * kx;
+        return;
+    }
+    f[0] /= fn, f[1] /= fn;
+    double r[2] = {f[1], -f[0]};  // the view's right: forward x up
+    double pitch = ww[0] * r[0] + ww[1] * r[1], lean = ww[0] * f[0] + ww[1] * f[1], yaw = ww[2];
+    if (g_settings.motion_lean) yaw -= lean, lean = 0;
+    pitch *= ky, yaw *= kx;
+    out[0] = r[0] * pitch + f[0] * lean, out[1] = r[1] * pitch + f[1] * lean, out[2] = yaw;
 }
 
 // One gyroscope reading (rad/s, Switch axes) over dt seconds: learn its bias at rest, pull the tilt toward gravity,
@@ -280,14 +527,11 @@ static void fuse_gyro(const double raw[3], double dt) {
         w[2] += KP * (a[0] * v[1] - a[1] * v[0]);
     }
     g.q = qnorm(qmul(g.q, rotation_step(w, dt)));
-    // Scale each sensor increment, before a window/game frame can batch rotations
-    // about different axes. Scaling their combined rotation is FPS dependent.
-    double aim[3] = {
-        w[0] * sens() * (g_settings.motion_invert & MOTION_INVERT_UD ? -1 : 1),
-        w[1],
-        w[2] * sens() * (g_settings.motion_invert & MOTION_INVERT_LR ? -1 : 1)
-    };
-    g.aim_q = qnorm(qmul(g.aim_q, rotation_step(aim, dt)));
+    // Each sensor increment is split and scaled here, before a window or game frame can batch turns about several
+    // axes (scaling their sum depended on the frame rate), and in the world's axes: composed on the left.
+    double aim[3];
+    aim_turn(w, m, aim);
+    g.aim_q = qnorm(qmul(rotation_step(aim, dt), g.aim_q));
 }
 
 // Shared fusion entry points: acceleration is gravity in G, gyro rad/s, both in Switch axes.
@@ -314,7 +558,7 @@ static void sensor_gyro(const double raw[3], uint64_t ts) {
     hs.host_ns = SDL_GetTicksNS();
     if (dt > 0 && dt < 0.1) {
         fuse_gyro(raw, dt);
-        hs.fused++;
+        hs.fused++, hs.total++;
     }
 }
 
@@ -324,8 +568,7 @@ void motion_sensor_event(const SDL_Event *e) {
     if (!isfinite(d[0]) || !isfinite(d[1]) || !isfinite(d[2])) return;
     uint64_t ts = e->gsensor.sensor_timestamp ? e->gsensor.sensor_timestamp : e->gsensor.timestamp;
     pthread_mutex_lock(&g_lock);
-#ifdef __linux__
-    if (!backend.enabled) { pthread_mutex_unlock(&g_lock); return; }
+    if (!backend.enabled || e->gsensor.which != backend.pad_id) { pthread_mutex_unlock(&g_lock); return; }
     uint64_t now = plat_now_ns();
     // Use event time for freshness: the native path below also supports a stalled device clock.
     uint64_t fresh_ts = e->gsensor.timestamp ? e->gsensor.timestamp : ts;
@@ -340,19 +583,16 @@ void motion_sensor_event(const SDL_Event *e) {
         if (backend.gyro_time && fresh_ts == backend.gyro_ts) { pthread_mutex_unlock(&g_lock); return; }
         backend.gyro_time = now, backend.gyro_ts = fresh_ts;
     }
-    if (native_fresh(now)) {
-        bool changed = backend.source != 1;
-        select_motion(1);
+    if (native_first(now) && g_settings.motion_source != MOTION_SOURCE_DSU && g_settings.motion_source != MOTION_SOURCE_OFF) {
+        bool changed = backend.source != SRC_PAD;
+        select_motion(SRC_PAD);
         if (changed) {
             const float *a = backend.acc;
             double acc[3] = {-a[0] / SDL_STANDARD_GRAVITY, a[2] / SDL_STANDARD_GRAVITY, -a[1] / SDL_STANDARD_GRAVITY};
             sensor_accel(acc);
         }
     }
-    if (backend.source != 1) { pthread_mutex_unlock(&g_lock); return; }
-#else
-    if (!g.sensors) { pthread_mutex_unlock(&g_lock); return; }
-#endif
+    if (backend.source != SRC_PAD) { pthread_mutex_unlock(&g_lock); return; }
     if (e->gsensor.sensor == SDL_SENSOR_ACCEL) {
         double acc[3] = {-d[0] / SDL_STANDARD_GRAVITY, d[2] / SDL_STANDARD_GRAVITY, -d[1] / SDL_STANDARD_GRAVITY};
         sensor_accel(acc);
@@ -362,6 +602,15 @@ void motion_sensor_event(const SDL_Event *e) {
         bool first = !g.gyro_ts;
         double dt = !first && ts > g.gyro_ts ? (double)(ts - g.gyro_ts) / 1e9 : 0;
         double host_dt = hs.host_ns && host > hs.host_ns ? (double)(host - hs.host_ns) / 1e9 : 0;
+        // The same report again: the sensor's time and its values unchanged. A controller polled faster than its
+        // sensor runs (a DualSense at 1000-8000 Hz, #759, and some that pass for one) repeats its last report; each
+        // copy was taken for a reading one sample period long, and the aim turned several times too far.
+        if (!first && ts == g.gyro_ts && !memcmp(d, g.last_gyro, sizeof g.last_gyro)) {
+            hs.repeated++;
+            pthread_mutex_unlock(&g_lock);
+            return;
+        }
+        memcpy(g.last_gyro, d, sizeof g.last_gyro);
         g.gyro_ts = ts;
         hs.gyro++;
         if (host_dt * 1e9 > hs.max_gap) hs.max_gap = (uint64_t)(host_dt * 1e9);
@@ -374,16 +623,16 @@ void motion_sensor_event(const SDL_Event *e) {
         // DualShock 4 or a DualSense may keep that clock still or move it in jumps (a still 16-bit DualShock 4 tick
         // reads as a third of a second through SDL's wrap): every reading then looked 0 s or 0.1 s and more after the
         // last one and was dropped, and the aim stood still while the readings went on (suspected in #220). A reading
-        // without a usable time counts as one sample period (SDL's rate for the sensor) instead.
+        // without a usable time is timed by when it came (SDL's event time), else by one sample period (SDL's rate).
         if (!first && !(dt > 0 && dt < 0.1)) {
             if (dt == 0) hs.stalled++;
             else hs.jumped++;
             if (++hs.bad_run == 8 && hs.notes < 64) {
                 hs.notes++;
                 LOG("[motion] the controller's sensor clock %s (%.4f s from one reading to the next): readings timed "
-                    "by its rate, %.1f ms\n", dt == 0 ? "stands still or goes back" : "jumps", dt, hs.period * 1e3);
+                    "by when they come\n", dt == 0 ? "stands still or goes back" : "jumps", dt);
             }
-            dt = hs.period > 0 ? hs.period : host_dt;
+            dt = host_dt > 0 && host_dt < 0.1 ? host_dt : hs.period;
         } else if (!first) {
             if (hs.bad_run >= 8 && hs.notes < 64) {
                 hs.notes++;
@@ -393,65 +642,186 @@ void motion_sensor_event(const SDL_Event *e) {
         }
         if (dt > 0 && dt < 0.1) {
             fuse_gyro(raw, dt);
-            hs.fused++;
+            hs.fused++, hs.total++;
         }
     }
     pthread_mutex_unlock(&g_lock);
 }
 
-#ifdef __linux__
-static void dsu_sample(const DsuPacket *p, uint32_t generation, void *user) {
-    (void)user;
-    if (native_fresh(plat_now_ns())) return;
-    if (backend.dsu_generation != generation && backend.source == 2) select_motion(0);
-    backend.dsu_generation = generation;
-    select_motion(2);
-    sensor_accel(p->acc);
-    // Microseconds -> ns, without overflowing on a malformed timestamp.
-    sensor_gyro(p->gyro, p->timestamp <= UINT64_MAX / 1000 ? p->timestamp * 1000 : 0);
+// ---- DSU (all systems) and the Steam Deck's HID node (Linux)
+// Controls' motion_dsu_axes (or SAVAGEWIND_DSU_AXES): the server's three turns as the game should take them, pitch,
+// yaw and roll; a server that packs them in another order or sign ("pitch roll -yaw") is set right here (#136: a
+// relay on a Legion Go sent roll in yaw's place).
+static int dsu_axis[3] = {0, 1, 2}, dsu_sign[3] = {1, 1, 1};
+
+static void dsu_axes_parse(void) {
+    const char *s = getenv("SAVAGEWIND_DSU_AXES");
+    if (!s || !*s) s = g_settings.motion_dsu_axes;
+    if (!s || !*s) return;
+    static const char *const names[3] = {"pitch", "yaw", "roll"};
+    int axis[3], sign[3], k = 0, used = 0;
+    for (const char *p = s; *p && k <= 3;) {
+        while (*p == ' ' || *p == ',') p++;
+        if (!*p) break;
+        int sg = 1, a = -1;
+        if (*p == '-' || *p == '+') sg = *p == '-' ? -1 : 1, p++;
+        for (int i = 0; i < 3; i++)
+            if (!strncmp(p, names[i], strlen(names[i]))) a = i;
+        if (a < 0 || k == 3 || used >> a & 1) { k = -1; break; }
+        used |= 1 << a;
+        axis[k] = a, sign[k] = sg, k++;
+        p += strlen(names[a]);
+    }
+    if (k != 3) {
+        LOG("[dsu] motion_dsu_axes = %s: not three of pitch, yaw, roll (each once, - flips one); kept as they come\n", s);
+        return;
+    }
+    memcpy(dsu_axis, axis, sizeof axis), memcpy(dsu_sign, sign, sizeof sign);
+    LOG("[dsu] the server's axes taken as %s\n", s);
 }
 
+static void dsu_sample(const DsuPacket *p, uint32_t generation, void *user) {
+    (void)user;
+    if (native_first(plat_now_ns()) && g_settings.motion_source != MOTION_SOURCE_DSU) return;
+    if (backend.dsu_generation != generation && backend.source == SRC_DSU) select_motion(SRC_NONE);
+    backend.dsu_generation = generation;
+    select_motion(SRC_DSU);
+    sensor_accel(p->acc);
+    // (the packet's turns back in the server's order - pitch, yaw, roll - for motion_dsu_axes)
+    double t[3] = {p->gyro[0], -p->gyro[2], p->gyro[1]}, o[3];
+    for (int i = 0; i < 3; i++) o[i] = dsu_sign[i] * t[dsu_axis[i]];
+    double gyro[3] = {o[0], o[2], -o[1]};
+    // Microseconds -> ns, without overflowing on a malformed timestamp.
+    sensor_gyro(gyro, p->timestamp <= UINT64_MAX / 1000 ? p->timestamp * 1000 : 0);
+}
+
+#ifdef __linux__
 static void deck_sample(const DsuPacket *p, uint32_t generation, void *user) {
     (void)generation, (void)user;
-    select_motion(3);
+    select_motion(SRC_DECK);
     sensor_accel(p->acc);
     sensor_gyro(p->gyro, p->timestamp * 1000);
 }
 #endif
 
+// ---- a PC handheld's own sensors (SDL's sensor API; Windows: the system's sensor framework)
+// Opened once, the first time a handheld has nothing better (SAVAGEWIND_DEVICE_SENSORS=0: never). Called under g_lock.
+static void device_open(void) {
+    if (backend.dev_tried) return;
+    backend.dev_tried = true;
+    const char *env = getenv("SAVAGEWIND_DEVICE_SENSORS");
+    if (env && !atoi(env)) return;
+    if (!SDL_InitSubSystem(SDL_INIT_SENSOR)) {
+        LOG("[motion] the handheld's own sensors: SDL's sensors unavailable (%s)\n", SDL_GetError());
+        return;
+    }
+    int n = 0;
+    SDL_SensorID *ids = SDL_GetSensors(&n);
+    for (int i = 0; ids && i < n; i++) {
+        SDL_SensorType type = SDL_GetSensorTypeForID(ids[i]);
+        if (type == SDL_SENSOR_ACCEL && !backend.dev_acc) backend.dev_acc = SDL_OpenSensor(ids[i]), backend.dev_acc_id = ids[i];
+        if (type == SDL_SENSOR_GYRO && !backend.dev_gyro) backend.dev_gyro = SDL_OpenSensor(ids[i]), backend.dev_gyro_id = ids[i];
+    }
+    SDL_free(ids);
+    if (backend.dev_acc && backend.dev_gyro) {
+        LOG("[motion] the handheld's own sensors: %s and %s\n", SDL_GetSensorName(backend.dev_acc),
+            SDL_GetSensorName(backend.dev_gyro));
+        return;
+    }
+    LOG("[motion] the handheld's own sensors: %s (%d sensor%s); a DSU server (Handheld Companion...) can give them\n",
+        backend.dev_acc ? "no gyroscope" : backend.dev_gyro ? "no accelerometer" : "none the system shows", n,
+        n == 1 ? "" : "s");
+    if (backend.dev_acc) SDL_CloseSensor(backend.dev_acc);
+    if (backend.dev_gyro) SDL_CloseSensor(backend.dev_gyro);
+    backend.dev_acc = backend.dev_gyro = NULL;
+}
+
+void motion_device_sensor_event(const SDL_Event *e) {
+    const float *d = e->sensor.data;
+    if (!isfinite(d[0]) || !isfinite(d[1]) || !isfinite(d[2])) return;
+    pthread_mutex_lock(&g_lock);
+    bool acc = backend.dev_acc && e->sensor.which == backend.dev_acc_id;
+    bool gyro = backend.dev_gyro && e->sensor.which == backend.dev_gyro_id;
+    uint64_t now = plat_now_ns(), ts = e->sensor.sensor_timestamp ? e->sensor.sensor_timestamp : e->sensor.timestamp;
+    if (acc) {
+        backend.dev_acc_time = now;
+        memcpy(backend.dev_acc_v, d, sizeof backend.dev_acc_v);
+        double a[3] = {-d[0] / SDL_STANDARD_GRAVITY, -d[1] / SDL_STANDARD_GRAVITY, -d[2] / SDL_STANDARD_GRAVITY};
+        if (backend.source == SRC_DEVICE) sensor_accel(a);
+    } else if (gyro) {
+        backend.dev_gyro_time = now;
+        double w[3] = {d[0], d[1], d[2]};
+        if (backend.source == SRC_DEVICE) sensor_gyro(w, ts);
+    }
+    pthread_mutex_unlock(&g_lock);
+}
+
 void motion_poll(void) {
+    static bool initialized, dsu_force;
 #ifdef __linux__
-    static bool initialized, enabled, force, deck_on;
+    static bool deck_on;
+#endif
     if (!initialized) {
         initialized = true;
+#ifdef __linux__
         // SAVAGEWIND_DECK_IMU=0: not the Steam Deck's own sensors
         deck_on = !getenv("SAVAGEWIND_DECK_IMU") || atoi(getenv("SAVAGEWIND_DECK_IMU"));
         deck_imu_init(&backend.deck);
+#endif
         const char *mode = getenv("SAVAGEWIND_DSU");
-        enabled = !mode || strcmp(mode, "off");
-        force = mode && !strcmp(mode, "on");
+        bool enabled = !mode || strcmp(mode, "off");
+        dsu_force = mode && !strcmp(mode, "on");
         if (mode && strcmp(mode, "auto") && strcmp(mode, "off") && strcmp(mode, "on"))
             LOG("[dsu] unknown SAVAGEWIND_DSU=%s; using auto\n", mode);
-        if (enabled) enabled = dsu_init(&backend.dsu, getenv("SAVAGEWIND_DSU_ENDPOINT"), (uint32_t)plat_now_ns());
+        if (enabled) backend.dsu_on = dsu_init(&backend.dsu, getenv("SAVAGEWIND_DSU_ENDPOINT"), (uint32_t)plat_now_ns());
         else LOG("[dsu] disabled (SAVAGEWIND_DSU=off)\n");
+        dsu_axes_parse();
     }
+    int setting = g_settings.motion_source;
+    bool force = dsu_force || setting == MOTION_SOURCE_DSU;
     uint64_t now = plat_now_ns();
     pthread_mutex_lock(&g_lock);
-    bool native = native_fresh(now);
-    if (backend.source == 1 && !native) {
-        LOG("[motion] SDL motion timeout; trying fallback\n");
-        select_motion(0);
+    if (now - hs.rate_ns >= 1000000000ull) {  // (the readings per second, for the Controls page)
+        hs.rate = hs.rate_ns && now > hs.rate_ns ? (float)((hs.total - hs.rate_total) * 1e9 / (double)(now - hs.rate_ns)) : 0;
+        hs.rate_total = hs.total, hs.rate_ns = now;
     }
+    bool off = setting == MOTION_SOURCE_OFF;
+    bool native = native_first(now) && !off && setting != MOTION_SOURCE_DSU;
+    if (backend.source == SRC_PAD && !native) {
+        if (native_fresh(now) && !off && setting != MOTION_SOURCE_DSU)
+            LOG("[motion] a DSU server answers: it comes before %s's sensor, which has no rate\n", backend.pad_name);
+        else
+            LOG("[motion] SDL motion timeout; trying fallback\n");
+        select_motion(SRC_NONE);
+    }
+    bool deck_fresh = false;
+#ifdef __linux__
     // With Steam Input's gamepad (no sensors), the Deck's own sensors, unless DSU is asked for (SAVAGEWIND_DSU=on)
-    bool deck = deck_on && !native && !force && backend.steam_pad;
+    bool deck = deck_on && !native && !force && backend.steam_pad && setting == MOTION_SOURCE_AUTO;
     if (deck) deck_imu_poll(&backend.deck, now, deck_sample, NULL);
     else if (backend.deck.fd >= 0) deck_imu_close(&backend.deck);
-    if (backend.source == 3 && !backend.deck.fresh) select_motion(0);
-    if (enabled && (force || (!native && !backend.deck.fresh))) dsu_poll(&backend.dsu, now, dsu_sample, NULL);
-    else if (enabled && backend.dsu.fd >= 0) dsu_close(&backend.dsu);
-    if (backend.source == 2 && !backend.dsu.fresh) select_motion(0);
-    pthread_mutex_unlock(&g_lock);
+    if (backend.source == SRC_DECK && (!backend.deck.fresh || !deck)) select_motion(SRC_NONE);
+    deck_fresh = deck && backend.deck.fresh;
 #endif
+    bool dsu = backend.dsu_on && (setting == MOTION_SOURCE_AUTO || setting == MOTION_SOURCE_DSU) &&
+               (force || backend.unrated || (!native && !deck_fresh));
+    if (dsu) dsu_poll(&backend.dsu, now, dsu_sample, NULL);
+    else if (backend.dsu_on && backend.dsu.fd >= 0) dsu_close(&backend.dsu);
+    if (backend.source == SRC_DSU && (!backend.dsu.fresh || !dsu)) select_motion(SRC_NONE);
+    // A PC handheld's own sensors, when nothing else gives motion
+    bool dev = setting == MOTION_SOURCE_AUTO && !native && !deck_fresh && !(dsu && backend.dsu.fresh) && settings_handheld();
+    if (dev) device_open();
+    bool dev_fresh = dev && backend.dev_acc && backend.dev_acc_time && backend.dev_gyro_time &&
+                     now - backend.dev_acc_time < DSU_TIMEOUT_NS && now - backend.dev_gyro_time < DSU_TIMEOUT_NS;
+    if (dev_fresh && backend.source == SRC_NONE) {
+        select_motion(SRC_DEVICE);
+        const float *d = backend.dev_acc_v;
+        double a[3] = {-d[0] / SDL_STANDARD_GRAVITY, -d[1] / SDL_STANDARD_GRAVITY, -d[2] / SDL_STANDARD_GRAVITY};
+        sensor_accel(a);
+    }
+    if (backend.source == SRC_DEVICE && !dev_fresh) select_motion(SRC_NONE);
+    if (off && backend.source != SRC_NONE) select_motion(SRC_NONE);
+    pthread_mutex_unlock(&g_lock);
 }
 
 void motion_tilt_held(bool held) {
@@ -564,12 +934,19 @@ void motion_gizmo_arcball(float w, float x, float y, float z) {
     pthread_mutex_unlock(&g_lock);
 }
 
-// A controller without a gyroscope at a shrine apparatus (runtime/hle/input.c): the right stick turns the table
-// (its X) and tilts it front / back (its Y), the left stick banks it (X) and tilts it front / back too (Y); 100
-// degrees per second at full tilt, times the motion sensitivity; the inversion options flip them. reset: recenter.
+// The sticks at a shrine apparatus (runtime/hle/input.c): the right stick turns the table (its X) and tilts it
+// front / back (its Y), the left stick banks it (X) and tilts it front / back too (Y); 100 degrees per second at full
+// tilt, times the motion sensitivity; the inversion options flip them. reset: recenter. With a gyroscope they take over
+// once pushed past half way (a gyroscope lying still, a handheld's on its dock, left no way to solve it), until the
+// recenter or the end of the apparatus gives it back.
 void motion_dualstick(float lx, float ly, float rx, float ry, double dt, bool reset) {
     if (!isfinite(lx) || !isfinite(ly) || !isfinite(rx) || !isfinite(ry)) return;
     pthread_mutex_lock(&g_lock);
+    if (!reset && g.sensors && !g.keyboard.active && !g.tilt_pitch && !g.tilt_roll && !g.tilt_yaw &&
+        fmax(fmax(fabs(lx), fabs(ly)), fmax(fabs(rx), fabs(ry))) < 0.5) {
+        pthread_mutex_unlock(&g_lock);
+        return;
+    }
     if (reset) virtual_recenter();
     else if (isfinite(dt) && dt > 0) {
         double k = 100 * PI / 180 * (dt > 0.25 ? 0.25 : dt) * sens();
@@ -618,12 +995,10 @@ static int source(double dt, Mat m) {
     bool virt = g.keyboard.active || g.tilt_held || g.tilt_pitch || g.tilt_roll || g.tilt_yaw || g.sc_pitch || g.sc_roll ||
                 s.sc_yaw || s.sc_pitch;
     if (g.sensors && g.started && !virt) {
-        quat_mat(g.q, m);
-#ifdef __linux__
-        return (int)backend.epoch + 1;
-#else
-        return 1;
-#endif
+        // (a shrine apparatus: the controller as it is held, no sensitivity or lean; a change of source for the game)
+        bool apparatus = pc_gyro_keyboard_active();
+        quat_mat(apparatus ? g.q : g.aim_q, m);
+        return (int)(backend.epoch & 0x3fffffff) * 2 + 1 + apparatus;
     }
     euler_mat(virtual_yaw(), g.tilt_pitch + g.sc_pitch + s.sc_pitch + g.keyboard.pitch * PI / 180,
               g.tilt_roll + g.sc_roll + g.keyboard.roll * PI / 180, m);
@@ -647,8 +1022,8 @@ static void fill(SixAxisState *st, Mat m, const double gyro[3], const double lin
 // Physical motion is an incremental rotation in controller axes. Euler yaw/roll become
 // ambiguous at vertical, and clamping Euler pitch makes an overhead controller stop
 // responding. Keep the full pose; sensitivity/inversion was already applied at sensor rate.
-static void sensor_samples(int kind, uint64_t n) {
-    Quat current = qnorm(g.aim_q);
+static void sensor_samples(int kind, uint64_t n, Quat pose) {
+    Quat current = qnorm(pose);
     double v[3] = {0};
     if (kind != s.src) {
         Mat m;
@@ -700,7 +1075,7 @@ static void update(uint64_t now) {
         s.yaw = 0;
         euler_mat(s.yaw, s.pitch, s.roll, s.m);
         if (s.src) {
-            s.sensor_q = qnorm(g.aim_q);
+            s.sensor_q = qnorm(s.src & 1 ? g.aim_q : g.q);
             s.output_q = qnorm(qmul(euler_quat(-s.src_yaw, 0, 0), s.sensor_q));
             quat_mat(s.output_q, s.m);
         }
@@ -736,7 +1111,7 @@ static void update(uint64_t now) {
                                                                 : "nothing yet: no accelerometer reading (lying still)");
     }
     if (kind) {
-        sensor_samples(kind, n);
+        sensor_samples(kind, n, kind & 1 ? g.aim_q : g.q);
         goto motion_log;
     }
     double yaw = virtual_yaw(), pitch = virtual_pitch(), roll = virtual_roll();
@@ -777,14 +1152,14 @@ motion_log:
         const SixAxisState *st = &s.ring[s.head];
         LOG("[motion] %s: yaw %.1f pitch %.1f roll %.1f deg | gyro %.3f %.3f %.3f turns/s | acc %.2f %.2f %.2f G | "
             "bias %.2f %.2f %.2f deg/s (spread %.4f rad/s, %.4f G) | sample %lld | readings %u gyro %u accel, "
-            "%u fused, %u stalled %u jumped, longest gap %.0f ms, last %.0f ms ago | game reads %u\n",
+            "%u fused, %u stalled %u jumped %u repeated, longest gap %.0f ms, last %.0f ms ago | game reads %u\n",
             kind ? "sensors" : g.keyboard.active ? "virtual gyro" : g.tilt_held || g.tilt_pitch || g.tilt_roll ? "mouse tilt"
                                                                                                     : "still/script",
             s.yaw * 180 / PI, s.pitch * 180 / PI, s.roll * 180 / PI, st->gyro[0], st->gyro[1], st->gyro[2], st->acc[0],
             st->acc[1], st->acc[2], g.bias[0] * 180 / PI, g.bias[1] * 180 / PI, g.bias[2] * 180 / PI, g.gyro_sd,
-            sqrt(g.acc_var), (long long)st->sampling_number, hs.gyro, hs.accel, hs.fused, hs.stalled, hs.jumped,
+            sqrt(g.acc_var), (long long)st->sampling_number, hs.gyro, hs.accel, hs.fused, hs.stalled, hs.jumped, hs.repeated,
             hs.max_gap / 1e6, hs.host_ns ? (double)(SDL_GetTicksNS() - hs.host_ns) / 1e6 : -1.0, hs.reads);
-        hs.gyro = hs.accel = hs.fused = hs.stalled = hs.jumped = hs.reads = 0, hs.max_gap = 0;
+        hs.gyro = hs.accel = hs.fused = hs.stalled = hs.jumped = hs.repeated = hs.reads = 0, hs.max_gap = 0;
     }
 }
 

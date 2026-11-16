@@ -19,6 +19,28 @@ def _word(gen, a):
     return struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
 
 
+def _ui_layout_draw(gen, a):
+    # A tail thunk is shared by MainScreen, AppMap, context prompts and dialogue layouts.
+    # Do not recurse through the thunk: bracket the independently verified native body.
+    w = _word(gen, a)
+    assert w & 0xfc000000 == 0x14000000, hex(w)
+    target = a + sext(w & 0x03ffffff, 26) * 4
+    assert target == gen.sites['ui_layout_native'], hex(target)
+    gates = (0x39440008, 0x7100011f, 0x39440809, 0x3943f80a,
+             0x3943fc0b, 0x7a401920, 0x7a400944, 0x7a421964)
+    assert tuple(_word(gen, target + i * 4) for i in range(len(gates))) == gates
+    fn = _fn(gen, 'ui_layout_native')
+    return (f'{{ extern void {fn}(Cpu *); extern void rt_ui_layout_draw(Cpu *, void (*)(Cpu *)); '
+            f'rt_ui_layout_draw(c, {fn}); return; }}')
+
+
+def _ui_layout_pane(gen, a):
+    assert _word(gen, a) == 0x39416008, hex(_word(gen, a))
+    fn = _fn(gen, 'ui_layout_pane')
+    return (f'{{ extern void {fn}(Cpu *); extern _Bool rt_ui_layout_pane_draw(Cpu *, void (*)(Cpu *)); '
+            f'if (rt_ui_layout_pane_draw(c, {fn})) return; c->x[8] = LD8(c->x[0] + 0x58); }}')
+
+
 def _quick_sort_enter(gen, a):
     # Menu::enter: sample held X before the selector initializes its list.
     assert _word(gen, a) == 0xfc1d0fe8, hex(_word(gen, a))  # str d8, [sp, #-0x30]!
@@ -327,22 +349,31 @@ def _surf_boost_remove(gen, a):
 # + 0x88) got a freed pointer (#391: a garbage value, a crash in the next load) and one inline copy of it
 # (1.9.0 0x7000dea400, the camera target) got an actor whose + 0x570 is null (#393: accessing 0x88). Both now treat
 # such an actor as none: the helper answers 0, the inline copy leaves its function by the path of "no target".
-def _stale_actor_helper(gen, a):
+def _stale_actor_cbz(gen, a, clear_x0):
     w = _word(gen, a)
     assert w & 0xff00001f == 0xb4000000, hex(w)  # cbz x0, <ret>
     target = a + sext((w >> 5) & 0x7ffff, 19) * 4
-    return ('{ extern void rt_stale_actor(void); '
+    clear = 'c->x[0] = 0; ' if clear_x0 else ''
+    return ('{ extern int rt_actor_link_valid(uint64_t); '
             'if (!c->x[0]) goto L_%x; '
-            'if (c->x[0] - 0x7000000000ull >= 0x320000000ull || !LD64(c->x[0] + 0x570)) { rt_stale_actor(); c->x[0] = 0; goto L_%x; } }'
-            % (target, target))
+            'if (!rt_actor_link_valid(c->x[0])) { %sgoto L_%x; } }'
+            % (target, clear, target))
+
+
+def _stale_actor_helper(gen, a):
+    return _stale_actor_cbz(gen, a, True)
+
+
+def _stale_actor_kind(gen, a):
+    return _stale_actor_cbz(gen, a, False)
 
 
 def _stale_actor_target(gen, a):
     assert _word(gen, a) == 0xf942ba68, hex(_word(gen, a))  # ldr x8, [x19, #0x570]
     # the epilogue of "no target": the function's own early exit (cbz x0 / cbnz x19 above this site)
     exit_at = _stale_target_exit(gen, a)
-    return ('{ extern void rt_stale_actor(void); '
-            'if (c->x[19] - 0x7000000000ull >= 0x320000000ull || !LD64(c->x[19] + 0x570)) { rt_stale_actor(); goto L_%x; } '
+    return ('{ extern int rt_actor_link_valid(uint64_t); '
+            'if (!rt_actor_link_valid(c->x[19])) { goto L_%x; } '
             'c->x[8] = LD64(c->x[19] + 0x570); }' % exit_at)
 
 
@@ -397,6 +428,19 @@ def _demo_move_arrive(gen, a):
     return ('{ extern float rt_demo_move_arrive(float, float); '
             'c->nzcv = rt_fcmp_s(c, rt_vf32(c, 8), rt_demo_move_arrive(rt_vf32(c, 9), rt_vf32(c, 0))); }'
             f'  /* {a:#x}: fcmp s8, s9 (player demo move: arrived within a frame of walking) */')
+
+
+# A player rail move's point (runtime/hle/framepace.c rt_rail_point_radius, #364): PlayerRailMove's update (1.9.0
+# 0x7000c89cec) moves the point Link walks to along the rail by half a radius whenever Link is within the radius of it,
+# and the radius is the delta frame the player stored that frame (+0x20f0), in metres. Above 30 fps the point waited for
+# Link at a rail node until he was within a fraction of a metre (0.17 at 180 fps), and the move's arrival tests ended the
+# walk there. The radius is at least 1, the console's.
+
+def _rail_point_radius(gen, a):
+    assert _word(gen, a) == 0xbd60f100, hex(_word(gen, a))  # ldr s0, [x8, #0x20f0]
+    return ('{ extern float rt_rail_point_radius(float); union { uint32_t u; float f; } r = { .u = (uint32_t)LD32(c->x[8] + 0x20f0) }; '
+            'r.f = rt_rail_point_radius(r.f); c->v[0] = r.u; }'
+            f'  /* {a:#x}: ldr s0, [x8, #0x20f0] (player rail move: the radius its point moves on within) */')
 
 
 def _kf_angle(gen, a):
@@ -894,6 +938,19 @@ def _gyro_scene_actor(gen, a):
 # isHold(pad, action) and isTrig(pad, action): each looks the action's pad mask up in a table of 41 (act_masks) and tests
 # it against the pad object's held (+0x11c) or pressed (+0x10) word. An action the player gave a binding of its own is
 # answered by the runtime from the host key / button instead (rt_act_query); every other answer stays the game's.
+# Controls > Menus wrap around (runtime/menu_wrap.c): the UI focus search (1.9.0 0x7000f58404, called when the focused
+# button has no neighbour link that way) ends with `mov x0, x20`, its result: the nearest focusable button roughly the
+# way pressed, or none at the end of a list. With x19 the control and w22 the direction, the runtime may answer with the
+# button farthest the other way instead.
+def _menu_wrap(gen, a):
+    assert _word(gen, a) == 0xaa1403e0, hex(_word(gen, a))  # mov x0, x20
+    return ('{ extern uint64_t rt_menu_wrap(Cpu *, uint64_t, uint64_t, uint32_t); '
+            # (the guest sp is still in sp_ here: the runtime calls the game's functions on it)
+            'uint64_t sp_saved = c->sp; c->sp = sp_; '
+            'c->x[0] = rt_menu_wrap(c, c->x[20], c->x[19], (uint32_t)c->x[22]); c->sp = sp_saved; }'
+            f'  /* {a:#x}: mov x0, x20 (UI focus search result: menus wrap around) */')
+
+
 def _act_query(kind):
     def patch(gen, a):
         assert _word(gen, a) == 0xa9be7bfd, hex(_word(gen, a))  # stp x29, x30, [sp, #-0x20]!
@@ -933,6 +990,8 @@ def _tp_gate(gen, a):
 
 
 PATCHES = {
+    'ui_layout_draw': _ui_layout_draw,
+    'ui_layout_pane': _ui_layout_pane,
     'quick_drop_tick': _quick_drop_tick,
     'quick_drop_actor_call': _quick_drop_actor_call,
     'quick_sort_enter': _quick_sort_enter,
@@ -980,10 +1039,12 @@ PATCHES = {
     'surf_boost_remove': _surf_boost_remove,
     'surf_jump_request': _surf_jump_request,
     'stale_actor_helper': _stale_actor_helper,
+    'stale_actor_kind': _stale_actor_kind,
     'stale_actor_target': _stale_actor_target,
     'phys_solver_steps': _solver_steps,
     'kf_angle': _kf_angle,
     'demo_move_arrive': _demo_move_arrive,
+    'rail_point_radius': _rail_point_radius,
     'phys_tick': _phys_tick,
     'phys_tick_mt': _phys_tick,
     'phys_motion_tick': _phys_motion_tick,
@@ -1021,6 +1082,7 @@ PATCHES = {
     'grass_blade_lateral_near': _grass_blade_lateral,
     'grass_blade_lateral_far': _grass_blade_lateral,
     'tree_ranges': _tree_ranges,
+    'menu_wrap': _menu_wrap,
     'act_hold': _act_query(0),
     'act_trig': _act_query(1),
     'pouch_remove_arrows': _remove_arrows,

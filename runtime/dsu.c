@@ -6,7 +6,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifdef __linux__
+#ifdef _WIN32
+#include <winsock2.h>
+#include <mstcpip.h>
+#ifndef SIO_UDP_CONNRESET
+#define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR, 12)
+#endif
+#else
 #include <arpa/inet.h>
 #include <errno.h>
 #include <sys/socket.h>
@@ -117,9 +123,22 @@ bool dsu_accept(DsuClient *c, const DsuPacket *p, uint64_t now) {
     return true;
 }
 
+// "a.b.c.d" -> the address in network order (as inet_pton gives it)
+static bool ipv4(const char *s, uint32_t *out) {
+    uint8_t b[4];
+    for (int i = 0; i < 4; i++) {
+        char *end;
+        if (*s < '0' || *s > '9') return false;
+        unsigned long v = strtoul(s, &end, 10);
+        if (v > 255 || end - s > 3 || (i < 3 ? *end != '.' : *end != 0)) return false;
+        b[i] = (uint8_t)v, s = end + (i < 3);
+    }
+    memcpy(out, b, 4);
+    return true;
+}
+
 bool dsu_init(DsuClient *c, const char *endpoint, uint32_t client) {
     *c = (DsuClient){.fd = -1, .slot = -1, .client = client, .port = 26760};
-#ifdef __linux__
     char host[64] = "127.0.0.1";
     if (endpoint) {
         const char *colon = strchr(endpoint, ':');
@@ -131,47 +150,94 @@ bool dsu_init(DsuClient *c, const char *endpoint, uint32_t client) {
         if (!colon[1] || *end || port < 1 || port > 65535) goto bad;
         c->port = port;
     }
-    if (inet_pton(AF_INET, host, &c->address) != 1) goto bad;
+    if (!ipv4(host, &c->address)) goto bad;
     c->enabled = true;
     fprintf(stderr, "[dsu] enabled: %s:%u (nonblocking)\n", host, c->port);
     return true;
 bad:
     fprintf(stderr, "[dsu] invalid SAVAGEWIND_DSU_ENDPOINT; use numeric IPv4:port\n");
-#else
-    (void)endpoint;
-#endif
     return false;
 }
 
+// ---- the socket: UDP, nonblocking (POSIX sockets; Winsock on Windows)
+#ifdef _WIN32
+#define SOCK(c) ((SOCKET)(c)->fd)
+#endif
+
 void dsu_close(DsuClient *c) {
-#ifdef __linux__
-    if (c->fd >= 0) close(c->fd);
+#ifdef _WIN32
+    if (c->fd >= 0) closesocket(SOCK(c));
+#else
+    if (c->fd >= 0) close((int)c->fd);
 #endif
     c->fd = -1;
     forget(c);
 }
 
-#ifdef __linux__
+static bool dsu_open(DsuClient *c) {
+#ifdef _WIN32
+    static bool wsa;
+    if (!wsa) {
+        WSADATA data;
+        if (WSAStartup(MAKEWORD(2, 2), &data)) return false;
+        wsa = true;
+    }
+    SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (s == INVALID_SOCKET) return false;
+    u_long on = 1;
+    BOOL no = FALSE;
+    DWORD got = 0;
+    ioctlsocket(s, FIONBIO, &on);
+    // (no server listening: Windows reports ICMP "port unreachable" as a reset on the next recv; not an error here)
+    WSAIoctl(s, SIO_UDP_CONNRESET, &no, sizeof no, NULL, 0, &got, NULL, NULL);
+    c->fd = (intptr_t)s;
+#else
+    int s = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    if (s < 0) return false;
+    c->fd = s;
+#endif
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof addr);
+    addr.sin_family = AF_INET, addr.sin_port = htons(c->port), addr.sin_addr.s_addr = c->address;
+#ifdef _WIN32
+    if (connect(SOCK(c), (struct sockaddr *)&addr, sizeof addr)) { dsu_close(c); return false; }
+#else
+    if (connect((int)c->fd, (struct sockaddr *)&addr, sizeof addr)) { dsu_close(c); return false; }
+#endif
+    return true;
+}
+
 static void request(DsuClient *c, uint32_t type) {
     uint8_t p[28];
     size_t n = dsu_request(p, c->client, type, c->slot);
     // Transient errors (including ICMP port unreachable) are retried at the next heartbeat.
-    (void)send(c->fd, p, n, MSG_DONTWAIT);
-}
+#ifdef _WIN32
+    (void)send(SOCK(c), (const char *)p, (int)n, 0);
+#else
+    (void)send((int)c->fd, p, n, MSG_DONTWAIT);
 #endif
+}
+
+// One datagram: its length (more than size: cut short), 0 none waiting, -1 the socket failed
+static long receive(DsuClient *c, uint8_t *data, size_t size) {
+#ifdef _WIN32
+    int n = recv(SOCK(c), (char *)data, (int)size, 0);
+    if (n >= 0) return n;
+    int e = WSAGetLastError();
+    return e == WSAEMSGSIZE ? (long)size + 1 : e == WSAEWOULDBLOCK || e == WSAECONNRESET || e == WSAEINTR ? 0 : -1;
+#else
+    ssize_t n = recv((int)c->fd, data, size, MSG_DONTWAIT | MSG_TRUNC);
+    if (n >= 0) return (long)n;
+    return errno == EAGAIN || errno == EWOULDBLOCK || errno == ECONNREFUSED || errno == EINTR ? 0 : -1;
+#endif
+}
 
 void dsu_poll(DsuClient *c, uint64_t now, DsuSampleFn sample, void *user) {
-#ifdef __linux__
     if (!c->enabled) return;
     dsu_expire(c, now);
     if (!c->retry || now >= c->retry) {
         c->retry = now + DSU_RETRY_NS;
-        if (c->fd < 0) {
-            c->fd = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-            if (c->fd < 0) return;
-            struct sockaddr_in addr = {.sin_family = AF_INET, .sin_port = htons(c->port), .sin_addr.s_addr = c->address};
-            if (connect(c->fd, (struct sockaddr *)&addr, sizeof addr)) { dsu_close(c); return; }
-        }
+        if (c->fd < 0 && !dsu_open(c)) return;
         request(c, 0x100000);
         request(c, 0x100001);
         if (c->slot >= 0) request(c, 0x100002);
@@ -179,9 +245,9 @@ void dsu_poll(DsuClient *c, uint64_t now, DsuSampleFn sample, void *user) {
     // Bounded work even if a server floods the socket. Process each queued motion sample for fusion.
     for (int i = 0; i < 128 && c->fd >= 0; i++) {
         uint8_t data[2048];
-        ssize_t n = recv(c->fd, data, sizeof data, MSG_DONTWAIT | MSG_TRUNC);
-        if (n < 0) {
-            if (errno != EAGAIN && errno != EWOULDBLOCK && errno != ECONNREFUSED && errno != EINTR) dsu_close(c);
+        long n = receive(c, data, sizeof data);
+        if (n <= 0) {
+            if (n < 0) dsu_close(c);
             break;
         }
         DsuPacket p;
@@ -203,7 +269,4 @@ void dsu_poll(DsuClient *c, uint64_t now, DsuSampleFn sample, void *user) {
             }
         } else if (dsu_accept(c, &p, now) && sample) sample(&p, c->generation, user);
     }
-#else
-    (void)c; (void)now; (void)sample; (void)user;
-#endif
 }

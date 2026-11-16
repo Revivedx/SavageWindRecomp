@@ -444,19 +444,23 @@ int vk_keylog_read(VkKeyLogEntry **out) {
 }
 
 // The translation's id (its cache/xlate name) and the header its file has
-static uint64_t xlate_id(const uint8_t *code, size_t max_size, int stage, const ShaderKey *key, XlateHeader *hd) {
+static uint64_t xlate_id_as(const char *id, const uint8_t *code, size_t max_size, int stage, const ShaderKey *key,
+                            XlateHeader *hd) {
     memset(hd, 0, sizeof *hd);
     memcpy(hd->magic, XLATE_MAGIC, 4);
     hd->info_size = sizeof(ShaderInfo);
     hd->bin_size = (uint32_t)maxwell_binary_size(code, max_size, stage);
     hd->key = *key;
     hd->stage = stage;
-    const char *id = maxwell_translator_id();
     uint64_t h = hash64(0xcbf29ce484222325ull, id, strlen(id));
     h = hash64(h, hd, sizeof *hd);
     h = hash64(h, code, hd->bin_size);
     if (maxwell_wet_lighting(code, max_size, stage)) h = hash64(h, "wet", 3);  // (Video > Wet grass fix: its own translation)
     return h ? h : 1;
+}
+
+static uint64_t xlate_id(const uint8_t *code, size_t max_size, int stage, const ShaderKey *key, XlateHeader *hd) {
+    return xlate_id_as(maxwell_translator_id(), code, max_size, stage, key, hd);
 }
 
 // The id a translation of this binary with this key has (precompile.c: the pipeline seed names shaders by binary
@@ -466,6 +470,10 @@ uint64_t vk_translate_id_for(const uint8_t *code, size_t max_size, int stage, co
     // (the seed's export only) SAVAGEWIND_SEED_LIST_ID=<translator id>: the ids as a list of a build before the
     // variant change named them (its translator id with the switches in it, the SWX2 file format), so a playthrough's
     // list from such a build can be exported once
+    // SAVAGEWIND_SEED_TRANSLATOR=<translator id>: the ids as another build of the same file format named them (a
+    // player's list from a problem report: --seed-from-report)
+    const char *other = getenv("SAVAGEWIND_SEED_TRANSLATOR");
+    if (other && *other) return xlate_id_as(other, code, max_size, stage, key, &hd);
     const char *old = getenv("SAVAGEWIND_SEED_LIST_ID");
     if (!old || !*old) return xlate_id(code, max_size, stage, key, &hd);
     memset(&hd, 0, sizeof hd);
@@ -941,6 +949,93 @@ static const char taa_instability[] =
         "  imageStore(hist_i, p, h);\n"
         "  imageStore(instab_i, p, vec4(instab));\n"
         "}\n";
+// The light TAA (exec.c mvec_taa, the default; SAVAGEWIND_TAA=full: the seven passes above): one pass. The vector of
+// the nearest surface among the pixel and its 4 diagonal neighbours (edges move with what is in front); the history
+// there (Catmull-Rom, 5 bilinear taps), clipped in YCoCg to the 3x3's mean +- 1.5 standard deviations (0.9 with
+// motion) and its extremes; the new sample a Lanczos 2 of the 3x3 at their jittered distances, deringed to the 3x3.
+// The history's .a counts the frames accumulated (/ 16): the blend is 1 / count down to 0.08 on a still pixel (0.3
+// in fast motion), more where the reactive mask (the vectors' .z: blended effects) is set (a plain blend: weighting
+// the samples by 1 / (1 + luma) darkened the scene, whose values are not display-range). No disocclusion or shading-change detection, no thin-feature locks: the
+// clipping alone drops stale history. The seven passes cost the GPU ~2.5 ms at 1440p (RTX 3060), this one ~0.5.
+static const char taa_lite[] =
+        "layout(set = 0, binding = 0) uniform sampler2D color_t;\n"
+        "layout(set = 0, binding = 1) uniform sampler2D vec_t;\n"
+        "layout(set = 0, binding = 2) uniform sampler2D depth_t;\n"
+        "layout(set = 0, binding = 3) uniform sampler2D hist_t;\n"
+        "layout(set = 0, binding = 8, rgba16f) uniform writeonly image2D hist_i;\n"
+        "layout(set = 0, binding = 9, rgba16f) uniform writeonly image2D out_i;\n"
+        "float lanczos2_sq(float x2) {\n"
+        "  x2 = min(x2, 4.0);\n"
+        "  float a = 0.4 * x2 - 1.0, b = 0.25 * x2 - 1.0;\n"
+        "  return (25.0 / 16.0 * a * a - 9.0 / 16.0) * (b * b);\n"
+        "}\n"
+        "vec4 history(vec2 uv) {\n"
+        "  vec2 sp = uv * pc.size.xy, tc = floor(sp - 0.5) + 0.5, f = sp - tc;\n"
+        "  vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));\n"
+        "  vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);\n"
+        "  vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));\n"
+        "  vec2 w3 = f * f * (-0.5 + 0.5 * f);\n"
+        "  vec2 w12 = w1 + w2;\n"
+        "  vec2 t0 = (tc - 1.0) * pc.size.zw, t3 = (tc + 2.0) * pc.size.zw, t12 = (tc + w2 / w12) * pc.size.zw;\n"
+        "  float a = w12.x * w0.y, b = w0.x * w12.y, c = w12.x * w12.y, d = w3.x * w12.y, e = w12.x * w3.y;\n"
+        "  vec4 s = textureLod(hist_t, vec2(t12.x, t0.y), 0.0) * a + textureLod(hist_t, vec2(t0.x, t12.y), 0.0) * b +\n"
+        "           textureLod(hist_t, t12, 0.0) * c + textureLod(hist_t, vec2(t3.x, t12.y), 0.0) * d +\n"
+        "           textureLod(hist_t, vec2(t12.x, t3.y), 0.0) * e;\n"
+        "  return s / (a + b + c + d + e);\n"
+        "}\n"
+        "void main() {\n"
+        "  ivec2 p = pixel();\n"
+        "  if (!onscreen(p)) return;\n"
+        "  vec2 uv = (vec2(p) + 0.5) * pc.size.zw, J = pc.jit.xy;\n"
+        "  float dn = texelFetch(depth_t, p, 0).r;\n"
+        "  ivec2 pn = p;\n"
+        "  for (int i = 0; i < 4; i++) {\n"
+        "    ivec2 q = clampp(p + ivec2((i & 1) * 2 - 1, (i >> 1) * 2 - 1));\n"
+        "    float d = texelFetch(depth_t, q, 0).r;\n"
+        "    if (d < dn) { dn = d; pn = q; }\n"
+        "  }\n"
+        "  vec4 v = texelFetch(vec_t, pn, 0);\n"
+        "  bool has = v.a >= 0.25;\n"
+        "  vec2 mv = has ? vec2(-0.5 * v.x, 0.5 * v.y) : vec2(0.0);\n"
+        "  vec2 ruv = uv + mv;\n"
+        "  bool fresh = pc.st.x < 0.5 || !has || !inside(ruv);\n"
+        "  vec4 c4 = texelFetch(color_t, p, 0);\n"
+        "  vec3 up = vec3(0.0), mu = vec3(0.0), m2 = vec3(0.0), lo = vec3(65504.0), hi = vec3(-65504.0);\n"
+        "  float uw = 0.0, n = 0.0;\n"
+        "  for (int y = -1; y <= 1; y++)\n"
+        "    for (int x = -1; x <= 1; x++) {\n"
+        "      ivec2 q = p + ivec2(x, y);\n"
+        "      if (!onscreen(q)) continue;\n"
+        "      vec3 s = ycocg(max(texelFetch(color_t, q, 0).rgb, vec3(0.0)));\n"
+        "      vec2 o = vec2(x, y) - J;\n"
+        "      float w = lanczos2_sq(dot(o, o));\n"
+        "      up += s * w; uw += w;\n"
+        "      mu += s; m2 += s * s; n += 1.0;\n"
+        "      lo = min(lo, s); hi = max(hi, s);\n"
+        "    }\n"
+        "  mu /= n;\n"
+        "  vec3 sigma = sqrt(max(m2 / n - mu * mu, vec3(0.0)));\n"
+        "  up = uw > FP16_MIN ? clamp(up / uw, lo, hi) : ycocg(max(c4.rgb, vec3(0.0)));\n"
+        "  vec3 res = up;\n"
+        "  float cnt = 1.0;\n"
+        "  if (!fresh) {\n"
+        "    vec4 h = history(ruv);\n"
+        "    vec3 hc = ycocg(max(h.rgb, vec3(0.0)));\n"
+        "    float prevn = clamp(h.a, 0.0, 1.0) * 16.0, vel = v4k(mv), react = clamp(v.z, 0.0, 1.0);\n"
+        "    float g = mix(1.5, 0.9, clamp(vel / 8.0, 0.0, 1.0));\n"
+        "    vec3 bmin = max(mu - g * sigma, lo), bmax = min(mu + g * sigma, hi);\n"
+        "    vec3 ctr = 0.5 * (bmin + bmax), ext = 0.5 * (bmax - bmin) + 1e-5, dl = hc - ctr, u3 = abs(dl / ext);\n"
+        "    float mx = max(u3.x, max(u3.y, u3.z));\n"
+        "    if (mx > 1.0) hc = ctr + dl / mx;\n"
+        "    float alpha = max(1.0 / (prevn + 1.0), mix(0.08, 0.3, clamp(vel / 16.0, 0.0, 1.0)));\n"
+        "    alpha = max(alpha, 0.5 * react);\n"
+        "    res = mix(hc, up, alpha);\n"
+        "    cnt = min(prevn + 1.0, 16.0);\n"
+        "  }\n"
+        "  vec3 o = max(rgb(res), vec3(0.0));\n"
+        "  imageStore(hist_i, p, vec4(o, cnt / 16.0));\n"
+        "  imageStore(out_i, p, vec4(o, c4.a));\n"
+        "}\n";
 static const char taa_resolve[] =
         "layout(set = 0, binding = 0) uniform sampler2D color_t;\n"
         "layout(set = 0, binding = 1) uniform sampler2D dil_t;\n"
@@ -1076,6 +1171,27 @@ static const char *builtin_src(const char *name, int *stage) {
                "layout(location = 0) in vec2 uv;\n"
                "layout(location = 0) out vec4 o;\n"
                "void main() { o = vec4(texture(t, uv).rgb, 1.0); }\n";
+    }
+    // Accessibility > Colour vision (runtime/colour_vision.h; exec.c vk_present_draw): present.frag with the
+    // correction's 3x3 matrix applied in linear light, rows r0..r2 after the vertex shader's 32 bytes. r0.w = 1: the
+    // picture is already linear (HDR's float picture), else it holds sRGB-encoded values (the game's 8-bit image, read
+    // raw), decoded and encoded again around the matrix.
+    if (!strcmp(name, "present_cvd.frag")) {
+        *stage = STAGE_FRAGMENT;
+        return "#version 450\n"
+               "layout(set = 0, binding = 0) uniform sampler2D t;\n"
+               "layout(push_constant) uniform P { layout(offset = 32) vec4 r0; vec4 r1; vec4 r2; } pc;\n"
+               "layout(location = 0) in vec2 uv;\n"
+               "layout(location = 0) out vec4 o;\n"
+               "vec3 enc(vec3 c) { return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c)); }\n"
+               "vec3 dec(vec3 c) { return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c)); }\n"
+               "void main() {\n"
+               "  vec3 c = texture(t, uv).rgb;\n"
+               "  bool lin = pc.r0.w > 0.5;\n"
+               "  vec3 l = lin ? c : dec(clamp(c, 0.0, 1.0));\n"
+               "  vec3 m = max(vec3(dot(pc.r0.xyz, l), dot(pc.r1.xyz, l), dot(pc.r2.xyz, l)), vec3(0.0));\n"
+               "  o = vec4(lin ? m : enc(min(m, vec3(1.0))), 1.0);\n"
+               "}\n";
     }
     // ---- post passes before the present (Video tab "Anti-aliasing" / "Upscaler"): exec.c vk_present_draw.
     // Each draws a fullscreen triangle into an image the size of its output; push constants: two vec4.
@@ -1332,11 +1448,11 @@ static const char *builtin_src(const char *name, int *stage) {
     }
     if (!strncmp(name, "taa_", 4)) {
         static const char *const names[] = {"taa_prepare.comp", "taa_shade_src.comp", "taa_shade_down.comp", "taa_shade.comp",
-                                            "taa_reactivity.comp", "taa_instability.comp", "taa_resolve.comp"};
+                                            "taa_reactivity.comp", "taa_instability.comp", "taa_resolve.comp", "taa_lite.comp"};
         static const char *const bodies[] = {taa_prepare, taa_shade_src, taa_shade_down, taa_shade, taa_reactivity,
-                                             taa_instability, taa_resolve};
-        static char *src[7];
-        for (int i = 0; i < 7; i++) {
+                                             taa_instability, taa_resolve, taa_lite};
+        static char *src[8];
+        for (int i = 0; i < 8; i++) {
             if (strcmp(name, names[i])) continue;
             if (!src[i]) {
                 size_t a = strlen(taa_common), b = strlen(bodies[i]);
@@ -1377,7 +1493,7 @@ static const char *builtin_src(const char *name, int *stage) {
                "  float peak = -1.0 / mix(8.0, 5.0, clamp(pc.a.x, 0.0, 1.0));\n"
                "  float w = amp.g * peak;\n"
                "  vec3 r = (b * w + d * w + f * w + h * w + e) / (1.0 + 4.0 * w);\n"
-               "  o = vec4(clamp(r, 0.0, 1.0), e4.a);\n"
+               "  o = vec4(max(r, 0.0), e4.a);\n"
                "}\n";
     }
     // Colour grading of the 3D scene (Video > Colour; exec.c scene_post, runtime/color_grade.h). The scene holds
@@ -1399,6 +1515,7 @@ static const char *builtin_src(const char *name, int *stage) {
     "  vec3 c = s.rgb * pc.g.rgb;\n"                                                                            \
     "  float y = dot(c, vec3(0.2126, 0.7152, 0.0722));\n"                                                       \
     "  c = max(mix(vec3(y), c, pc.a.x), 0.0);\n"                                                                \
+    "  vec3 hdr = max(c - vec3(1.0), vec3(0.0));\n"                                                             \
     "  vec3 x = enc(min(c, 1.0));\n"                                                                            \
     "  vec3 lo = 0.5 * pow(2.0 * x, vec3(pc.g.w)), hi = 1.0 - 0.5 * pow(max(2.0 - 2.0 * x, 0.0), vec3(pc.g.w));\n" \
     "  x = mix(lo, hi, step(0.5, x));\n"                                                                        \
@@ -1407,7 +1524,7 @@ static const char *builtin_src(const char *name, int *stage) {
     "  vec3 l = texture(t1, u * ((pc.a.z - 1.0) / pc.a.z) + 0.5 / pc.a.z).rgb;\n"                               \
     "  x = mix(x, clamp(l, 0.0, 1.0), pc.a.y);\n"                                                               \
     "#endif\n"                                                                                                  \
-    "  o = vec4(dec(x), s.a);\n"                                                                                \
+    "  o = vec4(dec(x) + hdr, s.a);\n"                                                                          \
     "}\n"
         if (name[5] == '_')
             return "#version 450\n#define LUT 1\nlayout(set = 0, binding = 1) uniform sampler3D t1;\n" GRADE_BODY;

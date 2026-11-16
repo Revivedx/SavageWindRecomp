@@ -30,6 +30,7 @@
 //   stats               RecStats: T's fields plain, R's and the waits' _Atomic relaxed adds; read by T
 //   profiling           the profiler's markers (runtime/prof.h): the recorder thread's batches and submits, T's waits on it
 #include "record.h"
+#include "mvec.h"
 #include "../../prof.h"
 
 #include <pthread.h>
@@ -63,6 +64,8 @@ static _Atomic uint64_t r_busy_ns, r_wakeups, r_submit_ns;
 static _Atomic uint64_t a_seq_waits, a_seq_wait_ns;  // (waits from any thread)
 
 bool rec_on(void) { return on > 0; }
+static __thread bool is_recorder;
+bool rec_on_recorder(void) { return is_recorder; }
 
 #define NOW() plat_now_ns()
 #define ADD(v, x) atomic_fetch_add_explicit(&(v), (x), memory_order_relaxed)
@@ -180,7 +183,9 @@ static uint64_t spin_for_work(uint64_t t) {  // the published end once it moves 
 
 static void *run(void *arg) {
     (void)arg;
+    is_recorder = true;
     prof_thread_name("vk-record");
+    plat_thread_elevate();
     extern void control_prof_thread(const char *name);  // runtime/control_prof.c (`threads`)
     control_prof_thread("recorder");
     uint64_t t = 0;
@@ -363,9 +368,11 @@ void rec_UpdateDescriptorSets(uint32_t n, const VkWriteDescriptorSet *w) {
 }
 
 // ================================================================== command buffers, submissions
+static void push_mvec_forget(void);
 static void begin_cb_run(const void *p) {
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     VK_CHECK(vkBeginCommandBuffer(*(const VkCommandBuffer *)p, &bi));
+    push_mvec_forget();
 }
 void rec_BeginCommandBuffer(VkCommandBuffer cb) {
     if (on <= 0) { begin_cb_run(&cb); return; }
@@ -396,7 +403,9 @@ static void submit_run(const void *p) {
                         .waitSemaphoreInfoCount = a->nwait, .pWaitSemaphoreInfos = a->wait};
     SW_ZONE("vkQueueSubmit2");
     uint64_t t0 = NOW();
+    pthread_mutex_lock(&g_vk_queue_lock);
     VkResult r = vkQueueSubmit2(g_vk.queue, 1, &si, VK_NULL_HANDLE);
+    pthread_mutex_unlock(&g_vk_queue_lock);
     uint64_t dt = NOW() - t0;
     if (prof) ADD(r_submit_ns, dt);
     if (dt > 50000000) {  // (a driver stall: a slow wait on the recorder shows where it was)
@@ -609,14 +618,45 @@ void rec_CmdBindDescriptorSets(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPip
 CMD_ARGS(CmdPushConstants, VkPipelineLayout layout; VkShaderStageFlags stages; uint32_t off, size;)  // then the bytes
 static void CmdPushConstants_run(const void *p) {
     const CmdPushConstantsArgs *a = p;
+    push_mvec_forget();
     vkCmdPushConstants(a->cb, a->layout, a->stages, a->off, a->size, after(a, sizeof *a));
 }
 void rec_CmdPushConstants(VkCommandBuffer cb, VkPipelineLayout layout, VkShaderStageFlags stages, uint32_t off, uint32_t size, const void *data) {
-    if (on <= 0) { vkCmdPushConstants(cb, layout, stages, off, size, data); return; }
+    if (on <= 0) { push_mvec_forget(); vkCmdPushConstants(cb, layout, stages, off, size, data); return; }
     ENQ_T0();
     CmdPushConstantsArgs *a = push(CmdPushConstants_run, sizeof *a, size);
     *a = (CmdPushConstantsArgs){cb, layout, stages, off, size};
     memcpy(after(a, sizeof *a), data, size);
+    commit();
+    ENQ_END();
+}
+
+CMD_ARGS(CmdPushConstantsMvec, VkPipelineLayout layout; uint32_t seq;)
+// Nine scene draws in ten have no motion of their own (mflag 0: the motion program then reads nothing else), and
+// pushing all MVEC_PUSH bytes for each was ~0.17 ms a frame of the recorder (RTX 3060, 1080p). Such a draw pushes only
+// mflag, and none at all when the last push in this render pass was a zero mflag with the same layout. Any other
+// push, a new render pass or another command buffer starts over (push_mvec_forget).
+static VkCommandBuffer mv_cb;
+static VkPipelineLayout mv_layout;
+static void push_mvec_forget(void) { mv_cb = VK_NULL_HANDLE; }
+static void push_mvec(VkCommandBuffer cb, VkPipelineLayout layout, uint32_t seq) {
+    uint32_t pc[MVEC_PUSH / 4];
+    mvec_resolve(seq, pc);
+    if (pc[0]) {
+        vkCmdPushConstants(cb, layout, VK_SHADER_STAGE_VERTEX_BIT, 0, MVEC_PUSH, pc);
+        mv_cb = VK_NULL_HANDLE;
+        return;
+    }
+    if (cb == mv_cb && layout == mv_layout) return;
+    vkCmdPushConstants(cb, layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof pc[0], pc);
+    mv_cb = cb, mv_layout = layout;
+}
+static void CmdPushConstantsMvec_run(const void *p) { const CmdPushConstantsMvecArgs *a = p; push_mvec(a->cb, a->layout, a->seq); }
+void rec_CmdPushConstantsMvec(VkCommandBuffer cb, VkPipelineLayout layout, uint32_t seq) {
+    if (on <= 0) { push_mvec(cb, layout, seq); return; }
+    ENQ_T0();
+    CmdPushConstantsMvecArgs *a = push(CmdPushConstantsMvec_run, sizeof *a, 0);
+    *a = (CmdPushConstantsMvecArgs){cb, layout, seq};
     commit();
     ENQ_END();
 }
@@ -818,6 +858,7 @@ static void begin_note(void) {
 static void begin_rendering(VkCommandBuffer cb, const VkRenderingInfo *ri) {
     rt_crash_note = begin_note;
     begin_cur = ri;
+    push_mvec_forget();
     vkCmdBeginRendering(cb, ri);
     begin_cur = NULL;
 }

@@ -12,6 +12,8 @@ uint64_t framepace_period_ns(void);
 bool framepace_on(void);
 // An event is running: a cutscene, a talk, an item fanfare (the game's event manager has an active event)
 bool framepace_in_event(void);
+// A MessageDialog layout is still drawable, including its closing animation.
+bool framepace_dialogue_ui(void);
 // The start screen or one of its menus is up (a 16:9 layout over pictures of its own)
 bool framepace_title_ui(void);
 // The "downloadable content" notice the game shows over the start screen (only B closes it)

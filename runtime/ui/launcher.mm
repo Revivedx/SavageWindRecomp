@@ -52,6 +52,7 @@ extern "C" {
 #include "gamelib.h"
 #include "game_versions.h"
 #include "dlc_check.h"
+#include "dlss_fetch.h"
 #include "romfs_build.h"
 #include "problem_report.h"
 #include "post_update.h"
@@ -105,7 +106,7 @@ static void save_png(id<MTLTexture> tex, const char *path) {
 #endif
 
 // The version this build is (also names the release files; Makefile / tools/bundle_macos.sh / make_dmg.sh read it).
-#define SAVAGEWIND_VERSION "0.5.3-alpha.5"
+#define SAVAGEWIND_VERSION "0.6.0-alpha.6"
 extern "C" const char *rt_version(void) { return SAVAGEWIND_VERSION; }  // (the title screen's version line: fs.c)
 
 // ------------------------------------------------------------------ game files
@@ -539,6 +540,37 @@ static std::string precompile_line(void) {
 
 static std::atomic<bool> g_stay_on_setup{false}, g_dlc_checking{false};
 
+// ------------------------------------------------------------------ NVIDIA DLSS (runtime/dlss_fetch.h)
+// NVIDIA's library for Video > Upscaler's NVIDIA DLSS, downloaded from NVIDIA's own repository after a setup when its
+// option is on (the setup page's DOWNLOAD NVIDIA DLSS, settings.dlss_download), or on its own from the game files
+// page. Not needed to play: a failed download leaves DLSS greyed out, nothing else.
+static const char k_dlss_text[] = "For NVIDIA DLSS in Video > Upscaler, on NVIDIA RTX graphics cards: downloads "
+                                   "NVIDIA's DLSS library (59 MB) from NVIDIA's own repository on GitHub. It is "
+                                   "NVIDIA's, under NVIDIA's licence, and not part of Savage Wind.";
+static std::atomic<bool> g_dlss_fetching{false};
+static std::atomic<float> g_dlss_frac{0};
+static void dlss_progress(uint64_t done, uint64_t total) { g_dlss_frac = total ? (float)((double)done / (double)total) : 0; }
+static bool run_dlss_fetch(void) {
+    g_dlss_frac = 0;
+    g_dlss_fetching = true;
+    set_job("Downloading NVIDIA DLSS...");
+    char why[300];
+    bool ok = dlss_fetch_run(dlss_progress, why, sizeof why);
+    g_dlss_fetching = false;
+    if (!ok) fprintf(stderr, "[launcher] NVIDIA DLSS: %s\n", why);
+    return ok;
+}
+static void *dlss_fetch_thread(void *) {
+    if (run_dlss_fetch()) set_job("NVIDIA DLSS downloaded.");
+    else set_job("NVIDIA DLSS couldn't be downloaded", true, "The game runs without it. Check the internet connection and "
+                 "try again. The log has the details.");
+    pthread_mutex_lock(&g_lock);
+    g_stay_on_setup = true;
+    g_busy = false;
+    pthread_mutex_unlock(&g_lock);
+    return NULL;
+}
+
 // Linux: the update runs in this program (runtime/post_update.h). It comes back only if it failed.
 // Add to Steam (runtime/steam_shortcuts.h): waits for Steam to close, so on a thread of its own
 static std::atomic<bool> g_steam_busy{false};
@@ -869,6 +901,8 @@ check:
             run_precompile();  // (a new version: always, the caches were emptied at its start)
 #endif
         if (why.empty()) post_update_finish(SAVAGEWIND_VERSION);
+        if (why.empty() && g_settings.dlss_download && dlss_fetch_offered() && !dlss_fetch_present())
+            run_dlss_fetch();  // (not needed to play: the game files are ready either way)
         RtDlcCheck dc = rt_dlc_check(g_root.c_str());
         pthread_mutex_lock(&g_lock);
         g_dlc = dc;
@@ -896,8 +930,23 @@ done:
 }
 
 // ------------------------------------------------------------------ folder dialog (SDL calls back on any thread)
+static std::string trim_folder_path(const char *s) {
+    std::string p = s ? s : "";
+    while (!p.empty() && (p.front() == ' ' || p.front() == '\t' || p.front() == '\r' || p.front() == '\n')) p.erase(p.begin());
+    while (!p.empty() && (p.back() == ' ' || p.back() == '\t' || p.back() == '\r' || p.back() == '\n')) p.pop_back();
+    if (p.size() >= 2 && ((p.front() == '"' && p.back() == '"') || (p.front() == '\'' && p.back() == '\'')))
+        p = p.substr(1, p.size() - 2);
+    return p;
+}
+
 static void SDLCALL picked(void *, const char *const *files, int) {
-    if (!files || !files[0]) return;
+    if (!files) {
+        const char *err = SDL_GetError();
+        if (err && err[0]) fprintf(stderr, "[launcher] folder dialog error: %s\n", err);
+        set_job("Folder picker failed to open", true, "Type or paste the folder path below instead.");
+        return;
+    }
+    if (!files[0]) return;
     pthread_mutex_lock(&g_lock);
     g_src = files[0];
     pthread_mutex_unlock(&g_lock);
@@ -1303,8 +1352,8 @@ static void launcher_fonts(void) {
     const char *fonts[] = {test ? test : "", own.c_str(), "fonts/nintendo_udsgr_std_003.ttf",
                            "/System/Library/Fonts/Avenir Next.ttc", "/System/Library/Fonts/Helvetica.ttc",
                            "C:/Windows/Fonts/segoeui.ttf"};
-    static const ImWchar latin[] = {0x20, 0xFF, 0x2039, 0x203A, 0x2192, 0x2192, 0x2713, 0x2713, 0x25B8, 0x25B8, 0};  // + ‹ › → ✓ ▸
-    static const ImWchar cyrillic[] = {0x20, 0xFF, 0x400, 0x4FF, 0x2039, 0x203A, 0x2192, 0x2192, 0x2713, 0x2713, 0x25B8,
+    static const ImWchar latin[] = {0x20, 0xFF, 0x0100, 0x017F, 0x2039, 0x203A, 0x2192, 0x2192, 0x2713, 0x2713, 0x25B8, 0x25B8, 0};  // + Latin-A, ‹ › → ✓ ▸
+    static const ImWchar cyrillic[] = {0x20, 0xFF, 0x0100, 0x017F, 0x400, 0x4FF, 0x2039, 0x203A, 0x2192, 0x2192, 0x2713, 0x2713, 0x25B8,
                                        0x25B8, 0};
     const ImWchar *ranges = !strcmp(ui_lang(), "ru") ? cyrillic : latin;
     auto add = [&](const char *p, float size, const ImWchar *r) {
@@ -1425,6 +1474,41 @@ extern "C" void boot_splash_close(void) {
     g_boot_ctx = NULL;
 }
 #endif
+
+// (runtime/main.c) --prepare --game <folder>: what Set up game files does on the start screen, without a window, for a
+// launcher that brings the player's copy. One "progress <0-1> <step>" line each time the step or the bar moves (the
+// shader pipelines need a window and are left out: they compile when first drawn). 0: the game files are ready.
+extern "C" int launcher_prepare(const char *root, const char *src) {
+    g_root = root;
+    g_src = src;
+    g_busy = true;
+    if (post_update_pending(SAVAGEWIND_VERSION)) post_update_reset_shaders(SAVAGEWIND_VERSION);  // (as a plain start does)
+    pthread_t t;
+    pthread_create(&t, NULL, extract_thread, NULL);
+    std::string last_step;
+    int last_percent = -1;
+    for (;;) {
+        pthread_mutex_lock(&g_lock);
+        bool busy = g_busy;
+        std::string job = g_job;
+        pthread_mutex_unlock(&g_lock);
+        std::string step = trv(job);
+        int percent = (int)(extract_progress() * 100);
+        if (!job.empty() && (step != last_step || percent != last_percent)) {
+            printf("progress %.2f %s\n", percent / 100.0, step.c_str());
+            fflush(stdout);
+        }
+        last_step = step;
+        last_percent = percent;
+        if (!busy) break;
+        SDL_Delay(500);
+    }
+    pthread_join(t, NULL);
+    pthread_mutex_lock(&g_lock);
+    bool failed = g_job_failed;
+    pthread_mutex_unlock(&g_lock);
+    return failed || !check_game_files(g_root).empty() ? 1 : 0;
+}
 
 // mode (runtime/main.c): 0 setup - the game files page alone, the game starts once they're ready; 1 configuration.
 // Returns when the game is to start; QUIT (and closing the setup page) exits.
@@ -1961,6 +2045,19 @@ extern "C" void launcher_run(const char *root, int mode) {
                         }
                     }
 #endif
+                    if (!g_confirm_delete && dlss_fetch_offered()) {  // NVIDIA's DLSS library, now (or again)
+                        bool have = dlss_fetch_present();
+                        opt_section("NVIDIA DLSS");
+                        if (have) opt_disable_next();
+                        if (opt_action("NVIDIA DLSS", tr(have ? "Downloaded" : "Not downloaded"), k_dlss_text, true)) {
+                            pthread_mutex_lock(&g_lock);
+                            g_busy = true;
+                            pthread_mutex_unlock(&g_lock);
+                            pthread_t t;
+                            pthread_create(&t, NULL, dlss_fetch_thread, NULL);
+                            pthread_detach(t);
+                        }
+                    }
                 }
                 if (!ready || !g_confirm_delete) {  // choose the folder, set up (again: from it, or the game code alone)
                     opt_section(!ready ? "Your copy of the game" : "Set up again");
@@ -1968,6 +2065,24 @@ extern "C" void launcher_run(const char *root, int mode) {
                     if (opt_action("Game files folder", src_v.c_str(), src_d.c_str(), true))
                         SDL_ShowOpenFolderDialog(picked, NULL, win, NULL, false);
                     if (!src.empty()) check_left_of_value(src_v);
+                    if (busy) opt_disable_next();
+                    {
+                        static char path_buf[1024];
+                        static std::string last_synced_src;
+                        if (src != last_synced_src) {
+                            snprintf(path_buf, sizeof path_buf, "%s", src.c_str());
+                            last_synced_src = src;
+                        }
+                        if (opt_text("Folder path", path_buf, sizeof path_buf, "Type or paste path...",
+                                     "Enter the path to your extracted game files folder directly if the system folder picker does not open.")) {
+                            std::string p = trim_folder_path(path_buf);
+                            pthread_mutex_lock(&g_lock);
+                            g_src = p;
+                            pthread_mutex_unlock(&g_lock);
+                            last_synced_src = p;
+                            snprintf(path_buf, sizeof path_buf, "%s", p.c_str());
+                        }
+                    }
                     if (!ready) {
                         first_row();
                         opt_section("Set up");
@@ -1990,6 +2105,13 @@ extern "C" void launcher_run(const char *root, int mode) {
                                        "files page of Savage Wind Configuration."))
                             settings_save();
                     }
+#endif
+                    if (dlss_fetch_offered() && !dlss_fetch_present()) {  // (an NVIDIA driver, NVIDIA's DLL not here)
+                        if (busy) opt_disable_next();
+                        if (opt_toggle("Download NVIDIA DLSS", &g_settings.dlss_download, true, k_dlss_text))
+                            settings_save();
+                    }
+#ifndef __APPLE__
                     {   // Savage Wind's own colour look (runtime/color_grade.h): on at the first setup unless the player
                         // chose a LUT before; Options > Colour changes it later. It comes with the Vivid colour preset,
                         // which suits the LUT best (the user's pick); turning the look off puts Natural back from Vivid.
@@ -2014,9 +2136,13 @@ extern "C" void launcher_run(const char *root, int mode) {
                     }
 #endif
                     if (shipped_release) {  // (runtime/post_update.h)
-                        if (opt_toggle("Check for updates", &g_settings.check_updates, true,
-                                       "When Savage Wind Configuration opens, asks GitHub if there is a new version and "
-                                       "offers it. Nothing is installed until you press Update."))
+                        if (const char *by = update_launcher())  // (installed by a launcher, which updates it: a row that
+                            opt_action("Check for updates", by,  //  only says so - pressing it does nothing)
+                                       "Updates come from the launcher that installed Savage Wind (named on the right). "
+                                       "After it updates Savage Wind, the next start sets the new version up by itself.");
+                        else if (opt_toggle("Check for updates", &g_settings.check_updates, true,
+                                            "When Savage Wind Configuration opens, asks GitHub if there is a new version and "
+                                            "offers it. Nothing is installed until you press Update."))
                             settings_save();
                         if (opt_toggle("Open this screen first", &g_settings.start_in_config, true,
                                        "Starting Savage Wind opens this screen, where updates are offered. Turned off, "
@@ -2119,6 +2245,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                             atomic_store(&g_pc.cancel, true);
                     }
 #endif
+                    if (g_dlss_fetching) f = g_dlss_frac, title = tr("Downloading NVIDIA DLSS"), nnotes = 0;
                     float tfs = g_font_menu->FontSize * 0.75f, sfs = g_font_small->FontSize * 0.85f;
                     ImVec2 ts = g_font_menu->CalcTextSizeA(tfs, FLT_MAX, 0, title);
                     float line_h = g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, "A").y;

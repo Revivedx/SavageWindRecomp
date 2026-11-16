@@ -30,6 +30,7 @@
 #include "save_profiles.h"
 #include "../perfcount.h"
 #include "../platform.h"
+#include "../game_place.h"
 
 #define FS_PATH_NOT_FOUND MAKE_RESULT(2, 1)
 #define FS_PATH_EXISTS MAKE_RESULT(2, 2)
@@ -361,7 +362,8 @@ static void voice_redirect(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
         if (!strncmp(R->rom_files[i].path, pre, pl)) chosen[nc++] = &R->rom_files[i];
     if (!nc) { LOG("[fs] voices: the RomFS has no %s folder, the game's own voices play\n", pre); free(chosen); return; }
     qsort(chosen, nc, sizeof *chosen, by_name_after);
-    int n = 0, nh = 0;
+    int n = 0, nh = 0, nov = 0;
+    uint64_t *ov_at = calloc(nc, sizeof *ov_at);  // (where a chosen file's overlay copy is appended; 0: not yet)
     struct Hybrid { int file; uint8_t *data; } *hy = malloc(sizeof *hy * R->rom_nfiles);
     for (int i = 0; i < R->rom_nfiles; i++) {
         const char *p = R->rom_files[i].path;
@@ -369,24 +371,46 @@ static void voice_redirect(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
         if (!strchr(p + 6, '/')) continue;
         RomFile *key = &R->rom_files[i], **hit = bsearch(&key, chosen, nc, sizeof *chosen, by_name_after);
         if (!hit) continue;
-        size_t pn = strlen(p), on = R->rom_files[i].size, vn = (*hit)->size;
+        // A chosen-folder file the overlay folder replaces (a voice mod) is the one that plays: its host file
+        char host[1200];
+        struct stat sb;
+        bool ov = overlay_file((*hit)->path, host, sizeof host) && !stat(host, &sb);
+        nov += ov;
+        size_t pn = strlen(p), on = R->rom_files[i].size, vn = ov ? (size_t)sb.st_size : (*hit)->size;
         if (pn > 5 && !strcmp(p + pn - 5, ".bars") && on < (1u << 20) && vn < (1u << 20)) {
             uint8_t *own = malloc(on ? on : 1), *vb = malloc(vn ? vn : 1);
-            bool ok = romfs_image_pread(R->img, own, on, R->rom_files[i].off) == (ssize_t)on &&
-                      romfs_image_pread(R->img, vb, vn, (*hit)->off) == (ssize_t)vn && bars_hybrid(own, on, vb, vn);
+            bool got = false;
+            if (ov) {
+                FILE *f = fopen(host, "rb");
+                got = f && fread(vb, 1, vn, f) == vn;
+                if (f) fclose(f);
+            } else got = romfs_image_pread(R->img, vb, vn, (*hit)->off) == (ssize_t)vn;
+            bool ok = romfs_image_pread(R->img, own, on, R->rom_files[i].off) == (ssize_t)on && got &&
+                      bars_hybrid(own, on, vb, vn);
             free(vb);
             if (ok) { hy[nh++] = (struct Hybrid){i, own}; n++; continue; }
             free(own);
         }
         uint8_t *meta = meta_copy(fmeta, foff, fsz);
-        memcpy(meta + R->rom_files[i].meta + 8, fmeta + (*hit)->meta + 8, 16);  // (data offset, size)
-        if ((*hit)->size > R->rom_files[i].size) {
+        if (ov) {  // (the host file appended past the end of the image, as the overlay below does)
+            uint64_t *at = &ov_at[hit - chosen], size = vn;  // (one appended copy for every language that plays it)
+            if (!*at) {
+                if (R->ov_n == R->ov_cap) { R->ov_cap = R->ov_cap ? R->ov_cap * 2 : 256; R->ov = realloc(R->ov, sizeof *R->ov * R->ov_cap); }
+                R->ov[R->ov_n++] = (Overlay){R->ov_end, size, strdup(host), -1, NULL};
+                *at = R->ov_end;
+                R->ov_end = (R->ov_end + size + 0xF) & ~0xFull;
+            }
+            uint64_t rel = *at - R->rom_data_off;
+            memcpy(meta + R->rom_files[i].meta + 8, &rel, 8);
+            memcpy(meta + R->rom_files[i].meta + 0x10, &size, 8);
+        } else memcpy(meta + R->rom_files[i].meta + 8, fmeta + (*hit)->meta + 8, 16);  // (data offset, size)
+        if (vn > R->rom_files[i].size) {
             R->grown = realloc(R->grown, sizeof *R->grown * (R->ngrown + 1));
-            R->grown[R->ngrown++] = (GrownFile){p, (*hit)->size - R->rom_files[i].size};
+            R->grown[R->ngrown++] = (GrownFile){p, vn - R->rom_files[i].size};
         }
         n++;
     }
-    free(chosen);
+    free(chosen), free(ov_at);
     if (nh) {  // the banks, one after another past the end of the image
         uint8_t *meta = meta_copy(fmeta, foff, fsz);
         uint64_t total = 0;
@@ -405,7 +429,8 @@ static void voice_redirect(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
         R->ov_end = (R->ov_end + total + 0xF) & ~0xFull;
     }
     free(hy);
-    LOG("[fs] voices: %d files play %s's voices (%d banks keep the text's subtitle markers)\n", n, vf, nh);
+    LOG("[fs] voices: %d files play %s's voices (%d banks keep the text's subtitle markers, %d from the overlay folder)\n",
+        n, vf, nh, nov);
 }
 
 // The game sets aside memory for a resource by its path's entry in System/Resource/ResourceSizeTable (the RSTB: the
@@ -980,9 +1005,10 @@ static void hud_letters_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz)
 // (Savage Wind+) Video > Haze: the air's haze. BOTW's outdoor haze is its atmospheric scattering, set per climate in
 // Pack/TitleBG.pack's WorldMgr/normal.bwinfo (AAMP, 20 climates): CalcMie and CalcRayleigh (the white and the blue of
 // the air: lower, clearer; at 0.6x the sky darkens and turns teal) and CalcSfParamNear (0 or below: the haze close by,
-// least at 0). The setting's share k of the game's haze gives those 0.7 + 0.3 k times theirs (0.85 at 50 %, where far
-// mountains keep their colour and the sky its blue; seen from Hebra's tower at noon, clear sky) and k times the near
-// one. The file is read at the start: one patch over its bytes, the same size.
+// least at 0). The setting's share k of the game's haze gives those 0.7 + 0.3 k times theirs and k times the near one.
+// k stays at 75 % or more (HAZE_MIN): at 50 % (0.85x) the sky, the far mountains and the ground already turn
+// green-teal on the Great Plateau at day, so 0-50 are left out. The file is read at the start: one patch over its
+// bytes, the same size.
 static uint32_t crc32_str(const char *s) { return (uint32_t)crc32(0, (const uint8_t *)s, (uInt)strlen(s)); }
 static size_t haze_done[512];  // (the value offsets changed so far)
 static void haze_walk_list(uint8_t *d, size_t n, size_t o, const uint32_t h[3], const float f[3], int *changed, int depth) {
@@ -1019,7 +1045,7 @@ static void haze_walk_list(uint8_t *d, size_t n, size_t o, const uint32_t h[3], 
                                       //  names that this scaling turned teal)
 }
 static void haze_patch(void) {
-    int pct = g_settings.haze;
+    int pct = g_settings.haze < HAZE_MIN ? HAZE_MIN : g_settings.haze;
     if (pct >= 100 || R != &images[0] || R->npatches >= 16) return;
     static const char pack_path[] = "Pack/TitleBG.pack", name[] = "WorldMgr/normal.bwinfo";
     int k = 0;
@@ -1463,9 +1489,8 @@ uint8_t *fs_game_file(const char *path, size_t *out_n) {
     return NULL;
 }
 
-// Path of the game's RomFS file containing image offset `off` (NULL if none).
-const char *romfs_file_at(uint64_t off) {
-    const RomImage *m = &images[0];
+// Path of the file of image m containing image offset `off` (NULL if none).
+static const char *image_file_at(const RomImage *m, uint64_t off) {
     int lo = 0, hi = m->rom_nfiles - 1;
     while (lo <= hi) {
         int mid = (lo + hi) / 2;
@@ -1487,6 +1512,9 @@ int fs_recent_files(const char **out, int max) {
     return k;
 }
 
+// Path of the game's RomFS file containing image offset `off` (NULL if none).
+const char *romfs_file_at(uint64_t off) { return image_file_at(&images[0], off); }
+
 // ------------------------------------------------------------------ IStorage (raw RomFS image)
 typedef struct { RomImage *img; uint64_t size; } Storage;
 
@@ -1505,7 +1533,16 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
         perfcount_add(PC_FILE_READS, 1), perfcount_add(PC_FILE_NS, plat_now_ns() - ft0);
         if (n > 0) perfcount_add(PC_FILE_BYTES, (uint64_t)n);
         if (n < 0) LOG("[fs] storage read failed at %llx: %s\n", off, strerror(errno));
-        if (m != &images[0]) break;
+        if (m != &images[0]) {  // (add-on content: its shrines and Divine Beasts)
+            const char *path = image_file_at(m, off);
+            static const char *last;
+            if (path && path != last) {
+                last = path;
+                if (getenv("SAVAGEWIND_LOG_FILES")) LOG("[fs] read aoc %s\n", path);
+                game_place_on_read(path);
+            }
+            break;
+        }
         {
             const char *path = romfs_file_at(off);
             static const char *last;
@@ -1513,6 +1550,7 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
                 last = path;
                 recent_files[atomic_load(&recent_n) & 7] = path, atomic_fetch_add(&recent_n, 1);
                 if (getenv("SAVAGEWIND_LOG_FILES")) LOG("[fs] read %s\n", path);
+                game_place_on_read(path);
             }
             // SAVAGEWIND_LOG_STREAMS=1: every read of a stream's header (a .bfstm read from its start: the sound
             // system opening it, once per playback of a BGM or other streamed sound)

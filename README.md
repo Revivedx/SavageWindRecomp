@@ -81,6 +81,11 @@ Saves are in the `save` folder of Savage Wind's data folder: next to `savagewind
 `~/.local/share/savagewind/save/` on Linux and the Steam Deck. To back them up or move them, close the game and copy
 the whole folder. More in [Saves](docs/saves.md), including profiles and Wii U / Cemu import.
 
+## Cheats, assists and amiibo
+
+Colour vision for colour-blind players, god mode, infinite stamina, damage and weapon wear settings, items, rupees,
+weather, teleporting and the virtual amiibo reader: how to use them in [Cheats and assists](docs/cheats-and-assists.md).
+
 ## Status
 
 | Area | Share | Progress |
@@ -113,7 +118,7 @@ Every action can be rebound in the game's Options. All the keys: [Controls](docs
 Read the [FAQ](docs/FAQ.md) first: issues about something it already covers are closed right away. Use the latest
 release and game version 1.9.0, search the [existing issues](https://github.com/Revivedx/SavageWindRecomp/issues?q=is%3Aissue),
 and [open one](https://github.com/Revivedx/SavageWindRecomp/issues/new/choose) with your `savagewind.log`. On a crash
-or a cutscene bug, attach your zipped `save` folder too. Reports without these are closed after 7 days.
+or a cutscene bug, attach your zipped `save` folder too. Reports without these are closed after 24 hours.
 
 ## Contributing and building
 

@@ -9,6 +9,9 @@
 #include "control.h"
 #include "control_cells.h"
 #include "control_places.h"
+#include "discord_rpc.h"
+#include "game_place.h"
+#include "language.h"
 #include "perfmon.h"
 #include "rt.h"
 #include "game_sites.h"
@@ -114,7 +117,31 @@ static bool link_position(float p[3]) {
 // last one still says where), so a report's log says where its bug happened and `goto` takes the line back.
 // SAVAGEWIND_PLACE_LOG=0: no lines.
 #define PLACE_LOG_NS 30000000000ull
+#define PRESENCE_NS 5000000000ull
+// The text's language: SAVAGEWIND_DISCORD_LANG (en, es, or a game language's folder), or the game's. Discord doesn't tell
+// its own to a local program.
+static const char *presence_language(void) {
+    const char *lang = getenv("SAVAGEWIND_DISCORD_LANG"), *code = language_text_code();
+    if (lang && *lang) return lang;
+    for (int i = 1; i < g_ntext_languages; i++)
+        if (!strcmp(code, g_text_languages[i].code)) return g_text_languages[i].folder;
+    return "USen";
+}
+
+static void presence_frame(void) {
+    static uint64_t last_ns;
+    uint64_t now = plat_now_ns();
+    if (last_ns && now - last_ns < PRESENCE_NS) return;
+    last_ns = now;
+    game_place_set_language(presence_language());  // (each time: the options can change the game's language while it runs)
+    float p[3] = {0};
+    bool has_link = link_position(p);
+    char details[128], state[128];
+    if (game_place_text(p[0], p[2], has_link, details, sizeof details, state, sizeof state)) discord_rpc_set(details, state);
+}
+
 void control_place_frame(void) {
+    presence_frame();
     static int on = -1;
     static uint64_t last_ns;
     static float last[3];

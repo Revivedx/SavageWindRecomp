@@ -38,7 +38,7 @@ keys ni rutas personales.
 Issues y pull requests (#160, 2026-10-26): GitHub lee los formularios (`.github/ISSUE_TEMPLATE/`) y los workflows
 (`.github/workflows/`) de la rama por defecto, `main`, así que un cambio en ellos solo cuenta cuando llega a `main`.
 `triage.yml` etiqueta `needs-info` los bugs nuevos sin log, de una release vieja o de 1.8.2 (con un comentario que
-dice qué falta), `stale.yml` los cierra a los 7 días sin cambios y `retarget.yml` pasa a `test` las pull requests de
+dice qué falta), `stale.yml` los cierra a las 24 horas sin cambios (corre cada hora) y `retarget.yml` pasa a `test` las pull requests de
 forks abiertas contra `main`. Una etiqueta `triage-ok` deja un issue fuera del triage. **En cada release**: poner la
 versión nueva como "(latest)" en el desplegable "Savage Wind version" de `bug_report.yml` (el triage marca solo la
 opción "An older release").
@@ -385,6 +385,17 @@ Pendiente:
      que se hace pasar por DualShock 4 puede dejarlo quieto o hacerlo saltar, y cada lectura se descartaba (0 s o un
      tercio de segundo desde la anterior): el apuntado se quedaba quieto aunque las lecturas siguieran llegando (sospecha en #220). Ahora una
      lectura sin tiempo usable cuenta como un periodo de muestreo (la frecuencia que da SDL).
+     Rehecho para Alpha 6 (2026-11-15, #136): la sensibilidad y la inversión van en los ejes del mundo (izquierda /
+     derecha alrededor de la gravedad, arriba / abajo alrededor de la derecha de la vista: `aim_turn`), no en los del
+     mando, que en vertical (un handheld) dejaban el giro horizontal sin sensibilidad ni inversión; en un santuario
+     el juego recibe la pose física. Un informe repetido (mismo tiempo del sensor y mismos valores: un mando sondeado
+     más rápido que su sensor, #759) se descarta; con el reloj del sensor parado cuenta el tiempo del evento. La fuente
+     ya no es siempre el mando en uso (`motion_pads`): el mismo mando visto dos veces (DS4Windows, DSX, Handheld
+     Companion, Steam Input: sus botones bajan a la vez) sigue con el sensor del real, y los mandos que Steam Input
+     oculta (salvo los de Valve) se abren antes de `SDL_Init` solo por sus sensores. DSU también en Windows (Winsock,
+     `motion_dsu_axes`), el Deck virtual de InputPlumber (28DE:12FE / uhid), y los sensores del propio handheld por
+     la API de sensores de SDL. Opciones: Motion source (con el estado en la descripción), Vertical motion
+     sensitivity, Lean to turn. Pruebas: `tools/test_motion_sensors.c`.
    - Iconos de botones (2026-10-22, `runtime/nvn/glyphs.c`): BOTW dibuja los botones de sus avisos (HUD, menús,
      diálogos) como caracteres de su propia fuente de mapa de bits `External_00.bffnt` (en `Font/Font_*.sbfarc`,
      igual en todas las regiones): 51 glifos en U+E040..E091, celdas de 50x50 (a 51 px) en una hoja BC4 de 256x1024
@@ -645,6 +656,13 @@ Pendiente:
          se lee al crear la ventana, antes de la precompilación de la pantalla de inicio, la precompilación vuelve a
          leerla y arranca el precalentamiento cuando la semilla ha entrado (`vk_pso_rewarm`): si no, el primer
          arranque tras la instalación enlazaba todo en el draw y solo el siguiente precalentaba.
+       - 2026-11-14: la semilla pasa a 8.561 pipelines (una vuelta de una hora por torres, pueblos, lugares, establos y
+         santuarios con TAA + FSR 3, SMAA al 75 %, FSR 1 y sombras altas: los ajustes de AA y escalado dan casi todos
+         los nuevos). El zip de Problem report lleva `pipelines/vk_pipelines.list` y `pipelines/vk_shader_keys.list`
+         del jugador, y `tools/merge_seed_report.py <zips>` los convierte en semilla (`--export-pipeline-seed` con
+         `SAVAGEWIND_CACHE_DIR` en una carpeta aparte, `SAVAGEWIND_PSO_FOREIGN=1` para una lista de otra GPU y
+         `SAVAGEWIND_SEED_TRANSLATOR=<id>` para los ids de otra build) y añade a `vk_pipelines.seed` los que falten.
+         Solo entran pipelines cuyos shaders están en los archivos del juego con las claves del registro del jugador.
        - "Shaders asíncronos" pasa a estar activado por defecto (`settings_version` 4: los ficheros de la versión 3
          con 0 toman el nuevo valor, porque el menú escribía todas las claves). Qué se salta y qué no
          (`draw_` en `exec.c`): un draw cuyo pipeline aún se construye se salta cuando sus targets se dibujaron en el
@@ -785,7 +803,7 @@ Pendiente:
      - Bruma (Vídeo > Opciones avanzadas > Bruma, `haze` en el ini, `services/fs.c` `haze_patch`): la neblina del exterior de BOTW es su
        dispersión atmosférica, por clima en `Pack/TitleBG.pack` `WorldMgr/normal.bwinfo` (AAMP, 20 climas en el objeto
        raíz): `CalcMie` y `CalcRayleigh` (lo blanco y lo azul del aire: más bajos, más claro; a 0,6x el cielo se oscurece
-       y vira a turquesa) y `CalcSfParamNear` (0 o negativo: la bruma de cerca, la mínima en 0). El ajuste k (0-100 %)
+       y vira a turquesa) y `CalcSfParamNear` (0 o negativo: la bruma de cerca, la mínima en 0). El ajuste k (75-100 %)
        da 0,7 + 0,3 k veces los dos primeros y k veces el tercero, como un parche de lectura sobre los bytes del archivo
        (mismo tamaño; AAMP comparte los valores iguales entre parámetros: cada uno se cambia una vez). El juego lo lee
        al arrancar: el cambio vale desde el siguiente inicio. 100 % no toca nada. Los objetos Fog de los perfiles de
@@ -920,7 +938,9 @@ Pendiente:
      `SAVAGEWIND_LOG_OPTIONS=1` registra cada valor que se guarda desde la pantalla de opciones, con la hora;
      `SAVAGEWIND_LOG_SCREENS=1` el estado de pausa y las pantallas de interfaz que existen;
      `SAVAGEWIND_DUMP_DATA_AT=<frames>` vuelca `.data` y `.bss` de main a `build/data_<frame>.bin` (para comparar
-     estados del juego).
+     estados del juego); `SAVAGEWIND_DEBUG_FIXED_STEP=<fps>` da al juego siempre el paso de esa frecuencia, sea cual
+     sea la real: su lógica corre como a esos FPS, más lenta o más rápida que el tiempo real (así se reprodujo a 180 FPS
+     en este PC, que no llega a ellos en esa escena, la salida del Santuario de la Vida de #364).
    - 60 FPS estables en el mundo abierto (2026-10-20). Dónde se iba el frame (perfilador de muestreo y
      `SAVAGEWIND_TIMELINE`): el hilo principal (0x101) graba ~30 de las ~62 listas del frame y hace el cálculo; dos
      hilos de trabajo graban el resto; el hilo de render (sead, 0x7000d81100) entrega UNA lista por frame
@@ -976,7 +996,16 @@ Pendiente:
        es completa. Medido con 2+2 pasadas alternas (Kakariko, establo y Hateno, sin límite de FPS, 1280x720): 40,1 →
        54,0, 47,8 → 63,6 y 51,5 → 59,0 fps; la GPU ocupada del 74-83 % al 98-99 %. Sin saltos de brillo en 60 capturas
        seguidas de día, de noche, con lluvia y dentro de Vah Ruta, y la foto de la cámara correcta.
-       `SAVAGEWIND_GPU_OVERLAP=0` lo quita.
+       `SAVAGEWIND_GPU_OVERLAP=0` lo quita. Eso cuenta con que el frame aplazado ya está en manos del driver: desde
+       Alpha 5 presenta el hilo grabador, y un limitador de FPS externo (RivaTuner, Radeon Chill), que duerme dentro de
+       `vkQueuePresentKHR`, lo dejaba ahí con ese frame sin entregar mientras el juego escribía el siguiente encima.
+       Las partículas de lluvia y antorchas (vértices que escriben la CPU y los shaders, leídos en su sitio) salían
+       estiradas un frame (#620, #629, #683, #717, #776). Ahora aplazar un fence espera a que su envío llegue al driver
+       (`deferred_handed_over`): con el limitador imitado en la lluvia fuerte de Lanayru, lo que la CPU reescribía antes
+       del envío pasa de ~20 % de las muestras a 0 y no se ven partículas estiradas; sin limitador cuesta ~1 % (123,0
+       frente a 124,4 fps, 4+4 pasadas alternas, RTX 3060). `SAVAGEWIND_VK_OVERLAP_HANDOVER=0` lo quita;
+       `SAVAGEWIND_DEBUG_PRESENT_LIMIT=<fps>` imita un limitador así y `SAVAGEWIND_VK_RACE_PROBE=1` mide la memoria que
+       el juego lee en su sitio y cambia entre la traducción y el envío o la espera (líneas `[race]`).
      Además:
      - Copias de constant buffers: se comparten en toda la lista (antes, solo dentro de cada trozo de ~300 draws que
        va a la GPU) y `UpdateUniformBuffer` (~450 por frame en el mundo, sobre solo ~40 rangos pequeños) invalida solo
@@ -1144,6 +1173,16 @@ Pendiente:
      `test` (36a02bc, con #108), 3+3 pasadas alternas sin límite de FPS a 1280x720 en una Radeon 660M: GPU por frame
      −1,9 % en Kakariko, −1,1 % en el establo del río y −1,9 % en la puerta de la Ciudad Gerudo; FPS +1,3 % en
      Kakariko (los otros dos, +1,1 y +0,8 %, dentro del ruido).
+   - Clears como load op del pase (2026-11-13): un clear del juego que es el primer comando de un pase y cubre todo el
+     render area se graba como `loadOp = CLEAR` del attachment (color, depth o stencil) en vez de `LOAD` seguido de
+     `vkCmdClearAttachments`: el target ya no se lee solo para sobrescribirlo (`clear` ofrece el valor y `begin_pass`
+     lo toma, en `exec.c`). Un clear que llega tras un draw, con máscara parcial o con scissor menor que el render area
+     queda como antes. En el recorrido de la Meseta de los Albores, a 1280x720: 28,6 clears por frame (el contador
+     `clears folded` de la línea `[vk]` de estadísticas) y ~9,7 M de píxeles de attachment sin leer por frame (~8 % de
+     las lecturas; ~39 MB por frame a 4 B/píxel, estimado con un contador aparte). En una Radeon Renoir (RADV, Mesa
+     26.2.6) los FPS no cambian: 44,09 ± 1,01 con y 43,61 ± 2,36 sin, cinco corridas alternas de cada uno; una corrida
+     de cada brazo tuvo un tirón de 100-190 ms ajeno al cambio. En esa GPU el límite está en otro sitio.
+     `SAVAGEWIND_VK_NO_CLEAR_FOLD=1` vuelve a los `vkCmdClearAttachments`.
    - Fallos gráficos que quedaban en la Alpha 2 (2026-10-22):
      - Consulta de oclusión del sol: `ReportCounter` con `SAMPLES_PASSED` (tipo 1) devolvía siempre 0 muestras y
        `ResetCounter` no hacía nada. BOTW dibuja una vez por frame el disco del sol con prueba de profundidad y sin
@@ -1548,6 +1587,12 @@ Pendiente:
        `SAVAGEWIND_DEBUG_TEXDUMP_LEVEL=<n>` el nivel (estirado al tamaño del 0) y `SAVAGEWIND_DEBUG_TEXDUMP_DRAW=<n>` el
        draw (numerado como en `[pick]`; cambia entre corridas) en vez del primero; `SAVAGEWIND_DEBUG_TEXDUMP_NTH=<n>`, el
        n-ésimo draw de ese shader en el frame (el cielo de BOTW: 1 es el del cubemap, 2 el de la vista).
+       Las texturas 3D se leen de la GPU tal cual (`build/gpu3d_<id>_<w>x<h>x<d>_f<formato>.raw`, texels en bruto: x,
+       luego y, luego z) y se comparan con lo subido (`SAVAGEWIND_DUMP_TEX3D=1`: `build/tex3d_*.raw`). El log también
+       trae las constantes del compilador (`vcb1` / `fcb1`, en hex). Así se encontró el cielo gris o negro de AMD en
+       Windows (#359): la tabla del cielo (256x32x16 RGBA16F, fs 3fe42f9951190955) subía bien, pero el driver de AMD
+       guardaba parte del borrado a cero que la precedía (40 % de la tabla mal); las imágenes 3D ya no se borran al
+       crearse (`SAVAGEWIND_VK_CLEAR_3D=1`: se borran como antes).
      - `SAVAGEWIND_LOG_FS_CB=<fs hash>:<k>:<primer float>:<cuántos>`: en cada frame, esos floats del uniform buffer `c[k]`
        del fragment shader (el `fcb<k>` del frame de depuración) en su primer draw; sigue un parámetro a lo largo de un
        recorrido con guion (así apareció la paleta de 60 s). En el frame de depuración, el log `[draw]` termina con
@@ -1786,6 +1831,24 @@ La 1.9.0 (2026-10-22, rama `game-1.9.0`; archivos del usuario en `extracted-1.9.
   La preparación acepta la carpeta 1.9.0 (versión "1.9.0", 39008+ ficheros) y rechaza `exefs` 1.9.0 con `romfs`
   1.8.2 y al revés.
 
+## NVIDIA DLSS (Video > Upscaler)
+
+Video > Upscaler: DLSS (`upscaler = dlss`; greyed where it can't run) renders the 3D scene smaller by the mode's factor
+and NVIDIA's DLSS Super Resolution builds the full-resolution image from it, with the world camera's depth, motion
+vectors, jitter and texture LOD bias (`runtime/nvn/vulkan/exec.c` `dlss_scene`). Windows, NVIDIA RTX graphics cards.
+Elsewhere, or when NGX can't make the feature, a settings file asking for it gets FSR 1.
+
+**No SDK.** Nothing of NVIDIA's SDK is compiled in, linked or shipped. `runtime/nvn/vulkan/dlss.c` finds the NVIDIA
+driver's NGX core (`_nvngx.dll`, through `HKLM\SOFTWARE\NVIDIA Corporation\Global\NGXCore`), takes its Vulkan entry
+points with `GetProcAddress`, and declares the few NGX types, values and parameter names it uses from the SDK's
+documented interface. NGX's parameter object is a C++ class reached through its vtable (MSVC's layout: each group of
+overloads in reverse order); a set-then-get round trip checks the layout first, and DLSS stays off if it fails. NGX is
+loaded only when NVIDIA's `nvngx_dlss.dll` is next to `savagewind.exe`. The setup page's Download NVIDIA DLSS (on PCs
+with an NVIDIA driver; `dlss_download = 1`, the default) and the game files page download it, with NVIDIA's
+`LICENSE.txt` as `NVIDIA-DLSS-LICENSE.txt`, from NVIDIA/DLSS on GitHub at release `v310.9.16` (`runtime/dlss_fetch.c`:
+WinHTTP; size and SHA-256 checked, written as `.part` and renamed only when both match). While it is missing on a PC
+with an NVIDIA driver, the menus' greyed DLSS points at Savage Wind Configuration.
+
 ## FSR 3 upscaling: held back for now
 
 AMD FSR 3.1 upscaling (PRs #194 and #195: per-object motion vectors, the five quality modes plus Ultra Performance) is
@@ -1796,8 +1859,10 @@ It comes back with the redesign of the motion vectors planned for Alpha 6: recor
 1.2 ms a frame for 2969 draws, spread out (constant buffers 0.35, matching 0.24, frame start 0.16, program 0.15, per-draw
 setup 0.13, push 0.10), with no single defect. FSR itself costs next to nothing there (2026-11-09, 1440p Quality: 130 fps
 native, 104 with FSR 3, 130 with FSR 3 and `SAVAGEWIND_MVEC=0`). That work has to leave the render thread.
-Until then `SAVAGEWIND_FSR3=1` offers it for tests, and a settings file with `upscaler = fsr3` loads as AMD FSR 1 with
-the same quality mode. TAA (Video > Anti-aliasing) and frame generation stay available.
+Offered again since 2026-11-13: the vectors are worked out on a thread of their own (`runtime/nvn/vulkan/mvec.c`) and
+the shadow cascades follow the upscaler's factor (same PC, Savage preset, 1440p, FSR 3 Quality over native: Great
+Plateau 106 / 102, Kakariko 106 / 88, Korok Forest 67 / 40). `SAVAGEWIND_FSR3=0` hides FSR 3 and FSR 4 again; a
+settings file with `upscaler = fsr3` then loads as AMD FSR 1 with the same quality mode.
 
 ## Frame generation (AMD FSR 3)
 
@@ -1946,11 +2011,13 @@ and its intensity (0-100%). ini: `colour_exposure` (EV), `colour_contrast`, `col
 LUT folders and files), `exec.c` `scene_post` / `grade_lut` / `grade_wanted`, `shaders.c` `grade.frag`.
 
 **Where.** One fullscreen pass on the 3D scene at the scene -> final image composite (`scene_composite`), at the
-scene's own size and in its format (A2B10G10R10, linear light), before FSR 1's EASU / RCAS and CAS; the composite then
-samples the result (`scene_up`). The game draws its HUD after the composite, so the HUD keeps its colours (checked:
-the hearts' pixels are identical with every preset and LUT). Frame generation's HUD-less copy and its final image
-come after it, so real and generated frames are graded alike; HDR10's output pass (device.c `hdr_write`) converts the
-graded SDR image. With every setting neutral (or `SAVAGEWIND_SCENE_GRADE=0`) the pass doesn't run.
+scene's own size and in its format (A2B10G10R10, or RGBA16F with HDR, linear light), before FSR 1's EASU / RCAS and
+CAS; the composite then samples the result (`scene_up`). The game draws its HUD after the composite, so the HUD keeps
+its colours (checked: the hearts' pixels are identical with every preset and LUT). Frame generation's HUD-less copy
+and its final image come after it, so real and generated frames are graded alike. With HDR, the 3D scene's tonemap is
+the extended curve and the present reads the float picture instead of the clipped 8-bit copy (`docs/hdr.md`); the
+grade shader preserves values above 1.0, so the extended highlights survive it. With every setting neutral (or
+`SAVAGEWIND_SCENE_GRADE=0`) the pass doesn't run.
 
 **The pass.** In linear light: exposure x white balance as RGB gains (temperature moves red against blue by 0.3 x t,
 tint green by 0.2 x t, then normalised to the same Rec. 709 luma), saturation around luma. Then sRGB-encoded, as the

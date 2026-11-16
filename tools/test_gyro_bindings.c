@@ -22,10 +22,16 @@ void plat_accessibility_shortcuts(bool allow) { (void)allow; }
 GameSites g_site;  // (no game: runtime/hle/bindings.c finds no HUD prompt)
 Cpu *kernel_current_cpu(void){abort();}
 void vibration_update(SDL_Gamepad *p,bool f){(void)p;(void)f;abort();}
+void vibration_pad_closed(SDL_Gamepad *p){(void)p;}
 bool menu_cursor_free(void){return false;}
-void motion_pad_opened(SDL_Gamepad*p){(void)p;abort();}
-void motion_pad_closed(void){abort();}
+void motion_pads(SDL_Gamepad*u,SDL_Gamepad*const*p,int n){(void)u;(void)p;(void)n;}
+void motion_pad_removed(SDL_Gamepad*p){(void)p;abort();}
+bool motion_pad_pressed(SDL_JoystickID id,uint64_t ns){(void)id;(void)ns;abort();}
+bool motion_pads_twins(SDL_JoystickID a,SDL_JoystickID b){(void)a;(void)b;abort();}
+bool motion_pad_sensor_only(SDL_Gamepad*p){(void)p;return false;}
+SDL_JoystickID motion_sensor_pad(void){return 0;}
 void motion_sensor_event(const SDL_Event*e){(void)e;abort();}
+void motion_device_sensor_event(const SDL_Event*e){(void)e;abort();}
 void motion_mouse(float x,float y){(void)x;(void)y;abort();}
 void motion_mouse_yaw(float y){(void)y;abort();}
 void motion_script(float a,float b,float c,float d){(void)a;(void)b;(void)c;(void)d;abort();}

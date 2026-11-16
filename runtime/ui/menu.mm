@@ -39,6 +39,7 @@ extern "C" {
 #include "../quick_drop.h"
 #include "../nvn/glyphs.h"
 #include "../color_grade.h"
+#include "../dlss_fetch.h"
 #include "../window_size.h"
 extern "C" {
 #include "../language.h"
@@ -478,8 +479,9 @@ static void load_fonts(void) {
     g_fonts_lang = ui_lang_generation() * 10007 + ui_dynamic_generation();
     ImFontConfig cfg;
     cfg.OversampleH = 2;
+    static const ImWchar latin_ext[] = {0x20, 0xFF, 0x0100, 0x017F, 0};
     auto add = [&](const char *path, float size, ImFontConfig c) {
-        ImFont *f = io.Fonts->AddFontFromFileTTF(path, size, &c);
+        ImFont *f = io.Fonts->AddFontFromFileTTF(path, size, &c, latin_ext);
         if (f) ui_merge_fallback_font(io.Fonts, size, &cfg);
         return f;
     };
@@ -522,6 +524,7 @@ static void load_fonts(void) {
 
 // Before a frame: another menu language may need other glyphs - the fonts and their texture are made again
 extern "C" void vk_imgui_fonts_changed(void);  // (runtime/nvn/vulkan/imgui_glue.cpp)
+extern "C" const char *vk_hdr_icc_description(void);  // (runtime/nvn/vulkan/device.c)
 static void fonts_follow_language(void) {
     bool need_hint_fonts = (g_settings.quick_sort || g_settings.quick_drop) && g_romfs_dir && !g_hint_font_attempted;
     bool icons_changed = (g_settings.quick_sort || g_settings.quick_drop) && g_hint_generation != glyphs_font_generation();
@@ -633,8 +636,10 @@ extern "C" void renderer_get_scale(float *sx, float *sy);
 extern "C" void renderer_get_scene_scale(float *sx, float *sy);
 extern "C" bool renderer_gpu_rtx(void);  // (vulkan/device.c, metal.m)
 extern "C" volatile int g_fg_active;     // (hle/framepace.c: the last presented frame was generated)
-// Video > Upscaler mode's names, by UPQ_*
-static const char *const k_upscale_modes[UPQ_COUNT] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance"};
+// Video > Upscaler mode's names, by UPQ_*, and their order on screen (largest render size first)
+static const char *const k_upscale_modes[UPQ_COUNT] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance", "Native"};
+static const int k_upscale_mode_order[UPQ_COUNT] = {
+    UPQ_NATIVE, UPQ_ULTRA, UPQ_QUALITY, UPQ_BALANCED, UPQ_PERFORMANCE, UPQ_ULTRA_PERFORMANCE};
 extern "C" {
 #include "../nvn/output_scale.h"
 }
@@ -823,8 +828,11 @@ static void tab_display(void) {
         const char *names[NV];
         int cur = 0, def = 0;
         for (int i = 0; i < NV; i++) {
-            snprintf(names_buf[i], sizeof names_buf[i], "%d%%", sizes[i]);
-            names[i] = names_buf[i];
+            if (sizes[i] == 0) names[i] = tr("Off");
+            else {
+                snprintf(names_buf[i], sizeof names_buf[i], "%d%%", sizes[i]);
+                names[i] = names_buf[i];
+            }
             if (sizes[i] == 100) def = i;
         }
         cur = def;
@@ -833,6 +841,24 @@ static void tab_display(void) {
         if (opt_choice("HUD size", &cur, names, NV, def,
                        "How big the hearts, stamina, minimap and the rest of the HUD are. Each part stays in its corner.", false))
             g_settings.hud_size = sizes[cur];
+    }
+    {   // Menu cursor speed
+        static const int speeds[] = MENU_SPEED_CHOICES;
+        enum { NV = sizeof speeds / sizeof speeds[0] };
+        static char names_buf[NV][16];
+        const char *names[NV];
+        int cur = 0, def = 0;
+        for (int i = 0; i < NV; i++) {
+            snprintf(names_buf[i], sizeof names_buf[i], "%d%%", speeds[i]);
+            names[i] = names_buf[i];
+            if (speeds[i] == 100) def = i;
+        }
+        cur = def;
+        for (int i = 0; i < NV; i++)
+            if (speeds[i] == g_settings.menu_speed) cur = i;
+        if (opt_choice("Menu cursor speed", &cur, names, NV, def,
+                       "How fast the cursor and transitions move in menus, inventory, and the map.", false))
+            g_settings.menu_speed = speeds[cur];
     }
     {   // Draw distance (runtime/draw_distance.c)
         // (Potato first, the nearest: order maps a row to DRAWDIST_*)
@@ -895,14 +921,6 @@ static void tab_display(void) {
         }
         opt_choice("VSync", &g_settings.vsync, names, VSYNC_COUNT, VSYNC_DEFAULT, desc.c_str(), false);
     }
-    {   // HDR (settings.h HDR_*: runtime/nvn/vulkan/device.c hdr_wanted)
-        static const char *const names[HDR_COUNT] = {"Automatic", "On", "Off"};
-        opt_choice("HDR", &g_settings.hdr, names, HDR_COUNT, HDR_AUTO,
-                   "Automatic: while Windows HDR is on for this display, the picture is sent in HDR, so it looks as bright "
-                   "and colourful as in SDR (in SDR, Windows shows it dim and dull then). On: always in HDR, where the "
-                   "display takes it. Off: always SDR. White follows Windows' SDR content brightness (Settings > System > "
-                   "Display > HDR).", false);
-    }
     static const char *const perf_names[] = {"Off", "FPS", "Full"};
     opt_choice("Performance overlay", &g_settings.perf_overlay, perf_names, 3, PERF_OFF,
                "FPS: the frame rate and frame time. Full: also CPU, memory and GPU load and temperatures, a "
@@ -919,7 +937,8 @@ static void tab_display(void) {
                                ? std::string(tr("AMD FSR 4"))
                                : std::string(tr("FSR 4")) + " " + tr(fsr4_offered() ? "(coming soon)" : "(AMD Radeon only)");
         std::string dlss = upscaler_available(UPSCALE_DLSS) ? std::string(tr("DLSS")) :
-                           std::string(tr("DLSS")) + " " + tr("(NVIDIA RTX only)");
+                           std::string(tr("DLSS")) + " " +
+                               tr(dlss_fetch_missing() ? "(download it in Savage Wind Configuration)" : "(NVIDIA RTX only)");
 #ifdef __APPLE__
         const char *ups[] = {"Off", "MetalFX"};
         static const int ups_value[] = {UPSCALE_OFF, UPSCALE_METALFX};
@@ -937,12 +956,14 @@ static void tab_display(void) {
               (upscaler_available(UPSCALE_FSR3)
                    ? tr("AMD FSR 3: it renders smaller and builds the full-resolution image from the frames before, "
                         "following the game's motion: sharper and steadier than FSR 1, and anti-aliased (Anti-aliasing "
-                        "has no effect with it). Sharpening sets its own sharpening. NVIDIA DLSS (NVIDIA RTX graphics "
-                        "cards) is coming in a later version.")
-                   : tr("AMD FSR 3 and NVIDIA DLSS (NVIDIA RTX graphics cards) are coming in a later version."));
+                        "has no effect with it). Sharpening sets its own sharpening.")
+                   : tr("AMD FSR 3 is coming in a later version."));
         if (upscaler_available(UPSCALE_FSR4))  // (its own paragraph: the ones above keep their translations)
             uds += std::string("\n\n") + tr("AMD FSR 4: like FSR 3, but AMD's machine learning rebuilds the image. For AMD Radeon "
                                               "graphics cards on Windows. Sharpening sets its own sharpening.");
+        uds += std::string("\n\n") + tr("NVIDIA DLSS: like FSR 3, but NVIDIA's machine learning rebuilds the image. For NVIDIA "
+                                          "RTX graphics cards on Windows, with NVIDIA's DLSS library, which Savage Wind "
+                                          "Configuration downloads.");
         const char *ud = uds.c_str();
 #endif
         enum { NU = sizeof ups_value / sizeof ups_value[0] };
@@ -957,29 +978,33 @@ static void tab_display(void) {
         for (int i = 0; i < NU; i++) if (ups_value[i] == UPSCALE_DEFAULT) udef = i;
         if (opt_choice_avail("Upscaler", &ui, &shown, ups, avail, NU, udef, ud)) g_settings.upscaler = ups_value[ui];
         // its mode (AMD's scale factors), one step in; greyed when the upscaler is off
-        const char *const *modes = k_upscale_modes;
         bool modes_ok = upscale_modes_available();
         std::string mode_names[UPQ_COUNT];
         const char *mn[UPQ_COUNT];
         bool mavail[UPQ_COUNT];
+        int mi = 2, mdef = 2;  // UPQ_QUALITY's position in k_upscale_mode_order
         for (int i = 0; i < UPQ_COUNT; i++) {
-            mode_names[i] = modes_ok ? tr(modes[i]) : std::string(tr(modes[i])) + " " + tr("(coming soon)");
+            int q = k_upscale_mode_order[i];
+            mode_names[i] = modes_ok ? tr(k_upscale_modes[q])
+                                     : std::string(tr(k_upscale_modes[q])) + " " + tr("(coming soon)");
             mn[i] = mode_names[i].c_str();
-            mavail[i] = modes_ok;
+            mavail[i] = modes_ok && upscale_mode_offered(q);
+            if (q == g_settings.upscale_quality) mi = i;
+            if (q == UPQ_QUALITY) mdef = i;
         }
         float sx, sy;  // the 3D scene's size (BOTW docked: 1600 x 900 times its scale)
         renderer_get_scene_scale(&sx, &sy);
         char rendering[100];
         snprintf(rendering, sizeof rendering, tr("Rendering at %.0f x %.0f."), 1600.0 * sx, 900.0 * sy);
         std::string md = std::string(tr("How much smaller the game renders before the upscaler brings it to the window, "
-                                        "on each side: Ultra Quality 1.3x, Quality 1.5x, Balanced 1.7x, Performance "
-                                        "2x, Ultra Performance 3x. Smaller is faster and softer.")) +
+                                        "on each side: Native 1x (FSR 3/4), Ultra Quality 1.3x, Quality 1.5x, Balanced "
+                                        "1.7x, Performance 2x, Ultra Performance 3x. Smaller is faster and softer.")) +
                          "\n\n" + (modes_ok ? rendering : tr("Coming in a later version."));
         opt_indent(1);
         if (g_settings.upscaler == UPSCALE_OFF) opt_disable_next();
         static int mshown = -1;
-        opt_choice_avail("Upscaler mode", &g_settings.upscale_quality, &mshown, mn, mavail, UPQ_COUNT, UPQ_QUALITY,
-                         md.c_str());
+        if (opt_choice_avail("Upscaler mode", &mi, &mshown, mn, mavail, UPQ_COUNT, mdef, md.c_str()))
+            g_settings.upscale_quality = k_upscale_mode_order[mi];
         opt_indent(-1);
     }
 #ifdef __APPLE__
@@ -1075,6 +1100,167 @@ static void tab_display(void) {
     }
     // Advanced (vulkan/exec.c: bloom's and the distance blur's draws; CMD_REPORT_COUNTER: dynamic resolution)
     opt_section("Advanced");
+    // HDR options (settings.h HDR_*: runtime/nvn/vulkan/device.c hdr_wanted): the switch and everything it sets,
+    // folded away until opened
+    static bool hdr_open;
+    if (opt_button(hdr_open ? "HDR options (hide)" : "HDR options (show)",
+                   "HDR on or off, brightness, the tone mapper, colour and presets."))
+        hdr_open = !hdr_open;
+    if (hdr_open) {
+        opt_indent(1);
+        {   // HDR (settings.h HDR_*: runtime/nvn/vulkan/device.c hdr_wanted)
+            static const char *const names[HDR_COUNT] = {"Automatic", "On", "Off"};
+            opt_choice("HDR", &g_settings.hdr, names, HDR_COUNT, HDR_AUTO,
+                       "Automatic: HDR while your display is in HDR; the scene keeps detail brighter than white. On: "
+                       "always HDR. Off: always standard (SDR). HDR setting changes apply immediately; switching HDR "
+                       "itself takes effect after a restart.",
+                       false);
+            const bool hdr_off = g_settings.hdr == HDR_OFF;
+            auto hdr_sub = [hdr_off]() { if (hdr_off) opt_disable_next(); };
+            opt_indent(1);
+            static const char *const tm_names[] = {"Vanilla", "RenoDX (PsychoV)"};
+            hdr_sub();
+            int tm = g_settings.hdr_tonemapper == 0 ? 0 : 1;
+            if (opt_choice("HDR tone mapper", &tm, tm_names, 2, 1,
+                           "RenoDX: keeps colour and detail in very bright areas instead of letting them clip to white. "
+                           "Vanilla: the game's original tonemap, where anything above white is clipped.", false))
+                g_settings.hdr_tonemapper = tm;
+            const bool psy_off = hdr_off || g_settings.hdr_tonemapper == 0;
+            auto psy_sub = [psy_off]() { if (psy_off) opt_disable_next(); };
+            std::string peak_desc = "The brightest your display can show. The scene, flashes, particles, HUD and menus "
+                                    "are capped to it. ";
+            peak_desc += vk_hdr_icc_description();
+            peak_desc += " Moves in 10-nit steps.";
+            hdr_sub();
+            float p = g_settings.hdr_peak_nits ? (float)g_settings.hdr_peak_nits : 1000.0f;
+            if (opt_slider("HDR peak brightness", &p, 80, 10000, 10, 1000, "%g nits", peak_desc.c_str())) {
+                g_settings.hdr_peak_nits = (int)lroundf(p);
+                hdr_look_init_peak();  // (a default preset slot keeps the newly known peak)
+            }
+            hdr_sub();
+            float g = g_settings.hdr_game_nits ? (float)g_settings.hdr_game_nits : 203.0f;
+            if (opt_slider("HDR game brightness", &g, 80, 1000, 1, 203, "%g nits",
+                           "How bright the 3D scene's normal white is. 203 nits is the standard HDR white; higher makes "
+                           "the scene brighter against the HUD, up to the peak."))
+                g_settings.hdr_game_nits = (int)lroundf(g);
+            hdr_sub();
+            float u = g_settings.hdr_ui_nits ? (float)g_settings.hdr_ui_nits
+                                             : g_settings.hdr_game_nits ? (float)g_settings.hdr_game_nits : 203.0f;
+            if (opt_slider("HDR UI brightness", &u, 80, 1000, 1, 203, "%g nits",
+                           "How bright the HUD and this menu's white is. 203 nits is the standard HDR white; capped by the peak."))
+                g_settings.hdr_ui_nits = (int)lroundf(u);
+            {   // (the colour and preset controls)
+                opt_indent(1);
+                psy_sub();
+                float exposure = (float)g_settings.hdr_exposure;
+                if (opt_slider("HDR exposure", &exposure, 50, 200, 5, 100, "%g %%",
+                               "Overall brightness of the 3D scene. 100% is the game's own brightness."))
+                    g_settings.hdr_exposure = (int)lroundf(exposure);
+                psy_sub();
+                float highlights = (float)g_settings.hdr_highlights;
+                if (opt_slider("HDR highlights", &highlights, 0, 100, 1, 50, "%g %%",
+                               "How much bright areas stand out. 50% is neutral; higher brightens highlights, lower "
+                               "tones them down."))
+                    g_settings.hdr_highlights = (int)lroundf(highlights);
+                psy_sub();
+                float shadows = (float)g_settings.hdr_shadows;
+                if (opt_slider("HDR shadows", &shadows, 0, 100, 1, 50, "%g %%",
+                               "How much dark areas stand out. 50% is neutral; higher lifts shadows (more detail), lower "
+                               "deepens them."))
+                    g_settings.hdr_shadows = (int)lroundf(shadows);
+                psy_sub();
+                float contrast = (float)g_settings.hdr_contrast;
+                if (opt_slider("HDR contrast", &contrast, 0, 100, 1, 50, "%g %%",
+                               "Contrast around the middle brightness. 50% is neutral; higher is punchier, lower is flatter."))
+                    g_settings.hdr_contrast = (int)lroundf(contrast);
+                psy_sub();
+                float saturation = (float)g_settings.hdr_saturation;
+                if (opt_slider("HDR saturation", &saturation, 0, 100, 1, 50, "%g %%",
+                               "Colour strength. 50% is neutral; 0% is black and white, 100% is twice as colourful."))
+                    g_settings.hdr_saturation = (int)lroundf(saturation);
+                psy_sub();
+                float highlight_saturation = (float)g_settings.hdr_highlight_saturation;
+                if (opt_slider("HDR highlight saturation", &highlight_saturation, 0, 100, 1, 50, "%g %%",
+                               "How much colour very bright areas keep. Below 50% fades them toward white, above 50% "
+                               "keeps more colour; 50% is neutral."))
+                    g_settings.hdr_highlight_saturation = (int)lroundf(highlight_saturation);
+                psy_sub();
+                float flare = (float)g_settings.hdr_flare;
+                if (opt_slider("HDR flare", &flare, 0, 100, 1, 0, "%g %%",
+                               "Compensates for glare in very bright scenes. 0% is off."))
+                    g_settings.hdr_flare = (int)lroundf(flare);
+                psy_sub();
+                static const char *const gamma_names[] = {"None", "2.2", "BT.1886"};
+                int gamma = g_settings.hdr_gamma;
+                if (opt_choice("HDR gamma correction", &gamma, gamma_names, 3, 0,
+                               "Fits the highlight fade to the display gamma. None: normal HDR output (default). 2.2: "
+                               "standard PC gamma. BT.1886: the 2.4 gamma used by many TVs. It changes how highlights "
+                               "fade near the top, not the peak brightness.",
+                               false))
+                    g_settings.hdr_gamma = gamma;
+                psy_sub();
+                float hue = (float)g_settings.hdr_hue;
+                if (opt_slider("HDR highlight hue correction", &hue, 0, 100, 5, 70, "%g %%",
+                               "How much very bright colours (fire, sparks, magic) fade toward the game's original "
+                               "yellow-white instead of staying deep red. 0% keeps them fully saturated; 70% is the "
+                               "recommended default."))
+                    g_settings.hdr_hue = (int)lroundf(hue);
+                psy_sub();
+                float blowout = (float)g_settings.hdr_blowout;
+                if (opt_slider("HDR highlight blowout", &blowout, 0, 100, 1, 65, "%g %%",
+                               "How much very bright colours fade to white, as they do in the game's original picture. "
+                               "65% is the recommended default; higher fades more, lower keeps more colour."))
+                    g_settings.hdr_blowout = (int)lroundf(blowout);
+                psy_sub();
+                float sdr_blend = (float)g_settings.hdr_sdr_blend;
+                if (opt_slider("HDR SDR blend", &sdr_blend, 0, 60, 1, 18, "%g %%",
+                               "How early bright tones leave the game's original brightness curve and start extending "
+                               "toward the HDR peak. 18% is the recommended default; higher keeps the original look "
+                               "longer, lower adds more HDR range."))
+                    g_settings.hdr_sdr_blend = (int)lroundf(sdr_blend);
+                hdr_sub();
+                float vanilla_sat = (float)g_settings.hdr_vanilla_saturation;
+                if (opt_slider("HDR vanilla saturation", &vanilla_sat, 0, 100, 1, 100, "%g %%",
+                               "How much of the game's original colour saturation is applied. 100% is the game's own look."))
+                    g_settings.hdr_vanilla_saturation = (int)lroundf(vanilla_sat);
+                hdr_sub();
+                float bloom = (float)g_settings.hdr_bloom;
+                if (opt_slider("HDR bloom strength", &bloom, 0, 100, 1, 100, "%g %%",
+                               "How much glow around bright objects is kept. 100% is the game's own bloom; 0% removes it."))
+                    g_settings.hdr_bloom = (int)lroundf(bloom);
+                psy_sub();
+                static const char *const clamp_names[] = {"BT.709", "BT.2020"};
+                int clamp = g_settings.hdr_clamp == 1 ? 1 : 0;
+                if (opt_choice("HDR gamut clamp", &clamp, clamp_names, 2, 0,
+                               "The colour range the final picture is fitted into. BT.709 is the game's original TV "
+                               "range (default); BT.2020 is the wider HDR range, which can keep more vivid colours.",
+                               false))
+                    g_settings.hdr_clamp = clamp;
+                hdr_sub();
+                static const char *const look_names[] = {"Preset Off", "Preset 1", "Preset 2", "Preset 3", "Custom"};
+                static const bool look_avail[] = {true, true, true, true, false};  // (Custom is only shown)
+                static int look_shown = -1;  // (the row keeps its shown value across frames, like Colour preset)
+                int look = hdr_look_current();
+                if (opt_choice_avail("HDR preset", &look, &look_shown, look_names, look_avail, 5, 1,
+                                     "Preset Off returns to a plain HDR picture: the game's original tonemap, standard "
+                                     "203-nit brightness and neutral colour settings. Preset 1-3 store your own full "
+                                     "HDR setup, including every setting and brightness. Save writes the current settings "
+                                     "into the last selected preset. Changes apply immediately.")) {
+                    hdr_look_apply(look);
+                    settings_save();
+                }
+                hdr_sub();
+                if (opt_button("Save HDR preset",
+                               "Save the current HDR settings into the last selected preset (Preset 1 if none is selected).")) {
+                    hdr_look_store(g_settings.hdr_preset >= 1 && g_settings.hdr_preset <= 3 ? g_settings.hdr_preset : 1);
+                    settings_save();
+                }
+                opt_indent(-1);
+            }
+            opt_indent(-1);
+        }
+        opt_indent(-1);
+    }
     opt_toggle("Bloom", &g_settings.bloom, true, "The glow around bright light: the sun, fire, glowing eyes. Off: a "
                "little faster, a flatter image.");
     opt_toggle("Depth of field", &g_settings.depth_of_field, true, "The game blurs the far distance a little. Off: sharp "
@@ -1135,14 +1321,30 @@ static void tab_audio(void) {
 // Cheats: what hands the player things or changes the world (the game's own menus keep to options and assists, so
 // these are only here). The same as the developer console commands next to them (rupees: runtime/rupees.c;
 // weather: runtime/weather.c).
+extern "C" bool rupees_set(int32_t count);
+
 static void cheats_options(void) {
     opt_toggle("Infinite rupees", &g_settings.infinite_rupees, false,
                "Keeps your wallet at 9999 rupees, topped up every few seconds.");
+    {
+        static char rupee_buf[16];
+        if (g_settings.infinite_rupees) opt_disable_next();
+        if (opt_text("Set rupees", rupee_buf, sizeof rupee_buf, "",
+                     "Sets your wallet to an exact number of rupees (0 to 999999). Turn off Infinite rupees first.")) {
+            char *end;
+            long n = strtol(rupee_buf, &end, 10);
+            if (rupee_buf[0] && end != rupee_buf && !*end && n >= 0 && n <= 999999 && rupees_set((int32_t)n)) {
+                std::string s = std::to_string(n);
+                memcpy(rupee_buf, s.c_str(), s.size() + 1);
+            } else
+                rupee_buf[0] = 0;
+        }
+    }
     static const char *const weather[WEATHER_COUNT] = {"Automatic", "No rain", "No thunderstorms", "Clear", "Cloudy",
                                                        "Rain", "Heavy rain", "Snow", "Heavy snow", "Thunderstorm",
                                                        "Thunder rain", "Rain in sunshine"};  // (settings.h weather)
-    opt_choice("Weather", &g_settings.weather, weather, WEATHER_COUNT, 0,
-               "Holds the weather you pick, or keeps out rain or thunderstorms. Cutscenes keep theirs.");
+    opt_dropdown("Weather", &g_settings.weather, weather, WEATHER_COUNT, 0,
+                 "Holds the weather you pick, or keeps out rain or thunderstorms. Cutscenes keep theirs.");
 }
 
 // Case-insensitive: does s contain needle (an empty needle matches)
@@ -1324,7 +1526,7 @@ static std::string item_desc(const GameItem *it) {
 // stay as they are.
 static void tab_cheats(void) {
     static char search[64];
-    static int cat;  // 0: all, else ITEMCAT_* + 1
+    static int cat;  // the row of cats below: 0 none chosen yet
     static float amount = 1;
     static char notice[160];
     static unsigned waiting;  // the request the notice waits to tell the result of
@@ -1337,11 +1539,13 @@ static void tab_cheats(void) {
         opt_end();
         return;
     }
-    static const char *cats[] = {"All", "Weapons", "Bows", "Shields", "Arrows", "Armour", "Materials"};
-    std::vector<const char *> cn;
-    for (const char *c : cats) cn.push_back(tr(c));
+    // A dropdown of kinds, none open at first: the whole list at once was too long to find anything in. Critters and
+    // fairies are materials to the game (Animal_Insect_*), listed apart here.
+    enum { C_NONE, C_WEAPON, C_BOW, C_SHIELD, C_ARROW, C_ARMOR, C_MATERIAL, C_CRITTER, C_ALL, C_COUNT };
+    static const char *cats[C_COUNT] = {"Choose a category", "Weapons", "Bows", "Shields", "Arrows", "Armour", "Materials",
+                                        "Critters and fairies", "All"};
     opt_text(tr("Search"), search, sizeof search, "", tr("Only the items whose name or actor contains this text."));
-    opt_choice(tr("Category"), &cat, cn.data(), (int)cn.size(), 0, tr("The items of one kind."), false);
+    opt_dropdown(tr("Category"), &cat, cats, C_COUNT, C_NONE, tr("The items of one kind."));
     opt_slider(tr("Amount"), &amount, 1, 99, 1, 1, "%g",
                tr("How many the Add button puts in the pouch. Stacks (arrows, materials) take them at once."));
     if (waiting) {
@@ -1355,9 +1559,14 @@ static void tab_cheats(void) {
         }
     }
     if (notice[0]) ImGui::TextDisabled("%s", notice);
-    for (int i = 0, n = items_count(); i < n; i++) {
+    if (cat == C_NONE && !search[0]) hint(tr("Choose a category, or type in Search, to see the items."));
+    for (int i = 0, n = items_count(); i < n && (cat != C_NONE || search[0]); i++) {
         const GameItem *it = items_at(i);
-        if (cat && it->cat != cat - 1) continue;
+        bool critter = !strncmp(it->actor, "Animal_Insect", 13);
+        int c = critter ? C_CRITTER : it->cat == ITEMCAT_WEAPON ? C_WEAPON : it->cat == ITEMCAT_BOW ? C_BOW
+              : it->cat == ITEMCAT_SHIELD ? C_SHIELD : it->cat == ITEMCAT_ARROW ? C_ARROW
+              : it->cat == ITEMCAT_ARMOR ? C_ARMOR : C_MATERIAL;
+        if (cat != C_NONE && cat != C_ALL && c != cat) continue;
         if (search[0] && !has_text(it->name, search) && !has_text(it->actor, search)) continue;
         // (only a row on screen can be hovered or selected: the list is long, its other rows need no description)
         bool seen = ImGui::IsRectVisible(ImVec2(ImGui::GetContentRegionAvail().x, ImGui::GetFontSize() * 1.9f));
@@ -1558,17 +1767,18 @@ static void perf_overlay_draw(ImGuiIO &io, float scale) {
         case UPSCALE_FSR1: line += tr("FSR 1"); break;
         case UPSCALE_FSR3: line += tr("FSR 3"); break;
         case UPSCALE_FSR4: line += tr("FSR 4"); break;
+        case UPSCALE_DLSS: line += tr("DLSS"); break;
         default: line += tr("Off");
     }
-    int q = g_settings.upscale_quality;
+    int q = upscale_quality_now();
     if (up != UPSCALE_OFF && upscale_factor() > 1.0) {
         char f[16];
         snprintf(f, sizeof f, "%.1f", upscale_factor());
         line += std::string(" ") + (q >= 0 && q < UPQ_COUNT ? std::string(tr(k_upscale_modes[q])) + " " : "") + f + "x";
     }
-    // (FSR 3 anti-aliases the scene itself: the setting does nothing then)
+    // (FSR 3 / 4 and DLSS anti-alias the scene themselves: the setting does nothing then)
     int aa = rt_antialias();
-    line += std::string(" | ") + tr("Anti-aliasing") + ": " + (rt_fsr4() ? tr("FSR 4") : rt_fsr3() ? tr("FSR 3") : aa == AA_TAA ? tr("TAA") : aa == AA_SMAA ? tr("SMAA") : g_settings.game_fxaa ? "FXAA" : tr("Off"));
+    line += std::string(" | ") + tr("Anti-aliasing") + ": " + (rt_fsr4() ? tr("FSR 4") : rt_fsr3() ? tr("FSR 3") : rt_dlss() ? tr("DLSS") : aa == AA_TAA ? tr("TAA") : aa == AA_SMAA ? tr("SMAA") : g_settings.game_fxaa ? "FXAA" : tr("Off"));
     ImGui::TextDisabled("%s", line.c_str());
     line.clear();
 #ifndef __APPLE__
@@ -2056,7 +2266,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     ImGui::NewFrame();
 
     if(pointer_hover&&!open&&!kbd&&!sizes) {
-        float s=fminf(io.DisplaySize.x/1280.f,io.DisplaySize.y/720.f);
+        float s=fminf(io.DisplaySize.x/1280.f,io.DisplaySize.y/(720.f+2*output_ui_extra_y()));
         ImVec2 a(io.DisplaySize.x*.5f+pointer_box[0]*s,io.DisplaySize.y*.5f-pointer_box[3]*s);
         ImVec2 b(io.DisplaySize.x*.5f+pointer_box[2]*s,io.DisplaySize.y*.5f-pointer_box[1]*s);
         bool pressed=pc_cursor_hover_pressed();

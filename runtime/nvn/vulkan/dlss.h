@@ -1,4 +1,5 @@
-// Optional NVIDIA DLSS Super Resolution backend (Windows + external NGX SDK).
+// NVIDIA DLSS Super Resolution (Windows): the NVIDIA driver's NGX, loaded at run time, and NVIDIA's DLL next to
+// savagewind.exe (dlss.c; ../../dlss_fetch.h downloads it). Elsewhere: unavailable.
 #pragma once
 
 #include <stdbool.h>
@@ -10,10 +11,9 @@ extern "C" {
 
 #include "vk.h"
 
-bool vk_dlss_compiled(void);
 void vk_dlss_required_instance_extensions(const char ***names, unsigned *count);
 void vk_dlss_required_device_extensions(const char ***names, unsigned *count);
-bool vk_dlss_init(void);
+bool vk_dlss_init(void);  // NGX on g_vk.dev; whether DLSS runs here (false: no DLL here, no NVIDIA driver with NGX)
 void vk_dlss_shutdown(void);
 bool vk_dlss_available(void);
 // color at the render size; depth and motion at its size too (MVLowRes): motion RG times mv_scale_x / mv_scale_y is

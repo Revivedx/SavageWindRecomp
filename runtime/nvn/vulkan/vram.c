@@ -186,6 +186,16 @@ void vram_allocator_setup(VmaAllocatorCreateInfo *ai, VmaVulkanFunctions *fn, bo
         uint64_t want = heap / 32, p = 1ull << 20;
         while (p * 2 <= want) p *= 2;
         ai->preferredLargeHeapBlockSize = vr_block = want - p > p * 2 - want ? p * 2 : p;
+    } else if (heap > VRAM_SMALL_HEAP) {
+        // Bigger heaps: blocks of 64 MB, not VMA's 256. A block is given back only when it is empty, and a 256 MB one
+        // with a few images left in it held the rest; system memory's heap takes the same size. On AMD's Windows
+        // driver and integrated GPUs video memory counts as the process's own memory, so that waste was RAM too
+        // (TotK Recomp's 64 MB blocks: ~230 MB less on a 10-minute route, valentderah/totk-pc-recomp 8e05d2b4).
+        // SAVAGEWIND_VRAM_BLOCK_MB=<n> (a power of 2, 16 to 256): another size.
+        uint64_t mb = 64;
+        const char *e = getenv("SAVAGEWIND_VRAM_BLOCK_MB");
+        if (e && atoi(e) >= 16 && atoi(e) <= 256 && !(atoi(e) & (atoi(e) - 1))) mb = (uint64_t)atoi(e);
+        ai->preferredLargeHeapBlockSize = vr_block = mb << 20;
     }
 }
 

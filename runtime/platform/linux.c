@@ -134,6 +134,8 @@ void plat_thread_realtime(uint64_t period_ns) {
     setpriority(PRIO_PROCESS, (id_t)gettid(), -10);  // (per thread on Linux; fails quietly without CAP_SYS_NICE)
 }
 
+void plat_thread_elevate(void) {}
+
 // ---- process
 // stdout / stderr go to savagewind.log in the data folder (runtime/paths.h; rt_paths_init runs later, so the same rule
 // is applied here). Processes started by this one (the start screen re-executing itself for the game) append to the
@@ -157,6 +159,20 @@ static void *log_echo_thread(void *arg) {
     }
     close(in);
     return NULL;
+}
+
+// A launcher that starts this with --prepare (runtime/main.c) reads its progress lines from stdout: stdout stays where
+// it is, and only stderr goes to the log. plat_init runs before main() looks at its arguments.
+static bool prepare_asked(void) {
+    char args[4096];
+    FILE *f = fopen("/proc/self/cmdline", "rb");
+    if (!f) return false;
+    size_t n = fread(args, 1, sizeof args - 1, f);
+    fclose(f);
+    args[n] = 0;
+    for (size_t i = 0; i < n; i += strlen(args + i) + 1)
+        if (!strcmp(args + i, "--prepare")) return true;
+    return false;
 }
 
 static void log_to_file(void) {
@@ -187,7 +203,7 @@ static void log_to_file(void) {
     }
     if (!freopen(g_log_path, append ? "a" : "w", stderr)) { g_log_path[0] = 0; return; }
     setvbuf(stderr, NULL, _IONBF, 0);  // (reopened, stderr was buffered: lines lost at the re-exec, or in a crash)
-    dup2(STDERR_FILENO, STDOUT_FILENO);
+    if (!prepare_asked()) dup2(STDERR_FILENO, STDOUT_FILENO);
     setenv("SAVAGEWIND_LOG_APPEND", "1", 1);
     g_echo_from = lseek(STDERR_FILENO, 0, SEEK_END);
     pthread_t t;

@@ -72,8 +72,7 @@ That step runs a compiler over your files, so it needs free space and a working 
 - your antivirus didn't quarantine anything from the Savage Wind folder.
 
 If it still fails, [open an issue](#reporting-a-problem) with `savagewind.log`
-([#618](https://github.com/Revivedx/SavageWindRecomp/issues/618),
-[#669](https://github.com/Revivedx/SavageWindRecomp/issues/669)).
+([#618](https://github.com/Revivedx/SavageWindRecomp/issues/618)).
 
 ### How long does setup take?
 
@@ -176,22 +175,23 @@ gives the driver a fresh cache.
 
 ### The sky is black, dark or wrong on my AMD card
 
-Still being looked at. It happens on AMD's Windows driver with RX 6000 cards and older (Vega included), not on newer
-cards or on Linux, and it can change from one start to the next. The 0.5.2 change for it did not fix it. Please follow
-the steps on [#359](https://github.com/Revivedx/SavageWindRecomp/issues/359) and add your card, driver, screenshots and
-logs there.
+Fixed in Alpha 6: 3D textures are now cleared when they're made, which AMD's Windows driver needed (RX 6000 cards
+and older, Vega included). If the sky is still wrong on Alpha 6, add your card, driver, screenshots and log on
+[#359](https://github.com/Revivedx/SavageWindRecomp/issues/359).
 
 ### The water is white, milky or transparent
 
-Milky water after a loading screen was fixed for Alpha 5. Transparent water is still open
+Milky water after a loading screen was fixed for Alpha 5, and transparent water for Alpha 6
 ([#649](https://github.com/Revivedx/SavageWindRecomp/issues/649)). If you see either on the latest version, add your
 GPU, driver and position.
 
-### Where are FSR 3 and FSR 4 upscaling?
+### Which upscaler should I use?
 
-They are held back. They work, but the motion vectors they need cost about 20% of the frame rate on the render thread
-(130 fps native, 104 with FSR 3, on an RTX 3060 at 1440p). This needs a redesign of the motion vectors, planned for
-Alpha 6. FSR 1 upscaling is available, and FSR 3 frame generation too.
+Since Alpha 6, Video > Upscaler offers FSR 1, FSR 3, FSR 4 (AMD Radeon RX 9000) and NVIDIA DLSS (RTX cards; Savage
+Wind Configuration downloads NVIDIA's library). They gain the most where the graphics card is the limit: 4K, the Savage
+preset, Extreme shadows. Where the CPU is the limit (1080p on a fast card), they cost about as much as they save, and
+their anti-aliasing is the reason to use them there. DLSS and FSR 3 look best in Quality or Native mode; Ultra
+Performance is only offered on a 4K window.
 
 ### Does frame generation work everywhere?
 
@@ -281,8 +281,24 @@ Any controller SDL knows. Button prompts follow the device you use, set in **Con
 
 ### Does gyro work?
 
-Yes, with DualSense, DualShock 4, Switch controllers and the Steam Deck. On a controller without one, hold T and move
-the mouse to tilt in the motion shrines. On Linux, other devices can use a DSU server.
+Yes, with any controller SDL reads a gyro from: DualSense, DualShock 4, Switch Pro and Joy-Con, the Steam Deck, and
+others such as the 8BitDo Ultimate 2 in its Switch or DInput mode. **Options > Controls > Motion source** says where the
+motion comes from right now, or why there is none.
+
+| Your controller | What to do |
+| --- | --- |
+| DualSense, DualShock 4, Switch Pro, Joy-Con | Nothing. With Steam Input on, the game opens the controller behind it for its gyro. |
+| Steam Deck | Nothing, in Gaming mode or Desktop mode. |
+| Steam Controller | Close Steam before starting the game, or set its gyro to act as a mouse in Steam Input. |
+| Xbox and other XInput pads | XInput has no gyro. If yours has one, switch it to its Switch, DS4 or DInput mode. |
+| ROG Ally, Legion Go, MSI Claw and other PC handhelds | Run Handheld Companion (or the handheld's own tool) with its DSU server on, or have it show a DualShock 4 with gyro. A DSU server that answers comes before the sensor SDL lends the handheld's gamepad. |
+| A DSU server (DS4Windows, BetterJoy, SteamDeckGyroDSU...) | Start it; the game finds it at 127.0.0.1:26760 when the controller has no gyro. Motion source: DSU server takes it first. |
+| Streaming (Moonlight, Artemis) | Have the host (Sunshine, Apollo) emulate a DualShock 4 or a DualSense, which carry the gyro. |
+
+Sensitivity, vertical sensitivity, inversion and Lean to turn are in Options > Controls; they change motion aiming,
+not shrine tilting. On a controller without a gyro, the sticks tilt the shrine apparatus, or hold T and move the mouse.
+If the gyro still misbehaves, start the game with `SAVAGEWIND_MOTION_LOG=1` and attach `savagewind.log` to
+[#136](https://github.com/Revivedx/SavageWindRecomp/issues/136).
 
 ### Does it work with mouse aiming?
 
@@ -312,9 +328,7 @@ a new one. The full list is on the [issue tracker](https://github.com/Revivedx/S
 
 | Problem | Seen on | Issue |
 |---|---|---|
-| Black, dark or wrong sky, can change between starts | AMD on Windows, RX 6000 and older | [#359](https://github.com/Revivedx/SavageWindRecomp/issues/359), [#665](https://github.com/Revivedx/SavageWindRecomp/issues/665) |
 | Fog glitches in the intro | Under investigation | [#630](https://github.com/Revivedx/SavageWindRecomp/issues/630) |
-| Transparent water | Under investigation | [#649](https://github.com/Revivedx/SavageWindRecomp/issues/649) |
 | Graphical bugs | ROG Ally Z1E on SteamOS | [#614](https://github.com/Revivedx/SavageWindRecomp/issues/614) |
 | Corrupted footprints in sand | Under investigation | [#634](https://github.com/Revivedx/SavageWindRecomp/issues/634) |
 | Corrupted picture | Under investigation | [#632](https://github.com/Revivedx/SavageWindRecomp/issues/632) |
@@ -345,8 +359,7 @@ a new one. The full list is on the [issue tracker](https://github.com/Revivedx/S
 | Attack key follows the Sort / Sensor binding | None yet | [#608](https://github.com/Revivedx/SavageWindRecomp/issues/608) |
 | Map controls with mouse and keyboard | None yet | [#440](https://github.com/Revivedx/SavageWindRecomp/issues/440) |
 | Button prompts and layout on DualSense | None yet | [#604](https://github.com/Revivedx/SavageWindRecomp/issues/604) |
-| Gyro axes wrong on some handhelds over DSU | Being looked at | [#136](https://github.com/Revivedx/SavageWindRecomp/issues/136) |
-| HUD shakes or goes out of bounds at 20:9 (2340x1080) | Needs more information; a 16:9 window meanwhile | [#728](https://github.com/Revivedx/SavageWindRecomp/issues/728) |
+| Gyro not found or wrong on some controllers and handhelds | Reworked for Alpha 6, testing: post your controller | [#136](https://github.com/Revivedx/SavageWindRecomp/issues/136) |
 | Gaps in Thai subtitles | Set Voices to "Same as text" | [#516](https://github.com/Revivedx/SavageWindRecomp/issues/516) |
 
 ### Setup
@@ -354,7 +367,7 @@ a new one. The full list is on the [issue tracker](https://github.com/Revivedx/S
 | Problem | Workaround | Issue |
 |---|---|---|
 | "No game files found" when reusing an install | [See above](#setup-says-no-game-files-found-in-that-folder) | [#590](https://github.com/Revivedx/SavageWindRecomp/issues/590) |
-| Setup stops at the start of the build | [See above](#setup-stops-at-5-10-or-the-game-code-didnt-build) | [#618](https://github.com/Revivedx/SavageWindRecomp/issues/618), [#669](https://github.com/Revivedx/SavageWindRecomp/issues/669) |
+| Setup stops at the start of the build | [See above](#setup-stops-at-5-10-or-the-game-code-didnt-build) | [#618](https://github.com/Revivedx/SavageWindRecomp/issues/618) |
 
 ---
 
@@ -383,7 +396,7 @@ Before opening one, read this page. An issue about something it already covers, 
 on the latest release, say so in your report and attach the log, and it stays open. A closed one is reopened if you
 comment with that.
 
-Reports missing the log get a `needs-info` label and are closed after 7 days without it. Never attach or link game
+Reports missing the log get a `needs-info` label and are closed after 24 hours without it. Never attach or link game
 files, keys or firmware.
 
 ---

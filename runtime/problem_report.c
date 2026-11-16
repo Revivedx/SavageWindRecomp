@@ -18,7 +18,7 @@
 
 const char *rt_version(void);  // runtime/ui/launcher.mm
 
-enum { REPORT_FILES = 4, REPORT_MAX_FILE = 0x40000000 };
+enum { REPORT_FILES = 6, REPORT_MAX_FILE = 0x40000000 };
 
 typedef struct {
     const char *name;
@@ -168,8 +168,17 @@ const char *problem_report_make(void) {
         if (name) snprintf(name, sizeof prev - (size_t)(name - prev), "savagewind.prev.log");
         else prev[0] = 0;
     }
-    const char *const from[] = {log, prev, settings_file()};
-    static const char *const names[] = {"savagewind.log", "savagewind.prev.log", "savagewind.ini"};
+    // The pipeline list and the shader key log (Vulkan, cache/): hashes and render state, nothing of the game or the
+    // player. With the same release's build they turn into a pipeline seed (tools/merge_seed_report.py), so the
+    // pipelines a player's settings need and the shipped seed lacks go into the next seed.
+    const char *cache = getenv("SAVAGEWIND_CACHE_DIR");
+    if (!cache || !*cache) cache = "cache";
+    char list[1100], keys[1100];
+    snprintf(list, sizeof list, "%s/vk_pipelines.list", cache);
+    snprintf(keys, sizeof keys, "%s/vk_shader_keys.list", cache);
+    const char *const from[] = {log, prev, settings_file(), list, keys};
+    static const char *const names[] = {"savagewind.log", "savagewind.prev.log", "savagewind.ini",
+                                        "pipelines/vk_pipelines.list", "pipelines/vk_shader_keys.list"};
     ZipEntry entries[REPORT_FILES];
     int count = 0;
     bool ok = true;

@@ -57,8 +57,10 @@ void opt_section(const char *title) {
 
 // One row: draws it, handles A / click and left / right while selected. Returns 2 (A / click), -1 / +1 (left / right) or 0.
 // arrows: ◀ value ▶ (a choice of several, or a stepper): left / right step it, and the arrows click too
+// arrows: ◀ value ▶, left / right step through the values; drop: the value in a box with ▼, a list opens on a click
+// (left / right do nothing)
 static int row(const char *label, const std::string &value, bool changed, const char *desc, bool upper = true,
-               bool arrows = false) {
+               bool arrows = false, bool drop = false) {
     ImGui::PushID(label);
     if (g_indent) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + g_indent * 28 * g_scale);  // (an option of the row above)
     ImVec2 p = ImGui::GetCursorScreenPos();
@@ -122,6 +124,19 @@ static int row(const char *label, const std::string &value, bool changed, const 
         }
         right = rx - gap;
     }
+    if (drop && !value.empty()) {  // [ value  ▼ ], drawn like arrows above
+        float aw = fs * 0.42f, gap = fs * 0.55f, cy = ty + fs * 0.52f;
+        float vw = ImGui::CalcTextSize(value.c_str()).x, bx0 = right - aw - gap * 2 - vw - gap;
+        ImU32 ac = off ? IM_COL32(110, 110, 100, 255) : hov || foc ? kGold : IM_COL32(170, 170, 160, 255);
+        dl->AddRectFilled(ImVec2(bx0, p.y + h * 0.14f), ImVec2(right + gap * 0.4f, p.y + h * 0.86f), IM_COL32(0, 0, 0, 70),
+                          r * 0.6f);
+        dl->AddRect(ImVec2(bx0, p.y + h * 0.14f), ImVec2(right + gap * 0.4f, p.y + h * 0.86f), ac, r * 0.6f, 0, 1.0f);
+        float tx = right - gap * 0.4f - aw;
+        dl->AddTriangleFilled(ImVec2(tx - aw * 0.75f, cy - aw * 0.45f), ImVec2(tx + aw * 0.75f, cy - aw * 0.45f),
+                              ImVec2(tx, cy + aw * 0.55f), ac);
+        right = tx - aw - gap;
+        if (step == 1 || step == -1) step = 0;
+    }
     if (!value.empty()) {
         float vw = ImGui::CalcTextSize(value.c_str()).x, vx = right - vw;
         dl->AddText(ImVec2(vx, ty), dim ? IM_COL32(110, 110, 102, 255) : changed ? IM_COL32(255, 255, 255, 255)
@@ -148,9 +163,10 @@ bool opt_choice(const char *label, int *v, const char *const *names, int n, int 
     return true;
 }
 
-bool opt_list(const char *label, int *v, const char *const *names, int n, int def, const char *desc, bool *picked) {
+static bool list_row(const char *label, int *v, const char *const *names, int n, int def, const char *desc, bool *picked,
+                     bool drop) {
     int cur = *v >= 0 && *v < n ? *v : 0;
-    int step = row(label, tr(names[cur]), cur != def, desc, true, true);
+    int step = row(label, tr(names[cur]), cur != def, desc, true, !drop, drop);
     *picked = false;
     ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
     ImGui::PushID(label);
@@ -183,6 +199,15 @@ bool opt_list(const char *label, int *v, const char *const *names, int n, int de
     if (nv == cur) return false;
     *v = nv;
     return true;
+}
+
+bool opt_list(const char *label, int *v, const char *const *names, int n, int def, const char *desc, bool *picked) {
+    return list_row(label, v, names, n, def, desc, picked, false);
+}
+
+bool opt_dropdown(const char *label, int *v, const char *const *names, int n, int def, const char *desc) {
+    bool picked;
+    return list_row(label, v, names, n, def, desc, &picked, true);
 }
 
 bool opt_choice_avail(const char *label, int *v, int *shown, const char *const *names, const bool *avail, int n, int def,

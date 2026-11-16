@@ -34,6 +34,7 @@
 
 // Optional helpers are zero when their complete feature group was not found.
 #define GAME_SITES_OPTIONAL(X) \
+    X(ui_control_layer)       /* a UI screen's input layer (runtime/menu_wrap.c) */ \
     X(pouch_lock)             /* native recursive inventory mutex */ \
     X(pouch_unlock)           \
     X(pouch_page_count)       /* entries on an inventory page */ \
@@ -64,7 +65,8 @@
     X(player_actor) \
     X(quick_drop_trash_prohibited) \
     X(quick_drop_actor_method) \
-    X(actor_info)
+    X(actor_info) \
+    X(horse_cam_lr)           /* CameraHorse's return address after calling the camera stick input */
 
 typedef struct {
 #define GAME_SITE_FIELD(n) uint64_t n;

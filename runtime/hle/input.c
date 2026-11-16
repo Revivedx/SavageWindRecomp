@@ -14,6 +14,7 @@
 #include "../hle.h"
 #include "../platform.h"
 #include "../control.h"
+#include "../game_sites.h"
 #include "../nvn/nvn.h"
 #include "../nvn/renderer.h"
 #include "../settings.h"
@@ -328,10 +329,10 @@ static bool cam_reading(void) {
 // (runtime/pc_cursor.c: a message box while the camera still takes input is speech over play, not a conversation)
 bool input_cam_live(void) { return cam_reading(); }
 
-// A controller without a gyroscope at a shrine apparatus (or with the tilt key held): its sticks turn the virtual
-// controller (runtime/hle/motion.c motion_dualstick), and R3 / L3 recenter it
+// At a shrine apparatus (or with the tilt key held, without a gyroscope): the sticks turn the virtual controller
+// (runtime/hle/motion.c motion_dualstick; with a gyroscope once pushed past half way), and R3 / L3 recenter it
 static bool dualstick_on(void) {
-    return pad && !host_test && (pc_gyro_keyboard_active() || tilt_held) && !motion_has_sensors() &&
+    return pad && !host_test && (pc_gyro_keyboard_active() || (tilt_held && !motion_has_sensors())) &&
            !menu_input_captured() && !framepace_menu_ui() && !framepace_title_ui();
 }
 
@@ -361,9 +362,37 @@ void input_cam_frame(float ratio) {
     cam_mouse = true;
 }
 
+// Riding is detected through the camera: CameraHorse reads the right stick through rt_cam_stick, from a call site
+// (its lr) that no other camera uses. While it was read in the last quarter second Link is riding.
+#define CAM_CALLER_NS 250000000ull
+static _Atomic uint64_t horse_cam_ns;  // CameraHorse's last read (game thread)
+
+static uint64_t horse_cam_lr(void) {
+    return g_site.horse_cam_lr;
+}
+
+static void cam_caller(uint64_t lr, uint64_t now) {
+    uint64_t site = horse_cam_lr();
+    if (site && lr == site) horse_cam_ns = now;
+}
+
+static bool horse_riding(void) {
+    if (!horse_cam_lr()) return false;
+    uint64_t t = horse_cam_ns;
+    return t && plat_now_ns() - t < CAM_CALLER_NS;
+}
+
+// Link is on a horse or the Master Cycle Zero (vulkan/exec.c: frame generation moves his box with him, and what he rides
+// is in it then). The cycle: the game asks its accelerate action every frame while Link rides it (bindings.c).
+bool rt_link_mounted(void) {
+    extern bool act_cycle_live(void);
+    return horse_riding() || act_cycle_live();
+}
+
 // tools/patches.py _cam_stick: the camera's stick input (two floats at out) when the mouse gives it; 0: the stick's
 int rt_cam_stick(uint64_t out, uint64_t lr) {
     cam_read_ns = plat_now_ns();
+    cam_caller(lr, cam_read_ns);
     bool mouse = cam_mouse && cam_native_on();
     if (cam_log_left()) {
         const float *p = (const float *)(uintptr_t)out;  // (CameraChase's main update: radius, pitch, yaw after it)
@@ -477,7 +506,10 @@ void input_focus_update(SDL_Window *w) {
 bool input_window_focused(void) {
     return win_focused;
 }
+static void pads_motion_refresh(void);
 void input_mouse_update(SDL_Window *w) {
+    static int motion_source = -1;  // (Controls > Motion source changed: which controller's sensors again)
+    if (g_settings.motion_source != motion_source) motion_source = g_settings.motion_source, pads_motion_refresh();
     motion_poll();
     input_focus_update(w);
     static bool gyro_keys;  // (the gyro keys start or stop working without a key event: entering an apparatus)
@@ -536,7 +568,7 @@ bool input_user_blocked(const SDL_Event *e) {
     if (test_event(e)) return false;  // synthetic events are also usable in unattended tests
     if (!win_focused) switch (e->type) {
     case SDL_EVENT_GAMEPAD_AXIS_MOTION: case SDL_EVENT_GAMEPAD_BUTTON_DOWN: case SDL_EVENT_GAMEPAD_BUTTON_UP:
-    case SDL_EVENT_GAMEPAD_SENSOR_UPDATE:
+    case SDL_EVENT_GAMEPAD_SENSOR_UPDATE: case SDL_EVENT_SENSOR_UPDATE:
         return true;  // before menu shortcuts, name entry and binding capture get the event
     default: break;
     }
@@ -552,7 +584,7 @@ bool input_user_blocked(const SDL_Event *e) {
     case SDL_EVENT_MOUSE_MOTION: case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_BUTTON_UP:
     case SDL_EVENT_MOUSE_WHEEL:
     case SDL_EVENT_GAMEPAD_ADDED: case SDL_EVENT_GAMEPAD_AXIS_MOTION: case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
-    case SDL_EVENT_GAMEPAD_BUTTON_UP: case SDL_EVENT_GAMEPAD_SENSOR_UPDATE: case SDL_EVENT_JOYSTICK_ADDED:
+    case SDL_EVENT_GAMEPAD_BUTTON_UP: case SDL_EVENT_GAMEPAD_SENSOR_UPDATE: case SDL_EVENT_SENSOR_UPDATE: case SDL_EVENT_JOYSTICK_ADDED:
     case SDL_EVENT_JOYSTICK_AXIS_MOTION: case SDL_EVENT_JOYSTICK_BUTTON_DOWN: case SDL_EVENT_JOYSTICK_BUTTON_UP:
         return true;
     default:
@@ -592,14 +624,17 @@ int input_pad_family(void) {
 // left a controller connected later unread.)
 static SDL_Gamepad *pads[8];
 static int npads;
+// (a controller Steam Input hides is open for its motion sensors only: runtime/hle/motion.c motion_pad_sensor_only)
 static void pad_use(SDL_Gamepad *p) {
-    if (p == pad) return;
-    if (pad) vibration_update(pad, false), motion_pad_closed();
+    if (p == pad || (p && motion_pad_sensor_only(p))) return;
+    if (pad) vibration_update(pad, false);
     pad = p;
-    if (pad) LOG("[input] gamepad in use: %s\n", SDL_GetGamepadName(pad)), motion_pad_opened(pad);
+    if (pad) LOG("[input] gamepad in use: %s\n", SDL_GetGamepadName(pad));
+    motion_pads(pad, pads, npads);
     note_family();
     recompute_pad();
 }
+static void pads_motion_refresh(void) { motion_pads(pad, pads, npads); }
 static void pad_open(SDL_JoystickID id) {
     for (int i = 0; i < npads; i++)
         if (SDL_GetGamepadID(pads[i]) == id) return;
@@ -608,8 +643,11 @@ static void pad_open(SDL_JoystickID id) {
     if (!p) return;
     pads[npads++] = p;
     if (!first_valve && SDL_GetGamepadVendor(p) == BIND_VALVE_VENDOR) first_valve = id;
-    LOG("[input] gamepad: %s (%04x:%04x)\n", SDL_GetGamepadName(p), SDL_GetGamepadVendor(p), SDL_GetGamepadProduct(p));
-    if (!pad) pad_use(p);
+    bool sensors_only = motion_pad_sensor_only(p);
+    LOG("[input] gamepad: %s (%04x:%04x)%s\n", SDL_GetGamepadName(p), SDL_GetGamepadVendor(p), SDL_GetGamepadProduct(p),
+        sensors_only ? ", behind Steam Input: its motion sensors only" : "");
+    if (!pad && !sensors_only) pad_use(p);
+    else motion_pads(pad, pads, npads);
 }
 
 void input_handle_event(const SDL_Event *e) {
@@ -721,22 +759,37 @@ void input_handle_event(const SDL_Event *e) {
             if (SDL_GetGamepadID(pads[i]) != e->gdevice.which) continue;
             SDL_Gamepad *gone = pads[i];
             pads[i] = pads[--npads];
-            if (gone == pad) pad_use(npads ? pads[0] : NULL);  // (the one in use: another connected one, if any)
+            motion_pad_removed(gone);
+            if (gone == pad) {  // (the one in use: another connected one, if any)
+                SDL_Gamepad *next = NULL;
+                for (int k = 0; k < npads && !next; k++)
+                    if (!motion_pad_sensor_only(pads[k])) next = pads[k];
+                pad_use(next);
+            }
+            motion_pads(pad, pads, npads);
+            vibration_pad_closed(gone);
             SDL_CloseGamepad(gone);
             break;
         }
         recompute_pad();
         break;
-    case SDL_EVENT_GAMEPAD_SENSOR_UPDATE:
-        if (win_focused && pad && !host_test && SDL_GetGamepadID(pad) == e->gsensor.which) motion_sensor_event(e);
+    case SDL_EVENT_GAMEPAD_SENSOR_UPDATE:  // (the controller whose sensors the motion takes: not always the one in use)
+        if (win_focused && !host_test && e->gsensor.which == motion_sensor_pad()) motion_sensor_event(e);
+        break;
+    case SDL_EVENT_SENSOR_UPDATE:  // (a PC handheld's own sensors)
+        if (win_focused && !host_test) motion_device_sensor_event(e);
         break;
     case SDL_EVENT_GAMEPAD_AXIS_MOTION: case SDL_EVENT_GAMEPAD_BUTTON_DOWN: case SDL_EVENT_GAMEPAD_BUTTON_UP:
         if (win_focused && pad && !host_test && (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
                                   (e->type == SDL_EVENT_GAMEPAD_AXIS_MOTION && abs(e->gaxis.value) > 16000))) {
             last_device = DEVICE_PAD;
             // (a button pressed on another controller: it becomes the one read. Not its sticks: a pad seen twice, by
-            // Steam or DS4Windows, or a drifting one would take over by itself)
-            if (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && SDL_GetGamepadID(pad) != e->gdevice.which)
+            // Steam or DS4Windows, or a drifting one would take over by itself. Nor a press on the same controller
+            // seen twice - its twin - or on one Steam Input hides: only their sensors are taken)
+            if (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && motion_pad_pressed(e->gbutton.which, e->gbutton.timestamp))
+                motion_pads(pad, pads, npads);
+            if (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && SDL_GetGamepadID(pad) != e->gdevice.which &&
+                !motion_pads_twins(SDL_GetGamepadID(pad), e->gdevice.which))
                 for (int i = 0; i < npads; i++)
                     if (SDL_GetGamepadID(pads[i]) == e->gdevice.which) pad_use(pads[i]);
         }
@@ -1002,7 +1055,10 @@ void input_frame(uint64_t frame) {
 // Buttons held right now (keyboard, gamepad, test script), independent of whether the game polls (movies).
 uint64_t input_buttons_now(void) {
     bool muted = (!win_focused && !host_test) || menu_input_captured();
-    uint64_t b = (muted ? 0 : key_buttons | pad_buttons | escape_buttons) | script_buttons;
+    uint64_t raw = muted ? 0 : key_buttons | pad_buttons;
+    if (!muted && !framepace_title_ui() && !framepace_menu_ui() && !pc_cursor_active())
+        raw = act_gameplay_buttons(raw, game_key, host_buttons);
+    uint64_t b = raw | (muted ? 0 : escape_buttons) | script_buttons;
     control_input_apply(&b, NULL, NULL, NULL, NULL);
     return b;
 }
@@ -1029,11 +1085,14 @@ static void fill_state(Cpu *c) {
         LOG("[input] watching controller object %llx\n", (unsigned long long)(c->x[1] - 8));
     }
     bool menu = (!win_focused && !host_test) || menu_input_captured();  // host controls belong to the focused game window
+
     // Customized actions use host bindings during play. Factory-default actions and all queries in menus, with
     // the window unfocused or the overlay up, use the Switch layer, so no binding can lock the player out.
     act_poll(!menu && !framepace_title_ui() && !framepace_menu_ui());
     uint64_t bow = pc_bow_sample();
-    uint64_t b = menu ? script_buttons : key_buttons | pad_buttons | escape_buttons | bow | script_buttons;
+    bool in_menu = menu || framepace_title_ui() || framepace_menu_ui();
+    uint64_t raw = menu ? 0 : (in_menu ? (key_buttons | pad_buttons) : act_gameplay_buttons(key_buttons | pad_buttons, game_key, host_buttons));
+    uint64_t b = raw | (menu ? 0 : escape_buttons | bow) | script_buttons;
     if (!menu) b |= auto_continue_buttons(b);  // (not while the overlay has the controls)
     b=pc_cursor_buttons(b);
     {   // injected Plus: held for ~10 presented frames (the game polls several times per frame)
@@ -1042,11 +1101,15 @@ static void fill_state(Cpu *c) {
         if (g_inject_plus > 0) { until = renderer_present_count() + 10; g_inject_plus = 0; }
         if (renderer_present_count() < until) b |= 1ull << BTN_PLUS;
     }
-    // (the controller's sticks turning a shrine apparatus move neither Link nor the camera meanwhile)
-    bool sticks = !menu && !dualstick_on();
+    // (the sticks of a controller without a gyroscope turning a shrine apparatus move neither Link nor the camera
+    // meanwhile; with one, the game keeps them as on the console)
+    bool sticks = !menu && !(dualstick_on() && !motion_has_sensors());
     int32_t plx = sticks ? pad_lx : 0, ply = sticks ? pad_ly : 0, prx = sticks ? pad_rx : 0, pry = sticks ? pad_ry : 0;
     bool map_keys=pc_cursor_map_navigation();
-    int32_t lx = clamp_axis((menu ? 0 : (map_keys?0:key_lx) + plx) + script_lx), ly = clamp_axis((menu ? 0 : (map_keys?0:key_ly) + ply) + script_ly);
+    int32_t klx = menu || map_keys ? 0 : key_lx, kly = menu || map_keys ? 0 : key_ly;
+    if (horse_riding() && klx && kly > 0) kly = 0;
+    int32_t lx = clamp_axis(klx + plx + script_lx);
+    int32_t ly = clamp_axis(kly + ply + script_ly);
     // Gate at each poll: an arrow or Enter held when a menu closes must never move the player or press A.
     // Event activity also includes cutscenes and fanfares, so it cannot identify dialogue choices safely.
     if (!menu && (framepace_title_ui() || framepace_menu_ui())) {

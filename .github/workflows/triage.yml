@@ -1,8 +1,10 @@
 # Bug reports: checks that a report has savagewind.log, comes from the latest release and from game version 1.9.0.
 # When something is missing it adds the needs-info label and one comment saying what; when the report is edited or
-# its author replies with what was missing, it takes them away again. stale.yml closes needs-info issues after 7 days.
+# its author replies with what was missing, it takes them away again. stale.yml closes needs-info issues after 24 hours.
 # A maintainer can label an issue triage-ok to keep the check off it. Only reads the issue's text: no code from the
 # issue or the repository runs here.
+# Crash reports that a third-party launcher opens by itself ("Crash: closed with code ...", RecompLauncher) don't use the
+# issue form, so they come without the bug label: they are checked too, and get the label.
 name: Bug report triage
 
 on:
@@ -18,7 +20,8 @@ jobs:
   triage:
     if: >-
       !github.event.issue.pull_request &&
-      contains(github.event.issue.labels.*.name, 'bug') &&
+      (contains(github.event.issue.labels.*.name, 'bug') ||
+       startsWith(github.event.issue.title, 'Crash: closed with code')) &&
       !contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.issue.author_association)
     runs-on: ubuntu-latest
     steps:
@@ -34,6 +37,8 @@ jobs:
             // triage-ok (the information came some other way).
             if (new Date(issue.created_at) < new Date('2026-10-26T00:00:00Z')) return;
             if (issue.labels.some(l => l.name === 'triage-ok')) return;
+            if (!issue.labels.some(l => l.name === 'bug'))
+              await github.rest.issues.addLabels({ owner, repo, issue_number: number, labels: ['bug'] });
 
             // The issue form's answers: "### <label>\n\n<answer>" blocks.
             const section = (text, label) => {
@@ -68,7 +73,7 @@ jobs:
 
             if (missing.length) {
               const text = `${MARK}\nThanks for the report! To look into it we still need:\n\n${missing.join('\n')}\n\n` +
-                           'Edit the issue or reply here with it. Reports still missing it after 7 days are closed ' +
+                           'Edit the issue or reply here with it. Reports still missing it after 24 hours are closed ' +
                            'automatically; you can reopen them any time.';
               if (!labelled) await github.rest.issues.addLabels({ owner, repo, issue_number: number, labels: [LABEL] });
               if (!mine) await github.rest.issues.createComment({ owner, repo, issue_number: number, body: text });

@@ -189,7 +189,8 @@ extern "C" void controls_bindings_draw(float scale) {
                      slot_binding(rdev, rother, fam));
         else if (kind == 3) snprintf(msg, sizeof msg, tr("Cancelled: %s unchanged."), name);
         else if (kind == 4) snprintf(msg, sizeof msg, tr("Nothing pressed: %s unchanged."), name);
-        if (kind == 1 || kind == 2 || kind == 5) settings_save();
+        else if (kind == 6) snprintf(msg, sizeof msg, "%s", tr("A and B swapped, with the actions on them."));
+        if (kind == 1 || kind == 2 || kind == 5 || kind == 6) settings_save();
     }
     if (msg[0]) ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", msg);
 
@@ -223,6 +224,8 @@ extern "C" void controls_bindings_draw(float scale) {
     ImGui::BeginDisabled(bind_is_default(BIND_DEV_KEY));
     if (ImGui::Button(tr("Reset keyboard to defaults"))) { bind_capture_cancel(); bind_reset(BIND_DEV_KEY); }
     ImGui::EndDisabled();
+    // the Xbox convention (confirm on the bottom button) in one click, and back again
+    if (ImGui::Button(tr("Swap A and B (Xbox: A confirms)"))) { bind_capture_cancel(); bind_swap_ab(); }
 
     ImGui::PushTextWrapPos(0);
     ImGui::TextDisabled("%s", tr("Bindings apply to the game only. Esc and F1 always open the in-game menu, and so do the "

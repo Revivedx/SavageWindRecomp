@@ -10,13 +10,18 @@
   keep registers and flags in C locals (`tools/regs.py`, `tools/flags.py`, the flag helpers in `runtime/cpu.h`), and
   the rule for skipping a draw whose pipeline is still building and linking ready stages inline (`TOTK_PIPE_SKIP`;
   `runtime/nvn/vulkan/exec.c` one_shot_target, link_now; `third_party/totk-pc-recomp/LICENSE`).
+- [RenoDX](https://github.com/clshortfuse/renodx) (MIT) - the HDR tonemap approach and the ported MacLeod-Boynton,
+  PsychoV test17 and Neutwo shader code: game mod by souperman9, tonemapper by Musa, RenoDX by ShortFuse (Carlos
+  Lopez Jr.), RenoVK fork by Ritsu, and the TotK port by ProSep ([totk-pc-recomp#281](https://github.com/valentderah/totk-pc-recomp/pull/281));
+  see `docs/hdr.md`.
 - [envytools](https://github.com/envytools/envytools) - NVIDIA GPU documentation used for the shader translator.
 - The Switch homebrew community's documentation ([Switchbrew](https://switchbrew.org)).
 - [Ghidra](https://github.com/NationalSecurityAgency/ghidra) and the
   [Switch Loader](https://github.com/Adubbz/Ghidra-Switch-Loader) - used for reverse engineering (not bundled).
 - Libraries: [SDL 3](https://libsdl.org) (zlib), [FFmpeg](https://ffmpeg.org) (LGPL),
   [Dear ImGui](https://github.com/ocornut/imgui) (MIT),
-  [NVIDIA DLSS SDK](https://github.com/NVIDIA/DLSS) (NVIDIA's own license; optional, Windows; `make dist` adds its `LICENSE.txt`),
+  [NVIDIA DLSS](https://github.com/NVIDIA/DLSS) (NVIDIA's own license; neither shipped nor linked: on Windows PCs with an
+  NVIDIA driver the setup downloads NVIDIA's DLL and `LICENSE.txt`),
   [Vulkan Memory Allocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator) (MIT),
   [SMAA](https://github.com/iryoku/smaa) (MIT), [AMD FidelityFX Super Resolution 1](https://github.com/GPUOpen-Effects/FidelityFX-FSR)
   (MIT), [AMD FidelityFX CAS](https://github.com/GPUOpen-Effects/FidelityFX-CAS) (MIT),

@@ -2303,6 +2303,7 @@ static void exec_list(uint64_t handle, int depth) {
         void *x = r->extra;
         if (r->op < CMD_COUNT) op_counts[r->op]++;
         switch (r->op) {
+        case CMD_UI_SCOPE: break;
         case CMD_END: return;
         case CMD_JUMP: p = r->x[0]; continue;
         case CMD_CALL: {

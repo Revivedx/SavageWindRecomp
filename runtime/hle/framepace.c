@@ -50,6 +50,7 @@
 #include "../rt.h"
 #include "../settings.h"
 #include "../framepace.h"
+#include "../ui_layout.h"
 #include "../gamelib.h"
 #include "../window_size.h"
 
@@ -144,12 +145,25 @@ static bool event_at_30(void) {
     return hold;
 }
 
-// The game's UI screen `id` exists (the screen manager's array; ids as runtime/ui/game_options.mm uses them)
-static bool screen_up(uint32_t id) {
+// The game's UI screen `id` (the screen manager's array; ids as runtime/ui/game_options.mm uses them)
+static uint64_t screen_at(uint32_t id) {
     uint64_t mgr = *(uint64_t *)(uintptr_t)g_site.screen_mgr;
-    if (!mgr || VF(uint32_t, mgr, 0x28) <= id) return false;
+    if (!mgr || VF(uint32_t, mgr, 0x28) <= id) return 0;
     uint64_t arr = VF(uint64_t, mgr, 0x30);
-    return arr && *(uint64_t *)(uintptr_t)(arr + 8 * id);
+    return arr ? VF(uint64_t, arr, 8 * id) : 0;
+}
+
+static bool screen_up(uint32_t id) { return screen_at(id) != 0; }
+
+// MessageDialog can keep drawing its close animation after the event manager clears its active event.
+// Use the native layout draw conditions, which include the closing state (+0xfe == 3).
+static bool screen_draws(uint64_t screen) {
+    return screen && VF(uint8_t, screen, 0x100) && !VF(uint8_t, screen, 0x102) &&
+           VF(uint8_t, screen, 0xfe) && VF(uint8_t, screen, 0xff) != 2;
+}
+
+bool framepace_dialogue_ui(void) {
+    return screen_draws(screen_at(0x11)) || screen_draws(screen_at(0x4a)) || screen_draws(screen_at(0x4c));
 }
 
 // (screens: 1 the start screen, 0x38 its load and confirmation menus; 0x38 can also be used over a paused game)
@@ -165,6 +179,9 @@ bool framepace_loading_ui(void) { return screen_up(0x55); }
 // (pause state 2: the pause menu's pages and the map; 4 is the quick menus over the game)
 bool framepace_menu_ui(void) { return *(uint32_t *)(uintptr_t)PAUSE_STATE == 2; }
 bool framepace_map_ui(void) {
+    uint64_t screen = screen_at(0x2a);
+    int mode = ui_layout_map_mode(screen);
+    if (mode >= 0) return mode && screen_draws(screen);
     if (!framepace_menu_ui()) return false;
     uint64_t mgr = *(uint64_t *)(uintptr_t)g_site.screen_mgr;
     if (!mgr || VF(uint32_t, mgr, 0x28) <= 0x2f) return false;
@@ -315,6 +332,13 @@ static void load_watch(uint64_t t) {
     }
 }
 
+static float menu_speed_mult(void) {
+    if (!in_menu()) return 1.0f;
+    int speed = g_settings.menu_speed;
+    if (speed < 70 || speed > 300) return 1.0f;
+    return speed / 100.0f;
+}
+
 void framepace_presented(uint64_t t, bool on_grid) {
     load_watch(t);
     if (!framepace_on()) return;
@@ -330,7 +354,7 @@ void framepace_presented(uint64_t t, bool on_grid) {
     g_grid_streak = on_grid ? g_grid_streak + 1 : 0;
     static int fixed = -1;
     if (fixed < 0) fixed = env_int("SAVAGEWIND_NO_CONTROLLER_STEP", 0);
-    if (!fixed) *(float *)(uintptr_t)CONTROLLER_STEP = g_step;
+    if (!fixed) *(float *)(uintptr_t)CONTROLLER_STEP = g_step * menu_speed_mult();
 }
 
 // The menus' speed: every frame the game sets a GUI speed to its integer interval x 0.5: 1 at 30 fps, 0.5 at 60, and
@@ -340,7 +364,8 @@ void framepace_presented(uint64_t t, bool on_grid) {
 float rt_gui_speed(float game) {
     static int off = -1;
     if (off < 0) off = env_int("SAVAGEWIND_NO_GUI_SPEED", 0);
-    return off || !framepace_on() ? game : g_step;
+    float base = off || !framepace_on() ? game : g_step;
+    return base * menu_speed_mult();
 }
 
 // ------------------------------------------------------------------ the game's clock (ksys::VFR)
@@ -481,16 +506,31 @@ int rt_phys_ticked(uint64_t solver_info) {
 
 // A player demo move's arrival (tools/patches.py _demo_move_arrive, #364): the move that walks Link in a cutscene ends
 // when the distance left is under the body's speed, given in metres per console frame: one console frame of walking.
-// Leaving the Shrine of Resurrection, the rail move's point runs about 0.15 m ahead of Link; above ~100 fps a frame's step
-// is short enough for Link to come within 0.185 m of an intermediate point (0.169 at 120 fps, measured), and the walk
-// ended halfway, Link standing still for the rest of the scene. The game's other end test (2 x speed x delta frame)
-// already follows the step; this one now does too: one frame of walking at the frame's length, at most a console frame's,
-// so 30 fps (and slower) keeps the game's test. SAVAGEWIND_DEMO_ARRIVE=0: the game's own.
+// Leaving the Shrine of Resurrection above ~100 fps, Link came within 0.185 m of the rail's point at its first node
+// (0.169 at 120 fps, measured; rt_rail_point_radius has why the point was that close), and the walk ended halfway, Link
+// standing still for the rest of the scene. The game's other end test (2 x speed x delta frame) already follows the step;
+// this one now does too: one frame of walking at the frame's length, at most a console frame's, so 30 fps (and slower)
+// keeps the game's test. SAVAGEWIND_DEMO_ARRIVE=0: the game's own.
 float rt_demo_move_arrive(float speed, float delta_frame) {
     static int on = -1;
     if (on < 0) on = env_int("SAVAGEWIND_DEMO_ARRIVE", 1) != 0;
     if (!on || !(delta_frame > 0) || delta_frame >= 1) return speed;
     return speed * delta_frame;
+}
+
+// A player rail move's point (tools/patches.py _rail_point_radius, #364). Link walks to a point on the rail
+// (PlayerRailMove, 1.9.0 0x7000c89cec), and the point moves on by half a radius whenever Link is within the radius of it.
+// The radius is the delta frame the player stored that frame, in metres: 1 at 30 fps, 0.17 at 180. At a rail node the
+// point starts along the next segment from rest and speeds up in the rail's own time, so the smaller the radius, the
+// closer Link came to it before it got away: 0.72 x the radius at 60 fps, 0.49 at 100, and at 180 (the game's step held
+// at 180 fps) 0.03 m, under the move's own end test (the distance growing again within two frames of walking), and the
+// walk out of the Shrine of Resurrection ended at the rail's first node, Link standing still for the rest of the scene.
+// The radius is at least the console's 1 m, so the point waits at the distance it does at 30 fps; slower than 30 fps
+// keeps the game's larger one. SAVAGEWIND_RAIL_RADIUS=0: the game's own.
+float rt_rail_point_radius(float radius) {
+    static int on = -1;
+    if (on < 0) on = env_int("SAVAGEWIND_RAIL_RADIUS", 1) != 0;
+    return on && radius < 1.0f ? 1.0f : radius;
 }
 
 // The sound system's frame (tools/patches.py _snd_frame_floor, #145): the game gives it the delta frame, at least 0.5
@@ -567,6 +607,25 @@ void rt_stale_actor(void) {
     if (k <= 5 || (k & (k - 1)) == 0) LOG("[game] a stale actor in the target manager was ignored (%u so far)\n", k);
 }
 
+int rt_actor_link_valid(uint64_t actor) {
+    uint64_t top = HEAP_BASE + kernel_heap_size();
+    if ((actor & 7) || actor < HEAP_BASE || actor + 0x578 > top) {
+        rt_stale_actor();
+        return 0;
+    }
+    uint64_t link = *(const uint64_t *)(uintptr_t)(actor + 0x570);
+    if ((link & 7) || link < HEAP_BASE || link + 0x90 > top) {
+        rt_stale_actor();
+        return 0;
+    }
+    uint64_t param = *(const uint64_t *)(uintptr_t)(link + 0x88);
+    if ((param & 7) || param < HEAP_BASE || param + 0x770 > top) {
+        rt_stale_actor();
+        return 0;
+    }
+    return 1;
+}
+
 // The game's frames that were presented: one step per presented frame, where game frames step twice while paused
 // (output_scale.c's jitter sequence: each presented frame gets the next phase)
 static uint64_t shown_frames;
@@ -634,6 +693,16 @@ void rt_vfr_update(uint64_t vfr) {
         if (step > 0.05) step = 0.05;
         last_step = step;
         ratio = (float)(step * 30);
+    }
+    {   // (testing) SAVAGEWIND_DEBUG_FIXED_STEP=<fps>: the game's step is always that frame rate's, whatever the real
+        // one: its logic runs as at that rate (slower or faster than real time), for frame-rate bugs a PC can't reach
+        static double fixed = -1;
+        if (fixed < 0) {
+            const char *e = getenv("SAVAGEWIND_DEBUG_FIXED_STEP");
+            fixed = e && atof(e) > 0 ? atof(e) : 0;
+            if (fixed > 0) LOG("[framepace] the game's step fixed at %.1f fps (testing)\n", fixed);
+        }
+        if (fixed > 0 && !paused) ratio = (float)(30.0 / fixed);
     }
     bool held = VF(uint8_t, vfr, VFR_OVERRIDE) && ratio > 1;  // (stage loading: the game asks for single steps)
     if (held) ratio = 1;

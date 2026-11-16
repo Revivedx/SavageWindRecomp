@@ -6,6 +6,161 @@ What changed in each Savage Wind release. The `test` branch holds what the next 
 
 Nothing yet.
 
+## Alpha 6 (0.6.0-alpha.6) - 2026-11-15
+
+The upscaler update: NVIDIA DLSS, FSR 3 and FSR 4 that gain frames, a faster build, a new gyro, and many fixes and
+options from the community. **Updating:** Savage Wind Configuration offers it in one click. On the first start the
+game code is built again for this version (a few minutes); your game files, saves and settings stay.
+
+### Upscalers and graphics
+
+- **NVIDIA DLSS** in Video > Upscaler, on RTX graphics cards on Windows ([#602](https://github.com/Revivedx/SavageWindRecomp/pull/602) by Yiozolm). Savage Wind doesn't
+  ship NVIDIA's library: Savage Wind Configuration downloads it from NVIDIA's own repository on your PC (offline:
+  copy `nvngx_dlss.dll` next to `savagewind.exe`). RTX 20 and 30 cards get DLSS's CNN model and RTX 40 and later its
+  transformer model: left to NVIDIA's choice, the transformer cost an RTX 3060 more than DLSS saved. RTX 3060, 4K,
+  Savage preset at 100%: 94 fps without an upscaler, 123 with DLSS Performance. `SAVAGEWIND_DLSS_PRESET=<n>` picks
+  another model.
+- **Native mode** for FSR 3 and FSR 4: their anti-aliasing at the window's resolution ([#820](https://github.com/Revivedx/SavageWindRecomp/pull/820) by jfpaardoo).
+- **Render scale** changes only the 3D scene: the HUD and menus stay sharp at any scale, and above 100% the menus no
+  longer shrink inside black bands ([#835](https://github.com/Revivedx/SavageWindRecomp/pull/835) by jfpaardoo, [#764](https://github.com/Revivedx/SavageWindRecomp/issues/764), [#746](https://github.com/Revivedx/SavageWindRecomp/issues/746)).
+- **HDR options** have a page of their own under Video > Advanced options, with a RenoDX extended tone mapper,
+  PsychoV, live presets and an Advanced fold ([#572](https://github.com/Revivedx/SavageWindRecomp/pull/572) by EthanBlazkowicz).
+- **Ultrawide:** the pause menu, the loading screen and the start screen keep their 16:9 layout ([#805](https://github.com/Revivedx/SavageWindRecomp/issues/805)).
+- **Gerudo Desert terrain** no longer comes out as huge spikes or dark patches around Molduga and Molduking
+  ([#855](https://github.com/Revivedx/SavageWindRecomp/issues/855), [#872](https://github.com/Revivedx/SavageWindRecomp/issues/872), [#797](https://github.com/Revivedx/SavageWindRecomp/issues/797), [#816](https://github.com/Revivedx/SavageWindRecomp/issues/816)).
+- **Waterfall bases** on GPUs without attachment feedback loops (older NVIDIA, Intel, older AMD) ([#848](https://github.com/Revivedx/SavageWindRecomp/issues/848), [#868](https://github.com/Revivedx/SavageWindRecomp/pull/868)
+  by jfpaardoo).
+- **Frame generation while riding:** the horse and the Master Cycle Zero no longer go back and forth in the
+  generated frames.
+- **The performance overlay (F10)** names DLSS when it is the upscaler.
+
+### Performance
+
+- **A faster build:** the release runtime is built with profile-guided optimisation and ThinLTO ([#801](https://github.com/Revivedx/SavageWindRecomp/pull/801) by
+  Fayberr). RTX 3060 and a Ryzen 5 5600X, 1080p: Kakariko with FSR 3 Quality from 106 to 118 fps, the Central tower
+  from 174 to 187.
+- **FSR 3 and DLSS cost fewer frames where the CPU is the limit:** draws without motion of their own send less to the
+  GPU, and DLSS and FSR 3 frame generation are recorded on the recorder thread ([#825](https://github.com/Revivedx/SavageWindRecomp/pull/825) by jfpaardoo). Playing at
+  1080p (camera turning), FSR 3 and DLSS now match or beat no upscaler: Kakariko 112 / 111 fps against 110.
+- **Fewer first-time stutters:** 11,615 pipelines are prepared before you play (Alpha 5: 3,993), from tours of every
+  region with every graphics option. Problem reports now carry your pipeline list, so the next versions can prepare
+  the ones you met too.
+- **Frame drops after long sessions or fast travel** that came with 0.5.3's particle fix ([#815](https://github.com/Revivedx/SavageWindRecomp/issues/815)).
+- **Less video memory held:** blocks of 64 MB instead of 256 MB, about 230 MB less in a short session (on AMD's
+  Windows driver and integrated GPUs this is RAM too). `SAVAGEWIND_VRAM_BLOCK_MB=<n>` sets another size.
+- **A pass's opening clear** is folded into how the pass starts ([#803](https://github.com/Revivedx/SavageWindRecomp/pull/803) by Dgmtnz).
+- **AMD FSR 3 and FSR 4 upscaling are back** in Video > Upscaler. They were held back in Alpha 5 because they ran
+  slower than native where the CPU was the limit; with the changes below they gain. RTX 3060 and a Ryzen 5 5600X,
+  1440p, Savage preset at 100% render scale, FSR 3 Quality over native: Great Plateau 106 / 102 fps, Kakariko
+  106 / 88, Korok Forest 67 / 40. `SAVAGEWIND_FSR3=0` hides them.
+- **FSR 3, FSR 4 and TAA cost the CPU much less:** their motion vectors are worked out on a thread of their own
+  instead of the thread that translates the game's drawing, every scene draw uses one motion program, and FSR 3 is
+  dispatched by the recorder thread. RTX 3060 and a Ryzen 5 5600X, Great Plateau, uncapped, 1440p, where the CPU is
+  the limit: FSR 3 Quality went from 101 to 119 fps (native 130). CPUs with fewer than 6 logical processors keep
+  the work on the translating thread.
+- **TAA is a single pass:** about 0.5 ms of GPU time at 1440p instead of 2.5 ms (same PC: 104 to 122 fps at 1440p;
+  with the Savage preset, 150% render scale, 54 to 71 fps, SMAA 77). The image is a little softer in motion than
+  before; `SAVAGEWIND_TAA=full` brings the old seven passes back.
+- **Frame generation with no frame limit** no longer lowers the frame rate: its two presents per game frame are
+  paced on a thread of their own instead of holding the thread that translates the game's drawing. Same PC, Savage
+  preset at 100% render scale, 1440p, presented frames per second without frame generation / with it before / with it
+  now: Great Plateau 102 / 47 / 125, Kakariko 88 / 48 / 116, Korok Forest 40 / 29 / 66.
+- **Shadow resolution follows FSR 3, FSR 4 and DLSS:** with one of them on, shadow maps above the console's size are
+  made smaller by the upscaler mode's factor (Savage at Quality: 5440 instead of 8192), the same shadow detail per
+  rendered pixel. Where shadows were most of the frame the upscaler gained nothing (Korok Forest, FSR 3 Quality:
+  41 to 67 fps, native 40). `SAVAGEWIND_SHADOW_FOLLOW=0` keeps the setting's size.
+- **Ultra Performance with FSR 3, FSR 4 or DLSS needs a 4K window:** below that it rendered a third of the window on
+  each side (853 x 480 at 1440p) and the whole image came out blurred. It is greyed there, and a stored Ultra
+  Performance runs as Performance. FSR 1 keeps it at any size.
+
+### Options and menus
+
+- **Cheats tab:** items by category from a dropdown (critters and fairies included, [#834](https://github.com/Revivedx/SavageWindRecomp/pull/834) by jfpaardoo), and an
+  exact rupee count ([#821](https://github.com/Revivedx/SavageWindRecomp/pull/821) by jfpaardoo). Weather is a dropdown too.
+- **Dialogue text speed** ([#678](https://github.com/Revivedx/SavageWindRecomp/pull/678) by jfpaardoo) and **menu cursor speed** ([#833](https://github.com/Revivedx/SavageWindRecomp/pull/833) by jfpaardoo) options.
+- **HUD size Off** hides the HUD, hearts included, while you play ([#804](https://github.com/Revivedx/SavageWindRecomp/pull/804) by jfpaardoo).
+- **Menus wrap around** with the controller ([#742](https://github.com/Revivedx/SavageWindRecomp/pull/742) by SeveX).
+- **A custom save folder** in the settings and the start screen ([#673](https://github.com/Revivedx/SavageWindRecomp/pull/673) by generalpooria).
+- **Discord Rich Presence** (Options > Gameplay, off by default): where you are in Hyrule on your Discord profile, with
+  place names read from your own game files ([#680](https://github.com/Revivedx/SavageWindRecomp/pull/680) by Eyeffect).
+- **Xbox controller page:** callout lines end on their buttons, and a button swaps A and B ([#795](https://github.com/Revivedx/SavageWindRecomp/pull/795) by gangg111).
+- **Turkish** letters in the start screen and menus ([#827](https://github.com/Revivedx/SavageWindRecomp/pull/827) by jfpaardoo).
+- **Voice language** plays the overlay folder's files of the chosen language ([#819](https://github.com/Revivedx/SavageWindRecomp/pull/819) by leonardo-spy).
+- **RecompLauncher:** Savage Wind can be set up from it ([#736](https://github.com/Revivedx/SavageWindRecomp/pull/736) by Xarishark).
+- **New guides:** [Cheats and assists](docs/cheats-and-assists.md) (assists, cheats, the teleport and the amiibo
+  reader) and [Teleport places](docs/teleport-places.md), every place `tp` knows.
+
+### Gyro
+
+The gyro reports are gathered on [#136](https://github.com/Revivedx/SavageWindRecomp/issues/136); please test your
+controller and post there.
+
+- **Sensitivity and inversion turn the aim, however the controller is held:** they act on left / right about gravity
+  and on up / down, not on the controller's own axes. Held upright (a handheld, the Steam Deck), "Invert left and
+  right" did nothing, "Invert up and down" flipped both, and the sensitivity only changed up and down.
+- **Vertical motion sensitivity** and **Lean to turn** (tilting the controller like a steering wheel also turns the
+  aim) in Options > Controls.
+- **Shrine tilt puzzles** follow the controller as it is held, whatever the sensitivity and inversion.
+- **Controllers polled faster than their sensor** (a DualSense at 1000-8000 Hz, some that pass for one): each repeated
+  report turned the aim again, so it ran off on its own ([#759](https://github.com/Revivedx/SavageWindRecomp/issues/759)).
+- **The same controller seen twice** (DS4Windows, DSX or Handheld Companion beside the real one): the gyro stays on
+  the real controller instead of following whichever of the two was pressed last.
+- **Steam Input:** the controller it hides behind its virtual gamepad (DualSense, DualShock 4, Switch Pro...) is opened
+  for its gyro, so motion works with Steam Input on. Valve's own controllers stay with Steam (the Deck already reads
+  its own sensors); `SAVAGEWIND_STEAM_SENSORS=0` turns this off.
+- **DSU servers on Windows too** (DS4Windows, BetterJoy, Handheld Companion for the ROG Ally, Legion Go and others,
+  SteamControllerDSU): at 127.0.0.1:26760 when the controller has no gyro, nothing to set up. `motion_dsu_axes` in
+  `savagewind.ini` sets right a server that sends its axes in another order or sign ("pitch roll -yaw"). A DSU server
+  that answers also comes before the sensor SDL lends a handheld's gamepad with no data rate, which stalls on the ROG
+  Ally ([#860](https://github.com/Revivedx/SavageWindRecomp/pull/860) by uzuki-P).
+- **PC handhelds' own sensors** when Windows shows them (through SDL), if nothing else gives motion.
+- **Linux handhelds under InputPlumber** (its virtual Steam Deck controller) read like the Deck.
+- **Options > Controls > Motion source:** Automatic, Controller, DSU server or Off; its description says where the
+  motion comes from right now, or why there is none.
+- **The sticks tilt a shrine apparatus with any controller** once pushed past half way (a gyro lying still, a handheld
+  on its dock); R3 gives it back to the gyro.
+
+### Accessibility
+
+- **Colour vision for colour-blind players**, the first rows of Options > Accessibility: Protanopia, Deuteranopia or
+  Tritanopia shifts the colours of the whole picture, HUD and menus included, so colours that look alike come apart
+  (a red Chuchu from a green one, the stamina wheel running out). Correction strength goes from 10% to 100%. It
+  works in HDR too, costs no extra pass, and leaves the Savage Wind menu and the camera rune's photos as they are.
+  More in [Cheats and assists](docs/cheats-and-assists.md#colour-vision).
+
+### Fixes
+
+- **Crash using the Sheikah Slate** in Zora's Domain and elsewhere: a stale actor is checked before it's read
+  ([#873](https://github.com/Revivedx/SavageWindRecomp/issues/873), [#874](https://github.com/Revivedx/SavageWindRecomp/pull/874) by jfpaardoo).
+- **Black or missing sky on AMD cards** ([#359](https://github.com/Revivedx/SavageWindRecomp/issues/359), [#665](https://github.com/Revivedx/SavageWindRecomp/issues/665)).
+- **The opening cutscene's walk** keeps the console's pace at high frame rates ([#364](https://github.com/Revivedx/SavageWindRecomp/issues/364)).
+- **Particles stretched across the screen** for a frame with the GPU overlap ([#629](https://github.com/Revivedx/SavageWindRecomp/issues/629)).
+- **1366x768 and similar sizes** render 1:1 instead of being resampled ([#770](https://github.com/Revivedx/SavageWindRecomp/issues/770), [#802](https://github.com/Revivedx/SavageWindRecomp/pull/802) by jfpaardoo).
+- **Rebinding a menu row** no longer moves gameplay actions ([#608](https://github.com/Revivedx/SavageWindRecomp/issues/608), [#642](https://github.com/Revivedx/SavageWindRecomp/pull/642) by jfpaardoo), and keyboard Jump and
+  Sprint keep their keys when the game's jump controls are swapped ([#798](https://github.com/Revivedx/SavageWindRecomp/issues/798), [#822](https://github.com/Revivedx/SavageWindRecomp/pull/822) by jfpaardoo).
+- **SW Update** leaves launcher installs and other programs' AppImages alone ([#677](https://github.com/Revivedx/SavageWindRecomp/pull/677) by devall96).
+- **Water** drawn transparent where a new image was read before its clear finished
+  ([#649](https://github.com/Revivedx/SavageWindRecomp/issues/649), by jfpaardoo).
+- **Bluetooth controllers** (DualSense on Windows): vibration no longer stalls input; it runs on a thread of its own
+  ([#730](https://github.com/Revivedx/SavageWindRecomp/issues/730), by jfpaardoo).
+- **Game files folder** on Linux without a working file dialog: the error is shown and the path can be typed in
+  ([#724](https://github.com/Revivedx/SavageWindRecomp/issues/724), by jfpaardoo).
+- **Stutter** while pipelines were linked ([#591](https://github.com/Revivedx/SavageWindRecomp/issues/591), by jfpaardoo).
+- **Hybrid CPUs** (Intel 12th gen and later): every logical processor is kept, and the game's critical threads run at a
+  higher priority ([#639](https://github.com/Revivedx/SavageWindRecomp/issues/639), by jfpaardoo).
+- **Refresh rate:** the monitor's real refresh rate is detected, and higher-Hz display modes are picked
+  ([#623](https://github.com/Revivedx/SavageWindRecomp/issues/623), by jfpaardoo).
+- **Video > Haze** keeps to 75 % or more: lower values turned the picture teal (by devall96).
+- **Taller windows** (16:10 and others) with Fill wide screens: the HUD, dialogue, pause menu, title screen and world map
+  keep their layout (by sabeliam).
+- **Keyboard on horseback:** W with A or D steers without speeding forward
+  ([#290](https://github.com/Revivedx/SavageWindRecomp/issues/290), by rvsting).
+- **Chinese and Korean text** showed Japanese glyphs, blank boxes or `?`: the game's Chinese and Korean shared fonts
+  were filled with the Japanese Standard font, which has no hanzi or hangul. They now load a CJK font —
+  `SAVAGEWIND_CJK_FONT`, or a TrueType one installed on the system (Microsoft YaHei / SimSun for Chinese, Malgun
+  Gothic for Korean, PingFang, WenQuanYi…) — and the menus' CJK fallback also accepts `SAVAGEWIND_CJK_FONT`, a font
+  in the data folder's `fonts/`, and more system paths (`fonts/README.md`).
+
 ## 0.5.3 (0.5.3-alpha.5) - 2026-11-12
 
 A quick fix update. **Updating:** Savage Wind Configuration offers it in one click (from 0.5.1 on). Your game files,

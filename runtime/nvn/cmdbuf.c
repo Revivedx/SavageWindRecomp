@@ -52,6 +52,7 @@ static uint64_t g_free_bytes;
 static HBlock *g_grave;  // dead blocks, oldest first, until three frames have passed
 static int g_ngrave, g_capgrave;
 static KMutex g_shadow_lock = KMUTEX_INIT;
+static NvnCmdBuf *g_command_buffers;
 uint64_t renderer_present_count(void);
 
 static void push_block(HBlock **v, int *n, int *cap, HBlock b) {
@@ -222,6 +223,11 @@ static HBlock shadow_block(Shadow *sh, int i, uint64_t want) {
 
 RT_ON_RESET(cmdbuf_shadow_reset) {  // (reboot: every list is dead; command buffers were guest objects)
     kmutex_lock(&g_shadow_lock);
+    while (g_command_buffers) {
+        NvnCmdBuf *cb = g_command_buffers;
+        g_command_buffers = cb->registry_next;
+        free(cb);
+    }
     for (int i = 0; i < g_nlive; i++) {
         for (int k = 0; k < g_live[i]->nblocks; k++) free(g_live[i]->blocks[k].mem);
         free(g_live[i]->blocks);
@@ -238,11 +244,19 @@ static NvnCmdBuf *cb_of(uint64_t guest) { return HOST(NvnCmdBuf, guest); }
 NVN(nvnCommandBufferInitialize) {
     NvnCmdBuf *cb = calloc(1, sizeof *cb);
     cb->guest = A(0);
+    kmutex_lock(&g_shadow_lock);
+    cb->registry_next = g_command_buffers; g_command_buffers = cb;
+    kmutex_unlock(&g_shadow_lock);
     SET_HOST(A(0), cb);
     RET(1);
 }
 NVN(nvnCommandBufferFinalize) {
     NvnCmdBuf *cb = cb_of(A(0));
+    kmutex_lock(&g_shadow_lock);
+    NvnCmdBuf **link = &g_command_buffers;
+    while (*link && *link != cb) link = &(*link)->registry_next;
+    if (*link) *link = cb->registry_next;
+    kmutex_unlock(&g_shadow_lock);
     if (cb && cb->shadow) shadow_leave(cb->shadow, cb->gused);
     free(cb);
     SET_HOST(A(0), 0);
@@ -306,11 +320,21 @@ NVN(nvnCommandBufferSetMemoryCallbackData) { cb_of(A(0))->callback_data = A(1); 
 NVN(nvnCommandBufferGetMemoryCallbackData) { RET(cb_of(A(0))->callback_data); }
 NVN(nvnCommandBufferSetCommandMemoryCallbackEnabled) { (void)c; }
 
+// Append a host record without touching guest command-memory accounting.
+static CmdRec *host_rec(NvnCmdBuf *cb, uint32_t op, uint32_t extra) {
+    uint32_t size = (uint32_t)((sizeof(CmdRec) + extra + 7) & ~7u);
+    if (cb->used + size + JUMP_RESERVE > cb->size) {
+        uint64_t want = size + JUMP_RESERVE;
+        use_block(cb, cb->block + 1, want > cb->size * 2 ? want : cb->size * 2);
+    }
+    CmdRec *r = raw_rec(cb->mem + cb->used, op, size);
+    cb->used += size;
+    return r;
+}
 // Reserve a record costing `cost` guest bytes. May call back into the guest for more memory, so callers snapshot
 // their arguments first. When the game adds no more (BOTW gives some command buffers a callback that is a bare
 // ret), recording goes on past the guest chunk: only the accounting is over, the records have room.
 static CmdRec *rec_cost(Cpu *c, NvnCmdBuf *cb, uint32_t op, uint32_t extra, uint32_t cost) {
-    uint32_t size = (uint32_t)((sizeof(CmdRec) + extra + 7) & ~7u);
     for (int tries = 0; !cb->shadow || cb->gused + cost > cb->gsize; tries++) {
         if (!cb->callback || tries == 2) {
             if (!cb->shadow) use_guest_chunk(cb, 0, 0);  // never given memory: the records still need a home
@@ -327,14 +351,21 @@ static CmdRec *rec_cost(Cpu *c, NvnCmdBuf *cb, uint32_t op, uint32_t extra, uint
     }
     cb->gused += cost;
     shadow_claim(cb->shadow, cb->gmem + cb->gused);
-    if (cb->used + size + JUMP_RESERVE > cb->size) {
-        uint64_t want = size + JUMP_RESERVE;
-        use_block(cb, cb->block + 1, want > cb->size * 2 ? want : cb->size * 2);
-    }
-    CmdRec *r = raw_rec(cb->mem + cb->used, op, size);
-    cb->used += size;
-    return r;
+    return host_rec(cb, op, extra);
 }
+bool nvn_ui_scope(uint64_t commands, unsigned kind) {
+    // The native screen can be called before its context is ready. Never dereference a candidate host pointer.
+    kmutex_lock(&g_shadow_lock);
+    NvnCmdBuf *cb = g_command_buffers;
+    while (cb && cb->guest != commands) cb = cb->registry_next;
+    kmutex_unlock(&g_shadow_lock);
+    if (!cb || !cb->recording || !cb->shadow || !cb->mem) return false;
+    // A host marker never allocates guest memory or invokes a guest out-of-memory callback.
+    CmdRec *r = host_rec(cb, CMD_UI_SCOPE, 0);
+    r->x[0] = kind;
+    return true;
+}
+
 static CmdRec *rec(Cpu *c, NvnCmdBuf *cb, uint32_t op, uint32_t extra) {
     return rec_cost(c, cb, op, extra, cmd_cost(op, extra));
 }

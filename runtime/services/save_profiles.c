@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #include "../platform.h"  // (Windows: mkdir with a mode)
+#include "../settings.h"
 #include "save_convert.h"
 #ifdef _WIN32
 #include <windows.h>
@@ -116,7 +117,10 @@ SpCode sp_validate_name(const char *name) {
 
 // ------------------------------------------------------------------ where things are
 bool sp_save_dir(const char *root, const char *name, char *out, size_t cap) {
-    if (is_default_name(name)) return join(out, cap, root, "save");
+    if (is_default_name(name)) {
+        if (g_settings.save_dir[0]) return snprintf(out, cap, "%s", g_settings.save_dir) < (int)cap;
+        return join(out, cap, root, "save");
+    }
     if (sp_validate_name(name) != SP_OK) return false;
     char rel[PATH_CAP];
     return snprintf(rel, sizeof rel, PROFILES_DIR "/%s/save", name) < (int)sizeof rel && join(out, cap, root, rel);
@@ -215,7 +219,10 @@ void sp_active_save_dir(const char *root, char *out, size_t cap) {
     }
     char name[SP_NAME_MAX + 1];
     sp_active(root, name, sizeof name);
-    if (!sp_save_dir(root, name, out, cap)) snprintf(out, cap, "%s", "save");
+    if (!sp_save_dir(root, name, out, cap)) {
+        if (g_settings.save_dir[0]) snprintf(out, cap, "%s", g_settings.save_dir);
+        else snprintf(out, cap, "%s", "save");
+    }
 }
 
 static char g_session[PATH_CAP];

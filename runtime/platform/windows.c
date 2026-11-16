@@ -1,5 +1,7 @@
 // Windows host layer (runtime/platform.h).
 #include <windows.h>
+#include <wingdi.h>
+#include <wchar.h>
 #include <pthread.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -325,6 +327,10 @@ void plat_thread_realtime(uint64_t period_ns) {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
 }
 
+void plat_thread_elevate(void) {
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+}
+
 // ---- process
 // Release builds are GUI-subsystem executables (no console window): stdout / stderr go to savagewind.log next to the
 // exe, and a fatal error shows a message box (plat_fatal_notice) instead of vanishing. Processes started by this one
@@ -434,9 +440,11 @@ void plat_init(void) {
 // never share a core with another busy thread of the game. With fewer cores than the game's busy threads (main, two job
 // workers, render, recorder, audio, file loading) they queue for one instead: by default with SMT and 4 or more
 // physical cores (plat_one_per_core_default). SAVAGEWIND_ONE_PER_CORE=1: always, 0: never. Called when the game
-// starts, so what the start screen runs (the game code build) keeps every logical processor. Under Wine / Proton the
-// Linux kernel schedules the threads, and there the Steam Deck measured one processor per core as a loss
-// (platform.h): the default keeps every logical processor, as the Linux build does.
+// starts, so what the start screen runs (the game code build) keeps every logical processor. On hybrid architectures
+// (Intel 12th+ Gen, Core Ultra, heterogeneous P/E cores) keeping all logical processors avoids starving P-core SMT
+// execution slots and forcing critical threads onto low-clock E-cores. Under Wine / Proton the Linux kernel schedules
+// the threads, and there the Steam Deck measured one processor per core as a loss (platform.h): the default keeps
+// every logical processor, as the Linux build does.
 void plat_cpu_placement(void) {
     DWORD_PTR all, sys, one = 0;
     if (!GetProcessAffinityMask(GetCurrentProcess(), &all, &sys)) return;
@@ -446,18 +454,28 @@ void plat_cpu_placement(void) {
     DWORD len = 0;
     GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &len);
     char *buf = len ? malloc(len) : NULL;
+    BYTE min_eff = 255, max_eff = 0;
     if (buf && GetLogicalProcessorInformationEx(RelationProcessorCore, (void *)buf, &len))
         for (DWORD o = 0; o < len;) {
             SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *e = (void *)(buf + o);
             DWORD_PTR m = e->Processor.GroupMask[0].Group == 0 ? e->Processor.GroupMask[0].Mask & all : 0;
-            if (m) cores++, one |= m & -m;  // (the core's first logical processor)
+            if (m) {
+                cores++;
+                one |= m & -m;  // (the core's first logical processor)
+                BYTE eff = e->Processor.EfficiencyClass;
+                if (eff < min_eff) min_eff = eff;
+                if (eff > max_eff) max_eff = eff;
+            }
             o += e->Size;
         }
     free(buf);
+    bool hybrid = (cores > 0 && min_eff != max_eff);
     const char *x = getenv("SAVAGEWIND_ONE_PER_CORE");
-    bool on = one && (x ? atoi(x) != 0 : !wine && plat_one_per_core_default(cores, logical));
-    fprintf(stderr, "[cpu] %d cores, %d logical processors: %s%s\n", cores, logical,
-            on ? "one logical processor per core" : "all logical processors", wine && !x ? " (Wine)" : "");
+    bool on = one && (x ? atoi(x) != 0 : !wine && !hybrid && plat_one_per_core_default(cores, logical));
+    fprintf(stderr, "[cpu] %d cores%s, %d logical processors: %s%s\n", cores,
+            hybrid ? " (hybrid P/E)" : "", logical,
+            on ? "one logical processor per core" : "all logical processors",
+            wine && !x ? " (Wine)" : hybrid && !x ? " (hybrid architecture)" : "");
     if (on) SetProcessAffinityMask(GetCurrentProcess(), one);
 }
 
@@ -684,6 +702,149 @@ int plat_proc_wait(PlatProc p, bool block) {
     GetExitCodeProcess(h, &code);
     CloseHandle(h);
     return code > 255 ? 255 : (int)code;  // (a crash's NTSTATUS, e.g. 0xC0000409, is not "still running" (-1))
+}
+
+// ---- HDR display peak from the Windows HDR calibration ICC profile
+// The app's profile has an MHC2 private tag: signature, reserved, regamma LUT size, min luminance, max luminance (both
+// ICC s15Fixed16, in cd/m2), then offsets and the LUT data. max_luminance is the display's small-area peak; the standard
+// lumi tag is the maximum full-frame luminance. We use the peak, as the game's highlight peak.
+static uint32_t icc_be32(const uint8_t *p) {
+    return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
+}
+
+static int icc_file_peak(const wchar_t *path) {
+    HANDLE h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    LARGE_INTEGER sz;
+    uint8_t *d = NULL;
+    DWORD got = 0;
+    if (!GetFileSizeEx(h, &sz) || sz.QuadPart < 132 || sz.QuadPart > (1 << 20)) goto done;
+    d = malloc((size_t)sz.QuadPart);
+    if (!d || !ReadFile(h, d, (DWORD)sz.QuadPart, &got, NULL) || (LONGLONG)got != sz.QuadPart ||
+        memcmp(d + 36, "acsp", 4))
+        goto done;
+    uint32_t n = icc_be32(d + 128);
+    if (n > 256 || 132 + (size_t)n * 12 > (size_t)sz.QuadPart) goto done;
+    for (uint32_t i = 0; i < n; i++) {
+        const uint8_t *tag = d + 132 + i * 12;
+        uint32_t off = icc_be32(tag + 4), len = icc_be32(tag + 8);
+        if (off > (uint32_t)sz.QuadPart || len > (uint32_t)sz.QuadPart - off) continue;
+        if (!memcmp(tag, "MHC2", 4) && len >= 20) {
+            int32_t v = (int32_t)icc_be32(d + off + 16);  // max_luminance, s15Fixed16
+            double nits = (double)v / 65536.0;
+            if (nits >= 80.0 && nits <= 10000.0) {
+                int peak = (int)(nits + 0.5);
+                free(d);
+                CloseHandle(h);
+                return peak;
+            }
+        }
+    }
+done:
+    free(d);
+    CloseHandle(h);
+    return 0;
+}
+
+// The active HDR profile is in the display class's per-user ICM profile associations (ICMProfileAC), one group per
+// monitor. The group's last profile is the HDR one (e.g. {SDR.icc, HDR Calibrated Profile.icc}). Pick the group for
+// the game window's monitor; the desktop's GetICMProfile often returns only the SDR sRGB profile.
+typedef struct {
+    wchar_t sub[64];
+} IccGroup;
+
+static int icc_group_cmp(const void *a, const void *b) {
+    return wcscmp(((const IccGroup *)a)->sub, ((const IccGroup *)b)->sub);
+}
+
+static int icc_registry_peak_for_display(int display, wchar_t *name, size_t name_cap) {
+    HKEY hk;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER,
+                      L"Software\\Microsoft\\Windows NT\\CurrentVersion\\ICM\\ProfileAssociations\\Display\\"
+                      L"{4d36e96e-e325-11ce-bfc1-08002be10318}", 0, KEY_READ, &hk) != ERROR_SUCCESS)
+        return 0;
+    wchar_t dir[1024];
+    UINT dn = GetWindowsDirectoryW(dir, 1000);
+    const wchar_t *icc_dir = L"\\System32\\spool\\drivers\\color\\";
+    if (dn && dn + wcslen(icc_dir) < 1024) wcscat(dir, icc_dir);
+    else wcscpy(dir, L"C:\\Windows\\System32\\spool\\drivers\\color\\");
+    IccGroup groups[32];
+    int ng = 0;
+    for (DWORD i = 0; ng < 32; i++) {
+        wchar_t sub[256];
+        DWORD sn = 256;
+        if (RegEnumKeyExW(hk, i, sub, &sn, NULL, NULL, NULL, NULL) != ERROR_SUCCESS) break;
+        HKEY k;
+        if (RegOpenKeyExW(hk, sub, 0, KEY_READ, &k) != ERROR_SUCCESS) continue;
+        DWORD type = 0, cb = 0;
+        if (RegQueryValueExW(k, L"ICMProfileAC", NULL, &type, NULL, &cb) == ERROR_SUCCESS && cb > 0 &&
+            (type == REG_MULTI_SZ || type == REG_SZ))
+            swprintf(groups[ng++].sub, 64, L"%s", sub);
+        RegCloseKey(k);
+    }
+    if (!ng) { RegCloseKey(hk); return 0; }
+    qsort(groups, ng, sizeof groups[0], icc_group_cmp);
+    int gi = display > 0 ? display - 1 : 0;  // DISPLAY1 -> first monitor group, etc.
+    if (gi < 0 || gi >= ng) gi = 0;  // (unknown display: best effort on the first group)
+    HKEY k;
+    if (RegOpenKeyExW(hk, groups[gi].sub, 0, KEY_READ, &k) != ERROR_SUCCESS) {
+        RegCloseKey(hk);
+        return 0;
+    }
+    int peak = 0;
+    DWORD type = 0, cb = 0;
+    if (RegQueryValueExW(k, L"ICMProfileAC", NULL, &type, NULL, &cb) == ERROR_SUCCESS && cb > 0) {
+        wchar_t *list = malloc(cb + sizeof(wchar_t));
+        if (list && RegQueryValueExW(k, L"ICMProfileAC", NULL, &type, (BYTE *)list, &cb) == ERROR_SUCCESS) {
+            list[cb / sizeof(wchar_t)] = 0;
+            for (wchar_t *s = list; *s; s += wcslen(s) + 1) {
+                wchar_t path[1024];
+                if (wcschr(s, L'\\')) swprintf(path, 1024, L"%s", s);
+                else swprintf(path, 1024, L"%s%s", dir, s);
+                int p = icc_file_peak(path);
+                if (p > 0) {  // the last valid profile is the HDR calibration
+                    peak = p;
+                    swprintf(name, name_cap, L"%s", s);
+                }
+            }
+        }
+        free(list);
+    }
+    RegCloseKey(k);
+    RegCloseKey(hk);
+    return peak;
+}
+
+int plat_hdr_peak_nits(void *hwnd_, char *profile, size_t profile_size) {
+    HWND hwnd = (HWND)hwnd_;
+    HMONITOR mon = hwnd ? MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+                        : MonitorFromPoint((POINT){0, 0}, MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFOEXW mi;
+    mi.cbSize = sizeof mi;
+    int display = 0;
+    if (mon && GetMonitorInfoW(mon, (MONITORINFO *)&mi))
+        swscanf(mi.szDevice, L"\\\\.\\DISPLAY%d", &display);
+    wchar_t name[512] = L"";
+    int peak = icc_registry_peak_for_display(display, name, 512);
+    if (!peak) {  // (the display's SDR profile may still carry an MHC2 tag)
+        HDC hdc = GetDC(hwnd);
+        wchar_t path[1024];
+        DWORD n = 1024;
+        if (hdc && GetICMProfileW(hdc, &n, path)) {
+            peak = icc_file_peak(path);
+            if (peak) {
+                const wchar_t *slash = wcsrchr(path, L'\\');
+                swprintf(name, 512, L"%s", slash ? slash + 1 : path);
+            }
+        }
+        if (hdc) ReleaseDC(hwnd, hdc);
+    }
+    if (profile && profile_size) {
+        profile[0] = 0;
+        if (peak) WideCharToMultiByte(CP_UTF8, 0, name, -1, profile, (int)profile_size, NULL, NULL);
+    }
+    return peak;
 }
 
 bool plat_remove_tree(const char *dir) {

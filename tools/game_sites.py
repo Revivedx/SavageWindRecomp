@@ -163,6 +163,7 @@ SITES = [
     # a stale actor in the target manager (tools/patches.py _stale_actor_helper, _stale_actor_target; #391, #393): the
     # helper that asks an actor for its link, and the camera target's inline copy of it
     Site('stale_actor_helper', 'code', 'b4000000/ff00001f f942b808 f9404500 14000000/fc000000 d65f03c0', 0),
+    Site('stale_actor_kind', 'code', 'b4000000/ff00001f f942b808 aa0003f3 528ebfc1 72a499a1 f9404500 94000000/fc000000', 0),
     Site('stale_actor_target', 'code', 'f942ba68 f9404500 94000000/fc000000 12000008 390006e8 37000000/fff8001f 394002e8 35000008/ff00001f', 0),
     # the physics step's solver microsteps (tools/patches.py _solver_steps): the delta frame times 6
     Site('phys_solver_steps', 'code', '1e231002 1e3c1004 f9401a68 1e2c1009 1e220822 f9400108 1e202048 f9400514', 4),
@@ -185,6 +186,9 @@ SITES = [
     # in console frames, fcmp s8, s9
     Site('demo_move_arrive', 'code', 'bd60bd09 94000000/fc000000 f9400668 5282fe09 38696908 34000008/ff00001f 1e292100 '
          '54000004/ff00001f 90000008/9f00001f bd404261 bd425102 1e222821 1e282020 54000005/ff00001f 1e292921 1e200820', 6),
+    # the radius within which a player rail move's point goes on along the rail (tools/patches.py _rail_point_radius):
+    # its load from the player, ldr s0, [x8, #0x20f0]
+    Site('rail_point_radius', 'code', 'bd60f100 1e202020 54000005/ff00001f 1e2c1001 f9403668 aa1403e0 aa1f03e1 aa1f03e2', 0),
     Site('kf_angle', 'code', '0e612800 0e0e3c08 0e040d00 0f3f5400 0ea0a800 6e180400 4e221c00 6e211c00 3c9983a0 '
          '94000000/fc000000 3cd883a6 1e2008c0', 9),
     # the sound system's frame (tools/patches.py _snd_frame_floor): the delta frame, at least 0.5, its timers' step
@@ -216,6 +220,8 @@ SITES = [
     Site('cam_stick', 'code', 'd100c3ff fd000be8 f90017f3 a901fbfd 910063fd aa0003f3 f900001f 52800060', 0),
     # (the end of the camera's stick input, with the stick's value written: tools/patches.py _cam_stick_end)
     Site('cam_stick_end', 'code', 'f9409408 910023e0 f90007e8 94000000/fc000000 360000c0 fd400be8 f94017f3', 5),
+    # CameraHorse's return address after calling the camera stick input (rt_cam_stick's lr, runtime/hle/input.c)
+    Site('horse_cam_lr', 'code', 'bd401ba0 1e202008 39416a68 54000001/ff00001f bd401fa0 1e202008 54000001/ff00001f 37180008/fff8001f', 0),
     Site('cam_pitch_chase', 'code', '1e208803 1e202008 bd41ce80 1e23cc2b bd41d281 1e212000 54000001/ff00001f '
          '52800039', 0),
     Site('cam_pitch_surf', 'code', '1e208803 1e202008 bd430260 1e23cc2d bd430661 1e212000 54000001/ff00001f '
@@ -239,6 +245,10 @@ SITES = [
     Site('pc_cursor_manager', 'code', 'd10143ff a9017bfd a9025ff8 a90357f6 a9044ff4 910043fd b9000be1 91006008', 0),
     Site('pc_cursor_activate', 'code', 'a9bd7bfd f9000bf5 a9024ff4 910003fd f9402415 aa0103f3 aa0003f4 f9002401', 0),
     Site('pc_pane_bounds', 'code', 'bd407020 2d4a0821 1e200824 bd408423 1e208825 1e230841 1e238842 1e2c1003', 0),
+    # Controls > Menus wrap around (runtime/menu_wrap.c): the UI focus search's result (`mov x0, x20` before its
+    # epilogue; x19 the control, w22 the direction), and the screen's input layer (the search's own first call)
+    Site('menu_wrap', 'code', 'aa1403e0 6d442beb 6d4333ed 6d423bef a94b4ff4 a94a57f6 a9495ff8 a94867fa', 0),
+    Site('ui_control_layer', 'code', 'f9401408 3943f001 f9402508 f9400109 aa0803e0 f9401522 d61f0040', 0),
     # Map focus helpers: retain marker targeting without controller-style recentering on hover.
     Site('beast_focus_axes', 'code', 'a9bd7bfd f9000bf5 a9024ff4 910003fd 91404408 2a0103f3 aa0003f4 91231115', 0),
     Site('beast_focus_linear', 'code', 'a9bd7bfd a90157f6 a9024ff4 910003fd 91404408 2a0103f3 aa0003f4 911f2116', 0),
@@ -363,6 +373,10 @@ SITES = [
     Site('pouch_item_get', 'code', 'd10243ff a9037bfd a9046ffc a90567fa a9065ff8 a90757f6 a9084ff4 9100c3fd f90003e3', 0),
     Site('pouch_mgr', 'got', '90000017/9f00001f aa0003f5 f94002f7/ffc003ff 910003e0 f94002f6 94000000/fc000000 2a0003e2 '
          'aa1603e0', 2),
+    # Generic layout draw thunk and its native eligibility checks (runtime/ui_layout.c).
+    Site('ui_layout_draw', 'code', '14000000/fc000000 f9013001 b4000001/ff00001f d10403ff a90a7bfd a90b6ffc a90c67fa a90d5ff8', 0),
+    Site('ui_layout_native', 'code', '39440008 7100011f 39440809 3943f80a 3943fc0b 7a401920 7a400944 7a421964', 0),
+    Site('ui_layout_pane', 'code', '39416008 52801029 6a28013f 54000001/ff00001f a9bd7bfd a90157f6 a9024ff4 910003fd', 0),
     Site('main_data', 'data', '', 0),
     Site('main_end', 'end', '', 0),
 ]
@@ -373,6 +387,7 @@ SITES = [
 # Without them the mouse turns the camera through the right stick, as before (runtime/hle/input.c); without the
 # second group it turns it without the game's camera inversion options.
 OPTIONAL_GROUPS = [
+    ('ui_layout_draw', 'ui_layout_native', 'ui_layout_pane'),
     ('quick_drop_tick', 'quick_drop_actor_call', 'player_drop_forbidden', 'actor_info_lookup',
      'actor_info_has_tag', 'pouch_discard', 'player_equipment', 'pouch_default_name',
      'player_schedule_equip', 'pouch_equipped_snapshot', 'actor_index_assign', 'actor_index_resolve',
@@ -385,10 +400,11 @@ OPTIONAL_GROUPS = [
     ('lookat_update',),  # (the free camera: without it Home does nothing)
     ('gyro_scene_actor',),
     ('surf_contact', 'surf_boost_remove', 'surf_jump_request'),
-    ('stale_actor_helper', 'stale_actor_target'),
+    ('stale_actor_helper', 'stale_actor_kind', 'stale_actor_target'),
     ('quick_menu_capture_alpha',),
     ('kf_angle',),
     ('demo_move_arrive',),
+    ('rail_point_radius',),
     ('phys_tick', 'phys_tick_mt', 'phys_motion_tick', 'phys_motion_tick_c'),
     ('yaz0_stream', 'yaz0_stream_ret'),
     ('pc_map_focus', 'pc_map_focus_target', 'pc_map_focus_now'),
@@ -396,6 +412,7 @@ OPTIONAL_GROUPS = [
      'beast_clamp_pitch', 'beast_wrap_yaw', 'beast_world'),
     ('pc_button_group',),
     ('pc_cursor_manager', 'pc_cursor_activate', 'pc_pane_bounds'),
+    ('menu_wrap', 'ui_control_layer'),  # (without them the menus stop at their ends, as in the game)
     ('cam_stick', 'cam_pitch_chase', 'cam_pitch_surf', 'cam_pitch_wakeboard', 'cam_pitch_aim', 'cam_pitch_item'),
     ('cam_reverse_x', 'cam_reverse_y'),
     ('cam_stick_end',),  # (Controls > Controller camera speed: without it the setting does nothing)
@@ -413,11 +430,15 @@ OPTIONAL_GROUPS = [
     ('stamina_store',),
     ('tp_gate',),  # (a far teleport of the control endpoint: without it a long jump freezes the world)
     ('item_tick', 'pouch_item_get', 'pouch_mgr'),
+    ('horse_cam_lr',),
 ]
 OPTIONAL = {n for g in OPTIONAL_GROUPS for n in g}
 
 KNOWN = {
     '1.9.0': {
+        'ui_layout_draw': 0x70013ee084,
+        'ui_layout_native': 0x7000f6f690,
+        'ui_layout_pane': 0x7000027d30,
         'quick_drop_tick': 0x7000e68168,
         'quick_drop_actor_call': 0x7001223f50,
         'player_drop_forbidden': 0x7000cc0334,
@@ -448,6 +469,8 @@ KNOWN = {
         'quick_sort_refill': 0x7000e27c2c,
         'quick_sort_mapping': 0x7000e28070,
         'quick_sort_cursor': 0x7000d665a4,
+        'menu_wrap': 0x7000f586b8,
+        'ui_control_layer': 0x7000f6e2c8,
         'quick_sort_labels': 0x7000e278c0,
         'pouch_lock': 0x7000eaff08,
         'pouch_unlock': 0x7000eaff18,
@@ -514,9 +537,11 @@ KNOWN = {
         'surf_boost_remove': 0x70011e9e94,
         'surf_jump_request': 0x70011ea3d4,
         'stale_actor_helper': 0x700120bc40,
+        'stale_actor_kind': 0x700120ccdc,
         'stale_actor_target': 0x7000dea400,
         'phys_solver_steps': 0x700156f930,
         'demo_move_arrive': 0x7000c711dc,
+        'rail_point_radius': 0x7000c89d4c,
         'kf_angle': 0x70012d57fc,
         'phys_tick': 0x70000f5e20,
         'phys_tick_mt': 0x700012644c,
@@ -540,6 +565,7 @@ KNOWN = {
         'world_mgr': 0x7001e57580,
         'cam_stick': 0x7000d57fe0,
         'cam_stick_end': 0x7000d5801c,
+        'horse_cam_lr': 0x7000c29000,
         'cam_pitch_chase': 0x7000bf5334,
         'cam_pitch_surf': 0x7000c1a52c,
         'cam_pitch_wakeboard': 0x7000c22104,

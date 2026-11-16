@@ -63,7 +63,8 @@ const char *bind_pad_label(int host, int fam); // controller button in the pad f
 const char *bind_key_label(int scancode);
 int bind_label_family(void);                   // the connected controller's family (also on the start screen)
 void bind_reset(int dev);
-void bind_reset_slot(int slot);                // one input (or action: BIND_ACTION + id) back to its defaults, both devices
+void bind_swap_ab(void);                       // the controller's A and B (and the actions on them) swapped: undoes itself
+void bind_reset_slot(int slot);              // one input (or action: BIND_ACTION + id) back to its defaults, both devices
 bool bind_is_default(int dev);
 bool bind_is_default_slot(int dev, int slot);
 
@@ -76,7 +77,7 @@ void bind_capture_cancel(void);
 bool bind_capture_active(int *dev, int *slot, int *ms_left);
 // Main thread, before anything else sees the event: true = consumed by a capture
 bool bind_capture_event(const SDL_Event *e);
-// Last change for the UI: 0 none, 1 set, 2 swapped (with *other), 3 cancelled, 4 timed out, 5 reset; *serial bumps
+// Last change for the UI: 0 none, 1 set, 2 swapped (with *other), 3 cancelled, 4 timed out, 5 reset, 6 A / B swapped; *serial bumps
 int bind_last_result(int *dev, int *slot, int *other, int *serial);
 
 // savagewind.ini: bind_pad_<input> / bind_key_<input> (only the ones that differ from the defaults are written)
@@ -113,6 +114,7 @@ void act_reset(void);                         // every action back to the defaul
 // Host state in, from runtime/hle/input.c. Main thread, on every key / button event:
 uint64_t act_scan_keys(uint64_t key_buttons, int (*held)(int scancode));    // actions the keyboard side holds
 uint64_t act_scan_pad(uint64_t pad_buttons, uint32_t host_buttons);         // ... the controller side holds
+uint64_t act_gameplay_buttons(uint64_t raw, int (*held)(int scancode), uint32_t host_buttons); // gameplay A/B/X/Y from action bindings
 void act_publish(uint64_t keys, uint64_t pads);                             // (bit per action)
 // The controller poll (game thread, once per GetNpadStates): freezes the held / pressed sets the game's queries see.
 // live = false in the game's menus, with the window unfocused or the overlay up: the Switch layer answers then.

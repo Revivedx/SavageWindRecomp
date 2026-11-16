@@ -115,23 +115,8 @@ GENFLAGS += -D_FILE_OFFSET_BITS=64 $(GENARCH)
 # --stack: every thread's default stack, reserved (committed as it grows): 256 MB, the guest threads' recursion runs on
 # it (runtime/kernel.c thread_start)
 LDFLAGS  := -fuse-ld=lld -Wl,--stack,268435456 $(if $(DEPS),-L$(DEPS)/lib) -lSDL3 -lavformat -lavcodec -lavutil -lswscale \
-            -lvulkan-1 -lwinmm -lole32 -lshell32 -lcomdlg32 -luuid -lshaderc_shared -lpdh -lws2_32 -l:libz.a \
+            -lvulkan-1 -lwinmm -lole32 -lshell32 -lcomdlg32 -luuid -lgdi32 -ladvapi32 -lshaderc_shared -lpdh -lws2_32 -lwinhttp -l:libz.a -lpthread \
             $(if $(RELEASE),-Wl$(comma)--subsystem$(comma)windows)  # release: no console window (log -> savagewind.log)
-# NVIDIA DLSS is an optional external SDK. Keep proprietary files out of this
-# repository; source builds can point at the sibling checkout with DLSS_SDK=../DLSS.
-DLSS_SDK ?= ../DLSS
-DLSS_DLL := $(DLSS_SDK)/lib/Windows_x86_64/rel/nvngx_dlss.dll
-DLSS_IMPORT := $(B)/nvngx_dlss.a
-DLSS_LIB := $(DLSS_SDK)/lib/Windows_x86_64/x64/nvsdk_ngx_s.lib
-ifneq ($(wildcard $(DLSS_DLL)),)
-DEPINC += -I$(DLSS_SDK)/include -DDLSS_SDK_PRESENT=1
-LDFLAGS += $(DLSS_IMPORT) $(DLSS_LIB)
-# The SDK wrapper is built with MSVC's CRT directives. Use the MinGW CRT and
-# provide the small ABI shim in runtime/nvn/vulkan/dlss_compat.c.
-LDFLAGS += -Wl,/NODEFAULTLIB:libcmt.lib -Wl,/NODEFAULTLIB:libcpmt.lib -Wl,/NODEFAULTLIB:OLDNAMES.lib
-else
-DEPINC += -DDLSS_SDK_PRESENT=0
-endif
 BACKEND_SRC := $(wildcard runtime/nvn/vulkan/*.c) $(wildcard runtime/nvn/vulkan/*.cpp)
 BACKEND_OBJ := $(patsubst runtime/%.cpp,$(B)/rt/%.o,$(patsubst runtime/%.c,$(B)/rt/%.o,$(BACKEND_SRC)))
 BACKEND_OBJ += $(B)/rt/platform/windows_rc.o  # the .exe's icon (Explorer, taskbar)
@@ -309,7 +294,7 @@ $(B)/rt/%.o: runtime/%.m $(RT_HDRS)
 # linked to a temp file, then renamed over: a copy of the game still running keeps its (old) file - relinking in
 # place gets running copies killed by macOS (code signature of the changed pages). The temp file keeps the real name
 # (in a folder of its own): on Windows the import library records the name the game code library loads it by.
-$(EXE): $(RT_OBJ) $(BACKEND_OBJ) $(UI_OBJ) $(IMGUI_OBJ) $(if $(wildcard $(DLSS_DLL)),$(DLSS_IMPORT) $(DLSS_LIB))
+$(EXE): $(RT_OBJ) $(BACKEND_OBJ) $(UI_OBJ) $(IMGUI_OBJ)
 	@mkdir -p $(dir $@)link
 	$(CXX) -o $(dir $@)link/$(notdir $@) $^ $(LDFLAGS)
 	mv -f $(dir $@)link/$(notdir $@) $@
@@ -324,11 +309,6 @@ $(B)/rt/ui/i18n.o: $(wildcard runtime/ui/i18n/*.inc) runtime/ui/i18n.h
 $(B)/rt/ui/%.o: runtime/ui/%.mm $(RT_HDRS)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(RUNTIME_OPTFLAGS) $(UIFLAGS) -c $< -o $@
-
-ifneq ($(wildcard $(DLSS_DLL)),)
-$(DLSS_IMPORT): $(DLSS_DLL) tools/make_dlss_import.py
-	python tools/make_dlss_import.py $< $@
-endif
 
 $(B)/imgui/%.o: $(IMGUI)/%.cpp
 	@mkdir -p $(dir $@)
@@ -350,6 +330,14 @@ gen:  # every module of the exefs, at the addresses tools/layout.py gives them
 	cd tools && ../$(PY) gen.py all ../extracted/exefs ../$(GEN) --hle ../runtime/hle/hle_symbols.txt $(GENSIMD) $(GENLOCALS) $(GENARGS)
 
 gen-objs: $(GEN_OBJ)
+
+# Discord Rich Presence's place names: the game's own text, written from your extracted/ and never committed
+ifneq ($(wildcard extracted/romfs/Pack/Bootup.pack),)
+PLACE_PY := $(firstword $(PY) python3)
+runtime/game_place_table.inc: tools/gen_place_table.py
+	$(PLACE_PY) tools/gen_place_table.py extracted/romfs/Pack $@
+$(B)/rt/game_place.o: runtime/game_place_table.inc
+endif
 
 # Runtime objects only (no generated code, no link): quick compile check
 runtime-objs: $(RT_OBJ) $(BACKEND_OBJ) $(UI_OBJ)
@@ -407,6 +395,11 @@ dmg: app
 # Needs: Windows 10+ x64, a Vulkan 1.3 driver, an SSE4.2 CPU (GENARCH_COMPAT x86-64-v2; checked at startup).
 DIST     := build/dist/Savage Wind
 WIN_B    := build/win-release
+# The release runtime is profile-guided with ThinLTO (tools/pgo/runtime.profdata: +19..33% fps at 1080p/1440p TAA on a
+# 5700X3D + 3080 Ti, see tools/pgo/README.md). DIST_PGO= and DIST_LTO= (empty) build it plain, e.g. with a clang other
+# than the one that wrote the profile.
+DIST_PGO ?= use
+DIST_LTO ?= thin
 deps-windows:
 	tools/build_deps_windows.sh
 dist:
@@ -415,7 +408,7 @@ dist:
 	@! find tools -maxdepth 1 -name '*.py' -newer build/helper/swgen/swgen.exe | grep -q . || \
 	    { echo "make gen-helper first: tools/*.py changed since build/helper/swgen was frozen"; exit 1; }
 	@[ -x build/zig/zig.exe ] || { echo "tools/fetch_zig.sh first (the compiler)"; exit 1; }
-	$(MAKE) B=$(WIN_B) DEPS=$(CURDIR)/build/deps-win RELEASE=1 $(WIN_B)/savagewind.exe $(WIN_B)/savagewind-config.exe $(WIN_B)/sw-update.exe
+	$(MAKE) B=$(WIN_B) DEPS=$(CURDIR)/build/deps-win RELEASE=1 PGO=$(DIST_PGO) LTO=$(DIST_LTO) $(WIN_B)/savagewind.exe $(WIN_B)/savagewind-config.exe $(WIN_B)/sw-update.exe
 	! nm $(WIN_B)/savagewind.exe | grep ' f_70' >/dev/null  # (no game code inside)
 	rm -rf build/dist && mkdir -p "$(DIST)/gamelib-src"
 	cp $(WIN_B)/savagewind.exe $(WIN_B)/savagewind.dll.a "$(DIST)/"
@@ -440,10 +433,7 @@ dist:
 	    build/fsr-dlls/AMD-FidelityFX-DLL-LICENSE.txt "$(DIST)/"; fi  # (AMD FSR 4: tools/fetch_fsr_dlls.py; AMD's licence allows binary redistribution with this notice)
 	mkdir "$(DIST)/colour-luts" && cp third_party/luts/*.cube third_party/luts/README.md "$(DIST)/colour-luts/"  # (CC0: Video > Colour)
 	cp README.md LICENSE "$(DIST)/"  # (licenses and source links of the bundled components: README "License")
-	if [ -f "$(DLSS_SDK)/lib/Windows_x86_64/rel/nvngx_dlss.dll" ]; then \
-		cp "$(DLSS_SDK)/lib/Windows_x86_64/rel/nvngx_dlss.dll" "$(DIST)/"; \
-		cp "$(DLSS_SDK)/LICENSE.txt" "$(DIST)/NVIDIA-DLSS-LICENSE.txt"; \
-	fi
+	cp recomplauncher.json "$(DIST)/"  # (RecompLauncher reads it from the release to set the game up: next to the exe)
 	PATH="$(CURDIR)/build/deps-win/bin:$$PATH" ldd $(WIN_B)/savagewind.exe | awk '(/ucrt64/ || /deps-win/) && !/vulkan-1/ {print $$3}' | sort -u | \
 	    xargs -I{} cp -u {} "$(DIST)/"
 	! ls "$(DIST)" | grep -iE 'x264|x265|xvid|postproc'  # (no GPL codec libraries in the release)
@@ -527,50 +517,15 @@ $(B)/test_pc_settings: tests/test_pc_settings.c runtime/settings.c runtime/setti
 	@mkdir -p $(dir $@)
 	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< -lSDL3 -lm
 
-$(B)/test_gpu_settings: tests/test_gpu_settings.c runtime/settings.c runtime/settings.h runtime/gpu_select.h runtime/hle/bindings.c
+$(B)/test_game_place: tests/test_game_place.c runtime/game_place.c runtime/game_place.h runtime/game_place_table.inc
 	@mkdir -p $(dir $@)
-	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< -lSDL3 -lm
+	$(CC) -O1 -Iruntime -o $@ $<
 
-test-gpu-settings: $(B)/test_gpu_settings
-	@set -e; tmp=$$(mktemp); trap 'rm -f "$$tmp"' EXIT; \
-	 $(B)/test_gpu_settings "$$tmp" -1; \
-	 for value in auto 0 1 2147483647 -1 nvidia 1junk 2147483648 99999999999999999999999999999; do \
-	   case "$$value" in 0|1|2147483647) expected=$$value;; *) expected=-1;; esac; \
-	   printf 'settings_version = 3\ngpu = %s  \r\n' "$$value" > "$$tmp"; \
-	   $(B)/test_gpu_settings "$$tmp" "$$expected"; \
-	   $(B)/test_gpu_settings "$$tmp" "$$expected"; \
-	 done
-
-.PHONY: test-gpu-settings
-
-$(B)/test_hud_scale: tests/test_hud_scale.c runtime/nvn/hud_scale.h
+$(B)/test_discord_rpc: tests/test_discord_rpc.c runtime/discord_rpc.c runtime/discord_rpc.h
 	@mkdir -p $(dir $@)
-	$(CC) -O1 -Iruntime -o $@ $< -lm
+	$(CC) -O1 -Iruntime -o $@ $<
 
-test-hud-scale: $(B)/test_hud_scale
-	$(B)/test_hud_scale
-
-.PHONY: test-hud-scale
-
-$(B)/test_shrine_sensor: tests/test_shrine_sensor.c runtime/shrine_sensor.c runtime/shrine_sensor.h runtime/settings.h
-	@mkdir -p $(dir $@)
-	$(CC) -O1 -Iruntime -o $@ tests/test_shrine_sensor.c runtime/shrine_sensor.c -lm
-
-test-shrine-sensor: $(B)/test_shrine_sensor
-	$(B)/test_shrine_sensor
-
-.PHONY: test-shrine-sensor
-
-$(B)/test_hud_button_layout: tests/test_hud_button_layout.c runtime/nvn/glyphs.c runtime/services/fs.c runtime/settings.c runtime/hle/bindings.c
-	@mkdir -p $(dir $@)
-	$(CC) -O1 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< -fuse-ld=lld -Wl,--gc-sections $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) -lSDL3 -lz -lm
-
-test-hud-button-layout: $(B)/test_hud_button_layout
-	$(B)/test_hud_button_layout
-
-.PHONY: test-hud-button-layout
-
-$(B)/test_options_pointer: tests/test_options_pointer.c runtime/pc_cursor.c runtime/pc_cursor.h runtime/pc_cursor_math.h
+$(B)/test_options_pointer: tests/test_options_pointer.c runtime/pc_cursor.c runtime/pc_cursor.h runtime/pc_cursor_math.h runtime/nvn/hud_scale.h
 	@mkdir -p $(dir $@)
 	$(CC) -O2 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -isystem third_party -o $@ $< -fuse-ld=lld -Wl,--gc-sections $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) -lSDL3 -lm
 
@@ -654,10 +609,15 @@ $(B)/test_gyro_settings: tools/test_gyro_settings.c runtime/settings.c runtime/h
 	$(CC) -O1 -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_gyro_settings.c \
 	    $(TEST_LD) -lSDL3 -lm
 
-$(B)/test_motion_keyboard: tools/test_motion_keyboard.c runtime/hle/motion.c $(RT_HDRS)
+$(B)/test_motion_keyboard: tools/test_motion_keyboard.c runtime/hle/motion.c runtime/dsu.c $(RT_HDRS)
 	@mkdir -p $(B)
 	$(CC) -O1 -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_motion_keyboard.c \
-	    $(TEST_LD) -lSDL3 -lm
+	    runtime/dsu.c $(TEST_LD) -lSDL3 -lm $(if $(filter windows,$(PLATFORM)),-lws2_32)
+
+$(B)/test_motion_sensors: tools/test_motion_sensors.c runtime/hle/motion.c runtime/dsu.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -O1 -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_motion_sensors.c \
+	    runtime/dsu.c $(TEST_LD) -lSDL3 -lm $(if $(filter windows,$(PLATFORM)),-lws2_32)
 
 $(B)/test_gyro_activation: tools/test_gyro_activation.c runtime/pc_gyro_scene.c $(RT_HDRS)
 	@mkdir -p $(B)
@@ -669,8 +629,8 @@ $(B)/test_gyro_drag: tools/test_gyro_drag.cpp runtime/ui/gyro_drag.h $(B)/imgui/
 	@mkdir -p $(B)
 	$(CXX) -O1 -std=c++17 $(OSFLAGS) -I$(IMGUI) -Iruntime -o $@ tools/test_gyro_drag.cpp $(filter %.o,$^)
 
-test-gyro: $(B)/test_gyro_bindings $(B)/test_gyro_settings $(B)/test_motion_keyboard $(B)/test_gyro_activation \
-           $(B)/test_gyro_drag test-bind-capture
+test-gyro: $(B)/test_gyro_bindings $(B)/test_gyro_settings $(B)/test_motion_keyboard $(B)/test_motion_sensors \
+           $(B)/test_gyro_activation $(B)/test_gyro_drag test-bind-capture
 	$(B)/test_gyro_bindings
 	@set -e; tmp=$$(mktemp); trap 'rm -f "$$tmp"' EXIT; \
 	 printf 'settings_version = 3\npc_gyro = 0\ngyro_scene = 1\n' > "$$tmp"; \
@@ -678,6 +638,7 @@ test-gyro: $(B)/test_gyro_bindings $(B)/test_gyro_settings $(B)/test_motion_keyb
 	 $(B)/test_gyro_settings "$$tmp" 1 0 saved; \
 	 SAVAGEWIND_PC_GYRO=1 SAVAGEWIND_GYRO_SCENE=0 $(B)/test_gyro_settings "$$tmp" 1 0
 	$(B)/test_motion_keyboard
+	$(B)/test_motion_sensors
 	$(B)/test_gyro_activation
 	$(B)/test_gyro_drag
 	python3 tools/test_gyro_site.py
@@ -926,3 +887,11 @@ test-quick-drop: test-quick-drop-native $(B)/test_quick_drop_input
 
 .PHONY: test-quick-drop test-quick-drop-native
 endif
+
+$(B)/test_ui_layout: tests/test_ui_layout.c runtime/ui_layout.c runtime/ui_layout.h runtime/nvn/cmdbuf.c runtime/nvn/nvn.h runtime/nvn/hud_scale.h
+	@mkdir -p $(dir $@)
+	$(CC) -O1 -ffunction-sections -fdata-sections $(DEPINC) -Iruntime -o $@ $< -fuse-ld=lld -Wl,--gc-sections -lpthread -lm
+
+test-ui-layout: $(B)/test_ui_layout
+	$(B)/test_ui_layout
+.PHONY: test-ui-layout
