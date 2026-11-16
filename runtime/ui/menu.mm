@@ -1322,6 +1322,7 @@ static void tab_audio(void) {
 // these are only here). The same as the developer console commands next to them (rupees: runtime/rupees.c;
 // weather: runtime/weather.c).
 extern "C" bool rupees_set(int32_t count);
+extern "C" bool hearts_set(int32_t count);
 
 static void cheats_options(void) {
     opt_toggle("Infinite rupees", &g_settings.infinite_rupees, false,
@@ -1338,6 +1339,23 @@ static void cheats_options(void) {
                 memcpy(rupee_buf, s.c_str(), s.size() + 1);
             } else
                 rupee_buf[0] = 0;
+        }
+    }
+    opt_toggle("God mode", &g_settings.god_mode, false,
+               "Link takes no damage.");
+    opt_toggle("Infinite stamina", &g_settings.infinite_stamina, false,
+               "The stamina wheel never runs out.");
+    {
+        static char heart_buf[16];
+        if (opt_text("Set hearts", heart_buf, sizeof heart_buf, "",
+                     "Sets your heart containers to an exact number (3 to 30).")) {
+            char *end;
+            long n = strtol(heart_buf, &end, 10);
+            if (heart_buf[0] && end != heart_buf && !*end && n >= 3 && n <= 30 && hearts_set((int32_t)n)) {
+                std::string s = std::to_string(n);
+                memcpy(heart_buf, s.c_str(), s.size() + 1);
+            } else
+                heart_buf[0] = 0;
         }
     }
     static const char *const weather[WEATHER_COUNT] = {"Automatic", "No rain", "No thunderstorms", "Clear", "Cloudy",

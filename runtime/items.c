@@ -373,6 +373,7 @@ bool items_request(int i, int count) {
 // live; the whole guest CPU state is put back afterwards). get: the item get; mgr: where the pause menu data's address
 // is; sstr_vt: sead::SafeString's vtable. The name and its SafeString go on the guest stack below sp.
 void rt_item_tick(Cpu *c, uint64_t get, uint64_t mgr, uint64_t sstr_vt) {
+    { extern void rt_hearts_tick(Cpu *c); rt_hearts_tick(c); }
     if (!atomic_load_explicit(&g_pending, memory_order_relaxed)) return;
     Request req[32];
     pthread_mutex_lock(&g_req_lock);
