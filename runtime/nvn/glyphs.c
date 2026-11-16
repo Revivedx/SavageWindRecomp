@@ -28,6 +28,8 @@
 #include "glyphs.h"
 #include "hw_illust.h"
 #include "../hle.h"
+#include "../framepace.h"
+#include "../game_sites.h"
 #include "../input_bind.h"
 #include "../paths.h"
 #include "../rt.h"
@@ -357,10 +359,19 @@ static void mouse(Canvas *c, Box b, int button, int dirs) {
 }
 
 // ---- what each glyph shows
-enum { G_KEEP, G_BUTTON, G_DPAD, G_LSTICK, G_RSTICK };
+// G_LETTER: a dim letter of the HUD's button diamond (glyphs_letter_code), the controller's button in its place
+enum { G_KEEP, G_BUTTON, G_DPAD, G_LSTICK, G_RSTICK, G_LETTER };
 typedef struct { uint8_t kind, arg; } Meaning;
 
+// The diamond's letters A B X Y: cells no prompt uses (the two empty squares, the power button, the second up-left
+// arrow), each drawn inside the box of the letter it stands for
+static const int k_letter_code[4] = {0xE090, 0xE091, 0xE048, 0xE08E};
+int glyphs_letter_code(int btn) { return btn >= 0 && btn < 4 ? k_letter_code[btn] : 0xE040; }
+int glyphs_letter_index(int btn) { return index_of(glyphs_letter_code(btn)); }
+
 static Meaning meaning(int code) {
+    for (int i = 0; i < 4; i++)
+        if (code == k_letter_code[i]) return (Meaning){G_LETTER, (uint8_t)(BIND_A + i)};
     switch (code) {
     case 0xE040: case 0xE041: case 0xE042: case 0xE043: return (Meaning){G_BUTTON, (uint8_t)(BIND_A + code - 0xE040)};
     case 0xE044: return (Meaning){G_BUTTON, BIND_L};
@@ -570,10 +581,120 @@ void glyphs_hud_positions(int pos[4]) {
     memcpy(pos, k_presets[0], 4 * sizeof(int));
 }
 
+// ---- the face buttons' characters follow the actions in play
+// The game draws its prompts with the Switch buttons' characters (A B X Y). With per-action bindings an action can sit
+// on another button than its Switch button's: in play each character stands for the button every action of its Switch
+// button moved to (input_bind.h act_prompt_host: Jump and the other Switch X actions all on A, the X character shows
+// A), and while a rune is out the A character stands for Activate rune's button. The menus keep the Switch layer
+// (g_bind_pad / g_bind_key): their prompts are the menus' own buttons. The sheet goes up again when that changes
+// (generation), so a prompt on screen changes on the next frame.
+#define ACT_ACTIVATE_RUNE 34   // (bindings.c k_act_names)
+#define RUNE_ASKED_MS 150      // asked that recently: a rune is out
+static int g_face[2][4];       // latched by generation(): per device (pad, keys) the host for A, B, X, Y
+
+static bool in_play(void) { return g_site.pause_state && LD32(g_site.pause_state) == 0; }  // (not the pause menu, map)
+
+// A rune is out: the game asks about Activate rune. Its prompt fades in before the first time it asks and out after the
+// last, and while a rune is out it doesn't ask every frame: so the A prompt's label seen while it asked (any language)
+// stands for the rune whenever it is on screen, fading in or out included, and is remembered for the next time a rune
+// comes out (else the fade-in showed "A Activate" in the slot's own corner first). A time limit on top of that made the
+// character and the slot flicker between the two while Magnesis was out.
+// With no prompt on screen the last answer stays: the game redraws the button's texture and lays the slot out only
+// while the prompt shows, so going back as it vanished left the next rune prompt's first frame in the old state ("Y
+// Activate" in the slot's own corner). Another prompt (Take, Talk) is what puts it back.
+static int g_letter_swap = -1;  // the dim letter (B X Y: 1-3) in the slot's own corner while the slot is moved, or -1
+static bool rune_out(void) {
+    static uint32_t rune_label;
+    static bool latched;
+    uint32_t label = act_a_prompt_label();
+    if (act_asked_within(ACT_ACTIVATE_RUNE, RUNE_ASKED_MS)) {
+        if (label > 1) rune_label = label;
+        return latched = true;
+    }
+    if (label > 1) latched = label == rune_label;
+    return latched;
+}
+
+// While the A character stands for Activate rune, the A slot of the HUD's button diamond moves to that button's corner
+// (and the dim letter there to the slot's own), with the values runtime/services/fs.c hud_letters_flyt gives a slot at
+// boot. Not to the left corner, whose labels the game lays out the other way round.
+static const float k_act_xy[4][2] = {{26.0f, 0.0f}, {0.0f, -26.0f}, {0.0f, 26.0f}, {-26.0f, 0.0f}};  // (fs.c)
+static const float k_dim_xy[4][2] = {{26.2f, 0.8f}, {1.0f, -26.0f}, {0.8f, 26.0f}, {-25.5f, -0.2f}};
+static void setf(uint64_t p, unsigned off, float v) { if (p) memcpy((void *)(uintptr_t)(p + off), &v, 4); }
+static float getf(uint64_t p, unsigned off) {
+    float v = 0;
+    if (p) memcpy(&v, (const void *)(uintptr_t)(p + off), 4);
+    return v;
+}
+static int face_vertex(int host);
+// The panes' new places show from the game's next layout pass, a frame after the glyph sheet's new character: the
+// character waits for them (RUNE_SETTLE: 1.5 frames), or for one frame "Y Activate" showed in the slot's own corner.
+// Where the slot is gets read back each time (the game can put it back by itself). Returns true once the slot has been
+// where host's button is that long; *moved: the dim letter (1-3) that went to the slot's own corner, or -1.
+static bool rune_slot(int host, int *moved) {  // host < 0: back to the slot's own corner
+    static int applied = -1;
+    static uint64_t applied_ns;
+    int pos[4];
+    glyphs_hud_positions(pos);
+    int own = pos[0], to = host >= 0 ? face_vertex(host) : -1;
+    if (to < 0 || to == 3 || own == 3) to = own;
+    *moved = -1;
+    for (int i = 1; i < 4 && to != own; i++)
+        if (pos[i] == to) *moved = i;
+    static uint64_t btn;  // (looked up again only when the HUD was rebuilt)
+    if (!btn || strncmp((const char *)(uintptr_t)(btn + 0xb8), "N_BtnA_00", 10)) btn = act_a_slot_pane("N_BtnA_00");
+    uint64_t now = SDL_GetTicksNS(), period = framepace_period_ns();
+    uint64_t settle = (period ? period : 33333333ull) * 3 / 2;  // RUNE_SETTLE
+    if (!btn) return true;
+    bool there = getf(btn, 0x30) == k_act_xy[to][0] && getf(btn, 0x34) == k_act_xy[to][1];
+    if (there && to == applied) return to == own || now - applied_ns >= settle;
+    if (there) { applied = to, applied_ns = now; return to == own; }
+    uint64_t base = act_a_slot_pane("P_Base_00"), capture = act_a_slot_pane("N_CaptureA_00");
+    setf(btn, 0x30, k_act_xy[to][0]), setf(btn, 0x34, k_act_xy[to][1]);           // (translate)
+    setf(base, 0x44, (to == 2 || to == 3) ? 180.0f : 0.0f), setf(base, 0x48, to == 2 ? -1.0f : 1.0f);  // (rotate z, scale x)
+    setf(capture, 0x30, k_act_xy[to][0] + 60), setf(capture, 0x34, k_act_xy[to][1]);
+    static const char *const letters[4] = {0, "T_B_00", "T_X_00", "T_Y_00"};  // (B X Y: pos[1..3])
+    for (int i = 1; i < 4; i++) {
+        uint64_t t = act_a_slot_pane(letters[i]);
+        int at = pos[i] == to ? own : pos[i];  // (the letter in the slot's new corner takes its old one)
+        setf(t, 0x30, k_dim_xy[at][0]), setf(t, 0x34, k_dim_xy[at][1]);
+    }
+    applied = to, applied_ns = now;
+    return to == own;
+}
+
+// Controls > Prompts follow action bindings (g_settings.prompts_follow); off: the Switch layer everywhere and the slot
+// in its own corner (put back if the setting goes off with the slot moved)
+static void resolve_face(void) {
+    bool on = g_settings.prompts_follow, play = on && in_play(), rune = play && rune_out();
+    int rune_host = rune ? g_act_pad[ACT_ACTIVATE_RUNE] : -1, moved = -1;
+    if ((play || !on) && !rune_slot(rune_host, &moved)) rune = false;  // (the characters follow once the slot is there)
+    g_letter_swap = rune ? moved : -1;
+    for (int dev = 0; dev < 2; dev++)
+        for (int i = 0; i < 4; i++) {
+            int layer = dev ? g_bind_key[BIND_A + i] : g_bind_pad[BIND_A + i];
+            int h = play ? act_prompt_host(dev ? BIND_DEV_KEY : BIND_DEV_PAD, BIND_A + i) : -1;
+            if (rune && i == 0) {
+                int r = dev ? g_act_key[ACT_ACTIVATE_RUNE] : g_act_pad[ACT_ACTIVATE_RUNE];
+                if (dev ? r > 0 : r >= 0) h = r;
+            }
+            g_face[dev][i] = h >= 0 && (dev ? h > 0 : 1) ? h : layer;
+        }
+}
+// The Switch button whose controller button a dim letter shows: its own, or A's for the letter that took the slot's
+// own corner while the slot is at the rune's (that corner is A's place on the controller)
+static int letter_slot(int b) { return g_letter_swap >= 0 && b == BIND_A + g_letter_swap ? BIND_A : b; }
+static int face_pad(int b) { return b >= BIND_A && b <= BIND_Y ? g_face[0][b - BIND_A] : g_bind_pad[b]; }
+static int face_key(int b) { return b >= BIND_A && b <= BIND_Y ? g_face[1][b - BIND_A] : g_bind_key[b]; }
+
 // cursor: with the state of the menus' mouse pointer, which changes some keyboard icons while a menu is open.
 static uint32_t generation(bool cursor) {
     int k = resolve_kind();
     uint32_t h = 2166136261u ^ (uint32_t)k;
+    resolve_face();
+    for (int d = 0; d < 2; d++)
+        for (int i = 0; i < 4; i++) h = (h ^ (uint16_t)g_face[d][i]) * 16777619u;
+    h = (h ^ (uint32_t)(g_letter_swap + 1)) * 16777619u;
     if (k == ICONS_KEYBOARD) {
         if (cursor) {
             h = (h ^ pc_cursor_preview_active()) * 16777619u;
@@ -626,7 +747,8 @@ static bool draw_glyph(Canvas *c, Box b, int code, int kind, int *copy) {
     int fam = kind == ICONS_PLAYSTATION ? 2 : kind == ICONS_STEAMDECK ? 3 : 1;
     if (kind == ICONS_NINTENDO) {  // the game's glyphs, following the controller bindings
         int host = -1;
-        if (m.kind == G_BUTTON) host = g_bind_pad[m.arg];
+        if (m.kind == G_BUTTON) host = face_pad(m.arg);
+        else if (m.kind == G_LETTER) host = g_bind_pad[letter_slot(m.arg)];
         else if (m.kind == G_DPAD && !(m.arg & (m.arg - 1))) host = g_bind_pad[k_dpad_slot[dir_index(m.arg)]];
         int want = host >= 0 ? nintendo_code(host) : 0;
         if (want && want != code) *copy = want;
@@ -636,7 +758,8 @@ static bool draw_glyph(Canvas *c, Box b, int code, int kind, int *copy) {
         switch (m.kind) {
         case G_BUTTON:
             if(m.arg==BIND_RSTICK&&pc_cursor_preview_active()) {mouse(c,b,SDL_BUTTON_LEFT,0);return true;}
-            key_icon(c, b, m.arg==BIND_Y&&pc_cursor_sensor_active()?g_bind_key[BIND_LEFT]:g_bind_key[m.arg]); return true;
+            key_icon(c, b, m.arg==BIND_Y&&pc_cursor_sensor_active()?g_bind_key[BIND_LEFT]:face_key(m.arg)); return true;
+        case G_LETTER: key_icon(c, b, g_bind_key[letter_slot(m.arg)]); return true;
         case G_DPAD:
             if (!(m.arg & (m.arg - 1))) key_icon(c, b, g_bind_key[k_dpad_slot[dir_index(m.arg)]]);
             else keys_icon(c, b, k_dpad_slot, m.arg);
@@ -659,7 +782,8 @@ static bool draw_glyph(Canvas *c, Box b, int code, int kind, int *copy) {
     }
     // Xbox / PlayStation / Steam Deck: buttons through the bindings; the sticks keep the game's (L / R)
     switch (m.kind) {
-    case G_BUTTON: pad_button(c, b, g_bind_pad[m.arg], fam); return true;
+    case G_BUTTON: pad_button(c, b, face_pad(m.arg), fam); return true;
+    case G_LETTER: pad_button(c, b, g_bind_pad[letter_slot(m.arg)], fam); return true;
     case G_DPAD:
         if (!(m.arg & (m.arg - 1))) {
             int host = g_bind_pad[k_dpad_slot[dir_index(m.arg)]];
@@ -729,14 +853,16 @@ bool glyphs_apply(uint64_t addr, uint64_t pool_lo, uint64_t pool_hi, uint32_t fo
     for (int code = 0xE040; code < 0xE0A0; code++) {
         uint32_t gi = index_of(code);
         if (gi == 0xffff) continue;
-        int x0, y0;
+        int x0, y0, lx0, ly0;
         cell_origin(f, gi, &x0, &y0);
         if (x0 + CELL > (int)w || y0 + CELL > (int)h) continue;
+        Meaning mc = meaning(code);  // (a diamond letter: the box of the letter it stands for)
+        cell_origin(f, mc.kind == G_LETTER ? index_of(0xE040 + mc.arg - BIND_A) : gi, &lx0, &ly0);
         // the original glyph's box (its lit pixels)
         int bx0 = CELL, by0 = CELL, bx1 = -1, by1 = -1;
         for (int y = 0; y < CELL; y++)
             for (int x = 0; x < CELL; x++)
-                if (orig[(uint64_t)sheet_y(f, y0, y) * w + x0 + x] > 96) {
+                if (orig[(uint64_t)sheet_y(f, ly0, y) * w + lx0 + x] > 96) {
                     if (x < bx0) bx0 = x;
                     if (x > bx1) bx1 = x;
                     if (y < by0) by0 = y;

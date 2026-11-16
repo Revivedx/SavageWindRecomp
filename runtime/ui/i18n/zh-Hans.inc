@@ -464,6 +464,8 @@ T("Echo in caves, shrines and big rooms.", "洞穴、神庙和大房间中的回
 T("Sound in the game's movies.", "游戏影片的声音。")
 T("The d-pad also moves like the left stick.", "十字键也能像左摇杆一样移动。")
 T("In the game's menus, pressing past the last item goes to the first, and back.", "在游戏菜单中，越过最后一项会回到第一项，反之亦然。")
+T("Prompts follow action bindings", "按键提示跟随动作绑定")
+T("In play, prompts show the buttons you bound, the rune's in its own spot.", "游戏中按键提示显示你绑定的按键，希卡之石功能的按键显示在其位置。")
 T("Left stick dead zone", "左摇杆死区")
 T("Right stick dead zone", "右摇杆死区")
 T("How far the stick must move before it counts. Raise it if the stick drifts.", "摇杆需要推动多远才会生效。摇杆自己漂移时请调高。")

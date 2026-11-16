@@ -484,6 +484,19 @@ static void act_migrate(int dev, int slot) {
     act_refresh();
 }
 
+int act_prompt_host(int dev, int sw) {
+    const int16_t *actions = dev == BIND_DEV_PAD ? g_act_pad : g_act_key;
+    int host = -1;
+    for (int id = 0; id < ACT_COUNT; id++) {
+        if (act_hidden(id) || act_switch_button(id) != sw) continue;
+        int h = actions[id];
+        if (h == ACT_NONE || (dev != BIND_DEV_PAD && h <= 0)) continue;  // (unbound: says nothing about the others)
+        if (host >= 0 && h != host) return -1;
+        host = h;
+    }
+    return host;
+}
+
 uint64_t act_scan_keys(uint64_t key_buttons, int (*held)(int scancode)) {
     (void)key_buttons;  // kept for callers; actions read host inputs, never the live Switch layout
     uint64_t out = 0, custom = a_custom;
@@ -637,9 +650,12 @@ static bool named(uint64_t obj, unsigned off, const char *name) {
     uint64_t p = obj >= GUEST_LO && obj < GUEST_HI - 0x100 ? LD64(obj + off) : 0;
     return p >= GUEST_LO && p < GUEST_HI - 64 && !strcmp((const char *)(uintptr_t)p, name);
 }
-static bool interact_prompt_up(void) {
+static uint64_t a_label;  // the A prompt's label (T_GuideA_01: its text at +0xe0, UTF-16)
+static uint64_t a_group;  // the A slot (N_A_00)
+// The A prompt's opacity (0-255; 0 while it isn't shown, as in a fade from 0 up and back down)
+static int interact_prompt_alpha(void) {
     static uint64_t screen, group, hud;  // DoCommand_00, its N_A_00 and N_InOut_00 (found again when the HUD is rebuilt)
-    if (!g_site.screen_mgr) return false;
+    if (!g_site.screen_mgr) return 0;
     if (!named(screen, 0xd0, "DoCommand_00") || !group || !hud ||
         strncmp((const char *)(uintptr_t)(group + 0xb8), "N_A_00", 8) ||
         strncmp((const char *)(uintptr_t)(hud + 0xb8), "N_InOut_00", 12)) {
@@ -653,9 +669,32 @@ static bool interact_prompt_up(void) {
         hud = pane_child(root, "N_InOut_00", 0, &budget);
         budget = 64;
         group = pane_child(hud, "N_A_00", 0, &budget);
-        if (!group) { screen = group = hud = 0; return false; }
+        budget = 64;
+        a_label = pane_child(group, "T_GuideA_01", 0, &budget);
+        if (!group) { screen = group = hud = a_label = 0; return 0; }
     }
-    return (LD8(group + 0x58) & 1) && (LD8(hud + 0x58) & 1) && LD8(hud + 0x5a) >= 0x80;  // (visible; global alpha)
+    a_group = group;
+    return (LD8(group + 0x58) & 1) && (LD8(hud + 0x58) & 1) ? LD8(hud + 0x5a) : 0;  // (visible; global alpha)
+}
+static bool interact_prompt_up(void) { return interact_prompt_alpha() >= 0x80; }
+
+uint64_t act_a_slot_pane(const char *name) {
+    interact_prompt_alpha();  // (finds the slot again after the HUD is rebuilt)
+    unsigned budget = 64;
+    return a_group ? pane_child(a_group, name, 0, &budget) : 0;
+}
+
+uint32_t act_a_prompt_label(void) {  // (while the prompt is on screen at all: fading in or out too)
+    if (!interact_prompt_alpha() || !a_label) return 0;
+    uint64_t text = LD64(a_label + 0xe0);
+    if (text < GUEST_LO || text >= GUEST_HI - 128) return 1;
+    uint32_t h = 2166136261u;
+    for (int i = 0; i < 64; i++) {
+        uint16_t ch = LD16(text + 2 * i);
+        if (!ch) break;
+        h = (h ^ ch) * 16777619u;
+    }
+    return h | 1;
 }
 
 // When the prompt was last seen (each controller poll): answering it takes it away within the same frame, before the
@@ -711,8 +750,14 @@ bool act_cycle_live(void) {
     return t && SDL_GetTicksNS() - t < 250000000ull;
 }
 
+static _Atomic uint32_t a_asked_ms[ACT_COUNT];  // when the game last asked about each action
+bool act_asked_within(int id, unsigned ms) {
+    return id >= 0 && id < ACT_COUNT && a_asked_ms[id] && (uint32_t)SDL_GetTicks() - a_asked_ms[id] < ms;
+}
+
 int rt_act_query(int kind, uint64_t pad, uint64_t id, uint64_t lr, uint64_t masks) {
     if (id == 38) cycle_asked_ns = SDL_GetTicksNS();
+    if (id < ACT_COUNT) a_asked_ms[id] = (uint32_t)SDL_GetTicks() | 1;
     if (!k_masks && masks) { k_masks = (const uint32_t *)(uintptr_t)masks; act_refresh(); }
     if (id < ACT_COUNT && k_masks && (k_masks[id] != k_masks_190[id]) != ((a_mask_diff >> id & 1) != 0))
         act_refresh();

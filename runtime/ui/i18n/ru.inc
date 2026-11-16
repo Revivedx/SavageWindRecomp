@@ -464,6 +464,8 @@ T("Echo in caves, shrines and big rooms.", "Эхо в пещерах, святи
 T("Sound in the game's movies.", "Звук роликов игры.")
 T("The d-pad also moves like the left stick.", "Крестовина тоже двигает, как левый стик.")
 T("In the game's menus, pressing past the last item goes to the first, and back.", "В меню игры после последнего пункта курсор переходит к первому, и обратно.")
+T("Prompts follow action bindings", "Подсказки следуют назначению действий")
+T("In play, prompts show the buttons you bound, the rune's in its own spot.", "В игре подсказки показывают назначенные кнопки, кнопку руны — на её месте.")
 T("Left stick dead zone", "Мёртвая зона левого стика")
 T("Right stick dead zone", "Мёртвая зона правого стика")
 T("How far the stick must move before it counts. Raise it if the stick drifts.", "Насколько нужно отклонить стик, чтобы это засчиталось. Увеличьте, если стик дрейфует.")

@@ -464,6 +464,8 @@ T("Echo in caves, shrines and big rooms.", "Eco em cavernas, santuários e salas
 T("Sound in the game's movies.", "O som dos vídeos do jogo.")
 T("The d-pad also moves like the left stick.", "O direcional também movimenta como o analógico esquerdo.")
 T("In the game's menus, pressing past the last item goes to the first, and back.", "Nos menus do jogo, passar do último item volta ao primeiro, e vice-versa.")
+T("Prompts follow action bindings", "Avisos seguem as ações atribuídas")
+T("In play, prompts show the buttons you bound, the rune's in its own spot.", "No jogo, os avisos mostram os botões atribuídos, o da runa no lugar dele.")
 T("Left stick dead zone", "Zona morta do analógico esquerdo")
 T("Right stick dead zone", "Zona morta do analógico direito")
 T("How far the stick must move before it counts. Raise it if the stick drifts.", "Quanto o analógico precisa se mover antes de contar. Aumente se o analógico se mover sozinho.")

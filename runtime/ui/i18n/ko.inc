@@ -464,6 +464,8 @@ T("Echo in caves, shrines and big rooms.", "동굴, 사당, 넓은 방에서의 
 T("Sound in the game's movies.", "게임 동영상의 소리입니다.")
 T("The d-pad also moves like the left stick.", "방향 버튼으로도 왼쪽 스틱처럼 이동합니다.")
 T("In the game's menus, pressing past the last item goes to the first, and back.", "게임 메뉴에서 마지막 항목을 지나면 첫 항목으로, 반대로도 이동합니다.")
+T("Prompts follow action bindings", "버튼 안내가 동작 할당을 따름")
+T("In play, prompts show the buttons you bound, the rune's in its own spot.", "플레이 중 버튼 안내가 할당한 버튼을 표시하고, 룬 버튼은 제자리에 표시합니다.")
 T("Left stick dead zone", "왼쪽 스틱 데드존")
 T("Right stick dead zone", "오른쪽 스틱 데드존")
 T("How far the stick must move before it counts. Raise it if the stick drifts.", "스틱을 얼마나 움직여야 입력으로 인식할지 정합니다. 스틱이 저절로 움직이면 높이세요.")

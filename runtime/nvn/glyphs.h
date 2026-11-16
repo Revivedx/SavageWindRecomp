@@ -22,6 +22,12 @@ uint32_t glyphs_font_generation(void);
 
 // The diamond vertex (0: East, 1: South, 2: North, 3: West) for each Switch face button (A, B, X, Y) on the HUD.
 void glyphs_hud_positions(int pos[4]);
+// The character the dim letter of Switch face button btn (0..3: A B X Y) in that diamond is written as
+// (runtime/services/fs.c): a cell of the icon font no prompt uses, drawn as the controller's button in that place, while
+// the prompts' own A B X Y follow the actions in play (Jump moved to A: "Jump" shows A, the diamond still shows Y).
+int glyphs_letter_code(int btn);
+// That character's glyph index in External_00.bffnt (its CWDH entry: runtime/services/fs.c makes it the letter's width)
+int glyphs_letter_index(int btn);
 
 // The device the Controls page and the tips draw instead of the Switch (runtime/nvn/hw_illust.c HW_DEVICE_*), -1 for
 // the Switch: Button icons' device, or on Automatic the controller connected. Decided when the game files are opened

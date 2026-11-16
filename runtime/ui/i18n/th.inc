@@ -140,6 +140,8 @@ T("D-pad as left stick", "ปุ่มทิศทางเป็นสติ๊
 T("Menus wrap around", "เมนูวนรอบ")
 T("The d-pad also moves like the left stick.", "ปุ่มทิศทางขยับได้เหมือนสติ๊กซ้ายด้วย")
 T("In the game's menus, pressing past the last item goes to the first, and back.", "ในเมนูของเกม เลื่อนเลยรายการสุดท้ายจะกลับไปรายการแรก และกลับกัน")
+T("Prompts follow action bindings", "ปุ่มที่แสดงตามการกำหนดการกระทำ")
+T("In play, prompts show the buttons you bound, the rune's in its own spot.", "ระหว่างเล่น คำแนะนำแสดงปุ่มที่คุณกำหนด และปุ่มรูนในตำแหน่งของมัน")
 T("Left stick dead zone", "เดดโซนสติ๊กซ้าย")
 T("Right stick dead zone", "เดดโซนสติ๊กขวา")
 T("How far the stick must move before it counts. Raise it if the stick drifts.", "ต้องขยับสติ๊กไกลแค่ไหนจึงจะนับเป็นการกด เพิ่มค่านี้ถ้าสติ๊กขยับเอง")

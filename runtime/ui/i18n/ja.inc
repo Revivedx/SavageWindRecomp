@@ -464,6 +464,8 @@ T("Echo in caves, shrines and big rooms.", "洞窟、祠、広い部屋での反
 T("Sound in the game's movies.", "ゲームのムービーの音声です。")
 T("The d-pad also moves like the left stick.", "十字ボタンでもLスティックと同じように移動します。")
 T("In the game's menus, pressing past the last item goes to the first, and back.", "ゲームのメニューで、最後の項目の先は最初の項目に戻ります（逆も同様）。")
+T("Prompts follow action bindings", "ボタン表示をアクションの割り当てに合わせる")
+T("In play, prompts show the buttons you bound, the rune's in its own spot.", "プレイ中のボタン表示を割り当てたボタンに合わせ、使用中の機能はその位置に表示します。")
 T("Left stick dead zone", "Lスティックのデッドゾーン")
 T("Right stick dead zone", "Rスティックのデッドゾーン")
 T("How far the stick must move before it counts. Raise it if the stick drifts.", "スティックをどれだけ倒すと入力になるか。スティックが勝手に動くときは上げてください。")

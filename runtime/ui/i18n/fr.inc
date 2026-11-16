@@ -464,6 +464,8 @@ T("Echo in caves, shrines and big rooms.", "Écho dans les grottes, les sanctuai
 T("Sound in the game's movies.", "Le son des vidéos du jeu.")
 T("The d-pad also moves like the left stick.", "La croix directionnelle déplace aussi comme le stick gauche.")
 T("In the game's menus, pressing past the last item goes to the first, and back.", "Dans les menus du jeu, aller au-delà du dernier élément ramène au premier, et inversement.")
+T("Prompts follow action bindings", "Les invites suivent les actions assignées")
+T("In play, prompts show the buttons you bound, the rune's in its own spot.", "En jeu, les invites montrent tes boutons assignés, celui de la rune à sa place.")
 T("Left stick dead zone", "Zone morte du stick gauche")
 T("Right stick dead zone", "Zone morte du stick droit")
 T("How far the stick must move before it counts. Raise it if the stick drifts.", "La distance que le stick doit parcourir avant de compter. Augmentez-la si le stick dérive.")

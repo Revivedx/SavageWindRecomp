@@ -68,6 +68,7 @@ typedef struct {
     uint8_t *hud_pack;       // Pack/Bootup.pack with the HUD letters patched (hud_letters_patch)
     size_t hud_pack_size;
     uint8_t *voice_banks;    // the text language's voice banks with the chosen voices' lengths (bars_hybrid)
+    uint8_t *font_arcs[8];   // Font/Font_*.sbfarc with the HUD letters' cells as wide as the letters (font_widths_patch)
 } RomImage;
 #define AOC_MAX 8
 static RomImage images[1 + AOC_MAX];  // [0] the game's, [index] add-on content
@@ -86,6 +87,7 @@ RT_ON_RESET(fs_reset) {
         for (int i = 0; i < m->npatches; i++) free(m->patches[i].data);  // (ov_meta and the extended table are among these)
         for (int i = 0; i < m->rom_nfiles; i++) free(m->rom_files[i].path);
         free(m->ov), free(m->rom_files), free(m->grown), free(m->rstb_blob), free(m->hud_pack), free(m->voice_banks);
+        for (int f = 0; f < 8; f++) free(m->font_arcs[f]);
         romfs_image_close(m->img);
         *m = (RomImage){0};
     }
@@ -750,7 +752,7 @@ static size_t hud_letters_flyt(const uint8_t *b, size_t n, uint8_t *out, int whi
                 if (k && *k) {
                     int btn = (int)(k - "ABXY");
                     sec[0x5A] = 1, sec[0x5B] = 0;  // (the font: the second)
-                    uint16_t c = (uint16_t)(0xE040 + btn);
+                    uint16_t c = (uint16_t)glyphs_letter_code(btn);
                     memcpy(sec + toff, &c, 2);
                     float fs[2];  // the font size: an icon fills less of its cell than a letter
                     memcpy(fs, sec + 0x70, 8);
@@ -1000,6 +1002,63 @@ static void hud_letters_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz)
     R->grown[R->ngrown++] = (GrownFile){"Layout/Common.blarc", nn - an};
     LOG("[fs] HUD letters: %d button letters use the icon font (archive %zu -> %zu bytes, pack +%llu KB, %.0f ms)\n",
         panes, (size_t)old, zn, (unsigned long long)(delta >> 10), (plat_now_ns() - t0) / 1e6);
+}
+
+// The HUD diamond's letters are spare cells of the icon font (glyphs_letter_code): the power button, an arrow and two
+// empty squares, narrower than a letter or with no advance at all, so the letters drawn into them came out clipped and
+// off centre. Each font archive (Font/Font_*.sbfarc, Yaz0 over SARC) with External_00.bffnt gets those cells' widths
+// (CWDH: left, glyph width, advance) set to the letters'; same size unpacked, so the ResourceSizeTable stays.
+static void font_widths_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
+    if (getenv("SAVAGEWIND_NO_HUD_LETTERS")) return;
+    int done = 0, nf = 0;
+    for (int k = 0; k < R->rom_nfiles && nf < 8; k++) {
+        const char *p = R->rom_files[k].path;
+        size_t pl = strlen(p);
+        if (strncmp(p, "Font/Font_", 10) || pl < 7 || strcmp(p + pl - 7, ".sbfarc")) continue;
+        char host[1200];
+        if (overlay_file(p, host, sizeof host)) continue;
+        size_t zn = R->rom_files[k].size, an = 0, outn = 0;
+        if (zn < 16 || zn > (64u << 20)) continue;
+        uint8_t *z = malloc(zn), *arc = NULL, *out = NULL;
+        if (z && romfs_image_pread(R->img, z, zn, R->rom_files[k].off) == (ssize_t)zn && !memcmp(z, "Yaz0", 4))
+            arc = yaz0_unpack(z, zn, &an);
+        uint32_t doff, s, e;
+        bool changed = false;
+        if (arc && sarc_find(arc, an, "External_00.bffnt", &doff, &s, &e) >= 0 && e > s && doff + e <= an) {
+            uint8_t *f = arc + doff + s;
+            size_t n = e - s;
+            for (size_t o = 0x14; o + 0x10 <= n; ) {  // (FFNT: the sections follow its 0x14-byte header)
+                uint32_t sz;
+                memcpy(&sz, f + o + 4, 4);
+                if (sz < 8 || o + sz > n) break;
+                if (!memcmp(f + o, "CWDH", 4)) {
+                    uint16_t lo = f[o + 8] | f[o + 9] << 8, hi = f[o + 10] | f[o + 11] << 8;
+                    for (int b = 0; b < 4; b++) {
+                        int cell = glyphs_letter_index(b), letter = b;  // (A B X Y: glyphs 0-3)
+                        if (cell < lo || cell > hi || letter < lo || 0x10 + 3 * (size_t)(cell - lo) + 3 > sz) continue;
+                        memcpy(f + o + 0x10 + 3 * (cell - lo), f + o + 0x10 + 3 * (letter - lo), 3);
+                        changed = true;
+                    }
+                    break;
+                }
+                o += sz;
+            }
+        }
+        if (changed) out = yaz0_pack(arc, an, z, &outn);
+        if (out) {
+            R->font_arcs[nf++] = out;
+            meta_copy(fmeta, foff, fsz);
+            uint64_t rel = R->ov_end - R->rom_data_off, size = outn;
+            memcpy(R->ov_meta + R->rom_files[k].meta + 8, &rel, 8);
+            memcpy(R->ov_meta + R->rom_files[k].meta + 0x10, &size, 8);
+            if (R->ov_n == R->ov_cap) { R->ov_cap = R->ov_cap ? R->ov_cap * 2 : 256; R->ov = realloc(R->ov, sizeof *R->ov * R->ov_cap); }
+            R->ov[R->ov_n++] = (Overlay){R->ov_end, size, NULL, -1, out};
+            R->ov_end = (R->ov_end + size + 0xF) & ~0xFull;
+            done++;
+        }
+        free(z), free(arc);
+    }
+    if (nf || done) LOG("[fs] HUD letters: %d font archive(s) with the letters' widths\n", done);
 }
 
 // (Savage Wind+) Video > Haze: the air's haze. BOTW's outdoor haze is its atmospheric scattering, set per climate in
@@ -1393,6 +1452,7 @@ static void rom_index(void) {
         break;
     }
     hud_letters_patch(fmeta, foff, fsz);
+    font_widths_patch(fmeta, foff, fsz);
     text_sheets_scan();
     menu_tex_scan();
     if (R == &images[0] && !atomic_load_explicit(&inventory_clip_layout_valid, memory_order_acquire))

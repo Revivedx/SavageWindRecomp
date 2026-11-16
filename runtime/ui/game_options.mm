@@ -1114,6 +1114,10 @@ void build_items(void) {
                        "In the game's menus, pressing past the last item goes to the first, and back.",
                        [](const Item &) { return (int)g_settings.menu_wrap; },
                        [](const Item &, int x) { g_settings.menu_wrap = x; }, 0));
+    v.push_back(toggle(P_CONTROLS, "Prompts follow action bindings",
+                       "In play, prompts show the buttons you bound, the rune's in its own spot.",
+                       [](const Item &) { return (int)g_settings.prompts_follow; },
+                       [](const Item &, int x) { g_settings.prompts_follow = x; }, 0));
     for (int s = 0; s < 2; s++)  // (runtime/hle/input.c dead_zone)
         v.push_back(choice(P_CONTROLS, s ? "Right stick dead zone" : "Left stick dead zone",
                            "How far the stick must move before it counts. Raise it if the stick drifts.",

@@ -464,6 +464,8 @@ T("Echo in caves, shrines and big rooms.", "Echo in grotten, heiligdommen en gro
 T("Sound in the game's movies.", "Het geluid in de filmpjes van het spel.")
 T("The d-pad also moves like the left stick.", "De D-pad beweegt ook als de linkerstick.")
 T("In the game's menus, pressing past the last item goes to the first, and back.", "In de menu's van het spel ga je na het laatste item naar het eerste, en terug.")
+T("Prompts follow action bindings", "Knophints volgen de actietoewijzing")
+T("In play, prompts show the buttons you bound, the rune's in its own spot.", "Tijdens het spelen tonen hints je toegewezen knoppen, die van de rune op z'n plek.")
 T("Left stick dead zone", "Dode zone linkerstick")
 T("Right stick dead zone", "Dode zone rechterstick")
 T("How far the stick must move before it counts. Raise it if the stick drifts.", "Hoe ver de stick moet bewegen voordat het telt. Verhoog dit als de stick vanzelf beweegt.")

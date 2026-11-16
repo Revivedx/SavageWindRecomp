@@ -108,6 +108,17 @@ bool act_is_default(int id);                  // both sides equal their factory 
 bool act_hidden(int id);                      // no code reaches it in the game (or only by a computed number): not on the page
 const char *act_name(int id);                 // what the game does with it, or NULL while unknown
 int act_switch_button(int id);                // the Switch input (BIND_*) in the game table (1.9.0 fallback before boot)
+// The host button a Switch face button's prompt character stands for in play (dev BIND_DEV_PAD / BIND_DEV_KEY, sw
+// BIND_A..BIND_Y): the one every action the game asks about on that Switch button is bound to, or -1 when they differ
+// (the character keeps following the Switch layer, g_bind_pad / g_bind_key)
+int act_prompt_host(int dev, int sw);
+// The game asked about action id in the last ms milliseconds (its HUD shows what it can do now: Activate rune while a
+// rune is out)
+bool act_asked_within(int id, unsigned ms);
+// The HUD's A prompt: 0 while it isn't shown, else a hash of its label (the same text: the same prompt, in any language)
+uint32_t act_a_prompt_label(void);
+// A pane of the HUD's A slot by name (DoCommand_00 > N_A_00 > ...), or 0
+uint64_t act_a_slot_pane(const char *name);
 void act_masks(const uint32_t *table);        // the game's table of one mask per action (its address, from the patch)
 void act_reset(void);                         // every action back to the default
 
