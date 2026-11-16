@@ -14,6 +14,13 @@ build: with `make dist`'s `PGO=use LTO=thin` plateau 1080p +33%, castle 1080p +2
 PGO alone +28 / +18 / +21 / +17%. The previous profile (AA off, older code) gave +1..+10% on the same routes and a merge of
 the two was worse than the new one alone: regenerate instead of merging.
 
+## Optional Alpha 6 FXAA profile
+
+`runtime-alpha6-fxaa.profdata` is a newer, FXAA-trained alternative, selected with
+`PGO_PROFILE=tools/pgo/runtime-alpha6-fxaa.profdata`. The default TAA profile stays
+unchanged. See [provenance, measured results and limitations](ALPHA6-FXAA.md)
+before selecting it. Both profiles require the matching Clang 23.1.4.
+
 ## Limits
 
 - A profile only fits the compiler that wrote it. With another clang, `PGO=use` can fail with an "unsupported
