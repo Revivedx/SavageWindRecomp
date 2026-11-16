@@ -1229,7 +1229,8 @@ static void rstb_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
     static const char rstb_path[] = "System/Resource/ResourceSizeTable.product.srsizetable";
     bool merged = R == &images[0] && romfs_has_dlc_merged();
     uint32_t model_grow = R == &images[0] ? rstb_model_grow() : 0;
-    if (!R->ngrown && !merged && !model_grow) return;
+    bool check_overlay = R == &images[0] && R->ov_n > 0;
+    if (!R->ngrown && !merged && !model_grow && !check_overlay) return;
     int k = 0;
     while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, rstb_path)) k++;
     char host[1200];
@@ -1300,6 +1301,39 @@ static void rstb_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
             mg++;
         }
         LOG("[fs] ResourceSizeTable: %d model entries grown by %u KB\n", mg, model_grow >> 10);
+    }
+    int ov_changed = 0;
+    if (check_overlay && !from_overlay) {
+        char name[300];
+        for (int i = 0; i < R->rom_nfiles; i++) {
+            const char *path = R->rom_files[i].path;
+            if (!strcmp(path, rstb_path) || !overlay_file(path, host, sizeof host)) continue;
+            struct stat sb;
+            if (stat(host, &sb) || sb.st_size <= 0) continue;
+            uint64_t uncomp = (uint64_t)sb.st_size;
+            uint8_t hdr[8];
+            FILE *f = fopen(host, "rb");
+            if (f) {
+                if (fread(hdr, 1, 8, f) == 8 && !memcmp(hdr, "Yaz0", 4))
+                    uncomp = ((uint64_t)hdr[4] << 24) | ((uint64_t)hdr[5] << 16) | ((uint64_t)hdr[6] << 8) | hdr[7];
+                fclose(f);
+            }
+            rstb_name(path, name, sizeof name);
+            uint32_t *e = rstb_entry(d, ncrc, nname, name);
+            if (!e) continue;
+            uint32_t v;
+            memcpy(&v, e, 4);
+            uint64_t need = ((uncomp + 31) & ~31ull) + 64;
+            if (need <= v || need > UINT32_MAX) continue;
+            v = (uint32_t)need;
+            memcpy(e, &v, 4);
+            ov_changed++;
+        }
+        if (ov_changed) LOG("[fs] overlay: %d ResourceSizeTable entries grown for modded files\n", ov_changed);
+    }
+    if (!changed && !dlc_changed && !model_grow && !ov_changed) {
+        free(d);
+        return;
     }
     size_t bn = 0;
     free(R->rstb_blob);
