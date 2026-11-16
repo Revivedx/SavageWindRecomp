@@ -601,6 +601,7 @@ void settings_load(void) {
                 if (!strcmp(val, k_text_speed[i])) g_settings.text_speed = i;
         }
         else if (!strcmp(key, "infinite_stamina")) g_settings.infinite_stamina = atoi(val) != 0;
+        else if (!strcmp(key, "unlimited_amiibo")) g_settings.unlimited_amiibo = atoi(val) != 0;
         else if (!strcmp(key, "infinite_rupees")) g_settings.infinite_rupees = atoi(val) != 0;
         else if (!strcmp(key, "weather")) {
             g_settings.weather = 0;
@@ -863,6 +864,7 @@ void settings_save(void) {
     fprintf(f, "weapon_wear = %d\n", g_settings.weapon_wear);
     fprintf(f, "infinite_arrows = %d\n", g_settings.infinite_arrows);
     fprintf(f, "infinite_stamina = %d\n", g_settings.infinite_stamina);
+    fprintf(f, "unlimited_amiibo = %d\n", g_settings.unlimited_amiibo);
     fprintf(f, "infinite_rupees = %d\n", g_settings.infinite_rupees);
     int wx = g_settings.weather;
     fprintf(f, "weather = %s\n", g_weather_keys[wx >= 0 && wx < WEATHER_COUNT ? wx : 0]);

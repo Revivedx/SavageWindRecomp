@@ -44,6 +44,7 @@ your settings.
 | Weapon wear | How fast weapons, bows and shields wear out: Fairy (never), Peter Pan (0.5x), Hylian (1x, the game's own), Hero (1.5x), Master (2x), Legend (2.5x), Dude, are you ok? (3x). |
 | Infinite arrows | Shooting a bow uses up no arrows. You still need one arrow to shoot. |
 | Infinite stamina | The stamina wheel never runs out. |
+| Unlimited amiibo usage | Scan the same amiibo as many times as you like in one day. |
 
 ## Cheats tab
 

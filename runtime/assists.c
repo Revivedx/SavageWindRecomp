@@ -54,3 +54,7 @@ uint32_t rt_stamina(uint32_t oldv, uint32_t newv) {
 // Infinite arrows: the bow's shot takes its arrows off the pouch through one function, which returns before taking
 // any (tools/patches.py _remove_arrows). One arrow is still needed to shoot.
 int rt_infinite_arrows(void) { return g_settings.infinite_arrows; }
+
+// Unlimited amiibo usage: every scan is the first of a new day to the game (tools/patches.py _amiibo_new_day), and the
+// figure keeps its own serial number, which is also what ties Epona to it.
+int rt_unlimited_amiibo(void) { return g_settings.unlimited_amiibo; }
