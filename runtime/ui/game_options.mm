@@ -929,6 +929,12 @@ void build_items(void) {
     v.push_back(toggle(P_VIDEO_ADV, "Depth of field", "Blurs the far distance. Off: sharp out to the horizon.",
                        [](const Item &) { return (int)g_settings.depth_of_field; },
                        [](const Item &, int x) { g_settings.depth_of_field = x; }, 1));
+    v.push_back(toggle(P_VIDEO_ADV, "Grass", "Grass blades and ground cover. Off: bare terrain, faster.",
+                       [](const Item &) { return (int)g_settings.grass; },
+                       [](const Item &, int x) { g_settings.grass = x; }, 1));
+    v.push_back(toggle(P_VIDEO_ADV, "Lens flare", "Sun glare and lens flare. Off: no sun flare.",
+                       [](const Item &) { return (int)g_settings.lens_flare; },
+                       [](const Item &, int x) { g_settings.lens_flare = x; }, 1));
     v.push_back(toggle(P_VIDEO_ADV, "Dynamic resolution", "Lowers the 3D resolution when a frame takes long, as on the console.",
                        [](const Item &) { return (int)g_settings.dynamic_res; },
                        [](const Item &, int x) { g_settings.dynamic_res = x; }, 1));

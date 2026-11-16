@@ -1265,6 +1265,8 @@ static void tab_display(void) {
                "little faster, a flatter image.");
     opt_toggle("Depth of field", &g_settings.depth_of_field, true, "The game blurs the far distance a little. Off: sharp "
                "out to the horizon, a little faster.");
+    opt_toggle("Grass", &g_settings.grass, true, "Grass blades and ground cover. Off: bare terrain, faster.");
+    opt_toggle("Lens flare", &g_settings.lens_flare, true, "Sun glare and lens flare. Off: no sun flare.");
     opt_toggle("Dynamic resolution", &g_settings.dynamic_res, true, "As on the console: the game lowers its 3D "
                "resolution (down to 1280x720 before upscaling) while frames take long, and raises it again after. "
                "Off: always the full resolution. On with the Potato preset.");

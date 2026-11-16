@@ -1126,3 +1126,7 @@ T("Reset save folder to default", "Revenir au dossier de sauvegarde par défaut"
 T("Revert to using the default save folder inside the game folder.", "Réutilise le dossier de sauvegarde par défaut, dans le dossier du jeu.")
 T("Lowers the 3D resolution when a frame takes long, as on the console.", "Baisse la résolution 3D quand une image prend du temps, comme sur la console.")
 T("As on the console: the game lowers its 3D resolution (down to 1280x720 before upscaling) while frames take long, and raises it again after. Off: always the full resolution. On with the Potato preset.", "Comme sur la console : le jeu baisse sa résolution 3D (jusqu'à 1280x720 avant la mise à l'échelle) tant que les images prennent du temps, puis la remonte. Désactivée : toujours la pleine résolution. Activée avec le préréglage Potato.")
+T("Grass", "Herbe")
+T("Grass blades and ground cover. Off: bare terrain, faster.", "Brins d'herbe et couverture du sol. Non : terrain nu, plus rapide.")
+T("Lens flare", "Reflet de lentille")
+T("Sun glare and lens flare. Off: no sun flare.", "Éblouissement solaire et reflets d'objectif. Non : aucun reflet solaire.")

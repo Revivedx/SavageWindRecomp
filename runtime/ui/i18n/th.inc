@@ -1126,3 +1126,7 @@ T("Reset save folder to default", "รีเซ็ตโฟลเดอร์เ
 T("Revert to using the default save folder inside the game folder.", "กลับไปใช้โฟลเดอร์เซฟเริ่มต้นภายในโฟลเดอร์เกม")
 T("Lowers the 3D resolution when a frame takes long, as on the console.", "ลดความละเอียด 3D เมื่อเฟรมใช้เวลานาน เหมือนบนคอนโซล")
 T("As on the console: the game lowers its 3D resolution (down to 1280x720 before upscaling) while frames take long, and raises it again after. Off: always the full resolution. On with the Potato preset.", "เหมือนบนคอนโซล: เกมจะลดความละเอียด 3D (ต่ำสุด 1280x720 ก่อนการขยายภาพ) ขณะที่เฟรมใช้เวลานาน แล้วเพิ่มกลับในภายหลัง ปิด: ใช้ความละเอียดเต็มเสมอ เปิดเมื่อใช้พรีเซ็ต Potato")
+T("Grass", "หญ้า")
+T("Grass blades and ground cover. Off: bare terrain, faster.", "ใบหญ้าและพืชคลุมดิน ปิด: พื้นผิวโล่ง เร็วขึ้น")
+T("Lens flare", "แสงสะท้อนเลนส์")
+T("Sun glare and lens flare. Off: no sun flare.", "แสงจ้าจากดวงอาทิตย์และแสงสะท้อนเลนส์ ปิด: ไม่มีแสงสะท้อนดวงอาทิตย์")

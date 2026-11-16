@@ -185,6 +185,8 @@ typedef struct {
     int haze;            // the air's haze, percent of the game's (services/fs.c haze_patch; from the next start)
     bool bloom;          // the glow around bright light (off: its draws clear their images: vulkan/exec.c)
     bool depth_of_field; // the distance blur over far pixels (off: its draw is skipped: vulkan/exec.c)
+    bool grass;          // grass blades and crossed quads (off: draw_distance.c hides both layers)
+    bool lens_flare;     // sun glare / lens flare (off: vulkan/exec.c skips sun occlusion queries)
     bool dynamic_res;    // the game lowers its 3D resolution (1600x900 down to 1280x720) when a frame takes long
                          // (vulkan/exec.c CMD_REPORT_COUNTER); off: it keeps 1600x900
     bool fast_fma;       // CPUs without FMA instructions (gamelib_compat): the game's fused multiply-adds rounded twice,

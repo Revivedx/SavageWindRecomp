@@ -96,6 +96,8 @@ Settings g_settings = {
     .haze = 100,
     .bloom = true,
     .depth_of_field = true,
+    .grass = true,
+    .lens_flare = true,
     .fast_fma = true,
 };
 
@@ -623,6 +625,8 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "bloom")) g_settings.bloom = atoi(val) != 0;
         else if (!strcmp(key, "depth_of_field")) g_settings.depth_of_field = atoi(val) != 0;
+        else if (!strcmp(key, "grass")) g_settings.grass = atoi(val) != 0;
+        else if (!strcmp(key, "lens_flare")) g_settings.lens_flare = atoi(val) != 0;
         else if (!strcmp(key, "dynamic_resolution")) g_settings.dynamic_res = atoi(val) != 0;
         else if (!strcmp(key, "fast_fma")) g_settings.fast_fma = atoi(val) != 0;
         else if (!strcmp(key, "colour_exposure")) g_settings.color_exposure = (int)lroundf((float)atof(val) * 10);  // (EV)
@@ -876,6 +880,8 @@ void settings_save(void) {
     fprintf(f, "haze = %d\n", g_settings.haze);
     fprintf(f, "bloom = %d\n", g_settings.bloom ? 1 : 0);
     fprintf(f, "depth_of_field = %d\n", g_settings.depth_of_field ? 1 : 0);
+    fprintf(f, "grass = %d\n", g_settings.grass ? 1 : 0);
+    fprintf(f, "lens_flare = %d\n", g_settings.lens_flare ? 1 : 0);
     fprintf(f, "dynamic_resolution = %d\n", g_settings.dynamic_res ? 1 : 0);
     fprintf(f, "fast_fma = %d\n", g_settings.fast_fma ? 1 : 0);
     fprintf(f, "colour_exposure = %.1f\n", g_settings.color_exposure / 10.0);

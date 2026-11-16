@@ -1677,6 +1677,7 @@ static int oq_nreports;
 static bool oq_on(void) {
     static int on = -1;
     if (on < 0) on = getenv("SAVAGEWIND_NO_OCCLUSION_QUERY") == NULL;
+    if (!g_settings.lens_flare) return false;
     if (on && !oq_pool) {
         VkQueryPoolCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_OCCLUSION,
                                     .queryCount = OQ_SLOTS};
