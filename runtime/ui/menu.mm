@@ -31,6 +31,9 @@ extern "C" bool vk_imgui_backend_init(void);  // runtime/nvn/vulkan/imgui_glue.c
 
 extern "C" {
 #include "../amiibo.h"
+#include "../bookmarks.h"
+#include "../control.h"
+#include "../control_places.h"
 #include "../hle.h"
 #include "../items.h"
 #include "../settings.h"
@@ -1584,6 +1587,114 @@ static void tab_cheats(void) {
     opt_end();
 }
 
+static void tp_send(float x, float y, float z, const char *name, char *notice, size_t n, bool *active) {
+    if (control_tp_request(x, y, z)) {
+        *active = true;
+        snprintf(notice, n, tr("Teleporting to %s..."), name);
+    } else {
+        snprintf(notice, n, "%s", tr("A teleport is already in progress."));
+    }
+}
+
+// The Teleport tab (in game only): saved bookmarks (runtime/bookmarks.h) and named places (runtime/control_places.h),
+// teleporting through control_tp_request().
+static void tab_teleport(void) {
+    static char bm_name[BOOKMARK_NAME_MAX];
+    static char search[64];
+    static int cat;  // 0 none, 1..6 PlaceKind, 7 all
+    static bool del_mode;
+    static char notice[200];
+    static bool tp_active;
+    opt_begin("##teleport", ImGui::GetFontSize() / 34);
+    float cur[3] = {0};
+    if (!control_tp_link_pos(cur)) {
+        hint(tr("Teleport is available in play only."));
+        opt_end();
+        return;
+    }
+    char tp_msg[200] = "";
+    int st = control_tp_status(tp_msg, sizeof tp_msg);
+    if (st == 1) {
+        tp_active = true;
+        snprintf(notice, sizeof notice, "%s", tr(tp_msg));
+    } else if (tp_active) {
+        tp_active = false;
+        snprintf(notice, sizeof notice, "%s", tp_msg[0] ? tp_msg : tr("Arrived"));
+    }
+    if (notice[0]) ImGui::TextDisabled("%s", notice);
+
+    opt_section(tr("Bookmarks"));
+    opt_text(tr("Bookmark name"), bm_name, sizeof bm_name, tr("Current spot"),
+             tr("Name for a new bookmark at Link's current position."));
+    char cur_desc[96];
+    snprintf(cur_desc, sizeof cur_desc, "%.1f, %.1f, %.1f", cur[0], cur[1], cur[2]);
+    if (opt_action(tr("Bookmark current position"), tr("Save"), cur_desc, false)) {
+        if (bookmarks_add(bm_name, cur[0], cur[1], cur[2])) {
+            snprintf(notice, sizeof notice, tr("Saved bookmark at %.1f, %.1f, %.1f."), cur[0], cur[1], cur[2]);
+            bm_name[0] = 0;
+        } else {
+            snprintf(notice, sizeof notice, "%s", tr("Bookmark list is full."));
+        }
+    }
+    int nb = bookmarks_count();
+    if (nb > 0) {
+        opt_toggle("Delete bookmarks", &del_mode, false,
+                   "When on, selecting a saved bookmark removes it instead of teleporting.");
+        for (int i = 0; i < nb; i++) {
+            const Bookmark *b = bookmarks_at(i);
+            if (!b) continue;
+            char desc[96];
+            snprintf(desc, sizeof desc, "%.1f, %.1f, %.1f", b->x, b->y, b->z);
+            if (opt_action(b->name, del_mode ? tr("Delete") : tr("Teleport"), desc, false)) {
+                if (del_mode) {
+                    bookmarks_remove(i);
+                    snprintf(notice, sizeof notice, "%s", tr("Bookmark removed."));
+                    break;
+                }
+                tp_send(b->x, b->y + 1.0f, b->z, b->name, notice, sizeof notice, &tp_active);
+            }
+        }
+    }
+
+    opt_section(tr("Places"));
+    enum { P_NONE, P_SHRINE, P_TOWER, P_STABLE, P_VILLAGE, P_LANDMARK, P_KOROK, P_ALL, P_COUNT };
+    static const char *cats[P_COUNT] = {"Choose a category", "Shrines", "Towers", "Stables",
+                                        "Villages", "Landmarks", "Koroks", "All"};
+    opt_text(tr("Search"), search, sizeof search, "", tr("Only the places whose name matches this text."));
+    opt_dropdown(tr("Category"), &cat, cats, P_COUNT, P_NONE, tr("The places of one kind."));
+    if (cat == P_NONE && !search[0]) hint(tr("Choose a category, or type in Search, to see places."));
+    if (cat != P_NONE || search[0]) {
+        int kind = cat >= P_SHRINE && cat <= P_KOROK ? (cat - 1) : -1;
+        char wbuf[64];
+        snprintf(wbuf, sizeof wbuf, "%s", search);
+        char *words[12];
+        int nw = 0;
+        for (char *tok = strtok(wbuf, " \t"); tok && nw < 12; tok = strtok(NULL, " \t")) words[nw++] = tok;
+        const Place *hits[200];
+        int total = place_list(kind, nw, words, hits, 200);
+        int shown = total < 200 ? total : 200;
+        for (int i = 0; i < shown; i++) {
+            const Place *p = hits[i];
+            bool vis = ImGui::IsRectVisible(ImVec2(ImGui::GetContentRegionAvail().x, ImGui::GetFontSize() * 1.9f));
+            std::string desc;
+            if (vis) {
+                desc = place_kind_name(p->kind);
+                if (p->sub && p->sub[0]) desc += std::string(" - ") + p->sub;
+            }
+            if (opt_action(p->name, tr("Teleport"), vis ? desc.c_str() : NULL, false)) {
+                float lift = p->ground ? 1.0f : p->kind == PLACE_KOROK ? 2.0f : 3.0f;
+                tp_send(p->x, p->y + lift, p->z, p->name, notice, sizeof notice, &tp_active);
+            }
+        }
+        if (total > 200) {
+            char more[96];
+            snprintf(more, sizeof more, tr("Showing first 200 of %d matches. Narrow Search to see more."), total);
+            hint(more);
+        }
+    }
+    opt_end();
+}
+
 static void tab_about(void) {
     header("Movement");
     toggle("D-pad as left stick", &g_settings.dpad_move);
@@ -1944,12 +2055,12 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     int ntabs = 0;
     if (prelaunch) tabs[ntabs++] = {"Prelaunch", -1, true};
     // (ids 5-7 were Link's Awakening tabs; the ids stay: test hooks)
-    static const char *names[] = {"Video", "Audio", "Language", "Saves", "amiibo", "", "", "", "Controls", "Quit", "Cheats"};
-    static const int order[] = {8, 0, 1, 2, 4, 3, 10, 9};  // Controls, Video, Audio, Language, amiibo, Saves, Cheats, Quit
+    static const char *names[] = {"Video", "Audio", "Language", "Saves", "amiibo", "", "", "", "Controls", "Quit", "Cheats", "Teleport"};
+    static const int order[] = {8, 0, 1, 2, 4, 3, 10, 11, 9};  // Controls, Video, Audio, Language, amiibo, Saves, Cheats, Teleport, Quit
     for (int i : order) {  // (Quit: in game only - the start screen has its own QUIT; Saves: on the start screen only,
         if (i == 9 && prelaunch) continue;  //  the game must not be running while its saves change)
         if (i == 3 && !prelaunch) continue;
-        if (i == 10 && !in_game) continue;  // (Cheats: in game only)
+        if ((i == 10 || i == 11) && !in_game) continue;  // (Cheats, Teleport: in game only)
         tabs[ntabs++] = {names[i], i, true};
     }
     int cur = 0;  // g_tab / g_tab_request hold ids
@@ -2044,6 +2155,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
                 case 8: tab_about(); break;
                 case 9: tab_quit(scale, in_game); break;
                 case 10: tab_cheats(); break;
+                case 11: tab_teleport(); break;
                 }
                 static const char *scroll_test = getenv("SAVAGEWIND_MENU_SCROLL");  // test hook: page scroll, 0..1
                 if (scroll_test) ImGui::SetScrollY(ImGui::GetScrollMaxY() * (float)atof(scroll_test));

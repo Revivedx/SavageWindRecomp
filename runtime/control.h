@@ -78,3 +78,9 @@ void control_console_free(ControlConsoleResult *r);
 int control_console_names(const char *prefix, const char **out, int max);
 // For tests and `report`: run a line now on the calling thread, with the console's rights. Not for other threads.
 void control_exec_line(const char *line, bool console, ControlConsoleResult *out);
+
+// UI teleport helpers (runtime/control_tp.c): read Link's current position, queue a teleport from the UI thread,
+// and poll its status (0: idle, 1: in progress, 2: arrived, 3: failed).
+bool control_tp_link_pos(float pos[3]);
+bool control_tp_request(float x, float y, float z);
+int control_tp_status(char *buf, size_t n);
