@@ -37,6 +37,7 @@ _Static_assert(PADB_LTRIGGER == SDL_GAMEPAD_BUTTON_COUNT, "trigger pseudo-button
     SDL_SCANCODE_F7}
 static const int16_t k_def_pad[BIND_KEY_COUNT] = DEF_PAD, k_def_key[BIND_KEY_COUNT] = DEF_KEY;
 int16_t g_bind_pad[BIND_KEY_COUNT] = DEF_PAD, g_bind_key[BIND_KEY_COUNT] = DEF_KEY;
+int16_t g_bind_pad2[BIND_KEY_COUNT], g_bind_key2[BIND_KEY_COUNT];
 
 bool bind_pad_slot(int slot) { return (slot >= 0 && slot < BIND_PAD_COUNT) || (slot >= BIND_WALK && slot < BIND_KEY_COUNT); }
 
@@ -152,9 +153,17 @@ static int act_default(int dev, int id);
 static void act_refresh(void);
 
 void bind_reset(int dev) {
-    if (dev == BIND_DEV_PAD) memcpy(g_bind_pad, k_def_pad, sizeof g_bind_pad);
-    else memcpy(g_bind_key, k_def_key, sizeof g_bind_key);
-    for (int id = 0; id < ACT_COUNT; id++) act_set(dev, id, ACT_FOLLOW);
+    if (dev == BIND_DEV_PAD) {
+        memcpy(g_bind_pad, k_def_pad, sizeof g_bind_pad);
+        for (int i = 0; i < BIND_KEY_COUNT; i++) g_bind_pad2[i] = -1;
+    } else {
+        memcpy(g_bind_key, k_def_key, sizeof g_bind_key);
+        memset(g_bind_key2, 0, sizeof g_bind_key2);
+    }
+    for (int id = 0; id < ACT_COUNT; id++) {
+        act_set(dev, id, ACT_FOLLOW);
+        act_set2(dev, id, ACT_NONE);
+    }
     LOG("[input] %s bindings reset to the defaults\n", dev == BIND_DEV_PAD ? "controller" : "keyboard");
     result(5, dev, -1, -1);
 }
@@ -163,11 +172,15 @@ void bind_reset_slot(int slot) {
     if (bind_slot_is_action(slot)) {
         act_set(BIND_DEV_PAD, slot - BIND_ACTION, ACT_FOLLOW);
         act_set(BIND_DEV_KEY, slot - BIND_ACTION, ACT_FOLLOW);
+        act_set2(BIND_DEV_PAD, slot - BIND_ACTION, ACT_NONE);
+        act_set2(BIND_DEV_KEY, slot - BIND_ACTION, ACT_NONE);
         return;
     }
     if (slot < 0 || slot >= BIND_KEY_COUNT) return;
     g_bind_key[slot] = k_def_key[slot];
+    g_bind_key2[slot] = 0;
     if (bind_pad_slot(slot)) g_bind_pad[slot] = k_def_pad[slot];
+    g_bind_pad2[slot] = -1;
     act_refresh();
 }
 
@@ -189,19 +202,31 @@ void bind_swap_ab(void) {
 bool bind_is_default(int dev) {
     for (int id = 0; id < ACT_COUNT; id++)
         if (!bind_is_default_slot(dev, BIND_ACTION + id)) return false;
-    return dev == BIND_DEV_PAD ? !memcmp(g_bind_pad, k_def_pad, sizeof g_bind_pad) : !memcmp(g_bind_key, k_def_key, sizeof g_bind_key);
+    if (dev == BIND_DEV_PAD) {
+        if (memcmp(g_bind_pad, k_def_pad, sizeof g_bind_pad)) return false;
+        for (int i = 0; i < BIND_KEY_COUNT; i++) if (g_bind_pad2[i] != -1) return false;
+        return true;
+    }
+    if (memcmp(g_bind_key, k_def_key, sizeof g_bind_key)) return false;
+    for (int i = 0; i < BIND_KEY_COUNT; i++) if (g_bind_key2[i] != 0) return false;
+    return true;
 }
 
 bool bind_is_default_slot(int dev, int slot) {
-    if (bind_slot_is_action(slot)) return act_default(dev, slot - BIND_ACTION) ==
-        (dev == BIND_DEV_PAD ? g_act_pad[slot - BIND_ACTION] : g_act_key[slot - BIND_ACTION]);
+    if (bind_slot_is_action(slot)) {
+        int id = slot - BIND_ACTION;
+        return act_default(dev, id) == (dev == BIND_DEV_PAD ? g_act_pad[id] : g_act_key[id]) &&
+               (dev == BIND_DEV_PAD ? g_act_pad2[id] : g_act_key2[id]) == ACT_NONE;
+    }
     if (slot < 0 || slot >= BIND_KEY_COUNT) return true;
-    return dev == BIND_DEV_PAD ? g_bind_pad[slot] == k_def_pad[slot] : g_bind_key[slot] == k_def_key[slot];
+    return dev == BIND_DEV_PAD ? (g_bind_pad[slot] == k_def_pad[slot] && g_bind_pad2[slot] == -1) :
+                                 (g_bind_key[slot] == k_def_key[slot] && g_bind_key2[slot] == 0);
 }
 
 
 // ------------------------------------------------------------------ capture
 static _Atomic int cap_dev = -1, cap_slot = -1;
+static _Atomic bool cap_alt;
 static _Atomic uint64_t cap_deadline;
 static _Atomic int res_kind, res_dev, res_slot, res_other, res_serial;
 
@@ -210,14 +235,17 @@ static void result(int kind, int dev, int slot, int other) {
     res_serial++;
 }
 
-void bind_capture_begin(int dev, int slot) {
+void bind_capture_begin_alt(int dev, int slot, bool alt) {
     if (!bind_slot_is_action(slot) &&
         (slot < 0 || slot >= BIND_KEY_COUNT || (dev == BIND_DEV_PAD && !bind_pad_slot(slot)))) return;
     if (dev == BIND_DEV_ANY && !bind_slot_is_action(slot) && slot >= BIND_KEY_COUNT) return;
     cap_deadline = SDL_GetTicks() + BIND_CAPTURE_MS;
+    cap_alt = alt;
     cap_slot = slot;
     cap_dev = dev;
 }
+void bind_capture_begin(int dev, int slot) { bind_capture_begin_alt(dev, slot, false); }
+bool bind_capture_is_alt(void) { return cap_dev >= 0 && cap_alt; }
 
 void bind_capture_cancel(void) {
     if (cap_dev < 0) return;
@@ -242,8 +270,28 @@ int bind_last_result(int *dev, int *slot, int *other, int *serial) {
     return res_kind;
 }
 
+void bind_set2(int dev, int slot, int host) {
+    if (slot < 0 || slot >= BIND_KEY_COUNT) return;
+    if (dev == BIND_DEV_PAD) {
+        if (bind_pad_slot(slot)) g_bind_pad2[slot] = (int16_t)host;
+    } else {
+        g_bind_key2[slot] = (int16_t)host;
+    }
+    act_refresh();
+}
+
 // Bind `host` to `slot`; only legacy host slots swap. Actions, Walk, Tilt and gyro allow shared inputs.
 static void assign(int dev, int slot, int host) {
+    if (cap_alt) {
+        if (bind_slot_is_action(slot)) {
+            act_set2(dev, slot - BIND_ACTION, host);
+            result(1, dev, slot, -1);
+            return;
+        }
+        bind_set2(dev, slot, host);
+        result(1, dev, slot, -1);
+        return;
+    }
     if (bind_slot_is_action(slot)) {  // an action may share its key with any other: nothing swaps
         act_set(dev, slot - BIND_ACTION, host);
         LOG("[input] %s action %d -> %s\n", dev == BIND_DEV_PAD ? "controller" : "keyboard", slot - BIND_ACTION,
@@ -326,6 +374,23 @@ static bool act_settings_load(const char *key, const char *val);
 static void act_migrate(int dev, int slot);
 bool bind_settings_load(const char *key, const char *val) {
     if (!strncmp(key, "act_", 4)) return act_settings_load(key, val);
+    bool pad2 = !strncmp(key, "bind_pad2_", 10), kb2 = !strncmp(key, "bind_key2_", 10);
+    if (pad2 || kb2) {
+        for (int i = 0; i < BIND_KEY_COUNT; i++) {
+            if (strcmp(key + 10, k_ini[i]) || (pad2 && !bind_pad_slot(i))) continue;
+            if (pad2) {
+                int h = !strcmp(val, "none") ? -1 : bind_pad_from_name(val);
+                if (h >= -1) g_bind_pad2[i] = (int16_t)h;
+            } else {
+                int sc = strcmp(val, "none") ? (int)SDL_GetScancodeFromName(val) : SDL_SCANCODE_UNKNOWN;
+                for (int m = 0; m < 5; m++)
+                    if (!strcmp(val, k_mouse[m])) sc = BIND_MOUSE + 1 + m;
+                if (sc != SDL_SCANCODE_UNKNOWN || !strcmp(val, "none")) g_bind_key2[i] = (int16_t)sc;
+            }
+        }
+        act_refresh();
+        return true;
+    }
     bool pad = !strncmp(key, "bind_pad_", 9), kb = !strncmp(key, "bind_key_", 9);
     if (!pad && !kb) return false;
     for (int i = 0; i < BIND_KEY_COUNT; i++) {
@@ -356,12 +421,19 @@ void bind_settings_save(FILE *f) {
     for (int i = 0; i < BIND_KEY_COUNT; i++)
         if (g_bind_key[i] != k_def_key[i])
             fprintf(f, "bind_key_%s = %s\n", k_ini[i], g_bind_key[i] ? bind_key_label(g_bind_key[i]) : "none");
+    for (int i = 0; i < BIND_KEY_COUNT; i++)
+        if (bind_pad_slot(i) && g_bind_pad2[i] >= 0 && g_bind_pad2[i] < PADB_HOST_COUNT)
+            fprintf(f, "bind_pad2_%s = %s\n", k_ini[i], k_pad_ini[g_bind_pad2[i]]);
+    for (int i = 0; i < BIND_KEY_COUNT; i++)
+        if (g_bind_key2[i] > 0)
+            fprintf(f, "bind_key2_%s = %s\n", k_ini[i], bind_key_label(g_bind_key2[i]));
 }
 
 // ------------------------------------------------------------------ per-action bindings
 // Each action owns its host defaults, copied from the factory Switch layout. ACT_FOLLOW remains an API reset
 // command for the existing UI, never a stored binding. Only actions differing from their defaults use host answers.
 int16_t g_act_key[ACT_COUNT], g_act_pad[ACT_COUNT];
+int16_t g_act_key2[ACT_COUNT], g_act_pad2[ACT_COUNT];
 static bool a_schema;  // schema 2 or newer: legacy raw-button migration has already happened
 static _Atomic uint64_t a_custom;  // at least one device differs from its factory action default (or live mask swapped)
 static _Atomic uint64_t a_mask_diff;  // k_masks[id] != k_masks_190[id] at the last act_refresh()
@@ -428,7 +500,8 @@ static int act_default(int dev, int id) {
 
 bool act_is_default(int id) {
     return id < 0 || id >= ACT_COUNT ||
-        (g_act_key[id] == act_default(BIND_DEV_KEY, id) && g_act_pad[id] == act_default(BIND_DEV_PAD, id));
+        (g_act_key[id] == act_default(BIND_DEV_KEY, id) && g_act_pad[id] == act_default(BIND_DEV_PAD, id) &&
+         g_act_key2[id] == ACT_NONE && g_act_pad2[id] == ACT_NONE);
 }
 
 static void act_refresh(void) {
@@ -455,17 +528,30 @@ void act_set(int dev, int id, int host) {
     act_refresh();
 }
 
+void act_set2(int dev, int id, int host) {
+    if (id < 0 || id >= ACT_COUNT) return;
+    if (host < 0) host = ACT_NONE;
+    if (dev == BIND_DEV_PAD) g_act_pad2[id] = (int16_t)host;
+    else g_act_key2[id] = (int16_t)host;
+    act_refresh();
+}
+
 void act_reset(void) {
     for (int i = 0; i < ACT_COUNT; i++) {
         g_act_key[i] = (int16_t)act_default(BIND_DEV_KEY, i);
         g_act_pad[i] = (int16_t)act_default(BIND_DEV_PAD, i);
+        g_act_key2[i] = ACT_NONE;
+        g_act_pad2[i] = ACT_NONE;
     }
     a_explicit_key = a_explicit_pad = 0;
     act_refresh();
 }
 
 // Initialized before settings or either Controls page can read the public arrays (also in standalone tests).
-__attribute__((constructor)) static void act_init(void) { act_reset(); }
+__attribute__((constructor)) static void act_init(void) {
+    for (int i = 0; i < BIND_KEY_COUNT; i++) g_bind_pad2[i] = -1, g_bind_key2[i] = 0;
+    act_reset();
+}
 
 void act_masks(const uint32_t *table) {
     k_masks = table;
@@ -489,8 +575,8 @@ uint64_t act_scan_keys(uint64_t key_buttons, int (*held)(int scancode)) {
     uint64_t out = 0, custom = a_custom;
     for (int id = 0; id < ACT_COUNT; id++) {
         if (!(custom >> id & 1)) continue;
-        int k = g_act_key[id];
-        out |= (uint64_t)(k > 0 && held(k)) << id;
+        int k = g_act_key[id], k2 = g_act_key2[id];
+        out |= (uint64_t)((k > 0 && held(k)) || (k2 > 0 && held(k2))) << id;
     }
     return out;
 }
@@ -500,20 +586,24 @@ uint64_t act_scan_pad(uint64_t pad_buttons, uint32_t host_buttons) {
     uint64_t out = 0, custom = a_custom;
     for (int id = 0; id < ACT_COUNT; id++) {
         if (!(custom >> id & 1)) continue;
-        int k = g_act_pad[id];
+        int k = g_act_pad[id], k2 = g_act_pad2[id];
         if (k_masks && k_masks[id] != k_masks_190[id] && k == act_default(BIND_DEV_PAD, id)) {
             int b = mask_button(k_masks[id]);
             if (b >= 0) k = k_def_pad[b];
         }
-        out |= (uint64_t)(k >= 0 && k < PADB_HOST_COUNT && (host_buttons >> k & 1)) << id;
+        bool on = (k >= 0 && k < PADB_HOST_COUNT && (host_buttons >> k & 1)) ||
+                  (k2 >= 0 && k2 < PADB_HOST_COUNT && (host_buttons >> k2 & 1));
+        out |= (uint64_t)on << id;
     }
     return out;
 }
 
 static bool act_held_host(int id, int (*held)(int scancode), uint32_t host) {
     if (id < 0 || id >= ACT_COUNT) return false;
-    int k = g_act_key[id], p = g_act_pad[id];
-    return (k > 0 && held && held(k)) || (p >= 0 && p < PADB_HOST_COUNT && (host >> p & 1));
+    int k = g_act_key[id], k2 = g_act_key2[id], p = g_act_pad[id], p2 = g_act_pad2[id];
+    return (k > 0 && held && held(k)) || (k2 > 0 && held && held(k2)) ||
+           (p >= 0 && p < PADB_HOST_COUNT && (host >> p & 1)) ||
+           (p2 >= 0 && p2 < PADB_HOST_COUNT && (host >> p2 & 1));
 }
 
 // During gameplay, decouple in-game action buttons (Y/X/A/B) from raw menu rebinds
@@ -739,14 +829,16 @@ static bool act_settings_load(const char *key, const char *val) {
         act_refresh();
         return true;
     }
+    bool pad2 = !strncmp(key, "act_pad2_", 9), kb2 = !strncmp(key, "act_key2_", 9);
     bool pad = !strncmp(key, "act_pad_", 8), kb = !strncmp(key, "act_key_", 8);
-    if (!pad && !kb) return false;
+    if (!pad && !kb && !pad2 && !kb2) return false;
+    const char *num = key + (pad2 || kb2 ? 9 : 8);
     char *end;
-    long id = strtol(key + 8, &end, 10);
-    if (end == key + 8 || *end || id < 0 || id >= ACT_COUNT) return true;
+    long id = strtol(num, &end, 10);
+    if (end == num || *end || id < 0 || id >= ACT_COUNT) return true;
     int host = ACT_FOLLOW;
     if (!strcmp(val, "none")) host = ACT_NONE;
-    else if (pad) {
+    else if (pad || pad2) {
         int h = bind_pad_from_name(val);
         if (h >= 0) host = h;
     } else {
@@ -755,7 +847,8 @@ static bool act_settings_load(const char *key, const char *val) {
             if (!strcmp(val, k_mouse[m])) sc = BIND_MOUSE + 1 + m;
         if (sc != SDL_SCANCODE_UNKNOWN) host = sc;
     }
-    if (host != ACT_FOLLOW) act_set(pad ? BIND_DEV_PAD : BIND_DEV_KEY, (int)id, host);
+    if (pad2 || kb2) act_set2(pad2 ? BIND_DEV_PAD : BIND_DEV_KEY, (int)id, host);
+    else if (host != ACT_FOLLOW) act_set(pad ? BIND_DEV_PAD : BIND_DEV_KEY, (int)id, host);
     return true;
 }
 
@@ -764,8 +857,11 @@ static void act_settings_save(FILE *f) {
     fprintf(f, "act_schema = 2\n");
     for (int i = 0; i < ACT_COUNT; i++) {
         int k = g_act_key[i], p = g_act_pad[i];
+        int k2 = g_act_key2[i], p2 = g_act_pad2[i];
         if (k != act_default(BIND_DEV_KEY, i)) fprintf(f, "act_key_%d = %s\n", i, k == ACT_NONE ? "none" : bind_key_label(k));
         if (p != act_default(BIND_DEV_PAD, i) && (p == ACT_NONE || (p >= 0 && p < PADB_HOST_COUNT)))
             fprintf(f, "act_pad_%d = %s\n", i, p == ACT_NONE ? "none" : k_pad_ini[p]);
+        if (k2 > 0) fprintf(f, "act_key2_%d = %s\n", i, bind_key_label(k2));
+        if (p2 >= 0 && p2 < PADB_HOST_COUNT) fprintf(f, "act_pad2_%d = %s\n", i, k_pad_ini[p2]);
     }
 }

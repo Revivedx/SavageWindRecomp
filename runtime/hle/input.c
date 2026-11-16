@@ -93,7 +93,7 @@ extern bool menu_input_captured(void);  // runtime/ui/menu.mm: overlay menu or n
 
 static bool profiler_key_available(void) {
     for (int i = 0; i < BIND_KEY_COUNT; i++)
-        if (g_bind_key[i] == SDL_SCANCODE_F6) return false;
+        if (g_bind_key[i] == SDL_SCANCODE_F6 || g_bind_key2[i] == SDL_SCANCODE_F6) return false;
     return !menu_input_captured();
 }
 
@@ -107,7 +107,7 @@ static int held_key(int sc) {
 
 static int menu_key(int sc) {
     for (int i = 0; i < BIND_KEY_COUNT; i++)
-        if (g_bind_key[i] == sc) return 0;  // a player's binding takes priority
+        if (g_bind_key[i] == sc || g_bind_key2[i] == sc) return 0;  // a player's binding takes priority
     return held_key(sc);
 }
 
@@ -124,8 +124,11 @@ static int menu_enter(void) {
 static int game_key(int sc) {
     if (pc_gyro_enabled() && sc)
         for (int i = BIND_GYRO_UP; i <= BIND_GYRO_CENTER; i++)
-            if (sc == g_bind_key[i]) return 0;
+            if (sc == g_bind_key[i] || sc == g_bind_key2[i]) return 0;
     return held_key(sc);
+}
+static int game_key_slot(int slot) {
+    return game_key(g_bind_key[slot]) || (g_bind_key2[slot] && game_key(g_bind_key2[slot]));
 }
 // ... and with the menus closed and the window focused (main thread)
 static bool gyro_keys_live(void) {
@@ -133,11 +136,14 @@ static bool gyro_keys_live(void) {
 }
 
 static bool held_pad(int slot) {
-    int h = g_bind_pad[slot];
-    return h >= 0 && h < PADB_HOST_COUNT && (host_buttons >> h & 1);
+    int h = g_bind_pad[slot], h2 = g_bind_pad2[slot];
+    return (h >= 0 && h < PADB_HOST_COUNT && (host_buttons >> h & 1)) ||
+           (h2 >= 0 && h2 < PADB_HOST_COUNT && (host_buttons >> h2 & 1));
 }
 
-static bool held_gyro(int slot) { return held_key(g_bind_key[slot]) || held_pad(slot); }
+static bool held_gyro(int slot) {
+    return held_key(g_bind_key[slot]) || (g_bind_key2[slot] && held_key(g_bind_key2[slot])) || held_pad(slot);
+}
 
 // Both event paths publish one combined motion state: releasing either device must not cancel the other.
 static void recompute_motion(void) {
@@ -147,7 +153,7 @@ static void recompute_motion(void) {
                         held_gyro(BIND_GYRO_TURN_RIGHT) - held_gyro(BIND_GYRO_TURN_LEFT),
                         held_gyro(BIND_GYRO_CENTER));
     else motion_keyboard(0, 0, 0, false);
-    bool tilt = (game_key(g_bind_key[BIND_TILT]) || held_pad(BIND_TILT)) && win_focused && !menu_input_captured();
+    bool tilt = (game_key_slot(BIND_TILT) || held_pad(BIND_TILT)) && win_focused && !menu_input_captured();
     if (tilt != tilt_held) motion_tilt_held(tilt_held = tilt);
 }
 
@@ -157,14 +163,14 @@ static void recompute_keyboard(void) {
     map_key_y=held_key(SDL_SCANCODE_W)-held_key(SDL_SCANCODE_S);
     uint64_t b = 0;
     for (int i = 0; i < BIND_PAD_COUNT; i++)
-        if (game_key(g_bind_key[i])) b |= 1ull << i;
+        if (game_key_slot(i)) b |= 1ull << i;
     key_buttons = b;
     act_publish(act_scan_keys(b, game_key), ~0ull);  // actions read their own host keys
-    int tilt = game_key(g_bind_key[BIND_WALK]) ? 13107 : 32767;  // walk: 40% (BOTW walks below about half)
-    key_lx = (game_key(g_bind_key[BIND_LS_RIGHT]) - game_key(g_bind_key[BIND_LS_LEFT])) * tilt;
-    key_ly = (game_key(g_bind_key[BIND_LS_UP]) - game_key(g_bind_key[BIND_LS_DOWN])) * tilt;
-    key_rx = (game_key(g_bind_key[BIND_RS_RIGHT]) - game_key(g_bind_key[BIND_RS_LEFT])) * 32767;
-    key_ry = (game_key(g_bind_key[BIND_RS_UP]) - game_key(g_bind_key[BIND_RS_DOWN])) * 32767;
+    int tilt = game_key_slot(BIND_WALK) ? 13107 : 32767;  // walk: 40% (BOTW walks below about half)
+    key_lx = (game_key_slot(BIND_LS_RIGHT) - game_key_slot(BIND_LS_LEFT)) * tilt;
+    key_ly = (game_key_slot(BIND_LS_UP) - game_key_slot(BIND_LS_DOWN)) * tilt;
+    key_rx = (game_key_slot(BIND_RS_RIGHT) - game_key_slot(BIND_RS_LEFT)) * 32767;
+    key_ry = (game_key_slot(BIND_RS_UP) - game_key_slot(BIND_RS_DOWN)) * 32767;
     menu_lx = (menu_key(SDL_SCANCODE_RIGHT) - menu_key(SDL_SCANCODE_LEFT)) * 32767;
     menu_ly = (menu_key(SDL_SCANCODE_UP) - menu_key(SDL_SCANCODE_DOWN)) * 32767;
     menu_confirm = menu_enter();  // publish here; guest polls must not read the keyboard arrays or bindings
@@ -239,14 +245,16 @@ static void recompute_pad(void) {
     recompute_motion();
     uint64_t b = 0;
     for (int i = 0; i < BIND_PAD_COUNT; i++)
-        if (g_bind_pad[i] >= 0 && g_bind_pad[i] < PADB_HOST_COUNT && (host >> g_bind_pad[i] & 1)) b |= 1ull << i;
+        if ((g_bind_pad[i] >= 0 && g_bind_pad[i] < PADB_HOST_COUNT && (host >> g_bind_pad[i] & 1)) ||
+            (g_bind_pad2[i] >= 0 && g_bind_pad2[i] < PADB_HOST_COUNT && (host >> g_bind_pad2[i] & 1))) b |= 1ull << i;
     pad_buttons = b;
     act_publish(~0ull, act_scan_pad(b, host));  // actions read their own host buttons
     // Fly mode (test builds): the press of its controller button toggles it. Not while the menu or a rebind has the pad
     // (the held state is still tracked, so letting go of a button that was just bound does not toggle).
     static bool fly_was_down;
-    int fly_host = g_bind_pad[BIND_FLY];
-    bool fly_down = fly_host >= 0 && fly_host < PADB_HOST_COUNT && (host >> fly_host & 1);
+    int fly_host = g_bind_pad[BIND_FLY], fly_host2 = g_bind_pad2[BIND_FLY];
+    bool fly_down = (fly_host >= 0 && fly_host < PADB_HOST_COUNT && (host >> fly_host & 1)) ||
+                    (fly_host2 >= 0 && fly_host2 < PADB_HOST_COUNT && (host >> fly_host2 & 1));
     if (fly_down && !fly_was_down && control_enabled() && !menu_input_captured() && !bind_capture_active(NULL, NULL, NULL))
         control_fly_toggle();
     fly_was_down = fly_down;
@@ -709,7 +717,9 @@ void input_handle_event(const SDL_Event *e) {
             g_skip_fs_off = !g_skip_fs_off;
             LOG("[input] F8: SAVAGEWIND_SKIP_FSHASH shaders %s\n", g_skip_fs_off ? "drawn" : "skipped");
         }
-        if (e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat && g_bind_key[BIND_FLY] && e->key.scancode == g_bind_key[BIND_FLY] &&
+        if (e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat &&
+            ((g_bind_key[BIND_FLY] && e->key.scancode == g_bind_key[BIND_FLY]) ||
+             (g_bind_key2[BIND_FLY] && e->key.scancode == g_bind_key2[BIND_FLY])) &&
             control_enabled() && !menu_input_captured()) control_fly_toggle();  // (fly mode, test builds)
         if (e->key.scancode < SDL_SCANCODE_COUNT) keys_down[e->key.scancode] = e->type == SDL_EVENT_KEY_DOWN;
         if (e->type == SDL_EVENT_KEY_DOWN) last_device = DEVICE_KEYBOARD;

@@ -55,6 +55,8 @@ enum { PADB_LTRIGGER = 26 /* SDL_GAMEPAD_BUTTON_COUNT */, PADB_RTRIGGER, PADB_HO
 
 extern int16_t g_bind_pad[BIND_KEY_COUNT];  // PADB value, -1 = none; use bind_pad_slot (stick directions stay keyboard-only)
 extern int16_t g_bind_key[BIND_KEY_COUNT];  // SDL_Scancode or BIND_MOUSE + button per input (0 = none)
+extern int16_t g_bind_pad2[BIND_KEY_COUNT]; // optional secondary PADB value, -1 = none
+extern int16_t g_bind_key2[BIND_KEY_COUNT]; // optional secondary SDL_Scancode or BIND_MOUSE + button (0 = none)
 bool bind_pad_slot(int slot);               // raw buttons, walk, tilt, gyro and fly; false for stick directions
 
 const char *bind_input_name(int slot);         // "Pause menu", "Move forward", "Camera up"...
@@ -72,6 +74,8 @@ bool bind_is_default_slot(int dev, int slot);
 // as does BIND_CAPTURE_MS without a press. On a conflict the two inputs swap.
 #define BIND_CAPTURE_MS 5000
 void bind_capture_begin(int dev, int slot);
+void bind_capture_begin_alt(int dev, int slot, bool alt);
+bool bind_capture_is_alt(void);
 void bind_capture_cancel(void);
 // capturing: dev / slot (else -1), ms left
 bool bind_capture_active(int *dev, int *slot, int *ms_left);
@@ -99,11 +103,15 @@ int bind_pad_from_name(const char *name);
 enum { ACT_FOLLOW = -1, ACT_NONE = -2 };
 extern int16_t g_act_key[ACT_COUNT];  // SDL_Scancode / BIND_MOUSE + button, or ACT_NONE
 extern int16_t g_act_pad[ACT_COUNT];  // PADB value or ACT_NONE
+extern int16_t g_act_key2[ACT_COUNT]; // optional secondary key, or ACT_NONE
+extern int16_t g_act_pad2[ACT_COUNT]; // optional secondary controller button, or ACT_NONE
 // An action as a capture slot: bind_capture_begin(dev, BIND_ACTION + id)
 #define BIND_ACTION 0x100
 static inline bool bind_slot_is_action(int slot) { return slot >= BIND_ACTION && slot < BIND_ACTION + ACT_COUNT; }
 
 void act_set(int dev, int id, int host);      // ACT_FOLLOW = restore factory default (not stored); ACT_NONE = nothing
+void act_set2(int dev, int id, int host);     // secondary binding: ACT_NONE = none
+void bind_set2(int dev, int slot, int host);  // secondary Switch/host binding: -1 (pad) / 0 (key) = none
 bool act_is_default(int id);                  // both sides equal their factory defaults
 bool act_hidden(int id);                      // no code reaches it in the game (or only by a computed number): not on the page
 const char *act_name(int id);                 // what the game does with it, or NULL while unknown
