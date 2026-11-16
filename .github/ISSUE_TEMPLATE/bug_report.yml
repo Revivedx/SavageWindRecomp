@@ -32,7 +32,7 @@ body:
       label: Savage Wind version
       description: Shown on the game's title screen, in Savage Wind Configuration and on the first line of `savagewind.log`.
       options:
-        - "0.5.0-alpha.5 (latest)"
+        - "0.6.0-alpha.6 (latest)"
         - "Built from the test branch"
         - "An older release (please update and try again first)"
     validations:
