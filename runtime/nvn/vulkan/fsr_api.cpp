@@ -139,11 +139,12 @@ extern "C" bool fsr3_api_wanted(void) {
 static ffxContext ctx;
 static int ctx_major;
 static uint32_t ctx_rw, ctx_rh, ctx_ow, ctx_oh;
-static VkDevice ctx_dev;
+
+extern "C" void vk_wait_idle_for_contexts(void);  // (device.c)
 
 extern "C" void fsr_api_destroy(void) {
     if (!ctx) return;
-    vkDeviceWaitIdle(ctx_dev);
+    vk_wait_idle_for_contexts();
     destroy_context(&ctx, nullptr);
     ctx = nullptr;
 }
@@ -209,7 +210,6 @@ static bool make_context(const Fsr3Dispatch *d, int major) {
     pv.header.type = FFX_API_QUERY_DESC_TYPE_GET_PROVIDER_VERSION;
     const char *got = query(&ctx, &pv.header) == FFX_API_RETURN_OK && pv.versionName ? pv.versionName : "?";
     ctx_major = major;
-    ctx_dev = d->dev;
     ctx_rw = d->color.width, ctx_rh = d->color.height, ctx_ow = d->output.width, ctx_oh = d->output.height;
     LOG("[fsr] AMD FSR API context %ux%u -> %ux%u (asked for %s, got %s)\n", ctx_rw, ctx_rh, ctx_ow, ctx_oh,
         major == 4 ? "the newest" : ver_name[major], got);

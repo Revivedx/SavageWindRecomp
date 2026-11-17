@@ -171,18 +171,32 @@ void bind_reset_slot(int slot) {
     act_refresh();
 }
 
-// The controller's confirm and back buttons swapped: the Switch's A and B, and every action on either of the two host
-// buttons they are on, take each other's (Nintendo's A on the right becomes the bottom one, the Xbox convention).
-// Nothing else changes, and swapping again undoes it.
+// The controller's confirm and back buttons in the Xbox convention, as the button says ("Xbox: A confirms"): the
+// Switch's A on the bottom button and its B on the right one. From Nintendo's layout the two, and every action on
+// either of the two host buttons, take each other's. Then the game's own A and B actions still on the other one of the
+// two follow them: bindings made one by one, or an earlier swap, can leave some behind. The button used to swap back
+// and forth, so a press after a swap kept from the last session put confirm back on the right button and left Cancel
+// (letting go of a wall, closing the paraglider, leaving a talk) on the confirm button (#934). Already in the Xbox
+// convention, the Switch's buttons stay; Reset controller to defaults goes back to Nintendo's.
 void bind_swap_ab(void) {
+    const int south = SDL_GAMEPAD_BUTTON_SOUTH, east = SDL_GAMEPAD_BUTTON_EAST;
     int a = g_bind_pad[BIND_A], b = g_bind_pad[BIND_B];
     if (a < 0 || b < 0 || a == b) return;
-    g_bind_pad[BIND_A] = (int16_t)b, g_bind_pad[BIND_B] = (int16_t)a;
-    for (int id = 0; id < ACT_COUNT; id++) {
-        if (g_act_pad[id] == a) act_set(BIND_DEV_PAD, id, b);
-        else if (g_act_pad[id] == b) act_set(BIND_DEV_PAD, id, a);
+    if (a != south || b != east) {
+        g_bind_pad[BIND_A] = (int16_t)b, g_bind_pad[BIND_B] = (int16_t)a;
+        for (int id = 0; id < ACT_COUNT; id++) {
+            if (g_act_pad[id] == a) act_set(BIND_DEV_PAD, id, b);
+            else if (g_act_pad[id] == b) act_set(BIND_DEV_PAD, id, a);
+        }
+        a = g_bind_pad[BIND_A], b = g_bind_pad[BIND_B];
     }
-    LOG("[input] controller: confirm and back swapped (A on %s, B on %s)\n", k_pad_ini[b], k_pad_ini[a]);
+    if (a == south && b == east)
+        for (int id = 0; id < ACT_COUNT; id++) {
+            int sb = act_switch_button(id);
+            if (sb == BIND_A && g_act_pad[id] == east) act_set(BIND_DEV_PAD, id, south);
+            else if (sb == BIND_B && g_act_pad[id] == south) act_set(BIND_DEV_PAD, id, east);
+        }
+    LOG("[input] controller: confirm and back in the Xbox convention (A on %s, B on %s)\n", k_pad_ini[a], k_pad_ini[b]);
     result(6, BIND_DEV_PAD, -1, -1);
 }
 

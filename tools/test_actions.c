@@ -556,6 +556,31 @@ static void swapped_jump_sprint_masks_keep_keyboard_bindings(void) {
     assert(hold(2) == -1 && hold(12) == -1);
 }
 
+// "Swap A and B (Xbox: A confirms)" sets that convention: the Switch's A and its actions on the bottom button, B and
+// its actions on the right one. A second press keeps it (#934: it swapped back), and A / B actions a swap kept from
+// before left on the other of the two follow; other actions stay where they are.
+static void swap_ab_sets_the_xbox_convention(void) {
+    const int south = SDL_GAMEPAD_BUTTON_SOUTH, east = SDL_GAMEPAD_BUTTON_EAST;
+    bind_reset(BIND_DEV_PAD);
+    for (int press = 0; press < 3; press++) {
+        if (press == 2) act_set(BIND_DEV_PAD, 14, south), act_set(BIND_DEV_PAD, 0, east);  // (Cancel, Interact left behind)
+        bind_swap_ab();
+        assert(g_bind_pad[BIND_A] == south && g_bind_pad[BIND_B] == east);
+        for (int id = 0; id < ACT_COUNT; id++) {
+            int sb = act_switch_button(id);
+            if (sb == BIND_A) assert(g_act_pad[id] == south);
+            else if (sb == BIND_B) assert(g_act_pad[id] == east);
+            else assert(g_act_pad[id] != south && g_act_pad[id] != east);
+        }
+    }
+    host(0, 0, 1u << east);  // Cancel (let go, close the paraglider) on the right button, Interact not
+    act_poll(true);
+    assert(hold(14) == 1 && hold(0) == 0);
+    host(0, 0, 0);
+    act_poll(true);
+    bind_reset(BIND_DEV_PAD);
+}
+
 int main(void) {
     static const uint32_t k_masks_190[ACT_COUNT] = {
         0x1, 0x2, 0x8, 0x10, 0x8, 0x1, 0x8, 0x2, 0x8, 0x2, 0x8, 0x8, 0x2, 0x4, 0x2, 0x40, 0x1, 0x80, 0x20, 0x8, 0x2,
@@ -578,7 +603,8 @@ int main(void) {
     schema_migration_is_one_time();
     captures_allow_shared_action_inputs();
     host_pad_slots();
+    swap_ab_sets_the_xbox_convention();
     names_and_groups();
-    puts("action bindings: default fallthrough, custom host bindings, schema migration, held / pressed, menus, shared keys, pad capture, contexts, reset and ini passed");
+    puts("action bindings: default fallthrough, custom host bindings, schema migration, held / pressed, menus, shared keys, pad capture, contexts, A / B swap, reset and ini passed");
     return 0;
 }

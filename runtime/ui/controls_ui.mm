@@ -224,7 +224,7 @@ extern "C" void controls_bindings_draw(float scale) {
     ImGui::BeginDisabled(bind_is_default(BIND_DEV_KEY));
     if (ImGui::Button(tr("Reset keyboard to defaults"))) { bind_capture_cancel(); bind_reset(BIND_DEV_KEY); }
     ImGui::EndDisabled();
-    // the Xbox convention (confirm on the bottom button) in one click, and back again
+    // the Xbox convention (confirm on the bottom button) in one click; Reset goes back to Nintendo's
     if (ImGui::Button(tr("Swap A and B (Xbox: A confirms)"))) { bind_capture_cancel(); bind_swap_ab(); }
 
     ImGui::PushTextWrapPos(0);

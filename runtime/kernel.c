@@ -1284,9 +1284,22 @@ void kernel_log_guest_chain(void) {
     fprintf(stderr, "\n");
 }
 
+static void dump_threads_locked(void);
 static void dump_threads(void) {
-    static const char *const kinds[] = {"-", "mutex", "condvar", "arbiter"};
     klock();
+    dump_threads_locked();
+}
+// The same from a thread that must not block on the kernel lock (the window's: a hung game may hold it): the threads
+// when the lock is free within a second, else a line that says so (the holder is then the hang).
+void kernel_dump_threads_try(void) {
+    for (int i = 0; i < 100; i++) {
+        if (kmutex_trylock(&g_klock)) { dump_threads_locked(); return; }
+        plat_sleep_until_ns(plat_now_ns() + 10000000ull);
+    }
+    LOG("[threads] the kernel lock stayed taken for a second: not dumped\n");
+}
+static void dump_threads_locked(void) {
+    static const char *const kinds[] = {"-", "mutex", "condvar", "arbiter"};
     for (KThread *t = g_threads; t; t = t->anext) {
         LOG("[threads] handle %x id %llx prio %d core %d %s wait %s %llx%s lr %llx\n", t->handle,
             (unsigned long long)t->id, t->prio, t->core, t->finished ? "finished" : t->started ? "running" : "created",

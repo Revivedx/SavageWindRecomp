@@ -63,7 +63,7 @@ const char *bind_pad_label(int host, int fam); // controller button in the pad f
 const char *bind_key_label(int scancode);
 int bind_label_family(void);                   // the connected controller's family (also on the start screen)
 void bind_reset(int dev);
-void bind_swap_ab(void);                       // the controller's A and B (and the actions on them) swapped: undoes itself
+void bind_swap_ab(void);                       // the controller's A on the bottom button, B on the right (and their actions)
 void bind_reset_slot(int slot);              // one input (or action: BIND_ACTION + id) back to its defaults, both devices
 bool bind_is_default(int dev);
 bool bind_is_default_slot(int dev, int slot);

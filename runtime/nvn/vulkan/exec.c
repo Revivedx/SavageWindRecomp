@@ -4761,10 +4761,13 @@ static bool up_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out) 
     for (uint64_t i = 0; i + 3 < nw; i += 4) {  // (a vec4: 16-byte aligned)
         float w = g[i], h = g[i + 1];
         if (!(w >= 16 && h >= 16) || fabsf(w * g[i + 2] - 1) > 1e-5f || fabsf(h * g[i + 3] - 1) > 1e-5f) continue;
+        // (to a texel of the target at that factor: a half-size buffer of an odd size is rounded down, so with the
+        // game's dynamic resolution (1520x855: 760x427) the grid is 1520x855, not 2 x 427; missed, the lighting's and
+        // the fog's half-size buffers were read off by up to a scaled texel in every frame below 1600x900, #942)
         bool match = false;
         for (int k = -2; k <= 2 && !match; k++) {
-            float f = k < 0 ? 1.0f / (float)(1 << -k) : (float)(1 << k);
-            match = w == (float)up_fix.gw * f && h == (float)up_fix.gh * f;
+            float f = k < 0 ? 1.0f / (float)(1 << -k) : (float)(1 << k), tol = f < 1 ? 0 : f - 1;
+            match = fabsf(w - (float)up_fix.gw * f) <= tol && fabsf(h - (float)up_fix.gh * f) <= tol;
         }
         if (!match) continue;
         if (!m->found) memcpy(buf, g, nw * 4);
@@ -4890,8 +4893,11 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
     TexBackend *tb = (TexBackend *)st.rt.color[0]->backend;
     // MessageDialog captures the background before drawing each window. Its crop uses a separate
     // source rectangle; translating the pane alone makes the captured location title/choice text repeat.
-    if ((!tb || tb->rs_group != RS_OUT) && hud_kind() == UI_LAYOUT_TALK &&
-        g_settings.hud_edges && shape > 0 && shape < 1 && size >= 27 * 4 &&
+    // On every taller window, not only a docked conversation: the window's pane is laid out in the middle 16:9
+    // part, while the final image's rows are the whole taller view, so the console-UV crop took rows from higher
+    // up than the pane covers. The dye shop's five-ingredients screen draws its capture as a 600-row band over the
+    // middle of the screen, and Link showed two pairs of eyes there (#947).
+    if ((!tb || tb->rs_group != RS_OUT) && shape > 0 && shape < 1 && size >= 27 * 4 &&
         g_cur_fs_hash == UINT64_C(0x90b79e85a3d120e3) && st.program &&
         hmix(1469598103934665603ull, (const void *)(uintptr_t)(st.program->stages[0].code_addr + 0x30), 0x200) ==
         UINT64_C(0x33067840cc99b18a)) {
@@ -4960,7 +4966,7 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
     // Combined projection/view matrices also include ui2d glyphs that already use the taller view.
     // Keep their projection and apply the same HUD placement as their captured shadow or button plate.
     float combined_scale[2];
-    if (hud_combined_shape(g, size, shape, combined_scale)) {
+    if (hud_combined_shape_at(g, size, shape, combined_scale, hud_kind() == UI_LAYOUT_TALK)) {
         hud_cut = menu_cut;
         static float buf[0x10000 / 4];
         uint64_t n = size > sizeof buf ? sizeof buf : size;
@@ -6592,6 +6598,12 @@ static void hc_list_begin(void) {
 // one go; every fetch in them then went through the copy for the rest of the session (upload 200 -> 1200 MB per 2 s,
 // 60 -> 54 fps on a GTX 1070, #815). The ring that races is rewritten every frame, and is still marked in a few frames.
 // In a marked region only fetches up to VDYN_COPY_MAX are copied (the ring's are 129 B - 2 KB), not the meshes around it.
+// Vertex data GPU-written too (gw: storing shaders write it as well) is learned and copied the same way: BOTW's rain
+// particles are such a ring, both the CPU and its shaders write it. It was left out (read in place: a copy made at
+// translation misses what a shader writes before the draw), and on a GPU a frame behind the CPU the rain came out as
+// streaks across the screen (#956: an RTX 2060 at 120 fps; its 6 GB heap copy in chunks). Only a region seen changed
+// while read in VDYN_HITS frames is copied, as for the rest (the rain's ring: one region); every small GPU-written fetch
+// is sampled, not one in 32, so that ring is learned in the rain's first frames.
 // SAVAGEWIND_VK_VDYN=0: off; =2: every fetch up to 4 KB copied (no learning, the cost above).
 #define VDYN_N 4096
 #define VDYN_SAMPLE_MAX 4096
@@ -6628,10 +6640,12 @@ static bool vdyn_hit(uint64_t addr, uint64_t size) {
 
 // (render thread) a fetch read in place: copied instead (false) if its region was marked; some small ones sampled
 static bool vdyn_fetch(uint64_t addr, uint64_t size) {
-    if (!size || !vdyn_on() || gw_overlaps(addr, addr + size)) return true;
-    if (vdyn_mode == 2 && size <= VDYN_SAMPLE_MAX) return false;
+    if (!size || !vdyn_on()) return true;
+    bool gw = gw_overlaps(addr, addr + size);
+    if (vdyn_mode == 2 && size <= VDYN_SAMPLE_MAX && !gw) return false;
     if (size <= VDYN_COPY_MAX && vdyn_hit(addr, size)) return false;
-    if (size > VDYN_SAMPLE_MAX || addr < HEAP_BASE || addr + size > HEAP_BASE + HEAP_MAX || (++vdyn_tick & VDYN_SMASK)) return true;
+    if (size > VDYN_SAMPLE_MAX || addr < HEAP_BASE || addr + size > HEAP_BASE + HEAP_MAX || (!gw && (++vdyn_tick & VDYN_SMASK)))
+        return true;
     uint64_t w = atomic_load_explicit(&vdyn_w, memory_order_relaxed);
     if (w - atomic_load_explicit(&vdyn_r, memory_order_acquire) >= VDYN_N) return true;  // (full: no sample)
     __typeof__(vdyn_chk[0]) *c = &vdyn_chk[w % VDYN_N];
@@ -10490,7 +10504,7 @@ static void scene_post(Prog *pr, CmdRec *r) {
 //     interpolation's optical flow has to make up the rest.
 static void save_view_png(TexBackend *b, VkImageView src, const char *path);
 volatile int g_fg_want;  // device.c: frame generation is wanted for the frame being drawn
-void vk_fg_wait_idle(void);  // (device.c)
+void vk_wait_idle_for_contexts(void);  // (device.c)
 
 enum { FG_CAMERA_FLOATS = 58 };
 static struct {
@@ -10805,7 +10819,7 @@ TexBackend *vk_fg_generate(NvnTexture *t, TexBackend *b) {
             }
             memcpy(f.cam_pos, pos, sizeof pos), memcpy(f.cam_up, up, sizeof up);
             memcpy(f.cam_right, right, sizeof right), memcpy(f.cam_fwd, fwd, sizeof fwd);
-            if (!g_fg_vk.dev) g_fg_vk = (FgVk){g_vk.phys, g_vk.dev, vk_fg_wait_idle};
+            if (!g_fg_vk.dev) g_fg_vk = (FgVk){g_vk.phys, g_vk.dev, vk_wait_idle_for_contexts};
             vk_full_barrier(cb);
             gp_mark(cb, "frame generation: FSR 3 optical flow + interpolation");
             static int test = -1;  // (measuring) SAVAGEWIND_FG_TEST=2: no interpolation (the HUD-less copy shown instead)
