@@ -869,6 +869,7 @@ static void menu_tex_scan(void) {
 // (runtime/nvn/text_upscale.c). External_00 is left out: glyphs.c redraws those, and Ancient_00's sheet is too small.
 static void text_sheets_scan(void) {
     static const char *const fonts[] = {"Normal_00.bffnt", "NormalS_00.bffnt", "Caption_00.bffnt", "Special_00.bffnt"};
+    static const int kinds[] = {TEXT_FONT_NORMAL, TEXT_FONT_OUTLINE, TEXT_FONT_CAPTION, TEXT_FONT_OTHER};
     static bool done;
     if (done || !g_settings.sharper_text || R != &images[0]) return;
     done = true;
@@ -891,7 +892,14 @@ static void text_sheets_scan(void) {
                     uint64_t bytes = (uint64_t)w * h / (format == 8 ? 1 : 2);  // (8: R8, 12: BC4)
                     for (uint32_t a = off; a + 0x10 + bytes <= n && a < off + 0x2000; a += 4)
                         if (!memcmp(f + a, "BRTD", 4)) {
-                            text_sheet_add(f + a + 0x10, bytes);
+                            // (its cells: f[p + 8], f[p + 9] in size; cols and rows at p + 20, p + 22)
+                            TextSheetInfo *info = calloc(1, sizeof *info);
+                            if (info) {
+                                *info = (TextSheetInfo){kinds[i], f[p + 8], f[p + 9], *(const uint16_t *)(f + p + 20),
+                                                        *(const uint16_t *)(f + p + 22)};
+                                snprintf(info->name, sizeof info->name, "%.20s/%s", path + 5, fonts[i]);
+                            }
+                            text_sheet_add(f + a + 0x10, bytes, info);
                             break;
                         }
                     break;

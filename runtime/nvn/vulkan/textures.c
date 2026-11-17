@@ -20,6 +20,7 @@
 #include "../hw_illust.h"
 #include "../renderer.h"
 #include "../../platform.h"
+#include "../text_redraw.h"
 #include "../text_upscale.h"
 
 // ================================================================== formats
@@ -533,11 +534,14 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     // Gameplay > Sharper text: a font sheet of the game (BC4, or R8 for NormalS_00) gets an image larger than the game
     // knows of. Its texture coordinates are fractions of the sheet, so nothing else changes.
     b->text_scale = 0;
+    b->text_info = NULL;
+    b->text_wait = 0;
     uint64_t sheet_bytes = (uint64_t)t->width * t->height / (t->format == 0x49 ? 2 : 1);
     if (g_settings.sharper_text && !b->gpu_bc4 && (t->format == 0x49 || t->format == 0x01) && t->pool &&
         t->layout.levels == 1 && t->addr >= t->pool->storage && t->addr + sheet_bytes <= t->pool->storage + t->pool->size &&
         text_sheet_known((const uint8_t *)(uintptr_t)t->addr, sheet_bytes)) {
         b->text_scale = (uint8_t)g_settings.sharper_text;
+        b->text_info = text_sheet_info((const uint8_t *)(uintptr_t)t->addr, sheet_bytes);
         b->bc4_cpu = t->format == 0x49;
         vf = VK_FORMAT_R8_UNORM;
         LOG("[vk] sharper text: font sheet %ux%u (nvn %#x) enlarged %ux\n", t->width, t->height, t->format, b->text_scale);
@@ -1364,7 +1368,15 @@ static void upload_text_sheet(VkCommandBuffer cb, NvnTexture *t, TexBackend *b, 
     if (bc4) bc4_channel(blocks, l->wb, l->hb, stride, 0, plain);
     else memcpy(plain, blocks, (uint64_t)pw * ph);
     // (the menus' textures are shapes and glows, not a letter's coverage: interpolated only, no edges redrawn)
-    if (!text_upscale(plain, pw, ph, s, bc4 && !b->menu_tex, big)) memset(big, 0, (uint64_t)dw * dh);
+    const TextSheetInfo *ti = b->text_info;  // (NULL for the menus')
+    if (!text_upscale(plain, pw, ph, s, bc4 && !b->menu_tex, ti ? ti->cell_w : 0, ti ? ti->cell_h : 0, big))
+        memset(big, 0, (uint64_t)dw * dh);
+    // (the glyphs drawn again from their outlines, before the lower levels are made from them. Until those are made,
+    // the sheet goes up as enlarged, and again once they are: vk_tex.)
+    if (ti) {
+        uint32_t gen = text_redraw_generation();  // (before: outlines made meanwhile still move it on)
+        if (text_redraw_sheet(ti, layer, plain, pw, ph, big, s, vk_cache_dir()) < 0) b->text_wait = gen;
+    }
     uint64_t at = 0;
     for (uint32_t lv = 0; lv < nlevels; lv++) {
         uint32_t w = dw >> lv, h = dh >> lv;
@@ -1677,6 +1689,10 @@ TexBackend *vk_tex(NvnTexture *t, bool for_render) {
         vk_trace_event(t, 1, NULL, 0, "use: CPU-owned, uploaded %d dynamic %d", b->uploaded, b->dynamic);
     if (b->pending_rgba) upload_pending(b);
     if (b->glyph_gen && b->glyph_gen != glyphs_generation()) upload_levels(t, b, 1);  // (button icons: other device)
+    if (b->text_wait && b->text_wait != text_redraw_generation()) {  // (a font sheet: outlines made since, text_redraw.c)
+        b->text_wait = 0;
+        upload_levels(t, b, ~0u);
+    }
     // Levels nvnTextureWriteTexels filled go up now, also into an image the GPU draws into: BOTW writes level 0 of its
     // 32x32x32 noise that way and then renders the smaller levels from it (the noise stayed black: GPU-owned images
     // never read guest memory again).
@@ -2393,12 +2409,15 @@ static VkSampler sampler_create(const NvnSamplerDesc *d, float aniso) {
     return s;
 }
 
-// An enlarged font sheet (Gameplay > Sharper text): the game samples its fonts without mip levels, these have some
+// An enlarged font sheet (Gameplay > Sharper text): the game samples its fonts without mip levels, these have some.
+// Biased half a level toward the larger ones: the redrawn letters' edges stay crisp where text is drawn a little smaller
+// than a level (tried in game at 1440p: 0 is softer, -1 may shimmer when text moves).
 VkSampler vk_text_sampler(void) {
     static VkSampler s;
     if (!s) {
         VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = VK_FILTER_LINEAR,
                                   .minFilter = VK_FILTER_LINEAR, .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+                                  .mipLodBias = -0.5f,
                                   .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
                                   .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
                                   .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .maxLod = VK_LOD_CLAMP_NONE};
