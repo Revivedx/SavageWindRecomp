@@ -516,6 +516,8 @@ T("Sets your wallet to an exact number of rupees (0 to 999999). Turn off Infinit
 T("Cheats", "치트")
 T("Weather", "날씨")
 T("Holds the weather you pick, or keeps out rain or thunderstorms. Cutscenes keep theirs.", "선택한 날씨를 유지하거나 비나 뇌우를 막습니다. 컷신은 원래 날씨를 유지합니다.")
+T("Free sprint out of combat", "전투 외 달리기 기력 소모 없음")
+T("Sprinting takes no stamina while no enemy is fighting you. Once the battle music starts, sprinting costs stamina again.", "적과 싸우고 있지 않을 때는 달리기에 기력이 들지 않습니다. 전투 음악이 시작되면 달리기에 다시 기력이 듭니다.")
 T("No rain", "비 없음")
 T("No thunderstorms", "뇌우 없음")
 T("Clear", "맑음")

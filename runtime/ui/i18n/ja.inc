@@ -516,6 +516,8 @@ T("Sets your wallet to an exact number of rupees (0 to 999999). Turn off Infinit
 T("Cheats", "チート")
 T("Weather", "天気")
 T("Holds the weather you pick, or keeps out rain or thunderstorms. Cutscenes keep theirs.", "選んだ天気を保つか、雨や雷雨を起こさないようにします。ムービーは元の天気のままです。")
+T("Free sprint out of combat", "戦闘外ダッシュでがんばり消費なし")
+T("Sprinting takes no stamina while no enemy is fighting you. Once the battle music starts, sprinting costs stamina again.", "敵と戦っていない間は、ダッシュでがんばりが減りません。戦闘の音楽が始まると、ダッシュで再びがんばりが減ります。")
 T("No rain", "雨なし")
 T("No thunderstorms", "雷雨なし")
 T("Clear", "晴れ")

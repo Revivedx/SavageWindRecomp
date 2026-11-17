@@ -61,13 +61,14 @@ If the pouch is full, you get as many as fit, and the tab says how many were add
 cutscene, the request waits until you are back in play. The item list comes from your own game files; nothing of the
 game is shipped with Savage Wind.
 
-### Rupees and weather
+### Rupees, weather and sprinting
 
 | Option | What it does |
 |---|---|
 | Infinite rupees | Keeps your wallet at 9999 rupees, topped up every few seconds. |
 | Set rupees | Sets your wallet to an exact number (0 to 999999). Turn off Infinite rupees first. |
 | Weather | Holds the weather you pick (clear, cloudy, rain, heavy rain, snow, heavy snow, thunderstorm, thunder rain, rain in sunshine), or keeps out rain or thunderstorms. Automatic is the game's own. Cutscenes keep their weather. |
+| Free sprint out of combat | Sprinting on the ground takes no stamina while no enemy is fighting you. Once enemies start the battle music, sprinting costs stamina again until the music fades. Climbing, swimming, gliding and attacks cost stamina as usual. |
 
 ## Teleport and console cheats
 

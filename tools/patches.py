@@ -891,6 +891,29 @@ def _stamina(gen, a):
     return ('{ extern uint32_t rt_stamina(uint32_t, uint32_t); '
             'ST32(c->x[19] + 0xa4, rt_stamina(LD32(c->x[19] + 0xa4), (uint32_t)c->v[8])); }'
             f'  /* {a:#x}: str s8, [x19, #0xa4] (stamina: Accessibility) */')
+
+
+# Cheats > Free sprint (runtime/free_sprint.c): Link's Move action, his walk, run and sprint on the ground (its update,
+# 1.9.0 0x7000c84664), loads what a sprint costs from its own parameters: EnergyDash, the stamina a second of sprinting
+# takes (sprint_cost, handed to the per-second cost 0x7000ce9e98), and EnergyDashTrig, what a sprint press takes
+# (sprint_press_cost, handed to the cost itself 0x7000ce9ef0). Both end in that cost, which takes nothing for 0.
+
+def _sprint_cost(gen, a):
+    assert _word(gen, a) == 0xbd400100, hex(_word(gen, a))  # ldr s0, [x8]
+    return ('{ extern uint32_t rt_sprint_cost(uint32_t); c->v[0] = rt_sprint_cost(LD32(c->x[8])); }'
+            f'  /* {a:#x}: ldr s0, [x8] (a sprint\'s stamina: Cheats) */')
+
+
+# Free sprint's "in combat": the battle music's controller (1.9.0 0x7001337864, a virtual method of the controller that
+# owns the field battle music) takes the game's battle info, x1; the field battle music (0x7001344c88) starts when its
+# first word is 1 or more and fades out when it is 0. The runtime keeps that word.
+
+def _battle_info(gen, a):
+    assert _word(gen, a) == 0xb9400028, hex(_word(gen, a))  # ldr w8, [x1]
+    return ('{ extern void rt_battle_info(int32_t); c->x[8] = LD32(c->x[1]); rt_battle_info((int32_t)c->x[8]); }'
+            f'  /* {a:#x}: ldr w8, [x1] (enemies in battle: Cheats) */')
+
+
 # Adding items (runtime/items.c rt_item_tick): at the entry of Link's damage handling (every frame in play, on the game
 # thread, as picking an item up is) the runtime calls the pause menu data's item get for what was asked for. The item
 # get takes the item's name as a sead::SafeString; its vtable is the one the item get itself loads (`adrp x26` /
@@ -1091,6 +1114,9 @@ PATCHES = {
     'link_life_store': _link_life,
     'link_life_tick': _link_life,
     'stamina_store': _stamina,
+    'sprint_cost': _sprint_cost,
+    'sprint_press_cost': _sprint_cost,
+    'battle_bgm_info': _battle_info,
     'item_tick': _item_tick,
 }
 

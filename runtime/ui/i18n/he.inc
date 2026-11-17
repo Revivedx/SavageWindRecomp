@@ -668,6 +668,8 @@ T("Sets your wallet to an exact number of rupees (0 to 999999). Turn off Infinit
 T("Cheats", "צ'יטים")
 T("Weather", "מזג אוויר")
 T("Holds the weather you pick, or keeps out rain or thunderstorms. Cutscenes keep theirs.", "שומר על מזג האוויר שבחרת, או מונע גשם או סופות רעמים. סצנות קולנועיות שומרות על שלהן.")
+T("Free sprint out of combat", "ריצה חופשית מחוץ לקרב")
+T("Sprinting takes no stamina while no enemy is fighting you. Once the battle music starts, sprinting costs stamina again.", "ריצה לא צורכת סיבולת כל עוד אף אויב לא נלחם בך. ברגע שמוזיקת הקרב מתחילה, הריצה שוב צורכת סיבולת.")
 T("No rain", "בלי גשם")
 T("No thunderstorms", "בלי סופות רעמים")
 T("Clear", "בהיר")

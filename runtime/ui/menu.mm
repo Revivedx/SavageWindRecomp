@@ -1320,7 +1320,7 @@ static void tab_audio(void) {
 
 // Cheats: what hands the player things or changes the world (the game's own menus keep to options and assists, so
 // these are only here). The same as the developer console commands next to them (rupees: runtime/rupees.c;
-// weather: runtime/weather.c).
+// weather: runtime/weather.c). Free sprint: runtime/free_sprint.c.
 extern "C" bool rupees_set(int32_t count);
 
 static void cheats_options(void) {
@@ -1345,6 +1345,9 @@ static void cheats_options(void) {
                                                        "Thunder rain", "Rain in sunshine"};  // (settings.h weather)
     opt_dropdown("Weather", &g_settings.weather, weather, WEATHER_COUNT, 0,
                  "Holds the weather you pick, or keeps out rain or thunderstorms. Cutscenes keep theirs.");
+    opt_toggle("Free sprint out of combat", &g_settings.free_sprint, false,
+               "Sprinting takes no stamina while no enemy is fighting you. Once the battle music starts, sprinting "
+               "costs stamina again.");
 }
 
 // Case-insensitive: does s contain needle (an empty needle matches)

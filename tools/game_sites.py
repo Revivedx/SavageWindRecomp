@@ -310,6 +310,16 @@ SITES = [
          'bd42e660', 0),
     # the stamina setter's store, PlayerInfo +0xa4 (tools/patches.py _stamina)
     Site('stamina_store', 'code', '1e204008 94000000/fc000000 bd00a668 f9400ff3 a940fbfd fc4207e8 d65f03c0', 2),
+    # Link's Move action loading what a sprint costs (tools/patches.py _sprint_cost; Cheats > Free sprint): EnergyDash
+    # (x19 + 0x20), the cost of a second of sprinting, and EnergyDashTrig (x19 + 0x30), the cost of a sprint press
+    Site('sprint_cost', 'code', 'f9401268 2a1f03e1 bd400100 94000000/fc000000 f9400668 52800181 f94be900 '
+         '94000000/fc000000', 2),
+    Site('sprint_press_cost', 'code', 'f9401a68 bd400100 94000000/fc000000 f9400660 90000001/9f00001f '
+         '91000021/ffc003ff 94000000/fc000000 36000000/fff8001f', 1),
+    # the battle music's controller taking the game's battle info, its first word the count the field battle music
+    # starts on (1 or more) and fades out on (0) (tools/patches.py _battle_info; Cheats > Free sprint)
+    Site('battle_bgm_info', 'code', 'd100c3ff a9017bfd a9024ff4 910043fd b9400028 aa0103f4 aa0003f3 7100051f '
+         '5400000b/ff00001f 39403e88', 4),
     # the pouch taking arrows off for the player's bow (tools/patches.py _remove_arrows; Accessibility > Infinite arrows)
     Site('pouch_remove_arrows', 'code', 'd101c3ff a9017bfd a9026ffc a90367fa a9045ff8 a90557f6 a9064ff4 910043fd '
          '90000008/9f00001f aa0003f3 f9400108/ffc003ff aa0103e0', 0),
@@ -428,6 +438,7 @@ OPTIONAL_GROUPS = [
     ('no_wear_hit', 'no_wear_ret'),
     ('link_life_store', 'link_life_tick'),
     ('stamina_store',),
+    ('sprint_cost', 'sprint_press_cost', 'battle_bgm_info'),  # (Cheats > Free sprint: without them it does nothing)
     ('tp_gate',),  # (a far teleport of the control endpoint: without it a long jump freezes the world)
     ('item_tick', 'pouch_item_get', 'pouch_mgr'),
     ('horse_cam_lr',),
@@ -596,6 +607,9 @@ KNOWN = {
         'link_life_store': 0x7000cc4e70,
         'link_life_tick': 0x7000cc4da4,
         'stamina_store': 0x7000cc7430,
+        'sprint_cost': 0x7000c84854,
+        'sprint_press_cost': 0x7000c848a0,
+        'battle_bgm_info': 0x7001337874,
         'item_tick': 0x7000cc4c3c,
         'pouch_item_get': 0x7000d921bc,
         'pouch_mgr': 0x7001e18570,

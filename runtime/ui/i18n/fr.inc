@@ -516,6 +516,8 @@ T("Sets your wallet to an exact number of rupees (0 to 999999). Turn off Infinit
 T("Cheats", "Triches")
 T("Weather", "Météo")
 T("Holds the weather you pick, or keeps out rain or thunderstorms. Cutscenes keep theirs.", "Garde la météo choisie, ou écarte la pluie ou les orages. Les cinématiques gardent la leur.")
+T("Free sprint out of combat", "Sprint gratuit hors combat")
+T("Sprinting takes no stamina while no enemy is fighting you. Once the battle music starts, sprinting costs stamina again.", "Sprinter ne consomme pas d'endurance tant qu'aucun ennemi ne vous combat. Dès que la musique de combat commence, sprinter consomme à nouveau de l'endurance.")
 T("No rain", "Pas de pluie")
 T("No thunderstorms", "Pas d'orages")
 T("Clear", "Dégagé")

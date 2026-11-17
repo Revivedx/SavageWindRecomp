@@ -516,6 +516,8 @@ T("Sets your wallet to an exact number of rupees (0 to 999999). Turn off Infinit
 T("Cheats", "Cheats")
 T("Weather", "Weer")
 T("Holds the weather you pick, or keeps out rain or thunderstorms. Cutscenes keep theirs.", "Houdt het gekozen weer vast, of houdt regen of onweer buiten. Tussenfilmpjes houden hun eigen weer.")
+T("Free sprint out of combat", "Gratis sprinten buiten gevechten")
+T("Sprinting takes no stamina while no enemy is fighting you. Once the battle music starts, sprinting costs stamina again.", "Sprinten kost geen uithoudingsvermogen zolang geen vijand tegen je vecht. Zodra de gevechtsmuziek begint, kost sprinten weer uithoudingsvermogen.")
 T("No rain", "Geen regen")
 T("No thunderstorms", "Geen onweer")
 T("Clear", "Helder")

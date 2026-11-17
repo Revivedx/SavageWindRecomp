@@ -516,6 +516,8 @@ T("Sets your wallet to an exact number of rupees (0 to 999999). Turn off Infinit
 T("Cheats", "Читы")
 T("Weather", "Погода")
 T("Holds the weather you pick, or keeps out rain or thunderstorms. Cutscenes keep theirs.", "Удерживает выбранную погоду или не допускает дождя или гроз. В роликах погода своя.")
+T("Free sprint out of combat", "Бесплатный бег вне боя")
+T("Sprinting takes no stamina while no enemy is fighting you. Once the battle music starts, sprinting costs stamina again.", "Бег не тратит выносливость, пока с вами не сражается ни один враг. Как только начинается боевая музыка, бег снова тратит выносливость.")
 T("No rain", "Без дождя")
 T("No thunderstorms", "Без гроз")
 T("Clear", "Ясно")

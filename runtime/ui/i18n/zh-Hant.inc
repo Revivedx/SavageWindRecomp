@@ -516,6 +516,8 @@ T("Sets your wallet to an exact number of rupees (0 to 999999). Turn off Infinit
 T("Cheats", "作弊")
 T("Weather", "天氣")
 T("Holds the weather you pick, or keeps out rain or thunderstorms. Cutscenes keep theirs.", "保持你選擇的天氣，或避免下雨或雷雨。過場動畫保持原有天氣。")
+T("Free sprint out of combat", "非戰鬥時衝刺不耗精力")
+T("Sprinting takes no stamina while no enemy is fighting you. Once the battle music starts, sprinting costs stamina again.", "沒有敵人與你戰鬥時，衝刺不消耗精力。戰鬥音樂一響起，衝刺就會再次消耗精力。")
 T("No rain", "無雨")
 T("No thunderstorms", "無雷雨")
 T("Clear", "晴朗")

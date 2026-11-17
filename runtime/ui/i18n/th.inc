@@ -223,6 +223,8 @@ T("Sets your wallet to an exact number of rupees (0 to 999999). Turn off Infinit
 T("Cheats", "สูตรโกง")
 T("Weather", "สภาพอากาศ")
 T("Holds the weather you pick, or keeps out rain or thunderstorms. Cutscenes keep theirs.", "คงสภาพอากาศที่คุณเลือก หรือกันฝนหรือพายุฝนฟ้าคะนองออกไป คัตซีนยังคงสภาพอากาศของตัวเอง")
+T("Free sprint out of combat", "วิ่งเร็วฟรีนอกการต่อสู้")
+T("Sprinting takes no stamina while no enemy is fighting you. Once the battle music starts, sprinting costs stamina again.", "การวิ่งเร็วไม่ใช้พลังกายขณะที่ไม่มีศัตรูต่อสู้กับคุณ เมื่อเพลงต่อสู้เริ่มขึ้น การวิ่งเร็วจะใช้พลังกายอีกครั้ง")
 T("No rain", "ไม่มีฝน")
 T("No thunderstorms", "ไม่มีพายุฝนฟ้าคะนอง")
 T("Clear", "ท้องฟ้าแจ่มใส")
