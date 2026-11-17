@@ -635,7 +635,6 @@ static bool toggle(const char *label, bool *v) {
 extern "C" void renderer_get_scale(float *sx, float *sy);
 extern "C" void renderer_get_scene_scale(float *sx, float *sy);
 extern "C" bool renderer_gpu_rtx(void);  // (vulkan/device.c, metal.m)
-extern "C" volatile int g_fg_active;     // (hle/framepace.c: the last presented frame was generated)
 // Video > Upscaler mode's names, by UPQ_*, and their order on screen (largest render size first). Dynamic is last:
 // it is a row the dynamic-resolution setting adds, so the list is one entry shorter while that setting is off.
 static const char *const k_upscale_modes[UPQ_COUNT] = {"Ultra Quality", "Quality", "Balanced", "Performance",
@@ -1809,7 +1808,11 @@ static void perf_overlay_draw(ImGuiIO &io, float scale) {
         }
     }
 #endif
-    if (g_fg_active) line += std::string(line.empty() ? "" : " | ") + tr("Frame generation on");
+    // (frame generation: one measured switch for both the line and the dynamic row below - the last second's
+    // generated frames, the same signal the dynamic governor uses, so what the overlay says it is measuring is
+    // what the governor is really measuring. A per-present flag would flicker frame to frame instead.)
+    bool fg_on = s.fps_generated > 0;
+    if (fg_on) line += std::string(line.empty() ? "" : " | ") + tr("Frame generation on");
     if (!line.empty()) ImGui::TextDisabled("%s", line.c_str());
     // Dynamic resolution / the upscaler's Dynamic mode: what it is holding, at what factor, and how it is measuring.
     // All the numbers the player needs to see why the picture is at the size it is, in one place.
@@ -1818,7 +1821,7 @@ static void perf_overlay_draw(ImGuiIO &io, float scale) {
         double target = dynamic_res_target();
         snprintf(dyn, sizeof dyn, tr("Dynamic: %s %.2fx, target %.0f fps, %s"),
                  dynamic_res_is_upscale() ? tr("upscaler") : tr("scene"), dynamic_factor(), target,
-                 g_fg_active ? tr("presented rate") : tr("real rate"));
+                 fg_on ? tr("presented rate") : tr("real rate"));
         ImGui::TextDisabled("%s", dyn);
     }
     // The frame generation verdict is the same whether the dynamic setting is on or off: with it on, frame generation
