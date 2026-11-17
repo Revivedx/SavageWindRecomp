@@ -14,6 +14,7 @@
 #endif
 
 #include "../../framepace.h"
+#include "../../hash.h"
 #include "../../imageload.h"
 #include "../../paths.h"
 #include "../../platform.h"
@@ -1106,13 +1107,7 @@ static uint64_t pc_saved_at;
 static pthread_mutex_t pc_save_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool pc_off;
 
-static uint64_t data_hash(const void *p, size_t n) {
-    const uint8_t *b = p;
-    uint64_t h = 0xcbf29ce484222325ull ^ n;
-    for (; n >= 8; n -= 8, b += 8) { uint64_t w; memcpy(&w, b, 8); h = (h ^ w) * 0x9E3779B97F4A7C15ull; h ^= h >> 29; }
-    for (; n; n--, b++) h = (h ^ *b) * 0x100000001B3ull;
-    return h ^ (h >> 32);
-}
+static uint64_t data_hash(const void *p, size_t n) { return hash64(0xcbf29ce484222325ull ^ n, p, n); }
 
 static void pc_header(PcHeader *h) {
     memset(h, 0, sizeof *h);
