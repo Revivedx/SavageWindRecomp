@@ -570,6 +570,22 @@ void glyphs_hud_positions(int pos[4]) {
     memcpy(pos, k_presets[0], 4 * sizeof(int));
 }
 
+static int g_hud_built[4];
+static _Atomic bool g_hud_built_valid;
+RT_ON_RESET(glyphs_hud_built_reset) { g_hud_built_valid = false; }  // (the next boot patches the layouts again)
+
+void glyphs_hud_positions_built(const int pos[4]) {
+    memcpy(g_hud_built, pos, sizeof g_hud_built);
+    g_hud_built_valid = true;
+}
+
+bool glyphs_hud_positions_stale(void) {
+    if (!g_hud_built_valid) return false;
+    int pos[4];
+    glyphs_hud_positions(pos);
+    return memcmp(pos, g_hud_built, sizeof pos) != 0;
+}
+
 // cursor: with the state of the menus' mouse pointer, which changes some keyboard icons while a menu is open.
 static uint32_t generation(bool cursor) {
     int k = resolve_kind();

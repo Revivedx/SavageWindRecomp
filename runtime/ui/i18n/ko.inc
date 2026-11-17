@@ -21,6 +21,7 @@ T("%s is now %s; %s moved to %s (swapped).", "%s: 이제 %s입니다. %s: %s(으
 T("Cancelled: %s unchanged.", "취소됨: %s 변경 없음.")
 T("Nothing pressed: %s unchanged.", "입력 없음: %s 변경 없음.")
 T("A and B swapped, with the actions on them.", "A와 B를 바꿨습니다 (할당된 동작 포함).")
+T("Restart the game to update the HUD buttons.", "HUD 버튼을 업데이트하려면 게임을 다시 시작하세요.")
 T("Controller", "컨트롤러")
 T("Keyboard", "키보드")
 T("Tilt the stick", "스틱 기울이기")

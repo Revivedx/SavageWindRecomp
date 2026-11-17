@@ -21,6 +21,7 @@ T("%s is now %s; %s moved to %s (swapped).", "ההקצאה החדשה של %s: %
 T("Cancelled: %s unchanged.", "בוטל: ההקצאה של %s לא השתנתה.")
 T("Nothing pressed: %s unchanged.", "לא נלחץ שום דבר: ההקצאה של %s לא השתנתה.")
 T("A and B swapped, with the actions on them.", "A ו-B הוחלפו, יחד עם הפעולות שלהם.")
+T("Restart the game to update the HUD buttons.", "הפעילו מחדש את המשחק כדי לעדכן את הכפתורים בתצוגה העילית.")
 T("Controller", "בקר")
 T("Keyboard", "מקלדת")
 T("Tilt the stick", "הטיית הסטיק")

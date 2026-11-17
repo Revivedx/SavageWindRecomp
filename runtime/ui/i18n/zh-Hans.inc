@@ -21,6 +21,7 @@ T("%s is now %s; %s moved to %s (swapped).", "%s现在是%s；%s改为%s（已�
 T("Cancelled: %s unchanged.", "已取消：%s未更改。")
 T("Nothing pressed: %s unchanged.", "未按下任何键：%s未更改。")
 T("A and B swapped, with the actions on them.", "已交换 A 和 B（包括其上的动作）。")
+T("Restart the game to update the HUD buttons.", "重启游戏以更新 HUD 按键。")
 T("Controller", "手柄")
 T("Keyboard", "键盘")
 T("Tilt the stick", "推动摇杆")

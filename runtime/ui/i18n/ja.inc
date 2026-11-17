@@ -21,6 +21,7 @@ T("%s is now %s; %s moved to %s (swapped).", "%sを%sにしました。%sは%s�
 T("Cancelled: %s unchanged.", "キャンセル：%sは変更されていません。")
 T("Nothing pressed: %s unchanged.", "入力なし：%sは変更されていません。")
 T("A and B swapped, with the actions on them.", "AとBを入れ替えました（割り当てたアクションも）。")
+T("Restart the game to update the HUD buttons.", "HUDのボタンを更新するには、ゲームを再起動してください。")
 T("Controller", "コントローラー")
 T("Keyboard", "キーボード")
 T("Tilt the stick", "スティックを倒す")

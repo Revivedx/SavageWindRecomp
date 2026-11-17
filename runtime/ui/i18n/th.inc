@@ -21,6 +21,7 @@ T("%s is now %s; %s moved to %s (swapped).", "ตอนนี้ %s คือ %s
 T("Cancelled: %s unchanged.", "ยกเลิกแล้ว: %s ไม่เปลี่ยน")
 T("Nothing pressed: %s unchanged.", "ไม่มีการกด: %s ไม่เปลี่ยน")
 T("A and B swapped, with the actions on them.", "สลับ A และ B แล้ว รวมถึงการกระทำที่กำหนดไว้")
+T("Restart the game to update the HUD buttons.", "เริ่มเกมใหม่เพื่ออัปเดตปุ่มบน HUD")
 T("Controller", "คอนโทรลเลอร์")
 T("Keyboard", "คีย์บอร์ด")
 T("Tilt the stick", "เอียงสติ๊ก")

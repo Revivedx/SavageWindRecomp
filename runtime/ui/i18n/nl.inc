@@ -21,6 +21,7 @@ T("%s is now %s; %s moved to %s (swapped).", "%s is nu %s; %s is verplaatst naar
 T("Cancelled: %s unchanged.", "Geannuleerd: %s ongewijzigd.")
 T("Nothing pressed: %s unchanged.", "Niets ingedrukt: %s ongewijzigd.")
 T("A and B swapped, with the actions on them.", "A en B gewisseld, met hun acties.")
+T("Restart the game to update the HUD buttons.", "Herstart het spel om de HUD-knoppen bij te werken.")
 T("Controller", "")
 T("Keyboard", "Toetsenbord")
 T("Tilt the stick", "Kantel de stick")

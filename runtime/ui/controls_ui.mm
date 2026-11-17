@@ -12,6 +12,7 @@
 
 extern "C" {
 #include "../input_bind.h"
+#include "../nvn/glyphs.h"
 #include "../settings.h"
 }
 extern "C" bool control_enabled(void);  // runtime/control.c: is the test endpoint on (SAVAGEWIND_CONTROL)?
@@ -226,6 +227,9 @@ extern "C" void controls_bindings_draw(float scale) {
     ImGui::EndDisabled();
     // the Xbox convention (confirm on the bottom button) in one click, and back again
     if (ImGui::Button(tr("Swap A and B (Xbox: A confirms)"))) { bind_capture_cancel(); bind_swap_ab(); }
+    // in game: the HUD's diamond was laid out when the game started (runtime/services/fs.c) and moves at the next one
+    if (glyphs_hud_positions_stale())
+        ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", tr("Restart the game to update the HUD buttons."));
 
     ImGui::PushTextWrapPos(0);
     ImGui::TextDisabled("%s", tr("Bindings apply to the game only. Esc and F1 always open the in-game menu, and so do the "

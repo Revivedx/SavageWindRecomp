@@ -21,6 +21,7 @@ T("%s is now %s; %s moved to %s (swapped).", "%s ist jetzt %s; %s liegt jetzt au
 T("Cancelled: %s unchanged.", "Abgebrochen: %s unverändert.")
 T("Nothing pressed: %s unchanged.", "Nichts gedrückt: %s unverändert.")
 T("A and B swapped, with the actions on them.", "A und B getauscht, samt ihrer Aktionen.")
+T("Restart the game to update the HUD buttons.", "Starte das Spiel neu, um die HUD-Tasten zu aktualisieren.")
 T("Controller", "")
 T("Keyboard", "Tastatur")
 T("Tilt the stick", "Stick neigen")

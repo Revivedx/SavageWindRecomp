@@ -998,6 +998,7 @@ static void hud_letters_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz)
     R->ov_end = (R->ov_end + size + 0xF) & ~0xFull;
     R->grown = realloc(R->grown, sizeof *R->grown * (R->ngrown + 1));
     R->grown[R->ngrown++] = (GrownFile){"Layout/Common.blarc", nn - an};
+    glyphs_hud_positions_built(pos);
     LOG("[fs] HUD letters: %d button letters use the icon font (archive %zu -> %zu bytes, pack +%llu KB, %.0f ms)\n",
         panes, (size_t)old, zn, (unsigned long long)(delta >> 10), (plat_now_ns() - t0) / 1e6);
 }

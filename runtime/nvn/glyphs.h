@@ -22,6 +22,11 @@ uint32_t glyphs_font_generation(void);
 
 // The diamond vertex (0: East, 1: South, 2: North, 3: West) for each Switch face button (A, B, X, Y) on the HUD.
 void glyphs_hud_positions(int pos[4]);
+// The HUD's layouts were patched with these positions (runtime/services/fs.c, when the game files are opened).
+void glyphs_hud_positions_built(const int pos[4]);
+// True when glyphs_hud_positions differs from the layout the HUD has this boot (bindings or HUD button layout changed
+// since): the diamond moves at the next start. False before the HUD is built (the start screen).
+bool glyphs_hud_positions_stale(void);
 
 // The device the Controls page and the tips draw instead of the Switch (runtime/nvn/hw_illust.c HW_DEVICE_*), -1 for
 // the Switch: Button icons' device, or on Automatic the controller connected. Decided when the game files are opened
