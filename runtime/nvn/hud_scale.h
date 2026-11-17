@@ -155,6 +155,18 @@ static inline double hud_edge_scissor_dy(double y_center, double gh, double shap
     return dir * (gh / 2.0) * (1.0 - shape);
 }
 
+// A HUD part kept whole (ui_layout.c, rt_ui_layout_pane_draw): all its panes take the part's anchor instead of each
+// the zone of its own centre. The champions' abilities are a column from the top-left zone into the middle one: each
+// icon and each count went to the anchor of the zone it was in, so at another HUD size the column broke apart and
+// icons left their counts (#913). The scope marker carries the part's layout kind (UI_LAYOUT_*, ui_layout.h) in the low
+// bits and its anchor, -1, 0 or 1 on each axis, above them.
+enum { HUD_KIND_MASK = 0xf, HUD_GROUP = 0x10 };
+static inline unsigned hud_group_kind(unsigned kind, int ax, int ay) {
+    return HUD_GROUP | (kind & HUD_KIND_MASK) | (unsigned)(ax + 1) << 5 | (unsigned)(ay + 1) << 7;
+}
+static inline int hud_group_ax(unsigned kind) { return (int)(kind >> 5 & 3) - 1; }
+static inline int hud_group_ay(unsigned kind) { return (int)(kind >> 7 & 3) - 1; }
+
 // Executing scopes may nest through cached command lists. Overflow preserves the outer owner.
 typedef struct { unsigned kind, depth, overflow, parent[16]; } HudScope;
 static inline void hud_scope_enter(HudScope *s, unsigned kind) {
