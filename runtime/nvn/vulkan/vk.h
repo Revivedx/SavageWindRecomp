@@ -108,6 +108,15 @@ VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout layout);
 // image's (the window's resolution), shadow maps (Video > Shadow resolution)
 enum { RS_NONE = 0, RS_SCENE = 1, RS_OUT = 2, RS_SHADOW = 3 };
 
+// A texture's claim on the write watch (textures.c, SAVAGEWIND_VK_CPU_OPTS bit 32): token 0: none
+typedef struct TexWW {
+    uint64_t addr, total;  // the storage it was armed for
+    uint64_t edge;         // hash of the partial pages at either end of it (not the texture's alone)
+    uint64_t page0;        // first whole page (index from GUEST_LO)
+    uint64_t retry;        // frame from which arming is tried again
+    uint32_t token, npages;
+} TexWW;
+
 typedef struct TexBackend {
     VkImage image;
     VmaAllocation mem;
@@ -125,6 +134,7 @@ typedef struct TexBackend {
     VkFormat view_fmt[2];    // (g_vk.lean_usage) the only formats its views may have; nview_fmt 0: any compatible one
     uint8_t nview_fmt;
     uint64_t data_hash, sample_hash, checked_frame, full_frame;
+    TexWW ww;
     bool scalable, presented;
     bool cleared_new;            // made zeroed (create_image): float, scaled and depth targets
     bool native_post;           // shader-identified bloom target: never inherit a scene scale
@@ -229,6 +239,11 @@ void renderer_get_scene_scale(float *sx, float *sy);
 void renderer_set_scene_scale(float sx, float sy);
 void renderer_set_shadow_size(uint32_t n);  // shadow maps' width (RS_SHADOW; 0: the game's own)
 uint64_t vk_frame_counter(void);
+int vk_cpu_opts(void);  // exec.c: the live SAVAGEWIND_VK_CPU_OPTS mask
+bool vk_heap_geometry_any(uint64_t lo, uint64_t hi);  // exec.c: a page of [lo, hi) holds vertices or indices the heap copy mirrors
+void vk_tex_pages_written(const uint64_t *pages, long n);  // textures.c: pages whose write-watch flags someone else reset
+void vk_tex_range_written(uint64_t addr, uint64_t size);
+void vk_tex_ww_stats(uint64_t out[5]);  // skipped, found written, missed (validation), armed, refused
 
 // ---- shaders / pipelines (shaders.c)
 VkShaderModule vk_compile_glsl(const char *src, int stage, const char *name);  // NULL on failure (logged)
