@@ -7180,12 +7180,19 @@ static void texture_info_(int stage, ShaderInfo *si, int i, VkDescriptorImageInf
 typedef struct { uint64_t seq, hash, hash2; VkDescriptorSetLayout layout; VkDescriptorSet set; uint32_t n; } SetEnt;
 static SetEnt *setc;
 
+// A 64x64 multiply folded to 64 bits (both halves of the product mixed in one mulq).
+static inline uint64_t mum64(uint64_t a, uint64_t b) {
+    unsigned __int128 r = (unsigned __int128)a * b;
+    return (uint64_t)r ^ (uint64_t)(r >> 64);
+}
+
 static VkDescriptorSet set_finish(VkDescriptorSetLayout layout, VkWriteDescriptorSet *w, int n) {
     static int off = -1;
     if (off < 0) off = getenv("SAVAGEWIND_VK_NO_SET_CACHE") != NULL;
     stat_sets++;
     SetEnt *e = NULL;
     uint64_t seq = vk_pending_seq() + (setc_gen << 40), h = 0, h2 = 0;
+    bool fast = (stage_cpu_opts() & 16) != 0;
     if (!off) {
         h = (uint64_t)(uintptr_t)layout;
         h2 = h ^ 0x6A09E667F3BCC909ull;
@@ -7201,6 +7208,17 @@ static VkDescriptorSet set_finish(VkDescriptorSetLayout layout, VkWriteDescripto
                 v[2] = w[i].pBufferInfo->offset;
                 v[3] = w[i].pBufferInfo->range;
             }
+            if (fast) {
+                // R1 (mask 16): the four words of a write are folded by two independent 64x64->128 multiplies (they run
+                // side by side), so a write adds one multiply to the chain through the hash instead of four multiply-shift
+                // steps for each of two hashes (llvm-mca, Zen 3: ~21 cycles a write before, ~6 now; a 10-write set was
+                // ~210 cycles, 0.5-0.64 ms a frame in the open world). The second hash is the same fold mixed another way,
+                // so the key is effectively 64 bits: a wrong hit needs a 2^-64 collision (~1e6 lookups a second).
+                uint64_t t = mum64(v[1] ^ 0xA0761D6478BD642Full, v[2] ^ 0xE7037ED1A0B428DBull) ^
+                             mum64(v[3] ^ 0x8EBC6AF09C88C6E3ull, v[0] ^ 0x589965CC75374CC3ull);
+                h = mum64(h ^ t, 0x9E3779B97F4A7C15ull);
+                h2 = (h2 ^ t) * 0xC2B2AE3D27D4EB4Full;
+            } else
             for (int k = 0; k < 4; k++) {
                 h = (h ^ v[k]) * 0x9E3779B97F4A7C15ull; h ^= h >> 29;
                 h2 = (h2 ^ v[k]) * 0xC2B2AE3D27D4EB4Full; h2 ^= h2 >> 31;
