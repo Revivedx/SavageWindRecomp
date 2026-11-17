@@ -200,6 +200,10 @@ void bind_swap_ab(void) {
     result(6, BIND_DEV_PAD, -1, -1);
 }
 
+bool bind_ab_swapped(void) {
+    return g_bind_pad[BIND_A] == SDL_GAMEPAD_BUTTON_SOUTH && g_bind_pad[BIND_B] == SDL_GAMEPAD_BUTTON_EAST;
+}
+
 bool bind_is_default(int dev) {
     for (int id = 0; id < ACT_COUNT; id++)
         if (!bind_is_default_slot(dev, BIND_ACTION + id)) return false;

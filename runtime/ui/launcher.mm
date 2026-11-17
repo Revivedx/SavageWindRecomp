@@ -1147,8 +1147,14 @@ static bool menu_item(const char *label, bool enabled, bool *hovered = NULL, con
 
 // Controllers, as in the in-game menu (runtime/ui/menu.mm): read straight from SDL, Nintendo layout - the right face
 // button (A) confirms, the bottom one (B) goes back; d-pad / left stick move. (ImGui's own SDL gamepad handling is
-// switched off: it used the Xbox layout and, per the user, didn't work on the start screen.)
+// switched off: it used the Xbox layout and, per the user, didn't work on the start screen.) With A and B swapped in the
+// bindings (Controls: "Swap A and B", the Xbox convention) the bottom one confirms and the right one goes back - from
+// when Settings closes: a swap made there doesn't change Settings' own buttons under the player (launcher_run keeps
+// this as it was while the Settings page is up).
+static bool g_pad_ab_swapped;
 static ImGuiKey launcher_pad_key(Uint8 b) {
+    if (g_pad_ab_swapped && (b == SDL_GAMEPAD_BUTTON_EAST || b == SDL_GAMEPAD_BUTTON_SOUTH))
+        b = b == SDL_GAMEPAD_BUTTON_EAST ? SDL_GAMEPAD_BUTTON_SOUTH : SDL_GAMEPAD_BUTTON_EAST;
     switch (b) {
     case SDL_GAMEPAD_BUTTON_EAST: return ImGuiKey_GamepadFaceDown;   // A: activate
     case SDL_GAMEPAD_BUTTON_SOUTH: return ImGuiKey_GamepadFaceRight; // B: back
@@ -1182,8 +1188,16 @@ static bool launcher_pad_event(const SDL_Event &e) {
         io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
         return true;
     case SDL_EVENT_GAMEPAD_BUTTON_DOWN: case SDL_EVENT_GAMEPAD_BUTTON_UP: {
+        // a release goes to the key its press went to ("Swap A and B" pressed with A swaps the mapping in between)
+        static ImGuiKey pressed_as[SDL_GAMEPAD_BUTTON_COUNT];
+        bool down = e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN;
+        int b = e.gbutton.button;
         ImGuiKey k = launcher_pad_key(e.gbutton.button);
-        if (k != ImGuiKey_None) io.AddKeyEvent(k, e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN);
+        if (b >= 0 && b < SDL_GAMEPAD_BUTTON_COUNT) {
+            if (down) pressed_as[b] = k;
+            else if (pressed_as[b] != ImGuiKey_None) k = pressed_as[b], pressed_as[b] = ImGuiKey_None;
+        }
+        if (k != ImGuiKey_None) io.AddKeyEvent(k, down);
         return true;
     }
     case SDL_EVENT_GAMEPAD_AXIS_MOTION: {
@@ -1638,6 +1652,7 @@ extern "C" void launcher_run(const char *root, int mode) {
         if (!status.empty()) page = SETUP;
     }
     bool was_busy = false;
+    g_pad_ab_swapped = bind_ab_swapped();  // (also when the start screen opens on Settings)
     while (!play) {
         menu_apply_window_requests(win);  // (the Video tab's Fullscreen)
         if (g_files_deleted) {  // (Settings > Prelaunch deleted them)
@@ -1646,6 +1661,7 @@ extern "C" void launcher_run(const char *root, int mode) {
             refresh_dlc();
             if (!status.empty()) { bind_capture_cancel(); settings_save(); page = SETUP; }
         }
+        if (page != SETTINGS) g_pad_ab_swapped = bind_ab_swapped();  // (Settings up: as it was when it opened)
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             if (page == SETTINGS && bind_capture_event(&e)) continue;  // (waiting for a new binding: controls_ui.mm)

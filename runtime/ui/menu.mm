@@ -95,9 +95,15 @@ extern "C" void menu_test_open(void) {
     if (getenv("SAVAGEWIND_MENU_TAB")) { extern int g_tab_request_ext; g_tab_request_ext = atoi(getenv("SAVAGEWIND_MENU_TAB")); }
 }
 
+// A and B swapped in the bindings (Controls: "Swap A and B", the Xbox convention) when the menu opened: its confirm
+// and back follow a swap from the next time it opens, so a swap made in the menu doesn't move its own buttons under
+// the player (key_from_pad).
+static std::atomic<bool> g_ab_swapped_open{false};
+
 void menu_tabs_focus(bool first_tab);
 static void set_open(bool open) {
     if (open == g_open.load()) return;
+    if (open) g_ab_swapped_open.store(bind_ab_swapped());
     g_open.store(open);
     input_reset();  // nothing held while the menu had focus leaks into the game
     bind_capture_cancel();
@@ -142,8 +148,13 @@ static ImGuiKey key_from_scancode(SDL_Scancode sc) {
     }
 }
 
-// Nintendo layout: the right face button (A) confirms, the bottom one (B) goes back.
+// Nintendo layout: the right face button (A) confirms, the bottom one (B) goes back. With A and B swapped the bottom
+// one confirms and the right one goes back: in the menu as they were when it opened (g_ab_swapped_open), in the name
+// entry and the console (the menu closed) as they are.
 static ImGuiKey key_from_pad(Uint8 b) {
+    bool swapped = g_open.load() ? g_ab_swapped_open.load() : bind_ab_swapped();
+    if (swapped && (b == SDL_GAMEPAD_BUTTON_EAST || b == SDL_GAMEPAD_BUTTON_SOUTH))
+        b = b == SDL_GAMEPAD_BUTTON_EAST ? SDL_GAMEPAD_BUTTON_SOUTH : SDL_GAMEPAD_BUTTON_EAST;
     switch (b) {
     case SDL_GAMEPAD_BUTTON_EAST: return ImGuiKey_GamepadFaceDown;   // activate
     case SDL_GAMEPAD_BUTTON_SOUTH: return ImGuiKey_GamepadFaceRight; // cancel / back
@@ -340,11 +351,18 @@ bool menu_handle_event(const SDL_Event *e) {
             return true;
         }
         if (!capturing()) return false;
+        // a release goes to the key its press went to: "Swap A and B" pressed with A swaps the mapping in between,
+        // and its release must not leave the menu's A held
+        static ImGuiKey pressed_as[SDL_GAMEPAD_BUTTON_COUNT];
+        int b = e->gbutton.button;
         ImGuiKey k = key_from_pad(e->gbutton.button);
         if (g_sizes.load()) {  // Window size's list (in game): the buttons bound to A and B, wherever they are
-            int b = e->gbutton.button;
             if (b == g_bind_pad[BIND_A]) k = ImGuiKey_GamepadFaceDown;
             else if (b == g_bind_pad[BIND_B]) k = ImGuiKey_GamepadFaceRight;
+        }
+        if (b >= 0 && b < SDL_GAMEPAD_BUTTON_COUNT) {
+            if (down) pressed_as[b] = k;
+            else if (pressed_as[b] != ImGuiKey_None) k = pressed_as[b], pressed_as[b] = ImGuiKey_None;
         }
         if (k != ImGuiKey_None) { QEvent q = {}; q.kind = QEvent::KEY; q.key = k; q.down = down; push(q); }
         return true;

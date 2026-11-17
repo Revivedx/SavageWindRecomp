@@ -64,6 +64,7 @@ const char *bind_key_label(int scancode);
 int bind_label_family(void);                   // the connected controller's family (also on the start screen)
 void bind_reset(int dev);
 void bind_swap_ab(void);                       // the controller's A on the bottom button, B on the right (and their actions)
+bool bind_ab_swapped(void);                    // A on the bottom face button and B on the right one (the Xbox convention)
 void bind_reset_slot(int slot);              // one input (or action: BIND_ACTION + id) back to its defaults, both devices
 bool bind_is_default(int dev);
 bool bind_is_default_slot(int dev, int slot);
