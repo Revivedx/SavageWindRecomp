@@ -10,7 +10,8 @@
 // in the same cells and inside each original glyph's box (the game's widths stay): keycaps and mouse buttons from the
 // keyboard bindings, Xbox, PlayStation or Steam Deck buttons through the controller bindings, or the game's own glyphs (moved
 // between cells when the controller bindings differ from the defaults). Nothing of Nintendo's is shipped: shapes are
-// drawn, labels set in Fira Sans (OFL, third_party/fonts).
+// drawn, labels set in Fira Sans (OFL, third_party/fonts), or with Sharper buttons taken from the player's own button
+// art (below).
 //
 // The texture goes up again whenever what to show changes (glyphs_generation: device, bindings, setting), so prompts
 // already on screen change on the next frame.
@@ -31,6 +32,7 @@
 #include "glyphs.h"
 #include "hw_illust.h"
 #include "../hle.h"
+#include "../imageload.h"
 #include "../input_bind.h"
 #include "../paths.h"
 #include "../rt.h"
@@ -261,6 +263,146 @@ static void text(Canvas *t, const char *s, float cx, float cy, float cap_h, floa
 }
 static void erase(Canvas *c, const Canvas *t) { for (int i = 0; i < c->n * c->n; i++) c->a[i] *= 1 - t->a[i]; }
 
+// ---- button art (Gameplay > Sharper buttons, the player's own): pictures of the buttons and keys, 128x128 RGBA PNGs
+// of a dark button with white symbols, in the folder layout of button prompt art packs (XGamepad/Default/T_X_A_White.png...),
+// read from <data root>/prompt-art. Nothing of it is shipped; without it, or with the setting off, the icons are drawn
+// as above.
+// The sheet has one channel the game tints, so a picture becomes coverage: the dark body counts, white inside it (a
+// letter) is a hole, white outside it (a stick's arrows, which touch the transparent background) counts. A pressed
+// d-pad arm (a large white part) becomes a band along its edge: as a hole its hairline outline vanishes at text size.
+typedef struct { char rel[64]; int w, h; float *cov; } Art;  // cov: w x h, cropped to what it covers
+#define ART_MAX 96
+#define ART_LIT_AREA 200  // art pixels: a white part this large on a d-pad is a pressed arm
+#define ART_LIT_BAND 6
+#define ART_MAX_SIDE 512  // (the packs' pictures are 128x128: a much larger file is not one of them, and is left out)
+static Art g_art[ART_MAX];
+static int g_nart, g_art_state;  // state: 0 not looked for, 1 found, -1 missing
+static char g_art_dir[1024];
+
+static bool art_ready(void) {
+    if (g_art_state) return g_art_state > 0;
+    snprintf(g_art_dir, sizeof g_art_dir, "%s/prompt-art", rt_data_root());
+    char probe[1100];
+    int w, h;
+    snprintf(probe, sizeof probe, "%s/XGamepad/Default/T_X_A_White.png", g_art_dir);
+    g_art_state = rt_image_info(probe, &w, &h) ? 1 : -1;
+    LOG("[glyphs] button art %s: %s\n", g_art_state > 0 ? "from" : "not found in", g_art_dir);
+    return g_art_state > 0;
+}
+
+static Art *art_load(const char *rel) {
+    if (!g_settings.sharper_buttons) return NULL;
+    for (int i = 0; i < g_nart; i++)
+        if (!strcmp(g_art[i].rel, rel)) return g_art[i].cov ? &g_art[i] : NULL;
+    if (g_nart >= ART_MAX || !art_ready()) return NULL;
+    Art *a = &g_art[g_nart++];
+    snprintf(a->rel, sizeof a->rel, "%s", rel);
+    char path[1200];
+    snprintf(path, sizeof path, "%s/%s", g_art_dir, rel);
+    int w, h;
+    if (!rt_image_info(path, &w, &h) || w < 1 || h < 1 || w > ART_MAX_SIDE || h > ART_MAX_SIDE) return NULL;
+    unsigned char *px = rt_image_rgba(path, &w, &h);
+    if (!px) return NULL;
+    int n = w * h;
+    float *al = malloc(n * sizeof *al), *lum = malloc(n * sizeof *lum), *cov = calloc(n, sizeof *cov);
+    int *comp = malloc(n * sizeof *comp), *stack = malloc(n * sizeof *stack), *dist = malloc(n * sizeof *dist);
+    if (w > ART_MAX_SIDE || h > ART_MAX_SIDE || !al || !lum || !cov || !comp || !stack || !dist) {
+        rt_image_free(px);
+        free(al), free(lum), free(cov), free(comp), free(stack), free(dist);
+        return NULL;
+    }
+    float body = 0;
+    int nbody = 0;
+    for (int i = 0; i < n; i++) {
+        al[i] = px[i * 4 + 3] / 255.0f, lum[i] = (px[i * 4] + px[i * 4 + 1] + px[i * 4 + 2]) / 765.0f, comp[i] = -1;
+        if (al[i] > 0.9f && lum[i] < 0.5f) body += lum[i], nbody++;
+    }
+    rt_image_free(px);
+    body = nbody ? body / nbody : 0.15f;
+    bool dpad = strstr(rel, "Dpad") != NULL;
+    static const int dx[4] = {1, -1, 0, 0}, dy[4] = {0, 0, 1, -1};
+    for (int i = 0; i < n; i++) cov[i] = al[i] * clampf((1 - lum[i]) / (1 - body), 0, 1);
+    for (int s = 0, id = 0; s < n; s++) {  // the white parts: holes inside the body, or ink outside it
+        if (comp[s] >= 0 || al[s] <= 0.5f || lum[s] <= 0.55f) continue;
+        int sp = 0, cnt = 0;
+        bool outside = false;
+        stack[sp++] = s, comp[s] = id;
+        while (sp) {
+            int p = stack[--sp], x = p % w, y = p / w;
+            stack[n - 1 - cnt++] = p;  // (the part's pixels, kept at the end of the stack)
+            for (int d = 0; d < 4; d++) {
+                int X = x + dx[d], Y = y + dy[d], q = Y * w + X;
+                if (X < 0 || Y < 0 || X >= w || Y >= h || al[q] <= 0.5f) { outside = true; continue; }
+                if (comp[q] < 0 && lum[q] > 0.55f) comp[q] = id, stack[sp++] = q;
+            }
+        }
+        const int *part = stack + n - cnt;
+        if (dpad && cnt >= ART_LIT_AREA) {  // a pressed arm: a band along its edge
+            for (int i = 0; i < cnt; i++) dist[part[i]] = 0;
+            for (int pass = 1; pass <= ART_LIT_BAND; pass++)
+                for (int i = 0; i < cnt; i++) {
+                    int p = part[i], x = p % w, y = p / w;
+                    if (dist[p]) continue;
+                    for (int d = 0; d < 4; d++) {
+                        int X = x + dx[d], Y = y + dy[d], q = Y * w + X;
+                        if (X < 0 || Y < 0 || X >= w || Y >= h || comp[q] != id || (dist[q] && dist[q] < pass)) { dist[p] = pass; break; }
+                    }
+                }
+            for (int i = 0; i < cnt; i++) cov[part[i]] = dist[part[i]] ? al[part[i]] : 0;
+        } else if (outside) {
+            for (int i = 0; i < cnt; i++) cov[part[i]] = al[part[i]];
+        }
+        id++;
+    }
+    int x0 = w, y0 = h, x1 = -1, y1 = -1;  // cropped to what it covers
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++)
+            if (cov[y * w + x] > 0.02f) x0 = x < x0 ? x : x0, x1 = x > x1 ? x : x1, y0 = y < y0 ? y : y0, y1 = y > y1 ? y : y1;
+    if (x1 >= 0) {
+        a->w = x1 - x0 + 1, a->h = y1 - y0 + 1;
+        a->cov = malloc((size_t)a->w * a->h * sizeof *a->cov);
+        for (int y = 0; y < a->h; y++) memcpy(a->cov + y * a->w, cov + (y + y0) * w + x0, a->w * sizeof *cov);
+    }
+    free(al), free(lum), free(cov), free(comp), free(stack), free(dist);
+    return a->cov ? a : NULL;
+}
+
+static float art_at(const Art *a, float x, float y) {  // bilinear, art pixel centres at +0.5, nothing outside
+    x -= 0.5f, y -= 0.5f;
+    int x0 = (int)floorf(x), y0 = (int)floorf(y);
+    float fx = x - x0, fy = y - y0, v = 0;
+    for (int j = 0; j < 2; j++)
+        for (int i = 0; i < 2; i++) {
+            int X = x0 + i, Y = y0 + j;
+            if (X >= 0 && Y >= 0 && X < a->w && Y < a->h) v += a->cov[Y * a->w + X] * (i ? fx : 1 - fx) * (j ? fy : 1 - fy);
+        }
+    return v;
+}
+
+// The picture rel b.s tall, centred on the glyph's box: false without it. Wider than max_w, it is narrowed, by up to
+// ART_SQUEEZE alone (a wide key keeps more of its height that way) and then made smaller as a whole.
+#define ART_SQUEEZE 0.72f
+static bool art_draw(Canvas *c, Box b, const char *rel, float max_w) {
+    const Art *a = rel ? art_load(rel) : NULL;
+    if (!a) return false;
+    float sy = b.s / a->h, sx = sy;  // (units per art pixel)
+    if (a->w * sx > max_w) sx = max_w / a->w, sy = minf(sy, sx / ART_SQUEEZE);
+    float ox = b.cx - a->w * sx / 2, oy = b.cy - a->h * sy / 2;
+    float step = 1 / (c->k * minf(sx, sy));  // (art pixels per canvas pixel)
+    int ss = (int)ceilf(step) + 1;  // (samples a side: an average over the pixel, not one point of it)
+    int px0 = (int)clampf(floorf(ox * c->k), 0, (float)c->n), px1 = (int)clampf(ceilf((ox + a->w * sx) * c->k), 0, (float)c->n);
+    int py0 = (int)clampf(floorf(oy * c->k), 0, (float)c->n), py1 = (int)clampf(ceilf((oy + a->h * sy) * c->k), 0, (float)c->n);
+    for (int py = py0; py < py1; py++)
+        for (int px = px0; px < px1; px++) {
+            float v = 0;
+            for (int j = 0; j < ss; j++)
+                for (int i = 0; i < ss; i++)
+                    v += art_at(a, ((px + (i + 0.5f) / ss) / c->k - ox) / sx, ((py + (j + 0.5f) / ss) / c->k - oy) / sy);
+            c->a[py * c->n + px] = maxf(c->a[py * c->n + px], v / (ss * ss));
+        }
+    return true;
+}
+
 // ---- icons
 enum { DIR_U = 1, DIR_D = 2, DIR_L = 4, DIR_R = 8 };
 
@@ -468,9 +610,126 @@ static int nintendo_code(int host) {
     }
 }
 
+// ---- the art for each button (button art above): NULL, none
+#define ART_X "XGamepad/Default/T_X_"
+#define ART_P "P5Gamepad/Default/T_P5_"
+#define ART_K "Keyboard_Mouse/Dark/T_"
+
+static const char *pad_art(int host, int fam) {
+    bool ps = fam == 2, num = ps || fam == 3;  // (the Steam Deck: Xbox's letters and menu buttons, numbered shoulders and sticks)
+    switch (host) {
+    case SDL_GAMEPAD_BUTTON_SOUTH: return ps ? ART_P "Cross.png" : ART_X "A_White.png";
+    case SDL_GAMEPAD_BUTTON_EAST: return ps ? ART_P "Circle.png" : ART_X "B_White.png";
+    case SDL_GAMEPAD_BUTTON_WEST: return ps ? ART_P "Square.png" : ART_X "X_White.png";
+    case SDL_GAMEPAD_BUTTON_NORTH: return ps ? ART_P "Triangle.png" : ART_X "Y_White.png";
+    case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER: return num ? ART_P "L1.png" : ART_X "LB.png";
+    case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: return num ? ART_P "R1.png" : ART_X "RB.png";
+    case PADB_LTRIGGER: return num ? ART_P "L2.png" : ART_X "LT.png";
+    case PADB_RTRIGGER: return num ? ART_P "R2.png" : ART_X "RT.png";
+    case SDL_GAMEPAD_BUTTON_START: return ps ? NULL : ART_X "X.png";  // (Menu; the art has no PlayStation Options)
+    case SDL_GAMEPAD_BUTTON_BACK: return ps ? ART_X "Share-1.png" : ART_X "Share.png";  // (Create's pill; View)
+    case SDL_GAMEPAD_BUTTON_LEFT_STICK: return num ? ART_P "L3.png" : ART_X "Left_Stick_Click.png";
+    case SDL_GAMEPAD_BUTTON_RIGHT_STICK: return num ? ART_P "R3.png" : ART_X "Right_Stick_Click.png";
+    case SDL_GAMEPAD_BUTTON_DPAD_UP: return ps ? ART_P "Dpad_UP.png" : ART_X "Dpad_Up.png";
+    case SDL_GAMEPAD_BUTTON_DPAD_DOWN: return ps ? ART_P "Dpad_Down.png" : ART_X "Dpad_Down.png";
+    case SDL_GAMEPAD_BUTTON_DPAD_LEFT: return ps ? ART_P "Dpad_Left.png" : ART_X "Dpad_Left.png";
+    case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: return ps ? ART_P "Dpad_Right.png" : ART_X "Dpad_Right.png";
+    default: return NULL;
+    }
+}
+
+// The d-pad with the directions in mask pressed (all four: the whole d-pad)
+static const char *dpad_art(int mask, int fam) {
+    bool ps = fam == 2;
+    switch (mask) {
+    case DIR_U: return ps ? ART_P "Dpad_UP.png" : ART_X "Dpad_Up.png";
+    case DIR_D: return ps ? ART_P "Dpad_Down.png" : ART_X "Dpad_Down.png";
+    case DIR_L: return ps ? ART_P "Dpad_Left.png" : ART_X "Dpad_Left.png";
+    case DIR_R: return ps ? ART_P "Dpad_Right.png" : ART_X "Dpad_Right.png";
+    case DIR_U | DIR_D: return ps ? ART_P "Dpad_Y.png" : ART_X "Dpad_Y.png";
+    case DIR_L | DIR_R: return ps ? ART_P "Dpad_X.png" : ART_X "Dpad_X.png";
+    default: return ps ? ART_P "Dpad.png" : ART_X "Dpad.png";
+    }
+}
+
+// A stick with arrows for the directions in dirs (all four: the stick alone, both sticks alike as the game's own icons
+// draw them: the camera's right stick with arrows all round stood out from Move's plain left one)
+static const char *stick_art(bool right, int dirs, int fam) {
+    static char buf[64];
+    const char *base = fam == 2 ? ART_P : ART_X, *d;
+    switch (dirs) {
+    case DIR_U: d = "_UP"; break;
+    case DIR_D: d = "_Down"; break;
+    case DIR_L: d = "_Left"; break;
+    case DIR_R: d = "_Right"; break;
+    case DIR_U | DIR_D: d = "_Y"; break;
+    case DIR_L | DIR_R: d = "_X"; break;
+    default: d = ""; break;
+    }
+    snprintf(buf, sizeof buf, "%s%s%s.png", base, right ? "R" : "L", d);
+    return buf;
+}
+
+// A key's picture, NULL if the art has none (it is then drawn on a blank key)
+static const char *key_art(int sc) {
+    static char buf[64];
+    const char *n = NULL;
+    switch (sc) {
+    case SDL_SCANCODE_UP: n = "Up"; break;
+    case SDL_SCANCODE_DOWN: n = "Down"; break;
+    case SDL_SCANCODE_LEFT: n = "Left"; break;
+    case SDL_SCANCODE_RIGHT: n = "Right"; break;
+    case SDL_SCANCODE_LSHIFT: case SDL_SCANCODE_RSHIFT: n = "Shift"; break;
+    case SDL_SCANCODE_LCTRL: case SDL_SCANCODE_RCTRL: n = "Crtl"; break;  // (sic, the art's name)
+    case SDL_SCANCODE_LALT: case SDL_SCANCODE_RALT: n = "Alt"; break;
+    case SDL_SCANCODE_RETURN: case SDL_SCANCODE_KP_ENTER: n = "Enter"; break;
+    case SDL_SCANCODE_ESCAPE: n = "Esc"; break;
+    case SDL_SCANCODE_BACKSPACE: n = "BackSpace"; break;
+    case SDL_SCANCODE_CAPSLOCK: n = "CapsLock"; break;
+    case SDL_SCANCODE_DELETE: n = "Del"; break;
+    case SDL_SCANCODE_INSERT: n = "Ins"; break;
+    case SDL_SCANCODE_HOME: n = "Home"; break;
+    case SDL_SCANCODE_END: n = "End"; break;
+    case SDL_SCANCODE_PAGEUP: n = "PageUp"; break;
+    case SDL_SCANCODE_PAGEDOWN: n = "PageDown"; break;
+    case SDL_SCANCODE_SPACE: n = "Space"; break;
+    case SDL_SCANCODE_TAB: n = "Tab"; break;
+    case SDL_SCANCODE_MINUS: n = "Minus"; break;
+    case SDL_SCANCODE_EQUALS: n = "Plus"; break;
+    case SDL_SCANCODE_SLASH: n = "Slash"; break;
+    case SDL_SCANCODE_SEMICOLON: n = "Semicolon"; break;
+    case SDL_SCANCODE_APOSTROPHE: n = "Quotation"; break;
+    case SDL_SCANCODE_GRAVE: n = "Tilde"; break;
+    case SDL_SCANCODE_LEFTBRACKET: n = "Brackets_L"; break;
+    case SDL_SCANCODE_RIGHTBRACKET: n = "Brackets_R"; break;
+    case SDL_SCANCODE_NUMLOCKCLEAR: n = "NumLock"; break;
+    case SDL_SCANCODE_PRINTSCREEN: n = "PrtScrn"; break;
+    case SDL_SCANCODE_KP_MULTIPLY: n = "Asterisk"; break;
+    case SDL_SCANCODE_4: return ART_K "3_Key_Dark-1.png";  // (the 4, under another name in the art)
+    default: break;
+    }
+    if (sc >= SDL_SCANCODE_F1 && sc <= SDL_SCANCODE_F12) {
+        snprintf(buf, sizeof buf, ART_K "F%d_Key_Dark.png", sc - SDL_SCANCODE_F1 + 1);
+        return buf;
+    }
+    if (!n && sc > 0 && sc < SDL_SCANCODE_COUNT) {  // letters and digits (no 4 in the art: above)
+        const char *s = SDL_GetScancodeName((SDL_Scancode)sc);
+        if (s && s[0] && !s[1] && ((s[0] >= 'A' && s[0] <= 'Z') || (s[0] >= '0' && s[0] <= '9'))) n = s;
+    }
+    if (!n) return NULL;
+    snprintf(buf, sizeof buf, ART_K "%s_Key_Dark.png", n);
+    return buf;
+}
+
+// The width a picture may take: the game shows a glyph only as wide as the font's width for it, a texel or so past
+// the original's lit pixels on either side (External_00's widths: 30 for A B X Y, 31 for the shoulders); what lies
+// further out in the cell is cut off
+static float art_max_w(Box b) { return b.w + 2; }
+
 // A controller button as an Xbox / PlayStation icon
 static void pad_button(Canvas *c, Box b, int host, int fam) {
     bool ps = fam == 2, num = ps || fam == 3;  // (the Steam Deck: Xbox's letters, numbered shoulders and sticks)
+    if (art_draw(c, b, pad_art(host, fam), art_max_w(b))) return;
     switch (host) {
     case SDL_GAMEPAD_BUTTON_SOUTH: case SDL_GAMEPAD_BUTTON_EAST: case SDL_GAMEPAD_BUTTON_WEST: case SDL_GAMEPAD_BUTTON_NORTH:
         if (ps) ps_face(c, b, host);
@@ -523,16 +782,62 @@ static const char *key_short(int sc, int *dir) {
     return buf;
 }
 
+// The mouse from the art (its buttons, or moving it: dirs), else drawn
+static void mouse_icon(Canvas *c, Box b, int button, int dirs) {
+    const char *rel = NULL;
+    if (!dirs) rel = button == 1 ? ART_K "Mouse_Left_Key_Dark.png" : button == 2 ? ART_K "Mouse_Middle_Key_Dark.png" :
+                     button == 3 ? ART_K "Mouse_Right_Key_Dark.png" : button == 0 ? ART_K "Mouse_Simple_Key_Dark.png" : NULL;
+    else if (!(dirs & (DIR_L | DIR_R))) rel = ART_K "Mouse_Y_Key_Dark.png";
+    else if (!(dirs & (DIR_U | DIR_D))) rel = ART_K "Mouse_X_Key_Dark.png";
+    else rel = ART_K "Mouse_XY_Key_Dark.png";
+    if (!art_draw(c, b, rel, art_max_w(b))) mouse(c, b, button, dirs);
+}
+
 // A keyboard binding (key or mouse button) as an icon
 static void key_icon(Canvas *c, Box b, int sc) {
-    if (sc > BIND_MOUSE && sc <= BIND_MOUSE_LAST) { mouse(c, b, sc - BIND_MOUSE, 0); return; }
+    if (sc > BIND_MOUSE && sc <= BIND_MOUSE_LAST) { mouse_icon(c, b, sc - BIND_MOUSE, 0); return; }
+    if (art_draw(c, b, key_art(sc), art_max_w(b))) return;
     int dir;
     const char *l = key_short(sc, &dir);
     keycap(c, b, l, dir);
 }
 
+// Several keys from the art, laid out as on the keyboard: four as up over left, down, right (W over A S D), two side
+// by side. False when one of them has no picture, or a wide one (Space) that would not read that small.
+static bool keys_art(Canvas *c, Box b, const int *slots, int dirs) {
+    const char *rel[4];
+    int n = 0;
+    for (int i = 0; i < 4; i++) {
+        if (!(dirs & (1 << i))) continue;
+        int sc = g_bind_key[slots[i]];
+        const char *r = sc > BIND_MOUSE && sc <= BIND_MOUSE_LAST ? NULL : key_art(sc);
+        const Art *a = r ? art_load(r) : NULL;
+        if (!a || a->w > a->h * 1.3f) return false;
+        static char names[4][64];
+        snprintf(names[i], sizeof names[i], "%s", r);  // (key_art's buffer is reused)
+        rel[n++] = names[i];
+    }
+    float mw = art_max_w(b);
+    if (n == 4) {  // (rel: up, down, left, right)
+        float q = minf(b.s / 2.1f, mw / 3.2f), gx = q * 1.07f, gy = q * 0.54f;
+        art_draw(c, (Box){b.cx, b.cy - gy, q, q}, rel[0], q);
+        art_draw(c, (Box){b.cx - gx, b.cy + gy, q, q}, rel[2], q);
+        art_draw(c, (Box){b.cx, b.cy + gy, q, q}, rel[1], q);
+        art_draw(c, (Box){b.cx + gx, b.cy + gy, q, q}, rel[3], q);
+        return true;
+    }
+    if (n == 2) {
+        float q = minf(b.s * 0.66f, mw / 2.15f), gx = q * 0.54f;
+        art_draw(c, (Box){b.cx - gx, b.cy, q, q}, rel[0], q);
+        art_draw(c, (Box){b.cx + gx, b.cy, q, q}, rel[1], q);
+        return true;
+    }
+    return false;
+}
+
 // Several keys (a stick's directions) on one keycap: arrows, or single-character labels side by side
 static void keys_icon(Canvas *c, Box b, const int *slots, int dirs) {
+    if (keys_art(c, b, slots, dirs)) return;
     char label[16] = "";
     int arrows = 0, n = 0;
     bool letters = true;
@@ -628,6 +933,7 @@ static uint32_t generation(bool cursor) {
     } else {
         for (int i = 0; i < BIND_PAD_COUNT; i++) h = (h ^ (uint16_t)g_bind_pad[i]) * 16777619u;
     }
+    h = (h ^ g_settings.sharper_buttons) * 16777619u;  // (the art or the drawn icons: switched in game, redrawn at once)
     return h | 1;
 }
 
@@ -679,7 +985,7 @@ static bool draw_glyph(Canvas *c, Box b, int code, int kind, int *copy) {
     if (kind == ICONS_KEYBOARD) {
         switch (m.kind) {
         case G_BUTTON:
-            if(m.arg==BIND_RSTICK&&pc_cursor_preview_active()) {mouse(c,b,SDL_BUTTON_LEFT,0);return true;}
+            if(m.arg==BIND_RSTICK&&pc_cursor_preview_active()) {mouse_icon(c,b,SDL_BUTTON_LEFT,0);return true;}
             key_icon(c, b, m.arg==BIND_Y&&pc_cursor_sensor_active()?g_bind_key[BIND_LEFT]:g_bind_key[m.arg]); return true;
         case G_DPAD:
             if (!(m.arg & (m.arg - 1))) key_icon(c, b, g_bind_key[k_dpad_slot[dir_index(m.arg)]]);
@@ -692,16 +998,16 @@ static bool draw_glyph(Canvas *c, Box b, int code, int kind, int *copy) {
             return true;
         }
         default: {  // the right stick: the mouse when it turns the camera, else its keys
-            if(pc_cursor_preview_active()){mouse(c,b,SDL_BUTTON_LEFT,0);return true;}
+            if(pc_cursor_preview_active()){mouse_icon(c,b,SDL_BUTTON_LEFT,0);return true;}
             static const int rs[4] = {BIND_RS_UP, BIND_RS_DOWN, BIND_RS_LEFT, BIND_RS_RIGHT};
-            if (g_settings.mouse_camera) mouse(c, b, 0, m.arg);
+            if (g_settings.mouse_camera) mouse_icon(c, b, 0, m.arg);
             else if (!(m.arg & (m.arg - 1))) key_icon(c, b, g_bind_key[rs[dir_index(m.arg)]]);
             else keys_icon(c, b, rs, m.arg);
             return true;
         }
         }
     }
-    // Xbox / PlayStation / Steam Deck: buttons through the bindings; the sticks keep the game's (L / R)
+    // Xbox / PlayStation / Steam Deck: buttons through the bindings; the sticks keep the game's (L / R) without the art
     switch (m.kind) {
     case G_BUTTON: pad_button(c, b, g_bind_pad[m.arg], fam); return true;
     case G_DPAD:
@@ -709,9 +1015,9 @@ static bool draw_glyph(Canvas *c, Box b, int code, int kind, int *copy) {
             int host = g_bind_pad[k_dpad_slot[dir_index(m.arg)]];
             if (host != k_dpad_host[dir_index(m.arg)]) { pad_button(c, b, host, fam); return true; }
         }
-        dpad(c, b, m.arg);
+        if (!art_draw(c, b, dpad_art(m.arg, fam), art_max_w(b))) dpad(c, b, m.arg);
         return true;
-    default: return false;
+    default: return art_draw(c, b, stick_art(m.kind == G_RSTICK, m.arg, fam), art_max_w(b));
     }
 }
 
@@ -858,9 +1164,9 @@ bool glyphs_sheet_known(uint64_t addr, uint64_t pool_lo, uint64_t pool_hi, uint3
     return is_sheet(addr, pool_lo, pool_hi, format, w, h);
 }
 
-// Gameplay > Sharper text. The icons are shapes and Fira Sans, so they are drawn again at the larger size rather
-// than enlarged; the game's own glyphs (the ones kept, and all of them with the Nintendo icons) are enlarged as the
-// game's text is (text_upscale.c), once a boot: the sheet's contents never change.
+// Gameplay > Sharper text. The icons are shapes and Fira Sans, or the button art (Sharper buttons), so they are drawn
+// again at the larger size rather than enlarged; the game's own glyphs (the ones kept, and all of them with the
+// Nintendo icons) are enlarged as the game's text is (text_upscale.c), once a boot: the sheet's contents never change.
 static uint8_t *g_big;
 static uint32_t g_big_k;
 

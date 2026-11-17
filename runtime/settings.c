@@ -637,6 +637,7 @@ void settings_load(void) {
         else if (!strcmp(key, "colour_lut_strength")) g_settings.color_lut_strength = atoi(val);  // (percent)
         else if (!strcmp(key, "sharper_menus"))  // (off / 2x / 4x)
             g_settings.sharper_menus = !strcmp(val, "4x") ? 4 : !strcmp(val, "2x") ? 2 : 0;
+        else if (!strcmp(key, "sharper_buttons")) g_settings.sharper_buttons = atoi(val) != 0;
         else if (!strcmp(key, "sharper_text"))  // (off / 2x / 4x)
             g_settings.sharper_text = !strcmp(val, "4x") ? 4 : !strcmp(val, "2x") ? 2 : 0;
         else if (!strcmp(key, "shadow_resolution"))  // (console / high / ultra / extreme)
@@ -821,6 +822,7 @@ void settings_save(void) {
     int sr = g_settings.shadow_res;
     fprintf(f, "shadow_resolution = %s\n", shadow[sr >= 0 && sr < SHADOW_COUNT ? sr : SHADOW_CONSOLE]);
     fprintf(f, "sharper_menus = %s\n", g_settings.sharper_menus == 4 ? "4x" : g_settings.sharper_menus == 2 ? "2x" : "off");
+    fprintf(f, "sharper_buttons = %d\n", g_settings.sharper_buttons ? 1 : 0);
     fprintf(f, "sharper_text = %s\n", g_settings.sharper_text == 4 ? "4x" : g_settings.sharper_text == 2 ? "2x" : "off");
     fprintf(f, "wide_view = %d\n", g_settings.wide_view);
     fprintf(f, "hud_edges = %d\n", g_settings.hud_edges);
