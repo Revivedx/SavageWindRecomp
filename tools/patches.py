@@ -904,14 +904,23 @@ def _sprint_cost(gen, a):
             f'  /* {a:#x}: ldr s0, [x8] (a sprint\'s stamina: Cheats) */')
 
 
-# Free sprint's "in combat": the battle music's controller (1.9.0 0x7001337864, a virtual method of the controller that
-# owns the field battle music) takes the game's battle info, x1; the field battle music (0x7001344c88) starts when its
-# first word is 1 or more and fades out when it is 0. The runtime keeps that word.
+# Free sprint's "in combat": the game hands its battle info (x1) to the music mode that is on (the virtual method at
+# +0x40 of the eight modes, 1.9.0 0x70013395b4 and others), and the mode to one of three battle music controllers'
+# setters: the field battle music's (0x7001345060; its state machine 0x7001344c88 starts the music when the first word
+# is 1 or more and fades it out at 0) and two others' (0x700133dcac, 0x7001349648). Each setter tells the runtime that
+# first word, with which of them it is.
 
-def _battle_info(gen, a):
-    assert _word(gen, a) == 0xb9400028, hex(_word(gen, a))  # ldr w8, [x1]
-    return ('{ extern void rt_battle_info(int32_t); c->x[8] = LD32(c->x[1]); rt_battle_info((int32_t)c->x[8]); }'
-            f'  /* {a:#x}: ldr w8, [x1] (enemies in battle: Cheats) */')
+def _battle_info(which):
+    def patch(gen, a):
+        w = _word(gen, a)
+        if w == 0xa9402428:  # ldp x8, x9, [x1]
+            load = 'c->x[8] = LD64(c->x[1]); c->x[9] = LD64(c->x[1] + 8);'
+        else:
+            assert w == 0xb9400028, hex(w)  # ldr w8, [x1]
+            load = 'c->x[8] = LD32(c->x[1]);'
+        return (f'{{ extern void rt_battle_info(int, int32_t); {load} rt_battle_info({which}, (int32_t)c->x[8]); }}'
+                f'  /* {a:#x}: the battle info\'s count (enemies in battle: Cheats) */')
+    return patch
 
 
 # Adding items (runtime/items.c rt_item_tick): at the entry of Link's damage handling (every frame in play, on the game
@@ -1116,7 +1125,9 @@ PATCHES = {
     'stamina_store': _stamina,
     'sprint_cost': _sprint_cost,
     'sprint_press_cost': _sprint_cost,
-    'battle_bgm_info': _battle_info,
+    'battle_info_field': _battle_info(0),
+    'battle_info_b': _battle_info(1),
+    'battle_info_c': _battle_info(2),
     'item_tick': _item_tick,
 }
 
