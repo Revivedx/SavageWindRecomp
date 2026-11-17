@@ -226,10 +226,15 @@ extern "C" void controls_bindings_draw(float scale) {
     if (ImGui::Button(tr("Reset keyboard to defaults"))) { bind_capture_cancel(); bind_reset(BIND_DEV_KEY); }
     ImGui::EndDisabled();
     // the Xbox convention (confirm on the bottom button) in one click, and back again
-    if (ImGui::Button(tr("Swap A and B (Xbox: A confirms)"))) { bind_capture_cancel(); bind_swap_ab(); }
+    const bool swapped = ImGui::Button(tr("Swap A and B (Xbox: A confirms)"));
+    if (swapped) { bind_capture_cancel(); bind_swap_ab(); }
     // in game: the HUD's diamond was laid out when the game started (runtime/services/fs.c) and moves at the next one
-    if (glyphs_hud_positions_stale())
+    if (glyphs_hud_positions_stale()) {
         ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", tr("Restart the game to update the HUD buttons."));
+        // the note appears under the button: scroll down to it when it falls below the bottom of the page
+        if (swapped && ImGui::GetItemRectMax().y > ImGui::GetWindowDrawList()->GetClipRectMax().y)
+            ImGui::SetScrollHereY(1.0f);
+    }
 
     ImGui::PushTextWrapPos(0);
     ImGui::TextDisabled("%s", tr("Bindings apply to the game only. Esc and F1 always open the in-game menu, and so do the "
