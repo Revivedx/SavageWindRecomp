@@ -957,8 +957,8 @@ void build_items(void) {
                        [](const Item &) { return N(k_text); }, [](const Item &, int x) { return tr(k_text[x]); },
                        [](const Item &) { return g_settings.sharper_menus / 2; },
                        [](const Item &, int x) { g_settings.sharper_menus = x * 2; }, 0));
-    // the button icons from the player's prompt-art folder (runtime/nvn/glyphs.c): redrawn as soon as it changes
-    v.push_back(toggle(P_GAMEPLAY, "Sharper buttons", "Cleaner button icons, from the prompt-art folder. Doesn't apply to Nintendo buttons.",
+    // the button icons from the shipped button art (runtime/nvn/glyphs.c): redrawn as soon as it changes
+    v.push_back(toggle(P_GAMEPLAY, "Sharper buttons", "Cleaner button icons. Doesn't apply to Nintendo buttons.",
                        [](const Item &) { return (int)g_settings.sharper_buttons; },
                        [](const Item &, int x) { g_settings.sharper_buttons = x; }, 0));
 

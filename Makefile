@@ -432,6 +432,7 @@ dist:
 	if [ -f build/fsr-dlls/amd_fidelityfx_loader_vk.dll ]; then cp build/fsr-dlls/amd_fidelityfx_*_vk.dll \
 	    build/fsr-dlls/AMD-FidelityFX-DLL-LICENSE.txt "$(DIST)/"; fi  # (AMD FSR 4: tools/fetch_fsr_dlls.py; AMD's licence allows binary redistribution with this notice)
 	mkdir "$(DIST)/colour-luts" && cp third_party/luts/*.cube third_party/luts/README.md "$(DIST)/colour-luts/"  # (CC0: Video > Colour)
+	cp -R third_party/prompt-art "$(DIST)/button-art"  # (CC0: Gameplay > Sharper buttons)
 	cp README.md LICENSE "$(DIST)/"  # (licenses and source links of the bundled components: README "License")
 	cp recomplauncher.json "$(DIST)/"  # (RecompLauncher reads it from the release to set the game up: next to the exe)
 	PATH="$(CURDIR)/build/deps-win/bin:$$PATH" ldd $(WIN_B)/savagewind.exe | awk '(/ucrt64/ || /deps-win/) && !/vulkan-1/ {print $$3}' | sort -u | \

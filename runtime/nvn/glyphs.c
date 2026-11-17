@@ -263,10 +263,11 @@ static void text(Canvas *t, const char *s, float cx, float cy, float cap_h, floa
 }
 static void erase(Canvas *c, const Canvas *t) { for (int i = 0; i < c->n * c->n; i++) c->a[i] *= 1 - t->a[i]; }
 
-// ---- button art (Gameplay > Sharper buttons, the player's own): pictures of the buttons and keys, 128x128 RGBA PNGs
-// of a dark button with white symbols, in the folder layout of button prompt art packs (XGamepad/Default/T_X_A_White.png...),
-// read from <data root>/prompt-art. Nothing of it is shipped; without it, or with the setting off, the icons are drawn
-// as above.
+// ---- button art (Gameplay > Sharper buttons): pictures of the buttons and keys, 128x128 RGBA PNGs of a dark button
+// with white symbols, in the folder layout of button prompt art packs (XGamepad/Default/T_X_A_White.png...). Shipped:
+// the ones used here from Julio Cacko's Input Prompts Pack (CC0: third_party/prompt-art, button-art/ next to the
+// executable); a player's own pack in <data root>/prompt-art takes their place. With the setting off, or a picture
+// missing, the icons are drawn as above.
 // The sheet has one channel the game tints, so a picture becomes coverage: the dark body counts, white inside it (a
 // letter) is a hole, white outside it (a stick's arrows, which touch the transparent background) counts. A pressed
 // d-pad arm (a large white part) becomes a band along its edge: as a hole its hairline outline vanishes at text size.
@@ -279,15 +280,21 @@ static Art g_art[ART_MAX];
 static int g_nart, g_art_state;  // state: 0 not looked for, 1 found, -1 missing
 static char g_art_dir[1024];
 
+static bool art_in(const char *dir) {  // (a pack's folder: it has the Xbox A)
+    char probe[1100];
+    int w, h;
+    snprintf(probe, sizeof probe, "%s/XGamepad/Default/T_X_A_White.png", dir);
+    return rt_image_info(probe, &w, &h);
+}
+
 static bool art_ready(void) {
     if (g_art_state) return g_art_state > 0;
     snprintf(g_art_dir, sizeof g_art_dir, "%s/prompt-art", rt_data_root());
-    char probe[1100];
-    int w, h;
-    snprintf(probe, sizeof probe, "%s/XGamepad/Default/T_X_A_White.png", g_art_dir);
-    g_art_state = rt_image_info(probe, &w, &h) ? 1 : -1;
-    LOG("[glyphs] button art %s: %s\n", g_art_state > 0 ? "from" : "not found in", g_art_dir);
-    return g_art_state > 0;
+    bool found = art_in(g_art_dir) ||
+                 (rt_resource("button-art", "third_party/prompt-art", g_art_dir, sizeof g_art_dir) && art_in(g_art_dir));
+    g_art_state = found ? 1 : -1;
+    LOG("[glyphs] button art %s%s\n", found ? "from " : "not found", found ? g_art_dir : "");
+    return found;
 }
 
 static Art *art_load(const char *rel) {

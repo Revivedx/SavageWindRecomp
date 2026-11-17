@@ -36,6 +36,8 @@
   [CINEMA 3](https://freshluts.com/luts/219) and "Dormant" is [CARIBE](https://freshluts.com/luts/217), both
   uploaded by Andy; "Ember" is [powerful cold](https://freshluts.com/luts/107), uploaded by sagi hershkovich
   (`third_party/luts/README.md`).
+- Button icons from the [Input Prompts Pack](https://juliocacko.itch.io/free-input-prompts) by JulioCacko, CC0 1.0,
+  unchanged (`third_party/prompt-art/README.md`).
 
 ## What the Windows release bundles
 
@@ -60,3 +62,5 @@ The Windows release zip also bundles, unchanged unless noted, under their own li
   Hebrew fonts, Medium, for the menus in Thai and Hebrew (SIL OFL 1.1, `NotoSansThai-OFL.txt`,
   `NotoSansHebrew-OFL.txt`).
 - Three colour LUTs in `colour-luts/` (CC0 1.0, from FreshLUTs: see "Credits" and `colour-luts/README.md`).
+- 150 button icons in `button-art/` (CC0 1.0, from JulioCacko's Input Prompts Pack: see "Credits" and
+  `button-art/README.md`).

@@ -47,6 +47,7 @@ cp third_party/fonts/NotoSansHebrew/NotoSansHebrew-Medium.ttf "$APPDIR/usr/bin/"
 cp third_party/fonts/NotoSansHebrew/OFL.txt "$APPDIR/usr/bin/NotoSansHebrew-OFL.txt"
 cp third_party/FidelityFX/LICENSE.txt "$APPDIR/usr/bin/FidelityFX-LICENSE.txt"  # (AMD FidelityFX SDK, MIT: frame generation)
 mkdir "$APPDIR/usr/bin/colour-luts" && cp third_party/luts/*.cube third_party/luts/README.md "$APPDIR/usr/bin/colour-luts/"  # (CC0: Video > Colour)
+cp -R third_party/prompt-art "$APPDIR/usr/bin/button-art"  # (CC0: Gameplay > Sharper buttons)
 cp README.md LICENSE "$APPDIR/usr/bin/"  # (licenses and source links of the bundled components: README "License")
 cp recomplauncher.json "$APPDIR/"  # (RecompLauncher reads /recomplauncher.json from inside the AppImage)
 [ -d "$L/helper/swgen" ] || { echo "no game code generator helper: tools/linux/gen_helper.sh $ARCH first"; exit 1; }

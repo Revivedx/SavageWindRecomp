@@ -1098,9 +1098,9 @@ static void tab_display(void) {
                        "upscale made on your computer from the game's own art, not Nintendo's original art.", false))
             g_settings.sharper_menus = cur * 2;
     }
-    // the button icons from the player's prompt-art folder (runtime/nvn/glyphs.c)
+    // the button icons from the shipped button art (runtime/nvn/glyphs.c)
     opt_toggle("Sharper buttons", &g_settings.sharper_buttons, false,
-               "Makes the button icons in the game's prompts cleaner, using the pictures in the prompt-art folder. "
+               "Makes the button icons in the game's prompts cleaner, using the free Input Prompts Pack by JulioCacko. "
                "Doesn't apply to Nintendo buttons.");
     // Advanced (vulkan/exec.c: bloom's and the distance blur's draws; CMD_REPORT_COUNTER: dynamic resolution)
     opt_section("Advanced");
