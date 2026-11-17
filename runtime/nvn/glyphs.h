@@ -9,11 +9,21 @@
 bool glyphs_apply(uint64_t addr, uint64_t pool_lo, uint64_t pool_hi, uint32_t format, uint32_t w, uint32_t h,
                   uint8_t *lin, uint32_t wb, uint32_t hb);
 
+// Gameplay > Sharper text: the texture at addr is that sheet (create_image gives it a larger image)
+bool glyphs_sheet_known(uint64_t addr, uint64_t pool_lo, uint64_t pool_hi, uint32_t format, uint32_t w, uint32_t h);
+// The sheet drawn k (2 to 4) times larger for the current device: out gets (w * k) x (h * k) R8 texels, rows in the
+// sheet's own order; lin as for glyphs_apply. False, with the texels only enlarged, when its memory holds something else.
+bool glyphs_draw_sheet(uint64_t addr, uint64_t pool_lo, uint64_t pool_hi, uint32_t format, uint32_t w, uint32_t h,
+                       const uint8_t *lin, uint32_t wb, uint32_t hb, uint32_t k, uint8_t *out);
+
 // The same for the HUD's button textures (R8 masks, w x h texels, rows `row` bytes apart in lin): true when the texture
 // is one of them.
 bool glyphs_apply_layout(uint32_t format, uint32_t w, uint32_t h, uint8_t *lin, uint32_t row);
 // One of those textures (R8 texels, deswizzled)?
 bool glyphs_is_layout_icon(uint32_t w, uint32_t h, const uint8_t *lin, uint32_t row);
+// Sharper text: such a texture drawn s (2 to 4) times larger into out ((w * s) x (h * s) R8 texels); false, with the
+// texels only enlarged, when it isn't one
+bool glyphs_draw_layout(uint32_t w, uint32_t h, const uint8_t *lin, uint32_t row, uint32_t s, uint8_t *out);
 
 // Changes whenever the icons to draw change (device, bindings, setting): sheets uploaded under another one go up again.
 uint32_t glyphs_generation(void);

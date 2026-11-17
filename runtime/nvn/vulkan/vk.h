@@ -138,6 +138,7 @@ typedef struct TexBackend {
     uint8_t text_scale;          // a font sheet enlarged by this much on upload (runtime/nvn/text_upscale.c); 0: not one
     bool heart_half;             // the HUD's half heart, HEART_SCALE times wider on upload (textures.c)
     uint32_t glyph_gen;          // a button glyph sheet (runtime/nvn/glyphs.c): the icons it was uploaded with
+    uint8_t glyph_scale;         // Sharper text: that sheet drawn this much larger on upload (glyphs_draw_sheet); 0: not
     // textures.c: one image per memory and shape, shared by every texture made there
     uint64_t key_addr;           // 0: not shared
     uint32_t key[7];             // target, format, width, height, depth, levels, samples
@@ -203,6 +204,7 @@ VkSampler vk_sampler(NvnSamplerDesc *d, bool aniso_ok, float bias);  // (aniso_o
                                                                      //  apply; bias: added to the LOD bias)
 VkSampler vk_default_sampler(bool linear);
 VkSampler vk_text_sampler(void);
+VkSampler vk_glyph_sampler(void);  // (the button glyph sheet drawn larger: textures.c upload_glyph_sheet)
 void vk_image_init_layout(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect);
 // Destruction once every submission that may use the object has completed.
 void vk_defer_image(VkImage img, VmaAllocation mem);

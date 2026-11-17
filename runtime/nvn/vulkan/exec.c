@@ -6937,6 +6937,7 @@ static void texture_info_(int stage, ShaderInfo *si, int i, VkDescriptorImageInf
     // (vk_sampler's Video > Anisotropic filtering: not for textures with one mip level - the render targets BOTW reads
     // back - nor in blended draws - particles, effects, decals - whose quads' square edges it brought out)
     bool all = aniso_all(), aniso_ok = all || !(st.color_state[0] & 1), material = false, text_sheet = false, menu_tex = false;
+    bool glyph_sheet = false;
     sc[0] = sc[1] = 1;
     wh[0] = wh[1] = 0;
     if (h && st.tpool && tic < (uint32_t)st.tpool->count) {
@@ -6966,6 +6967,7 @@ static void texture_info_(int stage, ShaderInfo *si, int i, VkDescriptorImageInf
             material = et->backend && !((TexBackend *)et->backend)->gpu_owned;
             text_sheet = et->backend && ((TexBackend *)et->backend)->text_scale;
             menu_tex = text_sheet && ((TexBackend *)et->backend)->menu_tex;
+            glyph_sheet = et->backend && ((TexBackend *)et->backend)->glyph_scale;
             if (et == scene_up.t && stage == 1) {  // (with the texture's own swizzle: BOTW draws its weapon wheel's
                 // blurred capture of the scene, whose alpha is 0, with alpha forced to 1)
                 view = vk_image_view(scene_up.img, VK_IMAGE_VIEW_TYPE_2D, scene_up.img->format, 0, 1, 0, 1,
@@ -7005,6 +7007,7 @@ static void texture_info_(int stage, ShaderInfo *si, int i, VkDescriptorImageInf
         d.min_filter = 5, d.lod_min = 0, d.lod_max = 16;
         smp = vk_sampler(&d, false, 0);
     } else if (text_sheet) smp = vk_text_sampler();
+    else if (glyph_sheet) smp = vk_glyph_sampler();
     if (!view) view = vk_dummy_view(st_->type), layout = VK_IMAGE_LAYOUT_GENERAL;
     if (!smp) smp = vk_default_sampler(true);
     *out = (VkDescriptorImageInfo){smp, view, layout};

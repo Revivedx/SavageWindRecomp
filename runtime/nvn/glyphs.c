@@ -15,6 +15,9 @@
 // The texture goes up again whenever what to show changes (glyphs_generation: device, bindings, setting), so prompts
 // already on screen change on the next frame.
 //
+// With Gameplay > Sharper text the sheet is drawn 2 or 4 times larger (glyphs_draw_sheet, into a larger image with mip
+// levels: textures.c): the game stretches its 50-texel cells to about 70 pixels at 1440p for dialogue, more in menus.
+//
 // SAVAGEWIND_GLYPH_DUMP=1 saves each sheet as uploaded, the original beside it (build/glyph_sheet_<n>.pgm, bottom-up).
 #include <math.h>
 #include <pthread.h>
@@ -32,6 +35,7 @@
 #include "../paths.h"
 #include "../rt.h"
 #include "../settings.h"
+#include "text_upscale.h"
 
 #define STBTT_STATIC
 #define STB_TRUETYPE_IMPLEMENTATION
@@ -101,9 +105,18 @@ static void bc4_encode(const uint8_t *img, uint32_t wb, uint32_t hb, uint8_t *li
         }
 }
 
-// ---- the cell canvas: coverage 0..1, cell pixels, y down
-typedef struct { float a[CELL * CELL]; } Canvas;
+// ---- the cell canvas: coverage 0..1, y down. Shapes are placed in the cell's own units (50 x 50, the game's texels);
+// the canvas has k pixels per unit: 1 for the game's sheet, more when Sharper text draws it larger (glyphs_draw_sheet)
+typedef struct { int k, n; float *a; } Canvas;  // n = CELL * k pixels a side
 typedef struct { float cx, cy, s, w; } Box;  // the original glyph's centre, height and width
+
+static bool canvas_init(Canvas *c, int k) {
+    c->k = k, c->n = CELL * k;
+    c->a = calloc((size_t)c->n * c->n, sizeof *c->a);
+    return c->a != NULL;
+}
+static void canvas_free(Canvas *c) { free(c->a), c->a = NULL; }
+static float unit(const Canvas *c, int p) { return (p + 0.5f) / (float)c->k; }  // (a pixel's centre, in units)
 
 typedef enum { SH_CIRCLE, SH_BOX, SH_SEG, SH_TRI } ShapeType;
 typedef struct { ShapeType t; float p[6], r, ring; } Shape;  // ring > 0: only a band that thick on its edge
@@ -141,14 +154,36 @@ static float sd(const Shape *s, float x, float y) {
     return s->ring > 0 ? fabsf(d) - s->ring : d;
 }
 
-static float cover(float d) { return clampf(0.5f - d, 0, 1); }
+// The coverage of a pixel whose centre is d units outside a shape: a ramp one pixel wide across the edge
+static float cover(const Canvas *c, float d) { return clampf(0.5f - d * c->k, 0, 1); }
+
+// The pixels a shape can touch (its bounds and a unit more): fill and cut leave the others as they are, so at 4x
+// a glyph costs about what the whole cell did at 1x
+static void bounds(const Canvas *c, const Shape *s, int *x0, int *y0, int *x1, int *y1) {
+    float lx, ly, hx, hy, m = s->r + (s->ring > 0 ? s->ring : 0) + 1;
+    switch (s->t) {
+    case SH_CIRCLE: lx = hx = s->p[0], ly = hy = s->p[1]; break;
+    case SH_BOX: lx = s->p[0] - s->p[2], hx = s->p[0] + s->p[2], ly = s->p[1] - s->p[3], hy = s->p[1] + s->p[3], m -= s->r; break;
+    case SH_SEG: lx = minf(s->p[0], s->p[2]), hx = maxf(s->p[0], s->p[2]), ly = minf(s->p[1], s->p[3]), hy = maxf(s->p[1], s->p[3]); break;
+    default:
+        lx = minf(minf(s->p[0], s->p[2]), s->p[4]), hx = maxf(maxf(s->p[0], s->p[2]), s->p[4]);
+        ly = minf(minf(s->p[1], s->p[3]), s->p[5]), hy = maxf(maxf(s->p[1], s->p[3]), s->p[5]);
+        break;
+    }
+    *x0 = (int)clampf(floorf((lx - m) * c->k), 0, (float)c->n), *x1 = (int)clampf(ceilf((hx + m) * c->k), 0, (float)c->n);
+    *y0 = (int)clampf(floorf((ly - m) * c->k), 0, (float)c->n), *y1 = (int)clampf(ceilf((hy + m) * c->k), 0, (float)c->n);
+}
 static void fill(Canvas *c, Shape s) {
-    for (int y = 0; y < CELL; y++)
-        for (int x = 0; x < CELL; x++) c->a[y * CELL + x] = maxf(c->a[y * CELL + x], cover(sd(&s, x + 0.5f, y + 0.5f)));
+    int x0, y0, x1, y1;
+    bounds(c, &s, &x0, &y0, &x1, &y1);
+    for (int y = y0; y < y1; y++)
+        for (int x = x0; x < x1; x++) c->a[y * c->n + x] = maxf(c->a[y * c->n + x], cover(c, sd(&s, unit(c, x), unit(c, y))));
 }
 static void cut(Canvas *c, Shape s) {
-    for (int y = 0; y < CELL; y++)
-        for (int x = 0; x < CELL; x++) c->a[y * CELL + x] *= 1 - cover(sd(&s, x + 0.5f, y + 0.5f));
+    int x0, y0, x1, y1;
+    bounds(c, &s, &x0, &y0, &x1, &y1);
+    for (int y = y0; y < y1; y++)
+        for (int x = x0; x < x1; x++) c->a[y * c->n + x] *= 1 - cover(c, sd(&s, unit(c, x), unit(c, y)));
 }
 static Shape circle(float x, float y, float r) { return (Shape){SH_CIRCLE, {x, y}, r, 0}; }
 static Shape box(float x, float y, float hw, float hh, float r) { return (Shape){SH_BOX, {x, y, hw, hh}, r, 0}; }
@@ -184,10 +219,12 @@ static bool font_ready(void) {
     return true;
 }
 
-// The text's capitals cap_h tall (less if it is wider than max_w), centred on (cx, cy): coverage into t
+// The text's capitals cap_h tall (less if it is wider than max_w), centred on (cx, cy): coverage into t (sizes in
+// units, set at t's own resolution: its letters are drawn from the outlines, not enlarged)
 static void text(Canvas *t, const char *s, float cx, float cy, float cap_h, float max_w) {
-    memset(t, 0, sizeof *t);
+    memset(t->a, 0, (size_t)t->n * t->n * sizeof *t->a);
     if (!font_ready() || !*s) return;
+    cx *= t->k, cy *= t->k, cap_h *= t->k, max_w *= t->k;  // (pixels from here on)
     int cap_y0, cap_y1, x0, x1;  // the height of "H" gives the scale for capitals
     stbtt_GetCodepointBox(&g_font, 'H', &x0, &cap_y0, &x1, &cap_y1);
     float scale = cap_h / (float)(cap_y1 > 0 ? cap_y1 : 700);
@@ -200,37 +237,39 @@ static void text(Canvas *t, const char *s, float cx, float cy, float cap_h, floa
     }
     if (width > max_w) scale *= max_w / width, width = max_w;
     float pen = cx - width / 2, base = cy + cap_y1 * scale / 2;
-    static unsigned char bm[CELL * 4 * CELL * 4];
     for (const char *p = s; *p; p++) {
         int cp = (unsigned char)*p, bx0, by0, bx1, by1, adv, lsb;
         float sx = pen - floorf(pen);
         stbtt_GetCodepointBitmapBoxSubpixel(&g_font, cp, scale, scale, sx, 0, &bx0, &by0, &bx1, &by1);
         int bw = bx1 - bx0, bh = by1 - by0;
-        if (bw > 0 && bh > 0 && bw * bh <= (int)sizeof bm) {
+        unsigned char *bm = bw > 0 && bh > 0 && bw <= 4 * t->n && bh <= 4 * t->n ? malloc((size_t)bw * bh) : NULL;
+        if (bm) {
             stbtt_MakeCodepointBitmapSubpixel(&g_font, bm, bw, bh, bw, scale, scale, sx, 0, cp);
             int ox = (int)floorf(pen) + bx0, oy = (int)lroundf(base) + by0;
             for (int y = 0; y < bh; y++)
                 for (int x = 0; x < bw; x++) {
                     int X = ox + x, Y = oy + y;
-                    if (X >= 0 && X < CELL && Y >= 0 && Y < CELL)
-                        t->a[Y * CELL + X] = maxf(t->a[Y * CELL + X], bm[y * bw + x] / 255.0f);
+                    if (X >= 0 && X < t->n && Y >= 0 && Y < t->n)
+                        t->a[Y * t->n + X] = maxf(t->a[Y * t->n + X], bm[y * bw + x] / 255.0f);
                 }
+            free(bm);
         }
         stbtt_GetCodepointHMetrics(&g_font, cp, &adv, &lsb);
         pen += adv * scale;
         if (p[1]) pen += stbtt_GetCodepointKernAdvance(&g_font, cp, (unsigned char)p[1]) * scale;
     }
 }
-static void ink(Canvas *c, const Canvas *t) { for (int i = 0; i < CELL * CELL; i++) c->a[i] = maxf(c->a[i], t->a[i]); }
-static void erase(Canvas *c, const Canvas *t) { for (int i = 0; i < CELL * CELL; i++) c->a[i] *= 1 - t->a[i]; }
+static void erase(Canvas *c, const Canvas *t) { for (int i = 0; i < c->n * c->n; i++) c->a[i] *= 1 - t->a[i]; }
 
 // ---- icons
 enum { DIR_U = 1, DIR_D = 2, DIR_L = 4, DIR_R = 8 };
 
 static void cut_text(Canvas *c, const char *s, float cx, float cy, float cap, float max_w) {
     Canvas t;
+    if (!canvas_init(&t, c->k)) return;
     text(&t, s, cx, cy, cap, max_w);
     erase(c, &t);
+    canvas_free(&t);
 }
 
 // A filled round button with its letter cut out (Xbox face buttons, stick presses)
@@ -289,10 +328,13 @@ static void dpad(Canvas *c, Box b, int mask) {
         cut(c, circle(x, y, w * 0.55f));
         return;
     }
-    for (int py = 0; py < CELL; py++)  // the cross's outline (both bars as one shape)
-        for (int px = 0; px < CELL; px++) {
-            float d = fabsf(minf(sd(&h, px + 0.5f, py + 0.5f), sd(&v, px + 0.5f, py + 0.5f))) - t;
-            c->a[py * CELL + px] = maxf(c->a[py * CELL + px], cover(d));
+    Shape all = ring(box(x, y, L, L, 0), t);
+    int x0, y0, x1, y1;
+    bounds(c, &all, &x0, &y0, &x1, &y1);
+    for (int py = y0; py < y1; py++)  // the cross's outline (both bars as one shape)
+        for (int px = x0; px < x1; px++) {
+            float X = unit(c, px), Y = unit(c, py), d = fabsf(minf(sd(&h, X, Y), sd(&v, X, Y))) - t;
+            c->a[py * c->n + px] = maxf(c->a[py * c->n + px], cover(c, d));
         }
     if (mask & DIR_U) fill(c, box(x, y - L / 2 - w / 2, w, L / 2 - w / 2 + r, r));
     if (mask & DIR_D) fill(c, box(x, y + L / 2 + w / 2, w, L / 2 - w / 2 + r, r));
@@ -339,14 +381,16 @@ static void mouse(Canvas *c, Box b, int button, int dirs) {
     fill(c, ring(body, t));
     fill(c, seg(x - hw, split, x + hw, split, t * 0.8f));
     fill(c, seg(x, y - hh, x, split, t * 0.8f));
-    for (int py = 0; py < CELL; py++)
-        for (int px = 0; px < CELL; px++) {
-            float X = px + 0.5f, Y = py + 0.5f, d = sd(&body, X, Y);
+    int x0, y0, x1, y1;
+    bounds(c, &body, &x0, &y0, &x1, &y1);
+    for (int py = y0; py < y1; py++)
+        for (int px = x0; px < x1; px++) {
+            float X = unit(c, px), Y = unit(c, py), d = sd(&body, X, Y);
             if (button == 1) d = maxf(d, maxf(X - x, Y - split));
             else if (button == 3) d = maxf(d, maxf(x - X, Y - split));
             else if (button == 4 || button == 5) d = maxf(d, maxf(X - (x - hw * 0.3f), fabsf(Y - (y + hh * (button == 4 ? 0.2f : 0.55f))) - hh * 0.14f));
             else continue;
-            c->a[py * CELL + px] = maxf(c->a[py * CELL + px], cover(d));
+            c->a[py * c->n + px] = maxf(c->a[py * c->n + px], cover(c, d));
         }
     if (button == 2) fill(c, seg(x, y - hh * 0.62f, x, y - hh * 0.32f, hw * 0.32f));
     float k = b.s * 0.09f, g = b.s * 0.08f;
@@ -676,40 +720,45 @@ static void cell_origin(const SheetFont *f, uint32_t i, int *x0, int *y0) {
     *x0 = (int)(i % f->cols) * (CELL + 1);
     *y0 = (int)(i / f->cols) * (CELL + 1);
 }
-static int sheet_y(const SheetFont *f, int y0, int y) { return (int)f->sheet_h - 1 - (y0 + y); }  // (stored bottom-up)
+// The row of a cell's pixel y (y down) in the sheet as stored (bottom-up), k pixels for each of the game's texels
+static int sheet_y(const SheetFont *f, uint32_t k, int y0, int y) { return (int)(f->sheet_h * k) - 1 - (y0 * (int)k + y); }
 
-// The sheet as already redrawn, one per generation. Opening or closing a menu with the keyboard changes the generation
-// (the pointer's state above) and each redraw took 50-60 ms of a frame (#591). The sheet's contents are checked first
-// and the icons depend only on the generation, so a sheet of the same generation is the same.
+// The sheet as already redrawn, one per generation and size. Opening or closing a menu with the keyboard changes the
+// generation (the pointer's state above) and each redraw took 50-60 ms of a frame (#591). The sheet's contents are
+// checked first and the icons depend only on the generation, so a sheet of the same generation is the same.
 #define SHEET_CACHE 8
-static struct { uint32_t gen; uint8_t *bc4; } g_sheet_cache[SHEET_CACHE];
+static struct { uint32_t gen, k; uint64_t bytes; uint8_t *data; } g_sheet_cache[SHEET_CACHE];
 static int g_sheet_next;
 static pthread_mutex_t g_sheet_lock = PTHREAD_MUTEX_INITIALIZER;
 
-static bool sheet_cached(uint32_t gen, uint8_t *lin) {
+static bool sheet_cached(uint32_t gen, uint32_t k, uint8_t *out, uint64_t bytes) {
     bool found = false;
     pthread_mutex_lock(&g_sheet_lock);
     for (int i = 0; i < SHEET_CACHE && !found; i++)
-        if (g_sheet_cache[i].bc4 && g_sheet_cache[i].gen == gen) memcpy(lin, g_sheet_cache[i].bc4, SHEET_BYTES), found = true;
+        if (g_sheet_cache[i].data && g_sheet_cache[i].gen == gen && g_sheet_cache[i].k == k && g_sheet_cache[i].bytes == bytes)
+            memcpy(out, g_sheet_cache[i].data, bytes), found = true;
     pthread_mutex_unlock(&g_sheet_lock);
     return found;
 }
 
-static void sheet_cache_add(uint32_t gen, const uint8_t *lin) {
+static void sheet_cache_add(uint32_t gen, uint32_t k, const uint8_t *data, uint64_t bytes) {
     pthread_mutex_lock(&g_sheet_lock);
-    if (!g_sheet_cache[g_sheet_next].bc4) g_sheet_cache[g_sheet_next].bc4 = malloc(SHEET_BYTES);
-    if (g_sheet_cache[g_sheet_next].bc4) {
-        memcpy(g_sheet_cache[g_sheet_next].bc4, lin, SHEET_BYTES);
-        g_sheet_cache[g_sheet_next].gen = gen;
+    typeof(g_sheet_cache[0]) *e = &g_sheet_cache[g_sheet_next];
+    if (e->bytes != bytes) free(e->data), e->data = malloc(bytes), e->bytes = bytes;
+    if (e->data) {
+        memcpy(e->data, data, bytes);
+        e->gen = gen, e->k = k;
         g_sheet_next = (g_sheet_next + 1) % SHEET_CACHE;
+    } else {
+        e->bytes = 0;
     }
     pthread_mutex_unlock(&g_sheet_lock);
 }
 
-bool glyphs_apply(uint64_t addr, uint64_t pool_lo, uint64_t pool_hi, uint32_t format, uint32_t w, uint32_t h,
-                  uint8_t *lin, uint32_t wb, uint32_t hb) {
+// The texture at addr is the game's glyph sheet (its size, format and contents)
+static bool is_sheet(uint64_t addr, uint64_t pool_lo, uint64_t pool_hi, uint32_t format, uint32_t w, uint32_t h) {
     const SheetFont *f = &k_sheet;
-    if (format != FMT_BC4 || w != f->sheet_w || h != f->sheet_h || w != wb * 4 || h != hb * 4) return false;
+    if (format != FMT_BC4 || w != f->sheet_w || h != f->sheet_h) return false;
     if (addr < pool_lo || addr + SHEET_BYTES > pool_hi) return false;
     uint64_t hash = fnv1a((const uint8_t *)(uintptr_t)addr, SHEET_BYTES);
     if (hash != SHEET_HASH) {
@@ -718,13 +767,17 @@ bool glyphs_apply(uint64_t addr, uint64_t pool_lo, uint64_t pool_hi, uint32_t fo
                             (unsigned long long)addr, (unsigned long long)hash);
         return false;
     }
-    uint32_t gen = glyphs_generation();
-    bool dump = getenv("SAVAGEWIND_GLYPH_DUMP") != NULL;
-    if (!dump && sheet_cached(gen, lin)) return true;
-    int kind = resolve_kind();
-    uint8_t *orig = malloc((uint64_t)w * h), *img = malloc((uint64_t)w * h);
-    bc4_decode(lin, wb, hb, orig);
-    memcpy(img, orig, (uint64_t)w * h);
+    return true;
+}
+
+// The icons for the device in use, into img: the sheet as stored, k pixels for each of the game's texels. orig: the
+// game's sheet; base: the same at img's size (orig itself at 1x), for the glyphs kept or moved. Returns how many changed.
+static int redraw_sheet(const uint8_t *orig, const uint8_t *base, uint32_t k, int kind, uint8_t *img) {
+    const SheetFont *f = &k_sheet;
+    uint32_t w = f->sheet_w, h = f->sheet_h, W = w * k, n = CELL * k;
+    memcpy(img, base, (uint64_t)W * h * k);
+    Canvas cv;
+    if (!canvas_init(&cv, (int)k)) return 0;
     int changed = 0;
     for (int code = 0xE040; code < 0xE0A0; code++) {
         uint32_t gi = index_of(code);
@@ -736,7 +789,7 @@ bool glyphs_apply(uint64_t addr, uint64_t pool_lo, uint64_t pool_hi, uint32_t fo
         int bx0 = CELL, by0 = CELL, bx1 = -1, by1 = -1;
         for (int y = 0; y < CELL; y++)
             for (int x = 0; x < CELL; x++)
-                if (orig[(uint64_t)sheet_y(f, y0, y) * w + x0 + x] > 96) {
+                if (orig[(uint64_t)sheet_y(f, 1, y0, y) * w + x0 + x] > 96) {
                     if (x < bx0) bx0 = x;
                     if (x > bx1) bx1 = x;
                     if (y < by0) by0 = y;
@@ -744,45 +797,109 @@ bool glyphs_apply(uint64_t addr, uint64_t pool_lo, uint64_t pool_hi, uint32_t fo
                 }
         if (bx1 < 0) bx0 = 4, by0 = 6, bx1 = 45, by1 = 45;
         Box b = {(bx0 + bx1 + 1) / 2.0f, (by0 + by1 + 1) / 2.0f, (float)(by1 - by0 + 1), (float)(bx1 - bx0 + 1)};
-        static Canvas cv;
-        memset(&cv, 0, sizeof cv);
+        memset(cv.a, 0, (size_t)n * n * sizeof *cv.a);
         int copy = 0;
         bool drawn = draw_glyph(&cv, b, code, kind, &copy);
         if (copy && index_of(copy) != 0xffff) {  // the game's glyph from another cell
             int sx0, sy0;
             cell_origin(f, index_of(copy), &sx0, &sy0);
-            for (int y = 0; y < CELL; y++)
-                memcpy(img + (uint64_t)sheet_y(f, y0, y) * w + x0, orig + (uint64_t)sheet_y(f, sy0, y) * w + sx0, CELL);
+            for (uint32_t y = 0; y < n; y++)
+                memcpy(img + (uint64_t)sheet_y(f, k, y0, (int)y) * W + x0 * k, base + (uint64_t)sheet_y(f, k, sy0, (int)y) * W + sx0 * k, n);
             changed++;
         } else if (drawn) {
-            for (int y = 0; y < CELL; y++)
-                for (int x = 0; x < CELL; x++)
-                    img[(uint64_t)sheet_y(f, y0, y) * w + x0 + x] = (uint8_t)lroundf(cv.a[y * CELL + x] * 255);
+            for (uint32_t y = 0; y < n; y++)
+                for (uint32_t x = 0; x < n; x++)
+                    img[(uint64_t)sheet_y(f, k, y0, (int)y) * W + x0 * k + x] = (uint8_t)lroundf(cv.a[y * n + x] * 255);
             changed++;
         }
     }
+    canvas_free(&cv);
+    return changed;
+}
+
+// SAVAGEWIND_GLYPH_DUMP: the sheet as uploaded (as stored: bottom-up), the original before it when one is given
+static void dump_sheet(const uint8_t *orig, const uint8_t *img, uint32_t w, uint32_t h) {
+    static int n;
+    char path[128];
+    snprintf(path, sizeof path, "build/glyph_sheet_%d.pgm", ++n);
+    FILE *fp = n <= 16 ? fopen(path, "wb") : NULL;
+    if (!fp) return;
+    fprintf(fp, "P5\n%u %u\n255\n", orig ? w * 2 : w, h);
+    for (uint32_t y = 0; y < h; y++) {
+        if (orig) fwrite(orig + (uint64_t)y * w, 1, w, fp);
+        fwrite(img + (uint64_t)y * w, 1, w, fp);
+    }
+    fclose(fp);
+}
+
+bool glyphs_apply(uint64_t addr, uint64_t pool_lo, uint64_t pool_hi, uint32_t format, uint32_t w, uint32_t h,
+                  uint8_t *lin, uint32_t wb, uint32_t hb) {
+    if (w != wb * 4 || h != hb * 4 || !is_sheet(addr, pool_lo, pool_hi, format, w, h)) return false;
+    uint32_t gen = glyphs_generation();
+    bool dump = getenv("SAVAGEWIND_GLYPH_DUMP") != NULL;
+    if (!dump && sheet_cached(gen, 1, lin, SHEET_BYTES)) return true;
+    int kind = resolve_kind();
+    uint8_t *orig = malloc((uint64_t)w * h), *img = malloc((uint64_t)w * h);
+    bc4_decode(lin, wb, hb, orig);
+    int changed = redraw_sheet(orig, orig, 1, kind, img);
     if (changed) bc4_encode(img, wb, hb, lin);
-    sheet_cache_add(gen, lin);
+    sheet_cache_add(gen, 1, lin, SHEET_BYTES);
     static int nlog;
     if (nlog++ < 16)
         LOG("[glyphs] button glyph sheet %llx: %s icons, %d glyphs redrawn\n", (unsigned long long)addr,
             k_kind_names[kind], changed);
-    if (dump) {
-        static int n;
-        char path[128];
-        snprintf(path, sizeof path, "build/glyph_sheet_%d.pgm", ++n);
-        FILE *fp = n <= 16 ? fopen(path, "wb") : NULL;
-        if (fp) {  // (as stored: bottom-up) and the original before it
-            fprintf(fp, "P5\n%u %u\n255\n", w * 2, h);
-            for (uint32_t y = 0; y < h; y++) {
-                fwrite(orig + (uint64_t)y * w, 1, w, fp);
-                fwrite(img + (uint64_t)y * w, 1, w, fp);
-            }
-            fclose(fp);
-        }
-    }
+    if (dump) dump_sheet(orig, img, w, h);
     free(orig);
     free(img);
+    return true;
+}
+
+bool glyphs_sheet_known(uint64_t addr, uint64_t pool_lo, uint64_t pool_hi, uint32_t format, uint32_t w, uint32_t h) {
+    return is_sheet(addr, pool_lo, pool_hi, format, w, h);
+}
+
+// Gameplay > Sharper text. The icons are shapes and Fira Sans, so they are drawn again at the larger size rather
+// than enlarged; the game's own glyphs (the ones kept, and all of them with the Nintendo icons) are enlarged as the
+// game's text is (text_upscale.c), once a boot: the sheet's contents never change.
+static uint8_t *g_big;
+static uint32_t g_big_k;
+
+bool glyphs_draw_sheet(uint64_t addr, uint64_t pool_lo, uint64_t pool_hi, uint32_t format, uint32_t w, uint32_t h,
+                       const uint8_t *lin, uint32_t wb, uint32_t hb, uint32_t k, uint8_t *out) {
+    uint64_t bytes = (uint64_t)w * k * h * k;
+    if (k < 2 || k > 4 || w != wb * 4 || h != hb * 4) return false;
+    uint8_t *orig = malloc((uint64_t)w * h);
+    if (!orig) return false;
+    bc4_decode(lin, wb, hb, orig);
+    if (!is_sheet(addr, pool_lo, pool_hi, format, w, h)) {  // (something else in its memory now: only enlarged)
+        if (!text_upscale(orig, w, h, k, false, out)) memset(out, 0, bytes);
+        free(orig);
+        return false;
+    }
+    uint32_t gen = glyphs_generation();
+    bool dump = getenv("SAVAGEWIND_GLYPH_DUMP") != NULL;
+    if (!dump && sheet_cached(gen, k, out, bytes)) {
+        free(orig);
+        return true;
+    }
+    uint64_t t0 = SDL_GetTicksNS();
+    pthread_mutex_lock(&g_sheet_lock);
+    if (g_big_k != k) {
+        free(g_big);
+        g_big = malloc(bytes);
+        g_big_k = g_big && text_upscale(orig, w, h, k, true, g_big) ? k : 0;
+    }
+    pthread_mutex_unlock(&g_sheet_lock);
+    int kind = resolve_kind(), changed = 0;
+    if (g_big_k == k) changed = redraw_sheet(orig, g_big, k, kind, out);
+    else memset(out, 0, bytes);
+    sheet_cache_add(gen, k, out, bytes);
+    static int nlog;
+    if (nlog++ < 16)
+        LOG("[glyphs] button glyph sheet %llx drawn %ux: %s icons, %d glyphs redrawn in %.0f ms\n", (unsigned long long)addr,
+            k, k_kind_names[kind], changed, (SDL_GetTicksNS() - t0) / 1e6);
+    if (dump) dump_sheet(NULL, out, w * k, h * k);
+    free(orig);
     return true;
 }
 
@@ -823,10 +940,10 @@ bool glyphs_is_layout_icon(uint32_t w, uint32_t h, const uint8_t *lin, uint32_t 
     return find_layout_icon(w, h, lin, row) != NULL;
 }
 
-bool glyphs_apply_layout(uint32_t format, uint32_t w, uint32_t h, uint8_t *lin, uint32_t row) {
-    if (format != FMT_R8) return false;
-    const LayoutIcon *li = find_layout_icon(w, h, lin, row);
-    if (!li) return false;
+// The icon li for the device in use into out, s texels for each of the texture's (rows out_row apart; out may be lin
+// at s = 1). False when the game's own stays (lin unchanged at s = 1).
+static bool layout_draw(const LayoutIcon *li, uint32_t w, uint32_t h, const uint8_t *lin, uint32_t row, uint32_t s,
+                        uint8_t *out, uint32_t out_row) {
     // the icon's box (its lit pixels), in a cell canvas with the texture centred in it (scaled down to fit)
     float k = w > CELL || h > CELL ? (float)CELL / (float)(w > h ? w : h) : 1;
     float ox = (CELL - w * k) / 2, oy = (CELL - h * k) / 2;
@@ -839,23 +956,46 @@ bool glyphs_apply_layout(uint32_t format, uint32_t w, uint32_t h, uint8_t *lin, 
                 if (y < by0) by0 = y;
                 if (y > by1) by1 = y;
             }
-    if (bx1 < 0) return true;
+    if (bx1 < 0) return false;
     Box b = {ox + (bx0 + bx1 + 1) * k / 2, oy + (by0 + by1 + 1) * k / 2, (by1 - by0 + 1) * k, (bx1 - bx0 + 1) * k};
-    static Canvas cv;
-    memset(&cv, 0, sizeof cv);
-    int kind = resolve_kind(), copy = 0;
-    bool drawn = draw_glyph(&cv, b, li->code, kind, &copy);  // (Nintendo: the game's own, even with other bindings)
+    Canvas cv;
+    if (!canvas_init(&cv, (int)s)) return false;
+    int copy = 0;
+    bool drawn = draw_glyph(&cv, b, li->code, resolve_kind(), &copy);  // (Nintendo: the game's own, even with other bindings)
     if (drawn)
-        for (int y = 0; y < (int)h; y++)
-            for (int x = 0; x < (int)w; x++) {  // (bilinear from the canvas)
-                float fx = clampf(ox + (x + 0.5f) * k - 0.5f, 0, CELL - 1), fy = clampf(oy + (y + 0.5f) * k - 0.5f, 0, CELL - 1);
-                int x0 = (int)fx, y0 = (int)fy, x1 = x0 + 1 < CELL ? x0 + 1 : x0, y1 = y0 + 1 < CELL ? y0 + 1 : y0;
+        for (uint32_t y = 0; y < h * s; y++)
+            for (uint32_t x = 0; x < w * s; x++) {  // (bilinear from the canvas; at 48x48 the canvas's own pixels)
+                float fx = clampf((ox + (x + 0.5f) / s * k) * s - 0.5f, 0, cv.n - 1), fy = clampf((oy + (y + 0.5f) / s * k) * s - 0.5f, 0, cv.n - 1);
+                int x0 = (int)fx, y0 = (int)fy, x1 = x0 + 1 < cv.n ? x0 + 1 : x0, y1 = y0 + 1 < cv.n ? y0 + 1 : y0;
                 float tx = fx - x0, ty = fy - y0;
-                float a = (cv.a[y0 * CELL + x0] * (1 - tx) + cv.a[y0 * CELL + x1] * tx) * (1 - ty) +
-                          (cv.a[y1 * CELL + x0] * (1 - tx) + cv.a[y1 * CELL + x1] * tx) * ty;
-                lin[(uint64_t)y * row + x] = (uint8_t)lroundf(a * 255);
+                float a = (cv.a[y0 * cv.n + x0] * (1 - tx) + cv.a[y0 * cv.n + x1] * tx) * (1 - ty) +
+                          (cv.a[y1 * cv.n + x0] * (1 - tx) + cv.a[y1 * cv.n + x1] * tx) * ty;
+                out[(uint64_t)y * out_row + x] = (uint8_t)lroundf(a * 255);
             }
+    canvas_free(&cv);
+    return drawn;
+}
+
+bool glyphs_draw_layout(uint32_t w, uint32_t h, const uint8_t *lin, uint32_t row, uint32_t s, uint8_t *out) {
+    const LayoutIcon *li = s >= 2 && s <= 4 ? find_layout_icon(w, h, lin, row) : NULL;
+    if (li && layout_draw(li, w, h, lin, row, s, out, w * s)) {
+        static int nlog;
+        if (nlog++ < 16) LOG("[glyphs] layout icon %04X (%ux%u) drawn %ux: %s icons\n", li->code, w, h, s, k_kind_names[resolve_kind()]);
+        return true;
+    }
+    uint8_t *plain = malloc((uint64_t)w * h);  // (the game's own, or something else there now: enlarged)
+    if (plain) for (uint32_t y = 0; y < h; y++) memcpy(plain + (uint64_t)y * w, lin + (uint64_t)y * row, w);
+    if (!plain || !text_upscale(plain, w, h, s, true, out)) memset(out, 0, (uint64_t)w * s * h * s);
+    free(plain);
+    return li != NULL;
+}
+
+bool glyphs_apply_layout(uint32_t format, uint32_t w, uint32_t h, uint8_t *lin, uint32_t row) {
+    if (format != FMT_R8) return false;
+    const LayoutIcon *li = find_layout_icon(w, h, lin, row);
+    if (!li) return false;
+    bool drawn = layout_draw(li, w, h, lin, row, 1, lin, row);
     static int nlog;
-    if (nlog++ < 16) LOG("[glyphs] layout icon %04X (%ux%u): %s icons%s\n", li->code, w, h, k_kind_names[kind], drawn ? "" : ", kept");
+    if (nlog++ < 16) LOG("[glyphs] layout icon %04X (%ux%u): %s icons%s\n", li->code, w, h, k_kind_names[resolve_kind()], drawn ? "" : ", kept");
     return true;
 }
