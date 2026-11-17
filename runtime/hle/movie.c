@@ -451,8 +451,9 @@ typedef struct {
     bool playing;  // a started video decoder, counted in g_movie_playing
     int fps;       // a video's frame rate (its file's)
     int64_t clock_ns, clock_us;  // pacing: when the frame of time clock_us was handed out (0: not yet)
+    int signalling;  // dec_signal calls between their check and the end of the game's SignalEvent (see dec_signal)
     pthread_mutex_t lock;
-    pthread_cond_t pace_cv;
+    pthread_cond_t pace_cv, sig_cv;
 } Decoder;
 
 // Input / output buffers live in the HLE heap, which only a reboot frees: buffers of destroyed decoders are kept
@@ -479,11 +480,21 @@ static void buf_put(uint8_t *m, uint32_t size) {
     pthread_mutex_unlock(&g_pool_lock);
 }
 
-// Signal one of the game's decoder events unless the decoder was stopped. Under the lock so a Stop on another
-// thread can't slip between the check and the signal.
+// Signal one of the game's decoder events unless the decoder was stopped. The game's SignalEvent runs without d->lock:
+// its syscalls are preemption points (kernel.c, rt_svc), where this thread may hand its core to a better waiter and
+// wait to get it back. Holding the lock then, a thread that took the core and called into the decoder (Acquire /
+// ReleaseOutputBufferIndex) waited for the lock with the core held: both stood still for good, and with them every
+// thread waiting for that core (#870, Demo101_0.webm at 60 fps). A Stop on another thread waits for the signals still
+// in flight (signalling) before it clears the events, so none is set after it.
 static void dec_signal(Cpu *c, Decoder *d, int i) {
     pthread_mutex_lock(&d->lock);
-    if (!d->stopped) signal_guest_event(c, d->events[i]);
+    uint64_t event = d->stopped ? 0 : d->events[i];
+    if (event) d->signalling++;
+    pthread_mutex_unlock(&d->lock);
+    if (!event) return;
+    signal_guest_event(c, event);
+    pthread_mutex_lock(&d->lock);
+    if (--d->signalling == 0) pthread_cond_broadcast(&d->sig_cv);
     pthread_mutex_unlock(&d->lock);
 }
 
@@ -580,24 +591,36 @@ static void dec_start(Cpu *c) {
 // decoders and nulls its pointers to them, and only then tells its decoder thread (0x70009114b0) to exit: an event
 // of ours still set by then wakes that thread into a virtual call through the null decoder (signal 11 after the
 // title's attract movie, when the thread was slow to run). A stopped hardware decoder signals nothing, so stop
-// signalling here and clear what is still set.
+// signalling here and clear what is still set. The game's ClearEvent runs without d->lock (see dec_signal), after the
+// signals still in flight have landed; the core is let go while waiting for them, as their threads may need it.
 static void dec_stop(Cpu *c) {
     Decoder *d = self_state(c);
     static uint64_t clear_event;
     if (!clear_event) clear_event = guest_sym("_ZN2nn2os10ClearEventEPNS0_9EventTypeE");
     pthread_mutex_lock(&d->lock);
     if (d->playing) d->playing = false, __atomic_sub_fetch(&g_movie_playing, 1, __ATOMIC_RELAXED);
-    if (!d->stopped) {
+    bool first = !d->stopped;
+    if (first) {
         d->stopped = true;
         pthread_cond_broadcast(&d->pace_cv);
         LOG("[movie] decoder %s stopped\n", d->video ? "video" : "audio");
-        uint64_t saved[8];
-        memcpy(saved, c->x, sizeof saved);
-        for (int i = 0; i < 4; i++)
-            if (d->events[i]) { c->x[0] = d->events[i]; guest_call(c, clear_event); }
-        memcpy(c->x, saved, sizeof saved);
     }
+    bool in_flight = first && d->signalling;
     pthread_mutex_unlock(&d->lock);
+    c->x[0] = 0;
+    if (!first) return;
+    if (in_flight) {
+        kernel_host_work_begin();
+        pthread_mutex_lock(&d->lock);
+        while (d->signalling) pthread_cond_wait(&d->sig_cv, &d->lock);
+        pthread_mutex_unlock(&d->lock);
+        kernel_host_work_end();
+    }
+    uint64_t saved[8];
+    memcpy(saved, c->x, sizeof saved);
+    for (int i = 0; i < 4; i++)
+        if (d->events[i]) { c->x[0] = d->events[i]; guest_call(c, clear_event); }
+    memcpy(c->x, saved, sizeof saved);
     c->x[0] = 0;
 }
 
@@ -923,6 +946,7 @@ HLE_FUNC("_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11Dec
     movie_track(1, d, true);
     pthread_mutex_init(&d->lock, NULL);
     pthread_cond_init(&d->pace_cv, NULL);
+    pthread_cond_init(&d->sig_cv, NULL);
     self[0] = vt;
     self[1] = (uint64_t)(uintptr_t)d;
 }

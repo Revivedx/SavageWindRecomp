@@ -1484,11 +1484,17 @@ static void hud_frame_update(void) {
     if (hud_quick_tracked(g_settings.hud_size, g_settings.hud_edges) && framepace_quick_ui()) hud_quick_ns = ns;
     hud_quick = hud_quick_ns && ns - hud_quick_ns < HUD_QUICK_HOLD_NS;
 }
+static unsigned hud_kind(void) { return hud_scope.kind & HUD_KIND_MASK; }  // (UI_LAYOUT_*; a HUD part kept whole: its layout's)
 static bool hud_owned(void) {
-    return hud_scope.kind == UI_LAYOUT_HUD || hud_scope.kind == UI_LAYOUT_CONTEXT;
+    return hud_kind() == UI_LAYOUT_HUD || hud_kind() == UI_LAYOUT_CONTEXT;
 }
 static bool hud_native_layout(void) {
-    return hud_scope.kind == UI_LAYOUT_DIALOGUE || hud_scope.kind == UI_LAYOUT_MENU || hud_scope.kind == UI_LAYOUT_TALK;
+    return hud_kind() == UI_LAYOUT_DIALOGUE || hud_kind() == UI_LAYOUT_MENU || hud_kind() == UI_LAYOUT_TALK;
+}
+// The anchor of a HUD pane centred at c on an axis (0 x, 1 y): a HUD part kept whole gives its own (hud_group_kind)
+static float hud_anchor_now(float c, float edge, int axis) {
+    if (!(hud_scope.kind & HUD_GROUP)) return hud_anchor(c, edge);
+    return (float)(axis ? hud_group_ay(hud_scope.kind) : hud_group_ax(hud_scope.kind)) * edge;
 }
 static float hud_scale_now(void) {
     hud_frame_update();
@@ -1506,10 +1512,10 @@ static int hud_edges_now(float shape) {
 // Dock a conversation as one layout, including choices and its close animation.
 static float hud_layout_dy(float shape) {
     if (!g_settings.hud_edges || shape >= 1) return 0;
-    return hud_scope.kind == UI_LAYOUT_TALK ? shape - 1 : 0;
+    return hud_kind() == UI_LAYOUT_TALK ? shape - 1 : 0;
 }
 static bool hud_context_native(float shape, float x, float y, float ex, float ey) {
-    return hud_scope.kind != UI_LAYOUT_CONTEXT && hud_context_keeps(g_settings.hud_edges && shape < 1, x, y, ex, ey);
+    return hud_kind() != UI_LAYOUT_CONTEXT && hud_context_keeps(g_settings.hud_edges && shape < 1, x, y, ex, ey);
 }
 
 // HUD at edges leaves a shop's panel where it is: its list, the item's panel and their frames are one 16:9 layout that
@@ -4876,15 +4882,15 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
     if (size < 64 || !st.rt.ncolor || !st.rt.color[0]) return false;
     const float *g = (const float *)(uintptr_t)addr;
     bool map_layout = shape >= 0.75f && shape < 1;
-    bool tall_map = map_layout && (hud_scope.kind == UI_LAYOUT_MENU ||
-                    (hud_scope.kind == UI_LAYOUT_NONE && output_tall_map(shape)));
+    bool tall_map = map_layout && (hud_kind() == UI_LAYOUT_MENU ||
+                    (hud_kind() == UI_LAYOUT_NONE && output_tall_map(shape)));
     // The terrain capture is prepared before AppMap switches presentation. Its fixed target
     // must already contain the taller view on the first visible map frame.
     if (map_layout && map_capture_patch(g, size, shape, out)) return true;
     TexBackend *tb = (TexBackend *)st.rt.color[0]->backend;
     // MessageDialog captures the background before drawing each window. Its crop uses a separate
     // source rectangle; translating the pane alone makes the captured location title/choice text repeat.
-    if ((!tb || tb->rs_group != RS_OUT) && hud_scope.kind == UI_LAYOUT_TALK &&
+    if ((!tb || tb->rs_group != RS_OUT) && hud_kind() == UI_LAYOUT_TALK &&
         g_settings.hud_edges && shape > 0 && shape < 1 && size >= 27 * 4 &&
         g_cur_fs_hash == UINT64_C(0x90b79e85a3d120e3) && st.program &&
         hmix(1469598103934665603ull, (const void *)(uintptr_t)(st.program->stages[0].code_addr + 0x30), 0x200) ==
@@ -4947,7 +4953,7 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         float tx = text_matrix[3] / text_matrix[15], ty = text_matrix[7] / text_matrix[15];
         if (hud_s != 1 && !hud_context_native(shape, tx, ty, edge_x, edge_y) &&
             !(hud_quick && hud_quick_keeps(tx, ty, edge_x, edge_y)))
-            hud_scale_matrix(text_matrix, hud_s, hud_anchor(tx, edge_x), hud_anchor(ty, edge_y));
+            hud_scale_matrix(text_matrix, hud_s, hud_anchor_now(tx, edge_x, 0), hud_anchor_now(ty, edge_y, 1));
         *out = ubo_span(vk_transient_copy(text_matrix, sizeof text_matrix, 256), sizeof text_matrix);
         return true;
     }
@@ -4964,14 +4970,14 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         float tx = buf[3] / buf[15], ty = buf[7] / buf[15];
         if (hud_s != 1 && !hud_context_native(shape, tx, ty, edge_x, edge_y) &&
             !(hud_quick && hud_quick_keeps(tx, ty, edge_x, edge_y)))
-            hud_scale_matrix(buf, hud_s, hud_anchor(tx, edge_x), hud_anchor(ty, edge_y));
+            hud_scale_matrix(buf, hud_s, hud_anchor_now(tx, edge_x, 0), hud_anchor_now(ty, edge_y, 1));
         if (pause_edges) hud_edge_matrix(buf, hud_pause_edge_dy(ty, shape));
         hud_edge_matrix(buf, hud_layout_dy(shape));
         if (map_chrome && fabsf(ty) > shape * (200.0f / 360))
             hud_edge_matrix(buf, copysignf(1 - shape, ty));
         if (hud_edge_active && !hud_context_native(shape, tx, ty, edge_x, edge_y) && hud_edge_moves(edge_mode, ty, edge_y) &&
             !(hud_quick && hud_quick_bar(tx, ty, edge_x, edge_y))) {
-            float ay = hud_anchor(ty, edge_y);
+            float ay = hud_anchor_now(ty, edge_y, 1);
             float dy = hud_edge_dy(ay, edge_y, shape);
             if (dy != 0) hud_edge_matrix(buf, dy);
         }
@@ -5099,8 +5105,8 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         if (hud_context_native(shape, (x0 + x1) / 2, (y0 + y1) / 2, edge_x, edge_y)) hud_scale = false;
         float cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
         if (hud_scale) {  // (a quick menu's bar: HUD size keeps its middle at the game's size, HUD at edges the bar)
-            hud_ax = hud_anchor(cx, edge_x);
-            hud_ay = hud_anchor(cy, edge_y);
+            hud_ax = hud_anchor_now(cx, edge_x, 0);
+            hud_ay = hud_anchor_now(cy, edge_y, 1);
             if (hud_edge_active && hud_edge_moves(edge_mode, cy, edge_y) &&
                 !(hud_quick && hud_quick_bar(cx, cy, edge_x, edge_y)) && !hud_shop_pane(mv[3], mv[7]))
                 edge_dy = hud_edge_dy(hud_ay, edge_y, shape);

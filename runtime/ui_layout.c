@@ -8,6 +8,7 @@
 #include "settings.h"
 #include "framepace.h"
 #include "nvn/nvn.h"
+#include "nvn/hud_scale.h"
 
 static bool ui_range(uint64_t p, uint64_t n) {
     return p >= GUEST_LO && p < GUEST_HI && n <= GUEST_HI - p;
@@ -27,8 +28,41 @@ int ui_layout_map_mode(uint64_t screen) {
     return frame == 0 ? 1 : frame == end ? 0 : -1;
 }
 
-static _Thread_local unsigned pane_draw_depth;
-RT_ON_RESET(ui_layout_reset) { pane_draw_depth = 0; }
+static _Thread_local unsigned pane_draw_depth, layout_kind;  // (the scope of the layout being drawn, and its screen:)
+static _Thread_local uint64_t layout_screen;
+RT_ON_RESET(ui_layout_reset) { pane_draw_depth = 0; layout_kind = UI_LAYOUT_NONE; layout_screen = 0; }
+
+// The champions' abilities in MainScreen: a row each (Pa_SinJu_00 to _03: the icon, its count and their glows), in a
+// column under the hearts from the top-left zone into the middle one (layout y 170 to 20, the zones' border at 120)
+static bool ui_champion_row(const char *name) {
+    return !memcmp(name, "Pa_SinJu_0", 10) && name[10] >= '0' && name[10] <= '3' && !name[11];
+}
+
+// The quick selectors' screen (slot 0x2d) keeps the game's geometry for its bar and its backdrop, but its D-pad guide
+// (N_MainAll_00: the rune, shield, weapon and bow in use and the arrow count) sits under the hearts all the time, part
+// of the HUD. Kept as it was, on a taller window the champions' abilities went up to the window's top under it (#903).
+static bool ui_dpad_guide(const char *name) {
+    if (memcmp(name, "N_MainAll_00", sizeof "N_MainAll_00")) return false;
+    uint64_t manager = *(uint64_t *)(uintptr_t)g_site.screen_mgr;
+    if (!ui_range(manager, 0x38)) return false;
+    uint32_t count = *(uint32_t *)(uintptr_t)(manager + 0x28);
+    uint64_t screens = *(uint64_t *)(uintptr_t)(manager + 0x30);
+    return count > 0x2d && count <= 256 && ui_range(screens, count * 8) && layout_screen &&
+           layout_screen == *(uint64_t *)(uintptr_t)(screens + 8 * 0x2d);
+}
+
+// A HUD part whose panes all take one anchor (hud_group_kind, #913)
+static bool ui_pane_group(Cpu *c, void (*native)(Cpu *), int ax, int ay) {
+    uint64_t wrapper = c->x[2];
+    if (!ui_range(wrapper, 0xb8)) return false;
+    uint64_t commands = *(uint64_t *)(uintptr_t)(wrapper + 0xb0);
+    if (!nvn_ui_scope(commands, hud_group_kind(UI_LAYOUT_HUD, ax, ay))) return false;
+    pane_draw_depth++;
+    native(c);  // (as below: the entry gate re-enters once, then draws the part's subtree normally)
+    pane_draw_depth--;
+    nvn_ui_scope(commands, UI_LAYOUT_NONE);
+    return true;
+}
 
 bool rt_ui_layout_pane_draw(Cpu *c, void (*native)(Cpu *)) {
 #ifdef __APPLE__
@@ -36,8 +70,11 @@ bool rt_ui_layout_pane_draw(Cpu *c, void (*native)(Cpu *)) {
 #else
     uint64_t pane = c->x[0];
     if (pane_draw_depth || !native || (!g_settings.hud_edges && g_settings.hud_size == 100) ||
-        strcmp(g_game_version, "1.9.0") || !g_site.screen_mgr || !ui_range(pane, 0xf8) ||
-        memcmp((const void *)(uintptr_t)(pane + 0xb8), "Pa_QuestName_00", sizeof "Pa_QuestName_00")) return false;
+        strcmp(g_game_version, "1.9.0") || !g_site.screen_mgr || !ui_range(pane, 0xf8)) return false;
+    const char *name = (const char *)(uintptr_t)(pane + 0xb8);
+    if ((layout_kind == UI_LAYOUT_HUD && ui_champion_row(name)) || (layout_kind == UI_LAYOUT_DIALOGUE && ui_dpad_guide(name)))
+        return ui_pane_group(c, native, -1, 1);  // (both under the hearts, in their corner)
+    if (memcmp((const void *)(uintptr_t)(pane + 0xb8), "Pa_QuestName_00", sizeof "Pa_QuestName_00")) return false;
     uint64_t manager = *(uint64_t *)(uintptr_t)g_site.screen_mgr;
     if (!ui_range(manager, 0x38)) return false;
     uint32_t count = *(uint32_t *)(uintptr_t)(manager + 0x28);
@@ -92,7 +129,9 @@ uint64_t ui_layout_begin(Cpu *c) {
     // Layout/pane draw receives nn::gfx's wrapper at +8; its NVN object is the pointer at wrapper+0xb0.
     commands = *(uint64_t *)(uintptr_t)(commands + 0xb8);
     if (!ui_range(commands, 8)) return 0;
-    return nvn_ui_scope(commands, kind) ? commands : 0;
+    if (!nvn_ui_scope(commands, kind)) return 0;
+    layout_kind = kind; layout_screen = screen;
+    return commands;
 #endif
 }
 
@@ -102,7 +141,10 @@ void ui_layout_end(Cpu *c, uint64_t commands) {
 }
 
 void rt_ui_layout_draw(Cpu *c, void (*native)(Cpu *)) {
+    unsigned outer = layout_kind;
+    uint64_t outer_screen = layout_screen;
     uint64_t commands = ui_layout_begin(c);
     native(c);
     ui_layout_end(c, commands);
+    layout_kind = outer; layout_screen = outer_screen;
 }

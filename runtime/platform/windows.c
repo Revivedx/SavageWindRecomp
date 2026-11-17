@@ -327,8 +327,36 @@ void plat_thread_realtime(uint64_t period_ns) {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
 }
 
+// Whether the processor has cores of different efficiency classes (Intel 12th Gen and later, Core Ultra: P- and
+// E-cores). Asked once.
+static bool cpu_hybrid(void) {
+    static int hybrid = -1;
+    if (hybrid >= 0) return hybrid;
+    hybrid = 0;
+    DWORD len = 0;
+    GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &len);
+    char *buf = len ? malloc(len) : NULL;
+    BYTE min_eff = 255, max_eff = 0;
+    if (buf && GetLogicalProcessorInformationEx(RelationProcessorCore, (void *)buf, &len))
+        for (DWORD o = 0; o < len;) {
+            SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *e = (void *)(buf + o);
+            if (e->Processor.EfficiencyClass < min_eff) min_eff = e->Processor.EfficiencyClass;
+            if (e->Processor.EfficiencyClass > max_eff) max_eff = e->Processor.EfficiencyClass;
+            o += e->Size;
+        }
+    free(buf);
+    hybrid = min_eff < max_eff;
+    return hybrid;
+}
+
+// Above normal on hybrid processors only, where it keeps the latency-critical threads (the game's main thread, the
+// render thread, the recorder) on P-cores (#650). Elsewhere it starved the game's other threads: with SMT and one
+// logical processor per core (plat_cpu_placement), Ryzen 7 7800X3D / 5700X3D players got frames of 0.3-1.2 s,
+// also standing still, which SAVAGEWIND_ONE_PER_CORE=0 removed (#883). SAVAGEWIND_THREAD_ELEVATE=1/0: always / never.
 void plat_thread_elevate(void) {
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+    static int on = -1;
+    if (on < 0) on = getenv("SAVAGEWIND_THREAD_ELEVATE") ? atoi(getenv("SAVAGEWIND_THREAD_ELEVATE")) != 0 : cpu_hybrid();
+    if (on) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
 }
 
 // ---- process
