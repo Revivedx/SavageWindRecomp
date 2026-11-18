@@ -1086,7 +1086,45 @@ static void uub_note(uint64_t lo, uint64_t hi) {
     guest_copy_flush();  // (a range copies made before don't know; and a copy's mask names places, whose range changed)
 }
 
+static int stage_cpu_opts(void);
+
+// The same table in one cache line an entry (cpuopts bit 64): the entries above are 80 bytes, so a hit read two lines
+// (the key, then the serial mask, chunk and span), and half of them started in one line and ended in the next. In the
+// capture (185415) the first read of the slot, the compare of its key, was 0.36 ms a frame of the queue thread (482 of
+// guest_copy's 757 samples; 8,900 sets a frame, most of the calls misses that then wrote the entry). A size over 4 GB
+// takes the table above.
+typedef struct { uint64_t addr, gen, serial, mask; uint32_t size, chunk; VkSpan span; } GCopyLine;
+_Static_assert(sizeof(GCopyLine) == 64, "a guest copy entry is one cache line");
+static GCopyLine gcopy_line[GCOPY_TAB] __attribute__((aligned(64)));
+static inline uint32_t gcopy_slot(uint64_t addr, uint64_t size) {
+    uint64_t h = (addr * 0x9E3779B97F4A7C15ull) ^ (size * 0xC2B2AE3D27D4EB4Full);
+    return (uint32_t)(h ^ (h >> 32)) & (GCOPY_TAB - 1);
+}
+static VkSpan guest_copy_line(uint64_t addr, uint64_t size) {
+    GCopyLine *e = &gcopy_line[gcopy_slot(addr, size)];
+    uint64_t gen = __atomic_load_n(&gcopy_gen, __ATOMIC_RELAXED);
+    if (e->gen == gen && e->addr == addr && e->size == (uint32_t)size) {
+        bool stale = false;
+        for (uint64_t m = e->mask; m && !stale; m &= m - 1) stale = uubt[__builtin_ctzll(m)].serial > e->serial;
+        if (!stale) {
+            uint64_t pending = vk_pending_seq();
+            if (chunks[e->chunk].seq < pending) chunks[e->chunk].seq = pending;
+            stat_gcopy_hit++;
+            return e->span;
+        }
+    }
+    stat_gcopy_miss++;
+    stat_gcopy_bytes += size;
+    VkSpan s = vk_transient_copy((const void *)(uintptr_t)addr, size, 256);
+    uint64_t mask = 0;
+    for (int i = 0; i < nuub; i++)
+        if (addr < uubt[i].hi && uubt[i].lo < addr + size) mask |= 1ull << i;
+    e->addr = addr; e->size = (uint32_t)size; e->gen = gen; e->serial = uub_serial; e->mask = mask; e->chunk = (uint32_t)active; e->span = s;
+    return s;
+}
+
 static VkSpan guest_copy(uint64_t addr, uint64_t size) {
+    if (size <= UINT32_MAX && (stage_cpu_opts() & 64)) return guest_copy_line(addr, size);
     uint64_t h = (addr * 0x9E3779B97F4A7C15ull) ^ (size * 0xC2B2AE3D27D4EB4Full);
     uint32_t slot = (uint32_t)(h ^ (h >> 32)) & (GCOPY_TAB - 1);
     __typeof__(gcopy[0]) *e = &gcopy[slot];
@@ -5305,6 +5343,30 @@ static bool fxaa_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out
 }
 
 // Constant buffer k of a stage (renderer.m bind_cbufs), copied into transient memory.
+// The bytes cbuf_info copies of constant buffer k (k >= 3) bound to the range r (r.addr set).
+static inline uint64_t cbuf_copy_size(const ShaderInfo *si, int k, Range r) {
+    uint64_t size = si->cbuf_size[k] ? si->cbuf_size[k] : 256;
+    if ((si->cbuf_dynamic & (1u << k)) && r.size) size = r.size > 0x10000 ? 0x10000 : r.size;
+    if (size > r.size && r.size) size = r.size;
+    if (size < 16) size = 16;
+    return size;
+}
+
+// Ahead of a draw's preparation (cpuopts bit 64): the copy-table slot of every constant buffer the stage reads, asked for
+// at once. Each was read cold, one after the other, when its buffer's turn came (guest_copy: 0.36 ms a frame of the
+// queue thread, almost all of it on that first read), and the ranges are known as soon as the draw is: the stage's
+// binds came before it. A hint only: a wrong guess (a buffer read in place, a patched one) costs a line, never a result.
+static inline void cbuf_prefetch(int stage, const ShaderInfo *si) {
+    for (uint32_t m = si->cbuf_mask >> 3; m; m &= m - 1) {  // (cbuf k is bound slot k - 3)
+        int i = __builtin_ctz(m);
+        if (i >= 18) break;
+        Range r = st.ubuf[stage][i];
+        if (!r.addr) continue;
+        uint64_t size = cbuf_copy_size(si, i + 3, r);
+        if (size <= UINT32_MAX) __builtin_prefetch(&gcopy_line[gcopy_slot(r.addr, size)], 1);
+    }
+}
+
 static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32_t gx, uint32_t gy, uint32_t gz) {
     static const uint8_t zeros[0x10000];
     if (k == 0) {
@@ -5342,9 +5404,7 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
     Range r = (idx >= 0 && idx < 18) ? st.ubuf[stage][idx] : (Range){0, 0};
     uint64_t size = si->cbuf_size[k] ? si->cbuf_size[k] : 256;
     if (!r.addr) return ubo_span(vk_transient_copy(zeros, size, 256), size);
-    if ((si->cbuf_dynamic & (1u << k)) && r.size) size = r.size > 0x10000 ? 0x10000 : r.size;
-    if (size > r.size && r.size) size = r.size;
-    if (size < 16) size = 16;
+    size = cbuf_copy_size(si, k, r);
     // An address outside the game's memory ended the game in the copy below after two hours of play (#640: 0x5000000000
     // on the render thread). Read as an unbound buffer, and logged: where the address comes from is still unknown.
     if (r.addr < GUEST_LO || r.addr >= GUEST_HI || size > GUEST_HI - r.addr) {
@@ -7067,6 +7127,23 @@ static void texture_info_(int stage, ShaderInfo *si, int i, VkDescriptorImageInf
 // render thread at Rito). Not for depth-compare textures (their shadow copies and depth twins come and go within a
 // frame), nor while this draw has feedback copies or a scene composite in play; a view that may have been destroyed
 // bumps vk_view_gen, which drops them all. SAVAGEWIND_VK_NO_TEX_MEMO=1: off, with the view memo.
+// Ahead of texture_info (cpuopts bit 64), which meets a texture's pool entry, the texture and its backend as three loads
+// that each wait for the one before, for every texture of every draw (the line of its guard was 0.25 ms a frame of the
+// queue thread in capture 185415). level 0: the pool entries of the stage's textures, all asked for at once; level 1,
+// once they are there: the textures they point to. Hints only.
+static inline void tex_prefetch(int stage, const ShaderInfo *si, int level) {
+    int n = si->ntex < 64 ? si->ntex : 64;
+    for (int i = 0; i < n; i++) {
+        int slot = ((int)si->tex[i].handle_offset - 0x20) / 8;
+        uint64_t h = (slot >= 0 && slot < 32) ? st.tex[stage][slot] : 0;
+        uint32_t tic = h & 0xFFFFF;
+        if (!st.tpool || tic >= (uint32_t)st.tpool->count) continue;
+        NvnTexEntry *te = &((NvnTexEntry *)st.tpool->entries)[tic];
+        if (level == 0) __builtin_prefetch(te);
+        else if (te->tex) __builtin_prefetch(te->tex);
+    }
+}
+
 static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo *out, float sc[2], uint32_t wh[2]) {
     ShaderTexture *st_ = &si->tex[i];
     int slot = ((int)st_->handle_offset - 0x20) / 8;
@@ -8682,6 +8759,13 @@ static void draw_(CmdRec *r, bool indexed) {
         stat_skipped++;
         return;
     }
+    if (stage_cpu_opts() & 64) {  // (the two shaders' info, then each stage's copy slots: see cbuf_prefetch)
+        __builtin_prefetch(&pr->fi->ntex);
+        __builtin_prefetch(&pr->vi->ntex);
+        cbuf_prefetch(0, pr->vi);
+        cbuf_prefetch(1, pr->fi);
+        tex_prefetch(1, pr->fi, 0);
+    }
     //if (profd) prof_program += SDL_GetTicksNS() - prof_program_start;
     {   // fragment-shader hash: skip lists (SAVAGEWIND_SKIP_FSHASH), debug logs, GPU profile labels
         static uint64_t last_fs, last_hash;
@@ -9213,6 +9297,7 @@ have_pipe:
     uint64_t prof_tx_ = profd ? SDL_GetTicksNS() : 0;
     sdw_fix.s = 0;
     shadow_copy_note(pr->fi);
+    if (stage_cpu_opts() & 64) tex_prefetch(1, pr->fi, 1);
     for (int i = 0; i < pr->fi->ntex && i < 64; i++) {
         float sc[2]; uint32_t wh[2];
         texture_info(1, pr->fi, i, &fii[i], sc, wh);
