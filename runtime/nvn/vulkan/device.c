@@ -3,6 +3,7 @@
 #include <SDL3/SDL_vulkan.h>
 #include <math.h>
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,9 +36,9 @@
 #include "dlss.h"
 
 // SAVAGEWIND_VK_API12=1: the driver used as a Vulkan 1.2 one (api12_usable below)
-static bool api12_forced(void) {
+static int api12_forced(void) {  // (0: no, 1: yes, 2: and without dynamic rendering)
     static int on = -1;
-    if (on < 0) { const char *e = getenv("SAVAGEWIND_VK_API12"); on = e && *e && strcmp(e, "0"); }
+    if (on < 0) { const char *e = getenv("SAVAGEWIND_VK_API12"); on = e && *e && strcmp(e, "0") ? (e[0] == '2' ? 2 : 1) : 0; }
     return on;
 }
 
@@ -140,7 +141,7 @@ static void create_instance(void) {
         validate = false;
         r = vkCreateInstance(&ci, NULL, &g_vk.inst);
     }
-    if (r != VK_SUCCESS) FATAL("vkCreateInstance: %d (is a Vulkan 1.3 driver installed?)\n", r);
+    if (r != VK_SUCCESS) FATAL("vkCreateInstance: %d (no Vulkan driver answered)\n", r);
     if (validate || ar) {
         PFN_vkCreateDebugUtilsMessengerEXT f =
             (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(g_vk.inst, "vkCreateDebugUtilsMessengerEXT");
@@ -168,11 +169,20 @@ static bool has_ext(VkExtensionProperties *e, uint32_t n, const char *name) {
 // (vk13.h), the shaders are compiled to SPIR-V 1.5 (spirv.c), and the graphics pipeline libraries, FSR 3 and frame
 // generation stay off. Each extension missing is logged, so a report from such a card says what its driver lacks.
 // SAVAGEWIND_VK_API12=1: a 1.3 driver used that way (testing; with the validation layer, every use of 1.3's core is
-// reported).
+// reported). =2: and taken as one without dynamic rendering, to see the error a card with such a driver gets.
+// `why` gets what the driver lacks, for the error when no GPU is usable (pick_device).
+static void why_add(char *why, size_t cap, const char *fmt, ...) {
+    size_t l = strlen(why);
+    if (l + 1 >= cap) return;
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(why + l, cap - l, fmt, ap);
+    va_end(ap);
+}
 static const char *const k_api12_ext[] = {VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
                                           VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME,
                                           VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME};
-static bool api12_usable(VkPhysicalDevice pd, uint32_t index) {
+static bool api12_usable(VkPhysicalDevice pd, uint32_t index, char *why, size_t cap) {
     uint32_t ne = 0;
     vkEnumerateDeviceExtensionProperties(pd, NULL, &ne, NULL);
     VkExtensionProperties *ep = calloc(ne ? ne : 1, sizeof *ep);
@@ -180,8 +190,9 @@ static bool api12_usable(VkPhysicalDevice pd, uint32_t index) {
     vkEnumerateDeviceExtensionProperties(pd, NULL, &ne, ep);
     bool ok = true;
     for (size_t i = 0; i < sizeof k_api12_ext / sizeof *k_api12_ext; i++)
-        if (!has_ext(ep, ne, k_api12_ext[i])) {
+        if (!has_ext(ep, ne, k_api12_ext[i]) || (api12_forced() == 2 && !i)) {
             LOG("[vk] gpu %u: a Vulkan 1.2 driver without %s\n", index, k_api12_ext[i]);
+            why_add(why, cap, "%s%s", ok ? "" : ", ", k_api12_ext[i]);
             ok = false;
         }
     free(ep);
@@ -225,13 +236,24 @@ static void pick_device(void) {
     if (override && *override && want < 0 && strcmp(override, "auto"))
         LOG("[vk] invalid SAVAGEWIND_GPU '%s'; using automatic selection\n", override);
     int best = -1, best_score = -1;
+    char why[600] = "";  // (each GPU turned down and the reason: the error's text when none is usable)
     for (uint32_t i = 0; i < n; i++) {
         VkPhysicalDeviceProperties p;
         vkGetPhysicalDeviceProperties(pd[i], &p);
         LOG("[vk] gpu %u: %s (api %u.%u.%u)\n", i, p.deviceName, VK_API_VERSION_MAJOR(p.apiVersion),
             VK_API_VERSION_MINOR(p.apiVersion), VK_API_VERSION_PATCH(p.apiVersion));
-        if (p.apiVersion < VK_API_VERSION_1_2) continue;
-        if ((p.apiVersion < VK_API_VERSION_1_3 || api12_forced()) && !api12_usable(pd[i], i)) continue;
+        if (p.apiVersion < VK_API_VERSION_1_2) {
+            why_add(why, sizeof why, " %s: its driver has Vulkan %u.%u, older than 1.2.", p.deviceName,
+                    VK_API_VERSION_MAJOR(p.apiVersion), VK_API_VERSION_MINOR(p.apiVersion));
+            continue;
+        }
+        if (p.apiVersion < VK_API_VERSION_1_3 || api12_forced()) {
+            char lacks[300] = "";
+            if (!api12_usable(pd[i], i, lacks, sizeof lacks)) {
+                why_add(why, sizeof why, " %s: its driver has Vulkan 1.2 without %s.", p.deviceName, lacks);
+                continue;
+            }
+        }
         // Check presentation before scoring: a headless adapter must not hide a usable GPU.
         uint32_t nq = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(pd[i], &nq, NULL);
@@ -246,13 +268,15 @@ static void pick_device(void) {
                 (qp[q].queueFlags & VK_QUEUE_COMPUTE_BIT)) usable = true;
         }
         free(qp);
-        if (!usable) continue;
+        if (!usable) {
+            why_add(why, sizeof why, " %s: it cannot draw to this window.", p.deviceName);
+            continue;
+        }
         int score = p.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 3 : p.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 2 : 1;
         if ((int)i == want) score = 100;
         if (score > best_score) { best_score = score; best = (int)i; }
     }
-    if (best < 0) FATAL("no Vulkan 1.3 device (or 1.2 with dynamic rendering, synchronization2 and extended dynamic "
-                        "state) with a graphics+compute+present queue\n");
+    if (best < 0) FATAL("no usable GPU.%s\n", why);  // (the platform's error box explains what is needed)
     if (want >= 0 && best != want)
         LOG("[vk] requested GPU %d unavailable or unsuitable; falling back to GPU %d\n", want, best);
     LOG("[vk] selected GPU %d (%s)\n", best, best == want ? "requested" : "automatic");

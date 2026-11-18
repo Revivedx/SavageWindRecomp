@@ -408,12 +408,18 @@ static void require_cpu(void) {
     ExitProcess(1);
 }
 
+// What the error box says under "no usable GPU" (the line above it names each GPU found and what its driver lacks).
+static const char *plat_gpu_need_text(void) {
+    return "Savage Wind needs a graphics driver with Vulkan 1.3, or with Vulkan 1.2 and these extensions: VK_KHR_dynamic_rendering, VK_KHR_synchronization2, VK_EXT_extended_dynamic_state and VK_EXT_extended_dynamic_state2. Install the latest driver "
+           "for the graphics card named above. If its latest driver still lacks them, that card cannot run Savage Wind.";
+}
+
 // Fatal error (rt_fatal_trace): the last FATAL / exception line of the log in a message box, when there is no console.
 void plat_fatal_notice(void) {
     plat_accessibility_shortcuts(true);  // (the shortcuts as they were: the process ends)
     if (!g_log_path[0]) return;
     fflush(stderr);
-    char text[1024] = "Savage Wind stopped because of an error.";
+    char text[1600] = "Savage Wind stopped because of an error.";
     FILE *f = fopen(g_log_path, "rb");
     if (f) {
         static char tail[16384];
@@ -442,10 +448,14 @@ void plat_fatal_notice(void) {
                          "PC's RAM, and Savage Wind keeps the game's 3 GB of memory available to the GPU: with integrated "
                          "graphics it needs 16 GB of RAM. Close other programs and lower Video > Shadow resolution and the "
                          "upscaler quality; with a dedicated GPU, update its driver.");
-            } else if (strstr(line, "Vulkan 1.3") || strstr(line, "vkCreateInstance")) {  // (no driver, or too old)
+            } else if (strstr(line, "no usable GPU")) {  // (device.c pick_device: the line names each GPU and what it lacks)
                 size_t l = strlen(text);
-                snprintf(text + l, sizeof text - l, "\n\nSavage Wind needs a graphics driver with Vulkan 1.3: install the "
-                         "latest driver for your GPU (NVIDIA, AMD or Intel).");
+                snprintf(text + l, sizeof text - l, "\n\n%s", plat_gpu_need_text());
+            } else if (strstr(line, "vkCreateInstance") || strstr(line, "no Vulkan device")) {  // (no driver at all)
+                size_t l = strlen(text);
+                snprintf(text + l, sizeof text - l, "\n\nNo Vulkan graphics driver was found. Install the latest driver "
+                         "for your GPU from NVIDIA, AMD or Intel: the one Windows installs by itself often has no Vulkan. "
+                         "Savage Wind needs Vulkan 1.3, or 1.2 with the extensions the FAQ lists.");
             } else if (strstr(line, "Vulkan") || strstr(line, "VK_") || strstr(line, "vk")) {  // (any other driver error)
                 size_t l = strlen(text);
                 snprintf(text + l, sizeof text - l, "\n\nThe graphics driver reported an error. Updating the driver for "

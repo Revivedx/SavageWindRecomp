@@ -272,9 +272,12 @@ const char *plat_symbol(uint64_t pc, uint64_t *offset) {
 void plat_fatal_notice(void) {
     if (!g_log_path[0]) return;
     fflush(stderr);
-    char text[1200];
-    // (the GPU out of memory, vk.h VK_CHECK: the reason a player can act on, #117)
+    char text[2000];
+    // (the GPU out of memory, vk.h VK_CHECK: the reason a player can act on, #117; no usable GPU, device.c
+    // pick_device: its line names each GPU found and what its driver lacks)
     bool oom = false;
+    static char gpu[700];
+    gpu[0] = 0;
     FILE *f = fopen(g_log_path, "rb");
     if (f) {
         static char tail[8192];
@@ -284,8 +287,17 @@ void plat_fatal_notice(void) {
         tail[fread(tail, 1, sizeof tail - 1, f)] = 0;
         fclose(f);
         oom = strstr(tail, "FATAL: the GPU ran out of memory") != NULL;
+        const char *g = strstr(tail, "FATAL: no usable GPU.");
+        if (g) {
+            size_t n = strcspn(g, "\n");
+            snprintf(gpu, sizeof gpu, "\n\n%.*s", (int)(n < 600 ? n : 600), g);
+        }
     }
-    snprintf(text, sizeof text, "Savage Wind stopped because of an error.%s\n\nDetails: %s",
+    snprintf(text, sizeof text, "Savage Wind stopped because of an error.%s%s%s\n\nDetails: %s", gpu,
+             gpu[0] ? "\n\nSavage Wind needs a graphics driver with Vulkan 1.3, or with Vulkan 1.2 and these extensions: VK_KHR_dynamic_rendering, VK_KHR_synchronization2, VK_EXT_extended_dynamic_state and VK_EXT_extended_dynamic_state2. Update Mesa or the "
+                      "driver for the graphics card named above. If its newest driver still lacks them, that card cannot "
+                      "run Savage Wind."
+                    : "",
              oom ? "\n\nThe graphics card ran out of memory. Integrated graphics share the PC's RAM, and Savage Wind keeps "
                    "the game's 3 GB of memory available to the GPU: with integrated graphics it needs 16 GB of RAM. Close "
                    "other programs and lower Video > Shadow resolution and the upscaler quality."
