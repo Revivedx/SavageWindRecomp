@@ -6144,7 +6144,36 @@ static int gw_find(uint64_t addr) {  // the first range ending after addr
 // range, until the set changes (gw_gen). The search was 3% of the render thread's time (4 cores, Rito).
 // SAVAGEWIND_VK_NO_GW_MEMO=1: search every time.
 static uint32_t gw_gen = 1;
-static bool gw_overlaps(uint64_t lo, uint64_t hi) {
+static bool gw_overlaps_exact(uint64_t lo, uint64_t hi);
+
+// A bit a 1 MB block of the set (cpuopts bit 128), so that the many lookups nowhere near it end on one load. The
+// bounds above take the reads outside [gw_lo, gw_hi), but the set's ranges lie all over the heap (the storage buffers
+// of the compute passes) and so did the bounds: in the capture (185415) gw_overlaps, gw_ubo_copied and the memo
+// of gw_check were 0.32 ms a frame of the queue thread, most of it on reads that answered "no". The bitmap is hashed
+// by block number (4096 bits: the 4 GB the heap holds, one bit each), so a block that shares a bit with one in the set
+// is asked of the exact search; no bit ever clears before the set does. A range wider than 8 blocks is always asked.
+#define GW_BLOCK_SHIFT 20
+#define GW_BLOCK_BITS 4096
+static uint64_t gw_blocks[GW_BLOCK_BITS / 64];
+static inline bool gw_maybe(uint64_t lo, uint64_t hi) {  // false: no range of the set overlaps [lo, hi)
+    if (!ngw || hi <= gw_lo || lo >= gw_hi) return false;
+    if (hi <= lo) return true;  // (empty or wrapped: the exact search answers)
+    uint64_t b0 = lo >> GW_BLOCK_SHIFT, b1 = (hi - 1) >> GW_BLOCK_SHIFT;
+    if (b1 - b0 >= 8) return true;
+    for (uint64_t b = b0; b <= b1; b++)
+        if (gw_blocks[(b & (GW_BLOCK_BITS - 1)) >> 6] >> (b & 63) & 1) return true;
+    return false;
+}
+static void gw_blocks_add(uint64_t lo, uint64_t hi) {  // the blocks of a range just put in the set
+    uint64_t b0 = lo >> GW_BLOCK_SHIFT, b1 = hi > lo ? (hi - 1) >> GW_BLOCK_SHIFT : b0;
+    if (b1 - b0 >= GW_BLOCK_BITS) { memset(gw_blocks, 0xff, sizeof gw_blocks); return; }
+    for (uint64_t b = b0; b <= b1; b++) gw_blocks[(b & (GW_BLOCK_BITS - 1)) >> 6] |= 1ull << (b & 63);
+}
+static inline bool gw_overlaps(uint64_t lo, uint64_t hi) {
+    if ((stage_cpu_opts() & 128) && !gw_maybe(lo, hi)) return false;
+    return gw_overlaps_exact(lo, hi);
+}
+static bool gw_overlaps_exact(uint64_t lo, uint64_t hi) {
     if (!ngw || hi <= gw_lo || lo >= gw_hi) return false;
     static struct { uint64_t lo, hi; uint32_t gen; bool r; } memo[1024];
     static int on = -1;
@@ -6178,6 +6207,7 @@ static bool gw_add(uint64_t lo, uint64_t hi) {  // false: no room
     gw[i].hi = hi;
     if (lo < gw_lo) gw_lo = lo;
     if (hi > gw_hi) gw_hi = hi;
+    gw_blocks_add(lo, hi);
     return true;
 }
 
@@ -6291,6 +6321,19 @@ static bool gw_ubo_copied(int stage, uint32_t cbuf_mask) {  // a constant buffer
     return false;
 }
 
+// Whether any constant buffer a stage reads is in or near the set (cpuopts bit 128): the cheap form of gw_ubo_copied's
+// loop, bitmap only. False: none overlaps, so none is copied from the set (the answer needs no memo).
+static inline bool gw_ubo_near(int stage, uint32_t cbuf_mask) {
+    for (uint32_t m = cbuf_mask >> 3; m; m &= m - 1) {
+        int i = __builtin_ctz(m);
+        if (i >= 18) break;
+        Range r = st.ubuf[stage][i];
+        uint64_t size = r.size ? (r.size > 0x10000 ? 0x10000 : r.size) : 0x10000;
+        if (r.addr && gw_maybe(r.addr, r.addr + size)) return true;
+    }
+    return false;
+}
+
 // Before a draw's or dispatch's copies (and before its pass begins): copies of memory in the set wait for the GPU.
 // cbufs[stage]: the constant buffers each stage reads (ShaderInfo.cbuf_mask; 0: none).
 static void gw_check(const uint32_t cbufs[6], bool vertices, uint64_t iaddr, uint64_t isize) {
@@ -6298,10 +6341,12 @@ static void gw_check(const uint32_t cbufs[6], bool vertices, uint64_t iaddr, uin
     static uint64_t chk_vbuf_gen, chk_vbuf_gw, chk_ubuf_gen[6], chk_ubuf_gw[6], chk_ubuf_gc[6];
     static uint32_t chk_cbuf_mask[6];
     uint64_t gc = __atomic_load_n(&gcopy_gen, __ATOMIC_RELAXED);
+    int opts = stage_cpu_opts();
     bool wait = false;
     for (int s = 0; s < 6 && !wait; s++) {
         uint32_t m = cbufs[s];
         if (!m) continue;
+        if ((opts & 128) && !gw_ubo_near(s, m)) continue;
         if (chk_ubuf_gen[s] == ubuf_gen[s] && chk_ubuf_gw[s] == gw_gen && chk_ubuf_gc[s] == gc && (chk_cbuf_mask[s] & m) == m)
             continue;
         wait = gw_ubo_copied(s, m);
@@ -7069,6 +7114,7 @@ void vk_exec_reset(void) {
     guest_copy_flush();
     gw_lo = ~0ull;
     gw_hi = 0;
+    memset(gw_blocks, 0, sizeof gw_blocks);
     if (prog_tab) memset(prog_tab, 0, prog_cap * sizeof *prog_tab);  // (the grown capacity is kept for the next boot)
     if (pipe_tab) memset(pipe_tab, 0, pipe_cap * sizeof *pipe_tab);
     prog_n = pipe_n = 0;
@@ -7580,7 +7626,18 @@ static VkDescriptorBufferInfo gsnap_info(int stage) {
 // pre_ii: texture descriptors already resolved by the caller (draw: fragment textures, needed earlier for the
 // viewport decision), or NULL.
 // dyn / ndyn: the offsets of its dynamic uniform buffers, by binding (ubo_dynamic_mark), appended.
-static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t set, int stage, ShaderInfo *si, const float *rscale_row0,
+// The descriptor writes of one set: 11 KB, which made the frame of stage_set 15 KB, and a frame over one page is entered
+// through ___chkstk_ms on Windows, a call that probes every page, for each of the 8,900 sets a frame (0.09 ms of the
+// queue thread in capture 185415, with draw_'s own). With cpuopts bit 128 they live in static memory instead (the draw
+// path runs on one thread, like the other statics here); a call made while one is in use (not known to happen) takes
+// the stack copy.
+typedef struct {
+    VkWriteDescriptorSet w[MAX_BIND];
+    VkDescriptorBufferInfo bi[MAX_BIND];
+    VkDescriptorImageInfo ii[MAX_BIND];
+} PrepScratch;
+
+static inline __attribute__((always_inline)) VkDescriptorSet stage_set_prepare_in(PrepScratch *scratch, Prog *p, VkDescriptorSetLayout layout, uint32_t set, int stage, ShaderInfo *si, const float *rscale_row0,
                                  const float tint[8], uint32_t gx, uint32_t gy, uint32_t gz, const VkDescriptorImageInfo *pre_ii,
                                  uint32_t *dyn, int *ndyn) {
 #ifdef _WIN32
@@ -7611,9 +7668,9 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
 #endif
     struct { uint32_t binding, off; } dv[32];
     int nd = 0;
-    VkWriteDescriptorSet w[MAX_BIND];
-    VkDescriptorBufferInfo bi[MAX_BIND];
-    VkDescriptorImageInfo ii[MAX_BIND];
+    VkWriteDescriptorSet *w = scratch->w;
+    VkDescriptorBufferInfo *bi = scratch->bi;
+    VkDescriptorImageInfo *ii = scratch->ii;
     int n = 0;
     int sg = stage == 1 ? 1 : 0;
     // The scale table: row 0, then one per texture (translate.c reads rscale[1 + slot], slot < ntex). Only those rows
@@ -7682,6 +7739,27 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
     }
     for (int i = 0; i < nd && dyn; i++) dyn[(*ndyn)++] = dv[i].off;
     return set_finish(layout, w, n);
+}
+
+static __attribute__((noinline)) VkDescriptorSet stage_set_prepare_stack(Prog *p, VkDescriptorSetLayout layout, uint32_t set, int stage, ShaderInfo *si, const float *rscale_row0,
+                                 const float tint[8], uint32_t gx, uint32_t gy, uint32_t gz, const VkDescriptorImageInfo *pre_ii,
+                                 uint32_t *dyn, int *ndyn) {
+    PrepScratch scratch;
+    return stage_set_prepare_in(&scratch, p, layout, set, stage, si, rscale_row0, tint, gx, gy, gz, pre_ii, dyn, ndyn);
+}
+
+static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t set, int stage, ShaderInfo *si, const float *rscale_row0,
+                                 const float tint[8], uint32_t gx, uint32_t gy, uint32_t gz, const VkDescriptorImageInfo *pre_ii,
+                                 uint32_t *dyn, int *ndyn) {
+    static PrepScratch shared __attribute__((aligned(64)));
+    static bool busy;
+    if ((stage_cpu_opts() & 128) && !busy) {
+        busy = true;
+        VkDescriptorSet d = stage_set_prepare_in(&shared, p, layout, set, stage, si, rscale_row0, tint, gx, gy, gz, pre_ii, dyn, ndyn);
+        busy = false;
+        return d;
+    }
+    return stage_set_prepare_stack(p, layout, set, stage, si, rscale_row0, tint, gx, gy, gz, pre_ii, dyn, ndyn);
 }
 
 // STAGE_REUSE_TEST_BEGIN
@@ -9293,7 +9371,9 @@ have_pipe:
     PROFD_ADD(prof_sets);
     ProfZone pz4 = PZ_NOW();
     PZ_SPAN("exec/draw/sets", pz3, pz4);
-    VkDescriptorImageInfo fii[64];
+    // (not on the stack: 1.5 KB of the 4.5 KB frame, and a frame over one page is entered through ___chkstk_ms; the draw
+    // path runs on one thread, and draw_ does not call itself)
+    static VkDescriptorImageInfo fii[64] __attribute__((aligned(64)));
     uint64_t prof_tx_ = profd ? SDL_GetTicksNS() : 0;
     sdw_fix.s = 0;
     shadow_copy_note(pr->fi);
