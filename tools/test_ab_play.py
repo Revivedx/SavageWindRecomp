@@ -168,11 +168,11 @@ def test_recovery():
     # the render thread is the limit (9.5 vs main 5.5): its savings show in the frame time one for one. The main thread's
     # savings show in its own column only. The recorder has headroom.
     savings = {
-        16: {'render': 0.50}, 64: {'render': 0.30}, 256: {'render': 0.70},
+        16: {'render': 0.50}, 64: {'render': 0.30}, 128: {'render': 0.70},
         512: {'render': 0.90, 'recorder': 0.2},
-        1024: {'main': 0.15}, 2048: {'main': 0.0}, 32: {}, 128: {'render': 0.0},
+        1024: {'main': 0.15}, 2048: {'main': 0.0}, 32: {},
     }
-    truth_frame = {16: -0.50, 64: -0.30, 256: -0.70, 512: -0.90, 1024: 0.0, 2048: 0.0, 32: 0.0, 128: 0.0}
+    truth_frame = {16: -0.50, 64: -0.30, 128: -0.70, 512: -0.90, 1024: 0.0, 2048: 0.0, 32: 0.0}
     runs, inside, flagged_zero, zero_n, big_called, big_n = 0, 0, 0, 0, 0, 0
     sigma_ok = 0
     for seed in range(24):
@@ -204,32 +204,33 @@ def test_recovery():
 
 
 def test_noise_floor_and_report():
-    savings = {256: {'render': 0.7}}
+    savings = {128: {'render': 0.7}}
     res, windows, game = run(savings, 3)
     fm = res['metrics']['frame_ms']
     assert len(fm['probes']) == 15 - len(ab.FACTORS)
     assert fm['probe_rms'] < 0.35, fm['probe_rms']  # the probes found nothing large
     text = ab.report(res, ab.FACTORS, 'test')
-    assert 'bit 256' in text and 'resolved' in text and 'noise floor' in text
+    assert 'bit 128' in text and 'resolved' in text and 'noise floor' in text
     assert '\u2014' not in text, 'no em dashes in the output'
     assert game.mask == 0, 'the mask is back where it started'
 
 
 def test_skipped_windows():
-    savings = {256: {'render': 0.7}, 16: {'render': 0.5}}
+    savings = {128: {'render': 0.7}, 16: {'render': 0.5}}
     res, windows, game = run(savings, 4, base=(5.5, 9.5, 4.5), menu_at=[(200, 230), (400, 420)])
     skipped = [w for w in windows if not w['ok']]
     assert 8 <= len(skipped) <= 18, len(skipped)
     assert res['usable'] == len(windows) - len(skipped)
     fm = res['metrics']['frame_ms']
     assert fm['dropped'] >= 1, 'the windows that straddle a pause (a long frame in them) are dropped as outliers'
-    e = fm['effects'][256]
+    e = fm['effects'][128]
     assert e['verdict'] != 'within noise' and abs(e['effect'] + 0.7) <= 3 * e['se'] + 0.03, e
 
 
 def test_refused_mask():
     plan, n = ab.make_plan(ab.FACTORS, 4, 0, random.Random(1))
-    game = FakeGame({}, 1, refuse=plan[2]['mask'])
+    start_mode = 777 & 3  # (the material cache mode the game starts with is kept in every window)
+    game = FakeGame({}, 1, refuse=plan[2]['mask'] | start_mode)
     start = game.mask = 777
     try:
         ab.run_session(game, plan, 3.0, 0.5, 0.0, game.advance, log=lambda *a: None)
@@ -241,9 +242,9 @@ def test_refused_mask():
 
 def test_limited_by_another_thread():
     # render saves 0.7 ms but the main thread is the limit (13.0): the frame time cannot move, the render column does
-    res, windows, game = run({256: {'render': 0.7}}, 7, base=(13.0, 9.0, 4.5))
-    fm = res['metrics']['frame_ms']['effects'][256]
-    rm = res['metrics']['render_ms']['effects'][256]
+    res, windows, game = run({128: {'render': 0.7}}, 7, base=(13.0, 9.0, 4.5))
+    fm = res['metrics']['frame_ms']['effects'][128]
+    rm = res['metrics']['render_ms']['effects'][128]
     assert abs(fm['effect']) < 3 * fm['se'] + 0.05, fm
     assert rm['verdict'] == 'resolved' and abs(rm['effect'] + 0.7) < 0.2, rm
 
@@ -253,7 +254,7 @@ def test_over_the_wire():
     import json
     import socket
     import threading
-    fake = FakeGame({256: {'render': 0.7}}, 11, base=(5.5, 9.5, 4.5))
+    fake = FakeGame({128: {'render': 0.7}}, 11, base=(5.5, 9.5, 4.5))
     srv = socket.socket()
     srv.bind(('127.0.0.1', 0))
     srv.listen(1)
@@ -292,9 +293,9 @@ def test_over_the_wire():
 
 def test_cli_plan():
     assert ab.main(['--dry-run', '--seed', '3']) == 0
-    assert ab.main(['--dry-run', '--seed', '3', '--bits', '16,256', '--no-visual', '--confirm', '1']) == 0
-    args = ab.parse_args(['--bits', '16,256', '--no-visual'])
-    assert [f[0] for f in ab.pick_factors(args)] == [16, 256]
+    assert ab.main(['--dry-run', '--seed', '3', '--bits', '16,128', '--no-visual', '--confirm', '1']) == 0
+    args = ab.parse_args(['--bits', '16,128', '--no-visual'])
+    assert [f[0] for f in ab.pick_factors(args)] == [16, 128]
 
 
 if __name__ == '__main__':

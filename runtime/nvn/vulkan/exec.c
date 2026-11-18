@@ -2913,7 +2913,8 @@ typedef struct Prog {
 // 64 cache-line guest copy table and prefetches ahead of a draw's constant buffers and textures (R4),
 // 128 block bitmap in front of the storing-shader range search (gw_overlaps, gw_check) and a static scratch for the
 // descriptor writes of a set (stage_set), so that neither the draw path's frame needs a stack probe (R4),
-// 512 far shadow cascades drawn every second frame (shadow_budget_skip, R4). Changes the picture a little: opt-in.
+// 512 far shadow cascades drawn every second frame (shadow_budget_skip, R4). KNOWN BAD: the ground and rocks flicker while
+// the camera pans (the stale cascade is read with this frame's matrices; seen and confirmed gone without it, 2026-11-18). Off.
 // Two switches for the guest's threads, mirrored to plain variables (stage_cpu_publish) because they are read there:
 // 1024 the dispatch of an indirect call from a per-thread table that also holds the host (HLE) targets, without the
 // thread-local lookup and with the slow path out of line (runtime/dispatch.c dispatch_fast),

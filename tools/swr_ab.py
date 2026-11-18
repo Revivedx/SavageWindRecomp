@@ -2,7 +2,8 @@
 """One play session, every optimization measured: how much each cpuopts bit adds, from windows of normal play.
 
 The game runs with SAVAGEWIND_CONTROL=<port> and SAVAGEWIND_VK_CPU_BENCH=1 (docs/PERF-CPU-CANDIDATES.md). While you
-play, this tool switches the optimizations on and off live (`cpuopts <mask>`), three seconds at a time, in a shuffled
+play, this tool switches the optimizations on and off live (`cpuopts <mask>`; the two low bits, the material cache mode
+the game started with, stay as they are in every window), three seconds at a time, in a shuffled
 order that is a balanced design (a Hadamard matrix of 16 windows, run eight times, every second run with every switch
 inverted, the "foldover"), so that every switch is on in half of the windows and off in the other half, and the others
 average out in each half. Short windows and many of them, because the scene drifts: the error of an effect falls with the
@@ -44,7 +45,6 @@ FACTORS = [
     (32, 'tex-watch', 'texture change detection from the write watch (R1)'),
     (64, 'copy-line', 'cache-line guest copy table and prefetches (R4)'),
     (128, 'gw-bitmap', 'block bitmap for the storing-shader search, static scratch (R4)'),
-    (256, 'stage-table', 'prepared stages of a submission, both stages, a table (R2)'),
     (512, 'shadow-budget', 'far shadow cascades every second frame (R4, changes the picture)'),
     (1024, 'dispatch', 'per-thread dispatch table for indirect calls'),
     (2048, 'cb-unlink', 'command buffer leaves the registry in O(1)'),
@@ -70,7 +70,7 @@ def make_plan(factors, passes, confirm, rng):
     confirm: all-off and all-on windows each, mixed in. Every window: mask, kind, codes (one +-1 per design column)."""
     nf = len(factors)
     n = 4
-    while n - 1 < nf:
+    while n - 1 < nf + 3:  # (at least three spare columns: the noise probes that give the noise floor)
         n *= 2
     cols = hadamard_columns(n)
     plan = []
@@ -265,17 +265,19 @@ def find_main_key(game, sleep):
 
 def run_session(game, plan, window, settle, warmup, sleep, log=print, min_fps=5.0):
     start_mask = game.cmd('cpuopts')['mask']
+    base = start_mask & 3  # (the material cache mode the game was started with stays on in every window: it is not a factor)
     main_key = find_main_key(game, sleep)
     out = []
     try:
         if warmup > 0:
-            game.cmd('cpuopts', 0)
+            game.cmd('cpuopts', base)
             log('warming up for %g s with every switch off' % warmup)
             sleep(warmup)
         for w in plan:
-            got = game.cmd('cpuopts', w['mask'])['mask']
-            if got != w['mask']:
-                raise RuntimeError('the game refused mask %d (it reports %d)' % (w['mask'], got))
+            want = w['mask'] | base
+            got = game.cmd('cpuopts', want)['mask']
+            if got != want:
+                raise RuntimeError('the game refused mask %d (it reports %d)' % (want, got))
             sleep(settle)
             a = snapshot(game)
             sleep(window)
@@ -287,7 +289,7 @@ def run_session(game, plan, window, settle, warmup, sleep, log=print, min_fps=5.
             rec['metrics'] = m or {}
             out.append(rec)
             log('window %2d/%d  mask %4d  %-6s %s' % (
-                w['index'] + 1, len(plan), w['mask'], w['kind'],
+                w['index'] + 1, len(plan), want, w['kind'],
                 ('%.2f ms/frame (%.0f fps), %d draws/frame' % (m['frame_ms'], m['fps'], m['draws']))
                 if rec['ok'] else 'SKIPPED (no frames: a menu or a pause?)'))
     finally:

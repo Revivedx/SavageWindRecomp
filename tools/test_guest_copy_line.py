@@ -58,6 +58,7 @@ static VkSpan vk_transient_copy(const void *data, uint64_t size, uint64_t align)
 }
 #define GCOPY_TAB 4096
 #define UUB_MAX 64
+static void mvec_sync(void) {}
 @DECLS@
 @FUNCS@
 
