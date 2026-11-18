@@ -30,6 +30,7 @@
 //   stats               RecStats: T's fields plain, R's and the waits' _Atomic relaxed adds; read by T
 //   profiling           the profiler's markers (runtime/prof.h): the recorder thread's batches and submits, T's waits on it
 #include "record.h"
+#include "vk13.h"
 #include "mvec.h"
 #include "../../prof.h"
 

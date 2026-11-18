@@ -1891,7 +1891,8 @@ static bool format_depth_compare(VkFormat f) {
         if (known[i] == f) return ok[i];
     VkFormatProperties3 p3 = {.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3};
     VkFormatProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2, .pNext = &p3};
-    vkGetPhysicalDeviceFormatProperties2(g_vk.phys, f, &p2);
+    // (VkFormatProperties3 is Vulkan 1.3's: a 1.2 driver is not asked and gets the copy that is always right)
+    if (!g_vk.api12) vkGetPhysicalDeviceFormatProperties2(g_vk.phys, f, &p2);
     bool r = (p3.optimalTilingFeatures & VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_DEPTH_COMPARISON_BIT) != 0;
     if (getenv("SAVAGEWIND_DEPTH_TWIN_ALL")) r = false;
     if (n < 16) known[n] = f, ok[n++] = r;
@@ -6141,8 +6142,12 @@ static void gw_check(const uint32_t cbufs[6], bool vertices, uint64_t iaddr, uin
 // the spans hug the geometry (up to 128 of them: ~140 MB for BOTW's ~50 MB), each is looked at first, and only the
 // ones written since (~8 a list) are queried and reset: 0.33 ms a list instead of 0.54 (6 spans over ~450 MB).
 // SAVAGEWIND_VK_HEAP_COPY_SPANS=<n>: at most n spans; SAVAGEWIND_VK_HEAP_COPY_PEEK=0: every span queried and reset.
-// Two shapes. With room for the whole heap in video memory and 4 GB besides it (8 GB cards and up): one buffer the
-// heap's size, made at once. With less (4-6 GB cards): the heap in chunks of HC_CHUNK_MB, each a buffer of its own
+// Two shapes. One buffer the heap's size, made at once: only with SAVAGEWIND_VK_HEAP_COPY=1 now. It was the shape of
+// cards with room for the whole heap and 4 GB besides it (8 GB and up), but the 3120 MB of video memory are also
+// 3120 MB of the process's commit charge (NVIDIA's Windows driver backs video memory with committed, untouched system
+// memory; AMD's too), which a PC with 8 GB of RAM cannot cover: private bytes 8348 MB against 5868 MB in chunks at the
+// Great Plateau (RTX 3060, 1080p), with the same frame rate in 4 views at 1080p and 1440p (within the 3% between runs).
+// The default on every discrete card: the heap in chunks of HC_CHUNK_MB, each a buffer of its own
 // made where geometry is first fetched - on a thread of their own (hc_maker: a block of video memory can take
 // milliseconds), live from the list after - while the video memory in use (VK_EXT_memory_budget: the process's;
 // else VMA's count) stays within the plan: the smaller of the budget and 90% of the video memory, less HC_RESERVE_MB
@@ -6229,8 +6234,7 @@ static bool hc_on(void) {
     hc_vram = bm && atoll(bm) > 0 ? (uint64_t)atoll(bm) << 20 : vram;
     bool discrete = g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
     uint64_t heap = kernel_heap_size();
-    hc_state = force == 0 || gmem_mapped || !ww ? 0 : force == 1 ? 1 : force == 2 ? 2 : !discrete ? 0
-             : hc_vram >= heap + (4ull << 30) ? 1 : 2;
+    hc_state = force == 0 || gmem_mapped || !ww ? 0 : force == 1 ? 1 : force == 2 ? 2 : !discrete ? 0 : 2;
     const char *cm = getenv("SAVAGEWIND_VK_HEAP_COPY_CHUNK_MB");
     unsigned def = hc_vram <= VRAM_SMALL_HEAP ? HC_CHUNK_SMALL_MB : HC_CHUNK_MB;
     unsigned mb = cm ? (unsigned)atoi(cm) : def;

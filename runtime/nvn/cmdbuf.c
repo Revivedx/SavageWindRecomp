@@ -290,8 +290,12 @@ static void use_guest_chunk(NvnCmdBuf *cb, uint64_t gmem, uint64_t gsize) {
     cb->gmem = gmem;
     cb->gsize = gsize;
     cb->gused = 0;
-    uint64_t want = gsize * 8;  // (records take several times the GPU bytes; more blocks chain on when needed, each
-    use_block(cb, 0, want < 0x400 ? 0x400 : want > 0x4000 ? 0x4000 : want);  // twice the last: start small)
+    // The first block is 0x200 bytes (five commands and the jump) whatever the window's size; more blocks chain on
+    // when needed, each twice the last. Sized by the window (8 times it, 0x400-0x4000 bytes) the lists of the Great
+    // Plateau held 310 MB and those of four more places 804 MB: 80,000 lists, most a few records in a block of 4 or
+    // 16 KB. A record is 80 bytes a command, and BOTW's windows are many times what it records in them.
+    (void)gsize;
+    use_block(cb, 0, 0x200);
 }
 
 NVN(nvnCommandBufferAddCommandMemory) {  // (cmd, pool, offset, size)

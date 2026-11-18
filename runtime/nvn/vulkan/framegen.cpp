@@ -187,7 +187,9 @@ static FfxResource image(const FgImage *im, const wchar_t *name, bool write) {
 
 static FfxResource shared(int i) { return g.shared.fpGetResource(&g.shared, g.res[i]); }
 
+extern "C" bool vk_api12(void);  // (device.c)
 extern "C" bool fg_dispatch(VkCommandBuffer cb, const FgConfig *c, const FgFrame *f) {
+    if (vk_api12()) return false;  // (a Vulkan 1.2 driver: no frame generation)
     if (g.live && memcmp(&g.cfg, c, sizeof *c)) {
         g_fg_vk.wait_idle();
         fg_destroy();

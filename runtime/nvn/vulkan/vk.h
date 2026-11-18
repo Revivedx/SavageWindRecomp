@@ -35,6 +35,7 @@ typedef struct {
     uint32_t qfam, qfam_count;
     VmaAllocator vma;
     VkPhysicalDeviceProperties props;
+    bool api12;                // a Vulkan 1.2 driver with the extensions 1.3 made core (device.c api12_usable, vk13.h)
     bool is_mali;              // Arm Mali (vendor 0x13B5): the Mali-only paths' default (tiler / non-coherent workarounds)
     VkPipelineCache pcache;
     VkPipelineCache pcache_pre;  // the precompiled shaders' libraries (cache/vk_precompiled.bin; read only while playing)
