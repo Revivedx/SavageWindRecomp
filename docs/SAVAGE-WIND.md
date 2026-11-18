@@ -518,8 +518,15 @@ Pendiente:
          "Precompilar shaders" (dice "Hecho", "Volver a hacer" o "Sin hacer", con el número de shaders y la fecha de
          la última vez). Una barra con el paso (leer los archivos, traducir y compilar, pipelines) y la cuenta; Esc o
          B la para y lo hecho se queda. `savagewind --precompile-shaders` hace lo mismo sin el menú (ventana oculta
-         con `SAVAGEWIND_HIDDEN=1`); `savagewind --scan-shaders` solo cuenta lo que encuentra y cuántos de los shaders
+         con `SAVAGEWIND_HIDDEN=1`); `--precompile-shaders-if-needed`, solo si no están al día (`shader_precompile_status`
+         distinto de 1; si lo están, sale enseguida); `savagewind --scan-shaders` solo cuenta lo que encuentra y cuántos de los shaders
          del registro de claves (abajo) están entre ellos (`SAVAGEWIND_SCAN_LIST=1`: shaders por archivo).
+       - Al iniciar (2026-11-18): con "Precompilar todos los shaders" activado, un inicio normal cuyos shaders no
+         están precompilados para esta GPU y este driver (nunca hechos, o hechos por otro driver o traductor: una
+         actualización del driver, la carpeta de datos de otro PC, archivos del juego preparados sin la pantalla de
+         inicio) pasa antes por la pantalla de inicio (`LAUNCHER_SHADERS` en `runtime/main.c`): los precompila en la
+         barra de progreso (Esc o B la para) y sigue al juego. El estado necesita el dispositivo (driver y GPU de las
+         librerías), así que la ventana se crea oculta antes del arranque, como en Windows.
        - De dónde salen (`runtime/nvn/shader_archive.c`): de la RomFS del propio usuario (`romfs/`), en los
          archivos desde los que el juego sube sus shaders a NVN: FSHA con ficheros BNSH de nn::gfx (materiales,
          terreno, hierba: `*.sbfsha`, `*.bfsha` dentro de `*.ssarc`), SHARCB de agl/gsys (`*.sharcb`: postproceso,

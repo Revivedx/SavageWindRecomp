@@ -1517,8 +1517,11 @@ extern "C" void launcher_run(const char *root, int mode) {
     g_root = root;
     saves_tab_set_game_files(root);
     g_file_size.reset(g_root);
-    g_setup_only = mode == 0;
+    g_setup_only = mode == 0 || mode == 3;  // (runtime/main.c: LAUNCHER_SETUP; LAUNCHER_SHADERS, below)
     ui_window_init();
+#ifndef __APPLE__
+    { extern void ui_window_show(void); ui_window_show(); }  // (made hidden for a start straight into the game)
+#endif
     SDL_Window *win = ui_window();
     g_launcher_win = win;
     SDL_SetWindowTitle(win, g_setup_only ? "Savage Wind" : "Savage Wind Configuration");
@@ -1581,6 +1584,19 @@ extern "C" void launcher_run(const char *root, int mode) {
         pthread_create(&t, NULL, extract_thread, NULL);
         pthread_detach(t);
     }
+#ifndef __APPLE__
+    // (runtime/main.c, LAUNCHER_SHADERS) a plain start whose shaders aren't precompiled for this GPU and driver: they
+    // are now, on the overlay (Esc / B stops it: what is done stays), then on into the game as after a setup
+    if (mode == 3 && status.empty() && !auto_setup) {
+        fprintf(stderr, "[launcher] precompiling the shaders before the game\n");
+        page = SETUP;
+        g_file_size.set_suspended(true);
+        g_busy = true;
+        pthread_t t;
+        pthread_create(&t, NULL, precompile_thread, NULL);
+        pthread_detach(t);
+    }
+#endif
     if (g_settings.check_updates && !getenv("SAVAGEWIND_NO_UPDATE_CHECK")) update_check_start();
     // SAVAGEWIND_LAUNCHER_SHOT=<frame>[:<page>] (test): save build/launcher.png at that frame and exit; page: settings[:<tab>] / askdelete / setup
     long shot_at = getenv("SAVAGEWIND_LAUNCHER_SHOT") ? atol(getenv("SAVAGEWIND_LAUNCHER_SHOT")) : 0, frame = 0;
@@ -2099,7 +2115,8 @@ extern "C" void launcher_run(const char *root, int mode) {
                                 settings_save();
                         }
                         if (opt_toggle("Precompile all shaders", &g_settings.precompile_shaders, true,
-                                       "After the setup, translates and compiles every shader of the game, so that none "
+                                       "After the setup, and at a start when they are missing or out of date (a new graphics "
+                                       "driver, another PC), translates and compiles every shader of the game, so that none "
                                        "stutters the first time it is drawn, also in places never visited. A few more "
                                        "minutes and about 1.5 GB of disk. It can be done later too, from the game "
                                        "files page of Savage Wind Configuration."))
