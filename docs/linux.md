@@ -9,7 +9,8 @@ package the release AppImages.
     ./Savage_Wind-0.3.0-alpha.3-x86_64.AppImage
 
 Needs: a distribution with glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36, Arch, ...), a Vulkan 1.3 driver
-(Mesa RADV / ANV / NVK / Turnip / Asahi Honeykrisp, or NVIDIA's), and on x86-64 a CPU with SSE4.2 (2008 or newer;
+(Mesa RADV / ANV / NVK / Turnip / Asahi Honeykrisp, or NVIDIA's; a 1.2 driver with dynamic rendering, synchronization2
+and extended dynamic state 1 and 2 is also taken), and on x86-64 a CPU with SSE4.2 (2008 or newer;
 without AVX2 / FMA the game code is built in a slower compatible mode).
 The start screen asks for the folder with your own game files and sets them up; from then on the game starts
 straight away. `--config` (`./Savage_Wind-*.AppImage --config`) opens the configuration screen: Play, Settings, the

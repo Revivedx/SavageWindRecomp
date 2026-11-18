@@ -68,7 +68,8 @@ game.
 ## Get started
 
 **You need:** your own game files (see [Game files](docs/game-files.md)), Windows 10 or later or Linux on x86-64, a
-GPU with Vulkan 1.3, 16 GB of RAM, a CPU with SSE4.2 (AVX2 runs faster) and about 20 GB of free disk space.
+GPU with Vulkan 1.3, 8 GB of RAM (16 GB with integrated graphics), a 4-thread CPU with SSE4.2 (AVX2 runs faster) and
+about 20 GB of free disk space.
 
 1. Download the latest build from [Releases](https://github.com/Revivedx/SavageWindRecomp/releases/latest):
    - **Windows:** the file ending in `windows.zip`. Extract it to a folder you can write to, not Program Files.

@@ -102,7 +102,9 @@ work away between sessions: in NVIDIA Control Panel > Manage 3D settings, raise 
 
 ### How much disk space and memory does it need?
 
-About 20 GB of disk and 16 GB of RAM.
+About 20 GB of disk and 8 GB of RAM with a dedicated graphics card: the game takes about 4.5 GB of RAM and asks
+Windows for about 6.5 GB, so keep the page file on and close other programs on an 8 GB PC. Integrated graphics take
+their video memory from the PC's RAM: 16 GB there.
 
 ### Where are my saves? Can I bring saves from the Wii U or Cemu?
 
@@ -241,8 +243,13 @@ draw distance.
 
 ### What hardware is the minimum?
 
-A GPU with a Vulkan 1.3 driver, a CPU with SSE4.2 and 16 GB of RAM. Without AVX2 and FMA the game code runs in a slower
-compatibility mode. GPUs with only Vulkan 1.2, such as the GT 730 and the oldest Radeons on Windows, aren't supported.
+A GPU with a Vulkan 1.3 driver, a CPU with SSE4.2 and 4 threads, and 8 GB of RAM (16 GB with integrated graphics).
+Without AVX2 and FMA the game code runs in a slower compatibility mode. With 2 threads the game runs but stutters.
+
+A GPU whose driver stops at Vulkan 1.2 is taken when the driver has dynamic rendering, synchronization2 and extended
+dynamic state 1 and 2 as extensions; FSR 3, FSR 4 and frame generation are off there. This path is new on the `test`
+branch and no such card has confirmed it yet: if yours doesn't start, the log names the extension that is missing, and
+a report with that log helps.
 
 ### Is this faster than an emulator?
 
