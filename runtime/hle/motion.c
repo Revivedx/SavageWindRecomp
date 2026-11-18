@@ -165,6 +165,20 @@ static struct {
     float rate;                  // ... readings per second, measured (the Controls page's status)
 } hs;
 
+// The sensor clock against the PC's (under g_lock). Its readings are timed by the sensor's own clock, which is precise
+// when right; a controller that passes for a DualShock 4 (a Gamesir G7 Pro in its DualShock mode over its dongle, #136)
+// can move that clock by plausible steps at the wrong speed, and every turn came out several times too far and
+// unsteady while the same pad wired, or TotK Recomp timing it by the PC's clock, was fine. Over each second of
+// readings the sensor's time is compared with the PC's: off by more than a quarter, the readings are timed by the
+// PC's clock instead (its time over the count: one even period each), until a second agrees again.
+static struct {
+    uint64_t host0, last;  // the window's first reading and the last one (PC's clock, ns)
+    double dev;            // the sensor's time between the window's readings (s)
+    int n, bad;            // readings since host0; those without a usable sensor time
+    bool host;             // timed by the PC's clock now
+    double period;         // ... one reading's time (s)
+} ck;
+
 // Where the motion comes from now (backend.source)
 enum { SRC_NONE, SRC_PAD, SRC_DSU, SRC_DECK, SRC_DEVICE, SRC_COUNT };
 // Why that controller's sensors (backend.pad_why)
@@ -225,6 +239,7 @@ static void select_motion(int source) {
     g.acc[0] = g.acc[1] = 0, g.acc[2] = -1;
     g.acc_mean = 1, g.acc_var = g.gyro_sd = 0;
     hs.host_ns = 0, hs.bad_run = 0;
+    memset(&ck, 0, sizeof ck);
 }
 
 bool motion_has_sensors(void) {
@@ -386,6 +401,7 @@ void motion_pads(SDL_Gamepad *in_use, SDL_Gamepad *const *pads, int n) {
     backend.acc_time = backend.gyro_time = backend.acc_ts = backend.gyro_ts = 0;
     if (backend.source == SRC_PAD) select_motion(SRC_NONE);
     hs.period = rate > 1 ? 1.0 / rate : 0, hs.host_ns = 0, hs.bad_run = 0;
+    memset(&ck, 0, sizeof ck);
     pthread_mutex_unlock(&g_lock);
     if (on) {
         LOG("[motion] %s: gyroscope and accelerometer on (%.0f / %.0f Hz)%s\n", SDL_GetGamepadName(want), rate,
@@ -550,12 +566,46 @@ static void sensor_accel(const double acc[3]) {
     for (int i = 0; i < 3; i++) g.lin[i] = g.acc[i] + m[2][i];
 }
 
+// One gyroscope reading's time (not the first's): the sensor's (dt; dev_ok: usable) or, while the sensor's clock
+// disagrees with the PC's (ck), one even period of the PC's. host: when it came, by the PC's clock (ns).
+static double clock_dt(double dt, bool dev_ok, uint64_t host) {
+    if (!ck.host0 || host < ck.last || host - ck.last > 250000000ull) {  // (the first reading, or after a gap: a new window)
+        ck.host0 = ck.last = host, ck.dev = 0, ck.n = ck.bad = 0;
+        return ck.host && dev_ok ? ck.period : dt;
+    }
+    ck.last = host;
+    ck.n++;
+    if (dev_ok) ck.dev += dt;
+    else ck.bad++;
+    double span = (double)(host - ck.host0) / 1e9;
+    if (span >= 1 && ck.n >= 30) {
+        if (ck.bad * 10 < ck.n) {  // (a clock that stands still or jumps: those readings are timed already)
+            double ratio = ck.dev / span;
+            bool off = ratio < 0.8 || ratio > 1.25;
+            if (off != ck.host && hs.notes < 64) {
+                hs.notes++;
+                LOG(off ? "[motion] the controller's sensor clock runs at %.2f times the PC's: readings timed by the PC's clock "
+                          "(%.1f ms each)\n"
+                        : "[motion] the controller's sensor clock agrees with the PC's again (%.2f times): readings timed by "
+                          "it (%.1f ms each)\n",
+                    ratio, span / ck.n * 1e3);
+            }
+            ck.host = off;
+            ck.period = span / ck.n;
+        }
+        ck.host0 = host, ck.dev = 0, ck.n = ck.bad = 0;
+    }
+    return ck.host && dev_ok ? ck.period : dt;
+}
+
 static void sensor_gyro(const double raw[3], uint64_t ts) {
     if (!g.started) return;
+    bool first = !g.gyro_ts;
     double dt = g.gyro_ts && ts > g.gyro_ts ? (double)(ts - g.gyro_ts) / 1e9 : 0;
     g.gyro_ts = ts;
     hs.gyro++;
     hs.host_ns = SDL_GetTicksNS();
+    if (!first) dt = clock_dt(dt, dt > 0 && dt < 0.1, hs.host_ns);
     if (dt > 0 && dt < 0.1) {
         fuse_gyro(raw, dt);
         hs.fused++, hs.total++;
@@ -624,6 +674,8 @@ void motion_sensor_event(const SDL_Event *e) {
         // reads as a third of a second through SDL's wrap): every reading then looked 0 s or 0.1 s and more after the
         // last one and was dropped, and the aim stood still while the readings went on (suspected in #220). A reading
         // without a usable time is timed by when it came (SDL's event time), else by one sample period (SDL's rate).
+        // One that runs at another speed than the PC's is caught by clock_dt.
+        bool dev_ok = !first && dt > 0 && dt < 0.1;
         if (!first && !(dt > 0 && dt < 0.1)) {
             if (dt == 0) hs.stalled++;
             else hs.jumped++;
@@ -640,6 +692,7 @@ void motion_sensor_event(const SDL_Event *e) {
             }
             hs.bad_run = 0;
         }
+        if (!first) dt = clock_dt(dt, dev_ok, host);
         if (dt > 0 && dt < 0.1) {
             fuse_gyro(raw, dt);
             hs.fused++, hs.total++;

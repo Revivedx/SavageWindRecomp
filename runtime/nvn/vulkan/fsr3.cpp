@@ -23,7 +23,6 @@ static FfxUInt32 shared_ctx;
 static FfxResourceInternal shared[3];
 static void *scratch;
 static uint32_t ctx_rw, ctx_rh, ctx_ow, ctx_oh;
-static VkDevice ctx_dev;
 
 // The scratch memory the backend lays its contexts out in: 64-byte aligned (they are alignas(32), and the vendored
 // ffx_vk.cpp starts its arrays on 64-byte boundaries: third_party/FidelityFX/README.md)
@@ -50,9 +49,11 @@ static void message(FfxMsgType type, const wchar_t *msg) {
 
 extern "C" bool fsr3_available(void) { return true; }
 
+extern "C" void vk_wait_idle_for_contexts(void);  // (device.c)
+
 extern "C" void fsr3_destroy(void) {
     if (!have_ctx) return;
-    vkDeviceWaitIdle(ctx_dev);
+    vk_wait_idle_for_contexts();
     for (int i = 0; i < 3; i++) iface.fpDestroyResource(&iface, shared[i], shared_ctx);
     iface.fpDestroyBackendContext(&iface, shared_ctx);
     ffxFsr3UpscalerContextDestroy(&ctx);
@@ -121,7 +122,6 @@ static bool make_context(const Fsr3Dispatch *d) {
         return false;
     }
     have_ctx = true;
-    ctx_dev = d->dev;
     ctx_rw = d->color.width, ctx_rh = d->color.height, ctx_ow = d->output.width, ctx_oh = d->output.height;
     LOG("[fsr3] context %ux%u -> %ux%u\n", ctx_rw, ctx_rh, ctx_ow, ctx_oh);
     return true;

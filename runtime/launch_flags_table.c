@@ -379,6 +379,7 @@ const LfInfo LF_TABLE[] = {
     {"SAVAGEWIND_TEX_FREE_MAX", LF_KIND_TEXT, LF_GROUP_OTHER, "", ""},
     {"SAVAGEWIND_TEX_FULLHASH", LF_KIND_SWITCH, LF_GROUP_OTHER, "", ""},
     {"SAVAGEWIND_THREAD_DUMP_AT", LF_KIND_TEXT, LF_GROUP_DEV, "", ""},
+    {"SAVAGEWIND_THREAD_ELEVATE", LF_KIND_NUMBER, LF_GROUP_PLAY, "1", "Raises the game's main and render threads above normal priority (default only on CPUs with P- and E-cores). 0 never."},
     {"SAVAGEWIND_TICK_SCALE", LF_KIND_NUMBER, LF_GROUP_OTHER, "", ""},
     {"SAVAGEWIND_TIMELINE", LF_KIND_TEXT, LF_GROUP_DEV, "", ""},
     {"SAVAGEWIND_TRACE_COUNT", LF_KIND_NUMBER, LF_GROUP_DEV, "", ""},
@@ -513,4 +514,4 @@ const LfInfo LF_TABLE[] = {
     {"SAVAGEWIND_XLATE_VERIFY", LF_KIND_TEXT, LF_GROUP_DEV, "", ""},
     {"SAVAGEWIND_YAZ0", LF_KIND_NUMBER, LF_GROUP_OTHER, "", ""},
 };
-const int LF_TABLE_N = 509;
+const int LF_TABLE_N = 510;

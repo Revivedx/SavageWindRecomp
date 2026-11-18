@@ -2736,9 +2736,26 @@ static void write_runtime_profile(void) {
 
 static char fg_real_shot[256];  // (SAVAGEWIND_FG_SHOT_AT: the game's frame after a generated one saved)
 
-void vk_fg_wait_idle(void) {
+// Before an effect's contexts are made again (frame generation, framegen.cpp; the FSR 3 / FSR 4 upscalers, fsr3.cpp and
+// fsr_api.cpp: the sizes changed, as when the scene's size does at a shop's sell list): the GPU done with what used
+// them. The recorder thread makes that call (exec.c fg_run, fsr3_run), in the middle of a frame whose presents the
+// translating thread may have queued already, and the present thread waits for that frame's submission
+// (rec_wait_submitted), which the recorder makes after this call. Waiting for the present queue to empty, as frame
+// generation did, then left both waiting for good: the picture stood still while the window still answered (#952,
+// #953). There the recorder waits on the timeline for what it has submitted instead, which covers every frame that used
+// the contexts, and leaves the queue to the present thread: the upscalers' vkDeviceWaitIdle used it meanwhile, which
+// Vulkan forbids (the device's queues are the caller's alone during that call).
+void vk_wait_idle_for_contexts(void) {
+    if (rec_on_recorder()) {
+        uint64_t seq = rec_submitted();
+        VkSemaphoreWaitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1,
+                                  .pSemaphores = &g_vk.timeline, .pValues = &seq};
+        for (int s = 1; vkWaitSemaphores(g_vk.dev, &wi, 1000000000ull) == VK_TIMEOUT; s++)
+            if (s <= 5) LOG("[vk] the GPU has not finished submission %llu after %d s\n", (unsigned long long)seq, s);
+        return;
+    }
     vk_present_idle();
-    if (!rec_on_recorder()) rec_drain();
+    rec_drain();
     vkDeviceWaitIdle(g_vk.dev);
 }
 
@@ -3437,6 +3454,23 @@ int ui_run(void) {
         menu_apply_window_requests(window);
         extern void input_mouse_update(SDL_Window *w);  // runtime/hle/input.c: hold the cursor while the game has it
         input_mouse_update(window);
+        {   // No frame for HANG_WATCH_MS while the window still runs (#952: the picture stopped selling to a merchant, the
+            // window still took focus and the mouse): what each of the game's threads waits for goes to the log, once
+            // per stop, so a player's log shows where it hung. SAVAGEWIND_HANG_WATCH=<seconds>, 0 off.
+            static int watch_s = -1;
+            static uint64_t seen = ~0ull, since;
+            static bool dumped;
+            if (watch_s < 0) watch_s = getenv("SAVAGEWIND_HANG_WATCH") ? atoi(getenv("SAVAGEWIND_HANG_WATCH")) : 10;
+            uint64_t now = SDL_GetTicks();
+            bool shown = !(SDL_GetWindowFlags(window) & (SDL_WINDOW_MINIMIZED | SDL_WINDOW_OCCLUDED));
+            if (total_frames != seen || !shown) seen = total_frames, since = now, dumped = false;
+            else if (watch_s > 0 && !dumped && total_frames > 300 && now - since >= (uint64_t)watch_s * 1000) {
+                dumped = true;
+                LOG("[hang-watch] no frame for %d s (frame %llu): the game's threads\n", watch_s, (unsigned long long)total_frames);
+                extern void kernel_dump_threads_try(void);  // runtime/kernel.c
+                kernel_dump_threads_try();
+            }
+        }
     }
 }
 

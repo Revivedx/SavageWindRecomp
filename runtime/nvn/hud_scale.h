@@ -59,16 +59,23 @@ static inline void hud_scale_view(float *v, float s, float m00, float m11, float
 }
 
 // Combined HUD matrices need the flat console projection corrected once. ui2d glyphs (128 bytes, Y flipped)
-// already use the taller projection, including nonuniform scale during a location title's appearance.
-static inline bool hud_combined_shape(const float *m, unsigned long long size, float shape, float scale[2]) {
+// already use the taller projection, including nonuniform scale during a location title's appearance. A text placed
+// at the layout's very middle has no translation; in a talk window it is still part of the window (centred_ok): a
+// sign's text block sits there, and on a taller window with HUD at edges it stayed while its box went down to the
+// bottom edge with the rest of the talk window, the text above the box (#947).
+static inline bool hud_combined_shape_at(const float *m, unsigned long long size, float shape, float scale[2],
+                                         bool centred_ok) {
     if (!(m[0] > 0 && m[5] != 0 && m[14] == -1 && m[15] > 0 &&
-          !m[1] && !m[2] && !m[4] && !m[6] && !m[8] && !m[9] && !m[12] && !m[13] && (m[3] || m[7])))
+          !m[1] && !m[2] && !m[4] && !m[6] && !m[8] && !m[9] && !m[12] && !m[13] && (m[3] || m[7] || centred_ok)))
         return false;
     bool flat = fabsf(fabsf(m[5]) / m[0] - 16.0f / 9.0f) < 0.002f;
     if (!flat && !(shape < 1 && size == 128 && m[5] < 0)) return false;
     scale[0] = flat && shape > 1 ? 1 / shape : 1;
     scale[1] = flat && shape < 1 ? shape : 1;
     return true;
+}
+static inline bool hud_combined_shape(const float *m, unsigned long long size, float shape, float scale[2]) {
+    return hud_combined_shape_at(m, size, shape, scale, false);
 }
 
 // A matrix with the view already in it (4 x 4 rows, row 3 its w: text, the clock)
@@ -154,6 +161,18 @@ static inline double hud_edge_scissor_dy(double y_center, double gh, double shap
     double dir = my > 1.0f / 3.0f ? 1.0 : my < -1.0f / 3.0f ? -1.0 : 0.0;
     return dir * (gh / 2.0) * (1.0 - shape);
 }
+
+// A HUD part kept whole (ui_layout.c, rt_ui_layout_pane_draw): all its panes take the part's anchor instead of each
+// the zone of its own centre. The champions' abilities are a column from the top-left zone into the middle one: each
+// icon and each count went to the anchor of the zone it was in, so at another HUD size the column broke apart and
+// icons left their counts (#913). The scope marker carries the part's layout kind (UI_LAYOUT_*, ui_layout.h) in the low
+// bits and its anchor, -1, 0 or 1 on each axis, above them.
+enum { HUD_KIND_MASK = 0xf, HUD_GROUP = 0x10 };
+static inline unsigned hud_group_kind(unsigned kind, int ax, int ay) {
+    return HUD_GROUP | (kind & HUD_KIND_MASK) | (unsigned)(ax + 1) << 5 | (unsigned)(ay + 1) << 7;
+}
+static inline int hud_group_ax(unsigned kind) { return (int)(kind >> 5 & 3) - 1; }
+static inline int hud_group_ay(unsigned kind) { return (int)(kind >> 7 & 3) - 1; }
 
 // Executing scopes may nest through cached command lists. Overflow preserves the outer owner.
 typedef struct { unsigned kind, depth, overflow, parent[16]; } HudScope;

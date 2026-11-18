@@ -137,27 +137,13 @@ static bool dll_here(void) {
     return have;
 }
 
-static bool core_load(void) {
-    if (N.tried) return N.loaded;
-    N.tried = 1;
-    if (!dll_here()) {
-        LOG("[dlss] NVIDIA's DLSS library is not next to savagewind.exe (the setup downloads it): DLSS off\n");
+static bool try_load_core(const char *path) {
+    HMODULE h = LoadLibraryA(path);
+    if (!h) {
+        LOG("[dlss] cannot load %s (error %lu)\n", path, GetLastError());
         return false;
     }
-    char dir[MAX_PATH] = {0}, path[MAX_PATH + 32];
-    DWORD n = sizeof dir;
-    if (RegGetValueA(HKEY_LOCAL_MACHINE, "SOFTWARE\\NVIDIA Corporation\\Global\\NGXCore", "FullPath", RRF_RT_REG_SZ,
-                     NULL, dir, &n) != ERROR_SUCCESS) {
-        LOG("[dlss] no NVIDIA driver with NGX (registry NGXCore missing): DLSS off\n");
-        return false;
-    }
-    snprintf(path, sizeof path, "%s\\_nvngx.dll", dir);
-    N.core = LoadLibraryA(path);
-    if (!N.core) {
-        LOG("[dlss] cannot load %s (error %lu): DLSS off\n", path, GetLastError());
-        return false;
-    }
-#define FN(f, name) N.f = (void *)GetProcAddress(N.core, name)
+#define FN(f, name) N.f = (void *)GetProcAddress(h, name)
     FN(init, "NVSDK_NGX_VULKAN_Init_Ext2");
     FN(req_ext, "NVSDK_NGX_VULKAN_RequiredExtensions");
     FN(caps, "NVSDK_NGX_VULKAN_GetCapabilityParameters");
@@ -170,7 +156,55 @@ static bool core_load(void) {
 #undef FN
     if (!N.init || !N.req_ext || !N.caps || !N.alloc_params || !N.destroy_params || !N.create || !N.evaluate ||
         !N.release) {
-        LOG("[dlss] the NGX core %s lacks Vulkan entry points: DLSS off\n", path);
+        LOG("[dlss] the NGX core %s lacks Vulkan entry points\n", path);
+        FreeLibrary(h);
+        memset(&N, 0, sizeof N);
+        N.tried = 1;
+        return false;
+    }
+    N.core = h;
+    return true;
+}
+
+// (skip_path may be out itself, the registry's core that failed: it is copied first, as out is written each step)
+static bool find_driverstore_core(const char *skip_path, char *out, size_t nout) {
+    char sysdir[MAX_PATH] = {0}, pattern[MAX_PATH + 64], skip[MAX_PATH + 32] = {0};
+    if (skip_path) snprintf(skip, sizeof skip, "%s", skip_path);
+    UINT slen = GetSystemDirectoryA(sysdir, MAX_PATH);
+    if (!slen || slen >= MAX_PATH) return false;
+    snprintf(pattern, sizeof pattern, "%s\\DriverStore\\FileRepository\\nv*", sysdir);
+    WIN32_FIND_DATAA fd;
+    HANDLE ff = FindFirstFileA(pattern, &fd);
+    if (ff == INVALID_HANDLE_VALUE) return false;
+    bool found = false;
+    do {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+        snprintf(out, nout, "%s\\DriverStore\\FileRepository\\%s\\_nvngx.dll", sysdir, fd.cFileName);
+        if (skip[0] && !_stricmp(out, skip)) continue;
+        if (GetFileAttributesA(out) != INVALID_FILE_ATTRIBUTES && try_load_core(out)) {
+            found = true;
+            break;
+        }
+    } while (FindNextFileA(ff, &fd));
+    FindClose(ff);
+    return found;
+}
+
+static bool core_load(void) {
+    if (N.tried) return N.loaded;
+    N.tried = 1;
+    if (!dll_here()) {
+        LOG("[dlss] NVIDIA's DLSS library is not next to savagewind.exe (the setup downloads it): DLSS off\n");
+        return false;
+    }
+    char dir[MAX_PATH] = {0}, path[MAX_PATH + 32] = {0};
+    DWORD n = sizeof dir;
+    bool have_reg = RegGetValueA(HKEY_LOCAL_MACHINE, "SOFTWARE\\NVIDIA Corporation\\Global\\NGXCore", "FullPath",
+                                 RRF_RT_REG_SZ, NULL, dir, &n) == ERROR_SUCCESS;
+    if (have_reg) snprintf(path, sizeof path, "%s\\_nvngx.dll", dir);
+    else LOG("[dlss] registry NGXCore missing, scanning DriverStore\n");
+    if ((!have_reg || !try_load_core(path)) && !find_driverstore_core(have_reg ? path : NULL, path, sizeof path)) {
+        LOG("[dlss] no usable NGX core found: DLSS off\n");
         return false;
     }
     const char *data = rt_data_root();
@@ -351,13 +385,14 @@ static void dlss_run(void *arg) {
         release_feature();
         static const int q[] = {NGX_PERF_ULTRAQUALITY, NGX_PERF_MAXQUALITY, NGX_PERF_BALANCED, NGX_PERF_MAXPERF,
                                 NGX_PERF_ULTRAPERF};  // (UPQ_*: Ultra Performance's 3.0 is DLSS's own)
+        static bool uq_rejected;
         unsigned requested = j->quality < 5 ? j->quality : 1;
-        // Some driver/NGX combinations reject Ultra Quality at a particular
-        // render size. Retry the next conservative mode before disabling DLSS.
-        static const unsigned fallback[] = {0, 1, 2, 3};
+        unsigned start = (requested == 0 && uq_rejected) ? 1 : requested;
+        // Some driver/NGX combinations reject Ultra Quality at a particular render size. Remember that
+        // rejection so dynamic-resolution steps go straight to Quality, and step down without duplicate retries.
         bool created = false;
-        for (unsigned attempt = 0; attempt < 4 && !created; attempt++) {
-            unsigned mode = attempt == 0 ? requested : fallback[attempt];
+        unsigned tries = start < 4 ? 4 : 5;
+        for (unsigned mode = start; mode < tries && !created; mode++) {
             if (!ok(N.alloc_params(&g_params), "allocate parameters")) { atomic_store(&g_failed, 1); return; }
             NgxParam *p = g_params;
             p_setu(p, "CreationNodeMask", 1);
@@ -373,8 +408,9 @@ static void dlss_run(void *arg) {
             NgxResult r = N.create(j->cb, NGX_FEATURE_SUPERSAMPLING, p, &g_feature);
             if (NGX_OK(r)) {
                 created = true;
-                if (attempt) LOG("[dlss] quality %u rejected; using fallback mode %u\n", requested, mode);
+                if (mode != requested) LOG("[dlss] quality %u rejected; using fallback mode %u\n", requested, mode);
             } else {
+                if (mode == 0) uq_rejected = true;
                 LOG("[dlss] quality mode %u rejected: %s (%#x)\n", mode, result_name(r), r);
                 release_feature();
             }

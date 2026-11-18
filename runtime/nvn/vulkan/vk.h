@@ -120,6 +120,7 @@ typedef struct TexBackend {
     uint8_t nview_fmt;
     uint64_t data_hash, sample_hash, checked_frame, full_frame;
     bool scalable, presented;
+    bool cleared_new;            // made zeroed (create_image): float, scaled and depth targets
     bool native_post;           // shader-identified bloom target: never inherit a scene scale
     bool hdr_upgraded;           // the game's linear 10-bit final image, made RGBA16F for HDR (hdr.c)
     uint8_t rs_group;            // RS_*: which output scale its allocation follows (textures.c)

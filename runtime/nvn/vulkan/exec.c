@@ -1484,11 +1484,17 @@ static void hud_frame_update(void) {
     if (hud_quick_tracked(g_settings.hud_size, g_settings.hud_edges) && framepace_quick_ui()) hud_quick_ns = ns;
     hud_quick = hud_quick_ns && ns - hud_quick_ns < HUD_QUICK_HOLD_NS;
 }
+static unsigned hud_kind(void) { return hud_scope.kind & HUD_KIND_MASK; }  // (UI_LAYOUT_*; a HUD part kept whole: its layout's)
 static bool hud_owned(void) {
-    return hud_scope.kind == UI_LAYOUT_HUD || hud_scope.kind == UI_LAYOUT_CONTEXT;
+    return hud_kind() == UI_LAYOUT_HUD || hud_kind() == UI_LAYOUT_CONTEXT;
 }
 static bool hud_native_layout(void) {
-    return hud_scope.kind == UI_LAYOUT_DIALOGUE || hud_scope.kind == UI_LAYOUT_MENU || hud_scope.kind == UI_LAYOUT_TALK;
+    return hud_kind() == UI_LAYOUT_DIALOGUE || hud_kind() == UI_LAYOUT_MENU || hud_kind() == UI_LAYOUT_TALK;
+}
+// The anchor of a HUD pane centred at c on an axis (0 x, 1 y): a HUD part kept whole gives its own (hud_group_kind)
+static float hud_anchor_now(float c, float edge, int axis) {
+    if (!(hud_scope.kind & HUD_GROUP)) return hud_anchor(c, edge);
+    return (float)(axis ? hud_group_ay(hud_scope.kind) : hud_group_ax(hud_scope.kind)) * edge;
 }
 static float hud_scale_now(void) {
     hud_frame_update();
@@ -1506,10 +1512,10 @@ static int hud_edges_now(float shape) {
 // Dock a conversation as one layout, including choices and its close animation.
 static float hud_layout_dy(float shape) {
     if (!g_settings.hud_edges || shape >= 1) return 0;
-    return hud_scope.kind == UI_LAYOUT_TALK ? shape - 1 : 0;
+    return hud_kind() == UI_LAYOUT_TALK ? shape - 1 : 0;
 }
 static bool hud_context_native(float shape, float x, float y, float ex, float ey) {
-    return hud_scope.kind != UI_LAYOUT_CONTEXT && hud_context_keeps(g_settings.hud_edges && shape < 1, x, y, ex, ey);
+    return hud_kind() != UI_LAYOUT_CONTEXT && hud_context_keeps(g_settings.hud_edges && shape < 1, x, y, ex, ey);
 }
 
 // HUD at edges leaves a shop's panel where it is: its list, the item's panel and their frames are one 16:9 layout that
@@ -4755,10 +4761,13 @@ static bool up_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out) 
     for (uint64_t i = 0; i + 3 < nw; i += 4) {  // (a vec4: 16-byte aligned)
         float w = g[i], h = g[i + 1];
         if (!(w >= 16 && h >= 16) || fabsf(w * g[i + 2] - 1) > 1e-5f || fabsf(h * g[i + 3] - 1) > 1e-5f) continue;
+        // (to a texel of the target at that factor: a half-size buffer of an odd size is rounded down, so with the
+        // game's dynamic resolution (1520x855: 760x427) the grid is 1520x855, not 2 x 427; missed, the lighting's and
+        // the fog's half-size buffers were read off by up to a scaled texel in every frame below 1600x900, #942)
         bool match = false;
         for (int k = -2; k <= 2 && !match; k++) {
-            float f = k < 0 ? 1.0f / (float)(1 << -k) : (float)(1 << k);
-            match = w == (float)up_fix.gw * f && h == (float)up_fix.gh * f;
+            float f = k < 0 ? 1.0f / (float)(1 << -k) : (float)(1 << k), tol = f < 1 ? 0 : f - 1;
+            match = fabsf(w - (float)up_fix.gw * f) <= tol && fabsf(h - (float)up_fix.gh * f) <= tol;
         }
         if (!match) continue;
         if (!m->found) memcpy(buf, g, nw * 4);
@@ -4876,16 +4885,19 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
     if (size < 64 || !st.rt.ncolor || !st.rt.color[0]) return false;
     const float *g = (const float *)(uintptr_t)addr;
     bool map_layout = shape >= 0.75f && shape < 1;
-    bool tall_map = map_layout && (hud_scope.kind == UI_LAYOUT_MENU ||
-                    (hud_scope.kind == UI_LAYOUT_NONE && output_tall_map(shape)));
+    bool tall_map = map_layout && (hud_kind() == UI_LAYOUT_MENU ||
+                    (hud_kind() == UI_LAYOUT_NONE && output_tall_map(shape)));
     // The terrain capture is prepared before AppMap switches presentation. Its fixed target
     // must already contain the taller view on the first visible map frame.
     if (map_layout && map_capture_patch(g, size, shape, out)) return true;
     TexBackend *tb = (TexBackend *)st.rt.color[0]->backend;
     // MessageDialog captures the background before drawing each window. Its crop uses a separate
     // source rectangle; translating the pane alone makes the captured location title/choice text repeat.
-    if ((!tb || tb->rs_group != RS_OUT) && hud_scope.kind == UI_LAYOUT_TALK &&
-        g_settings.hud_edges && shape > 0 && shape < 1 && size >= 27 * 4 &&
+    // On every taller window, not only a docked conversation: the window's pane is laid out in the middle 16:9
+    // part, while the final image's rows are the whole taller view, so the console-UV crop took rows from higher
+    // up than the pane covers. The dye shop's five-ingredients screen draws its capture as a 600-row band over the
+    // middle of the screen, and Link showed two pairs of eyes there (#947).
+    if ((!tb || tb->rs_group != RS_OUT) && shape > 0 && shape < 1 && size >= 27 * 4 &&
         g_cur_fs_hash == UINT64_C(0x90b79e85a3d120e3) && st.program &&
         hmix(1469598103934665603ull, (const void *)(uintptr_t)(st.program->stages[0].code_addr + 0x30), 0x200) ==
         UINT64_C(0x33067840cc99b18a)) {
@@ -4947,14 +4959,14 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         float tx = text_matrix[3] / text_matrix[15], ty = text_matrix[7] / text_matrix[15];
         if (hud_s != 1 && !hud_context_native(shape, tx, ty, edge_x, edge_y) &&
             !(hud_quick && hud_quick_keeps(tx, ty, edge_x, edge_y)))
-            hud_scale_matrix(text_matrix, hud_s, hud_anchor(tx, edge_x), hud_anchor(ty, edge_y));
+            hud_scale_matrix(text_matrix, hud_s, hud_anchor_now(tx, edge_x, 0), hud_anchor_now(ty, edge_y, 1));
         *out = ubo_span(vk_transient_copy(text_matrix, sizeof text_matrix, 256), sizeof text_matrix);
         return true;
     }
     // Combined projection/view matrices also include ui2d glyphs that already use the taller view.
     // Keep their projection and apply the same HUD placement as their captured shadow or button plate.
     float combined_scale[2];
-    if (hud_combined_shape(g, size, shape, combined_scale)) {
+    if (hud_combined_shape_at(g, size, shape, combined_scale, hud_kind() == UI_LAYOUT_TALK)) {
         hud_cut = menu_cut;
         static float buf[0x10000 / 4];
         uint64_t n = size > sizeof buf ? sizeof buf : size;
@@ -4964,14 +4976,14 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         float tx = buf[3] / buf[15], ty = buf[7] / buf[15];
         if (hud_s != 1 && !hud_context_native(shape, tx, ty, edge_x, edge_y) &&
             !(hud_quick && hud_quick_keeps(tx, ty, edge_x, edge_y)))
-            hud_scale_matrix(buf, hud_s, hud_anchor(tx, edge_x), hud_anchor(ty, edge_y));
+            hud_scale_matrix(buf, hud_s, hud_anchor_now(tx, edge_x, 0), hud_anchor_now(ty, edge_y, 1));
         if (pause_edges) hud_edge_matrix(buf, hud_pause_edge_dy(ty, shape));
         hud_edge_matrix(buf, hud_layout_dy(shape));
         if (map_chrome && fabsf(ty) > shape * (200.0f / 360))
             hud_edge_matrix(buf, copysignf(1 - shape, ty));
         if (hud_edge_active && !hud_context_native(shape, tx, ty, edge_x, edge_y) && hud_edge_moves(edge_mode, ty, edge_y) &&
             !(hud_quick && hud_quick_bar(tx, ty, edge_x, edge_y))) {
-            float ay = hud_anchor(ty, edge_y);
+            float ay = hud_anchor_now(ty, edge_y, 1);
             float dy = hud_edge_dy(ay, edge_y, shape);
             if (dy != 0) hud_edge_matrix(buf, dy);
         }
@@ -5099,8 +5111,8 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         if (hud_context_native(shape, (x0 + x1) / 2, (y0 + y1) / 2, edge_x, edge_y)) hud_scale = false;
         float cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
         if (hud_scale) {  // (a quick menu's bar: HUD size keeps its middle at the game's size, HUD at edges the bar)
-            hud_ax = hud_anchor(cx, edge_x);
-            hud_ay = hud_anchor(cy, edge_y);
+            hud_ax = hud_anchor_now(cx, edge_x, 0);
+            hud_ay = hud_anchor_now(cy, edge_y, 1);
             if (hud_edge_active && hud_edge_moves(edge_mode, cy, edge_y) &&
                 !(hud_quick && hud_quick_bar(cx, cy, edge_x, edge_y)) && !hud_shop_pane(mv[3], mv[7]))
                 edge_dy = hud_edge_dy(hud_ay, edge_y, shape);
@@ -6586,6 +6598,12 @@ static void hc_list_begin(void) {
 // one go; every fetch in them then went through the copy for the rest of the session (upload 200 -> 1200 MB per 2 s,
 // 60 -> 54 fps on a GTX 1070, #815). The ring that races is rewritten every frame, and is still marked in a few frames.
 // In a marked region only fetches up to VDYN_COPY_MAX are copied (the ring's are 129 B - 2 KB), not the meshes around it.
+// Vertex data GPU-written too (gw: storing shaders write it as well) is learned and copied the same way: BOTW's rain
+// particles are such a ring, both the CPU and its shaders write it. It was left out (read in place: a copy made at
+// translation misses what a shader writes before the draw), and on a GPU a frame behind the CPU the rain came out as
+// streaks across the screen (#956: an RTX 2060 at 120 fps; its 6 GB heap copy in chunks). Only a region seen changed
+// while read in VDYN_HITS frames is copied, as for the rest (the rain's ring: one region); every small GPU-written fetch
+// is sampled, not one in 32, so that ring is learned in the rain's first frames.
 // SAVAGEWIND_VK_VDYN=0: off; =2: every fetch up to 4 KB copied (no learning, the cost above).
 #define VDYN_N 4096
 #define VDYN_SAMPLE_MAX 4096
@@ -6622,10 +6640,12 @@ static bool vdyn_hit(uint64_t addr, uint64_t size) {
 
 // (render thread) a fetch read in place: copied instead (false) if its region was marked; some small ones sampled
 static bool vdyn_fetch(uint64_t addr, uint64_t size) {
-    if (!size || !vdyn_on() || gw_overlaps(addr, addr + size)) return true;
-    if (vdyn_mode == 2 && size <= VDYN_SAMPLE_MAX) return false;
+    if (!size || !vdyn_on()) return true;
+    bool gw = gw_overlaps(addr, addr + size);
+    if (vdyn_mode == 2 && size <= VDYN_SAMPLE_MAX && !gw) return false;
     if (size <= VDYN_COPY_MAX && vdyn_hit(addr, size)) return false;
-    if (size > VDYN_SAMPLE_MAX || addr < HEAP_BASE || addr + size > HEAP_BASE + HEAP_MAX || (++vdyn_tick & VDYN_SMASK)) return true;
+    if (size > VDYN_SAMPLE_MAX || addr < HEAP_BASE || addr + size > HEAP_BASE + HEAP_MAX || (!gw && (++vdyn_tick & VDYN_SMASK)))
+        return true;
     uint64_t w = atomic_load_explicit(&vdyn_w, memory_order_relaxed);
     if (w - atomic_load_explicit(&vdyn_r, memory_order_acquire) >= VDYN_N) return true;  // (full: no sample)
     __typeof__(vdyn_chk[0]) *c = &vdyn_chk[w % VDYN_N];
@@ -10484,7 +10504,7 @@ static void scene_post(Prog *pr, CmdRec *r) {
 //     interpolation's optical flow has to make up the rest.
 static void save_view_png(TexBackend *b, VkImageView src, const char *path);
 volatile int g_fg_want;  // device.c: frame generation is wanted for the frame being drawn
-void vk_fg_wait_idle(void);  // (device.c)
+void vk_wait_idle_for_contexts(void);  // (device.c)
 
 enum { FG_CAMERA_FLOATS = 58 };
 static struct {
@@ -10799,7 +10819,7 @@ TexBackend *vk_fg_generate(NvnTexture *t, TexBackend *b) {
             }
             memcpy(f.cam_pos, pos, sizeof pos), memcpy(f.cam_up, up, sizeof up);
             memcpy(f.cam_right, right, sizeof right), memcpy(f.cam_fwd, fwd, sizeof fwd);
-            if (!g_fg_vk.dev) g_fg_vk = (FgVk){g_vk.phys, g_vk.dev, vk_fg_wait_idle};
+            if (!g_fg_vk.dev) g_fg_vk = (FgVk){g_vk.phys, g_vk.dev, vk_wait_idle_for_contexts};
             vk_full_barrier(cb);
             gp_mark(cb, "frame generation: FSR 3 optical flow + interpolation");
             static int test = -1;  // (measuring) SAVAGEWIND_FG_TEST=2: no interpolation (the HUD-less copy shown instead)

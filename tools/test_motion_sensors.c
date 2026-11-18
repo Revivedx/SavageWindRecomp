@@ -106,6 +106,58 @@ static void repeated_reports(void) {
     printf("repeated reports: 1, 8 and 32 copies of each give the same turn PASS\n");
 }
 
+// Gyroscope readings at 250 Hz by the PC's clock whose sensor clock runs `speed` times as fast (a controller that passes
+// for a DualShock 4 over its dongle, #136): the yaw turned from 1.2 s to 3 s, once the first second has shown the clock
+// is off, must be the one a right clock gives.
+static double yaw_turned(double speed) {
+    motion_reboot_reset();
+    memset(&g, 0, sizeof g), g.q.w = g.aim_q.w = 1, g.acc[2] = -1;
+    memset(&hs, 0, sizeof hs), memset(&ck, 0, sizeof ck);
+    hs.period = 0.004;
+    memset(&backend, 0, sizeof backend);
+    backend.enabled = true, backend.pad_id = 7;
+    SDL_Event e = {0};
+    e.gsensor.which = 7;
+    e.gsensor.sensor = SDL_SENSOR_ACCEL, e.gsensor.data[1] = SDL_STANDARD_GRAVITY;
+    e.gsensor.timestamp = clock_ns, e.gsensor.sensor_timestamp = 1000;
+    motion_sensor_event(&e);
+    double from = 0;
+    for (int i = 0; i <= 750; i++) {
+        double t = i / 250.0;
+        e.gsensor.sensor = SDL_SENSOR_GYRO;
+        e.gsensor.data[0] = 0, e.gsensor.data[2] = 0, e.gsensor.data[1] = (float)(0.6 * sin(5 * t) + 0.3);
+        e.gsensor.sensor_timestamp = 1000 + (uint64_t)(i * 4000000.0 * speed);
+        clock_ns += 4000000;
+        e.gsensor.timestamp = clock_ns;
+        motion_sensor_event(&e);
+        e.gsensor.sensor = SDL_SENSOR_ACCEL;
+        e.gsensor.timestamp = ++clock_ns, e.gsensor.sensor_timestamp += 1;
+        motion_sensor_event(&e);
+        if (i == 300 || i == 750) {
+            Mat m;
+            quat_mat(g.q, m);
+            double yaw, pitch, roll;
+            euler_of(m, &yaw, &pitch, &roll);
+            if (i == 300) from = yaw;
+            else return yaw - from;
+        }
+    }
+    return 0;
+}
+static void clock_speed(void) {
+    double right = yaw_turned(1);
+    assert(fabs(right) > 0.2 && !ck.host);
+    double fast = yaw_turned(4);
+    assert(ck.host);
+    double slow = yaw_turned(0.25);
+    assert(ck.host);
+    if (fabs(fast - right) > 0.01 || fabs(slow - right) > 0.01) {
+        fprintf(stderr, "sensor clock x4: %.4f, x0.25: %.4f, right: %.4f rad\n", fast, slow, right);
+        abort();
+    }
+    printf("sensor clock at 4 and 0.25 times the PC's: timed by the PC's clock, the same turn as a right one PASS\n");
+}
+
 // At a shrine apparatus the game gets the controller as it is held (gravity agrees), whatever the sensitivity
 static void apparatus_pose(void) {
     settings(3, 1, MOTION_INVERT_UD, false);
@@ -179,6 +231,7 @@ static void dsu_axes(void) {
 int main(void) {
     world_axes();
     repeated_reports();
+    clock_speed();
     apparatus_pose();
     twins_found();
     steam_hidden();

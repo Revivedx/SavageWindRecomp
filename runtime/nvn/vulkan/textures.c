@@ -722,6 +722,7 @@ static void create_image(NvnTexture *t, TexBackend *b) {
         if (clear_3d) LOG("[vk] new 3D images cleared too (SAVAGEWIND_VK_CLEAR_3D)\n");
     }
     if (type == VK_IMAGE_TYPE_3D && !clear_3d) float_rt = false;
+    b->cleared_new = depthfmt || b->scalable || float_rt;
     if ((b->scalable || float_rt) && !depthfmt) {  // (scalable: made again at a new scale, no stale memory in what frames keep)
         VkCommandBuffer cb = vk_upload_cmd();
         VkClearColorValue zero = {{0}};
@@ -1671,6 +1672,22 @@ void vk_trace_dump(NvnTexture *t) {
     saves++;
 }
 
+// A new image the GPU draws into before anything was uploaded to it starts as its guest memory, as the texture does on
+// the console, where it is that memory. Vulkan hands out whatever an earlier image left in that video memory instead.
+// BOTW keeps the dents in the sand around Link (the Molduga's wake, for one: 512x512 R16 signed) in a texture whose
+// memory it zeroes on the CPU when it makes it, then only draws the dents into it and adds it to the terrain heights it
+// writes into its height map. The image was first bound as a render target, so it kept another image's texels: after a
+// fast travel, walls and slabs of sand, which the heights the CPU reads back for collision had too (#923). Not images
+// cleared when made (float, scaled and depth targets), 3D or multisampled ones. SAVAGEWIND_VK_RT_FROM_MEMORY=0: as before.
+static void first_draw_from_memory(NvnTexture *t, TexBackend *b) {
+    static int on = -1;
+    if (on < 0) on = !getenv("SAVAGEWIND_VK_RT_FROM_MEMORY") || atoi(getenv("SAVAGEWIND_VK_RT_FROM_MEMORY")) != 0;
+    if (!on || b->gpu_owned || b->uploaded || b->cleared_new || b->scalable || b->samples > 1 || b->depth > 1 ||
+        b->aspect != VK_IMAGE_ASPECT_COLOR_BIT || b->pending_rgba)
+        return;
+    upload_texture(t, b, false);
+}
+
 TexBackend *vk_tex(NvnTexture *t, bool for_render) {
     TexBackend *b = tex_backend(t);
     if (!for_render && !b->gpu_owned && vk_trace_tex(t))  // (CPU-owned: guest memory is uploaded when it changed)
@@ -1685,8 +1702,10 @@ TexBackend *vk_tex(NvnTexture *t, bool for_render) {
         if (b->gpu_owned) upload_levels(t, b, written);
         else upload_texture(t, b, true);
     }
-    if (for_render) b->gpu_owned = true;
-    else if (!b->gpu_owned) {
+    if (for_render) {
+        first_draw_from_memory(t, b);
+        b->gpu_owned = true;
+    } else if (!b->gpu_owned) {
         extern uint64_t prof_up_ns;
         uint64_t t0 = prof_up_ns != ~0ull ? SDL_GetTicksNS() : 0;
         SW_ACC("tex/upload check");
@@ -1696,7 +1715,11 @@ TexBackend *vk_tex(NvnTexture *t, bool for_render) {
     return b;
 }
 
-void renderer_mark_gpu_owned(NvnTexture *t) { tex_backend(t)->gpu_owned = true; }
+void renderer_mark_gpu_owned(NvnTexture *t) {
+    TexBackend *b = tex_backend(t);
+    first_draw_from_memory(t, b);
+    b->gpu_owned = true;
+}
 
 // Guest memory -> image for every level, whoever owns the image (exec.c: linear render targets the CPU wrote).
 void vk_texture_reload(NvnTexture *t) {

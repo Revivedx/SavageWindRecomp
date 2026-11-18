@@ -59,6 +59,7 @@ play SAVAGEWIND_GPU_OVERLAP | 0 | Overlap of CPU and GPU work. 0 turns it off.
 play SAVAGEWIND_NO_OCCLUSION_QUERY | 1 | Turns off occlusion queries.
 play SAVAGEWIND_NO_PREEMPT | 1 | Turns off thread preemption in the game's scheduler.
 play SAVAGEWIND_ONE_PER_CORE | 0 | Uses one logical processor per core. 0 uses all of them.
+play SAVAGEWIND_THREAD_ELEVATE | 1 | Raises the game's main and render threads above normal priority (default only on CPUs with P- and E-cores). 0 never.
 play SAVAGEWIND_COMPAT_CPU | 1 | Uses the game code for processors without AVX2 and FMA, if it was built.
 play SAVAGEWIND_KSYNC | 0 | Fast locks in the game. 0 turns them off.
 play SAVAGEWIND_FPS_CAP | 60 | Frame rate cap of the presenter. 0 means no cap.

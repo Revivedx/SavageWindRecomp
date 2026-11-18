@@ -377,6 +377,27 @@ def _stale_actor_target(gen, a):
             'c->x[8] = LD64(c->x[19] + 0x570); }' % exit_at)
 
 
+# The same link read in the check of an actor's flag by name (1.9.0 0x700120c760: actor + 0x570, then + 0x88, then the
+# flag's hash): with a stale actor whose + 0x570 is null it read 0x88 (#766, the Steam Deck, right after the helper
+# above had ignored that actor). Both loads now answer "no such flag" for an actor that fails the same check, through
+# the function's own `mov w0, wzr` path.
+def _stale_actor_flag(gen, a):
+    assert _word(gen, a) == 0xf942ba68, hex(_word(gen, a))  # ldr x8, [x19, #0x570]
+    no = _stale_flag_false(gen, a)
+    return ('{ extern int rt_actor_link_valid(uint64_t); '
+            'if (!rt_actor_link_valid(c->x[19])) { goto L_%x; } '
+            'c->x[8] = LD64(c->x[19] + 0x570); }' % no)
+
+
+def _stale_flag_false(gen, a):
+    # the nearest `mov w0, wzr; b <epilogue>` of the function: its "false" answer
+    for d in sorted(range(-0x80, 0x84, 4), key=abs):
+        b = a + d
+        if _word(gen, b) == 0x2a1f03e0 and _word(gen, b + 4) & 0xfc000000 == 0x14000000:  # mov w0, wzr; b
+            return b
+    raise AssertionError('stale actor flag: no "mov w0, wzr; b" near %#x' % a)
+
+
 def _stale_target_exit(gen, a):
     # walk back to the cbnz x19 that jumps to this code: its fall-through (the next word) is the epilogue's first word
     b = a
@@ -944,10 +965,11 @@ def _gyro_scene_actor(gen, a):
 # button farthest the other way instead.
 def _menu_wrap(gen, a):
     assert _word(gen, a) == 0xaa1403e0, hex(_word(gen, a))  # mov x0, x20
+    # (Like every patch site it runs on the Cpu: with gen.py --locals the registers are spilled before it, so c->sp is
+    # the guest sp the runtime calls the game's functions on. A function's locals, sp_ among them, exist only when it
+    # keeps registers in locals, which a function with SIMD asm batches never does: the aarch64 build, #909.)
     return ('{ extern uint64_t rt_menu_wrap(Cpu *, uint64_t, uint64_t, uint32_t); '
-            # (the guest sp is still in sp_ here: the runtime calls the game's functions on it)
-            'uint64_t sp_saved = c->sp; c->sp = sp_; '
-            'c->x[0] = rt_menu_wrap(c, c->x[20], c->x[19], (uint32_t)c->x[22]); c->sp = sp_saved; }'
+            'c->x[0] = rt_menu_wrap(c, c->x[20], c->x[19], (uint32_t)c->x[22]); }'
             f'  /* {a:#x}: mov x0, x20 (UI focus search result: menus wrap around) */')
 
 
@@ -1041,6 +1063,8 @@ PATCHES = {
     'stale_actor_helper': _stale_actor_helper,
     'stale_actor_kind': _stale_actor_kind,
     'stale_actor_target': _stale_actor_target,
+    'stale_actor_flag': _stale_actor_flag,
+    'stale_actor_flag2': _stale_actor_flag,
     'phys_solver_steps': _solver_steps,
     'kf_angle': _kf_angle,
     'demo_move_arrive': _demo_move_arrive,

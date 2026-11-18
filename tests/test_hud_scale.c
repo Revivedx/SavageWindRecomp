@@ -69,6 +69,13 @@ int main(void) {
     assert(NEAR(correction[0], 1 / 1.5f) && correction[1] == 1);
     text[15] = -1;  // screen-space stamp sprites use a different transform
     assert(!hud_combined_shape(text, 128, .9f, correction));
+    // A text block at the layout's very middle (a sign's text, #947): only in a talk window
+    float centred[16] = {1.39091f, 0, 0, 0, 0, -2.22546f, 0, 0, 0, 0, -1.0002f, 987.29f, 0, 0, -1, 989.092f};
+    assert(!hud_combined_shape(centred, 128, .9f, correction));
+    assert(hud_combined_shape_at(centred, 128, .9f, correction, true));
+    assert(correction[0] == 1 && correction[1] == 1);
+    hud_edge_matrix(centred, -.1f);
+    assert(NEAR(centred[7] / centred[15] * 600, -60));
 
     // The event clears before the final MessageDialog stops drawing.
     bool held = hud_dialogue_holds(false, true, true);

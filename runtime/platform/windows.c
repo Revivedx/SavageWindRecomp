@@ -327,8 +327,48 @@ void plat_thread_realtime(uint64_t period_ns) {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
 }
 
+// Cores of two kinds (Intel 12th Gen and later, Core Ultra: P- and E-cores): different efficiency classes or, where
+// Windows gives every core the same class, cores with two logical processors (Hyper-Threading) beside cores with one.
+// An Intel laptop processor with 12 cores and 16 logical processors was taken for a plain one there (#891) and run on
+// one logical processor per core, the E-cores included, which is what hybrid processors are kept from.
+static bool cores_mixed(BYTE min_eff, BYTE max_eff, int min_lp, int max_lp) {
+    return min_eff != max_eff || (min_lp == 1 && max_lp >= 2);
+}
+
+// Whether the processor is hybrid (cores_mixed). Asked once.
+static bool cpu_hybrid(void) {
+    static int hybrid = -1;
+    if (hybrid >= 0) return hybrid;
+    hybrid = 0;
+    DWORD len = 0;
+    GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &len);
+    char *buf = len ? malloc(len) : NULL;
+    BYTE min_eff = 255, max_eff = 0;
+    int min_lp = 64, max_lp = 0, cores = 0;
+    if (buf && GetLogicalProcessorInformationEx(RelationProcessorCore, (void *)buf, &len))
+        for (DWORD o = 0; o < len;) {
+            SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *e = (void *)(buf + o);
+            int lp = __builtin_popcountll((unsigned long long)e->Processor.GroupMask[0].Mask);
+            if (e->Processor.EfficiencyClass < min_eff) min_eff = e->Processor.EfficiencyClass;
+            if (e->Processor.EfficiencyClass > max_eff) max_eff = e->Processor.EfficiencyClass;
+            if (lp < min_lp) min_lp = lp;
+            if (lp > max_lp) max_lp = lp;
+            cores++;
+            o += e->Size;
+        }
+    free(buf);
+    hybrid = cores > 0 && cores_mixed(min_eff, max_eff, min_lp, max_lp);
+    return hybrid;
+}
+
+// Above normal on hybrid processors only, where it keeps the latency-critical threads (the game's main thread, the
+// render thread, the recorder) on P-cores (#650). Elsewhere it starved the game's other threads: with SMT and one
+// logical processor per core (plat_cpu_placement), Ryzen 7 7800X3D / 5700X3D players got frames of 0.3-1.2 s,
+// also standing still, which SAVAGEWIND_ONE_PER_CORE=0 removed (#883). SAVAGEWIND_THREAD_ELEVATE=1/0: always / never.
 void plat_thread_elevate(void) {
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+    static int on = -1;
+    if (on < 0) on = getenv("SAVAGEWIND_THREAD_ELEVATE") ? atoi(getenv("SAVAGEWIND_THREAD_ELEVATE")) != 0 : cpu_hybrid();
+    if (on) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
 }
 
 // ---- process
@@ -455,6 +495,7 @@ void plat_cpu_placement(void) {
     GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &len);
     char *buf = len ? malloc(len) : NULL;
     BYTE min_eff = 255, max_eff = 0;
+    int min_lp = 64, max_lp = 0;
     if (buf && GetLogicalProcessorInformationEx(RelationProcessorCore, (void *)buf, &len))
         for (DWORD o = 0; o < len;) {
             SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *e = (void *)(buf + o);
@@ -465,11 +506,14 @@ void plat_cpu_placement(void) {
                 BYTE eff = e->Processor.EfficiencyClass;
                 if (eff < min_eff) min_eff = eff;
                 if (eff > max_eff) max_eff = eff;
+                int lp = __builtin_popcountll((unsigned long long)e->Processor.GroupMask[0].Mask);  // (the core's own)
+                if (lp < min_lp) min_lp = lp;
+                if (lp > max_lp) max_lp = lp;
             }
             o += e->Size;
         }
     free(buf);
-    bool hybrid = (cores > 0 && min_eff != max_eff);
+    bool hybrid = cores > 0 && cores_mixed(min_eff, max_eff, min_lp, max_lp);
     const char *x = getenv("SAVAGEWIND_ONE_PER_CORE");
     bool on = one && (x ? atoi(x) != 0 : !wine && !hybrid && plat_one_per_core_default(cores, logical));
     fprintf(stderr, "[cpu] %d cores%s, %d logical processors: %s%s\n", cores,
