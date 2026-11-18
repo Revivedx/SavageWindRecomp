@@ -516,6 +516,8 @@ T("Sets your wallet to an exact number of rupees (0 to 999999). Turn off Infinit
 T("Cheats", "치트")
 T("Weather", "날씨")
 T("Holds the weather you pick, or keeps out rain or thunderstorms. Cutscenes keep theirs.", "선택한 날씨를 유지하거나 비나 뇌우를 막습니다. 컷신은 원래 날씨를 유지합니다.")
+T("Sure-footed horse", "흔들림 없는 말")
+T("A running horse no longer stops dead and rears when it runs into something. It no longer stops at cliff edges either.", "달리는 말이 무언가에 부딪혀도 갑자기 멈춰 서서 앞발을 들지 않습니다. 절벽 끝에서도 더 이상 멈추지 않습니다.")
 T("No rain", "비 없음")
 T("No thunderstorms", "뇌우 없음")
 T("Clear", "맑음")

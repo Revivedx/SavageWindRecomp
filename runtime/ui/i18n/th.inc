@@ -223,6 +223,8 @@ T("Sets your wallet to an exact number of rupees (0 to 999999). Turn off Infinit
 T("Cheats", "สูตรโกง")
 T("Weather", "สภาพอากาศ")
 T("Holds the weather you pick, or keeps out rain or thunderstorms. Cutscenes keep theirs.", "คงสภาพอากาศที่คุณเลือก หรือกันฝนหรือพายุฝนฟ้าคะนองออกไป คัตซีนยังคงสภาพอากาศของตัวเอง")
+T("Sure-footed horse", "ม้าเท้ามั่นคง")
+T("A running horse no longer stops dead and rears when it runs into something. It no longer stops at cliff edges either.", "ม้าที่กำลังวิ่งจะไม่หยุดกะทันหันและยกขาหน้าขึ้นอีกเมื่อชนสิ่งใด และจะไม่หยุดที่ขอบหน้าผาอีกด้วย")
 T("No rain", "ไม่มีฝน")
 T("No thunderstorms", "ไม่มีพายุฝนฟ้าคะนอง")
 T("Clear", "ท้องฟ้าแจ่มใส")

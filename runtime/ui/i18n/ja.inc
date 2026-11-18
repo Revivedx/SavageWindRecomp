@@ -516,6 +516,8 @@ T("Sets your wallet to an exact number of rupees (0 to 999999). Turn off Infinit
 T("Cheats", "チート")
 T("Weather", "天気")
 T("Holds the weather you pick, or keeps out rain or thunderstorms. Cutscenes keep theirs.", "選んだ天気を保つか、雨や雷雨を起こさないようにします。ムービーは元の天気のままです。")
+T("Sure-footed horse", "つまずかない馬")
+T("A running horse no longer stops dead and rears when it runs into something. It no longer stops at cliff edges either.", "走っている馬が何かにぶつかっても、急に止まって前足を上げなくなります。崖のふちでも止まらなくなります。")
 T("No rain", "雨なし")
 T("No thunderstorms", "雷雨なし")
 T("Clear", "晴れ")

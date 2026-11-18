@@ -516,6 +516,8 @@ T("Sets your wallet to an exact number of rupees (0 to 999999). Turn off Infinit
 T("Cheats", "Trapaças")
 T("Weather", "Clima")
 T("Holds the weather you pick, or keeps out rain or thunderstorms. Cutscenes keep theirs.", "Mantém o clima escolhido, ou evita chuva ou tempestades. As cenas mantêm o seu.")
+T("Sure-footed horse", "Cavalo de passo firme")
+T("A running horse no longer stops dead and rears when it runs into something. It no longer stops at cliff edges either.", "Um cavalo em movimento não para mais de repente nem empina ao bater em algo. Também não para mais na beira de penhascos.")
 T("No rain", "Sem chuva")
 T("No thunderstorms", "Sem tempestades")
 T("Clear", "Limpo")

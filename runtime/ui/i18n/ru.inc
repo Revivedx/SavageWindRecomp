@@ -516,6 +516,8 @@ T("Sets your wallet to an exact number of rupees (0 to 999999). Turn off Infinit
 T("Cheats", "Читы")
 T("Weather", "Погода")
 T("Holds the weather you pick, or keeps out rain or thunderstorms. Cutscenes keep theirs.", "Удерживает выбранную погоду или не допускает дождя или гроз. В роликах погода своя.")
+T("Sure-footed horse", "Устойчивый конь")
+T("A running horse no longer stops dead and rears when it runs into something. It no longer stops at cliff edges either.", "Бегущая лошадь больше не останавливается как вкопанная и не встаёт на дыбы, налетев на что-то. У края обрыва она тоже больше не останавливается.")
 T("No rain", "Без дождя")
 T("No thunderstorms", "Без гроз")
 T("Clear", "Ясно")

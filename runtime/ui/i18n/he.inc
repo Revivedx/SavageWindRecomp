@@ -668,6 +668,8 @@ T("Sets your wallet to an exact number of rupees (0 to 999999). Turn off Infinit
 T("Cheats", "צ'יטים")
 T("Weather", "מזג אוויר")
 T("Holds the weather you pick, or keeps out rain or thunderstorms. Cutscenes keep theirs.", "שומר על מזג האוויר שבחרת, או מונע גשם או סופות רעמים. סצנות קולנועיות שומרות על שלהן.")
+T("Sure-footed horse", "סוס יציב")
+T("A running horse no longer stops dead and rears when it runs into something. It no longer stops at cliff edges either.", "סוס בריצה כבר לא נעצר בבת אחת ומתרומם על רגליו האחוריות כשהוא נתקל במשהו. הוא גם כבר לא נעצר בקצה צוקים.")
 T("No rain", "בלי גשם")
 T("No thunderstorms", "בלי סופות רעמים")
 T("Clear", "בהיר")

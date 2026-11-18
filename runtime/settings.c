@@ -602,6 +602,7 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "infinite_stamina")) g_settings.infinite_stamina = atoi(val) != 0;
         else if (!strcmp(key, "infinite_rupees")) g_settings.infinite_rupees = atoi(val) != 0;
+        else if (!strcmp(key, "sure_footed")) g_settings.sure_footed = atoi(val) != 0;
         else if (!strcmp(key, "weather")) {
             g_settings.weather = 0;
             for (int i = 0; i < WEATHER_COUNT; i++)
@@ -864,6 +865,7 @@ void settings_save(void) {
     fprintf(f, "infinite_arrows = %d\n", g_settings.infinite_arrows);
     fprintf(f, "infinite_stamina = %d\n", g_settings.infinite_stamina);
     fprintf(f, "infinite_rupees = %d\n", g_settings.infinite_rupees);
+    fprintf(f, "sure_footed = %d\n", g_settings.sure_footed);
     int wx = g_settings.weather;
     fprintf(f, "weather = %s\n", g_weather_keys[wx >= 0 && wx < WEATHER_COUNT ? wx : 0]);
     int cv = g_settings.colour_vision;
