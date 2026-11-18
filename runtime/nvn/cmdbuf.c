@@ -6,6 +6,7 @@
 
 #include "ksync.h"
 #include "nvn.h"
+#include "cbreg.h"
 
 #define JUMP_RESERVE (sizeof(CmdRec) + 8)
 
@@ -53,6 +54,7 @@ static HBlock *g_grave;  // dead blocks, oldest first, until three frames have p
 static int g_ngrave, g_capgrave;
 static KMutex g_shadow_lock = KMUTEX_INIT;
 static NvnCmdBuf *g_command_buffers;
+volatile int g_opt_cb_unlink;  // cpuopts bit 2048, mirrored by stage_cpu_publish (exec.c); see rt.h
 uint64_t renderer_present_count(void);
 
 static void push_block(HBlock **v, int *n, int *cap, HBlock b) {
@@ -245,7 +247,7 @@ NVN(nvnCommandBufferInitialize) {
     NvnCmdBuf *cb = calloc(1, sizeof *cb);
     cb->guest = A(0);
     kmutex_lock(&g_shadow_lock);
-    cb->registry_next = g_command_buffers; g_command_buffers = cb;
+    cb_registry_add(&g_command_buffers, cb);
     kmutex_unlock(&g_shadow_lock);
     SET_HOST(A(0), cb);
     RET(1);
@@ -253,9 +255,7 @@ NVN(nvnCommandBufferInitialize) {
 NVN(nvnCommandBufferFinalize) {
     NvnCmdBuf *cb = cb_of(A(0));
     kmutex_lock(&g_shadow_lock);
-    NvnCmdBuf **link = &g_command_buffers;
-    while (*link && *link != cb) link = &(*link)->registry_next;
-    if (*link) *link = cb->registry_next;
+    cb_registry_remove(&g_command_buffers, cb, g_opt_cb_unlink);
     kmutex_unlock(&g_shadow_lock);
     if (cb && cb->shadow) shadow_leave(cb->shadow, cb->gused);
     free(cb);

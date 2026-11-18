@@ -43,6 +43,7 @@ struct KThread {
     int core_held;
     uint64_t core_ticket;
     bool off_cores;  // runs beside the cores, never holding one (kernel_thread_off_cores)
+    void *dcache;    // dispatch.c: this thread's table of call targets (cpuopts bit 1024), allocated at its first miss
 };
 
 typedef struct KSharedMem {

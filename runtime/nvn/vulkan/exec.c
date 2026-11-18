@@ -2924,6 +2924,12 @@ typedef struct Prog {
 #define CPU_OPTS_USAGE "cpuopts [mask]"
 static _Atomic int stage_cpu_options = -1;
 static _Atomic uint64_t stage_reuse_calls, stage_reuse_eligible, stage_reuse_hits;
+// The bits the guest's threads read (runtime/dispatch.c, nvn/cmdbuf.c), as plain variables there.
+static void stage_cpu_publish(int mask) {
+    g_opt_dispatch_fast = (mask & 1024) != 0;
+    g_opt_cb_unlink = (mask & 2048) != 0;
+}
+
 static __attribute__((noinline)) int stage_cpu_opts_init(void) {
     const char *e = getenv("SAVAGEWIND_VK_CPU_OPTS");
     int opts = e ? (int)(strtoul(e, NULL, 0) & CPU_OPTS_VALID) : 0;
@@ -2936,6 +2942,7 @@ static __attribute__((noinline)) int stage_cpu_opts_init(void) {
     int unset = -1;
     if (atomic_compare_exchange_strong_explicit(&stage_cpu_options, &unset, opts,
             memory_order_relaxed, memory_order_relaxed)) {
+        stage_cpu_publish(opts);
         LOG("[vk] CPU preparation experiments: mask %d (material cache mode %d)\n", opts, opts & CPU_OPTS_REUSE);
     } else opts = unset;
     return opts;
@@ -2959,8 +2966,10 @@ static void stage_cpu_command(int argc, char **argv, ControlReply *r) {
             return;
         }
         atomic_store_explicit(&stage_cpu_options, (int)mask, memory_order_relaxed);
+        stage_cpu_publish((int)mask);
     }
     control_field_int(r, "mask", stage_cpu_opts());
+    control_field_int(r, "draws", (int64_t)draws_total);  // (cumulative: ms per draw in tools/swr_ab.py)
     control_field_int(r, "reuse_calls", (int)atomic_load_explicit(&stage_reuse_calls, memory_order_relaxed));
     control_field_int(r, "reuse_eligible", (int)atomic_load_explicit(&stage_reuse_eligible, memory_order_relaxed));
     control_field_int(r, "reuse_hits", (int)atomic_load_explicit(&stage_reuse_hits, memory_order_relaxed));
