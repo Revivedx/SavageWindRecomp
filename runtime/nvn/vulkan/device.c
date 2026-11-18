@@ -2968,7 +2968,7 @@ static int boot_splash_thread(void *arg) {
 }
 
 static bool window_hidden;  // (made hidden: ui_window_init_hidden) until ui_window_show
-static void ui_window_show(void) {
+void ui_window_show(void) {
     if (window && window_hidden && !getenv("SAVAGEWIND_HIDDEN")) SDL_ShowWindow(window);
     window_hidden = false;
 }

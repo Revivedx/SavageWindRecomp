@@ -264,7 +264,8 @@ static int scan_shaders(const char *root) {
 }
 
 #ifndef __APPLE__
-// --precompile-shaders: the shader precompilation without the start screen (runtime/nvn/precompile.h). The pipelines
+// --precompile-shaders: the shader precompilation without the start screen (runtime/nvn/precompile.h);
+// --precompile-shaders-if-needed: only when they aren't precompiled for this GPU and driver yet. The pipelines
 // need the Vulkan device: a window is made for it (SAVAGEWIND_PRECOMPILE_NO_PIPELINES=1: translations and SPIR-V
 // only, no window).
 static void *precompile_progress(void *arg) {
@@ -276,9 +277,20 @@ static void *precompile_progress(void *arg) {
     return NULL;
 }
 
-static int precompile_shaders(const char *root) {
+static int precompile_shaders(const char *root, bool if_needed) {
     extern void ui_window_init(void);  // (the Vulkan device, for the pipelines; SAVAGEWIND_HIDDEN keeps the window hidden)
     if (!getenv("SAVAGEWIND_PRECOMPILE_NO_PIPELINES")) ui_window_init();
+    // --precompile-shaders-if-needed: nothing to do when they were made for this translator, GPU and driver (the
+    // status needs the device made above: without it a new driver isn't seen). For a launcher or script that calls
+    // it before every start: a run on precompiled shaders still makes every library again (about a minute).
+    if (if_needed) {
+        char date[32] = "";
+        int nsh = 0;
+        if (shader_precompile_status(&nsh, date, sizeof date) == 1) {
+            fprintf(stderr, "[precompile] up to date: %d shaders, %s\n", nsh, date);
+            return 0;
+        }
+    }
     char image[1100];
     snprintf(image, sizeof image, "%s/romfs", root);
     static ShaderPrecompile p;
@@ -333,7 +345,9 @@ static int dump_romfs(const char *root, const char *out_path) {
 // The start screen (runtime/ui/launcher.mm), in one of two modes: SETUP sets the game files up and nothing else (a
 // plain start before they're ready; the game starts once they are), CONFIG is the whole configuration screen - Play,
 // Settings, the game files, Quit ("Savage Wind Configuration", --config; Quit to Start Screen comes back to it).
-enum { LAUNCHER_SETUP, LAUNCHER_CONFIG, LAUNCHER_NONE };
+// SHADERS is SETUP's flow with only the shader precompilation: a plain start whose shaders aren't precompiled for
+// this GPU and driver (below).
+enum { LAUNCHER_SETUP, LAUNCHER_CONFIG, LAUNCHER_NONE, LAUNCHER_SHADERS };  // (SHADERS: precompile them, then play)
 void launcher_run(const char *root, int mode);
 bool launcher_game_ready(const char *root);
 int launcher_prepare(const char *root, const char *src);  // --prepare --game <folder>: the setup, without a window
@@ -360,7 +374,7 @@ int main(int argc, char **argv) {
     bool config = false, game_first = false;
     static char arg_root[1024];
     const char *dump = NULL, *seed_out = NULL, *game_src = NULL;
-    bool scan = false, precompile = false, add_steam = false, prepare = false;
+    bool scan = false, precompile = false, precompile_if_needed = false, add_steam = false, prepare = false;
     // (--game takes a folder only with --prepare: a plain --game stays the Steam entry below)
     for (int i = 1; i < argc; i++) prepare |= !strcmp(argv[i], "--prepare");
     for (int i = 1; i < argc; i++) {
@@ -374,6 +388,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--scan-shaders")) scan = true;
         else if (!strcmp(argv[i], "--add-to-steam")) add_steam = true;
         else if (!strcmp(argv[i], "--precompile-shaders")) precompile = true;
+        else if (!strcmp(argv[i], "--precompile-shaders-if-needed")) precompile = precompile_if_needed = true;
         else if (!strcmp(argv[i], "--export-pipeline-seed") && i + 1 < argc) seed_out = argv[++i];
         else if (argv[i][0] != '-' && !realpath(argv[i], arg_root)) root = argv[i];  // (relative to where we started)
         else if (argv[i][0] != '-') root = arg_root;
@@ -405,10 +420,11 @@ int main(int argc, char **argv) {
         return launcher_prepare(root, game_src);
     }
 #ifndef __APPLE__
-    if (precompile) return precompile_shaders(root);
+    if (precompile) return precompile_shaders(root, precompile_if_needed);
     if (seed_out) return export_pipeline_seed(root, seed_out);
 #else
     (void)precompile;
+    (void)precompile_if_needed;
     (void)seed_out;
 #endif
     // A plain start goes straight into the game once the game files are set up and the game code built from them
@@ -423,6 +439,23 @@ int main(int argc, char **argv) {
         if (new_version || (mode == LAUNCHER_NONE && g_settings.start_in_config && !game_first && post_update_shipped()))
             mode = LAUNCHER_CONFIG;
     }
+#ifndef __APPLE__
+    // A plain start whose shaders aren't precompiled for this GPU and driver - never done (game files set up without the
+    // start screen, its option turned off then), or made by another driver or translator (a driver update, the data
+    // folder from another PC): with Precompile all shaders on, the start screen precompiles them first, on its
+    // overlay (Esc / B stops it: what is done stays), and goes on into the game. Otherwise the first play stutters
+    // while they compile, and only Game Files says why.
+    if (mode == LAUNCHER_NONE && !skip_launcher && !getenv("SAVAGEWIND_HIDDEN") && g_settings.precompile_shaders &&
+        shader_precompile_available()) {
+        extern void ui_window_init_hidden(void);
+        ui_window_init_hidden();  // (the status needs the device: the GPU and driver the libraries were made for)
+        int pst = shader_precompile_status(NULL, NULL, 0);
+        if (pst != 1) {
+            LOG("[launcher] shaders %s: precompiling them before the game\n", pst ? "out of date" : "not precompiled");
+            mode = LAUNCHER_SHADERS;
+        }
+    }
+#endif
     // (tests of the start screen - screenshots, setup and delete runs - show it: the configuration screen, or
     // SAVAGEWIND_LAUNCHER_MODE=setup / config)
     const char *test_mode = getenv("SAVAGEWIND_LAUNCHER_MODE");

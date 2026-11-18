@@ -4,6 +4,11 @@ What changed in each Savage Wind release. The `test` branch holds what the next 
 
 ## Next (on the `test` branch)
 
+- **Shaders precompiled when they're missing or out of date:** with Precompile all shaders on, a start whose
+  precompiled shaders don't match this PC (a new graphics driver, the data folder from another PC, game files set up
+  without the start screen) precompiles them first on the progress bar (Esc or B skips it), then goes into the game.
+  Before, the game started anyway and stuttered while they compiled; only Game Files said why.
+  `savagewind --precompile-shaders-if-needed` does the same from a terminal: nothing when they are up to date.
 - **Lower requirements:** 8 GB of RAM with a dedicated graphics card instead of 16 GB. The game asks Windows for about
   2.5 GB less memory (RTX 3060, 1080p: 8.3 -> 5.9 GB) and no longer grows by hundreds of megabytes as you travel.
 - **Vulkan 1.2 drivers** are taken when they have dynamic rendering, synchronization2 and extended dynamic state 1 and
