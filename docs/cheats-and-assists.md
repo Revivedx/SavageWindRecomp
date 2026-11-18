@@ -78,6 +78,27 @@ game is shipped with Savage Wind.
 | Item pickup multiplier | Multiplies the stackable items you pick up (materials, monster parts, arrows) by 2, 4 or 8, up to 999. |
 | Sure-footed horse | A running horse no longer stops dead and rears when it runs into something, even a small rock. It no longer stops at cliff edges either: mind where you ride. |
 
+### Collectible hints on the map
+
+**Collectible hints on the map** helps you find the Korok seeds and shrines you have left, without giving their exact
+spots away. Turn it on in the Cheats tab, open the game's map and hold **D-pad Down**, or its key on the keyboard (**4**
+unless you changed it in Controls). The map's prompt bar shows it as **Hints**, with your button. The hints fade in
+while you hold it and fade out when you let go:
+
+- a soft pale circle around each Korok seed you don't have yet, and a stronger amber one around each shrine you haven't
+  found yet. The spot is somewhere inside its circle, not at its centre. Hovering a Korok seed's circle with the map's
+  cursor says so;
+- top right, the region under the cursor: its name and how many of its Korok seeds and shrines you have found. A region
+  where you have found everything is shown in a muted blue, with a check after its name.
+
+Only regions whose tower you have activated show anything: the rest of the map stays as the game shows it. Nothing is
+shown in Hero's Path mode, or while the Sheikah Sensor's settings or a stamp's window is open. It is off until you turn
+it on, and needs version 1.9.0 of the game.
+
+The counts come from your game while the map is open and follow it as you play: the first time, reading them takes a
+moment. They count the 900 Korok seeds and the 120 shrines of the main game; the shrines of The Champions' Ballad are
+not counted. The list of what to count comes from your own game files, so it needs a build made with them.
+
 ## Teleport and console cheats
 
 The teleport and a few more cheats are console commands for developers. To use them:
@@ -98,6 +119,7 @@ The teleport and a few more cheats are console commands for developers. To use t
 | `give <name> [count]` | Puts an item in the pouch, the same as the Cheats tab: `give arrow 20`. With several matches it lists them. |
 | `time <0-24>` | Sets the hour of the day. `time freeze` stops the clock and `time unfreeze` starts it again. |
 | `bloodmoon` | The game's own blood moon, as Cheats > Blood moon now. It starts once you close the console. |
+| `collectibles` | Shows the Korok seeds and shrines you have, in all of Hyrule and in each region, and which towers you have activated: the counts the map's hints use. |
 | `help` | Lists every command. |
 
 Known limits of the teleport:

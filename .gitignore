@@ -48,3 +48,5 @@ docs/RAMAS.md
 
 # Discord Rich Presence names: the game's own text (make writes it from extracted/)
 runtime/game_place_table.inc
+# Cheats > Collectibles: the game's own flags (make writes it from extracted/)
+runtime/collectibles_table.inc

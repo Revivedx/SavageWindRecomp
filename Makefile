@@ -364,6 +364,10 @@ PLACE_PY := $(firstword $(PY) python3)
 runtime/game_place_table.inc: tools/gen_place_table.py
 	$(PLACE_PY) tools/gen_place_table.py extracted/romfs/Pack $@
 $(B)/rt/game_place.o: runtime/game_place_table.inc
+# Cheats > Collectibles: each Korok's and shrine's flags and tower region, the same way
+runtime/collectibles_table.inc: tools/gen_collectibles.py tools/gen_place_table.py
+	$(PLACE_PY) tools/gen_collectibles.py extracted/romfs $@
+$(B)/rt/collectibles.o: runtime/collectibles_table.inc
 endif
 
 # Runtime objects only (no generated code, no link): quick compile check

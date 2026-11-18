@@ -28,11 +28,18 @@ enum { STAGE_TITLE = -2, STAGE_FIELD = -1 };  // or an index of interior_table
 static atomic_int stage = STAGE_TITLE;
 static int lang;  // an index of place_languages
 
-void game_place_set_language(const char *language) {
+// The index of place_languages for a language, -1: none
+static int language_index(const char *language) {
     if (!strcmp(language, "en")) language = "USen";
     if (!strcmp(language, "es")) language = "USes";
     for (int i = 0; i < PLACE_LANGUAGES; i++)
-        if (place_languages[i] && !strcmp(language, place_languages[i])) lang = i;
+        if (place_languages[i] && !strcmp(language, place_languages[i])) return i;
+    return -1;
+}
+
+void game_place_set_language(const char *language) {
+    int i = language_index(language);
+    if (i >= 0) lang = i;
 }
 
 void game_place_on_read(const char *path) {
@@ -68,11 +75,26 @@ const char *game_place_name(float x, float z) {
     return best;
 }
 
-const char *game_place_region(float x, float z) {
+int game_place_region_at(float x, float z) {
+    if (!(x >= -5000.0f && x < 5000.0f && z >= -4000.0f && z < 4000.0f)) return -1;
     int col = (int)((x + 5000.0f) / 100.0f), row = (int)((z + 4000.0f) / 100.0f);
-    if (x < -5000.0f || z < -4000.0f || col >= 100 || row >= 80) return NULL;
+    if (col >= 100 || row >= 80) return -1;
     char c = region_grid[row][col];
-    return c < 'a' ? NULL : region_names[c - 'a'][lang];
+    return c < 'a' ? -1 : c - 'a';
+}
+
+const char *game_place_region(float x, float z) {
+    int r = game_place_region_at(x, z);
+    return r < 0 ? NULL : region_names[r][lang];
+}
+
+int game_place_region_count(void) { return (int)COUNT(region_names); }
+
+const char *game_place_region_name(int region, const char *language) {
+    if (region < 0 || region >= (int)COUNT(region_names)) return NULL;
+    int i = language ? language_index(language) : -1;
+    const char *name = region_names[region][i >= 0 ? i : 0];
+    return name ? name : region_names[region][0];
 }
 
 bool game_place_text(float x, float z, bool has_link, char *details, size_t details_size, char *state, size_t state_size) {
