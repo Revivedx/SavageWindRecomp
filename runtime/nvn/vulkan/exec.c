@@ -2795,13 +2795,29 @@ typedef struct Prog {
     uint32_t reuse_mask[2];
 } Prog;
 
+// CPU preparation switches. One mask, set by SAVAGEWIND_VK_CPU_OPTS (any base) or live by the cpuopts command
+// (SAVAGEWIND_CONTROL + SAVAGEWIND_VK_CPU_BENCH=1). Its two low bits are the Alpha 6 material cache mode (0 off, 1 the
+// conservative reuse, 2 reuse across vertex programs), which SAVAGEWIND_VK_STAGE_REUSE=0..2 also sets (it wins over
+// the low bits of the mask). The other bits:
+#define CPU_OPTS_REUSE 3
+#define CPU_OPTS_VALID (CPU_OPTS_REUSE | 3824)  // (3824 = the bits below, 16..2048 but for 256 and 8, 4)
+#define CPU_OPTS_USAGE "cpuopts [mask]"
 static _Atomic int stage_cpu_options = -1;
 static _Atomic uint64_t stage_reuse_calls, stage_reuse_eligible, stage_reuse_hits;
 static __attribute__((noinline)) int stage_cpu_opts_init(void) {
-    const char *e = getenv("SAVAGEWIND_VK_STAGE_REUSE");
-    int opts = e ? atoi(e) : 0;
-    if (opts < 0 || opts > 2) opts = 0;
-    atomic_store_explicit(&stage_cpu_options, opts, memory_order_relaxed);
+    const char *e = getenv("SAVAGEWIND_VK_CPU_OPTS");
+    int opts = e ? (int)(strtoul(e, NULL, 0) & CPU_OPTS_VALID) : 0;
+    const char *r = getenv("SAVAGEWIND_VK_STAGE_REUSE");
+    if (r) {
+        int m = atoi(r);
+        opts = (opts & ~CPU_OPTS_REUSE) | (m < 0 || m > 2 ? 0 : m);
+    }
+    if ((opts & CPU_OPTS_REUSE) == CPU_OPTS_REUSE) opts &= ~CPU_OPTS_REUSE;
+    int unset = -1;
+    if (atomic_compare_exchange_strong_explicit(&stage_cpu_options, &unset, opts,
+            memory_order_relaxed, memory_order_relaxed)) {
+        LOG("[vk] CPU preparation experiments: mask %d (material cache mode %d)\n", opts, opts & CPU_OPTS_REUSE);
+    } else opts = unset;
     return opts;
 }
 static inline int stage_cpu_opts(void) {
@@ -2809,13 +2825,19 @@ static inline int stage_cpu_opts(void) {
     return opts >= 0 ? opts : stage_cpu_opts_init();
 }
 
+// The material cache mode of the mask (0, 1 or 2)
+static inline int stage_reuse_mode(void) { return stage_cpu_opts() & CPU_OPTS_REUSE; }
+
 static void stage_cpu_command(int argc, char **argv, ControlReply *r) {
-    if (argc > 2) { control_fail(r, "cpuopts [0-2]"); return; }
+    if (argc > 2) { control_fail(r, CPU_OPTS_USAGE); return; }
     if (argc == 2) {
         char *end;
-        long opts = strtol(argv[1], &end, 10);
-        if (!*argv[1] || *end || opts < 0 || opts > 2) { control_fail(r, "cpuopts [0-2]"); return; }
-        atomic_store_explicit(&stage_cpu_options, (int)opts, memory_order_relaxed);
+        unsigned long mask = strtoul(argv[1], &end, 10);
+        if (!*argv[1] || *end || (mask & ~(unsigned long)CPU_OPTS_VALID) || (mask & CPU_OPTS_REUSE) == CPU_OPTS_REUSE) {
+            control_fail(r, CPU_OPTS_USAGE);
+            return;
+        }
+        atomic_store_explicit(&stage_cpu_options, (int)mask, memory_order_relaxed);
     }
     control_field_int(r, "mask", stage_cpu_opts());
     control_field_int(r, "reuse_calls", atomic_load_explicit(&stage_reuse_calls, memory_order_relaxed));
@@ -2828,7 +2850,7 @@ static void stage_cpu_control_init(void) {
     if (looked || !control_enabled()) return;
     looked = true;
     if (!getenv("SAVAGEWIND_VK_CPU_BENCH")) return;
-    static const ControlCmd cmd[] = {{"cpuopts", "[0-2]", "Fragment preparation experiment", stage_cpu_command, 0}};
+    static const ControlCmd cmd[] = {{"cpuopts", "[mask]", "CPU preparation experiment mask", stage_cpu_command, 0}};
     control_register(cmd, 1);
 }
 
@@ -7546,7 +7568,7 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
 static __attribute__((noinline)) VkDescriptorSet stage_set_reuse_on(Prog *p, VkDescriptorSetLayout layout, uint32_t set, int stage,
                                  ShaderInfo *si, const float *rscale_row0, const float tint[8], uint32_t gx, uint32_t gy,
                                  uint32_t gz, const VkDescriptorImageInfo *pre_ii, uint32_t *dyn, int *ndyn) {
-    int opts = stage_cpu_opts();
+    int opts = stage_reuse_mode();
     static int off = -1;
     if (off < 0) off = getenv("SAVAGEWIND_VK_NO_SET_CACHE") != NULL;
     atomic_fetch_add_explicit(&stage_reuse_calls, 1, memory_order_relaxed);
@@ -7619,7 +7641,7 @@ static __attribute__((noinline)) VkDescriptorSet stage_set_reuse_on(Prog *p, VkD
 static inline VkDescriptorSet stage_set_reuse(Prog *p, VkDescriptorSetLayout layout, uint32_t set, int stage, ShaderInfo *si,
                                               const float *rscale_row0, const float tint[8], uint32_t gx, uint32_t gy, uint32_t gz,
                                               const VkDescriptorImageInfo *pre_ii, uint32_t *dyn, int *ndyn) {
-    if (!stage_cpu_opts()) return stage_set(p, layout, set, stage, si, rscale_row0, tint, gx, gy, gz, pre_ii, dyn, ndyn);
+    if (!stage_reuse_mode()) return stage_set(p, layout, set, stage, si, rscale_row0, tint, gx, gy, gz, pre_ii, dyn, ndyn);
     return stage_set_reuse_on(p, layout, set, stage, si, rscale_row0, tint, gx, gy, gz, pre_ii, dyn, ndyn);
 }
 // STAGE_REUSE_TEST_END
