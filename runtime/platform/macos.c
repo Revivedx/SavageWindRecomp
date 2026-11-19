@@ -98,6 +98,8 @@ void plat_exec(char *const argv[]) {
     if (plat_exe_path(path, sizeof path)) execv(path, *_NSGetArgv());
 }
 
+void plat_exec_wait(char *const argv[]) { plat_exec(argv); }  // (exec keeps the exit status)
+
 const char *plat_symbol(uint64_t pc, uint64_t *offset) {
     Dl_info di = {0};
     if (!dladdr((void *)(uintptr_t)pc, &di) || !di.dli_sname) return NULL;
@@ -181,6 +183,14 @@ static int rm_entry(const char *path, const struct stat *sb, int flag, struct FT
     return remove(path);
 }
 bool plat_remove_tree(const char *dir) { return nftw(dir, rm_entry, 16, FTW_DEPTH | FTW_PHYS) == 0; }
+
+bool plat_file_flush(const char *path) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return false;
+    bool ok = fsync(fd) == 0;
+    close(fd);
+    return ok;
+}
 
 bool plat_guest_sparse_heap_enabled(void) { return false; }
 

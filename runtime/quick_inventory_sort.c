@@ -6,6 +6,7 @@
 #include "hle.h"
 #include "game_sites.h"
 #include "quick_inventory_sort.h"
+#include "quick_replace.h"
 #include "settings.h"
 
 extern uint64_t input_buttons_now(void);
@@ -112,7 +113,7 @@ static void sort_execute(Cpu *original) {
     // Honor the native event, modal and equipment restrictions.
     if (sort_call(&scratch, g_site.quick_sort_event, 0, 0, 0) ||
         sort_call(&scratch, g_site.quick_sort_player_busy, 0, 0, 0) ||
-        sort_call(&scratch, g_site.quick_sort_modal, 0, 0, 0)) return;
+        (sort_call(&scratch, g_site.quick_sort_modal, 0, 0, 0) && !quick_replace_card_sort_allowed(screen))) return;
     uint64_t mgr = LD64(screen + 0x3640), items[20], equipped[4];
     int category = (int32_t)LD32(screen + 0x3738);
     int count = (int32_t)LD32(screen + 0x3880);

@@ -32,6 +32,7 @@
 #define MAX_SHEETS 64
 
 static uint64_t sheets[MAX_SHEETS];
+static const TextSheetInfo *sheet_info[MAX_SHEETS];
 static int nsheets;
 
 // (the whole sheet: the first rows of one can be empty, and the same as any other texture's)
@@ -41,8 +42,8 @@ static uint64_t sheet_hash(const uint8_t *p, size_t n) {
     return h;
 }
 
-void text_sheet_add(const uint8_t *sheet, size_t bytes) {
-    if (nsheets < MAX_SHEETS) sheets[nsheets++] = sheet_hash(sheet, bytes);
+void text_sheet_add(const uint8_t *sheet, size_t bytes, const TextSheetInfo *info) {
+    if (nsheets < MAX_SHEETS) sheet_info[nsheets] = info, sheets[nsheets++] = sheet_hash(sheet, bytes);
 }
 
 int text_sheet_count(void) { return nsheets; }
@@ -75,12 +76,19 @@ bool menu_tex_known(const uint8_t *texels, size_t bytes) {
     }
 }
 
-bool text_sheet_known(const uint8_t *texels, size_t bytes) {
-    if (!nsheets) return false;
+static int sheet_find(const uint8_t *texels, size_t bytes) {
+    if (!nsheets) return -1;
     uint64_t h = sheet_hash(texels, bytes);
     for (int i = 0; i < nsheets; i++)
-        if (sheets[i] == h) return true;
-    return false;
+        if (sheets[i] == h) return i;
+    return -1;
+}
+
+bool text_sheet_known(const uint8_t *texels, size_t bytes) { return sheet_find(texels, bytes) >= 0; }
+
+const TextSheetInfo *text_sheet_info(const uint8_t *texels, size_t bytes) {
+    int i = sheet_find(texels, bytes);
+    return i < 0 ? NULL : sheet_info[i];
 }
 
 static void catmull_weights(float t, float w[4]) {
@@ -93,12 +101,32 @@ static void catmull_weights(float t, float w[4]) {
 
 static inline int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 
-bool text_upscale(const uint8_t *src, uint32_t w, uint32_t h, uint32_t scale, bool edges, uint8_t *dst) {
+// The source texels a texel's interpolation may read, per column (or row): its cell's, with the gutter before it
+// (cell 0 or a sheet without cells: the whole sheet). Rows count from the bottom (as stored); cells from the top.
+static void cell_span(uint32_t n, uint32_t cell, bool flip, int *lo, int *hi) {
+    for (uint32_t i = 0; i < n; i++) {
+        if (!cell) { lo[i] = 0, hi[i] = (int)n - 1; continue; }
+        uint32_t t = flip ? n - 1 - i : i, a = t / (cell + 1) * (cell + 1), b = a + cell < n - 1 ? a + cell : n - 1;
+        lo[i] = flip ? (int)(n - 1 - b) : (int)a, hi[i] = flip ? (int)(n - 1 - a) : (int)b;
+    }
+}
+
+bool text_upscale(const uint8_t *src, uint32_t w, uint32_t h, uint32_t scale, bool edges, uint32_t cell_w, uint32_t cell_h,
+                  uint8_t *dst) {
     if (scale < 2 || scale > MAX_SCALE || !w || !h) return false;
     uint32_t dw = w * scale;
     float *row = malloc(sizeof(float) * (size_t)dw * h);  // horizontally interpolated, one row per source row
     uint8_t *peak = malloc((size_t)w * h);                // the highest coverage around each source texel
-    if (!row || !peak) { free(row); free(peak); return false; }
+    int *xlo = malloc(sizeof(int) * w), *xhi = malloc(sizeof(int) * w), *ylo = malloc(sizeof(int) * h),
+        *yhi = malloc(sizeof(int) * h);
+    if (!row || !peak || !xlo || !xhi || !ylo || !yhi) {
+        free(row), free(peak), free(xlo), free(xhi), free(ylo), free(yhi);
+        return false;
+    }
+    // (a letter's interpolation stays in its cell: across the one-texel gutter it reached the next cell's first row,
+    // and the quads, which reach a little past their cells, showed a "y"'s old descender under it)
+    cell_span(w, cell_w, false, xlo, xhi);
+    cell_span(h, cell_h, true, ylo, yhi);
 
     float wt[MAX_SCALE][4];
     int shift[MAX_SCALE];
@@ -112,10 +140,10 @@ bool text_upscale(const uint8_t *src, uint32_t w, uint32_t h, uint32_t scale, bo
         float *out = row + (size_t)y * dw;
         for (uint32_t x = 0; x < w; x++)
             for (uint32_t s = 0; s < scale; s++) {
-                int b = (int)x + shift[s];
+                int b = (int)x + shift[s], lo = xlo[x], hi = xhi[x];
                 const float *k = wt[s];
-                out[x * scale + s] = k[0] * in[clampi(b - 1, 0, (int)w - 1)] + k[1] * in[clampi(b, 0, (int)w - 1)] +
-                                     k[2] * in[clampi(b + 1, 0, (int)w - 1)] + k[3] * in[clampi(b + 2, 0, (int)w - 1)];
+                out[x * scale + s] = k[0] * in[clampi(b - 1, lo, hi)] + k[1] * in[clampi(b, lo, hi)] +
+                                     k[2] * in[clampi(b + 1, lo, hi)] + k[3] * in[clampi(b + 2, lo, hi)];
             }
     }
     for (uint32_t y = 0; y < h; y++)
@@ -123,17 +151,17 @@ bool text_upscale(const uint8_t *src, uint32_t w, uint32_t h, uint32_t scale, bo
             uint8_t m = 0;
             for (int j = -1; j <= 1; j++)
                 for (int i = -1; i <= 1; i++) {
-                    uint8_t v = src[(size_t)clampi((int)y + j, 0, (int)h - 1) * w + clampi((int)x + i, 0, (int)w - 1)];
+                    uint8_t v = src[(size_t)clampi((int)y + j, ylo[y], yhi[y]) * w + clampi((int)x + i, xlo[x], xhi[x])];
                     if (v > m) m = v;
                 }
             peak[(size_t)y * w + x] = m;
         }
     for (uint32_t y = 0; y < h; y++)
         for (uint32_t s = 0; s < scale; s++) {
-            int b = (int)y + shift[s];
+            int b = (int)y + shift[s], lo = ylo[y], hi = yhi[y];
             const float *k = wt[s];
-            const float *r0 = row + (size_t)clampi(b - 1, 0, (int)h - 1) * dw, *r1 = row + (size_t)clampi(b, 0, (int)h - 1) * dw,
-                        *r2 = row + (size_t)clampi(b + 1, 0, (int)h - 1) * dw, *r3 = row + (size_t)clampi(b + 2, 0, (int)h - 1) * dw;
+            const float *r0 = row + (size_t)clampi(b - 1, lo, hi) * dw, *r1 = row + (size_t)clampi(b, lo, hi) * dw,
+                        *r2 = row + (size_t)clampi(b + 1, lo, hi) * dw, *r3 = row + (size_t)clampi(b + 2, lo, hi) * dw;
             uint8_t *out = dst + (size_t)(y * scale + s) * dw;
             for (uint32_t x = 0; x < dw; x++) {
                 float v = k[0] * r0[x] + k[1] * r1[x] + k[2] * r2[x] + k[3] * r3[x];
@@ -151,7 +179,6 @@ bool text_upscale(const uint8_t *src, uint32_t w, uint32_t h, uint32_t scale, bo
                 out[x] = (uint8_t)(m * (t * t * (3 - 2 * t)) + 0.5f);
             }
         }
-    free(row);
-    free(peak);
+    free(row), free(peak), free(xlo), free(xhi), free(ylo), free(yhi);
     return true;
 }

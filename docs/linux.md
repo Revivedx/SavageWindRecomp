@@ -9,7 +9,8 @@ package the release AppImages.
     ./Savage_Wind-0.3.0-alpha.3-x86_64.AppImage
 
 Needs: a distribution with glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36, Arch, ...), a Vulkan 1.3 driver
-(Mesa RADV / ANV / NVK / Turnip / Asahi Honeykrisp, or NVIDIA's), and on x86-64 a CPU with SSE4.2 (2008 or newer;
+(Mesa RADV / ANV / NVK / Turnip / Asahi Honeykrisp, or NVIDIA's; a 1.2 driver with dynamic rendering, synchronization2
+and extended dynamic state 1 and 2 is also taken), and on x86-64 a CPU with SSE4.2 (2008 or newer;
 without AVX2 / FMA the game code is built in a slower compatible mode).
 The start screen asks for the folder with your own game files and sets them up; from then on the game starts
 straight away. `--config` (`./Savage_Wind-*.AppImage --config`) opens the configuration screen: Play, Settings, the
@@ -67,7 +68,9 @@ Controls-page motion sensitivity and inversion apply to either sensor source. No
 `SAVAGEWIND_DSU=auto` is the Linux default: contact DSU only when fresh SDL motion is unavailable.
 `SAVAGEWIND_DSU=off` disables DSU completely. `SAVAGEWIND_DSU=on` keeps discovery/subscription active even when SDL
 works, with SDL still taking priority. An optional `SAVAGEWIND_DSU_ENDPOINT=127.0.0.1:26760` accepts a numeric IPv4
-address and port (no DNS lookup on the game thread). Windows and macOS retain their existing SDL motion path.
+address and port (no DNS lookup on the game thread). Windows has the same DSU client (see the
+[FAQ](FAQ.md#does-gyro-work)); macOS keeps its SDL motion path. A controller sensor SDL gives no data rate (a
+handheld's own sensor lent to its gamepad by SDL's sensor fusion) comes after a DSU server that answers.
 
 Look in `~/.local/share/savagewind/savagewind.log` (or terminal output; custom data roots use their own log) for
 `[motion]` and `[dsu]`. SDL availability is logged when opening a controller; `[dsu] connected: slot ...` means
@@ -186,7 +189,8 @@ files or fonts.
 - The HLE / service / reset tables are ELF sections found through the linker's `__start_` / `__stop_` symbols.
 - Renderer: the Windows Vulkan backend unchanged.
 - Without the user's Switch fonts the game text uses DejaVu Sans (TrueType; the game's font engine can't use CFF
-  fonts such as Noto Sans CJK).
+  fonts such as Noto Sans CJK). For Chinese or Korean text set `SAVAGEWIND_CJK_FONT` to a TrueType CJK font (e.g.
+  `wqy-microhei.ttc`), or install one where the game looks for it; see `fonts/README.md`.
 - Pages: 4K and 16K kernels (Asahi) work; 64K-page kernels (some ARM servers) are not supported.
 
 ## Testing on ARM (aarch64): what to report

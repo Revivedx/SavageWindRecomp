@@ -17,6 +17,10 @@ int bind_pad_family(int type, int vendor, int product, const char *name, bool fi
 GameSites g_site;
 Settings g_settings;
 int16_t g_bind_key[BIND_KEY_COUNT], g_bind_pad[BIND_KEY_COUNT];
+int16_t g_bind_key2[BIND_KEY_COUNT], g_bind_pad2[BIND_KEY_COUNT];  // (second bindings: none, as bindings.c act_init)
+__attribute__((constructor)) static void no_second_bindings(void) {
+    for (int i = 0; i < BIND_KEY_COUNT; i++) g_bind_pad2[i] = -1;
+}
 uint64_t g_watch_lo, g_watch_hi;
 static bool captured;
 static int sensor_events;
@@ -26,9 +30,14 @@ bool menu_input_captured(void) { return captured; }
 bool menu_cursor_free(void) { return false; }
 void motion_tilt_held(bool held) { (void)held; }
 void motion_mouse(float x, float y) { (void)x; (void)y; }
-void motion_pad_opened(SDL_Gamepad *p) { (void)p; }
-void motion_pad_closed(void) {}
+void motion_pads(SDL_Gamepad *in_use, SDL_Gamepad *const *p, int n) { (void)in_use; (void)p; (void)n; }
+void motion_pad_removed(SDL_Gamepad *p) { (void)p; }
+bool motion_pad_pressed(SDL_JoystickID id, uint64_t ns) { (void)id; (void)ns; return false; }
+bool motion_pads_twins(SDL_JoystickID a, SDL_JoystickID b) { (void)a; (void)b; return false; }
+bool motion_pad_sensor_only(SDL_Gamepad *p) { (void)p; return false; }
+SDL_JoystickID motion_sensor_pad(void) { return pad ? SDL_GetGamepadID(pad) : 0; }  // (the controller in use's)
 void motion_sensor_event(const SDL_Event *e) { (void)e; sensor_events++; }
+void motion_device_sensor_event(const SDL_Event *e) { (void)e; }
 void vibration_update(SDL_Gamepad *p, bool focused) { (void)p; vibrating = focused; }
 void vibration_pad_closed(SDL_Gamepad *p) { (void)p; }
 uint64_t renderer_present_count(void) { return 0; }
@@ -48,6 +57,7 @@ void bind_reset(int dev) { (void)dev; unexpected_helper(); }
 // (per-action bindings: none here, the Switch layer answers)
 uint64_t act_scan_keys(uint64_t b, int (*held)(int)) { (void)b; (void)held; return 0; }
 uint64_t act_scan_pad(uint64_t b, uint32_t host) { (void)b; (void)host; return 0; }
+uint64_t act_gameplay_buttons(uint64_t raw, int (*held)(int), uint32_t host) { (void)held; (void)host; return raw; }
 void act_publish(uint64_t keys, uint64_t pads) { (void)keys; (void)pads; }
 void act_poll(bool live) { (void)live; }
 void motion_script(float p, float r, float ps, float ys) { (void)p; (void)r; (void)ps; (void)ys; unexpected_helper(); }
@@ -75,6 +85,8 @@ void motion_dualstick(float lx, float ly, float rx, float ry, double dt, bool re
 void motion_poll(void) {}
 bool framepace_title_ui(void) { return false; }
 bool framepace_menu_ui(void) { return false; }
+bool framepace_in_event(void) { return false; }
+bool framepace_dialogue_ui(void) { return false; }
 
 static void focus(bool on) {
     SDL_Event e = {0};
@@ -269,3 +281,6 @@ int main(void) {
     SDL_Quit();
     puts("input focus checks passed");
 }
+
+void photo_pad(uint32_t buttons) { (void)buttons; }
+uint64_t quick_replace_buttons(uint64_t b) { return b; }

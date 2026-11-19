@@ -1,6 +1,9 @@
 // Windows host layer (runtime/platform.h).
 #include <windows.h>
+#include <wingdi.h>
+#include <wchar.h>
 #include <pthread.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -325,8 +328,48 @@ void plat_thread_realtime(uint64_t period_ns) {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
 }
 
+// Cores of two kinds (Intel 12th Gen and later, Core Ultra: P- and E-cores): different efficiency classes or, where
+// Windows gives every core the same class, cores with two logical processors (Hyper-Threading) beside cores with one.
+// An Intel laptop processor with 12 cores and 16 logical processors was taken for a plain one there (#891) and run on
+// one logical processor per core, the E-cores included, which is what hybrid processors are kept from.
+static bool cores_mixed(BYTE min_eff, BYTE max_eff, int min_lp, int max_lp) {
+    return min_eff != max_eff || (min_lp == 1 && max_lp >= 2);
+}
+
+// Whether the processor is hybrid (cores_mixed). Asked once.
+static bool cpu_hybrid(void) {
+    static int hybrid = -1;
+    if (hybrid >= 0) return hybrid;
+    hybrid = 0;
+    DWORD len = 0;
+    GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &len);
+    char *buf = len ? malloc(len) : NULL;
+    BYTE min_eff = 255, max_eff = 0;
+    int min_lp = 64, max_lp = 0, cores = 0;
+    if (buf && GetLogicalProcessorInformationEx(RelationProcessorCore, (void *)buf, &len))
+        for (DWORD o = 0; o < len;) {
+            SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *e = (void *)(buf + o);
+            int lp = __builtin_popcountll((unsigned long long)e->Processor.GroupMask[0].Mask);
+            if (e->Processor.EfficiencyClass < min_eff) min_eff = e->Processor.EfficiencyClass;
+            if (e->Processor.EfficiencyClass > max_eff) max_eff = e->Processor.EfficiencyClass;
+            if (lp < min_lp) min_lp = lp;
+            if (lp > max_lp) max_lp = lp;
+            cores++;
+            o += e->Size;
+        }
+    free(buf);
+    hybrid = cores > 0 && cores_mixed(min_eff, max_eff, min_lp, max_lp);
+    return hybrid;
+}
+
+// Above normal on hybrid processors only, where it keeps the latency-critical threads (the game's main thread, the
+// render thread, the recorder) on P-cores (#650). Elsewhere it starved the game's other threads: with SMT and one
+// logical processor per core (plat_cpu_placement), Ryzen 7 7800X3D / 5700X3D players got frames of 0.3-1.2 s,
+// also standing still, which SAVAGEWIND_ONE_PER_CORE=0 removed (#883). SAVAGEWIND_THREAD_ELEVATE=1/0: always / never.
 void plat_thread_elevate(void) {
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+    static int on = -1;
+    if (on < 0) on = getenv("SAVAGEWIND_THREAD_ELEVATE") ? atoi(getenv("SAVAGEWIND_THREAD_ELEVATE")) != 0 : cpu_hybrid();
+    if (on) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
 }
 
 // ---- process
@@ -366,12 +409,18 @@ static void require_cpu(void) {
     ExitProcess(1);
 }
 
+// What the error box says under "no usable GPU" (the line above it names each GPU found and what its driver lacks).
+static const char *plat_gpu_need_text(void) {
+    return "Savage Wind needs a graphics driver with Vulkan 1.3, or with Vulkan 1.2 and these extensions: VK_KHR_dynamic_rendering, VK_KHR_synchronization2, VK_EXT_extended_dynamic_state and VK_EXT_extended_dynamic_state2. Install the latest driver "
+           "for the graphics card named above. If its latest driver still lacks them, that card cannot run Savage Wind.";
+}
+
 // Fatal error (rt_fatal_trace): the last FATAL / exception line of the log in a message box, when there is no console.
 void plat_fatal_notice(void) {
     plat_accessibility_shortcuts(true);  // (the shortcuts as they were: the process ends)
     if (!g_log_path[0]) return;
     fflush(stderr);
-    char text[1024] = "Savage Wind stopped because of an error.";
+    char text[1600] = "Savage Wind stopped because of an error.";
     FILE *f = fopen(g_log_path, "rb");
     if (f) {
         static char tail[16384];
@@ -400,10 +449,14 @@ void plat_fatal_notice(void) {
                          "PC's RAM, and Savage Wind keeps the game's 3 GB of memory available to the GPU: with integrated "
                          "graphics it needs 16 GB of RAM. Close other programs and lower Video > Shadow resolution and the "
                          "upscaler quality; with a dedicated GPU, update its driver.");
-            } else if (strstr(line, "Vulkan 1.3") || strstr(line, "vkCreateInstance")) {  // (no driver, or too old)
+            } else if (strstr(line, "no usable GPU")) {  // (device.c pick_device: the line names each GPU and what it lacks)
                 size_t l = strlen(text);
-                snprintf(text + l, sizeof text - l, "\n\nSavage Wind needs a graphics driver with Vulkan 1.3: install the "
-                         "latest driver for your GPU (NVIDIA, AMD or Intel).");
+                snprintf(text + l, sizeof text - l, "\n\n%s", plat_gpu_need_text());
+            } else if (strstr(line, "vkCreateInstance") || strstr(line, "no Vulkan device")) {  // (no driver at all)
+                size_t l = strlen(text);
+                snprintf(text + l, sizeof text - l, "\n\nNo Vulkan graphics driver was found. Install the latest driver "
+                         "for your GPU from NVIDIA, AMD or Intel: the one Windows installs by itself often has no Vulkan. "
+                         "Savage Wind needs Vulkan 1.3, or 1.2 with the extensions the FAQ lists.");
             } else if (strstr(line, "Vulkan") || strstr(line, "VK_") || strstr(line, "vk")) {  // (any other driver error)
                 size_t l = strlen(text);
                 snprintf(text + l, sizeof text - l, "\n\nThe graphics driver reported an error. Updating the driver for "
@@ -453,6 +506,7 @@ void plat_cpu_placement(void) {
     GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &len);
     char *buf = len ? malloc(len) : NULL;
     BYTE min_eff = 255, max_eff = 0;
+    int min_lp = 64, max_lp = 0;
     if (buf && GetLogicalProcessorInformationEx(RelationProcessorCore, (void *)buf, &len))
         for (DWORD o = 0; o < len;) {
             SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *e = (void *)(buf + o);
@@ -463,11 +517,14 @@ void plat_cpu_placement(void) {
                 BYTE eff = e->Processor.EfficiencyClass;
                 if (eff < min_eff) min_eff = eff;
                 if (eff > max_eff) max_eff = eff;
+                int lp = __builtin_popcountll((unsigned long long)e->Processor.GroupMask[0].Mask);  // (the core's own)
+                if (lp < min_lp) min_lp = lp;
+                if (lp > max_lp) max_lp = lp;
             }
             o += e->Size;
         }
     free(buf);
-    bool hybrid = (cores > 0 && min_eff != max_eff);
+    bool hybrid = cores > 0 && cores_mixed(min_eff, max_eff, min_lp, max_lp);
     const char *x = getenv("SAVAGEWIND_ONE_PER_CORE");
     bool on = one && (x ? atoi(x) != 0 : !wine && !hybrid && plat_one_per_core_default(cores, logical));
     fprintf(stderr, "[cpu] %d cores%s, %d logical processors: %s%s\n", cores,
@@ -510,8 +567,9 @@ static void append_arg(char *out, size_t cap, const char *a) {
     out[n] = 0;
 }
 
-// No exec() on Windows: start the new process with the same console / standard handles, then exit.
-void plat_exec(char *const argv[]) {
+// No exec() on Windows: start the new process with the same console / standard handles, then exit. wait: stay until
+// it ends and exit with its status, as exec keeps it on POSIX (plat_exec_wait).
+static void exec_self(char *const argv[], bool wait) {
     STARTUPINFOW si = {.cb = sizeof si};
     PROCESS_INFORMATION pi;
     BOOL ok;
@@ -529,9 +587,17 @@ void plat_exec(char *const argv[]) {
     }
     if (!ok) return;
     CloseHandle(pi.hThread);
+    DWORD status = 0;
+    if (wait && WaitForSingleObject(pi.hProcess, INFINITE) == WAIT_OBJECT_0) GetExitCodeProcess(pi.hProcess, &status);
     CloseHandle(pi.hProcess);
-    ExitProcess(0);
+    ExitProcess(status);
 }
+
+void plat_exec(char *const argv[]) { exec_self(argv, false); }
+
+// (start-up restarts only, before anything is open: the guest range taken by chance, the saved launch options. The
+// exit status was always 0 there, so a command line command or a launcher saw success for a failure, now and then.)
+void plat_exec_wait(char *const argv[]) { exec_self(argv, true); }
 
 // ---- diagnostics
 // DLL frames are named module+offset; frames in our own executable are left to the caller, which maps
@@ -702,6 +768,149 @@ int plat_proc_wait(PlatProc p, bool block) {
     return code > 255 ? 255 : (int)code;  // (a crash's NTSTATUS, e.g. 0xC0000409, is not "still running" (-1))
 }
 
+// ---- HDR display peak from the Windows HDR calibration ICC profile
+// The app's profile has an MHC2 private tag: signature, reserved, regamma LUT size, min luminance, max luminance (both
+// ICC s15Fixed16, in cd/m2), then offsets and the LUT data. max_luminance is the display's small-area peak; the standard
+// lumi tag is the maximum full-frame luminance. We use the peak, as the game's highlight peak.
+static uint32_t icc_be32(const uint8_t *p) {
+    return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
+}
+
+static int icc_file_peak(const wchar_t *path) {
+    HANDLE h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    LARGE_INTEGER sz;
+    uint8_t *d = NULL;
+    DWORD got = 0;
+    if (!GetFileSizeEx(h, &sz) || sz.QuadPart < 132 || sz.QuadPart > (1 << 20)) goto done;
+    d = malloc((size_t)sz.QuadPart);
+    if (!d || !ReadFile(h, d, (DWORD)sz.QuadPart, &got, NULL) || (LONGLONG)got != sz.QuadPart ||
+        memcmp(d + 36, "acsp", 4))
+        goto done;
+    uint32_t n = icc_be32(d + 128);
+    if (n > 256 || 132 + (size_t)n * 12 > (size_t)sz.QuadPart) goto done;
+    for (uint32_t i = 0; i < n; i++) {
+        const uint8_t *tag = d + 132 + i * 12;
+        uint32_t off = icc_be32(tag + 4), len = icc_be32(tag + 8);
+        if (off > (uint32_t)sz.QuadPart || len > (uint32_t)sz.QuadPart - off) continue;
+        if (!memcmp(tag, "MHC2", 4) && len >= 20) {
+            int32_t v = (int32_t)icc_be32(d + off + 16);  // max_luminance, s15Fixed16
+            double nits = (double)v / 65536.0;
+            if (nits >= 80.0 && nits <= 10000.0) {
+                int peak = (int)(nits + 0.5);
+                free(d);
+                CloseHandle(h);
+                return peak;
+            }
+        }
+    }
+done:
+    free(d);
+    CloseHandle(h);
+    return 0;
+}
+
+// The active HDR profile is in the display class's per-user ICM profile associations (ICMProfileAC), one group per
+// monitor. The group's last profile is the HDR one (e.g. {SDR.icc, HDR Calibrated Profile.icc}). Pick the group for
+// the game window's monitor; the desktop's GetICMProfile often returns only the SDR sRGB profile.
+typedef struct {
+    wchar_t sub[64];
+} IccGroup;
+
+static int icc_group_cmp(const void *a, const void *b) {
+    return wcscmp(((const IccGroup *)a)->sub, ((const IccGroup *)b)->sub);
+}
+
+static int icc_registry_peak_for_display(int display, wchar_t *name, size_t name_cap) {
+    HKEY hk;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER,
+                      L"Software\\Microsoft\\Windows NT\\CurrentVersion\\ICM\\ProfileAssociations\\Display\\"
+                      L"{4d36e96e-e325-11ce-bfc1-08002be10318}", 0, KEY_READ, &hk) != ERROR_SUCCESS)
+        return 0;
+    wchar_t dir[1024];
+    UINT dn = GetWindowsDirectoryW(dir, 1000);
+    const wchar_t *icc_dir = L"\\System32\\spool\\drivers\\color\\";
+    if (dn && dn + wcslen(icc_dir) < 1024) wcscat(dir, icc_dir);
+    else wcscpy(dir, L"C:\\Windows\\System32\\spool\\drivers\\color\\");
+    IccGroup groups[32];
+    int ng = 0;
+    for (DWORD i = 0; ng < 32; i++) {
+        wchar_t sub[256];
+        DWORD sn = 256;
+        if (RegEnumKeyExW(hk, i, sub, &sn, NULL, NULL, NULL, NULL) != ERROR_SUCCESS) break;
+        HKEY k;
+        if (RegOpenKeyExW(hk, sub, 0, KEY_READ, &k) != ERROR_SUCCESS) continue;
+        DWORD type = 0, cb = 0;
+        if (RegQueryValueExW(k, L"ICMProfileAC", NULL, &type, NULL, &cb) == ERROR_SUCCESS && cb > 0 &&
+            (type == REG_MULTI_SZ || type == REG_SZ))
+            swprintf(groups[ng++].sub, 64, L"%s", sub);
+        RegCloseKey(k);
+    }
+    if (!ng) { RegCloseKey(hk); return 0; }
+    qsort(groups, ng, sizeof groups[0], icc_group_cmp);
+    int gi = display > 0 ? display - 1 : 0;  // DISPLAY1 -> first monitor group, etc.
+    if (gi < 0 || gi >= ng) gi = 0;  // (unknown display: best effort on the first group)
+    HKEY k;
+    if (RegOpenKeyExW(hk, groups[gi].sub, 0, KEY_READ, &k) != ERROR_SUCCESS) {
+        RegCloseKey(hk);
+        return 0;
+    }
+    int peak = 0;
+    DWORD type = 0, cb = 0;
+    if (RegQueryValueExW(k, L"ICMProfileAC", NULL, &type, NULL, &cb) == ERROR_SUCCESS && cb > 0) {
+        wchar_t *list = malloc(cb + sizeof(wchar_t));
+        if (list && RegQueryValueExW(k, L"ICMProfileAC", NULL, &type, (BYTE *)list, &cb) == ERROR_SUCCESS) {
+            list[cb / sizeof(wchar_t)] = 0;
+            for (wchar_t *s = list; *s; s += wcslen(s) + 1) {
+                wchar_t path[1024];
+                if (wcschr(s, L'\\')) swprintf(path, 1024, L"%s", s);
+                else swprintf(path, 1024, L"%s%s", dir, s);
+                int p = icc_file_peak(path);
+                if (p > 0) {  // the last valid profile is the HDR calibration
+                    peak = p;
+                    swprintf(name, name_cap, L"%s", s);
+                }
+            }
+        }
+        free(list);
+    }
+    RegCloseKey(k);
+    RegCloseKey(hk);
+    return peak;
+}
+
+int plat_hdr_peak_nits(void *hwnd_, char *profile, size_t profile_size) {
+    HWND hwnd = (HWND)hwnd_;
+    HMONITOR mon = hwnd ? MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+                        : MonitorFromPoint((POINT){0, 0}, MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFOEXW mi;
+    mi.cbSize = sizeof mi;
+    int display = 0;
+    if (mon && GetMonitorInfoW(mon, (MONITORINFO *)&mi))
+        swscanf(mi.szDevice, L"\\\\.\\DISPLAY%d", &display);
+    wchar_t name[512] = L"";
+    int peak = icc_registry_peak_for_display(display, name, 512);
+    if (!peak) {  // (the display's SDR profile may still carry an MHC2 tag)
+        HDC hdc = GetDC(hwnd);
+        wchar_t path[1024];
+        DWORD n = 1024;
+        if (hdc && GetICMProfileW(hdc, &n, path)) {
+            peak = icc_file_peak(path);
+            if (peak) {
+                const wchar_t *slash = wcsrchr(path, L'\\');
+                swprintf(name, 512, L"%s", slash ? slash + 1 : path);
+            }
+        }
+        if (hdc) ReleaseDC(hwnd, hdc);
+    }
+    if (profile && profile_size) {
+        profile[0] = 0;
+        if (peak) WideCharToMultiByte(CP_UTF8, 0, name, -1, profile, (int)profile_size, NULL, NULL);
+    }
+    return peak;
+}
+
 bool plat_remove_tree(const char *dir) {
     // SHFileOperation wants a double-NUL-terminated path with backslashes
     static __thread wchar_t w[MAX_PATH + 2];
@@ -711,6 +920,22 @@ bool plat_remove_tree(const char *dir) {
     for (wchar_t *p = w; *p; p++) if (*p == L'/') *p = L'\\';
     SHFILEOPSTRUCTW op = {.wFunc = FO_DELETE, .pFrom = w, .fFlags = FOF_NO_UI};
     return SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted;
+}
+
+bool plat_file_flush(const char *path) {
+    wchar_t w[MAX_PATH + 1];
+    if (MultiByteToWideChar(CP_UTF8, 0, path, -1, w, MAX_PATH + 1) <= 1) return false;
+    HANDLE h = CreateFileW(w, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        DWORD e = GetLastError();
+        errno = e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND ? ENOENT : EACCES;
+        return false;
+    }
+    bool ok = FlushFileBuffers(h);
+    if (!ok) errno = EIO;
+    CloseHandle(h);
+    return ok;
 }
 
 // Windows' accessibility shortcuts while the game has the focus: pressing Shift five times (Sticky Keys), holding the

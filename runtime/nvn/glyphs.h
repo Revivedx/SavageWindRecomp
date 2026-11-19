@@ -9,11 +9,21 @@
 bool glyphs_apply(uint64_t addr, uint64_t pool_lo, uint64_t pool_hi, uint32_t format, uint32_t w, uint32_t h,
                   uint8_t *lin, uint32_t wb, uint32_t hb);
 
+// Gameplay > Sharper text: the texture at addr is that sheet (create_image gives it a larger image)
+bool glyphs_sheet_known(uint64_t addr, uint64_t pool_lo, uint64_t pool_hi, uint32_t format, uint32_t w, uint32_t h);
+// The sheet drawn k (2 to 4) times larger for the current device: out gets (w * k) x (h * k) R8 texels, rows in the
+// sheet's own order; lin as for glyphs_apply. False, with the texels only enlarged, when its memory holds something else.
+bool glyphs_draw_sheet(uint64_t addr, uint64_t pool_lo, uint64_t pool_hi, uint32_t format, uint32_t w, uint32_t h,
+                       const uint8_t *lin, uint32_t wb, uint32_t hb, uint32_t k, uint8_t *out);
+
 // The same for the HUD's button textures (R8 masks, w x h texels, rows `row` bytes apart in lin): true when the texture
 // is one of them.
 bool glyphs_apply_layout(uint32_t format, uint32_t w, uint32_t h, uint8_t *lin, uint32_t row);
 // One of those textures (R8 texels, deswizzled)?
 bool glyphs_is_layout_icon(uint32_t w, uint32_t h, const uint8_t *lin, uint32_t row);
+// Sharper text: such a texture drawn s (2 to 4) times larger into out ((w * s) x (h * s) R8 texels); false, with the
+// texels only enlarged, when it isn't one
+bool glyphs_draw_layout(uint32_t w, uint32_t h, const uint8_t *lin, uint32_t row, uint32_t s, uint8_t *out);
 
 // Changes whenever the icons to draw change (device, bindings, setting): sheets uploaded under another one go up again.
 uint32_t glyphs_generation(void);
@@ -22,6 +32,17 @@ uint32_t glyphs_font_generation(void);
 
 // The diamond vertex (0: East, 1: South, 2: North, 3: West) for each Switch face button (A, B, X, Y) on the HUD.
 void glyphs_hud_positions(int pos[4]);
+// The HUD's layouts were patched with these positions (runtime/services/fs.c, when the game files are opened).
+void glyphs_hud_positions_built(const int pos[4]);
+// True when glyphs_hud_positions differs from the layout the HUD has this boot (bindings or HUD button layout changed
+// since): the diamond moves at the next start. False before the HUD is built (the start screen).
+bool glyphs_hud_positions_stale(void);
+// The character the dim letter of Switch face button btn (0..3: A B X Y) in that diamond is written as
+// (runtime/services/fs.c): a cell of the icon font no prompt uses, drawn as the controller's button in that place, while
+// the prompts' own A B X Y follow the actions in play (Jump moved to A: "Jump" shows A, the diamond still shows Y).
+int glyphs_letter_code(int btn);
+// That character's glyph index in External_00.bffnt (its CWDH entry: runtime/services/fs.c makes it the letter's width)
+int glyphs_letter_index(int btn);
 
 // The device the Controls page and the tips draw instead of the Switch (runtime/nvn/hw_illust.c HW_DEVICE_*), -1 for
 // the Switch: Button icons' device, or on Automatic the controller connected. Decided when the game files are opened

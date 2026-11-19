@@ -20,6 +20,8 @@ uint64_t plat_now_ns(void) { return 1; }
 bool nvn_timeline(void) { return false; }
 void rt_fatal_trace(void) { abort(); }
 void guest_call(Cpu *c, uint64_t address) { (void)c; (void)address; assert(!"unexpected guest callback"); }
+void nvn_sync_in_list(uint64_t guest) { (void)guest; }
+NvnTexture *nvn_texture_host(uint64_t guest) { (void)guest; return NULL; }
 
 static bool pause_menu;
 bool framepace_menu_ui(void) { return pause_menu; }
@@ -29,6 +31,14 @@ static void native_draw(Cpu *c) { calls++; c->x[5] = 123; }
 static void native_pane(Cpu *c) {
     if (rt_ui_layout_pane_draw(c, native_pane)) return;
     calls++; c->x[5] = 456;
+}
+
+static Cpu *status_part;
+static void native_status_layout(Cpu *c) { (void)c; assert(rt_ui_layout_pane_draw(status_part, native_pane)); }
+
+static CmdRec *rec_at(uint64_t at) {
+    CmdRec *r = (CmdRec *)(uintptr_t)at;
+    return r->op == CMD_JUMP ? (CmdRec *)(uintptr_t)r->x[0] : r;
 }
 
 static unsigned scope_at(uint64_t at) {
@@ -158,10 +168,46 @@ int main(void) {
     ST64(pane+0xf0, controller+8); assert(!rt_ui_layout_pane_draw(&part, native_pane));
     ST64(pane+0xf0, controller); part.x[2] = 0; assert(!rt_ui_layout_pane_draw(&part, native_pane));
     assert(nvn_ui_scope(commands, UI_LAYOUT_NONE));
+    // The champions' abilities are drawn row by row in the HUD layout, all with the hearts' anchor (#913).
+    uint64_t status = base + 0xb000;
+    memcpy((void *)(uintptr_t)(status+0xb8), "Pa_SinJu_02", sizeof "Pa_SinJu_02");
+    Cpu status_cpu = {0}; status_cpu.x[0] = status; status_cpu.x[2] = pane_wrapper; status_part = &status_cpu;
+    assert(!rt_ui_layout_pane_draw(&status_cpu, native_pane));  // (outside a HUD layout's draw)
+    ST64(slots+8*0x4a, 0);
+    previous_calls = calls; at = cb->mem + cb->used;
+    rt_ui_layout_draw(&c, native_status_layout);
+    assert(calls == previous_calls+1 && status_cpu.x[5] == 456);
+    CmdRec *r = rec_at(at);
+    assert(r->op == CMD_UI_SCOPE && r->x[0] == UI_LAYOUT_HUD);
+    r = rec_at((uint64_t)(uintptr_t)r + r->size);
+    assert(r->op == CMD_UI_SCOPE && r->x[0] == hud_group_kind(UI_LAYOUT_HUD, -1, 1));
+    r = rec_at((uint64_t)(uintptr_t)r + r->size); assert(r->op == CMD_UI_SCOPE && r->x[0] == UI_LAYOUT_NONE);
+    r = rec_at((uint64_t)(uintptr_t)r + r->size); assert(r->op == CMD_UI_SCOPE && r->x[0] == UI_LAYOUT_NONE);
+    assert(!layout_kind);
+    memcpy((void *)(uintptr_t)(status+0xb8), "Pa_SinJu_04", sizeof "Pa_SinJu_04");
+    assert(!rt_ui_layout_pane_draw(&status_cpu, native_pane));
+    // The quick selectors' D-pad guide is drawn as HUD with the same anchor (#903); in another native screen it stays.
+    memcpy((void *)(uintptr_t)(status+0xb8), "N_MainAll_00", sizeof "N_MainAll_00");
+    ST64(slots+8*0x25, 0); ST64(slots+8*0x2d, screen);
+    at = cb->mem + cb->used; rt_ui_layout_draw(&c, native_status_layout);
+    r = rec_at(at); assert(r->op == CMD_UI_SCOPE && r->x[0] == UI_LAYOUT_DIALOGUE);
+    r = rec_at((uint64_t)(uintptr_t)r + r->size);
+    assert(r->op == CMD_UI_SCOPE && r->x[0] == hud_group_kind(UI_LAYOUT_HUD, -1, 1));
+    ST64(slots+8*0x2d, 0); ST64(slots+8*0x27, screen);
+    at = cb->mem + cb->used; layout_kind = UI_LAYOUT_NONE;
+    assert(ui_layout_begin(&c) && layout_kind == UI_LAYOUT_DIALOGUE);
+    assert(!rt_ui_layout_pane_draw(&status_cpu, native_pane));
+    ui_layout_end(&c, commands); layout_kind = UI_LAYOUT_NONE; layout_screen = 0;
+    ST64(slots+8*0x27, 0); ST64(slots+8*0x25, screen);
     // Nested cached lists restore the executing owner, including bounded overflow.
     HudScope scope = {0};
     hud_scope_enter(&scope, UI_LAYOUT_HUD); hud_scope_enter(&scope, UI_LAYOUT_DIALOGUE);
     assert(scope.kind == UI_LAYOUT_DIALOGUE);
+    hud_scope_leave(&scope); assert(scope.kind == UI_LAYOUT_HUD);
+    // A part kept whole carries its layout's kind and its anchor
+    hud_scope_enter(&scope, hud_group_kind(UI_LAYOUT_HUD, -1, 1));
+    assert((scope.kind & HUD_KIND_MASK) == UI_LAYOUT_HUD && (scope.kind & HUD_GROUP));
+    assert(hud_group_ax(scope.kind) == -1 && hud_group_ay(scope.kind) == 1);
     hud_scope_leave(&scope); assert(scope.kind == UI_LAYOUT_HUD);
     for (int i = 0; i < 40; i++) hud_scope_enter(&scope, UI_LAYOUT_CONTEXT);
     for (int i = 0; i < 40; i++) hud_scope_leave(&scope);

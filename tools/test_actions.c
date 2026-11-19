@@ -14,6 +14,7 @@ GameSites g_site;  // (no game: the HUD prompt check finds no screens)
 
 static uint64_t now;
 Uint64 SDL_GetTicks(void) { return now; }
+Uint64 SDL_GetTicksNS(void) { return now * 1000000ull; }
 int input_pad_family(void) { return 0; }
 bool settings_steam_deck(void) { return false; }
 
@@ -93,6 +94,31 @@ static void a_press_nobody_asked_about_expires(void) {
     host(0, 0, 0);
     for (int i = 0; i < 10; i++) now += 50, act_poll(true);  // 500 ms of polls nobody read
     assert(trig(JUMP) == 0);
+}
+
+// A conversation answers like the HUD prompt: with Jump on Interact's button, the press that picks an answer doesn't
+// jump. Lines only spoken over play (the camera still turns) leave the button to Jump.
+static bool dialogue_up, cam_live;
+bool framepace_dialogue_ui(void) { return dialogue_up; }
+bool input_cam_live(void) { return cam_live; }
+static void a_conversation_answer_does_not_jump(void) {
+    act_reset();
+    int a = g_act_pad[0];  // (Interact's controller button)
+    act_set(BIND_DEV_PAD, JUMP, a);
+    dialogue_up = true;
+    host(0, 0, 0), act_poll(true);
+    host(0, 0, 1u << a), now += 16, act_poll(true);
+    assert(hold(JUMP) == 0 && trig(JUMP) == 0);
+    host(0, 0, 0), now += 16, act_poll(true);
+    dialogue_up = false, now += 300, act_poll(true);  // closed, and the prompt's moment is over
+    host(0, 0, 1u << a), now += 16, act_poll(true);
+    assert(trig(JUMP) == 1);
+    host(0, 0, 0), now += 16, act_poll(true);
+    dialogue_up = cam_live = true, act_poll(true);
+    host(0, 0, 1u << a), now += 16, act_poll(true);
+    assert(trig(JUMP) == 1);
+    dialogue_up = cam_live = false;
+    host(0, 0, 0), act_reset(), act_poll(true);
 }
 
 static void menus_use_the_switch_layer(void) {
@@ -522,12 +548,74 @@ static void names_and_groups(void) {
         for (unsigned i = 0; i < sizeof raw / sizeof *raw; i++) assert(strcmp(bind_input_name(slot), raw[i]));
 }
 
+static void swapped_jump_sprint_masks_keep_keyboard_bindings(void) {
+    act_reset();
+    masks[2] = 0x2;   // BOTW JumpButtonChange: Jump -> B
+    masks[12] = 0x8;  // Sprint -> X
+    assert(act_is_default(2) && act_is_default(12));
+    act_poll(true);
+    assert(hold(2) == 0 && hold(12) == 0);
+    // Keyboard still follows its configured bindings (Space = Jump, Left Shift = Sprint)
+    key_down[SDL_SCANCODE_SPACE] = 1;
+    host(0, 0, 0);
+    act_poll(true);
+    assert(hold(2) == 1 && trig(2) == 1 && hold(12) == 0 && trig(12) == 0);
+    key_down[SDL_SCANCODE_SPACE] = 0;
+    key_down[SDL_SCANCODE_LSHIFT] = 1;
+    host(0, 0, 0);
+    act_poll(true);
+    assert(hold(2) == 0 && trig(2) == 0 && hold(12) == 1 && trig(12) == 1);
+    key_down[SDL_SCANCODE_LSHIFT] = 0;
+    // Uncustomized controller still follows the game's swapped Switch layout (B = Jump, X = Sprint)
+    host(0, 0, 1u << g_bind_pad[BIND_B]);
+    act_poll(true);
+    assert(hold(2) == 1 && trig(2) == 1 && hold(12) == 0 && trig(12) == 0);
+    host(0, 0, 1u << g_bind_pad[BIND_X]);
+    act_poll(true);
+    assert(hold(2) == 0 && trig(2) == 0 && hold(12) == 1 && trig(12) == 1);
+    host(0, 0, 0);
+    // Restoring the 1.9.0 masks returns both to game fallthrough (-1)
+    masks[2] = 0x8;
+    masks[12] = 0x2;
+    act_poll(true);
+    assert(hold(2) == -1 && hold(12) == -1);
+}
+
+// "Swap A and B (Xbox: A confirms)" sets that convention: the Switch's A and its actions on the bottom button, B and
+// its actions on the right one. A second press keeps it (#934: it swapped back), and A / B actions a swap kept from
+// before left on the other of the two follow; other actions stay where they are.
+static void swap_ab_sets_the_xbox_convention(void) {
+    const int south = SDL_GAMEPAD_BUTTON_SOUTH, east = SDL_GAMEPAD_BUTTON_EAST;
+    bind_reset(BIND_DEV_PAD);
+    for (int press = 0; press < 3; press++) {
+        if (press == 2) act_set(BIND_DEV_PAD, 14, south), act_set(BIND_DEV_PAD, 0, east);  // (Cancel, Interact left behind)
+        bind_swap_ab();
+        assert(g_bind_pad[BIND_A] == south && g_bind_pad[BIND_B] == east);
+        for (int id = 0; id < ACT_COUNT; id++) {
+            int sb = act_switch_button(id);
+            if (sb == BIND_A) assert(g_act_pad[id] == south);
+            else if (sb == BIND_B) assert(g_act_pad[id] == east);
+            else assert(g_act_pad[id] != south && g_act_pad[id] != east);
+        }
+    }
+    host(0, 0, 1u << east);  // Cancel (let go, close the paraglider) on the right button, Interact not
+    act_poll(true);
+    assert(hold(14) == 1 && hold(0) == 0);
+    host(0, 0, 0);
+    act_poll(true);
+    bind_reset(BIND_DEV_PAD);
+}
+
 int main(void) {
-    for (int i = 0; i < ACT_COUNT; i++) masks[i] = 0x1;
-    masks[JUMP] = 0x8, masks[ATTACK] = 0x10, masks[INTERACT] = 0x1, masks[CANCEL] = 0x2;
+    static const uint32_t k_masks_190[ACT_COUNT] = {
+        0x1, 0x2, 0x8, 0x10, 0x8, 0x1, 0x8, 0x2, 0x8, 0x2, 0x8, 0x8, 0x2, 0x4, 0x2, 0x40, 0x1, 0x80, 0x20, 0x8, 0x2,
+        0x10000, 0x20000, 0x10000, 0x20000, 0x2, 0x1, 0x2000, 0x4000, 0x4, 0x2, 0x4000, 0x4000, 0x2000, 0x1, 0x20000,
+        0x10, 0x20000, 0x1, 0x2, 0x2000};
+    memcpy(masks, k_masks_190, sizeof masks);
     act_masks(masks);
     defaults_are_untouched();
     the_switch_button_comes_from_the_game_table();
+    swapped_jump_sprint_masks_keep_keyboard_bindings();
     a_bound_action_follows_its_key();
     a_press_is_not_lost_when_nobody_asked();
     a_press_nobody_asked_about_expires();
@@ -540,7 +628,9 @@ int main(void) {
     schema_migration_is_one_time();
     captures_allow_shared_action_inputs();
     host_pad_slots();
+    swap_ab_sets_the_xbox_convention();
     names_and_groups();
-    puts("action bindings: default fallthrough, custom host bindings, schema migration, held / pressed, menus, shared keys, pad capture, contexts, reset and ini passed");
+    a_conversation_answer_does_not_jump();
+    puts("action bindings: default fallthrough, custom host bindings, schema migration, held / pressed, menus, shared keys, pad capture, contexts, A / B swap, reset and ini passed");
     return 0;
 }

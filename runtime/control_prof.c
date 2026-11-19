@@ -16,6 +16,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <intrin.h>
+#include <malloc.h>
 #define PSAPI_VERSION 2
 #include <psapi.h>
 #else
@@ -340,6 +341,82 @@ static void cmd_frametrace(int argc, char **argv, ControlReply *r) {
     control_fail(r, "Usage: frametrace start | stop | dump <path>");
 }
 
+// ---- `heaps` (Windows): every heap of the process walked - its committed bytes, its busy blocks and their bytes - with
+// the C runtime's heap (malloc: the runtime's own memory) told apart from the others (the drivers' and the system's),
+// and the C heap's busy bytes by block size. Takes a second or more: the walk visits every block under the heap's lock.
+static void cmd_heaps(int argc, char **argv, ControlReply *r) {
+    (void)argv;
+    if (argc != 1) { control_fail(r, "Usage: heaps"); return; }
+#ifdef _WIN32
+    HANDLE heaps[256];
+    DWORD n = GetProcessHeaps(256, heaps);
+    if (n > 256) n = 256;
+    HANDLE crt = (HANDLE)_get_heap_handle();
+    double crt_busy = 0, other_busy = 0, crt_commit = 0, other_commit = 0;
+    uint64_t cls_bytes[40] = {0}, cls_count[40] = {0};
+    // (what the blocks of 2 KB and more hold, by their first 4 bytes and size class: "#ver" is GLSL, 07230203 SPIR-V)
+    enum { SIG = 1024 };
+    static struct { uint32_t sig, cls; uint64_t bytes, count; } sigs[SIG];
+    memset(sigs, 0, sizeof sigs);
+    for (DWORD i = 0; i < n; i++) {
+        PROCESS_HEAP_ENTRY e = {0};
+        uint64_t busy = 0, blocks = 0, commit = 0;
+        if (!HeapLock(heaps[i])) continue;
+        while (HeapWalk(heaps[i], &e)) {
+            if (e.wFlags & PROCESS_HEAP_REGION) commit += e.Region.dwCommittedSize;
+            if (e.wFlags & PROCESS_HEAP_ENTRY_BUSY) {
+                busy += e.cbData, blocks++;
+                if (heaps[i] == crt) {
+                    int c = 0;
+                    while (c < 39 && (1ull << c) < e.cbData) c++;
+                    cls_bytes[c] += e.cbData, cls_count[c]++;
+                    if (e.cbData >= 2048) {
+                        uint32_t sig;
+                        memcpy(&sig, e.lpData, 4);
+                        uint32_t slot = (sig * 2654435761u + (uint32_t)c * 97u) % SIG, probes = 0;
+                        while (sigs[slot].count && (sigs[slot].sig != sig || sigs[slot].cls != (uint32_t)c) && probes++ < SIG) slot = (slot + 1) % SIG;
+                        if (!sigs[slot].count || (sigs[slot].sig == sig && sigs[slot].cls == (uint32_t)c))
+                            sigs[slot].sig = sig, sigs[slot].cls = (uint32_t)c, sigs[slot].bytes += e.cbData, sigs[slot].count++;
+                    }
+                }
+                if (e.cbData >= (1u << 20) && !(e.wFlags & PROCESS_HEAP_REGION)) commit += 0;  // (large blocks: counted as busy)
+            }
+        }
+        HeapUnlock(heaps[i]);
+        char key[48];
+        snprintf(key, sizeof key, "heap.%lu.busy_mb", (unsigned long)i); control_field_num(r, key, busy / 1048576.0);
+        snprintf(key, sizeof key, "heap.%lu.blocks", (unsigned long)i); control_field_num(r, key, (double)blocks);
+        snprintf(key, sizeof key, "heap.%lu.commit_mb", (unsigned long)i); control_field_num(r, key, commit / 1048576.0);
+        snprintf(key, sizeof key, "heap.%lu.crt", (unsigned long)i); control_field_bool(r, key, heaps[i] == crt);
+        if (heaps[i] == crt) crt_busy += busy, crt_commit += commit; else other_busy += busy, other_commit += commit;
+    }
+    control_field_num(r, "crt_busy_mb", crt_busy / 1048576.0);
+    control_field_num(r, "crt_commit_mb", crt_commit / 1048576.0);
+    control_field_num(r, "other_busy_mb", other_busy / 1048576.0);
+    control_field_num(r, "other_commit_mb", other_commit / 1048576.0);
+    for (int c = 0; c < 40; c++)
+        if (cls_count[c]) {
+            char key[48];
+            snprintf(key, sizeof key, "crt.le_%llu.mb", 1ull << c); control_field_num(r, key, cls_bytes[c] / 1048576.0);
+            snprintf(key, sizeof key, "crt.le_%llu.count", 1ull << c); control_field_num(r, key, (double)cls_count[c]);
+        }
+    for (int k = 0; k < 16; k++) {  // the 16 largest
+        int best = -1;
+        for (int i = 0; i < SIG; i++)
+            if (sigs[i].count && (best < 0 || sigs[i].bytes > sigs[best].bytes)) best = i;
+        if (best < 0 || sigs[best].bytes < (4u << 20)) break;
+        char key[64];
+        snprintf(key, sizeof key, "sig.%08x.le_%llu.mb", sigs[best].sig, 1ull << sigs[best].cls);
+        control_field_num(r, key, sigs[best].bytes / 1048576.0);
+        snprintf(key, sizeof key, "sig.%08x.le_%llu.count", sigs[best].sig, 1ull << sigs[best].cls);
+        control_field_num(r, key, (double)sigs[best].count);
+        sigs[best].count = 0;
+    }
+#else
+    control_fail(r, "heaps: Windows only");
+#endif
+}
+
 // ---- `memstats`: process memory, GPU memory heaps (VK_EXT_memory_budget: the whole process's use of each heap) and
 // texture memory by kind
 static void cmd_memstats(int argc, char **argv, ControlReply *r) {
@@ -414,6 +491,7 @@ void control_prof_init(void) {
     static const ControlCmd cmds[] = {
         {"frametrace", "start | stop | dump <path>", "Per-frame counters (builds, uploads, ASTC, waits, file reads, faults) to a CSV", cmd_frametrace},
         {"memstats", "", "Process RAM, GPU memory heaps and texture memory by kind", cmd_memstats},
+        {"heaps", "", "Windows heaps walked: the C heap's and the others' busy and committed MB, C heap by block size", cmd_heaps},
         {"frames", "[seconds]", "Frame times over the last seconds (default 5, maximum 60)", cmd_frames},
         {"sample", "start <seconds> [interval_us] | status", "Sample guest stacks to build/samples.txt; show status", cmd_sample},
         {"vkprof", "[0|1|2]", "Vulkan timers (startup setting)", cmd_vkprof},

@@ -17,8 +17,8 @@
 // vectors on, a pass with the internal-resolution scene depth gets the motion target appended after its color targets
 // (slot = the pass's color target count, exec.c begin_pass), and in it
 //  - a depth-writing draw (not full-screen) uses its program's motion variant: vertex key + mvec 1 and fragment key +
-//    mvec_rt (slot + 1) when it has a match in the previous frame, else the vertex key as is and fragment mvec_rt
-//    0x40 | (slot + 1) (still: zero motion);
+//    mvec_rt (slot + 1), whether it moved or not (the push constants say); until that is built, the vertex key as
+//    is and fragment mvec_rt 0x40 | (slot + 1) (still: zero motion);
 //  - a blended draw that writes no depth: fragment mvec_rt 0x80 | (slot + 1) (the reactive mask), vertex key as is.
 // The keys are otherwise those of the draw without motion vectors (in the key log of 2026-10-28 all 522 motion keys
 // were a logged key plus these fields). Which shaders: BOTW's motion passes are the G-buffer (6 color targets: slot 6;

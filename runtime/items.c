@@ -24,10 +24,12 @@
 #include "gamelib.h"
 #include "hle.h"
 #include "items.h"
+#include "kernel.h"
 #include "language.h"
 #include "nvn/tegra.h"
 #include "rt.h"
 #include "services/archive.h"
+#include "settings.h"
 #include "ui/i18n.h"
 
 uint8_t *fs_game_file(const char *path, size_t *out_n);  // runtime/services/fs.c
@@ -163,7 +165,13 @@ static void names_read(void) {
 // ---- the list
 static GameItem *g_items;
 static int g_nitems = -1;
+static const char **g_stack_actors;
+static int g_nstack;
 static pthread_once_t g_once = PTHREAD_ONCE_INIT;
+
+static int str_cmp(const void *a, const void *b) {
+    return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
 
 static uint32_t tag(const char *s) {  // (the tags are CRC-32s of their names)
     uint32_t c = 0xffffffff;
@@ -220,6 +228,9 @@ static void list_read(void) {
         {"WeaponSmallSword", ITEMCAT_WEAPON}, {"WeaponLargeSword", ITEMCAT_WEAPON}, {"WeaponSpear", ITEMCAT_WEAPON},
         {"WeaponBow", ITEMCAT_BOW}, {"WeaponShield", ITEMCAT_SHIELD}, {"Bullet", ITEMCAT_ARROW},
         {"ArmorHead", ITEMCAT_ARMOR}, {"ArmorUpper", ITEMCAT_ARMOR}, {"ArmorLower", ITEMCAT_ARMOR}, {"Item", ITEMCAT_MATERIAL},
+        // critters and fairies (Animal_Insect_*: bugs, lizards, frogs, fairies) are CapturedActors; CanGetPouch below
+        // leaves out what the pouch can't hold
+        {"CapturedActor", ITEMCAT_MATERIAL},
     };
     uint32_t can_get = tag("CanGetPouch"), important = tag("Important"), cooked = tag("CookResult"), rupee = tag("Rupee"),
              arrow = tag("Arrow");
@@ -254,6 +265,12 @@ static void list_read(void) {
         it->hearts = byml_get_int(&b, a, "cureItemHitPointRecover", 0);
         it->price = byml_get_int(&b, a, "itemSellingPrice", 0);
         effects(byml_get_str(&b, a, cat == ITEMCAT_ARMOR ? "armorEffectEffectType" : "cureItemEffectType"), it->effect);
+    }
+    g_stack_actors = calloc((size_t)(g_nitems ? g_nitems : 1), sizeof *g_stack_actors);
+    if (g_stack_actors) {
+        for (int i = 0; i < g_nitems; i++)
+            if (g_items[i].stack) g_stack_actors[g_nstack++] = g_items[i].actor;
+        qsort(g_stack_actors, (size_t)g_nstack, sizeof *g_stack_actors, str_cmp);
     }
     qsort(g_items, g_nitems, sizeof *g_items, item_cmp);
     int w = 0;  // (one per name and category)
@@ -366,10 +383,42 @@ bool items_request(int i, int count) {
     return ok;
 }
 
+static _Thread_local bool g_in_give;
+
+static bool guest_ptr_ok(uint64_t addr, size_t size) {
+    if (!addr || addr + size < addr) return false;
+    uint64_t top = HEAP_BASE + kernel_heap_size();
+    if (addr >= HEAP_BASE && addr + size <= top) return true;
+    if (addr >= STACK_BASE && addr + size <= STACK_BASE + STACK_SIZE) return true;
+    if (addr >= GUEST_LO && addr + size <= GUEST_HI) return true;
+    return false;
+}
+
+static bool items_is_stackable(const char *actor) {
+    if (!actor || !*actor) return false;
+    items_count();
+    if (!g_stack_actors || g_nstack <= 0) return false;
+    return bsearch(&actor, g_stack_actors, (size_t)g_nstack, sizeof *g_stack_actors, str_cmp) != NULL;
+}
+
+uint32_t rt_item_get_scale(uint64_t safe_str, uint32_t value) {
+    int mult = g_settings.item_multiplier;
+    if ((mult != 2 && mult != 4 && mult != 8) || g_in_give || value == 0 || value >= 1000)
+        return value;
+    if (!guest_ptr_ok(safe_str, 16)) return value;
+    uint64_t cstr = *(const uint64_t *)(uintptr_t)(safe_str + 8);
+    if (!guest_ptr_ok(cstr, 1)) return value;
+    const char *actor = (const char *)(uintptr_t)cstr;
+    if (!items_is_stackable(actor)) return value;
+    uint64_t scaled = (uint64_t)value * (uint32_t)mult;
+    return scaled > 999 ? 999 : (uint32_t)scaled;
+}
+
 // The game thread, every frame in play (tools/patches.py _item_tick: at a function's entry, so only its arguments are
 // live; the whole guest CPU state is put back afterwards). get: the item get; mgr: where the pause menu data's address
 // is; sstr_vt: sead::SafeString's vtable. The name and its SafeString go on the guest stack below sp.
 void rt_item_tick(Cpu *c, uint64_t get, uint64_t mgr, uint64_t sstr_vt) {
+    { extern void rt_hearts_tick(Cpu *c); rt_hearts_tick(c); }
     if (!atomic_load_explicit(&g_pending, memory_order_relaxed)) return;
     Request req[32];
     pthread_mutex_lock(&g_req_lock);
@@ -394,7 +443,9 @@ void rt_item_tick(Cpu *c, uint64_t get, uint64_t mgr, uint64_t sstr_vt) {
             int before = pouch_entries(pmdm);
             c->sp = buf;
             c->x[0] = pmdm, c->x[1] = buf, c->x[2] = (uint32_t)req[r].value, c->x[3] = 0;
+            g_in_give = true;
             guest_call(c, get);
+            g_in_give = false;
             // (a stack may only grow an entry it has: there no new entry says nothing)
             if (!stack && before >= 0 && pouch_entries(pmdm) == before) break;
             if (!stack) added++;

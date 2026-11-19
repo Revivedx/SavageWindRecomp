@@ -48,7 +48,9 @@ void deck_imu_close(DeckImu *d) {
 }
 
 #ifdef __linux__
-// The hidraw node of the controller's interface 2 (the one with the state reports), or -1.
+// The hidraw node of the controller's interface 2 (the one with the state reports), or -1. Also a virtual Deck
+// controller (InputPlumber's deck-uhid target on other handhelds - Legion Go, ROG Ally - under Steam Input, #136:
+// 28de:12fe or 28de:1205 made through uhid, so no USB interface): the same state reports (deck_imu_decode checks them).
 static int open_deck(char *name, size_t size) {
     DIR *dir = opendir("/sys/class/hidraw");
     if (!dir) return -1;
@@ -60,12 +62,15 @@ static int open_deck(char *name, size_t size) {
         FILE *f = fopen(path, "r");
         if (!f) continue;
         bool deck = false;
-        while (fgets(line, sizeof line, f)) deck |= !strncmp(line, "HID_ID=0003:000028DE:00001205", 29);
+        while (fgets(line, sizeof line, f))
+            deck |= !strncmp(line, "HID_ID=0003:000028DE:00001205", 29) || !strncmp(line, "HID_ID=0003:000028DE:000012FE", 29) ||
+                    !strncmp(line, "HID_ID=0006:000028DE:00001205", 29) || !strncmp(line, "HID_ID=0006:000028DE:000012FE", 29);
         fclose(f);
         snprintf(path, sizeof path, "/sys/class/hidraw/%s/device", e->d_name);
         if (!deck || !realpath(path, link)) continue;  // (the link itself is relative: "../../../0003:28DE:1205.0005")
         char *dev = strrchr(link, '/');  // ".../3-3:1.2/0003:28DE:1205.0005": the interface before it
-        if (!dev || dev - link < 4 || memcmp(dev - 4, ":1.2", 4)) continue;
+        bool uhid = strstr(link, "/uhid/") != NULL;  // (".../virtual/misc/uhid/0003:28DE:12FE.0007")
+        if (!uhid && (!dev || dev - link < 4 || memcmp(dev - 4, ":1.2", 4))) continue;
         snprintf(path, sizeof path, "/dev/%s", e->d_name);
         fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
         if (fd >= 0) snprintf(name, size, "%s", path);

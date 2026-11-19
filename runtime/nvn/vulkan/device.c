@@ -3,7 +3,9 @@
 #include <SDL3/SDL_vulkan.h>
 #include <math.h>
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdatomic.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -13,8 +15,10 @@
 #endif
 
 #include "../../framepace.h"
+#include "../../hash.h"
 #include "../../imageload.h"
 #include "../../paths.h"
+#include "../../platform.h"
 #include "../../perfmon.h"
 #include "../../prof.h"
 #include "../../settings.h"
@@ -26,10 +30,19 @@
 #include "shaders.h"
 #include "vram.h"
 #include "record.h"
+#include "vk13.h"
 #include "fsr_api.h"
+#include "xess.h"
 #include "../output_scale.h"
 #include "../renderer.h"
 #include "dlss.h"
+
+// SAVAGEWIND_VK_API12=1: the driver used as a Vulkan 1.2 one (api12_usable below)
+static int api12_forced(void) {  // (0: no, 1: yes, 2: and without dynamic rendering)
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("SAVAGEWIND_VK_API12"); on = e && *e && strcmp(e, "0") ? (e[0] == '2' ? 2 : 1) : 0; }
+    return on;
+}
 
 #ifdef _WIN32  // (kernel32; windows.h itself clashes with names used here)
 __declspec(dllimport) int __stdcall MoveFileExA(const char *from, const char *to, unsigned long flags);
@@ -99,6 +112,15 @@ static void create_instance(void) {
         for (uint32_t j = 0; j < n_ext; j++) duplicate |= !strcmp(ext[j], ngx_ext[i]);
         if (!duplicate) ext[n_ext++] = ngx_ext[i];
     }
+    // Intel XeSS's instance extensions, and its lowest Vulkan API version (xess.h; a no-op without libxess.dll)
+    const char *const *xess_iext = NULL;
+    uint32_t n_xess_iext = 0, xess_api = 0;
+    xess_required_instance_extensions(&xess_iext, &n_xess_iext, &xess_api);
+    for (uint32_t i = 0; i < n_xess_iext && n_ext < sizeof(ext) / sizeof(ext[0]); i++) {
+        bool duplicate = false;
+        for (uint32_t j = 0; j < n_ext; j++) duplicate |= !strcmp(ext[j], xess_iext[i]);
+        if (!duplicate) ext[n_ext++] = xess_iext[i];
+    }
     bool validate = getenv("SAVAGEWIND_VK_VALIDATION") != NULL;
     // (debugging) SAVAGEWIND_VK_ADDR_REPORT=<lo>-<hi> (hex GPU addresses): every bind and unbind of GPU memory in that
     // range ("[vkaddr]"), to name what a device fault's address was
@@ -117,8 +139,13 @@ static void create_instance(void) {
     snprintf(engine, sizeof engine, "Savage Wind %s", rt_version());
     VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .pApplicationName = "Savage Wind",
                              .applicationVersion = ver, .pEngineName = engine, .engineVersion = ver,
-                             .apiVersion = VK_API_VERSION_1_3};
+                             .apiVersion = api12_forced() ? VK_API_VERSION_1_2 : VK_API_VERSION_1_3};
     LOG("[vk] application version %u.%u.%u (Savage Wind %s)\n", vmaj, vmin, vpatch * 100 + vpre, rt_version());
+    if (xess_api > app.apiVersion) {  // (XeSS's lowest Vulkan API version, when libxess.dll is next to the game)
+        app.apiVersion = xess_api;
+        LOG("[vk] XeSS raises the application's Vulkan API version to %u.%u.%u\n", VK_API_VERSION_MAJOR(xess_api),
+            VK_API_VERSION_MINOR(xess_api), VK_API_VERSION_PATCH(xess_api));
+    }
     VkInstanceCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app,
                                .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext,
                                .enabledLayerCount = validate ? 1 : 0, .ppEnabledLayerNames = layers};
@@ -130,7 +157,7 @@ static void create_instance(void) {
         validate = false;
         r = vkCreateInstance(&ci, NULL, &g_vk.inst);
     }
-    if (r != VK_SUCCESS) FATAL("vkCreateInstance: %d (is a Vulkan 1.3 driver installed?)\n", r);
+    if (r != VK_SUCCESS) FATAL("vkCreateInstance: %d (no Vulkan driver answered)\n", r);
     if (validate || ar) {
         PFN_vkCreateDebugUtilsMessengerEXT f =
             (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(g_vk.inst, "vkCreateDebugUtilsMessengerEXT");
@@ -146,12 +173,74 @@ static void create_instance(void) {
     }
 }
 
+bool vk_api12(void) { return g_vk.api12; }  // (the C++ files: FSR 3 and frame generation stay off on a 1.2 driver)
+
 static bool has_ext(VkExtensionProperties *e, uint32_t n, const char *name) {
     for (uint32_t i = 0; i < n; i++) if (!strcmp(e[i].extensionName, name)) return true;
     return false;
 }
 
-// Discrete GPU first (SAVAGEWIND_GPU=<index> picks one), needs Vulkan 1.3 and a queue that can present.
+// A Vulkan 1.2 driver is taken when it has, as extensions, what the renderer uses of 1.3's core: dynamic rendering,
+// synchronization2 and the extended dynamic state (both). The commands then go through their KHR / EXT names
+// (vk13.h), the shaders are compiled to SPIR-V 1.5 (spirv.c), and the graphics pipeline libraries, FSR 3 and frame
+// generation stay off. Each extension missing is logged, so a report from such a card says what its driver lacks.
+// SAVAGEWIND_VK_API12=1: a 1.3 driver used that way (testing; with the validation layer, every use of 1.3's core is
+// reported). =2: and taken as one without dynamic rendering, to see the error a card with such a driver gets.
+// `why` gets what the driver lacks, for the error when no GPU is usable (pick_device).
+static void why_add(char *why, size_t cap, const char *fmt, ...) {
+    size_t l = strlen(why);
+    if (l + 1 >= cap) return;
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(why + l, cap - l, fmt, ap);
+    va_end(ap);
+}
+static const char *const k_api12_ext[] = {VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
+                                          VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME,
+                                          VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME};
+static bool api12_usable(VkPhysicalDevice pd, uint32_t index, char *why, size_t cap) {
+    uint32_t ne = 0;
+    vkEnumerateDeviceExtensionProperties(pd, NULL, &ne, NULL);
+    VkExtensionProperties *ep = calloc(ne ? ne : 1, sizeof *ep);
+    if (!ep) return false;
+    vkEnumerateDeviceExtensionProperties(pd, NULL, &ne, ep);
+    bool ok = true;
+    for (size_t i = 0; i < sizeof k_api12_ext / sizeof *k_api12_ext; i++)
+        if (!has_ext(ep, ne, k_api12_ext[i]) || (api12_forced() == 2 && !i)) {
+            LOG("[vk] gpu %u: a Vulkan 1.2 driver without %s\n", index, k_api12_ext[i]);
+            why_add(why, cap, "%s%s", ok ? "" : ", ", k_api12_ext[i]);
+            ok = false;
+        }
+    free(ep);
+    return ok;
+}
+
+Vk13 g_vk13;
+static void vk13_load(void) {
+    bool k = g_vk.api12;
+#define FN(field, core, old) \
+    g_vk13.field = (PFN_vk##core)vkGetDeviceProcAddr(g_vk.dev, k ? "vk" #old : "vk" #core); \
+    if (!g_vk13.field) FATAL("the Vulkan driver has no %s\n", k ? "vk" #old : "vk" #core);
+    FN(QueueSubmit2, QueueSubmit2, QueueSubmit2KHR)
+    FN(CmdBeginRendering, CmdBeginRendering, CmdBeginRenderingKHR)
+    FN(CmdEndRendering, CmdEndRendering, CmdEndRenderingKHR)
+    FN(CmdPipelineBarrier2, CmdPipelineBarrier2, CmdPipelineBarrier2KHR)
+    FN(CmdWriteTimestamp2, CmdWriteTimestamp2, CmdWriteTimestamp2KHR)
+    FN(CmdSetCullMode, CmdSetCullMode, CmdSetCullModeEXT)
+    FN(CmdSetFrontFace, CmdSetFrontFace, CmdSetFrontFaceEXT)
+    FN(CmdSetPrimitiveTopology, CmdSetPrimitiveTopology, CmdSetPrimitiveTopologyEXT)
+    FN(CmdSetDepthTestEnable, CmdSetDepthTestEnable, CmdSetDepthTestEnableEXT)
+    FN(CmdSetDepthWriteEnable, CmdSetDepthWriteEnable, CmdSetDepthWriteEnableEXT)
+    FN(CmdSetDepthCompareOp, CmdSetDepthCompareOp, CmdSetDepthCompareOpEXT)
+    FN(CmdSetStencilTestEnable, CmdSetStencilTestEnable, CmdSetStencilTestEnableEXT)
+    FN(CmdSetStencilOp, CmdSetStencilOp, CmdSetStencilOpEXT)
+    FN(CmdSetDepthBiasEnable, CmdSetDepthBiasEnable, CmdSetDepthBiasEnableEXT)
+    FN(CmdSetPrimitiveRestartEnable, CmdSetPrimitiveRestartEnable, CmdSetPrimitiveRestartEnableEXT)
+#undef FN
+}
+
+// Discrete GPU first (SAVAGEWIND_GPU=<index> picks one), needs Vulkan 1.3 (or 1.2 with the extensions above) and a
+// queue that can present.
 static void pick_device(void) {
     uint32_t n = 0;
     vkEnumeratePhysicalDevices(g_vk.inst, &n, NULL);
@@ -163,12 +252,24 @@ static void pick_device(void) {
     if (override && *override && want < 0 && strcmp(override, "auto"))
         LOG("[vk] invalid SAVAGEWIND_GPU '%s'; using automatic selection\n", override);
     int best = -1, best_score = -1;
+    char why[600] = "";  // (each GPU turned down and the reason: the error's text when none is usable)
     for (uint32_t i = 0; i < n; i++) {
         VkPhysicalDeviceProperties p;
         vkGetPhysicalDeviceProperties(pd[i], &p);
         LOG("[vk] gpu %u: %s (api %u.%u.%u)\n", i, p.deviceName, VK_API_VERSION_MAJOR(p.apiVersion),
             VK_API_VERSION_MINOR(p.apiVersion), VK_API_VERSION_PATCH(p.apiVersion));
-        if (p.apiVersion < VK_API_VERSION_1_3) continue;
+        if (p.apiVersion < VK_API_VERSION_1_2) {
+            why_add(why, sizeof why, " %s: its driver has Vulkan %u.%u, older than 1.2.", p.deviceName,
+                    VK_API_VERSION_MAJOR(p.apiVersion), VK_API_VERSION_MINOR(p.apiVersion));
+            continue;
+        }
+        if (p.apiVersion < VK_API_VERSION_1_3 || api12_forced()) {
+            char lacks[300] = "";
+            if (!api12_usable(pd[i], i, lacks, sizeof lacks)) {
+                why_add(why, sizeof why, " %s: its driver has Vulkan 1.2 without %s.", p.deviceName, lacks);
+                continue;
+            }
+        }
         // Check presentation before scoring: a headless adapter must not hide a usable GPU.
         uint32_t nq = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(pd[i], &nq, NULL);
@@ -183,18 +284,25 @@ static void pick_device(void) {
                 (qp[q].queueFlags & VK_QUEUE_COMPUTE_BIT)) usable = true;
         }
         free(qp);
-        if (!usable) continue;
+        if (!usable) {
+            why_add(why, sizeof why, " %s: it cannot draw to this window.", p.deviceName);
+            continue;
+        }
         int score = p.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 3 : p.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 2 : 1;
         if ((int)i == want) score = 100;
         if (score > best_score) { best_score = score; best = (int)i; }
     }
-    if (best < 0) FATAL("no Vulkan 1.3 device with a graphics+compute+present queue\n");
+    if (best < 0) FATAL("no usable GPU.%s\n", why);  // (the platform's error box explains what is needed)
     if (want >= 0 && best != want)
         LOG("[vk] requested GPU %d unavailable or unsuitable; falling back to GPU %d\n", want, best);
     LOG("[vk] selected GPU %d (%s)\n", best, best == want ? "requested" : "automatic");
     g_vk.phys = pd[best];
     free(pd);
     vkGetPhysicalDeviceProperties(g_vk.phys, &g_vk.props);
+    g_vk.api12 = g_vk.props.apiVersion < VK_API_VERSION_1_3 || api12_forced();
+    if (g_vk.api12)
+        LOG("[vk] a Vulkan 1.2 driver%s: 1.3's commands through their extensions, SPIR-V 1.5, no pipeline libraries, "
+            "no FSR 3\n", api12_forced() ? " (SAVAGEWIND_VK_API12)" : "");
     g_vk.is_mali = g_vk.props.vendorID == 0x13B5;  // (Arm)
 #ifdef _WIN32
     {   // sparse_heap = auto: only an Intel integrated GPU whose shared memory can't hold the whole guest heap
@@ -490,6 +598,12 @@ static void create_device(void) {
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
     VkExtensionProperties *ep = calloc(ne, sizeof *ep);
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
+    // Intel XeSS (vulkan/xess.h): its own device extensions (VK_EXT_mutable_descriptor_type, most often) and its
+    // feature chain, asked of the library so its version decides (its features are appended to the device's chain)
+    const char *const *xess_ext = NULL;
+    uint32_t n_xess_ext = 0;
+    void *xess_features = NULL;
+    bool xess_dev_reqs = xess_required_device_extensions(g_vk.inst, g_vk.phys, &xess_ext, &n_xess_ext, &xess_features);
     VkPhysicalDeviceFeatures2 sparse_features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &sparse_features);
     LOG("[vk] sparse buffer capability: sparseBinding %s, sparseResidencyBuffer %s, address space %llu MB\n",
@@ -523,6 +637,9 @@ static void create_device(void) {
     const char *ext[64];
     uint32_t n_ext = 0;
     ext[n_ext++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+    // (XeSS's device extensions: only where the library asked for them, and only those the driver has)
+    for (uint32_t i = 0; xess_dev_reqs && i < n_xess_ext && n_ext < sizeof ext / sizeof ext[0]; i++)
+        if (has_ext(ep, ne, xess_ext[i])) ext[n_ext++] = xess_ext[i];
 
     const char *memory_priority_env = getenv("SAVAGEWIND_VK_MEMORY_PRIORITY");
     bool request_memory_priority = memory_priority_env && !strcmp(memory_priority_env, "1");
@@ -609,6 +726,8 @@ static void create_device(void) {
     if (g_vk.host_import) ext[n_ext++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
     bool mem_budget = has_ext(ep, ne, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);  // what the OS grants (vram.c, exec.c's heap copy)
     if (mem_budget) ext[n_ext++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
+    g_vk.hdr_metadata = has_ext(ep, ne, VK_EXT_HDR_METADATA_EXTENSION_NAME);
+    if (g_vk.hdr_metadata) ext[n_ext++] = VK_EXT_HDR_METADATA_EXTENSION_NAME;  // peak / game nits (device.c hdr_metadata_send)
 #ifdef __linux__
     // the guest heap as GPU memory mapped at the heap's addresses (exec.c backend_heap_set)
     g_vk.dmabuf = has_ext(ep, ne, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME) && has_ext(ep, ne, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
@@ -738,7 +857,7 @@ static void create_device(void) {
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_PROPERTIES_EXT};
         VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &gp};
         vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
-        g_vk.gpl = gpl_have.graphicsPipelineLibrary && gp.graphicsPipelineLibraryFastLinking;
+        g_vk.gpl = !g_vk.api12 && gpl_have.graphicsPipelineLibrary && gp.graphicsPipelineLibraryFastLinking;
     }
     if (g_vk.gpl) {
         ext[n_ext++] = VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME;
@@ -776,7 +895,43 @@ static void create_device(void) {
     VkPhysicalDeviceVulkan12Features f12_have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &f13_have};
     VkPhysicalDeviceVulkan11Features f11_have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &f12_have};
     VkPhysicalDeviceFeatures2 have2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &f11_have};
+    // A 1.2 driver (g_vk.api12): the extensions' own feature structures in place of VkPhysicalDeviceVulkan13Features,
+    // asked here and turned on below; f13_have gets what they say, so the rest reads one structure either way.
+    VkPhysicalDeviceDynamicRenderingFeaturesKHR dr12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR,
+                                                        .pNext = f13_have.pNext};
+    VkPhysicalDeviceSynchronization2FeaturesKHR s212 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR,
+                                                        .pNext = &dr12};
+    VkPhysicalDeviceExtendedDynamicState2FeaturesEXT eds212 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT, .pNext = &s212};
+    VkPhysicalDeviceMaintenance4FeaturesKHR m412 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_FEATURES_KHR};
+    VkPhysicalDeviceShaderDemoteToHelperInvocationFeaturesEXT dm12 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DEMOTE_TO_HELPER_INVOCATION_FEATURES_EXT};
+    VkPhysicalDeviceShaderTerminateInvocationFeaturesKHR tm12 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_TERMINATE_INVOCATION_FEATURES_KHR};
+    void *head12 = &eds212;
+    bool m4_ext = false, dm_ext = false, tm_ext = false;
+    if (g_vk.api12) {
+        if ((m4_ext = has_ext(ep, ne, VK_KHR_MAINTENANCE_4_EXTENSION_NAME))) m412.pNext = head12, head12 = &m412;
+        if ((dm_ext = has_ext(ep, ne, VK_EXT_SHADER_DEMOTE_TO_HELPER_INVOCATION_EXTENSION_NAME))) dm12.pNext = head12, head12 = &dm12;
+        if ((tm_ext = has_ext(ep, ne, VK_KHR_SHADER_TERMINATE_INVOCATION_EXTENSION_NAME))) tm12.pNext = head12, head12 = &tm12;
+        f12_have.pNext = head12;
+    }
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &have2);
+    if (g_vk.api12) {
+        if (!dr12.dynamicRendering || !s212.synchronization2 || !eds212.extendedDynamicState2)
+            FATAL("the Vulkan 1.2 driver names dynamic rendering, synchronization2 and extended dynamic state 2 but has "
+                  "one of them off (%d %d %d)\n", dr12.dynamicRendering, s212.synchronization2, eds212.extendedDynamicState2);
+        f13_have.dynamicRendering = dr12.dynamicRendering;
+        f13_have.synchronization2 = s212.synchronization2;
+        f13_have.maintenance4 = m412.maintenance4;
+        f13_have.shaderDemoteToHelperInvocation = dm12.shaderDemoteToHelperInvocation;
+        f13_have.shaderTerminateInvocation = tm12.shaderTerminateInvocation;
+        for (size_t i = 0; i < sizeof k_api12_ext / sizeof *k_api12_ext; i++)
+            if (strcmp(k_api12_ext[i], VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME)) ext[n_ext++] = k_api12_ext[i];  // (that one: below)
+        if (m4_ext && m412.maintenance4) ext[n_ext++] = VK_KHR_MAINTENANCE_4_EXTENSION_NAME;
+        if (dm_ext && dm12.shaderDemoteToHelperInvocation) ext[n_ext++] = VK_EXT_SHADER_DEMOTE_TO_HELPER_INVOCATION_EXTENSION_NAME;
+        if (tm_ext && tm12.shaderTerminateInvocation) ext[n_ext++] = VK_KHR_SHADER_TERMINATE_INVOCATION_EXTENSION_NAME;
+    }
 #define WANT(have, name) (have.name ? VK_TRUE : (LOG("[vk] warning: the driver lacks " #name "\n"), VK_FALSE))
     if (fault && !ff_have.deviceFault) fault = g_fault_ext = false;
     if (g_vk.custom_border && !(cbc_have.customBorderColors && cbc_have.customBorderColorWithoutFormat)) {
@@ -826,6 +981,14 @@ static void create_device(void) {
     VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
                                             .storageBuffer16BitAccess = WANT(f11_have, storageBuffer16BitAccess),
                                             .uniformAndStorageBuffer16BitAccess = g_vk.fp16, .pNext = &f12};
+    if (g_vk.api12) {  // (the extensions' structures, holding what the driver has, in place of f13; f13's own chain after)
+        void *h12 = &eds212;
+        dr12.pNext = f13.pNext;
+        if (m4_ext && m412.maintenance4) m412.pNext = h12, h12 = &m412;
+        if (dm_ext && dm12.shaderDemoteToHelperInvocation) dm12.pNext = h12, h12 = &dm12;
+        if (tm_ext && tm12.shaderTerminateInvocation) tm12.pNext = h12, h12 = &tm12;
+        f12.pNext = h12;
+    }
 #undef WANT
     VkPhysicalDeviceFaultFeaturesEXT ff = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT, .deviceFault = VK_TRUE,
                                            .pNext = &f11};
@@ -860,6 +1023,15 @@ static void create_device(void) {
     VkPhysicalDeviceProvokingVertexFeaturesEXT pv_on = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT,
                                                          .provokingVertexLast = VK_TRUE, .pNext = next_feature};
     if (g_vk.provoking_last) next_feature = &pv_on;
+    // (Intel XeSS's feature chain last: the library patched its own structures onto it; its fields reach the device
+    // whichever end of the chain they hang on, but its pointer is only valid when the library asked for features)
+    if (xess_dev_reqs && xess_features) {
+        // (walk to the end of the library's chain and attach ours, so both are seen: ours is the chain head)
+        void *tail = xess_features;
+        for (VkBaseOutStructure *s = (VkBaseOutStructure *)tail; s->pNext; s = s->pNext) tail = s->pNext;
+        ((VkBaseOutStructure *)tail)->pNext = next_feature;
+        next_feature = xess_features;
+    }
     VkPhysicalDeviceFeatures2 f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = next_feature};
     VkPhysicalDeviceFeatures *b = &f.features, *h = &have.features;
     b->independentBlend = h->independentBlend;
@@ -1023,7 +1195,18 @@ static void create_device(void) {
                              .pQueueCreateInfos = &qi, .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext};
     VK_CHECK(vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.dev));
     free(ep);  // (read up to here: extended dynamic state and the FSR 4 checks above, #488)
+    vk13_load();
     fsr_api_probe(g_vk.dev, g_vk.phys);  // (logs what AMD's FSR DLLs offer this device; a no-op without them)
+    xess_probe(g_vk.inst, g_vk.dev, g_vk.phys);  // (makes the XeSS context where libxess.dll is next to the game)
+    if (g_settings.upscaler == UPSCALE_FSR4 && !fsr4_available()) {  // (a settings file from a PC with an AMD Radeon)
+        g_settings.upscaler = fsr3_available() && fsr3_upscaler_enabled() ? UPSCALE_FSR3 : UPSCALE_SPATIAL;
+        LOG("[fsr] FSR 4 is not offered on this GPU: upscaler %d instead\n", g_settings.upscaler);
+    }
+    if (g_settings.upscaler == UPSCALE_XESS && !xess_available()) {  // (a settings file from a PC with libxess.dll)
+        g_settings.upscaler = fsr3_available() && fsr3_upscaler_enabled() ? UPSCALE_FSR3 : UPSCALE_SPATIAL;
+        LOG("[xess] XeSS is not offered here (libxess.dll missing, or the GPU or driver can't run it): upscaler %d instead\n",
+            g_settings.upscaler);
+    }
     vkGetDeviceQueue(g_vk.dev, g_vk.qfam, 0, &g_vk.queue);
     g_vk.present_queue = g_vk.queue;
     if (qi.queueCount == 2) vkGetDeviceQueue(g_vk.dev, g_vk.qfam, 1, &g_vk.present_queue);
@@ -1045,7 +1228,7 @@ static void create_device(void) {
         override ? override : "unset", probe);
 
     VmaAllocatorCreateInfo ai = {.physicalDevice = g_vk.phys, .device = g_vk.dev, .instance = g_vk.inst,
-                                 .vulkanApiVersion = VK_API_VERSION_1_3};
+                                 .vulkanApiVersion = g_vk.api12 ? VK_API_VERSION_1_2 : VK_API_VERSION_1_3};
     VmaVulkanFunctions vfn;
     vram_allocator_setup(&ai, &vfn, mem_budget);
 #ifdef VK_EXT_memory_priority
@@ -1102,13 +1285,7 @@ static uint64_t pc_saved_at;
 static pthread_mutex_t pc_save_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool pc_off;
 
-static uint64_t data_hash(const void *p, size_t n) {
-    const uint8_t *b = p;
-    uint64_t h = 0xcbf29ce484222325ull ^ n;
-    for (; n >= 8; n -= 8, b += 8) { uint64_t w; memcpy(&w, b, 8); h = (h ^ w) * 0x9E3779B97F4A7C15ull; h ^= h >> 29; }
-    for (; n; n--, b++) h = (h ^ *b) * 0x100000001B3ull;
-    return h ^ (h >> 32);
-}
+static uint64_t data_hash(const void *p, size_t n) { return hash64(0xcbf29ce484222325ull ^ n, p, n); }
 
 static void pc_header(PcHeader *h) {
     memset(h, 0, sizeof *h);
@@ -1426,11 +1603,45 @@ static VkImage hdr_sc_images[8];      // the swapchain's own images while g_hdr
 static VkImageView hdr_sc_views[8];
 static VmaAllocation hdr_mem[8];      // g_vk.sc_images' memory while g_hdr
 static uint32_t hdr_count;
+// The game's float picture (linear, HUD included) for an HDR frame, and the passes that turn it into PQ code values on
+// the HDR10 swapchain. The game's 8-bit present image is still made (g_vk.sc_images): the overlay menu is drawn there
+// and composed after the picture; its white is the HUD/menu white (hdr_ui_nits).
+static VkImage hdr_game_images[8];
+static VkImageView hdr_game_views[8];
+static VmaAllocation hdr_game_mem[8];
+static uint32_t hdr_game_count;
+static VkSampler hdr_pres_sampler;
+static VkDescriptorSetLayout hdr_pres_dsl;
+static VkPipelineLayout hdr_pq_layout, hdr_ui_layout;
+static VkPipeline hdr_pq_pipe, hdr_ui_pipe;
+static VkFormat hdr_pres_fmt;
 static VkDescriptorSetLayout hdr_dsl;
 static VkPipelineLayout hdr_layout;
 static VkPipeline hdr_pipe;
 static VkDescriptorPool hdr_pool;
 static VkDescriptorSet hdr_sets[8];
+
+// The Windows HDR calibration profile read at startup, for the peak setting's description.
+#ifdef _WIN32
+static char g_hdr_icc_profile[256];
+static int g_hdr_icc_peak;
+static atomic_int g_hdr_icc_done;
+#endif
+const char *vk_hdr_icc_description(void) {
+#ifdef _WIN32
+    static char desc[512];
+    if (!atomic_load_explicit(&g_hdr_icc_done, memory_order_acquire))
+        return "Windows HDR calibration profile: not read yet.";
+    if (g_hdr_icc_peak >= 80 && g_hdr_icc_profile[0])
+        snprintf(desc, sizeof desc, "Windows HDR calibration profile: %s, %d nits.", g_hdr_icc_profile,
+                 g_hdr_icc_peak);
+    else
+        snprintf(desc, sizeof desc, "No Windows HDR calibration profile found; peak defaults to 1000 nits.");
+    return desc;
+#else
+    return "No Windows HDR calibration profile on this platform; set the peak manually.";
+#endif
+}
 
 // Video > HDR as it stands now: whether the swapchain should be HDR10, and SDR white's nits
 static bool hdr_wanted(float *white) {
@@ -1445,8 +1656,71 @@ static bool hdr_wanted(float *white) {
     // Windows 1.0 is the real lowest setting of the SDR content brightness slider.
     if (w <= 80) w = 0;
 #endif
-    *white = g_settings.hdr_white ? (float)g_settings.hdr_white : w >= 80 ? w : 200;
+#ifdef _WIN32
+    // Read the display's ICC peak once at startup. It is the first-run value of the peak setting (or 1000 nits if
+    // there is no profile) and is always shown in the setting's description.
+    static atomic_int icc_done;
+    if (!atomic_exchange_explicit(&icc_done, 1, memory_order_acq_rel)) {
+        void *hwnd = SDL_GetPointerProperty(p, SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+        char profile[256] = "";
+        int peak = plat_hdr_peak_nits(hwnd, profile, sizeof profile);
+        if (peak >= 80) {
+            g_hdr_icc_peak = peak;
+            snprintf(g_hdr_icc_profile, sizeof g_hdr_icc_profile, "%s", profile[0] ? profile : "unknown");
+            LOG("[hdr] Windows HDR calibration profile: \"%s\", %d nits\n", g_hdr_icc_profile, peak);
+        } else {
+            LOG("[hdr] no Windows HDR calibration profile found\n");
+        }
+        atomic_store_explicit(&g_hdr_icc_done, 1, memory_order_release);
+        if (g_settings.hdr_peak_nits <= 0) {  // (a fresh config, or an old 0 from before this was first filled)
+            g_settings.hdr_peak_nits = peak >= 80 ? peak : 1000;
+            settings_save();
+            LOG("[hdr] peak brightness set to %d nits (%s)\n", g_settings.hdr_peak_nits,
+                peak >= 80 ? "from the ICC profile" : "no ICC profile");
+        }
+        hdr_look_init_peak();  // (default preset slots: now that the peak is known, keep it in them)
+    }
+#endif
+    *white = g_settings.hdr_ui_nits >= 80 ? (float)g_settings.hdr_ui_nits
+             : g_settings.hdr_game_nits   ? (float)g_settings.hdr_game_nits
+             : g_settings.hdr_white       ? (float)g_settings.hdr_white
+                                          : w >= 80 ? w : 200;
     return on && g_cs_ext;
+}
+
+bool vk_hdr_game_enabled(void) { return g_hdr; }
+bool vk_hdr_targets_wanted(void) {  // (hdr.c: the final linear 10-bit image as RGBA16F)
+    static int off = -1;
+    if (off < 0) off = getenv("SAVAGEWIND_HDR_RT8") ? atoi(getenv("SAVAGEWIND_HDR_RT8")) != 0 : 0;  // (testing: the old 10-bit targets)
+    if (off || !window) return false;
+    float white;
+    return hdr_wanted(&white);  // (On, or Automatic while the display is in HDR; otherwise the SDR path is unchanged)
+}
+
+static void hdr_metadata_send(VkSwapchainKHR sc) {
+    if (!g_vk.hdr_metadata || !sc) return;
+    PFN_vkSetHdrMetadataEXT set = (PFN_vkSetHdrMetadataEXT)vkGetDeviceProcAddr(g_vk.dev, "vkSetHdrMetadataEXT");
+    if (!set) return;
+    float peak, game, ui;
+    vk_hdr_nits(&peak, &game, &ui);
+    VkHdrMetadataEXT m = {.sType = VK_STRUCTURE_TYPE_HDR_METADATA_EXT,
+                          .displayPrimaryRed = {0.708f, 0.292f}, .displayPrimaryGreen = {0.170f, 0.797f},
+                          .displayPrimaryBlue = {0.131f, 0.046f}, .whitePoint = {0.3127f, 0.3290f},
+                          .maxLuminance = peak, .minLuminance = 0.0f, .maxContentLightLevel = peak,
+                          .maxFrameAverageLightLevel = game};
+    set(g_vk.dev, 1, &sc, &m);
+}
+
+// Presets and the peak/game sliders are live, so the HDR metadata has to follow them: re-send it when the values
+// change (a display or compositor that honors MaxCLL would otherwise tone-map against the old peak).
+static void hdr_metadata_tick(VkSwapchainKHR sc) {
+    if (!g_vk.hdr_metadata || !sc) return;
+    static float last_peak = -1.0f, last_game = -1.0f;
+    float peak, game, ui;
+    vk_hdr_nits(&peak, &game, &ui);
+    if (peak == last_peak && game == last_game) return;
+    last_peak = peak, last_game = game;
+    hdr_metadata_send(sc);
 }
 
 static const char k_hdr_vs[] =
@@ -1527,7 +1801,11 @@ static void hdr_release(void) {
         vkDestroyImageView(g_vk.dev, hdr_sc_views[i], NULL);
         vmaDestroyImage(g_vk.vma, g_vk.sc_images[i], hdr_mem[i]);
     }
-    hdr_count = 0;
+    for (uint32_t i = 0; i < hdr_game_count; i++) {
+        vkDestroyImageView(g_vk.dev, hdr_game_views[i], NULL);
+        vmaDestroyImage(g_vk.vma, hdr_game_images[i], hdr_game_mem[i]);
+    }
+    hdr_count = hdr_game_count = 0;
 }
 
 static void hdr_make_images(uint32_t n, VkExtent2D ext) {
@@ -1544,8 +1822,20 @@ static void hdr_make_images(uint32_t n, VkExtent2D ext) {
                                          VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT};
         VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
         VK_CHECK(vmaCreateImage(g_vk.vma, &ci, &ai, &g_vk.sc_images[i], &hdr_mem[i], NULL));
+        // The game's float picture for an HDR frame: linear, at the window's size.
+        VkImageCreateInfo gi = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+                                .format = VK_FORMAT_R16G16B16A16_SFLOAT, .extent = {ext.width, ext.height, 1},
+                                .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
+                                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                         VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
+        VK_CHECK(vmaCreateImage(g_vk.vma, &gi, &ai, &hdr_game_images[i], &hdr_game_mem[i], NULL));
+        VkImageViewCreateInfo gv = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = hdr_game_images[i],
+                                    .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = VK_FORMAT_R16G16B16A16_SFLOAT,
+                                    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        VK_CHECK(vkCreateImageView(g_vk.dev, &gv, NULL, &hdr_game_views[i]));
     }
-    hdr_count = n;
+    hdr_count = hdr_game_count = n;
 }
 
 static void create_swapchain(void) {
@@ -1604,7 +1894,7 @@ static void create_swapchain(void) {
     g_vk.sc_count = 8;
     vkGetSwapchainImagesKHR(g_vk.dev, g_vk.swapchain, &g_vk.sc_count, g_vk.sc_images);
     g_hdr = hdr_found;
-    if (g_hdr) hdr_make_images(g_vk.sc_count, ext);
+    if (g_hdr) hdr_make_images(g_vk.sc_count, ext), hdr_metadata_send(g_vk.swapchain);
     for (uint32_t i = 0; i < g_vk.sc_count; i++) {
         VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = g_vk.sc_images[i],
                                     .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = draw.format,
@@ -1726,8 +2016,27 @@ static void *pt_waiter(void *arg) {
     }
 }
 
+// (testing) SAVAGEWIND_DEBUG_PRESENT_LIMIT=<fps>: each present held until 1/fps after the last one, inside the present
+// call, as an external frame limiter does (RivaTuner hooks vkQueuePresentKHR, Radeon Chill holds it in the driver):
+// the thread that presents waits there, not the game
+static void external_limiter(void) {
+    static double iv = -1;
+    static uint64_t next;
+    if (iv < 0) {
+        const char *e = getenv("SAVAGEWIND_DEBUG_PRESENT_LIMIT");
+        iv = e && atof(e) > 0 ? 1e9 / atof(e) : 0;
+        if (iv > 0) LOG("[vk] presents held to %.1f fps inside the present (an external limiter, testing)\n", 1e9 / iv);
+    }
+    if (iv <= 0) return;
+    uint64_t now = SDL_GetTicksNS();
+    if (next > now) SDL_DelayPrecise(next - now), now = next;
+    next = next && now - next < (uint64_t)iv ? next + (uint64_t)iv : now + (uint64_t)iv;
+}
+
 // vkQueuePresentKHR, timed and given a present id for the waiter when SAVAGEWIND_LOG_PRESENT asks
 static VkResult queue_present(VkQueue q, const VkPresentInfoKHR *info) {
+    external_limiter();
+    if (info->swapchainCount > 0 && info->pSwapchains) hdr_metadata_tick(info->pSwapchains[0]);
     if (pt_every < 0) {
         const char *e = getenv("SAVAGEWIND_LOG_PRESENT");
         pt_every = e ? atoi(e) : 0;
@@ -1787,6 +2096,7 @@ static void recreate_swapchain(void) {
 // one frame at a time otherwise, as before); a swapchain change and teardown wait for them all.
 // Only with SAVAGEWIND_VK_PRESENT_THREAD=1 now (create_device: one queue by default, #36, #293); otherwise presents on
 // the calling thread.
+pthread_mutex_t g_vk_queue_lock = PTHREAD_MUTEX_INITIALIZER;  // (vk.h)
 static pthread_mutex_t pres_m = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t pres_cv = PTHREAD_COND_INITIALIZER;
 static pthread_mutex_t sc_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -1845,7 +2155,9 @@ static void *present_thread(void *arg) {
                                .swapchainCount = 1, .pSwapchains = &q.sc, .pImageIndices = &q.img};
         pthread_mutex_lock(&sc_lock);
         uint64_t tq = SDL_GetTicksNS();
+        pthread_mutex_lock(&g_vk_queue_lock);  // (one queue: the recorder submits on it meanwhile)
         VkResult r = queue_present(g_vk.present_queue, &pi);
+        pthread_mutex_unlock(&g_vk_queue_lock);
         tq = SDL_GetTicksNS() - tq;
         pthread_mutex_unlock(&sc_lock);
         if (tq > 200000000ull) {  // (#224: a present the driver held on to)
@@ -1869,6 +2181,25 @@ static bool present_threaded(void) {
         on = g_vk.present_queue != g_vk.queue && !(e && !strcmp(e, "0"));
         if (on) { pthread_t t; pthread_create(&t, NULL, present_thread, NULL); }
         LOG("[vk] presents on %s\n", on ? "a thread of their own (second queue)" : "the calling thread");
+    }
+    return on;
+}
+
+// Frame generation's pair with one queue (the default): each of the two is presented once the GPU has drawn it, the
+// game's frame half an interval after the generated one (present_wait_turn). The translating thread did those waits
+// itself: it stood still for the GPU's whole frame and then for half the interval it had just made longer, so the game
+// drew at a quarter of its rate with the GPU half idle (RTX 3060, 1440p, no frame limit, Great Plateau: 101 fps
+// without frame generation, 47 presented with it). The present thread makes them instead, on the same queue
+// (g_vk_queue_lock), and the translating thread goes on to the next frame; present_wait_room still holds it at two
+// pairs ahead. Plain presents stay with the recorder, except while the thread still has some to make (their order).
+// SAVAGEWIND_VK_FG_PACER=0: on the calling thread, as before.
+static bool fg_pacer(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("SAVAGEWIND_VK_FG_PACER");
+        on = !(e && !strcmp(e, "0"));
+        if (on) { pthread_t t; pthread_create(&t, NULL, present_thread, NULL); }
+        LOG("[vk] frame generation's presents made by %s\n", on ? "the present thread, on the game's queue" : "the calling thread");
     }
     return on;
 }
@@ -1949,7 +2280,9 @@ static void rec_present_run(void *arg) {
     VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &q->sem,
                            .swapchainCount = 1, .pSwapchains = &q->sc, .pImageIndices = &q->img};
     pthread_mutex_lock(&sc_lock);
+    pthread_mutex_lock(&g_vk_queue_lock);
     VkResult r = queue_present(g_vk.queue, &pi);
+    pthread_mutex_unlock(&g_vk_queue_lock);
     pthread_mutex_unlock(&sc_lock);
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) atomic_store(&rec_present_stale, 1);
 }
@@ -1966,18 +2299,27 @@ static bool present_on_recorder(void) {
 // Present window image img once sem is signalled (kind, seq: frame generation's pair and the frame's submission, see
 // present_wait_turn). Returns false when the swapchain must be made again.
 static bool present_image(uint32_t img, VkSemaphore sem, int kind, uint64_t seq) {
-    if (!present_threaded() && kind == PRES_PLAIN && present_on_recorder()) {
+    bool threaded = present_threaded();
+    if (!threaded) {
+        pthread_mutex_lock(&pres_m);
+        bool queued = presq_n != 0;
+        pthread_mutex_unlock(&pres_m);
+        threaded = (kind != PRES_PLAIN || queued) && fg_pacer();
+    }
+    if (!threaded && kind == PRES_PLAIN && present_on_recorder()) {
         __typeof__(recp[0]) *q = &recp[recp_n++ % RECP_N];
         *q = (__typeof__(recp[0])){g_vk.swapchain, sem, img};
         rec_custom(rec_present_run, q);
         return !atomic_exchange(&rec_present_stale, 0);
     }
-    if (!present_threaded()) {
+    if (!threaded) {
         VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &sem,
                                .swapchainCount = 1, .pSwapchains = &g_vk.swapchain, .pImageIndices = &img};
         rec_wait_submitted(seq);  // (as present_thread)
         present_wait_turn(kind, seq);
+        pthread_mutex_lock(&g_vk_queue_lock);
         VkResult r = queue_present(g_vk.queue, &pi);
+        pthread_mutex_unlock(&g_vk_queue_lock);
         return !(r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR);
     }
     pthread_mutex_lock(&pres_m);
@@ -2032,7 +2374,10 @@ static void hdr_write(VkCommandBuffer cb, uint32_t i) {
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, hdr_layout, 0, 1, &hdr_sets[i], 0, NULL);
     static int srgb = -1;
     if (srgb < 0) srgb = getenv("SAVAGEWIND_HDR_SRGB") != NULL;
-    float pc[2] = {g_hdr_white, (float)srgb};
+    float peak;
+    { float g, u; vk_hdr_nits(&peak, &g, &u); }
+    float white = g_hdr_white < peak ? g_hdr_white : peak;  // (the peak caps this fallback path too)
+    float pc[2] = {white, (float)srgb};
     rec_CmdPushConstants(cb, hdr_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, pc);
     rec_CmdDraw(cb, 3, 1, 0, 0);
     rec_CmdEndRendering(cb);
@@ -2040,14 +2385,232 @@ static void hdr_write(VkCommandBuffer cb, uint32_t i) {
     image_barrier(cb, hdr_sc_images[i], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 }
 
+// ---- HDR present: the game's float picture (linear, HUD included) and the overlay menu onto the HDR10 swapchain.
+// The picture goes to PQ code values in Rec. 2020 at the HUD/menu white (pc.p.z; the tonemap's output is already scaled
+// so 1.0 is the HUD's white); the menu, drawn sRGB-encoded into g_vk.sc_images, is decoded and put at that white,
+// then blended over it with its coverage. pc.p.w is the peak: the final signal (scene, flashes, particles and menu) is
+// clamped to it, so no element can exceed the display's peak. The menu is drawn into an 8-bit image of its own, so
+// ImGui keeps its normal sRGB pipelines.
+static const char k_hdr_present_vs[] =
+    "#version 450\n"
+    "void main() {\n"
+    "  vec2 p = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);\n"
+    "  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);\n"
+    "}\n";
+static const char k_hdr_pq_fs[] =
+    "#version 450\n"
+    "layout(set = 0, binding = 0) uniform sampler2D src;\n"
+    "layout(push_constant) uniform P { vec4 p; } pc;\n"
+    "layout(location = 0) out vec4 o;\n"
+    "vec3 pq(vec3 nits) {\n"
+    "  const float m1 = 0.1593017578125, m2 = 78.84375, c1 = 0.8359375, c2 = 18.8515625, c3 = 18.6875;\n"
+    "  vec3 y = pow(clamp(nits / 10000.0, 0.0, 1.0), vec3(m1));\n"
+    "  return pow((c1 + c2 * y) / (1.0 + c3 * y), vec3(m2));\n"
+    "}\n"
+    "void main() {\n"
+    "  vec3 c = max(texelFetch(src, ivec2(gl_FragCoord.xy), 0).rgb, vec3(0.0));\n"
+    "  const mat3 to2020 = mat3(0.6274, 0.0691, 0.0164, 0.3293, 0.9195, 0.0880, 0.0433, 0.0114, 0.8956);\n"
+    "  vec3 nits = to2020 * c * pc.p.z;\n"
+    "  if (pc.p.w > 0.0) nits = min(nits, vec3(pc.p.w));\n"
+    "  o = vec4(pq(nits), 1.0);\n"
+    "}\n";
+static const char k_hdr_ui_fs[] =
+    "#version 450\n"
+    "layout(set = 0, binding = 0) uniform sampler2D ui;\n"
+    "layout(push_constant) uniform P { vec4 p; } pc;\n"
+    "layout(location = 0) out vec4 o;\n"
+    "vec3 srgb_decode(vec3 c) {\n"
+    "  return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), greaterThan(c, vec3(0.04045)));\n"
+    "}\n"
+    "vec3 pq(vec3 nits) {\n"
+    "  const float m1 = 0.1593017578125, m2 = 78.84375, c1 = 0.8359375, c2 = 18.8515625, c3 = 18.6875;\n"
+    "  vec3 y = pow(clamp(nits / 10000.0, 0.0, 1.0), vec3(m1));\n"
+    "  return pow((c1 + c2 * y) / (1.0 + c3 * y), vec3(m2));\n"
+    "}\n"
+    "void main() {\n"
+    "  vec4 u = texelFetch(ui, ivec2(gl_FragCoord.xy), 0);\n"
+    "  if (u.a <= 0.0) discard;\n"
+    "  vec3 c = srgb_decode(clamp(u.rgb / u.a, 0.0, 1.0));\n"
+    "  const mat3 to2020 = mat3(0.6274, 0.0691, 0.0164, 0.3293, 0.9195, 0.0880, 0.0433, 0.0114, 0.8956);\n"
+    "  vec3 nits = max(to2020 * c, vec3(0.0)) * pc.p.z;\n"
+    "  if (pc.p.w > 0.0) nits = min(nits, vec3(pc.p.w));\n"
+    "  o = vec4(pq(nits), u.a);\n"
+    "}\n";
+
+static VkPipeline hdr_fullscreen_pipe(const char *fs, bool blend) {
+    VkShaderModule vs = vk_compile_glsl(k_hdr_present_vs, STAGE_VERTEX, "hdr_present.vert");
+    VkShaderModule fm = vk_compile_glsl(fs, STAGE_FRAGMENT, "hdr_present.frag");
+    if (!vs || !fm) {
+        if (vs) vkDestroyShaderModule(g_vk.dev, vs, NULL);
+        if (fm) vkDestroyShaderModule(g_vk.dev, fm, NULL);
+        return VK_NULL_HANDLE;
+    }
+    VkPipelineShaderStageCreateInfo st[2] = {
+        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vs, .pName = "main"},
+        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fm, .pName = "main"}};
+    VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    VkPipelineInputAssemblyStateCreateInfo ia = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+                                                 .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+    VkPipelineViewportStateCreateInfo vp = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1,
+                                            .scissorCount = 1};
+    VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+                                                 .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE, .lineWidth = 1};
+    VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+                                               .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+    VkPipelineColorBlendAttachmentState ba = {.colorWriteMask = 0xF};
+    if (blend) {
+        ba.blendEnable = VK_TRUE;
+        ba.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        ba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        ba.colorBlendOp = VK_BLEND_OP_ADD;
+        ba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        ba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        ba.alphaBlendOp = VK_BLEND_OP_ADD;
+    }
+    VkPipelineColorBlendStateCreateInfo cb = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+                                              .attachmentCount = 1, .pAttachments = &ba};
+    VkDynamicState dyn[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo ds = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+                                           .dynamicStateCount = 2, .pDynamicStates = dyn};
+    VkPipelineRenderingCreateInfo ri = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+                                        .colorAttachmentCount = 1, .pColorAttachmentFormats = &hdr_format};
+    VkPipelineDepthStencilStateCreateInfo dss = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    VkPipelineLayout layout = blend ? hdr_ui_layout : hdr_pq_layout;
+    VkGraphicsPipelineCreateInfo gi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &ri, .stageCount = 2,
+                                       .pStages = st, .pVertexInputState = &vi, .pInputAssemblyState = &ia, .pViewportState = &vp,
+                                       .pRasterizationState = &rs, .pMultisampleState = &ms, .pDepthStencilState = &dss,
+                                       .pColorBlendState = &cb, .pDynamicState = &ds, .layout = layout};
+    VkPipeline p = VK_NULL_HANDLE;
+    if (vkCreateGraphicsPipelines(g_vk.dev, VK_NULL_HANDLE, 1, &gi, NULL, &p) != VK_SUCCESS) p = VK_NULL_HANDLE;
+    vkDestroyShaderModule(g_vk.dev, vs, NULL);
+    vkDestroyShaderModule(g_vk.dev, fm, NULL);
+    return p;
+}
+
+static void hdr_present_release(void) {
+    if (hdr_pq_pipe) vkDestroyPipeline(g_vk.dev, hdr_pq_pipe, NULL), hdr_pq_pipe = VK_NULL_HANDLE;
+    if (hdr_ui_pipe) vkDestroyPipeline(g_vk.dev, hdr_ui_pipe, NULL), hdr_ui_pipe = VK_NULL_HANDLE;
+    if (hdr_pq_layout) vkDestroyPipelineLayout(g_vk.dev, hdr_pq_layout, NULL), hdr_pq_layout = VK_NULL_HANDLE;
+    if (hdr_ui_layout) vkDestroyPipelineLayout(g_vk.dev, hdr_ui_layout, NULL), hdr_ui_layout = VK_NULL_HANDLE;
+    if (hdr_pres_dsl) vkDestroyDescriptorSetLayout(g_vk.dev, hdr_pres_dsl, NULL), hdr_pres_dsl = VK_NULL_HANDLE;
+    if (hdr_pres_sampler) vkDestroySampler(g_vk.dev, hdr_pres_sampler, NULL), hdr_pres_sampler = VK_NULL_HANDLE;
+    hdr_pres_fmt = VK_FORMAT_UNDEFINED;
+}
+
+static bool hdr_present_init(void) {
+    if (hdr_pq_pipe && hdr_pres_fmt == hdr_format) return true;
+    hdr_present_release();
+    VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = VK_FILTER_NEAREST,
+                              .minFilter = VK_FILTER_NEAREST, .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+                              .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                              .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                              .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .maxLod = 0};
+    VkDescriptorSetLayoutBinding b = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL};
+    VkDescriptorSetLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1,
+                                          .pBindings = &b};
+    VkPushConstantRange pr = {VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16};
+    VkPipelineLayoutCreateInfo pl = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1,
+                                     .pSetLayouts = &hdr_pres_dsl, .pushConstantRangeCount = 1, .pPushConstantRanges = &pr};
+    if (vkCreateSampler(g_vk.dev, &si, NULL, &hdr_pres_sampler) != VK_SUCCESS ||
+        vkCreateDescriptorSetLayout(g_vk.dev, &li, NULL, &hdr_pres_dsl) != VK_SUCCESS) {
+        LOG("[vk] HDR present resources unavailable; the picture goes out unconverted\n");
+        hdr_present_release();
+        return false;
+    }
+    VkPipelineLayoutCreateInfo plq = pl, plu = pl;
+    if (vkCreatePipelineLayout(g_vk.dev, &plq, NULL, &hdr_pq_layout) != VK_SUCCESS) hdr_pq_layout = VK_NULL_HANDLE;
+    plu.pSetLayouts = &hdr_pres_dsl;
+    if (vkCreatePipelineLayout(g_vk.dev, &plu, NULL, &hdr_ui_layout) != VK_SUCCESS) hdr_ui_layout = VK_NULL_HANDLE;
+    if (hdr_pq_layout) hdr_pq_pipe = hdr_fullscreen_pipe(k_hdr_pq_fs, false);
+    if (hdr_ui_layout) hdr_ui_pipe = hdr_fullscreen_pipe(k_hdr_ui_fs, true);
+    if (!hdr_pq_pipe || !hdr_ui_pipe) {
+        LOG("[vk] HDR present passes unavailable; the picture goes out unconverted\n");
+        hdr_present_release();
+        return false;
+    }
+    hdr_pres_fmt = hdr_format;
+    return true;
+}
+
+// After the game's frame, the float picture in hdr_game_images[i] into the HDR10 swapchain. menu: g_vk.sc_images[i]
+// holds the overlay menu (premultiplied sRGB over a clear 0) and is blended on at the UI white.
+static void hdr_game_write(VkCommandBuffer cb, uint32_t i, bool menu) {
+    if (!hdr_present_init()) {
+        image_barrier(cb, hdr_sc_images[i], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+        return;
+    }
+    image_barrier(cb, hdr_game_images[i], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    if (menu) image_barrier(cb, g_vk.sc_images[i], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    image_barrier(cb, hdr_sc_images[i], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    VkRenderingAttachmentInfo ca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = hdr_sc_views[i],
+                                    .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                    .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+    VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, g_vk.sc_extent}, .layerCount = 1,
+                          .colorAttachmentCount = 1, .pColorAttachments = &ca};
+    rec_CmdBeginRendering(cb, &ri);
+    VkViewport vp = {0, 0, (float)g_vk.sc_extent.width, (float)g_vk.sc_extent.height, 0, 1};
+    VkRect2D sc = {{0, 0}, g_vk.sc_extent};
+    rec_CmdSetViewport(cb, 0, 1, &vp);
+    rec_CmdSetScissor(cb, 0, 1, &sc);
+    float nits[4];
+    vk_hdr_nits(&nits[0], &nits[1], &nits[2]);  // peak, game white, UI white: .z scale, .w final cap
+    nits[3] = nits[0];  // the display peak is the final cap for every element: scene, flashes, particles, menu
+    static int logged;
+    if (!logged++) LOG("[hdr] present: paper white %.0f nits, peak %.0f nits (final cap)\n", nits[2], nits[0]);
+    VkDescriptorSet ds = vk_alloc_set(hdr_pres_dsl);
+    VkDescriptorImageInfo ii = {hdr_pres_sampler, hdr_game_views[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 0,
+                              .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                              .pImageInfo = &ii};
+    rec_UpdateDescriptorSets(1, &w);
+    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, hdr_pq_pipe);
+    vk_dyn_forget();
+    rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, hdr_pq_layout, 0, 1, &ds, 0, NULL);
+    rec_CmdPushConstants(cb, hdr_pq_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof nits, nits);
+    rec_CmdDraw(cb, 3, 1, 0, 0);
+    if (menu) {
+        ds = vk_alloc_set(hdr_pres_dsl);
+        VkDescriptorImageInfo mi = {hdr_pres_sampler, g_vk.sc_views[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkWriteDescriptorSet mw = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 0,
+                                   .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                   .pImageInfo = &mi};
+        rec_UpdateDescriptorSets(1, &mw);
+        rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, hdr_ui_pipe);
+        rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, hdr_ui_layout, 0, 1, &ds, 0, NULL);
+        rec_CmdPushConstants(cb, hdr_ui_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof nits, nits);
+        rec_CmdDraw(cb, 3, 1, 0, 0);
+    }
+    rec_CmdEndRendering(cb);
+    vk_dyn_forget();
+    image_barrier(cb, hdr_sc_images[i], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+}
+
 uint64_t g_present_split[6];  // (VK_PROF) acquire, end pass, draw + menu, submit, present, slot wait
-typedef struct { uint32_t image; VkSemaphore acquired; bool ok; } Frame;
+typedef struct { uint32_t image; VkSemaphore acquired; bool ok; bool hdr_game, menu; } Frame;
 static Frame cur_frame;
 
-// Acquire the next window image and begin rendering into it (cleared to `clear`). Returns false when there is
-// nothing to draw into (minimised window).
-bool vk_frame_begin(const float clear[4]) {
+// The image the frame is drawn into: the game's float picture for an HDR frame, else the 8-bit window image (game
+// frames without a float source: menus, movies, the start screen; it is also where the overlay menu is drawn).
+static VkImage frame_image(void) {
+    return cur_frame.hdr_game ? hdr_game_images[cur_frame.image] : g_vk.sc_images[cur_frame.image];
+}
+static VkImageView frame_view(void) {
+    return cur_frame.hdr_game ? hdr_game_views[cur_frame.image] : g_vk.sc_views[cur_frame.image];
+}
+static VkFormat frame_format(void) {
+    return cur_frame.hdr_game ? VK_FORMAT_R16G16B16A16_SFLOAT : g_vk.sc_format;
+}
+VkFormat vk_frame_format(void) { return frame_format(); }
+bool vk_frame_hdr(void) { return cur_frame.hdr_game; }
+
+// Acquire the next window image and begin rendering into it (cleared to `clear`). hdr_game: the caller has the game's
+// float picture (hdr.c) and draws it into RGBA16F. Returns false when there is nothing to draw into (minimised window).
+static bool frame_begin(const float clear[4], bool hdr_game) {
     cur_frame.ok = false;
+    cur_frame.hdr_game = false;
+    cur_frame.menu = false;
     int w, h;
     SDL_GetWindowSizeInPixels(window, &w, &h);
     // minimised (Windows keeps the window's size then, but its surface is 0 x 0: every acquire was out of date)
@@ -2094,14 +2657,15 @@ bool vk_frame_begin(const float clear[4]) {
         return false;
     }
     cur_frame.acquired = acquire_sem[slot];
+    cur_frame.hdr_game = hdr_game && g_hdr && cur_frame.image < hdr_game_count;
     slot_seq[slot] = vk_pending_seq();
     VkCommandBuffer cb = vk_cmd();
     // The window pass reads the game's image, written by an earlier submission's passes: only the full barrier that
     // ends an upload command buffer made those writes visible, when this submission had uploads (validation:
     // READ_AFTER_WRITE on the present draw once the recorder thread changed when they come)
     vk_full_barrier(cb);
-    image_barrier(cb, g_vk.sc_images[cur_frame.image], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-    VkRenderingAttachmentInfo ca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = g_vk.sc_views[cur_frame.image],
+    image_barrier(cb, frame_image(), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    VkRenderingAttachmentInfo ca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = frame_view(),
                                     .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                                     .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
                                     .clearValue.color.float32 = {clear[0], clear[1], clear[2], clear[3]}};
@@ -2117,6 +2681,8 @@ bool vk_frame_begin(const float clear[4]) {
     return true;
 }
 
+bool vk_frame_begin(const float clear[4]) { return frame_begin(clear, false); }
+
 // Passes of their own between vk_frame_begin and vk_frame_end (exec.c post passes): end the window image's
 // rendering, and begin it again keeping what was drawn.
 void vk_frame_suspend(void) {
@@ -2125,7 +2691,7 @@ void vk_frame_suspend(void) {
 void vk_frame_resume(void) {
     if (!cur_frame.ok) return;
     VkCommandBuffer cb = vk_cmd();
-    VkRenderingAttachmentInfo ca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = g_vk.sc_views[cur_frame.image],
+    VkRenderingAttachmentInfo ca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = frame_view(),
                                     .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                                     .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, g_vk.sc_extent}, .layerCount = 1,
@@ -2138,6 +2704,29 @@ void vk_frame_resume(void) {
     vk_dyn_forget();
 }
 
+// The overlay menu into the 8-bit window image while the game's float picture is in hdr_game (it is composed after
+// the PQ encode at the HUD's white, so the menu keeps its colours).
+static void frame_menu_begin(VkCommandBuffer cb) {
+    if (!cur_frame.ok || !cur_frame.hdr_game) return;
+    rec_CmdEndRendering(cb);
+    image_barrier(cb, g_vk.sc_images[cur_frame.image], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    const float zero[4] = {0, 0, 0, 0};
+    VkRenderingAttachmentInfo ca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                    .imageView = g_vk.sc_views[cur_frame.image],
+                                    .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                    .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                    .clearValue.color.float32 = {zero[0], zero[1], zero[2], zero[3]}};
+    VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, g_vk.sc_extent}, .layerCount = 1,
+                          .colorAttachmentCount = 1, .pColorAttachments = &ca};
+    rec_CmdBeginRendering(cb, &ri);
+    VkViewport vp = {0, 0, (float)g_vk.sc_extent.width, (float)g_vk.sc_extent.height, 0, 1};
+    VkRect2D sc = {{0, 0}, g_vk.sc_extent};
+    rec_CmdSetViewport(cb, 0, 1, &vp);
+    rec_CmdSetScissor(cb, 0, 1, &sc);
+    vk_dyn_forget();
+    cur_frame.menu = true;
+}
+
 VkExtent2D vk_frame_extent(void) { return g_vk.sc_extent; }
 void *vk_frame_cmd(void) {  // (the start screen's ImGui records into it itself: what was queued before goes first)
     VkCommandBuffer cb = vk_cmd();
@@ -2148,11 +2737,25 @@ void *vk_frame_cmd(void) {  // (the start screen's ImGui records into it itself:
 static void save_window_image(VkCommandBuffer cb, VkSpan *out) {
     uint32_t w = g_vk.sc_extent.width, h = g_vk.sc_extent.height;
     *out = vk_readback((uint64_t)w * h * 4);
-    image_barrier(cb, g_vk.sc_images[cur_frame.image], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    image_barrier(cb, frame_image(), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     VkBufferImageCopy rg = {.bufferOffset = out->off, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                             .imageExtent = {w, h, 1}};
-    rec_CmdCopyImageToBuffer(cb, g_vk.sc_images[cur_frame.image], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, out->buf, 1, &rg);
-    image_barrier(cb, g_vk.sc_images[cur_frame.image], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    rec_CmdCopyImageToBuffer(cb, frame_image(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, out->buf, 1, &rg);
+    image_barrier(cb, frame_image(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+}
+
+// The HDR game picture is RGBA16F: 8 bytes a pixel, converted to sRGB for the PNG (linear 1.0 is white) when the
+// submission has completed.
+static void save_hdr_game_image(VkCommandBuffer cb, VkSpan *out) {
+    uint32_t w = g_vk.sc_extent.width, h = g_vk.sc_extent.height;
+    *out = vk_readback((uint64_t)w * h * 8);
+    image_barrier(cb, hdr_game_images[cur_frame.image], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    VkBufferImageCopy rg = {.bufferOffset = out->off, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                            .imageExtent = {w, h, 1}};
+    rec_CmdCopyImageToBuffer(cb, hdr_game_images[cur_frame.image], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, out->buf, 1, &rg);
+    image_barrier(cb, hdr_game_images[cur_frame.image], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 }
 
 // End rendering into the window image and present it. shot_path: also save the window image as PNG.
@@ -2160,10 +2763,15 @@ static int frame_kind;  // (frame generation: PRES_GEN / PRES_AFTER_GEN for the 
 void vk_frame_end(const char *shot_path) {
     if (!cur_frame.ok) return;
     VkCommandBuffer cb = vk_cmd();
+    bool hdr_game = cur_frame.hdr_game;
     rec_CmdEndRendering(cb);
     VkSpan shot = {0};
-    if (shot_path) save_window_image(cb, &shot);
-    if (g_hdr) hdr_write(cb, cur_frame.image);
+    if (shot_path) {
+        if (hdr_game) save_hdr_game_image(cb, &shot);
+        else save_window_image(cb, &shot);
+    }
+    if (hdr_game) hdr_game_write(cb, cur_frame.image, cur_frame.menu);
+    else if (g_hdr) hdr_write(cb, cur_frame.image);
     else image_barrier(cb, g_vk.sc_images[cur_frame.image], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     uint32_t img = cur_frame.image;
     if (!done_sem[img]) done_sem[img] = binary_semaphore();
@@ -2178,14 +2786,37 @@ void vk_frame_end(const char *shot_path) {
     frame_kind = PRES_PLAIN;
     g_present_split[4] += SDL_GetTicksNS() - ts;
     cur_frame.ok = false;
+    cur_frame.menu = false;
+    cur_frame.hdr_game = false;
     if (shot_path) {
         vk_wait_seq(seq);
         uint32_t w = g_vk.sc_extent.width, h = g_vk.sc_extent.height;
-        uint8_t *px = shot.ptr;
-        bool bgr = g_vk.sc_format == VK_FORMAT_B8G8R8A8_UNORM || g_vk.sc_format == VK_FORMAT_B8G8R8A8_SRGB;
-        for (uint64_t i = 0; bgr && i < (uint64_t)w * h; i++) { uint8_t t = px[i * 4]; px[i * 4] = px[i * 4 + 2]; px[i * 4 + 2] = t; }
-        for (uint64_t i = 0; i < (uint64_t)w * h; i++) px[i * 4 + 3] = 255;
-        vk_save_png(shot_path, px, w, h);
+        if (hdr_game) {
+            _Float16 *hp = shot.ptr;
+            uint8_t *px = shot.ptr;
+            float mx = 0.0f;
+            double sum = 0.0;
+            for (uint64_t i = 0; i < (uint64_t)w * h; i++)
+                for (int c = 0; c < 3; c++) {
+                    float l = (float)hp[i * 4 + c];
+                    if (!(l > 0.0f)) l = 0.0f;
+                    if (l > mx) mx = l;
+                    sum += l;
+                    float s = l <= 0.0031308f ? 12.92f * l : 1.055f * powf(l, 1.0f / 2.4f) - 0.055f;
+                    if (s > 1.0f) s = 1.0f;
+                    px[i * 4 + c] = (uint8_t)(s * 255.0f + 0.5f);
+                }
+            LOG("[hdr] float picture: max %.3f (%.0f nits), mean %.3f (%.0f nits)\n", mx, mx * g_hdr_white,
+                (float)(sum / ((double)w * h * 3)), (float)(sum / ((double)w * h * 3)) * g_hdr_white);
+            for (uint64_t i = 0; i < (uint64_t)w * h; i++) px[i * 4 + 3] = 255;
+            vk_save_png(shot_path, px, w, h);
+        } else {
+            uint8_t *px = shot.ptr;
+            bool bgr = g_vk.sc_format == VK_FORMAT_B8G8R8A8_UNORM || g_vk.sc_format == VK_FORMAT_B8G8R8A8_SRGB;
+            for (uint64_t i = 0; bgr && i < (uint64_t)w * h; i++) { uint8_t t = px[i * 4]; px[i * 4] = px[i * 4 + 2]; px[i * 4 + 2] = t; }
+            for (uint64_t i = 0; i < (uint64_t)w * h; i++) px[i * 4 + 3] = 255;
+            vk_save_png(shot_path, px, w, h);
+        }
     }
 }
 
@@ -2278,7 +2909,24 @@ static void write_runtime_profile(void) {
 
 static char fg_real_shot[256];  // (SAVAGEWIND_FG_SHOT_AT: the game's frame after a generated one saved)
 
-void vk_fg_wait_idle(void) {
+// Before an effect's contexts are made again (frame generation, framegen.cpp; the FSR 3 / FSR 4 upscalers, fsr3.cpp and
+// fsr_api.cpp: the sizes changed, as when the scene's size does at a shop's sell list): the GPU done with what used
+// them. The recorder thread makes that call (exec.c fg_run, fsr3_run), in the middle of a frame whose presents the
+// translating thread may have queued already, and the present thread waits for that frame's submission
+// (rec_wait_submitted), which the recorder makes after this call. Waiting for the present queue to empty, as frame
+// generation did, then left both waiting for good: the picture stood still while the window still answered (#952,
+// #953). There the recorder waits on the timeline for what it has submitted instead, which covers every frame that used
+// the contexts, and leaves the queue to the present thread: the upscalers' vkDeviceWaitIdle used it meanwhile, which
+// Vulkan forbids (the device's queues are the caller's alone during that call).
+void vk_wait_idle_for_contexts(void) {
+    if (rec_on_recorder()) {
+        uint64_t seq = rec_submitted();
+        VkSemaphoreWaitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1,
+                                  .pSemaphores = &g_vk.timeline, .pValues = &seq};
+        for (int s = 1; vkWaitSemaphores(g_vk.dev, &wi, 1000000000ull) == VK_TIMEOUT; s++)
+            if (s <= 5) LOG("[vk] the GPU has not finished submission %llu after %d s\n", (unsigned long long)seq, s);
+        return;
+    }
     vk_present_idle();
     rec_drain();
     vkDeviceWaitIdle(g_vk.dev);
@@ -2287,7 +2935,12 @@ void vk_fg_wait_idle(void) {
 static bool fg_wanted(void) {
     static int forced = -2;
     if (forced == -2) forced = getenv("SAVAGEWIND_FG") ? atoi(getenv("SAVAGEWIND_FG")) : -1;
+    if (g_hdr) return false;  // (frame generation's copies are 8-bit and would clip the HDR picture)
     if (!(forced >= 0 ? forced : g_settings.frame_gen)) return false;
+    // (Video > Advanced > Dynamic resolution measured no net gain from frame generation on this machine: leave it off
+    // for the rest of the run. The setting is untouched - a reboot gives it a fresh measurement.)
+    extern bool dynamic_fg_disabled(void);
+    if (dynamic_fg_disabled()) return false;
     static int log = -1;
     static uint64_t n;
     if (log < 0) log = getenv("SAVAGEWIND_FG_LOG") != NULL;
@@ -2433,9 +3086,42 @@ static void present_locked(NvnTexture *t) {
     t0 += pso_wait();  // (not the acquire's time)
     bool held = boot_held();
     if (!held && boot_splash_active()) boot_splash_close();  // (the game's own frames from here on)
-    // Frame generation: the frame between the last one and this (exec.c vk_fg_generate), presented first
+    // HDR: the game copied its float 10-bit image (linear, HUD included) into the 8-bit image it presents (hdr.c). Use
+    // the float source instead, so the picture keeps the tonemap's highlights. The boot picture is SDR and has its own
+    // 8-bit pipeline, so HDR waits until it is gone.
+    VkImage hsrc = VK_NULL_HANDLE;
+    VkFormat hfmt = VK_FORMAT_UNDEFINED;
+    uint32_t hw = 0, hh = 0;
+    bool hdr_src = g_hdr && !held && vk_hdr_source(b->image, &hsrc, &hfmt, &hw, &hh);
+    if (!hdr_src && g_hdr && !held && b->hdr_upgraded) {  // (a game that presents its float image directly)
+        hdr_src = true;
+        hsrc = b->image, hfmt = b->format, hw = b->width, hh = b->height;
+    }
+
+    // The float source as its own backend. Static, so its cached views survive frames; forgotten below when the
+    // source changes (resize, reload, reboot: the old view must not be reused for new image memory).
+    static TexBackend hb;
+    static VkImage hb_image;
+    static VkFormat hb_fmt;
+    TexBackend *src = b;
+    if (hdr_src && (hsrc != hb_image || hfmt != hb_fmt || b->image != hb.image)) {
+        hb = *b;
+        hb.image = hsrc, hb.format = hfmt, hb.width = hw, hb.height = hh;
+        vk_views_forget(&hb);  // (the previous source's cached views must not be reused for the new image)
+        hb_image = hsrc, hb_fmt = hfmt;
+    }
+    if (hdr_src) src = &hb;
+    static int hdr_missing, hdr_found_told;
+    if (hdr_src) {
+        hdr_missing = 0;
+        if (!hdr_found_told++) LOG("[hdr] presenting the game's float picture (HDR)\n");
+    } else if (g_hdr && !held && ++hdr_missing == 10) {
+        LOG("[hdr] HDR10 output, but the game's float picture was not found (the 8-bit copy is shown)\n");
+    }
+    // Frame generation: the frame between the last one and this (exec.c vk_fg_generate), presented first. Its copies
+    // are 8-bit and would clip the HDR picture, so it stays off while the game's float picture is presented.
     TexBackend *gen;
-    { SW_ZONE("present/frame_gen"); gen = held ? NULL : vk_fg_generate(t, b); }
+    { SW_ZONE("present/frame_gen"); gen = (held || hdr_src) ? NULL : vk_fg_generate(t, b); }
     {   // (measuring) SAVAGEWIND_FG_TEST=1: the frame made, not presented
         static int test = -1;
         if (test < 0) test = getenv("SAVAGEWIND_FG_TEST") ? atoi(getenv("SAVAGEWIND_FG_TEST")) : 0;
@@ -2444,7 +3130,12 @@ static void present_locked(NvnTexture *t) {
     g_fg_active = gen != NULL;
     static const float black[4] = {0, 0, 0, 1};
     bool have;
-    { SW_ZONE("present/frame_begin"); have = vk_frame_begin(black); }
+    { SW_ZONE("present/frame_begin"); have = frame_begin(black, hdr_src); }
+    if (hdr_src && !vk_frame_hdr()) {  // (HDR was turned off while the swapchain was remade)
+        hdr_src = false;
+        src = b;
+        gen = NULL;  // (the generated frame path was skipped above for HDR)
+    }
     uint64_t nd = SDL_GetTicksNS() - t0;
     if (nd > 30000000) {
         static int warned;
@@ -2512,14 +3203,18 @@ static void present_locked(NvnTexture *t) {
             if (!vk_frame_begin(black)) { renderer_submit(); goto presented; }
             cb = vk_cmd();
         }
-        { SW_ZONE("present/draw"); vk_present_draw(cb, b, (float)vx, (float)vy, (float)vw, (float)vh, pv); }
+        { SW_ZONE("present/draw"); vk_present_draw(cb, src, (float)vx, (float)vy, (float)vw, (float)vh, pv); }
         if (held)  // (fading into the game's title screen: the boot picture over it, less each frame)
             boot_splash_draw(vk_frame_cmd(), g_vk.sc_extent.width, g_vk.sc_extent.height, boot_alpha);
         static long menu_at = -1;
         if (menu_at < 0) menu_at = getenv("SAVAGEWIND_MENU_AT") ? atol(getenv("SAVAGEWIND_MENU_AT")) : 0;
         if (menu_at && (long)total_frames + 1 == menu_at) { extern void menu_test_open(void); menu_test_open(); }
-        if (menu_render_needed()) rec_drain();  // (ImGui records into cb itself, and may upload its fonts on the queue)
-        { SW_ZONE("present/menu"); menu_render((void *)cb, g_vk.sc_extent.width, g_vk.sc_extent.height); }
+        bool menu = menu_render_needed();
+        if (menu) {
+            rec_drain();  // (ImGui records into cb itself, and may upload its fonts on the queue)
+            if (hdr_src) frame_menu_begin(cb);  // (the float picture is not the menu's target)
+            { SW_ZONE("present/menu"); menu_render((void *)cb, g_vk.sc_extent.width, g_vk.sc_extent.height); }
+        }
         g_present_split[2] += SDL_GetTicksNS() - td;
         static long win_shot = -1;
         if (win_shot < 0) win_shot = getenv("SAVAGEWIND_WINDOW_SHOT") ? atol(getenv("SAVAGEWIND_WINDOW_SHOT")) : 0;
@@ -2594,6 +3289,8 @@ presented:
     test_warp_frame(total_frames);
     extern void weather_frame(void);  // runtime/weather.c (Cheats > Weather, `weather`)
     weather_frame();
+    extern void blood_moon_frame(void);  // runtime/blood_moon.c (Cheats > Blood moon now, the console's bloodmoon)
+    blood_moon_frame();
     extern void control_frame(uint64_t frame);  // runtime/control.c (SAVAGEWIND_CONTROL)
     control_frame(total_frames);
     static long shot_every = -1;
@@ -2647,7 +3344,7 @@ presented:
             g_settings.upscaler = UPSCALE_OFF;
             for (int i = 0; i < 5; i++)
                 if (!strncmp(m, names[i], strlen(names[i]))) g_settings.upscaler = tu, g_settings.upscale_quality = i;
-            if ((f3 || f4) && !strncmp(m, "native", 6)) g_settings.upscaler = tu, g_settings.upscale_quality = UPQ_COUNT;
+            if ((f3 || f4) && !strncmp(m, "native", 6)) g_settings.upscaler = tu, g_settings.upscale_quality = UPQ_NATIVE;
             LOG("[test] frame %llu: upscaler %d mode %d\n", (unsigned long long)total_frames, g_settings.upscaler,
                 g_settings.upscale_quality);
             next = strchr(m, ',');
@@ -2816,6 +3513,7 @@ void ui_window_init(void) {
     atexit(quick_exit_handler);
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     settings_load();
+    { extern void motion_before_sdl_init(void); motion_before_sdl_init(); }  // (hle/motion.c: Steam Input's hidden pads)
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) FATAL("SDL_Init: %s\n", SDL_GetError());
     // Video > Window size (runtime/window_size.c: pixels; SDL's window size is pixels / the display's pixel density)
     winsize_refresh(NULL);
@@ -2935,6 +3633,23 @@ int ui_run(void) {
         menu_apply_window_requests(window);
         extern void input_mouse_update(SDL_Window *w);  // runtime/hle/input.c: hold the cursor while the game has it
         input_mouse_update(window);
+        {   // No frame for HANG_WATCH_MS while the window still runs (#952: the picture stopped selling to a merchant, the
+            // window still took focus and the mouse): what each of the game's threads waits for goes to the log, once
+            // per stop, so a player's log shows where it hung. SAVAGEWIND_HANG_WATCH=<seconds>, 0 off.
+            static int watch_s = -1;
+            static uint64_t seen = ~0ull, since;
+            static bool dumped;
+            if (watch_s < 0) watch_s = getenv("SAVAGEWIND_HANG_WATCH") ? atoi(getenv("SAVAGEWIND_HANG_WATCH")) : 10;
+            uint64_t now = SDL_GetTicks();
+            bool shown = !(SDL_GetWindowFlags(window) & (SDL_WINDOW_MINIMIZED | SDL_WINDOW_OCCLUDED));
+            if (total_frames != seen || !shown) seen = total_frames, since = now, dumped = false;
+            else if (watch_s > 0 && !dumped && total_frames > 300 && now - since >= (uint64_t)watch_s * 1000) {
+                dumped = true;
+                LOG("[hang-watch] no frame for %d s (frame %llu): the game's threads\n", watch_s, (unsigned long long)total_frames);
+                extern void kernel_dump_threads_try(void);  // runtime/kernel.c
+                kernel_dump_threads_try();
+            }
+        }
     }
 }
 

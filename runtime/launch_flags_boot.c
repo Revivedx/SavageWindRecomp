@@ -40,7 +40,7 @@ void launch_flags_boot(int argc, char **argv) {
     if (lf_in_effect(&l)) return;
     int n = lf_apply(&l);
     fprintf(stderr, "[flags] %d launch option(s) from %s: restarting with them\n", n, path);
-    plat_exec(NULL);
+    plat_exec_wait(NULL);  // (early in main: nothing open yet, and a command's exit status stays)
     fprintf(stderr, "[flags] could not restart; going on with the options set from here\n");
 }
 
