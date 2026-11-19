@@ -531,11 +531,22 @@ written for.
 
 ### Can I use mods?
 
-Partly, and not yet the way you would on Cemu. Language packs work: `lang/<language>.txt` in the data folder is read over
-the built-in translations. A loader for other mods is planned, and because this isn't an emulator, Wii U and Cemu
-packs need adapting. Mods must not ship game files
+Yes, since Alpha 7. Put each mod in its own folder in the `mods` folder next to Savage
+Wind (`mods/<name>/romfs/Actor/...`, or `mods/<name>/Actor/...` directly), then turn it on in the **Mods** tab (Settings
+on the start screen, or F1 in game) and restart. The tab also sets the load order and shows conflicts. Mods made for
+the Switch version 1.9.0 fit best; Wii U and Cemu packs need adapting, because the file formats differ. On Alpha 6
+(0.6.0), a mod's `romfs` folder can be loaded with the launch option `SAVAGEWIND_ROMFS_OVERLAY=<folder>`.
+
+**Mods are other people's work.** Savage Wind doesn't check, test or support them, and isn't responsible for what they
+do, including if they break the game or your saves. Back up your saves before trying one, and turn every mod off before
+reporting a bug: a bug caused by a mod is closed right away, because we don't support what isn't ours. Savage Wind
+releases never include mods, and mods must not be shared with game files in them
 ([#647](https://github.com/Revivedx/SavageWindRecomp/issues/647),
-[#645](https://github.com/Revivedx/SavageWindRecomp/issues/645)).
+[#645](https://github.com/Revivedx/SavageWindRecomp/issues/645)). In the future we may point to mods we've found to
+play well with Savage Wind.
+
+Language packs for Savage Wind's own menus are separate: `lang/<language>.txt` in the data folder is read over the
+built-in translations ([menu language packs](menu-language-packs.md)).
 
 ### Does it support amiibo?
 

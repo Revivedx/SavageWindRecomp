@@ -203,6 +203,15 @@ void mods_tab_draw(bool in_game, bool *want_restart) {
     }
 
     opt_section("Mods");
+    // (what Savage Wind takes on for mods and what it doesn't: always the first row)
+    opt_disable_next();
+    opt_action("About mods", "",
+               "Mods are made by other people, not by Savage Wind. We don't check, test or support them, and we aren't "
+               "responsible for what they do, including if they break the game or your saves. Back up your saves "
+               "before trying one, and turn mods off before reporting a bug: a report of a bug a mod causes is closed right "
+               "away. Savage Wind releases never include mods; "
+               "in the future we may suggest some we've found to play well with Savage Wind.",
+               true);
     if (g_list.count == 0) {
         opt_disable_next();
         opt_action("No mods installed", "",
