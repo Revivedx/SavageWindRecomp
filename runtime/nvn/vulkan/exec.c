@@ -1434,7 +1434,7 @@ static void hud_frame_update(void) {
     hud_event_dialogue = hud_dialogue_holds(hud_event_dialogue, hud_event, framepace_dialogue_ui());
     hud_menu = framepace_menu_ui(); hud_title = framepace_title_ui(); hud_loading = framepace_loading_ui();
     uint64_t ns = plat_now_ns();
-    if (hud_quick_tracked(g_settings.hud_size, g_settings.hud_edges) && framepace_quick_ui()) hud_quick_ns = ns;
+    if (hud_quick_tracked(g_settings.dynamic_hud ? 0 : g_settings.hud_size, g_settings.hud_edges) && framepace_quick_ui()) hud_quick_ns = ns;
     hud_quick = hud_quick_ns && ns - hud_quick_ns < HUD_QUICK_HOLD_NS;
 }
 static unsigned hud_kind(void) { return hud_scope.kind & HUD_KIND_MASK; }  // (UI_LAYOUT_*; a HUD part kept whole: its layout's)
@@ -1449,11 +1449,19 @@ static float hud_anchor_now(float c, float edge, int axis) {
     if (!(hud_scope.kind & HUD_GROUP)) return hud_anchor(c, edge);
     return (float)(axis ? hud_group_ay(hud_scope.kind) : hud_group_ax(hud_scope.kind)) * edge;
 }
+#define HUD_DYNAMIC_HOLD_NS 5000000000ull
 static float hud_scale_now(void) {
     hud_frame_update();
     if (hud_native_layout()) return 1;
-    return hud_owned() || !(hud_event || hud_event_dialogue || hud_menu || hud_title || hud_loading) ?
-           (float)g_settings.hud_size / 100 : 1;
+    if (!(hud_owned() || !(hud_event || hud_event_dialogue || hud_menu || hud_title || hud_loading))) return 1;
+    if (g_settings.dynamic_hud) {
+        extern uint64_t rt_link_damage_ns(void);
+        uint64_t dmg = rt_link_damage_ns();
+        uint64_t now = plat_now_ns();
+        if (!dmg || now < dmg || now - dmg >= HUD_DYNAMIC_HOLD_NS) return 0;
+        return (float)(g_settings.hud_size ? g_settings.hud_size : 100) / 100;
+    }
+    return (float)g_settings.hud_size / 100;
 }
 // HUD edge placement follows the recorded layout owner.
 static int hud_edges_now(float shape) {

@@ -54,7 +54,7 @@ static const Setting settings[] = {
     I(hdr_saturation, 0, 100, NULL), I(hdr_highlight_saturation, 0, 100, NULL), I(hdr_flare, 0, 100, NULL),
     I(hdr_gamma, 0, 2, "none|2.2|bt1886"),
     I(hdr_ui_nits, 0, 1000, NULL),
-    I(fov, 50, 200, NULL), I(hud_size, 0, 150, NULL), I(menu_speed, 70, 300, NULL), B(bloom), B(depth_of_field),
+    I(fov, 50, 200, NULL), I(hud_size, 0, 150, NULL), B(dynamic_hud), I(menu_speed, 70, 300, NULL), B(bloom), B(depth_of_field),
     B(grass), B(lens_flare), B(fast_fma),I(color_exposure, -20, 20, NULL), I(color_contrast, -50, 50, NULL),
     I(color_saturation, -100, 100, NULL), I(color_temperature, -100, 100, NULL),
     I(color_tint, -100, 100, NULL),

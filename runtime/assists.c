@@ -4,7 +4,13 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "hle.h"
+#include "platform.h"
 #include "settings.h"
+
+static uint64_t link_damage_ns;
+RT_ON_RESET(assists_reset) { __atomic_store_n(&link_damage_ns, 0, __ATOMIC_RELAXED); }
+uint64_t rt_link_damage_ns(void) { return __atomic_load_n(&link_damage_ns, __ATOMIC_RELAXED); }
 
 // The damage multipliers: d percent of a loss, rounded, and at least 1 while there is a loss
 static int32_t scaled(int32_t d, int pct) {
@@ -39,6 +45,7 @@ int rt_keep_wear(uint32_t type, int32_t newv, int32_t oldv) {
 // _link_life): God mode keeps the old one, the multiplier scales the loss.
 int32_t rt_link_life(int32_t oldv, int32_t newv) {
     if (newv >= oldv) return newv;
+    __atomic_store_n(&link_damage_ns, plat_now_ns(), __ATOMIC_RELAXED);
     if (g_settings.god_mode) return oldv;
     int32_t v = oldv - scaled(oldv - newv, g_settings.damage_taken);
     return v < 0 ? 0 : v;

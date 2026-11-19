@@ -196,6 +196,7 @@ typedef struct {
     int fov;             // field of view in play, percent of the game's own (FOV_CHOICES)
     bool handheld_setup; // a PC handheld's own settings were taken once (settings_load)
     int hud_size;        // the HUD's size in play, percent of the game's own (HUD_SIZE_CHOICES, runtime/nvn/hud_scale.h)
+    bool dynamic_hud;    // hide the HUD while exploring; show it for 5 s when Link takes damage (vulkan/exec.c)
     int menu_speed;      // menu cursor and UI animation speed, percent (MENU_SPEED_CHOICES, runtime/hle/framepace.c)
     int draw_distance;   // DRAWDIST_*: how far placed actors are kept (runtime/draw_distance.c)
     int haze;            // the air's haze, percent of the game's (services/fs.c haze_patch; from the next start)
