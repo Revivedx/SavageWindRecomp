@@ -1,5 +1,5 @@
 # Savage Wind build
-# macOS: Homebrew clang/SDL3/FFmpeg, Metal renderer.
+# macOS: Homebrew clang/SDL3/FFmpeg + Vulkan renderer on MoltenVK (see docs/macos.md).
 # Windows: MSYS2 UCRT64 shell (see docs/BUILD-windows.md), clang + Vulkan renderer.
 # Linux: clang + Vulkan renderer, x86-64 or aarch64 (see docs/linux.md).
 UNAME := $(shell uname -s)
@@ -30,6 +30,15 @@ endif
 # B: build dir. MACOS_MIN: oldest macOS to run on (default: this one). DEPS: prefix with SDL3 / FFmpeg instead of
 # Homebrew's (make deps). `make app` sets all three (build/mac15, 15.0, build/deps); plain `make` uses none.
 B         ?= build
+ifeq ($(PLATFORM),macos)
+RENDERER  ?= vulkan
+ifneq ($(filter-out metal vulkan,$(RENDERER)),)
+$(error RENDERER must be vulkan or metal)
+endif
+ifeq ($(RENDERER),metal)
+B         := $(if $(filter build,$(B)),build/metal,$(B))
+endif
+endif
 MACOS_MIN ?=
 DEPS      ?=
 MINFLAG  := $(if $(MACOS_MIN),-mmacosx-version-min=$(MACOS_MIN))
@@ -54,7 +63,8 @@ RT_SRC   := $(filter-out runtime/control.c runtime/control_game.c,$(wildcard run
             runtime/control.c runtime/control_game.c $(wildcard runtime/hle/*.c) $(wildcard runtime/services/*.c) \
             $(wildcard runtime/nvn/*.c) $(wildcard runtime/nvn/maxwell/*.c) runtime/platform/$(PLATFORM).c
 RT_HDRS  := $(wildcard runtime/*.h) $(wildcard runtime/platform/*.h) $(wildcard runtime/nvn/*.h) \
-            $(wildcard runtime/nvn/maxwell/*.h) $(wildcard runtime/nvn/vulkan/*.h) $(wildcard runtime/ui/*.h) \
+            $(wildcard runtime/nvn/maxwell/*.h) $(wildcard runtime/nvn/vulkan/*.h) \
+            $(wildcard runtime/nvn/vulkan/exec/*.h) $(wildcard runtime/ui/*.h) \
             $(wildcard runtime/services/*.h)
 UI_SRC   := $(wildcard runtime/ui/*.mm)
 UI_OBJ   := $(patsubst runtime/%.mm,$(B)/rt/%.o,$(UI_SRC))
@@ -62,15 +72,28 @@ IMGUI_OBJ := $(B)/imgui/imgui.o $(B)/imgui/imgui_draw.o $(B)/imgui/imgui_tables.
              $(B)/imgui/imgui_impl_sdl3.o
 
 ifeq ($(PLATFORM),macos)
+# RENDERER: vulkan (the default: runtime/nvn/vulkan, the Windows / Linux renderer, on MoltenVK - brew install molten-vk
+# vulkan-loader vulkan-headers shaderc) or metal (runtime/nvn/*.m from LAS Recomp, unmaintained; its own B, build/metal).
 SDL      := $(or $(DEPS),/opt/homebrew/opt/sdl3)
 FFMPEG   := $(or $(DEPS),/opt/homebrew/opt/ffmpeg)
+VULKAN   := $(or $(DEPS),/opt/homebrew)
 EXE      := $(B)/savagewind
 DEPINC   := -I$(SDL)/include -I$(FFMPEG)/include
-LDFLAGS  := -L$(SDL)/lib -lSDL3 -Wl,-rpath,$(SDL)/lib -L$(FFMPEG)/lib -lavformat -lavcodec -lavutil -lswscale -Wl,-rpath,$(FFMPEG)/lib \
-            -framework CoreFoundation -framework Foundation -framework Metal -framework MetalFX -framework QuartzCore -framework AppKit -framework ImageIO -framework CoreGraphics -framework UniformTypeIdentifiers
+LDFLAGS  := -L$(SDL)/lib -lSDL3 -Wl,-rpath,$(SDL)/lib -L$(FFMPEG)/lib -lavformat -lavcodec -lavutil -lswscale -Wl,-rpath,$(FFMPEG)/lib -lz \
+            -framework CoreFoundation -framework Foundation -framework QuartzCore -framework AppKit -framework ImageIO -framework CoreGraphics -framework UniformTypeIdentifiers -framework IOKit
+ifeq ($(RENDERER),metal)
+DEPINC   += -DSW_METAL=1
+LDFLAGS  += -framework Metal -framework MetalFX
 BACKEND_SRC := $(wildcard runtime/nvn/*.m)
 BACKEND_OBJ := $(patsubst runtime/%.m,$(B)/rt/%.o,$(BACKEND_SRC))
 IMGUI_OBJ += $(B)/imgui/imgui_impl_metal.o
+else
+DEPINC   += -I$(VULKAN)/include
+LDFLAGS  += -L$(VULKAN)/lib -lvulkan -lshaderc_shared -Wl,-rpath,$(VULKAN)/lib
+BACKEND_SRC := $(wildcard runtime/nvn/vulkan/*.c) $(wildcard runtime/nvn/vulkan/*.cpp)
+BACKEND_OBJ := $(patsubst runtime/%.cpp,$(B)/rt/%.o,$(patsubst runtime/%.c,$(B)/rt/%.o,$(BACKEND_SRC)))
+IMGUI_OBJ += $(B)/imgui/imgui_impl_vulkan.o
+endif
 UIFLAGS  := -fobjc-arc
 GAMELIB  := $(B)/swgame.dylib
 GAMELIB_LDFLAGS := -dynamiclib -undefined dynamic_lookup  # (the runtime functions it calls: the app's own)
@@ -212,7 +235,7 @@ endif
 RUNTIME_OPTFLAGS += -fprofile-instr-use=$(PGO_PROFILE)
 endif
 LDFLAGS += $(RUNTIME_LINKFLAGS)
-RUNTIME_CONFIG := $(strip $(RUNTIME_OPTFLAGS))
+RUNTIME_CONFIG := $(strip $(RUNTIME_OPTFLAGS) $(if $(filter macos,$(PLATFORM)),renderer=$(RENDERER)))  # (macOS: SW_METAL or not)
 $(shell mkdir -p $(B) && [ -f $(B)/runtime_config ] && [ "$$(cat $(B)/runtime_config 2>/dev/null)" = '$(RUNTIME_CONFIG)' ] || echo '$(RUNTIME_CONFIG)' > $(B)/runtime_config)
 $(RT_OBJ) $(filter $(B)/rt/%,$(BACKEND_OBJ)) $(UI_OBJ): $(B)/runtime_config $(if $(filter use,$(PGO)),$(PGO_PROFILE))
 
@@ -229,7 +252,7 @@ FFX_SRC  := $(FFX)/sdk/src/components/frameinterpolation/ffx_frameinterpolation.
             $(wildcard $(FFX)/sdk/src/shared/*.cpp)
 FFX_OBJ  := $(patsubst $(FFX)/sdk/src/%.cpp,$(B)/ffx/%.o,$(FFX_SRC))
 FFX_INC  := -I$(FFX)/sdk/include -I$(FFX)/sdk/src/components -I$(FFX)/sdk/src/shared -I$(FFX)/sdk/src/backends/shared
-ifneq ($(PLATFORM),macos)
+ifneq ($(PLATFORM)$(RENDERER),macosmetal)
 BACKEND_OBJ += $(FFX_OBJ)
 $(B)/rt/nvn/vulkan/fsr3.o: CXXFLAGS := -DSW_FSR3=1 -include $(FFX)/ffx_compat.h $(FFX_INC) $(CXXFLAGS)
 endif
@@ -240,6 +263,10 @@ $(B)/ffx/%.o: $(FFX)/sdk/src/%.cpp $(FFX)/ffx_compat.h
 # sizes, and a context smaller than the SDK's own code writes overran the next one in memory)
 $(B)/rt/nvn/vulkan/framegen.o: CXXFLAGS := -include $(FFX)/ffx_compat.h $(FFX_INC) -I$(FFX)/spirv $(CXXFLAGS)
 $(B)/rt/nvn/vulkan/framegen.o: $(FFX)/spirv/ffx_shaders_vk.h $(FFX)/spirv/ffx_fsr3upscaler_vk.h $(FFX)/ffx_compat.h
+# Intel XeSS (runtime/nvn/vulkan/xess.cpp): its MIT-licensed headers (third_party/xess), loaded at run time
+XESS_INC := -Ithird_party/xess
+$(B)/rt/nvn/vulkan/xess.o: CXXFLAGS := $(XESS_INC) $(CXXFLAGS)
+$(B)/rt/nvn/vulkan/xess.o: third_party/xess/xess.h third_party/xess/xess_vk.h
 
 all: $(EXE) $(CONFIG_EXE) $(if $(strip $(GEN_SRC)),$(GAMELIB))  # (GEN_SRC is a space when there is no generated/)
 
@@ -372,12 +399,14 @@ VERSION  := $(shell sed -n 's/^\#define SAVAGEWIND_VERSION "\(.*\)"/\1/p' runtim
 # (`make deps`: SDL3, LGPL FFmpeg, Python, from pinned sources), the generator helper when built
 # (`make gen-helper` after `make deps`), packaged by tools/bundle_macos.sh. No game files or fonts.
 APP_MIN  := 15.0
-APP_B    := build/mac15
+# (Vulkan: the loader + shaderc in build/deps too, and the bundle adds MoltenVK; RENDERER=metal: build/mac15-metal)
+APP_B    := build/mac15$(if $(filter metal,$(RENDERER)),-metal)
 deps:
-	MACOS_MIN=$(APP_MIN) tools/build_deps_macos.sh
+	RENDERER=$(RENDERER) MACOS_MIN=$(APP_MIN) tools/build_deps_macos.sh
 app:
 	@[ -f build/deps/lib/libSDL3.0.dylib ] || { echo "make deps first"; exit 1; }
-	$(MAKE) B=$(APP_B) MACOS_MIN=$(APP_MIN) DEPS=$(CURDIR)/build/deps $(APP_B)/savagewind
+	@[ "$(RENDERER)" != vulkan ] || [ -f build/deps/lib/libvulkan.1.dylib ] || { echo "make deps first (it builds the Vulkan loader too)"; exit 1; }
+	$(MAKE) RENDERER=$(RENDERER) B=$(APP_B) MACOS_MIN=$(APP_MIN) DEPS=build/deps $(APP_B)/savagewind  # (relative: a checkout under a path with spaces, common on a Mac)
 	MACOS_MIN=$(APP_MIN) tools/bundle_macos.sh $(APP_B)/savagewind
 
 # macOS release disk image (the .app + an Applications shortcut to drag it onto): build/dist/Savage Wind-<v>-macOS.dmg
@@ -496,6 +525,15 @@ test-bind-capture: $(B)/test_bind_capture
 	$(B)/test_bind_capture
 
 .PHONY: test-bind-capture
+
+$(B)/test_blood_moon: tools/test_blood_moon.c runtime/blood_moon.c runtime/blood_moon.h
+	@mkdir -p $(B)
+	$(CC) -O1 -g -Wall -Wno-unused-function $(OSFLAGS) -Iruntime -o $@ tools/test_blood_moon.c
+
+test-blood-moon: $(B)/test_blood_moon
+	$(B)/test_blood_moon
+
+.PHONY: test-blood-moon
 
 # Per-action bindings (docs/ACTIONS.md): the answers to the game's hold / pressed queries, menus, shared keys, capture and
 # savagewind.ini, then the patch the hook is written with (no game files)
@@ -676,6 +714,15 @@ test-save-profiles: $(B)/test_save_profiles
 
 .PHONY: test-save-profiles
 
+$(B)/test_mods: tools/test_mods.c runtime/mods.c runtime/mods.h
+	@mkdir -p $(B)
+	$(CC) -O1 -Wall -Wextra -Werror -std=gnu11 -D_FILE_OFFSET_BITS=64 -Iruntime -o $@ tools/test_mods.c runtime/mods.c
+
+test-mods: $(B)/test_mods
+	$(B)/test_mods
+
+.PHONY: test-mods
+
 $(B)/test_game_file_size: tools/test_game_file_size.c runtime/game_file_size.c runtime/game_file_size.h runtime/game_files.h
 	@mkdir -p $(B)
 	$(CC) -O1 -Wall $(OSFLAGS) -Iruntime -o $@ tools/test_game_file_size.c runtime/game_file_size.c
@@ -708,6 +755,7 @@ $(B)/test_control: tools/test_control.c runtime/control.c runtime/control.h
 test-control: $(B)/test_control
 	env -u SAVAGEWIND_CONTROL -u SAVAGEWIND_DEV $(B)/test_control
 	env -u SAVAGEWIND_CONTROL SAVAGEWIND_DEV=1 $(B)/test_control dev
+	env -u SAVAGEWIND_CONTROL -u SAVAGEWIND_DEV SAVAGEWIND_COMPANION=47977 $(B)/test_control companion
 
 .PHONY: test-control
 
@@ -792,7 +840,7 @@ test-audio-mix: $(B)/test_audio_mix
 
 .PHONY: test-audio-mix
 
-$(B)/test_movie_stop: tests/test_movie_stop.c runtime/hle/movie.c runtime/hle.h runtime/kernel.h runtime/settings.h
+$(B)/test_movie_stop: tests/test_movie_stop.c runtime/hle/movie.c runtime/mods.c runtime/mods.h runtime/hle.h runtime/kernel.h runtime/settings.h
 	@mkdir -p $(B)
 	$(CC) -O1 -Wall -Wno-unused-function $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< $(if $(DEPS),-L$(DEPS)/lib) -lavformat -lavcodec -lavutil -lswscale -lpthread -lm
 
@@ -829,6 +877,11 @@ $(B)/test_steam_shortcuts: tools/test_steam_shortcuts.c runtime/steam_shortcuts.
 	$(CC) -O1 -Wall -DSTEAM_VDF_ONLY -c runtime/steam_shortcuts.c -o $@-s.o
 	$(CC) -o $@ $@-t.o $@-s.o
 
+# savagewind <command> (runtime/cli.c): every command against a scratch data root, no game files
+.PHONY: test-cli
+test-cli: all
+	python3 tools/test_cli.py $(EXE)
+
 test-launch-flags: $(B)/test_launch_flags
 	$(B)/test_launch_flags
 	python3 tools/gen_launch_flags.py --check
@@ -851,9 +904,9 @@ test-quick-inventory-sort: $(B)/test_quick_inventory_sort $(B)/test_gamelib_site
 
 .PHONY: test-quick-inventory-sort
 
-$(B)/test_quick_hint_font: tools/test_quick_hint_font.cpp runtime/ui/quick_hint_font.mm runtime/ui/quick_hint_font.h \
+$(B)/test_quick_hint_font: tools/test_quick_hint_font.cpp runtime/ui/quick_hint_font.mm runtime/ui/quick_hint_font.h runtime/mods.h \
                          $(B)/imgui/imgui.o $(B)/imgui/imgui_draw.o $(B)/imgui/imgui_tables.o $(B)/imgui/imgui_widgets.o \
-                         $(B)/rt/services/archive.o $(B)/rt/nvn/tegra.o $(B)/rt/nvn/glyphs.o $(B)/rt/hle/bindings.o
+                         $(B)/rt/mods.o $(B)/rt/services/archive.o $(B)/rt/nvn/tegra.o $(B)/rt/nvn/glyphs.o $(B)/rt/hle/bindings.o
 	@mkdir -p $(B)
 	$(CXX) $(CXXFLAGS) -o $@ $< $(filter %.o,$^) $(TEST_LD) -lSDL3 -lm
 
@@ -895,3 +948,13 @@ $(B)/test_ui_layout: tests/test_ui_layout.c runtime/ui_layout.c runtime/ui_layou
 test-ui-layout: $(B)/test_ui_layout
 	$(B)/test_ui_layout
 .PHONY: test-ui-layout
+ifeq ($(PLATFORM),linux)
+$(B)/test_quick_replace: tools/test_quick_replace.c runtime/quick_replace.c runtime/quick_replace.h $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -std=gnu11 -O1 -g $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $<
+
+test-quick-replace: $(B)/test_quick_replace
+	$(B)/test_quick_replace
+
+.PHONY: test-quick-replace
+endif

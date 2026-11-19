@@ -17,6 +17,10 @@ int bind_pad_family(int type, int vendor, int product, const char *name, bool fi
 GameSites g_site;
 Settings g_settings;
 int16_t g_bind_key[BIND_KEY_COUNT], g_bind_pad[BIND_KEY_COUNT];
+int16_t g_bind_key2[BIND_KEY_COUNT], g_bind_pad2[BIND_KEY_COUNT];  // (second bindings: none, as bindings.c act_init)
+__attribute__((constructor)) static void no_second_bindings(void) {
+    for (int i = 0; i < BIND_KEY_COUNT; i++) g_bind_pad2[i] = -1;
+}
 uint64_t g_watch_lo, g_watch_hi;
 static bool captured;
 static int sensor_events;
@@ -84,6 +88,8 @@ void motion_dualstick(float lx, float ly, float rx, float ry, double dt, bool re
 void motion_poll(void) {}
 bool framepace_title_ui(void) { return false; }
 bool framepace_menu_ui(void) { return false; }
+bool framepace_in_event(void) { return false; }
+bool framepace_dialogue_ui(void) { return false; }
 
 static void focus(bool on) {
     SDL_Event e = {0};
@@ -278,3 +284,6 @@ int main(void) {
     SDL_Quit();
     puts("input focus checks passed");
 }
+
+void photo_pad(uint32_t buttons) { (void)buttons; }
+uint64_t quick_replace_buttons(uint64_t b) { return b; }

@@ -7,8 +7,8 @@ a virtual amiibo reader. None of them is on until you turn it on, and none of th
 |---|---|---|
 | [Colour vision](#colour-vision) | The game's Options > Accessibility | Nothing |
 | [Assists](#assists) | The game's Options > Accessibility | Nothing |
-| [Cheats tab](#cheats-tab) | Savage Wind menu (F1) > Cheats | Being in game |
-| [Teleport and console cheats](#teleport-and-console-cheats) | The console (` or F12) | The `DEV` launch option |
+| [Cheats tab](#cheats-tab) | Savage Wind menu (F1) > Cheats and Teleport | Being in game, started with `-dev` |
+| [Teleport and console cheats](#teleport-and-console-cheats) | The console (` or F12) | Started with `-dev` |
 | [amiibo](#amiibo) | Savage Wind menu (F1) > amiibo | Your own figure dumps |
 | [Save profiles](#keep-a-separate-save-for-cheats) | Savage Wind Configuration > Settings > Saves | The game closed |
 
@@ -48,7 +48,8 @@ your settings.
 ## Cheats tab
 
 Open the Savage Wind menu (**F1**, **Esc**, the controller's Home / Xbox / PlayStation button, or Back + Start) and
-go to the **Cheats** tab. The tab only shows up while you are in game, not on the title screen.
+go to the **Cheats** tab. The tab, and the Teleport tab next to it, only show up while you are in game and when
+Savage Wind was started with `-dev` (see [Teleport and console cheats](#teleport-and-console-cheats) for how).
 
 ### Items
 
@@ -61,19 +62,28 @@ If the pouch is full, you get as many as fit, and the tab says how many were add
 cutscene, the request waits until you are back in play. The item list comes from your own game files; nothing of the
 game is shipped with Savage Wind.
 
-### Rupees and weather
+### Rupees, assists, time, weather and more
 
 | Option | What it does |
 |---|---|
 | Infinite rupees | Keeps your wallet at 9999 rupees, topped up every few seconds. |
 | Set rupees | Sets your wallet to an exact number (0 to 999999). Turn off Infinite rupees first. |
+| God mode, Infinite stamina, One-hit kill, Infinite arrows, Weapon wear, Damage taken, Damage dealt | The same settings as the [Assists](#assists): changing one here changes it there too. |
+| Set hearts | Sets your heart containers to an exact number (3 to 30). It is written into your save. |
+| Time of day | Sets the game's clock to an hour. The day goes on from there. |
+| Freeze time | Stops the clock at the hour it is. Off: the day goes on. |
+| Blood moon now | The game's own blood moon: its cutscene plays, and the monsters and materials come back as after any blood moon. It starts once you close the menu, in the open world only. |
 | Weather | Holds the weather you pick (clear, cloudy, rain, heavy rain, snow, heavy snow, thunderstorm, thunder rain, rain in sunshine), or keeps out rain or thunderstorms. Automatic is the game's own. Cutscenes keep their weather. |
+| Free sprint out of combat | Sprinting on the ground takes no stamina while no enemy is fighting you. Once enemies start the battle music, sprinting costs stamina again until the music fades. Climbing, swimming, gliding and attacks cost stamina as usual. |
+| Item pickup multiplier | Multiplies the stackable items you pick up (materials, monster parts, arrows) by 2, 4 or 8, up to 999. |
+| Sure-footed horse | A running horse no longer stops dead and rears when it runs into something, even a small rock. It no longer stops at cliff edges either: mind where you ride. |
 
 ## Teleport and console cheats
 
 The teleport and a few more cheats are console commands for developers. To use them:
 
-1. Add the launch option `DEV` with the value `1` on the Savage Wind start screen. How to add one:
+1. Start Savage Wind with `-dev`: in Steam, right-click the game > Properties > Launch options, or after the path
+   in a shortcut. Or add the launch option `DEV` with the value `1` on the Savage Wind start screen:
    [Launch options](launch-options.md).
 2. Start the game and load your save.
 3. Press **`** (the key under Esc) or **F12** to open the console. The game gets no input while it is open; press the
@@ -87,6 +97,7 @@ The teleport and a few more cheats are console commands for developers. To use t
 | `pos` | Shows where Link is and copies a line you can give to `tp` later to come back. |
 | `give <name> [count]` | Puts an item in the pouch, the same as the Cheats tab: `give arrow 20`. With several matches it lists them. |
 | `time <0-24>` | Sets the hour of the day. `time freeze` stops the clock and `time unfreeze` starts it again. |
+| `bloodmoon` | The game's own blood moon, as Cheats > Blood moon now. It starts once you close the console. |
 | `help` | Lists every command. |
 
 Known limits of the teleport:
@@ -95,8 +106,7 @@ Known limits of the teleport:
 - After a long jump the camera can look odd for 1 to 3 seconds while the area loads.
 - Rarely, the game crashes after long jumps. Save before you teleport often; restarting the game fixes it.
 
-Developer mode also turns on other developer tools. If you only want the items, rupees and weather, use the Cheats
-tab, which needs no launch option.
+Developer mode also turns on other developer tools, and the Cheats and Teleport tabs of the Savage Wind menu.
 
 ## amiibo
 

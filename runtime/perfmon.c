@@ -25,6 +25,13 @@
 #include <dlfcn.h>
 #include <unistd.h>
 #endif
+#ifdef __APPLE__
+#include <CoreFoundation/CoreFoundation.h>
+#include <IOKit/IOKitLib.h>
+#include <mach/mach.h>
+#include <sys/resource.h>
+#include <sys/sysctl.h>
+#endif
 #if defined(__x86_64__) || defined(__i386__)
 #include <cpuid.h>
 #endif
@@ -131,6 +138,9 @@ static void cpu_name(char *out, size_t cap) {
         snprintf(out, cap, "%s", p);
         for (char *e = out + strlen(out); e > out && e[-1] == ' '; e--) e[-1] = 0;
     }
+#elif defined(__APPLE__)
+    size_t len = cap;  // ("Apple M4")
+    if (sysctlbyname("machdep.cpu.brand_string", out, &len, NULL, 0) || !out[0]) snprintf(out, cap, "CPU");
 #else
     snprintf(out, cap, "CPU");
 #endif
@@ -581,6 +591,75 @@ static bool amdgpu_sample(PerfStats *s) {
     return true;
 }
 
+#ifdef __APPLE__
+// macOS: the machine's CPU ticks (Mach), this process's CPU time (getrusage), memory (hw.memsize, VM statistics, the
+// process's physical footprint: Activity Monitor's "Memory") and the GPU's load and memory in use (IOAccelerator's
+// PerformanceStatistics, readable without privileges). No temperatures: Apple Silicon has them only behind private
+// interfaces.
+static void mac_gpu_sample(PerfStats *s) {
+    io_iterator_t it;
+    if (IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IOAccelerator"), &it) != KERN_SUCCESS) return;
+    for (io_object_t o; (o = IOIteratorNext(it)); IOObjectRelease(o)) {
+        CFMutableDictionaryRef props = NULL;
+        if (IORegistryEntryCreateCFProperties(o, &props, kCFAllocatorDefault, 0) != KERN_SUCCESS || !props) continue;
+        CFTypeRef ps = CFDictionaryGetValue(props, CFSTR("PerformanceStatistics"));
+        if (ps && CFGetTypeID(ps) == CFDictionaryGetTypeID()) {
+            int64_t v;
+            CFTypeRef n = CFDictionaryGetValue((CFDictionaryRef)ps, CFSTR("Device Utilization %"));
+            if (n && CFGetTypeID(n) == CFNumberGetTypeID() && CFNumberGetValue((CFNumberRef)n, kCFNumberSInt64Type, &v))
+                s->gpu_pct = (float)v;
+            n = CFDictionaryGetValue((CFDictionaryRef)ps, CFSTR("In use system memory"));
+            if (n && CFGetTypeID(n) == CFNumberGetTypeID() && CFNumberGetValue((CFNumberRef)n, kCFNumberSInt64Type, &v))
+                s->vram_used_mb = (float)(v >> 20);
+        }
+        CFRelease(props);
+    }
+    IOObjectRelease(it);
+}
+
+static void platform_sample(PerfStats *s, double dt) {
+    (void)dt;
+    static uint64_t p_idle, p_total, p_proc_us;
+    // (once: each mach_host_self() adds a reference to the host port, never released - twice a sample, the port's
+    // reference count would overflow after a few hours)
+    static mach_port_t host = MACH_PORT_NULL;
+    if (host == MACH_PORT_NULL) host = mach_host_self();
+    host_cpu_load_info_data_t cl;
+    mach_msg_type_number_t n = HOST_CPU_LOAD_INFO_COUNT;
+    if (host_statistics(host, HOST_CPU_LOAD_INFO, (host_info_t)&cl, &n) == KERN_SUCCESS) {
+        uint64_t idle = cl.cpu_ticks[CPU_STATE_IDLE], total = 0;
+        for (int i = 0; i < CPU_STATE_MAX; i++) total += cl.cpu_ticks[i];
+        struct rusage ru;
+        getrusage(RUSAGE_SELF, &ru);
+        uint64_t proc_us = (uint64_t)ru.ru_utime.tv_sec * 1000000 + ru.ru_utime.tv_usec +
+                           (uint64_t)ru.ru_stime.tv_sec * 1000000 + ru.ru_stime.tv_usec;
+        if (p_total && total > p_total) {
+            s->cpu_total_pct = 100.0f * (float)((total - p_total) - (idle - p_idle)) / (float)(total - p_total);
+            // (ticks are 1/100 s of one core, summed over all of them: the process's time over the same span)
+            double span_us = (double)(total - p_total) * 1e6 / (double)sysconf(_SC_CLK_TCK);
+            if (span_us > 0) s->cpu_game_pct = (float)(100.0 * (double)(proc_us - p_proc_us) / span_us);
+        }
+        p_idle = idle, p_total = total, p_proc_us = proc_us;
+    }
+    uint64_t mem = 0;
+    size_t len = sizeof mem;
+    if (!sysctlbyname("hw.memsize", &mem, &len, NULL, 0) && mem) {
+        s->ram_total_mb = (float)(mem >> 20);
+        vm_statistics64_data_t vm;
+        mach_msg_type_number_t vn = HOST_VM_INFO64_COUNT;
+        if (host_statistics64(host, HOST_VM_INFO64, (host_info64_t)&vm, &vn) == KERN_SUCCESS) {
+            uint64_t used = ((uint64_t)vm.active_count + vm.wire_count + vm.compressor_page_count) * (uint64_t)vm_kernel_page_size;
+            s->ram_used_mb = (float)(used >> 20);
+        }
+    }
+    task_vm_info_data_t ti;
+    mach_msg_type_number_t tn = TASK_VM_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&ti, &tn) == KERN_SUCCESS)
+        s->ram_game_mb = (float)(ti.phys_footprint >> 20);
+    gpu_hint(s->gpu_name);
+    mac_gpu_sample(s);
+}
+#else
 static void platform_sample(PerfStats *s, double dt) {
     static unsigned long long p_idle, p_total, p_proc;
     FILE *f = fopen("/proc/stat", "r");
@@ -634,6 +713,7 @@ static void platform_sample(PerfStats *s, double dt) {
         if (!amdgpu_sample(s)) devfreq_gpu_sample(s);
     }
 }
+#endif  // __APPLE__
 #endif
 
 // ------------------------------------------------------------------ sampler thread

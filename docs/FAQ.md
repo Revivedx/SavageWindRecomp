@@ -102,7 +102,9 @@ work away between sessions: in NVIDIA Control Panel > Manage 3D settings, raise 
 
 ### How much disk space and memory does it need?
 
-About 20 GB of disk and 16 GB of RAM.
+About 20 GB of disk and 8 GB of RAM with a dedicated graphics card: the game takes about 4.5 GB of RAM and asks
+Windows for about 6.5 GB, so keep the page file on and close other programs on an 8 GB PC. Integrated graphics take
+their video memory from the PC's RAM: 16 GB there.
 
 ### Where are my saves? Can I bring saves from the Wii U or Cemu?
 
@@ -241,8 +243,13 @@ draw distance.
 
 ### What hardware is the minimum?
 
-A GPU with a Vulkan 1.3 driver, a CPU with SSE4.2 and 16 GB of RAM. Without AVX2 and FMA the game code runs in a slower
-compatibility mode. GPUs with only Vulkan 1.2, such as the GT 730 and the oldest Radeons on Windows, aren't supported.
+A GPU with a Vulkan 1.3 driver, a CPU with SSE4.2 and 4 threads, and 8 GB of RAM (16 GB with integrated graphics).
+Without AVX2 and FMA the game code runs in a slower compatibility mode. With 2 threads the game runs but stutters.
+
+A GPU whose driver stops at Vulkan 1.2 is taken when the driver has dynamic rendering, synchronization2 and extended
+dynamic state 1 and 2 as extensions; FSR 3, FSR 4 and frame generation are off there. This path is new on the `test`
+branch and no such card has confirmed it yet: if yours doesn't start, the log names the extension that is missing, and
+a report with that log helps.
 
 ### Is this faster than an emulator?
 
@@ -524,11 +531,22 @@ written for.
 
 ### Can I use mods?
 
-Partly, and not yet the way you would on Cemu. Language packs work: `lang/<language>.txt` in the data folder is read over
-the built-in translations. A loader for other mods is planned, and because this isn't an emulator, Wii U and Cemu
-packs need adapting. Mods must not ship game files
+Yes, since Alpha 7. Put each mod in its own folder in the `mods` folder next to Savage
+Wind (`mods/<name>/romfs/Actor/...`, or `mods/<name>/Actor/...` directly), then turn it on in the **Mods** tab (Settings
+on the start screen, or F1 in game) and restart. The tab also sets the load order and shows conflicts. Mods made for
+the Switch version 1.9.0 fit best; Wii U and Cemu packs need adapting, because the file formats differ. On Alpha 6
+(0.6.0), a mod's `romfs` folder can be loaded with the launch option `SAVAGEWIND_ROMFS_OVERLAY=<folder>`.
+
+**Mods are other people's work.** Savage Wind doesn't check, test or support them, and isn't responsible for what they
+do, including if they break the game or your saves. Back up your saves before trying one, and turn every mod off before
+reporting a bug: a bug caused by a mod is closed right away, because we don't support what isn't ours. Savage Wind
+releases never include mods, and mods must not be shared with game files in them
 ([#647](https://github.com/Revivedx/SavageWindRecomp/issues/647),
-[#645](https://github.com/Revivedx/SavageWindRecomp/issues/645)).
+[#645](https://github.com/Revivedx/SavageWindRecomp/issues/645)). In the future we may point to mods we've found to
+play well with Savage Wind.
+
+Language packs for Savage Wind's own menus are separate: `lang/<language>.txt` in the data folder is read over the
+built-in translations ([menu language packs](menu-language-packs.md)).
 
 ### Does it support amiibo?
 

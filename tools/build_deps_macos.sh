@@ -38,13 +38,56 @@ fi
 
 if [ ! -f "$P/lib/libavcodec.dylib" ]; then
     unpack ffmpeg-9.0.2.tar.xz ffmpeg
-    (cd "$S/ffmpeg" && ./configure --prefix="$P" --cc=clang --arch=arm64 --enable-shared --disable-static \
+    # (a neutral prefix, installed through DESTDIR: FFmpeg keeps its configure line in the libraries
+    # (avcodec_configuration), and --prefix="$P" put the builder's home folder into the shipped .app)
+    (cd "$S/ffmpeg" && ./configure --prefix=/opt/savagewind-deps --cc=clang --arch=arm64 --enable-shared --disable-static \
         --extra-cflags="-mmacosx-version-min=$MIN" --extra-ldflags="-mmacosx-version-min=$MIN" \
         --disable-autodetect --disable-programs --disable-doc --disable-network --disable-avdevice --disable-avfilter \
         --disable-swresample --disable-everything \
         --enable-protocol=file --enable-demuxer=matroska,mov \
         --enable-decoder=vp9,vp8,vorbis,opus,h264,aac --enable-parser=vp9,vp8,vorbis,opus,h264,aac \
-        --install-name-dir='@rpath' && make -j"$JOBS" && make install)
+        --install-name-dir='@rpath' && make -j"$JOBS" && rm -rf "$S/ffmpeg-root" && make install DESTDIR="$S/ffmpeg-root" && cp -R "$S/ffmpeg-root/opt/savagewind-deps/." "$P/")
+fi
+
+# The Vulkan build (RENDERER, default vulkan; MoltenVK): the Vulkan loader and shaderc (with the glslang / SPIRV-Tools / SPIRV-Headers it builds
+# from), pinned to one Vulkan SDK release. MoltenVK itself is copied in by tools/bundle_macos.sh.
+if [ "${RENDERER:-vulkan}" = vulkan ]; then
+    VK=1.4.363.0
+    fetch https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/vulkan-sdk-$VK.tar.gz \
+          4a078be12bef21cfebc09d878b77a63cff9d68f899254a0b00d0e37ef73e7f7e Vulkan-Headers-$VK.tar.gz
+    fetch https://github.com/KhronosGroup/Vulkan-Loader/archive/refs/tags/vulkan-sdk-$VK.tar.gz \
+          941eff558fc74f248745fb7df367640cf89a8457f216dae498a74ae14b6ba6f7 Vulkan-Loader-$VK.tar.gz
+    fetch https://github.com/KhronosGroup/SPIRV-Headers/archive/refs/tags/vulkan-sdk-$VK.tar.gz \
+          5b3a0d099f5c7649e29c0938476c462e71d66ad89a0bde42fa1ba3eb476956c9 SPIRV-Headers-$VK.tar.gz
+    fetch https://github.com/KhronosGroup/SPIRV-Tools/archive/refs/tags/vulkan-sdk-$VK.tar.gz \
+          e6c83a215538fbfd265ccf398d3877985055df1273dbed73912bd05307664688 SPIRV-Tools-$VK.tar.gz
+    fetch https://github.com/KhronosGroup/glslang/archive/refs/tags/16.6.0.tar.gz \
+          9c09b901149c729df745057dafa815278aaa101b84d2b6e14f16a42de52f97f2 glslang-16.6.0.tar.gz
+    fetch https://github.com/google/shaderc/archive/refs/tags/v2026.4.tar.gz \
+          f06ce5bcca94e5df7f34e115743597d0ad2e13c5fe9213c67dc8c76031241947 shaderc-2026.4.tar.gz
+    CM=(-G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$P" -DCMAKE_PREFIX_PATH="$P"
+        -DCMAKE_OSX_DEPLOYMENT_TARGET="$MIN" -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_INSTALL_NAME_DIR=@rpath)
+    if [ ! -f "$P/lib/libvulkan.1.dylib" ]; then
+        unpack Vulkan-Headers-$VK.tar.gz vkheaders
+        cmake -S "$S/vkheaders" -B "$S/vkheaders/build" "${CM[@]}" && cmake --install "$S/vkheaders/build"
+        unpack Vulkan-Loader-$VK.tar.gz vkloader
+        # (SYSCONFDIR: its own system search folder, which would otherwise be this machine's build/deps/etc - a path
+        # under the builder's home inside the shipped library)
+        cmake -S "$S/vkloader" -B "$S/vkloader/build" "${CM[@]}" -DBUILD_TESTS=OFF -DSYSCONFDIR=/etc
+        cmake --build "$S/vkloader/build" -j"$JOBS" && cmake --install "$S/vkloader/build"
+    fi
+    if [ ! -f "$P/lib/libshaderc_shared.1.dylib" ]; then
+        unpack shaderc-2026.4.tar.gz shaderc
+        unpack glslang-16.6.0.tar.gz shaderc/third_party/glslang
+        unpack SPIRV-Tools-$VK.tar.gz shaderc/third_party/spirv-tools
+        unpack SPIRV-Headers-$VK.tar.gz shaderc/third_party/spirv-headers
+        cmake -S "$S/shaderc" -B "$S/shaderc/build" "${CM[@]}" -DSHADERC_SKIP_TESTS=ON -DSHADERC_SKIP_EXAMPLES=ON \
+              -DSHADERC_SKIP_COPYRIGHT_CHECK=ON -DSPIRV_SKIP_EXECUTABLES=ON -DENABLE_GLSLANG_BINARIES=OFF
+        cmake --build "$S/shaderc/build" -j"$JOBS" --target shaderc_shared
+        mkdir -p "$P/include/shaderc"
+        cp "$S"/shaderc/libshaderc/include/shaderc/*.h "$P/include/shaderc/"
+        cp -P "$S"/shaderc/build/libshaderc/libshaderc_shared*.dylib "$P/lib/"
+    fi
 fi
 
 if [ ! -x "$P/python/bin/python3.12" ]; then

@@ -4,7 +4,10 @@ What changed in each Savage Wind release. The `test` branch holds what the next 
 
 ## Next (on the `test` branch)
 
-Nothing yet.
+- **Lower requirements:** 8 GB of RAM with a dedicated graphics card instead of 16 GB. The game asks Windows for about
+  2.5 GB less memory (RTX 3060, 1080p: 8.3 -> 5.9 GB) and no longer grows by hundreds of megabytes as you travel.
+- **Vulkan 1.2 drivers** are taken when they have dynamic rendering, synchronization2 and extended dynamic state 1 and
+  2 as extensions (without FSR 3, FSR 4 or frame generation). Not confirmed on such a card yet.
 
 ## Alpha 6 (0.6.0-alpha.6) - 2026-11-15
 

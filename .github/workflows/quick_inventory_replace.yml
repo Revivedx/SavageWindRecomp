@@ -1,0 +1,37 @@
+name: Quick inventory replacement
+
+on:
+  pull_request:
+    branches: [test, main]
+    paths:
+      - 'runtime/quick_replace*'
+      - 'runtime/quick_drop*'
+      - 'runtime/quick_inventory_sort*'
+      - 'runtime/game_sites.h'
+      - 'tools/game_sites.py'
+      - 'tools/patches.py'
+      - 'tools/gen.py'
+      - 'tools/test_quick_replace*'
+      - 'Makefile'
+      - '.github/workflows/quick_inventory_replace.yml'
+  push:
+    branches: [test, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quick-replace-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quick-replace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - run: make test-quick-replace test-quick-drop-native test-quick-inventory-sort
+      - uses: astral-sh/setup-uv@v10.3.3
+      - run: uv run --no-project --with lz4 --with capstone --with unicorn python tools/test_game_sites.py
+      - run: uv run --no-project --with lz4 --with capstone --with unicorn python tools/test_quick_replace_codegen.py

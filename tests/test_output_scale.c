@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include "../runtime/nvn/output_scale.c"
 Settings g_settings = {.wide_view = true, .fov = 100, .render_scale = RSCALE_100};
+volatile int g_movie_playing;
 static bool title, loading, map, pause;
 bool framepace_menu_ui(void) { return pause; }
 bool framepace_map_ui(void) { return map; }
@@ -13,9 +14,12 @@ bool framepace_in_event(void) { return false; }
 bool fsr3_available(void) { return false; }
 bool fsr4_available(void) { return false; }
 bool vk_dlss_available(void) { return false; }
+bool xess_available(void) { return false; }
+bool xess_usable(void) { return false; }
 uint64_t plat_now_ns(void) { return 1000000000; }
 uint64_t renderer_present_count(void) { return 0; }
 uint64_t framepace_shown_frame(void) { return 0; }
+float winsize_refresh_rate(void) { return 60; }
 static void near(double actual, double expected) {
     assert(fabs(actual - expected) < 1e-6);
 }
@@ -30,7 +34,7 @@ int main(void) {
 
     pause = true;
     g_settings.hud_edges = true;
-#ifndef __APPLE__
+#ifndef SW_METAL
     assert(fabsf(output_pause_extra_y() - 40) < .001f);
     assert(fabsf(output_ui_extra_y() - 40) < .001f);
     g_settings.hud_edges = false;
@@ -46,7 +50,7 @@ int main(void) {
     near(o.shape, 1); near(o.vh, 720); near(o.vy, 40);
     title = true;
     output_scale(1280, 800, true, &o);
-#ifdef __APPLE__
+#ifdef SW_METAL
     near(o.shape, 1); near(o.vh, 720); near(o.vy, 40);
 #else
     near(o.shape, .9); near(o.vh, 800); near(o.vy, 0);
@@ -68,7 +72,7 @@ int main(void) {
     // A full-height map reveals more terrain within the original pixel scale.
     map = true;
     output_scale(1280, 800, true, &o);
-#ifdef __APPLE__
+#ifdef SW_METAL
     near(o.shape, .9); near(o.vh, 720); near(o.vy, 40);
     near(output_map_extra_y(), 0);
     output_scale(1024, 768, true, &o);
@@ -104,7 +108,7 @@ int main(void) {
         near(o.vw, 1366); near(o.vh, 768); near(o.vx, 0); near(o.vy, 0);
     }
 
-#ifndef __APPLE__
+#ifndef SW_METAL
     // Render scale only scales the 3D scene; UI/HUD targets stay at output resolution (#746).
     g_settings.render_scale = RSCALE_75;
     output_scale(1920, 1080, true, &o);
@@ -117,5 +121,22 @@ int main(void) {
     near(1600 * o.scene_sx, 3840); near(900 * o.scene_sy, 2160);
     g_settings.render_scale = RSCALE_100;
 #endif
-    puts("PASS: taller map viewport, 16:9 fallback, disabled fill, title, loading and ultrawide");
+    // Pre-rendered 16:9 movies keep their aspect ratio instead of stretching or squishing (#838).
+    g_movie_playing = 1;
+    output_scale(2560, 1080, true, &o);
+    near(o.shape, 1); near(o.vw, 1920); near(o.vh, 1080); near(o.vx, 320); near(o.vy, 0);
+    output_scale(1280, 800, true, &o);
+    near(o.shape, 1); near(o.vw, 1280); near(o.vh, 720); near(o.vx, 0); near(o.vy, 40);
+    g_movie_playing = 0;
+
+
+    // Dynamic resolution never draws the scene under a third of the window's lines: at 100% down to 3.0x, at 75% to
+    // 2.0x (2.4 would be under), at 50% (the Potato preset) to 1.5x, its fixed size before
+    near(k_dyn_res_factors[dyn_res_max_step()], 3.0);
+    g_settings.render_scale = RSCALE_75;
+    near(k_dyn_res_factors[dyn_res_max_step()], 2.0);
+    g_settings.render_scale = RSCALE_50;
+    near(k_dyn_res_factors[dyn_res_max_step()], 1.5);
+    g_settings.render_scale = RSCALE_100;
+    puts("PASS: taller map viewport, 16:9 fallback, disabled fill, title, loading, movies, ultrawide and dynamic floor");
 }

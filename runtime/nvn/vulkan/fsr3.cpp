@@ -47,7 +47,8 @@ static void message(FfxMsgType type, const wchar_t *msg) {
     LOG("[fsr3] %s: %s\n", type == FFX_MESSAGE_TYPE_ERROR ? "error" : "warning", buf);
 }
 
-extern "C" bool fsr3_available(void) { return true; }
+extern "C" bool vk_api12(void);  // (device.c: a Vulkan 1.2 driver, where the FidelityFX backend is not offered)
+extern "C" bool fsr3_available(void) { return !vk_api12(); }
 
 extern "C" void vk_wait_idle_for_contexts(void);  // (device.c)
 

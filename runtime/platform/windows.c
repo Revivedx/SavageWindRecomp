@@ -3,6 +3,7 @@
 #include <wingdi.h>
 #include <wchar.h>
 #include <pthread.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -408,12 +409,18 @@ static void require_cpu(void) {
     ExitProcess(1);
 }
 
+// What the error box says under "no usable GPU" (the line above it names each GPU found and what its driver lacks).
+static const char *plat_gpu_need_text(void) {
+    return "Savage Wind needs a graphics driver with Vulkan 1.3, or with Vulkan 1.2 and these extensions: VK_KHR_dynamic_rendering, VK_KHR_synchronization2, VK_EXT_extended_dynamic_state and VK_EXT_extended_dynamic_state2. Install the latest driver "
+           "for the graphics card named above. If its latest driver still lacks them, that card cannot run Savage Wind.";
+}
+
 // Fatal error (rt_fatal_trace): the last FATAL / exception line of the log in a message box, when there is no console.
 void plat_fatal_notice(void) {
     plat_accessibility_shortcuts(true);  // (the shortcuts as they were: the process ends)
     if (!g_log_path[0]) return;
     fflush(stderr);
-    char text[1024] = "Savage Wind stopped because of an error.";
+    char text[1600] = "Savage Wind stopped because of an error.";
     FILE *f = fopen(g_log_path, "rb");
     if (f) {
         static char tail[16384];
@@ -442,10 +449,14 @@ void plat_fatal_notice(void) {
                          "PC's RAM, and Savage Wind keeps the game's 3 GB of memory available to the GPU: with integrated "
                          "graphics it needs 16 GB of RAM. Close other programs and lower Video > Shadow resolution and the "
                          "upscaler quality; with a dedicated GPU, update its driver.");
-            } else if (strstr(line, "Vulkan 1.3") || strstr(line, "vkCreateInstance")) {  // (no driver, or too old)
+            } else if (strstr(line, "no usable GPU")) {  // (device.c pick_device: the line names each GPU and what it lacks)
                 size_t l = strlen(text);
-                snprintf(text + l, sizeof text - l, "\n\nSavage Wind needs a graphics driver with Vulkan 1.3: install the "
-                         "latest driver for your GPU (NVIDIA, AMD or Intel).");
+                snprintf(text + l, sizeof text - l, "\n\n%s", plat_gpu_need_text());
+            } else if (strstr(line, "vkCreateInstance") || strstr(line, "no Vulkan device")) {  // (no driver at all)
+                size_t l = strlen(text);
+                snprintf(text + l, sizeof text - l, "\n\nNo Vulkan graphics driver was found. Install the latest driver "
+                         "for your GPU from NVIDIA, AMD or Intel: the one Windows installs by itself often has no Vulkan. "
+                         "Savage Wind needs Vulkan 1.3, or 1.2 with the extensions the FAQ lists.");
             } else if (strstr(line, "Vulkan") || strstr(line, "VK_") || strstr(line, "vk")) {  // (any other driver error)
                 size_t l = strlen(text);
                 snprintf(text + l, sizeof text - l, "\n\nThe graphics driver reported an error. Updating the driver for "
@@ -556,8 +567,9 @@ static void append_arg(char *out, size_t cap, const char *a) {
     out[n] = 0;
 }
 
-// No exec() on Windows: start the new process with the same console / standard handles, then exit.
-void plat_exec(char *const argv[]) {
+// No exec() on Windows: start the new process with the same console / standard handles, then exit. wait: stay until
+// it ends and exit with its status, as exec keeps it on POSIX (plat_exec_wait).
+static void exec_self(char *const argv[], bool wait) {
     STARTUPINFOW si = {.cb = sizeof si};
     PROCESS_INFORMATION pi;
     BOOL ok;
@@ -575,9 +587,17 @@ void plat_exec(char *const argv[]) {
     }
     if (!ok) return;
     CloseHandle(pi.hThread);
+    DWORD status = 0;
+    if (wait && WaitForSingleObject(pi.hProcess, INFINITE) == WAIT_OBJECT_0) GetExitCodeProcess(pi.hProcess, &status);
     CloseHandle(pi.hProcess);
-    ExitProcess(0);
+    ExitProcess(status);
 }
+
+void plat_exec(char *const argv[]) { exec_self(argv, false); }
+
+// (start-up restarts only, before anything is open: the guest range taken by chance, the saved launch options. The
+// exit status was always 0 there, so a command line command or a launcher saw success for a failure, now and then.)
+void plat_exec_wait(char *const argv[]) { exec_self(argv, true); }
 
 // ---- diagnostics
 // DLL frames are named module+offset; frames in our own executable are left to the caller, which maps
@@ -900,6 +920,22 @@ bool plat_remove_tree(const char *dir) {
     for (wchar_t *p = w; *p; p++) if (*p == L'/') *p = L'\\';
     SHFILEOPSTRUCTW op = {.wFunc = FO_DELETE, .pFrom = w, .fFlags = FOF_NO_UI};
     return SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted;
+}
+
+bool plat_file_flush(const char *path) {
+    wchar_t w[MAX_PATH + 1];
+    if (MultiByteToWideChar(CP_UTF8, 0, path, -1, w, MAX_PATH + 1) <= 1) return false;
+    HANDLE h = CreateFileW(w, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        DWORD e = GetLastError();
+        errno = e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND ? ENOENT : EACCES;
+        return false;
+    }
+    bool ok = FlushFileBuffers(h);
+    if (!ok) errno = EIO;
+    CloseHandle(h);
+    return ok;
 }
 
 // Windows' accessibility shortcuts while the game has the focus: pressing Shift five times (Sticky Keys), holding the

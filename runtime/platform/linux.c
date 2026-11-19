@@ -194,8 +194,9 @@ static void log_to_file(void) {
         rename(g_log_path, prev);
     }
     const char *e = getenv("SAVAGEWIND_LOG_ECHO_FD");
-    int echo = e && isatty(atoi(e)) ? atoi(e) : -1;
-    if (echo < 0 && isatty(STDERR_FILENO) && (echo = dup(STDERR_FILENO)) >= 0) {  // (no close-on-exec: kept by the game)
+    bool quiet = getenv("SAVAGEWIND_LOG_QUIET") != NULL;  // (savagewind <command>: its own output only, runtime/cli.h)
+    int echo = !quiet && e && isatty(atoi(e)) ? atoi(e) : -1;
+    if (echo < 0 && !quiet && isatty(STDERR_FILENO) && (echo = dup(STDERR_FILENO)) >= 0) {  // (no close-on-exec: kept by the game)
         char fd[16];
         snprintf(fd, sizeof fd, "%d", echo);
         setenv("SAVAGEWIND_LOG_ECHO_FD", fd, 1);
@@ -257,6 +258,8 @@ void plat_exec(char *const argv[]) {
     if (av && plat_exe_path(path, sizeof path)) execv(path, av);
 }
 
+void plat_exec_wait(char *const argv[]) { plat_exec(argv); }  // (exec keeps the exit status)
+
 // ---- diagnostics
 // Exported symbols only (the Makefile links with -rdynamic); frames in the generated code are left to the caller,
 // which maps them to guest functions (runtime/dispatch.c). Static runtime functions come out as the nearest guest
@@ -272,9 +275,12 @@ const char *plat_symbol(uint64_t pc, uint64_t *offset) {
 void plat_fatal_notice(void) {
     if (!g_log_path[0]) return;
     fflush(stderr);
-    char text[1200];
-    // (the GPU out of memory, vk.h VK_CHECK: the reason a player can act on, #117)
+    char text[2000];
+    // (the GPU out of memory, vk.h VK_CHECK: the reason a player can act on, #117; no usable GPU, device.c
+    // pick_device: its line names each GPU found and what its driver lacks)
     bool oom = false;
+    static char gpu[700];
+    gpu[0] = 0;
     FILE *f = fopen(g_log_path, "rb");
     if (f) {
         static char tail[8192];
@@ -284,8 +290,17 @@ void plat_fatal_notice(void) {
         tail[fread(tail, 1, sizeof tail - 1, f)] = 0;
         fclose(f);
         oom = strstr(tail, "FATAL: the GPU ran out of memory") != NULL;
+        const char *g = strstr(tail, "FATAL: no usable GPU.");
+        if (g) {
+            size_t n = strcspn(g, "\n");
+            snprintf(gpu, sizeof gpu, "\n\n%.*s", (int)(n < 600 ? n : 600), g);
+        }
     }
-    snprintf(text, sizeof text, "Savage Wind stopped because of an error.%s\n\nDetails: %s",
+    snprintf(text, sizeof text, "Savage Wind stopped because of an error.%s%s%s\n\nDetails: %s", gpu,
+             gpu[0] ? "\n\nSavage Wind needs a graphics driver with Vulkan 1.3, or with Vulkan 1.2 and these extensions: VK_KHR_dynamic_rendering, VK_KHR_synchronization2, VK_EXT_extended_dynamic_state and VK_EXT_extended_dynamic_state2. Update Mesa or the "
+                      "driver for the graphics card named above. If its newest driver still lacks them, that card cannot "
+                      "run Savage Wind."
+                    : "",
              oom ? "\n\nThe graphics card ran out of memory. Integrated graphics share the PC's RAM, and Savage Wind keeps "
                    "the game's 3 GB of memory available to the GPU: with integrated graphics it needs 16 GB of RAM. Close "
                    "other programs and lower Video > Shadow resolution and the upscaler quality."
@@ -400,6 +415,14 @@ static int rm_entry(const char *path, const struct stat *sb, int flag, struct FT
     return remove(path);
 }
 bool plat_remove_tree(const char *dir) { return nftw(dir, rm_entry, 16, FTW_DEPTH | FTW_PHYS) == 0; }
+
+bool plat_file_flush(const char *path) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return false;
+    bool ok = fsync(fd) == 0;
+    close(fd);
+    return ok;
+}
 
 // End the process at once, skipping the library teardown: as on Windows, the GPU driver's threads crashed in exit()
 // while the game's threads still submitted work.

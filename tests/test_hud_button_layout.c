@@ -9,6 +9,13 @@
 #include "../runtime/settings.c"
 #include "../runtime/hle/bindings.c"
 #include "../runtime/nvn/glyphs.c"
+#include "../runtime/mods.c"
+#ifdef IN
+#undef IN
+#endif
+#ifdef OUT
+#undef OUT
+#endif
 #include "../runtime/hle.h"
 #include "../runtime/ipc.h"
 #include "../runtime/language.h"

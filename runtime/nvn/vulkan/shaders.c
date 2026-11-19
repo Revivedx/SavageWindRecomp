@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <zlib.h>
 
+#include "../../hash.h"
 #include "../shader_archive.h"
 #include "shaders.h"
 
@@ -63,13 +64,6 @@ typedef struct { char magic[4]; uint32_t info_size, msl_len, bin_size; ShaderKey
 static struct { uint64_t h; ShaderInfo *si; } xlate_tab[XLATE_TAB];
 static struct { const ShaderInfo *si; uint64_t h; } xlate_ids[XLATE_TAB];  // the other way round
 static pthread_mutex_t xlate_lock = PTHREAD_MUTEX_INITIALIZER;
-
-static uint64_t hash64(uint64_t h, const void *p, size_t n) {
-    const uint8_t *b = p;
-    for (; n >= 8; n -= 8, b += 8) { uint64_t w; memcpy(&w, b, 8); h = (h ^ w) * 0x9E3779B97F4A7C15ull; h ^= h >> 29; }
-    for (; n; n--, b++) h = (h ^ *b) * 0x100000001B3ull;
-    return h ^ (h >> 32);
-}
 
 // want: the header the file must have (all but msl_len), or NULL to take the one in the file (by id: the hash
 // covers it) when it is sane and of that stage.

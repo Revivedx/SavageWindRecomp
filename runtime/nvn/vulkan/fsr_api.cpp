@@ -128,7 +128,8 @@ extern "C" void fsr_api_probe(VkDevice dev, VkPhysicalDevice phys) {
         ver_have[4] ? "" : amd_gpu ? " (no FSR 4 for this GPU)" : " (FSR 4: AMD Radeon only)");
 }
 
-extern "C" bool fsr_api_has(int major) { return major >= 1 && major <= 4 && ver_have[major]; }
+extern "C" bool vk_api12(void);  // (device.c)
+extern "C" bool fsr_api_has(int major) { return major >= 1 && major <= 4 && ver_have[major] && !vk_api12(); }
 extern "C" bool fsr4_available(void) { return fsr_api_has(4); }
 extern "C" bool fsr3_api_wanted(void) {
     static int on = -1;

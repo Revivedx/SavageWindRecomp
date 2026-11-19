@@ -16,7 +16,7 @@ uint64_t act_raw_slots(void) { return 0; }
 uint64_t act_play_keys(int (*held)(int)) { (void)held; return 0; }
 uint64_t act_play_pads(uint32_t host) { (void)host; return 0; }
 uint64_t g_watch_lo, g_watch_hi;
-static uint64_t test_frame = 100, pointer_injection, control_injection;
+static uint64_t test_frame = 100, pointer_injection, control_injection, replacement_retry;
 static bool game_menu = true;
 bool menu_input_captured(void) { return false; }
 bool menu_cursor_free(void) { return false; }
@@ -75,6 +75,8 @@ int main(void) {
     // snapshot. Exercise each late producer while the real gate stays active.
     script_buttons = key_buttons = pad_buttons = pointer_injection = control_injection = 0;
     menu_confirm = false; test_frame += 20; assert(sample() == directions);
+    replacement_retry = 1ull << BTN_A; assert(sample() == directions);
+    replacement_retry = 0;
     pointer_injection = 1ull << BTN_A; assert(sample() == directions);
     pointer_injection = 0; assert(sample() == directions);
     menu_confirm = true; assert(sample() == directions);
@@ -99,3 +101,10 @@ int main(void) {
     puts("input consumption and equipped HID gate tests passed");
     return 0;
 }
+
+// These standalone tests do not own a replacement selector.
+bool quick_replace_enabled(void) { return false; }
+bool quick_replace_active(void) { return false; }
+bool quick_replace_card_drop_allowed(void) { return false; }
+bool quick_replace_card_sort_allowed(uint64_t screen) { (void)screen; return false; }
+uint64_t quick_replace_buttons(uint64_t b) { return b | replacement_retry; }

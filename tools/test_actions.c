@@ -96,6 +96,31 @@ static void a_press_nobody_asked_about_expires(void) {
     assert(trig(JUMP) == 0);
 }
 
+// A conversation answers like the HUD prompt: with Jump on Interact's button, the press that picks an answer doesn't
+// jump. Lines only spoken over play (the camera still turns) leave the button to Jump.
+static bool dialogue_up, cam_live;
+bool framepace_dialogue_ui(void) { return dialogue_up; }
+bool input_cam_live(void) { return cam_live; }
+static void a_conversation_answer_does_not_jump(void) {
+    act_reset();
+    int a = g_act_pad[0];  // (Interact's controller button)
+    act_set(BIND_DEV_PAD, JUMP, a);
+    dialogue_up = true;
+    host(0, 0, 0), act_poll(true);
+    host(0, 0, 1u << a), now += 16, act_poll(true);
+    assert(hold(JUMP) == 0 && trig(JUMP) == 0);
+    host(0, 0, 0), now += 16, act_poll(true);
+    dialogue_up = false, now += 300, act_poll(true);  // closed, and the prompt's moment is over
+    host(0, 0, 1u << a), now += 16, act_poll(true);
+    assert(trig(JUMP) == 1);
+    host(0, 0, 0), now += 16, act_poll(true);
+    dialogue_up = cam_live = true, act_poll(true);
+    host(0, 0, 1u << a), now += 16, act_poll(true);
+    assert(trig(JUMP) == 1);
+    dialogue_up = cam_live = false;
+    host(0, 0, 0), act_reset(), act_poll(true);
+}
+
 static void menus_use_the_switch_layer(void) {
     key_down[SDL_SCANCODE_G] = 1;
     host(0, 0, 0);
@@ -663,6 +688,7 @@ int main(void) {
     swap_ab_sets_the_xbox_convention();
     names_and_groups();
     play_bits_ignore_menu_rows();
+    a_conversation_answer_does_not_jump();
     puts("action bindings: default fallthrough, custom host bindings, schema migration, held / pressed, menus, shared keys, pad capture, contexts, A / B swap, reset and ini passed");
     return 0;
 }

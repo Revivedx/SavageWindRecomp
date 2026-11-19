@@ -3,6 +3,7 @@
 #include <SDL3/SDL_vulkan.h>
 #include <math.h>
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,6 +15,7 @@
 #endif
 
 #include "../../framepace.h"
+#include "../../hash.h"
 #include "../../imageload.h"
 #include "../../paths.h"
 #include "../../platform.h"
@@ -28,10 +30,19 @@
 #include "shaders.h"
 #include "vram.h"
 #include "record.h"
+#include "vk13.h"
 #include "fsr_api.h"
+#include "xess.h"
 #include "../output_scale.h"
 #include "../renderer.h"
 #include "dlss.h"
+
+// SAVAGEWIND_VK_API12=1: the driver used as a Vulkan 1.2 one (api12_usable below)
+static int api12_forced(void) {  // (0: no, 1: yes, 2: and without dynamic rendering)
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("SAVAGEWIND_VK_API12"); on = e && *e && strcmp(e, "0") ? (e[0] == '2' ? 2 : 1) : 0; }
+    return on;
+}
 
 #ifdef _WIN32  // (kernel32; windows.h itself clashes with names used here)
 __declspec(dllimport) int __stdcall MoveFileExA(const char *from, const char *to, unsigned long flags);
@@ -47,6 +58,7 @@ uint64_t g_addr_report_lo, g_addr_report_hi;  // (SAVAGEWIND_VK_ADDR_REPORT)
 uint64_t renderer_present_count(void);
 static bool g_m5;     // maintenance5 enabled (the pipeline cache's header: pc_header)
 static bool g_cs_ext;  // VK_EXT_swapchain_colorspace: HDR10 swapchains can be made (the HDR section below)
+static bool g_portability;  // VK_KHR_portability_enumeration: the instance lists portability drivers (MoltenVK)
 
 // ================================================================== instance / device
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_cb(VkDebugUtilsMessageSeverityFlagBitsEXT sev, VkDebugUtilsMessageTypeFlagsEXT type,
@@ -78,6 +90,12 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_cb(VkDebugUtilsMessageSeverityFlagBi
 
 // SAVAGEWIND_VK_VALIDATION=1: Khronos validation layer (MSYS2 package vulkan-validation-layers)
 static void create_instance(void) {
+#ifdef __APPLE__
+    // MoltenVK: let Metal compile shaders with all its threads (macOS 13.3+). Every new pipeline is a whole Metal
+    // compile there (no graphics pipeline libraries), its draws skipped until it's done: first-seen materials showed up
+    // late. (Read when the driver loads, just below; an MVK_CONFIG_* set by the player wins.)
+    setenv("MVK_CONFIG_SHOULD_MAXIMIZE_CONCURRENT_COMPILATION", "1", 0);
+#endif
     Uint32 n_sdl = 0;
     const char *const *sdl_ext = SDL_Vulkan_GetInstanceExtensions(&n_sdl);
     const char *ext[28];
@@ -88,9 +106,17 @@ static void create_instance(void) {
         vkEnumerateInstanceExtensionProperties(NULL, &nie, NULL);
         VkExtensionProperties *ie = calloc(nie ? nie : 1, sizeof *ie);
         vkEnumerateInstanceExtensionProperties(NULL, &nie, ie);
-        for (uint32_t i = 0; i < nie && !g_cs_ext; i++)
+        bool portability = false;  // (MoltenVK: a portability driver, listed only when the instance asks for those)
+        for (uint32_t i = 0; i < nie; i++) {
             if (!strcmp(ie[i].extensionName, VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME)) g_cs_ext = true;
+            if (!strcmp(ie[i].extensionName, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)) portability = true;
+        }
         if (g_cs_ext) ext[n_ext++] = VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME;
+#ifdef __APPLE__  // (elsewhere the loader lists it too, and it would bring in layered drivers - Mesa's Dozen on Windows)
+        if (portability) ext[n_ext++] = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME, g_portability = true;
+#else
+        (void)portability;
+#endif
         free(ie);
     }
     const char **ngx_ext = NULL;
@@ -100,6 +126,15 @@ static void create_instance(void) {
         bool duplicate = false;
         for (uint32_t j = 0; j < n_ext; j++) duplicate |= !strcmp(ext[j], ngx_ext[i]);
         if (!duplicate) ext[n_ext++] = ngx_ext[i];
+    }
+    // Intel XeSS's instance extensions, and its lowest Vulkan API version (xess.h; a no-op without libxess.dll)
+    const char *const *xess_iext = NULL;
+    uint32_t n_xess_iext = 0, xess_api = 0;
+    xess_required_instance_extensions(&xess_iext, &n_xess_iext, &xess_api);
+    for (uint32_t i = 0; i < n_xess_iext && n_ext < sizeof(ext) / sizeof(ext[0]); i++) {
+        bool duplicate = false;
+        for (uint32_t j = 0; j < n_ext; j++) duplicate |= !strcmp(ext[j], xess_iext[i]);
+        if (!duplicate) ext[n_ext++] = xess_iext[i];
     }
     bool validate = getenv("SAVAGEWIND_VK_VALIDATION") != NULL;
     // (debugging) SAVAGEWIND_VK_ADDR_REPORT=<lo>-<hi> (hex GPU addresses): every bind and unbind of GPU memory in that
@@ -119,9 +154,15 @@ static void create_instance(void) {
     snprintf(engine, sizeof engine, "Savage Wind %s", rt_version());
     VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .pApplicationName = "Savage Wind",
                              .applicationVersion = ver, .pEngineName = engine, .engineVersion = ver,
-                             .apiVersion = VK_API_VERSION_1_3};
+                             .apiVersion = api12_forced() ? VK_API_VERSION_1_2 : VK_API_VERSION_1_3};
     LOG("[vk] application version %u.%u.%u (Savage Wind %s)\n", vmaj, vmin, vpatch * 100 + vpre, rt_version());
+    if (xess_api > app.apiVersion) {  // (XeSS's lowest Vulkan API version, when libxess.dll is next to the game)
+        app.apiVersion = xess_api;
+        LOG("[vk] XeSS raises the application's Vulkan API version to %u.%u.%u\n", VK_API_VERSION_MAJOR(xess_api),
+            VK_API_VERSION_MINOR(xess_api), VK_API_VERSION_PATCH(xess_api));
+    }
     VkInstanceCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app,
+                               .flags = g_portability ? VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR : 0,
                                .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext,
                                .enabledLayerCount = validate ? 1 : 0, .ppEnabledLayerNames = layers};
     VkResult r = vkCreateInstance(&ci, NULL, &g_vk.inst);
@@ -132,7 +173,7 @@ static void create_instance(void) {
         validate = false;
         r = vkCreateInstance(&ci, NULL, &g_vk.inst);
     }
-    if (r != VK_SUCCESS) FATAL("vkCreateInstance: %d (is a Vulkan 1.3 driver installed?)\n", r);
+    if (r != VK_SUCCESS) FATAL("vkCreateInstance: %d (no Vulkan driver answered)\n", r);
     if (validate || ar) {
         PFN_vkCreateDebugUtilsMessengerEXT f =
             (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(g_vk.inst, "vkCreateDebugUtilsMessengerEXT");
@@ -148,12 +189,74 @@ static void create_instance(void) {
     }
 }
 
+bool vk_api12(void) { return g_vk.api12; }  // (the C++ files: FSR 3 and frame generation stay off on a 1.2 driver)
+
 static bool has_ext(VkExtensionProperties *e, uint32_t n, const char *name) {
     for (uint32_t i = 0; i < n; i++) if (!strcmp(e[i].extensionName, name)) return true;
     return false;
 }
 
-// Discrete GPU first (SAVAGEWIND_GPU=<index> picks one), needs Vulkan 1.3 and a queue that can present.
+// A Vulkan 1.2 driver is taken when it has, as extensions, what the renderer uses of 1.3's core: dynamic rendering,
+// synchronization2 and the extended dynamic state (both). The commands then go through their KHR / EXT names
+// (vk13.h), the shaders are compiled to SPIR-V 1.5 (spirv.c), and the graphics pipeline libraries, FSR 3 and frame
+// generation stay off. Each extension missing is logged, so a report from such a card says what its driver lacks.
+// SAVAGEWIND_VK_API12=1: a 1.3 driver used that way (testing; with the validation layer, every use of 1.3's core is
+// reported). =2: and taken as one without dynamic rendering, to see the error a card with such a driver gets.
+// `why` gets what the driver lacks, for the error when no GPU is usable (pick_device).
+static void why_add(char *why, size_t cap, const char *fmt, ...) {
+    size_t l = strlen(why);
+    if (l + 1 >= cap) return;
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(why + l, cap - l, fmt, ap);
+    va_end(ap);
+}
+static const char *const k_api12_ext[] = {VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
+                                          VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME,
+                                          VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME};
+static bool api12_usable(VkPhysicalDevice pd, uint32_t index, char *why, size_t cap) {
+    uint32_t ne = 0;
+    vkEnumerateDeviceExtensionProperties(pd, NULL, &ne, NULL);
+    VkExtensionProperties *ep = calloc(ne ? ne : 1, sizeof *ep);
+    if (!ep) return false;
+    vkEnumerateDeviceExtensionProperties(pd, NULL, &ne, ep);
+    bool ok = true;
+    for (size_t i = 0; i < sizeof k_api12_ext / sizeof *k_api12_ext; i++)
+        if (!has_ext(ep, ne, k_api12_ext[i]) || (api12_forced() == 2 && !i)) {
+            LOG("[vk] gpu %u: a Vulkan 1.2 driver without %s\n", index, k_api12_ext[i]);
+            why_add(why, cap, "%s%s", ok ? "" : ", ", k_api12_ext[i]);
+            ok = false;
+        }
+    free(ep);
+    return ok;
+}
+
+Vk13 g_vk13;
+static void vk13_load(void) {
+    bool k = g_vk.api12;
+#define FN(field, core, old) \
+    g_vk13.field = (PFN_vk##core)vkGetDeviceProcAddr(g_vk.dev, k ? "vk" #old : "vk" #core); \
+    if (!g_vk13.field) FATAL("the Vulkan driver has no %s\n", k ? "vk" #old : "vk" #core);
+    FN(QueueSubmit2, QueueSubmit2, QueueSubmit2KHR)
+    FN(CmdBeginRendering, CmdBeginRendering, CmdBeginRenderingKHR)
+    FN(CmdEndRendering, CmdEndRendering, CmdEndRenderingKHR)
+    FN(CmdPipelineBarrier2, CmdPipelineBarrier2, CmdPipelineBarrier2KHR)
+    FN(CmdWriteTimestamp2, CmdWriteTimestamp2, CmdWriteTimestamp2KHR)
+    FN(CmdSetCullMode, CmdSetCullMode, CmdSetCullModeEXT)
+    FN(CmdSetFrontFace, CmdSetFrontFace, CmdSetFrontFaceEXT)
+    FN(CmdSetPrimitiveTopology, CmdSetPrimitiveTopology, CmdSetPrimitiveTopologyEXT)
+    FN(CmdSetDepthTestEnable, CmdSetDepthTestEnable, CmdSetDepthTestEnableEXT)
+    FN(CmdSetDepthWriteEnable, CmdSetDepthWriteEnable, CmdSetDepthWriteEnableEXT)
+    FN(CmdSetDepthCompareOp, CmdSetDepthCompareOp, CmdSetDepthCompareOpEXT)
+    FN(CmdSetStencilTestEnable, CmdSetStencilTestEnable, CmdSetStencilTestEnableEXT)
+    FN(CmdSetStencilOp, CmdSetStencilOp, CmdSetStencilOpEXT)
+    FN(CmdSetDepthBiasEnable, CmdSetDepthBiasEnable, CmdSetDepthBiasEnableEXT)
+    FN(CmdSetPrimitiveRestartEnable, CmdSetPrimitiveRestartEnable, CmdSetPrimitiveRestartEnableEXT)
+#undef FN
+}
+
+// Discrete GPU first (SAVAGEWIND_GPU=<index> picks one), needs Vulkan 1.3 (or 1.2 with the extensions above) and a
+// queue that can present.
 static void pick_device(void) {
     uint32_t n = 0;
     vkEnumeratePhysicalDevices(g_vk.inst, &n, NULL);
@@ -165,12 +268,24 @@ static void pick_device(void) {
     if (override && *override && want < 0 && strcmp(override, "auto"))
         LOG("[vk] invalid SAVAGEWIND_GPU '%s'; using automatic selection\n", override);
     int best = -1, best_score = -1;
+    char why[600] = "";  // (each GPU turned down and the reason: the error's text when none is usable)
     for (uint32_t i = 0; i < n; i++) {
         VkPhysicalDeviceProperties p;
         vkGetPhysicalDeviceProperties(pd[i], &p);
         LOG("[vk] gpu %u: %s (api %u.%u.%u)\n", i, p.deviceName, VK_API_VERSION_MAJOR(p.apiVersion),
             VK_API_VERSION_MINOR(p.apiVersion), VK_API_VERSION_PATCH(p.apiVersion));
-        if (p.apiVersion < VK_API_VERSION_1_3) continue;
+        if (p.apiVersion < VK_API_VERSION_1_2) {
+            why_add(why, sizeof why, " %s: its driver has Vulkan %u.%u, older than 1.2.", p.deviceName,
+                    VK_API_VERSION_MAJOR(p.apiVersion), VK_API_VERSION_MINOR(p.apiVersion));
+            continue;
+        }
+        if (p.apiVersion < VK_API_VERSION_1_3 || api12_forced()) {
+            char lacks[300] = "";
+            if (!api12_usable(pd[i], i, lacks, sizeof lacks)) {
+                why_add(why, sizeof why, " %s: its driver has Vulkan 1.2 without %s.", p.deviceName, lacks);
+                continue;
+            }
+        }
         // Check presentation before scoring: a headless adapter must not hide a usable GPU.
         uint32_t nq = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(pd[i], &nq, NULL);
@@ -185,18 +300,25 @@ static void pick_device(void) {
                 (qp[q].queueFlags & VK_QUEUE_COMPUTE_BIT)) usable = true;
         }
         free(qp);
-        if (!usable) continue;
+        if (!usable) {
+            why_add(why, sizeof why, " %s: it cannot draw to this window.", p.deviceName);
+            continue;
+        }
         int score = p.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 3 : p.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 2 : 1;
         if ((int)i == want) score = 100;
         if (score > best_score) { best_score = score; best = (int)i; }
     }
-    if (best < 0) FATAL("no Vulkan 1.3 device with a graphics+compute+present queue\n");
+    if (best < 0) FATAL("no usable GPU.%s\n", why);  // (the platform's error box explains what is needed)
     if (want >= 0 && best != want)
         LOG("[vk] requested GPU %d unavailable or unsuitable; falling back to GPU %d\n", want, best);
     LOG("[vk] selected GPU %d (%s)\n", best, best == want ? "requested" : "automatic");
     g_vk.phys = pd[best];
     free(pd);
     vkGetPhysicalDeviceProperties(g_vk.phys, &g_vk.props);
+    g_vk.api12 = g_vk.props.apiVersion < VK_API_VERSION_1_3 || api12_forced();
+    if (g_vk.api12)
+        LOG("[vk] a Vulkan 1.2 driver%s: 1.3's commands through their extensions, SPIR-V 1.5, no pipeline libraries, "
+            "no FSR 3\n", api12_forced() ? " (SAVAGEWIND_VK_API12)" : "");
     g_vk.is_mali = g_vk.props.vendorID == 0x13B5;  // (Arm)
 #ifdef _WIN32
     {   // sparse_heap = auto: only an Intel integrated GPU whose shared memory can't hold the whole guest heap
@@ -492,6 +614,12 @@ static void create_device(void) {
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
     VkExtensionProperties *ep = calloc(ne, sizeof *ep);
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
+    // Intel XeSS (vulkan/xess.h): its own device extensions (VK_EXT_mutable_descriptor_type, most often) and its
+    // feature chain, asked of the library so its version decides (its features are appended to the device's chain)
+    const char *const *xess_ext = NULL;
+    uint32_t n_xess_ext = 0;
+    void *xess_features = NULL;
+    bool xess_dev_reqs = xess_required_device_extensions(g_vk.inst, g_vk.phys, &xess_ext, &n_xess_ext, &xess_features);
     VkPhysicalDeviceFeatures2 sparse_features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &sparse_features);
     LOG("[vk] sparse buffer capability: sparseBinding %s, sparseResidencyBuffer %s, address space %llu MB\n",
@@ -525,6 +653,11 @@ static void create_device(void) {
     const char *ext[64];
     uint32_t n_ext = 0;
     ext[n_ext++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+    // (XeSS's device extensions: only where the library asked for them, and only those the driver has)
+    for (uint32_t i = 0; xess_dev_reqs && i < n_xess_ext && n_ext < sizeof ext / sizeof ext[0]; i++)
+        if (has_ext(ep, ne, xess_ext[i])) ext[n_ext++] = xess_ext[i];
+    // (a portability driver - MoltenVK - must be asked for it when it lists it; its name is in vulkan_beta.h)
+    if (has_ext(ep, ne, "VK_KHR_portability_subset") && n_ext < sizeof ext / sizeof ext[0]) ext[n_ext++] = "VK_KHR_portability_subset";
 
     const char *memory_priority_env = getenv("SAVAGEWIND_VK_MEMORY_PRIORITY");
     bool request_memory_priority = memory_priority_env && !strcmp(memory_priority_env, "1");
@@ -631,6 +764,7 @@ static void create_device(void) {
 #endif
     g_vk.turnip = drv.driverID == VK_DRIVER_ID_MESA_TURNIP;
     g_vk.amd_proprietary = drv.driverID == VK_DRIVER_ID_AMD_PROPRIETARY;
+    g_vk.moltenvk = drv.driverID == VK_DRIVER_ID_MOLTENVK;
     {   // AMD's own shader compiler (its driver without "LLPC" in driverInfo: RDNA 2 and older on Windows) draws the sky
         // wrong from unoptimized SPIR-V (#359): its fragment shaders go through spirv-opt (spirv.c).
         // SAVAGEWIND_VK_OPT_FS=0 / 1 forces it off or on.
@@ -742,7 +876,7 @@ static void create_device(void) {
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_PROPERTIES_EXT};
         VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &gp};
         vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
-        g_vk.gpl = gpl_have.graphicsPipelineLibrary && gp.graphicsPipelineLibraryFastLinking;
+        g_vk.gpl = !g_vk.api12 && gpl_have.graphicsPipelineLibrary && gp.graphicsPipelineLibraryFastLinking;
     }
     if (g_vk.gpl) {
         ext[n_ext++] = VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME;
@@ -780,7 +914,43 @@ static void create_device(void) {
     VkPhysicalDeviceVulkan12Features f12_have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &f13_have};
     VkPhysicalDeviceVulkan11Features f11_have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &f12_have};
     VkPhysicalDeviceFeatures2 have2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &f11_have};
+    // A 1.2 driver (g_vk.api12): the extensions' own feature structures in place of VkPhysicalDeviceVulkan13Features,
+    // asked here and turned on below; f13_have gets what they say, so the rest reads one structure either way.
+    VkPhysicalDeviceDynamicRenderingFeaturesKHR dr12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR,
+                                                        .pNext = f13_have.pNext};
+    VkPhysicalDeviceSynchronization2FeaturesKHR s212 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR,
+                                                        .pNext = &dr12};
+    VkPhysicalDeviceExtendedDynamicState2FeaturesEXT eds212 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT, .pNext = &s212};
+    VkPhysicalDeviceMaintenance4FeaturesKHR m412 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_FEATURES_KHR};
+    VkPhysicalDeviceShaderDemoteToHelperInvocationFeaturesEXT dm12 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DEMOTE_TO_HELPER_INVOCATION_FEATURES_EXT};
+    VkPhysicalDeviceShaderTerminateInvocationFeaturesKHR tm12 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_TERMINATE_INVOCATION_FEATURES_KHR};
+    void *head12 = &eds212;
+    bool m4_ext = false, dm_ext = false, tm_ext = false;
+    if (g_vk.api12) {
+        if ((m4_ext = has_ext(ep, ne, VK_KHR_MAINTENANCE_4_EXTENSION_NAME))) m412.pNext = head12, head12 = &m412;
+        if ((dm_ext = has_ext(ep, ne, VK_EXT_SHADER_DEMOTE_TO_HELPER_INVOCATION_EXTENSION_NAME))) dm12.pNext = head12, head12 = &dm12;
+        if ((tm_ext = has_ext(ep, ne, VK_KHR_SHADER_TERMINATE_INVOCATION_EXTENSION_NAME))) tm12.pNext = head12, head12 = &tm12;
+        f12_have.pNext = head12;
+    }
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &have2);
+    if (g_vk.api12) {
+        if (!dr12.dynamicRendering || !s212.synchronization2 || !eds212.extendedDynamicState2)
+            FATAL("the Vulkan 1.2 driver names dynamic rendering, synchronization2 and extended dynamic state 2 but has "
+                  "one of them off (%d %d %d)\n", dr12.dynamicRendering, s212.synchronization2, eds212.extendedDynamicState2);
+        f13_have.dynamicRendering = dr12.dynamicRendering;
+        f13_have.synchronization2 = s212.synchronization2;
+        f13_have.maintenance4 = m412.maintenance4;
+        f13_have.shaderDemoteToHelperInvocation = dm12.shaderDemoteToHelperInvocation;
+        f13_have.shaderTerminateInvocation = tm12.shaderTerminateInvocation;
+        for (size_t i = 0; i < sizeof k_api12_ext / sizeof *k_api12_ext; i++)
+            if (strcmp(k_api12_ext[i], VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME)) ext[n_ext++] = k_api12_ext[i];  // (that one: below)
+        if (m4_ext && m412.maintenance4) ext[n_ext++] = VK_KHR_MAINTENANCE_4_EXTENSION_NAME;
+        if (dm_ext && dm12.shaderDemoteToHelperInvocation) ext[n_ext++] = VK_EXT_SHADER_DEMOTE_TO_HELPER_INVOCATION_EXTENSION_NAME;
+        if (tm_ext && tm12.shaderTerminateInvocation) ext[n_ext++] = VK_KHR_SHADER_TERMINATE_INVOCATION_EXTENSION_NAME;
+    }
 #define WANT(have, name) (have.name ? VK_TRUE : (LOG("[vk] warning: the driver lacks " #name "\n"), VK_FALSE))
     if (fault && !ff_have.deviceFault) fault = g_fault_ext = false;
     if (g_vk.custom_border && !(cbc_have.customBorderColors && cbc_have.customBorderColorWithoutFormat)) {
@@ -830,6 +1000,14 @@ static void create_device(void) {
     VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
                                             .storageBuffer16BitAccess = WANT(f11_have, storageBuffer16BitAccess),
                                             .uniformAndStorageBuffer16BitAccess = g_vk.fp16, .pNext = &f12};
+    if (g_vk.api12) {  // (the extensions' structures, holding what the driver has, in place of f13; f13's own chain after)
+        void *h12 = &eds212;
+        dr12.pNext = f13.pNext;
+        if (m4_ext && m412.maintenance4) m412.pNext = h12, h12 = &m412;
+        if (dm_ext && dm12.shaderDemoteToHelperInvocation) dm12.pNext = h12, h12 = &dm12;
+        if (tm_ext && tm12.shaderTerminateInvocation) tm12.pNext = h12, h12 = &tm12;
+        f12.pNext = h12;
+    }
 #undef WANT
     VkPhysicalDeviceFaultFeaturesEXT ff = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT, .deviceFault = VK_TRUE,
                                            .pNext = &f11};
@@ -864,6 +1042,15 @@ static void create_device(void) {
     VkPhysicalDeviceProvokingVertexFeaturesEXT pv_on = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT,
                                                          .provokingVertexLast = VK_TRUE, .pNext = next_feature};
     if (g_vk.provoking_last) next_feature = &pv_on;
+    // (Intel XeSS's feature chain last: the library patched its own structures onto it; its fields reach the device
+    // whichever end of the chain they hang on, but its pointer is only valid when the library asked for features)
+    if (xess_dev_reqs && xess_features) {
+        // (walk to the end of the library's chain and attach ours, so both are seen: ours is the chain head)
+        void *tail = xess_features;
+        for (VkBaseOutStructure *s = (VkBaseOutStructure *)tail; s->pNext; s = s->pNext) tail = s->pNext;
+        ((VkBaseOutStructure *)tail)->pNext = next_feature;
+        next_feature = xess_features;
+    }
     VkPhysicalDeviceFeatures2 f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = next_feature};
     VkPhysicalDeviceFeatures *b = &f.features, *h = &have.features;
     b->independentBlend = h->independentBlend;
@@ -1027,7 +1214,18 @@ static void create_device(void) {
                              .pQueueCreateInfos = &qi, .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext};
     VK_CHECK(vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.dev));
     free(ep);  // (read up to here: extended dynamic state and the FSR 4 checks above, #488)
+    vk13_load();
     fsr_api_probe(g_vk.dev, g_vk.phys);  // (logs what AMD's FSR DLLs offer this device; a no-op without them)
+    xess_probe(g_vk.inst, g_vk.dev, g_vk.phys);  // (makes the XeSS context where libxess.dll is next to the game)
+    if (g_settings.upscaler == UPSCALE_FSR4 && !fsr4_available()) {  // (a settings file from a PC with an AMD Radeon)
+        g_settings.upscaler = fsr3_available() && fsr3_upscaler_enabled() ? UPSCALE_FSR3 : UPSCALE_SPATIAL;
+        LOG("[fsr] FSR 4 is not offered on this GPU: upscaler %d instead\n", g_settings.upscaler);
+    }
+    if (g_settings.upscaler == UPSCALE_XESS && !xess_available()) {  // (a settings file from a PC with libxess.dll)
+        g_settings.upscaler = fsr3_available() && fsr3_upscaler_enabled() ? UPSCALE_FSR3 : UPSCALE_SPATIAL;
+        LOG("[xess] XeSS is not offered here (libxess.dll missing, or the GPU or driver can't run it): upscaler %d instead\n",
+            g_settings.upscaler);
+    }
     vkGetDeviceQueue(g_vk.dev, g_vk.qfam, 0, &g_vk.queue);
     g_vk.present_queue = g_vk.queue;
     if (qi.queueCount == 2) vkGetDeviceQueue(g_vk.dev, g_vk.qfam, 1, &g_vk.present_queue);
@@ -1049,7 +1247,7 @@ static void create_device(void) {
         override ? override : "unset", probe);
 
     VmaAllocatorCreateInfo ai = {.physicalDevice = g_vk.phys, .device = g_vk.dev, .instance = g_vk.inst,
-                                 .vulkanApiVersion = VK_API_VERSION_1_3};
+                                 .vulkanApiVersion = g_vk.api12 ? VK_API_VERSION_1_2 : VK_API_VERSION_1_3};
     VmaVulkanFunctions vfn;
     vram_allocator_setup(&ai, &vfn, mem_budget);
 #ifdef VK_EXT_memory_priority
@@ -1106,13 +1304,7 @@ static uint64_t pc_saved_at;
 static pthread_mutex_t pc_save_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool pc_off;
 
-static uint64_t data_hash(const void *p, size_t n) {
-    const uint8_t *b = p;
-    uint64_t h = 0xcbf29ce484222325ull ^ n;
-    for (; n >= 8; n -= 8, b += 8) { uint64_t w; memcpy(&w, b, 8); h = (h ^ w) * 0x9E3779B97F4A7C15ull; h ^= h >> 29; }
-    for (; n; n--, b++) h = (h ^ *b) * 0x100000001B3ull;
-    return h ^ (h >> 32);
-}
+static uint64_t data_hash(const void *p, size_t n) { return hash64(0xcbf29ce484222325ull ^ n, p, n); }
 
 static void pc_header(PcHeader *h) {
     memset(h, 0, sizeof *h);
@@ -1213,11 +1405,50 @@ static void pc_log(const char *what, const char *path, size_t sz, const char *wh
     else LOG("[vk] %s: starts empty (%s: %s)\n", what, path, why);
 }
 
+// MoltenVK makes the Metal library of every shader in the data it is given at once: minutes for a grown cache when
+// macOS's own shader cache does not have them (after a macOS update, or a cache from another Mac), the window not up
+// yet. There the cache is loaded on a thread of its own: until it is in, pipelines are made without one (the window,
+// the start screen; not saved), and the pre-warm waits for it (vk_pipeline_cache_wait).
+static _Atomic bool pc_loading;
+
+static void *pc_load_thread(void *arg) {
+    (void)arg;
+    prof_thread_name("pcache-load");
+    char path[512];
+    size_t sz;
+    const char *why = "no file yet";
+    uint64_t t0 = SDL_GetTicksNS();
+    VkPipelineCache c = pc_open("vk_pipelines.bin", true, false, path, sizeof path, &sz, &why);
+    __atomic_store_n(&g_vk.pcache, c, __ATOMIC_RELEASE);
+    atomic_store(&pc_loading, false);
+    pc_log("pipeline cache", path, sz, why);
+    LOG("[vk] pipeline cache loaded in %.0f ms (on its own thread)\n", (SDL_GetTicksNS() - t0) / 1e6);
+    return NULL;
+}
+
+// exec.c's pre-warm, before its first pipeline; vk_pipeline_cache_save
+void vk_pipeline_cache_wait(void) {
+    while (atomic_load(&pc_loading)) SDL_Delay(5);
+}
+
 static void pipeline_cache_load(void) {
     pc_off = getenv("SAVAGEWIND_VK_NO_PIPELINE_CACHE") != NULL;
     char path[512];
     size_t sz;
     const char *why = pc_off ? "off (SAVAGEWIND_VK_NO_PIPELINE_CACHE)" : "no file yet";
+    vk_cache_path(path, sizeof path, "vk_pipelines.bin");
+    FILE *probe = g_vk.moltenvk && !g_vk.gpl && !pc_off ? fopen(path, "rb") : NULL;
+    if (probe) {
+        fclose(probe);
+        pthread_t t;
+        atomic_store(&pc_loading, true);
+        if (pthread_create(&t, NULL, pc_load_thread, NULL) == 0) {
+            pthread_detach(t);
+            pc_saved_at = SDL_GetTicks();
+            return;
+        }
+        atomic_store(&pc_loading, false);
+    }
     g_vk.pcache = pc_open("vk_pipelines.bin", !pc_off, false, path, sizeof path, &sz, &why);
     pc_log("pipeline cache", path, sz, why);
     if (g_vk.gpl && !pc_off) {
@@ -1307,6 +1538,7 @@ static bool pc_write(VkPipelineCache c, const char *name, size_t *size) {
 }
 
 void vk_pipeline_cache_save(void) {
+    vk_pipeline_cache_wait();  // (at exit: not the device torn down under the load)
     if (pc_off || !g_vk.pcache) return;
     pthread_mutex_lock(&pc_save_lock);
     int news = atomic_exchange(&pc_new, 0);
@@ -1408,6 +1640,11 @@ static VkPresentModeKHR present_mode(char *have, size_t cap) {
     const VkPresentModeKHR one_shot[2] = {forced, NONE};  // the env override is a single mode, FIFO behind it
     int v = g_settings.vsync;
     const VkPresentModeKHR *ladder = (env && *env) ? one_shot : pref[v >= 0 && v < VSYNC_COUNT ? v : VSYNC_DEFAULT];
+    // MoltenVK (macOS) has FIFO and IMMEDIATE only: Fast fell to IMMEDIATE, no sync at all - frames shown off the
+    // display's beat (judder, the default setting). There Fast is FIFO with the fewest images instead (swapchain_make):
+    // in sync, and as little queued behind it as the surface allows.
+    static const VkPresentModeKHR mvk_fast[3] = {VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_FIFO_KHR, NONE};
+    if (!(env && *env) && g_vk.moltenvk && v == VSYNC_FAST) ladder = mvk_fast;
     for (int j = 0; ladder[j] != NONE; j++)
         for (uint32_t i = 0; i < n; i++)
             if (m[i] == ladder[j]) return ladder[j];
@@ -1475,6 +1712,13 @@ static bool hdr_wanted(float *white) {
     SDL_PropertiesID p = SDL_GetWindowProperties(window);
     bool on = SDL_GetBooleanProperty(p, SDL_PROP_WINDOW_HDR_ENABLED_BOOLEAN, false);
     float w = SDL_GetFloatProperty(p, SDL_PROP_WINDOW_SDR_WHITE_LEVEL_FLOAT, 0) * 80;  // (scRGB: 1.0 is 80 nits)
+#ifdef __APPLE__
+    // macOS: SDL calls a window HDR whenever its display has EDR headroom, which SDR panels have too below full
+    // brightness (a MacBook Air: "HDR10 output" on an SDR screen, every frame converted to PQ for nothing). So Auto is
+    // SDR there; Video > HDR On turns it on (XDR displays). Its white level of 1.0 is "unknown", as on Wayland below.
+    if (g_settings.hdr == HDR_AUTO) on = false;
+    if (w <= 80) w = 0;
+#endif
     if (g_settings.hdr == HDR_ON) on = true;
     if (g_settings.hdr == HDR_OFF) on = false;
 #ifdef __linux__
@@ -1696,6 +1940,10 @@ static void create_swapchain(void) {
     VkSwapchainKHR old = g_vk.swapchain;
     char modes[128];
     VkPresentModeKHR mode = present_mode(modes, sizeof modes);
+    // (MoltenVK, Fast as FIFO: the surface's fewest images - less input delay - unless frame generation queues a pair)
+    if (g_vk.moltenvk && mode == VK_PRESENT_MODE_FIFO_KHR && g_settings.vsync == VSYNC_FAST && !g_settings.frame_gen &&
+        !getenv("SAVAGEWIND_VK_PRESENT"))
+        count = caps.minImageCount;
     VkSwapchainCreateInfoKHR ci = {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, .surface = g_vk.surface, .minImageCount = count,
         .imageFormat = sf.format, .imageColorSpace = sf.colorSpace, .imageExtent = ext, .imageArrayLayers = 1,
@@ -2417,6 +2665,10 @@ static void hdr_game_write(VkCommandBuffer cb, uint32_t i, bool menu) {
 uint64_t g_present_split[6];  // (VK_PROF) acquire, end pass, draw + menu, submit, present, slot wait
 typedef struct { uint32_t image; VkSemaphore acquired; bool ok; bool hdr_game, menu; } Frame;
 static Frame cur_frame;
+// macOS gives a window it has covered completely (another app in front of a fullscreen one, another Space) no more
+// drawables: MoltenVK's first submission drawing into the next one waited its full second for it, a 1 s freeze each
+// time the game was switched away from. Nothing is drawn to the window while it is covered (as when minimised).
+static _Atomic bool window_occluded;  // (set in window_event_log)
 
 // The image the frame is drawn into: the game's float picture for an HDR frame, else the 8-bit window image (game
 // frames without a float source: menus, movies, the start screen; it is also where the overlay menu is drawn).
@@ -2441,7 +2693,13 @@ static bool frame_begin(const float clear[4], bool hdr_game) {
     int w, h;
     SDL_GetWindowSizeInPixels(window, &w, &h);
     // minimised (Windows keeps the window's size then, but its surface is 0 x 0: every acquire was out of date)
-    if (!w || !h || (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED)) return false;
+    bool covered = atomic_load(&window_occluded);
+    static bool was_covered;
+    if (covered != was_covered) {
+        was_covered = covered;
+        LOG("[window] %s (frame %llu)\n", covered ? "covered: not drawn to" : "drawn to again", (unsigned long long)renderer_present_count());
+    }
+    if (!w || !h || (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED) || covered) return false;
     uint64_t tp = SDL_GetTicksNS();
     { SW_ZONE("present/wait_room"); present_wait_room(); }
     g_present_split[4] += SDL_GetTicksNS() - tp;
@@ -2764,6 +3022,10 @@ static bool fg_wanted(void) {
     if (forced == -2) forced = getenv("SAVAGEWIND_FG") ? atoi(getenv("SAVAGEWIND_FG")) : -1;
     if (g_hdr) return false;  // (frame generation's copies are 8-bit and would clip the HDR picture)
     if (!(forced >= 0 ? forced : g_settings.frame_gen)) return false;
+    // (Video > Advanced > Dynamic resolution measured no net gain from frame generation on this machine: leave it off
+    // for the rest of the run. The setting is untouched - a reboot gives it a fresh measurement.)
+    extern bool dynamic_fg_disabled(void);
+    if (dynamic_fg_disabled()) return false;
     static int log = -1;
     static uint64_t n;
     if (log < 0) log = getenv("SAVAGEWIND_FG_LOG") != NULL;
@@ -3112,6 +3374,8 @@ presented:
     test_warp_frame(total_frames);
     extern void weather_frame(void);  // runtime/weather.c (Cheats > Weather, `weather`)
     weather_frame();
+    extern void blood_moon_frame(void);  // runtime/blood_moon.c (Cheats > Blood moon now, the console's bloodmoon)
+    blood_moon_frame();
     extern void control_frame(uint64_t frame);  // runtime/control.c (SAVAGEWIND_CONTROL)
     control_frame(total_frames);
     static long shot_every = -1;
@@ -3414,6 +3678,12 @@ void backend_clear_window(void) {
 // "[window]" lines for what the window went through (focus, minimised, restored, hidden behind another): an exclusive
 // fullscreen window that loses the focus is minimised and gives its display mode back (#224)
 static void window_event_log(const SDL_Event *e) {
+#ifdef __APPLE__
+    if (e->type == SDL_EVENT_WINDOW_OCCLUDED) atomic_store(&window_occluded, true);
+    else if (e->type == SDL_EVENT_WINDOW_EXPOSED || e->type == SDL_EVENT_WINDOW_SHOWN || e->type == SDL_EVENT_WINDOW_RESTORED ||
+             e->type == SDL_EVENT_WINDOW_FOCUS_GAINED)
+        atomic_store(&window_occluded, false);
+#endif
     const char *what = NULL;
     switch (e->type) {
     case SDL_EVENT_WINDOW_FOCUS_GAINED: what = "focus gained"; break;

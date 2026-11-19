@@ -15,6 +15,7 @@
 #include "perfmon.h"
 #include "rt.h"
 #include "game_sites.h"
+#include "blood_moon.h"
 
 uint64_t renderer_present_count(void);  // presented frames (the backend)
 bool control_camera_view(float view[12]);  // the world camera's view matrix (the backend; false: none)
@@ -86,6 +87,15 @@ static void cmd_time(int argc, char **argv, ControlReply *r) {
     float hour = test_warp_hour(&held);
     if (hour >= 0) control_field_num(r, "hour", hour);
     control_field_bool(r, "hour_held", held);
+}
+
+// ---- bloodmoon: the game's own blood moon (runtime/blood_moon.c), as Cheats > Blood moon now. It waits for the console
+// and any menu to close, then the game plays its cutscene and brings back the monsters and materials.
+static void cmd_bloodmoon(int argc, char **argv, ControlReply *r) {
+    (void)argv;
+    if (argc != 1) { control_fail(r, "Usage: bloodmoon"); return; }
+    if (!blood_moon_request()) { control_fail(r, "A blood moon can only start in the open world"); return; }
+    control_field_bool(r, "pending", true);
 }
 
 // ---- pos: Link's position (x y z) and stamina (uking::act::PlayerInfo +0x88 / +0xa4, as the clock probe in framepace.c reads them)
@@ -468,10 +478,10 @@ void control_items_init(void);     // runtime/items.c
 
 void control_game_init(void) {
     static const ControlCmd player[] = {
-        {"state", "", "Frame number, uptime, fps and hour", cmd_state, CONTROL_PLAYER},
-        {"pos", "", "Show the position and copy it as a line for goto or an issue", cmd_pos, CONTROL_PLAYER},
-        {"camera", "", "Show the camera position and direction", cmd_camera, CONTROL_PLAYER},
-        {"version", "", "Show the game version and system", cmd_version, CONTROL_PLAYER},
+        {"state", "", "Frame number, uptime, fps and hour", cmd_state, CONTROL_PLAYER | CONTROL_READ},
+        {"pos", "", "Show the position and copy it as a line for goto or an issue", cmd_pos, CONTROL_PLAYER | CONTROL_READ},
+        {"camera", "", "Show the camera position and direction", cmd_camera, CONTROL_PLAYER | CONTROL_READ},
+        {"version", "", "Show the game version and system", cmd_version, CONTROL_PLAYER | CONTROL_READ},
         {"report", "", "Build an issue report and copy it", cmd_report, CONTROL_PLAYER},
     };
     control_register(player, (int)(sizeof player / sizeof *player));
@@ -483,6 +493,7 @@ void control_game_init(void) {
         {"goto", "<x> <y> <z> | <swr:1 line> | <place>", "Go to coordinates, a place from pos or report, or a shrine, Korok, tower, stable, village by number or name", cmd_goto, 0},
         {"places", "[<kind>] [words]", "List the places goto knows (shrine, tower, stable, village, landmark, korok)", cmd_places, 0},
         {"tp", "<x> <y> <z> | <swr:1 line> | <place>", "Same as goto", cmd_goto, 0},
+        {"bloodmoon", "", "The game's own blood moon: its cutscene, and the monsters and materials back", cmd_bloodmoon, 0},
     };
     control_register(dev, (int)(sizeof dev / sizeof *dev));
     control_prof_init();

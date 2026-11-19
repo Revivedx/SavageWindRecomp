@@ -1066,6 +1066,8 @@ void backend_present(NvnTexture *t) {
     test_warp_frame(total_frames);
     extern void weather_frame(void);  // runtime/weather.c (Cheats > Weather, `weather`)
     weather_frame();
+    extern void blood_moon_frame(void);  // runtime/blood_moon.c (Cheats > Blood moon now, the console's bloodmoon)
+    blood_moon_frame();
     extern void control_frame(uint64_t frame);  // runtime/control.c (SAVAGEWIND_CONTROL)
     control_frame(total_frames);
     static long shot_every = -1;

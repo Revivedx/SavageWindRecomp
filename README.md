@@ -68,7 +68,8 @@ game.
 ## Get started
 
 **You need:** your own game files (see [Game files](docs/game-files.md)), Windows 10 or later or Linux on x86-64, a
-GPU with Vulkan 1.3, 16 GB of RAM, a CPU with SSE4.2 (AVX2 runs faster) and about 20 GB of free disk space.
+GPU with Vulkan 1.3, 8 GB of RAM (16 GB with integrated graphics), a 4-thread CPU with SSE4.2 (AVX2 runs faster) and
+about 20 GB of free disk space.
 
 1. Download the latest build from [Releases](https://github.com/Revivedx/SavageWindRecomp/releases/latest):
    - **Windows:** the file ending in `windows.zip`. Extract it to a folder you can write to, not Program Files.
@@ -97,6 +98,14 @@ the whole folder. More in [Saves](docs/saves.md), including profiles and Wii U /
 
 Colour vision for colour-blind players, god mode, infinite stamina, damage and weapon wear settings, items, rupees,
 weather, teleporting and the virtual amiibo reader: how to use them in [Cheats and assists](docs/cheats-and-assists.md).
+
+## Mods
+
+Since Alpha 7, Savage Wind loads mods from the `mods` folder next to it, with a **Mods** tab to turn them on and set
+their order. Mods are other people's work: Savage Wind doesn't check, test or support them,
+and isn't responsible for what they do, including if they break the game or your saves. Back up your saves before
+trying one. Releases never include mods. In the future we may point to mods we've found to play well with Savage Wind.
+More in the [FAQ](docs/FAQ.md#can-i-use-mods).
 
 ## Status
 
@@ -130,7 +139,9 @@ Every action can be rebound in the game's Options. All the keys: [Controls](docs
 Read the [FAQ](docs/FAQ.md) first: issues about something it already covers are closed right away. Use the latest
 release and game version 1.9.0, search the [existing issues](https://github.com/Revivedx/SavageWindRecomp/issues?q=is%3Aissue),
 and [open one](https://github.com/Revivedx/SavageWindRecomp/issues/new/choose) with your `savagewind.log`. On a crash
-or a cutscene bug, attach your zipped `save` folder too. Reports without these are closed after 24 hours.
+or a cutscene bug, attach your zipped `save` folder too. Reports without these are closed after 24 hours. Turn every
+mod off and check that the bug still happens: a bug caused by a mod is closed right away, because we don't support what
+isn't ours.
 
 ## Contributing and building
 

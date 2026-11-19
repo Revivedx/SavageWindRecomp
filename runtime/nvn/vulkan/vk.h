@@ -19,6 +19,10 @@
 #include "../nvn.h"
 #include "../maxwell/shader.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 void vk_device_fault_report(void);
 #define VK_CHECK(x) do { VkResult r_ = (x); if (r_ != VK_SUCCESS) { if (r_ == VK_ERROR_DEVICE_LOST) { vk_device_fault_report(); \
     FATAL("Vulkan device lost: the GPU stopped responding (%s, %s:%d)\n", #x, __FILE__, __LINE__); } \
@@ -35,6 +39,7 @@ typedef struct {
     uint32_t qfam, qfam_count;
     VmaAllocator vma;
     VkPhysicalDeviceProperties props;
+    bool api12;                // a Vulkan 1.2 driver with the extensions 1.3 made core (device.c api12_usable, vk13.h)
     bool is_mali;              // Arm Mali (vendor 0x13B5): the Mali-only paths' default (tiler / non-coherent workarounds)
     VkPipelineCache pcache;
     VkPipelineCache pcache_pre;  // the precompiled shaders' libraries (cache/vk_precompiled.bin; read only while playing)
@@ -57,6 +62,7 @@ typedef struct {
     bool radv;                 // the driver is Mesa's RADV
     bool turnip;               // the driver is Mesa's Turnip (Qualcomm Adreno; exec.c ubo_dynamic_mark_stage)
     bool amd_proprietary;      // the driver is AMD's own (Windows; textures.c's cube-compatible rule, #59)
+    bool moltenvk;             // the driver is MoltenVK (macOS, on Metal: strict output types, no integer blending)
     bool present_wait;         // VK_KHR_present_id + present_wait on (SAVAGEWIND_LOG_PRESENT: when frames are shown)
     bool hdr_metadata;         // VK_EXT_hdr_metadata: the HDR10 swapchain carries the peak/game nits
     bool fp16;                 // shaderFloat16 + 16-bit storage on (the FSR 3 upscaler's 16-bit shaders: fsr3.cpp)
@@ -137,8 +143,11 @@ typedef struct TexBackend {
     bool bc4_cpu;                // BC4 decoded to R8 on upload (SAVAGEWIND_VK_BC4_CPU=1: Mali text / sprites test)
     bool menu_tex;               // text_scale on one of the menus' textures, not a font sheet: the game's sampler stays
     uint8_t text_scale;          // a font sheet enlarged by this much on upload (runtime/nvn/text_upscale.c); 0: not one
+    const struct TextSheetInfo *text_info;  // ... and its font: its glyphs drawn again (text_redraw.c)
+    uint32_t text_wait;          // ... once their outlines are made: up again when text_redraw_generation() is past this
     bool heart_half;             // the HUD's half heart, HEART_SCALE times wider on upload (textures.c)
     uint32_t glyph_gen;          // a button glyph sheet (runtime/nvn/glyphs.c): the icons it was uploaded with
+    uint8_t glyph_scale;         // Sharper text: that sheet drawn this much larger on upload (glyphs_draw_sheet); 0: not
     // textures.c: one image per memory and shape, shared by every texture made there
     uint64_t key_addr;           // 0: not shared
     uint32_t key[7];             // target, format, width, height, depth, levels, samples
@@ -204,6 +213,7 @@ VkSampler vk_sampler(NvnSamplerDesc *d, bool aniso_ok, float bias);  // (aniso_o
                                                                      //  apply; bias: added to the LOD bias)
 VkSampler vk_default_sampler(bool linear);
 VkSampler vk_text_sampler(void);
+VkSampler vk_glyph_sampler(void);  // (the button glyph sheet drawn larger: textures.c upload_glyph_sheet)
 void vk_image_init_layout(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect);
 // Destruction once every submission that may use the object has completed.
 void vk_defer_image(VkImage img, VmaAllocation mem);
@@ -227,3 +237,7 @@ VkShaderModule vk_builtin_shader(const char *name);  // internal shaders (clear,
 // ---- device / window (device.c)
 void vk_save_png(const char *path, const uint8_t *rgba, uint32_t w, uint32_t h);
 bool vk_replace_file(const char *tmp, const char *path);  // rename over an existing file, atomically
+
+#ifdef __cplusplus
+}  // extern "C"
+#endif

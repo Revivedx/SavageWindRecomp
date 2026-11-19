@@ -44,7 +44,10 @@ versión nueva como "(latest)" en el desplegable "Savage Wind version" de `bug_r
 opción "An older release").
 
 Releases: el zip de `make dist` (ver `docs/BUILD-windows.md`) se sube con `gh release create v<versión>
---prerelease` sobre el commit de `public`. Alpha 1 (`0.1.0-alpha.1`, 2026-10-17) se probó como jugador: zip
+--prerelease` sobre el commit de `public`. El `.dmg` de macOS (Apple Silicon) no se hace aquí, no hay Mac: al
+publicar la release, el workflow "macOS disk image" (`.github/workflows/macos-dmg.yml`) lo genera en un runner de
+GitHub y lo adjunta con su `.sha256`. Antes, alguien con Mac (devall96) prueba el artefacto que ese workflow deja al
+cambiar el empaquetado en `test` (Actions > macOS disk image). Alpha 1 (`0.1.0-alpha.1`, 2026-10-17) se probó como jugador: zip
 extraído en una carpeta nueva, PATH sin MSYS2, preparación desde la pantalla de inicio (copia, `romfs.bin`,
 generación y compilación con swgen + zig: 2308 s con 12 hilos) y PLAY hasta tener a Link en el Santuario, a 30
 fps. La carpeta queda en ~30,5 GB (romfs 15 GB, `romfs.bin` 15,1 GB, `swgame.dll` 209 MB), ~32 GB durante la
@@ -815,9 +818,9 @@ Pendiente:
        "High" (`medium` en el ini), sombras 2048; Savage: distancia "Savage" (`high` en el ini), sombras 4096. Lo que no
        coincide con ninguno se muestra como Personalizado. Bloom off (`bloom = 0`): los draws del bloom
        (`bloom_scale.h` `bloom_native_target`) limpian su imagen a negro en vez de dibujar; profundidad de campo off
-       (`depth_of_field = 0`): se salta el desenfoque lejano (fs f7731492223eb16a). Resolución dinámica
-       (`dynamic_resolution = 1`): los ReportCounter llevan su tiempo real y el juego baja su 3D de 1600x900 hacia
-       1280x720 cuando el fotograma tarda (como `SAVAGEWIND_VK_COUNTER=live`). Densidad de pasto: pendiente, no se
+       (`depth_of_field = 0`): se salta el desenfoque lejano (fs f7731492223eb16a). Resolución dinámica:
+       el modo Dynamic del escalador (nvn/output_scale.c, sigue la tasa de fotogramas); el `dynamic_resolution` viejo
+       (los ReportCounter del juego con su tiempo real, como `SAVAGEWIND_VK_COUNTER=live`) ya no se lee. Densidad de pasto: pendiente, no se
        encontró aún el draw de las hojas de pasto.
      - Giro de los cuerpos que mueve el juego (#209): las piezas "keyframed" (el suelo de una Bestia Divina al
        inclinarse, ascensores, puertas) reciben cada fotograma un objetivo (FUN_710130d19c, una matriz 3x4) y cada paso

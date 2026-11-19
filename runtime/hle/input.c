@@ -50,6 +50,16 @@ static _Atomic int map_key_x,map_key_y;
 void input_pc_map_axes(float out[2]) { out[0]=map_key_x;out[1]=map_key_y; }
 static _Atomic uint64_t escape_buttons;
 static _Atomic bool pc_menu_active;
+// Quick inventory replacement's selector (runtime/quick_replace.c) takes the left click as A (replace) and the right
+// click as B (Back). The selector stamps every frame it is open (input_replace_mouse); a click pressed while that stamp
+// is fresh is held here instead of reaching the PC pointer (which ignores clicks over the quick selector) or the
+// bindings (left click is Y there, sorting), and so is its release. A selector gone by any path stops taking clicks
+// within three frames.
+extern uint64_t renderer_present_count(void);
+static _Atomic uint64_t replace_mouse_until;  // present count up to which the selector counts as open (0: closed)
+static _Atomic unsigned replace_clicks;       // held clicks: 1 left, 2 right
+void input_replace_mouse(bool open) { atomic_store(&replace_mouse_until, open ? renderer_present_count() + 3 : 0); }
+uint64_t input_replace_clicks(void) { return atomic_load(&replace_clicks); }
 // Controls > Mouse bow aiming (runtime/pc_bow.h): the right button held and the left button's clicks, from the main
 // thread's events; the state machine runs where the game reads the controller
 static _Atomic bool pc_bow_wanted;
@@ -94,7 +104,7 @@ extern bool menu_input_captured(void);  // runtime/ui/menu.mm: overlay menu or n
 
 static bool profiler_key_available(void) {
     for (int i = 0; i < BIND_KEY_COUNT; i++)
-        if (g_bind_key[i] == SDL_SCANCODE_F6) return false;
+        if (g_bind_key[i] == SDL_SCANCODE_F6 || g_bind_key2[i] == SDL_SCANCODE_F6) return false;
     return !menu_input_captured();
 }
 
@@ -108,7 +118,7 @@ static int held_key(int sc) {
 
 static int menu_key(int sc) {
     for (int i = 0; i < BIND_KEY_COUNT; i++)
-        if (g_bind_key[i] == sc) return 0;  // a player's binding takes priority
+        if (g_bind_key[i] == sc || g_bind_key2[i] == sc) return 0;  // a player's binding takes priority
     return held_key(sc);
 }
 
@@ -125,8 +135,11 @@ static int menu_enter(void) {
 static int game_key(int sc) {
     if (pc_gyro_enabled() && sc)
         for (int i = BIND_GYRO_UP; i <= BIND_GYRO_CENTER; i++)
-            if (sc == g_bind_key[i]) return 0;
+            if (sc == g_bind_key[i] || sc == g_bind_key2[i]) return 0;
     return held_key(sc);
+}
+static int game_key_slot(int slot) {
+    return game_key(g_bind_key[slot]) || (g_bind_key2[slot] && game_key(g_bind_key2[slot]));
 }
 // ... and with the menus closed and the window focused (main thread)
 static bool gyro_keys_live(void) {
@@ -134,11 +147,14 @@ static bool gyro_keys_live(void) {
 }
 
 static bool held_pad(int slot) {
-    int h = g_bind_pad[slot];
-    return h >= 0 && h < PADB_HOST_COUNT && (host_buttons >> h & 1);
+    int h = g_bind_pad[slot], h2 = g_bind_pad2[slot];
+    return (h >= 0 && h < PADB_HOST_COUNT && (host_buttons >> h & 1)) ||
+           (h2 >= 0 && h2 < PADB_HOST_COUNT && (host_buttons >> h2 & 1));
 }
 
-static bool held_gyro(int slot) { return held_key(g_bind_key[slot]) || held_pad(slot); }
+static bool held_gyro(int slot) {
+    return held_key(g_bind_key[slot]) || (g_bind_key2[slot] && held_key(g_bind_key2[slot])) || held_pad(slot);
+}
 
 // Both event paths publish one combined motion state: releasing either device must not cancel the other.
 static void recompute_motion(void) {
@@ -148,7 +164,7 @@ static void recompute_motion(void) {
                         held_gyro(BIND_GYRO_TURN_RIGHT) - held_gyro(BIND_GYRO_TURN_LEFT),
                         held_gyro(BIND_GYRO_CENTER));
     else motion_keyboard(0, 0, 0, false);
-    bool tilt = (game_key(g_bind_key[BIND_TILT]) || held_pad(BIND_TILT)) && win_focused && !menu_input_captured();
+    bool tilt = (game_key_slot(BIND_TILT) || held_pad(BIND_TILT)) && win_focused && !menu_input_captured();
     if (tilt != tilt_held) motion_tilt_held(tilt_held = tilt);
 }
 
@@ -158,15 +174,15 @@ static void recompute_keyboard(void) {
     map_key_y=held_key(SDL_SCANCODE_W)-held_key(SDL_SCANCODE_S);
     uint64_t b = 0;
     for (int i = 0; i < BIND_PAD_COUNT; i++)
-        if (game_key(g_bind_key[i])) b |= 1ull << i;
+        if (game_key_slot(i)) b |= 1ull << i;
     key_buttons = b;
     key_play = (b & ~act_raw_slots()) | act_play_keys(game_key);
     act_publish(act_scan_keys(b, game_key), ~0ull);  // actions read their own host keys
-    int tilt = game_key(g_bind_key[BIND_WALK]) ? 13107 : 32767;  // walk: 40% (BOTW walks below about half)
-    key_lx = (game_key(g_bind_key[BIND_LS_RIGHT]) - game_key(g_bind_key[BIND_LS_LEFT])) * tilt;
-    key_ly = (game_key(g_bind_key[BIND_LS_UP]) - game_key(g_bind_key[BIND_LS_DOWN])) * tilt;
-    key_rx = (game_key(g_bind_key[BIND_RS_RIGHT]) - game_key(g_bind_key[BIND_RS_LEFT])) * 32767;
-    key_ry = (game_key(g_bind_key[BIND_RS_UP]) - game_key(g_bind_key[BIND_RS_DOWN])) * 32767;
+    int tilt = game_key_slot(BIND_WALK) ? 13107 : 32767;  // walk: 40% (BOTW walks below about half)
+    key_lx = (game_key_slot(BIND_LS_RIGHT) - game_key_slot(BIND_LS_LEFT)) * tilt;
+    key_ly = (game_key_slot(BIND_LS_UP) - game_key_slot(BIND_LS_DOWN)) * tilt;
+    key_rx = (game_key_slot(BIND_RS_RIGHT) - game_key_slot(BIND_RS_LEFT)) * 32767;
+    key_ry = (game_key_slot(BIND_RS_UP) - game_key_slot(BIND_RS_DOWN)) * 32767;
     menu_lx = (menu_key(SDL_SCANCODE_RIGHT) - menu_key(SDL_SCANCODE_LEFT)) * 32767;
     menu_ly = (menu_key(SDL_SCANCODE_UP) - menu_key(SDL_SCANCODE_DOWN)) * 32767;
     menu_confirm = menu_enter();  // publish here; guest polls must not read the keyboard arrays or bindings
@@ -243,15 +259,17 @@ static void recompute_pad(void) {
     recompute_motion();
     uint64_t b = 0;
     for (int i = 0; i < BIND_PAD_COUNT; i++)
-        if (g_bind_pad[i] >= 0 && g_bind_pad[i] < PADB_HOST_COUNT && (host >> g_bind_pad[i] & 1)) b |= 1ull << i;
+        if ((g_bind_pad[i] >= 0 && g_bind_pad[i] < PADB_HOST_COUNT && (host >> g_bind_pad[i] & 1)) ||
+            (g_bind_pad2[i] >= 0 && g_bind_pad2[i] < PADB_HOST_COUNT && (host >> g_bind_pad2[i] & 1))) b |= 1ull << i;
     pad_buttons = b;
     pad_play = (b & ~act_raw_slots()) | act_play_pads(host);
     act_publish(~0ull, act_scan_pad(b, host));  // actions read their own host buttons
     // Fly mode (test builds): the press of its controller button toggles it. Not while the menu or a rebind has the pad
     // (the held state is still tracked, so letting go of a button that was just bound does not toggle).
     static bool fly_was_down;
-    int fly_host = g_bind_pad[BIND_FLY];
-    bool fly_down = fly_host >= 0 && fly_host < PADB_HOST_COUNT && (host >> fly_host & 1);
+    int fly_host = g_bind_pad[BIND_FLY], fly_host2 = g_bind_pad2[BIND_FLY];
+    bool fly_down = (fly_host >= 0 && fly_host < PADB_HOST_COUNT && (host >> fly_host & 1)) ||
+                    (fly_host2 >= 0 && fly_host2 < PADB_HOST_COUNT && (host >> fly_host2 & 1));
     if (fly_down && !fly_was_down && control_enabled() && !menu_input_captured() && !bind_capture_active(NULL, NULL, NULL))
         control_fly_toggle();
     fly_was_down = fly_down;
@@ -500,6 +518,7 @@ extern bool menu_cursor_free(void);     // runtime/ui/menu.mm: F2 (Esc without P
 static void window_focus(bool focused) {
     if (focused == win_focused) return;
     win_focused = focused;
+    if (!focused) atomic_store(&replace_clicks, 0);  // (a release outside the window never comes)
     plat_accessibility_shortcuts(!focused);  // (Shift five times: Windows' Sticky Keys prompt, while the game has the focus)
     input_reset();
     mouse_dx_milli = mouse_dy_milli = cam_dx_milli = cam_dy_milli = 0;
@@ -656,6 +675,18 @@ static void pad_open(SDL_JoystickID id) {
 }
 
 void input_handle_event(const SDL_Event *e) {
+    if ((e->type == SDL_EVENT_MOUSE_BUTTON_DOWN || e->type == SDL_EVENT_MOUSE_BUTTON_UP) &&
+        (e->button.button == SDL_BUTTON_LEFT || e->button.button == SDL_BUTTON_RIGHT)) {
+        unsigned bit = e->button.button == SDL_BUTTON_LEFT ? 1u : 2u;
+        if (e->type == SDL_EVENT_MOUSE_BUTTON_UP) {
+            if (atomic_fetch_and(&replace_clicks, ~bit) & bit) return;  // (its press was the selector's)
+        } else if ((win_focused || host_test) && !menu_input_captured() &&
+                   renderer_present_count() < atomic_load(&replace_mouse_until)) {
+            atomic_fetch_or(&replace_clicks, bit);
+            last_device = DEVICE_KEYBOARD;
+            return;
+        }
+    }
     if (pc_cursor_event(e)) return;
     // Mouse bow aiming, in play only: the right button aims (instead of its binding, the shield by default) and the
     // left one fires while it is held (otherwise the left button keeps its binding)
@@ -714,7 +745,9 @@ void input_handle_event(const SDL_Event *e) {
             g_skip_fs_off = !g_skip_fs_off;
             LOG("[input] F8: SAVAGEWIND_SKIP_FSHASH shaders %s\n", g_skip_fs_off ? "drawn" : "skipped");
         }
-        if (e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat && g_bind_key[BIND_FLY] && e->key.scancode == g_bind_key[BIND_FLY] &&
+        if (e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat &&
+            ((g_bind_key[BIND_FLY] && e->key.scancode == g_bind_key[BIND_FLY]) ||
+             (g_bind_key2[BIND_FLY] && e->key.scancode == g_bind_key2[BIND_FLY])) &&
             control_enabled() && !menu_input_captured()) control_fly_toggle();  // (fly mode, test builds)
         if (e->key.scancode < SDL_SCANCODE_COUNT) keys_down[e->key.scancode] = e->type == SDL_EVENT_KEY_DOWN;
         if (e->type == SDL_EVENT_KEY_DOWN) last_device = DEVICE_KEYBOARD;
@@ -1067,6 +1100,37 @@ uint64_t input_buttons_now(void) {
     return b;
 }
 
+// Accessibility > Hold-to-toggle for ZL (shield / focus) and ZR (bow aim) in gameplay.
+static bool zl_latched, zr_latched, prev_phys_zl, prev_phys_zr;
+RT_ON_RESET(toggle_buttons_reset) { zl_latched = zr_latched = prev_phys_zl = prev_phys_zr = false; }
+static uint64_t toggle_buttons(uint64_t b, bool in_play) {
+    bool phys_zl = (b & (1ull << BTN_ZL)) != 0;
+    bool phys_zr = (b & (1ull << BTN_ZR)) != 0;
+    if (!in_play) {
+        zl_latched = zr_latched = false;
+        prev_phys_zl = phys_zl;
+        prev_phys_zr = phys_zr;
+        return b;
+    }
+    if (!g_settings.toggle_zl) {
+        zl_latched = false;
+    } else {
+        if (phys_zl && !prev_phys_zl) zl_latched = !zl_latched;
+        if (zl_latched) b |= (1ull << BTN_ZL);
+        else b &= ~(1ull << BTN_ZL);
+    }
+    if (!g_settings.toggle_zr) {
+        zr_latched = false;
+    } else {
+        if (phys_zr && !prev_phys_zr) zr_latched = !zr_latched;
+        if (zr_latched) b |= (1ull << BTN_ZR);
+        else b &= ~(1ull << BTN_ZR);
+    }
+    prev_phys_zl = phys_zl;
+    prev_phys_zr = phys_zr;
+    return b;
+}
+
 static int32_t clamp_axis(int32_t v) { return v > 32767 ? 32767 : v < -32767 ? -32767 : v; }
 
 // NpadFullKeyState / NpadHandheldState / NpadJoy*State share this layout (0x28 bytes):
@@ -1100,6 +1164,8 @@ static void fill_state(Cpu *c) {
     uint64_t b = menu ? script_buttons : user | escape_buttons | bow | script_buttons;
     if (!menu) b |= auto_continue_buttons(b);  // (not while the overlay has the controls)
     b=pc_cursor_buttons(b);
+    // (Accessibility toggles: a menu, a cutscene or a talk lets go, so the shield or the bow isn't still up after it)
+    b = toggle_buttons(b, !in_menu && !pc_cursor_active() && !framepace_in_event() && !framepace_dialogue_ui());
     {   // injected Plus: held for ~10 presented frames (the game polls several times per frame)
         extern uint64_t renderer_present_count(void);
         static uint64_t until;
@@ -1136,6 +1202,7 @@ static void fill_state(Cpu *c) {
     }
     control_input_apply(&b, &lx, &ly, &rx, &ry);
     b = unconsumed_buttons(b);
+    { extern uint64_t quick_replace_buttons(uint64_t); b = quick_replace_buttons(b); }
     b = quick_drop_action_filter_buttons(b);
     // stick directions also appear as buttons (bits 16-23)
     if (lx < -16000) b |= 1ull << 16;

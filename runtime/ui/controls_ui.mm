@@ -12,13 +12,16 @@
 
 extern "C" {
 #include "../input_bind.h"
+#include "../nvn/glyphs.h"
 #include "../settings.h"
 }
 extern "C" bool control_enabled(void);  // runtime/control.c: is the test endpoint on (SAVAGEWIND_CONTROL)?
 
 static void cell(int dev, int slot, int fam, int cap_dev, int cap_slot, int ms_left) {
-    char lbl[96];
-    bool waiting = cap_dev == dev && cap_slot == slot;
+    char lbl[96], lbl2[96];
+    const bool cap_alt = bind_capture_is_alt();
+    const bool waiting = cap_dev == dev && cap_slot == slot && !cap_alt;
+    const bool waiting2 = cap_dev == dev && cap_slot == slot && cap_alt;
     if (waiting) snprintf(lbl, sizeof lbl, "%s  %d##%d_%d", tr(dev == BIND_DEV_PAD ? "Press a button..." : "Press a key..."),
                           (ms_left + 999) / 1000, dev, slot);
     else snprintf(lbl, sizeof lbl, "%s##%d_%d", tr(dev == BIND_DEV_PAD ? bind_pad_label(g_bind_pad[slot], fam) :
@@ -33,12 +36,36 @@ static void cell(int dev, int slot, int fam, int cap_dev, int cap_slot, int ms_l
     if (waiting) { ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.42f, 0.12f, 1)); pushed++; }
     else if (dup) { ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.16f, 0.12f, 1)); pushed++; }
     if (!bind_is_default_slot(dev, slot)) { ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.98f, 0.82f, 0.38f, 1)); pushed++; }
-    if (ImGui::Button(lbl, ImVec2(-FLT_MIN, 0))) {
+    float avail = ImGui::GetContentRegionAvail().x;
+    float gap = ImGui::GetStyle().ItemSpacing.x;
+    float w2 = avail * 0.34f;
+    float w1 = avail - w2 - gap;
+    if (w1 < 1) w1 = avail * 0.6f;
+    if (ImGui::Button(lbl, ImVec2(w1, 0))) {
         if (waiting) bind_capture_cancel();
         else bind_capture_begin(dev, slot);
     }
     ImGui::PopStyleColor(pushed);
     if (waiting && !ImGui::IsItemVisible()) ImGui::SetScrollHereY(0.5f);  // (a capture started by a test hook)
+    ImGui::SameLine();
+    int h2 = dev == BIND_DEV_PAD ? g_bind_pad2[slot] : g_bind_key2[slot];
+    bool has2 = dev == BIND_DEV_PAD ? (h2 >= 0) : (h2 > 0);
+    if (waiting2) snprintf(lbl2, sizeof lbl2, "... %d##2_%d_%d", (ms_left + 999) / 1000, dev, slot);
+    else if (has2) snprintf(lbl2, sizeof lbl2, "%s##2_%d_%d", tr(dev == BIND_DEV_PAD ? bind_pad_label(h2, fam) : bind_key_label(h2)), dev, slot);
+    else snprintf(lbl2, sizeof lbl2, "+##2_%d_%d", dev, slot);
+    int p2 = 0;
+    if (waiting2) { ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.42f, 0.12f, 1)); p2++; }
+    if (has2) { ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.98f, 0.82f, 0.38f, 1)); p2++; }
+    else if (!waiting2) { ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled)); p2++; }
+    if (ImGui::Button(lbl2, ImVec2(-FLT_MIN, 0))) {
+        if (waiting2) bind_capture_cancel();
+        else bind_capture_begin_alt(dev, slot, true);
+    }
+    ImGui::PopStyleColor(p2);
+    if (ImGui::BeginPopupContextItem()) {
+        if (ImGui::MenuItem(tr("Unbind"), NULL, false, has2)) { bind_set2(dev, slot, dev == BIND_DEV_PAD ? -1 : 0); settings_save(); }
+        ImGui::EndPopup();
+    }
 }
 
 // ---- what a binding says: a Switch input, or an action (slot BIND_ACTION + id)
@@ -65,8 +92,11 @@ static const char *slot_binding(int dev, int slot, int fam) {
 static void action_cell(int dev, int id, int fam, int cap_dev, int cap_slot, int ms_left) {
     const int slot = BIND_ACTION + id;
     const int host = dev == BIND_DEV_PAD ? g_act_pad[id] : g_act_key[id];
-    const bool waiting = cap_dev == dev && cap_slot == slot;
-    char lbl[96];
+    const int host2 = dev == BIND_DEV_PAD ? g_act_pad2[id] : g_act_key2[id];
+    const bool cap_alt = bind_capture_is_alt();
+    const bool waiting = cap_dev == dev && cap_slot == slot && !cap_alt;
+    const bool waiting2 = cap_dev == dev && cap_slot == slot && cap_alt;
+    char lbl[96], lbl2[96];
     if (waiting) snprintf(lbl, sizeof lbl, "%s  %d##a%d_%d", tr(dev == BIND_DEV_PAD ? "Press a button..." : "Press a key..."),
                           (ms_left + 999) / 1000, dev, id);
     else if (host == ACT_FOLLOW) {
@@ -78,7 +108,12 @@ static void action_cell(int dev, int id, int fam, int cap_dev, int cap_slot, int
     if (waiting) { ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.42f, 0.12f, 1)); pushed++; }
     if (host != ACT_FOLLOW) { ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.98f, 0.82f, 0.38f, 1)); pushed++; }
     else if (!waiting) { ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled)); pushed++; }
-    if (ImGui::Button(lbl, ImVec2(-FLT_MIN, 0))) {
+    float avail = ImGui::GetContentRegionAvail().x;
+    float gap = ImGui::GetStyle().ItemSpacing.x;
+    float w2 = avail * 0.34f;
+    float w1 = avail - w2 - gap;
+    if (w1 < 1) w1 = avail * 0.6f;
+    if (ImGui::Button(lbl, ImVec2(w1, 0))) {
         if (waiting) bind_capture_cancel();
         else bind_capture_begin(dev, slot);
     }
@@ -89,6 +124,24 @@ static void action_cell(int dev, int id, int fam, int cap_dev, int cap_slot, int
         ImGui::EndPopup();
     }
     if (waiting && !ImGui::IsItemVisible()) ImGui::SetScrollHereY(0.5f);
+    ImGui::SameLine();
+    bool has2 = host2 >= 0;
+    if (waiting2) snprintf(lbl2, sizeof lbl2, "... %d##a2_%d_%d", (ms_left + 999) / 1000, dev, id);
+    else if (has2) snprintf(lbl2, sizeof lbl2, "%s##a2_%d_%d", host_name(dev, host2, fam), dev, id);
+    else snprintf(lbl2, sizeof lbl2, "+##a2_%d_%d", dev, id);
+    int p2 = 0;
+    if (waiting2) { ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.42f, 0.12f, 1)); p2++; }
+    if (has2) { ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.98f, 0.82f, 0.38f, 1)); p2++; }
+    else if (!waiting2) { ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled)); p2++; }
+    if (ImGui::Button(lbl2, ImVec2(-FLT_MIN, 0))) {
+        if (waiting2) bind_capture_cancel();
+        else bind_capture_begin_alt(dev, slot, true);
+    }
+    ImGui::PopStyleColor(p2);
+    if (ImGui::BeginPopupContextItem()) {
+        if (ImGui::MenuItem(tr("Unbind"), NULL, false, has2)) { act_set2(dev, id, ACT_NONE); settings_save(); }
+        ImGui::EndPopup();
+    }
 }
 
 // The table of actions: every one the game asks about (the ones no code in the game reaches are left out)
@@ -221,7 +274,15 @@ extern "C" void controls_bindings_draw(float scale) {
     if (ImGui::Button(tr("Reset keyboard to defaults"))) { bind_capture_cancel(); bind_reset(BIND_DEV_KEY); }
     ImGui::EndDisabled();
     // the Xbox convention (confirm on the bottom button) in one click; Reset goes back to Nintendo's
-    if (ImGui::Button(tr("Swap A and B (Xbox: A confirms)"))) { bind_capture_cancel(); bind_swap_ab(); }
+    const bool swapped = ImGui::Button(tr("Swap A and B (Xbox: A confirms)"));
+    if (swapped) { bind_capture_cancel(); bind_swap_ab(); }
+    // in game: the HUD's diamond was laid out when the game started (runtime/services/fs.c) and moves at the next one
+    if (glyphs_hud_positions_stale()) {
+        ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", tr("Restart the game to update the HUD buttons."));
+        // the note appears under the button: scroll down to it when it falls below the bottom of the page
+        if (swapped && ImGui::GetItemRectMax().y > ImGui::GetWindowDrawList()->GetClipRectMax().y)
+            ImGui::SetScrollHereY(1.0f);
+    }
 
     ImGui::PushTextWrapPos(0);
     ImGui::TextDisabled("%s", tr("Bindings apply to the game only. Esc and F1 always open the in-game menu, and so do the "
