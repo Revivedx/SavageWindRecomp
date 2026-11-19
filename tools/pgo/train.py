@@ -184,7 +184,17 @@ def one_boot(args, config, route, scenes, attempt):
     except (OSError, ValueError, RuntimeError) as exc:
         print('{:28} failed: {}'.format(tag, exc), flush=True)
     finally:
+        code = proc.poll()
         pr.stop_game(game, proc, log)
+    if not ok:  # (what the game said last, and how it ended: a crash is not told by the control socket)
+        try:
+            with open(os.path.join(run_dir, 'log.txt'), 'rb') as f:
+                f.seek(max(0, os.path.getsize(f.name) - 1500))
+                print('    game exit code {}; log ends: {}'.format(
+                    'still running' if code is None else '{:#x}'.format(code & 0xffffffff),
+                    f.read().decode('utf-8', 'replace').strip().splitlines()[-4:]), flush=True)
+        except OSError:
+            pass
     new = [p for p in glob.glob(os.path.join(args.profiles, '*.profraw')) if p not in before]
     sizes = sorted((os.path.getsize(p), os.path.basename(p)) for p in new)
     print('{:28} {}  {:5.1f} min  {} presented frames  profraw: {}'.format(
