@@ -2988,7 +2988,11 @@ static uint64_t gen_frames;
 #ifdef SW_PGO_GENERATE
 static void write_runtime_profile(void) {
     extern int __llvm_profile_write_file(void);
+    extern void __llvm_profile_reset_counters(void);
+    // Snapshots are appended to the file: each holds the counts since the one before (reset after the write), so the
+    // merge adds up to exactly the run, not the early frames once for every later snapshot.
     if (__llvm_profile_write_file()) LOG("[pgo] could not write the runtime profile\n");
+    else __llvm_profile_reset_counters();
 }
 // A training run played by hand ends however the window is closed: keep the profile on disk as it goes.
 static void pgo_frame(void) {

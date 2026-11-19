@@ -574,7 +574,7 @@ static void disconnect(int slot) {
 // SAVAGEWIND_EXIT_AT ends the run; _exit skips the exit handler, so a run ended by the `exit` command writes it here.
 // (A helper that is empty in the normal build: the callers keep the same statements, so their profile data still fits.)
 static void pgo_dump(void) {
-    extern int __llvm_profile_write_file(void);
+    extern int __llvm_profile_write_file(void);  // (appends a snapshot of the counts since the last one: device.c resets them after each)
     if (__llvm_profile_write_file()) LOG("[pgo] could not write the runtime profile\n");
 }
 #else
