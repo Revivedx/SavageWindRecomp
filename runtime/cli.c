@@ -164,7 +164,8 @@ int cli_help(const char *topic) {
            "With no command, Savage Wind starts as usual: the game when it's set up, the start screen when not.\n\n");
     for (int i = 0; i < N_COMMANDS; i++) printf("  %-20s %s\n", k_commands[i].name, k_commands[i].summary);
     printf("\nsavagewind help <command> says more. --json (where a command has it) is for launchers: JSON on stdout.\n"
-           "A first argument that isn't a command is the game files folder, as before; --play, --config and the\n"
+           "A first argument that isn't a command is the game files folder, as before; --play (--skip-launcher / "
+           "--no-launcher), --config and the\n"
            "other flags work as they always have.\n");
     return 0;
 }
