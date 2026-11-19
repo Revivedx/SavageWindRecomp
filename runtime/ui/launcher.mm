@@ -1142,6 +1142,18 @@ static std::string trim_folder_path(const char *s) {
     return p;
 }
 
+// Changing the selected folder invalidates any result from the previous setup.
+static void select_game_folder(const std::string &path) {
+    pthread_mutex_lock(&g_lock);
+    g_src = path;
+    if (!g_busy) {
+        g_job.clear();
+        g_job_hint.clear();
+        g_job_failed = false;
+    }
+    pthread_mutex_unlock(&g_lock);
+}
+
 static void SDLCALL picked(void *, const char *const *files, int) {
     if (!files) {
         const char *err = SDL_GetError();
@@ -1150,9 +1162,7 @@ static void SDLCALL picked(void *, const char *const *files, int) {
         return;
     }
     if (!files[0]) return;
-    pthread_mutex_lock(&g_lock);
-    g_src = files[0];
-    pthread_mutex_unlock(&g_lock);
+    select_game_folder(files[0]);
 }
 
 // ------------------------------------------------------------------ the user's own Nintendo fonts (not shipped)
@@ -2308,9 +2318,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                         if (opt_text("Folder path", path_buf, sizeof path_buf, "Type or paste path...",
                                      "Enter the path to your extracted game files folder directly if the system folder picker does not open.")) {
                             std::string p = trim_folder_path(path_buf);
-                            pthread_mutex_lock(&g_lock);
-                            g_src = p;
-                            pthread_mutex_unlock(&g_lock);
+                            select_game_folder(p);
                             last_synced_src = p;
                             snprintf(path_buf, sizeof path_buf, "%s", p.c_str());
                         }
