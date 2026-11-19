@@ -170,7 +170,8 @@ const char *const k_aa[] = {"Off", "SMAA"};
 const char *const k_aa[] = {"Off", "FXAA", "SMAA", "TAA"};  // (settings.h AA_ROW_*)
 #endif
 const char *const k_aniso[] = {"Off", "2x", "4x", "8x", "16x"};  // (settings anisotropy 0..4)
-const char *const k_tex_lod[] = {"Default", "Sharp", "Sharper"};  // (settings tex_lod_bias 0..2)
+const char *const k_tex_lod[] = {"Default", "Sharp", "Sharper", "Ultra"};  // (settings tex_lod_bias 0..3)
+const char *const k_grass_dist[] = {"Follow draw distance", "Potato", "Original", "Medium", "High"};
 // (shown with Potato first, the nearest: k_drawdist_order maps a row index to settings.h DRAWDIST_*)
 const char *const k_drawdist[] = {"Original", "High", "Savage", "Potato"};  // (settings.h DRAWDIST_*; the ini: medium, high)
 const int k_drawdist_order[] = {DRAWDIST_POTATO, DRAWDIST_ORIGINAL, DRAWDIST_MEDIUM, DRAWDIST_HIGH};
@@ -756,8 +757,8 @@ void build_items(void) {
                        },
                        [](const Item &, int x) { g_settings.hdr_vanilla_saturation = x; }, 100));
     v.push_back(choice(P_HDR, "HDR bloom strength",
-                       "How much glow around bright objects is kept. 100% is the game's own bloom; 0% removes it.",
-                       [](const Item &) { return 101; },
+                       "How much glow around bright objects is kept. 100% is the game's own bloom; above it, stronger; 0% removes it.",
+                       [](const Item &) { return 201; },
                        [](const Item &, int x) {
                            static char buf[32];
                            snprintf(buf, sizeof buf, "%d %%", x);
@@ -765,7 +766,7 @@ void build_items(void) {
                        },
                        [](const Item &) {
                            int v = g_settings.hdr_bloom;
-                           return v >= 0 && v <= 100 ? v : 100;
+                           return v >= 0 && v <= 200 ? v : 100;
                        },
                        [](const Item &, int x) { g_settings.hdr_bloom = x; }, 100));
     v.push_back(choice(P_HDR, "HDR gamut clamp",
@@ -900,7 +901,7 @@ void build_items(void) {
                        [](const Item &, int x) { return x ? k_aniso[x] : tr("Off"); },
                        [](const Item &) { return g_settings.anisotropy; },
                        [](const Item &, int x) { g_settings.anisotropy = x; }, 1));
-    v.push_back(choice(P_VIDEO_ADV, "Texture sharpness", "Sharpens textures by biasing mipmap levels. Sharp (-0.5), Sharper (-1.0).",
+    v.push_back(choice(P_VIDEO_ADV, "Texture sharpness", "Sharpens textures by biasing mipmap levels. Sharp (-0.5), Sharper (-1.0), Ultra (-1.5).",
                        [](const Item &) { return N(k_tex_lod); },
                        [](const Item &, int x) { return tr(k_tex_lod[x]); },
                        [](const Item &) { return g_settings.tex_lod_bias; },
@@ -949,6 +950,10 @@ void build_items(void) {
     v.push_back(toggle(P_VIDEO_ADV, "Grass", "Grass blades and ground cover. Off: bare terrain, faster.",
                        [](const Item &) { return (int)g_settings.grass; },
                        [](const Item &, int x) { g_settings.grass = x; }, 1));
+    v.push_back(choice(P_VIDEO_ADV, "Grass distance", "How far out grass blades are drawn. High reaches about 2.45x independently of Draw distance.",
+                       [](const Item &) { return N(k_grass_dist); }, [](const Item &, int x) { return tr(k_grass_dist[x]); },
+                       [](const Item &) { return g_settings.grass_distance >= 0 && g_settings.grass_distance < GRASS_DIST_COUNT ? g_settings.grass_distance : 0; },
+                       [](const Item &, int x) { g_settings.grass_distance = x; }, 0));
     v.push_back(toggle(P_VIDEO_ADV, "Lens flare", "Sun glare and lens flare. Off: no sun flare.",
                        [](const Item &) { return (int)g_settings.lens_flare; },
                        [](const Item &, int x) { g_settings.lens_flare = x; }, 1));
@@ -964,7 +969,7 @@ void build_items(void) {
                            [](const Item &) { return g_settings.scene_copies >= 0 && g_settings.scene_copies < SCENE_COPIES_COUNT ? g_settings.scene_copies : 0; },
                            [](const Item &, int x) { g_settings.scene_copies = x; }, SCENE_COPIES_AUTO));
 #endif
-    v.push_back(choice(P_VIDEO_ADV, "Haze", "How hazy the air is. Lower: clearer distances. From the next start.",
+    v.push_back(choice(P_VIDEO_ADV, "Haze", "How hazy the air is. Lower: clearer distances; above 100%: denser atmosphere. From the next start.",
                        [](const Item &) { return N(k_haze); },
                        [](const Item &, int x) {
                            static std::string s;
@@ -972,7 +977,7 @@ void build_items(void) {
                            return s.c_str();
                        },
                        [](const Item &) { return nearest(k_haze, N(k_haze), (float)g_settings.haze); },
-                       [](const Item &, int x) { g_settings.haze = k_haze[x]; }, N(k_haze) - 1));
+                       [](const Item &, int x) { g_settings.haze = k_haze[x]; }, 2));
     v.push_back(button(P_VIDEO_ADV, "HDR options", "HDR on or off, brightness, the tone mapper, colour and presets.",
                        "Open", A_PAGE, P_HDR));
     // the game's font sheets enlarged (runtime/nvn/text_upscale.c): read when the game starts

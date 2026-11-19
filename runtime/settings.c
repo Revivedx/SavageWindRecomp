@@ -107,7 +107,8 @@ static const char *const k_vsync[VSYNC_COUNT] = {"on", "fast", "adaptive", "off"
 static const char *const k_hdr[HDR_COUNT] = {"auto", "on", "off"};             // (HDR_*)
 static const char *const k_sparse_heap[SPARSE_HEAP_COUNT] = {"auto", "on", "off"};
 static const char *const k_scene_copies[SCENE_COPIES_COUNT] = {"auto", "fast", "exact"};  // (SCENE_COPIES_*)
-static const char *const k_tex_lod_bias[TEX_LOD_COUNT] = {"default", "sharp", "sharper"};
+static const char *const k_tex_lod_bias[TEX_LOD_COUNT] = {"default", "sharp", "sharper", "ultra"};
+static const char *const k_grass_dist[GRASS_DIST_COUNT] = {"auto", "potato", "original", "medium", "high"};
 static const char *const k_fsmode[FSMODE_COUNT] = {"auto", "borderless", "exclusive"};  // (FSMODE_*)
 static const char *const k_audio_out[AUDIO_OUT_COUNT] = {"stereo", "surround_51", "headphones_3d"};  // (AUDIO_OUT_*)
 
@@ -255,7 +256,7 @@ static int hdr_look_clamp(int i, int x) {
     case 9: return x >= 0 && x <= 100 ? x : 65;
     case 10: return x >= 0 && x <= 60 ? x : 18;
     case 11: return x >= 0 && x <= 100 ? x : 100;
-    case 12: return x >= 0 && x <= 100 ? x : 100;
+    case 12: return x >= 0 && x <= 200 ? x : 100;
     case 13: return x ? 1 : 0;
     case 14: return x == 0 || (x >= 80 && x <= 10000) ? x : 0;
     case 15: return x == 0 || (x >= 80 && x <= 1000) ? x : 0;
@@ -544,7 +545,7 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "hdr_bloom")) {  // (HDR bloom strength, percent)
             int n = atoi(val);
-            g_settings.hdr_bloom = n >= 0 && n <= 100 ? n : 100;
+            g_settings.hdr_bloom = n >= 0 && n <= 200 ? n : 100;
         }
         else if (!strcmp(key, "hdr_clamp")) {  // (0: BT.709, 1: BT.2020)
             int n = atoi(val);
@@ -648,11 +649,16 @@ void settings_load(void) {
         else if (!strcmp(key, "menu_text_size")) g_settings.menu_text_size = atoi(val);
         else if (!strcmp(key, "haze")) {  // (percent; an older ini's 0-50 reads as 75: HAZE_MIN)
             int v = atoi(val);
-            g_settings.haze = v < HAZE_MIN ? HAZE_MIN : v > 100 ? 100 : v;
+            g_settings.haze = v < HAZE_MIN ? HAZE_MIN : v > HAZE_MAX ? HAZE_MAX : v;
         }
         else if (!strcmp(key, "bloom")) g_settings.bloom = atoi(val) != 0;
         else if (!strcmp(key, "depth_of_field")) g_settings.depth_of_field = atoi(val) != 0;
         else if (!strcmp(key, "grass")) g_settings.grass = atoi(val) != 0;
+        else if (!strcmp(key, "grass_distance")) {
+            g_settings.grass_distance = GRASS_DIST_FOLLOW;
+            for (int i = 0; i < GRASS_DIST_COUNT; i++)
+                if (!strcmp(val, k_grass_dist[i])) g_settings.grass_distance = i;
+        }
         else if (!strcmp(key, "lens_flare")) g_settings.lens_flare = atoi(val) != 0;
         // (dynamic_resolution, the game's own counters, did nothing and was saved on: not read. The frame-rate one is
         // the upscaler's Dynamic mode, upscale_quality.)
@@ -927,6 +933,8 @@ bool settings_save_to(const char *path) {
     fprintf(f, "bloom = %d\n", g_settings.bloom ? 1 : 0);
     fprintf(f, "depth_of_field = %d\n", g_settings.depth_of_field ? 1 : 0);
     fprintf(f, "grass = %d\n", g_settings.grass ? 1 : 0);
+    int gd = g_settings.grass_distance;
+    fprintf(f, "grass_distance = %s\n", k_grass_dist[gd >= 0 && gd < GRASS_DIST_COUNT ? gd : GRASS_DIST_FOLLOW]);
     fprintf(f, "lens_flare = %d\n", g_settings.lens_flare ? 1 : 0);
     fprintf(f, "fast_fma = %d\n", g_settings.fast_fma ? 1 : 0);
     fprintf(f, "colour_exposure = %.1f\n", g_settings.color_exposure / 10.0);

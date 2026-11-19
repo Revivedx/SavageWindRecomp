@@ -1153,8 +1153,8 @@ static void haze_walk_list(uint8_t *d, size_t n, size_t o, const uint32_t h[3], 
                                       //  names that this scaling turned teal)
 }
 static void haze_patch(void) {
-    int pct = g_settings.haze < HAZE_MIN ? HAZE_MIN : g_settings.haze;
-    if (pct >= 100 || R != &images[0] || R->npatches >= 16) return;
+    int pct = g_settings.haze < HAZE_MIN ? HAZE_MIN : g_settings.haze > HAZE_MAX ? HAZE_MAX : g_settings.haze;
+    if (pct == 100 || R != &images[0] || R->npatches >= 16) return;
     static const char pack_path[] = "Pack/TitleBG.pack", name[] = "WorldMgr/normal.bwinfo";
     int k = 0;
     while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, pack_path)) k++;
