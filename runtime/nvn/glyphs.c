@@ -649,7 +649,9 @@ bool glyphs_hud_positions_stale(void) {
 // (g_bind_pad / g_bind_key): their prompts are the menus' own buttons. The sheet goes up again when that changes
 // (generation), so a prompt on screen changes on the next frame.
 #define ACT_ACTIVATE_RUNE 34   // (bindings.c k_act_names)
-#define RUNE_ASKED_MS 150      // asked that recently: a rune is out
+#define ACT_CYCLE_ACCEL   38   // (bindings.c k_act_names: Cycle accelerate)
+#define ACT_CYCLE_BRAKE   39   // (bindings.c k_act_names: Cycle brake)
+#define RUNE_ASKED_MS 150      // asked that recently: a rune or cycle action is active
 static int g_face[2][4];       // latched by generation(): per device (pad, keys) the host for A, B, X, Y
 
 static bool in_play(void) { return g_site.pause_state && LD32(g_site.pause_state) == 0; }  // (not the pause menu, map)
@@ -727,6 +729,8 @@ static bool rune_slot(int host, int *moved) {  // host < 0: back to the slot's o
 // in its own corner (put back if the setting goes off with the slot moved)
 static void resolve_face(void) {
     bool on = g_settings.prompts_follow, play = on && in_play(), rune = play && rune_out();
+    bool cycle_accel = play && !rune && act_asked_within(ACT_CYCLE_ACCEL, RUNE_ASKED_MS);
+    bool cycle_brake = play && act_asked_within(ACT_CYCLE_BRAKE, RUNE_ASKED_MS);
     int rune_host = rune ? g_act_pad[ACT_ACTIVATE_RUNE] : -1, moved = -1;
     if ((play || !on) && !rune_slot(rune_host, &moved)) rune = false;  // (the characters follow once the slot is there)
     g_letter_swap = rune ? moved : -1;
@@ -734,8 +738,12 @@ static void resolve_face(void) {
         for (int i = 0; i < 4; i++) {
             int layer = dev ? g_bind_key[BIND_A + i] : g_bind_pad[BIND_A + i];
             int h = play ? act_prompt_host(dev ? BIND_DEV_KEY : BIND_DEV_PAD, BIND_A + i) : -1;
-            if (rune && i == 0) {
-                int r = dev ? g_act_key[ACT_ACTIVATE_RUNE] : g_act_pad[ACT_ACTIVATE_RUNE];
+            int act = (rune && i == 0) ? ACT_ACTIVATE_RUNE
+                    : (cycle_accel && i == 0) ? ACT_CYCLE_ACCEL
+                    : (cycle_brake && i == 1) ? ACT_CYCLE_BRAKE
+                    : -1;
+            if (act >= 0) {
+                int r = dev ? g_act_key[act] : g_act_pad[act];
                 if (dev ? r > 0 : r >= 0) h = r;
             }
             g_face[dev][i] = h >= 0 && (dev ? h > 0 : 1) ? h : layer;
