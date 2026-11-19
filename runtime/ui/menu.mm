@@ -255,6 +255,23 @@ bool menu_handle_event(const SDL_Event *e) {
         push(q);
         return false;  // the input runtime also releases its cached controls
     }
+    // Fullscreen that the system made or ended (macOS's green button or its View menu, a window manager's own key):
+    // taken as Video > Fullscreen, so the size set there applies. Before, the game took the whole screen's pixels as
+    // its size (3420x2146 on a 15" MacBook Air: about 46 fps where 1080p is a locked 60) while Video said 1080p.
+    // (Ours raise the same events; then the setting already agrees. An exclusive window that loses the focus is
+    // minimised and leaves its mode (#224): not a choice, so only a focused, shown window counts.)
+    if (e->type == SDL_EVENT_WINDOW_ENTER_FULLSCREEN || e->type == SDL_EVENT_WINDOW_LEAVE_FULLSCREEN) {
+        bool entered = e->type == SDL_EVENT_WINDOW_ENTER_FULLSCREEN;
+        SDL_Window *w = SDL_GetWindowFromID(e->window.windowID);
+        SDL_WindowFlags f = w ? SDL_GetWindowFlags(w) : 0;
+        if (entered != g_settings.fullscreen && (f & SDL_WINDOW_INPUT_FOCUS) && !(f & SDL_WINDOW_MINIMIZED)) {
+            g_settings.fullscreen = entered;
+            g_want_window_apply.store(true);
+            settings_save();
+            LOG("[window] fullscreen %s by the system: Video > Fullscreen follows\n", entered ? "made" : "ended");
+        }
+        return false;
+    }
     // a binding capture (Controls tab, or the game's Options screen) takes the press
     if (bind_capture_event(e)) return true;
     if (e->type == SDL_EVENT_KEY_DOWN) g_last_pad = false;
