@@ -868,6 +868,8 @@ static void tab_display(void) {
                        "How big the hearts, stamina, minimap and the rest of the HUD are. Each part stays in its corner.", false))
             g_settings.hud_size = sizes[cur];
     }
+    opt_toggle("Dynamic HUD", &g_settings.dynamic_hud, false,
+               "Hides the HUD while exploring and shows it for 5 seconds when Link takes damage.");
     {
         float tsz = (float)g_settings.menu_text_size;
         if (opt_slider("Overlay text size", &tsz, 80, 150, 5, 100, "%g%%",

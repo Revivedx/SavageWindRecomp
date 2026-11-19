@@ -494,6 +494,9 @@ void build_items(void) {
                        },
                        [](const Item &) { return nearest(k_hud_size, N(k_hud_size), (float)g_settings.hud_size); },
                        [](const Item &, int x) { g_settings.hud_size = k_hud_size[x]; }, HUD_SIZE_DEFAULT_INDEX));
+    v.push_back(toggle(P_GAMEPLAY, "Dynamic HUD", "Hides the HUD while exploring and shows it for 5 seconds when Link takes damage.",
+                       [](const Item &) { return (int)g_settings.dynamic_hud; },
+                       [](const Item &, int x) { g_settings.dynamic_hud = x; }, 0));
     v.push_back(choice(P_GAMEPLAY, "Menu cursor speed", "How fast the cursor and transitions move in menus, inventory, and the map.",
                        [](const Item &) { return N(k_menu_speed); },
                        [](const Item &, int x) {
