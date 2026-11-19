@@ -77,7 +77,7 @@ enum { SCENE_COPIES_AUTO = 0, SCENE_COPIES_FAST = 1, SCENE_COPIES_EXACT = 2, SCE
 // the screen); Exclusive always uses a display mode (the desktop's size too, at its highest refresh rate)
 enum { FSMODE_AUTO = 0, FSMODE_BORDERLESS = 1, FSMODE_EXCLUSIVE = 2, FSMODE_COUNT };
 // Texture LOD bias (Video > Texture sharpness): pulls forward mipmaps for sharper ground/object textures.
-enum { TEX_LOD_DEFAULT = 0, TEX_LOD_SHARP = 1, TEX_LOD_SHARPER = 2, TEX_LOD_COUNT };
+enum { TEX_LOD_DEFAULT = 0, TEX_LOD_SHARP = 1, TEX_LOD_SHARPER = 2, TEX_LOD_ULTRA = 3, TEX_LOD_COUNT };
 
 // Audio > Audio output (runtime/services/audio.c): Stereo mixes the game's 6 channels (FL, FR, FC, LFE, BL, BR) down
 // to 2; Surround 5.1 sends all 6 channels to the audio device; 3D Headphones mixes the 6 channels to stereo with
@@ -202,6 +202,7 @@ typedef struct {
     bool bloom;          // the glow around bright light (off: its draws clear their images: vulkan/exec.c)
     bool depth_of_field; // the distance blur over far pixels (off: its draw is skipped: vulkan/exec.c)
     bool grass;          // grass blades and crossed quads (off: draw_distance.c hides both layers)
+    int grass_distance;  // GRASS_DIST_*: independent grass draw distance (0: follow draw_distance)
     bool lens_flare;     // sun glare / lens flare (off: vulkan/exec.c skips sun occlusion queries)
     bool fast_fma;       // CPUs without FMA instructions (gamelib_compat): the game's fused multiply-adds rounded twice,
                          // faster (simd.h simd_fma_unfused); off: exact, as the console
@@ -250,8 +251,10 @@ typedef struct {
 #define STICK_CAM_MAX 600
 #define STICK_CAM_DEFAULT 200
 #define STICK_DEADZONE_DEFAULT 0.10f  // (the Switch's own input service has one: the game expects 0 at rest)
-#define HAZE_CHOICES {75, 90, 100}  // (percent of the game's haze: below 75 the whole picture turns teal)
+#define HAZE_CHOICES {75, 90, 100, 125, 150}  // (percent of the game's haze: below 75 the whole picture turns teal)
 #define HAZE_MIN 75
+#define HAZE_MAX 150
+enum { GRASS_DIST_FOLLOW = 0, GRASS_DIST_POTATO, GRASS_DIST_ORIGINAL, GRASS_DIST_MEDIUM, GRASS_DIST_HIGH, GRASS_DIST_COUNT };
 enum { DRAWDIST_ORIGINAL, DRAWDIST_MEDIUM, DRAWDIST_HIGH, DRAWDIST_POTATO, DRAWDIST_COUNT };  // (Original: the game's own
                                                                                   // distances; Potato: nearer)
 float draw_distance_factor(void);  // the setting's factor on the game's distances (1: Original)

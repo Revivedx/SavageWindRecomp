@@ -28,6 +28,7 @@
 #else
 #include "imgui_impl_vulkan.h"
 extern "C" bool vk_imgui_backend_init(void);  // runtime/nvn/vulkan/imgui_glue.cpp
+extern "C" bool vram_query_mb(int *total_mb, int *budget_mb);  // runtime/nvn/vulkan/vram.c
 #endif
 extern "C" bool vk_feedback_once(void);  // runtime/nvn/vulkan/exec.c (Video > Scene copies; Vulkan only)
 
@@ -732,6 +733,65 @@ static void tab_colour(void) {
 }
 #endif
 
+// Estimate expected GPU VRAM usage in MB from the active video settings so players can see how each option scales
+// memory before applying or raising settings above the console baseline.
+static int vram_estimate_mb(void) {
+    static const int rscale_pct[RSCALE_COUNT] = {50, 75, 100, 125, 150, 200};
+    int rs = g_settings.render_scale >= 0 && g_settings.render_scale < RSCALE_COUNT ? rscale_pct[g_settings.render_scale] : 100;
+    float up_scale = 1.0f;
+    if (g_settings.upscaler != UPSCALE_OFF) {
+        static const float up_mul[UPQ_COUNT] = {0.77f, 0.67f, 0.59f, 0.50f, 0.33f, 1.0f, 0.85f};
+        int uq = g_settings.upscale_quality >= 0 && g_settings.upscale_quality < UPQ_COUNT ? g_settings.upscale_quality : UPQ_QUALITY;
+        up_scale = up_mul[uq];
+    }
+    float px = (rs / 100.0f) * up_scale;
+    int rt_mb = (int)lroundf(260.0f * px * px);
+    static const int shadow_mb[SHADOW_COUNT] = {24, 45, 100, 400, 6};  // Console, High, Ultra, Extreme(Savage), Potato
+    int sm = g_settings.shadow_res >= 0 && g_settings.shadow_res < SHADOW_COUNT ? shadow_mb[g_settings.shadow_res] : 24;
+    int aa_mb = g_settings.antialias == AA_TAA ? 80 : g_settings.antialias == AA_SMAA ? 30 : 0;
+    int fg_mb = g_settings.frame_gen ? 150 : 0;
+    int text_mb = g_settings.sharper_text == 4 ? 160 : g_settings.sharper_text == 2 ? 40 : 0;
+    int menu_mb = g_settings.sharper_menus == 4 ? 120 : g_settings.sharper_menus == 2 ? 30 : 0;
+    static const int dd_mb[DRAWDIST_COUNT] = {0, 80, 180, -80};
+    int dd = g_settings.draw_distance >= 0 && g_settings.draw_distance < DRAWDIST_COUNT ? dd_mb[g_settings.draw_distance] : 0;
+    int grass_mb = !g_settings.grass ? -30 : (g_settings.grass_distance == GRASS_DIST_HIGH ? 30 : 0);
+    int hdr_mb = g_settings.hdr == HDR_ON ? 60 : 0;
+    int total = 1350 + rt_mb + sm + aa_mb + fg_mb + text_mb + menu_mb + dd + grass_mb + hdr_mb;
+    return total < 512 ? 512 : total;
+}
+
+static void draw_vram_bar(void) {
+    int est_mb = vram_estimate_mb();
+    int total_mb = 0, budget_mb = 0;
+#ifndef SW_METAL
+    vram_query_mb(&total_mb, &budget_mb);
+#endif
+    if (total_mb <= 0) {
+        PerfStats ps = {};
+        perfmon_snapshot(&ps);
+        if (ps.vram_total_mb > 0) total_mb = (int)lroundf(ps.vram_total_mb);
+    }
+    int cap_mb = budget_mb > 0 ? budget_mb : total_mb;
+    float frac = cap_mb > 0 ? (float)est_mb / (float)cap_mb : 0.0f;
+    float bar = frac > 1.0f ? 1.0f : frac < 0.0f ? 0.0f : frac;
+    ImVec4 fill = frac > 0.90f ? ImVec4(0.86f, 0.24f, 0.20f, 1.0f)
+                : frac > 0.70f ? ImVec4(0.90f, 0.66f, 0.18f, 1.0f)
+                               : ImVec4(0.24f, 0.72f, 0.42f, 1.0f);
+    char label[128];
+    if (cap_mb > 0)
+        snprintf(label, sizeof label, tr("Estimated VRAM: %d / %d MB (%d%%)"), est_mb, cap_mb, (int)lroundf(frac * 100.0f));
+    else
+        snprintf(label, sizeof label, tr("Estimated VRAM: ~%d MB"), est_mb);
+    ImGui::Spacing();
+    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, fill);
+    ImGui::ProgressBar(cap_mb > 0 ? bar : 0.0f, ImVec2(-FLT_MIN, 0.0f), label);
+    ImGui::PopStyleColor();
+    if (cap_mb > 0 && frac > 0.90f)
+        ImGui::TextColored(ImVec4(0.95f, 0.42f, 0.36f, 1.0f), "%s",
+                           tr("Near or above available video memory; lower Shadow resolution or Render scale if performance drops."));
+    ImGui::Spacing();
+}
+
 static void tab_display(void) {
     float scale = ImGui::GetFontSize() / 34;
     opt_begin("##video", scale);
@@ -748,6 +808,7 @@ static void tab_display(void) {
                        "field). Original: as on the console. High and Savage: further and sharper, for faster PCs.", false))
             graphics_preset_apply(cur);
     }
+    draw_vram_bar();
     bool fs = g_settings.fullscreen;
     if (opt_toggle("Fullscreen", &fs, false, "Fills the screen. Also: F11, Alt+Enter or Cmd+Ctrl+F.")) {
         g_settings.fullscreen = fs;
@@ -1086,10 +1147,10 @@ static void tab_display(void) {
                    "Keeps the textures of ground, paths and walls sharp where you look along them into the distance. "
                    "Off: the game's own filtering, as on the console. 16x is the sharpest and costs very little on a PC "
                    "graphics card.", false);
-        static const char *const tex_lod[] = {"Default", "Sharp", "Sharper"};
-        opt_choice("Texture sharpness", &g_settings.tex_lod_bias, tex_lod, 3, 0,
+        static const char *const tex_lod[] = {"Default", "Sharp", "Sharper", "Ultra"};
+        opt_choice("Texture sharpness", &g_settings.tex_lod_bias, tex_lod, TEX_LOD_COUNT, 0,
                    "Pulls forward mipmap levels on 3D textures for increased clarity on surfaces and distant objects. "
-                   "Sharp uses a -0.5 bias; Sharper uses -1.0.", false);
+                   "Sharp uses a -0.5 bias, Sharper uses -1.0, and Ultra uses -1.5.", false);
         static const char *const sharp[] = {"Off", "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%", "100%"};
         opt_choice("Sharpening (AMD CAS)", &g_settings.sharpening, sharp, 11, 0,
                    "AMD FidelityFX CAS sharpens the 3D image after the upscaler (or at the window's resolution with the "
@@ -1275,8 +1336,8 @@ static void tab_display(void) {
                     g_settings.hdr_vanilla_saturation = (int)lroundf(vanilla_sat);
                 hdr_sub();
                 float bloom = (float)g_settings.hdr_bloom;
-                if (opt_slider("HDR bloom strength", &bloom, 0, 100, 1, 100, "%g %%",
-                               "How much glow around bright objects is kept. 100% is the game's own bloom; 0% removes it."))
+                if (opt_slider("HDR bloom strength", &bloom, 0, 200, 5, 100, "%g %%",
+                               "How much glow around bright objects is kept. 100% is the game's own bloom; above it, stronger; 0% removes it."))
                     g_settings.hdr_bloom = (int)lroundf(bloom);
                 psy_sub();
                 static const char *const clamp_names[] = {"BT.709", "BT.2020"};
@@ -1316,6 +1377,15 @@ static void tab_display(void) {
     opt_toggle("Depth of field", &g_settings.depth_of_field, true, "The game blurs the far distance a little. Off: sharp "
                "out to the horizon, a little faster.");
     opt_toggle("Grass", &g_settings.grass, true, "Grass blades and ground cover. Off: bare terrain, faster.");
+    {
+        static const char *const gd_names[GRASS_DIST_COUNT] = {"Follow draw distance", "Potato", "Original", "Medium", "High"};
+        opt_indent(1);
+        if (!g_settings.grass) opt_disable_next();
+        opt_choice("Grass distance", &g_settings.grass_distance, gd_names, GRASS_DIST_COUNT, GRASS_DIST_FOLLOW,
+                   "How far out grass blades and ground cover are drawn. Follow draw distance matches Draw distance; "
+                   "High extends grass to about 2.45x without raising actor limits.", false);
+        opt_indent(-1);
+    }
     opt_toggle("Lens flare", &g_settings.lens_flare, true, "Sun glare and lens flare. Off: no sun flare.");
     if (gamelib_compat())  // (runtime/gamelib.h: a CPU without FMA instructions; simd.h simd_fma_unfused)
         opt_toggle("Fast math", &g_settings.fast_fma, true, "Your CPU has no FMA instructions, so the game's math runs "
@@ -1336,14 +1406,14 @@ static void tab_display(void) {
         enum { NH = sizeof haze / sizeof haze[0] };
         static char buf[NH][16];
         const char *names[NH];
-        int cur = NH - 1;
+        int cur = 2;  // 100%
         for (int i = 0; i < NH; i++) {
             snprintf(buf[i], sizeof buf[i], "%d%%", haze[i]);
             names[i] = buf[i];
             if (haze[i] == g_settings.haze) cur = i;
         }
-        if (opt_choice("Haze", &cur, names, NH, NH - 1, "How hazy the air is. Lower: clearer distances. It takes effect "
-                       "the next time you start the game.", false))
+        if (opt_choice("Haze", &cur, names, NH, 2, "How hazy the air is. Lower: clearer distances; above 100%: denser "
+                       "atmosphere. It takes effect the next time you start the game.", false))
             g_settings.haze = haze[cur];
     }
 #ifndef SW_METAL

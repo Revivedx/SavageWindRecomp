@@ -2364,6 +2364,7 @@ static float sampler_user_lod_bias(const NvnSamplerDesc *d) {
     if (d->min_filter <= 1 || d->compare_mode) return 0.0f;
     if (g_settings.tex_lod_bias == TEX_LOD_SHARP) return -0.5f;
     if (g_settings.tex_lod_bias == TEX_LOD_SHARPER) return -1.0f;
+    if (g_settings.tex_lod_bias == TEX_LOD_ULTRA) return -1.5f;
     return 0.0f;
 }
 

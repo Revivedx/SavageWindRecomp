@@ -145,11 +145,21 @@ static float env_factor(const char *name, float *cache) {
     }
     return *cache;
 }
+static int grass_level(void) {
+    switch (g_settings.grass_distance) {
+    case GRASS_DIST_POTATO: return DRAWDIST_POTATO;
+    case GRASS_DIST_ORIGINAL: return DRAWDIST_ORIGINAL;
+    case GRASS_DIST_MEDIUM: return DRAWDIST_MEDIUM;
+    case GRASS_DIST_HIGH: return DRAWDIST_HIGH;
+    default: return level();
+    }
+}
+
 static float grass_target(int quads) {
     static float env[2] = {-1, -1};
     float e = env_factor(quads ? "SAVAGEWIND_GRASS_QUADS" : "SAVAGEWIND_GRASS_BLADES", &env[quads]);
     if (e > 0) return e;
-    int d = level();
+    int d = grass_level();
     return d > DRAWDIST_ORIGINAL && d < DRAWDIST_COUNT ? (quads ? k_quads : k_blades)[d] : 1.0f;
 }
 
@@ -228,7 +238,7 @@ int rt_grass_range(uint64_t cam, uint32_t cell_bits, uint32_t *s0, uint32_t *a, 
         union { uint32_t u; float f; } x = {.u = *s0}, p = {.u = *a}, q = {.u = *b};
         float tn = *(float *)(uintptr_t)(cam + 0x134), asp = *(float *)(uintptr_t)(cam + 0x12c);
         float tt = tn > x.f ? tn : x.f;
-        g_cone = f > 1.0f && level() == DRAWDIST_HIGH && !getenv("SAVAGEWIND_GRASS_NOCONE");
+        g_cone = f > 1.0f && grass_level() == DRAWDIST_HIGH && !getenv("SAVAGEWIND_GRASS_NOCONE");
         g_cone_from = 1 / (tt * p.f) - 1 / (tt * q.f);  // (the game's near distance this frame)
         g_cone_k = tn * (asp > 0 ? asp : 1.0f) * CONE_WIDEN;
     }
