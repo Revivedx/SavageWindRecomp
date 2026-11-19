@@ -9,7 +9,9 @@
 // vectors, the previous frame's reconstructed depth, two of each that alternate), the optical flow context and the
 // frame interpolation context on a second backend interface; per frame, frame interpolation's prepare (dilates the
 // depth and motion vectors), the optical flow, then the interpolation.
+#ifndef __APPLE__  // (macOS has no malloc.h: _aligned_malloc is ffx_compat.h's)
 #include <malloc.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

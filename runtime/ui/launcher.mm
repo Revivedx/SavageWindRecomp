@@ -11,6 +11,8 @@
 // The background: runtime/ui/splash.mm.
 #ifdef __APPLE__
 #import <AppKit/NSEvent.h>
+#endif
+#ifdef SW_METAL
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 #endif
@@ -35,7 +37,7 @@
 #include "osk.h"
 #include "saves_tab.h"
 #include "splash.h"
-#ifdef __APPLE__
+#ifdef SW_METAL
 #include "imgui_impl_metal.h"
 #else
 #include "imgui_impl_vulkan.h"
@@ -64,13 +66,13 @@ extern "C" {
 #include "color_grade.h"
 #include "pc_cursor.h"
 #include "input_bind.h"
-#ifndef __APPLE__
+#ifndef SW_METAL
 #include "nvn/precompile.h"
 #endif
 void controls_bindings_draw(float scale);  // ui/controls_ui.mm
 void ui_window_init(void);
 SDL_Window *ui_window(void);
-#ifdef __APPLE__
+#ifdef SW_METAL
 void *ui_metal_layer(void);
 void *ui_metal_device(void);
 #else
@@ -84,7 +86,7 @@ uint64_t vk_imgui_texture_rgba(const void *rgba, int w, int h);
 void rec_drain(void);  // (runtime/nvn/vulkan/record.c)
 #endif
 }
-#ifdef __APPLE__
+#ifdef SW_METAL
 #import <ImageIO/ImageIO.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
@@ -496,7 +498,7 @@ static bool build_game_code(void) {
 // After a setup when its option is on (the setup page's PRECOMPILE ALL SHADERS, settings.precompile_shaders), or on
 // its own from the game files page of the configuration screen. The progress overlay shows it; Esc / B stops it
 // (what is done stays in the caches).
-#ifndef __APPLE__
+#ifndef SW_METAL
 static ShaderPrecompile g_pc;
 static std::atomic<bool> g_precompiling{false}, g_pc_only{false};
 
@@ -632,7 +634,7 @@ static void *update_thread(void *) {
 
 static bool stay_on_setup_finished(void) {  // (a check, shader precompilation or failed setup: the game files page stays)
     bool stay = g_stay_on_setup.exchange(false);
-#ifndef __APPLE__
+#ifndef SW_METAL
     stay |= g_pc_only.exchange(false);
 #endif
     return stay;
@@ -928,7 +930,7 @@ static void *extract_thread(void *) {
 check:
     {
         std::string why = check_game_files(g_root);
-#ifndef __APPLE__
+#ifndef SW_METAL
         if (why.empty() && !dlc_only && (g_settings.precompile_shaders || new_version) && shader_precompile_available())
             run_precompile();  // (a new version: always, the caches were emptied at its start)
 #endif
@@ -971,7 +973,7 @@ static void cli_str(const std::string &s) { cli_json_str(cli_out, s.c_str()); }
 
 // The setup's stage now: copy (with bytes), build (the game code) or shaders
 static const char *setup_stage(void) {
-#ifndef __APPLE__
+#ifndef SW_METAL
     if (g_precompiling) return "shaders";
 #endif
     return g_build_frac >= 0 ? "build" : "copy";
@@ -993,7 +995,7 @@ extern "C" int launcher_setup_cli(const char *root, const char *src, bool json) 
     const char *last_stage = "";
     for (bool busy = true; busy;) {
         if (cli_stop_requested()) {
-#ifndef __APPLE__
+#ifndef SW_METAL
             atomic_store(&g_pc.cancel, true);
 #endif
             const char *stopped = tr("Stopped. Set up again to finish.");
@@ -1591,7 +1593,7 @@ extern "C" void vk_imgui_fonts_changed(void);  // (runtime/nvn/vulkan/imgui_glue
 static void launcher_fonts_follow_language(void) {
     if (g_fonts_lang == ui_lang_generation() * 10007 + ui_dynamic_generation()) return;
     launcher_fonts();
-#ifdef __APPLE__
+#ifdef SW_METAL
     ImGui_ImplMetal_DestroyFontsTexture();  // (NewFrame makes it again)
 #else
     vk_imgui_fonts_changed();
@@ -1607,7 +1609,7 @@ static void left_shade(ImDrawList *bg, ImVec2 ds) {
     }
 }
 
-#ifndef __APPLE__
+#ifndef SW_METAL
 // ---- the boot picture (vulkan/device.c boot_splash_start): the start screen's background, moving as it does there,
 // with the name, from the game's start until its title screen is up. Without it the window is black for ~11 s on a
 // plain start: ~5 s of Savage Wind loading (the game code, the RomFS image) with nothing to draw, then ~6 s of the
@@ -1737,7 +1739,7 @@ extern "C" void launcher_run(const char *root, int mode) {
     SDL_Window *win = ui_window();
     g_launcher_win = win;
     SDL_SetWindowTitle(win, g_setup_only ? "Savage Wind" : "Savage Wind Configuration");
-#ifdef __APPLE__
+#ifdef SW_METAL
     CAMetalLayer *layer = (__bridge CAMetalLayer *)ui_metal_layer();
     id<MTLDevice> dev = (__bridge id<MTLDevice>)ui_metal_device();
     id<MTLCommandQueue> queue = [dev newCommandQueue];
@@ -1759,7 +1761,7 @@ extern "C" void launcher_run(const char *root, int mode) {
     st.Colors[ImGuiCol_HeaderActive] = ImVec4(1, 1, 1, 0.14f);
     st.Colors[ImGuiCol_NavCursor] = ImVec4(0.95f, 0.78f, 0.35f, 1);
     st.FrameRounding = st.WindowRounding = 10;
-#ifdef __APPLE__
+#ifdef SW_METAL
     ImGui_ImplSDL3_InitForMetal(win);
     ImGui_ImplMetal_Init(dev);
 #else
@@ -1800,7 +1802,7 @@ extern "C" void launcher_run(const char *root, int mode) {
     // SAVAGEWIND_LAUNCHER_SHOT=<frame>[:<page>] (test): save build/launcher.png at that frame and exit; page: settings[:<tab>] / askdelete / setup
     long shot_at = getenv("SAVAGEWIND_LAUNCHER_SHOT") ? atol(getenv("SAVAGEWIND_LAUNCHER_SHOT")) : 0, frame = 0;
     if (shot_at) {
-#ifdef __APPLE__
+#ifdef SW_METAL
         layer.framebufferOnly = NO;
 #endif
         const char *pg = strchr(getenv("SAVAGEWIND_LAUNCHER_SHOT"), ':');
@@ -1890,7 +1892,7 @@ extern "C" void launcher_run(const char *root, int mode) {
         }
         was_busy = busy;
 
-#ifdef __APPLE__
+#ifdef SW_METAL
         int w, h;
         SDL_GetWindowSizeInPixels(win, &w, &h);
         layer.drawableSize = CGSizeMake(w, h);
@@ -2234,7 +2236,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                             set_job("Downloadable content removed.");
                         }
                     }
-#ifndef __APPLE__
+#ifndef SW_METAL
                     if (!g_confirm_delete && shader_precompile_available()) {  // all the shaders, now (or again)
                         char date[32] = "";
                         int nsh = 0, pst = shader_precompile_status(&nsh, date, sizeof date);
@@ -2317,7 +2319,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                         first_row();
                         opt_section("Set up");
                     }
-#ifndef __APPLE__
+#ifndef SW_METAL
                     if (shader_precompile_available()) {
                         if (busy) opt_disable_next();
                         {   // the background (ui/splash.mm), from the next start
@@ -2346,7 +2348,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                         if (opt_toggle("Download Intel XeSS", &g_settings.xess_download, true, k_xess_text))
                             settings_save();
                     }
-#ifndef __APPLE__
+#ifndef SW_METAL
                     {   // Savage Wind's own colour look (runtime/color_grade.h): on at the first setup unless the player
                         // chose a LUT before; Options > Colour changes it later. It comes with the Vivid colour preset,
                         // which suits the LUT best (the user's pick); turning the look off puts Natural back from Vivid.
@@ -2486,7 +2488,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                         title = tr("Updating Savage Wind");
                         nnotes = 0;
                     }
-#ifndef __APPLE__
+#ifndef SW_METAL
                     bool shaders = g_precompiling;
                     if (shaders) {
                         f = shader_precompile_progress(&g_pc);
@@ -2514,7 +2516,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                     fg->AddRectFilled(ba, bb, IM_COL32(255, 255, 255, 25), 12 * sc);
                     if (f > 0) fg->AddRectFilled(ba, ImVec2(ba.x + (bb.x - ba.x) * f, bb.y), IM_COL32(236, 194, 84, 255), 12 * sc);
                     char line[200];
-#ifndef __APPLE__
+#ifndef SW_METAL
                     std::string step = shaders ? precompile_line() : tr(test_busy ? "Setting up the game files..." : job.c_str());
 #else
                     std::string step = tr(test_busy ? "Setting up the game files..." : job.c_str());
@@ -2558,7 +2560,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                 ImGui::SetCursorPosX(x0);
                 if (main_id.empty() && !nso_build_id(g_root + "/exefs/main", &main_id)) main_id = "?";
                 ImGui::TextColored(ImVec4(0.66f, 0.76f, 0.98f, 1), tr("main build id %s"), main_id.c_str());
-#ifndef __APPLE__
+#ifndef SW_METAL
                 {   // the precompiled shaders were made by another translator or driver: the first play stutters until
                     // they are made again (Game Files > Precompile shaders says so too, but only there). Asked once.
                     static int stale = -1;
@@ -2618,7 +2620,7 @@ extern "C" void launcher_run(const char *root, int mode) {
             typed_before = ui_text_busy();
 
             ImGui::Render();
-#ifdef __APPLE__
+#ifdef SW_METAL
             ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), cb, enc);
             [enc endEncoding];
             id<MTLTexture> shot = nil;
@@ -2662,7 +2664,7 @@ extern "C" void launcher_run(const char *root, int mode) {
     SDL_SetWindowTitle(win, "Savage Wind");
     splash_unload();
     saves_tab_unload();
-#ifdef __APPLE__
+#ifdef SW_METAL
     ImGui_ImplMetal_Shutdown();
 #else
     vk_imgui_backend_shutdown();

@@ -6,6 +6,7 @@
 // presented frame on the thread that presents, so a command never runs in the middle of a frame.
 #pragma once
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 typedef struct ControlReply ControlReply;  // what a command answers with (opaque; use the functions below)

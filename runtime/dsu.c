@@ -15,6 +15,7 @@
 #else
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #endif
@@ -192,8 +193,15 @@ static bool dsu_open(DsuClient *c) {
     WSAIoctl(s, SIO_UDP_CONNRESET, &no, sizeof no, NULL, 0, &got, NULL, NULL);
     c->fd = (intptr_t)s;
 #else
+#ifdef SOCK_NONBLOCK
     int s = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (s < 0) return false;
+#else  // (macOS: no socket() flags for these)
+    int s = socket(AF_INET, SOCK_DGRAM, 0);
+    if (s < 0) return false;
+    fcntl(s, F_SETFL, fcntl(s, F_GETFL) | O_NONBLOCK);
+    fcntl(s, F_SETFD, FD_CLOEXEC);
+#endif
     c->fd = s;
 #endif
     struct sockaddr_in addr;

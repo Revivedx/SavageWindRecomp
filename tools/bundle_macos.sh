@@ -82,6 +82,26 @@ while [ -n "$queue" ]; do
     done
 done
 rm -f "$C/Frameworks"/.*.src
+# ---- the Vulkan build (make app, the default): MoltenVK, the Vulkan driver the loader (copied above, it is linked)
+# opens through its manifest. A bundle's Contents/Resources/vulkan/icd.d is where the macOS loader looks first.
+if [ -f "$C/Frameworks/libvulkan.1.dylib" ]; then
+    MVK=${MOLTENVK:-/opt/homebrew/opt/molten-vk/lib/libMoltenVK.dylib}  # (Homebrew's is built for macOS 12+)
+    [ -f "$MVK" ] || { echo "no $MVK (brew install molten-vk, or MOLTENVK=<libMoltenVK.dylib>)"; exit 1; }
+    cp -L "$MVK" "$C/Frameworks/libMoltenVK.dylib"
+    chmod u+w "$C/Frameworks/libMoltenVK.dylib"
+    install_name_tool -id "@rpath/libMoltenVK.dylib" "$C/Frameworks/libMoltenVK.dylib" 2>/dev/null
+    mkdir -p "$C/Resources/vulkan/icd.d"
+    cat > "$C/Resources/vulkan/icd.d/MoltenVK_icd.json" <<'EOF'
+{
+    "file_format_version": "1.0.0",
+    "ICD": {
+        "library_path": "../../../Frameworks/libMoltenVK.dylib",
+        "api_version": "1.4.0",
+        "is_portability_driver": true
+    }
+}
+EOF
+fi
 rpaths() { otool -l "$1" | awk '/LC_RPATH/ {getline; getline; print $2}'; }
 for r in $(rpaths "$C/MacOS/savagewind"); do install_name_tool -delete_rpath "$r" "$C/MacOS/savagewind"; done
 install_name_tool -add_rpath "@executable_path/../Frameworks" "$C/MacOS/savagewind"
