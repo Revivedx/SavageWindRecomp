@@ -110,6 +110,22 @@ extern "C" void online_tab_draw(float scale) {
     if (opt_toggle("Damage between players", &g_online.pvp, false,
                    "Your blows hurt the other players and theirs hurt you. Only between players who both have it on."))
         online_settings_save();
+    {   // (the host's choice is everyone's: in another's session, his is shown and can't be changed here)
+        bool guest = online_state() != ONLINE_OFF && !online_is_host();
+        if (guest) ImGui::BeginDisabled();
+        if (opt_toggle("Collisions between players", &g_online.collide, true,
+                       "Players can't walk through each other. The host chooses it for everyone in his session."))
+            online_settings_save();
+        if (opt_toggle("Menus don't pause", &g_online.nopause, true,
+                       "The pause menu, the map and the quick menus don't stop the world while there are other players: they go on, and "
+                       "so do the enemies. The host chooses it for everyone in his session."))
+            online_settings_save();
+        if (opt_toggle("Revive instead of game over", &g_online.revive, true,
+                       "A player who dies is revived by a fairy where he fell, without loading his save again. The host "
+                       "chooses it for everyone in his session."))
+            online_settings_save();
+        if (guest) ImGui::EndDisabled();
+    }
     opt_end();
 }
 

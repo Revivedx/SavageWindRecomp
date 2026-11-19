@@ -13,7 +13,8 @@ runtime serves it as the RomFS overlay (runtime/main.c: <data root>/online_mod).
     it at any time. His armour is the game's own (the real Armor_* actors, worn on his skeleton: no actor here).
   - OnlineGear_<model>: a weapon, shield, bow, sheath or quiver's model alone on a DemoNPC, one per model list of the
     game's Weapon_* actors (the real ones fall, can be picked up, hurt): not resident, the runtime asks for one when
-    a player carries it and the game loads it meanwhile. gear.txt: "actor=its online actor" a line.
+    a player carries it and the game loads it meanwhile. gear.txt: "actor=its online actor" a line. Also each
+    material's (Item_*, Animal_Insect_*), for what a player holds from his pouch or throws.
 From the game, also:
   - Pack/TitleBG.pack Dm_Npc_Rito_HeroSoul_Kago.sbactorpack: a DemoNPC's actor link; Dm_Animal_Heron_A's AI program
   - Actor/ActorInfo.product.sbyml: the new actors' entries (PauseMenuPlayer's, with each model's own model and bounds)
@@ -40,6 +41,13 @@ HORSE_PREFIX = 'OnlineHorse_'  # (+ the horse's actor: the others' horses ridden
 GLOWS = ('Weapon_Sword_070', 'PlayerBeam')  # (gear with its own effects: the Master Sword, its beam)
 SWUNG = ('Weapon_Sword_', 'Weapon_Lsword_', 'Weapon_Spear_')  # (gear swung: its own ELink, for its swing trail)
 BEAM = 'OnlineBeam'
+# the runes as the others see them, with the game's own effects: the slate in his hand (Item_Conductor, its ELink: the
+# Magnesis magnet, Item_Magne) and what plays the runes' beam and chains (ReactionHit's ELink: MagneConnect, the Stasis
+# chains), moved by the runtime (runtime/online_actors.c grab_update, stop_update)
+SLATE = 'OnlineSlate'
+RUNE_FX = 'OnlineRuneFx'
+MAGNET_FX = 'OnlineMagnetFx'  # (the Magnesis rune's own ELink, Item_Magnetglove's: the magnet in the hands, MagneHand)
+OWN_FX = ('Item_Conductor', 'ReactionHit', 'Item_Magnetglove')  # (their ELink and SLink, not their XLink: no reactions of their own)
 STORY_FLAGS = ('IsGet_PortableUnit', 'PortableUnit_PowerOn', 'OP_DRC', 'Open_FirstDoor', 'Open_Door',
                'IsPlayed_Demo700_0', 'IsPlayed_Demo701_0',  # (Demo700_0: the slate's pedestal; Demo701_0: its first door)
                'IsPlayed_Demo164_0', 'IsPlayed_Demo166_0', 'MapTower_DemoFirst', 'MapTower_07_Demo') + tuple(
@@ -55,10 +63,14 @@ KNOCK = 'OnlineKnock'
 SHOCK0 = 'OnlineShock'
 PLAYER_ELINK = 'Player_GameRom'  # (GameROMPlayer's ElinkUser)
 PLAYER_SLINK = 'GameROMPlayer'  # (and its SlinkUser: his sounds, played on his Link by the runtime)
-VERSION = 35  # (runtime/main.c ONLINE_MOD_VERSION: armour actors, traverseDist, the paraglider, the enemies' traverseDist,
+VERSION = 42  # (runtime/main.c ONLINE_MOD_VERSION: armour actors, traverseDist, the paraglider, the enemies' traverseDist,
 # their chemical, the round bomb's own explosion, the weapons' ELink, the player's AnimationInfo, the
-# player's and the weapons' SLink, the armour's defence, the chests' flags, the world's, the horses, their saddles and reins, the Master Cycle)
+# player's and the weapons' SLink, the armour's defence, the chests' flags, the world's, the horses, their saddles and reins, the Master Cycle,
+# the slate and the runes' effects, the materials he holds)
 TRAVERSE = 1000.0  # (the online actors' traverseDist)
+# what he holds from his pouch over his head, or has just thrown: each material's model alone too (OnlineGear_<model>)
+HELD_KINDS = ('Item_', 'Animal_Insect_')
+HELD_NOT = ('Item_Conductor', 'Item_Magnetglove')  # (the slate and the magnet: their own actors)
 GEAR_KINDS = ('Weapon_Sword_', 'Weapon_Lsword_', 'Weapon_Spear_', 'Weapon_Shield_', 'Weapon_Bow_', 'Weapon_Sheath_',
               'Weapon_Lsheath_', 'Weapon_SpearSheath_', 'Weapon_Quiver_')
 # the Remote Bomb rune's bombs (resident in TitleBG), as the others see them thrown and going off
@@ -336,6 +348,8 @@ def main():
         model_of[online] = piece
     names = [] if no_gear else sorted(n[:-len('.sbactorpack')] for n in os.listdir(os.path.join(romfs, 'Actor', 'Pack'))
                                       if n.startswith(GEAR_KINDS))
+    names += [] if no_gear else sorted(n[:-len('.sbactorpack')] for n in os.listdir(os.path.join(romfs, 'Actor', 'Pack'))
+                                       if n.startswith(HELD_KINDS) and not n.startswith(HELD_NOT))
     names += [] if no_gear else ARROWS
     names += [] if no_gear else ['PlayerStole2', 'PlayerStole2_Vagrant']  # (the paraglider, open)
     for piece in names:
@@ -356,6 +370,18 @@ def main():
                             users={'ElinkUser': 'PlayerBeam', 'SlinkUser': 'PlayerBeam'})
         gear['PlayerBeam'] = BEAM
         model_of[BEAM] = 'PlayerBeam'
+        sp = actor_pack(romfs, title_bg, 'Item_Conductor')
+        sl = pio(next(f for f in sp.get_files() if f.name.startswith('Actor/ActorLink/')).data).objects['LinkTarget']
+        loose[SLATE] = build(SLATE, bytes(sp.get_file('Actor/ModelList/%s.bmodellist' % sl.params['ModelUser'].v).data),
+                             users={'ElinkUser': 'Item_Conductor', 'SlinkUser': 'Item_Conductor'})
+        model_of[SLATE] = 'Item_Conductor'
+        # (with the slate's model, hidden by the runtime: an actor with no model has its effects made, never drawn)
+        loose[RUNE_FX] = build(RUNE_FX, bytes(sp.get_file('Actor/ModelList/%s.bmodellist' % sl.params['ModelUser'].v).data),
+                               users={'ElinkUser': 'ReactionHit', 'SlinkUser': 'ReactionHit'})
+        model_of[RUNE_FX] = 'Item_Conductor'
+        loose[MAGNET_FX] = build(MAGNET_FX, bytes(sp.get_file('Actor/ModelList/%s.bmodellist' % sl.params['ModelUser'].v).data),
+                                 users={'ElinkUser': 'Item_Magnetglove', 'SlinkUser': 'Item_Magnetglove'})
+        model_of[MAGNET_FX] = 'Item_Conductor'
 
     def flat_as(data):
         """an enemy's AS as one clip: its element tree followed from the first, through each choice's "default" (or
@@ -716,6 +742,11 @@ def main():
             for k2 in ('elink', 'slink', 'xlink'):
                 if k2 in src:
                     entry[k2] = src[k2]
+        elif model_from in OWN_FX:
+            fx_src = by_name['ReactionHit'] if name == RUNE_FX else by_name['Item_Magnetglove'] if name == MAGNET_FX else src
+            for k2 in ('elink', 'slink'):
+                if k2 in fx_src:
+                    entry[k2] = fx_src[k2]
         elif model_from.startswith(SWUNG) and 'elink' in src:  # (a weapon's effects and sounds: its swing trail, its
             entry['elink'] = src['elink']  # swing's sound..., played on it by the runtime as its player's game plays them)
             if 'slink' in src:
@@ -872,6 +903,30 @@ def main():
                 if re.match(r'^[A-Za-z0-9]+_(Item|Obj|Weapon|Barrel|Kibako)_', n3):
                     world_flags.add(n3)
     for f2 in sorted(world_flags):
+        if f2 not in qflags and len(f2) < 48:
+            qflags.append(f2)
+    # (and one world's state for everyone: the Divine Beasts' (Remains*) and the Trial of the Sword's (FinalTrial*)
+    # progress, the people's talks and errands (Npc*, NPC*, the mini games, the towns' own), the field's switches
+    # (LinkTag*: gates and doors they open), the walls broken (WallCrack, IceWall), the pots, beehives, ores and dig
+    # spots used, the field's and towns' objects broken (FldObj, TwnObj, DgnObj). Not each player's own (the
+    # Compendium, items got, cutscenes seen), nor the enemies or animals (theirs their own way). runtime/online_actors.c
+    # quests_update: those a Blood Moon clears (revival_bool_data) come back as the items do)
+    shared_prefix = re.compile(r'^(Remains\w+|FinalTrial\w*|Npc\w*|NPC\w*|MiniGame\w*|Kakariko\w*|HatenoMini\w*|'
+                               r'HatenoNPC\w*|Rito\w*|Gerudo\w*|UMiiVillage\w*|FironeMini\w*|TreasureHunt\w*|'
+                               r'SunazarashiRace\w*|MamonoShop\w*)_')
+    shared_kind = re.compile(r'^[A-Za-z0-9-]+_(LinkTag(And|Or|NAnd|NOr|Count|XOr)?|WallCrack\w*|IceWall\w*|Pot\w*|'
+                             r'BeeHome\w*|OreDrop\w*|TreasureSpot\w*|FldObj\w*|TwnObj\w*|DgnObj\w*|KibakoDesert|'
+                             r'KibakoZora|PutRupee\w*|Necklace\w*)_')
+    more = set()
+    for gf in gdt.get_files():
+        if 'bool_data' in gf.name.split('/')[-1]:
+            for e in oead.byml.from_binary(bytes(gf.data)).get('bool_data', []):
+                n3 = str(e['DataName'])
+                # (and the shops' wares sold out and their doors opened, everyone's: *_SoldOut, GemShop_Open...)
+                shop = n3.endswith('_SoldOut') or n3 in ('GemShop_Open', 'Mans_Clothes_Shop')
+                if (shared_prefix.match(n3) or shared_kind.match(n3) or shop) and not n3.startswith(('IsPlayed', 'IsGet')):
+                    more.add(n3)
+    for f2 in sorted(more):
         if f2 not in qflags and len(f2) < 48:
             qflags.append(f2)
     open(os.path.join(out, 'quests.txt'), 'w').write(''.join(f2 + chr(10) for f2 in qflags[:32768]))

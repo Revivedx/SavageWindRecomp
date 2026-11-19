@@ -212,7 +212,10 @@ handle (the effect, its id; alive while the effect's +0x20 is that id): "Kago_Sh
 OnlinePlayer has the player's ElinkUser, `Player_GameRom`.
 
 Revali's Gale the same way (`effects` ONLINE_E_GALE): its charge's handle is at player +0x23c0 (found by diffing the
-player's memory before and while charging, 1.9.0), and the others keep "Kago_Wind" on his Link while it is alive. The
+player's memory before and while charging, 1.9.0), and the others keep "Kago_Wind" on his Link while it is alive. That
+handle is the Champions' ready effect's (Kago_Ready), alive while he guards with Daruk's Protection too: the Gale goes
+only when the last Champion's effect his Link played was Kago_Wind (else Daruk's shield drew Revali's wind on him in
+the others' games; tested with two games: the client's guard sent Kago_ShieldCount alone, his Gale Kago_Wind). The
 handle at +0x2380, new each time the Gale is let go, is the updraft's sound ("Kago_WindRiseUp" is only in SLink2, not
 ELink2), so it isn't sent; his rise and the paraglider he opens come with his position and gear. Tested with two
 games (the client given the Gale with `setflag IsGet_Obj_HeroSoul_Rito` on the host, through the shared flag):
@@ -254,6 +257,19 @@ the emits of the local Link's ELink and of his weapon's, shield's and bow's (`SA
   at 1). Mipha's Grace and Urbosa's Fury go as events too (Kago_Heal, Kago_Lightning...: only Daruk's Kago_Shield* and
   Revali's Kago_Wind, sent by their handles, are left out). Tested with two games: the host's voice, swings, charge
   and steps' rustle played on the client's puppet of him, each with a handle.
+- Not his continuous sounds (continuous_sound): the game plays them every frame or for as long as he moves, their
+  volume his speed - his gear's rattle (EquipNoise_*), the wind of his fall (WindDirect, and FallFlap*, emitted once
+  as a fall starts), his slide (ReactionSlide) - and any other his game emits again within 0.3 s, from then on. Played
+  by their keyword on his puppet, each was played whole at full volume and they piled up: bursts of white noise, 2.5 s
+  each, whenever he walked, jumped, fell or slid (found by recording the game's output, `SAVAGEWIND_AUDIO_WAV`, with
+  his sounds let through one at a time: FallFlap alone gave the roar). Tested: walking, three jumps and a fall down a
+  slope by the client, the host's recording without a burst. The paraglider's wind (ParashawlGlideMove /
+  ParashawlGlideAscendant) is in the known list too: only seen again it was held back, so its first one went, and
+  played whole on his puppet it was 4 s of loud hiss as he rose on Revali's Gale (each time, as the 64 sounds
+  remembered rotated). Tested with two games (slot 0, the champions' save): the client used Revali's Gale, the host's
+  recording had the hiss before, none after.
+- One of his effects sent again while the last of it still plays (a Champion's ability used again and again:
+  Kago_Ready) ends that one first: they piled up one over the other.
 - `SAVAGEWIND_EFF_ERR_LOG=1` logs the effects' error lines ("EFF_ERR[...]", made with
   sead::FormatFixedSafeString<128> at 0x7000579614 and never shown: `fmt128` in tools/patches.py).
 
@@ -313,7 +329,58 @@ second while it isn't found), and each frame while he holds it:
 - the rune's "MagneCatchMoving" sparkles where it is, played on the actor the rune plays them on
   (`**0x7001d66ab8 + 0x30`, ReactionHit; 0x7001395354, the position at the effect's +0xbc with +0x98 / +0x9a bit 8).
 
-`tools/online_bot.c` BOT_GRAB=<actor>,x,y,z holds that actor 10 s of every 20, going round a circle over it.
+`tools/online_bot.c` BOT_GRAB=<actor>,x,y,z holds that actor 10 s of every 20, going round a circle over it. (Its
+messages are built in a 16 KiB buffer, the runtime's own limit: in 1100 bytes, with STATE grown to 2969, every
+message of it was cut, so the host saw it loading for good and never made its Link.) Tested with the bot holding a
+crate at the Bokoblin camp: the host's crate was lifted, went round with it and glowed, the bot's Link beside it.
+
+The beam, the magnet and the chains, the game's own (online_mod v41): `OnlineRuneFx` (ReactionHit's ELink and SLink, the slate's
+model hidden: an actor with none has its effects made, never drawn) and `OnlineSlate` (Item_Conductor, the slate, in
+his puppet's right hand while he holds). The rune's beam is MagneConnect, played on ReactionHit
+(`[[0x7001d66ab8]] +0x30`, 0x7001100bd0 at 0x7000d40b94) and placed each frame by 0x7000d40bb8(holder, matrix, s0 the
+length): the holder keeps the handle at +0x48 and its id at +0x50, its +0x13c (0 while it holds) goes to the
+particles' +0x190 +0x18; the handle takes the matrix at +0xc0, the length at +0x110, bits 8 and 0x400 at +0x180. The
+matrix is the world's, whatever actor plays it: at the slate, its z toward what is held, its y as near up as it can
+be, its x = y x z; the beam is drawn from there along z for the length, blue at the slate (the magnet between Link's
+hands), pink, yellow at what is held (placed the other way, from the object toward the hands, the blue end is drawn at
+the object: the first video after this change). For another's grab, grab_update plays MagneConnect on his
+OnlineRuneFx (kept at his slate, unturned) and places it so, from between his puppet's hands (Weapon_R and Weapon_L)
+to the object here. The blue magnet over the hands is another effect: the key "Hand" of Item_Magnetglove's ELink
+(the particles MagneHand), which the rune plays from its action trigger - not by name, so it never shows among the
+emits (`SAVAGEWIND_ONLINE_FX_ALL`). Its keys, read from ELink2DB (header 0x60 bytes, its positions 64-bit; 0x5f6 users,
+their name hashes at 0x60, their offsets 64-bit after them; a user's header 0x40 bytes, its sort table, then its keys,
+0x30 bytes each, the name's offset first, from the names at 0x3a28d8): Chemical_*, Connect, Hand, MagneBall,
+MagneHit, ReactionEffect, Default, SlowMotion, FPSOK / FPSNG. `OnlineMagnetFx` (that ELink, the slate's model hidden)
+goes between his hands, its y toward what he holds (the U opens along its y), and plays "Hand" while he holds.
+Tested with the bot: the U and its glow at its hands, the beam from there to the box.
+
+The beam starts at the magnet's tips (MAGNET_TIP, 0.8 m from his hands toward what he holds; at most half the way),
+as in the holder's own game. His slate and these effect actors are made once and kept with his puppet, models
+hidden (the slate's drawn while he holds): pooled under the world between his grabs, the game removed them ("the game
+removed his OnlineRuneFx, made again") and a piece made again for him is never drawn, so his beam and magnet were gone
+for the rest of the session - "sometimes it doesn't show". And what he holds is looked for near where he caught it
+or where it is now in his game (15 m; let go, it fell its own way in each world); not found here, his magnet and
+beam still point where his is. Tested with the bot over three grabs in a row: the magnet and the beam each time. The Stasis
+chains: BitaLocked_Start on another OnlineRuneFx put where what he stopped is (stop_update).
+
+The beam needs the rune's aim: the game keeps two Vector3f at `[0x7001e58720] +0x192cc` (P_MAGNE_AIM,
+MAGNE_AIM_OFF), the camera's forward as the local rune was last raised, and MagneConnect's strands leave along it and
+bend to what is held. Zero until the local Link first raises the rune this boot: before that every MagneConnect (ours,
+the local rune's) is made ("on") and never drawn; after, they stay at his last aim (a remote beam bent along it,
+looping round him). grab_update writes his beam's own way there each frame his beam is drawn, unless the local Link
+holds something with Magnesis (his own beam then; raising the rune writes its own). Found by raising the rune with
+nothing to catch (the bot's beam then drawn, and after cancelling), then a diff of that object before and after: the
+two vectors written by hand, the rune never raised, drew the bot's beam. Not it (tried before): the ELinks'
+properties, the rune object's values and its handle, MagneMarker* / MagneBall / MagneHit, a real Item_Magnetglove
+made, the camera's AI action, the xlink system's words, the particles' resource records. Tested with the bot (the
+local rune never raised): its beam from its magnet to the box it held, straight; then a local hold with its beam on:
+both beams drawn, the local one from Link to his box.
+
+Weapons and Magnesis: a weapon he dropped or threw is his loot, its copy here (`g_theirs`). One he holds with
+Magnesis isn't sent as thrown (gear on no bone, ONLINE_GEAR_WORLD: in the video it took the copy to where the
+dropped weapon's old matrix was, in the sky, and the grab never found it, `holds ... not here`), the thrown path
+leaves alone the copy his grab moves, and grab_update looks for his loot of that name first (30 m), then the world's
+objects (15 m).
 
 ### Stasis and Cryonis
 
@@ -321,7 +388,11 @@ Stasis (protocol 22, STATE's `stop`, as `grab`): an actor near the player drawn 
 rune sets it; bit 4 while he aims; a model and a body, not a tag, and none shown for another) goes to the others, whose
 same object is held where it is in his game (its body, 0x70012d4e18, each frame) and drawn as stopped: +0x710 bit 3 and
 its materials' `uk_special_effect_B` at 1 (its glow; `uk_special_effect_A`, 0x700124ca7c per model unit, is the red
-pulse before it goes, 0 meanwhile). Its chains (`BitaLocked_Start`) aren't an effect of the object's own ELink.
+pulse before it goes, 0 meanwhile). Its chains (`BitaLocked_Start`, ReactionHit's) are played once on his
+OnlineRuneFx and placed as the rune places them (chains_place, from 1.9.0 0x70011f5970): the effect's matrix (+0xc0,
+flags +0x180 | 8, +0xb4..+0xbc 1) scaled by the stopped object's model's largest extent (the model unit's vtable
++0x208, its box) at the object. Made but never placed, they were never seen. Tested with the bot (BOT_STOP on an iron
+box): the chains round the box from the sky, as the rune's own, then the box's glow.
 
 Cryonis (STATE's `ice`: up to 3 pillars, their matrices): the Obj_IceMakerBlock actors near the player. The others
 show each with OnlineIce (tools/online_mod.py: the pillar's model, AS "Appear_Linear", effects, sounds and physics, one
@@ -430,13 +501,58 @@ them, and they are unlinked by then). The host's game keeps the list (LOOT_ADD f
 others, each with the game it came from and its actor's id there; up to 32, the oldest goes), and sends it (LOOTS)
 when it changes and every 2 s. Every other game within 150 m makes each one (the item itself, asked for by name)
 where it was, a real item its player can pick up. One gone from a game with that game's Link within 4 m of it was
-picked up: a weapon or shield is taken off the list (LOOT_TAKE), and every game deletes its own of it, the one it
-came from too; food and materials each player picks up his own. A weapon picked up into a free hand isn't gone: the
+picked up: it is taken off the list (LOOT_TAKE), and every game deletes its own of it, the one it came from too -
+a weapon, a shield, food, a material, a rupee, as in one world (before, food and materials each player picked up
+his own). A weapon picked up into a free hand isn't gone: the
 game keeps the same actor, in Link's hand now (+0xb98, +0xbb0, +0xbc8, their sheaths at +0x958: `link_carried`), so
 one that comes to be there was picked up too; before, those pickups, the most common ones, went unseen and the
 weapon stayed in the other games. No game deletes one this Link carries. The list holds 64 (more stay only where
 they fell: taking one off would have it go everywhere). `SAVAGEWIND_ONLINE_WEAPONS_LOG=1` logs the Weapon_* actors
 within 10 m of Link every 5 s.
+
+What a player holds from his pouch over his head (up to 5 materials or food, Item_* and Animal_Insect_*) is in his
+puppet's hands for the others (sample_held, OnlinePose.held, protocol 38): each material's model alone
+(OnlineGear_<its model>, tools/online_mod.py, online_mod v42), heaped on the puppet's hands (between Weapon_R
+and Weapon_L) as his game heaps them: three side by side, two over them, as far apart as they are big (0.22 m times
+the size). Each at the size his game holds it: the item's own +0x418, a scale on each axis (an apple 0.55, a mushroom
+0.372; 1 on the ground), sent in m[0] and written on the piece's own +0x418 each frame. (At 1 a mushroom was a column
+over his head; heaped 5 cm apart the apples went into each other, a small red lump.)
+One he holds is linked to him (+0x4d4 non-zero) and is sent as "in his hands"; as he throws it or lets it fall it
+flies from there: once it has left where it was while he held it, it is sent where it is, until it has lain 1.5 s (by then it is on the loot
+list and the others have the real one there). Before, the others saw nothing in his hands, and what he threw only
+once it lay (2-3 s: the ground was looked at every 30 frames, 1 s still). Tested with two games: the client held 3
+mushrooms, the host saw them over its puppet's hands (OnlineGear_Item_Mushroom_E, 3 made); let fall, the host saw
+them fall at once and had the 3 real ones where they lay 2.2 s after (falling and coming to rest included). Not
+tested: a throw ("Apuntar lejos": not found how to press it from a script), insects.
+
+What falls to the ground is everyone's too (drops_update, in loot_update): a new item near the local Link (Item_*,
+Weapon_*, PutRupee*, within 15 m) that the map didn't place (no HashId) - an ore's, a crate's or a pot's insides, a
+tree's fruit, what he drops from his pouch - not ours already nor one of the others' made here, goes on the loot list
+once it has lain still there 0.4 s (moved less than 5 cm between looks, every 9 frames: DROP_SETTLE_NS; an enemy's loot and a thrown weapon go on it
+their own way first). Not one in his hands: linked to him (+0x4d4 non-zero: 0x72 while he holds it, as the slate on
+his hip; 0 on the ground), or within 1.5 m of Link and 0.5 m over his feet (before, what he held went on the list
+and the others saw it lying where he had stood: the apples). Tested with two games: the client held 3
+mushrooms from its pouch and walked about 10 s, none sent; let fall, the 3 came in the host's game where they lay
+(-1037.9 250.0 1817.9 and the others in both), and one the host picked up went from the client's. Not one still falling (a weapon dropped from
+his pouch went on the list in the air, made there for the others: "the bow wasn't where it should be"). What
+is near when the game starts looking (and after a jump of 30 m: a load, a teleport) isn't new. Where our game breaks
+something for another (break_here: his ore, his crate, his tree), what ours drops of it is taken away for 5 s round
+it (g_drop_hush): his comes as his loot. One of the others' made here and gone within 1.5 s (made where our Link
+stood, it was lost at once) isn't picked up: it is made again (up to 5 times); before, that took it from everyone.
+`SAVAGEWIND_ONLINE_DROP_TEST=<s>[,<actor>]` (test): an item (Item_Fruit_A unless named) made 1.5 m before Link that
+many seconds in. Tested with two games: a sword the host's test dropped came in the client's game where it lay
+(-1041.5 250.2 1813.4 in both), the client standing on it and 8 m off; picked up by the client, gone in both; an
+apple that rolled to -1042.4 250.1 1813.6 there in both, picked up by the client, the host's left (each his own).
+Untested: an ore or a crate broken by one of them (the drops hushed in the other's game). A bow dropped 1 m over the
+ground came where it came to rest (-1041.5 250.2 1813.4 in both); an apple the client picked up went from the host's.
+
+An item the map placed (a HashId: a mushroom, a fruit lying there, a rupee; map_item) picked up by one goes from
+every world as a broken object does: gone from the local Link's world with him within 3.5 m, it goes on `broken`
+and the session's world list, and the others' games take it out (take_out: its actor deleted, its map object marked
+gone) and set its flag `<field>_<actor>_<HashId>`, so it stays gone (world_enforce, once a second, as a broken one).
+Not the Sheikah Slate on Link's hip nor the rune's glove (Item_Conductor, Item_Magnetglove: players_own_item, the
+drops' and the map items' both), not weapons (PICKs). Tested with two games: the client picked up two mushrooms
+(Item_Mushroom_E) by the start; the same two went from the host's world, the third left in both.
 
 Weapons and shields lying in the world (protocol 18): each game watches the Weapon_* actors within 4 m of its Link
 that he doesn't carry; one gone with him within 2.5 m, or in his hand now, was picked up (PICK: its name, where it
@@ -651,6 +767,235 @@ Recipes that found the bugs above:
 - An ability's effects: diff the player's memory (+0x2000..0x2800) before and while it is used; a handle that
   appears is the effect's (Daruk's layout), and its name must be in ELink2 (a name only in SLink2 is a sound).
 
+### The session's rules, revival, the Blood Moon, blows and the world's objects (protocol 35, mod v36)
+
+The host's rules (Settings > Online > Combat; `collide` and `revive` in online.ini, both on by default): his state
+carries them (`collide`, `revive`) and the others follow his; in another's session the toggles can't be changed.
+
+A player who dies is revived by a fairy where he fell (`revive`): the game asks whether Link has a fairy as he dies
+(1.9.0 0x7000cec510: x0 the player, its pause menu data asked for Animal_Insect_F; false at once in modes without
+one); the patch `has_fairy` (tools/patches.py, on its `and w0, w0, #1` before it returns) asks
+rt_online_has_fairy, which says yes while connected and the session's rule is on. The fairy's own revival plays
+(its effect, his hearts back) and his world isn't loaded again; a fairy of his own is used first, as always.
+Tested: the client's life written to 0: "revived by a fairy", hearts back to 12 quarters, no game over, the fairy's
+light on him.
+
+The Blood Moon: the time manager (ksys::world::Manager +0x5c8, its first) counts it at +0xc8 in degrees of the day
+(360 a day; past 2520, 7 days, at midnight there is one: 1.9.0 0x7001425fa8, and it starts again at 0). It writes
+it each frame to its game data value WM_BloodyMoonTimer (its handle at +0x120) and takes it back from there, so a
+write to the copy alone was undone the same frame; the game data manager's f32 setter (1.9.0 0x7000b36c80: x0 the
+manager, w1 the handle, s0 the value) sets it. Each player's state carries his (`bloody_moon`); the others take the
+host's when theirs is off by more than 30 (two game hours), so the Blood Moon comes for everyone the same night.
+`SAVAGEWIND_ONLINE_BM_TEST=<v>` (test): the host's set to v once in the world. Tested: the host's set to 2400, the
+client's went from 560.3 to 2401.4, both 2406 a few seconds later.
+
+The weather: of the players within 500 m, the first in the session's (the host when he is there) is everyone's, so
+players together anywhere on the map share one sky (before, only near the host).
+
+Sneak strikes: a copy of an enemy another's game has has no senses here, so the game takes it as unaware and a blow
+from behind does eight times its damage. A blow on one whose AS in its owner's game is a fighting one (not Wait*,
+*Sleep*, Squat*, *Talk*, Walk*, *Sit*, *Relax*, *Eat*, *Dance*, Look*) sends no more than the striker's weapon's
+attack power (power.txt) when it is more than twice that ("a blow of ... as without a sneak strike"). And an enemy
+just handed to this game (own_ready: struck by us, or come nearer) is made unaware, so our next blow would be a real
+sneak strike on it: for 8 s its life is kept GUARD_LIFE (1000) above its own (the real one apart, the one sent), and
+a blow takes off it no more than our weapon's power when it is more than twice that (its first half second, the game
+setting its life up, not counted). Tested: a Bokoblin handed to the client (12, 1012 to the game), a blow of 60: 3
+taken; its life 9 once the guard was over. (In a session, two Bokoblins were killed so: the copy's blow went as 4,
+handing them over, and the next blow on the new real one was a sneak strike.)
+
+Another player's bomb gone off within 4 m of the local Link, with damage between players on: two hearts less his
+armour's defence, and the blast knocks him down (OnlineKnock). Tested: the host's Remote Bomb set off 1.7 m from the
+client: "Host's bomb hit us: 6 after our defence 2", 8 -> 2.
+Sneak strikes tested: a blow of 12 on a copy of the host's Bokoblin fighting him (DoubleAttack) went as 3 (the
+client's weapon's power), and the host's game took 3.
+
+Blows: a player who hits one of the host's enemies another's game has (OnlinePose.aggro_id, aggro_seq: the enemy
+and the hit's number) gets it: the host's game hands it to him (within OWN_SAFE of it, not again for 6 s), so it
+turns on him, as an enemy turns on whoever strikes it; it stays his while he is within 45 m of it, whoever is
+nearer. `SAVAGEWIND_ONLINE_AGGRO_LOG=1` logs each blow and why. Tested: the host by a Bokoblin camp, the client 20 m
+off with `SAVAGEWIND_ONLINE_ELEM_HIT_TEST` (now on the nearest copy): both Bokoblin it hit went to the client
+("struck by it") and stayed his ("we have ... for real now", none given back).
+
+The world's objects: the map's objects with a body (a HashId; crates, barrels, boulders, a shrine's balls...) moving
+within 20 m of a player go with his state (`objs`: up to 8, the nearest, their matrices); the others' games move
+theirs, the same map object, there through its body each frame (FN_BODY_TO, as Magnesis). One moving in two
+players' worlds goes as the first one's in the session. Not enemies, players, items, animals nor what a level moves
+itself (lifts, gears, doors, water). `SAVAGEWIND_ONLINE_OBJ_TEST=<s>` (test): the nearest crate or barrel lifted 3 m
+for 3 s (1000 + <s>: that long after the break test's cut, SAVAGEWIND_ONLINE_BREAK_TEST, which waits for a tree
+near). Tested: a crate lifted on the host rose in the client's world too (253.3 while the host's was at 254.2) and
+both lay at -1043.0 251.2 1994.9 after. (Moved every 3 frames, the client's crate overshot and broke.)
+
+A cut tree's trunk (protocol 37, `objs_trunk`: bit k, objs[k] a trunk) has no HashId of its own: each game makes its
+own as the tree is cut (ours, followed in g_our_cut; the others', made here, in g_their_trunk), so it goes by the
+tree's HashId, and moves in every game as the others' objects do - pushed, rolled, launched out of Stasis. Before,
+each player's trunk lay where it fell in his own game: pushed away in one, still there in the other. Tested with two
+games: the host's test cut, both trunks at rest at -1052.2 249.8 1811.3; lifted 3 m on the host, the client's rose
+after it; let go, both again at -1052.2 249.8 1811.3.
+
+The others' objects are taken to his place through their bodies, which get there over a few steps: each is taken
+there every frame and for OBJ_HOLD frames (1.5 s) after his last (he stops sending one a second after it rests), and
+woken first when asleep (at rest a while, the game updates it no more and its body took nothing). Before, his trunk
+pushed stopped short here (0.4 m of a 3 m lift while his was at 2.4 m) or, at rest a while, didn't move at all.
+Tested with two games: a trunk at rest 40 s lifted 3 m on the host rose the whole 3 m in the client's world (249.8 to
+252.8) and lay again at 249.8 after. Still more than 0.5 m off his at the last of it (caught on a stump its body
+went round), it is put there (FN_SET_MTX). One another player holds with Magnesis or stopped with Stasis, moved here
+to his, is his too: sent back as ours, each game pulled the other's to where its own was (his Stasis, struck and let
+go, launched his trunk in his world alone). One followed while it moves goes to OBJ_FAR (100 m; 40 m before, and a
+launched one stopped in the air here). His Stasis's object is looked for as his grab's: the one of that name nearest
+where he stopped it or where it is now, 15 m (4 m before: two trunks fallen their own ways, his was "not here"; tested
+with the bot stopping a box it said was 8 m off: found, chained).
+
+Whose an object is, as in one world: the game that set it moving - a push, a blow, a bomb, a throw, however far its
+player - sends it until it rests (a second still), and the others follow it; one we are sending ourselves is ours
+and his is ignored, unless his began first (both within OBJ_TIE_NS, 0.3 s: the lower player number's). One a player
+just let go of (Magnesis, or Stasis struck and released: g_act.released, 4 s) is his as it flies. A trunk made here
+for another's cut sends nothing for 8 s (TRUNK_QUIET_NS: its fall is the cutter's), and ours, of our cut, sends where
+it fell for a second as it is first followed (the others' put there). (Tried before: the nearer player's - a far
+push, a bomb's, was lost; the first to send it kept it - a trunk rolling on the slope in the other's world took the
+host's own lift away.) An object another moves is followed here however far from our Link (obj_find: a trunk by its
+tree's HashId, else the map object of that HashId); before, only within 20 m, and with him 25 m off as he cut a tree,
+its fall and his pushes went unheard and it lay as it fell here, another way. One just followed isn't ours to send
+for 0.7 s (OBJ_QUIET_NS: it settling as it was taken to his), and one farther than 20 m starts no move of ours. Tested
+with two games: the client 60 m off as the host cut a tree and lifted its trunk, the client's rose and lay with it;
+the client cut and lifted one with the host 60 m off, the host's rose after it; both near, the host's lift, the two
+at 252.8, then 249.9 1811.4 each. (The test hooks: SAVAGEWIND_ONLINE_BREAK_TEST waits for a tree near and marks it
+seen, else world_enforce cut it again, a second trunk; the lift wakes what it lifts, asleep 15 s after it fell.)
+
+The menus don't pause (the host's rule, `nopause` in online.ini, on by default): the pause menu and the map set the
+UI's pause state (0x7001e1611c) to 2, and the game stops the world through the actor system's pause bits
+(ksys::act::BaseProcMgr at 0x7001e937f8, its u16 at +0x168, bit n "paused for n": 0x70015195c0 asks one,
+0x70015195d0 / 0x70015195e0 set and clear them; the world manager's update is skipped while bit 0 is set, 1.9.0
+0x700127f810; the pause reasons at 0x7001e16114, requestPause 0x7000d465a8, aren't used for menus). Opening either
+sets 0x7f; with others in the session they are cleared each frame while the state is 2, so the world, the enemies
+and the time of day go on while a player looks at his things. The quick menus (state 4) too: they stop it the same
+way (scene state 1, the bits 0x7f).
+Found by counting the game's function calls (SAVAGEWIND_FNPROF) in play and with the menu open: 0x700127f7d0 ran in
+both, the world manager's update (0x7001435618) only in play. Clearing those bits alone ran the time of day but
+left the actors still: the frame also leaves the world's jobs out (ksys::PhysicsEntitryWorldPre and the actors')
+while the game scene's state (0x7001e44ef0, set by 0x7001281100) is not 0, and it is 1 while a menu is up; the
+patches `scene_state_get` (its getter 0x700127f3c0), `scene_state_phys` (0x70012800bc), `scene_state_b`
+(0x70012810b8), `scene_state_c` (0x700128322c) and `scene_state_d` (0x7001280164: the physics' paused branch)
+read it through rt_scene_state, 0 then. The menu's own resume
+(0x7000d462d0) is done for the world alone each time it pauses: the physics system (0x700156f61c(its system, 0,
+0)), the bits (0x70015195e0(manager, 0x7f)), the manager's procs (0x7001519720), the scene's paused byte (+0x8b8).
+His pose is sampled with the menu up too, so the others see him as he is. Found the physics' share by counting
+calls again: with the first four sites the actors' jobs ran, the physics step (0x70012531a8, 0x7001459d08) didn't.
+Tested: with the host's menu up next to a Bokoblin camp, the Bokoblins moved metres every 2 s, the time of day went
+on, 57-60 fps. The local Link's own hits aren't taken while the menu is his (next to them for 14 s: 12 -> 4
+quarter hearts in play, 12 -> 12 with the menu up, his damage handling 0x7000cc4c3c running in both), so our own
+enemies' blows land through the runtime then, as the host's enemies' do on the others (own_strikes_in_menu: one
+starting an Attack / Kick AS, within its reach in front of him, his shield not up, STRIKE_FRAMES later).
+An archer's arrow (ArrowShoot, facing him within 40 m) lands
+as the arrow would (at 40 m/s), its bow's attack power less his defence, his shield up taking it. `SAVAGEWIND_ONLINE_MENU_LOG=1`
+logs their AS. Tested: two archers on their towers hit the host 17 m off with his menu up (2 each). Tested: with the host's menu up among the Bokoblins they jumped at him
+and struck (JumpAttack, Attack), 12 -> 10 -> 8 -> 6 -> 4 -> 2 -> 0, a fairy revived him (the menu up). Each kind tested the same
+way: the pause menu, the map, the weapons', shields' and runes' quick menus: the bits 0, the Bokoblins moving and
+striking (12 -> 6, 12 -> 8, 8 -> 2, 10 -> 4, 10 -> 6 in 6 s).
+
+Any of the UI's pauses does the same (the windows that come up in play, as a new item's, uiPickUpWin_00Screen), each
+new value logged once ("the UI's pause"), but not a load's (its bit 0x200: the world waits for the map then).
+
+But not once he presses A or X in the pouch (X "Coger", or A on a material and "Coger" in its list: a material taken
+out to hold over his head; A for anything else there too, the world stopping sooner than it must) until the menu goes:
+what he takes out is made then, and made with the actors' pause bits cleared the game never put it in his hands - it
+hung in the air where he took it out as he walked off, his hands empty ("las manzanas se congelan en el aire").
+The world is stopped again then as the menu stopped it as it opened: the physics world (0x700156f61c(its system, 1,
+0), as 1.9.0 0x7000c40458), the bits (0x70015195d0(manager, 0x7f)) and the manager's procs, the scene's paused
+byte; the scene's state is read as it is; the menu's own resume undoes it as it goes. A and X are the buttons the
+game is given (runtime/hle/input.c g_game_buttons: the keyboard's, the mouse's and the controller's alike). X alone
+wasn't enough: a player took his apples with A on them and "Coger" in their list, and they hung in the air. Found by turning the no-pause's parts off one at a time, two games, the
+client holding 3 mushrooms and walking 20 m: with the bits cleared they stayed 14-20 m behind him (the world jobs'
+scene state, the physics and the getter alone didn't matter; clearing bit 0 alone did it too, and stopping the
+world again after the first one was made was too late); stopped at X, 1 m from him in two runs, in his hands.
+
+The world behind the menus is drawn live, not the still picture the game takes as one opens (`SAVAGEWIND_ONLINE_MENU_STILL`:
+the picture, as without online play). Three things kept it still, found by following the world's draw from the frame
+down (SAVAGEWIND_FNPROF in play and with a menu up, then the bytes each skipped function tests):
+- the menus' frame (1.9.0 0x7000d45d70) asks the world's drawing paused every frame, 0x70015089b0(the graphics
+  manager, 1): its +0x96b0 set and the world's render layers off. The patch `menu_draw` (tools/patches.py, at its
+  `mov w1, #1`, 0x7000d45d84) asks with rt_menu_draw_pause, 0 while the menus don't pause the world;
+- the pause menu turns the world's camera off as it opens (0x7000e6840c: 0x7000e89490(1, false), camera 1 of the
+  game's list, its +0x90 bit 0; the views of a layer are drawn only with their camera on: 0x7000ff52dc). The frame hook
+  turns it on again (0x7000e89490(1, true));
+- the menu shows a small blurred picture of the scene made once as it opens (the pause menu and the map 320x180, its
+  tab icons cut from it by its alpha; the quick menus 1280x720): with the world drawn, it still showed the moment it
+  opened. The Vulkan backend (runtime/nvn/vulkan/exec.c menu_capture_refresh) makes it again each frame, before the
+  first draw that samples it, from the frame drawn so far: halved step by step, then a 13x13 Gaussian blur at its
+  size with alpha 1 (menu_blur.frag), then copied into it. A 16:9 target two thirds of the screen or less that no
+  pass drew since the frame before, sampled into a target at least 1280 wide; not in the menu's first 4 frames (the
+  camera comes back a frame later: else a dark flash).
+Tested with two games: the host's menu up among Bokoblins, two screenshots 1.5 s apart differ (the Bokoblins move and
+strike behind the blurred background, 450000-540000 draws every 2 s as in play, 104000 before), a teleport with the
+menu up shows the new place, and the weapons' quick menu the same.
+
+The map's objects broken (`broken`, 8 HashIds; `trunks_gone`): a map object (its HashId; not enemies, players,
+items, animals) within 15 m of the local Link that goes while he stays (he moved less than 10 m) was broken by him: a
+crate, a barrel, a rock a bomb broke, an ore, a pot, a bush his blade cut, or a tree he cut, which the game replaces
+with `<tree>_Stump` where it stood and `<tree>_Trunk`, the log, falling (a tree that went with no stump there isn't
+counted). The others' games break the same object (break_here): a tree as the game cuts it (its stump and its trunk
+made where it stood, the trunk tilted 8 degrees away from the cutter so it falls that way), anything else by the game
+itself (its life set to 0: its own pieces, effects and drops; and its flag `<field>_<actor>_<HashId>` set as a blow
+sets it, else the game made it again a few seconds later). His trunk chopped up goes from their worlds too.
+
+An object far from anything that moves it is asleep (its state +0x64 is 0: the game never updates it), and a tree
+asleep is drawn by its map placement's own model, its actor drawing nothing. So the object is woken first
+(0x7001515988: state 1, the process manager told): a crate's life 0 then breaks it as a blow does (asleep, it
+broke nothing and was only taken away), and a tree is taken out 0.4 s later (cut_later): woken, its first updates hand
+the drawing to its actor. Taken out at once, or deleted, hidden or sunk while asleep, the placement's tree stayed,
+drawn standing beside its stump, whatever the actor became (its state 3, its model 0). Taken out as the game takes out
+what a blow broke (take_out): its map object marked gone (0x7000bdc1f0: the actor's map object, +0x430 of its vtable,
+its flags +0xc | 0x80, as a tree's own cut does at 0x7000951ae8), then 0x7001524598 (mode 0: FN_DELETE and its
+placement told, 0x7001526bd0). Found by watching the game's own cut: `SAVAGEWIND_FNPROF_ARGS=7001524598,7001514bac`
+logged its removal of the tree, from 0x7000951b7c.
+
+The session's world (g_world, 2048 HashIds): every map object broken in the session, by anyone, is kept while it lasts
+(cleared when the session ends), and stays broken in every game:
+- one that comes again - near again, made again by a load or a game over (the game grows a cut tree again when its
+  area loads), or one a player's game didn't have yet (a tree far from his Link is no actor until he comes near) - is
+  broken again by world_enforce, about once a second, each actor of it once (its trunk only for a cut of the last
+  20 s);
+- while a player breaks nothing new, his game sends the whole list round in his last broken slot, one every 1.5 s
+  (world_rotate): a player who joins later gets everything broken before him;
+- one of the list that goes isn't told as ours (else each game sent the other's cut back to it, and it made the tree's
+  stump and trunk again: a pile of them).
+
+`SAVAGEWIND_ONLINE_BREAK_TEST=<s>`: the nearest tree cut that many seconds in, as the others' are, and sent as ours.
+Tested with two games, each seen on screen (screenshots from the same place and camera):
+- the host cut a tree with his axe and the client, 9 m away, saw it go: its stump where it stood, its trunk fallen,
+  as in the host's own world (before the wake, the client's tree stayed standing beside its stump);
+- the same with the client 270 m away: "not here yet"; come back, its game cut the tree (the world's list);
+- the host went 300 m away and back: his own cut tree had grown again, and was cut again, with a bush;
+- a crate the host broke broke in the client's world 60 m away (before the wake: taken away, unbroken);
+- a client that joined after the host had cut a tree and broken a crate got both (the crate as it came near).
+
+The level's mechanisms (protocol 36, STATE's `movers`): what a level moves itself - lifts and elevators, doors and
+shutters, gears, bridges, turning and sliding floors, propellers, gates, levers, a Divine Beast's parts (Remains*) -
+each game moved by its own logic, so one a player set going (a switch, a terminal, an orb) moved in his world alone.
+One within 80 m of the local Link that moves or changes the AS it plays in slot 0 while no other player's game moves
+it goes with his state (the nearest 6: its HashId, its matrix, its AS); the others' games wake theirs (0x7001515988)
+and put it there - through its body when it has one (FN_BODY_TO), and its matrix (FN_SET_MTX) - and play its AS
+(play_as), so it moves in every world as in his. One both move goes as the lower player number's; one theirs isn't
+sent back for 0.7 s after. Not the rocks to lift, the tags nor the far models (objs_update, nothing to move). A map
+actor the game makes again (woken, or moved while asleep: its state 3, another actor of the same HashId) is looked for
+again at once by its HashId; a woken one goes to another proc unit, so its watch is taken again (alive_rewatch).
+`SAVAGEWIND_ONLINE_MOVER_TEST=<s>`: the nearest mechanism lowered 2 m in 2 s that many seconds in (and
+`SAVAGEWIND_ONLINE_MOVER_TEST_AS=<name>` played on it); `SAVAGEWIND_ONLINE_MOVER_LOG=1` logs each one taken or sent.
+Tested with two games at a shrine's entrance (DgnObj_EntranceElevatorSP): its matrix moved on the host went to the
+client's, which moved its own there (187.70 -> 187.45). That shrine's elevator, closed in the test save, didn't run
+by itself, and an asleep one moved by hand is made again by the game; a lift ridden for real and a Divine Beast's
+parts (their AS) aren't tested yet.
+
+The shops: their wares sold out (every `*_SoldOut` flag) and the jeweller's opening (GemShop_Open) are shared flags
+(mod v37); the wares on their shelves are items, whose revival flags already are.
+
+One world's state (mod v37: 25767 shared flags): with the quests', chests' and items' flags, the Divine Beasts'
+(Remains*) and the Trial of the Sword's (FinalTrial*) progress, the people's talks and errands (Npc*, NPC*, the mini
+games, the towns' own), the field's switches (LinkTag*: the gates and doors they open), the walls broken
+(WallCrack, IceWall), the pots, beehives, ores and dig spots used and the field's, towns' and dungeons' objects
+broken (FldObj, TwnObj, DgnObj). Not each player's own (the Compendium, items got, cutscenes seen). Those a Blood
+Moon clears come back as the items do. A shrine's puzzle isn't in flags (each entry starts it anew): players in
+the same shrine see each other, and its moving balls and boxes go as the world's objects.
+
 ### Not done yet
 
 - Less to send: only the bones that moved, or fewer times a second (a session of 8 sends each player's skeleton to 7).
@@ -661,18 +1006,12 @@ Recipes that found the bugs above:
   Each player's state carries his three (`dye`, protocol 27) and his puppet's pieces are made with the same param
   (made again when it changes; tested: a dye written on the host made the client's piece again). Whether an
   OnlineArmor (a DemoNPC) shows it is still to see; if not, the colour has to go on its materials.
-- The world's objects moved (not taken), players in the same shrine
-  or Divine Beast is fine (the same map: shown), a Blood Moon at the same time (each game has its own; its WM_BloodyMoonTimer
-  is a game data f32 that the game recomputes into TimeMgr +0xc8: a write there doesn't stay). TimeMgr +0xb8 is the
-  time of day and +0xc8 the Blood Moon timer, both in degrees (360 a day, 0.25 a second); the name isn't in the game
-  data buffers at mgr +0xbd8..+0xc38 as gdt_value looks them up. The world's items come back right without it.
+- Bodies for the players' puppets (standing on one, the world's blows on them): they are DemoNPCs; the bumping is
+  the runtime's push (players_collide), the blows between players the runtime's (pvp_update).
 - The beam is not seen working yet: in the test runs (full hearts, the Master Sword) the game fired none, with or
   without online play, so `beam_move` and OnlineBeam are untested.
-- Magnesis' blue beam from the slate to what it holds (not a named effect of the player's, ReactionHit's or
-  Item_Magnetglove's ELink: 0x7001395354 / 0x7001100bd0 find none of MagneHand, MagneConnect, Item_Magne(_Main,
-  _Tail); the Item_Magnetglove actor's ELink plays it from its AI's state), Stasis' chains.
-- A Divine Beast seen moving by the others while one is inside: each world's beast is as its own flags are (the
-  quests' flags are shared), its AI isn't followed.
+- A Divine Beast seen moving by the others while one is inside: its parts (Remains*) are followed as the level's
+  mechanisms (their matrix and AS), not tested inside a beast yet.
 - Footprints left on the ground (Footprint: not made by its name), grass cut by a blade; the water's and grass's
   reactions are sent with the dust (ReactionField's), not seen yet in water.
 - The world shared: enemies, items, time of day, quests (Milk Bar's quest and enemy sync); damage between players.

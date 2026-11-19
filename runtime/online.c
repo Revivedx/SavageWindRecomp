@@ -37,7 +37,9 @@ typedef int sock_t;
 #include "rt.h"
 
 #define MAGIC 0x4c4f5753u  // "SWOL"
-#define PROTOCOL 34  // (34: a loot's rotation; 33: STATE carries his ground's reaction values; 32: QUEST, whose it is)
+#define PROTOCOL 38  // (38: the materials he holds or threw; 37: a cut tree's trunk among the objects moving near
+                    // him; 36: STATE carries the level's mechanisms moving near him; 35: his rules, Blood Moon timer, last
+                    // hit enemy, the objects moving near him)
 static volatile float g_local_hour = -1;  // (the local game's hour, from the frame loop: online_set_local_hour)
 #define SEND_HZ 20
 #define INTERP_NS 100000000ull  // the others are drawn this far behind what was last heard (smooth between updates)
@@ -87,13 +89,25 @@ typedef struct {
     char tack[2][24];                      // OnlinePose.tack*
     float tack_m[2][12];
     uint32_t ground_props[16];             // OnlinePose.ground_props
+    uint8_t collide;                       // OnlinePose.collide
+    uint8_t revive;                        // OnlinePose.revive
+    uint8_t nopause;                       // OnlinePose.nopause
+    float bloody_moon;                     // OnlinePose.bloody_moon
+    uint32_t aggro_id;                     // OnlinePose.aggro_*
+    uint16_t aggro_seq;
+    OnlineObj objs[ONLINE_OBJS];           // OnlinePose.objs
+    uint32_t broken[8];                    // OnlinePose.broken
+    uint32_t trunks_gone[4];               // OnlinePose.trunks_gone
+    OnlineMover movers[ONLINE_MOVERS];     // OnlinePose.movers
+    uint8_t objs_trunk;                    // OnlinePose.objs_trunk
+    OnlineHeld held[ONLINE_HELD];          // OnlinePose.held
 } WireState;
 typedef struct { uint32_t magic; uint16_t version; char name[ONLINE_NAME_MAX], pass[ONLINE_NAME_MAX]; } WireHello;
 typedef struct { char armor[3][48], gear[ONLINE_GEAR][48]; } WireEquip;  // EQUIP: what a player wears (head,
                                                                           // upper, lower) and carries (actor names)
 #pragma pack(pop)
 
-OnlineSettings g_online = {.port = ONLINE_PORT, .show_names = true, .show_markers = true};
+OnlineSettings g_online = {.port = ONLINE_PORT, .show_names = true, .show_markers = true, .collide = true, .revive = true, .nopause = true};
 
 // ------------------------------------------------------------------ sockets
 static void net_init(void) {
@@ -854,6 +868,15 @@ static bool sample_local(WireState *w) {
         memcpy(w->tack, g_pose.tack, sizeof w->tack);
         memcpy(w->tack_m, g_pose.tack_m, sizeof w->tack_m);
         memcpy(w->ground_props, g_pose.ground_props, sizeof w->ground_props);
+        w->collide = g_pose.collide, w->revive = g_pose.revive, w->bloody_moon = g_pose.bloody_moon;
+        w->nopause = g_pose.nopause;
+        w->aggro_id = g_pose.aggro_id, w->aggro_seq = g_pose.aggro_seq;
+        memcpy(w->objs, g_pose.objs, sizeof w->objs);
+        w->objs_trunk = g_pose.objs_trunk;
+        memcpy(w->held, g_pose.held, sizeof w->held);
+        memcpy(w->broken, g_pose.broken, sizeof w->broken);
+        memcpy(w->trunks_gone, g_pose.trunks_gone, sizeof w->trunks_gone);
+        memcpy(w->movers, g_pose.movers, sizeof w->movers);
         memcpy(w->ice, g_pose.ice, sizeof w->ice);
         w->yaw = g_pose.yaw;
     }
@@ -919,6 +942,17 @@ static void remote_snap(int id, const WireState *w) {  // (lock held)
     memcpy(s->pose.tack, w->tack, sizeof s->pose.tack);
     memcpy(s->pose.tack_m, w->tack_m, sizeof s->pose.tack_m);
     memcpy(s->pose.ground_props, w->ground_props, sizeof s->pose.ground_props);
+    s->pose.collide = w->collide, s->pose.revive = w->revive, s->pose.bloody_moon = w->bloody_moon;
+    s->pose.nopause = w->nopause;
+    s->pose.aggro_id = w->aggro_id, s->pose.aggro_seq = w->aggro_seq;
+    memcpy(s->pose.objs, w->objs, sizeof s->pose.objs);
+    s->pose.objs_trunk = w->objs_trunk;
+    memcpy(s->pose.held, w->held, sizeof s->pose.held);
+    for (int k = 0; k < ONLINE_HELD; k++) s->pose.held[k].name[sizeof s->pose.held[k].name - 1] = 0;
+    memcpy(s->pose.broken, w->broken, sizeof s->pose.broken);
+    memcpy(s->pose.trunks_gone, w->trunks_gone, sizeof s->pose.trunks_gone);
+    memcpy(s->pose.movers, w->movers, sizeof s->pose.movers);
+    for (int k = 0; k < ONLINE_MOVERS; k++) s->pose.movers[k].as[sizeof s->pose.movers[k].as - 1] = 0;
     s->pose.tack[0][23] = 0, s->pose.tack[1][23] = 0;
     for (int k = 0; k < ONLINE_FX_EVENTS; k++) s->pose.fxev[k].name[20] = 0;
     memcpy(s->pose.ice, w->ice, sizeof s->pose.ice);
@@ -1486,6 +1520,9 @@ void online_settings_load(void) {
         else if (!strcmp(key, "show_names")) g_online.show_names = atoi(val) != 0;
         else if (!strcmp(key, "show_markers")) g_online.show_markers = atoi(val) != 0;
         else if (!strcmp(key, "pvp")) g_online.pvp = atoi(val) != 0;
+        else if (!strcmp(key, "collide")) g_online.collide = atoi(val) != 0;
+        else if (!strcmp(key, "revive")) g_online.revive = atoi(val) != 0;
+        else if (!strcmp(key, "nopause")) g_online.nopause = atoi(val) != 0;
     }
     fclose(f);
     name_from_env();
@@ -1499,6 +1536,8 @@ static void name_from_env(void) {
     if (p && atoi(p) > 0 && atoi(p) < 65536) g_online.port = atoi(p);
     const char *v = getenv("SAVAGEWIND_ONLINE_PVP");  // (and damage between players on or off: tests)
     if (v && *v) g_online.pvp = atoi(v) != 0;
+    const char *co = getenv("SAVAGEWIND_ONLINE_COLLIDE");  // (and collisions between players on or off: tests)
+    if (co && *co) g_online.collide = atoi(co) != 0;
 }
 
 void online_settings_save(void) {
@@ -1507,8 +1546,9 @@ void online_settings_save(void) {
     FILE *f = fopen("online.ini", "w");
     if (!f) return;
     fprintf(f, "# Savage Wind online settings (Settings > Online in game)\n");
-    fprintf(f, "name = %s\nhost = %s\nport = %d\npassword = %s\nshow_names = %d\nshow_markers = %d\npvp = %d\n",
+    fprintf(f, "name = %s\nhost = %s\nport = %d\npassword = %s\nshow_names = %d\nshow_markers = %d\npvp = %d\n"
+               "collide = %d\nrevive = %d\nnopause = %d\n",
             g_online.name, g_online.host, g_online.port, g_online.password, g_online.show_names, g_online.show_markers,
-            g_online.pvp);
+            g_online.pvp, g_online.collide, g_online.revive, g_online.nopause);
     fclose(f);
 }

@@ -15,6 +15,7 @@
 //
 // Off unless online_mod is the RomFS overlay (or SAVAGEWIND_ONLINE_ACTOR=<name> picks an actor: docs/ONLINE.md, what
 // was tried). Without it the other players are only the overlay's figures (runtime/ui/online_ui.mm).
+#include <float.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,6 +30,7 @@
 #define FN_CREATE 0x7001535900ull
 #define ACTOR_HASH_ID 0x640  // (an actor's map object HashId: u32)
 #define FN_SET_MTX 0x700152261cull
+#define FN_ACTOR_WAKE 0x7001515988ull  // x0 an actor: woken (its state +0x64 to 1, its process manager told): take_out
 #define FN_DELETE 0x7001514bacull
 #define FN_AS_IN_SLOT 0x70014a0040ull  // x0 an AS manager, w1 slot, w2 bank -> the AS playing there (its name at +8;
                                        // the manager: slots at +0xc0, 0x50 each (+0x20 its banks), +0xb8 how many)
@@ -91,6 +93,17 @@ static bool alive(uint64_t actor, Watch w) {
            *(uint64_t *)(uintptr_t)(w.unit + 0x48) == actor && *(uint8_t *)(uintptr_t)(actor + 0x64) != 3;
 }
 
+// alive, or the same actor gone to another proc unit (woken: by us, or by itself as the player comes near - a
+// shrine's elevator): its id the same, not deleted; then watched again
+static bool alive_rewatch(uint64_t actor, Watch *w) {
+    if (alive(actor, *w)) return true;
+    if (!actor || *(uint32_t *)(uintptr_t)(actor + 0x60) != w->id || *(uint8_t *)(uintptr_t)(actor + 0x64) == 3) return false;
+    Watch n = watch(actor);
+    if (!VALID(n.unit) || *(uint64_t *)(uintptr_t)(n.unit + 0x48) != actor) return false;
+    *w = n;
+    return true;
+}
+
 // A request's BaseProcHandle (the unit, a flag): the unit keeps the handle's address (+8) until the actor is taken
 // or the handle released, so each request has one of its own, never moved, not used again for a long while (a ring)
 typedef struct { uint64_t unit, flag; } Handle;
@@ -112,7 +125,8 @@ typedef struct {
     int fails, wait;  // (wait: frames before asking again, after a failure)
 } Piece;
 
-#define MAGNE_BEAM 10
+#define MAGNE_BEAM 1
+#define MAGNET_TIP 0.8f  // (the magnet over the hands, from them to its tips, toward what is held: in metres)
 // A remote player in the world: his Link, his armour and his gear
 static struct {
     uint64_t link;  // OnlinePlayer; 0: none
@@ -123,6 +137,7 @@ static struct {
     Piece tack[2];  // (its saddle and reins)
     char horse_as[32];
     Piece shot[ONLINE_SHOTS];      // what he holds, threw or shot (bombs, arrows: OnlineShots)
+    Piece held[ONLINE_HELD];       // the materials he holds over his head or threw (OnlinePose.held: OnlineGear_*)
     uint16_t shot_id[ONLINE_SHOTS];  // (its id; 0: unused, out of sight)
     Piece nock;                    // the arrow on his bow's string while he draws it (it's no actor in his game)
     struct { uint64_t p; uint32_t id, pad; } kago[2];  // Daruk's Protection on his Link: its effects' handles
@@ -131,20 +146,29 @@ static struct {
     char trail_name[ONLINE_FX_MAX];
     int8_t dye[3];  // (the dyes his armour pieces here were made with)
     uint16_t fxev_seen;  // (his last effect played here, by its number)
-    struct { uint64_t p; uint32_t id, pad; uint64_t t; } fxev[ONLINE_FX_EVENTS];  // (those playing: their handles)
+    struct { uint64_t p; uint32_t id, pad; uint64_t t; char name[24]; } fxev[ONLINE_FX_EVENTS];  // (those playing)
     int kago_n;                    // (the ring's charges it was made for)
     uint64_t grab;                 // what he holds with the Magnesis rune, here (0: none)
+    uint64_t released; uint64_t released_t;  // (what he let go of - Magnesis, Stasis - and when: his moves of it his)
     Watch grab_w;
     char grab_name[ONLINE_GRAB_NAME];
     float grab_from[3];
     int grab_wait;                 // (frames before looking for it again: not found)
     struct { uint64_t p; uint32_t id, pad; } magne;  // the rune's glow on it (its handle)
-    struct { uint64_t p; uint32_t id, pad; } beam[MAGNE_BEAM];  // the rune's beam from his hand to it (its effects)
+    struct { uint64_t p; uint32_t id, pad; } beam[MAGNE_BEAM];  // the rune's beam from his hand to it (MagneConnect)
+    Piece slate;                   // the slate in his hand while he uses a rune (OnlineSlate: Item_Conductor's ELink)
+    bool slate_shown;              // (its model drawn: while he holds)
+    Piece rune_fx;                 // what plays his runes' beam and chains here (OnlineRuneFx: ReactionHit's ELink)
+    Piece stop_fx;                 // (and his Stasis chains, on what he stopped)
+    Piece magnet_fx;               // the magnet over his hands while he holds (OnlineMagnetFx: Item_Magnetglove's ELink)
+    struct { uint64_t p; uint32_t id, pad; } magnet;  // (its effect: the key "Hand", the particles MagneHand)
+    uint8_t holder[0x140];         // (the beam's holder, as the rune's: +0x48 its handle, +0x50 its id, +0x13c 0)
     uint64_t stop;                 // what he stopped with the Stasis rune, here (0: none)
     Watch stop_w;
     char stop_name[ONLINE_GRAB_NAME];
     int stop_wait;
     struct { uint64_t p; uint32_t id, pad; } chains;  // its chains (BitaLocked_Start)
+    bool chained;                  // (played once for what he stopped: the rune plays them as it stops it)
     struct { Piece p; float m[12]; bool used, rose; } ice[3];  // his Cryonis pillars, here (OnlineIce)
     uint16_t boom_seen;              // (the last explosion played)
     char name[ONLINE_NAME_MAX];
@@ -167,6 +191,14 @@ static const char *const k_bones[] = {"Weapon_R", "Weapon_L", "Pod_A", "Pod_B", 
 
 static float g_last_link[3];
 static bool g_local_dead;  // the local Link is dead (his body's AS: Dead...): game over is coming
+static struct { float pos[3]; int from; bool fresh; } g_blast[4];  // (the others' bombs gone off lately: pvp_update)
+static uint32_t g_aggro_id;   // the host's enemy we hit last (not ours: shown here), and that hit's number
+static uint16_t g_aggro_seq;  // (OnlinePose.aggro_*: the host's game hands it to us, so it turns on us)
+static OnlineObj g_objs_out[ONLINE_OBJS];  // (the world's objects moving near us: objs_update)
+static uint64_t g_break_test_t;            // (when SAVAGEWIND_ONLINE_BREAK_TEST cut its tree)
+static uint8_t g_objs_out_trunk;           // (bit k: g_objs_out[k] a cut tree's trunk, by the tree's HashId)
+static OnlineMover g_movers_out[ONLINE_MOVERS];  // (the level's mechanisms moving near us: movers_update)
+static uint32_t g_broken[8], g_trunks_gone[4];  // (the map's objects we broke, our trunks chopped: breaks_update)
 volatile bool g_online_actor[ONLINE_MAX];  // (online.h online_has_actor: the overlay draws no figure for these)
 
 bool online_has_actor(int slot) { return slot >= 0 && slot < ONLINE_MAX && g_online_actor[slot]; }
@@ -249,6 +281,7 @@ static bool play_as(Cpu *c, uint64_t actor, const char *name, int slot, int bank
 static Piece g_pool[ONLINE_MAX][POOL];
 
 static void booms_forget(void);
+static void movers_forget(void);
 
 // requests still under way when all was forgotten: what they make is deleted once made (else it would stay in the
 // world, a piece nobody moves)
@@ -287,7 +320,9 @@ static void forget_all(void) {
         orphan(&g_act[i].horse);
         orphan(&g_act[i].tack[0]), orphan(&g_act[i].tack[1]);
         for (int k = 0; k < ONLINE_SHOTS; k++) orphan(&g_act[i].shot[k]);
+        for (int k = 0; k < ONLINE_HELD; k++) orphan(&g_act[i].held[k]);
         orphan(&g_act[i].nock);
+        orphan(&g_act[i].slate), orphan(&g_act[i].rune_fx), orphan(&g_act[i].stop_fx), orphan(&g_act[i].magnet_fx);
         for (int k = 0; k < POOL; k++) orphan(&g_pool[i][k]);
     }
     memset(g_act, 0, sizeof g_act);
@@ -295,6 +330,7 @@ static void forget_all(void) {
     owns_forget();
     loot_forget();
     booms_forget();
+    movers_forget();
     memset(g_pool, 0, sizeof g_pool);
     for (int i = 0; i < ONLINE_MAX; i++) g_act[i].anim = -1, g_act[i].covered = -1;
 }
@@ -390,7 +426,10 @@ static void drop(Cpu *c, int i, bool left) {
     pool_piece(c, i, &g_act[i].horse);
     pool_piece(c, i, &g_act[i].tack[0]), pool_piece(c, i, &g_act[i].tack[1]);
     for (int k = 0; k < ONLINE_SHOTS; k++) pool_piece(c, i, &g_act[i].shot[k]);
+    for (int k = 0; k < ONLINE_HELD; k++) pool_piece(c, i, &g_act[i].held[k]);
     pool_piece(c, i, &g_act[i].nock);
+    pool_piece(c, i, &g_act[i].slate), pool_piece(c, i, &g_act[i].rune_fx), pool_piece(c, i, &g_act[i].stop_fx);
+    pool_piece(c, i, &g_act[i].magnet_fx);
     if (left)
         for (int k = 0; k < POOL; k++) delete_piece(c, &g_pool[i][k]);
     if (alive(g_act[i].link, g_act[i].link_w)) call(c, FN_DELETE, g_act[i].link, 0, 0, 0, 0, 0);
@@ -806,6 +845,7 @@ static int g_fx_taken;
 // FX_EVENT_NS (one that loops would stay)
 #define FX_EVENT_NS 2000000000ull
 static OnlineFxEvent g_fxev[ONLINE_FX_EVENTS];
+static bool g_kago_wind;  // (the last Champion's effect on the local Link: Revali's Gale's charge, Kago_Wind)
 static uint16_t g_fxev_seq;
 static char g_fx_trail[ONLINE_FX_MAX];  // his weapon's trail now ("" none), and when it started
 static uint64_t g_fx_trail_t;
@@ -916,18 +956,69 @@ static uint8_t weather_now(void) {
     return w < 9 ? w : 255;
 }
 
+// The Blood Moon: the time manager (ksys::world::Manager +0x5c8, its first) counts it at +0xc8 in degrees of the day
+// (360 a day; the time of day at +0xb8), from WM_BloodyMoonTimer at load; past 2520 (7 days), at midnight, there is
+// one (1.9.0 0x7001425fa8), and it starts again at 0. The others keep the host's (his time of day is theirs already),
+// so the Blood Moon comes for everyone the same night, and the world's items taken (quests.txt) come back for all
+static float *bloody_moon_timer(void) {
+    uint64_t wm = g_site.world_mgr ? *(uint64_t *)(uintptr_t)g_site.world_mgr : 0;
+    if (!VALID(wm) || !*(uint32_t *)(uintptr_t)(wm + 0x5c0)) return NULL;
+    uint64_t mgrs = *(uint64_t *)(uintptr_t)(wm + 0x5c8), tm = VALID(mgrs) ? *(uint64_t *)(uintptr_t)mgrs : 0;
+    return VALID(tm) ? (float *)(uintptr_t)(tm + 0xc8) : NULL;
+}
+
+// (set as the game sets it: its game data value WM_BloodyMoonTimer (the time manager's handle to it at +0x120), with
+// the game data manager's f32 setter (1.9.0 0x7000b36c80: x0 the manager, w1 the handle, s0 the value; the time
+// manager writes it there each frame and takes it back from there), and its own copy; a write to the copy alone
+// was undone the same frame)
+#define FN_GDT_SET_F32 0x7000b36c80ull
+static void bloody_moon_set(Cpu *c, float v) {
+    float *bm = bloody_moon_timer();
+    uint64_t mgr = test_warp_gdt_mgr();
+    if (!bm || !VALID(mgr)) return;
+    uint32_t handle = *(uint32_t *)(uintptr_t)((uint64_t)(uintptr_t)bm - 0xc8 + 0x120);
+    if (handle != 0xffffffffu) call_f(c, FN_GDT_SET_F32, mgr, handle, 0, 0, 0, 0, 0, v);
+    *bm = v;
+}
+
+static void bloody_moon_follow(Cpu *c, const OnlinePlayer *pl, int me) {
+    const char *test = getenv("SAVAGEWIND_ONLINE_BM_TEST");  // (test: the host's timer set to that once, in the world)
+    static bool tested;
+    if (test && me == 0 && !tested && bloody_moon_timer()) {
+        static int wait;
+        if (++wait > 300) bloody_moon_set(c, strtof(test, NULL)), tested = true, LOG("[online] Blood Moon test: %s\n", test);
+    }
+    const OnlinePlayer *h = &pl[0];  // (the host: slot 0)
+    float *bm = bloody_moon_timer();
+    if (me <= 0 || !bm || !h->used || !h->pose.valid || h->pose.bloody_moon < 0 || h->pose.bloody_moon > 4000 ||
+        (h->flags & ONLINE_F_LOADING))
+        return;
+    float d = h->pose.bloody_moon - *bm;
+    if (d < 30 && d > -30) return;  // (two game hours: his comes a little before or after ours, the same night)
+    static int logged;
+    if (logged++ < 10) LOG("[online] the host's Blood Moon timer: %.1f (was %.1f)\n", h->pose.bloody_moon, *bm);
+    bloody_moon_set(c, h->pose.bloody_moon);
+}
+
+static bool same_map(const OnlinePlayer *p);
 static void weather_follow(const OnlinePlayer *pl, int me, const float at[3]) {
     if (g_settings.weather > 0) return;
     uint64_t wm = g_site.world_mgr ? *(uint64_t *)(uintptr_t)g_site.world_mgr : 0;
     if (!VALID(wm) || !*(uint32_t *)(uintptr_t)(wm + 0x5c0) || *(volatile uint8_t *)(uintptr_t)(wm + 0x7d6)) return;
-    const OnlinePlayer *h = &pl[0];  // (the host: the session's first, slot 0)
-    if (me == 0 || !h->used || !h->pose.valid || h->pose.weather > 8 || (h->flags & ONLINE_F_LOADING)) return;
-    float dx = h->pos[0] - at[0], dy = h->pos[1] - at[1], dz = h->pos[2] - at[2];
-    if (dx * dx + dy * dy + dz * dz > WEATHER_NEAR * WEATHER_NEAR) return;
+    // (whose: of the players within WEATHER_NEAR, the first in the session - the host when he is there - so players
+    // together anywhere on the map share one sky, ours when we are the first of them)
+    const OnlinePlayer *h = NULL;
+    for (int i = 0; i < me && !h; i++) {
+        const OnlinePlayer *p = &pl[i];
+        if (!p->used || !p->pose.valid || p->pose.weather > 8 || (p->flags & ONLINE_F_LOADING) || !same_map(p)) continue;
+        float dx = p->pos[0] - at[0], dy = p->pos[1] - at[1], dz = p->pos[2] - at[2];
+        if (dx * dx + dy * dy + dz * dz <= WEATHER_NEAR * WEATHER_NEAR) h = p;
+    }
+    if (!h) return;
     volatile uint8_t *now = (volatile uint8_t *)(uintptr_t)(wm + 0x7d1);
     if (*now == h->pose.weather) return;
     static int logged;
-    if (logged++ < 20) LOG("[online] the host's weather: %d (was %d)\n", h->pose.weather, *now);
+    if (logged++ < 20) LOG("[online] %s's weather: %d (was %d)\n", h->name, h->pose.weather, *now);
     *now = h->pose.weather;
     *(volatile int32_t *)(uintptr_t)(wm + 0x794) = 4;
 }
@@ -945,6 +1036,36 @@ static uint64_t elink_ui(uint64_t actor) {
 }
 
 // each frame: what to watch; the effects noted since (SAVAGEWIND_ONLINE_FX_LOG=1: to the log); his weapon's trail
+// A sound the local game emits continuously (its volume his speed: EquipNoise_* his gear's rattle, WindDirect and
+// FallFlap* the wind of his fall - FallFlap once as it starts, a full-volume roar on the puppet -, ReactionSlide his
+// slide; and any other emitted again within CONT_SOUND_NS, from then on)
+// isn't sent: the others' games could only play it whole, at full volume (fx_update)
+#define CONT_SOUND_NS 300000000ull
+static uint32_t crc32_str(const char *s);
+static bool continuous_sound(const char *n) {
+    // (the paraglider's wind, ParashawlGlideMove / ParashawlGlideAscendant: its first one sent - before it was seen
+    // again - played whole on his puppet, a loud hiss for seconds as he rose on Revali's Gale)
+    static const char *const known[] = {"EquipNoise", "WindDirect", "ReactionSlide", "FallFlap", "ParashawlGlide"};
+    for (unsigned k = 0; k < sizeof known / sizeof *known; k++)
+        if (!strncmp(n, known[k], strlen(known[k]))) return true;
+    static struct { uint32_t h; uint64_t t; bool cont; } seen[64];
+    static int next;
+    uint32_t h = crc32_str(n);
+    uint64_t now = plat_now_ns();
+    for (int k = 0; k < 64; k++) {
+        if (seen[k].h != h) continue;
+        if (!seen[k].cont && now - seen[k].t < CONT_SOUND_NS) {
+            seen[k].cont = true;
+            LOG("[online] %s: a continuous sound, not sent\n", n);
+        }
+        seen[k].t = now;
+        return seen[k].cont;
+    }
+    seen[next].h = h, seen[next].t = now, seen[next].cont = false;
+    next = (next + 1) % 64;
+    return false;
+}
+
 static void fx_update(uint64_t player) {
     // the ground's reactions to his steps (ReactionField plays them: his footprints, the dust, the water, the grass):
     // sent as his effects (who 4), the others play them on theirs where his puppet is
@@ -1009,12 +1130,17 @@ static void fx_update(uint64_t player) {
         if (!VALID(name) || w >= FX_WATCH) continue;
         const char *n = (const char *)(uintptr_t)name;
         if (getenv("SAVAGEWIND_ONLINE_FX_LOG")) LOG("[online] fx %s: %.60s\n", who[w], n);
+        if (w == 0 && !strncmp(n, "Kago_", 5) && strcmp(n, "Kago_Ready")) g_kago_wind = !strcmp(n, "Kago_Wind");
         // (not his trail, nor the Champions' abilities: both their own way; nor the environment's, MaterialEnv,
         // FieldEnvEffect_*: his place's, not his)
         // (Daruk's and Revali's, Kago_Shield* and Kago_Wind, are sent by their handles in the player; Mipha's Grace
         // and Urbosa's Fury, Kago_Heal, Kago_Lightning / Kago_UrubozaRange..., go as these)
         // (his sounds, his Link's SLink and his weapon's, as his effects: who 2 and 3)
+        // (nor his continuous sounds: his gear's rattle, the wind of his fall, his slide, any sound the game emits again
+        // within CONT_SOUND_NS: it plays them every frame with his speed as their volume; emitted by their keyword on
+        // the puppet each played whole at full volume, piling up into walls of noise as he walked, jumped and slid)
         bool sound = w >= 4;
+        if (sound && continuous_sound(n)) continue;
         if ((w <= 1 || sound) && strncmp(n, "Blur", 4) && strncmp(n, "Kago_Shield", 11) && strcmp(n, "Kago_Wind") &&
             strncmp(n, "MaterialEnv", 11) &&
             strncmp(n, "FieldEnv", 8) && strlen(n) < sizeof g_fxev[0].name) {
@@ -1169,6 +1295,85 @@ static void sample_shots(Cpu *c, uint64_t player, const char (*as)[ONLINE_AS_MAX
         }
 }
 
+// What the local Link holds from his pouch over his head (Item_*, Animal_Insect_*: materials, food), for the others to
+// see in his puppet's hands, and each he then throws or lets fall, where it is while it flies (it goes on the loot list
+// once it lies: drops_update). One he holds is linked to him (+0x4d4 non-zero, as the slate on his hip: 0 on the
+// ground); it is sent as in his hands (heaped there by the others' games), and as it flies only once it has left where
+// it was while he held it. Looked for every 6 frames (all the actors), followed each frame; 1.5 s still after it left
+// his hands, no longer sent
+static bool held_kind(const char *n) {
+    return (!strncmp(n, "Item_", 5) || !strncmp(n, "Animal_Insect_", 14)) && strcmp(n, "Item_Conductor") &&
+           strncmp(n, "Item_Magnetglove", 16);
+}
+
+static volatile int g_nopause_now;  // (a menu is up and the world goes on: rt_scene_state says playing)
+
+static void sample_held(uint64_t player, OnlineHeld out[ONLINE_HELD]) {
+    static struct { uint64_t a; Watch w; char name[32]; float stale[3], last[3]; bool left, flying; uint64_t still_t; } tr[ONLINE_HELD];
+    static int tick;
+    memset(out, 0, sizeof(OnlineHeld) * ONLINE_HELD);
+    const float *pm = (const float *)(uintptr_t)(player + 0x398);
+    if (tick++ % 6 == 0) {
+        int na = all_actors(*(uint64_t *)(uintptr_t)(player + 0x68), g_actors, MAX_ACTORS);
+        for (int k = 0; k < na; k++) {
+            uint64_t a = g_actors[k];
+            if (a == player || !*(uint32_t *)(uintptr_t)(a + 0x4d4) || *(uint32_t *)(uintptr_t)(a + ACTOR_HASH_ID)) continue;
+            bool known = false;
+            for (int t = 0; t < ONLINE_HELD && !known; t++) known = tr[t].a == a;
+            if (known) continue;
+            char n[48];
+            actor_name_of(a, n);
+            if (!held_kind(n)) continue;
+            const float *m = (const float *)(uintptr_t)(a + 0x398);
+            float dx = m[3] - pm[3], dz = m[11] - pm[11];
+            if (dx * dx + dz * dz > 60 * 60) continue;
+            for (int t = 0; t < ONLINE_HELD; t++)
+                if (!tr[t].a) {
+                    memset(&tr[t], 0, sizeof tr[t]);
+                    tr[t].a = a, tr[t].w = watch(a);
+                    snprintf(tr[t].name, sizeof tr[t].name, "%s", n);
+                    tr[t].stale[0] = m[3], tr[t].stale[1] = m[7], tr[t].stale[2] = m[11];
+                    LOG("[online] we hold %s\n", n);
+                    break;
+                }
+        }
+    }
+    uint64_t now = plat_now_ns();
+    for (int t = 0; t < ONLINE_HELD; t++) {
+        if (!tr[t].a) continue;
+        if (!alive(tr[t].a, tr[t].w)) {  // (eaten, put back, picked up)
+            tr[t].a = 0;
+            continue;
+        }
+        const float *m = (const float *)(uintptr_t)(tr[t].a + 0x398);
+        snprintf(out[t].name, sizeof out[t].name, "%s", tr[t].name);
+        if (*(uint32_t *)(uintptr_t)(tr[t].a + 0x4d4)) {  // (in his hands)
+            out[t].mode = ONLINE_HELD_HANDS;
+            out[t].m[0] = *(float *)(uintptr_t)(tr[t].a + 0x418);  // (the size it is held at: its own - an apple 0.55, a
+                                                                   // mushroom 0.372 - smaller than on the ground)
+            tr[t].stale[0] = m[3], tr[t].stale[1] = m[7], tr[t].stale[2] = m[11], tr[t].left = false;
+            continue;
+        }
+        float sx = m[3] - tr[t].stale[0], sy = m[7] - tr[t].stale[1], sz = m[11] - tr[t].stale[2];
+        if (!tr[t].left && sx * sx + sy * sy + sz * sz < 0.05f * 0.05f) continue;  // (not yet at his hands)
+        if (!tr[t].left) {
+            tr[t].left = true, tr[t].still_t = 0;
+            tr[t].last[0] = m[3], tr[t].last[1] = m[7], tr[t].last[2] = m[11];
+            LOG("[online] %s left our hands\n", tr[t].name);
+        }
+        float lx = m[3] - tr[t].last[0], ly = m[7] - tr[t].last[1], lz = m[11] - tr[t].last[2];
+        tr[t].last[0] = m[3], tr[t].last[1] = m[7], tr[t].last[2] = m[11];
+        if (lx * lx + ly * ly + lz * lz > 0.01f * 0.01f) tr[t].still_t = 0;
+        else if (!tr[t].still_t) tr[t].still_t = now;
+        if (tr[t].still_t && now - tr[t].still_t > 1500000000ull) {
+            tr[t].a = 0;  // (lying: on the loot list by now, the others' own)
+            continue;
+        }
+        out[t].mode = ONLINE_HELD_WORLD;
+        memcpy(out[t].m, m, sizeof out[t].m);
+    }
+}
+
 // Explosions of the others' bombs: an OnlineBoom actor asked for at that place (its resources load meanwhile), then
 // sent the Remote Bomb rune's "go off" message (0x800000a: 0x7000b3b66c sends it to each of its bombs) through a
 // message transceiver of the local player's (his armour manager's, player +0x2500 +0xd8: the armour code sends its
@@ -1251,6 +1456,17 @@ static void booms_update(Cpu *c, uint64_t player) {
 #define FN_ACTOR_LOOK_ON 0x700152a08cull   // x0 an actor, w1 bits of its +0x710 to set (how it's drawn: 1 the
 #define FN_ACTOR_LOOK_OFF 0x700152a0b4ull  // Magnesis rune's aim on it, 2 held by it: 0x7000b98c40), and to clear
 #define FN_SPECIAL_FX_B 0x700124d220ull    // s0 a value, x1 a model: its materials' uk_special_effect_B
+#define FN_MAGNE_BEAM_SET 0x7000d40bb8ull  // x0 a holder (+0x48 the effect's handle, +0x50 its id), x1 Matrix34f, s0 a length
+#define P_MAGNE_AIM 0x7001e58720ull        // (*this + MAGNE_AIM_OFF: two Vector3f, the rune's aim when last raised,
+#define MAGNE_AIM_OFF 0x192ccull           // the camera's forward; MagneConnect's strands follow it, zero: not drawn)
+// what the local Link holds with Magnesis (0: none). 1.9.0: the rune's object at P_MAGNE, its +0x318 the magnetic part
+// of the actor held, 0x7000b993e8 checks it so; that part on while its +0x10 bit 0; its actor at +8
+static uint64_t magne_held(void) {
+    uint64_t g = *(uint64_t *)(uintptr_t)P_MAGNE;
+    uint64_t part = VALID(g) ? *(uint64_t *)(uintptr_t)(g + 0x318) : 0;
+    uint64_t a = VALID(part) && (*(uint32_t *)(uintptr_t)(part + 0x10) & 1) ? *(uint64_t *)(uintptr_t)(part + 8) : 0;
+    return VALID(a) ? a : 0;
+}
 // The map the local Link is on: the game's own (0x7001208304: its type, 0x70012082f8: its name; each a SafeString,
 // its chars at +8): "MainField/", "CDungeon/Dungeon000", "MainFieldDungeon/RemainsWind", ...
 #define FN_MAP_TYPE 0x7001208304ull
@@ -1388,7 +1604,7 @@ static void sample_pose(Cpu *c, uint64_t pinfo) {
         last_bone[k] = pose.gear_bone[k];
         // (on no bone but still his and near him - a weapon he threw, in flight or where it fell: its matrix in the
         // world, ONLINE_GEAR_WORLD. Not the paraglider: closed, it isn't sent at all)
-        if (!pose.gear_bone[k] && k != 5) {
+        if (!pose.gear_bone[k] && k != 5 && a != magne_held()) {
             float dx = w[3] - pm[3], dy = w[7] - pm[7], dz = w[11] - pm[11];
             if (dx * dx + dy * dy + dz * dz < 60 * 60) {
                 pose.gear_bone[k] = ONLINE_GEAR_WORLD;
@@ -1429,18 +1645,17 @@ static void sample_pose(Cpu *c, uint64_t pinfo) {
     {   // Revali's Gale: its charge's effect handle at player +0x23c0, alive while he holds to charge (found by diffing
         // the player before and during a Gale, 1.9.0; Daruk's handle layout: alive while the effect's +0x20 is the id
         // after it). Its updraft's handle at +0x2380 is a sound's ("Kago_WindRiseUp" is only in SLink2), not sent
+        // That handle is the Champions' ready effect's (Kago_Ready), Daruk's guard's too: the Gale only when the last
+        // Champion's effect his Link played was its charge, Kago_Wind (else Daruk's shield drew Revali's wind here)
         uint64_t h = *(uint64_t *)(uintptr_t)(player + 0x23c0);
-        if (VALID(h) && *(uint32_t *)(uintptr_t)(h + 0x20) == *(uint32_t *)(uintptr_t)(player + 0x23c8))
+        if (VALID(h) && *(uint32_t *)(uintptr_t)(h + 0x20) == *(uint32_t *)(uintptr_t)(player + 0x23c8) && g_kago_wind)
             pose.effects |= ONLINE_E_GALE;
     }
     {   // the Magnesis rune: what he holds (1.9.0: the rune's object at 0x7001e15f18, its +0x318 the magnetic part of
         // the actor held, 0x7000b993e8 checks it so; that part on while its +0x10 bit 0; its actor at +8)
         static uint64_t held;
         static float from[3];
-        uint64_t g = *(uint64_t *)(uintptr_t)P_MAGNE;
-        uint64_t part = VALID(g) ? *(uint64_t *)(uintptr_t)(g + 0x318) : 0;
-        uint64_t a = VALID(part) && (*(uint32_t *)(uintptr_t)(part + 0x10) & 1) ? *(uint64_t *)(uintptr_t)(part + 8) : 0;
-        if (!VALID(a)) a = 0;
+        uint64_t a = magne_held();
         const float *am = a ? (const float *)(uintptr_t)(a + 0x398) : NULL;
         if (a != held) {
             held = a;
@@ -1522,11 +1737,24 @@ static void sample_pose(Cpu *c, uint64_t pinfo) {
     boss_sample(c, player, &pose);
     g_local_dead = !strncmp(pose.as[0], "Dead", 4);
     sample_shots(c, player, pose.as, &pose.shots);
+    sample_held(player, pose.held);
     snprintf(pose.fx, sizeof pose.fx, "%s", g_fx_trail);  // (his weapon's swing trail: fx_update)
     memcpy(pose.fxev, g_fxev, sizeof pose.fxev);  // (his other effects: fx_update)
     memcpy(pose.ground_props, (const void *)g_rf_props, sizeof pose.ground_props);  // (fx_update: his ground's)
+    pose.collide = g_online.collide;  // (the host's is the session's: players_collide)
+    pose.revive = g_online.revive;    // (and rt_online_has_fairy's)
+    pose.nopause = g_online.nopause;  // (and menus_no_pause's)
+    {   float *bm = bloody_moon_timer();  // (his Blood Moon timer: bloody_moon_follow)
+        pose.bloody_moon = bm ? *bm : -1;
+    }
     pose.weather = weather_now();  // (the weather where he is: weather_follow)
     pose.pvp_seq = g_pvp.seq, pose.pvp_target = g_pvp.target, pose.pvp_damage = g_pvp.damage;  // (pvp_update)
+    pose.aggro_id = g_aggro_id, pose.aggro_seq = g_aggro_seq;
+    memcpy(pose.objs, g_objs_out, sizeof pose.objs);  // (objs_update)
+    pose.objs_trunk = g_objs_out_trunk;
+    memcpy(pose.movers, g_movers_out, sizeof pose.movers);  // (movers_update)
+    memcpy(pose.broken, g_broken, sizeof pose.broken);  // (breaks_update)
+    memcpy(pose.trunks_gone, g_trunks_gone, sizeof pose.trunks_gone);
     {   // the horse he rides: while his AS is a horse's (Horse*), the player's horse (GameRomHorse*) nearest him, looked
         // for among the actors a few times a second
         static uint64_t horse, tack[2];
@@ -1865,11 +2093,13 @@ static void enemy_held(Cpu *c, uint64_t a, uint64_t g, char name[40], float m[12
 }
 
 // an enemy as it is here, for the others
+static void own_guarded_life(uint64_t a, int32_t *life);
 static void enemy_state(Cpu *c, uint64_t a, OnlineEnemy *e) {
     actor_name_of(a, e->name);
     memcpy(e->m, (const float *)(uintptr_t)(a + 0x398), sizeof e->m);
     snprintf(e->as, sizeof e->as, "%s", playing(c, a, 0, 0));
     e->life = *(int32_t *)(uintptr_t)(a + ENEMY_LIFE);
+    own_guarded_life(a, &e->life);  // (one guarded: its real life, not the guard's)
     uint32_t h = *(uint32_t *)(uintptr_t)(a + ACTOR_HASH_ID);  // (one made by us has none: the one it was keeps its)
     if (h) e->hash = h;
     enemy_held(c, a, linked(a + 0xb98), e->weapon, e->wm, &e->wbone);
@@ -1887,11 +2117,13 @@ typedef struct {
     bool marked;  // (the host's game: its dead flag set, as the game sets it only for the map's own, not one made again)
     bool remade;  // (made by us from the list, not the map's own)
     uint64_t held[2]; Watch held_w[2];  // (loot: its weapon and shield while it lived: they fall when it dies)
+    uint64_t guard_until; int32_t real_life;  // (just made here from another's: own_guard)
 } Own;  // (state: OWN_*)
 // (OWN_GONE: gone here, died or removed, and told to the host's game, whose list still has it as ours until that
 // comes: neither made again nor shown as his until his list no longer has it ours)
 enum { OWN_NONE, OWN_MAKING, OWN_HAVE, OWN_GONE };
 #define OWNS 64
+#define GUARD_LIFE 1000  // (own_guard)
 static Own g_own[OWNS];
 static struct { uint64_t actor; Watch w; } g_own_left[OWNS];
 
@@ -1946,6 +2178,43 @@ static void own_drop(Cpu *c, Own *o) {
 }
 
 // ours, made when it came to us: as it was (where, its life); false while it is being made
+// An enemy just made here from another's game (own_ready) is unaware, whatever it was doing there: our first blow
+// would be a sneak strike, eight times its damage, a kill. For 8 s its life is kept GUARD_LIFE above its own (the
+// real one apart: what is sent, enemy_state), and each blow takes off it no more than our weapon's attack power
+// when it is more than twice that; at 0 it dies as any
+static void own_guarded_life(uint64_t a, int32_t *life) {
+    for (int k = 0; k < OWNS; k++)
+        if (g_own[k].guard_until && g_own[k].actor == a) *life = g_own[k].real_life;
+}
+static int attack_power(const char *name);
+static void own_guard(uint64_t player) {
+    uint64_t now = plat_now_ns();
+    for (int k = 0; k < OWNS; k++) {
+        Own *o = &g_own[k];
+        if (!o->guard_until || o->state != OWN_HAVE || !alive(o->actor, o->w)) { o->guard_until = 0; continue; }
+        int32_t *life = (int32_t *)(uintptr_t)(o->actor + ENEMY_LIFE);
+        int32_t dmg = o->real_life + GUARD_LIFE - *life;
+        // (its first half second: the game sets its life up as it starts; ours is put back, nothing taken)
+        if (o->guard_until - now > 7500000000ull) dmg = 0;
+        if (dmg > 0) {
+            uint64_t ar[ARMOR], gr[ONLINE_GEAR];
+            equipment(player, ar, gr);
+            char wn[48] = "";
+            if (gr[0]) actor_name_of(gr[0], wn);
+            int pw = wn[0] ? attack_power(wn) : 0;
+            if (pw > 0 && dmg > pw * 2) {
+                LOG("[online] a blow of %d on our %u, just ours: %d, as without a sneak strike\n", dmg, o->gid, pw);
+                dmg = pw;
+            }
+            o->real_life = o->real_life > dmg ? o->real_life - dmg : 0;
+        }
+        if (o->real_life <= 0 || now > o->guard_until) {  // (over: its own life again)
+            *life = o->real_life;
+            o->guard_until = 0;
+        } else *life = o->real_life + GUARD_LIFE;
+    }
+}
+
 static bool own_ready(Cpu *c, Own *o, const OnlineEnemy *e) {
     if (o->state == OWN_HAVE) return true;
     if (o->state == OWN_GONE) return false;
@@ -1965,6 +2234,11 @@ static bool own_ready(Cpu *c, Own *o, const OnlineEnemy *e) {
     memset(&o->made, 0, sizeof o->made);
     call(c, FN_SET_MTX, o->actor, (uint64_t)(uintptr_t)e->m, 0, 0, 0, 0);
     if (e->life > 0) *(int32_t *)(uintptr_t)(o->actor + ENEMY_LIFE) = e->life;
+    // (it was another's, fighting there: made here it is unaware, and our first blow would be a sneak strike, eight
+    // times; guarded a while: own_guard)
+    o->real_life = e->life > 0 ? e->life : *(int32_t *)(uintptr_t)(o->actor + ENEMY_LIFE);
+    o->guard_until = plat_now_ns() + 8000000000ull;
+    *(int32_t *)(uintptr_t)(o->actor + ENEMY_LIFE) = o->real_life + GUARD_LIFE;
     LOG("[online] we have %s %u for real now\n", e->name, o->gid);
     return true;
 }
@@ -2039,7 +2313,9 @@ static void own_hits(Cpu *c) {
 
 // the host's game: every enemy of everyone's, its state and its owner (slot)
 #define REG 64
-static struct { OnlineEnemy e; int hold, nearer; bool used; } g_reg[REG];  // (nearer: ticks another has been much nearer)
+// (nearer: ticks another has been much nearer; aggro: ticks before a blow may hand it to its striker again)
+// (striker: the slot it turned on, struck by him: his while he is within 45 m of it, whoever is nearer; -1 none)
+static struct { OnlineEnemy e; int hold, nearer, aggro, striker; bool used; } g_reg[REG];
 static OnlineEnemy g_reg_out[ONLINE_ENEMIES];  // (the list sent last: the others' are shown here from it each frame)
 static int g_reg_n;
 
@@ -2226,7 +2502,7 @@ static void enemies_host(Cpu *c, uint64_t player, const float link[3], const Onl
         if (!o) continue;
         o->state = OWN_HAVE, o->actor = a, o->w = watch(a);
         memset(&g_reg[free_r], 0, sizeof g_reg[free_r]);
-        g_reg[free_r].used = true;
+        g_reg[free_r].used = true, g_reg[free_r].striker = 0, g_reg[free_r].aggro = 0;
         g_reg[free_r].e.id = id;
         enemy_state(c, a, &g_reg[free_r].e);
         g_reg[free_r].e.owner = (uint8_t)me;
@@ -2241,10 +2517,50 @@ static void enemies_host(Cpu *c, uint64_t player, const float link[3], const Onl
                 !!(pl[i].flags & ONLINE_F_LOADING), pl[i].pose.valid, pl[i].pose.as[0], same_map(&pl[i]));
         could[i] = now;
     }
+    // (blows: a player who hits one another's game has gets it, so it turns on him, as an enemy turns on whoever
+    // strikes it; within OWN_SAFE of it, and not again for 6 s)
+    static uint16_t aggro_seen[ONLINE_MAX];
+    static bool aggro_init[ONLINE_MAX];
+    uint32_t aggro_of[ONLINE_MAX] = {0};
+    for (int i = 0; i < ONLINE_MAX; i++) {
+        uint16_t s = i == me ? g_aggro_seq : pl[i].used && pl[i].pose.valid ? pl[i].pose.aggro_seq : 0;
+        uint32_t id = i == me ? g_aggro_id : pl[i].pose.aggro_id;
+        if (!aggro_init[i]) aggro_seen[i] = s, aggro_init[i] = true;
+        if (s != aggro_seen[i]) {
+            aggro_of[i] = id, aggro_seen[i] = s;
+            if (getenv("SAVAGEWIND_ONLINE_AGGRO_LOG")) LOG("[online] slot %d struck %u (hit %u)\n", i, id, s);
+        }
+        if (i != me && !pl[i].used) aggro_init[i] = false;
+    }
     // owners: the player nearest each one (another only when he is clearly nearer, and not again for 3 s)
     for (int r = 0; r < REG; r++) {
         if (!g_reg[r].used) continue;
         OnlineEnemy *e = &g_reg[r].e;
+        if (g_reg[r].aggro > 0) g_reg[r].aggro--;
+        int striker = -1;
+        for (int i = 0; i < ONLINE_MAX; i++) {
+            if (!aggro_of[i] || aggro_of[i] != e->id) continue;
+            if (getenv("SAVAGEWIND_ONLINE_AGGRO_LOG"))
+                LOG("[online] %u struck by slot %d: owner %d, wait %d, can own %d, %.0f m\n", e->id, i, e->owner,
+                    g_reg[r].aggro, i == me || can_own(&pl[i], i, me), dist3(e->m, i == me ? link : pl[i].pos));
+            if (e->owner == OWNER_NONE || g_reg[r].aggro || i == e->owner) continue;
+            if (i != me && !can_own(&pl[i], i, me)) continue;
+            if (i == me && g_local_dead) continue;
+            if (dist3(e->m, i == me ? link : pl[i].pos) > OWN_SAFE) continue;  // (an arrow from afar too)
+            striker = i;
+        }
+        if (striker >= 0) {
+            LOG("[online] %s %u: slot %d's now (was %d's; struck by it)\n", e->name, e->id, striker, e->owner);
+            if (e->owner == me) {
+                Own *o = own_find(e->id);
+                if (o) own_drop(c, o);
+            }
+            if (striker == me) own_add(e->id);
+            e->owner = (uint8_t)striker;
+            g_reg[r].hold = 100, g_reg[r].nearer = 0, g_reg[r].aggro = 120;  // (6 s: this runs every 3 frames)
+            g_reg[r].striker = striker + 1;  // (+1: 0 none, as a new entry is)
+            continue;
+        }
         float best = 1e30f, cur = 1e30f, best3 = 1e30f;
         int nearest = me;
         for (int i = -1; i < ONLINE_MAX; i++) {
@@ -2274,6 +2590,9 @@ static void enemies_host(Cpu *c, uint64_t player, const float link[3], const Onl
         // (each change makes it anew in one game and deletes it in another: only when its owner is far from it (40 m),
         // or another has been 15 m nearer for 5 s, and not again for 10 s; players fighting it together keep it where
         // it is)
+        // (one that turned on the player who struck it stays his while he fights it, within 45 m of it)
+        if (g_reg[r].striker && (g_reg[r].striker - 1 != e->owner || cur > 45)) g_reg[r].striker = 0;
+        if (g_reg[r].striker && !gone_owner) continue;
         g_reg[r].nearer = nearest != e->owner && best + 15 < cur ? g_reg[r].nearer + 1 : 0;
         // (its owner far, it goes only to one clearly nearer: with both players about 40 m from it, it went back and
         // forth between them every few seconds - "owner at 42 m, new one at 42 m")
@@ -2404,7 +2723,58 @@ static void strike(Cpu *c, uint64_t player, const OnlineEnemy *e) {
         float at[3] = {pm[3] - dx / d, pm[7] + 0.3f, pm[11] - dz / d};
         boom_start(c, getenv("SAVAGEWIND_ONLINE_KNOCK") ? getenv("SAVAGEWIND_ONLINE_KNOCK") : "OnlineShock", at);
     }
-    LOG("[online] the host's %s hit us: %d (life %d)%s\n", e->name, power, *life, heavy ? ", knocked down" : "");
+    LOG("[online] %s hit us: %d (life %d)%s\n", e->name, power, *life, heavy ? ", knocked down" : "");
+}
+
+// Our own enemies while our menu is up and the world goes on for it (menus without pause): their blows don't reach the
+// local Link then (he is the menu's, his own hits aren't taken), so each one that starts an attack lands as the host's
+// enemies' do here (strike: within its reach in front of it, his shield not up), STRIKE_FRAMES later.
+// SAVAGEWIND_ONLINE_MENU_LOG=1 logs their AS as they change
+enum { MENU_LIVE_AFTER = 4 };  // (frames: rt_online_menu_live)
+enum { UI_PAUSE_LOAD = 0x200 };  // (the UI's pause state while a load runs: the world waits for it)
+static volatile int g_nopause_frames;  // (frames the menu has been up with the world going on)
+static void own_strikes_in_menu(Cpu *c, uint64_t player) {
+    static char last[OWNS][32];
+    static int wait[OWNS], arrow[OWNS];
+    static float arrow_d[OWNS];
+    static bool shot[OWNS];
+    static int log = -1;
+    if (log < 0) log = getenv("SAVAGEWIND_ONLINE_MENU_LOG") != NULL;
+    for (int k = 0; k < OWNS; k++) {
+        Own *o = &g_own[k];
+        if (!g_nopause_now || o->state != OWN_HAVE || !alive(o->actor, o->w)) { last[k][0] = 0, wait[k] = arrow[k] = 0; continue; }
+        OnlineEnemy e;
+        memset(&e, 0, sizeof e);
+        enemy_state(c, o->actor, &e);
+        if (e.life <= 0) continue;
+        if (strcmp(e.as, last[k])) {
+            if (log) LOG("[online] menu: our %s %u: %s\n", e.name, o->gid, e.as);
+            if (strstr(e.as, "Attack") || strstr(e.as, "Kick")) wait[k] = STRIKE_FRAMES;
+            snprintf(last[k], sizeof last[k], "%s", e.as);
+        }
+        if (wait[k] > 0 && --wait[k] == 0) strike(c, player, &e);
+        // (an archer's arrow: shot at him (ArrowShoot) facing him within 40 m, it lands as the arrow would, at 40 m/s,
+        // its bow's attack power less his armour's defence; his shield up takes it)
+        const float *pm = (const float *)(uintptr_t)(player + 0x398);
+        float dx = pm[3] - e.m[3], dz = pm[11] - e.m[11], d = sqrtf(dx * dx + dz * dz);
+        float fx = e.m[2], fz = e.m[10], fl = sqrtf(fx * fx + fz * fz);
+        if (!strcmp(e.as, "ArrowShoot") && !arrow[k] && d < 40 && d > 0.5f && fl > 0 && (dx * fx + dz * fz) / (d * fl) > 0.9f)
+            arrow[k] = 1 + (int)(d / 40.0f * 60.0f), arrow_d[k] = d;
+        if (strcmp(e.as, "ArrowShoot")) shot[k] = false;
+        if (arrow[k] > 0 && --arrow[k] == 0 && !shot[k]) {
+            shot[k] = true;
+            int32_t *life = (int32_t *)(uintptr_t)(player + ENEMY_LIFE);
+            const char *up = playing(c, player, 1, 0), *body = playing(c, player, 0, 0);
+            int power = e.weapon[0] ? attack_power(e.weapon) : 0;
+            if (power <= 0) power = 4;
+            if (strstr(up, "Guard") || strstr(body, "Guard")) LOG("[online] %s's arrow: blocked\n", e.name);
+            else if (*life > 0) {
+                int def = our_defense(player), dmg = power > def ? power - def : 1;
+                *life = *life > dmg ? *life - dmg : 0;
+                LOG("[online] %s's arrow hit us from %.0f m: %d (life %d)\n", e.name, arrow_d[k], dmg, *life);
+            }
+        }
+    }
 }
 
 // Damage between players (OnlineSettings.pvp, both players with it on): the puppets have no bodies a blow lands on, so
@@ -2415,14 +2785,60 @@ static void strike(Cpu *c, uint64_t player, const OnlineEnemy *e) {
 // Link out of the others' (a capsule each: 0.35 m wide, as tall as Link), on foot, where his puppet is shown. The push
 // is written to Link's real position (control_cell_player_pos, what `teleport` writes), all of the overlap at once, so
 // two players walking into each other stop face to face; each game pushes its own, so it is the same both ways.
-// SAVAGEWIND_ONLINE_NO_COLLIDE=1: none
+// The host chooses (Settings > Online > Combat, `collide` in online.ini, on by default): his state carries it, and the
+// others follow it. SAVAGEWIND_ONLINE_NO_COLLIDE=1: none
 #define COLLIDE_R 0.7f    // (between their centres)
 #define COLLIDE_H 1.7f    // (heights closer than this: the same level)
+// A player who dies in online play: the game asks whether he has a fairy (tools/patches.py _has_fairy); while in a
+// session whose host has it on (Settings > Online > Combat, `revive`), he has: a fairy revives him where he fell, his
+// hearts back, and his world isn't loaded again (game over would load his last save, away from the others). One of his
+// own is used first, as always
+static volatile int g_revive_rule = -1;  // (the session's: the host's choice, set each frame; -1 not in a session)
+static volatile int g_nopause_rule = -1;  // (menus_no_pause: the same)
+uint32_t rt_scene_state(uint32_t v) { return v == 1 && g_nopause_now ? 0 : v; }
+// (the Vulkan backend, runtime/nvn/vulkan/exec.c stale_capture_check: a menu is up and the world goes on, so the
+// menu's still picture of it is left out and the world drawn live shows. SAVAGEWIND_ONLINE_MENU_STILL: not)
+// Not in its first frames: the world's camera is turned on again a frame after the menu opens (the frame hook), so
+// until then the game's own picture, made as it opened, stays (made again from a frame without the world: a flash)
+int rt_online_menu_live(void) {
+    static int still = -1;
+    if (still < 0) still = getenv("SAVAGEWIND_ONLINE_MENU_STILL") != NULL;
+    return g_nopause_now && g_nopause_frames > MENU_LIVE_AFTER && !still;
+}
+// (the menus' frame asking the world's drawing paused, 1.9.0 0x7000d45d84: 1 as the game asks it, a still picture of
+// the world behind the menu; 0 while they don't pause the world, so it is drawn going on behind them. Its own
+// reading of the menu's state, not g_nopause_now: that is set later in the frame, after the menu has opened.
+// SAVAGEWIND_ONLINE_MENU_STILL: the still picture)
+uint32_t rt_menu_draw_pause(void) {
+    static int still = -1;
+    if (still < 0) still = getenv("SAVAGEWIND_ONLINE_MENU_STILL") != NULL;
+    if (still || online_state() != ONLINE_CONNECTED || !g_site.pause_state) return 1;
+    uint32_t ps = *(uint32_t *)(uintptr_t)g_site.pause_state;
+    if (!ps || (ps & UI_PAUSE_LOAD)) return 1;
+    int rule = g_nopause_rule < 0 ? g_online.nopause : g_nopause_rule;
+    OnlinePlayer np[ONLINE_MAX];
+    online_players(np);
+    int others = 0, me = online_local_id();
+    for (int i = 0; i < ONLINE_MAX; i++) others += np[i].used && i != me;
+    return rule && others ? 0 : 1;
+}
+uint32_t rt_online_has_fairy(uint32_t had) {
+    if (had || online_state() != ONLINE_CONNECTED) return had;
+    int rule = g_revive_rule;
+    if (rule < 0) rule = g_online.revive;
+    if (rule) LOG("[online] Link died: revived by a fairy (online play)\n");
+    return rule ? 1 : 0;
+}
+
 static void players_collide(Cpu *c, uint64_t player, const OnlinePlayer *pl, int me) {
     static int off = -1;
     if (off < 0) off = getenv("SAVAGEWIND_ONLINE_NO_COLLIDE") != NULL;
     extern bool framepace_in_event(void);
     if (off || !VALID(player) || me < 0 || framepace_in_event()) return;
+    g_revive_rule = online_is_host() || !pl[0].used || !pl[0].pose.valid ? g_online.revive : pl[0].pose.revive != 0;
+    g_nopause_rule = online_is_host() || !pl[0].used || !pl[0].pose.valid ? g_online.nopause : pl[0].pose.nopause != 0;
+    bool on = online_is_host() || !pl[0].used || !pl[0].pose.valid ? g_online.collide : pl[0].pose.collide != 0;
+    if (!on) return;
     const char *body = playing(c, player, 0, 0);
     if (strstr(body, "Horse") || strstr(body, "Motorcycle") || !strncmp(body, "Dead", 4)) return;
     const float *pm = (const float *)(uintptr_t)(player + 0x398);
@@ -2509,6 +2925,19 @@ static void pvp_update(Cpu *c, uint64_t player, const OnlinePlayer *pl, int me) 
             boom_start(c, "OnlineShock", at);  // (he flinches, as from the host's enemies' heavy blows)
         }
         LOG("[online] %s hit us: %d after our defence %d (life %d)\n", pl[i].name, dmg, def, *life);
+    }
+    // another player's bomb gone off within 4 m of our Link, with damage between players on: two hearts less our
+    // armour's defence, and its blast knocks him down (OnlineKnock: the game's own, which takes a quarter more)
+    for (int q = 0; q < 4; q++) {
+        if (!g_blast[q].fresh) continue;
+        g_blast[q].fresh = false;
+        float dx = pm[3] - g_blast[q].pos[0], dy = pm[7] - g_blast[q].pos[1], dz = pm[11] - g_blast[q].pos[2];
+        if (!g_online.pvp || *life <= 0 || dx * dx + dy * dy + dz * dz > 4.0f * 4.0f) continue;
+        int def = our_defense(player), dmg = 8 > def ? 8 - def : 1;
+        *life = *life > dmg ? *life - dmg : 0;
+        if (*life > 0) boom_start(c, "OnlineKnock", g_blast[q].pos);
+        LOG("[online] %s's bomb hit us: %d after our defence %d (life %d)\n",
+            g_blast[q].from >= 0 && g_blast[q].from < ONLINE_MAX ? pl[g_blast[q].from].name : "?", dmg, def, *life);
     }
 }
 
@@ -2669,8 +3098,30 @@ static void enemies_show(Cpu *c, uint64_t player, OnlineEnemy *e, int n, bool fr
             const float *pm = (const float *)(uintptr_t)(p->actor + 0x398);
             float at[3] = {pm[3], pm[7], pm[11]};
             uint8_t elem = elem_near(at, 2.5f);  // (one of our element arrows there: its element goes with it)
-            online_send_hit(e[k].id, g_puppet[s2].life - *life, elem);
-            LOG("[online] we hit the host's %s %u: %d%s\n", e[k].name, e[k].id, g_puppet[s2].life - *life,
+            int32_t dmg = g_puppet[s2].life - *life;
+            // (a sneak strike: a copy here has no senses, the game takes it as unaware and its blow from behind does
+            // eight times its damage; one that is fighting in its owner's game - not waiting, asleep, sat, talking,
+            // walking about - takes no more than our weapon's attack power, twice for a critical)
+            const char *eas = e[k].as;
+            bool unaware = !strncmp(eas, "Wait", 4) || strstr(eas, "Sleep") || !strncmp(eas, "Squat", 5) ||
+                           strstr(eas, "Talk") || !strncmp(eas, "Walk", 4) || strstr(eas, "Sit") || strstr(eas, "Relax") ||
+                           strstr(eas, "Eat") || strstr(eas, "Dance") || !strncmp(eas, "Look", 4) || !eas[0];
+            if (!unaware) {
+                uint64_t ar[ARMOR], gr[ONLINE_GEAR];
+                equipment(player, ar, gr);
+                char wn[48] = "";
+                if (gr[0]) actor_name_of(gr[0], wn);
+                int pw = wn[0] ? attack_power(wn) : 0;
+                if (pw > 0 && dmg > pw * 2) {
+                    LOG("[online] a blow of %d on the host's %s %u (%s, fighting): %d, as without a sneak strike\n", dmg,
+                        e[k].name, e[k].id, eas, pw);
+                    dmg = pw;
+                }
+            }
+            online_send_hit(e[k].id, dmg, elem);
+            g_aggro_id = e[k].id;
+            if (!++g_aggro_seq) g_aggro_seq = 1;
+            LOG("[online] we hit the host's %s %u: %d%s\n", e[k].name, e[k].id, dmg,
                 elem == ONLINE_ELEM_FIRE ? " (fire)" : elem == ONLINE_ELEM_ICE ? " (ice)"
                 : elem == ONLINE_ELEM_ELECTRIC ? " (electric)" : "");
         }
@@ -2722,12 +3173,22 @@ static void enemies_show(Cpu *c, uint64_t player, OnlineEnemy *e, int n, bool fr
                     }
         if (*ht && t0 && turn < ONLINE_ELEM_COUNT - 1 &&
             plat_now_ns() - t0 >= (uint64_t)((atof(ht) + 8.0 * turn) * 1e9))
-            for (int k = 0; k < n; k++) {
-                bool used = false;
-                for (int q = 0; q < turn; q++) used |= done_ids[q] == e[k].id;
-                if (used || e[k].owner == me || e[k].life <= 1) continue;
+            for (int pick = 0; pick < 1; pick++) {  // (the nearest copy not hit yet)
+                int k = -1;
+                float bd = 1e30f;
+                for (int j = 0; j < n; j++) {
+                    bool used = false;
+                    for (int q = 0; q < turn; q++) used |= done_ids[q] == e[j].id;
+                    if (used || e[j].owner == me || e[j].life <= 1) continue;
+                    const float *lm = (const float *)(uintptr_t)(player + 0x398);
+                    float lp[3] = {lm[3], lm[7], lm[11]}, d = dist3(e[j].m, lp);
+                    if (d < bd) bd = d, k = j;
+                }
+                if (k < 0) break;
                 uint8_t elem = (uint8_t)(ONLINE_ELEM_FIRE + turn);
                 online_send_hit(e[k].id, 1, elem);
+                g_aggro_id = e[k].id;
+                if (!++g_aggro_seq) g_aggro_seq = 1;
                 LOG("[online] element hit test: %u, element %d\n", e[k].id, elem);
                 done_ids[turn++] = e[k].id;
                 break;
@@ -2778,8 +3239,12 @@ static void enemies_show(Cpu *c, uint64_t player, OnlineEnemy *e, int n, bool fr
 // the game it came from and its actor's id there); the others make each one where it is, a real item they can pick
 // up. One picked up anywhere (gone from where it was with a Link next to it) is taken off the list, and goes in every
 // game, ours too
+// (not the Sheikah Slate on his hip nor the rune's glove: the player's own, Item_* actors too)
+static bool players_own_item(const char *n) {
+    return !strcmp(n, "Item_Conductor") || !strncmp(n, "Item_Magnetglove", 16);
+}
 static bool is_loot(const char *n) {
-    return !strncmp(n, "Item_", 5) || !strncmp(n, "Weapon_", 7) || !strncmp(n, "PutRupee", 8);
+    return (!strncmp(n, "Item_", 5) || !strncmp(n, "Weapon_", 7) || !strncmp(n, "PutRupee", 8)) && !players_own_item(n);
 }
 
 #define DEATHS 8
@@ -2789,11 +3254,28 @@ static struct { float pos[3]; int frames; uint32_t before[48]; int nbefore; } g_
 // (thrown: his weapon thrown, on the list as it left his hand; gone (broken on a blow) it is taken off wherever it is)
 static struct { uint32_t lid; uint64_t actor; Watch w; char name[40]; bool sent, listed, picked, thrown; uint32_t gid; float pos[3]; } g_mine[MINE];
 #define THEIRS ONLINE_LOOT
-static struct { uint32_t gid; Piece p; bool placed, gone; float pos[3]; int tries; uint64_t retry_t; uint8_t origin; } g_theirs[THEIRS];
+static struct { uint32_t gid; Piece p; bool placed, gone; float pos[3]; int tries; uint64_t retry_t, made_t; uint8_t origin; } g_theirs[THEIRS];
 static uint64_t g_carried_now[LINK_CARRIED];  // (this Link's, as loot_update saw them last)
 static OnlineLoot g_loot_list[ONLINE_LOOT];  // (the host's game: the list)
 static int g_nloot_list;
 static uint32_t g_next_gid = 1;
+// What falls to the ground here - an ore's, a crate's or a pot's insides, a tree's fruit, what he drops from his
+// pouch, a rupee - is everyone's loot too (drops_update): a new item (Item_*, Weapon_*, PutRupee*) near our Link that
+// the map didn't place (no HashId), not ours already nor one of the others' made here, on the list once it has been
+// there DROP_SETTLE_NS (the enemies' loot and a thrown weapon go on it their own way first). Where our game breaks
+// something for another (break_here: his ore, his crate), what it drops is its own and his comes on the list: ours
+// of it are taken away (g_drop_hush, DROP_HUSH_NS round where it broke)
+#define DROP_SEEN 128
+#define DROP_SETTLE_NS 400000000ull
+#define DROP_HUSH_NS 5000000000ull
+static struct { uint32_t id; uint64_t t; float pos[3]; } g_drop_seen[DROP_SEEN];  // (t: since it lay still there)
+static struct { float pos[3]; uint64_t until; } g_drop_hush[8];
+static void drop_hush(const float p[3]) {
+    int k = 0;
+    for (int q = 1; q < 8; q++)
+        if (g_drop_hush[q].until < g_drop_hush[k].until) k = q;
+    memcpy(g_drop_hush[k].pos, p, 12), g_drop_hush[k].until = plat_now_ns() + DROP_HUSH_NS;
+}
 
 static void loot_forget(void) {
     for (int k = 0; k < THEIRS; k++) orphan(&g_theirs[k].p);
@@ -2880,6 +3362,7 @@ static void loot_host_add(const OnlineLoot *l) {
     g_loot_list[g_nloot_list++].gid = g_next_gid++;
 }
 
+static bool loot_actor(uint64_t a);
 static void loot_update(Cpu *c, uint64_t player, const float link[3], int me, bool host) {
     static int tick;
     if (tick++ % 3) return;
@@ -2944,6 +3427,65 @@ static void loot_update(Cpu *c, uint64_t player, const float link[3], int me, bo
         for (int d = 0; d < DEATHS; d++)
             if (g_death[d].frames) g_death[d].frames = g_death[d].frames > 3 ? g_death[d].frames - 3 : 0;
     }
+    {   // what falls to the ground near us (every 9 frames: what he throws comes for the others soon after it lies)
+        static int dt;
+        static float was[3];
+        static bool base;  // (the first look, and after a load or a teleport: what is there now isn't new)
+        if (dt++ % 3 == 0) {
+            float jx = link[0] - was[0], jz = link[2] - was[2];
+            if (jx * jx + jz * jz > 30.0f * 30.0f) base = false, memset(g_drop_seen, 0, sizeof g_drop_seen);
+            memcpy(was, link, sizeof was);
+            if (!scanned) na = all_actors(*(uint64_t *)(uintptr_t)(player + 0x68), g_actors, MAX_ACTORS), scanned = true;
+            uint64_t now = plat_now_ns();
+            for (int k = 0; k < na; k++) {
+                uint64_t a = g_actors[k];
+                if (*(uint32_t *)(uintptr_t)(a + ACTOR_HASH_ID) || *(uint8_t *)(uintptr_t)(a + 0x64) == 3) continue;
+                const float *m = (const float *)(uintptr_t)(a + 0x398);
+                float p[3] = {m[3], m[7], m[11]};
+                if (!near_link(link, p, 15)) continue;
+                char n[48];
+                actor_name_of(a, n);
+                if (!is_loot(n) || carries(carried, a) || loot_actor(a)) continue;
+                // (one in his hands - materials he holds from his pouch, over him - isn't on the ground: before, the
+                // others saw what he held lying at his feet. It is linked to him then: +0x4d4 0x72, as the slate on
+                // his hip; 0 on the ground)
+                const float *lm = (const float *)(uintptr_t)(player + 0x398);
+                float hx = p[0] - lm[3], hz = p[2] - lm[11];
+                bool held = *(uint32_t *)(uintptr_t)(a + 0x4d4) || (hx * hx + hz * hz < 1.5f * 1.5f && p[1] > lm[7] + 0.5f);
+                uint32_t id = *(uint32_t *)(uintptr_t)(a + 0x60);
+                int f = -1, old = 0;
+                for (int q = 0; q < DROP_SEEN && f < 0; q++)
+                    if (g_drop_seen[q].id == id) f = q;
+                if (f < 0) {  // (first seen: the oldest one forgotten)
+                    for (int q = 1; q < DROP_SEEN; q++)
+                        if (g_drop_seen[q].t < g_drop_seen[old].t) old = q;
+                    g_drop_seen[old].id = id, g_drop_seen[old].t = base ? now : 1;  // (1: there before, never ours)
+                    memcpy(g_drop_seen[old].pos, p, sizeof p);
+                    bool hushed = false;
+                    for (int h = 0; h < 8 && !hushed; h++) hushed = now < g_drop_hush[h].until && near_link(g_drop_hush[h].pos, p, 5);
+                    if (base && hushed) {
+                        LOG("[online] %s dropped here by what we broke for another: taken away (his comes)\n", n);
+                        call(c, FN_DELETE, a, 0, 0, 0, 0, 0);
+                        g_drop_seen[old].t = 1;
+                    }
+                    continue;
+                }
+                if (g_drop_seen[f].t <= 1) continue;
+                // (still a while where it lies, not in his hands: a weapon dropped from his pouch falls and bounces
+                // first, and went on the list in the air, made there for the others)
+                float mx = p[0] - g_drop_seen[f].pos[0], my = p[1] - g_drop_seen[f].pos[1], mz = p[2] - g_drop_seen[f].pos[2];
+                if (held || mx * mx + my * my + mz * mz > 0.05f * 0.05f) {
+                    memcpy(g_drop_seen[f].pos, p, sizeof p), g_drop_seen[f].t = now;
+                    continue;
+                }
+                if (now - g_drop_seen[f].t < DROP_SETTLE_NS) continue;
+                g_drop_seen[f].t = 1;  // (once)
+                LOG("[online] %s fell to the ground here: everyone's\n", n);
+                loot_mine_add(a, n, me);
+            }
+            base = true;
+        }
+    }
     // the list as it is now
     static OnlineLoot list[ONLINE_LOOT];
     int nl;
@@ -2988,9 +3530,8 @@ static void loot_update(Cpu *c, uint64_t player, const float link[3], int me, bo
             continue;
         }
         if (!there) {
-            // (picked up: a weapon or shield is taken from the others; food, materials: each picks up his own)
-            if (g_mine[k].listed && (g_mine[k].thrown || near_link(link, g_mine[k].pos, 4)) &&
-                !strncmp(g_mine[k].name, "Weapon_", 7)) {
+            // (picked up: taken from the others, whatever it is - a weapon, food, a material, a rupee - as in one world)
+            if (g_mine[k].listed && (g_mine[k].thrown || near_link(link, g_mine[k].pos, 4))) {
                 if (host) loot_host_take(g_mine[k].gid);
                 else online_send_loot_take(g_mine[k].gid);
             }
@@ -3034,15 +3575,20 @@ static void loot_update(Cpu *c, uint64_t player, const float link[3], int me, bo
         Piece *pc = &g_theirs[t].p;
         bool had = pc->actor != 0;
         bool in_hand = had && alive(pc->actor, pc->w) && carries(carried, pc->actor);  // (into his free hand)
+        // (gone the moment it was made - made where our Link stood, it was lost at once - isn't picked up: made again)
+        if (had && !in_hand && !alive(pc->actor, pc->w) && plat_now_ns() - g_theirs[t].made_t < 1500000000ull &&
+            ++g_theirs[t].tries < 5) {
+            LOG("[online] loot %u (%s) lost as it was made here: made again\n", list[j].gid, list[j].name);
+            memset(pc, 0, sizeof *pc);
+            g_theirs[t].retry_t = plat_now_ns() + 300000000ull;
+            continue;
+        }
         if (had && (in_hand || !alive(pc->actor, pc->w))) {  // (gone here, or his now)
-            bool weapon = !strncmp(list[j].name, "Weapon_", 7);
-            if (weapon && (in_hand || near_link(link, g_theirs[t].pos, 4))) {
+            if (in_hand || near_link(link, g_theirs[t].pos, 4)) {  // (picked up here: gone for everyone)
                 LOG("[online] loot %u (%s) picked up here%s\n", list[j].gid, list[j].name, in_hand ? ", into his hand" : "");
                 if (host) loot_host_take(list[j].gid);
                 else online_send_loot_take(list[j].gid);
-            } else if (near_link(link, g_theirs[t].pos, 4))
-                LOG("[online] loot %u (%s) picked up here (each player picks up his own)\n", list[j].gid, list[j].name);
-            else
+            } else
                 LOG("[online] loot %u (%s) gone here, %.1f m from Link\n", list[j].gid, list[j].name,
                     sqrtf((g_theirs[t].pos[0] - link[0]) * (g_theirs[t].pos[0] - link[0]) +
                           (g_theirs[t].pos[1] - link[1]) * (g_theirs[t].pos[1] - link[1]) +
@@ -3065,6 +3611,7 @@ static void loot_update(Cpu *c, uint64_t player, const float link[3], int me, bo
                 pc->actor = call(c, FN_HANDLE_TAKE, (uint64_t)(uintptr_t)pc->handle, 0, 0, 0, 0, 0);
                 if (pc->actor) {
                     pc->w = watch(pc->actor);
+                    g_theirs[t].made_t = plat_now_ns();
                     // (as it lies in his game: its rotation with it; upright and a little above, without)
                     float m[12] = {1, 0, 0, list[j].pos[0], 0, 1, 0, list[j].pos[1] + 0.2f, 0, 0, 1, list[j].pos[2]};
                     bool rot = false;
@@ -3319,9 +3866,11 @@ static void quests_update(Cpu *c, uint64_t player, bool host) {
             line[strcspn(line, "\r\n")] = 0;
             if (!line[0]) continue;
             snprintf(names[n], sizeof names[n], "%s", line);
-            if (strstr(line, "_TBox_") || strstr(line, "_Item_") || strstr(line, "_Obj_") || strstr(line, "_Weapon_") ||
-                strstr(line, "_Barrel_") || strstr(line, "_Kibako_"))
-                revival[n >> 3] |= (uint8_t)(1 << (n & 7));
+            static const char *const kinds[] = {"_TBox_", "_Item_", "_Obj_", "_Weapon_", "_Barrel_", "_Kibako",
+                                                "_LinkTag", "_WallCrack", "_IceWall", "_Pot", "_BeeHome", "_OreDrop",
+                                                "_TreasureSpot", "_FldObj", "_TwnObj", "_DgnObj", "_PutRupee", "_Necklace"};
+            for (size_t q = 0; q < sizeof kinds / sizeof *kinds; q++)
+                if (strstr(line, kinds[q])) revival[n >> 3] |= (uint8_t)(1 << (n & 7));
             hash[n] = crc32_str(line), n++;
         }
         if (f) fclose(f);
@@ -3477,28 +4026,66 @@ static void stasis_look(Cpu *c, uint64_t a, bool on) {
     }
 }
 
+static bool fx_on(const void *h);
+static void fx_end(Cpu *c, void *h);
+static void rune_keep(Cpu *c, int i, Piece *p, const char *name, const char *who);
+
+// The Stasis chains' place and size, as the rune sets them after it plays BitaLocked_Start (1.9.0 0x70011f5970): the
+// effect's matrix (+0xc0, flags +0x180 | 8, +0xb4..+0xbc 1) scaled by the stopped object's model's largest extent (its
+// box from the model unit's vtable +0x208: x1 6 floats out, min then max) and put at the object. Not set, the chains
+// were made and never seen
+static void chains_place(Cpu *c, uint64_t h, uint64_t a) {
+    if (!VALID(h) || !VALID(a)) return;
+    const float *am = (const float *)(uintptr_t)(a + 0x398);
+    float s = 1;
+    uint64_t mdl = *(uint64_t *)(uintptr_t)(a + 0x4e0);
+    uint64_t units = VALID(mdl) ? *(uint64_t *)(uintptr_t)(mdl + 0x40) : 0;
+    uint64_t u = VALID(units) ? *(uint64_t *)(uintptr_t)units : 0;
+    uint64_t unit = VALID(u) ? *(uint64_t *)(uintptr_t)u : 0;
+    if (VALID(unit)) {
+        float box[6] = {FLT_MAX, FLT_MAX, FLT_MAX, -FLT_MAX, -FLT_MAX, -FLT_MAX};
+        uint64_t vt = *(uint64_t *)(uintptr_t)unit;
+        uint64_t fn = VALID(vt) ? *(uint64_t *)(uintptr_t)(vt + 0x208) : 0;
+        if (fn) call(c, fn, unit, (uint64_t)(uintptr_t)box, 0, 0, 0, 0);
+        float ex = box[3] - box[0], ey = box[4] - box[1], ez = box[5] - box[2];
+        float e = fmaxf(ex, fmaxf(ey, ez));
+        if (isfinite(e) && e > 0.05f && e < 100) s = e;
+    }
+    float m[12] = {s, 0, 0, am[3], 0, s, 0, am[7], 0, 0, s, am[11]};
+    memcpy((void *)(uintptr_t)(h + 0xc0), m, sizeof m);
+    float one[3] = {1, 1, 1};
+    memcpy((void *)(uintptr_t)(h + 0xb4), one, sizeof one);
+    *(uint32_t *)(uintptr_t)(h + 0x180) |= 8;
+    static int told;
+    if (told++ < 2) LOG("[online] Stasis chains placed: size %.2f\n", s);
+}
+
 // What the others stopped with the Stasis rune: the same object here (as Magnesis: the one of that name nearest where it
 // was), held where it is in his game (its body taken there each frame: it stays still as his does), drawn as stopped,
-// with its chains; let go when it's over there
+// with the game's own chains (BitaLocked_Start, ReactionHit's: played once on his OnlineRuneFx, chains_place); let go
+// when it's over there
 static void stop_update(Cpu *c, uint64_t player, const OnlinePlayer *pl, int me) {
     for (int i = 0; i < ONLINE_MAX; i++) {
         const OnlineGrab *g = i != me && pl[i].used && pl[i].pose.valid ? &pl[i].pose.stop : NULL;
         bool want = g && g->name[0];
         if (g_act[i].stop && (!want || strcmp(g->name, g_act[i].stop_name) || !alive(g_act[i].stop, g_act[i].stop_w))) {
             if (alive(g_act[i].stop, g_act[i].stop_w)) stasis_look(c, g_act[i].stop, false);
-            uint64_t cp = g_act[i].chains.p;
-            if (VALID(cp) && *(uint32_t *)(uintptr_t)(cp + 0x20) == g_act[i].chains.id)
-                call(c, FN_EFFECT_KILL, (uint64_t)(uintptr_t)&g_act[i].chains, 0, 0, 0, 0, 0);
-            memset(&g_act[i].chains, 0, sizeof g_act[i].chains);
+            fx_end(c, &g_act[i].chains);
             LOG("[online] %s's Stasis on %s: over\n", pl[i].name, g_act[i].stop_name);
-            g_act[i].stop = 0;
+            g_act[i].released = g_act[i].stop, g_act[i].released_t = plat_now_ns();
+            g_act[i].stop = 0, g_act[i].chained = false;
         }
-        if (!want) { g_act[i].stop_name[0] = 0, g_act[i].stop_wait = 0; continue; }
+        if (!want) {
+            g_act[i].stop_name[0] = 0, g_act[i].stop_wait = 0;
+            continue;
+        }
         if (!g_act[i].stop && (strcmp(g->name, g_act[i].stop_name) || g_act[i].stop_wait-- <= 0)) {
             snprintf(g_act[i].stop_name, sizeof g_act[i].stop_name, "%s", g->name);
             g_act[i].stop_wait = 30;
             int na = all_actors(*(uint64_t *)(uintptr_t)(player + 0x68), g_actors, MAX_ACTORS);
-            float best = 4 * 4;
+            // (the one of that name nearest where he stopped it or where it is in his game, 15 m: the two worlds' may
+            // have parted, a trunk fallen its own way in each; 4 m and his trunk was "not here")
+            float best = 15 * 15;
             for (int k = 0; k < na; k++) {
                 char n[48];
                 actor_name_of(g_actors[k], n);
@@ -3506,21 +4093,31 @@ static void stop_update(Cpu *c, uint64_t player, const OnlinePlayer *pl, int me)
                 const float *m = (const float *)(uintptr_t)(g_actors[k] + 0x398);
                 float d = (m[3] - g->from[0]) * (m[3] - g->from[0]) + (m[7] - g->from[1]) * (m[7] - g->from[1]) +
                           (m[11] - g->from[2]) * (m[11] - g->from[2]);
+                float dn = (m[3] - g->m[3]) * (m[3] - g->m[3]) + (m[7] - g->m[7]) * (m[7] - g->m[7]) +
+                           (m[11] - g->m[11]) * (m[11] - g->m[11]);
+                if (dn < d) d = dn;
                 if (d < best) best = d, g_act[i].stop = g_actors[k];
             }
-            if (g_act[i].stop) {
-                g_act[i].stop_w = watch(g_act[i].stop);
-                call_sret(c, FN_EFFECT_EMIT, (uint64_t)(uintptr_t)&g_act[i].chains, g_act[i].stop,
-                          (uint64_t)(uintptr_t)"BitaLocked_Start");
-                uint64_t cp = g_act[i].chains.p;
-                LOG("[online] its chains: %d\n", VALID(cp) && *(uint32_t *)(uintptr_t)(cp + 0x20) == g_act[i].chains.id);
-            }
+            if (g_act[i].stop) g_act[i].stop_w = watch(g_act[i].stop);
             LOG("[online] %s stopped %s with Stasis: %s\n", pl[i].name, g->name, g_act[i].stop ? "here too" : "not here");
         }
         if (!g_act[i].stop) continue;
         uint64_t body = *(uint64_t *)(uintptr_t)(g_act[i].stop + 0x190);
         if (VALID(body)) call(c, FN_BODY_TO, body, (uint64_t)(uintptr_t)g->m, 0, 0, 0, 0);
         stasis_look(c, g_act[i].stop, true);
+        // its chains, the game's own, where it is
+        if (!g_act[i].link) continue;
+        rune_keep(c, i, &g_act[i].stop_fx, "OnlineRuneFx", pl[i].name);
+        uint64_t fxa = g_act[i].stop_fx.actor;
+        if (!fxa) continue;
+        call(c, FN_SET_MTX, fxa, g_act[i].stop + 0x398, 0, 0, 0, 0);
+        if (running(fxa) && !g_act[i].chained) {
+            call_sret(c, FN_EFFECT_EMIT, (uint64_t)(uintptr_t)&g_act[i].chains, fxa, (uint64_t)(uintptr_t)"BitaLocked_Start");
+            g_act[i].chained = fx_on(&g_act[i].chains);
+            static int told;
+            if (told++ < 4) LOG("[online] %s's Stasis chains: BitaLocked_Start %s\n", pl[i].name, fx_on(&g_act[i].chains) ? "on" : "not made");
+        }
+        if (fx_on(&g_act[i].chains)) chains_place(c, g_act[i].chains.p, g_act[i].stop);
     }
 }
 
@@ -3690,41 +4287,100 @@ static void boss_update(Cpu *c, const OnlinePlayer *pl, int me) {
     }
 }
 
+static bool fx_on(const void *h) {  // (an effect's handle {effect, id}: still that effect)
+    const struct { uint64_t p; uint32_t id, pad; } *e = h;
+    return VALID(e->p) && *(uint32_t *)(uintptr_t)(e->p + 0x20) == e->id;
+}
+
+static void fx_end(Cpu *c, void *h) {
+    if (fx_on(h)) call(c, FN_EFFECT_KILL, (uint64_t)(uintptr_t)h, 0, 0, 0, 0, 0);
+    memset(h, 0, 16);
+}
+
+// his slate and the actors his runes' effects play on (OnlineSlate, OnlineRuneFx, OnlineMagnetFx, and OnlineRuneFx
+// for his Stasis chains) made once and kept with his puppet, where he is, models hidden, the slate's drawn in his
+// right hand while he holds. Not pooled under the world between his grabs: the game removed them there, and a piece
+// made again for him is never drawn (his beam and magnet were then gone for good)
+static void rune_keep(Cpu *c, int i, Piece *p, const char *name, const char *who) {
+    if (piece_update(c, i, p, name, who)) model_visible(c, p->actor, false);
+    if (!p->actor || !g_act[i].link) return;
+    const float *lm = (const float *)(uintptr_t)(g_act[i].link + 0x398);
+    float at[12] = {1, 0, 0, lm[3], 0, 1, 0, lm[7] + 1, 0, 0, 1, lm[11]};
+    call(c, FN_SET_MTX, p->actor, (uint64_t)(uintptr_t)at, 0, 0, 0, 0);  // (moved again where it's used, after)
+}
+
+static void rune_pieces(Cpu *c, int i, bool holding, const char *who) {
+    bool made = piece_update(c, i, &g_act[i].slate, "OnlineSlate", who);
+    if (g_act[i].slate.actor && (made || g_act[i].slate_shown != holding)) {
+        model_visible(c, g_act[i].slate.actor, holding);
+        g_act[i].slate_shown = holding;
+    }
+    rune_keep(c, i, &g_act[i].rune_fx, "OnlineRuneFx", who);
+    rune_keep(c, i, &g_act[i].magnet_fx, "OnlineMagnetFx", who);
+    if (!g_act[i].stop) rune_keep(c, i, &g_act[i].stop_fx, "OnlineRuneFx", who);
+    float hand[12];
+    if (g_act[i].slate.actor && g_act[i].link) {
+        if (holding && bone_mtx(c, g_act[i].link, "Weapon_R", hand))
+            call(c, FN_SET_MTX, g_act[i].slate.actor, (uint64_t)(uintptr_t)hand, 0, 0, 0, 0);
+        else if (!holding) {
+            const float *lm = (const float *)(uintptr_t)(g_act[i].link + 0x398);
+            float at[12] = {1, 0, 0, lm[3], 0, 1, 0, lm[7] + 1, 0, 0, 1, lm[11]};
+            call(c, FN_SET_MTX, g_act[i].slate.actor, (uint64_t)(uintptr_t)at, 0, 0, 0, 0);
+        }
+    }
+}
+
 static void grab_update(Cpu *c, uint64_t player, const OnlinePlayer *pl, int me) {
     for (int i = 0; i < ONLINE_MAX; i++) {
         const OnlineGrab *g = i != me && pl[i].used && pl[i].pose.valid ? &pl[i].pose.grab : NULL;
-        bool want = g && g->name[0];
+        bool want = g && g->name[0] && g_act[i].link;
         if (g_act[i].grab) {
             float dx = want ? g->from[0] - g_act[i].grab_from[0] : 0, dz = want ? g->from[2] - g_act[i].grab_from[2] : 0;
             if (!want || strcmp(g->name, g_act[i].grab_name) || dx * dx + dz * dz > 0.25f ||
                 !alive(g_act[i].grab, g_act[i].grab_w)) {
-                LOG("[online] %s lets go of %s\n", pl[i].name, g_act[i].grab_name);
+                LOG("[online] %s lets go of %s\n", pl[i].name[0] ? pl[i].name : g_act[i].name, g_act[i].grab_name);
+                if (alive(g_act[i].grab, g_act[i].grab_w)) {
+                    uint64_t model = *(uint64_t *)(uintptr_t)(g_act[i].grab + 0x4e0);
+                    if (VALID(model)) call_f(c, FN_SPECIAL_FX_B, 0, model, 0, 0, 0, 0, 0, 0.0f);
+                    call(c, FN_ACTOR_LOOK_OFF, g_act[i].grab, 2, 0, 0, 0, 0);
+                }
+                g_act[i].released = g_act[i].grab, g_act[i].released_t = plat_now_ns();
                 g_act[i].grab = 0;
             }
         }
-        uint64_t mp = g_act[i].magne.p;
-        bool glow = VALID(mp) && *(uint32_t *)(uintptr_t)(mp + 0x20) == g_act[i].magne.id;
-        if (!g_act[i].grab && glow) {
-            call(c, FN_EFFECT_KILL, (uint64_t)(uintptr_t)&g_act[i].magne, 0, 0, 0, 0, 0);
-            memset(&g_act[i].magne, 0, sizeof g_act[i].magne);
-            glow = false;
-        }
-        for (int q = 0; !g_act[i].grab && q < MAGNE_BEAM; q++) {
-            uint64_t bp = g_act[i].beam[q].p;
-            if (VALID(bp) && *(uint32_t *)(uintptr_t)(bp + 0x20) == g_act[i].beam[q].id)
-                call(c, FN_EFFECT_KILL, (uint64_t)(uintptr_t)&g_act[i].beam[q], 0, 0, 0, 0, 0);
-            memset(&g_act[i].beam[q], 0, sizeof g_act[i].beam[q]);
+        if (!want) {  // (the rune's effects end as he lets go)
+            fx_end(c, &g_act[i].magne);
+            fx_end(c, &g_act[i].magnet);
+            for (int q = 0; q < MAGNE_BEAM; q++) fx_end(c, &g_act[i].beam[q]);
         }
         if (!want) {
             g_act[i].grab_name[0] = 0, g_act[i].grab_wait = 0;
+            if (g_act[i].link && i != me && pl[i].used) rune_pieces(c, i, false, pl[i].name);
             continue;
         }
         if (!g_act[i].grab && (strcmp(g->name, g_act[i].grab_name) || g_act[i].grab_wait-- <= 0)) {
             snprintf(g_act[i].grab_name, sizeof g_act[i].grab_name, "%s", g->name);
             memcpy(g_act[i].grab_from, g->from, sizeof g_act[i].grab_from);
             g_act[i].grab_wait = 30;
-            int na = all_actors(*(uint64_t *)(uintptr_t)(player + 0x68), g_actors, MAX_ACTORS);
-            float best = 4 * 4;
+            // his loot first (a weapon he dropped or threw: its copy here, wherever it went), then the world's: the
+            // one of that name nearest where he caught it or where it is now in his game (the two worlds' may have
+            // parted: let go, it fell its own way in each)
+            float best = 30 * 30;
+            for (int t = 0; t < THEIRS; t++) {
+                Piece *lp = &g_theirs[t].p;
+                if (!g_theirs[t].gid || g_theirs[t].gone || g_theirs[t].origin != i || !lp->actor ||
+                    strcmp(lp->name, g->name) || !alive(lp->actor, lp->w))
+                    continue;
+                const float *m = (const float *)(uintptr_t)(lp->actor + 0x398);
+                float d = (m[3] - g->from[0]) * (m[3] - g->from[0]) + (m[7] - g->from[1]) * (m[7] - g->from[1]) +
+                          (m[11] - g->from[2]) * (m[11] - g->from[2]);
+                float dn = (m[3] - g->m[3]) * (m[3] - g->m[3]) + (m[7] - g->m[7]) * (m[7] - g->m[7]) +
+                           (m[11] - g->m[11]) * (m[11] - g->m[11]);
+                if (dn < d) d = dn;
+                if (d < best) best = d, g_act[i].grab = lp->actor;
+            }
+            int na = g_act[i].grab ? 0 : all_actors(*(uint64_t *)(uintptr_t)(player + 0x68), g_actors, MAX_ACTORS);
+            best = 15 * 15;
             for (int k = 0; k < na; k++) {
                 char n[48];
                 actor_name_of(g_actors[k], n);
@@ -3732,6 +4388,9 @@ static void grab_update(Cpu *c, uint64_t player, const OnlinePlayer *pl, int me)
                 const float *m = (const float *)(uintptr_t)(g_actors[k] + 0x398);
                 float d = (m[3] - g->from[0]) * (m[3] - g->from[0]) + (m[7] - g->from[1]) * (m[7] - g->from[1]) +
                           (m[11] - g->from[2]) * (m[11] - g->from[2]);
+                float dn = (m[3] - g->m[3]) * (m[3] - g->m[3]) + (m[7] - g->m[7]) * (m[7] - g->m[7]) +
+                           (m[11] - g->m[11]) * (m[11] - g->m[11]);
+                if (dn < d) d = dn;
                 if (d < best) best = d, g_act[i].grab = g_actors[k];
             }
             if (g_act[i].grab) {
@@ -3740,56 +4399,100 @@ static void grab_update(Cpu *c, uint64_t player, const OnlinePlayer *pl, int me)
             }
             LOG("[online] %s holds %s with Magnesis: %s\n", pl[i].name, g->name, g_act[i].grab ? "here too" : "not here");
         }
-        if (!g_act[i].grab) continue;
-        // (its body moved there: the velocities that take it there in a step, 0x70012d4e18; its actor +0x190 the body)
-        uint64_t body = *(uint64_t *)(uintptr_t)(g_act[i].grab + 0x190);
-        if (VALID(body)) call(c, FN_BODY_TO, body, (uint64_t)(uintptr_t)g->m, 0, 0, 0, 0);
-        else call(c, FN_SET_MTX, g_act[i].grab, (uint64_t)(uintptr_t)g->m, 0, 0, 0, 0);
-        // its golden glow: the materials' uk_special_effect_B at 1 (the rune keeps it so while it holds; 0 on letting go)
-        uint64_t model = *(uint64_t *)(uintptr_t)(g_act[i].grab + 0x4e0);
-        if (VALID(model)) call_f(c, FN_SPECIAL_FX_B, 0, model, 0, 0, 0, 0, 0, 1.0f);
-        // the rune's sparkles where it is, on the actor the game plays them on (P_MAGNE_FX's +0x30: ReactionHit)
-        uint64_t fxo = *(uint64_t *)(uintptr_t)P_MAGNE_FX;
-        fxo = VALID(fxo) ? *(uint64_t *)(uintptr_t)fxo : 0;
-        uint64_t fxa = VALID(fxo) ? *(uint64_t *)(uintptr_t)(fxo + 0x30) : 0;
-        if (!glow && VALID(fxa)) {
-            static const char *const kn = "MagneCatchMoving";
-            call_sret(c, FN_XLINK_EFFECT, (uint64_t)(uintptr_t)&g_act[i].magne, fxa, (uint64_t)(uintptr_t)kn);
-            mp = g_act[i].magne.p;
-            glow = VALID(mp) && *(uint32_t *)(uintptr_t)(mp + 0x20) == g_act[i].magne.id;
-        }
-        if (glow) {
-            *(uint16_t *)(uintptr_t)(mp + 0x98) |= 0x100;
-            *(float *)(uintptr_t)(mp + 0xbc) = g->m[3];
-            *(float *)(uintptr_t)(mp + 0xc0) = g->m[7];
-            *(float *)(uintptr_t)(mp + 0xc4) = g->m[11];
-            *(uint16_t *)(uintptr_t)(mp + 0x9a) |= 0x100;
-        }
-        // the beam: a row of the rune's effects from his slate (his Link's right hand) to it, bent up a little as
-        // the rune's own beam, each placed again each frame
-        float hand[12];
-        if (g_act[i].link && VALID(fxa) && bone_mtx(c, g_act[i].link, "Weapon_R", hand)) {
-            const char *bn = getenv("SAVAGEWIND_ONLINE_BEAM_FX");
-            static const char *kb;
-            kb = bn && *bn ? bn : "MagneCatchMoving";
-            float a[3] = {hand[3], hand[7], hand[11]}, b[3] = {g->m[3], g->m[7], g->m[11]};
-            float d = sqrtf((b[0] - a[0]) * (b[0] - a[0]) + (b[1] - a[1]) * (b[1] - a[1]) + (b[2] - a[2]) * (b[2] - a[2]));
-            for (int q = 0; q < MAGNE_BEAM; q++) {
-                uint64_t bp = g_act[i].beam[q].p;
-                bool on = VALID(bp) && *(uint32_t *)(uintptr_t)(bp + 0x20) == g_act[i].beam[q].id;
-                if (!on) {
-                    call_sret(c, FN_XLINK_EFFECT, (uint64_t)(uintptr_t)&g_act[i].beam[q], fxa, (uint64_t)(uintptr_t)kb);
-                    bp = g_act[i].beam[q].p;
-                    on = VALID(bp) && *(uint32_t *)(uintptr_t)(bp + 0x20) == g_act[i].beam[q].id;
+        rune_pieces(c, i, true, pl[i].name);  // (his slate up while he holds)
+        if (g_act[i].grab) {
+            // (its body moved there: the velocities that take it there in a step, 0x70012d4e18; its actor +0x190 the body)
+            uint64_t body = *(uint64_t *)(uintptr_t)(g_act[i].grab + 0x190);
+            if (VALID(body)) call(c, FN_BODY_TO, body, (uint64_t)(uintptr_t)g->m, 0, 0, 0, 0);
+            else call(c, FN_SET_MTX, g_act[i].grab, (uint64_t)(uintptr_t)g->m, 0, 0, 0, 0);
+            // its golden glow: the materials' uk_special_effect_B at 1 (the rune keeps it so while it holds; 0 on letting go)
+            uint64_t model = *(uint64_t *)(uintptr_t)(g_act[i].grab + 0x4e0);
+            if (VALID(model)) call_f(c, FN_SPECIAL_FX_B, 0, model, 0, 0, 0, 0, 0, 1.0f);
+            {   // the rune's sparkles where it is, on the actor the game plays them on (P_MAGNE_FX's +0x30: ReactionHit)
+                uint64_t fxo = *(uint64_t *)(uintptr_t)P_MAGNE_FX;
+                fxo = VALID(fxo) ? *(uint64_t *)(uintptr_t)fxo : 0;
+                uint64_t rh = VALID(fxo) ? *(uint64_t *)(uintptr_t)(fxo + 0x30) : 0;
+                if (!fx_on(&g_act[i].magne) && VALID(rh)) {
+                    static const char *const kn = "MagneCatchMoving";
+                    call_sret(c, FN_XLINK_EFFECT, (uint64_t)(uintptr_t)&g_act[i].magne, rh, (uint64_t)(uintptr_t)kn);
                 }
-                if (!on) break;
-                float t = (q + 1.0f) / (MAGNE_BEAM + 1.0f), arc = 4 * t * (1 - t) * d * 0.15f;
-                *(uint16_t *)(uintptr_t)(bp + 0x98) |= 0x100;
-                *(float *)(uintptr_t)(bp + 0xbc) = a[0] + (b[0] - a[0]) * t;
-                *(float *)(uintptr_t)(bp + 0xc0) = a[1] + (b[1] - a[1]) * t + arc;
-                *(float *)(uintptr_t)(bp + 0xc4) = a[2] + (b[2] - a[2]) * t;
-                *(uint16_t *)(uintptr_t)(bp + 0x9a) |= 0x100;
+                uint64_t mp = g_act[i].magne.p;
+                if (fx_on(&g_act[i].magne)) {
+                    *(uint16_t *)(uintptr_t)(mp + 0x98) |= 0x100;
+                    *(float *)(uintptr_t)(mp + 0xbc) = g->m[3];
+                    *(float *)(uintptr_t)(mp + 0xc0) = g->m[7];
+                    *(float *)(uintptr_t)(mp + 0xc4) = g->m[11];
+                    *(uint16_t *)(uintptr_t)(mp + 0x9a) |= 0x100;
+                }
             }
+        }  // (the object here: none - not found - his magnet and beam toward where his is)
+        // the beam, the game's own (MagneConnect, ReactionHit's: played on his OnlineRuneFx, and placed each frame as
+        // the rune places its own, 1.9.0 0x7000b99cf0: 0x7000d40bb8(holder, matrix, s0 its length), the holder keeping
+        // the effect's handle at +0x48 and its id at +0x50, its +0x13c 0 as the rune's while it holds: 0x7000d40bb8
+        // gives it to the beam's particles, +0x190 +0x18). Its matrix is the world's: at the slate (between his hands:
+        // the blue magnet is drawn there), its z toward what is held (the yellow end), its y as near up as it can be,
+        // its x = y x z
+        uint64_t fxa = g_act[i].rune_fx.actor;
+        float hand[12], left[12];
+        if (!fxa || !bone_mtx(c, g_act[i].link, "Weapon_R", hand)) continue;
+        float o[3] = {hand[3], hand[7], hand[11]};
+        if (bone_mtx(c, g_act[i].link, "Weapon_L", left))
+            o[0] = (o[0] + left[3]) / 2, o[1] = (o[1] + left[7]) / 2, o[2] = (o[2] + left[11]) / 2;
+        const float *gm = g_act[i].grab ? (const float *)(uintptr_t)(g_act[i].grab + 0x398) : g->m;  // (as it's drawn)
+        float z[3] = {gm[3] - o[0], gm[7] - o[1], gm[11] - o[2]};
+        float len = sqrtf(z[0] * z[0] + z[1] * z[1] + z[2] * z[2]);
+        if (len < 0.05f) continue;
+        z[0] /= len, z[1] /= len, z[2] /= len;
+        float x[3] = {z[2], 0, -z[0]};  // (up x z)
+        float xl = sqrtf(x[0] * x[0] + x[2] * x[2]);
+        if (xl < 1e-4f) x[0] = 1, x[2] = 0, xl = 1;  // (straight up or down: any level x)
+        x[0] /= xl, x[2] /= xl;
+        float y[3] = {z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0]};
+        // (his OnlineRuneFx goes where the slate is, so the game keeps it, unturned)
+        float at[12] = {1, 0, 0, o[0], 0, 1, 0, o[1], 0, 0, 1, o[2]};
+        // (the beam from the magnet's tips, MAGNET_TIP along it from his hands, as in his game: to what he holds)
+        float tip = fminf(MAGNET_TIP, len * 0.5f), bl = fmaxf(len - tip, 0.1f);
+        float mtx[12] = {x[0], y[0], z[0], o[0] + z[0] * tip, x[1], y[1], z[1], o[1] + z[1] * tip,
+                         x[2], y[2], z[2], o[2] + z[2] * tip};
+        call(c, FN_SET_MTX, fxa, (uint64_t)(uintptr_t)at, 0, 0, 0, 0);
+        // the magnet over his hands, the game's own: Item_Magnetglove's key "Hand" (the particles MagneHand; the rune
+        // plays it from its action, not by name), drawn about its actor with the U opening along its y: its y toward
+        // what he holds, its x level
+        uint64_t mf = g_act[i].magnet_fx.actor;
+        if (mf) {
+            float hx[3] = {z[2], 0, -z[0]};  // (level, across: y x up)
+            float hl = sqrtf(hx[0] * hx[0] + hx[2] * hx[2]);
+            if (hl < 1e-4f) hx[0] = 1, hx[2] = 0, hl = 1;
+            hx[0] /= hl, hx[2] /= hl;
+            float hz[3] = {hx[1] * z[2] - hx[2] * z[1], hx[2] * z[0] - hx[0] * z[2], hx[0] * z[1] - hx[1] * z[0]};  // (x x y)
+            float hm[12] = {hx[0], z[0], hz[0], o[0], hx[1], z[1], hz[1], o[1], hx[2], z[2], hz[2], o[2]};
+            call(c, FN_SET_MTX, mf, (uint64_t)(uintptr_t)hm, 0, 0, 0, 0);
+            if (running(mf) && !fx_on(&g_act[i].magnet)) {
+                call_sret(c, FN_EFFECT_EMIT, (uint64_t)(uintptr_t)&g_act[i].magnet, mf, (uint64_t)(uintptr_t)"Hand");
+                static int told;
+                if (told++ < 4) LOG("[online] %s's magnet: Hand %s\n", pl[i].name, fx_on(&g_act[i].magnet) ? "on" : "not made");
+            }
+        }
+        if (running(fxa) && !fx_on(&g_act[i].beam[0])) {
+            call_sret(c, FN_EFFECT_EMIT, (uint64_t)(uintptr_t)&g_act[i].beam[0], fxa, (uint64_t)(uintptr_t)"MagneConnect");
+            LOG("[online] %s's Magnesis beam: MagneConnect %s\n", pl[i].name, fx_on(&g_act[i].beam[0]) ? "on" : "not made");
+        }
+        if (fx_on(&g_act[i].beam[0])) {
+            // the beam's strands leave along the rune's aim and bend to what is held (two Vector3f the game keeps,
+            // zero until the local Link first raises the rune: before that every MagneConnect, ours too, is made and
+            // never drawn; after, they bent along his last aim). His beam's own way, each frame, unless the local Link
+            // holds something with it (his own beam then)
+            uint64_t ab = *(const uint64_t *)(uintptr_t)P_MAGNE_AIM;
+            if (VALID(ab) && !magne_held()) {
+                float *aim = (float *)(uintptr_t)(ab + MAGNE_AIM_OFF);
+                for (int k = 0; k < 6; k++) aim[k] = z[k % 3];
+            }
+            uint8_t *hd = g_act[i].holder;
+            memset(hd, 0, sizeof g_act[i].holder);
+            *(uint64_t *)(hd + 0x48) = g_act[i].beam[0].p;
+            *(uint32_t *)(hd + 0x50) = g_act[i].beam[0].id;
+            *(float *)(hd + 0x13c) = 0.0f;
+            call_f(c, FN_MAGNE_BEAM_SET, (uint64_t)(uintptr_t)hd, (uint64_t)(uintptr_t)mtx, 0, 0, 0, 0, 0, bl);
         }
     }
 }
@@ -3802,6 +4505,954 @@ static bool loot_actor(uint64_t a) {
     for (int k = 0; k < THEIRS; k++)
         if (g_theirs[k].p.actor == a) return true;
     return false;
+}
+
+// ---- The world's objects (protocol 35): the map's objects with a body (a HashId of the map; boulders, crates,
+// barrels, carts, a shrine's balls...) moving within 20 m of the local Link - pushed, rolling, carried, blown, hit -
+// go with his state (up to ONLINE_OBJS, the nearest), where they are; the others' games move theirs, the same map
+// object, there through its body (FN_BODY_TO, as Magnesis), so a boulder he pushes rolls in every game. One moving
+// in two players' worlds goes as the first one's in the session. Not enemies, players, items nor what a level's
+// own motion moves (lifts, gears, doors, water: each game moves those itself)
+#define OBJ_NEAR 20.0f
+#define OBJ_FAR 100.0f  // (one followed while it moves, as far: launched out of Stasis, it flew past 40 m)
+#define OBJ_SEEN 64
+static struct {
+    uint64_t a; Watch w; uint32_t hash; float last[3]; int still; bool trunk;
+    float his_m[12]; int his_hold;  // (his last place of it, still taken there OBJ_HOLD frames after his last)
+    uint64_t quiet;                 // (not ours to send before: it settling as it was taken to his isn't our move)
+    bool sending;                   // (sent as ours last time: it may go on so past OBJ_NEAR, launched)
+    uint64_t send_t, his_seen_t, his_start;  // (since we send it; his stream last seen, and since when)
+} g_obj_seen[OBJ_SEEN];
+#define OBJ_HOLD 90
+#define OBJ_QUIET_NS 700000000ull
+#define OBJ_TIE_NS 300000000ull   // (both started it this close: the lower player number's)
+#define TRUNK_QUIET_NS 8000000000ull  // (a trunk made here for his cut: its fall his)
+// (a cut tree's trunk has no HashId of its own: made by each game as the tree is cut, ours and the others' here are
+// known by the tree's, breaks_update; trunks_near lists those alive near p)
+static int trunks_near(const float p[3], float r, uint64_t *a, uint32_t *h, int max);
+static uint64_t trunk_made_t(uint64_t a);  // (one made here for another's cut: when; 0 none)
+
+static bool obj_kind(const char *n) {
+    if (!strncmp(n, "Enemy_", 6) || !strncmp(n, "Npc", 3) || !strncmp(n, "Online", 6) || !strncmp(n, "Item_", 5) ||
+        !strncmp(n, "Weapon_", 7) || !strncmp(n, "Animal_", 7) || !strncmp(n, "GameRom", 7) || !strcmp(n, "PlayerObj"))
+        return false;
+    static const char *const fixed[] = {"Lift", "Elevator", "Gear", "Door", "Shutter", "Water", "Fence", "Gate", "Bridge",
+                                        "Rotate", "Slide", "Move", "Floor", "Wall", "Propeller", "Windmill"};
+    for (size_t k = 0; k < sizeof fixed / sizeof *fixed; k++)
+        if (strstr(n, fixed[k])) return false;
+    return true;
+}
+
+// One the others move that we don't follow yet - farther than OBJ_NEAR from our Link, he 25 m off as he cut a tree and
+// pushed its trunk: its moves went unheard here, it lay as it fell here - found now: a trunk by its tree's HashId, else
+// the map object of that HashId (the actors looked through at most twice a second)
+static void obj_find(uint64_t player, uint32_t hash, bool trunk) {
+    for (int s = 0; s < OBJ_SEEN; s++)
+        if (g_obj_seen[s].a && g_obj_seen[s].hash == hash && g_obj_seen[s].trunk == trunk && alive(g_obj_seen[s].a, g_obj_seen[s].w))
+            return;
+    uint64_t a = 0;
+    if (trunk) {
+        uint64_t ta[16];
+        uint32_t th[16];
+        float far_p[3] = {0, 0, 0};
+        int n = trunks_near(far_p, 1e9f, ta, th, 16);
+        for (int k = 0; k < n && !a; k++)
+            if (th[k] == hash) a = ta[k];
+    } else {
+        static uint64_t last;
+        uint64_t now = plat_now_ns();
+        if (now - last < 500000000ull) return;
+        last = now;
+        int na = all_actors(*(uint64_t *)(uintptr_t)(player + 0x68), g_actors, MAX_ACTORS);
+        for (int k = 0; k < na && !a; k++)
+            if (*(uint32_t *)(uintptr_t)(g_actors[k] + ACTOR_HASH_ID) == hash && has_body(g_actors[k])) a = g_actors[k];
+    }
+    if (!a) return;
+    int free_s = -1;
+    for (int s = 0; s < OBJ_SEEN && free_s < 0; s++)
+        if (!g_obj_seen[s].a || !alive(g_obj_seen[s].a, g_obj_seen[s].w)) free_s = s;
+    if (free_s < 0) return;
+    const float *m = (const float *)(uintptr_t)(a + 0x398);
+    memset(&g_obj_seen[free_s], 0, sizeof g_obj_seen[free_s]);
+    g_obj_seen[free_s].a = a, g_obj_seen[free_s].w = watch(a), g_obj_seen[free_s].hash = hash, g_obj_seen[free_s].trunk = trunk;
+    g_obj_seen[free_s].last[0] = m[3], g_obj_seen[free_s].last[1] = m[7], g_obj_seen[free_s].last[2] = m[11];
+    g_obj_seen[free_s].still = 1000;
+    g_obj_seen[free_s].quiet = plat_now_ns() + OBJ_QUIET_NS;
+    if (trunk && trunk_made_t(a) && trunk_made_t(a) + TRUNK_QUIET_NS > g_obj_seen[free_s].quiet)
+        g_obj_seen[free_s].quiet = trunk_made_t(a) + TRUNK_QUIET_NS;
+}
+
+static void objs_update(Cpu *c, uint64_t player, const float link[3], const OnlinePlayer *pl, int me) {
+    static int tick;
+    // ours moving: looked for among the actors twice a second, followed each 3 frames
+    if (tick % 30 == 0) {
+        int na = all_actors(*(uint64_t *)(uintptr_t)(player + 0x68), g_actors, MAX_ACTORS);
+        for (int k = 0; k < na; k++) {
+            uint64_t a = g_actors[k];
+            uint32_t hash = *(uint32_t *)(uintptr_t)(a + ACTOR_HASH_ID);
+            if (!hash || !has_body(a)) continue;
+            const float *m = (const float *)(uintptr_t)(a + 0x398);
+            float dx = m[3] - link[0], dy = m[7] - link[1], dz = m[11] - link[2];
+            if (dx * dx + dy * dy + dz * dz > OBJ_NEAR * OBJ_NEAR) continue;
+            int f = -1, free_s = -1;
+            for (int s = 0; s < OBJ_SEEN && f < 0; s++) {
+                if (g_obj_seen[s].a == a) f = s;
+                else if (free_s < 0 && (!g_obj_seen[s].a || !alive(g_obj_seen[s].a, g_obj_seen[s].w))) free_s = s;
+            }
+            if (f >= 0 || free_s < 0) continue;
+            char n[48];
+            actor_name_of(a, n);
+            if (!obj_kind(n)) continue;
+            g_obj_seen[free_s].a = a, g_obj_seen[free_s].w = watch(a), g_obj_seen[free_s].hash = hash;
+            g_obj_seen[free_s].trunk = false;
+            g_obj_seen[free_s].last[0] = m[3], g_obj_seen[free_s].last[1] = m[7], g_obj_seen[free_s].last[2] = m[11];
+            g_obj_seen[free_s].still = 1000;
+        }
+        uint64_t ta[16];
+        uint32_t th[16];
+        int nt0 = trunks_near(link, OBJ_NEAR, ta, th, 16);
+        for (int k = 0; k < nt0; k++) {
+            int f = -1, free_s = -1;
+            for (int s = 0; s < OBJ_SEEN && f < 0; s++) {
+                if (g_obj_seen[s].a == ta[k]) f = s;
+                else if (free_s < 0 && (!g_obj_seen[s].a || !alive(g_obj_seen[s].a, g_obj_seen[s].w))) free_s = s;
+            }
+            if (f >= 0 || free_s < 0) continue;
+            const float *m = (const float *)(uintptr_t)(ta[k] + 0x398);
+            g_obj_seen[free_s].a = ta[k], g_obj_seen[free_s].w = watch(ta[k]), g_obj_seen[free_s].hash = th[k];
+            g_obj_seen[free_s].trunk = true;
+            g_obj_seen[free_s].last[0] = m[3], g_obj_seen[free_s].last[1] = m[7], g_obj_seen[free_s].last[2] = m[11];
+            g_obj_seen[free_s].still = 1000;
+            if (trunk_made_t(ta[k])) g_obj_seen[free_s].quiet = trunk_made_t(ta[k]) + TRUNK_QUIET_NS;  // (its fall his)
+            else g_obj_seen[free_s].still = 0;  // (ours, of our cut: where it fell sent a second, the others' put there)
+        }
+    }
+    {   // (test: SAVAGEWIND_ONLINE_OBJ_TEST=<s>: that many seconds in - 1000 + <s>: after the break test's cut - the nearest
+        // object we follow is lifted 3 m and held there for 3 s, as Magnesis would)
+        static const char *ot;
+        static uint64_t t0;
+        static int held = -1;
+        if (!ot) ot = getenv("SAVAGEWIND_ONLINE_OBJ_TEST") ? getenv("SAVAGEWIND_ONLINE_OBJ_TEST") : "";
+        bool after_cut = atof(ot) >= 1000;
+        if (*ot && !t0 && !after_cut) t0 = plat_now_ns();
+        if (after_cut && !t0 && g_break_test_t) t0 = g_break_test_t;
+        double el = *ot && t0 ? (plat_now_ns() - t0) / 1e9 - (atof(ot) - (after_cut ? 1000 : 0)) : -1;
+        if (el >= 0 && el < 3) {
+            if (held < 0) {
+                float bd = 1e30f;
+                for (int s = 0; s < OBJ_SEEN; s++) {
+                    if (!g_obj_seen[s].a || !alive(g_obj_seen[s].a, g_obj_seen[s].w)) continue;
+                    char tn[48];
+                    actor_name_of(g_obj_seen[s].a, tn);
+                    if (!strstr(tn, "Kibako") && !strstr(tn, "Barrel") && !strstr(tn, "Box") && !strstr(tn, "Ball") &&
+                        !strstr(tn, "_Trunk"))
+                        continue;
+                    const float *m = (const float *)(uintptr_t)(g_obj_seen[s].a + 0x398);
+                    float dx = m[3] - link[0], dz = m[11] - link[2], d = dx * dx + dz * dz;
+                    if (d < bd) bd = d, held = s;
+                }
+                if (held >= 0) {
+                    char n[48];
+                    actor_name_of(g_obj_seen[held].a, n);
+                    LOG("[online] object test: lifting %s %u\n", n, g_obj_seen[held].hash);
+                } else {
+                    static bool told;
+                    if (!told) told = true, LOG("[online] object test: nothing to lift near\n");
+                }
+            }
+            if (held >= 0 && alive(g_obj_seen[held].a, g_obj_seen[held].w)) {
+                static float to[12];
+                if (to[0] == 0) memcpy(to, (const float *)(uintptr_t)(g_obj_seen[held].a + 0x398), sizeof to), to[7] += 3;
+                if (*(uint8_t *)(uintptr_t)(g_obj_seen[held].a + 0x64) != 1)  // (at rest a while: asleep)
+                    call(c, FN_ACTOR_WAKE, g_obj_seen[held].a, 0, 0, 0, 0, 0);
+                uint64_t body = *(uint64_t *)(uintptr_t)(g_obj_seen[held].a + 0x190);
+                if (VALID(body)) call(c, FN_BODY_TO, body, (uint64_t)(uintptr_t)to, 0, 0, 0, 0);
+            }
+        }
+    }
+    // (the others' moving ones: moved here each frame - through its body, to be where his is the next step - and not
+    // sent as ours)
+    static uint32_t theirs[ONLINE_MAX * ONLINE_OBJS];
+    static bool theirs_trunk[ONLINE_MAX * ONLINE_OBJS];
+    int nt = 0;
+    for (int i = 0; i < ONLINE_MAX; i++) {
+        if (i == me || !pl[i].used || !pl[i].pose.valid || (pl[i].flags & ONLINE_F_LOADING) || !same_map(&pl[i])) continue;
+        for (int q = 0; q < ONLINE_OBJS; q++) {
+            const OnlineObj *o = &pl[i].pose.objs[q];
+            if (!o->hash) continue;
+            bool finite = true;
+            for (int z = 0; z < 12; z++) finite &= isfinite(o->m[z]);
+            if (!finite) continue;
+            bool trunk = (pl[i].pose.objs_trunk >> q) & 1;
+            obj_find(player, o->hash, trunk);  // (ours of it followed, however far from our Link: else it went unmoved)
+            // (whose it is, as in one world: the game that set it moving - a push, a blow, a bomb, a throw, however far
+            // its player - sends it until it rests, and the others follow it; one we are sending ourselves is ours,
+            // his ignored, unless he started it first (both within OBJ_TIE_NS: the lower player number's). One he
+            // just let go of - Magnesis, Stasis struck and released - is his, as it flies)
+            uint64_t now_t = plat_now_ns();
+            int es = -1;
+            for (int s = 0; s < OBJ_SEEN && es < 0; s++)
+                if (g_obj_seen[s].a && g_obj_seen[s].hash == o->hash && g_obj_seen[s].trunk == trunk &&
+                    alive(g_obj_seen[s].a, g_obj_seen[s].w))
+                    es = s;
+            bool thrown = es >= 0 && g_obj_seen[es].a == g_act[i].released && now_t - g_act[i].released_t < 4000000000ull;
+            bool ours = false;
+            if (es >= 0) {
+                if (now_t - g_obj_seen[es].his_seen_t > 500000000ull) g_obj_seen[es].his_start = now_t;  // (his began)
+                g_obj_seen[es].his_seen_t = now_t;
+                if (!thrown && g_obj_seen[es].sending)
+                    ours = g_obj_seen[es].send_t + OBJ_TIE_NS < g_obj_seen[es].his_start ||
+                           (g_obj_seen[es].send_t < g_obj_seen[es].his_start + OBJ_TIE_NS && me < i);
+            }
+            if (ours) continue;
+            theirs_trunk[nt] = trunk, theirs[nt++] = o->hash;
+            for (int s = 0; s < OBJ_SEEN; s++) {
+                if (g_obj_seen[s].hash != o->hash || g_obj_seen[s].trunk != trunk || !alive(g_obj_seen[s].a, g_obj_seen[s].w))
+                    continue;
+                memcpy(g_obj_seen[s].his_m, o->m, sizeof g_obj_seen[s].his_m);
+                g_obj_seen[s].his_hold = OBJ_HOLD + 1;
+                break;
+            }
+        }
+    }
+    // (his place of each, each frame: through its body, which gets there over a few steps, so still after his last -
+    // he stopped sending it as it came to rest - until it is there too: else it stopped short of where his lay)
+    for (int s = 0; s < OBJ_SEEN; s++) {
+        if (g_obj_seen[s].his_hold <= 0) continue;
+        if (!g_obj_seen[s].a || !alive(g_obj_seen[s].a, g_obj_seen[s].w)) { g_obj_seen[s].his_hold = 0; continue; }
+        g_obj_seen[s].his_hold--;
+        g_obj_seen[s].quiet = plat_now_ns() + OBJ_QUIET_NS;
+        // (asleep - at rest a while, the game updates it no more - its body took nothing: woken first)
+        if (*(uint8_t *)(uintptr_t)(g_obj_seen[s].a + 0x64) != 1) call(c, FN_ACTOR_WAKE, g_obj_seen[s].a, 0, 0, 0, 0, 0);
+        uint64_t body = *(uint64_t *)(uintptr_t)(g_obj_seen[s].a + 0x190);
+        const float *hm = g_obj_seen[s].his_m;
+        if (!g_obj_seen[s].his_hold) {  // (the last: still apart - caught on a stump its body went round - put there)
+            const float *am = (const float *)(uintptr_t)(g_obj_seen[s].a + 0x398);
+            float dx = am[3] - hm[3], dy = am[7] - hm[7], dz = am[11] - hm[11];
+            if (dx * dx + dy * dy + dz * dz > 0.5f * 0.5f) {
+                call(c, FN_SET_MTX, g_obj_seen[s].a, (uint64_t)(uintptr_t)hm, 0, 0, 0, 0);
+                static int told;
+                if (told++ < 8) LOG("[online] an object of another's %.1f m off his at rest: put there\n", sqrtf(dx * dx + dy * dy + dz * dz));
+            }
+        }
+        if (VALID(body)) call(c, FN_BODY_TO, body, (uint64_t)(uintptr_t)hm, 0, 0, 0, 0);
+        g_obj_seen[s].last[0] = hm[3], g_obj_seen[s].last[1] = hm[7], g_obj_seen[s].last[2] = hm[11];
+        g_obj_seen[s].still = 1000;  // (moved by him: not ours to send)
+    }
+    if (tick++ % 3) return;
+    // ours: those that moved more than 2 cm since, the nearest first
+    struct { int s; float d; } mv[OBJ_SEEN];
+    int nm = 0;
+    for (int s = 0; s < OBJ_SEEN; s++) {
+        if (!g_obj_seen[s].a) continue;
+        if (!alive(g_obj_seen[s].a, g_obj_seen[s].w)) { memset(&g_obj_seen[s], 0, sizeof g_obj_seen[s]); continue; }
+        const float *m = (const float *)(uintptr_t)(g_obj_seen[s].a + 0x398);
+        float dx = m[3] - g_obj_seen[s].last[0], dy = m[7] - g_obj_seen[s].last[1], dz = m[11] - g_obj_seen[s].last[2];
+        bool moved = dx * dx + dy * dy + dz * dz > 0.02f * 0.02f;
+        bool his = false;
+        for (int t = 0; t < nt && !his; t++) his = theirs[t] == g_obj_seen[s].hash && theirs_trunk[t] == g_obj_seen[s].trunk;
+        // (one another player holds with Magnesis or stopped with Stasis, moved here to his: his too - sent back as ours,
+        // each game pulled the other's to where its own was)
+        for (int k = 0; k < ONLINE_MAX && !his; k++) his = g_act[k].grab == g_obj_seen[s].a || g_act[k].stop == g_obj_seen[s].a;
+        g_obj_seen[s].last[0] = m[3], g_obj_seen[s].last[1] = m[7], g_obj_seen[s].last[2] = m[11];
+        bool was_sending = g_obj_seen[s].sending;
+        g_obj_seen[s].sending = false;
+        if (his || g_obj_seen[s].his_hold > 0 || plat_now_ns() < g_obj_seen[s].quiet) continue;
+        g_obj_seen[s].still = moved ? 0 : g_obj_seen[s].still + 1;
+        if (g_obj_seen[s].still > 20) continue;  // (still a second: sent until it rests)
+        float lx = m[3] - link[0], ly = m[7] - link[1], lz = m[11] - link[2], d = lx * lx + ly * ly + lz * lz;
+        if (d > OBJ_FAR * OBJ_FAR) { memset(&g_obj_seen[s], 0, sizeof g_obj_seen[s]); continue; }
+        if (d > OBJ_NEAR * OBJ_NEAR && !was_sending) continue;  // (one far starts no move of ours)
+        if (!was_sending) g_obj_seen[s].send_t = plat_now_ns();
+        g_obj_seen[s].sending = true;
+        mv[nm].s = s, mv[nm].d = d, nm++;
+    }
+    for (int a = 1; a < nm; a++)
+        for (int b = a; b > 0 && mv[b].d < mv[b - 1].d; b--) { int ts = mv[b].s; float td = mv[b].d; mv[b] = mv[b - 1]; mv[b - 1].s = ts, mv[b - 1].d = td; }
+    memset(g_objs_out, 0, sizeof g_objs_out);
+    g_objs_out_trunk = 0;
+    for (int k = 0; k < nm && k < ONLINE_OBJS; k++) {
+        g_objs_out[k].hash = g_obj_seen[mv[k].s].hash;
+        if (g_obj_seen[mv[k].s].trunk) g_objs_out_trunk |= (uint8_t)(1u << k);
+        memcpy(g_objs_out[k].m, (const float *)(uintptr_t)(g_obj_seen[mv[k].s].a + 0x398), sizeof g_objs_out[k].m);
+    }
+    static int logged;
+    if (nm && logged++ < 20) {
+        char n[48];
+        actor_name_of(g_obj_seen[mv[0].s].a, n);
+        LOG("[online] %d of the world's objects moving here (%s %u first)\n", nm, n, g_obj_seen[mv[0].s].hash);
+    }
+}
+
+// ---- The level's mechanisms (protocol 36): what a level moves itself - lifts and elevators, doors and shutters,
+// gears, bridges, turning and sliding floors, propellers, gates, a Divine Beast's parts (Remains*: Ruta's trunk,
+// Naboris' rings, Rudania's body, Medoh's wings) - each game moved by its own logic, so one a player set going (a
+// switch, a terminal, an orb) moved in his world alone. One within MOVER_NEAR of the local Link that moves or changes
+// its AS (slot 0) while no other player's game moves it goes with his state (`movers`, the nearest ONLINE_MOVERS):
+// its HashId, its matrix, its AS; the others' games put theirs there - through its body when it has one (FN_BODY_TO,
+// as the objects pushed), else its matrix (FN_SET_MTX) - and play its AS, so it moves in every world as in his. One
+// both move goes as the first one's (the other's game, seeing it his, stops sending it for MOVER_THEIRS_NS).
+// SAVAGEWIND_ONLINE_MOVER_LOG=1: each one taken or sent, logged once
+#define MOVER_NEAR 80.0f
+#define MOVER_TRACK 48
+#define MOVER_QUIET 90             // (frames still before ours stops being sent: 1.5 s)
+#define MOVER_THEIRS_NS 700000000ull
+static struct {
+    uint64_t a; Watch w; uint32_t hash;
+    float last[12]; char as[28];
+    int quiet;                     // (frames since it last moved here by itself)
+    uint64_t theirs_t;             // (when another's game last moved it here)
+} g_mv[MOVER_TRACK];
+
+static bool mover_kind(const char *n) {
+    if (!strncmp(n, "Enemy_", 6) || !strncmp(n, "Npc", 3) || !strncmp(n, "Online", 6) || !strncmp(n, "Item_", 5) ||
+        !strncmp(n, "Weapon_", 7) || !strncmp(n, "Animal_", 7) || !strncmp(n, "GameRom", 7) || !strcmp(n, "PlayerObj") ||
+        strstr(n, "Far") || strstr(n, "_Stump") || strstr(n, "_Trunk") || strstr(n, "Tag") ||
+        strstr(n, "LiftRock") || strstr(n, "StoneLift"))  // (tags don't move; the rocks to lift are objs_update's)
+        return false;
+    static const char *const kinds[] = {"Lift", "Elevator", "Gear", "Door", "Shutter", "Bridge", "Rotate", "Slide",
+                                        "Move", "Floor", "Propeller", "Windmill", "Gate", "Remains", "Wheel", "Crane",
+                                        "Piston", "Seesaw", "Turn", "Lever", "Swing", "Pendulum", "Waterwheel", "Fan"};
+    for (size_t k = 0; k < sizeof kinds / sizeof *kinds; k++)
+        if (strstr(n, kinds[k])) return true;
+    return false;
+}
+
+static bool mtx_moved(const float *a, const float *b) {
+    for (int k = 0; k < 12; k++) {
+        float d = a[k] - b[k], tol = (k == 3 || k == 7 || k == 11) ? 0.01f : 0.002f;
+        if (d > tol || d < -tol) return true;
+    }
+    return false;
+}
+
+static void movers_update(Cpu *c, uint64_t player, const float link[3], const OnlinePlayer *pl, int me) {
+    static int tick;
+    static int log_on = -1;
+    if (log_on < 0) log_on = getenv("SAVAGEWIND_ONLINE_MOVER_LOG") != NULL;
+    uint64_t now = plat_now_ns();
+    static bool rescan;  // (one lost - the game made it again: woken, or moved asleep - or one of another's not ours yet)
+    // the mechanisms near us: looked for among the actors once a second, and at once after one was lost
+    if (tick % 60 == 0 || rescan) {
+        rescan = false;
+        int na = all_actors(*(uint64_t *)(uintptr_t)(player + 0x68), g_actors, MAX_ACTORS);
+        for (int k = 0; k < na; k++) {
+            uint64_t a = g_actors[k];
+            uint32_t hash = *(uint32_t *)(uintptr_t)(a + ACTOR_HASH_ID);
+            if (!hash) continue;
+            const float *m = (const float *)(uintptr_t)(a + 0x398);
+            float dx = m[3] - link[0], dy = m[7] - link[1], dz = m[11] - link[2];
+            if (dx * dx + dy * dy + dz * dz > MOVER_NEAR * MOVER_NEAR) continue;
+            int f = -1, free_s = -1;
+            for (int t = 0; t < MOVER_TRACK && f < 0; t++) {
+                if (g_mv[t].a == a) f = t;
+                else if (free_s < 0 && (!g_mv[t].a || !alive_rewatch(g_mv[t].a, &g_mv[t].w))) free_s = t;
+            }
+            if (f >= 0 || free_s < 0) continue;
+            char n[48];
+            actor_name_of(a, n);
+            if (!mover_kind(n)) continue;
+            memset(&g_mv[free_s], 0, sizeof g_mv[free_s]);
+            g_mv[free_s].a = a, g_mv[free_s].w = watch(a), g_mv[free_s].hash = hash;
+            memcpy(g_mv[free_s].last, m, sizeof g_mv[free_s].last);
+            snprintf(g_mv[free_s].as, sizeof g_mv[free_s].as, "%s", playing(c, a, 0, 0));
+            g_mv[free_s].quiet = MOVER_QUIET;
+            if (log_on) LOG("[online] mechanism near: %s %u (AS %s)\n", n, hash, g_mv[free_s].as);
+        }
+    }
+    tick++;
+    {   // (test: SAVAGEWIND_ONLINE_MOVER_TEST=<s>: that many seconds in, the nearest mechanism here goes down 2 m in 2 s,
+        // set as the others' are; SAVAGEWIND_ONLINE_MOVER_TEST_AS=<name>: that AS played on it as it starts)
+        static const char *mt;
+        static uint64_t t0;
+        static int held = -1;
+        static float from[12];
+        if (!mt) mt = getenv("SAVAGEWIND_ONLINE_MOVER_TEST") ? getenv("SAVAGEWIND_ONLINE_MOVER_TEST") : "";
+        if (*mt && !t0) t0 = now;
+        double el = *mt ? (now - t0) / 1e9 - atof(mt) : -1;
+        if (el >= 0 && el < 2) {
+            if (held < 0) {
+                float bd = 1e30f;
+                for (int t = 0; t < MOVER_TRACK; t++) {
+                    if (!g_mv[t].a || !alive_rewatch(g_mv[t].a, &g_mv[t].w)) continue;
+                    const float *m = (const float *)(uintptr_t)(g_mv[t].a + 0x398);
+                    float dx = m[3] - link[0], dz = m[11] - link[2], d = dx * dx + dz * dz;
+                    if (d < bd) bd = d, held = t;
+                }
+                if (held >= 0) {
+                    char n[48];
+                    actor_name_of(g_mv[held].a, n);
+                    memcpy(from, (const float *)(uintptr_t)(g_mv[held].a + 0x398), sizeof from);
+                    LOG("[online] mechanism test: moving %s %u\n", n, g_mv[held].hash);
+                    const char *as = getenv("SAVAGEWIND_ONLINE_MOVER_TEST_AS");
+                    if (as) LOG("[online] mechanism test: AS %s %s\n", as, play_as(c, g_mv[held].a, as, 0, 0, -1, true) ? "plays" : "not played");
+                }
+            }
+            static uint32_t held_h;
+            if (held >= 0 && !held_h) held_h = g_mv[held].hash;
+            for (int t = 0; t < MOVER_TRACK && held_h; t++)  // (by its HashId: the game may make it again)
+                if (g_mv[t].hash == held_h && g_mv[t].a) held = t;
+            if (held >= 0 && alive_rewatch(g_mv[held].a, &g_mv[held].w)) {
+                float to[12];
+                memcpy(to, from, sizeof to);
+                to[7] -= (float)el;
+                uint64_t a = g_mv[held].a;
+                if (*(uint8_t *)(uintptr_t)(a + 0x64) != 1) call(c, FN_ACTOR_WAKE, a, 0, 0, 0, 0, 0), g_mv[held].w = watch(a);
+                uint64_t body = *(uint64_t *)(uintptr_t)(a + 0x190);
+                if (VALID(body)) call(c, FN_BODY_TO, body, (uint64_t)(uintptr_t)to, 0, 0, 0, 0);
+                call(c, FN_SET_MTX, a, (uint64_t)(uintptr_t)to, 0, 0, 0, 0);
+            }
+        }
+    }
+    // the others': theirs put where his is, playing what his plays
+    for (int i = 0; i < ONLINE_MAX; i++) {
+        if (i == me || !pl[i].used || !pl[i].pose.valid || (pl[i].flags & ONLINE_F_LOADING) || !same_map(&pl[i])) continue;
+        for (int q = 0; q < ONLINE_MOVERS; q++) {
+            const OnlineMover *o = &pl[i].pose.movers[q];
+            if (!o->hash) continue;
+            bool finite = true;
+            for (int z = 0; z < 12; z++) finite &= isfinite(o->m[z]);
+            if (!finite) continue;
+            bool tracked = false;
+            for (int t = 0; t < MOVER_TRACK && !tracked; t++) tracked = g_mv[t].hash == o->hash && g_mv[t].a;
+            if (!tracked && tick % 15 == 0) rescan = true;
+            for (int t = 0; t < MOVER_TRACK; t++) {
+                if (g_mv[t].hash != o->hash || !alive_rewatch(g_mv[t].a, &g_mv[t].w)) continue;
+                // (ours moving it now, his too: the first one's - the lower player number keeps it)
+                if (g_mv[t].quiet < MOVER_QUIET && me < i) break;
+                uint64_t a = g_mv[t].a;
+                if (*(uint8_t *)(uintptr_t)(a + 0x64) != 1) {  // (woken, it goes to another proc unit: watched again)
+                    call(c, FN_ACTOR_WAKE, a, 0, 0, 0, 0, 0);
+                    g_mv[t].w = watch(a);
+                }
+                uint64_t body = *(uint64_t *)(uintptr_t)(a + 0x190);
+                if (VALID(body)) call(c, FN_BODY_TO, body, (uint64_t)(uintptr_t)o->m, 0, 0, 0, 0);
+                call(c, FN_SET_MTX, a, (uint64_t)(uintptr_t)o->m, 0, 0, 0, 0);
+                if (o->as[0] && strcmp(playing(c, a, 0, 0), o->as)) {
+                    bool ok = play_as(c, a, o->as, 0, 0, -1, false);
+                    if (log_on) LOG("[online] %s's mechanism %u: AS %s%s\n", pl[i].name, o->hash, o->as, ok ? "" : " (not played)");
+                }
+                if (log_on && !g_mv[t].theirs_t) LOG("[online] %s moves the mechanism %u here\n", pl[i].name, o->hash);
+                memcpy(g_mv[t].last, (const float *)(uintptr_t)(a + 0x398), sizeof g_mv[t].last);
+                snprintf(g_mv[t].as, sizeof g_mv[t].as, "%s", playing(c, a, 0, 0));
+                g_mv[t].theirs_t = now, g_mv[t].quiet = MOVER_QUIET;
+                break;
+            }
+        }
+    }
+    // ours: those that moved here by themselves lately, the nearest first
+    struct { int t; float d; } mv[MOVER_TRACK];
+    int nm = 0;
+    for (int t = 0; t < MOVER_TRACK; t++) {
+        if (!g_mv[t].a) continue;
+        if (!alive_rewatch(g_mv[t].a, &g_mv[t].w)) {
+            memset(&g_mv[t], 0, sizeof g_mv[t]);
+            rescan = true;
+            continue;
+        }
+        const float *m = (const float *)(uintptr_t)(g_mv[t].a + 0x398);
+        float lx = m[3] - link[0], ly = m[7] - link[1], lz = m[11] - link[2], d = lx * lx + ly * ly + lz * lz;
+        if (g_mv[t].theirs_t && now - g_mv[t].theirs_t < MOVER_THEIRS_NS) continue;
+        g_mv[t].theirs_t = 0;
+        const char *as = playing(c, g_mv[t].a, 0, 0);
+        bool changed = mtx_moved(m, g_mv[t].last) || strcmp(as, g_mv[t].as);
+        if (changed && log_on && g_mv[t].quiet >= MOVER_QUIET) {
+            char n[48];
+            actor_name_of(g_mv[t].a, n);
+            LOG("[online] our mechanism %s %u moves (AS %s)\n", n, g_mv[t].hash, as);
+        }
+        memcpy(g_mv[t].last, m, sizeof g_mv[t].last);
+        snprintf(g_mv[t].as, sizeof g_mv[t].as, "%s", as);
+        g_mv[t].quiet = changed ? 0 : g_mv[t].quiet + 1;
+        if (g_mv[t].quiet >= MOVER_QUIET) continue;
+        mv[nm].t = t, mv[nm].d = d, nm++;
+    }
+    for (int a = 1; a < nm; a++)
+        for (int b = a; b > 0 && mv[b].d < mv[b - 1].d; b--) { int tt = mv[b].t; float td = mv[b].d; mv[b] = mv[b - 1]; mv[b - 1].t = tt, mv[b - 1].d = td; }
+    memset(g_movers_out, 0, sizeof g_movers_out);
+    for (int k = 0; k < nm && k < ONLINE_MOVERS; k++) {
+        g_movers_out[k].hash = g_mv[mv[k].t].hash;
+        memcpy(g_movers_out[k].m, g_mv[mv[k].t].last, sizeof g_movers_out[k].m);
+        snprintf(g_movers_out[k].as, sizeof g_movers_out[k].as, "%s", g_mv[mv[k].t].as);
+    }
+}
+
+static void movers_forget(void) { memset(g_mv, 0, sizeof g_mv), memset(g_movers_out, 0, sizeof g_movers_out); }
+
+// ---- The map's objects broken (protocol 35): a map object (its HashId) within 15 m of the local Link that goes while
+// he stays (no load: he moved less than 10 m) was broken by him: a crate, a barrel, a rock a bomb broke, an ore, a
+// pot... or a tree he cut (it leaves <tree>_Stump where it stood and <tree>_Trunk, the log, falling). Its HashId goes
+// with his state (`broken`, the last 8), and the others' games break the same object of theirs: a tree is cut as the
+// game cuts it (it goes, its stump and its trunk are made where it stood, the trunk leaning away from him so it falls
+// that way), anything else is broken by the game itself (its life set to 0: its own pieces, effects and drops), or
+// goes. His trunk chopped (gone) goes for the others too (`trunks_gone`). Not enemies, players, items, animals.
+// SAVAGEWIND_ONLINE_BREAK_TEST=<s> (test): the nearest tree here cut that many seconds in, as the others' are
+#define BREAKS 96
+static struct { uint64_t a; Watch w; uint32_t hash; float m[12]; char name[48]; } g_brk[BREAKS];
+static struct { uint32_t hash; uint64_t trunk; Watch tw; } g_our_cut[8];        // (our cuts: their trunk, followed)
+static struct { Handle *h; char name[48]; float m[12]; uint32_t hash; bool trunk, ours; } g_spawn[8];  // (being made)
+static bool g_spawn_ours;  // (the next spawn_at's trunk ours, as a cut of ours: the break test's)
+static struct { uint32_t hash; uint64_t a; Watch w; uint64_t t; } g_their_trunk[8];  // (the others' cuts: the trunk made here)
+static struct { uint64_t a; Watch w; uint64_t t; } g_breaking[16];  // (broken here for another: gone, or taken away)
+
+static uint64_t trunk_made_t(uint64_t a) {
+    for (int k = 0; k < 8; k++)
+        if (g_their_trunk[k].a == a) return g_their_trunk[k].t;
+    return 0;
+}
+
+static int trunks_near(const float p[3], float r, uint64_t *a, uint32_t *h, int max) {
+    int n = 0;
+    for (int k = 0; k < 16 && n < max; k++) {
+        uint64_t t = k < 8 ? g_our_cut[k].trunk : g_their_trunk[k - 8].a;
+        uint32_t th = k < 8 ? g_our_cut[k].hash : g_their_trunk[k - 8].hash;
+        if (!t || !th || !alive(t, k < 8 ? g_our_cut[k].tw : g_their_trunk[k - 8].w)) continue;
+        const float *m = (const float *)(uintptr_t)(t + 0x398);
+        float dx = m[3] - p[0], dy = m[7] - p[1], dz = m[11] - p[2];
+        if (dx * dx + dy * dy + dz * dz > r * r) continue;
+        a[n] = t, h[n] = th, n++;
+    }
+    return n;
+}
+
+// An item the map placed (a HashId: a mushroom, a fruit lying on the ground, a rupee) picked up by one goes from every
+// world as a broken object does (the same list and HashId; taken out, not broken, in the others'). Not weapons: those
+// lying in the world go as PICKs (protocol 18)
+static bool map_item(const char *n) {
+    return (!strncmp(n, "Item_", 5) || !strncmp(n, "PutRupee", 8)) && !players_own_item(n);
+}
+
+static bool breakable(const char *n) {
+    if (!strncmp(n, "Enemy_", 6) || !strncmp(n, "Npc", 3) || !strncmp(n, "Online", 6) || !strncmp(n, "Item_", 5) ||
+        !strncmp(n, "Weapon_", 7) || !strncmp(n, "Animal_", 7) || !strncmp(n, "GameRom", 7) || !strcmp(n, "PlayerObj") ||
+        strstr(n, "_Stump") || strstr(n, "_Trunk") || strstr(n, "Sweep") || strstr(n, "Sun_") || strstr(n, "Moon_") ||
+        strstr(n, "Far") || (strncmp(n, "Obj", 3) && strncmp(n, "Kibako", 6) && strncmp(n, "Barrel", 6) &&
+        strncmp(n, "FldObj", 6) && strncmp(n, "TwnObj", 6) && strncmp(n, "DgnObj", 6)))
+        return false;
+    return true;
+}
+
+// A map object broken here for another (a tree cut, a crate that didn't break): taken out of the world as the game
+// takes out what a blow broke (1.9.0 0x7001524598, mode 0: called so for each one at 0x7001492680) - its actor deleted
+// (FN_DELETE) and its map placement told (0x7001526bd0)
+// Before it, as a tree's own cut does (1.9.0 0x7000951ae8): its map object marked gone (0x7000bdc1f0: the actor's
+// map object, +0x430 of its vtable, its flags +0xc | 0x80, x1 12 bytes for the place it copies, x2 the place) - else
+// the game drew the tree again from its placement (the model it shows for trees far away), standing beside its stump
+#define FN_TAKE_OUT 0x7001524598ull
+#define FN_MAPOBJ_GONE 0x7000bdc1f0ull
+// A map object far from anything that moves it - a tree, a crate nobody touched - is asleep (its state +0x64 not 1:
+// the game updates it never): deleted so, it stayed where it was, drawn, its deletion waiting for an update that never
+// came; the game's own cut wakes it with its blows. So it is woken first (1.9.0 0x7001515988: state 1, its process
+// manager told), then taken out
+static void take_out(Cpu *c, uint64_t a) {
+    if (*(uint8_t *)(uintptr_t)(a + 0x64) != 1) call(c, FN_ACTOR_WAKE, a, 0, 0, 0, 0, 0);
+    const float *m = (const float *)(uintptr_t)(a + 0x398);
+    float at[3] = {m[3], m[7], m[11]}, out[4];
+    call(c, FN_MAPOBJ_GONE, a, (uint64_t)(uintptr_t)out, (uint64_t)(uintptr_t)at, 0, 0, 0);
+    call(c, FN_TAKE_OUT, a, 0, 0, 0, 0, 0);
+}
+
+// A tree cut here for another: woken now, taken out CUT_WAKE_NS later. Asleep, the game draws a tree from its map
+// placement's own model, its actor drawing nothing; woken, its first updates hand the drawing to the actor. Taken out
+// in the frame it was woken, the placement's tree stayed, drawn standing beside its stump; a moment later, it goes as
+// the game's own cut takes it (its blows having woken it long before)
+#define CUT_WAKE_NS 400000000ull
+static struct { uint64_t a; Watch w; uint64_t t; } g_cutting[8];
+static void cut_later(Cpu *c, uint64_t a) {
+    if (*(uint8_t *)(uintptr_t)(a + 0x64) != 1) call(c, FN_ACTOR_WAKE, a, 0, 0, 0, 0, 0);
+    for (int k = 0; k < 8; k++)
+        if (!g_cutting[k].a) {
+            g_cutting[k].a = a, g_cutting[k].w = watch(a), g_cutting[k].t = plat_now_ns();
+            return;
+        }
+    take_out(c, a);  // (none free: at once)
+}
+static void cutting_update(Cpu *c) {
+    for (int k = 0; k < 8; k++) {
+        if (!g_cutting[k].a || plat_now_ns() - g_cutting[k].t < CUT_WAKE_NS) continue;
+        if (alive(g_cutting[k].a, g_cutting[k].w)) take_out(c, g_cutting[k].a);
+        memset(&g_cutting[k], 0, sizeof g_cutting[k]);
+    }
+}
+
+static void spawn_at(Cpu *c, const char *name, const float m[12], uint32_t hash, bool trunk) {
+    for (int k = 0; k < 8; k++) {
+        if (g_spawn[k].h) continue;
+        Handle *h = new_handle();
+        if (!request(c, name, h)) return;
+        g_spawn[k].h = h, g_spawn[k].hash = hash, g_spawn[k].trunk = trunk, g_spawn[k].ours = g_spawn_ours;
+        snprintf(g_spawn[k].name, sizeof g_spawn[k].name, "%s", name);
+        memcpy(g_spawn[k].m, m, sizeof g_spawn[k].m);
+        return;
+    }
+}
+
+// The session's world: every map object broken in it, by anyone (its HashId; where the breaker was), kept while the
+// session lasts so it stays broken in every game: an object of it that comes - near again, made again by a load or
+// a game over - is broken again (world_enforce), and the list goes round in our pose's broken slots when nothing new
+// is broken, so a player who joins later gets it all (world_rotate)
+#define WORLD_MAX 2048
+static struct { uint32_t h; uint64_t t; float from[3]; uint64_t a; Watch w; } g_world[WORLD_MAX];
+static int g_nworld;
+static int16_t g_widx[4096];  // (index + 1, by HashId: open addressing)
+static uint64_t g_broken_new_t;  // (when we last broke something: world_rotate waits for quiet)
+
+static int world_find(uint32_t h) {
+    for (int k = 0; k < 4096; k++) {
+        int16_t v = g_widx[(h + k) & 4095];
+        if (!v) return -1;
+        if (g_world[v - 1].h == h) return v - 1;
+    }
+    return -1;
+}
+static bool world_has(uint32_t h) { return world_find(h) >= 0; }
+static void world_add(uint32_t h, const float from[3]) {
+    if (!h || world_has(h) || g_nworld >= WORLD_MAX) return;
+    g_world[g_nworld].h = h, g_world[g_nworld].t = plat_now_ns(), g_world[g_nworld].a = 0;
+    memcpy(g_world[g_nworld].from, from, sizeof g_world[g_nworld].from);
+    for (int k = 0; k < 4096; k++)
+        if (!g_widx[(h + k) & 4095]) {
+            g_widx[(h + k) & 4095] = (int16_t)(g_nworld + 1);
+            break;
+        }
+    g_nworld++;
+}
+static void world_seen(uint32_t h, uint64_t a) {  // (the actor of it broken now: not again while it lasts)
+    int k = world_find(h);
+    if (k >= 0) g_world[k].a = a, g_world[k].w = watch(a);
+}
+static void world_clear(void) {
+    if (g_nworld) LOG("[online] the session's world list cleared (%d broken)\n", g_nworld);
+    g_nworld = 0;
+    memset(g_widx, 0, sizeof g_widx);
+}
+
+// A map object broken here (by another player, or again after it came back - a load, a game over): as the game
+// breaks it, a tree cut (its stump; its trunk leaning away from the cutter, trunk_too) or anything else its life 0
+static void break_here(Cpu *c, uint64_t a, const char *n, uint32_t h, const float from[3], bool trunk_too, const char *who) {
+    for (int t = 0; t < BREAKS; t++)  // (not ours to send)
+        if (g_brk[t].a == a) memset(&g_brk[t], 0, sizeof g_brk[t]);
+    float m[12];
+    memcpy(m, (const float *)(uintptr_t)(a + 0x398), sizeof m);
+    float at[3] = {m[3], m[7], m[11]};
+    if (!map_item(n)) drop_hush(at);  // (what ours drops of it isn't his: his comes as his loot)
+    if (!strncmp(n, "Obj_Tree", 8)) {  // (cut as the game cuts it: its stump, its trunk leaning away from him)
+        char stump[64], trunk[64];
+        snprintf(stump, sizeof stump, "%s_Stump", n), snprintf(trunk, sizeof trunk, "%s_Trunk", n);
+        cut_later(c, a);
+        spawn_at(c, stump, m, h, false);
+        float ax = m[3] - from[0], az = m[11] - from[2], al = sqrtf(ax * ax + az * az);
+        float tm[12];
+        memcpy(tm, m, sizeof tm);
+        if (al > 0.01f) {  // (tilted 8 degrees from upright toward (ax, az): about the axis up x that, Rodrigues)
+            ax /= al, az /= al;
+            const float sn = 0.139f, cs = 0.990f;
+            float rot[9] = {cs + az * az * (1 - cs), ax * sn, -ax * az * (1 - cs),
+                            -ax * sn, cs, -az * sn,
+                            -ax * az * (1 - cs), az * sn, cs + ax * ax * (1 - cs)};
+            for (int r = 0; r < 3; r++)  // (the tilt times the tree's own turn)
+                for (int q2 = 0; q2 < 3; q2++)
+                    tm[4 * r + q2] = rot[3 * r] * m[q2] + rot[3 * r + 1] * m[4 + q2] + rot[3 * r + 2] * m[8 + q2];
+            tm[7] += 0.3f;
+        }
+        if (trunk_too) spawn_at(c, trunk, tm, h, true);
+        char field[32], flag[128];
+        snprintf(field, sizeof field, "%s", g_map[0] ? g_map : "MainField");
+        field[strcspn(field, "/")] = 0;
+        snprintf(flag, sizeof flag, "%s_%s_%u", field, n, h);
+        uint32_t fh = crc32_str(flag);
+        uint32_t *fv = bool_flag(fh);
+        if (fv && !(*fv & 1) && !set_bool_flag(c, fh)) *fv |= 1;
+        LOG("[online] %s cut %s (%u): cut here too%s\n", who, n, h, fv ? ", its flag set" : "");
+    } else if (map_item(n)) {  // (an item he picked up: taken out of the world here, its map object marked gone)
+        take_out(c, a);
+        char field[32], flag[128];
+        snprintf(field, sizeof field, "%s", g_map[0] ? g_map : "MainField");
+        field[strcspn(field, "/")] = 0;
+        snprintf(flag, sizeof flag, "%s_%s_%u", field, n, h);
+        uint32_t fh = crc32_str(flag);
+        uint32_t *fv = bool_flag(fh);
+        if (fv && !(*fv & 1) && !set_bool_flag(c, fh)) *fv |= 1;
+        LOG("[online] %s picked up %s (%u): gone here too%s\n", who, n, h, fv ? ", its flag set" : "");
+    } else {  // (the game breaks it: its life to 0; one that stays is taken away a moment later)
+        int32_t *life = (int32_t *)(uintptr_t)(a + ENEMY_LIFE);
+        if (*(uint8_t *)(uintptr_t)(a + 0x64) != 1) call(c, FN_ACTOR_WAKE, a, 0, 0, 0, 0, 0);  // (asleep: life 0 broke nothing)
+        *life = 0;
+        for (int q2 = 0; q2 < 16; q2++)  // (one that doesn't break - asleep, no life of its own - goes in 1.5 s)
+            if (!g_breaking[q2].a) {
+                g_breaking[q2].a = a, g_breaking[q2].w = watch(a), g_breaking[q2].t = plat_now_ns();
+                break;
+            }
+        // (and its flag set, <field>_<actor>_<HashId>, as a blow of ours would: else the game makes it again)
+        char field[32], flag[128];
+        snprintf(field, sizeof field, "%s", g_map[0] ? g_map : "MainField");
+        field[strcspn(field, "/")] = 0;
+        snprintf(flag, sizeof flag, "%s_%s_%u", field, n, h);
+        uint32_t fh = crc32_str(flag);
+        uint32_t *fv = bool_flag(fh);
+        if (fv && !(*fv & 1) && !set_bool_flag(c, fh)) *fv |= 1;
+        LOG("[online] %s broke %s (%u): broken here too%s\n", who, n, h, fv ? ", its flag set" : "");
+    }
+}
+
+// The world's broken objects that are here again (a load, a game over made them again; one far away came near): broken
+// again, each actor of them once (its trunk only for a cut of the last WORLD_TRUNK_NS: an older one's trunk went)
+#define WORLD_TRUNK_NS 20000000000ull
+static void world_enforce(Cpu *c, uint64_t player, const float link[3]) {
+    if (!g_nworld) return;
+    int na = all_actors(*(uint64_t *)(uintptr_t)(player + 0x68), g_actors, MAX_ACTORS);
+    for (int k = 0; k < na; k++) {
+        uint64_t a = g_actors[k];
+        uint32_t h = *(uint32_t *)(uintptr_t)(a + ACTOR_HASH_ID);
+        int w = h ? world_find(h) : -1;
+        if (w < 0 || (g_world[w].a == a && alive(a, g_world[w].w))) continue;
+        if (*(uint8_t *)(uintptr_t)(a + 0x64) == 3) continue;  // (going already)
+        char n[48];
+        actor_name_of(a, n);
+        if (!breakable(n) && !map_item(n)) continue;
+        bool cutting = false;
+        for (int q = 0; q < 8; q++) cutting |= g_cutting[q].a == a;
+        if (cutting) continue;
+        g_world[w].a = a, g_world[w].w = watch(a);
+        break_here(c, a, n, h, g_world[w].from, plat_now_ns() - g_world[w].t < WORLD_TRUNK_NS, "the world's list:");
+    }
+}
+
+// While we break nothing new, the world's list goes round in our pose's last broken slot, one each WORLD_ROTATE_NS:
+// a player who joined later gets what was broken before him (each game takes a HashId once: world_has)
+#define WORLD_ROTATE_NS 1500000000ull
+static void world_rotate(void) {
+    static int next;
+    static uint64_t at;
+    uint64_t now = plat_now_ns();
+    if (!g_nworld || now - g_broken_new_t < 3 * WORLD_ROTATE_NS || now - at < WORLD_ROTATE_NS) return;
+    at = now;
+    next %= g_nworld;
+    g_broken[7] = g_world[next++].h;
+}
+
+static void breaks_update(Cpu *c, uint64_t player, const float link[3], const OnlinePlayer *pl, int me) {
+    static int tick;
+    static float was[3];
+    if (online_state() != ONLINE_CONNECTED) world_clear();
+    cutting_update(c);
+    world_rotate();
+    if (tick % 60 == 30) world_enforce(c, player, link);  // (about once a second)
+    // what is being made (the others' stumps and trunks): placed once ready
+    for (int k = 0; k < 8; k++) {
+        if (!g_spawn[k].h) continue;
+        int *unit = (int *)(uintptr_t)g_spawn[k].h->unit;
+        if (!unit) continue;
+        if (*unit == 3 || *unit == 5) {
+            call(c, FN_HANDLE_RELEASE, (uint64_t)(uintptr_t)g_spawn[k].h, 0, 0, 0, 0, 0);
+            memset(&g_spawn[k], 0, sizeof g_spawn[k]);
+            continue;
+        }
+        if (*unit != 2) continue;
+        uint64_t a = call(c, FN_HANDLE_TAKE, (uint64_t)(uintptr_t)g_spawn[k].h, 0, 0, 0, 0, 0);
+        if (a) {
+            call(c, FN_SET_MTX, a, (uint64_t)(uintptr_t)g_spawn[k].m, 0, 0, 0, 0);
+            if (g_spawn[k].trunk && g_spawn[k].ours) {  // (the break test's own cut: its trunk ours, as the game's cut's)
+                memmove(g_our_cut + 1, g_our_cut, sizeof g_our_cut - sizeof *g_our_cut);
+                g_our_cut[0].hash = g_spawn[k].hash, g_our_cut[0].trunk = a, g_our_cut[0].tw = watch(a);
+            } else if (g_spawn[k].trunk)
+                for (int t = 0; t < 8; t++)
+                    if (!g_their_trunk[t].a || g_their_trunk[t].hash == g_spawn[k].hash) {
+                        g_their_trunk[t].hash = g_spawn[k].hash, g_their_trunk[t].a = a, g_their_trunk[t].w = watch(a);
+                        g_their_trunk[t].t = plat_now_ns();
+                        break;
+                    }
+            LOG("[online] made here: %s\n", g_spawn[k].name);
+        }
+        memset(&g_spawn[k], 0, sizeof g_spawn[k]);
+    }
+    for (int k = 0; k < 16; k++) {
+        if (!g_breaking[k].a || plat_now_ns() - g_breaking[k].t < 1500000000ull) continue;
+        if (alive(g_breaking[k].a, g_breaking[k].w)) {
+            char n[48];
+            actor_name_of(g_breaking[k].a, n);
+            LOG("[online] %s didn't break: taken away\n", n);
+            take_out(c, g_breaking[k].a);
+        }
+        memset(&g_breaking[k], 0, sizeof g_breaking[k]);
+    }
+    if (tick++ % 6) return;
+    float mx = link[0] - was[0], mz = link[2] - was[2];
+    bool jumped = mx * mx + mz * mz > 10.0f * 10.0f;  // (a load, a teleport: what went isn't broken)
+    memcpy(was, link, sizeof was);
+    int na = -1;
+    // ours: gone while we stood by (a tree: its stump is there now)
+    for (int k = 0; k < BREAKS; k++) {
+        if (!g_brk[k].a) continue;
+        float dx = g_brk[k].m[3] - link[0], dz = g_brk[k].m[11] - link[2], d2 = dx * dx + dz * dz;
+        if (alive(g_brk[k].a, g_brk[k].w) && d2 < 20.0f * 20.0f) continue;
+        if (!alive(g_brk[k].a, g_brk[k].w) && !jumped && d2 < 15.0f * 15.0f && g_brk[k].hash) {
+            bool tree = !strncmp(g_brk[k].name, "Obj_Tree", 8);
+            bool item = map_item(g_brk[k].name);
+            bool cut = !tree && (!item || d2 < 3.5f * 3.5f);  // (an item: gone with our Link by it, picked up)
+            if (tree) {  // (a tree that went whole, out of a load, isn't cut: its stump tells)
+                char stump[64];
+                snprintf(stump, sizeof stump, "%s_Stump", g_brk[k].name);
+                if (na < 0) na = all_actors(*(uint64_t *)(uintptr_t)(player + 0x68), g_actors, MAX_ACTORS);
+                for (int q = 0; q < na && !cut; q++) {
+                    char n[64];
+                    actor_name_of(g_actors[q], n);
+                    if (strcmp(n, stump)) continue;
+                    const float *m = (const float *)(uintptr_t)(g_actors[q] + 0x398);
+                    float sx = m[3] - g_brk[k].m[3], sz = m[11] - g_brk[k].m[11];
+                    cut = sx * sx + sz * sz < 1.0f;
+                }
+                char trunk[64];  // (its trunk, followed: chopped, it goes for the others too)
+                snprintf(trunk, sizeof trunk, "%s_Trunk", g_brk[k].name);
+                for (int q = 0; cut && q < na; q++) {
+                    char n[64];
+                    actor_name_of(g_actors[q], n);
+                    if (strcmp(n, trunk)) continue;
+                    const float *m = (const float *)(uintptr_t)(g_actors[q] + 0x398);
+                    float sx = m[3] - g_brk[k].m[3], sz = m[11] - g_brk[k].m[11];
+                    if (sx * sx + sz * sz > 6.0f * 6.0f) continue;
+                    bool known = false;  // (the same cut seen again: once)
+                    for (int o = 0; o < 8 && !known; o++) known = g_our_cut[o].hash == g_brk[k].hash && g_our_cut[o].trunk;
+                    if (known) break;
+                    memmove(g_our_cut + 1, g_our_cut, sizeof g_our_cut - sizeof *g_our_cut);
+                    g_our_cut[0].hash = g_brk[k].hash, g_our_cut[0].trunk = g_actors[q], g_our_cut[0].tw = watch(g_actors[q]);
+                    break;
+                }
+            }
+            static uint32_t told[256];  // (each once: a bush cut grows again as itself, and went again and again)
+            static int ntold;
+            // (one of the world's list already - another's, broken here for him, or ours again after a load - isn't
+            // told as ours: else each game sent the other's cut back to it, and it made the tree's stump and trunk
+            // again, a pile of them)
+            if (cut && world_has(g_brk[k].hash)) cut = false;
+            for (int q = 0; q < ntold && cut; q++) cut = told[q] != g_brk[k].hash;
+            if (cut) told[ntold++ % 256] = g_brk[k].hash, ntold = ntold > 256 ? 256 : ntold;
+            if (cut) {
+                memmove(g_broken + 1, g_broken, sizeof g_broken - sizeof *g_broken);
+                g_broken[0] = g_brk[k].hash;
+                g_broken_new_t = plat_now_ns();
+                world_add(g_brk[k].hash, link);
+                LOG("[online] we %s %s (%u)\n", tree ? "cut" : item ? "picked up" : "broke", g_brk[k].name, g_brk[k].hash);
+            }
+        }
+        memset(&g_brk[k], 0, sizeof g_brk[k]);
+    }
+    for (int k = 0; k < 8; k++)  // (our trunks chopped)
+        if (g_our_cut[k].trunk && !alive(g_our_cut[k].trunk, g_our_cut[k].tw)) {
+            memmove(g_trunks_gone + 1, g_trunks_gone, sizeof g_trunks_gone - sizeof *g_trunks_gone);
+            g_trunks_gone[0] = g_our_cut[k].hash;
+            LOG("[online] our trunk of %u chopped\n", g_our_cut[k].hash);
+            g_our_cut[k].trunk = 0;
+        }
+    if (tick % 5 == 1) {  // (those near us now: twice a second - a crate struck at once went untracked at 3 s)
+        if (na < 0) na = all_actors(*(uint64_t *)(uintptr_t)(player + 0x68), g_actors, MAX_ACTORS);
+        for (int k = 0; k < na; k++) {
+            uint64_t a = g_actors[k];
+            uint32_t hash = *(uint32_t *)(uintptr_t)(a + ACTOR_HASH_ID);
+            if (!hash) continue;
+            const float *m = (const float *)(uintptr_t)(a + 0x398);
+            float dx = m[3] - link[0], dz = m[11] - link[2];
+            if (dx * dx + dz * dz > 18.0f * 18.0f) continue;
+            int f = -1, free_k = -1;
+            for (int t = 0; t < BREAKS && f < 0; t++) {
+                if (g_brk[t].a == a) f = t;
+                else if (free_k < 0 && !g_brk[t].a) free_k = t;
+            }
+            if (f >= 0 || free_k < 0) continue;
+            char n[48];
+            actor_name_of(a, n);
+            if (!breakable(n) && !map_item(n)) continue;
+            g_brk[free_k].a = a, g_brk[free_k].w = watch(a), g_brk[free_k].hash = hash;
+            memcpy(g_brk[free_k].m, m, sizeof g_brk[free_k].m);
+            snprintf(g_brk[free_k].name, sizeof g_brk[free_k].name, "%s", n);
+        }
+    }
+    // the others': each new one broken here too (the same map object, by its HashId)
+    // The others' breaks (each HashId once): kept in the session's world list and broken here - at once when the
+    // object is here, else when it comes (world_enforce: a tree far from our Link is no actor until he comes near)
+    for (int i = 0; i < ONLINE_MAX; i++) {
+        if (i == me || !pl[i].used || !pl[i].pose.valid || !same_map(&pl[i])) continue;
+        for (int q = 0; q < 8; q++) {
+            uint32_t h = pl[i].pose.broken[q];
+            if (!h || world_has(h)) continue;
+            world_add(h, pl[i].pos);
+            if (na < 0) na = all_actors(*(uint64_t *)(uintptr_t)(player + 0x68), g_actors, MAX_ACTORS);
+            uint64_t a = 0;
+            char n[48] = "";
+            for (int k = 0; k < na && !a; k++) {
+                if (*(uint32_t *)(uintptr_t)(g_actors[k] + ACTOR_HASH_ID) != h) continue;
+                actor_name_of(g_actors[k], n);
+                if (breakable(n) || map_item(n)) a = g_actors[k];
+            }
+            if (!a) {
+                LOG("[online] %s broke %u: not here yet (broken here when it comes)\n", pl[i].name, h);
+                continue;
+            }
+            world_seen(h, a);
+            break_here(c, a, n, h, pl[i].pos, true, pl[i].name);
+        }
+        for (int q = 0; q < 4; q++) {  // (his trunks chopped: ours of them go)
+            uint32_t h = pl[i].pose.trunks_gone[q];
+            for (int t = 0; h && t < 8; t++)
+                if (g_their_trunk[t].hash == h && g_their_trunk[t].a) {
+                    if (alive(g_their_trunk[t].a, g_their_trunk[t].w)) call(c, FN_DELETE, g_their_trunk[t].a, 0, 0, 0, 0, 0);
+                    LOG("[online] %s chopped the trunk of %u: gone here too\n", pl[i].name, h);
+                    memset(&g_their_trunk[t], 0, sizeof g_their_trunk[t]);
+                }
+        }
+    }
+    {   // (test: SAVAGEWIND_ONLINE_DROP_TEST=<s>[,<actor>]: that many seconds in, an item - Item_Fruit_A unless named -
+        // made 1.5 m before our Link, as if it fell there: what drops_update gives everyone)
+        const char *dt = getenv("SAVAGEWIND_ONLINE_DROP_TEST");
+        static uint64_t d0;
+        static bool dropped;
+        if (dt && !d0) d0 = plat_now_ns();
+        if (dt && !dropped && plat_now_ns() - d0 > (uint64_t)(atof(dt) * 1e9)) {
+            dropped = true;
+            const char *nm = strchr(dt, ',') ? strchr(dt, ',') + 1 : "Item_Fruit_A";
+            const float *pm = (const float *)(uintptr_t)(player + 0x398);
+            float m[12] = {1, 0, 0, pm[3] + 1.5f * pm[2], 0, 1, 0, pm[7] + 1.0f, 0, 0, 1, pm[11] + 1.5f * pm[10]};
+            spawn_at(c, nm, m, 0, false);
+            LOG("[online] drop test: %s at %.1f %.1f %.1f\n", nm, m[3], m[7], m[11]);
+        }
+    }
+    // (test: the nearest tree cut here, as the others' are, that many seconds in)
+    const char *bt = getenv("SAVAGEWIND_ONLINE_BREAK_TEST");
+    static uint64_t t0;
+    static bool tested;
+    if (bt && !t0) t0 = plat_now_ns();
+    if (bt && !tested && plat_now_ns() - t0 > (uint64_t)(atof(bt) * 1e9)) {  // (none near yet: again later)
+        float bd = 1e30f;
+        int best = -1;
+        for (int k = 0; k < BREAKS; k++) {
+            if (!g_brk[k].a || strncmp(g_brk[k].name, "Obj_Tree", 8)) continue;
+            float dx = g_brk[k].m[3] - link[0], dz = g_brk[k].m[11] - link[2];
+            if (dx * dx + dz * dz < bd) bd = dx * dx + dz * dz, best = k;
+        }
+        if (best >= 0) {
+            tested = true;
+            char stump[64], trunk[64];
+            snprintf(stump, sizeof stump, "%s_Stump", g_brk[best].name);
+            snprintf(trunk, sizeof trunk, "%s_Trunk", g_brk[best].name);
+            LOG("[online] break test: %s cut here\n", g_brk[best].name);
+            g_break_test_t = plat_now_ns();
+            cut_later(c, g_brk[best].a);
+            spawn_at(c, stump, g_brk[best].m, 0, false);
+            g_spawn_ours = true;
+            spawn_at(c, trunk, g_brk[best].m, g_brk[best].hash, true);  // (its trunk ours, known by the tree, as a cut)
+            g_spawn_ours = false;
+            // (and sent as our cut: its stump is made a few frames later, after the check that would have told it)
+            memmove(g_broken + 1, g_broken, sizeof g_broken - sizeof *g_broken);
+            g_broken[0] = g_brk[best].hash;
+            g_broken_new_t = plat_now_ns();
+            world_add(g_brk[best].hash, link);
+            world_seen(g_brk[best].hash, g_brk[best].a);  // (cut here now: not again by world_enforce, a second trunk)
+            memset(&g_brk[best], 0, sizeof g_brk[best]);
+        } else {
+            static bool told;
+            if (!told) told = true, LOG("[online] break test: no tree near yet\n");
+        }
+    }
 }
 
 static void ground_update(Cpu *c, uint64_t player, const float link[3]) {
@@ -3909,6 +5560,7 @@ static void ground_update(Cpu *c, uint64_t player, const float link[3]) {
 }
 
 volatile int g_online_block_a;  // (runtime/hle/input.c: A held back)
+volatile uint64_t g_game_buttons;  // (runtime/hle/input.c: the buttons the game is given, as it reads them)
 
 // `actors <text>` (control): the live actors whose name has text in it, with where each is and how far from Link.
 // The control thread asks, the frame loop answers (the actor list is the game's, read on its thread only).
@@ -3958,6 +5610,11 @@ static void flag_cmd(int argc, char **argv, ControlReply *r, bool set) {
 }
 static void cmd_flag(int argc, char **argv, ControlReply *r) { flag_cmd(argc, argv, r, false); }
 static void cmd_setflag(int argc, char **argv, ControlReply *r) { flag_cmd(argc, argv, r, true); }
+static void cmd_leave(int argc, char **argv, ControlReply *r) {  // (`leave`: the session left, as its button does)
+    (void)argc, (void)argv;
+    online_leave();
+    control_text(r, "Left the online session");
+}
 static void cmd_bloodmoon(int argc, char **argv, ControlReply *r) {
     (void)argc, (void)argv;
     __atomic_store_n(&g_fake_blood_moon, 1, __ATOMIC_RELEASE);
@@ -4055,6 +5712,7 @@ void online_actors_control_init(void) {
          CONTROL_PLAYER},
         {"event", "<flow> [entry]", "Start an event on Link (entry: the flow's name if left out)", cmd_event, 0},
         {"setflag", "<bool flag name>", "Set a game data bool flag (as the game's setter does), then show it", cmd_setflag, 0},
+        {"leave", "", "Leave (or end) the online session, as its button does", cmd_leave, 0},
         {"bloodmoon", "", "Clear the world's shared flags (items, chests) here, as a Blood Moon does", cmd_bloodmoon, 0},
     };
     control_register(cmds, (int)(sizeof cmds / sizeof *cmds));
@@ -4089,16 +5747,102 @@ void rt_online_frame(Cpu *c) {
     // a load (no Link, or Link somewhere else at once): the game has removed the world's actors, ours with them
     float dx = link[0] - g_last_link[0], dy = link[1] - g_last_link[1], dz = link[2] - g_last_link[2];
     if (!world || dx * dx + dy * dy + dz * dz > 100 * 100) {
-        bool any = false;
-        for (int i = 0; i < ONLINE_MAX; i++) any |= g_act[i].link != 0;
-        if (any) LOG("[online] a load: the players' actors are gone\n");
-        forget_all();
-        g_settle = 60;
+        // (a long jump that loaded nothing - a teleport within the loaded map - leaves them: their puppets still
+        // alive, kept as they are; forgotten, they stayed in the world and were made again beside them, two of him)
+        bool any = false, kept = false;
+        for (int i = 0; i < ONLINE_MAX; i++) any |= g_act[i].link != 0, kept |= world && alive(g_act[i].link, g_act[i].link_w);
+        if (kept) {
+            LOG("[online] a long jump: the players' actors still here, kept\n");
+        } else {
+            if (any) LOG("[online] a load: the players' actors are gone\n");
+            forget_all();
+            g_settle = 60;
+        }
     }
     memcpy(g_last_link, link, sizeof link);
     for (int i = 0; i < ONLINE_MAX; i++) g_online_actor[i] = world && running(g_act[i].link);
     if (!world) return;
-    if (!framepace_paused()) sample_pose(c, pinfo), sample_skeleton(c, pinfo);
+    // (sampled with a menu up too while the world goes on for it: the others see him as he is)
+    if (!framepace_paused() || g_nopause_now) sample_pose(c, pinfo), sample_skeleton(c, pinfo);
+    {   // The pause menu and the map don't stop the world in a session with others (the host's rule, `nopause`): the
+        // UI's pause state (0x7001e1611c) is 2 while they are up, and the game stops the world through the actor
+        // system's pause bits (ksys::act::BaseProcMgr at 0x7001e937f8, its u16 at +0x168: bit n "paused for n";
+        // 0x70015195c0 asks one, 0x70015195d0 / 0x70015195e0 set and clear them; the world manager's update is
+        // skipped while bit 0 is set, 1.9.0 0x700127f810): opening either sets 0x7f. Those are cleared each frame
+        // while the state is 2, so the others' blows, the enemies and the time of day go on while he looks at his
+        // things, as in a game made for several. The quick menus (state 4) too: they stop it the same way. Not a
+        // pause of another kind (cutscenes, loading: the state is 0 then)
+        int others = 0;
+        OnlinePlayer np[ONLINE_MAX];
+        online_players(np);
+        for (int i = 0; i < ONLINE_MAX; i++) others += np[i].used && i != me;
+        int rule = g_nopause_rule < 0 ? g_online.nopause : g_nopause_rule;
+        uint64_t bpm = *(uint64_t *)(uintptr_t)0x7001e937f8ull;
+        static int logged;
+        // (any of the UI's pauses: 2 the pause menu and the map, 4 the quick menus, others the windows that come up
+        // in play, as a new item's (uiPickUpWin_00Screen); each new one logged once. Not with UI_PAUSE_LOAD, a load's:
+        // the world waits for the map then)
+        uint32_t ps_now = g_site.pause_state ? *(uint32_t *)(uintptr_t)g_site.pause_state : 0;
+        g_nopause_now = rule && others && online_state() == ONLINE_CONNECTED && ps_now && !(ps_now & UI_PAUSE_LOAD);
+        // (but not once he presses A or X in the pouch - X "take", or A on a material and "take" in its list, to hold
+        // it over his head; A for anything else there too: the world stops sooner than it must - until the menu goes:
+        // what he takes out is made then, and made with the actors' pause bits cleared (the world going on) the game
+        // never puts it in his hands: it hung in the air where he took it out as he walked off, his hands empty. The
+        // world is stopped again as the menu stopped it as it opened (the physics world, 0x700156f61c(its system, 1,
+        // 0) as 1.9.0 0x7000c40458; the bits, 0x70015195d0(manager, 0x7f), the manager's procs told; the scene's
+        // paused byte): the menu's own resume undoes it as it goes)
+        {
+            static bool held_stop, x_was;
+            bool x = (g_game_buttons & 5) != 0;  // (A or X: runtime/hle/input.c BTN_A, BTN_X)
+            if (!ps_now) held_stop = false;
+            else if (ps_now == 2 && x && !x_was && g_nopause_now && !held_stop) {
+                held_stop = true;
+                LOG("[online] A or X in the pouch (take to hold): the menu stops the world\n");
+                uint64_t phys = *(uint64_t *)(uintptr_t)0x7001d66ab0ull, scene = *(uint64_t *)(uintptr_t)0x7001d66b80ull;
+                phys = VALID(phys) ? *(uint64_t *)(uintptr_t)phys : 0, scene = VALID(scene) ? *(uint64_t *)(uintptr_t)scene : 0;
+                if (VALID(phys)) call(c, 0x700156f61cull, phys, 1, 0, 0, 0, 0);
+                if (VALID(bpm)) call(c, 0x70015195d0ull, bpm, 0x7f, 0, 0, 0, 0), call(c, 0x7001519720ull, bpm, 0, 0, 0, 0, 0);
+                if (VALID(scene)) *(volatile uint8_t *)(uintptr_t)(scene + 0x8b8) = 1;
+            }
+            x_was = x;
+            if (held_stop) g_nopause_now = 0;
+        }
+        if (g_nopause_now) {
+            static uint32_t seen_ps[16];
+            int q;
+            for (q = 0; q < 16 && seen_ps[q] && seen_ps[q] != ps_now; q++) {}
+            if (q < 16 && !seen_ps[q]) seen_ps[q] = ps_now, LOG("[online] the UI's pause %#x: the world goes on\n", ps_now);
+        }
+        g_nopause_frames = g_nopause_now ? g_nopause_frames + 1 : 0;
+        if (g_nopause_now && VALID(bpm) && (*(uint16_t *)(uintptr_t)(bpm + 0x168) & 1)) {
+            if (!logged++) LOG("[online] the menu doesn't stop the world (%#x)\n", *(uint16_t *)(uintptr_t)(bpm + 0x168));
+            // (undone as the menu's own resume does it, 1.9.0 0x7000d462d0, for the world alone: the physics world
+            // going on (0x700156f61c(its system, 0, 0)), the actors' pause bits cleared (0x70015195e0(manager, 0x7f))
+            // and the manager's procs told (0x7001519720), the scene's paused byte (+0x8b8) cleared; the menu's own
+            // screens, sounds and inputs are left as they are)
+            uint64_t phys = *(uint64_t *)(uintptr_t)0x7001d66ab0ull, scene = *(uint64_t *)(uintptr_t)0x7001d66b80ull;
+            phys = VALID(phys) ? *(uint64_t *)(uintptr_t)phys : 0, scene = VALID(scene) ? *(uint64_t *)(uintptr_t)scene : 0;
+            if (VALID(phys)) call(c, 0x700156f61cull, phys, 0, 0, 0, 0, 0);
+            call(c, 0x70015195e0ull, bpm, 0x7f, 0, 0, 0, 0);
+            call(c, 0x7001519720ull, bpm, 0, 0, 0, 0, 0);
+            if (VALID(scene)) *(volatile uint8_t *)(uintptr_t)(scene + 0x8b8) = 0;
+        } else if (g_site.pause_state && *(uint32_t *)(uintptr_t)g_site.pause_state == 0) logged = 0;
+        if (g_nopause_now && !getenv("SAVAGEWIND_ONLINE_MENU_STILL")) {
+            // (the world drawn behind it: the pause menu also turns the world's camera off as it opens, 1.9.0
+            // 0x7000e6840c: 0x7000e89490(1, false), camera 1 of the game's list ([[0x7001d6b0b8] +0x48][1]) made
+            // inactive (its +0x90 bit 0), so its view isn't drawn; turned on again the same way, 0x7000e89490(1, true).
+            // The menu's own drawing pause is the patch menu_draw, runtime rt_menu_draw_pause)
+            uint64_t cl = *(uint64_t *)(uintptr_t)0x7001d6b0b8ull;
+            cl = VALID(cl) ? *(uint64_t *)(uintptr_t)cl : 0;
+            uint64_t arr = VALID(cl) && *(uint32_t *)(uintptr_t)(cl + 0x40) > 1 ? *(uint64_t *)(uintptr_t)(cl + 0x48) : 0;
+            uint64_t cam = VALID(arr) ? *(uint64_t *)(uintptr_t)(arr + 8) : 0;
+            if (VALID(cam) && !(*(uint16_t *)(uintptr_t)(cam + 0x90) & 1)) {
+                static int told;
+                if (!told++) LOG("[online] the world's camera on behind the menu\n");
+                call(c, 0x7000e89490ull, 1, 1, 0, 0, 0, 0);
+            }
+        }
+    }
     {   // (why our pose isn't sent, logged as it changes: the others treat a player without one as on their map)
         static int why = -1;
         int now = framepace_paused() ? 1 : 0;
@@ -4211,11 +5955,21 @@ void rt_online_frame(Cpu *c) {
         if (VALID(player)) {
             OnlinePlayer wp[ONLINE_MAX];
             online_players(wp);
-            if (!online_is_host()) weather_follow(wp, me, link);
+            weather_follow(wp, me, link);  // (the first player near us: ours when that is us)
+            bloody_moon_follow(c, wp, me);
             pvp_update(c, player, wp, me);
             players_collide(c, player, wp, me);
+            own_strikes_in_menu(c, player);
+            own_guard(player);
         }
         if (VALID(player)) ground_update(c, player, link);
+        if (VALID(player)) {
+            OnlinePlayer op[ONLINE_MAX];
+            online_players(op);
+            objs_update(c, player, link, op, me);
+            movers_update(c, player, link, op, me);
+            breaks_update(c, player, link, op, me);
+        }
         if (VALID(player)) {
             OnlinePlayer gp[ONLINE_MAX];
             online_players(gp);
@@ -4467,6 +6221,15 @@ void rt_online_frame(Cpu *c) {
                 // (a sound: on its SLink, the player's / the weapon's: 0x700159f00c, the game's own keyword emit, w2 1 its
                 // SLink alone, x3 the two handles: the SLink's at +0x10)
                 if (best->who >= 2 && !VALID(slink_ui(on))) continue;
+                // (the same one still playing - sent again, a Champion's ability used again and again - ended first:
+                // they piled up, one over the other)
+                for (int o = 0; o < ONLINE_FX_EVENTS; o++) {
+                    uint64_t op = g_act[i].fxev[o].p;
+                    if (!op || strcmp(g_act[i].fxev[o].name, best->name)) continue;
+                    if (VALID(op) && *(uint32_t *)(uintptr_t)(op + 0x20) == g_act[i].fxev[o].id)
+                        call(c, FN_EFFECT_KILL, (uint64_t)(uintptr_t)&g_act[i].fxev[o], 0, 0, 0, 0, 0);
+                    memset(&g_act[i].fxev[o], 0, sizeof g_act[i].fxev[o]);
+                }
                 int q = 0;
                 while (q < ONLINE_FX_EVENTS - 1 && g_act[i].fxev[q].p) q++;
                 if (g_act[i].fxev[q].p) {
@@ -4483,6 +6246,7 @@ void rt_online_frame(Cpu *c) {
                 } else
                     call_sret(c, FN_EFFECT_EMIT, (uint64_t)(uintptr_t)&g_act[i].fxev[q], on, (uint64_t)(uintptr_t)best->name);
                 g_act[i].fxev[q].t = now;
+                snprintf(g_act[i].fxev[q].name, sizeof g_act[i].fxev[q].name, "%s", best->name);
                 if (getenv("SAVAGEWIND_ONLINE_FX_LOG")) {
                     static const char *const kinds[4] = {"Link", "weapon", "Link (sound)", "weapon (sound)"};
                     LOG("[online] %s: %s on his %s (%llx)\n", pl[i].name, best->name, kinds[best->who & 3],
@@ -4531,7 +6295,8 @@ void rt_online_frame(Cpu *c) {
                 for (int t = 0; finite && k == 0 && t < THEIRS; t++) {
                     Piece *lp = &g_theirs[t].p;
                     if (!g_theirs[t].gid || g_theirs[t].gone || g_theirs[t].origin != i || !lp->actor ||
-                        strcmp(lp->name, pl[i].gear[k]) || !alive(lp->actor, lp->w) || carries(g_carried_now, lp->actor))
+                        strcmp(lp->name, pl[i].gear[k]) || !alive(lp->actor, lp->w) || carries(g_carried_now, lp->actor) ||
+                        lp->actor == g_act[i].grab)
                         continue;
                     if (best < 0 || g_theirs[t].gid > g_theirs[best].gid) best = t;
                 }
@@ -4572,6 +6337,42 @@ void rt_online_frame(Cpu *c) {
                 for (int q = 0; q < 12; q++) finite &= isfinite(pl[i].pose.tack_m[k][q]);
                 if (tp->actor && finite) call(c, FN_SET_MTX, tp->actor, (uint64_t)(uintptr_t)pl[i].pose.tack_m[k], 0, 0, 0, 0);
             }
+        }
+        // the materials he holds from his pouch: between his puppet's hands (Weapon_R, Weapon_L), heaped as his game
+        // heaps them over his; and each he threw or let fall, where it flies in his game, until it lies (then it is on
+        // the loot list, made here as a real one)
+        for (int k = 0; k < ONLINE_HELD; k++) {
+            const OnlineHeld *h = &pl[i].pose.held[k];
+            bool on = pl[i].pose.valid && h->mode && h->name[0];
+            const char *ga = on ? gear_actor(h->name) : NULL;
+            Piece *p = &g_act[i].held[k];
+            piece_update(c, i, p, ga ? ga : "", pl[i].name);
+            if (!p->actor) continue;
+            float gm[12] = {1, 0, 0, pl[i].pos[0], 0, 1, 0, pl[i].pos[1] - 5000, 0, 0, 1, pl[i].pos[2]};
+            // (its size: as his game draws it in his hands, its +0x418 - a scale on each axis; 1 flying)
+            float scale = h->mode == ONLINE_HELD_HANDS && isfinite(h->m[0]) && h->m[0] > 0.05f && h->m[0] < 2 ? h->m[0] : 1;
+            for (int q = 0; q < 3; q++) *(float *)(uintptr_t)(p->actor + 0x418 + 4 * q) = scale;
+            if (h->mode == ONLINE_HELD_WORLD) {
+                bool finite = true;
+                for (int q = 0; q < 12; q++) finite &= isfinite(h->m[q]);
+                if (finite) memcpy(gm, h->m, sizeof gm);
+            } else if (h->mode == ONLINE_HELD_HANDS) {
+                for (int b = 0; b < 2; b++)
+                    if (!(have >> b & 1) && bone_mtx(c, g_act[i].link, k_bones[b], bm[b])) have |= 1 << b;
+                if ((have & 3) == 3) {
+                    // (a heap on his hands, as his game heaps them: three side by side, two over them, apart as far as
+                    // they are big - 12 cm for apples: closer, they went into each other, a red lump)
+                    static const float heap[ONLINE_HELD][3] = {{0, 0, 0.2f}, {1, 0, 0.1f}, {-1, 0, 0.1f}, {0.5f, 0.8f, 0},
+                                                               {-0.5f, 0.8f, 0}};
+                    float sp = 0.22f * scale;
+                    float s = sinf(pl[i].pose.yaw), co = cosf(pl[i].pose.yaw);
+                    gm[3] = (bm[0][3] + bm[1][3]) * 0.5f + sp * (heap[k][0] * co + heap[k][2] * s);
+                    gm[7] = (bm[0][7] + bm[1][7]) * 0.5f + sp * heap[k][1];
+                    gm[11] = (bm[0][11] + bm[1][11]) * 0.5f + sp * (-heap[k][0] * s + heap[k][2] * co);
+                    gm[0] = co, gm[2] = s, gm[8] = -s, gm[10] = co;  // (turned as he faces)
+                }
+            }
+            call(c, FN_SET_MTX, p->actor, (uint64_t)(uintptr_t)gm, 0, 0, 0, 0);
         }
         // what he holds, threw or shot, where it is (out of sight: those he no longer has)
         const OnlineShots *sh = &pl[i].pose.shots;
@@ -4654,6 +6455,12 @@ void rt_online_frame(Cpu *c) {
             snprintf(key, sizeof key, "Boom_%s", k_shot_names[sh->boom[k].kind]);
             const char *boom = getenv("SAVAGEWIND_BOOM_ACTOR") ? getenv("SAVAGEWIND_BOOM_ACTOR") : gear_actor(key);
             if (boom) boom_start(c, boom, sh->boom[k].pos);
+            for (int q = 0; q < 4; q++)  // (its blast on our Link, with damage between players on: pvp_update)
+                if (!g_blast[q].fresh) {
+                    memcpy(g_blast[q].pos, sh->boom[k].pos, sizeof g_blast[q].pos);
+                    g_blast[q].from = i, g_blast[q].fresh = true;
+                    break;
+                }
             LOG("[online] %s's bomb went off at %.1f %.1f %.1f\n", pl[i].name, sh->boom[k].pos[0], sh->boom[k].pos[1],
                 sh->boom[k].pos[2]);
         }

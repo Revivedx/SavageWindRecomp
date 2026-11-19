@@ -185,6 +185,24 @@ SITES = [
     # and its draw callback's (0x7001511150): the animation in the slot it found it in, against the one it drew from
     # (ldr w8, [x8, x9]: x9 the slot x 0xa8; x20 the actor)
     Site('blur_anim_draw', 'code', 'b8696908 b9401aa9 6b08013f', 0),
+    # the game scene's state (1.9.0 0x7001e44ef0: 0 playing, 1 the pause menu or the map up; its getter 0x700127f3c0
+    # and the frame's own reads of it, which leave the world's jobs out but at 0, 0x70012800bc the physics', 0x70012810b8,
+    # 0x700128322c): read through rt_scene_state (tools/patches.py _scene_state), which says 0 while a menu is up in
+    # an online session with others whose host has `nopause` on (runtime/online_actors.c)
+    Site('scene_state_get', 'code', '90000008/9f00001f b94ef100 d65f03c0', 1),
+    Site('scene_state_phys', 'code', '90000015/9f00001f b94ef2a8 35000208', 1),
+    Site('scene_state_b', 'code', '90000008/9f00001f b94ef108 34000008/ff00001f 94000000/fc000000', 1),
+    Site('scene_state_c', 'code', '90000008/9f00001f b94ef108 f100001f', 1),
+    Site('scene_state_d', 'code', 'b94ef2a8 34000608', 0),  # (0x7001280164: the physics' paused branch)
+    # the menus' frame (1.9.0 0x7000d45d70, while the pause menu, the map or a quick menu is up): its pause of the
+    # world's drawing, 0x70015089b0(the graphics manager, 1), asked again every frame (the world not drawn: the
+    # still picture taken as it opened behind the menu), its `mov w1, #1` (tools/patches.py _menu_draw: 0 while the
+    # menus don't pause the world, runtime/online_actors.c rt_menu_draw_pause)
+    Site('menu_draw', 'code', '52800021 f9400294/ffc003ff f9400280 94000000/fc000000 f9400280 52800021', 0),
+    # whether Link has a fairy to revive him as he dies (1.9.0 0x7000cec510; x0 the player: its pause menu data asked
+    # for Animal_Insect_F; false at once in modes without it), its `and w0, w0, #1` before it returns (tools/patches.py
+    # _has_fairy: in online play he always has one, runtime/online_actors.c rt_online_has_fairy)
+    Site('has_fairy', 'code', 'a90023e9 94000000/fc000000 a9417bfd 910083ff 12000000 d65f03c0', 4),
     Site('xlink_emit', 'code', 'aa0003f4 f9401800 aa0203f5 aa0103f3 94000000/fc000000 3941d008 34000008/ff00001f '
          '39434288', 0),
     # a stale actor in the target manager (tools/patches.py _stale_actor_helper, _stale_actor_target; #391, #393): the
@@ -449,6 +467,9 @@ OPTIONAL_GROUPS = [
     ('remote_bomb_made',),
     ('beam_move',),
     ('xlink_emit',),
+    ('has_fairy',),
+    ('scene_state_get', 'scene_state_phys', 'scene_state_b', 'scene_state_c', 'scene_state_d'),
+    ('menu_draw',),
     ('fmt128',),
     ('blur_anim', 'blur_frame_a', 'blur_frame_b', 'blur_anim_draw'),
     ('tp_gate',),  # (a far teleport of the control endpoint: without it a long jump freezes the world)
@@ -562,6 +583,13 @@ KNOWN = {
         'beam_move': 0x70007104a4,
         'xlink_emit': 0x7000f5106c,
         'fmt128': 0x7000579620,
+        'has_fairy': 0x7000cec570,
+        'scene_state_get': 0x700127f3c4,
+        'menu_draw': 0x7000d45d84,
+        'scene_state_phys': 0x70012800bc,
+        'scene_state_b': 0x70012810b8,
+        'scene_state_c': 0x700128322c,
+        'scene_state_d': 0x7001280164,
         'blur_anim': 0x7001510f0c,
         'blur_frame_a': 0x7001510fe8,
         'blur_frame_b': 0x7001511098,

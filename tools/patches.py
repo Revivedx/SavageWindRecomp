@@ -470,6 +470,35 @@ def _blur_frame_b(gen, a):
             f'  /* {a:#x}: ldr s0, [x8] (SwordBlur: its slot animation frame) */')
 
 
+# Online play: a player who dies is revived by a fairy, his world not loaded again (runtime/online_actors.c
+# rt_online_has_fairy, the host's choice): the game's "has he a fairy" (1.9.0 0x7000cec510) answers yes
+
+def _has_fairy(gen, a):
+    assert _word(gen, a) == 0x12000000, hex(_word(gen, a))  # and w0, w0, #1
+    return ('{ extern uint32_t rt_online_has_fairy(uint32_t); c->x[0] = rt_online_has_fairy((uint32_t)c->x[0] & 1); }'
+            f'  /* {a:#x}: and w0, w0, #1 (has Link a fairy: online play revives him) */')
+
+
+# Online play: the world drawn behind the menus (runtime/online_actors.c rt_menu_draw_pause): the menus' frame asks
+# the world's drawing paused with 0 instead of 1 while they don't pause the world (the host's `nopause`)
+
+def _menu_draw(gen, a):
+    assert _word(gen, a) == 0x52800021, hex(_word(gen, a))  # mov w1, #1
+    return ('{ extern uint32_t rt_menu_draw_pause(void); c->x[1] = rt_menu_draw_pause(); }'
+            f'  /* {a:#x}: mov w1, #1 (the menus stop drawing the world: not while they leave the world going) */')
+
+
+# Online play: the menus don't pause the world (runtime/online_actors.c rt_scene_state, the host's `nopause`): the game
+# scene's state (1.9.0 0x7001e44ef0: 1 while the pause menu or the map is up) is read as 0 by the frame's world jobs
+
+def _scene_state(gen, a):
+    w = _word(gen, a)
+    rt, base = {0xb94ef100: (0, 8), 0xb94ef2a8: (8, 21), 0xb94ef108: (8, 8)}[w]
+    return ('{ extern uint32_t rt_scene_state(uint32_t); '
+            f'c->x[{rt}] = rt_scene_state(LD32(c->x[{base}] + 0xef0)); }}'
+            f'  /* {a:#x}: ldr w{rt}, [x{base}, #0xef0] (the game scene\'s state: online play, menus without pause) */')
+
+
 # The physics step's solver microsteps (runtime/hle/framepace.c rt_solver_steps, #161): before each Havok step the game
 # gives the solver round(delta frame x 6) microsteps (1.9.0 0x700156f930): 6 at 30 fps, 3 at 60, 2 at 120. With fewer
 # the solver gives way more to what is in contact with Link: holding a cucco, its body over his head held his jump
@@ -1090,6 +1119,13 @@ PATCHES = {
     'remote_bomb_made': _remote_bomb_made,
     'beam_move': _beam_move,
     'xlink_emit': _xlink_emit,
+    'has_fairy': _has_fairy,
+    'menu_draw': _menu_draw,
+    'scene_state_get': _scene_state,
+    'scene_state_phys': _scene_state,
+    'scene_state_b': _scene_state,
+    'scene_state_c': _scene_state,
+    'scene_state_d': _scene_state,
     'fmt128': _fmt128,
     'blur_anim': _blur_anim,
     'blur_frame_a': _blur_frame_a,

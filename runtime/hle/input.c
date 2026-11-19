@@ -1096,6 +1096,10 @@ static void fill_state(Cpu *c) {
     control_input_apply(&b, &lx, &ly, &rx, &ry);
     b = unconsumed_buttons(b);
     b = quick_drop_action_filter_buttons(b);
+    {   // (what the game is given, for online play: runtime/online_actors.c, X in the pouch)
+        extern volatile uint64_t g_game_buttons;
+        g_game_buttons = b;
+    }
     {   // online play: another player in a cutscene near this Link (runtime/online_actors.c): A does nothing meanwhile
         extern volatile int g_online_block_a;
         if (g_online_block_a) b &= ~(1ull << BTN_A);

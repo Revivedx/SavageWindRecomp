@@ -61,13 +61,26 @@ typedef struct {
     char tack[2][24];  // (its horse's saddle and reins: none)
     float tack_m[2][12];
     uint32_t ground_props[16];  // (its ground's reaction values: none)
+    uint8_t collide;  // (its collisions setting: off, a bot isn't the host)
+    uint8_t revive;  // (its revival setting: off)
+    uint8_t nopause;  // (its menus setting: off)
+    float bloody_moon;  // (its Blood Moon timer: -1 unknown, set below)
+    uint32_t aggro_id;  // (the enemy it hit last: none)
+    uint16_t aggro_seq;
+    struct { uint32_t hash; float m[12]; } objs[8];  // (the objects moving near it: none)
+    uint32_t broken[8];  // (the objects it broke: none)
+    uint32_t trunks_gone[4];
+    struct { uint32_t hash; float m[12]; char as[28]; } movers[6];  // (the mechanisms moving near it: none)
+    uint8_t objs_trunk;
+    struct { char name[32]; uint8_t mode; float m[12]; } held[5];  // (the materials it holds: none)
 } WireState;
 typedef struct { uint32_t magic; uint16_t version; char name[24], pass[24]; } WireHello;
 #pragma pack(pop)
 enum { M_HELLO = 1, M_WELCOME, M_REJECT, M_STATE, M_JOIN, M_LEAVE, M_CHAT, M_PING, M_PONG, M_EQUIP };
 
 static void msg(sock_t s, uint8_t type, const void *p, int n) {
-    uint8_t b[1100];
+    uint8_t b[3 + 16384];  // (the runtime's own limit, runtime/online.c send_msg: a STATE is 2969 bytes now)
+    if (n + 3 > (int)sizeof b) return;
     b[0] = (uint8_t)(n + 1), b[1] = (uint8_t)((n + 1) >> 8), b[2] = type;
     memcpy(b + 3, p, n);
     send(s, (const char *)b, n + 3, 0);
@@ -86,7 +99,7 @@ int main(int argc, char **argv) {
     if (getaddrinfo(host, port, &hints, &res)) { fprintf(stderr, "bot: can't resolve %s\n", host); return 1; }
     sock_t s = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (connect(s, res->ai_addr, (int)res->ai_addrlen)) { fprintf(stderr, "bot: can't connect to %s:%s\n", host, port); return 1; }
-    WireHello h = {.magic = 0x4c4f5753u, .version = 34};
+    WireHello h = {.magic = 0x4c4f5753u, .version = 38};
     snprintf(h.name, sizeof h.name, "%s", name);
     msg(s, M_HELLO, &h, sizeof h);
     float centre[3] = {0, 0, 0};
@@ -183,7 +196,7 @@ int main(int argc, char **argv) {
                 memcpy(b0, &boom_seq, 2), b0[2] = 0, memcpy(b0 + 3, boom_at, 12);
             }
             // BOT_ICE=x,y,z: a Cryonis pillar of its there 10 s of every 20
-            ws.ice_n = 0, ws.weather = 255, ws.dye[0] = ws.dye[1] = ws.dye[2] = -1;
+            ws.ice_n = 0, ws.weather = 255, ws.bloody_moon = -1, ws.dye[0] = ws.dye[1] = ws.dye[2] = -1;
             if (getenv("BOT_ICE") && t > 12 && fmod(t, 20) < 10) {
                 float f[3];
                 if (sscanf(getenv("BOT_ICE"), "%f,%f,%f", &f[0], &f[1], &f[2]) == 3) {
@@ -193,6 +206,20 @@ int main(int argc, char **argv) {
             }
             // BOT_DEMO=1: in a cutscene (the others' A held back near it) 20 s of every 40
             if (getenv("BOT_DEMO") && fmod(t, 40) >= 20) ws.effects = 0x80;
+            // BOT_GALE=1: charges Revali's Gale 3 s of every 10
+            if (getenv("BOT_GALE") && t > 12 && fmod(t, 10) < 3) ws.effects |= 0x08;
+            // BOT_SOUND=<name>: plays that sound of its Link's (fxev who 2; BOT_SOUND_WHO=0: an effect of its Link's) every 10 s
+            {
+                static uint16_t seq;
+                static int last = -1;
+                static unsigned char ev[24];  // (kept in its state until the next)
+                if (getenv("BOT_SOUND") && t > 12 && (int)(t / 10) != last) {
+                    last = (int)(t / 10), seq++;
+                    memset(ev, 0, sizeof ev), memcpy(ev, &seq, 2), ev[2] = getenv("BOT_SOUND_WHO") ? atoi(getenv("BOT_SOUND_WHO")) : 2;
+                    snprintf((char *)ev + 3, 21, "%s", getenv("BOT_SOUND"));
+                }
+                memcpy(ws.fxev[0], ev, sizeof ev);
+            }
             // BOT_GRAB=<actor>,x,y,z: holds that actor (the one of that name nearest x y z) with the Magnesis rune 10 s
             // of every 20: lifted 3 m over where it was, going round a 2 m circle
             memset(&ws.grab, 0, sizeof ws.grab);
@@ -203,6 +230,17 @@ int main(int argc, char **argv) {
                     float a = (float)fmod(t, 20) * 1.2f, up = fminf((float)fmod(t, 20), 1.5f) * 2;
                     float m[12] = {cosf(a), 0, sinf(a), f[0] + 2 * sinf(a), 0, 1, 0, f[1] + up, -sinf(a), 0, cosf(a), f[2] + 2 * cosf(a) - 2};
                     memcpy(ws.grab.name, gn, sizeof gn), memcpy(ws.grab.from, f, 12), memcpy(ws.grab.m, m, 48);
+                }
+            }
+            // BOT_STOP=<actor>,x,y,z: stops that actor (the one of that name nearest x y z) with the Stasis rune 10 s of
+            // every 20, where it is
+            memset(&ws.stop, 0, sizeof ws.stop);
+            if (getenv("BOT_STOP") && t > 12 && fmod(t, 20) < 10) {
+                char gn[40] = {0};
+                float f[3] = {0};
+                if (sscanf(getenv("BOT_STOP"), "%39[^,],%f,%f,%f", gn, &f[0], &f[1], &f[2]) == 4) {
+                    float m[12] = {1, 0, 0, f[0], 0, 1, 0, f[1], 0, 0, 1, f[2]};
+                    memcpy(ws.stop.name, gn, sizeof gn), memcpy(ws.stop.from, f, 12), memcpy(ws.stop.m, m, 48);
                 }
             }
             msg(s, M_STATE, &ws, sizeof ws);

@@ -57,11 +57,22 @@ typedef struct {
 #define ONLINE_FX_EVENTS 8  // (OnlinePose.fxev: his last effects and sounds)
 #define ONLINE_FX_PROPS 24  // (OnlinePose.fx_props: his Link's ELink property values)
 #pragma pack(push, 1)
+#define ONLINE_OBJS 8  // (OnlinePose.objs: the world's objects moving near him)
+typedef struct { uint32_t hash; float m[12]; } OnlineObj;  // (its map HashId, 0 none; where it is)
+#define ONLINE_MOVERS 6  // (OnlinePose.movers: the level's mechanisms moving near him)
+typedef struct { uint32_t hash; float m[12]; char as[28]; } OnlineMover;  // (its map HashId, 0 none; where it is; the AS it
+                                                                          // plays in slot 0, "" none)
 typedef struct { uint16_t seq; uint8_t who; char name[21]; } OnlineFxEvent;  // (who: 0 his Link, 1 his weapon;
 // 2 his Link's sound, 3 his weapon's)
 #pragma pack(pop)
 #pragma pack(push, 1)
 typedef struct { char name[ONLINE_GRAB_NAME]; float from[3]; float m[12]; } OnlineGrab;
+// What he holds from his pouch over his head (up to 5 materials), and each one he just threw or let fall, while it
+// flies (until it lies: then it is on the loot list, the others' own)
+#define ONLINE_HELD 5
+enum { ONLINE_HELD_NONE, ONLINE_HELD_HANDS, ONLINE_HELD_WORLD };
+typedef struct { char name[32]; uint8_t mode; float m[12]; } OnlineHeld;  // (m: where it is, ONLINE_HELD_WORLD;
+                                                                         // m[0] the size it is held at, HANDS)
 #pragma pack(pop)
 
 typedef struct {
@@ -101,6 +112,19 @@ typedef struct {
     float tack_m[2][12];
     uint32_t ground_props[16];                   // his ground's (ReactionField's) ELink property values at its last
                                                  // reaction to him (his fxev who 4: the ground's kind, his speed...)
+    uint8_t collide;                             // his OnlineSettings.collide (the host's is the session's)
+    uint8_t revive;                              // his OnlineSettings.revive (the host's is the session's)
+    uint8_t nopause;                             // his OnlineSettings.nopause (the host's is the session's)
+    float bloody_moon;                           // his Blood Moon timer (TimeMgr +0xc8, degrees: 360 a day; -1 unknown)
+    uint32_t aggro_id;                           // the host's enemy he hit last (its id), and that hit's number: the
+    uint16_t aggro_seq;                          // host's game hands it to him, so it turns on him
+    OnlineObj objs[ONLINE_OBJS];                 // the map's objects moving near him (pushed, rolling, carried, blown)
+    uint32_t broken[8];                          // the map's objects he broke or cut lately (their HashIds, newest first)
+    uint32_t trunks_gone[4];                     // the trees he cut whose trunk he then chopped (their HashIds)
+    OnlineMover movers[ONLINE_MOVERS];           // the level's mechanisms moving near him (lifts, doors, gears, a Divine
+                                                 // Beast's parts): where each is, the AS it plays
+    uint8_t objs_trunk;                          // (objs: bit k, objs[k] is a fallen tree's trunk, its hash the tree's)
+    OnlineHeld held[ONLINE_HELD];                // the materials he holds over his head, or threw and that fly
 } OnlinePose;
 // OnlinePose.effects: Daruk's Protection's shield taking a hit (KAGO), its ring while he guards with its charges left
 // (KAGO_COUNT: 1 to 3, in effects >> KAGO_COUNT_SHIFT)
@@ -129,6 +153,9 @@ typedef struct {
     bool show_names;    // names over the other players
     bool show_markers;  // the others' figures in the world (off: the list only)
     bool pvp;           // damage between players: this player's blows hurt the others who have it on, theirs him
+    bool collide;       // players bump into each other (the host's choice is everyone's: OnlinePose.collide)
+    bool revive;        // a player who dies is revived by a fairy, not game over (the host's: OnlinePose.revive)
+    bool nopause;       // the pause menu and the map don't stop the world (the host's: OnlinePose.nopause)
 } OnlineSettings;
 
 extern OnlineSettings g_online;
