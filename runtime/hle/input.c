@@ -1085,11 +1085,15 @@ void input_frame(uint64_t frame) {
     motion_script(tilt_p, tilt_r, turn_p, turn_y);
 }
 
+static bool ui_menu_active(void) {
+    return framepace_title_ui() || framepace_menu_ui() || (framepace_in_event() && framepace_dialogue_ui());
+}
+
 // Buttons held right now (keyboard, gamepad, test script), independent of whether the game polls (movies).
 uint64_t input_buttons_now(void) {
     bool muted = (!win_focused && !host_test) || menu_input_captured();
     uint64_t raw = muted ? 0 : key_buttons | pad_buttons;
-    if (!muted && !framepace_title_ui() && !framepace_menu_ui() && !pc_cursor_active())
+    if (!muted && !ui_menu_active() && !pc_cursor_active())
         raw = act_gameplay_buttons(raw, game_key, host_buttons);
     uint64_t b = raw | (muted ? 0 : escape_buttons) | script_buttons;
     control_input_apply(&b, NULL, NULL, NULL, NULL);
@@ -1152,9 +1156,10 @@ static void fill_state(Cpu *c) {
 
     // Customized actions use host bindings during play. Factory-default actions and all queries in menus, with
     // the window unfocused or the overlay up, use the Switch layer, so no binding can lock the player out.
-    act_poll(!menu && !framepace_title_ui() && !framepace_menu_ui());
+    bool ui_menu = ui_menu_active();
+    act_poll(!menu && !ui_menu);
     uint64_t bow = pc_bow_sample();
-    bool in_menu = menu || framepace_title_ui() || framepace_menu_ui();
+    bool in_menu = menu || ui_menu;
     uint64_t raw = menu ? 0 : (in_menu ? (key_buttons | pad_buttons) : act_gameplay_buttons(key_buttons | pad_buttons, game_key, host_buttons));
     uint64_t b = raw | (menu ? 0 : escape_buttons | bow) | script_buttons;
     if (!menu) b |= auto_continue_buttons(b);  // (not while the overlay has the controls)
