@@ -52,7 +52,7 @@ Two configs: `play` (the player's own settings at the main monitor's size, all `
 The runtime appends a snapshot of the counters every 3000 presented frames and at the end, and resets them after each
 write, so the snapshots add up to the run (without the reset, the early frames were counted again in every later
 snapshot). On Windows a boot can re-exec itself when the guest address space is taken: the parent leaves a near-empty
-profraw and `perf_routes.wait_world` follows the child; `train.py` retries a boot once. Use a data root of its own (the
+profraw (skip it when merging) and `train.py` retries a boot once. Use a data root of its own (the
 first boot compiles shaders for about two minutes, so give `--boot` 420) and a scratch copy of a save, never the player's.
 
 For a quick profile without `train.py`, run `perf_routes.py` over the routes with the same `LLVM_PROFILE_FILE`:
