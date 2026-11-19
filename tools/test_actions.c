@@ -606,6 +606,25 @@ static void swap_ab_sets_the_xbox_convention(void) {
     bind_reset(BIND_DEV_PAD);
 }
 
+static void guard_rebind_updates_hidden_lock_on(void) {
+    // Rebinding action 13 ("Guard / lock on") to R2 (SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER / rtrigger)
+    // must also make hidden action 29 (lock-on) follow R2 instead of staying on L2 (#1016).
+    act_reset();
+    int r2 = SDL_GAMEPAD_BUTTON_EAST;
+    int l2 = g_act_pad[13];
+    assert(l2 != r2);
+    act_set(BIND_DEV_PAD, 13, r2);
+    host(0, 0, 1u << r2);
+    act_poll(true);
+    assert(hold(13) == 1 && hold(29) == 1);
+    host(0, 0, 1u << l2);
+    act_poll(true);
+    assert(hold(13) == 0 && hold(29) == 0);
+    host(0, 0, 0);
+    act_poll(true);
+    act_reset();
+}
+
 int main(void) {
     static const uint32_t k_masks_190[ACT_COUNT] = {
         0x1, 0x2, 0x8, 0x10, 0x8, 0x1, 0x8, 0x2, 0x8, 0x2, 0x8, 0x8, 0x2, 0x4, 0x2, 0x40, 0x1, 0x80, 0x20, 0x8, 0x2,
@@ -631,6 +650,7 @@ int main(void) {
     swap_ab_sets_the_xbox_convention();
     names_and_groups();
     a_conversation_answer_does_not_jump();
+    guard_rebind_updates_hidden_lock_on();
     puts("action bindings: default fallthrough, custom host bindings, schema migration, held / pressed, menus, shared keys, pad capture, contexts, A / B swap, reset and ini passed");
     return 0;
 }
