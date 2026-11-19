@@ -1919,19 +1919,33 @@ static void perf_cell(const char *fmt, float v) {
 // While the free camera is on: a strip at the bottom with its keys (or the controller's). A picture saved: a notice
 // with a thumbnail in the bottom-right corner for a few seconds. Neither is in the picture (that is the game image).
 extern "C" bool freecam_active(void);
+extern "C" bool freecam_path_playing(void);
+extern "C" bool freecam_path_loop(void);
+extern "C" int freecam_keyframe_count(void);
+extern "C" float freecam_path_duration(void);
 extern "C" int photo_saved_seq(const char **path);
 static void photo_overlay_draw(ImGuiIO &io, float scale) {
     ImDrawList *dl = ImGui::GetForegroundDrawList();
-    if (freecam_active()) {
+    if (freecam_active() && !freecam_path_playing()) {
         const char *keys = input_last_device() == DEVICE_PAD
             ? tr("Both stick clicks: exit   Left stick: move   ZR / ZL: up, down   D-pad up: filter   D-pad left / right: hour   D-pad down: picture")
             : tr("Home: exit   W A S D: move   E / Q: up, down   Shift / Ctrl: faster, slower   F8: filter   [ ]: hour   F7: picture");
+        int nkf = freecam_keyframe_count();
+        char path_line[256];
+        if (input_last_device() == DEVICE_PAD)
+            snprintf(path_line, sizeof path_line, tr("Y: add keyframe (%d)   X: play path (%.1fs)   B: remove keyframe"), nkf, freecam_path_duration());
+        else
+            snprintf(path_line, sizeof path_line, tr("K: keyframe (%d)   Backspace: undo   C: clear   P: play (%.1fs)   O: loop (%s)   -/+: speed"),
+                     nkf, freecam_path_duration(), tr(freecam_path_loop() ? "On" : "Off"));
         float fs = ImGui::GetFontSize() * 0.8f;
-        ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0, keys);
-        float pad = 10 * scale, y = io.DisplaySize.y - ts.y - 3 * pad;
-        ImVec2 a((io.DisplaySize.x - ts.x) * 0.5f - pad, y - pad), b((io.DisplaySize.x + ts.x) * 0.5f + pad, y + ts.y + pad);
+        ImVec2 ts1 = ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0, keys);
+        ImVec2 ts2 = ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0, path_line);
+        float w = ts1.x > ts2.x ? ts1.x : ts2.x, h = ts1.y + ts2.y + 4 * scale;
+        float pad = 10 * scale, y = io.DisplaySize.y - h - 3 * pad;
+        ImVec2 a((io.DisplaySize.x - w) * 0.5f - pad, y - pad), b((io.DisplaySize.x + w) * 0.5f + pad, y + h + pad);
         dl->AddRectFilled(a, b, IM_COL32(0, 0, 0, 150), 6 * scale);
-        dl->AddText(ImGui::GetFont(), fs, ImVec2(a.x + pad, y), IM_COL32(240, 240, 230, 255), keys);
+        dl->AddText(ImGui::GetFont(), fs, ImVec2((io.DisplaySize.x - ts1.x) * 0.5f, y), IM_COL32(240, 240, 230, 255), keys);
+        dl->AddText(ImGui::GetFont(), fs, ImVec2((io.DisplaySize.x - ts2.x) * 0.5f, y + ts1.y + 4 * scale), IM_COL32(210, 210, 200, 255), path_line);
     }
     static int seen = -1;
     static uint64_t tex;

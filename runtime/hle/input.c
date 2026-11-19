@@ -240,6 +240,8 @@ static void recompute_pad(void) {
                             SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) / 32767.0f,
                             host >> SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER & 1, host >> SDL_GAMEPAD_BUTTON_LEFT_SHOULDER & 1);
                 photo_pad(host);  // (hle/photo.c: the d-pad's filter, hour and picture)
+                extern void freecam_pad_buttons(uint32_t buttons);
+                freecam_pad_buttons(host);
             }
             pad_buttons = 0;
             host_buttons = 0;  // (the bindings see nothing either: the free camera has the controller)
@@ -250,6 +252,7 @@ static void recompute_pad(void) {
         }
         freecam_pad(0, 0, 0, 0, 0, 0, false, false);
         photo_pad(0);
+        { extern void freecam_pad_buttons(uint32_t buttons); freecam_pad_buttons(0); }
     }
     host_buttons = host;
     recompute_motion();
@@ -721,7 +724,10 @@ void input_handle_event(const SDL_Event *e) {
             }
             if (freecam_active()) {
                 extern bool photo_key(int scancode);  // (hle/photo.c: filter, hour, picture)
-                if (e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat && photo_key(e->key.scancode)) break;
+                extern bool freecam_path_key(int scancode);
+                if (e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat &&
+                    (photo_key(e->key.scancode) || freecam_path_key(e->key.scancode)))
+                    break;
                 freecam_key(e->key.scancode, e->type == SDL_EVENT_KEY_DOWN);
                 break;
             }
