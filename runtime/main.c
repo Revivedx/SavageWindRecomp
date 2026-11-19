@@ -410,7 +410,8 @@ int main(int argc, char **argv) {
         else if (cmd && !strcmp(cmd, "setup") && argv[i][0] != '-' && !cmd_src[0]) {
             if (!realpath(argv[i], cmd_src)) { fprintf(cli_out, "savagewind setup: %s doesn't exist\n", argv[i]); return 2; }
         }
-        else if (!strcmp(argv[i], "--play")) skip_launcher = true;
+        else if (!strcmp(argv[i], "--play") || !strcmp(argv[i], "--skip-launcher") ||
+                 !strcmp(argv[i], "--no-launcher")) skip_launcher = true;
         else if (!strcmp(argv[i], "--config")) config = true;
         else if (!strcmp(argv[i], "--game")) {
             game_first = true;  // (the Steam entry: into the game when it's ready)
