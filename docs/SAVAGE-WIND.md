@@ -815,9 +815,9 @@ Pendiente:
        "High" (`medium` en el ini), sombras 2048; Savage: distancia "Savage" (`high` en el ini), sombras 4096. Lo que no
        coincide con ninguno se muestra como Personalizado. Bloom off (`bloom = 0`): los draws del bloom
        (`bloom_scale.h` `bloom_native_target`) limpian su imagen a negro en vez de dibujar; profundidad de campo off
-       (`depth_of_field = 0`): se salta el desenfoque lejano (fs f7731492223eb16a). Resolución dinámica
-       (`dynamic_resolution = 1`): los ReportCounter llevan su tiempo real y el juego baja su 3D de 1600x900 hacia
-       1280x720 cuando el fotograma tarda (como `SAVAGEWIND_VK_COUNTER=live`). Densidad de pasto: pendiente, no se
+       (`depth_of_field = 0`): se salta el desenfoque lejano (fs f7731492223eb16a). Resolución dinámica:
+       el modo Dynamic del escalador (nvn/output_scale.c, sigue la tasa de fotogramas); el `dynamic_resolution` viejo
+       (los ReportCounter del juego con su tiempo real, como `SAVAGEWIND_VK_COUNTER=live`) ya no se lee. Densidad de pasto: pendiente, no se
        encontró aún el draw de las hojas de pasto.
      - Giro de los cuerpos que mueve el juego (#209): las piezas "keyframed" (el suelo de una Bestia Divina al
        inclinarse, ascensores, puertas) reciben cada fotograma un objetivo (FUN_710130d19c, una matriz 3x4) y cada paso

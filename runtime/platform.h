@@ -76,6 +76,9 @@ void plat_init(void);                                // first thing in main()
 bool plat_exe_path(char *buf, size_t size);
 const char *plat_log_path(void);  // the log file this run writes ("": stderr goes to a console, pipe or file)
 void plat_exec(char *const argv[]);  // replace the process (NULL = same command line); returns only on failure
+// The same, keeping the exit status on Windows too (the new process's becomes this one's): only for restarts at
+// start-up, before a window or a lock is open, as the parent stays until the child ends there.
+void plat_exec_wait(char *const argv[]);
 #if defined(_WIN32) || defined(__linux__)
 void plat_terminate(void);  // end the process now, skipping DLL teardown (exit status 0)
 // Windows: false turns off the accessibility shortcuts (Shift five times: Sticky Keys) where their feature is off,
@@ -89,6 +92,9 @@ PlatProc plat_spawn(const char *const argv[], const char *log_path, bool append_
 int plat_proc_wait(PlatProc p, bool block);  // exit code, or -1 while still running (block = false)
 void plat_proc_kill(PlatProc p);             // end it and what it started (then it's gone: no wait)
 bool plat_remove_tree(const char *dir);      // rm -rf
+// The file at path written out to the disk (fsync), through a descriptor of its own: the file may be renamed or deleted
+// meanwhile (Windows: the handle shares delete). False if it can't be opened or flushed.
+bool plat_file_flush(const char *path);
 #ifdef _WIN32
 #define PLAT_EXE_SUFFIX ".exe"
 #define PLAT_VENV_PYTHON "venv/Scripts/python.exe"  // relative to the venv's parent

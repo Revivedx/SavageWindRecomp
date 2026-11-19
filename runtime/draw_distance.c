@@ -191,6 +191,7 @@ static float g_cone_from, g_cone_to, g_cone_k;
 // x, z the cell's offset from the camera, d2 its squared distance, a, b the view direction (float bits) -> the half
 // width to use. The far part, which lists cells ahead of the near one to make them early, keeps only CONE_AHEAD m.
 float rt_grass_blade_lateral(int part, float lim, float x, float z, float d2, uint32_t a_bits, uint32_t b_bits) {
+    if (!g_settings.grass) return -1.0f;  // (never inside: grass off)
     if (!g_cone || d2 <= g_cone_from * g_cone_from) return lim;  // (Original, Medium, and the game's own near cells)
     float ahead = g_cone_to + CONE_AHEAD;
     if (part == 1 && d2 > ahead * ahead) return -1.0f;  // (never inside)
@@ -216,6 +217,11 @@ int rt_grass_range(uint64_t cam, uint32_t cell_bits, uint32_t *s0, uint32_t *a, 
             LOG("[grass] %s: tan(fovy/2) %g, region %g m (the game's), furthest %g m\n", quads ? "crossed quads" : "blades",
                 t, 1 / (tt * p.f) - 1 / (tt * q.f), 1 / (x.f * p.f));
         }
+    }
+    if (!g_settings.grass) {
+        if (!quads) g_cone = 0;
+        *a = *b = 0x49742400;  // 1e6f: shrink grass region to 0 m
+        return 1;
     }
     float f = quads ? 1.0f : g_blades;
     if (!quads) {  // (the blades' cone, for rt_grass_blade_lateral: at High only, past the game's own near distance)
@@ -271,6 +277,7 @@ static uint32_t grass_fade(uint64_t mgr, uint32_t k, int quads) {
             }
         }
     }
+    if (!g_settings.grass) return 0x49742400;  // 1e6f: fade out immediately
     if (f == 1.0f) return k;  // (Original: the game's own, bit for bit)
     union { uint32_t u; float f; } x = {.u = k};
     if (x.f > 0 && x.f < 3.0e38f) x.f /= f;

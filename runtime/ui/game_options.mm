@@ -42,6 +42,7 @@ extern "C" {
 #include "../gamelib.h"
 #include "../color_grade.h"
 #include "../dlss_fetch.h"
+#include "../xess_fetch.h"
 #include "../pc_cursor.h"
 #include "../window_size.h"
 void guest_call(Cpu *, uint64_t);
@@ -52,6 +53,7 @@ void menu_size_list_open(void);             // menu.mm (Window size's list, over
 bool menu_size_list_up(void);
 bool renderer_gpu_rtx(void);                // vulkan/device.c, metal.m
 const char *vk_hdr_icc_description(void);   // runtime/nvn/vulkan/device.c
+bool vk_feedback_once(void);                // runtime/nvn/vulkan/exec.c (Scene copies; Vulkan only)
 }
 
 namespace {
@@ -144,7 +146,7 @@ const char *const k_perf[] = {"Off", "FPS", "Full"};
 #ifdef __APPLE__
 const int k_ups_value[] = {UPSCALE_OFF, UPSCALE_METALFX};
 #else
-const int k_ups_value[] = {UPSCALE_OFF, UPSCALE_FSR1, UPSCALE_FSR3, UPSCALE_FSR4, UPSCALE_DLSS};
+const int k_ups_value[] = {UPSCALE_OFF, UPSCALE_FSR1, UPSCALE_FSR3, UPSCALE_FSR4, UPSCALE_DLSS, UPSCALE_XESS};
 #endif
 #ifdef __APPLE__
 const int UPS_DEFAULT = 1;  // (UPSCALE_DEFAULT: MetalFX)
@@ -154,11 +156,14 @@ const int UPS_DEFAULT = 0;  // (UPSCALE_DEFAULT: Off, the window's resolution)
 std::vector<int> g_shown;   // per item: the value shown instead of get(), one that can't be picked yet (-1: none)
 const char16_t GREY = 3;    // (the game's message colour for greyed values)
 // (shown with Native first, largest to smallest: k_modes_order maps a row index to settings.h UPQ_*)
-const char *const k_modes[] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance", "Native"};
-const int k_modes_order[] = {UPQ_NATIVE, UPQ_ULTRA, UPQ_QUALITY, UPQ_BALANCED, UPQ_PERFORMANCE, UPQ_ULTRA_PERFORMANCE};
+const char *const k_modes[] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance", "Native", "Dynamic"};
+const int k_modes_order[] = {UPQ_NATIVE, UPQ_ULTRA, UPQ_QUALITY, UPQ_BALANCED, UPQ_PERFORMANCE, UPQ_ULTRA_PERFORMANCE,
+                             UPQ_DYNAMIC};
 int upscale_mode_base(void) {
-    return (g_settings.upscaler == UPSCALE_FSR3 || g_settings.upscaler == UPSCALE_FSR4) ? 0 : 1;
+    return rt_fsr3() || rt_xess() ? 0 : 1;
 }
+// (the last one, Dynamic, is the dynamic resolution)
+int upscale_mode_count(void) { return (int)(sizeof k_modes_order / sizeof k_modes_order[0]); }
 #ifdef __APPLE__
 const char *const k_aa[] = {"Off", "SMAA"};
 #else
@@ -202,6 +207,7 @@ static int fps_default_index() {
 }
 const char *const k_vsync[VSYNC_COUNT] = {"On", "Fast", "Adaptive", "Off"};  // (settings.h VSYNC_*)
 const char *const k_hdr[HDR_COUNT] = {"Automatic", "On", "Off"};               // (settings.h HDR_*)
+const char *const k_scene_copies[SCENE_COPIES_COUNT] = {"Automatic", "Fast", "Exact"};  // (settings.h SCENE_COPIES_*)
 const char *const k_fsmode[FSMODE_COUNT] = {"Automatic", "Borderless", "Exclusive"};  // (settings.h FSMODE_*)
 constexpr int k_sens[] = {10, 25, 50, 75, 100, 125, 150, 200, 250, 300, 400, 500, 600, 800, 1000};  // mouse sensitivity, %
 constexpr int SENS_DEFAULT = 9;  // (300%: MOUSE_SENS_DEFAULT)
@@ -303,6 +309,9 @@ const char *ups_label(const Item &, int x) {
     if (u == UPSCALE_FSR3) return upscaler_available(u) ? tr("AMD FSR 3") : soon("FSR 3");
     if (u == UPSCALE_FSR4)
         return upscaler_available(u) ? tr("AMD FSR 4") : soon("FSR 4", fsr4_offered() ? "(coming soon)" : "(AMD Radeon only)");
+    if (u == UPSCALE_XESS)
+        return upscaler_available(u) ? tr("Intel XeSS")
+               : soon("XeSS", xess_fetch_missing() ? "(download it in Savage Wind Configuration)" : "(libxess.dll needed)");
     if (upscaler_available(UPSCALE_DLSS)) {
         static std::string available;
         available = tr("DLSS");
@@ -828,6 +837,7 @@ void build_items(void) {
     v.back().desc_fn = [](const Item &) {  // (one line)
         return g_settings.upscaler == UPSCALE_FSR4 ? tr("AMD FSR 4: renders smaller, then rebuilds detail with machine learning.")
              : g_settings.upscaler == UPSCALE_FSR3 ? tr("AMD FSR 3: renders smaller, then rebuilds detail from past frames.")
+             : g_settings.upscaler == UPSCALE_XESS ? tr("Intel XeSS: renders smaller, then rebuilds detail with machine learning.")
                                                    : tr("Off: full resolution. AMD FSR 1: renders smaller, then upscales.");
     };
     // With Upscaler Off no mode applies: the row has the one value Off, greyed, so its arrows go nowhere (rt_opt_read
@@ -835,7 +845,7 @@ void build_items(void) {
     // before stays stored and comes back with an upscaler.
     Item mode = choice(P_VIDEO_ADV, "Upscaler mode", "",
                        [](const Item &) {
-                           return g_settings.upscaler == UPSCALE_OFF ? 1 : N(k_modes_order) - upscale_mode_base();
+                           return g_settings.upscaler == UPSCALE_OFF ? 1 : upscale_mode_count() - upscale_mode_base();
                        },
                        [](const Item &, int x) {
                            if (g_settings.upscaler == UPSCALE_OFF) return tr("Off");
@@ -844,11 +854,11 @@ void build_items(void) {
                        },
                        [](const Item &) {
                            if (g_settings.upscaler == UPSCALE_OFF) return 0;
-                           int base = upscale_mode_base();
+                           int base = upscale_mode_base(), end = upscale_mode_count();
                            int q = (g_settings.upscale_quality == UPQ_NATIVE && base)
                                        ? (int)UPQ_QUALITY
                                        : g_settings.upscale_quality;
-                           for (int i = base; i < N(k_modes_order); i++)
+                           for (int i = base; i < end; i++)
                                if (k_modes_order[i] == q) return i - base;
                            return 0;
                        },
@@ -905,9 +915,17 @@ void build_items(void) {
                        [](const Item &) { return g_settings.sharpening; },
                        [](const Item &, int x) { g_settings.sharpening = x; }, 0));
     // AMD FSR 3 frame generation (vulkan/framegen.cpp)
-    v.push_back(toggle(P_VIDEO_ADV, "Frame generation (AMD FSR 3)", "Twice the frames on screen. Adds a little delay.",
-                       [](const Item &) { return (int)g_settings.frame_gen; },
-                       [](const Item &, int x) { g_settings.frame_gen = x; }, 0));
+    Item fg = toggle(P_VIDEO_ADV, "Frame generation (AMD FSR 3)", "Twice the frames on screen. Adds a little delay.",
+                     [](const Item &) { return (int)g_settings.frame_gen; },
+                     [](const Item &, int x) { g_settings.frame_gen = x; }, 0);
+    fg.desc_fn = [](const Item &) {
+        if (dynamic_fg_no_gain())
+            return tr("No net gain here: the upscaler's Dynamic mode would switch this off.");
+        if (dynamic_fg_disabled())
+            return tr("The upscaler's Dynamic mode switched this off: no net gain.");
+        return tr("Twice the frames on screen. Adds a little delay.");
+    };
+    v.push_back(fg);
 #endif
     v.push_back(toggle(P_VIDEO_ADV, "Asynchronous shaders", "On: no stutter, but some effects appear late.",
                        [](const Item &) { return (int)g_settings.async_shaders; },
@@ -921,21 +939,31 @@ void build_items(void) {
                            return 1;
                        },
                        [](const Item &, int x) { g_settings.shadow_res = k_shadow_order[x]; }, 1));
-    // bloom's and the distance blur's draws (exec.c); dynamic resolution (CMD_REPORT_COUNTER); the air's haze
-    // (services/fs.c haze_patch, read at the start)
+    // bloom's and the distance blur's draws (exec.c); the air's haze (services/fs.c haze_patch, read at the start)
     v.push_back(toggle(P_VIDEO_ADV, "Bloom", "The glow around bright light. Off: a little faster.",
                        [](const Item &) { return (int)g_settings.bloom; },
                        [](const Item &, int x) { g_settings.bloom = x; }, 1));
     v.push_back(toggle(P_VIDEO_ADV, "Depth of field", "Blurs the far distance. Off: sharp out to the horizon.",
                        [](const Item &) { return (int)g_settings.depth_of_field; },
                        [](const Item &, int x) { g_settings.depth_of_field = x; }, 1));
-    v.push_back(toggle(P_VIDEO_ADV, "Dynamic resolution", "Lowers the 3D resolution when a frame takes long, as on the console.",
-                       [](const Item &) { return (int)g_settings.dynamic_res; },
-                       [](const Item &, int x) { g_settings.dynamic_res = x; }, 1));
+    v.push_back(toggle(P_VIDEO_ADV, "Grass", "Grass blades and ground cover. Off: bare terrain, faster.",
+                       [](const Item &) { return (int)g_settings.grass; },
+                       [](const Item &, int x) { g_settings.grass = x; }, 1));
+    v.push_back(toggle(P_VIDEO_ADV, "Lens flare", "Sun glare and lens flare. Off: no sun flare.",
+                       [](const Item &) { return (int)g_settings.lens_flare; },
+                       [](const Item &, int x) { g_settings.lens_flare = x; }, 1));
     if (gamelib_compat())  // (runtime/gamelib.h: a CPU without FMA instructions; simd.h simd_fma_unfused)
         v.push_back(toggle(P_VIDEO_ADV, "Fast math", "Your CPU has no FMA instructions. On: faster, some results round a tiny bit differently from the console.",
                            [](const Item &) { return (int)g_settings.fast_fma; },
                            [](const Item &, int x) { g_settings.fast_fma = x; }, 1));
+#ifndef __APPLE__  // (the Metal renderer; the macOS series, #782, calls it SW_METAL)
+    if (vk_feedback_once())  // (vulkan/exec.c resolve_feedback: graphics cards without feedback loops only)
+        v.push_back(choice(P_VIDEO_ADV, "Scene copies", "How often water, rain and glass get a new copy of the picture to refract. Exact: much slower; try it if water looks wrong.",
+                           [](const Item &) { return (int)SCENE_COPIES_COUNT; },
+                           [](const Item &, int x) { return tr(k_scene_copies[x]); },
+                           [](const Item &) { return g_settings.scene_copies >= 0 && g_settings.scene_copies < SCENE_COPIES_COUNT ? g_settings.scene_copies : 0; },
+                           [](const Item &, int x) { g_settings.scene_copies = x; }, SCENE_COPIES_AUTO));
+#endif
     v.push_back(choice(P_VIDEO_ADV, "Haze", "How hazy the air is. Lower: clearer distances. From the next start.",
                        [](const Item &) { return N(k_haze); },
                        [](const Item &, int x) {
@@ -1043,6 +1071,10 @@ void build_items(void) {
                        "Discord app on this computer only, and nothing runs while it is off.",
                        [](const Item &) { return (int)g_settings.discord_rpc; },
                        [](const Item &, int x) { g_settings.discord_rpc = x; }, 0));
+    v.push_back(toggle(P_GAMEPLAY, "Quick inventory replacement",
+                       "Choose equipment to drop when its inventory is full, then receive the new item. Requires game version 1.9.0.",
+                       [](const Item &) { return (int)g_settings.quick_replace; },
+                       [](const Item &, int x) { g_settings.quick_replace = x; }, 0));
 
     // Audio
     v.push_back(choice(P_AUDIO, "Volume", "The game's volume. 100% is its own level.",
@@ -1114,6 +1146,10 @@ void build_items(void) {
                        "In the game's menus, pressing past the last item goes to the first, and back.",
                        [](const Item &) { return (int)g_settings.menu_wrap; },
                        [](const Item &, int x) { g_settings.menu_wrap = x; }, 0));
+    v.push_back(toggle(P_CONTROLS, "Prompts follow action bindings",
+                       "In play, prompts show the buttons you bound, the rune's in its own spot.",
+                       [](const Item &) { return (int)g_settings.prompts_follow; },
+                       [](const Item &, int x) { g_settings.prompts_follow = x; }, 0));
     for (int s = 0; s < 2; s++)  // (runtime/hle/input.c dead_zone)
         v.push_back(choice(P_CONTROLS, s ? "Right stick dead zone" : "Left stick dead zone",
                            "How far the stick must move before it counts. Raise it if the stick drifts.",
@@ -1368,6 +1404,26 @@ void build_items(void) {
     v.push_back(toggle(P_ACCESS, "Infinite stamina", "The stamina wheel never runs out.",
                        [](const Item &) { return (int)g_settings.infinite_stamina; },
                        [](const Item &, int x) { g_settings.infinite_stamina = x; }, 0));
+    v.push_back(toggle(P_ACCESS, "Toggle shield / focus (ZL)",
+                       "Press ZL once in play to hold your shield or lock on; press ZL again to release.",
+                       [](const Item &) { return (int)g_settings.toggle_zl; },
+                       [](const Item &, int x) { g_settings.toggle_zl = x; }, 0));
+    v.push_back(toggle(P_ACCESS, "Toggle bow aim (ZR)",
+                       "Press ZR once in play to draw and hold your bow; press ZR again to shoot.",
+                       [](const Item &) { return (int)g_settings.toggle_zr; },
+                       [](const Item &, int x) { g_settings.toggle_zr = x; }, 0));
+    {
+        static const int k_text_sizes[] = {80, 90, 100, 110, 120, 130, 140, 150};
+        v.push_back(choice(P_ACCESS, "Overlay text size", "Scale of the text and controls in this F1 overlay.",
+                           [](const Item &) { return N(k_text_sizes); },
+                           [](const Item &, int x) {
+                               static std::string s;
+                               s = pct(k_text_sizes[x]);
+                               return s.c_str();
+                           },
+                           [](const Item &) { return nearest(k_text_sizes, N(k_text_sizes), (float)g_settings.menu_text_size); },
+                           [](const Item &, int x) { g_settings.menu_text_size = k_text_sizes[x]; }, 2));
+    }
 
 }
 

@@ -23,6 +23,7 @@
 
 #include "../hle.h"
 #include "../kernel.h"
+#include "../mods.h"
 #include "../settings.h"
 
 #define MOVIE_EOS 4u
@@ -230,12 +231,10 @@ static void ex_set_data_source(Cpu *c) {
         snprintf(host, sizeof host, "%.*saoc%d/%s", dir, g_romfs_dir, i, rel);
     }
     if (rel && access(host, R_OK)) snprintf(host, sizeof host, "%s/%s", g_romfs_dir, rel);
-    // the RomFS overlay's copy first (SAVAGEWIND_ROMFS_OVERLAY, services/fs.c): movies are read from the host
-    const char *ov = getenv("SAVAGEWIND_ROMFS_OVERLAY");
-    if (ov && *ov && rel) {
+    // Active RomFS mod/overlay layers take precedence over base/DLC RomFS
+    if (rel) {
         char alt[1024];
-        snprintf(alt, sizeof alt, "%s/%s", ov, rel);
-        if (access(alt, R_OK) == 0) snprintf(host, sizeof host, "%s", alt);
+        if (mods_find_file("", rel, alt, sizeof alt, NULL, 0)) snprintf(host, sizeof host, "%s", alt);
     }
     LOG("[movie] open %s -> %s\n", path ? path : "(null)", host);
     if (avformat_open_input(&e->fmt, host, NULL, NULL) < 0 || avformat_find_stream_info(e->fmt, NULL) < 0) {

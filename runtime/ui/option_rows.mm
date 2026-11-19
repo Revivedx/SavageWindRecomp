@@ -146,21 +146,41 @@ static int row(const char *label, const std::string &value, bool changed, const 
     return step;
 }
 
-bool opt_toggle(const char *label, bool *v, bool def, const char *desc) {
-    if (!row(label, tr(*v ? "On" : "Off"), *v != def, desc)) return false;  // (any step flips it)
+static bool toggle_row(const char *label, bool *v, const char *value, bool changed, const char *desc, bool upper) {
+    if (!row(label, value, changed, desc, upper)) return false;  // (any step flips it)
     *v = !*v;
     return true;
 }
 
-bool opt_choice(const char *label, int *v, const char *const *names, int n, int def, const char *desc, bool wrap) {
+bool opt_toggle(const char *label, bool *v, bool def, const char *desc) {
+    return toggle_row(label, v, tr(*v ? "On" : "Off"), *v != def, desc, true);
+}
+
+bool opt_toggle_item(const char *label, bool *v, const char *value_override, const char *desc) {
+    return toggle_row(label, v, value_override ? value_override : tr(*v ? "On" : "Off"), *v, desc, false);
+}
+
+static bool choice_row(const char *label, int *v, const char *const *names, int n, int def, const char *desc, bool wrap,
+                       bool upper, bool translate_names) {
+    if (n <= 0) return false;
     int cur = *v >= 0 && *v < n ? *v : 0;
-    int step = row(label, tr(names[cur]), cur != def, desc, true, true);
+    const char *raw = names[cur] ? names[cur] : "";
+    int step = row(label, translate_names ? tr(raw) : raw, cur != def, desc, upper, true);
     if (!step) return false;
     int nv = cur + (step == 2 ? 1 : step);
     nv = wrap ? (nv + n) % n : nv < 0 ? 0 : nv >= n ? n - 1 : nv;
     if (nv == cur) return false;
     *v = nv;
     return true;
+}
+
+bool opt_choice(const char *label, int *v, const char *const *names, int n, int def, const char *desc, bool wrap) {
+    return choice_row(label, v, names, n, def, desc, wrap, true, true);
+}
+
+bool opt_choice_item(const char *label, int *v, const char *const *names, int n, int def, const char *desc, bool wrap,
+                     bool upper) {
+    return choice_row(label, v, names, n, def, desc, wrap, upper, false);
 }
 
 static bool list_row(const char *label, int *v, const char *const *names, int n, int def, const char *desc, bool *picked,

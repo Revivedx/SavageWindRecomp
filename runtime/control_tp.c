@@ -151,6 +151,8 @@ static void start_round(uint64_t frame, bool first) {
 }
 
 void control_tp_frame(uint64_t frame) {
+    extern bool control_tp_poll_ui(uint64_t frame);
+    control_tp_poll_ui(frame);
     const float *pp = pinfo_pos();
     if (land_until) {
         if (pp && plat_now_ns() < land_until && state != HOLD) land_follow(pp);
@@ -233,6 +235,92 @@ static void status_fields(ControlReply *r) {
     if (pp) { control_field_num(r, "x", pp[0]); control_field_num(r, "y", pp[1]); control_field_num(r, "z", pp[2]); }
 }
 
+static _Atomic int ui_req_pending;
+static float ui_req_pos[3];
+
+static bool tp_begin(const float t[3], uint64_t frame, char *err, size_t nerr) {
+    const float *pp = pinfo_pos();
+    if (!pp) { snprintf(err, nerr, "No world loaded"); return false; }
+    if (state == SCAN || state == PROBE || state == TEST || state == VERIFY || state == HOLD) {
+        snprintf(err, nerr, "Teleport in progress");
+        return false;
+    }
+    memcpy(target, t, sizeof target);
+    then_look.have = false;   // (a plain teleport turns nothing; goto sets this after it starts one)
+    float d = hypotf(t[0] - pp[0], t[2] - pp[2]);
+    if (d < 0.05f && fabsf(t[1] - pp[1]) < 0.05f) {
+        snprintf(err, nerr, "Already at that position");
+        return false;
+    }
+    ttol = fmaxf(0.01f, fminf(2.0f, 0.25f * fmaxf(d, 0.2f)));  // (a copy that did not move is d away; the real one is at the target)
+    why[0] = 0; tried = 0;
+    want_hold = d >= HOLD_DIST || fabsf(t[1] - pp[1]) >= 4.0f * HOLD_DIST;
+    if (want_hold) { atomic_store(&ready_run, 0); atomic_store(&hold_updates, 0); atomic_store(&hold_on, 1); }  // (before the write: the next update must not see the far position first)
+    float at[3];
+    uint64_t pa = path_addr();
+    if (pa) cache = pa;  // (the direct route: no search)
+    if (cache && control_mem_peek(cache, at, sizeof at) && near_pos(at, pp, 1.0f)) {
+        memcpy(orig[0], at, sizeof at);
+        if (control_mem_poke(cache, target, sizeof target)) {
+            if (want_hold) atomic_store(&hold_cell, cache);
+            stamp(frame); state = VERIFY;
+            return true;
+        }
+    }
+    cache = 0;
+    if (!control_mem_find_vec3_start(pp, 0.001f)) {
+        hold_stop();
+        snprintf(err, nerr, "Position search busy");
+        return false;
+    }
+    state = SCAN;
+    return true;
+}
+
+bool control_tp_poll_ui(uint64_t frame) {
+    if (!atomic_load_explicit(&ui_req_pending, memory_order_acquire)) return false;
+    if (state == SCAN || state == PROBE || state == TEST || state == VERIFY || state == HOLD) return false;
+    float t[3];
+    memcpy(t, ui_req_pos, sizeof t);
+    atomic_store_explicit(&ui_req_pending, 0, memory_order_release);
+    char err[200] = "";
+    if (!tp_begin(t, frame, err, sizeof err)) finish(FAILED, err);
+    return true;
+}
+
+bool control_tp_link_pos(float pos[3]) {
+    const float *pp = pinfo_pos();
+    if (!pp) return false;
+    memcpy(pos, pp, 3 * sizeof(float));
+    return true;
+}
+
+bool control_tp_request(float x, float y, float z) {
+    if (atomic_load_explicit(&ui_req_pending, memory_order_acquire)) return false;
+    if (state == SCAN || state == PROBE || state == TEST || state == VERIFY || state == HOLD) return false;
+    ui_req_pos[0] = x; ui_req_pos[1] = y; ui_req_pos[2] = z;
+    atomic_store_explicit(&ui_req_pending, 1, memory_order_release);
+    return true;
+}
+
+int control_tp_status(char *buf, size_t n) {
+    if (atomic_load_explicit(&ui_req_pending, memory_order_acquire) ||
+        state == SCAN || state == PROBE || state == TEST || state == VERIFY || state == HOLD) {
+        if (buf && n) snprintf(buf, n, "%s", state == HOLD ? "Loading ground at destination..." : "Teleporting...");
+        return 1;
+    }
+    if (state == DONE) {
+        if (buf && n) snprintf(buf, n, "%s", why[0] ? why : "Arrived");
+        return 2;
+    }
+    if (state == FAILED) {
+        if (buf && n) snprintf(buf, n, "%s", why[0] ? why : "Teleport failed");
+        return 3;
+    }
+    if (buf && n) buf[0] = 0;
+    return 0;
+}
+
 // teleport <x> <y> <z> | teleport status | teleport forget
 static void cmd_teleport(int argc, char **argv, ControlReply *r) {
     uint64_t frame = renderer_present_count();
@@ -243,35 +331,8 @@ static void cmd_teleport(int argc, char **argv, ControlReply *r) {
         control_fail(r, "Usage: teleport <x> <y> <z> | status | forget");
         return;
     }
-    const float *pp = pinfo_pos();
-    if (!pp) { control_fail(r, "No world loaded"); return; }
-    if (state == SCAN || state == PROBE || state == TEST || state == VERIFY) { control_fail(r, "Teleport in progress"); return; }
-    memcpy(target, t, sizeof target);
-    then_look.have = false;   // (a plain teleport turns nothing; goto sets this after it starts one)
-    {
-        float d = hypotf(t[0] - pp[0], t[2] - pp[2]);
-        if (d < 0.05f) { control_fail(r, "Distance below 0.05"); return; }
-        ttol = fmaxf(0.01f, fminf(2.0f, 0.25f * d));  // (a copy that did not move is d away; the real one is at the target)
-    }
-    why[0] = 0; tried = 0;
-    {
-        float d = hypotf(t[0] - pp[0], t[2] - pp[2]);
-        want_hold = d >= HOLD_DIST || fabsf(t[1] - pp[1]) >= 4.0f * HOLD_DIST;
-        if (want_hold) { atomic_store(&ready_run, 0); atomic_store(&hold_updates, 0); atomic_store(&hold_on, 1); }  // (before the write: the next update must not see the far position first)
-    }
-    float at[3];
-    uint64_t pa = path_addr();
-    if (pa) cache = pa;  // (the direct route: no search)
-    if (cache && control_mem_peek(cache, at, sizeof at) && near_pos(at, pp, 1.0f)) {
-        memcpy(orig[0], at, sizeof at);
-        if (control_mem_poke(cache, target, sizeof target)) {
-            if (want_hold) atomic_store(&hold_cell, cache);
-            stamp(frame); state = VERIFY; status_fields(r); return;
-        }
-    }
-    cache = 0;
-    if (!control_mem_find_vec3_start(pp, 0.001f)) { hold_stop(); control_fail(r, "Position search busy"); return; }
-    state = SCAN;
+    char err[200] = "";
+    if (!tp_begin(t, frame, err, sizeof err)) { control_fail(r, "%s", err); return; }
     status_fields(r);
 }
 

@@ -20,6 +20,7 @@
 #include "../hw_illust.h"
 #include "../renderer.h"
 #include "../../platform.h"
+#include "../text_redraw.h"
 #include "../text_upscale.h"
 
 // ================================================================== formats
@@ -413,8 +414,9 @@ VkFormat vk_view_format(TexBackend *b, VkFormat want) {
 // A HUD button drawing (glyphs_apply_layout)? Sharper menus must leave those alone, or they keep the Switch's icons (#613).
 // They are recognised deswizzled, so the check can't be made on the texels as stored.
 static bool hud_button_texture(NvnTexture *t) {
-    if (t->format != 0x01 || t->width > 100 || t->height > 100) return false;
+    if (t->format != 0x01 || t->width > 100 || t->height > 100 || t->target != 1 || !t->addr) return false;
     LevelLayout l = tegra_level(&t->layout, 0);
+    if (l.d > 1) return false;  // (the buffer below holds one 2D level: a small R8 volume overran it)
     uint8_t *lin = malloc((uint64_t)l.wb * l.hb);
     if (!lin) return false;
     tegra_deswizzle((const uint8_t *)(uintptr_t)t->addr, lin, l.wb, l.hb, l.d, 1, l.block_height_log2, l.block_depth_log2);
@@ -533,11 +535,14 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     // Gameplay > Sharper text: a font sheet of the game (BC4, or R8 for NormalS_00) gets an image larger than the game
     // knows of. Its texture coordinates are fractions of the sheet, so nothing else changes.
     b->text_scale = 0;
+    b->text_info = NULL;
+    b->text_wait = 0;
     uint64_t sheet_bytes = (uint64_t)t->width * t->height / (t->format == 0x49 ? 2 : 1);
     if (g_settings.sharper_text && !b->gpu_bc4 && (t->format == 0x49 || t->format == 0x01) && t->pool &&
         t->layout.levels == 1 && t->addr >= t->pool->storage && t->addr + sheet_bytes <= t->pool->storage + t->pool->size &&
         text_sheet_known((const uint8_t *)(uintptr_t)t->addr, sheet_bytes)) {
         b->text_scale = (uint8_t)g_settings.sharper_text;
+        b->text_info = text_sheet_info((const uint8_t *)(uintptr_t)t->addr, sheet_bytes);
         b->bc4_cpu = t->format == 0x49;
         vf = VK_FORMAT_R8_UNORM;
         LOG("[vk] sharper text: font sheet %ux%u (nvn %#x) enlarged %ux\n", t->width, t->height, t->format, b->text_scale);
@@ -563,6 +568,25 @@ static void create_image(NvnTexture *t, TexBackend *b) {
         tw *= b->text_scale;
         th *= b->text_scale;
         levels = b->text_scale == 4 ? 3 : 2;
+    }
+    // Gameplay > Sharper text, the button icons: glyphs.c draws their sheet (External_00), and the HUD's own button
+    // textures (the action prompt's button, 48x48, shown at about 56 pixels at 1440p), at the larger size instead of
+    // enlarging them, so they get an image of that size, with mip levels like the font sheets
+    b->glyph_scale = 0;
+    bool glyph_sheet = g_settings.sharper_text && t->format == 0x49 && t->pool &&
+                       glyphs_sheet_known(t->addr, t->pool->storage, t->pool->storage + t->pool->size, t->format, t->width, t->height);
+    bool hud_icon = g_settings.sharper_text && !glyph_sheet && t->format == 0x01 && !nvn_texture_flags_pitch(t->flags) && t->pool &&
+                    t->addr >= t->pool->storage && t->addr + tegra_layer_size(&t->layout) <= t->pool->storage + t->pool->size &&
+                    hud_button_texture(t);
+    if (!b->text_scale && g_settings.sharper_text && !b->gpu_bc4 && t->layout.levels == 1 && (glyph_sheet || hud_icon)) {
+        b->glyph_scale = (uint8_t)g_settings.sharper_text;
+        b->bc4_cpu = glyph_sheet;
+        vf = VK_FORMAT_R8_UNORM;
+        LOG("[vk] sharper text: button %s %ux%u drawn %ux\n", glyph_sheet ? "glyph sheet" : "texture", t->width, t->height,
+            b->glyph_scale);
+        tw *= b->glyph_scale;
+        th *= b->glyph_scale;
+        levels = b->glyph_scale == 4 ? 3 : 2;
     }
     b->heart_half = !b->text_scale && !b->scalable && heart_half_texture(t);
     if (b->heart_half) {
@@ -1365,7 +1389,15 @@ static void upload_text_sheet(VkCommandBuffer cb, NvnTexture *t, TexBackend *b, 
     if (bc4) bc4_channel(blocks, l->wb, l->hb, stride, 0, plain);
     else memcpy(plain, blocks, (uint64_t)pw * ph);
     // (the menus' textures are shapes and glows, not a letter's coverage: interpolated only, no edges redrawn)
-    if (!text_upscale(plain, pw, ph, s, bc4 && !b->menu_tex, big)) memset(big, 0, (uint64_t)dw * dh);
+    const TextSheetInfo *ti = b->text_info;  // (NULL for the menus')
+    if (!text_upscale(plain, pw, ph, s, bc4 && !b->menu_tex, ti ? ti->cell_w : 0, ti ? ti->cell_h : 0, big))
+        memset(big, 0, (uint64_t)dw * dh);
+    // (the glyphs drawn again from their outlines, before the lower levels are made from them. Until those are made,
+    // the sheet goes up as enlarged, and again once they are: vk_tex.)
+    if (ti) {
+        uint32_t gen = text_redraw_generation();  // (before: outlines made meanwhile still move it on)
+        if (text_redraw_sheet(ti, layer, plain, pw, ph, big, s, vk_cache_dir()) < 0) b->text_wait = gen;
+    }
     uint64_t at = 0;
     for (uint32_t lv = 0; lv < nlevels; lv++) {
         uint32_t w = dw >> lv, h = dh >> lv;
@@ -1409,6 +1441,62 @@ static void upload_heart_half(VkCommandBuffer cb, NvnTexture *t, TexBackend *b, 
     rec_CmdCopyBufferToImage(cb, out.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
 }
 
+// Sharper text, the button glyph sheet (BC4) or one of the HUD's button textures (R8): drawn glyph_scale times larger
+// (glyphs_draw_sheet, glyphs_draw_layout), and their mip levels down to the game's size (drawn smaller than the larger
+// image, they would alias without them)
+static void upload_glyph_sheet(VkCommandBuffer cb, NvnTexture *t, TexBackend *b, const LevelLayout *l, const uint8_t *src, bool linear) {
+    bool bc4 = t->format == 0x49;
+    uint32_t k = b->glyph_scale, bpb = bc4 ? 8 : 1, dw = l->wb * (bc4 ? 4 : 1) * k, dh = l->hb * (bc4 ? 4 : 1) * k;
+    uint8_t *blocks = malloc((uint64_t)l->wb * l->hb * bpb), *big = calloc((uint64_t)dw * dh, 1);
+    if (!blocks || !big) { free(blocks); free(big); return; }
+    if (linear) for (uint32_t y = 0; y < l->hb; y++) memcpy(blocks + (uint64_t)y * l->wb * bpb, src + (uint64_t)y * t->stride, l->wb * bpb);
+    else tegra_deswizzle(src, blocks, l->wb, l->hb, 1, bpb, l->block_height_log2, l->block_depth_log2);
+    if (bc4)
+        glyphs_draw_sheet(t->addr, t->pool->storage, t->pool->storage + t->pool->size, t->format, t->width, t->height, blocks,
+                          l->wb, l->hb, k, big);
+    else glyphs_draw_layout(l->wb, l->hb, blocks, l->wb, k, big);
+    b->glyph_gen = glyphs_generation();
+    free(blocks);
+    uint64_t total = 0;
+    for (uint32_t lv = 0; lv < b->levels; lv++) total += (uint64_t)(dw >> lv) * (dh >> lv);
+    VkSpan out = vk_transient(total, 16);
+    uint64_t at = 0;
+    for (uint32_t lv = 0; lv < b->levels; lv++) {
+        uint32_t w = dw >> lv, h = dh >> lv;
+        memcpy((uint8_t *)out.ptr + at, big, (uint64_t)w * h);
+        VkBufferImageCopy rg = {.bufferOffset = out.off + at, .bufferRowLength = w, .bufferImageHeight = h,
+                                .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv, 0, 1},
+                                .imageExtent = {w < level_w(b, lv) ? w : level_w(b, lv), h < level_h(b, lv) ? h : level_h(b, lv), 1}};
+        rec_CmdCopyBufferToImage(cb, out.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+        at += (uint64_t)w * h;
+        if (lv + 1 < b->levels)  // (2 x 2 texels -> 1, in place: each row is read before it is overwritten)
+            for (uint32_t y = 0; y < h / 2; y++)
+                for (uint32_t x = 0; x < w / 2; x++) {
+                    const uint8_t *a = big + (uint64_t)y * 2 * w + x * 2, *z = a + w;
+                    big[(uint64_t)y * (w / 2) + x] = (uint8_t)((a[0] + a[1] + z[0] + z[1] + 2) / 4);
+                }
+    }
+    free(big);
+}
+
+// Its sampler (exec.c): filtering between those levels, which the game's own sampler for it doesn't. Biased half a
+// level towards the larger ones: at 1440p a menu's icons are 1.35 times the game's sheet, and unbiased the 1x level
+// made up half of what they showed (edges 1.8 pixels wide against 1.4); a whole level sharpened them a little more
+// but brought back stair steps on round edges.
+VkSampler vk_glyph_sampler(void) {
+    static VkSampler s;
+    if (!s) {
+        VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = VK_FILTER_LINEAR,
+                                  .minFilter = VK_FILTER_LINEAR, .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+                                  .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                                  .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                                  .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .mipLodBias = -0.5f,
+                                  .maxLod = VK_LOD_CLAMP_NONE};
+        VK_CHECK(vkCreateSampler(g_vk.dev, &si, NULL, &s));
+    }
+    return s;
+}
+
 // Guest memory -> image for the levels in level_mask (bit per level), every layer or slice.
 static void upload_levels(NvnTexture *t, TexBackend *b, uint32_t level_mask) {
     const FormatInfo *fi = t->layout.fmt;
@@ -1427,6 +1515,10 @@ static void upload_levels(NvnTexture *t, TexBackend *b, uint32_t level_mask) {
             LevelLayout l = tegra_level(&t->layout, lv);
             if (b->heart_half) {
                 upload_heart_half(cb, t, b, &l, (const uint8_t *)(uintptr_t)t->addr + layer * layer_size + l.offset, layer);
+                continue;
+            }
+            if (b->glyph_scale) {
+                upload_glyph_sheet(cb, t, b, &l, (const uint8_t *)(uintptr_t)t->addr + l.offset, linear);
                 continue;
             }
             if (b->text_scale) {
@@ -1694,6 +1786,10 @@ TexBackend *vk_tex(NvnTexture *t, bool for_render) {
         vk_trace_event(t, 1, NULL, 0, "use: CPU-owned, uploaded %d dynamic %d", b->uploaded, b->dynamic);
     if (b->pending_rgba) upload_pending(b);
     if (b->glyph_gen && b->glyph_gen != glyphs_generation()) upload_levels(t, b, 1);  // (button icons: other device)
+    if (b->text_wait && b->text_wait != text_redraw_generation()) {  // (a font sheet: outlines made since, text_redraw.c)
+        b->text_wait = 0;
+        upload_levels(t, b, ~0u);
+    }
     // Levels nvnTextureWriteTexels filled go up now, also into an image the GPU draws into: BOTW writes level 0 of its
     // 32x32x32 noise that way and then renders the smaller levels from it (the noise stayed black: GPU-owned images
     // never read guest memory again).
@@ -2132,7 +2228,7 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
     uint32_t ly0 = v && (v->setmask & 2) ? v->min_layer : 0;
     uint32_t nly = v && (v->setmask & 2) && v->num_layers ? v->num_layers : b->layers - (ly0 < b->layers ? ly0 : 0);
     if (lv0 >= b->levels) lv0 = b->levels - 1;
-    if (b->text_scale) nlv = b->levels;  // (the mip levels the game doesn't know of: create_image)
+    if (b->text_scale || b->glyph_scale) nlv = b->levels;  // (the mip levels the game doesn't know of: create_image)
     if (lv0 + nlv > b->levels) nlv = b->levels - lv0;
     if (ly0 >= b->layers) ly0 = b->layers - 1;
     if (ly0 + nly > b->layers) nly = b->layers - ly0;
@@ -2416,12 +2512,15 @@ static VkSampler sampler_create(const NvnSamplerDesc *d, float aniso) {
     return s;
 }
 
-// An enlarged font sheet (Gameplay > Sharper text): the game samples its fonts without mip levels, these have some
+// An enlarged font sheet (Gameplay > Sharper text): the game samples its fonts without mip levels, these have some.
+// Biased half a level toward the larger ones: the redrawn letters' edges stay crisp where text is drawn a little smaller
+// than a level (tried in game at 1440p: 0 is softer, -1 may shimmer when text moves).
 VkSampler vk_text_sampler(void) {
     static VkSampler s;
     if (!s) {
         VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = VK_FILTER_LINEAR,
                                   .minFilter = VK_FILTER_LINEAR, .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+                                  .mipLodBias = -0.5f,
                                   .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
                                   .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
                                   .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .maxLod = VK_LOD_CLAMP_NONE};

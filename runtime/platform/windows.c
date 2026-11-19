@@ -3,6 +3,7 @@
 #include <wingdi.h>
 #include <wchar.h>
 #include <pthread.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -566,8 +567,9 @@ static void append_arg(char *out, size_t cap, const char *a) {
     out[n] = 0;
 }
 
-// No exec() on Windows: start the new process with the same console / standard handles, then exit.
-void plat_exec(char *const argv[]) {
+// No exec() on Windows: start the new process with the same console / standard handles, then exit. wait: stay until
+// it ends and exit with its status, as exec keeps it on POSIX (plat_exec_wait).
+static void exec_self(char *const argv[], bool wait) {
     STARTUPINFOW si = {.cb = sizeof si};
     PROCESS_INFORMATION pi;
     BOOL ok;
@@ -585,9 +587,17 @@ void plat_exec(char *const argv[]) {
     }
     if (!ok) return;
     CloseHandle(pi.hThread);
+    DWORD status = 0;
+    if (wait && WaitForSingleObject(pi.hProcess, INFINITE) == WAIT_OBJECT_0) GetExitCodeProcess(pi.hProcess, &status);
     CloseHandle(pi.hProcess);
-    ExitProcess(0);
+    ExitProcess(status);
 }
+
+void plat_exec(char *const argv[]) { exec_self(argv, false); }
+
+// (start-up restarts only, before anything is open: the guest range taken by chance, the saved launch options. The
+// exit status was always 0 there, so a command line command or a launcher saw success for a failure, now and then.)
+void plat_exec_wait(char *const argv[]) { exec_self(argv, true); }
 
 // ---- diagnostics
 // DLL frames are named module+offset; frames in our own executable are left to the caller, which maps
@@ -910,6 +920,22 @@ bool plat_remove_tree(const char *dir) {
     for (wchar_t *p = w; *p; p++) if (*p == L'/') *p = L'\\';
     SHFILEOPSTRUCTW op = {.wFunc = FO_DELETE, .pFrom = w, .fFlags = FOF_NO_UI};
     return SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted;
+}
+
+bool plat_file_flush(const char *path) {
+    wchar_t w[MAX_PATH + 1];
+    if (MultiByteToWideChar(CP_UTF8, 0, path, -1, w, MAX_PATH + 1) <= 1) return false;
+    HANDLE h = CreateFileW(w, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        DWORD e = GetLastError();
+        errno = e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND ? ENOENT : EACCES;
+        return false;
+    }
+    bool ok = FlushFileBuffers(h);
+    if (!ok) errno = EIO;
+    CloseHandle(h);
+    return ok;
 }
 
 // Windows' accessibility shortcuts while the game has the focus: pressing Shift five times (Sticky Keys), holding the

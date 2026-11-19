@@ -8,21 +8,26 @@ enum { UPSCALE_OFF = 0, UPSCALE_METALFX = 1 /* macOS */, UPSCALE_FSR1 = 2 /* AMD
        UPSCALE_FSR3 = 3 /* AMD FSR 3.1, Vulkan where built in (vulkan/fsr3.h) */,
        UPSCALE_DLSS = 4 /* NVIDIA DLSS: Windows, NVIDIA RTX and NVIDIA's DLL (vulkan/dlss.c) */,
        UPSCALE_FSR4 = 5 /* AMD FSR 4, Vulkan on Windows with AMD's DLLs and an AMD Radeon (vulkan/fsr_api.h) */,
+       UPSCALE_XESS = 6 /* Intel XeSS, Vulkan on Windows with libxess.dll (vulkan/xess.h) */,
        UPSCALE_COUNT };
 #ifdef __APPLE__
 #define UPSCALE_SPATIAL UPSCALE_METALFX  // each OS's spatial upscaler
 #define UPSCALE_FSR3_OR_SPATIAL UPSCALE_METALFX  // (a settings file from another OS)
 #define UPSCALE_FSR4_OR_SPATIAL UPSCALE_METALFX
+#define UPSCALE_XESS_OR_SPATIAL UPSCALE_METALFX
 #define UPSCALE_DEFAULT UPSCALE_METALFX  // (Metal has no internal resolution yet: MetalFX scales the image to the window)
 #else
 #define UPSCALE_SPATIAL UPSCALE_FSR1
 #define UPSCALE_FSR3_OR_SPATIAL UPSCALE_FSR3
 #define UPSCALE_FSR4_OR_SPATIAL UPSCALE_FSR4  // (without FSR 4 on this PC: vulkan/device.c moves it to FSR 3 or 1)
+#define UPSCALE_XESS_OR_SPATIAL UPSCALE_XESS  // (without libxess.dll on this PC: device.c moves it to FSR 3 or 1)
 #define UPSCALE_DEFAULT UPSCALE_OFF      // the 3D image at the window's resolution
 #endif
 // quality modes, AMD's scale factors (per axis): Ultra Quality 1.3, Quality 1.5, Balanced 1.7, Performance 2.0,
-// Ultra Performance 3.0, Native 1.0 (FSR 3 / FSR 4)
-enum { UPQ_ULTRA = 0, UPQ_QUALITY = 1, UPQ_BALANCED = 2, UPQ_PERFORMANCE = 3, UPQ_ULTRA_PERFORMANCE = 4, UPQ_NATIVE = 5, UPQ_COUNT };
+// Ultra Performance 3.0, Native 1.0 (FSR 3 / FSR 4). Dynamic is the frame-rate-following mode: it is only offered
+// while Video > Advanced > Dynamic resolution is on (one setting, two shapes - see nvn/output_scale.c).
+enum { UPQ_ULTRA = 0, UPQ_QUALITY = 1, UPQ_BALANCED = 2, UPQ_PERFORMANCE = 3, UPQ_ULTRA_PERFORMANCE = 4,
+       UPQ_NATIVE = 5, UPQ_DYNAMIC = 6, UPQ_COUNT };
 // TAA (Vulkan): the game's own motion vectors (vulkan/mvec.c) and a jittered camera (output_scale.c rt_jitter_on)
 // blend each frame with the ones before it (vulkan/exec.c mvec_taa)
 enum { AA_OFF = 0, AA_SMAA = 1, AA_TAA = 2 };
@@ -63,6 +68,10 @@ enum { VSYNC_ON = 0, VSYNC_FAST = 1, VSYNC_ADAPTIVE = 2, VSYNC_OFF = 3, VSYNC_CO
 // takes it), Off never (an SDR picture, which Windows shows dim and dull while its HDR is on)
 enum { HDR_AUTO = 0, HDR_ON = 1, HDR_OFF = 2, HDR_COUNT };
 enum { SPARSE_HEAP_AUTO = 0, SPARSE_HEAP_ON = 1, SPARSE_HEAP_OFF = 2, SPARSE_HEAP_COUNT };
+// Video > Scene copies (vulkan/exec.c resolve_feedback): on graphics cards without Vulkan feedback loops, how often the
+// copy of the 3D image that water, waterfalls, rain and glass refract is made again. Fast: once a frame for each effect
+// that reads it; Exact: after every later pass that drew into it (#848), many more copies; Automatic: Fast.
+enum { SCENE_COPIES_AUTO = 0, SCENE_COPIES_FAST = 1, SCENE_COPIES_EXACT = 2, SCENE_COPIES_COUNT };
 // Video > Fullscreen mode (runtime/window_size.c winsize_apply): Automatic is borderless at the desktop's size and the
 // display's own mode at any other size it has; Borderless never changes the display's mode (another size is scaled to
 // the screen); Exclusive always uses a display mode (the desktop's size too, at its highest refresh rate)
@@ -104,6 +113,7 @@ typedef struct {
     bool mute_unfocused; // mute audio while the window is in the background or minimized
     int shrine_sensor_volume; // Sheikah sensor volume: 0% (mute) .. 100% (normal)
     char amiibo_reader[128]; // the figure on the virtual reader: its dump as "<series>/<name>" ("": none; runtime/amiibo.h)
+    bool amiibo_random_uid;  // give the figure a fresh tag UID on each scan (unlimited daily uses)
     int perf_overlay;    // PERF_*: the performance overlay (F10 cycles it)
     int fps_limit;       // frame rate, frames per second (FPS_CHOICES; 0: no limit)
     bool fps_display;    // Frame rate > Match display: fps_limit follows the display (settings_fps_for_display)
@@ -112,9 +122,12 @@ typedef struct {
     int rumble_strength; // vibration intensity percent: 10..100 (default 100)
     bool freecam_sticks; // both stick clicks together turn the free camera on and off (hle/input.c)
     int gpu;             // Vulkan adapter index from the startup log; -1: automatic (restart required)
+    bool quick_replace;   // native full-inventory replacement (1.9.0)
     bool quick_drop;      // native dropping from the quick equipment selector
     bool quick_sort;      // native sorting in the quick equipment selector
     bool menu_wrap;      // the game's menus wrap around: past the last button to the first (runtime/menu_wrap.c)
+    bool prompts_follow; // in play the button prompts follow the per-action bindings, the rune's in its button's corner
+                         // (runtime/nvn/glyphs.c resolve_face)
     bool discord_rpc;     // Options > Gameplay: the player's Discord status shows where they are in the game
                           // (Windows; talks to the Discord app's local pipe only, never the network; off by default)
     bool dpad_move;      // the d-pad (and arrow keys) also act as the left stick while it is at rest
@@ -141,10 +154,12 @@ typedef struct {
                          // default since settings_version 4; off: every draw waits for its shaders, as before)
     bool precompile_shaders;  // setting the game files up also precompiles every shader (runtime/nvn/precompile.h)
     bool dlss_download;       // ... and downloads NVIDIA's DLSS library on PCs with an NVIDIA driver (dlss_fetch.h)
+    bool xess_download;      // after a setup, Intel's XeSS library is downloaded (runtime/xess_fetch.h)
     bool start_in_config;     // Windows releases: a plain start opens Savage Wind Configuration first
     int start_picture;        // the start screen's background (ui/splash.mm): START_PICTURE_*
     bool boot_picture;        // that picture while the game loads (vulkan/device.c boot_splash_start); off: black
     bool check_updates;       // Savage Wind Configuration asks SW Update if there is a new version
+    bool companion_apps;      // the read-only companion socket for map and tracker apps (control_companion_start); off
     int shadow_res;      // SHADOW_*: shadow maps at the console's size, bigger, or (Potato) smaller
     int sharper_menus;   // the menus' one-channel textures enlarged this many times (2 or 4; 0: off), runtime/nvn/text_upscale.c
     int sharper_text;    // the game's font sheets enlarged this many times (2 or 4; 0: off), runtime/nvn/text_upscale.c
@@ -177,6 +192,7 @@ typedef struct {
     int hdr_preset;      // 0 Preset Off, 1..3 the selected slot; 4 is only returned by hdr_look_current (Custom, not stored)
     int hdr_clip_nits;   // legacy, ignored: the final cap is always hdr_peak_nits
     int sparse_heap;     // SPARSE_HEAP_*: guest heap backing (Windows Vulkan; applied on next start)
+    int scene_copies;    // SCENE_COPIES_*: refraction copies without feedback loops (vulkan/exec.c; at once)
     int fov;             // field of view in play, percent of the game's own (FOV_CHOICES)
     bool handheld_setup; // a PC handheld's own settings were taken once (settings_load)
     int hud_size;        // the HUD's size in play, percent of the game's own (HUD_SIZE_CHOICES, runtime/nvn/hud_scale.h)
@@ -185,8 +201,8 @@ typedef struct {
     int haze;            // the air's haze, percent of the game's (services/fs.c haze_patch; from the next start)
     bool bloom;          // the glow around bright light (off: its draws clear their images: vulkan/exec.c)
     bool depth_of_field; // the distance blur over far pixels (off: its draw is skipped: vulkan/exec.c)
-    bool dynamic_res;    // the game lowers its 3D resolution (1600x900 down to 1280x720) when a frame takes long
-                         // (vulkan/exec.c CMD_REPORT_COUNTER); off: it keeps 1600x900
+    bool grass;          // grass blades and crossed quads (off: draw_distance.c hides both layers)
+    bool lens_flare;     // sun glare / lens flare (off: vulkan/exec.c skips sun occlusion queries)
     bool fast_fma;       // CPUs without FMA instructions (gamelib_compat): the game's fused multiply-adds rounded twice,
                          // faster (simd.h simd_fma_unfused); off: exact, as the console
     // Video > Colour (runtime/color_grade.h): 0 everywhere and no LUT = the game's own colours (nothing runs)
@@ -207,11 +223,17 @@ typedef struct {
     bool infinite_arrows;    // shooting a bow takes no arrows from the pouch
     bool infinite_stamina;   // the stamina wheel never goes down
     bool infinite_rupees;    // the wallet is kept at 9999 rupees (runtime/rupees.c)
+    int item_multiplier;     // 1, 2, 4 or 8: multiply stackable item pickups (runtime/items.c)
+    bool free_sprint;        // sprinting takes no stamina while no enemy is fighting Link (runtime/free_sprint.c)
+    bool sure_footed;        // a running horse doesn't stop dead and rear when it hits something (runtime/sure_footed.c)
     int weather;             // WEATHER_COUNT: the game's, rain or thunderstorms kept out, or one weather held (weather.c)
     bool god_mode;           // Link takes no damage
     bool one_hit_kill;       // whatever else takes damage loses all its life at once
     int damage_taken;        // percent of the damage Link takes (DAMAGE_CHOICES)
     int damage_dealt;        // percent of the damage everything else takes (DAMAGE_CHOICES)
+    bool toggle_zl;          // press ZL once in play to hold shield / focus; press again to release (hle/input.c)
+    bool toggle_zr;          // press ZR once in play to draw / hold bow; press again to release (hle/input.c)
+    int menu_text_size;      // overlay text scale, percent (80..150, ui/menu.mm)
     int text_language;   // index in g_text_languages (runtime/language.h), 0: the host's
     int voice_language;  // index in g_voice_languages, 0: the text language's voices
     bool save_backups;   // Saves > Back up at each start: a copy of the save folder as the game starts (runtime/save_backup.c)
@@ -286,6 +308,8 @@ int hdr_look_current(void);   // 0 Off, 1..3 the selected slot while its values 
 void hdr_look_apply(int slot);  // 0 Off, 1..3 a saved slot, into the HDR settings
 void hdr_look_store(int slot);  // the HDR settings into slot 1..3
 void hdr_look_init_peak(void);  // fill a default slot's unset peak/game/UI from the current display setup
+bool settings_save_to(const char *path);  // (savagewind settings: the values as they would be saved, elsewhere)
+void settings_reload(void);                // reads savagewind.ini again (savagewind settings set)
 // Frame rate > Match display: fps_limit becomes the highest offered rate the display (hz) can show, at least 30 (a
 // 280 Hz display: 240; a 60 Hz one: 60). Nothing with another rate chosen or hz unknown (runtime/window_size.c).
 void settings_fps_for_display(float hz);

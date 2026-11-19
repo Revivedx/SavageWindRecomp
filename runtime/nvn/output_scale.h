@@ -30,7 +30,8 @@ int rt_antialias(void);  // Video > Anti-aliasing (settings.h AA_*), or SAVAGEWI
 bool rt_fsr3(void);      // Video > Upscaler FSR 3, built in, or FSR 4 (both temporal, with the same inputs)
 bool rt_fsr4(void);      // Video > Upscaler FSR 4 (vulkan/fsr_api.h)
 bool rt_dlss(void);      // Video > Upscaler DLSS, and NGX can run it
-bool rt_temporal(void);  // TAA, FSR 3 / 4 or DLSS: motion vectors and the jitter on (vulkan/mvec.c, rt_jitter_on)
+bool rt_xess(void);      // Video > Upscaler Intel XeSS (vulkan/xess.h: libxess.dll, any DP4a GPU)
+bool rt_temporal(void);  // TAA, FSR 3 / 4, DLSS or XeSS: motion vectors and the jitter on (vulkan/mvec.c, rt_jitter_on)
 void rt_jitter_set_phases(uint32_t n);  // (FSR 3: the jitter sequence's length, fsr3_jitter_phases)
 bool upscale_modes_available(void);  // (rendering below the window's size: needs render-target scaling)
 double upscale_mode_factor(int q);
@@ -56,3 +57,17 @@ float output_map_extra_y(void);
 // Extra pause header/footer space, and the full visible pointer canvas (map or pause).
 float output_pause_extra_y(void);
 float output_ui_extra_y(void);
+
+// Dynamic resolution: the upscaler's Dynamic mode (nvn/output_scale.c). A frame-rate governor moves the upscaler's
+// factor, and a step smaller that does not actually raise the rate is undone (so a CPU-bound machine keeps full
+// resolution instead of softening the picture for nothing). The tick runs once per presented frame; reset on a new
+// window or boot.
+void dynamic_res_tick(float fps, float fps_generated, bool fg_on);
+double dynamic_res_target(void);
+void dynamic_res_reset(void);
+// For the F10 overlay: whether the Dynamic mode is in use, the factor it has settled on, and whether frame generation
+// has been turned off for having no net gain.
+bool dynamic_res_active(void);
+double dynamic_factor(void);
+bool dynamic_fg_disabled(void);  // Dynamic mode: FG was switched off for no net gain
+bool dynamic_fg_no_gain(void);   // another mode: the same verdict, as a hint only (nothing switched off)

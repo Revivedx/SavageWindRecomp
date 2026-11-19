@@ -54,7 +54,8 @@ RT_SRC   := $(filter-out runtime/control.c runtime/control_game.c,$(wildcard run
             runtime/control.c runtime/control_game.c $(wildcard runtime/hle/*.c) $(wildcard runtime/services/*.c) \
             $(wildcard runtime/nvn/*.c) $(wildcard runtime/nvn/maxwell/*.c) runtime/platform/$(PLATFORM).c
 RT_HDRS  := $(wildcard runtime/*.h) $(wildcard runtime/platform/*.h) $(wildcard runtime/nvn/*.h) \
-            $(wildcard runtime/nvn/maxwell/*.h) $(wildcard runtime/nvn/vulkan/*.h) $(wildcard runtime/ui/*.h) \
+            $(wildcard runtime/nvn/maxwell/*.h) $(wildcard runtime/nvn/vulkan/*.h) \
+            $(wildcard runtime/nvn/vulkan/exec/*.h) $(wildcard runtime/ui/*.h) \
             $(wildcard runtime/services/*.h)
 UI_SRC   := $(wildcard runtime/ui/*.mm)
 UI_OBJ   := $(patsubst runtime/%.mm,$(B)/rt/%.o,$(UI_SRC))
@@ -240,6 +241,10 @@ $(B)/ffx/%.o: $(FFX)/sdk/src/%.cpp $(FFX)/ffx_compat.h
 # sizes, and a context smaller than the SDK's own code writes overran the next one in memory)
 $(B)/rt/nvn/vulkan/framegen.o: CXXFLAGS := -include $(FFX)/ffx_compat.h $(FFX_INC) -I$(FFX)/spirv $(CXXFLAGS)
 $(B)/rt/nvn/vulkan/framegen.o: $(FFX)/spirv/ffx_shaders_vk.h $(FFX)/spirv/ffx_fsr3upscaler_vk.h $(FFX)/ffx_compat.h
+# Intel XeSS (runtime/nvn/vulkan/xess.cpp): its MIT-licensed headers (third_party/xess), loaded at run time
+XESS_INC := -Ithird_party/xess
+$(B)/rt/nvn/vulkan/xess.o: CXXFLAGS := $(XESS_INC) $(CXXFLAGS)
+$(B)/rt/nvn/vulkan/xess.o: third_party/xess/xess.h third_party/xess/xess_vk.h
 
 all: $(EXE) $(CONFIG_EXE) $(if $(strip $(GEN_SRC)),$(GAMELIB))  # (GEN_SRC is a space when there is no generated/)
 
@@ -497,6 +502,15 @@ test-bind-capture: $(B)/test_bind_capture
 
 .PHONY: test-bind-capture
 
+$(B)/test_blood_moon: tools/test_blood_moon.c runtime/blood_moon.c runtime/blood_moon.h
+	@mkdir -p $(B)
+	$(CC) -O1 -g -Wall -Wno-unused-function $(OSFLAGS) -Iruntime -o $@ tools/test_blood_moon.c
+
+test-blood-moon: $(B)/test_blood_moon
+	$(B)/test_blood_moon
+
+.PHONY: test-blood-moon
+
 # Per-action bindings (docs/ACTIONS.md): the answers to the game's hold / pressed queries, menus, shared keys, capture and
 # savagewind.ini, then the patch the hook is written with (no game files)
 $(B)/test_actions: tools/test_actions.c runtime/hle/bindings.c runtime/input_bind.h
@@ -676,6 +690,15 @@ test-save-profiles: $(B)/test_save_profiles
 
 .PHONY: test-save-profiles
 
+$(B)/test_mods: tools/test_mods.c runtime/mods.c runtime/mods.h
+	@mkdir -p $(B)
+	$(CC) -O1 -Wall -Wextra -Werror -std=gnu11 -D_FILE_OFFSET_BITS=64 -Iruntime -o $@ tools/test_mods.c runtime/mods.c
+
+test-mods: $(B)/test_mods
+	$(B)/test_mods
+
+.PHONY: test-mods
+
 $(B)/test_game_file_size: tools/test_game_file_size.c runtime/game_file_size.c runtime/game_file_size.h runtime/game_files.h
 	@mkdir -p $(B)
 	$(CC) -O1 -Wall $(OSFLAGS) -Iruntime -o $@ tools/test_game_file_size.c runtime/game_file_size.c
@@ -708,6 +731,7 @@ $(B)/test_control: tools/test_control.c runtime/control.c runtime/control.h
 test-control: $(B)/test_control
 	env -u SAVAGEWIND_CONTROL -u SAVAGEWIND_DEV $(B)/test_control
 	env -u SAVAGEWIND_CONTROL SAVAGEWIND_DEV=1 $(B)/test_control dev
+	env -u SAVAGEWIND_CONTROL -u SAVAGEWIND_DEV SAVAGEWIND_COMPANION=47977 $(B)/test_control companion
 
 .PHONY: test-control
 
@@ -792,7 +816,7 @@ test-audio-mix: $(B)/test_audio_mix
 
 .PHONY: test-audio-mix
 
-$(B)/test_movie_stop: tests/test_movie_stop.c runtime/hle/movie.c runtime/hle.h runtime/kernel.h runtime/settings.h
+$(B)/test_movie_stop: tests/test_movie_stop.c runtime/hle/movie.c runtime/mods.c runtime/mods.h runtime/hle.h runtime/kernel.h runtime/settings.h
 	@mkdir -p $(B)
 	$(CC) -O1 -Wall -Wno-unused-function $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $< $(if $(DEPS),-L$(DEPS)/lib) -lavformat -lavcodec -lavutil -lswscale -lpthread -lm
 
@@ -829,6 +853,11 @@ $(B)/test_steam_shortcuts: tools/test_steam_shortcuts.c runtime/steam_shortcuts.
 	$(CC) -O1 -Wall -DSTEAM_VDF_ONLY -c runtime/steam_shortcuts.c -o $@-s.o
 	$(CC) -o $@ $@-t.o $@-s.o
 
+# savagewind <command> (runtime/cli.c): every command against a scratch data root, no game files
+.PHONY: test-cli
+test-cli: all
+	python3 tools/test_cli.py $(EXE)
+
 test-launch-flags: $(B)/test_launch_flags
 	$(B)/test_launch_flags
 	python3 tools/gen_launch_flags.py --check
@@ -851,9 +880,9 @@ test-quick-inventory-sort: $(B)/test_quick_inventory_sort $(B)/test_gamelib_site
 
 .PHONY: test-quick-inventory-sort
 
-$(B)/test_quick_hint_font: tools/test_quick_hint_font.cpp runtime/ui/quick_hint_font.mm runtime/ui/quick_hint_font.h \
+$(B)/test_quick_hint_font: tools/test_quick_hint_font.cpp runtime/ui/quick_hint_font.mm runtime/ui/quick_hint_font.h runtime/mods.h \
                          $(B)/imgui/imgui.o $(B)/imgui/imgui_draw.o $(B)/imgui/imgui_tables.o $(B)/imgui/imgui_widgets.o \
-                         $(B)/rt/services/archive.o $(B)/rt/nvn/tegra.o $(B)/rt/nvn/glyphs.o $(B)/rt/hle/bindings.o
+                         $(B)/rt/mods.o $(B)/rt/services/archive.o $(B)/rt/nvn/tegra.o $(B)/rt/nvn/glyphs.o $(B)/rt/hle/bindings.o
 	@mkdir -p $(B)
 	$(CXX) $(CXXFLAGS) -o $@ $< $(filter %.o,$^) $(TEST_LD) -lSDL3 -lm
 
@@ -895,3 +924,13 @@ $(B)/test_ui_layout: tests/test_ui_layout.c runtime/ui_layout.c runtime/ui_layou
 test-ui-layout: $(B)/test_ui_layout
 	$(B)/test_ui_layout
 .PHONY: test-ui-layout
+ifeq ($(PLATFORM),linux)
+$(B)/test_quick_replace: tools/test_quick_replace.c runtime/quick_replace.c runtime/quick_replace.h $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -std=gnu11 -O1 -g $(OSFLAGS) $(DEPINC) -Iruntime -o $@ $<
+
+test-quick-replace: $(B)/test_quick_replace
+	$(B)/test_quick_replace
+
+.PHONY: test-quick-replace
+endif

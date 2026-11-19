@@ -24,6 +24,7 @@
 #include "../hle.h"
 #include "../platform.h"
 #include "../settings.h"
+#include "../window_size.h"  // (winsize_refresh_rate: the display's rate, the dynamic resolution's default target)
 #include "output_scale.h"
 
 #ifndef __APPLE__
@@ -36,6 +37,8 @@ extern bool vk_dlss_available(void);
 #ifndef __APPLE__
 bool fsr3_available(void);  // (vulkan/fsr3.h: built in)
 bool fsr4_available(void);  // (vulkan/fsr_api.h: AMD's DLLs, on an AMD Radeon)
+bool xess_available(void);  // (vulkan/xess.h: libxess.dll next to the game)
+bool xess_usable(void);     // (the context made, and not failed this run)
 #endif
 // FSR 3 and FSR 4 upscaling were held back from 0.5.0 until the motion vectors left the render thread (recording them
 // there cost 1.2 ms a frame: RTX 3060, 1440p Quality, 130 fps native, 104 with FSR 3). Offered again since they are
@@ -55,7 +58,8 @@ bool upscaler_available(int u) {
 #else
     return u == UPSCALE_OFF || u == UPSCALE_FSR1 || (u == UPSCALE_FSR3 && fsr3_available() && fsr3_upscaler_enabled())
         || (u == UPSCALE_FSR4 && fsr4_available() && fsr3_upscaler_enabled())  // (FSR 4: the same switch as FSR 3)
-        || (u == UPSCALE_DLSS && vk_dlss_available());
+        || (u == UPSCALE_DLSS && vk_dlss_available())
+        || (u == UPSCALE_XESS && xess_available());
 #endif
 }
 
@@ -73,12 +77,21 @@ bool rt_fsr4(void) { return g_settings.upscaler == UPSCALE_FSR4 && upscaler_avai
 // FSR 3 asks for either; vulkan/exec.c fsr3_scene picks the one to run
 bool rt_fsr3(void) { return (g_settings.upscaler == UPSCALE_FSR3 && upscaler_available(UPSCALE_FSR3)) || rt_fsr4(); }
 
+// Intel XeSS (vulkan/xess.h): the same temporal inputs as FSR 3 (mvec's vectors, the depth, a jittered camera). It
+// runs on any GPU with DP4a, with libxess.dll next to the game.
+bool rt_xess(void) { return g_settings.upscaler == UPSCALE_XESS && xess_usable(); }
+
 bool rt_dlss(void) { return g_settings.upscaler == UPSCALE_DLSS && upscaler_available(UPSCALE_DLSS); }
 
-bool rt_temporal(void) { return rt_antialias() == AA_TAA || rt_fsr3() || rt_dlss(); }
+bool rt_temporal(void) { return rt_antialias() == AA_TAA || rt_fsr3() || rt_dlss() || rt_xess(); }
+
+// quality modes, AMD's scale factors (per axis): Ultra Quality 1.3, Quality 1.5, Balanced 1.7, Performance 2.0,
+// Ultra Performance 3.0, Native 1.0 (FSR 3 / FSR 4). Dynamic is the frame-rate-following mode (see the governor
+// below).
+double dynamic_factor(void);  // the factor the dynamic governor has settled on
 
 double upscale_mode_factor(int q) {
-    static const double f[UPQ_COUNT] = {1.3, 1.5, 1.7, 2.0, 3.0, 1.0};
+    static const double f[UPQ_COUNT] = {1.3, 1.5, 1.7, 2.0, 3.0, 1.0, 1.0};  // (Dynamic: never used, see upscale_factor)
     return q >= 0 && q < UPQ_COUNT ? f[q] : 1.5;
 }
 
@@ -94,29 +107,269 @@ bool upscale_modes_available(void) {
     return on;
 }
 
-// Ultra Performance renders a third of the window's size on each side. A temporal upscaler (FSR 3 / 4, DLSS) is made to
-// bring that to 2160 lines or more; at 1440 the scene is 853 x 480 and the whole image comes out blurred, for hardly
-// more frames than Performance where the CPU is the limit. So it is offered from a 4K window on, and below that a
-// stored Ultra Performance runs as Performance (the setting is kept: it comes back on a 4K window). FSR 1 keeps it at
+// Ultra Performance renders a third of the window's size on each side. A temporal upscaler (FSR 3 / 4, XeSS, DLSS) is
+// made to bring that to 2160 lines or more; at 1440 the scene is 853 x 480 and the whole image comes out blurred, for
+// hardly more frames than Performance where the CPU is the limit. So it is offered from a 4K window on, and below that
+// a stored Ultra Performance runs as Performance (the setting is kept: it comes back on a 4K window). FSR 1 keeps it at
 // any size. SAVAGEWIND_UPSCALE_ANY=1: offered at any size, as before.
 static volatile int g_out_lines;  // the window's height (output_scale; 0: not known yet)
 bool upscale_mode_offered(int q) {
-    if (q == UPQ_NATIVE) return g_settings.upscaler == UPSCALE_FSR3 || g_settings.upscaler == UPSCALE_FSR4;
+    if (q == UPQ_DYNAMIC) return true;  // (the dynamic resolution: one of every upscaler's modes)
+    if (q == UPQ_NATIVE) return rt_fsr3() || rt_xess();  // (every temporal upscaler: XeSS reconstructs from the same
+                                                         //  inputs, so its 1x is anti-aliasing too - #820 knew only
+                                                         //  of FSR 3 and FSR 4, which were the ones there then)
     static int any = -1;
     if (any < 0) any = getenv("SAVAGEWIND_UPSCALE_ANY") && atoi(getenv("SAVAGEWIND_UPSCALE_ANY")) != 0;
-    if (q != UPQ_ULTRA_PERFORMANCE || any || !(rt_fsr3() || rt_dlss())) return true;
+    if (q != UPQ_ULTRA_PERFORMANCE || any || !(rt_fsr3() || rt_xess() || rt_dlss())) return true;
     return !g_out_lines || g_out_lines >= 2160;
 }
 
 int upscale_quality_now(void) {
     int q = g_settings.upscale_quality;
-    return upscale_mode_offered(q) ? q : (q == UPQ_NATIVE ? UPQ_QUALITY : UPQ_PERFORMANCE);
+    return upscale_mode_offered(q) ? q : (q == UPQ_NATIVE || q == UPQ_DYNAMIC ? UPQ_QUALITY : UPQ_PERFORMANCE);
 }
 
 double upscale_factor(void) {
     int u = g_settings.upscaler;
-    return u != UPSCALE_OFF && upscaler_available(u) && upscale_modes_available()
-               ? upscale_mode_factor(upscale_quality_now()) : 1.0;
+    if (u == UPSCALE_OFF || !upscaler_available(u) || !upscale_modes_available()) return 1.0;
+    // (the Dynamic mode: the factor follows the frame rate, dynamic_res_tick below)
+    if (upscale_quality_now() == UPQ_DYNAMIC) return dynamic_factor();
+    return upscale_mode_factor(upscale_quality_now());
+}
+
+// ---- Dynamic resolution: the upscaler's Dynamic mode
+//
+// One place only: Video > Upscaler mode > Dynamic, with any upscaler (FSR 1 runs on every graphics card). It moves the
+// upscaler's factor (upscale_factor above), so the HUD and menus stay at the window's resolution. With no upscaler
+// there is no dynamic resolution: a separate switch that scaled the scene on its own, and offered the Dynamic mode
+// only while on, was two controls for one thing (removed 2026-11-18). Off by default; the Potato preset picks it.
+//
+// The game's own mechanism (exec.c CMD_REPORT_COUNTER) is the other way of doing this: it times its GPU work with the
+// console's counters and picks between two fixed sizes from that. On a PC those counters measure our command
+// translation, not the GPU's work, so they are frozen by default and the setting had nothing to do unless it was
+// unfrozen by hand. This one is driven by the frame rate instead - real frames with frame generation off, presented
+// frames (the generated ones included) with it on, since that is what the player sees and what the upscaler's output
+// is paced at.
+//
+// Drawing fewer pixels only helps where the GPU is the limit. On a CPU-bound machine (most of this project's 1080p
+// and 1440p runs) it changes nothing and only makes the picture softer. GPU load readings are unreliable across
+// vendors, so instead of guessing the limiter this measures it: each step's settled frame rate is kept in a small
+// table, and a step smaller is only kept if it actually raised the rate over the step above it. The first step that
+// does not is undone, and the scale goes back to full resolution and stays there for the rest of the run. That is
+// what makes this a feature on a GPU-bound machine and a no-op on the machine that withdrew #852, without a hardware
+// whitelist. A step is judged only after DYN_RES_HOLD frames, so a load spike or a shader compile cannot shrink the
+// picture. SAVAGEWIND_DYNAMIC_LOG=1: every step and what it decided.
+#define DYN_RES_STEPS 8        // 1.0 (Native) down to 3.0x, the upscaler's scale factors
+#define DYN_RES_HOLD 60        // presented frames a step is held before its rate is judged (1 s at 60 fps)
+#define DYN_RES_SHRINK 0.92    // under this share of the target, try one step smaller
+#define DYN_RES_GROW 1.10      // over it, one step sharper
+#define DYN_RES_GAIN 1.05      // a step smaller has to gain at least this share of the rate to be kept
+static const double k_dyn_res_factors[DYN_RES_STEPS] = {1.0, 1.3, 1.5, 1.7, 2.0, 2.4, 2.7, 3.0};
+static volatile int dyn_res_step;         // 0: Native, dyn_res_max_step(): smallest
+
+// The smallest step allowed: the scene never smaller than a third of the window's lines, Ultra Performance's size at
+// a render scale of 100%. Below 100% that stops it earlier: the Potato preset (50%, Dynamic) goes from half the lines
+// down to its fixed size before (Quality, 1.5x), never under it; 213x120 at 1280x720 otherwise.
+static int dyn_res_max_step(void) {
+    static const double ss_f[RSCALE_COUNT] = {0.5, 0.75, 1.0, 1.25, 1.5, 2.0};  // (output_scale's Render scale)
+    int rsi = g_settings.render_scale;
+    double most = 3.0 * (rsi >= 0 && rsi < RSCALE_COUNT ? ss_f[rsi] : 1.0) + 1e-6;
+    int s = 0;
+    while (s + 1 < DYN_RES_STEPS && k_dyn_res_factors[s + 1] <= most) s++;
+    return s;
+}
+// The factor the governor has settled on: upscale_factor and the F10 overlay read it.
+double dynamic_factor(void) {
+    int s = dyn_res_step;
+    return s >= 0 && s < DYN_RES_STEPS ? k_dyn_res_factors[s] : 1.0;
+}
+static int dyn_res_hold;
+static float dyn_res_rate[DYN_RES_STEPS];  // the settled rate measured at each step (0: not measured)
+static int dyn_res_probe_step = -1;        // the step whose gain is being measured (-1: none)
+static bool dyn_res_no_gain;               // a step smaller gained nothing: the CPU is the limit, stay at Native
+static int dyn_res_floor = -1;             // the last step that gained frames: never smaller (-1: not found yet)
+static int dyn_res_logged;                 // the "stay at Native" decision is logged once, not every hold
+static bool dyn_fg_disabled;               // frame generation had no net gain: turned off for this run
+static bool dyn_fg_no_gain;                // the same verdict, outside the Dynamic mode (a hint, not an action)
+static float dyn_fg_baseline;              // real fps measured with frame generation off, before it was enabled
+static int dyn_fg_hold;                    // frames frame generation has been on and measured
+static bool dyn_fg_was_on;
+
+// Whether frame generation was switched off by the dynamic mode for having no net gain. Never touches the setting:
+// fg_wanted() simply reads this, so the menu still shows what the player chose and a reboot gets a fresh chance.
+bool dynamic_fg_disabled(void) { return dyn_fg_disabled; }
+// The same verdict, outside the Dynamic mode: nothing is switched off, but the frame generation row and the F10 overlay can say that it is costing frames without a net gain (see dynamic_fg_check).
+bool dynamic_fg_no_gain(void) { return dyn_fg_no_gain; }
+
+// Whether the Dynamic mode is in use: an upscaler running with it as its mode. Read by the F10 overlay
+// (perf_overlay_draw) and the frame generation verdict.
+bool dynamic_res_active(void) {
+    int u = g_settings.upscaler;
+    return u != UPSCALE_OFF && upscaler_available(u) && upscale_modes_available() &&
+           upscale_quality_now() == UPQ_DYNAMIC;
+}
+
+// The target frame rate: the display's, or the game's own limit when that is lower (a 60 limit on a 160 Hz screen
+// aims at 60, not 160). Uncapped with no display rate: 60, the console's own. The target only decides when to try
+// a smaller step and when there is headroom to go sharper; whether a step is kept is decided by the measured gain,
+// so a target the machine cannot reach does not walk the scale down forever.
+double dynamic_res_target(void) {
+    int lim = g_settings.fps_limit;  // (0: no limit)
+    float hz = winsize_refresh_rate();
+    double target = lim > 0 ? (double)lim : hz > 1 ? (double)hz : 60.0;
+    if (lim > 0 && hz > 1 && (double)hz < target) target = (double)hz;
+    return target;
+}
+
+// Keeps the governor's step in line with the setting, once per presented frame (dynamic_res_tick). Returns true while
+// SAVAGEWIND_DYNAMIC_RES_STEP=<0..7> holds one step, for testing sizes without waiting for the frame rate.
+static bool dynamic_res_sync(void) {
+    // (the mode was left and picked again, or the upscaler changed: the rates measured before belong to another
+    // configuration, so start over at full size with a fresh chance to measure the limiter)
+    static bool last_active;
+    bool active = dynamic_res_active();
+    if (last_active && !active) dynamic_res_reset();
+    last_active = active;
+    if (!active) { dyn_res_step = 0; return false; }
+    static int forced = -2;
+    if (forced == -2) {
+        const char *e = getenv("SAVAGEWIND_DYNAMIC_RES_STEP");
+        forced = e ? atoi(e) : -1;
+        if (forced >= DYN_RES_STEPS) forced = DYN_RES_STEPS - 1;
+    }
+    if (forced < 0) return false;
+    dyn_res_step = forced < dyn_res_max_step() ? forced : dyn_res_max_step();
+    return true;
+}
+
+// Once per presented frame, from objects.c: fps is the real rendered rate, fps_generated the generated frames per
+// second, fg_on whether frame generation is in use. The rate the governor acts on is the one the player sees: real
+// frames with frame generation off, presented frames (the generated ones included) with it on - the upscaler's output
+// is paced at that rate, so its Dynamic mode has to be too.
+//
+// Frame generation is not free: on a CPU-bound machine it can lower the real frame rate enough that even doubled
+// presentation loses. Its net gain is judged against the real rate measured while it was off: when it is on, the
+// presented rate (real + generated) has to beat that baseline by DYN_FG_GAIN.
+//
+// The verdict is the same whatever the upscaler's mode is, but what is done with it is not: in the Dynamic mode, frame
+// generation is switched off for the rest of the run (dynamic_fg_disabled, read by device.c fg_wanted) - that is part
+// of what the mode is for. In any other mode nothing is switched off; dynamic_fg_no_gain is just a hint shown next to
+// the frame generation setting and in the F10 overlay. Either way g_settings.frame_gen is untouched:
+// the setting stays as the player left it, a reboot starts a fresh measurement, frame generation that was on from
+// the very first frame has no baseline and is left alone, and turning it off by hand is not a verdict.
+#define DYN_FG_GAIN 1.15       // presented rate has to beat the no-FG rate by at least this to be worth it
+#define DYN_FG_HOLD 90         // presented frames FG is left on before its net gain is judged (1.5 s at 60 fps)
+static void dynamic_fg_check(float fps, float fps_generated, bool fg_on) {
+    if (dyn_fg_disabled || dyn_fg_no_gain) return;  // (the verdict is for the run; a reboot clears it)
+    if (!fg_on) {
+        if (fps > 0) dyn_fg_baseline = fps;  // (the rate without FG: the reference for the next time it is on)
+        dyn_fg_hold = 0;
+        dyn_fg_was_on = false;
+        return;
+    }
+    bool first = !dyn_fg_was_on;
+    dyn_fg_was_on = true;
+    if (first && dyn_fg_baseline <= 0) return;  // (FG was on from the start: no baseline, leave it alone)
+    if (++dyn_fg_hold < DYN_FG_HOLD) return;
+    dyn_fg_hold = 0;
+    float presented = fps + fps_generated;
+    if (dyn_fg_baseline > 0 && presented < dyn_fg_baseline * DYN_FG_GAIN) {
+        if (dynamic_res_active()) {
+            dyn_fg_disabled = true;
+            LOG("[dynamic] frame generation off: %.0f presented fps against %.0f without it (no net gain)\n", presented,
+                dyn_fg_baseline);
+        } else {
+            dyn_fg_no_gain = true;  // (not the Dynamic mode: a hint in the menu and the overlay, nothing switched off)
+            LOG("[dynamic] frame generation has no net gain: %.0f presented fps against %.0f without it (hint only)\n",
+                presented, dyn_fg_baseline);
+        }
+    } else {
+        // (it is paying for itself: keep the comparison fresh, but never above what the game can really draw)
+        dyn_fg_baseline = fmaxf(dyn_fg_baseline, fps);
+    }
+}
+
+void dynamic_res_tick(float fps, float fps_generated, bool fg_on) {
+    dynamic_fg_check(fps, fps_generated, fg_on);
+    if (dynamic_res_sync()) return;  // (keep dyn_res_step in line with the upscaler's mode)
+    // (the first seconds are loading, shader compilation and pipeline builds: the frame rate there says nothing
+    // about the scene's cost. Skip them, and everything after a reboot, which resets the counter.)
+    if (framepace_shown_frame() < 180) { dyn_res_hold = 0; return; }
+    if (!dynamic_res_active() || fps <= 0) { dyn_res_hold = 0; return; }
+    // (only in play: the title screen, loading screens, menus and cutscenes cost the GPU little or nothing of the
+    // scene's, so a step judged there gains nothing. On the title it was judged "CPU-bound" at 141 fps and held at
+    // full size for the whole run, while the world at 1440p, render scale 200%, ran GPU-bound at 58 fps)
+    if (framepace_title_ui() || framepace_loading_ui() || framepace_menu_ui() || framepace_map_ui() ||
+        framepace_in_event()) {
+        dyn_res_hold = 0;
+        if (dyn_res_probe_step >= 0) dyn_res_step = dyn_res_probe_step - 1, dyn_res_probe_step = -1;  // (judged later)
+        return;
+    }
+    // (the rate to hold: what is presented. With frame generation on that includes the generated frames.)
+    float presented = fps + (fg_on ? fps_generated : 0.0f);
+    double target = dynamic_res_target();
+    if (target <= 0) return;
+    if (++dyn_res_hold < DYN_RES_HOLD) return;
+    dyn_res_hold = 0;
+    float ratio = (float)(presented / target);
+    int before = dyn_res_step, max_step = dyn_res_max_step();
+    const char *why = "";
+    dyn_res_rate[dyn_res_step] = presented;  // (settled rate at the step we have been holding)
+    if (dyn_res_step > max_step) {  // (Render scale lowered since: back to the smallest size it allows)
+        dyn_res_step = max_step;
+        dyn_res_probe_step = -1;
+        why = " (render scale: the smallest allowed)";
+    } else if (dyn_res_probe_step >= 0) {
+        // (a step smaller was taken DYN_RES_HOLD frames ago: this is its settled rate. Keep it only if it gained
+        // frames over the step it came from - that is the whole test of whether the GPU is the limit here.)
+        int probe = dyn_res_probe_step;
+        dyn_res_probe_step = -1;
+        if (dyn_res_rate[probe] < dyn_res_rate[probe - 1] * DYN_RES_GAIN) {
+            // (no gain: the step before is where the GPU stopped being the limit. Back to it and never smaller -
+            // all the way back to Native threw away the steps that had gained: 1440p at 200%, 53 fps at 1.0x, 75 at
+            // 1.3x, 73 at 1.5x, and it went back to 53. Only when the first step gains nothing is it the CPU.)
+            dyn_res_step = dyn_res_floor = probe - 1;
+            dyn_res_no_gain = dyn_res_floor == 0;
+            why = dyn_res_no_gain ? " (no gain: CPU-bound, back to Native)"
+                                  : " (no gain smaller: back one step, the smallest from now on)";
+        } else {
+            why = " (kept: it gained frames)";
+        }
+    } else if (dyn_res_no_gain) {
+        if (dyn_res_step != 0) dyn_res_step = 0, why = " (CPU-bound: Native)";
+        // (stay at Native for the rest of the run: drawing smaller cannot help here. No more log lines for it.)
+    } else if (ratio > DYN_RES_GROW && dyn_res_step > 0) {
+        dyn_res_step--;  // (clear of the target: room to be sharper)
+        dyn_res_probe_step = -1;
+        why = " (headroom)";
+    } else if (ratio >= DYN_RES_SHRINK && dyn_res_step > 0 && dyn_res_probe_step < 0) {
+        // (at the target, or close enough that a smaller step is not called for: drift back towards full resolution
+        // one step at a time. The start-up transients may have taken a few steps down; this walks them back once the
+        // scene has settled, without a gain test that would need another step to compare against.)
+        dyn_res_step--;
+        why = " (at target: sharper)";
+    } else if (dyn_res_step < max_step && (dyn_res_floor < 0 || dyn_res_step < dyn_res_floor) &&
+               ratio < DYN_RES_SHRINK) {
+        dyn_res_probe_step = ++dyn_res_step;  // (well under the target: try one step smaller, judge it next time)
+        why = " (trying smaller)";
+    }
+    if ((dyn_res_step != before || (dyn_res_no_gain && !dyn_res_logged)) && getenv("SAVAGEWIND_DYNAMIC_LOG")) {
+        LOG("[dynamic-res] %.0f fps (%s) at a target of %.0f: %.2fx -> %.2fx%s\n", presented,
+            fg_on ? "presented" : "real", target, k_dyn_res_factors[before], k_dyn_res_factors[dyn_res_step], why);
+        if (dyn_res_no_gain) dyn_res_logged = 1;
+    }
+}
+
+// A new window or boot: the scale starts over at full size, with a fresh chance to measure the limiter. The frame
+// generation decision is NOT reset by a resize - only a reboot (backend reset) should give it another chance.
+void dynamic_res_reset(void) {
+    dyn_res_step = 0;
+    dyn_res_hold = 0;
+    dyn_res_probe_step = -1;
+    dyn_res_no_gain = false;
+    dyn_res_floor = -1;
+    dyn_res_logged = 0;
+    memset((void *)dyn_res_rate, 0, sizeof dyn_res_rate);
 }
 
 // The window's shape over 16:9 while the game's views are widened to fill it, else 1; the field of view's factor in
@@ -126,6 +379,11 @@ static volatile float g_window_shape = 1;  // the window's shape over 16:9, wide
 static uint32_t g_world_proj[4];  // tan(fovy / 2), aspect, near, far of the world camera's last matrix (rt_persp), float bits
 
 void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
+    {   // (the window's size changed: the dynamic resolution's steps were chosen for the old one, start over)
+        static double last_w, last_h;
+        if (last_w > 0 && (dw != last_w || dh != last_h)) dynamic_res_reset();
+        last_w = dw, last_h = dh;
+    }
     g_out_lines = (int)dh;
     double fit = fmin(dw / 1920.0, dh / 1080.0);
     static double forced = -1, wide_test = -1;
@@ -146,7 +404,9 @@ void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
 #ifndef __APPLE__
     title_fit = title_fit && shape >= 1;  // Vulkan cover-crops the artwork on taller title screens.
 #endif
-    bool reshape = reshape_allowed && fabs(shape - 1.0) > 0.005 && !title_fit &&
+    extern volatile int g_movie_playing;  // runtime/hle/movie.c: pre-rendered 16:9 cutscenes
+    bool movie = __atomic_load_n(&g_movie_playing, __ATOMIC_RELAXED) > 0;
+    bool reshape = reshape_allowed && fabs(shape - 1.0) > 0.005 && !title_fit && !movie &&
                    (shape < 1 || !framepace_loading_ui());
     if (!reshape) shape = 1.0;
     // render height in units of the Switch's 1080 lines: the window's (Metal: divided by the upscaler's factor)
@@ -174,7 +434,8 @@ void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
     if (cap < 1.0) { sx *= cap; sy *= cap; }
     o->sx = sx; o->sy = sy; o->shape = shape;
     // the 3D scene (BOTW docked: 1600x900, composited into the 1920x1080 final image) at the final image's
-    // resolution, scaled by Video > Render scale (on Vulkan) and divided by the upscaler's factor
+    // resolution, scaled by Video > Render scale (on Vulkan) and divided by the upscaler's factor (in its Dynamic mode,
+    // the one the frame rate sets: upscale_factor)
     double k = 1080.0 / SCENE_LINES / scene_div * scene_ss;
     o->scene_sx = sx * k; o->scene_sy = sy * k;
     double scap = fmin(MAX_TEX / (1920.0 * o->scene_sx), MAX_TEX / (1080.0 * o->scene_sy));
@@ -482,14 +743,14 @@ unsigned shadow_map_size(unsigned long long frame) {
     for (int i = 0; i < n; i++)
         if (frame >= at[i]) r = w[i];
     if (r > 8192) r = 8192;
-    // With a temporal upscaler (FSR 3 / 4, DLSS) the scene is drawn smaller by the quality mode's factor, and the
-    // cascades above the console's size follow it: as many shadow texels per drawn pixel as without the upscaler
+    // With a temporal upscaler (FSR 3 / 4, XeSS, DLSS) the scene is drawn smaller by the quality mode's factor, and
+    // the cascades above the console's size follow it: as many shadow texels per drawn pixel as without the upscaler
     // (Extreme at Quality: 5440 instead of 8192). The cascades cost the same at any scene resolution otherwise, and
     // where they are most of the frame the upscaler gained nothing. Never under the console's own 896.
     // SAVAGEWIND_SHADOW_FOLLOW=0: the setting's size, as before.
     static int follow = -1;
     if (follow < 0) follow = !getenv("SAVAGEWIND_SHADOW_FOLLOW") || atoi(getenv("SAVAGEWIND_SHADOW_FOLLOW")) != 0;
-    if (follow && r > 896 && (rt_fsr3() || rt_dlss())) {
+    if (follow && r > 896 && (rt_fsr3() || rt_xess() || rt_dlss())) {
         r = (unsigned)(r / upscale_factor() / 64.0 + 0.5) * 64;
         if (r < 896) r = 896;
     }

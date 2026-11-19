@@ -1,7 +1,9 @@
 // Tests for the command layer behind the control endpoint and the in-game console (runtime/control.c): who may run
 // what, the console's queue and its text, the table help prints, completion. No game needed; run it twice:
 //   test_control                    a normal player: only the player safe commands exist for the console
-//   SAVAGEWIND_DEV=1 test_control dev   developer commands too (make test-control runs both)
+//   SAVAGEWIND_DEV=1 test_control dev   developer commands too
+//   SAVAGEWIND_COMPANION=<port> test_control companion   the companion socket: only the read-only commands
+// (make test-control runs all three)
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,6 +53,7 @@ void control_game_init(void) {
         {"echo", "<words...>", "echo the arguments", cmd_echo, CONTROL_PLAYER},
         {"boom", "", "always fails", cmd_boom, CONTROL_PLAYER},
         {"nested", "", "a number", cmd_nested, CONTROL_PLAYER},
+        {"where", "", "read only", cmd_nested, CONTROL_PLAYER | CONTROL_READ},
         {"secret", "<x> <y> <z>", "developer only", cmd_secret, 0},
         {"sneaky", "", "developer only, no flags written", cmd_secret},
     };
@@ -74,14 +77,19 @@ static void expect(const char *line, bool failed, const char *text) {
 
 int main(int argc, char **argv) {
     bool dev = argc > 1 && !strcmp(argv[1], "dev");
-    // (the environment says which mode: the Makefile sets SAVAGEWIND_DEV=1 for the dev run; no setenv, Windows has none)
-    if (getenv("SAVAGEWIND_CONTROL") || (getenv("SAVAGEWIND_DEV") != NULL) != dev) {
-        printf("run it through make test-control (SAVAGEWIND_DEV=1 and the argument dev go together, SAVAGEWIND_CONTROL unset)\n");
+    bool companion = argc > 1 && !strcmp(argv[1], "companion");
+    // (the environment says which mode: the Makefile sets SAVAGEWIND_DEV=1 for the dev run and SAVAGEWIND_COMPANION for
+    // the companion run; no setenv, Windows has none)
+    if (getenv("SAVAGEWIND_CONTROL") || (getenv("SAVAGEWIND_DEV") != NULL) != dev ||
+        (getenv("SAVAGEWIND_COMPANION") != NULL) != companion) {
+        printf("run it through make test-control (SAVAGEWIND_DEV=1 goes with dev, SAVAGEWIND_COMPANION with companion, "
+               "SAVAGEWIND_CONTROL unset)\n");
         return 2;
     }
     control_init();
-    CHECK(control_enabled() == dev);
-    CHECK(!control_endpoint_on());
+    CHECK(control_enabled() == dev);   // the companion socket never turns developer mode on
+    if (!companion) CHECK(!control_endpoint_on());
+    else CHECK(!control_companion_start(CONTROL_COMPANION_PORT + 1));  // one server: a second one is refused
 
     // ---- text of a reply: fields as key: value, numbers shortened, strings unescaped
     expect("place", false, "x: 0.1\ny: 1234.568\nframe: 3000000000\nheld: true\nname: quote \" and \\ and \n newline");
@@ -109,10 +117,28 @@ int main(int argc, char **argv) {
         expect("ping", true, "Unknown command: ping");
     }
     expect("nonsense", true, "Unknown command: nonsense");
-    {   // the socket side (not the console) always has the full set, and the same word reaches the same handler
+    if (!companion) {   // the developer socket (not the console) has the full set, and the same word reaches the same handler
         ControlConsoleResult r;
         control_exec_line("secret 1 2 3", false, &r);
         CHECK(!r.failed && r.text && !strcmp(r.text, "ran: true"));
+        control_console_free(&r);
+    } else {            // the companion socket: only the read-only commands, whatever else the console may run
+        static const char *const refused[] = {"secret 1 2 3", "sneaky", "place", "echo x", "exit"};
+        for (size_t i = 0; i < sizeof refused / sizeof *refused; i++) {
+            ControlConsoleResult r;
+            control_exec_line(refused[i], false, &r);
+            CHECK(r.failed && r.text && !strncmp(r.text, "Unknown command: ", 17));
+            control_console_free(&r);
+        }
+        ControlConsoleResult r;
+        control_exec_line("where", false, &r);
+        CHECK(!r.failed && r.text && !strcmp(r.text, "n: 2"));
+        control_console_free(&r);
+        control_exec_line("ping", false, &r);
+        CHECK(!r.failed);
+        control_console_free(&r);
+        control_exec_line("help", false, &r);   // lists what the companion socket may run, nothing else
+        CHECK(!r.failed && r.text && strstr(r.text, "where") && strstr(r.text, "ping") && !strstr(r.text, "echo") && !strstr(r.text, "exit"));
         control_console_free(&r);
     }
 
@@ -132,7 +158,7 @@ int main(int argc, char **argv) {
     {
         const char *names[16];
         int n = control_console_names("", names, 16);
-        CHECK(n == (dev ? 10 : 7));   // help, ping, exit and 7 test commands, or only the player safe ones (help, exit, 5 test ones)
+        CHECK(n == (dev ? 11 : 8));   // help, ping, exit and 8 test commands, or only the player safe ones (help, exit, 6 test ones)
         n = control_console_names("e", names, 16);
         CHECK(n >= 1 && !strcmp(names[0], "echo"));
         n = control_console_names("sec", names, 16);
@@ -140,7 +166,7 @@ int main(int argc, char **argv) {
         n = control_console_names("zzz", names, 16);
         CHECK(n == 0);
         n = control_console_names("", names, 2);
-        CHECK(n == (dev ? 10 : 7));   // the count is the full count; only `max` pointers are written
+        CHECK(n == (dev ? 11 : 8));   // the count is the full count; only `max` pointers are written
     }
 
     // ---- the console's queue: lines run in control_frame(), results come back in order
@@ -176,6 +202,6 @@ int main(int argc, char **argv) {
         CHECK(!control_console_submit(huge));
     }
 
-    printf("%s: %d checks, %d failed\n", dev ? "dev" : "player", checks, failures);
+    printf("%s: %d checks, %d failed\n", dev ? "dev" : companion ? "companion" : "player", checks, failures);
     return failures ? 1 : 0;
 }

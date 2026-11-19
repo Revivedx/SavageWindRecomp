@@ -73,6 +73,116 @@ def _quick_drop_actor_call(gen, a):
             'rt_quick_drop_actor_end(token, actor, c->x[0]); }')
 
 
+# Replacement observes checked native functions rather than redirecting every
+# generated direct call. Query/chest/toast have no computed entry paths; their
+# invocation locals stay in the generated C frame until the checked exits.
+def _replace_call(gen, a, word, hook, target=None):
+    assert _word(gen, a) == word, hex(_word(gen, a))
+    dest = target if target is not None else gen.lift(a).target
+    native = f'f_{dest:x}'
+    return (f'{{ extern void {native}(Cpu *); extern void {hook}(Cpu *, void (*)(Cpu *)); '
+            f'c->x[30] = {a + 4:#x}ull; {hook}(c, {native}); }}')
+
+
+def _replace_tick_call(gen, a):
+    return _replace_call(gen, a, 0x940004f3, 'rt_quick_replace_tick')
+
+
+def _replace_fill_call(gen, a):
+    return _replace_call(gen, a, 0x97fffdbd, 'rt_quick_replace_fill')
+
+
+def _replace_full_info_call(gen, a):
+    return _replace_call(gen, a, 0x94224eaf, 'rt_quick_replace_full_info')
+
+
+def _replace_popup(gen, a):
+    assert _word(gen, a) == _sub_sp(0x40), hex(_word(gen, a))
+    return ('{ extern void rt_quick_replace_popup(Cpu *); rt_quick_replace_popup(c); c->sp -= 0x40; }')
+
+
+def _replace_item_popup(gen, a):
+    assert _word(gen, a) == 0xf9400408, hex(_word(gen, a))
+    return ('{ extern void rt_quick_replace_item_popup(Cpu *); rt_quick_replace_item_popup(c); '
+            'c->x[8] = LD64(c->x[0] + 8); }')
+
+
+def _replace_gate(gen, a, word, hook, original):
+    assert _word(gen, a) == word, hex(_word(gen, a))
+    return f'{{ extern _Bool {hook}(Cpu *); if ({hook}(c)) return; {original} }}'
+
+
+def _replace_receive(gen, a):
+    return _replace_gate(gen, a, _sub_sp(0x1b0), 'rt_quick_replace_receive', 'c->sp -= 0x1b0;')
+
+
+def _replace_card_close(gen, a):
+    return _replace_gate(gen, a, _sub_sp(0x30), 'rt_quick_replace_card_close', 'c->sp -= 0x30;')
+
+
+def _replace_card_action(gen, a):
+    return _replace_gate(gen, a, _sub_sp(0x90), 'rt_quick_replace_card_action', 'c->sp -= 0x90;')
+
+
+def _replace_pane(gen, a):
+    return _replace_gate(gen, a, 0x39416008, 'rt_quick_replace_pane', 'c->x[8] = LD8(c->x[0] + 0x58);')
+
+
+def _replace_anim(gen, a):
+    return _replace_gate(gen, a, 0xbd405001, 'rt_quick_replace_anim',
+                         'c->v[1] = LD32(c->x[0] + 0x50);')
+
+
+def _replace_query(gen, a):
+    assert _word(gen, a) == 0xa9bf7bfd, hex(_word(gen, a))
+    return ('uint64_t qr_query = c->x[0]; '
+            '{ uint64_t ea = c->sp - 0x10; ST64(ea, c->x[29]); ST64(ea + 8, c->x[30]); c->sp = ea; }')
+
+
+def _replace_query_return(gen, a):
+    assert _word(gen, a) == 0xd65f03c0, hex(_word(gen, a))
+    return '{ extern void rt_quick_replace_query(Cpu *, uint64_t); rt_quick_replace_query(c, qr_query); return; }'
+
+
+def _replace_chest(gen, a):
+    assert _word(gen, a) == _sub_sp(0x70), hex(_word(gen, a))
+    return ('extern unsigned rt_quick_replace_chest_begin(Cpu *); '
+            'uint64_t qr_chest_ai = c->x[0]; unsigned qr_chest_mode = rt_quick_replace_chest_begin(c); '
+            'if (!qr_chest_mode) return; c->sp -= 0x70;')
+
+
+def _replace_chest_return(gen, a):
+    assert _word(gen, a) == 0xd65f03c0, hex(_word(gen, a))
+    return ('{ extern void rt_quick_replace_chest_end(Cpu *, uint64_t, unsigned); '
+            'rt_quick_replace_chest_end(c, qr_chest_ai, qr_chest_mode); return; }')
+
+
+def _replace_toast(gen, a):
+    assert _word(gen, a) == 0xa9be7bfd, hex(_word(gen, a))
+    return ('extern int rt_quick_replace_toast_begin(Cpu *); '
+            'uint64_t qr_toast = c->x[0]; int qr_toast_saved = rt_quick_replace_toast_begin(c); '
+            '{ uint64_t ea = c->sp - 0x20; ST64(ea, c->x[29]); ST64(ea + 8, c->x[30]); c->sp = ea; }')
+
+
+def _replace_toast_exit(gen, a):
+    word = _word(gen, a)
+    assert word in (0xd65f03c0, 0x17ffffb3, 0x17fffd8f), hex(word)
+    native = ''
+    if word != 0xd65f03c0:
+        dest = gen.lift(a).target
+        native = f'extern void f_{dest:x}(Cpu *); f_{dest:x}(c); '
+    return ('{ extern void rt_quick_replace_toast_end(uint64_t, int); '+native+
+            'rt_quick_replace_toast_end(qr_toast, qr_toast_saved); return; }')
+
+
+def _replace_ui_draw(gen, a):
+    assert _word(gen, a) == 0x17ee0583, hex(_word(gen, a))
+    native = f'f_{gen.sites["replace_ui_draw_native"]:x}'
+    return (f'{{ extern void {native}(Cpu *); '
+            'extern void rt_quick_replace_ui_draw(Cpu *, void (*)(Cpu *)); '
+            f'rt_quick_replace_ui_draw(c, {native}); return; }}')
+
+
 def _fn(gen, site):  # the generated function at a site's address
     return f'f_{gen.sites[site]:x}'
 
@@ -912,10 +1022,69 @@ def _stamina(gen, a):
     return ('{ extern uint32_t rt_stamina(uint32_t, uint32_t); '
             'ST32(c->x[19] + 0xa4, rt_stamina(LD32(c->x[19] + 0xa4), (uint32_t)c->v[8])); }'
             f'  /* {a:#x}: str s8, [x19, #0xa4] (stamina: Accessibility) */')
+
+
+# Cheats > Free sprint (runtime/free_sprint.c): Link's Move action, his walk, run and sprint on the ground (its update,
+# 1.9.0 0x7000c84664), loads what a sprint costs from its own parameters: EnergyDash, the stamina a second of sprinting
+# takes (sprint_cost, handed to the per-second cost 0x7000ce9e98), and EnergyDashTrig, what a sprint press takes
+# (sprint_press_cost, handed to the cost itself 0x7000ce9ef0). Both end in that cost, which takes nothing for 0.
+
+def _sprint_cost(gen, a):
+    assert _word(gen, a) == 0xbd400100, hex(_word(gen, a))  # ldr s0, [x8]
+    return ('{ extern uint32_t rt_sprint_cost(uint32_t); c->v[0] = rt_sprint_cost(LD32(c->x[8])); }'
+            f'  /* {a:#x}: ldr s0, [x8] (a sprint\'s stamina: Cheats) */')
+
+
+# Free sprint's "in combat": the game hands its battle info (x1) to the music mode that is on (the virtual method at
+# +0x40 of the eight modes, 1.9.0 0x70013395b4 and others), and the mode to one of three battle music controllers'
+# setters: the field battle music's (0x7001345060; its state machine 0x7001344c88 starts the music when the first word
+# is 1 or more and fades it out at 0) and two others' (0x700133dcac, 0x7001349648). Each setter tells the runtime that
+# first word, with which of them it is.
+
+def _battle_info(which):
+    def patch(gen, a):
+        w = _word(gen, a)
+        if w == 0xa9402428:  # ldp x8, x9, [x1]
+            load = 'c->x[8] = LD64(c->x[1]); c->x[9] = LD64(c->x[1] + 8);'
+        else:
+            assert w == 0xb9400028, hex(w)  # ldr w8, [x1]
+            load = 'c->x[8] = LD32(c->x[1]);'
+        return (f'{{ extern void rt_battle_info(int, int32_t); {load} rt_battle_info({which}, (int32_t)c->x[8]); }}'
+                f'  /* {a:#x}: the battle info\'s count (enemies in battle: Cheats) */')
+    return patch
+# Cheats > Sure-footed horse (runtime/sure_footed.c): every frame the horse's update (1.9.0 0x70006afe4c; x1 of its
+# checks is its state: the gear at +0x34) asks two checks whether to stop the horse (new gear 0). The crash check
+# (0x70006b16c4), only at the top gear (4), looks at what the horse's Body touches: a steep face ahead, higher than the
+# horse can step, is a crash, flagged (+0x3ac bit 15) for the animation picker (0x70006b26bc) to play Crash. Without a
+# crash, the stop check (0x70006b19c8) stops a horse at the top gear when its look-ahead (0x70006b4218, as far as the
+# gear and speed carry it) finds the way blocked: a tree, a rock, a cliff edge; at lower gears it stops only a horse
+# nothing drives. The picker plays Courbette for a stop from gear 3 or 4. Both rears are the long stop at an obstacle;
+# with the option on, the crash check reads gear 0 and the look-ahead finds the way clear, so no obstacle stops a
+# horse, and the stop check's other stop stays the game's.
+
+def _horse_crash(gen, a):
+    assert _word(gen, a) == 0xb9403428, hex(_word(gen, a))  # ldr w8, [x1, #0x34]
+    return ('{ extern int rt_sure_footed(void); c->x[8] = rt_sure_footed() ? 0 : LD32(c->x[1] + 0x34); }'
+            f'  /* {a:#x}: ldr w8, [x1, #0x34] (the horse\'s gear at its crash check: Cheats) */')
+
+
+def _horse_look_ahead(gen, a):
+    assert _word(gen, a) == _sub_sp(0x170), hex(_word(gen, a))
+    return ('{ extern int rt_sure_footed(void); if (rt_sure_footed()) { c->x[0] = 1; return; } c->sp -= 0x170; }'
+            f'  /* {a:#x}: sub sp, sp, #0x170 (the horse\'s look-ahead: the way clear with Cheats) */')
+
+
 # Adding items (runtime/items.c rt_item_tick): at the entry of Link's damage handling (every frame in play, on the game
 # thread, as picking an item up is) the runtime calls the pause menu data's item get for what was asked for. The item
 # get takes the item's name as a sead::SafeString; its vtable is the one the item get itself loads (`adrp x26` /
 # `ldr x26, [x26, #off]` at +0x24 / +0x30, then +0x10).
+
+def _pouch_item_get(gen, a):
+    assert _word(gen, a) == _sub_sp(0x90), hex(_word(gen, a))
+    return ('{ extern uint32_t rt_item_get_scale(uint64_t, uint32_t); '
+            'c->x[2] = rt_item_get_scale(c->x[1], (uint32_t)c->x[2]); c->sp -= 0x90; }'
+            f'  /* {a:#x}: sub sp, sp, #0x90 (PauseMenuDataMgr::itemGet: item pickup multiplier) */')
+
 
 def _item_tick(gen, a):
     assert _word(gen, a) == _sub_sp(0x70), hex(_word(gen, a))
@@ -1014,6 +1183,25 @@ def _tp_gate(gen, a):
 PATCHES = {
     'ui_layout_draw': _ui_layout_draw,
     'ui_layout_pane': _ui_layout_pane,
+    'replace_tick_call': _replace_tick_call,
+    'replace_fill_call': _replace_fill_call,
+    'replace_full_info_call': _replace_full_info_call,
+    'replace_popup': _replace_popup,
+    'replace_item_popup': _replace_item_popup,
+    'replace_receive': _replace_receive,
+    'replace_card_close_gate': _replace_card_close,
+    'replace_card_action': _replace_card_action,
+    'replace_pane_draw': _replace_pane,
+    'replace_anim_advance': _replace_anim,
+    'replace_query': _replace_query,
+    'replace_query_return': _replace_query_return,
+    'replace_chest_update': _replace_chest,
+    'replace_chest_return': _replace_chest_return,
+    'replace_toast_update': _replace_toast,
+    'replace_toast_return': _replace_toast_exit,
+    'replace_toast_tail_a': _replace_toast_exit,
+    'replace_toast_tail_b': _replace_toast_exit,
+    'replace_ui_draw': _replace_ui_draw,
     'quick_drop_tick': _quick_drop_tick,
     'quick_drop_actor_call': _quick_drop_actor_call,
     'quick_sort_enter': _quick_sort_enter,
@@ -1115,6 +1303,14 @@ PATCHES = {
     'link_life_store': _link_life,
     'link_life_tick': _link_life,
     'stamina_store': _stamina,
+    'pouch_item_get': _pouch_item_get,
+    'sprint_cost': _sprint_cost,
+    'sprint_press_cost': _sprint_cost,
+    'battle_info_field': _battle_info(0),
+    'battle_info_b': _battle_info(1),
+    'battle_info_c': _battle_info(2),
+    'horse_crash': _horse_crash,
+    'horse_look_ahead': _horse_look_ahead,
     'item_tick': _item_tick,
 }
 

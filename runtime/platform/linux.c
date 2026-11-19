@@ -194,8 +194,9 @@ static void log_to_file(void) {
         rename(g_log_path, prev);
     }
     const char *e = getenv("SAVAGEWIND_LOG_ECHO_FD");
-    int echo = e && isatty(atoi(e)) ? atoi(e) : -1;
-    if (echo < 0 && isatty(STDERR_FILENO) && (echo = dup(STDERR_FILENO)) >= 0) {  // (no close-on-exec: kept by the game)
+    bool quiet = getenv("SAVAGEWIND_LOG_QUIET") != NULL;  // (savagewind <command>: its own output only, runtime/cli.h)
+    int echo = !quiet && e && isatty(atoi(e)) ? atoi(e) : -1;
+    if (echo < 0 && !quiet && isatty(STDERR_FILENO) && (echo = dup(STDERR_FILENO)) >= 0) {  // (no close-on-exec: kept by the game)
         char fd[16];
         snprintf(fd, sizeof fd, "%d", echo);
         setenv("SAVAGEWIND_LOG_ECHO_FD", fd, 1);
@@ -256,6 +257,8 @@ void plat_exec(char *const argv[]) {
     char **av = self_argv();
     if (av && plat_exe_path(path, sizeof path)) execv(path, av);
 }
+
+void plat_exec_wait(char *const argv[]) { plat_exec(argv); }  // (exec keeps the exit status)
 
 // ---- diagnostics
 // Exported symbols only (the Makefile links with -rdynamic); frames in the generated code are left to the caller,
@@ -412,6 +415,14 @@ static int rm_entry(const char *path, const struct stat *sb, int flag, struct FT
     return remove(path);
 }
 bool plat_remove_tree(const char *dir) { return nftw(dir, rm_entry, 16, FTW_DEPTH | FTW_PHYS) == 0; }
+
+bool plat_file_flush(const char *path) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return false;
+    bool ok = fsync(fd) == 0;
+    close(fd);
+    return ok;
+}
 
 // End the process at once, skipping the library teardown: as on Windows, the GPU driver's threads crashed in exit()
 // while the game's threads still submitted work.

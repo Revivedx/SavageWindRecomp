@@ -18,6 +18,7 @@
 #include "imgui.h"
 #include "gyro_drag.h"
 #include "option_rows.h"
+#include "mods_tab.h"
 #include "saves_tab.h"
 #include "imgui_internal.h"  // (NavCursorVisible)
 #include "osk.h"
@@ -28,18 +29,24 @@
 #include "imgui_impl_vulkan.h"
 extern "C" bool vk_imgui_backend_init(void);  // runtime/nvn/vulkan/imgui_glue.cpp
 #endif
+extern "C" bool vk_feedback_once(void);  // runtime/nvn/vulkan/exec.c (Video > Scene copies; Vulkan only)
 
 extern "C" {
 #include "../amiibo.h"
+#include "../bookmarks.h"
+#include "../control.h"
+#include "../control_places.h"
 #include "../hle.h"
 #include "../items.h"
 #include "../settings.h"
 #include "../gamelib.h"
 #include "../quick_inventory_sort.h"
 #include "../quick_drop.h"
+#include "../ui/quick_inventory_layout.h"
 #include "../nvn/glyphs.h"
 #include "../color_grade.h"
 #include "../dlss_fetch.h"
+#include "../xess_fetch.h"
 #include "../window_size.h"
 extern "C" {
 #include "../language.h"
@@ -95,9 +102,15 @@ extern "C" void menu_test_open(void) {
     if (getenv("SAVAGEWIND_MENU_TAB")) { extern int g_tab_request_ext; g_tab_request_ext = atoi(getenv("SAVAGEWIND_MENU_TAB")); }
 }
 
+// A and B swapped in the bindings (Controls: "Swap A and B", the Xbox convention) when the menu opened: its confirm
+// and back follow a swap from the next time it opens, so a swap made in the menu doesn't move its own buttons under
+// the player (key_from_pad).
+static std::atomic<bool> g_ab_swapped_open{false};
+
 void menu_tabs_focus(bool first_tab);
 static void set_open(bool open) {
     if (open == g_open.load()) return;
+    if (open) g_ab_swapped_open.store(bind_ab_swapped());
     g_open.store(open);
     input_reset();  // nothing held while the menu had focus leaks into the game
     bind_capture_cancel();
@@ -142,8 +155,13 @@ static ImGuiKey key_from_scancode(SDL_Scancode sc) {
     }
 }
 
-// Nintendo layout: the right face button (A) confirms, the bottom one (B) goes back.
+// Nintendo layout: the right face button (A) confirms, the bottom one (B) goes back. With A and B swapped the bottom
+// one confirms and the right one goes back: in the menu as they were when it opened (g_ab_swapped_open), in the name
+// entry and the console (the menu closed) as they are.
 static ImGuiKey key_from_pad(Uint8 b) {
+    bool swapped = g_open.load() ? g_ab_swapped_open.load() : bind_ab_swapped();
+    if (swapped && (b == SDL_GAMEPAD_BUTTON_EAST || b == SDL_GAMEPAD_BUTTON_SOUTH))
+        b = b == SDL_GAMEPAD_BUTTON_EAST ? SDL_GAMEPAD_BUTTON_SOUTH : SDL_GAMEPAD_BUTTON_EAST;
     switch (b) {
     case SDL_GAMEPAD_BUTTON_EAST: return ImGuiKey_GamepadFaceDown;   // activate
     case SDL_GAMEPAD_BUTTON_SOUTH: return ImGuiKey_GamepadFaceRight; // cancel / back
@@ -340,11 +358,18 @@ bool menu_handle_event(const SDL_Event *e) {
             return true;
         }
         if (!capturing()) return false;
+        // a release goes to the key its press went to: "Swap A and B" pressed with A swaps the mapping in between,
+        // and its release must not leave the menu's A held
+        static ImGuiKey pressed_as[SDL_GAMEPAD_BUTTON_COUNT];
+        int b = e->gbutton.button;
         ImGuiKey k = key_from_pad(e->gbutton.button);
         if (g_sizes.load()) {  // Window size's list (in game): the buttons bound to A and B, wherever they are
-            int b = e->gbutton.button;
             if (b == g_bind_pad[BIND_A]) k = ImGuiKey_GamepadFaceDown;
             else if (b == g_bind_pad[BIND_B]) k = ImGuiKey_GamepadFaceRight;
+        }
+        if (b >= 0 && b < SDL_GAMEPAD_BUTTON_COUNT) {
+            if (down) pressed_as[b] = k;
+            else if (pressed_as[b] != ImGuiKey_None) k = pressed_as[b], pressed_as[b] = ImGuiKey_None;
         }
         if (k != ImGuiKey_None) { QEvent q = {}; q.kind = QEvent::KEY; q.key = k; q.down = down; push(q); }
         return true;
@@ -517,7 +542,7 @@ static void load_fonts(void) {
     if (!g_font_big) g_font_big = g_font;
     if (!g_menu_font || !g_menu_font_big) g_menu_font = g_font, g_menu_font_big = g_font_big;
     g_hint_font = g_hint_buttons = nullptr;
-    g_hint_font_attempted = g_romfs_dir && (g_settings.quick_sort || g_settings.quick_drop);
+    g_hint_font_attempted = g_romfs_dir && (g_settings.quick_sort || g_settings.quick_drop || g_settings.quick_replace);
     if (g_hint_font_attempted) quick_hint_fonts_load(io.Fonts, &g_hint_font, &g_hint_buttons);
     g_hint_generation = icons_generation;
 }
@@ -526,8 +551,8 @@ static void load_fonts(void) {
 extern "C" void vk_imgui_fonts_changed(void);  // (runtime/nvn/vulkan/imgui_glue.cpp)
 extern "C" const char *vk_hdr_icc_description(void);  // (runtime/nvn/vulkan/device.c)
 static void fonts_follow_language(void) {
-    bool need_hint_fonts = (g_settings.quick_sort || g_settings.quick_drop) && g_romfs_dir && !g_hint_font_attempted;
-    bool icons_changed = (g_settings.quick_sort || g_settings.quick_drop) && g_hint_generation != glyphs_font_generation();
+    bool need_hint_fonts = (g_settings.quick_sort || g_settings.quick_drop || g_settings.quick_replace) && g_romfs_dir && !g_hint_font_attempted;
+    bool icons_changed = (g_settings.quick_sort || g_settings.quick_drop || g_settings.quick_replace) && g_hint_generation != glyphs_font_generation();
     int current_fonts_gen = ui_lang_generation() * 10007 + ui_dynamic_generation();
     if (g_fonts_lang == current_fonts_gen && !need_hint_fonts && !icons_changed) return;
     load_fonts();
@@ -635,11 +660,12 @@ static bool toggle(const char *label, bool *v) {
 extern "C" void renderer_get_scale(float *sx, float *sy);
 extern "C" void renderer_get_scene_scale(float *sx, float *sy);
 extern "C" bool renderer_gpu_rtx(void);  // (vulkan/device.c, metal.m)
-extern "C" volatile int g_fg_active;     // (hle/framepace.c: the last presented frame was generated)
-// Video > Upscaler mode's names, by UPQ_*, and their order on screen (largest render size first)
-static const char *const k_upscale_modes[UPQ_COUNT] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance", "Native"};
+// Video > Upscaler mode's names, by UPQ_*, and their order on screen (largest render size first). Dynamic is last:
+// it is a row the dynamic-resolution setting adds, so the list is one entry shorter while that setting is off.
+static const char *const k_upscale_modes[UPQ_COUNT] = {"Ultra Quality", "Quality", "Balanced", "Performance",
+                                                       "Ultra Performance", "Native", "Dynamic"};
 static const int k_upscale_mode_order[UPQ_COUNT] = {
-    UPQ_NATIVE, UPQ_ULTRA, UPQ_QUALITY, UPQ_BALANCED, UPQ_PERFORMANCE, UPQ_ULTRA_PERFORMANCE};
+    UPQ_NATIVE, UPQ_ULTRA, UPQ_QUALITY, UPQ_BALANCED, UPQ_PERFORMANCE, UPQ_ULTRA_PERFORMANCE, UPQ_DYNAMIC};
 extern "C" {
 #include "../nvn/output_scale.h"
 }
@@ -842,6 +868,12 @@ static void tab_display(void) {
                        "How big the hearts, stamina, minimap and the rest of the HUD are. Each part stays in its corner.", false))
             g_settings.hud_size = sizes[cur];
     }
+    {
+        float tsz = (float)g_settings.menu_text_size;
+        if (opt_slider("Overlay text size", &tsz, 80, 150, 5, 100, "%g%%",
+                       "Scale of the text and controls in this F1 overlay."))
+            g_settings.menu_text_size = (int)lroundf(tsz);
+    }
     {   // Menu cursor speed
         static const int speeds[] = MENU_SPEED_CHOICES;
         enum { NV = sizeof speeds / sizeof speeds[0] };
@@ -939,6 +971,9 @@ static void tab_display(void) {
         std::string dlss = upscaler_available(UPSCALE_DLSS) ? std::string(tr("DLSS")) :
                            std::string(tr("DLSS")) + " " +
                                tr(dlss_fetch_missing() ? "(download it in Savage Wind Configuration)" : "(NVIDIA RTX only)");
+        std::string xess = upscaler_available(UPSCALE_XESS) ? std::string(tr("Intel XeSS")) :
+                           std::string(tr("Intel XeSS")) + " " +
+                               tr(xess_fetch_missing() ? "(download it in Savage Wind Configuration)" : "(libxess.dll needed)");
 #ifdef __APPLE__
         const char *ups[] = {"Off", "MetalFX"};
         static const int ups_value[] = {UPSCALE_OFF, UPSCALE_METALFX};
@@ -946,8 +981,8 @@ static void tab_display(void) {
                          "scaling. MetalFX: Apple's upscaler, sharper.\n\nRendering below the window's size (the modes "
                          "below) is coming in a later version.";
 #else
-        const char *ups[] = {"Off", "AMD FSR 1", fsr3.c_str(), fsr4.c_str(), dlss.c_str()};
-        static const int ups_value[] = {UPSCALE_OFF, UPSCALE_FSR1, UPSCALE_FSR3, UPSCALE_FSR4, UPSCALE_DLSS};
+        const char *ups[] = {"Off", "AMD FSR 1", fsr3.c_str(), fsr4.c_str(), dlss.c_str(), xess.c_str()};
+        static const int ups_value[] = {UPSCALE_OFF, UPSCALE_FSR1, UPSCALE_FSR3, UPSCALE_FSR4, UPSCALE_DLSS, UPSCALE_XESS};
         // (the FSR 3 paragraph on its own: the first one keeps its translations)
         static std::string uds;
         uds = std::string(tr("Off: the 3D image renders at the window's resolution. AMD FSR 1: it renders smaller (the mode "
@@ -964,6 +999,10 @@ static void tab_display(void) {
         uds += std::string("\n\n") + tr("NVIDIA DLSS: like FSR 3, but NVIDIA's machine learning rebuilds the image. For NVIDIA "
                                           "RTX graphics cards on Windows, with NVIDIA's DLSS library, which Savage Wind "
                                           "Configuration downloads.");
+        if (upscaler_available(UPSCALE_XESS))  // (its own paragraph: the ones above keep their translations)
+            uds += std::string("\n\n") + tr("Intel XeSS: like FSR 3, but Intel's machine learning rebuilds the image. It runs on "
+                                              "every graphics card with DP4a (any recent GPU), with libxess.dll next to the game. "
+                                              "Sharpening has no effect with it.");
         const char *ud = uds.c_str();
 #endif
         enum { NU = sizeof ups_value / sizeof ups_value[0] };
@@ -977,13 +1016,15 @@ static void tab_display(void) {
         int udef = 0;  // (the reset value: UPSCALE_DEFAULT)
         for (int i = 0; i < NU; i++) if (ups_value[i] == UPSCALE_DEFAULT) udef = i;
         if (opt_choice_avail("Upscaler", &ui, &shown, ups, avail, NU, udef, ud)) g_settings.upscaler = ups_value[ui];
-        // its mode (AMD's scale factors), one step in; greyed when the upscaler is off
+        // its mode (AMD's scale factors, or Dynamic: the dynamic resolution), one step in; greyed when the upscaler
+        // is off
         bool modes_ok = upscale_modes_available();
+        const int nm = UPQ_COUNT;
         std::string mode_names[UPQ_COUNT];
         const char *mn[UPQ_COUNT];
         bool mavail[UPQ_COUNT];
         int mi = 2, mdef = 2;  // UPQ_QUALITY's position in k_upscale_mode_order
-        for (int i = 0; i < UPQ_COUNT; i++) {
+        for (int i = 0; i < nm; i++) {
             int q = k_upscale_mode_order[i];
             mode_names[i] = modes_ok ? tr(k_upscale_modes[q])
                                      : std::string(tr(k_upscale_modes[q])) + " " + tr("(coming soon)");
@@ -999,11 +1040,13 @@ static void tab_display(void) {
         std::string md = std::string(tr("How much smaller the game renders before the upscaler brings it to the window, "
                                         "on each side: Native 1x (FSR 3/4), Ultra Quality 1.3x, Quality 1.5x, Balanced "
                                         "1.7x, Performance 2x, Ultra Performance 3x. Smaller is faster and softer.")) +
+                         "\n\n" + tr("Dynamic: renders the 3D scene smaller when frames are slow, sharper when they "
+                                     "aren't; stays full size where that gains nothing.") +
                          "\n\n" + (modes_ok ? rendering : tr("Coming in a later version."));
         opt_indent(1);
         if (g_settings.upscaler == UPSCALE_OFF) opt_disable_next();
         static int mshown = -1;
-        if (opt_choice_avail("Upscaler mode", &mi, &mshown, mn, mavail, UPQ_COUNT, mdef, md.c_str()))
+        if (opt_choice_avail("Upscaler mode", &mi, &mshown, mn, mavail, nm, mdef, md.c_str()))
             g_settings.upscale_quality = k_upscale_mode_order[mi];
         opt_indent(-1);
     }
@@ -1053,11 +1096,18 @@ static void tab_display(void) {
                    "upscaler off), before the HUD is drawn over it: edges get crisper without halos. Most useful with "
                    "AMD FSR 1.", false);
         // AMD FSR 3 frame generation (vulkan/framegen.cpp; the frame rate counts the presented frames: framepace.c)
-        opt_toggle("Frame generation (AMD FSR 3)", &g_settings.frame_gen, false,
-                   "AMD FSR 3 makes a frame between each two the game draws: about twice the frames on screen. The "
-                   "frame rate above counts them all, so the game itself draws half of it (60 with 120) and the "
-                   "controls answer as at that rate, a little later. In play only: the menus and the map show the "
-                   "game's own frames. Fast moves can leave faint smears around Link and what moves on its own.");
+        static std::string fg_desc;
+        fg_desc = std::string(tr("AMD FSR 3 makes a frame between each two the game draws: about twice the frames on "
+                                 "screen. The frame rate above counts them all, so the game itself draws half of it "
+                                 "(60 with 120) and the controls answer as at that rate, a little later. In play only: "
+                                 "the menus and the map show the game's own frames. Fast moves can leave faint smears "
+                                 "around Link and what moves on its own."));
+        if (dynamic_fg_no_gain())  // (not the upscaler's Dynamic mode: this is a hint, nothing is switched off)
+            fg_desc += std::string("\n\n") + tr("It is not adding frames here: the upscaler's Dynamic mode would "
+                                                "switch it off automatically.");
+        else if (dynamic_fg_disabled())
+            fg_desc += std::string("\n\n") + tr("The upscaler's Dynamic mode switched it off: it had no net gain.");
+        opt_toggle("Frame generation (AMD FSR 3)", &g_settings.frame_gen, false, fg_desc.c_str());
     }
 #endif
     opt_toggle("Asynchronous shaders", &g_settings.async_shaders, true,
@@ -1265,13 +1315,22 @@ static void tab_display(void) {
                "little faster, a flatter image.");
     opt_toggle("Depth of field", &g_settings.depth_of_field, true, "The game blurs the far distance a little. Off: sharp "
                "out to the horizon, a little faster.");
-    opt_toggle("Dynamic resolution", &g_settings.dynamic_res, true, "As on the console: the game lowers its 3D "
-               "resolution (down to 1280x720 before upscaling) while frames take long, and raises it again after. "
-               "Off: always the full resolution. On with the Potato preset.");
+    opt_toggle("Grass", &g_settings.grass, true, "Grass blades and ground cover. Off: bare terrain, faster.");
+    opt_toggle("Lens flare", &g_settings.lens_flare, true, "Sun glare and lens flare. Off: no sun flare.");
     if (gamelib_compat())  // (runtime/gamelib.h: a CPU without FMA instructions; simd.h simd_fma_unfused)
         opt_toggle("Fast math", &g_settings.fast_fma, true, "Your CPU has no FMA instructions, so the game's math runs "
                    "in software. On: about 10% faster; some results round a tiny bit differently from the console, "
                    "which doesn't show in play. Off: exact, as on the console.");
+#ifndef __APPLE__  // (the Metal renderer; the macOS series, #782, calls it SW_METAL)
+    if (vk_feedback_once()) {  // (vulkan/exec.c resolve_feedback: graphics cards without feedback loops only)
+        static const char *const names[SCENE_COPIES_COUNT] = {"Automatic", "Fast", "Exact"};
+        opt_choice("Scene copies", &g_settings.scene_copies, names, SCENE_COPIES_COUNT, SCENE_COPIES_AUTO,
+                   "Your graphics card can't read the picture it is drawing, so water, waterfalls, rain and glass "
+                   "refract a copy of it. Automatic and Fast: a new copy once a frame for each effect. Exact: a new "
+                   "copy whenever more was drawn in between, much slower (on a Mac at 1080p, 36 instead of 60 frames "
+                   "a second in the open world). Try it if water or a waterfall looks wrong.", false);
+    }
+#endif
     {   // the air's haze (services/fs.c haze_patch): the game reads it at the start
         static const int haze[] = HAZE_CHOICES;
         enum { NH = sizeof haze / sizeof haze[0] };
@@ -1320,8 +1379,15 @@ static void tab_audio(void) {
 
 // Cheats: what hands the player things or changes the world (the game's own menus keep to options and assists, so
 // these are only here). The same as the developer console commands next to them (rupees: runtime/rupees.c;
-// weather: runtime/weather.c).
+// weather: runtime/weather.c). Free sprint: runtime/free_sprint.c. Sure-footed horse, menu only: runtime/sure_footed.c.
+// The assists below are Options > Accessibility's own settings (runtime/assists.c), the same rows here; the hour is the
+// console's `time` (runtime/services/test_warp.c), the blood moon its `bloodmoon` (runtime/blood_moon.c).
 extern "C" bool rupees_set(int32_t count);
+extern "C" bool hearts_set(int32_t count);
+extern "C" void test_warp_set_hour(float hour);
+extern "C" void test_warp_hold_hour(float hour);
+extern "C" float test_warp_hour(bool *held);
+#include "../blood_moon.h"
 
 static void cheats_options(void) {
     opt_toggle("Infinite rupees", &g_settings.infinite_rupees, false,
@@ -1340,11 +1406,91 @@ static void cheats_options(void) {
                 rupee_buf[0] = 0;
         }
     }
+    opt_toggle("God mode", &g_settings.god_mode, false,
+               "Link takes no damage.");
+    opt_toggle("Infinite stamina", &g_settings.infinite_stamina, false,
+               "The stamina wheel never runs out.");
+    opt_toggle("One-hit kill", &g_settings.one_hit_kill, false, "Enemies go down in one hit.");
+    opt_toggle("Infinite arrows", &g_settings.infinite_arrows, false,
+               "Shooting a bow uses up no arrows. You still need one to shoot.");
+    {   // (Accessibility's rows: game_options.mm k_wear and DAMAGE_CHOICES)
+        static const int wear[] = {0, 50, 100, 150, 200, 250, 300};
+        static const char *const wear_names[] = {"Fairy", "Peter Pan", "Hylian", "Hero", "Master", "Legend",
+                                                 "Dude, are you ok?"};
+        enum { NW = sizeof wear / sizeof wear[0] };
+        int w = 2;
+        for (int i = 0; i < NW; i++) if (g_settings.weapon_wear == wear[i]) w = i;
+        if (opt_choice("Weapon wear", &w, wear_names, NW, 2,
+                       "How fast weapons, bows and shields wear out. Fairy: never. Hylian: the game's own.", false))
+            g_settings.weapon_wear = wear[w], g_settings.no_weapon_wear = wear[w] == 0;
+        static const int damage[] = DAMAGE_CHOICES;
+        static const char *const damage_names[] = {"25%", "50%", "75%", "100%", "150%", "200%", "300%", "400%"};
+        enum { ND = sizeof damage / sizeof damage[0] };
+        static_assert(sizeof damage_names / sizeof damage_names[0] == ND, "a name for each damage choice");
+        for (int dealt = 0; dealt < 2; dealt++) {
+            int &setting = dealt ? g_settings.damage_dealt : g_settings.damage_taken;
+            int d = 3;
+            for (int i = 0; i < ND; i++) if (setting == damage[i]) d = i;
+            if (opt_choice(dealt ? "Damage dealt" : "Damage taken", &d, damage_names, ND, 3,
+                           dealt ? "How much damage enemies take. 100% is the game's own."
+                                 : "How much damage Link takes. 100% is the game's own.", false))
+                setting = damage[d];
+        }
+    }
+    {
+        static char heart_buf[16];
+        if (opt_text("Set hearts", heart_buf, sizeof heart_buf, "",
+                     "Sets your heart containers to an exact number (3 to 30).")) {
+            char *end;
+            long n = strtol(heart_buf, &end, 10);
+            if (heart_buf[0] && end != heart_buf && !*end && n >= 3 && n <= 30 && hearts_set((int32_t)n)) {
+                std::string s = std::to_string(n);
+                memcpy(heart_buf, s.c_str(), s.size() + 1);
+            } else
+                heart_buf[0] = 0;
+        }
+    }
     static const char *const weather[WEATHER_COUNT] = {"Automatic", "No rain", "No thunderstorms", "Clear", "Cloudy",
                                                        "Rain", "Heavy rain", "Snow", "Heavy snow", "Thunderstorm",
                                                        "Thunder rain", "Rain in sunshine"};  // (settings.h weather)
     opt_dropdown("Weather", &g_settings.weather, weather, WEATHER_COUNT, 0,
                  "Holds the weather you pick, or keeps out rain or thunderstorms. Cutscenes keep theirs.");
+    {   // the hour, as the console's `time`: the game's clock, read every frame (it runs on while the menu is up)
+        bool held = false;
+        float now = test_warp_hour(&held);
+        if (now < 0) opt_disable_next();
+        float hour = now < 0 ? 12 : floorf(now);
+        if (opt_slider("Time of day", &hour, 0, 23, 1, 12, "%g:00",
+                       "Sets the game's clock to that hour. The day goes on from there unless Freeze time is on.") &&
+            now >= 0)
+            test_warp_set_hour(hour);
+        if (now < 0) opt_disable_next();
+        bool freeze = held;
+        if (opt_toggle("Freeze time", &freeze, false, "Stops the game's clock at the hour it is. Off: the day goes on.") &&
+            now >= 0)
+            test_warp_hold_hour(freeze ? now : -1.0f);
+    }
+    {   // the game's own blood moon (runtime/blood_moon.c): it waits for this menu to close
+        static int told;  // 1: asked for, 2: not in the open world
+        if (opt_button("Blood moon now", "The game's own blood moon: its cutscene, and the monsters and materials come "
+                                         "back. It starts once you close this menu, in the open world only."))
+            told = blood_moon_request() ? 1 : 2;
+        if (told == 1 && !blood_moon_pending()) told = 0;
+        if (told) hint(tr(told == 1 ? "The blood moon starts once you close this menu."
+                                    : "A blood moon can only start in the open world."));
+    }
+    static const char *const mults[] = {"Off", "2x", "4x", "8x"};
+    static const int mult_vals[] = {1, 2, 4, 8};
+    int mult_idx = g_settings.item_multiplier == 8 ? 3 : g_settings.item_multiplier == 4 ? 2 : g_settings.item_multiplier == 2 ? 1 : 0;
+    opt_dropdown("Item pickup multiplier", &mult_idx, mults, 4, 0,
+                 "Multiplies stackable items you pick up (materials, monster parts, arrows).");
+    g_settings.item_multiplier = mult_vals[mult_idx];
+    opt_toggle("Free sprint out of combat", &g_settings.free_sprint, false,
+               "Sprinting takes no stamina while no enemy is fighting you. Once the battle music starts, sprinting "
+               "costs stamina again.");
+    opt_toggle("Sure-footed horse", &g_settings.sure_footed, false,
+               "A running horse no longer stops dead and rears when it runs into something."
+               " It no longer stops at cliff edges either.");
 }
 
 // Case-insensitive: does s contain needle (an empty needle matches)
@@ -1371,6 +1517,8 @@ static void tab_amiibo(void) {
     char desc[1400];
     snprintf(desc, sizeof desc, tr("The figure the game's reader finds when it looks for an amiibo (the amiibo rune). None: it finds no figure. The figures are the dumps (.bin) in the folder %s."), amiibo_folder());
     opt_action("On the reader", cur ? cur->name : tr("None"), desc);
+    opt_toggle("Randomize amiibo UID", &g_settings.amiibo_random_uid, false,
+               "Gives the figure on the reader a fresh serial number on every scan so it can be used more than once a day.");
     auto choose = [](int i) {
         char key[256] = "";
         if (i >= 0) amiibo_key(i, key, sizeof key);
@@ -1584,6 +1732,114 @@ static void tab_cheats(void) {
     opt_end();
 }
 
+static void tp_send(float x, float y, float z, const char *name, char *notice, size_t n, bool *active) {
+    if (control_tp_request(x, y, z)) {
+        *active = true;
+        snprintf(notice, n, tr("Teleporting to %s..."), name);
+    } else {
+        snprintf(notice, n, "%s", tr("A teleport is already in progress."));
+    }
+}
+
+// The Teleport tab (in game only): saved bookmarks (runtime/bookmarks.h) and named places (runtime/control_places.h),
+// teleporting through control_tp_request().
+static void tab_teleport(void) {
+    static char bm_name[BOOKMARK_NAME_MAX];
+    static char search[64];
+    static int cat;  // 0 none, 1..6 PlaceKind, 7 all
+    static bool del_mode;
+    static char notice[200];
+    static bool tp_active;
+    opt_begin("##teleport", ImGui::GetFontSize() / 34);
+    float cur[3] = {0};
+    if (!control_tp_link_pos(cur)) {
+        hint(tr("Teleport is available in play only."));
+        opt_end();
+        return;
+    }
+    char tp_msg[200] = "";
+    int st = control_tp_status(tp_msg, sizeof tp_msg);
+    if (st == 1) {
+        tp_active = true;
+        snprintf(notice, sizeof notice, "%s", tr(tp_msg));
+    } else if (tp_active) {
+        tp_active = false;
+        snprintf(notice, sizeof notice, "%s", tp_msg[0] ? tp_msg : tr("Arrived"));
+    }
+    if (notice[0]) ImGui::TextDisabled("%s", notice);
+
+    opt_section(tr("Bookmarks"));
+    opt_text(tr("Bookmark name"), bm_name, sizeof bm_name, tr("Current spot"),
+             tr("Name for a new bookmark at Link's current position."));
+    char cur_desc[96];
+    snprintf(cur_desc, sizeof cur_desc, "%.1f, %.1f, %.1f", cur[0], cur[1], cur[2]);
+    if (opt_action(tr("Bookmark current position"), tr("Save"), cur_desc, false)) {
+        if (bookmarks_add(bm_name, cur[0], cur[1], cur[2])) {
+            snprintf(notice, sizeof notice, tr("Saved bookmark at %.1f, %.1f, %.1f."), cur[0], cur[1], cur[2]);
+            bm_name[0] = 0;
+        } else {
+            snprintf(notice, sizeof notice, "%s", tr("Bookmark list is full."));
+        }
+    }
+    int nb = bookmarks_count();
+    if (nb > 0) {
+        opt_toggle("Delete bookmarks", &del_mode, false,
+                   "When on, selecting a saved bookmark removes it instead of teleporting.");
+        for (int i = 0; i < nb; i++) {
+            const Bookmark *b = bookmarks_at(i);
+            if (!b) continue;
+            char desc[96];
+            snprintf(desc, sizeof desc, "%.1f, %.1f, %.1f", b->x, b->y, b->z);
+            if (opt_action(b->name, del_mode ? tr("Delete") : tr("Teleport"), desc, false)) {
+                if (del_mode) {
+                    bookmarks_remove(i);
+                    snprintf(notice, sizeof notice, "%s", tr("Bookmark removed."));
+                    break;
+                }
+                tp_send(b->x, b->y + 1.0f, b->z, b->name, notice, sizeof notice, &tp_active);
+            }
+        }
+    }
+
+    opt_section(tr("Places"));
+    enum { P_NONE, P_SHRINE, P_TOWER, P_STABLE, P_VILLAGE, P_LANDMARK, P_KOROK, P_ALL, P_COUNT };
+    static const char *cats[P_COUNT] = {"Choose a category", "Shrines", "Towers", "Stables",
+                                        "Villages", "Landmarks", "Koroks", "All"};
+    opt_text(tr("Search"), search, sizeof search, "", tr("Only the places whose name matches this text."));
+    opt_dropdown(tr("Category"), &cat, cats, P_COUNT, P_NONE, tr("The places of one kind."));
+    if (cat == P_NONE && !search[0]) hint(tr("Choose a category, or type in Search, to see places."));
+    if (cat != P_NONE || search[0]) {
+        int kind = cat >= P_SHRINE && cat <= P_KOROK ? (cat - 1) : -1;
+        char wbuf[64];
+        snprintf(wbuf, sizeof wbuf, "%s", search);
+        char *words[12];
+        int nw = 0;
+        for (char *tok = strtok(wbuf, " \t"); tok && nw < 12; tok = strtok(NULL, " \t")) words[nw++] = tok;
+        const Place *hits[200];
+        int total = place_list(kind, nw, words, hits, 200);
+        int shown = total < 200 ? total : 200;
+        for (int i = 0; i < shown; i++) {
+            const Place *p = hits[i];
+            bool vis = ImGui::IsRectVisible(ImVec2(ImGui::GetContentRegionAvail().x, ImGui::GetFontSize() * 1.9f));
+            std::string desc;
+            if (vis) {
+                desc = place_kind_name(p->kind);
+                if (p->sub && p->sub[0]) desc += std::string(" - ") + p->sub;
+            }
+            if (opt_action(p->name, tr("Teleport"), vis ? desc.c_str() : NULL, false)) {
+                float lift = p->ground ? 1.0f : p->kind == PLACE_KOROK ? 2.0f : 3.0f;
+                tp_send(p->x, p->y + lift, p->z, p->name, notice, sizeof notice, &tp_active);
+            }
+        }
+        if (total > 200) {
+            char more[96];
+            snprintf(more, sizeof more, tr("Showing first 200 of %d matches. Narrow Search to see more."), total);
+            hint(more);
+        }
+    }
+    opt_end();
+}
+
 static void tab_about(void) {
     header("Movement");
     toggle("D-pad as left stick", &g_settings.dpad_move);
@@ -1630,6 +1886,10 @@ static void tab_about(void) {
                        "100% is the game's own speed."))
             g_settings.stick_cam_y = (int)cy;
     }
+    opt_toggle("Toggle shield / focus (ZL)", &g_settings.toggle_zl, false,
+               "Press ZL once in play to hold your shield or lock on; press ZL again to release.");
+    opt_toggle("Toggle bow aim (ZR)", &g_settings.toggle_zr, false,
+               "Press ZR once in play to draw and hold your bow; press ZR again to shoot.");
     controls_bindings_draw(ImGui::GetFontSize() / 34);
     ImGui::Spacing();
     header("Menu");
@@ -1768,6 +2028,7 @@ static void perf_overlay_draw(ImGuiIO &io, float scale) {
         case UPSCALE_FSR3: line += tr("FSR 3"); break;
         case UPSCALE_FSR4: line += tr("FSR 4"); break;
         case UPSCALE_DLSS: line += tr("DLSS"); break;
+        case UPSCALE_XESS: line += tr("XeSS"); break;
         default: line += tr("Off");
     }
     int q = upscale_quality_now();
@@ -1775,10 +2036,12 @@ static void perf_overlay_draw(ImGuiIO &io, float scale) {
         char f[16];
         snprintf(f, sizeof f, "%.1f", upscale_factor());
         line += std::string(" ") + (q >= 0 && q < UPQ_COUNT ? std::string(tr(k_upscale_modes[q])) + " " : "") + f + "x";
+    } else if (q == UPQ_DYNAMIC) {
+        line += std::string(" ") + tr("Dynamic");
     }
     // (FSR 3 / 4 and DLSS anti-alias the scene themselves: the setting does nothing then)
     int aa = rt_antialias();
-    line += std::string(" | ") + tr("Anti-aliasing") + ": " + (rt_fsr4() ? tr("FSR 4") : rt_fsr3() ? tr("FSR 3") : rt_dlss() ? tr("DLSS") : aa == AA_TAA ? tr("TAA") : aa == AA_SMAA ? tr("SMAA") : g_settings.game_fxaa ? "FXAA" : tr("Off"));
+    line += std::string(" | ") + tr("Anti-aliasing") + ": " + (rt_fsr4() ? tr("FSR 4") : rt_fsr3() ? tr("FSR 3") : rt_dlss() ? tr("DLSS") : rt_xess() ? tr("XeSS") : aa == AA_TAA ? tr("TAA") : aa == AA_SMAA ? tr("SMAA") : g_settings.game_fxaa ? "FXAA" : tr("Off"));
     ImGui::TextDisabled("%s", line.c_str());
     line.clear();
 #ifndef __APPLE__
@@ -1793,8 +2056,28 @@ static void perf_overlay_draw(ImGuiIO &io, float scale) {
         }
     }
 #endif
-    if (g_fg_active) line += std::string(line.empty() ? "" : " | ") + tr("Frame generation on");
+    // (frame generation: one measured switch for both the line and the dynamic row below - the last second's
+    // generated frames, the same signal the dynamic governor uses, so what the overlay says it is measuring is
+    // what the governor is really measuring. A per-present flag would flicker frame to frame instead.)
+    bool fg_on = s.fps_generated > 0;
+    if (fg_on) line += std::string(line.empty() ? "" : " | ") + tr("Frame generation on");
     if (!line.empty()) ImGui::TextDisabled("%s", line.c_str());
+    // The upscaler's Dynamic mode (the dynamic resolution): what it is holding, at what factor, how it is measuring.
+    // All the numbers the player needs to see why the picture is at the size it is, in one place.
+    if (dynamic_res_active()) {
+        char dyn[160];
+        double target = dynamic_res_target();
+        snprintf(dyn, sizeof dyn, tr("Dynamic: %s %.2fx, target %.0f fps, %s"), tr("upscaler"), dynamic_factor(),
+                 target, fg_on ? tr("presented rate") : tr("real rate"));
+        ImGui::TextDisabled("%s", dyn);
+    }
+    // The frame generation verdict is the same in any upscaler mode: in the Dynamic mode frame generation was switched
+    // off; in another, it is only a hint in the settings and here. Either way the player sees why the presented rate
+    // is what it is.
+    if (dynamic_fg_disabled())
+        ImGui::TextDisabled("%s", tr("Frame generation off: no net gain"));
+    else if (dynamic_fg_no_gain())
+        ImGui::TextDisabled("%s", tr("Frame generation: no net gain"));
     // Link's coordinates; no line at all while there is no Link or the game is in a scene (title, loading, movie, event).
     // Axis letters are not translated.
     float pos[3];
@@ -1940,16 +2223,20 @@ extern "C" int menu_keyboard_run(const char *initial, int max_len, char *out, in
 static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     // (id: the page; -1 = Prelaunch)
     struct Tab { const char *name; int id; bool on; };
-    Tab tabs[11];
+    Tab tabs[12];
     int ntabs = 0;
     if (prelaunch) tabs[ntabs++] = {"Prelaunch", -1, true};
     // (ids 5-7 were Link's Awakening tabs; the ids stay: test hooks)
-    static const char *names[] = {"Video", "Audio", "Language", "Saves", "amiibo", "", "", "", "Controls", "Quit", "Cheats"};
-    static const int order[] = {8, 0, 1, 2, 4, 3, 10, 9};  // Controls, Video, Audio, Language, amiibo, Saves, Cheats, Quit
+    static const char *names[] = {"Video", "Audio", "Language", "Saves", "amiibo", "", "", "", "Controls", "Quit", "Cheats", "Teleport",
+                                  "Mods"};
+    // Controls, Video, Audio, Language, amiibo, Saves, Mods, Cheats, Teleport, Quit
+    static const int order[] = {8, 0, 1, 2, 4, 3, 12, 10, 11, 9};
     for (int i : order) {  // (Quit: in game only - the start screen has its own QUIT; Saves: on the start screen only,
         if (i == 9 && prelaunch) continue;  //  the game must not be running while its saves change)
         if (i == 3 && !prelaunch) continue;
-        if (i == 10 && !in_game) continue;  // (Cheats: in game only)
+        // (Cheats, Teleport: in game only, and only when started with -dev or SAVAGEWIND_DEV=1: cheats are
+        // developer mode, as the console's give, tp and time)
+        if ((i == 10 || i == 11) && (!in_game || !control_enabled())) continue;
         tabs[ntabs++] = {names[i], i, true};
     }
     int cur = 0;  // g_tab / g_tab_request hold ids
@@ -2044,6 +2331,17 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
                 case 8: tab_about(); break;
                 case 9: tab_quit(scale, in_game); break;
                 case 10: tab_cheats(); break;
+                case 11: tab_teleport(); break;
+                case 12: {
+                    bool want_restart = false;
+                    mods_tab_draw(in_game, &want_restart);
+                    if (want_restart) {
+                        settings_save();
+                        rt_request_reboot(1);
+                        set_open(false);
+                    }
+                    break;
+                }
                 }
                 static const char *scroll_test = getenv("SAVAGEWIND_MENU_SCROLL");  // test hook: page scroll, 0..1
                 if (scroll_test) ImGui::SetScrollY(ImGui::GetScrollMaxY() * (float)atof(scroll_test));
@@ -2128,9 +2426,11 @@ static void quick_inventory_hint_draw(const ImGuiIO &io) {
     int family = kind == ICONS_XBOX ? 1 : kind == ICONS_PLAYSTATION ? 2 : 0;
     float canvas = fminf(io.DisplaySize.x / 1280.f, io.DisplaySize.y / 720.f);
     float scale = canvas / 1.5f, fs = 32 * scale, radius = 15 * scale, gap = 10 * scale;
-    float y = io.DisplaySize.y * .5f + 23 * canvas;
+    int drop = quick_drop_hint_state();
+    float y = quick_inventory_layout(io.DisplaySize.x, io.DisplaySize.y, drop >= 6).controls_y;
     struct Prompt { const char *label, *icon; int binding; bool enabled; } prompts[3];
-    int count = 0, drop = quick_drop_hint_state();
+    int count = 0;
+    if (drop >= 4) prompts[count++] = {tr("Replace"), "\xee\x81\x80", BIND_A, drop == 5 || drop == 7};
     if (drop == 1 || drop == 2) prompts[count++] = {tr("Drop"), "\xee\x81\x83", BIND_Y, drop == 2};
     if (quick_inventory_sort_hint()) prompts[count++] = {tr("Sort"), "\xee\x81\x82", BIND_X, true};
     if (drop) prompts[count++] = {tr("Back"), "\xee\x81\x81", BIND_B, true};
@@ -2238,7 +2538,8 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     last = now;
     drain_events(io);
     // fonts are built at 34/56 px for a ~1080 px tall output; scale to the window
-    float scale = (float)(th / 1080.0);
+    int text_pct = g_settings.menu_text_size >= 80 && g_settings.menu_text_size <= 150 ? g_settings.menu_text_size : 100;
+    float scale = (float)(th / 1080.0) * (text_pct / 100.0f);
     if (scale < 0.45f) scale = 0.45f;
     io.FontGlobalScale = scale;
 

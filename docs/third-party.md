@@ -22,6 +22,9 @@
   [Dear ImGui](https://github.com/ocornut/imgui) (MIT),
   [NVIDIA DLSS](https://github.com/NVIDIA/DLSS) (NVIDIA's own license; neither shipped nor linked: on Windows PCs with an
   NVIDIA driver the setup downloads NVIDIA's DLL and `LICENSE.txt`),
+  [Intel XeSS](https://github.com/intel/xess) (Intel Simplified Software License; neither shipped nor linked: on Windows
+  PCs with an Intel graphics card the setup downloads Intel's DLL and `LICENSE.txt`; the API headers in
+  `third_party/xess` are MIT),
   [Vulkan Memory Allocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator) (MIT),
   [SMAA](https://github.com/iryoku/smaa) (MIT), [AMD FidelityFX Super Resolution 1](https://github.com/GPUOpen-Effects/FidelityFX-FSR)
   (MIT), [AMD FidelityFX CAS](https://github.com/GPUOpen-Effects/FidelityFX-CAS) (MIT),
