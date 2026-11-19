@@ -44,7 +44,10 @@ versión nueva como "(latest)" en el desplegable "Savage Wind version" de `bug_r
 opción "An older release").
 
 Releases: el zip de `make dist` (ver `docs/BUILD-windows.md`) se sube con `gh release create v<versión>
---prerelease` sobre el commit de `public`. Alpha 1 (`0.1.0-alpha.1`, 2026-10-17) se probó como jugador: zip
+--prerelease` sobre el commit de `public`. El `.dmg` de macOS (Apple Silicon) no se hace aquí, no hay Mac: al
+publicar la release, el workflow "macOS disk image" (`.github/workflows/macos-dmg.yml`) lo genera en un runner de
+GitHub y lo adjunta con su `.sha256`. Antes, alguien con Mac (devall96) prueba el artefacto que ese workflow deja al
+cambiar el empaquetado en `test` (Actions > macOS disk image). Alpha 1 (`0.1.0-alpha.1`, 2026-10-17) se probó como jugador: zip
 extraído en una carpeta nueva, PATH sin MSYS2, preparación desde la pantalla de inicio (copia, `romfs.bin`,
 generación y compilación con swgen + zig: 2308 s con 12 hilos) y PLAY hasta tener a Link en el Santuario, a 30
 fps. La carpeta queda en ~30,5 GB (romfs 15 GB, `romfs.bin` 15,1 GB, `swgame.dll` 209 MB), ~32 GB durante la

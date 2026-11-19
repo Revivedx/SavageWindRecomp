@@ -46,6 +46,11 @@ them up and builds the game code on your Mac. Everything it writes lives in
 `~/Library/Application Support/local.savagewind`: game files, saves, settings (`savagewind.ini`), shader caches and
 `savagewind.log`. Hold **Option** while opening the app for the configuration screen (what `--config` is elsewhere).
 
+Releases attach this disk image, built on GitHub's Apple Silicon runners (`.github/workflows/macos-dmg.yml`), with
+its SHA-256. It is ad-hoc signed, not notarized: the first time, Control-click the app and choose **Open** (or run
+`xattr -dr com.apple.quarantine "/Applications/Savage Wind.app"`). The in-game updater doesn't cover macOS yet:
+download the next release's disk image yourself.
+
 ## Recommended settings (MacBook Air / base M-series)
 
 1080p fullscreen, Anti-aliasing **SMAA**, VSync **Fast**: a locked 60 on an M4. TAA costs ~5 ms a frame on Apple GPUs
