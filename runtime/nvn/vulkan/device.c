@@ -2988,8 +2988,20 @@ static uint64_t gen_frames;
 #ifdef SW_PGO_GENERATE
 static void write_runtime_profile(void) {
     extern int __llvm_profile_write_file(void);
+    extern void __llvm_profile_reset_counters(void);
+    // Snapshots are appended to the file: each holds the counts since the one before (reset after the write), so the
+    // merge adds up to exactly the run, not the early frames once for every later snapshot.
     if (__llvm_profile_write_file()) LOG("[pgo] could not write the runtime profile\n");
+    else __llvm_profile_reset_counters();
 }
+// A training run played by hand ends however the window is closed: keep the profile on disk as it goes.
+static void pgo_frame(void) {
+    static unsigned pgo_frames;
+    if (++pgo_frames % 3000 == 0) write_runtime_profile();
+}
+#else
+static void write_runtime_profile(void) {}  // (empty in the normal build: the callers keep the same statements in both builds,
+static void pgo_frame(void) {}              // so the profile trained on the instrumented one still fits them)
 #endif
 
 static char fg_real_shot[256];  // (SAVAGEWIND_FG_SHOT_AT: the game's frame after a generated one saved)
@@ -3344,20 +3356,12 @@ presented:
     extern uint64_t framepace_script_frame(uint64_t presented);
     uint64_t script_frame = framepace_script_frame(total_frames);  // (SAVAGEWIND_SCRIPT_CLOCK: 30ths of a second)
     input_frame(script_frame);
-#ifdef SW_PGO_GENERATE
-    {   // a training run played by hand ends however the window is closed: keep the profile on disk as it goes
-        static unsigned pgo_frames;
-        if (++pgo_frames % 3000 == 0) write_runtime_profile();
-    }
-#endif
+    pgo_frame();
     {   // SAVAGEWIND_EXIT_AT=<frame> (counted as SAVAGEWIND_INPUT): end the run there
         static long exit_at = -1;
         if (exit_at < 0) exit_at = getenv("SAVAGEWIND_EXIT_AT") ? atol(getenv("SAVAGEWIND_EXIT_AT")) : 0;
         if (exit_at && (long)script_frame >= exit_at) {
-#ifdef SW_PGO_GENERATE
-            // The scripted exit skips atexit, so finish the runtime training profile explicitly.
-            write_runtime_profile();
-#endif
+            write_runtime_profile();  // (a training run: the scripted exit skips atexit, so the profile is finished here)
             fflush(stderr);
             _exit(0);
         }
