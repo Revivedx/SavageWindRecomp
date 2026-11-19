@@ -1,4 +1,4 @@
-// Small Linux Cemuhook client. No SDL, threads, DNS or blocking I/O.
+// Small Cemuhook (DSU) client, Linux and Windows. No SDL, threads, DNS or blocking I/O.
 #pragma once
 #include <stdbool.h>
 #include <stddef.h>
@@ -16,7 +16,8 @@ typedef struct {
 } DsuPacket;
 
 typedef struct {
-    int fd, slot;
+    intptr_t fd;  // the socket (-1: none; Windows: a SOCKET)
+    int slot;
     bool enabled, fresh, have_sequence;
     uint32_t client, server, sequence, generation;
     uint8_t mac[6];

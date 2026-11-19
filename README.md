@@ -36,27 +36,40 @@ game.
 > can simply ignore this project.
 
 > [!WARNING]
-> **This is an alpha.** The whole game can be finished from start to end, but expect bugs and crashes in some places,
-> and some mechanics that break above 30 fps ([#425](https://github.com/Revivedx/SavageWindRecomp/issues/425)). If a
-> cutscene freezes or breaks, lower the frame rate to 30 fps for that scene.
+> **This is an alpha.** The whole game can be finished from start to end, and as of Alpha 6 no known bug stops you
+> from progressing, but expect bugs and crashes in some places, and some mechanics that break above 30 fps
+> ([#425](https://github.com/Revivedx/SavageWindRecomp/issues/425)). If a cutscene freezes or breaks, lower the frame
+> rate to 30 fps for that scene.
+>
+> **Please read the [FAQ](docs/FAQ.md) before asking** about game file formats, mod support or testing. Many great
+> contributors help out, but every review, approval and release test is done by one person with limited hardware.
+>
+> **Alpha 7 will take longer than usual:** development slows down a bit while GTA VI comes out. Game-breaking bugs
+> still get quick fixes first, and bug reports and pull requests stay welcome. We're still on track for the **Beta
+> within the next month**, which will focus on full mod support and more quality-of-life options.
 
 ## Features
 
 - The whole game and both DLC, from your own copy
 - Frame rates from 30 to 360 fps, or your display's own rate
-- Resolutions up to 4K and beyond, ultrawide, and FSR 1 upscaling
+- Resolutions up to 4K and beyond, and ultrawide
+- Upscaling with NVIDIA DLSS, AMD FSR 3, FSR 4 and FSR 1, and FSR 3 frame generation
 - Graphics presets from Potato, below console quality, to Savage, far beyond it
 - Longer draw distance, sharper shadows, adjustable field of view, colour grading and HDR
-- Keyboard and mouse with real mouse camera, and any controller, gyro included
+- Keyboard and mouse with real mouse camera, and any controller, gyro included (Steam Input, DSU servers, handhelds)
 - Button prompts that match your device
-- Save profiles, backups, and Wii U / Cemu save import
-- Steam Deck and PC handhelds
-- Photo mode, accessibility options and cheats
+- Save profiles, backups, a custom save folder, and Wii U / Cemu save import
+- Steam Deck and PC handhelds, and Add to Steam
+- One-click updates from Savage Wind Configuration
+- Photo mode, colour vision filters, accessibility options, cheats and a teleport
+  ([Cheats and assists](docs/cheats-and-assists.md))
+- Discord Rich Presence (off by default)
 
 ## Get started
 
 **You need:** your own game files (see [Game files](docs/game-files.md)), Windows 10 or later or Linux on x86-64, a
-GPU with Vulkan 1.3, 16 GB of RAM, a CPU with SSE4.2 (AVX2 runs faster) and about 20 GB of free disk space.
+GPU with Vulkan 1.3, 8 GB of RAM (16 GB with integrated graphics), a 4-thread CPU with SSE4.2 (AVX2 runs faster) and
+about 20 GB of free disk space.
 
 1. Download the latest build from [Releases](https://github.com/Revivedx/SavageWindRecomp/releases/latest):
    - **Windows:** the file ending in `windows.zip`. Extract it to a folder you can write to, not Program Files.
@@ -80,6 +93,19 @@ Something wrong? See the [FAQ](docs/FAQ.md), which also lists the known issues.
 Saves are in the `save` folder of Savage Wind's data folder: next to `savagewind.exe` on Windows, and in
 `~/.local/share/savagewind/save/` on Linux and the Steam Deck. To back them up or move them, close the game and copy
 the whole folder. More in [Saves](docs/saves.md), including profiles and Wii U / Cemu import.
+
+## Cheats, assists and amiibo
+
+Colour vision for colour-blind players, god mode, infinite stamina, damage and weapon wear settings, items, rupees,
+weather, teleporting and the virtual amiibo reader: how to use them in [Cheats and assists](docs/cheats-and-assists.md).
+
+## Mods
+
+Since Alpha 7, Savage Wind loads mods from the `mods` folder next to it, with a **Mods** tab to turn them on and set
+their order. Mods are other people's work: Savage Wind doesn't check, test or support them,
+and isn't responsible for what they do, including if they break the game or your saves. Back up your saves before
+trying one. Releases never include mods. In the future we may point to mods we've found to play well with Savage Wind.
+More in the [FAQ](docs/FAQ.md#can-i-use-mods).
 
 ## Status
 
@@ -113,7 +139,9 @@ Every action can be rebound in the game's Options. All the keys: [Controls](docs
 Read the [FAQ](docs/FAQ.md) first: issues about something it already covers are closed right away. Use the latest
 release and game version 1.9.0, search the [existing issues](https://github.com/Revivedx/SavageWindRecomp/issues?q=is%3Aissue),
 and [open one](https://github.com/Revivedx/SavageWindRecomp/issues/new/choose) with your `savagewind.log`. On a crash
-or a cutscene bug, attach your zipped `save` folder too. Reports without these are closed after 7 days.
+or a cutscene bug, attach your zipped `save` folder too. Reports without these are closed after 24 hours. Turn every
+mod off and check that the bug still happens: a bug caused by a mod is closed right away, because we don't support what
+isn't ours.
 
 ## Contributing and building
 

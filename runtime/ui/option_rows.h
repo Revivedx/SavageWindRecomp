@@ -11,10 +11,17 @@
 void opt_begin(const char *id, float scale);
 void opt_section(const char *title);
 bool opt_toggle(const char *label, bool *v, bool def, const char *desc);
+// item toggle: label as written (upper = false), optional value_override (else On/Off), highlighted while *v is true
+bool opt_toggle_item(const char *label, bool *v, const char *value_override, const char *desc);
 // wrap: past the last value back to the first (and the other way); false: stops at the ends
 bool opt_choice(const char *label, int *v, const char *const *names, int n, int def, const char *desc, bool wrap = true);
+// item choice: values shown verbatim without tr() and label casing controlled by upper (default false)
+bool opt_choice_item(const char *label, int *v, const char *const *names, int n, int def, const char *desc,
+                     bool wrap = true, bool upper = false);
 // a long choice: A / click opens the values as a list (*picked: one was picked there), left / right step through them
 bool opt_list(const char *label, int *v, const char *const *names, int n, int def, const char *desc, bool *picked);
+// A dropdown: the value in a box with ▼; a click (A, Enter) opens the list, left / right don't step through it
+bool opt_dropdown(const char *label, int *v, const char *const *names, int n, int def, const char *desc);
 // a choice where some values can't be picked yet (avail[i] false: shown greyed when stepped onto, never stored): *v
 // keeps the last available value, *shown is the one on screen (-1: *v). True when *v changed.
 bool opt_choice_avail(const char *label, int *v, int *shown, const char *const *names, const bool *avail, int n, int def,

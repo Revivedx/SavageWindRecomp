@@ -9,6 +9,7 @@
 #endif
 
 #include "cpu.h"
+#include "simd.h"  // (the portable lowering under test; cpu.h leaves it out on AArch64)
 
 extern GuestFn tests[];
 extern int ntests;
@@ -79,7 +80,11 @@ int main(int argc, char **argv) {
         memcpy(c.x, in.x, sizeof c.x);
         c.sp = in.sp;
         c.nzcv = in.nzcv;
+#if defined(SIMD_ASM) && defined(__aarch64__)
+        rt_set_fpcr(in.fpcr);  // (--simd asm: the guest's FP/SIMD runs on the host's, as in the game on AArch64)
+#else
         rt_fpcr_write(&c, in.fpcr);  // (x86-64: FZ is MXCSR's DAZ / FTZ, as in the game)
+#endif
         memcpy(c.v, in.v, sizeof c.v);
         c.excl_addr = ~0ull;
         tests[in.k](&c);

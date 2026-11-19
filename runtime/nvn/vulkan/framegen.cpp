@@ -9,7 +9,9 @@
 // vectors, the previous frame's reconstructed depth, two of each that alternate), the optical flow context and the
 // frame interpolation context on a second backend interface; per frame, frame interpolation's prepare (dilates the
 // depth and motion vectors), the optical flow, then the interpolation.
+#ifndef __APPLE__  // (macOS has no malloc.h: _aligned_malloc is ffx_compat.h's)
 #include <malloc.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -187,7 +189,9 @@ static FfxResource image(const FgImage *im, const wchar_t *name, bool write) {
 
 static FfxResource shared(int i) { return g.shared.fpGetResource(&g.shared, g.res[i]); }
 
+extern "C" bool vk_api12(void);  // (device.c)
 extern "C" bool fg_dispatch(VkCommandBuffer cb, const FgConfig *c, const FgFrame *f) {
+    if (vk_api12()) return false;  // (a Vulkan 1.2 driver: no frame generation)
     if (g.live && memcmp(&g.cfg, c, sizeof *c)) {
         g_fg_vk.wait_idle();
         fg_destroy();

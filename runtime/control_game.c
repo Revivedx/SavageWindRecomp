@@ -9,9 +9,13 @@
 #include "control.h"
 #include "control_cells.h"
 #include "control_places.h"
+#include "discord_rpc.h"
+#include "game_place.h"
+#include "language.h"
 #include "perfmon.h"
 #include "rt.h"
 #include "game_sites.h"
+#include "blood_moon.h"
 
 uint64_t renderer_present_count(void);  // presented frames (the backend)
 bool control_camera_view(float view[12]);  // the world camera's view matrix (the backend; false: none)
@@ -85,6 +89,15 @@ static void cmd_time(int argc, char **argv, ControlReply *r) {
     control_field_bool(r, "hour_held", held);
 }
 
+// ---- bloodmoon: the game's own blood moon (runtime/blood_moon.c), as Cheats > Blood moon now. It waits for the console
+// and any menu to close, then the game plays its cutscene and brings back the monsters and materials.
+static void cmd_bloodmoon(int argc, char **argv, ControlReply *r) {
+    (void)argv;
+    if (argc != 1) { control_fail(r, "Usage: bloodmoon"); return; }
+    if (!blood_moon_request()) { control_fail(r, "A blood moon can only start in the open world"); return; }
+    control_field_bool(r, "pending", true);
+}
+
 // ---- pos: Link's position (x y z) and stamina (uking::act::PlayerInfo +0x88 / +0xa4, as the clock probe in framepace.c reads them)
 static uint64_t player_info(void) { return g_site.player_info ? *(uint64_t *)(uintptr_t)g_site.player_info : 0; }
 
@@ -114,7 +127,31 @@ static bool link_position(float p[3]) {
 // last one still says where), so a report's log says where its bug happened and `goto` takes the line back.
 // SAVAGEWIND_PLACE_LOG=0: no lines.
 #define PLACE_LOG_NS 30000000000ull
+#define PRESENCE_NS 5000000000ull
+// The text's language: SAVAGEWIND_DISCORD_LANG (en, es, or a game language's folder), or the game's. Discord doesn't tell
+// its own to a local program.
+static const char *presence_language(void) {
+    const char *lang = getenv("SAVAGEWIND_DISCORD_LANG"), *code = language_text_code();
+    if (lang && *lang) return lang;
+    for (int i = 1; i < g_ntext_languages; i++)
+        if (!strcmp(code, g_text_languages[i].code)) return g_text_languages[i].folder;
+    return "USen";
+}
+
+static void presence_frame(void) {
+    static uint64_t last_ns;
+    uint64_t now = plat_now_ns();
+    if (last_ns && now - last_ns < PRESENCE_NS) return;
+    last_ns = now;
+    game_place_set_language(presence_language());  // (each time: the options can change the game's language while it runs)
+    float p[3] = {0};
+    bool has_link = link_position(p);
+    char details[128], state[128];
+    if (game_place_text(p[0], p[2], has_link, details, sizeof details, state, sizeof state)) discord_rpc_set(details, state);
+}
+
 void control_place_frame(void) {
+    presence_frame();
     static int on = -1;
     static uint64_t last_ns;
     static float last[3];
@@ -441,10 +478,10 @@ void control_items_init(void);     // runtime/items.c
 
 void control_game_init(void) {
     static const ControlCmd player[] = {
-        {"state", "", "Frame number, uptime, fps and hour", cmd_state, CONTROL_PLAYER},
-        {"pos", "", "Show the position and copy it as a line for goto or an issue", cmd_pos, CONTROL_PLAYER},
-        {"camera", "", "Show the camera position and direction", cmd_camera, CONTROL_PLAYER},
-        {"version", "", "Show the game version and system", cmd_version, CONTROL_PLAYER},
+        {"state", "", "Frame number, uptime, fps and hour", cmd_state, CONTROL_PLAYER | CONTROL_READ},
+        {"pos", "", "Show the position and copy it as a line for goto or an issue", cmd_pos, CONTROL_PLAYER | CONTROL_READ},
+        {"camera", "", "Show the camera position and direction", cmd_camera, CONTROL_PLAYER | CONTROL_READ},
+        {"version", "", "Show the game version and system", cmd_version, CONTROL_PLAYER | CONTROL_READ},
         {"report", "", "Build an issue report and copy it", cmd_report, CONTROL_PLAYER},
     };
     control_register(player, (int)(sizeof player / sizeof *player));
@@ -456,6 +493,7 @@ void control_game_init(void) {
         {"goto", "<x> <y> <z> | <swr:1 line> | <place>", "Go to coordinates, a place from pos or report, or a shrine, Korok, tower, stable, village by number or name", cmd_goto, 0},
         {"places", "[<kind>] [words]", "List the places goto knows (shrine, tower, stable, village, landmark, korok)", cmd_places, 0},
         {"tp", "<x> <y> <z> | <swr:1 line> | <place>", "Same as goto", cmd_goto, 0},
+        {"bloodmoon", "", "The game's own blood moon: its cutscene, and the monsters and materials back", cmd_bloodmoon, 0},
     };
     control_register(dev, (int)(sizeof dev / sizeof *dev));
     control_prof_init();

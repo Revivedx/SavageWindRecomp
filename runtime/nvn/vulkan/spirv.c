@@ -44,7 +44,8 @@ static shaderc_shader_kind kind_of(int stage) {
 // deflated (zlib; a third to a quarter of the size: the precompiled shaders of the whole game take ~0.4 GB instead
 // of 1.4).
 static uint64_t src_hash(const char *src, int stage) {
-    uint64_t h = 0xcbf29ce484222325ull ^ (uint64_t)stage ^ (optimized(stage) ? 0x6f707400ull : 0);
+    // (a Vulkan 1.2 driver takes SPIR-V 1.5, not the 1.6 a 1.3 one is given: files of their own)
+    uint64_t h = 0xcbf29ce484222325ull ^ (uint64_t)stage ^ (optimized(stage) ? 0x6f707400ull : 0) ^ (g_vk.api12 ? 0x31320000ull : 0);
     for (const char *p = vk_spirv_id(); *p; p++) { h ^= (uint8_t)*p; h *= 0x100000001B3ull; }
     for (const char *p = src; *p; p++) { h ^= (uint8_t)*p; h *= 0x100000001B3ull; }
     return h;
@@ -203,7 +204,8 @@ uint32_t *vk_glsl_to_spirv(const char *src, int stage, const char *name, size_t 
     static __thread shaderc_compiler_t comp;
     if (!comp) comp = shaderc_compiler_initialize();
     shaderc_compile_options_t o = shaderc_compile_options_initialize();
-    shaderc_compile_options_set_target_env(o, shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_3);
+    shaderc_compile_options_set_target_env(o, shaderc_target_env_vulkan,
+                                           g_vk.api12 ? shaderc_env_version_vulkan_1_2 : shaderc_env_version_vulkan_1_3);
     shaderc_compile_options_set_optimization_level(o, optimized(stage) ? shaderc_optimization_level_performance
                                                                        : shaderc_optimization_level_zero);
     shaderc_compilation_result_t r = shaderc_compile_into_spv(comp, src, strlen(src), kind_of(stage), name, "main", o);

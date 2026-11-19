@@ -52,16 +52,37 @@ void remove_at(int i) {
     save();
 }
 
+void load_once(void) {
+    if (g_loaded) return;
+    char path[1100];
+    g_loaded = true;
+    if (launch_flags_path(path, sizeof path)) lf_load(&g_list, path);
+}
+
 }  // namespace
 
+const char *const k_dev_options_desc =
+    "The console's developer commands and cheats (give, tp, time, bloodmoon), and the Cheats and Teleport tabs of the "
+    "Savage Wind menu. The same as starting the game with -dev. Takes effect when you press Play.";
+
+bool launch_flags_dev(void) {
+    load_once();
+    int i = lf_index(&g_list, "SAVAGEWIND_DEV");
+    return i >= 0 && !lf_value_is_off(g_list.flag[i].value);
+}
+
+void launch_flags_set_dev(bool on) {
+    load_once();
+    int i = lf_index(&g_list, "SAVAGEWIND_DEV");
+    if (on == (i >= 0 && !lf_value_is_off(g_list.flag[i].value))) return;
+    if (i >= 0) lf_remove(&g_list, i);
+    if (on) lf_set(&g_list, "SAVAGEWIND_DEV", "1");
+    memset(g_row_active, 0, sizeof g_row_active);
+    save();
+}
+
 void launch_flags_ui(float sc) {
-    if (!g_loaded) {
-        char path[1100];
-        g_loaded = true;
-        if (launch_flags_path(path, sizeof path)) {
-            lf_load(&g_list, path);
-        }
-    }
+    load_once();
     ImGui::PushID("##launchflags");
     ImGui::PushTextWrapPos(0);
     ImGui::TextDisabled("%s", tr("Extra settings for testing and fixing problems. Only add one if you were asked to. "
@@ -69,6 +90,12 @@ void launch_flags_ui(float sc) {
     ImGui::PopTextWrapPos();
     if (launch_flags_disabled())
         ImGui::TextColored(kWarn, "%s", tr("Launch options are switched off for this start (--no-launch-flags)."));
+    ImGui::Spacing();
+    bool dev = launch_flags_dev();
+    if (ImGui::Checkbox(tr("Developer options"), &dev)) launch_flags_set_dev(dev);
+    ImGui::PushTextWrapPos(0);
+    ImGui::TextDisabled("%s", tr(k_dev_options_desc));  // (shown, not a tooltip: a controller can't hover)
+    ImGui::PopTextWrapPos();
     ImGui::Spacing();
 
     // the list

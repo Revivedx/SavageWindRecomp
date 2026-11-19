@@ -54,6 +54,7 @@ uint64_t plat_now_ns(void);                // monotonic
 void plat_sleep_until_ns(uint64_t t);      // precise wait for plat_now_ns() >= t
 void plat_wait_until_ns(uint64_t t);       // wait for plat_now_ns() >= t without spinning (the OS timer's precision)
 void plat_thread_realtime(uint64_t period_ns);  // periodic timing thread (vsync): don't coalesce its timers
+void plat_thread_elevate(void);            // latency-critical thread (game main, render, recorder): favor P-cores on hybrid architectures
 int plat_cpu_count(void);       // logical processors this process may run on (its affinity, after plat_cpu_placement)
 void plat_cpu_placement(void);  // (game start) one logical processor per core where plat_one_per_core_default says
 // Whether the game runs on one logical processor per core when SAVAGEWIND_ONE_PER_CORE doesn't say (cores: physical
@@ -75,12 +76,15 @@ void plat_init(void);                                // first thing in main()
 bool plat_exe_path(char *buf, size_t size);
 const char *plat_log_path(void);  // the log file this run writes ("": stderr goes to a console, pipe or file)
 void plat_exec(char *const argv[]);  // replace the process (NULL = same command line); returns only on failure
+// The same, keeping the exit status on Windows too (the new process's becomes this one's): only for restarts at
+// start-up, before a window or a lock is open, as the parent stays until the child ends there.
+void plat_exec_wait(char *const argv[]);
 #if defined(_WIN32) || defined(__linux__)
 void plat_terminate(void);  // end the process now, skipping DLL teardown (exit status 0)
+#endif
 // Windows: false turns off the accessibility shortcuts (Shift five times: Sticky Keys) where their feature is off,
 // true puts them back as they were (the game's window has the focus or not). Elsewhere nothing.
 void plat_accessibility_shortcuts(bool allow);
-#endif
 
 // Child processes (game code generator and compiler, game-file setup). stdout + stderr go to log_path (NULL = /dev/null).
 typedef intptr_t PlatProc;  // 0 = failed to start
@@ -88,12 +92,21 @@ PlatProc plat_spawn(const char *const argv[], const char *log_path, bool append_
 int plat_proc_wait(PlatProc p, bool block);  // exit code, or -1 while still running (block = false)
 void plat_proc_kill(PlatProc p);             // end it and what it started (then it's gone: no wait)
 bool plat_remove_tree(const char *dir);      // rm -rf
+// The file at path written out to the disk (fsync), through a descriptor of its own: the file may be renamed or deleted
+// meanwhile (Windows: the handle shares delete). False if it can't be opened or flushed.
+bool plat_file_flush(const char *path);
 #ifdef _WIN32
 #define PLAT_EXE_SUFFIX ".exe"
 #define PLAT_VENV_PYTHON "venv/Scripts/python.exe"  // relative to the venv's parent
 #else
 #define PLAT_EXE_SUFFIX ""
 #define PLAT_VENV_PYTHON "venv/bin/python"
+#endif
+
+#ifdef _WIN32
+// The display's peak luminance from the active Windows HDR calibration ICC profile (MHC2 tag, nits), 0 if unknown.
+// hwnd: the game window (SDL_PROP_WINDOW_WIN32_HWND_POINTER), may be NULL. profile: the applied ICC file name.
+int plat_hdr_peak_nits(void *hwnd, char *profile, size_t profile_size);
 #endif
 
 // ---- diagnostics

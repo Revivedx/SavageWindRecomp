@@ -11,6 +11,8 @@
 // The background: runtime/ui/splash.mm.
 #ifdef __APPLE__
 #import <AppKit/NSEvent.h>
+#endif
+#ifdef SW_METAL
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 #endif
@@ -35,7 +37,7 @@
 #include "osk.h"
 #include "saves_tab.h"
 #include "splash.h"
-#ifdef __APPLE__
+#ifdef SW_METAL
 #include "imgui_impl_metal.h"
 #else
 #include "imgui_impl_vulkan.h"
@@ -52,21 +54,25 @@ extern "C" {
 #include "gamelib.h"
 #include "game_versions.h"
 #include "dlc_check.h"
+#include "dlss_fetch.h"
+#include "xess_fetch.h"
+#include "cli.h"
 #include "romfs_build.h"
 #include "problem_report.h"
 #include "post_update.h"
 #include "steam_shortcuts.h"
 #include "settings.h"
+#include "control.h"
 #include "color_grade.h"
 #include "pc_cursor.h"
 #include "input_bind.h"
-#ifndef __APPLE__
+#ifndef SW_METAL
 #include "nvn/precompile.h"
 #endif
 void controls_bindings_draw(float scale);  // ui/controls_ui.mm
 void ui_window_init(void);
 SDL_Window *ui_window(void);
-#ifdef __APPLE__
+#ifdef SW_METAL
 void *ui_metal_layer(void);
 void *ui_metal_device(void);
 #else
@@ -80,7 +86,7 @@ uint64_t vk_imgui_texture_rgba(const void *rgba, int w, int h);
 void rec_drain(void);  // (runtime/nvn/vulkan/record.c)
 #endif
 }
-#ifdef __APPLE__
+#ifdef SW_METAL
 #import <ImageIO/ImageIO.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
@@ -105,7 +111,7 @@ static void save_png(id<MTLTexture> tex, const char *path) {
 #endif
 
 // The version this build is (also names the release files; Makefile / tools/bundle_macos.sh / make_dmg.sh read it).
-#define SAVAGEWIND_VERSION "0.5.2-alpha.5"
+#define SAVAGEWIND_VERSION "0.6.0-alpha.6"
 extern "C" const char *rt_version(void) { return SAVAGEWIND_VERSION; }  // (the title screen's version line: fs.c)
 
 // ------------------------------------------------------------------ game files
@@ -492,7 +498,7 @@ static bool build_game_code(void) {
 // After a setup when its option is on (the setup page's PRECOMPILE ALL SHADERS, settings.precompile_shaders), or on
 // its own from the game files page of the configuration screen. The progress overlay shows it; Esc / B stops it
 // (what is done stays in the caches).
-#ifndef __APPLE__
+#ifndef SW_METAL
 static ShaderPrecompile g_pc;
 static std::atomic<bool> g_precompiling{false}, g_pc_only{false};
 
@@ -539,6 +545,66 @@ static std::string precompile_line(void) {
 
 static std::atomic<bool> g_stay_on_setup{false}, g_dlc_checking{false};
 
+// ------------------------------------------------------------------ NVIDIA DLSS (runtime/dlss_fetch.h)
+// NVIDIA's library for Video > Upscaler's NVIDIA DLSS, downloaded from NVIDIA's own repository after a setup when its
+// option is on (the setup page's DOWNLOAD NVIDIA DLSS, settings.dlss_download), or on its own from the game files
+// page. Not needed to play: a failed download leaves DLSS greyed out, nothing else.
+static const char k_dlss_text[] = "For NVIDIA DLSS in Video > Upscaler, on NVIDIA RTX graphics cards: downloads "
+                                   "NVIDIA's DLSS library (59 MB) from NVIDIA's own repository on GitHub. It is "
+                                   "NVIDIA's, under NVIDIA's licence, and not part of Savage Wind.";
+static std::atomic<bool> g_dlss_fetching{false};
+static std::atomic<float> g_dlss_frac{0};
+static void dlss_progress(uint64_t done, uint64_t total) { g_dlss_frac = total ? (float)((double)done / (double)total) : 0; }
+static bool run_dlss_fetch(void) {
+    g_dlss_frac = 0;
+    g_dlss_fetching = true;
+    set_job("Downloading NVIDIA DLSS...");
+    char why[300];
+    bool ok = dlss_fetch_run(dlss_progress, why, sizeof why);
+    g_dlss_fetching = false;
+    if (!ok) fprintf(stderr, "[launcher] NVIDIA DLSS: %s\n", why);
+    return ok;
+}
+// Intel's library for Video > Upscaler's Intel XeSS (runtime/xess_fetch.h), the same way: after a setup when its option
+// is on (DOWNLOAD INTEL XESS, settings.xess_download), or on its own from the game files page. Offered where an Intel
+// graphics card is.
+static const char k_xess_text[] = "For Intel XeSS in Video > Upscaler, on Intel graphics cards: downloads "
+                                   "Intel's XeSS library (78 MB) from Intel's own repository on GitHub. It is Intel's, "
+                                   "under Intel's licence, and not part of Savage Wind.";
+static std::atomic<bool> g_xess_fetching{false};
+static std::atomic<float> g_xess_frac{0};
+static void xess_progress(uint64_t done, uint64_t total) { g_xess_frac = total ? (float)((double)done / (double)total) : 0; }
+static bool run_xess_fetch(void) {
+    g_xess_frac = 0;
+    g_xess_fetching = true;
+    set_job("Downloading Intel XeSS...");
+    char why[300];
+    bool ok = xess_fetch_run(xess_progress, why, sizeof why);
+    g_xess_fetching = false;
+    if (!ok) fprintf(stderr, "[launcher] Intel XeSS: %s\n", why);
+    return ok;
+}
+static void *xess_fetch_thread(void *) {
+    if (run_xess_fetch()) set_job("Intel XeSS downloaded.");
+    else set_job("Intel XeSS couldn't be downloaded", true, "The game runs without it. Check the internet connection and "
+                 "try again. The log has the details.");
+    pthread_mutex_lock(&g_lock);
+    g_stay_on_setup = true;
+    g_busy = false;
+    pthread_mutex_unlock(&g_lock);
+    return NULL;
+}
+static void *dlss_fetch_thread(void *) {
+    if (run_dlss_fetch()) set_job("NVIDIA DLSS downloaded.");
+    else set_job("NVIDIA DLSS couldn't be downloaded", true, "The game runs without it. Check the internet connection and "
+                 "try again. The log has the details.");
+    pthread_mutex_lock(&g_lock);
+    g_stay_on_setup = true;
+    g_busy = false;
+    pthread_mutex_unlock(&g_lock);
+    return NULL;
+}
+
 // Linux: the update runs in this program (runtime/post_update.h). It comes back only if it failed.
 // Add to Steam (runtime/steam_shortcuts.h): waits for Steam to close, so on a thread of its own
 static std::atomic<bool> g_steam_busy{false};
@@ -568,7 +634,7 @@ static void *update_thread(void *) {
 
 static bool stay_on_setup_finished(void) {  // (a check, shader precompilation or failed setup: the game files page stays)
     bool stay = g_stay_on_setup.exchange(false);
-#ifndef __APPLE__
+#ifndef SW_METAL
     stay |= g_pc_only.exchange(false);
 #endif
     return stay;
@@ -864,11 +930,15 @@ static void *extract_thread(void *) {
 check:
     {
         std::string why = check_game_files(g_root);
-#ifndef __APPLE__
+#ifndef SW_METAL
         if (why.empty() && !dlc_only && (g_settings.precompile_shaders || new_version) && shader_precompile_available())
             run_precompile();  // (a new version: always, the caches were emptied at its start)
 #endif
         if (why.empty()) post_update_finish(SAVAGEWIND_VERSION);
+        if (why.empty() && g_settings.dlss_download && dlss_fetch_offered() && !dlss_fetch_present())
+            run_dlss_fetch();  // (not needed to play: the game files are ready either way)
+        if (why.empty() && g_settings.xess_download && xess_fetch_offered() && !xess_fetch_present())
+            run_xess_fetch();  // (the same for Intel's)
         RtDlcCheck dc = rt_dlc_check(g_root.c_str());
         pthread_mutex_lock(&g_lock);
         g_dlc = dc;
@@ -895,9 +965,191 @@ done:
     return NULL;
 }
 
+// ------------------------------------------------------------------ command line (runtime/cli.h: savagewind <command>)
+// What the start screen does, without a window, for scripts and other launchers. json: one JSON object per line on
+// stdout (progress, then the result); otherwise lines on stdout in the menu language. The exit status says whether it
+// worked.
+static void cli_str(const std::string &s) { cli_json_str(cli_out, s.c_str()); }
+
+// The setup's stage now: copy (with bytes), build (the game code) or shaders
+static const char *setup_stage(void) {
+#ifndef SW_METAL
+    if (g_precompiling) return "shaders";
+#endif
+    return g_build_frac >= 0 ? "build" : "copy";
+}
+
+// savagewind setup [<folder>]: sets the game files up from that folder (no folder: builds the game code again from
+// the copy already set up), as Set up game files does. 0: the game files are ready; 130: stopped (Ctrl+C). Stopping
+// leaves an unfinished copy that status reports and the next setup replaces; quitting ends the compilers (gamebuild.c).
+extern "C" int launcher_setup_cli(const char *root, const char *src, bool json) {
+    g_root = root;
+    saves_tab_set_game_files(root);
+    g_src = src ? src : "";
+    g_busy = true;
+    cli_catch_stop();
+    pthread_t t;
+    pthread_create(&t, NULL, extract_thread, NULL);
+    std::string last_job;
+    int last_pct = -1;
+    const char *last_stage = "";
+    for (bool busy = true; busy;) {
+        if (cli_stop_requested()) {
+#ifndef SW_METAL
+            atomic_store(&g_pc.cancel, true);
+#endif
+            const char *stopped = tr("Stopped. Set up again to finish.");
+            if (json) fprintf(cli_out, "{\"event\":\"done\",\"ok\":false,\"stopped\":true,\"message\":\"Stopped\",\"hint\":\"\"}\n");
+            else fprintf(cli_out, "%s\n", stopped);
+            fflush(cli_out);
+            exit(130);
+        }
+        pthread_mutex_lock(&g_lock);
+        busy = g_busy;
+        std::string job = g_job;
+        pthread_mutex_unlock(&g_lock);
+        int pct = (int)(extract_progress() * 100);
+        const char *stage = setup_stage();
+        if (busy && (job != last_job || pct != last_pct || stage != last_stage)) {
+            if (json) {
+                fprintf(cli_out, "{\"event\":\"progress\",\"stage\":\"%s\",\"percent\":%d", stage, pct);
+                if (!strcmp(stage, "copy")) fprintf(cli_out, ",\"done\":%llu,\"total\":%llu", (unsigned long long)g_done, (unsigned long long)g_total);
+                fprintf(cli_out, ",\"step\":");
+                cli_str(job);
+                fprintf(cli_out, ",\"text\":");
+                cli_str(tr(job.c_str()));
+                fprintf(cli_out, "}\n");
+            } else if (job != last_job) fprintf(cli_out, "%s\n", tr(job.c_str()));
+            fflush(cli_out);
+            last_job = job, last_pct = pct, last_stage = stage;
+        }
+        if (busy) SDL_Delay(250);
+    }
+    pthread_join(t, NULL);
+    std::string why = check_game_files(g_root);
+    bool ok = why.empty() && !g_job_failed;
+    if (json) {
+        fprintf(cli_out, "{\"event\":\"done\",\"ok\":%s,\"message\":", ok ? "true" : "false");
+        cli_str(g_job);
+        fprintf(cli_out, ",\"hint\":");
+        cli_str(g_job_hint);
+        fprintf(cli_out, ",\"text\":");
+        cli_str(tr(g_job.c_str()));
+        fprintf(cli_out, "}\n");
+    } else {
+        fprintf(cli_out, "%s\n", tr(g_job.c_str()));
+        if (!g_job_hint.empty()) fprintf(cli_out, "%s\n", tr(g_job_hint.c_str()));
+    }
+    fflush(cli_out);
+    return ok ? 0 : 1;
+}
+
+// savagewind verify: every check there is, in full - the files and their version, every RomFS file and byte, the
+// movies, the game code and the DLC read through. 0: all fine.
+extern "C" int launcher_verify_cli(const char *root, bool json) {
+    g_root = root;
+    std::string files = check_copied_files(g_root), id, romfs, version;
+    const GameVersion *v = nso_build_id(g_root + "/exefs/main", &id) ? main_version(id) : NULL;
+    if (v) version = v->name;
+    if (files.empty() && v) romfs = check_romfs(g_root + "/romfs", *v);
+    bool movies = files.empty() && movies_complete(g_root + "/romfs");
+    bool code = gamelib_present(root);
+    RtDlcCheck dc = rt_dlc_verify(root);
+    std::string dlc_head, dlc_hint;
+    bool dlc_ok = dc.state == RT_DLC_NONE || dc.state == RT_DLC_READY;
+    if (!dlc_ok) dlc_problem_text(dc, &dlc_head, &dlc_hint);
+    bool ok = files.empty() && v && romfs.empty() && movies && code && dlc_ok;
+    if (json) {
+        fprintf(cli_out, "{\"ok\":%s,\"version\":", ok ? "true" : "false");
+        cli_str(version);
+        fprintf(cli_out, ",\"files\":");
+        cli_str(files);
+        fprintf(cli_out, ",\"romfs\":");
+        cli_str(romfs);
+        fprintf(cli_out, ",\"movies\":%s,\"game_code\":%s,\"dlc\":\"%s\",\"dlc_problem\":", movies ? "true" : "false",
+                code ? "true" : "false", rt_dlc_state_name(dc.state));
+        cli_str(dlc_head);
+        fprintf(cli_out, "}\n");
+    } else {
+        // (terminal text: English, as the log; one fprintf a row)
+        std::string game = files.empty() ? version : tr(files.c_str());
+        std::string dlc = dlc_ok ? rt_dlc_state_name(dc.state) : dlc_head + (dlc_hint.empty() ? "" : " - " + dlc_hint);
+        fprintf(cli_out, "%-12s %s: %s\n", "Game files", files.empty() ? "ok" : "PROBLEM", game.c_str());
+        if (files.empty()) {
+            fprintf(cli_out, "%-12s %s%s%s\n", "RomFS", romfs.empty() ? "ok" : "PROBLEM", romfs.empty() ? "" : ": ", romfs.c_str());
+            fprintf(cli_out, "%-12s %s\n", "Movies", movies ? "ok" : "PROBLEM: some are missing");
+        }
+        fprintf(cli_out, "%-12s %s\n", "Game code", code ? "ok" : "PROBLEM: not built for this version (savagewind setup)");
+        fprintf(cli_out, "%-12s %s: %s\n", "DLC", dlc_ok ? "ok" : "PROBLEM", dlc.c_str());
+    }
+    fflush(cli_out);
+    return ok ? 0 : 1;
+}
+
+// savagewind status: whether the game files are set up and the game code built, their version and the DLC.
+// 0: ready to play.
+extern "C" int launcher_status_cli(const char *root, bool json) {
+    g_root = root;
+    std::string why = check_game_files(g_root), id, version;
+    if (nso_build_id(g_root + "/exefs/main", &id))
+        if (const GameVersion *v = main_version(id)) version = v->name;
+    RtDlcCheck dlc = rt_dlc_check(root);
+    const char *dlc_state = rt_dlc_state_name(dlc.state);
+    if (json) {
+        fprintf(cli_out, "{\"ready\":%s,\"problem\":", why.empty() ? "true" : "false");
+        cli_str(why);
+        fprintf(cli_out, ",\"game_files\":");
+        cli_str(root);
+        fprintf(cli_out, ",\"version\":");
+        cli_str(version);
+        fprintf(cli_out, ",\"main_build_id\":");
+        cli_str(id);
+        fprintf(cli_out, ",\"dlc\":");
+        cli_str(dlc_state);
+        fprintf(cli_out, ",\"savage_wind\":");
+        cli_str(rt_version());
+        fprintf(cli_out, "}\n");
+    } else {
+        fprintf(cli_out, "Savage Wind %s\n", rt_version());
+        fprintf(cli_out, "Game files:  %s\n", root);
+        fprintf(cli_out, "Version:     %s\n", version.empty() ? "-" : version.c_str());
+        fprintf(cli_out, "DLC:         %s\n", dlc_state);
+        fprintf(cli_out, "Ready:       %s\n", why.empty() ? "yes" : why.c_str());
+    }
+    return why.empty() ? 0 : 1;
+}
+
+// savagewind delete --yes: what Delete game files does (the copy and the game code built from it; never the saves).
+extern "C" int launcher_delete_cli(const char *root) {
+    struct stat st;
+    if (stat(root, &st) != 0) {
+        fprintf(cli_out, "No game files to delete.\n");
+        return 0;
+    }
+    double gb = rt_game_files_size(root) / 1e9;
+    bool ok = rt_remove_game_files(root);
+    fprintf(cli_out, ok ? "Deleted the game files (%.1f GB).\n" : "The game files couldn't be deleted (%.1f GB).\n", gb);
+    return ok ? 0 : 1;
+}
+
 // ------------------------------------------------------------------ folder dialog (SDL calls back on any thread)
+static std::string trim_folder_path(const char *s) {
+    std::string p = s ? s : "";
+    while (!p.empty() && (p.front() == ' ' || p.front() == '\t' || p.front() == '\r' || p.front() == '\n')) p.erase(p.begin());
+    while (!p.empty() && (p.back() == ' ' || p.back() == '\t' || p.back() == '\r' || p.back() == '\n')) p.pop_back();
+    if (p.size() >= 2 && ((p.front() == '"' && p.back() == '"') || (p.front() == '\'' && p.back() == '\'')))
+        p = p.substr(1, p.size() - 2);
+    return p;
+}
+
 static void SDLCALL picked(void *, const char *const *files, int) {
-    if (!files || !files[0]) return;
+    if (!files) {
+        const char *err = SDL_GetError();
+        if (err && err[0]) fprintf(stderr, "[launcher] folder dialog error: %s\n", err);
+        set_job("Folder picker failed to open", true, "Type or paste the folder path below instead.");
+        return;
+    }
+    if (!files[0]) return;
     pthread_mutex_lock(&g_lock);
     g_src = files[0];
     pthread_mutex_unlock(&g_lock);
@@ -1098,8 +1350,14 @@ static bool menu_item(const char *label, bool enabled, bool *hovered = NULL, con
 
 // Controllers, as in the in-game menu (runtime/ui/menu.mm): read straight from SDL, Nintendo layout - the right face
 // button (A) confirms, the bottom one (B) goes back; d-pad / left stick move. (ImGui's own SDL gamepad handling is
-// switched off: it used the Xbox layout and, per the user, didn't work on the start screen.)
+// switched off: it used the Xbox layout and, per the user, didn't work on the start screen.) With A and B swapped in the
+// bindings (Controls: "Swap A and B", the Xbox convention) the bottom one confirms and the right one goes back - from
+// when Settings closes: a swap made there doesn't change Settings' own buttons under the player (launcher_run keeps
+// this as it was while the Settings page is up).
+static bool g_pad_ab_swapped;
 static ImGuiKey launcher_pad_key(Uint8 b) {
+    if (g_pad_ab_swapped && (b == SDL_GAMEPAD_BUTTON_EAST || b == SDL_GAMEPAD_BUTTON_SOUTH))
+        b = b == SDL_GAMEPAD_BUTTON_EAST ? SDL_GAMEPAD_BUTTON_SOUTH : SDL_GAMEPAD_BUTTON_EAST;
     switch (b) {
     case SDL_GAMEPAD_BUTTON_EAST: return ImGuiKey_GamepadFaceDown;   // A: activate
     case SDL_GAMEPAD_BUTTON_SOUTH: return ImGuiKey_GamepadFaceRight; // B: back
@@ -1133,8 +1391,16 @@ static bool launcher_pad_event(const SDL_Event &e) {
         io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
         return true;
     case SDL_EVENT_GAMEPAD_BUTTON_DOWN: case SDL_EVENT_GAMEPAD_BUTTON_UP: {
+        // a release goes to the key its press went to ("Swap A and B" pressed with A swaps the mapping in between)
+        static ImGuiKey pressed_as[SDL_GAMEPAD_BUTTON_COUNT];
+        bool down = e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN;
+        int b = e.gbutton.button;
         ImGuiKey k = launcher_pad_key(e.gbutton.button);
-        if (k != ImGuiKey_None) io.AddKeyEvent(k, e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN);
+        if (b >= 0 && b < SDL_GAMEPAD_BUTTON_COUNT) {
+            if (down) pressed_as[b] = k;
+            else if (pressed_as[b] != ImGuiKey_None) k = pressed_as[b], pressed_as[b] = ImGuiKey_None;
+        }
+        if (k != ImGuiKey_None) io.AddKeyEvent(k, down);
         return true;
     }
     case SDL_EVENT_GAMEPAD_AXIS_MOTION: {
@@ -1303,8 +1569,8 @@ static void launcher_fonts(void) {
     const char *fonts[] = {test ? test : "", own.c_str(), "fonts/nintendo_udsgr_std_003.ttf",
                            "/System/Library/Fonts/Avenir Next.ttc", "/System/Library/Fonts/Helvetica.ttc",
                            "C:/Windows/Fonts/segoeui.ttf"};
-    static const ImWchar latin[] = {0x20, 0xFF, 0x2039, 0x203A, 0x2192, 0x2192, 0x2713, 0x2713, 0x25B8, 0x25B8, 0};  // + ‹ › → ✓ ▸
-    static const ImWchar cyrillic[] = {0x20, 0xFF, 0x400, 0x4FF, 0x2039, 0x203A, 0x2192, 0x2192, 0x2713, 0x2713, 0x25B8,
+    static const ImWchar latin[] = {0x20, 0xFF, 0x0100, 0x017F, 0x2039, 0x203A, 0x2192, 0x2192, 0x2713, 0x2713, 0x25B8, 0x25B8, 0};  // + Latin-A, ‹ › → ✓ ▸
+    static const ImWchar cyrillic[] = {0x20, 0xFF, 0x0100, 0x017F, 0x400, 0x4FF, 0x2039, 0x203A, 0x2192, 0x2192, 0x2713, 0x2713, 0x25B8,
                                        0x25B8, 0};
     const ImWchar *ranges = !strcmp(ui_lang(), "ru") ? cyrillic : latin;
     auto add = [&](const char *p, float size, const ImWchar *r) {
@@ -1327,7 +1593,7 @@ extern "C" void vk_imgui_fonts_changed(void);  // (runtime/nvn/vulkan/imgui_glue
 static void launcher_fonts_follow_language(void) {
     if (g_fonts_lang == ui_lang_generation() * 10007 + ui_dynamic_generation()) return;
     launcher_fonts();
-#ifdef __APPLE__
+#ifdef SW_METAL
     ImGui_ImplMetal_DestroyFontsTexture();  // (NewFrame makes it again)
 #else
     vk_imgui_fonts_changed();
@@ -1343,7 +1609,7 @@ static void left_shade(ImDrawList *bg, ImVec2 ds) {
     }
 }
 
-#ifndef __APPLE__
+#ifndef SW_METAL
 // ---- the boot picture (vulkan/device.c boot_splash_start): the start screen's background, moving as it does there,
 // with the name, from the game's start until its title screen is up. Without it the window is black for ~11 s on a
 // plain start: ~5 s of Savage Wind loading (the game code, the RomFS image) with nothing to draw, then ~6 s of the
@@ -1426,6 +1692,41 @@ extern "C" void boot_splash_close(void) {
 }
 #endif
 
+// (runtime/main.c) --prepare --game <folder>: what Set up game files does on the start screen, without a window, for a
+// launcher that brings the player's copy. One "progress <0-1> <step>" line each time the step or the bar moves (the
+// shader pipelines need a window and are left out: they compile when first drawn). 0: the game files are ready.
+extern "C" int launcher_prepare(const char *root, const char *src) {
+    g_root = root;
+    g_src = src;
+    g_busy = true;
+    if (post_update_pending(SAVAGEWIND_VERSION)) post_update_reset_shaders(SAVAGEWIND_VERSION);  // (as a plain start does)
+    pthread_t t;
+    pthread_create(&t, NULL, extract_thread, NULL);
+    std::string last_step;
+    int last_percent = -1;
+    for (;;) {
+        pthread_mutex_lock(&g_lock);
+        bool busy = g_busy;
+        std::string job = g_job;
+        pthread_mutex_unlock(&g_lock);
+        std::string step = trv(job);
+        int percent = (int)(extract_progress() * 100);
+        if (!job.empty() && (step != last_step || percent != last_percent)) {
+            printf("progress %.2f %s\n", percent / 100.0, step.c_str());
+            fflush(stdout);
+        }
+        last_step = step;
+        last_percent = percent;
+        if (!busy) break;
+        SDL_Delay(500);
+    }
+    pthread_join(t, NULL);
+    pthread_mutex_lock(&g_lock);
+    bool failed = g_job_failed;
+    pthread_mutex_unlock(&g_lock);
+    return failed || !check_game_files(g_root).empty() ? 1 : 0;
+}
+
 // mode (runtime/main.c): 0 setup - the game files page alone, the game starts once they're ready; 1 configuration.
 // Returns when the game is to start; QUIT (and closing the setup page) exits.
 static bool g_setup_only;
@@ -1438,7 +1739,7 @@ extern "C" void launcher_run(const char *root, int mode) {
     SDL_Window *win = ui_window();
     g_launcher_win = win;
     SDL_SetWindowTitle(win, g_setup_only ? "Savage Wind" : "Savage Wind Configuration");
-#ifdef __APPLE__
+#ifdef SW_METAL
     CAMetalLayer *layer = (__bridge CAMetalLayer *)ui_metal_layer();
     id<MTLDevice> dev = (__bridge id<MTLDevice>)ui_metal_device();
     id<MTLCommandQueue> queue = [dev newCommandQueue];
@@ -1460,7 +1761,7 @@ extern "C" void launcher_run(const char *root, int mode) {
     st.Colors[ImGuiCol_HeaderActive] = ImVec4(1, 1, 1, 0.14f);
     st.Colors[ImGuiCol_NavCursor] = ImVec4(0.95f, 0.78f, 0.35f, 1);
     st.FrameRounding = st.WindowRounding = 10;
-#ifdef __APPLE__
+#ifdef SW_METAL
     ImGui_ImplSDL3_InitForMetal(win);
     ImGui_ImplMetal_Init(dev);
 #else
@@ -1501,7 +1802,7 @@ extern "C" void launcher_run(const char *root, int mode) {
     // SAVAGEWIND_LAUNCHER_SHOT=<frame>[:<page>] (test): save build/launcher.png at that frame and exit; page: settings[:<tab>] / askdelete / setup
     long shot_at = getenv("SAVAGEWIND_LAUNCHER_SHOT") ? atol(getenv("SAVAGEWIND_LAUNCHER_SHOT")) : 0, frame = 0;
     if (shot_at) {
-#ifdef __APPLE__
+#ifdef SW_METAL
         layer.framebufferOnly = NO;
 #endif
         const char *pg = strchr(getenv("SAVAGEWIND_LAUNCHER_SHOT"), ':');
@@ -1554,6 +1855,7 @@ extern "C" void launcher_run(const char *root, int mode) {
         if (!status.empty()) page = SETUP;
     }
     bool was_busy = false;
+    g_pad_ab_swapped = bind_ab_swapped();  // (also when the start screen opens on Settings)
     while (!play) {
         menu_apply_window_requests(win);  // (the Video tab's Fullscreen)
         if (g_files_deleted) {  // (Settings > Prelaunch deleted them)
@@ -1562,6 +1864,7 @@ extern "C" void launcher_run(const char *root, int mode) {
             refresh_dlc();
             if (!status.empty()) { bind_capture_cancel(); settings_save(); page = SETUP; }
         }
+        if (page != SETTINGS) g_pad_ab_swapped = bind_ab_swapped();  // (Settings up: as it was when it opened)
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             if (page == SETTINGS && bind_capture_event(&e)) continue;  // (waiting for a new binding: controls_ui.mm)
@@ -1589,7 +1892,7 @@ extern "C" void launcher_run(const char *root, int mode) {
         }
         was_busy = busy;
 
-#ifdef __APPLE__
+#ifdef SW_METAL
         int w, h;
         SDL_GetWindowSizeInPixels(win, &w, &h);
         layer.drawableSize = CGSizeMake(w, h);
@@ -1933,7 +2236,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                             set_job("Downloadable content removed.");
                         }
                     }
-#ifndef __APPLE__
+#ifndef SW_METAL
                     if (!g_confirm_delete && shader_precompile_available()) {  // all the shaders, now (or again)
                         char date[32] = "";
                         int nsh = 0, pst = shader_precompile_status(&nsh, date, sizeof date);
@@ -1961,6 +2264,32 @@ extern "C" void launcher_run(const char *root, int mode) {
                         }
                     }
 #endif
+                    if (!g_confirm_delete && dlss_fetch_offered()) {  // NVIDIA's DLSS library, now (or again)
+                        bool have = dlss_fetch_present();
+                        opt_section("NVIDIA DLSS");
+                        if (have) opt_disable_next();
+                        if (opt_action("NVIDIA DLSS", tr(have ? "Downloaded" : "Not downloaded"), k_dlss_text, true)) {
+                            pthread_mutex_lock(&g_lock);
+                            g_busy = true;
+                            pthread_mutex_unlock(&g_lock);
+                            pthread_t t;
+                            pthread_create(&t, NULL, dlss_fetch_thread, NULL);
+                            pthread_detach(t);
+                        }
+                    }
+                    if (!g_confirm_delete && xess_fetch_offered()) {  // Intel's XeSS library, now (or again)
+                        bool have = xess_fetch_present();
+                        opt_section("Intel XeSS");
+                        if (have) opt_disable_next();
+                        if (opt_action("Intel XeSS", tr(have ? "Downloaded" : "Not downloaded"), k_xess_text, true)) {
+                            pthread_mutex_lock(&g_lock);
+                            g_busy = true;
+                            pthread_mutex_unlock(&g_lock);
+                            pthread_t t;
+                            pthread_create(&t, NULL, xess_fetch_thread, NULL);
+                            pthread_detach(t);
+                        }
+                    }
                 }
                 if (!ready || !g_confirm_delete) {  // choose the folder, set up (again: from it, or the game code alone)
                     opt_section(!ready ? "Your copy of the game" : "Set up again");
@@ -1968,11 +2297,29 @@ extern "C" void launcher_run(const char *root, int mode) {
                     if (opt_action("Game files folder", src_v.c_str(), src_d.c_str(), true))
                         SDL_ShowOpenFolderDialog(picked, NULL, win, NULL, false);
                     if (!src.empty()) check_left_of_value(src_v);
+                    if (busy) opt_disable_next();
+                    {
+                        static char path_buf[1024];
+                        static std::string last_synced_src;
+                        if (src != last_synced_src) {
+                            snprintf(path_buf, sizeof path_buf, "%s", src.c_str());
+                            last_synced_src = src;
+                        }
+                        if (opt_text("Folder path", path_buf, sizeof path_buf, "Type or paste path...",
+                                     "Enter the path to your extracted game files folder directly if the system folder picker does not open.")) {
+                            std::string p = trim_folder_path(path_buf);
+                            pthread_mutex_lock(&g_lock);
+                            g_src = p;
+                            pthread_mutex_unlock(&g_lock);
+                            last_synced_src = p;
+                            snprintf(path_buf, sizeof path_buf, "%s", p.c_str());
+                        }
+                    }
                     if (!ready) {
                         first_row();
                         opt_section("Set up");
                     }
-#ifndef __APPLE__
+#ifndef SW_METAL
                     if (shader_precompile_available()) {
                         if (busy) opt_disable_next();
                         {   // the background (ui/splash.mm), from the next start
@@ -1990,6 +2337,18 @@ extern "C" void launcher_run(const char *root, int mode) {
                                        "files page of Savage Wind Configuration."))
                             settings_save();
                     }
+#endif
+                    if (dlss_fetch_offered() && !dlss_fetch_present()) {  // (an NVIDIA driver, NVIDIA's DLL not here)
+                        if (busy) opt_disable_next();
+                        if (opt_toggle("Download NVIDIA DLSS", &g_settings.dlss_download, true, k_dlss_text))
+                            settings_save();
+                    }
+                    if (xess_fetch_offered() && !xess_fetch_present()) {  // (an Intel graphics card, Intel's DLL not here)
+                        if (busy) opt_disable_next();
+                        if (opt_toggle("Download Intel XeSS", &g_settings.xess_download, true, k_xess_text))
+                            settings_save();
+                    }
+#ifndef SW_METAL
                     {   // Savage Wind's own colour look (runtime/color_grade.h): on at the first setup unless the player
                         // chose a LUT before; Options > Colour changes it later. It comes with the Vivid colour preset,
                         // which suits the LUT best (the user's pick); turning the look off puts Natural back from Vivid.
@@ -2013,10 +2372,25 @@ extern "C" void launcher_run(const char *root, int mode) {
                         }
                     }
 #endif
+                    // Companion apps (map and tracker apps): the read-only companion socket (runtime/control.h).
+                    // On opens it at once; off takes effect at the next start. No app is named: supported, not
+                    // promoted.
+                    if (opt_toggle("Companion apps", &g_settings.companion_apps, false,
+                                   "Lets companion apps on this computer, such as a live map or a checklist, show "
+                                   "where Link is while you play. They can only read the game, never change it, and "
+                                   "only apps on this computer can connect. Turning it off takes effect the next time "
+                                   "Savage Wind starts.")) {
+                        if (g_settings.companion_apps) control_companion_start(CONTROL_COMPANION_PORT);
+                        settings_save();
+                    }
                     if (shipped_release) {  // (runtime/post_update.h)
-                        if (opt_toggle("Check for updates", &g_settings.check_updates, true,
-                                       "When Savage Wind Configuration opens, asks GitHub if there is a new version and "
-                                       "offers it. Nothing is installed until you press Update."))
+                        if (const char *by = update_launcher())  // (installed by a launcher, which updates it: a row that
+                            opt_action("Check for updates", by,  //  only says so - pressing it does nothing)
+                                       "Updates come from the launcher that installed Savage Wind (named on the right). "
+                                       "After it updates Savage Wind, the next start sets the new version up by itself.");
+                        else if (opt_toggle("Check for updates", &g_settings.check_updates, true,
+                                            "When Savage Wind Configuration opens, asks GitHub if there is a new version and "
+                                            "offers it. Nothing is installed until you press Update."))
                             settings_save();
                         if (opt_toggle("Open this screen first", &g_settings.start_in_config, true,
                                        "Starting Savage Wind opens this screen, where updates are offered. Turned off, "
@@ -2053,6 +2427,11 @@ extern "C" void launcher_run(const char *root, int mode) {
                         settings_save();
                         if (update_rollback_start()) exit(0);
                     }
+                }
+                if (!busy && !g_confirm_delete) {  // (also while setting up: the game code build is when many decide)
+                    opt_section("Developer options");
+                    bool dev = launch_flags_dev();
+                    if (opt_toggle("Developer options", &dev, false, k_dev_options_desc)) launch_flags_set_dev(dev);
                 }
                 if (!job_line.empty()) {  // the current step / result
                     ImGui::Dummy(ImVec2(0, 14 * sc));
@@ -2109,7 +2488,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                         title = tr("Updating Savage Wind");
                         nnotes = 0;
                     }
-#ifndef __APPLE__
+#ifndef SW_METAL
                     bool shaders = g_precompiling;
                     if (shaders) {
                         f = shader_precompile_progress(&g_pc);
@@ -2119,6 +2498,8 @@ extern "C" void launcher_run(const char *root, int mode) {
                             atomic_store(&g_pc.cancel, true);
                     }
 #endif
+                    if (g_dlss_fetching) f = g_dlss_frac, title = tr("Downloading NVIDIA DLSS"), nnotes = 0;
+                    if (g_xess_fetching) f = g_xess_frac, title = tr("Downloading Intel XeSS"), nnotes = 0;
                     float tfs = g_font_menu->FontSize * 0.75f, sfs = g_font_small->FontSize * 0.85f;
                     ImVec2 ts = g_font_menu->CalcTextSizeA(tfs, FLT_MAX, 0, title);
                     float line_h = g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, "A").y;
@@ -2135,7 +2516,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                     fg->AddRectFilled(ba, bb, IM_COL32(255, 255, 255, 25), 12 * sc);
                     if (f > 0) fg->AddRectFilled(ba, ImVec2(ba.x + (bb.x - ba.x) * f, bb.y), IM_COL32(236, 194, 84, 255), 12 * sc);
                     char line[200];
-#ifndef __APPLE__
+#ifndef SW_METAL
                     std::string step = shaders ? precompile_line() : tr(test_busy ? "Setting up the game files..." : job.c_str());
 #else
                     std::string step = tr(test_busy ? "Setting up the game files..." : job.c_str());
@@ -2179,7 +2560,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                 ImGui::SetCursorPosX(x0);
                 if (main_id.empty() && !nso_build_id(g_root + "/exefs/main", &main_id)) main_id = "?";
                 ImGui::TextColored(ImVec4(0.66f, 0.76f, 0.98f, 1), tr("main build id %s"), main_id.c_str());
-#ifndef __APPLE__
+#ifndef SW_METAL
                 {   // the precompiled shaders were made by another translator or driver: the first play stutters until
                     // they are made again (Game Files > Precompile shaders says so too, but only there). Asked once.
                     static int stale = -1;
@@ -2239,7 +2620,7 @@ extern "C" void launcher_run(const char *root, int mode) {
             typed_before = ui_text_busy();
 
             ImGui::Render();
-#ifdef __APPLE__
+#ifdef SW_METAL
             ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), cb, enc);
             [enc endEncoding];
             id<MTLTexture> shot = nil;
@@ -2283,7 +2664,7 @@ extern "C" void launcher_run(const char *root, int mode) {
     SDL_SetWindowTitle(win, "Savage Wind");
     splash_unload();
     saves_tab_unload();
-#ifdef __APPLE__
+#ifdef SW_METAL
     ImGui_ImplMetal_Shutdown();
 #else
     vk_imgui_backend_shutdown();

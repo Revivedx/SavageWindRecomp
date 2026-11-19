@@ -163,7 +163,11 @@ SITES = [
     # a stale actor in the target manager (tools/patches.py _stale_actor_helper, _stale_actor_target; #391, #393): the
     # helper that asks an actor for its link, and the camera target's inline copy of it
     Site('stale_actor_helper', 'code', 'b4000000/ff00001f f942b808 f9404500 14000000/fc000000 d65f03c0', 0),
+    Site('stale_actor_kind', 'code', 'b4000000/ff00001f f942b808 aa0003f3 528ebfc1 72a499a1 f9404500 94000000/fc000000', 0),
     Site('stale_actor_target', 'code', 'f942ba68 f9404500 94000000/fc000000 12000008 390006e8 37000000/fff8001f 394002e8 35000008/ff00001f', 0),
+    # and the two loads of an actor's link in the check of one of its flags by name (1.9.0 0x700120c760; #766)
+    Site('stale_actor_flag', 'code', 'f942ba68 52864261 72b85581 f9404500 94000000/fc000000 36000000/fff8001f 52800020 a9424ff4', 0),
+    Site('stale_actor_flag2', 'code', 'f942ba68 528120a1 72a6b2c1 f9404500 94000000/fc000000 2a000288 37000008/fff8001f f942ba68', 0),
     # the physics step's solver microsteps (tools/patches.py _solver_steps): the delta frame times 6
     Site('phys_solver_steps', 'code', '1e231002 1e3c1004 f9401a68 1e2c1009 1e220822 f9400108 1e202048 f9400514', 4),
     # Havok's deactivation at the console's pace (tools/patches.py _phys_tick, _phys_motion_tick): the world step's
@@ -185,6 +189,9 @@ SITES = [
     # in console frames, fcmp s8, s9
     Site('demo_move_arrive', 'code', 'bd60bd09 94000000/fc000000 f9400668 5282fe09 38696908 34000008/ff00001f 1e292100 '
          '54000004/ff00001f 90000008/9f00001f bd404261 bd425102 1e222821 1e282020 54000005/ff00001f 1e292921 1e200820', 6),
+    # the radius within which a player rail move's point goes on along the rail (tools/patches.py _rail_point_radius):
+    # its load from the player, ldr s0, [x8, #0x20f0]
+    Site('rail_point_radius', 'code', 'bd60f100 1e202020 54000005/ff00001f 1e2c1001 f9403668 aa1403e0 aa1f03e1 aa1f03e2', 0),
     Site('kf_angle', 'code', '0e612800 0e0e3c08 0e040d00 0f3f5400 0ea0a800 6e180400 4e221c00 6e211c00 3c9983a0 '
          '94000000/fc000000 3cd883a6 1e2008c0', 9),
     # the sound system's frame (tools/patches.py _snd_frame_floor): the delta frame, at least 0.5, its timers' step
@@ -220,6 +227,8 @@ SITES = [
     Site('cam_stick', 'code', 'd100c3ff fd000be8 f90017f3 a901fbfd 910063fd aa0003f3 f900001f 52800060', 0),
     # (the end of the camera's stick input, with the stick's value written: tools/patches.py _cam_stick_end)
     Site('cam_stick_end', 'code', 'f9409408 910023e0 f90007e8 94000000/fc000000 360000c0 fd400be8 f94017f3', 5),
+    # CameraHorse's return address after calling the camera stick input (rt_cam_stick's lr, runtime/hle/input.c)
+    Site('horse_cam_lr', 'code', 'bd401ba0 1e202008 39416a68 54000001/ff00001f bd401fa0 1e202008 54000001/ff00001f 37180008/fff8001f', 0),
     Site('cam_pitch_chase', 'code', '1e208803 1e202008 bd41ce80 1e23cc2b bd41d281 1e212000 54000001/ff00001f '
          '52800039', 0),
     Site('cam_pitch_surf', 'code', '1e208803 1e202008 bd430260 1e23cc2d bd430661 1e212000 54000001/ff00001f '
@@ -243,6 +252,10 @@ SITES = [
     Site('pc_cursor_manager', 'code', 'd10143ff a9017bfd a9025ff8 a90357f6 a9044ff4 910043fd b9000be1 91006008', 0),
     Site('pc_cursor_activate', 'code', 'a9bd7bfd f9000bf5 a9024ff4 910003fd f9402415 aa0103f3 aa0003f4 f9002401', 0),
     Site('pc_pane_bounds', 'code', 'bd407020 2d4a0821 1e200824 bd408423 1e208825 1e230841 1e238842 1e2c1003', 0),
+    # Controls > Menus wrap around (runtime/menu_wrap.c): the UI focus search's result (`mov x0, x20` before its
+    # epilogue; x19 the control, w22 the direction), and the screen's input layer (the search's own first call)
+    Site('menu_wrap', 'code', 'aa1403e0 6d442beb 6d4333ed 6d423bef a94b4ff4 a94a57f6 a9495ff8 a94867fa', 0),
+    Site('ui_control_layer', 'code', 'f9401408 3943f001 f9402508 f9400109 aa0803e0 f9401522 d61f0040', 0),
     # Map focus helpers: retain marker targeting without controller-style recentering on hover.
     Site('beast_focus_axes', 'code', 'a9bd7bfd f9000bf5 a9024ff4 910003fd 91404408 2a0103f3 aa0003f4 91231115', 0),
     Site('beast_focus_linear', 'code', 'a9bd7bfd a90157f6 a9024ff4 910003fd 91404408 2a0103f3 aa0003f4 911f2116', 0),
@@ -304,6 +317,23 @@ SITES = [
          'bd42e660', 0),
     # the stamina setter's store, PlayerInfo +0xa4 (tools/patches.py _stamina)
     Site('stamina_store', 'code', '1e204008 94000000/fc000000 bd00a668 f9400ff3 a940fbfd fc4207e8 d65f03c0', 2),
+    # Link's Move action loading what a sprint costs (tools/patches.py _sprint_cost; Cheats > Free sprint): EnergyDash
+    # (x19 + 0x20), the cost of a second of sprinting, and EnergyDashTrig (x19 + 0x30), the cost of a sprint press
+    Site('sprint_cost', 'code', 'f9401268 2a1f03e1 bd400100 94000000/fc000000 f9400668 52800181 f94be900 '
+         '94000000/fc000000', 2),
+    Site('sprint_press_cost', 'code', 'f9401a68 bd400100 94000000/fc000000 f9400660 90000001/9f00001f '
+         '91000021/ffc003ff 94000000/fc000000 36000000/fff8001f', 1),
+    # the three battle music controllers taking the game's battle info, its first word the count their music starts on
+    # (1 or more) and fades out on (0): the field battle music's and two others' (tools/patches.py _battle_info;
+    # Cheats > Free sprint). Whichever music mode is on hands the info to one of them.
+    Site('battle_info_field', 'code', 'a9402428 a91da408 d65f03c0', 0),
+    Site('battle_info_b', 'code', 'a9402428 a91da408 d3609d28 34000008/ff00001f 52800048 b901e808 d65f03c0 '
+         'b941dc08', 0),
+    Site('battle_info_c', 'code', 'b9400028 b901d008 d65f03c0', 0),
+    # the horse's crash check loading its gear, and the entry of its stop check's look-ahead (tools/patches.py
+    # _horse_crash, _horse_look_ahead; Cheats > Sure-footed horse)
+    Site('horse_crash', 'code', 'b9403428 7100111f 54000001/ff00001f d10303ff 6d072beb f90053f5 6d0823e9 a9097bfd', 0),
+    Site('horse_look_ahead', 'code', 'd105c3ff fd00a3e8 f900affc a914fbfd a9164ff4 910523fd aa0103f4 aa0003f3', 0),
     # the pouch taking arrows off for the player's bow (tools/patches.py _remove_arrows; Accessibility > Infinite arrows)
     Site('pouch_remove_arrows', 'code', 'd101c3ff a9017bfd a9026ffc a90367fa a9045ff8 a90557f6 a9064ff4 910043fd '
          '90000008/9f00001f aa0003f3 f9400108/ffc003ff aa0103e0', 0),
@@ -367,6 +397,56 @@ SITES = [
     Site('pouch_item_get', 'code', 'd10243ff a9037bfd a9046ffc a90567fa a9065ff8 a90757f6 a9084ff4 9100c3fd f90003e3', 0),
     Site('pouch_mgr', 'got', '90000017/9f00001f aa0003f5 f94002f7/ffc003ff 910003e0 f94002f6 94000000/fc000000 2a0003e2 '
          'aa1603e0', 2),
+    # Generic layout draw thunk and its native eligibility checks (runtime/ui_layout.c).
+    Site('ui_layout_draw', 'code', '14000000/fc000000 f9013001 b4000001/ff00001f d10403ff a90a7bfd a90b6ffc a90c67fa a90d5ff8', 0),
+    Site('ui_layout_native', 'code', '39440008 7100011f 39440809 3943f80a 3943fc0b 7a401920 7a400944 7a421964', 0),
+    Site('ui_layout_pane', 'code', '39416008 52801029 6a28013f 54000001/ff00001f a9bd7bfd a90157f6 a9024ff4 910003fd', 0),
+    # Optional native replacement lifecycle (verified 1.9.0).
+    Site('replace_layout_calculate', 'code', 'f9400c08 b4000008/ff00001f d10183ff a9037bfd f90023f5 a9054ff4 9100c3fd aa0003f5 2a0203f4 910023e0', 0),
+    Site('pouch_can_receive', 'code', 'a9be7bfd f9000bf3 910003fd aa0003f3 94000000/fc000000 35000000/ff00001f 90000008/9f00001f aa1303e1', 0),
+    Site('replace_toast_start', 'code', 'a9bd7bfd a90157f6 a9024ff4 910003fd b9420008 7100011f f940fc09 9a9fc135', 0),
+    Site('replace_pickup_status', 'code', 'd10143ff a9037bfd f90023f3 9100c3fd f9400408 b5000008/ff00001f 12800013 2a1303e0 f94023f3 a9437bfd 910143ff d65f03c0 aa0003e3', 0),
+    Site('replace_draw_info_reset', 'code', 'a9bd7bfd f9000bf5 a9024ff4 910003fd f9408814 91042013 eb13029f 54000000/ff00001f', 0),
+    Site('actor_link_copy', 'code', 'a9be7bfd a9014ff4 910003fd f9400434 aa0003f3 b5000014/ff00001f aa1f03f4 aa1303e0', 0),
+    Site('replace_interaction_target', 'code', 'b5000001/ff00001f 2a1f03e0 d65f03c0 a9be7bfd f9000bf3 910003fd aa0103f3 2a1f03e1', 0),
+    Site('actor_link_assign', 'code', 'a9be7bfd a9014ff4 910003fd aa0003f3 f9400400 aa0103f4 b4000000/ff00001f 39400268', 0),
+    Site('replace_card_prepare', 'code', 'a9be7bfd a9014ff4 910003fd aa0103f3 aa0003f4 52800160 aa1f03e1 94000000/fc000000', 0),
+    Site('replace_card_close', 'code', '90000008/9f00001f 91000108/ffc003ff f9400108 b9402909 f9401908 71002d3f 52800b09 9a9f8129 f8696900 b4000000/ff00001f f9400008 12800001', 0),
+    Site('replace_component_update', 'code', 'a9be7bfd f9000bf3 910003fd 39442008 3904001f 34000008/ff00001f b9410408 aa0003f3', 0),
+    Site('replace_ai_child_matches', 'code', 'a9be7bfd a9014ff4 910003fd f9400008 aa0103f3 f9406908 d63f0100 b4000000/ff00001f', 0),
+    Site('replace_pickup_call_a', 'code', '94000000/fc000000 94000000/fc000000 910063e0 94000000/fc000000 d10043a0 94000000/fc000000 14000000/fc000000 90000001/9f00001f', 0),
+    Site('replace_pickup_call_b', 'code', '94000000/fc000000 94000000/fc000000 910023e0 94000000/fc000000 d10043a0 94000000/fc000000 14000000/fc000000', 0),
+    Site('replace_pickup_call_c', 'code', '94000000/fc000000 94000000/fc000000 910063e0 94000000/fc000000 910023e0 94000000/fc000000 14000000/fc000000 90000008/9f00001f', 0),
+    Site('replace_safe_string_vtable_slot', 'ref', '90000008/9f00001f f9400108/ffc003ff 9000000a/9f00001f 9100014a/ffc003ff b909613f 90000009/9f00001f 91000129/ffc003ff aa1303e0', 1),
+    Site('replace_string_assign', 'call', '910063e1 94000000/fc000000 f94017e8 14000000/fc000000', 1),
+    Site('replace_card_manager_slot', 'ref', '90000008/9f00001f 2a0003e2 f9400108/ffc003ff f9400100 b4000000/ff00001f 7100045f 1a9fd7e1 94000000/fc000000', 2),
+    Site('replace_pouch_manager_slot', 'ref', '90000008/9f00001f 0b170317 f9400108/ffc003ff f9400100 94000000/fc000000 90000004/9f00001f 910043e3 f9400084/ffc003ff', 2),
+    Site('replace_interaction_manager_slot', 'ref', '90000017/9f00001f 910163e1 f94002f7/ffc003ff f94002e0 94000000/fc000000 37000000/fff8001f b943ae68 12147908', 2),
+    Site('replace_chest_closed_wait_name', 'ref', 'd63f0100 90000001/9f00001f 91000021/ffc003ff aa1303e0 aa1f03e2 94000000/fc000000 f94013f3 a9417bfd', 2),
+    Site('replace_weapon_modifier', 'call', '94000000/fc000000 90000017/9f00001f aa0003f5 f94002f7/ffc003ff 910003e0 f94002f6 94000000/fc000000 2a0003e2', 0),
+    Site('replace_toast_vtable', 'ref', '90000008/9f00001f 91000108/ffc003ff 3905127f 52a7f009 f9000268 91052268 b9014269 12800009', 1),
+    Site('replace_game_picture_vtable', 'ref', '14000000/fc000000 a9be7bfd f9000bf3 910003fd 90000008/9f00001f aa0203e4 f9400108/ffc003ff aa0303e5 aa0103e3 f9400108 aa1f03e1 aa0003f3 f9402502 94000000/fc000000 90000008/9f00001f 91000108/ffc003ff', 15),
+    Site('replace_picture_vtable_base', 'got', '90000008/9f00001f aa1403f9 f9400108/ffc003ff 91004108 f80f8728 aa1903e0 94000000/fc000000 79408a68', 2),
+    Site('replace_popup', 'code', 'd10103ff a9027bfd f9001bf3 910083fd b9400028 71001d1f 54000000/ff00001f 7100191f', 0),
+    Site('replace_item_popup', 'code', 'f9400408 39400108 34000008/ff00001f d10103ff a9017bfd a90257f6 a9034ff4 910043fd', 0),
+    Site('replace_receive', 'code', 'd106c3ff a9167bfd f900bbfc a9185ff8 a91957f6 a91a4ff4 910583fd 90000008/9f00001f', 0),
+    Site('replace_card_close_gate', 'code', 'd100c3ff a9017bfd a9024ff4 910043fd aa0003f4 b940c000 2a0103f3 94000000/fc000000', 0),
+    Site('replace_card_action', 'code', 'd10243ff a9067bfd f9003bf5 a9084ff4 910183fd f9400008 aa0003f3 f9401508', 0),
+    Site('replace_chest_update', 'code', 'd101c3ff a9037bfd a9045ff8 a90557f6 a9064ff4 9100c3fd 90000017/9f00001f 90000008/9f00001f 91000108/ffc003ff f94002f7/ffc003ff 910023e1', 0),
+    Site('replace_query', 'code', 'a9bf7bfd 910003fd f9401009 9100a008 aa0803e0 b9400121 94000000/fc000000 12000000', 0),
+    Site('replace_toast_update', 'code', 'a9be7bfd a9014ff4 910003fd aa0003f3 94000000/fc000000 36000000/fff8001f 3946a268 35000008/ff00001f', 0),
+    Site('replace_pane_draw', 'code', '39416008 52801029 6a28013f 54000001/ff00001f a9bd7bfd a90157f6 a9024ff4 910003fd', 0),
+    Site('replace_anim_advance', 'code', 'bd405001 1e202028 39415c08 121c6d08 39015c08 54000001/ff00001f d65f03c0 6dbd23e9', 0),
+    Site('replace_ui_draw', 'code', '14000000/fc000000 f9013001 b4000001/ff00001f d10403ff a90a7bfd a90b6ffc a90c67fa a90d5ff8', 0),
+    Site('replace_tick_call', 'code', '94000000/fc000000 90000008/9f00001f 91000108/ffc003ff f9400100 b4000000/ff00001f b9411ae8 51000508 7100051f', 0),
+    Site('replace_fill_call', 'code', '94000000/fc000000 aa1303e0 94000000/fc000000 b9773a75 710006bf b9788274 54000000/ff00001f 35000015/ff00001f', 0),
+    Site('replace_chest_return', 'code', 'd65f03c0 f9400674 90000008/9f00001f 91000108/ffc003ff 910023e1 aa1303e0 a900a3f5 94000000/fc000000', 0),
+    Site('replace_query_return', 'code', 'b9400121 94000000/fc000000 12000000 a8c17bfd d65f03c0', 4),
+    Site('replace_toast_return', 'code', 'd65f03c0 36000000/fff8001f 14000000/fc000000 b9420268 7100011f 5400000d/ff00001f aa1303e0 2a1f03e1', 0),
+    Site('replace_toast_tail_a', 'code', '14000000/fc000000 3906a27f 394e2268 7100051f 54000000/ff00001f 7100091f 54000001/ff00001f aa1303e0', 0),
+    Site('replace_toast_tail_b', 'code', 'aa1303e0 52800021 94000000/fc000000 aa1303e0 a9414ff4 a8c27bfd 14000000/fc000000', 6),
+    Site('replace_ui_draw_native', 'code', '39440008 7100011f 39440809 3943f80a 3943fc0b 7a401920 7a400944 7a421964', 0),
+    Site('replace_full_info_call', 'code', '91238108 90000009/9f00001f 91000129/ffc003ff f9000268 90000008/9f00001f 91000108/ffc003ff 91004129 a9022269 f9400bf3 a8c27bfd d65f03c0 90000008/9f00001f 91000108/ffc003ff 91004108 f8010408 14000000/fc000000 a9be7bfd f9000bf3 910003fd 90000008/9f00001f aa0003f3 f9400108/ffc003ff 91004108 f8010408 94000000/fc000000 aa1303e0 f9400bf3 a8c27bfd 14000000/fc000000 52800020 d65f03c0 a9bf7bfd 910003fd 91008000 94000000/fc000000', 34),
     Site('main_data', 'data', '', 0),
     Site('main_end', 'end', '', 0),
 ]
@@ -377,6 +457,19 @@ SITES = [
 # Without them the mouse turns the camera through the right stick, as before (runtime/hle/input.c); without the
 # second group it turns it without the game's camera inversion options.
 OPTIONAL_GROUPS = [
+    ('ui_layout_draw', 'ui_layout_native', 'ui_layout_pane'),
+    ('replace_layout_calculate', 'pouch_can_receive', 'replace_toast_start', 'replace_pickup_status',
+     'replace_draw_info_reset', 'actor_link_copy', 'replace_interaction_target', 'actor_link_assign',
+     'replace_card_prepare', 'replace_card_close', 'replace_component_update', 'replace_ai_child_matches',
+     'replace_pickup_call_a', 'replace_pickup_call_b', 'replace_pickup_call_c', 'replace_safe_string_vtable_slot',
+     'replace_string_assign', 'replace_card_manager_slot', 'replace_pouch_manager_slot',
+     'replace_interaction_manager_slot', 'replace_chest_closed_wait_name', 'replace_weapon_modifier',
+     'replace_toast_vtable', 'replace_game_picture_vtable', 'replace_picture_vtable_base', 'replace_popup',
+     'replace_item_popup', 'replace_receive', 'replace_card_close_gate', 'replace_card_action',
+     'replace_chest_update', 'replace_query', 'replace_toast_update', 'replace_pane_draw', 'replace_anim_advance',
+     'replace_ui_draw', 'replace_tick_call', 'replace_fill_call', 'replace_chest_return', 'replace_query_return',
+     'replace_toast_return', 'replace_toast_tail_a', 'replace_toast_tail_b', 'replace_ui_draw_native',
+     'replace_full_info_call'),
     ('quick_drop_tick', 'quick_drop_actor_call', 'player_drop_forbidden', 'actor_info_lookup',
      'actor_info_has_tag', 'pouch_discard', 'player_equipment', 'pouch_default_name',
      'player_schedule_equip', 'pouch_equipped_snapshot', 'actor_index_assign', 'actor_index_resolve',
@@ -389,10 +482,11 @@ OPTIONAL_GROUPS = [
     ('lookat_update',),  # (the free camera: without it Home does nothing)
     ('gyro_scene_actor',),
     ('surf_contact', 'surf_boost_remove', 'surf_jump_request'),
-    ('stale_actor_helper', 'stale_actor_target'),
+    ('stale_actor_helper', 'stale_actor_kind', 'stale_actor_target', 'stale_actor_flag', 'stale_actor_flag2'),
     ('quick_menu_capture_alpha',),
     ('kf_angle',),
     ('demo_move_arrive',),
+    ('rail_point_radius',),
     ('phys_tick', 'phys_tick_mt', 'phys_motion_tick', 'phys_motion_tick_c'),
     ('yaz0_stream', 'yaz0_stream_ret'),
     ('pc_map_focus', 'pc_map_focus_target', 'pc_map_focus_now'),
@@ -400,6 +494,7 @@ OPTIONAL_GROUPS = [
      'beast_clamp_pitch', 'beast_wrap_yaw', 'beast_world'),
     ('pc_button_group',),
     ('pc_cursor_manager', 'pc_cursor_activate', 'pc_pane_bounds'),
+    ('menu_wrap', 'ui_control_layer'),  # (without them the menus stop at their ends, as in the game)
     ('cam_stick', 'cam_pitch_chase', 'cam_pitch_surf', 'cam_pitch_wakeboard', 'cam_pitch_aim', 'cam_pitch_item'),
     ('cam_reverse_x', 'cam_reverse_y'),
     ('cam_stick_end',),  # (Controls > Controller camera speed: without it the setting does nothing)
@@ -416,13 +511,65 @@ OPTIONAL_GROUPS = [
     ('link_life_store', 'link_life_tick'),
     ('stamina_store',),
     ('impulse_flush',),  # (without it a hit between bodies can be lost above 60 fps)
+    ('sprint_cost', 'sprint_press_cost', 'battle_info_field', 'battle_info_b', 'battle_info_c'),  # (Cheats > Free sprint: without them it does nothing)
+    ('horse_crash', 'horse_look_ahead'),  # (Cheats > Sure-footed horse: without them it does nothing)
     ('tp_gate',),  # (a far teleport of the control endpoint: without it a long jump freezes the world)
     ('item_tick', 'pouch_item_get', 'pouch_mgr'),
+    ('horse_cam_lr',),
 ]
 OPTIONAL = {n for g in OPTIONAL_GROUPS for n in g}
 
 KNOWN = {
     '1.9.0': {
+        'ui_layout_draw': 0x70013ee084,
+        'ui_layout_native': 0x7000f6f690,
+        'ui_layout_pane': 0x7000027d30,
+        'replace_layout_calculate': 0x7000025c64,
+        'pouch_can_receive': 0x7000be21e0,
+        'replace_toast_start': 0x7000da9a0c,
+        'replace_pickup_status': 0x7000e780f0,
+        'replace_draw_info_reset': 0x7000f60944,
+        'actor_link_copy': 0x7001070ce0,
+        'replace_interaction_target': 0x70010d544c,
+        'actor_link_assign': 0x700112649c,
+        'replace_card_prepare': 0x70013e942c,
+        'replace_card_close': 0x70013e99c4,
+        'replace_component_update': 0x70013eb788,
+        'replace_ai_child_matches': 0x7001537800,
+        'replace_pickup_call_a': 0x7000cb0ce4,
+        'replace_pickup_call_b': 0x7000ca4440,
+        'replace_pickup_call_c': 0x7000cbc270,
+        'replace_safe_string_vtable_slot': 0x7001d66260,
+        'replace_string_assign': 0x7000573698,
+        'replace_card_manager_slot': 0x7001d67960,
+        'replace_pouch_manager_slot': 0x7001d67af0,
+        'replace_interaction_manager_slot': 0x7001d68838,
+        'replace_chest_closed_wait_name': 0x700164f739,
+        'replace_weapon_modifier': 0x70007b4ee0,
+        'replace_toast_vtable': 0x7001cde098,
+        'replace_game_picture_vtable': 0x7001d0e408,
+        'replace_picture_vtable_base': 0x7001b7ccd0,
+        'replace_popup': 0x7000e78a30,
+        'replace_item_popup': 0x7000e7a7f0,
+        'replace_receive': 0x7000be1e30,
+        'replace_card_close_gate': 0x70013ed264,
+        'replace_card_action': 0x7000709ba0,
+        'replace_chest_update': 0x7000a9d1bc,
+        'replace_query': 0x7000b445c0,
+        'replace_toast_update': 0x7000daa3fc,
+        'replace_pane_draw': 0x7000027d30,
+        'replace_anim_advance': 0x7000f6c9b4,
+        'replace_ui_draw': 0x70013ee084,
+        'replace_tick_call': 0x7000e66d9c,
+        'replace_fill_call': 0x7000e28538,
+        'replace_chest_return': 0x7000a9d210,
+        'replace_query_return': 0x7000b445e4,
+        'replace_toast_return': 0x7000daa4d8,
+        'replace_toast_tail_a': 0x7000daa42c,
+        'replace_toast_tail_b': 0x7000daa514,
+        'replace_ui_draw_native': 0x7000f6f690,
+        'replace_full_info_call': 0x70005e6e54,
+
         'quick_drop_tick': 0x7000e68168,
         'quick_drop_actor_call': 0x7001223f50,
         'player_drop_forbidden': 0x7000cc0334,
@@ -453,6 +600,8 @@ KNOWN = {
         'quick_sort_refill': 0x7000e27c2c,
         'quick_sort_mapping': 0x7000e28070,
         'quick_sort_cursor': 0x7000d665a4,
+        'menu_wrap': 0x7000f586b8,
+        'ui_control_layer': 0x7000f6e2c8,
         'quick_sort_labels': 0x7000e278c0,
         'pouch_lock': 0x7000eaff08,
         'pouch_unlock': 0x7000eaff18,
@@ -519,9 +668,13 @@ KNOWN = {
         'surf_boost_remove': 0x70011e9e94,
         'surf_jump_request': 0x70011ea3d4,
         'stale_actor_helper': 0x700120bc40,
+        'stale_actor_kind': 0x700120ccdc,
         'stale_actor_target': 0x7000dea400,
+        'stale_actor_flag': 0x700120c780,
+        'stale_actor_flag2': 0x700120c7f0,
         'phys_solver_steps': 0x700156f930,
         'demo_move_arrive': 0x7000c711dc,
+        'rail_point_radius': 0x7000c89d4c,
         'kf_angle': 0x70012d57fc,
         'phys_tick': 0x70000f5e20,
         'phys_tick_mt': 0x700012644c,
@@ -546,6 +699,7 @@ KNOWN = {
         'world_mgr': 0x7001e57580,
         'cam_stick': 0x7000d57fe0,
         'cam_stick_end': 0x7000d5801c,
+        'horse_cam_lr': 0x7000c29000,
         'cam_pitch_chase': 0x7000bf5334,
         'cam_pitch_surf': 0x7000c1a52c,
         'cam_pitch_wakeboard': 0x7000c22104,
@@ -576,6 +730,13 @@ KNOWN = {
         'link_life_store': 0x7000cc4e70,
         'link_life_tick': 0x7000cc4da4,
         'stamina_store': 0x7000cc7430,
+        'sprint_cost': 0x7000c84854,
+        'sprint_press_cost': 0x7000c848a0,
+        'battle_info_field': 0x7001345060,
+        'battle_info_b': 0x700133dcac,
+        'battle_info_c': 0x7001349648,
+        'horse_crash': 0x70006b16c4,
+        'horse_look_ahead': 0x70006b4218,
         'item_tick': 0x7000cc4c3c,
         'pouch_item_get': 0x7000d921bc,
         'pouch_mgr': 0x7001e18570,

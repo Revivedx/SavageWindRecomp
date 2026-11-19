@@ -5,9 +5,11 @@
 #include "../framepace.h"
 #include "../game_sites.h"
 #include "../kernel.h"
+#include "../platform.h"
 #include "../prof.h"
 #include "../perfmon.h"
 #include "nvn.h"
+#include "output_scale.h"  // (dynamic_res_tick: Video > Advanced > Dynamic resolution)
 
 void renderer_sync(void);
 
@@ -224,6 +226,7 @@ static void qop_run(const QOp *o) {
 static void *queue_thread(void *arg) {
     (void)arg;
     prof_thread_name("nvn-queue");
+    plat_thread_elevate();
     kernel_sample_host_thread();
     extern void control_prof_thread(const char *name);  // runtime/control_prof.c (`threads`)
     control_prof_thread("render");
@@ -1230,6 +1233,15 @@ NVN(nvnQueuePresentTexture) {
     present_pace(w->interval);
     if (frame_split()) g_fs_pace = plat_now_ns();
     perfmon_frame();
+    {   // Video > Advanced > Dynamic resolution: the scene's size or the upscaler's factor follows the frame rate
+        // (nvn/output_scale.c). With frame generation on, the presented rate (generated frames included) is what it
+        // holds; frame generation itself is left alone unless it has no net gain.
+        static PerfStats ps;
+        perfmon_snapshot(&ps);
+        // (fps_generated counts the frames made in the last second: a steadier signal than g_fg_active, which is
+        // just whether the last present was a generated one)
+        dynamic_res_tick(ps.fps, ps.fps_generated, ps.fps_generated > 0);
+    }
     TL("present (backend)");
     if (async_exec()) {
         if (i >= 0 && i < w->num) queue_put(QOP_PRESENT, 0, HOST(NvnTexture, w->textures[i]));

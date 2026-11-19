@@ -72,8 +72,7 @@ That step runs a compiler over your files, so it needs free space and a working 
 - your antivirus didn't quarantine anything from the Savage Wind folder.
 
 If it still fails, [open an issue](#reporting-a-problem) with `savagewind.log`
-([#618](https://github.com/Revivedx/SavageWindRecomp/issues/618),
-[#669](https://github.com/Revivedx/SavageWindRecomp/issues/669)).
+([#618](https://github.com/Revivedx/SavageWindRecomp/issues/618)).
 
 ### How long does setup take?
 
@@ -103,7 +102,9 @@ work away between sessions: in NVIDIA Control Panel > Manage 3D settings, raise 
 
 ### How much disk space and memory does it need?
 
-About 20 GB of disk and 16 GB of RAM.
+About 20 GB of disk and 8 GB of RAM with a dedicated graphics card: the game takes about 4.5 GB of RAM and asks
+Windows for about 6.5 GB, so keep the page file on and close other programs on an 8 GB PC. Integrated graphics take
+their video memory from the PC's RAM: 16 GB there.
 
 ### Where are my saves? Can I bring saves from the Wii U or Cemu?
 
@@ -176,21 +177,23 @@ gives the driver a fresh cache.
 
 ### The sky is black, dark or wrong on my AMD card
 
-Fixed in 0.5.2. It came from AMD's own shader compiler, which AMD's Windows driver uses on RX 6000 cards and older
-(Vega included); newer cards and Linux drew the sky right. Update to 0.5.2, and if the sky is still wrong there, add
-your card, driver and log on [#359](https://github.com/Revivedx/SavageWindRecomp/issues/359).
+Fixed in Alpha 6: 3D textures are now cleared when they're made, which AMD's Windows driver needed (RX 6000 cards
+and older, Vega included). If the sky is still wrong on Alpha 6, add your card, driver, screenshots and log on
+[#359](https://github.com/Revivedx/SavageWindRecomp/issues/359).
 
 ### The water is white, milky or transparent
 
-Milky water after a loading screen was fixed for Alpha 5. Transparent water is still open
+Milky water after a loading screen was fixed for Alpha 5, and transparent water for Alpha 6
 ([#649](https://github.com/Revivedx/SavageWindRecomp/issues/649)). If you see either on the latest version, add your
 GPU, driver and position.
 
-### Where are FSR 3 and FSR 4 upscaling?
+### Which upscaler should I use?
 
-They are held back. They work, but the motion vectors they need cost about 20% of the frame rate on the render thread
-(130 fps native, 104 with FSR 3, on an RTX 3060 at 1440p). This needs a redesign of the motion vectors, planned for
-Alpha 6. FSR 1 upscaling is available, and FSR 3 frame generation too.
+Since Alpha 6, Video > Upscaler offers FSR 1, FSR 3, FSR 4 (AMD Radeon RX 9000) and NVIDIA DLSS (RTX cards; Savage
+Wind Configuration downloads NVIDIA's library). They gain the most where the graphics card is the limit: 4K, the Savage
+preset, Extreme shadows. Where the CPU is the limit (1080p on a fast card), they cost about as much as they save, and
+their anti-aliasing is the reason to use them there. DLSS and FSR 3 look best in Quality or Native mode; Ultra
+Performance is only offered on a 4K window.
 
 ### Does frame generation work everywhere?
 
@@ -240,8 +243,13 @@ draw distance.
 
 ### What hardware is the minimum?
 
-A GPU with a Vulkan 1.3 driver, a CPU with SSE4.2 and 16 GB of RAM. Without AVX2 and FMA the game code runs in a slower
-compatibility mode. GPUs with only Vulkan 1.2, such as the GT 730 and the oldest Radeons on Windows, aren't supported.
+A GPU with a Vulkan 1.3 driver, a CPU with SSE4.2 and 4 threads, and 8 GB of RAM (16 GB with integrated graphics).
+Without AVX2 and FMA the game code runs in a slower compatibility mode. With 2 threads the game runs but stutters.
+
+A GPU whose driver stops at Vulkan 1.2 is taken when the driver has dynamic rendering, synchronization2 and extended
+dynamic state 1 and 2 as extensions; FSR 3, FSR 4 and frame generation are off there. This path is new on the `test`
+branch and no such card has confirmed it yet: if yours doesn't start, the log names the extension that is missing, and
+a report with that log helps.
 
 ### Is this faster than an emulator?
 
@@ -280,8 +288,24 @@ Any controller SDL knows. Button prompts follow the device you use, set in **Con
 
 ### Does gyro work?
 
-Yes, with DualSense, DualShock 4, Switch controllers and the Steam Deck. On a controller without one, hold T and move
-the mouse to tilt in the motion shrines. On Linux, other devices can use a DSU server.
+Yes, with any controller SDL reads a gyro from: DualSense, DualShock 4, Switch Pro and Joy-Con, the Steam Deck, and
+others such as the 8BitDo Ultimate 2 in its Switch or DInput mode. **Options > Controls > Motion source** says where the
+motion comes from right now, or why there is none.
+
+| Your controller | What to do |
+| --- | --- |
+| DualSense, DualShock 4, Switch Pro, Joy-Con | Nothing. With Steam Input on, the game opens the controller behind it for its gyro. |
+| Steam Deck | Nothing, in Gaming mode or Desktop mode. |
+| Steam Controller | Close Steam before starting the game, or set its gyro to act as a mouse in Steam Input. |
+| Xbox and other XInput pads | XInput has no gyro. If yours has one, switch it to its Switch, DS4 or DInput mode. |
+| ROG Ally, Legion Go, MSI Claw and other PC handhelds | Run Handheld Companion (or the handheld's own tool) with its DSU server on, or have it show a DualShock 4 with gyro. A DSU server that answers comes before the sensor SDL lends the handheld's gamepad. |
+| A DSU server (DS4Windows, BetterJoy, SteamDeckGyroDSU...) | Start it; the game finds it at 127.0.0.1:26760 when the controller has no gyro. Motion source: DSU server takes it first. |
+| Streaming (Moonlight, Artemis) | Have the host (Sunshine, Apollo) emulate a DualShock 4 or a DualSense, which carry the gyro. |
+
+Sensitivity, vertical sensitivity, inversion and Lean to turn are in Options > Controls; they change motion aiming,
+not shrine tilting. On a controller without a gyro, the sticks tilt the shrine apparatus, or hold T and move the mouse.
+If the gyro still misbehaves, start the game with `SAVAGEWIND_MOTION_LOG=1` and attach `savagewind.log` to
+[#136](https://github.com/Revivedx/SavageWindRecomp/issues/136).
 
 ### Does it work with mouse aiming?
 
@@ -311,10 +335,7 @@ a new one. The full list is on the [issue tracker](https://github.com/Revivedx/S
 
 | Problem | Seen on | Issue |
 |---|---|---|
-| Black, dark or wrong sky (fixed in 0.5.2: tell us if it still happens) | AMD on Windows, RX 6000 and older | [#359](https://github.com/Revivedx/SavageWindRecomp/issues/359), [#665](https://github.com/Revivedx/SavageWindRecomp/issues/665) |
 | Fog glitches in the intro | Under investigation | [#630](https://github.com/Revivedx/SavageWindRecomp/issues/630) |
-| Transparent water | Under investigation | [#649](https://github.com/Revivedx/SavageWindRecomp/issues/649) |
-| Rain or torch particles stretched across the screen for a frame (radial flashes, shards); please try `SAVAGEWIND_GPU_OVERLAP=0` and tell us | NVIDIA and AMD | [#620](https://github.com/Revivedx/SavageWindRecomp/issues/620), [#629](https://github.com/Revivedx/SavageWindRecomp/issues/629), [#683](https://github.com/Revivedx/SavageWindRecomp/issues/683), [#717](https://github.com/Revivedx/SavageWindRecomp/issues/717) |
 | Graphical bugs | ROG Ally Z1E on SteamOS | [#614](https://github.com/Revivedx/SavageWindRecomp/issues/614) |
 | Corrupted footprints in sand | Under investigation | [#634](https://github.com/Revivedx/SavageWindRecomp/issues/634) |
 | Corrupted picture | Under investigation | [#632](https://github.com/Revivedx/SavageWindRecomp/issues/632) |
@@ -345,8 +366,7 @@ a new one. The full list is on the [issue tracker](https://github.com/Revivedx/S
 | Attack key follows the Sort / Sensor binding | None yet | [#608](https://github.com/Revivedx/SavageWindRecomp/issues/608) |
 | Map controls with mouse and keyboard | None yet | [#440](https://github.com/Revivedx/SavageWindRecomp/issues/440) |
 | Button prompts and layout on DualSense | None yet | [#604](https://github.com/Revivedx/SavageWindRecomp/issues/604) |
-| Gyro axes wrong on some handhelds over DSU | Being looked at | [#136](https://github.com/Revivedx/SavageWindRecomp/issues/136) |
-| HUD shakes or goes out of bounds at 20:9 (2340x1080) | Needs more information; a 16:9 window meanwhile | [#728](https://github.com/Revivedx/SavageWindRecomp/issues/728) |
+| Gyro not found or wrong on some controllers and handhelds | Reworked for Alpha 6, testing: post your controller | [#136](https://github.com/Revivedx/SavageWindRecomp/issues/136) |
 | Gaps in Thai subtitles | Set Voices to "Same as text" | [#516](https://github.com/Revivedx/SavageWindRecomp/issues/516) |
 
 ### Setup
@@ -354,7 +374,7 @@ a new one. The full list is on the [issue tracker](https://github.com/Revivedx/S
 | Problem | Workaround | Issue |
 |---|---|---|
 | "No game files found" when reusing an install | [See above](#setup-says-no-game-files-found-in-that-folder) | [#590](https://github.com/Revivedx/SavageWindRecomp/issues/590) |
-| Setup stops at the start of the build | [See above](#setup-stops-at-5-10-or-the-game-code-didnt-build) | [#618](https://github.com/Revivedx/SavageWindRecomp/issues/618), [#669](https://github.com/Revivedx/SavageWindRecomp/issues/669) |
+| Setup stops at the start of the build | [See above](#setup-stops-at-5-10-or-the-game-code-didnt-build) | [#618](https://github.com/Revivedx/SavageWindRecomp/issues/618) |
 
 ---
 
@@ -383,7 +403,7 @@ Before opening one, read this page. An issue about something it already covers, 
 on the latest release, say so in your report and attach the log, and it stays open. A closed one is reopened if you
 comment with that.
 
-Reports missing the log get a `needs-info` label and are closed after 7 days without it. Never attach or link game
+Reports missing the log get a `needs-info` label and are closed after 24 hours without it. Never attach or link game
 files, keys or firmware.
 
 ---
@@ -511,11 +531,22 @@ written for.
 
 ### Can I use mods?
 
-Partly, and not yet the way you would on Cemu. Language packs work: `lang/<language>.txt` in the data folder is read over
-the built-in translations. A loader for other mods is planned, and because this isn't an emulator, Wii U and Cemu
-packs need adapting. Mods must not ship game files
+Yes, since Alpha 7. Put each mod in its own folder in the `mods` folder next to Savage
+Wind (`mods/<name>/romfs/Actor/...`, or `mods/<name>/Actor/...` directly), then turn it on in the **Mods** tab (Settings
+on the start screen, or F1 in game) and restart. The tab also sets the load order and shows conflicts. Mods made for
+the Switch version 1.9.0 fit best; Wii U and Cemu packs need adapting, because the file formats differ. On Alpha 6
+(0.6.0), a mod's `romfs` folder can be loaded with the launch option `SAVAGEWIND_ROMFS_OVERLAY=<folder>`.
+
+**Mods are other people's work.** Savage Wind doesn't check, test or support them, and isn't responsible for what they
+do, including if they break the game or your saves. Back up your saves before trying one, and turn every mod off before
+reporting a bug: a bug caused by a mod is closed right away, because we don't support what isn't ours. Savage Wind
+releases never include mods, and mods must not be shared with game files in them
 ([#647](https://github.com/Revivedx/SavageWindRecomp/issues/647),
-[#645](https://github.com/Revivedx/SavageWindRecomp/issues/645)).
+[#645](https://github.com/Revivedx/SavageWindRecomp/issues/645)). In the future we may point to mods we've found to
+play well with Savage Wind.
+
+Language packs for Savage Wind's own menus are separate: `lang/<language>.txt` in the data folder is read over the
+built-in translations ([menu language packs](menu-language-packs.md)).
 
 ### Does it support amiibo?
 

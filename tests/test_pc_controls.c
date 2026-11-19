@@ -31,6 +31,7 @@ bool menu_input_captured(void) { return captured; }
 bool prof_toggle(void) { return false; }
 bool menu_cursor_free(void) { return freed; }
 void vibration_update(SDL_Gamepad *p, bool focused) { (void)p; (void)focused; }
+void vibration_pad_closed(SDL_Gamepad *p) { (void)p; }
 void motion_tilt_held(bool held) { motion_tilt = held; }
 bool pc_gyro_keyboard_active(void) { return gyro_active; }
 void motion_keyboard(int p,int r,int y,bool reset) { gyro_pitch=p;gyro_roll=r;gyro_yaw=y;gyro_reset=reset; }
@@ -82,6 +83,14 @@ void motion_mouse(float x, float y) { tilt_mouse_x=x;tilt_mouse_y=y; }
 void motion_mouse_yaw(float steps) { tilt_mouse_yaw=steps; }
 bool motion_has_sensors(void) { return sensor_pad; }
 void motion_script(float p, float r, float x, float y) { (void)p; (void)r; (void)x; (void)y; abort(); }
+void motion_pads(SDL_Gamepad *in_use, SDL_Gamepad *const *p, int n) { (void)in_use; (void)p; (void)n; }
+void motion_pad_removed(SDL_Gamepad *p) { (void)p; }
+bool motion_pad_pressed(SDL_JoystickID id, uint64_t ns) { (void)id; (void)ns; return false; }
+bool motion_pads_twins(SDL_JoystickID a, SDL_JoystickID b) { (void)a; (void)b; return false; }
+bool motion_pad_sensor_only(SDL_Gamepad *p) { (void)p; return false; }
+SDL_JoystickID motion_sensor_pad(void) { return 0; }
+void motion_device_sensor_event(const SDL_Event *e) { (void)e; }
+bool framepace_dialogue_ui(void) { return false; }
 void watch_arm(void) { abort(); }
 
 static void update(void) { input_mouse_update((SDL_Window *)(uintptr_t)1); }
@@ -124,6 +133,40 @@ int main(void) {
     e.type=SDL_EVENT_MOUSE_BUTTON_DOWN;e.button.button=SDL_BUTTON_LEFT;
     input_handle_event(&e);assert(input_buttons_now()&(1ull<<BTN_Y));
     e.type=SDL_EVENT_MOUSE_BUTTON_UP;input_handle_event(&e);
+
+    // Quick inventory replacement's selector open: left and right clicks are its A and B, kept from the bindings
+    // (no attack, no shield) through their release, even when it closes in between; closed, they are bound again.
+    input_replace_mouse(true);
+    e.type=SDL_EVENT_MOUSE_BUTTON_DOWN;e.button.button=SDL_BUTTON_LEFT;input_handle_event(&e);
+    assert(input_replace_clicks()==1&&!(input_buttons_now()&(1ull<<BTN_Y)));
+    e.button.button=SDL_BUTTON_RIGHT;input_handle_event(&e);
+    assert(input_replace_clicks()==3&&!(input_buttons_now()&(1ull<<BTN_ZL)));
+    input_replace_mouse(false);
+    e.type=SDL_EVENT_MOUSE_BUTTON_UP;input_handle_event(&e);
+    e.button.button=SDL_BUTTON_LEFT;input_handle_event(&e);
+    assert(input_replace_clicks()==0&&!(input_buttons_now()&((1ull<<BTN_Y)|(1ull<<BTN_ZL))));
+    e.type=SDL_EVENT_MOUSE_BUTTON_DOWN;input_handle_event(&e);
+    assert(input_replace_clicks()==0&&(input_buttons_now()&(1ull<<BTN_Y)));
+    e.type=SDL_EVENT_MOUSE_BUTTON_UP;input_handle_event(&e);assert(!(input_buttons_now()&(1ull<<BTN_Y)));
+
+    // Rebinding "Menu: sort / sensor" to a key must not hijack Attack in play (#608)
+    int16_t saved_bind_y = g_bind_key[BIND_Y];
+    g_bind_key[BIND_Y] = SDL_SCANCODE_Y;
+    e.type=SDL_EVENT_KEY_DOWN;e.key.scancode=SDL_SCANCODE_Y;
+    input_handle_event(&e);
+    assert(!(input_buttons_now()&(1ull<<BTN_Y)));  // Y key does NOT attack in gameplay
+    e.type=SDL_EVENT_MOUSE_BUTTON_DOWN;e.button.button=SDL_BUTTON_LEFT;
+    input_handle_event(&e);
+    assert(input_buttons_now()&(1ull<<BTN_Y));     // mouse left still attacks
+    e.type=SDL_EVENT_MOUSE_BUTTON_UP;input_handle_event(&e);
+    e.type=SDL_EVENT_KEY_UP;e.key.scancode=SDL_SCANCODE_Y;input_handle_event(&e);
+    g_bind_key[BIND_Y] = saved_bind_y;
+
+    // Scripted/console A/B/X/Y buttons must still reach the game in play
+    script_buttons = (1ull << BTN_A) | (1ull << BTN_B) | (1ull << BTN_X) | (1ull << BTN_Y);
+    assert((input_buttons_now() & script_buttons) == script_buttons);
+    script_buttons = 0;
+
     puts("PASS: F bow, right-mouse shield/lock-on and left-mouse attack use ordinary bindings");
 
     // Controller Walk scales both left-stick axes and returns to full speed on release (never cumulative).
@@ -232,3 +275,5 @@ int main(void) {
     assert(photo_takes == shots_before + 1);
     puts("PASS: PrintScreen triggers screenshot capture");
 }
+
+uint64_t quick_replace_buttons(uint64_t b) { return b; }

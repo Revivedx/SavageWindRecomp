@@ -68,6 +68,8 @@ static pthread_mutex_t queue_lock = PTHREAD_MUTEX_INITIALIZER;
 static Request *requests, *requests_tail, *finished, *finished_tail;
 static _Atomic bool enabled, queued;  // enabled: developer mode (see control_enabled); the socket is up when listener is set
 static bool dev_mode, initialized;
+static bool companion;  // the socket is the companion one (SAVAGEWIND_COMPANION): it runs only the CONTROL_READ commands
+static _Atomic bool companion_listening;
 static bool running_for_console;  // (a handler is running for the console: help lists only what it may run)
 static ControlSocket listener = BAD_SOCKET;
 static Connection clients[MAX_CLIENTS];  // owned by the socket thread
@@ -174,8 +176,12 @@ void control_register(const ControlCmd *cmds, int count) {
     }
     pthread_mutex_unlock(&registry_lock);
 }
-// What the caller may run: the socket and developer mode run everything; a player's console only the player safe commands.
-static bool allowed(const ControlCmd *c, bool console) { return !console || dev_mode || (c->flags & CONTROL_PLAYER); }
+// What the caller may run: the developer socket and developer mode run everything; a player's console only the player
+// safe commands; the companion socket only the commands that just read state.
+static bool allowed(const ControlCmd *c, bool console) {
+    if (console) return dev_mode || (c->flags & CONTROL_PLAYER);
+    return !companion || (c->flags & CONTROL_READ);
+}
 static int by_name(const void *a, const void *b) { return strcmp((*(const ControlCmd *const *)a)->name, (*(const ControlCmd *const *)b)->name); }
 static void help(int argc, char **argv, ControlReply *r) {
     (void)argc; (void)argv;
@@ -281,7 +287,7 @@ static bool enqueue(int slot, const char *error) {
 }
 
 bool control_enabled(void) { return dev_mode; }
-bool control_endpoint_on(void) { return enabled; }
+bool control_endpoint_on(void) { return enabled || companion_listening; }
 
 // Run one command (on the frame hook). console: the caller is the in-game console, not the socket.
 static void execute(int argc, char **argv, bool console, ControlReply *r) {
@@ -731,21 +737,28 @@ static bool listen_on(unsigned value) {
     return true;
 }
 
-void control_init(void) {
-    const char *port = getenv("SAVAGEWIND_CONTROL");
+// The port in the environment variable `name`, or 0 when it is not set or not a port (logged).
+static unsigned port_from_env(const char *name) {
+    const char *port = getenv(name);
+    if (!port) return 0;
     unsigned value = 0;
-    bool serve_socket = false;
-    if (port) {
-        const char *p = port;
-        while (*p >= '0' && *p <= '9' && value <= 65535) value = value * 10 + (unsigned)(*p++ - '0');
-        if (!*port || *p || !value || value > 65535) LOG("[control] invalid port: %s\n", port);
-        else serve_socket = true;
-    }
-    if (serve_socket && listen_on(value)) enabled = true;
+    const char *p = port;
+    while (*p >= '0' && *p <= '9' && value <= 65535) value = value * 10 + (unsigned)(*p++ - '0');
+    if (!*port || *p || !value || value > 65535) { LOG("[control] invalid port in %s: %s\n", name, port); return 0; }
+    return value;
+}
+
+void control_init(void) {
+    unsigned value = port_from_env("SAVAGEWIND_CONTROL");
+    if (value && listen_on(value)) enabled = true;
+    // The companion socket: the same loopback server for map and tracker apps, but only the commands that read state.
+    // SAVAGEWIND_CONTROL wins when both are set; the companion socket never turns developer mode on.
+    unsigned companion_port = value ? 0 : port_from_env("SAVAGEWIND_COMPANION");
+    if (companion_port) control_companion_start(companion_port);
     dev_mode = enabled || env_on("SAVAGEWIND_DEV");
     static const ControlCmd builtins[] = {
-        {"help", "", "List the commands", help, CONTROL_PLAYER},
-        {"ping", "", "Check that the game answers", ping, 0},
+        {"help", "", "List the commands", help, CONTROL_PLAYER | CONTROL_READ},
+        {"ping", "", "Check that the game answers", ping, CONTROL_READ},
         {"exit", "", "Close the game", quit, CONTROL_PLAYER},
     };
     control_register(builtins, sizeof builtins / sizeof *builtins);
@@ -753,4 +766,16 @@ void control_init(void) {
     initialized = true;
     if (enabled) LOG("[control] listening on 127.0.0.1:%u\n", value);
     else if (dev_mode) LOG("[control] developer commands on in the console (SAVAGEWIND_DEV)\n");
+}
+
+// The companion socket: the loopback server for map and tracker apps, running only the CONTROL_READ
+// commands. Opened by SAVAGEWIND_COMPANION=<port> at start or by the Companion apps switch on the start screen. There is
+// one server: when the developer socket (SAVAGEWIND_CONTROL) or a companion socket is already up, nothing changes.
+bool control_companion_start(unsigned port) {
+    if (enabled || companion || !port || port > 65535) return false;  // (one try per run: a taken port isn't retried)
+    companion = true;  // (set before listening, so the first request is already limited; stays set if the port is taken)
+    if (!listen_on(port)) return false;
+    companion_listening = true;
+    LOG("[control] companion socket (read only) on 127.0.0.1:%u\n", port);
+    return true;
 }

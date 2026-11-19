@@ -12,6 +12,8 @@ const int g_ntext_languages = 1, g_nvoice_languages = 1;
 int input_pad_family(void) { return 0; }
 bool fsr3_upscaler_enabled(void) { return false; }
 float winsize_refresh_rate(void) { return 0; }
+bool framepace_dialogue_ui(void) { return false; }
+bool input_cam_live(void) { return false; }
 
 int main(int argc, char **argv) {
     assert(argc == 6);
@@ -29,5 +31,11 @@ int main(int argc, char **argv) {
     g_settings.tex_lod_bias = (g_settings.tex_lod_bias + 1) % TEX_LOD_COUNT;
     g_settings.audio_output = (g_settings.audio_output + 1) % AUDIO_OUT_COUNT;
     settings_save();
-    printf("PASS: load cursor=%s, toggle and save for next boot\n", argv[2]);
+    // Potato: no grass, no lens flare, AMD CAS at 80%; another preset brings grass and the flare back
+    graphics_preset_apply(GPRESET_POTATO);
+    assert(!g_settings.grass && !g_settings.lens_flare && g_settings.sharpening == 8);
+    assert(graphics_preset_current() == GPRESET_POTATO);
+    graphics_preset_apply(GPRESET_HIGH);
+    assert(g_settings.grass && g_settings.lens_flare && graphics_preset_current() == GPRESET_HIGH);
+    printf("PASS: load cursor=%s, toggle and save for next boot; Potato and High presets\n", argv[2]);
 }

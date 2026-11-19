@@ -11,7 +11,7 @@
 #include "language.h"
 #include "handheld.h"
 
-bool fsr3_upscaler_enabled(void);  // (nvn/output_scale.c: FSR 3 upscaling held back for now)
+bool fsr3_upscaler_enabled(void);  // (nvn/output_scale.c: SAVAGEWIND_FSR3=0 hides FSR 3 / 4)
 
 #define SETTINGS_FILE settings_file()
 
@@ -33,18 +33,20 @@ Settings g_settings = {
     .freecam_sticks = true,
     .damage_taken = 100,
     .damage_dealt = 100,
+    .colour_vision_strength = COLOUR_VISION_STRENGTH_DEFAULT,
     .weapon_wear = 100,
+    .item_multiplier = 1,
     .upscaler = UPSCALE_DEFAULT,  // (Off: the window's resolution; MetalFX on macOS)
     .upscale_quality = UPQ_QUALITY,
     .game_fxaa = true,
     .anisotropy = 1,  // (2x: the Original graphics preset)
-    .dynamic_res = true,
     .render_scale = RSCALE_100,
     .mouse_camera = true,
     .pc_cursor = true,
     .mouse_sens = MOUSE_SENS_DEFAULT,
     .mouse_sens_y = 1.0f,
     .motion_sens = 1.0f,
+    .motion_sens_y = 1.0f,
     .pc_gyro = true,
     .gyro_scene = true,
     .stick_cam_x = STICK_CAM_DEFAULT,
@@ -52,6 +54,8 @@ Settings g_settings = {
     .stick_deadzone = {STICK_DEADZONE_DEFAULT, STICK_DEADZONE_DEFAULT},
     .fps_limit = FPS_DEFAULT,
     .precompile_shaders = true,
+    .dlss_download = true,
+    .xess_download = true,
     .start_in_config = true,
     .start_picture = START_PICTURE_SCREENSHOT,
     .boot_picture = true,
@@ -61,18 +65,48 @@ Settings g_settings = {
     .gpu = -1,
     .wide_view = true,
     .hud_edges = false,
+    .hdr_peak_nits = 0,  // (not set yet: the first start reads the ICC peak, else 1000; then it is a normal setting)
+    .hdr_game_nits = 203,  // (HGIG reference white)
+    .hdr_ui_nits = 203,    // (the HUD/menu; HGIG reference white by default)
+    .hdr_hue = 70,         // (RenoDX BOTW's default highlight hue/purity transfer)
+    .hdr_blowout = 65,     // (RenoDX BOTW's default SDR highlight desaturation/purity)
+    .hdr_sdr_blend = 18,   // (RenoDX BOTW's default extended-curve pivot, percent)
+    .hdr_vanilla_saturation = 100,  // (the game's own saturation grade)
+    .hdr_bloom = 100,      // (the game's own bloom)
+    .hdr_clamp = 0,        // (BT.709, as the game's own grade)
+    .hdr_tonemapper = 1,   // (RenoDX PsychoV, the BOTW mod's default and its "RenoDRT" label)
+    .hdr_exposure = 100,   // (the mod's ColorGradeExposure default)
+    .hdr_highlights = 50,  // (the mod's ColorGradeHighlights default)
+    .hdr_shadows = 50,     // (the mod's ColorGradeShadows default)
+    .hdr_contrast = 50,    // (the mod's ColorGradeContrast default)
+    .hdr_saturation = 50,  // (the mod's ColorGradeSaturation default)
+    .hdr_highlight_saturation = 50,  // (the mod's ColorGradeHighlightSaturation default)
+    .hdr_flare = 0,        // (the mod's ColorGradeFlare default)
+    .hdr_gamma = 0,        // (the mod's ToneMapGammaCorrection default)
+    .hdr_look = {          // (Video > HDR preset 1..3; all three start as the mod's defaults)
+        {1, 100, 50, 50, 50, 50, 50, 0, 70, 65, 18, 100, 100, 0, 0, 0, 0, 0},
+        {1, 100, 50, 50, 50, 50, 50, 0, 70, 65, 18, 100, 100, 0, 0, 0, 0, 0},
+        {1, 100, 50, 50, 50, 50, 50, 0, 70, 65, 18, 100, 100, 0, 0, 0, 0, 0},
+    },
+    .hdr_preset = 1,       // (Preset 1: the mod's defaults)
+    .hdr_clip_nits = 0,    // (legacy: the final cap is hdr_peak_nits)
     .fov = 100,
     .hud_size = 100,
+    .menu_speed = 100,
+    .menu_text_size = 100,
     .color_lut_strength = 100,
     .haze = 100,
     .bloom = true,
     .depth_of_field = true,
+    .grass = true,
+    .lens_flare = true,
     .fast_fma = true,
 };
 
 static const char *const k_vsync[VSYNC_COUNT] = {"on", "fast", "adaptive", "off"};  // (VSYNC_*: the ini's words)
 static const char *const k_hdr[HDR_COUNT] = {"auto", "on", "off"};             // (HDR_*)
 static const char *const k_sparse_heap[SPARSE_HEAP_COUNT] = {"auto", "on", "off"};
+static const char *const k_scene_copies[SCENE_COPIES_COUNT] = {"auto", "fast", "exact"};  // (SCENE_COPIES_*)
 static const char *const k_tex_lod_bias[TEX_LOD_COUNT] = {"default", "sharp", "sharper"};
 static const char *const k_fsmode[FSMODE_COUNT] = {"auto", "borderless", "exclusive"};  // (FSMODE_*)
 static const char *const k_audio_out[AUDIO_OUT_COUNT] = {"stereo", "surround_51", "headphones_3d"};  // (AUDIO_OUT_*)
@@ -96,11 +130,16 @@ static const char *const k_drawdist[DRAWDIST_COUNT] = {"original", "medium", "hi
 const char *const g_weather_keys[WEATHER_COUNT] = {"game", "no_rain", "no_storms", "clear", "cloudy", "rain",
                                                    "heavy_rain", "snow", "heavy_snow", "thunderstorm", "thunder_rain",
                                                    "sun_shower"};  // (weather; settings.h)
+const char *const g_colour_vision_keys[COLOUR_VISION_COUNT] = {"off", "protanopia", "deuteranopia", "tritanopia"};
 static const char *const k_icons[ICONS_COUNT] = {"auto", "keyboard", "xbox", "playstation", "nintendo", "steamdeck"};
+const char *const g_motion_source_keys[MOTION_SOURCE_COUNT] = {"auto", "controller", "dsu", "off"};
 
 static const char *const k_button_layout[BUTTON_LAYOUT_COUNT] = {"auto", "nintendo", "swap_ab", "xbox", "swap_xy", "gamecube"};
 
-static const char *const k_quality[UPQ_COUNT] = {"ultra_quality", "quality", "balanced", "performance", "ultra_performance"};
+static const char *const k_quality[UPQ_COUNT] = {"ultra_quality", "quality", "balanced", "performance", "ultra_performance",
+                                                 "native", "dynamic"};
+
+static const char *const k_text_speed[TEXT_SPEED_COUNT] = {"normal", "fast", "instant"};
 
 // Debug overrides seed this boot's options; the Controls switches can still change them at once.
 static void pc_controls_env(void) {
@@ -182,15 +221,139 @@ static void handheld_first_setup(void) {
     LOG("[settings] PC handheld: its own settings, the first time\n");
 }
 
+// Video > HDR preset: the whole HDR look, as the mod's presets are. The display peak, game and UI whites are
+// included, so a preset restores the display setup too; a default slot stores 0 for them (keep the current setup)
+// until hdr_look_init_peak fills them after the ICC read. Slots are clamped so a hand-edited INI cannot break the
+// shader.
+static void hdr_look_get(int *v) {
+    v[0] = g_settings.hdr_tonemapper == 0 ? 0 : 1;
+    v[1] = g_settings.hdr_exposure;
+    v[2] = g_settings.hdr_highlights;
+    v[3] = g_settings.hdr_shadows;
+    v[4] = g_settings.hdr_contrast;
+    v[5] = g_settings.hdr_saturation;
+    v[6] = g_settings.hdr_highlight_saturation;
+    v[7] = g_settings.hdr_flare;
+    v[8] = g_settings.hdr_hue;
+    v[9] = g_settings.hdr_blowout;
+    v[10] = g_settings.hdr_sdr_blend;
+    v[11] = g_settings.hdr_vanilla_saturation;
+    v[12] = g_settings.hdr_bloom;
+    v[13] = g_settings.hdr_clamp == 1 ? 1 : 0;
+    v[14] = g_settings.hdr_peak_nits;
+    v[15] = g_settings.hdr_game_nits;
+    v[16] = g_settings.hdr_ui_nits;
+    v[17] = g_settings.hdr_gamma;
+}
+
+static int hdr_look_clamp(int i, int x) {
+    switch (i) {
+    case 0: return x ? 1 : 0;
+    case 1: return x >= 50 && x <= 200 ? x : 100;
+    case 7: return x >= 0 && x <= 100 ? x : 0;
+    case 8: return x >= 0 && x <= 100 ? x : 70;
+    case 9: return x >= 0 && x <= 100 ? x : 65;
+    case 10: return x >= 0 && x <= 60 ? x : 18;
+    case 11: return x >= 0 && x <= 100 ? x : 100;
+    case 12: return x >= 0 && x <= 100 ? x : 100;
+    case 13: return x ? 1 : 0;
+    case 14: return x == 0 || (x >= 80 && x <= 10000) ? x : 0;
+    case 15: return x == 0 || (x >= 80 && x <= 1000) ? x : 0;
+    case 16: return x == 0 || (x >= 80 && x <= 1000) ? x : 0;
+    case 17: return x >= 0 && x <= 2 ? x : 0;
+    default: return x >= 0 && x <= 100 ? x : 50;
+    }
+}
+
+// The mod's OnPresetOff: ToneMapType 0, peak/game/UI 203, the grading neutral, hue 100, blowout 0, bloom 100.
+// -1 means "leave as it is": the mod's OnPresetOff does not set SDR blend, vanilla saturation or the clamp.
+static const int k_hdr_off[18] = {0, 100, 50, 50, 50, 50, 50, 0, 100, 0, -1, -1, 100, -1, 203, 203, 203, 0};
+
+static bool hdr_look_matches(const int *a) {
+    int cur[18];
+    hdr_look_get(cur);
+    for (int i = 0; i < 18; i++) {
+        if (a[i] < 0 && (i == 10 || i == 11 || i == 13)) continue;  // (Preset Off leaves these as they are)
+        int v = hdr_look_clamp(i, a[i]);
+        if (v == 0 && (i == 14 || i == 15 || i == 16)) continue;  // (a default slot: keep the current display setup)
+        if (v != cur[i]) return false;
+    }
+    return true;
+}
+
+int hdr_look_current(void) {
+    int slot = g_settings.hdr_preset;
+    if (slot == 0) return hdr_look_matches(k_hdr_off) ? 0 : 4;
+    if (slot >= 1 && slot <= 3 && hdr_look_matches(g_settings.hdr_look[slot - 1])) return slot;
+    return 4;  // (a stored slot with different values is Custom, even if another slot happens to match)
+}
+
+void hdr_look_apply(int slot) {
+    if (slot < 0 || slot > 3) return;
+    const int *v = slot == 0 ? k_hdr_off : g_settings.hdr_look[slot - 1];
+    g_settings.hdr_tonemapper = hdr_look_clamp(0, v[0]);
+    g_settings.hdr_exposure = hdr_look_clamp(1, v[1]);
+    g_settings.hdr_highlights = hdr_look_clamp(2, v[2]);
+    g_settings.hdr_shadows = hdr_look_clamp(3, v[3]);
+    g_settings.hdr_contrast = hdr_look_clamp(4, v[4]);
+    g_settings.hdr_saturation = hdr_look_clamp(5, v[5]);
+    g_settings.hdr_highlight_saturation = hdr_look_clamp(6, v[6]);
+    g_settings.hdr_flare = hdr_look_clamp(7, v[7]);
+    g_settings.hdr_hue = hdr_look_clamp(8, v[8]);
+    g_settings.hdr_blowout = hdr_look_clamp(9, v[9]);
+    if (v[10] >= 0) g_settings.hdr_sdr_blend = hdr_look_clamp(10, v[10]);
+    if (v[11] >= 0) g_settings.hdr_vanilla_saturation = hdr_look_clamp(11, v[11]);
+    g_settings.hdr_bloom = hdr_look_clamp(12, v[12]);
+    if (v[13] >= 0) g_settings.hdr_clamp = hdr_look_clamp(13, v[13]);
+    int pv = hdr_look_clamp(14, v[14]);
+    int gv = hdr_look_clamp(15, v[15]);
+    int uv = hdr_look_clamp(16, v[16]);
+    if (pv != 0) g_settings.hdr_peak_nits = pv;
+    if (gv != 0) g_settings.hdr_game_nits = gv;
+    if (uv != 0) g_settings.hdr_ui_nits = uv;
+    g_settings.hdr_gamma = hdr_look_clamp(17, v[17]);
+    g_settings.hdr_preset = slot;
+}
+
+void hdr_look_store(int slot) {
+    if (slot < 1 || slot > 3) return;
+    int *v = g_settings.hdr_look[slot - 1];
+    hdr_look_get(v);
+    // A platform without the ICC read (Linux) may still have the peak at 0 ("unset"): store what the present uses,
+    // so the preset restores the same display setup instead of the wildcard.
+    if (v[14] < 80) v[14] = 1000;
+    if (v[15] < 80) v[15] = 203;
+    if (v[16] < 80) v[16] = v[15];
+    g_settings.hdr_preset = slot;
+}
+
+void hdr_look_init_peak(void) {
+    for (int i = 0; i < 3; i++) {
+        if (g_settings.hdr_look[i][14] == 0 && g_settings.hdr_peak_nits > 0)
+            g_settings.hdr_look[i][14] = g_settings.hdr_peak_nits;
+        if (g_settings.hdr_look[i][15] == 0 && g_settings.hdr_game_nits > 0)
+            g_settings.hdr_look[i][15] = g_settings.hdr_game_nits;
+        if (g_settings.hdr_look[i][16] == 0 && g_settings.hdr_ui_nits > 0)
+            g_settings.hdr_look[i][16] = g_settings.hdr_ui_nits;
+    }
+}
+
+static bool g_loaded;  // (settings_reload: read again)
+
+void settings_reload(void) {
+    g_loaded = false;
+    settings_load();
+}
+
 void settings_load(void) {
-    static bool loaded;
-    if (loaded) return;
-    loaded = true;
+    if (g_loaded) return;
+    g_loaded = true;
     FILE *f = fopen(SETTINGS_FILE, "r");
     if (!f) {
         handheld_first_setup();
         gyro_startup_overrides();
         pc_controls_env();
+        hdr_look_init_peak();
         return;
     }
     char line[256];
@@ -228,6 +391,7 @@ void settings_load(void) {
         else if (!strcmp(key, "mute_unfocused")) g_settings.mute_unfocused = atoi(val) != 0;
         else if (!strcmp(key, "shrine_sensor_volume")) g_settings.shrine_sensor_volume = atoi(val);
         else if (!strcmp(key, "amiibo_reader")) snprintf(g_settings.amiibo_reader, sizeof g_settings.amiibo_reader, "%s", strcmp(val, "none") ? val : "");
+        else if (!strcmp(key, "amiibo_random_uid")) g_settings.amiibo_random_uid = atoi(val) != 0;
         else if (!strcmp(key, "show_fps")) g_settings.perf_overlay = atoi(val) ? PERF_FPS : PERF_OFF;  // (older files)
         else if (!strcmp(key, "perf_overlay")) g_settings.perf_overlay = !strcmp(val, "full") ? PERF_FULL : !strcmp(val, "fps") ? PERF_FPS : PERF_OFF;
         else if (!strcmp(key, "frame_rate")) {  // (fps / off / display)
@@ -241,11 +405,13 @@ void settings_load(void) {
         else if (!strcmp(key, "settings_version")) version = atoi(val);
         else if (!strcmp(key, "resolution")) snprintf(old_res, sizeof old_res, "%s", val);  // (version 1)
         else if (!strcmp(key, "upscaler"))  // (metalfx / fsr1: this OS's spatial upscaler; dlss: NGX; fsr3, fsr4: Vulkan,
-            // held back for now: FSR 1 with the same quality mode, nvn/output_scale.c fsr3_upscaler_enabled)
+            // hidden with SAVAGEWIND_FSR3=0: FSR 1 with the same quality mode, nvn/output_scale.c fsr3_upscaler_enabled;
+            // xess: libxess.dll, vulkan/xess.h)
             g_settings.upscaler = !strcmp(val, "dlss") ? UPSCALE_DLSS
                                 : !strcmp(val, "fsr1") || !strcmp(val, "metalfx") ? UPSCALE_SPATIAL
                                 : !strcmp(val, "fsr3") ? (fsr3_upscaler_enabled() ? UPSCALE_FSR3_OR_SPATIAL : UPSCALE_SPATIAL)
                                 : !strcmp(val, "fsr4") ? (fsr3_upscaler_enabled() ? UPSCALE_FSR4_OR_SPATIAL : UPSCALE_SPATIAL)
+                                : !strcmp(val, "xess") ? UPSCALE_XESS_OR_SPATIAL
                                                        : UPSCALE_OFF;
         else if (!strcmp(key, "upscaler_quality")) {
             for (int i = 0; i < UPQ_COUNT; i++)
@@ -281,9 +447,13 @@ void settings_load(void) {
         else if (!strcmp(key, "rumble")) g_settings.rumble = atoi(val) != 0;
         else if (!strcmp(key, "rumble_strength")) g_settings.rumble_strength = atoi(val);
         else if (!strcmp(key, "freecam_sticks")) g_settings.freecam_sticks = atoi(val) != 0;
+        else if (!strcmp(key, "quick_replace")) g_settings.quick_replace = atoi(val) != 0;
         else if (!strcmp(key, "quick_drop")) g_settings.quick_drop = atoi(val) != 0;
         else if (!strcmp(key, "quick_sort")) g_settings.quick_sort = atoi(val) != 0;
+        else if (!strcmp(key, "discord_rpc")) g_settings.discord_rpc = atoi(val) != 0;
         else if (!strcmp(key, "dpad_move")) g_settings.dpad_move = atoi(val) != 0;
+        else if (!strcmp(key, "menu_wrap")) g_settings.menu_wrap = atoi(val) != 0;
+        else if (!strcmp(key, "prompts_follow")) g_settings.prompts_follow = atoi(val) != 0;
         else if (!strcmp(key, "left_stick_deadzone")) g_settings.stick_deadzone[0] = (float)atof(val) / 100;  // (percent)
         else if (!strcmp(key, "right_stick_deadzone")) g_settings.stick_deadzone[1] = (float)atof(val) / 100;
         else if (!strcmp(key, "mouse_bow")) g_settings.pc_bow = atoi(val) != 0;
@@ -295,6 +465,13 @@ void settings_load(void) {
         else if (!strcmp(key, "pc_gyro")) g_settings.pc_gyro = atoi(val) != 0;
         else if (!strcmp(key, "gyro_scene")) g_settings.gyro_scene = atoi(val) != 0;
         else if (!strcmp(key, "motion_sensitivity")) g_settings.motion_sens = (float)atof(val);
+        else if (!strcmp(key, "motion_vertical_sensitivity")) g_settings.motion_sens_y = (float)atof(val);
+        else if (!strcmp(key, "motion_lean")) g_settings.motion_lean = atoi(val) != 0;
+        else if (!strcmp(key, "motion_source")) {
+            for (int i = 0; i < MOTION_SOURCE_COUNT; i++)
+                if (!strcmp(val, g_motion_source_keys[i])) g_settings.motion_source = i;
+        }
+        else if (!strcmp(key, "motion_dsu_axes")) snprintf(g_settings.motion_dsu_axes, sizeof g_settings.motion_dsu_axes, "%s", val);
         else if (!strcmp(key, "motion_invert")) {  // (off, up_down, left_right, both)
             g_settings.motion_invert = !strcmp(val, "both") ? MOTION_INVERT_UD | MOTION_INVERT_LR :
                                        !strcmp(val, "up_down") ? MOTION_INVERT_UD :
@@ -310,12 +487,15 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "async_shaders")) g_settings.async_shaders = atoi(val) != 0;
         else if (!strcmp(key, "precompile_shaders")) g_settings.precompile_shaders = atoi(val) != 0;
+        else if (!strcmp(key, "dlss_download")) g_settings.dlss_download = atoi(val) != 0;
+        else if (!strcmp(key, "xess_download")) g_settings.xess_download = atoi(val) != 0;
         else if (!strcmp(key, "start_in_config")) g_settings.start_in_config = atoi(val) != 0;
         else if (!strcmp(key, "start_picture")) {
             int v = atoi(val);
             g_settings.start_picture = v >= 0 && v < START_PICTURE_COUNT ? v : START_PICTURE_SCREENSHOT;
         } else if (!strcmp(key, "boot_picture")) g_settings.boot_picture = atoi(val) != 0;
         else if (!strcmp(key, "check_updates")) g_settings.check_updates = atoi(val) != 0;
+        else if (!strcmp(key, "companion_apps")) g_settings.companion_apps = atoi(val) != 0;
         else if (!strcmp(key, "wide_view")) g_settings.wide_view = atoi(val) != 0;
         else if (!strcmp(key, "hud_edges")) g_settings.hud_edges = atoi(val) != 0;
         else if (!strcmp(key, "hdr")) {
@@ -326,12 +506,105 @@ void settings_load(void) {
             for (int i = 0; i < SPARSE_HEAP_COUNT; i++)
                 if (!strcmp(val, k_sparse_heap[i])) g_settings.sparse_heap = i;
         }
+        else if (!strcmp(key, "scene_copies")) {
+            for (int i = 0; i < SCENE_COPIES_COUNT; i++)
+                if (!strcmp(val, k_scene_copies[i])) g_settings.scene_copies = i;
+        }
         else if (!strcmp(key, "hdr_paper_white")) {  // (nits; 0: Windows' SDR content brightness)
             int n = atoi(val);
             g_settings.hdr_white = n >= 80 && n <= 1000 ? n : 0;
         }
+        else if (!strcmp(key, "hdr_peak_nits")) {  // (0: not set yet; the first start reads the ICC peak)
+            int n = atoi(val);
+            g_settings.hdr_peak_nits = n == 0 || (n >= 80 && n <= 10000) ? n : 0;
+        }
+        else if (!strcmp(key, "hdr_game_nits")) {
+            int n = atoi(val);
+            g_settings.hdr_game_nits = n >= 80 && n <= 1000 ? n : 203;
+        }
+        else if (!strcmp(key, "hdr_ui_nits")) {
+            int n = atoi(val);
+            g_settings.hdr_ui_nits = n >= 80 && n <= 1000 ? n : 0;
+        }
+        else if (!strcmp(key, "hdr_hue")) {  // (highlight hue/purity transfer, percent)
+            int n = atoi(val);
+            g_settings.hdr_hue = n >= 0 && n <= 100 ? n : 70;
+        }
+        else if (!strcmp(key, "hdr_blowout")) {  // (SDR highlight desaturation/purity, percent)
+            int n = atoi(val);
+            g_settings.hdr_blowout = n >= 0 && n <= 100 ? n : 65;
+        }
+        else if (!strcmp(key, "hdr_sdr_blend")) {  // (extended-curve pivot, percent)
+            int n = atoi(val);
+            g_settings.hdr_sdr_blend = n >= 0 && n <= 60 ? n : 18;
+        }
+        else if (!strcmp(key, "hdr_vanilla_saturation")) {  // (the game's saturation grade, percent)
+            int n = atoi(val);
+            g_settings.hdr_vanilla_saturation = n >= 0 && n <= 100 ? n : 100;
+        }
+        else if (!strcmp(key, "hdr_bloom")) {  // (HDR bloom strength, percent)
+            int n = atoi(val);
+            g_settings.hdr_bloom = n >= 0 && n <= 100 ? n : 100;
+        }
+        else if (!strcmp(key, "hdr_clamp")) {  // (0: BT.709, 1: BT.2020)
+            int n = atoi(val);
+            g_settings.hdr_clamp = n == 1 ? 1 : 0;
+        }
+        else if (!strcmp(key, "hdr_tonemapper")) {  // (0: Vanilla, 1: RenoDX PsychoV)
+            int n = atoi(val);
+            g_settings.hdr_tonemapper = n == 0 ? 0 : 1;
+        }
+        else if (!strcmp(key, "hdr_exposure")) {  // (percent)
+            int n = atoi(val);
+            g_settings.hdr_exposure = n >= 50 && n <= 200 ? n : 100;
+        }
+        else if (!strcmp(key, "hdr_highlights")) {  // (0..100)
+            int n = atoi(val);
+            g_settings.hdr_highlights = n >= 0 && n <= 100 ? n : 50;
+        }
+        else if (!strcmp(key, "hdr_shadows")) {
+            int n = atoi(val);
+            g_settings.hdr_shadows = n >= 0 && n <= 100 ? n : 50;
+        }
+        else if (!strcmp(key, "hdr_contrast")) {
+            int n = atoi(val);
+            g_settings.hdr_contrast = n >= 0 && n <= 100 ? n : 50;
+        }
+        else if (!strcmp(key, "hdr_saturation")) {
+            int n = atoi(val);
+            g_settings.hdr_saturation = n >= 0 && n <= 100 ? n : 50;
+        }
+        else if (!strcmp(key, "hdr_highlight_saturation")) {
+            int n = atoi(val);
+            g_settings.hdr_highlight_saturation = n >= 0 && n <= 100 ? n : 50;
+        }
+        else if (!strcmp(key, "hdr_flare")) {
+            int n = atoi(val);
+            g_settings.hdr_flare = n >= 0 && n <= 100 ? n : 0;
+        }
+        else if (!strcmp(key, "hdr_gamma")) {  // (0: none, 1: sRGB, 2: gamma 2.4)
+            int n = atoi(val);
+            g_settings.hdr_gamma = n >= 0 && n <= 2 ? n : 0;
+        }
+        else if (!strcmp(key, "hdr_preset")) {  // (1..3; 0: Custom)
+            int n = atoi(val);
+            g_settings.hdr_preset = n >= 1 && n <= 3 ? n : 0;
+        }
+        else if (!strncmp(key, "hdr_look", 8) && key[8] >= '1' && key[8] <= '3' && key[9] == 0) {
+            int v[18] = {0};
+            int n = sscanf(val, "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d",
+                           &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7], &v[8],
+                           &v[9], &v[10], &v[11], &v[12], &v[13], &v[14], &v[15], &v[16], &v[17]);
+            // (14 values: the pre-gamma/custom-peak format; the rest stay 0 = keep the current display setup)
+            if (n == 18 || n == 14) memcpy(g_settings.hdr_look[key[8] - '1'], v, sizeof v);
+        }
+        else if (!strcmp(key, "hdr_clip_nits")) {  // (legacy: ignored; the final cap is hdr_peak_nits)
+            int n = atoi(val);
+            g_settings.hdr_clip_nits = n == 0 || (n >= 80 && n <= 10000) ? n : 0;
+        }
         else if (!strcmp(key, "field_of_view")) g_settings.fov = atoi(val);  // (percent)
         else if (!strcmp(key, "hud_size")) g_settings.hud_size = atoi(val);  // (percent)
+        else if (!strcmp(key, "menu_speed")) g_settings.menu_speed = atoi(val);  // (percent)
         else if (!strcmp(key, "handheld_setup")) g_settings.handheld_setup = atoi(val) != 0;
         else if (!strcmp(key, "draw_distance")) {
             for (int i = 0; i < DRAWDIST_COUNT; i++)
@@ -341,25 +614,48 @@ void settings_load(void) {
         else if (!strcmp(key, "weapon_wear")) g_settings.weapon_wear = atoi(val);  // (percent)
         else if (!strcmp(key, "infinite_arrows")) g_settings.infinite_arrows = atoi(val) != 0;
         else if (!strcmp(key, "save_backups")) g_settings.save_backups = atoi(val) != 0;
+        else if (!strcmp(key, "save_dir")) snprintf(g_settings.save_dir, sizeof g_settings.save_dir, "%s", strcmp(val, "default") ? val : "");
         else if (!strcmp(key, "stick_camera_speed")) g_settings.stick_cam_on = atoi(val) != 0;
         else if (!strcmp(key, "stick_camera_x")) g_settings.stick_cam_x = atoi(val);  // (percent)
         else if (!strcmp(key, "stick_camera_y")) g_settings.stick_cam_y = atoi(val);  // (percent)
         else if (!strcmp(key, "start_at_continue")) g_settings.auto_continue = atoi(val) != 0;
+        else if (!strcmp(key, "text_speed")) {
+            for (int i = 0; i < TEXT_SPEED_COUNT; i++)
+                if (!strcmp(val, k_text_speed[i])) g_settings.text_speed = i;
+        }
         else if (!strcmp(key, "infinite_stamina")) g_settings.infinite_stamina = atoi(val) != 0;
         else if (!strcmp(key, "infinite_rupees")) g_settings.infinite_rupees = atoi(val) != 0;
+        else if (!strcmp(key, "item_multiplier")) g_settings.item_multiplier = atoi(val);
+        else if (!strcmp(key, "free_sprint")) g_settings.free_sprint = atoi(val) != 0;
+        else if (!strcmp(key, "sure_footed")) g_settings.sure_footed = atoi(val) != 0;
         else if (!strcmp(key, "weather")) {
             g_settings.weather = 0;
             for (int i = 0; i < WEATHER_COUNT; i++)
                 if (!strcmp(val, g_weather_keys[i])) g_settings.weather = i;
         }
+        else if (!strcmp(key, "colour_vision")) {
+            g_settings.colour_vision = 0;
+            for (int i = 0; i < COLOUR_VISION_COUNT; i++)
+                if (!strcmp(val, g_colour_vision_keys[i])) g_settings.colour_vision = i;
+        }
+        else if (!strcmp(key, "colour_vision_strength")) g_settings.colour_vision_strength = atoi(val);  // (percent)
         else if (!strcmp(key, "god_mode")) g_settings.god_mode = atoi(val) != 0;
         else if (!strcmp(key, "one_hit_kill")) g_settings.one_hit_kill = atoi(val) != 0;
         else if (!strcmp(key, "damage_taken")) g_settings.damage_taken = atoi(val);  // (percent)
         else if (!strcmp(key, "damage_dealt")) g_settings.damage_dealt = atoi(val);
-        else if (!strcmp(key, "haze")) { int v = atoi(val); g_settings.haze = v < 0 ? 0 : v > 100 ? 100 : v; }  // (percent)
+        else if (!strcmp(key, "toggle_zl")) g_settings.toggle_zl = atoi(val) != 0;
+        else if (!strcmp(key, "toggle_zr")) g_settings.toggle_zr = atoi(val) != 0;
+        else if (!strcmp(key, "menu_text_size")) g_settings.menu_text_size = atoi(val);
+        else if (!strcmp(key, "haze")) {  // (percent; an older ini's 0-50 reads as 75: HAZE_MIN)
+            int v = atoi(val);
+            g_settings.haze = v < HAZE_MIN ? HAZE_MIN : v > 100 ? 100 : v;
+        }
         else if (!strcmp(key, "bloom")) g_settings.bloom = atoi(val) != 0;
         else if (!strcmp(key, "depth_of_field")) g_settings.depth_of_field = atoi(val) != 0;
-        else if (!strcmp(key, "dynamic_resolution")) g_settings.dynamic_res = atoi(val) != 0;
+        else if (!strcmp(key, "grass")) g_settings.grass = atoi(val) != 0;
+        else if (!strcmp(key, "lens_flare")) g_settings.lens_flare = atoi(val) != 0;
+        // (dynamic_resolution, the game's own counters, did nothing and was saved on: not read. The frame-rate one is
+        // the upscaler's Dynamic mode, upscale_quality.)
         else if (!strcmp(key, "fast_fma")) g_settings.fast_fma = atoi(val) != 0;
         else if (!strcmp(key, "colour_exposure")) g_settings.color_exposure = (int)lroundf((float)atof(val) * 10);  // (EV)
         else if (!strcmp(key, "colour_contrast")) g_settings.color_contrast = atoi(val);  // (percent)
@@ -404,7 +700,7 @@ void settings_load(void) {
             SETTINGS_FILE, old_res[0] ? old_res : "-", g_settings.upscaler, g_settings.upscale_quality,
             g_settings.mouse_sens);
     }
-#ifndef __APPLE__
+#ifndef SW_METAL
     if (version < 3 && g_settings.upscaler == UPSCALE_FSR1) {
         bool lower = version < 2 && (!strcmp(old_res, "75%") || !strcmp(old_res, "67%") || !strcmp(old_res, "50%") ||
                                      !strcmp(old_res, "25%"));
@@ -439,8 +735,11 @@ void settings_load(void) {
     if (!(g_settings.mouse_sens >= 0.1f && g_settings.mouse_sens <= 10.0f)) g_settings.mouse_sens = MOUSE_SENS_DEFAULT;
     if (!(g_settings.mouse_sens_y >= 0.5f && g_settings.mouse_sens_y <= 2.0f)) g_settings.mouse_sens_y = 1.0f;
     if (!(g_settings.motion_sens >= 0.1f && g_settings.motion_sens <= 10.0f)) g_settings.motion_sens = 1.0f;
+    if (!(g_settings.motion_sens_y >= 0.5f && g_settings.motion_sens_y <= 2.0f)) g_settings.motion_sens_y = 1.0f;
+    if (g_settings.motion_source < 0 || g_settings.motion_source >= MOTION_SOURCE_COUNT) g_settings.motion_source = MOTION_SOURCE_AUTO;
     if (g_settings.fov < 50 || g_settings.fov > 200) g_settings.fov = 100;
-    if (g_settings.hud_size < 50 || g_settings.hud_size > 150) g_settings.hud_size = 100;
+    if (g_settings.hud_size != 0 && (g_settings.hud_size < 50 || g_settings.hud_size > 150)) g_settings.hud_size = 100;
+    if (g_settings.menu_speed < 70 || g_settings.menu_speed > 300) g_settings.menu_speed = 100;
 #define CLAMP(v, lo, hi) ((v) < (lo) ? (lo) : (v) > (hi) ? (hi) : (v))
     g_settings.color_exposure = CLAMP(g_settings.color_exposure, -20, 20);
     g_settings.color_contrast = CLAMP(g_settings.color_contrast, -50, 50);
@@ -448,23 +747,30 @@ void settings_load(void) {
     g_settings.color_temperature = CLAMP(g_settings.color_temperature, -100, 100);
     g_settings.color_tint = CLAMP(g_settings.color_tint, -100, 100);
     g_settings.color_lut_strength = CLAMP(g_settings.color_lut_strength, 0, 100);
+    g_settings.colour_vision_strength = CLAMP(g_settings.colour_vision_strength, 10, 100);
     g_settings.stick_cam_x = CLAMP(g_settings.stick_cam_x, STICK_CAM_MIN, STICK_CAM_MAX);
     g_settings.stick_cam_y = CLAMP(g_settings.stick_cam_y, STICK_CAM_MIN, STICK_CAM_MAX);
+    g_settings.menu_text_size = CLAMP(g_settings.menu_text_size, 80, 150);
     g_settings.rumble_strength = CLAMP(g_settings.rumble_strength, RUMBLE_STRENGTH_MIN, RUMBLE_STRENGTH_MAX);
     g_settings.weapon_wear = CLAMP(g_settings.weapon_wear, WEAPON_WEAR_MIN, WEAPON_WEAR_MAX);
     if (g_settings.no_weapon_wear) g_settings.weapon_wear = 0;  // (Unbreakable weapons is Weapon wear's Fairy, 0x)
+    if (g_settings.item_multiplier != 2 && g_settings.item_multiplier != 4 && g_settings.item_multiplier != 8)
+        g_settings.item_multiplier = 1;
 #undef CLAMP
     for (int i = 0; i < 2; i++)
         if (!(g_settings.stick_deadzone[i] >= 0 && g_settings.stick_deadzone[i] <= 0.5f))
             g_settings.stick_deadzone[i] = STICK_DEADZONE_DEFAULT;
     pc_controls_env();
     gyro_startup_overrides();
+    hdr_look_init_peak();
     LOG("[settings] loaded %s\n", SETTINGS_FILE);
 }
 
-void settings_save(void) {
-    FILE *f = fopen(SETTINGS_FILE, "w");
-    if (!f) { LOG("[settings] cannot write %s\n", SETTINGS_FILE); return; }
+void settings_save(void) { settings_save_to(SETTINGS_FILE); }
+
+bool settings_save_to(const char *path) {
+    FILE *f = fopen(path, "w");
+    if (!f) { LOG("[settings] cannot write %s\n", path); return false; }
     fprintf(f, "# Savage Wind settings (edited from the in-game menu: F1, Esc, or Minus+Plus on a controller)\n");
     fprintf(f, "settings_version = %d\n", SETTINGS_VERSION);
     fprintf(f, "fullscreen = %d\n", g_settings.fullscreen);
@@ -495,8 +801,9 @@ void settings_save(void) {
     fprintf(f, "mute_unfocused = %d\n", g_settings.mute_unfocused);
     fprintf(f, "shrine_sensor_volume = %d\n", g_settings.shrine_sensor_volume);
     fprintf(f, "amiibo_reader = %s\n", g_settings.amiibo_reader[0] ? g_settings.amiibo_reader : "none");
+    fprintf(f, "amiibo_random_uid = %d\n", g_settings.amiibo_random_uid);
     fprintf(f, "perf_overlay = %s\n", g_settings.perf_overlay == PERF_FULL ? "full" : g_settings.perf_overlay == PERF_FPS ? "fps" : "off");
-    static const char *const ups[UPSCALE_COUNT] = {"off", "metalfx", "fsr1", "fsr3", "dlss", "fsr4"};
+    static const char *const ups[UPSCALE_COUNT] = {"off", "metalfx", "fsr1", "fsr3", "dlss", "fsr4", "xess"};
     int u = g_settings.upscaler, uq = g_settings.upscale_quality;
     fprintf(f, "upscaler = %s\n", u >= 0 && u < UPSCALE_COUNT ? ups[u] : "off");
     fprintf(f, "upscaler_quality = %s\n", k_quality[uq >= 0 && uq < UPQ_COUNT ? uq : UPQ_QUALITY]);
@@ -518,9 +825,13 @@ void settings_save(void) {
     fprintf(f, "rumble = %d\n", g_settings.rumble);
     fprintf(f, "rumble_strength = %d\n", g_settings.rumble_strength);
     fprintf(f, "freecam_sticks = %d\n", g_settings.freecam_sticks);
+    fprintf(f, "quick_replace = %d\n", g_settings.quick_replace);
     fprintf(f, "quick_drop = %d\n", g_settings.quick_drop);
     fprintf(f, "quick_sort = %d\n", g_settings.quick_sort);
+    fprintf(f, "discord_rpc = %d\n", g_settings.discord_rpc);
     fprintf(f, "dpad_move = %d\n", g_settings.dpad_move);
+    fprintf(f, "menu_wrap = %d\n", g_settings.menu_wrap);
+    fprintf(f, "prompts_follow = %d\n", g_settings.prompts_follow);
     fprintf(f, "left_stick_deadzone = %.0f\n", g_settings.stick_deadzone[0] * 100);
     fprintf(f, "right_stick_deadzone = %.0f\n", g_settings.stick_deadzone[1] * 100);
     fprintf(f, "mouse_camera = %d\n", g_settings.mouse_camera);
@@ -540,11 +851,14 @@ void settings_save(void) {
             k_button_layout[g_settings.button_layout >= 0 && g_settings.button_layout < BUTTON_LAYOUT_COUNT ?
                                 g_settings.button_layout : BUTTON_LAYOUT_AUTO]);
     fprintf(f, "async_shaders = %d\n", g_settings.async_shaders);
+    fprintf(f, "dlss_download = %d\n", g_settings.dlss_download);
+    fprintf(f, "xess_download = %d\n", g_settings.xess_download);
     fprintf(f, "precompile_shaders = %d\n", g_settings.precompile_shaders);
     fprintf(f, "start_in_config = %d\n", g_settings.start_in_config);
     fprintf(f, "start_picture = %d\n", g_settings.start_picture);
     fprintf(f, "boot_picture = %d\n", g_settings.boot_picture);
     fprintf(f, "check_updates = %d\n", g_settings.check_updates);
+    fprintf(f, "companion_apps = %d\n", g_settings.companion_apps);
     static const char *const shadow[SHADOW_COUNT] = {"console", "high", "ultra", "extreme", "potato"};
     int sr = g_settings.shadow_res;
     fprintf(f, "shadow_resolution = %s\n", shadow[sr >= 0 && sr < SHADOW_COUNT ? sr : SHADOW_CONSOLE]);
@@ -555,9 +869,37 @@ void settings_save(void) {
     fprintf(f, "hdr = %s\n", k_hdr[g_settings.hdr >= 0 && g_settings.hdr < HDR_COUNT ? g_settings.hdr : HDR_AUTO]);
     fprintf(f, "sparse_heap = %s\n", k_sparse_heap[g_settings.sparse_heap >= 0 && g_settings.sparse_heap < SPARSE_HEAP_COUNT ?
                                                        g_settings.sparse_heap : SPARSE_HEAP_AUTO]);
+    fprintf(f, "scene_copies = %s\n", k_scene_copies[g_settings.scene_copies >= 0 && g_settings.scene_copies < SCENE_COPIES_COUNT ?
+                                                         g_settings.scene_copies : SCENE_COPIES_AUTO]);
     if (g_settings.hdr_white) fprintf(f, "hdr_paper_white = %d\n", g_settings.hdr_white);
+    if (g_settings.hdr_peak_nits) fprintf(f, "hdr_peak_nits = %d\n", g_settings.hdr_peak_nits);
+    if (g_settings.hdr_game_nits) fprintf(f, "hdr_game_nits = %d\n", g_settings.hdr_game_nits);
+    fprintf(f, "hdr_ui_nits = %d\n", g_settings.hdr_ui_nits);  // (0: the scene's white, a state worth keeping)
+    fprintf(f, "hdr_hue = %d\n", g_settings.hdr_hue);
+    fprintf(f, "hdr_blowout = %d\n", g_settings.hdr_blowout);
+    fprintf(f, "hdr_sdr_blend = %d\n", g_settings.hdr_sdr_blend);
+    fprintf(f, "hdr_vanilla_saturation = %d\n", g_settings.hdr_vanilla_saturation);
+    fprintf(f, "hdr_bloom = %d\n", g_settings.hdr_bloom);
+    fprintf(f, "hdr_clamp = %d\n", g_settings.hdr_clamp);
+    fprintf(f, "hdr_tonemapper = %d\n", g_settings.hdr_tonemapper);
+    fprintf(f, "hdr_exposure = %d\n", g_settings.hdr_exposure);
+    fprintf(f, "hdr_highlights = %d\n", g_settings.hdr_highlights);
+    fprintf(f, "hdr_shadows = %d\n", g_settings.hdr_shadows);
+    fprintf(f, "hdr_contrast = %d\n", g_settings.hdr_contrast);
+    fprintf(f, "hdr_saturation = %d\n", g_settings.hdr_saturation);
+    fprintf(f, "hdr_highlight_saturation = %d\n", g_settings.hdr_highlight_saturation);
+    fprintf(f, "hdr_flare = %d\n", g_settings.hdr_flare);
+    fprintf(f, "hdr_gamma = %d\n", g_settings.hdr_gamma);
+    fprintf(f, "hdr_preset = %d\n", g_settings.hdr_preset);
+    for (int i = 0; i < 3; i++) {
+        const int *v = g_settings.hdr_look[i];
+        fprintf(f, "hdr_look%d = %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d\n", i + 1,
+                v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], v[12], v[13],
+                v[14], v[15], v[16], v[17]);
+    }
     fprintf(f, "field_of_view = %d\n", g_settings.fov);
     fprintf(f, "hud_size = %d\n", g_settings.hud_size);
+    fprintf(f, "menu_speed = %d\n", g_settings.menu_speed);
     if (g_settings.handheld_setup) fprintf(f, "handheld_setup = 1\n");
     int dd = g_settings.draw_distance;
     fprintf(f, "draw_distance = %s\n", k_drawdist[dd >= 0 && dd < DRAWDIST_COUNT ? dd : DRAWDIST_ORIGINAL]);
@@ -566,16 +908,26 @@ void settings_save(void) {
     fprintf(f, "infinite_arrows = %d\n", g_settings.infinite_arrows);
     fprintf(f, "infinite_stamina = %d\n", g_settings.infinite_stamina);
     fprintf(f, "infinite_rupees = %d\n", g_settings.infinite_rupees);
+    fprintf(f, "item_multiplier = %d\n", g_settings.item_multiplier);
+    fprintf(f, "free_sprint = %d\n", g_settings.free_sprint);
+    fprintf(f, "sure_footed = %d\n", g_settings.sure_footed);
     int wx = g_settings.weather;
     fprintf(f, "weather = %s\n", g_weather_keys[wx >= 0 && wx < WEATHER_COUNT ? wx : 0]);
+    int cv = g_settings.colour_vision;
+    fprintf(f, "colour_vision = %s\n", g_colour_vision_keys[cv >= 0 && cv < COLOUR_VISION_COUNT ? cv : 0]);
+    fprintf(f, "colour_vision_strength = %d\n", g_settings.colour_vision_strength);
     fprintf(f, "god_mode = %d\n", g_settings.god_mode);
     fprintf(f, "one_hit_kill = %d\n", g_settings.one_hit_kill);
     fprintf(f, "damage_taken = %d\n", g_settings.damage_taken);
     fprintf(f, "damage_dealt = %d\n", g_settings.damage_dealt);
+    fprintf(f, "toggle_zl = %d\n", g_settings.toggle_zl ? 1 : 0);
+    fprintf(f, "toggle_zr = %d\n", g_settings.toggle_zr ? 1 : 0);
+    fprintf(f, "menu_text_size = %d\n", g_settings.menu_text_size);
     fprintf(f, "haze = %d\n", g_settings.haze);
     fprintf(f, "bloom = %d\n", g_settings.bloom ? 1 : 0);
     fprintf(f, "depth_of_field = %d\n", g_settings.depth_of_field ? 1 : 0);
-    fprintf(f, "dynamic_resolution = %d\n", g_settings.dynamic_res ? 1 : 0);
+    fprintf(f, "grass = %d\n", g_settings.grass ? 1 : 0);
+    fprintf(f, "lens_flare = %d\n", g_settings.lens_flare ? 1 : 0);
     fprintf(f, "fast_fma = %d\n", g_settings.fast_fma ? 1 : 0);
     fprintf(f, "colour_exposure = %.1f\n", g_settings.color_exposure / 10.0);
     fprintf(f, "colour_contrast = %d\n", g_settings.color_contrast);
@@ -588,30 +940,34 @@ void settings_save(void) {
     fprintf(f, "text_language = %s\n", tl > 0 && tl < g_ntext_languages ? g_text_languages[tl].folder : "auto");
     fprintf(f, "voice_language = %s\n", vl > 0 && vl < g_nvoice_languages ? g_voice_languages[vl].folder : "text");
     fprintf(f, "save_backups = %d\n", g_settings.save_backups);
+    if (g_settings.save_dir[0]) fprintf(f, "save_dir = %s\n", g_settings.save_dir);
     fprintf(f, "stick_camera_speed = %d\n", g_settings.stick_cam_on);
     fprintf(f, "stick_camera_x = %d\n", g_settings.stick_cam_x);
     fprintf(f, "stick_camera_y = %d\n", g_settings.stick_cam_y);
     fprintf(f, "start_at_continue = %d\n", g_settings.auto_continue);
+    int ts = g_settings.text_speed;
+    fprintf(f, "text_speed = %s\n", k_text_speed[ts >= 0 && ts < TEXT_SPEED_COUNT ? ts : TEXT_SPEED_NORMAL]);
     fprintf(f, "menu_tip_seen = %d\n", g_settings.menu_tip_seen);
     bind_settings_save(f);
     fclose(f);
+    return true;
 }
 
 // (settings.h GPRESET_*). The upscaler's mode counts only with an upscaler. Original is also the defaults above.
 static const struct {
     int draw_distance, shadow_res;
-    bool bloom, depth_of_field, dynamic_res;
+    bool bloom, depth_of_field, grass, lens_flare;
     int anisotropy, antialias;
     bool game_fxaa;
     int upscaler, upscale_quality;
     bool async_shaders;
     int render_scale;
 } k_gpreset[GPRESET_COUNT] = {
-    {DRAWDIST_POTATO, SHADOW_POTATO, false, false, true, 0, AA_OFF, true, UPSCALE_SPATIAL, UPQ_QUALITY, true, RSCALE_50},
-    {DRAWDIST_ORIGINAL, SHADOW_CONSOLE, true, true, true, 1 /* 2x */, AA_OFF, true, UPSCALE_DEFAULT, UPQ_QUALITY, true, RSCALE_100},
-    {DRAWDIST_MEDIUM, SHADOW_HIGH, true, true, false, 3 /* 8x */, AA_SMAA, false, UPSCALE_DEFAULT, UPQ_QUALITY, false, RSCALE_125},
-    {DRAWDIST_HIGH, SHADOW_EXTREME, true, true, false, 4 /* 16x */, AA_TAA_OR_SMAA, false, UPSCALE_DEFAULT, UPQ_QUALITY, false, RSCALE_150},
-    {DRAWDIST_ORIGINAL, SHADOW_CONSOLE, true, true, true, 1 /* 2x */, AA_OFF, true, UPSCALE_SPATIAL, UPQ_ULTRA, true, RSCALE_100},
+    {DRAWDIST_POTATO, SHADOW_POTATO, false, false, false, false, 0, AA_OFF, true, UPSCALE_SPATIAL, UPQ_DYNAMIC, true, RSCALE_50},
+    {DRAWDIST_ORIGINAL, SHADOW_CONSOLE, true, true, true, true, 1 /* 2x */, AA_OFF, true, UPSCALE_DEFAULT, UPQ_QUALITY, true, RSCALE_100},
+    {DRAWDIST_MEDIUM, SHADOW_HIGH, true, true, true, true, 3 /* 8x */, AA_SMAA, false, UPSCALE_DEFAULT, UPQ_QUALITY, false, RSCALE_125},
+    {DRAWDIST_HIGH, SHADOW_EXTREME, true, true, true, true, 4 /* 16x */, AA_TAA_OR_SMAA, false, UPSCALE_DEFAULT, UPQ_QUALITY, false, RSCALE_150},
+    {DRAWDIST_ORIGINAL, SHADOW_CONSOLE, true, true, true, true, 1 /* 2x */, AA_OFF, true, UPSCALE_SPATIAL, UPQ_ULTRA, true, RSCALE_100},
 };
 const char *const g_gpreset_names[GPRESET_COUNT] = {"Potato", "Original", "High", "Savage", "PC Handheld"};
 
@@ -621,7 +977,8 @@ int graphics_preset_current(void) {
     for (int i = 0; i < graphics_preset_count(); i++)
         if (g_settings.draw_distance == k_gpreset[i].draw_distance && g_settings.shadow_res == k_gpreset[i].shadow_res &&
             g_settings.bloom == k_gpreset[i].bloom && g_settings.depth_of_field == k_gpreset[i].depth_of_field &&
-            g_settings.dynamic_res == k_gpreset[i].dynamic_res && g_settings.anisotropy == k_gpreset[i].anisotropy &&
+            g_settings.grass == k_gpreset[i].grass && g_settings.lens_flare == k_gpreset[i].lens_flare &&
+            g_settings.anisotropy == k_gpreset[i].anisotropy &&
             g_settings.antialias == k_gpreset[i].antialias && g_settings.game_fxaa == k_gpreset[i].game_fxaa &&
             g_settings.upscaler == k_gpreset[i].upscaler &&
             (g_settings.upscaler == UPSCALE_OFF || g_settings.upscale_quality == k_gpreset[i].upscale_quality) &&
@@ -636,7 +993,8 @@ void graphics_preset_apply(int preset) {
     g_settings.shadow_res = k_gpreset[preset].shadow_res;
     g_settings.bloom = k_gpreset[preset].bloom;
     g_settings.depth_of_field = k_gpreset[preset].depth_of_field;
-    g_settings.dynamic_res = k_gpreset[preset].dynamic_res;
+    g_settings.grass = k_gpreset[preset].grass;
+    g_settings.lens_flare = k_gpreset[preset].lens_flare;
     g_settings.anisotropy = k_gpreset[preset].anisotropy;
     g_settings.antialias = k_gpreset[preset].antialias;
     g_settings.game_fxaa = k_gpreset[preset].game_fxaa;
@@ -645,4 +1003,5 @@ void graphics_preset_apply(int preset) {
     g_settings.async_shaders = k_gpreset[preset].async_shaders;
     g_settings.render_scale = k_gpreset[preset].render_scale;
     if (preset == GPRESET_HANDHELD) g_settings.sharpening = 7, g_settings.tex_lod_bias = TEX_LOD_SHARP;  // (the upscaled image's softness)
+    if (preset == GPRESET_POTATO) g_settings.sharpening = 8;  // (AMD CAS 80%: FSR 1 from half the lines and Dynamic is soft)
 }

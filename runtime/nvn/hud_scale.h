@@ -4,6 +4,7 @@
 // screen a point p goes to anchor + (p - anchor) x s.
 #pragma once
 #include <stdbool.h>
+#include <math.h>
 
 // The anchor of a pane centred at c, on a screen from -edge to edge
 static inline float hud_anchor(float c, float edge) { return c < -edge / 3 ? -edge : c > edge / 3 ? edge : 0; }
@@ -14,12 +15,67 @@ static inline bool hud_quick_keeps(float x, float y, float edge_x, float edge_y)
     return x > -0.72f * edge_x && x < 0.72f * edge_x && y > -0.4f * edge_y && y < 0.85f * edge_y;
 }
 
+// PauseMenuInfo's header/footer occupy the outer bands; the inventory and description stay centered.
+static inline float hud_pause_anchor(float y, float edge_y) {
+    if (edge_y <= 0 || !isfinite(y)) return 0;
+    return y > (250.0f / 360) * edge_y ? 1 : y < -(280.0f / 360) * edge_y ? -1 : 0;
+}
+
+static inline float hud_pause_edge_dy(float y, float shape) {
+    return shape > 0 && shape < 1 ? hud_pause_anchor(y, shape) * (1 - shape) : 0;
+}
+
+// ui2d's four window pieces share parent bounds and border margins. Recognize their relationships,
+// so only a screen-wide pause frame expands; an item description or a modal window keeps its geometry.
+// 1/-1: horizontal top/bottom strip; 2: vertical end, which must grow with both strips.
+static inline int hud_pause_frame_part(const float *margin, float w, float h, const float *rc) {
+    float rw = rc[0], rh = rc[1], x = rc[2], y = rc[3];
+    if (!isfinite(w) || !isfinite(h) || w <= 0 || h <= 0 || rw <= 0 || rh <= 0 || rw >= w || rh >= h)
+        return 0;
+    float tol = 1e-5f * fmaxf(w, h);
+    bool horizontal = fabsf(w - rw - rh) < tol, vertical = fabsf(h - rh - rw) < tol;
+    bool border = false;
+    for (int i = 0; i < 4; i++) border |= isfinite(margin[i]) && fabsf(margin[i] - (horizontal ? rh : rw)) < tol;
+    if (!border) return 0;
+    if (horizontal && fabsf(x + w / 2) < tol && fabsf(y - h / 2) < tol) return 1;
+    if (horizontal && fabsf(x + w / 2 - rh) < tol && fabsf(y + h / 2 - rh) < tol) return -1;
+    if (vertical && ((fabsf(x - w / 2 + rw) < tol && fabsf(y - h / 2) < tol) ||
+                     (fabsf(x + w / 2) < tol && fabsf(y - h / 2 + rw) < tol))) return 2;
+    return 0;
+}
+
+// DoCommand's action cluster stays in the same native band as conversation prompts through event entry/exit.
+static inline bool hud_context_keeps(bool enabled, float x, float y, float edge_x, float edge_y) {
+    return enabled && x > -0.2f * edge_x && x < 0.45f * edge_x &&
+           y > -(300.0f / 360) * edge_y && y < -(160.0f / 360) * edge_y;
+}
+
 // A pane's view rows (3 x 4, row 2 its depth: projected x = m00 x / -z, y = m11 y / -z)
 static inline void hud_scale_view(float *v, float s, float m00, float m11, float ax, float ay) {
     for (int k = 0; k < 4; k++) {
         v[k] = s * v[k] - (1 - s) * ax / m00 * v[8 + k];
         v[4 + k] = s * v[4 + k] - (1 - s) * ay / m11 * v[8 + k];
     }
+}
+
+// Combined HUD matrices need the flat console projection corrected once. ui2d glyphs (128 bytes, Y flipped)
+// already use the taller projection, including nonuniform scale during a location title's appearance. A text placed
+// at the layout's very middle has no translation; in a talk window it is still part of the window (centred_ok): a
+// sign's text block sits there, and on a taller window with HUD at edges it stayed while its box went down to the
+// bottom edge with the rest of the talk window, the text above the box (#947).
+static inline bool hud_combined_shape_at(const float *m, unsigned long long size, float shape, float scale[2],
+                                         bool centred_ok) {
+    if (!(m[0] > 0 && m[5] != 0 && m[14] == -1 && m[15] > 0 &&
+          !m[1] && !m[2] && !m[4] && !m[6] && !m[8] && !m[9] && !m[12] && !m[13] && (m[3] || m[7] || centred_ok)))
+        return false;
+    bool flat = fabsf(fabsf(m[5]) / m[0] - 16.0f / 9.0f) < 0.002f;
+    if (!flat && !(shape < 1 && size == 128 && m[5] < 0)) return false;
+    scale[0] = flat && shape > 1 ? 1 / shape : 1;
+    scale[1] = flat && shape < 1 ? shape : 1;
+    return true;
+}
+static inline bool hud_combined_shape(const float *m, unsigned long long size, float shape, float scale[2]) {
+    return hud_combined_shape_at(m, size, shape, scale, false);
 }
 
 // A matrix with the view already in it (4 x 4 rows, row 3 its w: text, the clock)
@@ -55,12 +111,17 @@ static inline bool hud_quick_bar_px(double cx, double cy, double gw, double gh, 
     return gw > 0 && gh > 0 && hud_quick_bar((float)(cx / gw * 2 - 1), (float)(1 - cy / gh * 2), 1, (float)shape);
 }
 
+// A talk's layout can outlive its event while it fades. Incidental speech in play must not acquire this hold.
+static inline bool hud_dialogue_holds(bool held, bool event, bool draws) {
+    return draws && (event || held);
+}
+
 // HUD at edges this frame: 0 off, 1 the HUD in play, 2 an event. Off in menus, the title and a load, like HUD size. In
 // an event (a talk, a chest's "You got" box) only the top part moves (hud_edge_moves): a box's top edge went to the
 // window's edge while the box and its text stayed in the 16:9 band (#599), and the area name, still fading out when an
 // event starts, stays at the edge instead of dropping into the band.
 static inline int hud_edge_mode(bool setting, float shape, bool menu, bool title, bool loading, bool event) {
-    if (!setting || shape >= 1 || menu || title || loading) return 0;
+    if (!setting || fabsf(shape - 1.0f) < 0.005f || menu || title || loading) return 0;
     return event ? 2 : 1;
 }
 
@@ -99,4 +160,68 @@ static inline double hud_edge_scissor_dy(double y_center, double gh, double shap
     float my = (float)(y_center / gh * 2.0 - 1.0);
     double dir = my > 1.0f / 3.0f ? 1.0 : my < -1.0f / 3.0f ? -1.0 : 0.0;
     return dir * (gh / 2.0) * (1.0 - shape);
+}
+
+// A HUD part kept whole (ui_layout.c, rt_ui_layout_pane_draw): all its panes take the part's anchor instead of each
+// the zone of its own centre. The champions' abilities are a column from the top-left zone into the middle one: each
+// icon and each count went to the anchor of the zone it was in, so at another HUD size the column broke apart and
+// icons left their counts (#913). The scope marker carries the part's layout kind (UI_LAYOUT_*, ui_layout.h) in the low
+// bits and its anchor, -1, 0 or 1 on each axis, above them.
+enum { HUD_KIND_MASK = 0xf, HUD_GROUP = 0x10 };
+static inline unsigned hud_group_kind(unsigned kind, int ax, int ay) {
+    return HUD_GROUP | (kind & HUD_KIND_MASK) | (unsigned)(ax + 1) << 5 | (unsigned)(ay + 1) << 7;
+}
+static inline int hud_group_ax(unsigned kind) { return (int)(kind >> 5 & 3) - 1; }
+static inline int hud_group_ay(unsigned kind) { return (int)(kind >> 7 & 3) - 1; }
+// On windows wider than 16:9 (shape > 1), outer horizontal anchors move from the 16:9 edge (1/shape) to the window edge (1)
+static inline float hud_edge_dx(float ax, float edge_x, float shape) {
+    if (shape <= 1 || edge_x <= 0) return 0;
+    return (ax / edge_x) * (1.0f - edge_x);
+}
+
+// Offset a pane's view matrix horizontally by dx in projected coordinates
+static inline void hud_edge_view_x(float *v, float m00, float dx) {
+    if (dx == 0) return;
+    for (int k = 0; k < 4; k++)
+        v[k] -= dx / m00 * v[8 + k];
+}
+
+// Offset a matrix with the view already in it (text, the clock) horizontally by dx
+static inline void hud_edge_matrix_x(float *m, float dx) {
+    if (dx == 0) return;
+    for (int k = 0; k < 4; k++)
+        m[k] += dx * m[12 + k];
+}
+
+// Offset a scissor rectangle horizontally on a screen wider than 16:9
+static inline double hud_edge_scissor_dx(double x_center, double gw, double shape) {
+    if (shape <= 1 || gw <= 0) return 0;
+    double edge_x = 1.0 / shape;
+    float mx = (float)(x_center / gw * 2.0 - 1.0);
+    double dir = mx > edge_x / 3.0 ? 1.0 : mx < -edge_x / 3.0 ? -1.0 : 0.0;
+    return dir * (gw / 2.0) * (1.0 - edge_x);
+}
+
+// Executing scopes may nest through cached command lists. Overflow preserves the outer owner.
+typedef struct { unsigned kind, depth, overflow, parent[16]; } HudScope;
+static inline void hud_scope_enter(HudScope *s, unsigned kind) {
+    if (s->depth == 16 || s->overflow) { s->overflow++; return; }
+    s->parent[s->depth++] = s->kind; s->kind = kind;
+}
+static inline void hud_scope_leave(HudScope *s) {
+    if (s->overflow) { s->overflow--; return; }
+    s->kind = s->depth ? s->parent[--s->depth] : 0;
+}
+
+
+// A window's local background capture samples the final image in console UV coordinates.
+// Reshape that source rectangle and move its center with the window, leaving the local mask alone.
+static inline bool hud_capture_crop(float *g, float shape, float dy) {
+    if (!(shape > 0 && shape < 1 && isfinite(g[22]) && isfinite(g[23]) &&
+          isfinite(g[24]) && g[24] > 0 && isfinite(g[25]) && g[25] > 0 && isfinite(g[26]))) return false;
+    g[25] *= shape;
+    float shift = -dy / (2 * g[25]);
+    g[22] += sinf(g[26]) * shift;
+    g[23] += cosf(g[26]) * shift;
+    return true;
 }

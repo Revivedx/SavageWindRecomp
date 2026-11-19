@@ -9,8 +9,9 @@ or developer only.
 | | player safe commands | developer commands |
 |---|---|---|
 | normal start | yes | no |
-| `SAVAGEWIND_DEV=1` | yes | yes |
+| `SAVAGEWIND_DEV=1`, or `-dev` on the command line | yes | yes |
 | `SAVAGEWIND_CONTROL=<port>` | yes | yes |
+| Companion apps switch or `SAVAGEWIND_COMPANION=<port>` | console: yes; companion socket: only the read-only ones | no |
 
 A normal start has no socket and no developer commands: they are not listed by `help`, not run, and answer
 `Unknown command`. `SAVAGEWIND_CONTROL=<port>` also opens the socket, `SAVAGEWIND_DEV=1` only unlocks the developer
@@ -26,6 +27,24 @@ python tools/swctl.py state
 
 A command is player safe when its entry in the table has the `CONTROL_PLAYER` flag (`runtime/control.h`). Leave the flag
 off for anything that writes memory or files, moves things or ends the game.
+
+## The companion socket
+
+Map and tracker apps can show where Link is while
+you play. They connect to a second kind of socket that only reads:
+
+- **Companion apps** on the start screen (Savage Wind Configuration) turns it on, on `127.0.0.1:7777`. It opens at once;
+  turning it off takes effect the next time Savage Wind starts. It is saved as `companion_apps` in `savagewind.ini`.
+- The launch option `SAVAGEWIND_COMPANION=<port>` does the same on another port.
+
+The companion socket runs only the commands with the `CONTROL_READ` flag: `help`, `ping`, `version`, `state`, `pos`,
+`camera` and `get`. Everything else, `exit` included, answers `Unknown command`, and developer mode stays off. It listens
+on `127.0.0.1` only, refuses HTTP requests like the developer socket, and speaks the same protocol (one line in, one
+JSON line out). When `SAVAGEWIND_CONTROL` is set as well, the developer socket is used instead and the companion socket
+is not opened.
+
+Give a new command `CONTROL_READ` only when it reads state and nothing else: no memory or file writes, no input, no
+movement, nothing that ends or pauses the game.
 
 ## The in-game console
 
@@ -60,6 +79,7 @@ Most of them rely on addresses found in game version 1.9.0 and are untested on o
 |---|---|
 | `ping` | Check that the game answers (data: `pong` = true) |
 | `time [freeze \| unfreeze \| set <0-24> \| <0-24>]` | Show the hour of the day. `set <hour>` or just `<hour>` sets it and keeps the clock running or frozen as it was. `freeze` holds the current hour, `unfreeze` continues from it at the normal speed. It writes both `WM_Time` buffers and lifts the early game 11:00 clock cap, without touching the paraglider quest flag. `SAVAGEWIND_TEST_TIME` still holds its configured hour |
+| `bloodmoon` | The game's own blood moon (runtime/blood_moon.c, Cheats > Blood moon now): the request waits until play resumes (console and menus closed, no loading screen or cutscene), then the game plays its cutscene and brings back the monsters and materials. An error outside the open world |
 | `rupees [<0-9999> \| lock \| unlock]` | Cheat. Without an argument: whether Infinite rupees is on and the last wallet count read. `<n>` sets the wallet once; `lock` turns on Infinite rupees (the wallet kept at 9999, the same as the overlay's Cheats tab) and `unlock` turns it off. The rupee count is found in the game's memory by a background thread, so the first write takes a few seconds (`runtime/rupees.c`). Like `set`, no settings file is written |
 | `weather [game \| no_rain \| no_storms \| clear \| cloudy \| rain \| heavy_rain \| snow \| heavy_snow \| thunderstorm \| thunder_rain \| sun_shower]` | Cheat. Without an argument: the weather setting and, with a world loaded, the weather now. `no_rain` turns any rain into clouds, `no_storms` turns thunderstorms into clouds or rain, a weather type holds it, and `game` gives the weather back to the game. The same as Weather in the overlay's Cheats tab: applied from the next frame, and a cutscene keeps its own weather (`runtime/weather.c`). Like `set`, no settings file is written |
 | `shot <file>` | Save a screenshot as PNG, on the machine the game runs on (Vulkan only for now). The file must be a `.png` inside the game's folder: a relative path without `..` |

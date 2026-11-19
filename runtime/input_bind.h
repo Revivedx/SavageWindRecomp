@@ -55,6 +55,8 @@ enum { PADB_LTRIGGER = 26 /* SDL_GAMEPAD_BUTTON_COUNT */, PADB_RTRIGGER, PADB_HO
 
 extern int16_t g_bind_pad[BIND_KEY_COUNT];  // PADB value, -1 = none; use bind_pad_slot (stick directions stay keyboard-only)
 extern int16_t g_bind_key[BIND_KEY_COUNT];  // SDL_Scancode or BIND_MOUSE + button per input (0 = none)
+extern int16_t g_bind_pad2[BIND_KEY_COUNT]; // optional secondary PADB value, -1 = none
+extern int16_t g_bind_key2[BIND_KEY_COUNT]; // optional secondary SDL_Scancode or BIND_MOUSE + button (0 = none)
 bool bind_pad_slot(int slot);               // raw buttons, walk, tilt, gyro and fly; false for stick directions
 
 const char *bind_input_name(int slot);         // "Pause menu", "Move forward", "Camera up"...
@@ -63,7 +65,9 @@ const char *bind_pad_label(int host, int fam); // controller button in the pad f
 const char *bind_key_label(int scancode);
 int bind_label_family(void);                   // the connected controller's family (also on the start screen)
 void bind_reset(int dev);
-void bind_reset_slot(int slot);                // one input (or action: BIND_ACTION + id) back to its defaults, both devices
+void bind_swap_ab(void);                       // the controller's A on the bottom button, B on the right (and their actions)
+bool bind_ab_swapped(void);                    // A on the bottom face button and B on the right one (the Xbox convention)
+void bind_reset_slot(int slot);              // one input (or action: BIND_ACTION + id) back to its defaults, both devices
 bool bind_is_default(int dev);
 bool bind_is_default_slot(int dev, int slot);
 
@@ -71,12 +75,14 @@ bool bind_is_default_slot(int dev, int slot);
 // as does BIND_CAPTURE_MS without a press. On a conflict the two inputs swap.
 #define BIND_CAPTURE_MS 5000
 void bind_capture_begin(int dev, int slot);
+void bind_capture_begin_alt(int dev, int slot, bool alt);
+bool bind_capture_is_alt(void);
 void bind_capture_cancel(void);
 // capturing: dev / slot (else -1), ms left
 bool bind_capture_active(int *dev, int *slot, int *ms_left);
 // Main thread, before anything else sees the event: true = consumed by a capture
 bool bind_capture_event(const SDL_Event *e);
-// Last change for the UI: 0 none, 1 set, 2 swapped (with *other), 3 cancelled, 4 timed out, 5 reset; *serial bumps
+// Last change for the UI: 0 none, 1 set, 2 swapped (with *other), 3 cancelled, 4 timed out, 5 reset, 6 A / B swapped; *serial bumps
 int bind_last_result(int *dev, int *slot, int *other, int *serial);
 
 // savagewind.ini: bind_pad_<input> / bind_key_<input> (only the ones that differ from the defaults are written)
@@ -98,21 +104,37 @@ int bind_pad_from_name(const char *name);
 enum { ACT_FOLLOW = -1, ACT_NONE = -2 };
 extern int16_t g_act_key[ACT_COUNT];  // SDL_Scancode / BIND_MOUSE + button, or ACT_NONE
 extern int16_t g_act_pad[ACT_COUNT];  // PADB value or ACT_NONE
+extern int16_t g_act_key2[ACT_COUNT]; // optional secondary key, or ACT_NONE
+extern int16_t g_act_pad2[ACT_COUNT]; // optional secondary controller button, or ACT_NONE
 // An action as a capture slot: bind_capture_begin(dev, BIND_ACTION + id)
 #define BIND_ACTION 0x100
 static inline bool bind_slot_is_action(int slot) { return slot >= BIND_ACTION && slot < BIND_ACTION + ACT_COUNT; }
 
 void act_set(int dev, int id, int host);      // ACT_FOLLOW = restore factory default (not stored); ACT_NONE = nothing
+void act_set2(int dev, int id, int host);     // secondary binding: ACT_NONE = none
+void bind_set2(int dev, int slot, int host);  // secondary Switch/host binding: -1 (pad) / 0 (key) = none
 bool act_is_default(int id);                  // both sides equal their factory defaults
 bool act_hidden(int id);                      // no code reaches it in the game (or only by a computed number): not on the page
 const char *act_name(int id);                 // what the game does with it, or NULL while unknown
 int act_switch_button(int id);                // the Switch input (BIND_*) in the game table (1.9.0 fallback before boot)
+// The host button a Switch face button's prompt character stands for in play (dev BIND_DEV_PAD / BIND_DEV_KEY, sw
+// BIND_A..BIND_Y): the one every action the game asks about on that Switch button is bound to, or -1 when they differ
+// (the character keeps following the Switch layer, g_bind_pad / g_bind_key)
+int act_prompt_host(int dev, int sw);
+// The game asked about action id in the last ms milliseconds (its HUD shows what it can do now: Activate rune while a
+// rune is out)
+bool act_asked_within(int id, unsigned ms);
+// The HUD's A prompt: 0 while it isn't shown, else a hash of its label (the same text: the same prompt, in any language)
+uint32_t act_a_prompt_label(void);
+// A pane of the HUD's A slot by name (DoCommand_00 > N_A_00 > ...), or 0
+uint64_t act_a_slot_pane(const char *name);
 void act_masks(const uint32_t *table);        // the game's table of one mask per action (its address, from the patch)
 void act_reset(void);                         // every action back to the default
 
 // Host state in, from runtime/hle/input.c. Main thread, on every key / button event:
 uint64_t act_scan_keys(uint64_t key_buttons, int (*held)(int scancode));    // actions the keyboard side holds
 uint64_t act_scan_pad(uint64_t pad_buttons, uint32_t host_buttons);         // ... the controller side holds
+uint64_t act_gameplay_buttons(uint64_t raw, int (*held)(int scancode), uint32_t host_buttons); // gameplay A/B/X/Y from action bindings
 void act_publish(uint64_t keys, uint64_t pads);                             // (bit per action)
 // The controller poll (game thread, once per GetNpadStates): freezes the held / pressed sets the game's queries see.
 // live = false in the game's menus, with the window unfocused or the overlay up: the Switch layer answers then.

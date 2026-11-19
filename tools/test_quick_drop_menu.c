@@ -68,3 +68,13 @@ int main(void) {
     quick_drop_reset(); assert(!menu_screen && !menu_buttons && !atomic_load(&drop_hint));
     puts("ok: held-Y entry, one request per edge, exact locked identity, CPU preservation, Back priority and disabled guards");
 }
+
+// These standalone tests do not own a replacement selector.
+bool quick_replace_enabled(void) { return false; }
+bool quick_replace_active(void) { return false; }
+bool quick_replace_card_drop_allowed(void) { return false; }
+bool quick_replace_card_sort_allowed(uint64_t screen) { (void)screen; return false; }
+bool quick_replace_menu(Cpu *c) { (void)c; return false; }
+bool quick_replace_bottom_layout(void) { return false; }
+
+Settings g_settings;

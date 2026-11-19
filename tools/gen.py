@@ -614,6 +614,10 @@ class Module:
                     # also where it jumps to a label
                     text = re.sub(r'goto (L_[0-9a-f]+);', lambda g: f'{{{reload}{fload(i)} goto {g.group(1)}; }}', text)
                     text = f'{spill}{publish(i)}{opaque}{text}{end_opaque}{reload}{fload(i)}'
+                else:
+                    # a patch may name the guest sp's local (sp_); without locals (RECOMP_LOCALS=0, or a function
+                    # with FP/SIMD inline asm, as on Arm hosts) it is the Cpu's own
+                    text = re.sub(r'\bsp_\b', 'c->sp', text)
                 emit(i, '    ' + text)
                 last = 'op'
                 continue

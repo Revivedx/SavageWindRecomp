@@ -1,0 +1,45 @@
+# Builds the app on real macOS (Apple Silicon, Homebrew: the toolchain docs/macos.md sets up on a player's Mac): no
+# game code, so no Nintendo data - the same `make` a Mac user runs (the Vulkan renderer on MoltenVK). Then the FP/SIMD
+# lowering AArch64 hosts use (gen.py's --simd asm, the guest's instructions run natively) against Unicorn: the one
+# place in CI that can run it, as no other runner is AArch64.
+name: macOS
+
+on:
+  push:
+    branches: [test, main]
+  pull_request:
+    branches: [test, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Dependencies
+        run: brew install sdl3 ffmpeg molten-vk vulkan-loader vulkan-headers shaderc
+      - name: Build
+        run: make -j$(sysctl -n hw.ncpu) && ls -l build/savagewind
+
+  simd-asm:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Python packages
+        run: python -m pip install lz4 capstone unicorn
+      - name: FP/SIMD, AArch64 inline asm
+        run: |
+          python tools/test_simd.py --jobs $(sysctl -n hw.ncpu) --simd asm
+          python tools/test_simd.py --jobs $(sysctl -n hw.ncpu) --simd asm --locals

@@ -1,0 +1,64 @@
+# The macOS release disk image (docs/macos.md, "The .app"): make deps, make gen-helper, tools/fetch_zig.sh, make app
+# and make dmg on Apple Silicon. The image holds no game code (the start screen builds it on the player's Mac from
+# their own files), so no Nintendo data. A published release gets the .dmg and its .sha256 attached; a push to test
+# that changes the macOS packaging builds it as an artifact (for testers with a Mac). Ad-hoc signed, not notarized:
+# the first open needs Control-click > Open (docs/macos.md).
+name: macOS disk image
+
+on:
+  release:
+    types: [published]
+  push:
+    branches: [test]
+    paths:
+      - .github/workflows/macos-dmg.yml
+      - tools/build_deps_macos.sh
+      - tools/bundle_macos.sh
+      - tools/make_dmg.sh
+      - tools/swgen.spec
+  workflow_dispatch:
+
+permissions:
+  contents: write  # (gh release upload)
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  dmg:
+    runs-on: macos-15
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build tools and MoltenVK
+        run: brew install ninja molten-vk
+      - name: Pinned dependencies (cached by their script)
+        uses: actions/cache@v4
+        with:
+          path: build/deps
+          key: macos-deps-${{ hashFiles('tools/build_deps_macos.sh') }}
+      - name: Dependencies
+        run: make deps
+      - name: Game code generator
+        run: make gen-helper
+      - name: Compiler for the game code
+        run: tools/fetch_zig.sh
+      - name: App and disk image
+        run: make app && make dmg
+      - name: Checksum
+        run: |
+          cd build/dist
+          for f in *.dmg; do shasum -a 256 "$f" > "$f.sha256"; done
+          ls -l
+      - uses: actions/upload-artifact@v4
+        with:
+          name: savage-wind-macos-dmg
+          path: |
+            build/dist/*.dmg
+            build/dist/*.dmg.sha256
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" build/dist/*.dmg build/dist/*.dmg.sha256 --clobber
