@@ -17,3 +17,9 @@ bool game_place_text(float x, float z, bool has_link, char *details, size_t deta
 // On the main field: the name that holds at x, z and the tower region (NULL: none)
 const char *game_place_name(float x, float z);
 const char *game_place_region(float x, float z);
+
+// The tower regions by number, in the order of game_place_table.inc's region_names (runtime/collectibles.c): how many,
+// and one's name in a language (a game language's folder, en or es; NULL or one it doesn't know: English)
+int game_place_region_count(void);
+int game_place_region_at(float x, float z);  // the region at x, z on the main field; -1: none
+const char *game_place_region_name(int region, const char *language);

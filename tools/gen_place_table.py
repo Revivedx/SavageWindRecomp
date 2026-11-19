@@ -113,6 +113,19 @@ def tower_grid(d):
     return area
 
 
+def tower_regions(static, sbeco):
+    """The tower area at (x, z), and the 15 regions in the order of region_names (sorted by area): (area, {area: the
+    tower's MessageID}, [areas]). tools/gen_collectibles.py numbers its regions the same way."""
+    area = tower_grid(sbeco)
+    regions = {}
+    for m in static['LocationMarker']:
+        if m.get('Icon') == 'Tower':
+            regions[area(m['Translate']['X'], m['Translate']['Z'])] = m['MessageID']
+    if len(regions) != 15:
+        sys.exit(f'{len(regions)} regions found, 15 towers expected')
+    return area, regions, sorted(regions)
+
+
 def region_name(tower):
     """"Torre del lago" -> "Lago"; "Torre de Hebra" -> "Hebra"; "Lake Tower" -> "Lake". Other languages build the name in
     too many ways (Hebra-Turm, Turm der Ebene): there it stays the tower's."""
@@ -176,14 +189,7 @@ def main():
             places.append((l['Translate']['X'], l['Translate']['Z'], LABEL_RADIUS[l['ShowLevel']], l['MessageID'], False))
 
     # The regions: each area of the grid is named by the tower that stands in it
-    area = tower_grid(yaz0_decompress(boot['Ecosystem/MapTower.sbeco']))
-    regions = {}
-    for m in static['LocationMarker']:
-        if m.get('Icon') == 'Tower':
-            regions[area(m['Translate']['X'], m['Translate']['Z'])] = m['MessageID']
-    if len(regions) != 15:
-        sys.exit(f'{len(regions)} regions found, 15 towers expected')
-    ids = sorted(regions)
+    area, regions, ids = tower_regions(static, yaz0_decompress(boot['Ecosystem/MapTower.sbeco']))
     grid = []
     for row in range(WORLD_Z // CELL):
         z = -WORLD_Z / 2 + (row + 0.5) * CELL
