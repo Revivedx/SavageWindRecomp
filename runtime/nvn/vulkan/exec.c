@@ -1094,7 +1094,7 @@ static inline void stat_bump(_Atomic uint64_t *c) {
 
 // The same table in one cache line an entry (cpuopts bit 64): the entries above are 80 bytes, so a hit read two lines
 // (the key, then the serial mask, chunk and span), and half of them started in one line and ended in the next. In the
-// capture (185415) the first read of the slot, the compare of its key, was 0.36 ms a frame of the queue thread (482 of
+// In a profile capture the first read of the slot, the compare of its key, was 0.36 ms a frame of the queue thread (482 of
 // guest_copy's 757 samples; 8,900 sets a frame, most of the calls misses that then wrote the entry). A size over 4 GB
 // takes the table above.
 typedef struct { uint64_t addr, gen, serial, mask; uint32_t size, chunk; VkSpan span; } GCopyLine;
@@ -2722,7 +2722,7 @@ static VkPipeline clear_pipeline(int index, int kind, uint32_t mask, bool depth,
     return p;
 }
 
-// ---- cpuopts bit 512: the shadow cascades' draw budget (R4)
+// ---- cpuopts bit 512: the shadow cascades' draw budget
 // BOTW draws the sun's shadow cascades (a depth 2D array of 3 layers, a pass of depth-only draws for each layer) in every
 // frame: ~810 of the ~4,400 draws a frame in the open world, ~0.2 ms of GPU but a share of the render thread (a draw
 // costs it about the same wherever it goes). With the bit set, the layers named by SAVAGEWIND_SHADOW_BUDGET_LAYERS (a
@@ -2906,20 +2906,19 @@ typedef struct Prog {
 } Prog;
 
 // CPU preparation switches. One mask, set by SAVAGEWIND_VK_CPU_OPTS (any base) or live by the cpuopts command
-// (SAVAGEWIND_CONTROL + SAVAGEWIND_VK_CPU_BENCH=1). Its two low bits are the Alpha 6 material cache mode (0 off, 1 the
+// (SAVAGEWIND_CONTROL + SAVAGEWIND_VK_CPU_BENCH=1). Its two low bits are the material cache mode (0 off, 1 the
 // conservative reuse, 2 reuse across vertex programs), which SAVAGEWIND_VK_STAGE_REUSE=0..2 also sets (it wins over
 // the low bits of the mask). The other bits:
-// 16 throughput-bound descriptor-set hash (R1), 32 texture change detection from the write watch (textures.c, R1),
-// 64 cache-line guest copy table and prefetches ahead of a draw's constant buffers and textures (R4),
+// 16 throughput-bound descriptor-set hash, 32 texture change detection from the write watch (textures.c),
+// 64 cache-line guest copy table and prefetches ahead of a draw's constant buffers and textures,
 // 128 block bitmap in front of the storing-shader range search (gw_overlaps, gw_check) and a static scratch for the
-// descriptor writes of a set (stage_set), so that neither the draw path's frame needs a stack probe (R4),
-// 512 far shadow cascades drawn every second frame (shadow_budget_skip, R4). KNOWN BAD: the ground and rocks flicker while
+// descriptor writes of a set (stage_set), so that neither the draw path's frame needs a stack probe,
+// 512 far shadow cascades drawn every second frame (shadow_budget_skip). KNOWN BAD: the ground and rocks flicker while
 // the camera pans (the stale cascade is read with this frame's matrices; seen and confirmed gone without it, 2026-11-18). Off.
 // Two switches for the guest's threads, mirrored to plain variables (stage_cpu_publish) because they are read there:
 // 1024 the dispatch of an indirect call from a per-thread table that also holds the host (HLE) targets, without the
 // thread-local lookup and with the slow path out of line (runtime/dispatch.c dispatch_fast),
 // 2048 a command buffer leaves the registry with two pointer writes instead of a walk of the list (nvn/cmdbuf.c).
-// (Not here: 4, 8 and 256 of the older branch, its own preparation experiments; the material cache is the low bits.)
 #define CPU_OPTS_REUSE 3
 #define CPU_OPTS_VALID (CPU_OPTS_REUSE | 3824)  // (3824 = 16 + 32 + 64 + 128 + 512 + 1024 + 2048)
 #define CPU_OPTS_USAGE "cpuopts [mask]"
@@ -6251,7 +6250,7 @@ static bool gw_overlaps_exact(uint64_t lo, uint64_t hi);
 
 // A bit a 1 MB block of the set (cpuopts bit 128), so that the many lookups nowhere near it end on one load. The
 // bounds above take the reads outside [gw_lo, gw_hi), but the set's ranges lie all over the heap (the storage buffers
-// of the compute passes) and so did the bounds: in the capture (185415) gw_overlaps, gw_ubo_copied and the memo
+// of the compute passes) and so did the bounds: in a profile capture gw_overlaps, gw_ubo_copied and the memo
 // of gw_check were 0.32 ms a frame of the queue thread, most of it on reads that answered "no". The bitmap is hashed
 // by block number (4096 bits: the 4 GB the heap holds, one bit each), so a block that shares a bit with one in the set
 // is asked of the exact search; no bit ever clears before the set does. A range wider than 8 blocks is always asked.
@@ -7278,7 +7277,7 @@ static void texture_info_(int stage, ShaderInfo *si, int i, VkDescriptorImageInf
 // bumps vk_view_gen, which drops them all. SAVAGEWIND_VK_NO_TEX_MEMO=1: off, with the view memo.
 // Ahead of texture_info (cpuopts bit 64), which meets a texture's pool entry, the texture and its backend as three loads
 // that each wait for the one before, for every texture of every draw (the line of its guard was 0.25 ms a frame of the
-// queue thread in capture 185415). level 0: the pool entries of the stage's textures, all asked for at once; level 1,
+// queue thread in a profile capture). level 0: the pool entries of the stage's textures, all asked for at once; level 1,
 // once they are there: the textures they point to. Hints only.
 static inline void tex_prefetch(int stage, const ShaderInfo *si, int level) {
     int n = si->ntex < 64 ? si->ntex : 64;
@@ -7462,7 +7461,7 @@ static VkDescriptorSet set_finish(VkDescriptorSetLayout layout, VkWriteDescripto
                 v[3] = w[i].pBufferInfo->range;
             }
             if (fast) {
-                // R1 (mask 16): the four words of a write are folded by two independent 64x64->128 multiplies (they run
+                // (mask 16) the four words of a write are folded by two independent 64x64->128 multiplies (they run
                 // side by side), so a write adds one multiply to the chain through the hash instead of four multiply-shift
                 // steps for each of two hashes (llvm-mca, Zen 3: ~21 cycles a write before, ~6 now; a 10-write set was
                 // ~210 cycles, 0.5-0.64 ms a frame in the open world). The second hash is the same fold mixed another way,
@@ -7731,7 +7730,7 @@ static VkDescriptorBufferInfo gsnap_info(int stage) {
 // dyn / ndyn: the offsets of its dynamic uniform buffers, by binding (ubo_dynamic_mark), appended.
 // The descriptor writes of one set: 11 KB, which made the frame of stage_set 15 KB, and a frame over one page is entered
 // through ___chkstk_ms on Windows, a call that probes every page, for each of the 8,900 sets a frame (0.09 ms of the
-// queue thread in capture 185415, with draw_'s own). With cpuopts bit 128 they live in static memory instead (the draw
+// queue thread in a profile capture, with draw_'s own). With cpuopts bit 128 they live in static memory instead (the draw
 // path runs on one thread, like the other statics here); a call made while one is in use (not known to happen) takes
 // the stack copy.
 typedef struct {

@@ -51,8 +51,8 @@ typedef struct { PktFn fn; uint32_t size; uint32_t pad; } PktHdr;  // fn NULL: s
 static uint8_t *ring;
 static uint64_t ring_cap;  // (a power of two)
 // The ring's two ends and the translator's own cursors get a cache line each. Statics are laid out in the linker's
-// order (the play build sorted them by name: `tail` shared a line with `target`, `wpos` with `wp`), so a cursor one
-// thread writes constantly must not share a line with whatever follows it. Capture 185415 (queue thread): the load of
+// order (in one build it sorted them by name: `tail` shared a line with `target`, `wpos` with `wp`), so a cursor one
+// thread writes constantly must not share a line with whatever follows it. A profile capture (queue thread): the load of
 // `tail` in wait_room was 0.10 ms a frame, 16000 pushes at about 6 ns each: R stores `tail` after every packet, so
 // T's load finds the line in R's cache. wait_room reads it only when the last value it saw says the ring is full.
 typedef struct { _Atomic uint64_t v; } __attribute__((aligned(64))) RingEnd;  // (sizeof 64: alone on its line)

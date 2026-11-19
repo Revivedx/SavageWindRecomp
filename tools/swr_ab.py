@@ -41,11 +41,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # (bit, short name, what it is)
 FACTORS = [
-    (16, 'set-hash', 'descriptor-set hash bound by throughput (R1)'),
-    (32, 'tex-watch', 'texture change detection from the write watch (R1)'),
-    (64, 'copy-line', 'cache-line guest copy table and prefetches (R4)'),
-    (128, 'gw-bitmap', 'block bitmap for the storing-shader search, static scratch (R4)'),
-    (512, 'shadow-budget', 'far shadow cascades every second frame (R4, changes the picture)'),
+    (16, 'set-hash', 'descriptor-set hash bound by throughput'),
+    (32, 'tex-watch', 'texture change detection from the write watch'),
+    (64, 'copy-line', 'cache-line guest copy table and prefetches'),
+    (128, 'gw-bitmap', 'block bitmap for the storing-shader search, static scratch'),
+    (512, 'shadow-budget', 'far shadow cascades every second frame (changes the picture)'),
     (1024, 'dispatch', 'per-thread dispatch table for indirect calls'),
     (2048, 'cb-unlink', 'command buffer leaves the registry in O(1)'),
 ]
