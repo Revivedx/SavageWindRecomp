@@ -530,6 +530,8 @@ static void act_refresh(void) {
         if (swapped) diff |= 1ull << id;
         if (!act_is_default(id) || swapped) custom |= 1ull << id;
     }
+    // Action 29 is the hidden Z-targeting/lock-on check sharing BIND_ZL with action 13 ("Guard / lock on", #1016).
+    if (custom >> 13 & 1) custom |= 1ull << 29;
     a_mask_diff = diff;
     a_custom = custom;
 }
@@ -610,6 +612,8 @@ uint64_t act_scan_keys(uint64_t key_buttons, int (*held)(int scancode)) {
         int k = g_act_key[id], k2 = g_act_key2[id];
         out |= (uint64_t)((k > 0 && held(k)) || (k2 > 0 && held(k2))) << id;
     }
+    if (!(a_explicit_key >> 29 & 1) && (custom >> 13 & 1))
+        out = (out & ~(1ull << 29)) | ((out >> 13 & 1ull) << 29);
     return out;
 }
 
@@ -627,6 +631,8 @@ uint64_t act_scan_pad(uint64_t pad_buttons, uint32_t host_buttons) {
                   (k2 >= 0 && k2 < PADB_HOST_COUNT && (host_buttons >> k2 & 1));
         out |= (uint64_t)on << id;
     }
+    if (!(a_explicit_pad >> 29 & 1) && (custom >> 13 & 1))
+        out = (out & ~(1ull << 29)) | ((out >> 13 & 1ull) << 29);
     return out;
 }
 
