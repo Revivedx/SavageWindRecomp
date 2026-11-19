@@ -72,6 +72,8 @@ typedef struct {
     uint8_t *hud_pack;       // Pack/Bootup.pack with the HUD letters patched (hud_letters_patch)
     size_t hud_pack_size;
     uint8_t *voice_banks;    // the text language's voice banks with the chosen voices' lengths (bars_hybrid)
+    uint8_t **voice_packs;   // Pack/TitleBG_*.pack with the chosen voices' NV_Custom_NoActor.bars / StaticVoicePack.ssarc
+    int nvoice_packs;
     uint8_t *font_arcs[8];   // Font/Font_*.sbfarc with the HUD letters' cells as wide as the letters (font_widths_patch)
 } RomImage;
 #define AOC_MAX 8
@@ -91,6 +93,8 @@ RT_ON_RESET(fs_reset) {
         for (int i = 0; i < m->npatches; i++) free(m->patches[i].data);  // (ov_meta and the extended table are among these)
         for (int i = 0; i < m->rom_nfiles; i++) free(m->rom_files[i].path);
         free(m->ov), free(m->rom_files), free(m->grown), free(m->rstb_blob), free(m->hud_pack), free(m->voice_banks);
+        for (int p = 0; p < m->nvoice_packs; p++) free(m->voice_packs[p]);
+        free(m->voice_packs);
         for (int f = 0; f < 8; f++) free(m->font_arcs[f]);
         romfs_image_close(m->img);
         *m = (RomImage){0};
@@ -388,6 +392,106 @@ static bool bars_hybrid(uint8_t *own, size_t on, const uint8_t *vb, size_t vn) {
     return true;
 }
 
+static uint64_t loaded_size(const uint8_t head[8], uint64_t size);
+static void rstb_name(const char *path, char *out, size_t cap);
+
+// TitleBG_<lang>.pack embeds Voice/<vl>/NV_Custom_NoActor.bars (Champion power voices, #1007) and StaticVoicePack.ssarc.
+// Rebuild each non-chosen pack with the chosen voice folder's files while keeping its own SARC entry names.
+static int titlebg_voice_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz, const char *pre, size_t pl,
+                               RomFile **chosen, int nc) {
+    int patched = 0;
+    for (int i = 0; i < R->rom_nfiles; i++) {
+        const char *p = R->rom_files[i].path;
+        size_t pn = strlen(p);
+        if (strncmp(p, "Pack/TitleBG_", 13) || pn <= 5 || strcmp(p + pn - 5, ".pack")) continue;
+        size_t sz = R->rom_files[i].size;
+        if (sz < 0x20 || sz > (16u << 20)) continue;
+        uint8_t *pack = malloc(sz);
+        if (!pack) continue;
+        if (romfs_image_pread(R->img, pack, sz, R->rom_files[i].off) != (ssize_t)sz ||
+            memcmp(pack, "SARC", 4) || memcmp(pack + 6, "\xFF\xFE", 2)) {
+            free(pack);
+            continue;
+        }
+        int cnt = sarc_count(pack, sz);
+        uint32_t data_off = rd32(pack + 12);
+        if (cnt <= 0 || cnt > 64 || data_off < 0x20 + (uint32_t)cnt * 16 || data_off > sz) {
+            free(pack);
+            continue;
+        }
+        uint8_t *rep[64] = {0};
+        const uint8_t *src[64] = {0};
+        size_t src_sz[64] = {0};
+        bool any = false;
+        for (int k = 0; k < cnt; k++) {
+            const char *name = NULL;
+            if (!sarc_node(pack, sz, k, &name, &src[k], &src_sz[k])) { any = false; break; }
+            if (!name || strncmp(name, "Voice/", 6) || !strncmp(name, pre, pl) || !strchr(name + 6, '/')) continue;
+            RomFile key = {.path = (char *)name}, *kp = &key;
+            RomFile **hit = bsearch(&kp, chosen, nc, sizeof *chosen, by_name_after);
+            if (!hit) continue;
+            char host[1200];
+            struct stat sb;
+            bool ov = mods_find_file(R->ov_sub, (*hit)->path, host, sizeof host, NULL, 0) && !stat(host, &sb);
+            size_t vn = ov ? (size_t)sb.st_size : (*hit)->size;
+            uint8_t *buf = malloc(vn ? vn : 1);
+            bool got = false;
+            if (buf && ov) {
+                FILE *f = fopen(host, "rb");
+                got = f && fread(buf, 1, vn, f) == vn;
+                if (f) fclose(f);
+            } else if (buf) {
+                got = romfs_image_pread(R->img, buf, vn, (*hit)->off) == (ssize_t)vn;
+            }
+            if (got) {
+                rep[k] = buf;
+                src[k] = buf;
+                src_sz[k] = vn;
+                any = true;
+            } else {
+                free(buf);
+            }
+        }
+        if (!any) {
+            for (int k = 0; k < cnt; k++) free(rep[k]);
+            free(pack);
+            continue;
+        }
+        uint32_t s_off[64], e_off[64];
+        size_t out_sz = data_off;
+        for (int k = 0; k < cnt; k++) {
+            out_sz = (out_sz + 7) & ~7ull;
+            s_off[k] = (uint32_t)(out_sz - data_off);
+            e_off[k] = (uint32_t)(s_off[k] + src_sz[k]);
+            out_sz += src_sz[k];
+        }
+        uint8_t *out = calloc(1, out_sz);
+        if (out) {
+            memcpy(out, pack, data_off);
+            uint32_t total = (uint32_t)out_sz;
+            memcpy(out + 8, &total, 4);
+            for (int k = 0; k < cnt; k++) {
+                memcpy(out + 0x20 + k * 16 + 8, &s_off[k], 4);
+                memcpy(out + 0x20 + k * 16 + 12, &e_off[k], 4);
+                if (src_sz[k]) memcpy(out + data_off + s_off[k], src[k], src_sz[k]);
+            }
+            meta_copy(fmeta, foff, fsz);
+            uint64_t rel = R->ov_end - R->rom_data_off, size64 = out_sz;
+            memcpy(R->ov_meta + R->rom_files[i].meta + 8, &rel, 8);
+            memcpy(R->ov_meta + R->rom_files[i].meta + 0x10, &size64, 8);
+            if (R->ov_n == R->ov_cap) { R->ov_cap = R->ov_cap ? R->ov_cap * 2 : 256; R->ov = realloc(R->ov, sizeof *R->ov * R->ov_cap); }
+            R->ov[R->ov_n++] = (Overlay){R->ov_end, size64, NULL, -1, out};
+            R->ov_end = (R->ov_end + size64 + 0xF) & ~0xFull;
+            R->voice_packs = realloc(R->voice_packs, sizeof *R->voice_packs * (R->nvoice_packs + 1));
+            R->voice_packs[R->nvoice_packs++] = out;
+            patched++;
+        }
+        for (int k = 0; k < cnt; k++) free(rep[k]);
+        free(pack);
+    }
+    return patched;
+}
+
 // Voices in another language than the text (runtime/language.c): every Voice/<lang>/<path> but Common's takes the
 // data of the chosen folder's <path> when it has one (the .bars banks and the Stream_*/ dialogue streams). (The game reads its text language's folder or a fallback;
 // whichever it is, it gets the chosen voices.) Only the file-meta entries change: the data stays in the image, but
@@ -446,12 +550,22 @@ static void voice_redirect(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
             memcpy(meta + R->rom_files[i].meta + 8, &rel, 8);
             memcpy(meta + R->rom_files[i].meta + 0x10, &size, 8);
         } else memcpy(meta + R->rom_files[i].meta + 8, fmeta + (*hit)->meta + 8, 16);  // (data offset, size)
-        if (vn > R->rom_files[i].size) {
+        uint64_t own_loaded = on, new_loaded = vn;
+        if (pn > 6 && !strcmp(p + pn - 6, ".ssarc") && on >= 8 && vn >= 8) {
+            uint8_t h1[8], h2[8];
+            if (romfs_image_pread(R->img, h1, 8, R->rom_files[i].off) == 8) own_loaded = loaded_size(h1, on);
+            if (ov) {
+                FILE *f = fopen(host, "rb");
+                if (f) { if (fread(h2, 1, 8, f) == 8) new_loaded = loaded_size(h2, vn); fclose(f); }
+            } else if (romfs_image_pread(R->img, h2, 8, (*hit)->off) == 8) new_loaded = loaded_size(h2, vn);
+        }
+        if (new_loaded > own_loaded) {
             R->grown = realloc(R->grown, sizeof *R->grown * (R->ngrown + 1));
-            R->grown[R->ngrown++] = (GrownFile){p, vn - R->rom_files[i].size};
+            R->grown[R->ngrown++] = (GrownFile){p, new_loaded - own_loaded};
         }
         n++;
     }
+    int np = titlebg_voice_patch(fmeta, foff, fsz, pre, pl, chosen, nc);
     free(chosen), free(ov_at);
     if (nh) {  // the banks, one after another past the end of the image
         uint8_t *meta = meta_copy(fmeta, foff, fsz);
@@ -471,8 +585,8 @@ static void voice_redirect(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
         R->ov_end = (R->ov_end + total + 0xF) & ~0xFull;
     }
     free(hy);
-    LOG("[fs] voices: %d files play %s's voices (%d banks keep the text's subtitle markers, %d from the overlay folder)\n",
-        n, vf, nh, nov);
+    LOG("[fs] voices: %d files play %s's voices (%d banks keep the text's subtitle markers, %d from the overlay folder, %d TitleBG packs)\n",
+        n, vf, nh, nov, np);
 }
 
 // The game sets aside memory for a resource by its path's entry in System/Resource/ResourceSizeTable (the RSTB: the
@@ -1394,7 +1508,9 @@ static void rstb_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
     uint64_t added = 0, dlc_added = 0;
     for (int g = 0; g < R->ngrown; g++) {
         if (R->grown[g].mod && from_overlay) continue;
-        uint32_t grow = (uint32_t)((R->grown[g].grow + 31) & ~31ull) + 32, *size = rstb_entry(d, ncrc, nname, R->grown[g].path);
+        char rname[300];
+        rstb_name(R->grown[g].path, rname, sizeof rname);
+        uint32_t grow = (uint32_t)((R->grown[g].grow + 31) & ~31ull) + 32, *size = rstb_entry(d, ncrc, nname, rname);
         if (!size) continue;  // (no entry: the game sizes it from the file, the dialogue streams)
         uint32_t v;
         memcpy(&v, size, 4);
