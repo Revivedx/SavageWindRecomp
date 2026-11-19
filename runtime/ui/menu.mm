@@ -1414,13 +1414,13 @@ static void cheats_options(void) {
     opt_toggle("Infinite arrows", &g_settings.infinite_arrows, false,
                "Shooting a bow uses up no arrows. You still need one to shoot.");
     {   // (Accessibility's rows: game_options.mm k_wear and DAMAGE_CHOICES)
-        static const int wear[] = {0, 50, 100, 150, 200, 250, 300};
-        static const char *const wear_names[] = {"Fairy", "Peter Pan", "Hylian", "Hero", "Master", "Legend",
-                                                 "Dude, are you ok?"};
+        static const int wear[] = {0, 12, 17, 20, 25, 33, 50, 100, 150, 200, 250, 300};
+        static const char *const wear_names[] = {"Fairy", "0.125x", "0.167x", "0.2x", "0.25x", "0.33x", "Peter Pan",
+                                                 "Hylian", "Hero", "Master", "Legend", "Dude, are you ok?"};
         enum { NW = sizeof wear / sizeof wear[0] };
-        int w = 2;
+        int w = 7;
         for (int i = 0; i < NW; i++) if (g_settings.weapon_wear == wear[i]) w = i;
-        if (opt_choice("Weapon wear", &w, wear_names, NW, 2,
+        if (opt_choice("Weapon wear", &w, wear_names, NW, 7,
                        "How fast weapons, bows and shields wear out. Fairy: never. Hylian: the game's own.", false))
             g_settings.weapon_wear = wear[w], g_settings.no_weapon_wear = wear[w] == 0;
         static const int damage[] = DAMAGE_CHOICES;

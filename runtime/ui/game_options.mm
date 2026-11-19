@@ -176,7 +176,7 @@ const char *const k_drawdist[] = {"Original", "High", "Savage", "Potato"};  // (
 const int k_drawdist_order[] = {DRAWDIST_POTATO, DRAWDIST_ORIGINAL, DRAWDIST_MEDIUM, DRAWDIST_HIGH};
 constexpr int k_haze[] = HAZE_CHOICES;
 // Accessibility > Weapon wear: percent of the game's wear, a name and the factor shown beside it
-constexpr int k_wear[] = {0, 50, 100, 150, 200, 250, 300};
+constexpr int k_wear[] = {0, 12, 17, 20, 25, 33, 50, 100, 150, 200, 250, 300};
 // Accessibility > Colour vision (runtime/colour_vision.h): the type (settings.h COLOUR_VISION_*) and its strength, %
 const char *const k_cvd_name[COLOUR_VISION_COUNT] = {"Off", "Protanopia", "Deuteranopia", "Tritanopia"};
 const char *const k_cvd_desc[COLOUR_VISION_COUNT] = {
@@ -187,8 +187,8 @@ const char *const k_cvd_desc[COLOUR_VISION_COUNT] = {
 };
 constexpr int k_cvd_strength[] = {10, 20, 30, 40, 50, 60, 70, 80, 90, 100};
 static_assert(k_cvd_strength[9] == COLOUR_VISION_STRENGTH_DEFAULT);
-const char *const k_wear_name[] = {"Fairy", "Peter Pan", "Hylian", "Hero", "Master", "Legend", "Dude, are you ok?"};
-const char *const k_wear_times[] = {"0x", "0.5x", "1x", "1.5x", "2x", "2.5x", "3x"};  // percent (Video > Haze)
+const char *const k_wear_name[] = {"Fairy", NULL, NULL, NULL, NULL, NULL, "Peter Pan", "Hylian", "Hero", "Master", "Legend", "Dude, are you ok?"};
+const char *const k_wear_times[] = {"0x", "0.125x", "0.167x", "0.2x", "0.25x", "0.33x", "0.5x", "1x", "1.5x", "2x", "2.5x", "3x"};  // percent (Video > Haze)
 // (shown with Potato first, the smallest: k_shadow_order maps a row index to settings.h SHADOW_*)
 const char *const k_shadow[] = {"Console (896)", "High (2048)", "Ultra (4096)", "Savage (8192)", "Potato (448)"};  // (SHADOW_*)
 const int k_shadow_order[] = {SHADOW_POTATO, SHADOW_CONSOLE, SHADOW_HIGH, SHADOW_ULTRA, SHADOW_EXTREME};
@@ -1389,7 +1389,8 @@ void build_items(void) {
                            static char buf[4][64];
                            static int k;
                            char *b = buf[k++ & 3];
-                           snprintf(b, sizeof buf[0], "%s (%s)", tr(k_wear_name[x]), k_wear_times[x]);
+                           if (k_wear_name[x]) snprintf(b, sizeof buf[0], "%s (%s)", tr(k_wear_name[x]), k_wear_times[x]);
+                           else snprintf(b, sizeof buf[0], "%s", k_wear_times[x]);
                            return (const char *)b;
                        },
                        [](const Item &) { return nearest(k_wear, N(k_wear), (float)g_settings.weapon_wear); },
@@ -1397,7 +1398,7 @@ void build_items(void) {
                            g_settings.weapon_wear = k_wear[x];
                            g_settings.no_weapon_wear = k_wear[x] == 0;
                        },
-                       2));
+                       7));
     v.push_back(toggle(P_ACCESS, "Infinite arrows", "Shooting a bow uses up no arrows. You still need one to shoot.",
                        [](const Item &) { return (int)g_settings.infinite_arrows; },
                        [](const Item &, int x) { g_settings.infinite_arrows = x; }, 0));
