@@ -896,8 +896,11 @@ SLOT_LIST(holders, NvnTexture, backend_slot) // textures holding an image
 
 static uint64_t g_kept_bytes;
 
+static void tww_release(TexWW *w);
+
 static void free_backend(TexBackend *b) {
     if (b->kept) g_kept_bytes -= b->kept_bytes;
+    tww_release(&b->ww);
     keyed_remove(b);
     idle_remove(b);
     images_remove(b);
@@ -1195,6 +1198,156 @@ static uint64_t fnv_sample(const uint8_t *p, uint64_t n) {
     return h ^ n;
 }
 
+// TWW-BEGIN
+// ---- change detection from the write watch (SAVAGEWIND_VK_CPU_OPTS bit 32)
+// A texture whose storage holds whole 4K pages is not sampled every 8th frame and hashed in full every 120th: Windows says
+// whether any of those pages was written since the texture last read them (plat_any_written, ~0.6 us), and only then is
+// it hashed in full (exact, so it also finds what a sample missed). Windows keeps one flag per page and a query that
+// resets it clears it for whoever asks next, so the flags are shared with care (all of it runs under the GPU lock):
+//  - a texture owns its whole pages alone (tww_claim); one whose pages are another's keeps the sampled hashes;
+//  - the heap copy (exec.c) resets the flags of every page its spans hold, textures' included, and hands those pages
+//    over (vk_tex_pages_written -> tww_dirty), which a texture reads with the flags;
+//  - a texture never resets a page that holds geometry (vk_heap_geometry_any): those flags are the heap copy's;
+//  - the partial pages at either end of the storage may be a neighbor's: those bytes are hashed at every check.
+// The order that matters: its pages' flags are reset before the storage is read, so a write after the read shows again.
+#define TWW_PAGES ((GUEST_HI - GUEST_LO) >> 12)
+#define TWW_MIN_PAGES 4      // fewer whole pages: hashing them is as cheap as asking
+#define TWW_MIN_PAGES_DYN 16
+#define TWW_MAX_PAGES 4096   // (the page list's size; a larger texture is hashed as before)
+
+static uint64_t *tww_dirty;  // a bit per guest page: its flag was reset by the heap copy since a texture last looked
+static uint32_t *tww_claim;  // the TexWW token of the texture holding each page, 0: none
+static pthread_mutex_t tww_lock = PTHREAD_MUTEX_INITIALIZER;
+static uint32_t tww_token_next;
+static uint64_t tww_pagebuf[TWW_MAX_PAGES + 1];
+static uint64_t tww_stat_skip, tww_stat_written, tww_stat_missed, tww_stat_armed, tww_stat_refused;
+
+void vk_tex_ww_stats(uint64_t out[5]) {
+    out[0] = tww_stat_skip, out[1] = tww_stat_written, out[2] = tww_stat_missed, out[3] = tww_stat_armed, out[4] = tww_stat_refused;
+}
+
+static void tww_dirty_set(uint64_t page) {
+    uint64_t *d = __atomic_load_n(&tww_dirty, __ATOMIC_ACQUIRE);
+    if (d && page < TWW_PAGES) __atomic_fetch_or(&d[page >> 6], 1ull << (page & 63), __ATOMIC_RELAXED);
+}
+
+void vk_tex_pages_written(const uint64_t *pages, long n) {
+    if (!__atomic_load_n(&tww_dirty, __ATOMIC_ACQUIRE)) return;
+    for (long i = 0; i < n; i++)
+        if (pages[i] >= GUEST_LO && pages[i] < GUEST_HI) tww_dirty_set((pages[i] - GUEST_LO) >> 12);
+}
+
+void vk_tex_range_written(uint64_t addr, uint64_t size) {
+    if (!size || !__atomic_load_n(&tww_dirty, __ATOMIC_ACQUIRE)) return;
+    uint64_t lo = addr < GUEST_LO ? GUEST_LO : addr, hi = addr + size > GUEST_HI ? GUEST_HI : addr + size;
+    for (uint64_t p = lo < hi ? (lo - GUEST_LO) >> 12 : 1, e = lo < hi ? (hi - 1 - GUEST_LO) >> 12 : 0; p <= e; p++) tww_dirty_set(p);
+}
+
+static uint64_t tww_word_mask(uint64_t p, uint64_t e, uint64_t *take) {
+    uint64_t t = 64 - (p & 63);
+    if (t > e - p) t = e - p;
+    *take = t;
+    return (t == 64 ? ~0ull : (1ull << t) - 1) << (p & 63);
+}
+
+static bool tww_dirty_any(uint64_t first, uint64_t n) {
+    uint64_t *d = __atomic_load_n(&tww_dirty, __ATOMIC_ACQUIRE);
+    if (!d) return false;
+    for (uint64_t p = first, e = first + n, take; p < e; p += take)
+        if (__atomic_load_n(&d[p >> 6], __ATOMIC_RELAXED) & tww_word_mask(p, e, &take)) return true;
+    return false;
+}
+
+static void tww_dirty_clear(uint64_t first, uint64_t n) {
+    uint64_t *d = __atomic_load_n(&tww_dirty, __ATOMIC_ACQUIRE);
+    if (!d) return;
+    for (uint64_t p = first, e = first + n, take; p < e; p += take)
+        __atomic_fetch_and(&d[p >> 6], ~tww_word_mask(p, e, &take), __ATOMIC_RELAXED);
+}
+
+// The whole pages inside [addr, addr + total): their first page (from GUEST_LO) and count
+static bool tww_range(uint64_t addr, uint64_t total, uint64_t *first, uint64_t *n) {
+    uint64_t lo = (addr + 4095) & ~4095ull, hi = (addr + total) & ~4095ull;
+    if (addr < GUEST_LO || addr + total > GUEST_HI || hi <= lo) return false;
+    *first = (lo - GUEST_LO) >> 12;
+    *n = (hi - lo) >> 12;
+    return true;
+}
+
+// Hash of the bytes before the first whole page and after the last (under 8 KB)
+static uint64_t tww_edge(const uint8_t *mem, uint64_t addr, uint64_t total, uint64_t lo, uint64_t hi) {
+    return hash_full(mem, lo - addr) ^ (hash_full(mem + (hi - addr), addr + total - hi) * 0x9E3779B97F4A7C15ull);
+}
+
+static void tww_release_locked(TexWW *w) {
+    if (!w->token) return;
+    for (uint64_t p = w->page0, e = w->page0 + w->npages; p < e; p++)
+        if (tww_claim[p] == w->token) tww_claim[p] = 0;
+    w->token = 0;
+}
+
+static void tww_release(TexWW *w) {
+    if (!w->token) return;
+    pthread_mutex_lock(&tww_lock);
+    tww_release_locked(w);
+    pthread_mutex_unlock(&tww_lock);
+}
+
+// Takes the texture's whole pages for the watch and resets their flags. To be called just before its storage is read in
+// full, which is what the flags are then relative to. False: not armed (too small or large, a page is another's or holds
+// geometry, no write watch): the texture is checked as before.
+static bool tww_arm(TexWW *w, const uint8_t *mem, uint64_t addr, uint64_t total, bool dynamic, uint64_t frame) {
+    uint64_t first, n;
+    if (!tww_range(addr, total, &first, &n) || n < (dynamic ? TWW_MIN_PAGES_DYN : TWW_MIN_PAGES) || n > TWW_MAX_PAGES) {
+        tww_release(w);
+        return false;
+    }
+    if (frame < w->retry) return false;
+    pthread_mutex_lock(&tww_lock);
+    if (!tww_claim) {
+        uint32_t *c = calloc(TWW_PAGES, sizeof *c);
+        uint64_t *d = calloc((TWW_PAGES + 63) / 64, sizeof *d);
+        if (!c || !d) { free(c), free(d); pthread_mutex_unlock(&tww_lock); w->retry = frame + 600; return false; }
+        tww_claim = c;
+        __atomic_store_n(&tww_dirty, d, __ATOMIC_RELEASE);
+    }
+    if (w->token && (w->page0 != first || w->npages != n)) tww_release_locked(w);
+    if (!w->token) {
+        for (uint64_t p = first; p < first + n; p++)
+            if (tww_claim[p]) { w->retry = frame + 120; tww_stat_refused++; pthread_mutex_unlock(&tww_lock); return false; }
+        if (++tww_token_next == 0) ++tww_token_next;
+        w->token = tww_token_next;
+        w->page0 = first, w->npages = (uint32_t)n;
+        for (uint64_t p = first; p < first + n; p++) tww_claim[p] = w->token;
+    }
+    uint64_t lo = GUEST_LO + (first << 12), hi = lo + (n << 12);
+    if (vk_heap_geometry_any(lo, hi) || plat_written_pages(lo, hi - lo, tww_pagebuf, TWW_MAX_PAGES + 1) < 0) {
+        tww_release_locked(w);
+        w->retry = frame + 600;
+        tww_stat_refused++;
+        pthread_mutex_unlock(&tww_lock);
+        return false;
+    }
+    tww_dirty_clear(first, n);  // (after the reset: a page the heap copy reset before it is in the read that follows)
+    w->addr = addr, w->total = total;
+    w->edge = tww_edge(mem, addr, total, lo, hi);
+    tww_stat_armed++;
+    pthread_mutex_unlock(&tww_lock);
+    return true;
+}
+
+// 0: nothing in the storage was written since tww_arm; 1: something may have been; -1: not armed
+static int tww_check(TexWW *w, const uint8_t *mem, uint64_t addr, uint64_t total) {
+    if (!w->token) return -1;
+    if (w->addr != addr || w->total != total) { tww_release(w); return -1; }
+    uint64_t lo = GUEST_LO + (w->page0 << 12), hi = lo + ((uint64_t)w->npages << 12);
+    int r = plat_any_written(lo, hi - lo);
+    if (r < 0) { tww_release(w); return -1; }
+    if (r > 0 || tww_dirty_any(w->page0, w->npages)) return 1;
+    return tww_edge(mem, addr, total, lo, hi) != w->edge;
+}
+// TWW-END
+
 static pthread_mutex_t pending_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static void upload_scaled(VkCommandBuffer cb, TexBackend *b, VkSpan s, VkBufferImageCopy rg, uint32_t gw, uint32_t gh);
@@ -1264,6 +1417,29 @@ static void upload_texture(NvnTexture *t, TexBackend *b, bool written) {
     static int always_full = -1;
     if (always_full < 0) always_full = getenv("SAVAGEWIND_TEX_FULLHASH") ? 1 : 0;
     bool full = b->dynamic || !b->uploaded || always_full;
+    static int ww_state = -1, ww_validate;  // (the write watch is there, and the check is verified by a hash)
+    if (ww_state < 0) {
+        ww_state = plat_any_written(GUEST_LO, 4096) >= 0;
+        ww_validate = getenv("SAVAGEWIND_TEX_WW_VALIDATE") != NULL;
+    }
+    bool ww = ww_state && !always_full && (vk_cpu_opts() & 32);
+    if (ww && !written && b->uploaded) {
+        int st = tww_check(&b->ww, mem, t->addr, total);
+        if (st == 0) {
+            if (!ww_validate || hash_full(mem, total) == b->data_hash) { tww_stat_skip++; SW_TALLY("tex/ww unchanged"); return; }
+            static int logged;  // (a write the watch missed: this texture keeps the hashes from now on)
+            if (logged++ < 8) LOG("[vk] texture %llx: write watch missed a change (%llu bytes at %llx)\n", (unsigned long long)t->debug_id,
+                                  (unsigned long long)total, (unsigned long long)t->addr);
+            tww_stat_missed++;
+            tww_release(&b->ww);
+            b->ww.retry = ~0ull;
+            full = true;
+        } else if (st > 0) {
+            tww_stat_written++;
+            SW_TALLY("tex/ww written");
+            full = true;
+        }
+    }
     if (!full && frame - b->full_frame >= 120 && full_hash_budget >= total) { full = true; full_hash_budget -= total; }
     if (!full) {
         prof_tex_samples++;
@@ -1275,9 +1451,10 @@ static void upload_texture(NvnTexture *t, TexBackend *b, bool written) {
     if (b->dynamic) SW_TALLY("tex/full hash (dynamic)");
     else SW_TALLY("tex/full hash");
     SW_COUNT("tex full hash bytes", total);
+    bool armed = ww && tww_arm(&b->ww, mem, t->addr, total, b->dynamic, frame);  // (before the storage is read in full)
     uint64_t h = hash_full(mem, total);
     b->full_frame = frame;
-    b->sample_hash = fnv_sample(mem, total);
+    if (!armed) b->sample_hash = fnv_sample(mem, total);
     if (b->uploaded && h == b->data_hash) return;
     if (b->uploaded && h != b->data_hash && !written) b->dynamic = true;
     b->data_hash = h;

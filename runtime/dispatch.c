@@ -135,16 +135,21 @@ GuestFn dispatch_lookup(uint64_t addr) {
 
 // Small direct-mapped cache in front of the binary search
 #define DCACHE 4096
-static __thread struct { uint64_t addr; GuestFn fn; } dcache[DCACHE];
+typedef struct { uint64_t addr; GuestFn fn; } DEntry;
+static __thread DEntry dcache[DCACHE];
 
-static GuestFn dispatch_slow(Cpu *c) {
+// What a call to c->pc runs, found the slow way. *kind: 0 an ordinary function (cacheable), 1 a host function (HLE) with
+// a fixed target (every call still passes the unwind point), 2 not to be cached (an HLE stub without an implementation).
+static inline __attribute__((always_inline)) GuestFn dispatch_resolve(Cpu *c, int *kind) {
     uint64_t pc = c->pc;
+    *kind = 0;
     if (pc >= HLE_BASE && pc < HLE_BASE + HLE_SIZE) {
-        rt_unwind_point();  // (HLE calls aren't cached below, so every one passes here: a reboot's safe point)
+        rt_unwind_point();  // (an HLE call is a reboot's safe point)
         int i = (int)((pc - HLE_BASE) / 16);
         if (i < hle_count) {
-            if (hle_slots[i].fn) return hle_slots[i].fn;
+            if (hle_slots[i].fn) { *kind = 1; return hle_slots[i].fn; }
             unimpl_pc = pc;
+            *kind = 2;
             return hle_unimplemented;
         }
     }
@@ -156,19 +161,76 @@ static GuestFn dispatch_slow(Cpu *c) {
         const char *s = loader_symbol_at(c->x[30], &off);
         FATAL("no function at %llx (lr=%llx %s+%llx)\n", pc, c->x[30], s ? s : "?", off);
     }
-    unsigned h = (unsigned)(pc >> 2) & (DCACHE - 1);
-    dcache[h].addr = pc;
-    dcache[h].fn = f;
+    return f;
+}
+
+static GuestFn dispatch_slow(Cpu *c) {
+    int kind;
+    GuestFn f = dispatch_resolve(c, &kind);
+    if (kind == 0) {  // (HLE calls aren't cached here, so every one passes the unwind point)
+        unsigned h = (unsigned)(c->pc >> 2) & (DCACHE - 1);
+        dcache[h].addr = c->pc;
+        dcache[h].fn = f;
+    }
     return f;
 }
 
 // Always tail-calls, so chains of indirect jumps don't grow the host stack.
-void rt_dispatch(Cpu *c) {
+// The two bodies are kept apart (cpuopts bit 1024, g_opt_dispatch_fast) so that one binary can measure the new one
+// against the old in the same session; rt_dispatch itself only chooses (a flag load and a jump, the same for both).
+static __attribute__((noinline)) void dispatch_old(Cpu *c) {
     KThread *t = c->thread;  // (a better thread waiting for this one's core gets it: kernel.c kernel_preempt)
     if (t && t->core_held >= 0 && __builtin_expect(g_core_best_wait[t->core_held].v < t->prio, 0)) kernel_preempt(t);
     unsigned h = (unsigned)(c->pc >> 2) & (DCACHE - 1);
     GuestFn f = dcache[h].addr == c->pc ? dcache[h].fn : dispatch_slow(c);
     __attribute__((musttail)) return f(c);
+}
+
+// The new body: the thread's table is found through its KThread (already read for the preemption check), not through
+// the thread-local storage (on Windows: the TLS index, the thread block's slot table, the slot, then the table),
+// holds host (HLE) targets too (the entry's address with bit 0 set; every call of one still passes the unwind point, which
+// only does something while g_rt_unwind is set: then the slow path takes it), and every path that is not a hit is out of
+// line, so that a hit needs no stack frame (the old body pushed 5 registers and took 0x40 bytes of stack before its first
+// compare). A Cpu without a thread (a host thread calling guest code) takes the old body.
+static __attribute__((noinline, cold)) void dispatch_fast_slow(Cpu *c) {
+    KThread *t = c->thread;
+    if (t->core_held >= 0 && g_core_best_wait[t->core_held].v < t->prio) kernel_preempt(t);
+    uint64_t pc = c->pc;
+    DEntry *tab = (DEntry *)t->dcache;
+    if (!tab) tab = t->dcache = calloc(DCACHE, sizeof(DEntry));  // (NULL when out of memory: nothing is cached)
+    DEntry *e = tab ? &tab[(pc >> 2) & (DCACHE - 1)] : NULL;
+    if (e && e->addr == pc) __attribute__((musttail)) return e->fn(c);
+    if (e && e->addr == (pc | 1)) {  // (an HLE target)
+        rt_unwind_point();
+        __attribute__((musttail)) return e->fn(c);
+    }
+    int kind;
+    GuestFn f = dispatch_resolve(c, &kind);
+    if (e && kind <= 1 && !(pc & 1)) {  // (an odd pc is never cached: its address would read as an even pc's host tag)
+        e->addr = kind ? pc | 1 : pc;
+        e->fn = f;
+    }
+    __attribute__((musttail)) return f(c);
+}
+
+static __attribute__((noinline)) void dispatch_fast(Cpu *c) {
+    KThread *t = c->thread;
+    if (__builtin_expect(!t, 0)) __attribute__((musttail)) return dispatch_old(c);
+    if (__builtin_expect(t->core_held >= 0 && g_core_best_wait[t->core_held].v < t->prio, 0))
+        __attribute__((musttail)) return dispatch_fast_slow(c);
+    DEntry *tab = (DEntry *)t->dcache;
+    if (__builtin_expect(!tab, 0)) __attribute__((musttail)) return dispatch_fast_slow(c);
+    uint64_t pc = c->pc;
+    DEntry *e = &tab[(pc >> 2) & (DCACHE - 1)];
+    if (__builtin_expect(e->addr == pc, 1)) __attribute__((musttail)) return e->fn(c);
+    if (e->addr == (pc | 1) && !g_rt_unwind) __attribute__((musttail)) return e->fn(c);
+    __attribute__((musttail)) return dispatch_fast_slow(c);
+}
+
+volatile int g_opt_dispatch_fast;
+void rt_dispatch(Cpu *c) {
+    if (g_opt_dispatch_fast) __attribute__((musttail)) return dispatch_fast(c);
+    __attribute__((musttail)) return dispatch_old(c);
 }
 
 void guest_call(Cpu *c, uint64_t addr) {

@@ -8,6 +8,11 @@ import tempfile
 
 def function(source, name):
     pos=source.index(name+'(')
+    # Skip forward declarations and calls: the definition is the one whose parameter list is followed by a brace.
+    while True:
+        end_sig=min(i for i in (source.find(';',pos),source.find('{',pos)) if i>=0)
+        if source[end_sig]=='{' and source.rfind('static ',0,pos)>source.rfind('\n\n',0,pos):break
+        pos=source.index(name+'(',pos+1)
     start=source.rfind('static ',0,pos)
     brace=source.index('{',pos)
     end,depth=brace+1,1
@@ -56,6 +61,10 @@ static float tex_sc[2][64][2];
 static uint32_t tex_wh[2][64][2];
 #define LOG(...) ((void)0)
 static _Atomic int stage_cpu_options=-1;
+#define CPU_OPTS_REUSE 3
+#define CPU_OPTS_VALID (CPU_OPTS_REUSE | 3824)
+static bool g_opt_dispatch_fast, g_opt_cb_unlink;
+static void stage_cpu_publish(int mask) {g_opt_dispatch_fast=(mask&1024)!=0;g_opt_cb_unlink=(mask&2048)!=0;}
 static _Atomic uint64_t stage_reuse_calls, stage_reuse_eligible, stage_reuse_hits;
 typedef struct {bool failed; int mask;} ControlReply;
 static void control_fail(ControlReply *r,const char *text) {(void)text;r->failed=true;}
@@ -188,7 +197,8 @@ def main():
     root=Path(__file__).resolve().parent.parent
     source=(root/'runtime/nvn/vulkan/exec.c').read_text()
     c='\n'.join([FIXTURE,function(source,'stage_reuse_plan'),function(source,'stage_cpu_opts_init'),function(source,'stage_cpu_opts'),
-                  function(source,'set_finish'),function(source,'stage_set').replace('stage_set(', 'stage_set_prepare('),
+                  function(source,'stage_reuse_mode'),function(source,'mum64'),function(source,'set_finish'),
+                  source[source.index('typedef struct {\n    VkWriteDescriptorSet w[MAX_BIND];'):source.index('// STAGE_REUSE_TEST_BEGIN')].replace('stage_set(', 'stage_set_prepare('),
                   source[source.index('// STAGE_REUSE_TEST_BEGIN'):source.index('// STAGE_REUSE_TEST_END')].replace('stage_set(', 'stage_set_prepare(').replace('stage_set_reuse(', 'stage_set('),MAIN])
     with tempfile.TemporaryDirectory(prefix='swr-reuse-') as d:
         path=Path(d)/'test.c';path.write_text(c);exe=Path(d)/'test'
