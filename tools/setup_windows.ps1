@@ -26,7 +26,7 @@ if (-not (Test-Path $py)) {
     winget install --id Python.Python.3.12 -e --scope user --accept-source-agreements --accept-package-agreements --silent
 }
 if (-not (Test-Path "$root\tools\venv\Scripts\python.exe")) { & $py -m venv "$root\tools\venv" }
-& "$root\tools\venv\Scripts\python.exe" -m pip install -q lz4 capstone unicorn
+& "$root\tools\venv\Scripts\python.exe" -m pip install -q lz4 capstone unicorn oead
 
 # LF line endings in this clone (the bash tools break with CRLF; Git for Windows defaults to autocrlf=true)
 git -C $root config core.autocrlf false

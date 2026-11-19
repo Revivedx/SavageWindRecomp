@@ -42,6 +42,7 @@
 #include "dlss.h"
 #include "../output_scale.h"
 #include "../../game_sites.h"
+#include "../../online.h"
 #include "../../framepace.h"
 #include "../../services/fs_layout.h"
 #include "../../perfcount.h"
@@ -1505,6 +1506,8 @@ static uint32_t pass_ncolor, pass_samples = 1, pass_w, pass_h;
 static int pass_mvec = -1;
 static uint64_t mvec_cleared = ~0ull;
 static TexBackend *post_image(int i, uint32_t w, uint32_t h, VkFormat f);
+static TexBackend *post_image_ex(int i, uint32_t w, uint32_t h, VkFormat f, VkImageUsageFlags extra);
+static void post_pass(VkCommandBuffer cb, const char *fs, const VkImageView *srcs, int n, TexBackend *dst, const float pc[8], bool clear);
 // A native-size background capture excludes the map cursor from refraction.
 static TexBackend *map_background;
 static NvnTexture *map_background_target;
@@ -8522,6 +8525,92 @@ static void wait_built(_Atomic int *state) {  // (0 building: until built or fai
     perfcount_add(PC_BUILD_WAIT_NS, SDL_GetTicksNS() - t0);
 }
 
+// Online play with the menus not pausing the world (runtime/online_actors.c rt_online_menu_live): the pause menu
+// and the map show the scene through a small picture of it made once as they open (a 16:9 target two thirds of the
+// screen or less that no pass draws again, drawn into a target at least 1280 wide: the pause menu's 320x180, its
+// background and the masks its tab icons are cut from; the quick menus' 1280x720). Before
+// the first draw sampling it in a frame it is made again from the frame drawn so far, the world drawn live behind
+// the menu, scaled down with linear filtering (soft, as the game's own); so the menu shows the world going on.
+static void menu_capture_refresh(Prog *pr) {
+    extern int rt_online_menu_live(void);
+    NvnTexture *rt = st.rt.ncolor ? st.rt.color[0] : NULL;
+    if (!rt || !pr->fi || !rt_online_menu_live()) return;
+    uint64_t now = renderer_present_count();
+    static NvnTexture *done[4];
+    static uint64_t done_frame;
+    if (done_frame != now) memset(done, 0, sizeof done), done_frame = now;
+    for (int i = 0; i < pr->fi->ntex && i < 64; i++) {
+        NvnTexture *t = shader_texture_object(1, &pr->fi->tex[i]);
+        if (!t || t == rt || t->target != 1 || !t->backend) continue;
+        TexBackend *b = (TexBackend *)t->backend;
+        if (!b->gpu_owned || !b->drawn_frame || b->drawn_frame + 2 > now) continue;
+        uint64_t a = (uint64_t)t->width * rt->height, c = (uint64_t)t->height * rt->width;
+        if (getenv("SAVAGEWIND_MENU_CAPTURE_LOG")) {  // (debugging: the stale textures a menu samples)
+            static NvnTexture *seen[32];
+            int q;
+            for (q = 0; q < 32 && seen[q] && seen[q] != t; q++) {}
+            if (q < 32 && !seen[q])
+                seen[q] = t, LOG("[vk] menu samples a stale %ux%u (format %#x, drawn %llu, now %llu) into %ux%u\n", t->width,
+                                 t->height, t->format, (unsigned long long)b->drawn_frame, (unsigned long long)now, rt->width, rt->height);
+        }
+        if (rt->width < 1280 || t->width * 3 > rt->width * 2 || t->width < 64 || (a > c ? a - c : c - a) * 50 > c) continue;
+        int k, free_ = -1;
+        for (k = 0; k < 4 && done[k] != t; k++)
+            if (!done[k] && free_ < 0) free_ = k;
+        if (k < 4 || free_ < 0) continue;  // (made again this frame already)
+        done[free_] = t;
+        TexBackend *s = vk_tex(rt, false), *d = vk_tex(t, false);
+        if (!s->image || !d->image || s->samples != 1 || d->samples != 1 ||
+            ((s->aspect | d->aspect) & ~VK_IMAGE_ASPECT_COLOR_BIT))
+            continue;
+        VkFormatProperties fs, fd;
+        vkGetPhysicalDeviceFormatProperties(g_vk.phys, s->format, &fs);
+        vkGetPhysicalDeviceFormatProperties(g_vk.phys, d->format, &fd);
+        if (!(fs.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT) ||
+            !(fs.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) ||
+            !(fd.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT))
+            continue;
+        static NvnTexture *told[8];
+        for (k = 0; k < 8 && told[k] && told[k] != t; k++) {}
+        if (k < 8 && !told[k])
+            told[k] = t, LOG("[vk] the menu's picture of the scene (%ux%u, format %#x) made again each frame from the "
+                             "%ux%u target: the world behind it live (online play)\n", t->width, t->height, t->format,
+                             rt->width, rt->height);
+        vk_end_pass();
+        VkCommandBuffer cb = vk_cmd();
+        vk_full_barrier(cb);
+        // (halved step by step down to about twice its size, then into it: each linear step averages 2x2, so the
+        // whole is a box filter, soft as the game's blurred picture, not the aliasing of one 6x step)
+        TexBackend *from = s;
+        for (int j = 0; j < 4 && from->width >= d->width * 3 && from->height >= d->height * 3; j++) {
+            TexBackend *h = post_image_ex(36 + j, from->width / 2, from->height / 2, s->format, VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+            if (!h || !h->image) break;
+            VkImageBlit hb = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                              .srcOffsets = {{0, 0, 0}, {(int32_t)from->width, (int32_t)from->height, 1}},
+                              .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                              .dstOffsets = {{0, 0, 0}, {(int32_t)h->width, (int32_t)h->height, 1}}};
+            rec_CmdBlitImage(cb, from->image, VK_IMAGE_LAYOUT_GENERAL, h->image, VK_IMAGE_LAYOUT_GENERAL, 1, &hb, VK_FILTER_LINEAR);
+            vk_full_barrier(cb);
+            from = h;
+        }
+        // (blurred at the picture's size, alpha 1: menu_blur.frag; then into it, at the same size)
+        TexBackend *bt = post_image(39, d->width, d->height, s->format);
+        if (bt && bt->image) {
+            float pc[8] = {(float)from->width, (float)from->height, (float)d->width, (float)d->height};
+            VkImageView in[3] = {post_view(from)};
+            post_pass(cb, "menu_blur.frag", in, 1, bt, pc, false);
+            vk_full_barrier(cb);
+            from = bt;
+        }
+        VkImageBlit bl = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                          .srcOffsets = {{0, 0, 0}, {(int32_t)from->width, (int32_t)from->height, 1}},
+                          .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                          .dstOffsets = {{0, 0, 0}, {(int32_t)d->width, (int32_t)d->height, 1}}};
+        rec_CmdBlitImage(cb, from->image, VK_IMAGE_LAYOUT_GENERAL, d->image, VK_IMAGE_LAYOUT_GENERAL, 1, &bl, VK_FILTER_LINEAR);
+        vk_full_barrier(cb);
+    }
+}
+
 static void draw_(CmdRec *r, bool indexed) {
     if (profd) prof_tp_ = SDL_GetTicksNS();
     ProfZone pz0 = PZ_NOW();
@@ -8754,6 +8843,7 @@ static void draw_(CmdRec *r, bool indexed) {
         prof_gw_check += now - prof_stage_start;
         prof_stage_start = now;
     }
+    menu_capture_refresh(pr);
     begin_pass();
     if (pass_void) { stat_skipped++; return; }
     // ---- motion vectors (mvec.c): an opaque draw of a pass with the motion target is recorded (its identity and the
@@ -10007,8 +10097,9 @@ static VkPipeline post_pipeline(const char *fs, VkFormat fmt) {
 // output, 3, 4: FSR EASU / RCAS of the presented image; 5, 6: FSR EASU / RCAS of the 3D scene, 7: its CAS
 // sharpening (scene_post), 32: its colour grading, 33: the map background before cursor UI, 34: its DLSS output,
 // 35: DLSS's motion vectors (dlss_scene).
-enum { POST_IMAGES = 36 };  // (mvec: 8 the object vectors, 9 the debug view, 10 the motion vectors, 11 / 12 TAA's
-                            //  history; FSR 3: 13 its output, 14 the depth, 15 the reactive mask; 16-31 TAA: mvec_taa)
+enum { POST_IMAGES = 40 };  // (mvec: 8 the object vectors, 9 the debug view, 10 the motion vectors, 11 / 12 TAA's
+                            //  history; FSR 3: 13 its output, 14 the depth, 15 the reactive mask; 16-31 TAA: mvec_taa;
+                            //  36-39 the menu's live picture of the scene: menu_capture_refresh, 39 its blur)
 static TexBackend *post_image_ex(int i, uint32_t w, uint32_t h, VkFormat f, VkImageUsageFlags extra);
 static TexBackend *post_image(int i, uint32_t w, uint32_t h, VkFormat f) { return post_image_ex(i, w, h, f, 0); }
 // Keep the map's decorative refraction separate from its interactive UI.
@@ -10737,8 +10828,9 @@ static void fg_before_draw(void) {
 }
 
 static void fg_draw(Prog *pr, CmdRec *r) {
-    if (!g_fg_want && !dlss_wanted() && !rt_xess()) return;  // (DLSS's and XeSS's camera vectors: dlss_scene and
-                                                             //  fsr3_scene's XeSS branch make them the same way)
+    bool camera_only = !g_fg_want;  // (online play needs the camera too: runtime/online.h; DLSS's and XeSS's camera
+    if (camera_only && !dlss_wanted() && !rt_xess() && !online_wants_camera()) return;  // vectors: dlss_scene and
+                                                                                     //  fsr3_scene's XeSS branch)
     if (st.rt.depth && vk_texture_scale_group(st.rt.depth) == RS_SCENE) {
         Range u = st.ubuf[0][0];
         const float *f = (const float *)(uintptr_t)u.addr;
@@ -10758,7 +10850,7 @@ static void fg_draw(Prog *pr, CmdRec *r) {
             if (i < 4) fg.cand[i].draws++;
         }
     }
-    if (!g_fg_want) return;
+    if (camera_only) return;
     NvnTexture *t = scene_composite(pr, r);
     if (t) {
         fg.out_rt = st.rt.color[0];
@@ -10904,6 +10996,14 @@ TexBackend *vk_fg_generate(NvnTexture *t, TexBackend *b) {
     uint64_t now = SDL_GetTicksNS();
     float frame_ms = fg.last_ns ? (float)((now - fg.last_ns) / 1e6) : 16.7f;
     fg.last_ns = now;
+    if (online_wants_camera() && fg.ncand) {  // this frame's scene camera for the online overlay (the most drawn with)
+        int c = 0;
+        for (int i = 1; i < fg.ncand; i++)
+            if (fg.cand[i].draws > fg.cand[c].draws) c = i;
+        double v[16];
+        for (int i = 0; i < 16; i++) v[i] = fg.cand[c].m[12 + i];
+        online_camera_set(v, renderer_origin_lower_left() ? 1.0f : -1.0f);
+    }
     TexBackend *out = NULL, *scene = fg.scene && same ? vk_tex(fg.scene, true) : NULL;
     int best = scene ? cam_best(scene->width, scene->height) : -1;
     bool ok = g_fg_want && fg.hudless_ok && best >= 0 && b->image && b->layers == 1 && b->samples == 1;

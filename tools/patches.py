@@ -421,7 +421,9 @@ def _frame_wait(gen, a):
 
 def _vfr_ratio(gen, a):
     assert _word(gen, a) == 0xb9407a68, hex(_word(gen, a))  # ldr w8, [x19, #0x78]
-    return ('{ extern void rt_vfr_update(uint64_t); rt_vfr_update(c->x[19]); c->x[8] = LD32(c->x[19] + 0x78); }'
+    # (and online play's actors: runtime/online_actors.c, on this thread before the actors' update)
+    return ('{ extern void rt_vfr_update(uint64_t); extern void rt_online_frame(Cpu *); rt_vfr_update(c->x[19]); '
+            'rt_online_frame(c); c->x[8] = LD32(c->x[19] + 0x78); }'
             f'  /* {a:#x}: ldr w8, [x19, #0x78] (VFR: interval ratio) */')
 
 
@@ -525,6 +527,116 @@ def _surf_jump_request(gen, a):
     target = a + sext((w >> 5) & 0x3fff, 14) * 4
     return ('{ extern int rt_surf_jump_request(uint64_t); '
             f'if (!(c->x[0] & 1) || !rt_surf_jump_request(c->x[19])) goto L_{target:x}; }}')
+
+
+# Online play's arrows (runtime/online_actors.c rt_online_arrow): each update of an arrow's flight action (1.9.0
+# 0x70005ee5dc: x0 the action, its actor at +8; the straight part and the fall), the local player's are followed.
+
+def _arrow_move(gen, a):
+    assert _word(gen, a) == 0x39c50008, hex(_word(gen, a))  # ldrsb w8, [x0, #0x140]
+    return ('{ extern void rt_online_arrow(uint64_t); rt_online_arrow(c->x[0]); '
+            'c->x[8] = (uint32_t)(int32_t)(int8_t)LD8(c->x[0] + 0x140); }'
+            f'  /* {a:#x}: ldrsb w8, [x0, #0x140] (an arrow in flight) */')
+
+
+# Online play's bombs (runtime/online_actors.c rt_online_bomb): each bomb the Remote Bomb rune makes (1.9.0
+# 0x7000b3ba04, after its 0x7001535900 and its matrix: the bomb in x22).
+
+def _remote_bomb_made(gen, a):
+    assert _word(gen, a) == 0xf942aec8, hex(_word(gen, a))  # ldr x8, [x22, #0x558]
+    return ('{ extern void rt_online_bomb(uint64_t); rt_online_bomb(c->x[22]); c->x[8] = LD64(c->x[22] + 0x558); }'
+            f'  /* {a:#x}: ldr x8, [x22, #0x558] (a Remote Bomb bomb just made) */')
+
+
+# Online play's Master Sword beams (runtime/online_actors.c rt_online_arrow, with the arrows): a method of the beam's AI
+# action (PlayerBeamMove, 1.9.0 0x7000710498) that the AI asks while it flies; x0 the action, its actor at +8.
+
+def _beam_move(gen, a):
+    assert _word(gen, a) == 0xaa0003f3, hex(_word(gen, a))  # mov x19, x0
+    return ('{ extern void rt_online_arrow(uint64_t); rt_online_arrow(c->x[0]); c->x[19] = c->x[0]; }'
+            f'  /* {a:#x}: mov x19, x0 (a Master Sword beam flying) */')
+
+
+# Every effect and sound an actor plays (xlink2::UserInstance::emit, 0x7000f51054): online play notes those of the local
+# Link and what he holds (runtime/online_actors.c rt_online_xlink_emit), to play them on his Link in the others' games
+
+def _xlink_emit(gen, a):
+    assert _word(gen, a) == 0xaa0003f4, hex(_word(gen, a))  # mov x20, x0
+    return ('{ extern void rt_online_xlink_emit(uint64_t, uint64_t); rt_online_xlink_emit(c->x[0], c->x[1]); '
+            f'c->x[20] = c->x[0]; }}  /* {a:#x}: mov x20, x0 (an actor effect or sound played) */')
+
+
+
+# The effects' error lines (EFF_ERR[...], made with sead::FormatFixedSafeString<128> and never shown): to the log with
+# SAVAGEWIND_EFF_ERR_LOG=1 (runtime/online_actors.c rt_game_fmt)
+
+def _fmt128(gen, a):
+    assert _word(gen, a) == 0xaa0003e8, hex(_word(gen, a))  # mov x8, x0
+    return ('{ extern void rt_game_fmt(uint64_t, uint64_t, uint64_t); rt_game_fmt(c->x[1], c->x[2], c->x[3]); '
+            f'c->x[8] = c->x[0]; }}  /* {a:#x}: mov x8, x0 (a fixed string formatted) */')
+
+
+
+# SwordBlur's reads of its actor's animation slots (runtime/online_actors.c rt_blur_anim / rt_blur_frame): a puppet of
+# online play plays no AS, its slots empty; its player's, while his trail plays
+
+def _blur_anim(gen, a):
+    assert _word(gen, a) == 0xb8696908, hex(_word(gen, a))  # ldr w8, [x8, x9]
+    return ('{ extern uint32_t rt_blur_anim(uint64_t, uint32_t, uint32_t); '
+            'c->x[8] = rt_blur_anim(c->x[19], (uint32_t)(c->x[9] / 0xa8), LD32(c->x[8] + c->x[9])); }'
+            f'  /* {a:#x}: ldr w8, [x8, x9] (SwordBlur: the animation in a slot) */')
+
+
+def _blur_anim_draw(gen, a):
+    assert _word(gen, a) == 0xb8696908, hex(_word(gen, a))  # ldr w8, [x8, x9]
+    return ('{ extern uint32_t rt_blur_anim(uint64_t, uint32_t, uint32_t); '
+            'c->x[8] = rt_blur_anim(c->x[20], (uint32_t)(c->x[9] / 0xa8), LD32(c->x[8] + c->x[9])); }'
+            f'  /* {a:#x}: ldr w8, [x8, x9] (SwordBlur drawing: the animation in its slot) */')
+
+
+def _blur_frame_a(gen, a):
+    assert _word(gen, a) == 0xbd40010a, hex(_word(gen, a))  # ldr s10, [x8]
+    return ('{ extern float rt_blur_frame(uint64_t, uint32_t, float); '
+            'union { uint32_t u; float f; } v = { .u = LD32(c->x[8]) }; '
+            'v.f = rt_blur_frame(c->x[19], (uint32_t)c->x[9], v.f); c->v[10] = v.u; }'
+            f'  /* {a:#x}: ldr s10, [x8] (SwordBlur: a slot animation frame) */')
+
+
+def _blur_frame_b(gen, a):
+    assert _word(gen, a) == 0xbd400100, hex(_word(gen, a))  # ldr s0, [x8]
+    return ('{ extern float rt_blur_frame(uint64_t, uint32_t, float); '
+            'union { uint32_t u; float f; } v = { .u = LD32(c->x[8]) }; '
+            'v.f = rt_blur_frame(c->x[19], LD32(c->x[26] + 0xc), v.f); c->v[0] = v.u; }'
+            f'  /* {a:#x}: ldr s0, [x8] (SwordBlur: its slot animation frame) */')
+
+
+# Online play: a player who dies is revived by a fairy, his world not loaded again (runtime/online_actors.c
+# rt_online_has_fairy, the host's choice): the game's "has he a fairy" (1.9.0 0x7000cec510) answers yes
+
+def _has_fairy(gen, a):
+    assert _word(gen, a) == 0x12000000, hex(_word(gen, a))  # and w0, w0, #1
+    return ('{ extern uint32_t rt_online_has_fairy(uint32_t); c->x[0] = rt_online_has_fairy((uint32_t)c->x[0] & 1); }'
+            f'  /* {a:#x}: and w0, w0, #1 (has Link a fairy: online play revives him) */')
+
+
+# Online play: the world drawn behind the menus (runtime/online_actors.c rt_menu_draw_pause): the menus' frame asks
+# the world's drawing paused with 0 instead of 1 while they don't pause the world (the host's `nopause`)
+
+def _menu_draw(gen, a):
+    assert _word(gen, a) == 0x52800021, hex(_word(gen, a))  # mov w1, #1
+    return ('{ extern uint32_t rt_menu_draw_pause(void); c->x[1] = rt_menu_draw_pause(); }'
+            f'  /* {a:#x}: mov w1, #1 (the menus stop drawing the world: not while they leave the world going) */')
+
+
+# Online play: the menus don't pause the world (runtime/online_actors.c rt_scene_state, the host's `nopause`): the game
+# scene's state (1.9.0 0x7001e44ef0: 1 while the pause menu or the map is up) is read as 0 by the frame's world jobs
+
+def _scene_state(gen, a):
+    w = _word(gen, a)
+    rt, base = {0xb94ef100: (0, 8), 0xb94ef2a8: (8, 21), 0xb94ef108: (8, 8)}[w]
+    return ('{ extern uint32_t rt_scene_state(uint32_t); '
+            f'c->x[{rt}] = rt_scene_state(LD32(c->x[{base}] + 0xef0)); }}'
+            f'  /* {a:#x}: ldr w{rt}, [x{base}, #0xef0] (the game scene\'s state: online play, menus without pause) */')
 
 
 # The physics step's solver microsteps (runtime/hle/framepace.c rt_solver_steps, #161): before each Havok step the game
@@ -1248,6 +1360,22 @@ PATCHES = {
     'surf_contact': _surf_contact,
     'surf_boost_remove': _surf_boost_remove,
     'surf_jump_request': _surf_jump_request,
+    'arrow_move': _arrow_move,
+    'remote_bomb_made': _remote_bomb_made,
+    'beam_move': _beam_move,
+    'xlink_emit': _xlink_emit,
+    'has_fairy': _has_fairy,
+    'menu_draw': _menu_draw,
+    'scene_state_get': _scene_state,
+    'scene_state_phys': _scene_state,
+    'scene_state_b': _scene_state,
+    'scene_state_c': _scene_state,
+    'scene_state_d': _scene_state,
+    'fmt128': _fmt128,
+    'blur_anim': _blur_anim,
+    'blur_frame_a': _blur_frame_a,
+    'blur_frame_b': _blur_frame_b,
+    'blur_anim_draw': _blur_anim_draw,
     'stale_actor_helper': _stale_actor_helper,
     'stale_actor_kind': _stale_actor_kind,
     'stale_actor_target': _stale_actor_target,

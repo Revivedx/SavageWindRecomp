@@ -160,6 +160,51 @@ SITES = [
     Site('surf_contact', 'code', '3941d2a8 36080008/fff8001f bd4066a0 1e202008 5400000d/ff00001f bd403261 1e202028 5400000d/ff00001f', 0),
     Site('surf_boost_remove', 'code', '1e203820 2f00e401 aa1403e1 1e216800 bd003260 0f016680 f94006a0 94000000/fc000000', 0),
     Site('surf_jump_request', 'code', '36000000/fff8001f 52a82608 b9006668 b9008288 52800028 3900a288 2d488680 52800141', 0),
+    # arrows' flight (tools/patches.py _arrow_move): the load of the state of an arrow's flight action (x0, its actor
+    # at +8), each update of an arrow in flight
+    Site('arrow_move', 'code', '39c50008 aa0003f3 3100051f 54000000/ff00001f 34000008/ff00001f 7100051f '
+         '54000001/ff00001f aa1303e0', 0),
+    # the Remote Bomb rune's bombs (tools/patches.py _remote_bomb_made): the first load from a bomb just made (x22)
+    Site('remote_bomb_made', 'code', 'f942aec8 b4000008/ff00001f 528000a9 b9014909 91002288 52800509 9ba92269 '
+         '71000e7f', 0),
+    # the Master Sword beam's AI action (PlayerBeamMove, crc 0xc38e3702: 0x7000b6d698; its vtable 0x7001c1df30), a method
+    # the AI asks every update (tools/patches.py _beam_move): x0 the action, its actor at +8
+    Site('beam_move', 'code', 'aa0003f3 94000000/fc000000 36000000/fff8001f f9400bf3 52800020 a8c27bfd d65f03c0 '
+         'f9400660', 0),
+    # every effect and sound an actor plays (xlink2::UserInstance::emit, its "emit(%s)" log line; 0x7000f51054;
+    # tools/patches.py _xlink_emit): its mov x20, x0 (x0 the user instance, x1 the locator)
+    # sead::FormatFixedSafeString<128>'s constructor (0x7000579614; the effects' "EFF_ERR[...]" lines are made with it
+    # and never shown): its mov x8, x0, x1 the format (tools/patches.py _fmt128, SAVAGEWIND_EFF_ERR_LOG)
+    Site('fmt128', 'code', 'aa0003e8 52801009 928005eb a9390fa2 910043aa a93a17a4', 0),
+    # SwordBlur's emitter callback (0x7001510a90): its reads of its actor's animation slots, the animation (ldr w8,
+    # [x8, x9]: x9 the slot x 0xa8) and its frame (ldr s10, [x8]: w9 the slot; ldr s0, [x8]: the slot at x26 +0xc); x19
+    # the actor (tools/patches.py _blur_anim, _blur_frame_a, _blur_frame_b: a puppet's are its player's)
+    Site('blur_anim', 'code', 'b8696908 b81ec3a8 94000000/fc000000', 0),
+    Site('blur_frame_a', 'code', 'bd40010a 94000000/fc000000 f9400808', 0),
+    Site('blur_frame_b', 'code', 'bd400100 bd001340 79802b48', 0),
+    # and its draw callback's (0x7001511150): the animation in the slot it found it in, against the one it drew from
+    # (ldr w8, [x8, x9]: x9 the slot x 0xa8; x20 the actor)
+    Site('blur_anim_draw', 'code', 'b8696908 b9401aa9 6b08013f', 0),
+    # the game scene's state (1.9.0 0x7001e44ef0: 0 playing, 1 the pause menu or the map up; its getter 0x700127f3c0
+    # and the frame's own reads of it, which leave the world's jobs out but at 0, 0x70012800bc the physics', 0x70012810b8,
+    # 0x700128322c): read through rt_scene_state (tools/patches.py _scene_state), which says 0 while a menu is up in
+    # an online session with others whose host has `nopause` on (runtime/online_actors.c)
+    Site('scene_state_get', 'code', '90000008/9f00001f b94ef100 d65f03c0', 1),
+    Site('scene_state_phys', 'code', '90000015/9f00001f b94ef2a8 35000208', 1),
+    Site('scene_state_b', 'code', '90000008/9f00001f b94ef108 34000008/ff00001f 94000000/fc000000', 1),
+    Site('scene_state_c', 'code', '90000008/9f00001f b94ef108 f100001f', 1),
+    Site('scene_state_d', 'code', 'b94ef2a8 34000608', 0),  # (0x7001280164: the physics' paused branch)
+    # the menus' frame (1.9.0 0x7000d45d70, while the pause menu, the map or a quick menu is up): its pause of the
+    # world's drawing, 0x70015089b0(the graphics manager, 1), asked again every frame (the world not drawn: the
+    # still picture taken as it opened behind the menu), its `mov w1, #1` (tools/patches.py _menu_draw: 0 while the
+    # menus don't pause the world, runtime/online_actors.c rt_menu_draw_pause)
+    Site('menu_draw', 'code', '52800021 f9400294/ffc003ff f9400280 94000000/fc000000 f9400280 52800021', 0),
+    # whether Link has a fairy to revive him as he dies (1.9.0 0x7000cec510; x0 the player: its pause menu data asked
+    # for Animal_Insect_F; false at once in modes without it), its `and w0, w0, #1` before it returns (tools/patches.py
+    # _has_fairy: in online play he always has one, runtime/online_actors.c rt_online_has_fairy)
+    Site('has_fairy', 'code', 'a90023e9 94000000/fc000000 a9417bfd 910083ff 12000000 d65f03c0', 4),
+    Site('xlink_emit', 'code', 'aa0003f4 f9401800 aa0203f5 aa0103f3 94000000/fc000000 3941d008 34000008/ff00001f '
+         '39434288', 0),
     # a stale actor in the target manager (tools/patches.py _stale_actor_helper, _stale_actor_target; #391, #393): the
     # helper that asks an actor for its link, and the camera target's inline copy of it
     Site('stale_actor_helper', 'code', 'b4000000/ff00001f f942b808 f9404500 14000000/fc000000 d65f03c0', 0),
@@ -508,6 +553,15 @@ OPTIONAL_GROUPS = [
     ('stamina_store',),
     ('sprint_cost', 'sprint_press_cost', 'battle_info_field', 'battle_info_b', 'battle_info_c'),  # (Cheats > Free sprint: without them it does nothing)
     ('horse_crash', 'horse_look_ahead'),  # (Cheats > Sure-footed horse: without them it does nothing)
+    ('arrow_move',),
+    ('remote_bomb_made',),
+    ('beam_move',),
+    ('xlink_emit',),
+    ('has_fairy',),
+    ('scene_state_get', 'scene_state_phys', 'scene_state_b', 'scene_state_c', 'scene_state_d'),
+    ('menu_draw',),
+    ('fmt128',),
+    ('blur_anim', 'blur_frame_a', 'blur_frame_b', 'blur_anim_draw'),
     ('tp_gate',),  # (a far teleport of the control endpoint: without it a long jump freezes the world)
     ('item_tick', 'pouch_item_get', 'pouch_mgr'),
     ('horse_cam_lr',),
@@ -662,6 +716,22 @@ KNOWN = {
         'surf_contact': 0x70011e9e74,
         'surf_boost_remove': 0x70011e9e94,
         'surf_jump_request': 0x70011ea3d4,
+        'arrow_move': 0x70005ee5e8,
+        'remote_bomb_made': 0x7000b3bb5c,
+        'beam_move': 0x70007104a4,
+        'xlink_emit': 0x7000f5106c,
+        'fmt128': 0x7000579620,
+        'has_fairy': 0x7000cec570,
+        'scene_state_get': 0x700127f3c4,
+        'menu_draw': 0x7000d45d84,
+        'scene_state_phys': 0x70012800bc,
+        'scene_state_b': 0x70012810b8,
+        'scene_state_c': 0x700128322c,
+        'scene_state_d': 0x7001280164,
+        'blur_anim': 0x7001510f0c,
+        'blur_frame_a': 0x7001510fe8,
+        'blur_frame_b': 0x7001511098,
+        'blur_anim_draw': 0x700151164c,
         'stale_actor_helper': 0x700120bc40,
         'stale_actor_kind': 0x700120ccdc,
         'stale_actor_target': 0x7000dea400,

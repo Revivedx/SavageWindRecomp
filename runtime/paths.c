@@ -84,7 +84,8 @@ static void choose_root(char *root, size_t n, bool *dev, const char *start, cons
     const char *env = getenv("SAVAGEWIND_DATA_ROOT");
     if (dev) *dev = false;
     if (env && *env) snprintf(root, n, "%s", env);
-    else if (is_dir("extracted")) {  // dev / portable: as before
+    else if (is_dir("extracted") || access("game_dir.txt", F_OK) == 0) {  // dev / portable: as before (game_dir.txt:
+        // the game files elsewhere, runtime/main.c)
         snprintf(root, n, "%s", start);
         if (dev) *dev = true;
     } else {

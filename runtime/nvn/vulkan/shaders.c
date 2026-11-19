@@ -1330,6 +1330,28 @@ static const char *builtin_src(const char *name, int *stage) {
                "  o = vec4(clamp(c, mn, mx), alpha);\n"
                "}\n";
     }
+    // The pause menu's live picture of the scene (exec.c menu_capture_refresh): a Gaussian blur (13x13, sigma 3 source
+    // texels) of the halved scene, a.xy its size, a.zw the picture's; alpha 1 (the scene's own is 0: the menu's tab
+    // icons are cut from this picture by its alpha)
+    if (!strcmp(name, "menu_blur.frag")) {
+        *stage = STAGE_FRAGMENT;
+        return "#version 450\n"
+               "layout(set = 0, binding = 0) uniform sampler2D t;\n"
+               "layout(push_constant) uniform P { vec4 a; vec4 b; } pc;\n"
+               "layout(location = 0) out vec4 o;\n"
+               "void main() {\n"
+               "  ivec2 c = ivec2(gl_FragCoord.xy * pc.a.xy / pc.a.zw), mx = ivec2(pc.a.xy) - 1;\n"
+               "  vec3 s = vec3(0.0);\n"
+               "  float w = 0.0;\n"
+               "  for (int y = -6; y <= 6; y++)\n"
+               "    for (int x = -6; x <= 6; x++) {\n"
+               "      float k = exp(-float(x * x + y * y) / 18.0);\n"
+               "      s += texelFetch(t, clamp(c + ivec2(x, y), ivec2(0), mx), 0).rgb * k;\n"
+               "      w += k;\n"
+               "    }\n"
+               "  o = vec4(s / w, 1.0);\n"
+               "}\n";
+    }
     // FSR 1 RCAS: contrast-adaptive sharpening of the EASU output (same size). a.x = sharpness (exp2(-stops)),
     // b.xy = image size. The lobe is limited so the result stays inside the neighbours' range; noise is damped.
     // b.z = 1: the input is EASU's gamma 2.0 of a linear image, the output linear again.
