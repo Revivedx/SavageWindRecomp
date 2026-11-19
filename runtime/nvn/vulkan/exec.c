@@ -1052,9 +1052,13 @@ static VkSpan copy_dedupe(int slot, const void *data, uint64_t size, uint64_t al
 // the range it wrote: each copy keeps the update count it was made at and which written ranges it covers. (Copies used
 // to be shared within one GPU piece of ~300 draws and every UpdateUniformBuffer dropped them all: ~3000 copies, ~15 MB,
 // a frame in the open world.)
-#define GCOPY_TAB 4096
+// 4-way set-associative cache (2048 sets x 4 ways = 8192 entries) prevents hot UBO/vertex hash collisions.
+#define GCOPY_SETS 2048
+#define GCOPY_WAYS 4
 #define UUB_MAX 64
-static struct { uint64_t addr, size, gen, serial, mask; int chunk; VkSpan span; } gcopy[GCOPY_TAB];
+typedef struct { uint64_t addr, size, gen, serial, mask; int chunk; VkSpan span; } GcopyEntry;
+static GcopyEntry gcopy[GCOPY_SETS][GCOPY_WAYS];
+static uint8_t gcopy_rr[GCOPY_SETS];
 static uint64_t gcopy_gen = 1;
 static struct { uint64_t lo, hi, serial; } uubt[UUB_MAX];  // ranges UpdateUniformBuffer wrote, with the last update's count
 static int nuub;
@@ -1088,18 +1092,32 @@ static void uub_note(uint64_t lo, uint64_t hi) {
 
 static VkSpan guest_copy(uint64_t addr, uint64_t size) {
     uint64_t h = (addr * 0x9E3779B97F4A7C15ull) ^ (size * 0xC2B2AE3D27D4EB4Full);
-    uint32_t slot = (uint32_t)(h ^ (h >> 32)) & (GCOPY_TAB - 1);
-    __typeof__(gcopy[0]) *e = &gcopy[slot];
+    uint32_t set = (uint32_t)(h ^ (h >> 32)) & (GCOPY_SETS - 1);
+    GcopyEntry *ways = gcopy[set];
     uint64_t gen = __atomic_load_n(&gcopy_gen, __ATOMIC_RELAXED);
-    if (e->gen == gen && e->addr == addr && e->size == size) {
-        bool stale = false;
-        for (uint64_t m = e->mask; m && !stale; m &= m - 1) stale = uubt[__builtin_ctzll(m)].serial > e->serial;
-        if (!stale) {
-            uint64_t pending = vk_pending_seq();
-            if (chunks[e->chunk].seq < pending) chunks[e->chunk].seq = pending;
-            stat_gcopy_hit++;
-            return e->span;
+    int victim = -1;
+    for (int w = 0; w < GCOPY_WAYS; w++) {
+        GcopyEntry *e = &ways[w];
+        if (e->gen != gen) {
+            if (victim < 0) victim = w;
+            continue;
         }
+        if (e->addr == addr && e->size == size) {
+            bool stale = false;
+            for (uint64_t m = e->mask; m && !stale; m &= m - 1) stale = uubt[__builtin_ctzll(m)].serial > e->serial;
+            if (!stale) {
+                uint64_t pending = vk_pending_seq();
+                if (chunks[e->chunk].seq < pending) chunks[e->chunk].seq = pending;
+                stat_gcopy_hit++;
+                return e->span;
+            }
+            victim = w;  // reuse the stale entry directly
+            break;
+        }
+    }
+    if (victim < 0) {
+        victim = gcopy_rr[set];
+        gcopy_rr[set] = (uint8_t)((victim + 1) & (GCOPY_WAYS - 1));
     }
     stat_gcopy_miss++;
     stat_gcopy_bytes += size;
@@ -1107,7 +1125,7 @@ static VkSpan guest_copy(uint64_t addr, uint64_t size) {
     uint64_t mask = 0;
     for (int i = 0; i < nuub; i++)
         if (addr < uubt[i].hi && uubt[i].lo < addr + size) mask |= 1ull << i;
-    e->addr = addr; e->size = size; e->gen = gen; e->serial = uub_serial; e->mask = mask; e->chunk = active; e->span = s;
+    ways[victim] = (GcopyEntry){addr, size, gen, uub_serial, mask, active, s};
     return s;
 }
 
@@ -8493,6 +8511,30 @@ static void hdr_record_copy(NvnTexture *sn, NvnTexture *dn) {
 
 static void draw_(CmdRec *r, bool indexed);
 static uint64_t stat_discarded;
+// Branch-free max-index scan when primitive restart is off so clang auto-vectorizes to SIMD pmax.
+static uint32_t scan_max_u16(const uint16_t *s, uint32_t count, bool prim_restart, uint16_t restart, uint32_t cur) {
+    if (!prim_restart) {
+        uint16_t mx = cur > 0xFFFFu ? 0xFFFFu : (uint16_t)cur;
+        for (uint32_t i = 0; i < count; i++)
+            if (s[i] > mx) mx = s[i];
+        return mx > cur ? mx : cur;
+    }
+    for (uint32_t i = 0; i < count; i++)
+        if (s[i] > cur && s[i] != restart) cur = s[i];
+    return cur;
+}
+
+static uint32_t scan_max_u32(const uint32_t *s, uint32_t count, bool prim_restart, uint32_t restart, uint32_t cur) {
+    if (!prim_restart) {
+        for (uint32_t i = 0; i < count; i++)
+            if (s[i] > cur) cur = s[i];
+        return cur;
+    }
+    for (uint32_t i = 0; i < count; i++)
+        if (s[i] > cur && s[i] != restart) cur = s[i];
+    return cur;
+}
+
 static void draw(CmdRec *r, bool indexed) {
     // Rasterizer discard: the primitives stop before rasterization, so nothing reaches the targets, depth, stencil or
     // occlusion queries. Its only output in NVN is transform feedback, which isn't implemented (cmdbuf.c), so the draw
@@ -9335,8 +9377,8 @@ have_pipe:
             } else {
                 if (profd) prof_index_copy++;
                 ib = vk_transient_copy(src, (uint64_t)count * isz + 4, 4);
-                if (isz == 2) { const uint16_t *s = src; for (uint32_t i = 0; i < count; i++) if (s[i] > max_index && s[i] != (uint16_t)restart) max_index = s[i]; }
-                else { const uint32_t *s = src; for (uint32_t i = 0; i < count; i++) if (s[i] > max_index && s[i] != restart) max_index = s[i]; }
+                if (isz == 2) max_index = scan_max_u16(src, count, st.prim_restart, (uint16_t)restart, max_index);
+                else max_index = scan_max_u32(src, count, st.prim_restart, restart, max_index);
             }
         } else if (native) {  // 8-bit indices: widen to 16
             if (profd) prof_index_copy++;
@@ -9369,6 +9411,9 @@ have_pipe:
     }
 
     // ---- vertex streams: the range this draw can read, copied once per submission
+    VkBuffer vbufs[17];
+    VkDeviceSize voffs[17];
+    uint32_t vdirty = 0;
     for (uint32_t sm = pipe_memo.k.s.used_streams & ((1u << 17) - 1); sm; sm &= sm - 1) {
         int s = __builtin_ctz(sm);
         VkSpan sp;
@@ -9383,14 +9428,15 @@ have_pipe:
                 if (profd) prof_vertex_direct++;
                 race_probe_note(v.addr, v.size, false);
                 if (dc.vbuf[s] != dbuf || dc.voff[s] != doff) {
-                    rec_CmdBindVertexBuffers(cb, (uint32_t)s, 1, &dbuf, &doff);
+                    vbufs[s] = dbuf; voffs[s] = doff;
                     dc.vbuf[s] = dbuf; dc.voff[s] = doff;
+                    vdirty |= 1u << s;
                 }
                 continue;
             }
             if (scan_src) {  // copying after all: the index scan bounds the copy
-                if (scan_isz == 2) { const uint16_t *q = scan_src; for (uint32_t i = 0; i < icount; i++) if (q[i] > max_index && q[i] != (uint16_t)scan_restart) max_index = q[i]; }
-                else { const uint32_t *q = scan_src; for (uint32_t i = 0; i < icount; i++) if (q[i] > max_index && q[i] != scan_restart) max_index = q[i]; }
+                if (scan_isz == 2) max_index = scan_max_u16(scan_src, icount, st.prim_restart, (uint16_t)scan_restart, max_index);
+                else max_index = scan_max_u32(scan_src, icount, st.prim_restart, scan_restart, max_index);
                 max_index += 1;
                 if (base_vertex > 0) max_index += (uint32_t)base_vertex;
                 scan_src = NULL;
@@ -9408,9 +9454,17 @@ have_pipe:
         }
         VkDeviceSize off = sp.off;
         if (dc.vbuf[s] != sp.buf || dc.voff[s] != off) {
-            rec_CmdBindVertexBuffers(cb, (uint32_t)s, 1, &sp.buf, &off);
+            vbufs[s] = sp.buf; voffs[s] = off;
             dc.vbuf[s] = sp.buf; dc.voff[s] = off;
+            vdirty |= 1u << s;
         }
+    }
+    while (vdirty) {
+        int first = __builtin_ctz(vdirty), end = first;
+        while ((vdirty >> end) & 1u) end++;
+        uint32_t run = (uint32_t)(end - first);
+        rec_CmdBindVertexBuffers(cb, (uint32_t)first, run, &vbufs[first], &voffs[first]);
+        vdirty &= ~(((1u << run) - 1u) << first);
     }
 
     if (profd) prof_vertex_bind += SDL_GetTicksNS() - prof_index_start;
