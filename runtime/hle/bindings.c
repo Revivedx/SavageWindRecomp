@@ -48,8 +48,8 @@ static const char *const k_ini[BIND_KEY_COUNT] = {
     "gyro_up", "gyro_down", "gyro_left", "gyro_right", "gyro_turn_left", "gyro_turn_right", "gyro_center", "fly",
 };
 // What each raw Switch input does apart from the 41 actions: the Key bindings page and the F1 overlay list these by
-// function, never by the Switch button. The two with no function of their own (left stick press, D-pad Down: the
-// actions Crouch, Call horse and Throw distance cover them) are not listed and keep their Switch names.
+// function, never by the Switch button. Left stick press has no function of its own (covered by Crouch) and is not
+// listed; D-pad Down is listed because Magnesis pull-closer and menus read it directly.
 static const char *const k_names[BIND_KEY_COUNT] = {
     "Menu: confirm", "Menu: back", "Menu: Hero's Path", "Menu: sort / sensor",
     "Left stick press", "Menu: inspect / zoom", "Menu: previous tab", "Menu: next tab",
