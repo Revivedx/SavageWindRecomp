@@ -390,6 +390,16 @@ static void log_screens(void);
 // patched to scale a per-update step it doesn't scale itself
 static volatile float g_frame_ratio = 1;
 
+// TimeMgr also uses the normal clock increment for its cloud accumulator. The
+// native frame delta, time gates, and separate Blood Moon timer stay in the game.
+uint32_t rt_day_cycle_step(uint32_t bits) {
+    int length = g_settings.day_cycle_length;
+    if (length <= DAY_CYCLE_DEFAULT || length > DAY_CYCLE_MAX) return bits;
+    union { uint32_t u; float f; } step = { .u = bits };
+    step.f /= (float)length;
+    return step.u;
+}
+
 // An arrow's gravity in its fall, added once per update (tools/patches.py _arrow_gravity, #144): per console frame.
 // SAVAGEWIND_LOG_ARROW=1 logs each falling arrow's update (time, velocity before it).
 float rt_arrow_gravity(uint64_t arrow, float g) {

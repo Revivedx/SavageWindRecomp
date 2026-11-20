@@ -154,6 +154,11 @@ SITES = [
     # tan(fovy / 2) (y) and of it with the aspect ratio (x)
     Site('persp_unproject_y', 'code', 'bd409800 f900003f 1e201004 1e214000 bd000820 bd409800 bd40ac01 bd400442', 6),
     Site('persp_unproject_x', 'code', 'bd409800 f900003f 1e201004 1e214000 bd000820 bd409800 bd40ac01 bd400442', 18),
+    # TimeMgr's clock step in OnlyUpdateTimeOfDay and normal mode, respectively.
+    Site('day_cycle_time_only', 'code', '90000008/9f00001f bd40c668 f9400108/ffc003ff f9400100 94000000/fc000000 '
+         'bd40ba61 52a87688 1f000500', 1),
+    Site('day_cycle_normal', 'code', '90000008/9f00001f bd40c668 f9400108/ffc003ff f9400100 94000000/fc000000 '
+         '1e200908 bd40ba60 52800028 39053e68', 1),
     # arrows' fall (tools/patches.py _arrow_gravity): the load of the gravity added to an arrow's velocity per update
     Site('arrow_fall_gravity', 'code', 'bd410a81 1e212849 bd410e81 1e21280a 94000000/fc000000 36000000/fff8001f f9404288 2d400500', 0),
     # Experimental shield-surf takeoff grace (#305): contact update, boost removal and launch request.
@@ -658,6 +663,8 @@ KNOWN = {
         'vfr_ratio': 0x700151d494,
         'gui_speed': 0x7001280ee8,
         'quick_menu_capture_alpha': 0x7000e26a38,
+        'day_cycle_time_only': 0x70014266d4,
+        'day_cycle_normal': 0x7001426788,
         'arrow_fall_gravity': 0x70005ee734,
         'surf_contact': 0x70011e9e74,
         'surf_boost_remove': 0x70011e9e94,
