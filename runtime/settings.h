@@ -88,6 +88,8 @@ enum { START_PICTURE_ART, START_PICTURE_SCREENSHOT, START_PICTURE_SAVE, START_PI
 
 // Gameplay > Dialogue text speed (runtime/pc_cursor.c): speed at which dialogue text appears during conversations
 enum { TEXT_SPEED_NORMAL = 0, TEXT_SPEED_FAST = 1, TEXT_SPEED_INSTANT = 2, TEXT_SPEED_COUNT = 3 };
+enum { DAY_CYCLE_DEFAULT = 1, DAY_CYCLE_MAX = 4 };
+
 typedef struct {
     bool fullscreen;
     int fullscreen_mode;     // FSMODE_*
@@ -123,6 +125,7 @@ typedef struct {
     bool freecam_sticks; // both stick clicks together turn the free camera on and off (hle/input.c)
     int gpu;             // Vulkan adapter index from the startup log; -1: automatic (restart required)
     bool quick_replace;   // native full-inventory replacement (1.9.0)
+    int day_cycle_length; // multiple of the original 24-minute day/night cycle
     bool quick_drop;      // native dropping from the quick equipment selector
     bool quick_sort;      // native sorting in the quick equipment selector
     bool menu_wrap;      // the game's menus wrap around: past the last button to the first (runtime/menu_wrap.c)

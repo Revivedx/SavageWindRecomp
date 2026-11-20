@@ -1261,3 +1261,7 @@ T("Downloading Intel XeSS", "Intel XeSS 다운로드 중")
 T("Dynamic: renders the 3D scene smaller when frames are slow, sharper when they aren't; stays full size where that gains nothing.", "동적: 프레임이 느릴 때 3D 장면을 더 작게, 빠를 때 더 선명하게 렌더링합니다. 이득이 없는 환경에서는 전체 크기를 유지합니다.")
 T("About mods", "모드 안내")
 T("Mods are made by other people, not by Savage Wind. We don't check, test or support them, and we aren't responsible for what they do, including if they break the game or your saves. Back up your saves before trying one, and turn mods off before reporting a bug: a report of a bug a mod causes is closed right away. Savage Wind releases never include mods; in the future we may suggest some we've found to play well with Savage Wind.", "모드는 Savage Wind가 아니라 다른 사람들이 만든 것입니다. 저희는 모드를 확인하거나 테스트하거나 지원하지 않으며, 게임이나 세이브가 망가지는 경우를 포함해 모드가 하는 일에 책임지지 않습니다. 모드를 써 보기 전에 세이브를 백업하고, 버그를 신고하기 전에는 모드를 꺼 주세요. 모드 때문에 생긴 버그 신고는 바로 닫힙니다. Savage Wind 릴리스에는 모드가 포함되지 않습니다. 앞으로 Savage Wind에서 잘 작동하는 모드를 추천할 수는 있습니다.")
+
+T("Day/night cycle length", "낮과 밤의 주기")
+T("Real time for a full day and night while the in-game clock runs.", "게임 내 시계가 흐를 때 낮과 밤이 한 번 지나가는 데 걸리는 실제 시간입니다.")
+T("%d min", "%d분")

@@ -425,6 +425,13 @@ def _vfr_ratio(gen, a):
             f'  /* {a:#x}: ldr w8, [x19, #0x78] (VFR: interval ratio) */')
 
 
+def _day_cycle_step(gen, a):
+    assert _word(gen, a) == 0xbd40c668, hex(_word(gen, a))  # ldr s8, [x19, #0xc4]
+    # Change the local step only. TimeMgr still applies its own frame delta and publishes WM_Time.
+    return ('{ extern uint32_t rt_day_cycle_step(uint32_t); '
+            'c->v[8] = rt_day_cycle_step((uint32_t)LD32(c->x[19] + 0xc4)); }')
+
+
 # Arrows (#144): once in their fall, an arrow's velocity is its last direction x its speed plus a gravity vector
 # (0, ArrowGravity, 0), added once per update with no time step (1.9.0 0x70005ee668; the straight part before it scales
 # by the delta frame). Above 30 fps it fell 2 or 4 times as fast per second and landed short. The load of its Y part
@@ -1244,6 +1251,8 @@ PATCHES = {
     'vfr_ratio': _vfr_ratio,
     'gui_speed': _gui_speed,
     'quick_menu_capture_alpha': _quick_menu_capture_alpha,
+    'day_cycle_time_only': _day_cycle_step,
+    'day_cycle_normal': _day_cycle_step,
     'arrow_fall_gravity': _arrow_gravity,
     'surf_contact': _surf_contact,
     'surf_boost_remove': _surf_boost_remove,

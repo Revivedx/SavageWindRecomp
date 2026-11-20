@@ -1056,6 +1056,16 @@ void build_items(void) {
 #endif
 
     // Gameplay
+    v.push_back(choice(P_GAMEPLAY, "Day/night cycle length", "Real time for a full day and night while the in-game clock runs.",
+                       [](const Item &) -> int { return DAY_CYCLE_MAX; },
+                       [](const Item &, int x) {
+                           static char label[32];
+                           snprintf(label, sizeof label, tr("%d min"), 24 * (x + 1));
+                           return (const char *)label;
+                       },
+                       [](const Item &) { return g_settings.day_cycle_length - 1; },
+                       [](const Item &, int x) { g_settings.day_cycle_length = x + 1; }, DAY_CYCLE_DEFAULT - 1));
+
     v.push_back(toggle(P_GAMEPLAY, "Quick inventory sorting",
                        "Sort weapons, bows and shields in the quick selector. Requires game version 1.9.0.",
                        [](const Item &) { return (int)g_settings.quick_sort; },

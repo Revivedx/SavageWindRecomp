@@ -1261,3 +1261,7 @@ T("Downloading Intel XeSS", "正在下载 Intel XeSS")
 T("Dynamic: renders the 3D scene smaller when frames are slow, sharper when they aren't; stays full size where that gains nothing.", "动态：帧率低时缩小 3D 场景，帧率够时恢复清晰；降档无收益的环境保持原生尺寸。")
 T("About mods", "关于模组")
 T("Mods are made by other people, not by Savage Wind. We don't check, test or support them, and we aren't responsible for what they do, including if they break the game or your saves. Back up your saves before trying one, and turn mods off before reporting a bug: a report of a bug a mod causes is closed right away. Savage Wind releases never include mods; in the future we may suggest some we've found to play well with Savage Wind.", "模组由其他人制作，而非 Savage Wind。我们不检查、不测试也不支持模组，对模组造成的任何后果概不负责，包括游戏或存档损坏。试用模组前请备份存档，报告错误前请先关闭模组；由模组导致的错误报告会被立即关闭。Savage Wind 的发布版本绝不包含模组；将来我们可能会推荐一些与 Savage Wind 配合良好的模组。")
+
+T("Day/night cycle length", "昼夜循环时长")
+T("Real time for a full day and night while the in-game clock runs.", "游戏内时钟走动时，完整一个昼夜所需的现实时间。")
+T("%d min", "%d 分钟")

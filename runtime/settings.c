@@ -94,6 +94,7 @@ Settings g_settings = {
     .hud_size = 100,
     .menu_speed = 100,
     .menu_text_size = 100,
+    .day_cycle_length = DAY_CYCLE_DEFAULT,
     .color_lut_strength = 100,
     .haze = 100,
     .bloom = true,
@@ -448,6 +449,12 @@ void settings_load(void) {
         else if (!strcmp(key, "rumble_strength")) g_settings.rumble_strength = atoi(val);
         else if (!strcmp(key, "freecam_sticks")) g_settings.freecam_sticks = atoi(val) != 0;
         else if (!strcmp(key, "quick_replace")) g_settings.quick_replace = atoi(val) != 0;
+        else if (!strcmp(key, "day_cycle_length")) {
+            char *end;
+            long length = strtol(val, &end, 10);
+            g_settings.day_cycle_length = !*end && length >= DAY_CYCLE_DEFAULT && length <= DAY_CYCLE_MAX
+                ? (int)length : DAY_CYCLE_DEFAULT;
+        }
         else if (!strcmp(key, "quick_drop")) g_settings.quick_drop = atoi(val) != 0;
         else if (!strcmp(key, "quick_sort")) g_settings.quick_sort = atoi(val) != 0;
         else if (!strcmp(key, "discord_rpc")) g_settings.discord_rpc = atoi(val) != 0;
@@ -826,6 +833,7 @@ bool settings_save_to(const char *path) {
     fprintf(f, "rumble_strength = %d\n", g_settings.rumble_strength);
     fprintf(f, "freecam_sticks = %d\n", g_settings.freecam_sticks);
     fprintf(f, "quick_replace = %d\n", g_settings.quick_replace);
+    fprintf(f, "day_cycle_length = %d\n", g_settings.day_cycle_length);
     fprintf(f, "quick_drop = %d\n", g_settings.quick_drop);
     fprintf(f, "quick_sort = %d\n", g_settings.quick_sort);
     fprintf(f, "discord_rpc = %d\n", g_settings.discord_rpc);

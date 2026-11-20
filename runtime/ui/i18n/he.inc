@@ -1260,3 +1260,7 @@ T("Downloading Intel XeSS", "מוריד את Intel XeSS")
 T("Dynamic: renders the 3D scene smaller when frames are slow, sharper when they aren't; stays full size where that gains nothing.", "דינמי: מרנדר את סצנת ה-3D קטנה יותר כשהפריימים איטיים וחדה יותר כשלא; נשארת בגודל מלא כשאין בכך תועלת.")
 T("About mods", "על מודים")
 T("Mods are made by other people, not by Savage Wind. We don't check, test or support them, and we aren't responsible for what they do, including if they break the game or your saves. Back up your saves before trying one, and turn mods off before reporting a bug: a report of a bug a mod causes is closed right away. Savage Wind releases never include mods; in the future we may suggest some we've found to play well with Savage Wind.", "המודים נוצרים על ידי אנשים אחרים, לא על ידי Savage Wind. איננו בודקים, מנסים או תומכים בהם, ואיננו אחראים למה שהם עושים, כולל אם הם שוברים את המשחק או את השמירות שלך. גבה את השמירות לפני שאתה מנסה מוד, וכבה את המודים לפני דיווח על באג: דיווח על באג שנגרם על ידי מוד ייסגר מיד. גרסאות Savage Wind לעולם אינן כוללות מודים; בעתיד אולי נמליץ על כמה שעובדים טוב עם Savage Wind.")
+
+T("Day/night cycle length", "משך מחזור היום והלילה")
+T("Real time for a full day and night while the in-game clock runs.", "הזמן האמיתי שעוברים יום ולילה שלמים כאשר שעון המשחק פועל.")
+T("%d min", "%d דק׳")
