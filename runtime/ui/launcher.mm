@@ -546,12 +546,13 @@ static std::string precompile_line(void) {
 static std::atomic<bool> g_stay_on_setup{false}, g_dlc_checking{false};
 
 // ------------------------------------------------------------------ NVIDIA DLSS (runtime/dlss_fetch.h)
-// NVIDIA's library for Video > Upscaler's NVIDIA DLSS, downloaded from NVIDIA's own repository after a setup when its
-// option is on (the setup page's DOWNLOAD NVIDIA DLSS, settings.dlss_download), or on its own from the game files
-// page. Not needed to play: a failed download leaves DLSS greyed out, nothing else.
-static const char k_dlss_text[] = "For NVIDIA DLSS in Video > Upscaler, on NVIDIA RTX graphics cards: downloads "
-                                   "NVIDIA's DLSS library (59 MB) from NVIDIA's own repository on GitHub. It is "
-                                   "NVIDIA's, under NVIDIA's licence, and not part of Savage Wind.";
+// NVIDIA's libraries for Video > Upscaler and Video > Frame generation's NVIDIA DLSS, downloaded from NVIDIA's own
+// repository after a setup when its option is on (the setup page's DOWNLOAD NVIDIA DLSS, settings.dlss_download), or
+// on their own from the game files page. Not needed to play: a failed download leaves DLSS greyed out, nothing else.
+static const char k_dlss_text[] = "For NVIDIA DLSS in Video > Upscaler and Video > Frame generation, on NVIDIA RTX "
+                                   "graphics cards: downloads NVIDIA's DLSS libraries (66 MB) from NVIDIA's own "
+                                   "repository on GitHub. They are NVIDIA's, under NVIDIA's licence, and not part of "
+                                   "Savage Wind.";
 static std::atomic<bool> g_dlss_fetching{false};
 static std::atomic<float> g_dlss_frac{0};
 static void dlss_progress(uint64_t done, uint64_t total) { g_dlss_frac = total ? (float)((double)done / (double)total) : 0; }
@@ -2264,7 +2265,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                         }
                     }
 #endif
-                    if (!g_confirm_delete && dlss_fetch_offered()) {  // NVIDIA's DLSS library, now (or again)
+                    if (!g_confirm_delete && dlss_fetch_offered()) {  // NVIDIA's DLSS libraries, now (or again)
                         bool have = dlss_fetch_present();
                         opt_section("NVIDIA DLSS");
                         if (have) opt_disable_next();
@@ -2338,7 +2339,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                             settings_save();
                     }
 #endif
-                    if (dlss_fetch_offered() && !dlss_fetch_present()) {  // (an NVIDIA driver, NVIDIA's DLL not here)
+                    if (dlss_fetch_offered() && !dlss_fetch_present()) {  // (an NVIDIA driver, NVIDIA's DLLs not here)
                         if (busy) opt_disable_next();
                         if (opt_toggle("Download NVIDIA DLSS", &g_settings.dlss_download, true, k_dlss_text))
                             settings_save();
