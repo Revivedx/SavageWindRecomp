@@ -1298,6 +1298,14 @@ static void sparkle(ImDrawList *dl, ImVec2 c, float r, float k, float spin) {
     dl->AddConvexPolyFilled(pts, 8, IM_COL32(255, 248, 215, (int)(235 * k)));
 }
 
+// Select the next menu item for the keyboard and controllers. SetKeyboardFocusHere alone leaves ImGui's nav cursor
+// hidden, and A / Enter press the selected item only while it shows (ImGui 1.91): the item looked selected (menu_item
+// draws its own highlight) but did nothing until a d-pad move.
+static void menu_select_next() {
+    ImGui::SetKeyboardFocusHere();
+    ImGui::SetNavCursorVisible(true);
+}
+
 // split .. split_end: that part of the label in its own colour
 static bool menu_item(const char *label, bool enabled, bool *hovered = NULL, const char *split = NULL, ImU32 col2 = 0,
                       const char *split_end = NULL) {
@@ -1790,6 +1798,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                       (post_update_pending(SAVAGEWIND_VERSION) || !status.empty()) && !post_update_failed_before(SAVAGEWIND_VERSION);
     if (!auto_setup) explain_status(status);
     bool play = false;
+    bool play_selected = false;  // (PLAY selected on the first frame; again after a "Title screen" reboot)
     bool tip_then_play = false;  // (setup mode: the game files just got ready; the first-start note, then the game)
     if (auto_setup) {
         fprintf(stderr, "[launcher] setting up this version by itself (%s)\n", status.empty() ? "new version" : status.c_str());
@@ -1985,8 +1994,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                     ImGui::SetCursorPosY(285 * s + 3 * pitch(0.35f) - 3 * pitch(g_menu_gap) - (update_st == UPDATE_AVAILABLE ? pitch(g_menu_gap) : 0));
                 }
                 ImGui::SetCursorPosX(x0);
-                static bool focused_once;
-                if (!focused_once) { ImGui::SetKeyboardFocusHere(); focused_once = true; }
+                if (!play_selected) menu_select_next(), play_selected = true;
                 ImVec2 play_at = ImGui::GetCursorScreenPos();
                 bool pressed = menu_item("PLAY", status.empty());
                 if (status.empty()) {  // PLAY twinkles now and then while the game is ready
@@ -2023,15 +2031,15 @@ extern "C" void launcher_run(const char *root, int mode) {
                     }
                 }
                 ImGui::SetCursorPosX(x0);
-                if (g_refocus == SETTINGS) ImGui::SetKeyboardFocusHere(), g_refocus = MAIN;  // (back from Settings: it
-                if (menu_item("SETTINGS", true)) {                                             //  stays selected)
+                if (g_refocus == SETTINGS) menu_select_next(), g_refocus = MAIN;  // (back from Settings: it stays selected)
+                if (menu_item("SETTINGS", true)) {
                     static bool opened;
                     menu_tabs_focus(!opened);  // (first time this session: Prelaunch; later: the selected tab)
                     opened = true;
                     page = SETTINGS;
                 }
                 ImGui::SetCursorPosX(x0);  // (set up, set up again, delete: the game files page)
-                if (g_refocus == SETUP) ImGui::SetKeyboardFocusHere(), g_refocus = MAIN;
+                if (g_refocus == SETUP) menu_select_next(), g_refocus = MAIN;
                 if (menu_item(status.empty() ? "GAME FILES" : "SET UP GAME FILES", !busy)) refresh_dlc(), page = SETUP;
                 ImGui::SetCursorPosX(x0);
                 if (menu_item("QUIT", true)) exit(0);
