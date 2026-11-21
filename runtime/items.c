@@ -5,7 +5,8 @@
 // quest items, Korok seeds), cooked dishes (CookResult: they need their effects) and rupees. Each has the name the
 // game gives it, <actor>_Name in Message/Msg_<lang>.product.ssarc's ActorType/*.msbt inside Pack/Bootup_<lang>.pack;
 // one without a name is left out, and of several actors with one name (armour's upgrade levels, dyes) the first by
-// actor name stays.
+// actor name stays. The name's pinyin comes with it (runtime/pinyin.h): the menu's search is typed on a controller's
+// on-screen keyboard, which has no IME and only ASCII keys, so 鲈鱼 is found by "luyu".
 //
 // Adding: the pause menu data's item get (1.9.0 0x7000d921bc; x0 the pause menu data, x1 the item's name as a
 // sead::SafeString, w2 its value, x3 its weapon modifier or NULL) is what picking an item up calls: a stack's value
@@ -27,6 +28,7 @@
 #include "kernel.h"
 #include "language.h"
 #include "nvn/tegra.h"
+#include "pinyin.h"
 #include "rt.h"
 #include "services/archive.h"
 #include "settings.h"
@@ -256,6 +258,8 @@ static void list_read(void) {
         if (!name) continue;
         GameItem *it = &g_items[g_nitems++];
         it->actor = copy(actor, strlen(actor)), it->name = name, it->cat = cat;
+        char py[256];  // (the MSBT reader stops a name at 160 bytes: the readings always fit)
+        if (pinyin_text(name, py, sizeof py)) it->pinyin = copy(py, strlen(py));
         it->stack = cat == ITEMCAT_ARROW || cat == ITEMCAT_MATERIAL;
         it->value = cat <= ITEMCAT_SHIELD ? byml_get_int(&b, a, "generalLife", 1) * 100 : 1;
         it->attack = byml_get_int(&b, a, "attackPower", 0);
@@ -470,24 +474,29 @@ static bool has_text(const char *s, const char *t) {  // (ignoring case)
     return false;
 }
 
+bool items_matches(int i, const char *text) {
+    const GameItem *it = items_at(i);
+    return it && (has_text(it->name, text) || has_text(it->actor, text) || (it->pinyin && pinyin_match(it->pinyin, text)));
+}
+
 static void cmd_give(int argc, char **argv, ControlReply *r) {
-    if (argc < 2 || argc > 3) { control_fail(r, "Usage: give <actor or part of a name> [count]"); return; }
+    if (argc < 2 || argc > 3) { control_fail(r, "Usage: give <actor, part of a name or its pinyin> [count]"); return; }
     int count = argc == 3 ? atoi(argv[2]) : 1, i = 0, n = items_count();
     while (i < n && strcmp(g_items[i].actor, argv[1])) i++;
-    if (i == n) {  // not an actor: the items whose name or actor has this in it. One is given, several are listed
+    if (i == n) {  // not an actor: the items whose name, actor or pinyin has this in it. One is given, several are listed
         int found = 0, first = n;
         for (int k = 0; k < n; k++) {
-            if (!has_text(g_items[k].name, argv[1]) && !has_text(g_items[k].actor, argv[1])) continue;
+            if (!items_matches(k, argv[1])) continue;
             if (!found++) first = k;
         }
-        if (!found) { control_fail(r, "No item has this in its name or actor"); return; }
+        if (!found) { control_fail(r, "No item has this in its name, actor or pinyin"); return; }
         if (found > 1) {
             // (the fields for scripts, the lines for the console, which prints them instead)
             char list[2048] = "";
             size_t at = 0;
             int shown = 0;
             for (int k = first; k < n && shown < 30; k++) {
-                if (!has_text(g_items[k].name, argv[1]) && !has_text(g_items[k].actor, argv[1])) continue;
+                if (!items_matches(k, argv[1])) continue;
                 control_text(r, "%s  %s", g_items[k].actor, g_items[k].name);
                 if (at < sizeof list) at += (size_t)snprintf(list + at, sizeof list - at, "%s%s", shown ? " " : "", g_items[k].actor);
                 shown++;
@@ -508,7 +517,7 @@ static void cmd_give(int argc, char **argv, ControlReply *r) {
 
 void control_items_init(void) {
     static const ControlCmd cmds[] = {
-        {"give", "<actor or part of a name> [count]", "Put an item in the pouch, in play (several matches: lists them)", cmd_give},
+        {"give", "<actor, part of a name or its pinyin> [count]", "Put an item in the pouch, in play (several matches: lists them)", cmd_give},
     };
     control_register(cmds, (int)(sizeof cmds / sizeof *cmds));
 }

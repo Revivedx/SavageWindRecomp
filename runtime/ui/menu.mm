@@ -1692,7 +1692,7 @@ static void tab_cheats(void) {
     enum { C_NONE, C_WEAPON, C_BOW, C_SHIELD, C_ARROW, C_ARMOR, C_MATERIAL, C_CRITTER, C_ALL, C_COUNT };
     static const char *cats[C_COUNT] = {"Choose a category", "Weapons", "Bows", "Shields", "Arrows", "Armour", "Materials",
                                         "Critters and fairies", "All"};
-    opt_text(tr("Search"), search, sizeof search, "", tr("Only the items whose name or actor contains this text."));
+    opt_text(tr("Search"), search, sizeof search, "", tr("Only the items whose name, actor or pinyin contains this text ('luyu' finds 鲈鱼)."));
     opt_dropdown(tr("Category"), &cat, cats, C_COUNT, C_NONE, tr("The items of one kind."));
     opt_slider(tr("Amount"), &amount, 1, 99, 1, 1, "%g",
                tr("How many the Add button puts in the pouch. Stacks (arrows, materials) take them at once."));
@@ -1715,7 +1715,7 @@ static void tab_cheats(void) {
               : it->cat == ITEMCAT_SHIELD ? C_SHIELD : it->cat == ITEMCAT_ARROW ? C_ARROW
               : it->cat == ITEMCAT_ARMOR ? C_ARMOR : C_MATERIAL;
         if (cat != C_NONE && cat != C_ALL && c != cat) continue;
-        if (search[0] && !has_text(it->name, search) && !has_text(it->actor, search)) continue;
+        if (search[0] && !items_matches(i, search)) continue;
         // (only a row on screen can be hovered or selected: the list is long, its other rows need no description)
         bool seen = ImGui::IsRectVisible(ImVec2(ImGui::GetContentRegionAvail().x, ImGui::GetFontSize() * 1.9f));
         if (opt_action(it->name, tr("Add"), seen ? item_desc(it).c_str() : NULL, false)) {

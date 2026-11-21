@@ -19,6 +19,7 @@ enum { ITEMFX_NONE, ITEMFX_ATTACK, ITEMFX_DEFENSE, ITEMFX_CLIMB, ITEMFX_BEAM, IT
 typedef struct {
     const char *actor;  // "Weapon_Sword_001"
     const char *name;   // in the text language, UTF-8
+    const char *pinyin; // the name's readings, syllables spaced ("kao lu yu"): what the search finds it by too
     int cat;            // ITEMCAT_*
     int value;          // what the item get is given for one: durability x 100 (weapons, bows, shields), else 1
     bool stack;         // one pouch entry holds many (arrows, materials)
@@ -36,6 +37,9 @@ typedef struct {
 // item get in the game code)
 int items_count(void);
 const GameItem *items_at(int i);
+// Does item i match a search text: its name, its actor, or the pinyin of its name ("luyu" finds 烤鲈鱼 - the menu's
+// search is typed on a controller's ASCII keyboard, which has no IME, so a Chinese name needs the reading)
+bool items_matches(int i, const char *text);
 bool items_available(void);  // the game code has the item get (its sites were found)
 // Puts `count` of item i in the pouch on the game thread's next frame in play (a stack takes them at once, anything
 // else one entry each, at most ITEMS_MAX_EACH). false: the queue is full.

@@ -296,6 +296,7 @@ $(B)/rt/prof_sampler.o: RTFLAGS += -fms-extensions
 $(B)/rt/memscan_os.o: RTFLAGS += -fms-extensions
 
 $(B)/rt/control_places.o: runtime/control_places_data.inc  # (the generated table of shrines, Koroks ...)
+$(B)/rt/pinyin.o: runtime/pinyin_data.inc  # (the hanzi readings, tools/gen_pinyin_table.py)
 
 $(B)/rt/%.o: runtime/%.c $(RT_HDRS)
 	@mkdir -p $(dir $@)
@@ -722,6 +723,18 @@ test-mods: $(B)/test_mods
 	$(B)/test_mods
 
 .PHONY: test-mods
+
+# Pinyin for the search fields (runtime/pinyin.c): the readings of a few ordinary Chinese names, and what a search
+# typed on a controller's ASCII on-screen keyboard finds with them
+$(B)/test_pinyin: tools/test_pinyin.c runtime/pinyin.c runtime/pinyin.h runtime/pinyin_data.inc
+	@mkdir -p $(B)
+	$(CC) -O1 -Wall -Wextra -Werror -std=gnu11 -Iruntime -o $@ tools/test_pinyin.c runtime/pinyin.c
+
+test-pinyin: $(B)/test_pinyin
+	$(B)/test_pinyin
+	$(firstword $(PY) python3) tools/test_pinyin_table.py
+
+.PHONY: test-pinyin
 
 $(B)/test_game_file_size: tools/test_game_file_size.c runtime/game_file_size.c runtime/game_file_size.h runtime/game_files.h
 	@mkdir -p $(B)

@@ -8,6 +8,11 @@ What changed in each Savage Wind release. The `test` branch holds what the next 
   2.5 GB less memory (RTX 3060, 1080p: 8.3 -> 5.9 GB) and no longer grows by hundreds of megabytes as you travel.
 - **Vulkan 1.2 drivers** are taken when they have dynamic rendering, synchronization2 and extended dynamic state 1 and
   2 as extensions (without FSR 3, FSR 4 or frame generation). Not confirmed on such a card yet.
+- **Cheats: Chinese item names are found by pinyin.** The items are listed under the name your game's text language
+  gives them, but the search is typed on the on-screen keyboard a controller drives, which has no input method, so a
+  Chinese name could not be searched for at all. `luyu` now finds 鲈鱼, `kaoluyu` 烤鲈鱼, `bingleng` the frozen fish,
+  and `yu` every name with 鱼 in it, on a controller or a keyboard. The readings are the Unicode Han Database's, not
+  the game's (`runtime/pinyin.c`); the console's `give` command reads them the same way.
 
 ## Alpha 6 (0.6.0-alpha.6) - 2026-11-15
 
