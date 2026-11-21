@@ -734,7 +734,7 @@ void input_handle_event(const SDL_Event *e) {
             g_debug_frame_request = 1;
         if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_F6 && !e->key.repeat && profiler_key_available())
             prof_toggle();  // start, stop, or acknowledge a full buffer (runtime/prof.h; report: tools/swprof.py)
-        if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_F12 && !e->key.repeat)
+        if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_F12 && !e->key.repeat && control_enabled())
             g_record_frames = !g_record_frames;
         if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_F8 && !e->key.repeat) {
             g_skip_fs_off = !g_skip_fs_off;

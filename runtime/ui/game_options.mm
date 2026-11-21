@@ -1308,6 +1308,7 @@ void build_items(void) {
     // Esc and F2 are hard-wired (the game can always be paused, the cursor freed): shown greyed, never rebound
     v.push_back(button(P_BINDS, "Pause menu / back", "Fixed: this key always works.", "", A_FIXED, 0));
     v.push_back(button(P_BINDS, "Free mouse cursor", "Fixed: this key frees the mouse cursor.", "", A_FIXED, 1));
+    bind(BIND_CONSOLE, bind_input_name(BIND_CONSOLE));
     for (int sl = BIND_LS_UP; sl <= BIND_RS_RIGHT; sl++) bind(sl, bind_input_name(sl));
     bind(BIND_WALK, bind_input_name(BIND_WALK));
     bind(BIND_TILT, bind_input_name(BIND_TILT));

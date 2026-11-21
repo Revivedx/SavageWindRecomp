@@ -282,10 +282,14 @@ bool menu_handle_event(const SDL_Event *e) {
     }
     switch (e->type) {
     case SDL_EVENT_KEY_DOWN:
-        if (!e->key.repeat && (e->key.scancode == SDL_SCANCODE_GRAVE || e->key.scancode == SDL_SCANCODE_F12) &&
-            !g_open.load() && g_kbd.load() != 1 && !g_sizes.load()) {
-            set_console(!console_is_open());
-            return true;
+        {
+            bool console_key = (g_bind_key[BIND_CONSOLE] > 0 && e->key.scancode == g_bind_key[BIND_CONSOLE]) ||
+                               (g_bind_key2[BIND_CONSOLE] > 0 && e->key.scancode == g_bind_key2[BIND_CONSOLE]) ||
+                               (g_bind_key[BIND_CONSOLE] == SDL_SCANCODE_F12 && e->key.scancode == SDL_SCANCODE_GRAVE);
+            if (!e->key.repeat && console_key && !g_open.load() && g_kbd.load() != 1 && !g_sizes.load()) {
+                set_console(!console_is_open());
+                return true;
+            }
         }
         if (console_is_open()) {
             if (e->key.scancode == SDL_SCANCODE_ESCAPE) { if (!e->key.repeat) set_console(false); return true; }

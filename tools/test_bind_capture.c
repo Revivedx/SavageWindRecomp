@@ -100,6 +100,19 @@ int main(void) {
     bind_capture_begin(BIND_DEV_KEY,BIND_GYRO_CENTER);
     e.key.scancode=SDL_SCANCODE_H;assert(bind_capture_event(&e));
     assert(g_bind_key[BIND_GYRO_CENTER]==SDL_SCANCODE_H&&g_bind_key[BIND_RS_UP]==camera_up);
+
+    // Console defaults to F12, can be rebound, and frees F12 for other bindings once moved (#1020).
+    assert(g_bind_key[BIND_CONSOLE] == SDL_SCANCODE_F12 && !bind_pad_slot(BIND_CONSOLE));
+    bind_capture_begin(BIND_DEV_KEY, BIND_CONSOLE);
+    e = (SDL_Event){0}; e.type = SDL_EVENT_KEY_DOWN; e.key.scancode = SDL_SCANCODE_F4;
+    assert(bind_capture_event(&e));
+    assert(g_bind_key[BIND_CONSOLE] == SDL_SCANCODE_F4);
+    bind_capture_begin(BIND_DEV_KEY, BIND_WALK);
+    e.key.scancode = SDL_SCANCODE_F12;
+    assert(bind_capture_event(&e));
+    assert(g_bind_key[BIND_WALK] == SDL_SCANCODE_F12);
+    bind_reset(BIND_DEV_KEY);
+
     puts("binding capture: confirm releases, assignments, cancellation and timeout passed");
     return 0;
 }
