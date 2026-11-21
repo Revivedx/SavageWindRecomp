@@ -234,6 +234,7 @@ typedef struct {
     bool toggle_zl;          // press ZL once in play to hold shield / focus; press again to release (hle/input.c)
     bool toggle_zr;          // press ZR once in play to draw / hold bow; press again to release (hle/input.c)
     int menu_text_size;      // overlay text scale, percent (80..150, ui/menu.mm)
+    bool menu_remember_pos;  // remember last focused option and scroll position when reopening the F1 overlay
     int text_language;   // index in g_text_languages (runtime/language.h), 0: the host's
     int voice_language;  // index in g_voice_languages, 0: the text language's voices
     bool save_backups;   // Saves > Back up at each start: a copy of the save folder as the game starts (runtime/save_backup.c)

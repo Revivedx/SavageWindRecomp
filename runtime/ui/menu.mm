@@ -107,6 +107,7 @@ extern "C" void menu_test_open(void) {
 // the player (key_from_pad).
 static std::atomic<bool> g_ab_swapped_open{false};
 
+static bool g_had_page_focus, g_restore_on_open;
 void menu_tabs_focus(bool first_tab);
 static void set_open(bool open) {
     if (open == g_open.load()) return;
@@ -116,7 +117,10 @@ static void set_open(bool open) {
     bind_capture_cancel();
     if (open) {
         static bool opened;  // the controller's cursor: the first tab (Controls) the first time this session, later the
-        menu_tabs_focus(!opened);  // selected one
+        if (opened && g_settings.menu_remember_pos && g_had_page_focus)
+            g_restore_on_open = true;
+        else
+            menu_tabs_focus(!opened);  // selected one
         opened = true;
     }
     else { settings_save(); osk_cancel(); g_text_busy = false; }
@@ -874,6 +878,8 @@ static void tab_display(void) {
                        "Scale of the text and controls in this F1 overlay."))
             g_settings.menu_text_size = (int)lroundf(tsz);
     }
+    opt_toggle("Remember menu position", &g_settings.menu_remember_pos, false,
+               "Keep the selected option and scroll position when reopening this F1 overlay.");
     {   // Menu cursor speed
         static const int speeds[] = MENU_SPEED_CHOICES;
         enum { NV = sizeof speeds / sizeof speeds[0] };
@@ -2262,6 +2268,12 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     bool down_from_tab = focused_tab != -99 && ImGui::GetCurrentContext()->NavCursorVisible && !any_popup &&
                          (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadDown) || ImGui::IsKeyPressed(ImGuiKey_GamepadLStickDown) ||
                           ImGui::IsKeyPressed(ImGuiKey_DownArrow));
+    if (g_restore_on_open) {
+        g_restore_on_open = false;
+        opt_restore_focus(true);
+    } else if (down_from_tab && g_settings.menu_remember_pos) {
+        opt_restore_focus(true);
+    }
     opt_focus_first(down_from_tab);
     if (ImGui::BeginTabBar("##tabs", ImGuiTabBarFlags_NoTabListScrollingButtons)) {
         for (int k = 0; k < ntabs; k++) {
@@ -2298,6 +2310,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
             }
             if (ImGui::IsItemFocused()) focused_tab = t.id;
             else if (focused_tab == t.id) focused_tab = -99;
+            g_had_page_focus = (focused_tab == -99);
             ImGui::EndDisabled();
             if (open) {
                 g_tab = t.id;

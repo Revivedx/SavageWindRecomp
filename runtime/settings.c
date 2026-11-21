@@ -94,6 +94,7 @@ Settings g_settings = {
     .hud_size = 100,
     .menu_speed = 100,
     .menu_text_size = 100,
+    .menu_remember_pos = false,
     .color_lut_strength = 100,
     .haze = 100,
     .bloom = true,
@@ -646,6 +647,7 @@ void settings_load(void) {
         else if (!strcmp(key, "toggle_zl")) g_settings.toggle_zl = atoi(val) != 0;
         else if (!strcmp(key, "toggle_zr")) g_settings.toggle_zr = atoi(val) != 0;
         else if (!strcmp(key, "menu_text_size")) g_settings.menu_text_size = atoi(val);
+        else if (!strcmp(key, "menu_remember_pos")) g_settings.menu_remember_pos = atoi(val) != 0;
         else if (!strcmp(key, "haze")) {  // (percent; an older ini's 0-50 reads as 75: HAZE_MIN)
             int v = atoi(val);
             g_settings.haze = v < HAZE_MIN ? HAZE_MIN : v > 100 ? 100 : v;
@@ -923,6 +925,7 @@ bool settings_save_to(const char *path) {
     fprintf(f, "toggle_zl = %d\n", g_settings.toggle_zl ? 1 : 0);
     fprintf(f, "toggle_zr = %d\n", g_settings.toggle_zr ? 1 : 0);
     fprintf(f, "menu_text_size = %d\n", g_settings.menu_text_size);
+    fprintf(f, "menu_remember_pos = %d\n", g_settings.menu_remember_pos ? 1 : 0);
     fprintf(f, "haze = %d\n", g_settings.haze);
     fprintf(f, "bloom = %d\n", g_settings.bloom ? 1 : 0);
     fprintf(f, "depth_of_field = %d\n", g_settings.depth_of_field ? 1 : 0);

@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "imgui.h"
@@ -27,7 +28,12 @@ void opt_disable_next(void) { g_next_disabled = true; }
 static bool g_value_dim;  // the next row's value is shown greyed (a value that can't be picked yet)
 static int g_indent;
 static bool g_focus_req, g_take_first;  // (opt_focus_first: requested / this page's first row takes it)
+static bool g_restore_req, g_take_restore;  // (opt_restore_focus: restore the last focused row on this page)
+static ImGuiID g_restore_id;
+static std::string g_cur_page;
+static std::unordered_map<std::string, ImGuiID> g_saved_focus;
 void opt_focus_first(bool on) { g_focus_req = on; }
+void opt_restore_focus(bool on) { g_restore_req = on; }
 static bool g_held;  // the last row's left / right has been held a while (steppers go faster)
 void opt_indent(int step) { g_indent = g_indent + step < 0 ? 0 : g_indent + step; }
 
@@ -35,6 +41,19 @@ void opt_begin(const char *id, float scale) {
     g_scale = scale;
     static std::string page;  // (another page: its first row's description, not the last page's)
     if (page != id) page = id, g_desc_shown.clear(), g_img_shown = DescImage();
+    g_cur_page = id;
+    g_take_restore = false;
+    g_restore_id = 0;
+    if (g_restore_req) {
+        g_restore_req = false;
+        auto it = g_saved_focus.find(g_cur_page);
+        if (it != g_saved_focus.end() && it->second != 0) {
+            g_take_restore = true;
+            g_restore_id = it->second;
+            g_focus_req = false;
+            ImGui::NavMoveRequestCancel();
+        }
+    }
     g_take_first = g_focus_req;
     g_focus_req = false;
     if (g_take_first) ImGui::NavMoveRequestCancel();  // (this frame's Down goes to the first row instead)
@@ -68,9 +87,15 @@ static int row(const char *label, const std::string &value, bool changed, const 
     ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));  // (the row's own border shows the selection)
     bool clicked = ImGui::InvisibleButton("##row", ImVec2(w, h), ImGuiButtonFlags_EnableNav);
     ImGui::PopStyleColor();
-    if (g_take_first) {  // (opt_focus_first)
+    ImGuiID item_id = ImGui::GetItemID();
+    if (g_take_restore && item_id == g_restore_id) {  // (opt_restore_focus)
+        g_take_restore = false;
+        g_restore_id = 0;
+        ImGui::SetFocusID(item_id, ImGui::GetCurrentWindow());
+        ImGui::SetNavCursorVisible(true);
+    } else if (g_take_first) {  // (opt_focus_first)
         g_take_first = false;
-        ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
+        ImGui::SetFocusID(item_id, ImGui::GetCurrentWindow());
         ImGui::SetNavCursorVisible(true);
         ImGui::SetScrollHereY(0);
     }
@@ -79,6 +104,7 @@ static int row(const char *label, const std::string &value, bool changed, const 
     bool dim = off || g_value_dim;
     g_value_dim = false;
     bool hov = ImGui::IsItemHovered(), foc = ImGui::IsItemFocused() && ImGui::GetCurrentContext()->NavCursorVisible;
+    if (foc && !g_cur_page.empty()) g_saved_focus[g_cur_page] = item_id;
     int step = clicked && !off ? 2 : 0;
     g_held = false;
     if (foc && !off) {

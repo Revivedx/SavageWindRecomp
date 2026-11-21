@@ -59,3 +59,5 @@ void ui_texture_free(unsigned long long tex);
 // the next page's first row takes the controller's cursor (Down on the tab bar: ImGui's own pick across the nested
 // panes was unreliable - some tabs went to a row further down, some nowhere). Cleared by the next opt_begin / call.
 void opt_focus_first(bool on);
+// restore focus to the page's last focused row (if any) instead of jumping to the first row
+void opt_restore_focus(bool on);

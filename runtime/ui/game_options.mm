@@ -1424,6 +1424,10 @@ void build_items(void) {
                            [](const Item &) { return nearest(k_text_sizes, N(k_text_sizes), (float)g_settings.menu_text_size); },
                            [](const Item &, int x) { g_settings.menu_text_size = k_text_sizes[x]; }, 2));
     }
+    v.push_back(toggle(P_ACCESS, "Remember menu position",
+                       "Keep the selected option and scroll position when reopening this F1 overlay.",
+                       [](const Item &) { return (int)g_settings.menu_remember_pos; },
+                       [](const Item &, int x) { g_settings.menu_remember_pos = x; }, 0));
 
 }
 
