@@ -222,6 +222,7 @@ typedef struct {
     int weapon_wear;         // how fast they wear out otherwise, percent of the game's (WEAPON_WEAR_MIN..MAX)
     bool infinite_arrows;    // shooting a bow takes no arrows from the pouch
     bool infinite_stamina;   // the stamina wheel never goes down
+    int stamina_drain;       // percent of stamina drained (DAMAGE_CHOICES)
     bool infinite_rupees;    // the wallet is kept at 9999 rupees (runtime/rupees.c)
     int item_multiplier;     // 1, 2, 4 or 8: multiply stackable item pickups (runtime/items.c)
     bool free_sprint;        // sprinting takes no stamina while no enemy is fighting Link (runtime/free_sprint.c)

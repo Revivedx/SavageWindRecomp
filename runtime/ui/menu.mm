@@ -1436,6 +1436,11 @@ static void cheats_options(void) {
                                  : "How much damage Link takes. 100% is the game's own.", false))
                 setting = damage[d];
         }
+        int sd = 3;
+        for (int i = 0; i < ND; i++) if (g_settings.stamina_drain == damage[i]) sd = i;
+        if (opt_choice("Stamina drain", &sd, damage_names, ND, 3,
+                       "How fast stamina drains. 100% is the game's own.", false))
+            g_settings.stamina_drain = damage[sd];
     }
     {
         static char heart_buf[16];

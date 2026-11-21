@@ -64,6 +64,7 @@ static const Setting settings[] = {
     B(infinite_stamina), B(infinite_rupees), I(item_multiplier, 1, 8, NULL), B(free_sprint), B(sure_footed), I(weather, 0, WEATHER_COUNT - 1,
                            "game|no_rain|no_storms|clear|cloudy|rain|heavy_rain|snow|heavy_snow|thunderstorm|thunder_rain|sun_shower"),
     B(god_mode), B(one_hit_kill), I(damage_taken, 25, 400, NULL), I(damage_dealt, 25, 400, NULL),
+    I(stamina_drain, 25, 400, NULL),
     I(text_language, 0, 0, NULL), I(voice_language, 0, 0, NULL), B(save_backups), B(stick_cam_on), I(stick_cam_x, STICK_CAM_MIN, STICK_CAM_MAX, NULL),
     I(stick_cam_y, STICK_CAM_MIN, STICK_CAM_MAX, NULL), B(toggle_zl), B(toggle_zr), I(menu_text_size, 80, 150, NULL),
     B(auto_continue), B(menu_tip_seen),

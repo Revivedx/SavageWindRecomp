@@ -31,6 +31,7 @@ Settings g_settings = {
     .rumble = true,
     .rumble_strength = RUMBLE_STRENGTH_DEFAULT,
     .freecam_sticks = true,
+    .stamina_drain = 100,
     .damage_taken = 100,
     .damage_dealt = 100,
     .colour_vision_strength = COLOUR_VISION_STRENGTH_DEFAULT,
@@ -624,6 +625,7 @@ void settings_load(void) {
                 if (!strcmp(val, k_text_speed[i])) g_settings.text_speed = i;
         }
         else if (!strcmp(key, "infinite_stamina")) g_settings.infinite_stamina = atoi(val) != 0;
+        else if (!strcmp(key, "stamina_drain")) g_settings.stamina_drain = atoi(val);  // (percent)
         else if (!strcmp(key, "infinite_rupees")) g_settings.infinite_rupees = atoi(val) != 0;
         else if (!strcmp(key, "item_multiplier")) g_settings.item_multiplier = atoi(val);
         else if (!strcmp(key, "free_sprint")) g_settings.free_sprint = atoi(val) != 0;
@@ -907,6 +909,7 @@ bool settings_save_to(const char *path) {
     fprintf(f, "weapon_wear = %d\n", g_settings.weapon_wear);
     fprintf(f, "infinite_arrows = %d\n", g_settings.infinite_arrows);
     fprintf(f, "infinite_stamina = %d\n", g_settings.infinite_stamina);
+    fprintf(f, "stamina_drain = %d\n", g_settings.stamina_drain);
     fprintf(f, "infinite_rupees = %d\n", g_settings.infinite_rupees);
     fprintf(f, "item_multiplier = %d\n", g_settings.item_multiplier);
     fprintf(f, "free_sprint = %d\n", g_settings.free_sprint);

@@ -44,11 +44,20 @@ int32_t rt_link_life(int32_t oldv, int32_t newv) {
     return v < 0 ? 0 : v;
 }
 
-// Infinite stamina: the stamina setter keeps the old value instead of storing a lower one (tools/patches.py _stamina)
+// Infinite stamina and stamina drain multiplier: the stamina setter keeps the old value or scales the drain (#968).
 uint32_t rt_stamina(uint32_t oldv, uint32_t newv) {
     float o, n;
     memcpy(&o, &oldv, 4), memcpy(&n, &newv, 4);
-    return g_settings.infinite_stamina && n < o ? oldv : newv;
+    if (n >= o) return newv;
+    if (g_settings.infinite_stamina) return oldv;
+    int pct = g_settings.stamina_drain;
+    if (pct <= 0) return oldv;
+    if (pct == 100) return newv;
+    float s = o - (o - n) * ((float)pct / 100.0f);
+    if (s < 0.0f) s = 0.0f;
+    uint32_t out;
+    memcpy(&out, &s, 4);
+    return out;
 }
 
 // Infinite arrows: the bow's shot takes its arrows off the pouch through one function, which returns before taking

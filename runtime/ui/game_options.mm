@@ -1404,6 +1404,15 @@ void build_items(void) {
     v.push_back(toggle(P_ACCESS, "Infinite stamina", "The stamina wheel never runs out.",
                        [](const Item &) { return (int)g_settings.infinite_stamina; },
                        [](const Item &, int x) { g_settings.infinite_stamina = x; }, 0));
+    v.push_back(choice(P_ACCESS, "Stamina drain", "How fast stamina drains. 100% is the game's own.",
+                       [](const Item &) { return N(k_damage); },
+                       [](const Item &, int x) {
+                           static std::string s;
+                           s = pct(k_damage[x]);
+                           return s.c_str();
+                       },
+                       [](const Item &) { return nearest(k_damage, N(k_damage), g_settings.stamina_drain); },
+                       [](const Item &, int x) { g_settings.stamina_drain = k_damage[x]; }, DAMAGE_DEFAULT));
     v.push_back(toggle(P_ACCESS, "Toggle shield / focus (ZL)",
                        "Press ZL once in play to hold your shield or lock on; press ZL again to release.",
                        [](const Item &) { return (int)g_settings.toggle_zl; },
